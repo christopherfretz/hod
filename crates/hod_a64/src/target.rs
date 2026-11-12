@@ -27,7 +27,8 @@
 
 use hod_cg::abi::{AbiUnsupported, Assignment, Sig};
 use hod_cg::{
-    CallEmit, CgResult, Class, FixupKind, FnCx, FrameRef, Label, PReg, RegInfo, RegSet, Target,
+    CallEmit, CgResult, Class, FixupKind, FnCx, FrameDesc, FrameRef, Label, PReg, RegInfo, RegSet,
+    Target,
 };
 use hod_ir::{
     Inst, InstKind, Intrinsic, Opcode, ParamAttrs, TypeId, TypeKind, TypeTable, Value, ValueKind,
@@ -161,6 +162,10 @@ impl Target for A64 {
 
     fn end_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
         frame::end(cx)
+    }
+
+    fn frame_base_offset(&self, desc: &FrameDesc, place: FrameRef) -> Option<i64> {
+        frame::base_offset(desc, place)
     }
 
     fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()> {

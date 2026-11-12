@@ -76,7 +76,7 @@ between the IR and the bytes.
 | `hod_bc` | LLVM bitcode reader → `hod_ir`. (Later.) | `hod_ir` |
 | `hod_obj` | Object-file model and the ELF64 relocatable writer: sections, COMDAT groups, symbols, relocations, string tables. Knows nothing about code generation. | - |
 | `hod_mc_a64` | AArch64 instruction encoder: typed constructors → 32-bit words, plus fixup kinds. No IR knowledge. | - |
-| `hod_mc_x64` | x86-64 instruction encoder. | - |
+| `hod_mc_x64` | x86-64 instruction encoder: typed constructors → instruction bytes with their PC-relative site, plus fixup kinds. No IR knowledge. | - |
 | `hod_cg` | Target-independent code generation: the walk over a function, frame layout, value locations, the call-lowering driver, the per-function output record, and the scheduler that runs functions on worker threads and merges results in order. Defines the `Target` trait. | `hod_ir`, `hod_obj` |
 | `hod_a64` | AArch64 `Target`: instruction lowering, AAPCS64 for IR-level types, intrinsics, TLS and GOT access sequences. | `hod_cg`, `hod_mc_a64` |
 | `hod_x64` | x86-64 SysV `Target`. | `hod_cg`, `hod_mc_x64` |

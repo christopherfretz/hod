@@ -9,7 +9,9 @@
 //! with the tables a body reader needs.
 
 pub mod bitstream;
+pub mod codes;
 mod error;
+mod raw;
 
 pub use error::{BcError, BcErrorKind, BcResult};
 
@@ -21,4 +23,14 @@ pub mod limits {
 
     /// The most abbreviation operands one block (with BLOCKINFO) defines.
     pub const MAX_ABBREV_OPS: usize = 1 << 20;
+}
+
+/// Walks the blocks of `data` without building anything: the first pass
+/// alone, for tests and timing.
+///
+/// # Errors
+/// As the first pass of the module read.
+#[doc(hidden)]
+pub fn walk_only(data: &[u8]) -> BcResult<usize> {
+    raw::walk(data).map(|raw| raw.pool.len())
 }

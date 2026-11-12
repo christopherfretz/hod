@@ -324,6 +324,19 @@ impl<'a, 'b> Cursor<'a, 'b> {
         }
     }
 
+    /// A cursor at the top level of the bits `start..end` of `data`: the
+    /// stream inside a wrapper header, with positions still counted from
+    /// the first byte of `data`.
+    ///
+    /// # Errors
+    /// `Malformed` if the range is not inside the data.
+    pub fn new_in(data: &'a [u8], start: u64, end: u64) -> BcResult<Cursor<'a, 'static>> {
+        let mut cursor = Cursor::new(data);
+        cursor.bits.seek(start, end)?;
+        cursor.at = start;
+        Ok(cursor)
+    }
+
     /// A cursor inside the block `span` of `data`, with the abbreviations
     /// of `info`: for reading a block found earlier, such as a function
     /// body, on its own. The cursor ends at the block's end.

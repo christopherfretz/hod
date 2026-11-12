@@ -19,8 +19,8 @@ pub enum Fixup {
     Adr21,
     /// `immhi:immlo` of ADRP: a multiple of 4096 in ±4 GiB.
     Adrp21,
-    /// `imm19` of LDR (literal) and LDRSW (literal): a multiple of 4 in
-    /// ±1 MiB.
+    /// `imm19` of LDR (literal), LDRSW (literal) and LDR (literal,
+    /// SIMD&FP): a multiple of 4 in ±1 MiB.
     Literal19,
 }
 

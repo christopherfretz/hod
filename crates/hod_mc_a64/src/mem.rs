@@ -131,45 +131,56 @@ const fn store_bits(ms: MemSize) -> u32 {
     ms.log2() << 30
 }
 
+// The helpers below are shared with the FP/SIMD forms (`fpmem`): `bits`
+// carries the `size`, `V` and `opc` fields, `rt` is a register field value,
+// and `scale` is log2 of the access width in bytes.
+
 /// Load/store register (unsigned immediate).
 #[inline]
-const fn ls_scaled(bits: u32, ms: MemSize, rt: RegZr, rn: RegSp, offset: i64) -> u32 {
-    let imm12 = ((offset >> ms.log2()) as u32) & 0xfff;
-    bits | 0x3900_0000 | imm12 << 10 | rn.code() << 5 | rt.code()
+pub(crate) const fn ls_scaled(bits: u32, scale: u32, rt: u32, rn: RegSp, offset: i64) -> u32 {
+    let imm12 = ((offset >> scale) as u32) & 0xfff;
+    bits | 0x3900_0000 | imm12 << 10 | rn.code() << 5 | rt
 }
 
 /// Load/store register (unscaled immediate, post-indexed or pre-indexed),
 /// selected by `mode` in bits 11:10.
 #[inline]
-const fn ls_imm9(bits: u32, mode: u32, rt: RegZr, rn: RegSp, offset: i64) -> u32 {
-    bits | 0x3800_0000 | ((offset as u32) & 0x1ff) << 12 | mode << 10 | rn.code() << 5 | rt.code()
+pub(crate) const fn ls_imm9(bits: u32, mode: u32, rt: u32, rn: RegSp, offset: i64) -> u32 {
+    bits | 0x3800_0000 | ((offset as u32) & 0x1ff) << 12 | mode << 10 | rn.code() << 5 | rt
 }
 
 /// Load/store register (register offset).
 #[inline]
-const fn ls_reg(bits: u32, rt: RegZr, rn: RegSp, rm: RegZr, index: Index, scaled: bool) -> u32 {
+pub(crate) const fn ls_reg(
+    bits: u32,
+    rt: u32,
+    rn: RegSp,
+    rm: RegZr,
+    index: Index,
+    scaled: bool,
+) -> u32 {
     bits | 0x3820_0800
         | rm.code() << 16
         | (index as u32) << 13
         | (scaled as u32) << 12
         | rn.code() << 5
-        | rt.code()
+        | rt
 }
 
-const UNSCALED: u32 = 0;
-const POST: u32 = 1;
-const PRE: u32 = 3;
+pub(crate) const UNSCALED: u32 = 0;
+pub(crate) const POST: u32 = 1;
+pub(crate) const PRE: u32 = 3;
 
 /// An unsigned scaled offset: a multiple of the access width from 0 to 4095
 /// times the width.
 #[inline]
-const fn scaled_ok(ms: MemSize, offset: i64) -> bool {
-    offset >= 0 && offset & (ms.bytes() - 1) == 0 && offset >> ms.log2() <= 0xfff
+pub(crate) const fn scaled_ok(scale: u32, offset: i64) -> bool {
+    offset >= 0 && offset & ((1i64 << scale) - 1) == 0 && offset >> scale <= 0xfff
 }
 
 /// A signed 9-bit byte offset.
 #[inline]
-const fn imm9_ok(offset: i64) -> bool {
+pub(crate) const fn imm9_ok(offset: i64) -> bool {
     offset >= -256 && offset <= 255
 }
 
@@ -187,8 +198,8 @@ checked! {
     /// Precondition: `offset` is a multiple of the access width in
     /// `0..=4095 * width`.
     pub fn ldr_off / try_ldr_off(op: Load, rt: RegZr, rn: RegSp, offset: i64)
-    requires scaled_ok(op.mem_size(), offset);
-    { ls_scaled(op.bits(), op.mem_size(), rt, rn, offset) }
+    requires scaled_ok(op.mem_size().log2(), offset);
+    { ls_scaled(op.bits(), op.mem_size().log2(), rt.code(), rn, offset) }
 
     /// `LDUR*  <Rt>, [<Xn|SP>, #offset]`: LDUR, LDURB, LDURH, LDURSB,
     /// LDURSH, LDURSW (unscaled offset).
@@ -196,7 +207,7 @@ checked! {
     /// Precondition: `-256 <= offset <= 255`.
     pub fn ldur / try_ldur(op: Load, rt: RegZr, rn: RegSp, offset: i64)
     requires imm9_ok(offset);
-    { ls_imm9(op.bits(), UNSCALED, rt, rn, offset) }
+    { ls_imm9(op.bits(), UNSCALED, rt.code(), rn, offset) }
 
     /// `LDR*  <Rt>, [<Xn|SP>, #offset]!`: the pre-indexed form of the loads.
     ///
@@ -204,7 +215,7 @@ checked! {
     /// different registers (always true when `rn` is SP).
     pub fn ldr_pre / try_ldr_pre(op: Load, rt: RegZr, rn: RegSp, offset: i64)
     requires imm9_ok(offset) && writeback_ok(rt, rn);
-    { ls_imm9(op.bits(), PRE, rt, rn, offset) }
+    { ls_imm9(op.bits(), PRE, rt.code(), rn, offset) }
 
     /// `LDR*  <Rt>, [<Xn|SP>], #offset`: the post-indexed form of the loads.
     ///
@@ -212,7 +223,7 @@ checked! {
     /// different registers (always true when `rn` is SP).
     pub fn ldr_post / try_ldr_post(op: Load, rt: RegZr, rn: RegSp, offset: i64)
     requires imm9_ok(offset) && writeback_ok(rt, rn);
-    { ls_imm9(op.bits(), POST, rt, rn, offset) }
+    { ls_imm9(op.bits(), POST, rt.code(), rn, offset) }
 
     /// `LDR <Wt|Xt>, <label>` / `LDRSW <Xt>, <label>`: LDR (literal),
     /// LDRSW (literal).
@@ -228,8 +239,8 @@ checked! {
     /// Precondition: `offset` is a multiple of the access width in
     /// `0..=4095 * width`.
     pub fn str_off / try_str_off(ms: MemSize, rt: RegZr, rn: RegSp, offset: i64)
-    requires scaled_ok(ms, offset);
-    { ls_scaled(store_bits(ms), ms, rt, rn, offset) }
+    requires scaled_ok(ms.log2(), offset);
+    { ls_scaled(store_bits(ms), ms.log2(), rt.code(), rn, offset) }
 
     /// `STUR*  <Rt>, [<Xn|SP>, #offset]`: STUR, STURB, STURH (unscaled
     /// offset).
@@ -237,7 +248,7 @@ checked! {
     /// Precondition: `-256 <= offset <= 255`.
     pub fn stur / try_stur(ms: MemSize, rt: RegZr, rn: RegSp, offset: i64)
     requires imm9_ok(offset);
-    { ls_imm9(store_bits(ms), UNSCALED, rt, rn, offset) }
+    { ls_imm9(store_bits(ms), UNSCALED, rt.code(), rn, offset) }
 
     /// `STR*  <Rt>, [<Xn|SP>, #offset]!`: the pre-indexed form of the
     /// stores.
@@ -246,7 +257,7 @@ checked! {
     /// different registers (always true when `rn` is SP).
     pub fn str_pre / try_str_pre(ms: MemSize, rt: RegZr, rn: RegSp, offset: i64)
     requires imm9_ok(offset) && writeback_ok(rt, rn);
-    { ls_imm9(store_bits(ms), PRE, rt, rn, offset) }
+    { ls_imm9(store_bits(ms), PRE, rt.code(), rn, offset) }
 
     /// `STR*  <Rt>, [<Xn|SP>], #offset`: the post-indexed form of the
     /// stores.
@@ -255,7 +266,7 @@ checked! {
     /// different registers (always true when `rn` is SP).
     pub fn str_post / try_str_post(ms: MemSize, rt: RegZr, rn: RegSp, offset: i64)
     requires imm9_ok(offset) && writeback_ok(rt, rn);
-    { ls_imm9(store_bits(ms), POST, rt, rn, offset) }
+    { ls_imm9(store_bits(ms), POST, rt.code(), rn, offset) }
 }
 
 /// `LDR*  <Rt>, [<Xn|SP>, <Rm>, <extend> #amount]`: the register-offset
@@ -263,7 +274,7 @@ checked! {
 /// when `scaled`, and not at all otherwise.
 #[inline]
 pub const fn ldr_reg(op: Load, rt: RegZr, rn: RegSp, rm: RegZr, index: Index, scaled: bool) -> u32 {
-    ls_reg(op.bits(), rt, rn, rm, index, scaled)
+    ls_reg(op.bits(), rt.code(), rn, rm, index, scaled)
 }
 
 /// `STR*  <Rt>, [<Xn|SP>, <Rm>, <extend> #amount]`: the register-offset
@@ -278,12 +289,12 @@ pub const fn str_reg(
     index: Index,
     scaled: bool,
 ) -> u32 {
-    ls_reg(store_bits(ms), rt, rn, rm, index, scaled)
+    ls_reg(store_bits(ms), rt.code(), rn, rm, index, scaled)
 }
 
-const PAIR_POST: u32 = 1;
-const PAIR_OFFSET: u32 = 2;
-const PAIR_PRE: u32 = 3;
+pub(crate) const PAIR_POST: u32 = 1;
+pub(crate) const PAIR_OFFSET: u32 = 2;
+pub(crate) const PAIR_PRE: u32 = 3;
 const PAIR_W: u32 = 0;
 const PAIR_SW: u32 = 1;
 const PAIR_X: u32 = 2;
@@ -296,32 +307,26 @@ const fn pair_opc(sz: Size) -> u32 {
     }
 }
 
-/// Load/store pair. `scale` is log2 of the element width in bytes.
+/// Load/store pair. `regs` are the two register field values; `scale` is
+/// log2 of the element width in bytes.
 #[inline]
-const fn pair(
+pub(crate) const fn pair(
     opc: u32,
     mode: u32,
     load: u32,
-    regs: (RegZr, RegZr),
+    regs: (u32, u32),
     rn: RegSp,
     scale: u32,
     offset: i64,
 ) -> u32 {
     let (rt, rt2) = regs;
     let imm7 = ((offset >> scale) as u32) & 0x7f;
-    opc << 30
-        | 0x2800_0000
-        | mode << 23
-        | load << 22
-        | imm7 << 15
-        | rt2.code() << 10
-        | rn.code() << 5
-        | rt.code()
+    opc << 30 | 0x2800_0000 | mode << 23 | load << 22 | imm7 << 15 | rt2 << 10 | rn.code() << 5 | rt
 }
 
 /// A pair offset: a multiple of the element width in `-64..=63` widths.
 #[inline]
-const fn pair_offset_ok(scale: u32, offset: i64) -> bool {
+pub(crate) const fn pair_offset_ok(scale: u32, offset: i64) -> bool {
     offset & ((1i64 << scale) - 1) == 0 && offset >> scale >= -64 && offset >> scale <= 63
 }
 
@@ -346,7 +351,7 @@ checked! {
     /// `-64..=63` widths; `rt` and `rt2` have different encodings.
     pub fn ldp_off / try_ldp_off(sz: Size, rt: RegZr, rt2: RegZr, rn: RegSp, offset: i64)
     requires pair_offset_ok(pair_scale(sz), offset) && rt.code() != rt2.code();
-    { pair(pair_opc(sz), PAIR_OFFSET, 1, (rt, rt2), rn, pair_scale(sz), offset) }
+    { pair(pair_opc(sz), PAIR_OFFSET, 1, (rt.code(), rt2.code()), rn, pair_scale(sz), offset) }
 
     /// `LDP <Rt>, <Rt2>, [<Xn|SP>, #offset]!`: LDP, pre-indexed form.
     ///
@@ -356,7 +361,7 @@ checked! {
     requires pair_offset_ok(pair_scale(sz), offset)
         && rt.code() != rt2.code()
         && pair_writeback_ok(rt, rt2, rn);
-    { pair(pair_opc(sz), PAIR_PRE, 1, (rt, rt2), rn, pair_scale(sz), offset) }
+    { pair(pair_opc(sz), PAIR_PRE, 1, (rt.code(), rt2.code()), rn, pair_scale(sz), offset) }
 
     /// `LDP <Rt>, <Rt2>, [<Xn|SP>], #offset`: LDP, post-indexed form.
     ///
@@ -365,7 +370,7 @@ checked! {
     requires pair_offset_ok(pair_scale(sz), offset)
         && rt.code() != rt2.code()
         && pair_writeback_ok(rt, rt2, rn);
-    { pair(pair_opc(sz), PAIR_POST, 1, (rt, rt2), rn, pair_scale(sz), offset) }
+    { pair(pair_opc(sz), PAIR_POST, 1, (rt.code(), rt2.code()), rn, pair_scale(sz), offset) }
 
     /// `LDPSW <Xt>, <Xt2>, [<Xn|SP>, #offset]`: LDPSW, signed-offset form.
     ///
@@ -373,7 +378,7 @@ checked! {
     /// `rt2` have different encodings.
     pub fn ldpsw_off / try_ldpsw_off(rt: RegZr, rt2: RegZr, rn: RegSp, offset: i64)
     requires pair_offset_ok(2, offset) && rt.code() != rt2.code();
-    { pair(PAIR_SW, PAIR_OFFSET, 1, (rt, rt2), rn, 2, offset) }
+    { pair(PAIR_SW, PAIR_OFFSET, 1, (rt.code(), rt2.code()), rn, 2, offset) }
 
     /// `LDPSW <Xt>, <Xt2>, [<Xn|SP>, #offset]!`: LDPSW, pre-indexed form.
     ///
@@ -383,7 +388,7 @@ checked! {
     requires pair_offset_ok(2, offset)
         && rt.code() != rt2.code()
         && pair_writeback_ok(rt, rt2, rn);
-    { pair(PAIR_SW, PAIR_PRE, 1, (rt, rt2), rn, 2, offset) }
+    { pair(PAIR_SW, PAIR_PRE, 1, (rt.code(), rt2.code()), rn, 2, offset) }
 
     /// `LDPSW <Xt>, <Xt2>, [<Xn|SP>], #offset`: LDPSW, post-indexed form.
     ///
@@ -392,7 +397,7 @@ checked! {
     requires pair_offset_ok(2, offset)
         && rt.code() != rt2.code()
         && pair_writeback_ok(rt, rt2, rn);
-    { pair(PAIR_SW, PAIR_POST, 1, (rt, rt2), rn, 2, offset) }
+    { pair(PAIR_SW, PAIR_POST, 1, (rt.code(), rt2.code()), rn, 2, offset) }
 
     /// `STP <Rt>, <Rt2>, [<Xn|SP>, #offset]`: STP, signed-offset form.
     ///
@@ -400,7 +405,7 @@ checked! {
     /// `-64..=63` widths.
     pub fn stp_off / try_stp_off(sz: Size, rt: RegZr, rt2: RegZr, rn: RegSp, offset: i64)
     requires pair_offset_ok(pair_scale(sz), offset);
-    { pair(pair_opc(sz), PAIR_OFFSET, 0, (rt, rt2), rn, pair_scale(sz), offset) }
+    { pair(pair_opc(sz), PAIR_OFFSET, 0, (rt.code(), rt2.code()), rn, pair_scale(sz), offset) }
 
     /// `STP <Rt>, <Rt2>, [<Xn|SP>, #offset]!`: STP, pre-indexed form.
     ///
@@ -408,12 +413,12 @@ checked! {
     /// register as `rn` (always true when `rn` is SP).
     pub fn stp_pre / try_stp_pre(sz: Size, rt: RegZr, rt2: RegZr, rn: RegSp, offset: i64)
     requires pair_offset_ok(pair_scale(sz), offset) && pair_writeback_ok(rt, rt2, rn);
-    { pair(pair_opc(sz), PAIR_PRE, 0, (rt, rt2), rn, pair_scale(sz), offset) }
+    { pair(pair_opc(sz), PAIR_PRE, 0, (rt.code(), rt2.code()), rn, pair_scale(sz), offset) }
 
     /// `STP <Rt>, <Rt2>, [<Xn|SP>], #offset`: STP, post-indexed form.
     ///
     /// Precondition: as [`stp_pre`].
     pub fn stp_post / try_stp_post(sz: Size, rt: RegZr, rt2: RegZr, rn: RegSp, offset: i64)
     requires pair_offset_ok(pair_scale(sz), offset) && pair_writeback_ok(rt, rt2, rn);
-    { pair(pair_opc(sz), PAIR_POST, 0, (rt, rt2), rn, pair_scale(sz), offset) }
+    { pair(pair_opc(sz), PAIR_POST, 0, (rt.code(), rt2.code()), rn, pair_scale(sz), offset) }
 }

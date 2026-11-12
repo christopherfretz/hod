@@ -555,6 +555,7 @@ pub fn materialize_gpr_const(cx: &mut FnCx<'_, A64>, rd: Reg, id: ConstId) -> Cg
         Const::IntOfAddr { addr, .. } => return materialize_gpr_const(cx, rd, addr),
         Const::DsoLocalEquivalent(sym) | Const::NoCfi(sym) => sym_address(cx, rd, sym, 0)?,
         Const::BlockAddr { func, block } => block_address(cx, rd, func, block)?,
+        Const::SymDiff { .. } => crate::constaddr::sym_diff(cx, rd, id)?,
         _ => return unsupported(CONSTANT),
     }
     Ok(())
@@ -666,6 +667,9 @@ pub fn materialize_mem_const(cx: &mut FnCx<'_, A64>, dst: FrameRef, value: Value
             fixups.clear();
             let flattened = cx.module.consts.flatten(cx.types(), id, &mut image, &mut fixups);
             let result = match flattened {
+                Ok(()) if !crate::constaddr::is_plain(&fixups) => {
+                    crate::constaddr::write_image(cx, dst, ty, &image, &fixups)
+                }
                 Ok(()) => write_image(cx, &mut at, &image, &fixups),
                 Err(_) => unsupported(CONSTANT),
             };

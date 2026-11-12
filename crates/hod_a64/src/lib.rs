@@ -33,6 +33,7 @@
 //! | `aggr` | WP-040 | `Mem`-class values: wide integers, aggregates, overflow intrinsics | `tests/aggr.rs` |
 //! | `intrinsic` | WP-041, WP-070 | the other intrinsics | `tests/intrinsic.rs` |
 //! | `fpintr` | WP-070 | the floating-point intrinsics | `tests/fpintr.rs` |
+//! | `constaddr` | WP-072 | constant operands that hold addresses: differences, relocated images | `tests/constaddr.rs` |
 //!
 //! The differential harness that runs generated programs natively and
 //! compares them with `hod_interp` is `tests/diff.rs`.
@@ -41,6 +42,7 @@ pub mod abi;
 pub mod aggr;
 pub mod call;
 pub mod common;
+pub mod constaddr;
 pub mod control;
 pub mod features;
 pub mod float;

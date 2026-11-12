@@ -56,8 +56,12 @@ section, under about 2000 lines.
 
 - Source `scripts/env.sh` before cargo. Each checkout builds into its own
   target directory; a target directory shared between worktrees is unsound.
-- Builds and test runs are capped (`CARGO_BUILD_JOBS`, the harness's `-j`,
-  per-process time and memory limits). Do not raise the caps.
+- Builds draw from one pool of parallelism tokens shared by every
+  checkout on the machine (a make jobserver: `scripts/jobserver.sh`,
+  picked up by `scripts/env.sh`); without a pool they are capped by
+  `CARGO_BUILD_JOBS`. Test runs are capped too (`RUST_TEST_THREADS`, the
+  harness's `-j`, per-process time and memory limits). Do not raise the
+  caps, and do not unset `MAKEFLAGS`.
 - Temporary files go under the worktree's build directory, never in a
   shared location with a fixed name.
 

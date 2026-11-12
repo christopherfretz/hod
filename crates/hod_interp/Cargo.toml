@@ -1,0 +1,18 @@
+[package]
+name = "hod_interp"
+description = "A reference interpreter for hod_ir function bodies and a generator of executable random programs. Test infrastructure; not shipped."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+hod_ir.workspace = true
+
+[dev-dependencies]
+hod_testutil = { workspace = true }
+
+[lints]
+workspace = true

@@ -6,19 +6,20 @@ crate could be re-implemented from its spec and its tests alone.
 
 | file | covers | status |
 |---|---|---|
-| `ir.md` | `hod_ir`: the IR model, builder API, printer, `classify` | design written; §2.1, §3, §4 implemented (WP-002); the rest WP-003..009 |
+| `ir.md` | `hod_ir`: the IR model, builder API, printer, `classify` | §2..§5 implemented (WP-002, WP-003, WP-004); debug metadata, the printer and `classify` are WP-005, WP-006, WP-009 |
 | `ll.md` | `hod_ll`: accepted text dialects, errors | current for the lexer and the module level (WP-007); function bodies planned (WP-008) |
 | `object.md` | `hod_obj`: object model, ELF64 writer, linked sections, ELF convention helpers | current (WP-010, WP-011) |
 | `mc-a64.md` | `hod_mc_a64`: register model, instruction constructors, logical and floating-point immediates, constant materialization, fixups | current: base integer set (WP-012), scalar floating point, FP/SIMD loads and stores and a SIMD subset (WP-013) |
 | `mc-x64.md` | `hod_mc_x64` | planned |
 | `codegen.md` | `hod_cg`: the walk, value-location policy, frame, `Target` trait, per-function output record | design written (WP-014); implemented from WP-030 on |
-| `abi-a64.md` | how IR-level types are passed and returned on AArch64 | planned |
+| `abi-a64.md` | `hod_a64::abi::assign`: how IR-level signatures are passed and returned on AArch64 Linux as LLVM does it, extension duties, variadic functions, what is unsupported | current (WP-034); the code generator's duties of §8 are implemented by WP-038 |
 | `abi-x64.md` | the same for x86-64 SysV | planned |
 | `eh.md` | `hod_eh`: CFI and LSDA | planned |
 | `dwarf.md` | `hod_dwarf` | planned |
 | `xform.md` | `hod_xform`: required lowerings | planned |
 | `cli.md` | the `hod` command line, the `hod` facade's `compile`, fallback, coverage log | current (WP-015); reasons grow with code generation |
 | `harness.md` | `xtask`: the kiln shim, test formats, differential runs, benchmarks | "shim" current (WP-015); the rest planned (WP-016..018) |
+| `interp.md` | `hod_interp`: the reference interpreter (values, memory, traps, unsupported reasons, host functions, limits), the program generator, the LLVM oracle | current (WP-031) |
 
 ## Conventions
 

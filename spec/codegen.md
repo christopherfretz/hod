@@ -111,8 +111,11 @@ registers the ABI names.
 type's width are **unspecified**. A consumer that depends on them
 (`zext`, `sext`, compares, division, right shifts, `switch`, a conversion
 to floating point, `inttoptr` from a narrower integer, an index or an
-`alloca` count narrower than a pointer, an argument or a return value
-with `zeroext`/`signext`) extends first. A conditional branch or a
+`alloca` count narrower than a pointer) extends first. An argument or a
+return value is extended as the target's ABI document requires of its
+producer (`abi-a64.md` §7: with `zeroext`/`signext`, and a plain `i1` to
+8 bits), and what arrives may be assumed extended only as far as that
+document lets its consumer assume. A conditional branch or a
 `select` on `i1` tests bit 0. In memory an integer occupies
 its store size with the bits above its width zero (`spec/ir.md` §4.3);
 `store` writes that and `load` may rely on it. A frame slot hod makes for
@@ -432,8 +435,8 @@ entry sp -> +--------------------------------------+  = fp + FRAME   (CFA)
 - Mapping symbols: a function's code starts in A64 state (`$x`); a data
   island inside a function (§9.2) is bracketed `$d` … `$x`.
 - With branch protection on (module property), the function starts with
-  the matching `bti`/`paciasp` forms; `abi-a64.md` states them. Until that
-  is implemented `classify` rejects the property.
+  the matching `bti`/`paciasp` forms. They are not specified yet
+  (`abi-a64.md` §1.1); until they are, `classify` rejects the property.
 
 ### 5.6 x86-64 (planned)
 
@@ -566,6 +569,21 @@ They are specified in `abi-<target>.md` and tested by layer L5
 (`docs/VALIDATION.md`). The frontend has already applied the C++ ABI
 (`sret`, `byval`, coerced aggregates); the assigner never looks at a
 source-level type.
+
+Signatures (`hod_cg::abi`, fixed ahead of the code generator so that the
+ABI work packages can proceed independently): `Sig { cc, ret, ret_attrs,
+params, param_attrs, fixed, variadic }`; `Part { arg, kind, offset, size,
+place }` with `place` a `Place::Reg(PReg)` or a `Place::Stack(offset)`
+measured from the stack pointer at the call, and `kind` either `Value`
+(bytes of the argument's value) or `Pointee` (bytes of the memory a
+`byval` argument points to, copied into the stack-argument area);
+`Assignment { args, ret, ret_memory, sret_returned_in, stack_size, va,
+vector_regs_used }`. `ret_memory` is set when a return value does not fit
+the return registers and the signature has no `sret` parameter: the
+caller then passes the address of a buffer, as LLVM does. A target's
+`assign(types, sig, out) -> Result<(), AbiUnsupported>` names what it
+cannot pass (`abi:<what>`); the facade runs it over a module's signatures
+as part of deciding support, so code generation never meets a failure.
 
 ### 7.3 Runtime functions
 

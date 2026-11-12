@@ -20,22 +20,36 @@
 //! | `asm` | §2 | the inline-assembly table |
 //! | `props` | §2.1 | `ModuleProps` and module flags |
 //! | `strings` | §2 | interned byte strings |
+//! | `value` | §5.3 | `Value`, `InstId`, `SlotId` |
+//! | `inst` | §5.4 | opcodes, predicates, memory flags, the instruction record |
+//! | `intrinsic` | §5.5 | `Intrinsic`, name resolution, the no-code rule |
+//! | `body` | §5.1, §5.2, §5.6 | `Body` and the API code generation reads |
+//! | `builder` | §5.1, §5.3 | `FunctionBuilder` |
+//! | `verify` | §5.1 | `Body::verify` |
 
 mod asm;
 mod attrs;
+mod body;
+mod builder;
 mod comdat;
 mod constant;
 mod error;
 mod flatten;
 mod fold;
 mod ids;
+mod inst;
 mod intern;
+mod intrinsic;
 mod module;
 mod props;
+#[cfg(test)]
+mod random;
 mod strings;
 mod symbol;
 mod target;
 mod types;
+mod value;
+mod verify;
 mod wide;
 
 pub use asm::InlineAsm;
@@ -65,3 +79,17 @@ pub use target::{
     X86_64_LINUX_DATA_LAYOUT,
 };
 pub use types::{MAX_INT_BITS, MAX_TYPE_SIZE, TypeKind, TypeTable};
+
+pub use body::{
+    Block, Blocks, Body, Bundle, CallSite, Callee, Clause, Inst, InstKind, Insts, LandingPad, Phi,
+    PtrAdd, SHUFFLE_UNDEF, Slot, SlotVar, Successors, Switch, UseFacts,
+};
+pub use builder::{CallDesc, FunctionBuilder};
+pub use inst::{
+    AtomicOrdering, FloatPredicate, IntPredicate, MemFlags, Opcode, RmwOp, SyncScope, TailKind,
+    aggregate_field,
+};
+pub use intrinsic::{
+    Intrinsic, IntrinsicRef, NoCode, no_code_intrinsic, no_code_names, resolve_intrinsic,
+};
+pub use value::{InstId, SlotId, Value, ValueKind};

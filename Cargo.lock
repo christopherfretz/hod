@@ -23,6 +23,7 @@ dependencies = [
  "hod_cg",
  "hod_ir",
  "hod_mc_a64",
+ "hod_testutil",
 ]
 
 [[package]]
@@ -71,6 +72,14 @@ name = "hod_eh"
 version = "0.0.0"
 dependencies = [
  "hod_obj",
+]
+
+[[package]]
+name = "hod_interp"
+version = "0.0.0"
+dependencies = [
+ "hod_ir",
+ "hod_testutil",
 ]
 
 [[package]]

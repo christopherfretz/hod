@@ -79,7 +79,7 @@ fn lossy(name: &[u8]) -> String {
     format!("attr:{}", String::from_utf8_lossy(name))
 }
 
-impl Parser<'_> {
+impl Parser<'_, '_> {
     /// Parses every attribute group. Of two definitions of one number
     /// the later one is the group, as in LLVM; the earlier one is still
     /// read, and an error in it is an error.

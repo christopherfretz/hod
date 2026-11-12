@@ -26,11 +26,15 @@
 //! | `body` | §5.1, §5.2, §5.6 | `Body` and the API code generation reads |
 //! | `builder` | §5.1, §5.3 | `FunctionBuilder` |
 //! | `verify` | §5.1 | `Body::verify` |
+//! | `debug` | §6 | `DebugInfo`: debug nodes, expressions, locations, the field table |
+//! | `classify` | §8 | the support matrix, `classify`, the census |
+//! | `print` | §9 | the printer: LLVM text from a module and its bodies |
 
 mod asm;
 mod attrs;
 mod body;
 mod builder;
+mod classify;
 mod comdat;
 mod constant;
 mod error;
@@ -41,6 +45,7 @@ mod inst;
 mod intern;
 mod intrinsic;
 mod module;
+mod print;
 mod props;
 #[cfg(test)]
 mod random;
@@ -51,6 +56,8 @@ mod types;
 mod value;
 mod verify;
 mod wide;
+
+mod debug;
 
 pub use asm::InlineAsm;
 pub use attrs::{
@@ -64,6 +71,7 @@ pub use error::{IrError, IrErrorKind, IrResult};
 pub use flatten::{Fixup, FixupTarget};
 pub use ids::{AsmId, BlockId, ComdatId, ConstId, DiId, LocId, SymId, TypeId};
 pub use module::{Module, StringLists, Structor, Unsupported};
+pub use print::{Dialect, IoSink, Part, PrintError};
 pub use props::{
     BranchProtection, CodeModel, FlagBehavior, FlagClass, FlagValue, FramePointer,
     IGNORABLE_MODULE_FLAGS, KNOWN_MODULE_FLAGS, ModuleFlag, ModuleProps, PicLevel,
@@ -93,3 +101,26 @@ pub use intrinsic::{
     Intrinsic, IntrinsicRef, NoCode, no_code_intrinsic, no_code_names, resolve_intrinsic,
 };
 pub use value::{InstId, SlotId, Value, ValueKind};
+
+pub use debug::expr::{DI_OPS, DiOp, DiOps, ExprId, di_op_named};
+pub use debug::map::{
+    DI_FIELD_NOTES, DI_KIND_NOTES, DI_RECORDS, DiMapping, di_field, di_field_table, di_kind,
+    di_record,
+};
+// The `DW_TAG_*` numbers, the name tables and lookups, the flag sets.
+pub use body::{DbgDeclare, DbgRecord, DbgRecordKind};
+pub use classify::{
+    CONSTRUCT_FAMILIES, CONSTRUCT_NAMES, Census, CensusEntry, Classifier, ConstructInfo,
+    INVALID_RULES, Rejection, RejectionKind, STRUCTURAL_RULES, SUPPORT_GROUPS, SUPPORT_ROWS,
+    StackArgs, Support, SupportCell, SupportRow, SupportStatus, TypeClass, TypeClasses, census,
+    classify, classify_body, support_markdown,
+};
+pub use debug::names::*;
+pub use debug::node::{
+    DiBasicType, DiBound, DiCompileUnit, DiCompositeType, DiConstant, DiDerivedType, DiEnumerator,
+    DiFieldValue, DiFile, DiGlobalVariable, DiGlobalVariableExpression, DiImportedEntity, DiKind,
+    DiLabel, DiLexicalBlock, DiLexicalBlockFile, DiLocalVariable, DiNamespace, DiNode, DiOther,
+    DiString, DiSubprogram, DiSubrange, DiSubroutineType, DiTemplateTypeParameter,
+    DiTemplateValueParameter, DiTuple,
+};
+pub use debug::{DebugInfo, DebugStats, DiLocation};

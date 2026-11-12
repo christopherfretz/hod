@@ -4,7 +4,8 @@
 //! kiln drives the `opt`, `llc` and `clang++` of one LLVM installation,
 //! chosen with `--llvm-dir=<dir>`. The shim is such a directory: every entry
 //! of the real installation is a symbolic link to the real one, except
-//! `bin/llc`, a script that runs `hod` with the real `llc` as its fallback.
+//! `bin/llc`, a script that runs `hod` with the real `llc` as its fallback
+//! and the real `llvm-dis` as its bitcode converter.
 //! Beside it, `kiln++-hod` runs a given `kiln++` with `--llvm-dir=<shim>`.
 
 use std::collections::BTreeMap;
@@ -55,6 +56,9 @@ pub struct Shim {
     pub llc: PathBuf,
     /// The real `llc`, hod's fallback.
     pub real_llc: PathBuf,
+    /// The real `llvm-dis`, hod's bitcode converter, if the installation
+    /// has one.
+    pub real_llvm_dis: Option<PathBuf>,
     /// `<dir>/kiln++-hod`, if a kiln was given.
     pub compiler: Option<PathBuf>,
 }
@@ -260,6 +264,8 @@ struct Plan {
     bin: BTreeMap<OsString, Entry>,
     /// The entries of `<out>`, without the marker and `bin`.
     top: BTreeMap<OsString, Entry>,
+    /// `<llvm>/bin/llvm-dis`, if it is a file.
+    llvm_dis: Option<PathBuf>,
     has_wrapper: bool,
 }
 
@@ -330,10 +336,17 @@ fn plan(request: &Request) -> Result<Plan, String> {
     let major = required_major(&llvm, &out)?;
 
     let real_bin = llvm.join("bin");
+    // The converter must be of the LLVM that writes the bitcode, which is
+    // this installation's `opt`. Without one the variable is set empty
+    // (unset, for hod), so that a caller's converter for some other LLVM
+    // is never used with this one.
+    let llvm_dis = Some(real_bin.join("llvm-dis")).filter(|path| path.is_file());
     let llc_script = format!(
-        "{HEADER}# hod with llc's command line; what hod does not support goes to the real llc.\n\
-         HOD_FALLBACK_LLC={} exec {} \"$@\"\n",
+        "{HEADER}# hod with llc's command line; what hod does not support goes to the real llc,\n\
+         # and bitcode is turned into text by the real llvm-dis.\n\
+         HOD_FALLBACK_LLC={} HOD_BITCODE_VIA={} exec {} \"$@\"\n",
         sh_quote(&real_bin.join("llc"))?,
+        llvm_dis.as_deref().map_or_else(|| Ok("''".to_owned()), sh_quote)?,
         sh_quote(&hod)?
     );
     let mut bin = BTreeMap::new();
@@ -375,7 +388,7 @@ fn plan(request: &Request) -> Result<Plan, String> {
         hod.display(),
         kiln.as_ref().map_or("-".to_owned(), |kiln| kiln.display().to_string())
     );
-    Ok(Plan { llvm, out, major, marker, bin, top, has_wrapper: kiln.is_some() })
+    Ok(Plan { llvm, out, major, marker, bin, top, llvm_dis, has_wrapper: kiln.is_some() })
 }
 
 /// Makes sure `dir` is a real directory this command may write into:
@@ -427,6 +440,7 @@ pub fn build(request: &Request) -> Result<Shim, String> {
     Ok(Shim {
         llc: bin.join("llc"),
         real_llc: plan.llvm.join("bin").join("llc"),
+        real_llvm_dis: plan.llvm_dis,
         compiler: plan.has_wrapper.then(|| out.join(WRAPPER)),
         dir: plan.out.clone(),
         llvm: plan.llvm,
@@ -440,9 +454,10 @@ usage: cargo xtask shim --llvm <dir> --hod <hod binary> --out <dir> [--kiln <kil
 
 Creates or updates <out>: a directory kiln accepts as --llvm-dir, mirroring the LLVM
 installation <dir> with symbolic links, except bin/llc, which runs <hod binary> with the
-real llc as its fallback (HOD_STRICT and HOD_COVERAGE_LOG pass through from the
-environment). With --kiln, also writes <out>/kiln++-hod, which runs <kiln++> with
---llvm-dir=<out>. <out> must not exist, or must have been made by this command.
+real llc as its fallback and the real llvm-dis as its bitcode converter (HOD_STRICT and
+HOD_COVERAGE_LOG pass through from the environment). With --kiln, also writes
+<out>/kiln++-hod, which runs <kiln++> with --llvm-dir=<out>. <out> must not exist, or
+must have been made by this command.
 ";
 
 /// Parses the command's arguments (`--name value` or `--name=value`).
@@ -486,6 +501,12 @@ pub fn summary(shim: &Shim) -> String {
         shim.llc.display(),
         shim.real_llc.display()
     );
+    match &shim.real_llvm_dis {
+        Some(llvm_dis) => {
+            let _ = writeln!(text, "  bitcode:  converted to text by {}", llvm_dis.display());
+        }
+        None => text.push_str("  bitcode:  not converted (the installation has no llvm-dis)\n"),
+    }
     if let Some(compiler) = &shim.compiler {
         let _ = writeln!(text, "  compiler: {}", compiler.display());
     }
@@ -507,7 +528,7 @@ mod tests {
     /// A fake LLVM installation: stub tools, `lib/clang/<major>`, and a
     /// header directory.
     fn fake_llvm(dir: &Path, major: u32) {
-        for tool in ["opt", "llc", "clang++", "llvm-as"] {
+        for tool in ["opt", "llc", "clang++", "llvm-as", "llvm-dis"] {
             script(&dir.join("bin").join(tool), &format!("echo real-{tool} \"$@\""));
         }
         fs::create_dir_all(dir.join("lib/clang").join(major.to_string())).unwrap();
@@ -515,8 +536,9 @@ mod tests {
         fs::write(dir.join("include/c++/v1/vector"), "// vector\n").unwrap();
     }
 
-    /// A stand-in for hod (or kiln): prints its fallback and its arguments.
+    /// A stand-in for hod (or kiln): prints its settings and its arguments.
     const ECHO: &str = "echo \"fallback=$HOD_FALLBACK_LLC strict=$HOD_STRICT log=$HOD_COVERAGE_LOG\"\n\
+                        echo \"via=${HOD_BITCODE_VIA-unset}\"\n\
                         for a in \"$@\"; do echo \"arg=$a\"; done";
 
     struct Fixture {
@@ -571,7 +593,8 @@ mod tests {
     fn run_script(path: &Path, args: &[&str], env: &[(&str, &str)]) -> String {
         let mut command = Command::new(path);
         command.args(args).env_remove("HOD_STRICT").env_remove("HOD_COVERAGE_LOG");
-        command.env("HOD_FALLBACK_LLC", "from-the-environment").envs(env.iter().copied());
+        command.env("HOD_FALLBACK_LLC", "from-the-environment");
+        command.env("HOD_BITCODE_VIA", "from-the-environment").envs(env.iter().copied());
         let outcome = run_with(&mut command, b"", Duration::from_secs(20));
         assert!(outcome.success(), "{}: {}", path.display(), outcome.stderr_text());
         outcome.stdout_text()
@@ -588,6 +611,7 @@ mod tests {
         assert_eq!((shim.major, &shim.llvm), (22, &llvm));
         assert_eq!(shim.llc, shim.dir.join("bin/llc"));
         assert_eq!(shim.real_llc, llvm.join("bin/llc"));
+        assert_eq!(shim.real_llvm_dis, Some(llvm.join("bin/llvm-dis")));
         assert_eq!(shim.compiler, Some(shim.dir.join("kiln++-hod")));
 
         let entries: Vec<PathBuf> = snapshot(&shim.dir).into_iter().map(|(p, _)| p).collect();
@@ -597,6 +621,7 @@ mod tests {
             "bin/clang++",
             "bin/llc",
             "bin/llvm-as",
+            "bin/llvm-dis",
             "bin/opt",
             "include",
             "kiln++-hod",
@@ -606,7 +631,8 @@ mod tests {
         .map(PathBuf::from)
         .collect();
         assert_eq!(entries, expected);
-        for mirrored in ["bin/clang++", "bin/llvm-as", "bin/opt", "include", "lib"] {
+        for mirrored in ["bin/clang++", "bin/llvm-as", "bin/llvm-dis", "bin/opt", "include", "lib"]
+        {
             let link = shim.dir.join(mirrored);
             assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "{mirrored}");
             assert_eq!(fs::read_link(&link).unwrap(), llvm.join(mirrored), "{mirrored}");
@@ -620,26 +646,61 @@ mod tests {
         assert!(shim.dir.join("bin/../include/c++/v1/vector").is_file());
         let marker = fs::read_to_string(shim.dir.join(MARKER)).unwrap();
         assert!(marker.starts_with("hod-shim 1\nllvm "), "{marker}");
-        assert!(summary(&shim).contains("LLVM 22"));
+        let summary = summary(&shim);
+        assert!(summary.contains("LLVM 22"), "{summary}");
+        assert!(
+            summary
+                .contains(&format!("converted to text by {}", llvm.join("bin/llvm-dis").display())),
+            "{summary}"
+        );
     }
 
     // spec/harness.md "shim": `bin/llc` is hod with the real llc as its
-    // fallback; the other tools are the real ones.
+    // fallback and the real llvm-dis as its converter, whatever the
+    // caller's environment says of either; the other tools are the real
+    // ones.
     #[test]
     fn llc_runs_hod_with_the_real_llc_as_fallback() {
         let f = fixture("shim-llc");
         let shim = build(&f.request).unwrap();
         let text = run_script(&shim.llc, &["-O0", "a b", "-o", "x.o", "-"], &[]);
         let fallback = shim.real_llc.display();
+        let via = shim.real_llvm_dis.as_deref().unwrap().display();
         assert_eq!(
             text,
-            format!("fallback={fallback} strict= log=\narg=-O0\narg=a b\narg=-o\narg=x.o\narg=-\n")
+            format!(
+                "fallback={fallback} strict= log=\nvia={via}\n\
+                 arg=-O0\narg=a b\narg=-o\narg=x.o\narg=-\n"
+            )
         );
         let text =
             run_script(&shim.llc, &[], &[("HOD_STRICT", "1"), ("HOD_COVERAGE_LOG", "/x/cov.tsv")]);
-        assert_eq!(text, format!("fallback={fallback} strict=1 log=/x/cov.tsv\n"));
+        assert_eq!(text, format!("fallback={fallback} strict=1 log=/x/cov.tsv\nvia={via}\n"));
         assert_eq!(run_script(&shim.dir.join("bin/opt"), &["-S"], &[]), "real-opt -S\n");
         assert_eq!(run_script(&shim.dir.join("bin/clang++"), &[], &[]), "real-clang++\n");
+        assert_eq!(run_script(&shim.dir.join("bin/llvm-dis"), &[], &[]), "real-llvm-dis\n");
+    }
+
+    // spec/harness.md "shim": an installation without llvm-dis (kiln does
+    // not require one) gives a shim that converts nothing, and a caller's
+    // converter, which may be another LLVM's, is not let through.
+    #[test]
+    fn no_converter_without_llvm_dis() {
+        let f = fixture("shim-no-dis");
+        fs::remove_file(f.request.llvm.join("bin/llvm-dis")).unwrap();
+        let shim = build(&f.request).unwrap();
+        assert_eq!(shim.real_llvm_dis, None);
+        let text = run_script(&shim.llc, &["-O0"], &[]);
+        assert_eq!(
+            text,
+            format!("fallback={} strict= log=\nvia=\narg=-O0\n", shim.real_llc.display())
+        );
+        assert!(summary(&shim).contains("not converted"), "{}", summary(&shim));
+        // The tool arrives: the next run of the command takes it up.
+        script(&f.request.llvm.join("bin/llvm-dis"), "echo real-llvm-dis");
+        let rebuilt = build(&f.request).unwrap();
+        let via = rebuilt.real_llvm_dis.as_deref().unwrap().display().to_string();
+        assert!(run_script(&rebuilt.llc, &[], &[]).ends_with(&format!("via={via}\n")));
     }
 
     // spec/harness.md "shim": the wrapper puts --llvm-dir=<shim> first.
@@ -648,7 +709,7 @@ mod tests {
         let f = fixture("shim-wrapper");
         let shim = build(&f.request).unwrap();
         let text = run_script(shim.compiler.as_deref().unwrap(), &["-c", "x y.cpp"], &[]);
-        let lines: Vec<&str> = text.lines().skip(1).collect();
+        let lines: Vec<&str> = text.lines().skip(2).collect();
         let dir = format!("arg=--llvm-dir={}", shim.dir.display());
         assert_eq!(lines, [dir.as_str(), "arg=-c", "arg=x y.cpp"]);
     }
@@ -669,7 +730,14 @@ mod tests {
         };
         let shim = build(&request).unwrap();
         let text = run_script(&shim.llc, &["-O0"], &[]);
-        assert_eq!(text, format!("fallback={} strict= log=\narg=-O0\n", shim.real_llc.display()));
+        assert_eq!(
+            text,
+            format!(
+                "fallback={} strict= log=\nvia={}\narg=-O0\n",
+                shim.real_llc.display(),
+                shim.real_llvm_dis.as_deref().unwrap().display()
+            )
+        );
         let text = run_script(shim.compiler.as_deref().unwrap(), &[], &[]);
         assert!(text.ends_with(&format!("arg=--llvm-dir={}\n", shim.dir.display())), "{text}");
         assert_eq!(sh_quote(Path::new("a'b c")).unwrap(), "'a'\\''b c'");
@@ -707,6 +775,7 @@ mod tests {
             "bin",
             "bin/clang++",
             "bin/llc",
+            "bin/llvm-dis",
             "bin/llvm-objcopy",
             "bin/opt",
             "include",

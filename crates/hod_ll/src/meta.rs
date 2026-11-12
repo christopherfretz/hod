@@ -215,7 +215,7 @@ pub(crate) struct Upgrade {
     pub sign_b_key: bool,
 }
 
-impl Parser<'_> {
+impl Parser<'_, '_> {
     /// Builds the node index.
     pub(crate) fn index_metadata(&mut self) -> PResult<()> {
         let count = self.index.nodes.len();
@@ -431,7 +431,7 @@ impl Parser<'_> {
                 let Some(id) = parse_u32(self.tok_text(number)) else {
                     return fail(LlErrorKind::Syntax, at, "expected a metadata node number");
                 };
-                if self.md.node(id).is_none() {
+                if !self.has_md_node(id) {
                     let message = format!("use of undefined metadata '!{id}'");
                     return fail(LlErrorKind::Undefined, at, message);
                 }

@@ -94,6 +94,8 @@ pub struct CommandLine {
     pub strict: Option<bool>,
     /// `--coverage-log=`.
     pub coverage_log: Option<PathBuf>,
+    /// `--bitcode-via=`: the `llvm-dis` that turns bitcode into text.
+    pub bitcode_via: Option<PathBuf>,
     /// The arguments for the fallback: the original ones, in order and as
     /// spelled, without hod's own options.
     pub forwarded: Vec<OsString>,
@@ -132,6 +134,7 @@ enum Opt {
     Output,
     Fallback,
     CoverageLog,
+    BitcodeVia,
 }
 
 impl Opt {
@@ -160,6 +163,7 @@ impl Opt {
             "o" => Opt::Output,
             "fallback" => Opt::Fallback,
             "coverage-log" => Opt::CoverageLog,
+            "bitcode-via" => Opt::BitcodeVia,
             _ => return None,
         })
     }
@@ -179,7 +183,7 @@ impl Opt {
 
     /// hod's own options: not `llc`'s, never forwarded to the fallback.
     fn is_hod_specific(self) -> bool {
-        matches!(self, Opt::Fallback | Opt::Strict | Opt::CoverageLog)
+        matches!(self, Opt::Fallback | Opt::Strict | Opt::CoverageLog | Opt::BitcodeVia)
     }
 }
 
@@ -343,14 +347,17 @@ impl Parser {
                 self.line.options.split_dwarf_output = Some(PathBuf::from(value));
                 return;
             }
-            Opt::Fallback | Opt::CoverageLog => {
+            Opt::Fallback | Opt::CoverageLog | Opt::BitcodeVia => {
                 if value.is_empty() {
                     self.fatal(format!("option '{written}' requires a non-empty value"));
-                } else if opt == Opt::Fallback {
-                    self.line.fallback = Some(PathBuf::from(value));
-                } else {
-                    self.line.coverage_log = Some(PathBuf::from(value));
+                    return;
                 }
+                let slot = match opt {
+                    Opt::Fallback => &mut self.line.fallback,
+                    Opt::CoverageLog => &mut self.line.coverage_log,
+                    _ => &mut self.line.bitcode_via,
+                };
+                *slot = Some(PathBuf::from(value));
                 return;
             }
             Opt::TimeTraceFile => return,
@@ -406,6 +413,7 @@ pub fn parse(args: &[OsString]) -> CommandLine {
             fallback: None,
             strict: None,
             coverage_log: None,
+            bitcode_via: None,
             forwarded: Vec::with_capacity(args.len()),
             rejected: None,
             fatal: None,
@@ -515,6 +523,9 @@ hod's own options (each also settable in the environment):
                                                      something in the module or on the command line
   --strict                        HOD_STRICT=1       No fallback: unsupported is an error
   --coverage-log=<file>           HOD_COVERAGE_LOG   Append one line per invocation to <file>
+  --bitcode-via=<llvm-dis>        HOD_BITCODE_VIA    Convert a bitcode input to text with this
+                                                     llvm-dis (of the LLVM that wrote the bitcode)
+                                                     and compile the text
 
 EXIT STATUS: 0 on success; 1 on an error; 2 when the module is unsupported and no fallback
 ran; otherwise the fallback's own status. The contract is spec/cli.md.
@@ -551,6 +562,7 @@ mod tests {
         assert_eq!(line.input, Input::Stdin);
         assert_eq!(line.output, None);
         assert_eq!((line.fallback, line.strict, line.coverage_log), (None, None, None));
+        assert_eq!(line.bitcode_via, None);
     }
 
     // spec/cli.md "Options": the command line kiln builds
@@ -801,6 +813,7 @@ mod tests {
             "--strict",
             "-filetype=obj",
             "--coverage-log=cov.tsv",
+            "--bitcode-via=/usr/lib/llvm-22/bin/llvm-dis",
             "-o",
             "a.o",
             "-",
@@ -809,19 +822,38 @@ mod tests {
         assert_eq!(line.fallback, Some("/usr/lib/llvm-22/bin/llc".into()));
         assert_eq!(line.strict, Some(true));
         assert_eq!(line.coverage_log, Some("cov.tsv".into()));
+        assert_eq!(line.bitcode_via, Some("/usr/lib/llvm-22/bin/llvm-dis".into()));
         assert_eq!(line.forwarded, os(&["-O0", "-filetype=obj", "-o", "a.o", "-"]));
 
-        let line = parsed(&["-fallback", "llc", "-coverage-log", "c", "-strict=false", "m.ll"]);
+        let line = parsed(&[
+            "-fallback",
+            "llc",
+            "-coverage-log",
+            "c",
+            "-strict=false",
+            "-bitcode-via",
+            "dis",
+            "m.ll",
+        ]);
         assert_eq!((&line.rejected, &line.fatal), (&None, &None));
         assert_eq!(line.fallback, Some("llc".into()));
         assert_eq!(line.coverage_log, Some("c".into()));
         assert_eq!(line.strict, Some(false));
+        assert_eq!(line.bitcode_via, Some("dis".into()));
         assert_eq!(line.input, Input::Path("m.ll".into()));
         assert_eq!(line.forwarded, os(&["m.ll"]));
 
         // The last one wins, as for llc's options.
-        let line = parsed(&["--fallback=a", "--fallback=b", "--strict=0", "--strict=1"]);
+        let line = parsed(&[
+            "--fallback=a",
+            "--fallback=b",
+            "--strict=0",
+            "--strict=1",
+            "--bitcode-via=c",
+            "--bitcode-via=d",
+        ]);
         assert_eq!((line.fallback, line.strict), (Some("b".into()), Some(true)));
+        assert_eq!(line.bitcode_via, Some("d".into()));
         assert!(line.forwarded.is_empty());
 
         // An unknown option does not hide them: the fallback is still found.
@@ -840,6 +872,8 @@ mod tests {
             (&["-O0", "--coverage-log"], "'--coverage-log' requires a value"),
             (&["--fallback="], "'--fallback' requires a non-empty value"),
             (&["--coverage-log", ""], "'--coverage-log' requires a non-empty value"),
+            (&["-filetype=obj", "--bitcode-via"], "'--bitcode-via' requires a value"),
+            (&["--bitcode-via="], "'--bitcode-via' requires a non-empty value"),
             (&["--strict=maybe"], "invalid value 'maybe' for '--strict'"),
         ] {
             let line = parsed(args);
@@ -860,6 +894,7 @@ mod tests {
         assert_eq!(accepted(&["--help", "--version"]).action, Action::Help);
         assert_eq!(accepted(&["--version=false"]).action, Action::Compile);
         assert!(HELP.contains("--fallback=<llc>") && HELP.contains("HOD_COVERAGE_LOG"));
+        assert!(HELP.contains("--bitcode-via=<llvm-dis>") && HELP.contains("HOD_BITCODE_VIA"));
     }
 
     // Arguments are bytes: a path that is not UTF-8 is a path all the same,

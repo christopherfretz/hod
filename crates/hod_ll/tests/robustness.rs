@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use hod_ir::Arch;
-use hod_ll::{Lexer, Tok};
+use hod_ll::{BodyParser, Lexer, ParsedModule, Tok};
 
 use common::{Lcg, Llvm, handwritten, parse};
 
@@ -28,8 +28,19 @@ fn survive(text: &[u8]) -> bool {
         tokens += 1;
         assert!(tokens <= text.len(), "more tokens than bytes");
     }
-    match parse(text, Arch::X86_64) {
-        Ok(_) => true,
+    let parsed = parse(text, Arch::X86_64).and_then(|mut parsed| {
+        // And every body (§11).
+        let ParsedModule { module, text } = &mut parsed;
+        let mut bodies = BodyParser::new(text);
+        for function in text.functions() {
+            if let Some(body) = bodies.parse(module, function)? {
+                bodies.recycle(body);
+            }
+        }
+        Ok(())
+    });
+    match parsed {
+        Ok(()) => true,
         Err(error) => {
             assert!(error.offset <= text.len(), "{error}: offset past the end");
             false
@@ -271,11 +282,110 @@ fn pathological() -> Vec<(&'static str, Vec<u8>)> {
         let _ = writeln!(blocks, "@t{index} = global ptr blockaddress(@{function}, %b{label})");
     }
     inputs.push(("block addresses in two functions", blocks.into_bytes()));
+    // Bodies (§11): long, wide and repetitive.
+    let body = |head: &str, lines: &dyn Fn(&mut String), tail: &str| {
+        let mut text = String::from(head);
+        lines(&mut text);
+        text.push_str(tail);
+        text.into_bytes()
+    };
+    let big = DEEP;
+    inputs.extend([
+        (
+            "a million-instruction block",
+            body("define i64 @f(i64 %x) {\n", &|t| {
+                for n in 0..LONG {
+                    let _ = writeln!(t, "  %v{n} = add i64 %x, {n}");
+                }
+            }, "  ret i64 %x\n}\n"),
+        ),
+        (
+            "a wide switch",
+            body("define void @f(i32 %x) {\n  switch i32 %x, label %d [\n", &|t| {
+                for n in 0..big {
+                    let _ = writeln!(t, "    i32 {n}, label %d");
+                }
+            }, "  ]\nd:\n  ret void\n}\n"),
+        ),
+        (
+            "a wide phi",
+            body("define i32 @f(i1 %c) {\nentry:\n  br i1 %c, label %a, label %b\na:\n  br label %b\nb:\n  %r = phi i32 ", &|t| {
+                for n in 0..big {
+                    let _ = write!(t, "[ {n}, %entry ], ");
+                }
+            }, "[ 0, %a ]\n  ret i32 %r\n}\n"),
+        ),
+        (
+            "forward references, descending",
+            body("define i64 @f(i64 %x) {\nentry:\n  br label %use\ndef:\n", &|t| {
+                for n in (0..big).rev() {
+                    let _ = writeln!(t, "  %v{n} = add i64 %x, {n}");
+                }
+                t.push_str("  ret i64 %x\nuse:\n");
+                for n in 0..big {
+                    let _ = writeln!(t, "  %u{n} = add i64 %v{n}, 1");
+                }
+            }, "  br label %def\n}\n"),
+        ),
+        (
+            "unlabelled blocks referred to ahead",
+            body("define void @f() {\n", &|t| {
+                for n in 1..big {
+                    let _ = writeln!(t, "  br label %{n}\n");
+                }
+            }, "  ret void\n}\n"),
+        ),
+        (
+            "blocks branching back",
+            body("define void @f() {\nb0:\n  br label %b1\n", &|t| {
+                for n in 1..big {
+                    let _ = writeln!(t, "b{n}:\n  br label %b{}", n - 1);
+                }
+            }, "}\n"),
+        ),
+        (
+            "a call with many arguments",
+            body("declare void @g(...)\ndefine void @f() {\n  call void (...) @g(", &|t| {
+                for n in 0..big {
+                    let _ = write!(t, "i32 {n}, ");
+                }
+            }, "i32 0)\n  ret void\n}\n"),
+        ),
+        (
+            "many intrinsic calls",
+            body("declare i32 @llvm.ctpop.i32(i32)\ndeclare void @llvm.dbg.value(metadata, metadata, metadata)\ndefine i32 @f(i32 %x) {\n", &|t| {
+                for n in 0..big {
+                    let _ = writeln!(t, "  %c{n} = call i32 @llvm.ctpop.i32(i32 %x)");
+                    let _ = writeln!(t, "  call void @llvm.dbg.value(metadata i32 %c{n}, metadata !0, metadata !DIExpression())");
+                }
+            }, "  ret i32 %x\n}\n!0 = !{}\n"),
+        ),
+        (
+            "many functions",
+            body("", &|t| {
+                for n in 0..big {
+                    let _ = writeln!(t, "define i32 @f{n}(i32 %x) {{\n  %y = add i32 %x, {n}\n  ret i32 %y\n}}");
+                }
+            }, ""),
+        ),
+        ("nested constants in a body", repeat("define void @f() {\n  store ptr ", "getelementptr (i8, ptr ", DEEP)),
+        ("an operand list that does not end", repeat("declare void @g(...)\ndefine void @f() {\n  call void (...) @g(", "i32 0, ", DEEP)),
+        ("a phi that does not end", repeat("define void @f() {\n  %r = phi i32 ", "[ 0, %x ], ", DEEP)),
+    ]);
     inputs
 }
 
 /// The pathological inputs that are modules; the others are errors.
-const MODULES: [&str; 19] = [
+const MODULES: [&str; 28] = [
+    "a million-instruction block",
+    "a wide switch",
+    "a wide phi",
+    "forward references, descending",
+    "unlabelled blocks referred to ahead",
+    "blocks branching back",
+    "a call with many arguments",
+    "many intrinsic calls",
+    "many functions",
     "a line comment",
     "zero bytes",
     "alignments",

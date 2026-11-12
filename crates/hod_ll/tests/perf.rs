@@ -15,7 +15,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use hod_ir::Arch;
-use hod_ll::{Lexer, ParseOptions, ParsedModule, Tok, parse_module, scan_only};
+use hod_ll::{BodyParser, Lexer, ParseOptions, ParsedModule, Tok, parse_module, scan_only};
 use hod_testutil::{DEFAULT_TIMEOUT, Scratch, run_with};
 
 use common::{Lcg, Llvm};
@@ -193,6 +193,23 @@ fn status_kib(field: &str) -> Option<u64> {
 /// the probe answers with.
 const PROBE: &str = "HOD_LL_PERF_PROBE";
 const PEAK: &str = "peak-kib ";
+/// Set beside [`PROBE`]: the probe parses the bodies too.
+const PROBE_BODIES: &str = "HOD_LL_PERF_PROBE_BODIES";
+
+/// Parses every body of `parsed`, one alive at a time (`spec/ll.md`
+/// §11.1); the number of instructions.
+fn parse_every_body(parsed: &mut ParsedModule<'_>) -> usize {
+    let ParsedModule { module, text } = parsed;
+    let mut bodies = BodyParser::new(text);
+    let mut insts = 0;
+    for function in text.functions() {
+        if let Some(body) = bodies.parse(module, function).expect("a body") {
+            insts += body.inst_count();
+            bodies.recycle(body);
+        }
+    }
+    insts
+}
 
 /// Not a test of its own: with [`PROBE`] naming a file, parses it and
 /// prints how far the resident memory of the process rose above what it
@@ -210,7 +227,10 @@ fn memory_probe() {
     let Some(before) = status_kib("VmRSS:") else {
         return;
     };
-    let parsed = parse_module(&text, &ParseOptions::default()).expect("the parse");
+    let mut parsed = parse_module(&text, &ParseOptions::default()).expect("the parse");
+    if std::env::var_os(PROBE_BODIES).is_some() {
+        parse_every_body(&mut parsed);
+    }
     let peak = status_kib("VmHWM:").unwrap_or(before);
     println!("\n{PEAK}{}", peak.saturating_sub(before));
     drop(parsed);
@@ -218,11 +238,14 @@ fn memory_probe() {
 
 /// The peak memory of a parse of `text` in KiB, measured by this binary
 /// run again as a probe; `None` where `/proc` does not say.
-fn peak_kib(text: &[u8]) -> Option<u64> {
+fn peak_kib(text: &[u8], with_bodies: bool) -> Option<u64> {
     let scratch = Scratch::new("hod_ll_perf");
     let path = scratch.write("text.ll", text);
     let mut command = Command::new(std::env::current_exe().ok()?);
     command.args(["memory_probe", "--exact", "--nocapture", "--test-threads=1"]).env(PROBE, path);
+    if with_bodies {
+        command.env(PROBE_BODIES, "1");
+    }
     let outcome = run_with(&mut command, &[], DEFAULT_TIMEOUT);
     let output = outcome.stdout_text();
     let line = output.lines().find_map(|line| line.strip_prefix(PEAK))?;
@@ -251,7 +274,8 @@ fn measure(title: &str, text: &[u8], options: &ParseOptions) -> (ParsedModule<'s
     lines.push(report("index scan", text.len(), time));
 
     let (time, parsed) = timed(|| parse_module(text, options).expect("the parse"));
-    let peak = peak_kib(text);
+    let peak = peak_kib(text, false);
+    let module_time = time;
     lines.push(report("module-level parse", text.len(), time));
 
     // What the module-level parse has to lex after the scan: everything
@@ -287,6 +311,15 @@ fn measure(title: &str, text: &[u8], options: &ParseOptions) -> (ParsedModule<'s
     assert_eq!(skipped, (1, bodies.len() - 19), "the bodies are one body");
     lines.push(report("stepping over bodies", bodies.len(), time));
 
+    // §11: the module level and then every body, from the text each time.
+    let (time, insts) = timed(|| {
+        let mut parsed = parse_module(text, options).expect("the parse");
+        parse_every_body(&mut parsed)
+    });
+    let peak_all = peak_kib(text, true);
+    lines.push(report("module and bodies", text.len(), time));
+    lines.push(report("bodies alone", body_bytes, time.saturating_sub(module_time)));
+
     assert_eq!(scanned.1, body_bytes, "the scan and the parse find the same bodies");
     let mut out = format!(
         "{title}: {:.2} MiB, {tokens} tokens ({outside} outside bodies), {} top-level entities, \
@@ -310,6 +343,14 @@ fn measure(title: &str, text: &[u8], options: &ParseOptions) -> (ParsedModule<'s
         ),
         None => write!(out, "\n  peak memory of the parse: not measurable here"),
     };
+    if let Some(kib) = peak_all {
+        let _ = write!(
+            out,
+            "\n  peak memory with bodies  {:8.2} MiB, {:.2} bytes per byte of text; {insts} instructions",
+            kib as f64 / 1024.0,
+            kib as f64 * 1024.0 / text.len() as f64
+        );
+    }
     (parsed, out)
 }
 

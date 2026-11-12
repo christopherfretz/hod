@@ -1,7 +1,7 @@
 # spec: hod_ll — LLVM textual IR to hod_ir
 
-Status: **current** for the lexer and the module level (WP-007); function
-bodies are WP-008, which builds on §6. Normative for `crates/hod_ll`.
+Status: **current** for the lexer and the module level (WP-007) and for
+function bodies (WP-008, §11, which builds on §6). Normative for `crates/hod_ll`.
 Background: `docs/design/0001-input.md`; the IR it produces is
 `spec/ir.md`.
 
@@ -26,10 +26,10 @@ Anything that is not LLVM IR, or that `hod_ir` refuses, is an error with
 a position (§8). The parser never panics on input, never loops without
 consuming input and never recurses without a bound.
 
-This document covers the lexer (§2) and the module level (§3 to §5, §7):
-everything in a file except the instructions of its functions. A function
-body is found, stepped over, and handed on as a byte span with the tables
-a body parser needs (§6).
+This document covers the lexer (§2), the module level (§3 to §5, §7) and
+function bodies (§11). The module level finds each body, steps over it,
+and hands it on as a byte span with the tables a body parser needs (§6);
+the body parser reads it into a `hod_ir::Body`.
 
 ## 2. Lexer
 
@@ -213,17 +213,29 @@ anything has to, is given.
 | `const-expr:ptrauth` | `ptrauth (…)` | its pointer operand |
 | `blockaddress:unlabelled-block` | a `blockaddress` whose block has no label in the text (§5.5) | a null pointer |
 | `symbol:anonymous-external` | a numbered global that is not `internal` or `private` (§5.7) | a symbol named `__unnamed_K` |
+| `syncscope:<name>` | body: a `syncscope("…")` other than `singlethread` (§11.5) | the system scope |
+| `alloca:inalloca`, `alloca:swifterror`, `alloca:scalable` | body: such an `alloca` | the `alloca` without it |
+| `getelementptr:scalable`, `getelementptr:vector-element-not-bytes` | body: a step of a `getelementptr` with no fixed size in bytes | poison |
+| `aggregate:no-fixed-offset`, `insertvalue:offset-over-4GiB` | body: an `extractvalue` or `insertvalue` of a field without a fixed offset, or past 4 GiB | poison |
+| `inst:catchswitch`, `inst:catchpad`, `inst:cleanuppad`, `inst:catchret`, `inst:cleanupret` | body: funclet exception handling (§11.4) | the opcode alone |
+| `call:forwarded-varargs` | body: `musttail call … (…, ...)` | poison |
+| `metadata-arg:<callee>`, `metadata-arg:indirect` | body: a call that would be emitted with a `metadata` argument (§11.6) | poison |
+| `bundle:metadata-input` | body: a `metadata` operand of an operand bundle | nothing |
+| `invoke:no-code-intrinsic` | body: an `invoke` or `callbr` of an intrinsic that generates no code (§11.7) | a branch to the normal destination |
+| `no-code-cycle` | body: no-code calls each of which stands for the next (§11.7) | nothing |
 
 A construct met several times in one top-level entity is recorded once
-for it.
+for it. A body construct is recorded against the function, and the body
+that has one is not delivered (§11.1).
 
 ### 3.5 What is not checked
 
 `hod_ll` is not a verifier. Of what LLVM's parser or verifier refuse, it
 accepts:
 
-- Anything inside a function body (§6), a `uselistorder` or a summary
-  entry: stepped over unread.
+- At the module level, anything inside a function body (§6), a
+  `uselistorder` or a summary entry: stepped over unread. What the body
+  parser does not check is in §11.8.
 - Metadata that the module level does not read (§7): the operands of a
   node, references from one node to another, the fields of specialized
   nodes.
@@ -759,3 +771,201 @@ initializer that is a difference of block addresses has no image in
 `hod_ir` yet (`labels.relative`); a discardable `unnamed_addr` constant
 that only holds a symbol's address is replaced by `llc` with a GOT
 entry, which is the backend's choice and not the parser's.
+
+## 11. Function bodies
+
+The body parser (WP-008) reads the text of one function body, a span of
+§6, into a `hod_ir::Body` (`spec/ir.md` §5) through `FunctionBuilder`.
+It is the same `Parser` as the module level's, in body mode: types,
+constants, attributes and metadata references are read by the code of
+§5 and §7, and the names they refer to resolve through `ModuleText`
+(§6) and `Module::find_symbol` instead of the module level's own
+tables.
+
+### 11.1 Interface
+
+```rust
+pub struct BodyParser<'t, 'a> { /* … */ }
+impl<'t, 'a> BodyParser<'t, 'a> {
+    pub fn new(text: &'t ModuleText<'a>) -> Self;
+    pub fn parse(&mut self, module: &mut Module, function: &FunctionText)
+        -> Result<Option<Body>, LlError>;
+    pub fn unsupported(&self) -> impl ExactSizeIterator<Item = &str>;
+    pub fn debug(&self) -> &BodyDebug;
+    pub fn recycle(&mut self, body: Body);
+}
+pub fn parse_bodies<E: From<LlError>>(module: &mut Module, text: &ModuleText<'_>,
+    each: impl FnMut(&Module, ParsedBody<'_>) -> Result<(), E>) -> Result<(), E>;
+pub struct ParsedBody<'p> { pub function: &'p FunctionText, pub body: Option<&'p Body>,
+    pub unsupported: &'p [Cow<'static, str>], pub debug: &'p BodyDebug }
+pub struct BodyDebug { pub locations: Vec<(u32, MdRef)>, pub records: Vec<DebugRecordText> }
+pub struct DebugRecordText { pub name: Span, pub args: Span, pub before: u32 }
+```
+
+- `parse` adds to `module` the types, constants and inline-assembly
+  callees the body mentions, and the body is valid against that module.
+  It never adds a symbol.
+- `Ok(None)`: the body has a construct of §3.4 marked "body". Each is
+  named by `unsupported()` (once) and recorded against the function's
+  symbol. The rest of the body is still read and checked, with the
+  stand-in the table gives, so an error after an unsupported construct
+  is still an error.
+- A parser keeps its tables from one function to the next; with
+  `recycle`, the next body is built in the storage of the last one
+  (`spec/ir.md` §5.1), so peak memory follows the largest function.
+  `parse_bodies` does that for every function, in file order.
+- **Parallel parsing.** `spec/ir.md` §5.1 has bodies parsed in parallel
+  against a frozen `&Module`. That is not implementable on `hod_ir` as it
+  is: there is no lookup-only access to the type and constant tables,
+  and `Value` has no immediate integers, so almost every body interns
+  something. The deviation: each worker parses with its own **clone** of
+  the module (`Module: Clone`), with a `BodyParser` of its own over the
+  shared `&ModuleText`. Every id present in the module before the clone
+  means the same in every clone, so a body is the same body against any
+  clone that has what it interned; a consumer that needs one module
+  re-parses, or runs one sequential pass first (after which the bodies'
+  ids are all present). The unsupported names come back from the parser
+  as well as in the clone's record, for merging. This is a gap of
+  `hod_ir` (`spec/landed/ll/WP-008.md`).
+
+### 11.2 Locals
+
+`%name`, `%"name"` and `%N` are the function's own: arguments, results
+and blocks. Arguments are named from the parameter list of the header
+(§6): unnamed ones take the numbers from 0, then the entry block, if it
+has no label, the next number. Each unnamed result that is not `void`
+and each unlabelled block takes the next number; a written number may
+skip numbers (LLVM 19 and later) but never go back. A name used before
+its definition is a `FunctionBuilder::reserve` placeholder, resolved at
+the definition; the type it was used with must be the type it is defined
+with (`Type`); a name used and never defined is `Undefined` at its first
+use. Numbers are kept in a dense table (up to 4096 past the highest
+met) and a map beyond; names in an open-addressed table emptied by
+generation, so neither costs an allocation per function.
+
+### 11.3 Blocks
+
+`BlockId` is the block's ordinal in the text, the entry block 0: the
+number of terminators before the block. That is the rule of §5.5, so a
+`blockaddress` built at the module level names the same block. A use of
+a block name not yet met triggers one scan of the labels from the
+current statement to the end of the body (terminators and labels outside
+parentheses, as §5.5). A use of a *number* not found by that scan is a
+block without a label further on: the body is then read twice more, a
+numbering pass that records the number and ordinal of each unlabelled
+block (whether an unnamed instruction takes a number depends on its
+type, so this needs the real grammar), then the real pass. A
+`blockaddress` inside a body resolves the function through
+`text.functions()`, by symbol; one of an unlabelled block is still
+`blockaddress:unlabelled-block` (a follow-up: LLVM prints `N:` labels,
+so only hand-written text has it).
+
+### 11.4 Instructions
+
+Every instruction of LLVM 19 to 22 is read. What `hod_ir` keeps
+(`spec/ir.md` §5.4):
+
+- Flags (`nuw`, `nsw`, `exact`, `disjoint`, `samesign`, `nneg`,
+  `inbounds`, `nusw`, `inrange`, fast-math flags) are read and dropped.
+- `getelementptr` becomes `ptr_add`: constant indices folded into the
+  offset, the others as `(value, stride)` pairs.
+- An `alloca` in the entry block with a literal count, in address space
+  0, becomes a slot of `size × count` bytes at its alignment (the
+  preferred one when none is written); any other is the `Alloca`
+  instruction.
+- Default alignments: `load` and `store` the ABI alignment of the type;
+  `cmpxchg` and `atomicrmw` the store size rounded up to a power of two.
+- The funclet instructions are read, emitted as bare opcodes and noted
+  (`inst:*`): the body is unsupported.
+
+The checks LLVM's parser makes on operand types are made (`Type`), with
+LLVM's messages where it has one; `castIsValid` is reproduced for casts.
+
+### 11.5 Memory and atomics
+
+`load atomic` and `store atomic` take an ordering LLVM allows for them,
+or the text is an error. `syncscope("singlethread")` is kept; any other
+scope is noted `syncscope:<name>`.
+
+### 11.6 Calls
+
+`call`, `invoke` and `callbr`: `[tail | musttail | notail] call
+[fast-math] [cc] [return attributes] [addrspace(N)] type callee(args)
+[function attributes] [bundles]`, then the successors.
+
+- `type` is a function type, checked against the arguments (count and
+  types), or the return type alone, in which case the function type is
+  made of the arguments' types (the callee's own when it is the same).
+- The callee is a symbol (a direct call; so is a constant expression
+  that is a symbol's address), a local, inline assembly (`asm
+  [sideeffect] [alignstack] [inteldialect] [unwind] "…", "…"`, interned
+  with the call's function type) or any other pointer constant.
+- Of the call-site function attributes, in place or through `#N`, only
+  `noreturn`, `nounwind` and `returns_twice` are kept (`spec/ir.md`
+  §5.7); the callee's own are not merged in. A rejected attribute is
+  noted `attr:<name>`, also through a group.
+- Argument and return attributes are those of §5.6.
+- Operand bundles are kept with their tags and inputs.
+- A callee named `llvm.*` is resolved once per symbol: first
+  `hod_ir::no_code_intrinsic`, then `resolve_intrinsic` with the
+  declaration's type. It must be called with exactly the declaration's
+  function type: anything else is a `Type` error, which LLVM's verifier
+  also refuses ("Intrinsic called with incompatible signature").
+- A `metadata` argument is read (`!"…"`, `!N`, `!{…}`, `!DIKind(…)`, or a
+  value as metadata) and, if the call would be emitted, noted
+  `metadata-arg:<callee>`: `hod_ir` has no metadata operand.
+
+### 11.7 Calls that generate no code
+
+By `spec/ir.md` §5.5: a call of a `Drop` intrinsic leaves no
+instruction, and its result, if any, is poison; a `FirstArg` intrinsic's
+result is its first argument (whose type must be the result type); a
+`DebugRecord` intrinsic (`llvm.dbg.*`) is a debug record in the old
+form: its argument list is stepped over and handed to §11.9. An `invoke`
+or `callbr` of one is noted `invoke:no-code-intrinsic`. A ring of
+`FirstArg` calls that stand for each other leaves values that never
+resolve: noted `no-code-cycle`.
+
+### 11.8 What is not checked
+
+As at the module level, the body parser is not a verifier. It does not
+check dominance, that phi incomings match the predecessors, where
+landing pads and funclet pads stand, inline-assembly constraints, the
+rules of `musttail`, the operands of a debug record, or the metadata of
+an attachment beyond that the node exists. A body that parses need not
+pass `Body::verify`, though every body of the corpus does (§11.11).
+
+### 11.9 Debug information
+
+`hod_ir`'s debug nodes are not delivered yet (WP-005). The body parser
+keeps where the text has them (`BodyParser::debug`): the `!dbg`
+attachment of each instruction that left one in the body, by its
+position, and each debug record (`#dbg_value(…)` and kin, and calls of
+`llvm.dbg.*`) as the spans of its name and arguments with the position
+of the instruction it stands before. Every other attachment is checked
+to name a node and dropped. Both pass through one seam in `body.rs`
+(`SEAM(WP-005)`), where the work package that delivers debug nodes
+turns them into `FunctionBuilder` calls.
+
+### 11.10 Cost
+
+Measured by `tests/perf.rs` as in §9 ("module and bodies", "bodies
+alone") and by `tests/corpus.rs` over the captured corpus. Nothing is
+recursive or quadratic in the size of a body: the robustness inputs
+include a block of a million instructions, a 100,000-way `switch`, a phi
+of 100,000 incomings, 100,000 forward references and 100,000 unlabelled
+blocks referred to ahead (`tests/robustness.rs`). Figures:
+`spec/landed/ll/WP-008.md`.
+
+### 11.11 Tests
+
+| section | test | oracle |
+|---|---|---|
+| §11.2 to §11.7 | `syntax::verdicts_and_error_positions`, `llvm_as_agrees_or_the_difference_is_named` (the rows after "Bodies") | `llvm-as` 19 and 22 |
+| §3.4 (body names) | `syntax::unsupported_constructs_are_recorded_by_name` | the names, per snippet |
+| §11 | `roundtrip::printed_programs_read_back_run_the_same` (and an `#[ignore]`d larger batch) | `hod_interp` on generated programs, against the same programs printed as LLVM text and read back |
+| §11, §11.3 | `differential::bodies::every_body_parses_verifies_and_has_llvms_blocks` | `Body::verify`; the text as written and as `llvm-dis` prints it give the same shapes; block counts against `llvm-dis`'s labels |
+| §11.1 | `differential::bodies::bodies_parsed_on_clones_in_parallel_are_the_sequential_ones` | one sequential parser |
+| §11 | `corpus::every_corpus_body_parses_and_verifies` (with `HOD_LL_CORPUS`) | `Body::verify` over the captured corpus |
+| §8, §11.10 | `robustness` (prefixes and mutations now parse bodies too; body inputs) | each returns in time |
+| §11.10 | `perf` | printed |

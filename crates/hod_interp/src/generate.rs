@@ -1860,6 +1860,7 @@ impl<'g> FnGen<'g> {
 
     /// Vector operations whose operands cannot make them trap (§9.2),
     /// back to a scalar in the pool.
+    #[allow(clippy::too_many_lines)]
     fn vector_op(&mut self) -> IrResult<()> {
         use Opcode::{AShr, Add, And, LShr, Mul, Or, SExt, Shl, Sub, Trunc, UDiv, URem, Xor, ZExt};
         let widths: Vec<u32> =

@@ -580,7 +580,7 @@ fn vectors_as_values() {
 /// selection DAG of `llc` 19 and 22 gives `ff 00 00` and `ff ff 00` for
 /// these at every optimization level, and is right for the other lengths
 /// from 2 to 16 and widths from 16 to 128; `llc -O0` of either, through
-/// GlobalISel, gives these bytes.)
+/// the global instruction selector, gives these bytes.)
 #[test]
 fn truncation_of_wide_lanes() {
     let t = parse(&module(

@@ -1,6 +1,7 @@
-//! Hand-written programs that throw (`spec/interp.md` §5.9), as
-//! [`Generated`] programs for the LLVM oracle: the shapes of C++
-//! exception handling at the IR level, each run on several arguments.
+//! Hand-written programs that throw (`spec/interp.md` §5.9) or branch
+//! through block addresses (§5.5), as [`Generated`] programs for the LLVM
+//! oracle: the shapes of C++ exception handling and of computed gotos at
+//! the IR level, each run on several arguments.
 //!
 //! A program compares selectors only with `llvm.eh.typeid.for` and with
 //! 0: the numbers themselves are the personality's (LLVM numbers type
@@ -276,9 +277,50 @@ fn nested(target: &TargetSpec, a: u64, b_arg: u64) -> Generated {
     cx.finish(entry, a, b_arg)
 }
 
+/// A computed goto (§5.5): a constant table of block addresses, an
+/// `indirectbr` through it, and an address compared with a constant.
+fn computed_goto(target: &TargetSpec, a: u64) -> Generated {
+    let mut cx = Cx::new(target);
+    let entry = cx.declare("goto");
+    let m = &mut cx.m;
+    let addrs: Vec<_> =
+        (1..=3).map(|b| m.consts.block_addr(entry, hod_ir::BlockId::new(b)).unwrap()).collect();
+    let table_ty = m.types.array(PTR, 3).unwrap();
+    let init = m.consts.aggregate(&m.types, table_ty, &addrs).unwrap();
+    let desc = hod_ir::VariableDesc {
+        init: Some(init),
+        constant: true,
+        ..hod_ir::VariableDesc::new(table_ty)
+    };
+    let table = m.add_variable(b"table", &desc).unwrap();
+    let two = addrs[1];
+    cx.define(entry, &|m, b, _, _| {
+        let targets = [b.create_block()?, b.create_block()?, b.create_block()?];
+        let three = int(m, I64, 3);
+        let k = b.binary(Opcode::URem, I64, b.arg(0)?, three)?;
+        let at = b.ptr_add(PTR, Value::sym(table)?, 0, &[(k, 8)])?;
+        let addr = b.load(PTR, at, hod_ir::MemFlags::aligned(8)?)?;
+        let is_two = b.icmp(IntPredicate::Eq, I1, addr, Value::constant(two)?)?;
+        let is_two = b.cast(Opcode::ZExt, I64, is_two)?;
+        b.indirect_br(addr, &targets)?;
+        for (n, &block) in targets.iter().enumerate() {
+            b.begin_block(block)?;
+            let k = int(m, I64, 100 * (n as u64 + 1));
+            let r = b.binary(Opcode::Add, I64, is_two, k)?;
+            let r = b.binary(Opcode::Add, I64, r, b.arg(1)?)?;
+            b.ret(Some(r))?;
+        }
+        Ok(())
+    });
+    cx.finish(entry, a, 5)
+}
+
 /// The programs [`super`] checks, each on several arguments.
 pub fn cases(target: &TargetSpec) -> Vec<Generated> {
     let mut cases = Vec::new();
+    for a in 0..3 {
+        cases.push(computed_goto(target, a));
+    }
     for a in 0..5 {
         cases.push(classify(target, a, 40 + a));
     }

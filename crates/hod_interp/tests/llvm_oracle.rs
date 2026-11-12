@@ -237,7 +237,8 @@ fn per_major(mut check: impl FnMut(&Tools, &TargetSpec) -> usize) -> Vec<(u32, u
     counts
 }
 
-/// §5.9, §10.2: the hand-written unwinding programs agree with LLVM.
+/// §5.5, §5.9, §10.2: the hand-written programs that unwind or branch
+/// through block addresses agree with LLVM.
 #[test]
 fn unwinding_cases_agree_with_llvm() {
     let counts = per_major(|tools, target| {
@@ -246,7 +247,7 @@ fn unwinding_cases_agree_with_llvm() {
         check_programs(tools, target.triple(), &labels, &cases)
     });
     for (major, count) in counts {
-        println!("LLVM {major}: {count} unwinding cases agree with llc at -O0 and -O2");
+        println!("LLVM {major}: {count} unwinding and computed-goto cases agree with llc at -O0 and -O2");
     }
 }
 

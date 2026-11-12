@@ -808,6 +808,52 @@ pub fn branch_bit(
     cx.fixup(at, TEST14, label)
 }
 
+// ---- block addresses (§6.3, §9.6): added by WP-037 ----
+
+/// Puts `blockaddress(func, block)` in `rd`, writing `rd` and one
+/// scratch register other than it (added by WP-037). The address is
+/// formed PC-relative by the function itself (§9.6): `adr rd, label`,
+/// whose 21-bit field reaches ±1 MiB. In far mode the distance comes from
+/// a `b label` placed in the code and jumped over, whose 26-bit field
+/// reaches the whole function (§5.5.1) and which this reads back as data
+/// (`.text` is readable on every supported platform):
+/// `adr rd, 1f` · `ldr wT, [rd]` · `sbfx xT, xT, #0, #26` ·
+/// `add rd, rd, xT, lsl #2` · `b 2f` · `1: b label` · `2:`.
+/// The label of a block that is not emitted is bound to the shared trap
+/// (§6.1), as the block's offset in data is.
+///
+/// # Errors
+/// [`BLOCKADDRESS`] for a block of another function (`classify` rejects
+/// it); what the fixup reports.
+pub fn block_address(
+    cx: &mut FnCx<'_, A64>,
+    rd: Reg,
+    func: SymId,
+    block: hod_ir::BlockId,
+) -> CgResult<()> {
+    if func != cx.body.symbol() || block.index() >= cx.body.block_count() {
+        return unsupported(BLOCKADDRESS);
+    }
+    let label = cx.block_label(block);
+    if !cx.far() {
+        let at = cx.offset();
+        put(cx, mc::adr(rd.zr(), 0));
+        return cx.fixup(at, ADR21, label);
+    }
+    let tmp = other_scratch(rd);
+    put_all(
+        cx,
+        &[
+            mc::adr(rd.zr(), 20),
+            mc::ldr_off(Load::W, tmp.zr(), rd.sp(), 0),
+            mc::sbfx(Size::X, tmp.zr(), tmp.zr(), 0, 26),
+            mc::add_shifted(Size::X, rd.zr(), rd.zr(), tmp.zr(), mc::Shift::Lsl, 2),
+            mc::b(8),
+        ],
+    );
+    branch(cx, label)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -42,17 +42,14 @@ impl ModuleEmitter<'_> {
         hod_ir::module_asm_effects(module, &mut effects)
             .map_err(|_| CgError::unsupported(unsupported::MODULE_ASM))?;
         for effect in &effects {
-            let id = match effect.sym {
-                Some(sym) => {
-                    if effect.retain {
-                        self.name_symbol(sym)?;
-                    }
-                    Self::obj_sym(sym)
+            let id = if let Some(sym) = effect.sym {
+                if effect.retain {
+                    self.name_symbol(sym)?;
                 }
-                None => {
-                    let name = self.obj.add_string(effect.name).map_err(obj_err)?;
-                    self.obj.add_symbol(Symbol::undefined(name))
-                }
+                Self::obj_sym(sym)
+            } else {
+                let name = self.obj.add_string(effect.name).map_err(obj_err)?;
+                self.obj.add_symbol(Symbol::undefined(name))
             };
             if effect.retain {
                 self.obj.retain_symbol(id);

@@ -103,7 +103,7 @@ struct Op {
 
 /// The operands of a constraint string, without allocating.
 struct Ops {
-    ops: [Op; MAX_OPS],
+    list: [Op; MAX_OPS],
     len: usize,
     direct_outputs: usize,
 }
@@ -178,7 +178,7 @@ fn parse_alt(text: &[u8]) -> CgResult<Alt> {
 impl Ops {
     /// Reads `constraints`. Clobbers are checked and dropped.
     fn parse(constraints: &[u8]) -> CgResult<Ops> {
-        let mut ops = Ops { ops: [Op::default(); MAX_OPS], len: 0, direct_outputs: 0 };
+        let mut ops = Ops { list: [Op::default(); MAX_OPS], len: 0, direct_outputs: 0 };
         if constraints.is_empty() {
             return Ok(ops);
         }
@@ -226,17 +226,17 @@ impl Ops {
                 op.arg = Some(args);
                 args += 1;
             }
-            ops.ops[ops.len] = op;
+            ops.list[ops.len] = op;
             ops.len += 1;
         }
         // Outputs come first, and a digit names an output.
-        let outputs = ops.ops[..ops.len].iter().take_while(|op| op.kind == Kind::Output).count();
-        let tied_ok = ops.ops[..ops.len].iter().all(|op| {
+        let outputs = ops.list[..ops.len].iter().take_while(|op| op.kind == Kind::Output).count();
+        let tied_ok = ops.list[..ops.len].iter().all(|op| {
             op.alts[..usize::from(op.nalts)]
                 .iter()
                 .all(|a| a.codes & TIED == 0 || usize::from(a.tied) < outputs)
         });
-        if ops.ops[outputs..ops.len].iter().any(|op| op.kind == Kind::Output) || !tied_ok {
+        if ops.list[outputs..ops.len].iter().any(|op| op.kind == Kind::Output) || !tied_ok {
             return unsupported(CONSTRAINT);
         }
         Ok(ops)
@@ -288,43 +288,29 @@ fn alt_weight(cx: &FnCx<'_, A64>, op: &Op, operand: Option<Value>, index: usize)
     best
 }
 
-/// The empty-template call `inst` (module documentation).
-///
-/// # Errors
-/// [`crate::call::CALL_INLINE_ASM`] for a template that is not empty;
-/// the names of this module.
-pub fn call<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>) -> CgResult<()> {
-    let Some(site) = inst.call() else {
-        return cx.bug("an inline-assembly lowering of something that is no call");
-    };
-    let ValueKind::Asm(id) = site.callee_value().kind() else {
-        return cx.bug("an inline-assembly lowering of another callee");
-    };
-    let asm = cx.module.asm(id);
-    if !hod_ir::asm_template_is_empty(hod_ir::Arch::Aarch64, asm.template) {
-        return unsupported(crate::call::CALL_INLINE_ASM);
-    }
-    if site.bundle_count() != 0 {
-        return unsupported(BUNDLE);
-    }
-    let ops = Ops::parse(asm.constraints)?;
-    if ops.direct_outputs > 1 || (ops.direct_outputs == 0) != (inst.ty() == TypeId::VOID) {
-        return unsupported(OUTPUTS);
-    }
-    let args = site.args();
-    let operands = ops.ops[..ops.len].iter().filter(|op| op.arg.is_some()).count();
-    if operands != args.len() {
-        return unsupported(CONSTRAINT);
-    }
+/// What a barrier does besides ordering: at most one effect.
+enum Effect {
+    None,
+    /// The result is this input's value.
+    Result(Value),
+    /// An indirect output tied to this input stores it.
+    Store {
+        value: Value,
+        ptr: Value,
+    },
+}
+
+/// The alternative LLVM takes: the first of the greatest total weight,
+/// or the first when every one is invalid.
+fn choose(cx: &FnCx<'_, A64>, ops: &Ops, args: &[Value]) -> usize {
     let value_of = |op: &Op| op.arg.map(|a| args[usize::from(a)]);
-    // The alternative LLVM takes.
-    let count = ops.ops[..ops.len].iter().map(|op| usize::from(op.nalts)).max().unwrap_or(1);
+    let count = ops.list[..ops.len].iter().map(|op| usize::from(op.nalts)).max().unwrap_or(1);
     let mut chosen = 0;
     if count > 1 {
         let mut best_sum = -1;
         for index in 0..count {
             let mut sum = Some(0);
-            for op in &ops.ops[..ops.len] {
+            for op in &ops.list[..ops.len] {
                 sum = match (sum, alt_weight(cx, op, value_of(op), index)) {
                     (Some(s), Some(w)) => Some(s + w),
                     _ => None,
@@ -336,10 +322,24 @@ pub fn call<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>) -> CgResult<()> {
             }
         }
     }
+    chosen
+}
+
+/// The effect of the barrier `inst` with operands `ops` (module
+/// documentation).
+fn effect<'a>(
+    cx: &FnCx<'a, A64>,
+    inst: Inst<'a>,
+    site: hod_ir::CallSite<'a>,
+    ops: &Ops,
+) -> CgResult<Effect> {
+    let args = site.args();
+    let value_of = |op: &Op| op.arg.map(|a| args[usize::from(a)]);
+    let chosen = choose(cx, ops, args);
     let alt_of = |op: &Op| op.alts[if chosen < usize::from(op.nalts) { chosen } else { 0 }];
     // The input tied to each output, under that alternative.
     let mut tied_to: [Option<u8>; MAX_OPS] = [None; MAX_OPS];
-    for (index, op) in ops.ops[..ops.len].iter().enumerate() {
+    for (index, op) in ops.list[..ops.len].iter().enumerate() {
         let alt = alt_of(op);
         if op.kind == Kind::Input && alt.codes & TIED != 0 {
             if tied_to[usize::from(alt.tied)].is_some() {
@@ -355,20 +355,15 @@ pub fn call<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>) -> CgResult<()> {
         }
     }
     // What each output does: at most one effect.
-    enum Effect {
-        None,
-        Result(Value),
-        Store { value: Value, ptr: Value },
-    }
     let mut effect = Effect::None;
-    for (index, op) in ops.ops[..ops.len].iter().enumerate() {
+    for (index, op) in ops.list[..ops.len].iter().enumerate() {
         if op.kind != Kind::Output {
             continue;
         }
         let alt = alt_of(op);
         let register = alt.codes & (R | W | SPEC | XX) != 0;
         let memory = alt.codes & M != 0;
-        let input = tied_to[index].map(|i| &ops.ops[usize::from(i)]);
+        let input = tied_to[index].map(|i| &ops.list[usize::from(i)]);
         let this = if op.indirect {
             // `llc` takes memory for an output of memory codes only, and
             // a register for a tied one with a register code.
@@ -412,6 +407,38 @@ pub fn call<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>) -> CgResult<()> {
             effect = this;
         }
     }
+    Ok(effect)
+}
+
+/// The empty-template call `inst` (module documentation).
+///
+/// # Errors
+/// [`crate::call::CALL_INLINE_ASM`] for a template that is not empty;
+/// the names of this module.
+pub fn call<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>) -> CgResult<()> {
+    let Some(site) = inst.call() else {
+        return cx.bug("an inline-assembly lowering of something that is no call");
+    };
+    let ValueKind::Asm(id) = site.callee_value().kind() else {
+        return cx.bug("an inline-assembly lowering of another callee");
+    };
+    let asm = cx.module.asm(id);
+    if !hod_ir::asm_template_is_empty(hod_ir::Arch::Aarch64, asm.template) {
+        return unsupported(crate::call::CALL_INLINE_ASM);
+    }
+    if site.bundle_count() != 0 {
+        return unsupported(BUNDLE);
+    }
+    let ops = Ops::parse(asm.constraints)?;
+    if ops.direct_outputs > 1 || (ops.direct_outputs == 0) != (inst.ty() == TypeId::VOID) {
+        return unsupported(OUTPUTS);
+    }
+    let args = site.args();
+    let operands = ops.list[..ops.len].iter().filter(|op| op.arg.is_some()).count();
+    if operands != args.len() {
+        return unsupported(CONSTRAINT);
+    }
+    let effect = effect(cx, inst, site, &ops)?;
     deferred_first(cx, inst, None)?;
     match effect {
         Effect::None => {}

@@ -375,6 +375,57 @@ Cost (`tests/symbol_perf.rs`, a printed measurement, not a gate): for
 takes about 0.2 µs to create a symbol by name, 0.03 µs to describe it
 and 0.07 µs to find it again.
 
+### 2.3 Assembly text that needs no assembler
+
+hod has no assembler. Two kinds of assembly text do nothing an assembler
+would have to do, and `hod_ir` (`src/asm_text.rs`, WP-075) reads them so
+that a target need not:
+
+- **Module-level assembly of symbol directives.** `read_module_asm(arch,
+  text, &mut Vec<AsmDirectives>)` reads statements separated by newlines
+  and `;`, with comments (`/* */` at the start of a statement; `//`
+  anywhere and `#` at the start of a statement on AArch64, `#` anywhere on
+  x86-64) and blank statements. A statement is one of `.globl`/`.global`,
+  `.weak`, `.hidden`, `.protected` (each with a comma list of names) or
+  `.type name, @function|%function|STT_FUNC|@object|%object|STT_OBJECT|
+  @notype|%notype|STT_NOTYPE`. A name is plain (`[A-Za-z_.$][A-Za-z0-9_.$]*`)
+  and not an assembler-local `.L` name. The result has one entry per name,
+  in the order of first appearance, with its binding, visibility (the last
+  directive wins) and type. Everything else is an `AsmRefusal { what,
+  statement }`: a label, an instruction, an assignment (`.set`, `=`), any
+  other directive (`.size`, `.symver`, `.internal`, section directives
+  among them: none was seen in real input with an effect `llc` writes
+  without assembling), a quoted name, an unterminated comment, and two
+  directives that disagree (`.globl` and `.weak` of one name, two types).
+- `module_asm_effects(module, &mut Vec<AsmSymbolEffect>)` reads the
+  module's text and checks each name against the module, giving what the
+  object must change; it refuses (`what = "binding" | "type" | "symbol"`)
+  what `llc` warns about, fails on, or settles by its assembler's
+  precedence:
+
+  | directive | name the module does not have | declaration | definition |
+  |---|---|---|---|
+  | `.globl` | a new undefined global symbol | nothing; `extern_weak` refused (`llc` warns) | nothing; weak or `linkonce` refused (`llc` warns) |
+  | `.weak` | a new undefined weak symbol | weak | nothing if weak or `linkonce`; refused if strong (`llc` fails) |
+  | `.hidden`, `.protected` | the visibility, on a new undefined global symbol | the visibility, unless the module gives one other than default (it wins) | likewise |
+  | `.type` | the type, on a new undefined global symbol | the type, but on a thread-local variable (refused) | nothing if it is the definition's own (function, or object for a variable); otherwise refused |
+
+  A symbol of `internal`, `private`, `appending` or
+  `available_externally` linkage, an unresolved symbol, and a binding
+  directive on a `common` variable are refused. A declaration the text
+  names is kept in the symbol table even if nothing refers to it, as
+  `llc` keeps it.
+- **Empty inline-assembly templates.** `asm_template_is_empty(arch,
+  template)` is true for a template with no `$` (no operand, no `$$`)
+  whose statements are all blank or comments. Such a call is an
+  optimization barrier: its effect is its constraints' (a target's,
+  `spec/codegen.md` §5.5.1 "Assembly that needs no assembler").
+
+`classify` (§8) reports module assembly that `module_asm_effects` accepts
+as `module:asm-symbols` and any other as `module:asm`; a call of inline
+assembly with an empty template as `call:inline-asm-empty` and any other
+as `call:inline-asm`.
+
 ## 3. Types
 
 Interned in the module's type table. Kinds: `void`; integers of any width

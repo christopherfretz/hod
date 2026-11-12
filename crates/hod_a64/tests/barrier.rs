@@ -32,7 +32,7 @@ fn llc_path(major: u32) -> Option<PathBuf> {
 /// `llc`'s object of the functions, by `major`.
 fn llc(dir: &Scratch, major: u32) -> Option<PathBuf> {
     let llc = llc_path(major)?;
-    let input = dir.write(&format!("llc-{major}.ll"), &format!("{}{FUNCTIONS}", ll_header(major)));
+    let input = dir.write(&format!("llc-{major}.ll"), format!("{}{FUNCTIONS}", ll_header(major)));
     let output = dir.join(format!("llc-{major}.o"));
     let mut command = Command::new(llc);
     command

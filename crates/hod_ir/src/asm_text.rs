@@ -121,7 +121,7 @@ pub fn asm_template_is_empty(arch: Arch, template: &[u8]) -> bool {
     let mut statements = Statements::new(arch, template);
     while let Some(statement) = statements.next_statement() {
         match statement {
-            Ok(s) if s.is_empty() => {}
+            Ok([]) => {}
             _ => return false,
         }
     }
@@ -399,11 +399,10 @@ fn effect<'m>(
     // definition make `llc` warn or fail; the rest change nothing, but
     // `.weak` of a declaration.
     let binding = match (entry.binding, definition) {
-        (None, _) => None,
         (Some(AsmBinding::Global), _) if weakish || linkage == Linkage::ExternWeak => {
             return refuse("binding", 0);
         }
-        (Some(AsmBinding::Global), _) => None,
+        (None | Some(AsmBinding::Global), _) => None,
         (Some(AsmBinding::Weak), true) if weakish => None,
         (Some(AsmBinding::Weak), true) => return refuse("binding", 0),
         (Some(AsmBinding::Weak), false) if linkage == Linkage::ExternWeak => None,

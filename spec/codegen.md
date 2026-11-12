@@ -1011,6 +1011,52 @@ them there, and has the saturating arithmetic, `scmp`/`ucmp`, the
   refuses them as `intrinsic:<name>`. Vector forms are `a64:intrinsic-vector`,
   `bfloat` ones `a64:intrinsic-bfloat`.
 
+##### Assembly that needs no assembler (WP-075)
+
+`hod_a64::barrier` lowers a call (or `invoke`) of inline assembly whose
+template is empty (`spec/ir.md` §2.3) as `llc -O0` does; `call.rs` routes
+every inline-assembly callee to it. Such a call emits no instruction; it
+orders as a call does (deferred operands are emitted first). The flags
+`sideeffect`, `alignstack`, `inteldialect` and `unwind` change nothing an
+empty template does, and an `invoke` continues at its normal destination.
+Its constraints decide its one possible effect:
+
+- **Clobbers** of `memory`, `cc`, `fp`, `lr`, `x0..x30`, `w0..w30` and
+  `v`/`q`/`d`/`s`/`h`/`b` `0..31` need nothing: an empty template writes
+  no register and no memory, and the ordering a `memory` clobber asks for
+  is the call's own (hod moves no memory access across an instruction).
+  Any other (`sp`, `x31`, `dirflag`, ...) is `a64:inline-asm-clobber`.
+- **Alternatives** (`|`) are chosen by LLVM's weights
+  (`getSingleConstraintMatchWeight`): invalid, default 0, register 1
+  (`r`/`g` for an integer operand, `w` for a floating-point or vector
+  one), memory 2, constant 3 (`i`/`n` for a constant integer); a direct
+  output weighs 0. The first alternative of the greatest sum wins, the
+  first if all are invalid.
+- **An input** has no effect. An input whose chosen codes are only
+  `i`/`n` and whose value is not a constant integer is
+  `a64:inline-asm-operand`.
+- **An indirect output** (`=*`) of memory codes only has no effect, tied
+  or not (`llc` passes the address; the template writes nothing). Of a
+  register code and tied to a direct input of its `elementtype`, it
+  stores the input to the address (`=*r,0`: `llc` loads the register from
+  the input and stores it back); tied to an indirect input of the same
+  address, nothing. Otherwise (untied, or of another type) it is
+  `a64:inline-asm-output`, or `a64:inline-asm-operand` for a type
+  mismatch.
+- **A direct output** (`=r`) must be tied to a register-class input of
+  its type, which becomes the result; an untied direct output is
+  undefined after the template, `a64:inline-asm-output`.
+- More than one effect (two direct outputs, a struct result, two stores)
+  is `a64:inline-asm-outputs`; an operand bundle on the call is
+  `a64:inline-asm-bundle`; constraint text that is not read (`!i`, `Q`,
+  a tied output, an input before an output, a digit naming no output, a
+  count of operands unequal to the call's) is `a64:inline-asm-constraint`.
+
+A template that is not empty stays `call:inline-asm`. The tests are
+`crates/hod_a64/tests/barrier.rs`: one module of every form, built by hod
+and by `llc` 19 and 22, linked with a C driver that checks each effect
+under every linker, dynamic and static.
+
 #### 5.5.2 Target features (WP-043)
 
 `hod_a64::features::check` judges a `target-features` string (a
@@ -1769,6 +1815,20 @@ mold and runs them):
 - x86-64: no target yet; the PC bias of a code relocation is not
   considered in the mergeable-section addend check, and padding is
   `0x90`.
+
+#### 9.7.1 Module assembly of symbol directives (WP-075)
+
+`emit_module` refuses module assembly that `module_asm_effects`
+(`spec/ir.md` §2.3) refuses, with `module:asm`, before it emits anything.
+Once every module symbol is defined, it writes each effect into the
+object: an undefined symbol for a name the module does not have, the
+binding, visibility and type a directive gives, and `retain` for a
+declaration the text names, so that it is in the symbol table even if no
+relocation refers to it. A directive makes no relocation and changes no
+section. The oracle is `crates/hod_cg/tests/emit_asm.rs`: the sections,
+symbols and relocations of hod's object equal `llc`'s (19 and 22), which
+must compile each case without a diagnostic; what `llc` warns about or
+refuses is refused.
 
 ## 10. Errors and limits
 

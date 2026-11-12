@@ -24,7 +24,7 @@ Milestones and tracks are in `docs/ROADMAP.md`.
 | WP-014 | T-CG | `spec/codegen.md`: the `Target` trait, value-location policy v1, frame layout, the per-function output record. Design only; reviewed before T-CG work starts | WP-004, WP-010 | review |
 | WP-015 | T-H | `hod_cli`: `llc`-compatible command line, stdin input, `--fallback`, coverage log; the `--llvm-dir` shim directory for kiln | WP-001 | done |
 | WP-016 | T-H | `xtask irdiff`: build with `llc` and with hod, link with each linker in the matrix, run under limits, compare; `tests/ir/` directive format | WP-015 | done |
-| WP-017 | T-H | `xtask corpus`: capture IR from kiln's executing tests and from clang on the GCC torture suite into `.build/corpus`, pinned and reproducible | WP-015 | todo |
+| WP-017 | T-H | `xtask corpus`: capture IR from kiln's executing tests and from clang on the GCC torture suite into `.build/corpus`, pinned and reproducible | WP-015 | in-progress |
 | WP-018 | T-H | `xtask bench` and `bench/`: size classes, wall/RSS/size measurement for hod and `llc`, baselines, phase timings | WP-015 | todo |
 | WP-019 | T-H | L2 gate: parse, print, `llvm-as` acceptance and behavioral equivalence through `llc` over the captured corpus | WP-006, WP-008, WP-017 | todo |
 | WP-020 | T-H | Bitcode on the text path: `hod` converts bitcode input to text with a configured `llvm-dis` (`--bitcode-via=`, set by the shim) before parsing, instead of falling back; coverage log records the conversion time. Design 0001 point 6 | WP-015 | todo |

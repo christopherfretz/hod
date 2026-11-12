@@ -402,8 +402,8 @@ const fn a64(name: &'static str, by: &'static str, note: &'static str) -> Suppor
 // ---- the groups, in the order of `docs/status/support.md` ----
 
 const MODULE: [SupportRow; 23] = [
-    a64("module:pic", "WP-033", "`PIC Level` is not 0"),
-    a64("module:pie", "WP-033", "`PIE Level` is not 0"),
+    row("module:pic", ON, todo(X64), "`PIC Level` is not 0"),
+    row("module:pie", ON, todo(X64), "`PIE Level` is not 0"),
     // `CodeModel` order.
     a64("module:code-model-tiny", LATER, ""),
     both("module:code-model-small", ON, "the default of both targets: nothing changes"),
@@ -458,7 +458,7 @@ const DEBUG_ROWS: [SupportRow; 4] = [
 const GLOBAL: [SupportRow; 12] = [
     both("global:function-declaration", ON, "nothing is emitted for a declaration"),
     both("global:variable-declaration", ON, "nothing is emitted for a declaration"),
-    a64("global:function-definition", "WP-033", "a function that gets a body"),
+    row("global:function-definition", ON, todo(X64), "a function that gets a body"),
     row("global:variable-definition", ON, todo(X64), "a variable with an initializer"),
     row("global:alias", ON, todo(X64), ""),
     row("global:alias-offset", ON, todo(X64), "an alias of a symbol plus a non-zero offset"),
@@ -518,7 +518,7 @@ const INIT: [SupportRow; 8] = [
 ];
 
 const FUNCTION: [SupportRow; 6] = [
-    a64("function:parameters", "WP-033", "a body with parameters; per class of parameter"),
+    row("function:parameters", ON, todo(X64), "a body with parameters; per class of parameter"),
     a64("function:variadic", "WP-038", "a variadic function with a body"),
     a64("function:may-unwind", "WP-042", "a body without `nounwind`: it needs unwind tables"),
     a64("function:personality", EH, "a body with a personality function"),
@@ -528,7 +528,7 @@ const FUNCTION: [SupportRow; 6] = [
 
 /// In the order of [`cc_index`].
 const CC: [SupportRow; 15] = [
-    a64("cc:ccc", "WP-033", ""),
+    row("cc:ccc", ON, todo(X64), ""),
     a64("cc:fastcc", "WP-038", "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     a64("cc:coldcc", LATER, ""),
     a64("cc:ghccc", LATER, ""),
@@ -623,7 +623,7 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
 
 /// In `FnStr::ALL` order.
 const ATTR_STRING: [SupportRow; FnStr::ALL.len()] = [
-    a64("attr:target-cpu", "WP-033", "the target has to read it"),
+    row("attr:target-cpu", ON, todo(X64), "AArch64: the code is ARMv8.0, which every CPU runs"),
     a64("attr:target-features", "WP-033", "the target has to read it"),
     both("attr:tune-cpu", ON, "tuning only: hod does not tune"),
     both("attr:frame-pointer", ON, "any value: hod always keeps a frame pointer"),
@@ -648,10 +648,10 @@ const ATTR_STRING: [SupportRow; FnStr::ALL.len()] = [
 
 /// In `TypeClass::ALL` order.
 const TYPE: [SupportRow; TypeClass::ALL.len()] = [
-    a64("type:int", "WP-033", "integers of at most 64 bits"),
+    row("type:int", ON, todo(X64), "integers of at most 64 bits"),
     a64("type:i128", "WP-040", ""),
     a64("type:int-wide", LATER, "integers wider than 64 bits other than `i128`"),
-    a64("type:ptr", "WP-033", "pointers in address space 0"),
+    row("type:ptr", ON, todo(X64), "pointers in address space 0"),
     a64("type:half", LATER, ""),
     a64("type:bfloat", LATER, ""),
     a64("type:float", "WP-039", ""),
@@ -730,12 +730,12 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
     a64("inst:landingpad", EH, ""),
     both("inst:catchpad", never(WINDOWS_EH), ""),
     both("inst:cleanuppad", never(WINDOWS_EH), ""),
-    a64("inst:br", "WP-033", ""),
+    row("inst:br", ON, todo(X64), ""),
     a64("inst:condbr", "WP-037", "LLVM's two-way `br`"),
     a64("inst:switch", "WP-037", ""),
     a64("inst:indirectbr", "WP-037", ""),
-    a64("inst:ret", "WP-033", ""),
-    a64("inst:unreachable", "WP-033", ""),
+    row("inst:ret", ON, todo(X64), ""),
+    row("inst:unreachable", ON, todo(X64), ""),
     both(
         "inst:callbr",
         never("its only use is inline assembly with labels (`spec/codegen.md` §1)"),
@@ -811,10 +811,15 @@ const LANDINGPAD: [SupportRow; 3] = [
 ];
 
 const OPERAND: [SupportRow; 9] = [
-    a64("operand:symbol", "WP-033", "a symbol's address as a value, with or without an offset"),
+    row(
+        "operand:symbol",
+        ON,
+        todo(X64),
+        "a symbol's address as a value, with or without an offset",
+    ),
     a64("operand:slot", "WP-036", "the address of a stack slot"),
     a64("operand:blockaddress", "WP-037", "of a block of the same function"),
-    a64("operand:addr-of-int", "WP-033", "`inttoptr` of a constant number"),
+    row("operand:addr-of-int", ON, todo(X64), "`inttoptr` of a constant number"),
     a64("operand:int-of-addr", LATER, "`ptrtoint` of a constant address"),
     a64("operand:sym-diff", LATER, ""),
     a64("operand:dso-local-equivalent", LATER, ""),

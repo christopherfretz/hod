@@ -53,6 +53,10 @@ define signext i8 @a_i8(i64 %a, i8 signext %x) { ret i8 %x }
 define { i64, i64 } @a_pair({ i64, i64 } %p) { ret { i64, i64 } %p }
 define { double, double } @a_hfa({ double, double } %p) { ret { double, double } %p }
 define i128 @a_i128(i64 %a, i128 %x) { ret i128 %x }
+define half @a_h(half %a, half %b) { ret half %b }
+define fp128 @a_q(fp128 %a, fp128 %b) { ret fp128 %b }
+define <4 x i32> @a_v(<4 x i32> %a, <4 x i32> %b) { ret <4 x i32> %b }
+define ptr @r_aoi() { ret ptr inttoptr (i64 4096 to ptr) }
 
 define ptr @p_g() { ret ptr @g }
 define ptr @p_g16() { ret ptr getelementptr (i8, ptr @g, i64 16) }
@@ -90,6 +94,8 @@ double a_second(double, double);
 float a_f9(float, float, float, float, float, float, float, float, float);
 int8_t a_i8(int64_t, int8_t);
 struct pair a_pair(struct pair); struct hfa a_hfa(struct hfa); __int128 a_i128(int64_t, __int128);
+_Float16 a_h(_Float16, _Float16); long double a_q(long double, long double);
+int32x4_t a_v(int32x4_t, int32x4_t); void *r_aoi(void);
 void *p_g(void); void *p_g16(void); void *p_h(void); void *p_h8(void); void *p_w(void);
 void *p_loc(void); void *p_fn(void); int64_t p_int(void);
 
@@ -154,6 +160,11 @@ int main(void) {
     CHECK(r.a == 0.5 && r.b == -0.25);
     __int128 x = ((__int128)0x1234 << 64) | 0x5678;
     CHECK(a_i128(0, x) == x);
+    CHECK(a_h(1, (_Float16)-2.5) == (_Float16)-2.5);
+    CHECK(a_q(1.0L, 0.1L) == 0.1L);
+    int32x4_t w4 = a_v(vdupq_n_s32(1), (int32x4_t){ 5, 6, 7, 8 });
+    CHECK(vgetq_lane_s32(w4, 0) == 5 && vgetq_lane_s32(w4, 3) == 8);
+    CHECK(r_aoi() == (void *)4096);
 
     CHECK(p_g() == (void *)g);
     CHECK(p_g16() == (void *)&g[2]);

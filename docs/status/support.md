@@ -20,30 +20,30 @@ input to the fallback when one is configured (`spec/cli.md`).
 
 | group | constructs | aarch64 supported | not-implemented | rejected | x86_64 supported | not-implemented | rejected |
 |---|---|---|---|---|---|---|---|
-| `module` | 23 | 6 | 15 | 2 | 2 | 15 | 6 |
+| `module` | 23 | 8 | 13 | 2 | 2 | 15 | 6 |
 | `structor` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `debug` | 4 | 0 | 4 | 0 | 0 | 4 | 0 |
-| `global` | 12 | 10 | 2 | 0 | 2 | 10 | 0 |
+| `global` | 12 | 11 | 1 | 0 | 2 | 10 | 0 |
 | `linkage` | 11 | 9 | 1 | 1 | 1 | 9 | 1 |
 | `visibility` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `tls` | 4 | 0 | 4 | 0 | 0 | 4 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
 | `init` | 8 | 4 | 4 | 0 | 0 | 8 | 0 |
-| `function` | 6 | 0 | 6 | 0 | 0 | 6 | 0 |
-| `cc` | 15 | 0 | 13 | 2 | 0 | 12 | 3 |
-| `attr` | 56 | 10 | 43 | 3 | 9 | 39 | 8 |
-| `type` | 15 | 0 | 12 | 3 | 0 | 13 | 2 |
-| `inst` | 67 | 0 | 59 | 8 | 0 | 59 | 8 |
+| `function` | 6 | 1 | 5 | 0 | 0 | 6 | 0 |
+| `cc` | 15 | 1 | 12 | 2 | 0 | 12 | 3 |
+| `attr` | 56 | 11 | 42 | 3 | 9 | 39 | 8 |
+| `type` | 15 | 2 | 10 | 3 | 0 | 13 | 2 |
+| `inst` | 67 | 3 | 56 | 8 | 0 | 59 | 8 |
 | `mem` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 0 | 21 | 0 | 0 | 21 | 0 |
 | `call` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
 | `tail` | 3 | 2 | 1 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
-| `operand` | 9 | 0 | 9 | 0 | 0 | 9 | 0 |
+| `operand` | 9 | 2 | 7 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 133 | 0 | 133 | 0 | 0 | 133 | 0 |
-| total | 434 | 47 | 341 | 46 | 16 | 363 | 55 |
+| total | 434 | 60 | 328 | 46 | 16 | 363 | 55 |
 
 ## `module`
 
@@ -51,8 +51,8 @@ Module properties (`ModuleProps`, §2.1) and module-level tables.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `module:pic` | not-implemented | not-implemented | WP-033. `PIC Level` is not 0 |
-| `module:pie` | not-implemented | not-implemented | WP-033. `PIE Level` is not 0 |
+| `module:pic` | supported | not-implemented | `PIC Level` is not 0 |
+| `module:pie` | supported | not-implemented | `PIE Level` is not 0 |
 | `module:code-model-tiny` | not-implemented | not-implemented | unplanned |
 | `module:code-model-small` | supported | supported | the default of both targets: nothing changes |
 | `module:code-model-kernel` | not-implemented | not-implemented | unplanned |
@@ -103,7 +103,7 @@ Symbols: what they are and what a definition carries.
 |---|---|---|---|
 | `global:function-declaration` | supported | supported | nothing is emitted for a declaration |
 | `global:variable-declaration` | supported | supported | nothing is emitted for a declaration |
-| `global:function-definition` | not-implemented | not-implemented | WP-033. a function that gets a body |
+| `global:function-definition` | supported | not-implemented | a function that gets a body |
 | `global:variable-definition` | supported | not-implemented | a variable with an initializer |
 | `global:alias` | supported | not-implemented |  |
 | `global:alias-offset` | supported | not-implemented | an alias of a symbol plus a non-zero offset |
@@ -185,7 +185,7 @@ Properties of a function that has a body.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `function:parameters` | not-implemented | not-implemented | WP-033. a body with parameters; per class of parameter |
+| `function:parameters` | supported | not-implemented | a body with parameters; per class of parameter |
 | `function:variadic` | not-implemented | not-implemented | WP-038. a variadic function with a body |
 | `function:may-unwind` | not-implemented | not-implemented | WP-042. a body without `nounwind`: it needs unwind tables |
 | `function:personality` | not-implemented | not-implemented | M2 (exceptions). a body with a personality function |
@@ -198,7 +198,7 @@ Calling conventions, of a body's function and of a call.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `cc:ccc` | not-implemented | not-implemented | WP-033 |
+| `cc:ccc` | supported | not-implemented |  |
 | `cc:fastcc` | not-implemented | not-implemented | WP-038. assigned as `ccc` (`spec/abi-a64.md` §1.2) |
 | `cc:coldcc` | not-implemented | not-implemented | unplanned |
 | `cc:ghccc` | not-implemented | not-implemented | unplanned |
@@ -255,7 +255,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:sanitize_realtime_blocking` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_thread` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_type` | not-implemented | not-implemented | unplanned |
-| `attr:target-cpu` | not-implemented | not-implemented | WP-033. the target has to read it |
+| `attr:target-cpu` | supported | not-implemented | AArch64: the code is ARMv8.0, which every CPU runs |
 | `attr:target-features` | not-implemented | not-implemented | WP-033. the target has to read it |
 | `attr:tune-cpu` | supported | supported | tuning only: hod does not tune |
 | `attr:frame-pointer` | supported | supported | any value: hod always keeps a frame pointer |
@@ -283,10 +283,10 @@ Type classes of the values instructions produce and consume.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `type:int` | not-implemented | not-implemented | WP-033. integers of at most 64 bits |
+| `type:int` | supported | not-implemented | integers of at most 64 bits |
 | `type:i128` | not-implemented | not-implemented | WP-040 |
 | `type:int-wide` | not-implemented | not-implemented | unplanned. integers wider than 64 bits other than `i128` |
-| `type:ptr` | not-implemented | not-implemented | WP-033. pointers in address space 0 |
+| `type:ptr` | supported | not-implemented | pointers in address space 0 |
 | `type:half` | not-implemented | not-implemented | unplanned |
 | `type:bfloat` | not-implemented | not-implemented | unplanned |
 | `type:float` | not-implemented | not-implemented | WP-039 |
@@ -360,12 +360,12 @@ Instructions.
 | `inst:landingpad` | not-implemented | not-implemented | M2 (exceptions) |
 | `inst:catchpad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:cleanuppad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
-| `inst:br` | not-implemented | not-implemented | WP-033 |
+| `inst:br` | supported | not-implemented |  |
 | `inst:condbr` | not-implemented | not-implemented | WP-037. LLVM's two-way `br` |
 | `inst:switch` | not-implemented | not-implemented | WP-037 |
 | `inst:indirectbr` | not-implemented | not-implemented | WP-037 |
-| `inst:ret` | not-implemented | not-implemented | WP-033 |
-| `inst:unreachable` | not-implemented | not-implemented | WP-033 |
+| `inst:ret` | supported | not-implemented |  |
+| `inst:unreachable` | supported | not-implemented |  |
 | `inst:callbr` | rejected | rejected | its only use is inline assembly with labels (`spec/codegen.md` §1) |
 | `inst:invoke` | not-implemented | not-implemented | M2 (exceptions) |
 | `inst:resume` | not-implemented | not-implemented | M2 (exceptions) |
@@ -464,10 +464,10 @@ Constant addresses as instruction operands.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `operand:symbol` | not-implemented | not-implemented | WP-033. a symbol's address as a value, with or without an offset |
+| `operand:symbol` | supported | not-implemented | a symbol's address as a value, with or without an offset |
 | `operand:slot` | not-implemented | not-implemented | WP-036. the address of a stack slot |
 | `operand:blockaddress` | not-implemented | not-implemented | WP-037. of a block of the same function |
-| `operand:addr-of-int` | not-implemented | not-implemented | WP-033. `inttoptr` of a constant number |
+| `operand:addr-of-int` | supported | not-implemented | `inttoptr` of a constant number |
 | `operand:int-of-addr` | not-implemented | not-implemented | unplanned. `ptrtoint` of a constant address |
 | `operand:sym-diff` | not-implemented | not-implemented | unplanned |
 | `operand:dso-local-equivalent` | not-implemented | not-implemented | unplanned |

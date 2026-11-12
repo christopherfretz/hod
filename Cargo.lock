@@ -34,8 +34,11 @@ name = "hod_a64"
 version = "0.0.0"
 dependencies = [
  "hod_cg",
+ "hod_interp",
  "hod_ir",
+ "hod_ll",
  "hod_mc_a64",
+ "hod_obj",
  "hod_testutil",
 ]
 
@@ -81,8 +84,8 @@ dependencies = [
 name = "hod_dwarf"
 version = "0.0.0"
 dependencies = [
- "hod_ir",
  "hod_obj",
+ "hod_testutil",
 ]
 
 [[package]]

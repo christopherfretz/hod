@@ -1337,12 +1337,9 @@ impl Fx<'_, '_, '_> {
             return self.mistyped("intrinsic called with incompatible signature");
         }
 
-        // `musttail` in a variadic function forwards the arguments: what
-        // `llvm-dis` writes as `...`.
-        if tail == TailKind::MustTail && self.variadic {
-            self.note("call:forwarded-varargs");
-            return self.stand_in_call(kind, ret, normal);
-        }
+        // `musttail` in a variadic function forwards the variable
+        // arguments (what `llvm-dis` writes as `...`); the record does not
+        // say so, and neither does the body: `spec/ll.md` §11.6.
 
         if let CalleeInfo::NoCode(rule) = info {
             if kind != Kind::Call {

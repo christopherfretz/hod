@@ -481,8 +481,8 @@ impl Parser<'_, '_> {
         if let Some(ordinal) = self.block_ordinal(function, sym, label)? {
             return ir(at, self.module.consts.block_addr(sym, BlockId::new(ordinal)));
         }
-        // A block with no label of its own: only a body parser knows its
-        // number.
+        // A block with no label of its own in a body the scan of §5.5
+        // could not number.
         self.note("blockaddress:unlabelled-block");
         ir(at, self.module.consts.null(&self.module.types, TypeId::PTR))
     }
@@ -508,13 +508,8 @@ impl Parser<'_, '_> {
                 );
             };
             let found = self.by_sym[at].1 as usize;
-            let Some(key) = self.label_key(label) else {
-                return Ok(None);
-            };
-            let (src, body) = (self.src, text.functions()[found].body);
-            let labels = self.labels.entry(found).or_insert_with(|| block_labels(src, body));
-            let at = labels.binary_search_by(|(name, _)| name.cmp(&key));
-            return Ok(at.ok().map(|at| labels[at].1));
+            let function = &text.functions()[found];
+            return self.find_label(found, function.params, function.body, label);
         }
         if self.defined.is_none() {
             let mut defined = HashMap::new();
@@ -537,13 +532,33 @@ impl Parser<'_, '_> {
                 "blockaddress of a function this module does not define",
             );
         };
+        let item = &self.index.items[found];
+        self.find_label(found, item.params, item.body, label)
+    }
+
+    /// The ordinal of the block that `label` names in the function
+    /// `found` with parameters `params` and body `body`; `None` for a
+    /// number the scan could not settle (§5.5). A name or a number the
+    /// function has no block for is `Undefined`, as in `llvm-as`.
+    fn find_label(
+        &mut self,
+        found: usize,
+        params: crate::Span,
+        body: crate::Span,
+        label: Token,
+    ) -> PResult<Option<u32>> {
         let Some(key) = self.label_key(label) else {
             return Ok(None);
         };
-        let (src, body) = (self.src, self.index.items[found].body);
-        let labels = self.labels.entry(found).or_insert_with(|| block_labels(src, body));
-        let at = labels.binary_search_by(|(name, _)| name.cmp(&key));
-        Ok(at.ok().map(|at| labels[at].1))
+        let src = self.src;
+        let labels = self.labels.entry(found).or_insert_with(|| block_labels(src, params, body));
+        if let Ok(at) = labels.labels.binary_search_by(|(name, _)| name.cmp(&key)) {
+            return Ok(Some(labels.labels[at].1));
+        }
+        if key.0 && !labels.numbered {
+            return Ok(None);
+        }
+        fail(LlErrorKind::Undefined, label.start, "referenced value is not a basic block")
     }
 
     /// The key of a `@name`, `%name`, `@42` or `%42` token: a number and
@@ -560,44 +575,417 @@ impl Parser<'_, '_> {
 /// A block label: whether it is a number, and its name or digits.
 pub(crate) type LabelKey = (bool, Vec<u8>);
 
-/// Every label of the body `body`, with the ordinal of the block it
-/// starts, sorted by label; of two blocks with one label, the first. A
-/// block has exactly one terminator, so a label's ordinal is the number
+/// The blocks of one body by label (§5.5).
+#[derive(Debug, Default)]
+pub(crate) struct BlockLabels {
+    /// Every label with the ordinal of the block it starts, sorted by
+    /// label; of two blocks with one label, the first. With `numbered`,
+    /// also the number of each block without a label.
+    pub labels: Vec<(LabelKey, u32)>,
+    /// Whether the numbers of the blocks without a label are in
+    /// `labels`: the scan settled every number of the function.
+    pub numbered: bool,
+}
+
+/// The labels of the body `body` of a function with parameters `params`.
+///
+/// A block has exactly one terminator, so a label's ordinal is the number
 /// of terminators before it; a terminator keyword is nothing else
 /// anywhere in a body, and a label outside parentheses is a block's
 /// (inside, `line:` is a field of a debug location).
-fn block_labels(src: &[u8], body: crate::Span) -> Vec<(LabelKey, u32)> {
+///
+/// A block without a label takes the next number of the function's
+/// unnamed values, as in LLVM: the numbers go to unnamed parameters, then
+/// to the entry block and every other block without a label, and to each
+/// result without a name, in text order; a written number continues the
+/// count from itself. The scan reads one statement per line: a line that
+/// starts outside brackets with a name and `=` assigns a result, with an
+/// instruction word an unassigned instruction (which takes a number
+/// unless it has no result: `store`, `fence`, the terminators without
+/// one, and a call of a `void` type), with `to`, `unwind`, `catch`,
+/// `filter` or `cleanup` continues the line before. Anything else, and a
+/// written number below the count, stops the numbering: `numbered` is
+/// then `false` and only the written labels are known.
+fn block_labels(src: &[u8], params: crate::Span, body: crate::Span) -> BlockLabels {
     let mut lexer = Lexer::new(src);
-    lexer.set_pos(body.start as usize);
     let mut labels: Vec<(LabelKey, u32)> = Vec::new();
+    let mut numbers = Numbering::default();
+    numbers.parameters(&mut lexer, params);
+    lexer.set_pos(body.start as usize);
     let mut ordinal = 0u32;
     let mut parens = 0u32;
+    let mut brackets = 0u32;
+    let mut new_block = true;
+    let mut last_end = body.start;
+    let mut ahead: Option<Token> = None;
+    let mut expect = Expect::Any;
     loop {
-        let token = lexer.next_token();
+        let token = ahead.take().unwrap_or_else(|| lexer.next_token());
         if token.start >= body.end || token.kind == Tok::Eof {
             // Stable: equal labels stay in layout order.
             labels.sort_by(|a, b| a.0.cmp(&b.0));
             labels.dedup_by(|later, first| later.0 == first.0);
-            return labels;
+            return BlockLabels { labels, numbered: numbers.ok };
         }
+        let line_start = parens == 0
+            && brackets == 0
+            && src[last_end as usize..token.start as usize].contains(&b'\n');
+        let line_start = line_start || token.start == body.start || last_end == body.start;
+        last_end = token.end;
         let text = lexer.text(token);
         match token.kind {
-            Tok::LParen => parens += 1,
+            Tok::LParen => {
+                parens += 1;
+                expect = Expect::Any;
+            }
             Tok::RParen => parens = parens.saturating_sub(1),
+            Tok::LBracket if parens == 0 => brackets += 1,
+            Tok::RBracket if parens == 0 => brackets = brackets.saturating_sub(1),
             _ if parens > 0 => {}
-            Tok::Label => labels.push(((false, text[..text.len() - 1].to_vec()), ordinal)),
+            Tok::Label => {
+                labels.push(((false, text[..text.len() - 1].to_vec()), ordinal));
+                new_block = false;
+            }
             Tok::LabelId => {
                 if let Some(number) = parse_u32(&text[..text.len() - 1]) {
                     labels.push(((true, number.to_string().into_bytes()), ordinal));
+                    numbers.written(number);
+                } else {
+                    numbers.ok = false;
                 }
+                new_block = false;
             }
             Tok::LabelQuoted => {
                 let mut name = Vec::new();
                 unescape(&text[1..text.len() - 2], &mut name);
                 labels.push(((false, name), ordinal));
+                new_block = false;
             }
-            Tok::Word if is_terminator(text) => ordinal += 1,
+            _ => {
+                numbers.ok &= expect.step(token.kind, text, line_start && brackets == 0);
+                if line_start && brackets == 0 && numbers.ok {
+                    let continued = token.kind == Tok::Word
+                        && matches!(text, b"to" | b"unwind" | b"catch" | b"filter" | b"cleanup");
+                    if !continued {
+                        if new_block {
+                            if let Some(number) = numbers.take() {
+                                labels.push(((true, number.to_string().into_bytes()), ordinal));
+                            }
+                            new_block = false;
+                        }
+                        let next = lexer.next_token();
+                        ahead = Some(next);
+                        numbers.statement(&mut lexer, token, next, &mut ahead);
+                    }
+                }
+                if token.kind == Tok::Word && is_terminator(text) {
+                    ordinal += 1;
+                    new_block = true;
+                }
+            }
+        }
+    }
+}
+
+/// What the guard of [`block_labels`] against a second statement on a
+/// line expects of the next token outside parentheses.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Expect {
+    Any,
+    /// `=` after a local name at the start of a line.
+    Equal,
+    /// An instruction's word, after `=` or a tail marker.
+    Opcode,
+    /// The operation of an `atomicrmw`, after `volatile`.
+    RmwOp,
+    /// A constant expression's flags, then its `(`.
+    Paren,
+}
+
+impl Expect {
+    /// Reads one token: `false` if it is an instruction word where none
+    /// can stand, which only a second statement on the line explains.
+    fn step(&mut self, kind: Tok, text: &[u8], line_start: bool) -> bool {
+        let word = kind == Tok::Word;
+        let before = std::mem::replace(self, Expect::Any);
+        match before {
+            Expect::Paren if !line_start => {
+                let flag = word && is_flag(text);
+                if flag {
+                    *self = Expect::Paren;
+                }
+                return flag;
+            }
+            Expect::RmwOp => {
+                if word && text == b"volatile" {
+                    *self = Expect::RmwOp;
+                }
+                return true;
+            }
+            Expect::Equal if kind == Tok::Equal => {
+                *self = Expect::Opcode;
+                return true;
+            }
             _ => {}
         }
+        let opcode_at = line_start || before == Expect::Opcode;
+        if word && !opcode_at && (is_terminator(text) || is_instruction(text)) {
+            // Inside a statement, only a constant expression's word.
+            *self = Expect::Paren;
+            return !is_terminator(text);
+        }
+        if word && text == b"atomicrmw" {
+            *self = Expect::RmwOp;
+        } else if opcode_at && word && matches!(text, b"tail" | b"musttail" | b"notail") {
+            *self = Expect::Opcode;
+        } else if line_start && matches!(kind, Tok::Local | Tok::LocalQuoted | Tok::LocalId) {
+            *self = Expect::Equal;
+        }
+        true
+    }
+}
+
+/// Whether `word` is an instruction's (LLVM's opcode names), so that
+/// inside a statement it can only start a constant expression.
+fn is_instruction(word: &[u8]) -> bool {
+    matches!(
+        word,
+        b"fneg"
+            | b"add"
+            | b"fadd"
+            | b"sub"
+            | b"fsub"
+            | b"mul"
+            | b"fmul"
+            | b"udiv"
+            | b"sdiv"
+            | b"fdiv"
+            | b"urem"
+            | b"srem"
+            | b"frem"
+            | b"shl"
+            | b"lshr"
+            | b"ashr"
+            | b"and"
+            | b"or"
+            | b"xor"
+            | b"extractelement"
+            | b"insertelement"
+            | b"shufflevector"
+            | b"extractvalue"
+            | b"insertvalue"
+            | b"alloca"
+            | b"load"
+            | b"store"
+            | b"fence"
+            | b"cmpxchg"
+            | b"atomicrmw"
+            | b"getelementptr"
+            | b"trunc"
+            | b"zext"
+            | b"sext"
+            | b"fptrunc"
+            | b"fpext"
+            | b"fptoui"
+            | b"fptosi"
+            | b"uitofp"
+            | b"sitofp"
+            | b"ptrtoint"
+            | b"ptrtoaddr"
+            | b"inttoptr"
+            | b"bitcast"
+            | b"addrspacecast"
+            | b"icmp"
+            | b"fcmp"
+            | b"phi"
+            | b"select"
+            | b"freeze"
+            | b"call"
+            | b"va_arg"
+            | b"landingpad"
+            | b"catchpad"
+            | b"cleanuppad"
+    )
+}
+
+/// Whether `word` is a flag that may stand between a constant
+/// expression's word and its `(`.
+fn is_flag(word: &[u8]) -> bool {
+    matches!(word, b"nuw" | b"nsw" | b"exact" | b"inbounds" | b"nusw" | b"inrange" | b"disjoint")
+}
+
+/// The count of a function's unnamed values while [`block_labels`]
+/// scans it.
+struct Numbering {
+    next: u64,
+    ok: bool,
+}
+
+impl Default for Numbering {
+    fn default() -> Self {
+        Numbering { next: 0, ok: true }
+    }
+}
+
+impl Numbering {
+    /// The next number, taken.
+    fn take(&mut self) -> Option<u32> {
+        let number = u32::try_from(self.next).ok();
+        self.next += 1;
+        self.ok &= number.is_some();
+        number
+    }
+
+    /// A number written in the text: the count continues after it.
+    fn written(&mut self, number: u32) {
+        if u64::from(number) < self.next {
+            self.ok = false;
+        }
+        self.next = u64::from(number) + 1;
+    }
+
+    /// The parameters: each without a name takes a number. A parameter
+    /// is named when it ends in a local name that is not its first token
+    /// (`%T` alone is a type).
+    fn parameters(&mut self, lexer: &mut Lexer<'_>, params: crate::Span) {
+        lexer.set_pos(params.start as usize);
+        let (mut depth, mut tokens, mut last) = (0u32, 0u32, None::<Token>);
+        loop {
+            let token = lexer.next_token();
+            let end = token.start >= params.end || token.kind == Tok::Eof;
+            if end || (depth == 0 && token.kind == Tok::Comma) {
+                if tokens > 0 {
+                    match last {
+                        Some(name) if tokens > 1 && name.kind == Tok::LocalId => {
+                            match parse_u32(&lexer.text(name)[1..]) {
+                                Some(number) => self.written(number),
+                                None => self.ok = false,
+                            }
+                        }
+                        Some(name)
+                            if tokens > 1 && matches!(name.kind, Tok::Local | Tok::LocalQuoted) => {
+                        }
+                        Some(token) if token.kind == Tok::DotDotDot => {}
+                        _ => {
+                            self.take();
+                        }
+                    }
+                }
+                if end {
+                    return;
+                }
+                (tokens, last) = (0, None);
+                continue;
+            }
+            match token.kind {
+                Tok::LParen | Tok::LBracket | Tok::LBrace | Tok::Less => depth += 1,
+                Tok::RParen | Tok::RBracket | Tok::RBrace | Tok::Greater => {
+                    depth = depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+            tokens += 1;
+            last = Some(token);
+        }
+    }
+
+    /// The statement that starts with `first`, then `second`: an
+    /// assignment, or an unassigned instruction.
+    fn statement(
+        &mut self,
+        lexer: &mut Lexer<'_>,
+        first: Token,
+        second: Token,
+        ahead: &mut Option<Token>,
+    ) {
+        match first.kind {
+            Tok::LocalId if second.kind == Tok::Equal => match parse_u32(&lexer.text(first)[1..]) {
+                Some(number) => self.written(number),
+                None => self.ok = false,
+            },
+            Tok::Local | Tok::LocalQuoted if second.kind == Tok::Equal => {}
+            // A debug record (`#dbg_value(…)`) is no instruction.
+            Tok::HashWord => {}
+            Tok::Word => {
+                let mut word = lexer.text(first);
+                let mut next = second;
+                if matches!(word, b"tail" | b"musttail" | b"notail") && next.kind == Tok::Word {
+                    word = lexer.text(next);
+                    next = lexer.next_token();
+                    *ahead = Some(next);
+                }
+                let result = match word {
+                    b"store" | b"fence" | b"br" | b"ret" | b"switch" | b"indirectbr"
+                    | b"resume" | b"unreachable" | b"cleanupret" | b"catchret" => false,
+                    b"call" | b"invoke" | b"callbr" => {
+                        let Some(void) = return_type_is_void(lexer, next, ahead) else {
+                            self.ok = false;
+                            return;
+                        };
+                        !void
+                    }
+                    _ => true,
+                };
+                if result {
+                    self.take();
+                }
+            }
+            _ => self.ok = false,
+        }
+    }
+}
+
+/// Whether the return type of the call whose words after the opcode
+/// start with `first` is `void`: the first type after the fast-math
+/// flags, calling convention and return attributes. `None` if the line
+/// ends first.
+fn return_type_is_void(
+    lexer: &mut Lexer<'_>,
+    first: Token,
+    ahead: &mut Option<Token>,
+) -> Option<bool> {
+    let mut token = first;
+    let mut parens = 0u32;
+    loop {
+        let text = lexer.text(token);
+        match token.kind {
+            Tok::Eof => return None,
+            Tok::LParen => parens += 1,
+            Tok::RParen => parens = parens.saturating_sub(1),
+            _ if parens > 0 => {}
+            Tok::Word if text == b"void" => return Some(true),
+            Tok::Word
+                if matches!(
+                    text,
+                    b"ptr"
+                        | b"half"
+                        | b"bfloat"
+                        | b"float"
+                        | b"double"
+                        | b"x86_fp80"
+                        | b"fp128"
+                        | b"ppc_fp128"
+                        | b"x86_amx"
+                        | b"x86_mmx"
+                        | b"token"
+                        | b"label"
+                        | b"metadata"
+                        | b"target"
+                ) =>
+            {
+                return Some(false);
+            }
+            Tok::IntType
+            | Tok::LBrace
+            | Tok::Less
+            | Tok::LBracket
+            | Tok::Local
+            | Tok::LocalQuoted
+            | Tok::LocalId => return Some(false),
+            Tok::Word | Tok::Int | Tok::Str | Tok::Equal => {}
+            _ => return None,
+        }
+        token = lexer.next_token();
+        *ahead = Some(token);
     }
 }

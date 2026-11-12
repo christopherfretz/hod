@@ -130,7 +130,6 @@ fn handwritten_bodies_are_delivered() {
                  \"inst:cleanupret\"]",
                 "define funclets unsupported [\"alloca:inalloca\", \"inst:catchpad\", \
                  \"inst:catchret\", \"inst:catchswitch\"]",
-                "define musttail_va unsupported [\"call:forwarded-varargs\"]",
                 "define scopes unsupported [\"syncscope:agent\"]",
             ],
             "LLVM {major}"

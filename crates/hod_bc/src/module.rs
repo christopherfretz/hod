@@ -547,22 +547,39 @@ impl<'r, 'a> Build<'r, 'a> {
 
     // ---- symbols ----
 
-    /// Creates the symbol of every global value, as `hod_ll` does at its
-    /// first mention and in `number_globals` (`spec/bc.md` §5.5).
+    /// Creates the symbol of every global value, in record order, which
+    /// is the order of LLVM's module and `hod_ll`'s (`spec/bc.md` §5.5,
+    /// `spec/ll.md` §5.7).
     fn symbols(&mut self) -> BcResult<()> {
         let raw = self.raw;
         let mut globals = Vec::with_capacity(raw.globals.len());
         let mut unnamed: Vec<(u8, usize)> = Vec::new();
         let mut specials = 0u8;
+        let mut numbered = Vec::new();
+        // `llvm-dis` numbers the unnamed globals variables first, then
+        // aliases, IFUNCs and functions; `hod_ll` names a non-local one
+        // `__unnamed_K` by that number.
+        for (index, &rec) in raw.globals.iter().enumerate() {
+            let ops = rec.ops(self.pool());
+            if self.strtab_name(ops, rec.pos)?.is_empty() {
+                let order = match rec.code {
+                    mc::GLOBALVAR => 0,
+                    mc::FUNCTION => 3,
+                    mc::ALIAS => 1,
+                    _ => 2,
+                };
+                unnamed.push((order, index));
+            }
+        }
+        unnamed.sort_unstable();
         for (index, &rec) in raw.globals.iter().enumerate() {
             let ops = rec.ops(self.pool());
             let name = self.strtab_name(ops, rec.pos)?;
             let field = |k: usize| ops.get(k).copied().unwrap_or(0);
-            let (space, defined, order) = match rec.code {
-                mc::GLOBALVAR => (field(3) >> 2, false, 0),
-                mc::FUNCTION => (field(18), field(4) == 0, 3),
-                mc::ALIAS => (field(3), false, 1),
-                _ => (field(3), false, 2),
+            let (space, defined) = match rec.code {
+                mc::GLOBALVAR => (field(3) >> 2, false),
+                mc::FUNCTION => (field(18), field(4) == 0),
+                _ => (field(3), false),
             };
             let Ok(space) = u32::try_from(space) else {
                 return fail(BcErrorKind::Invalid, rec.pos, "an address space over 32 bits");
@@ -577,8 +594,18 @@ impl<'r, 'a> Build<'r, 'a> {
                 specials |= bit;
                 None
             } else if name.is_empty() {
-                unnamed.push((order, index));
-                None
+                let ordinal = unnamed.iter().position(|&(_, at)| at == index).unwrap_or(0);
+                let local = matches!(ops.get(5), Some(3 | 9));
+                let sym = if local {
+                    ir(rec.pos, self.module.anonymous_symbol())?
+                } else {
+                    let name = format!("__unnamed_{}", ordinal + 1);
+                    let sym = ir(rec.pos, self.module.symbol_named(name.as_bytes()))?;
+                    self.module.record_unsupported("symbol:anonymous-external", Some(sym));
+                    sym
+                };
+                numbered.push((ordinal, sym));
+                Some(sym)
             } else {
                 Some(ir(rec.pos, self.module.symbol_named(name))?)
             };
@@ -588,25 +615,9 @@ impl<'r, 'a> Build<'r, 'a> {
                 defined_function: defined && rec.code == mc::FUNCTION,
             });
         }
-        // `llvm-dis` numbers the unnamed globals variables first, then
-        // aliases, IFUNCs and functions; `hod_ll` names a non-local one
-        // `__unnamed_K` by that number.
-        unnamed.sort_unstable();
-        for (ordinal, &(_, index)) in unnamed.iter().enumerate() {
-            let rec = raw.globals[index];
-            let ops = rec.ops(self.pool());
-            let local = matches!(ops.get(5), Some(3 | 9));
-            let sym = if local {
-                ir(rec.pos, self.module.anonymous_symbol())?
-            } else {
-                let name = format!("__unnamed_{}", ordinal + 1);
-                let sym = ir(rec.pos, self.module.symbol_named(name.as_bytes()))?;
-                self.module.record_unsupported("symbol:anonymous-external", Some(sym));
-                sym
-            };
-            globals[index].sym = Some(sym);
-            self.numbered.push(sym);
-        }
+        // The numbered globals in `llvm-dis`'s order of numbers.
+        numbered.sort_unstable_by_key(|&(ordinal, _)| ordinal);
+        self.numbered.extend(numbered.into_iter().map(|(_, sym)| sym));
         self.values = Values::new(globals, &raw.constants, &raw.pool, &self.types)?;
         Ok(())
     }

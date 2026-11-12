@@ -109,37 +109,38 @@ fn the_matrices_are_the_table() {
 
 /// §8.2: one representative of each group, compiled against the shipped
 /// matrix: the first reason of the module pass (empty: it is accepted)
-/// and of the body pass (empty: the program has no body), on AArch64
-/// and on x86-64. A flip of the
+/// and of the body pass (empty: the program has no body or it is
+/// accepted), on AArch64 and on x86-64: `(row, module on AArch64, module
+/// on x86-64, body on AArch64, body on x86-64)`. A flip of the
 /// matrix that changes one of these is a deliberate change of this
 /// table.
-const SHIPPED_REASONS: [(&str, &str, &str, &str); 26] = [
-    ("module:pic", "module:pic", "module:pic", ""),
-    ("module:frame-pointer", "", "", ""),
-    ("structor:priority", "", "module:global-ctors", ""),
-    ("debug:module-flags", "debug:module-flags", "debug:module-flags", ""),
-    ("debug:locations", "global:function-definition", "global:function-definition", "cc:ccc"),
-    ("global:function-declaration", "", "", ""),
-    ("global:variable-definition", "", "global:variable-definition", ""),
-    ("global:ifunc", "", "global:ifunc", ""),
-    ("linkage:extern_weak", "", "linkage:extern_weak", ""),
-    ("visibility:hidden", "", "global:variable-definition", ""),
-    ("tls:initial-exec", "tls:initial-exec", "global:variable-definition", ""),
-    ("comdat:any", "", "global:variable-definition", ""),
-    ("init:symbol", "", "global:variable-definition", ""),
-    ("function:slots", "global:function-definition", "global:function-definition", "cc:ccc"),
-    ("cc:fastcc", "global:function-definition", "global:function-definition", "cc:fastcc"),
-    ("attr:zeroext", "global:function-definition", "global:function-definition", "cc:ccc"),
-    ("type:double", "global:function-definition", "global:function-definition", "cc:ccc"),
-    ("inst:add", "global:function-definition", "global:function-definition", "cc:ccc"),
-    ("mem:volatile", "global:function-definition", "global:function-definition", "cc:ccc"),
-    ("atomicrmw:add", "global:function-definition", "global:function-definition", "cc:ccc"),
-    ("call:indirect", "global:function-definition", "global:function-definition", "cc:ccc"),
-    ("tail:musttail", "global:function-definition", "global:function-definition", "cc:ccc"),
-    ("bundle:deopt", "global:function-definition", "global:function-definition", "cc:ccc"),
-    ("landingpad:catch", "global:function-definition", "global:function-definition", "cc:ccc"),
-    ("operand:slot", "global:function-definition", "global:function-definition", "cc:ccc"),
-    ("intrinsic:llvm.memcpy", "global:function-definition", "global:function-definition", "cc:ccc"),
+const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 26] = [
+    ("module:pic", "", "module:pic", "", ""),
+    ("module:frame-pointer", "", "", "", ""),
+    ("structor:priority", "", "module:global-ctors", "", ""),
+    ("debug:module-flags", "debug:module-flags", "debug:module-flags", "", ""),
+    ("debug:locations", "", "global:function-definition", "type:double", "cc:ccc"),
+    ("global:function-declaration", "", "", "", ""),
+    ("global:variable-definition", "", "global:variable-definition", "", ""),
+    ("global:ifunc", "", "global:ifunc", "", ""),
+    ("linkage:extern_weak", "", "linkage:extern_weak", "", ""),
+    ("visibility:hidden", "", "global:variable-definition", "", ""),
+    ("tls:initial-exec", "tls:initial-exec", "global:variable-definition", "", ""),
+    ("comdat:any", "", "global:variable-definition", "", ""),
+    ("init:symbol", "", "global:variable-definition", "", ""),
+    ("function:slots", "", "global:function-definition", "type:double", "cc:ccc"),
+    ("cc:fastcc", "", "global:function-definition", "cc:fastcc", "cc:fastcc"),
+    ("attr:zeroext", "", "global:function-definition", "attr:zeroext", "cc:ccc"),
+    ("type:double", "", "global:function-definition", "type:double", "cc:ccc"),
+    ("inst:add", "", "global:function-definition", "type:double", "cc:ccc"),
+    ("mem:volatile", "", "global:function-definition", "type:double", "cc:ccc"),
+    ("atomicrmw:add", "", "global:function-definition", "type:double", "cc:ccc"),
+    ("call:indirect", "", "global:function-definition", "type:double", "cc:ccc"),
+    ("tail:musttail", "", "global:function-definition", "type:double", "cc:ccc"),
+    ("bundle:deopt", "", "global:function-definition", "type:double", "cc:ccc"),
+    ("landingpad:catch", "", "global:function-definition", "type:double", "cc:ccc"),
+    ("operand:slot", "", "global:function-definition", "type:double", "cc:ccc"),
+    ("intrinsic:llvm.memcpy", "", "global:function-definition", "type:double", "cc:ccc"),
 ];
 
 #[test]
@@ -152,8 +153,10 @@ fn shipped_refuses_with_the_expected_first_reason() {
     }
     for arch in ARCHES {
         let shipped = Classifier::new(Support::shipped(arch)).with_stack_args(&NO_STACK);
-        for (row, a64_reason, x64_reason, body_reason) in SHIPPED_REASONS {
-            let module_reason = if arch == Arch::Aarch64 { a64_reason } else { x64_reason };
+        for (row, a64_reason, x64_reason, a64_body, x64_body) in SHIPPED_REASONS {
+            let a64 = arch == Arch::Aarch64;
+            let module_reason = if a64 { a64_reason } else { x64_reason };
+            let body_reason = if a64 { a64_body } else { x64_body };
             let program = program_for(row, arch);
             let reason = |result: Result<(), Rejection>| {
                 result.err().map_or(String::new(), |rejection| rejection.construct.into_owned())
@@ -161,7 +164,7 @@ fn shipped_refuses_with_the_expected_first_reason() {
             assert_eq!(reason(shipped.module(&program.m)), module_reason, "{row} on {arch:?}");
             let bodies = program.bodies.first().map(|body| shipped.body(&program.m, body));
             assert_eq!(reason(bodies.unwrap_or(Ok(()))), body_reason, "{row} on {arch:?}");
-            assert_eq!(program.bodies.is_empty(), body_reason.is_empty(), "{row}");
+            assert_eq!(program.bodies.is_empty(), x64_body.is_empty(), "{row}");
         }
     }
 }
@@ -429,8 +432,10 @@ const RICH_MODULE: [&str; 13] = [
     "init:symbol",
 ];
 
-/// The rows of `RICH_MODULE` AArch64 supports (WP-032).
-const A64_SUPPORTED: [&str; 8] = [
+/// The rows of `RICH_MODULE` AArch64 supports (WP-032, WP-033).
+const A64_SUPPORTED: [&str; 10] = [
+    "module:pic",
+    "global:function-definition",
     "module:global-ctors",
     "structor:priority",
     "global:variable-definition",
@@ -469,6 +474,19 @@ const RICH_BODY: [&str; 16] = [
     "inst:ret",
 ];
 
+/// The rows of `RICH_BODY` AArch64 supports (WP-033).
+const A64_SUPPORTED_BODY: [&str; 6] =
+    ["cc:ccc", "function:parameters", "type:int", "type:ptr", "operand:symbol", "inst:ret"];
+
+/// What the shipped matrix finds in the rich body on `arch`.
+fn rich_body(arch: Arch) -> Vec<&'static str> {
+    RICH_BODY
+        .iter()
+        .copied()
+        .filter(|row| arch != Arch::Aarch64 || !A64_SUPPORTED_BODY.contains(row))
+        .collect()
+}
+
 fn census_of(support: &Support, program: &Program) -> Census {
     let classifier = Classifier::new(support).with_stack_args(&NO_STACK);
     let mut census = Census::new();
@@ -493,18 +511,26 @@ fn findings_come_in_the_specified_order() {
     for arch in ARCHES {
         let program = rich(arch, true);
         let mut expected: Vec<&str> = rich_module(arch);
-        expected.insert(3, "module-flag:mystery");
-        let at = expected.iter().position(|row| *row == "global:function-definition").unwrap();
+        let flags = expected.iter().position(|row| *row == "debug:module-flags").unwrap();
+        expected.insert(flags + 1, "module-flag:mystery");
+        // The function's attributes come before its definition, after the
+        // module's own properties.
+        let at = expected
+            .iter()
+            .position(|row| *row == "global:function-definition")
+            .unwrap_or(expected.len());
         expected.insert(at, "attr:jumptable");
-        expected.extend(RICH_BODY);
+        let body = rich_body(arch);
+        expected.extend(&body);
         let shipped = Support::shipped(arch);
         assert_eq!(names(&census_of(shipped, &program)), expected, "{arch:?}");
         // The first reason of each pass is the first finding of it.
         let classifier = Classifier::new(shipped).with_stack_args(&NO_STACK);
         let module_reason = classifier.module(&program.m).unwrap_err();
-        assert_eq!((module_reason.construct.as_ref(), module_reason.symbol), ("module:pic", None));
+        let first = if arch == Arch::Aarch64 { "module:uwtable" } else { "module:pic" };
+        assert_eq!((module_reason.construct.as_ref(), module_reason.symbol), (first, None));
         let body_reason = classifier.body(&program.m, &program.bodies[0]).unwrap_err();
-        assert_eq!(body_reason.construct, "cc:ccc");
+        assert_eq!(body_reason.construct, body[0]);
         assert_eq!(
             (body_reason.symbol, body_reason.inst),
             (Some(program.bodies[0].symbol()), None)
@@ -560,7 +586,7 @@ fn the_census_equals_repeated_classification() {
         }
         let census = census_of(Support::shipped(arch), &program);
         assert_eq!(names(&census), found, "{arch:?}");
-        let expected: Vec<&str> = rich_module(arch).into_iter().chain(RICH_BODY).collect();
+        let expected: Vec<&str> = rich_module(arch).into_iter().chain(rich_body(arch)).collect();
         assert_eq!(found, expected, "{arch:?}");
         // And what is accepted has an empty census.
         assert!(census_of(&support, &program).is_empty());
@@ -619,18 +645,20 @@ fn the_census_counts_occurrences_and_symbols() {
         assert_eq!((entry.construct.as_str(), entry.kind), (name, RejectionKind::Unsupported));
         (entry.occurrences, entry.symbols)
     };
-    assert_eq!(count("module:pic"), (1, 0));
-    assert_eq!(count("global:function-definition"), (2, 2));
-    // Supported since WP-032: not counted.
-    assert!(census.get("global:variable-definition").is_none());
-    assert_eq!(count("cc:ccc"), (2, 2));
     assert_eq!(count("inst:add"), (3, 2));
     assert_eq!(count("inst:store"), (1, 1));
-    assert_eq!(count("operand:symbol"), (1, 1));
-    assert_eq!(count("inst:ret"), (2, 2));
-    // i32: two parameters, three results and six operands of `add`, one
-    // operand of `store`.
-    assert_eq!(count("type:int"), (12, 2));
+    // Supported since WP-032 and WP-033: not counted.
+    for row in [
+        "global:variable-definition",
+        "module:pic",
+        "global:function-definition",
+        "cc:ccc",
+        "type:int",
+        "operand:symbol",
+        "inst:ret",
+    ] {
+        assert!(census.get(row).is_none(), "{row}");
+    }
     assert!(census.get("inst:sub").is_none());
     assert_eq!(census.len(), census.entries().len());
 

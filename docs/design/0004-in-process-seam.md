@@ -1,7 +1,8 @@
 # Design 0004: the in-process seam (stage 2)
 
-Status: proposed (2026-11-12, WP-089), for kiln's maintainers to review
-point by point (section 9). Design 0001 fixed the stages: 1, hod as
+Status: accepted in shape by kiln's maintainers (2026-11-12, section 10);
+kiln's K1 measures the print first and K2 onward wait for that number
+against the stop rule of 7.6. Proposed 2026-11-12 (WP-089). Design 0001 fixed the stages: 1, hod as
 `llc`'s stand-in (done); **2, kiln hands its built module to hod in the
 same process (this note)**; 3, kiln lowers into `hod_ir` directly.
 
@@ -462,3 +463,85 @@ K6; K3b once WP-087 has landed; H7.
     (`Options::debug_compression`, different bytes)?
 12. May one kiln CI job build with the feature, fetching hod by git
     revision?
+
+## 10. Review by kiln's maintainers (2026-11-12)
+
+Checked against kiln main `6c46e943e` (the logic at `bd60e182` is the
+same; line numbers of `codegen_cmd.rs` moved). Where this section and
+the text above differ, this section holds.
+
+**One structural change (decision 2).** kiln's root `Cargo.lock` has only
+crates.io sources and packagers build kiln offline from vendored crates;
+an optional git dependency would enter that lock, feature off or not.
+So `kiln_hod` is **its own small workspace inside kiln's repository**
+(excluded from the root workspace, its own `Cargo.lock` carrying hod's
+revision) holding the bridge and a thin `kiln++`-with-hod binary;
+`kiln_driver` gains a dependency-free backend hook that the wrapper
+registers. The stock build, its lock and its packaging are untouched.
+H6's `[patch]` flow is unchanged. If hod is published to crates.io with
+an exact pin, folding it back into a feature becomes possible.
+
+**One missing dependency (decision 4).** `ir_passes` decides by scanning
+the printed text. Handing the module over before printing needs the same
+predicate computed from the `Module` (kiln's K4: tested equal to the text
+scan over the suite). First version, conservative: a module for which
+the predicate says `opt` is not handed over unless an explicit opt-in is
+set; the dual-mode libc++ run decides when the default flips. What runs
+`opt` at `-O0`: any `-flto`; the sanitizers fuzzer-no-link, memory,
+thread, address, hwaddress (not UBSan alone); gcov or
+`-fprofile-instr-generate`; any `alwaysinline` attribute group, on a
+definition **or a call site** (`[[clang::always_inline]]` statements,
+calls inside `flatten` functions); the `instrument-function-entry`
+family; a declared `llvm.coro.*`. `-disable-llvm-passes` suppresses all
+but LTO.
+
+**Answers.**
+
+1. A read-only view in `kiln_llvm` (K2), a kiln-internal surface with no
+   stability promise (the bridge is built in kiln's CI). Smaller than
+   1.2 says: print order, `Inst::ty`, names, successors, attribute
+   lists, `gc`, `personality`, initializers, alias targets, constants
+   and inline asm are public already. Missing beyond 1.2's list:
+   metadata attachments on globals, a metadata-kind id-to-name lookup,
+   sync-scope names, alias/IFUNC value types, COMDAT kind by id, counts
+   of metadata and attribute sets.
+2. kiln's agents write kiln's side (K1-K6); hod reviews each pull
+   request and owns H1-H7.
+3. Both: `-fkiln-backend=llvm|hod` (default `llvm`; `hod` on a kiln
+   without the bridge is an error) and `KILN_BACKEND`; the flag wins.
+4. Wrong out of line: only `available_externally` bodies (inline +
+   `always_inline` and defined elsewhere: `extern template`,
+   `gnu_inline`, a C inline definition), which rely on `opt`. Not
+   determined: an unused discardable `always_inline` definition that
+   names an undefined symbol; `alloca` or return-address builtins in
+   such a body; target-feature mismatch between caller and callee. The
+   conservative default above covers them.
+5. Yes, in `kiln_driver`: it owns the `catch_unwind` and a process-wide
+   contained scope the hook consults (the first-panic record is
+   process-wide and is filled even by a caught panic); the bridge
+   returns a `Result`.
+6. Yes; the hand-over sits after the error gate (`lower` prints even
+   when errors were emitted and `run` discards the text).
+7. Yes: no profile sets `panic`, unwinding is kiln's policy.
+8. Exact revision plus the compile-time `hod::EMBED_API` assert; `seam-N`
+   tags are names, the lock records the commit.
+9. No: nothing changes the module after `emit_with_debug`; the text has
+   two more readers, `ir_passes` and the PCH image check.
+10. Do not rely on `Module::verify` (structural only, tests only): hod
+    verifies every bridged body.
+11. Keep `llvm-objcopy` first (byte equality is the validation); hod's
+    own compression is a later, measured step.
+12. Yes, one CI job building the `kiln_hod` workspace.
+
+**Corrections to section 1.** `llc` also gets `-mcpu`,
+`-relocation-model`, function and data sections, `-fp-contract`,
+`-code-model`, x86 branch alignment, `-debugger-tune` and the
+split-DWARF flags: `Options::from_llc_args` (H2) must accept or decline
+each. `-S -emit-llvm` at `-O0` writes `opt`'s output when `ir_passes`
+fires. "One thread" is the dedicated compile thread; each child process
+has two helper threads. `kiln:crates/kiln_llvm/src/attr.rs:200` is
+`enum Attr`; the interned table is `AttrTable` (`:362`).
+
+**Schedule.** K1 first, with the split of IR build against print for the
+regex unit and two larger ones at `-O0` and `-g`; K2 and K4 only if that
+number passes 7.6, behind kiln's release work.

@@ -126,6 +126,10 @@ pub fn fp_int_cast<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> Cg
 /// # Errors
 /// [`WIDE_MUL_OVERFLOW`] beyond half of [`MAX_QUADRATIC_BITS`]; what the
 /// operands report.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "operands a, b; product p; result r; scratch x, y"
+)]
 pub fn mul_overflow_wide<'a>(
     cx: &mut FnCx<'a, A64>,
     inst: Inst<'a>,
@@ -338,6 +342,10 @@ pub fn intrinsic<'a>(
 /// the register, shifted, shifted back and compared; on a difference the
 /// saturated value (all ones, or the extreme of the operand's sign);
 /// then moved back down. An amount of at least `bits` is poison.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "operands a, b; their registers r, k; scratch x, y"
+)]
 fn shl_sat<'a>(
     cx: &mut FnCx<'a, A64>,
     inst: Inst<'a>,
@@ -411,8 +419,8 @@ fn folds(site: &CallSite<'_>) -> bool {
 }
 
 /// Whether `inst` has no effect but its result: the driver's rule for a
-/// result nothing uses (`hod_cg` `driver.rs`, `has_no_effect`), which is
-/// also what SelectionDAG deletes when nothing uses its node.
+/// result nothing uses (`hod_cg`'s `driver.rs`, `has_no_effect`), which is
+/// also what `SelectionDAG` deletes when nothing uses its node.
 fn removable(inst: Inst<'_>) -> bool {
     let op = inst.opcode();
     if op.is_binary() || op.is_cast() {
@@ -441,7 +449,7 @@ fn removable(inst: Inst<'_>) -> bool {
 /// `Target::begin_function`'s part (WP-084): in a function that calls
 /// `llvm.is.constant` or `llvm.objectsize`, decides which instructions
 /// are not emitted, as `llc` does. Its IR pass replaces those calls by
-/// constants and nothing else; SelectionDAG then builds each block's
+/// constants and nothing else; `SelectionDAG` then builds each block's
 /// nodes and deletes a node nothing uses and that has no effect, which
 /// frees its operands' nodes in turn. A value used in another block (or
 /// by a `phi`) is exported and stays. So an instruction is not emitted
@@ -465,8 +473,10 @@ fn decide(body: &Body) -> bool {
             uses.resize(n, 0);
             bits.clear();
             bits.resize(2 * words, 0);
-            let set = |bits: &mut [u64], base: usize, i: usize| bits[base + i / 64] |= 1 << (i % 64);
-            let get = |bits: &[u64], base: usize, i: usize| bits[base + i / 64] >> (i % 64) & 1 != 0;
+            let set =
+                |bits: &mut [u64], base: usize, i: usize| bits[base + i / 64] |= 1 << (i % 64);
+            let get =
+                |bits: &[u64], base: usize, i: usize| bits[base + i / 64] >> (i % 64) & 1 != 0;
             for site in body.calls() {
                 if folds(&site) {
                     set(&mut bits, 0, site.inst().index());

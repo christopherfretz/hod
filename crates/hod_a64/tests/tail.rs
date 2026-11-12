@@ -16,6 +16,7 @@ mod common;
 #[path = "common/native.rs"]
 mod native;
 
+use std::cmp::Ordering;
 use std::fmt::Write as _;
 
 use common::{assert_refused, compile_ll, ll_header, parse};
@@ -64,7 +65,11 @@ impl Rng {
             0x1_0000_0000,
         ];
         let r = self.next();
-        if r % 3 == 0 { EDGES[(r >> 8) as usize % EDGES.len()] } else { self.next() >> (r % 64) }
+        if r.is_multiple_of(3) {
+            EDGES[(r >> 8) as usize % EDGES.len()]
+        } else {
+            self.next() >> (r % 64)
+        }
     }
 }
 
@@ -86,9 +91,9 @@ fn build(n: u32, p: &[&str], out: &str) -> String {
         }
     }
     let conv = match n.cmp(&w) {
-        std::cmp::Ordering::Less => "trunc",
-        std::cmp::Ordering::Equal => "",
-        std::cmp::Ordering::Greater => "sext",
+        Ordering::Less => "trunc",
+        Ordering::Equal => "",
+        Ordering::Greater => "sext",
     };
     if conv.is_empty() {
         writeln!(s, "  %{out} = or i{w} {acc}, 0").unwrap();
@@ -104,13 +109,13 @@ fn fold(n: u32, v: &str, out: &str) -> String {
     let mut s = String::new();
     let mut acc = String::from("0");
     for k in 0..n.div_ceil(64) {
-        if n > 64 {
-            writeln!(s, "  %{out}.r{k} = lshr i{n} %{v}, {}", 64 * k).unwrap();
-            writeln!(s, "  %{out}.t{k} = trunc i{n} %{out}.r{k} to i64").unwrap();
-        } else if n < 64 {
-            writeln!(s, "  %{out}.t{k} = zext i{n} %{v} to i64").unwrap();
-        } else {
-            writeln!(s, "  %{out}.t{k} = or i64 %{v}, 0").unwrap();
+        match n.cmp(&64) {
+            Ordering::Greater => {
+                writeln!(s, "  %{out}.r{k} = lshr i{n} %{v}, {}", 64 * k).unwrap();
+                writeln!(s, "  %{out}.t{k} = trunc i{n} %{out}.r{k} to i64").unwrap();
+            }
+            Ordering::Less => writeln!(s, "  %{out}.t{k} = zext i{n} %{v} to i64").unwrap(),
+            Ordering::Equal => writeln!(s, "  %{out}.t{k} = or i64 %{v}, 0").unwrap(),
         }
         writeln!(s, "  %{out}.m{k} = mul i64 {acc}, -7046029254386353131").unwrap();
         writeln!(s, "  %{out}.a{k} = add i64 %{out}.m{k}, %{out}.t{k}").unwrap();
@@ -521,8 +526,8 @@ fn saturating_shifts() {
             for _ in 0..30 {
                 let a = rng.word();
                 // Junk above the amount's width: the callee must not read it.
-                let b =
-                    rng.next() % u64::from(n) | (rng.next() << n.min(63)) & !((1 << n.min(63)) - 1);
+                let b = (rng.next() % u64::from(n))
+                    | ((rng.next() << n.min(63)) & !((1 << n.min(63)) - 1));
                 let b = if n == 64 { b % 64 } else { b };
                 calls.push((format!("{op}{n}"), [a, b, 0, 0, 0, 0]));
                 let mask = if n == 64 { u64::MAX } else { (1 << n) - 1 };
@@ -797,7 +802,12 @@ next:
 fn folded_operands_are_not_evaluated() {
     let calls: Vec<native::Call> = ["bcp", "cross", "osize", "beside", "kept", "exported"]
         .into_iter()
-        .map(|name| (name.to_owned(), [if name == "kept" || name == "exported" { 2 } else { 0 }, 0, 0, 0, 0, 0]))
+        .map(|name| {
+            (
+                name.to_owned(),
+                [if name == "kept" || name == "exported" { 2 } else { 0 }, 0, 0, 0, 0, 0],
+            )
+        })
         .collect();
     let want = format!("0\n0\n{}\n1\n42\n0\n", u64::MAX);
     run("a64-tail-folded", FOLDED_OPERANDS, &calls, Some(&want));

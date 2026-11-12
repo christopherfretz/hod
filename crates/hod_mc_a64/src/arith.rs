@@ -418,7 +418,7 @@ pub const fn sdiv(sz: Size, rd: RegZr, rn: RegZr, rm: RegZr) -> u32 {
     dp2(sz, 0b00_0011, rd, rn, rm)
 }
 
-/// The eight CRC32 instructions (FEAT_CRC32): the polynomial (`C`: the
+/// The eight CRC32 instructions (`FEAT_CRC32`): the polynomial (`C`: the
 /// Castagnoli one) and the width of the data operand.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Crc32 {

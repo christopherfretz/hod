@@ -487,9 +487,21 @@ run `nest` signatures against llc 19.
 - `alignstack` matters only for a block that goes to the stack (§3.3)
   and for `byval` (§6.2). On a scalar, a vector or a structure it
   changes nothing.
+- `alignstack(N)` on a function asks its prologue to align `sp` to `N`.
+  `llc` emits nothing for `N` ≤ 16 and realigns `sp` (`and sp, x9,
+  #~(N-1)`) for a larger `N` (measured, WP-069). hod emits nothing for
+  any `N`: AArch64's `sp` is always 16-aligned, and hod's frame never
+  relies on more: a slot aligned above 16 is placed by aligning its own
+  address at entry (`codegen.md` §5.1), whatever `sp` is. The kiln and
+  test corpora have the parameter form only (27 modules per LLVM major,
+  all on HFA arrays: `[2 x double]`, `[4 x double]`, `[2 x float]`,
+  `[3 x float]`, `[1 x double]`, `[1 x fp128]`, `[2 x fp128]
+  alignstack(16)`, `[2 x bfloat]`), the function form in none.
 
 *Evidence:* `table::attributes`, `table::aggregates`; the grid's
-`attributes()`.
+`attributes()`; `tests/call.rs`'s `alignstack_arguments_and_functions_run`
+(the corpus's forms on the stack, `alignstack(32)` and `alignstack(16)`
+functions with slots of that alignment; hod and `llc` both ways).
 
 ### 6.5 After an argument without a part
 

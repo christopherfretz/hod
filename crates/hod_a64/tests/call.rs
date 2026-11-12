@@ -872,6 +872,42 @@ fn odd_leaves_of_incoming_arguments_are_cleared() {
     }
 }
 
+/// `attr:alignstack`, run (`tests/data/call/alignstack.ll`): on block
+/// arguments that go to the stack (`abi-a64.md` §3.3: `[2 x double]` and
+/// `[3 x float]` aligned past their own alignment, `[2 x fp128]`,
+/// `[2 x float] alignstack(8)`, the corpus's forms), and on a function
+/// (`alignstack(32)` with a 32-aligned slot, `alignstack(16)`). gcc's
+/// driver calls the callee directly and through a forwarding caller; the
+/// caller and the callee module by hod and by `llc` in every pairing, hod
+/// also stressed; every linker where hod is involved.
+#[test]
+fn alignstack_arguments_and_functions_run() {
+    let dir = Scratch::new("a64-call-alignstack");
+    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let caller = data("alignstack.ll");
+    let callee = data("alignstack_callee.ll");
+    let driver = toolchain.compile_c(&dir, "alignstack-driver", &data("alignstack.c"), &[]);
+    let stress = Options { stress: hod_cg::Stress::ALL, ..Options::default() };
+    let plain = Options::default();
+    for (tag, caller_llc, callee_llc, options) in [
+        ("LL", true, true, plain),
+        ("HL", false, true, plain),
+        ("LH", true, false, plain),
+        ("HH", false, false, plain),
+        ("HH-stress", false, false, stress),
+    ] {
+        let Some(a) = object_with(&dir, &format!("as-{tag}"), &caller, caller_llc, options) else {
+            return;
+        };
+        let Some(b) = object_with(&dir, &format!("as-callee-{tag}"), &callee, callee_llc, options)
+        else {
+            return;
+        };
+        let name = format!("alignstack-{tag}");
+        link_run_all(&toolchain, &dir, &name, &[], &[&driver, &a, &b], " 0 failed", tag == "LL");
+    }
+}
+
 /// `spec/codegen.md` §7.1, effective attributes, as a property:
 /// `classify` and the call sequence see the same attributes for random
 /// combinations of a declaration's and a call site's attributes, with

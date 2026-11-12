@@ -599,7 +599,12 @@ const ATTR_MEM: [SupportRow; 6] = [
 
 const ATTR_VALUE: [SupportRow; 3] = [
     both("attr:align", ON, "on a parameter or return: an assumption, no code"),
-    a64("attr:alignstack", LATER, "on a parameter and on a function"),
+    row(
+        "attr:alignstack",
+        ON,
+        todo(X64),
+        "on a parameter: placement of a stack block (abi-a64.md §3.3); on a function: no code, `sp` is always 16-aligned and an over-aligned slot aligns itself",
+    ),
     row("attr:uwtable", ON, todo(X64), "on a function with a body (WP-049)"),
 ];
 

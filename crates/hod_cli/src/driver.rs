@@ -17,6 +17,7 @@ use hod::{CompileError, Construct, InputKind, Options, OutputKind};
 use crate::args::{self, Action, CommandLine, Input};
 use crate::convert;
 use crate::coverage::{FallbackStatus, Log, Outcome, Record};
+use crate::phases::Phases;
 
 /// Exit status: success.
 pub const EXIT_OK: u8 = 0;
@@ -41,6 +42,8 @@ pub const ENV_IN_FALLBACK: &str = "HOD_IN_FALLBACK";
 /// The variables that are settings. The bitcode converter is started
 /// without them.
 pub const SETTINGS: [&str; 4] = [ENV_FALLBACK, ENV_STRICT, ENV_COVERAGE_LOG, ENV_BITCODE_VIA];
+/// Environment variable: the file the phase report is appended to.
+pub const ENV_TIME_PHASES: &str = "HOD_TIME_PHASES";
 
 /// hod's settings from the environment.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -56,6 +59,8 @@ pub struct Environment {
     /// `HOD_IN_FALLBACK` is set: this process was started by another hod,
     /// as its fallback or its bitcode converter.
     pub in_fallback: bool,
+    /// `HOD_TIME_PHASES`, if set and not empty.
+    pub time_phases: Option<PathBuf>,
     /// A variable with a value hod does not accept.
     pub error: Option<String>,
 }
@@ -69,6 +74,7 @@ impl Environment {
             coverage_log: non_empty(ENV_COVERAGE_LOG).map(PathBuf::from),
             bitcode_via: non_empty(ENV_BITCODE_VIA).map(PathBuf::from),
             in_fallback: non_empty(ENV_IN_FALLBACK).is_some(),
+            time_phases: non_empty(ENV_TIME_PHASES).map(PathBuf::from),
             ..Environment::default()
         };
         match non_empty(ENV_STRICT) {
@@ -138,6 +144,7 @@ struct Job<'a, 'io> {
     io: &'a mut Io<'io>,
     start: Instant,
     record: Record,
+    phases: &'a mut Phases,
 }
 
 impl Job<'_, '_> {
@@ -164,6 +171,7 @@ impl Job<'_, '_> {
         let started = Instant::now();
         match run_fallback(llc, &self.line.forwarded, input) {
             Ok(status) => {
+                self.phases.end("fallback");
                 self.record.outcome = Outcome::Fallback;
                 self.record.fallback_time = Some(started.elapsed());
                 let (exit, ended, how) = fallback_end(status);
@@ -208,6 +216,7 @@ impl Job<'_, '_> {
             Ok(input) => input,
             Err(message) => return self.fail(EXIT_ERROR, "input-unreadable", &message),
         };
+        self.phases.end("read");
         self.record.input_kind = Some(InputKind::detect(&input));
         self.record.input_bytes = Some(input.len());
         self.record.target = hod::effective_triple(&input, &line.options).map(str::to_owned);
@@ -229,6 +238,8 @@ impl Job<'_, '_> {
             let started = Instant::now();
             let converted = convert::run(&llvm_dis, &input);
             self.record.conversion_time = Some(started.elapsed());
+            // The attempt that declined the bitcode is in this phase too.
+            self.phases.end("convert");
             match converted {
                 Ok(text) => {
                     self.record.target =
@@ -248,11 +259,13 @@ impl Job<'_, '_> {
                 }
             }
         }
+        self.phases.end("compile");
 
         let error = match compiled {
             Ok(object) => {
                 return match write_output(&output, &object, self.io.stdout) {
                     Ok(()) => {
+                        self.phases.end("write");
                         self.record.outcome = Outcome::Hod;
                         self.record.hod_time = self.start.elapsed();
                         Finished { exit: EXIT_OK, record: self.record }
@@ -304,6 +317,7 @@ pub fn run(args: &[OsString], env: &Environment, compile: Compile<'_>, io: &mut 
             return EXIT_ERROR;
         }
     };
+    let mut phases = Phases::new(start);
     let job = Job {
         line: &line,
         settings: Settings {
@@ -325,6 +339,7 @@ pub fn run(args: &[OsString], env: &Environment, compile: Compile<'_>, io: &mut 
             conversion_time: None,
             fallback_status: None,
         },
+        phases: &mut phases,
     };
     let Finished { exit, record } = job.run(env, compile);
     if let Some(log) = &mut log
@@ -333,6 +348,13 @@ pub fn run(args: &[OsString], env: &Environment, compile: Compile<'_>, io: &mut 
         let path = log_path.unwrap_or_default();
         let _ =
             writeln!(io.stderr, "hod: error: cannot write coverage log '{}': {e}", path.display());
+        return if exit == EXIT_OK { EXIT_ERROR } else { exit };
+    }
+    if let Some(path) = &env.time_phases
+        && let Err(e) = phases.append(path)
+    {
+        let _ =
+            writeln!(io.stderr, "hod: error: cannot write phase report '{}': {e}", path.display());
         return if exit == EXIT_OK { EXIT_ERROR } else { exit };
     }
     exit
@@ -526,6 +548,61 @@ mod tests {
         assert!(bad.error.unwrap().contains("invalid value 'yes' for HOD_STRICT"));
     }
 
+    // spec/cli.md "Phase report": with `HOD_TIME_PHASES`, each compile
+    // invocation appends its phases, in order, and `total`.
+    #[test]
+    fn phase_report() {
+        let scratch = Scratch::new("driver-phases");
+        let file = scratch.join("phases.tsv");
+        let env = Environment::from_vars(|name| {
+            (name == "HOD_TIME_PHASES").then(|| file.clone().into_os_string())
+        });
+        assert_eq!(env, Environment { time_phases: Some(file.clone()), ..Environment::default() });
+        let phases = || {
+            let text = std::fs::read_to_string(&file).unwrap();
+            let _ = std::fs::remove_file(&file);
+            assert!(text.ends_with('\n'), "{text:?}");
+            let names: Vec<String> = text
+                .lines()
+                .map(|line| {
+                    let (name, micros) = line.split_once('\t').expect("a tab");
+                    assert!(micros.parse::<u64>().is_ok(), "{line:?}");
+                    name.to_owned()
+                })
+                .collect();
+            names.join(" ")
+        };
+
+        let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &object, MODULE);
+        assert_eq!((ran.exit, ran.stderr.as_str()), (EXIT_OK, ""));
+        assert_eq!(phases(), "read compile write total");
+        // A decline is the phases up to it.
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile, MODULE);
+        assert_eq!(ran.exit, EXIT_UNSUPPORTED);
+        assert_eq!(phases(), "read compile total");
+        // Reports are appended; an invocation that compiles nothing has none.
+        run_with(&["-filetype=obj", "-o", "-"], &env, &object, MODULE);
+        run_with(&["--version"], &env, &object, b"");
+        run_with(&["-filetype=obj", "-o", "-"], &env, &object, MODULE);
+        assert_eq!(phases(), "read compile write total read compile write total");
+
+        // A report that cannot be written is an error, like a coverage line.
+        let nowhere = scratch.join("no-such-dir/phases.tsv");
+        let env = Environment { time_phases: Some(nowhere.clone()), ..Environment::default() };
+        let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &object, MODULE);
+        assert_eq!(ran.exit, EXIT_ERROR);
+        assert!(
+            ran.stderr.starts_with(&format!(
+                "hod: error: cannot write phase report '{}': ",
+                nowhere.display()
+            )),
+            "{}",
+            ran.stderr
+        );
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile, MODULE);
+        assert_eq!(ran.exit, EXIT_UNSUPPORTED, "the first failure's status stands");
+    }
+
     // spec/cli.md "Behaviour": a successful compile writes the object to
     // `-o`, or to standard output, or to the name derived from the input.
     #[test]
@@ -646,6 +723,28 @@ mod tests {
     /// What the stand-in converters print: a module as `llvm-dis` writes it.
     const CONVERTED: &str = "; ModuleID = '<stdin>'\n\
         target triple = \"x86_64-unknown-linux-gnu\"\n\ndefine i32 @f() {\n  ret i32 7\n}\n";
+
+    /// spec/cli.md "Phase report": a conversion is a phase of its own.
+    #[test]
+    fn phase_report_of_a_conversion() {
+        let scratch = Scratch::new("driver-convert-phases");
+        // The converter is a child of this test: it holds a jobserver slot.
+        let _slot = hod_testutil::jobs::global().acquire();
+        scratch.write("llvm-dis.text", CONVERTED);
+        let converter = scratch.write_script("llvm-dis", "cat > /dev/null\ncat \"$0.text\"");
+        let file = scratch.join("phases.tsv");
+        let env = Environment {
+            bitcode_via: Some(converter),
+            time_phases: Some(file.clone()),
+            ..Environment::default()
+        };
+        let seen = std::cell::RefCell::new(Vec::new());
+        let ran = run_with(&["-O0", "-filetype=obj", "-o", "-"], &env, &text_only(&seen), BITCODE);
+        assert_eq!((ran.exit, ran.stderr.as_str()), (EXIT_OK, ""));
+        let text = std::fs::read_to_string(&file).unwrap();
+        let names: Vec<&str> = text.lines().map(|line| line.split('\t').next().unwrap()).collect();
+        assert_eq!(names, ["read", "convert", "compile", "write", "total"]);
+    }
 
     // spec/cli.md "Bitcode conversion" and "Behaviour" step 8: with a
     // converter, a bitcode module is compiled from its text, and the log

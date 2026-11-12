@@ -25,7 +25,7 @@ Milestones and tracks are in `docs/ROADMAP.md`.
 | WP-015 | T-H | `hod_cli`: `llc`-compatible command line, stdin input, `--fallback`, coverage log; the `--llvm-dir` shim directory for kiln | WP-001 | done |
 | WP-016 | T-H | `xtask irdiff`: build with `llc` and with hod, link with each linker in the matrix, run under limits, compare; `tests/ir/` directive format | WP-015 | done |
 | WP-017 | T-H | `xtask corpus`: capture IR from kiln's executing tests and from clang on the GCC torture suite into `.build/corpus`, pinned and reproducible | WP-015 | done |
-| WP-018 | T-H | `xtask bench` and `bench/`: size classes, wall/RSS/size measurement for hod and `llc`, baselines, phase timings | WP-015 | in-progress |
+| WP-018 | T-H | `xtask bench` and `bench/`: size classes, wall/RSS/size measurement for hod and `llc`, baselines, phase timings | WP-015 | done |
 | WP-019 | T-H | L2 gate: parse, print, `llvm-as` acceptance and behavioral equivalence through `llc` over the captured corpus | WP-006, WP-008, WP-017 | todo |
 | WP-020 | T-H | Bitcode on the text path: `hod` converts bitcode input to text with a configured `llvm-dis` (`--bitcode-via=`, set by the shim) before parsing, instead of falling back; coverage log records the conversion time, and (from WP-022) a field with the fallback's exit status. Design 0001 point 6. The corpus then captures the modules kiln hands `llc` as bitcode (97 tests per LLVM major run `opt` first: `-O1` and up, coroutines, `always_inline` library functions; `xtask/src/corpus/kiln.rs` `opt_first_reason`) | WP-015 | in-progress |
 | WP-021 | T-IR | `available_externally` + `alwaysinline` bodies: producers mark them, `hod` emits a local copy and redirects the module's calls (design 0001 point 6); test with libstdc++'s extern-template cases | WP-003, WP-004 | todo |
@@ -55,6 +55,7 @@ instruction group and can run in parallel once WP-033 has landed.
 | WP-041 | T-A64 | the intrinsics C code produces: `memcpy`/`memmove`/`memset`, bit manipulation, `abs`/min/max, `trap`, `expect`-class no-ops, `frameaddress`/`returnaddress` | WP-035, WP-036 | todo |
 | WP-042 | T-EH | `spec/eh.md` (CFI part) and `hod_eh`: `.eh_frame` from `FuncRecord` frame descriptions, CIE sharing; checked with `llvm-dwarfdump --eh-frame` and by unwinding through hod frames | WP-030 | todo |
 | WP-043 | T-H | wire code generation into `hod::compile` (parse with `hod_ll`, `classify`, compile, emit), per-construct reasons in `spec/cli.md`, `docs/status/support.md` | WP-008, WP-009, WP-033 | todo |
+| WP-050 | T-X64 | `spec/mc-x64.md` + `hod_mc_x64`: the base integer set an `-O0` code generator needs (registers of every width with REX, every ModRM/SIB/RIP-relative memory form, moves and extensions, `lea`, arithmetic and logic with register, memory and immediate operands, multiply and divide, shifts, `setcc`/`cmovcc`, branches and calls with near and short forms, stack, bit counting, `lock` forms and `cmpxchg`/`xadd`/`xchg`, `ud2`, `endbr64`, multi-byte `nop`), fixups for the ELF relocations of the small PIC code model; L1 sweep harness against `llvm-mc`. Scalar SSE floating point is the follow-up row, as WP-013 was for AArch64 | WP-001 | in-progress |
 
 ## M1 and later
 

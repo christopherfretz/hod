@@ -84,9 +84,14 @@ fn coverage(log: &Path) -> Vec<Line> {
 /// `hod` with a clean `HOD_*` environment.
 fn hod() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_hod"));
-    for var in
-        ["HOD_FALLBACK_LLC", "HOD_STRICT", "HOD_COVERAGE_LOG", "HOD_BITCODE_VIA", "HOD_IN_FALLBACK"]
-    {
+    for var in [
+        "HOD_FALLBACK_LLC",
+        "HOD_STRICT",
+        "HOD_COVERAGE_LOG",
+        "HOD_BITCODE_VIA",
+        "HOD_IN_FALLBACK",
+        "HOD_TIME_PHASES",
+    ] {
         command.env_remove(var);
     }
     command
@@ -245,6 +250,37 @@ fn settings_from_the_environment() {
         outcome.stderr_text(),
         "hod: error: invalid value 'yes' for HOD_STRICT: expected 1 or 0\n"
     );
+}
+
+// spec/cli.md "Phase report": the time in the fallback is a phase.
+#[test]
+fn phase_report_with_a_fallback() {
+    let scratch = Scratch::new("cli-phases");
+    let llc = FakeLlc::new(&scratch, "llc");
+    let report = scratch.join("phases.tsv");
+    let names = || {
+        let text = std::fs::read_to_string(&report).expect("a report");
+        let _ = std::fs::remove_file(&report);
+        let lines: Vec<(&str, &str)> = text.lines().map(|l| l.split_once('\t').unwrap()).collect();
+        assert!(lines.iter().all(|(_, micros)| micros.parse::<u64>().is_ok()), "{text:?}");
+        lines.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(" ")
+    };
+    let mut fall_back = hod();
+    fall_back.env("HOD_TIME_PHASES", &report).env("HOD_FALLBACK_LLC", &llc.path);
+    let outcome = run_hod(fall_back.args(["-filetype=obj", "-o", "x.o"]), MODULE.as_bytes());
+    assert_eq!(exit_code(&outcome), 0, "{}", outcome.stderr_text());
+    assert_eq!(names(), "read compile fallback total");
+    // A command line hod hands on unread has no phase before the fallback.
+    let mut unread = hod();
+    unread.env("HOD_TIME_PHASES", &report).env("HOD_FALLBACK_LLC", &llc.path);
+    let outcome = run_hod(unread.args(["-filetype=obj", "--no-such-option"]), MODULE.as_bytes());
+    assert_eq!(exit_code(&outcome), 0, "{}", outcome.stderr_text());
+    assert_eq!(names(), "fallback total");
+    // Without the variable nothing is written.
+    let mut plain = hod();
+    plain.env("HOD_FALLBACK_LLC", &llc.path);
+    run_hod(plain.args(["-filetype=obj", "-o", "x.o"]), MODULE.as_bytes());
+    assert!(!report.exists());
 }
 
 // spec/cli.md "Exit status": the fallback's status is hod's.

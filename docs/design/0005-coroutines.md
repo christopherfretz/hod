@@ -1,6 +1,6 @@
 # Design 0005: coroutines without `opt`
 
-Status: proposed 2026-11-12 (WP-100). A design; no product code. Design
+Status: proposed 2026-11-12 (WP-100); B accepted in shape by the supervisor, and revised after that review (frame residency rules of 3.4, the invariant of 3.3). A design; no product code. Design
 0001 point 6 made coroutines hod's to handle after `alwaysinline`
 (WP-021). Today kiln runs `opt` on every module that declares an
 `llvm.coro.*` intrinsic and hod refuses an unsplit coroutine by name
@@ -110,14 +110,32 @@ same activation. The categories:
 - An alloca with `!coro.outside.frame` stays on the stack. clang 22 puts
   this on parameter allocas; kiln and clang put it on the
   `get_return_object` result (GRO); kiln marks nothing else.
-- Any other alloca with lifetime markers goes into the frame if a path
-  from a `lifetime.start` to a use crosses a suspend. An *escaped*
-  alloca also goes in if a suspend lies on a path between two of its
-  `lifetime.start`s (a loop).
-- An alloca without lifetime markers goes into the frame if it escapes,
-  or if one use reaches another across a suspend.
+- Uses are collected through *aliases*: pointers derived by GEP or cast
+  are followed, and their uses count as uses of the alloca. An alloca is
+  *escaped* when some use, through an alias or not, is anything other
+  than a load from it, a store to it, a `memcpy`/`memmove`/`memset` on
+  it, a lifetime marker, or a debug record. Examples of escapes: a store
+  *of* its address, a call argument not marked `captures(none)`, a
+  `phi`, a `select`, `ptrtoint`. In kiln's output, `captures(none)`
+  appears only on intrinsic declarations, so every call argument
+  escapes.
+- An alloca with lifetime markers (on the whole alloca, not on a part of
+  it) goes into the frame if some use, including a `lifetime.end`, is
+  reachable from a `lifetime.start` across a suspend. If it is escaped,
+  it also goes in when a suspend lies on a path between two of its
+  `lifetime.start`s, or on a loop through one.
+- An escaped alloca without lifetime markers **always** goes into the
+  frame. Once the address has escaped, whether the alloca is "used after"
+  a suspend cannot be decided from its direct uses.
+- An unescaped alloca without lifetime markers goes into the frame if
+  one use reaches another across a suspend.
 - An SSA value used across a suspend is spilled to the frame at its
   definition and reloaded in the clones.
+- If a frame-resident alloca may be written before `coro.begin` (a
+  store, or an escape, that `coro.begin` does not dominate), the
+  original stack alloca stays for those uses. Its contents are copied
+  into the frame field just after `coro.begin`, and the uses that
+  `coro.begin` dominates are redirected to the field.
 
 The rule was checked with hand-edited IR (`.build/target-wp-100/exp/
 esc*.pre.ll`):
@@ -284,13 +302,14 @@ cleanup). `globaldce` changes no definition in any experiment: the set
 of `define`s is the same with and without it. At `-O0`, it only deletes
 declarations.
 
-### 1.4 What LLVM gets wrong: a use after free
+### 1.4 What LLVM gets wrong: two uses after free
 
-The leaf coroutine of `0005-data/exceptions.cpp` keeps the
-exception-pointer and selector slots in the frame. A landing pad in the
-ramp writes them, and a load in the clone reads them after a suspend.
-LLVM's analysis of allocas without lifetime markers is coarse and sees
-that as a crossing.
+**The exception slots.** The leaf coroutine of `0005-data/exceptions.cpp`
+keeps the exception-pointer and selector slots in the frame. These
+slots are unescaped and have no lifetime markers. LLVM's test for them
+pairs every use with every use: some store in a landing pad reaches,
+across a suspend, some load on another path, and that counts as a
+crossing. No load ever sees a value stored before a suspend.
 
 The ramp's unwind path then frees the frame and *afterwards* loads
 those slots to rethrow. `0005-data/gro-throws-uaf.cpp` makes
@@ -305,11 +324,37 @@ from LLVM 19 and from LLVM 22:
 The simpler `ramp-throw.cpp`, where the body throws in the ramp, is
 fine. There the slots do not cross a suspend and stay on the stack.
 
+**The return object under a postcondition** (kiln only: clang 22 has no
+P2900 contracts). A coroutine's postcondition is evaluated by the ramp
+after `coro.end` on the return object. In kiln's output that return
+object is an alloca without lifetime markers. The postcondition takes
+its address (`r.ok()`), so the alloca is escaped and LLVM puts it in
+the frame. If the coroutine runs to completion inside the ramp, the
+ramp frees the frame before the postcondition reads the return object.
+
+`0005-data/post-sync.cpp` has `initial_suspend` and `final_suspend`
+both `suspend_never`, and `post(r: r.ok())`. Built with kiln++
+`-fcontract-evaluation-semantic=enforce` and LLVM 22 `opt` + `llc`:
+
+- Plain, it prints `42`.
+- Under the same poisoning, the postcondition fails on the freed bytes
+  and the program terminates (exit 134).
+
+Three corpus modules have the same shape:
+`basic.contract.eval/run-coroutine-post-{enforce,observe,quick-enforce}`,
+in `ea()` and `bad()`. They work only because those coroutines suspend
+before the ramp returns. In that case the ramp still reads the frame
+while the coroutine is suspended, which is a data race once another
+thread may resume it.
+
 Two consequences follow:
 
 - The oracle is not perfect. Validation compares behaviour and knows
   the oracle's own failures (section 5).
-- An implementation must not copy LLVM's rule blindly.
+- An implementation must not copy LLVM's rule blindly. hod narrows the
+  rule for unescaped slots, where precision is provable (3.4, rule 3).
+  For escaped slots hod keeps LLVM's rule and refuses the unsafe shape
+  by name (3.4, the safety conditions).
 
 ## 2. The observable ABI, and what is private
 
@@ -498,15 +543,14 @@ F.destroy:  the same, with w0 = 1
   activation, because every entry builds the same frame. The stubs get
   FDEs of their own, or rows that restate the entry state; landing pads
   are shared.
-- **Escaped allocas:** in the heap when the plan says they cross. An
-  address taken in one activation stays valid in the next, as with
-  LLVM.
+- **Escaped allocas:** in the heap by LLVM's rule (3.4, rules 4 and 5),
+  so an address taken in one activation stays valid in the next.
 - **Dynamic allocas:** on the machine stack (§5.2), dangling after a
   resumption as in LLVM. The first version refuses them, together with
   `stacksave`/`stackrestore`, in coroutine bodies
   (`coro:dynamic-alloca`): a `stackrestore` of a value saved by another
   activation would move `sp` into a dead stack. The corpus count is 0.
-- **Refused:** see 3.6.
+- **Refused:** see 3.4 and section 4.
 
 **Variant B0, rejected:** the frame pointer *is* the heap frame.
 CFI defines the CFA from x29, and the unwinder restores the caller's
@@ -518,6 +562,67 @@ stack. And every slot, including ones that must not outlive a free
 
 ### 3.3 Details of B that the packages must get right
 
+- **Invariant: no frame access once the coroutine may run elsewhere.**
+  The suspending activation makes *no access through x19* (no load,
+  store, spill to a heap home, or reload) after an `await_suspend`
+  wrapper (`coro.await.suspend.void/bool/handle`) has returned. This
+  covers every path from the return of the wrapper to the `coro.suspend`
+  and the whole −1 path after it, up to the activation's return or tail
+  exit. Once the wrapper returns, the coroutine may already be running
+  or destroyed on another thread, or (`0005-data/resume-inside-await-
+  suspend.cpp`) inside the wrapper itself. `.bool`'s *false* edge is
+  exempt: the coroutine did not suspend.
+
+  How B keeps it:
+  - Under hod's location policy (`spec/codegen.md` §4.1, §4.4), a home
+    value is stored to its home when it is defined, and a call only
+    displaces *register* values. Every value live across the suspend is
+    therefore already in its heap home before the wrapper is called.
+    The wrapper call itself may displace register values; that happens
+    *before* the call.
+  - The `coro.suspend` "call" displaces nothing and stores nothing. At
+    that point no register value is live: the only values defined after
+    the wrapper's return are the `.bool` result and the suspend's own
+    result, and both have stack homes, since neither is live on a
+    resumption edge. C3 asserts this.
+  - `phi` incoming slots are always on the machine stack.
+    - The switch on a `coro.suspend` result writes its successors'
+      incoming slots **per edge, after the dispatch** on w0, unlike
+      `spec/codegen.md` §4.5's "all successors before the terminator".
+      The 0 and 1 edges are therefore written in the resumed activation.
+      The corpus has `phi`s on 14 resume, 9 destroy and 5 suspended
+      successors, out of 233 suspend switches (kiln and libc++).
+    - Every other edge is written and read in one activation.
+  - These are not x19 accesses, and are allowed:
+    - the mode test (`[x29, #mode]`);
+    - the handle form's `x16 := [x0]`, which reads the *other*
+      coroutine's frame;
+    - the epilogue's restore of the saved x19 from the machine stack.
+  - A heap slot or heap value used on a −1 path cannot be placed
+    anywhere that keeps the invariant. The plan refuses it
+    (`coro:frame-access-after-suspend`, 3.4).
+
+  **Older dialect.** In LLVM before the wrapper intrinsics,
+  `await_suspend` was an ordinary call between `coro.save` and
+  `coro.suspend`. The corpus has none of it: all 182 kiln and 51 libc++
+  suspends use a wrapper intrinsic, as clang ≥ 19 does. If it appears,
+  the same invariant holds from `coro.save` on, because every call after
+  the save may publish the handle. Inlined `await_suspend` code that
+  reads its awaiter from the heap is therefore refused, also as
+  `coro:frame-access-after-suspend`.
+
+  C3 checks this structurally:
+  - The plan exports the *suspended region*: the instructions from each
+    wrapper's return (or from `coro.save` in the older dialect) to its
+    `coro.suspend`, and every block reachable from a −1 edge. A block
+    shared with other paths counts whole, because its code is shared.
+  - When the emitter forms a `FrameRef::Coro` address inside that
+    region, it reports `CgError::Internal`. This check is on in every
+    build: it costs one bit test per frame access.
+  - A test disassembles every coroutine of the seeds and of the corpus
+    and finds no `[x19…]` operand in the region's address ranges.
+
+  The behavioural check is `resume-inside-await-suspend.cpp` (5.3).
 - **The handle form** (`coro.await.suspend.handle`, possibly invoked):
   call the wrapper with (awaiter, x19), then load `x16 := [x0]`.
   - ramp mode: `blr x16` with `x0 = h`, outside the invoke's call-site
@@ -558,7 +663,7 @@ stack. And every slot, including ones that must not outlive a free
 
 `hod_xform::coro::plan(&Module, &Body) -> Result<Option<CoroPlan>,
 Refusal>` runs before code generation. It gives `None` for a body
-without `presplitcoroutine`. The interface is fixed here so that C1 and
+without `presplitcoroutine`. The interface is fixed here so that packages C1 and
 C3 can be written against it:
 
 ```rust
@@ -569,53 +674,165 @@ pub struct CoroPlan {
     pub frame_align: u32,               // ≥ 16
     pub heap_slots: BitSet<SlotId>,     // Body::slots that live in the frame
     pub heap_values: BitSet<ValueId>,   // results/arguments whose home is in the frame
+    pub begin_copies: Vec<SlotId>,      // heap slots with a stack shadow before coro.begin
     pub suspends: Vec<Suspend>,         // in index order
+    pub suspended_region: BitSet<BlockId>, // with Suspend::wrapper..suspend (3.3)
     pub has_unwind_end: bool,
     pub final_index: Option<u32>,
 }
-pub struct Suspend { pub save: InstId, pub suspend: InstId, pub index: u32, pub is_final: bool }
+pub struct Suspend {
+    pub save: InstId, pub wrapper: Option<InstId>, pub suspend: InstId,
+    pub index: u32, pub is_final: bool,
+}
 ```
 
-**Rules.** A *resumption edge* is a 0- or 1-arm of a switch on a
-`coro.suspend` result. Reachability *after* a resumption follows the
-blocks of a resumed activation: it stops at `coro.end(false)`, and
-takes only the false side of `is_in_ramp` (the true side of LLVM 19's
-`coro.end` result). An SSA value is in `heap_values` iff it is
-live-in on a resumption edge (backward liveness over the blocks; at
-`-O0` most values are block-local and skipped by their use facts). An
-alloca slot is in `heap_slots` iff one of these holds:
+**Definitions.**
 
-1. it is the promise: in the header, not in `heap_slots`;
-2. it has `!coro.outside.frame`: stack;
-3. it is *unescaped* (only loaded and stored) and some load can see a
-   store made before a resumption edge. This is a forward dataflow of
-   two bits per alloca, "stored on some path" and "a resumption edge
-   passed since". The bits are joined by union; a store clears the
-   second.
-4. it is *escaped* and has lifetime markers, and it may be alive (after
-   a `lifetime.start`, before a `lifetime.end`) on a resumption edge;
-5. it is *escaped* and has no lifetime markers, and it is used both
-   before some resumption edge and after it.
+- A *resumption edge* is a 0- or 1-arm of a switch on a `coro.suspend`
+  result.
+- Reachability *after* a resumption follows the blocks of a resumed
+  activation. It stops at `coro.end(false)`, and takes only the false
+  side of `is_in_ramp` (the true side of LLVM 19's `coro.end` result).
+- The *uses* of an alloca include the uses of its *aliases*: pointers
+  derived from it by `getelementptr` (any indices), `bitcast` or
+  `addrspacecast`, followed transitively.
+- An alloca is **unescaped** iff every use is one of:
+  - a `load` from it;
+  - a `store` *to* it (the address operand);
+  - `llvm.memcpy`/`memmove`/`memset` with it as an address operand,
+    which counts as a store, or as a load for a source;
+  - a lifetime marker.
 
-The rules differ from LLVM's in two places. Rule 3 keeps the
-exception-pointer and selector slots on the stack, removing 1.4's use
-after free. Rule 5 keeps an escaped slot used only on one side of every
-suspend on the stack.
+  `#dbg_*` records are not uses. Anything else is an escape: a store
+  *of* the address or of an alias, a call or invoke argument (whatever
+  its attributes), `phi`, `select`, `icmp`, `ptrtoint`, `ret`. An alias
+  that is itself live across a resumption edge is also an escape (C1
+  test: none at `-O0` in the corpus).
 
-They are also a **safety condition**. Every slot or home that code
-reaches *after the frame is freed* must be on the stack. The ramp's
-unwind path frees and then rethrows; the cleanup-destination `phi`s
-are switched on after `operator delete` in every activation. That code
-is never reachable from a resumption edge with a value that crossed, so
-the plan's tests assert it.
+  Following aliases is necessary, not an optimisation. kiln returns a
+  small aggregate return object coerced (`ret i64`). Its return-value
+  slot is reached only through GEPs, and the ramp loads it on its
+  return path, which runs after the frame is freed when the coroutine
+  completes in the ramp. Treating the GEP as an escape would put the
+  slot in the heap (rule 5), and every such coroutine would then be
+  refused under the safety conditions below.
+- A slot *has lifetime markers* iff some `llvm.lifetime.start` names the
+  alloca itself, not an alias at a nonzero offset.
 
-The plan also enforces:
+**An SSA value is in `heap_values`** iff it is live-in on a resumption
+edge. This is backward liveness over the blocks; at `-O0` most values
+are block-local and are skipped by their use facts.
 
-- No heap slot or value is touched before `coro.begin` (else
-  `coro:frame-before-begin`). kiln and clang copy parameters after
-  `coro.begin` and only read the parameter allocas for the copy.
-- No argument and no `Incoming` area is used after a resumption (else
-  `coro:argument-across-suspend`).
+**An alloca slot is in `heap_slots`** by the first rule that applies:
+
+1. **The promise:** in the header, not in `heap_slots`.
+2. **`!coro.outside.frame`:** stack. The plan refuses
+   (`coro:outside-frame-across-suspend`) a marked slot that has a use
+   after a resumption edge. This checks the front end's promise cheaply;
+   LLVM trusts it.
+3. **Unescaped:** heap iff some load can see a store made before a
+   resumption edge.
+   - This is a forward dataflow over two bits per alloca: "stored on
+     some path" and "a resumption edge passed since the last store".
+     The bits are joined by union. A store sets the first and clears
+     the second; a resumption edge sets the second. A load (or memcpy
+     source) with both bits set means heap.
+   - Lifetime markers play no part here.
+   - Sound because an unescaped slot's contents are observable only
+     through its loads.
+   - It differs from LLVM, which pairs every use with every use (1.4).
+     It keeps the exception and selector slots on the stack, removing
+     the first use after free of 1.4.
+4. **Escaped, with lifetime markers:** heap iff either
+   - (a) some use, including a `lifetime.end`, is reachable from a
+     `lifetime.start` through a resumption edge, or
+   - (b) a resumption edge lies on a path from one `lifetime.start` to
+     another, or on a cycle through one.
+
+   This is LLVM's rule, with both clauses. Clause (b) covers a loop
+   whose body restarts the lifetime: the address published in one
+   iteration must stay the same in the next.
+5. **Escaped, without lifetime markers:** heap, always. This is LLVM's
+   rule. Once the address has escaped, no rule based on direct uses can
+   tell whether the slot is read after a suspend. In `int x = 0; int *p
+   = &x; co_await s; *p = 1;` only `p` is loaded after the edge. In
+   `T t; reg.add(&t); co_await s; reg.poke();` nothing names `t` after
+   it. Both are seeds (5.3).
+
+**Before `coro.begin`.** A heap slot with a use on a path from entry
+that has not reached `coro.begin` is handled as LLVM does (1.2):
+- Such uses address a machine-stack *shadow*.
+- Just after `coro.begin`, the shadow's bytes are copied into the heap
+  slot, on every path through `coro.begin`. The slot is listed in
+  `begin_copies`.
+- Later uses address the heap.
+
+Corpus count, kiln: **5 slots in 2 modules**. All are parameter allocas
+whose address is passed to the promise's `operator new`
+(`promise_alloc_template`, and the `elements_of` overload of
+libstdc++'s `generator`). libc++: 0. So the copy is specified, not
+refused. One shape is still refused: an *alias* (an SSA pointer)
+computed before `coro.begin` and used after it, because it would still
+point at the shadow (`coro:frame-before-begin`; corpus count 0).
+
+A pointer to the shadow that escaped into memory before `coro.begin` and
+is dereferenced after it sees stale data. LLVM has the same hazard. In
+the 5 corpus slots the escape is the argument of `operator new`, which
+returns before `coro.begin`.
+
+**Safety conditions.** No slot or value that code reaches after the
+frame is freed, or inside the suspended region of 3.3, may be in the
+heap. Rules 1-3 never produce such a heap slot:
+- A rule-3 slot is heap only if a load after a resumption edge needs
+  it.
+- The ramp's tail after `coro.end(false)` and the unwind path after
+  `is_in_ramp` are not reachable after a resumption.
+- The cleanup-destination slot is stored again before every read in
+  the activation that frees.
+
+The plan's tests assert this on the corpus. Rules 4 and 5 can produce
+such a slot. The corpus has exactly one shape, and kiln's markings are
+listed with it:
+
+| shape (corpus, per LLVM version) | kiln marks it | clang marks it | hod |
+|---|---|---|---|
+| return object read by a contract postcondition on the ramp tail (`r.ok()` takes its address): 6 slots in 3 modules, `ea()`/`bad()` of `basic.contract.eval/run-coroutine-post-{enforce,observe,quick-enforce}` | no | n/a (no P2900) | refused |
+| GRO kept in a separate object (5 slots) | `!coro.outside.frame` | yes | stack (rule 2) |
+| `sret` return object | n/a: an argument, not an alloca | n/a | never a slot |
+| cleanup objects (temporaries with destructors) on the ramp's unwind path | lifetime markers; never alive across a resumption in the corpus (rule 4 puts 0 of them in the heap with a use after free) | same | rule 4 |
+
+hod follows **LLVM's rule with no exception**, and refuses the unsafe
+shape by name: `coro:frame-access-after-suspend`, for a heap slot or
+heap value with a use in the suspended region or after the frame is
+freed.
+
+A narrower exception was considered and rejected. The return object
+under a postcondition is created on a path from which no resumption
+edge is reachable. But that path is also the suspending activation's −1
+path. A pointer published there can be used by a resumed activation
+after the ramp has returned, and nothing in the IR rules that out.
+
+The refused modules fall back to `opt` + `llc`, which carries the
+hazard (1.4, `post-sync.cpp`). The fix belongs to the front end: kiln
+can mark the return-object slot `!coro.outside.frame`, as it does for
+the GRO. The C++ object belongs to the ramp, not to the coroutine
+(section 7). With the mark, hod keeps the slot on the stack, and so
+does LLVM, which removes the bug.
+
+**C1's gate** follows: on the 100 pre-opt corpus modules, hod's
+`heap_slots` ∪ `begin_copies` must be a superset of `opt`'s `%F.Frame`
+allocas minus the rule-3 slots, with **no other exemption**. Every
+heap slot must also satisfy the safety conditions, or be refused by
+name. Only the 6 slots above are expected to be refused.
+
+**The plan also refuses:**
+
+- an argument or `Incoming` area used after a resumption edge
+  (`coro:argument-across-suspend`).
+
+A `phi` on a resumption successor needs no rule. Its incoming value is
+read after the re-entry (3.3), so a value defined before the suspend is
+live-in on the edge and lands in `heap_values`.
 
 ### 3.5 Recommendation: B
 
@@ -645,12 +862,12 @@ What would overturn it:
   `mem.rs`. If more than about 15 sites name `FP` as a slot base, A's
   isolation becomes worth its cost.
 - A requirement that the transformation be checked by `llc` apart from
-  the code generator. Only A, or C1 below, allows that.
-- kiln's maintainers choosing C2.
+  the code generator. Only A, or approach C-actor below, allows that.
+- kiln's maintainers choosing approach C-front.
 
 ### 3.6 Other approaches
 
-- **C1: a GCC-style actor function, made by `hod_xform`.** The ramp
+- **C-actor: a GCC-style actor function, made by `hod_xform`.** The ramp
   allocates the frame and calls `F.actor(frame, mode)`. The single body
   dispatches on the index, and `resume`/`destroy` are thunks. This keeps
   B's compile-once property and A's target independence.
@@ -659,10 +876,10 @@ What would overturn it:
   nodes. The ramp's code after `coro.end` (GRO conversion, `sret`) has
   to be cut out of the body and given a context pointer. Its tail call
   `F.actor(frame, mode)` → `resume(h)` has mismatched prototypes, which
-  is invalid `musttail` in LLVM IR, so `llc` could not check C1's output
+  is invalid `musttail` in LLVM IR, so `llc` could not check C-actor's output
   either. Its debug info is worse than B's: the variables are in
   another function, behind an argument. **Not chosen.**
-- **C2: kiln lowers coroutines itself**, as GCC's front end does: no
+- **C-front: kiln lowers coroutines itself**, as GCC's front end does: no
   `llvm.coro.*` at `-O0`, the frame as a struct, an actor with a state
   switch, and `musttail` for transfers. hod would then need nothing new
   except `musttail` through a loaded pointer, which exists. kiln's `-O0`
@@ -724,14 +941,37 @@ The LLVM 19 forms have the same counts, with `i1 coro.end` instead of
 `is_in_ramp`. The promise of `aligned_frame.cpp` is behind a `bitcast`
 there, so the script does not see its alignment.
 
+**Alloca classes** (`python3 -I 0005-data/coro-slots.py` on the pre-opt
+modules; classes as defined in 3.4, so aliases are followed; one LLVM
+version, the other is identical):
+
+| alloca class in coroutine bodies | kiln corpus (25) | libc++ (10) |
+|---|---:|---:|
+| promise | 67 | 17 |
+| `!coro.outside.frame` (GRO) | 5 | 0 |
+| unescaped, with / without lifetime markers | 43 / 415 | 12 / 102 |
+| escaped, with lifetime markers (rule 4) | 215 | 57 |
+| escaped, without lifetime markers (rule 5: heap always) | 16 | 2 |
+| … of these, used before `coro.begin` (copied at `coro.begin`) | **5 in 2 modules** | 0 |
+| … of these, used after the free or in the suspended region (refused) | **6 in 3 modules** | 0 |
+| escaped with markers, used after the free or in the suspended region | 0 | 0 |
+| `phi`s on a suspend switch's 0 / 1 / −1 successor (of 233 switches, both) | 14 / 9 / 5 | |
+| suspends without a wrapper intrinsic (older dialect) | 0 of 182 | 0 of 51 |
+
+So, under 3.4, the plan refuses 3 modules per LLVM version
+(`coro:frame-access-after-suspend`, the contract postconditions of
+1.4). It specifies the copy at `coro.begin` for 2 modules and refuses
+nothing else in the corpus or in libc++.
+
 **Not seen, so refused by name at first:** `coro.frame` (trivial; could
 be accepted), dynamic allocas and `stacksave` in coroutine bodies, the
 retcon and async ABIs (`llvm.coro.id.retcon*`, `.async`, already
 unknown intrinsics), an unwinding `coro.end` without a final suspend,
 over-aligned heap slots without `coro.align`, arguments used after a
-resumption, frame use before `coro.begin`, variadic coroutines, and a
-`coro.suspend` whose result is not used by one `switch` (a front-end
-shape kiln does not write).
+resumption, an alias computed before `coro.begin` and used after it,
+an `!coro.outside.frame` slot used after a resumption, variadic
+coroutines, and a `coro.suspend` whose result is not used by one
+`switch` (a front-end shape kiln does not write).
 
 Elsewhere in kiln's tests, about 45 sources use coroutines. Most are
 diagnostics, `constexpr` or compile-only tests. `tests/codegen/coro_*.cpp`
@@ -775,14 +1015,42 @@ programs are run, and their stdout and exit status must match.
    - allocation failure;
    - an SSA value live across a suspend (the
      `reference-result-bound-to-reference` shape);
+   - **`escaped-local.cpp`**, rule 5 (3.4). It has `int x; int *p = &x;
+     co_await s; *p = 1; use(x)` and `T t; reg.add(&t); co_await s;
+     reg.poke();`. Expected stdout `1 7` / `poked 5`, in both dialects,
+     as kiln writes it (lifetime markers, rule 4) and with the markers
+     deleted from the IR (rule 5). Checked with `opt` + `llc` 19 and 22,
+     plain and poisoned. With `x` and `t` forced onto the stack (marked
+     `!coro.outside.frame` by hand), LLVM's own build prints `65535 7` /
+     `poked 65535`.
+   - **`resume-inside-await-suspend.cpp`**, the invariant of 3.3, for
+     `.void`, `.bool` and `.handle`. Each `await_suspend` resumes the
+     coroutine to completion and then takes the freed frame's block back
+     as a canary. Expected stdout `void: body 3` / `canary ok`, then the
+     same for `bool` and `handle`, in both dialects, plain and poisoned.
+     A store through the frame pointer inserted after the wrapper's
+     return in LLVM's split IR prints `canary BROKEN`.
+   - **`params-before-begin.cpp`**, the copy at `coro.begin`. The
+     promise's `operator new` takes the parameters by reference and
+     changes one. Expected stdout `new 3 4 x` / `body 3 5 x`, in both
+     dialects, plain and poisoned.
+   - `post-sync.cpp`: *not* a seed for hod's output. It is refused
+     (`coro:frame-access-after-suspend`), and its census line asserts
+     the refusal.
    - each in the LLVM 19 (`i1 coro.end`) and the LLVM 22 dialect.
 
-   The harness needs two things it lacks today (WP-021 saw them as
-   ERRORs). First, a pre-opt oracle per seed. Second, a dialect tag: a
-   LLVM 22 seed is not valid for LLVM 19's `opt`, and the brief's "both
-   LLVMs" rule needs a per-dialect exemption for these seeds.
-   `gro-throws-uaf` carries a known-oracle-failure mark: the oracle
-   crashes under the poisoning below and hod must not.
+   The harness parts are built in **C2** with their own tests (supervisor
+   decision):
+   - **A pre-opt oracle per seed**, which WP-021 saw as ERRORs.
+   - **A dialect tag.** An LLVM 22 seed is not valid for LLVM 19's
+     `opt`, so the "both LLVMs" rule applies per dialect.
+   - **An oracle-skip mark:** `oracle-skip(<reason>, llvm=<versions>)`
+     on a seed whose oracle is wrong. Such a seed carries its own
+     expected output, and it is compared with that output only, never
+     with "either". The marks are listed in `spec/harness.md`.
+
+     `gro-throws-uaf` (LLVM 19, 22) carries one: the oracle crashes
+     under poisoning.
 4. **Mixed objects:**
    - a coroutine compiled by hod, resumed, destroyed, `done()`-tested
      and `from_promise`d from an `llc` object, and the reverse;
@@ -825,7 +1093,20 @@ programs are run, and their stdout and exit status must match.
    9. `is_in_ramp` inverted on LLVM 19 (caught by the frame freed twice
       or never);
    10. the x19 CFI row dropped (caught by an exception through a hod
-       coroutine called from `llc` code that uses x19).
+       coroutine called from `llc` code that uses x19);
+   11. an escaped slot left on the stack: rule 5 or rule 4 disabled
+       (caught by `escaped-local`, as demonstrated with LLVM above);
+   12. a heap home written after the wrapper returned, e.g. the
+       `coro.suspend` "call" re-storing live values, or the suspend
+       switch writing `phi` incoming slots before dispatch. This is
+       caught by the structural check of 3.3 (`CgError::Internal` and the
+       disassembly test), and by `resume-inside-await-suspend` (broken
+       canary, or a crash under poisoning);
+   13. an alias computed before `coro.begin` used after it, or the
+       `coro.begin` copy omitted (caught by `params-before-begin`: the
+       parameter copies made after `coro.begin` would read an
+       uninitialised heap slot. The corpus's `promise_alloc_template`
+       never reads its parameters, so it would not catch this).
 
 ## 6. Packages
 
@@ -834,12 +1115,12 @@ proposals; section 8 has them as BACKLOG rows.
 
 | id | scope and ownership | depends | refuses until the next lands | gate |
 |---|---|---|---|---|
-| C1 | **The plan.** `crates/hod_xform/src/coro/` (new), `spec/xform.md` (new, from `planned`), its tests. `plan()` and the rules of 3.4; the `coro:*` refusals of 3.6 and section 4. The tests use IR text: hod's heap set ⊇ LLVM's frame set minus the rule-3 slots, checked on the 100 pre-opt corpus modules against `opt`'s `%F.Frame`; the safety condition; each refusal by name. | — | everything still refused in classify | the tests pass; the census of the refusals over the 100 modules (expected: none) |
-| C2 | **Handle operations in any function** (`coro-early`'s rewrites): `coro.resume`, `destroy` (call and invoke), `done`, `promise`, `noop`. The noop frame and function are emitted per object, as private symbols (object-level, like WP-021's copies). `crates/hod_a64/src/coro.rs` (new), `hod_cg::emit` hook, classify rows, `spec/codegen.md` § "Coroutines". | — | `attr:presplitcoroutine` and the body intrinsics | libc++ `noop_coroutine.pass` in strict mode; mixed-object handle tests |
-| C3 | **Coroutine bodies (B).** `hod_cg`: `FrameRef::Coro`, the second area, the plan wired into slot and home placement, `coro.suspend` as a call, patch sites for `coro.size`/`coro.align`, stub hooks. `hod_a64`: x19 base, prologue/epilogue/CFI save, stubs, mode slot, `coro.id/alloc/size/align/begin/save/suspend/end/free/frame/is_in_ramp`, `await.suspend.void/bool`. Both dialects. | C1, C2 | `intrinsic:llvm.coro.await.suspend.handle`; `coro:debug-info` (a coroutine in a module with debug info) | the corpus's coroutine modules without symmetric transfer (21 per version) and libc++'s 9, all pre-opt, behaviour equal under `irdiff --hybrid` and under poisoning; seeds; mutations 1-3, 6-10 |
-| C4 | **Symmetric transfer**: the handle form in both modes (3.3). `hod_a64/src/coro.rs`, tests. | C3 | — | deep transfer; the 4 corpus modules with `.handle`; mutation 5 |
+| C1 | **The plan.** `crates/hod_xform/src/coro/` (new), `spec/xform.md` (new, from `planned`), its tests. `plan()` with the definitions, rules 1-5, the `coro.begin` copies, the suspended region and the safety conditions of 3.4; the `coro:*` refusals of 3.4 and section 4. Tests on IR text, including hand-made shapes for each rule (both clauses of rule 4; rule 5 with and without markers; aliases; an alias crossing a suspend) and each refusal by name. | — | everything still refused in classify | on the 100 pre-opt corpus modules, `heap_slots` ∪ `begin_copies` ⊇ `opt`'s `%F.Frame` allocas minus the rule-3 slots, with **no other exemption**; the safety conditions hold for every heap slot; refusal census = exactly the 6 contract-postcondition modules (3 per version), `coro:frame-access-after-suspend` |
+| C2 | **Handle operations in any function** (`coro-early`'s rewrites): `coro.resume`, `destroy` (call and invoke), `done`, `promise`, `noop`, in `crates/hod_a64/src/coro.rs` (new). **The noop frame** goes in `hod_cg`, generically: a per-object private constant `{ptr, ptr}` and a private function that returns, emitted on first use, with one small `Target` hook for that function's body. Also the classify rows and `spec/codegen.md` § "Coroutines". **Harness part**, with its own tests: the per-seed pre-opt oracle, dialect-tagged seeds, and the `oracle-skip(reason, llvm=…)` mark, listed in `spec/harness.md` (5.3). | — | `attr:presplitcoroutine` and the body intrinsics | libc++ `noop_coroutine.pass` in strict mode; mixed-object handle tests; the harness tests (a tagged seed runs only on its dialect; a skip mark compares only against its expected output) |
+| C3 | **Coroutine bodies (B).** `hod_cg`: `FrameRef::Coro`, the second area, the plan wired into slot and home placement, the `coro.begin` copies, `coro.suspend` as a call that stores nothing, per-edge `phi` writes on the suspend switch, the suspended-region check, `coro.size`/`coro.align` patch sites, stub hooks. `hod_a64`: x19 base, prologue/epilogue/CFI save, stubs, mode slot, `coro.id/alloc/size/align/begin/save/suspend/end/free/frame/is_in_ramp`, `await.suspend.void/bool`. Both dialects. Uses C2's harness. | C1, C2 | `intrinsic:llvm.coro.await.suspend.handle`; `coro:debug-info` (a coroutine in a module with debug info) | the corpus's coroutine modules without symmetric transfer and not refused, and libc++'s 9, all pre-opt: behaviour equal under `irdiff --hybrid` and under poisoning; the seeds of 5.3 except deep transfer; the structural test of 3.3 (no `[x19…]` in the suspended region) on seeds and corpus; mutations 1-3, 6-13 except 12's `.handle` case |
+| C4 | **Symmetric transfer**: the handle form in both modes (3.3), keeping the invariant (the only post-wrapper memory access is `[x0]`). `hod_a64/src/coro.rs`, tests. | C3 | — | deep transfer; the 4 corpus modules with `.handle`; `resume-inside-await-suspend`'s `.handle` case; mutation 5 and the `.handle` case of 12 |
 | C5 | **Debug info**: heap variables as `DW_OP_breg19`; stub subprograms with `__promise` and `__coro_frame`; the frame type `F.coro_frame_ty`; `__coro_resume_N` labels. `hod_cg` debug hooks, `hod_dwarf` if a new form is needed, `tests/debug/coroutine.cpp`. | C3 | — | `xtask debug` with the expected ramp difference; `--verify` on the 50 `-g` coroutine modules |
-| C6 | **Pre-opt acceptance.** `crates/hod/src/session/` trigger set {`alwaysinline`, coroutines}; `spec/cli.md` "Always-inline" becomes "Pre-opt modules", with kiln's contract; `scripts/preopt-census.sh` rerun; `spec/landed/` record with speed and size against `opt` + `llc`. | C4, C5 | — | census: the 50 corpus modules build pre-opt; libc++ strict on `support.coroutines` and a hybrid run with 0 differences; time and object size measured (expected: about half of `llc`'s coroutine bytes) |
+| C6 | **Pre-opt acceptance.** `crates/hod/src/session/` trigger set {`alwaysinline`, coroutines}; `spec/cli.md` "Always-inline" becomes "Pre-opt modules", with kiln's contract (a refused module falls back to `opt` + `llc`); `scripts/preopt-census.sh` rerun; `spec/landed/` record with speed and size against `opt` + `llc`. | C4, C5 | — | census: 44 of the 50 corpus modules build pre-opt and the 6 are refused by name; libc++ strict on `support.coroutines` and a hybrid run with 0 differences; time and object size measured (expected: about half of `llc`'s coroutine bytes) |
 | C7 | x86-64: the stubs, rbx as base, prologue. Only when `hod_x64` code generation exists. | C6, x86-64 codegen | `coro:x86-64` | as C3-C4 on x86-64 |
 
 **Parallel:** C1 ∥ C2. C3 needs both. Then C4 ∥ C5, then C6. C1's
@@ -847,42 +1128,62 @@ interface is fixed in 3.4, so C3's `hod_cg` part (the frame area, stub
 hooks) can start against a hand-built plan while C1 finishes. The
 gate needs C1.
 
-## 7. Open questions
+## 7. Decisions taken, and questions for kiln
 
-**For the supervisor:**
+**Decided by the supervisor (review of this design):**
 
-1. B reserves x19 and gives hod_a64 its first callee-saved save (the
-   save set is empty today). Accepted?
-2. The seed harness needs a pre-opt oracle and dialect-tagged seeds (5.3).
-   Is that a C3 task or a separate harness package?
-3. Where LLVM is wrong (1.4), hod is right. Does the harness get a
-   "known oracle failure" mark per seed, or are such seeds kept out of
-   `irdiff`?
-4. C2's noop frame is a module-level emission. Should it go in `hod_cg`
-   generically (as WP-021's copies) or in the target?
+1. x19 is reserved and saved in coroutine functions.
+2. The pre-opt oracle and the dialect-tagged seeds are built in C2, as a
+   harness part with its own tests. C3 uses them.
+3. A seed whose oracle is wrong carries its expected output and an
+   explicit `oracle-skip` mark, with the reason and the LLVM versions;
+   never "accept either". The marks are listed in `spec/harness.md`.
+4. The noop frame is generic in `hod_cg`: a per-object private
+   constant and a private function that returns, emitted on first use,
+   with one small `Target` hook for the function's body.
 
 **For kiln's maintainers:**
 
-1. Would you rather lower coroutines in kiln at `-O0` (C2,
+1. Would you rather lower coroutines in kiln at `-O0` (approach C-front,
    section 3.6)? If yes, C1 and C3-C5 are not needed.
-2. kiln writes no `!coro.outside.frame` on parameter allocas, though
-   clang 22 does. hod does not need it (rule 3 keeps them on the
-   stack), but are kiln's parameter allocas guaranteed to be read only
-   for the parameter copies before the first suspend?
-3. Does kiln ever emit, in a coroutine body, a dynamic `alloca`,
-   `stacksave`, a use of an argument after a suspend, or a heap-bound
-   access before `coro.begin`? hod refuses all of them by name.
-4. When hod accepts coroutines (C6), kiln's driver stops running `opt`
+2. **Information: two latent uses of freed memory on kiln's LLVM route
+   today** (1.4). Both reproduce with `opt` + `llc` 19 and 22 under
+   `GLIBC_TUNABLES=glibc.malloc.tcache_count=0 MALLOC_PERTURB_=165`.
+   - `0005-data/gro-throws-uaf.cpp`: `get_return_object` throws. The
+     ramp frees the frame, then reads the exception slots LLVM put in
+     it. SIGSEGV. clang has the same bug.
+   - `0005-data/post-sync.cpp`: a P2900 postcondition on a coroutine
+     that completes in its ramp. The escaped return object is in the
+     frame and is read after the ramp freed it. The postcondition fails
+     (exit 134). With a coroutine that suspends instead, the ramp reads
+     the frame of a suspended coroutine, which is a race if another
+     thread resumes it.
+
+   Proposed fix for the second: mark the return-object alloca
+   `!coro.outside.frame`, as kiln already does for a separate GRO. hod
+   refuses the shape until then (3 corpus modules).
+3. Will you mark parameter allocas `!coro.outside.frame` as clang 22
+   does? Today the five parameters passed by reference to a promise
+   `operator new` live in the frame with a copy at `coro.begin`. That is
+   correct, but marking them is simpler and keeps them on the stack.
+   Are kiln's parameter allocas guaranteed to be read only for the
+   parameter copies, before the first suspend?
+4. Does kiln ever emit, in a coroutine body, a dynamic `alloca`,
+   `stacksave`, a use of an argument after a suspend, an alias computed
+   before `coro.begin` and used after it, or an `await_suspend` call
+   without a wrapper intrinsic? hod refuses all of them by name.
+5. When hod accepts coroutines (C6), kiln's driver stops running `opt`
    for modules whose triggers are only `alwaysinline` and coroutines
-   (`needs_coro_lowering`), on the same contract as WP-021. Agreed?
+   (`needs_coro_lowering`), on the same contract as WP-021, and falls
+   back for a refused module. Agreed?
 
 ## 8. Proposed BACKLOG rows
 
 | id | track | title | depends |
 |---|---|---|---|
-| C1 | T-XF | coroutine plan: `hod_xform::coro::plan`, frame residency rules, suspend numbering, `coro:*` refusals; `spec/xform.md` (design 0005 §3.4) | WP-100 |
-| C2 | T-A64 | coroutine handle operations in any function: `coro.resume/destroy/done/promise/noop`, the per-object noop frame (0005 §1.1, §6) | WP-100 |
-| C3 | T-CG | coroutine bodies, one body with heap frame and entry stubs: `FrameRef::Coro`, x19 base, stubs, body intrinsics, both dialects (0005 §3.2-3.3) | C1, C2 |
+| C1 | T-XF | coroutine plan: `hod_xform::coro::plan`, frame residency rules 1-5 (LLVM's for escaped slots), `coro.begin` copies, suspended region, safety conditions, `coro:*` refusals; `spec/xform.md` (design 0005 §3.4) | WP-100 |
+| C2 | T-A64 | coroutine handle operations in any function: `coro.resume/destroy/done/promise/noop`; the noop frame generic in `hod_cg`; harness: pre-opt oracle, dialect-tagged seeds, `oracle-skip` mark in `spec/harness.md` (0005 §1.1, §5.3, §6) | WP-100 |
+| C3 | T-CG | coroutine bodies, one body with heap frame and entry stubs: `FrameRef::Coro`, x19 base, stubs, body intrinsics, `coro.begin` copies, no frame access after the wrapper (structural check), both dialects (0005 §3.2-3.4) | C1, C2 |
 | C4 | T-A64 | symmetric transfer: `coro.await.suspend.handle` in ramp and clone mode (0005 §3.3) | C3 |
 | C5 | T-DW | coroutine debug info: heap variables, stub subprograms, frame type, resume labels (0005 §3.2, §5.6) | C3 |
 | C6 | T-IR | pre-opt modules with coroutines accepted in place of `opt` + `llc`; `spec/cli.md`; census, libc++ strict, speed and size (0005 §5, §6) | C4, C5 |

@@ -17,7 +17,8 @@
 //! 3. the unit's `imports` go (WP-059's), and so do its function-local
 //!    `enums` and `retainedTypes` (a typedef in a function template);
 //! 4. `private` globals become `internal`, so that `llc` gives them a
-//!    symbol hod's addresses can name;
+//!    symbol hod's addresses can name; a unit left with no global gets
+//!    one, `hod_oracle_anchor`, or `llvm-extract` would delete it;
 //! 5. `llvm-extract --delete --rfunc '.*'` deletes the functions' bodies.
 //!
 //! hod reads the result; `llc` reads it without `templateParams` (WP-059
@@ -200,6 +201,13 @@ pub fn oracle_input(ir: &str) -> String {
 
     let join = |v: &[u32]| v.iter().map(|n| format!("!{n}")).collect::<Vec<_>>().join(", ");
     let (rt, gl, en) = (max + 1, max + 2, max + 3);
+    // `llvm-extract` deletes a unit with no live global (its dead debug
+    // information pass), retained types and all: an anchor keeps it.
+    let anchor = globals.is_empty();
+    let mut globals = globals;
+    if anchor {
+        globals.push(max + 4);
+    }
     let mut new_cu = cu_text.to_string();
     for f in ["retainedTypes", "globals", "imports", "enums"] {
         if let Some(t) = field(&new_cu, f) {
@@ -210,7 +218,15 @@ pub fn oracle_input(ir: &str) -> String {
     new_cu.insert_str(close, &format!(", enums: !{en}, retainedTypes: !{rt}, globals: !{gl}"));
 
     let mut out = String::with_capacity(ir.len() + 4096);
+    let mut anchored = !anchor;
     for line in ir.lines() {
+        if !anchored && line.starts_with('!') {
+            out.push_str(&format!(
+                "@hod_oracle_anchor = global i32 0, align 4, !dbg !{}\n",
+                max + 4
+            ));
+            anchored = true;
+        }
         if let Some((lhs, _)) = line.split_once(" = ")
             && number(lhs) == Some(cu)
         {
@@ -233,6 +249,15 @@ pub fn oracle_input(ir: &str) -> String {
         join(&globals),
         join(&enums)
     ));
+    if anchor {
+        let (gve, gv, ty) = (max + 4, max + 5, max + 6);
+        let file = field(cu_text, "file").expect("a unit's file");
+        out.push_str(&format!(
+            "!{gve} = !DIGlobalVariableExpression(var: !{gv}, expr: !DIExpression())\n\
+             !{gv} = distinct !DIGlobalVariable(name: \"hod_oracle_anchor\", scope: !{cu}, file: !{file}, line: 1, type: !{ty}, isLocal: false, isDefinition: true)\n\
+             !{ty} = !DIBasicType(name: \"int\", size: 32, encoding: DW_ATE_signed)\n"
+        ));
+    }
     out
 }
 
@@ -263,6 +288,20 @@ pub fn read(text: &str) -> Module {
         .module
 }
 
+/// Each global of `module` with an expression, at `llc`'s symbol of the
+/// same name.
+pub fn global_addrs(elf: &Elf, module: &Module) -> Vec<GlobalAddr> {
+    module
+        .global_exprs()
+        .iter()
+        .filter_map(|&(sym, expr)| {
+            let name = String::from_utf8_lossy(module.symbol(sym).name()).into_owned();
+            let at = elf.symbols.iter().position(|s| s.name == name)?;
+            Some(GlobalAddr { expr, symbol: SymbolId::from_index(at as u32 - 1), addend: 0 })
+        })
+        .collect()
+}
+
 /// hod's debug sections for `llc`'s object of `module` (functions
 /// deleted): the line table from the plan's files, the DIEs from the
 /// module's tables (`UnitPlan::of_module`), each global relocated
@@ -276,15 +315,7 @@ pub fn module_sections(
     let plan = UnitPlan::of_module(module, unit)?;
     let mut obj = stand_in(elf, arch);
     let line = write_debug_line(&mut obj, &plan.files().header(), &[]).expect("line table");
-    let globals: Vec<GlobalAddr> = module
-        .global_exprs()
-        .iter()
-        .filter_map(|&(sym, expr)| {
-            let name = String::from_utf8_lossy(module.symbol(sym).name()).into_owned();
-            let at = elf.symbols.iter().position(|s| s.name == name)?;
-            Some(GlobalAddr { expr, symbol: SymbolId::from_index(at as u32 - 1), addend: 0 })
-        })
-        .collect();
+    let globals = global_addrs(elf, module);
     let input = UnitInput { plan: &plan, line_offset: 0, globals: &globals, code: &[] };
     let dies = write_debug_info(&mut obj, line.line, &[input])?;
     Ok((obj, line, dies, plan.die_count()))

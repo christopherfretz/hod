@@ -15,6 +15,12 @@
 //! and pointer types, namespaces up to three deep), read into `hod_ir`'s
 //! tables (not timed); the plan and the writer timed separately, and the
 //! string pool alone on the strings the writer names.
+//!
+//! The type graph (§6.8, §7.2): the oracle input of
+//! `tests/data/types/stl.cpp` (clang 19, `common/types.rs`), heavy in the
+//! standard library; the plan and the writer timed separately, the
+//! `.debug_info` size against `llc`'s, and `llc`'s whole run of the same
+//! module for scale.
 
 mod common;
 
@@ -271,4 +277,64 @@ fn die_throughput() {
         pool_s * 100.0 / write_s,
     );
     assert_eq!(pooled, str_bytes, "the pool alone makes the same .debug_str");
+}
+
+#[test]
+#[ignore = "a measurement; run in release with --ignored --nocapture"]
+#[allow(clippy::cast_precision_loss)] // the counts are far below 2^52
+fn type_graph_throughput() {
+    use common::types::{cxx, extract, global_addrs, oracle_input, read, strip_template_params};
+    use hod_testutil::{Scratch, tool};
+    const TRIPLE: &str = "aarch64-unknown-linux-gnu";
+    let (Some(clang), Some(extract_tool), Some(llc)) =
+        (tool("clang++-19"), tool("llvm-extract"), common::llc(19))
+    else {
+        return;
+    };
+    let scratch = Scratch::new("types-throughput");
+    let source = format!("{}/tests/data/types/stl.cpp", env!("CARGO_MANIFEST_DIR"));
+    let ir = cxx(&clang, &scratch, "stl", std::path::Path::new(&source), Some(TRIPLE));
+    let ir = extract(&extract_tool, &scratch, "stl", &oracle_input(&ir));
+    let module = read(&ir);
+    let unit = module.debug.compile_units()[0];
+    let (plan_s, plan) = best(|| UnitPlan::of_module(&module, unit).unwrap());
+    let dies = plan.die_count();
+
+    let for_llc = strip_template_params(&ir);
+    let (llc_s, object) = best(|| common::compile(&llc, &scratch, "stl", &for_llc, TRIPLE));
+    let elf = common::Elf::parse(object);
+    let globals = global_addrs(&elf, &module);
+    let mut write_s = f64::MAX;
+    let (_, (info, total)) = best(|| {
+        let mut obj = common::dies::stand_in(&elf, Arch::AArch64);
+        let line = obj.add_section(b".debug_line", SectionKind::Debug, 1).unwrap();
+        let input = UnitInput { plan: &plan, line_offset: 0, globals: &globals, code: &[] };
+        let start = Instant::now();
+        let out = write_debug_info(&mut obj, line, &[input]).unwrap();
+        write_s = write_s.min(start.elapsed().as_secs_f64());
+        let secs =
+            [Some(out.abbrev), Some(out.info), Some(out.str_offsets), Some(out.str), out.addr];
+        (obj.data(out.info).len(), secs.iter().flatten().map(|&s| obj.data(s).len()).sum::<usize>())
+    });
+    let llc_size = |name: &str| elf.section(name).map_or(0, |i| elf.sections[i].size as usize);
+    let llc_info = llc_size(".debug_info");
+    let llc_total: usize =
+        [".debug_abbrev", ".debug_info", ".debug_str_offsets", ".debug_str", ".debug_addr"]
+            .iter()
+            .map(|s| llc_size(s))
+            .sum();
+    let n = dies as f64;
+    eprintln!(
+        "stl.cpp: {dies} DIEs: plan {:.1} ns/DIE ({:.2} ms), writer {:.1} ns/DIE ({:.2} ms), \
+         together {:.1} ns/DIE; .debug_info {info} bytes against llc's {llc_info} ({:.3}), \
+         the DIE sections {total} against {llc_total} ({:.3}); llc's whole run of the module {:.1} ms",
+        plan_s * 1e9 / n,
+        plan_s * 1e3,
+        write_s * 1e9 / n,
+        write_s * 1e3,
+        (plan_s + write_s) * 1e9 / n,
+        info as f64 / llc_info as f64,
+        total as f64 / llc_total as f64,
+        llc_s * 1e3,
+    );
 }

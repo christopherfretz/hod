@@ -101,6 +101,7 @@ const fn is_type_kind(kind: DiKind) -> bool {
 /// The attributes of a member function declaration, which pick its
 /// family.
 #[derive(Clone, Copy, Debug, Default)]
+#[allow(clippy::struct_excessive_bools)] // one per optional attribute
 struct MethodAttrs {
     link: bool,
     name: bool,
@@ -176,7 +177,7 @@ fn method_family(a: &MethodAttrs) -> Option<(usize, u32)> {
     None
 }
 
-impl<'a> UnitPlan<'a> {
+impl UnitPlan<'_> {
     /// The entry point of the type graph (§6.8): type `t`, which `from`'s
     /// field `field` names, has a DIE in this unit, made (with everything
     /// it reaches) if it is new; its index. Later packages call it for
@@ -677,19 +678,19 @@ impl<'a> UnitPlan<'a> {
             },
             (Kind::Composite, DiNode::CompositeType(c)) => {
                 let n = c.elements.len() as u32;
-                if step < n {
-                    let e = c.elements[step as usize];
-                    let task = self.element(node, die, e)?;
-                    Self::then(work, die, step + 1, task);
-                } else if step == n {
-                    Self::then(
+                match step.cmp(&n) {
+                    std::cmp::Ordering::Less => {
+                        let e = c.elements[step as usize];
+                        let task = self.element(node, die, e)?;
+                        Self::then(work, die, step + 1, task);
+                    }
+                    std::cmp::Ordering::Equal => Self::then(
                         work,
                         die,
                         n + 1,
                         c.vtable_holder.map(|v| ensure("vtableHolder", v)),
-                    );
-                } else {
-                    return Ok(false);
+                    ),
+                    std::cmp::Ordering::Greater => return Ok(false),
                 }
             }
             (Kind::Enumeration, DiNode::CompositeType(c)) => match step {
@@ -994,7 +995,7 @@ impl<'a> Writer<'a> {
     }
 
     /// Writes a DIE of the type graph (§6.8).
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::many_single_char_names)]
     pub(crate) fn type_die(
         &mut self,
         plan: &UnitPlan<'a>,

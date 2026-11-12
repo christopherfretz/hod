@@ -1048,6 +1048,8 @@ pub const BASES: [u32; FAMILIES.len()] = bases();
 
 /// One past the last code of the table.
 pub const CODE_END: u32 = BASES[FAMILIES.len() - 1] + FAMILIES[FAMILIES.len() - 1].block as u32;
+// Every code takes at most two ULEB128 bytes.
+const _: () = assert!(CODE_END <= 1 << 14);
 
 /// The code of a DIE of family `family` with option `mask` and, for a
 /// family with optional children, `children`.
@@ -1206,8 +1208,6 @@ mod tests {
         let table = write_abbrev(&all);
         // Every code at once (no object uses more than a few hundred).
         assert!(table.len() < 512 * 1024, "{}", table.len());
-        // Every code takes at most two bytes.
-        assert!(CODE_END <= 1 << 14, "{CODE_END}");
         assert_eq!(table.last(), Some(&0));
     }
 

@@ -136,7 +136,7 @@ keeps the per-function facts that only exist after code generation
 | lexical block | `DiLexicalBlock` (`scope`, `file`, `line`, `column`), `DiLexicalBlockFile` | code ranges, derived from `lines`: the union of the transitions whose location's scope chain contains the block (§6.4) | nothing; the ranges are derived, not recorded |
 | parameter, local variable | `DiLocalVariable` (`name`, `arg`, `scope`, `file`, `line`, `type`, `flags`, `align`); the record's `DIExpression` | `vars` (variable, expression, declared-at, `VarPlace`) | `VarRow` has no expression field yet (`crates/hod_cg/src/record.rs:139`) although `hod_ir` has `SlotVar.expr` now; `#dbg_value` variables are dropped by policy v1 |
 | label | `DiLabel` | `labels` | `Chunk` has no `labels` table yet (`crates/hod_cg/src/record.rs:225`) although `hod_ir` has `#dbg_label` now |
-| type graph | `DiBasicType`, `DiDerivedType` (pointers, references, typedefs, cv, members, inheritance, pointers to member, friends), `DiCompositeType` (classes, structs, unions, enums, arrays with `DiSubrange`s), `DiSubroutineType`, `DiEnumerator` | nothing | nothing for C++ at `-O0`; Fortran-style bounds and annotations are `unsupported` |
+| type graph (WP-058, §6.8) | `DiBasicType`, `DiDerivedType` (pointers, references, typedefs, template aliases, cv, atomic, restrict, members, static members, inheritance, pointers to member, friends), `DiCompositeType` (classes, structs, unions, enums, arrays and vectors with `DiSubrange`s), `DiSubroutineType`, `DiEnumerator`, member function declarations (`DiSubprogram` without `DISPFlagDefinition`); a static member's constant from `Module`'s constant pool | nothing | nothing for C++ at `-O0`; Fortran-style bounds, strides, address spaces and annotations are `unsupported` (§6.8) |
 | global variable | `DiGlobalVariableExpression` (`var`, `expr`) via `Module::global_exprs()`; `DiGlobalVariable` | the variable's symbol (address, TLS) | nothing |
 | namespace | `DiNamespace` (`name`, `scope`, `exportSymbols`) | nothing | nothing |
 | imported entity | `DiImportedEntity` (`using`, `using namespace`) | nothing | nothing |
@@ -168,11 +168,13 @@ core; `hod_ir` was not changed):
   came from (`crates/hod_ir/src/debug/node.rs:64`, `DiFieldValue::Str`;
   the records of `node.rs:787` on), so the string pool hashes bytes where
   an id-keyed pool would index an array (§6.3);
-- no per-unit index of nodes: the plan walks `cu.globals` and follows
-  links, which finds every global DIE of the core; the later packages'
-  types reached only through `retainedTypes`, `enums` and `imports` are
-  in the same unit record (`DiCompileUnit`, `node.rs:790`), so no index
-  is needed yet;
+- no per-unit index of nodes: the plan walks `cu.globals`, then
+  `cu.enums` and `cu.retainedTypes` (WP-058), and follows links, which
+  finds every DIE `llc` writes for them; no index is needed;
+- a static member's constant (`extraData` of a static member) is a
+  constant id, not a node, so its value needs the module's `ConstPool`
+  and `TypeTable`: `UnitPlan::of_module` reads them, `UnitPlan::new`
+  (tables only) refuses such a constant as `Unsupported` (WP-058);
 - no TLS flag on a global: whether a variable's symbol is thread-local is
   the symbol's (`hod_obj::SymbolKind::Tls`), and `GlobalAddr` will carry
   it for `DW_OP_form_tls_address` (WP-059).
@@ -495,7 +497,7 @@ a subprogram but with locations (possible in LLVM) gets its rows in the
 unit of the locations' subprogram. A function without debug information
 has no sequence.
 
-## 6. DIEs (core implemented, WP-053)
+## 6. DIEs (core implemented, WP-053; the type graph, WP-058)
 
 ### 6.1 Abbreviations: a fixed table (implemented)
 
@@ -561,15 +563,35 @@ exclusive `low_pc` forms), and pin the bytes of one entry.
 | 46 | `namespace`: `name` (bit 0), `export_symbols` (bit 1), children optional | 8 | 698 | WP-053 |
 | 47 | `variable` (global): `name`, `type`, `external` (0), `decl_file`/`decl_line` (1), `alignment` (2), `location` (3), `linkage_name` (4) | 32 | 706 | WP-053 |
 | 48 | `compile_unit`: `producer`, `language`, `name`, `str_offsets_base`, `stmt_list`, `comp_dir`, `low_pc` addrx + `high_pc` (0), `low_pc` addr + `ranges` + `rnglists_base` (1), `addr_base` (2), children optional | 16 | 738 | WP-053 |
+| 49 | `base_type` (any: `bit_size` for `dataSize`, `endianity`) | 8 | 754 | WP-058 |
+| 50–51 | `typedef` (any: `alignment`, accessibility, declaration), `template_alias` | 16, 8 | 762, 778 | WP-058 |
+| 52–53 | `member` (any: bit fields, `alignment`, artificial, accessibility, declaration), `inheritance` (virtual: an `exprloc` offset and `virtuality`) | 256, 2 | 786, 1042 | WP-058 |
+| 54–55 | static member (any), as `DW_TAG_variable` (DWARF 5) and as `DW_TAG_member` (DWARF 4 units) | 64, 64 | 1044, 1108 | WP-058 |
+| 56–61 | `structure`, `class`, `union` types (any: `export_symbols`, `containing_type`, `calling_convention`, `alignment`, accessibility), then their declarations (any) | 256 each, 8 each | 1172–1956 | WP-058 |
+| 62–64 | `enumeration_type`, `array_type` (`GNU_vector`, `byte_size`), `subroutine_type` (`prototyped`, `calling_convention`, `reference`, `rvalue_reference`), each any | 512, 16, 64 | 1964, 2476, 2492 | WP-058 |
+| 65 | `subprogram` (member declaration): `linkage_name`, `name`, `decl_file`/`decl_line`, `type`, `virtuality` + `vtable_elem_location` + `containing_type`, `declaration`, `artificial`, `external`, accessibility, `explicit`, `deleted` | 2048 | 2556 | WP-058 |
+| 66 | `subprogram` (member declaration, qualified): as 65 without `explicit`, with `reference`, `rvalue_reference`, `noreturn` before accessibility | 4096 | 4604 | WP-058 |
+| 67 | `variable` (global, no name: a structured binding's hidden object) | 32 | 8700 | WP-058 |
+| 68 | `base_type` (the array index type, `__ARRAY_SIZE_TYPE__`: `name`, `byte_size`, `encoding`, in `llc`'s order) | 1 | 8732 | WP-058 |
 
-`CODE_END` is 754. Since the core families come last, their codes take
+Families 2 to 45 that WP-058 owns are used for the common shape of each
+kind (they keep the codes the reserved shapes promised); the "any"
+families 49 to 66 take every other combination, so the codes stay a few
+ORs. Subroutine parameters use WP-057's `formal_parameter` family (its
+`type` and `artificial` slots). WP-058 refined the slots of its own
+reserved families 29 (`lower_bound` before `count`) and 36–37 to `llc`'s
+order.
+
+`CODE_END` is 8733 (it was 754). Since the core families come last, their codes take
 two ULEB bytes where `llc`'s take one (the cost is in §7.2; open question
 7).
 
 ### 6.2 Writing straight from the tables (implemented)
 
 No DIE tree of nodes is built. `UnitPlan::new` makes one pass over the
-unit's `globals`: for each global, its namespace chain from the outermost
+unit's `globals`, then its `enums`, then its `retainedTypes` (a
+subprogram among them is WP-057's and is skipped), as `llc` does. Types
+are made by the type graph (§6.8). For a global: for each global, its namespace chain from the outermost
 (a cycle is `BadReference`), then the variable, then its type chain, each
 node getting a DIE the first time it is reached. A DIE is a node id, a
 parent index and a kind (twelve bytes); the node-to-DIE map is four bytes
@@ -657,15 +679,13 @@ Anything else the plan meets is `Unsupported { node, what }`, not a
 wrong DIE:
 
 - a unit whose `emissionKind` is not `FullDebug`;
-- a variable with several expressions, a non-empty expression, no name,
-  no type, a line without a file, or template parameters;
+- a variable with several expressions, a non-empty expression, no
+  type, a line without a file, or template parameters (a variable with
+  no name is written without one since WP-058, as `llc` does);
 - a declaration or a static member's definition;
-- a type other than a base or pointer type;
-- a base type without a name, with an encoding beyond one byte, or with
-  `dataSize` or endianity;
-- a pointer with an address space;
-- a scope other than a namespace or the unit, or a namespace inside
-  anything else.
+- a global's scope other than a namespace or the unit, or a namespace
+  inside anything else;
+- the type shapes of §6.8's refusals.
 
 These are the later packages' shapes (§10).
 
@@ -675,7 +695,15 @@ These are the later packages' shapes (§10).
 - `NotACompileUnit` if the node is not a unit;
 - `BadReference { node, field }` if a link names no node, names a node of
   the wrong kind, or forms a namespace cycle;
-- `Unsupported` (§6.5).
+- `MemberOutsideType { node }` for a member (a member, an inheritance, a
+  friend, a static member, a member function) whose scope is not a class,
+  struct or union (WP-058);
+- `TypeCycle { node }` for a type that contains itself by value: a
+  typedef, qualifier or array cycle not broken by a pointer, a
+  reference or a class (WP-058);
+- `MissingSize { node }` for a base type, a defined enumeration, a
+  vector or a bit field of size 0 (WP-058);
+- `Unsupported` (§6.5, §6.8).
 
 `write_debug_info` fails with:
 - `NoUnit` for no units;
@@ -701,7 +729,8 @@ is the whole list of permitted differences:
   `strx1`/`data1`, and two-byte codes for the core families. The dump
   prints values, not forms, so these vanish;
 - **the offset of a reference**: a reference is compared by the name its
-  target prints;
+  target prints; `DW_AT_count` and `DW_AT_friend`, which the dump prints
+  as bare offsets, by the `DW_AT_name` of the DIE at that offset (WP-058);
 - **string and address indices**: `DW_OP_addrx` is compared by the
   relocation target of its entry (section and offset of the symbol plus
   addend);
@@ -714,10 +743,139 @@ is the whole list of permitted differences:
 - **`DW_AT_decl_file` numbers**: hod's file table holds every `DiFile` of
   the module, `llc`'s only the files it uses. The dump prints the file's
   name, which is equal;
-- **not written**: Apple and sysroot attributes and name tables (§1.1).
+- **not written**: Apple and sysroot attributes and name tables (§1.1);
+- **the oracle input of the type graph** (WP-058, `tests/common/types.rs`):
+  hod writes no function DIEs, template parameters or imported entities
+  yet (WP-057, WP-059), so a module with them is compared as a module
+  that has none. Functions' bodies are deleted (`llvm-extract`), and the
+  types of their locals and of the definitions join `retainedTypes`
+  unless they reach something function-local. Globals that are
+  declarations or static members' definitions, have an expression, or
+  are scoped in a class are dropped, as are `imports` and function-local
+  `enums` and `retainedTypes`. `private` globals become `internal`, and a
+  unit left with no global gets `hod_oracle_anchor`, or `llvm-extract`
+  would delete the unit. `llc` reads the result without `templateParams`.
+  Both writers read the same module, so this narrows what is compared and
+  changes nothing in it;
+- **sizes**: hod's `.debug_info` is 1.07 to 1.16 times `llc`'s on the type
+  graph (§7.2): every type family's code is two bytes, and a string index
+  or a line from 128 to 255 is two ULEB bytes where `llc` uses `strx1`
+  or `data1`.
 
 The relocations of `.debug_info`, `.debug_str_offsets` (by the string
 each one points at) and `.debug_addr` must name the same targets.
+
+### 6.8 The type graph (implemented, WP-058)
+
+**Entry point.** `UnitPlan::reference_type(from, field, t)`
+(`src/types.rs`, crate-internal) gives the DIE of type node `t` and makes
+it first if it does not exist yet. `from` and `field` name the referring
+node for a `BadReference`. The globals (§6.2) call it, and WP-057 (local
+variables, parameters, subprogram types) and WP-059 (template
+parameters, static members' definitions, imported entities) call it the
+same way. A DIE index it returns is valid at once. A forward reference
+is patched by the writer (§6.2). `UnitPlan::of_module(&module, unit)`
+is the plan with the module's constant pool (static member constants,
+§2).
+
+**Order: `llc`'s `getOrCreateTypeDIE`.** For each type, the scope
+(context) comes first: namespaces through their chain, classes as types.
+Then, if the type has a DIE, that DIE is used. Otherwise its DIE is
+created, appended to the context's children, and *constructed*: its
+attributes are fixed and the types it names are reached in `llc`'s
+order for its kind. The steps are tasks on one explicit work list
+(`Ensure`, `Create`, `Construct { step }`), with no recursion, so depth
+costs nothing (`tests/type_graph.rs`, 20,000 nested pointers). A DIE's
+slot in the node-to-DIE map is set when it is created, before it is
+constructed. So a cycle through a pointer, a reference or a class finds
+the DIE and stops: cycles cost one map lookup. A cycle that does not
+pass through one of those (a typedef, qualifier, atomic or array
+contains itself by value) is `TypeCycle`. Members, inheritance, friends
+and the vptr member are not in the map (as in `llc`'s
+`constructMemberDIE`): each is written while its class is constructed,
+which happens once. After the unit's
+lists, the virtual member functions' `containing_type` is added if that
+class has a DIE, as `llc` does at the end of the unit. Each node has one
+DIE per unit.
+
+**What each kind writes**, in `llc`'s attribute order:
+- **base types**: name, encoding (every `DW_ATE`), byte size; `bit_size`
+  for a `dataSize` that differs from the size (`_BitInt`, LLVM 22);
+  `endianity`; `DW_TAG_unspecified_type` (`decltype(nullptr)`) with its
+  name;
+- **derived types**:
+  - pointer, reference, rvalue reference, const, volatile, restrict and
+    atomic: the type (absent for `void`);
+  - typedef and template alias: name, decl, and alignment and
+    accessibility (a class's member typedef);
+  - pointer to member: the type and `containing_type`;
+- **classes, structs and unions**: the elements in their order, each by
+  its kind: member function declarations, friends, static members (`DW_TAG_variable` with
+  `declaration`, `external`, and `const_value` for a constant: `udata` or
+  `sdata` by `isUnsignedDIType`, a float as its bits), then members
+  (`data_member_location`, or `bit_size` and `data_bit_offset` for a bit
+  field), inheritance (an offset, or for a virtual base the `exprloc`
+  `llc` writes, and `virtuality`), and the vptr member (`artificial`).
+  After them `export_symbols`, `containing_type` (`vtableHolder`),
+  `calling_convention` (`pass_by_value` or `pass_by_reference`), name,
+  byte size (0 for an empty class, none for a declaration), declaration,
+  accessibility, decl and alignment;
+- **enumerations**: the base type, `enum_class`, name, byte size, decl;
+  each enumerator's `const_value` is `udata` or `sdata` by the base type's
+  signedness, 64 bits wide (`hod_ll` refuses a wider one as
+  `debug:DIEnumerator.wide`);
+- **arrays**: `GNU_vector` and the byte size for vectors, the element
+  type, one subrange per dimension against the unit's index type
+  `__ARRAY_SIZE_TYPE__` (made once, after the first element type);
+  `lower_bound` unless it is the language's default; `count` unless it
+  is -1 (an unknown bound); `upper_bound`; a count that is a variable is
+  a reference to the variable's DIE (a VLA), or absent if the variable
+  has none;
+- **subroutine types**: the return type, one `formal_parameter` per
+  parameter (`artificial` for an artificial type, `this`), and
+  `unspecified_parameters` for a trailing null (varargs, or an
+  unprototyped C function); `prototyped` for C languages;
+  `calling_convention` unless normal; `reference` and `rvalue_reference`;
+- **member function declarations**: linkage name, name, decl, type,
+  `virtuality` and `vtable_elem_location` (`DW_OP_constu` index),
+  `declaration`, `artificial`, `external`, then `reference`,
+  `rvalue_reference` and `noreturn`, then accessibility, `explicit` and
+  `deleted`; their parameters (the object pointer is artificial);
+- **forward declarations**: name, `declaration`, and the byte size of a
+  declared enumeration.
+
+**Function-local types (WP-057).** A type whose scope is a subprogram
+or a lexical block is placed under that scope's DIE. Until WP-057 makes
+those DIEs, the context lookup finds none and refuses with
+`Unsupported("a function-local type (WP-057)")`. WP-057 makes the
+subprogram's (or block's) DIE first and then calls `reference_type`. The
+context lookup then finds the DIE and nests the type there, as `llc`
+does, with no change to the type graph.
+
+**Template parameters (WP-059)** are skipped. Neither `templateParams`
+nor a template alias's `extraData` is read, so no DIE and no error comes
+from them (`tests/type_graph.rs`). WP-059 adds them as children at
+`llc`'s position in the construct steps.
+
+**Refused** (`Unsupported`, named):
+- a pointer with an address space;
+- a derived type with a name, size, line or accessibility its kind does
+  not have;
+- a composite with a runtime language, or of another tag (variant parts,
+  Fortran or Objective-C shapes);
+- a declared class with exported symbols, a vtable holder, a calling
+  convention or an alignment;
+- a subrange with a stride, a variable or expression bound, an
+  expression count, a variable count together with a bound, or a count
+  below -1;
+- a vector with other than one subrange;
+- a base type encoding beyond one byte;
+- a static member constant wider than 64 bits, or one read without the
+  module (`UnitPlan::new`);
+- a member function definition, thrown types, or a declaration with
+  `declaration` among a class's elements, or a combination of flags no
+  family has;
+- a function-local type (above).
 
 ## 7. Speed and memory
 
@@ -808,6 +966,21 @@ sections (2.3 MB of them `.debug_str`), with 275,016 relocations.
   `.debug_info` is larger (67,438 against 62,712), about 1.1 bytes per
   DIE, nearly all of it the second byte of the core families' codes (open
   question 7).
+
+The type graph (WP-058, `type_graph_throughput`, same host, release,
+best of five) on the oracle input of `stl.cpp` (clang 19; `std::vector`,
+`std::map`, `std::string`, `std::unique_ptr`, `std::shared_ptr`,
+`std::function`, `<iostream>`), 6,393 DIEs:
+- the plan costs 67 ns per DIE (0.43 ms), the writer 71 ns per DIE
+  (0.46 ms), 138 ns per DIE in all. `llc`'s whole run of the same module
+  (functions deleted) takes 61 ms;
+- size: `.debug_info` is 45,225 bytes against `llc`'s 42,391 (1.067×);
+  the five DIE sections are 159,748 against 158,038 (1.011×), because the
+  fixed `.debug_abbrev` holds only the codes used. Over §8.6's
+  comparisons, `.debug_info` is 1.066× (`stl.cpp`), 1.164× (`types.cpp`,
+  a module made of small types), 1.122× (hand-written) and 1.086× (the
+  corpus) `llc`'s: two-byte codes and two-byte ULEB values from 128 to 255
+  (§6.7).
 
 ## 8. Tests
 
@@ -901,7 +1074,7 @@ for the policy and 12.4 ns/row for the writer (336 MB/s; 4.16 bytes/row,
 modules (hod writes the same bytes for the same sequences; with one
 sequence per function the overhead is §4.7's).
 
-### 8.6 DIEs (`tests/dies.rs`, `die_oracle.rs`, `die_debugger.rs`, implemented)
+### 8.6 DIEs (`tests/dies.rs`, `die_oracle.rs`, `die_debugger.rs`, `type_graph.rs`, `type_oracle.rs`, `type_debugger.rs`, implemented)
 
 The parser does not read debug metadata yet (WP-054), so the tests fill
 `hod_ir`'s tables with the builder API. `tests/common/meta.rs` reads
@@ -937,8 +1110,8 @@ some over-aligned globals, with 400 to 100,000 globals.
   - the same bytes under shuffling, splitting, chunking and threads
     (§7.1);
   - every error of §6.6 leaves the object unchanged;
-  - an unsupported shape (a `const` type, a struct scope) is
-    `Unsupported`.
+  - an unsupported shape (a pointer with an address space, a struct
+    scope) is `Unsupported`.
 - **`tests/die_oracle.rs`** (`llc` 19 and 22 × AArch64 and x86-64 on
   `globals`, `strings` and 2,000 generated globals):
   - hod's sections, written from the tables for `llc`'s symbols, are
@@ -967,8 +1140,41 @@ some over-aligned globals, with 400 to 100,000 globals.
     time. lldb cannot find `outer::half` (a namespace member declared
     after a nested namespace) in `llc`'s program either, so it is
     skipped.
-- **Throughput** (`tests/throughput.rs`, `die_throughput`, ignored):
-  §7.2.
+- **`tests/type_graph.rs`** (WP-058, modules read by `hod_ll`): each
+  named error of §6.6 (a member scoped in a namespace; typedef,
+  qualifier and array cycles; a base type, an enumeration and a bit field
+  without a size); a struct whose members point back at it and a pointer
+  to itself, with one DIE per node; a function-local type refused naming
+  WP-057; template parameters skipped; a 20,000-deep chain.
+- **`tests/type_oracle.rs`** (WP-058; `llc` × AArch64 and x86-64; the
+  oracle input of §6.7, read by `hod_ll`, the DIEs from
+  `UnitPlan::of_module`): both objects verify, the trees are equal, the
+  relocation targets are equal. The inputs and the results, all in
+  `llc`'s order:
+  - hand-written IR (`tests/data/types/hand.ll`, `hand_c.ll`,
+    `hand22.ll`; 19 and 22, `hand22` 22 only): a friend, a template
+    alias, every `DW_ATE`, endianity, calling conventions on subroutine
+    types, a VLA count with and without its variable's DIE, explicit
+    lower bounds and bound-only subranges, wide and signed enumerators,
+    C's `prototyped` and default lower bound, `_BitInt` `dataSize`;
+    10 objects, 332 DIEs;
+  - `types.cpp` (every feature class reached from globals) by clang 19
+    (`llc` 19 and 22), clang 22 and kiln++ (`llc` 22): 8 objects, 3,164
+    DIEs;
+  - `stl.cpp` by clang 19 and 22: 4 objects, 25,560 DIEs;
+  - with `HOD_DWARF_CORPUS=.build/corpus`, every DWARF 5 `-g` module of
+    the corpus by its own LLVM: 12 modules (the other two ask for DWARF
+    4, open question 6), 24 objects, 668 DIEs.
+- **`tests/type_debugger.rs`** (WP-058, AArch64 hosts): `types.cpp`'s
+  object from `llc` 19 and 22, with hod's debug sections in place of
+  `llc`'s, linked as a shared library by GNU ld, lld and mold. gdb runs
+  `ptype` of 20 types, `ptype /o` and `print sizeof` of 8, `whatis` and
+  `ptype` of 43 variables, `print` of 5 static member constants and
+  `info types` twice. lldb runs `type lookup` of 20 types and `image
+  lookup -t` of 8. Result: identical on every pair of major and linker
+  (315 lines for gdb, 253 for lldb).
+- **Throughput** (`tests/throughput.rs`, `die_throughput` and
+  `type_graph_throughput`, ignored): §7.2.
 
 ## 9. The bridge in `hod_cg` (planned)
 
@@ -986,7 +1192,7 @@ Rows for `docs/BACKLOG.md` (ids to be assigned; "this" is WP-052):
 | line tables in `emit_module` | §5.7 and §9 in `hod_cg::emit`: `FileTable` from `DiFile` nodes, `LocId` → `SourceLoc`, `function_rows`, one `Sequence` per function; `encode_sequence` into the chunk and the merge of encoded runs (§7.1); `LineRow` gains a block-start bit (§5.3); `DW_LNCT_LLVM_source` for `DiFile.source`; gdb/lldb sessions on hod-compiled programs (§8.3 without `llc`); 1-vs-N-thread identity | this, WP-032 |
 | DIE writer core (WP-053, **landed**: `spec/landed/dwarf/WP-053.md`) | §6.1 to §6.3, §6.5 to §6.7: the fixed abbreviation table, `.debug_info` unit header, compile unit DIE, `.debug_str`/`.debug_str_offsets`/`.debug_addr`/`.debug_rnglists`, the scope inversion, reference patching; `--verify` clean and compared with `llc` on modules with globals only | this |
 | subprograms and variables | subprogram DIEs (`low_pc`/`high_pc`, `frame_base`), parameters and locals from `vars` with `DIExpression` composed onto the frame-base offset (`VarRow` gains its expression), lexical blocks from `lines` (§6.4), labels (the `labels` table); gdb `info locals`/`print`/`bt` on hod-compiled programs | DIE writer core, line tables in `emit_module` |
-| the type graph | basic, derived (pointer, reference, rvalue reference, typedef, const/volatile, member, inheritance, pointer to member, friend), composite (class, struct, union, enum with enumerators, array with subranges), subroutine types, declarations and completion, `vtableHolder`; compared with `llc` by `llvm-dwarfdump` structure; gdb `ptype` | DIE writer core |
+| the type graph (WP-058, **landed**: `spec/landed/dwarf/WP-058.md`) | basic, derived (pointer, reference, rvalue reference, typedef, const/volatile, member, inheritance, pointer to member, friend), composite (class, struct, union, enum with enumerators, array with subranges), subroutine types, declarations and completion, `vtableHolder`; compared with `llc` by `llvm-dwarfdump` structure; gdb `ptype` | DIE writer core |
 | globals, namespaces, templates | global and static-member variables (`DW_OP_addrx`, TLS with `DW_OP_form_tls_address`), namespaces, imported entities, template type and value parameters (packs), `DW_AT_specification` for out-of-line definitions | subprograms and variables, the type graph |
 | L7 harness | §8.4: `xtask` gdb and lldb sessions, kiln's debugger tests, corpus `--verify`, `(function, line)` comparison with `llc`; the two-object COMDAT case | line tables in `emit_module`, subprograms and variables |
 | line-tables-only and compressed sections | `emissionKind: LineTablesOnly` (CU and subprogram DIEs only), `SHF_COMPRESSED` with zlib written in safe Rust (no dependency) | DIE writer core |

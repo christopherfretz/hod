@@ -118,14 +118,16 @@ fn template_parameters_are_skipped() {
 /// is linear and does not overflow the stack.
 #[test]
 fn deep_chains_are_linear() {
+    use std::fmt::Write as _;
     let depth = 20_000;
     let mut body = String::new();
     for i in 0..depth {
         let next = if i + 1 == depth { 9 } else { 100 + i + 1 };
         let n = if i == 0 { 3 } else { 100 + i };
-        body.push_str(&format!(
-            "!{n} = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !{next}, size: 64)\n"
-        ));
+        let _ = writeln!(
+            body,
+            "!{n} = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !{next}, size: 64)"
+        );
     }
     assert_eq!(plan(&body), Ok(depth + 2));
 }

@@ -79,13 +79,17 @@ fn name_refs(text: &str) -> String {
     }
     let mut out = String::with_capacity(text.len());
     for line in text.lines() {
-        let named = ["DW_AT_count", "DW_AT_friend"].into_iter().find_map(|a| {
-            let v = line.trim_start().strip_prefix(a)?.strip_prefix("\t(0x")?.strip_suffix(')')?;
-            let o = u64::from_str_radix(v, 16).ok().filter(|_| v.len() == 8)?;
-            Some((a, names.get(&o)?))
+        let target = ["DW_AT_count", "DW_AT_friend"].into_iter().find_map(|attr| {
+            let v =
+                line.trim_start().strip_prefix(attr)?.strip_prefix("\t(0x")?.strip_suffix(')')?;
+            let offset = u64::from_str_radix(v, 16).ok().filter(|_| v.len() == 8)?;
+            Some((attr, names.get(&offset)?))
         });
-        match named {
-            Some((a, n)) => out.push_str(&format!("{a}\t(the DIE of {n})")),
+        match target {
+            Some((attr, name)) => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "{attr}\t(the DIE of {name})");
+            }
             None => out.push_str(line),
         }
         out.push('\n');
@@ -177,13 +181,13 @@ fn compare(major: u32, label: &str, ir: &str, tally: &mut Tally) {
 /// The node an error names, for the message.
 fn node_text(module: &hod_ir::Module, e: &hod_dwarf::Error) -> String {
     use hod_dwarf::Error as E;
-    let node = match *e {
-        E::BadReference { node, .. }
-        | E::Unsupported { node, .. }
-        | E::MemberOutsideType { node }
-        | E::TypeCycle { node }
-        | E::MissingSize { node } => node,
-        _ => return String::new(),
+    let (E::BadReference { node, .. }
+    | E::Unsupported { node, .. }
+    | E::MemberOutsideType { node }
+    | E::TypeCycle { node }
+    | E::MissingSize { node }) = *e
+    else {
+        return String::new();
     };
     format!("{:?}", module.debug.node(hod_ir::DiId::new(node)))
 }
@@ -282,4 +286,50 @@ fn stl_cpp_matches_llc() {
         compare(22, "stl-clang22", &ir, &mut tally);
     }
     report("stl.cpp", &tally);
+}
+
+fn ll_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut entries: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+    entries.sort();
+    for p in entries {
+        if p.is_dir() {
+            ll_files(&p, out);
+        } else if p.extension().is_some_and(|e| e == "ll") {
+            out.push(p);
+        }
+    }
+}
+
+/// §8.6 at scale: with `HOD_DWARF_CORPUS=<dir>` (the captured corpus,
+/// `.build/corpus`), every DWARF 5 `-g` module under `dir`, made into
+/// the oracle input by its own LLVM's `llvm-extract`, against its own
+/// `llc`.
+#[test]
+fn corpus_matches_llc() {
+    let Some(dir) = std::env::var_os("HOD_DWARF_CORPUS") else {
+        eprintln!("note: HOD_DWARF_CORPUS not set; no corpus modules");
+        return;
+    };
+    let mut paths = Vec::new();
+    ll_files(Path::new(&dir), &mut paths);
+    let mut tally = Tally::default();
+    let mut modules = 0;
+    for major in [19, 22] {
+        let Some(extract_tool) = tool(&format!("llvm-extract-{major}")) else { continue };
+        let wanted = format!("llvm{major}");
+        for p in paths.iter().filter(|p| p.components().any(|c| c.as_os_str() == wanted.as_str())) {
+            let text = std::fs::read_to_string(p).unwrap();
+            if !text.contains("DICompileUnit") || text.contains("\"Dwarf Version\", i32 4") {
+                continue;
+            }
+            let label = format!("corpus{modules}");
+            let scratch = Scratch::new(&format!("types-{label}"));
+            let ir = extract(&extract_tool, &scratch, &label, &oracle_input(&text));
+            eprintln!("{label}: {}", p.display());
+            compare(major, &label, &ir, &mut tally);
+            modules += 1;
+        }
+    }
+    report(&format!("corpus ({modules} modules)"), &tally);
 }

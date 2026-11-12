@@ -7,9 +7,12 @@
 
 #![allow(dead_code)] // Each test binary uses its own subset.
 
+#[cfg(unix)]
+pub mod linking;
+
 use hod_obj::{
-    A64Reloc, Arch, Binding, GroupKind, Object, SectionKind, Symbol, SymbolId, SymbolKind,
-    SymbolPlace,
+    A64Reloc, Arch, Binding, GroupKind, Object, SectionId, SectionKind, Symbol, SymbolId,
+    SymbolKind, SymbolPlace, X64Reloc,
 };
 
 pub const SHT_PROGBITS: u32 = 1;
@@ -29,6 +32,7 @@ pub const SHF_EXECINSTR: u64 = 0x4;
 pub const SHF_MERGE: u64 = 0x10;
 pub const SHF_STRINGS: u64 = 0x20;
 pub const SHF_INFO_LINK: u64 = 0x40;
+pub const SHF_LINK_ORDER: u64 = 0x80;
 pub const SHF_GROUP: u64 = 0x200;
 pub const SHF_TLS: u64 = 0x400;
 
@@ -215,6 +219,7 @@ impl Elf {
         elf.read_symbols();
         elf.check_relocations();
         elf.check_groups();
+        elf.check_links();
         elf
     }
 
@@ -377,6 +382,31 @@ impl Elf {
         }
     }
 
+    /// ELF gABI "Sections": `sh_link` and `sh_info` of the sections that
+    /// are not tables. A section has a link exactly when it has
+    /// `SHF_LINK_ORDER`, and the link names another section with contents
+    /// of its own; `sh_info` is unused.
+    fn check_links(&self) {
+        let is_table = |kind| {
+            matches!(kind, 0 | SHT_SYMTAB | SHT_STRTAB | SHT_RELA | SHT_GROUP | SHT_SYMTAB_SHNDX)
+        };
+        for (index, sec) in self.sections.iter().enumerate() {
+            if is_table(sec.kind) {
+                assert_eq!(sec.flags & SHF_LINK_ORDER, 0, "SHF_LINK_ORDER on table {index}");
+                continue;
+            }
+            assert_eq!(sec.info, 0, "sh_info of section {index}");
+            assert_eq!(sec.flags & SHF_INFO_LINK, 0, "SHF_INFO_LINK on section {index}");
+            assert_eq!(sec.flags & SHF_LINK_ORDER != 0, sec.link != 0, "sh_link of {index}");
+            if sec.link != 0 {
+                let target = self.sections.get(sec.link as usize);
+                let target = target.unwrap_or_else(|| panic!("sh_link of section {index}"));
+                assert!(!is_table(target.kind), "section {index} is linked to a table");
+                assert_ne!(sec.link as usize, index, "section {index} is linked to itself");
+            }
+        }
+    }
+
     /// The flag word and the member section indices of group section
     /// `index`.
     pub fn group(&self, index: usize) -> (u32, Vec<u32>) {
@@ -443,16 +473,93 @@ pub const BL: u32 = 0x9400_0000;
 /// `b <JUMP26>`
 pub const B: u32 = 0x1400_0000;
 
+/// `bti c`: a landing pad; a no-op where the feature is absent.
+pub const BTI_C: u32 = 0xd503_245f;
+/// `mrs x0, tpidr_el0`: the thread pointer.
+pub const MRS_X0_TP: u32 = 0xd53b_d040;
+/// `mrs x1, tpidr_el0`
+pub const MRS_X1_TP: u32 = 0xd53b_d041;
+/// `add x0, x1, x0`
+pub const ADD_X0_X1_X0: u32 = 0x8b00_0020;
+
 /// Adds a global function symbol covering `code`, appended to `section`.
-pub fn function(
-    obj: &mut Object,
-    section: hod_obj::SectionId,
-    name: &str,
-    code: &[u32],
-) -> SymbolId {
-    let at = obj.append(section, &words(code));
+pub fn function(obj: &mut Object, section: SectionId, name: &str, code: &[u32]) -> SymbolId {
+    function_bytes(obj, section, name, &words(code))
+}
+
+/// Adds a global function symbol covering `code`, appended to `section`.
+pub fn function_bytes(obj: &mut Object, section: SectionId, name: &str, code: &[u8]) -> SymbolId {
+    let at = obj.append(section, code);
     let name = obj.add_string(name.as_bytes()).unwrap();
-    obj.add_symbol(Symbol::defined(name, SymbolKind::Func, section, at, 4 * code.len() as u64))
+    obj.add_symbol(Symbol::defined(name, SymbolKind::Func, section, at, code.len() as u64))
+}
+
+/// Adds a symbol of the given kind and binding at `value` in `section`.
+pub fn define(
+    obj: &mut Object,
+    name: &str,
+    kind: SymbolKind,
+    binding: Binding,
+    section: SectionId,
+    value: u64,
+    size: u64,
+) -> SymbolId {
+    let name = obj.add_string(name.as_bytes()).unwrap();
+    obj.add_symbol(Symbol::defined(name, kind, section, value, size).with_binding(binding))
+}
+
+/// The sections and the `puts` symbol a [`say`] function needs.
+#[derive(Clone, Copy, Debug)]
+pub struct Say {
+    pub text: SectionId,
+    pub rodata: SectionId,
+    pub puts: SymbolId,
+}
+
+impl Say {
+    pub fn new(obj: &mut Object) -> Self {
+        let text = obj.add_section(b".text", SectionKind::Text, 16).unwrap();
+        let rodata = obj.add_section(b".rodata", SectionKind::ReadOnlyData, 1).unwrap();
+        Self { text, rodata, puts: undefined(obj, "puts") }
+    }
+}
+
+/// Adds `int name(void) { puts(message); return 0; }` for the object's
+/// architecture: the message through a local symbol in `.rodata`, `puts`
+/// through the PLT.
+pub fn say(obj: &mut Object, at: Say, name: &str, message: &str) -> SymbolId {
+    let offset = obj.append(at.rodata, message.as_bytes());
+    obj.append(at.rodata, &[0]);
+    let size = message.len() as u64 + 1;
+    let string = define(obj, ".L.str", SymbolKind::Object, Binding::Local, at.rodata, offset, size);
+    match obj.arch() {
+        Arch::AArch64 => {
+            let code = [PUSH_FRAME, SET_FP, ADRP_X0, ADD_X0_LO12, BL, MOV_W0_0, POP_FRAME, RET];
+            let function = function(obj, at.text, name, &code);
+            let start = obj.symbol(function).value;
+            obj.add_relocation(at.text, start + 8, A64Reloc::AdrPrelPgHi21, string, 0);
+            obj.add_relocation(at.text, start + 12, A64Reloc::AddAbsLo12Nc, string, 0);
+            obj.add_relocation(at.text, start + 16, A64Reloc::Call26, at.puts, 0);
+            function
+        }
+        Arch::X86_64 => {
+            #[rustfmt::skip]
+            let code = [
+                0x55,                         // push %rbp
+                0x48, 0x89, 0xe5,             // mov %rsp, %rbp
+                0x48, 0x8d, 0x3d, 0, 0, 0, 0, // lea .L.str(%rip), %rdi
+                0xe8, 0, 0, 0, 0,             // call puts
+                0x31, 0xc0,                   // xor %eax, %eax
+                0x5d,                         // pop %rbp
+                0xc3,                         // ret
+            ];
+            let function = function_bytes(obj, at.text, name, &code);
+            let start = obj.symbol(function).value;
+            obj.add_relocation(at.text, start + 7, X64Reloc::Pc32, string, -4);
+            obj.add_relocation(at.text, start + 12, X64Reloc::Plt32, at.puts, -4);
+            function
+        }
+    }
 }
 
 /// Adds a global undefined symbol.
@@ -493,6 +600,39 @@ pub fn hello(message: &str) -> Object {
     obj.add_relocation(text, 8, A64Reloc::AdrPrelPgHi21, string, 0);
     obj.add_relocation(text, 12, A64Reloc::AddAbsLo12Nc, string, 0);
     obj.add_relocation(text, 16, A64Reloc::Call26, puts, 0);
+    obj
+}
+
+/// `int main(void) { puts("x86"); return 42; }` for x86-64, and a pointer
+/// to `main` in `.data`.
+pub fn x86_64_program() -> Object {
+    let mut obj = Object::new(Arch::X86_64);
+    let text = obj.add_section(b".text", SectionKind::Text, 16).unwrap();
+    let rodata = obj.add_section(b".rodata", SectionKind::ReadOnlyData, 1).unwrap();
+    let data = obj.add_section(b".data", SectionKind::Data, 8).unwrap();
+    obj.append(rodata, b"x86\0");
+    let name = obj.add_string(b".L.str").unwrap();
+    let string = obj.add_symbol(
+        Symbol::defined(name, SymbolKind::Object, rodata, 0, 4).with_binding(Binding::Local),
+    );
+    let puts = undefined(&mut obj, "puts");
+    #[rustfmt::skip]
+    let code = [
+        0x55,                                     // push %rbp
+        0x48, 0x89, 0xe5,                         // mov %rsp, %rbp
+        0x48, 0x8d, 0x3d, 0, 0, 0, 0,             // lea .L.str(%rip), %rdi
+        0xe8, 0, 0, 0, 0,                         // call puts
+        0xb8, 42, 0, 0, 0,                        // mov $42, %eax
+        0x5d,                                     // pop %rbp
+        0xc3,                                     // ret
+    ];
+    obj.append(text, &code);
+    let name = obj.add_string(b"main").unwrap();
+    let main = obj.add_symbol(Symbol::defined(name, SymbolKind::Func, text, 0, code.len() as u64));
+    obj.add_relocation(text, 7, X64Reloc::Pc32, string, -4);
+    obj.add_relocation(text, 12, X64Reloc::Plt32, puts, -4);
+    obj.append_zeros(data, 8);
+    obj.add_relocation(data, 0, X64Reloc::Abs64, main, 0);
     obj
 }
 

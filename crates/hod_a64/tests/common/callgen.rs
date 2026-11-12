@@ -113,10 +113,9 @@ impl Leaf {
 }
 
 /// A C structure and the IR clang 22 passes and returns it as on this
-/// target, less the `alignstack` clang puts on an HFA argument (the
-/// `attr:alignstack` row is unplanned): it changes nothing for the
-/// naturally aligned ones kept here, and HFAs of `float` (where it moves
-/// stack arguments) are only results: `(C name, C definition, argument IR or "" (not an argument),
+/// target, with the `alignstack` clang puts on an HFA argument (which
+/// moves a block of `float`s on the stack, `abi-a64.md` §3.3):
+/// `(C name, C definition, argument IR or "" (not an argument),
 /// return IR, the leaves of the IR value, which are also the C fields'
 /// bytes in order)`. `ret` "" is a structure returned in memory.
 pub struct AggTy {
@@ -145,35 +144,35 @@ pub const AGGS: &[AggTy] = &[
     AggTy {
         c: "struct hfa1",
         def: "struct hfa1 { float a; };",
-        arg: "",
+        arg: "[1 x float] alignstack(8)",
         ret: "{ float }",
         leaves: &[Leaf::F32],
     },
     AggTy {
         c: "struct hfa3",
         def: "struct hfa3 { float a, b, c; };",
-        arg: "",
+        arg: "[3 x float] alignstack(8)",
         ret: "{ float, float, float }",
         leaves: &[Leaf::F32, Leaf::F32, Leaf::F32],
     },
     AggTy {
         c: "struct hda2",
         def: "struct hda2 { double a, b; };",
-        arg: "[2 x double]",
+        arg: "[2 x double] alignstack(8)",
         ret: "{ double, double }",
         leaves: &[Leaf::F64, Leaf::F64],
     },
     AggTy {
         c: "struct hda4",
         def: "struct hda4 { double a, b, c, d; };",
-        arg: "[4 x double]",
+        arg: "[4 x double] alignstack(8)",
         ret: "{ double, double, double, double }",
         leaves: &[Leaf::F64, Leaf::F64, Leaf::F64, Leaf::F64],
     },
     AggTy {
         c: "struct hq2",
         def: "struct hq2 { long double a, b; };",
-        arg: "[2 x fp128]",
+        arg: "[2 x fp128] alignstack(16)",
         ret: "{ fp128, fp128 }",
         leaves: &[Leaf::F128, Leaf::F128],
     },
@@ -1061,7 +1060,8 @@ fn call_ir(
             Src::Param(p) => format!("{}{attrs} %p{p}", t.ir(false)),
             Src::Const(v) => {
                 let text = ir_const(*t, v, false);
-                let (ty, rest) = text.split_once(' ').expect("type and value");
+                let ty = t.ir(false);
+                let rest = text.strip_prefix(&format!("{ty} ")).expect("type and value");
                 format!("{ty}{attrs} {rest}")
             }
         };

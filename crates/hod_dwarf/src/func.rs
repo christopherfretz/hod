@@ -966,7 +966,7 @@ impl<'a> Writer<'a> {
                     let mask = 1 | b(decl.is_some()) << 1 | b(art) << 2;
                     // WP-087: an unnamed variable has no `DW_AT_name`; an
                     // aligned one has `DW_AT_alignment` after it.
-                    let family = match (v.name.is_empty(), v.align != 0) {
+                    let family = match (v.name.is_empty(), v.align >= 8) {
                         (true, _) => fam::VARIABLE_UNNAMED,
                         (false, true) => fam::VARIABLE_ALIGNED,
                         (false, false) => fam::VARIABLE,
@@ -976,7 +976,7 @@ impl<'a> Writer<'a> {
                     if !v.name.is_empty() {
                         self.strx(v.name)?;
                     }
-                    if v.align != 0 {
+                    if v.align >= 8 {
                         write_uleb(&mut self.info, u64::from(v.align / 8));
                     }
                 }

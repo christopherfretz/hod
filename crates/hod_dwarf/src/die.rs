@@ -956,7 +956,7 @@ impl<'a> Writer<'a> {
                 let addr = self.addr_of[die as usize];
                 let mask = u32::from(!v.is_local)
                     | u32::from(file.is_some()) << 1
-                    | u32::from(v.align != 0) << 2
+                    | u32::from(v.align >= 8) << 2
                     | u32::from(addr != NONE) << 3
                     | u32::from(!v.linkage_name.is_empty()) << 4;
                 if v.name.is_empty() {
@@ -971,7 +971,7 @@ impl<'a> Writer<'a> {
                     write_uleb(&mut self.info, u64::from(file));
                     write_uleb(&mut self.info, u64::from(v.line));
                 }
-                if v.align != 0 {
+                if v.align >= 8 {
                     write_uleb(&mut self.info, u64::from(v.align / 8));
                 }
                 if addr != NONE {

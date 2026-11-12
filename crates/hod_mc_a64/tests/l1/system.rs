@@ -3,7 +3,7 @@
 use hod_mc_a64::*;
 
 use crate::harness::Batch;
-use crate::text::{BARRIERS, SYS_REGS, xz, z};
+use crate::text::{BARRIERS, READ_ONLY_SYS_REGS, SYS_REGS, xz, z};
 
 pub fn build(b: &mut Batch) {
     emit!(b, nop(), "nop");
@@ -33,6 +33,11 @@ pub fn build(b: &mut Batch) {
         for t in 0..32 {
             emit!(b, mrs(z(t), reg), "mrs {}, {name}", xz(t));
             emit!(b, msr(reg, z(t)), "msr {name}, {}", xz(t));
+        }
+    }
+    for (reg, name) in READ_ONLY_SYS_REGS {
+        for t in 0..32 {
+            emit!(b, mrs(z(t), reg), "mrs {}, {name}", xz(t));
         }
     }
     for (option, name) in BARRIERS {

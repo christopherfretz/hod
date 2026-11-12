@@ -207,6 +207,18 @@ intrinsics! {
     CoroAwaitSuspendVoid = "llvm.coro.await.suspend.void" [],
     CoroAwaitSuspendBool = "llvm.coro.await.suspend.bool" [],
     CoroAwaitSuspendHandle = "llvm.coro.await.suspend.handle" [],
+    // Saturating shifts (WP-084).
+    SshlSat = "llvm.sshl.sat" [Ret],
+    UshlSat = "llvm.ushl.sat" [Ret],
+    // AArch64 CRC32 (FEAT_CRC32, WP-084): not overloaded.
+    Aarch64Crc32b = "llvm.aarch64.crc32b" [],
+    Aarch64Crc32h = "llvm.aarch64.crc32h" [],
+    Aarch64Crc32w = "llvm.aarch64.crc32w" [],
+    Aarch64Crc32x = "llvm.aarch64.crc32x" [],
+    Aarch64Crc32cb = "llvm.aarch64.crc32cb" [],
+    Aarch64Crc32ch = "llvm.aarch64.crc32ch" [],
+    Aarch64Crc32cw = "llvm.aarch64.crc32cw" [],
+    Aarch64Crc32cx = "llvm.aarch64.crc32cx" [],
 }
 
 /// The most overload types an intrinsic on the list has.

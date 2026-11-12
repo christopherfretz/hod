@@ -11,7 +11,6 @@ use crate::common::{corpus, parse, parsed};
 /// What a body of clang's output may be unsupported for (`spec/ll.md`
 /// §3.4); any other name fails the test.
 const CLANG_BODY_UNSUPPORTED: &[&str] = &[
-    "attr:convergent",
     "attr:no_caller_saved_registers",
     "attr:nocf_check",
     "attr:noduplicate",

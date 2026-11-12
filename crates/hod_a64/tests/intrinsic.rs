@@ -130,11 +130,6 @@ fn what_is_not_lowered_is_refused_by_name() {
             intrinsic::WIDE,
         ),
         (
-            "declare <4 x i32> @llvm.ctpop.v4i32(<4 x i32>)\n\
-             define <4 x i32> @f(<4 x i32> %a) {\n  %r = call <4 x i32> @llvm.ctpop.v4i32(<4 x i32> %a)\n  ret <4 x i32> %r\n}\n",
-            intrinsic::VECTOR,
-        ),
-        (
             "declare void @llvm.memcpy.inline.p0.p0.i64(ptr, ptr, i64, i1)\n\
              define void @f(ptr %d, ptr %s, i64 %n) {\n  call void @llvm.memcpy.inline.p0.p0.i64(ptr %d, ptr %s, i64 %n, i1 false)\n  ret void\n}\n",
             intrinsic::INLINE_LENGTH,
@@ -148,11 +143,6 @@ fn what_is_not_lowered_is_refused_by_name() {
             "declare ptr @llvm.frameaddress.p0(i32)\n\
              define ptr @f() {\n  %r = call ptr @llvm.frameaddress.p0(i32 1000)\n  ret ptr %r\n}\n",
             intrinsic::FRAME_DEPTH,
-        ),
-        (
-            "declare i32 @llvm.sshl.sat.i32(i32, i32)\n\
-             define i32 @f(i32 %a, i32 %b) {\n  %r = call i32 @llvm.sshl.sat.i32(i32 %a, i32 %b)\n  ret i32 %r\n}\n",
-            intrinsic::INTRINSIC,
         ),
     ]);
     // The same intrinsics at 64 and 128 bits compile (WP-070: i128).

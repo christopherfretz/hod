@@ -91,8 +91,8 @@ pub const INLINE_MAX: u64 = 64;
 /// vector registers at most).
 pub const INLINE_MOVE_MAX: u64 = 32;
 
-/// `llvm.readcyclecounter`: `mrs CNTVCT_EL0`, which the encoder has no
-/// system register for (WP-070).
+/// `llvm.readcyclecounter`: not refused any more (`tail`, WP-084); kept
+/// for the coverage log's history.
 pub const READCYCLECOUNTER: &str = "a64:readcyclecounter";
 /// `llvm.eh.typeid.for` of something that is not a symbol (WP-070).
 pub const TYPEID: &str = "a64:eh-typeid";
@@ -111,6 +111,9 @@ pub fn intrinsic<'a>(
     args: &'a [Value],
 ) -> CgResult<()> {
     use Intrinsic as I;
+    if let Some(done) = crate::lanes::intrinsic(cx, inst, which, args) {
+        return done;
+    }
     if crate::fpintr::is_fp(which) {
         return crate::fpintr::fp_intrinsic(cx, inst, which, args);
     }
@@ -168,7 +171,7 @@ pub fn intrinsic<'a>(
             )?;
             Ok(())
         }
-        (I::ReadCycleCounter, _) => unsupported(READCYCLECOUNTER),
+        (I::ReadCycleCounter, _) => crate::tail::read_cycle_counter(cx, inst),
         (I::Memcpy | I::MemcpyInline | I::Memmove, &[dst, src, len, _volatile]) => {
             deferred_first(cx, inst, None)?;
             copy(cx, which, dst, src, len)
@@ -203,23 +206,8 @@ pub fn intrinsic<'a>(
             cx.finish(inst, rd)
         }
         (I::IsConstant, &[x]) => {
-            // As `llc`'s `LowerConstantIntrinsics`: true for a manifest
-            // constant (a literal number, `null`, a zero, `undef`), false
-            // for anything else, a symbol's address and aggregates
-            // included (LangRef lets the result be false for anything).
-            let manifest = x.as_const().is_some_and(|id| {
-                matches!(
-                    cx.module.consts.get(id),
-                    Const::Int { .. }
-                        | Const::WideInt { .. }
-                        | Const::Float { .. }
-                        | Const::WideFloat { .. }
-                        | Const::Null(_)
-                        | Const::Zero(_)
-                        | Const::Undef(_)
-                        | Const::Poison(_)
-                )
-            });
+            // As `llc`'s `LowerConstantIntrinsics` (`tail`, WP-084).
+            let manifest = crate::tail::is_manifest(cx, x);
             let rd = cx.def_reg(inst)?;
             mov_imm(cx, Size::W, xr(rd), u64::from(manifest));
             cx.finish(inst, rd)
@@ -237,6 +225,19 @@ pub fn intrinsic<'a>(
             put(cx, mc::and(Size::X, xr(p).zr(), xr(p).zr(), xr(m).zr()));
             cx.finish(inst, p)
         }
+        (
+            I::SshlSat
+            | I::UshlSat
+            | I::Aarch64Crc32b
+            | I::Aarch64Crc32h
+            | I::Aarch64Crc32w
+            | I::Aarch64Crc32x
+            | I::Aarch64Crc32cb
+            | I::Aarch64Crc32ch
+            | I::Aarch64Crc32cw
+            | I::Aarch64Crc32cx,
+            _,
+        ) => crate::tail::intrinsic(cx, inst, which, args),
         _ => unsupported(INTRINSIC),
     }
 }
@@ -307,15 +308,31 @@ fn unary<'a>(
     x: Value,
     bits: u32,
 ) -> CgResult<()> {
+    if which == Intrinsic::Bswap && !bits.is_multiple_of(16) {
+        // The verifier rejects it: an odd number of bytes.
+        return unsupported(INTRINSIC);
+    }
+    let r = cx.use_reg(x)?;
+    lane_unary(cx, which, xr(r), bits)?;
+    cx.finish(inst, r)
+}
+
+/// The register part of [`unary`], and one lane of the element-wise
+/// form (`lanes.rs`, WP-080): `ctlz`, `cttz`, `ctpop`, `bswap`,
+/// `bitreverse` or `abs` of the `bits`-bit value in `r`, in place.
+/// Writes `v31` for `ctpop`.
+///
+/// # Errors
+/// [`INTRINSIC`] for `bswap` of an odd number of bytes; `Internal` for
+/// another intrinsic.
+pub fn lane_unary(cx: &mut FnCx<'_, A64>, which: Intrinsic<'_>, r: Reg, bits: u32) -> CgResult<()> {
     use Intrinsic as I;
     if which == I::Bswap && !bits.is_multiple_of(16) {
-        // The verifier rejects it: an odd number of bytes.
         return unsupported(INTRINSIC);
     }
     let sz = size_for_bits(bits);
     let rb = reg_bits(bits);
-    let r = cx.use_reg(x)?;
-    let rr = xr(r).zr();
+    let rr = r.zr();
     match which {
         I::Ctlz => {
             if bits != rb {
@@ -323,19 +340,19 @@ fn unary<'a>(
                 // value counts `bits`.
                 let s = rb - bits;
                 put(cx, mc::lsl_imm(sz, rr, rr, s));
-                put(cx, mc::orr_imm(sz, xr(r).sp(), rr, 1 << (s - 1)));
+                put(cx, mc::orr_imm(sz, r.sp(), rr, 1 << (s - 1)));
             }
             put(cx, mc::clz(sz, rr, rr));
         }
         I::Cttz => {
             if bits != rb {
-                put(cx, mc::orr_imm(sz, xr(r).sp(), rr, 1 << bits));
+                put(cx, mc::orr_imm(sz, r.sp(), rr, 1 << bits));
             }
             put(cx, mc::rbit(sz, rr, rr));
             put(cx, mc::clz(sz, rr, rr));
         }
         I::Ctpop => {
-            zero_extend(cx, xr(r), bits);
+            zero_extend(cx, r, bits);
             put(cx, mc::fmov_gpr_to_fp(sz, V31, rr));
             put(cx, mc::cnt(VecBits::V64, V31, V31));
             put(cx, mc::uaddlv(Arr::B8, V31, V31));
@@ -359,13 +376,13 @@ fn unary<'a>(
         }
         I::Abs => {
             // The smallest value is its own negation at the width.
-            sign_extend(cx, xr(r), bits);
-            put(cx, mc::cmp_imm(sz, xr(r).sp(), 0));
+            sign_extend(cx, r, bits);
+            put(cx, mc::cmp_imm(sz, r.sp(), 0));
             put(cx, mc::cneg(sz, rr, rr, Cond::Mi));
         }
         _ => return cx.bug("an integer intrinsic without a lowering"),
     }
-    cx.finish(inst, r)
+    Ok(())
 }
 
 /// `smax`, `smin`, `umax`, `umin`: both operands extended, `cmp`,
@@ -378,6 +395,16 @@ fn min_max<'a>(
     b: Value,
     bits: u32,
 ) -> CgResult<()> {
+    let ra = cx.use_reg(a)?;
+    let rb = cx.use_reg(b)?;
+    lane_min_max(cx, which, xr(ra), xr(rb), bits);
+    cx.finish(inst, ra)
+}
+
+/// The register part of [`min_max`], and one lane of the element-wise
+/// form (`lanes.rs`, WP-080): `x = smax|smin|umax|umin(x, y)` at `bits`
+/// bits. Writes `x` and `y`.
+pub fn lane_min_max(cx: &mut FnCx<'_, A64>, which: Intrinsic<'_>, x: Reg, y: Reg, bits: u32) {
     let (signed, cond) = match which {
         Intrinsic::Smax => (true, Cond::Gt),
         Intrinsic::Smin => (true, Cond::Lt),
@@ -385,9 +412,6 @@ fn min_max<'a>(
         _ => (false, Cond::Lo),
     };
     let sz = size_for_bits(bits);
-    let ra = cx.use_reg(a)?;
-    let rb = cx.use_reg(b)?;
-    let (x, y) = (xr(ra), xr(rb));
     if signed {
         sign_extend(cx, x, bits);
         sign_extend(cx, y, bits);
@@ -397,7 +421,6 @@ fn min_max<'a>(
     }
     put(cx, mc::cmp(sz, x.zr(), y.zr()));
     put(cx, mc::csel(sz, x.zr(), x.zr(), y.zr(), cond));
-    cx.finish(inst, ra)
 }
 
 /// `fshl` (`left`) or `fshr` of `[a, b, c]`: the concatenation `a:b`
@@ -441,7 +464,20 @@ fn funnel<'a>(
     let ra = cx.use_reg(a)?;
     let rbv = cx.use_reg(b)?;
     let rc = cx.use_reg(c)?;
-    let (x, y, z) = (xr(ra).zr(), xr(rbv).zr(), xr(rc).zr());
+    let left_result = lane_funnel(cx, left, [xr(ra), xr(rbv), xr(rc)], bits);
+    cx.finish(inst, if left_result { ra } else { rbv })
+}
+
+/// The register part of [`funnel`] for an amount in a register, and one
+/// lane of the element-wise form (`lanes.rs`, WP-080): `fshl` (`left`) or
+/// `fshr` of the `bits`-bit values in `[a, b, c]`. The result is in `a`
+/// when this returns `true`, else in `b`. Writes all three, `x16` and
+/// `x17`.
+#[allow(clippy::many_single_char_names, reason = "the operands are LangRef's a, b, c")]
+pub fn lane_funnel(cx: &mut FnCx<'_, A64>, left: bool, [a, b, c]: [Reg; 3], bits: u32) -> bool {
+    let sz = size_for_bits(bits);
+    let rb = reg_bits(bits);
+    let (x, y, z) = (a.zr(), b.zr(), c.zr());
     if bits == rb {
         // The register shifts take their amount modulo `rb`; the other
         // half moves by one, then by the complement: `rb - k` without a
@@ -452,22 +488,22 @@ fn funnel<'a>(
             put(cx, mc::lsr_imm(sz, y, y, 1));
             put(cx, mc::lsrv(sz, y, y, z));
             put(cx, mc::orr(sz, x, x, y));
-            return cx.finish(inst, ra);
+            return true;
         }
         put(cx, mc::lsrv(sz, y, y, z));
         put(cx, mc::mvn(sz, z, z));
         put(cx, mc::lsl_imm(sz, x, x, 1));
         put(cx, mc::lslv(sz, x, x, z));
         put(cx, mc::orr(sz, y, y, x));
-        return cx.finish(inst, rbv);
+        return false;
     }
     // k = c mod N, in c's register; x16 holds N.
-    zero_extend(cx, xr(rbv), bits);
+    zero_extend(cx, b, bits);
     if bits.is_power_of_two() {
-        put(cx, mc::and_imm(sz, xr(rc).sp(), z, u64::from(bits - 1)));
+        put(cx, mc::and_imm(sz, c.sp(), z, u64::from(bits - 1)));
         mov_imm(cx, sz, X16, u64::from(bits));
     } else {
-        zero_extend(cx, xr(rc), bits);
+        zero_extend(cx, c, bits);
         mov_imm(cx, sz, X16, u64::from(bits));
         put(cx, mc::udiv(sz, X17.zr(), z, X16.zr()));
         put(cx, mc::msub(sz, z, X17.zr(), X16.zr(), z));
@@ -478,14 +514,14 @@ fn funnel<'a>(
         put(cx, mc::sub(sz, z, X16.zr(), z));
         put(cx, mc::lsrv(sz, y, y, z));
         put(cx, mc::orr(sz, x, x, y));
-        return cx.finish(inst, ra);
+        return true;
     }
     // (b >> k) | (a << (N - k)); for k = 0 the bits of a land above N.
     put(cx, mc::lsrv(sz, y, y, z));
     put(cx, mc::sub(sz, z, X16.zr(), z));
     put(cx, mc::lslv(sz, x, x, z));
     put(cx, mc::orr(sz, y, y, x));
-    cx.finish(inst, rbv)
+    false
 }
 
 // ---- saturating arithmetic and three-way compares (WP-070) ----
@@ -507,11 +543,19 @@ fn saturating<'a>(
     b: Value,
     bits: u32,
 ) -> CgResult<()> {
-    let signed = matches!(which, Intrinsic::SaddSat | Intrinsic::SsubSat);
-    let add = matches!(which, Intrinsic::SaddSat | Intrinsic::UaddSat);
     let ra = cx.use_reg(a)?;
     let rb = cx.use_reg(b)?;
-    let (x, y) = (xr(ra), xr(rb));
+    lane_saturating(cx, which, xr(ra), xr(rb), bits);
+    cx.finish(inst, ra)
+}
+
+/// The register part of [`saturating`], and one lane of the element-wise
+/// form (`lanes.rs`, WP-080): `x = {s,u}{add,sub}.sat(x, y)` at `bits`
+/// bits. Writes `x`, `y` and `x16`.
+#[allow(clippy::many_single_char_names, reason = "x, y the operands' registers")]
+pub fn lane_saturating(cx: &mut FnCx<'_, A64>, which: Intrinsic<'_>, x: Reg, y: Reg, bits: u32) {
+    let signed = matches!(which, Intrinsic::SaddSat | Intrinsic::SsubSat);
+    let add = matches!(which, Intrinsic::SaddSat | Intrinsic::UaddSat);
     let (xz, yz) = (x.zr(), y.zr());
     if bits == 32 || bits == 64 {
         let sz = size_for_bits(bits);
@@ -525,7 +569,7 @@ fn saturating<'a>(
         } else {
             put(cx, mc::csel(sz, xz, xz, RegZr::ZR, Cond::Hs));
         }
-        return cx.finish(inst, ra);
+        return;
     }
     let extend = if signed { mc::sbfx } else { mc::ubfx };
     put(cx, extend(Size::X, xz, xz, 0, bits));
@@ -549,7 +593,28 @@ fn saturating<'a>(
         put(cx, mc::cmp_imm(Size::X, x.sp(), 0));
         put(cx, mc::csel(Size::X, xz, xz, RegZr::ZR, Cond::Ge));
     }
-    cx.finish(inst, ra)
+}
+
+/// The register part of [`three_way`] for operands of 1 to 64 bits, and
+/// one lane of the element-wise form (`lanes.rs`, WP-080): `x =
+/// scmp|ucmp(x, y)` (`signed`), -1, 0 or 1 in all 64 bits of `x`. Writes
+/// `x` and `y`.
+pub fn lane_three_way(cx: &mut FnCx<'_, A64>, signed: bool, x: Reg, y: Reg, operand_bits: u32) {
+    let gt = if signed { Cond::Gt } else { Cond::Hi };
+    let sz = size_for_bits(operand_bits);
+    if signed {
+        sign_extend(cx, x, operand_bits);
+        sign_extend(cx, y, operand_bits);
+    } else {
+        zero_extend(cx, x, operand_bits);
+        zero_extend(cx, y, operand_bits);
+    }
+    put(cx, mc::cmp(sz, x.zr(), y.zr()));
+    let r = x.zr();
+    put(cx, mc::cset(Size::X, r, gt));
+    // r = (a >= b) ? r : -1.
+    let ge = if signed { Cond::Ge } else { Cond::Hs };
+    put(cx, mc::csinv(Size::X, r, r, RegZr::ZR, ge));
 }
 
 /// `scmp`/`ucmp` (`signed`) of `a` and `b`: -1, 0 or 1 in the result
@@ -576,7 +641,7 @@ fn three_way<'a>(
         TypeKind::Int(_) => return unsupported(WIDE),
         _ => return unsupported(VECTOR),
     };
-    let (lt, gt) = if signed { (Cond::Lt, Cond::Gt) } else { (Cond::Lo, Cond::Hi) };
+    let lt = if signed { Cond::Lt } else { Cond::Lo };
     let rd = if operand_bits == 128 {
         let (sa, sb) = (cx.use_mem(a)?, cx.use_mem(b)?);
         let (t1, t2) = (xr(cx.temp(Class::Gpr)?), xr(cx.temp(Class::Gpr)?));
@@ -597,23 +662,9 @@ fn three_way<'a>(
         put(cx, mc::orr(Size::X, r, r, X16.zr()));
         rd
     } else {
-        let sz = size_for_bits(operand_bits);
         let ra = cx.use_reg(a)?;
         let rb = cx.use_reg(b)?;
-        let (x, y) = (xr(ra), xr(rb));
-        if signed {
-            sign_extend(cx, x, operand_bits);
-            sign_extend(cx, y, operand_bits);
-        } else {
-            zero_extend(cx, x, operand_bits);
-            zero_extend(cx, y, operand_bits);
-        }
-        put(cx, mc::cmp(sz, x.zr(), y.zr()));
-        let r = xr(ra).zr();
-        put(cx, mc::cset(Size::X, r, gt));
-        // r = (a >= b) ? r : -1.
-        let ge = if signed { Cond::Ge } else { Cond::Hs };
-        put(cx, mc::csinv(Size::X, r, r, RegZr::ZR, ge));
+        lane_three_way(cx, signed, xr(ra), xr(rb), operand_bits);
         ra
     };
     if !wide_result {

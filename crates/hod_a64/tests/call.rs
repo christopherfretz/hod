@@ -705,12 +705,6 @@ fn the_remaining_forms_are_refused_by_name() {
             hod_ir::AttrConflict::NAME,
         ),
         (
-            "declare i32 @p(...)\ndeclare { i7, i64 } @g()\n\
-             define void @f() personality ptr @p { %r = invoke { i7, i64 } @g() to label %a unwind label %b\n\
-             a:\n ret void\nb:\n %l = landingpad { ptr, i32 } cleanup\n ret void }",
-            call::INVOKE_ODD_RESULT,
-        ),
-        (
             "declare i32 @p(...)\ndeclare void @g()\n\
              define void @f() personality ptr @p { invoke void @g() to label %a unwind label %b\n\
              a:\n ret void\nb:\n %l = landingpad { ptr, i64 } cleanup\n ret void }",

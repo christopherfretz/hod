@@ -64,6 +64,8 @@ pub struct FnState {
     pub va: call::VaState,
     /// The scratch images of vectors (`vector`, WP-079).
     pub vector: vector::VectorState,
+    /// Whether instructions are not emitted (`tail`, WP-084).
+    pub tail: crate::tail::TailState,
 }
 
 /// DWARF numbers: `x<n>` is `n`, `sp` is 31, `v<n>` is `64 + n`.
@@ -117,6 +119,9 @@ fn vector_class(types: &TypeTable, ty: TypeId, elem: TypeId, len: u32) -> Class 
     let elem_ok = !matches!(types.kind(elem), TypeKind::Int(1));
     if len.is_power_of_two() && (bits == 64 || bits == 128) && elem_ok {
         Class::Fpr
+    } else if !elem_ok && len <= crate::mask::MAX_MASK {
+        // A mask: bit-packed in a general register (WP-081).
+        Class::Gpr
     } else {
         Class::Mem
     }
@@ -191,6 +196,7 @@ impl Target for A64 {
     }
 
     fn begin_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
+        crate::tail::begin(cx);
         frame::begin(cx)
     }
 
@@ -203,6 +209,12 @@ impl Target for A64 {
     }
 
     fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()> {
+        if cx.state.tail.drops && crate::tail::dropped(inst) {
+            return Ok(());
+        }
+        if let Some(done) = crate::mask::lower(cx, inst) {
+            return done;
+        }
         let class = result_class(cx, inst);
         match inst.kind() {
             InstKind::Binary { lhs, rhs } => match class {
@@ -212,6 +224,7 @@ impl Target for A64 {
             },
             InstKind::Unary { arg } => match (inst.opcode(), class) {
                 (Opcode::FNeg, Class::Fpr) => float::fneg(cx, inst, arg),
+                (Opcode::FNeg, Class::Mem) => crate::lanes::fneg(cx, inst, arg),
                 (_, Class::Gpr) => int::freeze(cx, inst, arg),
                 (_, Class::Fpr) => float::freeze(cx, inst, arg),
                 (_, Class::Mem) => aggr::freeze(cx, inst, arg),
@@ -355,7 +368,7 @@ impl Target for A64 {
             ValueKind::Const(id) if reg::is_fpr(reg) => {
                 common::materialize_fpr_const(cx, vr(reg), id)
             }
-            ValueKind::Const(id) => common::materialize_gpr_const(cx, xr(reg), id),
+            ValueKind::Const(id) => crate::mask::materialize(cx, xr(reg), id),
             ValueKind::Sym(sym) => common::sym_address(cx, xr(reg), sym, 0),
             ValueKind::Slot(slot) => common::slot_address(cx, xr(reg), slot),
             _ => cx.bug("materialize of something that is no constant"),

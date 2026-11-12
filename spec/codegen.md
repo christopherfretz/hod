@@ -834,8 +834,8 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
   case's block comes next). A case value is compared by `cmp #imm`,
   `cmn #-imm`, or through `x16`. Code is linear in the cases; a run does
   about `log2(n) + 4` compares; no jump table and no data island. A
-  constant condition is a `br`. A `switch` wider than 64 bits is
-  `a64:switch-wide` (`classify` supports `inst:switch` for `int` only).
+  constant condition is a `br`. A `switch` wider than 64 bits is a
+  compare chain (WP-084 below); `a64:switch-wide` is no longer produced.
 - **`indirectbr`** is `br` of the address in its register; a
   `blockaddress` constant operand is formed in `x16` first.
 - **`blockaddress` in code** (`common::block_address`): `adr rd, label`
@@ -876,11 +876,10 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
   such arrays. `resume` calls `_Unwind_Resume` with the exception
   pointer, then traps.
 - **Refused by name**: `a64:call` (`callbr`), `a64:call-inline-asm`,
-  `a64:call-bundle`, `a64:invoke-odd-int-result` (an `invoke` whose
-  `Mem` result needs leaf clearing on the normal edge),
-  `a64:va-intrinsic`, `a64:va_arg`, `a64:landingpad`,
+  `a64:call-bundle`, `a64:va-intrinsic`, `a64:va_arg`, `a64:landingpad`,
   `a64:landingpad-clause`, `a64:resume`. `a64:variadic-definition` is
-  no longer produced; WP-069 removed `a64:call-wide-int-extension` and
+  no longer produced, nor, since WP-084, `a64:invoke-odd-int-result`
+  (an `invoke`'s odd leaves are cleared by `FnCx::call`); WP-069 removed `a64:call-wide-int-extension` and
   `a64:call-narrow-ext-stack-arg` (`abi-a64.md` §7.1) and
   `a64:call-mismatched-declaration` (§7.1 here).
 - **Tests** (`tests/call.rs`): random signatures (`tests/common/
@@ -1012,11 +1011,10 @@ them there, and has the saturating arithmetic, `scmp`/`ucmp`, the
 - **`eh.typeid.for`** of a symbol is `mov w, #FnCx::type_id(sym)`, the
   index `emit_module` gives the type in the LSDA's type table; of
   anything else it is refused (`a64:eh-typeid`).
-- **`clear_cache`** calls `__clear_cache`. **`readcyclecounter`** needs
-  `mrs CNTVCT_EL0`, which the encoder's `SysReg` lacks: refused
-  (`a64:readcyclecounter`).
-- `sshl.sat`/`ushl.sat` are not in `hod_ir`'s intrinsic list: classify
-  refuses them as `intrinsic:<name>`. Vector forms are `a64:intrinsic-vector`,
+- **`clear_cache`** calls `__clear_cache`. **`readcyclecounter`** is
+  `mrs rd, CNTVCT_EL0` since WP-084 (`a64:readcyclecounter` is no longer
+  produced).
+- `sshl.sat`/`ushl.sat` are lowered by WP-084 (below). Vector forms are `a64:intrinsic-vector`,
   `bfloat` ones `a64:intrinsic-bfloat`.
 
 #### Assembly that needs no assembler (WP-075)
@@ -1141,6 +1139,142 @@ section.
   × operations × indices against a model, `llc` and clang
   `ext_vector_type`, under bfd, lld and mold; calls both ways with gcc;
   the refusals), `tests/ir/vectors.ll`.
+
+#### Vectors, the lane loop (WP-080)
+
+Design note `docs/design/0003-vectors.md` (V3); the code is
+`crates/hod_a64/src/lanes.rs`, whose module docs are part of this
+section.
+
+- **One loop, the scalar kernels.** Every element-wise operation on a
+  vector that has no one-instruction form (all of them on a `Mem`
+  vector; division, remainder, `mul` of 64-bit lanes, `frem`, `half`
+  arithmetic and the casts without a NEON instruction on an `Fpr` one)
+  is one loop unrolled at emit time over at most 256 lanes. Per lane:
+  pool temporaries of the element's class, each operand's lane loaded
+  (zero-extended), **the scalar lowering's own register kernel**, the
+  result lane stored. The kernels are factored out of the scalar
+  lowerings (`int::lane_binary`, `int::lane_cast`, `float::lane_binary`,
+  `float::lane_frem`, `float::lane_fneg`, `float::lane_convert`,
+  `intrinsic::lane_unary`/`lane_min_max`/`lane_saturating`/
+  `lane_three_way`/`lane_funnel`, `fpintr::lane_inline`/`lane_call`),
+  which call them too: a lane computes exactly what the scalar
+  instruction computes, poison and undefined behaviour included.
+- **Images.** Operands: a `Mem` vector's slot; an `Fpr` vector stored
+  into scratch image `k` (WP-079) and its register given back at once,
+  so the loop has the whole pool (stress `min_pool`: four general and
+  two vector registers; the third floating-point operand of `fma` and
+  `fmuladd` is loaded into `v31`). An operand named twice has one image;
+  a scalar operand (`powi`'s exponent) is put into a register in every
+  lane. Result: a `Mem` vector's slot (`def_mem`); an `Fpr` vector's
+  lanes go to the next free scratch image (the first operand's when
+  three are taken: three operands of the result's type, each lane read
+  before it is written) and the image is loaded into the result's
+  register at the end.
+- **Calls per lane.** `frem`, the libm intrinsics, `pow`, `atan2`,
+  `powi` and `ldexp` call per lane as the scalar does (`fmodf`/`fmod`,
+  `sinf`/`sin`, `__powisf2`, `ldexpf`, ...; `half` widened, the result
+  narrowed). A call ends every temporary, so each lane takes its own;
+  the images are frame memory and survive.
+- **Covered.** `add` .. `srem` and the shifts on `i8`..`i64` lanes;
+  `fadd` .. `frem` and `fneg` on `half`, `float`, `double`; `trunc`,
+  `zext`, `sext`, `ptrtoint`, `ptrtoaddr`, `inttoptr`, `fpext`,
+  `fptrunc`, `fptoui`, `fptosi`, `uitofp`, `sitofp` between any two
+  vectors of one length (the classes may differ); the vector forms of
+  `ctlz`, `cttz`, `ctpop`, `bswap`, `bitreverse`, `abs`, `smax`, `smin`,
+  `umax`, `umin`, the four `*.sat`, `scmp`, `ucmp` (any result width),
+  `fshl`, `fshr`, `ptrmask`, and of every floating-point intrinsic of
+  WP-070 but `frexp` and `is.fpclass`. A `select` on a scalar `i1` was
+  already lowered (WP-039/040).
+- **Refused, by name.** The shapes `vector::lanes` refuses keep its
+  names (`a64:vector-length`, `a64:vector-wide-element` for `i128` and
+  `fp128` lanes, `a64:vector-odd-element`); a vector of `bfloat` is
+  `a64:vector-bfloat`. Lanes of `i1` are WP-081's: a binary operation or
+  a cast of one stays `a64:mem-vector`, an intrinsic of one
+  `a64:intrinsic-vector`, as before. `frexp` and `is.fpclass` of a vector
+  stay `a64:intrinsic-vector`.
+- **Cost.** The code is a constant number of bytes per lane (no lane
+  shares work with another), emitted without allocating; see the landed
+  record for the numbers.
+- **Hooks.** `aggr::binary` and `aggr::cast` (a vector), `float::binary`
+  (the three `a64:vector-op` places) and `float::vector_cast` (its
+  fallback), the `fneg` arm of `A64::lower` for class `Mem`, and the
+  first line of `intrinsic::intrinsic`.
+- **Tests**: `crates/hod_a64/tests/lanes.rs` (every operation × element
+  × lane count 1, 2, 3, 4, 8, 16, 256 against a Rust model, `llc` 22 and
+  19, clang `ext_vector_type` and gcc `vector_size` C, under bfd, lld
+  and mold, plain and stressed; refusals; 256-lane compiles; bytes per
+  lane), `tests/ir/vector_lanes.ll`.
+
+#### Vectors, masks (WP-081)
+
+Design note `docs/design/0003-vectors.md` (V2, §4.1); the code is
+`crates/hod_a64/src/mask.rs`, whose module docs (the bit rules) are
+part of this section.
+
+- **Representation.** `<N x i1>` with `1 ≤ N ≤ 64` is of class `Gpr`:
+  lane `i` is bit `i` of the register, the bits from `N` up are
+  unspecified (as for `iN`, §2.2). That is LLVM's in-memory image
+  (lane 0 in bit 0 of byte 0, `⌈N/8⌉` bytes), so a `bitcast` between a
+  mask and `iN`, a byte vector or a float of `N` bits is the copy the
+  other groups make, and `phi`, `freeze`, a scalar `select`,
+  `extractvalue`/`insertvalue` and loads are unchanged.
+- **Memory layout, settled by experiment** (`llc -O0 -global-isel=0
+  -fast-isel=0`, LLVM 22 and 19, and `hod_interp`): a stored mask has
+  the bits from `N` to the end of its last byte **zero** (`llc`: `and
+  w8, w0, #0x7` then `strb` for `<3 x i1>`, `#0xfff` then `strh` for
+  `<12 x i1>`; `<40 x i1>` five bytes); hod clears them before every
+  store of a mask whose `N` is not a multiple of 8. A load assumes
+  nothing about them (`llc` assumes they are zero: a `<3 x i1>` loaded,
+  bitcast to `i3` and zero-extended is one `ldrb`): every reader of a
+  mask's lanes reads only its `N` bits. `N = 1` is one bit in one byte
+  (`cset`, `strb`); `N` not a multiple of 8 differs only in the padding.
+  A byte that holds a poison lane is poison as a whole (LLVM's memory is
+  poison byte by byte; `llc` lets the bits of an out-of-range `fptoui`
+  to `i1` spill into the neighbouring lanes), so tests do not compare it.
+- **Lowered.** Vector `icmp` (integer and pointer lanes, every
+  predicate; lanes extended by the predicate's signedness) and `fcmp`
+  (`half`, `float`, `double`, every predicate) as one `cmp`/`fcmp` +
+  `cset` per lane, the bit inserted; the logical and arithmetic
+  operations and `icmp` on masks as one bit instruction each; `select`
+  of masks (`(c & t) | (f & ~c)`) and of lanes on a mask (`tst` +
+  `csel` per lane); `zext`/`sext` of masks to integer lanes,
+  `uitofp`/`sitofp` to float lanes; `trunc` to a mask, `fptoui`/`fptosi`
+  to a mask (each lane through `float::lane_convert`);
+  `extractelement`, `insertelement` (constant or variable index),
+  `shufflevector` of masks (runs of lanes by `ubfx`/`bfi`); and
+  `llvm.vector.reduce.{add,mul,and,or,xor,smax,smin,umax,umin}` of masks
+  (one flag: any, all, parity) and of integer lanes,
+  `reduce.{fadd,fmul}` (in lane order from the start value, which is
+  right with or without `reassoc`) and `reduce.{fmax,fmin}` (as
+  `maxnum`/`minnum`) of float lanes, up to 256 lanes.
+- **Poison.** An undefined or poison lane of a constant or of a
+  shuffle mask is 0; an out-of-range constant index reads lane 0; a lane
+  that LLVM leaves poison takes what the bit rule gives.
+- **Refused, by name.** A lane operation on a mask of more than 64 lanes
+  (it stays of class `Mem`): `a64:mask-wide`. A mask crossing a call or a
+  return (argument, result, or leaf of an aggregate one):
+  `a64:vector-call` (WP-082: no ABI is invented here). An intrinsic of
+  `i1` lanes (`llvm.umax.v4i1`): the intrinsic group's
+  `a64:intrinsic-vector`. `fcmp` of `bfloat` lanes:
+  `a64:vector-bfloat`. A reduction whose operand list is not the
+  intrinsic's: `a64:vector-reduce`. `reduce.fmaximum`/`fminimum` stay
+  the intrinsic group's refusal.
+- **Known `llc` defects** (not hod's, not chased; the interpreter and
+  gcc/clang vector extensions decide): SelectionDAG stores a `trunc`
+  of `<3 x i64>` to `<3 x i8>` into the wrong bytes (WP-080); `llc` 19
+  crashes on `llvm.vector.insert` of non-power-of-two lengths; stores of
+  `<4 x i3>` are wrong. None of them is on a mask path tested here.
+- **Hooks.** `target::vector_class` (a vector of `i1` of at most 64
+  lanes is `Gpr`), the first line of `A64::lower` (`mask::lower`), the
+  constant arm of `A64::materialize` (`mask::materialize`), and
+  `vector::has_mem_vector` (any vector of `i1` in a signature is
+  `a64:vector-call`).
+- **Tests**: `crates/hod_a64/tests/mask.rs` (every construct × lane type
+  × lane count against a Rust model, `hod_interp` on value-form twins,
+  `llc` 22 and 19, under bfd, lld and mold, plain and stressed; masks
+  loaded with their padding bits set; refusals; the widest masks;
+  bytes per lane), `tests/ir/vector_masks.ll`.
 
 #### Atomics (WP-074)
 
@@ -1280,11 +1414,8 @@ the helpers, the refusals, the threaded programs of
   `musttail` whose stack argument area fits the caller's is judged
   (`musttail:stack-args-grow` when it does not); x86-64 keeps no rule
   (`musttail:stack-args-unknown`).
-- **`invoke` with an odd-leaf `Mem` result** stays refused
-  (`a64:invoke-odd-int-result`): clearing the bits above the leaves must
-  happen after the call and before the normal edge's phi stores, which
-  `FnCx::call` (`hod_cg/src/call.rs`) emits with the branch; no target
-  hook sits between them. No corpus module needs it.
+- **`invoke` with an odd-leaf `Mem` result**: lowered since WP-084
+  (below).
 - Tests: `tests/fused.rs` (every predicate × width or float type ×
   operand form × block layout, the two-use and separated shapes, and an
   object check that a fused branch has no `cset`), `tests/phis.rs`
@@ -1341,6 +1472,91 @@ them; `common::sym_address` calls it for `Access::Tls`.
   an executable; mold relaxes descriptors of preemptible symbols to
   initial exec (its form puts the two `nop`s first), even in a static
   link, and keeps initial exec as it is.
+
+#### The short tail (WP-084)
+
+`src/tail.rs`; each construct is reached by one call from the module
+that refused it before.
+
+- **`fp128` and `half` fields** of aggregates (`extractvalue`,
+  `insertvalue`): `aggr` already moved an `Fpr` field through
+  `fpr_view`; the matrix rows now include `half` and `fp128`.
+- **Conversions between floating point and `i65`..`i128`**
+  (`aggr::cast` → `tail::fp_int_cast`) are the calls `llc` makes:
+  `fptosi`/`fptoui` call `__fix{,uns}{hf,sf,df,tf}ti` (a `half` operand
+  directly), the 128-bit result is the value's home (the bits above a
+  narrower width are unspecified, §2.2); `sitofp`/`uitofp` call
+  `__float{,un}ti{sf,df,tf}` with the operand extended (by its
+  signedness) into a 16-byte slot when it is narrower than 128 bits; to
+  `half` they call the `sf` function and `fcvt h, s`, two roundings, as
+  `llc`. Wider integers stay `a64:wide-fp-cast` (`llc` expands them
+  inline), and so does `bfloat` (`llc` cannot select it either).
+- **`{s,u}mul.with.overflow` wider than 64 bits** (`aggr` →
+  `tail::mul_overflow_wide`): both operands extended (by signedness) to
+  `2N` bits in slots of their own, `aggr::multiply` forms the exact
+  product, the unsigned flag is any product bit at or above `N`, the
+  signed one any such bit that differs from bit `N - 1`; the low `N`
+  bits (top limb masked) and the flag byte are written as for the other
+  overflow intrinsics. Beyond `N = MAX_QUADRATIC_BITS / 2` (2048) it is
+  `a64:wide-mul-overflow`. `llc` lowers these inline too; no libcall.
+- **`switch` on an integer of class `Mem`** (`control::switch` →
+  `tail::switch_wide`): for each case not to the default, in the IR's
+  order, each limb of the condition (the top one zero-extended) is
+  loaded into `x16`, the case's limb built in `x17`, compared by `cmp`
+  then `ccmp …, #0, eq`, and `b.eq` to the case; then the default. A
+  constant condition is a `br`.
+- **`readcyclecounter`** is `mrs rd, CNTVCT_EL0` (`SysReg::CntvctEl0`,
+  read only), as `llc`.
+- **`aarch64.crc32{,c}{b,h,w,x}`** are the `crc32*` instructions on the
+  operands' registers (`b` and `h` read only the data register's low
+  bits). `llc` cannot select them without `+crc` in the function's
+  features; hod chooses no instruction by a feature (§5.5.2) and lowers
+  them either way (ARMv8.1-A makes CRC32 mandatory).
+- **`sshl.sat`, `ushl.sat`** up to 64 bits: the operand shifted to the
+  top of the register, the amount zero-extended from the width, `lslv`,
+  shifted back by `asrv`/`lsrv` and compared; on a difference the
+  result is all ones (unsigned) or the extreme of the operand's sign
+  (`asr #63` · `eor #0x7fff…`), then shifted down. `i128` and wider are
+  `a64:intrinsic-wide`, vectors `a64:intrinsic-vector`.
+- **`is.constant`** is true for what `llc`'s `isManifestConstant` calls
+  manifest: data (a number, `null`, a zero, `undef`, `poison`, `none`, a
+  byte string) and literal aggregates, splats and constant expressions
+  all of whose operands are (`inttoptr` of an integer included). Anything
+  holding a symbol's or a block's address is false.
+- **The operands of folded `is.constant` and `objectsize`.** `llc`'s IR
+  pass (`LowerConstantIntrinsics`; in LLVM 22 inside
+  `pre-isel-intrinsic-lowering`) replaces those calls by constants and
+  folds branches on them; it deletes nothing else. SelectionDAG then
+  builds each block's nodes and deletes every node nothing uses that has
+  no effect, recursively (a non-volatile load included); a value used in
+  another block, or by a `phi`, is exported and stays. So in a function
+  that calls either intrinsic (`Target::begin_function` looks at the
+  call sites, nothing more for a function without them), hod does not
+  emit an instruction that has no effect (the driver's `has_no_effect`
+  set), is not used outside its block or by a `phi` by any instruction
+  but a folded call, and whose users in its block are all not emitted
+  (`tail::begin`, one backward pass per block; `target::lower` returns at
+  once for them). GCC's `bcp-1.c` (`__builtin_constant_p(p[123456])`
+  with `p` null) is the case: the load is not run. The same holds for
+  `objectsize`'s pointer operand. Not modelled: the blocks `llc` deletes
+  after folding a branch on the result (hod emits them; they never run).
+  In functions without these calls hod still skips only an instruction
+  nothing uses (§4.7), not its operands; `llc` deletes such dead chains
+  everywhere, a known difference for loads through invalid pointers in
+  dead code.
+- **`invoke` with an odd-leaf `Mem` result**: `FnCx::call`
+  (`hod_cg/src/call.rs`) clears the bits above the odd leaves of an
+  `invoke`'s result in its home after the call and before the normal
+  edge's phi stores and branch (`clear_odd_leaves`, as for incoming
+  arguments); `call::call` clears a plain call's itself as before.
+- **Stays refused**: `const-expr:trunc` (a truncated difference of two
+  `blockaddress`es in a global's initializer; needs a constant form for
+  label differences in `hod_ir`, the readers and module emission),
+  `special-global:llvm.global.annotations` (`llc` drops the array, a
+  global in section `llvm.metadata`; the readers would have to treat it
+  as one of their special arrays, `hod_ll/src/globals.rs` and
+  `hod_bc/src/module.rs`), `type:bfloat` (a type class of its own: ABI,
+  conversions, arithmetic through `float`).
 
 #### 5.5.2 Target features (WP-043)
 

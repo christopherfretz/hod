@@ -170,11 +170,7 @@ pub fn binary<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, lhs: Value, rhs: Value
     }
     let bits = width(cx, inst.result());
     let konst = const_int(cx, rhs);
-    let lhs_ext = match op {
-        Opcode::LShr | Opcode::UDiv | Opcode::URem => Ext::Zero,
-        Opcode::AShr | Opcode::SDiv | Opcode::SRem => Ext::Sign,
-        _ => Ext::None,
-    };
+    let lhs_ext = lhs_ext(op);
     // A constant shift right extends and shifts in one instruction.
     let fold_shift = matches!(op, Opcode::LShr | Opcode::AShr) && konst.is_some();
     let result = operand(cx, lhs, bits, if fold_shift { Ext::None } else { lhs_ext })?;
@@ -191,6 +187,71 @@ pub fn binary<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, lhs: Value, rhs: Value
         _ => divide(cx, op, ra, rhs, lhs_ext, bits)?,
     }
     cx.finish(inst, result)
+}
+
+/// How the left operand of `op` is extended before the operation.
+fn lhs_ext(op: Opcode) -> Ext {
+    match op {
+        Opcode::LShr | Opcode::UDiv | Opcode::URem => Ext::Zero,
+        Opcode::AShr | Opcode::SDiv | Opcode::SRem => Ext::Sign,
+        _ => Ext::None,
+    }
+}
+
+/// How a right operand of `op` in a register is extended before the
+/// operation: as the left one for a division, by zero for a shift amount
+/// narrower than five bits (`lslv` and its kin read five or six bits).
+fn rhs_ext(op: Opcode, bits: u32) -> Ext {
+    match op {
+        Opcode::Shl | Opcode::LShr | Opcode::AShr if bits < 5 => Ext::Zero,
+        Opcode::UDiv | Opcode::URem | Opcode::SDiv | Opcode::SRem => lhs_ext(op),
+        _ => Ext::None,
+    }
+}
+
+/// `ra = ra <op> rm` of two registers at `bits` bits, both operands
+/// already extended as [`lhs_ext`] and [`rhs_ext`] say: the one
+/// instruction of each operation (a remainder through `x17`).
+fn reg_op(cx: &mut FnCx<'_, A64>, op: Opcode, bits: u32, ra: Reg, rm: RegZr) {
+    let sz = size_for_bits(bits);
+    let rd = ra.zr();
+    let word = match op {
+        Opcode::Add => mc::add(sz, rd, rd, rm),
+        Opcode::Sub => mc::sub(sz, rd, rd, rm),
+        Opcode::Mul => mc::mul(sz, rd, rd, rm),
+        Opcode::And => mc::and(sz, rd, rd, rm),
+        Opcode::Or => mc::orr(sz, rd, rd, rm),
+        Opcode::Xor => mc::eor(sz, rd, rd, rm),
+        Opcode::Shl => mc::lslv(sz, rd, rd, rm),
+        Opcode::LShr => mc::lsrv(sz, rd, rd, rm),
+        Opcode::AShr => mc::asrv(sz, rd, rd, rm),
+        Opcode::UDiv => mc::udiv(sz, rd, rd, rm),
+        Opcode::SDiv => mc::sdiv(sz, rd, rd, rm),
+        _ => {
+            let signed = op == Opcode::SRem;
+            put(
+                cx,
+                if signed {
+                    mc::sdiv(sz, X17.zr(), rd, rm)
+                } else {
+                    mc::udiv(sz, X17.zr(), rd, rm)
+                },
+            );
+            mc::msub(sz, rd, X17.zr(), rm, rd)
+        }
+    };
+    put(cx, word);
+}
+
+/// One lane of an element-wise integer operation (`lanes.rs`, WP-080):
+/// `ra = ra <op> rb` at `bits` bits (`op` an integer binary opcode), the
+/// operands extended as this module's [`binary`] extends them, then the
+/// instruction [`binary`] emits for two registers. Writes `ra`, `rb` and
+/// `x17`.
+pub fn lane_binary(cx: &mut FnCx<'_, A64>, op: Opcode, bits: u32, ra: Reg, rb: Reg) {
+    extend(cx, ra, bits, lhs_ext(op));
+    extend(cx, rb, bits, rhs_ext(op, bits));
+    reg_op(cx, op, bits, ra, rb.zr());
 }
 
 /// `add` or `sub` (`sub`) of `ra` and `rhs` into `ra`: an immediate when
@@ -226,8 +287,7 @@ fn add_sub(
         }
     }
     let rm = source(cx, rhs, bits, Ext::None, X16)?.zr();
-    let rd = ra.zr();
-    put(cx, if sub { mc::sub(sz, rd, rd, rm) } else { mc::add(sz, rd, rd, rm) });
+    reg_op(cx, if sub { Opcode::Sub } else { Opcode::Add }, bits, ra, rm);
     Ok(())
 }
 
@@ -258,14 +318,9 @@ fn shift(
             }
         }
         None => {
-            // `lslv` and its kin read five or six bits of the amount.
-            let ext = if bits < 5 { Ext::Zero } else { Ext::None };
-            let rm = source(cx, rhs, bits, ext, X16)?.zr();
-            match op {
-                Opcode::Shl => mc::lslv(sz, rd, rd, rm),
-                Opcode::LShr => mc::lsrv(sz, rd, rd, rm),
-                _ => mc::asrv(sz, rd, rd, rm),
-            }
+            let rm = source(cx, rhs, bits, rhs_ext(op, bits), X16)?.zr();
+            reg_op(cx, op, bits, ra, rm);
+            return Ok(());
         }
     };
     put(cx, word);
@@ -282,17 +337,8 @@ fn divide(
     ext: Ext,
     bits: u32,
 ) -> CgResult<()> {
-    let sz = size_for_bits(bits);
-    let signed = matches!(op, Opcode::SDiv | Opcode::SRem);
-    let rn = ra.zr();
     let rm = source(cx, rhs, bits, ext, X16)?.zr();
-    let quotient = |rd| if signed { mc::sdiv(sz, rd, rn, rm) } else { mc::udiv(sz, rd, rn, rm) };
-    if matches!(op, Opcode::UDiv | Opcode::SDiv) {
-        put(cx, quotient(rn));
-    } else {
-        put(cx, quotient(X17.zr()));
-        put(cx, mc::msub(sz, rn, X17.zr(), rm, rn));
-    }
+    reg_op(cx, op, bits, ra, rm);
     Ok(())
 }
 
@@ -335,15 +381,7 @@ fn logical(
         }
     }
     let b = source(cx, rhs, bits, Ext::None, X16)?.zr();
-    let (d, n) = (ra.zr(), ra.zr());
-    put(
-        cx,
-        match op {
-            Opcode::And => mc::and(sz, d, n, b),
-            Opcode::Or => mc::orr(sz, d, n, b),
-            _ => mc::eor(sz, d, n, b),
-        },
-    );
+    reg_op(cx, op, bits, ra, b);
     Ok(())
 }
 
@@ -399,21 +437,29 @@ pub fn cast<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<
     }
     let from = width(cx, arg);
     let r = cx.use_reg(arg)?;
+    lane_cast(cx, op, from, to, xr(r));
+    cx.finish(inst, r)
+}
+
+/// The register part of [`cast`] (and one lane of an element-wise cast,
+/// `lanes.rs`, WP-080): `r`, a value of `from` bits, as the `op` cast of
+/// it to `to` bits, in place: extended by zero (`zext`, `inttoptr`) or
+/// sign (`sext`) when it widens, else unchanged.
+pub fn lane_cast(cx: &mut FnCx<'_, A64>, op: Opcode, from: u32, to: u32, r: Reg) {
     if from < to {
-        let rr = xr(r).zr();
+        let (sz, rr) = (size_for_bits(to), r.zr());
         match op {
             Opcode::ZExt | Opcode::IntToPtr => put(cx, mc::ubfx(sz, rr, rr, 0, from)),
             Opcode::SExt => put(cx, mc::sbfx(sz, rr, rr, 0, from)),
             _ => {}
         }
     }
-    cx.finish(inst, r)
 }
 
 // ---- compares ----
 
 /// The condition that holds after `cmp lhs, rhs` when `pred` does.
-fn cond_of(pred: IntPredicate) -> Cond {
+pub fn cond_of(pred: IntPredicate) -> Cond {
     match pred {
         IntPredicate::Eq => Cond::Eq,
         IntPredicate::Ne => Cond::Ne,

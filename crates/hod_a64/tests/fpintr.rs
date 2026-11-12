@@ -486,16 +486,6 @@ fn live_values_survive_called_intrinsics() {
 fn what_is_not_lowered_is_refused_by_name() {
     assert_refused(&[
         (
-            "declare <2 x double> @llvm.fabs.v2f64(<2 x double>)\n\
-             define <2 x double> @f(<2 x double> %a) {\n  %r = call <2 x double> @llvm.fabs.v2f64(<2 x double> %a)\n  ret <2 x double> %r\n}\n",
-            intr::VECTOR,
-        ),
-        (
-            "declare <4 x float> @llvm.fma.v4f32(<4 x float>, <4 x float>, <4 x float>)\n\
-             define <4 x float> @f(<4 x float> %a) {\n  %r = call <4 x float> @llvm.fma.v4f32(<4 x float> %a, <4 x float> %a, <4 x float> %a)\n  ret <4 x float> %r\n}\n",
-            intr::VECTOR,
-        ),
-        (
             "declare bfloat @llvm.fabs.bf16(bfloat)\n\
              define bfloat @f(bfloat %a) {\n  %r = call bfloat @llvm.fabs.bf16(bfloat %a)\n  ret bfloat %r\n}\n",
             fpintr::BFLOAT,
@@ -509,11 +499,6 @@ fn what_is_not_lowered_is_refused_by_name() {
             "declare double @llvm.powi.f64.i64(double, i64)\n\
              define double @f(double %a, i64 %n) {\n  %r = call double @llvm.powi.f64.i64(double %a, i64 %n)\n  ret double %r\n}\n",
             intr::INTRINSIC,
-        ),
-        (
-            "declare i64 @llvm.readcyclecounter()\n\
-             define i64 @f() {\n  %r = call i64 @llvm.readcyclecounter()\n  ret i64 %r\n}\n",
-            intr::READCYCLECOUNTER,
         ),
         (
             "declare i32 @llvm.eh.typeid.for.p0(ptr)\n\

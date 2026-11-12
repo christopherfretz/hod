@@ -2,20 +2,10 @@
 # outcome (spec/harness.md "roundtrip"). An entry not listed must pass.
 # Fields: entry, outcome, detail (for the reader; not compared).
 # corpus: 6250 entries, MANIFEST.tsv sha256 37254c252964563e22cfc7766ea576846cd31f7d107ef1f8e92fd4c4259b29c3
-gcc-torture/llvm19/bcp-1.c.ll	parser-unsupported	attr:convergent
-gcc-torture/llvm19/builtin-constant.c.ll	parser-unsupported	attr:convergent
-gcc-torture/llvm22/bcp-1.c.ll	parser-unsupported	attr:convergent
-gcc-torture/llvm22/builtin-constant.c.ll	parser-unsupported	attr:convergent
 kiln/llvm19/conformance/dcl.attr/annotate-run-O2.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
 kiln/llvm19/conformance/dcl.attr/clang-attr-valid-forms-run.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
-kiln/llvm19/conformance/ext.gnu.builtins/constant-p-class-arg-template.cpp.ll	parser-unsupported	attr:convergent
-kiln/llvm19/conformance/re.alg/regex-match-libstdcxx.cpp.ll	parser-unsupported	attr:convergent
 kiln/llvm19/conformance/target.acle/exclusive-sysreg-run.cpp.ll	parser-unsupported	metadata-arg:llvm.read_volatile_register.i64
-kiln/llvm19/conformance/templates/builtins/builtin.constant-p.cpp.ll	parser-unsupported	attr:convergent
 kiln/llvm22/conformance/dcl.attr/annotate-run-O2.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
 kiln/llvm22/conformance/dcl.attr/clang-attr-valid-forms-run.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
-kiln/llvm22/conformance/ext.gnu.builtins/constant-p-class-arg-template.cpp.ll	parser-unsupported	attr:convergent
 kiln/llvm22/conformance/ext.multiversion/multiversion-run.cpp.ll	parser-unsupported	attr:fmv-features
-kiln/llvm22/conformance/re.alg/regex-match-libstdcxx.cpp.ll	parser-unsupported	attr:convergent
 kiln/llvm22/conformance/target.acle/exclusive-sysreg-run.cpp.ll	parser-unsupported	metadata-arg:llvm.read_volatile_register.i64
-kiln/llvm22/conformance/templates/builtins/builtin.constant-p.cpp.ll	parser-unsupported	attr:convergent

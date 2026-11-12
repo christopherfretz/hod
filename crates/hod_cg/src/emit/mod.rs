@@ -31,7 +31,6 @@ use hod_obj::{
 
 use self::data::Relocs;
 use self::lines::DebugLines;
-pub use self::lines::unsupported as debug_unsupported;
 use self::section::{Found, Kind, NO_GROUP, Sections};
 use crate::access::prefers_local_alias;
 use crate::error::{CgError, CgResult};
@@ -69,6 +68,13 @@ pub mod unsupported {
     /// An `!llvm.linker.options` entry that is not a pair of strings,
     /// which ELF `llc` refuses ("invalid llvm.linker.options").
     pub const LINKER_OPTION: &str = "module:linker-option-not-a-pair";
+    /// A compile unit whose `emissionKind` is `LineTablesOnly` or
+    /// `DebugDirectivesOnly`: their DIEs (a unit and its subprograms
+    /// only) are not written yet (`spec/dwarf.md` §9).
+    pub const DEBUG_EMISSION_KIND: &str = "debug:emission-kind";
+    /// A compile unit with a node the DIE writer does not write yet
+    /// (`spec/dwarf.md` §6.5).
+    pub const DEBUG_DIE: &str = "debug:die-unsupported";
     /// A function with an unwind-table entry, no landing pads and a
     /// personality LLVM does not know: `llc` gives it the personality and
     /// an LSDA of call sites hod does not record (`spec/eh.md` §1.1).

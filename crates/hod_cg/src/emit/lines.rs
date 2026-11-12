@@ -30,20 +30,9 @@ use hod_dwarf::{
 use hod_ir::{DebugInfo, DiId, DiKind, DiNode, EmissionKind, Module, SymId, SymbolKind};
 use hod_obj::{Arch, Binding, Object, SectionId, SymbolId};
 
+use super::unsupported;
 use crate::error::{CgError, CgResult};
 use crate::record::LineRow;
-
-/// The construct names of debug information that module emission
-/// refuses (`spec/codegen.md` §10, `spec/dwarf.md` §9).
-pub mod unsupported {
-    /// A compile unit whose `emissionKind` is `LineTablesOnly` or
-    /// `DebugDirectivesOnly`: their DIEs (a unit and its subprograms
-    /// only) are not written yet.
-    pub const EMISSION_KIND: &str = "debug:emission-kind";
-    /// A compile unit with a node the DIE writer does not write yet
-    /// (`spec/dwarf.md` §6.5).
-    pub const DIE: &str = "debug:die-unsupported";
-}
 
 /// "Not looked up yet" in [`DebugLines::scope_file`].
 const UNKNOWN: u32 = u32::MAX;
@@ -78,7 +67,7 @@ pub(super) struct DebugLines<'m> {
 
 fn dwarf_err(error: hod_dwarf::Error) -> CgError {
     match error {
-        hod_dwarf::Error::Unsupported { .. } => CgError::unsupported(unsupported::DIE),
+        hod_dwarf::Error::Unsupported { .. } => CgError::unsupported(unsupported::DEBUG_DIE),
         error => CgError::internal(format!("debug information: {error}")),
     }
 }
@@ -89,7 +78,7 @@ impl<'m> DebugLines<'m> {
     /// further.
     ///
     /// # Errors
-    /// [`unsupported::EMISSION_KIND`], [`unsupported::DIE`]; an internal
+    /// [`unsupported::DEBUG_EMISSION_KIND`], [`unsupported::DEBUG_DIE`]; an internal
     /// error for a unit the tables do not describe.
     pub(super) fn new(module: &'m Module, arch: Arch) -> CgResult<Option<Box<DebugLines<'m>>>> {
         let debug = &module.debug;
@@ -102,7 +91,7 @@ impl<'m> DebugLines<'m> {
                 EmissionKind::NoDebug => continue,
                 EmissionKind::FullDebug => {}
                 EmissionKind::LineTablesOnly | EmissionKind::DebugDirectivesOnly => {
-                    return Err(CgError::unsupported(unsupported::EMISSION_KIND));
+                    return Err(CgError::unsupported(unsupported::DEBUG_EMISSION_KIND));
                 }
             }
             let plan = UnitPlan::new(debug, unit).map_err(dwarf_err)?;
@@ -247,7 +236,7 @@ impl<'m> DebugLines<'m> {
     /// address, if it was placed.
     ///
     /// # Errors
-    /// [`unsupported::DIE`]; an internal error for what the writers
+    /// [`unsupported::DEBUG_DIE`]; an internal error for what the writers
     /// refuse.
     pub(super) fn finish(
         &self,

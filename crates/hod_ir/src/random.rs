@@ -552,7 +552,11 @@ impl Generator {
 /// and its module. With `complete` false, one reserved value is left
 /// undefined.
 #[allow(clippy::too_many_lines)]
-fn generate(seed: u64, storage: Option<Body>, complete: bool) -> (Module, IrResult<Body>) {
+pub(crate) fn generate(
+    seed: u64,
+    storage: Option<Body>,
+    complete: bool,
+) -> (Module, IrResult<Body>) {
     let mut rng = Rng(seed);
     let mut m = Module::new(TargetSpec::aarch64_linux_gnu());
     let (i1, i32, i64, ptr) = (TypeId::I1, TypeId::I32, TypeId::I64, TypeId::PTR);

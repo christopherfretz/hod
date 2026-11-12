@@ -21,7 +21,6 @@ int main(void) {
   return tick(2) == 3 ? 0 : 1;
 }
 //@ tier: quick
-//@ xfail(gdb): hod writes DW_OP_addrx for a function's thread-local static (global.rs:57); gdb shows a wrong value where llc's has no location
 //@ gdb: break tls_static.c:16
 //@ gdb: run
 //@ gdb: print global_ticks

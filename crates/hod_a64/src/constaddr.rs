@@ -105,6 +105,9 @@ pub fn write_image(
                     crate::common::add_const(cx, X17.sp(), X17.sp(), f.addend);
                 }
             }
+            // WP-095: classify refuses a label difference in an operand
+            // (`operand:block-diff`).
+            FixupTarget::BlockDiff { .. } => return unsupported(CONSTANT_RELOC),
         }
         let ms = match f.size {
             1 => MemSize::B,

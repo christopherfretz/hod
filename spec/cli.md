@@ -315,8 +315,12 @@ invocation's *rejection*:
 A rejected command line is handed to the fallback whole when one is
 configured and strict mode is off ("Fallback protocol"): hod cannot know
 what the rest of such a command line means, so it does not read the input
-either. Otherwise it is an error: `hod: error: <text><note>`, exit status
-1, where `<note>` is as in "Strict mode".
+either. Otherwise it is an error: `hod: error: <text><note>`, where
+`<note>` is as in "Strict mode", with exit status 1, except in strict mode
+for the reason `unknown-option`: exit status 2 (WP-021). An option or
+value hod does not know is something `llc` may know, so a caller in strict
+mode reads it as it reads an unsupported module: hod declined, run `llc`.
+A `usage` rejection is a mistake in the command line, for `llc` too: 1.
 
 **`--version`** prints `hod version <version>` as its first line and exits
 0. With a fallback configured, two more things follow: a line
@@ -587,6 +591,96 @@ hod: error: unsupported construct 'codegen-not-implemented' (strict mode: no fal
 Without strict mode and without a fallback the same failures end with
 `; no fallback is configured (--fallback=<llc> or HOD_FALLBACK_LLC)`.
 
+## Always-inline (WP-021)
+
+hod accepts a front end's module before LLVM's `-O0` pipeline (kiln's or
+clang's `-S -emit-llvm -O0 -Xclang -disable-llvm-passes`) when the only
+thing that pipeline would have done is `always-inline`. hod does not
+inline; `crates/hod/src/session/inlining.rs` settles what a module that
+never met the inliner means.
+
+**The pipeline it replaces.** `default<O0>` is, printed by LLVM 19,
+`function(ee-instrument<>),always-inline,coro-cond(coro-early,cgscc(coro-split),coro-cleanup,globaldce),function(annotation-remarks),verify`;
+LLVM 22 adds `alloc-token`. kiln runs it when a module has an
+`alwaysinline` attribute set, an `"instrument-function-entry*"` string
+attribute or a coroutine intrinsic declaration (plus sanitizers and
+coverage, which stay on LLVM's path). hod refuses the others by name
+today: `attr:instrument-function-entry`,
+`attr:instrument-function-entry-inlined`, `attr:instrument-function-exit`
+(module level), `attr:presplitcoroutine`, `intrinsic:llvm.coro.*`,
+`attr:sanitize_alloc_token`. `annotation-remarks` writes remarks only;
+`verify` is hod's own verifier, which runs on every body, discarded ones
+included. So the modules hod may accept in place of `opt` + `llc` are
+those whose trigger set is empty or exactly {`alwaysinline`}.
+
+**`available_externally`.** A function of that linkage is a definition
+for an optimizer's eyes only. One that is not `alwaysinline` is
+discarded: its body is verified, never classified or compiled, and every
+reference is to the external symbol, as `llc` writes it. An alias or
+ifunc of that linkage is not emitted either. One that is `alwaysinline`
+and called directly (`call`/`invoke` of the symbol) by a body this object
+contains, transitively through the copies' own calls, is compiled as a
+local copy (`spec/codegen.md` §9.7.2); the direct calls go to the
+copy, every other reference (an address in code or data, an alias) to
+the external symbol, so function pointers compare equal across objects.
+The copy is what makes a program link that has no other definition
+(libstdc++'s `std::allocator<char>::allocate` is not exported by
+`libstdc++.so.6`). A body nothing calls is never judged: a construct hod
+refuses in it does not decline the module.
+
+**Out of line is correct** for a call to an `alwaysinline` function with
+ordinary linkage, except for the bodies below. The reasons for the
+constructs that look inlining-sensitive and are not:
+
+- `llvm.is.constant`: the inliner substitutes the arguments, so an
+  inlined call may answer `true` where the out-of-line body answers
+  `false`. The intrinsic's contract allows either answer at any point
+  ("the result may be either"), and the source must be correct for both;
+  `-O0` `llc` already folds it to `false` without the inliner's help.
+- `llvm.objectsize`: the same; "unknown" (`-1` or `0` per its `min`
+  argument) is always a permitted answer, and the checks built on it are
+  `_FORTIFY_SOURCE` checks that only lose precision.
+- A call site marked `alwaysinline` with an ordinary callee: LLVM 19 and
+  22 do inline it. Out of line the callee runs the same code; the
+  exceptions below apply to it too (any `alwaysinline` set in the module
+  turns the check on, because the readers do not say which call carries
+  it).
+- Dynamic `alloca`: inlined, LLVM wraps it in `stacksave`/`stackrestore`
+  and frees it at the inlined return, which is the out-of-line lifetime.
+- `musttail` in the callee becomes a plain call at a non-`musttail`
+  site: the same meaning. Variadic bodies, recursion, `indirectbr` and
+  `noinline` call sites are not inlined by LLVM.
+
+**Declined.** A direct call to a body whose meaning depends on being
+inlined declines the module (status 2 in strict mode) when it may have
+been inlined: the callee is an `available_externally` copy, or the module
+has any `alwaysinline` attribute set. Reported in the callee, by these
+stable names (`hod::inline_reason`):
+
+| name | the body has | inlined by LLVM? |
+|---|---|---|
+| `alwaysinline:frame-address` | `llvm.frameaddress`, `llvm.sponentry`, `llvm.localaddress`, `llvm.eh.dwarf.cfa` | yes: the caller's frame |
+| `alwaysinline:return-address` | `llvm.returnaddress`, `llvm.addressofreturnaddress` | yes: the caller's return address |
+| `alwaysinline:stacksave-escapes` | an `llvm.stacksave` result used other than by `llvm.stackrestore` | yes: the caller's stack pointer |
+| `alwaysinline:returns-twice` | a call to a `returns_twice` function | no: LLVM leaves it out of line; declined anyway (a `setjmp` in a body meant to vanish into its caller is the caller's frame by intent) |
+| `alwaysinline:returns-local-address` | a return of a stack slot's address (through `getelementptr`, `select`, `phi`) | yes: `llc -O0` keeps the slot live for the whole caller, out of line it is dead |
+| `alwaysinline:frame-register-asm` | inline assembly whose template or constraints name `sp`, `fp`, `lr`, `x29`, `x30` (or the x86-64 frame registers) | yes: the caller's registers |
+
+`blockaddress` of the body's own labels is accepted: the label belongs
+to the body that runs.
+
+**Size.** `always-inline` deletes the discardable functions it inlined
+everywhere; hod keeps them, so a hod object of a pre-opt module carries
+more `linkonce_odr` code (measured in `spec/landed/ir/WP-021.md`); the
+linker folds the duplicates.
+
+**kiln's contract.** At `-O0`, with a trigger set that is empty or
+exactly {`alwaysinline`}, kiln writes the pre-opt module as text to
+hod's standard input: `hod --strict <the llc arguments it planned> -o
+<object>`. Status 2 means declined and nothing was written: kiln then
+runs `opt` and `llc` as today. Any other non-zero status is hod's error
+and is reported as such.
+
 ## Reasons
 
 The reason is why hod did not produce the output itself. `-` when it did.
@@ -684,7 +778,7 @@ the text got.
 |---|---|
 | 0 | hod wrote the output (or printed the version or the help) |
 | 1 | an error in hod: usage, I/O, `malformed-input`, `invalid-options`, `internal-error`, the coverage log, the fallback could not be started, the bitcode conversion failed (`bitcode-converter-*`) and no fallback ran |
-| 2 | the module is unsupported (`CompileError::Unsupported`) and no fallback ran |
+| 2 | the module is unsupported (`CompileError::Unsupported`) and no fallback ran; in strict mode, also a command line rejected as `unknown-option` (WP-021) |
 | other | when the fallback ran: its exit status, whatever it is (including 0, 1 and 2) |
 
 `llc` itself exits 1 for its errors. Status 2 lets a harness in strict

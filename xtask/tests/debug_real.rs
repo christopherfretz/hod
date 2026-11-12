@@ -41,10 +41,10 @@ fn usable(report: &Report, options: &Options) -> bool {
 }
 
 // "Seeds", "Lines": the quick tier of tests/debug (the tests with `tier:
-// quick`: stepping, the two-object COMDAT case in both orders, and a known
-// finding) on every front end, linker and debugger found. Nothing fails,
-// nothing is in error, no `xfail` is stale; the finding still fails as
-// recorded. The threshold of the `(function, line)` comparison: no
+// quick`: stepping, the two-object COMDAT case in both orders, and a
+// function's thread-local static, the harness's first finding, fixed by
+// WP-094) on every front end, linker and debugger found. Nothing fails,
+// nothing is in error, no `xfail` is stale. The threshold of the `(function, line)` comparison: no
 // unclassified difference, and almost every pair the same.
 #[test]
 fn quick_tier_matches_llc() {

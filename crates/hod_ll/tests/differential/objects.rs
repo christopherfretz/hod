@@ -55,6 +55,8 @@ struct Tally {
     got_equivalents: usize,
     /// Variables whose initializer `hod_ir` has no image for.
     without_image: BTreeSet<String>,
+    /// Variables holding a label difference (WP-095).
+    label_differences: BTreeSet<String>,
 }
 
 fn binding(linkage: Linkage) -> u8 {
@@ -297,6 +299,14 @@ impl<'a> View<'a> {
             return;
         }
         assert_eq!(image.len() as u64, size, "{context}: image size");
+        // A label difference (WP-095) is a number once the function is
+        // laid out, which `llc` writes as `.word .La-.Lb`; under
+        // `--save-temp-labels` its assembler keeps relocations for it. Its
+        // value depends on the code layout: not compared.
+        if fixups.iter().any(|f| matches!(f.target, FixupTarget::BlockDiff { .. })) {
+            tally.label_differences.insert(self.names[symbol.id().index()].clone());
+            return;
+        }
         let mut relocations = 0;
         for fixup in &fixups {
             let field = format!("{context}: field at {}", fixup.offset);
@@ -361,6 +371,7 @@ impl<'a> View<'a> {
                 };
                 assert_eq!(theirs, mine, "{field}: the block is in its function's section");
             }
+            FixupTarget::BlockDiff { .. } => unreachable!("{field}: checked by the caller"),
             FixupTarget::Diff { a, b } | FixupTarget::PltDiff { a, b } => {
                 let plt = matches!(fixup.target, FixupTarget::PltDiff { .. });
                 let minus = self.place(b, 0);
@@ -578,10 +589,10 @@ fn symbols_and_initializers_match_llc_objects() {
     if !corpus().is_empty() {
         assert!(tally.variables > 3_000 && tally.relocations > 2_000, "{tally:?}");
         assert!(tally.aliases > 0 && tally.got_equivalents > 0 && tally.folded > 0, "{tally:?}");
-        // Differences of block addresses: `hod_ir` has no image for
-        // them (`spec/ll.md` §5.5).
+        // Differences of block addresses have an image since WP-095.
+        assert_eq!(tally.without_image, BTreeSet::new(), "variables without an image");
         let known = ["labels.relative"].map(String::from);
-        assert_eq!(tally.without_image, BTreeSet::from(known), "variables without an image");
+        assert_eq!(tally.label_differences, BTreeSet::from(known), "label differences");
     }
 }
 

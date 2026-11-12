@@ -500,7 +500,19 @@ a number, and integer arithmetic on numbers. Everything else stays `Expr`.
   are declined by `classify`: a number minus an address (`sub (i64 4,
   ptrtoint @a)`), and an address in an integer whose width is not 8, 16,
   32 or 64 bits. Neither has been seen from a C++ front end; a normal
-  form is added when one is.
+  form is added when one is. (A number minus an address is in one GCC
+  torture module, C; it stays declined, WP-095.)
+- `fold_cast` also folds a `bitcast` of a fixed vector of at most 128
+  bits whose elements are all numbers to an integer or float: the
+  vector's image (§4.3), as `llc` folds it (WP-095).
+- A label difference stays an `Expr` (`trunc (sub (ptrtoint
+  blockaddress(@f, %a)), (ptrtoint blockaddress(@f, %b)))`): its value is
+  known only once the function is laid out. `ConstPool::block_diff`
+  recognizes one: an integer expression of only `ptrtoint` of a
+  `blockaddress`, numbers, `add`, `sub` and `trunc` that adds one block
+  and subtracts another of the same function, returning `BlockDiff {
+  func, a, b, addend }`. Arithmetic modulo 2^n commutes with truncation,
+  so its value is the low bits of `a - b + addend` (WP-095).
 
 ### 4.3 Initializer images
 
@@ -524,14 +536,18 @@ on error both buffers are left as they were.
   in its lowest bits.
 - An address leaves zero bytes and a fixup: `Sym(s)` for `Addr` and
   `no_cfi`; `Plt(s)` for `dso_local_equivalent`; `Block { func, block }`;
-  `Diff { a, b }` and `PltDiff { a, b }` for `SymDiff`. The field's value
+  `Diff { a, b }` and `PltDiff { a, b }` for `SymDiff`; `BlockDiff {
+  func, a, b }` for an `Expr` that is a label difference (§4.2, WP-095),
+  whose addend is the `BlockDiff`'s (a number once the function is laid
+  out: the code generator writes it, no relocation). The field's value
   is target + addend, truncated to `size` bytes (8 for a pointer; 1, 2, 4
   or 8 for an integer).
 - A `Diff { a, b }` can be written only when `a` and `b` are defined in
   one section, or `b` is defined in the section that holds the field.
   `flatten` cannot know sections; whoever turns fixups into relocations
   checks this and reports the variable as unsupported otherwise.
-- No image (`UnsupportedInitializer`): `Expr`, the `none` token, an
+- No image (`UnsupportedInitializer`): an `Expr` other than a label
+  difference, the `none` token, an
   address in an integer whose width is not 8, 16, 32 or 64 bits, an
   address in a vector whose elements are not whole bytes. `UnsizedType`
   and `InvalidType` (scalable) for types without a fixed size.
@@ -852,7 +868,8 @@ does not have is `Rejected`. The lists below are the table, in full.
   `preallocated`, `elementtype` (inline assembly).
 - On functions, as keywords (`FnAttrs` flags): `noreturn`, `naked`,
   `nounwind`, `returns_twice`, `alwaysinline` (it decides what happens to
-  an `available_externally` body: design 0001, point 6), `ssp`, `sspreq`,
+  an `available_externally` body and which bodies decline a pre-opt
+  module: design 0001, point 6, `spec/cli.md` "Always-inline"), `ssp`, `sspreq`,
   `sspstrong`, `presplitcoroutine`, and the sanitizers
   `sanitize_address`, `sanitize_alloc_token`, `sanitize_hwaddress`,
   `sanitize_memory`, `sanitize_memtag`, `sanitize_numerical_stability`,
@@ -932,12 +949,13 @@ backend) reads them:
   `no-infs-fp-math`, `no-nans-fp-math`, `no-signed-zeros-fp-math`,
   `unsafe-fp-math`, and `no-trapping-math`;
 - `sample-profile-suffix-elision-policy`, a string LLVM defines where it
-  is read (sample-profile loading), not in its attribute list.
+  is read (sample-profile loading), not in its attribute list; and
+  `fmv-features`, likewise (WP-095).
 
   Fifteen of these were added when the table was built against LLVM's
   attribute list and clang's output, each because clang emits it in an
   ordinary build or because it is the twin of a name already here, and
-  one later, because LLVM 22 bitcode modules carry it:
+  two later, because LLVM 22 modules carry them:
 
   | attribute | why only an optimizer reads it |
   |---|---|
@@ -953,6 +971,7 @@ backend) reads them:
   | `noprofile`, `skipprofile` | read by the profile instrumentation passes |
   | `"no-trapping-math"` | on every function clang emits; without `strictfp` (rejected) the default floating-point environment is assumed either way |
   | `"sample-profile-suffix-elision-policy"` | steers how the sample-profile loader matches symbol names with suffixes (`"selected"`); no effect on code generation; on functions of LLVM 22 bitcode modules (WP-029) |
+  | `"fmv-features"` | the feature set of a function-multiversioning version (`target_version`/`target_clones`), read by the optimizer's static resolution of calls to versions (`getFeatureMask`); the resolver and the version names are already in the IR. `llc` 22 writes the same object with it removed or with a value (`"dotprod,sve2"`); on functions of clang 22 with `-fmv` (WP-095) |
 
 **Rejected**: anything else. An attribute that is in neither list is a
 `classify` failure naming the attribute (`attr:<name>`, which the

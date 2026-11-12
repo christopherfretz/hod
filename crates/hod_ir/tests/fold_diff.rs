@@ -240,7 +240,9 @@ fn hod_image(ctx: &Ctx, value: ConstId) -> Result<Image, String> {
                     term(ctx.name(b).to_string(), -1);
                 }
                 FixupTarget::Plt(sym) => term(format!("{}@PLT", ctx.name(sym)), 1),
-                FixupTarget::Block { .. } => panic!("no case has a block address"),
+                FixupTarget::Block { .. } | FixupTarget::BlockDiff { .. } => {
+                    panic!("no case has a block address")
+                }
             }
             let size = usize::from(fixup.size);
             Field {

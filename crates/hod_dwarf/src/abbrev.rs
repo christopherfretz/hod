@@ -303,6 +303,8 @@ pub mod fam {
     // WP-087: whole `-g` units.
     pub const VARIABLE_UNNAMED: usize = 87;
     pub const VARIABLE_ALIGNED: usize = 88;
+    // WP-094: the declines left after WP-087.
+    pub const SUBPROGRAM_MINIMAL: usize = 89;
 }
 
 /// Every family, in code order (`spec/dwarf.md` §6.1 has the same table).
@@ -1318,6 +1320,22 @@ pub const FAMILIES: &[Family] = &[
             o(2, at::ARTIFICIAL, FLAG_PRESENT),
         ],
     ),
+    // WP-094. 89: a function with inlined code in a `LineTablesOnly`
+    // unit (`includeMinimalInlineScopes`): its code, then its name, or
+    // `DW_AT_abstract_origin` when it has an abstract instance.
+    fam(
+        "subprogram (line tables only)",
+        tag::SUBPROGRAM,
+        Optional,
+        8,
+        "WP-094",
+        &[
+            s(at::LOW_PC, ADDRX),
+            s(at::HIGH_PC, DATA4),
+            o(0, at::NAME, STRX),
+            o(1, at::ABSTRACT_ORIGIN, REF4),
+        ],
+    ),
 ];
 
 /// The slots of the general static-member families (54, 55), in `llc`'s
@@ -1481,7 +1499,9 @@ mod tests {
         // WP-087 appended families 87 and 88.
         assert_eq!(BASES[fam::VARIABLE_UNNAMED], 10631);
         assert_eq!(BASES[fam::VARIABLE_ALIGNED], 10639);
-        assert_eq!(CODE_END, 10647);
+        // WP-094 appended family 89.
+        assert_eq!(BASES[fam::SUBPROGRAM_MINIMAL], 10647);
+        assert_eq!(CODE_END, 10655);
         for (index, name) in [
             (fam::CONST_TYPE, "const_type"),
             (fam::TYPEDEF, "typedef"),

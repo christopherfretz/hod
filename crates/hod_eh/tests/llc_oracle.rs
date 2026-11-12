@@ -8,6 +8,8 @@
 //! restate instead, §4.3) the section and its relocations must be
 //! byte-identical.
 
+#![allow(clippy::too_many_lines, clippy::format_push_string)]
+
 mod common;
 
 use common::{compile, llc, round_trip};
@@ -275,4 +277,53 @@ fn llc19_eh_frame_round_trips() {
 #[test]
 fn llc22_eh_frame_round_trips() {
     oracle(22);
+}
+
+/// The shape of a personality slot (§2.2) as an object file shows it: the
+/// section's type, flags and alignment, the slot symbol's binding, type,
+/// visibility and size, its relocation, and the COMDAT group it signs.
+fn slot_shape(object: &[u8]) -> Vec<String> {
+    let elf = common::Elf::parse(object.to_vec());
+    let name = "DW.ref.__gxx_personality_v0";
+    let index = elf.section(&format!(".data.{name}")).expect("the slot's section");
+    let s = &elf.sections[index];
+    let symbol = elf.symbols.iter().position(|y| y.name == name).expect("the slot symbol");
+    let y = &elf.symbols[symbol];
+    let relas = elf.relas(elf.rela_of(index).expect("the slot's relocation"));
+    let target = &elf.symbols[relas[0].sym as usize].name;
+    let group = elf
+        .sections
+        .iter()
+        .enumerate()
+        .find(|(_, g)| g.ty == 17 && g.info as usize == symbol)
+        .map(|(i, _)| elf.bytes(i).to_vec())
+        .expect("a group signed by the slot");
+    let words: Vec<u32> =
+        group.chunks_exact(4).map(|w| u32::from_le_bytes(w.try_into().unwrap())).collect();
+    vec![
+        format!("section type {} flags {:#x} align {} size {}", s.ty, s.flags, s.align, s.size),
+        format!("symbol info {:#x} other {:#x} value {}", y.info, y.other, y.value),
+        format!(
+            "relocations {} type {} to {target} + {}",
+            relas.len(),
+            relas[0].ty,
+            relas[0].addend
+        ),
+        format!("group flag {} holds the slot {}", words[0], words[1..].contains(&(index as u32))),
+    ]
+}
+
+/// §2.2: `personality_ref` makes the slot as llc does.
+#[test]
+fn personality_slot_as_llc_makes_it() {
+    let Some(llc) = llc(22) else { return };
+    let scratch = Scratch::new("eh-slot");
+    let (_, ir) = cases().into_iter().find(|c| c.0 == "personality_shared_cie").unwrap();
+    let theirs = compile(&llc, &scratch, "slot", &ir, "aarch64-unknown-linux-gnu");
+    let mut obj = hod_obj::Object::new(Arch::AArch64);
+    let name = obj.add_string(b"__gxx_personality_v0").unwrap();
+    let routine = obj.add_symbol(hod_obj::Symbol::undefined(name));
+    hod_eh::personality_ref(&mut obj, routine).unwrap();
+    let ours = hod_obj::elf::to_vec(&obj).unwrap();
+    assert_eq!(slot_shape(&ours), slot_shape(&theirs));
 }

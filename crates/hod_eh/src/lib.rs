@@ -41,6 +41,7 @@ use hod_obj::{
     Binding, GroupKind, Object, SectionId, SectionKind, Symbol, SymbolId, SymbolKind, Visibility,
 };
 
+use leb::{Sink, sleb, uleb};
 pub use leb::{uleb_len, write_sleb, write_uleb};
 pub use target::{AARCH64, CfiTarget, X86_64, for_arch, pe};
 
@@ -206,82 +207,149 @@ const DW_CFA_OFFSET_EXTENDED_SF: u8 = 0x11;
 const DW_CFA_DEF_CFA_SF: u8 = 0x12;
 const DW_CFA_DEF_CFA_OFFSET_SF: u8 = 0x13;
 
-/// Appends the advance from code offset `from` to `to` (`to >= from`), with
-/// the shortest of `DW_CFA_advance_loc`, `_loc1`, `_loc2`, `_loc4` that
-/// holds the factored delta, nothing for no change (`spec/eh.md` §4.1).
-pub fn write_advance(out: &mut Vec<u8>, delta: u32) {
-    if delta == 0 {
-        // Nothing.
-    } else if delta < 0x40 {
-        out.push(DW_CFA_ADVANCE_LOC | delta as u8);
-    } else if delta <= 0xff {
-        out.extend_from_slice(&[DW_CFA_ADVANCE_LOC1, delta as u8]);
-    } else if delta <= 0xffff {
-        out.push(DW_CFA_ADVANCE_LOC2);
-        out.extend_from_slice(&(delta as u16).to_le_bytes());
-    } else {
-        out.push(DW_CFA_ADVANCE_LOC4);
-        out.extend_from_slice(&delta.to_le_bytes());
+/// The longest encoding of one row: `DW_CFA_advance_loc4` and an
+/// instruction with two LEB128 operands (a 16-bit register, a 32-bit
+/// factored offset).
+const MAX_ROW: usize = 5 + 1 + 3 + 5;
+
+/// A small stack buffer an FDE is encoded into before it is appended.
+struct Staging {
+    buf: [u8; 128],
+    len: usize,
+}
+
+impl Staging {
+    const fn new() -> Self {
+        Staging { buf: [0; 128], len: 0 }
+    }
+    /// Appends what it holds to `out` when another row might not fit.
+    #[inline]
+    fn make_room(&mut self, out: &mut Vec<u8>, need: usize) {
+        if self.len + need > self.buf.len() {
+            self.flush(out);
+        }
+    }
+    #[inline]
+    fn flush(&mut self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.buf[..self.len]);
+        self.len = 0;
     }
 }
 
-/// `value / factor` when it divides exactly.
+impl Sink for Staging {
+    #[inline]
+    fn byte(&mut self, b: u8) {
+        self.buf[self.len] = b;
+        self.len += 1;
+    }
+    #[inline]
+    fn bytes(&mut self, b: &[u8]) {
+        self.buf[self.len..self.len + b.len()].copy_from_slice(b);
+        self.len += b.len();
+    }
+}
+
+/// Appends the advance of the code location by `delta` (already divided
+/// by the code alignment factor), with the shortest of
+/// `DW_CFA_advance_loc`, `_loc1`, `_loc2`, `_loc4` that holds it, nothing
+/// for no change (`spec/eh.md` §4.1).
+pub fn write_advance(out: &mut Vec<u8>, delta: u32) {
+    advance(out, delta);
+}
+
+#[inline]
+fn advance<S: Sink>(out: &mut S, delta: u32) {
+    if delta == 0 {
+        // Nothing.
+    } else if delta < 0x40 {
+        out.byte(DW_CFA_ADVANCE_LOC | delta as u8);
+    } else if delta <= 0xff {
+        out.bytes(&[DW_CFA_ADVANCE_LOC1, delta as u8]);
+    } else if delta <= 0xffff {
+        out.byte(DW_CFA_ADVANCE_LOC2);
+        out.bytes(&(delta as u16).to_le_bytes());
+    } else {
+        out.byte(DW_CFA_ADVANCE_LOC4);
+        out.bytes(&delta.to_le_bytes());
+    }
+}
+
+/// `value / factor` when it divides exactly. The factors of every target
+/// are powers of two (±1, ±4, ±8), which take a shift, not a division.
+#[inline]
 fn factored(value: i32, factor: i32) -> Option<i64> {
-    let (value, factor) = (i64::from(value), i64::from(factor));
-    (value % factor == 0).then(|| value / factor)
+    let magnitude = factor.unsigned_abs();
+    let quotient = if magnitude.is_power_of_two() {
+        if value as u32 & (magnitude - 1) != 0 {
+            return None;
+        }
+        i64::from(value >> magnitude.trailing_zeros())
+    } else {
+        let (value, m) = (i64::from(value), i64::from(magnitude));
+        if value % m != 0 {
+            return None;
+        }
+        value / m
+    };
+    Some(if factor < 0 { -quotient } else { quotient })
 }
 
 /// Appends one call-frame instruction, as `llc` chooses its form
 /// (`spec/eh.md` §4.2). `None` when an offset does not factor.
 pub fn write_op(out: &mut Vec<u8>, target: &CfiTarget, op: Op) -> Option<()> {
+    instruction(out, target, op)
+}
+
+#[inline]
+fn instruction<S: Sink>(out: &mut S, target: &CfiTarget, op: Op) -> Option<()> {
     match op {
         Op::DefCfa { reg, offset } => {
             if offset >= 0 {
-                out.push(DW_CFA_DEF_CFA);
-                write_uleb(out, u64::from(reg));
-                write_uleb(out, offset as u64);
+                out.byte(DW_CFA_DEF_CFA);
+                uleb(out, u64::from(reg));
+                uleb(out, offset as u64);
             } else {
                 let f = factored(offset, target.data_align)?;
-                out.push(DW_CFA_DEF_CFA_SF);
-                write_uleb(out, u64::from(reg));
-                write_sleb(out, f);
+                out.byte(DW_CFA_DEF_CFA_SF);
+                uleb(out, u64::from(reg));
+                sleb(out, f);
             }
         }
         Op::DefCfaOffset(offset) => {
             if offset >= 0 {
-                out.push(DW_CFA_DEF_CFA_OFFSET);
-                write_uleb(out, offset as u64);
+                out.byte(DW_CFA_DEF_CFA_OFFSET);
+                uleb(out, offset as u64);
             } else {
                 let f = factored(offset, target.data_align)?;
-                out.push(DW_CFA_DEF_CFA_OFFSET_SF);
-                write_sleb(out, f);
+                out.byte(DW_CFA_DEF_CFA_OFFSET_SF);
+                sleb(out, f);
             }
         }
         Op::DefCfaRegister(reg) => {
-            out.push(DW_CFA_DEF_CFA_REGISTER);
-            write_uleb(out, u64::from(reg));
+            out.byte(DW_CFA_DEF_CFA_REGISTER);
+            uleb(out, u64::from(reg));
         }
         Op::Offset { reg, cfa_offset } => {
             let f = factored(cfa_offset, target.data_align)?;
             if f < 0 {
-                out.push(DW_CFA_OFFSET_EXTENDED_SF);
-                write_uleb(out, u64::from(reg));
-                write_sleb(out, f);
+                out.byte(DW_CFA_OFFSET_EXTENDED_SF);
+                uleb(out, u64::from(reg));
+                sleb(out, f);
             } else if reg < 64 {
-                out.push(DW_CFA_OFFSET | reg as u8);
-                write_uleb(out, f as u64);
+                out.byte(DW_CFA_OFFSET | reg as u8);
+                uleb(out, f as u64);
             } else {
-                out.push(DW_CFA_OFFSET_EXTENDED);
-                write_uleb(out, u64::from(reg));
-                write_uleb(out, f as u64);
+                out.byte(DW_CFA_OFFSET_EXTENDED);
+                uleb(out, u64::from(reg));
+                uleb(out, f as u64);
             }
         }
         Op::Restore { reg } => {
             if reg < 64 {
-                out.push(DW_CFA_RESTORE | reg as u8);
+                out.byte(DW_CFA_RESTORE | reg as u8);
             } else {
-                out.push(DW_CFA_RESTORE_EXTENDED);
-                write_uleb(out, u64::from(reg));
+                out.byte(DW_CFA_RESTORE_EXTENDED);
+                uleb(out, u64::from(reg));
             }
         }
     }
@@ -289,8 +357,14 @@ pub fn write_op(out: &mut Vec<u8>, target: &CfiTarget, op: Op) -> Option<()> {
 }
 
 /// Appends an FDE's instructions: each row's advance, then its
-/// instruction (`spec/eh.md` §4).
-fn write_rows(out: &mut Vec<u8>, target: &CfiTarget, fde: &Fde<'_>) -> Result<(), Error> {
+/// instruction (`spec/eh.md` §4), staged in `stage`.
+#[inline]
+fn write_rows(
+    out: &mut Vec<u8>,
+    stage: &mut Staging,
+    target: &CfiTarget,
+    fde: &Fde<'_>,
+) -> Result<(), Error> {
     let mut at = 0u32;
     let code_align = target.code_align;
     for (row, r) in fde.rows.iter().enumerate() {
@@ -301,13 +375,17 @@ fn write_rows(out: &mut Vec<u8>, target: &CfiTarget, fde: &Fde<'_>) -> Result<()
         if r.offset > fde.size {
             return Err(Error::RowBeyondEnd { order, row });
         }
-        let delta = r.offset - at;
-        if delta % code_align != 0 {
-            return Err(Error::Unfactored { order, row });
+        let mut delta = r.offset - at;
+        if code_align != 1 {
+            if !delta.is_multiple_of(code_align) {
+                return Err(Error::Unfactored { order, row });
+            }
+            delta /= code_align;
         }
-        write_advance(out, delta / code_align);
+        stage.make_room(out, MAX_ROW);
+        advance(stage, delta);
         at = r.offset;
-        write_op(out, target, r.op).ok_or(Error::Unfactored { order, row })?;
+        instruction(stage, target, r.op).ok_or(Error::Unfactored { order, row })?;
     }
     Ok(())
 }
@@ -339,7 +417,11 @@ struct PendingReloc {
 /// the order of the first function (by `order`) that uses it; within a
 /// CIE by `order`. Returns the order and, per CIE, its personality and the
 /// number of FDEs.
-fn layout(fdes: &[Fde<'_>]) -> Result<(Vec<u32>, Vec<(Option<SymbolId>, u32)>), Error> {
+/// The FDEs' indices in output order, and per CIE its personality and its
+/// number of FDEs.
+type Layout = (Vec<u32>, Vec<(Option<SymbolId>, u32)>);
+
+fn layout(fdes: &[Fde<'_>]) -> Result<Layout, Error> {
     // Personalities with the lowest order that uses each; few per object.
     let mut personalities: Vec<(SymbolId, u32)> = Vec::new();
     for fde in fdes {
@@ -412,25 +494,17 @@ fn write_cie(
     write_uleb(out, u64::from(target.code_align));
     write_sleb(out, i64::from(target.data_align));
     out.push(target.return_address);
-    match personality {
-        Some(symbol) => {
-            let size = usize::from(target.pointer_size);
-            write_uleb(out, 3 + size as u64);
-            out.push(target.personality_encoding);
-            relocs.push(PendingReloc {
-                offset: out.len() as u32,
-                pointer: true,
-                symbol,
-                addend: 0,
-            });
-            out.resize(out.len() + size, 0);
-            out.push(target.lsda_encoding);
-            out.push(target.fde_encoding);
-        }
-        None => {
-            write_uleb(out, 1);
-            out.push(target.fde_encoding);
-        }
+    if let Some(symbol) = personality {
+        let size = usize::from(target.pointer_size);
+        write_uleb(out, 3 + size as u64);
+        out.push(target.personality_encoding);
+        relocs.push(PendingReloc { offset: out.len() as u32, pointer: true, symbol, addend: 0 });
+        out.resize(out.len() + size, 0);
+        out.push(target.lsda_encoding);
+        out.push(target.fde_encoding);
+    } else {
+        write_uleb(out, 1);
+        out.push(target.fde_encoding);
     }
     for &op in target.initial {
         // The table's initial instructions always factor.
@@ -454,7 +528,7 @@ pub fn write_eh_frame(obj: &mut Object, fdes: &[Fde<'_>]) -> Result<Option<Secti
     let (sorted, cies) = layout(fdes)?;
     let rows: usize = fdes.iter().map(|f| f.rows.len()).sum();
     let with_lsda = fdes.iter().filter(|f| f.lsda.is_some()).count();
-    let mut out = Vec::with_capacity(cies.len() * 40 + fdes.len() * 24 + rows * 3);
+    let mut out = Vec::with_capacity(cies.len() * 40 + fdes.len() * 28 + rows * 5);
     let mut relocs = Vec::with_capacity(cies.len() + fdes.len() + with_lsda);
     let mut next = sorted.iter();
     let mut last_start = 0;
@@ -465,35 +539,40 @@ pub fn write_eh_frame(obj: &mut Object, fdes: &[Fde<'_>]) -> Result<Option<Secti
             let Some(&i) = next.next() else { unreachable!("layout counts every FDE") };
             let fde = &fdes[i as usize];
             let start = out.len();
-            out.extend_from_slice(&[0; 4]); // length
-            let pointer = u32::try_from(out.len() - cie).map_err(|_| Error::TooLarge)?;
-            out.extend_from_slice(&pointer.to_le_bytes());
+            let pointer = u32::try_from(start + 4 - cie).map_err(|_| Error::TooLarge)?;
             relocs.push(PendingReloc {
-                offset: out.len() as u32,
+                offset: (start + 8) as u32,
                 pointer: false,
                 symbol: fde.start,
                 addend: fde.start_addend,
             });
-            out.extend_from_slice(&[0; 4]); // initial location
-            out.extend_from_slice(&fde.size.to_le_bytes());
+            let mut stage = Staging::new();
+            stage.bytes(&[0; 4]); // length, patched below
+            stage.bytes(&pointer.to_le_bytes());
+            stage.bytes(&[0; 4]); // initial location, relocated
+            stage.bytes(&fde.size.to_le_bytes());
             if personality.is_some() {
                 let size = usize::from(target.pointer_size);
-                write_uleb(&mut out, size as u64);
+                stage.byte(size as u8); // augmentation length (ULEB128)
                 if let Some(lsda) = fde.lsda {
                     relocs.push(PendingReloc {
-                        offset: out.len() as u32,
+                        offset: (start + stage.len) as u32,
                         pointer: true,
                         symbol: lsda.symbol,
                         addend: lsda.addend,
                     });
                 }
-                out.resize(out.len() + size, 0);
+                stage.bytes(&[0; 8][..size]);
             } else {
-                write_uleb(&mut out, 0);
+                stage.byte(0);
             }
-            write_rows(&mut out, target, fde)?;
+            write_rows(&mut out, &mut stage, target, fde)?;
+            // DW_CFA_nop to a multiple of 4.
+            stage.make_room(&mut out, 3);
+            let end = out.len() + stage.len;
+            stage.bytes(&[0; 3][..end.next_multiple_of(4) - end]);
+            stage.flush(&mut out);
             last_start = start;
-            pad(&mut out, 4);
             patch_length(&mut out, start);
         }
     }
@@ -508,6 +587,7 @@ pub fn write_eh_frame(obj: &mut Object, fdes: &[Fde<'_>]) -> Result<Option<Secti
         SectionKind::Elf { sh_type: target.section_type, sh_flags: SHF_ALLOC, sh_entsize: 0 };
     let section = obj.add_section(b".eh_frame", kind, u64::from(target.section_align))?;
     obj.append_owned(section, out);
+    obj.reserve(0, 0, relocs.len(), 0);
     for r in relocs {
         let kind = if r.pointer { target.pointer_reloc } else { target.pc_reloc };
         obj.add_relocation(section, u64::from(r.offset), kind, r.symbol, r.addend);

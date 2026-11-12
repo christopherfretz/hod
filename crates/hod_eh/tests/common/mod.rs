@@ -1,9 +1,9 @@
 //! Shared by the oracle tests (`spec/eh.md` §7): a small ELF64 reader and
 //! patcher, a reader of `llvm-dwarfdump --eh-frame` output, and the
-//! round trip "llc's object → hod_eh's input rows → hod_eh's `.eh_frame`
+//! round trip "llc's object → `hod_eh`'s input rows → `hod_eh`'s `.eh_frame`
 //! spliced into llc's object".
 
-#![allow(dead_code)]
+#![allow(dead_code, clippy::too_many_lines, clippy::format_push_string, clippy::format_collect)]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -35,6 +35,7 @@ pub struct Shdr {
 pub struct Sym {
     pub name: String,
     pub info: u8,
+    pub other: u8,
     pub shndx: u16,
     pub value: u64,
 }
@@ -108,6 +109,7 @@ impl Elf {
                 symbols.push(Sym {
                     name: cstr(&data, names + u32_at(&data, e) as usize),
                     info: data[e + 4],
+                    other: data[e + 5],
                     shndx: u16_at(&data, e + 6),
                     value: u64_at(&data, e + 8),
                 });
@@ -155,8 +157,7 @@ impl Elf {
         self.symbols
             .iter()
             .find(|f| f.info & 0xf == 2 && f.shndx == s.shndx && f.value as i64 == addend)
-            .map(|f| f.name.clone())
-            .unwrap_or_else(|| panic!("no function at {}+{addend}", s.name))
+            .map_or_else(|| panic!("no function at {}+{addend}", s.name), |f| f.name.clone())
     }
 
     /// The file with the contents of section `index` and of its relocation
@@ -167,7 +168,7 @@ impl Elf {
         let mut out = self.data.clone();
         let shoff = u64_at(&out, 0x28) as usize;
         let shentsize = usize::from(u16_at(&out, 0x3a));
-        let mut put = |out: &mut Vec<u8>, section: usize, bytes: &[u8]| {
+        let put = |out: &mut Vec<u8>, section: usize, bytes: &[u8]| {
             out.resize(out.len().next_multiple_of(8), 0);
             let at = out.len() as u64;
             out.extend_from_slice(bytes);
@@ -259,7 +260,8 @@ pub fn parse_dump(text: &str) -> Vec<Entry> {
         } else if t.starts_with("Augmentation data:") {
             // The encodings, without the pointer bytes (which are the
             // unrelocated field and so depend on the layout).
-            let bytes: Vec<&str> = t["Augmentation data:".len()..].split_whitespace().collect();
+            let data = t.strip_prefix("Augmentation data:").unwrap_or_default();
+            let bytes: Vec<&str> = data.split_whitespace().collect();
             let (first, last) = (bytes.first().copied(), bytes.last().copied());
             e.header
                 .push(format!("Augmentation encodings: {first:?} .. {last:?} ({})", bytes.len()));
@@ -458,9 +460,11 @@ pub fn round_trip(
     let reloc_at = |offset: u64| relas.iter().find(|r| r.offset == offset).copied();
     // The functions' module order: their `define`s in the IR.
     let order_of = |name: &str| {
-        ir.find(&format!("@{name}("))
-            .or_else(|| ir.find(&format!("@\"{name}\"(")))
-            .unwrap_or_else(|| panic!("{name} in the IR")) as u32
+        let (plain, quoted) = (format!("@{name}("), format!("@\"{name}\"("));
+        ir.lines()
+            .filter(|l| l.starts_with("define "))
+            .position(|l| l.contains(&plain) || l.contains(&quoted))
+            .unwrap_or_else(|| panic!("a definition of {name} in the IR")) as u32
     };
 
     // Placeholder symbols that stand for llc's symbol table entries 1..n.

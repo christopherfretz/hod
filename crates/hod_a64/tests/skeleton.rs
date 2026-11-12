@@ -11,7 +11,7 @@ use common::linking::{Toolchain, exit_code};
 use common::{code_words, define, emit, int, module, returns, write_object};
 use hod_a64::A64;
 use hod_cg::{CgError, Chunk, Class, Options, Scratch, Target, compile_function};
-use hod_ir::{FunctionBuilder, Opcode, TypeId, TypeKind};
+use hod_ir::{AtomicOrdering, FunctionBuilder, Opcode, SyncScope, TypeId, TypeKind};
 use hod_mc_a64 as mc;
 use hod_mc_a64::{Reg, RegSp, Size};
 
@@ -103,13 +103,16 @@ fn unimplemented_groups_are_refused_by_name() {
     let entry = b.create_block().unwrap();
     b.begin_block(entry).unwrap();
     let x = b.arg(0).unwrap();
+    // The `add` is lowered (WP-035) and its code emitted before the
+    // `fence`, which has no package yet, is refused.
     let sum = b.binary(Opcode::Add, TypeId::I64, x, one).unwrap();
+    b.fence(AtomicOrdering::SeqCst, SyncScope::System).unwrap();
     b.ret(Some(sum)).unwrap();
     let body = b.finish().unwrap();
     let mut scratch = Scratch::new();
     let mut chunk = Chunk::new();
     let result = compile_function(&A64, &m, &body, &Options::default(), &mut scratch, &mut chunk);
-    assert_eq!(result, Err(CgError::unsupported(hod_a64::int::BINARY)));
+    assert_eq!(result, Err(CgError::unsupported(hod_a64::target::ATOMIC)));
     assert!(chunk.code.is_empty(), "a refused function leaves no trace");
 }
 

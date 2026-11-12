@@ -12,7 +12,7 @@ use hod_ir::{
     ParamAttrs, SymbolKind, TypeId, TypeKind, UwTable, Value,
 };
 
-use crate::abi::{AbiUnsupported, PartKind, Place, Sig};
+use crate::abi::{AbiUnsupported, LaneLoc, PartKind, Place, Sig};
 use crate::cx::{FnCx, Scratch};
 use crate::error::{
     CALL_BYVAL_PLACE, CALL_PART_CLASS, CgError, CgResult, DEBUG_DBG_ASSIGN, DEBUG_DBG_VALUE,
@@ -403,6 +403,7 @@ impl<'a, T: Target> FnCx<'a, T> {
             // Wholly on the stack: the incoming location is the home.
             if next - first == 1
                 && part.offset == 0
+                && part.kind == PartKind::Value
                 && let Place::Stack(offset) = part.place
             {
                 let width = if class == Class::Mem { 0 } else { part.size.min(255) as u8 };
@@ -432,6 +433,14 @@ impl<'a, T: Target> FnCx<'a, T> {
                 for at in first..next {
                     let part = self.s.fn_asg.args[at];
                     let to = home.offset_by(part.offset);
+                    if crate::call::is_lanes(part.kind) {
+                        let from = match part.place {
+                            Place::Reg(reg) => LaneLoc::Reg(reg),
+                            Place::Stack(offset) => LaneLoc::Frame(FrameRef::Incoming(offset)),
+                        };
+                        t.lanes_in(self, &part, from, LaneLoc::Frame(to))?;
+                        continue;
+                    }
                     match part.place {
                         Place::Reg(reg) => t.store(self, reg, to, part.size),
                         Place::Stack(offset) => {
@@ -440,6 +449,31 @@ impl<'a, T: Target> FnCx<'a, T> {
                     }
                 }
                 self.clear_odd_leaves(ty, home);
+                continue;
+            }
+            if crate::call::is_lanes(part.kind) {
+                // WP-082: a mask whose elements arrive as lanes; their
+                // bits are gathered in a scratch register.
+                let bits = self.scratch_reg(Class::Gpr);
+                for at in first..next {
+                    let part = self.s.fn_asg.args[at];
+                    let from = match part.place {
+                        Place::Reg(reg) => LaneLoc::Reg(reg),
+                        Place::Stack(offset) => LaneLoc::Frame(FrameRef::Incoming(offset)),
+                    };
+                    t.lanes_in(self, &part, from, LaneLoc::Reg(bits))?;
+                }
+                match (state.kind, state.loc) {
+                    (Kind::Reg, _) => {
+                        let to = self.alloc(class)?;
+                        t.mov(self, to, bits);
+                        self.own(to, key);
+                    }
+                    (Kind::Home, Loc::Frame(home)) => {
+                        t.store(self, bits, home, u32::from(state.width));
+                    }
+                    _ => return self.bug("an argument without a kind"),
+                }
                 continue;
             }
             let (Place::Reg(reg), true) = (part.place, next - first == 1) else {

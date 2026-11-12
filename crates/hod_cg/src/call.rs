@@ -11,9 +11,11 @@ use hod_ir::{
     TypeKind, Value, ValueKind, call_arg_attrs, call_ret_attrs,
 };
 
-use crate::abi::{AbiUnsupported, Assignment, Part, PartKind, Place, Sig};
+use crate::abi::{AbiUnsupported, Assignment, LaneLoc, Part, PartKind, Place, Sig};
 use crate::cx::{FnCx, TailExit};
-use crate::error::{CALL_MUSTTAIL_RET_MEMORY, CALL_PART_CLASS, CgError, CgResult};
+use crate::error::{
+    CALL_MUSTTAIL_RET_MEMORY, CALL_PART_CLASS, CALL_PART_LANES, CgError, CgResult,
+};
 use crate::frame::FrameRef;
 use crate::loc::{Class, Key, Loc};
 use crate::record::{CallSiteRow, NO_PAD};
@@ -24,6 +26,11 @@ use crate::target::{CallEmit, CallTarget, Target};
 /// Whether `attrs` asks for an extension (`zeroext` or `signext`).
 fn extends(attrs: ParamAttrs) -> bool {
     attrs.has(ParamAttrs::ZEROEXT) || attrs.has(ParamAttrs::SIGNEXT)
+}
+
+/// Whether a part's elements travel as lanes (§7.2, WP-082).
+pub(crate) fn is_lanes(kind: PartKind) -> bool {
+    matches!(kind, PartKind::Lanes { .. })
 }
 
 /// An operand of a runtime-function call (§7.3).
@@ -347,11 +354,25 @@ impl<'a, T: Target> FnCx<'a, T> {
         let class = self.class_of(value);
         let ret_ty = self.body.ret_type(self.module);
         let source = if class == Class::Mem { Some(self.use_mem(value)?) } else { None };
+        // WP-082: a mask whose elements travel as lanes is converted from
+        // its bits, which wait in a scratch register.
+        let bits = self.scratch_reg(Class::Gpr);
+        if source.is_none() && self.s.fn_asg.ret.iter().any(|part| is_lanes(part.kind)) {
+            self.put(value, bits)?;
+        }
         for index in 0..self.s.fn_asg.ret.len() {
             let part = self.s.fn_asg.ret[index];
             let Place::Reg(reg) = part.place else {
                 return self.bug("a part of the return value on the stack");
             };
+            if is_lanes(part.kind) {
+                let from = match source {
+                    Some(slot) => LaneLoc::Frame(slot.offset_by(part.offset)),
+                    None => LaneLoc::Reg(bits),
+                };
+                t.lanes_out(self, &part, from, LaneLoc::Reg(reg))?;
+                continue;
+            }
             if let Some(slot) = source {
                 t.load(self, reg, slot.offset_by(part.offset), part.size);
                 self.extend_last_piece(ret_ty, self.ret_attrs, &part, slot, None);
@@ -471,8 +492,19 @@ impl<'a, T: Target> FnCx<'a, T> {
                 self.place_part(arg, ty, attrs, part, stack, &mut mem_source)?;
             }
         }
+        // WP-082: a register value returned in memory (a wide mask) is
+        // received in a buffer of this instruction's own.
+        let ret_buffer = match (asg.ret_memory, call.ret_mem) {
+            (Some(_), None)
+                if call.ret != TypeId::VOID
+                    && t.class_of(self.types(), call.ret) != Class::Mem =>
+            {
+                Some(self.s.frame.alloc_temp(self.types().alloc_size_of(call.ret))?)
+            }
+            (_, buffer) => buffer,
+        };
         if let Some(memory) = asg.ret_memory {
-            let Some(buffer) = call.ret_mem else {
+            let Some(buffer) = ret_buffer else {
                 return self.bug("a call that returns in memory without a place for the result");
             };
             match (memory.address, stack) {
@@ -545,8 +577,18 @@ impl<'a, T: Target> FnCx<'a, T> {
         // The result (§4.4): left in its return register, or copied
         // into the result's home.
         let mut reg = None;
-        if call.ret != TypeId::VOID && asg.ret_memory.is_none() {
-            let class = t.class_of(self.types(), call.ret);
+        let class = t.class_of(self.types(), call.ret);
+        if call.ret != TypeId::VOID
+            && class != Class::Mem
+            && asg.ret_memory.is_some()
+            && let Some(buffer) = ret_buffer
+        {
+            // WP-082: the image the callee wrote, in a temporary.
+            let to = self.temp(class)?;
+            let bytes = self.types().alloc_size_of(call.ret).min(u64::from(self.reg_bytes(class)));
+            t.load(self, to, buffer, bytes as u32);
+            reg = Some(to);
+        } else if call.ret != TypeId::VOID && asg.ret_memory.is_none() {
             if class == Class::Mem {
                 let Some(buffer) = call.ret_mem else {
                     return self.bug("a call with a result of class Mem and no place for it");
@@ -555,8 +597,27 @@ impl<'a, T: Target> FnCx<'a, T> {
                     let Place::Reg(from) = part.place else {
                         return self.bug("a part of a return value on the stack");
                     };
-                    t.store(self, from, buffer.offset_by(part.offset), part.size);
+                    let to = buffer.offset_by(part.offset);
+                    if is_lanes(part.kind) {
+                        t.lanes_in(self, part, LaneLoc::Reg(from), LaneLoc::Frame(to))?;
+                    } else {
+                        t.store(self, from, to, part.size);
+                    }
                 }
+            } else if asg.ret.iter().any(|part| is_lanes(part.kind)) {
+                // WP-082: a mask whose elements return as lanes: their
+                // bits are gathered in a scratch register, then moved to
+                // a temporary.
+                let bits = self.scratch_reg(Class::Gpr);
+                for part in &asg.ret {
+                    let Place::Reg(from) = part.place else {
+                        return self.bug("a part of a return value on the stack");
+                    };
+                    t.lanes_in(self, part, LaneLoc::Reg(from), LaneLoc::Reg(bits))?;
+                }
+                let to = self.temp(class)?;
+                t.mov(self, to, bits);
+                reg = Some(to);
             } else {
                 let [Part { place: Place::Reg(from), .. }] = asg.ret[..] else {
                     return self.bug("a scalar return value that is not in one register");
@@ -613,6 +674,33 @@ impl<'a, T: Target> FnCx<'a, T> {
             self.put(pointer, scratch)?;
             t.copy_from_ptr(self, dst, scratch, part.offset, part.size);
             return Ok(());
+        }
+
+        // WP-082: elements widened to lanes, moved by the target.
+        if is_lanes(part.kind) {
+            let to = match (part.place, to_stack) {
+                (Place::Reg(reg), _) => LaneLoc::Reg(reg),
+                (_, Some(dst)) => LaneLoc::Frame(dst),
+                (Place::Stack(_), None) => {
+                    return self.bug("a stack part in a call without a stack-argument area");
+                }
+            };
+            let from = match arg {
+                CallArg::Mem(slot) => LaneLoc::Frame(slot.offset_by(part.offset)),
+                CallArg::Value(value) if class == Class::Mem => {
+                    if mem_source.0 != part.arg {
+                        *mem_source = (part.arg, self.use_mem(value)?);
+                    }
+                    LaneLoc::Frame(mem_source.1.offset_by(part.offset))
+                }
+                CallArg::Value(value) if class == Class::Gpr => {
+                    let bits = self.scratch_reg(Class::Gpr);
+                    self.put(value, bits)?;
+                    LaneLoc::Reg(bits)
+                }
+                _ => return Err(CgError::unsupported(CALL_PART_LANES)),
+            };
+            return t.lanes_out(self, part, from, to);
         }
 
         // A value that is in memory: its bytes are moved from there.

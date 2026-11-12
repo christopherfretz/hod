@@ -40,6 +40,7 @@
 //! | `mask` | WP-081 | vectors of `i1` as bit-packed general registers: compares, vector-condition `select`, mask casts, element access and shuffles of masks, `llvm.vector.reduce.*` | `tests/mask.rs` |
 //! | `vector` | WP-079 | vector helpers (shape, lanes, images, indices); `extractelement`, `insertelement`, `shufflevector` | `tests/vector.rs` |
 //! | `atomic` | WP-074 | atomic `load`/`store`, `atomicrmw`, `cmpxchg`, `fence` | `tests/atomic.rs` |
+//! | `vcall` | WP-082 | vectors across calls: the lanes of masks and promoted vectors (`PartKind::Lanes`) | `tests/vcall.rs` |
 //! | `tail` | WP-084 | wide fp conversions, wide `mul.with.overflow`, wide `switch`, `readcyclecounter`, `is.constant`, `{s,u}shl.sat`, `crc32` | `tests/tail.rs` |
 //!
 //! The differential harness that runs generated programs natively and
@@ -67,6 +68,7 @@ pub mod tail;
 pub mod target;
 pub mod term;
 pub mod tls;
+pub mod vcall;
 pub mod vector;
 
 use std::fmt;

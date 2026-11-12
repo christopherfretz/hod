@@ -13,7 +13,7 @@ use crate::lexer::{Lexer, Tok, Token, hex_value, unescape};
 use crate::limits::MAX_INT_LITERAL_DIGITS;
 use crate::parser::{Parser, ir};
 
-impl Parser<'_> {
+impl Parser<'_, '_> {
     /// `type value`.
     pub(crate) fn parse_typed_const(&mut self) -> PResult<ConstId> {
         let ty = self.parse_type()?;

@@ -39,7 +39,7 @@ enum Special {
     CompilerUsed,
 }
 
-impl<'a> Parser<'a> {
+impl<'a> Parser<'a, '_> {
     /// Creates every COMDAT.
     pub(crate) fn define_comdats(&mut self) -> PResult<()> {
         for at in 0..self.index.comdats.len() {
@@ -67,6 +67,26 @@ impl<'a> Parser<'a> {
     /// The symbol a `@name` or `@42` token refers to, created unresolved
     /// at its first mention.
     pub(crate) fn global_ref(&mut self, token: Token) -> PResult<SymId> {
+        if let Some(text) = self.text {
+            // A function body: every global is described, or missing.
+            let found = match token.kind {
+                Tok::Global => {
+                    let src = self.src;
+                    self.module.find_symbol(&src[token.start as usize + 1..token.end as usize])
+                }
+                Tok::GlobalQuoted => {
+                    self.module.find_symbol(&self.name(token).unwrap_or_default())
+                }
+                Tok::GlobalId => text.numbered_global(self.global_number(token)?),
+                _ => return fail(LlErrorKind::Syntax, token.start, "expected a global name"),
+            };
+            let Some(sym) = found else {
+                let name = String::from_utf8_lossy(self.tok_text(token)).into_owned();
+                let message = format!("use of undefined value '{name}'");
+                return fail(LlErrorKind::Undefined, token.start, message);
+            };
+            return Ok(sym);
+        }
         let sym = match token.kind {
             Tok::Global => {
                 let src = self.src;

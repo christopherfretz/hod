@@ -26,13 +26,18 @@ pub(crate) enum TypeSlot {
     Done(TypeId),
 }
 
-pub(crate) struct Parser<'a> {
+pub(crate) struct Parser<'a, 'm> {
     pub src: &'a [u8],
     pub lx: Lexer<'a>,
     /// The current token: one token of lookahead.
     pub tok: Token,
-    pub module: Module,
+    pub module: &'m mut Module,
     pub index: Index,
+    /// Set when a function body is parsed (`spec/ll.md` §6): the tables
+    /// the module level left behind answer for named types, numbered
+    /// globals, metadata nodes and attribute groups, in place of the
+    /// parser's own, which are empty then.
+    pub text: Option<&'m ModuleText<'a>>,
 
     /// Named types: name to index in `index.types` and `type_slots`.
     pub type_names: NameMap,
@@ -87,6 +92,20 @@ pub(crate) struct Parser<'a> {
     pub labels: HashMap<usize, Vec<(LabelKey, u32)>>,
 }
 
+/// The scratch stacks of a [`Parser`] and its `blockaddress` tables: a
+/// body parser keeps them from one function to the next.
+#[derive(Debug, Default)]
+pub(crate) struct Scratch {
+    pub tys: Vec<TypeId>,
+    pub elems: Vec<ConstId>,
+    pub words: Vec<u64>,
+    pub buf: Vec<u8>,
+    pub pattrs: Vec<ParamAttrs>,
+    pub pending: Vec<Cow<'static, str>>,
+    pub defined: Option<HashMap<LabelKey, usize>>,
+    pub labels: HashMap<usize, Vec<(LabelKey, u32)>>,
+}
+
 /// Maps a refusal of `hod_ir` to a failure at `at`.
 pub(crate) fn ir<T>(at: u32, result: IrResult<T>) -> PResult<T> {
     result.map_err(|error| ir_fail(at, error))
@@ -99,39 +118,8 @@ pub(crate) fn run<'a>(src: &'a [u8], options: &ParseOptions) -> PResult<ParsedMo
     }
     let index = scan(src)?;
     let target = target_of(src, &index, options)?;
-    let mut parser = Parser {
-        src,
-        lx: Lexer::new(src),
-        tok: Token { kind: Tok::Eof, start: 0, end: 0 },
-        module: Module::new(target),
-        index,
-        type_names: NameMap::default(),
-        type_numbers: Vec::new(),
-        type_slots: Vec::new(),
-        tys: Vec::new(),
-        elems: Vec::new(),
-        words: Vec::new(),
-        buf: Vec::new(),
-        pattrs: Vec::new(),
-        depth: 0,
-        first_ref: Vec::new(),
-        described: Vec::new(),
-        numbered_globals: Vec::new(),
-        pending: Vec::new(),
-        dbg: Vec::new(),
-        groups: Vec::new(),
-        fa: FnAttrs::new(),
-        fa_align: None,
-        group_refs: Vec::new(),
-        specials_seen: 0,
-        upgrade: None,
-        upgraded: Vec::new(),
-        md: MetadataIndex::default(),
-        functions: Vec::new(),
-        symbol_dbg: Vec::new(),
-        defined: None,
-        labels: HashMap::new(),
-    };
+    let mut module = Module::new(target);
+    let mut parser = Parser::new(src, &mut module, index, None, Scratch::default());
     for at in 0..parser.index.module_asm.len() {
         let text = parser.string(parser.index.module_asm[at]);
         parser.module.append_module_asm(&text);
@@ -145,7 +133,8 @@ pub(crate) fn run<'a>(src: &'a [u8], options: &ParseOptions) -> PResult<ParsedMo
     parser.flush(None);
     parser.number_globals()?;
     parser.items()?;
-    parser.finish()
+    let text = parser.finish()?;
+    Ok(ParsedModule { module, text })
 }
 
 /// The target: the module's triple, or the caller's default; the
@@ -173,7 +162,87 @@ fn target_of(src: &[u8], index: &Index, options: &ParseOptions) -> PResult<Targe
     Ok(target)
 }
 
-impl<'a> Parser<'a> {
+impl<'a, 'm> Parser<'a, 'm> {
+    /// A parser over `src` that adds to `module`. `text` is given for a
+    /// function body, and `index` is empty then.
+    pub(crate) fn new(
+        src: &'a [u8],
+        module: &'m mut Module,
+        index: Index,
+        text: Option<&'m ModuleText<'a>>,
+        scratch: Scratch,
+    ) -> Parser<'a, 'm> {
+        Parser {
+            src,
+            lx: Lexer::new(src),
+            tok: Token { kind: Tok::Eof, start: 0, end: 0 },
+            module,
+            index,
+            text,
+            type_names: NameMap::default(),
+            type_numbers: Vec::new(),
+            type_slots: Vec::new(),
+            tys: scratch.tys,
+            elems: scratch.elems,
+            words: scratch.words,
+            buf: scratch.buf,
+            pattrs: scratch.pattrs,
+            depth: 0,
+            first_ref: Vec::new(),
+            described: Vec::new(),
+            numbered_globals: Vec::new(),
+            pending: scratch.pending,
+            dbg: Vec::new(),
+            groups: Vec::new(),
+            fa: FnAttrs::new(),
+            fa_align: None,
+            group_refs: Vec::new(),
+            specials_seen: 0,
+            upgrade: None,
+            upgraded: Vec::new(),
+            md: MetadataIndex::default(),
+            functions: Vec::new(),
+            symbol_dbg: Vec::new(),
+            defined: scratch.defined,
+            labels: scratch.labels,
+        }
+    }
+
+    /// Gives the scratch stacks back, empty, for the next parser.
+    pub(crate) fn into_scratch(mut self) -> Scratch {
+        self.tys.clear();
+        self.elems.clear();
+        self.pattrs.clear();
+        self.pending.clear();
+        Scratch {
+            tys: self.tys,
+            elems: self.elems,
+            words: self.words,
+            buf: self.buf,
+            pattrs: self.pattrs,
+            pending: self.pending,
+            defined: self.defined,
+            labels: self.labels,
+        }
+    }
+
+    /// The attribute group `#id`, if it is defined.
+    pub(crate) fn attr_group(&self, id: u32) -> Option<&AttrGroup> {
+        if let Some(text) = self.text {
+            return text.attr_group(id);
+        }
+        let found = self.groups.binary_search_by_key(&id, |group| group.id).ok()?;
+        Some(&self.groups[found])
+    }
+
+    /// Whether the metadata node `!id` is defined.
+    pub(crate) fn has_md_node(&self, id: u32) -> bool {
+        match self.text {
+            Some(text) => text.metadata().node(id).is_some(),
+            None => self.md.node(id).is_some(),
+        }
+    }
+
     // ---- tokens ----
 
     pub(crate) fn bump(&mut self) {
@@ -332,7 +401,7 @@ impl<'a> Parser<'a> {
 
     // ---- the end ----
 
-    fn finish(mut self) -> PResult<ParsedModule<'a>> {
+    fn finish(mut self) -> PResult<ModuleText<'a>> {
         for symbol in self.module.symbols() {
             if symbol.is_unresolved() {
                 let at = self.first_ref.get(symbol.id().index()).copied().unwrap_or(0);
@@ -353,18 +422,15 @@ impl<'a> Parser<'a> {
         self.type_names.map_values(type_of);
         let numbered_types =
             self.type_numbers.iter().map(|&(number, slot)| (number, type_of(slot))).collect();
-        Ok(ParsedModule {
-            module: self.module,
-            text: ModuleText {
-                source: self.src,
-                functions: self.functions,
-                named_types: self.type_names,
-                numbered_types,
-                numbered_globals: self.numbered_globals,
-                groups: self.groups,
-                metadata: self.md,
-                symbol_dbg: self.symbol_dbg,
-            },
+        Ok(ModuleText {
+            source: self.src,
+            functions: self.functions,
+            named_types: self.type_names,
+            numbered_types,
+            numbered_globals: self.numbered_globals,
+            groups: self.groups,
+            metadata: self.md,
+            symbol_dbg: self.symbol_dbg,
         })
     }
 }

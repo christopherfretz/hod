@@ -78,6 +78,8 @@ fn section_align(&self, section: SectionId) -> u64
 fn raise_section_align(&mut self, section: SectionId, align: u64)
 fn section_size(&self, section: SectionId) -> u64
 fn section_group(&self, section: SectionId) -> Option<GroupId>
+fn set_linked_section(&mut self, section: SectionId, target: SectionId)
+fn linked_section(&self, section: SectionId) -> Option<SectionId>
 ```
 
 A section has a name, a kind, an alignment (a power of two, in bytes) and
@@ -92,6 +94,32 @@ entry size; `ReservedSectionType` and `ReservedSectionFlags` (see
 `raise_section_align` sets the alignment to the larger of the current one
 and `align`. An `align` that is not a power of two changes nothing and is
 reported by the writer as `BadAlignment` (see "Deferred errors").
+
+#### Linked sections
+
+`set_linked_section(section, target)` says that `section` describes
+`target` (gABI "Sections", `SHF_LINK_ORDER`): a table of records about the
+code in `target`, such as an exception table or a table of patchable entry
+points. `linked_section` returns the target, `None` when there is none. A
+later call replaces the target; a link cannot be removed. Linking a section
+to itself changes nothing and is reported by the writer as `LinkedToItself`
+(see "Deferred errors"). Any other section of the object may be the target,
+of any kind, itself linked or not.
+
+What a linker does with the link is the linker's choice, and the three
+tested differ:
+
+| | GNU ld 2.44, lld 22 | mold 2.37 |
+|---|---|---|
+| order of linked sections of one name in the output | the order of their targets | input order |
+| under `--gc-sections` | kept exactly when its target is kept | treated like any section: dropped unless something refers to it |
+
+So contents that must survive `--gc-sections` under every linker need a
+reference as well as a link, and nothing may depend on the output order.
+
+A linked section whose target is in a COMDAT group should be a member of
+that group: when the linker discards the group it then discards the linked
+section with it. The model does not check this.
 
 #### Section kinds
 
@@ -112,12 +140,19 @@ reported by the writer as `BadAlignment` (see "Deferred errors").
 | `Elf { sh_type, sh_flags, sh_entsize }` | anything else | as given | as given | as given |
 
 The types and flags are those of gABI "Sections". A section in a group also
-gets `SHF_GROUP`. `sh_link` and `sh_info` of a caller's section are zero.
+gets `SHF_GROUP`, and a linked section `SHF_LINK_ORDER` with its target in
+`sh_link` (see "ELF writer", "Caller's sections").
+
+Mergeable sections: the linker may keep one copy of equal entries (equal
+strings, equal constants) across all sections with the same name, flags and
+entry size, so two symbols that name equal entries in different objects may
+end with one address. GNU ld, lld and mold all do. The conventional names
+are `.rodata.str<char_size>.<align>` and `.rodata.cst<entry_size>`.
 
 `SectionKind::Elf` is the escape hatch (a mergeable `.debug_str`, a section
 with `SHF_GNU_RETAIN`, `SHT_X86_64_UNWIND`, ...). The constants are public
 in `hod_obj::elf` (`SHT_*`, `SHF_*`). It may not claim what the writer
-generates or what needs a link the model cannot express: `sh_type` of
+generates or sets itself: `sh_type` of
 `SHT_NULL`, `SHT_SYMTAB`, `SHT_RELA`, `SHT_REL`, `SHT_HASH`, `SHT_DYNAMIC`,
 `SHT_DYNSYM`, `SHT_GROUP` or `SHT_SYMTAB_SHNDX` is `ReservedSectionType`;
 `SHF_GROUP`, `SHF_INFO_LINK` or `SHF_LINK_ORDER` in `sh_flags` is
@@ -304,6 +339,37 @@ group (`SectionAlreadyInGroup`, which changes nothing). A section's
 relocations belong to its group with it. `group_members` yields members in
 the order added. An empty group is allowed.
 
+Members may be of any kind, including sections that are not loaded: a
+function's group usually holds its code, its exception table and the debug
+sections that describe only it.
+
+A `Plain` group only ties its members together. `Plain` groups with equal
+signatures are not deduplicated: the linker keeps the members of all of
+them, and the ordinary symbol rules decide between their definitions. When
+the linker discards unused sections (`--gc-sections`), GNU ld and lld keep
+all members of a group if they keep one; mold 2.37 decides for each member
+separately.
+
+#### References into a group from outside it
+
+gABI "Section Groups" forbids a reference from outside a group to a local
+symbol (a section symbol included) of a section in it: when the linker
+discards that copy of the group, the reference has no target. Only symbols
+with global or weak binding may be used to reach into a group, and those
+resolve to the kept copy. The model does not check this; what linkers do
+with such a reference depends on the section it comes from:
+
+- From a section that is not loaded (`.debug_*`) and from `.eh_frame`, the
+  three linkers accept it without a diagnostic. This is what debug
+  information and unwind tables for COMDAT functions need. The value
+  written is the linker's choice (GNU ld 2.44 writes the address in the
+  kept copy, lld 22 and mold 2.37 write 0), so a consumer of the section
+  cannot rely on it.
+- From a loaded section (code, data), it is not portable: lld rejects it
+  ("relocation refers to a discarded section"), while GNU ld and mold
+  accept it silently in the cases tried. A producer must not emit it. No
+  test pins this, because the linkers disagree.
+
 ### Stack marker
 
 `StackNote::NonExecutable` (the default) makes the writer emit an empty
@@ -319,7 +385,8 @@ effect, and the writer returns the **first** recorded error before writing
 anything. This applies to: `add_relocation` with a kind of another
 architecture; `align_to` and `raise_section_align` with a bad alignment;
 `add_symbol`, `add_relocation` and `add_group` past the 32-bit index space
-(`TooLarge`).
+(`TooLarge`); `set_linked_section` of a section to itself
+(`LinkedToItself`).
 
 ## ELF writer
 
@@ -389,6 +456,20 @@ An alignment so large that the file would pass 2^64 bytes is
 `TooLarge(FileBytes)`. Below that the padding is written as asked: a
 section aligned to 1 GiB makes a file of at least 1 GiB.
 
+### Caller's sections
+
+A caller's section's header has `sh_type`, `sh_flags` and `sh_entsize` from
+its kind (see "Section kinds"), `sh_addralign` its alignment, `sh_size` its
+size, and:
+
+- `SHF_GROUP` added to `sh_flags` when it is in a group;
+- for a linked section, `SHF_LINK_ORDER` added to `sh_flags` and `sh_link`
+  the ELF index of its target; otherwise `sh_link` is 0;
+- `sh_info` 0, always.
+
+The link does not affect the section's position in the object, its
+relocation section, or anything else.
+
 ### Section names
 
 `.shstrtab` (`SHT_STRTAB`, no flags, alignment 1) holds: a NUL; `.symtab`,
@@ -451,6 +532,66 @@ added, the member's ELF index followed by its relocation section's ELF
 index if it has one. Members and their relocation sections have
 `SHF_GROUP`.
 
+### ELF conventions
+
+Some sections have names and contents fixed by convention between
+compilers, linkers and the C runtime. These helpers in `hod_obj::elf` build
+them with ordinary `Object` calls, so that every producer gets them right;
+they add nothing to the model.
+
+```rust
+pub const DEFAULT_INIT_PRIORITY: u16 = 65535;
+pub fn add_init_array(obj: &mut Object, priority: u16) -> Result<SectionId, Error>
+pub fn add_fini_array(obj: &mut Object, priority: u16) -> Result<SectionId, Error>
+
+pub const GNU_PROPERTY_AARCH64_FEATURE_1_BTI: u32 = 1;
+pub const GNU_PROPERTY_AARCH64_FEATURE_1_PAC: u32 = 2;
+pub const GNU_PROPERTY_AARCH64_FEATURE_1_GCS: u32 = 4;
+pub const GNU_PROPERTY_X86_FEATURE_1_IBT: u32 = 1;
+pub const GNU_PROPERTY_X86_FEATURE_1_SHSTK: u32 = 2;
+pub const fn gnu_property_note(arch: Arch, features: u32) -> [u8; 32]
+pub fn add_gnu_property_note(obj: &mut Object, features: u32) -> Result<SectionId, Error>
+```
+
+**Initializer and finalizer arrays.** `add_init_array` adds a section of
+kind `InitArray`, alignment 8, named `.init_array.<priority>` with the
+priority in decimal without padding, or `.init_array` for
+`DEFAULT_INIT_PRIORITY`; `add_fini_array` the same with `FiniArray` and
+`.fini_array`. These are the names, type, flags, alignment and entry size
+(0) that clang gives the sections of
+`__attribute__((constructor(priority)))` functions. The caller fills the
+section with pointers (8 bytes and an `Abs64` relocation each). Each call
+adds a section, whether or not one with that name exists; a producer keeps
+the id for each priority it uses. The errors are those of `add_section`.
+
+The linker places `.init_array.<n>` sections in increasing order of the
+number `n` and `.init_array` after them, and the same for `.fini_array`
+(GNU ld, lld and mold all compare numbers, not text: 1000 follows 200). The
+C runtime calls initializers front to back before `main` and finalizers
+back to front at exit, so an initializer with a lower priority number runs
+earlier and a finalizer with a lower number runs later.
+
+**GNU property note.** `gnu_property_note` is the contents of a
+`.note.gnu.property` section holding one property, the architecture's
+feature word (`GNU_PROPERTY_AARCH64_FEATURE_1_AND`, 0xc0000000, AArch64
+ELF "Program Property"; `GNU_PROPERTY_X86_FEATURE_1_AND`, 0xc0000002, x86-64
+psABI "Program Property") with the value `features`: eight little-endian
+32-bit words, `4, 16, NT_GNU_PROPERTY_TYPE_0 (5), "GNU\0", <property>, 4,
+<features>, 0`. `add_gnu_property_note` adds that section (kind `Note`,
+alignment 8) for the object's architecture. Section and contents are, byte
+for byte, what clang emits for `-mbranch-protection=` on AArch64 (`bti` 1,
+`pac-ret` 2, `bti+pac-ret` 3; `standard` is those two plus whatever the
+compiler's version adds, `gcs` 4 in clang 22) and `-fcf-protection=` on
+x86-64 (`branch` 1, `return` 2, `full` 3). `features` is not checked
+against the architecture's defined bits. An object should have one such
+section; the helper does not look for one already there.
+
+The note is a promise about all code in the object: every indirect branch
+target starts with the landing pad instruction (BTI, IBT), and so on. A
+linker marks its output with a feature only when every input object has
+it. GNU ld and lld do so for both architectures; mold 2.37 does for x86-64
+and leaves the AArch64 property out of its output.
+
 ### Large section counts
 
 `-ffunction-sections` on a large C++ translation unit passes 65 280
@@ -484,6 +625,7 @@ involved.
 | `BadEntrySize { section: Some }` | writer | a `MergeableStrings`/`MergeableConstants` section's size is not a multiple of its entry size |
 | `ReservedSectionType { sh_type }` | `add_section` | see "Section kinds" |
 | `ReservedSectionFlags { sh_flags }` | `add_section` | see "Section kinds" |
+| `LinkedToItself { section }` | writer (deferred from `set_linked_section`) | the section is its own link target |
 | `SectionAlreadyInGroup { section }` | `add_group_member` | the section is in a group |
 | `RelocationArchMismatch { section, kind }` | writer (deferred from `add_relocation`) | kind of another architecture |
 | `DataInNobits { section }` | writer | bytes stored in a section without file space |
@@ -516,8 +658,10 @@ These are properties of the design, checked by `record_sizes` in
   relocations are an index chain through it, so sections need no vectors of
   their own and may be interleaved freely. Symbol names are appended to one
   byte arena that is already the image of `.strtab`.
-- **Per section:** one record (about 100 bytes), and one heap buffer for
-  its contents once it has any. Section names are interned in one arena
+- **Per section:** one record of 104 bytes (the alignment is stored as its
+  exponent, which is what leaves room for the link target), and one heap
+  buffer for its contents once it has any. Section names are interned in
+  one arena
   with an open-addressing index (a fixed, non-random hash); adding a
   section hashes its name once.
 - **Section contents are copied at most once by the writer**: `to_vec`
@@ -560,8 +704,13 @@ same. Deliberate differences:
 
 - ELF32, big-endian, executables and shared objects, `SHT_REL` relocation
   sections, architectures other than AArch64 and x86-64.
-- `SHF_LINK_ORDER` and any caller's section that needs `sh_link` or
-  `sh_info` (`SectionKind::Elf` rejects it).
+- A caller's section with a nonzero `sh_info`, with `SHF_INFO_LINK`, or
+  with an `sh_link` that is not a link-order target: nothing a producer of
+  relocatable objects emits needs one, except sections that refer to
+  symbol table indices (`.llvm_addrsig`, `SHT_LLVM_CALL_GRAPH_PROFILE`),
+  which would also need the writer's symbol numbering.
+- `SHF_LINK_ORDER` with `sh_link` 0 (the form without a target), and
+  removing a link.
 - `STB_GNU_UNIQUE`, symbol versioning, `STT_COMMON`.
 - Compressing sections: `SHF_COMPRESSED` may be set through
   `SectionKind::Elf`, with the caller providing the compressed bytes and
@@ -577,18 +726,26 @@ failure.
 
 | file | layer | covers |
 |---|---|---|
-| `src/model.rs`, `src/names.rs`, `src/reloc.rs` (unit tests) | L0 | "Model": ids, strings, contents, symbols, relocation chains, groups, deferred errors, record sizes, name interning, relocation numbering |
-| `tests/common/mod.rs` | - | test support: an independent ELF64 reader that checks, for every object it parses, the header, the escapes, that contents are aligned and do not overlap, the symbol order against `sh_info`, every relocation section's link, info, flags, name and order, and every group's link, signature, members and flags |
-| `tests/structure.rs` | L3 | "ELF writer", "Errors", "Determinism", through the reader: each section kind; shared names; symbol reordering and relocation remapping; omitted symbols; section and file symbols; sorted relocations; group contents; stack marker; `write` = `to_vec` through sinks of any granularity; every error; the three escapes exactly at 0xff00; an object with 70 000 sections |
-| `tests/tools.rs` | L3 | the same objects read by `llvm-readelf` and binutils `readelf` (`--all -g -W`, no diagnostics allowed) with sections, symbols, relocations and groups compared; **every named relocation kind** written once and its name read back from both tools; the 70 000 section object; an x86-64 object through `llvm-readelf` and `llvm-objdump -d -r`; the AArch64 program through `llvm-objdump -d -r` |
+| `src/model.rs`, `src/names.rs`, `src/reloc.rs`, `src/elf/conventions.rs` (unit tests) | L0 | "Model": ids, strings, contents, symbols, relocation chains, groups, linked sections, deferred errors, record sizes, name interning, relocation numbering; "ELF conventions": priority names, the property note's fields |
+| `tests/common/mod.rs` | - | test support: an independent ELF64 reader that checks, for every object it parses, the header, the escapes, that contents are aligned and do not overlap, the symbol order against `sh_info`, every relocation section's link, info, flags, name and order, every group's link, signature, members and flags, and every other section's link (`SHF_LINK_ORDER` exactly when `sh_link` is nonzero, the target a caller's section other than itself, `sh_info` 0); and the fixture programs |
+| `tests/common/linking.rs` | - | test support for linking and running: the compiler driver per target, the linkers present, the emulator |
+| `tests/structure.rs` | L3 | "ELF writer", "Errors", "Determinism", through the reader: each section kind; shared names; symbol reordering and relocation remapping; omitted symbols; section and file symbols; sorted relocations; group contents, with members that are not loaded; linked sections; the convention helpers' sections; stack marker; `write` = `to_vec` through sinks of any granularity; every error; the three escapes exactly at 0xff00; an object with 70 000 sections |
+| `tests/tools.rs` | L3 | the same objects read by `llvm-readelf` and binutils `readelf` (`--all -g -W`, no diagnostics allowed) with sections, symbols, relocations and groups compared; linked sections and a `Plain` group with a member that is not loaded, in both tools; **every named relocation kind** written once and its name read back from both tools; the property note against clang's, byte for byte and header for header, for each `-mbranch-protection=` and `-fcf-protection=` setting, and its features named by `llvm-readelf -n` and `readelf -n`; the initializer and finalizer array sections against clang's for the same priorities, for both architectures; the 70 000 section object; an x86-64 object through `llvm-readelf` and `llvm-objdump -d -r`; the AArch64 program through `llvm-objdump -d -r` |
 | `tests/link.rs` | L3 | link and run, AArch64 Linux hosts only |
+| `tests/link_x64.rs` | L3 | link and run for x86-64, under `qemu-x86_64` on other hosts |
+| `tests/link_tls.rs` | L3 | link and run, thread-local storage, both architectures |
+| `tests/link_conventions.rs` | L3 | link and run, "ELF conventions", both architectures |
 | `examples/throughput.rs` | - | a timing and memory report, not a gate: `cargo run --release -p hod_obj --example throughput [functions [relocations-per-function]]`, and with `HOD_OBJ_MODE=one-text` for a single `.text` |
 
 ### Link-and-run tests
 
-Each program is hand-encoded AArch64 code, linked through the C compiler
-driver with each of GNU ld, lld and mold, with linker warnings fatal, and
-run:
+Each program's code is hand-encoded, linked through the C compiler driver
+with each of GNU ld, lld and mold, with linker warnings fatal and no
+diagnostic allowed, and run. Where a linker behaves differently, the test
+says so and checks what that linker does (see "Linked sections", "Section
+groups", "ELF conventions").
+
+AArch64 (`tests/link.rs`):
 
 - `main` returns 42;
 - `main` calls `puts` on a string in `.rodata` (`ADR_PREL_PG_HI21`,
@@ -599,6 +756,25 @@ run:
   and with it global, and the program returns the value of whichever object
   comes first; the control test shows the same two global definitions
   without a group fail to link;
+- the same two objects, each with a debug section in the group and, outside
+  it, a debug section and an `.eh_frame` (a CIE and an FDE) that refer to
+  the group's code through its section symbol and a local symbol: both
+  link orders succeed, the discarded copy's member is gone from the program
+  and the sections outside the group are all there;
+- two objects with a `Plain` group of the same signature: both groups'
+  contents are in the program, where of two COMDAT groups (the control)
+  only the first is; with `--gc-sections`, a member nothing refers to
+  stays with its group (GNU ld, lld);
+- three functions, each with a record in a section linked to its section,
+  the records added in reverse: the records are in the functions' order
+  and, with `--gc-sections`, the record of the function that is not called
+  is gone and the other two stay (GNU ld, lld; with mold the program links
+  and runs, and the uncalled function's record is gone); without the links
+  (the control) no record survives `--gc-sections`;
+- two objects with `.rodata.str1.1` and `.rodata.cst8` sections holding an
+  equal string and an equal constant at different offsets: the program
+  finds each pair at one address, and, in the control with plain read-only
+  sections of the same names, at two;
 - a pointer in `.data` initialized with an address (`ABS64` against a
   global symbol, and against a section symbol plus addend), read by `main`;
 - a 4096-aligned variable in `.bss`, placed between sections with
@@ -606,12 +782,68 @@ run:
 - the object with 70 000 function sections, where `main` and the function
   it jumps to are in sections whose indices need the escapes.
 
-The linker is selected with `gcc -B<dir> -fuse-ld=<bfd|lld|mold>`, where
-`<dir>` is a scratch directory holding one symbolic link named `ld.<name>`
-to the linker `hod_testutil::tool` found. `gcc -fuse-ld=<name>` runs the
-program `ld.<name>` from its program search path and `-B` puts a directory
-at the front of that path, so this works wherever the linker is installed
-and whatever it is called (`ld.lld` is `/usr/bin/ld.lld-22` or
+x86-64 (`tests/link_x64.rs`): `main` returns 42; `main` calls `puts`
+(`PC32` for the string, `PLT32` for the call); the pointer in `.data`
+(`R_X86_64_64` against a global symbol and against a section symbol plus
+addend, read through `PC32`); the two COMDAT objects, weak and global, in
+both link orders.
+
+Thread-local storage (`tests/link_tls.rs`), for both architectures. The
+object defines an initialized variable in `.tdata` (global), a second one
+there with a local symbol, and a zero one in `.tbss` at offset 8192 with
+alignment 16, all `STT_TLS`; and one function per variable and access
+model that returns the variable's address. A C driver, compiled by the
+target's C compiler, requires in the main thread and then in a second
+thread that the variables have their initial values and that each function
+returns the address its own compiler computes for the variable (for the
+local one, the same address from every model); each thread then changes
+its copies, so the second thread seeing initial values shows the copies
+are per thread. It exits with 42, computed from the main thread's values.
+
+- As a program, linked position-independent and not, with every model in
+  one object: AArch64 local exec (`TLSLE_ADD_TPREL_HI12`,
+  `TLSLE_ADD_TPREL_LO12_NC`), initial exec (`TLSIE_ADR_GOTTPREL_PAGE21`,
+  `TLSIE_LD64_GOTTPREL_LO12_NC`) and descriptors (`TLSDESC_ADR_PAGE21`,
+  `TLSDESC_LD64_LO12`, `TLSDESC_ADD_LO12`, `TLSDESC_CALL`); x86-64 local
+  exec (`TPOFF32`), initial exec (`GOTTPOFF`), general dynamic (`TLSGD`
+  with `PLT32` to `__tls_get_addr`) and descriptors (`GOTPC32_TLSDESC`,
+  `TLSDESC_CALL`). The linker relaxes the dynamic models here.
+- As a shared object the driver is linked against, where nothing is
+  relaxed: the dynamic models (AArch64 descriptors; x86-64 general dynamic
+  and descriptors) and, linked separately, initial exec. The shared
+  object's dynamic relocations must include the model's own
+  (`R_AARCH64_TLSDESC`; `R_X86_64_DTPMOD64` and `R_X86_64_TLSDESC`;
+  `R_AARCH64_TLS_TPREL64`; `R_X86_64_TPOFF64`), which shows the access was
+  not turned into another model. The models are linked separately because
+  GNU ld turns a variable's descriptor accesses into initial exec when the
+  same variable is also accessed that way.
+
+Conventions (`tests/link_conventions.rs`), for both architectures:
+
+- an object with initializers and finalizers of priorities 200, 1000,
+  30000 and the default, added in another order, each printing its name:
+  the program prints the initializers in increasing priority, `main`, and
+  the finalizers in decreasing priority;
+- two objects, linked without the C runtime, one with `_start`: when both
+  carry the property note the program has the features
+  (`llvm-readelf --notes`; not checked for mold on AArch64), and when one
+  does not, it has none.
+
+**Toolchains.** The linker is selected with
+`gcc -B<dir> -fuse-ld=<bfd|lld|mold>`, where `<dir>` is a scratch
+directory holding one symbolic link named `ld.<name>` to the linker
+`hod_testutil::tool` found. `gcc -fuse-ld=<name>` runs the program
+`ld.<name>` from its program search path and `-B` puts a directory at the
+front of that path, so this works wherever the linker is installed and
+whatever it is called (`ld.lld` is `/usr/bin/ld.lld-22` or
 `/usr/lib/llvm-22/bin/ld.lld` here, neither of which plain `-fuse-ld=lld`
-finds). Each test then checks the program's `.comment` section to confirm
+finds). Each link then checks the program's `.comment` section to confirm
 the intended linker produced it.
+
+The AArch64 tests exist on an AArch64 Linux host and use `gcc`. The x86-64
+tests use the host's `gcc` on an x86-64 Linux host; elsewhere they use
+`x86_64-linux-gnu-gcc`, `x86_64-linux-gnu-ld.bfd` (lld and mold link any
+target as they are) and run the program with
+`qemu-x86_64 -L /usr/x86_64-linux-gnu`. All of these are found through
+`hod_testutil::tool`; when the cross system root is missing the tests skip,
+or fail under `HOD_REQUIRE_TOOLS=1`.

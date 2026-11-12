@@ -30,6 +30,8 @@ pub const GROUPS: &[(&str, Enable)] = &[
     // blocks without predecessors (through `common::skeleton`).
     ("WP-033", |e| e.options.unreachable_blocks = true),
     // WP-035 adds: ("WP-035", |e| { e.generator = true; e.options.casts = true; ... }),
+    // The floating-point group: `float`, `double`, `fcmp`, conversions.
+    ("WP-039", |e| e.options.floats = true),
 ];
 
 /// What every landed group enables together.

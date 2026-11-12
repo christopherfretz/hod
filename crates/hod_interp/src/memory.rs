@@ -7,6 +7,8 @@
 //! that grows and shrinks like a stack: stack allocations die in the
 //! reverse of the order they were made.
 
+use std::cell::Cell;
+
 use hod_ir::SymId;
 
 use crate::error::Trap;
@@ -22,6 +24,9 @@ pub(crate) enum AllocKind {
     Stack,
     /// A function: one address, no bytes.
     Function(SymId),
+    /// A variable without an initializer (a declaration): one address, no
+    /// bytes. What it holds is not the program's to know.
+    Extern(SymId),
     /// The addresses of frames that have returned.
     Dead,
 }
@@ -56,6 +61,8 @@ pub struct Memory {
     gap: u64,
     limit: u64,
     peak: u64,
+    /// The declared variable the last refused access met, if it met one.
+    extern_hit: Cell<Option<SymId>>,
 }
 
 impl Memory {
@@ -71,6 +78,7 @@ impl Memory {
             gap: gap.max(1),
             limit,
             peak: 0,
+            extern_hit: Cell::new(None),
         }
     }
 
@@ -123,6 +131,25 @@ impl Memory {
         let base = self.place(1, 1)?;
         self.allocs.push(Alloc { base, size: 1, align: 1, at: 0, kind: AllocKind::Function(sym) });
         Ok(base)
+    }
+
+    /// The address of a declared variable: an allocation without bytes.
+    pub(crate) fn alloc_extern(&mut self, sym: SymId) -> Result<u64, Trap> {
+        let base = self.place(1, 1)?;
+        self.allocs.push(Alloc { base, size: 1, align: 1, at: 0, kind: AllocKind::Extern(sym) });
+        Ok(base)
+    }
+
+    /// A fresh address that no allocation covers (a block address, an
+    /// exception): an identity, not memory. An access through it traps.
+    pub(crate) fn reserve(&mut self) -> Result<u64, Trap> {
+        self.place(1, 1)
+    }
+
+    /// The declared variable a refused access since the last call met,
+    /// and forgets it.
+    pub(crate) fn take_extern_hit(&self) -> Option<SymId> {
+        self.extern_hit.take()
     }
 
     /// Takes the next addresses: a gap, then `size` (at least one) aligned
@@ -196,6 +223,10 @@ impl Memory {
         match alloc.kind {
             AllocKind::Dead if offset < alloc.size => return Err(Trap::UseAfterFree),
             AllocKind::Dead | AllocKind::Function(_) => return Err(Trap::OutOfBounds),
+            AllocKind::Extern(sym) => {
+                self.extern_hit.set(Some(sym));
+                return Err(Trap::OutOfBounds);
+            }
             AllocKind::Data | AllocKind::Constant | AllocKind::Stack => {}
         }
         if offset > alloc.size || len > alloc.size - offset {

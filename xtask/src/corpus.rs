@@ -12,6 +12,7 @@ pub mod census;
 pub mod entry;
 pub mod kiln;
 pub mod manifest;
+pub mod reasons;
 pub mod sha256;
 pub mod torture;
 pub mod verify;
@@ -27,6 +28,7 @@ pub const USAGE: &str = "\
 usage: cargo xtask corpus capture [options]
        cargo xtask corpus verify [options] [<corpus dir>]
        cargo xtask corpus census [--report <file>] [<corpus dir>]
+       cargo xtask corpus reasons [options] [<corpus dir>]
        cargo xtask corpus fetch [--torture <dir>]
 
 capture: runs kiln++ over kiln's executing tests and clang over the GCC
@@ -57,6 +59,16 @@ through irdiff in hybrid mode, with each LLVM the corpus was captured for.
 
 census: counts the constructs of the corpus's modules and writes the report
 (default: docs/status/corpus.md of this workspace).
+
+reasons: why hod declines each module, by text, native bitcode and
+llvm-dis, first refusal and census, and what a decline costs.
+
+  --hod <binary>       the hod to ask (default: <build dir>/release/hod)
+  --before <binary>    an older hod to time the same declines with
+  --llc                also time llc on each module's bitcode
+  --limit <N>          only the first N entries of each LLVM
+  -j <N>, --jobs <N>   modules at once (default 3, at most 16)
+  --report <file>      write the report there (default: print it)
 
 fetch: clones the pinned GCC tag, sparsely, into the --torture directory.
 
@@ -194,6 +206,46 @@ pub fn parse_verify(args: &[String], options: &mut verify::Options) -> Result<()
     Ok(())
 }
 
+/// Reads `reasons`'s arguments: the options and where the report goes.
+pub fn parse_reasons(
+    args: &[String],
+    build_dir: &Path,
+) -> Result<(reasons::Options, Option<PathBuf>), String> {
+    let mut options = reasons::Options {
+        dir: default_dir(build_dir),
+        hod: build_dir.join("release").join("hod"),
+        before: None,
+        llc: false,
+        jobs: capture::DEFAULT_JOBS,
+        limit: None,
+        work: build_dir.join("corpus-reasons"),
+    };
+    let (mut report, mut given, mut index) = (None, false, 0);
+    while index < args.len() {
+        let arg = args[index].as_str();
+        match arg {
+            "--hod" => options.hod = absolute(Path::new(value(args, &mut index, arg)?)),
+            "--before" => options.before = Some(absolute(Path::new(value(args, &mut index, arg)?))),
+            "--llc" => options.llc = true,
+            "--limit" => {
+                let text = value(args, &mut index, arg)?;
+                options.limit =
+                    Some(text.parse().map_err(|_| format!("invalid --limit '{text}'"))?);
+            }
+            "-j" | "--jobs" => options.jobs = jobs(value(args, &mut index, arg)?)?,
+            "--report" => report = Some(absolute(Path::new(value(args, &mut index, arg)?))),
+            other if other.starts_with('-') => return Err(format!("unknown option '{other}'")),
+            other if !given => {
+                options.dir = absolute(Path::new(other));
+                given = true;
+            }
+            other => return Err(format!("more than one corpus directory: '{other}'")),
+        }
+        index += 1;
+    }
+    Ok((options, report))
+}
+
 /// The defaults of `verify` for this workspace and this process's
 /// environment.
 pub fn verify_defaults(build_dir: &Path) -> verify::Options {
@@ -265,6 +317,33 @@ pub fn fetch(dir: &Path, search: &Search) -> Result<String, String> {
         dir.display(),
         capture::revision(dir, search)
     ))
+}
+
+/// `cargo xtask corpus reasons`.
+fn reasons_command(args: &[String], build_dir: &Path) -> u8 {
+    let (options, report) = match parse_reasons(args, build_dir) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprint!("xtask corpus: {message}\n{USAGE}");
+            return 2;
+        }
+    };
+    let written = reasons::run(&options).and_then(|text| match report {
+        Some(path) => std::fs::write(&path, text)
+            .map(|()| format!("wrote {}\n", path.display()))
+            .map_err(|e| format!("cannot write '{}': {e}", path.display())),
+        None => Ok(text),
+    });
+    match written {
+        Ok(text) => {
+            print!("{text}");
+            0
+        }
+        Err(message) => {
+            eprintln!("xtask corpus: {message}");
+            2
+        }
+    }
 }
 
 /// Runs `cargo xtask corpus <args>` and returns the exit status.
@@ -340,6 +419,7 @@ pub fn command(args: &[String]) -> u8 {
                 Err(message) => failed(&message),
             }
         }
+        Some("reasons") => reasons_command(rest, &build_dir),
         Some("fetch") => {
             let mut options = capture_defaults(&build_dir);
             let mut index = 0;

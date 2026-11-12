@@ -14,7 +14,7 @@ Milestones and tracks are in `docs/ROADMAP.md`.
 | WP-004 | T-IR | `hod_ir` functions: blocks, instructions, operand pools, call and landing-pad side tables; function-at-a-time delivery | WP-002 | in-progress |
 | WP-005 | T-IR | `hod_ir` debug metadata: typed `DI*` nodes, `DILocation`, debug records | WP-003 | todo |
 | WP-006 | T-IR | `hod_ir` printer (LLVM text, version-selectable) | WP-003, WP-004 | todo |
-| WP-007 | T-IR | `hod_ll` lexer and the module-level parser (types, globals, declarations, attributes, metadata) | WP-003 | todo |
+| WP-007 | T-IR | `hod_ll` lexer and the module-level parser (types, globals, declarations, attributes, metadata) | WP-003 | in-progress |
 | WP-008 | T-IR | `hod_ll` function bodies: every instruction `hod_ir` models | WP-004, WP-007 | todo |
 | WP-009 | T-IR | `hod_ir::classify`: the support matrix as code, with one named reason per rejected construct; `docs/status/support.md` generated from it | WP-004 | todo |
 | WP-010 | T-OBJ | `spec/object.md` + `hod_obj` model and ELF64 writer: sections, symbols, RELA relocations, string tables, `.note.GNU-stack` | WP-001 | done |

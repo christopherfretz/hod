@@ -1640,24 +1640,30 @@ Recorded only when the module has debug information.
   `end_function`, adds a row at the epilogue: the location of the function's `ret` if
   exactly one was emitted, `LocId::NONE` otherwise, so that the shared
   epilogue does not inherit the line of whichever block was emitted last.
-- `vars`: one row per `#dbg_declare`: the variable, the record's
-  expression, its declaration location, and where the declared address
-  is: a frame-base offset (a stack slot), a frame-base offset holding the
-  address (an over-aligned slot, §5.1), or the home of a value that is
-  not a slot (an `sret` argument, a dynamic `alloca`; §4.1 gives it a
-  home). `hod_dwarf` composes the location with the expression. Several
-  rows may name one slot (structured bindings do), each with its own
+- `vars` (`VarRow`, implemented in WP-057): one row per `#dbg_declare`:
+  the variable, the record's expression (`ExprId`), its location, and
+  where the declared address is (`VarPlace`): `Frame(off)`, the variable
+  is `off` bytes from the DWARF frame base (a stack slot), or
+  `FrameIndirect(off)`, the address is stored there (an over-aligned
+  slot, §5.1, or the home of a value that is not a slot, such as an
+  `sret` or by-reference argument; §4.1 gives it a home). The driver
+  records `Slot`/`Indirect` places while the frame grows and rewrites them
+  through `Target::frame_base_offset` once the frame is final; a place
+  the target cannot reach by a fixed offset is `Refused("debug:frame-place")`.
+  `hod_dwarf` composes the location with the expression. Several rows
+  may name one slot (structured bindings do), each with its own
   expression. At `-O0` a row's location holds for the whole function. The
   body is dropped after its function is compiled, so everything
   `hod_dwarf` needs from it is copied here.
-- `labels`: one row per `#dbg_label` in a reachable block: the label and
-  the code offset of the instruction that follows it.
-- `#dbg_value` records describe values that policy v1 keeps in registers
-  for a few instructions; unoptimized input does not contain them. v1
-  records the ones whose value has a home (as a location valid from the
-  definition to the end of the function) and drops the rest: the variable
-  then shows as unavailable, which is not wrong. The count dropped is
-  reported in the coverage log.
+- labels are rows of `vars` too: one `VarPlace::Label(offset)` row per
+  `#dbg_label` in a reachable block, the label and the code offset of
+  the instruction that follows it.
+- a record hod cannot describe exactly is a `VarPlace::Refused(name)`
+  row; a `FullDebug` unit then refuses the function under that name:
+  `debug:dbg-value` (any `#dbg_value`: clang and kiln do not emit them at
+  `-O0`, and none is described yet, `spec/dwarf.md` open question 9),
+  `debug:dbg-assign`, `debug:declare-address` (a `#dbg_declare` of a
+  constant, a symbol, or a value that never got a home).
 
 ### 9.6 Block addresses
 

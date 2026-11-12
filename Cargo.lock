@@ -85,6 +85,7 @@ name = "hod_eh"
 version = "0.0.0"
 dependencies = [
  "hod_obj",
+ "hod_testutil",
 ]
 
 [[package]]

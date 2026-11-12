@@ -1529,6 +1529,7 @@ mod tests {
                 reason: reason.map(str::to_owned),
                 detail: detail.to_owned(),
                 covers: None,
+                failure: None,
             };
         let declined = |linker| {
             record(Outcome::Fail, BuiltBy::Declined, Some(ADMISSION), Some(linker), "hod declined")

@@ -625,16 +625,49 @@ displaced and the call site is recorded.
 
 ### 7.4 Symbol addresses
 
-How code reaches a symbol depends only on the module (PIC and PIE level,
-code model) and the symbol (linkage, visibility, `dso_local`, thread-local
-model, whether it is defined here):
+How code reaches a symbol depends only on the module (PIE level, code
+model), the relocation model (`Options::reloc_model`: `llc`'s
+`-relocation-model=`, `Static` by default as `llc`'s is on ELF) and the
+symbol (linkage, visibility, `dso_local`, thread-local model). Three pure,
+target-independent functions in `hod_cg` (`src/access.rs`) answer it:
 
-`sym_access(module, sym) -> Direct | Got | Tls(model)`, and for calls
-`Direct | Plt`. It is one target-independent function in `hod_cg`,
-following the rule LLVM's `TargetMachine::shouldAssumeDSOLocal` applies,
-and tested against the relocations `llc` emits for the same module and
-symbol over a grid of linkages, visibilities and PIC levels. Each target
-has one access sequence per answer.
+```rust
+pub fn sym_access(module: &Module, options: &Options, sym: SymId) -> Access; // Direct | Got | Tls(TlsAccess)
+pub fn call_access(module: &Module, sym: SymId) -> CallAccess;               // Direct | Plt
+pub fn prefers_local_alias(module: &Module, options: Options, sym: SymId) -> bool;
+```
+
+- `sym_access` follows `TargetMachine::shouldAssumeDSOLocal` (on ELF
+  exactly the symbol's `dso_local`, which `hod_ir` stores as LLVM implies
+  it): not `dso_local` is `Got`. On AArch64 under the small or tiny code
+  model an `extern_weak` symbol is `Got` as well (`adrp` cannot produce 0).
+  A thread-local symbol is `Tls(m)`, `m` being `TargetMachine::getTLSModel`:
+  the model the output implies (a shared library is PIC with no `PIE
+  Level`; `dso_local` gives the local variant), or the symbol's own if that
+  is more specific. AArch64 lowers `LocalDynamic` as `GeneralDynamic`.
+- `call_access` is `Direct` for a `dso_local` callee, else `Plt`.
+- `prefers_local_alias` is `AsmPrinter::getSymbolPreferLocal`: in a shared
+  library, a `dso_local` external definition of default visibility, not an
+  IFUNC and not in a deduplicating COMDAT, is reached through a local
+  alias (`.L<name>$local`, or its section symbol, as below), because the
+  linker considers its global symbol preemptible. This holds for code and
+  for data relocations alike, but not for the subtracted side of a
+  PC-relative difference (`lowerRelativeReference` uses the symbol).
+
+A reference to a local symbol, or to one reached through its local alias,
+is written against the **section symbol** with the symbol's offset in the
+addend, as the ELF assembler does, when the symbol is placed, is not an
+IFUNC, and its section is neither thread-local nor, unless the addend is
+0, mergeable. Otherwise it names the symbol (for a local alias, the
+`.L<name>$local` symbol module emission defines next to it).
+
+`tests/sym_access.rs` checks all three against the relocations `llc`
+(LLVM 19 and 22) emits for one getter and one caller per symbol over a
+grid of declared and defined variables and functions × every linkage ×
+visibility × `dso_local` × thread-local model, on AArch64 and x86-64,
+static, PIC and PIC with `PIE Level` (2880 answers; the section-symbol
+rule is checked on the same relocations). Each target has one access
+sequence per answer.
 
 ### 7.5 Constants in code
 
@@ -880,29 +913,129 @@ question, §13.)
 
 ### 9.7 Merge and module emission
 
-`hod_cg::emit_module` (its own work package; summarized here because the
-record must serve it):
+`hod_cg::emit_module(module, &Options, chunks) -> CgResult<Emitted>`
+(`src/emit/`), or step by step `ModuleEmitter::new`, `add_chunk` per
+chunk in module order, `finish`. The object is laid out as `llc -O0`
+lays it out for the same options (`reloc_model`, `code_model`,
+`function_sections`, `data_sections`); the oracle is `llc` of LLVM 19 and
+22, and every difference that remains is listed below.
 
-- Before any function is compiled, every module symbol is added to the
-  object as undefined, in `SymId` order, so that a `SymId` maps to its
-  `hod_obj::SymbolId` by arithmetic and relocations can be written without
-  a lookup (`spec/object.md` "Symbols").
-- Chunks are merged in module order. A function goes to `.text`, or to its
-  own section when it has an explicit section, is in a COMDAT, or
-  `function_sections` is set (named as `llc` names it: `.text.<symbol>`);
-  COMDAT members join their group. Its symbol is defined with the code's
-  size; relocations and island mapping symbols are rebased to the section
-  offset.
-- Variables are flattened (`ConstPool::flatten`) into the section their
-  linkage, constness, thread-local model and relocations call for. A
-  `Fixup` becomes a relocation as `resolve` in
-  `crates/hod_ir/tests/flatten_diff.rs` does it; a `Diff { a, b }` is
-  encodable only when both symbols are in one section or `b` is in the
-  field's section, and the variable is `Unsupported` otherwise.
-- Aliases, IFUNCs, constructors and destructors, retained symbols and
-  linker options follow `spec/object.md`.
-- The result depends only on the module and the options: not on the
-  number of workers or on how functions were divided into chunks.
+**Symbols.** `new` adds every module symbol to the object as undefined,
+in `SymId` order, so a `SymId` is its `hod_obj::SymbolId` by arithmetic
+(`spec/object.md` "Symbols"); an anonymous symbol is named
+`__unnamed_<n>`, `n` counting anonymous symbols in `SymId` order. `finish`
+defines them: binding from linkage (internal and private local;
+`linkonce`, `linkonce_odr`, `weak`, `weak_odr` and `extern_weak` weak; the
+rest global), visibility, type (`OBJECT`, `FUNC`, `TLS`, `GNU_IFUNC`) and
+size (the initializer's alloc size, the code's length). A private symbol
+is named `.L<name>` and is written only when a relocation or a group names
+it; an undefined symbol nothing references is left out by the writer
+(`spec/object.md`), as `llc` leaves it out, except a declaration `llc`
+has a directive for (non-default visibility, `extern_weak`), which is
+kept, untyped. Only the names of symbols the object keeps reach the
+string table. Runtime functions (§7.3) map to the
+module's symbol of that name if there is one, else to one new undefined
+global symbol each.
+
+**Sections** (`section.rs`) are chosen by `TargetLoweringObjectFileELF`'s
+rules: `getKindForGlobal` (TLS zero → `.tbss`, else `.tdata`; `common`;
+all-zero or all-`undef` → `.bss`; constant without relocations →
+`.rodata`, or for an `unnamed_addr` one a C string → `.rodata.str<w>.<a>`
+and 4, 8, 16 or 32 bytes → `.rodata.cst<n>`; constant with relocations →
+`.rodata` when static or when every relocation is a difference of two
+`dso_local` symbols, else `.data.rel.ro`; the rest `.data`), unique
+sections `<prefix>.<symbol>` for `-data-sections`, `-function-sections`
+and COMDAT members, explicit sections with `getELFKindForNamedSection`
+and `getELFSectionType`, `SHF_GNU_RETAIN` for `llvm.used` members, and
+`llc`'s unique-ID rule for an explicit section met with conflicting flags,
+entry size or group (`calcUniqueIDUpdateFlagsAndSize`). Sections are
+created in the order the symbols are met; `.text` first. A variable in
+`llvm.metadata` is not emitted.
+
+**Initializers** are flattened (`ConstPool::flatten`); each `Fixup`
+becomes a relocation: `Sym` an absolute one of the field's width (§7.4
+decides the target symbol); `Diff { a, b }` folds to a number when both
+are in one section and placed, else is PC-relative to `a` when `b` is in
+the field's section (`PLT32` for `PltDiff`), else `init:sym-diff-unencodable`;
+`Block` resolves through the function's `block_offsets` (§9.6).
+
+**Functions.** A function goes to `.text`, or to its own section when it
+has an explicit section, is in a COMDAT, or `function_sections` is set;
+its symbol is defined with the code's size, its relocations and islands
+are rebased to the section offset (AArch64 adds `$x`/`$d` mapping symbols
+at each change). A code relocation to a local function, or one reached
+through its local alias, that is not placed yet waits for `finish`, which
+writes it against the section symbol. Padding between functions is the
+target's (AArch64: `nop`s).
+
+**COMDATs.** One group per COMDAT (`any` and `nodeduplicate`; another
+selection kind is `comdat:selection-kind`), its signature the module
+symbol of that name or a new local symbol. A constructor whose associated
+symbol is a COMDAT member joins that COMDAT's group.
+
+**Aliases and IFUNCs** are defined in `finish` at their target's place
+plus offset (an alias of a declaration or of an expression that is not a
+symbol plus an offset is `global:alias-target`; an IFUNC whose resolver is
+not defined here is `global:ifunc-resolver`).
+
+**Constructors and destructors** go to `.init_array[.<priority>]` and
+`.fini_array[.<priority>]` (65535 unsuffixed), one 8-byte entry per
+structor in the module's order, in the group of its associated symbol's
+COMDAT if it has one. `!llvm.linker.options` become `.linker-options`
+(`SHT_LLVM_LINKER_OPTIONS`, `SHF_EXCLUDE`), `!llvm.dependent-libraries`
+`.deplibs` (`SHT_LLVM_DEPENDENT_LIBRARIES`, `SHF_MERGE|SHF_STRINGS`).
+
+**`Emitted`**: the object; `funcs: Vec<PlacedFunc>` in module order, each
+the function's `FuncRecord` with `code` its byte range in `section`, the
+row ranges ranges of `Emitted::rows`, and `relocs` empty; `rows`, every
+function's rows merged (`code`, `relocs` and `funcs` empty), for `hod_eh`
+and `hod_dwarf`.
+
+**Determinism and cost.** The result depends only on the module, the
+options and the functions' records, not on how functions were divided
+into chunks or on which thread compiled them (`tests/emit_merge.rs`).
+Emission is linear: symbols are found by index, sections through one hash
+table keyed by name, group and unique ID, and nothing is allocated per
+symbol beyond the object's tables (local aliases and COMDAT signatures are
+in maps sized by their count).
+
+**Refused by name** (`hod_cg::emit::unsupported`, §10): `module:asm`
+(module-level inline assembly), `comdat:selection-kind`,
+`linkage:appending` (outside the special arrays),
+`global:initializer-in-bss`, `global:alias-target`,
+`global:ifunc-resolver`, `init:sym-diff-unencodable`,
+`init:address-width` (an address in a 1-byte field),
+`init:dso-local-equivalent` (outside a difference),
+`init:blockaddress-unplaced`.
+
+**Known differences from `llc`**, none of which changes what a linker
+makes of the object (`tests/emit_link.rs` links both with GNU ld, lld and
+mold and runs them):
+
+- Order: `hod` creates the variables' sections and defines their symbols
+  before the functions'; `llc` interleaves them in module order. The
+  symbol table's order differs accordingly (locals first in both).
+- Variables are laid out in `SymId` order; `llc` lays them out in the
+  order of their definitions in the text. `hod_ll` numbers a named
+  symbol at its first mention, which can come before its definition, so
+  the two orders can differ (1 corpus module per LLVM major: RTTI of a
+  local class). A follow-up for `hod_ll` (number the definitions in file
+  order first) would close it.
+- `hod` writes no `STT_FILE` symbol, no `$d` mapping symbols in data
+  sections, and sets `SHF_INFO_LINK` on `.rela` sections.
+- A COMDAT signature symbol `hod` makes is defined in the group's first
+  member section; `llc`'s is in `.group`.
+- `hod` keeps relocations that `llc`'s assembler resolves inside one
+  section (a `bl` to a local function in the same section).
+- A `.L<name>$local` symbol appears in the symbol table when a reference
+  through a local alias cannot use the section symbol (a mergeable
+  section with a non-zero addend); `llc` writes the same symbol.
+- `llc` replaces a load of a GOT-equivalent private constant
+  (`@x = private unnamed_addr constant ptr @y`) by a `GOTPCREL` of `@y`
+  in a difference; `hod` keeps the constant (both are correct).
+- x86-64: no target yet; the PC bias of a code relocation is not
+  considered in the mergeable-section addend check, and padding is
+  `0x90`.
 
 ## 10. Errors and limits
 
@@ -961,7 +1094,13 @@ pub enum CgError {
 - **Unit:** the frame allocator; labels and fixups; `sym_access` against
   `llc` (§7.4); record contents for hand-built bodies; restart leaves no
   trace in the chunk; the same functions in one chunk and in many give
-  the same object.
+  the same object (`tests/emit_merge.rs`).
+- **Module emission** (§9.7): snippets against `llc` 19 and 22, with
+  `llc`'s own code for the functions (`tests/emit_llc.rs`); a data module
+  linked by GNU ld, lld and mold and run against `llc`'s
+  (`tests/emit_link.rs`); every corpus module with its bodies stripped
+  against `llc` (`tests/emit_corpus.rs`, `HOD_CG_CORPUS`); each refusal by
+  name; time and peak memory against `llc` (`tests/emit_bench.rs`).
 - **L4** (`xtask irdiff`): each instruction-group work package adds
   `tests/ir/` programs for its group and flips their expected-unsupported
   directives; behavior must equal `llc`'s with every linker.

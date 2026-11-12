@@ -793,7 +793,17 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
                 self.s(tail.name())?;
                 self.s(" call ")?;
             }
-            (Opcode::Invoke, TailKind::None) => self.s("invoke ")?,
+            (Opcode::Invoke, TailKind::None) => {
+                // LLVM 19 has `invoke` of these refused; LLVM 22 takes it.
+                if let Some(Intrinsic::Other(
+                    name @ ("llvm.wasm.throw" | "llvm.wasm.rethrow" | "llvm.fake.use"),
+                )) = call.intrinsic()
+                    && self.dialect.major() < 22
+                {
+                    return self.unsupported(format!("invoke:{name}"));
+                }
+                self.s("invoke ")?;
+            }
             (Opcode::CallBr, TailKind::None) => self.s("callbr ")?,
             // LLVM has the markers on `call` only.
             (_, tail) => return self.unsupported(format!("{}:{}", opcode.name(), tail.name())),

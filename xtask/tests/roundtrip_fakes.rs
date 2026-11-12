@@ -10,8 +10,11 @@
 //! printer keeps global names: `fake_as_refuse`, `fake_as_crash`,
 //! `fake_verify_refuse`, `fake_opt_hang`, `fake_llc_fail`,
 //! `fake_link_fail`, `fake_wrong_output`. `llc` refuses to run without
-//! the reference configuration's flags. A linked "program" is a script
-//! that prints `hello`, or `goodbye` for `fake_wrong_output`.
+//! the reference configuration's flags, and `fake_needs_sections` without
+//! `-function-sections`; the driver refuses `fake_warns` with
+//! `-Wl,--fatal-warnings`. A linked "program" is a script that prints
+//! `hello`, or `goodbye` for `fake_wrong_output`, without the newline for
+//! `fake_no_newline`; the driver looks at every object it links.
 #![cfg(target_os = "linux")]
 
 mod common;
@@ -46,24 +49,35 @@ const FAKE_LLC: &str = r#"PATH=/usr/bin:/bin
 if [ "$1" = --version ]; then echo "fake LLVM version 22.1.0"; exit 0; fi
 case " $* " in *" -global-isel=0 "*) ;; *) echo "not the reference configuration" >&2; exit 1 ;; esac
 case " $* " in *" -fast-isel=0 "*) ;; *) echo "not the reference configuration" >&2; exit 1 ;; esac
+sections=
+case " $* " in *" -function-sections "*) sections=1 ;; esac
 out= in=
 while [ $# -gt 0 ]; do
   case "$1" in -o) out=$2; shift ;; -*) ;; *) in=$1 ;; esac
   shift
 done
 if grep -q '@fake_llc_fail' "$in"; then echo "llc: error: cannot select" >&2; exit 1; fi
+if [ -z "$sections" ] && grep -q '@fake_needs_sections' "$in"; then echo "llc: no sections" >&2; exit 1; fi
 cp "$in" "$out""#;
 
 const FAKE_GCC: &str = r#"PATH=/usr/bin:/bin
-out= in=
+out= fatal= ins=
 while [ $# -gt 0 ]; do
-  case "$1" in -o) out=$2; shift ;; -*) ;; *) in=$1 ;; esac
+  case "$1" in
+    -o) out=$2; shift ;;
+    -Wl,--fatal-warnings) fatal=1 ;;
+    -*) ;;
+    *) ins="$ins $1" ;;
+  esac
   shift
 done
-if grep -q '@fake_link_fail' "$in"; then echo "ld: undefined reference to 'x'" >&2; exit 1; fi
+if grep -q '@fake_link_fail' $ins; then echo "ld: undefined reference to 'x'" >&2; exit 1; fi
+if [ -n "$fatal" ] && grep -q '@fake_warns' $ins; then echo "ld: warning: an error" >&2; exit 1; fi
 word=hello
-if grep -q '@fake_wrong_output' "$in"; then word=goodbye; fi
-printf '#!/bin/sh\necho %s\n' "$word" > "$out"
+if grep -q '@fake_wrong_output' $ins; then word=goodbye; fi
+end='\n'
+if grep -q '@fake_no_newline' $ins; then end=; fi
+printf '#!/bin/sh\nprintf "%s%s"\n' "$word" "$end" > "$out"
 chmod 755 "$out""#;
 
 /// A fake installation: the tools of LLVM 22 on a `PATH` of their own.
@@ -91,11 +105,13 @@ impl Fakes {
 
     /// Adds an entry for LLVM 22: the directives, then `module`.
     fn entry(&self, name: &str, stdout: &str, module: &str) {
-        let arch = Arch::host().expect("a supported host").name();
-        let text = format!(
-            ";@ covers: fake {name}\n;@ target: {arch}\n;@ llvm: 22\n;@ link: m\n;@ stdout: {stdout}\n\
-             target triple = \"{arch}-unknown-linux-gnu\"\n{module}"
-        );
+        let text = format!("{}{module}", head(name, stdout));
+        self.raw(name, &text, "text");
+    }
+
+    /// Adds an entry for LLVM 22 of exactly `text`, with the manifest's
+    /// `delivered` column.
+    fn raw(&self, name: &str, text: &str, delivered: &str) {
         let entry = format!("fake/llvm22/{name}.ll");
         let path = self.corpus().join(&entry);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -112,7 +128,7 @@ impl Fakes {
                 producer: "fake".to_owned(),
                 producer_args: "-".to_owned(),
                 llc_args: "-".to_owned(),
-                delivered: "text".to_owned(),
+                delivered: delivered.to_owned(),
                 sha256: "0".repeat(64),
                 bytes: 0,
                 key: "0".repeat(64),
@@ -133,6 +149,15 @@ impl Fakes {
         options.jobs = 3;
         options
     }
+}
+
+/// An entry's directives and triple.
+fn head(name: &str, stdout: &str) -> String {
+    let arch = Arch::host().expect("a supported host").name();
+    format!(
+        ";@ covers: fake {name}\n;@ target: {arch}\n;@ llvm: 22\n;@ link: m\n;@ stdout: {stdout}\n\
+         target triple = \"{arch}-unknown-linux-gnu\"\n"
+    )
 }
 
 /// A `main` that returns 0, with a global named `marker` if there is one.
@@ -369,4 +394,218 @@ fn work_directory_and_keep() {
     let text = std::fs::read_to_string(printed[0].join("printed.ll")).unwrap();
     assert!(text.contains("@fake_llc_fail"), "{text}");
     assert!(Path::new(&kept).starts_with(&options.build_dir));
+}
+
+/// The text of an entry of two modules, `lib` and `test`: `lib` defines
+/// `@answer` (after `lib`'s text), `test` has `main` (after `test`'s).
+fn two_modules(name: &str, lib: &str, test: &str) -> String {
+    let arch = Arch::host().expect("a supported host").name();
+    let triple = format!("target triple = \"{arch}-unknown-linux-gnu\"\n");
+    format!(
+        ";@ covers: fake {name}\n;@ target: {arch}\n;@ llvm: 22\n;@ link: m\n;@ stdout: hello\n\
+         ;@ module: lib\n{triple}{lib}define i32 @answer() {{\n  ret i32 0\n}}\n\
+         ;@ module: test\n{triple}{test}declare i32 @answer()\n\
+         define i32 @main() {{\n  %r = call i32 @answer()\n  ret i32 %r\n}}\n"
+    )
+}
+
+// spec/harness.md "roundtrip", "What an entry goes through": an entry of
+// several modules is parsed, printed, assembled and verified module by
+// module, and the engine builds and links the printed modules together;
+// the module that failed is named. The manifest's `delivered` column has
+// one word per module.
+#[test]
+fn several_modules() {
+    let fakes = Fakes::new("roundtrip-modules");
+    let unsupported = "declare void @g(ptr, ...)\n\
+         define void @f(ptr %p, ...) {\n  musttail call void (ptr, ...) @g(ptr %p, ...)\n  ret void\n}\n";
+    let entries = [
+        ("both", two_modules("both", "", ""), "text bitcode"),
+        ("lib_llc", two_modules("lib_llc", "@fake_llc_fail = global i32 1\n", ""), "text text"),
+        ("test_as", two_modules("test_as", "", "@fake_as_refuse = global i32 1\n"), "text text"),
+        // The link and the program see every module.
+        (
+            "lib_output",
+            two_modules("lib_output", "@fake_wrong_output = global i32 1\n", ""),
+            "text text",
+        ),
+        ("test_parse", two_modules("test_parse", "", "this is not IR\n"), "text text"),
+        // A bug in a later module is not hidden by an earlier "unsupported".
+        ("worst", two_modules("worst", unsupported, "this is not IR\n"), "text text"),
+        ("lib_unsupported", two_modules("lib_unsupported", unsupported, ""), "text text"),
+        ("delivered", two_modules("delivered", "", ""), "text"),
+    ];
+    for (name, text, delivered) in &entries {
+        fakes.raw(name, text, delivered);
+    }
+    let mut options = fakes.options();
+    options.keep = true;
+    let report = run(&options).unwrap();
+    let cases = [
+        ("both", Outcome::Pass, ""),
+        ("lib_llc", Outcome::LlcFailed, "module 'lib': llc failed (exit status 1): llc: error"),
+        ("test_as", Outcome::LlvmAsRefused, "module 'test': llvm-as failed (exit status 1)"),
+        ("lib_output", Outcome::BehaviourDiffers, "with bfd: the program of llc's object wrote"),
+        ("test_parse", Outcome::ParserError, "module 'test': module: "),
+        ("worst", Outcome::ParserError, "module 'test': module: "),
+        ("lib_unsupported", Outcome::ParserUnsupported, "module 'lib': call:forwarded-varargs"),
+        ("delivered", Outcome::HarnessError, "the manifest says 1 module(s) (delivered 'text')"),
+    ];
+    for (name, outcome, detail) in cases {
+        let (got, text) = outcome_of(&report, name);
+        assert_eq!(got, outcome, "{name}: {text}");
+        assert!(text.starts_with(detail), "{name}: {text}");
+    }
+    // What the engine was given: the printed modules after their lines.
+    let kept = report.kept.clone().expect("failing entries are kept");
+    let dir = std::fs::read_dir(kept.join("llvm22"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| {
+            p.join("modules").join("lib.ll").is_file()
+                && std::fs::read_to_string(p.join("modules").join("lib.ll"))
+                    .unwrap()
+                    .contains("@fake_llc_fail")
+        })
+        .expect("lib_llc's directory is kept");
+    let printed = std::fs::read_to_string(dir.join("printed.ll")).unwrap();
+    let lib = printed.find(";@ module: lib\n").expect("lib's line");
+    let test = printed.find(";@ module: test\n").expect("test's line");
+    assert!(lib < test && printed.contains("@fake_llc_fail"), "{printed}");
+    assert!(dir.join("modules").join("test.bc").is_file());
+}
+
+// "What an entry goes through", step 5: the entry's directives reach the
+// engine, which applies them: `llc-args`, `link: allow-warnings`, and
+// `stdout-no-newline`.
+#[test]
+fn directives_are_the_engines() {
+    let fakes = Fakes::new("roundtrip-directives");
+    let arch = Arch::host().expect("a supported host").name();
+    let entry = |name: &str, directives: &str, marker: &str| {
+        let text = format!(
+            ";@ covers: fake {name}\n;@ target: {arch}\n;@ llvm: 22\n{directives}\
+             target triple = \"{arch}-unknown-linux-gnu\"\n{}",
+            module(Some(marker))
+        );
+        fakes.raw(name, &text, "text");
+    };
+    entry("sections", ";@ llc-args: -function-sections\n;@ stdout: hello\n", "fake_needs_sections");
+    entry("no_sections", ";@ stdout: hello\n", "fake_needs_sections");
+    entry("warns", ";@ link: m allow-warnings\n;@ stdout: hello\n", "fake_warns");
+    entry("warns_fatal", ";@ link: m\n;@ stdout: hello\n", "fake_warns");
+    entry("no_newline", ";@ stdout-no-newline: hello\n", "fake_no_newline");
+    entry("newline_missing", ";@ stdout: hello\n", "fake_no_newline");
+    let report = run(&fakes.options()).unwrap();
+    let cases = [
+        ("sections", Outcome::Pass),
+        ("no_sections", Outcome::LlcFailed),
+        ("warns", Outcome::Pass),
+        ("warns_fatal", Outcome::LinkFailed),
+        ("no_newline", Outcome::Pass),
+        ("newline_missing", Outcome::BehaviourDiffers),
+    ];
+    for (name, outcome) in cases {
+        let (got, text) = outcome_of(&report, name);
+        assert_eq!(got, outcome, "{name}: {text}");
+    }
+}
+
+// "Expectation file": it names the corpus it is for; a run against
+// another corpus says so, compares by name, and does not call the
+// entries the other corpus had stale; only a complete run may update it.
+#[test]
+fn the_file_names_its_corpus() {
+    let fakes = Fakes::new("roundtrip-identity");
+    fakes.entry("pass", "hello", &module(None));
+    fakes.entry("fake_llc_fail", "hello", &module(Some("fake_llc_fail")));
+    let mut options = fakes.options();
+    options.update = true;
+    run(&options).unwrap();
+    let file = std::fs::read_to_string(&options.expected).unwrap();
+    let identity = xtask::roundtrip::corpus_identity(
+        &fakes.corpus(),
+        &Manifest::read(&fakes.corpus()).unwrap(),
+    )
+    .unwrap();
+    assert!(identity.starts_with("2 entries, MANIFEST.tsv sha256 "), "{identity}");
+    assert!(file.contains(&format!("\n# corpus: {identity}\n")), "{file}");
+    options.update = false;
+    let report = run(&options).unwrap();
+    assert!(!report.notes.iter().any(|n| n.contains("expectation file")), "{:?}", report.notes);
+    assert_eq!(report.exit_status(), 0);
+
+    // Another corpus: one entry fewer, one more.
+    std::fs::write(&options.expected, file.clone() + "fake/llvm22/gone.ll\tllc-failed\t-\n")
+        .unwrap();
+    fakes.entry("other", "hello", &module(None));
+    let report = run(&options).unwrap();
+    assert!(report.stale.is_empty(), "{:?}", report.stale);
+    assert!(
+        report.notes.iter().any(|n| n.starts_with("the expectation file is for '2 entries, ")
+            && n.contains("this corpus is 3 entries, ")),
+        "{:?}",
+        report.notes
+    );
+    assert_eq!(report.exit_status(), 0, "{}", report.summary(true));
+    options.limit = Some(1);
+    options.update = true;
+    assert!(run(&options).unwrap_err().contains("needs a complete run"));
+    options.limit = None;
+    let report = run(&options).unwrap();
+    assert!(report.updated);
+    let file = std::fs::read_to_string(&options.expected).unwrap();
+    assert!(file.contains("\n# corpus: 3 entries, ") && !file.contains("gone.ll"), "{file}");
+}
+
+// "Options", `--tier quick`: the quick tier's entries only.
+#[test]
+fn the_quick_tier() {
+    let fakes = Fakes::new("roundtrip-quick");
+    let mut quick = Vec::new();
+    for i in 0..64 {
+        let name = format!("t{i}");
+        fakes.entry(&name, "hello", &module(None));
+        if xtask::roundtrip::in_quick_tier(&format!("fake/llvm22/{name}.ll")) {
+            quick.push(format!("fake/llvm22/{name}.ll"));
+        }
+    }
+    quick.sort();
+    assert!(!quick.is_empty() && quick.len() < 16, "{quick:?}");
+    let mut options = fakes.options();
+    options.quick = true;
+    let report = run(&options).unwrap();
+    let ran: Vec<String> = report.results.iter().map(|r| r.entry.clone()).collect();
+    assert_eq!(ran, quick);
+    assert!(report.configuration.contains("(quick tier)"), "{}", report.configuration);
+}
+
+// spec/harness.md "ci": the gate's step. Without a corpus it is skipped
+// with a notice, or fails under HOD_REQUIRE_TOOLS=1; with one it prints
+// one line when it passes and the summary when it fails.
+#[test]
+fn the_gate_step() {
+    let fakes = Fakes::new("roundtrip-ci");
+    let mut options = fakes.options();
+    options.corpus = fakes.scratch.join("no-corpus");
+    let skipped = xtask::roundtrip::gate(&options).unwrap();
+    assert!(skipped.starts_with("roundtrip: skipped: no corpus at "), "{skipped}");
+    assert_eq!(skipped.lines().count(), 1);
+    options.require_tools = true;
+    let failed = xtask::roundtrip::gate(&options).unwrap_err();
+    assert!(failed.contains("(HOD_REQUIRE_TOOLS=1)"), "{failed}");
+
+    let mut options = fakes.options();
+    fakes.entry("pass", "hello", &module(None));
+    let passed = xtask::roundtrip::gate(&options).unwrap();
+    assert_eq!(passed.lines().count(), 1, "{passed}");
+    assert!(passed.starts_with("roundtrip: 1 entries, 1 as expected, 0 worse"), "{passed}");
+    assert!(passed.contains(", which is for another corpus)"), "{passed}");
+    fakes.entry("fake_llc_fail", "hello", &module(Some("fake_llc_fail")));
+    let failed = xtask::roundtrip::gate(&options).unwrap_err();
+    assert!(failed.contains("WORSE     fake/llvm22/fake_llc_fail.ll: llc-failed"), "{failed}");
+    options.quick = true;
+    // Neither entry is in the quick tier.
+    assert!(!xtask::roundtrip::in_quick_tier("fake/llvm22/pass.ll"));
+    assert!(xtask::roundtrip::gate(&options).unwrap_err().contains("no corpus entry is selected"));
 }

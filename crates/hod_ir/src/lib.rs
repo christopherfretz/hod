@@ -37,6 +37,7 @@ mod builder;
 mod classify;
 mod comdat;
 mod constant;
+mod dom;
 mod error;
 mod flatten;
 mod fold;

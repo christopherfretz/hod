@@ -7,9 +7,9 @@ mod common;
 use common::{DOUBLE, Fx, I1, I32, I64, PTR, VOID, al, call, icall, int, unsupported, value};
 use hod_interp::{Outcome, Val};
 use hod_ir::{
-    AliasDesc, AtomicOrdering, BlockId, Bundle, CallDesc, ConstOp, FunctionBuilder, FunctionDesc,
-    IFuncDesc, InlineAsm, IrResult, Linkage, Module, Opcode, ParamAttrs, ParamMem, RmwOp,
-    SyncScope, TlsModel, TypeId, Value, VariableDesc,
+    AliasDesc, AtomicOrdering, Bundle, CallDesc, ConstOp, FunctionBuilder, FunctionDesc, IFuncDesc,
+    InlineAsm, IrResult, Linkage, Module, Opcode, ParamAttrs, ParamMem, RmwOp, SyncScope, TlsModel,
+    TypeId, Value, VariableDesc,
 };
 
 /// Runs `void f()` whose body is `build`, which leaves its last block for
@@ -121,47 +121,23 @@ fn only_what_is_reached() {
 /// §8: instructions.
 #[test]
 fn instructions() {
-    let landing = |b: &mut FunctionBuilder, m: &mut Module| -> IrResult<(BlockId, TypeId)> {
-        let exn = m.types.struct_type(&[PTR, I32], false)?;
-        Ok((b.create_block()?, exn))
-    };
-    let invoke = reason(|m, b| {
-        let (pad, exn) = landing(b, m)?;
-        let normal = b.create_block()?;
-        let std = m.find_symbol(b"source").unwrap();
-        let ty = m.symbol(std).ty();
-        b.invoke(I64, &CallDesc::new(Value::sym(std)?, ty, &[]), normal, pad)?;
+    // §5.9: unwinding through a function whose personality is not the
+    // Itanium C++ one.
+    let foreign = reason(|m, b| {
+        let eh = hod_interp::eh::declare(m)?;
+        let exn = eh.pad_ty;
+        let (pad, normal) = (b.create_block()?, b.create_block()?);
+        let tag = Value::sym(eh.type_infos[0])?;
+        let payload = int(m, I64, 1);
+        let args = [tag, payload];
+        b.invoke(VOID, &CallDesc::new(Value::sym(eh.throw)?, eh.throw_ty, &args), normal, pad)?;
         b.begin_block(pad)?;
         let caught = b.landing_pad(exn, true, &[])?;
         b.resume(caught)?;
         b.begin_block(normal)?;
         Ok(())
     });
-    assert_eq!(invoke, "inst:invoke");
-    let pad = loose_reason(|m, b| {
-        let (pad, exn) = landing(b, m)?;
-        b.br(pad)?;
-        b.begin_block(pad)?;
-        let caught = b.landing_pad(exn, true, &[])?;
-        b.resume(caught)?;
-        Ok(())
-    });
-    assert_eq!(pad, "inst:landingpad");
-    let resume = loose_reason(|m, b| {
-        let exn = m.types.struct_type(&[PTR, I32], false)?;
-        let zero = Value::constant(m.consts.zero(&m.types, exn)?)?;
-        b.resume(zero)?;
-        Ok(())
-    });
-    assert_eq!(resume, "inst:resume");
-    let indirect = reason(|_, b| {
-        let p = slot(b)?;
-        let target = b.create_block()?;
-        b.indirect_br(p, &[target])?;
-        b.begin_block(target)?;
-        Ok(())
-    });
-    assert_eq!(indirect, "inst:indirectbr");
+    assert_eq!(foreign, "eh:personality");
     let callbr = loose_reason(|m, b| {
         let void_ty = m.types.function(VOID, &[], false)?;
         let asm =
@@ -269,10 +245,6 @@ fn constants() {
         })
     };
     assert_eq!(
-        operand(|m| Ok((PTR, m.consts.block_addr(sym_f(m), BlockId::new(0))?))),
-        "const:blockaddress"
-    );
-    assert_eq!(
         operand(|m| Ok((I64, m.consts.sym_diff(&m.types, I64, sym_f(m), sym_sink(m), 0, false)?))),
         "const:symdiff"
     );
@@ -309,16 +281,6 @@ fn constants() {
     let outcome = fx.run(f, &[]);
     assert_eq!(unsupported(&outcome), "global:initializer");
     assert_eq!(outcome.stopped_at, None);
-
-    let mut fx = Fx::new();
-    let f = fx.func("f", VOID, &[], |_, b| {
-        b.ret(None)?;
-        Ok(())
-    });
-    let m = &mut fx.m;
-    let init = m.consts.block_addr(f, BlockId::new(0)).unwrap();
-    m.add_variable(b"g", &VariableDesc { init: Some(init), ..VariableDesc::new(PTR) }).unwrap();
-    assert_eq!(unsupported(&fx.run(f, &[])), "const:blockaddress");
 }
 
 /// §8: calls.
@@ -388,7 +350,13 @@ fn symbols() {
             Ok(())
         })
     };
-    assert_eq!(address_of(|m| m.add_variable(b"errno", &VariableDesc::new(I32))), "extern:errno");
+    // A declared variable has an address (§4) but nothing to read.
+    let read = reason(|m, b| {
+        let errno = m.add_variable(b"errno", &VariableDesc::new(I32))?;
+        b.load(I32, Value::sym(errno)?, al(4))?;
+        Ok(())
+    });
+    assert_eq!(read, "extern:errno");
     assert_eq!(
         address_of(|m| {
             let zero = m.consts.zero(&m.types, I32)?;

@@ -34,6 +34,7 @@ const PICLEVEL: &str = "hod_ir has the PIC levels 0, 1 and 2";
 const BLOCKNUM: &str =
     "LLVM takes the address of a numbered block only before the function is defined";
 const LINKOPT: &str = "a linker option is a list of strings (§7.2)";
+const PPC: &str = "ppc_fp128 is read as fp128 and noted (§3.4), so fp128 takes its literals too";
 
 #[rustfmt::skip]
 pub const ROWS: &[Row] = &[
@@ -193,6 +194,13 @@ pub const ROWS: &[Row] = &[
     ("@x = global double inf", "Syntax@1:20", "--", ""),
     ("@x = global half 0xH3C00", "ok", "++", ""),
     ("@x = global half 0x3C00", "Type@1:18", "--", ""),
+    ("@x = global x86_fp80 1.0", "Type@1:22", "--", ""),
+    ("@x = global fp128 0x3FF0000000000000", "Type@1:19", "--", ""),
+    ("@x = global float 0.1", "Type@1:19", "--", ""),
+    ("@x = global float 0x36A0000000000000", "ok", "++", ""),
+    ("@x = global double 0xH3C00", "Type@1:20", "--", ""),
+    ("@x = global float 1e40", "Type@1:19", "--", ""),
+    ("@x = global fp128 0xM00000000000000000000000000000000", "ok", "--", PPC),
     ("@x = global double 0xH3C00", "Type@1:20", "--", ""),
     ("@x = global double 0x00000000000000003FF0000000000000", "ok", "++", ""),
     ("@x = global double 0x1", "ok", "++", ""),

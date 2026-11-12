@@ -97,15 +97,12 @@ pub struct AttrGroup {
     pub rejected: Vec<Box<str>>,
 }
 
-/// The result of [`parse_module`]: the module with everything but
-/// function bodies, and what a body parser needs to finish the job
-/// (`spec/ll.md` §6). Read-only and `Sync` apart from the public
-/// `module` field.
+/// What the text of a module leaves behind for whoever parses the
+/// function bodies (`spec/ll.md` §6): where each body is, and the tables
+/// that resolve what a body refers to by name or number. Read-only and
+/// `Sync`: any number of body parsers may share one.
 #[derive(Debug)]
-pub struct ParsedModule<'a> {
-    /// The module: target, types, constants, symbols, COMDATs, attribute
-    /// sets, module properties, and the record of what was unsupported.
-    pub module: Module,
+pub struct ModuleText<'a> {
     source: &'a [u8],
     functions: Vec<FunctionText>,
     named_types: names::NameMap,
@@ -116,7 +113,7 @@ pub struct ParsedModule<'a> {
     symbol_dbg: Vec<(SymId, MdRef)>,
 }
 
-impl<'a> ParsedModule<'a> {
+impl<'a> ModuleText<'a> {
     /// The source the spans are offsets into.
     pub fn source(&self) -> &'a [u8] {
         self.source
@@ -167,6 +164,28 @@ impl<'a> ParsedModule<'a> {
     /// (`DISubprogram`).
     pub fn symbol_dbg(&self) -> &[(SymId, MdRef)] {
         &self.symbol_dbg
+    }
+}
+
+/// The result of [`parse_module`]: the module with everything but
+/// function bodies, and what a body parser needs to finish the job
+/// (`spec/ll.md` §6). The two are separate fields so that the module can
+/// be added to while the text tables are read; the tables are also
+/// reached through the result itself (`parsed.functions()`).
+#[derive(Debug)]
+pub struct ParsedModule<'a> {
+    /// The module: target, types, constants, symbols, COMDATs, attribute
+    /// sets, module properties, and the record of what was unsupported.
+    pub module: Module,
+    /// The text side.
+    pub text: ModuleText<'a>,
+}
+
+impl<'a> std::ops::Deref for ParsedModule<'a> {
+    type Target = ModuleText<'a>;
+
+    fn deref(&self) -> &ModuleText<'a> {
+        &self.text
     }
 }
 

@@ -12,7 +12,7 @@ use hod_ir::{
     AttrClass, AttrSyntax, CallConv, Const, ConstId, FixupTarget, FnAttrs, FnStr, Linkage, Module,
     ParamAttrs, ParamMem, SymId, Symbol, SymbolKind, UnnamedAddr, UwTable, Visibility, attr_class,
 };
-use hod_ll::{MdKind, MdRef, ParsedModule, unescape};
+use hod_ll::{FunctionText, Lexer, MdKind, MdRef, ModuleText, ParsedModule, Tok, unescape};
 
 use crate::common::{Case, corpus, parse, parsed};
 
@@ -648,6 +648,7 @@ fn assert_sync<T: Sync + Send>() {}
 #[test]
 fn the_body_parser_interface_matches_the_text() {
     assert_sync::<ParsedModule<'static>>();
+    assert_sync::<ModuleText<'static>>();
     for case in corpus() {
         let text = &case.canonical;
         let parsed = parse(text, case.arch).expect("accepted");
@@ -740,4 +741,48 @@ fn debug_attachments(case: &Case, parsed: &ParsedModule<'_>, canonical: &str) {
         let listed = parsed.symbol_dbg().iter().find(|(sym, _)| *sym == function.sym);
         assert_eq!(function.dbg, listed.map(|&(_, reference)| reference), "{}", case.name);
     }
+}
+
+/// §6: the text side is shared by readers on several threads while the
+/// module is added to. Each thread lexes a share of the bodies from the
+/// recorded spans, and together they see what one reader sees.
+#[test]
+fn bodies_are_read_from_several_threads_while_the_module_grows() {
+    const READERS: usize = 4;
+    let Some(case) = corpus().iter().max_by_key(|case| case.text.len()) else {
+        return;
+    };
+    let mut parsed = parsed(case);
+    let ParsedModule { module, text } = &mut parsed;
+    let text: &ModuleText<'_> = text;
+    let count = |function: &FunctionText| {
+        let mut lexer = Lexer::new(text.source());
+        lexer.set_pos(function.body.start as usize);
+        let mut tokens = 0usize;
+        loop {
+            let token = lexer.next_token();
+            if token.start >= function.body.end || token.kind == Tok::Eof {
+                return tokens;
+            }
+            assert_ne!(token.kind, Tok::Error, "{}: {}", case.name, lexer.error());
+            tokens += 1;
+        }
+    };
+    let count = &count;
+    let serial: usize = text.functions().iter().map(count).sum();
+    let shared: usize = std::thread::scope(|scope| {
+        let readers: Vec<_> = (0..READERS)
+            .map(|reader| {
+                let share = text.functions().iter().skip(reader).step_by(READERS);
+                scope.spawn(move || share.map(count).sum::<usize>())
+            })
+            .collect();
+        // Meanwhile the module takes a type that no text of the corpus has.
+        let before = module.types.len();
+        module.types.int(977).expect("an integer type");
+        assert_eq!(module.types.len(), before + 1);
+        readers.into_iter().map(|reader| reader.join().expect("a reader")).sum()
+    });
+    assert!(serial > text.functions().len(), "{}: bodies have tokens", case.name);
+    assert_eq!(shared, serial, "{}", case.name);
 }

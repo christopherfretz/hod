@@ -14,7 +14,7 @@ use crate::lexer::{Lexer, MAX_SOURCE_BYTES, Tok, Token, unescape};
 use crate::meta::{MdRef, MetadataIndex, Upgrade};
 use crate::names::NameMap;
 use crate::skip::skip_group;
-use crate::{AttrGroup, FunctionText, ParseOptions, ParsedModule, Span, limits};
+use crate::{AttrGroup, FunctionText, ModuleText, ParseOptions, ParsedModule, Span, limits};
 
 /// Where the definition of a named type stands.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -355,14 +355,16 @@ impl<'a> Parser<'a> {
             self.type_numbers.iter().map(|&(number, slot)| (number, type_of(slot))).collect();
         Ok(ParsedModule {
             module: self.module,
-            source: self.src,
-            functions: self.functions,
-            named_types: self.type_names,
-            numbered_types,
-            numbered_globals: self.numbered_globals,
-            groups: self.groups,
-            metadata: self.md,
-            symbol_dbg: self.symbol_dbg,
+            text: ModuleText {
+                source: self.src,
+                functions: self.functions,
+                named_types: self.type_names,
+                numbered_types,
+                numbered_globals: self.numbered_globals,
+                groups: self.groups,
+                metadata: self.md,
+                symbol_dbg: self.symbol_dbg,
+            },
         })
     }
 }

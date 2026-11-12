@@ -65,6 +65,18 @@ Not written, with the reason:
 - `.debug_types` / type units: only with `-fdebug-types-section`, which is
   not a module property.
 
+**Compressed** (WP-061): with `debug_compression: Zlib` (`hod
+--compress-debug-sections=zlib`, what `clang -gz=zlib` asks of LLVM's
+object writer; `llc` has no such option) every `.debug_*` section that
+shrinks is written as `SHF_COMPRESSED`: an `Elf64_Chdr`
+(`ELFCOMPRESS_ZLIB`, the plain size, the plain alignment 1), a zlib
+stream, `sh_addralign` 8, the other flags kept (`.debug_str` is `MSC`).
+A section that would not shrink stays as above, as in LLVM. Relocations
+are unchanged: their offsets are into the uncompressed bytes, which
+linkers and debuggers decompress before applying them. The format, the
+compressor and its limits are `spec/object.md` "Compressed sections";
+zstd is not written.
+
 ### 1.2 Units
 
 One `.debug_info` unit per compile unit listed in `!llvm.dbg.cu`
@@ -633,6 +645,21 @@ exclusive `low_pc` forms), and pin the bytes of one entry.
 | 69 | `subprogram` (definition, any): `low_pc`, `high_pc`, `frame_base`, then `linkage_name` (0), `name` (1), `decl_file`/`decl_line` (2), `prototyped` (3), `type` (4), `artificial` (5), `external` (6), `noreturn` (7), children optional | 512 | 8733 | WP-057 |
 | 70 | `subprogram` (member definition): `low_pc`, `high_pc`, `frame_base`, `object_pointer` (0), `decl_file` (1), `decl_line` (2), `linkage_name` (3), `specification`, children optional | 32 | 9245 | WP-057 |
 | 71 | `label` (with `decl_column`, LLVM 21 and later), `low_pc` (0) | 2 | 9277 | WP-057 |
+| 72 | `subprogram` (abstract instance): `linkage_name` (0), `name` (1), decl (2), `prototyped` (3), `type` (4), `artificial` (5), `external` (6), `noreturn` (7), `inline`, children optional | 512 | 9279 | WP-085 |
+| 73 | `subprogram` (abstract member): `decl_file` (0), `decl_line` (1), `linkage_name` (2), `specification`, `inline`, `object_pointer` (3), children optional | 32 | 9791 | WP-085 |
+| 74 | `subprogram` (of an abstract instance): `low_pc`, `high_pc`, `frame_base`, `object_pointer` (0), `abstract_origin`, children optional | 4 | 9823 | WP-085 |
+| 75 | `inlined_subroutine`: `abstract_origin`, `low_pc`/`high_pc` (0), `ranges` (1), `call_file`, `call_line`, `call_column` (2), children optional | 16 | 9827 | WP-085 |
+| 76 | `lexical_block` (of an abstract instance): `low_pc`/`high_pc` (0), `ranges` (1), `abstract_origin`, children | 4 | 9843 | WP-085 |
+| 77 | `lexical_block` (abstract), children | 1 | 9847 | WP-085 |
+| 78 | `formal_parameter` (of an abstract instance): `location`, `abstract_origin` | 1 | 9848 | WP-085 |
+| 79 | `variable` (of an abstract instance): `location`, `abstract_origin` | 1 | 9849 | WP-085 |
+| 80 | `label` (of an abstract instance): `abstract_origin`, `low_pc` | 1 | 9850 | WP-085 |
+| 81 | `variable` (global, any): `name`, `type`, `external` (0), decl (1), `declaration` (2), `alignment` (3), `location` (4), `const_value` udata (5), sdata (6), `linkage_name` (7), children optional | 512 | 9851 | WP-059 |
+| 82 | `variable` (specification, any): `specification`, `type` (0), `alignment` (1), `location` (2), `const_value` udata (3), sdata (4), `linkage_name` (5), children optional | 128 | 10363 | WP-059 |
+| 83 | `template_value_parameter` (any): `type` (0), `name` (1), `default_value` (2), `const_value` udata (3), sdata (4), `location` (5) | 64 | 10491 | WP-059 |
+| 84 | `GNU_template_template_param` (any): `name` (0), `default_value` (1), `GNU_template_name` | 4 | 10555 | WP-059 |
+| 85 | `template_alias` (with parameters): 51's slots, children | 8 | 10559 | WP-059 |
+| 86 | `subprogram` (specification, any): `low_pc`, `high_pc`, `frame_base`, `object_pointer` (0), `type` (1), `decl_file` (2), `decl_line` (3), `linkage_name` (4), `specification`, children optional | 64 | 10567 | WP-059 |
 
 Families 2 to 45 that WP-058 owns are used for the common shape of each
 kind (they keep the codes the reserved shapes promised); the "any"
@@ -648,7 +675,7 @@ WP-057 uses its reserved families 0 (`formal_parameter`), 1 (local
 `low_pc`/`high_pc` or `ranges` as `DW_FORM_sec_offset`) and 39 (`label`),
 and appends 69 to 71 for the other shapes.
 
-`CODE_END` is 9279 (754 after WP-053, 8733 after WP-058). Since the core families come last, their codes take
+`CODE_END` is 10631 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085). Since the core families come last, their codes take
 two ULEB bytes where `llc`'s take one (the cost is in §7.2; open question
 7).
 
@@ -794,11 +821,7 @@ reports a `debug:*` name as itself and §6.5's unnamed shapes as
 | `debug:local-type-scope` | a function-local type reached before its function was added (in `types.rs`) |
 
 Inlined code and functions' statics are §6.9's (WP-085), with its own
-refusals.
-
-`LineTablesOnly` is not written by WP-057: the subprogram DIE it needs
-exists now, but the unit, the bridge and `classify` still refuse it
-(§9; WP-061).
+refusals. `LineTablesOnly` and `DebugDirectivesOnly` units are §6.10 (WP-061).
 
 ### 6.5 What the core writes (implemented)
 
@@ -840,7 +863,8 @@ All debug sections stay outside every group (§1.3).
 Anything else the plan meets is `Unsupported { node, what }`, not a
 wrong DIE:
 
-- a unit whose `emissionKind` is not `FullDebug`;
+- a unit whose `emissionKind` is `NoDebug` (the bridge gives the plan
+  none; other reduced kinds are §6.10);
 - a variable with several expressions, a non-empty expression, no
   type, a line without a file, or template parameters (a variable with
   no name is written without one since WP-058, as `llc` does);
@@ -1044,10 +1068,8 @@ there, as `llc` does. A local type reached while no DIE of its scope
 exists (a global's type that names it, or a retained type of a function
 that was not placed) is `Unsupported("debug:local-type-scope")`.
 
-**Template parameters (WP-059)** are skipped. Neither `templateParams`
-nor a template alias's `extraData` is read, so no DIE and no error comes
-from them (`tests/type_graph.rs`). WP-059 adds them as children at
-`llc`'s position in the construct steps.
+**Template parameters** are children at `llc`'s position in the
+construct steps (WP-059, §6.11).
 
 **Refused** (`Unsupported`, named):
 - a pointer with an address space;
@@ -1190,6 +1212,176 @@ stays refused, for the same reason). A value with a home becomes a
 - `dies_inline_throughput.rs`: 20,000 inlined calls, an inlining chain
   20,000 deep (counted at 2,000) and 2,000 functions of ten calls;
   `inlined_die_cost` (ignored) is §7.2's measurement.
+
+### 6.10 Reduced units: `LineTablesOnly` and `DebugDirectivesOnly` (implemented, WP-061)
+
+`crates/hod_dwarf/src/reduced.rs`. What `llc` 19 and 22 write, read from
+their output (the two agree):
+
+| `emissionKind` | sections of the unit | DIEs |
+|---|---|---|
+| `FullDebug` | §1.1 | §6 |
+| `LineTablesOnly` (`-gline-tables-only`, `-g1`) | §1.1 | the unit DIE, attribute for attribute as for `FullDebug` (§6.5), and **no child** for a function without inlined code: `DwarfDebug::endFunctionImpl` returns before creating a subprogram when the function has no abstract scopes; the function's code is only in the unit's `low_pc`/`high_pc` or `DW_AT_ranges` |
+| `DebugDirectivesOnly` (`-gline-directives-only`) | `.debug_line` and `.debug_line_str` only (no `.debug_info`, `.debug_abbrev`, strings, addresses or ranges) | none |
+| `NoDebug` (`-g0` units in a linked module) | none: the unit is skipped, its functions get no rows | none |
+
+The line table of a reduced unit is the one a `FullDebug` unit of the
+same functions gets, byte for byte (`hod_a64/tests/reduced.rs` checks it
+against hod's `-g` object of the same source). A module mixes kinds
+freely: units are written in `!llvm.dbg.cu` order, each as its kind
+says; the `DebugDirectivesOnly` and `NoDebug` units are left out of
+`write_debug_info`'s inputs (`DebugLines::finish`), so a module whose
+units are all `DebugDirectivesOnly` has no `.debug_info` at all.
+
+A `LineTablesOnly` function with code inlined into it (a scope row with
+`inlinedAt` that covers a byte) gets, from `llc`, a subprogram with only
+`low_pc`, `high_pc` and `name`, an abstract subprogram per inlined
+function (`name`, `DW_AT_inline`) and `DW_TAG_inlined_subroutine`
+children (`abstract_origin`, `low_pc`/`high_pc`, `call_file`,
+`call_line`, `call_column`). Inlined subroutines are WP-085's; until
+they land, such a function is refused. A `DebugDirectivesOnly` function
+with inlined code needs nothing more than its rows and is written.
+
+Refusals (`pub const` in `reduced.rs`, re-exported by the crate):
+
+| name | what |
+|---|---|
+| `debug:line-tables-inlined` | a `LineTablesOnly` function with inlined code (above) |
+| `debug:line-tables-variables` | a `LineTablesOnly` function with variable or label records: no producer writes them, and `llc` 22 crashes on them |
+| `debug:reduced-unit-entities` | a `LineTablesOnly` or `DebugDirectivesOnly` unit that lists globals, enumerations, retained types or imported entities: no producer writes them; `llc` 22 crashes on such a `LineTablesOnly` unit and writes a stray `.debug_addr` for such a `DebugDirectivesOnly` one (an empty list, `globals: !{}`, is accepted) |
+
+The hooks: `UnitPlan::build` calls `reduced::check_unit` for a unit that
+is not `FullDebug` (`die.rs`), and `UnitPlan::add_function` hands such a
+unit's functions to `reduced::add_function` (`func.rs`), which adds no
+DIE. `has_dies(kind)` tells the bridge which units go to
+`write_debug_info`.
+
+`debugInfoForProfiling: true` makes `llc` write a subprogram for every
+function of a `LineTablesOnly` unit; `hod_ir` does not map the flag
+(`crates/hod_ir/src/debug/map.rs`), so hod writes none. No producer of
+hod's inputs sets it without `-fdebug-info-for-profiling`; open question
+in §11.
+
+### 6.11 Globals, templates, imports and specifications (implemented, WP-059)
+
+What is outside function bodies, written as `llc` 19 and 22 write it
+(`-O0 -global-isel=0 -fast-isel=0`), its order and attributes taken
+from `llc`'s output (`llvm-dwarfdump` trees), not from its source. The
+code is in new modules of `hod_dwarf`: `scope.rs` (the names of what is
+refused, the plan's state), `global.rs`, `template.rs`, `import.rs` and
+`spec.rs`. Each reaches the core through one call at the site that
+refused before (`spec/landed/dwarf/WP-059.md` lists them).
+
+**Globals** (`getOrCreateGlobalVariableDIE`). A plain global (a
+definition, an empty expression, no declaration, no template
+parameters, not thread-local) stays the core's (§6.5). Every other
+global outside a function is made here, in `llc`'s order: its context
+(namespaces), the variable, then
+- a static member's definition (`declaration:`, a `DW_TAG_variable` or
+  `DW_TAG_member` with `DIFlagStaticMember` in a class): the class (with
+  its members), then the declaration if the class does not list it
+  (appended), then the definition's type if it is not the
+  declaration's. The definition is written in the unit with
+  `DW_AT_specification`, then `type` (when it differs), `alignment`,
+  the location or constant, and `linkage_name`;
+- any other: `name`, `type`, `external`, decl, `declaration` (a
+  declaration), `alignment`, its template parameters as children, the
+  location or constant, `linkage_name`.
+
+The location is `DW_OP_addrx` of the global's `.debug_addr` entry (§6.5).
+A constant expression (`DW_OP_constu v, DW_OP_stack_value` or
+`DW_OP_consts v, DW_OP_stack_value`) is `DW_AT_const_value`, `udata` or
+`sdata` as the operator says, with no location. A thread-local
+variable on AArch64 has no location: AArch64's `llc` writes none, and
+gdb and lldb print it as `llc`'s. Its linkage name is kept. A
+thread-local constant is written as a constant. Neither a constant nor
+a thread-local variable takes a `.debug_addr` entry, even when the code
+generator placed its symbol: the unit counts the entries of the
+globals that write a location (`global_takes_address`), then the
+template parameters' (below), then the functions'.
+
+**Template parameters** (`addTemplateParams`), each a child DIE:
+- `DW_TAG_template_type_parameter`: `type`, `name`, `default_value`;
+- `DW_TAG_template_value_parameter`: `type`, `name`, `default_value`,
+  then the value:
+  - an integer is `DW_AT_const_value`, `udata` or `sdata` by
+    `isUnsignedDIType` (an enumeration with a base type takes its base
+    type's signedness, as in `llc` 19 and 22);
+  - the address of a symbol is `DW_AT_location (DW_OP_addrx N,
+    DW_OP_stack_value)`. It takes a `.debug_addr` entry, against the
+    place the code generator gave the symbol (`UnitPlan::place_symbols`,
+    called by the bridge after `seal`);
+  - a float, a null pointer or an address with an offset has no value,
+    as in `llc`;
+- `DW_TAG_GNU_template_parameter_pack`: `name`; its parameters are
+  children;
+- `DW_TAG_GNU_template_template_param`: `name`, `default_value`,
+  `DW_AT_GNU_template_name`.
+
+hod is DWARF 5 only, so `default_value` is written whenever the node
+says so. A parameter is a task of the type graph (§6.8,
+`Task::Template`): its DIE, then its type's. Where the parameters go:
+- the first children of a class, structure or union and of a member
+  function declaration (before the return type and the parameters);
+- after the base type of a template alias (its `extraData`);
+- the children of a variable;
+- the last children of a definition, after its variables, blocks and
+  imports. They are made at `seal`, as `finishSubprogramDefinitions`
+  does.
+
+**Imported entities** (`DW_TAG_imported_module`, `DW_TAG_imported_declaration`)
+are made at `seal`, before the functions' types, as `llc` emits them at
+the end of the module:
+- first the unit's `imports:`, each in its scope (the unit, a file or
+  a namespace);
+- then each function's (its `retainedNodes`), as the function's
+  children.
+
+For each, the scope comes first, then the entity's DIE if it has none
+(a namespace, a type, a function declaration, a global without a
+location), then the import: decl, `import`, `name`.
+
+**Specifications** (`getOrCreateSubprogramDIE`,
+`applySubprogramDefinitionAttributes`):
+- a member function's declaration that its class does not list (a
+  template's instance, an implicit member) is made when its definition
+  is, and appended to the class;
+- a definition whose declaration is in a namespace or the unit (an
+  out-of-line definition such as `void ns::f() {}`) has its declaration
+  made there, with the member declaration's attributes (§6.8);
+- the definition goes to the unit with `DW_AT_specification`;
+- a definition whose return type is not its declaration's (`auto`
+  deduced) writes `DW_AT_type` after the frame base and before the decl
+  (families 35 and 86). That type is made at `seal`.
+
+**Families** (§6.1): WP-059 uses its reserved families
+- 14 to 18;
+- 35, refined to `object_pointer` (0), `type`, `decl_line` (1),
+  `linkage_name` (2), `specification`;
+- 41 and 42 (42's `const_value` is `udata`), 43 and 44.
+
+It appends 81 to 86 for the other shapes.
+
+**Refused** (`Unsupported`, named in `scope.rs`):
+
+| name | what |
+|---|---|
+| `debug:global-expression` | a global's expression that is neither empty nor a constant |
+| `debug:global-shape` | a static member's definition that is not a definition; a global without a name or type that is not a static member's definition; a line without a file |
+| `debug:global-scope` | a global scoped outside the unit, a file or a namespace (a module) |
+| `debug:static-member-declaration` | a `declaration:` that is not a static member of a class |
+| `debug:tls-location` | a thread-local variable on x86-64, whose `llc` writes `DW_OP_const8u` + `DW_OP_GNU_push_tls_address` |
+| `debug:template-parameter` | a parameter of another tag; a pack with a type or a default; a template template parameter whose value is not a string; a value of the wrong kind |
+| `debug:template-value` | an integer value wider than 64 bits |
+| `debug:template-address` | the address of a symbol this object does not place (an undefined function or variable) |
+| `debug:import` | an import of another tag, with `elements:`, an `imported_module` with a name, a line without a file |
+| `debug:import-scope` | a unit's import scoped outside the unit, a file or a namespace; a function's import scoped elsewhere than its function |
+| `debug:import-entity` | an import of a module, of another import, of a function's definition or of a function-local variable |
+| `debug:declaration-scope` | a function declaration scoped outside a class, the unit, a file or a namespace, or virtual outside a class |
+
+A function's `static` (`debug:local-static`), inlined subroutines,
+`#dbg_value`, fragments and other location expressions are WP-085's. A
+unit's `LineTablesOnly` and compressed sections are WP-061's.
 
 ## 7. Speed and memory
 
@@ -1617,13 +1809,13 @@ records. `hod_dwarf` never sees a `LocId` or a `DiId`.
 `DebugLines` (`crates/hod_cg/src/emit/lines.rs`):
 
 1. `new`, once, before any function is placed: a `UnitPlan` per compile
-   unit of `!llvm.dbg.cu` whose `emissionKind` is `FullDebug`
+   unit of `!llvm.dbg.cu` whose `emissionKind` is not `NoDebug` (§6.10)
    (`UnitPlan::for_functions`, the open form of `of_module`, so the
    static member constants and the whole type graph are available). A
    module without `!llvm.dbg.cu`, or whose units are all `NoDebug`, gets
    `None` and nothing else is done or written: the same bytes as the
-   module without any debug information (tested). `LineTablesOnly` and
-   `DebugDirectivesOnly` are refused as `debug:emission-kind`; a unit
+   module without any debug information (tested). A
+   `DebugDirectivesOnly` unit gets its line table and no DIEs (§6.10); a unit
    the DIE core does not write (§6.5) as `debug:die-unsupported`, a
    `debug:*` name of §6.4 as itself.
 2. `add_function`, as each function is placed (§5.7), in module order:
@@ -1643,15 +1835,17 @@ The function DIEs are written by the one unit writer at `finish`, not
 per chunk: the plan is filled serially as functions are placed, so every
 string and address index is assigned in one order (open question 8).
 
-**What `LineTablesOnly` needs end to end** (WP-061). (1) `UnitPlan`
-accepting a `LineTablesOnly` unit: only the unit DIE and a subprogram DIE
-per function (name, linkage name, `low_pc`/`high_pc`,
-`decl_file`/`decl_line`, no types, variables or globals); (2) those
-subprogram DIEs: WP-057's family 69 writes them, so this is a mode of
-`add_function` that skips the variables, blocks and types; (3) lifting
-the `debug:emission-kind` refusal in `DebugLines::new`, and `classify`'s
-`debug:*` refusals (`crates/hod_ir/src/classify/matrix.rs:456`). The
-line table is the same as for `FullDebug`.
+**Reduced units** (WP-061, §6.10): every unit but a `NoDebug` one gets a
+plan and a line table; `Unit::dies` (`has_dies`) says whether it goes to
+`write_debug_info`. `classify` still refuses debug modules up front
+(`debug:*` rows, `crates/hod_ir/src/classify/walk.rs`), so a
+`-gline-tables-only` build reaches this through `emit_module` and the
+tests only; lifting those rows for modules without `FullDebug` units is
+a follow-up.
+
+**Compressed sections** (WP-061): with `Options::debug_compression`
+`Zlib`, `ModuleEmitter::finish` compresses the `.debug_*` sections last
+(§1.1, `spec/object.md` "Compressed sections").
 
 **What must land before `classify`'s `debug:*` refusals can drop**
 (`debug:subprogram`, `debug:slot-variables`, `debug:locations`,
@@ -1675,9 +1869,9 @@ Rows for `docs/BACKLOG.md` (ids to be assigned; "this" is WP-052):
 | DIE writer core (WP-053, **landed**: `spec/landed/dwarf/WP-053.md`) | §6.1 to §6.3, §6.5 to §6.7: the fixed abbreviation table, `.debug_info` unit header, compile unit DIE, `.debug_str`/`.debug_str_offsets`/`.debug_addr`/`.debug_rnglists`, the scope inversion, reference patching; `--verify` clean and compared with `llc` on modules with globals only | this |
 | subprograms and variables (WP-057, **landed**: `spec/landed/dwarf/WP-057.md`) | subprogram DIEs (`low_pc`/`high_pc`, `frame_base`), parameters and locals from `vars` with `DIExpression` composed onto the frame-base offset (`VarRow` gains its expression), lexical blocks from `lines` (§6.4), labels (the `labels` table); gdb `info locals`/`print`/`bt` on hod-compiled programs | DIE writer core, line tables in `emit_module` |
 | the type graph (WP-058, **landed**: `spec/landed/dwarf/WP-058.md`) | basic, derived (pointer, reference, rvalue reference, typedef, const/volatile, member, inheritance, pointer to member, friend), composite (class, struct, union, enum with enumerators, array with subranges), subroutine types, declarations and completion, `vtableHolder`; compared with `llc` by `llvm-dwarfdump` structure; gdb `ptype` | DIE writer core |
-| globals, namespaces, templates | global and static-member variables (`DW_OP_addrx`, TLS with `DW_OP_form_tls_address`), namespaces, imported entities, template type and value parameters (packs), `DW_AT_specification` for out-of-line definitions | subprograms and variables, the type graph |
+| globals, namespaces, templates (WP-059, **landed**: `spec/landed/dwarf/WP-059.md`) | global and static-member variables (`DW_OP_addrx`, TLS with `DW_OP_form_tls_address`), namespaces, imported entities, template type and value parameters (packs), `DW_AT_specification` for out-of-line definitions | subprograms and variables, the type graph |
 | L7 harness | §8.4: `xtask` gdb and lldb sessions, kiln's debugger tests, corpus `--verify`, `(function, line)` comparison with `llc`; the two-object COMDAT case | line tables in `emit_module`, subprograms and variables |
-| line-tables-only and compressed sections | `emissionKind: LineTablesOnly` (CU and subprogram DIEs only), `SHF_COMPRESSED` with zlib written in safe Rust (no dependency) | DIE writer core |
+| line-tables-only and compressed sections (WP-061, **landed**: `spec/landed/dwarf/WP-061.md`) | §6.10 (`LineTablesOnly`, `DebugDirectivesOnly`, mixed units) and §1.1 (`SHF_COMPRESSED` with zlib, written in safe Rust by `hod_obj::deflate`) | DIE writer core |
 | split DWARF | `-gsplit-dwarf`: skeleton unit, `.dwo` sections, `DW_UT_skeleton`/`split_compile`; `hod_ir` must first map `splitDebugFilename` and `dwoId` | DIE writer core |
 
 ## 11. Open questions
@@ -1724,3 +1918,8 @@ Rows for `docs/BACKLOG.md` (ids to be assigned; "this" is WP-052):
 9. `#dbg_value` (`debug:dbg-value`) is refused outright: clang and kiln
    do not emit it at `-O0`, so no exact form has been needed. When one
    is (a value with a home), it becomes a `LocalPlace` like `Frame`.
+10. `debugInfoForProfiling` (WP-061, §6.10): `llc` writes a subprogram
+    for every function of a `LineTablesOnly` unit with the flag set;
+    `hod_ir` drops the flag (`crates/hod_ir/src/debug/map.rs:72`). Map it
+    and refuse such units, or write those subprograms, when an input with
+    `-fdebug-info-for-profiling` shows up.

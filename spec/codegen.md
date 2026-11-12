@@ -2086,8 +2086,7 @@ in maps sized by their count).
 `init:blockaddress-unplaced`, `module:linker-option-not-a-pair` (an
 `!llvm.linker.options` entry of other than two strings: `llc` writes
 `.linker-options` as pairs), `eh:unknown-personality-without-pads`
-(`spec/eh.md` §1.1), `debug:emission-kind` (a `LineTablesOnly` or
-`DebugDirectivesOnly` unit), `debug:die-unsupported` (a unit with a node
+(`spec/eh.md` §1.1), `debug:die-unsupported` (a unit with a node
 the DIE writer does not write yet, `spec/dwarf.md` §6.5).
 
 **Known differences from `llc`**, none of which changes what a linker

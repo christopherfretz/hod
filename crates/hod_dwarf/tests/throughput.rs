@@ -289,7 +289,7 @@ fn die_throughput() {
 #[ignore = "a measurement; run in release with --ignored --nocapture"]
 #[allow(clippy::cast_precision_loss)] // the counts are far below 2^52
 fn type_graph_throughput() {
-    use common::types::{cxx, extract, global_addrs, oracle_input, read, strip_template_params};
+    use common::types::{cxx, extract, global_addrs, oracle_input, read};
     use hod_testutil::{Scratch, tool};
     const TRIPLE: &str = "aarch64-unknown-linux-gnu";
     let (Some(clang), Some(extract_tool), Some(llc)) =
@@ -306,8 +306,7 @@ fn type_graph_throughput() {
     let (plan_s, plan) = best(|| UnitPlan::of_module(&module, unit).unwrap());
     let dies = plan.die_count();
 
-    let for_llc = strip_template_params(&ir);
-    let (llc_s, object) = best(|| common::compile(&llc, &scratch, "stl", &for_llc, TRIPLE));
+    let (llc_s, object) = best(|| common::compile(&llc, &scratch, "stl", &ir, TRIPLE));
     let elf = common::Elf::parse(object);
     let globals = global_addrs(&elf, &module);
     let mut write_s = f64::MAX;

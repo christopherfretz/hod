@@ -5,6 +5,7 @@
 //! real `llc` and `llvm-dis` (and skip without them, see
 //! `hod_testutil::tool`).
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -99,6 +100,8 @@ fn hod() -> Command {
         "HOD_IN_FALLBACK",
         "HOD_TIME_PHASES",
         "HOD_CENSUS",
+        "HOD_THREADS",
+        "MAKEFLAGS",
     ] {
         command.env_remove(var);
     }
@@ -173,7 +176,7 @@ fn fallback_receives_original_arguments_and_identical_input() {
             .arg("-O0")
             .arg(format!("--fallback={}", llc.path.display()))
             .args(["-relocation-model=pic", "-filetype=obj", "--strict=false"])
-            .args(["-function-sections", "-mcpu=generic", "-debugger-tune=gdb"])
+            .args(["-function-sections", "-mcpu=generic", "-debugger-tune=gdb", "--threads=2"])
             .arg("--coverage-log")
             .arg(&log)
             .arg("-o")
@@ -212,6 +215,44 @@ fn fallback_receives_original_arguments_and_identical_input() {
     assert_eq!(line.target, "aarch64-unknown-linux-gnu");
     assert!(line.hod_micros.parse::<u64>().is_ok() && line.fallback_micros.parse::<u64>().is_ok());
     assert_eq!((line.conversion_micros.as_str(), line.fallback_status.as_str()), ("-", "0"));
+}
+
+// spec/cli.md "Threads": `--threads=<n>` and `HOD_THREADS` change how many
+// threads build the object, never its bytes; the option wins over the
+// variable, so a bad variable is still an error (it is read first).
+#[test]
+fn threads_option() {
+    let scratch = Scratch::new("cli-threads");
+    // Enough instructions for several threads (one per 4096).
+    let mut module = String::from("target triple = \"aarch64-unknown-linux-gnu\"\n");
+    for f in 0..24 {
+        let _ = write!(module, "define i64 @f{f}(i64 %x) {{\n  %v0 = add i64 %x, {f}\n");
+        for i in 1..800 {
+            let _ = writeln!(module, "  %v{i} = add i64 %v{}, {i}", i - 1);
+        }
+        module.push_str("  ret i64 %v799\n}\n");
+    }
+    let build = |command: &mut Command, name: &str| {
+        let out = scratch.join(name);
+        let outcome = run_hod(
+            command.args(["-filetype=obj", "--strict", "-o"]).arg(&out).arg("-"),
+            module.as_bytes(),
+        );
+        assert_eq!(exit_code(&outcome), 0, "{name}: {}", outcome.stderr_text());
+        std::fs::read(&out).unwrap()
+    };
+    let one = build(&mut hod(), "one.o");
+    assert!(one.starts_with(b"\x7FELF"));
+    assert!(build(hod().arg("--threads=4"), "four.o") == one);
+    assert!(build(hod().env("HOD_THREADS", "4").arg("--threads=1"), "mixed.o") == one);
+    assert!(build(hod().args(["--threads", "3"]), "three.o") == one);
+    let outcome = run_hod(hod().args(["-filetype=obj", "--threads=0", "-"]), module.as_bytes());
+    assert_eq!(exit_code(&outcome), 1);
+    assert!(outcome.stderr_text().contains("invalid value '0' for '--threads'"));
+    let outcome =
+        run_hod(hod().env("HOD_THREADS", "x").args(["--threads=2", "-"]), module.as_bytes());
+    assert_eq!(exit_code(&outcome), 1);
+    assert!(outcome.stderr_text().contains("HOD_THREADS"), "{}", outcome.stderr_text());
 }
 
 // spec/cli.md "Environment": the same settings from the environment, and

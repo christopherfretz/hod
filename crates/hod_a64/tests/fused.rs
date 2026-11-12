@@ -28,6 +28,7 @@ const DEFAULT: Options = Options {
     function_sections: false,
     data_sections: false,
     stress: Stress { min_pool: false, far: false, displace: false },
+    debug_compression: hod_obj::Compression::None,
 };
 
 /// Plain, every stress option, far mode alone.

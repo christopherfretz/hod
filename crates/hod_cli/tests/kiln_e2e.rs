@@ -396,7 +396,8 @@ fn command(program: &Path) -> Command {
     for var in ["HOD_FALLBACK_LLC", "HOD_STRICT", "HOD_COVERAGE_LOG", "HOD_IN_FALLBACK"] {
         command.env_remove(var);
     }
-    // The shim's `llc` names its own converter; a caller's must not win.
+    // The shim's `llc` reads bitcode natively; a caller's converter must
+    // not win.
     command.env("HOD_BITCODE_VIA", "/nonexistent/llvm-dis");
     // kiln's own harness sets this; the wrapper's flag must win over it.
     command.env("KILN_LLVM_DIR", "/nonexistent/llvm");
@@ -451,8 +452,8 @@ fn coverage(log: &Path) -> Vec<Vec<String>> {
 // every linker and prints what the same source built by kiln with LLVM
 // prints. One program is pinned to hod's code and one to the fallback, so
 // both paths stay tested as the support matrix moves. Bitcode (after
-// kiln's `opt`) is converted with the installation's llvm-dis
-// (spec/cli.md "Bitcode conversion"); spec/cli.md "Strict mode" surfaces
+// kiln's `opt`) is read by hod's own reader, never converted
+// (spec/cli.md "Bitcode conversion", WP-068); spec/cli.md "Strict mode" surfaces
 // as a failed compile.
 #[test]
 fn kiln_builds_and_runs_programs_through_the_shim() {
@@ -746,8 +747,8 @@ impl Shimmed {
         let line = self.compile(&source, program.args, &object, false);
         let name = program.name;
         assert_eq!(line[2], program.form, "{name}: {line:?}");
-        // The shim converts bitcode with llvm-dis: field 9 is its time.
-        assert_eq!(line[8] != "-", program.form == "bitcode", "{name}: {line:?}");
+        // The shim reads bitcode natively: nothing is converted (field 9).
+        assert_eq!(&*line[8], "-", "{name}: {line:?}");
         match (&*line[0], program.path) {
             ("hod", Route::Hod | Route::Either) => {
                 assert_eq!((&*line[1], &*line[7], &*line[9]), ("-", "-", "-"), "{name}: {line:?}");
@@ -806,7 +807,6 @@ fn through_the_shim(kiln: &Path, llvm: &Path) {
         kiln: Some(kiln.to_path_buf()),
     })
     .unwrap_or_else(|e| panic!("cannot build the shim: {e}"));
-    assert!(built.real_llvm_dis.is_some(), "the installation has an llvm-dis: {built:?}");
     let compiler = built.compiler.clone().expect("a kiln was given");
     let work = scratch.join("work");
     std::fs::create_dir(&work).unwrap();
@@ -843,9 +843,9 @@ fn through_the_shim(kiln: &Path, llvm: &Path) {
     // Code hod generates: strict mode succeeds.
     shimmed.hod_builds_integers();
 
-    // Strict mode on bitcode: hod's decline is the text path's, which shows
-    // that the module was converted and looked at as text.
+    // Strict mode on bitcode: hod's own reader declines it with the
+    // construct's name, and nothing was converted.
     let line = shimmed.strict_fails("module-asm.cpp", "strict-asm.o");
     assert_eq!((&*line[1], &*line[2]), ("module:asm", "bitcode"), "{line:?}");
-    assert!(line[8].parse::<u64>().is_ok(), "the conversion ran: {line:?}");
+    assert_eq!(&*line[8], "-", "no conversion ran: {line:?}");
 }

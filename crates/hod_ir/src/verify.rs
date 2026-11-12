@@ -37,6 +37,8 @@ use IrErrorKind::{
     UnsizedType, UseFactsMismatch,
 };
 
+mod calls;
+
 impl Body {
     /// Checks every structural and type rule of §5 and that the recorded
     /// use facts are the ones the instructions imply (§5.6).
@@ -594,7 +596,7 @@ impl Verifier<'_> {
                 }
                 Ok(())
             }
-            Opcode::Call | Opcode::Invoke | Opcode::CallBr => self.call(id, d),
+            Opcode::Call | Opcode::Invoke | Opcode::CallBr => self.call(id, d, block),
             Opcode::LandingPad => {
                 let Some(pad) = body.pads.get(a.bits() as usize) else {
                     return self.fail(InvalidOperand, id, "it has no landing-pad record");
@@ -739,7 +741,7 @@ impl Verifier<'_> {
         Ok(())
     }
 
-    fn call(&self, id: u32, d: &InstData) -> IrResult<()> {
+    fn call(&self, id: u32, d: &InstData, block: BlockId) -> IrResult<()> {
         let body = self.body;
         let types = self.types;
         let [a, b, c] = d.ops;
@@ -798,7 +800,7 @@ impl Verifier<'_> {
         match d.op {
             Opcode::Invoke => {
                 self.block_id(id, call.normal)?;
-                self.block_id(id, call.unwind)
+                self.block_id(id, call.unwind)?;
             }
             Opcode::CallBr => {
                 let list = call.unwind;
@@ -809,10 +811,11 @@ impl Verifier<'_> {
                 if dests.first() != Some(&call.normal) {
                     return self.fail(InvalidOperand, id, "its fallthrough is recorded twice");
                 }
-                dests.iter().try_for_each(|&raw| self.block_id(id, raw))
+                dests.iter().try_for_each(|&raw| self.block_id(id, raw))?;
             }
-            _ => Ok(()),
+            _ => {}
         }
+        self.call_rules(id, d.op, call, vals, bundles, block)
     }
 
     fn callee(&self, id: u32, call: &CallData, callee: Value) -> IrResult<()> {

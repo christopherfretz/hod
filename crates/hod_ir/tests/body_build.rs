@@ -13,9 +13,10 @@ mod body_support;
 use body_support::dump;
 use hod_ir::{
     AsmId, AtomicOrdering, Block, BlockId, Body, Bundle, CallConv, CallDesc, CallSite, Callee,
-    Clause, DiId, FloatPredicate, FunctionBuilder, Inst, InstId, InstKind, IntPredicate, Intrinsic,
-    IrErrorKind, IrResult, LocId, MemFlags, Module, Opcode, ParamAttrs, RmwOp, SHUFFLE_UNDEF,
-    SlotId, SymId, SyncScope, TailKind, TargetSpec, TypeId, Value, ValueKind, aggregate_field,
+    Clause, DiId, FloatPredicate, FunctionBuilder, InlineAsm, Inst, InstId, InstKind, IntPredicate,
+    Intrinsic, IrErrorKind, IrResult, LocId, MemFlags, Module, Opcode, ParamAttrs, RmwOp,
+    SHUFFLE_UNDEF, SlotId, SymId, SyncScope, TailKind, TargetSpec, TypeId, Value, ValueKind,
+    aggregate_field,
 };
 
 const I1: TypeId = TypeId::I1;
@@ -334,6 +335,8 @@ fn calls_read_back_from_the_side_table() {
     let void_ty = f.m.types.function(VOID, &[], false).unwrap();
     let memcpy_ty = f.m.types.function(VOID, &[PTR, PTR, I64, I1], false).unwrap();
     let no = int(&mut f.m, I1, 0);
+    let asm = InlineAsm { template: b"nop", constraints: b"", flags: 0, ty: void_ty };
+    let asm_id = f.m.inline_asm(&asm).unwrap();
     let b = &mut f.b;
     let direct = Value::sym(SymId::new(9)).unwrap();
 
@@ -343,13 +346,14 @@ fn calls_read_back_from_the_side_table() {
     let zeroext = ParamAttrs::NONE.with(ParamAttrs::ZEROEXT).unwrap();
     let args = [f.a, f.p, f.l];
     let inputs = [f.a, f.l];
-    let bundles = [Bundle { tag: "deopt", inputs: &inputs }, Bundle { tag: "kcfi", inputs: &[] }];
+    let bundles =
+        [Bundle { tag: "deopt", inputs: &inputs }, Bundle { tag: "hod.test", inputs: &[] }];
     let rich = b
         .call(
             I32,
             &CallDesc {
                 cc: CallConv::FAST,
-                tail: TailKind::MustTail,
+                tail: TailKind::Tail,
                 noreturn: true,
                 returns_twice: true,
                 ret_attrs: signext,
@@ -373,7 +377,7 @@ fn calls_read_back_from_the_side_table() {
         .unwrap();
     let unknown = Intrinsic::Other("llvm.aarch64.hint");
     let other = b.call(VOID, &CallDesc::intrinsic(unknown, &[], void_ty, &[])).unwrap();
-    let asm = Value::asm(AsmId::new(4)).unwrap();
+    let asm = Value::asm(asm_id).unwrap();
     let inline = b.call(VOID, &CallDesc::new(asm, void_ty, &[])).unwrap();
 
     let body = f.done();
@@ -404,7 +408,7 @@ fn calls_read_back_from_the_side_table() {
     assert_eq!(call.callee(), Callee::Value(f.p));
     assert_eq!(call.callee_value(), f.p);
     assert_eq!((call.fn_type(), call.ty(), call.cc()), (callee_ty, I32, CallConv::FAST));
-    assert_eq!(call.tail(), TailKind::MustTail);
+    assert_eq!(call.tail(), TailKind::Tail);
     assert!(call.is_noreturn() && !call.is_nounwind() && call.returns_twice());
     assert_eq!(call.args(), args);
     assert!(call.has_param_attrs());
@@ -430,7 +434,7 @@ fn calls_read_back_from_the_side_table() {
 
     let call = calls[4];
     assert_eq!(call.callee(), Callee::Value(asm));
-    assert_eq!(asm.kind(), ValueKind::Asm(AsmId::new(4)));
+    assert_eq!(asm.kind(), ValueKind::Asm(asm_id));
 }
 
 /// §5.4 "exception", "terminator": `invoke`, `landingpad` with its
@@ -443,13 +447,17 @@ fn invoke_landing_pad_and_callbr_read_back() {
     let null = f.m.consts.null(&f.m.types, PTR).unwrap();
     let filter_ty = f.m.types.array(PTR, 1).unwrap();
     let filter = f.m.consts.zero(&f.m.types, filter_ty).unwrap();
+    // `callbr` calls inline assembly with a label for each indirect
+    // destination (§5.8).
+    let goto = InlineAsm { template: b"", constraints: b"!i,!i", flags: 0, ty: void_ty };
+    let goto = f.m.inline_asm(&goto).unwrap();
     let b = &mut f.b;
     let [normal, pad_block, after, side] = [(); 4].map(|()| b.create_block().unwrap());
     let callee = Value::sym(SymId::new(2)).unwrap();
     let invoke = b.invoke(VOID, &CallDesc::new(callee, void_ty, &[]), normal, pad_block).unwrap();
     assert_eq!(b.current_block(), None, "an invoke ends its block");
     b.begin_block(normal).unwrap();
-    let asm = Value::asm(AsmId::new(0)).unwrap();
+    let asm = Value::asm(goto).unwrap();
     let callbr = b.callbr(VOID, &CallDesc::new(asm, void_ty, &[]), after, &[side, after]).unwrap();
     b.begin_block(pad_block).unwrap();
     let clauses = [Clause::Catch(null), Clause::Filter(filter)];
@@ -1211,7 +1219,8 @@ fn recycling_storage() {
             value = b.call(I32, &desc).unwrap();
         }
         b.resolve(hole, value).unwrap();
-        let unknown = Intrinsic::Other("llvm.unknown.thing");
+        // An intrinsic hod does not know that LLVM lets `invoke` call.
+        let unknown = Intrinsic::Other("llvm.experimental.patchpoint.i32");
         let void_ty_args = [value];
         let desc = CallDesc::intrinsic(unknown, &[], callee_ty, &void_ty_args);
         let last = b.invoke(I32, &desc, exit, pad).unwrap();

@@ -486,11 +486,13 @@ struct Ran {
     phases: Vec<(String, u64)>,
 }
 
-/// The last line of hod's coverage log: its outcome and its reason.
+/// The last line of hod's coverage log: its outcome and its reason. The
+/// log is append-only by field (`spec/cli.md` "Coverage log"): a line with
+/// more fields than this reader knows is read by position.
 fn coverage_outcome(log: &Path) -> Option<(String, String)> {
     let text = std::fs::read_to_string(log).ok()?;
     let fields: Vec<&str> = text.lines().last()?.split('\t').collect();
-    (fields.len() == 8).then(|| (fields[0].to_owned(), fields[1].to_owned()))
+    (fields.len() >= 8).then(|| (fields[0].to_owned(), fields[1].to_owned()))
 }
 
 /// Reads hod's phase report (`spec/cli.md` "Phase report"): one line

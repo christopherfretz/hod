@@ -42,6 +42,8 @@ pub struct FunctionBits {
     pub sym: SymId,
     /// Its function type.
     pub ty: TypeId,
+    /// Its function type's bitcode type id.
+    pub type_id: u64,
     /// Its FUNCTION block; read it with
     /// [`crate::bitstream::Cursor::enter_at`] and [`ModuleBits::block_info`].
     pub span: BlockSpan,
@@ -52,12 +54,16 @@ pub struct FunctionBits {
 #[derive(Debug)]
 pub struct ModuleBits<'a> {
     data: &'a [u8],
-    raw: Raw<'a>,
-    types: Types,
-    values: Values,
+    pub(crate) raw: Raw<'a>,
+    pub(crate) types: Types,
+    pub(crate) values: Values,
+    /// Attribute group entries: (group id, index, record), sorted.
+    pub(crate) groups: Vec<(u64, u64, Rec)>,
     numbered: Vec<SymId>,
     functions: Vec<FunctionBits>,
     md_kinds: Vec<(u64, Vec<u8>)>,
+    /// Metadata strings, decoded: (start, len) by table and index.
+    md_text: Vec<Vec<(u32, u32)>>,
     sync_scopes: Vec<Vec<u8>>,
     bundle_tags: Vec<Vec<u8>>,
 }
@@ -138,10 +144,52 @@ impl<'a> ModuleBits<'a> {
         self.raw.attr_lists.get(at).map(|rec| rec.ops(&self.raw.pool))
     }
 
+    /// The number of module-level metadata ids: function-local metadata
+    /// (a body's METADATA block) is numbered from here.
+    pub fn metadata_count(&self) -> usize {
+        self.raw.md.len()
+    }
+
+    /// Module metadata `id`, as the module's METADATA blocks define it
+    /// (`spec/bc.md` §11.8); `None` past [`Self::metadata_count`].
+    pub fn metadata(&self, id: u64) -> Option<Metadata<'a, '_>> {
+        let slot = *self.raw.md.get(usize::try_from(id).ok()?)?;
+        Some(match slot {
+            MdSlot::String { table, index } => {
+                let (start, len) = *self.md_text.get(table as usize)?.get(index as usize)?;
+                let blob = self.raw.md_strings.get(table as usize)?.blob;
+                Metadata::String(blob.get(start as usize..)?.get(..len as usize)?)
+            }
+            MdSlot::Kept(rec) if rec.code == md::VALUE => match rec.ops(&self.raw.pool) {
+                &[ty, value] => Metadata::Value { ty, value },
+                _ => Metadata::Skipped,
+            },
+            MdSlot::Kept(rec) => Metadata::Node {
+                distinct: rec.code == md::DISTINCT_NODE,
+                operands: rec.ops(&self.raw.pool),
+            },
+            MdSlot::Skipped => Metadata::Skipped,
+        })
+    }
+
     /// The producer string of the IDENTIFICATION block.
     pub fn producer(&self) -> Option<Vec<u8>> {
         self.raw.producer.and_then(|rec| chars(rec.ops(&self.raw.pool), rec.pos).ok())
     }
+}
+
+/// One module metadata id (see [`ModuleBits::metadata`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Metadata<'a, 'm> {
+    /// An `!"..."` string.
+    String(&'a [u8]),
+    /// A tuple: its operands as NODE records hold them, metadata id + 1,
+    /// 0 for `null`.
+    Node { distinct: bool, operands: &'m [u64] },
+    /// A value as metadata: its bitcode type id and module value id.
+    Value { ty: u64, value: u64 },
+    /// A debug-info node or another record this reader does not keep.
+    Skipped,
 }
 
 /// Reads the module level of the bitcode `data`.
@@ -152,7 +200,7 @@ pub fn read_module<'a>(data: &'a [u8], options: &ReadOptions) -> BcResult<BcModu
     let raw = crate::raw::walk(data)?;
     let mut b = Build::new(&raw, options)?;
     b.run()?;
-    let Build { module, types, values, numbered, functions, md_kinds, .. } = b;
+    let Build { module, types, values, groups, numbered, functions, md_kinds, md_text, .. } = b;
     let sync_scopes = text_list(&raw, &raw.sync_scopes)?;
     let bundle_tags = text_list(&raw, &raw.bundle_tags)?;
     let bits = ModuleBits {
@@ -160,9 +208,11 @@ pub fn read_module<'a>(data: &'a [u8], options: &ReadOptions) -> BcResult<BcModu
         raw,
         types,
         values,
+        groups,
         numbered,
         functions,
         md_kinds,
+        md_text,
         sync_scopes,
         bundle_tags,
     };
@@ -1005,7 +1055,7 @@ impl<'r, 'a> Build<'r, 'a> {
         };
         ir(at, self.module.set_function(sym, &desc))?;
         if let Some(span) = span {
-            self.functions.push(FunctionBits { sym, ty, span });
+            self.functions.push(FunctionBits { sym, ty, type_id: field(2), span });
         }
         self.flush(sym);
         Ok(())

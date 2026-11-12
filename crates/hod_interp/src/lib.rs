@@ -20,12 +20,13 @@
 //! assert!(matches!(outcome.result, Ok(Some(Val::Int { bits: 64, .. }))));
 //! ```
 
+pub mod eh;
 mod error;
 pub mod generate;
 pub mod host;
 mod interp;
 mod memory;
-mod ops;
+pub mod ops;
 mod value;
 
 pub use error::{Stop, Trap};

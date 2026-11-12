@@ -14,7 +14,7 @@ mod common;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use common::{Elf, compile, llc, round_trip};
+use common::{Elf, compile, linkers, llc, round_trip};
 use hod_obj::Arch;
 use hod_testutil::{Outcome, Scratch, run, tool};
 
@@ -22,24 +22,6 @@ const IR: &str = include_str!("data/unwind.ll");
 const EXPECTED: &str = "cleanup large\ncleanup template\nrethrowing 1\ncaught 101\n\
 cleanup large\ncleanup template\nrethrowing 2\ncaught 102\n\
 cleanup large\ncleanup template\nrethrowing 3\ncaught 103\nno throw\n";
-
-/// The linkers, each as the `g++` flags that select it.
-fn linkers(scratch: &Scratch) -> Vec<(&'static str, Vec<OsString>)> {
-    let mut out = Vec::new();
-    for (name, program) in [("bfd", "ld.bfd"), ("lld", "ld.lld"), ("mold", "ld.mold")] {
-        let Some(found) = tool(program) else { continue };
-        let dir = scratch.join(format!("use-{name}"));
-        std::fs::create_dir_all(&dir).unwrap();
-        let link = dir.join(format!("ld.{name}"));
-        if !link.exists() {
-            std::os::unix::fs::symlink(&found, &link).unwrap();
-        }
-        let mut prefix = OsString::from("-B");
-        prefix.push(&dir);
-        out.push((name, vec![prefix, format!("-fuse-ld={name}").into()]));
-    }
-    out
-}
 
 fn link_and_run(
     driver: &Path,
@@ -72,7 +54,9 @@ fn unwind(major: u32) {
     let scratch = Scratch::new(&format!("eh-unwind{major}"));
     let label = format!("unwind-{major}");
     let object = compile(&llc, &scratch, &label, IR, "aarch64-unknown-linux-gnu");
-    let Some(rt) = round_trip(&scratch, &label, Arch::AArch64, IR, &object, false) else { return };
+    let Some(rt) = round_trip(&scratch, &label, Arch::AArch64, IR, &object, false, None) else {
+        return;
+    };
     assert!(rt.cies == 2 && rt.used_state, "the program has functions with landing pads");
     let original = scratch.write(&format!("{label}.orig.o"), &object);
     let patched = scratch.write(&format!("{label}.hod.o"), &rt.patched);

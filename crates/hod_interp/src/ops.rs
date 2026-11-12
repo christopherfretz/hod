@@ -3,6 +3,9 @@
 //!
 //! An integer of width `bits` is a `u128` with the bits above the width
 //! clear, on the way in and on the way out.
+//!
+//! Public (WP-044) so that other oracles can share the arithmetic; the
+//! code generator's test machine keeps its own on purpose.
 
 // Exact IEEE comparison is the meaning being implemented.
 #![allow(clippy::float_cmp)]
@@ -13,7 +16,11 @@ use crate::error::Trap;
 use crate::value::{mask, sext};
 
 /// The thirteen integer binary instructions.
-pub(crate) fn int_binary(op: Opcode, bits: u32, a: u128, b: u128) -> Result<u128, Trap> {
+///
+/// # Errors
+/// [`Trap::ShiftTooLarge`], [`Trap::DivisionByZero`] and
+/// [`Trap::DivisionOverflow`], as the instruction's semantics say.
+pub fn int_binary(op: Opcode, bits: u32, a: u128, b: u128) -> Result<u128, Trap> {
     let m = mask(bits);
     let (sa, sb) = (sext(bits, a), sext(bits, b));
     let min = 1u128 << (bits - 1);
@@ -53,7 +60,7 @@ pub(crate) fn int_binary(op: Opcode, bits: u32, a: u128, b: u128) -> Result<u128
 }
 
 /// `icmp`. Pointers compare as 64-bit integers.
-pub(crate) fn icmp(pred: IntPredicate, bits: u32, a: u128, b: u128) -> bool {
+pub fn icmp(pred: IntPredicate, bits: u32, a: u128, b: u128) -> bool {
     let (sa, sb) = (sext(bits, a), sext(bits, b));
     match pred {
         IntPredicate::Eq => a == b,
@@ -70,7 +77,7 @@ pub(crate) fn icmp(pred: IntPredicate, bits: u32, a: u128, b: u128) -> bool {
 }
 
 /// `fcmp`. A `float` is compared after the (exact) widening to `f64`.
-pub(crate) fn fcmp(pred: FloatPredicate, a: f64, b: f64) -> bool {
+pub fn fcmp(pred: FloatPredicate, a: f64, b: f64) -> bool {
     let unordered = a.is_nan() || b.is_nan();
     match pred {
         FloatPredicate::False => false,
@@ -114,7 +121,10 @@ float_binary!(f64_binary, f64);
 
 /// `fptoui` and `fptosi` to an integer of `bits` bits: the value rounded
 /// toward zero, which must fit.
-pub(crate) fn float_to_int(x: f64, bits: u32, signed: bool) -> Result<u128, Trap> {
+///
+/// # Errors
+/// [`Trap::FloatToIntOverflow`] when it does not fit, or is a NaN.
+pub fn float_to_int(x: f64, bits: u32, signed: bool) -> Result<u128, Trap> {
     if !x.is_finite() {
         return Err(Trap::FloatToIntOverflow);
     }
@@ -138,7 +148,7 @@ pub(crate) fn float_to_int(x: f64, bits: u32, signed: bool) -> Result<u128, Trap
 /// The bit operations and min/max intrinsics with one result of the
 /// operands' width.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum IntOp {
+pub enum IntOp {
     Abs,
     Smax,
     Smin,
@@ -160,7 +170,10 @@ pub(crate) enum IntOp {
 /// An [`IntOp`] on operands of `bits` bits. `b` is the second operand or,
 /// for `abs`, `ctlz` and `cttz`, the "poison on the special input" flag;
 /// `c` is the shift amount of a funnel shift.
-pub(crate) fn int_intrinsic(op: IntOp, bits: u32, a: u128, b: u128, c: u128) -> Result<u128, Trap> {
+///
+/// # Errors
+/// [`Trap::PoisonIntrinsic`] for an input that makes the result poison.
+pub fn int_intrinsic(op: IntOp, bits: u32, a: u128, b: u128, c: u128) -> Result<u128, Trap> {
     let m = mask(bits);
     let (sa, sb) = (sext(bits, a), sext(bits, b));
     let min = 1u128 << (bits - 1);
@@ -228,7 +241,7 @@ fn fits_signed(value: i128, bits: u32) -> bool {
 
 /// The arithmetic of the `*.with.overflow` intrinsics.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Checked {
+pub enum Checked {
     Sadd,
     Uadd,
     Ssub,
@@ -238,7 +251,7 @@ pub(crate) enum Checked {
 }
 
 /// The wrapped result and whether the exact result does not fit.
-pub(crate) fn checked(op: Checked, bits: u32, a: u128, b: u128) -> (u128, bool) {
+pub fn checked(op: Checked, bits: u32, a: u128, b: u128) -> (u128, bool) {
     let m = mask(bits);
     let (sa, sb) = (sext(bits, a), sext(bits, b));
     let signed = |exact: Option<i128>| exact.is_none_or(|value| !fits_signed(value, bits));
@@ -254,7 +267,7 @@ pub(crate) fn checked(op: Checked, bits: u32, a: u128, b: u128) -> (u128, bool) 
 }
 
 /// `scmp` and `ucmp`: -1, 0 or 1 in a result of `result_bits` bits.
-pub(crate) fn three_way(signed: bool, bits: u32, a: u128, b: u128, result_bits: u32) -> u128 {
+pub fn three_way(signed: bool, bits: u32, a: u128, b: u128, result_bits: u32) -> u128 {
     let ordering = if signed { sext(bits, a).cmp(&sext(bits, b)) } else { a.cmp(&b) };
     (ordering as i128 as u128) & mask(result_bits)
 }

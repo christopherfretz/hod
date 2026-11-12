@@ -30,8 +30,9 @@ defines for hod.
 
 The interpreter is itself checked against LLVM (§10).
 
-It is single-threaded, little-endian, and has 64-bit pointers. It does not
-model exceptions, variadic calls, vectors, thread-local storage or inline
+It is single-threaded, little-endian, and has 64-bit pointers. It models
+C++ exceptions of the Itanium ABI (§5.9) and computed gotos (§5.5). It does
+not model variadic calls, vectors, thread-local storage, `callbr` or inline
 assembly: those are **unsupported** (§8), which is a third kind of answer,
 neither a result nor a trap.
 
@@ -139,6 +140,8 @@ alignment, a kind and, for every byte, a **written** flag.
 | constant variable | the same, for a variable that is `constant` | never |
 | stack | when a frame is pushed, for every stack slot of the body; by `alloca` | when the frame that made it returns |
 | function | at the start of a run, for every function except an undefined `extern_weak` one | never |
+| declared variable | at the start of a run, after all the others, for every variable without an initializer (a type-information object, `errno`): one address, no bytes; an access traps as `extern:<name>` (§8) | never |
+| (reserved address) | for every `blockaddress` constant at the start of a run, and for every exception thrown: an identity in no allocation; an access is `out-of-bounds` | never |
 
 - **Addresses.** `Config::addr_base` is below the first allocation;
   consecutive allocations are at least `Config::addr_gap` bytes apart, each
@@ -264,6 +267,13 @@ Tests: `tests/instructions.rs` (`integer_arithmetic_wraps_at_the_width`,
 `integer_traps`, `float_arithmetic_is_ieee`,
 `computed_nan_traps_by_default`), unit tests of `ops.rs`.
 
+**`hod_interp::ops` is public** (WP-044): `int_binary`, `icmp`, `fcmp`,
+`float_to_int`, `int_intrinsic` with `IntOp`, `checked` with `Checked`,
+`three_way`. They are the arithmetic of this section and of §5.6 on
+`u128` bit patterns of a given width, as the interpreter itself uses them;
+a test of another crate may state its expectations with them. They are an
+interface: a change of behaviour is a change of this section.
+
 ### 5.2 Compares and `select`
 
 - `icmp` (LangRef "'icmp' Instruction"): the ten predicates on two integers
@@ -356,11 +366,26 @@ LangRef "Terminator Instructions", "'phi' Instruction".
   definitions dominate uses; the interpreter does not either, it traps when
   an execution actually reads such a value. Values do not survive from one
   activation to the next.
-- `indirectbr`, `invoke`, `callbr`, `resume`, `landingpad` and the funclet
+- **`blockaddress(@f, %b)`** is a pointer: at the start of a run each
+  `blockaddress` constant of the module gets a reserved address of its own
+  (§4), so two of one block are equal and two of different blocks differ.
+  It may be stored, loaded, put in a variable's initializer (a table) and
+  passed around. LangRef ("Addresses of Basic Blocks") defines it only as
+  an operand of `indirectbr` and in a comparison with `null`: **an `icmp`
+  of one with any other non-null pointer, and a `ptrtoint` of one, trap
+  `blockaddress-inspected`** (`llc -O2` folds an equality of two block
+  addresses as it likes; the address itself is the layout's).
+- `indirectbr addr, [targets]` takes the edge to the block `addr` is the
+  address of, if that block is of the current function and one of
+  `targets`; any other address (of another function's block, of a slot, a
+  block not listed) traps `indirectbr-target`.
+- `invoke`, `landingpad` and `resume`: §5.9. `callbr` and the funclet
   instructions are unsupported.
 
 Tests: `tests/instructions.rs` (`phis_are_a_parallel_copy`,
-`switch_and_repeated_successors`, `unreachable_and_undefined_values`).
+`switch_and_repeated_successors`, `unreachable_and_undefined_values`),
+`tests/block_addr.rs` (`computed_goto_through_a_table`,
+`inspecting_a_block_address`, `indirectbr_off_its_list`).
 
 ### 5.6 Intrinsics
 
@@ -427,6 +452,106 @@ LangRef "'call' Instruction".
 
 Tests: `tests/calls.rs` (`direct_calls_and_recursion`, `indirect_calls`,
 `void_calls_and_unused_results`, `call_depth`).
+
+### 5.9 Exceptions
+
+LangRef "Exception Handling in LLVM", "'invoke'", "'landingpad'",
+"'resume'"; the Itanium C++ ABI's "Exception Handling" (the two-phase
+unwind of its level I, the personality of its level II). LLVM leaves what
+a landing pad receives to the personality routine; the model is that of
+**`__gxx_personality_v0`**, the one personality it knows, as libstdc++
+and libc++abi implement it. A function whose frame an exception reaches
+and whose personality is another is unsupported `eh:personality`.
+
+**Throwing and catching.** `hod_interp::eh` names two functions that the
+interpreter provides itself when the program has no body for them (they
+are not host functions and leave no event in the trace):
+
+- `void hod_throw(ptr type, i64 payload)` throws an exception. `type` is
+  the address of a **type-information object**, which is the exception's
+  type identity; `payload` is its value. A null `type` traps `host`.
+- `i64 hod_catch(ptr exception)` catches the exception a handler's
+  landing pad received and returns its payload: `__cxa_begin_catch`
+  followed by `__cxa_end_catch`. Anything that is not an exception waiting
+  in its handler traps `not-an-exception`.
+
+`eh::declare(&mut Module)` declares both, the personality, and four
+type-information objects of the C++ runtime (`_ZTIi`, `_ZTIl`, `_ZTIj`,
+`_ZTIs`: `int`, `long`, `unsigned`, `short`) as external constants. For
+these the personality's type match is pointer identity, which is the
+model's. (Class types with bases, pointer adjustments and `catch` by
+reference are a C++ runtime's matter, outside what LLVM IR decides.)
+
+**Clauses.** A function's type ids are 1, 2, ... in the order of first
+mention over its landing pads' clauses (pads in block order), then over
+its `llvm.eh.typeid.for` operands. A `catch @ti` clause matches an
+exception of type `@ti`, `catch null` every exception; its selector is the
+type id of `@ti` (of `null`). A `filter [n x ptr] [...]` clause matches an
+exception whose type is *not* listed; its selector is negative, -1 for the
+function's first filter, -2 for the second, .... A filter's elements must
+be type-information addresses (`eh:filter-catch-all` for a null one,
+`eh:filter-form` for a form other than an array). `llvm.eh.typeid.for(@ti)`
+is `@ti`'s type id. **Only two facts about a selector are the program's to
+rely on**: whether it equals `llvm.eh.typeid.for` of a type, and its sign
+(LLVM numbers ids per function differently, and its inliner merges
+clauses: §10.2).
+
+**The pad's decision.** For an exception of type `t`, a landing pad's
+clauses are tried in order and the first that matches is a **handler**
+with its selector; if none matches, the pad is a **cleanup** (selector 0)
+if it has the `cleanup` flag, and otherwise does **nothing**.
+
+**Unwinding.** A throw is two phases, as in the Itanium ABI:
+
+1. **Search.** From the frame that called `hod_throw` outwards, each frame
+   is at a call; if that call is an `invoke`, its landing pad's decision is
+   taken. The first frame whose pad is a handler is the **handler frame**.
+   If there is none, the run traps `uncaught-exception`: `__cxa_throw`
+   calls `std::terminate`, and **no cleanup runs** (nothing printed by a
+   cleanup is in the trace).
+2. **Cleanup.** From the same frame outwards again: a frame at a `call`, or
+   at an `invoke` whose pad does nothing, is popped (its slots die, §4); a
+   frame whose pad is a cleanup is entered there with selector 0; the
+   handler frame is entered at its pad with the handler's selector.
+
+Entering a pad takes the `invoke`'s unwind edge (§5.5: the pad's `phi`s
+read their entries for the `invoke`'s block); its `landingpad` yields the
+pair `{ ptr exception, i32 selector }`, `exception` being a reserved
+address (§4) that names this exception. A `landingpad` reached otherwise
+than by unwinding is `Stop::Invalid` (the verifier admits no such edge).
+
+`resume { ptr, i32 }` continues the cleanup phase of the exception the
+pair names, from the frame of the function that resumes: it is popped and
+the next frame outwards decides. A pair that names no exception waiting in
+a cleanup (one already caught, one made up) traps `not-an-exception`.
+
+The **outcome of an exception leaving the outermost frame** is always
+defined: the search phase finds no handler and the run traps
+`uncaught-exception` at the throw, before any cleanup.
+
+**When the phases disagree.** Phase 2 normally meets exactly what phase 1
+saw. It may not when a cleanup changes the frames in between, for
+instance by calling, from the cleanup, a function that resumes. (A
+cleanup that returns or branches away instead of resuming abandons the
+exception; that is no disagreement and the run goes on.) If phase 2 meets a handler where phase 1 found none,
+libstdc++ installs it and libc++abi calls `std::terminate`; if it does not
+meet the handler frame at the call phase 1 saw, or a `resume` has no
+handler frame left outside it, the result depends on the runtime too. All
+of these trap `eh-phase-mismatch`.
+
+**`nounwind`.** An exception that would leave a `call` or `invoke` marked
+`nounwind`, or a function marked `nounwind`, traps `unwind-from-nounwind`
+(LangRef: undefined behavior; C++ compilers make it `std::terminate`
+through a pad, hod_cg's code would unwind on).
+
+**Cost.** Each frame the search looks at and each frame the cleanup
+phase pops is one step (§7).
+
+Tests: `tests/unwind.rs` (`catch_clauses_in_order`, `filters`,
+`typeid_for`, `cleanup_then_resume`, `uncaught_runs_no_cleanup`,
+`nounwind_violations`, `shared_pad_and_nested`, `invoke_returns`,
+`misuse`, `null_type`); the cases of `tests/eh_cases` against LLVM
+(§10.2).
 
 ## 6. Host functions and the trace
 
@@ -525,17 +650,19 @@ starts.
 | `type:int-over-128` | an integer wider than 128 bits |
 | `type:target-ext`, `type:token` | a value of that type; the `none` token constant |
 | `type:opaque`, `type:function`, `type:label`, `type:metadata` | a value of that type. The builder does not make such values: defensive |
-| `inst:va_arg`, `inst:invoke`, `inst:landingpad`, `inst:resume`, `inst:indirectbr`, `inst:callbr`, `inst:addrspacecast` | the instruction |
+| `inst:va_arg`, `inst:callbr`, `inst:addrspacecast` | the instruction |
+| `eh:personality` | an exception reaches a frame whose personality is not `__gxx_personality_v0` (§5.9) |
+| `eh:filter-form`, `eh:filter-catch-all` | a `filter` clause that is not an array of type-information addresses |
 | `inst:cleanuppad`, `inst:catchpad`, `inst:catchswitch`, `inst:catchret`, `inst:cleanupret` | the funclet instructions |
 | `inst:atomicrmw-fmax`, `-fmin`, `-fmaximum`, `-fminimum` | that `atomicrmw` operation |
 | `intrinsic:<name>` | any intrinsic not in §5.6: the base name for one `hod_ir` knows (`intrinsic:llvm.stacksave`, `intrinsic:llvm.fmuladd`, `intrinsic:llvm.va_start`), the full name for one it does not |
-| `const:blockaddress`, `const:symdiff` | that constant |
+| `const:symdiff` | that constant |
 | `const-expr:<op>` | a constant expression that `hod_ir` could not fold (`const-expr:add`) |
 | `const:aggregate` | an aggregate constant used as a value that cannot be flattened |
 | `global:initializer` | a variable's initializer cannot be flattened, or is not as large as its type |
 | `global:thread-local`, `global:alias`, `global:ifunc` | the address of such a symbol |
 | `global:extern-weak` | the address of an undefined `extern_weak` function (it would be null or not, by the link) |
-| `extern:<name>` | a call of a function with neither body nor host function; the address of a variable without an initializer |
+| `extern:<name>` | a call of a function with neither body nor host function; an access of a variable without an initializer |
 | `call:inline-asm`, `call:operand-bundle`, `call:variadic` | such a call |
 | `attr:byval`, `attr:inalloca`, `attr:preallocated` | a call with such an argument |
 
@@ -586,9 +713,10 @@ Every generated program satisfies, for every seed and all options:
 
 The module holds the function `entry`, functions `f1`, `f2`, ... with
 signatures drawn from a small pool (so that several share one, for indirect
-calls), with `options.globals` the variables of §9.3, and with
-`options.hosts` the declarations of `sink` and `source` (§6.1). Function
-`fN` calls only functions of a higher number: there is no recursion.
+calls), with `options.globals` the variables of §9.3, with
+`options.hosts` the declarations of `sink` and `source` (§6.1), and with
+`options.exceptions` those of `eh::declare` (§5.9). Function `fN` calls
+only functions of a higher number: there is no recursion.
 
 Tests: `tests/generate.rs` (`programs_verify_and_run_within_their_bound`,
 `generation_is_deterministic`, `results_do_not_depend_on_addresses`).
@@ -662,12 +790,24 @@ impl Options {
 | `indirect_calls` | calls through a `select` of two function addresses, or through an address loaded from a constant table | `calls`, and `selects` or `globals` |
 | `many_args` | functions of 9 to 12 parameters of mixed types | `calls` |
 | `hosts` | calls of `sink` and `source` | |
+| `exceptions` | §5.9: a `hod_throw` under a condition that leaves the function; one or two `invoke`s of `hod_throw` under conditions to one shared pad, with `phi`s in the pad; `invoke`s of generated functions that may throw, the pad rejoining the normal destination with a `phi` of the result; calls marked `nounwind` of functions that cannot throw. A pad has 1 to 3 clauses (`catch` of one of the four types, catch-all, `filter` of 1 to 4 types or empty) and maybe `cleanup`; it dispatches on `selector == llvm.eh.typeid.for(@ti)`, then on the selector's sign; the cleanup runs code and `resume`s; the handler `hod_catch`es and runs code. With `hosts` each pad sinks a number of its own and its integer `phi`s, and the handler sinks which test of the selector matched. The entry function catches everything; pads nest two deep | `compares` |
+| `block_addresses` | §5.5: a constant table of 2 or 4 `blockaddress`es of the function's own blocks, an `indirectbr` to one loaded by a masked index, the arms joining with `phi`s; the loaded address compared with `null` | `globals`, `compares` |
 
 Constructs nest up to three deep. A switch that is off removes its
 constructs entirely; a switch whose needs are not met is off.
 
+`exceptions` and `block_addresses` are **off in `Options::default()`**,
+and when off they draw nothing from the random stream: every seed gives
+the program it gave before they existed. `Options::everything()` is the
+default with both on. A switch added later must keep this property.
+
 Tests: `tests/generate.rs` (`minimal_options_leave_only_integer_arithmetic`,
-`each_option_switches_its_constructs`, `size_knobs`).
+`each_option_switches_its_constructs`, `size_knobs`, `unwinding_switches`,
+`existing_seeds_keep_their_programs`: a hash of the printed programs of
+seeds of three option sets, fixed before WP-044. It depends on
+`hod_ir`'s printer: a change of the printer changes the constants, and
+the new ones are taken only after checking that the generator did not
+change).
 
 ### 9.4 Coverage
 
@@ -686,6 +826,14 @@ Tests: `tests/generate.rs` (`minimal_options_leave_only_integer_arithmetic`,
 `cf:unreachable-block`, `phi`, `call:direct`, `call:indirect`,
 `call:many-args`, `call:unused-result`, `call:sink`, `call:source`.
 
+`Coverage::UNWIND_NAMES` are the counters of `exceptions` and
+`block_addresses`: `eh:throw`, `eh:invoke-throw`, `eh:invoke-call`,
+`eh:shared-pad`, `eh:pad-phi`, `eh:catch`, `eh:catch-all`, `eh:filter`,
+`eh:filter-empty`, `eh:cleanup`, `eh:typeid-for`, `eh:nounwind-call`,
+`eh:normal-phi`, `cf:indirectbr`, `blockaddress:table`,
+`blockaddress:compare`. They are zero for the default options and
+positive over a few hundred seeds of `Options::everything()`.
+
 Six more are counted from the finished bodies with `Body::uses`: `use:dead`,
 `use:next`, `use:once-later`, `use:many` (each instruction with a result is
 one of the four), `use:other-block`, and `use:across-call` (an instruction
@@ -697,7 +845,8 @@ seeds; with a switch off its counters are zero and all others stay
 positive.
 
 Test: `tests/generate.rs` (`default_options_cover_every_construct`,
-`each_option_switches_its_constructs`).
+`each_option_switches_its_constructs`,
+`unwinding_programs_cover_every_construct`).
 
 ### 9.5 The fuel bound and throughput
 
@@ -755,6 +904,53 @@ x86-64, the tests skip with a note; with `HOD_REQUIRE_TOOLS=1` they fail.
   seeds of the default options and as many of tiny programs, a tenth as
   many of 6 × 400 and a fiftieth of 3 × 3000.
 - `HOD_ORACLE_KEEP=<dir>` keeps every file compiled.
+
+### 10.2 Exceptions and block addresses
+
+The programs of §5.9 and §5.5 are checked against the real Itanium ABI:
+
+- `hod_throw` and `hod_catch` are a C++ shim (in `tests/llvm_oracle.rs`)
+  compiled with `g++`: `__cxa_allocate_exception` of an `int64_t`,
+  `__cxa_throw` with the given `std::type_info`; `__cxa_begin_catch`,
+  read the payload, `__cxa_end_catch`. The type-information objects are
+  the C++ runtime's own; the link is with `g++` (libstdc++, libgcc's
+  unwinder).
+- The printer gives every function `personality ptr
+  @__gxx_personality_v0`, and marks the non-entry functions that have
+  landing pads `noinline`: LLVM's inliner appends the caller's clauses to
+  an inlined landing pad, so a selector that the pad's own clauses would
+  not give reaches its dispatch. That is correct LLVM (C++ dispatches on
+  `typeid.for` equality only), but the generator's sign tests would see
+  it; the model has no inlining, so the oracle does not inline them.
+- An uncaught exception is checked by its end: the binary dies by
+  `SIGABRT` from `std::terminate`, having printed what the program
+  printed before the throw and nothing of any cleanup
+  (`uncaught_is_terminate`).
+- Each test runs with every LLVM major installed of 22 and 19 (`llc-N`,
+  `opt-N`), and needs one at least.
+
+Tests:
+
+- `unwinding_cases_agree_with_llvm`: the hand-written cases of
+  `tests/eh_cases` (each clause kind, nesting, `resume` through frames
+  without pads, a computed goto through a table), each called on several
+  arguments: 12 per major.
+- `unwinding_programs_agree_with_llvm` (quick): 48 seeds of
+  `Options::everything()`, 48 of `everything().sized(2, 12)` and 6 of
+  `sized(8, 300)`: 102 programs per major.
+- `many_unwinding_programs_agree_with_llvm` (slow, `--ignored`):
+  the shapes of `many_programs_agree_with_llvm` (§10) with
+  `Options::everything()`: `HOD_ORACLE_SEEDS` of the default size and as
+  many tiny ones, a tenth as many of 6 × 400, a fiftieth of 3 × 3000.
+
+Results at WP-044 (LLVM 22.1 and 19.1, AArch64): 12 cases, 102 quick and
+2,120 slow programs (`HOD_ORACLE_SEEDS=1000`) agree at `-O0` and `-O2`
+with each major. Two disagreements were found while it was built, both
+in the oracle's own assumptions and both at `-O2` only: `llc -O2` folded
+an `icmp eq` of two `blockaddress`es that the interpreter called unequal
+(LangRef defines no such comparison: it became the trap
+`blockaddress-inspected`, and the generator compares with `null`), and
+the inliner's merged clauses above (`noinline`).
 
 ### 10.1 The unoptimized leg is SelectionDAG
 
@@ -827,8 +1023,10 @@ widths that are not a power of two or in `i1`.
 | `tests/calls.rs` | §5.8, §5.6, §6, §7, §2 |
 | `tests/unsupported.rs` | §8: every reason that can be provoked |
 | `tests/robustness.rs` | §1, §2: a thousand random unguarded programs (zero divisors, wild pointers, uses before definitions, endless recursion, calls through any pointer); every body verifies, no run panics or is `Invalid`, and at least twelve kinds of end occur |
+| `tests/unwind.rs` | §5.9 |
+| `tests/block_addr.rs` | §5.5: `blockaddress`, `indirectbr` |
 | `tests/generate.rs` | §9 |
-| `tests/llvm_oracle.rs` | §10 |
+| `tests/llvm_oracle.rs` | §10, §10.2 (with the cases of `tests/eh_cases`) |
 
 Each test names its section. `tests/common` builds one-function modules;
 `tests/llvm_text` is the printer of §10.
@@ -836,6 +1034,17 @@ Each test names its section. `tests/common` builds one-function modules;
 ## 12. Open questions and follow-ups
 
 Open, with the conservative choice taken:
+
+- **Comparing block addresses.** The brief of WP-044 asked for a
+  `blockaddress` "compared for equality"; LangRef defines only the
+  comparison with `null`, and `llc -O2` does fold an equality of two
+  differently from the addresses it emits. The model traps
+  (`blockaddress-inspected`); if C++ front ends rely on an equality (a
+  GNU computed-goto idiom), what LLVM guarantees must be settled first.
+- **`unwind-from-nounwind` is stricter than compiled code**: a C++
+  compiler puts a terminate pad where it needs one, and hod_cg's code
+  unwinds on through a `nounwind` function that has no pad. No generated
+  program reaches it.
 
 - **Address-dependent results are not detected.** A program that returns
   `ptrtoint` of a stack slot has a result here, and a different one in
@@ -863,9 +1072,10 @@ Open, with the conservative choice taken:
 
 Follow-ups, none of which the code generator's first milestones need:
 
-- exceptions: `invoke`, `landingpad`, `resume`, with a model of the
-  personality's decision;
-- `indirectbr` and `blockaddress`; `callbr`;
+- `callbr` (an `asm goto`: needs a model of inline assembly);
+- exceptions of class types (base-class matching, `catch` by pointer with
+  qualification conversions): the C++ runtime's `__do_catch`, beyond the
+  four fundamental types; foreign exceptions; the funclet instructions;
 - variadic functions: `va_arg`, `llvm.va_start`, `llvm.va_end`,
   `llvm.va_copy`;
 - `byval` arguments (a copy in the callee's frame);

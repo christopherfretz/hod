@@ -2,7 +2,8 @@
 //! `indirectbr`, and the `blockaddress` constants it consumes
 //! ([`crate::common::block_address`]).
 //!
-//! **Owner: WP-037.** Tests: `tests/control.rs`. The dispatch in
+//! **Owner: WP-037**; `condbr` fused with a deferred compare: WP-066
+//! (`tests/fused.rs`). Tests: `tests/control.rs`. The dispatch in
 //! `target.rs` is final. Branches use `crate::common::branch*`, which know
 //! far mode.
 //!

@@ -134,9 +134,13 @@ depend on how the functions were grouped into chunks.
 A build system already runs one compiler per core, so hod takes no thread
 it is not given (`docs/ARCHITECTURE.md`, "Parallelism"):
 
-- With `HOD_THREADS=<n>` (a positive integer; anything else is the error
-  `invalid value '<v>' for HOD_THREADS: expected a positive integer`,
-  `usage`), hod may use `n` threads.
+- With `--threads=<n>` or `HOD_THREADS=<n>` (a positive integer; anything
+  else is the error `invalid value '<v>' for '--threads': expected a
+  positive integer` or `invalid value '<v>' for HOD_THREADS: expected a
+  positive integer`, `usage`), hod may use `n` threads, granted outright:
+  no jobserver token is taken. The option wins over the variable, as
+  every option of hod's own does ("Environment"); a variable with a bad
+  value is an error even when the option is given.
 - Otherwise, under a GNU make jobserver (`MAKEFLAGS` holding
   `--jobserver-auth=fifo:<path>`, make 4.4's form; the last such word
   wins), up to 16 threads: hod runs on its implicit token and, for a
@@ -236,14 +240,17 @@ installation directory, see `spec/harness.md` "shim".)
 | `--strict` | `HOD_STRICT=1` | no fallback ("Strict mode") |
 | `--coverage-log=<file>` | `HOD_COVERAGE_LOG` | append one line per invocation ("Coverage log") |
 | `--bitcode-via=<llvm-dis>` | `HOD_BITCODE_VIA` | the `llvm-dis` that turns a bitcode input into text, or `native`, the default: hod's own reader ("Bitcode conversion") |
+| `--threads=<n>` | `HOD_THREADS` | the most threads code generation uses, a positive integer ("Threads") |
 
 They follow the grammar above (`--fallback <llc>`, `-strict=false`, ...).
 They are never passed to the fallback. A mistake in one of them is an error
 (reason `usage`, exit status 1) whatever else is configured, never a
 fallback: `--strict=maybe`, `--fallback=` (empty), `--bitcode-via=`
-(empty), `--coverage-log` as the last argument.
+(empty), `--threads=0`, `--threads=` (empty), `--coverage-log` as the
+last argument.
 
-The four variables of this table are hod's **settings**.
+The first four variables of this table are hod's **settings**
+(`HOD_THREADS` is not one: the bitcode converter is started with it).
 
 ## Environment
 
@@ -263,8 +270,9 @@ The four variables of this table are hod's **settings**.
   costs reading every body. It has no command-line form: it is for
   `cargo xtask corpus reasons` and for whoever asks what to implement
   next.
-- `HOD_THREADS` and `MAKEFLAGS` set the threads of code generation
-  ("Threads"). They have no command-line form.
+- `HOD_THREADS` (command-line form `--threads=<n>`) and `MAKEFLAGS` set
+  the threads of code generation ("Threads"). `MAKEFLAGS` has no
+  command-line form.
 - `HOD_TIME_PHASES=<file>` asks for a phase report ("Phase report"). It
   has no command-line form: it is a measurement hook for the benchmark
   harness, not a setting of a build.

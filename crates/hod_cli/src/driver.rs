@@ -50,8 +50,8 @@ pub const ENV_TIME_PHASES: &str = "HOD_TIME_PHASES";
 /// (coverage field 11), not only the first.
 pub const ENV_CENSUS: &str = "HOD_CENSUS";
 /// Environment variable: the most threads code generation uses
-/// (`spec/cli.md` "Threads"), a positive integer; without it, extra
-/// threads come only from a jobserver.
+/// (`spec/cli.md` "Threads"), a positive integer; `--threads=` wins over
+/// it; without either, extra threads come only from a jobserver.
 pub const ENV_THREADS: &str = "HOD_THREADS";
 /// The value of `--bitcode-via` that names hod's own bitcode reader.
 pub const BITCODE_NATIVE: &str = "native";
@@ -398,7 +398,7 @@ pub fn run(args: &[OsString], env: &Environment, compile: Compile<'_>, io: &mut 
             strict: line.strict.unwrap_or(env.strict),
             bitcode_via: line.bitcode_via.clone().or_else(|| env.bitcode_via.clone()),
             census: env.census,
-            threads: jobs::threads(env.threads, env.makeflags.as_deref()),
+            threads: jobs::threads(line.threads.or(env.threads), env.makeflags.as_deref()),
         },
         io,
         start,
@@ -656,6 +656,50 @@ mod tests {
         }
         let make = vars(&[("MAKEFLAGS", "-j4 --jobserver-auth=fifo:/tmp/fifo")]);
         assert_eq!(make.makeflags.as_deref(), Some("-j4 --jobserver-auth=fifo:/tmp/fifo"));
+    }
+
+    // spec/cli.md "Threads": `--threads=<n>` wins over `HOD_THREADS`,
+    // and either wins over a jobserver (no token is taken then).
+    #[test]
+    fn threads_option_environment_and_jobserver() {
+        let seen = std::cell::Cell::new(None);
+        let probe = |_: &[u8], _: &Options, settings: &hod::Settings, _: &mut Report| {
+            seen.set(Some((settings.threads.max, settings.threads.tokens.is_some())));
+            Ok(OBJECT.to_vec())
+        };
+        let make = Some("-j8 --jobserver-auth=fifo:/nonexistent/fifo".to_owned());
+        let threads = |args: &[&str], explicit: Option<usize>, makeflags: &Option<String>| {
+            let env = Environment {
+                threads: explicit,
+                makeflags: makeflags.clone(),
+                ..Environment::default()
+            };
+            seen.set(None);
+            let ran = run_with(args, &env, &probe, DECLARATIONS);
+            assert_eq!(ran.exit, EXIT_OK, "{args:?}: {}", ran.stderr);
+            seen.get().expect("compiled")
+        };
+        let obj = ["-filetype=obj"];
+        // `max` 0 is the calling thread alone (`hod::Threads::default`).
+        assert_eq!(threads(&obj, None, &None), (0, false));
+        assert_eq!(threads(&obj, Some(5), &None), (5, false));
+        assert_eq!(threads(&["-filetype=obj", "--threads=3"], Some(5), &None), (3, false));
+        assert_eq!(threads(&["--threads", "2", "-filetype=obj"], None, &None), (2, false));
+        assert_eq!(threads(&obj, None, &make), (crate::jobs::JOBSERVER_MAX_THREADS, true));
+        assert_eq!(threads(&obj, Some(5), &make), (5, false));
+        assert_eq!(threads(&["-filetype=obj", "--threads=1"], None, &make), (1, false));
+
+        // A mistake in it is an error, never a fallback; an invalid
+        // HOD_THREADS is one even when the option is given.
+        let llc =
+            Environment { fallback: Some("/nonexistent/llc".into()), ..Environment::default() };
+        let ran = run_with(&["-filetype=obj", "--threads=0"], &llc, &probe, DECLARATIONS);
+        assert_eq!(ran.exit, EXIT_ERROR);
+        assert!(ran.stderr.contains("invalid value '0' for '--threads'"), "{}", ran.stderr);
+        let bad = Environment { error: Some("invalid value 'x' for HOD_THREADS".into()), ..llc };
+        let ran = run_with(&["-filetype=obj", "--threads=2"], &bad, &probe, DECLARATIONS);
+        assert_eq!(ran.exit, EXIT_ERROR);
+        assert!(ran.stderr.contains("HOD_THREADS"), "{}", ran.stderr);
     }
 
     // spec/cli.md "Coverage log" field 11 and "Reasons" (first refusal and

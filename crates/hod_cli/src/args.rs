@@ -96,6 +96,9 @@ pub struct CommandLine {
     pub coverage_log: Option<PathBuf>,
     /// `--bitcode-via=`: the `llvm-dis` that turns bitcode into text.
     pub bitcode_via: Option<PathBuf>,
+    /// `--threads=`: the most threads code generation uses, a positive
+    /// integer (`spec/cli.md` "Threads").
+    pub threads: Option<usize>,
     /// The arguments for the fallback: the original ones, in order and as
     /// spelled, without hod's own options.
     pub forwarded: Vec<OsString>,
@@ -135,6 +138,7 @@ enum Opt {
     Fallback,
     CoverageLog,
     BitcodeVia,
+    Threads,
 }
 
 impl Opt {
@@ -164,6 +168,7 @@ impl Opt {
             "fallback" => Opt::Fallback,
             "coverage-log" => Opt::CoverageLog,
             "bitcode-via" => Opt::BitcodeVia,
+            "threads" => Opt::Threads,
             _ => return None,
         })
     }
@@ -183,7 +188,10 @@ impl Opt {
 
     /// hod's own options: not `llc`'s, never forwarded to the fallback.
     fn is_hod_specific(self) -> bool {
-        matches!(self, Opt::Fallback | Opt::Strict | Opt::CoverageLog | Opt::BitcodeVia)
+        matches!(
+            self,
+            Opt::Fallback | Opt::Strict | Opt::CoverageLog | Opt::BitcodeVia | Opt::Threads
+        )
     }
 }
 
@@ -360,6 +368,20 @@ impl Parser {
                 *slot = Some(PathBuf::from(value));
                 return;
             }
+            Opt::Threads if value.is_empty() => {
+                self.fatal(format!("option '{written}' requires a non-empty value"));
+                return;
+            }
+            Opt::Threads => {
+                match value.to_str().and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0) {
+                    Some(threads) => self.line.threads = Some(threads),
+                    None => self.fatal(format!(
+                        "invalid value '{}' for '{written}': expected a positive integer",
+                        value.to_string_lossy()
+                    )),
+                }
+                return;
+            }
             Opt::TimeTraceFile => return,
             _ => {}
         }
@@ -414,6 +436,7 @@ pub fn parse(args: &[OsString]) -> CommandLine {
             strict: None,
             coverage_log: None,
             bitcode_via: None,
+            threads: None,
             forwarded: Vec::with_capacity(args.len()),
             rejected: None,
             fatal: None,
@@ -526,6 +549,9 @@ hod's own options (each also settable in the environment):
   --bitcode-via=<llvm-dis>        HOD_BITCODE_VIA    Convert a bitcode input to text with this
                                                      llvm-dis (of the LLVM that wrote the bitcode)
                                                      and compile the text
+  --threads=<n>                   HOD_THREADS        Use at most <n> threads for code generation
+                                                     (without either: a make jobserver's idle
+                                                     tokens, else one thread)
 
 EXIT STATUS: 0 on success; 1 on an error; 2 when the module is unsupported and no fallback
 ran; otherwise the fallback's own status. The contract is spec/cli.md.
@@ -563,6 +589,7 @@ mod tests {
         assert_eq!(line.output, None);
         assert_eq!((line.fallback, line.strict, line.coverage_log), (None, None, None));
         assert_eq!(line.bitcode_via, None);
+        assert_eq!(line.threads, None);
     }
 
     // spec/cli.md "Options": the command line kiln builds
@@ -814,6 +841,7 @@ mod tests {
             "-filetype=obj",
             "--coverage-log=cov.tsv",
             "--bitcode-via=/usr/lib/llvm-22/bin/llvm-dis",
+            "--threads=4",
             "-o",
             "a.o",
             "-",
@@ -823,6 +851,7 @@ mod tests {
         assert_eq!(line.strict, Some(true));
         assert_eq!(line.coverage_log, Some("cov.tsv".into()));
         assert_eq!(line.bitcode_via, Some("/usr/lib/llvm-22/bin/llvm-dis".into()));
+        assert_eq!(line.threads, Some(4));
         assert_eq!(line.forwarded, os(&["-O0", "-filetype=obj", "-o", "a.o", "-"]));
 
         let line = parsed(&[
@@ -833,6 +862,8 @@ mod tests {
             "-strict=false",
             "-bitcode-via",
             "dis",
+            "-threads",
+            "2",
             "m.ll",
         ]);
         assert_eq!((&line.rejected, &line.fatal), (&None, &None));
@@ -840,6 +871,7 @@ mod tests {
         assert_eq!(line.coverage_log, Some("c".into()));
         assert_eq!(line.strict, Some(false));
         assert_eq!(line.bitcode_via, Some("dis".into()));
+        assert_eq!(line.threads, Some(2));
         assert_eq!(line.input, Input::Path("m.ll".into()));
         assert_eq!(line.forwarded, os(&["m.ll"]));
 
@@ -851,9 +883,12 @@ mod tests {
             "--strict=1",
             "--bitcode-via=c",
             "--bitcode-via=d",
+            "--threads=3",
+            "--threads=1",
         ]);
         assert_eq!((line.fallback, line.strict), (Some("b".into()), Some(true)));
         assert_eq!(line.bitcode_via, Some("d".into()));
+        assert_eq!(line.threads, Some(1));
         assert!(line.forwarded.is_empty());
 
         // An unknown option does not hide them: the fallback is still found.
@@ -875,6 +910,12 @@ mod tests {
             (&["-filetype=obj", "--bitcode-via"], "'--bitcode-via' requires a value"),
             (&["--bitcode-via="], "'--bitcode-via' requires a non-empty value"),
             (&["--strict=maybe"], "invalid value 'maybe' for '--strict'"),
+            (&["--threads"], "'--threads' requires a value"),
+            (&["--threads="], "'--threads' requires a non-empty value"),
+            (&["--threads=0"], "invalid value '0' for '--threads': expected a positive integer"),
+            (&["-threads", "-1"], "invalid value '-1' for '-threads': expected a positive"),
+            (&["--threads=two"], "invalid value 'two' for '--threads'"),
+            (&["--threads= 2"], "invalid value ' 2' for '--threads'"),
         ] {
             let line = parsed(args);
             let fatal = line.fatal.unwrap_or_else(|| panic!("{args:?}: expected a fatal error"));
@@ -895,6 +936,7 @@ mod tests {
         assert_eq!(accepted(&["--version=false"]).action, Action::Compile);
         assert!(HELP.contains("--fallback=<llc>") && HELP.contains("HOD_COVERAGE_LOG"));
         assert!(HELP.contains("--bitcode-via=<llvm-dis>") && HELP.contains("HOD_BITCODE_VIA"));
+        assert!(HELP.contains("--threads=<n>") && HELP.contains("HOD_THREADS"));
     }
 
     // Arguments are bytes: a path that is not UTF-8 is a path all the same,

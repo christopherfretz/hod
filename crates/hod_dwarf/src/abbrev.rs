@@ -53,6 +53,7 @@ pub mod tag {
     pub const IMPORTED_MODULE: u16 = 0x3a;
     pub const UNSPECIFIED_TYPE: u16 = 0x3b;
     pub const RVALUE_REFERENCE_TYPE: u16 = 0x42;
+    pub const TEMPLATE_ALIAS: u16 = 0x43;
     pub const ATOMIC_TYPE: u16 = 0x47;
     pub const GNU_TEMPLATE_TEMPLATE_PARAM: u16 = 0x4106;
     pub const GNU_TEMPLATE_PARAMETER_PACK: u16 = 0x4107;
@@ -85,6 +86,7 @@ pub mod at {
     pub const DATA_MEMBER_LOCATION: u16 = 0x38;
     pub const DECL_FILE: u16 = 0x3a;
     pub const DECL_LINE: u16 = 0x3b;
+    pub const PROTOTYPED: u16 = 0x27;
     pub const DECLARATION: u16 = 0x3c;
     pub const ENCODING: u16 = 0x3e;
     pub const EXTERNAL: u16 = 0x3f;
@@ -95,7 +97,13 @@ pub mod at {
     pub const VIRTUALITY: u16 = 0x4c;
     pub const VTABLE_ELEM_LOCATION: u16 = 0x4d;
     pub const RANGES: u16 = 0x55;
+    pub const EXPLICIT: u16 = 0x63;
     pub const OBJECT_POINTER: u16 = 0x64;
+    pub const ENDIANITY: u16 = 0x65;
+    pub const REFERENCE: u16 = 0x77;
+    pub const RVALUE_REFERENCE: u16 = 0x78;
+    pub const NORETURN: u16 = 0x87;
+    pub const DELETED: u16 = 0x8a;
     pub const DATA_BIT_OFFSET: u16 = 0x6b;
     pub const ENUM_CLASS: u16 = 0x6d;
     pub const LINKAGE_NAME: u16 = 0x6e;
@@ -104,6 +112,7 @@ pub mod at {
     pub const RNGLISTS_BASE: u16 = 0x74;
     pub const ALIGNMENT: u16 = 0x88;
     pub const EXPORT_SYMBOLS: u16 = 0x89;
+    pub const GNU_VECTOR: u16 = 0x2107;
     pub const GNU_TEMPLATE_NAME: u16 = 0x2110;
 }
 
@@ -205,6 +214,49 @@ pub mod fam {
     pub const NAMESPACE: usize = 46;
     pub const GLOBAL_VARIABLE: usize = 47;
     pub const COMPILE_UNIT: usize = 48;
+    // Families 0 to 48 above are WP-053's table; WP-058 appends the
+    // general shapes of the type graph (`spec/dwarf.md` §6.1, §6.8).
+    pub const CONST_TYPE: usize = 7;
+    pub const REFERENCE_TYPE: usize = 8;
+    pub const RVALUE_REFERENCE_TYPE: usize = 9;
+    pub const VOLATILE_TYPE: usize = 10;
+    pub const RESTRICT_TYPE: usize = 11;
+    pub const ATOMIC_TYPE: usize = 12;
+    pub const TYPEDEF: usize = 13;
+    pub const INHERITANCE: usize = 19;
+    pub const STRUCTURE_TYPE: usize = 20;
+    pub const STRUCTURE_DECL: usize = 23;
+    pub const ENUMERATION_TYPE: usize = 26;
+    pub const ENUMERATOR: usize = 27;
+    pub const ARRAY_TYPE: usize = 28;
+    pub const SUBRANGE: usize = 29;
+    pub const SUBRANGE_VAR_COUNT: usize = 30;
+    pub const SUBROUTINE_TYPE: usize = 31;
+    pub const UNSPECIFIED_PARAMETERS: usize = 32;
+    pub const PTR_TO_MEMBER_TYPE: usize = 33;
+    pub const UNSPECIFIED_TYPE: usize = 34;
+    pub const VIRTUAL_DECL: usize = 36;
+    pub const SPECIAL_DECL: usize = 37;
+    pub const STATIC_MEMBER: usize = 40;
+    pub const FRIEND: usize = 45;
+    pub const BASE_TYPE_ANY: usize = 49;
+    pub const TYPEDEF_ANY: usize = 50;
+    pub const TEMPLATE_ALIAS: usize = 51;
+    pub const MEMBER_ANY: usize = 52;
+    pub const INHERITANCE_VIRTUAL: usize = 53;
+    pub const STATIC_VARIABLE_ANY: usize = 54;
+    pub const STATIC_MEMBER_ANY: usize = 55;
+    /// Structure, class, union: `+ 0`, `+ 1`, `+ 2`.
+    pub const STRUCTURE_ANY: usize = 56;
+    /// Their declarations: `+ 0`, `+ 1`, `+ 2`.
+    pub const STRUCTURE_DECL_ANY: usize = 59;
+    pub const ENUMERATION_ANY: usize = 62;
+    pub const ARRAY_ANY: usize = 63;
+    pub const SUBROUTINE_ANY: usize = 64;
+    pub const METHOD: usize = 65;
+    pub const METHOD_QUALIFIED: usize = 66;
+    pub const GLOBAL_NAMELESS: usize = 67;
+    pub const INDEX_TYPE: usize = 68;
 }
 
 /// Every family, in code order (`spec/dwarf.md` §6.1 has the same table).
@@ -499,8 +551,8 @@ pub const FAMILIES: &[Family] = &[
         "WP-058",
         &[
             s(at::TYPE, REF4),
-            o(0, at::COUNT, UDATA),
             o(1, at::LOWER_BOUND, SDATA),
+            o(0, at::COUNT, UDATA),
             o(2, at::UPPER_BOUND, SDATA),
         ],
     ),
@@ -711,7 +763,253 @@ pub const FAMILIES: &[Family] = &[
             o(1, at::RNGLISTS_BASE, SEC_OFFSET),
         ],
     ),
+    // 49: WP-058's general shapes of the type graph.
+    fam(
+        "base_type (any)",
+        tag::BASE_TYPE,
+        No,
+        8,
+        "WP-058",
+        &[
+            o(0, at::NAME, STRX),
+            s(at::ENCODING, DATA1),
+            s(at::BYTE_SIZE, UDATA),
+            o(1, at::ENDIANITY, DATA1),
+            o(2, at::BIT_SIZE, UDATA),
+        ],
+    ),
+    // 50
+    fam(
+        "typedef (any)",
+        tag::TYPEDEF,
+        No,
+        16,
+        "WP-058",
+        &[
+            o(0, at::TYPE, REF4),
+            s(at::NAME, STRX),
+            o(2, at::ALIGNMENT, UDATA),
+            o(3, at::ACCESSIBILITY, DATA1),
+            o(1, at::DECL_FILE, UDATA),
+            o(1, at::DECL_LINE, UDATA),
+        ],
+    ),
+    fam(
+        "template_alias",
+        tag::TEMPLATE_ALIAS,
+        No,
+        8,
+        "WP-058",
+        &[
+            o(0, at::TYPE, REF4),
+            s(at::NAME, STRX),
+            o(2, at::ACCESSIBILITY, DATA1),
+            o(1, at::DECL_FILE, UDATA),
+            o(1, at::DECL_LINE, UDATA),
+        ],
+    ),
+    fam(
+        "member (any)",
+        tag::MEMBER,
+        No,
+        256,
+        "WP-058",
+        &[
+            o(0, at::NAME, STRX),
+            s(at::TYPE, REF4),
+            o(1, at::DECL_FILE, UDATA),
+            o(1, at::DECL_LINE, UDATA),
+            o(2, at::BIT_SIZE, UDATA),
+            o(2, at::DATA_BIT_OFFSET, UDATA),
+            o(3, at::ALIGNMENT, UDATA),
+            o(4, at::DATA_MEMBER_LOCATION, UDATA),
+            o(5, at::ACCESSIBILITY, DATA1),
+            o(6, at::VIRTUALITY, DATA1),
+            o(7, at::ARTIFICIAL, FLAG_PRESENT),
+        ],
+    ),
+    fam(
+        "inheritance (virtual)",
+        tag::INHERITANCE,
+        No,
+        2,
+        "WP-058",
+        &[
+            s(at::TYPE, REF4),
+            s(at::DATA_MEMBER_LOCATION, EXPRLOC),
+            o(0, at::ACCESSIBILITY, DATA1),
+            s(at::VIRTUALITY, DATA1),
+        ],
+    ),
+    fam("member (static, declaration, any)", tag::VARIABLE, No, 64, "WP-058", STATIC_ANY),
+    // 55
+    fam("member (static, DW_TAG_member, any)", tag::MEMBER, No, 64, "WP-058", STATIC_ANY),
+    fam("structure_type (any)", tag::STRUCTURE_TYPE, Optional, 256, "WP-058", COMPOSITE_ANY),
+    fam("class_type (any)", tag::CLASS_TYPE, Optional, 256, "WP-058", COMPOSITE_ANY),
+    fam("union_type (any)", tag::UNION_TYPE, Optional, 256, "WP-058", COMPOSITE_ANY),
+    fam(
+        "structure_type (declaration, any)",
+        tag::STRUCTURE_TYPE,
+        Optional,
+        8,
+        "WP-058",
+        DECLARATION_ANY,
+    ),
+    // 60
+    fam("class_type (declaration, any)", tag::CLASS_TYPE, Optional, 8, "WP-058", DECLARATION_ANY),
+    fam("union_type (declaration, any)", tag::UNION_TYPE, Optional, 8, "WP-058", DECLARATION_ANY),
+    fam(
+        "enumeration_type (any)",
+        tag::ENUMERATION_TYPE,
+        Optional,
+        512,
+        "WP-058",
+        &[
+            o(0, at::TYPE, REF4),
+            o(1, at::ENUM_CLASS, FLAG_PRESENT),
+            o(2, at::NAME, STRX),
+            o(3, at::BYTE_SIZE, UDATA),
+            o(4, at::DECLARATION, FLAG_PRESENT),
+            o(5, at::ACCESSIBILITY, DATA1),
+            o(6, at::DECL_FILE, UDATA),
+            o(6, at::DECL_LINE, UDATA),
+            o(7, at::ALIGNMENT, UDATA),
+        ],
+    ),
+    fam(
+        "array_type (any)",
+        tag::ARRAY_TYPE,
+        Optional,
+        16,
+        "WP-058",
+        &[
+            o(0, at::GNU_VECTOR, FLAG_PRESENT),
+            o(1, at::BYTE_SIZE, UDATA),
+            s(at::TYPE, REF4),
+            o(2, at::NAME, STRX),
+        ],
+    ),
+    fam(
+        "subroutine_type (any)",
+        tag::SUBROUTINE_TYPE,
+        Optional,
+        64,
+        "WP-058",
+        &[
+            o(0, at::TYPE, REF4),
+            o(1, at::PROTOTYPED, FLAG_PRESENT),
+            o(2, at::CALLING_CONVENTION, DATA1),
+            o(3, at::REFERENCE, FLAG_PRESENT),
+            o(4, at::RVALUE_REFERENCE, FLAG_PRESENT),
+        ],
+    ),
+    // 65
+    fam(
+        "subprogram (member declaration)",
+        tag::SUBPROGRAM,
+        Optional,
+        2048,
+        "WP-058",
+        &[
+            o(0, at::LINKAGE_NAME, STRX),
+            o(1, at::NAME, STRX),
+            o(2, at::DECL_FILE, UDATA),
+            o(2, at::DECL_LINE, UDATA),
+            o(3, at::TYPE, REF4),
+            o(4, at::VIRTUALITY, DATA1),
+            o(4, at::VTABLE_ELEM_LOCATION, EXPRLOC),
+            s(at::DECLARATION, FLAG_PRESENT),
+            o(5, at::ARTIFICIAL, FLAG_PRESENT),
+            o(6, at::EXTERNAL, FLAG_PRESENT),
+            o(7, at::ACCESSIBILITY, DATA1),
+            o(8, at::EXPLICIT, FLAG_PRESENT),
+            o(9, at::DELETED, FLAG_PRESENT),
+            o(4, at::CONTAINING_TYPE, REF4),
+        ],
+    ),
+    fam(
+        "subprogram (member declaration, qualified)",
+        tag::SUBPROGRAM,
+        Optional,
+        4096,
+        "WP-058",
+        &[
+            o(0, at::LINKAGE_NAME, STRX),
+            o(1, at::NAME, STRX),
+            o(2, at::DECL_FILE, UDATA),
+            o(2, at::DECL_LINE, UDATA),
+            o(3, at::TYPE, REF4),
+            o(4, at::VIRTUALITY, DATA1),
+            o(4, at::VTABLE_ELEM_LOCATION, EXPRLOC),
+            s(at::DECLARATION, FLAG_PRESENT),
+            o(5, at::EXTERNAL, FLAG_PRESENT),
+            o(7, at::REFERENCE, FLAG_PRESENT),
+            o(8, at::RVALUE_REFERENCE, FLAG_PRESENT),
+            o(9, at::NORETURN, FLAG_PRESENT),
+            o(6, at::ACCESSIBILITY, DATA1),
+            o(10, at::DELETED, FLAG_PRESENT),
+            o(4, at::CONTAINING_TYPE, REF4),
+        ],
+    ),
+    fam(
+        "variable (global, no name)",
+        tag::VARIABLE,
+        No,
+        32,
+        "WP-058",
+        &[
+            s(at::TYPE, REF4),
+            o(0, at::EXTERNAL, FLAG_PRESENT),
+            o(1, at::DECL_FILE, UDATA),
+            o(1, at::DECL_LINE, UDATA),
+            o(2, at::ALIGNMENT, UDATA),
+            o(3, at::LOCATION, EXPRLOC),
+            o(4, at::LINKAGE_NAME, STRX),
+        ],
+    ),
+    fam(
+        "base_type (array index)",
+        tag::BASE_TYPE,
+        No,
+        1,
+        "WP-058",
+        &[s(at::NAME, STRX), s(at::BYTE_SIZE, UDATA), s(at::ENCODING, DATA1)],
+    ),
 ];
+
+/// The slots of the general static-member families (54, 55), in `llc`'s
+/// order: one `const_value` form per sign (exclusive option bits 3, 4).
+const STATIC_ANY: &[Slot] = &[
+    s(at::NAME, STRX),
+    s(at::TYPE, REF4),
+    o(0, at::DECL_FILE, UDATA),
+    o(0, at::DECL_LINE, UDATA),
+    s(at::EXTERNAL, FLAG_PRESENT),
+    s(at::DECLARATION, FLAG_PRESENT),
+    o(1, at::ARTIFICIAL, FLAG_PRESENT),
+    o(2, at::ACCESSIBILITY, DATA1),
+    o(3, at::CONST_VALUE, UDATA),
+    o(4, at::CONST_VALUE, SDATA),
+    o(5, at::ALIGNMENT, UDATA),
+];
+
+/// The slots of the general structure, class and union families (56 to
+/// 58), in `llc`'s order.
+const COMPOSITE_ANY: &[Slot] = &[
+    o(0, at::EXPORT_SYMBOLS, FLAG_PRESENT),
+    o(1, at::CONTAINING_TYPE, REF4),
+    o(2, at::CALLING_CONVENTION, DATA1),
+    o(3, at::NAME, STRX),
+    s(at::BYTE_SIZE, UDATA),
+    o(4, at::ACCESSIBILITY, DATA1),
+    o(5, at::DECL_FILE, UDATA),
+    o(5, at::DECL_LINE, UDATA),
+    o(6, at::ALIGNMENT, UDATA),
+];
+
+/// The slots of the general declaration families (59 to 61).
+const DECLARATION_ANY: &[Slot] =
+    &[o(0, at::NAME, STRX), s(at::DECLARATION, FLAG_PRESENT), o(1, at::ACCESSIBILITY, DATA1)];
 
 /// The number of option bits of a family (not counting the children
 /// bit).
@@ -750,6 +1048,8 @@ pub const BASES: [u32; FAMILIES.len()] = bases();
 
 /// One past the last code of the table.
 pub const CODE_END: u32 = BASES[FAMILIES.len() - 1] + FAMILIES[FAMILIES.len() - 1].block as u32;
+// Every code takes at most two ULEB128 bytes.
+const _: () = assert!(CODE_END <= 1 << 14);
 
 /// The code of a DIE of family `family` with option `mask` and, for a
 /// family with optional children, `children`.
@@ -827,7 +1127,36 @@ mod tests {
         assert_eq!(BASES[fam::NAMESPACE], 698);
         assert_eq!(BASES[fam::GLOBAL_VARIABLE], 706);
         assert_eq!(BASES[fam::COMPILE_UNIT], 738);
-        assert_eq!(CODE_END, 754);
+        // WP-058 appended families 49 to 67 after the end WP-053 left.
+        assert_eq!(BASES[fam::BASE_TYPE_ANY], 754);
+        assert_eq!(CODE_END, 8733);
+        for (index, name) in [
+            (fam::CONST_TYPE, "const_type"),
+            (fam::TYPEDEF, "typedef"),
+            (fam::INHERITANCE, "inheritance"),
+            (fam::STRUCTURE_TYPE, "structure_type"),
+            (fam::STRUCTURE_DECL, "structure_type (declaration)"),
+            (fam::ENUMERATION_TYPE, "enumeration_type"),
+            (fam::ENUMERATOR, "enumerator"),
+            (fam::ARRAY_TYPE, "array_type"),
+            (fam::SUBRANGE, "subrange_type"),
+            (fam::SUBRANGE_VAR_COUNT, "subrange_type (variable count)"),
+            (fam::SUBROUTINE_TYPE, "subroutine_type"),
+            (fam::UNSPECIFIED_PARAMETERS, "unspecified_parameters"),
+            (fam::PTR_TO_MEMBER_TYPE, "ptr_to_member_type"),
+            (fam::UNSPECIFIED_TYPE, "unspecified_type"),
+            (fam::VIRTUAL_DECL, "subprogram (virtual declaration)"),
+            (fam::SPECIAL_DECL, "subprogram (special declaration)"),
+            (fam::STATIC_MEMBER, "member (static, declaration)"),
+            (fam::FRIEND, "friend"),
+            (fam::BASE_TYPE_ANY, "base_type (any)"),
+            (fam::STRUCTURE_ANY + 2, "union_type (any)"),
+            (fam::STRUCTURE_DECL_ANY + 1, "class_type (declaration, any)"),
+            (fam::METHOD, "subprogram (member declaration)"),
+            (fam::GLOBAL_NAMELESS, "variable (global, no name)"),
+        ] {
+            assert_eq!(FAMILIES[index].name, name);
+        }
         assert_eq!(FAMILIES[fam::NAMESPACE].tag, tag::NAMESPACE);
         assert_eq!(FAMILIES[fam::GLOBAL_VARIABLE].tag, tag::VARIABLE);
         assert_eq!(FAMILIES[fam::COMPILE_UNIT].tag, tag::COMPILE_UNIT);
@@ -864,8 +1193,11 @@ mod tests {
                 // the enumerator's two value forms) repeat an attribute
                 // only under a mask that sets both, which is never
                 // written.
-                let exclusive =
-                    (f.tag == tag::COMPILE_UNIT || f.tag == tag::ENUMERATOR) && mask & 0b11 == 0b11;
+                // So do the general static members' two `const_value`
+                // forms (bits 3 and 4).
+                let exclusive = ((f.tag == tag::COMPILE_UNIT || f.tag == tag::ENUMERATOR)
+                    && mask & 0b11 == 0b11)
+                    || (f.name.starts_with("member (static") && mask & 0b11000 == 0b11000);
                 assert!(seen.len() == n || exclusive, "{}: mask {mask:#b} repeats", f.name);
             }
         }
@@ -874,7 +1206,8 @@ mod tests {
             all.mark(c);
         }
         let table = write_abbrev(&all);
-        assert!(table.len() < 32 * 1024, "{}", table.len());
+        // Every code at once (no object uses more than a few hundred).
+        assert!(table.len() < 512 * 1024, "{}", table.len());
         assert_eq!(table.last(), Some(&0));
     }
 

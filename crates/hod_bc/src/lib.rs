@@ -11,8 +11,10 @@
 mod attrs;
 pub mod bitstream;
 mod body;
+mod body_debug;
 pub mod codes;
 mod consts;
+mod debug;
 mod error;
 mod inst;
 mod module;

@@ -9,6 +9,7 @@ pub mod dies;
 pub mod generate;
 pub mod meta;
 pub mod session;
+pub mod types;
 
 use std::path::{Path, PathBuf};
 
@@ -409,7 +410,7 @@ pub fn write(
     let files: Vec<FileEntry<'_>> = table
         .files
         .iter()
-        .map(|(name, dir, md5)| FileEntry { name, dir: *dir, md5: *md5 })
+        .map(|(name, dir, md5)| FileEntry { name, dir: *dir, md5: *md5, source: None })
         .collect();
     let mut input: Vec<Sequence<'_>> = seqs
         .iter()
@@ -528,6 +529,7 @@ pub fn transitions_of(f: &LlcFunction) -> (FunctionLines<'static>, Vec<Transitio
         .map(|r| Transition {
             offset: r.offset,
             loc: Some(SourceLoc { file: r.file, line: r.line, column: r.column }),
+            block_start: false,
         })
         .collect();
     (FunctionLines { scope, size: f.size, transitions: &[], epilogue }, ts)

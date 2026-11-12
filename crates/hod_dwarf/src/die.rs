@@ -4,8 +4,8 @@
 //! `.debug_rnglists`.
 
 use hod_ir::{
-    ChecksumKind, DW_TAG_BASE_TYPE, DW_TAG_POINTER_TYPE, DebugInfo, DiCompileUnit, DiFile, DiFlags,
-    DiId, DiKind, DiNode, EmissionKind, ExprId,
+    ChecksumKind, ConstPool, DebugInfo, DiCompileUnit, DiFile, DiId, DiKind, DiNode, EmissionKind,
+    ExprId, Module, TypeTable,
 };
 use hod_obj::elf::{SHF_MERGE, SHF_STRINGS, SHT_PROGBITS};
 use hod_obj::{Object, SectionId, SectionKind, SymbolId};
@@ -17,7 +17,7 @@ use crate::line::FileTable;
 use crate::strings::DebugStrings;
 use crate::target::for_arch;
 
-const NONE: u32 = u32::MAX;
+pub(crate) const NONE: u32 = u32::MAX;
 const DW_UT_COMPILE: u8 = 0x01;
 const DW_OP_ADDRX: u8 = 0xa1;
 const DW_RLE_END_OF_LIST: u8 = 0x00;
@@ -26,22 +26,54 @@ const DW_RLE_STARTX_LENGTH: u8 = 0x03;
 /// unit's first DIE.
 const UNIT_HEADER: usize = 12;
 
+/// What a DIE of the plan is written as; its node is the `hod_ir` node
+/// it is written from (`spec/dwarf.md` §6.2, §6.8).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
+pub(crate) enum Kind {
     Unit,
     Namespace,
+    /// A global variable (`DIGlobalVariable`).
     Variable,
+    /// A `DIBasicType`: a base or unspecified type.
     BaseType,
-    PointerType,
+    /// A `DIDerivedType` that is a type: pointer, reference, qualifier,
+    /// typedef, template alias, pointer to member.
+    Derived,
+    /// A `DIDerivedType` member or inheritance of a class (not keyed:
+    /// one node listed by two classes is two DIEs, as in `llc`).
+    Member,
+    /// A static data member's declaration (keyed).
+    StaticMember,
+    /// A `DW_TAG_friend` element (not keyed).
+    Friend,
+    /// A structure, class or union.
+    Composite,
+    Enumeration,
+    /// Its node is the `DIEnumerator` (not keyed: enumerators are
+    /// uniqued, so two enumerations may share one).
+    Enumerator,
+    Array,
+    /// Its node is the `DISubrange` (not keyed).
+    Subrange,
+    /// The unit's `__ARRAY_SIZE_TYPE__`; its node is the unit.
+    IndexType,
+    Subroutine,
+    /// A formal parameter of a subroutine type or a member function
+    /// declaration; its node is the parameter's type (not keyed).
+    Param,
+    /// `DW_TAG_unspecified_parameters`; its node is its parent's.
+    Unspecified,
+    /// A member function declaration (`DISubprogram`, keyed).
+    Method,
 }
 
 /// One DIE of the plan: the node it is written from and its parent's
 /// index.
 #[derive(Clone, Copy, Debug)]
-struct Die {
-    node: DiId,
-    parent: u32,
-    kind: Kind,
+pub(crate) struct Die {
+    pub(crate) node: DiId,
+    pub(crate) parent: u32,
+    pub(crate) kind: Kind,
 }
 
 /// The DIE tree of one compile unit, before anything is written
@@ -55,24 +87,35 @@ struct Die {
 /// and the map from a node to its DIE is four bytes per node.
 #[derive(Clone, Debug)]
 pub struct UnitPlan<'a> {
-    debug: &'a DebugInfo,
-    unit: DiId,
-    cu: DiCompileUnit<'a>,
+    pub(crate) debug: &'a DebugInfo,
+    pub(crate) unit: DiId,
+    pub(crate) cu: DiCompileUnit<'a>,
     name: &'a [u8],
     comp_dir: &'a [u8],
     files: FileTable<'a>,
     /// `(DiFile id, file index)`, sorted by id.
     file_index: Vec<(u32, u32)>,
     /// In discovery order; DIE 0 is the unit.
-    dies: Vec<Die>,
+    pub(crate) dies: Vec<Die>,
     /// Per DIE, where its children start in `children`; one more entry
     /// than `dies`.
     child_start: Vec<u32>,
-    children: Vec<u32>,
+    pub(crate) children: Vec<u32>,
     /// Per node of the table: its DIE, or `NONE`.
-    slot: Vec<u32>,
+    pub(crate) slot: Vec<u32>,
     /// `(DIGlobalVariableExpression id, DIE)`, sorted by id.
     by_expr: Vec<(u32, u32)>,
+    /// The module's constants, for static members' values (§6.8).
+    pub(crate) consts: Option<(&'a ConstPool, &'a TypeTable)>,
+    /// `(DIE, DIE)`, sorted: the variable a subrange's count names, or
+    /// the containing type of a virtual member function (§6.8).
+    pub(crate) aux: Vec<(u32, u32)>,
+    /// `(DIE, value, signed)`, sorted: a static member's constant.
+    pub(crate) values: Vec<(u32, u64, bool)>,
+    /// The `__ARRAY_SIZE_TYPE__` DIE, or `NONE`.
+    pub(crate) index_die: u32,
+    /// While the plan is built: the type graph's work (§6.8).
+    pub(crate) build: crate::types::Build,
 }
 
 fn md5_of(f: &DiFile<'_>) -> Option<[u8; 16]> {
@@ -87,11 +130,17 @@ fn md5_of(f: &DiFile<'_>) -> Option<[u8; 16]> {
     Some(out)
 }
 
-const fn unsupported(node: DiId, what: &'static str) -> Error {
+/// A file's embedded source (`DW_LNCT_LLVM_source`); an empty one is
+/// none (`spec/ir.md` §6).
+fn source_of<'a>(f: &DiFile<'a>) -> Option<&'a [u8]> {
+    (!f.source.is_empty()).then_some(f.source)
+}
+
+pub(crate) const fn unsupported(node: DiId, what: &'static str) -> Error {
     Error::Unsupported { node: node.raw(), what }
 }
 
-const fn bad(node: DiId, field: &'static str) -> Error {
+pub(crate) const fn bad(node: DiId, field: &'static str) -> Error {
     Error::BadReference { node: node.raw(), field }
 }
 
@@ -109,6 +158,25 @@ impl<'a> UnitPlan<'a> {
     /// or a node of the wrong kind, or a namespace cycle; `Unsupported`
     /// for what this writer does not write yet (`spec/dwarf.md` §6.5).
     pub fn new(debug: &'a DebugInfo, unit: DiId) -> Result<Self, Error> {
+        Self::build(debug, None, unit)
+    }
+
+    /// The plan of compile unit `unit` of `module`'s debug tables, with
+    /// the module's constants for the values of static data members
+    /// (`spec/dwarf.md` §6.8); [`UnitPlan::new`] refuses a static member
+    /// with a value.
+    ///
+    /// # Errors
+    /// As [`UnitPlan::new`].
+    pub fn of_module(module: &'a Module, unit: DiId) -> Result<Self, Error> {
+        Self::build(&module.debug, Some((&module.consts, &module.types)), unit)
+    }
+
+    fn build(
+        debug: &'a DebugInfo,
+        consts: Option<(&'a ConstPool, &'a TypeTable)>,
+        unit: DiId,
+    ) -> Result<Self, Error> {
         let Some(DiKind::CompileUnit) = debug.find_kind(unit) else {
             return Err(Error::NotACompileUnit { node: unit.raw() });
         };
@@ -125,14 +193,20 @@ impl<'a> UnitPlan<'a> {
 
         // The file table: directory 0 and file 0 from the unit, then every
         // file node in id order (`spec/dwarf.md` §4.4, §5.7).
-        let mut files = FileTable::new(file.directory, file.filename, md5_of(&file));
+        let mut files = FileTable::new_with_source(
+            file.directory,
+            file.filename,
+            md5_of(&file),
+            source_of(&file),
+        );
         let mut file_index = Vec::new();
         let count = debug.node_count();
         for raw in 0..count as u32 {
             let id = DiId::new(raw);
             if debug.kind(id) == DiKind::File {
                 let DiNode::File(f) = debug.node(id) else { continue };
-                file_index.push((raw, files.add(f.directory, f.filename, md5_of(&f))));
+                let at = files.add_with_source(f.directory, f.filename, md5_of(&f), source_of(&f));
+                file_index.push((raw, at));
             }
         }
 
@@ -149,25 +223,54 @@ impl<'a> UnitPlan<'a> {
             children: Vec::new(),
             slot: vec![NONE; count],
             by_expr: Vec::with_capacity(cu.globals.len()),
+            consts,
+            aux: Vec::new(),
+            values: Vec::new(),
+            index_die: NONE,
+            build: crate::types::Build::default(),
         };
         plan.push(unit, 0, Kind::Unit);
         let mut chain = Vec::new();
         for &gve in cu.globals {
             plan.discover_global(gve, &mut chain)?;
         }
+        // Then the unit's enumerations and retained types, as `llc`'s
+        // `beginModule` (§6.8).
+        for &e in cu.enums {
+            plan.reference_type(unit, "enums", e)?;
+        }
+        for &t in cu.retained_types {
+            if debug.find_kind(t) == Some(DiKind::Subprogram) {
+                continue; // a retained function is WP-057's
+            }
+            plan.reference_type(unit, "retainedTypes", t)?;
+        }
+        plan.finish_types()?;
         plan.by_expr.sort_unstable();
         plan.invert();
         Ok(plan)
     }
 
-    fn push(&mut self, node: DiId, parent: u32, kind: Kind) -> u32 {
-        let index = self.dies.len() as u32;
-        self.dies.push(Die { node, parent, kind });
+    /// A DIE for `node`, keyed: `die_of(node)` finds it.
+    pub(crate) fn push(&mut self, node: DiId, parent: u32, kind: Kind) -> u32 {
+        let index = self.push_anon(node, parent, kind);
         self.slot[node.index()] = index;
         index
     }
 
-    fn node_of(&self, from: DiId, field: &'static str, id: DiId) -> Result<DiNode<'a>, Error> {
+    /// A DIE written from `node` that `die_of(node)` does not find.
+    pub(crate) fn push_anon(&mut self, node: DiId, parent: u32, kind: Kind) -> u32 {
+        let index = self.dies.len() as u32;
+        self.dies.push(Die { node, parent, kind });
+        index
+    }
+
+    pub(crate) fn node_of(
+        &self,
+        from: DiId,
+        field: &'static str,
+        id: DiId,
+    ) -> Result<DiNode<'a>, Error> {
         if !self.debug.contains(id) {
             return Err(bad(from, field));
         }
@@ -192,9 +295,6 @@ impl<'a> UnitPlan<'a> {
         if e.expr != ExprId::EMPTY {
             return Err(unsupported(gve, "a global variable expression that is not empty"));
         }
-        if v.name.is_empty() {
-            return Err(unsupported(var, "a global variable without a name"));
-        }
         if !v.is_definition || v.declaration.is_some() {
             return Err(unsupported(var, "a declaration or a static member's definition"));
         }
@@ -210,57 +310,13 @@ impl<'a> UnitPlan<'a> {
         let parent = self.scope_parent(var, v.scope, chain)?;
         let die = self.push(var, parent, Kind::Variable);
         self.by_expr.push((gve.raw(), die));
-        self.discover_type(var, v.ty, chain)
-    }
-
-    /// The types a DIE names, each once: a chain, since a base type
-    /// names nothing and a pointer one type.
-    fn discover_type(
-        &mut self,
-        mut from: DiId,
-        mut next: Option<DiId>,
-        chain: &mut Vec<DiId>,
-    ) -> Result<(), Error> {
-        while let Some(t) = next {
-            let node = self.node_of(from, "type", t)?;
-            if self.slot[t.index()] != NONE {
-                return Ok(());
-            }
-            match node {
-                DiNode::BasicType(b) if b.tag == DW_TAG_BASE_TYPE => {
-                    if b.name.is_empty() {
-                        return Err(unsupported(t, "a base type without a name"));
-                    }
-                    if b.encoding > 0xff {
-                        return Err(unsupported(t, "a base type encoding beyond one byte"));
-                    }
-                    if b.data_size != 0
-                        || b.flags.0 & (DiFlags::BIG_ENDIAN.0 | DiFlags::LITTLE_ENDIAN.0) != 0
-                    {
-                        return Err(unsupported(t, "a base type's dataSize or endianity"));
-                    }
-                    self.push(t, 0, Kind::BaseType);
-                    next = None;
-                }
-                DiNode::DerivedType(d) if d.tag == DW_TAG_POINTER_TYPE => {
-                    if d.dwarf_address_space.is_some() {
-                        return Err(unsupported(t, "a pointer with an address space"));
-                    }
-                    let parent = self.scope_parent(t, d.scope, chain)?;
-                    self.push(t, parent, Kind::PointerType);
-                    from = t;
-                    next = d.base_type;
-                }
-                _ => return Err(unsupported(t, "a type other than a base or pointer type")),
-            }
-        }
-        Ok(())
+        self.reference_type(var, "type", v.ty.unwrap_or(DiId::NONE)).map(|_| ())
     }
 
     /// The DIE that encloses a node whose `scope` field is `scope`: the
     /// unit, or a namespace DIE, discovered from the outermost namespace
     /// in when it is new.
-    fn scope_parent(
+    pub(crate) fn scope_parent(
         &mut self,
         of: DiId,
         scope: Option<DiId>,
@@ -360,7 +416,7 @@ impl<'a> UnitPlan<'a> {
         Some(self.by_expr[at].1)
     }
 
-    fn children_of(&self, die: u32) -> std::ops::Range<usize> {
+    pub(crate) fn children_of(&self, die: u32) -> std::ops::Range<usize> {
         self.child_start[die as usize] as usize..self.child_start[die as usize + 1] as usize
     }
 }
@@ -456,28 +512,28 @@ struct Reloc {
 }
 
 /// The output of the writer before the object is touched.
-struct Writer<'a> {
-    info: Vec<u8>,
-    str_offsets: Vec<u8>,
+pub(crate) struct Writer<'a> {
+    pub(crate) info: Vec<u8>,
+    pub(crate) str_offsets: Vec<u8>,
     addr: Vec<u8>,
     rnglists: Vec<u8>,
-    strings: DebugStrings<'a>,
-    used: Used,
+    pub(crate) strings: DebugStrings<'a>,
+    pub(crate) used: Used,
     relocs: Vec<Reloc>,
     // Per unit, reused.
-    offsets: Vec<u32>,
-    patches: Vec<(usize, u32)>,
+    pub(crate) offsets: Vec<u32>,
+    pub(crate) patches: Vec<(usize, u32)>,
     stack: Vec<(u32, usize)>,
     addr_of: Vec<u32>,
     addrs: Vec<(SymbolId, i64)>,
     spans: Vec<CodeSpan>,
     /// The current unit's start in `info`, and its globals' addresses.
-    unit_start: usize,
+    pub(crate) unit_start: usize,
     cur: Vec<(SymbolId, i64)>,
 }
 
 #[inline]
-fn uleb_len(mut v: u64) -> usize {
+pub(crate) fn uleb_len(mut v: u64) -> usize {
     let mut n = 1;
     while v >= 0x80 {
         v >>= 7;
@@ -488,13 +544,13 @@ fn uleb_len(mut v: u64) -> usize {
 
 impl<'a> Writer<'a> {
     #[inline]
-    fn abbrev(&mut self, code: u32) {
+    pub(crate) fn abbrev(&mut self, code: u32) {
         self.used.mark(code);
         write_uleb(&mut self.info, u64::from(code));
     }
 
     #[inline]
-    fn strx(&mut self, s: &'a [u8]) -> Result<(), Error> {
+    pub(crate) fn strx(&mut self, s: &'a [u8]) -> Result<(), Error> {
         let index = self.strings.index(s)?;
         write_uleb(&mut self.info, u64::from(index));
         Ok(())
@@ -509,7 +565,7 @@ impl<'a> Writer<'a> {
     /// A `DW_FORM_ref4` to DIE `die`: written now if the DIE is, else
     /// patched once it is.
     #[inline]
-    fn ref4(&mut self, die: u32) {
+    pub(crate) fn ref4(&mut self, die: u32) {
         let at = self.offsets[die as usize];
         if at == NONE {
             self.patches.push((self.info.len(), die));
@@ -519,7 +575,12 @@ impl<'a> Writer<'a> {
         }
     }
 
-    fn ref_to(&mut self, plan: &UnitPlan<'_>, from: DiId, node: DiId) -> Result<(), Error> {
+    pub(crate) fn ref_to(
+        &mut self,
+        plan: &UnitPlan<'_>,
+        from: DiId,
+        node: DiId,
+    ) -> Result<(), Error> {
         let die = plan.die_of(node).ok_or(bad(from, "type"))?;
         self.ref4(die);
         Ok(())
@@ -745,8 +806,13 @@ impl<'a> Writer<'a> {
                     | u32::from(v.align != 0) << 2
                     | u32::from(addr != NONE) << 3
                     | u32::from(!v.linkage_name.is_empty()) << 4;
-                self.abbrev(code(fam::GLOBAL_VARIABLE, mask, false));
-                self.strx(v.name)?;
+                if v.name.is_empty() {
+                    // A string literal's (clang 22): no name (§6.8).
+                    self.abbrev(code(fam::GLOBAL_NAMELESS, mask, false));
+                } else {
+                    self.abbrev(code(fam::GLOBAL_VARIABLE, mask, false));
+                    self.strx(v.name)?;
+                }
                 self.ref_to(plan, d.node, v.ty.unwrap_or(DiId::NONE))?;
                 if let Some(file) = file {
                     write_uleb(&mut self.info, u64::from(file));
@@ -774,23 +840,8 @@ impl<'a> Writer<'a> {
                     self.strx(ns.name)?;
                 }
             }
-            (Kind::BaseType, DiNode::BasicType(b)) => {
-                self.abbrev(code(fam::BASE_TYPE, 0, false));
-                self.strx(b.name)?;
-                self.info.push(b.encoding as u8);
-                write_uleb(&mut self.info, b.size / 8);
-            }
-            (Kind::PointerType, DiNode::DerivedType(p)) => {
-                let mask = u32::from(p.base_type.is_some()) | u32::from(!p.name.is_empty()) << 1;
-                self.abbrev(code(fam::POINTER_TYPE, mask, false));
-                if let Some(base) = p.base_type {
-                    self.ref_to(plan, d.node, base)?;
-                }
-                if !p.name.is_empty() {
-                    self.strx(p.name)?;
-                }
-            }
-            _ => unreachable!("a DIE's kind matches its node's: the plan made both"),
+            (Kind::Unit, _) => unreachable!("the unit DIE is written by `unit`"),
+            (_, node) => self.type_die(plan, die, d, node, children)?,
         }
         Ok(())
     }

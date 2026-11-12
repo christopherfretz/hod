@@ -172,12 +172,14 @@ kept:
 - INDEX_OFFSET and INDEX (skipped)
 - GLOBAL_DECL_ATTACHMENT
 
-Every other metadata record only takes the next metadata id, as
-`md::defines_id` says. This covers every debug-info node (DILocation,
-DISubprogram, DICompositeType and the rest). Debug information is not
-read by `hod_bc` yet (WP-055): a module with `llvm.dbg.cu` is recorded
-unsupported as `debug-info` and nothing of it is built. `hod_ll` reads
-it (`ll.md §7`).
+- every debug-information record (§6.3), LOCATION, EXPRESSION,
+  ASSIGN_ID and ARG_LIST.
+
+Every record that defines an id takes the next metadata id, as
+`md::defines_id` says; ARG_LIST does too, as LLVM's reader numbers it.
+The first pass also notes whether any kept record is debug information
+(`Raw::md_debug`): a module with none, and no `llvm.dbg.cu`, costs
+nothing more (§6.1).
 
 ### 3.4 Unsupported, by name
 
@@ -205,6 +207,7 @@ names are stable:
 | `const-expr-binop`, `const-expr-cast` | a constant-expression opcode LLVM 19 to 22 no longer fold |
 | `const-expr-select`, `const-expr-cmp`, `const-expr-unop`, `const-expr-gep-old` | constant expressions `hod_ll` refuses as well (`ll.md §3.4`) |
 | `module-inline-asm-value` | an INLINEASM constant at module level |
+| `debug-layout` | a debug-information record laid out as no LLVM from 19 to 22 writes it: more operands than LLVM 22 writes, a DIExpression version other than 3, a DIGlobalVariable or DISubrange version other than 2, the type references, subprogram and unit layouts of bitcode before LLVM 3.9, a DILocalVariable without its alignment (§6.3), a DEBUG_LOC of more than 7 operands or a debug record of more than its operands (§11.6) |
 
 ## 4. Record codes
 
@@ -397,8 +400,9 @@ Only what `hod_ll` uses is built. The rest takes an id and is never read.
     known ones become `ModuleProps`.
   - `llvm.linker.options` and `llvm.dependent-libraries` give the string
     lists of `ll.md §7.2`.
-  - `llvm.ident` and the debug-info lists are dropped, as `ll.md §3.3`
+  - `llvm.ident` and `llvm.errno.tbaa` are dropped, as `ll.md §3.3`
     drops them.
+  - `llvm.dbg.cu` lists the compile units (§6.2).
   - Any other named node is noted `named-metadata:<name>`.
 - **Nodes** are read without recursion. A flag's value is an integer, a
   string or a node. A node value is `Other`, as `hod_ll` keeps it.
@@ -409,13 +413,158 @@ Only what `hod_ll` uses is built. The rest takes an id and is never read.
 
 ## 6. Debug information
 
-Stage 1 builds no debug information.
+The debug information of a module is read into `Module::debug`, the
+tables `hod_ll` fills from text (`ll.md §7.4`), with the same fields,
+defaults, checks and refusals: what `hod_ll` reads from `llvm-dis` of
+the bitcode, `hod_bc` reads from the bitcode (§6.6 lists where the two
+can part).
 
-- Every debug-info metadata record only takes its id (§3.3).
-- `!dbg` attachments of definitions are in the function blocks.
+### 6.1 When
 
-A later stage reads debug information from the same records as
-`hod_ll`'s debug stage reads it from text.
+The module has debug information when its METADATA block holds a debug
+record (§3.3) or it has `!llvm.dbg.cu`. Only then is §6.2 run; a module
+without debug information allocates nothing for it and walks no
+function block twice.
+
+### 6.2 The passes
+
+`module::Build::debug` runs after the named metadata (§5.8) and before
+the items (§5.7):
+
+1. **Reserve.** Over the module's metadata ids, in order: each node
+   record and LOCATION reserves an id (`DebugInfo::reserve`,
+   `reserve_loc`); each EXPRESSION is interned; ASSIGN_ID is kept as
+   nothing (`ir.md §6.9`).
+2. **Define.** Each node and location is defined from its record (§6.3);
+   a reference names any id, so forward references and cycles need no
+   order. A field that names a tuple as a single node reserves the tuple
+   and defines it (uniqued) after the node; a list field reads the
+   tuple's operands in place. Strings and constants are added
+   (hash-consed). A reference to a location, an expression or an
+   assign id where a node is expected, to a value of a function, or to
+   a record that is not debug information is `debug:invalid` and stands
+   as an empty tuple, as in `hod_ll`.
+3. **Compile units.** `llvm.dbg.cu`'s operands, each a DICompileUnit
+   (else `debug:invalid`), are listed (`add_compile_unit`).
+4. **Functions.** Each FUNCTION block is walked once, in file order
+   (`debug::scan_function`): its METADATA block is read (strings and
+   records, ids numbered from the module's count) and its
+   METADATA_ATTACHMENT block's even-length record gives the `!dbg` of
+   the definition. Steps 1 and 2 run over the function's ids. What a
+   body needs of each id is kept in `DebugBits` (`ModuleBits::debug`):
+   the handle of a node, location or expression, a value as metadata
+   (type and value id), `!{}`, or a DIArgList's operands.
+
+Then the items: a variable's `!dbg` (GLOBAL_DECL_ATTACHMENT) names its
+DIGlobalVariableExpressions (`attach_global_expr`); a function's names
+its DISubprogram (`FunctionDesc::subprogram`), from the attachment of
+a declaration or the function block of a definition. Anything else
+there is `debug:invalid`, noted against the symbol.
+
+After the items, as `hod_ll`'s `finish_debug`: `Module::finish_debug`,
+and when the module uses its debug information (`llvm.dbg.cu`, a
+global-variable expression or a subprogram) and the module flag `Debug
+Info Version` is not 3 or `verify_debug` fails, `debug:invalid`.
+
+### 6.3 Records
+
+Operands are metadata id + 1 (0 for null) unless said otherwise. `op0`
+holds `distinct` in bit 0 and the record's version or flags above it.
+Every record's operand count is checked: fewer than LLVM 19 writes is
+`Invalid`, more than LLVM 22 writes is `debug-layout`. The table is
+`debug::layout`; each operand is a field `hod_ir` maps, drops or
+refuses as `di_field` says (`ir.md §6.2`), or a flag read by hand.
+
+| code | record | operands accepted | read by hand |
+|---|---|---|---|
+| 7 | DILocation | 5, 6 or 8: `distinct, line, column, scope (id), inlinedAt + 1[, implicit[, atomGroup, atomRank]]` | column of 16 bits or more is 0; atoms dropped |
+| 12 | GenericDINode | any | `DiOther` |
+| 13 | DISubrange | 5 | version 2 (`op0 >> 1`); each bound a constant, a node or an expression |
+| 14 | DIEnumerator | 3, or wide: `flags, width, name, words…` | sign-rotated words; a value that does not fit 64 bits is `debug:DIEnumerator.wide` |
+| 15 | DIBasicType | 6 to 9 | 22: `op0 & 2`, size as metadata |
+| 16 | DIFile | 3 to 6 | checksum kind and value, both or neither |
+| 17 | DIDerivedType | 12 to 15 | 22: `op0 & 2`, size and offset as metadata; `dwarfAddressSpace` + 1; the packed pointer-authentication word |
+| 18 | DICompositeType | 16 to 26 | `op0 & 2` required (`debug-layout`); 22: `op0 & 4`, size and offset as metadata; `enumKind` 0xFFFFFFFF is none |
+| 19 | DISubroutineType | 3 to 4 | `op0 & 2` required |
+| 20 | DICompileUnit | 14 to 23 | `op11` (old subprograms) must be 0; a DWARF 6 language name (`op1` bit 63) is `debug:DICompileUnit.sourceLanguageName` |
+| 21 | DISubprogram | 18 to 21 | `op0 & 6 == 6` required; 22: `keyInstructions` (`op20`) |
+| 22, 23 | DILexicalBlock, DILexicalBlockFile | 5, 4 | |
+| 24 | DINamespace | 3 | `exportSymbols` from `op0 & 2` |
+| 25, 26 | DITemplateTypeParameter, DITemplateValueParameter | 3 to 4, 5 to 6 | the 5-operand value form has no `defaulted` |
+| 27 | DIGlobalVariable | 12 to 13 | version 2 |
+| 28 | DILocalVariable | 9 to 10 | `op0 & 2` (alignment present) required |
+| 29 | DIExpression | elements | version 3 (`op0 >> 1`) |
+| 31 | DIImportedEntity | 6 to 8 | |
+| 37 | DIGlobalVariableExpression | 3 | |
+| 40 | DILabel | 5 to 7 | `isArtificial` from `op0 & 2`; `coroSuspendIdx` `u64::MAX` is none |
+| 30, 32–34, 41, 44, 45, 48, 49 | DIObjCProperty, DIModule, DIMacro, DIMacroFile, DIStringType, DICommonBlock, DIGenericSubrange, DISubrangeType, DIFixedPointType | any | `DiOther`; `classify` refuses `debug:<kind>` |
+| 46 | DIArgList | value ids as metadata (0-based) | a body's record value |
+| 47 | DIAssignID | 0 | nothing kept |
+
+### 6.4 Refusals
+
+The names are `hod_ll`'s (`ll.md §3.4`): `debug:<kind>` (by
+`classify`), `debug:<kind>.<field>` for a field `hod_ir` cannot hold at
+a value other than its default, `debug:DIEnumerator.wide`,
+`debug:#dbg_declare_value`, `debug:#dbg_assign.DIArgList` and
+`debug:invalid`. They are module or body notes, never errors. A record
+the reader cannot decode is an error: `Invalid` (cut short, an id that
+names nothing, a field out of range) or `Unsupported("debug-layout")`.
+
+### 6.5 Cost
+
+Linear: each record is read once per pass and each function block is
+walked once more (step 4). A tuple is defined once, when first named.
+No recursion follows the input. `tests/debug.rs` and `examples/bcread.rs`
+give the numbers (`landed/bc/WP-055.md`).
+
+### 6.6 Where `hod_bc` and `hod_ll` can part
+
+- **Function-local metadata in a module with no module-level debug
+  record and no `llvm.dbg.cu`.** §6.1 does not run, so a body's
+  `DEBUG_LOC` or record finds no node and notes `debug:invalid`.
+  `hod_ll` reads the same nodes from the text. LLVM writes a
+  subprogram's unit, file and types at module level, so clang and kiln
+  never write such a module.
+- **The `llvm.dbg.*` calls** (§11.6) are read as `hod_ll` reads them,
+  but LLVM 19 to 22 write debug records, never the calls, so no tool
+  makes the bitcode to compare.
+
+### 6.7 Tests
+
+`src/debug.rs`'s unit tests, over `tests/data/debug-llvm22.bc` (clang 22
+`-O2 -g` of `hod_ll`'s `debug_c.c`, checked in):
+
+- `the_layouts_agree_with_hod_ir`: each field of §6.3's table is one
+  `hod_ir::di_field` maps, drops or refuses as the table says;
+- `record_lengths_outside_the_layout_are_refused`: for every kind, one
+  operand short is `Invalid` and one past the maximum is `debug-layout`;
+- `unknown_versions_are_refused`: a DIExpression of version 4, a
+  DIGlobalVariable or DISubrange of version 1 and a LOCATION of 9
+  operands are `debug-layout`; an empty EXPRESSION and a LOCATION of 4
+  are `Invalid`;
+- `out_of_range_operands_are_errors`: a node or a location naming
+  metadata that does not exist;
+- `unknown_codes_are_not_debug_records`;
+- `wide_enumerators_are_noted`: `debug:DIEnumerator.wide`.
+
+`tests/debug.rs` compares `hod_bc` on bitcode with `hod_ll` on
+`llvm-dis` of it, as `common::read_*_bodies` dump them (the debug dump
+labels every node reachable from the compile units, the global-variable
+expressions and the subprograms in the order a walk meets them, and
+writes every location and debug record structurally); a difference
+names its line:
+
+- clang 19 and 22, `-O0` and `-O2`, on `debug_types.cpp`, `debug_c.c`
+  and `stl.cpp`; clang 22 with `-gkey-instructions` and `-gdwarf-6`;
+- kiln's `debug/kiln_types.ll`;
+- `declare_value_is_refused_by_name`: record 66;
+- `corpus_debug_modules_agree` (`HOD_BC_CORPUS`): every corpus module
+  with `!llvm.dbg.cu` whose `llvm-dis` text `llvm-as` takes back.
+
+`tests/differential.rs` and `tests/bodies.rs` count a module whose
+`llvm-dis` text `llvm-as` does not take back as a tool failure: there is
+no oracle (§10).
 
 ## 7. The interface to a body reader
 
@@ -434,6 +583,7 @@ borrows the input and carries what a body reader needs:
 | `attr_list(index)` | a PARAMATTR list's group ids (call-site attributes) |
 | `metadata_kinds()`, `sync_scopes()`, `bundle_tags()` | the tables of those names |
 | `metadata_count()`, `metadata(id)` | the module metadata slot table: a string, a tuple (operands as id + 1, 0 for null), a value, or a skipped (debug-info) node; function-local metadata is numbered from `metadata_count()` |
+| `debug` (crate-private) | §6.2's `DebugBits`: what each module and function-local metadata id became |
 | `numbered_globals()`, `producer()` | the numbering of §5.5 and the producer string |
 
 **Reading bodies in parallel.** Bodies are independent of each other
@@ -535,8 +685,11 @@ not vacuous.
 
 ### 9.4 Robustness
 
-`tests/robustness.rs` uses `tests/data/module-llvm19.bc` (checked in).
-It checks four things:
+`tests/robustness.rs` uses `tests/data/module-llvm19.bc`,
+`tests/data/bodies-llvm19.bc` and `tests/data/debug-llvm22.bc` (checked
+in; the last holds the debug records of §6.3, `DEBUG_LOC`,
+`DEBUG_LOC_AGAIN` and the debug records of §11.6). It checks four
+things:
 
 - the file reads;
 - every truncation is an error;
@@ -569,6 +722,10 @@ numbers of each run are recorded in `landed/bc/`.
   constants are walked with an explicit stack, without a depth limit.
 - **Names.** A name that is not UTF-8 is read lossily where `hod_ir`
   takes a `&str`: target extension types and attribute string keys.
+- **Debug information** parts from `hod_ll` where §6.6 says.
+- **`llvm-dis` oracle.** `llvm-dis` 19 and 22 write a struct type named
+  only in a `DITemplateValueParameter`'s value without defining it, so
+  `llvm-as` refuses the text; such a module has no oracle.
 
 ## 11. Function bodies
 
@@ -741,11 +898,46 @@ The rest follows `hod_ll`'s order:
 ### 11.6 Skipped
 
 - the function's VALUE_SYMTAB (local names: `hod_ir` keeps none), its
-  METADATA block, USELIST blocks and any other nested block;
-- DEBUG_LOC (35), DEBUG_LOC_AGAIN (33), BLOCKADDR_USERS (60);
-- debug records 61–66 (`#dbg_value` and friends), as `hod_ll` skips
-  them;
-- metadata attachments of instructions.
+  METADATA block (read at module level, §6.2), USELIST blocks and any
+  other nested block;
+- BLOCKADDR_USERS (60);
+- metadata attachments of instructions other than `!dbg` (which
+  bitcode writes as DEBUG_LOC).
+
+**Debug information** is read as `hod_ll` reads it (`ll.md §11.9`):
+
+- **DEBUG_LOC (35)** `[line, column, scope + 1, inlinedAt + 1,
+  implicit]`, and in LLVM 22 `atomGroup, atomRank` (dropped): 4 to 7
+  operands. It is the location of the instructions the last record
+  became (`set_loc_since`), interned (`DebugInfo::loc`). A scope that is
+  not a node or an inlined-at that is not a location is `debug:invalid`.
+  A scope of 0 is `Invalid`. **DEBUG_LOC_AGAIN (33)** repeats the last;
+  without one it is `Invalid`.
+- **Debug records** follow the instruction they stand before; after
+  each instruction the builder places the records that follow before
+  its first `hod_ir` instruction (`place_records_before`). Operands are
+  metadata ids (0-based):
+  - 61 VALUE and 62 DECLARE `[loc, var, expr, value]`;
+  - 64 VALUE_SIMPLE `[loc, var, expr, value id (relative, and its type
+    if a forward reference)]`;
+  - 63 ASSIGN `[loc, var, expr, value, id, address expr, address]`;
+  - 65 LABEL `[loc, label]`;
+  - 66 DECLARE_VALUE notes `debug:#dbg_declare_value`.
+
+  The location must be a DILocation (else `debug:invalid` and the
+  record is dropped), the variable a DILocalVariable and the label a
+  DILabel (else `debug:invalid`), the expression an expression
+  (`Invalid`). A value is a value as metadata, `!{}` (none) or a
+  DIArgList of values; anything else is `Invalid`. Then as `hod_ll`:
+  a declaration of a DIArgList is `debug:invalid`; an assignment whose
+  value or address is a DIArgList notes `debug:#dbg_assign.DIArgList`.
+- **A call of `llvm.dbg.declare`, `.value`, `.assign` or `.label`**
+  (the form before debug records): its arguments are metadata ids
+  (relative, as values are), read as a record's operands, and the
+  record waits for the call's DEBUG_LOC; without one it is
+  `debug:invalid`. Another `llvm.dbg.*` notes `debug:<name>`.
+- After the body is built, `Body::verify_debug` must pass, else
+  `debug:invalid`.
 
 ### 11.7 Definition attachments
 
@@ -786,7 +978,8 @@ delivered.
   structurally) plus the module dump of §9.2.
 
 `tests/robustness.rs` (§9.4) reads the module and then every body, over
-`tests/data/bodies-llvm19.bc` as well.
+`tests/data/bodies-llvm19.bc` and `tests/data/debug-llvm22.bc` as well.
+The debug tests are §6.7.
 
 ### 11.10 Cost
 

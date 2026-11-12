@@ -6,15 +6,16 @@
 use std::borrow::Cow;
 
 use hod_ir::{
-    AliasDesc, Arch, CallConv, ComdatId, ComdatKind, Const, ConstId, FlagValue, FnAttrs, FnAttrsId,
-    FnStr, FunctionDesc, IFuncDesc, Linkage, Module, ParamAttrs, Retained, SymId, TargetSpec,
-    TlsModel, TypeId, TypeKind, UnnamedAddr, VariableDesc, Visibility,
+    AliasDesc, Arch, CallConv, ComdatId, ComdatKind, Const, ConstId, DiId, DiKind, FlagValue,
+    FnAttrs, FnAttrsId, FnStr, FunctionDesc, IFuncDesc, Linkage, Module, ParamAttrs, Retained,
+    SymId, TargetSpec, TlsModel, TypeId, TypeKind, UnnamedAddr, VariableDesc, Visibility,
 };
 
 use crate::attrs::{self, Attr, FUNCTION_INDEX, FnGroup, chars};
 use crate::bitstream::{BitReader, BlockInfo, BlockSpan};
 use crate::codes::{attr, md, module as mc};
 use crate::consts::{GlobalValue, Values};
+use crate::debug::{DebugBits, Dx, FnDebug, Handle, INVALID, LSlot, LocalBlock, LocalMd, Scratch};
 use crate::error::{BcErrorKind, BcResult, fail, ir};
 use crate::raw::{MdSlot, Raw, Rec};
 use crate::types::{self, Types};
@@ -66,6 +67,7 @@ pub struct ModuleBits<'a> {
     md_text: Vec<Vec<(u32, u32)>>,
     sync_scopes: Vec<Vec<u8>>,
     bundle_tags: Vec<Vec<u8>>,
+    pub(crate) debug: DebugBits,
 }
 
 impl<'a> ModuleBits<'a> {
@@ -164,11 +166,13 @@ impl<'a> ModuleBits<'a> {
                 &[ty, value] => Metadata::Value { ty, value },
                 _ => Metadata::Skipped,
             },
-            MdSlot::Kept(rec) => Metadata::Node {
-                distinct: rec.code == md::DISTINCT_NODE,
-                operands: rec.ops(&self.raw.pool),
-            },
-            MdSlot::Skipped => Metadata::Skipped,
+            MdSlot::Kept(rec) if rec.code == md::NODE || rec.code == md::DISTINCT_NODE => {
+                Metadata::Node {
+                    distinct: rec.code == md::DISTINCT_NODE,
+                    operands: rec.ops(&self.raw.pool),
+                }
+            }
+            MdSlot::Kept(_) => Metadata::Skipped,
         })
     }
 
@@ -198,9 +202,11 @@ pub enum Metadata<'a, 'm> {
 /// A [`crate::BcError`]: never a panic, for any `data`.
 pub fn read_module<'a>(data: &'a [u8], options: &ReadOptions) -> BcResult<BcModule<'a>> {
     let raw = crate::raw::walk(data)?;
-    let mut b = Build::new(&raw, options)?;
+    let mut b = Build::new(data, &raw, options)?;
     b.run()?;
-    let Build { module, types, values, groups, numbered, functions, md_kinds, md_text, .. } = b;
+    let Build {
+        module, types, values, groups, numbered, functions, md_kinds, md_text, debug, ..
+    } = b;
     let sync_scopes = text_list(&raw, &raw.sync_scopes)?;
     let bundle_tags = text_list(&raw, &raw.bundle_tags)?;
     let bits = ModuleBits {
@@ -215,6 +221,7 @@ pub fn read_module<'a>(data: &'a [u8], options: &ReadOptions) -> BcResult<BcModu
         md_text,
         sync_scopes,
         bundle_tags,
+        debug,
     };
     Ok(BcModule { module, bits })
 }
@@ -225,7 +232,7 @@ fn text_list(raw: &Raw<'_>, recs: &[Rec]) -> BcResult<Vec<Vec<u8>>> {
 
 /// The notes of the entity being built, each once (`hod_ll`'s `note`).
 #[derive(Default)]
-struct Notes(Vec<Cow<'static, str>>);
+pub(crate) struct Notes(Vec<Cow<'static, str>>);
 
 impl Notes {
     fn add(&mut self, construct: impl Into<Cow<'static, str>>) {
@@ -269,7 +276,8 @@ enum Special {
     CompilerUsed,
 }
 
-struct Build<'r, 'a> {
+pub(crate) struct Build<'r, 'a> {
+    data: &'a [u8],
     raw: &'r Raw<'a>,
     module: Module,
     types: Types,
@@ -289,6 +297,17 @@ struct Build<'r, 'a> {
     scratch: Vec<Attr<'r>>,
     /// The symbols described, by index.
     described: Vec<bool>,
+    /// `!llvm.dbg.cu`'s operands and where it is.
+    dbg_cu: Option<(Vec<u64>, u64)>,
+    debug: DebugBits,
+    dscratch: Scratch<'a>,
+    local: LocalBlock<'a>,
+    /// The metadata ids each definition's `!dbg` names, by definition.
+    fn_dbg: Vec<Vec<Option<DiId>>>,
+    /// The subprogram of the function being described.
+    fn_subprogram: Option<DiId>,
+    /// The definitions met.
+    definitions: usize,
 }
 
 fn text(raw: &Raw<'_>, rec: Rec) -> BcResult<Vec<u8>> {
@@ -296,7 +315,7 @@ fn text(raw: &Raw<'_>, rec: Rec) -> BcResult<Vec<u8>> {
 }
 
 impl<'r, 'a> Build<'r, 'a> {
-    fn new(raw: &'r Raw<'a>, options: &ReadOptions) -> BcResult<Self> {
+    fn new(data: &'a [u8], raw: &'r Raw<'a>, options: &ReadOptions) -> BcResult<Self> {
         let at = raw.module_pos;
         // The bitcode epoch has been 0 since LLVM 4; LLVM refuses others.
         if let Some(rec) = raw.epoch
@@ -370,6 +389,7 @@ impl<'r, 'a> Build<'r, 'a> {
         let types = types::build(raw, &mut module)?;
         let values = Values::new(Vec::new(), &[], &[], &types)?;
         Ok(Build {
+            data,
             raw,
             module,
             types,
@@ -386,6 +406,13 @@ impl<'r, 'a> Build<'r, 'a> {
             notes: Notes::default(),
             scratch: Vec::new(),
             described: Vec::new(),
+            dbg_cu: None,
+            debug: DebugBits::default(),
+            dscratch: Scratch::default(),
+            local: LocalBlock::default(),
+            fn_dbg: Vec::new(),
+            fn_subprogram: None,
+            definitions: 0,
         })
     }
 
@@ -424,7 +451,9 @@ impl<'r, 'a> Build<'r, 'a> {
         self.kinds()?;
         self.symbols()?;
         self.metadata()?;
+        self.debug()?;
         self.items()?;
+        self.finish_debug()?;
         ir(self.raw.module_pos, self.module.verify_symbols())
     }
 
@@ -644,7 +673,7 @@ impl<'r, 'a> Build<'r, 'a> {
     fn items(&mut self) -> BcResult<()> {
         let raw = self.raw;
         // Attachments of variables and declarations.
-        let mut attached: Vec<(u64, u64, u64)> = Vec::new();
+        let mut attached: Vec<(u64, u64, u64, u64)> = Vec::new();
         for &rec in &raw.md_decl_attachments {
             let ops = rec.ops(self.pool());
             if ops.len() % 2 != 1 {
@@ -655,24 +684,42 @@ impl<'r, 'a> Build<'r, 'a> {
                 );
             }
             for pair in ops[1..].chunks(2) {
-                attached.push((ops[0], pair[0], rec.pos));
+                attached.push((ops[0], pair[0], pair[1], rec.pos));
             }
         }
+        // By value, in record order.
+        attached.sort_by_key(|&(value, ..)| value);
+        let mut next_attached = 0;
+        let mut dbg: Vec<Option<DiId>> = Vec::new();
         let mut definitions = raw.functions.iter();
         for (index, &rec) in raw.globals.iter().enumerate() {
             let id = index as u64;
-            for &(_, kind, at) in attached.iter().filter(|(value, ..)| *value == id) {
-                let name = self.kind_name(kind, at)?.to_vec();
-                match &name[..] {
-                    b"dbg" | b"type" | b"vcall_visibility" | b"prof" | b"section_prefix"
-                    | b"annotation" => {}
-                    _ => self
-                        .notes
-                        .add(format!("global-metadata:{}", String::from_utf8_lossy(&name))),
+            dbg.clear();
+            while let Some(&(value, kind, md_id, at)) = attached.get(next_attached) {
+                if value > id {
+                    break;
+                }
+                next_attached += 1;
+                if value < id {
+                    continue;
+                }
+                let name = self.kind_name(kind, at)?;
+                match name {
+                    b"dbg" => dbg.push(self.debug_node(md_id)),
+                    b"type" | b"vcall_visibility" | b"prof" | b"section_prefix" | b"annotation" => {
+                    }
+                    _ => {
+                        let construct =
+                            format!("global-metadata:{}", String::from_utf8_lossy(name));
+                        self.notes.add(construct);
+                    }
                 }
             }
             match rec.code {
-                mc::GLOBALVAR => self.variable(index, rec)?,
+                mc::GLOBALVAR => {
+                    self.variable_dbg(index, &dbg, rec.pos)?;
+                    self.variable(index, rec)?;
+                }
                 mc::FUNCTION => {
                     let defined = rec.ops(self.pool()).get(4) == Some(&0);
                     let span = if defined {
@@ -689,6 +736,13 @@ impl<'r, 'a> Build<'r, 'a> {
                     } else {
                         None
                     };
+                    if defined {
+                        if let Some(mds) = self.fn_dbg.get_mut(self.definitions) {
+                            dbg.append(mds);
+                        }
+                        self.definitions += 1;
+                    }
+                    self.function_dbg(&dbg);
                     self.function(index, rec, span)?;
                 }
                 _ => self.indirect(index, rec)?,
@@ -702,6 +756,34 @@ impl<'r, 'a> Build<'r, 'a> {
             );
         }
         Ok(())
+    }
+
+    /// The global-variable expressions a variable's `!dbg` names,
+    /// attached; anything else is `debug:invalid` (as in `hod_ll`).
+    fn variable_dbg(&mut self, index: usize, dbg: &[Option<DiId>], at: u64) -> BcResult<()> {
+        let Some(sym) = self.sym(index) else { return Ok(()) };
+        for &node in dbg {
+            match node {
+                Some(node) if self.module.debug.kind(node) == DiKind::GlobalVariableExpression => {
+                    ir(at, self.module.attach_global_expr(sym, node))?;
+                }
+                _ => self.notes.add(INVALID),
+            }
+        }
+        Ok(())
+    }
+
+    /// The subprogram a function's `!dbg` names, for its description.
+    fn function_dbg(&mut self, dbg: &[Option<DiId>]) {
+        self.fn_subprogram = None;
+        for &node in dbg {
+            match node {
+                Some(node) if self.module.debug.kind(node) == DiKind::Subprogram => {
+                    self.fn_subprogram = Some(node);
+                }
+                _ => self.notes.add(INVALID),
+            }
+        }
     }
 
     fn sym(&self, index: usize) -> Option<SymId> {
@@ -1060,7 +1142,7 @@ impl<'r, 'a> Build<'r, 'a> {
             param_attrs: &param_attrs,
             attrs: fn_attrs,
             personality,
-            subprogram: None,
+            subprogram: self.fn_subprogram,
             addr_space,
             has_body: defined,
         };
@@ -1228,7 +1310,7 @@ impl<'r, 'a> Build<'r, 'a> {
                 let (start, len) = self.md_text[table as usize][index as usize];
                 Some(&self.raw.md_strings[table as usize].blob[start as usize..][..len as usize])
             }
-            _ => None,
+            MdSlot::Kept(_) => None,
         })
     }
 
@@ -1308,7 +1390,7 @@ impl<'r, 'a> Build<'r, 'a> {
                     }
                 }
                 b"llvm.ident" | b"llvm.errno.tbaa" => {}
-                b"llvm.dbg.cu" => self.module.record_unsupported("debug-info", None),
+                b"llvm.dbg.cu" => self.dbg_cu = Some((nodes.to_vec(), at)),
                 other => {
                     let construct = format!("named-metadata:{}", String::from_utf8_lossy(other));
                     self.module.record_unsupported(&construct, None);
@@ -1319,6 +1401,145 @@ impl<'r, 'a> Build<'r, 'a> {
         notes.flush(&mut self.module, None);
         self.notes = notes;
         self.upgrade = upgrade;
+        Ok(())
+    }
+
+    // ---- debug information (`spec/bc.md` §6) ----
+
+    /// The reader of the debug records, over the module's block and the
+    /// function block `local` (empty at the module level).
+    fn dx<'x>(&'x mut self, local: &'x mut LocalBlock<'a>) -> Dx<'x, 'a> {
+        Dx {
+            module: &mut self.module,
+            values: &mut self.values,
+            raw: self.raw,
+            md_text: &self.md_text,
+            handles: &mut self.debug.module,
+            lslots: &local.slots,
+            lpool: &local.pool,
+            lhandles: &mut local.handles,
+            scratch: &mut self.dscratch,
+            notes: 0,
+        }
+    }
+
+    /// The module's debug nodes and every function's local ones, read in
+    /// two passes (reserve, then define) so a node may name a later one.
+    /// A module without debug information costs nothing here.
+    fn debug(&mut self) -> BcResult<()> {
+        let raw = self.raw;
+        if !raw.md_debug && self.dbg_cu.is_none() {
+            return Ok(());
+        }
+        self.debug.on = true;
+        let count = raw.md.len() as u64;
+        self.debug.module = vec![Handle::None; raw.md.len()];
+        let mut local = std::mem::take(&mut self.local);
+        let units = self.dbg_cu.take();
+        let mut notes = 0;
+        {
+            let mut dx = self.dx(&mut local);
+            dx.reserve(0, count)?;
+            dx.define(0, count)?;
+            if let Some((units, at)) = &units {
+                dx.compile_units(units, *at)?;
+            }
+            notes |= dx.notes;
+        }
+        self.dbg_cu = units;
+        let dbg_kind = self.md_kinds.iter().find(|(_, name)| name == b"dbg").map(|&(id, _)| id);
+        let mut ops = Vec::new();
+        self.fn_dbg.reserve(raw.functions.len());
+        for &span in &raw.functions {
+            local.slots.clear();
+            local.pool.clear();
+            local.handles.clear();
+            let dbg = crate::debug::scan_function(
+                self.data, &raw.info, span, dbg_kind, &mut ops, &mut local,
+            )?;
+            if local.slots.is_empty() {
+                let subprogram = dbg.iter().map(|&id| self.debug_node(id)).collect();
+                self.fn_dbg.push(subprogram);
+                continue;
+            }
+            local.handles.resize(local.slots.len(), Handle::None);
+            let len = local.slots.len() as u64;
+            {
+                let mut dx = self.dx(&mut local);
+                dx.reserve(count, count + len)?;
+                dx.define(count, count + len)?;
+                notes |= dx.notes;
+            }
+            let (Ok(start), Ok(len32)) =
+                (u32::try_from(self.debug.local.len()), u32::try_from(len))
+            else {
+                return fail(BcErrorKind::Limit, span.start, "over 2^32 local metadata ids");
+            };
+            for (slot, &handle) in local.slots.iter().zip(&local.handles) {
+                let md = match *slot {
+                    LSlot::String(_) => LocalMd::Other,
+                    LSlot::Rec { code, start, len, .. } => {
+                        let ops = &local.pool[start as usize..][..len as usize];
+                        match (code, ops) {
+                            (md::VALUE, &[ty, value]) => LocalMd::Value { ty, value },
+                            (md::NODE, []) => LocalMd::EmptyTuple,
+                            (md::ARG_LIST, ops) => {
+                                let start = self.debug.args.len() as u32;
+                                self.debug.args.extend_from_slice(ops);
+                                LocalMd::ArgList { start, len: ops.len() as u32 }
+                            }
+                            _ if handle != Handle::None => LocalMd::Debug(handle),
+                            _ => LocalMd::Other,
+                        }
+                    }
+                };
+                self.debug.local.push(md);
+            }
+            self.debug.functions.push((span.start, FnDebug { start, len: len32 }));
+            let subprogram = dbg
+                .iter()
+                .map(|&id| match id.checked_sub(count) {
+                    None => self.debug_node(id),
+                    Some(local_id) => match local.handles.get(local_id as usize) {
+                        Some(&Handle::Node(node)) => Some(node),
+                        _ => None,
+                    },
+                })
+                .collect();
+            self.fn_dbg.push(subprogram);
+        }
+        self.local = local;
+        let mut pending = std::mem::take(&mut self.notes);
+        pending.bits(notes);
+        pending.flush(&mut self.module, None);
+        self.notes = pending;
+        Ok(())
+    }
+
+    /// The debug node module metadata `id` is, if it is one.
+    fn debug_node(&self, id: u64) -> Option<DiId> {
+        match self.debug.module.get(usize::try_from(id).ok()?)? {
+            Handle::Node(node) => Some(*node),
+            _ => None,
+        }
+    }
+
+    /// After the items, as `hod_ll` does: the tables completed and, when
+    /// the module uses them, checked as LLVM's verifier checks them.
+    fn finish_debug(&mut self) -> BcResult<()> {
+        if self.module.debug.is_empty() && self.dbg_cu.is_none() {
+            return Ok(());
+        }
+        ir(self.raw.module_pos, self.module.finish_debug())?;
+        let used = self.dbg_cu.is_some()
+            || !self.module.global_exprs().is_empty()
+            || self.module.symbols().any(|symbol| {
+                matches!(symbol.kind(), hod_ir::SymbolKind::Function { subprogram: Some(_), .. })
+            });
+        let version = self.module.props.debug_info_version;
+        if used && (version != Some(3) || self.module.verify_debug().is_err()) {
+            self.module.record_unsupported(INVALID, None);
+        }
         Ok(())
     }
 
@@ -1457,4 +1678,16 @@ fn alignment(field: u64, at: u64) -> BcResult<Option<u64>> {
         1..=33 => Ok(Some(1 << (field - 1))),
         _ => fail(BcErrorKind::Invalid, at, format!("alignment field {field}")),
     }
+}
+
+/// The debug-record reader over the module `data`, read up to its
+/// bodies, for the unit tests of `crate::debug`.
+#[cfg(test)]
+pub(crate) fn with_dx<R>(data: &[u8], f: impl FnOnce(&mut Dx<'_, '_>) -> R) -> R {
+    let raw = crate::raw::walk(data).expect("the test module walks");
+    let mut b = Build::new(data, &raw, &ReadOptions::default()).expect("the test module");
+    b.run().expect("the test module reads");
+    let mut local = LocalBlock::default();
+    let mut dx = b.dx(&mut local);
+    f(&mut dx)
 }

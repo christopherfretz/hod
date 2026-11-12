@@ -4,7 +4,10 @@
 //!
 //! The files are `tests/data/module-llvm19.bc` and
 //! `tests/data/bodies-llvm19.bc`, `llvm-as` 19 of `tests/data/module.ll`
-//! and `tests/data/bodies.ll`, checked in so the test needs no LLVM. A
+//! and `tests/data/bodies.ll`, and `tests/data/debug-llvm22.bc`, clang 22
+//! `-O2 -g` of `hod_ll`'s `debug_c.c` (the metadata block's debug
+//! records, `DEBUG_LOC`, `DEBUG_LOC_AGAIN` and debug records), checked in
+//! so the test needs no LLVM. A
 //! read is the module and then every body (`spec/bc.md` §11); one that
 //! returns at all is a pass (an `Err` or an `Ok`); a panic fails the
 //! test, a read over `SLOW` fails it as a hang, and the process's peak
@@ -14,9 +17,10 @@
 
 use std::time::{Duration, Instant};
 
-const FILES: [(&str, &[u8]); 2] = [
+const FILES: [(&str, &[u8]); 3] = [
     ("module", include_bytes!("data/module-llvm19.bc")),
     ("bodies", include_bytes!("data/bodies-llvm19.bc")),
+    ("debug", include_bytes!("data/debug-llvm22.bc")),
 ];
 const SLOW: Duration = Duration::from_secs(2);
 const MEMORY: u64 = 256 << 20;
@@ -83,7 +87,12 @@ fn the_files_read() {
             Ok(())
         })
         .expect(name);
-        assert!(name == "module" || bodies >= 7, "{name}: {bodies} bodies");
+        let least = match name {
+            "module" => 0,
+            "debug" => 3,
+            _ => 7,
+        };
+        assert!(bodies >= least, "{name}: {bodies} bodies");
     }
 }
 
@@ -146,7 +155,7 @@ fn random_bytes_return() {
         }
         // And some as the real file with a random tail.
         if case % 7 == 0 {
-            let file = FILES[case % 2].1;
+            let file = FILES[case % FILES.len()].1;
             let cut = (next() as usize) % file.len();
             data = [&file[..cut], &data[..]].concat();
         }

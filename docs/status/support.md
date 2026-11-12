@@ -31,19 +31,19 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `init` | 8 | 5 | 3 | 0 | 0 | 8 | 0 |
 | `function` | 6 | 6 | 0 | 0 | 0 | 6 | 0 |
 | `cc` | 15 | 4 | 9 | 2 | 0 | 12 | 3 |
-| `attr` | 56 | 21 | 32 | 3 | 9 | 39 | 8 |
+| `attr` | 56 | 22 | 31 | 3 | 9 | 39 | 8 |
 | `type` | 15 | 9 | 3 | 3 | 0 | 13 | 2 |
 | `inst` | 67 | 53 | 6 | 8 | 0 | 59 | 8 |
 | `mem` | 3 | 1 | 2 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 0 | 21 | 0 | 0 | 21 | 0 |
 | `call` | 3 | 2 | 1 | 0 | 0 | 3 | 0 |
-| `tail` | 3 | 2 | 1 | 0 | 2 | 1 | 0 |
+| `tail` | 3 | 3 | 0 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `operand` | 9 | 4 | 5 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 133 | 37 | 96 | 0 | 0 | 133 | 0 |
-| total | 434 | 182 | 206 | 46 | 16 | 363 | 55 |
+| total | 434 | 184 | 204 | 46 | 16 | 363 | 55 |
 
 ## `module`
 
@@ -234,7 +234,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:preallocated` | rejected | rejected | a Windows construct |
 | `attr:elementtype` | not-implemented | not-implemented | unplanned. on an inline-assembly or intrinsic argument |
 | `attr:align` | supported | supported | on a parameter or return: an assumption, no code |
-| `attr:alignstack` | not-implemented | not-implemented | unplanned. on a parameter and on a function |
+| `attr:alignstack` | supported | not-implemented | on a parameter: placement of a stack block (abi-a64.md §3.3); on a function: no code, `sp` is always 16-aligned and an over-aligned slot aligns itself |
 | `attr:uwtable` | supported | not-implemented | on a function with a body (WP-049) |
 | `attr:noreturn` | supported | supported | a promise: nothing to do in the function itself |
 | `attr:naked` | rejected | rejected | a naked function is its inline assembly, with no frame (`spec/codegen.md` §1) |
@@ -429,7 +429,7 @@ Tail-call markers.
 |---|---|---|---|
 | `tail:tail` | supported | supported | a permission: ignored (`spec/codegen.md` §7.1) |
 | `tail:notail` | supported | supported | hod makes no tail call of its own |
-| `tail:musttail` | not-implemented | not-implemented | M2 (musttail). and the `musttail:` rules of §8.6 |
+| `tail:musttail` | supported | not-implemented | and the `musttail:` rules of §8.6, which need the `StackArgs` hook (`hod_cg::abi::TargetStackArgs`) |
 
 ## `bundle`
 

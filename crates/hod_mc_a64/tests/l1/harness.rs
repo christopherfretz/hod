@@ -153,7 +153,7 @@ pub struct Tools {
 /// The features the oracle assembles and disassembles with. Without
 /// `+fullfp16`, half-precision arithmetic is an error to it, as it is
 /// absent from the crate.
-const FEATURES: &str = "+lse,+bti,+pauth,+fp-armv8,+neon";
+const FEATURES: &str = "+lse,+bti,+pauth,+fp-armv8,+neon,+crc";
 
 const TRIPLE: &str = "--triple=aarch64-unknown-linux-gnu";
 

@@ -326,3 +326,70 @@ fn module_metadata_slots() {
         );
     }
 }
+
+/// `spec/ir.md` §5.7 (WP-086): `convergent` is kept, on a declaration
+/// (through an attribute group, as clang and kiln write
+/// `llvm.is.constant`), on a definition and on call sites (a group and
+/// the keyword). For LLVM 19 and 22: `hod_bc` reads it from the bitcode
+/// and `hod_ll` from the text and from `llvm-dis`'s text, all three
+/// alike; `hod_ir`'s printer writes it back, and what it writes is what
+/// was read and what the same `llvm-as` takes.
+#[test]
+fn convergent_is_read_kept_and_printed() {
+    const TEXT: &[u8] = b"target triple = \"aarch64-unknown-linux-gnu\"\n\
+        declare i1 @llvm.is.constant.i32(i32) #0\n\
+        define i32 @g(i32 %x) convergent {\n  ret i32 %x\n}\n\
+        define i32 @f(i32 %x) {\n\
+          %c = call i1 @llvm.is.constant.i32(i32 %x) #0\n\
+          %y = call i32 @g(i32 %x) convergent\n\
+          %z = call i32 @g(i32 %y)\n\
+          ret i32 %z\n}\n\
+        attributes #0 = { convergent nocallback nofree nosync nounwind willreturn memory(none) }\n";
+    let mut ran = false;
+    for major in MAJORS {
+        if common::llvm_bin(major).is_none() {
+            continue;
+        }
+        ran = true;
+        let bitcode = common::assemble(major, TEXT).expect("llvm-as");
+        let canonical = common::disassemble(major, &bitcode).expect("llvm-dis");
+        let from_bitcode = common::read_bitcode_bodies(&bitcode).expect("hod_bc");
+        assert_eq!(common::read_text_bodies(&canonical).as_ref(), Ok(&from_bitcode), "{major}");
+        assert_eq!(common::read_text_bodies(TEXT).as_ref(), Ok(&from_bitcode), "{major}");
+        // Two convergent call sites of three, and the flag on both
+        // functions that have it, nothing recorded as unsupported.
+        assert_eq!(from_bitcode.matches("convergent: true").count(), 2, "{from_bitcode}");
+        assert_eq!(from_bitcode.matches("convergent: false").count(), 1, "{from_bitcode}");
+        let flagged = from_bitcode
+            .lines()
+            .filter(|line| line.contains(" attrs={") && line.contains("convergent"))
+            .count();
+        assert_eq!(flagged, 2, "LLVM {major}: {from_bitcode}");
+        assert!(!from_bitcode.contains("attr:convergent"), "{from_bitcode}");
+
+        // The printer's text reads back as the same module and bodies.
+        let read = hod_bc::read_module(&bitcode, &hod_bc::ReadOptions::default()).unwrap();
+        let mut module = read.module;
+        let mut bodies = Vec::new();
+        hod_bc::read_bodies(&mut module, &read.bits, |_, body| {
+            bodies.extend(body.body.cloned());
+            Ok::<(), hod_bc::BcError>(())
+        })
+        .unwrap();
+        let mut printed = String::new();
+        let dialect = hod_ir::Dialect::new(major).unwrap();
+        module.print(&mut printed, dialect, &bodies).unwrap();
+        let sites = printed.lines().filter(|line| line.contains("call ")).collect::<Vec<_>>();
+        let flagged = sites.iter().filter(|line| line.ends_with(" convergent")).count();
+        assert_eq!((sites.len(), flagged), (3, 2), "{printed}");
+        let groups = printed.lines().filter(|line| line.starts_with("attributes #"));
+        assert_eq!(groups.filter(|line| line.contains("convergent")).count(), 2, "{printed}");
+        assert!(common::reassembles(major, printed.as_bytes()), "LLVM {major}: {printed}");
+        let again = common::read_text_bodies(printed.as_bytes()).expect("printed text");
+        let calls = |dump: &str| -> Vec<String> {
+            dump.lines().filter(|line| line.contains("convergent:")).map(String::from).collect()
+        };
+        assert_eq!(calls(&again), calls(&from_bitcode), "LLVM {major}");
+    }
+    assert!(ran, "no LLVM installed");
+}

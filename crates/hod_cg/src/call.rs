@@ -190,6 +190,12 @@ impl<'a, T: Target> FnCx<'a, T> {
         if let Some(reg) = done.reg {
             self.finish(inst, reg)?;
         }
+        // WP-084: an `invoke`'s result is read on the normal edge, after
+        // the branch: the bits above its odd integer leaves are cleared
+        // here, before the phi stores (a call's are cleared by the target).
+        if let (Some(_), Some(home)) = (unwind, ret_mem) {
+            self.clear_odd_leaves(ret, home);
+        }
         // §7.1 step 6.
         if let (Some(normal), Some(pad)) = (normal, unwind) {
             let t = self.target;

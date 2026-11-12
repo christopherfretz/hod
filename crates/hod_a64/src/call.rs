@@ -17,9 +17,9 @@
 //!   width is not a multiple of 8 (`{ i7, i64 }`, `i65`): the bits above
 //!   each such leaf are cleared in the result's home, since a producer
 //!   owes nothing above a leaf (`abi-a64.md` §7) and memory holds them
-//!   zero (`spec/codegen.md` §2.2). An `invoke` with such a result is
-//!   refused ([`INVOKE_ODD_RESULT`]): its result is used on the normal
-//!   edge, after the branch the sequence emits.
+//!   zero (`spec/codegen.md` §2.2). For an `invoke`, whose result is
+//!   used on the normal edge after the branch the sequence emits, the
+//!   call sequence clears them before that branch (WP-084).
 //! - A `musttail` call in a variadic function first reloads the
 //!   argument registers that carry no named argument from the register
 //!   save area, so the callee receives them as this function did
@@ -50,8 +50,8 @@ pub const CALL_INLINE_ASM: &str = "a64:call-inline-asm";
 /// A call with an operand bundle.
 pub const CALL_BUNDLE: &str = "a64:call-bundle";
 /// An `invoke` whose `Mem`-class result has an integer leaf whose width
-/// is not a multiple of 8: the bits above it cannot be cleared before the
-/// normal edge is taken.
+/// is not a multiple of 8: not refused any more (WP-084); kept for the
+/// coverage log's history.
 pub const INVOKE_ODD_RESULT: &str = "a64:invoke-odd-int-result";
 /// `llvm.va_start`, `llvm.va_end`, `llvm.va_copy` outside what is
 /// lowered: `va_start` in a function that is not variadic, an operand
@@ -76,7 +76,6 @@ pub const UNSUPPORTED: &[&str] = &[
     CALL,
     CALL_INLINE_ASM,
     CALL_BUNDLE,
-    INVOKE_ODD_RESULT,
     VA_INTRINSIC,
     VA_ARG,
     LANDING_PAD,
@@ -148,7 +147,7 @@ pub fn reserve_variadic(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
 /// documentation).
 ///
 /// # Errors
-/// [`CALL`], [`CALL_INLINE_ASM`], [`CALL_BUNDLE`], [`INVOKE_ODD_RESULT`];
+/// [`CALL`], [`CALL_INLINE_ASM`], [`CALL_BUNDLE`];
 /// what `assign` and the call sequence report.
 pub fn call<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>) -> CgResult<()> {
     let Some(site) = inst.call() else {
@@ -169,14 +168,13 @@ pub fn call<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>) -> CgResult<()> {
         && result != TypeId::VOID
         && cx.target.class_of(cx.types(), result) == Class::Mem
         && has_odd_leaf(cx, result);
-    if odd && inst.opcode() == Opcode::Invoke {
-        return unsupported(INVOKE_ODD_RESULT);
-    }
     if musttail && is_variadic(cx) {
         forward_variadic_registers(cx, inst)?;
     }
     cx.call(inst)?;
-    if odd && !cx.is_dead(inst) {
+    // An `invoke`'s are cleared by the call sequence before its branch
+    // (WP-084).
+    if odd && inst.opcode() != Opcode::Invoke && !cx.is_dead(inst) {
         let home = cx.def_mem(inst)?;
         clear_above_leaves(cx, result, home, 0);
     }

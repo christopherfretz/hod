@@ -8,27 +8,22 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `(compiled)` | 3262 | 3226 |
+| `(compiled)` | 3279 | 3243 |
 | `debug:module-flags` | 7 | 7 |
 | `inst:icmp/vector` | 8 | 6 |
-| `attr:convergent` | 5 | 5 |
 | `inst:extractvalue/fp128` | 5 | 5 |
-| `inst:sdiv/vector` | 4 | 4 |
-| `inst:udiv/vector` | 4 | 4 |
 | `inst:callbr` | 3 | 3 |
 | `intrinsic:llvm.smul.with.overflow/int-wide` | 3 | 3 |
 | `intrinsic:llvm.vector.reduce.add` | 3 | 3 |
 | `module:asm` | 3 | 3 |
 | `type:bfloat` | 3 | 3 |
 | `const-expr:trunc` | 2 | 3 |
-| `a64:mem-vector` | 2 | 2 |
 | `call:inline-asm` | 2 | 2 |
-| `inst:srem/vector` | 2 | 2 |
 | `intrinsic:llvm.aarch64.neon.udot.v4i32.v16i8` | 2 | 2 |
 | `intrinsic:llvm.umul.with.overflow/i128` | 2 | 2 |
 | `special-global:llvm.global.annotations` | 2 | 2 |
 | `a64:inline-asm-operand` | 1 | 1 |
-| `a64:vector-op` | 1 | 1 |
+| `a64:vector-call` | 1 | 1 |
 | `cc:preserve_mostcc` | 1 | 1 |
 | `const-expr:sub` | 1 | 1 |
 | `init:blockaddress-unplaced` | 1 | 1 |
@@ -61,12 +56,8 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 | `debug:locations` | 7 | 7 |
 | `debug:module-flags` | 7 | 7 |
 | `debug:subprogram` | 7 | 7 |
-| `inst:sdiv/vector` | 6 | 6 |
-| `attr:convergent` | 5 | 5 |
 | `debug:slot-variables` | 5 | 5 |
 | `inst:extractvalue/fp128` | 5 | 5 |
-| `inst:srem/vector` | 5 | 5 |
-| `inst:udiv/vector` | 4 | 4 |
 | `intrinsic:llvm.vector.reduce.add` | 4 | 4 |
 | `const-expr:sub` | 3 | 4 |
 | `call:inline-asm` | 3 | 3 |
@@ -75,18 +66,15 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 | `module:asm` | 3 | 3 |
 | `type:bfloat` | 3 | 3 |
 | `const-expr:trunc` | 2 | 3 |
-| `a64:mem-vector` | 2 | 2 |
-| `inst:urem/vector` | 2 | 2 |
 | `intrinsic:llvm.aarch64.neon.ld3.v8i8.p0` | 2 | 2 |
 | `intrinsic:llvm.aarch64.neon.st2.v8i16.p0` | 2 | 2 |
 | `intrinsic:llvm.aarch64.neon.tbl1.v8i8` | 2 | 2 |
 | `intrinsic:llvm.aarch64.neon.udot.v4i32.v16i8` | 2 | 2 |
-| `intrinsic:llvm.fma/vector` | 2 | 2 |
 | `intrinsic:llvm.umul.with.overflow/i128` | 2 | 2 |
 | `linkage:appending` | 2 | 2 |
 | `special-global:llvm.global.annotations` | 2 | 2 |
 | `a64:inline-asm-operand` | 1 | 1 |
-| `a64:vector-op` | 1 | 1 |
+| `a64:vector-call` | 1 | 1 |
 | `cc:79` | 1 | 1 |
 | `cc:aarch64_vector_pcs` | 1 | 1 |
 | `cc:preserve_allcc` | 1 | 1 |
@@ -223,16 +211,7 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 | `intrinsic:llvm.aarch64.neon.vsli.v4i32` | 1 | 1 |
 | `intrinsic:llvm.aarch64.neon.vsli.v8i8` | 1 | 1 |
 | `intrinsic:llvm.aarch64.neon.vsri.v16i8` | 1 | 1 |
-| `intrinsic:llvm.ceil/vector` | 1 | 1 |
-| `intrinsic:llvm.ctlz/vector` | 1 | 1 |
-| `intrinsic:llvm.ctpop/vector` | 1 | 1 |
-| `intrinsic:llvm.fabs/vector` | 1 | 1 |
-| `intrinsic:llvm.floor/vector` | 1 | 1 |
 | `intrinsic:llvm.readcyclecounter` | 1 | 1 |
-| `intrinsic:llvm.round/vector` | 1 | 1 |
-| `intrinsic:llvm.roundeven/vector` | 1 | 1 |
-| `intrinsic:llvm.sqrt/vector` | 1 | 1 |
-| `intrinsic:llvm.trunc/vector` | 1 | 1 |
 | `intrinsic:llvm.umul.with.overflow/int-wide` | 1 | 1 |
 | `metadata-arg:llvm.read_volatile_register.i64` | 1 | 1 |
 | `attr:fmv-features` | 1 | 0 |
@@ -262,13 +241,13 @@ Coverage-log field 7 (from the process's start to the decline) of the first-refu
 
 | LLVM | route | median | p99 | worst | share of `llc`: median | p99 | worst |
 |---|---|---:|---:|---:|---:|---:|---:|
-| 22 | text | 4235 | 14825 | 259875 | 12.3% | 35.5% | 158.8% |
-| 22 | bitcode, native | 3934 | 14093 | 167002 | 11.4% | 35.4% | 218.1% |
-| 22 | bitcode, `llvm-dis` | 27390 | 74064 | 667561 | 79.7% | 171.1% | 373.9% |
-| 22 | `llc -O0` | 37967 | 75245 | 3594118 | | | |
-| 22 | the `convert` of the `llvm-dis` route | 23888 | 64650 | 440798 | | | |
-| 19 | text | 4411 | 14772 | 354513 | 12.4% | 38.6% | 131.4% |
-| 19 | bitcode, native | 4025 | 14437 | 220406 | 11.2% | 39.3% | 148.4% |
-| 19 | bitcode, `llvm-dis` | 29422 | 69693 | 794227 | 82.4% | 178.3% | 374.9% |
-| 19 | `llc -O0` | 38792 | 73423 | 3916936 | | | |
-| 19 | the `convert` of the `llvm-dis` route | 25337 | 59325 | 510064 | | | |
+| 22 | text | 5163 | 25998 | 240839 | 14.4% | 51.4% | 163.8% |
+| 22 | bitcode, native | 4387 | 18529 | 153270 | 12.3% | 40.8% | 398.0% |
+| 22 | bitcode, `llvm-dis` | 29390 | 94203 | 590011 | 86.6% | 171.4% | 613.1% |
+| 22 | `llc -O0` | 37355 | 96000 | 3663972 | | | |
+| 22 | the `convert` of the `llvm-dis` route | 24999 | 74714 | 387056 | | | |
+| 19 | text | 3588 | 16389 | 291056 | 11.8% | 45.5% | 326.2% |
+| 19 | bitcode, native | 3194 | 12947 | 182556 | 10.5% | 36.9% | 86.5% |
+| 19 | bitcode, `llvm-dis` | 23899 | 58287 | 722415 | 79.1% | 158.8% | 256.2% |
+| 19 | `llc -O0` | 28895 | 72686 | 3537572 | | | |
+| 19 | the `convert` of the `llvm-dis` route | 20465 | 50115 | 475025 | | | |

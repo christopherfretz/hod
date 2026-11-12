@@ -463,6 +463,7 @@ impl Generator {
             noreturn: self.rng.chance(8),
             nounwind: self.rng.chance(2),
             returns_twice: self.rng.chance(16),
+            convergent: self.rng.chance(8),
             ret_attrs: if ret_signext { signext } else { ParamAttrs::NONE },
             arg_attrs: &attrs,
             bundles: &bundles[..bundle_count],

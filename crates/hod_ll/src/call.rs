@@ -266,7 +266,13 @@ impl Fx<'_, '_, '_> {
         if cleared {
             flags |= self.p.fa.flags();
         }
-        Ok(flags & (FnAttrs::NORETURN | FnAttrs::NOUNWIND | FnAttrs::RETURNS_TWICE))
+        // The call-site function attributes `hod_ir` keeps (`spec/ir.md`
+        // §5.7): `CallDesc`'s flags.
+        Ok(flags
+            & (FnAttrs::NORETURN
+                | FnAttrs::NOUNWIND
+                | FnAttrs::RETURNS_TWICE
+                | FnAttrs::CONVERGENT))
     }
 
     /// `[ "tag"(type value, …), … ]`, into the bundle tables.
@@ -657,6 +663,7 @@ impl Fx<'_, '_, '_> {
         desc.noreturn = site.flags & FnAttrs::NORETURN != 0;
         desc.nounwind = site.flags & FnAttrs::NOUNWIND != 0;
         desc.returns_twice = site.flags & FnAttrs::RETURNS_TWICE != 0;
+        desc.convergent = site.flags & FnAttrs::CONVERGENT != 0;
         desc.ret_attrs = site.ret_attrs;
         desc.arg_attrs = if site.any_attrs { &self.s.arg_attrs } else { &[] };
         desc.bundles = bundles_slice;

@@ -150,15 +150,15 @@ fn what_is_refused_is_refused_by_name() {
             aggr::WIDE_DIVISION,
         ),
         (
-            "declare { i128, i1 } @llvm.umul.with.overflow.i128(i128, i128)\ndefine { i128, i1 } @f(i128 %a) { %r = call { i128, i1 } @llvm.umul.with.overflow.i128(i128 %a, i128 3)\n ret { i128, i1 } %r }",
+            "declare { i4096, i1 } @llvm.umul.with.overflow.i4096(i4096, i4096)\ndefine { i4096, i1 } @f(i4096 %a) { %r = call { i4096, i1 } @llvm.umul.with.overflow.i4096(i4096 %a, i4096 3)\n ret { i4096, i1 } %r }",
             aggr::WIDE_MUL_OVERFLOW,
         ),
         (
-            "define double @f(i128 %a) { %r = sitofp i128 %a to double\n ret double %r }",
+            "define double @f(i256 %a) { %r = sitofp i256 %a to double\n ret double %r }",
             aggr::WIDE_FP_CAST,
         ),
         (
-            "define i128 @f(double %a) { %r = fptoui double %a to i128\n ret i128 %r }",
+            "define i256 @f(double %a) { %r = fptoui double %a to i256\n ret i256 %r }",
             aggr::WIDE_FP_CAST,
         ),
         (

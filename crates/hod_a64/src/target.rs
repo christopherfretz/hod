@@ -64,6 +64,8 @@ pub struct FnState {
     pub va: call::VaState,
     /// The scratch images of vectors (`vector`, WP-079).
     pub vector: vector::VectorState,
+    /// Whether instructions are not emitted (`tail`, WP-084).
+    pub tail: crate::tail::TailState,
 }
 
 /// DWARF numbers: `x<n>` is `n`, `sp` is 31, `v<n>` is `64 + n`.
@@ -194,6 +196,7 @@ impl Target for A64 {
     }
 
     fn begin_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
+        crate::tail::begin(cx);
         frame::begin(cx)
     }
 
@@ -206,6 +209,9 @@ impl Target for A64 {
     }
 
     fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()> {
+        if cx.state.tail.drops && crate::tail::dropped(inst) {
+            return Ok(());
+        }
         if let Some(done) = crate::mask::lower(cx, inst) {
             return done;
         }

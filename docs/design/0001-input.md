@@ -76,7 +76,7 @@ machine: good for proportions, not for baselines. The benchmark harness
    needs no change to kiln and makes every `.ll` file from any source a
    test input. The in-process bridge follows once the IR contract is stable
    (M5); it needs a small hook in kiln's driver, to be agreed with kiln's
-   maintainers.
+   maintainers. Stage 2, the in-process bridge, is designed in `docs/design/0004-in-process-seam.md`.
 6. **IR that today needs an LLVM pass at `-O0`** is hod's to handle, in
    this order: `alwaysinline`, coroutines (a splitting pass of hod's own,
    `hod_xform`), coverage. Sanitizers that LLVM instruments stay on the

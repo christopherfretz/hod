@@ -6,7 +6,7 @@ crate could be re-implemented from its spec and its tests alone.
 
 | file | covers | status |
 |---|---|---|
-| `ir.md` | `hod_ir`: the IR model, builder API, printer, `classify` | design written; §2.1, §3, §4 implemented (WP-002); the rest WP-003..009 |
+| `ir.md` | `hod_ir`: the IR model, builder API, printer, `classify` | §2..§5 implemented (WP-002, WP-003, WP-004); debug metadata, the printer and `classify` are WP-005, WP-006, WP-009 |
 | `ll.md` | `hod_ll`: accepted text dialects, errors | planned (WP-007, WP-008) |
 | `object.md` | `hod_obj`: object model, ELF64 writer, linked sections, ELF convention helpers | current (WP-010, WP-011) |
 | `mc-a64.md` | `hod_mc_a64`: register model, instruction constructors, logical and floating-point immediates, constant materialization, fixups | current: base integer set (WP-012), scalar floating point, FP/SIMD loads and stores and a SIMD subset (WP-013) |

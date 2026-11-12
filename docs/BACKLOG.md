@@ -11,7 +11,7 @@ Milestones and tracks are in `docs/ROADMAP.md`.
 | WP-001 | T-H | Cargo workspace, lints (`forbid(unsafe_code)`, clippy pedantic), `rust-toolchain.toml`, `scripts/env.sh`, empty crates per `docs/ARCHITECTURE.md`, `xtask ci --quick` (fmt, clippy, test), GitHub Actions running it on aarch64 and x86_64 | - | done |
 | WP-002 | T-IR | `hod_ir` types and constants per `spec/ir.md` §3-§4: the type table with layout, constant pool, address normal forms and folding, interning, sizes asserted | WP-001 | done |
 | WP-003 | T-IR | `hod_ir` module level: globals, functions, aliases, IFUNCs, COMDATs, attributes, module flags; the builder API for producers | WP-002 | done |
-| WP-004 | T-IR | `hod_ir` functions: blocks, instructions, operand pools, call and landing-pad side tables; function-at-a-time delivery | WP-002 | in-progress |
+| WP-004 | T-IR | `hod_ir` functions: blocks, instructions, operand pools, call and landing-pad side tables; function-at-a-time delivery | WP-002 | done |
 | WP-005 | T-IR | `hod_ir` debug metadata: typed `DI*` nodes, `DILocation`, debug records | WP-003 | todo |
 | WP-006 | T-IR | `hod_ir` printer (LLVM text, version-selectable) | WP-003, WP-004 | todo |
 | WP-007 | T-IR | `hod_ll` lexer and the module-level parser (types, globals, declarations, attributes, metadata) | WP-003 | in-progress |

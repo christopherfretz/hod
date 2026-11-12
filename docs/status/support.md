@@ -20,15 +20,15 @@ input to the fallback when one is configured (`spec/cli.md`).
 
 | group | constructs | aarch64 supported | not-implemented | rejected | x86_64 supported | not-implemented | rejected |
 |---|---|---|---|---|---|---|---|
-| `module` | 23 | 2 | 19 | 2 | 2 | 15 | 6 |
-| `structor` | 2 | 0 | 2 | 0 | 0 | 2 | 0 |
+| `module` | 23 | 6 | 15 | 2 | 2 | 15 | 6 |
+| `structor` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `debug` | 4 | 0 | 4 | 0 | 0 | 4 | 0 |
-| `global` | 12 | 2 | 10 | 0 | 2 | 10 | 0 |
-| `linkage` | 11 | 1 | 9 | 1 | 1 | 9 | 1 |
-| `visibility` | 2 | 0 | 2 | 0 | 0 | 2 | 0 |
+| `global` | 12 | 10 | 2 | 0 | 2 | 10 | 0 |
+| `linkage` | 11 | 9 | 1 | 1 | 1 | 9 | 1 |
+| `visibility` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `tls` | 4 | 0 | 4 | 0 | 0 | 4 | 0 |
-| `comdat` | 5 | 0 | 2 | 3 | 0 | 2 | 3 |
-| `init` | 8 | 0 | 8 | 0 | 0 | 8 | 0 |
+| `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
+| `init` | 8 | 4 | 4 | 0 | 0 | 8 | 0 |
 | `function` | 6 | 0 | 6 | 0 | 0 | 6 | 0 |
 | `cc` | 15 | 0 | 13 | 2 | 0 | 12 | 3 |
 | `attr` | 56 | 10 | 43 | 3 | 9 | 39 | 8 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 9 | 0 | 9 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 133 | 0 | 133 | 0 | 0 | 133 | 0 |
-| total | 434 | 17 | 371 | 46 | 16 | 363 | 55 |
+| total | 434 | 47 | 341 | 46 | 16 | 363 | 55 |
 
 ## `module`
 
@@ -70,10 +70,10 @@ Module properties (`ModuleProps`, §2.1) and module-level tables.
 | `module:cf-protection-branch` | rejected | not-implemented | an x86 property |
 | `module:cf-protection-return` | rejected | not-implemented | an x86 property |
 | `module:asm` | not-implemented | not-implemented | hod_asm. module-level inline assembly |
-| `module:linker-options` | not-implemented | not-implemented | WP-032. `!llvm.linker.options` |
-| `module:dependent-libraries` | not-implemented | not-implemented | WP-032. `!llvm.dependent-libraries` |
-| `module:global-ctors` | not-implemented | not-implemented | WP-032. an entry of `llvm.global_ctors` |
-| `module:global-dtors` | not-implemented | not-implemented | WP-032. an entry of `llvm.global_dtors` |
+| `module:linker-options` | supported | not-implemented | `!llvm.linker.options` |
+| `module:dependent-libraries` | supported | not-implemented | `!llvm.dependent-libraries` |
+| `module:global-ctors` | supported | not-implemented | an entry of `llvm.global_ctors` |
+| `module:global-dtors` | supported | not-implemented | an entry of `llvm.global_dtors` |
 
 ## `structor`
 
@@ -81,8 +81,8 @@ Constructor and destructor entries.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `structor:priority` | not-implemented | not-implemented | WP-032. a constructor or destructor priority other than 65535 |
-| `structor:associated` | not-implemented | not-implemented | WP-032. a constructor or destructor with an associated symbol |
+| `structor:priority` | supported | not-implemented | a constructor or destructor priority other than 65535 |
+| `structor:associated` | supported | not-implemented | a constructor or destructor with an associated symbol |
 
 ## `debug`
 
@@ -104,15 +104,15 @@ Symbols: what they are and what a definition carries.
 | `global:function-declaration` | supported | supported | nothing is emitted for a declaration |
 | `global:variable-declaration` | supported | supported | nothing is emitted for a declaration |
 | `global:function-definition` | not-implemented | not-implemented | WP-033. a function that gets a body |
-| `global:variable-definition` | not-implemented | not-implemented | WP-032. a variable with an initializer |
-| `global:alias` | not-implemented | not-implemented | WP-032 |
-| `global:alias-offset` | not-implemented | not-implemented | WP-032. an alias of a symbol plus a non-zero offset |
+| `global:variable-definition` | supported | not-implemented | a variable with an initializer |
+| `global:alias` | supported | not-implemented |  |
+| `global:alias-offset` | supported | not-implemented | an alias of a symbol plus a non-zero offset |
 | `global:alias-absolute` | not-implemented | not-implemented | unplanned. an alias of a number |
-| `global:ifunc` | not-implemented | not-implemented | WP-032 |
-| `global:section` | not-implemented | not-implemented | WP-032. a definition with an explicit section |
-| `global:align` | not-implemented | not-implemented | WP-032. a definition with a stated alignment |
-| `global:unnamed-addr` | not-implemented | not-implemented | WP-032. `unnamed_addr` on a definition: mergeable sections |
-| `global:used` | not-implemented | not-implemented | WP-032. a definition in `llvm.used` (`SHF_GNU_RETAIN`) |
+| `global:ifunc` | supported | not-implemented |  |
+| `global:section` | supported | not-implemented | a definition with an explicit section |
+| `global:align` | supported | not-implemented | a definition with a stated alignment |
+| `global:unnamed-addr` | supported | not-implemented | `unnamed_addr` on a definition: mergeable sections |
+| `global:used` | supported | not-implemented | a definition in `llvm.used` (`SHF_GNU_RETAIN`) |
 
 ## `linkage`
 
@@ -122,15 +122,15 @@ Linkages, on declarations and definitions.
 |---|---|---|---|
 | `linkage:external` | supported | supported | by itself; a definition also meets its `global:` row |
 | `linkage:available_externally` | not-implemented | not-implemented | WP-021. design 0001, point 6 |
-| `linkage:linkonce` | not-implemented | not-implemented | WP-032 |
-| `linkage:linkonce_odr` | not-implemented | not-implemented | WP-032 |
-| `linkage:weak` | not-implemented | not-implemented | WP-032 |
-| `linkage:weak_odr` | not-implemented | not-implemented | WP-032 |
+| `linkage:linkonce` | supported | not-implemented |  |
+| `linkage:linkonce_odr` | supported | not-implemented |  |
+| `linkage:weak` | supported | not-implemented |  |
+| `linkage:weak_odr` | supported | not-implemented |  |
 | `linkage:appending` | rejected | rejected | only LLVM's special arrays have it, and those are not symbols (§2.2) |
-| `linkage:internal` | not-implemented | not-implemented | WP-032 |
-| `linkage:private` | not-implemented | not-implemented | WP-032 |
-| `linkage:extern_weak` | not-implemented | not-implemented | WP-032 |
-| `linkage:common` | not-implemented | not-implemented | WP-032 |
+| `linkage:internal` | supported | not-implemented |  |
+| `linkage:private` | supported | not-implemented |  |
+| `linkage:extern_weak` | supported | not-implemented |  |
+| `linkage:common` | supported | not-implemented |  |
 
 ## `visibility`
 
@@ -138,8 +138,8 @@ Visibilities other than `default`.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `visibility:hidden` | not-implemented | not-implemented | WP-032 |
-| `visibility:protected` | not-implemented | not-implemented | WP-032 |
+| `visibility:hidden` | supported | not-implemented |  |
+| `visibility:protected` | supported | not-implemented |  |
 
 ## `tls`
 
@@ -158,10 +158,10 @@ COMDAT selection kinds of a definition's COMDAT.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `comdat:any` | not-implemented | not-implemented | WP-032 |
+| `comdat:any` | supported | not-implemented |  |
 | `comdat:exactmatch` | rejected | rejected | ELF has `any` and `nodeduplicate` only; `llc` refuses it too |
 | `comdat:largest` | rejected | rejected | ELF has `any` and `nodeduplicate` only; `llc` refuses it too |
-| `comdat:nodeduplicate` | not-implemented | not-implemented | WP-032 |
+| `comdat:nodeduplicate` | supported | not-implemented |  |
 | `comdat:samesize` | rejected | rejected | ELF has `any` and `nodeduplicate` only; `llc` refuses it too |
 
 ## `init`
@@ -170,12 +170,12 @@ What a variable's initializer contains.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `init:data` | not-implemented | not-implemented | WP-032. any initializer: numbers, zero, `undef`, aggregates, bytes |
-| `init:symbol` | not-implemented | not-implemented | WP-032. a symbol's address, with or without an offset |
+| `init:data` | supported | not-implemented | any initializer: numbers, zero, `undef`, aggregates, bytes |
+| `init:symbol` | supported | not-implemented | a symbol's address, with or without an offset |
 | `init:blockaddress` | not-implemented | not-implemented | WP-037 |
-| `init:sym-diff` | not-implemented | not-implemented | WP-032. the difference of two symbol addresses |
+| `init:sym-diff` | supported | not-implemented | the difference of two symbol addresses |
 | `init:sym-diff-plt` | not-implemented | not-implemented | unplanned. the same through `dso_local_equivalent` (relative vtables) |
-| `init:int-of-addr` | not-implemented | not-implemented | WP-032. an address in an integer field |
+| `init:int-of-addr` | supported | not-implemented | an address in an integer field |
 | `init:dso-local-equivalent` | not-implemented | not-implemented | unplanned |
 | `init:no-cfi` | not-implemented | not-implemented | unplanned |
 

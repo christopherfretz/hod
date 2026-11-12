@@ -215,7 +215,10 @@ const fn has(flags: DiFlags, f: DiFlags) -> bool {
 
 /// The flags a definition may have: anything else is written by `llc`
 /// in a way hod does not yet write, and is refused.
-const DEF_FLAGS: u32 = DiFlags::PROTOTYPED.0 | DiFlags::ARTIFICIAL.0 | DiFlags::NO_RETURN.0;
+/// `DIFlagThunk` (kiln's virtual thunks) changes nothing in `llc`'s DIE
+/// (WP-087, checked with `llc` 19 and 22).
+const DEF_FLAGS: u32 =
+    DiFlags::PROTOTYPED.0 | DiFlags::ARTIFICIAL.0 | DiFlags::NO_RETURN.0 | DiFlags::THUNK.0;
 const DEF_SP_FLAGS: u32 = SpFlags::DEFINITION.0 | SpFlags::LOCAL_TO_UNIT.0 | SpFlags::OPTIMIZED.0;
 
 /// `dwarf::isC`, as the type graph has it.
@@ -464,11 +467,10 @@ impl<'a> UnitPlan<'a> {
                     if n.ty.is_none() {
                         return Err(unsupported(v.node, "debug:variable-without-type"));
                     }
-                    if n.align != 0 {
+                    // WP-087: a named local's alignment is written; a
+                    // parameter's, or an unnamed one's, is not yet.
+                    if n.align != 0 && (n.arg != 0 || n.name.is_empty()) {
                         return Err(unsupported(v.node, "debug:variable-alignment"));
-                    }
-                    if n.arg == 0 && n.name.is_empty() {
-                        return Err(unsupported(v.node, "debug:variable-without-name"));
                     }
                     if let LocalPlace::Frame(_) | LocalPlace::FrameIndirect(_) = v.place
                         && let Err(name) = check_expr(self, v.expr)
@@ -948,9 +950,21 @@ impl<'a> Writer<'a> {
                     self.opt_name(v.name)?;
                 } else {
                     let mask = 1 | b(decl.is_some()) << 1 | b(art) << 2;
-                    self.abbrev(code(fam::VARIABLE, mask, false));
+                    // WP-087: an unnamed variable has no `DW_AT_name`; an
+                    // aligned one has `DW_AT_alignment` after it.
+                    let family = match (v.name.is_empty(), v.align != 0) {
+                        (true, _) => fam::VARIABLE_UNNAMED,
+                        (false, true) => fam::VARIABLE_ALIGNED,
+                        (false, false) => fam::VARIABLE,
+                    };
+                    self.abbrev(code(family, mask, false));
                     self.exprloc();
-                    self.strx(v.name)?;
+                    if !v.name.is_empty() {
+                        self.strx(v.name)?;
+                    }
+                    if v.align != 0 {
+                        write_uleb(&mut self.info, u64::from(v.align / 8));
+                    }
                 }
                 self.decl(decl);
                 self.ref_to(plan, node, v.ty.unwrap_or(DiId::NONE))?;

@@ -115,12 +115,14 @@ fn the_matrices_are_the_table() {
 /// matrix that changes one of these is a deliberate change of this
 /// table. `*` is "not checked here" (no row uses it since WP-066 pinned
 /// the AArch64 bodies again once every instruction group was in).
-const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 26] = [
+const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 27] = [
     ("module:pic", "", "module:pic", "", ""),
     ("module:frame-pointer", "", "", "", ""),
     ("structor:priority", "", "module:global-ctors", "", ""),
-    ("debug:module-flags", "debug:module-flags", "debug:module-flags", "", ""),
-    ("debug:locations", "", "global:function-definition", "debug:locations", "cc:ccc"),
+    // WP-087: debug modules reach the DWARF writer on AArch64.
+    ("debug:module-flags", "", "debug:module-flags", "", ""),
+    ("debug:dwarf-version", "debug:dwarf-version", "debug:module-flags", "", ""),
+    ("debug:locations", "", "global:function-definition", "", "cc:ccc"),
     ("global:function-declaration", "", "", "", ""),
     ("global:variable-definition", "", "global:variable-definition", "", ""),
     ("global:ifunc", "", "global:ifunc", "", ""),
@@ -444,10 +446,12 @@ const RICH_MODULE: [&str; 13] = [
     "init:symbol",
 ];
 
-/// The rows of `RICH_MODULE` AArch64 supports (WP-032, WP-033, WP-049, WP-075).
-const A64_SUPPORTED: [&str; 12] = [
+/// The rows of `RICH_MODULE` AArch64 supports (WP-032, WP-033, WP-049, WP-075,
+/// WP-087).
+const A64_SUPPORTED: [&str; 13] = [
     "module:pic",
     "module:uwtable",
+    "debug:module-flags",
     "global:function-definition",
     "module:global-ctors",
     "structor:priority",
@@ -541,8 +545,12 @@ fn findings_come_in_the_specified_order() {
     for arch in ARCHES {
         let program = rich(arch, true);
         let mut expected: Vec<&str> = rich_module(arch);
-        let flags = expected.iter().position(|row| *row == "debug:module-flags").unwrap();
-        expected.insert(flags + 1, "module-flag:mystery");
+        // The flags come after the debug flags, which come after the
+        // module's own properties; every one before them is supported on
+        // AArch64.
+        let flags =
+            expected.iter().position(|row| *row == "debug:module-flags").map_or(0, |p| p + 1);
+        expected.insert(flags, "module-flag:mystery");
         // The function's attributes come before its definition, after the
         // module's own properties.
         let at = expected
@@ -557,7 +565,7 @@ fn findings_come_in_the_specified_order() {
         // The first reason of each pass is the first finding of it.
         let classifier = Classifier::new(shipped).with_stack_args(&NO_STACK);
         let module_reason = classifier.module(&program.m).unwrap_err();
-        let first = if arch == Arch::Aarch64 { "debug:module-flags" } else { "module:pic" };
+        let first = if arch == Arch::Aarch64 { "module-flag:mystery" } else { "module:pic" };
         assert_eq!((module_reason.construct.as_ref(), module_reason.symbol), (first, None));
         // AArch64 supports the whole body (WP-069: `tail:musttail`).
         let Some(&first_body) = body.first() else {

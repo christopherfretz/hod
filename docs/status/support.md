@@ -22,7 +22,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 |---|---|---|---|---|---|---|---|
 | `module` | 24 | 10 | 12 | 2 | 2 | 16 | 6 |
 | `structor` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
-| `debug` | 4 | 0 | 4 | 0 | 0 | 4 | 0 |
+| `debug` | 5 | 4 | 1 | 0 | 0 | 5 | 0 |
 | `global` | 12 | 11 | 1 | 0 | 2 | 10 | 0 |
 | `linkage` | 11 | 9 | 1 | 1 | 1 | 9 | 1 |
 | `visibility` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 9 | 7 | 2 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 143 | 118 | 25 | 0 | 0 | 135 | 8 |
-| total | 447 | 305 | 96 | 46 | 17 | 367 | 63 |
+| total | 448 | 309 | 93 | 46 | 17 | 368 | 63 |
 
 ## `module`
 
@@ -91,10 +91,11 @@ Debug information.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `debug:module-flags` | not-implemented | not-implemented | T-DW. `Dwarf Version` or `Debug Info Version` is set |
-| `debug:subprogram` | not-implemented | not-implemented | T-DW. a function with a body and a `DISubprogram` |
-| `debug:slot-variables` | not-implemented | not-implemented | T-DW. a stack slot that is a source variable |
-| `debug:locations` | not-implemented | not-implemented | T-DW. a body whose instructions carry source locations |
+| `debug:module-flags` | supported | not-implemented | `Dwarf Version` or `Debug Info Version` is set (WP-087) |
+| `debug:dwarf-version` | not-implemented | not-implemented | T-DW. a compile unit with debug information and a `Dwarf Version` other than 5 (absent is LLVM's 4): `hod_dwarf` writes DWARF 5 only |
+| `debug:subprogram` | supported | not-implemented | a function with a body and a `DISubprogram` (WP-087) |
+| `debug:slot-variables` | supported | not-implemented | a stack slot that is a source variable (WP-087) |
+| `debug:locations` | supported | not-implemented | a body whose instructions carry source locations (WP-087) |
 
 ## `global`
 

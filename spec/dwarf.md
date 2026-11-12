@@ -660,6 +660,8 @@ exclusive `low_pc` forms), and pin the bytes of one entry.
 | 84 | `GNU_template_template_param` (any): `name` (0), `default_value` (1), `GNU_template_name` | 4 | 10555 | WP-059 |
 | 85 | `template_alias` (with parameters): 51's slots, children | 8 | 10559 | WP-059 |
 | 86 | `subprogram` (specification, any): `low_pc`, `high_pc`, `frame_base`, `object_pointer` (0), `type` (1), `decl_file` (2), `decl_line` (3), `linkage_name` (4), `specification`, children optional | 64 | 10567 | WP-059 |
+| 87 | `variable` (local, unnamed): `location` (0), decl (1), `type`, `artificial` (2) | 8 | 10631 | WP-087 |
+| 88 | `variable` (local, aligned): `location` (0), `name`, `alignment`, decl (1), `type`, `artificial` (2) | 8 | 10639 | WP-087 |
 
 Families 2 to 45 that WP-058 owns are used for the common shape of each
 kind (they keep the codes the reserved shapes promised); the "any"
@@ -675,7 +677,7 @@ WP-057 uses its reserved families 0 (`formal_parameter`), 1 (local
 `low_pc`/`high_pc` or `ranges` as `DW_FORM_sec_offset`) and 39 (`label`),
 and appends 69 to 71 for the other shapes.
 
-`CODE_END` is 10631 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085). Since the core families come last, their codes take
+`CODE_END` is 10647 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085, 10631 after WP-059). Since the core families come last, their codes take
 two ULEB bytes where `llc`'s take one (the cost is in §7.2; open question
 7).
 
@@ -815,10 +817,11 @@ reports a `debug:*` name as itself and §6.5's unnamed shapes as
 | `debug:foreign-scope` | a variable or row in another function's scope |
 | `debug:fragment` | a `DW_OP_LLVM_fragment` in a declared variable's expression |
 | `debug:expression` | any other op that is not a plain DWARF op |
-| `debug:variable-without-type`, `debug:variable-alignment`, `debug:variable-without-name`, `debug:variable-twice` | as named |
+| `debug:variable-without-type`, `debug:variable-twice` | as named |
+| `debug:variable-alignment` | an `alignas` parameter, or an unnamed one; an `alignas` variable of an abstract instance (§6.9). A named local's `alignment` is written since WP-087 (family 88, in bytes, after `name`) |
 | `debug:label-attribute` | an artificial or coroutine label, or one without a name |
 | `debug:object-pointer` | two `this` parameters |
-| `debug:local-type-scope` | a function-local type reached before its function was added (in `types.rs`) |
+| `debug:local-type-scope` | a function-local type reached before its function was added, when the type is scoped in a block, or the function has no code in this module (in `types.rs`, `early.rs`; §6.12) |
 
 Inlined code and functions' statics are §6.9's (WP-085), with its own
 refusals. `LineTablesOnly` and `DebugDirectivesOnly` units are §6.10 (WP-061).
@@ -1383,6 +1386,75 @@ A function's `static` (`debug:local-static`), inlined subroutines,
 `#dbg_value`, fragments and other location expressions are WP-085's. A
 unit's `LineTablesOnly` and compressed sections are WP-061's.
 
+### 6.12 Debug modules end to end (implemented, WP-087)
+
+**`classify`** no longer refuses debug modules on AArch64: of its four
+`debug:*` rows, `debug:module-flags`, `debug:subprogram`,
+`debug:slot-variables` and `debug:locations` are supported there (x86-64
+keeps them, its code generator being absent). One row is new and refused
+on both: `debug:dwarf-version`, a compile unit that is not `NoDebug` in a
+module whose `Dwarf Version` is not 5. No flag is LLVM's DWARF 4 (`llc`
+22 writes version 4 then); `hod_dwarf` writes 5 only.
+
+**Declines, not errors** (`crates/hod/src/back.rs`, the bridge): the
+module's `ModuleEmitter` is made before any function is compiled, so
+what the unit plans refuse (§6.4 to §6.11 names) is declined before code
+generation; what the function DIEs refuse is still found as functions
+are added. What the DWARF writer finds wrong with the input is an
+ordinary decline by name, never an internal error and never an object
+without its DIEs:
+
+| name | what |
+|---|---|
+| `debug:malformed-metadata` | a field naming a node of a kind it does not allow, a type cycle, a member outside a type, a sized type without a size, a NUL in a file name, a unit that is not a `DICompileUnit` |
+| `debug:section-too-large` | a `.debug_*` section of 4 GiB or more |
+
+What remains an internal error is the bridge's own bug (a line row, a
+code span, a symbol or a global's address it made wrong).
+
+**Shapes whole units need** (each compared with `llc` 19 and 22):
+- a function-local type the unit retains (clang lists the typedef of an
+  explicit cast in `retainedTypes`) reached before its function: the
+  function's concrete DIE is made early, as for its statics (§6.9),
+  when the module has its code. A type local to a block, or to a
+  function without code here, stays `debug:local-type-scope` (`llc` 22
+  puts the latter under the abstract instance, `llc` 19 under an empty
+  subprogram);
+- an unnamed local (a catch parameter without a name): a `variable`
+  without `DW_AT_name` (family 87);
+- an `alignas` local: `DW_AT_alignment` in bytes after `name` (family
+  88);
+- a `DIFlagThunk` definition (kiln++'s virtual thunks): `llc` writes
+  nothing for the flag;
+- an abstract instance of a function template: its template parameters
+  are its first children, made before its return type
+  (`applySubprogramDefinitionAttributes` at
+  `constructAbstractSubprogramScopeDIE`); one whose return type differs
+  from its declaration's is `debug:specification-type`;
+- a static member of an enumeration type: `isUnsignedDIType` follows the
+  enumeration's base type (signed without one).
+
+**The census** (`crates/hod_a64/tests/dies_e2e.rs`, `debug_census`): 130
+`-g -O0` modules (44 libc++ tests, a standard-library unit and four bench
+sources, each by clang 19, clang 22 and kiln++, with libstdc++ or libc++).
+hod's code generator builds 116; every built module is
+`--verify` clean, 111 link and run with the same exit status and output
+as `llc`'s, and 99 have `llc`'s DIE tree (tags, names, order). The
+other 17 are known differences, none of them a wrong value:
+- `llc` keeps the inlined subroutine of a call whose only code is an
+  unconditional branch hod falls through (§5.7 P1), with its abstract
+  instance; hod has neither (6 modules);
+- `llc` deletes the blocks under a `llvm.is.constant` it folds to false
+  (`LowerConstantIntrinsics`, even at `-O0`); hod keeps them, and their
+  block and variable DIEs (8 modules);
+- the order of two unit-level pointer and reference types around an
+  on-demand member template declaration (5 modules).
+
+On those modules 92% of the 239 416 functions' line tables are `llc`'s
+under §5.7; the rest differ in rows `llc` gives instructions hod does
+not emit (an empty `asm`, a branch), which the debuggers do not see
+when they stop at lines.
+
 ## 7. Speed and memory
 
 ### 7.1 Parallel emission and determinism
@@ -1837,27 +1909,17 @@ string and address index is assigned in one order (open question 8).
 
 **Reduced units** (WP-061, §6.10): every unit but a `NoDebug` one gets a
 plan and a line table; `Unit::dies` (`has_dies`) says whether it goes to
-`write_debug_info`. `classify` still refuses debug modules up front
-(`debug:*` rows, `crates/hod_ir/src/classify/walk.rs`), so a
-`-gline-tables-only` build reaches this through `emit_module` and the
-tests only; lifting those rows for modules without `FullDebug` units is
-a follow-up.
+`write_debug_info`. Since WP-087 `classify` lets debug modules through
+on AArch64 (§6.12), so a `-gline-tables-only` build reaches this from
+the command line.
 
 **Compressed sections** (WP-061): with `Options::debug_compression`
 `Zlib`, `ModuleEmitter::finish` compresses the `.debug_*` sections last
 (§1.1, `spec/object.md` "Compressed sections").
 
-**What must land before `classify`'s `debug:*` refusals can drop**
-(`debug:subprogram`, `debug:slot-variables`, `debug:locations`,
-`debug:module-flags`). On the corpus (§8.8), 8 of the 12 DWARF 5 `-g`
-modules already compile and match `llc`; the other 4 need `a64:vector-element`
-(2, the code generator) and global expressions (2, WP-059). On
-`stl.cpp`, in the order hit: inlined subroutines (52 of 383 functions,
-`always_inline` at `-O0`; written since WP-085, §6.9), on-demand member
-declarations (43, `debug:specification`), early function-local types
-(`debug:local-type-scope`), local statics (written since WP-085), and
-WP-059's globals (declarations, static members, expressions). DWARF 4
-(2 corpus modules) is open question 6.
+**`classify`'s `debug:*` refusals** dropped on AArch64 with WP-087
+(§6.12); `debug:dwarf-version` replaces them for units other than DWARF
+5 (open question 6).
 
 ## 10. Follow-on work packages
 

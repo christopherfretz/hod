@@ -73,6 +73,14 @@ pub mod unsupported {
     /// A compile unit with a node the DIE writer does not write yet
     /// (`spec/dwarf.md` §6.5).
     pub const DEBUG_DIE: &str = "debug:die-unsupported";
+    // WP-087: what the DWARF writer finds wrong with the input is declined
+    // by name (`spec/dwarf.md` §6.12), never an internal error.
+    /// Debug metadata the DWARF writer cannot describe: a field naming a
+    /// node of a kind it does not allow, a type cycle, a member outside a
+    /// type, a sized type without a size, a NUL in a file name.
+    pub const DEBUG_MALFORMED: &str = "debug:malformed-metadata";
+    /// A debug section of 4 GiB or more, beyond 32-bit DWARF.
+    pub const DEBUG_TOO_LARGE: &str = "debug:section-too-large";
     /// A function with an unwind-table entry, no landing pads and a
     /// personality LLVM does not know: `llc` gives it the personality and
     /// an LSDA of call sites hod does not record (`spec/eh.md` §1.1).

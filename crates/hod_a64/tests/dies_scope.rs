@@ -279,14 +279,12 @@ fn definition_with_its_own_return_type() {
     assert_eq!(count_tag(&u, "DW_TAG_unspecified_type"), 1);
 }
 
-/// A bug outside WP-059: `crates/hod_dwarf/src/types.rs:613` (`is_unsigned`)
-/// treats every enumeration as signed, where `llc` 19 and 22 follow an
-/// enumeration's base type (`isUnsignedDIType`): a static member
-/// `constexpr E e = E::B` of `enum class E : uint8_t` with `B = 200` is
-/// `DW_AT_const_value (-56)` in hod's tree, `(200)` in `llc`'s.
+/// `llc` 19 and 22 follow an enumeration's base type (`isUnsignedDIType`):
+/// a static member `constexpr E e = E::B` of `enum class E : uint8_t` with
+/// `B = 200` is `DW_AT_const_value (200)`. hod's `is_unsigned`
+/// (`crates/hod_dwarf/src/types.rs`) wrote `(-56)` until WP-087.
 /// WP-059's template values follow the base type (`template.rs`).
 #[test]
-#[ignore = "bug in crates/hod_dwarf/src/types.rs:613 (is_unsigned of an enumeration), not WP-059's"]
 fn static_member_of_unsigned_enumeration() {
     let Some(c22) = tool("clang++-22") else { return };
     let scratch = Scratch::new("dies-scope-enum");

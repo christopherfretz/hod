@@ -47,6 +47,7 @@ use std::fmt;
 
 pub mod abbrev;
 mod die;
+mod early;
 mod func;
 mod global;
 mod import;
@@ -63,6 +64,7 @@ mod template;
 mod types;
 
 pub use die::{CodeSpan, DieSections, GlobalAddr, UnitInput, UnitPlan, write_debug_info};
+pub use early::LOCAL_TYPE_SCOPE;
 pub use func::{FunctionInput, LocalPlace, LocalRow, ScopeRow};
 pub use inline::{
     DEBUG_INLINED_DISCRIMINATOR, DEBUG_INLINED_FOREIGN_UNIT, DEBUG_INLINED_LOCAL_TYPE,

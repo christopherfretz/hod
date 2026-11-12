@@ -300,6 +300,9 @@ pub mod fam {
     pub const TEMPLATE_TEMPLATE_ANY: usize = 84;
     pub const TEMPLATE_ALIAS_PARAMS: usize = 85;
     pub const SUBPROGRAM_SPEC_ANY: usize = 86;
+    // WP-087: whole `-g` units.
+    pub const VARIABLE_UNNAMED: usize = 87;
+    pub const VARIABLE_ALIGNED: usize = 88;
 }
 
 /// Every family, in code order (`spec/dwarf.md` §6.1 has the same table).
@@ -1282,6 +1285,39 @@ pub const FAMILIES: &[Family] = &[
             s(at::SPECIFICATION, REF4),
         ],
     ),
+    // WP-087. 87: a local variable without a name (an unnamed `catch`
+    // parameter); 1's option bits.
+    fam(
+        "variable (local, unnamed)",
+        tag::VARIABLE,
+        No,
+        8,
+        "WP-087",
+        &[
+            o(0, at::LOCATION, EXPRLOC),
+            o(1, at::DECL_FILE, UDATA),
+            o(1, at::DECL_LINE, UDATA),
+            s(at::TYPE, REF4),
+            o(2, at::ARTIFICIAL, FLAG_PRESENT),
+        ],
+    ),
+    // 88: a local variable with an alignment (`alignas`); 1's option bits.
+    fam(
+        "variable (local, aligned)",
+        tag::VARIABLE,
+        No,
+        8,
+        "WP-087",
+        &[
+            o(0, at::LOCATION, EXPRLOC),
+            s(at::NAME, STRX),
+            s(at::ALIGNMENT, UDATA),
+            o(1, at::DECL_FILE, UDATA),
+            o(1, at::DECL_LINE, UDATA),
+            s(at::TYPE, REF4),
+            o(2, at::ARTIFICIAL, FLAG_PRESENT),
+        ],
+    ),
 ];
 
 /// The slots of the general static-member families (54, 55), in `llc`'s
@@ -1442,7 +1478,10 @@ mod tests {
         assert_eq!(BASES[fam::SUBPROGRAM_ABSTRACT], 9279);
         // WP-059 appended families 81 to 86.
         assert_eq!(BASES[fam::GLOBAL_ANY], 9851);
-        assert_eq!(CODE_END, 10631);
+        // WP-087 appended families 87 and 88.
+        assert_eq!(BASES[fam::VARIABLE_UNNAMED], 10631);
+        assert_eq!(BASES[fam::VARIABLE_ALIGNED], 10639);
+        assert_eq!(CODE_END, 10647);
         for (index, name) in [
             (fam::CONST_TYPE, "const_type"),
             (fam::TYPEDEF, "typedef"),

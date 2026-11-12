@@ -7,11 +7,12 @@
 
 use hod_ir::{
     AliasDesc, Arch, AtomicOrdering, BlockId, Body, BranchProtection, Bundle, CallConv, CallDesc,
-    CallSite, Classifier, Clause, CodeModel, ComdatKind, ConstId, ConstOp, DiId, FloatPredicate,
-    FnAttrs, FnStr, FramePointer, FunctionBuilder, FunctionDesc, IFuncDesc, InlineAsm,
-    IntPredicate, Intrinsic, Linkage, LocId, MemFlags, Module, Opcode, ParamAttrs, ParamMem,
-    PicLevel, Rejection, Retained, RmwOp, StackArgs, Support, SymId, Symbol, SyncScope, TailKind,
-    TargetSpec, TlsModel, TypeClass, TypeId, UnnamedAddr, UwTable, Value, VariableDesc, Visibility,
+    CallSite, Classifier, Clause, CodeModel, ComdatKind, ConstId, ConstOp, DiCompileUnit, DiFile,
+    DiId, EmissionKind, FloatPredicate, FnAttrs, FnStr, FramePointer, FunctionBuilder,
+    FunctionDesc, IFuncDesc, InlineAsm, IntPredicate, Intrinsic, Linkage, LocId, MemFlags, Module,
+    Opcode, ParamAttrs, ParamMem, PicLevel, Rejection, Retained, RmwOp, StackArgs, Support, SymId,
+    Symbol, SyncScope, TailKind, TargetSpec, TlsModel, TypeClass, TypeId, UnnamedAddr, UwTable,
+    Value, VariableDesc, Visibility,
 };
 
 pub const I1: TypeId = TypeId::I1;
@@ -324,6 +325,21 @@ pub fn program_for(row: &str, arch: Arch) -> Program {
         }),
         "debug" => match name {
             "module-flags" => module_program(arch, |m| m.props.dwarf_version = Some(5)),
+            // A compile unit with `-gdwarf-4`.
+            "dwarf-version" => module_program(arch, |m| {
+                m.props.dwarf_version = Some(4);
+                let d = &mut m.debug;
+                let file = DiFile { filename: b"a.c", directory: b"/", ..Default::default() };
+                let file = d.add(&file.into()).unwrap();
+                let unit = DiCompileUnit {
+                    language: 0x1d,
+                    file: Some(file),
+                    emission_kind: EmissionKind::FullDebug,
+                    ..Default::default()
+                };
+                let unit = d.add_distinct(&unit.into()).unwrap();
+                d.add_compile_unit(unit).unwrap();
+            }),
             "subprogram" => {
                 function_program(arch, &[], |_, desc| desc.subprogram = Some(DiId::new(0)))
             }

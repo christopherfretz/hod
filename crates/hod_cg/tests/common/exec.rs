@@ -38,13 +38,16 @@ use hod_ir::{FloatPredicate, IntPredicate, Module, Opcode, SymId, SymbolKind};
 use super::ehview;
 use super::isa::{self, Ins, Opnd, REGS};
 
+/// An LSDA call site: start, length, landing pad, action chain.
+type Site = (u64, u64, u64, Vec<i64>);
+
 /// One function's unwind tables, decoded from an object.
 struct FuncTables {
     /// The FDE's rows.
     rows: Vec<CfiRow>,
     /// The LSDA, if it has one: each call site's start, length, landing
     /// pad (0 for none) and action chain.
-    sites: Option<Vec<(u64, u64, u64, Vec<i64>)>>,
+    sites: Option<Vec<Site>>,
     /// The type table by type id from 1: the type-information symbol,
     /// `None` for a catch-all.
     types: Vec<Option<SymId>>,

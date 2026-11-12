@@ -432,9 +432,10 @@ const RICH_MODULE: [&str; 13] = [
     "init:symbol",
 ];
 
-/// The rows of `RICH_MODULE` AArch64 supports (WP-032, WP-033).
-const A64_SUPPORTED: [&str; 10] = [
+/// The rows of `RICH_MODULE` AArch64 supports (WP-032, WP-033, WP-049).
+const A64_SUPPORTED: [&str; 11] = [
     "module:pic",
+    "module:uwtable",
     "global:function-definition",
     "module:global-ctors",
     "structor:priority",
@@ -474,9 +475,16 @@ const RICH_BODY: [&str; 16] = [
     "inst:ret",
 ];
 
-/// The rows of `RICH_BODY` AArch64 supports (WP-033).
-const A64_SUPPORTED_BODY: [&str; 6] =
-    ["cc:ccc", "function:parameters", "type:int", "type:ptr", "operand:symbol", "inst:ret"];
+/// The rows of `RICH_BODY` AArch64 supports (WP-033, WP-049).
+const A64_SUPPORTED_BODY: [&str; 7] = [
+    "cc:ccc",
+    "function:parameters",
+    "type:int",
+    "type:ptr",
+    "function:may-unwind",
+    "operand:symbol",
+    "inst:ret",
+];
 
 /// What the shipped matrix finds in the rich body on `arch`.
 fn rich_body(arch: Arch) -> Vec<&'static str> {
@@ -527,7 +535,7 @@ fn findings_come_in_the_specified_order() {
         // The first reason of each pass is the first finding of it.
         let classifier = Classifier::new(shipped).with_stack_args(&NO_STACK);
         let module_reason = classifier.module(&program.m).unwrap_err();
-        let first = if arch == Arch::Aarch64 { "module:uwtable" } else { "module:pic" };
+        let first = if arch == Arch::Aarch64 { "debug:module-flags" } else { "module:pic" };
         assert_eq!((module_reason.construct.as_ref(), module_reason.symbol), (first, None));
         let body_reason = classifier.body(&program.m, &program.bodies[0]).unwrap_err();
         assert_eq!(body_reason.construct, body[0]);

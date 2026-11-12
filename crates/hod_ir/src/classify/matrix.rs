@@ -411,7 +411,12 @@ const MODULE: [SupportRow; 23] = [
     a64("module:code-model-medium", LATER, ""),
     a64("module:code-model-large", LATER, ""),
     a64("module:large-data-threshold", LATER, ""),
-    a64("module:uwtable", "WP-042", "the module's default unwind-table kind is not `none`"),
+    row(
+        "module:uwtable",
+        ON,
+        todo(X64),
+        "the module's default unwind-table kind is not `none` (WP-049)",
+    ),
     both(
         "module:frame-pointer",
         ON,
@@ -520,7 +525,12 @@ const INIT: [SupportRow; 8] = [
 const FUNCTION: [SupportRow; 6] = [
     row("function:parameters", ON, todo(X64), "a body with parameters; per class of parameter"),
     a64("function:variadic", "WP-038", "a variadic function with a body"),
-    a64("function:may-unwind", "WP-042", "a body without `nounwind`: it needs unwind tables"),
+    row(
+        "function:may-unwind",
+        ON,
+        todo(X64),
+        "a body without `nounwind`: it needs unwind tables (WP-049)",
+    ),
     a64("function:personality", EH, "a body with a personality function"),
     a64("function:slots", "WP-036", "a body with fixed stack objects (`Body::slots`)"),
     a64("function:over-aligned-slot", "WP-036", "a stack object aligned above 16 bytes"),
@@ -591,7 +601,7 @@ const ATTR_MEM: [SupportRow; 6] = [
 const ATTR_VALUE: [SupportRow; 3] = [
     both("attr:align", ON, "on a parameter or return: an assumption, no code"),
     a64("attr:alignstack", LATER, "on a parameter and on a function"),
-    a64("attr:uwtable", "WP-042", "on a function with a body"),
+    row("attr:uwtable", ON, todo(X64), "on a function with a body (WP-049)"),
 ];
 
 /// In the order of `FnAttrs::FLAG_NAMES`.

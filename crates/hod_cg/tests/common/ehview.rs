@@ -28,6 +28,9 @@ pub struct Cie<R> {
     pub initial: Vec<CfiRow>,
 }
 
+/// A decoded `.eh_frame`: its CIEs and FDEs.
+pub type Frames<R> = (Vec<Cie<R>>, Vec<FdeView<R>>);
+
 /// An FDE, its rows decoded into `hod_cg`'s row type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FdeView<R> {
@@ -209,7 +212,7 @@ fn instructions(
 pub fn eh_frame<R: Clone>(
     data: &[u8],
     reloc_at: &dyn Fn(u64) -> Option<Target<R>>,
-) -> Result<(Vec<Cie<R>>, Vec<FdeView<R>>), String> {
+) -> Result<Frames<R>, String> {
     let mut cies: Vec<Cie<R>> = Vec::new();
     let mut fdes = Vec::new();
     let mut at = 0usize;
@@ -317,7 +320,7 @@ pub struct LsdaView<'a, R> {
     pub sites: Vec<(u64, u64, u64, u64)>,
     /// Where the action table starts.
     actions: usize,
-    /// The TType base, with a type table.
+    /// The `TType` base, with a type table.
     pub ttbase: Option<usize>,
     pub ttype_encoding: u8,
     /// The type table's entries, by type id from 1: the target of each.

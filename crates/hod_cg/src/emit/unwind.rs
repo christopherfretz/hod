@@ -90,24 +90,7 @@ impl ModuleEmitter<'_> {
     /// needs them (`spec/eh.md` §1.1).
     pub(super) fn unwind_tables(&mut self) -> CgResult<()> {
         let module = self.module;
-        let mut with_pads = 0usize;
-        let mut entries = 0usize;
-        for func in &self.funcs {
-            let record = &func.record;
-            if !record.needs_unwind_entry() {
-                continue;
-            }
-            entries += 1;
-            if record.has_pads {
-                with_pads += 1;
-            } else if let Some(personality) = record.personality
-                && !KNOWN_PERSONALITIES.contains(&module.symbol(personality).name())
-            {
-                // `llc` writes such a function's personality and an LSDA
-                // whose call sites hod does not record.
-                return Err(CgError::unsupported(unsupported::PERSONALITY_WITHOUT_PADS));
-            }
-        }
+        let (entries, with_pads) = self.count_entries()?;
         if entries == 0 {
             return Ok(());
         }
@@ -162,10 +145,8 @@ impl ModuleEmitter<'_> {
                 type_ids: start.2..types.len(),
             });
         }
-        for index in 0..types.len() {
-            if let Some(id) = types[index] {
-                self.name_symbol(SymId::new(id.index()))?;
-            }
+        for id in types.iter().flatten() {
+            self.name_symbol(SymId::new(id.index()))?;
         }
 
         // The personality slots, one per personality, in first use.
@@ -210,8 +191,42 @@ impl ModuleEmitter<'_> {
             hod_eh::write_lsdas(&mut self.obj, &funcs, options).map_err(eh_err)?
         };
 
-        // `.eh_frame`: one FDE per function that needs one, its LSDA by
-        // the function's position in `ranges`.
+        self.write_fdes(entries, &ranges, &lsdas, &slots)
+    }
+
+    /// The functions that need an FDE, and those of them with landing
+    /// pads; an unknown personality without pads is refused.
+    fn count_entries(&self) -> CgResult<(usize, usize)> {
+        let module = self.module;
+        let (mut entries, mut with_pads) = (0usize, 0usize);
+        for func in &self.funcs {
+            let record = &func.record;
+            if !record.needs_unwind_entry() {
+                continue;
+            }
+            entries += 1;
+            if record.has_pads {
+                with_pads += 1;
+            } else if let Some(personality) = record.personality
+                && !KNOWN_PERSONALITIES.contains(&module.symbol(personality).name())
+            {
+                // `llc` writes such a function's personality and an LSDA
+                // whose call sites hod does not record.
+                return Err(CgError::unsupported(unsupported::PERSONALITY_WITHOUT_PADS));
+            }
+        }
+        Ok((entries, with_pads))
+    }
+
+    /// `.eh_frame`: one FDE per function that needs one, its LSDA by the
+    /// function's position in `ranges`.
+    fn write_fdes(
+        &mut self,
+        entries: usize,
+        ranges: &[Ranges],
+        lsdas: &[Lsda],
+        slots: &[(SymId, SymbolId)],
+    ) -> CgResult<()> {
         let mut frames = Vec::with_capacity(entries);
         let mut next_lsda = 0usize;
         for (index, placed) in self.funcs.iter().enumerate() {

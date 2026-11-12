@@ -77,16 +77,30 @@ it:
 | `order` | the function's `SymId` index (module order) |
 | `start`, `start_addend` | the section symbol of the function's section and the function's offset in it, as `llc` does it (a COMDAT function's section included, `spec/object.md` "References into a group from outside it") |
 | `size` | `func.code.len()` |
-| `rows` | `chunk.cfi[func.cfi]`, each `CfiOp` mapped to the `Op` of the same name |
-| `personality` | when `func.has_pads`: the slot `personality_ref` made for the function's IR personality (`hod_ir` `SymbolKind::Function { personality }`), one slot per personality per object; `None` otherwise |
+| `rows` | `rows.cfi[func.cfi]` as they are: `hod_cg`'s `CfiOp` and `CfiRow` are this crate's `Op` and `Row` (re-exported), so there is no copy and no conversion |
+| `personality` | when `func.has_pads`: the slot `personality_ref` made for `func.personality`, one slot per personality per object, made in the order of first use; `None` otherwise |
 | `lsda` | when `func.has_pads`: the function's entry of `write_lsdas`' result (§9.1); `None` otherwise |
 
-Which functions get an entry is LLVM's rule (`needsUnwindTableEntry`): a
-function has an FDE unless it is `nounwind`, has no `uwtable` and no
-personality. A known personality (the C and C++ ones) is used only by a
-function with landing pads, so a function with a personality and no pads
-gets the CIE without one, as `llc` does. `FuncRecord` carries neither the
-personality nor the attributes; the caller reads them from the module.
+`FuncRecord` carries what the rule needs, set by `compile_function` from
+the module (`spec/codegen.md` §9.1): `personality` (the IR personality,
+`SymbolKind::Function { personality }`), `nounwind` (`FnAttrs::NOUNWIND`)
+and `uwtable` (any `UwTable` but `None`). The FDE rule is LLVM's
+(`needsUnwindTableEntry`), `FuncRecord::needs_unwind_entry`: a function
+has an FDE unless it is `nounwind`, has no `uwtable` and has no
+personality. Its personality and LSDA are written only when it has
+landing pads (`shouldEmitPersonality` without `forceEmitPersonality`): a
+personality LLVM knows (`classifyEHPersonality`, the C and C++ ones among
+them) does nothing for a function without pads, so such a function gets
+the CIE without one, as `llc` does. For a personality LLVM does not know,
+`llc` writes the personality and an LSDA anyway, whose call sites are
+calls hod does not record; `emit_module` refuses such a function as
+`eh:unknown-personality-without-pads`.
+
+The LSDA rows are mapped once per object: a pad's block becomes its
+index, a type id's `SymId` its `SymbolId`, and a row with
+`nounwind` and no pad is left out (§9.3). Everything is read from the
+merged rows and the placed records, so the tables do not depend on how
+the functions were divided into chunks.
 
 ## 2. CIE
 
@@ -401,14 +415,17 @@ by no entry makes the personality call `std::terminate`; with hod's rows
 that is only a call the code generator did not record.
 
 `llc` decides "a call without a pad" by whether the callee is `nounwind`
-(`callToNoUnwindFunction`): a call to a `nounwind` function leaves a gap.
-`CallSiteRow` does not say whether its callee can unwind (§9.9), so every
-plain call is a row without a pad, and `hod_eh` writes an entry where
-`llc` writes none (or splits an entry `llc` merges). The tables then
-differ in bytes, not in what any call that can unwind does; a `nounwind`
-callee that unwinds anyway (undefined behaviour) is unwound through
-rather than terminated. §9.8's oracle builds its rows with `llc`'s rule,
-which is what makes it byte-identical.
+(`callToNoUnwindFunction`: a direct call of a function declared
+`nounwind`; a runtime function, an indirect callee, an alias and a
+call-site `nounwind` do not count): such a call writes no entry, and
+rule 2 merges across it. `CallSiteRow::nounwind` says so, set by the
+core (`spec/codegen.md` §9.4); the caller drops a row with `nounwind`
+and no pad before calling `write_lsdas` (§1.1), so this crate never sees
+one, and the tables are `llc`'s.
+
+A row's `landing`, in `hod_cg` `record.rs` and here: used only with a
+pad; the offset of the pad's landing stub, or 0 for the pad's own
+`PadRow::offset`. It is 0 for a row without a pad.
 
 ### 9.4 Action table
 
@@ -581,9 +598,6 @@ cause, may leave the sections added so far.)
 
 ### 9.10 What the core's rows do not say
 
-- Whether a call can unwind (§9.3): `CallSiteRow` (`hod_cg` `record.rs`,
-  `CallSiteRow`) has no flag for a `nounwind` callee, so hod's tables cover
-  calls `llc` leaves uncovered. Harmless for correct programs; a flag
-  (or dropping such rows in the core) would make them `llc`'s.
+- Whether a call can unwind is `CallSiteRow::nounwind` (WP-049, §9.3).
 - The function's name, section and the object's `.data`: the caller
   supplies them after the merge, as it does `Fde::start` (§1.1).

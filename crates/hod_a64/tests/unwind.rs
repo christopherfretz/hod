@@ -13,6 +13,7 @@
 
 mod common;
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -36,9 +37,8 @@ fn leaves(major: u32) -> String {
         } else {
             format!("  %s = alloca [{slot} x i8], align 16\n")
         };
-        text.push_str(&format!(
-            "define i32 @leaf_{i}() uwtable {{\nentry:\n{alloca}  unreachable\n}}\n"
-        ));
+        let _ =
+            writeln!(text, "define i32 @leaf_{i}() uwtable {{\nentry:\n{alloca}  unreachable\n}}");
     }
     text
 }
@@ -222,9 +222,6 @@ fn a_throw_passes_through_a_hod_frame() {
          return 1; }\n",
         &["-x", "c++"],
     );
-    if tool("g++").is_none() && tools_required() {
-        panic!("no g++ (HOD_REQUIRE_TOOLS=1)");
-    }
     for linker in &toolchain.linkers {
         let program = scratch.join(format!("throw-{}", linker.name));
         let ran =

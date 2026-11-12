@@ -92,7 +92,13 @@ fn with_eh_rows(chunk: &Chunk, personality: SymId) -> Chunk {
             (
                 vec![
                     CallSiteRow { start: 0, len: 4, pad: 0, landing: 0, nounwind: false },
-                    CallSiteRow { start: 4, len: 4, pad: NO_PAD, landing: 0, nounwind: n % 2 == 0 },
+                    CallSiteRow {
+                        start: 4,
+                        len: 4,
+                        pad: NO_PAD,
+                        landing: 0,
+                        nounwind: n.is_multiple_of(2),
+                    },
                     CallSiteRow { start: 8, len: 4, pad: NO_PAD, landing: 0, nounwind: false },
                 ],
                 vec![PadRow {

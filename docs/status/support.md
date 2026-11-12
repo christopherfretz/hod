@@ -20,7 +20,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 
 | group | constructs | aarch64 supported | not-implemented | rejected | x86_64 supported | not-implemented | rejected |
 |---|---|---|---|---|---|---|---|
-| `module` | 23 | 8 | 13 | 2 | 2 | 15 | 6 |
+| `module` | 23 | 9 | 12 | 2 | 2 | 15 | 6 |
 | `structor` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `debug` | 4 | 0 | 4 | 0 | 0 | 4 | 0 |
 | `global` | 12 | 11 | 1 | 0 | 2 | 10 | 0 |
@@ -29,9 +29,9 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `tls` | 4 | 0 | 4 | 0 | 0 | 4 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
 | `init` | 8 | 4 | 4 | 0 | 0 | 8 | 0 |
-| `function` | 6 | 1 | 5 | 0 | 0 | 6 | 0 |
+| `function` | 6 | 2 | 4 | 0 | 0 | 6 | 0 |
 | `cc` | 15 | 1 | 12 | 2 | 0 | 12 | 3 |
-| `attr` | 56 | 11 | 42 | 3 | 9 | 39 | 8 |
+| `attr` | 56 | 12 | 41 | 3 | 9 | 39 | 8 |
 | `type` | 15 | 2 | 10 | 3 | 0 | 13 | 2 |
 | `inst` | 67 | 3 | 56 | 8 | 0 | 59 | 8 |
 | `mem` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 9 | 2 | 7 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 133 | 0 | 133 | 0 | 0 | 133 | 0 |
-| total | 434 | 60 | 328 | 46 | 16 | 363 | 55 |
+| total | 434 | 63 | 325 | 46 | 16 | 363 | 55 |
 
 ## `module`
 
@@ -59,7 +59,7 @@ Module properties (`ModuleProps`, §2.1) and module-level tables.
 | `module:code-model-medium` | not-implemented | not-implemented | unplanned |
 | `module:code-model-large` | not-implemented | not-implemented | unplanned |
 | `module:large-data-threshold` | not-implemented | not-implemented | unplanned |
-| `module:uwtable` | not-implemented | not-implemented | WP-042. the module's default unwind-table kind is not `none` |
+| `module:uwtable` | supported | not-implemented | the module's default unwind-table kind is not `none` (WP-049) |
 | `module:frame-pointer` | supported | supported | any `frame-pointer` value: hod always keeps a frame pointer (`spec/codegen.md` §5) |
 | `module:branch-target-enforcement` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
 | `module:guarded-control-stack` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
@@ -187,7 +187,7 @@ Properties of a function that has a body.
 |---|---|---|---|
 | `function:parameters` | supported | not-implemented | a body with parameters; per class of parameter |
 | `function:variadic` | not-implemented | not-implemented | WP-038. a variadic function with a body |
-| `function:may-unwind` | not-implemented | not-implemented | WP-042. a body without `nounwind`: it needs unwind tables |
+| `function:may-unwind` | supported | not-implemented | a body without `nounwind`: it needs unwind tables (WP-049) |
 | `function:personality` | not-implemented | not-implemented | M2 (exceptions). a body with a personality function |
 | `function:slots` | not-implemented | not-implemented | WP-036. a body with fixed stack objects (`Body::slots`) |
 | `function:over-aligned-slot` | not-implemented | not-implemented | WP-036. a stack object aligned above 16 bytes |
@@ -235,7 +235,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:elementtype` | not-implemented | not-implemented | unplanned. on an inline-assembly or intrinsic argument |
 | `attr:align` | supported | supported | on a parameter or return: an assumption, no code |
 | `attr:alignstack` | not-implemented | not-implemented | unplanned. on a parameter and on a function |
-| `attr:uwtable` | not-implemented | not-implemented | WP-042. on a function with a body |
+| `attr:uwtable` | supported | not-implemented | on a function with a body (WP-049) |
 | `attr:noreturn` | supported | supported | a promise: nothing to do in the function itself |
 | `attr:naked` | rejected | rejected | a naked function is its inline assembly, with no frame (`spec/codegen.md` §1) |
 | `attr:nounwind` | supported | supported | its absence is `function:may-unwind` |

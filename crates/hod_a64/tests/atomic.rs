@@ -541,3 +541,30 @@ fn refused_atomics_by_name() {
 fn contended_programs_on_threads_agree() {
     atomic_threads::check();
 }
+
+/// Found by the corpus run (`gcc-torture/pr79286.c`), not an atomic: a
+/// load through a constant `getelementptr` far beyond its global (an
+/// out-of-bounds index LLVM folds into the address) gets an `adrp` of
+/// `.bss` plus the offset, which no linker can relocate
+/// ("relocation truncated to fit: `R_AARCH64_ADR_PREL_PG_HI21`"); `llc`'s
+/// object links. The address computation is `mem.rs`'s (WP-036) /
+/// constants with addresses (WP-072).
+#[test]
+#[ignore = "a bug outside WP-074: a far constant offset from a symbol does not link"]
+fn a_far_constant_offset_from_a_global_links() {
+    let text = format!(
+        "{}@d = internal global [0 x [8 x i32]] zeroinitializer, align 4\n\
+         define i32 @main() {{\nentry:\n  %v = load volatile i32, ptr getelementptr inbounds \
+         ([0 x [8 x i32]], ptr @d, i64 0, i64 300000000000000000), align 4\n  ret i32 0\n}}\n",
+        ll_header(22)
+    );
+    let (m, bodies) = parse(&text);
+    let emitted = common::emit(&m, &bodies, &Options::default());
+    let scratch = hod_testutil::Scratch::new("a64-atomic-far-offset");
+    let object = common::write_object(&scratch, "far.o", &emitted);
+    let Some(toolchain) = common::linking::Toolchain::host(&scratch) else { return };
+    for linker in &toolchain.linkers {
+        let outcome = toolchain.link(linker, &[], &[&object], &scratch.join(linker.name));
+        assert!(outcome.success(), "{}: {}", linker.name, outcome.stderr_text());
+    }
+}

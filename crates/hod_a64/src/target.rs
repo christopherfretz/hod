@@ -346,16 +346,19 @@ impl Target for A64 {
 
     fn extend_arg(&self, cx: &mut FnCx<'_, Self>, reg: PReg, ty: TypeId, attrs: ParamAttrs) {
         let Some(bits) = cx.types().int_bits(ty) else { return };
-        if bits >= 64 {
-            return;
-        }
         let Some(extension) = abi::produced_extension(bits, attrs) else { return };
-        let sz = common::size_for_bits(extension.to);
+        // Wider than 64 bits (`spec/codegen.md` §8.2): `reg` holds the
+        // last piece, extended from the integer's bits in it to 64.
+        let (sz, width) = if bits > 64 {
+            (Size::X, bits % 64)
+        } else {
+            (common::size_for_bits(extension.to), bits)
+        };
         let rd = xr(reg).zr();
         let word = if extension.signed {
-            mc::sbfx(sz, rd, rd, 0, bits)
+            mc::sbfx(sz, rd, rd, 0, width)
         } else {
-            mc::ubfx(sz, rd, rd, 0, bits)
+            mc::ubfx(sz, rd, rd, 0, width)
         };
         put(cx, word);
     }

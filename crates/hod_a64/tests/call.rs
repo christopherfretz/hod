@@ -250,7 +250,7 @@ fn random_signatures_agree_with_gcc_and_llc() {
     // `HOD_CALL_SEED` and `HOD_CALL_COUNT` explore other cases.
     let var = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok());
     let seed = var("HOD_CALL_SEED").unwrap_or(0x38_0001);
-    let count = var("HOD_CALL_COUNT").map_or(300, |n| n as usize);
+    let count = var("HOD_CALL_COUNT").map_or(600, |n| n as usize);
     let pic = Options { reloc_model: hod_cg::RelocModel::Pic, ..Options::default() };
     let stress = Options { stress: hod_cg::Stress::ALL, ..Options::default() };
     let build = |tag, a_llc, b_llc, options: &Options, shared, all_linkers| Build {
@@ -434,12 +434,7 @@ fn oracle_type(rng: &mut Rng) -> OT {
         1 => OT::Double,
         _ => {
             let n = *rng.pick(&WIDTHS);
-            // `a64:call-wide-int-extension`, `a64:call-narrow-ext-stack-arg`.
-            let ext = if matches!(n, 1 | 8 | 16 | 32) {
-                *rng.pick(&["", " zeroext", " signext"])
-            } else {
-                ""
-            };
+            let ext = *rng.pick(&["", " zeroext", " signext"]);
             OT::Int(n, ext)
         }
     }
@@ -539,35 +534,34 @@ fn chains_agree_with_the_interpreter() {
         let ret = q[pick];
         // A caller's arguments for `callee`: its own parameters (`have`,
         // with their values) or constants. Returns the argument texts.
-        let call_args = |rng: &mut Rng,
-                         callee: &[OT],
-                         values: &[Val],
-                         have: &mut Vec<(OT, Val)>| {
-            let mut args = Vec::new();
-            for (t, v) in callee.iter().zip(values) {
-                let fits: Vec<usize> =
-                    (0..have.len()).filter(|&i| have[i].0.same(*t) && have[i].1 == *v).collect();
-                let text = if !fits.is_empty() && rng.chance(50) {
-                    format!("{}{} %a{}", t.ir(), t.attr(), rng.pick(&fits))
-                } else if rng.chance(30) {
-                    let text = oracle_ir_const(v);
-                    let (ty, rest) = text.split_once(' ').expect("type and value");
-                    format!("{ty}{} {rest}", t.attr())
-                } else {
-                    let attr = if let OT::Int(n, _) = t { oracle_type_ext(rng, *n) } else { "" };
-                    have.push((
-                        match t {
-                            OT::Int(n, _) => OT::Int(*n, attr),
-                            other => *other,
-                        },
-                        v.clone(),
-                    ));
-                    format!("{}{} %a{}", t.ir(), t.attr(), have.len() - 1)
-                };
-                args.push(text);
-            }
-            args
-        };
+        let call_args =
+            |rng: &mut Rng, callee: &[OT], values: &[Val], have: &mut Vec<(OT, Val)>| {
+                let mut args = Vec::new();
+                for (t, v) in callee.iter().zip(values) {
+                    let fits: Vec<usize> = (0..have.len())
+                        .filter(|&i| have[i].0.same(*t) && have[i].1 == *v)
+                        .collect();
+                    let text = if !fits.is_empty() && rng.chance(50) {
+                        format!("{}{} %a{}", t.ir(), t.attr(), rng.pick(&fits))
+                    } else if rng.chance(30) {
+                        let text = oracle_ir_const(v);
+                        let (ty, rest) = text.split_once(' ').expect("type and value");
+                        format!("{ty}{} {rest}", t.attr())
+                    } else {
+                        let attr = if let OT::Int(..) = t { oracle_type_ext(rng) } else { "" };
+                        have.push((
+                            match t {
+                                OT::Int(n, _) => OT::Int(*n, attr),
+                                other => *other,
+                            },
+                            v.clone(),
+                        ));
+                        format!("{}{} %a{}", t.ir(), t.attr(), have.len() - 1)
+                    };
+                    args.push(text);
+                }
+                args
+            };
         let q_values: Vec<Val> = q.iter().map(|t| oracle_value(&mut rng, *t)).collect();
         let mut p_have = Vec::new();
         let q_args = call_args(&mut rng, &q, &q_values, &mut p_have);
@@ -683,10 +677,10 @@ fn chains_agree_with_the_interpreter() {
     }
 }
 
-/// An extension attribute for an argument of `n` bits a caller adds.
-fn oracle_type_ext(rng: &mut Rng, n: u32) -> &'static str {
+/// An extension attribute a caller adds to an integer argument.
+fn oracle_type_ext(rng: &mut Rng) -> &'static str {
     const EXTS: [&str; 3] = ["", " zeroext", " signext"];
-    if matches!(n, 1 | 8 | 16 | 32) { EXTS[rng.below(3) as usize] } else { "" }
+    EXTS[rng.below(3) as usize]
 }
 
 #[test]
@@ -706,19 +700,6 @@ fn the_remaining_forms_are_refused_by_name() {
             call::CALL_BUNDLE,
         ),
         (
-            "declare void @g(i100)\ndefine void @f(i100 %x) { call void @g(i100 signext %x)\n ret void }",
-            call::CALL_WIDE_EXT_ARG,
-        ),
-        (
-            "declare void @g(i100 zeroext)\ndefine void @f(i100 %x) { call void @g(i100 %x)\n ret void }",
-            call::CALL_WIDE_EXT_ARG,
-        ),
-        (
-            "declare void @g(i64, i64, i64, i64, i64, i64, i64, i64, i7 zeroext)\n\
-             define void @f(i7 %x) { call void @g(i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i7 zeroext %x)\n ret void }",
-            call::CALL_NARROW_EXT_STACK_ARG,
-        ),
-        (
             "declare void @g(ptr sret([5 x i64]))\n\
              define void @f(ptr %p) { call void @g(ptr byval([5 x i64]) %p)\n ret void }",
             hod_ir::AttrConflict::NAME,
@@ -736,10 +717,15 @@ fn the_remaining_forms_are_refused_by_name() {
             call::LANDING_PAD,
         ),
     ]);
-    // An `i7 zeroext` in a register, and a matching direct call that takes
-    // the declaration's attributes, are lowered.
+    // An extended `i7` in a register or on the stack, an extended `i100`,
+    // and a matching direct call that takes the declaration's attributes,
+    // are lowered.
     for lowered in [
         "declare void @g(i7 zeroext)\ndefine void @f(i7 %x) { call void @g(i7 zeroext %x)\n ret void }",
+        "declare void @g(i64, i64, i64, i64, i64, i64, i64, i64, i7 zeroext)\n\
+         define void @f(i7 %x) { call void @g(i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i7 zeroext %x)\n ret void }",
+        "declare void @g(i100)\ndefine void @f(i100 %x) { call void @g(i100 signext %x)\n ret void }",
+        "declare void @g(i100 zeroext)\ndefine void @f(i100 %x) { call void @g(i100 %x)\n ret void }",
         "declare void @g(ptr byval([5 x i64]) align 8)\ndefine void @f(ptr %p) { call void @g(ptr %p)\n ret void }",
     ] {
         assert_eq!(common::compile_ll(lowered), Ok(()), "{lowered}");
@@ -747,13 +733,8 @@ fn the_remaining_forms_are_refused_by_name() {
 }
 
 /// A return value wider than 64 bits with `signext` is owed extended to
-/// 128 bits (`abi-a64.md` §7), but `A64::extend_arg` returns early for 64
-/// bits and more (`crates/hod_a64/src/target.rs:349`) and `place_return`
-/// loads a `Mem`-class value without extending it
-/// (`crates/hod_cg/src/call.rs:339`). The same gap is why calls refuse
-/// `call::CALL_WIDE_EXT_ARG`.
+/// 128 bits (`abi-a64.md` §7): its last piece is extended.
 #[test]
-#[ignore = "target.rs:349 and hod_cg/src/call.rs:339 do not extend an integer wider than 64 bits"]
 fn a_wide_signext_return_is_extended() {
     let dir = Scratch::new("a64-call-wide-ret");
     let Some(toolchain) = Toolchain::host(&dir) else { return };
@@ -812,6 +793,41 @@ fn declared_attributes_follow_the_function_type() {
         };
         let name = format!("attrs-{tag}");
         link_run_all(&toolchain, &dir, &name, &[], &[&driver, &a, &b], "0 failed", tag == "LL");
+    }
+}
+
+/// `abi-a64.md` §7, run: integers with `zeroext` or `signext` of odd
+/// widths and of widths over 64 bits that are not multiples of 64, in
+/// registers and on the stack, as arguments and results
+/// (`tests/data/call/ext.ll`). Every value starts as junk above its
+/// width; gcc's checkers see every bit of the extended carrier. The
+/// caller and the callee module by hod and by `llc` in every pairing,
+/// hod also stressed; every linker where hod is involved.
+#[test]
+fn extended_integers_of_every_width_run() {
+    let dir = Scratch::new("a64-call-ext");
+    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let caller = data("ext.ll");
+    let callee = data("ext_callee.ll");
+    let driver = toolchain.compile_c(&dir, "ext-driver", &data("ext.c"), &[]);
+    let stress = Options { stress: hod_cg::Stress::ALL, ..Options::default() };
+    let plain = Options::default();
+    for (tag, caller_llc, callee_llc, options) in [
+        ("LL", true, true, plain),
+        ("HL", false, true, plain),
+        ("LH", true, false, plain),
+        ("HH", false, false, plain),
+        ("HH-stress", false, false, stress),
+    ] {
+        let Some(a) = object_with(&dir, &format!("ext-{tag}"), &caller, caller_llc, options) else {
+            return;
+        };
+        let Some(b) = object_with(&dir, &format!("ext-callee-{tag}"), &callee, callee_llc, options)
+        else {
+            return;
+        };
+        let name = format!("ext-{tag}");
+        link_run_all(&toolchain, &dir, &name, &[], &[&driver, &a, &b], " 0 failed", tag == "LL");
     }
 }
 

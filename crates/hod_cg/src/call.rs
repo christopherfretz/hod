@@ -21,6 +21,11 @@ use crate::reg::{PReg, RegSet};
 use crate::sym::{RuntimeFn, SymRef};
 use crate::target::{CallEmit, CallTarget, Target};
 
+/// Whether `attrs` asks for an extension (`zeroext` or `signext`).
+fn extends(attrs: ParamAttrs) -> bool {
+    attrs.has(ParamAttrs::ZEROEXT) || attrs.has(ParamAttrs::SIGNEXT)
+}
+
 /// An operand of a runtime-function call (§7.3).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CallArg {
@@ -343,6 +348,7 @@ impl<'a, T: Target> FnCx<'a, T> {
             };
             if let Some(slot) = source {
                 t.load(self, reg, slot.offset_by(part.offset), part.size);
+                self.extend_last_piece(ret_ty, self.ret_attrs, &part, slot, None);
             } else {
                 self.check_class(reg, class)?;
                 self.put(value, reg)?;
@@ -621,6 +627,7 @@ impl<'a, T: Target> FnCx<'a, T> {
                 (Place::Reg(reg), None) => t.load(self, reg, from, part.size),
                 (Place::Stack(_), None) => {}
             }
+            self.extend_last_piece(ty, attrs, part, slot, to_stack);
             return Ok(());
         }
 
@@ -645,8 +652,55 @@ impl<'a, T: Target> FnCx<'a, T> {
             t.extend_arg(self, reg, ty, attrs);
         }
         if let Some(dst) = to_stack {
-            t.store(self, reg, dst, part.size);
+            // §7.1: an extended integer fills its stack slot, as far as
+            // the extension reaches (LLVM's callers store an `i7 zeroext`
+            // as 32 bits, an `i33 signext` as 64).
+            let size =
+                if class == Class::Gpr && extends(attrs) && self.types().int_bits(ty).is_some() {
+                    part.size.max(self.reg_bytes(Class::Gpr))
+                } else {
+                    part.size
+                };
+            t.store(self, reg, dst, size);
         }
         Ok(())
+    }
+
+    /// §7.1: the last piece of an integer wider than a register, a
+    /// `Mem`-class value whose image is in `slot`, brought to the form
+    /// the ABI requires of its producer once `part` has been placed: in
+    /// its register by [`Target::extend_arg`] (which decides what that
+    /// form is), or on the stack through a scratch register and stored a
+    /// whole register wide. Nothing for other parts and types, and on
+    /// the stack nothing without `zeroext` or `signext`.
+    fn extend_last_piece(
+        &mut self,
+        ty: TypeId,
+        attrs: ParamAttrs,
+        part: &Part,
+        slot: FrameRef,
+        to_stack: Option<FrameRef>,
+    ) {
+        let t = self.target;
+        let reg_bytes = self.reg_bytes(Class::Gpr);
+        let Some(bits) = self.types().int_bits(ty) else { return };
+        let piece_bits = 8 * reg_bytes;
+        if bits <= piece_bits || bits % piece_bits == 0 {
+            return;
+        }
+        let last = (bits - 1) / piece_bits * reg_bytes;
+        let size = bits.div_ceil(8) - last;
+        match (part.place, to_stack) {
+            (Place::Reg(reg), None) if part.offset == last => t.extend_arg(self, reg, ty, attrs),
+            (Place::Stack(_), Some(dst))
+                if extends(attrs) && part.offset <= last && last < part.offset + part.size =>
+            {
+                let scratch = self.scratch_reg(Class::Gpr);
+                t.load(self, scratch, slot.offset_by(last), size);
+                t.extend_arg(self, scratch, ty, attrs);
+                t.store(self, scratch, dst.offset_by(last - part.offset), reg_bytes);
+            }
+            _ => {}
+        }
     }
 }

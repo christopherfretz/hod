@@ -53,18 +53,6 @@ pub const CALL_BUNDLE: &str = "a64:call-bundle";
 /// is not a multiple of 8: the bits above it cannot be cleared before the
 /// normal edge is taken.
 pub const INVOKE_ODD_RESULT: &str = "a64:invoke-odd-int-result";
-/// An argument wider than 64 bits, not a multiple of 64, with `zeroext`
-/// or `signext` (`i100 signext`): the producer owes its extension to the
-/// next multiple of 64 (`abi-a64.md` §7), which `A64::extend_arg`
-/// (`target.rs`) does not do for more than 64 bits, and which the call
-/// sequence skips for a `Mem`-class value.
-pub const CALL_WIDE_EXT_ARG: &str = "a64:call-wide-int-extension";
-/// An argument on the stack whose width is not 1, 8, 16, 32 or 64 bits,
-/// with `zeroext` or `signext` (`i7 zeroext`): LLVM's callers store it
-/// extended to 32 bits, and its consumer may read it so (`abi-a64.md` §7,
-/// `abi::assumed_extension`), but `assign` gives the part its store size
-/// and the call sequence stores only that many bytes.
-pub const CALL_NARROW_EXT_STACK_ARG: &str = "a64:call-narrow-ext-stack-arg";
 /// `llvm.va_start`, `llvm.va_end`, `llvm.va_copy` outside what is
 /// lowered: `va_start` in a function that is not variadic, an operand
 /// that is not a pointer.
@@ -89,8 +77,6 @@ pub const UNSUPPORTED: &[&str] = &[
     CALL_INLINE_ASM,
     CALL_BUNDLE,
     INVOKE_ODD_RESULT,
-    CALL_WIDE_EXT_ARG,
-    CALL_NARROW_EXT_STACK_ARG,
     VA_INTRINSIC,
     VA_ARG,
     LANDING_PAD,
@@ -177,9 +163,6 @@ pub fn call<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>) -> CgResult<()> {
     if site.bundle_count() != 0 {
         return unsupported(CALL_BUNDLE);
     }
-    if let Some(name) = refused_extension(cx, &site) {
-        return unsupported(name);
-    }
     let musttail = site.tail() == TailKind::MustTail;
     let result = inst.ty();
     let odd = !musttail
@@ -252,59 +235,6 @@ fn any_odd(cx: &FnCx<'_, A64>, ty: TypeId) -> bool {
 /// image is at `at + offset`: the byte holding the leaf's top bit is
 /// masked to the bits below it (`spec/ir.md` §4.3). `ty` has at most
 /// [`MAX_REG_LEAVES`] leaves. Writes `x16` and `x17`.
-/// The refusal an extended integer argument of the call needs, if any:
-/// [`CALL_WIDE_EXT_ARG`], or [`CALL_NARROW_EXT_STACK_ARG`] when `assign`
-/// puts such an argument on the stack. The attributes are those of the
-/// call site, else of the function a direct call names, as the call
-/// sequence reads them.
-fn refused_extension(cx: &FnCx<'_, A64>, site: &hod_ir::CallSite<'_>) -> Option<&'static str> {
-    let types = cx.types();
-    let mut narrow = false;
-    let mut sig_params = Vec::new();
-    let mut sig_attrs = Vec::new();
-    for (index, &arg) in site.args().iter().enumerate() {
-        let ty = value_ty(cx, arg);
-        let attrs = hod_ir::call_arg_attrs(cx.module, site, index).unwrap_or(site.arg_attrs(index));
-        sig_params.push(ty);
-        sig_attrs.push(attrs);
-        let Some(bits) = types.int_bits(ty) else { continue };
-        if bits > 64 && crate::abi::produced_extension(bits, attrs).is_some() {
-            return Some(CALL_WIDE_EXT_ARG);
-        }
-        let stored = crate::abi::assumed_extension(bits, attrs, hod_cg::abi::Place::Stack(0));
-        narrow |= stored.is_some_and(|e| e.to > bits.next_multiple_of(8));
-    }
-    if !narrow {
-        return None;
-    }
-    let TypeKind::Function { ret, params, variadic } = types.kind(site.fn_type()) else {
-        return None;
-    };
-    let ret_attrs = hod_ir::call_ret_attrs(cx.module, site).unwrap_or(site.ret_attrs());
-    let sig = hod_cg::abi::Sig {
-        cc: site.cc(),
-        ret,
-        ret_attrs,
-        params: &sig_params,
-        param_attrs: &sig_attrs,
-        fixed: params.len() as u32,
-        variadic,
-    };
-    let mut asg = hod_cg::abi::Assignment::default();
-    // A signature `assign` refuses is refused by the call sequence.
-    crate::abi::assign(types, &sig, &mut asg).ok()?;
-    asg.args
-        .iter()
-        .any(|part| {
-            let at = part.arg as usize;
-            let bits = types.int_bits(sig_params[at]).unwrap_or(0);
-            matches!(part.place, hod_cg::abi::Place::Stack(_))
-                && crate::abi::assumed_extension(bits, sig_attrs[at], part.place)
-                    .is_some_and(|e| e.to > bits.next_multiple_of(8))
-        })
-        .then_some(CALL_NARROW_EXT_STACK_ARG)
-}
-
 fn clear_above_leaves(cx: &mut FnCx<'_, A64>, ty: TypeId, at: FrameRef, offset: u32) {
     let types = cx.types();
     match types.kind(ty) {

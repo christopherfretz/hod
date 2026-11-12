@@ -576,6 +576,38 @@ which the tests' emitter and comparison call; `table::extension` pins
 them row by row. For aggregates, LLVM's consumer stores each member and the stored bytes must
 be right although hod passed junk above every leaf.
 
+### 7.1 Measured: odd and wide widths
+
+What `llc` 19 and 22 (`-O0 -global-isel=0 -fast-isel=0`, identical) do
+with an extended integer whose width is neither 8, 16, 32 nor a
+multiple of 64, measured by WP-069 (`a` is the value's register or its
+last piece's):
+
+| type, place | `llc` producer | `llc` consumer | hod producer |
+|---|---|---|---|
+| `iN` ext, N < 32, register | `ubfx`/`sbfx w, #0, #N` | assumes 32 bits | the same |
+| `iN` ext, N < 32 (not 1, 8, 16), stack | 4 bytes stored, extended to 32 | `ldr w`: assumes 32 bits | 8 bytes, extended to 64 |
+| `iN` ext, 32 < N < 64, register | extended to 64 | assumes 64 | the same |
+| `iN` ext, 32 < N < 64, stack | 8 bytes, extended to 64 | assumes 64 | the same |
+| `iN` ext, 64 < N ≤ 512, N mod 64 ≠ 0, registers (argument or result) | the last piece extended from `N mod 64` bits to 64 (`sbfx x1, x1, #0, #36` for `i100`) | assumes it | the same |
+| the same, last piece on the stack | the last piece stored as 8 bytes, extended | assumes it (an `asr` of the loaded slot) | the same |
+| `iN` ext, N a multiple of 64 | nothing | nothing | nothing |
+| `iN` ext result in memory (N > 512, `ret_memory`) | the image alone (`strh` + `strb` for `i520`) | nothing beyond the image | the same |
+
+An integer wider than the remaining argument registers may be split
+between registers and the stack (`i200` after six general registers,
+`i600`): §4.2 places its pieces, and the rule applies to whichever
+piece is last. hod's producer stores every extended integer that a
+general register carries as a whole register on the stack; every such
+slot is 8 bytes (§3.2), so this writes nothing outside the value's slot.
+
+*Evidence:* `tests/call.rs`'s `extended_integers_of_every_width_run`
+(`tests/data/call/ext.ll`: 14 widths and places, both attributes, junk
+above every width; hod and `llc` as either the caller or the callee,
+gcc's checkers seeing every bit of the carrier) and the random
+signatures of `tests/common/callgen.rs`, which now draw extended
+integers of every width in every position.
+
 ## 8. What the code generator does with an `Assignment`
 
 `assign` only says where; these are the duties that go with it. In the

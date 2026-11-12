@@ -741,17 +741,11 @@ These are decisions the group packages (WP-035..041) build on.
 - **Refused by name**: `a64:call` (`callbr`), `a64:call-inline-asm`,
   `a64:call-bundle`, `a64:invoke-odd-int-result` (an `invoke` whose
   `Mem` result needs leaf clearing on the normal edge),
-  `a64:call-wide-int-extension` (an extended argument wider than 64 bits
-  and no multiple of 64: `A64::extend_arg` stops at 64 bits, and the
-  sequence does not extend a `Mem`-class argument),
-  `a64:call-narrow-ext-stack-arg` (an extended argument of an odd width
-  on the stack: LLVM stores it as 32 bits, the sequence stores its store
-  size), `a64:call-mismatched-declaration` (a direct call through
-  another function type whose callee declares attributes the call site
-  lacks: `llc` does not take them, the sequence would),
   `a64:va-intrinsic`, `a64:va_arg`, `a64:landingpad`,
   `a64:landingpad-clause`, `a64:resume`. `a64:variadic-definition` is
-  no longer produced.
+  no longer produced; WP-069 removed `a64:call-wide-int-extension` and
+  `a64:call-narrow-ext-stack-arg` (`abi-a64.md` §7.1) and
+  `a64:call-mismatched-declaration` (§7.1 here).
 - **Tests** (`tests/call.rs`): random signatures (`tests/common/
   callgen.rs`) linking gcc-compiled C with modules compiled by hod and
   `llc` in every pairing, stressed, PIC with a shared object; the call
@@ -840,6 +834,12 @@ For `Call` and `Invoke`, in this order:
    from the return registers (§4.4), or copy it into the result's home for
    a `Mem` class.
 
+6. (`Invoke`) write the normal destination's incoming slots and branch to
+   it; then, if step 3 lowered the stack pointer, emit the pad stub
+   (§5.3).
+
+A call marked `noreturn` is followed by the trap instruction.
+
 **Effective attributes.** A call passes its arguments and takes its
 result with its *effective* attributes, which `classify` reads too, both
 through `hod_ir::call_arg_attrs` and `call_ret_attrs` (one rule in one
@@ -869,11 +869,21 @@ Function attributes are not part of this rule (`returns_twice` and
 
 `FnCx::place_return` places a `ret`'s value in the return registers; a
 value returned in memory (`ret_memory`) is the target's to copy.
-6. (`Invoke`) write the normal destination's incoming slots and branch to
-   it; then, if step 3 lowered the stack pointer, emit the pad stub
-   (§5.3).
 
-A call marked `noreturn` is followed by the trap instruction.
+**Extended integers.** An integer argument or result with `zeroext` or
+`signext` is extended as `abi-<target>.md` asks; for AArch64, §7 there.
+The sequence calls `Target::extend_arg` for the part that holds the
+integer's last piece, in its register, on both sides of a call and in
+`place_return`: for an integer no wider than a general register the
+register holds the whole value; for a wider one whose width is no
+multiple of the register's, it holds the last piece, and `extend_arg`
+extends that piece's `N mod 64` bits to the register's width. A last
+piece on the stack is extended through a scratch register and stored as
+a whole register, and so is any extended integer that a general
+register would carry, so that its slot holds the extended value
+whatever its width. A result returned in memory (`ret_memory`) is its
+image alone. The incoming side extends nothing: it may assume what the
+target's table promises.
 
 **Every call instruction in a function's code is emitted by this
 sequence** and so has a call-site row, including the calls of runtime

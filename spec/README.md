@@ -12,7 +12,7 @@ crate could be re-implemented from its spec and its tests alone.
 | `mc-a64.md` | `hod_mc_a64`: register model, instruction constructors, logical and floating-point immediates, constant materialization, fixups | current: base integer set (WP-012), scalar floating point, FP/SIMD loads and stores and a SIMD subset (WP-013) |
 | `mc-x64.md` | `hod_mc_x64` | planned |
 | `codegen.md` | `hod_cg`: the walk, value-location policy, frame, `Target` trait, per-function output record | design written (WP-014); implemented from WP-030 on |
-| `abi-a64.md` | how IR-level types are passed and returned on AArch64 | planned |
+| `abi-a64.md` | `hod_a64::abi::assign`: how IR-level signatures are passed and returned on AArch64 Linux as LLVM does it, extension duties, variadic functions, what is unsupported | current (WP-034); the code generator's duties of §8 are implemented by WP-038 |
 | `abi-x64.md` | the same for x86-64 SysV | planned |
 | `eh.md` | `hod_eh`: CFI and LSDA | planned |
 | `dwarf.md` | `hod_dwarf` | planned |

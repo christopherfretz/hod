@@ -119,7 +119,7 @@ pub struct Module {
     pub props: ModuleProps,
     /// The tables bodies only read: one copy, which the forks of a frozen
     /// module share (§5.1, "Reading bodies in parallel").
-    shared: Arc<Shared>,
+    shared: Tables,
     asms: AsmTable,
     fn_attrs: FnAttrTable,
     unsupported: Vec<(Box<str>, Option<SymId>)>,
@@ -130,6 +130,26 @@ pub struct Module {
     /// What a fork of a frozen module knows of where it came from; `None`
     /// in a module that is not a fork.
     fork: Option<Box<ForkOrigin>>,
+}
+
+/// [`Shared`], owned until the module is frozen (so that changing it
+/// costs no atomic operation), shared by the forks after.
+#[derive(Clone, Debug)]
+enum Tables {
+    Own(Box<Shared>),
+    Frozen(Arc<Shared>),
+}
+
+impl std::ops::Deref for Tables {
+    type Target = Shared;
+
+    #[inline]
+    fn deref(&self) -> &Shared {
+        match self {
+            Tables::Own(shared) => shared,
+            Tables::Frozen(shared) => shared,
+        }
+    }
 }
 
 /// The parts of a [`Module`] that reading a body does not add to.
@@ -149,14 +169,14 @@ struct Shared {
 
 /// The shared tables, to change: in a fork, the change makes the fork's
 /// work one it cannot hand over ([`Module::delta`]).
-fn shared_mut<'a>(
-    shared: &'a mut Arc<Shared>,
-    fork: &mut Option<Box<ForkOrigin>>,
-) -> &'a mut Shared {
+fn shared_mut<'a>(shared: &'a mut Tables, fork: &mut Option<Box<ForkOrigin>>) -> &'a mut Shared {
     if let Some(fork) = fork {
         fork.refused = true;
     }
-    Arc::make_mut(shared)
+    match shared {
+        Tables::Own(shared) => shared,
+        Tables::Frozen(shared) => Arc::make_mut(shared),
+    }
 }
 
 impl Module {
@@ -168,7 +188,7 @@ impl Module {
             types,
             consts: ConstPool::new(),
             props: ModuleProps::default(),
-            shared: Arc::default(),
+            shared: Tables::Own(Box::default()),
             asms: AsmTable::default(),
             fn_attrs: FnAttrTable::default(),
             unsupported: Vec::new(),
@@ -195,7 +215,11 @@ impl Module {
     /// `InvalidSymbol` for an empty name or a name with a zero byte;
     /// `TableFull`.
     pub fn symbol_named(&mut self, name: &[u8]) -> IrResult<SymId> {
-        if let Some(sym) = self.shared.symbols.find(name) {
+        // A module no fork shares a table with interns at once; one
+        // that does looks first, so that finding changes nothing.
+        if self.shares_tables()
+            && let Some(sym) = self.shared.symbols.find(name)
+        {
             return Ok(sym);
         }
         shared_mut(&mut self.shared, &mut self.fork).symbols.named(name)
@@ -475,7 +499,11 @@ impl Module {
     /// # Errors
     /// `TableFull`.
     pub fn comdat_named(&mut self, name: &[u8]) -> IrResult<ComdatId> {
-        if let Some(id) = self.shared.comdats.find(name) {
+        // A module no fork shares a table with interns at once; one
+        // that does looks first, so that finding changes nothing.
+        if self.shares_tables()
+            && let Some(id) = self.shared.comdats.find(name)
+        {
             return Ok(id);
         }
         shared_mut(&mut self.shared, &mut self.fork).comdats.named(name)
@@ -952,6 +980,9 @@ impl Module {
     /// that [`Module::fork`] copies nothing. A frozen module is used as
     /// before; [`Module::thaw`] undoes it once the forks are gone.
     pub fn freeze(&mut self) {
+        if let Tables::Own(shared) = &mut self.shared {
+            self.shared = Tables::Frozen(Arc::new(std::mem::take(&mut **shared)));
+        }
         self.types.freeze();
         self.consts.freeze();
         self.asms.freeze();
@@ -962,6 +993,11 @@ impl Module {
     /// Back to one layer per table, where no fork shares the base any
     /// more. The module is the same module before and after.
     pub fn thaw(&mut self) {
+        if let Tables::Frozen(shared) = &mut self.shared
+            && let Some(shared) = Arc::get_mut(shared)
+        {
+            self.shared = Tables::Own(Box::new(std::mem::take(shared)));
+        }
         self.types.thaw();
         self.consts.thaw();
         self.asms.thaw();
@@ -994,7 +1030,10 @@ impl Module {
             types: self.types.fork(),
             consts: self.consts.fork(),
             props: self.props,
-            shared: Arc::clone(&self.shared),
+            shared: match &self.shared {
+                Tables::Frozen(shared) => Tables::Frozen(Arc::clone(shared)),
+                Tables::Own(shared) => Tables::Own(shared.clone()),
+            },
             asms: self.asms.fork(),
             fn_attrs: self.fn_attrs.fork(),
             unsupported: Vec::new(),
@@ -1095,7 +1134,7 @@ impl Module {
     /// this module.
     pub fn stamp(&self) -> Stamp {
         Stamp {
-            shared: Arc::as_ptr(&self.shared) as usize,
+            shared: std::ptr::from_ref::<Shared>(&self.shared) as usize,
             props: self.props,
             debug: self.debug.counts(),
             touched: self.debug.touched(),
@@ -1105,6 +1144,13 @@ impl Module {
     /// Whether this module is a fork ([`Module::fork`]).
     pub fn is_fork(&self) -> bool {
         self.fork.is_some()
+    }
+
+    /// Whether this module is a fork or frozen: whether a fork may share
+    /// its tables.
+    #[inline]
+    fn shares_tables(&self) -> bool {
+        matches!(self.shared, Tables::Frozen(_))
     }
 }
 

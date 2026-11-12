@@ -1082,11 +1082,16 @@ const OPERAND: [SupportRow; 9] = [
     row("operand:slot", ON, todo(X64), "the address of a stack slot"),
     row("operand:blockaddress", ON, todo(X64), "of a block of the same function"),
     row("operand:addr-of-int", ON, todo(X64), "`inttoptr` of a constant number"),
-    a64("operand:int-of-addr", LATER, "`ptrtoint` of a constant address"),
-    a64("operand:sym-diff", LATER, ""),
+    row("operand:int-of-addr", ON, todo(X64), "`ptrtoint` of a constant address (WP-072)"),
+    row("operand:sym-diff", ON, todo(X64), "a difference of two symbol addresses (WP-072)"),
     a64("operand:dso-local-equivalent", LATER, ""),
     a64("operand:no-cfi", LATER, ""),
-    a64("operand:address-in-aggregate", LATER, "an aggregate or vector constant with an address"),
+    row(
+        "operand:address-in-aggregate",
+        ON,
+        todo(X64),
+        "an aggregate or vector constant with an address (WP-072)",
+    ),
 ];
 
 /// In the order of [`const_op_index`].

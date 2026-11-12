@@ -40,10 +40,10 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `tail` | 3 | 3 | 0 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
-| `operand` | 9 | 4 | 5 | 0 | 0 | 9 | 0 |
+| `operand` | 9 | 7 | 2 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 133 | 94 | 39 | 0 | 0 | 133 | 0 |
-| total | 434 | 245 | 143 | 46 | 16 | 363 | 55 |
+| total | 434 | 248 | 140 | 46 | 16 | 363 | 55 |
 
 ## `module`
 
@@ -468,11 +468,11 @@ Constant addresses as instruction operands.
 | `operand:slot` | supported | not-implemented | the address of a stack slot |
 | `operand:blockaddress` | supported | not-implemented | of a block of the same function |
 | `operand:addr-of-int` | supported | not-implemented | `inttoptr` of a constant number |
-| `operand:int-of-addr` | not-implemented | not-implemented | unplanned. `ptrtoint` of a constant address |
-| `operand:sym-diff` | not-implemented | not-implemented | unplanned |
+| `operand:int-of-addr` | supported | not-implemented | `ptrtoint` of a constant address (WP-072) |
+| `operand:sym-diff` | supported | not-implemented | a difference of two symbol addresses (WP-072) |
 | `operand:dso-local-equivalent` | not-implemented | not-implemented | unplanned |
 | `operand:no-cfi` | not-implemented | not-implemented | unplanned |
-| `operand:address-in-aggregate` | not-implemented | not-implemented | unplanned. an aggregate or vector constant with an address |
+| `operand:address-in-aggregate` | supported | not-implemented | an aggregate or vector constant with an address (WP-072) |
 
 ## `const-expr`
 

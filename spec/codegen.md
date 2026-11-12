@@ -523,6 +523,42 @@ These are decisions the group packages (WP-035..041) build on.
   until WP-035 switches the generator on; it prints the missing mask (the
   generator switches still off).
 
+##### Control flow (WP-037)
+
+- **`condbr`** tests bit 0 (§2.2): `tbz` to the false block when the
+  true block is emitted next, else `tbnz` to the true block and `b` to
+  the false one unless it comes next. A constant condition, and two
+  equal targets, are a `br`. A deferred condition is asked for (emitted)
+  first; fusing a deferred compare into the branch is left to the
+  integration package after WP-035 and WP-039, at the place marked in
+  `control.rs`.
+- **`switch`** zero-extends the condition in its register (`ubfx`, below
+  64 bits), drops the cases that go to the default, sorts the others by
+  unsigned value (skipped when they come sorted) and emits a binary
+  search: a node compares with its middle case (`b.eq` to its block,
+  `b.hi` to the upper half), a run of at most four cases is a chain of
+  `cmp` · `b.eq` ending in `b default` (or `b.ne default` when the last
+  case's block comes next). A case value is compared by `cmp #imm`,
+  `cmn #-imm`, or through `x16`. Code is linear in the cases; a run does
+  about `log2(n) + 4` compares; no jump table and no data island. A
+  constant condition is a `br`. A `switch` wider than 64 bits is
+  `a64:switch-wide` (`classify` supports `inst:switch` for `int` only).
+- **`indirectbr`** is `br` of the address in its register; a
+  `blockaddress` constant operand is formed in `x16` first.
+- **`blockaddress` in code** (`common::block_address`): `adr rd, label`
+  (fixup kind 4, ±1 MiB). In far mode: `adr rd, 1f` · `ldr wT, [rd]` ·
+  `sbfx xT, xT, #0, #26` · `add rd, rd, xT, lsl #2` · `b 2f` ·
+  `1: b label` · `2:`: the distance is read back from the `imm26` of a
+  `b` that is never executed, so the only fixup is a `b`'s, which reaches
+  the whole function. This reads `.text` as data: an execute-only text
+  mapping would break it (none of the supported linkers makes one by
+  default). The glue's constant path (`materialize_gpr_const`) still
+  refuses `blockaddress` (`a64:blockaddress`) until it calls this helper,
+  so a `blockaddress` reaches code only as `indirectbr`'s own operand;
+  `operand:blockaddress` stays not-implemented until then.
+- **`phi`** needs nothing from the target beyond the glue (§4.5); the
+  protocol is tested here on the real target for `int` and `ptr`.
+
 ### 5.6 x86-64 (planned)
 
 `push rbp` · `mov rbp, rsp` · pushes of the save set · `sub rsp, imm32`

@@ -509,7 +509,7 @@ const COMDAT: [SupportRow; ComdatKind::ALL.len()] = [
 const INIT: [SupportRow; 8] = [
     row("init:data", ON, todo(X64), "any initializer: numbers, zero, `undef`, aggregates, bytes"),
     row("init:symbol", ON, todo(X64), "a symbol's address, with or without an offset"),
-    a64("init:blockaddress", "WP-037", ""),
+    row("init:blockaddress", ON, todo(X64), "of a block of a function with an `indirectbr` (§9.6)"),
     row("init:sym-diff", ON, todo(X64), "the difference of two symbol addresses"),
     a64("init:sym-diff-plt", LATER, "the same through `dso_local_equivalent` (relative vtables)"),
     row("init:int-of-addr", ON, todo(X64), "an address in an integer field"),
@@ -641,7 +641,7 @@ const ATTR_STRING: [SupportRow; FnStr::ALL.len()] = [
     a64("attr:zero-call-used-regs", LATER, ""),
     both("attr:stack-protector-buffer-size", ON, "a parameter of `attr:ssp`, read with it"),
     row("attr:min-legal-vector-width", ON, todo(X64), "read by x86 only"),
-    a64("attr:no-jump-tables", "WP-037", ""),
+    row("attr:no-jump-tables", ON, todo(X64), "hod emits no jump table (`spec/codegen.md` §6.2)"),
     both("attr:no-builtins", ON, "hod recognises no library call"),
     both("attr:no-builtin", ON, "every `no-builtin-<function>`; hod recognises no library call"),
 ];
@@ -718,7 +718,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
     a64("inst:extractelement", VECTORS, ""),
     a64("inst:insertelement", VECTORS, ""),
     a64("inst:shufflevector", VECTORS, ""),
-    a64("inst:phi", "WP-037", ""),
+    row("inst:phi", on(&[TypeClass::Int, TypeClass::Ptr]), todo(X64), ""),
     a64("inst:select", "WP-035", ""),
     a64("inst:freeze", "WP-035", ""),
     both(
@@ -731,9 +731,9 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
     both("inst:catchpad", never(WINDOWS_EH), ""),
     both("inst:cleanuppad", never(WINDOWS_EH), ""),
     row("inst:br", ON, todo(X64), ""),
-    a64("inst:condbr", "WP-037", "LLVM's two-way `br`"),
-    a64("inst:switch", "WP-037", ""),
-    a64("inst:indirectbr", "WP-037", ""),
+    row("inst:condbr", ON, todo(X64), "LLVM's two-way `br`"),
+    row("inst:switch", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:indirectbr", ON, todo(X64), ""),
     row("inst:ret", ON, todo(X64), ""),
     row("inst:unreachable", ON, todo(X64), ""),
     both(
@@ -818,7 +818,11 @@ const OPERAND: [SupportRow; 9] = [
         "a symbol's address as a value, with or without an offset",
     ),
     a64("operand:slot", "WP-036", "the address of a stack slot"),
-    a64("operand:blockaddress", "WP-037", "of a block of the same function"),
+    a64(
+        "operand:blockaddress",
+        "WP-037",
+        "of a block of the same function; the glue does not materialize one yet",
+    ),
     row("operand:addr-of-int", ON, todo(X64), "`inttoptr` of a constant number"),
     a64("operand:int-of-addr", LATER, "`ptrtoint` of a constant address"),
     a64("operand:sym-diff", LATER, ""),

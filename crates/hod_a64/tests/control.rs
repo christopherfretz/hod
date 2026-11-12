@@ -592,6 +592,13 @@ fn the_branch_forms() {
     // driver's junk bits in every native test.
 }
 
+/// A `switch` on `i128` is refused by name (`classify` rejects it first).
+#[test]
+fn a_wide_switch_is_refused_by_name() {
+    let f = "define i64 @f(i128 %x) {\n switch i128 %x, label %a [ i128 1, label %b ]\na:\n ret i64 1\nb:\n ret i64 2\n}";
+    assert_eq!(compile_ll(f), Err(CgError::unsupported(hod_a64::control::SWITCH_WIDE)));
+}
+
 #[test]
 fn the_group_is_no_longer_refused() {
     for f in [

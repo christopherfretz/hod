@@ -713,6 +713,11 @@ fn random_bodies_verify() {
     }
     assert!(insts > 20 * SEEDS as usize, "{insts} instructions");
     assert!(outside > 1000 && next > 1000 && arg_outside > 100, "{outside} {next} {arg_outside}");
+    eprintln!(
+        "random bodies: {SEEDS} bodies, {insts} instructions; {outside} results used outside \
+         their block, {next} only by the next instruction; {arg_outside} arguments used \
+         outside the entry block"
+    );
 }
 
 /// §5.3: a reserved value left undefined fails `finish` with

@@ -26,6 +26,35 @@ use crate::lexer::Tok;
 use crate::meta::{MdKind, MdRef};
 use crate::parser::{Parser, ir};
 
+/// The fields LLVM's parser requires (`LLParser`'s `REQUIRED`), by
+/// kind; `DILocation`'s `scope` is checked where locations are read.
+const REQUIRED: &[(DiKind, &str)] = &[
+    (DiKind::File, "filename"),
+    (DiKind::File, "directory"),
+    (DiKind::Enumerator, "name"),
+    (DiKind::Enumerator, "value"),
+    (DiKind::DerivedType, "tag"),
+    (DiKind::DerivedType, "baseType"),
+    (DiKind::CompositeType, "tag"),
+    (DiKind::SubroutineType, "types"),
+    (DiKind::CompileUnit, "file"),
+    (DiKind::LexicalBlock, "scope"),
+    (DiKind::LexicalBlockFile, "scope"),
+    (DiKind::LexicalBlockFile, "discriminator"),
+    (DiKind::Namespace, "scope"),
+    (DiKind::TemplateTypeParameter, "type"),
+    (DiKind::TemplateValueParameter, "value"),
+    (DiKind::GlobalVariableExpression, "var"),
+    (DiKind::GlobalVariableExpression, "expr"),
+    (DiKind::LocalVariable, "scope"),
+    (DiKind::ImportedEntity, "tag"),
+    (DiKind::ImportedEntity, "scope"),
+    (DiKind::Label, "scope"),
+    (DiKind::Label, "name"),
+    (DiKind::Label, "file"),
+    (DiKind::Label, "line"),
+];
+
 /// What a numbered metadata node became.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Handle {
@@ -164,19 +193,26 @@ impl<'a> Parser<'a, '_> {
         }
     }
 
-    /// After the items: the module's tables complete, then checked
-    /// as LLVM's verifier checks them; a failure is `debug:invalid`.
+    /// After the items: the module's tables complete, then, when the
+    /// module uses them (`!llvm.dbg.cu`, a `!dbg` on a global value),
+    /// checked as LLVM's verifier checks them; a failure is
+    /// `debug:invalid`, as is debug information LLVM would drop for want
+    /// of a `Debug Info Version` of 3.
     pub(crate) fn finish_debug(&mut self) -> PResult<()> {
         if self.module.debug.is_empty() && self.dbg_cu.is_none() {
             return Ok(());
         }
         ir(self.src.len() as u32, self.module.finish_debug())?;
-        let debug = &self.module.debug;
-        let unlisted = (0..debug.node_count() as u32).any(|raw| {
-            let id = DiId::new(raw);
-            debug.kind(id) == DiKind::CompileUnit && !debug.compile_units().contains(&id)
-        });
-        if unlisted || self.module.verify_debug().is_err() {
+        // LLVM drops the debug information of a module that uses it
+        // without `Debug Info Version` 3.
+        let used = self.dbg_cu.is_some()
+            || !self.module.global_exprs().is_empty()
+            || self.module.symbols().any(|symbol| {
+                matches!(symbol.kind(), hod_ir::SymbolKind::Function { subprogram: Some(_), .. })
+            });
+        let version = self.module.props.debug_info_version;
+        // LLVM's verifier checks only what is used, and so does this.
+        if used && (version != Some(3) || self.module.verify_debug().is_err()) {
             self.module.record_unsupported(INVALID, None);
         }
         Ok(())
@@ -263,7 +299,7 @@ impl<'a> Parser<'a, '_> {
                     scratch.strs.clear();
                 }
                 Handle::Loc(id) => {
-                    let (loc, distinct) = self.location_body(node.span, node.distinct)?;
+                    let (loc, distinct) = self.location_body(node.span, node.distinct, &mut scratch)?;
                     let debug = &mut self.module.debug;
                     let result = if distinct {
                         debug.define_distinct_loc(id, loc)
@@ -579,15 +615,31 @@ impl<'a> Parser<'a, '_> {
         span: Span,
         scratch: &mut DebugScratch,
     ) -> PResult<Made<'a>> {
-        let Some(kind) = DiKind::named(name).filter(|_| di_kind(name) == Some(DiMapping::Mapped))
-        else {
+        let mapping = di_kind(name);
+        let Some(kind) = DiKind::named(name).filter(|_| mapping == Some(DiMapping::Mapped)) else {
+            if mapping.is_none() {
+                let at = span.start - 2 - name.len() as u32;
+                return fail(LlErrorKind::Syntax, at, "expected metadata type");
+            }
             return Ok(Made { kind: None, name, first: scratch.fields.len() });
         };
         let first = scratch.fields.len();
+        // The fields met, for LLVM's two rules: none twice, and the
+        // required ones present.
+        let mut seen: [&[u8]; 48] = [b""; 48];
+        let mut count = 0;
         self.goto(span.start);
         while self.tok.start < span.end {
             let (field, at) = self.field_name()?;
-            let field_text = &self.src[at as usize..at as usize + field.len()];
+            if seen[..count].contains(&field) {
+                let field = String::from_utf8_lossy(field);
+                let message = format!("field '{field}' cannot be specified more than once");
+                return fail(LlErrorKind::Syntax, at, message);
+            }
+            if count < seen.len() {
+                seen[count] = field;
+                count += 1;
+            }
             match di_field(name, field) {
                 Some(DiMapping::Mapped) => {
                     let value = self.field_value(kind, field, scratch)?;
@@ -603,14 +655,18 @@ impl<'a> Parser<'a, '_> {
                     }
                 }
                 None => {
-                    let kind = String::from_utf8_lossy(name);
-                    let field = String::from_utf8_lossy(field_text);
-                    self.module.record_unsupported(&format!("debug:{kind}.{field}"), None);
-                    self.skip_value()?;
+                    let field = String::from_utf8_lossy(field);
+                    return fail(LlErrorKind::Syntax, at, format!("invalid field '{field}'"));
                 }
             }
             if self.tok.start < span.end {
                 self.expect(Tok::Comma, "expected ',' between fields")?;
+            }
+        }
+        for &(required, field) in REQUIRED {
+            if required == kind && !seen[..count].contains(&field.as_bytes()) {
+                let message = format!("missing required field '{field}'");
+                return fail(LlErrorKind::Syntax, span.end, message);
             }
         }
         Ok(Made { kind: Some(kind), name, first })
@@ -811,7 +867,12 @@ impl<'a> Parser<'a, '_> {
     }
 
     /// The inside of `!DILocation(…)`, and whether it is distinct.
-    fn location_body(&mut self, span: Span, distinct: bool) -> PResult<(DiLocation, bool)> {
+    fn location_body(
+        &mut self,
+        span: Span,
+        distinct: bool,
+        scratch: &mut DebugScratch,
+    ) -> PResult<(DiLocation, bool)> {
         let mut loc = DiLocation { line: 0, column: 0, scope: DiId::NONE, inlined_at: LocId::NONE };
         let mut scope = false;
         self.goto(span.start);
@@ -820,21 +881,20 @@ impl<'a> Parser<'a, '_> {
             match field {
                 b"line" => loc.line = self.expect_u32("expected a line number")?,
                 b"column" => {
-                    // LLVM keeps 16 bits and stores a larger column as 0.
                     let column = self.expect_u32("expected a column number")?;
-                    loc.column = u16::try_from(column).unwrap_or(0);
+                    let Ok(column) = u16::try_from(column) else {
+                        return fail(LlErrorKind::Syntax, at, "value for 'column' too large, limit is 65535");
+                    };
+                    loc.column = column;
                 }
                 b"scope" => {
                     scope = true;
-                    let mut scratch = std::mem::take(&mut self.dscratch);
-                    let node = self.node_ref(&mut scratch);
-                    self.dscratch = scratch;
-                    match node? {
+                    match self.node_ref(scratch)? {
                         Some(node) => loc.scope = node,
                         None => return fail(LlErrorKind::Syntax, at, "a DILocation's scope is not null"),
                     }
                 }
-                b"inlinedAt" => loc.inlined_at = self.loc_ref()?.unwrap_or(LocId::NONE),
+                b"inlinedAt" => loc.inlined_at = self.loc_ref(scratch)?.unwrap_or(LocId::NONE),
                 _ => match di_field(b"DILocation", field) {
                     Some(DiMapping::Dropped(_)) => {
                         self.skip_value()?;
@@ -856,14 +916,24 @@ impl<'a> Parser<'a, '_> {
     }
 
     /// A location by number, or `null`: `None` for `null`.
-    pub(crate) fn loc_ref(&mut self) -> PResult<Option<LocId>> {
+    fn loc_ref(&mut self, scratch: &mut DebugScratch) -> PResult<Option<LocId>> {
         let at = self.tok.start;
         if self.eat_word(b"null") {
             return Ok(None);
         }
         let node = self.md_ref()?;
         let resume = self.tok.start;
-        let loc = self.loc_of(at, node)?;
+        let loc = match node {
+            MdRef::Inline(MdKind::Location, span) => {
+                self.enter()?;
+                let (loc, distinct) = self.location_body(span, false, scratch)?;
+                self.leave();
+                let debug = &mut self.module.debug;
+                let made = if distinct { debug.distinct_loc(loc) } else { debug.loc(loc) };
+                Some(ir(at, made)?)
+            }
+            node => self.loc_of(at, node)?,
+        };
         self.goto(resume);
         Ok(loc)
     }
@@ -877,7 +947,12 @@ impl<'a> Parser<'a, '_> {
                 _ => Ok(self.invalid_loc()),
             },
             MdRef::Inline(MdKind::Location, span) => {
-                let (loc, distinct) = self.location_body(span, false)?;
+                let mut scratch = std::mem::take(&mut self.dscratch);
+                let read = self.location_body(span, false, &mut scratch);
+                let read = read.and_then(|read| self.define_tuples(&mut scratch).map(|()| read));
+                scratch.lists.clear();
+                self.dscratch = scratch;
+                let (loc, distinct) = read?;
                 let debug = &mut self.module.debug;
                 let made = if distinct { debug.distinct_loc(loc) } else { debug.loc(loc) };
                 Ok(Some(ir(at, made)?))

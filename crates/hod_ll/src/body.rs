@@ -403,6 +403,13 @@ fn build(
         return Ok(None);
     }
     match b.finish() {
+        // A body whose debug information breaks a rule of LLVM's
+        // verifier (`spec/ir.md` §6.8), which drops it then.
+        Ok(body) if !p.module.debug.is_empty() && body.verify_debug(p.module).is_err() => {
+            p.note(INVALID);
+            s.storage = Some(body);
+            Ok(None)
+        }
         Ok(body) => Ok(Some(body)),
         // Every name has its definition, so what is left undefined is a
         // ring of no-code calls that each stand for the next

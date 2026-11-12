@@ -141,9 +141,11 @@ fn synthetic(debug_info: bool) -> (Vec<u8>, usize) {
     text.push_str("\"no-trapping-math\"=\"true\" \"stack-protector-buffer-size\"=\"8\" ");
     text.push_str("\"target-cpu\"=\"x86-64\" \"tune-cpu\"=\"generic\" }\n");
     text.push_str("attributes #1 = { \"frame-pointer\"=\"all\" \"target-cpu\"=\"x86-64\" }\n\n");
-    text.push_str("!llvm.module.flags = !{!5, !6, !7}\n!llvm.ident = !{!8}\n");
     if debug_info {
+        text.push_str("!llvm.module.flags = !{!5, !6, !7, !9}\n!llvm.ident = !{!8}\n");
         text.push_str("!llvm.dbg.cu = !{!0}\n");
+    } else {
+        text.push_str("!llvm.module.flags = !{!5, !6, !7}\n!llvm.ident = !{!8}\n");
     }
     text.push_str("!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus_14, file: !1, ");
     text.push_str("producer: \"clang\", isOptimized: false, runtimeVersion: 0, emissionKind: ");
@@ -151,7 +153,12 @@ fn synthetic(debug_info: bool) -> (Vec<u8>, usize) {
     text.push_str("!2 = !{}\n!3 = !DILocation(line: 1, column: 1, scope: !10)\n");
     text.push_str("!4 = !DISubroutineType(types: !2)\n!5 = !{i32 8, !\"PIC Level\", i32 2}\n");
     text.push_str("!6 = !{i32 7, !\"uwtable\", i32 2}\n!7 = !{i32 7, !\"frame-pointer\", i32 2}\n");
-    text.push_str("!8 = !{!\"clang\"}\n!9 = !{}\n");
+    text.push_str("!8 = !{!\"clang\"}\n");
+    if debug_info {
+        text.push_str("!9 = !{i32 2, !\"Debug Info Version\", i32 3}\n");
+    } else {
+        text.push_str("!9 = !{}\n");
+    }
     if !debug_info {
         text.push_str("!10 = !{}\n");
     }
@@ -368,7 +375,7 @@ fn rates_on_a_synthetic_module() {
         // A span is the inside of the braces: the newline after `{` too.
         assert_eq!(bodies, body_bytes + FUNCTIONS);
         let debug: Vec<_> = parsed.module.unsupported().map(|u| u.construct).collect();
-        assert_eq!(debug, if debug_info { vec!["debug-info"] } else { Vec::new() });
+        assert_eq!(debug, Vec::<&str>::new());
         let expected = if debug_info { FUNCTIONS } else { 0 };
         assert_eq!(parsed.functions().iter().filter(|f| f.dbg.is_some()).count(), expected);
     }

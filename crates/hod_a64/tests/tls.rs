@@ -531,3 +531,82 @@ fn symbol_offsets_fold_as_llc_folds() {
         }
     }
 }
+
+// ---- the sequences, instruction for instruction ----
+
+/// `llvm-objdump -dr` of an object: instruction and relocation lines,
+/// addresses, bytes and comments dropped.
+fn with_relocations(object: &Path) -> Option<Vec<String>> {
+    let objdump = tool("llvm-objdump")?;
+    let text = output(
+        &objdump,
+        &[
+            "-dr".as_ref(),
+            "--no-show-raw-insn".as_ref(),
+            "--no-leading-addr".as_ref(),
+            object.as_os_str(),
+        ],
+    );
+    Some(
+        text.lines()
+            .filter(|line| line.starts_with(char::is_whitespace) && !line.trim().is_empty())
+            .map(|line| {
+                let line = line.split("//").next().unwrap_or(line);
+                let line = line.trim();
+                let line = match line.split_once(':') {
+                    Some((at, rest)) if at.chars().all(|c| c.is_ascii_hexdigit()) => rest,
+                    _ => line,
+                };
+                line.split_whitespace().collect::<Vec<_>>().join(" ")
+            })
+            .collect(),
+    )
+}
+
+/// `spec/codegen.md` §5.5.1 (WP-073): the sequence of each model is
+/// `llc`'s, relocation for relocation, around what hod saves.
+#[test]
+fn each_model_is_the_psabi_sequence() {
+    let dir = Scratch::new("a64-tls-seq");
+    let ir = "@gd = thread_local global i32 1\n\
+              @ie = thread_local(initialexec) global i32 2\n\
+              @le = dso_local thread_local(localexec) global i32 3\n\
+              declare ptr @llvm.threadlocal.address.p0(ptr)\n\
+              define ptr @f_gd() {\n  %p = call ptr @llvm.threadlocal.address.p0(ptr @gd)\n  ret ptr %p\n}\n\
+              define ptr @f_ie() {\n  %p = call ptr @llvm.threadlocal.address.p0(ptr @ie)\n  ret ptr %p\n}\n\
+              define ptr @f_le() {\n  %p = call ptr @llvm.threadlocal.address.p0(ptr @le)\n  ret ptr %p\n}\n";
+    let obj = object(&dir, "seq", ir, Mode::Shared, false).unwrap();
+    let Some(lines) = with_relocations(&obj) else { return };
+    let text = lines.join("\n");
+    let expect = |want: &[&str]| {
+        assert!(text.contains(&want.join("\n")), "missing\n{}\nin\n{text}", want.join("\n"));
+    };
+    expect(&[
+        "stp x0, x1, [sp, #-0x20]!",
+        "mrs x1, NZCV",
+        "str x1, [sp, #0x10]",
+        "adrp x0, 0x0 <f_gd>",
+        "R_AARCH64_TLSDESC_ADR_PAGE21 gd",
+        "ldr x1, [x0]",
+        "R_AARCH64_TLSDESC_LD64_LO12 gd",
+        "add x0, x0, #0x0",
+        "R_AARCH64_TLSDESC_ADD_LO12 gd",
+        "blr x1",
+        "R_AARCH64_TLSDESC_CALL gd",
+        "mrs x1, TPIDR_EL0",
+    ]);
+    expect(&[
+        "R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21 ie",
+        "ldr x9, [x9]",
+        "R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC ie",
+        "str x0, [sp, #-0x10]!",
+        "mrs x0, TPIDR_EL0",
+        "add x9, x0, x9",
+        "ldr x0, [sp], #0x10",
+    ]);
+    let le =
+        lines.iter().position(|l| l.contains("TLSLE_ADD_TPREL_HI12 .Lle$local")).expect("hi12");
+    assert!(lines[le - 1].ends_with("#0x0, lsl #12"), "{}", lines[le - 1]);
+    assert!(lines[le - 2].starts_with("mrs x") && lines[le - 2].ends_with("TPIDR_EL0"));
+    assert!(lines[le + 2].contains("TLSLE_ADD_TPREL_LO12_NC .Lle$local"), "{}", lines[le + 2]);
+}

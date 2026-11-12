@@ -20,7 +20,7 @@ pub(crate) mod node;
 
 use crate::error::{IrErrorKind, IrResult, err};
 use crate::ids::{DiId, LocId};
-use crate::intern::{Hasher64, InternTable, next_id, pool_start};
+use crate::intern::{Hasher64, InternTable, Seg, next_id, pool_start};
 use crate::strings::StrPool;
 
 use expr::{DiOp, DiOps, ExprId, ExprTable, order_error};
@@ -102,16 +102,18 @@ pub struct DebugStats {
 /// once.
 #[derive(Clone, Debug, Default)]
 pub struct DebugInfo {
-    heads: Vec<Head>,
+    heads: Seg<Head>,
     /// Masks, numbers, string ids and node ids, as the nodes' fields
     /// need them. A node list is stored in place, so that it is read as
     /// a slice.
-    cells: Vec<DiId>,
+    cells: Seg<DiId>,
     /// The number of strings in `strings` and the bytes they take, for
     /// the size report.
     string_count: u32,
     string_bytes: usize,
-    strings: Option<StrPool>,
+    /// Boxed: the tables of a module without debug information are a
+    /// fixed number of words.
+    strings: Option<Box<StrPool>>,
     /// The uniqued nodes.
     interner: Option<InternTable>,
     /// Nodes reserved and not defined.
@@ -119,7 +121,7 @@ pub struct DebugInfo {
     /// String ids of the kind names of `DiOther` nodes, each once.
     other_kinds: Vec<u32>,
     exprs: ExprTable,
-    locs: Vec<LocRec>,
+    locs: Seg<LocRec>,
     loc_interner: Option<InternTable>,
     undefined_locs: u32,
     units: Vec<DiId>,
@@ -207,7 +209,7 @@ impl DebugInfo {
     pub fn add(&mut self, node: &DiNode<'_>) -> IrResult<DiId> {
         let id = next_id(self.heads.len(), "debug node")?;
         let head = self.store(node, 0)?;
-        let cells = &self.cells[head.at as usize..];
+        let cells = self.cells.from(head.at as usize);
         let mut hasher = Hasher64::new(u64::from(head.kind) | (u64::from(head.tag) << 8));
         for cell in cells {
             hasher.word(u64::from(cell.raw()));
@@ -220,7 +222,9 @@ impl DebugInfo {
             // comparison never needs the other node's length.
             other.kind == head.kind
                 && other.tag == head.tag
-                && self.cells[other.at as usize..]
+                && self
+                    .cells
+                    .from(other.at as usize)
                     .get(..cells.len())
                     .is_some_and(|theirs| theirs == cells)
         });
@@ -307,7 +311,7 @@ impl DebugInfo {
         self.cells[at as usize] = DiId::new(mask);
         if let DiNode::Other(other) = node {
             // Interned by `encode` unless the name is empty.
-            let name = self.strings.as_ref().and_then(|strings| strings.find(other.kind));
+            let name = self.strings.as_deref().and_then(|strings| strings.find(other.kind));
             let raw = name.map_or(u32::MAX, crate::strings::StrId::raw);
             if !self.other_kinds.contains(&raw) {
                 self.other_kinds.push(raw);
@@ -378,7 +382,7 @@ impl DebugInfo {
         }
         let at = head.at as usize;
         let mask = self.cells[at].raw();
-        let mut dec = Dec { cells: &self.cells, at: at + 1, strings: self.strings.as_ref() };
+        let mut dec = Dec { cells: self.cells.from(at), at: 1, strings: self.strings.as_deref() };
         DiNode::decode(kind, head.tag, mask, &mut dec)
     }
 
@@ -776,12 +780,12 @@ impl DebugInfo {
     pub fn stats(&self) -> DebugStats {
         DebugStats {
             nodes: self.heads.len(),
-            node_bytes: size_of_val(&self.heads[..]) + size_of_val(&self.cells[..]),
+            node_bytes: self.heads.bytes() + self.cells.bytes(),
             string_bytes: self.string_bytes,
             exprs: self.exprs.len(),
             expr_bytes: self.exprs.bytes(),
             locs: self.locs.len(),
-            loc_bytes: size_of_val(&self.locs[..]),
+            loc_bytes: self.locs.bytes(),
         }
     }
 }
@@ -791,6 +795,185 @@ fn describe(node: &DiNode<'_>) -> &'static str {
     match node {
         DiNode::Subprogram(_) => "DISubprogram that is a definition",
         other => other.kind().llvm_name(),
+    }
+}
+
+/// The sizes of the debug tables a body does not add to, for telling
+/// whether a fork changed them (`spec/ir.md` §5.1).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct DebugCounts {
+    heads: usize,
+    cells: usize,
+    strings: usize,
+    other_kinds: usize,
+    units: usize,
+    undefined: u32,
+    undefined_locs: u32,
+}
+
+/// What one body added to a fork's debug tables: expressions and
+/// locations, at their fork-local ids from the mark on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DebugDelta {
+    exprs: Vec<Box<[u64]>>,
+    locs: Vec<LocRec>,
+}
+
+/// Fork-local expression and location ids to a module's.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DebugRemap {
+    exprs_base: usize,
+    exprs: Vec<ExprId>,
+    locs_base: usize,
+    locs: Vec<LocId>,
+}
+
+impl DebugRemap {
+    pub(crate) fn is_identity(&self) -> bool {
+        self.exprs.is_empty() && self.locs.is_empty()
+    }
+
+    #[inline]
+    pub(crate) fn expr(&self, id: ExprId) -> ExprId {
+        // The empty expression is id 0 everywhere, made or not.
+        if id == ExprId::EMPTY {
+            return id;
+        }
+        match id.index().checked_sub(self.exprs_base) {
+            Some(at) => self.exprs[at],
+            None => id,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn loc(&self, id: LocId) -> LocId {
+        if id == LocId::NONE {
+            return id;
+        }
+        match id.index().checked_sub(self.locs_base) {
+            Some(at) => self.locs[at],
+            None => id,
+        }
+    }
+}
+
+impl DebugInfo {
+    // ---- `spec/ir.md` §5.1: reading bodies in parallel ----
+
+    pub(crate) fn freeze(&mut self) {
+        self.heads.freeze();
+        self.cells.freeze();
+        if let Some(strings) = &mut self.strings {
+            strings.freeze();
+        }
+        if let Some(interner) = &mut self.interner {
+            interner.freeze();
+        }
+        self.exprs.freeze();
+        self.locs.freeze();
+        if let Some(interner) = &mut self.loc_interner {
+            interner.freeze();
+        }
+    }
+
+    pub(crate) fn fork(&self) -> DebugInfo {
+        DebugInfo {
+            heads: self.heads.fork(),
+            cells: self.cells.fork(),
+            string_count: self.string_count,
+            string_bytes: self.string_bytes,
+            strings: self.strings.as_ref().map(|strings| Box::new(strings.fork())),
+            interner: self.interner.as_ref().map(InternTable::fork),
+            undefined: self.undefined,
+            other_kinds: self.other_kinds.clone(),
+            exprs: self.exprs.fork(),
+            locs: self.locs.fork(),
+            loc_interner: self.loc_interner.as_ref().map(InternTable::fork),
+            undefined_locs: self.undefined_locs,
+            units: self.units.clone(),
+        }
+    }
+
+    pub(crate) fn thaw(&mut self) {
+        self.heads.thaw();
+        self.cells.thaw();
+        if let Some(strings) = &mut self.strings {
+            strings.thaw();
+        }
+        if let Some(interner) = &mut self.interner {
+            interner.thaw();
+        }
+        self.exprs.thaw();
+        self.locs.thaw();
+        if let Some(interner) = &mut self.loc_interner {
+            interner.thaw();
+        }
+    }
+
+    pub(crate) fn counts(&self) -> DebugCounts {
+        DebugCounts {
+            heads: self.heads.len(),
+            cells: self.cells.len(),
+            strings: self.strings.as_ref().map_or(0, |strings| strings.len()),
+            other_kinds: self.other_kinds.len(),
+            units: self.units.len(),
+            undefined: self.undefined,
+            undefined_locs: self.undefined_locs,
+        }
+    }
+
+    /// Whether an entry of a shared base was changed in place.
+    pub(crate) fn touched(&self) -> bool {
+        self.heads.touched() || self.cells.touched() || self.locs.touched()
+    }
+
+    /// Whether the tables a body does not add to changed since `origin`.
+    pub(crate) fn changed_since(&self, origin: &DebugCounts) -> bool {
+        self.counts() != *origin || self.touched()
+    }
+
+    /// `(expressions, locations)`: where a fork's next ones go.
+    pub(crate) fn mark(&self) -> (usize, usize) {
+        (self.exprs.mark(), self.locs.len())
+    }
+
+    /// The expressions and locations from `mark` on; `None` if a
+    /// location was reserved or defined rather than interned or made
+    /// distinct, which only the module itself can do in order.
+    pub(crate) fn delta(&self, (exprs, locs): (usize, usize)) -> Option<DebugDelta> {
+        let locs: Vec<LocRec> = (locs..self.locs.len()).map(|id| self.locs[id]).collect();
+        if locs.iter().any(|loc| loc.state != LOC_INTERNED && loc.state != LOC_DISTINCT) {
+            return None;
+        }
+        Some(DebugDelta { exprs: self.exprs.owned_since(exprs), locs })
+    }
+
+    /// A remap for a fork of this (frozen) table.
+    pub(crate) fn remap(&self) -> DebugRemap {
+        let (exprs_base, locs_base) = self.mark();
+        DebugRemap { exprs_base, exprs: Vec::new(), locs_base, locs: Vec::new() }
+    }
+
+    /// Adds `delta`'s expressions and locations as the fork made them,
+    /// with their ids translated, and extends `map` with the ids they
+    /// became.
+    pub(crate) fn adopt(&mut self, delta: &DebugDelta, map: &mut DebugRemap) -> IrResult<()> {
+        for elements in &delta.exprs {
+            let id = self.exprs.add_elements(elements)?;
+            map.exprs.push(id);
+        }
+        for record in &delta.locs {
+            let loc = DiLocation {
+                line: record.line,
+                column: record.column,
+                scope: record.scope,
+                inlined_at: map.loc(record.inlined_at),
+            };
+            let id =
+                if record.state == LOC_DISTINCT { self.distinct_loc(loc)? } else { self.loc(loc)? };
+            map.locs.push(id);
+        }
+        Ok(())
     }
 }
 

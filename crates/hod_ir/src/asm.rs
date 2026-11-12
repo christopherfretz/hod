@@ -3,7 +3,7 @@
 
 use crate::error::{IrErrorKind, IrResult, err};
 use crate::ids::{AsmId, TypeId};
-use crate::intern::{Hasher64, InternTable, next_id};
+use crate::intern::{Hasher64, InternTable, Seg, next_id};
 use crate::strings::{StrId, StrPool};
 use crate::types::{TypeKind, TypeTable};
 
@@ -53,7 +53,7 @@ struct Entry {
 /// The inline-assembly callees of a module.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AsmTable {
-    entries: Vec<Entry>,
+    entries: Seg<Entry>,
     strings: StrPool,
     interner: InternTable,
 }
@@ -106,6 +106,68 @@ impl AsmTable {
     /// Number of distinct callees.
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    // ---- §5.1 reading bodies in parallel ----
+
+    pub(crate) fn freeze(&mut self) {
+        self.entries.freeze();
+        self.strings.freeze();
+        self.interner.freeze();
+    }
+
+    pub(crate) fn fork(&self) -> AsmTable {
+        AsmTable {
+            entries: self.entries.fork(),
+            strings: self.strings.fork(),
+            interner: self.interner.fork(),
+        }
+    }
+
+    pub(crate) fn thaw(&mut self) {
+        self.entries.thaw();
+        self.strings.thaw();
+        self.interner.thaw();
+    }
+
+    pub(crate) fn local_is_empty(&self) -> bool {
+        self.entries.local_is_empty()
+    }
+
+    /// The callees from `from` on, as owned values (their strings may be
+    /// older than they are: the pool shares equal strings).
+    pub(crate) fn owned_since(&self, from: usize) -> Vec<OwnedAsm> {
+        (from..self.entries.len())
+            .map(|id| {
+                let asm = self.get(AsmId::new(id as u32));
+                OwnedAsm {
+                    template: asm.template.into(),
+                    constraints: asm.constraints.into(),
+                    flags: asm.flags,
+                    ty: asm.ty,
+                }
+            })
+            .collect()
+    }
+}
+
+/// An inline-assembly callee that owns its strings.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) struct OwnedAsm {
+    pub(crate) template: Box<[u8]>,
+    pub(crate) constraints: Box<[u8]>,
+    pub(crate) flags: u8,
+    pub(crate) ty: TypeId,
+}
+
+impl OwnedAsm {
+    pub(crate) fn view(&self, ty: TypeId) -> InlineAsm<'_> {
+        InlineAsm {
+            template: &self.template,
+            constraints: &self.constraints,
+            flags: self.flags,
+            ty,
+        }
     }
 }
 

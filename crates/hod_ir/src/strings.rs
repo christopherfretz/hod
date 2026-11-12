@@ -6,7 +6,7 @@
 //! its own buffer so that a name lookup lands on the symbol directly.
 
 use crate::error::IrResult;
-use crate::intern::{Hasher64, InternTable, next_id, pool_start};
+use crate::intern::{Hasher64, InternTable, Seg, next_id, pool_start};
 
 /// An interned byte string of one [`StrPool`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
@@ -40,9 +40,9 @@ pub(crate) fn hash_bytes(bytes: &[u8]) -> u32 {
 /// A set of interned byte strings.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct StrPool {
-    bytes: Vec<u8>,
+    bytes: Seg<u8>,
     /// `(start, len)` in `bytes`.
-    spans: Vec<(u32, u32)>,
+    spans: Seg<(u32, u32)>,
     interner: InternTable,
 }
 
@@ -72,13 +72,41 @@ impl StrPool {
 
     fn span(&self, id: u32) -> &[u8] {
         let (start, len) = self.spans[id as usize];
-        &self.bytes[start as usize..start as usize + len as usize]
+        self.bytes.slice(start as usize, len as usize)
     }
 
     /// The string `id`.
     #[inline]
     pub(crate) fn get(&self, id: StrId) -> &[u8] {
         self.span(id.0)
+    }
+
+    /// Number of strings.
+    pub(crate) fn len(&self) -> usize {
+        self.spans.len()
+    }
+
+    /// `spec/ir.md` §5.1: the strings move into a base forks share.
+    pub(crate) fn freeze(&mut self) {
+        self.bytes.freeze();
+        self.spans.freeze();
+        self.interner.freeze();
+    }
+
+    /// A pool sharing this one's base, with no string of its own.
+    pub(crate) fn fork(&self) -> StrPool {
+        StrPool {
+            bytes: self.bytes.fork(),
+            spans: self.spans.fork(),
+            interner: self.interner.fork(),
+        }
+    }
+
+    /// Back to one layer where no fork shares the base.
+    pub(crate) fn thaw(&mut self) {
+        self.bytes.thaw();
+        self.spans.thaw();
+        self.interner.thaw();
     }
 }
 

@@ -28,7 +28,7 @@
 
 use crate::error::{IrErrorKind, IrResult, err};
 use crate::ids::TypeId;
-use crate::intern::{Hasher64, InternTable, next_id, pool_start};
+use crate::intern::{Hasher64, InternTable, Seg, next_id, pool_start};
 use crate::target::{DataLayout, MAX_ADDR_SPACE};
 
 /// The largest integer width LLVM accepts (`IntegerType::MAX_INT_BITS`).
@@ -196,15 +196,15 @@ fn align_up(size: u64, align_log2: u8) -> u64 {
 #[derive(Clone, Debug)]
 pub struct TypeTable {
     layout: DataLayout,
-    data: Vec<TypeData>,
+    data: Seg<TypeData>,
     /// Struct field types; a struct owns a contiguous range.
-    fields: Vec<TypeId>,
+    fields: Seg<TypeId>,
     /// Struct field byte offsets, parallel to `fields`.
-    field_offsets: Vec<u64>,
+    field_offsets: Seg<u64>,
     /// Function parameter types; a function type owns a contiguous range.
-    params: Vec<TypeId>,
+    params: Seg<TypeId>,
     /// Target extension type names.
-    names: Vec<Box<str>>,
+    names: Seg<Box<str>>,
     interner: InternTable,
     opaque_count: u32,
 }
@@ -215,11 +215,11 @@ impl TypeTable {
     pub fn new(layout: &DataLayout) -> TypeTable {
         let mut table = TypeTable {
             layout: layout.clone(),
-            data: Vec::new(),
-            fields: Vec::new(),
-            field_offsets: Vec::new(),
-            params: Vec::new(),
-            names: Vec::new(),
+            data: Seg::default(),
+            fields: Seg::default(),
+            field_offsets: Seg::default(),
+            params: Seg::default(),
+            names: Seg::default(),
             interner: InternTable::new(),
             opaque_count: 0,
         };
@@ -263,6 +263,120 @@ impl TypeTable {
     /// Never true: the fixed types are always present.
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
+    }
+
+    // ---- §5.1 reading bodies in parallel ----
+
+    /// Moves every type into a base that forks share.
+    pub(crate) fn freeze(&mut self) {
+        self.data.freeze();
+        self.fields.freeze();
+        self.field_offsets.freeze();
+        self.params.freeze();
+        self.names.freeze();
+        self.interner.freeze();
+    }
+
+    /// A table with this one's (frozen) types and none of its own.
+    pub(crate) fn fork(&self) -> TypeTable {
+        TypeTable {
+            layout: self.layout.clone(),
+            data: self.data.fork(),
+            fields: self.fields.fork(),
+            field_offsets: self.field_offsets.fork(),
+            params: self.params.fork(),
+            names: self.names.fork(),
+            interner: self.interner.fork(),
+            opaque_count: self.opaque_count,
+        }
+    }
+
+    /// Back to one layer where no fork shares the base.
+    pub(crate) fn thaw(&mut self) {
+        self.data.thaw();
+        self.fields.thaw();
+        self.field_offsets.thaw();
+        self.params.thaw();
+        self.names.thaw();
+        self.interner.thaw();
+    }
+
+    /// Whether no type was added since the table was frozen or forked.
+    pub(crate) fn local_is_empty(&self) -> bool {
+        self.data.local_is_empty()
+    }
+
+    /// The types from `from` on, copied, for [`TypeTable::adopt`]: a
+    /// table that can describe only those.
+    pub(crate) fn tail(&self, from: usize) -> TypeTable {
+        let fields = (from..self.data.len())
+            .filter(|&id| self.data[id].tag == Tag::Struct)
+            .map(|id| self.data[id].a as usize)
+            .min()
+            .unwrap_or(self.fields.len());
+        let params = (from..self.data.len())
+            .filter(|&id| self.data[id].tag == Tag::Function)
+            .map(|id| self.data[id].b as usize)
+            .min()
+            .unwrap_or(self.params.len());
+        let names = (from..self.data.len())
+            .filter(|&id| self.data[id].tag == Tag::TargetExt)
+            .map(|id| self.data[id].a as usize)
+            .min()
+            .unwrap_or(self.names.len());
+        TypeTable {
+            layout: self.layout.clone(),
+            data: self.data.tail(from),
+            fields: self.fields.tail(fields),
+            field_offsets: self.field_offsets.tail(fields),
+            params: self.params.tail(params),
+            names: self.names.tail(names),
+            interner: InternTable::new(),
+            opaque_count: 0,
+        }
+    }
+
+    /// Interns, in order, the types of `tail` (a fork's types from
+    /// `first`), with every type id they name translated by `map`, and
+    /// appends the id each became to `map`'s list: the same calls, in
+    /// the same order, that made them in the fork.
+    pub(crate) fn adopt(
+        &mut self,
+        tail: &TypeTable,
+        first: usize,
+        map: &mut Vec<TypeId>,
+        base: usize,
+    ) -> IrResult<()> {
+        let id_of = |map: &[TypeId], ty: TypeId| -> TypeId {
+            if ty.index() < base { ty } else { map[ty.index() - base] }
+        };
+        let mut scratch = Vec::new();
+        for id in first..tail.data.len() {
+            let made = match tail.kind(TypeId::new(id as u32)) {
+                TypeKind::Int(bits) => self.int(bits)?,
+                TypeKind::Ptr { addr_space } => self.ptr(addr_space)?,
+                TypeKind::Vector { elem, len } => self.vector(id_of(map, elem), len)?,
+                TypeKind::ScalableVector { elem, min_len } => {
+                    self.scalable_vector(id_of(map, elem), min_len)?
+                }
+                TypeKind::Array { elem, len } => self.array(id_of(map, elem), len)?,
+                TypeKind::Struct { fields, packed } => {
+                    scratch.clear();
+                    scratch.extend(fields.iter().map(|&field| id_of(map, field)));
+                    self.struct_type(&scratch, packed)?
+                }
+                TypeKind::Opaque(_) => self.opaque_struct()?,
+                TypeKind::Function { ret, params, variadic } => {
+                    scratch.clear();
+                    scratch.extend(params.iter().map(|&param| id_of(map, param)));
+                    self.function(id_of(map, ret), &scratch, variadic)?
+                }
+                TypeKind::TargetExt { name } => self.target_ext(name)?,
+                kind => unreachable!("{kind:?} has a fixed id and is never added"),
+            };
+            map.push(made);
+        }
+        Ok(())
     }
 
     // ---- constructors ----
@@ -344,7 +458,7 @@ impl TypeTable {
             let d = &self.data[id as usize];
             d.tag == Tag::Struct
                 && d.flags & PACKED == flags
-                && self.fields[d.a as usize..][..d.b as usize] == *fields
+                && self.fields.slice(d.a as usize, d.b as usize) == fields
         });
         if let Some(id) = found {
             return Ok(TypeId::new(id));
@@ -410,7 +524,7 @@ impl TypeTable {
             d.tag == Tag::Function
                 && d.flags == flags
                 && d.a == ret.raw()
-                && self.params[d.b as usize..][..d.c as usize] == *params
+                && self.params.slice(d.b as usize, d.c as usize) == params
         });
         if let Some(id) = found {
             return Ok(TypeId::new(id));
@@ -615,13 +729,13 @@ impl TypeTable {
                 len: u64::from(d.b) | (u64::from(d.c) << 32),
             },
             Tag::Struct => TypeKind::Struct {
-                fields: &self.fields[d.a as usize..][..d.b as usize],
+                fields: self.fields.slice(d.a as usize, d.b as usize),
                 packed: d.flags & PACKED != 0,
             },
             Tag::Opaque => TypeKind::Opaque(d.a),
             Tag::Function => TypeKind::Function {
                 ret: TypeId::new(d.a),
-                params: &self.params[d.b as usize..][..d.c as usize],
+                params: self.params.slice(d.b as usize, d.c as usize),
                 variadic: d.flags & VARIADIC != 0,
             },
             Tag::TargetExt => TypeKind::TargetExt { name: &self.names[d.a as usize] },
@@ -663,7 +777,7 @@ impl TypeTable {
     #[inline]
     pub fn struct_fields(&self, ty: TypeId) -> Option<&[TypeId]> {
         let d = &self.data[ty.index()];
-        (d.tag == Tag::Struct).then(|| &self.fields[d.a as usize..][..d.b as usize])
+        (d.tag == Tag::Struct).then(|| self.fields.slice(d.a as usize, d.b as usize))
     }
 
     /// The element type of an array or a vector.
@@ -751,7 +865,7 @@ impl TypeTable {
     #[inline]
     pub fn field_offsets(&self, ty: TypeId) -> Option<&[u64]> {
         let d = &self.data[ty.index()];
-        (d.tag == Tag::Struct).then(|| &self.field_offsets[d.a as usize..][..d.b as usize])
+        (d.tag == Tag::Struct).then(|| self.field_offsets.slice(d.a as usize, d.b as usize))
     }
 
     /// The distance in bytes between consecutive elements of an array or

@@ -29,7 +29,7 @@
 
 use crate::error::{IrErrorKind, IrResult, err};
 use crate::ids::{BlockId, ConstId, SymId, TypeId};
-use crate::intern::{Hasher64, InternTable, next_id, pool_start};
+use crate::intern::{Hasher64, InternTable, Seg, next_id, pool_start};
 use crate::types::{TypeKind, TypeTable};
 use crate::wide;
 
@@ -329,10 +329,10 @@ const NO_SOURCE_TYPE: u32 = u32::MAX;
 /// The interned constants of a module.
 #[derive(Clone, Debug, Default)]
 pub struct ConstPool {
-    data: Vec<Repr>,
-    words: Vec<u64>,
-    elems: Vec<ConstId>,
-    bytes: Vec<u8>,
+    data: Seg<Repr>,
+    words: Seg<u64>,
+    elems: Seg<ConstId>,
+    bytes: Seg<u8>,
     interner: InternTable,
 }
 
@@ -352,6 +352,180 @@ impl ConstPool {
         self.data.is_empty()
     }
 
+    // ---- §5.1 reading bodies in parallel ----
+
+    /// Moves every constant into a base that forks share.
+    pub(crate) fn freeze(&mut self) {
+        self.data.freeze();
+        self.words.freeze();
+        self.elems.freeze();
+        self.bytes.freeze();
+        self.interner.freeze();
+    }
+
+    /// A pool with this one's (frozen) constants and none of its own.
+    pub(crate) fn fork(&self) -> ConstPool {
+        ConstPool {
+            data: self.data.fork(),
+            words: self.words.fork(),
+            elems: self.elems.fork(),
+            bytes: self.bytes.fork(),
+            interner: self.interner.fork(),
+        }
+    }
+
+    /// Back to one layer where no fork shares the base.
+    pub(crate) fn thaw(&mut self) {
+        self.data.thaw();
+        self.words.thaw();
+        self.elems.thaw();
+        self.bytes.thaw();
+        self.interner.thaw();
+    }
+
+    /// Whether no constant was added since the pool was frozen or forked.
+    pub(crate) fn local_is_empty(&self) -> bool {
+        self.data.local_is_empty()
+    }
+
+    /// The constants from `from` on, copied, for [`ConstPool::adopt`].
+    pub(crate) fn tail(&self, from: usize) -> ConstPool {
+        // Each entry appends its pooled part when it is made, so the
+        // tail's parts are the pools' ends from the first one it has.
+        let (mut words, mut elems, mut bytes) =
+            (self.words.len(), self.elems.len(), self.bytes.len());
+        for id in from..self.data.len() {
+            match self.data[id] {
+                Repr::WideInt { words: at, .. }
+                | Repr::WideFloat { words: at, .. }
+                | Repr::SymDiff { words: at, .. } => words = words.min(at as usize),
+                Repr::Aggregate { elems: at, .. } | Repr::Expr { args: at, .. } => {
+                    elems = elems.min(at as usize);
+                }
+                Repr::Bytes { start, .. } => bytes = bytes.min(start as usize),
+                _ => {}
+            }
+        }
+        ConstPool {
+            data: self.data.tail(from),
+            words: self.words.tail(words),
+            elems: self.elems.tail(elems),
+            bytes: self.bytes.tail(bytes),
+            interner: InternTable::new(),
+        }
+    }
+
+    /// Interns, in order, the constants of `tail` (a fork's constants
+    /// from `first`), with the type and constant ids they name
+    /// translated, and appends the id each became to `map`: the same
+    /// entries, made in the same order, as in the fork. Ids below
+    /// `base` (`types_base` for types) are the base's, the same in both.
+    pub(crate) fn adopt(
+        &mut self,
+        tail: &ConstPool,
+        first: usize,
+        map: &mut Vec<ConstId>,
+        base: usize,
+        types: &[TypeId],
+        types_base: usize,
+    ) -> IrResult<()> {
+        let ty_of = |ty: TypeId| -> TypeId {
+            if ty.index() < types_base { ty } else { types[ty.index() - types_base] }
+        };
+        let id_of = |map: &[ConstId], id: ConstId| -> ConstId {
+            if id.index() < base { id } else { map[id.index() - base] }
+        };
+        let mut scratch = Vec::new();
+        for id in first..tail.data.len() {
+            let repr = tail.data[id];
+            let made = match tail.get(ConstId::new(id as u32)) {
+                Const::Int { ty, value } => self.intern(Repr::Int { ty: ty_of(ty), value })?,
+                Const::WideInt { ty, words } => {
+                    let (ty, len) = (ty_of(ty), words.len() as u32);
+                    self.intern_words(
+                        seed::WIDE_INT,
+                        ty,
+                        0,
+                        words,
+                        |repr| match *repr {
+                            Repr::WideInt { ty: t, words, len } if t == ty => {
+                                Some((words, len as usize))
+                            }
+                            _ => None,
+                        },
+                        |words| Repr::WideInt { ty, words, len },
+                    )?
+                }
+                Const::Float { ty, bits } => self.intern(Repr::Float { ty: ty_of(ty), bits })?,
+                Const::WideFloat { ty, bits } => {
+                    let ty = ty_of(ty);
+                    self.intern_words(
+                        seed::WIDE_FLOAT,
+                        ty,
+                        0,
+                        &[bits as u64, (bits >> 64) as u64],
+                        |repr| match *repr {
+                            Repr::WideFloat { ty: t, words } if t == ty => Some((words, 2)),
+                            _ => None,
+                        },
+                        |words| Repr::WideFloat { ty, words },
+                    )?
+                }
+                Const::Aggregate { ty, elems } => {
+                    scratch.clear();
+                    scratch.extend(elems.iter().map(|&elem| id_of(map, elem)));
+                    self.intern_aggregate(ty_of(ty), &scratch)?
+                }
+                Const::Bytes { ty, bytes } => self.bytes_of_type(ty_of(ty), bytes)?,
+                Const::SymDiff { ty, a, b, addend, plt } => {
+                    let ty = ty_of(ty);
+                    let words = [u64::from(a.raw()) | (u64::from(b.raw()) << 32), addend as u64];
+                    self.intern_words(
+                        seed::SYM_DIFF,
+                        ty,
+                        u32::from(plt),
+                        &words,
+                        |repr| match *repr {
+                            Repr::SymDiff { ty: t, words, plt: p } if t == ty && p == plt => {
+                                Some((words, 2))
+                            }
+                            _ => None,
+                        },
+                        |words| Repr::SymDiff { ty, words, plt },
+                    )?
+                }
+                Const::Expr { op, ty, source_ty, args } => {
+                    scratch.clear();
+                    scratch.extend(args.iter().map(|&arg| id_of(map, arg)));
+                    self.expr(op, ty_of(ty), source_ty.map(ty_of), &scratch)?
+                }
+                // The entries without a pooled part: the stored form with
+                // its ids translated.
+                _ => self.intern(match repr {
+                    Repr::Null(ty) => Repr::Null(ty_of(ty)),
+                    Repr::Zero(ty) => Repr::Zero(ty_of(ty)),
+                    Repr::Undef(ty) => Repr::Undef(ty_of(ty)),
+                    Repr::Poison(ty) => Repr::Poison(ty_of(ty)),
+                    Repr::Splat { ty, elem } => {
+                        Repr::Splat { ty: ty_of(ty), elem: id_of(map, elem) }
+                    }
+                    Repr::IntOfAddr { ty, addr } => {
+                        Repr::IntOfAddr { ty: ty_of(ty), addr: id_of(map, addr) }
+                    }
+                    Repr::NoneToken
+                    | Repr::Addr { .. }
+                    | Repr::BlockAddr { .. }
+                    | Repr::AddrOfInt { .. }
+                    | Repr::DsoLocalEquivalent(_)
+                    | Repr::NoCfi(_) => repr,
+                    _ => unreachable!("an entry with a pooled part is matched above"),
+                })?,
+            };
+            map.push(made);
+        }
+        Ok(())
+    }
+
     // ---- reading ----
 
     /// The constant `id`.
@@ -359,7 +533,7 @@ impl ConstPool {
         match self.data[id.index()] {
             Repr::Int { ty, value } => Const::Int { ty, value },
             Repr::WideInt { ty, words, len } => {
-                Const::WideInt { ty, words: &self.words[words as usize..][..len as usize] }
+                Const::WideInt { ty, words: self.words.slice(words as usize, len as usize) }
             }
             Repr::Float { ty, bits } => Const::Float { ty, bits },
             Repr::WideFloat { ty, words } => {
@@ -373,11 +547,11 @@ impl ConstPool {
             Repr::Poison(ty) => Const::Poison(ty),
             Repr::NoneToken => Const::NoneToken,
             Repr::Aggregate { ty, elems, len } => {
-                Const::Aggregate { ty, elems: &self.elems[elems as usize..][..len as usize] }
+                Const::Aggregate { ty, elems: self.elems.slice(elems as usize, len as usize) }
             }
             Repr::Splat { ty, elem } => Const::Splat { ty, elem },
             Repr::Bytes { ty, start, len } => {
-                Const::Bytes { ty, bytes: &self.bytes[start as usize..][..len as usize] }
+                Const::Bytes { ty, bytes: self.bytes.slice(start as usize, len as usize) }
             }
             Repr::Addr { sym, addend } => Const::Addr { sym, addend },
             Repr::BlockAddr { func, block } => Const::BlockAddr { func, block },
@@ -403,7 +577,7 @@ impl ConstPool {
                     op,
                     ty,
                     source_ty: (source != NO_SOURCE_TYPE).then(|| TypeId::new(source)),
-                    args: &self.elems[at + 1..][..len as usize],
+                    args: self.elems.slice(at + 1, len as usize),
                 }
             }
         }
@@ -468,10 +642,10 @@ impl ConstPool {
             | Repr::Null(_)
             | Repr::Zero(_) => true,
             Repr::WideInt { words, len, .. } => {
-                self.words[words as usize..][..len as usize].iter().all(|&w| w == 0)
+                self.words.slice(words as usize, len as usize).iter().all(|&w| w == 0)
             }
             Repr::WideFloat { words, .. } => {
-                self.words[words as usize..][..2].iter().all(|&w| w == 0)
+                self.words.slice(words as usize, 2).iter().all(|&w| w == 0)
             }
             _ => false,
         }
@@ -484,7 +658,9 @@ impl ConstPool {
     pub fn is_zero_or_undef(&self, id: ConstId) -> bool {
         match self.data[id.index()] {
             Repr::Undef(_) | Repr::Poison(_) => true,
-            Repr::Aggregate { elems, len, .. } => self.elems[elems as usize..][..len as usize]
+            Repr::Aggregate { elems, len, .. } => self
+                .elems
+                .slice(elems as usize, len as usize)
                 .iter()
                 .all(|&elem| self.is_zero_or_undef(elem)),
             Repr::Splat { elem, .. } => self.is_zero_or_undef(elem),
@@ -558,7 +734,7 @@ impl ConstPool {
         self.intern_pooled(
             hasher.finish(),
             |pool, repr| {
-                same(repr).is_some_and(|(at, len)| pool.words[at as usize..][..len] == *words)
+                same(repr).is_some_and(|(at, len)| pool.words.slice(at as usize, len) == words)
             },
             |pool| {
                 let start = pool_start(pool.words.len(), words.len(), "constant word")?;
@@ -763,6 +939,12 @@ impl ConstPool {
         if is_vector && elems.iter().all(|&e| e == elems[0]) {
             return self.intern(Repr::Splat { ty, elem: elems[0] });
         }
+        self.intern_aggregate(ty, elems)
+    }
+
+    /// The stored aggregate of type `ty` with these elements, canonical
+    /// already.
+    fn intern_aggregate(&mut self, ty: TypeId, elems: &[ConstId]) -> IrResult<ConstId> {
         let mut hasher = Hasher64::new(seed::AGGREGATE);
         hasher.pair(ty.raw(), elems.len() as u32);
         for elem in elems {
@@ -772,7 +954,7 @@ impl ConstPool {
             hasher.finish(),
             |pool, repr| match *repr {
                 Repr::Aggregate { ty: t, elems: at, len } => {
-                    t == ty && pool.elems[at as usize..][..len as usize] == *elems
+                    t == ty && pool.elems.slice(at as usize, len as usize) == elems
                 }
                 _ => false,
             },
@@ -840,7 +1022,7 @@ impl ConstPool {
             hasher.finish(),
             |pool, repr| match *repr {
                 Repr::Bytes { start, len, .. } => {
-                    pool.bytes[start as usize..][..len as usize] == *data
+                    pool.bytes.slice(start as usize, len as usize) == data
                 }
                 _ => false,
             },
@@ -994,7 +1176,7 @@ impl ConstPool {
                     t == ty
                         && o == op
                         && pool.elems[at].raw() == source
-                        && pool.elems[at + 1..][..len as usize] == *args
+                        && pool.elems.slice(at + 1, len as usize) == args
                 }
                 _ => false,
             },

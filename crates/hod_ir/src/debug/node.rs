@@ -144,8 +144,8 @@ pub enum DiFieldOut<'a> {
 
 /// Where a node's fields are written.
 pub(crate) struct Enc<'t> {
-    pub(crate) cells: &'t mut Vec<DiId>,
-    pub(crate) strings: &'t mut Option<StrPool>,
+    pub(crate) cells: &'t mut crate::intern::Seg<DiId>,
+    pub(crate) strings: &'t mut Option<Box<StrPool>>,
     /// The number of strings in `strings` and the bytes they take, kept
     /// here because the pool does not report them.
     pub(crate) string_count: &'t mut u32,
@@ -405,7 +405,7 @@ impl<'a> Field<'a> for &'a [u8] {
         !self.is_empty()
     }
     fn put(&self, enc: &mut Enc<'_>) -> IrResult<()> {
-        let id = enc.strings.get_or_insert_with(StrPool::default).intern(self)?;
+        let id = enc.strings.get_or_insert_with(Box::default).intern(self)?;
         if id.raw() == *enc.string_count {
             // New: ids are handed out in order.
             *enc.string_count += 1;

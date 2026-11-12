@@ -15,7 +15,7 @@ use std::fmt;
 
 use crate::error::{IrErrorKind, IrResult, err};
 use crate::ids::TypeId;
-use crate::intern::{Hasher64, InternTable, next_id, pool_start};
+use crate::intern::{Hasher64, InternTable, Seg, next_id, pool_start};
 use crate::strings::{StrId, StrPool};
 
 /// A calling convention, by LLVM's number (`llvm::CallingConv::ID`).
@@ -218,6 +218,12 @@ impl ParamAttrs {
     /// already has a typed attribute (LLVM allows `elementtype` beside
     /// another one on an inline-assembly operand; that combination is not
     /// representable).
+    /// The same attributes with the memory type translated
+    /// (`spec/ir.md` §5.1).
+    pub(crate) fn map_mem_ty(self, f: impl FnOnce(TypeId) -> TypeId) -> ParamAttrs {
+        ParamAttrs { mem_ty: f(self.mem_ty), ..self }
+    }
+
     pub fn with_mem(self, mem: ParamMem, ty: TypeId) -> IrResult<ParamAttrs> {
         if mem == ParamMem::None {
             return err(IrErrorKind::InvalidOperand, "a typed parameter attribute needs a kind");
@@ -824,8 +830,8 @@ struct FnAttrsEntry {
 /// The interned function attribute sets of a module.
 #[derive(Clone, Debug)]
 pub(crate) struct FnAttrTable {
-    sets: Vec<FnAttrsEntry>,
-    strings: Vec<(FnStr, StrId)>,
+    sets: Seg<FnAttrsEntry>,
+    strings: Seg<(FnStr, StrId)>,
     values: StrPool,
     interner: InternTable,
 }
@@ -839,9 +845,11 @@ impl Default for FnAttrTable {
             uwtable: UwTable::None,
             stack_align: 0,
         };
+        let mut sets = Seg::default();
+        sets.push(empty);
         FnAttrTable {
-            sets: vec![empty],
-            strings: Vec::new(),
+            sets,
+            strings: Seg::default(),
             values: StrPool::default(),
             interner: InternTable::new(),
         }
@@ -908,6 +916,52 @@ impl FnAttrTable {
     pub(crate) fn len(&self) -> usize {
         self.sets.len()
     }
+
+    // ---- §5.1 reading bodies in parallel ----
+
+    pub(crate) fn freeze(&mut self) {
+        self.sets.freeze();
+        self.strings.freeze();
+        self.values.freeze();
+        self.interner.freeze();
+    }
+
+    pub(crate) fn fork(&self) -> FnAttrTable {
+        FnAttrTable {
+            sets: self.sets.fork(),
+            strings: self.strings.fork(),
+            values: self.values.fork(),
+            interner: self.interner.fork(),
+        }
+    }
+
+    pub(crate) fn thaw(&mut self) {
+        self.sets.thaw();
+        self.strings.thaw();
+        self.values.thaw();
+        self.interner.thaw();
+    }
+
+    pub(crate) fn local_is_empty(&self) -> bool {
+        self.sets.local_is_empty()
+    }
+
+    /// The sets from `from` on, as owned values.
+    pub(crate) fn owned_since(&self, from: usize) -> IrResult<Vec<FnAttrs>> {
+        (from..self.sets.len())
+            .map(|id| {
+                let view = self.get(FnAttrsId(id as u32));
+                let mut attrs = FnAttrs::new();
+                attrs.flags = view.entry.flags;
+                attrs.uwtable = view.entry.uwtable;
+                attrs.stack_align = view.entry.stack_align;
+                for (key, value) in view.strings() {
+                    attrs.set_string(key, value)?;
+                }
+                Ok(attrs)
+            })
+            .collect()
+    }
 }
 
 /// An interned set of function attributes, read through its module
@@ -954,7 +1008,9 @@ impl<'a> FnAttrsView<'a> {
     pub fn strings(&self) -> impl Iterator<Item = (FnStr, &'a [u8])> + use<'a> {
         let table = self.table;
         let start = self.entry.strings as usize;
-        table.strings[start..start + usize::from(self.entry.strings_len)]
+        table
+            .strings
+            .slice(start, usize::from(self.entry.strings_len))
             .iter()
             .map(move |&(key, value)| (key, table.values.get(value)))
     }

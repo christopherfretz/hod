@@ -9,7 +9,7 @@
 use std::fmt;
 
 use crate::error::{IrErrorKind, IrResult, err};
-use crate::intern::{Hasher64, InternTable, next_id, pool_start};
+use crate::intern::{Hasher64, InternTable, Seg, next_id, pool_start};
 
 /// A debug expression of a module (§6.4). Equal expressions have equal
 /// ids.
@@ -256,10 +256,10 @@ impl Iterator for DiOps<'_> {
 /// The expressions of a module: one element pool, a span per expression.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ExprTable {
-    elements: Vec<u64>,
+    elements: Seg<u64>,
     /// `(start, len)` in `elements`; entry 0 is the empty expression and
     /// exists once any other does.
-    spans: Vec<(u32, u32)>,
+    spans: Seg<(u32, u32)>,
     interner: Option<InternTable>,
     /// The distinct `Other` elements met, for `classify`.
     others: Vec<u64>,
@@ -275,7 +275,7 @@ impl ExprTable {
     #[inline]
     pub(crate) fn elements(&self, id: ExprId) -> &[u64] {
         match self.spans.get(id.index()) {
-            Some(&(start, len)) => &self.elements[start as usize..(start + len) as usize],
+            Some(&(start, len)) => self.elements.slice(start as usize, len as usize),
             None => &[],
         }
     }
@@ -289,7 +289,7 @@ impl ExprTable {
     }
 
     pub(crate) fn bytes(&self) -> usize {
-        size_of_val(&self.elements[..]) + size_of_val(&self.spans[..])
+        self.elements.bytes() + self.spans.bytes()
     }
 
     /// The id of the expression whose elements were just pushed at
@@ -304,7 +304,7 @@ impl ExprTable {
 
     /// The id for the tail, and whether the tail was kept.
     fn intern_tail(&mut self, start: usize) -> IrResult<(ExprId, bool)> {
-        let tail = &self.elements[start..];
+        let tail = self.elements.from(start);
         if tail.is_empty() {
             return Ok((ExprId::EMPTY, false));
         }
@@ -325,7 +325,7 @@ impl ExprTable {
             }
             rest = &rest[taken..];
         }
-        let tail = &self.elements[start..];
+        let tail = self.elements.from(start);
         let mut hasher = Hasher64::new(0xd1e);
         for &element in tail {
             hasher.word(element);
@@ -334,7 +334,7 @@ impl ExprTable {
         let interner = self.interner.get_or_insert_with(InternTable::new);
         let found = interner.find(hash, |id| {
             let (at, len) = self.spans[id as usize];
-            self.elements[at as usize..(at + len) as usize] == *tail
+            self.elements.slice(at as usize, len as usize) == tail
         });
         if let Some(id) = found {
             return Ok((ExprId(id), false));
@@ -365,6 +365,44 @@ impl ExprTable {
         let start = self.elements.len();
         self.elements.extend_from_slice(elements);
         self.intern(start)
+    }
+
+    // ---- `spec/ir.md` §5.1: reading bodies in parallel ----
+
+    /// The number of spans, the empty expression's included once made:
+    /// where a fork's next expression goes.
+    pub(crate) fn mark(&self) -> usize {
+        self.spans.len()
+    }
+
+    pub(crate) fn freeze(&mut self) {
+        self.elements.freeze();
+        self.spans.freeze();
+        if let Some(interner) = &mut self.interner {
+            interner.freeze();
+        }
+    }
+
+    pub(crate) fn fork(&self) -> ExprTable {
+        ExprTable {
+            elements: self.elements.fork(),
+            spans: self.spans.fork(),
+            interner: self.interner.as_ref().map(InternTable::fork),
+            others: self.others.clone(),
+        }
+    }
+
+    pub(crate) fn thaw(&mut self) {
+        self.elements.thaw();
+        self.spans.thaw();
+        if let Some(interner) = &mut self.interner {
+            interner.thaw();
+        }
+    }
+
+    /// The elements of the expressions from span `from` on, each owned.
+    pub(crate) fn owned_since(&self, from: usize) -> Vec<Box<[u64]>> {
+        (from..self.spans.len()).map(|id| self.elements(ExprId(id as u32)).into()).collect()
     }
 }
 

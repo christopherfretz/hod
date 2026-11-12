@@ -11,7 +11,7 @@ use std::ops::Range;
 use hod_obj::elf::{SHF_ALLOC, SHT_PROGBITS};
 use hod_obj::{Object, SectionId, SectionKind, SymbolId};
 
-use crate::leb::{sleb, uleb};
+use crate::leb::{Sink, sleb, uleb};
 use crate::{Error, Lsda, for_arch, uleb_len};
 
 /// "No landing pad" in [`CallSite::pad`]: a plain call or a runtime call.
@@ -100,39 +100,57 @@ pub struct LsdaOptions {
 const DW_EH_PE_OMIT: u8 = 0xff;
 const DW_EH_PE_ULEB128: u8 = 0x01;
 
-/// One action record: its type filter and the record its chain goes on
-/// to.
+/// One action record: its type filter, the record its chain goes on to,
+/// and its offset in the action table.
+#[derive(Clone, Copy)]
 struct Action {
     value: i64,
-    next: Option<usize>,
-    pos: usize,
+    next: Option<u32>,
+    pos: u32,
 }
 
-/// One function's LSDA, encoded but not yet placed.
-struct Encoded {
-    bytes: Vec<u8>,
-    /// Type-table fields: their offset in `bytes` and the type-info symbol.
-    relocs: Vec<(u32, SymbolId)>,
+/// One call-site entry: start, end, landing address, first action.
+type Entry = (u32, u32, u32, u64);
+
+/// The buffers one function's encoding needs, reused for the next.
+#[derive(Default)]
+struct Work {
+    /// Per pad, LLVM's type-id list, as a range of `lists`.
+    lists: Vec<i64>,
+    list_of: Vec<Range<u32>>,
+    sorted: Vec<u32>,
+    filters: Filters,
+    filter_offsets: Vec<i64>,
+    actions: Vec<Action>,
+    chain: Vec<u32>,
+    first_action: Vec<u64>,
+    sites: Vec<Entry>,
 }
 
-/// Appends `value` as ULEB128 of exactly `len` bytes (padded with
-/// continuation bytes, as the assembler pads a fragment that may not
-/// shrink); `len` is at least [`uleb_len`] of it.
-fn uleb_padded(out: &mut Vec<u8>, mut value: u64, len: usize) {
-    for i in 0..len {
-        let mut byte = (value & 0x7f) as u8;
-        value >>= 7;
-        if i + 1 < len {
-            byte |= 0x80;
-        }
-        out.push(byte);
+/// Bytes written at increasing offsets into a buffer sized beforehand.
+struct Cursor<'a> {
+    buf: &'a mut [u8],
+    at: usize,
+}
+
+impl Sink for Cursor<'_> {
+    #[inline]
+    fn byte(&mut self, b: u8) {
+        self.buf[self.at] = b;
+        self.at += 1;
+    }
+    #[inline]
+    fn bytes(&mut self, b: &[u8]) {
+        self.buf[self.at..self.at + b.len()].copy_from_slice(b);
+        self.at += b.len();
     }
 }
 
-fn sleb_len(value: i64) -> usize {
-    let mut v = Vec::new();
-    sleb(&mut v, value);
-    v.len()
+/// The number of bytes SLEB128 takes for `value`.
+const fn sleb_len(value: i64) -> usize {
+    // The bits to store, the sign bit included.
+    let bits = 65 - if value < 0 { (!value).leading_zeros() } else { value.leading_zeros() };
+    (bits as usize).div_ceil(7)
 }
 
 /// The filter table as LLVM builds it (`MachineFunction::getFilterIDFor`):
@@ -145,21 +163,16 @@ struct Filters {
 }
 
 impl Filters {
+    fn clear(&mut self) {
+        self.ids.clear();
+        self.ends.clear();
+    }
+
     /// The filter id (negative) of `list`.
     fn id_for(&mut self, list: &[u32]) -> i64 {
         for &end in &self.ends {
-            let (mut i, mut j) = (end, list.len());
-            let mut matches = true;
-            while i > 0 && j > 0 {
-                i -= 1;
-                j -= 1;
-                if self.ids[i] != list[j] {
-                    matches = false;
-                    break;
-                }
-            }
-            if matches && j == 0 {
-                return -(1 + i as i64);
+            if end >= list.len() && self.ids[end - list.len()..end] == *list {
+                return -(1 + (end - list.len()) as i64);
             }
         }
         let id = -(1 + self.ids.len() as i64);
@@ -170,147 +183,182 @@ impl Filters {
     }
 }
 
-/// Encodes one function's LSDA (`spec/eh.md` §9.2 to §9.5), or the first
-/// problem with its rows.
-fn encode(f: &FuncLsda<'_>, pointer_size: usize, ttype_encoding: u8) -> Result<Encoded, Error> {
-    let order = f.order;
-    let types = f.type_ids.len() as u64;
-    let type_ok = |t: u32| t >= 1 && u64::from(t) <= types;
-
-    // Per pad, LLVM's type-id list: 0 for a cleanup that has clauses, then
-    // the clauses last to first; filters by their (negative) filter id.
-    let mut filters = Filters::default();
-    let mut type_lists: Vec<Vec<i64>> = Vec::with_capacity(f.pads.len());
-    let mut list_of_filter = Vec::new();
-    for (pad, p) in f.pads.iter().enumerate() {
-        let (start, end) = (p.clauses.start as usize, p.clauses.end as usize);
-        if start > end || end > f.clauses.len() {
-            return Err(Error::BadClauses { order, pad });
-        }
-        if start == end && !p.cleanup {
-            return Err(Error::EmptyPad { order, pad });
-        }
-        let mut list = Vec::with_capacity(end - start + 1);
-        if p.cleanup && start != end {
-            list.push(0);
-        }
-        for clause in (start..end).rev() {
-            match &f.clauses[clause] {
-                &Clause::Catch(t) => {
-                    if !type_ok(t) {
-                        return Err(Error::BadTypeId { order, clause });
+impl Work {
+    /// Per pad, LLVM's type-id list (`MachineFunction::addLandingPad`): 0
+    /// for a cleanup that has clauses, then the clauses last to first;
+    /// filters by their (negative) filter id. Then the filter table's byte
+    /// offsets.
+    fn type_lists(&mut self, f: &FuncLsda<'_>) -> Result<(), Error> {
+        let order = f.order;
+        let types = f.type_ids.len() as u64;
+        let type_ok = |t: u32| t >= 1 && u64::from(t) <= types;
+        // the clauses last to first; filters by their (negative) filter id.
+        self.lists.clear();
+        self.list_of.clear();
+        self.filters.clear();
+        for (pad, p) in f.pads.iter().enumerate() {
+            let (start, end) = (p.clauses.start as usize, p.clauses.end as usize);
+            if start > end || end > f.clauses.len() {
+                return Err(Error::BadClauses { order, pad });
+            }
+            if start == end && !p.cleanup {
+                return Err(Error::EmptyPad { order, pad });
+            }
+            let from = self.lists.len() as u32;
+            if p.cleanup && start != end {
+                self.lists.push(0);
+            }
+            for clause in (start..end).rev() {
+                match &f.clauses[clause] {
+                    &Clause::Catch(t) => {
+                        if !type_ok(t) {
+                            return Err(Error::BadTypeId { order, clause });
+                        }
+                        self.lists.push(i64::from(t));
                     }
-                    list.push(i64::from(t));
-                }
-                Clause::Filter(r) => {
-                    let (s, e) = (r.start as usize, r.end as usize);
-                    if s > e
-                        || e > f.filter_ids.len()
-                        || !f.filter_ids[s..e].iter().all(|&t| type_ok(t))
-                    {
-                        return Err(Error::BadFilter { order, clause });
+                    Clause::Filter(r) => {
+                        let (s, e) = (r.start as usize, r.end as usize);
+                        let ids =
+                            f.filter_ids.get(s..e).filter(|ids| ids.iter().all(|&t| type_ok(t)));
+                        let Some(ids) = ids else {
+                            return Err(Error::BadFilter { order, clause });
+                        };
+                        let id = self.filters.id_for(ids);
+                        self.lists.push(id);
                     }
-                    list_of_filter.clear();
-                    list_of_filter.extend_from_slice(&f.filter_ids[s..e]);
-                    list.push(filters.id_for(&list_of_filter));
                 }
             }
+            self.list_of.push(from..self.lists.len() as u32);
         }
-        type_lists.push(list);
-    }
-    // The byte offset (negative, biased by one) of each filter-table entry.
-    let mut filter_offsets = Vec::with_capacity(filters.ids.len());
-    let mut at = -1i64;
-    for &id in &filters.ids {
-        filter_offsets.push(at);
-        at -= uleb_len(u64::from(id)) as i64;
-    }
-    let value_of = |t: i64| if t < 0 { filter_offsets[(-1 - t) as usize] } else { t };
-
-    // The action table (`EHStreamer::computeActionsTable`): pads sorted by
-    // their lists, each sharing the longest common prefix of its list with
-    // the previous pad's (its chain's tail).
-    let mut sorted: Vec<usize> = (0..f.pads.len()).collect();
-    sorted.sort_by(|&a, &b| type_lists[a].cmp(&type_lists[b]));
-    let mut actions: Vec<Action> = Vec::new();
-    let mut action_bytes = 0usize;
-    let mut first_action = vec![0u64; f.pads.len()];
-    // The record of each entry of the previous pad's list.
-    let mut prev_chain: Vec<usize> = Vec::new();
-    let mut prev: Option<usize> = None;
-    let mut first = 0u64;
-    for &pad in &sorted {
-        let list = &type_lists[pad];
-        let shared =
-            prev.map_or(0, |q| type_lists[q].iter().zip(list).take_while(|(a, b)| a == b).count());
-        if shared < list.len() {
-            prev_chain.truncate(shared);
-            for &t in &list[shared..] {
-                let value = value_of(t);
-                let pos = action_bytes;
-                let next = prev_chain.last().copied();
-                let disp =
-                    next.map_or(0, |n| actions[n].pos as i64 - (pos + sleb_len(value)) as i64);
-                action_bytes += sleb_len(value) + sleb_len(disp);
-                prev_chain.push(actions.len());
-                actions.push(Action { value, next, pos });
-            }
-            first = actions[*prev_chain.last().unwrap_or(&0)].pos as u64 + 1;
+        // The byte offset (negative, biased by one) of each filter-table entry.
+        self.filter_offsets.clear();
+        let mut at = -1i64;
+        for &id in &self.filters.ids {
+            self.filter_offsets.push(at);
+            at -= uleb_len(u64::from(id)) as i64;
         }
-        first_action[pad] = first;
-        prev = Some(pad);
+        Ok(())
     }
 
-    // The call-site table (`EHStreamer::computeCallSiteTable`): adjacent
-    // rows with the same landing and action merge; a range between two
-    // padded rows (or the function's ends) gets an entry without a pad
-    // exactly when a call without a pad is in it.
-    let mut sites: Vec<(u32, u32, u32, u64)> = Vec::with_capacity(f.call_sites.len() + 1);
-    let mut last_end = 0u32;
-    let mut prev_end = 0u32;
-    let mut saw_throwing = false;
-    let mut prev_is_invoke = false;
-    for (row, c) in f.call_sites.iter().enumerate() {
-        if c.start < prev_end {
-            return Err(Error::CallSiteOutOfOrder { order, row });
-        }
-        let end = c.start.checked_add(c.len).filter(|&e| e <= f.size);
-        let Some(end) = end else { return Err(Error::CallSiteBeyondEnd { order, row }) };
-        prev_end = end;
-        if c.pad == NO_PAD {
-            saw_throwing = true;
-            continue;
-        }
-        let Some(pad) = f.pads.get(c.pad as usize) else {
-            return Err(Error::BadPad { order, row });
+    /// The action table; returns its size in bytes.
+    fn action_table(&mut self, pads: usize) -> u32 {
+        // The action table (`EHStreamer::computeActionsTable`): pads sorted by
+        // their lists, each sharing the longest common prefix of its list with
+        // the previous pad's (its chain's tail).
+        let Work { lists, list_of, sorted, filter_offsets, actions, chain, first_action, .. } =
+            self;
+        let list = |pad: u32| {
+            &lists[list_of[pad as usize].start as usize..list_of[pad as usize].end as usize]
         };
-        let landing = if c.landing == 0 { pad.offset } else { c.landing };
-        if landing >= f.size {
-            return Err(Error::LandingBeyondEnd { order, row });
+        sorted.clear();
+        sorted.extend(0..pads as u32);
+        if !sorted.is_sorted_by(|&a, &b| list(a) <= list(b)) {
+            sorted.sort_by(|&a, &b| list(a).cmp(list(b)));
+        }
+        actions.clear();
+        chain.clear();
+        first_action.clear();
+        first_action.resize(pads, 0);
+        let mut action_bytes = 0u32;
+        let mut prev: Option<u32> = None;
+        let mut first = 0u64;
+        for &pad in sorted.iter() {
+            let this = list(pad);
+            let shared =
+                prev.map_or(0, |q| list(q).iter().zip(this).take_while(|(a, b)| a == b).count());
+            if shared < this.len() {
+                chain.truncate(shared);
+                for &t in &this[shared..] {
+                    let value = if t < 0 { filter_offsets[(-1 - t) as usize] } else { t };
+                    let pos = action_bytes;
+                    let next = chain.last().copied();
+                    let field = pos + sleb_len(value) as u32;
+                    let disp =
+                        next.map_or(0, |n| i64::from(actions[n as usize].pos) - i64::from(field));
+                    action_bytes = field + sleb_len(disp) as u32;
+                    chain.push(actions.len() as u32);
+                    actions.push(Action { value, next, pos });
+                }
+                first = u64::from(actions[*chain.last().unwrap_or(&0) as usize].pos) + 1;
+            }
+            first_action[pad as usize] = first;
+            prev = Some(pad);
+        }
+        action_bytes
+    }
+
+    /// The call-site table.
+    fn call_site_table(&mut self, f: &FuncLsda<'_>) -> Result<(), Error> {
+        let order = f.order;
+        // The call-site table (`EHStreamer::computeCallSiteTable`): adjacent
+        // rows with the same landing and action merge; a range between two
+        // padded rows (or the function's ends) gets an entry without a pad
+        // exactly when a call without a pad is in it.
+        let sites = &mut self.sites;
+        sites.clear();
+        let mut last_end = 0u32;
+        let mut prev_end = 0u32;
+        let mut saw_throwing = false;
+        let mut prev_is_invoke = false;
+        for (row, c) in f.call_sites.iter().enumerate() {
+            if c.start < prev_end {
+                return Err(Error::CallSiteOutOfOrder { order, row });
+            }
+            let end = c.start.checked_add(c.len).filter(|&e| e <= f.size);
+            let Some(end) = end else { return Err(Error::CallSiteBeyondEnd { order, row }) };
+            prev_end = end;
+            if c.pad == NO_PAD {
+                saw_throwing = true;
+                continue;
+            }
+            let Some(pad) = f.pads.get(c.pad as usize) else {
+                return Err(Error::BadPad { order, row });
+            };
+            let landing = if c.landing == 0 { pad.offset } else { c.landing };
+            if landing >= f.size {
+                return Err(Error::LandingBeyondEnd { order, row });
+            }
+            if saw_throwing {
+                sites.push((last_end, c.start, 0, 0));
+                prev_is_invoke = false;
+                saw_throwing = false;
+            }
+            let action = self.first_action[c.pad as usize];
+            last_end = end;
+            if prev_is_invoke
+                && let Some(last) = sites.last_mut()
+                && last.2 == landing
+                && last.3 == action
+            {
+                last.1 = end;
+                continue;
+            }
+            sites.push((c.start, end, landing, action));
+            prev_is_invoke = true;
         }
         if saw_throwing {
-            sites.push((last_end, c.start, 0, 0));
-            prev_is_invoke = false;
-            saw_throwing = false;
+            sites.push((last_end, f.size, 0, 0));
         }
-        let action = first_action[c.pad as usize];
-        if prev_is_invoke {
-            if let Some(last) = sites.last_mut() {
-                if last.2 == landing && last.3 == action {
-                    last.1 = end;
-                    last_end = end;
-                    continue;
-                }
-            }
-        }
-        sites.push((c.start, end, landing, action));
-        prev_is_invoke = true;
-        last_end = end;
+        Ok(())
     }
-    if saw_throwing {
-        sites.push((last_end, f.size, 0, 0));
-    }
+}
 
+/// Encodes one function's LSDA (`spec/eh.md` §9.2 to §9.5) at the end of
+/// `out`, with its type-table fields (offset in `out`, type-info) in
+/// `relocs`; or the first problem with its rows, `out` and `relocs`
+/// unchanged.
+fn encode(
+    f: &FuncLsda<'_>,
+    w: &mut Work,
+    pointer_size: usize,
+    ttype_encoding: u8,
+    out: &mut Vec<u8>,
+    relocs: &mut Vec<(u32, SymbolId)>,
+) -> Result<(), Error> {
+    w.type_lists(f)?;
+    let action_bytes = w.action_table(f.pads.len());
+    w.call_site_table(f)?;
+    let Work { actions, sites, filters, .. } = w;
     // Sizes, then bytes.
     let cst_len: usize = sites
         .iter()
@@ -321,12 +369,12 @@ fn encode(f: &FuncLsda<'_>, pointer_size: usize, ttype_encoding: u8) -> Result<E
                 + uleb_len(a)
         })
         .sum();
-    let have_types = !f.type_ids.is_empty() || !filters.ids.is_empty();
-    let filter_bytes: usize = filters.ids.iter().map(|&t| uleb_len(u64::from(t))).sum();
+    let filter_ids = &filters.ids;
+    let have_types = !f.type_ids.is_empty() || !filter_ids.is_empty();
     let type_bytes = f.type_ids.len() * pointer_size;
     // After the TType base offset: the call-site encoding, the table's
     // length, the table, the actions.
-    let after = 1 + uleb_len(cst_len as u64) + cst_len + action_bytes;
+    let after = 1 + uleb_len(cst_len as u64) + cst_len + action_bytes as usize;
     // The TType base offset's own size, as the assembler settles it
     // (§9.2): from nothing, growing, never shrinking.
     let mut ttbase = (0u64, 0usize);
@@ -344,43 +392,53 @@ fn encode(f: &FuncLsda<'_>, pointer_size: usize, ttype_encoding: u8) -> Result<E
             size = need;
         }
     }
-    let total = 2 + ttbase.1 + after + 3 + type_bytes + filter_bytes + 3;
-    let mut out = Vec::with_capacity(total);
-    out.push(DW_EH_PE_OMIT); // @LPStart
+    let filter_bytes: usize = filter_ids.iter().map(|&t| uleb_len(u64::from(t))).sum();
+    let head = 2 + ttbase.1 + after;
+    let table = if have_types { head.next_multiple_of(4) } else { head };
+    let total = (table + type_bytes + filter_bytes).next_multiple_of(4);
+    // Zeros: the padding and the type-table fields are already written.
+    let base = out.len();
+    out.resize(base + total, 0);
+    let mut c = Cursor { buf: &mut out[base..], at: 0 };
+    c.byte(DW_EH_PE_OMIT); // @LPStart
     if have_types {
-        out.push(ttype_encoding);
-        uleb_padded(&mut out, ttbase.0, ttbase.1);
+        c.byte(ttype_encoding);
+        let mut v = ttbase.0;
+        for i in 0..ttbase.1 {
+            let more = if i + 1 < ttbase.1 { 0x80 } else { 0 };
+            c.byte((v & 0x7f) as u8 | more);
+            v >>= 7;
+        }
     } else {
-        out.push(DW_EH_PE_OMIT);
+        c.byte(DW_EH_PE_OMIT);
     }
-    out.push(DW_EH_PE_ULEB128);
-    uleb(&mut out, cst_len as u64);
-    for &(s, e, l, a) in &sites {
-        uleb(&mut out, u64::from(s));
-        uleb(&mut out, u64::from(e - s));
-        uleb(&mut out, u64::from(l));
-        uleb(&mut out, a);
+    c.byte(DW_EH_PE_ULEB128);
+    uleb(&mut c, cst_len as u64);
+    for &(s, e, l, a) in sites.iter() {
+        uleb(&mut c, u64::from(s));
+        uleb(&mut c, u64::from(e - s));
+        uleb(&mut c, u64::from(l));
+        uleb(&mut c, a);
     }
-    for a in &actions {
-        sleb(&mut out, a.value);
-        let next_field = (a.pos + sleb_len(a.value)) as i64;
-        sleb(&mut out, a.next.map_or(0, |n| actions[n].pos as i64 - next_field));
+    for a in actions.iter() {
+        sleb(&mut c, a.value);
+        let field = i64::from(a.pos) + sleb_len(a.value) as i64;
+        sleb(&mut c, a.next.map_or(0, |n| i64::from(actions[n as usize].pos) - field));
     }
-    let mut relocs = Vec::new();
     if have_types {
-        out.resize(out.len().next_multiple_of(4), 0);
+        let mut at = base + table;
         for t in f.type_ids.iter().rev() {
             if let Some(symbol) = *t {
-                relocs.push((out.len() as u32, symbol));
+                relocs.push((at as u32, symbol));
             }
-            out.resize(out.len() + pointer_size, 0);
+            at += pointer_size;
         }
-        for &t in &filters.ids {
-            uleb(&mut out, u64::from(t));
+        c.at = table + type_bytes;
+        for &t in filter_ids {
+            uleb(&mut c, u64::from(t));
         }
     }
-    out.resize(out.len().next_multiple_of(4), 0);
-    Ok(Encoded { bytes: out, relocs })
+    Ok(())
 }
 
 /// Writes the LSDA of each function in `funcs` into `obj`
@@ -391,8 +449,9 @@ fn encode(f: &FuncLsda<'_>, pointer_size: usize, ttype_encoding: u8) -> Result<E
 ///
 /// Returns each function's LSDA, in the order of `funcs`, as
 /// [`Fde::lsda`](crate::Fde::lsda) takes it. The output depends only on the
-/// set of functions, not on the order of the slice. On an error `obj` is
-/// unchanged.
+/// set of functions, not on the order of the slice. On an error in the
+/// rows `obj` is unchanged.
+#[allow(clippy::too_many_lines)] // Encode all, then the stubs, then place.
 pub fn write_lsdas(
     obj: &mut Object,
     funcs: &[FuncLsda<'_>],
@@ -403,95 +462,116 @@ pub fn write_lsdas(
     }
     let target = for_arch(obj.arch());
     let pointer_size = usize::from(target.pointer_size);
-    let mut by_order: Vec<usize> = (0..funcs.len()).collect();
-    if !by_order.is_sorted_by_key(|&i| funcs[i].order) {
-        by_order.sort_unstable_by_key(|&i| funcs[i].order);
+    let mut by_order: Vec<u32> = (0..funcs.len() as u32).collect();
+    if !by_order.is_sorted_by_key(|&i| funcs[i as usize].order) {
+        by_order.sort_unstable_by_key(|&i| funcs[i as usize].order);
     }
-    if let Some(w) = by_order.windows(2).find(|w| funcs[w[0]].order == funcs[w[1]].order) {
-        return Err(Error::DuplicateOrder { order: funcs[w[0]].order });
+    if let Some(w) =
+        by_order.windows(2).find(|w| funcs[w[0] as usize].order == funcs[w[1] as usize].order)
+    {
+        return Err(Error::DuplicateOrder { order: funcs[w[0] as usize].order });
     }
     let own_section = |f: &FuncLsda<'_>, obj: &Object| {
         options.function_sections || obj.section_group(f.section).is_some()
     };
-    // Everything that can fail, before `obj` is touched.
-    let mut encoded = Vec::with_capacity(funcs.len());
+    // Everything that can fail, before `obj` is touched: every LSDA,
+    // encoded one after another in module order, each at a multiple of 4.
+    let rows: usize = funcs.iter().map(|f| f.call_sites.len()).sum();
+    let mut all = Vec::with_capacity(funcs.len() * 24 + rows * 4);
+    let mut spans = Vec::with_capacity(funcs.len());
+    let mut relocs: Vec<(u32, SymbolId)> = Vec::new();
+    let mut work = Work::default();
+    let mut any_own = false;
     for &i in &by_order {
-        let f = &funcs[i];
-        if own_section(f, obj) && f.name.contains(&0) {
+        let f = &funcs[i as usize];
+        let own = own_section(f, obj);
+        if own && f.name.contains(&0) {
             return Err(Error::BadName { order: f.order });
         }
-        encoded.push(encode(f, pointer_size, target.personality_encoding)?);
+        any_own |= own;
+        let start = all.len();
+        let first_reloc = relocs.len();
+        encode(f, &mut work, pointer_size, target.personality_encoding, &mut all, &mut relocs)?;
+        spans.push((start..all.len(), first_reloc..relocs.len()));
+    }
+    if u32::try_from(all.len()).is_err() {
+        return Err(Error::TooLarge);
     }
 
     // The stubs: one per type-info object, ordered by name as `llc`
     // orders them.
-    let mut types: Vec<SymbolId> =
-        encoded.iter().flat_map(|e| e.relocs.iter().map(|r| r.1)).collect();
-    types.sort_unstable_by_key(|s| s.index());
+    let mut types: Vec<SymbolId> = relocs.iter().map(|r| r.1).collect();
+    types.sort_unstable();
     types.dedup();
-    types.sort_by(|&a, &b| {
-        obj.string(obj.symbol(a).name)
-            .cmp(obj.string(obj.symbol(b).name))
-            .then(a.index().cmp(&b.index()))
-    });
-    let mut stub_of = Vec::new(); // (type symbol, stub offset), by symbol
-    let mut stub_symbol = None;
-    if !types.is_empty() {
+    let stubs = if types.is_empty() {
+        None
+    } else {
+        let mut named = types.clone();
+        let name = |s: SymbolId| obj.string(obj.symbol(s).name);
+        named.sort_by(|&a, &b| name(a).cmp(name(b)).then(a.cmp(&b)));
         let section = match options.stubs {
             Some(s) => s,
             None => obj.add_section(b".data", SectionKind::Data, 8)?,
         };
         obj.raise_section_align(section, 8);
         obj.align_to(section, 8, 0);
-        for &t in &types {
+        let mut offsets = vec![0i64; types.len()];
+        obj.reserve(0, 0, named.len(), 0);
+        for &t in &named {
             let at = obj.append_zeros(section, 8);
             obj.add_relocation(section, at, target.abs_reloc, t, 0);
-            stub_of.push((t, at as i64));
+            offsets[types.binary_search(&t).unwrap_or(0)] = at as i64;
         }
-        stub_of.sort_unstable_by_key(|&(t, _)| t.index());
-        stub_symbol = Some(obj.section_symbol(section));
-    }
-    let stub = |t: SymbolId| {
-        let k = stub_of.binary_search_by_key(&t.index(), |&(s, _)| s.index()).unwrap_or(0);
-        stub_of[k].1
+        Some((obj.section_symbol(section), offsets))
     };
 
     let kind = SectionKind::Elf { sh_type: SHT_PROGBITS, sh_flags: SHF_ALLOC, sh_entsize: 0 };
-    let mut shared: Option<SectionId> = None;
     let mut result = vec![Lsda { symbol: SymbolId::from_index(0), addend: 0 }; funcs.len()];
-    for (k, &i) in by_order.iter().enumerate() {
-        let f = &funcs[i];
-        let e = &encoded[k];
-        let section = if own_section(f, obj) {
-            let mut name = Vec::with_capacity(18 + f.name.len());
-            name.extend_from_slice(b".gcc_except_table.");
-            name.extend_from_slice(f.name);
-            let section = obj.add_section(&name, kind, 4)?;
-            if let Some(group) = obj.section_group(f.section) {
-                obj.add_group_member(group, section)?;
-            }
-            section
-        } else if let Some(s) = shared {
-            s
-        } else {
-            let s = obj.add_section(b".gcc_except_table", kind, 4)?;
-            shared = Some(s);
-            s
-        };
-        let base = obj.align_to(section, 4, 0);
-        obj.append(section, &e.bytes);
-        if let Some(stubs) = stub_symbol {
-            for &(at, t) in &e.relocs {
-                obj.add_relocation(
-                    section,
-                    base + u64::from(at),
-                    target.pointer_reloc,
-                    stubs,
-                    stub(t),
-                );
+    obj.reserve(0, 0, relocs.len(), 0);
+    let mut place = |obj: &mut Object, section: SectionId, k: usize, base: u64| {
+        let (bytes, rel) = &spans[k];
+        if let Some((symbol, offsets)) = &stubs {
+            for &(at, t) in &relocs[rel.clone()] {
+                let offset = base + u64::from(at) - bytes.start as u64;
+                let stub = offsets[types.binary_search(&t).unwrap_or(0)];
+                obj.add_relocation(section, offset, target.pointer_reloc, *symbol, stub);
             }
         }
-        result[i] = Lsda { symbol: obj.section_symbol(section), addend: base as i64 };
+        result[by_order[k] as usize] =
+            Lsda { symbol: obj.section_symbol(section), addend: base as i64 };
+    };
+    if any_own {
+        let mut shared: Option<SectionId> = None;
+        for (k, &i) in by_order.iter().enumerate() {
+            let f = &funcs[i as usize];
+            let bytes = &all[spans[k].0.clone()];
+            let section = if own_section(f, obj) {
+                let mut name = Vec::with_capacity(18 + f.name.len());
+                name.extend_from_slice(b".gcc_except_table.");
+                name.extend_from_slice(f.name);
+                let section = obj.add_section(&name, kind, 4)?;
+                if let Some(group) = obj.section_group(f.section) {
+                    obj.add_group_member(group, section)?;
+                }
+                section
+            } else if let Some(s) = shared {
+                s
+            } else {
+                let s = obj.add_section(b".gcc_except_table", kind, 4)?;
+                shared = Some(s);
+                s
+            };
+            let base = obj.append(section, bytes);
+            place(obj, section, k, base);
+        }
+    } else {
+        // Every table in the one shared section: its bytes as encoded.
+        let section = obj.add_section(b".gcc_except_table", kind, 4)?;
+        let starts: Vec<u64> = spans.iter().map(|s| s.0.start as u64).collect();
+        for (k, base) in starts.into_iter().enumerate() {
+            place(obj, section, k, base);
+        }
+        obj.append_owned(section, all);
     }
     Ok(result)
 }

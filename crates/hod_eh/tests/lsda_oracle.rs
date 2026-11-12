@@ -9,6 +9,8 @@
 //! same type table, the same stubs, each function's LSDA where llc put it,
 //! and the bytes and relocations of every section identical.
 
+#![allow(clippy::too_many_lines, clippy::format_push_string)]
+
 mod common;
 
 use common::lsda::lsda_trip;
@@ -373,6 +375,7 @@ fn oracle(major: u32) {
                         function_sections,
                         reverse,
                         &|_, _| {},
+                        true,
                     );
                     assert!(t.identical, "{label}: byte-identical to llc");
                     if !reverse {
@@ -437,7 +440,7 @@ fn wrong_rows_fail_the_round_trip() {
         };
         for mutate in [&wrong_landing as &dyn Fn(&str, &mut common::lsda::Rows), &wrong_type] {
             let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                lsda_trip(&label, arch, &ir, &object, false, false, mutate)
+                lsda_trip(&label, arch, &ir, &object, false, false, mutate, true)
             }))
             .is_err();
             assert!(failed, "{label}: a wrong table must fail the comparison");

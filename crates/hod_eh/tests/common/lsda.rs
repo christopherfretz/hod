@@ -3,7 +3,13 @@
 //! into `hod_eh`'s input rows, written again by `write_lsdas`, compared, and
 //! spliced into llc's object.
 
-#![allow(dead_code, clippy::too_many_lines, clippy::type_complexity)]
+#![allow(
+    clippy::map_unwrap_or,
+    dead_code,
+    clippy::too_many_lines,
+    clippy::type_complexity,
+    clippy::too_many_arguments
+)]
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -246,14 +252,25 @@ pub fn stubs(elf: &Elf) -> BTreeMap<i64, String> {
         .collect()
 }
 
-/// The callees llc's IR declares `nounwind`.
+/// The functions llc's IR declares or defines `nounwind` (inline, or
+/// through an attribute group): what LLVM's `callToNoUnwindFunction` asks.
 pub fn nounwind(ir: &str) -> BTreeSet<String> {
+    let groups: BTreeSet<String> = ir
+        .lines()
+        .filter_map(|l| l.strip_prefix("attributes "))
+        .filter(|l| l.split_whitespace().any(|w| w == "nounwind"))
+        .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+        .collect();
     ir.lines()
-        .filter(|l| l.starts_with("declare ") && l.contains("nounwind"))
+        .filter(|l| l.starts_with("declare ") || l.starts_with("define "))
         .filter_map(|l| {
             let at = l.find('@')? + 1;
             let end = l[at..].find('(')? + at;
-            Some(l[at..end].to_string())
+            let name = l[at..end].trim_matches('"').to_string();
+            // The attributes after the parameter list.
+            let close = l.rfind(')')?;
+            let after = &l[close + 1..];
+            after.split_whitespace().any(|w| w == "nounwind" || groups.contains(w)).then_some(name)
         })
         .collect()
 }
@@ -402,7 +419,8 @@ pub struct LsdaTrip {
 
 /// Re-writes the LSDAs of `object` (llc's, from `ir`) with `hod_eh`, checks
 /// them against llc's (`spec/eh.md` §9.8), and splices them in.
-/// `mutate` may change the rows first (the wrong-table test).
+/// `mutate` may change the rows first (the wrong-table test); with `check`
+/// false the tables are only written and spliced, not compared.
 pub fn lsda_trip(
     label: &str,
     arch: Arch,
@@ -411,6 +429,7 @@ pub fn lsda_trip(
     function_sections: bool,
     reverse: bool,
     mutate: &dyn Fn(&str, &mut Rows),
+    check: bool,
 ) -> LsdaTrip {
     let elf = Elf::parse(object.to_vec());
     let pointer_size = match arch {
@@ -589,7 +608,7 @@ pub fn lsda_trip(
             .collect();
         let llc_relas = elf.rela_of(index).map(|r| elf.relas(r)).unwrap_or_default();
         let same = bytes == elf.bytes(index) && relas == llc_relas;
-        if !same {
+        if !same && check {
             eprintln!(
                 "{label}: {name} differs from llc's\n  llc {}\n  hod {}",
                 hex(elf.bytes(index)),
@@ -617,12 +636,14 @@ pub fn lsda_trip(
             |at: usize| relocs.iter().find(|r| r.0 == at as u64).map(|r| hod_stubs[&r.1].clone());
         let ours = decode(obj.data(sec), l.addend as usize, pointer_size, &hod_type_at);
         let theirs = &decoded[k];
-        assert_eq!(ours.ttype_encoding, theirs.ttype_encoding, "{label}: {}: TType", f.name);
-        assert_eq!(ours.types, theirs.types, "{label}: {}: type table", f.name);
-        let meaning = |d: &Decoded| -> Vec<(u64, u64, u64, Vec<Act>)> {
-            d.sites.iter().map(|s| (s.start, s.len, s.landing, s.chain.clone())).collect()
-        };
-        assert_eq!(meaning(&ours), meaning(theirs), "{label}: {}: call sites", f.name);
+        if check {
+            assert_eq!(ours.ttype_encoding, theirs.ttype_encoding, "{label}: {}: TType", f.name);
+            assert_eq!(ours.types, theirs.types, "{label}: {}: type table", f.name);
+            let meaning = |d: &Decoded| -> Vec<(u64, u64, u64, Vec<Act>)> {
+                d.sites.iter().map(|s| (s.start, s.len, s.landing, s.chain.clone())).collect()
+            };
+            assert_eq!(meaning(&ours), meaning(theirs), "{label}: {}: call sites", f.name);
+        }
         if l.addend as u64 != f.lsda_offset {
             identical = false;
         }

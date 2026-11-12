@@ -33,7 +33,7 @@ pub fn ret<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, value: Option<Value>) -> 
             let from = if cx.class_of(value) == Class::Mem {
                 cx.use_mem(value)?
             } else {
-                return cx.bug("a register value returned in memory");
+                crate::vcall::ret_image(cx, value)?
             };
             ret_memory_address(cx, X17)?;
             let mut to = Cursor::at_reg(X17, 0, X17);

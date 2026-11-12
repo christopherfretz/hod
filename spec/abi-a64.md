@@ -306,9 +306,9 @@ treatment to every width. `table::wide_integers`; the grid (65, 96, 127,
 ### 4.3 Fixed vectors
 
 For `<n x T>`, let `b` be the element's size in bytes and `t = n·b`.
-Supported elements are `i8`, `i16`, `i32`, `i64`, `ptr`, `half`,
-`bfloat`, `float`, `double` and `fp128`; any other element (`i1`, `i7`,
-`i128`, …) is `abi:vector-element`. A scalable vector is
+Supported elements are `i1` (a mask, below), `i8`, `i16`, `i32`, `i64`,
+`ptr`, `half`, `bfloat`, `float`, `double` and `fp128`; any other element
+(`i7`, `i128`, …) is `abi:vector-element`. A scalable vector is
 `abi:scalable-vector`. The first row that applies gives the pieces:
 
 | condition | pieces | example |
@@ -319,7 +319,7 @@ Supported elements are `i8`, `i16`, `i32`, `i64`, `ptr`, `half`,
 | `n` = 1, `T` is `half` or `bfloat` | one `H` or `Bf`, 2 bytes | `<1 x half>` |
 | `n` = 1 | one `D`, `b` bytes | `<1 x float>`, `<1 x i8>` |
 | `n` a power of two, `t` > 16 | `t`/16 of class `Q`, 16 bytes each | `<8 x i32>` |
-| `n` a power of two, `t` < 8, integer or pointer elements | `abi:vector-promoted` | `<2 x i8>`, `<2 x i16>` |
+| `n` a power of two, `t` < 8, integer or pointer elements | one `D` of lanes: element `i` zero-extended to lane `i` of `2s` (`n` = 2) or `4h` (`n` = 4) | `<2 x i8>`, `<2 x i16>`, `<4 x i8>` |
 | `n` a power of two, `t` < 8, floating-point elements | one `D`, `t` bytes | `<2 x half>` |
 | `n` not a power of two; `m·b` is 8 or 16 for `m` the next power of two | one `D` or `Q`, `t` bytes | `<3 x float>`, `<7 x i8>` |
 | `n` not a power of two, otherwise | `n` pieces, `b` bytes each: class `W` for `i8`, `i16`, `i32`; `D` for `i64`, `ptr`, `double`; `H`, `Bf`, `S` for `half`, `bfloat`, `float` | `<3 x i64>`, `<5 x i32>`, `<3 x i8>` |
@@ -329,13 +329,39 @@ piece size on. Note that `<1 x i64>` and the elements of `<3 x i64>`
 travel in vector registers, while the elements of `<3 x i8>` travel in
 general registers.
 
-`abi:vector-promoted`: LLVM passes such a vector with each element
-widened to a larger lane, which is not the value's bytes at some place
-and so cannot be said with a `Part`.
+A vector of widened lanes is not the value's bytes at some place: its
+part has kind `PartKind::Lanes` (`spec/codegen.md` §7.2) rather than
+`Value`, `offset` the leaf's offset, `size` 8. The producer writes each
+element zero-extended to its lane; the consumer reads only the element's
+bits of each lane (LLVM 19's producer can leave other bits set).
+
+**Masks.** For `<n x i1>` the first row that applies:
+
+| condition | pieces | example |
+|---|---|---|
+| `n` is 2, 4 or 8 | one `D` of lanes: element `i` as 0 or 1 in lane `i` of `2s`, `4h` or `8b` | `<4 x i1>` |
+| `n` = 16 | one `Q` of lanes, `16b` | `<16 x i1>` |
+| `n` ≤ 64 | `n` pieces of class `W`, piece `i` carrying element `i` as 0 or 1 in bit 0 | `<1 x i1>`, `<3 x i1>`, `<32 x i1>`, `<64 x i1>` |
+| otherwise | `abi:mask-wide` | `<65 x i1>` |
+
+Every mask piece is a `Lanes` part (with `bits` 1; for a `W` piece,
+`first` = `i`, `lane` 4, `size` 4); a consumer reads bit 0 of each lane
+only. A `W` piece on the stack takes an 8-byte slot of which the
+producer writes 4 bytes. As a leaf of an array a `D` or `Q` mask or
+widened vector is a block member like any `D` or `Q` piece (§3.3), and
+on the stack takes its 8- or 16-byte slot; `W` mask pieces are no block
+(§3.3). A mask returned in memory (§5.1: more than 8 `W` pieces) is its
+in-memory image: bit `i` is element `i`, the bits from `n` to the end of
+the last byte zero.
 
 *Evidence:* AAPCS64 C.1 for the 8- and 16-byte ("short") vectors; the
 rest is LLVM's type legalization. `table::vectors`; the grid's
-`vectors()` (58 shapes over all ten element types).
+`vectors()` (58 shapes over all ten element types). Lanes and masks:
+`vcall.rs` (WP-082) against `llc` 22 and 19 in both directions, every
+mask length up to 64 and every widened shape, alone, after full
+argument registers, in structures and arrays, as results, through a
+pointer, `invoke`, `musttail` and as named arguments of a variadic
+function; also LLVM's own `-O0` output read for each row.
 
 ### 4.4 Aggregates
 
@@ -633,7 +659,8 @@ but an `Assignment`, and checked by the grid in both directions.
    16-byte aligned at the call instruction (AAPCS64 "The stack").
 2. For each `Value` part, copy `size` bytes of the argument's in-memory
    image from `offset` to the part's place; for an integer argument
-   apply §7.
+   apply §7. For each `Lanes` part, write its elements to the lanes of
+   the place as §4.3 says.
 3. For each `Pointee` part, copy `size` bytes from the address the
    argument's value holds to the part's stack place. The pointer is not
    passed anywhere.
@@ -652,7 +679,8 @@ passing": the callee may modify its stack arguments).
 
 1. Each `Value` part of a parameter is found at its place, with `S` the
    value of `sp` at entry. A parameter may be assembled from several
-   parts; the bytes between them are padding.
+   parts; the bytes between them are padding. A `Lanes` part's elements
+   are the element bits of its lanes (§4.3).
 2. A parameter with a `Pointee` part has as its value the address
    `S + offset` of that part (§6.2).
 3. If `ret_memory` is set, the address at `ret_memory.address` must be
@@ -815,7 +843,7 @@ coverage log (`spec/cli.md`) counts by them.
 | `abi:target-ext-type` | a target extension type |
 | `abi:addrspace` | a pointer in an address space other than 0 |
 | `abi:vector-element` | a vector whose element is not one of §4.3's |
-| `abi:vector-promoted` | a vector LLVM passes with widened lanes (§4.3) |
+| `abi:mask-wide` | a mask of more than 64 elements (§4.3) |
 | `abi:wide-int-array` | an array argument of integers wider than 64 bits (§3.3) |
 | `abi:bfloat-array` | an array argument of `bfloat` (§3.3) |
 | `abi:vector-array` | an array argument of vectors of more than one piece (§3.3) |

@@ -74,9 +74,7 @@ impl<'a> Parser<'a, '_> {
                     let src = self.src;
                     self.module.find_symbol(&src[token.start as usize + 1..token.end as usize])
                 }
-                Tok::GlobalQuoted => {
-                    self.module.find_symbol(&self.name(token).unwrap_or_default())
-                }
+                Tok::GlobalQuoted => self.module.find_symbol(&self.name(token).unwrap_or_default()),
                 Tok::GlobalId => text.numbered_global(self.global_number(token)?),
                 _ => return fail(LlErrorKind::Syntax, token.start, "expected a global name"),
             };

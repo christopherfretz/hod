@@ -90,6 +90,9 @@ pub(crate) struct Parser<'a, 'm> {
     /// with the ordinal of its block, sorted.
     pub defined: Option<HashMap<LabelKey, usize>>,
     pub labels: HashMap<usize, Vec<(LabelKey, u32)>>,
+    /// In a body: `(symbol, index in text.functions())`, sorted, filled
+    /// at the first `blockaddress`.
+    pub by_sym: Vec<(u32, u32)>,
 }
 
 /// The scratch stacks of a [`Parser`] and its `blockaddress` tables: a
@@ -104,6 +107,7 @@ pub(crate) struct Scratch {
     pub pending: Vec<Cow<'static, str>>,
     pub defined: Option<HashMap<LabelKey, usize>>,
     pub labels: HashMap<usize, Vec<(LabelKey, u32)>>,
+    pub by_sym: Vec<(u32, u32)>,
 }
 
 /// Maps a refusal of `hod_ir` to a failure at `at`.
@@ -205,6 +209,7 @@ impl<'a, 'm> Parser<'a, 'm> {
             symbol_dbg: Vec::new(),
             defined: scratch.defined,
             labels: scratch.labels,
+            by_sym: scratch.by_sym,
         }
     }
 
@@ -223,16 +228,8 @@ impl<'a, 'm> Parser<'a, 'm> {
             pending: self.pending,
             defined: self.defined,
             labels: self.labels,
+            by_sym: self.by_sym,
         }
-    }
-
-    /// The attribute group `#id`, if it is defined.
-    pub(crate) fn attr_group(&self, id: u32) -> Option<&AttrGroup> {
-        if let Some(text) = self.text {
-            return text.attr_group(id);
-        }
-        let found = self.groups.binary_search_by_key(&id, |group| group.id).ok()?;
-        Some(&self.groups[found])
     }
 
     /// Whether the metadata node `!id` is defined.

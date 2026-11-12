@@ -185,7 +185,10 @@ impl Fx<'_, '_, '_> {
                 }
                 let value = |ty| int(ty) || float(ty);
                 let scalable = |shape: Shape| shape.is_some_and(|(_, scalable)| scalable);
-                value(s) && value(d) && bits(src) == bits(dst) && scalable(s_shape) == scalable(d_shape)
+                value(s)
+                    && value(d)
+                    && bits(src) == bits(dst)
+                    && scalable(s_shape) == scalable(d_shape)
             }
             _ => false,
         }
@@ -535,7 +538,6 @@ impl Fx<'_, '_, '_> {
 
     /// The flags of an access: `align` bytes, or the default if `None`.
     fn mem_flags(
-        &mut self,
         at: u32,
         align: u64,
         volatile: bool,
@@ -578,7 +580,7 @@ impl Fx<'_, '_, '_> {
             return mistyped(ty_at, "atomic load operand must have a power-of-two byte size");
         }
         let align = align.unwrap_or_else(|| types.align_of(ty));
-        let mem = self.mem_flags(at, align, volatile, order)?;
+        let mem = Self::mem_flags(at, align, volatile, order)?;
         Ok((ty, ir(at, self.b.load(ty, ptr, mem))?))
     }
 
@@ -609,7 +611,7 @@ impl Fx<'_, '_, '_> {
             return mistyped(ty_at, "atomic store operand must have a power-of-two byte size");
         }
         let align = align.unwrap_or_else(|| types.align_of(ty));
-        let mem = self.mem_flags(at, align, volatile, order)?;
+        let mem = Self::mem_flags(at, align, volatile, order)?;
         ir(at, self.b.store(value, ptr, mem))?;
         Ok((TypeId::VOID, Value::NONE))
     }
@@ -684,13 +686,12 @@ impl Fx<'_, '_, '_> {
             let slot = ir(at, self.b.add_slot(size, align))?;
             return Ok((result, ir(at, self.b.slot(slot))?));
         }
-        let count = match count {
-            Some(count) => count,
-            None => {
-                let module = &mut *self.p.module;
-                let one = ir(at, module.consts.int(&module.types, TypeId::I32, 1))?;
-                ir(at, Value::constant(one))?
-            }
+        let count = if let Some(count) = count {
+            count
+        } else {
+            let module = &mut *self.p.module;
+            let one = ir(at, module.consts.int(&module.types, TypeId::I32, 1))?;
+            ir(at, Value::constant(one))?
         };
         Ok((result, ir(at, self.b.alloca(result, count, elem_size, align))?))
     }
@@ -722,11 +723,12 @@ impl Fx<'_, '_, '_> {
         }
         let types = &self.p.module.types;
         if !(types.is_int(ty) || types.is_ptr(ty)) || !self.atomic_type(ty) {
-            let message = "cmpxchg operand must be an integer or pointer of a power-of-two byte size";
+            let message =
+                "cmpxchg operand must be an integer or pointer of a power-of-two byte size";
             return mistyped(ty_at, message);
         }
         let align = align.unwrap_or_else(|| types.size_of(ty).next_power_of_two());
-        let mem = self.mem_flags(at, align, volatile, Some((success, scope)))?;
+        let mem = Self::mem_flags(at, align, volatile, Some((success, scope)))?;
         let result = ir(at, self.p.module.types.struct_type(&[ty, TypeId::I1], false))?;
         let value = self.b.cmpxchg(result, ptr, expected, replacement, mem, failure, weak);
         Ok((result, ir(at, value)?))
@@ -769,7 +771,7 @@ impl Fx<'_, '_, '_> {
             return mistyped(ty_at, "atomicrmw operand has a type the operation does not take");
         }
         let align = align.unwrap_or_else(|| types.size_of(ty).next_power_of_two());
-        let mem = self.mem_flags(at, align, volatile, Some((ordering, scope)))?;
+        let mem = Self::mem_flags(at, align, volatile, Some((ordering, scope)))?;
         Ok((ty, ir(at, self.b.atomic_rmw(op, ty, ptr, value, mem))?))
     }
 
@@ -801,7 +803,10 @@ impl Fx<'_, '_, '_> {
             Const::Splat { elem, .. } => self.index_value(elem),
             Const::Aggregate { elems, .. } => {
                 let first = self.index_value(*elems.first()?)?;
-                elems[1..].iter().all(|&elem| self.index_value(elem) == Some(first)).then_some(first)
+                elems[1..]
+                    .iter()
+                    .all(|&elem| self.index_value(elem) == Some(first))
+                    .then_some(first)
             }
             _ => None,
         }
@@ -809,6 +814,7 @@ impl Fx<'_, '_, '_> {
 
     /// `getelementptr`: a `PtrAdd` (`spec/ir.md` §5.4) with every
     /// constant index folded into the offset.
+    #[allow(clippy::too_many_lines)] // One grammar, read in one place.
     fn get_element_ptr(&mut self, at: u32) -> PResult<(TypeId, Value)> {
         self.flags(&[b"inbounds", b"nuw", b"nusw"]);
         let source_at = self.p.tok.start;
@@ -849,23 +855,22 @@ impl Fx<'_, '_, '_> {
             }
             // The index: its value if it is a constant.
             let token = self.p.tok;
-            let (value, constant) = if token.kind == Tok::Int
-                && index_shape.is_none()
-                && token.end - token.start <= 18
-            {
-                let text = self.p.tok_text(token);
-                let (negative, digits) = match text.strip_prefix(b"-") {
-                    Some(digits) => (true, digits),
-                    None => (false, text),
+            let (value, constant) =
+                if token.kind == Tok::Int && index_shape.is_none() && token.end - token.start <= 18
+                {
+                    let text = self.p.tok_text(token);
+                    let (negative, digits) = match text.strip_prefix(b"-") {
+                        Some(digits) => (true, digits),
+                        None => (false, text),
+                    };
+                    let magnitude = digits.iter().fold(0i64, |v, &d| v * 10 + i64::from(d - b'0'));
+                    let literal = if negative { -magnitude } else { magnitude };
+                    self.p.bump();
+                    (Value::NONE, Some(sext64(literal as u64, bits)))
+                } else {
+                    let value = self.value(index_ty)?;
+                    (value, value.as_const().and_then(|id| self.index_value(id)))
                 };
-                let magnitude = digits.iter().fold(0i64, |v, &d| v * 10 + i64::from(d - b'0'));
-                let literal = if negative { -magnitude } else { magnitude };
-                self.p.bump();
-                (Value::NONE, Some(sext64(literal as u64, bits)))
-            } else {
-                let value = self.value(index_ty)?;
-                (value, value.as_const().and_then(|id| self.index_value(id)))
-            };
             let types = &self.p.module.types;
             let stride = if first {
                 first = false;
@@ -967,14 +972,12 @@ impl Fx<'_, '_, '_> {
         let Some(field) = self.field_type(agg_ty) else {
             return mistyped(agg_at, "invalid indices for extractvalue");
         };
-        match aggregate_field(&self.p.module.types, agg_ty, &self.s.path) {
-            Ok((offset, _)) => Ok((field, ir(at, self.b.extract_value(field, agg, offset))?)),
-            Err(_) => {
-                // A field after a scalable vector has no fixed offset.
-                self.p.note("aggregate:no-fixed-offset");
-                Ok((field, self.stand_in(at, field)?))
-            }
+        if let Ok((offset, _)) = aggregate_field(&self.p.module.types, agg_ty, &self.s.path) {
+            return Ok((field, ir(at, self.b.extract_value(field, agg, offset))?));
         }
+        // A field after a scalable vector has no fixed offset.
+        self.p.note("aggregate:no-fixed-offset");
+        Ok((field, self.stand_in(at, field)?))
     }
 
     fn insert_value(&mut self, at: u32) -> PResult<(TypeId, Value)> {

@@ -72,10 +72,7 @@ impl LocalNames {
         let mut at = hash(key) as usize & mask;
         loop {
             let (generation, entry) = self.slots[at];
-            if generation != self.generation
-                || entry == 0
-                || self.key(entry as usize - 1) == key
-            {
+            if generation != self.generation || entry == 0 || self.key(entry as usize - 1) == key {
                 return at;
             }
             at = (at + 1) & mask;
@@ -128,7 +125,7 @@ pub(crate) enum CalleeInfo {
     NoCode(NoCode),
     /// A member of hod's list with its overload types, for calls made
     /// with the declaration's type.
-    Known(Intrinsic<'static>, [TypeId; 4], u8),
+    Known(Intrinsic<'static>, [TypeId; 3], u8),
     /// Any other `llvm.*` name.
     Other,
 }
@@ -185,6 +182,8 @@ pub(crate) struct FnState {
     pub vals: Vec<Value>,
     pub arg_tys: Vec<TypeId>,
     pub arg_attrs: Vec<ParamAttrs>,
+    /// Where each argument of a call starts.
+    pub arg_at: Vec<u32>,
     pub bundle_vals: Vec<Value>,
     /// Per bundle: the tag (in `bundle_tags`) and the inputs (in
     /// `bundle_vals`).
@@ -273,7 +272,7 @@ impl<'t, 'a> BodyParser<'t, 'a> {
         let mut parser = Parser::new(source, module, Index::default(), Some(self.text), scratch);
         let result = body(&mut parser, &mut self.state, function);
         if result.is_ok() {
-            self.unsupported.extend(parser.pending.drain(..));
+            self.unsupported.append(&mut parser.pending);
         }
         self.scratch = parser.into_scratch();
         for construct in &self.unsupported {
@@ -322,9 +321,9 @@ pub struct ParsedBody<'p> {
 /// # Errors
 /// The first [`LlError`] of a body, converted to `E`, or the first error
 /// `each` returns.
-pub fn parse_bodies<'a, E: From<LlError>>(
+pub fn parse_bodies<E: From<LlError>>(
     module: &mut Module,
-    text: &ModuleText<'a>,
+    text: &ModuleText<'_>,
     mut each: impl FnMut(&Module, ParsedBody<'_>) -> Result<(), E>,
 ) -> Result<(), E> {
     let mut parser = BodyParser::new(text);
@@ -364,28 +363,6 @@ fn body(
     build(p, state, function, false)
 }
 
-/// The numbers and ordinals of the blocks of `function` that have no
-/// label, for a `blockaddress` met outside the function
-/// (`spec/ll.md` §5.5). Nothing is left behind in the parser but what
-/// the body interned.
-pub(crate) fn unlabelled_blocks(
-    p: &mut Parser<'_, '_>,
-    state: &mut FnState,
-    function: &FunctionText,
-) -> PResult<()> {
-    let saved = (p.lx.pos(), p.tok, p.depth);
-    let pending = std::mem::take(&mut p.pending);
-    state.unlabelled.clear();
-    state.numbered = false;
-    state.need_numbering = false;
-    let result = build(p, state, function, true);
-    p.pending = pending;
-    p.lx.set_pos(saved.0);
-    p.tok = saved.1;
-    p.depth = saved.2;
-    result.map(|_| ())
-}
-
 /// One pass over the body. With `numbering`, nothing is built to be
 /// kept: the pass finds the numbers of the blocks without labels.
 fn build(
@@ -416,7 +393,6 @@ fn build(
         p,
         b: builder,
         s: state,
-        sym: function.sym,
         end: function.body.end,
         ret_ty: ret,
         next: 0,
@@ -455,7 +431,6 @@ pub(crate) struct Fx<'p, 'a, 'm> {
     pub p: &'p mut Parser<'a, 'm>,
     pub b: FunctionBuilder,
     pub s: &'p mut FnState,
-    pub sym: hod_ir::SymId,
     /// Where the body ends: the offset of its `}`.
     pub end: u32,
     pub ret_ty: TypeId,
@@ -623,7 +598,10 @@ impl<'a> Fx<'_, 'a, '_> {
             Local::Value(..) | Local::Block(_) => {
                 let message = match name {
                     Some(token) => {
-                        format!("multiple definition of local value named '{}'", self.spelled(token))
+                        format!(
+                            "multiple definition of local value named '{}'",
+                            self.spelled(token)
+                        )
                     }
                     None => "multiple definition of a local value".to_string(),
                 };

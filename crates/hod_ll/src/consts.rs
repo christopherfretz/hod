@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use hod_ir::{BlockId, ConstId, ConstOp, SymId, TypeId, TypeKind};
 
+use crate::body::is_terminator;
 use crate::error::{LlErrorKind, PResult, fail};
 use crate::float::{Narrow, decimal, fp80, fp128, hex_u64, hex_value_u64, narrow};
 use crate::index::{ItemKind, parse_u32};
@@ -440,7 +441,7 @@ impl Parser<'_, '_> {
             self.elems.push(index);
         }
         self.expect(Tok::RParen, "expected ')' at the end of a getelementptr")?;
-        let module = &mut self.module;
+        let module = &mut *self.module;
         let id = module.consts.fold_gep(&mut module.types, source, base, &self.elems[first..]);
         self.elems.truncate(first);
         ir(at, id)
@@ -477,7 +478,7 @@ impl Parser<'_, '_> {
         }
         self.bump();
         self.expect(Tok::RParen, "expected ')' after the block")?;
-        if let Some(ordinal) = self.block_ordinal(function, label)? {
+        if let Some(ordinal) = self.block_ordinal(function, sym, label)? {
             return ir(at, self.module.consts.block_addr(sym, BlockId::new(ordinal)));
         }
         // A block with no label of its own: only a body parser knows its
@@ -489,7 +490,32 @@ impl Parser<'_, '_> {
     /// The ordinal, in layout order, of the block of the function named
     /// by `function` that the label token `label` names (§5.5); `None`
     /// if no label of the body is that one.
-    fn block_ordinal(&mut self, function: Token, label: Token) -> PResult<Option<u32>> {
+    fn block_ordinal(&mut self, function: Token, sym: SymId, label: Token) -> PResult<Option<u32>> {
+        if let Some(text) = self.text {
+            // In a body (`spec/ll.md` §11.3): the definitions are the
+            // module text's, found by symbol.
+            if self.by_sym.is_empty() && !text.functions().is_empty() {
+                let functions = text.functions().iter().enumerate();
+                self.by_sym = functions.map(|(at, f)| (f.sym.raw(), at as u32)).collect();
+                self.by_sym.sort_unstable();
+            }
+            let at = self.by_sym.binary_search_by_key(&sym.raw(), |&(raw, _)| raw);
+            let Ok(at) = at else {
+                return fail(
+                    LlErrorKind::Undefined,
+                    function.start,
+                    "blockaddress of a function this module does not define",
+                );
+            };
+            let found = self.by_sym[at].1 as usize;
+            let Some(key) = self.label_key(label) else {
+                return Ok(None);
+            };
+            let (src, body) = (self.src, text.functions()[found].body);
+            let labels = self.labels.entry(found).or_insert_with(|| block_labels(src, body));
+            let at = labels.binary_search_by(|(name, _)| name.cmp(&key));
+            return Ok(at.ok().map(|at| labels[at].1));
+        }
         if self.defined.is_none() {
             let mut defined = HashMap::new();
             for (at, item) in self.index.items.iter().enumerate() {
@@ -574,21 +600,4 @@ fn block_labels(src: &[u8], body: crate::Span) -> Vec<(LabelKey, u32)> {
             _ => {}
         }
     }
-}
-
-fn is_terminator(word: &[u8]) -> bool {
-    matches!(
-        word,
-        b"ret"
-            | b"br"
-            | b"switch"
-            | b"indirectbr"
-            | b"invoke"
-            | b"resume"
-            | b"unreachable"
-            | b"cleanupret"
-            | b"catchret"
-            | b"catchswitch"
-            | b"callbr"
-    )
 }

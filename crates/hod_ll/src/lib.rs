@@ -7,11 +7,14 @@
 //! the tables a body parser needs.
 
 mod attrs;
+mod body;
+mod call;
 mod consts;
 mod error;
 mod float;
 mod globals;
 mod index;
+mod inst;
 mod lexer;
 mod meta;
 mod names;
@@ -22,6 +25,7 @@ mod types;
 use hod_ir::{FnAttrsId, Module, SymId, TargetSpec, TypeId};
 
 pub use attrs::call_conv_keyword;
+pub use body::{BodyDebug, BodyParser, DebugRecordText, ParsedBody, parse_bodies};
 pub use error::{LlError, LlErrorKind};
 pub use lexer::{Lexer, MAX_SOURCE_BYTES, Tok, Token, unescape};
 pub use meta::{MdKind, MdNode, MdRef, MetadataIndex, NamedMetadata};

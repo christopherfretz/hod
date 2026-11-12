@@ -29,21 +29,21 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `tls` | 4 | 0 | 4 | 0 | 0 | 4 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
 | `init` | 8 | 5 | 3 | 0 | 0 | 8 | 0 |
-| `function` | 6 | 4 | 2 | 0 | 0 | 6 | 0 |
-| `cc` | 15 | 1 | 12 | 2 | 0 | 12 | 3 |
-| `attr` | 56 | 14 | 39 | 3 | 9 | 39 | 8 |
-| `type` | 15 | 4 | 8 | 3 | 0 | 13 | 2 |
-| `inst` | 67 | 47 | 12 | 8 | 0 | 59 | 8 |
+| `function` | 6 | 6 | 0 | 0 | 0 | 6 | 0 |
+| `cc` | 15 | 4 | 9 | 2 | 0 | 12 | 3 |
+| `attr` | 56 | 21 | 32 | 3 | 9 | 39 | 8 |
+| `type` | 15 | 9 | 3 | 3 | 0 | 13 | 2 |
+| `inst` | 67 | 53 | 6 | 8 | 0 | 59 | 8 |
 | `mem` | 3 | 1 | 2 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 0 | 21 | 0 | 0 | 21 | 0 |
-| `call` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
+| `call` | 3 | 2 | 1 | 0 | 0 | 3 | 0 |
 | `tail` | 3 | 2 | 1 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
-| `landingpad` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
+| `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `operand` | 9 | 4 | 5 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 133 | 2 | 131 | 0 | 0 | 133 | 0 |
-| total | 434 | 119 | 269 | 46 | 16 | 363 | 55 |
+| `intrinsic` | 133 | 37 | 96 | 0 | 0 | 133 | 0 |
+| total | 434 | 182 | 206 | 46 | 16 | 363 | 55 |
 
 ## `module`
 
@@ -186,9 +186,9 @@ Properties of a function that has a body.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `function:parameters` | supported | not-implemented | a body with parameters; per class of parameter |
-| `function:variadic` | not-implemented | not-implemented | WP-038. a variadic function with a body |
+| `function:variadic` | supported | not-implemented | a variadic function with a body |
 | `function:may-unwind` | supported | not-implemented | a body without `nounwind`: it needs unwind tables (WP-049) |
-| `function:personality` | not-implemented | not-implemented | M2 (exceptions). a body with a personality function |
+| `function:personality` | supported | not-implemented | a body with a personality function |
 | `function:slots` | supported | not-implemented | a body with fixed stack objects (`Body::slots`) |
 | `function:over-aligned-slot` | supported | not-implemented | a stack object aligned above 16 bytes |
 
@@ -199,14 +199,14 @@ Calling conventions, of a body's function and of a call.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `cc:ccc` | supported | not-implemented |  |
-| `cc:fastcc` | not-implemented | not-implemented | WP-038. assigned as `ccc` (`spec/abi-a64.md` §1.2) |
+| `cc:fastcc` | supported | not-implemented | assigned as `ccc` (`spec/abi-a64.md` §1.2) |
 | `cc:coldcc` | not-implemented | not-implemented | unplanned |
 | `cc:ghccc` | not-implemented | not-implemented | unplanned |
 | `cc:anyregcc` | not-implemented | not-implemented | unplanned |
 | `cc:preserve_mostcc` | not-implemented | not-implemented | unplanned |
 | `cc:preserve_allcc` | not-implemented | not-implemented | unplanned |
-| `cc:swiftcc` | not-implemented | not-implemented | WP-038. assigned as `ccc` (`spec/abi-a64.md` §1.2) |
-| `cc:cxx_fast_tlscc` | not-implemented | not-implemented | WP-038. assigned as `ccc` (`spec/abi-a64.md` §1.2) |
+| `cc:swiftcc` | supported | not-implemented | assigned as `ccc` (`spec/abi-a64.md` §1.2) |
+| `cc:cxx_fast_tlscc` | supported | not-implemented | assigned as `ccc` (`spec/abi-a64.md` §1.2) |
 | `cc:tailcc` | not-implemented | not-implemented | unplanned |
 | `cc:cfguard_checkcc` | rejected | rejected | a Windows construct |
 | `cc:swifttailcc` | not-implemented | not-implemented | unplanned |
@@ -220,16 +220,16 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `attr:zeroext` | not-implemented | not-implemented | WP-038 |
-| `attr:signext` | not-implemented | not-implemented | WP-038 |
+| `attr:zeroext` | supported | not-implemented |  |
+| `attr:signext` | supported | not-implemented |  |
 | `attr:inreg` | not-implemented | not-implemented | unplanned |
-| `attr:nest` | not-implemented | not-implemented | WP-038 |
+| `attr:nest` | supported | not-implemented |  |
 | `attr:swiftself` | not-implemented | not-implemented | unplanned |
 | `attr:swifterror` | not-implemented | not-implemented | unplanned |
 | `attr:swiftasync` | not-implemented | not-implemented | unplanned |
-| `attr:sret` | not-implemented | not-implemented | WP-038 |
-| `attr:byval` | not-implemented | not-implemented | WP-038 |
-| `attr:byref` | not-implemented | not-implemented | WP-038 |
+| `attr:sret` | supported | not-implemented |  |
+| `attr:byval` | supported | not-implemented |  |
+| `attr:byref` | supported | not-implemented |  |
 | `attr:inalloca` | rejected | rejected | a Windows construct |
 | `attr:preallocated` | rejected | rejected | a Windows construct |
 | `attr:elementtype` | not-implemented | not-implemented | unplanned. on an inline-assembly or intrinsic argument |
@@ -239,7 +239,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:noreturn` | supported | supported | a promise: nothing to do in the function itself |
 | `attr:naked` | rejected | rejected | a naked function is its inline assembly, with no frame (`spec/codegen.md` §1) |
 | `attr:nounwind` | supported | supported | its absence is `function:may-unwind` |
-| `attr:returns_twice` | not-implemented | not-implemented | WP-038. on a body, a call, or a function called directly |
+| `attr:returns_twice` | supported | not-implemented | on a body, a call, or a function called directly |
 | `attr:alwaysinline` | supported | supported | by itself; see `linkage:available_externally` |
 | `attr:ssp` | not-implemented | not-implemented | spec/codegen.md §13. open question: accept and ignore, or implement |
 | `attr:sspreq` | not-implemented | not-implemented | spec/codegen.md §13 |
@@ -284,18 +284,18 @@ Type classes of the values instructions produce and consume.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `type:int` | supported | not-implemented | integers of at most 64 bits |
-| `type:i128` | not-implemented | not-implemented | WP-040 |
-| `type:int-wide` | not-implemented | not-implemented | unplanned. integers wider than 64 bits other than `i128` |
+| `type:i128` | supported | not-implemented | WP-040 |
+| `type:int-wide` | supported | not-implemented | integers wider than 64 bits other than `i128` (WP-040) |
 | `type:ptr` | supported | not-implemented | pointers in address space 0 |
-| `type:half` | not-implemented | not-implemented | unplanned |
+| `type:half` | supported | not-implemented | arithmetic in single precision |
 | `type:bfloat` | not-implemented | not-implemented | unplanned |
 | `type:float` | supported | not-implemented |  |
 | `type:double` | supported | not-implemented |  |
-| `type:fp128` | not-implemented | not-implemented | unplanned |
+| `type:fp128` | supported | not-implemented | arithmetic, compares and conversions are calls |
 | `type:x86_fp80` | rejected | not-implemented | not an AArch64 type |
 | `type:vector` | not-implemented | not-implemented | M2 (vectors). vectors of fixed length |
 | `type:scalable-vector` | rejected | rejected | scalable vectors are refused by design |
-| `type:aggregate` | not-implemented | not-implemented | WP-040. structs and arrays as first-class values |
+| `type:aggregate` | supported | not-implemented | structs and arrays as first-class values (WP-040) |
 | `type:token` | not-implemented | not-implemented | T-XF (coroutine splitting). the results of the coroutine intrinsics |
 | `type:target-ext` | rejected | rejected | no target extension type has a lowering |
 
@@ -305,59 +305,59 @@ Instructions.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `inst:add` | supported (int) | not-implemented |  |
-| `inst:sub` | supported (int) | not-implemented |  |
-| `inst:mul` | supported (int) | not-implemented |  |
-| `inst:udiv` | supported (int) | not-implemented |  |
-| `inst:sdiv` | supported (int) | not-implemented |  |
-| `inst:urem` | supported (int) | not-implemented |  |
-| `inst:srem` | supported (int) | not-implemented |  |
-| `inst:shl` | supported (int) | not-implemented |  |
-| `inst:lshr` | supported (int) | not-implemented |  |
-| `inst:ashr` | supported (int) | not-implemented |  |
-| `inst:and` | supported (int) | not-implemented |  |
-| `inst:or` | supported (int) | not-implemented |  |
-| `inst:xor` | supported (int) | not-implemented |  |
-| `inst:fadd` | supported (half, float, double) | not-implemented |  |
-| `inst:fsub` | supported (half, float, double) | not-implemented |  |
-| `inst:fmul` | supported (half, float, double) | not-implemented |  |
-| `inst:fdiv` | supported (half, float, double) | not-implemented |  |
-| `inst:frem` | supported (float, double) | not-implemented | a call of `fmod` |
-| `inst:fneg` | supported (half, float, double) | not-implemented |  |
-| `inst:icmp` | supported (int, ptr) | not-implemented |  |
-| `inst:fcmp` | supported (int, half, float, double) | not-implemented |  |
-| `inst:trunc` | supported (int) | not-implemented |  |
-| `inst:zext` | supported (int) | not-implemented |  |
-| `inst:sext` | supported (int) | not-implemented |  |
-| `inst:fptrunc` | supported (half, float, double) | not-implemented |  |
-| `inst:fpext` | supported (half, float, double) | not-implemented |  |
-| `inst:fptoui` | supported (int, half, float, double) | not-implemented |  |
-| `inst:fptosi` | supported (int, half, float, double) | not-implemented |  |
-| `inst:uitofp` | supported (int, half, float, double) | not-implemented |  |
-| `inst:sitofp` | supported (int, half, float, double) | not-implemented |  |
-| `inst:ptrtoint` | supported (int, ptr) | not-implemented |  |
-| `inst:ptrtoaddr` | supported (int, ptr) | not-implemented |  |
-| `inst:inttoptr` | supported (int, ptr) | not-implemented |  |
-| `inst:bitcast` | supported (int, ptr) | not-implemented | between integers and floats with WP-039 |
+| `inst:add` | supported (int, i128, int-wide) | not-implemented |  |
+| `inst:sub` | supported (int, i128, int-wide) | not-implemented |  |
+| `inst:mul` | supported (int, i128, int-wide) | not-implemented |  |
+| `inst:udiv` | supported (int, i128) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
+| `inst:sdiv` | supported (int, i128) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
+| `inst:urem` | supported (int, i128) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
+| `inst:srem` | supported (int, i128) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
+| `inst:shl` | supported (int, i128, int-wide) | not-implemented |  |
+| `inst:lshr` | supported (int, i128, int-wide) | not-implemented |  |
+| `inst:ashr` | supported (int, i128, int-wide) | not-implemented |  |
+| `inst:and` | supported (int, i128, int-wide) | not-implemented |  |
+| `inst:or` | supported (int, i128, int-wide) | not-implemented |  |
+| `inst:xor` | supported (int, i128, int-wide) | not-implemented |  |
+| `inst:fadd` | supported (half, float, double, fp128) | not-implemented |  |
+| `inst:fsub` | supported (half, float, double, fp128) | not-implemented |  |
+| `inst:fmul` | supported (half, float, double, fp128) | not-implemented |  |
+| `inst:fdiv` | supported (half, float, double, fp128) | not-implemented |  |
+| `inst:frem` | supported (half, float, double, fp128) | not-implemented | a call of `fmod` |
+| `inst:fneg` | supported (half, float, double, fp128) | not-implemented |  |
+| `inst:icmp` | supported (int, i128, int-wide, ptr) | not-implemented |  |
+| `inst:fcmp` | supported (int, half, float, double, fp128) | not-implemented |  |
+| `inst:trunc` | supported (int, i128, int-wide) | not-implemented |  |
+| `inst:zext` | supported (int, i128, int-wide) | not-implemented |  |
+| `inst:sext` | supported (int, i128, int-wide) | not-implemented |  |
+| `inst:fptrunc` | supported (half, float, double, fp128) | not-implemented |  |
+| `inst:fpext` | supported (half, float, double, fp128) | not-implemented |  |
+| `inst:fptoui` | supported (int, half, float, double, fp128) | not-implemented |  |
+| `inst:fptosi` | supported (int, half, float, double, fp128) | not-implemented |  |
+| `inst:uitofp` | supported (int, half, float, double, fp128) | not-implemented |  |
+| `inst:sitofp` | supported (int, half, float, double, fp128) | not-implemented |  |
+| `inst:ptrtoint` | supported (int, i128, int-wide, ptr) | not-implemented |  |
+| `inst:ptrtoaddr` | supported (int, i128, int-wide, ptr) | not-implemented |  |
+| `inst:inttoptr` | supported (int, i128, int-wide, ptr) | not-implemented |  |
+| `inst:bitcast` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128) | not-implemented | between integers and floats with WP-039 |
 | `inst:addrspacecast` | rejected | rejected | it has a pointer in a non-zero address space on one side |
-| `inst:load` | supported (int, ptr) | not-implemented | a plain load; see `mem:`; FP and vector values: WP-067 |
-| `inst:store` | supported (int, ptr) | not-implemented | a plain store; see `mem:`; FP and vector values: WP-067 |
+| `inst:load` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | not-implemented | a plain load; see `mem:`; FP and vector values: WP-067 |
+| `inst:store` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | not-implemented | a plain store; see `mem:`; FP and vector values: WP-067 |
 | `inst:alloca` | supported | not-implemented | a dynamic allocation; fixed ones are `function:slots` |
 | `inst:fence` | not-implemented | not-implemented | M2 (atomics) |
 | `inst:cmpxchg` | not-implemented | not-implemented | M2 (atomics) |
 | `inst:atomicrmw` | not-implemented | not-implemented | M2 (atomics). and the operation's `atomicrmw:` row |
 | `inst:ptradd` | supported | not-implemented | LLVM's `getelementptr` (§5.4); not a vector of pointers |
-| `inst:extractvalue` | not-implemented | not-implemented | WP-040 |
-| `inst:insertvalue` | not-implemented | not-implemented | WP-040 |
+| `inst:extractvalue` | supported (int, i128, int-wide, ptr, float, double, aggregate) | not-implemented |  |
+| `inst:insertvalue` | supported (int, i128, int-wide, ptr, float, double, aggregate) | not-implemented |  |
 | `inst:extractelement` | not-implemented | not-implemented | M2 (vectors) |
 | `inst:insertelement` | not-implemented | not-implemented | M2 (vectors) |
 | `inst:shufflevector` | not-implemented | not-implemented | M2 (vectors) |
 | `inst:phi` | supported | not-implemented | for every class whose `type:*` row is supported |
-| `inst:select` | supported (int, ptr) | not-implemented |  |
-| `inst:freeze` | supported (int, ptr) | not-implemented |  |
+| `inst:select` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | not-implemented |  |
+| `inst:freeze` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | not-implemented |  |
 | `inst:va_arg` | rejected | rejected | `llc` miscompiles it on AArch64, so there is no oracle; frontends do not emit it |
-| `inst:call` | not-implemented | not-implemented | WP-038. a call of anything but an intrinsic |
-| `inst:landingpad` | not-implemented | not-implemented | M2 (exceptions) |
+| `inst:call` | supported | not-implemented | a call of anything but an intrinsic |
+| `inst:landingpad` | supported | not-implemented |  |
 | `inst:catchpad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:cleanuppad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:br` | supported | not-implemented |  |
@@ -367,8 +367,8 @@ Instructions.
 | `inst:ret` | supported | not-implemented |  |
 | `inst:unreachable` | supported | not-implemented |  |
 | `inst:callbr` | rejected | rejected | its only use is inline assembly with labels (`spec/codegen.md` §1) |
-| `inst:invoke` | not-implemented | not-implemented | M2 (exceptions) |
-| `inst:resume` | not-implemented | not-implemented | M2 (exceptions) |
+| `inst:invoke` | supported | not-implemented |  |
+| `inst:resume` | supported | not-implemented |  |
 | `inst:catchswitch` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:catchret` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:cleanupret` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
@@ -417,9 +417,9 @@ Kinds of callee.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `call:indirect` | not-implemented | not-implemented | WP-038. the callee is a computed address |
+| `call:indirect` | supported | not-implemented | the callee is a computed address |
 | `call:inline-asm` | not-implemented | not-implemented | hod_asm. the callee is inline assembly |
-| `call:variadic` | not-implemented | not-implemented | WP-038. a call through a variadic function type |
+| `call:variadic` | supported | not-implemented | a call through a variadic function type |
 
 ## `tail`
 
@@ -454,9 +454,9 @@ Landing-pad clauses.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `landingpad:cleanup` | not-implemented | not-implemented | M2 (exceptions) |
-| `landingpad:catch` | not-implemented | not-implemented | M2 (exceptions) |
-| `landingpad:filter` | not-implemented | not-implemented | M2 (exceptions) |
+| `landingpad:cleanup` | supported | not-implemented |  |
+| `landingpad:catch` | supported | not-implemented |  |
+| `landingpad:filter` | supported | not-implemented |  |
 
 ## `operand`
 
@@ -506,42 +506,42 @@ Intrinsics (§5.5).
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `intrinsic:llvm.memcpy` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.memcpy.inline` | not-implemented | not-implemented | unplanned |
-| `intrinsic:llvm.memmove` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.memset` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.memset.inline` | not-implemented | not-implemented | unplanned |
-| `intrinsic:llvm.va_start` | not-implemented | not-implemented | WP-038 |
-| `intrinsic:llvm.va_end` | not-implemented | not-implemented | WP-038 |
-| `intrinsic:llvm.va_copy` | not-implemented | not-implemented | WP-038 |
+| `intrinsic:llvm.memcpy` | supported (int, ptr) | not-implemented |  |
+| `intrinsic:llvm.memcpy.inline` | supported (int, ptr) | not-implemented |  |
+| `intrinsic:llvm.memmove` | supported (int, ptr) | not-implemented |  |
+| `intrinsic:llvm.memset` | supported (int, ptr) | not-implemented |  |
+| `intrinsic:llvm.memset.inline` | supported (int, ptr) | not-implemented |  |
+| `intrinsic:llvm.va_start` | supported | not-implemented |  |
+| `intrinsic:llvm.va_end` | supported | not-implemented |  |
+| `intrinsic:llvm.va_copy` | supported | not-implemented |  |
 | `intrinsic:llvm.stacksave` | supported | not-implemented |  |
 | `intrinsic:llvm.stackrestore` | supported | not-implemented |  |
-| `intrinsic:llvm.frameaddress` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.returnaddress` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.trap` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.debugtrap` | not-implemented | not-implemented | unplanned |
-| `intrinsic:llvm.ubsantrap` | not-implemented | not-implemented | unplanned |
-| `intrinsic:llvm.bswap` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.bitreverse` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.ctpop` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.ctlz` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.cttz` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.fshl` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.fshr` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.abs` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.smax` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.smin` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.umax` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.umin` | not-implemented | not-implemented | WP-041 |
+| `intrinsic:llvm.frameaddress` | supported (int, ptr) | not-implemented |  |
+| `intrinsic:llvm.returnaddress` | supported (int, ptr) | not-implemented |  |
+| `intrinsic:llvm.trap` | supported | not-implemented |  |
+| `intrinsic:llvm.debugtrap` | supported | not-implemented |  |
+| `intrinsic:llvm.ubsantrap` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.bswap` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.bitreverse` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.ctpop` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.ctlz` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.cttz` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.fshl` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.fshr` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.abs` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.smax` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.smin` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.umax` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.umin` | supported (int) | not-implemented |  |
 | `intrinsic:llvm.scmp` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.ucmp` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.clmul` | not-implemented | not-implemented | unplanned |
-| `intrinsic:llvm.sadd.with.overflow` | not-implemented | not-implemented | WP-040 |
-| `intrinsic:llvm.uadd.with.overflow` | not-implemented | not-implemented | WP-040 |
-| `intrinsic:llvm.ssub.with.overflow` | not-implemented | not-implemented | WP-040 |
-| `intrinsic:llvm.usub.with.overflow` | not-implemented | not-implemented | WP-040 |
-| `intrinsic:llvm.smul.with.overflow` | not-implemented | not-implemented | WP-040 |
-| `intrinsic:llvm.umul.with.overflow` | not-implemented | not-implemented | WP-040 |
+| `intrinsic:llvm.sadd.with.overflow` | supported (int, i128, int-wide, aggregate) | not-implemented |  |
+| `intrinsic:llvm.uadd.with.overflow` | supported (int, i128, int-wide, aggregate) | not-implemented |  |
+| `intrinsic:llvm.ssub.with.overflow` | supported (int, i128, int-wide, aggregate) | not-implemented |  |
+| `intrinsic:llvm.usub.with.overflow` | supported (int, i128, int-wide, aggregate) | not-implemented |  |
+| `intrinsic:llvm.smul.with.overflow` | supported (int, aggregate) | not-implemented | up to 64 bits |
+| `intrinsic:llvm.umul.with.overflow` | supported (int, aggregate) | not-implemented | up to 64 bits |
 | `intrinsic:llvm.sadd.sat` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.uadd.sat` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.ssub.sat` | not-implemented | not-implemented | unplanned |
@@ -596,12 +596,12 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.eh.typeid.for` | not-implemented | not-implemented | M2 (exceptions) |
 | `intrinsic:llvm.threadlocal.address` | not-implemented | not-implemented | M2 (TLS) |
 | `intrinsic:llvm.thread.pointer` | not-implemented | not-implemented | M2 (TLS) |
-| `intrinsic:llvm.prefetch` | not-implemented | not-implemented | unplanned |
+| `intrinsic:llvm.prefetch` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.clear_cache` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.readcyclecounter` | not-implemented | not-implemented | unplanned |
-| `intrinsic:llvm.is.constant` | not-implemented | not-implemented | unplanned |
-| `intrinsic:llvm.objectsize` | not-implemented | not-implemented | unplanned |
-| `intrinsic:llvm.ptrmask` | not-implemented | not-implemented | unplanned |
+| `intrinsic:llvm.is.constant` | supported | not-implemented |  |
+| `intrinsic:llvm.objectsize` | supported (int, ptr) | not-implemented |  |
+| `intrinsic:llvm.ptrmask` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.load.relative` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.instrprof.increment` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.instrprof.increment.step` | not-implemented | not-implemented | unplanned |

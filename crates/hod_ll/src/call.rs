@@ -518,14 +518,14 @@ impl Fx<'_, '_, '_> {
             if self.p.tok.kind != Tok::LParen {
                 return self.p.syntax("expected '(' in call");
             }
-            let args = self.skip_group()?;
             let name = match callee_token.kind {
                 Tok::GlobalQuoted => {
                     Span { start: callee_token.start + 2, end: callee_token.end - 1 }
                 }
                 _ => Span { start: callee_token.start + 1, end: callee_token.end },
             };
-            self.debug_call(name, Span { start: args.start + 1, end: args.end - 1 });
+            let name = &self.p.src[name.start as usize..name.end as usize];
+            self.debug_call(name)?;
             self.call_fn_attrs()?;
             self.bundles()?;
             return self.stand_in_call(at, op, ret);

@@ -74,6 +74,18 @@ impl Body {
         v.debug_ids()?;
         v.use_facts()
     }
+
+    /// The rules of §6.8 alone, those [`Body::verify`] checks on the
+    /// body's debug declarations, records and locations: what a producer
+    /// that reads them from text checks of each body it hands out.
+    ///
+    /// # Errors
+    /// `InvalidDebugInfo`, as [`Body::verify`].
+    pub fn verify_debug(&self, module: &Module) -> IrResult<()> {
+        let v = Verifier { body: self, module, types: &module.types };
+        v.debug_records()?;
+        v.debug_ids()
+    }
 }
 
 /// The scalar type of `ty` and, for a vector, its length and whether it

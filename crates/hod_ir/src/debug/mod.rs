@@ -66,11 +66,12 @@ struct LocRec {
 
 /// Reserved and not defined.
 const LOC_RESERVED: u16 = 0;
-/// Defined, and never the answer to a lookup: distinct, or defined after
-/// its id was handed out.
+/// Defined and distinct: never the answer to a lookup.
 const LOC_DISTINCT: u16 = 1;
 /// Defined and interned.
 const LOC_INTERNED: u16 = 2;
+/// Defined after a reservation, not interned and not distinct.
+const LOC_UNIQUED: u16 = 3;
 
 /// What the debug tables hold, for the size reports of §6.10.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -528,13 +529,35 @@ impl DebugInfo {
         Ok(LocId::new(id))
     }
 
-    /// Defines the reserved location `id`.
+    /// Defines the reserved location `id`. It is not interned (a later
+    /// [`DebugInfo::loc`] does not return it), and it is not distinct:
+    /// the printer writes it as LLVM's uniqued `!DILocation`, as it was
+    /// read. [`DebugInfo::define_distinct_loc`] defines a distinct one.
     ///
     /// # Errors
     /// `UndefinedDebugNode` if `id` was never reserved, or the scope or
     /// the inlined-at location does not exist; `DebugRedefined` if `id`
     /// is defined already.
     pub fn define_loc(&mut self, id: LocId, loc: DiLocation) -> IrResult<()> {
+        self.define_loc_as(id, loc, LOC_UNIQUED)
+    }
+
+    /// [`DebugInfo::define_loc`] of LLVM's `distinct !DILocation`.
+    ///
+    /// # Errors
+    /// As [`DebugInfo::define_loc`].
+    pub fn define_distinct_loc(&mut self, id: LocId, loc: DiLocation) -> IrResult<()> {
+        self.define_loc_as(id, loc, LOC_DISTINCT)
+    }
+
+    /// Whether location `id` is LLVM's `distinct !DILocation`: made by
+    /// [`DebugInfo::distinct_loc`] or [`DebugInfo::define_distinct_loc`].
+    #[inline]
+    pub fn is_distinct_loc(&self, id: LocId) -> bool {
+        self.locs.get(id.index()).is_some_and(|record| record.state == LOC_DISTINCT)
+    }
+
+    fn define_loc_as(&mut self, id: LocId, loc: DiLocation, state: u16) -> IrResult<()> {
         match self.locs.get(id.index()) {
             None => {
                 return err(IrErrorKind::UndefinedDebugNode, format!("{id:?} was never reserved"));
@@ -550,7 +573,7 @@ impl DebugInfo {
             scope: loc.scope,
             inlined_at: loc.inlined_at,
             column: loc.column,
-            state: LOC_DISTINCT,
+            state,
         };
         self.undefined_locs -= 1;
         Ok(())

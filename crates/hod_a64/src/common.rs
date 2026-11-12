@@ -562,10 +562,15 @@ pub fn materialize_gpr_const(cx: &mut FnCx<'_, A64>, rd: Reg, id: ConstId) -> Cg
 
 /// Puts the vector-class constant `id` in `rd` (§7.5): a scalar float by
 /// the encoder's FP materialization through `x16`, `fp128` by its two
-/// halves through `x16`, zero by `movi`.
+/// halves through `x16`, zero by `movi`, and any other constant (a
+/// vector, WP-067) from its in-memory image, 8 bytes at a time through
+/// `x16` (a symbol address in it by [`sym_address`]): no literal pool, so
+/// no relocation and no reach limit beyond those of a symbol address.
 ///
 /// # Errors
-/// [`CONSTANT`] for a vector constant other than zero.
+/// [`CONSTANT`] for a constant without an image; [`CONSTANT_RELOC`] for
+/// an image with a relocation other than an aligned 8-byte symbol
+/// address.
 pub fn materialize_fpr_const(cx: &mut FnCx<'_, A64>, rd: VReg, id: ConstId) -> CgResult<()> {
     match cx.module.consts.get(id) {
         Const::Float { ty, bits } => {
@@ -586,7 +591,19 @@ pub fn materialize_fpr_const(cx: &mut FnCx<'_, A64>, rd: VReg, id: ConstId) -> C
         Const::Null(_) | Const::Zero(_) | Const::Undef(_) | Const::Poison(_) => {
             put(cx, mc::movi_mask(mc::VecBits::V128, rd, 0));
         }
-        _ => return unsupported(CONSTANT),
+        _ => {
+            let (mut image, mut fixups) =
+                IMAGE.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+            image.clear();
+            fixups.clear();
+            let flattened = cx.module.consts.flatten(cx.types(), id, &mut image, &mut fixups);
+            let result = match flattened {
+                Ok(()) => image_to_fpr(cx, rd, &image, &fixups),
+                Err(_) => unsupported(CONSTANT),
+            };
+            IMAGE.with(|cell| *cell.borrow_mut() = (image, fixups));
+            result?;
+        }
     }
     Ok(())
 }
@@ -852,6 +869,52 @@ pub fn block_address(
         ],
     );
     branch(cx, label)
+}
+
+// ---- vector constants: added by WP-067 ----
+
+/// Puts the image (at most 16 bytes) in `rd` through `x16`: the low 8
+/// bytes by `fmov dN, x16` (which clears the rest), the high 8 by
+/// `fmov vN.d[1], x16`. A zero word is `xzr`. Added by WP-067 with the
+/// vector constants of [`materialize_fpr_const`].
+fn image_to_fpr(
+    cx: &mut FnCx<'_, A64>,
+    rd: VReg,
+    image: &[u8],
+    fixups: &[hod_ir::Fixup],
+) -> CgResult<()> {
+    if image.len() > 16
+        || fixups.iter().any(|f| {
+            f.size != 8 || !f.offset.is_multiple_of(8) || !matches!(f.target, FixupTarget::Sym(_))
+        })
+    {
+        return unsupported(CONSTANT_RELOC);
+    }
+    for (index, chunk) in image.chunks(8).enumerate() {
+        let offset = index as u64 * 8;
+        let src = if let Some(f) = fixups.iter().find(|f| f.offset == offset)
+            && let FixupTarget::Sym(sym) = f.target
+        {
+            sym_address(cx, X16, sym, f.addend)?;
+            X16.zr()
+        } else {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            let word = u64::from_le_bytes(word);
+            if word == 0 {
+                RegZr::ZR
+            } else {
+                mov_imm(cx, Size::X, X16, word);
+                X16.zr()
+            }
+        };
+        if index == 0 {
+            put(cx, mc::fmov_gpr_to_fp(Size::X, rd, src));
+        } else {
+            put(cx, mc::fmov_gpr_to_hi(rd, src));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -10,7 +10,6 @@ use crate::body::{Body, CallSite, Callee, Clause, Inst, InstKind, PtrAdd, SHUFFL
 use crate::ids::{AsmId, BlockId, TypeId};
 use crate::inst::{AtomicOrdering, Opcode, RmwOp, SyncScope, TailKind};
 use crate::intrinsic::Intrinsic;
-use crate::symbol::Symbol;
 use crate::types::{TypeKind, TypeTable};
 use crate::value::{Value, ValueKind};
 
@@ -207,6 +206,12 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
             return self.malformed("a body without a block");
         }
         let entry = body.entry();
+        let mut records = body.dbg_records().peekable();
+        // Whether a declaration is written after an instruction.
+        let placed = body
+            .declares()
+            .iter()
+            .any(|declare| super::debug::placed_after(body, declare.address).is_some());
         for block in body.blocks() {
             writeln!(self.out, "b{}:", block.id().raw())?;
             if block.id() == entry {
@@ -215,38 +220,28 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
                     let (size, align) = (slot.size(), slot.align());
                     writeln!(self.out, "  %s{index} = alloca [{size} x i8], align {align}")?;
                 }
-                self.dbg_slot_vars(body)?;
+                self.dbg_declares(body)?;
             }
             for inst in block.insts() {
+                while let Some(record) = records.peek().filter(|record| record.before == inst.id())
+                {
+                    let record = *record;
+                    self.dbg_record(body, &record)?;
+                    records.next();
+                }
                 self.s("  ")?;
                 self.inst(body, inst)?;
-                self.dbg_inst(body, inst)?;
+                self.dbg_inst(inst)?;
                 self.s("\n")?;
+                if placed {
+                    for declare in body.declares() {
+                        if super::debug::placed_after(body, declare.address) == Some(inst.id()) {
+                            self.dbg_declare_one(body, declare)?;
+                        }
+                    }
+                }
             }
         }
-        Ok(())
-    }
-
-    // ---- DEBUG INFORMATION HOOKS ----
-    //
-    // The printer writes no debug information yet (§9.7). These three are
-    // where it goes: ` !dbg !N` on the `define` line (the subprogram),
-    // `#dbg_declare` records (dialect 19: `llvm.dbg.declare` calls) for
-    // the slot variables after the slots, and ` , !dbg !N` after an
-    // instruction, with the metadata nodes written by `Writer::metadata`.
-
-    #[expect(clippy::unused_self, clippy::unnecessary_wraps, reason = "the debug-info hook")]
-    pub(super) fn dbg_function(&mut self, _symbol: Symbol<'_>) -> R {
-        Ok(())
-    }
-
-    #[expect(clippy::unused_self, clippy::unnecessary_wraps, reason = "the debug-info hook")]
-    fn dbg_slot_vars(&mut self, _body: &Body) -> R {
-        Ok(())
-    }
-
-    #[expect(clippy::unused_self, clippy::unnecessary_wraps, reason = "the debug-info hook")]
-    fn dbg_inst(&mut self, _body: &Body, _inst: Inst<'_>) -> R {
         Ok(())
     }
 
@@ -281,7 +276,7 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
     }
 
     /// `type operand`.
-    fn typed(&mut self, body: &Body, value: Value) -> R {
+    pub(super) fn typed(&mut self, body: &Body, value: Value) -> R {
         let ty = self.value_ty(body, value)?;
         self.ty(ty)?;
         self.s(" ")?;

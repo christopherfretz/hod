@@ -1124,11 +1124,26 @@ spellings.
 
 `DiNode::new(kind)` is a node with every field at its default;
 `DiNode::llvm_default(kind)` is a node as LLVM's parser starts one, which
-differs in one place: a global variable is a definition.
+differs in two places: a global variable is a definition, and so is a
+subprogram (`spFlags: DISPFlagDefinition`: LLVM's `isDefinition` is
+`true` when neither it nor `spFlags` is written).
 `DiNode::set(field, value)` sets a field by its LLVM name, for a producer
 that holds LLVM's names; it also takes the older spellings of a
 subprogram's flags (`isLocal`, `isDefinition`, `isOptimized`,
 `virtuality`).
+
+For a reader of LLVM's text and for the printer, each field says what it
+holds and gives its value back by name: `DiKind::field_shape(field)` is
+the field's `DiShape` (a number, a signed number, an optional number, a
+flag, a string, a node, a list, an expression, a constant, a bound, a
+flag set of `DiFlags` or `SpFlags`, or one of the three enumerations),
+which says what to make of the text written there; and
+`DiNode::each_field(visit)` calls `visit(name, DiFieldOut)` for the tag
+of a tagged kind and then for every field not at its default, in the
+order of the table above, `DiFieldOut` being the field's value as
+stored (`UInt`, `Int`, `Bool`, `Str`, `Node`, `List`, `Expr`, `Const`,
+`Bound`, `Flags`, `SpFlags`, `EmissionKind`, `NameTableKind`,
+`ChecksumKind`).
 
 ### 6.3 Building
 
@@ -1189,8 +1204,11 @@ another function, the location of the call it was inlined at
   for an inlined-at call so that two calls on one line stay two inlined
   instances; also the cheapest way in for a producer whose locations are
   unique already (one push, no hash).
-- `reserve_loc()` and `define_loc(id, l)`: for `!dbg !7` met before `!7`.
-  A defined reserved location is not interned.
+- `reserve_loc()` and `define_loc(id, l)` or `define_distinct_loc(id,
+  l)`: for `!dbg !7` met before `!7`. A defined reserved location is not
+  interned (a later `loc` of the same location is another id), and keeps
+  whether it was defined `distinct`, which `is_distinct_loc(id)` answers
+  for every location, so that the printer writes it as it was read.
 - `location(id)` is one array read; `function_of(id)` is the subprogram
   of the scope at the end of the inlined-at chain: the function the
   instruction is in.
@@ -1240,6 +1258,14 @@ older intrinsic-call spelling (`llvm.dbg.declare` ...):
   address_expr, loc)` (one value: a `DIArgList` there is unsupported,
   §6.9; the `DIAssignID` is not kept), `dbg_label(label, loc)`: before the
   next instruction appended to the open block (`BadBlock` without one).
+- `set_loc(loc)` gives the instructions appended from then on their
+  location; `set_loc_since(first, loc)` gives it to those appended since
+  the builder held `first` of them (`inst_count()` then) and to no
+  others, for a producer that learns an instruction's location after the
+  instructions it became, as LLVM's text, which writes `!dbg` last. These
+  three tables and the location array are the whole of a body's debug
+  information: the form `hod_ll` fills from text and the bitcode reader
+  from records.
 
 A record or declaration does not use the value it names: use counts and
 the two facts about uses (§5.6) are the same with and without debug
@@ -1284,7 +1310,10 @@ function's, and that a global-variable expression is attached to a
 variable. Like `verify_symbols` it is for tests and for producers that
 want their output checked; code generation does not need it to have run.
 
-`Body::verify` (§5.8) checks a body's debug records:
+`Body::verify` (§5.8) checks a body's debug records, and
+`Body::verify_debug(module)` checks those rules alone, for a producer
+that hands out only bodies whose debug information LLVM's verifier would
+keep (`spec/ll.md` §11.9):
 
 - always: declarations and records name values of this body (or
   nothing); a declaration names no slot; records are in position order,
@@ -1850,12 +1879,35 @@ form, not a round trip of what a producer read: `PtrAdd` as `i8`
 `getelementptr`s, slots as `alloca`s, numbered values and blocks,
 literal struct types, and what the IR dropped stays dropped.
 
-No debug information is written yet. The hooks are `dbg_function` (` !dbg
-!N` on the `define` line), `dbg_slot_vars` (the slot variables:
-`#dbg_declare` records, `llvm.dbg.declare` calls in dialect 19) and
-`dbg_inst` (`, !dbg !N` after an instruction), in
-`crates/hod_ir/src/print/body.rs`, with the nodes written by the
-metadata step of §9.3.
+Debug information (`crates/hod_ir/src/print/debug.rs`) is numbered
+before every other metadata: node `DiId(i)` is `!i` and location `l` is
+`!(node_count + l)`; strings (`!"…"`), constants (`i32 7`), tuples a
+field names as a list (`!{…}`) and expressions (`!DIExpression(…)`)
+are written in place, so not every number is used. A node is written
+with its tag first and then the fields `each_field` gives (§6.2), DWARF
+constants by name (`DW_TAG_*`, `DW_ATE_*`, `DW_LANG_*`, `DW_CC_*`),
+flag sets as `A | B` with the multi-bit fields first and any bits
+without a name as a number; a field LLVM's parser requires, and a field
+whose default there is not hod's (a subprogram's `spFlags`, a global
+variable's `isDefinition`), is written even at hod's default. A field
+LLVM's text has only from a later major (`DILabel`'s `column`,
+`isArtificial`, `coroSuspendIdx`, `DIBasicType`'s `dataSize`, from 21)
+is `Unsupported("debug:<kind>.<field>")` in an older dialect when it is
+not at its default. Then the locations, then `!llvm.dbg.cu`, then the
+module flags and the rest.
+
+` !dbg !N` stands on a `define` with its subprogram, and on a `declare`
+whose subprogram is not distinct; a variable gets `, !dbg !N` for each
+global-variable expression. In a body, `#dbg_declare` records (in every
+dialect: LLVM 19's parser takes records) follow the entry block's
+`alloca`s, one per slot variable and per declaration whose address is
+not an instruction result; a declaration of an instruction's result
+follows that instruction (or the `alloca`s, for a `phi` or a
+terminator). The positioned records stand before their instruction, and
+`, !dbg !N` follows an instruction with a location. An assign record is
+`Unsupported("debug:#dbg_assign")`: without its `DIAssignID` the text
+could not say what it says. A `DiOther` node is
+`Unsupported("debug:<kind>")`.
 
 ### 9.8 LLVM's rules that `hod_ir` does not check
 

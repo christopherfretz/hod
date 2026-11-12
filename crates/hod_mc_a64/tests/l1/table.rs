@@ -408,6 +408,7 @@ pub const CONSTRUCTORS: &[(&str, &[&str])] = &[
     ("bfcvt", &["bfcvt"]),
     ("fcvtxn", &["fcvtxn"]),
     ("fcvtxn_scalar", &["fcvtxn"]),
+    ("frint_scalar", &["frint32z", "frint32x", "frint64z", "frint64x"]),
     ("saddlv", &["saddlv"]),
     ("neon_fp_across", &["f*"]),
     ("addp_scalar", &["addp"]),

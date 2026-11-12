@@ -238,7 +238,7 @@ pub fn intrinsic<'a>(
             | I::Aarch64Crc32cx,
             _,
         ) => crate::tail::intrinsic(cx, inst, which, args),
-        _ => unsupported(INTRINSIC),
+        _ => crate::neon::intrinsic(cx, inst, which, args),
     }
 }
 

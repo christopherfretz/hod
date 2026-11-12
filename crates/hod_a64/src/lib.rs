@@ -42,6 +42,7 @@
 //! | `atomic` | WP-074 | atomic `load`/`store`, `atomicrmw`, `cmpxchg`, `fence` | `tests/atomic.rs` |
 //! | `vcall` | WP-082 | vectors across calls: the lanes of masks and promoted vectors (`PartKind::Lanes`) | `tests/vcall.rs` |
 //! | `tail` | WP-084 | wide fp conversions, wide `mul.with.overflow`, wide `switch`, `readcyclecounter`, `is.constant`, `{s,u}shl.sat`, `crc32` | `tests/tail.rs` |
+//! | `neon` | WP-083 | the target intrinsics: `llvm.aarch64.neon.*`, `crypto.*`, `sisd.*`, `cls`, barriers and hints | `tests/neon.rs` |
 //!
 //! The differential harness that runs generated programs natively and
 //! compares them with `hod_interp` is `tests/diff.rs`.
@@ -63,6 +64,7 @@ pub mod intrinsic;
 pub mod lanes;
 pub mod mask;
 pub mod mem;
+pub mod neon;
 pub mod reg;
 pub mod tail;
 pub mod target;

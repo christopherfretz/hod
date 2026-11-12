@@ -699,6 +699,35 @@ As for the integer compares, `a < b` is `fcmgt(arr, rd, b, a)`. An
 "unordered or" predicate is the complement (`not`) of the opposite ordered
 one.
 
+### NEON intrinsics (WP-083)
+
+`src/neon.rs`: the instructions of the AArch64 target intrinsics
+(`spec/codegen.md` §5.5.1 "NEON intrinsics (WP-083)"), as families of
+operations. Each family is an enum with `ALL` and `mnemonic()`, and a
+checked constructor (`neon_x` / `try_neon_x`) whose precondition is the
+shapes the architecture has for that operation; `try_` returns `None`
+for the others.
+
+| constructor | encodes |
+|---|---|
+| `neon_int3(op: Int3, bits, elem, rd, rn, rm)`, `neon_int3_scalar(op, elem, ...)` | integer three same: halving, saturating, rounding and register shifts, `smax`.., `sabd`/`uabd`, `pmul`, the pairwise `addp`/`smaxp`.., `sqdmulh`, `sqrdmulh`, `sqrdmlah`/`sqrdmlsh`; scalar forms where they exist |
+| `neon_int2(op: Int2, bits, elem, rd, rn)`, `neon_int2_scalar` | integer two-register misc: `suqadd`, `usqadd`, `cls`, `saddlp`, `sadalp`/`uadalp`, `sqabs`, `sqneg`, `abs`, `neg`, `sqxtn`/`uqxtn`/`sqxtun` (narrowing: `elem` is the narrow element, `V64`; `V128` is the `2` form), `urecpe`, `ursqrte` |
+| `neon_fp3(op: Fp3, bits, fmt: FpFormat, ...)`, `neon_fp3_scalar` | floating-point three same, half precision included: `fmaxnm`.., `fmulx`, `frecps`, `frsqrts`, `fabd`, `facge`/`facgt`, the pairwise forms, `fadd`.. |
+| `neon_fp2(op: Fp2, bits, fmt, rd, rn)`, `neon_fp2_scalar` | floating-point two-register misc: `fcvt{n,m,a,p,z}{s,u}`, `frecpe`, `frsqrte`, `frecpx` (scalar), `frint32/64{x,z}` (no `H`), `scvtf`/`ucvtf`, `fabs`, `fneg`, `fsqrt`, `frint*` |
+| `frint_scalar(wide, exact, double, rd, rn)` | `FRINT32Z`/`FRINT32X`/`FRINT64Z`/`FRINT64X` of `S` or `D` (floating-point data-processing) |
+| `bfcvtn(bits, ...)`, `bfcvt`, `fcvtxn`, `fcvtxn_scalar` | the conversions to bfloat16; `FCVTXN` (round to odd) |
+| `saddlv(bits, elem, ...)`, `neon_fp_across(op: FpAcross, bits, fmt, ...)`, `addp_scalar`, `neon_fp_pair(op: FpPair, fmt, ...)` | `SADDLV`; `FMAXV`/`FMINV`/`FMAXNMV`/`FMINNMV` (`4S`, `4H`, `8H`); the two-element reductions `ADDP <Dd>, <Vn>.2D` and `FADDP`/`FMAXP`/`FMINP`/`FMAXNMP`/`FMINNMP <Hd|Sd|Dd>` |
+| `neon_long3(op: Long3, elem, ...)`, `sqdmull_scalar(elem, ...)` | three different, lower halves: `saddl`.. `usubw`, `addhn`/`raddhn`/`subhn`/`rsubhn` (`elem` the narrow element), `sabal`.., `smull`/`umull`/`sqdmull`, `smlal`.., `pmull` (`D`: `1Q`) |
+| `neon_shift(op: ShiftImm, bits, elem, rd, rn, amount)`, `neon_shift_scalar` | shifts by immediate: `sshr`.. `ursra`, `sri`, `shl`, `sli`, `sqshl`/`uqshl`/`sqshlu`, the narrowing `shrn`.. `uqrshrn`, the fixed-point `scvtf`/`ucvtf`/`fcvtzs`/`fcvtzu` (`#fbits`) |
+| `neon_dot(op: Dot, bits, ...)`, `fcmla(bits, fmt, ..., rot)`, `fcadd(bits, fmt, ..., rot270)` | `sdot`/`udot`/`usdot`, `smmla`/`ummla`/`usmmla`, `bfdot`, `bfmmla`, `bfmlalb`/`bfmlalt`, `fmlal`/`fmlal2`/`fmlsl`/`fmlsl2`; `FCMLA`, `FCADD` |
+| `aes(op: Aes, rd, rn)`, `sha3reg(op: Sha3Reg, rd, rn, rm)`, `sha2reg(op: Sha2Reg, rd, rn)`, `eor3`, `bcax`, `xar` | `AESE`/`AESD`/`AESMC`/`AESIMC`; SHA1, SHA256, SHA512 and `RAX1`; the SHA3 `EOR3`, `BCAX`, `XAR` |
+| `tbl_n(extend, len, bits, rd, rn, rm)` | `TBL`/`TBX` with a table of `len` (1..4) consecutive registers from `rn` (`V0` after `V31`) |
+| `ldst_multi(op: Multi, bits, elem, rt, rn: RegSp)`, `ldst_lane(load, n, elem, index, rt, rn)`, `ld_rep(n, bits, elem, rt, rn)` | `LD1`..`LD4`/`ST1`..`ST4` (multiple structures, no post-index; `1D` for `LD1`/`ST1` only), the single-structure (lane) forms, `LD1R`..`LD4R` |
+
+Tests: `tests/l1/neon.rs`, against `llvm-mc` and `llvm-objdump` of LLVM
+22 and 19 (`+fullfp16,+rdm,+dotprod,+i8mm,+bf16,+aes,+sha2,+sha3,
++complxnum,+fp16fml,+v8.5a`).
+
 ## Fixups
 
 A code generator emits a PC-relative instruction before it knows the
@@ -755,10 +784,14 @@ loads and stores, prefetch (`PRFM`), `LDAPR`, the load/store-acquire
 Armv8.1 other than BTI. Adding one is a constructor, a row here, a row in
 `tests/l1/table.rs` and a sweep.
 
-Floating point and SIMD the crate does not encode. SVE, SME, the
-cryptographic and dot-product extensions, and the structure loads and
-stores (`LD1`..`LD4`, `ST1`..`ST4`, `LD1R`) are outside this crate's scope
-so far. The rest is listed with where it would go; each is an entry next to
+Floating point and SIMD the crate does not encode. SVE, SME, SM3/SM4,
+FP8, the by-element (indexed) forms, the post-index structure loads and
+stores, and the second-half (`2`) forms of the long and narrowing
+three-different instructions are outside this crate's scope so far. Much
+of the table below is now provided by "NEON intrinsics (WP-083)" above
+(the `int3`, `int2`, `fp3`, `fp2`, across, shift-immediate, table and
+three-different families, `FRINT32X`..), in families of its own rather
+than next to the helpers named. The rest is listed with where it would go; each is an entry next to
 an existing one, using the helper named:
 
 | not provided | follow-up |

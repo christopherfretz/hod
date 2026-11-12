@@ -507,6 +507,14 @@ pub const fn fcvtxn_scalar(rd: VReg, rn: VReg) -> u32 {
     rr(0x7e61_6800, rd, rn)
 }
 
+/// `FRINT{32,64}{X,Z} <Sd|Dd>, <Sn|Dn>`: the scalar (floating-point
+/// data-processing) form of `frint32` (`!wide`) or `frint64`, `exact`
+/// for the `X` forms (the current rounding mode) else toward zero.
+#[inline]
+pub const fn frint_scalar(wide: bool, exact: bool, double: bool, rd: VReg, rn: VReg) -> u32 {
+    rr(0x1e28_4000 | (wide as u32) << 16 | (exact as u32) << 15 | (double as u32) << 22, rd, rn)
+}
+
 // Across lanes and scalar pairwise.
 
 checked! {

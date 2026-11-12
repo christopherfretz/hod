@@ -257,6 +257,17 @@ fn fp2(b: &mut Batch) {
         emit!(b, bfcvt(v(d), v(n)), "bfcvt h{d}, s{n}");
         emit!(b, fcvtxn(v(d), v(n)), "fcvtxn v{d}.2s, v{n}.2d");
         emit!(b, fcvtxn_scalar(v(d), v(n)), "fcvtxn s{d}, d{n}");
+        for (wide, w) in [(false, 32), (true, 64)] {
+            for (exact, x) in [(false, 'z'), (true, 'x')] {
+                for (double, p) in [(false, 's'), (true, 'd')] {
+                    emit!(
+                        b,
+                        frint_scalar(wide, exact, double, v(d), v(n)),
+                        "frint{w}{x} {p}{d}, {p}{n}"
+                    );
+                }
+            }
+        }
     }
 }
 

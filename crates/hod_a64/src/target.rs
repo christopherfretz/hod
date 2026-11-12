@@ -22,8 +22,9 @@
 //! `aggr`; `condbr`, `switch`, `indirectbr` are `control`; calls,
 //! `invoke`, `landingpad`, `resume`, `va_arg` and the `llvm.va_*`
 //! intrinsics are `call`; every other intrinsic is `intrinsic`; `br`,
-//! `ret` and `unreachable` are `term`. Atomics, vector element
-//! operations and funclets have no package yet and are refused here.
+//! `ret` and `unreachable` are `term`; `extractelement`, `insertelement`
+//! and `shufflevector` are `vector` (WP-079). Atomics and funclets have
+//! no package yet and are refused here.
 
 use hod_cg::abi::{AbiUnsupported, Assignment, Sig};
 use hod_cg::{
@@ -39,7 +40,7 @@ use crate::common::{
     self, Cursor, V30, V31, X16, X17, copy_bytes, fixup_field, gpr_load_op, load_fpr_at,
     load_gpr_at, other_scratch, put, store_fpr_bytes, store_gpr_bytes, unsupported, vr, xr,
 };
-use crate::{abi, aggr, call, control, float, frame, int, intrinsic, mem, reg, term};
+use crate::{abi, aggr, call, control, float, frame, int, intrinsic, mem, reg, term, vector};
 
 /// The AArch64 Linux target (AAPCS64, `spec/abi-a64.md`). A zero-sized
 /// value: everything it knows is in constants.
@@ -57,7 +58,7 @@ pub struct FnState {
     /// The variadic save area (`call`, WP-038).
     pub va: call::VaState,
     /// The scratch images of vectors (`vector`, WP-079).
-    pub vector: crate::vector::VectorState,
+    pub vector: vector::VectorState,
 }
 
 /// DWARF numbers: `x<n>` is `n`, `sp` is 31, `v<n>` is `64 + n`.
@@ -154,6 +155,7 @@ impl Target for A64 {
         sig: &Sig<'_>,
         out: &mut Assignment,
     ) -> Result<(), AbiUnsupported> {
+        vector::check_signature(types, sig)?;
         abi::assign(types, sig, out)
     }
 
@@ -246,9 +248,15 @@ impl Target for A64 {
             InstKind::Fence { .. } | InstKind::CmpXchg { .. } | InstKind::AtomicRmw { .. } => {
                 unsupported(ATOMIC)
             }
-            InstKind::ExtractElement { .. }
-            | InstKind::InsertElement { .. }
-            | InstKind::ShuffleVector { .. } => unsupported(VECTOR),
+            InstKind::ExtractElement { vector, index } => {
+                vector::extract_element(cx, inst, vector, index)
+            }
+            InstKind::InsertElement { vector, value, index } => {
+                vector::insert_element(cx, inst, vector, value, index)
+            }
+            InstKind::ShuffleVector { first, second, mask } => {
+                vector::shuffle_vector(cx, inst, first, second, mask)
+            }
             InstKind::Funclet => unsupported(FUNCLET),
             InstKind::Phi(_) => cx.bug("a phi reached the lowering"),
         }
@@ -401,7 +409,8 @@ impl Target for A64 {
 
 /// An atomic instruction: no package yet.
 pub const ATOMIC: &str = "a64:atomic";
-/// A vector element operation: no package yet.
+/// A vector element operation: lowered by `vector` since WP-079; the
+/// name stays for the record.
 pub const VECTOR: &str = "a64:vector-element";
 /// A funclet pad (Windows exception handling): never on this target.
 pub const FUNCLET: &str = "a64:funclet";

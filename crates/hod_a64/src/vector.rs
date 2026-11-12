@@ -62,13 +62,13 @@
 
 use hod_cg::abi::{AbiUnsupported, Sig};
 use hod_cg::{CgResult, Class, FnCx, FrameRef, PReg, Target};
-use hod_ir::{Const, TypeId, TypeKind, TypeTable, Value, ValueKind};
+use hod_ir::{Const, Inst, SHUFFLE_UNDEF, TypeId, TypeKind, TypeTable, Value, ValueKind};
 use hod_mc_a64 as mc;
 use hod_mc_a64::{Arr, Cond, Load, MemSize, Reg, Shift, Size, VMemSize, VReg, VecBits};
 
 use crate::common::{
-    Cursor, X16, X17, copy_bytes, frame_address, load_fpr_at, load_gpr_at, materialize_mem_const,
-    put, store_fpr_at, store_gpr_at, unsupported, vr, xr,
+    Cursor, X16, X17, copy_bytes, deferred_first, frame_address, load_fpr_at, load_gpr_at,
+    materialize_mem_const, put, store_fpr_at, store_gpr_at, unsupported, value_ty, vr, xr,
 };
 use crate::reg;
 use crate::target::A64;
@@ -532,6 +532,220 @@ pub fn store_lane(cx: &mut FnCx<'_, A64>, lanes: &Lanes, rt: PReg, at: &mut Curs
     } else {
         store_gpr_at(cx, lanes.gpr_store(), xr(rt).zr(), at);
     }
+}
+
+// ---- element access ----
+
+/// `%r = extractelement %vector, %index`: for an `Fpr` vector and a
+/// constant index, `umov` (a general result) or `mov` (DUP element,
+/// scalar: a floating-point result) of the lane; otherwise one load of
+/// the lane from the vector's image (an `Fpr` vector spilled to scratch
+/// image 0). An index out of range reads lane 0 (a constant) or the
+/// masked or clamped lane (a variable).
+///
+/// # Errors
+/// What [`lanes`] and [`index`] refuse; what asking for the operands
+/// reports.
+pub fn extract_element<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    vector: Value,
+    at: Value,
+) -> CgResult<()> {
+    deferred_first(cx, inst, None)?;
+    let lanes = lanes(cx, value_ty(cx, vector))?;
+    let idx = index(cx, at, &lanes)?;
+    let image = if lanes.shape.class == Class::Fpr {
+        let v = vr(cx.use_reg(vector)?);
+        let rd = cx.def_reg(inst)?;
+        if let Index::Lane(_) | Index::Poison = idx {
+            let lane = if let Index::Lane(lane) = idx { lane } else { 0 };
+            let word = if reg::is_fpr(rd) {
+                mc::dup_scalar(lanes.elem(), vr(rd), v, lane)
+            } else {
+                mc::umov(lanes.elem(), xr(rd).zr(), v, lane)
+            };
+            put(cx, word);
+            return cx.finish(inst, rd);
+        }
+        let image = spill(cx, v, &lanes.shape, 0)?;
+        let mut cursor = lane_cursor(cx, image, &lanes, idx);
+        load_lane(cx, &lanes, rd, &mut cursor);
+        return cx.finish(inst, rd);
+    } else {
+        cx.use_mem(vector)?
+    };
+    let rd = cx.def_reg(inst)?;
+    let mut cursor = lane_cursor(cx, image, &lanes, idx);
+    load_lane(cx, &lanes, rd, &mut cursor);
+    cx.finish(inst, rd)
+}
+
+/// `%r = insertelement %vector, %value, %index`: for an `Fpr` vector and
+/// a constant index, `ins` (from a general or a vector register) into the
+/// vector's register; for a variable index, the register spilled to
+/// scratch image 0, the lane stored, the image reloaded. A `Mem` vector
+/// is copied to the result's slot and the lane stored there. An index out
+/// of range writes nothing (a constant) or the masked or clamped lane (a
+/// variable): the result is poison either way.
+///
+/// # Errors
+/// What [`lanes`] and [`index`] refuse; what asking for the operands
+/// reports.
+pub fn insert_element<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    vector: Value,
+    value: Value,
+    at: Value,
+) -> CgResult<()> {
+    deferred_first(cx, inst, None)?;
+    let lanes = lanes(cx, inst.ty())?;
+    let idx = index(cx, at, &lanes)?;
+    let e = cx.use_reg(value)?;
+    if lanes.shape.class == Class::Fpr {
+        let v = cx.use_reg(vector)?;
+        match idx {
+            Index::Lane(lane) => {
+                let word = if reg::is_fpr(e) {
+                    mc::ins_elem(lanes.elem(), vr(v), lane, vr(e), 0)
+                } else {
+                    mc::ins_gpr(lanes.elem(), vr(v), lane, xr(e).zr())
+                };
+                put(cx, word);
+            }
+            Index::Poison => {}
+            Index::Reg { .. } => {
+                let image = spill(cx, vr(v), &lanes.shape, 0)?;
+                let mut cursor = lane_cursor(cx, image, &lanes, idx);
+                store_lane(cx, &lanes, e, &mut cursor);
+                reload(cx, vr(v), &lanes.shape, image);
+            }
+        }
+        return cx.finish(inst, v);
+    }
+    let r = cx.def_mem(inst)?;
+    write_mem(cx, r, vector)?;
+    if idx != Index::Poison {
+        let mut cursor = lane_cursor(cx, r, &lanes, idx);
+        store_lane(cx, &lanes, e, &mut cursor);
+    }
+    Ok(())
+}
+
+/// Where lane `entry` of a shuffle's concatenated sources is: source 0 or
+/// 1 and the lane in it; `None` for an undefined entry (or one past both
+/// sources, which the verifier rejects).
+fn source(entry: u32, n: u32) -> Option<(usize, u32)> {
+    if entry == SHUFFLE_UNDEF || entry >= 2 * n {
+        None
+    } else if entry < n {
+        Some((0, entry))
+    } else {
+        Some((1, entry - n))
+    }
+}
+
+/// An operand of a shuffle: its register (an `Fpr` vector) or its image
+/// (a `Mem` vector).
+#[derive(Clone, Copy)]
+enum Operand {
+    Reg(VReg),
+    Image(FrameRef),
+}
+
+/// `%r = shufflevector %first, %second, <mask>`: lane by lane, each
+/// result lane the source lane its mask entry names, an undefined one
+/// zero. `Fpr` to `Fpr`: `dup` for a splat, else `ins` (element) per
+/// lane into a new register; with a `Mem` side, each lane through `x16`
+/// (`umov` or a load, then `ins` or a store). A source no entry names is
+/// not asked for.
+///
+/// # Errors
+/// What [`lanes`] refuses for either type; what asking for the operands
+/// reports.
+pub fn shuffle_vector<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    first: Value,
+    second: Value,
+    mask: &[u32],
+) -> CgResult<()> {
+    deferred_first(cx, inst, None)?;
+    let src = lanes(cx, value_ty(cx, first))?;
+    let dst = lanes(cx, inst.ty())?;
+    let n = src.count();
+    let mut used = [false; 2];
+    for &entry in mask {
+        if let Some((which, _)) = source(entry, n) {
+            used[which] = true;
+        }
+    }
+    let mut ops = [None; 2];
+    for (which, value) in [first, second].into_iter().enumerate() {
+        if !used[which] {
+            continue;
+        }
+        if which == 1 && second == first && ops[0].is_some() {
+            ops[1] = ops[0];
+            continue;
+        }
+        ops[which] = Some(if src.shape.class == Class::Fpr {
+            Operand::Reg(vr(cx.use_reg(value)?))
+        } else {
+            Operand::Image(cx.use_mem(value)?)
+        });
+    }
+    let lane_of = |entry: u32| -> Option<(Operand, u32)> {
+        let (which, lane) = source(entry, n)?;
+        Some((ops[which]?, lane))
+    };
+    let elem = src.elem();
+    if dst.shape.class == Class::Fpr {
+        let rd = cx.def_reg(inst)?;
+        let d = vr(rd);
+        let defined: Option<u32> = mask.iter().copied().find(|&e| source(e, n).is_some());
+        let splat = defined
+            .filter(|&e| mask.iter().all(|&m| source(m, n).is_none() || m == e))
+            .and_then(lane_of);
+        if let Some((Operand::Reg(v), lane)) = splat {
+            put(cx, mc::dup_elem(dst.arr(), d, v, lane));
+            return cx.finish(inst, rd);
+        }
+        if mask.iter().any(|&m| source(m, n).is_none()) {
+            put(cx, mc::movi_mask(VecBits::V128, d, 0));
+        }
+        for (k, &entry) in (0u32..).zip(mask) {
+            match lane_of(entry) {
+                None => {}
+                Some((Operand::Reg(v), lane)) => put(cx, mc::ins_elem(elem, d, k, v, lane)),
+                Some((Operand::Image(image), lane)) => {
+                    let mut cursor = Cursor::frame(cx, offset(image, src.offset(lane)), X16);
+                    load_gpr_at(cx, src.gpr_load(), X16, &mut cursor);
+                    put(cx, mc::ins_gpr(elem, d, k, X16.zr()));
+                }
+            }
+        }
+        return cx.finish(inst, rd);
+    }
+    let r = cx.def_mem(inst)?;
+    for (k, &entry) in (0u32..).zip(mask) {
+        let rt = match lane_of(entry) {
+            None => mc::RegZr::ZR,
+            Some((Operand::Reg(v), lane)) => {
+                put(cx, mc::umov(elem, X16.zr(), v, lane));
+                X16.zr()
+            }
+            Some((Operand::Image(image), lane)) => {
+                let mut cursor = Cursor::frame(cx, offset(image, src.offset(lane)), X16);
+                load_gpr_at(cx, src.gpr_load(), X16, &mut cursor);
+                X16.zr()
+            }
+        };
+        let mut cursor = Cursor::frame(cx, offset(r, dst.offset(k)), X17);
+        store_gpr_at(cx, dst.gpr_store(), rt, &mut cursor);
+    }
+    Ok(())
 }
 
 // ---- calls ----

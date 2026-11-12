@@ -1291,6 +1291,10 @@ fn verify_type_rules() {
     assert_eq!(verdict(|f| drop(f.b.cast(Opcode::BitCast, PTR, f.l))), no(InvalidType));
     assert_eq!(verdict(|f| drop(f.b.cast(Opcode::BitCast, I64, f.d))), ok);
     assert_eq!(verdict(|f| drop(f.b.cast(Opcode::AddrSpaceCast, PTR, f.p))), no(InvalidType));
+    // `ptrtoaddr` gives exactly the address width; `ptrtoint` any width.
+    assert_eq!(verdict(|f| drop(f.b.cast(Opcode::PtrToAddr, I64, f.p))), ok);
+    assert_eq!(verdict(|f| drop(f.b.cast(Opcode::PtrToAddr, I32, f.p))), no(InvalidType));
+    assert_eq!(verdict(|f| drop(f.b.cast(Opcode::PtrToInt, I32, f.p))), ok);
 
     // Memory.
     assert_eq!(verdict(|f| drop(f.b.load(I32, f.a, align(4)))), no(InvalidType));

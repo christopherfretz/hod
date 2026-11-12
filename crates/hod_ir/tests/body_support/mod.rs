@@ -102,6 +102,121 @@ pub fn type_text(types: &TypeTable, ty: TypeId) -> String {
     }
 }
 
+/// The type LLVM spells `text`, interned in `types`: the inverse of
+/// [`type_text`], and a function type as `ret (params)`.
+///
+/// # Panics
+/// Panics if `text` is not such a spelling.
+pub fn parse_type(types: &mut TypeTable, text: &str) -> TypeId {
+    let mut rest = text;
+    let ty = parse(types, &mut rest);
+    assert!(rest.trim().is_empty(), "{rest:?} follows the type in {text:?}");
+    ty
+}
+
+/// Consumes `token` if it is next.
+fn eat(rest: &mut &str, token: &str) -> bool {
+    match rest.trim_start().strip_prefix(token) {
+        Some(after) => {
+            *rest = after;
+            true
+        }
+        None => false,
+    }
+}
+
+fn expect(rest: &mut &str, token: &str) {
+    assert!(eat(rest, token), "expected {token:?} at {rest:?}");
+}
+
+fn number(rest: &mut &str) -> u64 {
+    let text = rest.trim_start();
+    let end = text.find(|c: char| !c.is_ascii_digit()).unwrap_or(text.len());
+    *rest = &text[end..];
+    text[..end].parse().unwrap_or_else(|_| panic!("expected a number at {text:?}"))
+}
+
+/// Types up to `close`, separated by commas; `...` sets the flag.
+fn list(types: &mut TypeTable, rest: &mut &str, close: &str) -> (Vec<TypeId>, bool) {
+    let (mut items, mut dots) = (Vec::new(), false);
+    if eat(rest, close) {
+        return (items, dots);
+    }
+    loop {
+        if eat(rest, "...") {
+            dots = true;
+        } else {
+            items.push(parse(types, rest));
+        }
+        if eat(rest, close) {
+            return (items, dots);
+        }
+        expect(rest, ",");
+    }
+}
+
+fn parse(types: &mut TypeTable, rest: &mut &str) -> TypeId {
+    let ty = if eat(rest, "<{") {
+        let fields = list(types, rest, "}>").0;
+        types.struct_type(&fields, true).unwrap()
+    } else if eat(rest, "{") {
+        let fields = list(types, rest, "}").0;
+        types.struct_type(&fields, false).unwrap()
+    } else if eat(rest, "[") {
+        let len = number(rest);
+        expect(rest, "x");
+        let elem = parse(types, rest);
+        expect(rest, "]");
+        types.array(elem, len).unwrap()
+    } else if eat(rest, "<") {
+        let scalable = eat(rest, "vscale");
+        if scalable {
+            expect(rest, "x");
+        }
+        let len = u32::try_from(number(rest)).unwrap();
+        expect(rest, "x");
+        let elem = parse(types, rest);
+        expect(rest, ">");
+        if scalable {
+            types.scalable_vector(elem, len).unwrap()
+        } else {
+            types.vector(elem, len).unwrap()
+        }
+    } else {
+        let text = rest.trim_start();
+        let end = text.find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(text.len());
+        let (word, after) = text.split_at(end);
+        *rest = after;
+        match word {
+            "void" => TypeId::VOID,
+            "label" => TypeId::LABEL,
+            "metadata" => TypeId::METADATA,
+            "token" => TypeId::TOKEN,
+            "half" => TypeId::HALF,
+            "bfloat" => TypeId::BFLOAT,
+            "float" => TypeId::FLOAT,
+            "double" => TypeId::DOUBLE,
+            "fp128" => TypeId::FP128,
+            "x86_fp80" => TypeId::X86_FP80,
+            "ptr" if eat(rest, "addrspace(") => {
+                let addr_space = u32::try_from(number(rest)).unwrap();
+                expect(rest, ")");
+                types.ptr(addr_space).unwrap()
+            }
+            "ptr" => TypeId::PTR,
+            _ => {
+                let bits = word.strip_prefix('i').and_then(|bits| bits.parse().ok());
+                types.int(bits.unwrap_or_else(|| panic!("no type {word:?}"))).unwrap()
+            }
+        }
+    };
+    if eat(rest, "(") {
+        let (params, variadic) = list(types, rest, ")");
+        return types.function(ty, &params, variadic).unwrap();
+    }
+    ty
+}
+
 /// Whether `llvm_as` accepts `text`; `Err` holds its diagnostics.
 pub fn assembles(llvm_as: &Path, text: &str) -> Result<(), String> {
     let outcome = hod_testutil::run_with(

@@ -82,7 +82,13 @@ fn cast_is_valid(types: &TypeTable, op: Opcode, src: TypeId, dst: TypeId) -> boo
         Opcode::FPExt => same && float(s) && float(d) && bits(s) < bits(d),
         Opcode::FPToUI | Opcode::FPToSI => same && float(s) && int(d),
         Opcode::UIToFP | Opcode::SIToFP => same && int(s) && float(d),
-        Opcode::PtrToInt | Opcode::PtrToAddr => same && ptr(s) && int(d),
+        Opcode::PtrToInt => same && ptr(s) && int(d),
+        // The result is exactly as wide as an address of that space.
+        Opcode::PtrToAddr => {
+            let TypeKind::Ptr { addr_space } = types.kind(s) else { return false };
+            let address = types.data_layout().pointer(addr_space).index_bits;
+            same && int(d) && bits(d) == u64::from(address)
+        }
         Opcode::IntToPtr => same && int(s) && ptr(d),
         Opcode::AddrSpaceCast => same && ptr(s) && ptr(d) && s != d,
         Opcode::BitCast => {
@@ -108,13 +114,14 @@ fn cast_is_valid(types: &TypeTable, op: Opcode, src: TypeId, dst: TypeId) -> boo
 }
 
 /// Whether a value of type `ty` can be accessed atomically: an integer,
-/// pointer, float or fixed vector whose size in bits is a power of two
-/// and at least eight (LLVM's rule).
+/// pointer, float or vector of them whose size in bits is a power of two
+/// and at least eight (LLVM's rule). A scalable vector counts with its
+/// minimum size, as LLVM counts it.
 fn atomic_type(types: &TypeTable, ty: TypeId) -> bool {
     let (scalar, vec) = shape(types, ty);
     let class = types.is_int(scalar) || types.is_ptr(scalar) || types.is_float(scalar);
-    let bits = types.size_in_bits_of(ty);
-    class && !vec.is_some_and(|(_, scalable)| scalable) && bits >= 8 && bits.is_power_of_two()
+    let bits = types.size_in_bits_of(scalar) * vec.map_or(1, |(len, _)| u64::from(len));
+    class && bits >= 8 && bits.is_power_of_two()
 }
 
 /// Whether `agg` has, at any depth, a field or element of type `field`

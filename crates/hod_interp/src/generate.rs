@@ -88,6 +88,14 @@ pub struct Options {
     /// `null` (the one comparison LLVM defines). Needs `globals` and `compares`. Off by
     /// default, as `exceptions`.
     pub block_addresses: bool,
+    /// Vectors (§5.10) of the integer widths in use, of 1 to 16 lanes:
+    /// built from scalars by `insertelement` and `shufflevector`,
+    /// element-wise arithmetic, compares and `select`s (with `compares`
+    /// and `selects`), casts (with `casts`), shuffles and the vector
+    /// intrinsics, and back to a scalar by `extractelement`, a reduction
+    /// or a `bitcast`. Off by default, as `exceptions`, and not in
+    /// [`Options::everything`].
+    pub vectors: bool,
 }
 
 impl Default for Options {
@@ -119,6 +127,7 @@ impl Default for Options {
             hosts: true,
             exceptions: false,
             block_addresses: false,
+            vectors: false,
         }
     }
 }
@@ -152,7 +161,7 @@ impl Options {
     }
 
     /// The default options with `exceptions` and `block_addresses` on:
-    /// everything the generator makes.
+    /// everything the generator makes but `vectors`.
     pub fn everything() -> Options {
         Options { exceptions: true, block_addresses: true, ..Options::default() }
     }
@@ -276,6 +285,22 @@ impl Coverage {
         "blockaddress:compare",
     ];
 
+    /// The counters of the constructs of `vectors` (§9.4), which the
+    /// default options leave out.
+    pub const VECTOR_NAMES: &'static [&'static str] = &[
+        "vector:build",
+        "vector:int",
+        "vector:compare",
+        "vector:select",
+        "vector:shuffle",
+        "vector:cast",
+        "vector:intrinsic",
+        "vector:extract",
+        "vector:reduce",
+        "vector:bitcast",
+        "vector:mask-bitcast",
+    ];
+
     /// The count of `name`; 0 for a name that is not a counter.
     pub fn get(&self, name: &str) -> u64 {
         self.0.get(name).copied().unwrap_or(0)
@@ -295,7 +320,9 @@ impl Coverage {
 
     fn hit(&mut self, name: &'static str) {
         debug_assert!(
-            Coverage::NAMES.contains(&name) || Coverage::UNWIND_NAMES.contains(&name),
+            Coverage::NAMES.contains(&name)
+                || Coverage::UNWIND_NAMES.contains(&name)
+                || Coverage::VECTOR_NAMES.contains(&name),
             "{name}"
         );
         *self.0.entry(name).or_default() += 1;
@@ -1728,7 +1755,7 @@ impl<'g> FnGen<'g> {
     /// One operation that stays in the current block.
     fn op(&mut self) -> IrResult<()> {
         let opt = &self.g.opt;
-        let menu: [(u64, bool); 11] = [
+        let menu: [(u64, bool); 12] = [
             (30, true),
             (8, opt.compares),
             (6, opt.selects),
@@ -1740,6 +1767,8 @@ impl<'g> FnGen<'g> {
             (6, opt.calls),
             (5, opt.hosts),
             (1, true),
+            // Last, so that with it off the rolls are what they were.
+            (6, opt.vectors),
         ];
         let total: u64 = menu.iter().filter(|(_, on)| *on).map(|(weight, _)| weight).sum();
         let mut roll = self.rng().below(total);
@@ -1779,12 +1808,193 @@ impl<'g> FnGen<'g> {
             7 => self.intrinsic(),
             8 => self.call(),
             9 => self.host_call(),
-            _ => {
+            10 => {
                 let bits = self.int_width();
                 let arg = self.pick_int(bits)?;
                 let ty = self.tid(Ty::Int(bits))?;
                 let value = self.b.freeze(ty, arg)?;
                 self.hit("freeze");
+                self.finish_int(value, bits)
+            }
+            _ => self.vector_op(),
+        }
+    }
+
+    // ---- vectors (§5.10) ----
+
+    /// The vector type of `len` lanes of `bits` bits.
+    fn vector_ty(&mut self, bits: u32, len: u32) -> IrResult<TypeId> {
+        let elem = self.tid(Ty::Int(bits))?;
+        self.g.m.types.vector(elem, len)
+    }
+
+    /// The vector of `len` lanes, each `value`.
+    fn vector_splat(&mut self, bits: u32, len: u32, value: u128) -> IrResult<Value> {
+        let ty = self.vector_ty(bits, len)?;
+        let lane = self.cint(bits, value)?;
+        let lane = lane.as_const().expect("an integer constant");
+        let m = &mut self.g.m;
+        Value::constant(m.consts.splat(&m.types, ty, lane)?)
+    }
+
+    /// A vector of `len` lanes of `bits` bits from pool integers: one
+    /// broadcast by a `shufflevector`, a few more inserted.
+    fn vector_of(&mut self, bits: u32, len: u32) -> IrResult<Value> {
+        let ty = self.vector_ty(bits, len)?;
+        let m = &mut self.g.m;
+        let zero = Value::constant(m.consts.zero(&m.types, ty)?)?;
+        let first = self.pick_int(bits)?;
+        let at = self.cint(32, 0)?;
+        let one = self.b.insert_element(ty, zero, first, at)?;
+        let mut vector = self.b.shuffle_vector(ty, one, zero, &vec![0; len as usize])?;
+        for _ in 0..self.rng().below(u64::from(len.min(3)) + 1) {
+            let lane = self.pick_int(bits)?;
+            let index_bits = self.rng().pick(&[32, 64]);
+            let at = self.rng().below(u64::from(len));
+            let index = self.cint(index_bits, u128::from(at))?;
+            vector = self.b.insert_element(ty, vector, lane, index)?;
+        }
+        self.hit("vector:build");
+        Ok(vector)
+    }
+
+    /// Vector operations whose operands cannot make them trap (§9.2),
+    /// back to a scalar in the pool.
+    fn vector_op(&mut self) -> IrResult<()> {
+        use Opcode::{AShr, Add, And, LShr, Mul, Or, SExt, Shl, Sub, Trunc, UDiv, URem, Xor, ZExt};
+        let widths: Vec<u32> =
+            [8, 16, 32, 64].into_iter().filter(|bits| self.g.ints.contains(bits)).collect();
+        let mut bits = self.rng().pick(&widths);
+        let mut len = self.rng().pick(&[1, 2, 3, 4, 4, 8, 8, 16]);
+        let ty = self.vector_ty(bits, len)?;
+        let (a, b) = (self.vector_of(bits, len)?, self.vector_of(bits, len)?);
+        let opt = self.g.opt.clone();
+        let value = match self.rng().below(6) {
+            1 if opt.compares => {
+                let mask = self.g.m.types.vector(TypeId::I1, len)?;
+                let pred = self.rng().pick(IntPredicate::ALL);
+                let cond = self.b.icmp(pred, mask, a, b)?;
+                self.hit("vector:compare");
+                if opt.selects && self.rng().chance(60) {
+                    self.hit("vector:select");
+                    self.b.select(ty, cond, a, b)?
+                } else if self.g.ints.contains(&len) && self.rng().chance(50) {
+                    // `<N x i1>` is N bits, lane 0 the lowest (§3.1).
+                    let int = self.tid(Ty::Int(len))?;
+                    let value = self.b.cast(Opcode::BitCast, int, cond)?;
+                    self.hit("vector:mask-bitcast");
+                    return self.finish_int(value, len);
+                } else {
+                    self.b.cast(SExt, ty, cond)?
+                }
+            }
+            2 => {
+                let to = self.rng().pick(&[1, 2, 4, len, 2 * len]);
+                let mask: Vec<u32> =
+                    (0..to).map(|_| self.rng().below(2 * u64::from(len)) as u32).collect();
+                let result = self.vector_ty(bits, to)?;
+                len = to;
+                self.hit("vector:shuffle");
+                self.b.shuffle_vector(result, a, b, &mask)?
+            }
+            3 if opt.casts && widths.len() > 1 => {
+                let to = self.rng().pick(&widths);
+                let op = if to < bits {
+                    Trunc
+                } else if self.rng().chance(50) {
+                    ZExt
+                } else {
+                    SExt
+                };
+                let result = self.vector_ty(to, len)?;
+                let same = to == bits;
+                bits = to;
+                if same {
+                    a
+                } else {
+                    self.hit("vector:cast");
+                    self.b.cast(op, result, a)?
+                }
+            }
+            4 if opt.intrinsics => {
+                let no = self.cint(1, 0)?;
+                let suffix = format!("v{len}i{bits}");
+                self.hit("vector:intrinsic");
+                match self.rng().below(3) {
+                    0 => {
+                        let name = self.rng().pick(&["ctpop", "bitreverse"]);
+                        self.intrinsic_call(&format!("llvm.{name}.{suffix}"), ty, &[ty], &[a])?
+                    }
+                    1 => {
+                        // With the flag off, zero and the smallest value
+                        // are defined.
+                        let name = self.rng().pick(&["ctlz", "cttz", "abs"]);
+                        let params = [ty, TypeId::I1];
+                        self.intrinsic_call(
+                            &format!("llvm.{name}.{suffix}"),
+                            ty,
+                            &params,
+                            &[a, no],
+                        )?
+                    }
+                    _ => {
+                        let name = self.rng().pick(&[
+                            "smax", "smin", "umax", "umin", "sadd.sat", "uadd.sat", "ssub.sat",
+                            "usub.sat",
+                        ]);
+                        let name = format!("llvm.{name}.{suffix}");
+                        self.intrinsic_call(&name, ty, &[ty, ty], &[a, b])?
+                    }
+                }
+            }
+            _ => {
+                let op =
+                    self.rng().pick(&[Add, Sub, Mul, And, Or, Xor, Shl, LShr, AShr, UDiv, URem]);
+                let rhs = match op {
+                    Shl | LShr | AShr => {
+                        let limit = self.vector_splat(bits, len, u128::from(bits - 1))?;
+                        self.b.binary(And, ty, b, limit)?
+                    }
+                    UDiv | URem => {
+                        let one = self.vector_splat(bits, len, 1)?;
+                        self.b.binary(Or, ty, b, one)?
+                    }
+                    _ => b,
+                };
+                self.hit("vector:int");
+                self.b.binary(op, ty, a, rhs)?
+            }
+        };
+        self.vector_to_int(value, bits, len)
+    }
+
+    /// A scalar of the pool from `vector`: a lane, a reduction of the
+    /// lanes, or all of it.
+    fn vector_to_int(&mut self, vector: Value, bits: u32, len: u32) -> IrResult<()> {
+        let ty = self.vector_ty(bits, len)?;
+        let elem = self.tid(Ty::Int(bits))?;
+        let whole = bits * len;
+        match self.rng().below(3) {
+            0 if self.g.ints.contains(&whole) => {
+                let int = self.tid(Ty::Int(whole))?;
+                let value = self.b.cast(Opcode::BitCast, int, vector)?;
+                self.hit("vector:bitcast");
+                self.finish_int(value, whole)
+            }
+            1 => {
+                let op = self
+                    .rng()
+                    .pick(&["add", "mul", "and", "or", "xor", "smax", "smin", "umax", "umin"]);
+                let name = format!("llvm.vector.reduce.{op}.v{len}i{bits}");
+                let value = self.intrinsic_call(&name, elem, &[ty], &[vector])?;
+                self.hit("vector:reduce");
+                self.finish_int(value, bits)
+            }
+            _ => {
+                let at = self.rng().below(u64::from(len));
+                let index = self.cint(64, u128::from(at))?;
+                let value = self.b.extract_element(elem, vector, index)?;
+                self.hit("vector:extract");
                 self.finish_int(value, bits)
             }
         }

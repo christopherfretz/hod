@@ -81,6 +81,50 @@ impl BuiltBy {
     }
 }
 
+/// Which step of a test went wrong, for the harness commands that read
+/// records (`spec/harness.md` "irdiff", "Library"). The detail says the
+/// same in words; this is what a caller decides on. An ERROR is about the
+/// oracle's side (or the witness, or the harness); a FAIL or XFAIL about
+/// hod's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Failure {
+    /// The reference `llc` failed or wrote no object.
+    ReferenceBuild,
+    /// The witness did not confirm the reference ("The witness").
+    Witness,
+    /// hod failed on a module (step 2), whatever the way.
+    HodBuild,
+    /// hod declined, or did what the test's `unsupported` directives do
+    /// not describe.
+    Declined,
+    /// A link failed or wrote no program.
+    Link,
+    /// A program ran into a limit: its time, or the output kept.
+    Run,
+    /// A program ended or printed otherwise than it must.
+    Comparison,
+    /// `llc`, the driver or the linker ran into its time limit.
+    Timeout,
+    /// `llc`, the driver or the linker was killed by a signal.
+    Crash,
+    /// The harness could not do its work, the directives do not parse,
+    /// or the program was linked by another linker.
+    Harness,
+}
+
+impl Failure {
+    /// The kind of a tool's failure that ended as `end`: `step`, unless
+    /// the tool crashed or timed out.
+    pub fn of_tool(step: Self, end: super::process::End) -> Self {
+        use super::process::End;
+        match end {
+            End::Signal(_) => Self::Crash,
+            End::TimedOut => Self::Timeout,
+            End::Exit(_) => step,
+        }
+    }
+}
+
 /// One line of the results: a test with one linker, or a test that was
 /// decided before any linker ran.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,6 +145,9 @@ pub struct Record {
     pub detail: String,
     /// The test's `covers` directive.
     pub covers: Option<String>,
+    /// Which step went wrong: set on every ERROR, FAIL and XFAIL, `None`
+    /// otherwise. Not in the results file.
+    pub failure: Option<Failure>,
 }
 
 /// A free-form field of the results file: `\\`, `\t`, `\n` and `\r` for
@@ -336,6 +383,7 @@ mod tests {
             reason: None,
             detail: String::new(),
             covers: None,
+            failure: None,
         }
     }
 
@@ -387,6 +435,7 @@ mod tests {
             reason: Some("codegen-not-implemented".to_owned()),
             detail: "two\nlines\r and a \\ backslash".to_owned(),
             covers: Some("spec/ir.md §5.4".to_owned()),
+            failure: None,
         };
         assert_eq!(
             full.to_line(),

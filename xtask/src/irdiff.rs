@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 pub use directives::{Arch, Expectations, LINKER_NAMES, Tier};
 pub use engine::{Mode, Session, Test};
 pub use process::Limits;
-pub use report::{BuiltBy, Outcome, Record, Report};
+pub use report::{BuiltBy, Failure, Outcome, Record, Report};
 pub use tools::{Linker, Search, Toolchain};
 
 /// The command's help.
@@ -346,6 +346,7 @@ pub fn run(config: &Config) -> Result<Report, String> {
         reason: None,
         detail: detail.to_owned(),
         covers: None,
+        failure: (outcome == Outcome::Error).then_some(Failure::Harness),
     };
     let llvm_name =
         llvm.as_ref().map_or_else(|| "nollvm".to_owned(), |llvm| format!("llvm{}", llvm.major));

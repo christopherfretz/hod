@@ -907,16 +907,26 @@ A body's debug information is in the body itself (§11.9).
 ### 11.2 Locals
 
 `%name`, `%"name"` and `%N` are the function's own: arguments, results
-and blocks. Arguments are named from the parameter list of the header
-(§6): unnamed ones take the numbers from 0, then the entry block, if it
-has no label, the next number. Each unnamed result that is not `void`
-and each unlabelled block takes the next number; a written number may
-skip numbers (LLVM 19 and later) but never go back. A name used before
-its definition is a `FunctionBuilder::reserve` placeholder, resolved at
-the definition; the type it was used with must be the type it is defined
-with (`Type`); a name used and never defined is `Undefined` at its first
-use. Numbers are kept in a dense table (up to 4096 past the highest
-met) and a map beyond; names in an open-addressed table emptied by
+and blocks. Numbers are LLVM's: ONE counter per function, starting at 0,
+taken in text order by each unnamed argument of the header (§6), then by
+the entry block if it has no label, then by each block without a label
+and each unnamed result that is not `void`, in the order they are
+written. A written number (a parameter's `%N`, a result's `%N =`, a
+label `N:`) may skip numbers (LLVM 19 and later) and the counter goes on
+after it; one below the counter, a number written twice included, is a
+`Syntax` error in LLVM's words: `argument expected to be numbered '%N'
+or greater` (at the parameter's type), `instruction expected to be
+numbered '%N' or greater` (at the name), `label expected to be numbered
+'N' or greater` (at the label), `N` being the counter. A `void`
+instruction with a name is an error. A name used before its definition
+is a `FunctionBuilder::reserve` placeholder, resolved at the definition;
+the type it was used with must be the type it is defined with (`Type`);
+a name used and never defined is `Undefined` (`use of undefined value
+'%N'`) at its first use. Numbers are kept in a dense table (up to 4096
+past its length) and a map beyond; a number is in one of the two only,
+and in the map only if the dense table does not reach it: growing the
+dense table moves into it what the map held for the numbers it now
+covers (WP-071). Names are in an open-addressed table emptied by
 generation, so neither costs an allocation per function.
 
 ### 11.3 Blocks
@@ -1066,6 +1076,8 @@ blocks referred to ahead (`tests/robustness.rs`). Figures:
 | §11.2 to §11.7 | `syntax::verdicts_and_error_positions`, `llvm_as_agrees_or_the_difference_is_named` (the rows after "Bodies") | `llvm-as` 19 and 22 |
 | §3.4 (body names) | `syntax::unsupported_constructs_are_recorded_by_name` | the names, per snippet |
 | §11 | `roundtrip::printed_programs_read_back_run_the_same` (and an `#[ignore]`d larger batch) | `hod_interp` on generated programs, against the same programs printed as LLVM text and read back |
+| §11.2, §11.3 | `numbering::a_block_beyond_the_dense_table_is_found_after_the_table_grows_over_it`, `numbered_blocks_and_values_read_as_llvm_reads_them` (generated, fixed seeds: thousands of numbered blocks and values, numbers skipped by more than 4096, blocks of more than 4096 instructions, blocks without labels; `br`, `switch`, `indirectbr`, `invoke`, `phi`, `blockaddress`) | `llvm-as` 19 and 22 accept each module; each block's successors against `llvm-as \| llvm-dis`; the printed module's block references through `llvm-as \| llvm-dis` are the original's; printing what hod reads of its own text is a fixed point |
+| §11.2 | `numbering::numbers_out_of_order_are_refused_as_llvm_as_refuses_them` | `llvm-as` 19 and 22: the same position and words |
 | §11, §11.3 | `differential::bodies::every_body_parses_verifies_and_has_llvms_blocks` | `Body::verify`; the text as written and as `llvm-dis` prints it give the same shapes; block counts against `llvm-dis`'s labels |
 | §11.1 | `differential::bodies::bodies_parsed_on_clones_in_parallel_are_the_sequential_ones` | one sequential parser |
 | §11 | `corpus::every_corpus_body_parses_and_verifies` (with `HOD_LL_CORPUS`) | `Body::verify` over the captured corpus |

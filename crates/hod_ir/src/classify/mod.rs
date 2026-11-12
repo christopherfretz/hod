@@ -6,10 +6,13 @@
 //! - `support`: [`Support`], the matrix as a value a walk consults.
 //! - `walk`: the module pass and the body pass, in the order of §8.8.
 //! - `report`: the census and the text of `docs/status/support.md`.
+//! - `attrs`: the attributes a call passes with, which the call sequence
+//!   of `hod_cg` reads through the same functions.
 //!
 //! The accept path does not allocate and does not format: a walk reads
 //! the tables once and consults an array of bit sets.
 
+mod attrs;
 mod matrix;
 mod report;
 mod support;
@@ -18,6 +21,7 @@ mod walk;
 use std::borrow::Cow;
 use std::fmt;
 
+pub use attrs::{AttrConflict, call_arg_attrs, call_declaration, call_ret_attrs, merge_call_attrs};
 pub use matrix::{
     CONSTRUCT_FAMILIES, CONSTRUCT_NAMES, ConstructInfo, INVALID_RULES, STRUCTURAL_RULES,
     SUPPORT_GROUPS, SUPPORT_ROWS, SupportCell, SupportRow, SupportStatus, TypeClass, TypeClasses,

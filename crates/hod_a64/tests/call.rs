@@ -250,7 +250,7 @@ fn random_signatures_agree_with_gcc_and_llc() {
     // `HOD_CALL_SEED` and `HOD_CALL_COUNT` explore other cases.
     let var = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok());
     let seed = var("HOD_CALL_SEED").unwrap_or(0x38_0001);
-    let count = var("HOD_CALL_COUNT").map_or(300, |n| n as usize);
+    let count = var("HOD_CALL_COUNT").map_or(600, |n| n as usize);
     let pic = Options { reloc_model: hod_cg::RelocModel::Pic, ..Options::default() };
     let stress = Options { stress: hod_cg::Stress::ALL, ..Options::default() };
     let build = |tag, a_llc, b_llc, options: &Options, shared, all_linkers| Build {
@@ -434,12 +434,7 @@ fn oracle_type(rng: &mut Rng) -> OT {
         1 => OT::Double,
         _ => {
             let n = *rng.pick(&WIDTHS);
-            // `a64:call-wide-int-extension`, `a64:call-narrow-ext-stack-arg`.
-            let ext = if matches!(n, 1 | 8 | 16 | 32) {
-                *rng.pick(&["", " zeroext", " signext"])
-            } else {
-                ""
-            };
+            let ext = *rng.pick(&["", " zeroext", " signext"]);
             OT::Int(n, ext)
         }
     }
@@ -539,35 +534,34 @@ fn chains_agree_with_the_interpreter() {
         let ret = q[pick];
         // A caller's arguments for `callee`: its own parameters (`have`,
         // with their values) or constants. Returns the argument texts.
-        let call_args = |rng: &mut Rng,
-                         callee: &[OT],
-                         values: &[Val],
-                         have: &mut Vec<(OT, Val)>| {
-            let mut args = Vec::new();
-            for (t, v) in callee.iter().zip(values) {
-                let fits: Vec<usize> =
-                    (0..have.len()).filter(|&i| have[i].0.same(*t) && have[i].1 == *v).collect();
-                let text = if !fits.is_empty() && rng.chance(50) {
-                    format!("{}{} %a{}", t.ir(), t.attr(), rng.pick(&fits))
-                } else if rng.chance(30) {
-                    let text = oracle_ir_const(v);
-                    let (ty, rest) = text.split_once(' ').expect("type and value");
-                    format!("{ty}{} {rest}", t.attr())
-                } else {
-                    let attr = if let OT::Int(n, _) = t { oracle_type_ext(rng, *n) } else { "" };
-                    have.push((
-                        match t {
-                            OT::Int(n, _) => OT::Int(*n, attr),
-                            other => *other,
-                        },
-                        v.clone(),
-                    ));
-                    format!("{}{} %a{}", t.ir(), t.attr(), have.len() - 1)
-                };
-                args.push(text);
-            }
-            args
-        };
+        let call_args =
+            |rng: &mut Rng, callee: &[OT], values: &[Val], have: &mut Vec<(OT, Val)>| {
+                let mut args = Vec::new();
+                for (t, v) in callee.iter().zip(values) {
+                    let fits: Vec<usize> = (0..have.len())
+                        .filter(|&i| have[i].0.same(*t) && have[i].1 == *v)
+                        .collect();
+                    let text = if !fits.is_empty() && rng.chance(50) {
+                        format!("{}{} %a{}", t.ir(), t.attr(), rng.pick(&fits))
+                    } else if rng.chance(30) {
+                        let text = oracle_ir_const(v);
+                        let (ty, rest) = text.split_once(' ').expect("type and value");
+                        format!("{ty}{} {rest}", t.attr())
+                    } else {
+                        let attr = if let OT::Int(..) = t { oracle_type_ext(rng) } else { "" };
+                        have.push((
+                            match t {
+                                OT::Int(n, _) => OT::Int(*n, attr),
+                                other => *other,
+                            },
+                            v.clone(),
+                        ));
+                        format!("{}{} %a{}", t.ir(), t.attr(), have.len() - 1)
+                    };
+                    args.push(text);
+                }
+                args
+            };
         let q_values: Vec<Val> = q.iter().map(|t| oracle_value(&mut rng, *t)).collect();
         let mut p_have = Vec::new();
         let q_args = call_args(&mut rng, &q, &q_values, &mut p_have);
@@ -683,10 +677,10 @@ fn chains_agree_with_the_interpreter() {
     }
 }
 
-/// An extension attribute for an argument of `n` bits a caller adds.
-fn oracle_type_ext(rng: &mut Rng, n: u32) -> &'static str {
+/// An extension attribute a caller adds to an integer argument.
+fn oracle_type_ext(rng: &mut Rng) -> &'static str {
     const EXTS: [&str; 3] = ["", " zeroext", " signext"];
-    if matches!(n, 1 | 8 | 16 | 32) { EXTS[rng.below(3) as usize] } else { "" }
+    EXTS[rng.below(3) as usize]
 }
 
 #[test]
@@ -706,22 +700,9 @@ fn the_remaining_forms_are_refused_by_name() {
             call::CALL_BUNDLE,
         ),
         (
-            "declare void @g(i100)\ndefine void @f(i100 %x) { call void @g(i100 signext %x)\n ret void }",
-            call::CALL_WIDE_EXT_ARG,
-        ),
-        (
-            "declare void @g(i100 zeroext)\ndefine void @f(i100 %x) { call void @g(i100 %x)\n ret void }",
-            call::CALL_WIDE_EXT_ARG,
-        ),
-        (
-            "declare void @g(i64, i64, i64, i64, i64, i64, i64, i64, i7 zeroext)\n\
-             define void @f(i7 %x) { call void @g(i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i7 zeroext %x)\n ret void }",
-            call::CALL_NARROW_EXT_STACK_ARG,
-        ),
-        (
-            "declare void @g(ptr byval([5 x i64]) align 8)\n\
-             define void @f(ptr %p) { call void (ptr, i64) @g(ptr %p, i64 1)\n ret void }",
-            call::CALL_MISMATCHED_DECLARATION,
+            "declare void @g(ptr sret([5 x i64]))\n\
+             define void @f(ptr %p) { call void @g(ptr byval([5 x i64]) %p)\n ret void }",
+            hod_ir::AttrConflict::NAME,
         ),
         (
             "declare i32 @p(...)\ndeclare { i7, i64 } @g()\n\
@@ -736,10 +717,15 @@ fn the_remaining_forms_are_refused_by_name() {
             call::LANDING_PAD,
         ),
     ]);
-    // An `i7 zeroext` in a register, and a matching direct call that takes
-    // the declaration's attributes, are lowered.
+    // An extended `i7` in a register or on the stack, an extended `i100`,
+    // and a matching direct call that takes the declaration's attributes,
+    // are lowered.
     for lowered in [
         "declare void @g(i7 zeroext)\ndefine void @f(i7 %x) { call void @g(i7 zeroext %x)\n ret void }",
+        "declare void @g(i64, i64, i64, i64, i64, i64, i64, i64, i7 zeroext)\n\
+         define void @f(i7 %x) { call void @g(i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i7 zeroext %x)\n ret void }",
+        "declare void @g(i100)\ndefine void @f(i100 %x) { call void @g(i100 signext %x)\n ret void }",
+        "declare void @g(i100 zeroext)\ndefine void @f(i100 %x) { call void @g(i100 %x)\n ret void }",
         "declare void @g(ptr byval([5 x i64]) align 8)\ndefine void @f(ptr %p) { call void @g(ptr %p)\n ret void }",
     ] {
         assert_eq!(common::compile_ll(lowered), Ok(()), "{lowered}");
@@ -747,13 +733,8 @@ fn the_remaining_forms_are_refused_by_name() {
 }
 
 /// A return value wider than 64 bits with `signext` is owed extended to
-/// 128 bits (`abi-a64.md` §7), but `A64::extend_arg` returns early for 64
-/// bits and more (`crates/hod_a64/src/target.rs:349`) and `place_return`
-/// loads a `Mem`-class value without extending it
-/// (`crates/hod_cg/src/call.rs:339`). The same gap is why calls refuse
-/// `call::CALL_WIDE_EXT_ARG`.
+/// 128 bits (`abi-a64.md` §7): its last piece is extended.
 #[test]
-#[ignore = "target.rs:349 and hod_cg/src/call.rs:339 do not extend an integer wider than 64 bits"]
 fn a_wide_signext_return_is_extended() {
     let dir = Scratch::new("a64-call-wide-ret");
     let Some(toolchain) = Toolchain::host(&dir) else { return };
@@ -767,16 +748,332 @@ fn a_wide_signext_return_is_extended() {
     link_run_all(&toolchain, &dir, "wide", &[], &[&driver, &obj], "done", true);
 }
 
-/// `hod_cg`'s call sequence takes a direct call's missing attributes from
-/// the callee's declaration whatever the call's function type
-/// (`crates/hod_cg/src/call.rs:143`); `llc` only when the types are the
-/// same (`CallBase::paramHasAttr` through `getCalledFunction`). Until the
-/// core checks the type, `hod_a64` refuses such a call
-/// (`call::CALL_MISMATCHED_DECLARATION`) and this test fails.
+/// A direct call through a function type other than the callee's takes
+/// none of the declaration's attributes (`spec/codegen.md` §7.1, as
+/// `llc` lowers it): lowered, not refused.
 #[test]
-#[ignore = "hod_cg/src/call.rs:143 takes a declaration's attributes for a call of another function type"]
 fn a_mismatched_direct_call_takes_no_declared_attributes() {
     let functions = "declare void @g(ptr byval([5 x i64]) align 8)\n\
                      define void @f(ptr %p) { call void (ptr, i64) @g(ptr %p, i64 1)\n ret void }";
     assert_eq!(common::compile_ll(functions), Ok(()));
+}
+
+/// `spec/codegen.md` §7.1, effective attributes, run: `tests/data/call/
+/// attrs.ll` calls gcc's functions and `attrs_callee.ll`'s through
+/// declarations whose attributes the calls must not take (another
+/// function type: `byval`, `sret`, `nest`, variadic against fixed both
+/// ways, a result) and must take (the callee's own type: `byval` beside
+/// the site's `align`, `signext`). The caller and the callee module by
+/// hod and by `llc` in every pairing, hod also stressed; every linker
+/// where hod is involved.
+#[test]
+fn declared_attributes_follow_the_function_type() {
+    let dir = Scratch::new("a64-call-attrs");
+    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let caller = data("attrs.ll");
+    let callee = data("attrs_callee.ll");
+    let driver = toolchain.compile_c(&dir, "attrs-driver", &data("attrs.c"), &[]);
+    let stress = Options { stress: hod_cg::Stress::ALL, ..Options::default() };
+    let plain = Options::default();
+    for (tag, caller_llc, callee_llc, options) in [
+        ("LL", true, true, plain),
+        ("HL", false, true, plain),
+        ("LH", true, false, plain),
+        ("HH", false, false, plain),
+        ("HH-stress", false, false, stress),
+    ] {
+        let Some(a) = object_with(&dir, &format!("attrs-{tag}"), &caller, caller_llc, options)
+        else {
+            return;
+        };
+        let Some(b) =
+            object_with(&dir, &format!("attrs-callee-{tag}"), &callee, callee_llc, options)
+        else {
+            return;
+        };
+        let name = format!("attrs-{tag}");
+        link_run_all(&toolchain, &dir, &name, &[], &[&driver, &a, &b], "0 failed", tag == "LL");
+    }
+}
+
+/// `abi-a64.md` §7, run: integers with `zeroext` or `signext` of odd
+/// widths and of widths over 64 bits that are not multiples of 64, in
+/// registers and on the stack, as arguments and results
+/// (`tests/data/call/ext.ll`). Every value starts as junk above its
+/// width; gcc's checkers see every bit of the extended carrier. The
+/// caller and the callee module by hod and by `llc` in every pairing,
+/// hod also stressed; every linker where hod is involved.
+#[test]
+fn extended_integers_of_every_width_run() {
+    let dir = Scratch::new("a64-call-ext");
+    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let caller = data("ext.ll");
+    let callee = data("ext_callee.ll");
+    let driver = toolchain.compile_c(&dir, "ext-driver", &data("ext.c"), &[]);
+    let stress = Options { stress: hod_cg::Stress::ALL, ..Options::default() };
+    let plain = Options::default();
+    for (tag, caller_llc, callee_llc, options) in [
+        ("LL", true, true, plain),
+        ("HL", false, true, plain),
+        ("LH", true, false, plain),
+        ("HH", false, false, plain),
+        ("HH-stress", false, false, stress),
+    ] {
+        let Some(a) = object_with(&dir, &format!("ext-{tag}"), &caller, caller_llc, options) else {
+            return;
+        };
+        let Some(b) = object_with(&dir, &format!("ext-callee-{tag}"), &callee, callee_llc, options)
+        else {
+            return;
+        };
+        let name = format!("ext-{tag}");
+        link_run_all(&toolchain, &dir, &name, &[], &[&driver, &a, &b], " 0 failed", tag == "LL");
+    }
+}
+
+/// `spec/codegen.md` §2.2 and §4.8, run: a `Mem`-class argument whose
+/// integer leaves have odd widths (`{ i17, i64 }`, `i65`, `[2 x i9]`, a
+/// nest of them), in registers and on the stack, arrives with junk above
+/// every leaf (`abi-a64.md` §7 promises nothing there), and its home
+/// must hold zeros above each width (`tests/data/call/odd.ll`). The home
+/// is observed through what the callee passes on to gcc's checkers,
+/// which then also check those zeros. gcc's driver calls the callee
+/// directly and through a forwarding caller; the caller and the callee
+/// module by hod and by `llc` in every pairing, hod also stressed; every
+/// linker where hod is involved.
+#[test]
+fn odd_leaves_of_incoming_arguments_are_cleared() {
+    let dir = Scratch::new("a64-call-odd");
+    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let caller = data("odd.ll");
+    let callee = data("odd_callee.ll");
+    let c = data("odd.c");
+    let hod_driver = toolchain.compile_c(&dir, "odd-driver-hod", &c, &["-DHOD"]);
+    let llc_driver = toolchain.compile_c(&dir, "odd-driver-llc", &c, &[]);
+    let stress = Options { stress: hod_cg::Stress::ALL, ..Options::default() };
+    let plain = Options::default();
+    for (tag, caller_llc, callee_llc, options) in [
+        ("LL", true, true, plain),
+        ("HL", false, true, plain),
+        ("LH", true, false, plain),
+        ("HH", false, false, plain),
+        ("HH-stress", false, false, stress),
+    ] {
+        let Some(a) = object_with(&dir, &format!("odd-{tag}"), &caller, caller_llc, options) else {
+            return;
+        };
+        let Some(b) = object_with(&dir, &format!("odd-callee-{tag}"), &callee, callee_llc, options)
+        else {
+            return;
+        };
+        let driver = if callee_llc { &llc_driver } else { &hod_driver };
+        let name = format!("odd-{tag}");
+        link_run_all(&toolchain, &dir, &name, &[], &[driver, &a, &b], " 0 failed", tag == "LL");
+    }
+}
+
+/// `attr:alignstack`, run (`tests/data/call/alignstack.ll`): on block
+/// arguments that go to the stack (`abi-a64.md` §3.3: `[2 x double]` and
+/// `[3 x float]` aligned past their own alignment, `[2 x fp128]`,
+/// `[2 x float] alignstack(8)`, the corpus's forms), and on a function
+/// (`alignstack(32)` with a 32-aligned slot, `alignstack(16)`). gcc's
+/// driver calls the callee directly and through a forwarding caller; the
+/// caller and the callee module by hod and by `llc` in every pairing, hod
+/// also stressed; every linker where hod is involved.
+#[test]
+fn alignstack_arguments_and_functions_run() {
+    let dir = Scratch::new("a64-call-alignstack");
+    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let caller = data("alignstack.ll");
+    let callee = data("alignstack_callee.ll");
+    let driver = toolchain.compile_c(&dir, "alignstack-driver", &data("alignstack.c"), &[]);
+    let stress = Options { stress: hod_cg::Stress::ALL, ..Options::default() };
+    let plain = Options::default();
+    for (tag, caller_llc, callee_llc, options) in [
+        ("LL", true, true, plain),
+        ("HL", false, true, plain),
+        ("LH", true, false, plain),
+        ("HH", false, false, plain),
+        ("HH-stress", false, false, stress),
+    ] {
+        let Some(a) = object_with(&dir, &format!("as-{tag}"), &caller, caller_llc, options) else {
+            return;
+        };
+        let Some(b) = object_with(&dir, &format!("as-callee-{tag}"), &callee, callee_llc, options)
+        else {
+            return;
+        };
+        let name = format!("alignstack-{tag}");
+        link_run_all(&toolchain, &dir, &name, &[], &[&driver, &a, &b], " 0 failed", tag == "LL");
+    }
+}
+
+/// `spec/codegen.md` §7.1, "Tail kinds": `hod_cg::abi::TargetStackArgs`
+/// is the `StackArgs` hook `classify` decides `musttail` calls with
+/// (`spec/ir.md` §8.6). With it, the handwritten `musttail` forms that
+/// `handwritten_calls_run` runs (stack and register arguments exchanged,
+/// variadic thunks forwarding `...`, an indirect call) meet no
+/// `musttail:` rule; a call that needs a larger stack-argument area than
+/// its caller's has is `musttail:stack-args-grow`, one that lists
+/// variable arguments is `musttail:stack-args-unknown`, and so is every
+/// `musttail` call without the hook. The areas are those of the
+/// effective attributes: a `byval` the call takes from the declaration
+/// counts.
+#[test]
+fn the_stack_args_hook_decides_musttail() {
+    use hod_ir::{Arch, Census, Classifier, Support};
+    let hook = hod_cg::abi::TargetStackArgs::new(&hod_a64::A64);
+    let shipped = Support::shipped(Arch::Aarch64);
+    let musttail_rules = |text: &str, with_hook: bool| -> Vec<String> {
+        let (module, bodies) = parse(&format!("{}{text}", ll_header(22)));
+        let classifier = Classifier::new(shipped);
+        let classifier = if with_hook { classifier.with_stack_args(&hook) } else { classifier };
+        let mut census = Census::new();
+        for body in &bodies {
+            classifier.census_body(&module, body, &mut census);
+        }
+        let mut found: Vec<String> = census
+            .entries()
+            .iter()
+            .map(|entry| entry.construct.clone())
+            .filter(|name| name.starts_with("musttail:") || name == "tail:musttail")
+            .collect();
+        found.dedup();
+        found
+    };
+    let hand = data("hand.ll");
+    let hand = hand.lines().filter(|line| !line.starts_with("target ")).collect::<Vec<_>>();
+    let hand = hand.join("\n");
+    assert_eq!(musttail_rules(&hand, true), Vec::<String>::new());
+    assert_eq!(musttail_rules(&hand, false), ["musttail:stack-args-unknown"]);
+
+    let nine = "i64, i64, i64, i64, i64, i64, i64, i64, i64";
+    let cases: [(String, &[&str]); 4] = [
+        (
+            format!(
+                "declare i64 @g({nine})\n\
+                 define i64 @f({nine}) {{\n  %r = musttail call i64 @g(i64 0, i64 0, i64 0, i64 0, \
+                 i64 0, i64 0, i64 0, i64 0, i64 1)\n  ret i64 %r\n}}\n"
+            ),
+            &[],
+        ),
+        (
+            format!(
+                "declare i64 @g({nine})\n\
+                 define i64 @f(i64 %x) {{\n  %r = musttail call i64 @g(i64 0, i64 0, i64 0, i64 0, \
+                 i64 0, i64 0, i64 0, i64 0, i64 %x)\n  ret i64 %r\n}}\n"
+            ),
+            &["musttail:stack-args-grow"],
+        ),
+        (
+            "declare void @g(ptr byval([4 x i64]) align 8)\n\
+             define void @f(ptr %p) {\n  musttail call void @g(ptr %p)\n  ret void\n}\n"
+                .into(),
+            &["musttail:stack-args-grow"],
+        ),
+        (
+            "declare void @g(i32, ...)\n\
+             define void @f(i32 %n) {\n  musttail call void (i32, ...) @g(i32 %n, i64 1)\n  ret void\n}\n"
+                .into(),
+            &["musttail:stack-args-unknown"],
+        ),
+    ];
+    for (text, want) in &cases {
+        assert_eq!(musttail_rules(text, true), *want, "{text}");
+    }
+}
+
+/// `spec/codegen.md` §7.1, effective attributes, as a property:
+/// `classify` and the call sequence see the same attributes for random
+/// combinations of a declaration's and a call site's attributes, with
+/// the call through the callee's own function type or another one
+/// (an extra argument, variadic against fixed both ways). Both are
+/// observed by what they refuse: `inreg` and `swiftself` are refused by
+/// the shipped matrix (`attr:inreg`, `attr:swiftself`) and by `assign`
+/// (`abi:inreg`, `abi:swiftself`), and an `sret` on one side with a
+/// `byval` on the other is `call:attribute-conflict`. The expectation is
+/// a model of `llc`'s rule written here, not `hod_ir`'s helper.
+#[test]
+fn classify_and_the_call_sequence_see_the_same_attributes() {
+    const P0: [&str; 6] =
+        ["", "inreg", "swiftself", "sret([2 x i64])", "byval([2 x i64])", "noundef"];
+    const P1: [&str; 5] = ["", "signext", "zeroext", "inreg", "noundef"];
+    const P2: [&str; 3] = ["", "inreg", "byval([2 x i64])"];
+    const RET: [&str; 4] = ["", "signext", "zeroext", "inreg"];
+    let mut rng = Rng(0x69_0001);
+    let mut seen = [0usize; 4];
+    for case in 0..600 {
+        let pick = |rng: &mut Rng, pool: &[&'static str]| *rng.pick(pool);
+        let mut decl =
+            [pick(&mut rng, &RET), pick(&mut rng, &P0), pick(&mut rng, &P1), pick(&mut rng, &P2)];
+        let mut site =
+            [pick(&mut rng, &RET), pick(&mut rng, &P0), pick(&mut rng, &P1), pick(&mut rng, &P2)];
+        // `sret` goes with a `void` result.
+        let sret = decl[1].starts_with("sret") || site[1].starts_with("sret");
+        let ret = if sret { "void" } else { "i8" };
+        if sret {
+            (decl[0], site[0]) = ("", "");
+        }
+        // 0: the callee's type; 1: an extra i64; 2: a variadic call type
+        // of a fixed callee; 3: a variadic callee through its own type,
+        // with a variable i64; 4: a variadic callee through a fixed type.
+        let shape = rng.below(5) as usize;
+        let decl_variadic = shape >= 3;
+        let (call_ty, extra) = match shape {
+            1 => ("(ptr, i8, ptr, i64)", ", i64 1"),
+            2 => ("(ptr, i8, ptr, ...)", ""),
+            3 => ("(ptr, i8, ptr, ...)", ", i64 1"),
+            _ => ("(ptr, i8, ptr)", ""),
+        };
+        let matched = shape == 0 || shape == 3;
+        let dots = if decl_variadic { ", ..." } else { "" };
+        let text = format!(
+            "declare {} {ret} @g(ptr {} , i8 {} , ptr {} {dots})\n\
+             define void @f(ptr %p, i8 %x) {{\n  call {} {ret} {call_ty} @g(ptr {} %p, i8 {} %x, ptr {} %p{extra})\n  ret void\n}}\n",
+            decl[0], decl[1], decl[2], decl[3], site[0], site[1], site[2], site[3]
+        );
+        // The model: the call site's attributes, and the declaration's
+        // when the types match.
+        let effective: Vec<&str> =
+            site.iter().chain(if matched { &decl[..] } else { &[][..] }).copied().collect();
+        let has = |what: &str| effective.contains(&what);
+        let mem = |a: &str| {
+            if a.starts_with("sret") {
+                1
+            } else if a.starts_with("byval") {
+                2
+            } else {
+                0
+            }
+        };
+        let conflict = matched && mem(site[1]) * mem(decl[1]) == 2;
+        let refused: Vec<&str> = ["inreg", "swiftself"].into_iter().filter(|a| has(a)).collect();
+
+        let (module, bodies) = parse(&format!("{}{text}", ll_header(22)));
+        let census = hod_ir::census(&module, &bodies);
+        for what in ["inreg", "swiftself"] {
+            let row = format!("attr:{what}");
+            let found = census.entries().iter().any(|entry| entry.construct == row);
+            assert_eq!(found, refused.contains(&what), "case {case}: classify and {row}\n{text}");
+        }
+        let compiled = common::compile_ll(&text);
+        let allowed: Vec<String> = refused
+            .iter()
+            .map(|a| format!("abi:{a}"))
+            .chain(conflict.then(|| hod_ir::AttrConflict::NAME.to_owned()))
+            .collect();
+        match &compiled {
+            Ok(()) => {
+                assert!(allowed.is_empty(), "case {case}: compiled, expected {allowed:?}\n{text}");
+            }
+            Err(hod_cg::CgError::Unsupported { construct }) => assert!(
+                allowed.iter().any(|name| name == construct),
+                "case {case}: refused {construct}, expected {allowed:?}\n{text}"
+            ),
+            Err(other) => panic!("case {case}: {other}\n{text}"),
+        }
+        seen[usize::from(matched) * 2 + usize::from(compiled.is_ok())] += 1;
+    }
+    // Every quadrant of (matched, compiled) is exercised.
+    assert!(seen.iter().all(|&n| n > 10), "{seen:?}");
 }

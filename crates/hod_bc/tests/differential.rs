@@ -72,6 +72,9 @@ fn compare(path: &Path, major: u32) -> Outcome {
             Outcome::Differ(classes(&a, &b), a, b)
         }
         (Err(_), Err(_)) => Outcome::BothRefuse,
+        (Err(_), Ok(_)) if !common::reassembles(major, &canonical) => {
+            Outcome::Tool("llvm-dis: text llvm-as does not take back".into())
+        }
         (Err(error), Ok(_)) => Outcome::Differ(
             vec![format!("only hod_ll refuses: {}", head(&error))],
             error,

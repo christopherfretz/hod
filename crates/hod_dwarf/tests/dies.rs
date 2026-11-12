@@ -433,9 +433,9 @@ fn unsupported_shapes_are_errors() {
     let variants = [
         (
             "!4 = distinct !DIGlobalVariable(name: \"c\", scope: !0, file: !1, line: 1, type: !5, isLocal: false, isDefinition: true)\n\
-             !5 = !DIDerivedType(tag: DW_TAG_const_type, baseType: !6)\n\
+             !5 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !6, size: 64, dwarfAddressSpace: 1)\n\
              !6 = !DIBasicType(name: \"int\", size: 32, encoding: DW_ATE_signed)\n",
-            "a type",
+            "a pointer with an address space (the type graph writes the rest, §6.8)",
         ),
         (
             "!4 = distinct !DIGlobalVariable(name: \"s\", scope: !5, file: !1, line: 1, type: !6, isLocal: false, isDefinition: true)\n\

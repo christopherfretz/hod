@@ -2,13 +2,12 @@
 ; member-function pointers (`{ i64 ptrtoint (ptr @f to i64), i64 0 }` stored),
 ; a table of function pointers filled in code, a difference of a function
 ; and a variable (two sections), and addresses truncated to 32 and 16 bits.
-;@ covers: spec/codegen.md §5.5.1 constant operands with addresses (WP-072)
+;@ covers: spec/ir.md §4.2 addresses as operands; spec/codegen.md §5.5.1 (WP-072)
 ;@ tier: quick
 ;@ unsupported(x86_64): *
 ;@ stdout: cross=1 low=1 pair=1
 ;@ stdout: r1=25 r2=15 r3=5 r4=46 d=28 e=0 same=1
 
-target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32"
 target triple = "aarch64-unknown-linux-gnu"
 
 %struct.S = type <{ ptr, i32, [4 x i8] }>
@@ -275,9 +274,9 @@ define linkonce_odr dso_local noundef i32 @_ZNK1S4virtEi(ptr noundef nonnull ali
   ret i32 %9
 }
 
-attributes #0 = { mustprogress noinline norecurse nounwind optnone uwtable "frame-pointer"="non-leaf-no-reserve" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="generic" "target-features"="+fp-armv8,+neon,+outline-atomics,+v8a,-fmv" }
-attributes #1 = { mustprogress noinline nounwind optnone uwtable "frame-pointer"="non-leaf-no-reserve" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="generic" "target-features"="+fp-armv8,+neon,+outline-atomics,+v8a,-fmv" }
-attributes #2 = { "frame-pointer"="non-leaf-no-reserve" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="generic" "target-features"="+fp-armv8,+neon,+outline-atomics,+v8a,-fmv" }
+attributes #0 = { mustprogress noinline norecurse nounwind optnone uwtable "frame-pointer"="non-leaf" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="generic" "target-features"="+fp-armv8,+neon,+outline-atomics,+v8a,-fmv" }
+attributes #1 = { mustprogress noinline nounwind optnone uwtable "frame-pointer"="non-leaf" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="generic" "target-features"="+fp-armv8,+neon,+outline-atomics,+v8a,-fmv" }
+attributes #2 = { "frame-pointer"="non-leaf" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="generic" "target-features"="+fp-armv8,+neon,+outline-atomics,+v8a,-fmv" }
 attributes #3 = { nounwind }
 
 !llvm.module.flags = !{!0, !1, !2, !3, !4}
@@ -286,5 +285,5 @@ attributes #3 = { nounwind }
 !1 = !{i32 8, !"PIC Level", i32 2}
 !2 = !{i32 7, !"PIE Level", i32 2}
 !3 = !{i32 7, !"uwtable", i32 2}
-!4 = !{i32 7, !"frame-pointer", i32 4}
+!4 = !{i32 7, !"frame-pointer", i32 1}
 !6 = !{}

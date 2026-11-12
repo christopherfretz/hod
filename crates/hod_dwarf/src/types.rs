@@ -380,7 +380,9 @@ impl UnitPlan<'_> {
             // block's DIE first, and the type is then its child.
             DiKind::Subprogram | DiKind::LexicalBlock | DiKind::LexicalBlockFile => {
                 match self.slot[s.index()] {
-                    NONE => Err(unsupported(of, "debug:local-type-scope")),
+                    // WP-087: the function's early DIE (§6.12).
+                    NONE if kind == DiKind::Subprogram => self.local_type_parent(of, s),
+                    NONE => Err(unsupported(of, crate::early::LOCAL_TYPE_SCOPE)),
                     d => Ok(d),
                 }
             }
@@ -610,7 +612,13 @@ impl UnitPlan<'_> {
                 return Err(bad(t, "baseType"));
             }
             match self.debug.node(t) {
-                DiNode::CompositeType(c) => return Ok(c.tag != tag::ENUMERATION_TYPE),
+                // An enumeration follows its underlying type; one without
+                // is signed (LLVM's `isUnsignedDIType`, WP-087).
+                DiNode::CompositeType(c) if c.tag == tag::ENUMERATION_TYPE => match c.base_type {
+                    Some(base) => t = base,
+                    None => return Ok(false),
+                },
+                DiNode::CompositeType(_) => return Ok(true),
                 DiNode::DerivedType(d) => match d.tag {
                     tag::POINTER_TYPE
                     | tag::PTR_TO_MEMBER_TYPE

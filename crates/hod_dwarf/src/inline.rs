@@ -101,6 +101,11 @@ impl Inline {
         self.abs.get(&node.raw()).copied().filter(|&d| d != NO_DIE)
     }
 
+    /// Whether the module has the code of subprogram `node`.
+    pub(crate) fn has_body(&self, node: DiId) -> bool {
+        self.bodies.as_ref().is_some_and(|b| b.binary_search(&node.raw()).is_ok())
+    }
+
     /// Whether `die` was made early for statics; it is the function's
     /// from now on.
     pub(crate) fn take_early(&mut self, die: u32) -> bool {
@@ -537,9 +542,18 @@ impl<'a> Writer<'a> {
                     self.abbrev(code(fam::FORMAL_PARAMETER, mask, false));
                     self.opt_name(v.name)?;
                 } else {
+                    if v.align != 0 {
+                        // WP-087: written for a concrete local only.
+                        return Err(unsupported(node, "debug:variable-alignment"));
+                    }
                     let mask = b(decl.is_some()) << 1 | b(art) << 2;
-                    self.abbrev(code(fam::VARIABLE, mask, false));
-                    self.strx(v.name)?;
+                    // WP-087: an unnamed variable has no `DW_AT_name`.
+                    let family =
+                        if v.name.is_empty() { fam::VARIABLE_UNNAMED } else { fam::VARIABLE };
+                    self.abbrev(code(family, mask, false));
+                    if !v.name.is_empty() {
+                        self.strx(v.name)?;
+                    }
                 }
                 self.decl(decl);
                 self.ref_to(plan, node, v.ty.unwrap_or(DiId::NONE))?;

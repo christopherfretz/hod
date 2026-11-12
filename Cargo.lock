@@ -48,6 +48,7 @@ version = "0.0.0"
 dependencies = [
  "hod_mc_a64",
  "hod_mc_x64",
+ "hod_testutil",
 ]
 
 [[package]]

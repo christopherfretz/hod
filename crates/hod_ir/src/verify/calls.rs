@@ -2,12 +2,12 @@
 //! (`spec/ir.md` §5.8): what each opcode may call, tail markers and
 //! `musttail`'s conditions, immediate arguments, operand bundles.
 
-use super::Verifier;
+use super::{Signature, Verifier, signature};
 use crate::asm::InlineAsm;
 use crate::attrs::{CallConv, ParamAttrs, ParamMem};
 use crate::body::{BundleData, CALL_TAIL_MASK, CallData, UNSET};
 use crate::constant::Const;
-use crate::error::IrErrorKind::{InvalidCall, InvalidOperand};
+use crate::error::IrErrorKind::{InvalidAttribute, InvalidCall, InvalidOperand};
 use crate::error::IrResult;
 use crate::inst::{Opcode, TailKind};
 use crate::intrinsic::{CODE_OTHER, Intrinsic};
@@ -130,6 +130,23 @@ impl Verifier<'_> {
             }
             _ => None,
         };
+        if call.attrs != UNSET {
+            let types: Vec<_> = args.iter().map(|&arg| body.value_type(self.module, arg)).collect();
+            let TypeKind::Function { ret, params, .. } = self.types.kind(call.fn_ty) else {
+                return self.fail(InvalidOperand, id, "the call's type is not a function type");
+            };
+            let sig = Signature {
+                ret: (ret, self.call_attrs(call, None)),
+                params: params.len(),
+                args: &types,
+                elementtype: intrinsic.is_some() || asm.is_some(),
+            };
+            if let Err(what) =
+                signature(self.types, &sig, |index| self.call_attrs(call, Some(index)))
+            {
+                return self.fail(InvalidAttribute, id, what);
+            }
+        }
         let labels = asm.map_or(0, |asm| labels(asm.constraints));
         if op == Opcode::CallBr {
             let Some(asm) = asm else {

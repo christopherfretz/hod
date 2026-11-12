@@ -12,8 +12,8 @@ mod print_support;
 
 use hod_ir::{
     Body, Bundle, CallConv, CallDesc, Clause, Dialect, FunctionDesc, InlineAsm, IntPredicate,
-    Intrinsic, IrErrorKind, Module, Opcode, ParamAttrs, PrintError, SymId, TailKind, TargetSpec,
-    TypeId, Value,
+    Intrinsic, IrErrorKind, Module, Opcode, ParamAttrs, ParamMem, PrintError, SymId, TailKind,
+    TargetSpec, TypeId, Value,
 };
 use print_support::{Fx, Llvm, declare, define, printed};
 
@@ -651,5 +651,369 @@ fn operand_bundles() {
         x.ret_void();
         let body = x.finish();
         check(what, &m, &body, (!ok).then_some(IrErrorKind::InvalidCall));
+    }
+}
+
+// ---- attributes ----
+
+/// An argument of type `ty`: a constant of it.
+fn arg_of(x: &mut Fx<'_>, ty: TypeId) -> Value {
+    if ty == TypeId::PTR {
+        return x.null();
+    }
+    if x.m.types.is_int(ty) {
+        return x.int(ty, 1);
+    }
+    if ty == TypeId::FLOAT {
+        return x.f32(1.0);
+    }
+    Value::constant(x.m.consts.zero(&x.m.types, ty).unwrap()).unwrap()
+}
+
+/// A call of `@h` of type `ret (params..., ...?)` with arguments of
+/// `args` (the parameters, then variable arguments), carrying `attrs`
+/// and `ret_attrs`; of `llvm.va_end` instead when `intrinsic`.
+#[derive(Clone, Copy)]
+struct AttrCase<'a> {
+    ret: TypeId,
+    ret_attrs: ParamAttrs,
+    params: &'a [TypeId],
+    variadic: bool,
+    args: &'a [TypeId],
+    attrs: &'a [ParamAttrs],
+    intrinsic: bool,
+}
+
+/// The types of the attribute cases past the built-in ones: `<2 x i32>`,
+/// `<2 x ptr>` and an opaque struct. A module made the same way has
+/// them with the same ids.
+fn extra_types(m: &mut Module) -> (TypeId, TypeId, TypeId) {
+    let v2i32 = m.types.vector(TypeId::I32, 2).unwrap();
+    let v2ptr = m.types.vector(TypeId::PTR, 2).unwrap();
+    (v2i32, v2ptr, m.types.opaque_struct().unwrap())
+}
+
+fn attr_case(what: &str, ok: bool, case: AttrCase<'_>) {
+    let mut m = module();
+    extra_types(&mut m);
+    let (f, _) = setup(&mut m, TypeId::VOID, &[], false);
+    let fn_ty = m.types.function(case.ret, case.params, case.variadic).unwrap();
+    let h = m.add_function(b"h", &FunctionDesc::new(fn_ty)).unwrap();
+    let mut x = Fx::new(&mut m, f);
+    let args: Vec<Value> = case.args.iter().map(|&ty| arg_of(&mut x, ty)).collect();
+    let base = if case.intrinsic {
+        CallDesc::intrinsic(Intrinsic::VaEnd, &[TypeId::PTR], fn_ty, &args)
+    } else {
+        CallDesc::new(x.sym(h), fn_ty, &args)
+    };
+    let mut attrs = case.attrs.to_vec();
+    attrs.resize(args.len(), ParamAttrs::NONE);
+    let desc = CallDesc { arg_attrs: &attrs, ret_attrs: case.ret_attrs, ..base };
+    x.b.call(case.ret, &desc).unwrap();
+    x.ret_void();
+    let body = x.finish();
+    check(
+        &format!("attributes: {what}"),
+        &m,
+        &body,
+        (!ok).then_some(IrErrorKind::InvalidAttribute),
+    );
+}
+
+/// Parameter attributes on call arguments (§5.8), which are checked as a
+/// function's parameters are: each kept and broken.
+#[test]
+#[expect(clippy::too_many_lines, reason = "a table of cases")]
+fn parameter_attributes() {
+    let flag = |flag| ParamAttrs::NONE.with(flag).unwrap();
+    let mem = |mem, ty| ParamAttrs::NONE.with_mem(mem, ty).unwrap();
+    let align = ParamAttrs::NONE.with_align(8).unwrap();
+    let none = ParamAttrs::NONE;
+    let (v2i32, v2ptr, opaque) = extra_types(&mut module());
+    let one = |ty: TypeId| [ty];
+    let base = AttrCase {
+        ret: TypeId::VOID,
+        ret_attrs: none,
+        params: &[],
+        variadic: false,
+        args: &[],
+        attrs: &[],
+        intrinsic: false,
+    };
+    let signext = [flag(ParamAttrs::SIGNEXT)];
+    let nest = [flag(ParamAttrs::NEST)];
+    let swifterror = [flag(ParamAttrs::SWIFT_ERROR)];
+    let aligned = [align];
+    let byval = [mem(ParamMem::ByVal, TypeId::I32)];
+    let byval_opaque = [mem(ParamMem::ByVal, opaque)];
+    let byref_opaque = [mem(ParamMem::ByRef, opaque)];
+    let inalloca_opaque = [mem(ParamMem::InAlloca, opaque)];
+    let preallocated_opaque = [mem(ParamMem::Preallocated, opaque)];
+    let byval_inreg = [mem(ParamMem::ByVal, TypeId::I32).with(ParamAttrs::INREG).unwrap()];
+    let sret_inreg = [mem(ParamMem::Sret, TypeId::I32).with(ParamAttrs::INREG).unwrap()];
+    let nest_inreg = [flag(ParamAttrs::NEST).with(ParamAttrs::INREG).unwrap()];
+    let sret = mem(ParamMem::Sret, TypeId::I32);
+    let inalloca = mem(ParamMem::InAlloca, TypeId::I32);
+    let swiftself = flag(ParamAttrs::SWIFT_SELF);
+    let element = [mem(ParamMem::ElementType, TypeId::I32)];
+    let (i32s, floats, vectors) = (one(TypeId::I32), one(TypeId::FLOAT), one(v2i32));
+    let (ptrs, i64s, ptr_vectors) = (one(TypeId::PTR), one(TypeId::I64), one(v2ptr));
+    let three = [TypeId::PTR; 3];
+    let two = [TypeId::PTR; 2];
+    for (what, ok, case) in [
+        ("signext on i32", true, AttrCase { params: &i32s, args: &i32s, attrs: &signext, ..base }),
+        (
+            "signext on float",
+            false,
+            AttrCase { params: &floats, args: &floats, attrs: &signext, ..base },
+        ),
+        (
+            "signext on a vector",
+            false,
+            AttrCase { params: &vectors, args: &vectors, attrs: &signext, ..base },
+        ),
+        ("nest on ptr", true, AttrCase { params: &ptrs, args: &ptrs, attrs: &nest, ..base }),
+        ("nest on i32", false, AttrCase { params: &i32s, args: &i32s, attrs: &nest, ..base }),
+        (
+            "swifterror on i32",
+            false,
+            AttrCase { params: &i32s, args: &i32s, attrs: &swifterror, ..base },
+        ),
+        ("align on ptr", true, AttrCase { params: &ptrs, args: &ptrs, attrs: &aligned, ..base }),
+        (
+            "align on a pointer vector",
+            true,
+            AttrCase { params: &ptr_vectors, args: &ptr_vectors, attrs: &aligned, ..base },
+        ),
+        ("align on i64", false, AttrCase { params: &i64s, args: &i64s, attrs: &aligned, ..base }),
+        ("byval on ptr", true, AttrCase { params: &ptrs, args: &ptrs, attrs: &byval, ..base }),
+        ("byval on i64", false, AttrCase { params: &i64s, args: &i64s, attrs: &byval, ..base }),
+        (
+            "byval of an opaque struct",
+            false,
+            AttrCase { params: &ptrs, args: &ptrs, attrs: &byval_opaque, ..base },
+        ),
+        (
+            "byref of an opaque struct",
+            false,
+            AttrCase { params: &ptrs, args: &ptrs, attrs: &byref_opaque, ..base },
+        ),
+        (
+            "inalloca of an opaque struct",
+            false,
+            AttrCase { params: &ptrs, args: &ptrs, attrs: &inalloca_opaque, ..base },
+        ),
+        (
+            "preallocated of an opaque struct",
+            false,
+            AttrCase { params: &ptrs, args: &ptrs, attrs: &preallocated_opaque, ..base },
+        ),
+        (
+            "byval with inreg",
+            false,
+            AttrCase { params: &ptrs, args: &ptrs, attrs: &byval_inreg, ..base },
+        ),
+        (
+            "sret with inreg",
+            true,
+            AttrCase { params: &ptrs, args: &ptrs, attrs: &sret_inreg, ..base },
+        ),
+        (
+            "nest with inreg",
+            false,
+            AttrCase { params: &ptrs, args: &ptrs, attrs: &nest_inreg, ..base },
+        ),
+        (
+            "sret on the second parameter",
+            true,
+            AttrCase { params: &three, args: &three, attrs: &[none, sret], ..base },
+        ),
+        (
+            "sret on the third parameter",
+            false,
+            AttrCase { params: &three, args: &three, attrs: &[none, none, sret], ..base },
+        ),
+        (
+            "sret twice",
+            false,
+            AttrCase { params: &three, args: &three, attrs: &[sret, sret], ..base },
+        ),
+        (
+            "sret on a variable argument",
+            false,
+            AttrCase { params: &[], variadic: true, args: &ptrs, attrs: &[sret], ..base },
+        ),
+        (
+            "inalloca on the last parameter",
+            true,
+            AttrCase { params: &two, args: &two, attrs: &[none, inalloca], ..base },
+        ),
+        (
+            "inalloca on another parameter",
+            false,
+            AttrCase { params: &two, args: &two, attrs: &[inalloca, none], ..base },
+        ),
+        (
+            "swiftself once",
+            true,
+            AttrCase { params: &two, args: &two, attrs: &[swiftself, none], ..base },
+        ),
+        (
+            "swiftself twice",
+            false,
+            AttrCase { params: &two, args: &two, attrs: &[swiftself, swiftself], ..base },
+        ),
+        (
+            "swiftself twice, one a variable argument",
+            true,
+            AttrCase {
+                params: &ptrs,
+                variadic: true,
+                args: &two,
+                attrs: &[swiftself, swiftself],
+                ..base
+            },
+        ),
+        (
+            "nest twice, one a variable argument",
+            false,
+            AttrCase {
+                params: &ptrs,
+                variadic: true,
+                args: &two,
+                attrs: &[nest[0], nest[0]],
+                ..base
+            },
+        ),
+        (
+            "elementtype on a function's argument",
+            false,
+            AttrCase { params: &ptrs, args: &ptrs, attrs: &element, ..base },
+        ),
+        (
+            "elementtype on an intrinsic's argument",
+            true,
+            AttrCase { params: &ptrs, args: &ptrs, attrs: &element, intrinsic: true, ..base },
+        ),
+        (
+            "signext on an i32 result",
+            true,
+            AttrCase { ret: TypeId::I32, ret_attrs: signext[0], ..base },
+        ),
+        (
+            "signext on a float result",
+            false,
+            AttrCase { ret: TypeId::FLOAT, ret_attrs: signext[0], ..base },
+        ),
+        (
+            "align on a pointer result",
+            true,
+            AttrCase { ret: TypeId::PTR, ret_attrs: align, ..base },
+        ),
+    ] {
+        attr_case(what, ok, case);
+    }
+}
+
+/// Attributes LLVM's text cannot put on a return value: refused, and the
+/// printer writes what LLVM then refuses (LLVM 22 takes `alignstack`
+/// there; LLVM 19 does not parse it, so hod refuses it).
+#[test]
+fn return_attributes() {
+    let nest = ParamAttrs::NONE.with(ParamAttrs::NEST).unwrap();
+    let stack = ParamAttrs::NONE.with_stack_align(16).unwrap();
+    for (what, attrs, refused_by_22) in [("nest", nest, true), ("alignstack", stack, false)] {
+        let mut m = module();
+        let (f, _) = setup(&mut m, TypeId::VOID, &[], false);
+        let fn_ty = m.types.function(TypeId::PTR, &[], false).unwrap();
+        let h = m.add_function(b"h", &FunctionDesc::new(fn_ty)).unwrap();
+        let mut x = Fx::new(&mut m, f);
+        let desc = CallDesc { ret_attrs: attrs, ..CallDesc::new(x.sym(h), fn_ty, &[]) };
+        x.b.call(TypeId::PTR, &desc).unwrap();
+        x.ret_void();
+        let body = x.finish();
+        assert_eq!(body.verify(&m).unwrap_err().kind, IrErrorKind::InvalidAttribute, "{what}");
+        for (major, refused) in [(19, true), (22, refused_by_22)] {
+            let Some(llvm) = Llvm::new(major) else { continue };
+            let text = printed(&m, llvm.dialect(), std::slice::from_ref(&body));
+            assert_eq!(
+                llvm.objection(&text).is_some(),
+                refused,
+                "{what} on a result, LLVM {major}"
+            );
+        }
+    }
+}
+
+/// A function's own signature is checked when it is described (§5.7):
+/// `Module::add_function` refuses what a call's arguments may not have,
+/// and `elementtype`, which LLVM allows on a call's argument alone.
+#[test]
+fn function_signatures() {
+    let mut m = module();
+    let ty =
+        m.types.function(TypeId::VOID, &[TypeId::PTR, TypeId::PTR, TypeId::PTR], false).unwrap();
+    let sret = ParamAttrs::NONE.with_mem(ParamMem::Sret, TypeId::I32).unwrap();
+    let signext = ParamAttrs::NONE.with(ParamAttrs::SIGNEXT).unwrap();
+    let element = ParamAttrs::NONE.with_mem(ParamMem::ElementType, TypeId::I32).unwrap();
+    let none = ParamAttrs::NONE;
+    for (what, attrs, ok) in [
+        ("sret on the second parameter", [none, sret, none], true),
+        ("sret on the third parameter", [none, none, sret], false),
+        ("signext on a pointer", [signext, none, none], false),
+        ("elementtype", [element, none, none], false),
+    ] {
+        let desc = FunctionDesc { param_attrs: &attrs, ..FunctionDesc::new(ty) };
+        // A refused description leaves its name unresolved: each is
+        // tried in a module of its own, where the type has the same id.
+        let made = if ok {
+            m.add_function(b"accepted", &desc)
+        } else {
+            let mut fresh = module();
+            let params = [TypeId::PTR; 3];
+            assert_eq!(fresh.types.function(TypeId::VOID, &params, false).unwrap(), ty);
+            fresh.add_function(b"h", &desc)
+        };
+        assert_eq!(made.is_ok(), ok, "{what}: {made:?}");
+        if !ok {
+            assert_eq!(made.unwrap_err().kind, IrErrorKind::InvalidAttribute);
+        }
+    }
+    // LLVM takes the accepted declaration, and refuses the text of each
+    // refused one.
+    for llvm in [22, 19].into_iter().filter_map(Llvm::new) {
+        let text = printed(&m, llvm.dialect(), &[]);
+        llvm.accept(&text, "the accepted declaration");
+        let line = "declare void @accepted(ptr, ptr sret(i32), ptr)";
+        assert!(text.contains(line), "{text}");
+        for refused in [
+            "declare void @accepted(ptr, ptr, ptr sret(i32))",
+            "declare void @accepted(ptr signext, ptr, ptr)",
+            "declare void @accepted(ptr elementtype(i32), ptr, ptr)",
+        ] {
+            let edited = text.replace(line, refused);
+            assert!(llvm.objection(&edited).is_some(), "LLVM {}: {refused}", llvm.major);
+        }
+    }
+}
+
+/// `sanitize_realtime` with `sanitize_realtime_blocking`: `FnAttrs::set`
+/// refuses the pair, and LLVM refuses the text with both.
+#[test]
+fn realtime_function_attributes() {
+    let mut attrs = hod_ir::FnAttrs::new();
+    attrs.set(hod_ir::FnAttrs::SANITIZE_REALTIME).unwrap();
+    let error = attrs.set(hod_ir::FnAttrs::SANITIZE_REALTIME_BLOCKING).unwrap_err();
+    assert_eq!(error.kind, IrErrorKind::InvalidAttribute);
+    let mut m = module();
+    let id = m.intern_fn_attrs(&attrs).unwrap();
+    let ty = m.types.function(TypeId::VOID, &[], false).unwrap();
+    m.add_function(b"h", &FunctionDesc { attrs: id, ..FunctionDesc::new(ty) }).unwrap();
+    for llvm in [22].into_iter().filter_map(Llvm::new) {
+        let text = printed(&m, llvm.dialect(), &[]);
+        llvm.accept(&text, "sanitize_realtime alone");
+        let both =
+            text.replace("sanitize_realtime", "sanitize_realtime sanitize_realtime_blocking");
+        assert!(llvm.objection(&both).is_some(), "{both}");
     }
 }

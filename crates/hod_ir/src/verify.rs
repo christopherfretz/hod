@@ -37,7 +37,10 @@ use IrErrorKind::{
     UnsizedType, UseFactsMismatch,
 };
 
+mod attrs;
 mod calls;
+
+pub(crate) use attrs::{Signature, signature};
 
 impl Body {
     /// Checks every structural and type rule of §5 and that the recorded

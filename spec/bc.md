@@ -315,6 +315,10 @@ encodings are:
   references among globals resolve.
 - **Value ids.** Globals take value ids in record order, and the
   module-level constants follow them.
+- **Symbol ids.** Symbols are created in record order, which is LLVM's
+  module order (variables, functions, aliases, IFUNCs): the order
+  `ll.md` §5.7 gives the text, so both deliver the same `SymId`s. An
+  unnamed global's symbol is created in its place too.
 - **Unnamed globals.** A global with an empty name is numbered as
   `llvm-dis` numbers it: variables, then aliases, then IFUNCs, then
   functions, each group in record order. The order is

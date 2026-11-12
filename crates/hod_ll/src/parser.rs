@@ -128,6 +128,7 @@ pub(crate) fn run<'a>(src: &'a [u8], options: &ParseOptions) -> PResult<ParsedMo
         let text = parser.string(parser.index.module_asm[at]);
         parser.module.append_module_asm(&text);
     }
+    parser.number_globals()?;
     parser.define_types()?;
     parser.flush(None);
     parser.define_comdats()?;
@@ -135,7 +136,6 @@ pub(crate) fn run<'a>(src: &'a [u8], options: &ParseOptions) -> PResult<ParsedMo
     parser.index_metadata()?;
     parser.named_metadata()?;
     parser.flush(None);
-    parser.number_globals()?;
     parser.items()?;
     let text = parser.finish()?;
     Ok(ParsedModule { module, text })

@@ -466,6 +466,20 @@ file, as LLVM requires. One that is `internal` or `private` is
 order, and recorded (`symbol:anonymous-external`), because LLVM's own `K`
 follows the order in which it emits them.
 
+**Order.** Symbols are numbered in LLVM's module order (`ir.md` §2.2):
+every variable, then every function, then every alias, then every IFUNC,
+each kind in the order of its definitions and declarations in the text.
+Which global refers to which first does not matter: LLVM keeps one list
+per kind and appends a global to its list where it is defined or
+declared, and `llvm-dis` prints, the bitcode writer numbers, and `llc`
+lays out `.text` and `.data` in the order of those lists. All symbols are
+created by this one pass over the index (§4.3) before anything else is
+read. The rule is the same as `bc.md` §5.5's record order, so the text
+and bitcode of one module give the same `SymId`s; `hod_bc`'s differential
+test checks it (`symbol order`), and `tests/syntax`
+(`symbols_are_numbered_in_llvms_module_order`) checks it against
+`llvm-dis` 19 and 22.
+
 ### 5.8 Functions, aliases, IFUNCs
 
 `declare|define [linkage] [preemption] [visibility] [dll storage] [cc]

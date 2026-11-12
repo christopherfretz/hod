@@ -201,6 +201,15 @@ whatever it turns out to be. A name is not empty and has no zero byte
 (LLVM's `@0`); it can only become an `internal` or `private` symbol.
 `find_symbol(name) -> Option<SymId>` looks a name up without creating it.
 
+**Order.** `SymId`s are given in creation order, and `symbols()` walks
+them so. The producers create every symbol first and in LLVM's module
+order: the variables, then the functions, then the aliases, then the
+IFUNCs, each kind in the order its module lists them (the text's order
+of definitions and declarations, which is the bitcode's record order).
+That is the order `llc` lays the sections' contents out in, and the
+order in which one module read from its text and from its bitcode
+delivers the same ids (`ll.md` §5.7, `bc.md` §5.5).
+
 **States.** A symbol is in one of three states:
 
 - *unresolved*: it has an id, which constants and instructions may use,

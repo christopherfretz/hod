@@ -348,3 +348,57 @@ fn blockaddress_of_a_block_without_a_label_is_llvms() {
         }
     }
 }
+
+/// LLVM's module order as `llvm-dis` prints it: each line that defines
+/// or declares a global, tagged with its kind, and the names listed kind
+/// by kind (variables, functions, aliases, IFUNCs), each kind in the
+/// order printed.
+fn llvm_order(text: &[u8]) -> Vec<String> {
+    let mut kinds: [Vec<String>; 4] = Default::default();
+    for line in String::from_utf8_lossy(text).lines() {
+        let name = |rest: &str| rest.split(['(', ' ']).next().unwrap_or("").to_string();
+        if let Some(rest) = line.strip_prefix('@') {
+            let (name, value) = rest.split_once(" = ").expect("a global's line");
+            let words: Vec<&str> = value.split(' ').collect();
+            let kind = if words.contains(&"alias") {
+                2
+            } else if words.contains(&"ifunc") {
+                3
+            } else {
+                0
+            };
+            kinds[kind].push(name.to_string());
+        } else if line.starts_with("define ") || line.starts_with("declare ") {
+            let at = line.find(" @").expect("a function's name");
+            kinds[1].push(name(&line[at + 2..]));
+        }
+    }
+    kinds.concat()
+}
+
+/// §5.7: symbols are numbered in LLVM's module order — variables, then
+/// functions, then aliases, then IFUNCs, each kind in the order of its
+/// definitions and declarations in the text, whatever refers to what
+/// first.
+#[test]
+fn symbols_are_numbered_in_llvms_module_order() {
+    const TEXT: &str = "@a = global ptr @c\n@al = alias i32, ptr @b\ndefine void @f() {\n  call void @h()\n  call void @g()\n  ret void\n}\n@b = global i32 1\n@ifn = ifunc void (), ptr @resolver\ndeclare void @h()\n@c = global ptr @f\ndefine ptr @resolver() {\n  ret ptr @g\n}\n@al0 = alias i32, ptr @a\ndefine void @g() {\n  ret void\n}\n@d = global i32 0\n";
+    let parsed = parse_all(TEXT.as_bytes()).unwrap_or_else(|error| panic!("{error}"));
+    let mine: Vec<String> = parsed
+        .module
+        .symbols()
+        .map(|symbol| String::from_utf8_lossy(symbol.name()).into_owned())
+        .collect();
+    assert_eq!(mine, ["a", "b", "c", "d", "f", "h", "resolver", "g", "al", "al0", "ifn"]);
+    for llvm in [19, 22].into_iter().filter_map(Llvm::find) {
+        let mut assemble = Command::new(llvm.tool("llvm-as"));
+        assemble.args(["-o", "-", "-"]);
+        let bitcode = run_with(&mut assemble, TEXT.as_bytes(), DEFAULT_TIMEOUT);
+        assert!(bitcode.success(), "{}", bitcode.stderr_text());
+        let mut disassemble = Command::new(llvm.tool("llvm-dis"));
+        disassemble.args(["-o", "-", "-"]);
+        let printed = run_with(&mut disassemble, &bitcode.stdout, DEFAULT_TIMEOUT);
+        assert!(printed.success(), "{}", printed.stderr_text());
+        assert_eq!(mine, llvm_order(&printed.stdout), "LLVM {}'s module order", llvm.major);
+    }
+}

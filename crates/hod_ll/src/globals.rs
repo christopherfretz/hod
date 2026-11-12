@@ -39,7 +39,7 @@ enum Special {
     CompilerUsed,
 }
 
-impl<'a> Parser<'a, '_> {
+impl Parser<'_, '_> {
     /// Creates every COMDAT.
     pub(crate) fn define_comdats(&mut self) -> PResult<()> {
         for at in 0..self.index.comdats.len() {
@@ -124,18 +124,15 @@ impl<'a> Parser<'a, '_> {
         }
     }
 
-    /// The name token of the declaration `item` if it is a number. The
-    /// index has the names of assignments and definitions only.
-    fn declared_number(&mut self, item: Item) -> PResult<Option<Token>> {
-        let text = &self.src[item.start as usize..item.end as usize];
-        if !text.windows(2).any(|pair| pair[0] == b'@' && pair[1].is_ascii_digit()) {
-            return Ok(None);
-        }
+    /// The name token of the declaration `item`: the first global name
+    /// outside brackets. The index has the names of assignments and
+    /// definitions only.
+    fn declared_name(&mut self, item: Item) -> PResult<Option<Token>> {
         self.goto(item.start);
         while self.tok.start < item.end {
             match self.tok.kind {
-                Tok::GlobalId => return Ok(Some(self.tok)),
-                Tok::Global | Tok::GlobalQuoted | Tok::Eof => break,
+                Tok::Global | Tok::GlobalQuoted | Tok::GlobalId => return Ok(Some(self.tok)),
+                Tok::Eof => break,
                 Tok::LParen | Tok::LBracket | Tok::LBrace => {
                     self.skip_brackets()?;
                 }
@@ -145,66 +142,157 @@ impl<'a> Parser<'a, '_> {
         Ok(None)
     }
 
-    /// Gives every numbered global its symbol, before anything refers to
-    /// one (`spec/ll.md` §5.7). One with internal or private linkage is an
-    /// anonymous symbol. One with any other linkage needs a name in the
-    /// object: it takes `__unnamed_K`, `K` counting the numbered globals
-    /// from 1 in file order, and is noted, because LLVM numbers such
-    /// names in the order it emits them.
-    pub(crate) fn number_globals(&mut self) -> PResult<()> {
-        let mut ordinal = 0u32;
-        for at in 0..self.index.items.len() {
-            let mut item = self.index.items[at];
-            if item.kind == ItemKind::Declare {
-                match self.declared_number(item)? {
-                    Some(name) => item.name = name,
-                    None => continue,
+    /// What the assignment `item` defines, by the word that says it:
+    /// `global` or `constant`, `alias`, `ifunc`; `None` if there is none
+    /// (an error, reported when the item is read).
+    fn assigned_kind(&mut self, item: Item) -> PResult<Option<GlobalKind>> {
+        self.goto(item.start);
+        while self.tok.start < item.end {
+            match self.tok.kind {
+                Tok::Word => {
+                    let kind = match self.text() {
+                        b"global" | b"constant" => Some(GlobalKind::Variable),
+                        b"alias" => Some(GlobalKind::Alias),
+                        b"ifunc" => Some(GlobalKind::IFunc),
+                        _ => None,
+                    };
+                    if kind.is_some() {
+                        return Ok(kind);
+                    }
+                    self.bump();
                 }
+                Tok::LParen => {
+                    self.skip_brackets()?;
+                }
+                _ => return Ok(None),
             }
-            if item.name.kind != Tok::GlobalId {
+        }
+        Ok(None)
+    }
+
+    /// Gives every global its symbol before anything refers to one, in
+    /// the order of LLVM's module (`spec/ll.md` §5.7): the variables, then
+    /// the functions, the aliases and the IFUNCs, each kind in the order
+    /// of its definitions and declarations in the file, wherever a global
+    /// is first mentioned.
+    ///
+    /// A numbered global with internal or private linkage is an anonymous
+    /// symbol. One with any other linkage needs a name in the object: it
+    /// takes `__unnamed_K`, `K` counting the numbered globals from 1 in
+    /// file order, and is noted, because LLVM numbers such names in the
+    /// order it emits them.
+    pub(crate) fn number_globals(&mut self) -> PResult<()> {
+        // File order: each global's kind and name; the numbers ascend.
+        let mut globals: Vec<(GlobalKind, Token, u32, Item)> = Vec::new();
+        let mut ordinal = 0u32;
+        let mut last_number = None;
+        for at in 0..self.index.items.len() {
+            let item = self.index.items[at];
+            let (kind, name) = match item.kind {
+                ItemKind::Declare => match self.declared_name(item)? {
+                    Some(name) => (GlobalKind::Function, name),
+                    None => continue,
+                },
+                ItemKind::Define => (GlobalKind::Function, item.name),
+                ItemKind::Assign => match self.assigned_kind(item)? {
+                    Some(kind) => (kind, item.name),
+                    None => continue,
+                },
+            };
+            if kind == GlobalKind::Variable && is_special(self.tok_text(name)) {
                 continue;
             }
-            ordinal += 1;
-            let number = self.global_number(item.name)?;
-            self.goto(item.start);
-            while item.kind == ItemKind::Declare && self.tok.kind == Tok::Meta {
-                self.bump();
-                self.bump();
+            let mut unnamed = 0;
+            if name.kind == Tok::GlobalId {
+                ordinal += 1;
+                unnamed = ordinal;
+                let number = self.global_number(name)?;
+                // As in LLVM, the numbers ascend.
+                if let Some(last) = last_number
+                    && number <= last
+                {
+                    let known = globals.iter().any(|&(_, other, _, _)| {
+                        other.kind == Tok::GlobalId
+                            && self.global_number(other).ok() == Some(number)
+                    });
+                    return if known {
+                        let message = format!("redefinition of global '@{number}'");
+                        fail(LlErrorKind::Redefined, name.start, message)
+                    } else {
+                        let message =
+                            format!("global expected to be numbered '@{}' or greater", last + 1);
+                        fail(LlErrorKind::Syntax, name.start, message)
+                    };
+                }
+                last_number = Some(number);
             }
-            let local = self.at_word(b"internal") || self.at_word(b"private");
-            let sym = if local {
-                ir(item.name.start, self.module.anonymous_symbol())?
-            } else {
-                let name = format!("__unnamed_{ordinal}");
-                let sym = ir(item.name.start, self.module.symbol_named(name.as_bytes()))?;
-                self.note("symbol:anonymous-external");
-                self.flush(Some(sym));
-                sym
+            globals.push((kind, name, unnamed, item));
+        }
+        // LLVM's order: kind by kind (stable: file order within a kind).
+        globals.sort_by_key(|&(kind, _, _, _)| kind);
+        let mut numbered = Vec::new();
+        for (_, name, unnamed, item) in globals {
+            let sym = match name.kind {
+                Tok::GlobalId => {
+                    self.goto(item.start);
+                    while item.kind == ItemKind::Declare && self.tok.kind == Tok::Meta {
+                        self.bump();
+                        self.bump();
+                    }
+                    if self.at_word(b"internal") || self.at_word(b"private") {
+                        ir(name.start, self.module.anonymous_symbol())?
+                    } else {
+                        let text = format!("__unnamed_{unnamed}");
+                        let sym = ir(name.start, self.module.symbol_named(text.as_bytes()))?;
+                        self.note("symbol:anonymous-external");
+                        self.flush(Some(sym));
+                        sym
+                    }
+                }
+                Tok::GlobalQuoted => {
+                    let text = self.name(name).unwrap_or_default();
+                    ir(name.start, self.module.symbol_named(&text))?
+                }
+                _ => {
+                    let text = &self.src[name.start as usize + 1..name.end as usize];
+                    ir(name.start, self.module.symbol_named(text))?
+                }
             };
-            // As in LLVM, the numbers ascend: the table is sorted as it
-            // is filled.
-            if let Some(&(last, _)) = self.numbered_globals.last()
-                && number <= last
-            {
-                let known = self.numbered_globals.binary_search_by_key(&number, |&(n, _)| n);
-                return if known.is_ok() {
-                    let message = format!("redefinition of global '@{number}'");
-                    fail(LlErrorKind::Redefined, item.name.start, message)
-                } else {
-                    let message =
-                        format!("global expected to be numbered '@{}' or greater", last + 1);
-                    fail(LlErrorKind::Syntax, item.name.start, message)
-                };
+            if name.kind == Tok::GlobalId {
+                numbered.push((self.global_number(name)?, sym));
             }
-            self.numbered_globals.push((number, sym));
             if sym.index() >= self.first_ref.len() {
-                self.first_ref.resize(sym.index() + 1, item.name.start);
+                self.first_ref.resize(sym.index() + 1, name.start);
                 self.described.resize(sym.index() + 1, false);
             }
         }
+        numbered.sort_unstable_by_key(|&(number, _)| number);
+        self.numbered_globals = numbered;
         Ok(())
     }
+}
 
+/// The kinds of global in the order of LLVM's module: its lists of
+/// variables, functions, aliases and IFUNCs, as the bitcode writer and
+/// its value numbering take them.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub(crate) enum GlobalKind {
+    Variable,
+    Function,
+    Alias,
+    IFunc,
+}
+
+/// Whether `name` (with its `@`) is one of the special arrays, which are
+/// not symbols (§5.9).
+fn is_special(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"@llvm.global_ctors" | b"@llvm.global_dtors" | b"@llvm.used" | b"@llvm.compiler.used"
+    )
+}
+
+impl<'a> Parser<'a, '_> {
     /// The symbol the entity named by `token` describes; an error if an
     /// earlier entity described it.
     fn describe(&mut self, token: Token) -> PResult<SymId> {

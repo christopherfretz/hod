@@ -352,7 +352,7 @@ Instructions.
 | `inst:extractelement` | not-implemented | not-implemented | M2 (vectors) |
 | `inst:insertelement` | not-implemented | not-implemented | M2 (vectors) |
 | `inst:shufflevector` | not-implemented | not-implemented | M2 (vectors) |
-| `inst:phi` | supported (int, ptr) | not-implemented |  |
+| `inst:phi` | supported | not-implemented | for every class whose `type:*` row is supported |
 | `inst:select` | not-implemented | not-implemented | WP-035 |
 | `inst:freeze` | not-implemented | not-implemented | WP-035 |
 | `inst:va_arg` | rejected | rejected | `llc` miscompiles it on AArch64, so there is no oracle; frontends do not emit it |

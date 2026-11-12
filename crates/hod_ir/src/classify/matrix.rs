@@ -718,7 +718,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
     a64("inst:extractelement", VECTORS, ""),
     a64("inst:insertelement", VECTORS, ""),
     a64("inst:shufflevector", VECTORS, ""),
-    row("inst:phi", on(&[TypeClass::Int, TypeClass::Ptr]), todo(X64), ""),
+    row("inst:phi", ON, todo(X64), "for every class whose `type:*` row is supported"),
     a64("inst:select", "WP-035", ""),
     a64("inst:freeze", "WP-035", ""),
     both(

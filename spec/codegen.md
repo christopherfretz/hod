@@ -557,7 +557,8 @@ These are decisions the group packages (WP-035..041) build on.
   so a `blockaddress` reaches code only as `indirectbr`'s own operand;
   `operand:blockaddress` stays not-implemented until then.
 - **`phi`** needs nothing from the target beyond the glue (§4.5); the
-  protocol is tested here on the real target for `int` and `ptr`.
+  protocol is tested here on the real target for `int` and `ptr`; its
+  matrix row is supported for every class, the `type:*` rows gating.
 
 ### 5.6 x86-64 (planned)
 

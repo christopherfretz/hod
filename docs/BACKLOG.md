@@ -23,13 +23,14 @@ Milestones and tracks are in `docs/ROADMAP.md`.
 | WP-013 | T-A64 | `hod_mc_a64`: scalar floating point and the SIMD subset codegen needs for `float`/`double`/vectors-as-values: an FP/vector register type, FP/SIMD loads and stores (all addressing modes, pairs, literal), FP constant materialization next to `mov_imm`; the L1 harness run with `+fp-armv8,+neon` | WP-012 | done |
 | WP-014 | T-CG | `spec/codegen.md`: the `Target` trait, value-location policy v1, frame layout, the per-function output record. Design only; reviewed before T-CG work starts | WP-004, WP-010 | review |
 | WP-015 | T-H | `hod_cli`: `llc`-compatible command line, stdin input, `--fallback`, coverage log; the `--llvm-dir` shim directory for kiln | WP-001 | done |
-| WP-016 | T-H | `xtask irdiff`: build with `llc` and with hod, link with each linker in the matrix, run under limits, compare; `tests/ir/` directive format | WP-015 | in-progress |
+| WP-016 | T-H | `xtask irdiff`: build with `llc` and with hod, link with each linker in the matrix, run under limits, compare; `tests/ir/` directive format | WP-015 | done |
 | WP-017 | T-H | `xtask corpus`: capture IR from kiln's executing tests and from clang on the GCC torture suite into `.build/corpus`, pinned and reproducible | WP-015 | todo |
 | WP-018 | T-H | `xtask bench` and `bench/`: size classes, wall/RSS/size measurement for hod and `llc`, baselines, phase timings | WP-015 | todo |
 | WP-019 | T-H | L2 gate: parse, print, `llvm-as` acceptance and behavioral equivalence through `llc` over the captured corpus | WP-006, WP-008, WP-017 | todo |
 | WP-020 | T-H | Bitcode on the text path: `hod` converts bitcode input to text with a configured `llvm-dis` (`--bitcode-via=`, set by the shim) before parsing, instead of falling back; coverage log records the conversion time. Design 0001 point 6 | WP-015 | todo |
 | WP-021 | T-IR | `available_externally` + `alwaysinline` bodies: producers mark them, `hod` emits a local copy and redirects the module's calls (design 0001 point 6); test with libstdc++'s extern-template cases | WP-003, WP-004 | todo |
 | WP-022 | T-H | Coverage log: a ninth field with the fallback's exit status; per-function records (which functions hod compiled, which construct stopped it) for function-level coverage; measure the shim's per-TU `sh` exec and remove it if it shows | WP-015 | todo |
+| WP-023 | T-H | `irdiff` follow-ups: emulated cross runs (x86-64 through a cross driver and `qemu-x86_64 -L <sysroot>`); the full gate also runs `--hybrid` and `--target x86_64`; `stdout` forms for output without a final newline; seed corpus gaps (bit and floating-point intrinsics, vectors, `indirectbr`, `byval`/`sret`, `half`/`fp128`); wild once provisioned | WP-016 | todo |
 
 ## M1: C (aarch64)
 
@@ -46,7 +47,7 @@ instruction group and can run in parallel once WP-033 has landed.
 | WP-035 | T-A64 | integer arithmetic, shifts, division, compares, casts between integers and pointers, `select`, `freeze`; compare-and-branch fusion | WP-033 | todo |
 | WP-036 | T-A64 | memory: `Load`/`Store` of every `Gpr` width incl. odd widths, stack slots, `PtrAdd` with fusion into addressing modes, dynamic `Alloca`, over-aligned slots, `stacksave`/`stackrestore` | WP-033 | todo |
 | WP-037 | T-A64 | control flow: `CondBr`, `Switch`, `phi`, `IndirectBr` and block addresses | WP-033 | todo |
-| WP-038 | T-A64 | calls: direct and indirect, results, `sret`/`byval`, stack arguments, `noreturn`; variadic callees and `VaArg`/`va_*` | WP-033, WP-034 | todo |
+| WP-038 | T-A64 | calls: direct and indirect, results, `sret`/`byval`, stack arguments, `noreturn`; variadic callees and `va_start`/`va_end`/`va_copy` (the `va_arg` instruction is rejected: `llc` miscompiles it on this target, so there is no oracle) | WP-033, WP-034 | todo |
 | WP-039 | T-A64 | floating point: arithmetic, compares, conversions, constants, loads and stores, FP arguments | WP-013, WP-033 | todo |
 | WP-040 | T-A64 | `Mem`-class values: `i128` arithmetic, first-class aggregates (`ExtractValue`, `InsertValue`, loads, stores, `select`, `phi`), overflow intrinsics | WP-035, WP-036 | todo |
 | WP-041 | T-A64 | the intrinsics C code produces: `memcpy`/`memmove`/`memset`, bit manipulation, `abs`/min/max, `trap`, `expect`-class no-ops, `frameaddress`/`returnaddress` | WP-035, WP-036 | todo |

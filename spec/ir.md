@@ -527,7 +527,7 @@ order and each ends in exactly one terminator.
 | memory | `Load`, `Store` (alignment, volatile, atomic ordering), `Alloca` (dynamic only), `Fence`, `CmpXchg`, `AtomicRmw` (17 operations) | |
 | address | `PtrAdd { base, offset, [(index, scale)] }` | replaces `getelementptr`: `base + offset + Σ sext_or_trunc(index) * scale`, computed in pointer width. A producer folds all constant indices into `offset`. Vector GEPs are element-wise `PtrAdd`s on vectors of pointers |
 | aggregate | `ExtractValue`, `InsertValue` (index path resolved to a byte offset and a field type), `ExtractElement`, `InsertElement`, `ShuffleVector` | |
-| other | `Phi`, `Select`, `Freeze`, `VaArg` | |
+| other | `Phi`, `Select`, `Freeze`, `VaArg` | `VaArg` exists so `classify` can reject it (`inst:va_arg`): `llc` 19 and 22 accept the instruction for AArch64 Linux and miscompile it, so there is nothing to agree with. C and C++ front ends expand `va_arg` themselves |
 | call | `Call`, `Invoke` (callee value, function type, calling convention, tail kind, the call attributes of §5.7, operand bundles by name) | intrinsics: §5.5 |
 | exception | `LandingPad` (cleanup flag, catch and filter clauses), `Resume` | the funclet instructions (`catchswitch` and the rest) exist as opcodes only so `classify` can reject them |
 | terminator | `Br`, `CondBr`, `Switch`, `IndirectBr`, `Ret`, `Unreachable`, `CallBr` | |

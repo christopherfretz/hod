@@ -301,6 +301,7 @@ fn cg_options(options: &Options) -> Result<hod_cg::Options, CompileError> {
         function_sections: options.function_sections,
         data_sections: options.data_sections,
         stress: hod_cg::Stress::default(),
+        debug_compression: options.debug_compression,
     })
 }
 
@@ -400,6 +401,9 @@ mod tests {
         assert_eq!(cg.reloc_model, hod_cg::RelocModel::Pic);
         assert_eq!(cg.code_model, Some(hod_ir::CodeModel::Large));
         assert!(cg.function_sections && !cg.data_sections);
+        assert_eq!(cg.debug_compression, hod_obj::Compression::None);
+        let gz = Options { debug_compression: hod_obj::Compression::Zlib, ..Options::default() };
+        assert_eq!(cg_options(&gz).unwrap().debug_compression, hod_obj::Compression::Zlib);
         assert_eq!(
             cg_options(&Options::default()).unwrap().reloc_model,
             hod_cg::RelocModel::Static

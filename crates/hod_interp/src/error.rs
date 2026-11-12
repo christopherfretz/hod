@@ -89,6 +89,10 @@ traps! {
     /// `resume` or `hod_catch` of something that is not an exception
     /// waiting in a landing pad.
     NotAnException = "not-an-exception",
+    /// A poison lane of a vector was observed: it became a scalar
+    /// (`extractelement` of it or out of range, a `bitcast` to a scalar,
+    /// a reduction) or a field of an aggregate (§3.1).
+    PoisonLane = "poison-lane",
     /// The instruction budget ran out.
     Fuel = "limit-fuel",
     /// Calls nested deeper than the configured limit.

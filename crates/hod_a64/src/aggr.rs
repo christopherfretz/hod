@@ -250,7 +250,10 @@ fn pointer(cx: &mut FnCx<'_, A64>, ptr: Value) -> CgResult<Cursor> {
 pub fn binary<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, lhs: Value, rhs: Value) -> CgResult<()> {
     deferred_first(cx, inst, None)?;
     let Some(bits) = wide_int(cx, inst.ty()) else {
-        return unsupported(if cx.types().is_vector(inst.ty()) { MEM_VECTOR } else { BINARY });
+        if cx.types().is_vector(inst.ty()) {
+            return crate::lanes::binary(cx, inst, lhs, rhs);
+        }
+        return unsupported(BINARY);
     };
     let op = inst.opcode();
     match op {
@@ -713,6 +716,10 @@ pub fn cast<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<
     deferred_first(cx, inst, None)?;
     let from = value_ty(cx, arg);
     let to = inst.ty();
+    if cx.types().is_vector(to) && !matches!(inst.opcode(), Opcode::BitCast | Opcode::AddrSpaceCast)
+    {
+        return crate::lanes::cast(cx, inst, arg);
+    }
     match inst.opcode() {
         Opcode::BitCast => bitcast(cx, inst, arg, from, to),
         Opcode::ZExt | Opcode::SExt | Opcode::Trunc => {

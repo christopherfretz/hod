@@ -448,11 +448,7 @@ fn half_frem<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, lhs: Value, rhs: Value)
     give_back(cx, rhs, b);
     let t2 = cx.temp(Class::Fpr)?;
     put(cx, mc::fmov(FpSize::S, vr(t2), V31));
-    let Some(r) = cx.call_runtime(RuntimeFn::Fmodf, &[CallArg::Reg(t1), CallArg::Reg(t2)], None)?
-    else {
-        return cx.bug("a runtime function returned nothing");
-    };
-    put(cx, mc::fcvt(FpFormat::H, vr(r), FpFormat::S, vr(r)));
+    let r = fmod_call(cx, Fp::H, t1, t2)?;
     cx.finish(inst, r)
 }
 
@@ -473,8 +469,7 @@ pub fn binary<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, lhs: Value, rhs: Value
     let op = inst.opcode();
     match shape(cx, inst.ty()) {
         Shape::Scalar(fp) if op == Opcode::FRem => match fp {
-            Fp::S => libcall(cx, inst, RuntimeFn::Fmodf, lhs, rhs),
-            Fp::D => libcall(cx, inst, RuntimeFn::Fmod, lhs, rhs),
+            Fp::S | Fp::D => libcall(cx, inst, fmod_of(fp), lhs, rhs),
             Fp::H => half_frem(cx, inst, lhs, rhs),
         },
         Shape::Scalar(fp) => {
@@ -482,15 +477,7 @@ pub fn binary<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, lhs: Value, rhs: Value
             deferred_first(cx, inst, None)?;
             let a = cx.use_reg(lhs)?;
             let b = cx.use_reg(rhs)?;
-            let (va, vb) = (vr(a), vr(b));
-            if fp == Fp::H {
-                put(cx, mc::fcvt(FpFormat::S, va, FpFormat::H, va));
-                put(cx, mc::fcvt(FpFormat::S, vb, FpFormat::H, vb));
-            }
-            put(cx, word(fp.size(), va, va, vb));
-            if fp == Fp::H {
-                put(cx, mc::fcvt(FpFormat::H, va, FpFormat::S, va));
-            }
+            scalar_binary(cx, word, fp, vr(a), vr(b));
             cx.finish(inst, a)
         }
         Shape::Quad => {
@@ -511,7 +498,7 @@ pub fn binary<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, lhs: Value, rhs: Value
                 Opcode::FSub => mc::fsub_vec,
                 Opcode::FMul => mc::fmul_vec,
                 Opcode::FDiv => mc::fdiv_vec,
-                _ => return unsupported(VECTOR_OP),
+                _ => return crate::lanes::binary(cx, inst, lhs, rhs),
             };
             deferred_first(cx, inst, None)?;
             let a = cx.use_reg(lhs)?;
@@ -520,12 +507,86 @@ pub fn binary<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, lhs: Value, rhs: Value
             cx.finish(inst, a)
         }
         Shape::IntVec(arr) => int_vector(cx, inst, arr, lhs, rhs),
-        Shape::HalfVec | Shape::OtherVec => unsupported(VECTOR_OP),
+        Shape::HalfVec | Shape::OtherVec => crate::lanes::binary(cx, inst, lhs, rhs),
     }
 }
 
 /// The scalar instruction of a floating-point binary opcode.
 type Fp3 = fn(FpSize, VReg, VReg, VReg) -> u32;
+
+/// `va = va <word> vb` in format `fp`: `half` through single precision.
+fn scalar_binary(cx: &mut FnCx<'_, A64>, word: Fp3, fp: Fp, va: VReg, vb: VReg) {
+    if fp == Fp::H {
+        put(cx, mc::fcvt(FpFormat::S, va, FpFormat::H, va));
+        put(cx, mc::fcvt(FpFormat::S, vb, FpFormat::H, vb));
+    }
+    put(cx, word(fp.size(), va, va, vb));
+    if fp == Fp::H {
+        put(cx, mc::fcvt(FpFormat::H, va, FpFormat::S, va));
+    }
+}
+
+/// The scalar format of a vector element type of `half`, `float` or
+/// `double` (what the lane operations below take); `Internal` otherwise.
+fn lane_format(cx: &FnCx<'_, A64>, elem: TypeId) -> CgResult<Fp> {
+    match shape(cx, elem) {
+        Shape::Scalar(fp) => Ok(fp),
+        _ => cx.bug("a floating-point lane of a type that is not half, float or double"),
+    }
+}
+
+/// One lane of an element-wise `fadd`, `fsub`, `fmul` or `fdiv`
+/// (`lanes.rs`, WP-080): `va = va <op> vb` for elements of `elem`
+/// (`half`, `float`, `double`), as [`binary`] computes a scalar.
+///
+/// # Errors
+/// [`BINARY`] for another opcode.
+pub fn lane_binary(
+    cx: &mut FnCx<'_, A64>,
+    op: Opcode,
+    elem: TypeId,
+    va: VReg,
+    vb: VReg,
+) -> CgResult<()> {
+    let fp = lane_format(cx, elem)?;
+    let Some(word) = scalar_op(op) else { return unsupported(BINARY) };
+    scalar_binary(cx, word, fp, va, vb);
+    Ok(())
+}
+
+/// The function `frem` of `fp` calls (`half` through `fmodf`).
+fn fmod_of(fp: Fp) -> RuntimeFn {
+    if fp == Fp::D { RuntimeFn::Fmod } else { RuntimeFn::Fmodf }
+}
+
+/// `fmod` of the two values in the pool temporaries `t1` and `t2` (a
+/// `half` already widened to single precision), the result narrowed
+/// back for `half`: the call and the result's register.
+fn fmod_call(cx: &mut FnCx<'_, A64>, fp: Fp, t1: PReg, t2: PReg) -> CgResult<PReg> {
+    let Some(r) = cx.call_runtime(fmod_of(fp), &[CallArg::Reg(t1), CallArg::Reg(t2)], None)? else {
+        return cx.bug("a runtime function returned nothing");
+    };
+    if fp == Fp::H {
+        put(cx, mc::fcvt(FpFormat::H, vr(r), FpFormat::S, vr(r)));
+    }
+    Ok(r)
+}
+
+/// One lane of an element-wise `frem` (`lanes.rs`, WP-080): `fmod` of
+/// the pool temporaries `a` and `b` (elements of `elem`), as [`binary`]
+/// calls it for a scalar; the result's register (every temporary has
+/// ended at the call).
+///
+/// # Errors
+/// What the call reports.
+pub fn lane_frem(cx: &mut FnCx<'_, A64>, elem: TypeId, a: PReg, b: PReg) -> CgResult<PReg> {
+    let fp = lane_format(cx, elem)?;
+    if fp == Fp::H {
+        put(cx, mc::fcvt(FpFormat::S, vr(a), FpFormat::H, vr(a)));
+        put(cx, mc::fcvt(FpFormat::S, vr(b), FpFormat::H, vr(b)));
+    }
+    fmod_call(cx, fp, a, b)
+}
 
 fn scalar_op(op: Opcode) -> Option<Fp3> {
     Some(match op {
@@ -559,7 +620,7 @@ fn int_vector<'a>(
             | Opcode::AShr
     ) || (op == Opcode::Mul && arr == Arr::D2)
     {
-        return unsupported(VECTOR_OP);
+        return crate::lanes::binary(cx, inst, lhs, rhs);
     }
     deferred_first(cx, inst, None)?;
     let a = cx.use_reg(lhs)?;
@@ -614,7 +675,23 @@ pub fn fneg<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<
     }
     deferred_first(cx, inst, None)?;
     let a = cx.use_reg(arg)?;
-    let va = vr(a);
+    negate(cx, shape, vr(a))?;
+    cx.finish(inst, a)
+}
+
+/// One lane of an element-wise `fneg` (`lanes.rs`, WP-080): the sign bit
+/// of the element of `elem` (`half`, `float`, `double`) in `va` flipped,
+/// as [`fneg`] does it for a scalar. Writes `v31` for `half`.
+///
+/// # Errors
+/// `Internal` for another element type.
+pub fn lane_fneg(cx: &mut FnCx<'_, A64>, elem: TypeId, va: VReg) -> CgResult<()> {
+    let fp = lane_format(cx, elem)?;
+    negate(cx, Shape::Scalar(fp), va)
+}
+
+/// `fneg` of a value of `shape` in `va`, in place.
+fn negate(cx: &mut FnCx<'_, A64>, shape: Shape, va: VReg) -> CgResult<()> {
     match shape {
         Shape::Scalar(Fp::S) => put(cx, mc::fneg(FpSize::S, va, va)),
         Shape::Scalar(Fp::D) => put(cx, mc::fneg(FpSize::D, va, va)),
@@ -631,7 +708,7 @@ pub fn fneg<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<
         }
         Shape::IntVec(_) | Shape::OtherVec => return cx.bug("fneg of an integer vector"),
     }
-    cx.finish(inst, a)
+    Ok(())
 }
 
 /// `%r = freeze %arg` of class `Fpr`: a copy (§4.7; `undef` and `poison`
@@ -673,7 +750,7 @@ pub fn cast<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<
             }
             deferred_first(cx, inst, None)?;
             let r = cx.use_reg(arg)?;
-            put(cx, mc::fcvt(b.format(), vr(r), a.format(), vr(r)));
+            convert(cx, Conv::Fp(a, b), r, r);
             cx.finish(inst, r)
         }
         (Some(Shape::Scalar(fp)), None) => {
@@ -685,14 +762,8 @@ pub fn cast<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<
             };
             deferred_first(cx, inst, None)?;
             let a = cx.use_reg(arg)?;
-            let va = vr(a);
-            if fp == Fp::H {
-                put(cx, mc::fcvt(FpFormat::S, va, FpFormat::H, va));
-            }
             let rd = cx.def_reg(inst)?;
-            let sz = size_for_bits(bits);
-            let word = if signed { mc::fcvtzs } else { mc::fcvtzu };
-            put(cx, word(sz, xr(rd).zr(), fp.size(), va));
+            convert(cx, Conv::ToInt { fp, bits, signed }, a, rd);
             cx.finish(inst, rd)
         }
         (None, Some(Shape::Scalar(fp))) => {
@@ -704,15 +775,48 @@ pub fn cast<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<
             };
             deferred_first(cx, inst, None)?;
             let a = cx.use_reg(arg)?;
-            let ra = xr(a).zr();
+            let rd = cx.def_reg(inst)?;
+            convert(cx, Conv::FromInt { bits, signed, fp }, a, rd);
+            cx.finish(inst, rd)
+        }
+        (Some(from), Some(to)) => vector_cast(cx, inst, arg, op, from, to),
+        _ => unsupported(CAST),
+    }
+}
+
+/// A conversion between scalars with a floating-point side.
+#[derive(Clone, Copy)]
+enum Conv {
+    /// `fpext`/`fptrunc` between two formats.
+    Fp(Fp, Fp),
+    /// `fptosi` (`signed`) or `fptoui` to an integer of `bits` bits.
+    ToInt { fp: Fp, bits: u32, signed: bool },
+    /// `sitofp` (`signed`) or `uitofp` from an integer of `bits` bits.
+    FromInt { bits: u32, signed: bool, fp: Fp },
+}
+
+/// The conversion `conv` of the scalar in `src` into `dst` (which may be
+/// `src` for [`Conv::Fp`]). Writes `src`.
+fn convert(cx: &mut FnCx<'_, A64>, conv: Conv, src: PReg, dst: PReg) {
+    match conv {
+        Conv::Fp(a, b) => put(cx, mc::fcvt(b.format(), vr(dst), a.format(), vr(src))),
+        Conv::ToInt { fp, bits, signed } => {
+            let va = vr(src);
+            if fp == Fp::H {
+                put(cx, mc::fcvt(FpFormat::S, va, FpFormat::H, va));
+            }
+            let word = if signed { mc::fcvtzs } else { mc::fcvtzu };
+            put(cx, word(size_for_bits(bits), xr(dst).zr(), fp.size(), va));
+        }
+        Conv::FromInt { bits, signed, fp } => {
+            let ra = xr(src).zr();
             // §2.2: the bits above the width are unspecified.
             let sz = size_for_bits(bits);
             if bits != 32 && bits != 64 {
                 let extend = if signed { mc::sbfx } else { mc::ubfx };
                 put(cx, extend(sz, ra, ra, 0, bits));
             }
-            let rd = cx.def_reg(inst)?;
-            let vd = vr(rd);
+            let vd = vr(dst);
             let word = if signed { mc::scvtf } else { mc::ucvtf };
             // `half` through single: an integer of magnitude 2^24 or more
             // is infinity in `half` either way, and below that the single
@@ -721,11 +825,45 @@ pub fn cast<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<
             if fp == Fp::H {
                 put(cx, mc::fcvt(FpFormat::H, vd, FpFormat::S, vd));
             }
-            cx.finish(inst, rd)
         }
-        (Some(from), Some(to)) => vector_cast(cx, inst, arg, op, from, to),
-        _ => unsupported(CAST),
     }
+}
+
+/// One lane of an element-wise conversion with a floating-point side
+/// (`lanes.rs`, WP-080): `fpext`, `fptrunc`, `fptoui`, `fptosi`,
+/// `uitofp`, `sitofp` of the element of `from` in `src` to one of `to` in
+/// `dst` (a register of `to`'s class; `src` itself for `fpext` and
+/// `fptrunc` is allowed), as [`cast`] converts a scalar. Writes `src`.
+///
+/// # Errors
+/// [`CAST`] for another conversion or element type.
+pub fn lane_convert(
+    cx: &mut FnCx<'_, A64>,
+    op: Opcode,
+    from: TypeId,
+    to: TypeId,
+    src: PReg,
+    dst: PReg,
+) -> CgResult<()> {
+    let fp_of = |ty| match shape(cx, ty) {
+        Shape::Scalar(fp) => Some(fp),
+        _ => None,
+    };
+    let int_of = |ty| cx.types().int_bits(ty).filter(|b| (1..=64).contains(b));
+    let conv = match (op, fp_of(from), fp_of(to)) {
+        (Opcode::FPExt | Opcode::FPTrunc, Some(a), Some(b)) if a != b => Conv::Fp(a, b),
+        (Opcode::FPToSI | Opcode::FPToUI, Some(fp), None) => {
+            let Some(bits) = int_of(to) else { return unsupported(CAST) };
+            Conv::ToInt { fp, bits, signed: op == Opcode::FPToSI }
+        }
+        (Opcode::SIToFP | Opcode::UIToFP, None, Some(fp)) => {
+            let Some(bits) = int_of(from) else { return unsupported(CAST) };
+            Conv::FromInt { bits, signed: op == Opcode::SIToFP, fp }
+        }
+        _ => return unsupported(CAST),
+    };
+    convert(cx, conv, src, dst);
+    Ok(())
 }
 
 /// The width of an integer type of class `Gpr`.
@@ -799,23 +937,32 @@ fn vector_cast<'a>(
         (Opcode::UIToFP, Shape::IntVec(i), Shape::FpVec(f)) if f.arr() == i => {
             return same_lanes(cx, inst, arg, f, mc::ucvtf_vec);
         }
-        (Opcode::Trunc, Shape::IntVec(f), Shape::IntVec(t)) => match (f, t) {
-            (Arr::H8, Arr::B8) => |rd, rn| mc::xtn(mc::Elem::B, rd, rn),
-            (Arr::S4, Arr::H4) => |rd, rn| mc::xtn(mc::Elem::H, rd, rn),
-            (Arr::D2, Arr::S2) => |rd, rn| mc::xtn(mc::Elem::S, rd, rn),
-            _ => return unsupported(CAST),
-        },
-        (Opcode::ZExt | Opcode::SExt, Shape::IntVec(f), Shape::IntVec(t)) => {
-            let signed = op == Opcode::SExt;
-            match (f, t, signed) {
-                (Arr::B8, Arr::H8, false) => |rd, rn| mc::uxtl(mc::Elem::B, rd, rn),
-                (Arr::H4, Arr::S4, false) => |rd, rn| mc::uxtl(mc::Elem::H, rd, rn),
-                (Arr::S2, Arr::D2, false) => |rd, rn| mc::uxtl(mc::Elem::S, rd, rn),
-                (Arr::B8, Arr::H8, true) => |rd, rn| mc::sxtl(mc::Elem::B, rd, rn),
-                (Arr::H4, Arr::S4, true) => |rd, rn| mc::sxtl(mc::Elem::H, rd, rn),
-                (Arr::S2, Arr::D2, true) => |rd, rn| mc::sxtl(mc::Elem::S, rd, rn),
-                _ => return unsupported(CAST),
-            }
+        (Opcode::Trunc, Shape::IntVec(Arr::H8), Shape::IntVec(Arr::B8)) => {
+            |rd, rn| mc::xtn(mc::Elem::B, rd, rn)
+        }
+        (Opcode::Trunc, Shape::IntVec(Arr::S4), Shape::IntVec(Arr::H4)) => {
+            |rd, rn| mc::xtn(mc::Elem::H, rd, rn)
+        }
+        (Opcode::Trunc, Shape::IntVec(Arr::D2), Shape::IntVec(Arr::S2)) => {
+            |rd, rn| mc::xtn(mc::Elem::S, rd, rn)
+        }
+        (Opcode::ZExt, Shape::IntVec(Arr::B8), Shape::IntVec(Arr::H8)) => {
+            |rd, rn| mc::uxtl(mc::Elem::B, rd, rn)
+        }
+        (Opcode::ZExt, Shape::IntVec(Arr::H4), Shape::IntVec(Arr::S4)) => {
+            |rd, rn| mc::uxtl(mc::Elem::H, rd, rn)
+        }
+        (Opcode::ZExt, Shape::IntVec(Arr::S2), Shape::IntVec(Arr::D2)) => {
+            |rd, rn| mc::uxtl(mc::Elem::S, rd, rn)
+        }
+        (Opcode::SExt, Shape::IntVec(Arr::B8), Shape::IntVec(Arr::H8)) => {
+            |rd, rn| mc::sxtl(mc::Elem::B, rd, rn)
+        }
+        (Opcode::SExt, Shape::IntVec(Arr::H4), Shape::IntVec(Arr::S4)) => {
+            |rd, rn| mc::sxtl(mc::Elem::H, rd, rn)
+        }
+        (Opcode::SExt, Shape::IntVec(Arr::S2), Shape::IntVec(Arr::D2)) => {
+            |rd, rn| mc::sxtl(mc::Elem::S, rd, rn)
         }
         // Vectors of pointers and of 64-bit integers: the same bits.
         (Opcode::PtrToInt | Opcode::IntToPtr, Shape::IntVec(Arr::D2), Shape::IntVec(Arr::D2))
@@ -826,7 +973,7 @@ fn vector_cast<'a>(
             let a = cx.use_reg(arg)?;
             return cx.finish(inst, a);
         }
-        _ => return unsupported(CAST),
+        _ => return crate::lanes::cast(cx, inst, arg),
     };
     deferred_first(cx, inst, None)?;
     let a = cx.use_reg(arg)?;

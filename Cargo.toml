@@ -53,7 +53,15 @@ cast_possible_truncation = "allow"
 cast_possible_wrap = "allow"
 cast_sign_loss = "allow"
 
+# WP-068 (spec/landed/cli/WP-068.md): one code unit, whole-program LTO and
+# abort on panic give a binary 14% smaller that starts with fewer page
+# faults and builds big modules 4-6% faster; a rebuild of the binary got
+# faster too (23 s against 30 s after a change in hod_ll). A panic is a bug
+# of hod's either way: the process ends (SIGABRT instead of exit status
+# 101), no caller catches it. Tests keep unwinding (cargo ignores `panic`
+# for test targets).
 [profile.release]
 debug = 1
-lto = "thin"
-codegen-units = 4
+lto = "fat"
+codegen-units = 1
+panic = "abort"

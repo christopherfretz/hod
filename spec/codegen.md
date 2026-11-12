@@ -803,7 +803,7 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
   register is the store's own operand, §4.2), so padding bits are zero.
   A zero constant is stored from `xzr`/`wzr`.
 - **Volatile** accesses are lowered as plain ones; `hod_cg` never drops
-  or repeats them. Atomic loads and stores are `a64:atomic`.
+  or repeats them. Atomic loads and stores are WP-074's ("Atomics").
 - **`alloca`** with a constant count rounds the size up to 16 and
   subtracts it from `sp` (`sub` immediates, or `mov x17` and `sub`
   extended); a variable count is zero-extended from its width, scaled,
@@ -1019,6 +1019,52 @@ them there, and has the saturating arithmetic, `scmp`/`ucmp`, the
   refuses them as `intrinsic:<name>`. Vector forms are `a64:intrinsic-vector`,
   `bfloat` ones `a64:intrinsic-bfloat`.
 
+#### Assembly that needs no assembler (WP-075)
+
+`hod_a64::barrier` lowers a call (or `invoke`) of inline assembly whose
+template is empty (`spec/ir.md` §2.3) as `llc -O0` does; `call.rs` routes
+every inline-assembly callee to it. Such a call emits no instruction; it
+orders as a call does (deferred operands are emitted first). The flags
+`sideeffect`, `alignstack`, `inteldialect` and `unwind` change nothing an
+empty template does, and an `invoke` continues at its normal destination.
+Its constraints decide its one possible effect:
+
+- **Clobbers** of `memory`, `cc`, `fp`, `lr`, `x0..x30`, `w0..w30` and
+  `v`/`q`/`d`/`s`/`h`/`b` `0..31` need nothing: an empty template writes
+  no register and no memory, and the ordering a `memory` clobber asks for
+  is the call's own (hod moves no memory access across an instruction).
+  Any other (`sp`, `x31`, `dirflag`, ...) is `a64:inline-asm-clobber`.
+- **Alternatives** (`|`) are chosen by LLVM's weights
+  (`getSingleConstraintMatchWeight`): invalid, default 0, register 1
+  (`r`/`g` for an integer operand, `w` for a floating-point or vector
+  one), memory 2, constant 3 (`i`/`n` for a constant integer); a direct
+  output weighs 0. The first alternative of the greatest sum wins, the
+  first if all are invalid.
+- **An input** has no effect. An input whose chosen codes are only
+  `i`/`n` and whose value is not a constant integer is
+  `a64:inline-asm-operand`.
+- **An indirect output** (`=*`) of memory codes only has no effect, tied
+  or not (`llc` passes the address; the template writes nothing). Of a
+  register code and tied to a direct input of its `elementtype`, it
+  stores the input to the address (`=*r,0`: `llc` loads the register from
+  the input and stores it back); tied to an indirect input of the same
+  address, nothing. Otherwise (untied, or of another type) it is
+  `a64:inline-asm-output`, or `a64:inline-asm-operand` for a type
+  mismatch.
+- **A direct output** (`=r`) must be tied to a register-class input of
+  its type, which becomes the result; an untied direct output is
+  undefined after the template, `a64:inline-asm-output`.
+- More than one effect (two direct outputs, a struct result, two stores)
+  is `a64:inline-asm-outputs`; an operand bundle on the call is
+  `a64:inline-asm-bundle`; constraint text that is not read (`!i`, `Q`,
+  a tied output, an input before an output, a digit naming no output, a
+  count of operands unequal to the call's) is `a64:inline-asm-constraint`.
+
+A template that is not empty stays `call:inline-asm`. The tests are
+`crates/hod_a64/tests/barrier.rs`: one module of every form, built by hod
+and by `llc` 19 and 22, linked with a C driver that checks each effect
+under every linker, dynamic and static.
+
 #### Vectors, the base (WP-079)
 
 Design note `docs/design/0003-vectors.md` (V1); the code is
@@ -1095,6 +1141,147 @@ section.
   × operations × indices against a model, `llc` and clang
   `ext_vector_type`, under bfd, lld and mold; calls both ways with gcc;
   the refusals), `tests/ir/vectors.ll`.
+
+#### Vectors, the lane loop (WP-080)
+
+Design note `docs/design/0003-vectors.md` (V3); the code is
+`crates/hod_a64/src/lanes.rs`, whose module docs are part of this
+section.
+
+- **One loop, the scalar kernels.** Every element-wise operation on a
+  vector that has no one-instruction form (all of them on a `Mem`
+  vector; division, remainder, `mul` of 64-bit lanes, `frem`, `half`
+  arithmetic and the casts without a NEON instruction on an `Fpr` one)
+  is one loop unrolled at emit time over at most 256 lanes. Per lane:
+  pool temporaries of the element's class, each operand's lane loaded
+  (zero-extended), **the scalar lowering's own register kernel**, the
+  result lane stored. The kernels are factored out of the scalar
+  lowerings (`int::lane_binary`, `int::lane_cast`, `float::lane_binary`,
+  `float::lane_frem`, `float::lane_fneg`, `float::lane_convert`,
+  `intrinsic::lane_unary`/`lane_min_max`/`lane_saturating`/
+  `lane_three_way`/`lane_funnel`, `fpintr::lane_inline`/`lane_call`),
+  which call them too: a lane computes exactly what the scalar
+  instruction computes, poison and undefined behaviour included.
+- **Images.** Operands: a `Mem` vector's slot; an `Fpr` vector stored
+  into scratch image `k` (WP-079) and its register given back at once,
+  so the loop has the whole pool (stress `min_pool`: four general and
+  two vector registers; the third floating-point operand of `fma` and
+  `fmuladd` is loaded into `v31`). An operand named twice has one image;
+  a scalar operand (`powi`'s exponent) is put into a register in every
+  lane. Result: a `Mem` vector's slot (`def_mem`); an `Fpr` vector's
+  lanes go to the next free scratch image (the first operand's when
+  three are taken: three operands of the result's type, each lane read
+  before it is written) and the image is loaded into the result's
+  register at the end.
+- **Calls per lane.** `frem`, the libm intrinsics, `pow`, `atan2`,
+  `powi` and `ldexp` call per lane as the scalar does (`fmodf`/`fmod`,
+  `sinf`/`sin`, `__powisf2`, `ldexpf`, ...; `half` widened, the result
+  narrowed). A call ends every temporary, so each lane takes its own;
+  the images are frame memory and survive.
+- **Covered.** `add` .. `srem` and the shifts on `i8`..`i64` lanes;
+  `fadd` .. `frem` and `fneg` on `half`, `float`, `double`; `trunc`,
+  `zext`, `sext`, `ptrtoint`, `ptrtoaddr`, `inttoptr`, `fpext`,
+  `fptrunc`, `fptoui`, `fptosi`, `uitofp`, `sitofp` between any two
+  vectors of one length (the classes may differ); the vector forms of
+  `ctlz`, `cttz`, `ctpop`, `bswap`, `bitreverse`, `abs`, `smax`, `smin`,
+  `umax`, `umin`, the four `*.sat`, `scmp`, `ucmp` (any result width),
+  `fshl`, `fshr`, `ptrmask`, and of every floating-point intrinsic of
+  WP-070 but `frexp` and `is.fpclass`. A `select` on a scalar `i1` was
+  already lowered (WP-039/040).
+- **Refused, by name.** The shapes `vector::lanes` refuses keep its
+  names (`a64:vector-length`, `a64:vector-wide-element` for `i128` and
+  `fp128` lanes, `a64:vector-odd-element`); a vector of `bfloat` is
+  `a64:vector-bfloat`. Lanes of `i1` are WP-081's: a binary operation or
+  a cast of one stays `a64:mem-vector`, an intrinsic of one
+  `a64:intrinsic-vector`, as before. `frexp` and `is.fpclass` of a vector
+  stay `a64:intrinsic-vector`.
+- **Cost.** The code is a constant number of bytes per lane (no lane
+  shares work with another), emitted without allocating; see the landed
+  record for the numbers.
+- **Hooks.** `aggr::binary` and `aggr::cast` (a vector), `float::binary`
+  (the three `a64:vector-op` places) and `float::vector_cast` (its
+  fallback), the `fneg` arm of `A64::lower` for class `Mem`, and the
+  first line of `intrinsic::intrinsic`.
+- **Tests**: `crates/hod_a64/tests/lanes.rs` (every operation × element
+  × lane count 1, 2, 3, 4, 8, 16, 256 against a Rust model, `llc` 22 and
+  19, clang `ext_vector_type` and gcc `vector_size` C, under bfd, lld
+  and mold, plain and stressed; refusals; 256-lane compiles; bytes per
+  lane), `tests/ir/vector_lanes.ll`.
+
+#### Atomics (WP-074)
+
+`crates/hod_a64/src/atomic.rs` lowers atomic `load` and `store`,
+`atomicrmw`, `cmpxchg` and `fence`; `target.rs` dispatches them before
+the class-based arms.
+
+- **Which sequence.** The function's `target-features` decide (the last
+  `±outline-atomics` and the last `±lse` item; `-mattr` is not
+  consulted): `+outline-atomics` without `+lse` (what clang and kiln
+  write) is the **outline** strategy; anything else (no item,
+  `-outline-atomics`, or `+lse`) is **LL/SC**. hod never emits LSE
+  instructions inline: an exclusive loop is correct on every ARMv8.0
+  core, and the helpers already choose LSE at run time.
+- **Outline.** The `__aarch64_*` helpers of libgcc/compiler-rt (in
+  `hod_cg::RuntimeFn`, arguments in `x0`/`w0`, then `x1`, ..., result in
+  `x0`; `cas16` takes and returns pairs in `x0:x1`, `x2:x3`, pointer
+  `x4`) are called exactly where LLVM 22 at `-O0` calls them:
+  `cmpxchg` of 1..16 bytes (`casN`), an `i128` atomic load (`cas16` of
+  zero by zero), and `atomicrmw xchg`, `add`, `sub` (negated into
+  `ldadd`), `and` (inverted into `ldclr`), `or` (`ldset`), `xor`
+  (`ldeor`) of 1..8 bytes. Everything else (`nand`, the minimums and
+  maximums, `uinc_wrap`, `udec_wrap`, `usub_cond`, `usub_sat`, the
+  floating-point operations, an `i128` store or read-modify-write) is
+  an LL/SC loop under both strategies, as atomic as LLVM's
+  `casN`-in-a-loop.
+- **Orderings.** An operation acquires when its ordering is `acquire`,
+  `acq_rel` or `seq_cst`, releases when `release`, `acq_rel` or
+  `seq_cst`; a `cmpxchg` takes the union of its success ordering and its
+  failure ordering (a `seq_cst` failure also releases). The helper
+  suffix is `relax`, `acq`, `rel`, `acq_rel` by those two bits;
+  `seq_cst` uses `acq_rel`, as LLVM does. LL/SC uses `ldaxr`/`ldxr` and
+  `stlxr`/`stxr` (pairs: `ldaxp`/`ldxp`, `stlxp`/`stxp`). `unordered` and
+  `monotonic` are relaxed. Weak `cmpxchg` is strong (it never fails
+  spuriously, which LangRef allows).
+- **Loads and stores** of 1..8 bytes: `ldar`/`stlr` when they acquire or
+  release, else plain `ldr`/`str` (single-copy atomic when aligned).
+  `half`, `bfloat`, `float`, `double` go through `x16` and `fmov`.
+  `i128` (LL/SC): a load is a `ldxp`/`stxp` loop that stores back what it
+  read (release on the store only for `seq_cst`); a store is a
+  `ldxp`/`st(l)xp` loop.
+- **The exclusive window.** Every operand, address and temporary is in a
+  register, and the 128-bit operands are in `v30`/`v31`, before the loop
+  label is bound; the loop body is only instruction words and branches
+  (`x16`, `x17`, `w17` for the status of narrower loops). So no glue (a
+  spill, a reload, a rematerialised address) is placed between the
+  exclusive load and the exclusive store, under any `Stress` setting.
+  A `cmpxchg` whose comparison fails leaves through `clrex` (an `i128`
+  one first stores the old value back with `st(l)xp`, so the failure
+  is also an atomic read).
+- **Operations.** Sub-word signed minimum and maximum sign-extend the
+  old value into `x16` and compare with the operand sign-extended;
+  `uinc_wrap` is `old >= v ? 0 : old + 1`, `udec_wrap`
+  `old == 0 || old > v ? v : old - 1`, `usub_cond` `old >= v ? old - v
+  : old`, `usub_sat` `old >= v ? old - v : 0`. `fmax`/`fmin` are
+  `fmaxnm`/`fminnm`, `fmaximum`/`fminimum` `fmax`/`fmin`; `half`
+  arithmetic converts to single and back (exact: one rounding). `i128`
+  operations are pairwise (`adds`/`adc`, `subs`/`sbc`, `cmp` with `sbcs`
+  for the comparisons).
+- **`cmpxchg` result.** `{ T, i1 }` is a `Mem` value: the old value at
+  offset 0 and the flag byte at the second field's offset. A sub-word
+  outline compare zero-extends the expected value (`cmp ... uxtb/uxth`).
+- **`fence`**: `dmb ishld` for `acquire`, `dmb ish` otherwise;
+  `syncscope("singlethread")` emits nothing (a compiler barrier: hod
+  does not reorder).
+- **Refused, by name:** `a64:atomic-unaligned`, an access whose
+  alignment is below its size (LLVM calls `__atomic_*` there; hod has no
+  such call yet); `a64:atomic-type`, an atomic of `fp128`, a vector, an
+  integer that is not 8, 16, 32, 64 or 128 bits, or an operation whose
+  type does not fit it; `a64:atomic-bfloat-op`, `bfloat` arithmetic
+  (`xchg`, loads and stores of `bfloat` are lowered).
+
+Tests: `crates/hod_a64/tests/atomic.rs` (the table, the window scan,
+the helpers, the refusals, the threaded programs of
+`tests/common/atomic_threads.rs`), `crates/hod/tests/atomic_cxx.rs`.
 
 #### Constant operands with addresses (WP-072)
 
@@ -1235,8 +1422,9 @@ FP and Advanced SIMD and never chooses an instruction by a feature, so:
   `crypto`, `crc`, `lse`, `lse2`, `rdm`, `ras`, `rcpc`, `fullfp16`,
   `dotprod`, `i8mm`, `bf16`, `pauth`, `bti`, `mte`, `sve*`, `sme*`, `gcs`,
   ...; the full list is `AVAILABILITY` in `crates/hod_a64/src/features.rs`);
-  and `fmv` and `outline-atomics`, which change no code hod emits (no
-  function multi-versioning; `classify` refuses atomics). `+bti` and
+  `fmv`, which changes no code hod emits (no function multi-versioning);
+  and `outline-atomics` with `lse`, which pick an atomic sequence
+  ("Atomics (WP-074)"), each one correct on every ARMv8.0 core. `+bti` and
   `+pauth` are availability: whether a function must begin with `bti` or
   sign its return address is the branch-protection attributes and module
   flags, which `classify` refuses (§5.5).
@@ -1964,8 +2152,7 @@ in maps sized by their count).
 `init:blockaddress-unplaced`, `module:linker-option-not-a-pair` (an
 `!llvm.linker.options` entry of other than two strings: `llc` writes
 `.linker-options` as pairs), `eh:unknown-personality-without-pads`
-(`spec/eh.md` §1.1), `debug:emission-kind` (a `LineTablesOnly` or
-`DebugDirectivesOnly` unit), `debug:die-unsupported` (a unit with a node
+(`spec/eh.md` §1.1), `debug:die-unsupported` (a unit with a node
 the DIE writer does not write yet, `spec/dwarf.md` §6.5).
 
 **Known differences from `llc`**, none of which changes what a linker
@@ -1996,6 +2183,20 @@ mold and runs them):
 - x86-64: no target yet; the PC bias of a code relocation is not
   considered in the mergeable-section addend check, and padding is
   `0x90`.
+
+#### 9.7.1 Module assembly of symbol directives (WP-075)
+
+`emit_module` refuses module assembly that `module_asm_effects`
+(`spec/ir.md` §2.3) refuses, with `module:asm`, before it emits anything.
+Once every module symbol is defined, it writes each effect into the
+object: an undefined symbol for a name the module does not have, the
+binding, visibility and type a directive gives, and `retain` for a
+declaration the text names, so that it is in the symbol table even if no
+relocation refers to it. A directive makes no relocation and changes no
+section. The oracle is `crates/hod_cg/tests/emit_asm.rs`: the sections,
+symbols and relocations of hod's object equal `llc`'s (19 and 22), which
+must compile each case without a diagnostic; what `llc` warns about or
+refuses is refused.
 
 ## 10. Errors and limits
 

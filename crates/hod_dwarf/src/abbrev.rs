@@ -55,6 +55,8 @@ pub mod tag {
     pub const RVALUE_REFERENCE_TYPE: u16 = 0x42;
     pub const TEMPLATE_ALIAS: u16 = 0x43;
     pub const ATOMIC_TYPE: u16 = 0x47;
+    // WP-085.
+    pub const INLINED_SUBROUTINE: u16 = 0x1d;
     pub const GNU_TEMPLATE_TEMPLATE_PARAM: u16 = 0x4106;
     pub const GNU_TEMPLATE_PARAMETER_PACK: u16 = 0x4107;
 }
@@ -113,6 +115,12 @@ pub mod at {
     pub const RNGLISTS_BASE: u16 = 0x74;
     pub const ALIGNMENT: u16 = 0x88;
     pub const EXPORT_SYMBOLS: u16 = 0x89;
+    // WP-085.
+    pub const INLINE: u16 = 0x20;
+    pub const ABSTRACT_ORIGIN: u16 = 0x31;
+    pub const CALL_COLUMN: u16 = 0x57;
+    pub const CALL_FILE: u16 = 0x58;
+    pub const CALL_LINE: u16 = 0x59;
     pub const GNU_VECTOR: u16 = 0x2107;
     pub const GNU_TEMPLATE_NAME: u16 = 0x2110;
 }
@@ -264,6 +272,34 @@ pub mod fam {
     pub const LABEL_COLUMN: usize = 71;
     pub const LEXICAL_BLOCK: usize = 38;
     pub const LABEL: usize = 39;
+    // WP-059's reserved families (`spec/dwarf.md` §6.11), then the ones it
+    // appends.
+    pub const TEMPLATE_TYPE_PARAMETER: usize = 14;
+    pub const TEMPLATE_VALUE_PARAMETER: usize = 15;
+    pub const TEMPLATE_VALUE_ADDRESS: usize = 16;
+    pub const TEMPLATE_PACK: usize = 17;
+    pub const TEMPLATE_TEMPLATE: usize = 18;
+    pub const SUBPROGRAM_SPEC_TYPED: usize = 35;
+    pub const VARIABLE_SPEC: usize = 41;
+    pub const VARIABLE_CONST: usize = 42;
+    pub const IMPORTED_MODULE: usize = 43;
+    pub const IMPORTED_DECLARATION: usize = 44;
+    // WP-085: abstract instances and inlined subroutines.
+    pub const SUBPROGRAM_ABSTRACT: usize = 72;
+    pub const SUBPROGRAM_ABSTRACT_MEMBER: usize = 73;
+    pub const SUBPROGRAM_OF_ABSTRACT: usize = 74;
+    pub const INLINED_SUBROUTINE: usize = 75;
+    pub const LEXICAL_BLOCK_OF_ABSTRACT: usize = 76;
+    pub const LEXICAL_BLOCK_ABSTRACT: usize = 77;
+    pub const FORMAL_PARAMETER_OF_ABSTRACT: usize = 78;
+    pub const VARIABLE_OF_ABSTRACT: usize = 79;
+    pub const LABEL_OF_ABSTRACT: usize = 80;
+    pub const GLOBAL_ANY: usize = 81;
+    pub const VARIABLE_SPEC_ANY: usize = 82;
+    pub const TEMPLATE_VALUE_ANY: usize = 83;
+    pub const TEMPLATE_TEMPLATE_ANY: usize = 84;
+    pub const TEMPLATE_ALIAS_PARAMS: usize = 85;
+    pub const SUBPROGRAM_SPEC_ANY: usize = 86;
 }
 
 /// Every family, in code order (`spec/dwarf.md` §6.1 has the same table).
@@ -585,7 +621,7 @@ pub const FAMILIES: &[Family] = &[
     fam("unspecified_type", tag::UNSPECIFIED_TYPE, No, 2, "WP-058", &[o(0, at::NAME, STRX)]),
     // 35
     fam(
-        "subprogram (out-of-line definition)",
+        "subprogram (specification, typed)",
         tag::SUBPROGRAM,
         Optional,
         16,
@@ -595,7 +631,7 @@ pub const FAMILIES: &[Family] = &[
             s(at::HIGH_PC, DATA4),
             s(at::FRAME_BASE, EXPRLOC),
             o(0, at::OBJECT_POINTER, REF4),
-            o(1, at::DECL_FILE, UDATA),
+            s(at::TYPE, REF4),
             o(1, at::DECL_LINE, UDATA),
             o(2, at::LINKAGE_NAME, STRX),
             s(at::SPECIFICATION, REF4),
@@ -698,7 +734,7 @@ pub const FAMILIES: &[Family] = &[
             o(0, at::EXTERNAL, FLAG_PRESENT),
             o(1, at::DECL_FILE, UDATA),
             o(1, at::DECL_LINE, UDATA),
-            s(at::CONST_VALUE, SDATA),
+            s(at::CONST_VALUE, UDATA),
         ],
     ),
     fam(
@@ -1036,6 +1072,216 @@ pub const FAMILIES: &[Family] = &[
             o(0, at::LOW_PC, ADDRX),
         ],
     ),
+    // 72 to 80: WP-085's abstract instances (`DW_AT_inline`, written as
+    // `data1` where `llc` writes `implicit_const`, §6.7), the concrete
+    // DIEs that name them by `DW_AT_abstract_origin`, and inlined
+    // subroutines.
+    fam(
+        "subprogram (abstract)",
+        tag::SUBPROGRAM,
+        Optional,
+        512,
+        "WP-085",
+        &[
+            o(0, at::LINKAGE_NAME, STRX),
+            o(1, at::NAME, STRX),
+            o(2, at::DECL_FILE, UDATA),
+            o(2, at::DECL_LINE, UDATA),
+            o(3, at::PROTOTYPED, FLAG_PRESENT),
+            o(4, at::TYPE, REF4),
+            o(5, at::ARTIFICIAL, FLAG_PRESENT),
+            o(6, at::EXTERNAL, FLAG_PRESENT),
+            o(7, at::NORETURN, FLAG_PRESENT),
+            s(at::INLINE, DATA1),
+        ],
+    ),
+    fam(
+        "subprogram (abstract member)",
+        tag::SUBPROGRAM,
+        Optional,
+        32,
+        "WP-085",
+        &[
+            o(0, at::DECL_FILE, UDATA),
+            o(1, at::DECL_LINE, UDATA),
+            o(2, at::LINKAGE_NAME, STRX),
+            s(at::SPECIFICATION, REF4),
+            s(at::INLINE, DATA1),
+            o(3, at::OBJECT_POINTER, REF4),
+        ],
+    ),
+    fam(
+        "subprogram (of abstract)",
+        tag::SUBPROGRAM,
+        Optional,
+        4,
+        "WP-085",
+        &[
+            s(at::LOW_PC, ADDRX),
+            s(at::HIGH_PC, DATA4),
+            s(at::FRAME_BASE, EXPRLOC),
+            o(0, at::OBJECT_POINTER, REF4),
+            s(at::ABSTRACT_ORIGIN, REF4),
+        ],
+    ),
+    fam(
+        "inlined_subroutine",
+        tag::INLINED_SUBROUTINE,
+        Optional,
+        16,
+        "WP-085",
+        &[
+            s(at::ABSTRACT_ORIGIN, REF4),
+            o(0, at::LOW_PC, ADDRX),
+            o(0, at::HIGH_PC, DATA4),
+            o(1, at::RANGES, SEC_OFFSET),
+            s(at::CALL_FILE, UDATA),
+            s(at::CALL_LINE, UDATA),
+            o(2, at::CALL_COLUMN, UDATA),
+        ],
+    ),
+    fam(
+        "lexical_block (of abstract)",
+        tag::LEXICAL_BLOCK,
+        Yes,
+        4,
+        "WP-085",
+        &[
+            o(0, at::LOW_PC, ADDRX),
+            o(0, at::HIGH_PC, DATA4),
+            o(1, at::RANGES, SEC_OFFSET),
+            s(at::ABSTRACT_ORIGIN, REF4),
+        ],
+    ),
+    fam("lexical_block (abstract)", tag::LEXICAL_BLOCK, Yes, 1, "WP-085", &[]),
+    fam(
+        "formal_parameter (of abstract)",
+        tag::FORMAL_PARAMETER,
+        No,
+        1,
+        "WP-085",
+        &[s(at::LOCATION, EXPRLOC), s(at::ABSTRACT_ORIGIN, REF4)],
+    ),
+    fam(
+        "variable (of abstract)",
+        tag::VARIABLE,
+        No,
+        1,
+        "WP-085",
+        &[s(at::LOCATION, EXPRLOC), s(at::ABSTRACT_ORIGIN, REF4)],
+    ),
+    fam(
+        "label (of abstract)",
+        tag::LABEL,
+        No,
+        1,
+        "WP-085",
+        &[s(at::ABSTRACT_ORIGIN, REF4), s(at::LOW_PC, ADDRX)],
+    ),
+    // WP-059 appends the shapes of globals, template parameters and
+    // specifications no reserved family holds (`spec/dwarf.md` §6.11).
+    // 81: a global variable of any shape, in `llc`'s order (one
+    // `const_value` form per sign: exclusive option bits 5, 6).
+    fam(
+        "variable (global, any)",
+        tag::VARIABLE,
+        Optional,
+        512,
+        "WP-059",
+        &[
+            s(at::NAME, STRX),
+            s(at::TYPE, REF4),
+            o(0, at::EXTERNAL, FLAG_PRESENT),
+            o(1, at::DECL_FILE, UDATA),
+            o(1, at::DECL_LINE, UDATA),
+            o(2, at::DECLARATION, FLAG_PRESENT),
+            o(3, at::ALIGNMENT, UDATA),
+            o(4, at::LOCATION, EXPRLOC),
+            o(5, at::CONST_VALUE, UDATA),
+            o(6, at::CONST_VALUE, SDATA),
+            o(7, at::LINKAGE_NAME, STRX),
+        ],
+    ),
+    // 82: a static member's definition of any shape (exclusive bits 3, 4).
+    fam(
+        "variable (specification, any)",
+        tag::VARIABLE,
+        Optional,
+        128,
+        "WP-059",
+        &[
+            s(at::SPECIFICATION, REF4),
+            o(0, at::TYPE, REF4),
+            o(1, at::ALIGNMENT, UDATA),
+            o(2, at::LOCATION, EXPRLOC),
+            o(3, at::CONST_VALUE, UDATA),
+            o(4, at::CONST_VALUE, SDATA),
+            o(5, at::LINKAGE_NAME, STRX),
+        ],
+    ),
+    // 83: a template value parameter of any shape (exclusive bits 3, 4).
+    fam(
+        "template_value_parameter (any)",
+        tag::TEMPLATE_VALUE_PARAMETER,
+        No,
+        64,
+        "WP-059",
+        &[
+            o(0, at::TYPE, REF4),
+            o(1, at::NAME, STRX),
+            o(2, at::DEFAULT_VALUE, FLAG_PRESENT),
+            o(3, at::CONST_VALUE, UDATA),
+            o(4, at::CONST_VALUE, SDATA),
+            o(5, at::LOCATION, EXPRLOC),
+        ],
+    ),
+    // 84: a template template parameter of any shape.
+    fam(
+        "GNU_template_template_param (any)",
+        tag::GNU_TEMPLATE_TEMPLATE_PARAM,
+        No,
+        4,
+        "WP-059",
+        &[
+            o(0, at::NAME, STRX),
+            o(1, at::DEFAULT_VALUE, FLAG_PRESENT),
+            s(at::GNU_TEMPLATE_NAME, STRX),
+        ],
+    ),
+    // 85: a template alias with its parameters as children.
+    fam(
+        "template_alias (with parameters)",
+        tag::TEMPLATE_ALIAS,
+        Yes,
+        8,
+        "WP-059",
+        &[
+            o(0, at::TYPE, REF4),
+            s(at::NAME, STRX),
+            o(2, at::ACCESSIBILITY, DATA1),
+            o(1, at::DECL_FILE, UDATA),
+            o(1, at::DECL_LINE, UDATA),
+        ],
+    ),
+    // 86: a definition with a declaration, of any shape.
+    fam(
+        "subprogram (specification, any)",
+        tag::SUBPROGRAM,
+        Optional,
+        64,
+        "WP-059",
+        &[
+            s(at::LOW_PC, ADDRX),
+            s(at::HIGH_PC, DATA4),
+            s(at::FRAME_BASE, EXPRLOC),
+            o(0, at::OBJECT_POINTER, REF4),
+            o(1, at::TYPE, REF4),
+            o(2, at::DECL_FILE, UDATA),
+            o(3, at::DECL_LINE, UDATA),
+            o(4, at::LINKAGE_NAME, STRX),
+            s(at::SPECIFICATION, REF4),
+        ],
+    ),
 ];
 
 /// The slots of the general static-member families (54, 55), in `llc`'s
@@ -1192,7 +1438,11 @@ mod tests {
         assert_eq!(BASES[fam::BASE_TYPE_ANY], 754);
         // WP-057 appended families 69 to 71.
         assert_eq!(BASES[fam::SUBPROGRAM_ANY], 8733);
-        assert_eq!(CODE_END, 9279);
+        // WP-085 appended families 72 to 80.
+        assert_eq!(BASES[fam::SUBPROGRAM_ABSTRACT], 9279);
+        // WP-059 appended families 81 to 86.
+        assert_eq!(BASES[fam::GLOBAL_ANY], 9851);
+        assert_eq!(CODE_END, 10631);
         for (index, name) in [
             (fam::CONST_TYPE, "const_type"),
             (fam::TYPEDEF, "typedef"),
@@ -1260,7 +1510,18 @@ mod tests {
                 // forms (bits 3 and 4).
                 let exclusive = ((f.tag == tag::COMPILE_UNIT || f.tag == tag::ENUMERATOR)
                     && mask & 0b11 == 0b11)
-                    || (f.name.starts_with("member (static") && mask & 0b11000 == 0b11000);
+                    || (f.name.starts_with("member (static") && mask & 0b11000 == 0b11000)
+                    // WP-059's general families: one `const_value` form
+                    // per sign.
+                    || (f.owner == "WP-059" && {
+                        let bits: Vec<u8> = f
+                            .slots
+                            .iter()
+                            .filter(|s| s.at == at::CONST_VALUE)
+                            .map(|s| s.bit)
+                            .collect();
+                        bits.len() == 2 && bits.iter().all(|&b| b > 0 && mask & (1 << (b - 1)) != 0)
+                    });
                 assert!(seen.len() == n || exclusive, "{}: mask {mask:#b} repeats", f.name);
             }
         }

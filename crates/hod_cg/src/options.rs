@@ -17,7 +17,15 @@ pub struct Options {
     pub data_sections: bool,
     /// The stress options of §12. All off in a product build.
     pub stress: Stress,
+    /// `--compress-debug-sections=` (WP-061, `spec/object.md`
+    /// "Compressed sections"): how the `.debug_*` sections are written.
+    /// `llc` has no such option; `clang -gz=zlib` does this.
+    pub debug_compression: hod_obj::Compression,
 }
+
+/// A `.debug_*` section of 4 GiB or more with compression asked for: the
+/// compressor's limit (`hod_obj::Limit::CompressedBytes`).
+pub const LIMIT_COMPRESSED_SECTION: &str = "limit:compressed-section";
 
 impl Options {
     /// The code model in force: the option, else the module's, else

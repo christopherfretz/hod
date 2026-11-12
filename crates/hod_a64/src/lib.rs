@@ -33,15 +33,20 @@
 //! | `aggr` | WP-040 | `Mem`-class values: wide integers, aggregates, overflow intrinsics | `tests/aggr.rs` |
 //! | `intrinsic` | WP-041, WP-070 | the other intrinsics | `tests/intrinsic.rs` |
 //! | `fpintr` | WP-070 | the floating-point intrinsics | `tests/fpintr.rs` |
+//! | `barrier` | WP-075 | inline assembly whose template assembles to nothing | `tests/barrier.rs` |
 //! | `constaddr` | WP-072 | constant operands that hold addresses: differences, relocated images | `tests/constaddr.rs` |
 //! | `tls` | WP-073 | thread-local addresses, `llvm.threadlocal.address`, `llvm.thread.pointer` | `tests/tls.rs` |
+//! | `lanes` | WP-080 | element-wise vector operations, one lane at a time over the scalar kernels | `tests/lanes.rs` |
 //! | `vector` | WP-079 | vector helpers (shape, lanes, images, indices); `extractelement`, `insertelement`, `shufflevector` | `tests/vector.rs` |
+//! | `atomic` | WP-074 | atomic `load`/`store`, `atomicrmw`, `cmpxchg`, `fence` | `tests/atomic.rs` |
 //!
 //! The differential harness that runs generated programs natively and
 //! compares them with `hod_interp` is `tests/diff.rs`.
 
 pub mod abi;
 pub mod aggr;
+pub mod atomic;
+pub mod barrier;
 pub mod call;
 pub mod common;
 pub mod constaddr;
@@ -52,6 +57,7 @@ pub mod fpintr;
 pub mod frame;
 pub mod int;
 pub mod intrinsic;
+pub mod lanes;
 pub mod mem;
 pub mod reg;
 pub mod target;

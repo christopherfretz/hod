@@ -21,6 +21,7 @@ use crate::error::{Stop, Trap, invalid, unsupported};
 use crate::memory::{AllocKind, Mark, Memory};
 use crate::ops::{self, Checked, IntOp};
 use crate::value::{Agg, MAX_INT_BITS, Val, sext};
+mod vector_ops;
 
 /// A module and the bodies of some of its functions (§2).
 #[derive(Clone, Debug)]
@@ -305,6 +306,8 @@ enum Class {
     Float,
     Double,
     Agg,
+    /// A vector (§3.1): its type and store size.
+    Vector(TypeId, u32),
 }
 
 impl Class {
@@ -314,6 +317,7 @@ impl Class {
             Class::Int(bits) => bits.div_ceil(8) as usize,
             Class::Ptr | Class::Double => 8,
             Class::Float => 4,
+            Class::Vector(_, size) => size as usize,
             Class::Void | Class::Agg => 0,
         }
     }
@@ -329,7 +333,9 @@ fn decode(class: Class, bytes: &[u8]) -> Val {
         Class::Ptr => Val::Ptr(value as u64),
         Class::Float => Val::Float(value as u32),
         Class::Double => Val::Double(value as u64),
-        Class::Void | Class::Agg => unreachable!("{class:?} is not a scalar"),
+        Class::Void | Class::Agg | Class::Vector(..) => {
+            unreachable!("{class:?} is not a scalar")
+        }
     }
 }
 
@@ -691,7 +697,7 @@ impl<'a> Machine<'_, 'a> {
             TypeKind::BFloat => return unsupported("type:bfloat"),
             TypeKind::Fp128 => return unsupported("type:fp128"),
             TypeKind::X86Fp80 => return unsupported("type:x86_fp80"),
-            TypeKind::Vector { .. } => return unsupported("type:vector"),
+            TypeKind::Vector { .. } => self.vector_class(ty)?,
             TypeKind::ScalableVector { .. } => return unsupported("type:scalable-vector"),
             TypeKind::Opaque(_) => return unsupported("type:opaque"),
             TypeKind::Function { .. } => return unsupported("type:function"),
@@ -710,6 +716,7 @@ impl<'a> Machine<'_, 'a> {
             | (Class::Float, Val::Float(_))
             | (Class::Double, Val::Double(_)) => true,
             (Class::Agg, Val::Agg(agg)) => agg.ty == ty,
+            (Class::Vector(..), Val::Agg(vector)) => vector.ty == ty,
             _ => false,
         })
     }
@@ -783,8 +790,9 @@ impl<'a> Machine<'_, 'a> {
             Class::Double => Val::Double(0),
             Class::Agg => {
                 self.leaves(ty, 0, &mut Vec::new())?;
-                Val::Agg(Agg { ty, bytes: vec![0; self.image_len(ty)?].into() })
+                Val::Agg(Agg { ty, bytes: vec![0; self.image_len(ty)?].into(), lanes: None })
             }
+            Class::Vector(..) => Val::Agg(self.vector_from(ty, None)?),
             Class::Void => return invalid("a value of type void"),
         })
     }
@@ -840,7 +848,10 @@ impl<'a> Machine<'_, 'a> {
                     let len = usize::from(fixup.size).min(8);
                     image[at..at + len].copy_from_slice(&value.to_le_bytes()[..len]);
                 }
-                Val::Agg(Agg { ty, bytes: image.into() })
+                if let Class::Vector(_, size) = self.class(ty)? {
+                    return Ok(Val::Agg(self.vector_from(ty, Some(&image[..size as usize]))?));
+                }
+                Val::Agg(Agg { ty, bytes: image.into(), lanes: None })
             }
             Const::Addr { sym, addend } => {
                 Val::Ptr(self.sym_addr(sym)?.wrapping_add(addend as u64))
@@ -927,6 +938,7 @@ impl<'a> Machine<'_, 'a> {
         let class = self.class(ty)?;
         match class {
             Class::Void => invalid("a load of type void"),
+            Class::Vector(..) => self.vector_load(ty, addr, align),
             Class::Agg => {
                 let mut leaves = Vec::new();
                 self.leaves(ty, 0, &mut leaves)?;
@@ -941,10 +953,14 @@ impl<'a> Machine<'_, 'a> {
                         }
                         let bytes = self.mem.raw(at + offset, len);
                         Self::check_padding(leaf, bytes)?;
+                        if let Class::Vector(leaf_ty, _) = leaf {
+                            // The bits above a mask's lanes are zero too.
+                            self.vector_from(leaf_ty, Some(bytes))?;
+                        }
                         image[offset..offset + len].copy_from_slice(bytes);
                     }
                 }
-                Ok(Val::Agg(Agg { ty, bytes: image.into() }))
+                Ok(Val::Agg(Agg { ty, bytes: image.into(), lanes: None }))
             }
             scalar => {
                 let bytes = self.mem.load(addr, scalar.store_len() as u64, align)?;
@@ -969,6 +985,7 @@ impl<'a> Machine<'_, 'a> {
 
     fn store(&mut self, val: &Val, addr: u64, align: u64) -> Result<(), Stop> {
         match val {
+            Val::Agg(vector) if vector.is_vector() => self.vector_store(vector, addr, align)?,
             Val::Agg(agg) => {
                 let mut leaves = Vec::new();
                 self.leaves(agg.ty, 0, &mut leaves)?;
@@ -1156,6 +1173,12 @@ impl<'a> Machine<'_, 'a> {
     fn execute(&mut self, f: &Frame<'a>, inst: Inst<'a>) -> Result<Flow, Stop> {
         let op = inst.opcode();
         let ty = inst.ty();
+        if (self.module.types.is_vector(ty)
+            || matches!(inst.kind(), InstKind::ExtractElement { .. }))
+            && let Some(flow) = self.vector_inst(f, inst)?
+        {
+            return Ok(flow);
+        }
         Ok(Flow::Value(match inst.kind() {
             InstKind::Binary { lhs, rhs } if op.is_int_binary() => {
                 let ((bits, a), (other, b)) = (self.int(f, lhs)?, self.int(f, rhs)?);
@@ -1272,14 +1295,15 @@ impl<'a> Machine<'_, 'a> {
                 let class = self.class(ty)?;
                 let len = match class {
                     Class::Agg => self.image_len(ty)?,
-                    scalar => scalar.store_len(),
+                    other => other.store_len(),
                 };
                 let bytes = usize::try_from(offset)
                     .ok()
                     .and_then(|at| agg.bytes.get(at..)?.get(..len))
                     .ok_or_else(|| Stop::Invalid("extractvalue outside the aggregate".into()))?;
                 match class {
-                    Class::Agg => Val::Agg(Agg { ty, bytes: bytes.into() }),
+                    Class::Agg => Val::Agg(Agg { ty, bytes: bytes.into(), lanes: None }),
+                    Class::Vector(..) => Val::Agg(self.vector_from(ty, Some(bytes))?),
                     Class::Void => return invalid("extractvalue of type void"),
                     scalar => decode(scalar, bytes),
                 }
@@ -1292,6 +1316,10 @@ impl<'a> Machine<'_, 'a> {
                     Val::Int { bits, .. } => Class::Int(*bits).store_len(),
                     Val::Ptr(_) | Val::Double(_) => 8,
                     Val::Float(_) => 4,
+                    // An aggregate has no poison lanes to keep (§3.1).
+                    Val::Agg(inner) if inner.has_poison() => {
+                        return Err(Trap::PoisonLane.into());
+                    }
                     Val::Agg(inner) => inner.bytes.len(),
                 };
                 let at = usize::try_from(offset).unwrap_or(usize::MAX);
@@ -1304,7 +1332,7 @@ impl<'a> Machine<'_, 'a> {
             }
             InstKind::ExtractElement { .. }
             | InstKind::InsertElement { .. }
-            | InstKind::ShuffleVector { .. } => return unsupported("type:vector"),
+            | InstKind::ShuffleVector { .. } => return invalid("a vector operation on a scalar"),
             InstKind::Phi(_) => return invalid("a phi was reached without taking an edge"),
             InstKind::Select { cond, if_true, if_false } => {
                 self.class(ty)?;
@@ -1440,6 +1468,9 @@ impl<'a> Machine<'_, 'a> {
             }
             (Opcode::BitCast, Val::Float(bits), Class::Int(32)) => Val::i32(bits),
             (Opcode::BitCast, Val::Double(bits), Class::Int(64)) => Val::i64(bits),
+            (Opcode::BitCast, Val::Agg(vector), _) if vector.is_vector() => {
+                self.vector_to_scalar(&vector, ty)?
+            }
             (Opcode::BitCast, val, _) if self.fits(&val, ty)? => val,
             (Opcode::AddrSpaceCast, ..) => return unsupported("inst:addrspacecast"),
             (_, arg, _) => return invalid(format!("{} of {arg} to {ty:?}", op.name())),
@@ -1536,7 +1567,7 @@ impl<'a> Machine<'_, 'a> {
         }
         encode(first, &mut image[..len]);
         encode(flag, &mut image[at..=at]);
-        Ok(Val::Agg(Agg { ty, bytes: image.into() }))
+        Ok(Val::Agg(Agg { ty, bytes: image.into(), lanes: None }))
     }
 
     // ---- calls ----
@@ -1933,7 +1964,7 @@ impl<'a> Machine<'_, 'a> {
         }
         encode(first, &mut image[..8]);
         encode(second, &mut image[at..at + 4]);
-        Ok(Val::Agg(Agg { ty, bytes: image.into() }))
+        Ok(Val::Agg(Agg { ty, bytes: image.into(), lanes: None }))
     }
 
     /// An intrinsic call (§5.6). `None` for an intrinsic without a result.
@@ -1945,6 +1976,9 @@ impl<'a> Machine<'_, 'a> {
         call: CallSite<'a>,
         ty: TypeId,
     ) -> Result<Option<Val>, Stop> {
+        if let Some(result) = self.vector_intrinsic(f, intrinsic, call, ty)? {
+            return Ok(Some(result));
+        }
         let args = call.args();
         let arg = |index: usize| match args.get(index) {
             Some(&value) => Ok(value),

@@ -58,9 +58,9 @@ cargo xtask shim --llvm <dir> --hod <hod binary> --out <dir> [--kiln <kiln++>]
 ```
 
 Builds `<out>`: a directory that kiln accepts as an LLVM installation and in
-which `llc` is hod, with the installation's `llc` as its fallback and the
-installation's `llvm-dis` as its bitcode converter (`spec/cli.md` "Fallback
-protocol", "Bitcode conversion"). This is how hod is plugged into kiln, and
+which `llc` is hod, with the installation's `llc` as its fallback and
+bitcode read by hod's own reader (`spec/cli.md` "Fallback protocol",
+"Bitcode conversion"). This is how hod is plugged into kiln, and
 through kiln into every C++ test suite, without changing kiln. Unix hosts
 only. Arguments are `--name <value>` or `--name=<value>`. Exit status: 0; 1
 when the directory cannot be built; 2 for a usage error.
@@ -101,7 +101,7 @@ discovery".)
   .hod-shim            marker: this directory was made by `cargo xtask shim`
   bin/                 a real directory
     llc                script: hod, with the real llc as its fallback and
-                       the real llvm-dis as its bitcode converter
+                       hod's own bitcode reader
     <every other entry of <llvm>/bin>     symbolic links to the real ones
   <every other entry of <llvm>>           symbolic links to the real ones
   kiln++-hod           script, with --kiln only: kiln++ using this directory
@@ -114,25 +114,24 @@ discovery".)
 - `bin/llc` is a `/bin/sh` script, mode 755:
 
   ```sh
-  HOD_FALLBACK_LLC='<llvm>/bin/llc' HOD_BITCODE_VIA='<llvm>/bin/llvm-dis' exec '<hod>' "$@"
+  HOD_FALLBACK_LLC='<llvm>/bin/llc' HOD_BITCODE_VIA=native exec '<hod>' "$@"
   ```
 
-  It sets the fallback and the bitcode converter and nothing else:
+  It sets the fallback and the bitcode reading and nothing else:
   `HOD_STRICT` and `HOD_COVERAGE_LOG` reach hod from the caller's
   environment, so the same shim serves hybrid and strict runs
-  (`spec/cli.md`). Both are the installation's own, whatever the caller's
-  environment says of either: the bitcode hod is handed was written by
-  this installation's `opt`, and only the `llvm-dis` of the same LLVM
-  reads it reliably. kiln does not require an `llvm-dis`. If
-  `<llvm>/bin/llvm-dis` is not a file, the script sets `HOD_BITCODE_VIA=''`
-  (unset, for hod): nothing is converted, bitcode goes to the fallback as
-  `bitcode-input`, and a caller's converter is still not let through. The
-  command's summary says which it is (`bitcode:  converted to text by
-  <path>`, or `bitcode:  not converted (the installation has no
-  llvm-dis)`); running the command again after the tool arrives takes it
-  up.
-- `bin/llvm-dis` is a link to the real one, like every other tool: hod is
-  never its own converter through a shim.
+  (`spec/cli.md`). Both are fixed whatever the caller's environment says:
+  the fallback is the installation's own `llc`, and bitcode (which kiln
+  hands `llc` after `opt`) is read by `hod_bc`, never by a converter a
+  caller names, which could be another LLVM's. Until WP-068 the script
+  named the installation's `llvm-dis` as converter; hod's reader gives the
+  same object (the evidence: `spec/landed/cli/WP-068.md`) without a
+  process and a print-and-parse round trip per module (about 100 ms on a
+  libc++ test module). A bitcode module `hod_bc` cannot read is declined
+  with the reader's reason and goes to the fallback, which reads bitcode
+  itself, so no text is ever needed. The command's summary says
+  `bitcode:  read by hod (HOD_BITCODE_VIA=native)`.
+- `bin/llvm-dis` is a link to the real one, like every other tool.
 - The script costs one `sh` start per translation unit before hod runs
   (measured: `spec/landed/cli/WP-020.md`). It stays a script because the
   corpus capture puts its own program where hod stands and relies on the
@@ -192,7 +191,7 @@ kiln_e2e.rs`).
 ### Tests
 
 `xtask/src/shim.rs`: `layout`, `llc_runs_hod_with_the_real_llc_as_fallback`
-(and the real `llvm-dis` as its converter), `no_converter_without_llvm_dis`,
+(and hod's own bitcode reader), `no_converter_without_llvm_dis`,
 `wrapper_runs_kiln_with_the_shim`, `paths_with_spaces_and_quotes`,
 `idempotent`, `rebuild_follows_the_request`,
 `refuses_a_directory_it_did_not_make`, `never_writes_through_links`,
@@ -208,11 +207,11 @@ checked, and the coverage log has one line per translation unit, which
 says the module was text and was not converted. Three programs reach hod
 as bitcode (a coroutine, an `always_inline` function, and the first
 program at `-O1`): each is linked, run and checked, and its coverage line
-says that hod was given bitcode, converted it (a conversion time, the
-triple known), declined it as text and that the fallback exited 0. A
+says that hod was given bitcode and converted nothing (no conversion
+time), and either built it or declined it with the fallback exiting 0. A
 caller's `HOD_BITCODE_VIA` naming a file that does not exist is set
 throughout and must not matter. With `HOD_STRICT=1` the compile fails
-with hod's diagnostic for text and for converted bitcode alike. The test
+with hod's diagnostic for text and for bitcode alike. The test
 needs `kiln++`: `$HOD_KILN`, else
 `<build root>/target-kiln/release/kiln++` beside this checkout's target
 directory. Without one it skips with a note; under `HOD_REQUIRE_TOOLS=1`

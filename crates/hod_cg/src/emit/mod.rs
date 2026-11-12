@@ -12,6 +12,7 @@
 //! allocated per symbol or per function beyond the object's own tables
 //! and the merged rows.
 
+mod asm;
 mod data;
 mod lines;
 mod section;
@@ -63,15 +64,12 @@ pub mod unsupported {
     /// A variable of `appending` linkage that is not one of the special
     /// arrays `hod_ir` reads.
     pub const APPENDING: &str = "linkage:appending";
-    /// Module-level inline assembly (`hod_asm`'s, not yet).
+    /// Module-level assembly an assembler must read (`hod_asm`'s, not
+    /// yet): anything but the symbol directives of `spec/ir.md` §2.3.
     pub const MODULE_ASM: &str = "module:asm";
     /// An `!llvm.linker.options` entry that is not a pair of strings,
     /// which ELF `llc` refuses ("invalid llvm.linker.options").
     pub const LINKER_OPTION: &str = "module:linker-option-not-a-pair";
-    /// A compile unit whose `emissionKind` is `LineTablesOnly` or
-    /// `DebugDirectivesOnly`: their DIEs (a unit and its subprograms
-    /// only) are not written yet (`spec/dwarf.md` §9).
-    pub const DEBUG_EMISSION_KIND: &str = "debug:emission-kind";
     /// A compile unit with a node the DIE writer does not write yet
     /// (`spec/dwarf.md` §6.5).
     pub const DEBUG_DIE: &str = "debug:die-unsupported";
@@ -329,9 +327,7 @@ impl<'m> ModuleEmitter<'m> {
             rows: Chunk::new(),
             debug: None,
         };
-        if !module.module_asm().is_empty() {
-            return Err(CgError::unsupported(unsupported::MODULE_ASM));
-        }
+        asm::check(module)?;
         // `TargetLoweringObjectFileELF::emitModuleMetadata`.
         if module.linker_options().iter().any(|list| list.len() != 2) {
             return Err(CgError::unsupported(unsupported::LINKER_OPTION));
@@ -863,6 +859,16 @@ impl<'m> ModuleEmitter<'m> {
         self.unwind_tables()?;
         self.debug_tables()?;
         self.define()?;
+        self.module_asm_symbols()?;
+        // WP-061: last, once every section is complete.
+        self.obj.compress_debug_sections(self.options.debug_compression).map_err(|error| {
+            match error {
+                hod_obj::Error::TooLarge(hod_obj::Limit::CompressedBytes) => {
+                    CgError::unsupported(crate::options::LIMIT_COMPRESSED_SECTION)
+                }
+                error => obj_err(error),
+            }
+        })?;
         let ModuleEmitter { obj, funcs, rows, .. } = self;
         Ok(Emitted { object: obj, funcs, rows })
     }

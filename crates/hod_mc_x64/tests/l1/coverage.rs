@@ -74,7 +74,7 @@ fn every_constructor_is_swept() {
         build(&mut total);
     }
     println!("l1 total: {encodings} encodings, {rejections} rejections");
-    assert!(encodings >= 150_000, "the sweeps shrank to {encodings} encodings");
+    assert!(encodings >= 250_000, "the sweeps shrank to {encodings} encodings");
 
     let counts = total.counts();
     for (name, checked) in &defined {

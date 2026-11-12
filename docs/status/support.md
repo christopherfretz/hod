@@ -340,8 +340,8 @@ Instructions.
 | `inst:inttoptr` | supported (int, ptr) | not-implemented |  |
 | `inst:bitcast` | supported (int, ptr) | not-implemented | between integers and floats with WP-039 |
 | `inst:addrspacecast` | rejected | rejected | it has a pointer in a non-zero address space on one side |
-| `inst:load` | supported (int, ptr) | not-implemented | a plain load; see `mem:`; FP and vector values: WP-067 |
-| `inst:store` | supported (int, ptr) | not-implemented | a plain store; see `mem:`; FP and vector values: WP-067 |
+| `inst:load` | supported (int, ptr, half, bfloat, float, double, fp128) | not-implemented | a plain load; see `mem:`; FP and vector values: WP-067 |
+| `inst:store` | supported (int, ptr, half, bfloat, float, double, fp128) | not-implemented | a plain store; see `mem:`; FP and vector values: WP-067 |
 | `inst:alloca` | supported | not-implemented | a dynamic allocation; fixed ones are `function:slots` |
 | `inst:fence` | not-implemented | not-implemented | M2 (atomics) |
 | `inst:cmpxchg` | not-implemented | not-implemented | M2 (atomics) |

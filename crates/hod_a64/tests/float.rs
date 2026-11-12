@@ -1345,3 +1345,674 @@ fn generated_functions_compile() {
         assert_eq!(compile_ll(&text), Ok::<(), CgError>(()), "{text}");
     }
 }
+
+// ---- loads and stores of `Fpr`-class values (WP-067) ----
+//
+// Each function loads a value of type `T` through one addressing form
+// and stores its argument through another; the C driver gives it a
+// pointer into a buffer whose end is a guard page, fills the buffer and
+// two variables (one through the GOT, one `dso_local`) with a pattern,
+// and prints the loaded bits and every byte that changed. The model
+// below computes the same lines (a load reads exactly the store size, a
+// store writes exactly it), and so do hod plain, hod stressed and `llc`.
+
+/// The buffer: `p` is `PBASE` bytes into it; it ends at a guard page.
+const MEM_BUF: i64 = 0x30000;
+const PBASE: i64 = 0x10000;
+const MEM_END: i64 = MEM_BUF - PBASE;
+/// The size of each variable.
+const GSIZE: i64 = 256;
+
+/// A type of class `Fpr` as the memory tests use it: its `.ll` name, its
+/// store size, and the C type it travels as. `carrier` is the `.ll` type
+/// it travels as when that is not the type itself, with the casts to and
+/// from it.
+#[derive(Clone, Copy, Debug)]
+struct MemTy {
+    ll: &'static str,
+    size: i64,
+    c: &'static str,
+    carrier: Option<(&'static str, &'static str, &'static str)>,
+}
+
+const fn mt(ll: &'static str, size: i64, c: &'static str) -> MemTy {
+    MemTy { ll, size, c, carrier: None }
+}
+
+const fn mtc(ll: &'static str, size: i64, c: &'static str, car: &'static str) -> MemTy {
+    MemTy { ll, size, c, carrier: Some((car, "bitcast", "bitcast")) }
+}
+
+const MEM_TYPES: &[MemTy] = &[
+    mt("half", 2, "_Float16"),
+    mtc("bfloat", 2, "uint16_t", "i16"),
+    mt("float", 4, "float"),
+    mt("double", 8, "double"),
+    mt("fp128", 16, "long double"),
+    mt("<2 x float>", 8, "d_t"),
+    mt("<4 x float>", 16, "q_t"),
+    mt("<2 x double>", 16, "q_t"),
+    mt("<1 x double>", 8, "d_t"),
+    mt("<8 x i8>", 8, "d_t"),
+    mt("<16 x i8>", 16, "q_t"),
+    mt("<4 x i16>", 8, "d_t"),
+    mt("<8 x i16>", 16, "q_t"),
+    mt("<2 x i32>", 8, "d_t"),
+    mt("<4 x i32>", 16, "q_t"),
+    mt("<1 x i64>", 8, "d_t"),
+    mt("<2 x i64>", 16, "q_t"),
+    mt("<4 x half>", 8, "d_t"),
+    mt("<8 x half>", 16, "q_t"),
+    mtc("<16 x i4>", 8, "uint64_t", "i64"),
+    mtc("<32 x i4>", 16, "q_t", "<2 x i64>"),
+    mtc("<4 x bfloat>", 8, "uint64_t", "i64"),
+    MemTy {
+        ll: "<2 x ptr>",
+        size: 16,
+        c: "q_t",
+        carrier: Some(("<2 x i64>", "inttoptr", "ptrtoint")),
+    },
+];
+
+/// Where an address points.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Region {
+    Buf,
+    /// `@<prefix>g` (preemptible: through the GOT) or `@<prefix>d`
+    /// (`dso_local`: direct).
+    Global(bool),
+}
+
+/// An addressing form. `I` and `J` are the `i64 %i` and `i32 %j`
+/// arguments.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Form {
+    /// `%p` itself.
+    P,
+    /// `%p` + a byte offset.
+    C(i64),
+    /// `%p` + `k` elements.
+    CT(i64),
+    /// `%p` + `I` elements.
+    Xi,
+    /// `%p` + `J` elements (`sxtw`).
+    Xj,
+    /// `%p` + `I` bytes.
+    Xi8,
+    /// `%p` + `I` × 3 elements + 1 element (a stride that is no power of
+    /// two).
+    Xi3,
+    /// `%p` + `I` bytes + `k`, by two `ptradd`s.
+    Two(i64),
+    /// A variable + `k` bytes, as a constant expression.
+    G(bool, i64),
+    /// A variable + `I` elements.
+    Gi(bool),
+}
+
+impl Form {
+    fn region(self) -> Region {
+        match self {
+            Form::G(direct, _) | Form::Gi(direct) => Region::Global(direct),
+            _ => Region::Buf,
+        }
+    }
+
+    /// The offset as `a * x + b`, with `x` the index argument it uses
+    /// (`Some(true)` for `I`, `Some(false)` for `J`).
+    fn affine(self, size: i64) -> (Option<bool>, i64, i64) {
+        match self {
+            Form::P => (None, 0, 0),
+            Form::C(k) | Form::G(_, k) => (None, 0, k),
+            Form::CT(k) => (None, 0, k * size),
+            Form::Xi | Form::Gi(_) => (Some(true), size, 0),
+            Form::Xj => (Some(false), size, 0),
+            Form::Xi8 => (Some(true), 1, 0),
+            Form::Xi3 => (Some(true), 3 * size, size),
+            Form::Two(k) => (Some(true), 1, k),
+        }
+    }
+
+    /// The lines that form the address in `%<tag>`, and the operand.
+    fn text(self, t: &MemTy, tag: &str, prefix: &str) -> (String, String) {
+        let tl = t.ll;
+        let gname = |direct: bool| format!("@{prefix}{}", if direct { "d" } else { "g" });
+        let gep = |what: String| (format!("%{tag} = getelementptr {what}\n"), format!("%{tag}"));
+        match self {
+            Form::P => (String::new(), "%p".into()),
+            Form::C(k) => gep(format!("i8, ptr %p, i64 {k}")),
+            Form::CT(k) => gep(format!("{tl}, ptr %p, i64 {k}")),
+            Form::Xi => gep(format!("{tl}, ptr %p, i64 %i")),
+            Form::Xj => gep(format!("{tl}, ptr %p, i32 %j")),
+            Form::Xi8 => gep(format!("i8, ptr %p, i64 %i")),
+            Form::Xi3 => gep(format!("[3 x {tl}], ptr %p, i64 %i, i64 1")),
+            Form::Two(k) => (
+                format!(
+                    "%{tag}0 = getelementptr i8, ptr %p, i64 %i\n%{tag} = getelementptr i8, ptr %{tag}0, i64 {k}\n"
+                ),
+                format!("%{tag}"),
+            ),
+            Form::G(direct, k) => {
+                (String::new(), format!("getelementptr (i8, ptr {}, i64 {k})", gname(direct)))
+            }
+            Form::Gi(direct) => gep(format!("{tl}, ptr {}, i64 %i", gname(direct))),
+        }
+    }
+}
+
+/// The byte forms of the buffer's and the variables' initial contents.
+fn buf_init(k: i64) -> u8 {
+    ((k as u64).wrapping_mul(0x9e37_79b1) >> 11) as u8
+}
+
+fn global_init(direct: bool, k: i64) -> u8 {
+    (k * 37 + if direct { 101 } else { 11 }) as u8
+}
+
+/// What a memory function does.
+#[derive(Clone, Debug)]
+enum MemKind {
+    /// Load through one form (if any), store the argument through another
+    /// (if any); `early` computes the store's address before the load
+    /// (no fusing).
+    Access { load: Option<Form>, store: Option<Form>, volatile: (bool, bool), early: bool },
+    /// Through a frame slot of `count` elements aligned to `align`, at
+    /// element `I & (count - 1)` or at constant element `at`.
+    Slot { count: i64, align: u64, at: Option<i64> },
+    /// Store the constant (its `.ll` text and its bytes) to the buffer at
+    /// `%p` and return a volatile load of it.
+    Const(String, Vec<u8>),
+}
+
+struct MemFunc {
+    name: String,
+    ty: MemTy,
+    kind: MemKind,
+}
+
+impl MemFunc {
+    fn text(&self, prefix: &str) -> String {
+        let t = &self.ty;
+        let tl = t.ll;
+        let (pl, conv_in, conv_out) = match t.carrier {
+            Some((car, to, from)) => (car, Some(to), Some(from)),
+            None => (tl, None, None),
+        };
+        let mut b = String::new();
+        let v = if let Some(to) = conv_in {
+            let _ = writeln!(b, "%v = {to} {pl} %x to {tl}");
+            "%v"
+        } else {
+            "%x"
+        };
+        let r = match &self.kind {
+            MemKind::Access { load, store, volatile, early } => {
+                let st = store.map(|f| f.text(t, "s", prefix));
+                if *early && let Some((pre, _)) = &st {
+                    b.push_str(pre);
+                }
+                let r = if let Some(f) = load {
+                    let (pre, op) = f.text(t, "l", prefix);
+                    b.push_str(&pre);
+                    let vol = if volatile.0 { "volatile " } else { "" };
+                    let _ = writeln!(b, "%r = load {vol}{tl}, ptr {op}");
+                    "%r"
+                } else {
+                    v
+                };
+                if let Some((pre, op)) = st {
+                    if !*early {
+                        b.push_str(&pre);
+                    }
+                    let vol = if volatile.1 { "volatile " } else { "" };
+                    let _ = writeln!(b, "store {vol}{tl} {v}, ptr {op}");
+                }
+                r
+            }
+            MemKind::Slot { count, align, at } => {
+                let _ = writeln!(b, "%s = alloca [{count} x {tl}], align {align}");
+                match at {
+                    Some(k) => {
+                        let _ = writeln!(b, "%q = getelementptr {tl}, ptr %s, i64 {k}");
+                    }
+                    None => {
+                        let _ = writeln!(b, "%m = and i64 %i, {}", count - 1);
+                        let _ = writeln!(b, "%q = getelementptr {tl}, ptr %s, i64 %m");
+                    }
+                }
+                let _ = writeln!(b, "store {tl} {v}, ptr %q\n%r = load {tl}, ptr %q");
+                "%r"
+            }
+            MemKind::Const(c, _) => {
+                let _ = writeln!(b, "store {tl} {c}, ptr %p\n%r = load volatile {tl}, ptr %p");
+                "%r"
+            }
+        };
+        let ret = if let Some(from) = conv_out {
+            let _ = writeln!(b, "%o = {from} {tl} {r} to {pl}");
+            "%o"
+        } else {
+            r
+        };
+        let _ = write!(b, "ret {pl} {ret}");
+        format!("define {pl} @{prefix}{}(ptr %p, i64 %i, i32 %j, {pl} %x) {{\n{b}\n}}\n", self.name)
+    }
+
+    /// The forms that use index argument `I` (`true`) or `J`.
+    fn forms(&self) -> Vec<Form> {
+        match &self.kind {
+            MemKind::Access { load, store, .. } => {
+                load.iter().chain(store.iter()).copied().collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The range of index argument `I` (`which`) or `J` every form allows.
+    fn range(&self, which: bool) -> (i64, i64) {
+        let size = self.ty.size;
+        let (mut lo, mut hi) = if which { (-(1 << 40), 1 << 40) } else { (-(1 << 30), 1 << 30) };
+        for f in self.forms() {
+            let (x, a, b) = f.affine(size);
+            if x != Some(which) {
+                continue;
+            }
+            let (min, max) = match f.region() {
+                Region::Buf => (-PBASE, MEM_END - size),
+                Region::Global(_) => (0, GSIZE - size),
+            };
+            lo = lo.max((min - b).div_euclid(a) + i64::from((min - b).rem_euclid(a) != 0));
+            hi = hi.min((max - b).div_euclid(a));
+        }
+        (lo, hi)
+    }
+
+    /// The driver's line for arguments `i`, `j` and value bytes `x`.
+    fn expect(&self, i: i64, j: i64, x: &[u8]) -> String {
+        let size = self.ty.size;
+        let mut buf: Vec<(i64, u8)> = Vec::new();
+        let mut globals: [Vec<(i64, u8)>; 2] = [Vec::new(), Vec::new()];
+        let at = |f: Form| {
+            let (which, a, b) = f.affine(size);
+            let arg = match which {
+                Some(true) => i,
+                Some(false) => j,
+                None => 0,
+            };
+            (f.region(), a * arg + b)
+        };
+        let init = |region: Region, k: i64| match region {
+            Region::Buf => buf_init(k + PBASE),
+            Region::Global(direct) => global_init(direct, k),
+        };
+        let result: Vec<u8> = match &self.kind {
+            MemKind::Access { load, store, .. } => {
+                let r = match load {
+                    Some(f) => {
+                        let (region, off) = at(*f);
+                        (0..size).map(|k| init(region, off + k)).collect()
+                    }
+                    None => x.to_vec(),
+                };
+                if let Some(f) = store {
+                    let (region, off) = at(*f);
+                    let list = match region {
+                        Region::Buf => &mut buf,
+                        Region::Global(direct) => &mut globals[usize::from(direct)],
+                    };
+                    for (k, &byte) in x.iter().enumerate() {
+                        let pos = off + k as i64;
+                        if byte != init(region, pos) {
+                            list.push((
+                                if region == Region::Buf { pos + PBASE } else { pos },
+                                byte,
+                            ));
+                        }
+                    }
+                }
+                r
+            }
+            MemKind::Slot { .. } => x.to_vec(),
+            MemKind::Const(_, bytes) => {
+                for (k, &byte) in bytes.iter().enumerate() {
+                    let pos = k as i64;
+                    if byte != init(Region::Buf, pos) {
+                        buf.push((pos + PBASE, byte));
+                    }
+                }
+                bytes.clone()
+            }
+        };
+        let list = |l: &[(i64, u8)]| {
+            l.iter().fold(String::new(), |mut s, (o, b)| {
+                let _ = write!(s, " {o:x}:{b:02x}");
+                s
+            })
+        };
+        format!(
+            "r {} b{} g{} d{}",
+            hex_bytes(&result),
+            list(&buf),
+            list(&globals[0]),
+            list(&globals[1])
+        )
+    }
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().fold(String::new(), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
+/// The memory functions: for each type, every form as the load's with a
+/// random store form and as the store's with a random load form, slots,
+/// both accesses at one address.
+fn mem_funcs() -> Vec<MemFunc> {
+    let mut rng = Rng(67);
+    let mut out = Vec::new();
+    for (ti, t) in MEM_TYPES.iter().enumerate() {
+        let s = t.size;
+        let mut forms = vec![
+            Form::P,
+            Form::C(1),
+            Form::C(s),
+            Form::C(255),
+            Form::C(256),
+            Form::C(-256),
+            Form::C(-257),
+            Form::C(4095 * s),
+            Form::C(4096 * s),
+            Form::C(65520),
+            Form::C(-PBASE),
+            Form::C(MEM_END - s),
+            Form::C(0x1_fff1 - s),
+            Form::CT(1),
+            Form::CT(-1),
+            Form::CT(4095),
+            Form::CT(-16),
+            Form::Xi,
+            Form::Xj,
+            Form::Xi8,
+            Form::Xi3,
+            Form::Two(3),
+            Form::Two(-70000 + PBASE),
+            Form::G(false, 0),
+            Form::G(true, 3),
+            Form::G(false, GSIZE - s),
+            Form::Gi(true),
+            Form::Gi(false),
+        ];
+        forms.dedup();
+        let pick = |rng: &mut Rng| forms[rng.below(forms.len() as u64) as usize];
+        let mut add = |name: String, kind: MemKind| {
+            out.push(MemFunc { name: format!("{name}_t{ti}"), ty: *t, kind });
+        };
+        for (k, &f) in forms.iter().enumerate() {
+            let other = pick(&mut rng);
+            let vol = (rng.below(4) == 0, rng.below(4) == 0);
+            let early = rng.below(3) == 0;
+            add(
+                format!("ld{k}"),
+                MemKind::Access { load: Some(f), store: Some(other), volatile: vol, early },
+            );
+            let other = pick(&mut rng);
+            add(
+                format!("st{k}"),
+                MemKind::Access { load: Some(other), store: Some(f), volatile: vol, early: !early },
+            );
+        }
+        add(
+            "ldonly".into(),
+            MemKind::Access {
+                load: Some(Form::P),
+                store: None,
+                volatile: (true, false),
+                early: false,
+            },
+        );
+        add(
+            "stonly".into(),
+            MemKind::Access {
+                load: None,
+                store: Some(Form::P),
+                volatile: (false, true),
+                early: false,
+            },
+        );
+        add(
+            "same".into(),
+            MemKind::Access {
+                load: Some(Form::Xi),
+                store: Some(Form::Xi),
+                volatile: (false, false),
+                early: true,
+            },
+        );
+        add("slot1".into(), MemKind::Slot { count: 1, align: 1, at: None });
+        add("slot8".into(), MemKind::Slot { count: 8, align: 64, at: None });
+        add("slotbig".into(), MemKind::Slot { count: 8192, align: 16, at: Some(8191) });
+        add("slotmid".into(), MemKind::Slot { count: 8192, align: 128, at: Some(4095) });
+        for (k, (text, bytes)) in mem_constants(t).into_iter().enumerate() {
+            add(format!("const{k}"), MemKind::Const(text, bytes));
+        }
+    }
+    out
+}
+
+/// Constants of `t` to store: `.ll` text and bytes.
+fn mem_constants(t: &MemTy) -> Vec<(String, Vec<u8>)> {
+    let size = t.size as usize;
+    let mut out = vec![("zeroinitializer".to_string(), vec![0; size])];
+    let le = |v: u128| v.to_le_bytes()[..size].to_vec();
+    match t.ll {
+        "half" => out.push(("0xH3C01".into(), le(0x3c01))),
+        "bfloat" => out.push(("0xR8001".into(), le(0x8001))),
+        "float" => out.push(("-1.5".into(), le(0xbfc0_0000))),
+        "double" => out.push(("0x7FF4000000000001".into(), le(0x7ff4_0000_0000_0001))),
+        "fp128" => out.push((
+            "0xL0123456789ABCDEF7FFF800000000001".into(),
+            le(0x7fff_8000_0000_0001_0123_4567_89ab_cdef),
+        )),
+        _ => {}
+    }
+    out
+}
+
+/// The C literal of a value of `t` with bytes `x`.
+fn mem_c_value(t: &MemTy, x: &[u8]) -> String {
+    let word = |k: usize| {
+        let mut w = [0u8; 8];
+        let end = (k + 8).min(x.len());
+        w[..end - k].copy_from_slice(&x[k..end]);
+        u64::from_le_bytes(w)
+    };
+    match (t.c, t.size) {
+        ("_Float16", _) => format!("H(0x{:x})", word(0)),
+        ("float", _) => format!("F(0x{:x}u)", word(0)),
+        ("double", _) => format!("D(0x{:x}ull)", word(0)),
+        ("long double", _) => format!("Q(0x{:x}ull, 0x{:x}ull)", word(0), word(8)),
+        ("d_t", _) => format!("VD(0x{:x}ull)", word(0)),
+        ("q_t", _) => format!("VQ(0x{:x}ull, 0x{:x}ull)", word(0), word(8)),
+        ("uint16_t", _) => format!("(uint16_t)0x{:x}", word(0)),
+        ("uint64_t", _) => format!("0x{:x}ull", word(0)),
+        _ => unreachable!("{t:?}"),
+    }
+}
+
+const MEM_DRIVER: &str = r#"
+#include <sys/mman.h>
+#include <unistd.h>
+static unsigned char *buf;
+static void pb(const void *v, int n) { const unsigned char *b = v; printf("r "); for (int k = 0; k < n; k++) printf("%02x", b[k]); }
+static unsigned char ib(long k) { return (unsigned char)(((unsigned long)k * 0x9e3779b1ul) >> 11); }
+static unsigned char ig(int direct, long k) { return (unsigned char)(k * 37 + (direct ? 101 : 11)); }
+static void fill(unsigned char *g, unsigned char *d) {
+  for (long k = 0; k < 256; k++) { g[k] = ig(0, k); d[k] = ig(1, k); }
+}
+static void diff(unsigned char *g, unsigned char *d) {
+  printf(" b");
+  for (long k = 0; k < 0x30000; k++) if (buf[k] != ib(k)) { printf(" %lx:%02x", k, buf[k]); buf[k] = ib(k); }
+  printf(" g");
+  for (long k = 0; k < 256; k++) if (g[k] != ig(0, k)) printf(" %lx:%02x", k, g[k]);
+  printf(" d");
+  for (long k = 0; k < 256; k++) if (d[k] != ig(1, k)) printf(" %lx:%02x", k, d[k]);
+  printf("\n");
+  fill(g, d);
+}
+"#;
+
+/// Runs the memory functions natively; returns the calls compared.
+fn run_mem(label: &str, funcs: &[MemFunc], per: usize) -> usize {
+    let dir = hod_testutil::Scratch::new(label);
+    let Some(toolchain) = Toolchain::host(&dir) else { return 0 };
+    let globals = |prefix: &str| {
+        format!(
+            "@{prefix}g = global [{GSIZE} x i8] zeroinitializer, align 16\n@{prefix}d = dso_local global [{GSIZE} x i8] zeroinitializer, align 16\n"
+        )
+    };
+    let text = |prefix: &str| {
+        let mut text = globals(prefix);
+        for f in funcs {
+            text.push_str(&f.text(prefix));
+        }
+        text
+    };
+    let mut objects = Vec::new();
+    for (prefix, stress) in [("h_", Stress::default()), ("s_", Stress::ALL)] {
+        let (m, bodies) = parse(&format!("{}{}", ll_header(22), text(prefix)));
+        let emitted = emit(&m, &bodies, &Options { stress, ..Options::default() });
+        objects.push(write_object(&dir, &format!("{prefix}hod.o"), &emitted));
+    }
+    let mut prefixes = vec!["h_", "s_"];
+    if let Some(object) = llc(
+        &dir,
+        "llc",
+        &format!("{}{}", ll_header(common::llc_major()), text("l_")),
+        &["-relocation-model=pic"],
+    ) {
+        objects.push(object);
+        prefixes.push("l_");
+    }
+    eprintln!("{label}: compared {}", prefixes.join(", "));
+    let mut c = String::from(DRIVER_HEAD);
+    c.push_str(MEM_DRIVER);
+    for prefix in &prefixes {
+        let _ = writeln!(c, "extern unsigned char {prefix}g[{GSIZE}], {prefix}d[{GSIZE}];");
+        for f in funcs {
+            let pc = f.ty.c;
+            let _ =
+                writeln!(c, "{pc} {prefix}{}(unsigned char *, int64_t, int32_t, {pc});", f.name);
+        }
+    }
+    let mut rng = Rng(670);
+    let mut expected: Vec<String> = Vec::new();
+    let mut calls = 0;
+    for (index, f) in funcs.iter().enumerate() {
+        let _ = writeln!(c, "static void t{index}(void) {{");
+        let (ilo, ihi) = f.range(true);
+        let (jlo, jhi) = f.range(false);
+        let pick = |rng: &mut Rng, lo: i64, hi: i64, k: usize| match k {
+            0 => lo,
+            1 => hi,
+            2 if lo <= 0 && 0 <= hi => 0,
+            _ => lo + (rng.next() % ((hi - lo) as u64 + 1).min(1 << 40)) as i64,
+        };
+        for k in 0..per {
+            let (i, j) = (pick(&mut rng, ilo, ihi, k), pick(&mut rng, jlo, jhi, (k + 1) % per));
+            let x: Vec<u8> = (0..f.ty.size).map(|_| rng.next() as u8).collect();
+            let lit = mem_c_value(&f.ty, &x);
+            for prefix in &prefixes {
+                let _ = writeln!(
+                    c,
+                    "{{ {} r = {prefix}{}(buf + 0x{PBASE:x}, {i}ll, {j}, {lit}); pb(&r, {}); diff({prefix}g, {prefix}d); }}",
+                    f.ty.c, f.name, f.ty.size
+                );
+                expected.push(f.expect(i, j, &x));
+            }
+            calls += 1;
+        }
+        let _ = writeln!(c, "}}");
+    }
+    c.push_str("int main(void) {\n  long pg = sysconf(_SC_PAGESIZE);\n");
+    c.push_str("  unsigned char *m = mmap(0, 0x30000 + pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);\n");
+    c.push_str(
+        "  if (m == MAP_FAILED || mprotect(m + 0x30000, pg, PROT_NONE)) return 2;\n  buf = m;\n",
+    );
+    c.push_str("  for (long k = 0; k < 0x30000; k++) buf[k] = ib(k);\n");
+    for prefix in &prefixes {
+        let _ = writeln!(c, "  fill({prefix}g, {prefix}d);");
+    }
+    for index in 0..funcs.len() {
+        let _ = writeln!(c, "  t{index}();");
+    }
+    c.push_str("  return 0;\n}\n");
+    let driver = toolchain.compile_c(&dir, "driver", &c, &[]);
+    let mut inputs: Vec<&std::path::Path> = vec![&driver];
+    inputs.extend(objects.iter().map(std::path::PathBuf::as_path));
+    let mut failures = Vec::new();
+    for (k, linker) in toolchain.linkers.iter().enumerate() {
+        let program = dir.join(format!("mem-{}", linker.name));
+        let ran = toolchain.link_and_run(linker, &[], &inputs, &program);
+        assert_eq!(exit_code(&ran), Some(0), "{}: {}", linker.name, ran.stderr_text());
+        if k > 0 {
+            continue;
+        }
+        let stdout = ran.stdout_text();
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.len(), expected.len(), "the driver's output");
+        for (n, line) in lines.iter().enumerate() {
+            let call = n / prefixes.len();
+            let f = &funcs[call / per];
+            let first = lines[n - n % prefixes.len()];
+            let want = &expected[n];
+            if want != line {
+                failures.push(format!(
+                    "{}{}: {line}\n   want {want}",
+                    prefixes[n % prefixes.len()],
+                    f.name
+                ));
+            } else if *line != first {
+                failures.push(format!(
+                    "{}{}: {line}\n   but {first}",
+                    prefixes[n % prefixes.len()],
+                    f.name
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} lines differ:\n{}\n{}",
+        failures.len(),
+        failures.iter().take(30).cloned().collect::<Vec<_>>().join("\n"),
+        funcs[0].text("h_"),
+    );
+    calls
+}
+
+/// Loads and stores of every `Fpr`-class type through every addressing
+/// form, natively against the model and `llc`.
+#[test]
+fn loads_and_stores_agree_with_the_model_and_llc() {
+    let funcs = mem_funcs();
+    let calls = run_mem("a64-float-mem", &funcs, 6);
+    eprintln!("{} functions, {calls} calls compared", funcs.len());
+}
+
+/// An atomic load or store of an `Fpr`-class value stays refused by
+/// `mem.rs`'s check, before the hook.
+#[test]
+fn atomic_fp_accesses_stay_refused() {
+    assert_refused(&[
+        (
+            "define double @f(ptr %p) { %r = load atomic double, ptr %p seq_cst, align 8\n ret double %r }",
+            hod_a64::target::ATOMIC,
+        ),
+        (
+            "define void @f(ptr %p, float %v) { store atomic float %v, ptr %p release, align 4\n ret void }",
+            hod_a64::target::ATOMIC,
+        ),
+    ]);
+}

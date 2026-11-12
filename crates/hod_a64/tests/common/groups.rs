@@ -47,6 +47,8 @@ pub const GROUPS: &[(&str, Enable)] = &[
     }),
     // The floating-point group: `float`, `double`, `fcmp`, conversions.
     ("WP-039", |e| e.options.floats = true),
+    // The floating-point leftovers: loads and stores of `float` and `double`.
+    ("WP-067", |e| (e.options.floats, e.options.memory) = (true, true)),
 ];
 
 /// What every landed group enables together.

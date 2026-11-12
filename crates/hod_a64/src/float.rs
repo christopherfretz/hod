@@ -26,9 +26,12 @@
 use hod_cg::{CallArg, CgResult, Class, FnCx, PReg, RuntimeFn};
 use hod_ir::{FloatPredicate, Inst, InstKind, IntPredicate, Opcode, TypeId, TypeKind, Value};
 use hod_mc_a64 as mc;
-use hod_mc_a64::{Arr, Cond, FpArr, FpFormat, FpSize, RegZr, Size, VReg, VecBits};
+use hod_mc_a64::{Arr, Cond, FpArr, FpFormat, FpSize, RegZr, Size, VMemSize, VReg, VecBits};
 
-use crate::common::{V31, X16, deferred_first, put, size_for_bits, unsupported, value_ty, vr, xr};
+use crate::common::{
+    Cursor, V31, X16, deferred_first, load_fpr_at, put, size_for_bits, store_fpr_at, unsupported,
+    value_ty, vr, xr,
+};
 use crate::target::A64;
 
 /// A binary operation on vector-register values.
@@ -737,4 +740,70 @@ pub fn select<'a>(
         put(cx, mc::fcsel(FpSize::D, va, va, vb, c.first));
     }
     cx.finish(inst, a)
+}
+
+// ---- loads and stores (WP-067) ----
+
+/// The one access of an `Fpr`-class value in memory: its store size,
+/// which is 2, 4, 8 or 16 bytes (`target::vector_class` admits vectors
+/// of 64 and 128 bits only; a vector of elements narrower than a byte is
+/// bit-packed in the register as in memory).
+fn access(cx: &FnCx<'_, A64>, ty: TypeId) -> CgResult<VMemSize> {
+    Ok(match cx.types().size_of(ty) {
+        2 => VMemSize::H,
+        4 => VMemSize::S,
+        8 => VMemSize::D,
+        16 => VMemSize::Q,
+        _ => return cx.bug("an Fpr-class value whose store size is no register view"),
+    })
+}
+
+/// The address operand `ptr` if it is a deferred `ptradd` that the
+/// addressing fuses (as `mem.rs` decides).
+fn fused_ptr(cx: &FnCx<'_, A64>, ptr: Value) -> Option<Value> {
+    cx.deferred(ptr).filter(|d| matches!(d.kind(), InstKind::PtrAdd(_))).map(|_| ptr)
+}
+
+/// `%r = load <ty>, ptr %ptr` of class `Fpr` (the hook in `mem.rs`, which
+/// has refused an atomic load): one `ldr`/`ldur` of exactly the store
+/// size at the address `address` computes. `address` is `mem.rs`'s: it
+/// fuses a deferred `ptradd` and asks for the address operands, so it
+/// runs after the result's register is taken (a vector register, which
+/// no address computation writes).
+///
+/// # Errors
+/// What asking for the operands reports.
+pub fn load<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    ptr: Value,
+    address: impl FnOnce(&mut FnCx<'a, A64>) -> CgResult<Cursor>,
+) -> CgResult<()> {
+    deferred_first(cx, inst, fused_ptr(cx, ptr))?;
+    let sz = access(cx, inst.ty())?;
+    let rd = cx.def_reg(inst)?;
+    let mut at = address(cx)?;
+    load_fpr_at(cx, sz, vr(rd), &mut at);
+    cx.finish(inst, rd)
+}
+
+/// `store <ty> %value, ptr %ptr` of class `Fpr` (the hook in `mem.rs`,
+/// which has refused an atomic store): one `str`/`stur` of exactly the
+/// store size.
+///
+/// # Errors
+/// What asking for the operands reports.
+pub fn store<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    value: Value,
+    ptr: Value,
+    address: impl FnOnce(&mut FnCx<'a, A64>) -> CgResult<Cursor>,
+) -> CgResult<()> {
+    deferred_first(cx, inst, fused_ptr(cx, ptr))?;
+    let sz = access(cx, value_ty(cx, value))?;
+    let src = cx.use_reg(value)?;
+    let mut at = address(cx)?;
+    store_fpr_at(cx, sz, vr(src), &mut at);
+    Ok(())
 }

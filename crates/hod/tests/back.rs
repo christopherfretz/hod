@@ -78,7 +78,7 @@ fn compile(input: &str, threads: Threads) -> Result<Vec<u8>, CompileError> {
 }
 
 fn max(max: usize) -> Threads {
-    Threads { max, tokens: None }
+    Threads { max, ..Threads::default() }
 }
 
 /// Instructions per function of [`function`], about.
@@ -128,7 +128,7 @@ impl ThreadTokens for Pool {
 #[test]
 fn tokens_are_asked_for_large_modules_and_given_back() {
     let pool = Arc::new(Pool { idle: AtomicUsize::new(2), asked: AtomicUsize::new(0) });
-    let threads = || Threads { max: 8, tokens: Some(pool.clone()) };
+    let threads = || Threads { max: 8, tokens: Some(pool.clone()), per_thread: 0 };
     let small = module(3, |_| PLAIN);
     compile(&small, threads()).expect("hod compiles the module");
     assert_eq!(pool.asked.load(Ordering::SeqCst), 0, "a small module asks for nothing");
@@ -138,7 +138,7 @@ fn tokens_are_asked_for_large_modules_and_given_back() {
     assert_eq!(pool.asked.load(Ordering::SeqCst), 1);
     assert_eq!(pool.idle.load(Ordering::SeqCst), 2, "the tokens are back");
     let refused = module(9 * PARALLEL_MIN_INSTS / PER_FUNCTION, |i| {
-        if i == 700 { "+strict-align" } else { PLAIN }
+        if i == 300 { "+strict-align" } else { PLAIN }
     });
     assert!(compile(&refused, threads()).is_err());
     assert_eq!(pool.idle.load(Ordering::SeqCst), 2, "the tokens are back after a refusal");
@@ -233,4 +233,31 @@ fn x86_64_is_a_stable_refusal() {
     let settings = Settings { support: Some(support), ..Settings::default() };
     let result = hod::compile_with(input.as_bytes(), &obj(), &settings, &mut Report::default());
     assert_eq!(result, Err(Unsupported::module(Construct::CodegenNotImplemented).into()));
+}
+
+// Measures the break-even of `PARALLEL_MIN_INSTS` (spec/landed/cli/WP-043.md):
+// `cargo test --release -p hod --test back -- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, not a test"]
+fn break_even() {
+    use std::time::Instant;
+    for functions in [8, 16, 32, 64, 128, 256, 512, 1024, 4096] {
+        let input = module(functions, |_| PLAIN);
+        let mut line = format!("{:>7} insts:", functions * PER_FUNCTION);
+        for threads in [1, 2, 4, 8] {
+            let settings = Settings {
+                threads: Threads { max: threads, per_thread: 1, ..Threads::default() },
+                ..Settings::default()
+            };
+            let mut best = u128::MAX;
+            for _ in 0..15 {
+                let mut report = Report::default();
+                hod::compile_with(input.as_bytes(), &obj(), &settings, &mut report).unwrap();
+                let at = |name| report.phases.iter().find(|(n, _)| *n == name).unwrap().1;
+                best = best.min((at("emission") - at("bodies")).as_micros());
+            }
+            let _ = write!(line, "  {threads}t {best:>6} us");
+        }
+        println!("{line}");
+    }
 }

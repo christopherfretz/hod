@@ -42,11 +42,15 @@ pub struct Threads {
     /// Where every thread beyond the first must come from. `None`: `max`
     /// is granted outright (an explicit setting).
     pub tokens: Option<Arc<dyn ThreadTokens>>,
+    /// The work, in IR instructions, each thread needs; 0 is
+    /// [`PARALLEL_MIN_INSTS`]. For measuring the break-even.
+    pub per_thread: usize,
 }
 
 impl PartialEq for Threads {
     fn eq(&self, other: &Threads) -> bool {
         self.max == other.max
+            && self.per_thread == other.per_thread
             && match (&self.tokens, &other.tokens) {
                 (None, None) => true,
                 (Some(a), Some(b)) => std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b)),
@@ -57,11 +61,12 @@ impl PartialEq for Threads {
 
 impl Eq for Threads {}
 
-/// The least work, in IR instructions, for which a second thread pays:
-/// below it a module is compiled on the calling thread alone, and each
-/// thread beyond the first needs this much more (measured:
+/// The work, in IR instructions, each thread must have: a module of `n`
+/// times this many uses at most `n` threads, so one below twice this is
+/// compiled on the calling thread alone. A thread then has about 0.4 ms
+/// of work against about 30 µs to start and join it (measured:
 /// `spec/landed/cli/WP-043.md`).
-pub const PARALLEL_MIN_INSTS: usize = 16_384;
+pub const PARALLEL_MIN_INSTS: usize = 4_096;
 
 /// How many chunks each worker gets, about: more than one, so that a
 /// worker that drew short functions takes more.
@@ -84,7 +89,8 @@ impl Drop for Lease<'_> {
 
 /// How many threads compile `work` instructions in `bodies` functions.
 fn wanted_threads(threads: &Threads, work: usize, bodies: usize) -> usize {
-    threads.max.min(bodies).min(work / PARALLEL_MIN_INSTS).max(1)
+    let per_thread = if threads.per_thread == 0 { PARALLEL_MIN_INSTS } else { threads.per_thread };
+    threads.max.min(bodies).min(work / per_thread).max(1)
 }
 
 /// The bodies cut into runs of consecutive functions of about `per_chunk`
@@ -364,7 +370,7 @@ mod tests {
     // at most one per function.
     #[test]
     fn threads_wanted() {
-        let max = |max| Threads { max, tokens: None };
+        let max = |max| Threads { max, ..Threads::default() };
         assert_eq!(wanted_threads(&Threads::default(), 1 << 30, 100), 1);
         assert_eq!(wanted_threads(&max(8), PARALLEL_MIN_INSTS - 1, 100), 1);
         assert_eq!(wanted_threads(&max(8), 2 * PARALLEL_MIN_INSTS, 100), 2);

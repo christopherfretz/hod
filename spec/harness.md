@@ -613,6 +613,15 @@ business, not the program's; "Test directives").
 | `selector_narrow_load.ll` | `spec/interp.md` §10.1: a narrow load GlobalISel miscompiles on AArch64 | |
 | `selector_i1_compare.ll` | `spec/interp.md` §10.1: an `i1` compare FastISel miscompiles on AArch64 | |
 | `two_modules.ll` | two modules: definitions and declarations across them, internal linkage, linkonce_odr | quick |
+| `exit_int.ll` | call-free: integer operations, shifts, compares, casts, select at i8 to i64 | quick |
+| `exit_float.ll` | call-free: floating-point arithmetic, conversions, the fcmp predicates with NaN | quick |
+| `exit_control.ll` | call-free: loops, phi, switch, indirectbr, local arrays, narrow loads and stores, a pointer table | quick |
+
+The three `exit_*.ll` programs make no call, so hod compiled them before
+it had calls (WP-043): each checks its results against values derived
+independently of any compiler and reports through its exit status alone
+(7 when every check passed, `100 + n` for check `n`). They carry
+`unsupported(x86_64): *`, since x86-64 has no code generator yet.
 
 The `va_arg` instruction is not in the corpus, because it has no oracle:
 for AArch64 Linux, `llc` (19 and 22) accepts it and reads the `va_list` as

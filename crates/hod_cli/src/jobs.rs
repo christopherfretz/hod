@@ -131,13 +131,13 @@ impl ThreadTokens for Lazy {
 /// to the machine); else the calling thread alone. Touches no file.
 pub fn threads(explicit: Option<usize>, makeflags: Option<&str>) -> Threads {
     if let Some(max) = explicit {
-        return Threads { max, tokens: None };
+        return Threads { max, ..Threads::default() };
     }
     let Some(path) = makeflags.and_then(fifo_from_makeflags) else {
         return Threads::default();
     };
     let tokens: Arc<dyn ThreadTokens> = Arc::new(Lazy { path, opened: OnceLock::new() });
-    Threads { max: JOBSERVER_MAX_THREADS, tokens: Some(tokens) }
+    Threads { max: JOBSERVER_MAX_THREADS, tokens: Some(tokens), per_thread: 0 }
 }
 
 #[cfg(test)]

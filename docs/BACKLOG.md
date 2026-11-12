@@ -51,7 +51,7 @@ instruction group and can run in parallel once WP-033 has landed.
 | WP-033 | T-A64 | `hod_a64` skeleton per `spec/codegen.md` §5.5: `RegInfo`, `class_of`, prologue/epilogue/CFI rows, glue, constant and symbol-address materialization, `Ret`, `Br`, `Unreachable`; a builder-made module that returns 42 links with every linker and runs | WP-030, WP-032 | done |
 | WP-034 | T-A64 | `spec/abi-a64.md` and `assign` for AArch64 (scalars, `sret`, `byval`, aggregates and `i128` as values, variadic calls and callees, `musttail`); the L5 grid generator against clang in both directions | WP-030 | done |
 | WP-035 | T-A64 | integer arithmetic, shifts, division, compares, casts between integers and pointers, `select`, `freeze`; compare-and-branch fusion | WP-033 | done |
-| WP-036 | T-A64 | memory: `Load`/`Store` of every `Gpr` width incl. odd widths, stack slots, `PtrAdd` with fusion into addressing modes, dynamic `Alloca`, over-aligned slots, `stacksave`/`stackrestore` | WP-033 | in-progress |
+| WP-036 | T-A64 | memory: `Load`/`Store` of every `Gpr` width incl. odd widths, stack slots, `PtrAdd` with fusion into addressing modes, dynamic `Alloca`, over-aligned slots, `stacksave`/`stackrestore` | WP-033 | done |
 | WP-037 | T-A64 | control flow: `CondBr`, `Switch`, `phi`, `IndirectBr` and block addresses | WP-033 | in-progress |
 | WP-038 | T-A64 | calls: direct and indirect, results, `sret`/`byval`, stack arguments, `noreturn`; variadic callees and `va_start`/`va_end`/`va_copy` (the `va_arg` instruction is rejected: `llc` miscompiles it on this target, so there is no oracle) | WP-033, WP-034 | in-progress |
 | WP-039 | T-A64 | floating point: arithmetic, compares, conversions, constants, loads and stores, FP arguments | WP-013, WP-033 | done |

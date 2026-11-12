@@ -58,10 +58,12 @@ fn thread_local(m: &mut Module, name: &str) -> SymId {
 
 // ---- §8.6: thread-local storage ----
 
-/// §8.6 `tls:direct-operand`: a thread-local symbol is an operand of
-/// `llvm.threadlocal.address` and of nothing else.
+/// §8.6 `tls:direct-operand`: a thread-local symbol's address is an
+/// operand like any other symbol's (WP-073), the value stored or the
+/// address stored to, a call argument, the argument of
+/// `llvm.threadlocal.address`; only a callee may not be one.
 #[test]
-fn a_thread_local_symbol_is_only_the_operand_of_threadlocal_address() {
+fn a_thread_local_symbol_is_an_operand_but_no_callee() {
     let direct = |through_intrinsic: bool, stored: bool| {
         let mut fx = fx(ARCH);
         let t = thread_local(&mut fx.m, "t");
@@ -84,35 +86,38 @@ fn a_thread_local_symbol_is_only_the_operand_of_threadlocal_address() {
             }
         })
     };
-    let rejection = refused(&direct(false, false), rule("tls:direct-operand"));
-    assert!(rejection.symbol.is_some() && rejection.inst.is_some());
-    refused(&direct(false, true), "tls:direct-operand");
-    accepted(&direct(true, false));
-    accepted(&direct(true, true));
+    for through_intrinsic in [false, true] {
+        for stored in [false, true] {
+            accepted(&direct(through_intrinsic, stored));
+        }
+    }
 
-    // The same symbol in any other argument position, and as the
-    // argument of any other call, is refused.
+    // As the argument of another call: accepted. As the callee: refused.
     let mut fx = fx(ARCH);
     let t = thread_local(&mut fx.m, "t");
     let (take, take_ty) = declare(&mut fx.m, "take", VOID, &[PTR]);
     let args = [sym(t)];
-    let program = fx.with(|b, _| {
+    accepted(&fx.with(|b, _| {
         b.call(VOID, &CallDesc::new(sym(take), take_ty, &args)).unwrap();
-    });
-    refused(&program, "tls:direct-operand");
-
-    // A symbol that is not thread-local is an operand like any other.
-    let plain = classify_support::fx(ARCH);
-    let g = plain.g;
-    accepted(&plain.with(|b, _| {
-        b.store(b.arg(0).unwrap(), sym(g), align(4)).unwrap();
     }));
+    let mut fx = classify_support::fx(ARCH);
+    let t = thread_local(&mut fx.m, "t");
+    let ty = fx.m.types.function(VOID, &[], false).unwrap();
+    let rejection = refused(
+        &fx.with(|b, _| {
+            b.call(VOID, &CallDesc::new(sym(t), ty, &[])).unwrap();
+        }),
+        rule("tls:direct-operand"),
+    );
+    assert!(rejection.symbol.is_some() && rejection.inst.is_some());
 }
 
 /// §8.6 `tls:address-in-constant`: the address of a thread-local symbol
-/// is not a constant: not in an initializer, not as a constant operand.
+/// is code, not data: a plain address operand (`@t + 4`) is accepted
+/// (WP-073); an initializer, an aggregate operand and a difference are
+/// refused.
 #[test]
-fn a_thread_local_address_is_not_a_constant() {
+fn a_thread_local_address_is_not_data() {
     let init = |tls: bool| {
         let mut m = module(ARCH);
         let target = if tls { thread_local(&mut m, "t") } else { variable(&mut m, "t", I32) };
@@ -143,11 +148,24 @@ fn a_thread_local_address_is_not_a_constant() {
             }
         })
     };
-    refused(&operand(true, false), "tls:address-in-constant");
-    accepted(&operand(false, false));
-    // Decided conservatively: `llvm.threadlocal.address` takes the
-    // symbol itself; a constant expression over it is refused.
-    refused(&operand(true, true), "tls:address-in-constant");
+    for tls in [false, true] {
+        accepted(&operand(tls, false));
+        accepted(&operand(tls, true));
+    }
+
+    // Inside an aggregate operand: data.
+    let mut fx = fx(ARCH);
+    let t = thread_local(&mut fx.m, "t");
+    let address = fx.m.consts.addr(t, 0).unwrap();
+    let pair = fx.m.types.struct_type(&[I64, PTR], false).unwrap();
+    let zero = fx.m.consts.int(&fx.m.types, I64, 0).unwrap();
+    let value = constant(fx.m.consts.aggregate(&fx.m.types, pair, &[zero, address]).unwrap());
+    refused(
+        &fx.with(|b, _| {
+            b.store(value, b.arg(1).unwrap(), align(8)).unwrap();
+        }),
+        "tls:address-in-constant",
+    );
 
     // A difference of thread-local addresses is no constant either.
     let mut m = module(ARCH);

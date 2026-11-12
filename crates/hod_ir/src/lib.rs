@@ -113,10 +113,11 @@ pub use debug::map::{
 // The `DW_TAG_*` numbers, the name tables and lookups, the flag sets.
 pub use body::{DbgDeclare, DbgRecord, DbgRecordKind};
 pub use classify::{
-    CONSTRUCT_FAMILIES, CONSTRUCT_NAMES, Census, CensusEntry, Classifier, ConstructInfo,
-    INVALID_RULES, Rejection, RejectionKind, STRUCTURAL_RULES, SUPPORT_GROUPS, SUPPORT_ROWS,
-    StackArgs, Support, SupportCell, SupportRow, SupportStatus, TypeClass, TypeClasses, census,
-    classify, classify_body, support_markdown,
+    AttrConflict, CONSTRUCT_FAMILIES, CONSTRUCT_NAMES, Census, CensusEntry, Classifier,
+    ConstructInfo, INVALID_RULES, Rejection, RejectionKind, STRUCTURAL_RULES, SUPPORT_GROUPS,
+    SUPPORT_ROWS, StackArgs, Support, SupportCell, SupportRow, SupportStatus, TypeClass,
+    TypeClasses, call_arg_attrs, call_declaration, call_ret_attrs, census, classify, classify_body,
+    merge_call_attrs, support_markdown,
 };
 pub use debug::names::*;
 pub use debug::node::{

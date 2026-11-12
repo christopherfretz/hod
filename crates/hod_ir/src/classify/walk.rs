@@ -10,6 +10,7 @@
 use std::borrow::Cow;
 use std::ops::ControlFlow;
 
+use super::attrs::{call_declaration, merge_call_attrs};
 use super::matrix::{FAR_PTR, NO_VALUE, SUPPORT_ROWS, TypeClass, at, class_code, rules};
 use super::support::Support;
 use super::{Rejection, RejectionKind, StackArgs};
@@ -26,6 +27,22 @@ use crate::types::TypeKind;
 use crate::value::{InstId, Value, ValueKind};
 
 pub(crate) type Flow = ControlFlow<()>;
+
+/// The return and parameter attributes of the declaration a call takes
+/// attributes from ([`call_declaration`]), if it has any.
+fn declared_attrs<'m>(
+    module: &'m Module,
+    site: &CallSite<'_>,
+) -> Option<(ParamAttrs, &'m [ParamAttrs])> {
+    match call_declaration(module, site)?.kind() {
+        SymbolKind::Function { ret_attrs, param_attrs, .. }
+            if !ret_attrs.is_none() || !param_attrs.is_empty() =>
+        {
+            Some((ret_attrs, param_attrs))
+        }
+        _ => None,
+    }
+}
 
 const GO: Flow = ControlFlow::Continue(());
 
@@ -813,13 +830,23 @@ impl<'a, S: Sink> Walker<'a, S> {
         {
             return false;
         }
-        let has_attrs = site.has_param_attrs();
-        if has_attrs && !self.accepts_attrs(site.ret_attrs()) {
+        // The attributes the call passes with (`spec/codegen.md` §7.1).
+        let declared = declared_attrs(module, &site);
+        let has_attrs = site.has_param_attrs() || declared.is_some();
+        let accepts = |own: ParamAttrs, theirs: ParamAttrs| {
+            merge_call_attrs(own, theirs).is_ok_and(|attrs| self.accepts_attrs(attrs))
+        };
+        let (ret_declared, of_param) = match declared {
+            Some((ret, params)) => (ret, params),
+            None => (ParamAttrs::NONE, &[][..]),
+        };
+        if has_attrs && !accepts(site.ret_attrs(), ret_declared) {
             return false;
         }
         site.args().iter().enumerate().all(|(index, &arg)| {
+            let theirs = of_param.get(index).copied().unwrap_or(ParamAttrs::NONE);
             self.accepts_operand(cx, classes, arg)
-                && (!has_attrs || self.accepts_attrs(site.arg_attrs(index)))
+                && (!has_attrs || accepts(site.arg_attrs(index), theirs))
         })
     }
 
@@ -1059,9 +1086,17 @@ impl<'a, S: Sink> Walker<'a, S> {
                 }
             }
         }
-        let has_attrs = site.has_param_attrs();
+        // The attributes the call passes with (`spec/codegen.md` §7.1):
+        // its own and, for a direct call through the callee's own type,
+        // the declaration's.
+        let declared = declared_attrs(self.module, &site);
+        let has_attrs = site.has_param_attrs() || declared.is_some();
+        let (ret_declared, of_param) = match declared {
+            Some((ret, params)) => (ret, params),
+            None => (ParamAttrs::NONE, &[][..]),
+        };
         if has_attrs {
-            self.param_attrs(site.ret_attrs(), at)?;
+            self.call_attrs(site.ret_attrs(), ret_declared, at)?;
         }
         let classes = self.classes(row);
         if data.ty != TypeId::VOID {
@@ -1080,7 +1115,8 @@ impl<'a, S: Sink> Walker<'a, S> {
                 _ => self.operand(cx, row, classes, arg, at)?,
             }
             if has_attrs {
-                self.param_attrs(site.arg_attrs(index), at)?;
+                let theirs = of_param.get(index).copied().unwrap_or(ParamAttrs::NONE);
+                self.call_attrs(site.arg_attrs(index), theirs, at)?;
             }
         }
         if has_bundles {
@@ -1091,6 +1127,18 @@ impl<'a, S: Sink> Walker<'a, S> {
             }
         }
         GO
+    }
+
+    /// The rows of the attributes a call passes one argument (or its
+    /// result) with: `own` merged with the declaration's `theirs`. A
+    /// conflict, which the call sequence refuses, reports both.
+    fn call_attrs(&mut self, own: ParamAttrs, theirs: ParamAttrs, at: At) -> Flow {
+        if let Ok(attrs) = merge_call_attrs(own, theirs) {
+            self.param_attrs(attrs, at)
+        } else {
+            self.param_attrs(own, at)?;
+            self.param_attrs(theirs, at)
+        }
     }
 
     /// What a call of something other than an intrinsic calls, how, and

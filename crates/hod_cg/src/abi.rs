@@ -6,9 +6,13 @@
 //! (incoming locations). The rules are the target's, in
 //! `spec/abi-<target>.md`.
 
-use hod_ir::{CallConv, ParamAttrs, TypeId};
+use hod_ir::{
+    CallConv, CallSite, Module, ParamAttrs, StackArgs, Symbol, SymbolKind, TypeId, TypeKind,
+    TypeTable, call_arg_attrs, call_ret_attrs,
+};
 
 use crate::reg::PReg;
+use crate::target::Target;
 
 /// What is being called or defined, as far as passing goes.
 #[derive(Clone, Copy, Debug)]
@@ -144,3 +148,77 @@ impl Assignment {
 /// log reports (`abi:<what>`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct AbiUnsupported(pub &'static str);
+
+/// `hod_ir::StackArgs` answered by a target's [`Target::assign`]: the
+/// hook `classify` needs to decide a `musttail` call (`spec/codegen.md`
+/// §7.1, "Tail kinds"; `spec/ir.md` §8.6).
+///
+/// Both sides are assigned as the call sequence assigns them: a
+/// function's own signature with its declared attributes, a call with its
+/// effective ones (`hod_ir::call_arg_attrs`). A call that passes more
+/// arguments than its function type names (the variable arguments of a
+/// variadic call) has no answer: their types are the body's, which the
+/// hook is not given. `musttail` forwards a variadic caller's variable
+/// arguments as `...`, which a call site does not list, so this costs no
+/// `musttail` call of the corpus.
+#[derive(Clone, Copy)]
+pub struct TargetStackArgs<'t, T> {
+    target: &'t T,
+}
+
+impl<T> std::fmt::Debug for TargetStackArgs<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TargetStackArgs")
+    }
+}
+
+impl<'t, T: Target> TargetStackArgs<'t, T> {
+    /// The hook of `target`.
+    pub const fn new(target: &'t T) -> TargetStackArgs<'t, T> {
+        TargetStackArgs { target }
+    }
+
+    fn stack_size(&self, types: &TypeTable, sig: &Sig<'_>) -> Option<u64> {
+        let mut asg = Assignment::default();
+        self.target.assign(types, sig, &mut asg).ok()?;
+        Some(u64::from(asg.stack_size))
+    }
+}
+
+impl<T: Target> StackArgs for TargetStackArgs<'_, T> {
+    fn of_function(&self, module: &Module, function: Symbol<'_>) -> Option<u64> {
+        let SymbolKind::Function { cc, ret_attrs, param_attrs, .. } = function.kind() else {
+            return None;
+        };
+        let TypeKind::Function { ret, params, variadic } = module.types.kind(function.ty()) else {
+            return None;
+        };
+        let fixed = u32::try_from(params.len()).ok()?;
+        let sig = Sig { cc, ret, ret_attrs, params, param_attrs, fixed, variadic };
+        self.stack_size(&module.types, &sig)
+    }
+
+    fn of_call(&self, module: &Module, call: &CallSite<'_>) -> Option<u64> {
+        let TypeKind::Function { ret, params, variadic } = module.types.kind(call.fn_type()) else {
+            return None;
+        };
+        if call.args().len() != params.len() {
+            return None;
+        }
+        let ret_attrs = call_ret_attrs(module, call).ok()?;
+        let param_attrs = (0..params.len())
+            .map(|index| call_arg_attrs(module, call, index).ok())
+            .collect::<Option<Vec<ParamAttrs>>>()?;
+        let fixed = u32::try_from(params.len()).ok()?;
+        let sig = Sig {
+            cc: call.cc(),
+            ret,
+            ret_attrs,
+            params,
+            param_attrs: &param_attrs,
+            fixed,
+            variadic,
+        };
+        self.stack_size(&module.types, &sig)
+    }
+}

@@ -1611,6 +1611,66 @@ that refused it before.
   `hod_bc/src/module.rs`), `type:bfloat` (a type class of its own: ABI,
   conversions, arithmetic through `float`).
 
+#### NEON intrinsics (WP-083)
+
+`src/neon.rs`, reached by one call: the last arm of
+`intrinsic::intrinsic` hands it every intrinsic nothing before it took.
+It lowers the AArch64 target intrinsics on `hod_ir`'s list (§5.5,
+`spec/ir.md`): `llvm.aarch64.neon.*`, `crypto.*`, `sisd.*`, `cls`,
+`cls64`, `dmb`, `dsb`, `isb`, `hint`. The bfloat ones (`bfcvt`,
+`bfcvtn`, `bfcvtn2`, `bfdot`, `bfmlalb`, `bfmlalt`, `bfmmla`) are on the
+list with a matrix row that is not supported, so they stay
+`intrinsic:<name>` (vectors of `bfloat` are not lowered; the scalar is,
+WP-095 below).
+
+- **Target features.** Like `crc32` (WP-084), an intrinsic is lowered
+  whatever the function's `target-features` say: a feature is
+  availability (§5.5.2), and hod never chooses or refuses an instruction
+  by one. `llc` refuses some of them without the feature (`+aes`,
+  `+sha3`, `+dotprod`, ...); hod emits them, and the program is as
+  correct as the CPU it runs on supports the instruction.
+- **Table-driven.** Each intrinsic maps to a lowering family; the family
+  reads the call's types (vector width and element, or a scalar) and
+  takes the encoder family of `hod_mc_a64::neon` that has that shape: the
+  vector form, the scalar (`<1 x i64>`, `i32`, `i64`, `float`, `double`,
+  `<1 x double>`) form, or the general-register form (`fcvt*` to `i32`/
+  `i64`, `cls`). The checked encoder refusing the shape is the refusal.
+- **Operands.** The first two vector-register operands are `use_reg`'d
+  (an accumulating instruction writes operand 0's register); the others
+  are put into `v30`, `v31`, then temporaries; an `i32`/`i64` operand is
+  moved in with `fmov`. A general result is moved out with `fmov`,
+  zero-extending: also the signed reductions of bytes and halfwords
+  (`saddv`, `smaxv`, `sminv`, `saddlv`), as `llc` 22 (`llc` 19
+  sign-extends `saddlv`'s; `<arm_neon.h>` truncates either).
+- **Consecutive registers.** `tbl`/`tbx` tables and the structure loads
+  and stores use `v24`..`v27`, taken (`take_reg`) before the deferred
+  operands. A structure result (`ld2`.. `ld4`, `ld2lane`.., `ld2r`..) is
+  a `Mem` value: the registers are stored to its slot. `ld<n>`/`st<n>`
+  of `<1 x i64>`/`<1 x double>` are `ld1`/`st1` of `n` registers, as
+  `llc`.
+- **Composite forms.** `sq{,r}dmulh.lane{,q}`: `dup` of the lane into
+  the second operand's register, then the instruction. Two-element
+  reductions are the scalar pairwise forms (`addp d`, `faddp`/`fmaxp`..
+  `s|d`); `faddv` of four floats is `faddp` then `faddp s`; `saddlv`/
+  `uaddlv` of `<2 x i32>` is `saddlp`/`uaddlp` to `1D`. `fmax`/`fmin`/
+  `fmaxnm`/`fminnm` of `<1 x double>` are the scalar instructions,
+  `frint{32,64}{x,z}` of `<1 x double>` the scalar `frint`.
+  `vcvtfp2hf`/`vcvthf2fp` are `fcvtn`/`fcvtl` of `4S`/`4H`. `sqshlu`'s
+  shift is a constant splat (or constant). `pmull64`'s operands are
+  moved from general registers.
+- **Barriers and hints.** `dmb`/`dsb` take a constant option that is a
+  barrier (`Barrier::ALL`), `isb` only 15 (`SY`), `hint` any constant
+  below 128.
+- **Refused by name.** `a64:intrinsic-target`: a known intrinsic with a
+  signature no instruction takes (`smax` of `<2 x i64>`, `frint32x` of
+  half, a type that is not a 64- or 128-bit vector). `a64:intrinsic-
+  immediate`: a shift amount, lane or barrier option that is not a
+  constant in range.
+
+Tests: `crates/hod_a64/tests/neon.rs` (`cases_match_llc` over
+`tests/data/neon/cases.txt`, `every_case_compiles`, the refusals); the
+encodings `crates/hod_mc_a64/tests/l1/neon.rs`.
+
 #### The short tail, second part (WP-095)
 
 `src/tail2.rs`; each construct is reached by one call from the module

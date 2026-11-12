@@ -753,7 +753,7 @@ suffix, so a producer reading LLVM's output never sees one. One exception:
 the member. `Intrinsic::mangled_name(types, overloads)` is the inverse, for
 the printer.
 
-The list (133; each with every overload LLVM allows):
+The list (351; each with every overload LLVM allows):
 
 - memory: `memcpy memcpy.inline memmove memset memset.inline`
 - variable arguments and stack: `va_start va_end va_copy stacksave
@@ -762,7 +762,7 @@ The list (133; each with every overload LLVM allows):
 - bits: `bswap bitreverse ctpop ctlz cttz fshl fshr abs smax smin umax
   umin scmp ucmp clmul`
 - checked and saturating arithmetic: `{s,u}{add,sub,mul}.with.overflow`,
-  `{s,u}{add,sub}.sat`
+  `{s,u}{add,sub,shl}.sat`
 - floating point: `fabs sqrt floor ceil trunc round roundeven nearbyint
   rint copysign fma fmuladd minnum maxnum minimum maximum minimumnum
   maximumnum canonicalize arithmetic.fence pow powi ldexp frexp sin cos tan
@@ -777,9 +777,18 @@ The list (133; each with every overload LLVM allows):
   coro.align coro.save coro.suspend coro.resume coro.destroy coro.done
   coro.promise coro.frame coro.noop coro.is_in_ramp
   coro.await.suspend.{void,bool,handle}`
+- AArch64 (WP-084, WP-083; the variants are `Aarch64` and the name's
+  parts in camel case): `aarch64.crc32{b,h,w,x,cb,ch,cw,cx}`,
+  `aarch64.{cls,cls64,dmb,dsb,isb,hint}`, the `aarch64.crypto.*` of AES,
+  SHA1, SHA256, SHA512 and SHA3, and the `aarch64.neon.*` and
+  `aarch64.sisd.*` that clang 22 or 19 emits for `<arm_neon.h>` (178 of
+  them; `bfcvt`, `bfcvtn` and `bfcvtn2` are LLVM 19's, which LLVM 22
+  upgrades to other IR on reading) but the SM3/SM4, FP8, `famax`/`famin`
+  and `vluti` ones. The list in
+  `crates/hod_ir/src/intrinsic.rs` is the reference.
 
-Not on the list, and therefore `Other`: target-specific intrinsics
-(`llvm.aarch64.*`, `llvm.x86.*`), intrinsics with metadata arguments (the
+Not on the list, and therefore `Other`: the other target-specific
+intrinsics (`llvm.aarch64.*` not above, `llvm.x86.*`), intrinsics with metadata arguments (the
 constrained floating-point family, `llvm.read_register`), the masked
 vector family (its signatures differ between LLVM 19 and 22), and anything
 no frontend in scope emits at `-O0`.

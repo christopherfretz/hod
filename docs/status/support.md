@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `operand` | 10 | 7 | 3 | 0 | 0 | 10 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 143 | 118 | 25 | 0 | 0 | 135 | 8 |
-| total | 450 | 313 | 91 | 46 | 17 | 370 | 63 |
+| `intrinsic` | 351 | 319 | 32 | 0 | 0 | 135 | 216 |
+| total | 658 | 514 | 98 | 46 | 17 | 370 | 271 |
 
 ## `module`
 
@@ -655,6 +655,214 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.aarch64.crc32ch` | supported (int) | rejected | x86_64: an AArch64 property |
 | `intrinsic:llvm.aarch64.crc32cw` | supported (int) | rejected | x86_64: an AArch64 property |
 | `intrinsic:llvm.aarch64.crc32cx` | supported (int) | rejected | x86_64: an AArch64 property |
+| `intrinsic:llvm.aarch64.cls` | supported (int) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.cls64` | supported (int) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.aesd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.aese` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.aesimc` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.aesmc` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.bcaxs` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.bcaxu` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.eor3s` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.eor3u` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.rax1` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.sha1c` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.sha1h` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.sha1m` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.sha1p` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.sha1su0` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.sha1su1` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.sha256h` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.sha256h2` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.sha256su0` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.sha256su1` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.sha512h` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.sha512h2` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.sha512su0` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.sha512su1` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.crypto.xar` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.dmb` | supported (int) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.dsb` | supported (int) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.hint` | supported (int) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.isb` | supported (int) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.abs` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.addp` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.bfcvt` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
+| `intrinsic:llvm.aarch64.neon.bfcvtn` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
+| `intrinsic:llvm.aarch64.neon.bfcvtn2` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
+| `intrinsic:llvm.aarch64.neon.bfdot` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
+| `intrinsic:llvm.aarch64.neon.bfmlalb` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
+| `intrinsic:llvm.aarch64.neon.bfmlalt` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
+| `intrinsic:llvm.aarch64.neon.bfmmla` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
+| `intrinsic:llvm.aarch64.neon.cls` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fabd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.facge` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.facgt` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.faddp` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.faddv` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fcvtas` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fcvtau` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fcvtms` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fcvtmu` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fcvtns` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fcvtnu` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fcvtps` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fcvtpu` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fcvtxn` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fcvtzs` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fcvtzu` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fmax` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fmaxnm` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fmaxnmp` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fmaxnmv` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fmaxp` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fmaxv` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fmin` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fminnm` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fminnmp` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fminnmv` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fminp` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fminv` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fmlal` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fmlal2` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fmlsl` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fmlsl2` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.fmulx` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.frecpe` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.frecps` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.frecpx` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.frint32x` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.frint32z` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.frint64x` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.frint64z` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.frsqrte` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.frsqrts` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.ld1x2` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.ld1x3` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.ld1x4` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.ld2` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.ld2lane` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.ld2r` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.ld3` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.ld3lane` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.ld3r` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.ld4` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.ld4lane` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.ld4r` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.pmul` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.pmull` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.pmull64` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.raddhn` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.rshrn` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.rsubhn` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sabd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.saddlp` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.saddlv` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.saddv` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.scalar.sqxtn` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.scalar.sqxtun` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.scalar.uqxtn` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sdot` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.shadd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.shsub` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.smax` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.smaxp` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.smaxv` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.smin` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sminp` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sminv` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.smmla` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.smull` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqabs` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqadd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqdmulh` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqdmulh.lane` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqdmulh.laneq` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqdmull` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqdmulls.scalar` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqneg` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqrdmlah` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqrdmlsh` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqrdmulh` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqrdmulh.lane` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqrdmulh.laneq` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqrshl` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqrshrn` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqrshrun` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqshl` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqshlu` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqshrn` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqshrun` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqsub` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqxtn` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sqxtun` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.srhadd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.srshl` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.sshl` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.st1x2` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.st1x3` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.st1x4` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.st2` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.st2lane` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.st3` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.st3lane` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.st4` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.st4lane` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.suqadd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.tbl1` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.tbl2` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.tbl3` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.tbl4` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.tbx1` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.tbx2` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.tbx3` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.tbx4` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.uabd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.uaddlp` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.uaddlv` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.uaddv` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.udot` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.uhadd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.uhsub` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.umax` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.umaxp` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.umaxv` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.umin` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.uminp` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.uminv` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.ummla` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.umull` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.uqadd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.uqrshl` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.uqrshrn` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.uqshl` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.uqshrn` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.uqsub` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.uqxtn` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.urecpe` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.urhadd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.urshl` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.ursqrte` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.usdot` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.ushl` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.usmmla` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.usqadd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.vcadd.rot270` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.vcadd.rot90` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.vcmla.rot0` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.vcmla.rot180` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.vcmla.rot270` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.vcmla.rot90` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.vcvtfp2fxs` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.vcvtfp2fxu` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.vcvtfp2hf` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.vcvtfxs2fp` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.vcvtfxu2fp` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.vcvthf2fp` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.vsli` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.neon.vsri` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.sisd.fabd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.aarch64.sisd.fcvtxn` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
 
 ## Structural rules
 

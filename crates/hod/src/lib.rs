@@ -6,11 +6,13 @@
 //! decline, [`Unsupported`] (a named construct; the caller may fall back to
 //! LLVM) and the other [`CompileError`]s.
 //!
-//! [`compile`] reads its input with `hod_ll` (text) or `hod_bc` (bitcode),
-//! checks it with `hod_ir::classify` and declines it with the first reason
-//! (the front half, `front.rs`); a module accepted whole goes to
-//! [`generate`], the back half (`back.rs`): code generation with
-//! `hod_a64`, on worker threads for a large module, and the object.
+//! [`compile`] reads its input with `hod_ll` (text) or `hod_bc` (bitcode)
+//! into a [`Session`], which checks it with `hod_ir::classify` as it is
+//! fed and declines it with the first reason (the front half, `front.rs`
+//! and `session.rs`); a module accepted whole goes to [`generate`], the
+//! back half (`back.rs`): code generation with `hod_a64`, on worker
+//! threads for a large module, and the object. A program that builds its
+//! own `hod_ir` module (kiln's bridge) feeds a [`Session`] directly.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -18,6 +20,7 @@ use std::path::PathBuf;
 
 mod back;
 mod front;
+mod session;
 
 pub use hod_obj::Compression;
 
@@ -28,6 +31,7 @@ pub use back::{
 pub use front::{
     BitcodeReading, INTERNAL_ERROR, LIMIT_READER, Report, Settings, compile_with, generate,
 };
+pub use session::Session;
 
 /// What [`compile`] writes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

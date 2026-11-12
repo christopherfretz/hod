@@ -5,6 +5,7 @@
 //! real `llc` and `llvm-dis` (and skip without them, see
 //! `hod_testutil::tool`).
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -225,9 +226,9 @@ fn threads_option() {
     // Enough instructions for several threads (one per 4096).
     let mut module = String::from("target triple = \"aarch64-unknown-linux-gnu\"\n");
     for f in 0..24 {
-        module.push_str(&format!("define i64 @f{f}(i64 %x) {{\n  %v0 = add i64 %x, {f}\n"));
+        let _ = write!(module, "define i64 @f{f}(i64 %x) {{\n  %v0 = add i64 %x, {f}\n");
         for i in 1..800 {
-            module.push_str(&format!("  %v{i} = add i64 %v{}, {i}\n", i - 1));
+            let _ = writeln!(module, "  %v{i} = add i64 %v{}, {i}", i - 1);
         }
         module.push_str("  ret i64 %v799\n}\n");
     }

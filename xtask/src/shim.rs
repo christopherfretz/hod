@@ -705,10 +705,7 @@ mod tests {
         let text = run_script(&shim.llc, &["-O0"], &[]);
         assert_eq!(
             text,
-            format!(
-                "fallback={} strict= log=\nvia=native\narg=-O0\n",
-                shim.real_llc.display(),
-            )
+            format!("fallback={} strict= log=\nvia=native\narg=-O0\n", shim.real_llc.display())
         );
         let text = run_script(shim.compiler.as_deref().unwrap(), &[], &[]);
         assert!(text.ends_with(&format!("arg=--llvm-dir={}\n", shim.dir.display())), "{text}");

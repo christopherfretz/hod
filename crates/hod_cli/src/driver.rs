@@ -685,7 +685,7 @@ mod tests {
         assert_eq!(threads(&obj, Some(5), &None), (5, false));
         assert_eq!(threads(&["-filetype=obj", "--threads=3"], Some(5), &None), (3, false));
         assert_eq!(threads(&["--threads", "2", "-filetype=obj"], None, &None), (2, false));
-        assert_eq!(threads(&obj, None, &make), (crate::jobs::JOBSERVER_MAX_THREADS, true));
+        assert_eq!(threads(&obj, None, &make), (jobs::JOBSERVER_MAX_THREADS, true));
         assert_eq!(threads(&obj, Some(5), &make), (5, false));
         assert_eq!(threads(&["-filetype=obj", "--threads=1"], None, &make), (1, false));
 

@@ -677,3 +677,29 @@ fn hod_ll_reads_an_aggregate_phi() {
     let (module, bodies) = parse(&text);
     assert_eq!(bodies.len(), 3, "{}", module.symbol_count());
 }
+
+/// A thread-local symbol in an operand constant stays refused by
+/// `classify` (thread-local storage is WP-073's), alone, in an aggregate
+/// and under `ptrtoint`.
+#[test]
+fn thread_local_addresses_stay_refused() {
+    for operand in [
+        "{ ptr, i64 } { ptr @t, i64 0 }",
+        "i64 ptrtoint (ptr @t to i64)",
+        "{ i64, i64 } { i64 ptrtoint (ptr @t to i64), i64 0 }",
+    ] {
+        let text = format!(
+            "{}@t = thread_local global i64 0, align 8\ndefine void @f(ptr %p) {{\n  store {operand}, ptr %p, align 8\n  ret void\n}}\n",
+            ll_header(22)
+        );
+        let (module, bodies) = parse(&text);
+        let mut census = hod_ir::Census::new();
+        Classifier::new(Support::shipped(Arch::Aarch64)).census_body(
+            &module,
+            &bodies[0],
+            &mut census,
+        );
+        let found: Vec<&str> = census.entries().iter().map(|e| e.construct.as_str()).collect();
+        assert!(found.contains(&"tls:address-in-constant"), "{operand}: {found:?}");
+    }
+}

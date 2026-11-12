@@ -509,7 +509,8 @@ These are decisions the group packages (WP-035..041) build on.
   constant is stored into its home: zero-like ones with `xzr`, wide
   integers word by word, other aggregates from their flattened image,
   whose only accepted relocations are aligned 8-byte symbol addresses
-  (else `a64:constant-relocation`). Symbol addresses follow §7.4:
+  (else `a64:constant-relocation`; WP-072 writes every other relocation
+  of a non-vector image, "Constant operands with addresses" below). Symbol addresses follow §7.4:
   `adrp`+`add` with the addend folded, or `adrp`+`ldr` from the GOT then
   the addend added; a code model other than small is `a64:code-model`.
 - **Other reason names of the target**: `a64:atomic`,
@@ -1010,6 +1011,46 @@ them there, and has the saturating arithmetic, `scmp`/`ucmp`, the
 - `sshl.sat`/`ushl.sat` are not in `hod_ir`'s intrinsic list: classify
   refuses them as `intrinsic:<name>`. Vector forms are `a64:intrinsic-vector`,
   `bfloat` ones `a64:intrinsic-bfloat`.
+
+#### Constant operands with addresses (WP-072)
+
+`src/constaddr.rs`, hooked from `common::materialize_gpr_const` and
+`common::materialize_mem_const`. Rows `operand:int-of-addr`,
+`operand:sym-diff` and `operand:address-in-aggregate` are on.
+
+- **Everything is computed in code.** An address in an operand constant
+  is formed by §7.4's access (`common::sym_address`: `adrp`+`add`, or the
+  GOT) or by the function's own block address (`common::block_address`),
+  then stored or kept in the register. No constant pool and no data
+  relocation: the code is the same shape for PIC and non-PIC, a
+  preemptible or `extern_weak` symbol comes from its GOT entry (0 for an
+  undefined weak one), and a difference of symbols in different sections
+  or a truncated address needs no relocation that could not express it.
+- **`IntOfAddr`** of class `Gpr` is its address in the register (the bits
+  above a narrower type's width are unspecified, §2.2); in an image it is
+  a field of 1, 2, 4 or 8 bytes.
+- **`SymDiff`** of class `Gpr` (`operand:sym-diff`) is `a + addend` in
+  the destination, `b` in the other scratch register
+  (`common::other_scratch`), `sub`. Writes the destination and that
+  scratch register only, as a block address does.
+- **`Mem`-class images.** An image whose relocations are all aligned
+  8-byte symbol addresses is written by `common` as before. Any other
+  (a field of 1, 2 or 4 bytes, an unaligned field of a packed struct, a
+  block address, `dso_local_equivalent`, a difference) is written by
+  `constaddr::write_image`: the bytes between fields as 8/4/2/1-byte
+  stores (`xzr` for zero), each field computed in `x17` (`x16` the second
+  register of a difference) and stored with its width, a fresh frame
+  cursor (scratch `x16`) per store. Writes `x16` and `x17` only.
+- **`dso_local_equivalent @f`** in an image, or in a difference, is `f`'s
+  own address: what a call through it needs. As a scalar operand it is
+  still `operand:dso-local-equivalent` (and `no_cfi` `operand:no-cfi`).
+- **Refused**: an address in an integer whose width is not 8, 16, 32 or
+  64 bits inside an image, and an `i128` (or wider) `ptrtoint` of an
+  address, have no image: `a64:constant`. A vector constant with an
+  address that is not an aligned 8-byte symbol address stays
+  `a64:constant-relocation` (vectors are WP-078 and after). A
+  thread-local symbol in a constant is `classify`'s `tls:address-in-constant` rule.
+  Every other expression `hod_ir` keeps (`Expr`) is `const-expr:<op>`.
 
 #### 5.5.2 Target features (WP-043)
 

@@ -113,16 +113,14 @@ fn the_matrices_are_the_table() {
 /// accepted), on AArch64 and on x86-64: `(row, module on AArch64, module
 /// on x86-64, body on AArch64, body on x86-64)`. A flip of the
 /// matrix that changes one of these is a deliberate change of this
-/// table. `*` is "not checked here": the AArch64
-/// instruction groups turn rows on one merge after another, and the
-/// first refusal of these bodies (or their acceptance) moves with every
-/// one of them; WP-066 writes the names back when the groups are in.
+/// table. `*` is "not checked here" (no row uses it since WP-066 pinned
+/// the AArch64 bodies again once every instruction group was in).
 const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 26] = [
     ("module:pic", "", "module:pic", "", ""),
     ("module:frame-pointer", "", "", "", ""),
     ("structor:priority", "", "module:global-ctors", "", ""),
     ("debug:module-flags", "debug:module-flags", "debug:module-flags", "", ""),
-    ("debug:locations", "", "global:function-definition", "*", "cc:ccc"),
+    ("debug:locations", "", "global:function-definition", "debug:locations", "cc:ccc"),
     ("global:function-declaration", "", "", "", ""),
     ("global:variable-definition", "", "global:variable-definition", "", ""),
     ("global:ifunc", "", "global:ifunc", "", ""),
@@ -131,19 +129,19 @@ const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 26] = [
     ("tls:initial-exec", "", "global:variable-definition", "", ""),
     ("comdat:any", "", "global:variable-definition", "", ""),
     ("init:symbol", "", "global:variable-definition", "", ""),
-    ("function:slots", "", "global:function-definition", "*", "cc:ccc"),
-    ("cc:fastcc", "", "global:function-definition", "*", "cc:fastcc"),
-    ("attr:zeroext", "", "global:function-definition", "*", "cc:ccc"),
-    ("type:double", "", "global:function-definition", "*", "cc:ccc"),
-    ("inst:add", "", "global:function-definition", "*", "cc:ccc"),
-    ("mem:volatile", "", "global:function-definition", "*", "cc:ccc"),
-    ("atomicrmw:add", "", "global:function-definition", "*", "cc:ccc"),
-    ("call:indirect", "", "global:function-definition", "*", "cc:ccc"),
-    ("tail:musttail", "", "global:function-definition", "*", "cc:ccc"),
-    ("bundle:deopt", "", "global:function-definition", "*", "cc:ccc"),
-    ("landingpad:catch", "", "global:function-definition", "*", "cc:ccc"),
-    ("operand:slot", "", "global:function-definition", "*", "cc:ccc"),
-    ("intrinsic:llvm.memcpy", "", "global:function-definition", "*", "cc:ccc"),
+    ("function:slots", "", "global:function-definition", "", "cc:ccc"),
+    ("cc:fastcc", "", "global:function-definition", "", "cc:fastcc"),
+    ("attr:zeroext", "", "global:function-definition", "", "cc:ccc"),
+    ("type:double", "", "global:function-definition", "", "cc:ccc"),
+    ("inst:add", "", "global:function-definition", "", "cc:ccc"),
+    ("mem:volatile", "", "global:function-definition", "", "cc:ccc"),
+    ("atomicrmw:add", "", "global:function-definition", "inst:atomicrmw", "cc:ccc"),
+    ("call:indirect", "", "global:function-definition", "", "cc:ccc"),
+    ("tail:musttail", "", "global:function-definition", "", "cc:ccc"),
+    ("bundle:deopt", "", "global:function-definition", "bundle:deopt", "cc:ccc"),
+    ("landingpad:catch", "", "global:function-definition", "", "cc:ccc"),
+    ("operand:slot", "", "global:function-definition", "", "cc:ccc"),
+    ("intrinsic:llvm.memcpy", "", "global:function-definition", "", "cc:ccc"),
 ];
 
 #[test]
@@ -206,7 +204,7 @@ fn the_free_functions_use_the_shipped_matrix() {
 fn support_flips_rows() {
     let shipped = Support::shipped(Arch::Aarch64);
     // A row no package of the first AArch64 wave flips.
-    let row = "inst:extractelement";
+    let row = "cc:ghccc";
     assert_eq!(shipped.supports(row), Some(false));
     let flipped = shipped.clone().with(row).unwrap();
     assert_eq!(flipped.supports(row), Some(true));
@@ -225,7 +223,9 @@ fn support_flips_rows() {
         assert!(shipped.clone().with(unknown).is_none(), "{unknown:?}");
         assert!(shipped.clone().without(unknown).is_none(), "{unknown:?}");
     }
-    assert_eq!(shipped.supports("inst:extractelement/int"), Some(false));
+    // WP-079: lanes of byte-sized elements, not of the wide integers.
+    assert_eq!(shipped.supports("inst:extractelement/int"), Some(true));
+    assert_eq!(shipped.supports("inst:extractelement/i128"), Some(false));
     // WP-035: integer arithmetic on integers, not on pointers.
     assert_eq!(shipped.supports("inst:add/int"), Some(true));
     assert_eq!(shipped.supports("inst:add/ptr"), Some(false));

@@ -9,7 +9,7 @@
 
 use std::ops::Range;
 
-use hod_ir::{BlockId, DiId, LocId, SymId};
+use hod_ir::{BlockId, DiId, ExprId, LocId, SymId};
 use hod_obj::RelocKind;
 
 use crate::frame::FrameRef;
@@ -101,7 +101,12 @@ pub struct LineRow {
 }
 
 /// Where the address a `#dbg_declare` names is, for the whole function
-/// (§9.5).
+/// (§9.5); or, for a row that is not a declaration, what else it is.
+///
+/// The driver records [`VarPlace::Slot`] and [`VarPlace::Indirect`]
+/// while the frame grows, and once the frame is final rewrites them to
+/// [`VarPlace::Frame`] and [`VarPlace::FrameIndirect`]: a finished
+/// record has no `Slot` or `Indirect` row.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum VarPlace {
     /// The variable is in this frame slot.
@@ -109,20 +114,29 @@ pub enum VarPlace {
     /// This frame slot holds the variable's address: an over-aligned slot
     /// (§5.1), or the home of a value that is not a slot.
     Indirect(FrameRef),
+    /// The variable is this many bytes from the function's DWARF frame
+    /// base ([`FrameDesc::frame_base`]).
+    Frame(i64),
+    /// The variable's address is this many bytes from the frame base.
+    FrameIndirect(i64),
+    /// A `#dbg_label` at this code offset; the row's `var` is the label.
+    Label(u32),
+    /// The row's variable or label cannot be described exactly: a full
+    /// debug unit refuses the function under this stable name, a unit
+    /// that writes no variables ignores it.
+    Refused(&'static str),
 }
 
-/// One `#dbg_declare` (§9.5).
-///
-/// **Seam for the debug-metadata work package (WP-005).** The record's
-/// expression is not a field yet: `hod_ir::SlotVar` carries none, and the
-/// type that will hold one is that package's to define. The row gains the
-/// expression when it exists; until then every row's expression is empty.
+/// One `#dbg_declare`, or one `#dbg_label` (§9.5).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct VarRow {
-    /// The variable (a local-variable debug node).
+    /// The variable (a local-variable debug node), or the label.
     pub var: DiId,
     /// Where it is declared.
     pub loc: LocId,
+    /// How the variable is found from the declared address:
+    /// [`ExprId::EMPTY`] when it is simply there.
+    pub expr: ExprId,
     /// Where the declared address is.
     pub place: VarPlace,
 }
@@ -216,9 +230,8 @@ impl FuncRecord {
 
 /// The output of a run of function compiles (§9.1).
 ///
-/// **Seam for WP-005:** the `labels` table of §9.5 (`#dbg_label`) and the
-/// `#dbg_value` rows have no table here yet: `hod_ir` does not represent
-/// those records.
+/// `#dbg_label`s are rows of [`Chunk::vars`] ([`VarPlace::Label`]); a
+/// `#dbg_value` or `#dbg_assign` is a [`VarPlace::Refused`] row.
 #[derive(Clone, PartialEq, Eq, Default, Debug)]
 pub struct Chunk {
     /// The functions' instructions and data islands, one function after
@@ -240,7 +253,7 @@ pub struct Chunk {
     pub filter_ids: Vec<u32>,
     /// Line-table transitions (§9.5).
     pub lines: Vec<LineRow>,
-    /// Declared variables (§9.5).
+    /// Declared variables and labels (§9.5).
     pub vars: Vec<VarRow>,
     /// Data islands (§7.5).
     pub islands: Vec<IslandRow>,

@@ -86,6 +86,7 @@ pub mod at {
     pub const DATA_MEMBER_LOCATION: u16 = 0x38;
     pub const DECL_FILE: u16 = 0x3a;
     pub const DECL_LINE: u16 = 0x3b;
+    pub const DECL_COLUMN: u16 = 0x39;
     pub const PROTOTYPED: u16 = 0x27;
     pub const DECLARATION: u16 = 0x3c;
     pub const ENCODING: u16 = 0x3e;
@@ -257,6 +258,12 @@ pub mod fam {
     pub const METHOD_QUALIFIED: usize = 66;
     pub const GLOBAL_NAMELESS: usize = 67;
     pub const INDEX_TYPE: usize = 68;
+    // WP-057 appends the subprogram definitions no reserved family holds.
+    pub const SUBPROGRAM_ANY: usize = 69;
+    pub const SUBPROGRAM_MEMBER: usize = 70;
+    pub const LABEL_COLUMN: usize = 71;
+    pub const LEXICAL_BLOCK: usize = 38;
+    pub const LABEL: usize = 39;
 }
 
 /// Every family, in code order (`spec/dwarf.md` §6.1 has the same table).
@@ -638,7 +645,7 @@ pub const FAMILIES: &[Family] = &[
         Yes,
         4,
         "WP-057",
-        &[o(0, at::LOW_PC, ADDRX), o(0, at::HIGH_PC, DATA4), o(1, at::RANGES, RNGLISTX)],
+        &[o(0, at::LOW_PC, ADDRX), o(0, at::HIGH_PC, DATA4), o(1, at::RANGES, SEC_OFFSET)],
     ),
     fam(
         "label",
@@ -975,6 +982,60 @@ pub const FAMILIES: &[Family] = &[
         "WP-058",
         &[s(at::NAME, STRX), s(at::BYTE_SIZE, UDATA), s(at::ENCODING, DATA1)],
     ),
+    // 69: WP-057's subprogram definitions.
+    fam(
+        "subprogram (definition, any)",
+        tag::SUBPROGRAM,
+        Optional,
+        512,
+        "WP-057",
+        &[
+            s(at::LOW_PC, ADDRX),
+            s(at::HIGH_PC, DATA4),
+            s(at::FRAME_BASE, EXPRLOC),
+            o(0, at::LINKAGE_NAME, STRX),
+            o(1, at::NAME, STRX),
+            o(2, at::DECL_FILE, UDATA),
+            o(2, at::DECL_LINE, UDATA),
+            o(3, at::PROTOTYPED, FLAG_PRESENT),
+            o(4, at::TYPE, REF4),
+            o(5, at::ARTIFICIAL, FLAG_PRESENT),
+            o(6, at::EXTERNAL, FLAG_PRESENT),
+            o(7, at::NORETURN, FLAG_PRESENT),
+        ],
+    ),
+    fam(
+        "subprogram (member definition)",
+        tag::SUBPROGRAM,
+        Optional,
+        32,
+        "WP-057",
+        &[
+            s(at::LOW_PC, ADDRX),
+            s(at::HIGH_PC, DATA4),
+            s(at::FRAME_BASE, EXPRLOC),
+            o(0, at::OBJECT_POINTER, REF4),
+            o(1, at::DECL_FILE, UDATA),
+            o(2, at::DECL_LINE, UDATA),
+            o(3, at::LINKAGE_NAME, STRX),
+            s(at::SPECIFICATION, REF4),
+        ],
+    ),
+    // 71: a label with a column (LLVM 21 and later).
+    fam(
+        "label (with column)",
+        tag::LABEL,
+        No,
+        2,
+        "WP-057",
+        &[
+            s(at::NAME, STRX),
+            s(at::DECL_FILE, UDATA),
+            s(at::DECL_LINE, UDATA),
+            s(at::DECL_COLUMN, UDATA),
+            o(0, at::LOW_PC, ADDRX),
+        ],
+    ),
 ];
 
 /// The slots of the general static-member families (54, 55), in `llc`'s
@@ -1129,7 +1190,9 @@ mod tests {
         assert_eq!(BASES[fam::COMPILE_UNIT], 738);
         // WP-058 appended families 49 to 67 after the end WP-053 left.
         assert_eq!(BASES[fam::BASE_TYPE_ANY], 754);
-        assert_eq!(CODE_END, 8733);
+        // WP-057 appended families 69 to 71.
+        assert_eq!(BASES[fam::SUBPROGRAM_ANY], 8733);
+        assert_eq!(CODE_END, 9279);
         for (index, name) in [
             (fam::CONST_TYPE, "const_type"),
             (fam::TYPEDEF, "typedef"),

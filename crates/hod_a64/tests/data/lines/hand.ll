@@ -1,7 +1,7 @@
 ; Hand-written cases of the line policy (spec/dwarf.md 5.3, 5.4, 5.7):
 ; a block that starts with an instruction without a location, an
-; instruction inlined from another file, an explicit line 0, two
-; returns, and a function whose locations name no subprogram of its own.
+; explicit line 0, two returns, and a function whose locations name no
+; subprogram of its own. The inlined location is in hand_inlined.ll.
 
 @g = dso_local global i32 0, align 4, !dbg !40
 
@@ -16,16 +16,6 @@ a:
 b:
   %v = load i32, ptr @g, align 4, !dbg !13
   ret i32 %v, !dbg !13
-}
-
-define dso_local i32 @inlined(i32 %x) uwtable !dbg !20 {
-entry:
-  %a = add i32 %x, 3, !dbg !21
-  store volatile i32 %a, ptr @g, align 4, !dbg !21
-  %b = mul i32 %a, 5, !dbg !24
-  store volatile i32 %b, ptr @g, align 4, !dbg !24
-  %c = sub i32 %b, 1, !dbg !25
-  ret i32 %c, !dbg !25
 }
 
 define dso_local i32 @line_zero(i32 %x) uwtable !dbg !30 {
@@ -68,19 +58,11 @@ entry:
 !4 = !DISubroutineType(types: !5)
 !5 = !{!6, !6}
 !6 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
-!7 = !DIFile(filename: "inc/inl.h", directory: "/hod/tests/lines")
 
 !10 = distinct !DISubprogram(name: "block_start", scope: !1, file: !1, line: 3, type: !4, scopeLine: 3, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !0)
 !11 = !DILocation(line: 4, column: 7, scope: !10)
 !12 = !DILocation(line: 5, column: 5, scope: !10)
 !13 = !DILocation(line: 6, column: 3, scope: !10)
-
-!20 = distinct !DISubprogram(name: "inlined", scope: !1, file: !1, line: 9, type: !4, scopeLine: 9, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !0)
-!21 = !DILocation(line: 10, column: 11, scope: !20)
-!22 = distinct !DISubprogram(name: "helper", scope: !7, file: !7, line: 2, type: !4, scopeLine: 2, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !0)
-!23 = !DILocation(line: 11, column: 10, scope: !20)
-!24 = !DILocation(line: 3, column: 12, scope: !22, inlinedAt: !23)
-!25 = !DILocation(line: 12, column: 3, scope: !20)
 
 !30 = distinct !DISubprogram(name: "line_zero", scope: !1, file: !1, line: 15, type: !4, scopeLine: 15, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !0)
 !31 = !DILocation(line: 16, column: 11, scope: !30)

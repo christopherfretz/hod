@@ -14,6 +14,7 @@ use crate::error::CgResult;
 use crate::frame::FrameRef;
 use crate::label::{FixupKind, Label};
 use crate::loc::Class;
+use crate::record::FrameDesc;
 use crate::reg::{PReg, RegInfo};
 use crate::sym::SymRef;
 
@@ -136,6 +137,18 @@ pub trait Target: Sized + Sync {
     /// `Unsupported("limit:frame-size")` for a frame the prologue cannot
     /// express.
     fn end_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()>;
+
+    /// The offset of `place` from the function's DWARF frame base
+    /// ([`FrameDesc::frame_base`]) once `end_function` has filled `desc`,
+    /// valid from the end of the prologue to the start of each exit
+    /// sequence (§9.5): what a variable's `DW_OP_fbreg` says. `None` for
+    /// a place the frame base does not reach by a fixed offset; the
+    /// variables there are refused (`debug:frame-place`). The default is
+    /// `None` for every place.
+    fn frame_base_offset(&self, desc: &FrameDesc, place: FrameRef) -> Option<i64> {
+        let _ = (desc, place);
+        None
+    }
 
     /// Lowers one instruction that is not a `phi`: terminators and calls
     /// included. One `match` on the opcode that dispatches to the

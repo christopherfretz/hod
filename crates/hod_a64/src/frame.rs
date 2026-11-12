@@ -164,6 +164,17 @@ pub fn end(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
     Ok(())
 }
 
+/// `Target::frame_base_offset`: the frame base is `x29`, which the
+/// prologue sets to the entry stack pointer less `FRAME`, so a local is
+/// at its own offset and an incoming argument `FRAME` further up.
+pub fn base_offset(desc: &FrameDesc, place: FrameRef) -> Option<i64> {
+    match place {
+        FrameRef::Local(at) => Some(i64::from(at)),
+        FrameRef::Incoming(at) => Some(i64::from(desc.frame_size) + i64::from(at)),
+        FrameRef::Outgoing(_) => None,
+    }
+}
+
 /// The CFI rows of the prologue at `at` (§5.5, §9.3): the CFA moves with
 /// each `sub`, the frame record is saved by the `stp`, and from the
 /// `mov x29, sp` on the CFA is `x29 + FRAME`.

@@ -476,7 +476,12 @@ impl<'a, S: Sink> Walker<'a, S> {
             }
         }
         if !module.module_asm().is_empty() {
-            self.row(at::MODULE_ASM, at)?;
+            // §2.3: directives only, or text an assembler must read.
+            let mut effects = Vec::new();
+            match crate::asm_text::module_asm_effects(module, &mut effects) {
+                Ok(()) => self.row(at::MODULE_ASM_SYMBOLS, at)?,
+                Err(_) => self.row(at::MODULE_ASM, at)?,
+            }
         }
         if !module.linker_options().is_empty() {
             self.row(at::MODULE_LINKER_OPTIONS, at)?;
@@ -1163,7 +1168,18 @@ impl<'a, S: Sink> Walker<'a, S> {
                 if asm.index() >= module.asm_count() {
                     self.invalid(rules::INLINE_ASM, at)?;
                 }
-                self.row(at::CALL_INLINE_ASM, at)?;
+                // §2.3: a template that assembles to nothing needs no
+                // assembler.
+                let empty = asm.index() < module.asm_count()
+                    && crate::asm_text::asm_template_is_empty(
+                        self.support.arch(),
+                        module.asm(asm).template,
+                    );
+                if empty {
+                    self.row(at::CALL_INLINE_ASM_EMPTY, at)?;
+                } else {
+                    self.row(at::CALL_INLINE_ASM, at)?;
+                }
             }
             _ => {
                 self.row(at::CALL_INDIRECT, at)?;

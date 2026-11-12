@@ -12,6 +12,7 @@
 //! allocated per symbol or per function beyond the object's own tables
 //! and the merged rows.
 
+mod asm;
 mod data;
 mod lines;
 mod section;
@@ -63,7 +64,8 @@ pub mod unsupported {
     /// A variable of `appending` linkage that is not one of the special
     /// arrays `hod_ir` reads.
     pub const APPENDING: &str = "linkage:appending";
-    /// Module-level inline assembly (`hod_asm`'s, not yet).
+    /// Module-level assembly an assembler must read (`hod_asm`'s, not
+    /// yet): anything but the symbol directives of `spec/ir.md` §2.3.
     pub const MODULE_ASM: &str = "module:asm";
     /// An `!llvm.linker.options` entry that is not a pair of strings,
     /// which ELF `llc` refuses ("invalid llvm.linker.options").
@@ -329,9 +331,7 @@ impl<'m> ModuleEmitter<'m> {
             rows: Chunk::new(),
             debug: None,
         };
-        if !module.module_asm().is_empty() {
-            return Err(CgError::unsupported(unsupported::MODULE_ASM));
-        }
+        asm::check(module)?;
         // `TargetLoweringObjectFileELF::emitModuleMetadata`.
         if module.linker_options().iter().any(|list| list.len() != 2) {
             return Err(CgError::unsupported(unsupported::LINKER_OPTION));
@@ -869,6 +869,7 @@ impl<'m> ModuleEmitter<'m> {
         self.unwind_tables()?;
         self.debug_tables()?;
         self.define()?;
+        self.module_asm_symbols()?;
         let ModuleEmitter { obj, funcs, rows, .. } = self;
         Ok(Emitted { object: obj, funcs, rows })
     }

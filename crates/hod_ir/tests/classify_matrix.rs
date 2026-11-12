@@ -432,7 +432,7 @@ const RICH_MODULE: [&str; 13] = [
     "module:pic",
     "module:uwtable",
     "debug:module-flags",
-    "module:asm",
+    "module:asm-symbols",
     "module:global-ctors",
     "structor:priority",
     "global:function-definition",
@@ -444,8 +444,8 @@ const RICH_MODULE: [&str; 13] = [
     "init:symbol",
 ];
 
-/// The rows of `RICH_MODULE` AArch64 supports (WP-032, WP-033, WP-049).
-const A64_SUPPORTED: [&str; 11] = [
+/// The rows of `RICH_MODULE` AArch64 supports (WP-032, WP-033, WP-049, WP-075).
+const A64_SUPPORTED: [&str; 12] = [
     "module:pic",
     "module:uwtable",
     "global:function-definition",
@@ -457,6 +457,7 @@ const A64_SUPPORTED: [&str; 11] = [
     "global:section",
     "init:data",
     "init:symbol",
+    "module:asm-symbols",
 ];
 
 /// What the shipped matrix finds in the rich module on `arch`.

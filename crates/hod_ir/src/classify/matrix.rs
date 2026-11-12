@@ -399,7 +399,7 @@ const fn a64(name: &'static str, by: &'static str, note: &'static str) -> Suppor
 
 // ---- the groups, in the order of `docs/status/support.md` ----
 
-const MODULE: [SupportRow; 23] = [
+const MODULE: [SupportRow; 24] = [
     row("module:pic", ON, todo(X64), "`PIC Level` is not 0"),
     row("module:pie", ON, todo(X64), "`PIE Level` is not 0"),
     // `CodeModel` order.
@@ -429,7 +429,13 @@ const MODULE: [SupportRow; 23] = [
     row("module:branch-protection-pauth-lr", todo(LATER), never(A64_ONLY), ""),
     row("module:cf-protection-branch", never(X64_ONLY), todo(X64), ""),
     row("module:cf-protection-return", never(X64_ONLY), todo(X64), ""),
-    a64("module:asm", ASM, "module-level inline assembly"),
+    a64("module:asm", ASM, "module-level inline assembly an assembler must read"),
+    row(
+        "module:asm-symbols",
+        ON,
+        todo(X64),
+        "module-level assembly made only of symbol directives (`spec/ir.md` §2.3)",
+    ),
     row("module:linker-options", ON, todo(X64), "`!llvm.linker.options`"),
     row("module:dependent-libraries", ON, todo(X64), "`!llvm.dependent-libraries`"),
     row("module:global-ctors", ON, todo(X64), "an entry of `llvm.global_ctors`"),
@@ -1037,9 +1043,15 @@ const ATOMICRMW: [SupportRow; RmwOp::ALL.len()] = [
     a64("atomicrmw:fminimum", ATOMICS, ""),
 ];
 
-const CALL: [SupportRow; 3] = [
+const CALL: [SupportRow; 4] = [
     row("call:indirect", ON, todo(X64), "the callee is a computed address"),
-    a64("call:inline-asm", ASM, "the callee is inline assembly"),
+    a64("call:inline-asm", ASM, "the callee is inline assembly an assembler must read"),
+    row(
+        "call:inline-asm-empty",
+        ON,
+        todo(X64),
+        "the callee is inline assembly whose template assembles to nothing (`spec/ir.md` §2.3)",
+    ),
     row("call:variadic", ON, todo(X64), "a call through a variadic function type"),
 ];
 
@@ -1746,6 +1758,7 @@ pub(crate) mod at {
     /// Plus the bit number of a `BranchProtection` bit.
     pub(crate) const MODULE_PROTECTION: usize = find("module:branch-target-enforcement");
     pub(crate) const MODULE_ASM: usize = find("module:asm");
+    pub(crate) const MODULE_ASM_SYMBOLS: usize = find("module:asm-symbols");
     pub(crate) const MODULE_LINKER_OPTIONS: usize = find("module:linker-options");
     pub(crate) const MODULE_DEPENDENT_LIBRARIES: usize = find("module:dependent-libraries");
     pub(crate) const MODULE_CTORS: usize = find("module:global-ctors");
@@ -1828,6 +1841,7 @@ pub(crate) mod at {
     pub(crate) const ATOMICRMW: usize = find("atomicrmw:xchg");
     pub(crate) const CALL_INDIRECT: usize = find("call:indirect");
     pub(crate) const CALL_INLINE_ASM: usize = find("call:inline-asm");
+    pub(crate) const CALL_INLINE_ASM_EMPTY: usize = find("call:inline-asm-empty");
     pub(crate) const CALL_VARIADIC: usize = find("call:variadic");
     pub(crate) const TAIL_TAIL: usize = find("tail:tail");
     pub(crate) const TAIL_NOTAIL: usize = find("tail:notail");

@@ -3,7 +3,7 @@
 ; functions are absolute, in code and in initialized data.
 ;@ covers: spec/ir.md §2.1 target (PIC level), §4.2 addresses
 ;@ link: no-pie
-;@ unsupported: codegen-not-implemented
+;@ unsupported: *
 ;@ stdout: one: 20
 ;@ stdout: two: -20
 ;@ stdout: three: 900

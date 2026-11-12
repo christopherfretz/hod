@@ -29,7 +29,22 @@ pub const GROUPS: &[(&str, Enable)] = &[
     // The skeleton: `br`, `ret`, `unreachable`, constants, arguments,
     // blocks without predecessors (through `common::skeleton`).
     ("WP-033", |e| e.options.unreachable_blocks = true),
-    // WP-035 adds: ("WP-035", |e| { e.generator = true; e.options.casts = true; ... }),
+    // The integer group: the generator itself, integers of every width, compares, selects, casts.
+    ("WP-035", |e| {
+        e.generator = true;
+        e.options.narrow_ints = true;
+        e.options.odd_ints = true;
+        e.options.casts = true;
+        e.options.compares = true;
+        e.options.selects = true;
+    }),
+    // The memory group: loads, stores, `ptradd`, slots, globals.
+    ("WP-036", |e| (e.options.memory, e.options.globals) = (true, true)),
+    // Control flow: `condbr`, `switch`, loops with `phi`s, `indirectbr`.
+    ("WP-037", |e| {
+        let o = &mut e.options;
+        (o.branches, o.loops, o.switches, o.block_addresses) = (true, true, true, true);
+    }),
     // The floating-point group: `float`, `double`, `fcmp`, conversions.
     ("WP-039", |e| e.options.floats = true),
 ];

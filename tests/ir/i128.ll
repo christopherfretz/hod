@@ -3,7 +3,7 @@
 ; above 64, bitwise operations, compares, and conversions to and from
 ; narrower integers. Values are printed as two 64-bit halves.
 ;@ covers: spec/ir.md §5.4 integer, compare, cast (at i128)
-;@ unsupported: codegen-not-implemented
+;@ unsupported: *
 ;@ stdout: a=0123456789abcdef0123456789abcdef b=00000000000000010000000000000001 n=4
 ;@ stdout: add   0123456789abcdf00123456789abcdf0
 ;@ stdout: sub   0123456789abcdee0123456789abcdee

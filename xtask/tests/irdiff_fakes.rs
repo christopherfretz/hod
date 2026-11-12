@@ -513,6 +513,9 @@ fn unsupported_expected_and_unexpected() {
     world.test("unexpected.ll", "; hod: decline codegen-not-implemented\n");
     world.test("reason.ll", ";@ unsupported: vector-type\n; hod: decline inline-asm\n");
     world.test("stale.ll", ";@ unsupported: codegen-not-implemented\n");
+    // `*`: any reason will do, but hod must still decline.
+    world.test("any.ll", ";@ unsupported: *\n; hod: decline module:asm\n");
+    world.test("any-stale.ll", ";@ unsupported: *\n");
     world.test(
         "conditional.ll",
         &format!(
@@ -533,6 +536,7 @@ fn unsupported_expected_and_unexpected() {
     let all = report.summary(true);
     assert_eq!(outcomes(&report, "expected.ll"), [Outcome::Unsupported; 3], "{all}");
     assert_eq!(outcomes(&report, "conditional.ll"), [Outcome::Unsupported; 3], "{all}");
+    assert_eq!(outcomes(&report, "any.ll"), [Outcome::Unsupported; 3], "{all}");
     assert_eq!(outcomes(&report, "elsewhere.ll"), [Outcome::Pass; 3], "{all}");
     let declined = &report.records.iter().find(|r| file_name(&r.test) == "expected.ll").unwrap();
     assert_eq!(declined.built_by, BuiltBy::Declined);
@@ -552,6 +556,7 @@ fn unsupported_expected_and_unexpected() {
             "stale.ll",
             "hod compiled this test; remove its 'unsupported: codegen-not-implemented' directive",
         ),
+        ("any-stale.ll", "hod compiled this test; remove its 'unsupported: *' directive"),
         (
             "xfailed.ll",
             "hod declined the module and the test has no \
@@ -568,8 +573,8 @@ fn unsupported_expected_and_unexpected() {
     assert!(all.contains("expected.ll [bfd lld mold]: codegen-not-implemented\n"), "{all}");
     assert!(
         all.contains(
-            "irdiff: coverage: hod built 2 of 8 objects; declined codegen-not-implemented: 4; \
-             declined inline-asm: 1; declined now: 1\n"
+            "irdiff: coverage: hod built 3 of 10 objects; declined codegen-not-implemented: 4; \
+             declined inline-asm: 1; declined module:asm: 1; declined now: 1\n"
         ),
         "{all}"
     );

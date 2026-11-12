@@ -110,10 +110,13 @@ fn one_input_end_to_end() {
         assert!(hybrid.produced() && hybrid.wall_ratio.is_some(), "{summary}");
         if hybrid.status == Status::Fallback {
             assert_eq!(hybrid.size_ratio, Ratio::of(1, 1), "llc's object, through hod\n{summary}");
-            assert_eq!(
-                hybrid.phases.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
-                ["read", "compile", "fallback", "total"]
-            );
+            // spec/cli.md "Phase report": the front half's phases, as far
+            // as the decline got, between `read` and `compile`.
+            let phases: Vec<&str> = hybrid.phases.iter().map(|(name, _)| name.as_str()).collect();
+            assert!(phases.len() >= 4 && phases[0] == "read", "{phases:?}");
+            assert!(phases.ends_with(&["compile", "fallback", "total"]), "{phases:?}");
+            let front = &phases[1..phases.len() - 3];
+            assert!(["parse", "classify", "bodies"].starts_with(front), "{phases:?}");
         }
 
         if time {

@@ -19,5 +19,5 @@ fn main() -> ExitCode {
         stdout: &mut std::io::stdout().lock(),
         stderr: &mut std::io::stderr().lock(),
     };
-    ExitCode::from(driver::run(&args, &env, &hod::compile, &mut io))
+    ExitCode::from(driver::run(&args, &env, &hod::compile_with, &mut io))
 }

@@ -117,6 +117,21 @@ pub fn run(
     result.map(|(output, _)| output)
 }
 
+/// [`run`], and how long the child took from when its jobserver token was
+/// held to when its output was read: waiting for the pool is not in it
+/// (`corpus reasons` times `llc` with it).
+pub fn run_timed(
+    program: &Path,
+    configure: impl FnOnce(&mut Command),
+    stdin: &[u8],
+    limits: Limits,
+) -> Result<(Output, Duration), String> {
+    let result = run_from(program, configure, stdin, limits);
+    let result = result.map(|(output, started)| (output, started.elapsed()));
+    children::park_if_interrupted();
+    result
+}
+
 /// [`run`], and when the child's time started: once its jobserver token
 /// was held.
 fn run_from(

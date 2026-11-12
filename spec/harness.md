@@ -591,8 +591,9 @@ driver, or `bfd`, `lld` or `mold` fails it.
 the C library; its expected output was derived independently of any
 compiler and then confirmed with the oracle, on LLVM 22 and 19. Each is
 valid for both targets and both LLVM majors, names what it covers in a
-`covers` directive, and carries `unsupported: codegen-not-implemented`
-until hod compiles it.
+`covers` directive, and carries `unsupported: *` until hod compiles it
+(any reason: which construct hod names first is the support matrix's
+business, not the program's; "Test directives").
 
 | file | covers | tier |
 |---|---|---|
@@ -1014,7 +1015,7 @@ everywhere.
 | `module` | starts the next module of a test of several, and names it ("Several modules") | any | one module |
 | `tier` | `quick` or `full` | once | `full` |
 | `covers` | the spec section the test exercises, free text | once | none |
-| `unsupported` | the coverage-log reason hod declines this test with (lower-case letters, digits, `-`) | any | hod must compile it |
+| `unsupported` | the coverage-log reason hod declines this test with (lower-case letters, digits, `-`, `:`, `.`, `_`: the names of `spec/cli.md` "Reasons", `global:function-definition`, `intrinsic:llvm.memcpy`), or `*`: hod declines, with any reason | any | hod must compile it |
 | `xfail` | why hod is known to fail this test, free text; never empty | any | it must pass |
 
 - `stdout` and `stdin` lines are taken verbatim, in order, each followed
@@ -1032,6 +1033,19 @@ everywhere.
 - List values (`args`, `target`, `llvm`, `link`) are words separated by
   spaces or tabs. An argument cannot contain white space.
 - For the other keys, white space around the value is dropped.
+
+**`unsupported: *` or a named reason.** `*` says "hod declines this
+test; which construct it names first is not this test's business": the
+test is UNSUPPORTED whatever reason hod declines or falls back with, and
+still FAILs with "remove its 'unsupported' directive" once hod compiles
+it. Behavioral tests — every program under `tests/ir`, the seed corpus —
+use `*`: the first refusal follows the support matrix
+(`crates/hod_ir/src/classify/matrix.rs`), which every code-generation
+package moves, and a named reason would have to be edited at every such
+merge. A named reason is for a test *about* the reason (that hod refuses
+this construct with this name), and should name a construct no package
+is about to turn on (refused by design, unplanned, or a property of the
+command line).
 
 **Conditions** narrow an `unsupported` or `xfail` directive to part of the
 matrix. A condition is a target (`aarch64`, `x86_64`), a linker (`bfd`,
@@ -1063,7 +1077,7 @@ directives of `tests/ir/main_args.ll`):
 ;@ args: alpha beta
 ;@ stdin: one line of input
 ;@ exit: 3
-;@ unsupported: codegen-not-implemented
+;@ unsupported: *
 ;@ stdout: argc=3
 ;@ stdout: alpha beta
 ;@ stdout:
@@ -1108,7 +1122,7 @@ a file is reported, with its line:
 - an `llvm` item that is not `N` or `N+` with `N` a number without a
   leading zero;
 - an `unsupported` reason with other characters than lower-case letters,
-  digits and `-`;
+  digits, `-`, `:`, `.` and `_` (other than `*` alone);
 - an unknown condition, an empty one, a second condition of the same
   kind, or a linker condition on `unsupported`.
 

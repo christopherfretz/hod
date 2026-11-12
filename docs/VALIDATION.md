@@ -1,0 +1,127 @@
+# Validation
+
+hod has one job that can go wrong in two ways: wrong code, or slow code
+generation. Both are tested. This document says how, which checks run when,
+and what a release candidate must pass.
+
+## Oracles
+
+hod never has to decide by itself what the right answer is.
+
+- **`llc -O0`** (LLVM 22, and 19) is the oracle for behavior: the same IR
+  through `llc` and through hod, linked the same way, must produce programs
+  with identical stdout and exit status.
+- **LLVM's assembler and disassembler** (`llvm-mc`, `llvm-objdump`) are the
+  oracle for instruction encodings.
+- **`llvm-readelf`, `llvm-dwarfdump --verify`, and the linkers themselves**
+  are the oracle for object-file structure.
+- **gdb and lldb** are the oracle for debug information: a scripted session
+  must print the same answers on hod's object as on LLVM's.
+- **clang** is the oracle for the calling convention: hod-compiled and
+  clang-compiled functions must be able to call each other.
+
+LLVM is a test dependency only. Tests that need a tool skip with a note when
+it is missing, and fail when `HOD_REQUIRE_TOOLS=1` (CI and release runs).
+
+## Layers
+
+Each layer has a directory under `tests/` and an `xtask` subcommand. Lower
+layers are fast and run on every change; higher layers run before merges or
+on a schedule.
+
+| | layer | what it checks | oracle | when |
+|---|---|---|---|---|
+| L0 | unit tests | each crate's own invariants | - | every change |
+| L1 | **encoding** | every instruction form `hod_mc_*` can produce, across operand sweeps: hod's bytes disassemble to the intended instruction, and equal `llvm-mc`'s bytes for the same assembly | `llvm-mc`, `llvm-objdump` | every change |
+| L2 | **IR ingestion** | `hod_ll` parses everything in the IR corpus; `parse → print → llvm-as → llvm-dis` equals `llvm-as → llvm-dis` of the original | `llvm-as` | every change |
+| L3 | **object structure** | hod's objects pass `llvm-readelf`/`llvm-dwarfdump --verify`, and link with every linker in the matrix | binutils, LLVM tools | every change |
+| L4 | **IR differential** (`xtask irdiff`) | each program in the IR corpus built by `llc` and by hod behaves identically | `llc` | every change (small set), merge gate (all) |
+| L5 | **ABI cross-linking** | generated caller/callee pairs over a grid of argument types, one side hod and one side clang, both directions | clang | merge gate |
+| L6 | **kiln's corpus through hod** | kiln's executing tests (about 1500 `run` tests plus the GCC torture suite) with hod as the code generator | clang (kiln's harness) | merge gate |
+| L7 | **debug info** | scripted gdb and lldb sessions; line-table and variable-location comparison against `llc`'s DWARF | gdb, lldb, `llvm-dwarfdump` | merge gate |
+| L8 | **libc++ test suite** with kiln + hod | the long-term acceptance gate | the suite | nightly / release |
+| L9 | **open-source projects** built with kiln + hod, running their own tests | - | release |
+| L10 | **fuzzing** | random C programs (csmith, YARPGen) through clang `-O0 -emit-llvm`, then L4; random IR functions against an interpreter | `llc`, an IR interpreter | continuous, budgeted |
+
+### The IR corpus
+
+`tests/ir/` holds `.ll` files with `;@` directives (expected stdout, exit
+status, required target, required LLVM version). Sources:
+
+1. hand-written files, one per IR construct, named after the `hod_ir` spec
+   section they exercise;
+2. IR that kiln emits for its own test corpus and that clang emits for C
+   test suites, captured by `xtask corpus` (not committed in bulk; generated
+   from pinned inputs into `.build/`);
+3. reduced reproducers for every miscompile found, committed with the fix.
+
+Because the corpus is IR, it does not depend on kiln's state, and tests the
+backend from the first milestone, before any C++ feature is complete.
+
+### Linker matrix
+
+Every linking test runs with each of: GNU ld, lld, mold, wild. The same
+object must link with all of them and the programs must behave identically.
+Linker versions are pinned in the provisioning script and recorded in
+status reports.
+
+### Hybrid, strict, bisect
+
+`docs/ARCHITECTURE.md` "Fallback" describes the mechanism. Its use here:
+
+- Suites L6, L8 and L9 are run in **hybrid** mode from the start. Two numbers
+  are recorded for every run: the pass rate, and **coverage**: the fraction
+  of translation units (and of functions) hod compiled itself. Pass rate
+  below the LLVM baseline is a bug; coverage below 100% is the remaining
+  work, listed by construct from the coverage log.
+- Gates are **strict**: no fallback.
+- A failing test in hybrid or strict mode is handed to `xtask bisect`, which
+  finds the smallest set of functions that must go to `llc` for the test to
+  pass, and writes the reduced IR into `tests/ir/` as a reproducer.
+
+## Performance
+
+Speed and memory are properties with tests, not goals with hopes.
+
+- `bench/` holds IR inputs in size classes (small, typical, large, with and
+  without debug info), generated from pinned sources.
+- `xtask bench` measures, per input: wall time (fastest of N serial runs),
+  peak resident memory, and output size, for hod and for `llc -O0` on the
+  same input, on the same machine, in the same run.
+- Results are recorded as **ratios to `llc`** as well as absolute numbers,
+  because ratios survive a change of machine and absolute numbers do not.
+- Baselines live in `bench/baselines/`. A change that makes hod more than 5%
+  slower or 2% larger in memory on any input fails unless the baseline is
+  updated with a written reason. On a machine other than the baseline's the
+  check is advisory.
+- The harness also reports time per phase (ingest, analysis, emission,
+  debug info, object writing) and bytes of IR per second, so regressions
+  are attributable.
+- End-to-end numbers (`kiln++ -c` with hod against `kiln++ -c` with `llc`)
+  are reported in `docs/status/perf.md` for the benchmark corpus.
+
+## Gates
+
+**Every change (local, minutes):** `cargo xtask ci --quick`: format, clippy
+with warnings denied, L0 to L3, and the small L4 set.
+
+**Merge to main (CI):** `cargo xtask ci`: everything above plus full L4, L5,
+and, from the milestones that enable them, L6 and L7 in strict mode for the
+constructs claimed as supported.
+
+**Release candidate:** all of the above with `HOD_REQUIRE_TOOLS=1`, on both
+targets, with every linker; L8 strict at the pass rate kiln achieves with
+`llc`; L9; the benchmark gate; a fuzzing budget with no open findings; and
+the support matrix in `docs/status/` regenerated.
+
+## Rules for tests
+
+- Every behavior ships with a test, and every miscompile gets a reduced
+  reproducer in `tests/ir/` before the fix is merged.
+- A test names the spec section it covers.
+- A known gap is marked expected-fail with a reason and a backlog row. It is
+  never left failing and never deleted.
+- A test whose oracle crashes or times out is an ERROR, not a pass and not a
+  hod failure.
+- Every child process runs with a time limit and a memory limit. The host is
+  shared.

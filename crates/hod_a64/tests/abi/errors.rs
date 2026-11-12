@@ -60,7 +60,8 @@ fn every_name() {
     let opaque = t.opaque_struct().expect("a type");
     let empty = t.struct_type(&[], false).expect("a type");
     let mut array = |elem, len| t.array(elem, len).expect("a type");
-    let wide_array = array(i128, 2);
+    // WP-101: `[2 x i128]` fits the registers as LLVM agrees; five do not.
+    let wide_array = array(i128, 5);
     let bfloat_array = array(TypeId::BFLOAT, 2);
     let one_long = array(i64, 1);
     let one_quad = array(TypeId::FP128, 1);
@@ -69,7 +70,8 @@ fn every_name() {
     let huge = array(i64, 1 << 30);
     let huge_bytes = array(i8, 1 << 33);
     let mut vector = |elem, len| t.vector(elem, len).expect("a type");
-    let v2i128 = vector(i128, 2);
+    // WP-101: a lone `<1 x i128>`; wider ones pass.
+    let v1i128 = vector(i128, 1);
     // WP-082: masks of up to 64 elements and widened vectors pass.
     let v65i1 = vector(TypeId::I1, 65);
     let v128i1 = vector(TypeId::I1, 128);
@@ -150,7 +152,7 @@ fn every_name() {
         ("abi:addrspace", refusal(&t, c, void, &[(far, NONE)], None)),
         ("abi:addrspace", refusal(&t, c, void, &[(far_vector, NONE)], None)),
         ("abi:addrspace", refusal(&t, c, (far, NONE), &[], None)),
-        ("abi:vector-element", refusal(&t, c, void, &[(v2i128, NONE)], None)),
+        ("abi:vector-element", refusal(&t, c, void, &[(v1i128, NONE)], None)),
         ("abi:vector-element", refusal(&t, c, void, &[(v2x86, NONE)], None)),
         ("abi:mask-wide", refusal(&t, c, void, &[(v65i1, NONE)], None)),
         ("abi:mask-wide", refusal(&t, c, (v128i1, NONE), &[], None)),

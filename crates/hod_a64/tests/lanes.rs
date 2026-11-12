@@ -1500,18 +1500,19 @@ fn what_is_refused_is_refused_by_name() {
         )
     };
     let cases = [
-        (binary("<2 x i128>", "add"), vector::WIDE_ELEMENT),
+        // WP-101: `i128` and `fp128` lanes compute; these stay refused.
+        (binary("<2 x i128>", "shl"), hod_a64::tail3::I128_OP),
         (binary("<4 x i7>", "add"), vector::ODD_ELEMENT),
         (binary("<3 x i24>", "mul"), vector::ODD_ELEMENT),
         (binary("<257 x i8>", "add"), vector::LENGTH),
-        (binary("<2 x fp128>", "fadd"), vector::WIDE_ELEMENT),
+        (binary("<2 x i128>", "udiv"), hod_a64::tail3::I128_OP),
         (binary("<4 x bfloat>", "fadd"), vector::BFLOAT),
         (binary("<3 x bfloat>", "fmul"), vector::BFLOAT),
         (
             "define void @f(ptr %p) {\n  %v = load <4 x i16>, ptr %p\n  \
-             %r = zext <4 x i16> %v to <4 x i128>\n  store <4 x i128> %r, ptr %p\n  ret void\n}\n"
+             %r = sitofp <4 x i16> %v to <4 x fp128>\n  store <4 x fp128> %r, ptr %p\n  ret void\n}\n"
                 .into(),
-            vector::WIDE_ELEMENT,
+            hod_a64::tail3::WIDE_CAST,
         ),
         (
             "declare { <4 x float>, <4 x i32> } @llvm.frexp.v4f32.v4i32(<4 x float>)\n\

@@ -353,8 +353,8 @@ Instructions.
 | `inst:ptradd` | supported | not-implemented | LLVM's `getelementptr` (§5.4); not a vector of pointers |
 | `inst:extractvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented |  |
 | `inst:insertvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented |  |
-| `inst:extractelement` | supported (int, i128, ptr, half, bfloat, float, double, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
-| `inst:insertelement` | supported (int, ptr, half, bfloat, float, double, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
+| `inst:extractelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
+| `inst:insertelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:shufflevector` | supported (vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:phi` | supported | not-implemented | for every class whose `type:*` row is supported |
 | `inst:select` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented |  |

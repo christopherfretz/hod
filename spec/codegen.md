@@ -1756,6 +1756,50 @@ that refused it before (WP-084's "stays refused" list is settled here).
   - `cc:preserve_allcc`, `cc:79` (`win64cc`) and `cc:aarch64_vector_pcs`
     (WP-082), which the one `preserve_mostcc` corpus module also uses.
 
+#### The short tail, third part (WP-101)
+
+`src/tail3.rs`, reached by one call at the top of `A64Target::lower`
+(`target.rs`) that answers only for the forms below.
+
+- **Vectors of `i128` and `fp128` lanes** ("wide lanes"). `<1 x i128>`
+  and `<1 x fp128>` are class `Fpr` (one `Q` register); every longer one
+  is `Mem`, lane `i` at byte `16·i`. A lowering spills an `Fpr` operand
+  to a scratch image (`vector::scratch`) and works on memory images;
+  an `Fpr` result is built in the last scratch image and loaded. Per
+  lane, as `llc` scalarizes them:
+  - `add`, `sub` (`adds`/`adc`, `subs`/`sbc`), `and`, `or`, `xor` limb
+    by limb; `mul` as the scalar `i128` multiply (`umulh`, `madd`);
+  - `icmp`: the low limbs compared, then `ccmp` of the high limbs for
+    `eq`/`ne` or `sbcs xzr` for an ordering; the result is a mask
+    (`<N x i1>`, at most 64 lanes, bit-packed in a `Gpr`; more is
+    `a64:mask-wide`);
+  - `fadd`, `fsub`, `fmul`, `fdiv`, `frem`, `fcmp` of `fp128` lanes are
+    the runtime calls of the scalar (`__addtf3` .. `__divtf3`, `fmodl`,
+    `__eqtf2`, `__lttf2`, `__letf2`, `__unordtf2`, with
+    `float::quad_flags`' table); the mask of `fcmp` is collected in a
+    frame slot across the calls; `fneg` flips bit 127;
+  - `select` with a mask condition, `tst` and `csel` per limb;
+  - `sext`/`zext` of a mask, of `i8`..`i64` lanes to `i128` lanes,
+    `trunc` of `i128` lanes to a mask or to `i8`..`i64` lanes;
+  - `insertelement`, `extractelement` (constant or variable index,
+    wrapped as `vector::index` does) and `shufflevector` (an undefined
+    lane is zero).
+  Refused, by name: shifts, `udiv`, `sdiv`, `urem`, `srem` of `i128`
+  lanes (`a64:vector-i128-op`: `llc` calls `__ashlti3`.. per lane; no
+  corpus module); any other cast with a wide side
+  (`a64:vector-wide-cast`: `sitofp`, `fpext`, `fptrunc`, bitcasts
+  between floating-point and integer lanes); intrinsics on wide lanes
+  stay `a64:vector-wide-element`.
+- **Wide lanes across calls** (`abi.rs`, `spec/abi-a64.md` §3.3, §4.3):
+  each `i128` element travels as an `i128` (two general registers under
+  the even-register rule, or a 16-aligned stack slot), as both LLVM
+  selectors in 19 and 22 pass it; an `fp128` element in a `Q` register.
+  A lone `<1 x i128>` argument or result stays `abi:vector-element`: it
+  is a `Q`-register value in two general registers, and the call
+  sequence moves no value between classes (§7.2). In a structure or an
+  array it is memory and passes (`std::experimental::simd<__int128>`
+  passes `[1 x <1 x i128>] alignstack(16)` and returns `{<1 x i128>}`).
+
 #### 5.5.2 Target features (WP-043)
 
 `hod_a64::features::check` judges a `target-features` string (a

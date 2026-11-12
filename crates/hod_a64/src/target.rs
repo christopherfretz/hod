@@ -214,6 +214,9 @@ impl Target for A64 {
         if cx.state.tail.drops && crate::tail::dropped(inst) {
             return Ok(());
         }
+        if let Some(done) = crate::tail3::lower(cx, inst) {
+            return done;
+        }
         if let Some(done) = crate::mask::lower(cx, inst) {
             return done;
         }

@@ -209,7 +209,13 @@ answer for them:
 
 - `abi:wide-int-array`: the leaf is an integer wider than 64 bits.
   (After one `i64`, GlobalISel passes `[1 x i128]` in `x2`, `x3` and
-  SelectionDAG in `x1`, `x2`.)
+  SelectionDAG in `x1`, `x2`.) Except where the four configurations
+  (SelectionDAG and GlobalISel of LLVM 19 and 22) agree, for a leaf of
+  two pieces (`i128`, `<1 x i128>`; WP-101): one leaf when NGRN is even,
+  or when fewer than two registers are left (it is then an ordinary
+  `i128`: §3.2, the even-register rule, a 16-aligned stack slot); `n` ≥ 2
+  leaves when NGRN + 2n ≤ 8 (a block of 2n `X` registers from NGRN, no
+  even-register rule). The rest keeps the name.
 - `abi:bfloat-array`: the leaf's class is `Bf`. (llc 22 treats it as a
   block, llc 19 does not.)
 - `abi:vector-array`: the leaf is a vector that takes more than one
@@ -307,13 +313,17 @@ treatment to every width. `table::wide_integers`; the grid (65, 96, 127,
 
 For `<n x T>`, let `b` be the element's size in bytes and `t = n·b`.
 Supported elements are `i1` (a mask, below), `i8`, `i16`, `i32`, `i64`,
-`ptr`, `half`, `bfloat`, `float`, `double` and `fp128`; any other element
-(`i7`, `i128`, …) is `abi:vector-element`. A scalable vector is
+`ptr`, `half`, `bfloat`, `float`, `double`, `fp128` and `i128`; any
+other element (`i7`, `i96`, …) is `abi:vector-element`, and so is a lone
+`<1 x i128>` argument or return value (WP-101: hod keeps it in a `Q`
+register, `spec/codegen.md` §2, and the call sequence moves no value
+between register classes; in an aggregate it passes). A scalable vector is
 `abi:scalable-vector`. The first row that applies gives the pieces:
 
 | condition | pieces | example |
 |---|---|---|
 | `T` is `fp128` | `n` of class `Q`, 16 bytes each | `<2 x fp128>` |
+| `T` is `i128` | `2n` of class `X`, 8 bytes each; pieces `2i` and `2i + 1` are element `i`, an `i128` (§4.2: the even-register rule) | `<2 x i128>` |
 | `t` = 8 | one `D`, 8 bytes | `<2 x float>`, `<1 x i64>` |
 | `t` = 16 | one `Q`, 16 bytes | `<4 x i32>` |
 | `n` = 1, `T` is `half` or `bfloat` | one `H` or `Bf`, 2 bytes | `<1 x half>` |
@@ -842,9 +852,9 @@ coverage log (`spec/cli.md`) counts by them.
 | `abi:scalable-vector` | a scalable vector, also as a `byval` pointee |
 | `abi:target-ext-type` | a target extension type |
 | `abi:addrspace` | a pointer in an address space other than 0 |
-| `abi:vector-element` | a vector whose element is not one of §4.3's |
+| `abi:vector-element` | a vector whose element is not one of §4.3's; a lone `<1 x i128>` |
 | `abi:mask-wide` | a mask of more than 64 elements (§4.3) |
-| `abi:wide-int-array` | an array argument of integers wider than 64 bits (§3.3) |
+| `abi:wide-int-array` | an array argument of integers wider than 64 bits, where LLVM's selectors disagree (§3.3) |
 | `abi:bfloat-array` | an array argument of `bfloat` (§3.3) |
 | `abi:vector-array` | an array argument of vectors of more than one piece (§3.3) |
 | `abi:one-leaf-array` | an array argument with one leaf and a different stack alignment than the leaf's (§3.3) |

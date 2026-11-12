@@ -349,6 +349,62 @@ impl<'a, T: Target> FnCx<'a, T> {
         Ok(())
     }
 
+    /// A `Mem`-class argument in registers, or in several pieces:
+    /// gathered in its home slot (`parts` of the function's assignment).
+    fn enter_mem(
+        &mut self,
+        ty: TypeId,
+        state: ValState,
+        parts: std::ops::Range<usize>,
+    ) -> CgResult<()> {
+        let t = self.target;
+        let Loc::Frame(home) = state.loc else {
+            return self.bug("a Mem-class argument without a home");
+        };
+        for at in parts {
+            let part = self.s.fn_asg.args[at];
+            let to = home.offset_by(part.offset);
+            if crate::call::is_lanes(part.kind) {
+                t.lanes_in(self, &part, incoming(part.place), LaneLoc::Frame(to))?;
+                continue;
+            }
+            match part.place {
+                Place::Reg(reg) => t.store(self, reg, to, part.size),
+                Place::Stack(offset) => t.copy(self, to, FrameRef::Incoming(offset), part.size),
+            }
+        }
+        self.clear_odd_leaves(ty, home);
+        Ok(())
+    }
+
+    /// WP-082: a mask whose elements arrive as lanes (`parts` of the
+    /// function's assignment); their bits are gathered in a scratch
+    /// register, then moved to the argument's register or home.
+    fn enter_lanes(
+        &mut self,
+        key: Key,
+        state: ValState,
+        class: Class,
+        parts: std::ops::Range<usize>,
+    ) -> CgResult<()> {
+        let t = self.target;
+        let bits = self.scratch_reg(Class::Gpr);
+        for at in parts {
+            let part = self.s.fn_asg.args[at];
+            t.lanes_in(self, &part, incoming(part.place), LaneLoc::Reg(bits))?;
+        }
+        match (state.kind, state.loc) {
+            (Kind::Reg, _) => {
+                let to = self.alloc(class)?;
+                t.mov(self, to, bits);
+                self.own(to, key);
+            }
+            (Kind::Home, Loc::Frame(home)) => t.store(self, bits, home, u32::from(state.width)),
+            _ => return self.bug("an argument without a kind"),
+        }
+        Ok(())
+    }
+
     /// §4.8: the entry code for the arguments. An argument that arrived
     /// in a register rests there if it is a register value, and is
     /// stored to its home otherwise; one that arrived on the stack has
@@ -425,55 +481,11 @@ impl<'a, T: Target> FnCx<'a, T> {
 
             let state = self.ensure(key)?;
             if class == Class::Mem {
-                // In registers, or in several pieces: gathered in a
-                // home slot.
-                let Loc::Frame(home) = state.loc else {
-                    return self.bug("a Mem-class argument without a home");
-                };
-                for at in first..next {
-                    let part = self.s.fn_asg.args[at];
-                    let to = home.offset_by(part.offset);
-                    if crate::call::is_lanes(part.kind) {
-                        let from = match part.place {
-                            Place::Reg(reg) => LaneLoc::Reg(reg),
-                            Place::Stack(offset) => LaneLoc::Frame(FrameRef::Incoming(offset)),
-                        };
-                        t.lanes_in(self, &part, from, LaneLoc::Frame(to))?;
-                        continue;
-                    }
-                    match part.place {
-                        Place::Reg(reg) => t.store(self, reg, to, part.size),
-                        Place::Stack(offset) => {
-                            t.copy(self, to, FrameRef::Incoming(offset), part.size);
-                        }
-                    }
-                }
-                self.clear_odd_leaves(ty, home);
+                self.enter_mem(ty, state, first..next)?;
                 continue;
             }
             if crate::call::is_lanes(part.kind) {
-                // WP-082: a mask whose elements arrive as lanes; their
-                // bits are gathered in a scratch register.
-                let bits = self.scratch_reg(Class::Gpr);
-                for at in first..next {
-                    let part = self.s.fn_asg.args[at];
-                    let from = match part.place {
-                        Place::Reg(reg) => LaneLoc::Reg(reg),
-                        Place::Stack(offset) => LaneLoc::Frame(FrameRef::Incoming(offset)),
-                    };
-                    t.lanes_in(self, &part, from, LaneLoc::Reg(bits))?;
-                }
-                match (state.kind, state.loc) {
-                    (Kind::Reg, _) => {
-                        let to = self.alloc(class)?;
-                        t.mov(self, to, bits);
-                        self.own(to, key);
-                    }
-                    (Kind::Home, Loc::Frame(home)) => {
-                        t.store(self, bits, home, u32::from(state.width));
-                    }
-                    _ => return self.bug("an argument without a kind"),
-                }
+                self.enter_lanes(key, state, class, first..next)?;
                 continue;
             }
             let (Place::Reg(reg), true) = (part.place, next - first == 1) else {
@@ -763,5 +775,13 @@ impl<'a, T: Target> FnCx<'a, T> {
         }
         self.out.funcs.push(record);
         Ok(())
+    }
+}
+
+/// A `Lanes` part's incoming place, as a side of `Target::lanes_in`.
+fn incoming(place: Place) -> LaneLoc {
+    match place {
+        Place::Reg(reg) => LaneLoc::Reg(reg),
+        Place::Stack(offset) => LaneLoc::Frame(FrameRef::Incoming(offset)),
     }
 }

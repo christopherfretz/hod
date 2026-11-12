@@ -29,6 +29,8 @@
     clippy::too_many_lines,
     clippy::cast_possible_truncation,
     clippy::format_collect,
+    clippy::many_single_char_names,
+    clippy::similar_names,
     reason = "a test generator: `.ll` and C text built by hand"
 )]
 
@@ -357,7 +359,7 @@ fn shape(rng: &mut Rng, pool: &[Ty], aggregates: bool) -> Ty {
     }
     match rng.below(4) {
         0 | 1 => leaf,
-        2 => St((0..1 + rng.below(3)).map(|_| rng.pick(pool)).collect()),
+        2 => St((0..=rng.below(3)).map(|_| rng.pick(pool)).collect()),
         // An array of a vector passed in several registers is refused
         // (`abi:vector-array`: LLVM's selectors disagree).
         _ if leaf.small() => ar(2 + rng.below(3) as u32, leaf),
@@ -1024,11 +1026,11 @@ fn variadic_calls_pass_vectors() {
     let mut cases = Vec::new();
     for _ in 0..30 {
         let mut params: Vec<Ty> =
-            (0..1 + rng.below(4)).map(|_| shape(&mut rng, &named, true)).collect();
+            (0..=rng.below(4)).map(|_| shape(&mut rng, &named, true)).collect();
         if rng.below(4) == 0 {
             params.splice(0..0, (0..8).map(|_| V(E::I32, 4)));
         }
-        let var: Vec<Ty> = (0..1 + rng.below(8))
+        let var: Vec<Ty> = (0..=rng.below(8))
             .map(|_| {
                 let leaf = rng.pick(&var_pool);
                 if matches!(leaf, V(..)) && rng.below(3) == 0 {
@@ -1057,7 +1059,7 @@ fn vectors_agree_with_gcc() {
         if rng.below(4) == 0 {
             params.extend((0..7).map(|_| V(E::I32, 4)));
         }
-        params.extend((0..1 + rng.below(6)).map(|_| {
+        params.extend((0..=rng.below(6)).map(|_| {
             let leaf = rng.pick(&agg_pool);
             if matches!(leaf, V(..)) && rng.below(3) == 0 {
                 ar(2 + rng.below(3) as u32, leaf)

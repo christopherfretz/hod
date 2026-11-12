@@ -59,6 +59,10 @@ pub const GROUPS: &[(&str, Enable)] = &[
     ("WP-041", |e| e.options.intrinsics = true),
     // The floating-point leftovers: loads and stores of `float` and `double`.
     ("WP-067", |e| (e.options.floats, e.options.memory) = (true, true)),
+    // The second intrinsic set: the saturating arithmetic `intrinsics`
+    // emits (no generator switch makes FP intrinsics; `exceptions`, which
+    // emits `eh.typeid.for`, needs a host `hod_throw` this harness lacks).
+    ("WP-070", |e| e.options.intrinsics = true),
 ];
 
 /// What every landed group enables together.

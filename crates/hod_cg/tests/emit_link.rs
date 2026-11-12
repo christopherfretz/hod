@@ -15,6 +15,7 @@ mod elfview;
 #[allow(dead_code)]
 mod linking;
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -103,13 +104,19 @@ const PROBES: &[(&str, &str)] = &[
     ("zero", "%v = load i32, ptr @zero\n%x = sext i32 %v to i64"),
     ("pstr", "%p = load ptr, ptr @pstr\n%c = load i8, ptr %p\n%x = sext i8 %c to i64"),
     ("pstr2", "%p = load ptr, ptr @pstr2\n%c = load i8, ptr %p\n%x = sext i8 %c to i64"),
-    ("str16", "%p = getelementptr i8, ptr @str16, i64 2\n%c = load i16, ptr %p\n%x = sext i16 %c to i64"),
+    (
+        "str16",
+        "%p = getelementptr i8, ptr @str16, i64 2\n%c = load i16, ptr %p\n%x = sext i16 %c to i64",
+    ),
     ("ro", "%v = load i32, ptr @ro\n%x = sext i32 %v to i64"),
     ("roptr", "%p = load ptr, ptr @roptr\n%e = icmp eq ptr %p, @i32\n%x = zext i1 %e to i64"),
     ("parr", "%p = load ptr, ptr @parr\n%v = load i32, ptr %p\n%x = sext i32 %v to i64"),
     ("plocal", "%p = load ptr, ptr @plocal\n%v = load i32, ptr %p\n%x = sext i32 %v to i64"),
     ("pst", "%p = load ptr, ptr @pst\n%x = load i64, ptr %p"),
-    ("st.c", "%p = getelementptr i8, ptr @st, i64 16\n%v = load i16, ptr %p\n%x = sext i16 %v to i64"),
+    (
+        "st.c",
+        "%p = getelementptr i8, ptr @st, i64 16\n%v = load i16, ptr %p\n%x = sext i16 %v to i64",
+    ),
     ("cd", "%v = load i32, ptr @cd\n%x = sext i32 %v to i64"),
     ("com", "%v = load i32, ptr @com\n%x = sext i32 %v to i64"),
     ("wk", "%v = load i32, ptr @wk\n%x = sext i32 %v to i64"),
@@ -175,21 +182,18 @@ declare i32 @printf(ptr, ...)
     );
     for (i, (label, _)) in PROBES.iter().enumerate() {
         let len = label.len() + 1;
-        text.push_str(&format!(
-            "@l{i} = private unnamed_addr constant [{len} x i8] c\"{label}\\00\"\n"
-        ));
+        let _ =
+            writeln!(text, "@l{i} = private unnamed_addr constant [{len} x i8] c\"{label}\\00\"");
     }
     text.push_str("define i32 @main() {\n");
     for (i, (_, expr)) in PROBES.iter().enumerate() {
-        text.push_str(&format!("  br label %p{i}\np{i}:\n"));
+        let _ = writeln!(text, "  br label %p{i}\np{i}:");
         for line in expr.lines() {
             // Number the probe's names apart.
             let line = line.replace('%', &format!("%q{i}_"));
-            text.push_str(&format!("  {line}\n"));
+            let _ = writeln!(text, "  {line}");
         }
-        text.push_str(&format!(
-            "  call i32 (ptr, ...) @printf(ptr @fmt, ptr @l{i}, i64 %q{i}_x)\n"
-        ));
+        let _ = writeln!(text, "  call i32 (ptr, ...) @printf(ptr @fmt, ptr @l{i}, i64 %q{i}_x)");
     }
     text.push_str("  ret i32 0\n}\n");
     text
@@ -255,7 +259,8 @@ fn data_links_and_runs_like_llc() {
         let options = Options { reloc_model: RelocModel::Pic, ..Options::default() };
         let emitted = emit_module(&parsed.module, &options, &[chunk]).expect("emission");
         let ours_o = linking::write(&scratch, &format!("data-hod-{major}.o"), &emitted.object);
-        let expected = link_run(&toolchain, &scratch, &format!("llc-{major}"), &[&main_o, &theirs_o]);
+        let expected =
+            link_run(&toolchain, &scratch, &format!("llc-{major}"), &[&main_o, &theirs_o]);
         let got = link_run(&toolchain, &scratch, &format!("hod-{major}"), &[&main_o, &ours_o]);
         assert_eq!(got, expected, "LLVM {major}: hod's data runs differently");
         assert_eq!(expected[0].lines().count() - 1, PROBES.len());

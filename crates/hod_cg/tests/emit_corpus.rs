@@ -73,8 +73,17 @@ fn class(side: &str, line: &str) -> String {
     let general = |name: &str| -> String {
         let name = name.trim_matches(|c| c == '[' || c == ']');
         for prefix in [
-            ".rodata.str", ".rodata.cst", ".data.rel.ro", ".tbss", ".tdata", ".bss", ".data",
-            ".rodata", ".text", ".init_array", ".fini_array",
+            ".rodata.str",
+            ".rodata.cst",
+            ".data.rel.ro",
+            ".tbss",
+            ".tdata",
+            ".bss",
+            ".data",
+            ".rodata",
+            ".text",
+            ".init_array",
+            ".fini_array",
         ] {
             if name.starts_with(prefix) {
                 return prefix.to_string();
@@ -89,7 +98,8 @@ fn class(side: &str, line: &str) -> String {
             let section = general(words.next().unwrap_or(""));
             let rest: Vec<&str> = words.collect();
             // type and bind
-            let kind = rest.iter().skip_while(|w| **w != "type").take(4).copied().collect::<Vec<_>>();
+            let kind =
+                rest.iter().skip_while(|w| **w != "type").take(4).copied().collect::<Vec<_>>();
             format!("{side}: symbol in {section} {}", kind.join(" "))
         }
         "reloc" => {
@@ -115,7 +125,12 @@ fn run_one(scratch: &Scratch, index: usize, path: &Path) -> Outcome {
     let options = hod_ll::ParseOptions::default();
     let parsed = match hod_ll::parse_module(&source, &options) {
         Ok(parsed) => parsed,
-        Err(e) => return Outcome::Skipped(format!("hod_ll: {}", e.to_string().lines().next().unwrap_or(""))),
+        Err(e) => {
+            return Outcome::Skipped(format!(
+                "hod_ll: {}",
+                e.to_string().lines().next().unwrap_or("")
+            ));
+        }
     };
     if let Some(u) = parsed.module.unsupported().next() {
         return Outcome::Refused(format!("hod_ll: {}", u.construct));
@@ -164,7 +179,8 @@ fn run_one(scratch: &Scratch, index: usize, path: &Path) -> Outcome {
         std::fs::write(keep.join(format!("m{index}.hod.o")), &ours.bytes).unwrap();
         eprintln!("kept {}: m{index}", path.display());
     }
-    let (a, b) = (ours.describe_without(&|_| false, &skip), theirs.describe_without(&|_| false, &skip));
+    let (a, b) =
+        (ours.describe_without(&|_| false, &skip), theirs.describe_without(&|_| false, &skip));
     let (only_ours, only_theirs) = diff(&a, &b);
     if only_ours.is_empty() && only_theirs.is_empty() {
         return Outcome::Agree;
@@ -210,7 +226,7 @@ fn corpus_modules_agree_with_llc() {
     let scratch = Scratch::new("emit-corpus");
     let next = AtomicUsize::new(0);
     let tallies: Mutex<BTreeMap<u32, Tally>> = Mutex::new(BTreeMap::new());
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(4);
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(4);
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| {

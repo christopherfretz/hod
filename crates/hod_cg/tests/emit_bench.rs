@@ -49,7 +49,7 @@ fn peak_kib(stderr: &str) -> u64 {
 }
 
 /// Wall seconds and peak KiB of `command` under GNU `time`.
-fn timed(command: Command) -> (f64, u64) {
+fn timed(command: &Command) -> (f64, u64) {
     let mut timed = Command::new("/usr/bin/time");
     timed.args(["-f", "%M"]).arg(command.get_program()).args(command.get_args());
     for (key, value) in command.get_envs() {
@@ -118,7 +118,7 @@ fn emit_time_and_memory() {
             if parse_only {
                 command.env("HOD_CG_BENCH_PARSE_ONLY", "1");
             }
-            (0..3).map(|_| timed(command_clone(&command)).1).min().unwrap()
+            (0..3).map(|_| timed(&command_clone(&command)).1).min().unwrap()
         };
         let rss_all = child(false);
         let rss_parse = child(true);
@@ -133,7 +133,7 @@ fn emit_time_and_memory() {
                 .arg(&input)
                 .arg("-o")
                 .arg(&output);
-            let (seconds, kib) = timed(command);
+            let (seconds, kib) = timed(&command);
             llc_time = llc_time.min(seconds);
             llc_rss = llc_rss.min(kib);
         }

@@ -357,7 +357,16 @@ impl<'m> ModuleEmitter<'m> {
             } else {
                 name.extend_from_slice(sym.name());
             }
-            let id = self.obj.add_string(&name).map_err(obj_err)?;
+            // A declaration or a named private symbol is named in
+            // `define`, and only if the object keeps it: the string table
+            // holds no name of a symbol the writer leaves out.
+            let lazy =
+                !sym.is_definition() || (sym.linkage() == Linkage::Private && !sym.is_anonymous());
+            let id = if lazy {
+                hod_obj::StrId::EMPTY
+            } else {
+                self.obj.add_string(&name).map_err(obj_err)?
+            };
             let mut symbol = Symbol::undefined(id).with_visibility(visibility(sym.visibility()));
             if sym.linkage() == Linkage::ExternWeak {
                 symbol.binding = Binding::Weak;
@@ -1056,10 +1065,23 @@ impl<'m> ModuleEmitter<'m> {
                     self.obj.symbol_mut(id).kind = SymbolKind::NoType;
                     self.obj.retain_symbol(id);
                 }
+                if !symbol.is_definition() && self.obj.is_referenced(id) {
+                    let name = self.obj.add_string(symbol.name()).map_err(obj_err)?;
+                    self.obj.symbol_mut(id).name = name;
+                }
                 continue;
             }
             if symbol.linkage() == Linkage::Private && !self.obj.is_referenced(id) {
                 continue;
+            }
+            if symbol.linkage() == Linkage::Private && !symbol.is_anonymous() {
+                let mut name = std::mem::take(&mut self.name);
+                name.clear();
+                name.extend_from_slice(b".L");
+                name.extend_from_slice(symbol.name());
+                let added = self.obj.add_string(&name).map_err(obj_err);
+                self.name = name;
+                self.obj.symbol_mut(id).name = added?;
             }
             let target = self.obj.symbol_mut(id);
             target.binding = binding(symbol.linkage());

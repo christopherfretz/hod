@@ -480,10 +480,7 @@ fn unsupported_constructs_are_refused_by_name() {
             "@a = external global i32\n@b = external global i32\n@d = global i64 sub (i64 ptrtoint (ptr @a to i64), i64 ptrtoint (ptr @b to i64))\n",
         ),
         (u::NOBITS_INIT, "@x = global i32 5, section \".bss.mine\"\n"),
-        (
-            u::DSO_LOCAL_EQUIVALENT,
-            "declare void @f()\n@p = global ptr dso_local_equivalent @f\n",
-        ),
+        (u::DSO_LOCAL_EQUIVALENT, "declare void @f()\n@p = global ptr dso_local_equivalent @f\n"),
     ];
     let mut checked = 0;
     for &(name, ir) in cases {

@@ -434,8 +434,18 @@ const MODULE: [SupportRow; 23] = [
 ];
 
 const STRUCTOR: [SupportRow; 2] = [
-    row("structor:priority", ON, todo(X64), "a constructor or destructor priority other than 65535"),
-    row("structor:associated", ON, todo(X64), "a constructor or destructor with an associated symbol"),
+    row(
+        "structor:priority",
+        ON,
+        todo(X64),
+        "a constructor or destructor priority other than 65535",
+    ),
+    row(
+        "structor:associated",
+        ON,
+        todo(X64),
+        "a constructor or destructor with an associated symbol",
+    ),
 ];
 
 const DEBUG_ROWS: [SupportRow; 4] = [

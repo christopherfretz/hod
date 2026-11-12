@@ -344,3 +344,22 @@ fn personality_slot() {
         (routine, RelocKind::A64(hod_obj::A64Reloc::Abs64))
     );
 }
+
+/// §3.3: under a `zPLR` CIE, an FDE without an LSDA has a zero,
+/// unrelocated LSDA field.
+#[test]
+fn personality_without_lsda() {
+    let (mut obj, s) = object(2);
+    let fdes = [Fde { personality: Some(s[1]), ..fde(0, s[0], &PROLOGUE) }];
+    let section = write_eh_frame(&mut obj, &fdes).unwrap().unwrap();
+    let data = obj.data(section);
+    let e = entries(data);
+    let (fde_at, _, _) = e[1];
+    // Augmentation length 8, then eight zero bytes.
+    assert_eq!(data[fde_at + 16], 8);
+    assert_eq!(&data[fde_at + 17..fde_at + 25], &[0; 8]);
+    let relocs: Vec<u64> = obj.relocations(section).map(|r| r.offset).collect();
+    // The personality pointer in the CIE and the initial location only.
+    assert_eq!(relocs.len(), 2);
+    assert!(!relocs.contains(&(fde_at as u64 + 17)));
+}

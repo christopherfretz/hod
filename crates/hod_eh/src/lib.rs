@@ -2,7 +2,7 @@
 //!
 //! See `docs/ARCHITECTURE.md` for this crate's role and `spec/eh.md` for its
 //! contract. This crate writes the call-frame information (`spec/eh.md`
-//! §1 to §6): one `.eh_frame` per object from one [`Fde`] per function,
+//! §1 to §8): one `.eh_frame` per object from one [`Fde`] per function,
 //! through [`write_eh_frame`]. The LSDA (`.gcc_except_table`) is a later
 //! work package; an FDE already carries the reference to it.
 //!

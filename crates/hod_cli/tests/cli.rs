@@ -1,14 +1,15 @@
 //! The `hod` binary end to end, against `spec/cli.md`.
 //!
-//! The fallback here is a script that records what it was given, so these
-//! tests need no LLVM. The last two use the real `llc` (and skip without
-//! it, see `hod_testutil::tool`).
+//! The fallback and the bitcode converter here are scripts that record what
+//! they were given, so these tests need no LLVM. The `real_*` tests use the
+//! real `llc` and `llvm-dis` (and skip without them, see
+//! `hod_testutil::tool`).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use hod_testutil::{Outcome, Scratch, run_with, tool};
+use hod_testutil::{LLVM_MAJORS, Outcome, Scratch, run_with, tool, tools_required};
 
 const MODULE: &str = "\
 ; ModuleID = 'm.cpp'
@@ -32,10 +33,12 @@ struct Line {
     target: String,
     hod_micros: String,
     fallback_micros: String,
+    conversion_micros: String,
+    fallback_status: String,
 }
 
 /// Reads a coverage log, checking the shape of every line: newline
-/// terminated, eight tab-separated fields, the vocabulary of each.
+/// terminated, ten tab-separated fields, the vocabulary of each.
 fn coverage(log: &Path) -> Vec<Line> {
     let text = std::fs::read_to_string(log).unwrap_or_else(|e| panic!("{}: {e}", log.display()));
     assert!(text.ends_with('\n'), "the log ends with a newline: {text:?}");
@@ -43,7 +46,7 @@ fn coverage(log: &Path) -> Vec<Line> {
     text.lines()
         .map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
-            assert_eq!(fields.len(), 8, "eight fields: {line:?}");
+            assert_eq!(fields.len(), 10, "ten fields: {line:?}");
             assert!(fields.iter().all(|f| !f.is_empty()), "no empty field: {line:?}");
             assert!(["hod", "fallback", "error"].contains(&fields[0]), "outcome: {line:?}");
             assert!(["text", "bitcode", "-"].contains(&fields[2]), "input kind: {line:?}");
@@ -52,6 +55,16 @@ fn coverage(log: &Path) -> Vec<Line> {
             assert!(fields[7] == "-" || number(fields[7]), "fallback time: {line:?}");
             assert_eq!(fields[0] == "fallback", fields[7] != "-", "fallback time: {line:?}");
             assert_eq!(fields[0] == "hod", fields[1] == "-", "reason: {line:?}");
+            assert!(fields[8] == "-" || number(fields[8]), "conversion time: {line:?}");
+            assert!(fields[8] == "-" || fields[2] == "bitcode", "only bitcode converts: {line:?}");
+            let status = fields[9];
+            assert!(
+                status == "-"
+                    || number(status)
+                    || status.strip_prefix("signal:").is_some_and(number),
+                "fallback status: {line:?}"
+            );
+            assert_eq!(fields[0] == "fallback", status != "-", "fallback status: {line:?}");
             Line {
                 outcome: fields[0].to_owned(),
                 reason: fields[1].to_owned(),
@@ -61,6 +74,8 @@ fn coverage(log: &Path) -> Vec<Line> {
                 target: fields[5].to_owned(),
                 hod_micros: fields[6].to_owned(),
                 fallback_micros: fields[7].to_owned(),
+                conversion_micros: fields[8].to_owned(),
+                fallback_status: fields[9].to_owned(),
             }
         })
         .collect()
@@ -69,9 +84,14 @@ fn coverage(log: &Path) -> Vec<Line> {
 /// `hod` with a clean `HOD_*` environment.
 fn hod() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_hod"));
-    for var in
-        ["HOD_FALLBACK_LLC", "HOD_STRICT", "HOD_COVERAGE_LOG", "HOD_IN_FALLBACK", "HOD_TIME_PHASES"]
-    {
+    for var in [
+        "HOD_FALLBACK_LLC",
+        "HOD_STRICT",
+        "HOD_COVERAGE_LOG",
+        "HOD_BITCODE_VIA",
+        "HOD_IN_FALLBACK",
+        "HOD_TIME_PHASES",
+    ] {
         command.env_remove(var);
     }
     command
@@ -183,6 +203,7 @@ fn fallback_receives_original_arguments_and_identical_input() {
     assert_eq!(line.output, out.to_str().unwrap());
     assert_eq!(line.target, "aarch64-unknown-linux-gnu");
     assert!(line.hod_micros.parse::<u64>().is_ok() && line.fallback_micros.parse::<u64>().is_ok());
+    assert_eq!((line.conversion_micros.as_str(), line.fallback_status.as_str()), ("-", "0"));
 }
 
 // spec/cli.md "Environment": the same settings from the environment, and
@@ -280,16 +301,33 @@ fn fallback_exit_status_propagates() {
         assert_eq!(exit_code(&outcome), code);
         assert_eq!(outcome.stderr_text(), "err from llc\n", "hod adds nothing");
     }
-    // A fallback that ran is a `fallback` line whatever its status.
+    // A fallback that ran is a `fallback` line whatever its status, and
+    // the status is the line's last field.
     let lines = coverage(&log);
     assert_eq!(lines.len(), 4);
     assert!(lines.iter().all(|l| l.outcome == "fallback" && l.reason == "codegen-not-implemented"));
+    let statuses: Vec<&str> = lines.iter().map(|l| l.fallback_status.as_str()).collect();
+    assert_eq!(statuses, ["1", "2", "7", "255"]);
 
-    // Killed by a signal: 128 + the signal, and hod says so.
+    // Killed by a signal: 128 + the signal, and hod says so; the log has
+    // the signal, not the sum.
     let killed = scratch.write_script("killed", "cat > /dev/null\nkill -TERM $$");
-    let outcome = run_hod(hod().env("HOD_FALLBACK_LLC", &killed).arg("-filetype=obj"), b"");
+    let killed_log = scratch.join("killed.tsv");
+    let outcome = run_hod(
+        hod()
+            .env("HOD_FALLBACK_LLC", &killed)
+            .env("HOD_COVERAGE_LOG", &killed_log)
+            .arg("-filetype=obj"),
+        b"",
+    );
     assert_eq!(exit_code(&outcome), 128 + 15);
     assert!(outcome.stderr_text().contains("was terminated by signal 15"), "{outcome:?}");
+    let lines = coverage(&killed_log);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(
+        (lines[0].outcome.as_str(), lines[0].fallback_status.as_str()),
+        ("fallback", "signal:15")
+    );
 
     // A fallback that does not read its input does not hang or break hod.
     let deaf = scratch.write_script("deaf", "exit 3");
@@ -297,13 +335,21 @@ fn fallback_exit_status_propagates() {
     let outcome = run_hod(hod().env("HOD_FALLBACK_LLC", &deaf).arg("-filetype=obj"), &big);
     assert_eq!(exit_code(&outcome), 3);
 
-    // A fallback that cannot be started.
+    // A fallback that cannot be started: no fallback ran, so no status.
     let outcome = run_hod(
-        hod().env("HOD_FALLBACK_LLC", scratch.join("missing")).arg("-filetype=obj"),
+        hod()
+            .env("HOD_FALLBACK_LLC", scratch.join("missing"))
+            .env("HOD_COVERAGE_LOG", &killed_log)
+            .arg("-filetype=obj"),
         MODULE.as_bytes(),
     );
     assert_eq!(exit_code(&outcome), 1);
     assert!(outcome.stderr_text().starts_with("hod: error: cannot run fallback '"), "{outcome:?}");
+    let lines = coverage(&killed_log);
+    assert_eq!(
+        (lines[1].outcome.as_str(), lines[1].reason.as_str(), lines[1].fallback_status.as_str()),
+        ("error", "fallback-unavailable", "-")
+    );
 }
 
 // spec/cli.md "Strict mode": unsupported is an error naming the construct,
@@ -634,11 +680,526 @@ fn hod_is_not_its_own_fallback() {
     assert_eq!(exit_code(&outcome), 1);
     let stderr = outcome.stderr_text();
     assert!(stderr.contains("HOD_IN_FALLBACK") && stderr.contains("real llc"), "{stderr}");
+    assert_eq!(stderr.lines().count(), 1, "the outer hod adds nothing: {stderr}");
     // One line from each of the two processes, the inner one first.
     let lines = coverage(&log);
     let summary: Vec<(&str, &str)> =
         lines.iter().map(|l| (l.outcome.as_str(), l.reason.as_str())).collect();
     assert_eq!(summary, [("error", "fallback-loop"), ("fallback", "codegen-not-implemented")]);
+    assert_eq!(lines[1].fallback_status, "1");
+}
+
+/// What the stand-in converters print for a module: text as `llvm-dis`
+/// writes it, with a triple that is not the one of `MODULE`.
+const CONVERTED: &str = "\
+; ModuleID = '<stdin>'
+source_filename = \"m.cpp\"
+target triple = \"x86_64-unknown-linux-gnu\"
+
+define i32 @seven() {
+  ret i32 7
+}
+";
+
+/// Bytes that start with the bitcode magic: `size` of them, not UTF-8,
+/// more than a pipe holds when `size` says so.
+fn bitcode_like(size: usize) -> Vec<u8> {
+    let mut bytes = b"BC\xC0\xDE\x35\x14\x00\x00".to_vec();
+    while bytes.len() < size {
+        bytes.extend_from_slice(b"\x00\xFF\xFE record \n");
+    }
+    bytes
+}
+
+/// A stand-in for `llvm-dis`: records its arguments (one per line) in
+/// `<script>.args` and those of hod's variables it was started with (the
+/// four settings and `HOD_IN_FALLBACK`; the harness has `HOD_*` variables
+/// of its own, which are not hod's) in `<script>.env`, then does
+/// `behaviour`, which deals with standard input itself. `<script>.text`
+/// holds `CONVERTED` for it to print.
+struct FakeDis {
+    path: PathBuf,
+}
+
+impl FakeDis {
+    /// Reads all of its input into `<script>.stdin` and prints the module.
+    const GOOD: &str = "cat > \"$0.stdin\"\ncat \"$0.text\"";
+
+    fn new(scratch: &Scratch, name: &str, behaviour: &str) -> Self {
+        let body = format!(
+            ": > \"$0.args\"\n\
+             for a in \"$@\"; do printf '%s\\n' \"$a\" >> \"$0.args\"; done\n\
+             env | grep -E \
+             '^HOD_(FALLBACK_LLC|STRICT|COVERAGE_LOG|BITCODE_VIA|IN_FALLBACK)=' \
+             | sort > \"$0.env\"\n\
+             {behaviour}"
+        );
+        let path = scratch.write_script(name, &body);
+        scratch.write(&format!("{name}.text"), CONVERTED);
+        Self { path }
+    }
+
+    fn recorded(&self, what: &str) -> PathBuf {
+        let mut name = self.path.clone().into_os_string();
+        name.push(what);
+        PathBuf::from(name)
+    }
+
+    fn ran(&self) -> bool {
+        self.recorded(".args").exists()
+    }
+
+    fn args(&self) -> Vec<String> {
+        let text = std::fs::read_to_string(self.recorded(".args")).expect("the converter ran");
+        text.lines().map(str::to_owned).collect()
+    }
+
+    fn env(&self) -> String {
+        std::fs::read_to_string(self.recorded(".env")).expect("the converter ran")
+    }
+
+    fn stdin(&self) -> Vec<u8> {
+        std::fs::read(self.recorded(".stdin")).expect("the converter read its input")
+    }
+}
+
+// spec/cli.md "Bitcode conversion": with a converter, bitcode goes through
+// it on pipes (more than a pipe holds, in both directions at once) and the
+// invocation goes on as for text. The converter gets none of hod's
+// settings. "Fallback protocol": the fallback still gets the original
+// arguments and the original bitcode.
+#[test]
+fn bitcode_is_converted_and_goes_on_as_text() {
+    let scratch = Scratch::new("cli-convert");
+    let llc = FakeLlc::new(&scratch, "llc");
+    // Prints the module, then every byte it reads as a comment line while
+    // it is still reading: about four times the input, while hod is still
+    // writing it.
+    let dis = FakeDis::new(
+        &scratch,
+        "llvm-dis",
+        "cat \"$0.text\"\ntee \"$0.stdin\" | od -An -v -tx1 | sed 's/^/;/'",
+    );
+    let log = scratch.join("cov.tsv");
+    let out = scratch.join("a.o");
+    let input = bitcode_like(1 << 20);
+    let outcome = run_hod(
+        hod()
+            .env("HOD_FALLBACK_LLC", &llc.path)
+            .env("HOD_COVERAGE_LOG", &log)
+            .env("HOD_STRICT", "0")
+            .env("HOD_BITCODE_VIA", &dis.path)
+            .args(["-O0", "-relocation-model=pic", "-filetype=obj", "-o"])
+            .arg(&out)
+            .arg("-"),
+        &input,
+    );
+    assert_eq!(exit_code(&outcome), 0, "{}", outcome.stderr_text());
+    assert_eq!(outcome.stdout_text(), "out from llc\n");
+    assert_eq!(outcome.stderr_text(), "err from llc\n", "hod adds nothing");
+
+    assert_eq!(dis.args(), ["-o", "-", "-"]);
+    assert!(dis.stdin() == input, "the converter reads the bytes hod read");
+    assert_eq!(dis.env(), "HOD_IN_FALLBACK=1\n", "none of hod's settings reach the converter");
+    assert_eq!(
+        llc.args(),
+        ["-O0", "-relocation-model=pic", "-filetype=obj", "-o", out.to_str().unwrap(), "-"]
+    );
+    assert!(llc.stdin() == input, "the fallback reads the original bitcode, not the text");
+
+    let lines = coverage(&log);
+    assert_eq!(lines.len(), 1);
+    let line = &lines[0];
+    assert_eq!(
+        (line.outcome.as_str(), line.reason.as_str(), line.input_kind.as_str()),
+        ("fallback", "codegen-not-implemented", "bitcode"),
+        "the text reached the same decline as a text input"
+    );
+    assert_eq!(line.input_bytes, input.len().to_string(), "the bitcode's size");
+    assert_eq!(line.output, out.to_str().unwrap());
+    assert_eq!(line.target, "x86_64-unknown-linux-gnu", "the converted module's triple");
+    let micros = |field: &str| field.parse::<u64>().unwrap_or_else(|_| panic!("{line:?}"));
+    assert!(micros(&line.conversion_micros) > 0, "{line:?}");
+    assert!(micros(&line.hod_micros) >= micros(&line.conversion_micros), "{line:?}");
+    assert_eq!(line.fallback_status, "0");
+
+    // The module's triple is now known, so the target check applies to
+    // converted bitcode as it does to text ("Reasons").
+    let dis_wasm = FakeDis::new(&scratch, "llvm-dis-wasm", FakeDis::GOOD);
+    let wasm = CONVERTED.replace("x86_64-unknown-linux-gnu", "wasm32-unknown-unknown");
+    scratch.write("llvm-dis-wasm.text", wasm);
+    let outcome = run_hod(
+        hod()
+            .env("HOD_FALLBACK_LLC", &llc.path)
+            .env("HOD_COVERAGE_LOG", &log)
+            .arg(format!("--bitcode-via={}", dis_wasm.path.display()))
+            .arg("-filetype=obj"),
+        &input,
+    );
+    assert_eq!(exit_code(&outcome), 0, "{}", outcome.stderr_text());
+    assert_eq!(llc.args(), ["-filetype=obj"], "--bitcode-via is hod's own: not forwarded");
+    let lines = coverage(&log);
+    assert_eq!(
+        (lines[1].reason.as_str(), lines[1].input_kind.as_str(), lines[1].target.as_str()),
+        ("unsupported-target", "bitcode", "wasm32-unknown-unknown")
+    );
+    assert_ne!(lines[1].conversion_micros, "-");
+}
+
+/// A converter that fails: its name, what it does, the reason of the
+/// failure, and the diagnostic after the converter's path.
+type FailingConverter = (&'static str, &'static str, &'static str, String);
+
+/// Every way a converter that starts can fail.
+fn failing_converters() -> Vec<FailingConverter> {
+    let not_a_module = "' wrote something that is not one whole module of LLVM text";
+    vec![
+        (
+            "fail",
+            "cat > /dev/null\necho >&2\necho 'llvm-dis: error: Invalid record' >&2\n\
+             echo 'more' >&2\nexit 1",
+            "bitcode-converter-failed",
+            "' failed (exit status 1): llvm-dis: error: Invalid record".into(),
+        ),
+        (
+            "fail-after-output",
+            "cat > /dev/null\ncat \"$0.text\"\nexit 4",
+            "bitcode-converter-failed",
+            "' failed (exit status 4)".into(),
+        ),
+        ("fail-deaf", "exit 5", "bitcode-converter-failed", "' failed (exit status 5)".into()),
+        (
+            // A megabyte on standard error before reading anything: all of
+            // it is read, 200 characters of its first line are quoted.
+            "fail-noisy",
+            "head -c 1048576 /dev/zero | tr '\\0' 'e' >&2\necho >&2\ncat > /dev/null\nexit 1",
+            "bitcode-converter-failed",
+            format!("' failed (exit status 1): {}...", "e".repeat(200)),
+        ),
+        (
+            "killed",
+            "kill -KILL $$",
+            "bitcode-converter-killed",
+            "' was terminated by signal 9".into(),
+        ),
+        ("nothing", "cat > /dev/null", "bitcode-converter-output", "' wrote nothing".into()),
+        ("deaf", "exit 0", "bitcode-converter-output", "' wrote nothing".into()),
+        (
+            "garbage",
+            "cat > /dev/null\necho 'not a module'",
+            "bitcode-converter-output",
+            not_a_module.into(),
+        ),
+        ("bitcode", "cat", "bitcode-converter-output", not_a_module.into()),
+        (
+            "cut-short",
+            "cat > /dev/null\nprintf '%s' '; ModuleID = x'",
+            "bitcode-converter-output",
+            not_a_module.into(),
+        ),
+        (
+            "warned",
+            "cat > /dev/null\ncat \"$0.text\"\necho 'warning: ignoring invalid debug info' >&2",
+            "bitcode-converter-stderr",
+            "' wrote to standard error: warning: ignoring invalid debug info".into(),
+        ),
+    ]
+}
+
+/// Checks the log of a run of failed conversions of `input`: per reason,
+/// in order, one line of a fallback and then `errors` lines of errors.
+fn assert_failed_conversions(log: &Path, reasons: &[&str], errors: usize, input: &[u8]) {
+    let lines = coverage(log);
+    assert_eq!(lines.len(), reasons.len() * (1 + errors));
+    for (index, line) in lines.iter().enumerate() {
+        let reason = reasons[index / (1 + errors)];
+        let outcome = if index.is_multiple_of(1 + errors) { "fallback" } else { "error" };
+        assert_eq!((line.outcome.as_str(), line.reason.as_str()), (outcome, reason), "{index}");
+        assert_eq!(line.input_kind, "bitcode", "{index}");
+        assert_eq!(line.input_bytes, input.len().to_string(), "{index}");
+        assert_eq!(line.target, "-", "{index}: a module that was not converted has no triple");
+        assert_ne!(line.conversion_micros, "-", "{index}: an attempt has a time");
+        assert_eq!(line.fallback_status, if outcome == "fallback" { "0" } else { "-" }, "{index}");
+    }
+}
+
+// spec/cli.md "Bitcode conversion" and "Reasons": every way a conversion
+// fails has its reason; in hybrid mode the fallback then runs exactly as
+// for any other decline (original arguments, original bitcode, hod silent);
+// without a fallback it is an error, exit status 1.
+#[test]
+fn conversion_failures() {
+    let scratch = Scratch::new("cli-convert-fail");
+    let log = scratch.join("cov.tsv");
+    let strict_llc = FakeLlc::new(&scratch, "llc-strict");
+    // More than a pipe holds: a converter that does not read it all must
+    // not block hod, nor kill it with SIGPIPE.
+    let input = bitcode_like(1 << 20);
+    let cases = failing_converters();
+    for (name, behaviour, _, said) in &cases {
+        let dis = FakeDis::new(&scratch, name, behaviour);
+        let llc = FakeLlc::new(&scratch, &format!("llc-{name}"));
+        let args = ["-O0", "-filetype=obj", "-o", "x.o", "-"];
+        let via = format!("--bitcode-via={}", dis.path.display());
+
+        // Hybrid: the fallback, as for any other decline.
+        let outcome = run_hod(
+            hod()
+                .env("HOD_COVERAGE_LOG", &log)
+                .env("HOD_FALLBACK_LLC", &llc.path)
+                .arg(&via)
+                .args(args),
+            &input,
+        );
+        assert_eq!(exit_code(&outcome), 0, "{name}: {}", outcome.stderr_text());
+        assert_eq!(outcome.stdout_text(), "out from llc\n", "{name}");
+        assert_eq!(outcome.stderr_text(), "err from llc\n", "{name}: hod adds nothing");
+        assert!(dis.ran(), "{name}");
+        assert_eq!(llc.args(), args, "{name}");
+        assert!(llc.stdin() == input, "{name}: the fallback reads the original bitcode");
+
+        // Strict, and no fallback at all: an error that names the converter.
+        let expected = format!("hod: error: bitcode converter '{}{said}", dis.path.display());
+        let strict = run_hod(
+            hod()
+                .env("HOD_COVERAGE_LOG", &log)
+                .env("HOD_FALLBACK_LLC", &strict_llc.path)
+                .env("HOD_STRICT", "1")
+                .arg(&via)
+                .args(args),
+            &input,
+        );
+        assert_eq!(exit_code(&strict), 1, "{name}");
+        assert_eq!(strict.stderr_text(), format!("{expected} (strict mode: no fallback)\n"));
+        assert!(strict.stdout.is_empty(), "{name}");
+        let alone = run_hod(hod().env("HOD_COVERAGE_LOG", &log).arg(&via).args(args), &input);
+        assert_eq!(exit_code(&alone), 1, "{name}");
+        assert_eq!(
+            alone.stderr_text(),
+            format!(
+                "{expected}; no fallback is configured (--fallback=<llc> or HOD_FALLBACK_LLC)\n"
+            )
+        );
+    }
+    assert!(!strict_llc.ran(), "strict mode never runs the fallback");
+    let reasons: Vec<&str> = cases.iter().map(|case| case.2).collect();
+    assert_failed_conversions(&log, &reasons, 2, &input);
+}
+
+// spec/cli.md "Bitcode conversion" and "Reasons": a converter that cannot
+// be started, because it is missing or is not executable.
+#[test]
+fn converter_that_cannot_be_started() {
+    let scratch = Scratch::new("cli-convert-missing");
+    let log = scratch.join("cov.tsv");
+    let input = bitcode_like(1 << 20);
+    let missing = scratch.join("no-such-llvm-dis");
+    let plain_file = scratch.write("not-executable", "text");
+    let llc = FakeLlc::new(&scratch, "llc");
+    for converter in [&missing, &plain_file] {
+        let via = format!("--bitcode-via={}", converter.display());
+        let outcome = run_hod(
+            hod()
+                .env("HOD_COVERAGE_LOG", &log)
+                .env("HOD_FALLBACK_LLC", &llc.path)
+                .arg(&via)
+                .args(["-filetype=obj"]),
+            &input,
+        );
+        assert_eq!(exit_code(&outcome), 0, "{}", outcome.stderr_text());
+        assert_eq!(outcome.stderr_text(), "err from llc\n");
+        assert_eq!(llc.args(), ["-filetype=obj"]);
+        assert!(llc.stdin() == input);
+        let strict = run_hod(
+            hod().env("HOD_COVERAGE_LOG", &log).arg(&via).args(["-filetype=obj", "--strict"]),
+            &input,
+        );
+        assert_eq!(exit_code(&strict), 1);
+        let stderr = strict.stderr_text();
+        let start = format!("hod: error: cannot run bitcode converter '{}': ", converter.display());
+        assert!(stderr.starts_with(&start), "{stderr}");
+        assert!(stderr.ends_with(" (strict mode: no fallback)\n"), "{stderr}");
+    }
+    assert_failed_conversions(&log, &["bitcode-converter-unavailable"; 2], 1, &input);
+}
+
+// spec/cli.md "Bitcode conversion": a bitcode file is converted the same
+// way (its bytes on the converter's standard input); "Fallback protocol":
+// the fallback is given the file's name and hod's own standard input.
+#[test]
+fn bitcode_file_input() {
+    let scratch = Scratch::new("cli-convert-file");
+    let llc = FakeLlc::new(&scratch, "llc");
+    let dis = FakeDis::new(&scratch, "llvm-dis", FakeDis::GOOD);
+    let log = scratch.join("cov.tsv");
+    let bitcode = bitcode_like(4096);
+    let input = scratch.write("m.bc", &bitcode);
+    let outcome = run_hod(
+        hod()
+            .env("HOD_FALLBACK_LLC", &llc.path)
+            .env("HOD_COVERAGE_LOG", &log)
+            .env("HOD_BITCODE_VIA", &dis.path)
+            .arg(&input)
+            .args(["-O0", "-filetype=obj"]),
+        b"not the module",
+    );
+    assert_eq!(exit_code(&outcome), 0, "{}", outcome.stderr_text());
+    assert_eq!(dis.args(), ["-o", "-", "-"]);
+    assert_eq!(dis.stdin(), bitcode);
+    assert_eq!(llc.args(), [input.to_str().unwrap(), "-O0", "-filetype=obj"]);
+    assert_eq!(llc.stdin(), b"not the module");
+    let lines = coverage(&log);
+    assert_eq!(lines.len(), 1);
+    let line = &lines[0];
+    assert_eq!(
+        (line.reason.as_str(), line.input_kind.as_str(), line.target.as_str()),
+        ("codegen-not-implemented", "bitcode", "x86_64-unknown-linux-gnu")
+    );
+    assert_eq!(line.input_bytes, bitcode.len().to_string());
+    assert_eq!(line.output, scratch.join("m.o").to_str().unwrap());
+    assert_ne!(line.conversion_micros, "-");
+}
+
+// spec/cli.md "hod's own options" and "Environment" for the converter, and
+// "Bitcode conversion": it runs only for a module whose encoding is all
+// that stands in the way.
+#[test]
+fn converter_settings() {
+    let scratch = Scratch::new("cli-convert-settings");
+    let llc = FakeLlc::new(&scratch, "llc");
+    let from_env = FakeDis::new(&scratch, "dis-env", FakeDis::GOOD);
+    let from_flag = FakeDis::new(&scratch, "dis-flag", FakeDis::GOOD);
+    let never = FakeDis::new(&scratch, "dis-never", FakeDis::GOOD);
+    let log = scratch.join("cov.tsv");
+    let bitcode = bitcode_like(64);
+    let base = || {
+        let mut command = hod();
+        command.env("HOD_FALLBACK_LLC", &llc.path).env("HOD_COVERAGE_LOG", &log);
+        command
+    };
+
+    // The environment; then the command line over the environment.
+    let outcome =
+        run_hod(base().env("HOD_BITCODE_VIA", &from_env.path).arg("-filetype=obj"), &bitcode);
+    assert_eq!(exit_code(&outcome), 0, "{}", outcome.stderr_text());
+    assert!(from_env.ran());
+    std::fs::remove_file(from_env.recorded(".args")).unwrap();
+    let outcome = run_hod(
+        base()
+            .env("HOD_BITCODE_VIA", &from_env.path)
+            .arg("--bitcode-via")
+            .arg(&from_flag.path)
+            .arg("-filetype=obj"),
+        &bitcode,
+    );
+    assert_eq!(exit_code(&outcome), 0, "{}", outcome.stderr_text());
+    assert!(from_flag.ran() && !from_env.ran());
+    assert_eq!(llc.args(), ["-filetype=obj"]);
+
+    // Set but empty is unset: bitcode is declined as without a converter.
+    let outcome = run_hod(base().env("HOD_BITCODE_VIA", "").arg("-filetype=obj"), &bitcode);
+    assert_eq!(exit_code(&outcome), 0, "{}", outcome.stderr_text());
+
+    // Not run: a text module; assembly output; a rejected command line.
+    let via = format!("--bitcode-via={}", never.path.display());
+    for (args, input) in [
+        (&["-filetype=obj"][..], MODULE.as_bytes()),
+        (&["-filetype=asm"], &bitcode),
+        (&["-filetype=obj", "-frobnicate"], &bitcode),
+    ] {
+        let outcome = run_hod(base().arg(&via).args(args), input);
+        assert_eq!(exit_code(&outcome), 0, "{args:?}: {}", outcome.stderr_text());
+        assert_eq!(llc.args(), args, "{args:?}");
+    }
+    assert!(!never.ran(), "nothing to convert, nothing run");
+
+    // A mistake in the option is an error whatever else is configured.
+    let outcome = run_hod(base().args(["-filetype=obj", "--bitcode-via="]), &bitcode);
+    assert_eq!(exit_code(&outcome), 1);
+    assert_eq!(
+        outcome.stderr_text(),
+        "hod: error: option '--bitcode-via' requires a non-empty value\n"
+    );
+
+    let lines = coverage(&log);
+    let summary: Vec<(&str, &str, &str, bool)> = lines
+        .iter()
+        .map(|l| {
+            (
+                l.outcome.as_str(),
+                l.reason.as_str(),
+                l.input_kind.as_str(),
+                l.conversion_micros != "-",
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("fallback", "codegen-not-implemented", "bitcode", true),
+            ("fallback", "codegen-not-implemented", "bitcode", true),
+            ("fallback", "bitcode-input", "bitcode", false),
+            ("fallback", "codegen-not-implemented", "text", false),
+            ("fallback", "assembly-output", "bitcode", false),
+            ("fallback", "unknown-option", "-", false),
+            ("error", "usage", "-", false),
+        ]
+    );
+}
+
+// spec/cli.md "Bitcode conversion": hod where the converter should be,
+// named directly or through an `llc` entry of a shim directory (which sets
+// the settings again), stops at once instead of starting converters without
+// end; the invocation falls back like any failed conversion.
+#[test]
+fn hod_is_not_its_own_converter() {
+    let scratch = Scratch::new("cli-convert-loop");
+    let llc = FakeLlc::new(&scratch, "llc");
+    let log = scratch.join("cov.tsv");
+    let hod_path = env!("CARGO_BIN_EXE_hod");
+    let entry = scratch.write_script(
+        "shim-llc",
+        &format!(
+            "HOD_FALLBACK_LLC='{}' HOD_BITCODE_VIA=\"$0\" exec '{hod_path}' \"$@\"",
+            llc.path.display()
+        ),
+    );
+    let bitcode = bitcode_like(64);
+    for converter in [Path::new(hod_path), &entry] {
+        let outcome = run_hod(
+            hod()
+                .env("HOD_FALLBACK_LLC", &llc.path)
+                .env("HOD_COVERAGE_LOG", &log)
+                .env("HOD_BITCODE_VIA", converter)
+                .args(["-filetype=obj"]),
+            &bitcode,
+        );
+        assert_eq!(exit_code(&outcome), 0, "{}", outcome.stderr_text());
+        assert_eq!(outcome.stderr_text(), "err from llc\n");
+        assert_eq!(llc.stdin(), bitcode);
+
+        let strict = run_hod(
+            hod().env("HOD_BITCODE_VIA", converter).args(["-filetype=obj", "--strict"]),
+            &bitcode,
+        );
+        assert_eq!(exit_code(&strict), 1);
+        let stderr = strict.stderr_text();
+        assert!(
+            stderr.starts_with(&format!(
+                "hod: error: bitcode converter '{}' failed (exit status 1): hod: error: this hod \
+                 was started by another hod",
+                converter.display()
+            )),
+            "{stderr}"
+        );
+        assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    }
+    // One line per invocation that had a log: the inner hod has none of the
+    // outer one's settings, so it writes no line of its own.
+    let lines = coverage(&log);
+    let summary: Vec<(&str, &str)> =
+        lines.iter().map(|l| (l.outcome.as_str(), l.reason.as_str())).collect();
+    assert_eq!(summary, [("fallback", "bitcode-converter-failed"); 2]);
 }
 
 /// `llvm-readelf -h` of `object`, asserting that it is a relocatable ELF.
@@ -748,4 +1309,154 @@ fn real_llc_fallback_bitcode() {
         ("fallback", "bitcode-input", "bitcode")
     );
     assert_eq!(lines[0].input_bytes, bitcode.len().to_string());
+    assert_eq!(lines[0].target, "-", "without a converter a bitcode module's triple is not read");
+    assert_eq!(lines[0].conversion_micros, "-");
+}
+
+/// The `bin` directory of every supported LLVM that is installed with the
+/// tools these tests use, newest first. Under `HOD_REQUIRE_TOOLS=1` at
+/// least one must be.
+fn llvm_installations() -> Vec<(u32, PathBuf)> {
+    let found: Vec<(u32, PathBuf)> = LLVM_MAJORS
+        .iter()
+        .map(|&major| (major, PathBuf::from(format!("/usr/lib/llvm-{major}/bin"))))
+        .filter(|(_, bin)| {
+            ["llvm-as", "llvm-dis", "llc", "llvm-readelf"].iter().all(|t| bin.join(t).is_file())
+        })
+        .collect();
+    if found.is_empty() {
+        assert!(
+            !tools_required(),
+            "no LLVM installation in /usr/lib/llvm-<N> (HOD_REQUIRE_TOOLS=1)"
+        );
+        eprintln!("note: no LLVM installation in /usr/lib/llvm-<N>; skipping");
+    }
+    found
+}
+
+/// `module` as bitcode, by `bin`'s `llvm-as`.
+fn assemble(bin: &Path, module: &str) -> Vec<u8> {
+    let assembled = run_with(
+        Command::new(bin.join("llvm-as")).args(["-o", "-", "-"]),
+        module.as_bytes(),
+        Duration::from_mins(1),
+    );
+    assert!(assembled.success(), "{}", assembled.stderr_text());
+    assert!(assembled.stdout.starts_with(b"BC\xC0\xDE"), "llvm-as writes raw bitcode");
+    assembled.stdout
+}
+
+// spec/cli.md "Bitcode conversion", with the real llvm-dis and llc of every
+// installed LLVM: bitcode is converted by the llvm-dis of the LLVM that
+// wrote it, the module's triple becomes known, hod reaches the same decline
+// as for the text, and the fallback builds a valid object from the bitcode.
+#[test]
+fn real_llvm_dis_converts_bitcode() {
+    for (major, bin) in llvm_installations() {
+        let scratch = Scratch::new(&format!("cli-dis-{major}"));
+        let bitcode = assemble(&bin, MODULE);
+        let log = scratch.join("cov.tsv");
+        let out = scratch.join("seven.o");
+        let via = format!("--bitcode-via={}", bin.join("llvm-dis").display());
+        let outcome = run_hod(
+            hod()
+                .env("HOD_FALLBACK_LLC", bin.join("llc"))
+                .env("HOD_COVERAGE_LOG", &log)
+                .arg(&via)
+                .args(["-O0", "-relocation-model=pic", "-filetype=obj", "-o"])
+                .arg(&out)
+                .arg("-"),
+            &bitcode,
+        );
+        assert_eq!(exit_code(&outcome), 0, "LLVM {major}: {}", outcome.stderr_text());
+        assert_eq!(outcome.stderr_text(), "", "LLVM {major}");
+        assert_relocatable_elf(&bin.join("llvm-readelf"), &out);
+
+        // Strict: the decline is the text path's, with status 2.
+        let strict = run_hod(
+            hod().env("HOD_COVERAGE_LOG", &log).arg(&via).args(["-filetype=obj", "--strict"]),
+            &bitcode,
+        );
+        assert_eq!(exit_code(&strict), 2, "LLVM {major}");
+        assert_eq!(
+            strict.stderr_text(),
+            "hod: error: unsupported construct 'codegen-not-implemented' \
+             (strict mode: no fallback)\n"
+        );
+        // The wrapper form of bitcode is bitcode too; llvm-dis reads it.
+        let mut wrapped = 0x0B17_C0DE_u32.to_le_bytes().to_vec();
+        for word in [0_u32, 20, u32::try_from(bitcode.len()).unwrap(), 0] {
+            wrapped.extend_from_slice(&word.to_le_bytes());
+        }
+        wrapped.extend_from_slice(&bitcode);
+        let alone = run_hod(
+            hod().env("HOD_COVERAGE_LOG", &log).arg(&via).args(["-filetype=obj"]),
+            &wrapped,
+        );
+        assert_eq!(exit_code(&alone), 2, "LLVM {major}: {}", alone.stderr_text());
+
+        let lines = coverage(&log);
+        assert_eq!(lines.len(), 3);
+        for (line, (outcome, bytes)) in lines.iter().zip([
+            ("fallback", bitcode.len()),
+            ("error", bitcode.len()),
+            ("error", wrapped.len()),
+        ]) {
+            assert_eq!(
+                (line.outcome.as_str(), line.reason.as_str(), line.input_kind.as_str()),
+                (outcome, "codegen-not-implemented", "bitcode"),
+                "LLVM {major}"
+            );
+            assert_eq!(line.input_bytes, bytes.to_string(), "LLVM {major}");
+            assert_eq!(line.target, "aarch64-unknown-linux-gnu", "LLVM {major}: {line:?}");
+            assert_ne!(line.conversion_micros, "-", "LLVM {major}");
+        }
+        assert_eq!(lines[0].fallback_status, "0");
+    }
+}
+
+// spec/cli.md "Bitcode conversion": the converter must be the llvm-dis of
+// the LLVM that wrote the bitcode. An older one fails on what it does not
+// know, and the invocation falls back: the newer llc still builds the
+// object. Needs both LLVM 22 and LLVM 19.
+#[test]
+fn real_llvm_dis_of_another_major() {
+    let installations = llvm_installations();
+    let [(new_major, new), .., (old_major, old)] = &installations[..] else {
+        eprintln!("note: fewer than two LLVM installations; skipping the mismatch test");
+        return;
+    };
+    // `captures` is an attribute LLVM 19 does not have.
+    assert!(*new_major >= 21 && *old_major < 21, "{installations:?}");
+    let module = "target triple = \"aarch64-unknown-linux-gnu\"\n\
+                  define ptr @keep(ptr captures(none) %p) {\n  ret ptr null\n}\n";
+    let bitcode = assemble(new, module);
+    let scratch = Scratch::new("cli-dis-mismatch");
+    let log = scratch.join("cov.tsv");
+    let out = scratch.join("keep.o");
+    let via = format!("--bitcode-via={}", old.join("llvm-dis").display());
+    let outcome = run_hod(
+        hod()
+            .env("HOD_FALLBACK_LLC", new.join("llc"))
+            .env("HOD_COVERAGE_LOG", &log)
+            .arg(&via)
+            .args(["-O0", "-filetype=obj", "-o"])
+            .arg(&out)
+            .arg("-"),
+        &bitcode,
+    );
+    assert_eq!(exit_code(&outcome), 0, "{}", outcome.stderr_text());
+    assert_eq!(outcome.stderr_text(), "");
+    assert_relocatable_elf(&new.join("llvm-readelf"), &out);
+    let strict = run_hod(hod().arg(&via).args(["-filetype=obj", "--strict"]), &bitcode);
+    assert_eq!(exit_code(&strict), 1);
+    let stderr = strict.stderr_text();
+    assert!(stderr.contains("failed (exit status 1): ") && stderr.contains("llvm-dis"), "{stderr}");
+    let lines = coverage(&log);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(
+        (lines[0].outcome.as_str(), lines[0].reason.as_str(), lines[0].target.as_str()),
+        ("fallback", "bitcode-converter-failed", "-")
+    );
+    assert_eq!(lines[0].fallback_status, "0");
 }

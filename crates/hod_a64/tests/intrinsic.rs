@@ -13,6 +13,8 @@
 //!   `objectsize`, `is.constant`, `prefetch`, `ptrmask`;
 //! - the exact words of the short forms; what is refused, by name.
 
+#![allow(clippy::many_single_char_names, reason = "the C driver's parameters")]
+
 mod common;
 
 #[path = "common/int_gen.rs"]
@@ -199,7 +201,10 @@ mod mem_intrinsics {
         let [n, m, v, x] = f.ints;
         format!(
             "ptr {buf}, i64 {n}, i32 {}, i8 {}, i64 {}, double 0x{:016X}",
-            m as u32 as i32, v as u8 as i8, x as i64, f.double.to_bits()
+            m as u32 as i32,
+            v as u8 as i8,
+            x as i64,
+            f.double.to_bits()
         )
     }
 
@@ -267,8 +272,13 @@ mod mem_intrinsics {
             )
             .unwrap();
             let init: Vec<String> = f.buf.iter().map(u8::to_string).collect();
-            writeln!(c, "static const unsigned char {}_init[{BUF}] = {{{}}};", f.name, init.join(","))
-                .unwrap();
+            writeln!(
+                c,
+                "static const unsigned char {}_init[{BUF}] = {{{}}};",
+                f.name,
+                init.join(",")
+            )
+            .unwrap();
         }
         c.push_str(
             "int main(void) {\n  long pg = sysconf(_SC_PAGESIZE);\n\
@@ -527,8 +537,7 @@ int main(int argc, char **argv) {
         let Some(toolchain) = Toolchain::host(&scratch) else { return };
         let text = format!("{}{FUNCTIONS}", ll_header(22));
         let (module, bodies) = parse(&text);
-        let driver =
-            toolchain.compile_c(&scratch, "driver", DRIVER, &["-fno-omit-frame-pointer"]);
+        let driver = toolchain.compile_c(&scratch, "driver", DRIVER, &["-fno-omit-frame-pointer"]);
         let mut objects = Vec::new();
         for (mode, stress) in [("plain", Stress::default()), ("stress", Stress::ALL)] {
             let options = Options { stress, ..Options::default() };

@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
 | `operand` | 9 | 4 | 5 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 133 | 2 | 131 | 0 | 0 | 133 | 0 |
-| total | 434 | 118 | 270 | 46 | 16 | 363 | 55 |
+| `intrinsic` | 133 | 28 | 105 | 0 | 0 | 133 | 0 |
+| total | 434 | 144 | 244 | 46 | 16 | 363 | 55 |
 
 ## `module`
 
@@ -506,33 +506,33 @@ Intrinsics (§5.5).
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `intrinsic:llvm.memcpy` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.memcpy.inline` | not-implemented | not-implemented | unplanned |
-| `intrinsic:llvm.memmove` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.memset` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.memset.inline` | not-implemented | not-implemented | unplanned |
+| `intrinsic:llvm.memcpy` | supported (int, ptr) | not-implemented |  |
+| `intrinsic:llvm.memcpy.inline` | supported (int, ptr) | not-implemented |  |
+| `intrinsic:llvm.memmove` | supported (int, ptr) | not-implemented |  |
+| `intrinsic:llvm.memset` | supported (int, ptr) | not-implemented |  |
+| `intrinsic:llvm.memset.inline` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.va_start` | not-implemented | not-implemented | WP-038 |
 | `intrinsic:llvm.va_end` | not-implemented | not-implemented | WP-038 |
 | `intrinsic:llvm.va_copy` | not-implemented | not-implemented | WP-038 |
 | `intrinsic:llvm.stacksave` | supported | not-implemented |  |
 | `intrinsic:llvm.stackrestore` | supported | not-implemented |  |
-| `intrinsic:llvm.frameaddress` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.returnaddress` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.trap` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.debugtrap` | not-implemented | not-implemented | unplanned |
-| `intrinsic:llvm.ubsantrap` | not-implemented | not-implemented | unplanned |
-| `intrinsic:llvm.bswap` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.bitreverse` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.ctpop` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.ctlz` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.cttz` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.fshl` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.fshr` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.abs` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.smax` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.smin` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.umax` | not-implemented | not-implemented | WP-041 |
-| `intrinsic:llvm.umin` | not-implemented | not-implemented | WP-041 |
+| `intrinsic:llvm.frameaddress` | supported (int, ptr) | not-implemented |  |
+| `intrinsic:llvm.returnaddress` | supported (int, ptr) | not-implemented |  |
+| `intrinsic:llvm.trap` | supported | not-implemented |  |
+| `intrinsic:llvm.debugtrap` | supported | not-implemented |  |
+| `intrinsic:llvm.ubsantrap` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.bswap` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.bitreverse` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.ctpop` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.ctlz` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.cttz` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.fshl` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.fshr` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.abs` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.smax` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.smin` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.umax` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.umin` | supported (int) | not-implemented |  |
 | `intrinsic:llvm.scmp` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.ucmp` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.clmul` | not-implemented | not-implemented | unplanned |
@@ -596,12 +596,12 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.eh.typeid.for` | not-implemented | not-implemented | M2 (exceptions) |
 | `intrinsic:llvm.threadlocal.address` | not-implemented | not-implemented | M2 (TLS) |
 | `intrinsic:llvm.thread.pointer` | not-implemented | not-implemented | M2 (TLS) |
-| `intrinsic:llvm.prefetch` | not-implemented | not-implemented | unplanned |
+| `intrinsic:llvm.prefetch` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.clear_cache` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.readcyclecounter` | not-implemented | not-implemented | unplanned |
-| `intrinsic:llvm.is.constant` | not-implemented | not-implemented | unplanned |
-| `intrinsic:llvm.objectsize` | not-implemented | not-implemented | unplanned |
-| `intrinsic:llvm.ptrmask` | not-implemented | not-implemented | unplanned |
+| `intrinsic:llvm.is.constant` | supported | not-implemented |  |
+| `intrinsic:llvm.objectsize` | supported (int, ptr) | not-implemented |  |
+| `intrinsic:llvm.ptrmask` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.load.relative` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.instrprof.increment` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.instrprof.increment.step` | not-implemented | not-implemented | unplanned |

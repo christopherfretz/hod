@@ -12,7 +12,7 @@
 //! operations (more than the register pool holds) and returns a
 //! combination of them, so a call that clobbered a live register shows.
 
-#![allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
+#![allow(clippy::too_many_lines, clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 #![allow(dead_code, reason = "each test uses part of it")]
 
 use std::collections::BTreeSet;

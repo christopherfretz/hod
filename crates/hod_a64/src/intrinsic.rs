@@ -235,7 +235,7 @@ fn unary<'a>(
     bits: u32,
 ) -> CgResult<()> {
     use Intrinsic as I;
-    if which == I::Bswap && bits % 16 != 0 {
+    if which == I::Bswap && !bits.is_multiple_of(16) {
         // The verifier rejects it: an odd number of bytes.
         return unsupported(INTRINSIC);
     }
@@ -329,6 +329,7 @@ fn min_max<'a>(
 
 /// `fshl` (`left`) or `fshr` of `[a, b, c]`: the concatenation `a:b`
 /// shifted by `c` modulo the width, its high (`fshl`) or low half.
+#[allow(clippy::many_single_char_names, reason = "the operands are LangRef's a, b, c")]
 fn funnel<'a>(
     cx: &mut FnCx<'a, A64>,
     inst: Inst<'a>,
@@ -574,7 +575,7 @@ fn set(cx: &mut FnCx<'_, A64>, inline: bool, dst: Value, byte: Value, len: Value
     let d = xr(cx.use_reg(dst)?);
     // The byte in every byte of x17 (or xzr for zero).
     let pattern = match const_int(cx, byte) {
-        Some(value) if value & 0xff == 0 => RegZr::ZR,
+        Some(value) if value.trailing_zeros() >= 8 => RegZr::ZR,
         Some(value) => {
             mov_imm(cx, Size::X, X17, (value & 0xff) * 0x0101_0101_0101_0101);
             X17.zr()

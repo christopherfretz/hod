@@ -12,7 +12,7 @@
 //! -global-isel=0 -fast-isel=0`. A case the interpreter traps on (a
 //! poison flag that is set and hit) is run but not compared.
 
-#![allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
+#![allow(clippy::too_many_lines, clippy::cast_possible_truncation, clippy::many_single_char_names)]
 #![allow(dead_code, reason = "each test uses part of it")]
 
 use std::collections::BTreeSet;
@@ -42,7 +42,7 @@ pub const FUNNEL: [&str; 2] = ["fshl", "fshr"];
 /// Whether intrinsic `name` is defined at `bits` (`bswap`: whole 16-bit
 /// halves).
 pub fn defined_at(name: &str, bits: u32) -> bool {
-    name != "bswap" || bits % 16 == 0
+    name != "bswap" || bits.is_multiple_of(16)
 }
 
 /// Whether `name` takes the `i1` poison flag.

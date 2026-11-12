@@ -8,6 +8,7 @@
 // Random numbers are cut to size all over this file.
 #![allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 
+use crate::asm::InlineAsm;
 use crate::attrs::{CallConv, ParamAttrs};
 use crate::body::{BlockData, Body, Bundle, Clause, UNSET, UseFacts};
 use crate::builder::{CallDesc, FunctionBuilder};
@@ -128,10 +129,108 @@ impl Term {
 /// result, the classes of its parameters, whether it is variadic.
 type Callee = (TypeId, Option<usize>, &'static [usize], bool);
 
+/// Where a value is defined, for the dominance rule (§5.8).
+#[derive(Clone, Copy, Debug)]
+enum Where {
+    /// A constant, argument, slot or symbol: usable anywhere.
+    Always,
+    /// An instruction's result in planned block `.0`.
+    In(usize),
+    /// The result of the `invoke` ending planned block `.0`, defined on
+    /// its edge to planned block `.1`.
+    Edge(usize, usize),
+}
+
+/// Where a use is: at an instruction of planned block `block`, or, for a
+/// `phi` of planned block `phi`, at the end of the incoming block `block`.
+#[derive(Clone, Copy, Debug)]
+struct Use {
+    block: usize,
+    phi: Option<usize>,
+}
+
+/// The planned control-flow graph's reachability and dominators, as
+/// bit sets over at most 64 planned blocks.
+struct Cfg {
+    reach: u64,
+    /// The blocks that dominate each block, itself included.
+    dom: Vec<u64>,
+    preds: Vec<Vec<usize>>,
+}
+
+impl Cfg {
+    fn new(terms: &[Term], preds: Vec<Vec<usize>>) -> Cfg {
+        let count = terms.len();
+        let mut reach = 1u64;
+        let mut work = vec![0];
+        while let Some(block) = work.pop() {
+            for next in terms[block].successors() {
+                if reach & (1 << next) == 0 {
+                    reach |= 1 << next;
+                    work.push(next);
+                }
+            }
+        }
+        let mut dom = vec![reach; count];
+        dom[0] = 1;
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for block in (1..count).filter(|&block| reach & (1 << block) != 0) {
+                let from = preds[block].iter().filter(|&&pred| reach & (1 << pred) != 0);
+                let new = from.fold(reach, |all, &pred| all & dom[pred]) | (1 << block);
+                changed |= new != dom[block];
+                dom[block] = new;
+            }
+        }
+        Cfg { reach, dom, preds }
+    }
+
+    fn reaches(&self, block: usize) -> bool {
+        self.reach & (1 << block) != 0
+    }
+
+    /// LLVM's block dominance: anything dominates a block control does
+    /// not reach, and such a block dominates nothing.
+    fn dominates(&self, a: usize, b: usize) -> bool {
+        !self.reaches(b) || (self.reaches(a) && self.dom[b] & (1 << a) != 0)
+    }
+
+    /// Whether a value defined at `at_def` may be used at `at`. `later`:
+    /// the definition comes after the use when both are in one block,
+    /// as for a reserved value resolved by a later definition.
+    fn available(&self, at_def: Where, at: Use, later: bool) -> bool {
+        if !self.reaches(at.block) {
+            return true;
+        }
+        match at_def {
+            Where::Always => true,
+            Where::In(block) if block == at.block => {
+                self.reaches(block) && (!later || at.phi.is_some())
+            }
+            Where::In(block) => self.dominates(block, at.block),
+            Where::Edge(from, to) => {
+                let alone = || {
+                    let preds = &self.preds[to];
+                    preds.len() == 1
+                        || (preds.iter().filter(|&&pred| pred == from).count() == 1
+                            && preds.iter().all(|&pred| pred == from || self.dominates(to, pred)))
+                };
+                self.reaches(from)
+                    && ((at.phi == Some(to) && at.block == from)
+                        || (self.dominates(to, at.block) && alone()))
+            }
+        }
+    }
+}
+
 struct Hole {
     value: Value,
     class: usize,
-    resolved: bool,
+    /// Where it is used so far.
+    uses: Vec<Use>,
+    /// Where its definition is, once it has one.
+    target: Option<Where>,
 }
 
 struct Generator {
@@ -139,17 +238,29 @@ struct Generator {
     b: FunctionBuilder,
     tys: [TypeId; CLASSES],
     /// What a value of each class can be: constants, arguments, slots,
-    /// symbols, and every instruction result so far. Nothing here checks
-    /// dominance, as nothing in `verify` does.
-    pool: [Vec<Value>; CLASSES],
+    /// symbols, and every instruction result so far, each with where it
+    /// is defined; a use takes one whose definition dominates it.
+    pool: [Vec<(Value, Where)>; CLASSES],
     holes: Vec<Hole>,
+    cfg: Cfg,
+    ids: Vec<BlockId>,
+    /// The planned block being built.
+    here: usize,
+    /// The constants `i1 false`, `i1 true` and an `i32`.
+    flags: [Value; 2],
+    kcfi: Value,
+    /// Inline assembly for `callbr`: `[void, i32 result]` by the number
+    /// of indirect destinations.
+    asm_goto: [[Value; 4]; 2],
+    /// The debug locations, when the module has tables.
+    locs: Vec<LocId>,
     /// Phi entries to add once every block is built.
     deferred: Vec<(Value, Value, BlockId)>,
     ret: Option<usize>,
-    locs: bool,
     callees: [Callee; 4],
     memcpy_ty: TypeId,
     void_fn: TypeId,
+    asm_int_fn: TypeId,
     exn: TypeId,
     pair: TypeId,
     far_ptr: TypeId,
@@ -159,34 +270,73 @@ struct Generator {
 }
 
 impl Generator {
-    /// A value of `class`: an existing one, or one reserved now and defined
-    /// later (§5.3).
+    /// A value of `class` for a use by an instruction of the block being
+    /// built.
     fn value(&mut self, class: usize) -> Value {
+        self.value_at(class, Use { block: self.here, phi: None })
+    }
+
+    /// A value of `class` for a use at `at`: an existing one whose
+    /// definition dominates it, or one reserved now and defined later
+    /// (§5.3) by something that will.
+    fn value_at(&mut self, class: usize, at: Use) -> Value {
         match self.rng.below(16) {
             0 | 1 => {
                 let value = self.b.reserve(self.tys[class]).unwrap();
-                self.holes.push(Hole { value, class, resolved: false });
+                self.holes.push(Hole { value, class, uses: vec![at], target: None });
                 value
             }
             2 => {
-                let old: Vec<Value> =
-                    self.holes.iter().filter(|h| h.class == class).map(|h| h.value).collect();
-                if old.is_empty() { self.rng.pick(&self.pool[class]) } else { self.rng.pick(&old) }
+                let cfg = &self.cfg;
+                let old: Vec<usize> = (0..self.holes.len())
+                    .filter(|&index| {
+                        let hole = &self.holes[index];
+                        hole.class == class
+                            && hole.target.is_none_or(|target| cfg.available(target, at, false))
+                    })
+                    .collect();
+                if old.is_empty() {
+                    return self.pooled(class, at);
+                }
+                let hole = &mut self.holes[self.rng.pick(&old)];
+                hole.uses.push(at);
+                hole.value
             }
-            _ => self.rng.pick(&self.pool[class]),
+            _ => self.pooled(class, at),
         }
     }
 
-    /// Records a new value of `class`, sometimes as the definition of a
-    /// reserved one.
+    /// A value of the pool usable at `at`.
+    fn pooled(&mut self, class: usize, at: Use) -> Value {
+        let cfg = &self.cfg;
+        let usable: Vec<Value> = self.pool[class]
+            .iter()
+            .filter(|&&(_, at_def)| cfg.available(at_def, at, false))
+            .map(|&(value, _)| value)
+            .collect();
+        self.rng.pick(&usable)
+    }
+
+    /// Records a new value of `class` defined in the block being built.
     fn define(&mut self, class: usize, result: IrResult<Value>) {
+        self.define_at(class, result, Where::In(self.here));
+    }
+
+    /// Records a new value of `class` defined at `at_def`, sometimes as
+    /// the definition of a reserved one whose uses it dominates.
+    fn define_at(&mut self, class: usize, result: IrResult<Value>, at_def: Where) {
         let value = result.unwrap();
-        self.pool[class].push(value);
+        self.pool[class].push((value, at_def));
+        let cfg = &self.cfg;
         if self.rng.chance(6)
-            && let Some(hole) = self.holes.iter_mut().find(|h| h.class == class && !h.resolved)
+            && let Some(hole) = self.holes.iter_mut().find(|h| {
+                h.class == class
+                    && h.target.is_none()
+                    && h.uses.iter().all(|&at| cfg.available(at_def, at, true))
+            })
         {
             self.b.resolve(hole.value, value).unwrap();
-            hole.resolved = true;
+            hole.target = Some(at_def);
         }
     }
 
@@ -205,16 +355,46 @@ impl Generator {
         mem
     }
 
-    fn call(&mut self, invoke: Option<(BlockId, BlockId)>, callbr: Option<(BlockId, &[BlockId])>) {
+    /// A call; with `invoke`, an `invoke` to the planned blocks (normal,
+    /// unwind); with `callbr`, a `callbr` of inline assembly to the
+    /// planned blocks (fallthrough, indirect).
+    #[expect(clippy::too_many_lines, reason = "every kind of call")]
+    fn call(&mut self, invoke: Option<(usize, usize)>, callbr: Option<(usize, &[usize])>) {
+        let ids = self.ids.clone();
         let emit = |b: &mut FunctionBuilder, ty: TypeId, desc: &CallDesc<'_>| match (invoke, callbr)
         {
-            (Some((normal, unwind)), _) => b.invoke(ty, desc, normal, unwind),
-            (None, Some((fallthrough, indirect))) => b.callbr(ty, desc, fallthrough, indirect),
+            (Some((normal, unwind)), _) => b.invoke(ty, desc, ids[normal], ids[unwind]),
+            (None, Some((fallthrough, indirect))) => {
+                let indirect: Vec<BlockId> = indirect.iter().map(|&to| ids[to]).collect();
+                b.callbr(ty, desc, ids[fallthrough], &indirect)
+            }
             (None, None) => b.call(ty, desc),
         };
-        let which = self.rng.below(6);
+        if let Some((_, indirect)) = callbr {
+            // LLVM has `callbr` for inline assembly with one label
+            // constraint per indirect destination, and no tail marker.
+            let with_result = self.rng.chance(2);
+            let callee = self.asm_goto[usize::from(with_result)][indirect.len()];
+            let (ty, fn_ty) = if with_result {
+                (TypeId::I32, self.asm_int_fn)
+            } else {
+                (TypeId::VOID, self.void_fn)
+            };
+            let result = emit(&mut self.b, ty, &CallDesc::new(callee, fn_ty, &[]));
+            if with_result {
+                self.define(INT, result);
+            } else {
+                result.unwrap();
+            }
+            return;
+        }
+        // Only `call` takes an intrinsic here: none of these may be
+        // invoked.
+        let which = self.rng.below(if invoke.is_some() { 4 } else { 6 });
         if which == 4 {
-            let args = [self.value(PTR), self.value(PTR), self.value(LONG), self.value(BOOL)];
+            // The volatile flag is an immediate argument.
+            let flag = self.rng.pick(&self.flags);
+            let args = [self.value(PTR), self.value(PTR), self.value(LONG), flag];
             let overloads = [TypeId::PTR, TypeId::PTR, TypeId::I64];
             let memcpy = CallDesc::intrinsic(Intrinsic::Memcpy, &overloads, self.memcpy_ty, &args);
             let desc = CallDesc { nounwind: true, ..memcpy };
@@ -228,13 +408,13 @@ impl Generator {
             return;
         }
         let (fn_ty, ret, params, variadic) = self.callees[which];
-        let mut args: Vec<Value> = params.iter().map(|&class| self.value(class)).collect();
+        let mut classes: Vec<usize> = params.to_vec();
         if variadic {
             for _ in 0..self.rng.below(3) {
-                let class = self.rng.below(CLASSES);
-                args.push(self.value(class));
+                classes.push(self.rng.below(CLASSES));
             }
         }
+        let args: Vec<Value> = classes.iter().map(|&class| self.value(class)).collect();
         let callee = if self.rng.chance(3) {
             self.value(PTR)
         } else {
@@ -248,32 +428,54 @@ impl Generator {
                 inputs.push(self.value(class));
             }
         }
+        let kcfi = [self.kcfi];
         let bundles =
-            [Bundle { tag: "deopt", inputs: &inputs }, Bundle { tag: "kcfi", inputs: &[] }];
+            [Bundle { tag: "deopt", inputs: &inputs }, Bundle { tag: "kcfi", inputs: &kcfi }];
+        // `signext` on integers only.
+        let integer = |class: usize| matches!(class, BOOL | INT | LONG);
         let signext = ParamAttrs::NONE.with(ParamAttrs::SIGNEXT).unwrap();
-        let attrs: Vec<ParamAttrs> = if self.rng.chance(3) {
-            args.iter()
-                .map(|_| if self.rng.chance(2) { signext } else { ParamAttrs::NONE })
-                .collect()
+        let attrs: Vec<ParamAttrs> =
+            if self.rng.chance(3) {
+                classes
+                    .iter()
+                    .map(|&class| {
+                        if integer(class) && self.rng.chance(2) {
+                            signext
+                        } else {
+                            ParamAttrs::NONE
+                        }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        let ret_signext = ret.is_some_and(integer) && self.rng.chance(4);
+        // Tail markers on `call` alone, and not `musttail`, whose
+        // conditions a random call does not meet.
+        let tail = if invoke.is_some() {
+            TailKind::None
         } else {
-            Vec::new()
+            self.rng.pick(&[TailKind::None, TailKind::Tail, TailKind::NoTail])
         };
         let desc = CallDesc {
             cc: self.rng.pick(&[CallConv::C, CallConv::FAST, CallConv::COLD]),
-            tail: self.rng.pick(TailKind::ALL),
+            tail,
             noreturn: self.rng.chance(8),
             nounwind: self.rng.chance(2),
             returns_twice: self.rng.chance(16),
-            ret_attrs: if self.rng.chance(4) { signext } else { ParamAttrs::NONE },
+            ret_attrs: if ret_signext { signext } else { ParamAttrs::NONE },
             arg_attrs: &attrs,
             bundles: &bundles[..bundle_count],
             ..CallDesc::new(callee, fn_ty, &args)
         };
         let ty = ret.map_or(TypeId::VOID, |class| self.tys[class]);
         let result = emit(&mut self.b, ty, &desc);
-        match ret {
-            Some(class) => self.define(class, result),
-            None => {
+        match (ret, invoke) {
+            (Some(class), Some((normal, _))) => {
+                self.define_at(class, result, Where::Edge(self.here, normal));
+            }
+            (Some(class), None) => self.define(class, result),
+            (None, _) => {
                 result.unwrap();
             }
         }
@@ -282,8 +484,8 @@ impl Generator {
     /// One instruction that is neither a phi nor a terminator.
     #[allow(clippy::too_many_lines)]
     fn instruction(&mut self) {
-        if self.locs && self.rng.chance(3) {
-            let loc = if self.rng.chance(5) { LocId::NONE } else { LocId::new(self.rng.small(40)) };
+        if !self.locs.is_empty() && self.rng.chance(3) {
+            let loc = if self.rng.chance(5) { LocId::NONE } else { self.rng.pick(&self.locs) };
             self.b.set_loc(loc);
         }
         let tys = self.tys;
@@ -479,7 +681,9 @@ impl Generator {
         }
     }
 
-    fn block(&mut self, index: usize, term: &Term, preds: &[usize], pad: bool, ids: &[BlockId]) {
+    fn block(&mut self, index: usize, term: &Term, preds: &[usize], pad: bool) {
+        let ids = self.ids.clone();
+        self.here = index;
         self.b.begin_block(ids[index]).unwrap();
         let phis = if preds.is_empty() { 0 } else { self.rng.below(3) };
         for _ in 0..phis {
@@ -488,7 +692,11 @@ impl Generator {
             let mut distinct = preds.to_vec();
             distinct.sort_unstable();
             distinct.dedup();
-            let values: Vec<Value> = distinct.iter().map(|_| self.value(class)).collect();
+            // Each used at the end of its incoming block.
+            let values: Vec<Value> = distinct
+                .iter()
+                .map(|&from| self.value_at(class, Use { block: from, phi: Some(index) }))
+                .collect();
             let mut list: Vec<(Value, BlockId)> = preds
                 .iter()
                 .map(|from| (values[distinct.binary_search(from).unwrap()], ids[*from]))
@@ -540,10 +748,8 @@ impl Generator {
                 let addr = self.value(PTR);
                 self.b.indirect_br(addr, &blocks(targets)).unwrap();
             }
-            Term::Invoke(normal, unwind) => self.call(Some((ids[*normal], ids[*unwind])), None),
-            Term::CallBr(fallthrough, indirect) => {
-                self.call(None, Some((ids[*fallthrough], &blocks(indirect))));
-            }
+            Term::Invoke(normal, unwind) => self.call(Some((*normal, *unwind)), None),
+            Term::CallBr(fallthrough, indirect) => self.call(None, Some((*fallthrough, indirect))),
         }
     }
 }
@@ -579,22 +785,48 @@ pub(crate) fn generate(
     let ret_ty = ret.map_or(TypeId::VOID, |class| tys[class]);
     let fn_ty = m.types.function(ret_ty, &param_tys, rng.chance(4)).unwrap();
 
-    let mut pool: [Vec<Value>; CLASSES] = Default::default();
+    let always = |value: ConstId| (Value::constant(value).unwrap(), Where::Always);
+    let mut pool: [Vec<(Value, Where)>; CLASSES] = Default::default();
     for (class, values) in pool.iter_mut().enumerate() {
         let zero = m.consts.zero(&m.types, tys[class]).unwrap();
         let undef = m.consts.undef(&m.types, tys[class]).unwrap();
-        values.extend([zero, undef].map(|constant| Value::constant(constant).unwrap()));
+        values.extend([zero, undef].map(always));
     }
     let mut cases = [[ConstId::new(0); 4]; 2];
     for (wide, row) in cases.iter_mut().enumerate() {
         let class = if wide == 1 { LONG } else { INT };
         for (index, case) in row.iter_mut().enumerate() {
             *case = m.consts.int(&m.types, tys[class], 10 + index as u64).unwrap();
-            pool[class].push(Value::constant(*case).unwrap());
+            pool[class].push(always(*case));
         }
     }
-    pool[PTR].push(Value::sym(SymId::new(rng.small(100))).unwrap());
+    pool[PTR].push((Value::sym(SymId::new(rng.small(100))).unwrap(), Where::Always));
     let filter_ty = m.types.array(ptr, 2).unwrap();
+    let flags =
+        [0, 1].map(|bit| Value::constant(m.consts.int(&m.types, i1, bit).unwrap()).unwrap());
+    let kcfi = Value::constant(m.consts.int(&m.types, i32, 0x1234_5678).unwrap()).unwrap();
+    let asm_int_fn = m.types.function(i32, &[], false).unwrap();
+    let mut asm_goto = [[Value::NONE; 4]; 2];
+    for (with_result, row) in asm_goto.iter_mut().enumerate() {
+        for (labels, callee) in row.iter_mut().enumerate() {
+            let mut constraints = if with_result == 1 { "=r".to_string() } else { String::new() };
+            for _ in 0..labels {
+                constraints += if constraints.is_empty() { "!i" } else { ",!i" };
+            }
+            let asm = InlineAsm {
+                template: b"",
+                constraints: constraints.as_bytes(),
+                flags: InlineAsm::SIDE_EFFECT,
+                ty: if with_result == 1 { asm_int_fn } else { void_fn },
+            };
+            *callee = Value::asm(m.inline_asm(&asm).unwrap()).unwrap();
+        }
+    }
+    // Half the modules have debug tables: a subprogram, locations in it
+    // and its variables, which the body's locations and slot variables
+    // name. The function is not attached to the subprogram, so its
+    // locations may be any function's (§6.8).
+    let (locs, vars) = if rng.chance(2) { debug_tables(&mut m) } else { (Vec::new(), Vec::new()) };
 
     let sym = SymId::new(seed as u32 & 0xffff);
     let mut b = match storage {
@@ -603,19 +835,19 @@ pub(crate) fn generate(
     }
     .unwrap();
     for (index, &class) in params.iter().enumerate() {
-        pool[class].push(b.arg(index as u32).unwrap());
+        pool[class].push((b.arg(index as u32).unwrap(), Where::Always));
     }
     for _ in 0..rng.below(4) {
         let slot = b.add_slot(rng.next() >> rng.below(64), 1 << rng.below(6)).unwrap();
-        pool[PTR].push(b.slot(slot).unwrap());
-        if rng.chance(2) {
-            b.set_slot_var(slot, DiId::new(rng.small(9)), LocId::new(rng.small(9))).unwrap();
+        pool[PTR].push((b.slot(slot).unwrap(), Where::Always));
+        if !vars.is_empty() && rng.chance(2) {
+            b.set_slot_var(slot, rng.pick(&vars), rng.pick(&locs)).unwrap();
         }
     }
 
-    // The control-flow graph first: phis need their predecessors. Block 0
-    // is the entry and nothing branches to it; a landing-pad block is
-    // reached only by unwinding.
+    // The control-flow graph first: phis need their predecessors, and
+    // uses their dominators. Block 0 is the entry and nothing branches to
+    // it; a landing-pad block is reached only by unwinding.
     let count = 1 + rng.below(8);
     let ids: Vec<BlockId> = (0..count).map(|_| b.create_block().unwrap()).collect();
     let is_pad: Vec<bool> = (0..count).map(|index| index > 0 && rng.chance(5)).collect();
@@ -634,7 +866,6 @@ pub(crate) fn generate(
     order.insert(0, 0);
 
     let mut g = Generator {
-        locs: rng.chance(2),
         catch: m.consts.null(&m.types, ptr).unwrap(),
         filter: m.consts.zero(&m.types, filter_ty).unwrap(),
         exn: m.types.struct_type(&[ptr, i32], false).unwrap(),
@@ -645,6 +876,14 @@ pub(crate) fn generate(
         tys,
         pool,
         holes: Vec::new(),
+        cfg: Cfg::new(&terms, preds.clone()),
+        ids,
+        here: 0,
+        flags,
+        kcfi,
+        asm_goto,
+        asm_int_fn,
+        locs,
         deferred: Vec::new(),
         ret,
         callees,
@@ -653,37 +892,99 @@ pub(crate) fn generate(
         cases,
     };
     for index in order {
-        g.block(index, &terms[index], &preds[index], is_pad[index], &ids);
+        g.block(index, &terms[index], &preds[index], is_pad[index]);
     }
     let mut deferred = std::mem::take(&mut g.deferred);
     g.rng.shuffle(&mut deferred);
     for (phi, value, from) in deferred {
         g.b.add_incoming(phi, value, from).unwrap();
     }
-    if !complete && g.holes.iter().all(|hole| hole.resolved) {
+    if !complete && g.holes.iter().all(|hole| hole.target.is_some()) {
         let value = g.b.reserve(TypeId::I32).unwrap();
-        g.holes.push(Hole { value, class: INT, resolved: false });
+        g.holes.push(Hole { value, class: INT, uses: Vec::new(), target: None });
     }
     let unresolved: Vec<usize> =
-        (0..g.holes.len()).filter(|&index| !g.holes[index].resolved).collect();
+        (0..g.holes.len()).filter(|&index| g.holes[index].target.is_none()).collect();
     let skipped = if complete { None } else { Some(g.rng.pick(&unresolved)) };
     for index in unresolved {
         if skipped == Some(index) {
             continue;
         }
-        // To a real value, or to a reserved value made earlier, which
-        // cannot make a cycle.
+        // To a value whose definition dominates every use, or to a
+        // reserved value made earlier with such a definition, which
+        // cannot make a cycle. Every block is built: a definition in a
+        // use's own block may be after the use.
         let class = g.holes[index].class;
-        let earlier: Vec<Value> =
-            g.holes[..index].iter().filter(|h| h.class == class).map(|h| h.value).collect();
-        let target = if !earlier.is_empty() && g.rng.chance(4) {
+        let cfg = &g.cfg;
+        let uses = &g.holes[index].uses;
+        let fits = |at_def: Where| uses.iter().all(|&at| cfg.available(at_def, at, true));
+        let earlier: Vec<(Value, Where)> = g.holes[..index]
+            .iter()
+            .filter(|h| h.class == class)
+            .filter_map(|h| h.target.filter(|&at_def| fits(at_def)).map(|at_def| (h.value, at_def)))
+            .collect();
+        let usable: Vec<(Value, Where)> =
+            g.pool[class].iter().copied().filter(|&(_, at_def)| fits(at_def)).collect();
+        let (target, at_def) = if !earlier.is_empty() && g.rng.chance(4) {
             g.rng.pick(&earlier)
         } else {
-            g.rng.pick(&g.pool[class])
+            g.rng.pick(&usable)
         };
         g.b.resolve(g.holes[index].value, target).unwrap();
+        g.holes[index].target = Some(at_def);
     }
     (m, g.b.finish())
+}
+
+/// Debug tables for a generated body: a compile unit, a subprogram, eight
+/// locations in it and three of its variables.
+fn debug_tables(m: &mut Module) -> (Vec<LocId>, Vec<DiId>) {
+    use crate::debug::DiLocation;
+    use crate::debug::names::{EmissionKind, SpFlags};
+    use crate::debug::node::{DiBasicType, DiCompileUnit, DiFile, DiLocalVariable, DiSubprogram};
+    use crate::props::FlagValue;
+    // Without the version flag LLVM drops the tables instead of checking
+    // them.
+    m.set_module_flag(7, b"Dwarf Version", FlagValue::Int(5)).unwrap();
+    m.set_module_flag(2, b"Debug Info Version", FlagValue::Int(3)).unwrap();
+    let d = &mut m.debug;
+    let file = d.add(&DiFile { filename: b"random.c", ..Default::default() }.into()).unwrap();
+    let unit = DiCompileUnit {
+        language: 0x1d,
+        file: Some(file),
+        emission_kind: EmissionKind::FullDebug,
+        ..Default::default()
+    };
+    let unit = d.add_distinct(&unit.into()).unwrap();
+    d.add_compile_unit(unit).unwrap();
+    let int =
+        d.add(&DiBasicType { name: b"int", size: 32, encoding: 5, ..Default::default() }.into());
+    let subprogram = DiSubprogram {
+        name: b"random",
+        file: Some(file),
+        sp_flags: SpFlags::DEFINITION,
+        unit: Some(unit),
+        ..Default::default()
+    };
+    let scope = d.add_distinct(&subprogram.into()).unwrap();
+    let locs = (1..=8)
+        .map(|line| d.loc(DiLocation { line, column: 1, scope, inlined_at: LocId::NONE }).unwrap())
+        .collect();
+    let int = int.unwrap();
+    let vars = [b"a", b"b", b"c"]
+        .iter()
+        .map(|name| {
+            let var = DiLocalVariable {
+                name: name.as_slice(),
+                scope: Some(scope),
+                file: Some(file),
+                ty: Some(int),
+                ..Default::default()
+            };
+            d.add(&var.into()).unwrap()
+        })
+        .collect();
+    (locs, vars)
 }
 
 const SEEDS: u64 = 1500;

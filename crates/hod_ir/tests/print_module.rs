@@ -39,7 +39,7 @@ fn byte_names() -> Vec<Vec<u8>> {
 
 /// The function attribute flags a dialect has (§9.2), but
 /// `sanitize_realtime_blocking`: LLVM refuses it with `sanitize_realtime`
-/// (`FnAttrs` does not, §9.8).
+/// (and so does `FnAttrs::set`, §5.8).
 fn fn_flags(major: u32) -> u32 {
     let mut flags = 0;
     for (name, flag) in FnAttrs::FLAG_NAMES {

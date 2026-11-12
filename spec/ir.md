@@ -148,8 +148,12 @@ of `!llvm.module.flags`: LLVM's behavior number, the name, and
   not evaluate requirements.
 - Errors (`InvalidModuleFlag`), after which nothing has changed: a
   behavior outside 1 to 8; a name set twice, not counting `Require`
-  entries; `Max` or `Min` behavior with a value that is not an integer; a
-  known flag with a bad value.
+  entries; `Max` or `Min` behavior with a value that is not an integer;
+  `Require` (3), `Append` (5) or `AppendUnique` (6) with a value that is
+  not a metadata node (`FlagValue::Other`), and `wchar_size` or
+  `SemanticInterposition` (other than as a `Require`) with one that is
+  not an integer, as LLVM's verifier refuses (`tests/verify_llvm.rs`);
+  a known flag with a bad value.
 - The behavior of a known flag is otherwise not looked at: behaviors say
   how to merge modules, and hod gets one module.
 
@@ -309,8 +313,10 @@ described later:
   aliases at offset zero, that is not `available_externally` and returns
   a pointer.
 
-**Not checked**, deliberately: that parameter attributes fit their
-parameter types; that a declaration has no personality (LLVM refuses one;
+Parameter and return attributes fit their types and positions, as §5.7
+says (`InvalidAttribute`, from `add_function` and `set_function`).
+
+**Not checked**, deliberately: that a declaration has no personality (LLVM refuses one;
 hod never reads it); that an earlier and a later description agree.
 
 These rules are LLVM's wherever both have one: `tests/symbols_as.rs`
@@ -894,6 +900,22 @@ call instructions):
   `string`, `strings`). A set's fixed part is 12 bytes.
 - The parameter attributes of a function symbol are interned as a list
   per distinct signature (`Symbol::kind()` returns the slice).
+- LLVM's rules for which attributes fit (`verifyParameterAttrs`,
+  `verifyFunctionAttrs`) are checked where the attributes are given: a
+  function's by `Module::add_function` and `set_function`, a call's by
+  `Body::verify` (§5.8), each an `InvalidAttribute`. Per value: `zeroext`
+  and `signext` on an integer; the typed attributes, `nest`, `swifterror`
+  and `align` on a pointer or vector of pointers; `byval`, `byref`,
+  `inalloca` and `preallocated` of a sized type; at most one of the typed
+  ones but `elementtype`, `sret` or `inreg`, and `nest`; `elementtype`
+  only on a call of an intrinsic or inline assembly, never on a
+  function. On a return value no typed attribute, `nest`, Swift attribute
+  or `alignstack`. Positions: `sret` once, on the first or second
+  parameter, never on a variable argument; `nest` once; `inalloca` on the
+  last parameter (on a call's variable arguments, the last argument);
+  `swiftself`, `swiftasync` and `swifterror` each once.
+  `FnAttrs::set` refuses `sanitize_realtime` with
+  `sanitize_realtime_blocking`.
 
 ### 5.8 What is checked, and when
 
@@ -921,16 +943,53 @@ so that it also judges a body that did not come from the builder:
 | a loaded, stored or `va_arg` type is sized | `UnsizedType` |
 | an aggregate offset names a field of that type; a shuffle mask entry selects an element | `BadIndex` |
 | the recorded use facts are the recomputed ones (§5.6) | `UseFactsMismatch` |
+| a use is dominated by its definition (below) | `NotDominated` |
+| `callbr` calls inline assembly that does not unwind (LLVM 19 refuses another callee; LLVM 22's verifier crashes on one, which the tests count as a refusal), with as many `!i` label constraints as indirect destinations; label constraints on `callbr` only; `invoke` calls no intrinsic but LLVM's invokable ones (`donothing`, the coroutine `resume`/`destroy`/`await.suspend.*`, `seh.try.*`, `seh.scope.*`, `wasm.throw`, `wasm.rethrow`, `fake.use`, `experimental.patchpoint.*`, `experimental.gc.statepoint.*`); a tail marker on `call` only; `musttail`'s conditions (below); an intrinsic's `immarg` arguments are constant integers or floats, not `undef` or `poison`; a bundle LLVM knows (`deopt`, `funclet`, `gc-transition`, `cfguardtarget`, `preallocated`, `gc-live`, `ptrauth`, `kcfi`, `clang.arc.attachedcall`, `convergencectrl`) at most once per call; `kcfi` has one `i32` constant | `InvalidCall` |
+| a call's parameter and return attributes fit their types and positions, as a function's do (§5.7) | `InvalidAttribute` |
+
+**Dominance**, as LLVM's verifier defines it. A use in a block that is
+not reachable from the entry is always dominated; a definition in an
+unreachable block dominates nothing reachable. Within a block, a
+definition dominates the instructions after it, so an instruction never
+dominates itself, and a self-use in a reachable block is refused (a
+`phi` naming itself through a back edge is not a self-use: see next).
+A `phi`'s operand for the edge from block `P` is used at the end of `P`:
+its definition must dominate `P`'s terminator. An `invoke`'s result is
+defined on its normal edge, not at the end of its block: a use is
+dominated if it is the normal destination's `phi` operand for that edge,
+or the normal destination dominates the use and the edge dominates the
+destination (the invoke's block appears once among the destination's
+predecessors and the destination dominates every other predecessor).
+So the result is not available on the unwind edge, nor in a normal
+destination it reaches over a critical edge. A `callbr`'s result is
+defined at the end of its block, as LLVM 19 to 22 verify it. The dominator
+tree is built only for a body with a use across blocks or a use before
+its definition in one block (iterative Lengauer–Tarjan, then preorder
+intervals: each query is two compares); the cost is in
+`spec/landed/ir/WP-026.md`.
+
+**`musttail`** (LLVM's `verifyMustTailCall`): the callee is not inline
+assembly; the call and the function agree in variadic-ness, return type
+and calling convention, and pass no variable arguments; the next
+instruction is `ret`, or a `bitcast` of the result and then `ret`, which
+returns nothing, the result (or its cast), `undef` or `poison`. With
+`tailcc` or `swifttailcc` no parameter of the function or the call has
+`inalloca`, `inreg`, `swifterror`, `preallocated` or `byref` and the
+function is not variadic; otherwise the parameter types match (but for an
+intrinsic callee) and each parameter has the same ABI attributes in the
+call and the function (`sret`, `byval`, `inalloca`, `inreg`,
+`alignstack`, `swiftself`, `swiftasync`, `swifterror`, `preallocated`,
+`byref`, and `align` with `byval` or `byref`). The function's attributes
+are its symbol's; a body whose symbol is not a function of the module is
+checked as a `ccc` function without attributes.
 
 `verify` returns the first violation. It is the definition of "well
 formed" that code generation may assume. Tests run it on every body; a
 producer under test runs it on every body it hands over; a release build
 need not run it at all.
 
-Not checked: that a definition dominates its uses (LLVM allows anything in
-unreachable blocks, and no decision in code generation rests on it), and
-that a symbol or inline-assembly id exists, which becomes checkable when
-the module has those tables (§2.2).
+An inline-assembly callee names an entry of the module's table
+(`InvalidOperand`). What `verify` leaves to LLVM is listed in §9.8.
 
 ### 5.9 Reading a body
 
@@ -1219,7 +1278,9 @@ want their output checked; code generation does not need it to have run.
   each before an instruction of the body that is not a `phi`; a label has
   no values and a value record without a list one; "named by a declare"
   is recomputed with the other use facts;
-- when the module has debug tables: every instruction location exists,
+- and, whether or not the module has debug tables (an id into an empty
+  table names nothing, so a module without debug information has no
+  valid location or variable): every instruction location exists,
   leads to a subprogram and, when the function has one, to the
   function's; the variable of a slot variable, declaration or record is a
   `DILocalVariable` and a label a `DILabel`, in the subprogram of the
@@ -1786,27 +1847,38 @@ metadata step of §9.3.
 ### 9.8 LLVM's rules that `hod_ir` does not check
 
 The printer prints what `Body::verify` and `Module::verify_symbols`
-accept. LLVM refuses some of it; a producer that wants text LLVM takes
-keeps these rules:
+accept, and LLVM 19 and 22 verify all of it but what is listed here. The
+rules LLVM's verifier has that `hod_ir` once left to producers
+(dominance, `callbr` and `invoke` callees, tail markers and `musttail`,
+`immarg`, bundles, parameter attributes, the realtime sanitizer pair,
+module-flag shapes) are checked since WP-026 (§2.1, §5.7, §5.8). What
+remains, each a rule no producer of hod's has met and a test of LLVM's
+behaviour would need a construct `hod_ir` does not model:
 
-- a use is dominated by its definition (no self-use in a reachable
-  block; an `invoke` or `callbr` result is used only past the normal
-  edge);
-- `callbr` calls inline assembly (LLVM 22's verifier crashes on
-  `callbr` of a function);
-- `invoke` does not call an intrinsic;
-- tail markers only on `call`; `musttail`: the caller's signature and
-  calling convention, and `ret` (of the result) directly after;
-- an `immarg` parameter gets a constant (LLVM 22 also refuses `undef`);
-- a `"kcfi"` bundle has exactly one operand;
-- parameter attributes fit their types and positions (`signext` and
-  `zeroext` on integers, `sret` on the first or second parameter of a
-  function returning `void`, ...);
-- `sanitize_realtime` and `sanitize_realtime_blocking` are not both in
-  one attribute set;
-- a module flag of behavior 5 (`append`) or 6 (`append-unique`) has a
-  node as its value, not a string;
-- in an ELF object (`llc`), each linker option is a pair.
+- `swifterror` values: LLVM allows a `swifterror` argument or `alloca`
+  only as a load or store address or a `swifterror` call argument.
+- `preallocated`: the `"preallocated"` bundle's token and the
+  `llvm.call.preallocated.*` protocol, and `musttail` with it.
+- An intrinsic's own `immarg` value ranges (`llvm.prefetch`'s locality
+  0 to 3, ...): `verify` checks that the argument is a constant, not its
+  value.
+- The shapes of bundles other than `kcfi` (`deopt`, `gc-live`,
+  `funclet`, `ptrauth`, `clang.arc.attachedcall`, `convergencectrl`):
+  at most one of each is checked, not their operands.
+- `elementtype` on an indirect inline-assembly operand: LLVM requires it
+  on each `=*` or `*` constraint; `verify` allows it there and does not
+  require it.
+- `musttail` in a body whose symbol is not a function of the module: the
+  function's calling convention and parameter attributes are taken as
+  `ccc` and none.
+- In an ELF object, each linker option is a key and a value: `llc`
+  refuses another option ("invalid llvm.linker.options"), but LLVM's
+  verifier accepts it and so does a Mach-O or COFF object. It is a rule of
+  the object writer, not of the IR, so `verify` does not check it; the
+  ELF writer refuses such an option (WP-032's `hod_cg::emit_module`).
+- An `atomicrmw` operation LLVM 19 does not have (`fmaximum`, `fminimum`,
+  `usub_cond`, `usub_sat`) is not printed for LLVM 19 (§9.2): not a
+  verifier rule, a dialect difference.
 
 What the model does not keep: a symbol's address is typed `ptr` whatever
 its address space; branch-protection value 1 versus 2, the behaviors and
@@ -1818,10 +1890,21 @@ not kept.
 - Unit (`print/mod.rs`, `print/body.rs`): dialect numbers, `IoSink`
   errors, `float` spelling, name quoting, intrinsic names against
   `Intrinsic::mangled_name`, the index path against `aggregate_field`.
-- Random bodies (`print/random_tests.rs`): 1500 generator bodies printed
-  for LLVM 19 and 22; those that keep §9.8's rules pass `llvm-as` and
-  `opt -passes=verify`, the others pass `llvm-as -disable-verify`, and a
-  body that is not printed holds a construct its dialect lacks.
+- Random bodies (`print/random_tests.rs`): 1500 generator bodies, each
+  verified by `Body::verify`, printed for LLVM 19 and 22 in batches of
+  modules; every printed body passes `llvm-as` and `opt -passes=verify`
+  (no "parsed only" bucket), at least 1000 per major, covering every
+  opcode but the funclets'; a body that is not printed holds a construct
+  its dialect lacks (for LLVM 19, the four `atomicrmw` operations of
+  §9.8: about 200 of the 1500).
+- LLVM's verifier rules (`tests/verify_llvm.rs`): each rule of §5.8's
+  `NotDominated`, `InvalidCall` and `InvalidAttribute` rows, of §5.7's
+  attribute rules and of §2.1's flag shapes, built through `hod_ir` with
+  its nearest valid variant; hod's verdict, then `llvm-as` (with its
+  verifier) 19 and 22 on the printed text agree. Where `hod_ir` refuses
+  the construct before it can be printed (a function's signature, a
+  module flag, a tail marker on `invoke`), LLVM is given the accepted
+  text with the line edited.
 - Initializers (`tests/print_data.rs`): every kind of initializer, both
   targets, LLVM 19 and 22: `llc`'s `.data` bytes and relocations equal
   `flatten`'s.
@@ -1864,7 +1947,7 @@ IR").
   rule, including the block-boundary and `phi` cases; recycling
   (`tests/body_build.rs`). A deterministic generator builds random
   well-formed bodies over every opcode but the funclets', which must
-  verify, build identically in recycled storage and not finish with a
+  verify (and which LLVM verifies, §9.9), build identically in recycled storage and not finish with a
   placeholder unresolved; and damages finished bodies one table entry at
   a time, which `verify` must refuse with the kind of §5.8 (`random`
   module).
@@ -1876,6 +1959,12 @@ IR").
   `is_terminator`; LLVM keeps the mangled name of every listed intrinsic
   and renames a wrong one; `llc -O0` emits the same assembly with a
   no-code intrinsic call as with what §5.5's rule makes of it.
+- LLVM's verifier rules kept by `verify` (§5.8 `NotDominated`,
+  `InvalidCall`, `InvalidAttribute`; §5.7's attribute rules; §2.1's flag
+  shapes), against `llvm-as` 19 and 22, each case with its nearest valid
+  variant (`tests/verify_llvm.rs`); the dominator tree against the
+  definition on random graphs (`dom` module); verify's cost with and
+  without uses across blocks (`examples/body_throughput.rs`).
 - Layout: §3's grid against `llc` and `opt`, both targets, LLVM 19 and 22.
 - Constant folding: §4.2's reductions against the assembly `llc` writes
   for the same expressions as initializers (`symbol + addend` has no

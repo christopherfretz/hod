@@ -605,22 +605,27 @@ fn verify_without_a_subprogram_or_without_tables() {
         assert_eq!(body.verify(&f.m).err().map(|error| error.kind), verdict);
     }
 
-    // No tables: ids are not checked, positions and values are.
+    // No tables: the ids are checked all the same, and name nothing.
     let mut m = Module::new(TargetSpec::aarch64_linux_gnu());
     let fn_ty = m.types.function(I32, &[I32], false).unwrap();
-    let mut b = FunctionBuilder::new(&m, SymId::new(0), fn_ty).unwrap();
-    let entry = b.create_block().unwrap();
-    b.begin_block(entry).unwrap();
-    let value = b.arg(0).unwrap();
-    b.set_loc(LocId::new(4));
-    b.dbg_value(value, DiId::new(8), ExprId::new(3), LocId::new(5)).unwrap();
-    b.dbg_label(DiId::new(9), LocId::NONE).unwrap();
-    b.dbg_declare(value, DiId::new(8), ExprId::EMPTY, LocId::new(5)).unwrap();
-    b.ret(Some(value)).unwrap();
-    let body = b.finish().unwrap();
+    let with = |location: bool, declare: bool| {
+        let mut b = FunctionBuilder::new(&m, SymId::new(0), fn_ty).unwrap();
+        let entry = b.create_block().unwrap();
+        b.begin_block(entry).unwrap();
+        let value = b.arg(0).unwrap();
+        if location {
+            b.set_loc(LocId::new(4));
+        }
+        if declare {
+            b.dbg_declare(value, DiId::new(8), ExprId::EMPTY, LocId::new(5)).unwrap();
+        }
+        b.ret(Some(value)).unwrap();
+        b.finish().unwrap().verify(&m).err().map(|error| error.kind)
+    };
     assert!(m.debug.is_empty());
-    body.verify(&m).unwrap();
-    assert!(body.arg_uses(0).named_by_declare());
+    assert_eq!(with(false, false), None);
+    assert_eq!(with(true, false), Some(IrErrorKind::InvalidDebugInfo), "a location");
+    assert_eq!(with(false, true), Some(IrErrorKind::InvalidDebugInfo), "a variable");
 }
 
 /// §6.1, §6.10: a body without debug information holds nothing for it:

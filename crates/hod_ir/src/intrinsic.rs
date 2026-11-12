@@ -228,6 +228,53 @@ impl<'a> Intrinsic<'a> {
         }
     }
 
+    /// The arguments LLVM marks `immarg`, by index: each must be a
+    /// constant integer or float, never `undef` or `poison` (§5.8). The
+    /// same in LLVM 19 and LLVM 22.
+    pub fn immediate_args(self) -> &'static [usize] {
+        use Intrinsic as I;
+        match self {
+            I::Memcpy | I::MemcpyInline | I::Memmove | I::Memset | I::MemsetInline => &[3],
+            I::FrameAddress | I::ReturnAddress | I::UbsanTrap => &[0],
+            I::Ctlz | I::Cttz | I::Abs | I::IsFpClass | I::VectorExtract => &[1],
+            I::Prefetch | I::ObjectSize => &[1, 2, 3],
+            I::VectorInsert => &[2],
+            _ => &[],
+        }
+    }
+
+    /// Whether LLVM allows `invoke` of this intrinsic (§5.8): the
+    /// coroutine resumers and `await.suspend`, and of the names hod does
+    /// not know, `llvm.donothing`, the SEH scope markers, the patchpoints
+    /// and statepoints, and (LLVM 22, not LLVM 19, which the printer
+    /// refuses them for, §9.6) `llvm.wasm.throw`, `llvm.wasm.rethrow` and
+    /// `llvm.fake.use`.
+    pub fn is_invokable(self) -> bool {
+        use Intrinsic as I;
+        match self {
+            I::CoroResume
+            | I::CoroDestroy
+            | I::CoroAwaitSuspendVoid
+            | I::CoroAwaitSuspendBool
+            | I::CoroAwaitSuspendHandle => true,
+            I::Other(name) => {
+                matches!(
+                    name,
+                    "llvm.donothing"
+                        | "llvm.seh.try.begin"
+                        | "llvm.seh.try.end"
+                        | "llvm.seh.scope.begin"
+                        | "llvm.seh.scope.end"
+                        | "llvm.wasm.throw"
+                        | "llvm.wasm.rethrow"
+                        | "llvm.fake.use"
+                ) || name.starts_with("llvm.experimental.patchpoint.")
+                    || name.starts_with("llvm.experimental.gc.statepoint.")
+            }
+            _ => false,
+        }
+    }
+
     /// How many overload types the intrinsic has; 0 for `Other`.
     pub fn overload_count(self) -> usize {
         self.index().map_or(0, |index| TABLE[index].1.len())

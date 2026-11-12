@@ -61,8 +61,10 @@ const DIST_BASE: [u16; 30] = [
     1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
     2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
 ];
-const DIST_EXTRA: [u8; 30] =
-    [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+const DIST_EXTRA: [u8; 30] = [
+    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
+    13,
+];
 /// The order in which the code-length code's lengths are sent.
 const CL_ORDER: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
 
@@ -216,7 +218,6 @@ fn fixed_codes() -> (Code<288>, Code<30>) {
     let mut ll = Code::<288>::empty();
     for (s, l) in ll.len.iter_mut().enumerate() {
         *l = match s {
-            0..=143 => 8,
             144..=255 => 9,
             256..=279 => 7,
             _ => 8,
@@ -338,8 +339,8 @@ fn at_least_two(freq: &mut [u32]) {
     let used = freq.iter().filter(|&&f| f != 0).count();
     for s in 0..2 {
         if used + s < 2 {
-            let free = freq.iter().position(|&f| f == 0).unwrap_or(0);
-            freq[free] = 1;
+            let slot = freq.iter().position(|&f| f == 0).unwrap_or(0);
+            freq[slot] = 1;
         }
     }
 }
@@ -353,7 +354,7 @@ struct Bits<'o> {
 
 impl Bits<'_> {
     /// `value` holds at most `len` bits; `len` is at most 32.
-    #[inline(always)]
+    #[inline]
     fn put(&mut self, value: u32, len: u32) {
         self.buf |= u64::from(value) << self.n;
         self.n += len;
@@ -437,9 +438,9 @@ impl Deflater {
             a + b
         };
         let (fixed_ll, fixed_d) = fixed_codes();
-        let fixed =
-            3 + data_bits(&fixed_ll.len[..286], &fixed_d.len, &self.ll_freq, &self.d_freq)
-                + self.extra_bits;
+        let fixed = 3
+            + data_bits(&fixed_ll.len[..286], &fixed_d.len, &self.ll_freq, &self.d_freq)
+            + self.extra_bits;
         let header = self.header();
         let dynamic = header.bits
             + data_bits(&header.ll.len[..286], &header.d.len, &self.ll_freq, &self.d_freq)
@@ -502,17 +503,18 @@ impl Deflater {
             }
         }
         bits.put(u32::from(ll.bits[256]), u32::from(ll.len[256]));
-        if bits.n % 8 != 0 {
+        if bits.n.is_multiple_of(8) {
+            bits.align();
+        } else {
             // An empty stored block brings the stream to a byte boundary.
             bits.put(0, 3);
             bits.align();
             bits.out.extend_from_slice(&[0x00, 0x00, 0xff, 0xff]);
-        } else {
-            bits.align();
         }
     }
 
     /// Greedy LZ77 over one segment into `tokens`, counting symbols.
+    #[allow(clippy::many_single_char_names, reason = "short names keep the loop legible")]
     fn matches(&mut self, s: &[u8]) {
         if u64::from(self.base) + s.len() as u64 + 2 > u64::from(u32::MAX) {
             self.table.fill(0);
@@ -574,12 +576,12 @@ impl Deflater {
             }
             misses += 1;
             let step = 1 + (misses >> 5) as usize;
-            let stop = (pos + step).min(n);
-            for &b in &s[pos..stop] {
+            let until = (pos + step).min(n);
+            for &b in &s[pos..until] {
                 self.tokens.push(u32::from(b));
                 self.ll_freq[b as usize] += 1;
             }
-            pos = stop;
+            pos = until;
         }
         for &b in &s[pos.min(n)..] {
             self.tokens.push(u32::from(b));

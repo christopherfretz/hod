@@ -15,7 +15,9 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::PathBuf;
 
-use hod::{CodeModel, DebuggerTuning, FpContract, OptLevel, Options, OutputKind, RelocModel};
+use hod::{
+    CodeModel, Compression, DebuggerTuning, FpContract, OptLevel, Options, OutputKind, RelocModel,
+};
 
 /// What the invocation asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,6 +98,8 @@ pub struct CommandLine {
     pub coverage_log: Option<PathBuf>,
     /// `--bitcode-via=`: the `llvm-dis` that turns bitcode into text.
     pub bitcode_via: Option<PathBuf>,
+    /// `--compress-debug-sections=`, if given (WP-061).
+    pub compress_debug_sections: Option<Compression>,
     /// The arguments for the fallback: the original ones, in order and as
     /// spelled, without hod's own options.
     pub forwarded: Vec<OsString>,
@@ -135,6 +139,7 @@ enum Opt {
     Fallback,
     CoverageLog,
     BitcodeVia,
+    CompressDebugSections,
 }
 
 impl Opt {
@@ -164,6 +169,7 @@ impl Opt {
             "fallback" => Opt::Fallback,
             "coverage-log" => Opt::CoverageLog,
             "bitcode-via" => Opt::BitcodeVia,
+            "compress-debug-sections" => Opt::CompressDebugSections,
             _ => return None,
         })
     }
@@ -183,7 +189,14 @@ impl Opt {
 
     /// hod's own options: not `llc`'s, never forwarded to the fallback.
     fn is_hod_specific(self) -> bool {
-        matches!(self, Opt::Fallback | Opt::Strict | Opt::CoverageLog | Opt::BitcodeVia)
+        matches!(
+            self,
+            Opt::Fallback
+                | Opt::Strict
+                | Opt::CoverageLog
+                | Opt::BitcodeVia
+                | Opt::CompressDebugSections
+        )
     }
 }
 
@@ -255,6 +268,20 @@ fn output_kind(value: &str) -> Option<OutputKind> {
         // `null` (no output) is `llc`'s; hod does not offer it.
         _ => return None,
     })
+}
+
+/// A value of `--compress-debug-sections=` or
+/// `HOD_COMPRESS_DEBUG_SECTIONS` (`spec/cli.md` "hod's own options"), or
+/// the message of its mistake.
+pub fn compression(value: &OsStr) -> Result<Compression, String> {
+    match value.to_str() {
+        Some("none") => Ok(Compression::None),
+        Some("zlib") => Ok(Compression::Zlib),
+        Some("zstd") => Err("compression 'zstd' is not supported: hod writes zlib only".into()),
+        _ => {
+            Err(format!("invalid compression '{}': expected none or zlib", value.to_string_lossy()))
+        }
+    }
 }
 
 /// Stores a recognized value; says whether there was one.
@@ -361,6 +388,13 @@ impl Parser {
                 return;
             }
             Opt::TimeTraceFile => return,
+            Opt::CompressDebugSections => {
+                match compression(value) {
+                    Ok(c) => self.line.compress_debug_sections = Some(c),
+                    Err(message) => self.fatal(format!("'{written}': {message}")),
+                }
+                return;
+            }
             _ => {}
         }
         let Some(text) = value.to_str() else {
@@ -414,6 +448,7 @@ pub fn parse(args: &[OsString]) -> CommandLine {
             strict: None,
             coverage_log: None,
             bitcode_via: None,
+            compress_debug_sections: None,
             forwarded: Vec::with_capacity(args.len()),
             rejected: None,
             fatal: None,
@@ -526,6 +561,10 @@ hod's own options (each also settable in the environment):
   --bitcode-via=<llvm-dis>        HOD_BITCODE_VIA    Convert a bitcode input to text with this
                                                      llvm-dis (of the LLVM that wrote the bitcode)
                                                      and compile the text
+  --compress-debug-sections=<none|zlib>
+                                  HOD_COMPRESS_DEBUG_SECTIONS
+                                                     Write the .debug_* sections compressed
+                                                     (SHF_COMPRESSED, zlib); zstd is not supported
 
 EXIT STATUS: 0 on success; 1 on an error; 2 when the module is unsupported and no fallback
 ran; otherwise the fallback's own status. The contract is spec/cli.md.
@@ -814,10 +853,12 @@ mod tests {
             "-filetype=obj",
             "--coverage-log=cov.tsv",
             "--bitcode-via=/usr/lib/llvm-22/bin/llvm-dis",
+            "--compress-debug-sections=zlib",
             "-o",
             "a.o",
             "-",
         ]);
+        assert_eq!(line.compress_debug_sections, Some(Compression::Zlib));
         assert_eq!((&line.rejected, &line.fatal), (&None, &None));
         assert_eq!(line.fallback, Some("/usr/lib/llvm-22/bin/llc".into()));
         assert_eq!(line.strict, Some(true));
@@ -833,8 +874,11 @@ mod tests {
             "-strict=false",
             "-bitcode-via",
             "dis",
+            "-compress-debug-sections",
+            "none",
             "m.ll",
         ]);
+        assert_eq!(line.compress_debug_sections, Some(Compression::None));
         assert_eq!((&line.rejected, &line.fatal), (&None, &None));
         assert_eq!(line.fallback, Some("llc".into()));
         assert_eq!(line.coverage_log, Some("c".into()));
@@ -851,7 +895,10 @@ mod tests {
             "--strict=1",
             "--bitcode-via=c",
             "--bitcode-via=d",
+            "--compress-debug-sections=zlib",
+            "--compress-debug-sections=none",
         ]);
+        assert_eq!(line.compress_debug_sections, Some(Compression::None));
         assert_eq!((line.fallback, line.strict), (Some("b".into()), Some(true)));
         assert_eq!(line.bitcode_via, Some("d".into()));
         assert!(line.forwarded.is_empty());
@@ -875,6 +922,9 @@ mod tests {
             (&["-filetype=obj", "--bitcode-via"], "'--bitcode-via' requires a value"),
             (&["--bitcode-via="], "'--bitcode-via' requires a non-empty value"),
             (&["--strict=maybe"], "invalid value 'maybe' for '--strict'"),
+            (&["--compress-debug-sections=zstd"], "compression 'zstd' is not supported"),
+            (&["--compress-debug-sections", "gzip"], "invalid compression 'gzip'"),
+            (&["--compress-debug-sections"], "'--compress-debug-sections' requires a value"),
         ] {
             let line = parsed(args);
             let fatal = line.fatal.unwrap_or_else(|| panic!("{args:?}: expected a fatal error"));
@@ -895,6 +945,7 @@ mod tests {
         assert_eq!(accepted(&["--version=false"]).action, Action::Compile);
         assert!(HELP.contains("--fallback=<llc>") && HELP.contains("HOD_COVERAGE_LOG"));
         assert!(HELP.contains("--bitcode-via=<llvm-dis>") && HELP.contains("HOD_BITCODE_VIA"));
+        assert!(HELP.contains("--compress-debug-sections=<none|zlib>"));
     }
 
     // Arguments are bytes: a path that is not UTF-8 is a path all the same,

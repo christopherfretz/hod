@@ -301,6 +301,7 @@ fn cg_options(options: &Options) -> Result<hod_cg::Options, CompileError> {
         function_sections: options.function_sections,
         data_sections: options.data_sections,
         stress: hod_cg::Stress::default(),
+        debug_compression: options.debug_compression,
     })
 }
 

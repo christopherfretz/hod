@@ -42,8 +42,8 @@ fn input(i: u64) -> Vec<u8> {
         8 => SEGMENT,
         9 => SEGMENT + 1,
         10 => 3 * SEGMENT + 17,
-        _ if i % 97 == 0 => 64 * 1024 + rng.below(200_000) as usize,
-        _ if i % 5 == 0 => rng.below(8) as usize,
+        _ if i.is_multiple_of(97) => 64 * 1024 + rng.below(200_000) as usize,
+        _ if i.is_multiple_of(5) => rng.below(8) as usize,
         _ => rng.below(4096) as usize,
     };
     let mut out = Vec::with_capacity(len);
@@ -62,7 +62,7 @@ fn input(i: u64) -> Vec<u8> {
         // distances.
         3 => {
             let words: Vec<Vec<u8>> = (0..50)
-                .map(|_| (0..1 + rng.below(9)).map(|_| b'a' + rng.below(26) as u8).collect())
+                .map(|_| (0..=rng.below(9)).map(|_| b'a' + rng.below(26) as u8).collect())
                 .collect();
             while out.len() < len {
                 out.extend_from_slice(&words[rng.below(50) as usize]);
@@ -87,7 +87,7 @@ fn input(i: u64) -> Vec<u8> {
     out
 }
 
-const DECODE: &str = r#"
+const DECODE: &str = r"
 import struct, sys, zlib
 data = open(sys.argv[1], 'rb').read()
 at = n = 0
@@ -109,7 +109,7 @@ while at < len(data):
         print(f'input {n}: Adler-32 differs'); sys.exit(1)
     n += 1
 print(n)
-"#;
+";
 
 const INPUTS: u64 = 3000;
 
@@ -127,7 +127,8 @@ fn python_zlib_decodes_every_stream() {
         stats[0] += data.len();
         stats[1] += stream.len();
         // A stored segment costs 5 bytes per 65 535; nothing grows more.
-        let bound = data.len() + 5 * data.len().div_ceil(65_535) + 8 + 5 * data.len().div_ceil(SEGMENT);
+        let bound =
+            data.len() + 5 * data.len().div_ceil(65_535) + 8 + 5 * data.len().div_ceil(SEGMENT);
         assert!(stream.len() <= bound, "input {i}: {} bytes from {}", stream.len(), data.len());
         records.extend_from_slice(&(data.len() as u32).to_le_bytes());
         records.extend_from_slice(&data);
@@ -163,7 +164,8 @@ fn streams_are_deterministic() {
 /// Compressible input shrinks: the matcher and the dynamic block work.
 #[test]
 fn repetitive_input_shrinks() {
-    let data: Vec<u8> = b"DW_TAG_subprogram DW_AT_name ".iter().copied().cycle().take(100_000).collect();
+    let data: Vec<u8> =
+        b"DW_TAG_subprogram DW_AT_name ".iter().copied().cycle().take(100_000).collect();
     let mut out = Vec::new();
     deflate::zlib(&data, &mut out).unwrap();
     assert!(out.len() < data.len() / 50, "{} bytes", out.len());

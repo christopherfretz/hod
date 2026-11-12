@@ -19,6 +19,8 @@ use std::path::PathBuf;
 mod back;
 mod front;
 
+pub use hod_obj::Compression;
+
 pub use back::{
     LIMIT_OBJECT, OBJECT_NUL_IN_NAME, OPTION_RELOCATION_MODEL, OPTION_SPLIT_DWARF,
     PARALLEL_MIN_INSTS, ThreadTokens, Threads, generate_with,
@@ -125,6 +127,11 @@ pub struct Options {
     pub split_dwarf_output: Option<PathBuf>,
     /// `-filetype=`.
     pub output_kind: OutputKind,
+    /// hod's `--compress-debug-sections=` (not `llc`'s; `clang -gz`'s):
+    /// the `.debug_*` sections as `SHF_COMPRESSED` zlib streams
+    /// (`spec/object.md` "Compressed sections"). A module handed to the
+    /// fallback is written as the fallback writes it, uncompressed.
+    pub debug_compression: Compression,
 }
 
 /// Why hod declined a module: the name is what the coverage log and the

@@ -859,6 +859,15 @@ impl<'m> ModuleEmitter<'m> {
         self.unwind_tables()?;
         self.debug_tables()?;
         self.define()?;
+        // WP-061: last, once every section is complete.
+        self.obj.compress_debug_sections(self.options.debug_compression).map_err(|error| {
+            match error {
+                hod_obj::Error::TooLarge(hod_obj::Limit::CompressedBytes) => {
+                    CgError::unsupported(crate::options::LIMIT_COMPRESSED_SECTION)
+                }
+                error => obj_err(error),
+            }
+        })?;
         let ModuleEmitter { obj, funcs, rows, .. } = self;
         Ok(Emitted { object: obj, funcs, rows })
     }

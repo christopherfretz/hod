@@ -80,6 +80,19 @@ fn barriers_run_as_llc_builds_them() {
     }
 }
 
+// spec/ir.md §2.3: `classify` accepts every barrier form, `elementtype`
+// on an inline-assembly operand included (it is the operand's type, which
+// the lowering reads), and so the pipeline hands them to the target.
+#[test]
+fn classify_accepts_every_barrier() {
+    let (m, bodies) = parse(&format!("{}{FUNCTIONS}", ll_header(22)));
+    let classifier = hod_ir::Classifier::new(hod_ir::Support::shipped(hod_ir::Arch::Aarch64));
+    classifier.module(&m).unwrap_or_else(|r| panic!("module: {}", r.construct));
+    for body in &bodies {
+        classifier.body(&m, body).unwrap_or_else(|r| panic!("body: {}", r.construct));
+    }
+}
+
 // §5.5.1 "WP-075": what is not a pure barrier, or not read, is refused
 // by name.
 #[test]

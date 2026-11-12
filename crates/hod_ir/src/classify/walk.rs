@@ -287,10 +287,13 @@ impl<'a, S: Sink> Walker<'a, S> {
 
     #[inline]
     fn param_attrs(&mut self, attrs: ParamAttrs, at: At) -> Flow {
-        if attrs.is_none() { GO } else { self.param_attrs_slow(attrs, at) }
+        if attrs.is_none() { GO } else { self.param_attrs_slow(attrs, false, at) }
     }
 
-    fn param_attrs_slow(&mut self, attrs: ParamAttrs, at: At) -> Flow {
+    /// `asm_operand`: the attributes of an inline-assembly operand, whose
+    /// `elementtype` is the operand's type for the target to read
+    /// (`spec/ir.md` §2.3), not a way of passing it.
+    fn param_attrs_slow(&mut self, attrs: ParamAttrs, asm_operand: bool, at: At) -> Flow {
         for (index, &flag) in PARAM_FLAGS.iter().enumerate() {
             if attrs.has(flag) {
                 self.row(at::ATTR_PARAM + index, at)?;
@@ -310,6 +313,7 @@ impl<'a, S: Sink> Walker<'a, S> {
             ParamMem::ByRef => 2,
             ParamMem::InAlloca => 3,
             ParamMem::Preallocated => 4,
+            ParamMem::ElementType if asm_operand => return GO,
             ParamMem::ElementType => 5,
         };
         self.row(at::ATTR_MEM + mem, at)
@@ -857,7 +861,7 @@ impl<'a, S: Sink> Walker<'a, S> {
 
     /// Whether the parameter attributes `attrs` are all supported.
     fn accepts_attrs(&self, attrs: ParamAttrs) -> bool {
-        attrs.is_none() || !self.finds(|walker| walker.param_attrs_slow(attrs, At::MODULE))
+        attrs.is_none() || !self.finds(|walker| walker.param_attrs_slow(attrs, false, At::MODULE))
     }
 
     /// Whether `walk` has a finding.
@@ -1110,6 +1114,7 @@ impl<'a, S: Sink> Walker<'a, S> {
         if callee_is_operand {
             self.operand(cx, row, classes, site.callee_value(), at)?;
         }
+        let asm_callee = matches!(site.callee_value().kind(), ValueKind::Asm(_));
         for (index, &arg) in site.args().iter().enumerate() {
             match arg.kind() {
                 // The one place a thread-local symbol may stand.
@@ -1121,7 +1126,12 @@ impl<'a, S: Sink> Walker<'a, S> {
             }
             if has_attrs {
                 let theirs = of_param.get(index).copied().unwrap_or(ParamAttrs::NONE);
-                self.call_attrs(site.arg_attrs(index), theirs, at)?;
+                let own = site.arg_attrs(index);
+                if asm_callee && theirs.is_none() {
+                    self.param_attrs_slow(own, true, at)?;
+                } else {
+                    self.call_attrs(own, theirs, at)?;
+                }
             }
         }
         if has_bundles {

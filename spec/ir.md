@@ -424,7 +424,9 @@ that a target need not:
 `classify` (§8) reports module assembly that `module_asm_effects` accepts
 as `module:asm-symbols` and any other as `module:asm`; a call of inline
 assembly with an empty template as `call:inline-asm-empty` and any other
-as `call:inline-asm`.
+as `call:inline-asm`. An `elementtype` on an argument of inline
+assembly is the operand's type, which the target reads, and has no row
+of its own there; elsewhere it is `attr:elementtype`.
 
 ## 3. Types
 

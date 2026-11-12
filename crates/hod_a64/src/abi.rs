@@ -11,16 +11,16 @@ use hod_ir::{CallConv, ParamAttrs, ParamMem, TypeId, TypeKind, TypeTable};
 
 use crate::reg;
 
-/// The largest number of register-sized pieces the arguments, or the
-/// return value, of one signature may be broken into (§10).
+/// The largest number of pieces the arguments of one signature may be
+/// broken into (§10).
 pub const MAX_PIECES: u32 = 1 << 16;
 
 /// The number of argument registers of each class, `x0`..`x7` and
-/// `v0`..`v7` (§3).
+/// `v0`..`v7` (§3.1).
 pub const ARG_REGS: u8 = 8;
 
 /// The register that carries the address of a returned-in-memory value
-/// and an `sret` argument (§6.1, §5.3).
+/// and an `sret` argument (§5.2, §6.1).
 pub const INDIRECT_RESULT: PReg = reg::X8;
 
 /// The register that carries a `nest` argument (§6.3).
@@ -84,7 +84,7 @@ fn no<T>(name: &'static str) -> Abi<T> {
 }
 
 /// Whether `cc` passes arguments, returns values and preserves registers
-/// exactly as `ccc` does on this target (§1).
+/// exactly as `ccc` does on this target (§1.2).
 pub fn cc_is_c(cc: CallConv) -> bool {
     cc == CallConv::C
         || cc == CallConv::FAST
@@ -160,7 +160,55 @@ fn assign_signature(types: &TypeTable, sig: &Sig<'_>, out: &mut Assignment) -> A
     Ok(())
 }
 
-/// The allocation state of §3: the next general register, the next
+/// Bits above an integer extended by sign (`signed`) or by zero, up to
+/// bit `to` (§7).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Extension {
+    pub signed: bool,
+    pub to: u32,
+}
+
+/// `zeroext` (false) or `signext` (true), if `attrs` has one.
+fn extension_attr(attrs: ParamAttrs) -> Option<bool> {
+    if attrs.has(ParamAttrs::SIGNEXT) {
+        Some(true)
+    } else if attrs.has(ParamAttrs::ZEROEXT) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// §7: what the producer of an argument or return value of type
+/// `i<bits>` with the attributes `attrs` must do above the value, in a
+/// register and on the stack alike; `None` when it owes nothing. For an
+/// integer wider than 64 bits this speaks of its last piece.
+pub fn produced_extension(bits: u32, attrs: ParamAttrs) -> Option<Extension> {
+    let extension = match (bits, extension_attr(attrs)) {
+        // A lone `i1` is a byte holding 0 or 1.
+        (1, None) => Extension { signed: false, to: 8 },
+        (_, None) => return None,
+        (..=32, Some(signed)) => Extension { signed, to: 32 },
+        (_, Some(signed)) => Extension { signed, to: bits.checked_next_multiple_of(64)? },
+    };
+    (extension.to != bits).then_some(extension)
+}
+
+/// §7: what the consumer of such a value may assume when its last part
+/// is at `place`; `None` when nothing.
+pub fn assumed_extension(bits: u32, attrs: ParamAttrs, place: Place) -> Option<Extension> {
+    let produced = produced_extension(bits, attrs)?;
+    // LLVM's callers store only the low byte, or two, of these on the
+    // stack.
+    let stored = match (bits, extension_attr(attrs), place) {
+        (1 | 8, Some(_), Place::Stack(_)) => 8,
+        (16, Some(_), Place::Stack(_)) => 16,
+        _ => produced.to,
+    };
+    (stored != bits).then_some(Extension { signed: produced.signed, to: stored })
+}
+
+/// The allocation state of §3.1: the next general register, the next
 /// vector register and the next stack offset, plus the two registers
 /// outside the argument registers.
 #[derive(Default)]
@@ -242,7 +290,7 @@ enum Block {
     Stack { align: u64 },
 }
 
-/// The register type of a piece (§4).
+/// The class of a piece (§3.2).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Class {
     /// A general register, for a value of up to 32 bits.

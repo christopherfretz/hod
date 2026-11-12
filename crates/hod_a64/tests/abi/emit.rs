@@ -18,6 +18,9 @@ use hod_cg::abi::{Assignment, Part, Place, VaInfo};
 pub struct Item {
     /// The offset in `hodabi_in` of the image to pass.
     pub src: u64,
+    /// The offset in `hodabi_in` of the image to leave in memory when the
+    /// value is returned there.
+    pub memory: u64,
     /// The offset in the output blob of the image received.
     pub dst: u64,
     /// The alloc size of the value: what a return in memory copies.
@@ -414,7 +417,8 @@ impl Asm<'_> {
                     "x17".to_string()
                 }
             };
-            self.copy(ret.size, ("x9", ret.src), (&address, 0));
+            // §5.2: what a `store` of the value leaves there.
+            self.copy(ret.size, ("x9", ret.memory), (&address, 0));
             self.poison();
             if let Some(reg) = memory.returned_in {
                 let Reg::General(number) = classify(reg) else {

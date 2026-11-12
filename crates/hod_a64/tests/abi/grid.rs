@@ -319,6 +319,16 @@ fn conventions() -> Vec<Case> {
             ]
             .map(|case| case.cc(cc)),
         );
+        if cc != CallConv::FAST {
+            // A variadic `fastcc` function is not valid IR (§1.2).
+            cases.extend(
+                [
+                    Case::of(&[I64, d.clone(), I128, I8, Ty::Float]).variadic(1),
+                    Case::of(&seq(&[(&I64, 8), (&d, 8), (&I8, 2), (&d, 1)])).variadic(9),
+                ]
+                .map(|case| case.cc(cc)),
+            );
+        }
     }
     cases
 }
@@ -502,11 +512,9 @@ fn systematic_grid() {
     assert_eq!(refused.keys().copied().collect::<Vec<_>>(), ["abi:one-leaf-array"]);
     let report = run_cases("abi-grid", &cases, 0x5eed, &tools);
     eprintln!(
-        "systematic grid: {} signatures; {} hod-calls-LLVM and {} LLVM-calls-hod runs; \
-         refused: {refused:?}; llc crashed on: {:#?}",
+        "systematic grid: {} signatures; {}; refused: {refused:?}; llc crashed on: {:#?}",
         cases.len(),
-        report.hod_calls,
-        report.llvm_calls,
+        report.summary(),
         report.llc_crashes
     );
     report.check("systematic grid");
@@ -523,11 +531,10 @@ fn random_grid() {
         let (cases, refused) = random(seed, count);
         let report = run_cases("abi-random", &cases, seed, &tools);
         eprintln!(
-            "random grid, seed {seed}: {} signatures; {} hod-calls-LLVM and {} LLVM-calls-hod \
-             runs; refused while drawing: {refused:?}; llc crashed on: {:#?}",
+            "random grid, seed {seed}: {} signatures; {}; refused while drawing: {refused:?}; \
+             llc crashed on: {:#?}",
             cases.len(),
-            report.hod_calls,
-            report.llvm_calls,
+            report.summary(),
             report.llc_crashes
         );
         report.check("random grid");

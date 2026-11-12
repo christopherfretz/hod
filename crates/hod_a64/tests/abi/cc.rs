@@ -102,3 +102,112 @@ fn conventions_equal_to_c() {
         );
     }
 }
+
+/// A `musttail` pair that differs in `nest` (which the verifier lets it),
+/// and a variadic thunk that calls something and then forwards.
+const THUNKS: &str = r"
+target triple = 'aarch64-unknown-linux-gnu'
+
+declare void @g(ptr, i64)
+declare void @gv(ptr, ...)
+declare void @ext(ptr)
+
+define void @f(ptr nest %a, i64 %b) {
+  musttail call void @g(ptr %a, i64 %b)
+  ret void
+}
+
+define void @fv(ptr %a, ...) {
+  call void @ext(ptr %a)
+  musttail call void (ptr, ...) @gv(ptr %a, ...)
+  ret void
+}
+";
+
+/// A `musttail` pair that differs in an attribute that changes places.
+const MISMATCH: &str = r"
+target triple = 'aarch64-unknown-linux-gnu'
+
+declare void @g([2 x i64] alignstack(16))
+
+define void @f([2 x i64] %a) {
+  musttail call void @g([2 x i64] alignstack(16) %a)
+  ret void
+}
+";
+
+/// The registers the instructions of `lines` write: the first operand of
+/// a `mov` or an `ldr`, the first two of an `ldp`.
+fn written(lines: &[&str]) -> Vec<String> {
+    let mut all = Vec::new();
+    for line in lines {
+        let mut words = line.split_whitespace();
+        let count = match words.next() {
+            Some("mov" | "ldr") => 1,
+            Some("ldp") => 2,
+            _ => 0,
+        };
+        all.extend(words.take(count).map(|word| word.trim_end_matches(',').to_string()));
+    }
+    all
+}
+
+/// `spec/abi-a64.md` §8.5: LLVM accepts a `musttail` pair that differs
+/// in `nest` and refuses one that differs in `alignstack`; and its
+/// variadic `musttail` thunk hands on `x1`..`x7`, `x8` and `q0`..`q7`
+/// as it received them, which is what a variadic callee compiled by
+/// LLVM therefore relies on.
+#[test]
+fn musttail_in_llvm() {
+    let Some(tools) = Tools::find() else { return };
+    let scratch = Scratch::new("abi-musttail");
+    for (config, llc) in &tools.llc {
+        let compile = |name: &str, module: &str| {
+            let name = format!("{name}{}.ll", config.tag());
+            let source = scratch.write(&name, module.replace('\'', "\""));
+            hod_testutil::run(
+                llc,
+                [
+                    config.opt.as_ref(),
+                    "-filetype=asm".as_ref(),
+                    "-o".as_ref(),
+                    "-".as_ref(),
+                    source.as_os_str(),
+                ],
+            )
+        };
+        let refused = compile("mismatch", MISMATCH);
+        assert!(
+            !refused.success() && refused.stderr_text().contains("mismatched ABI impacting"),
+            "llc {}: a pair differing in `alignstack` was not refused:\n{}",
+            config.tag(),
+            tail(&refused.stderr_text())
+        );
+
+        let outcome = compile("thunks", THUNKS);
+        assert!(outcome.success(), "llc {}:\n{}", config.tag(), tail(&outcome.stderr_text()));
+        let text = outcome.stdout_text();
+        let lines: Vec<&str> = text.lines().map(str::trim).collect();
+        let start = lines.iter().position(|line| line.starts_with("fv:")).expect("the thunk");
+        let call = start
+            + lines[start..]
+                .iter()
+                .position(|line| line.split_whitespace().eq(["bl", "ext"]))
+                .expect("the call");
+        let exit = call
+            + lines[call..]
+                .iter()
+                .position(|line| line.split_whitespace().eq(["b", "gv"]))
+                .expect("the tail call");
+        let restored = written(&lines[call..exit]);
+        let wanted = (1..=8).map(|n| format!("x{n}")).chain((0..8).map(|n| format!("q{n}")));
+        for register in wanted {
+            assert!(
+                restored.contains(&register),
+                "llc {}: the thunk does not restore {register}:\n{}",
+                config.tag(),
+                lines[call..=exit].join("\n")
+            );
+        }
+    }
+}

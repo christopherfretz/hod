@@ -241,11 +241,7 @@ fn variadic_against_c() {
                 } else {
                     compare(plan, hod_calls, blob)
                 };
-                if hod_calls {
-                    report.hod_calls += 1;
-                } else {
-                    report.llvm_calls += 1;
-                }
+                report.count(&tag, hod_calls);
                 if let Some(problem) = problem {
                     let side = if hod_calls { "hod calls C" } else { "LLVM calls hod, C walks" };
                     report.failures.push(format!(
@@ -258,10 +254,9 @@ fn variadic_against_c() {
         }
     }
     eprintln!(
-        "variadic: {} signatures; {} hod-calls-C and {} LLVM-calls-hod runs",
+        "variadic: {} signatures, each with hod calling C and with LLVM calling hod; {}",
         plans.len(),
-        report.hod_calls,
-        report.llvm_calls
+        report.summary()
     );
     report.check("variadic");
 }

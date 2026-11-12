@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 
-use hod_a64::abi::assign;
+use hod_a64::abi::{assign, assumed_extension, produced_extension};
 use hod_cg::abi::{Assignment, Part, Place, Sig};
 use hod_ir::{
     AARCH64_LINUX_DATA_LAYOUT, CallConv, DataLayout, ParamAttrs, ParamMem, TypeId, TypeTable,
@@ -261,9 +261,11 @@ impl Case {
 pub struct Slot {
     /// The value; for a `byval` argument, the pointee.
     pub image: Image,
-    /// Where `hodabi_in` holds `image.clean` and `image.dirty`.
+    /// Where `hodabi_in` holds `image.clean`, `image.dirty` and
+    /// `image.memory`.
     pub clean: u64,
     pub dirty: u64,
+    pub memory: u64,
     /// Where the consumer writes what arrived, in its output blob.
     pub out: u64,
     /// The width of a value that is one integer.
@@ -301,9 +303,10 @@ impl Blobs {
     fn slot(&mut self, image: Image, int: Option<u32>, ext: Option<bool>) -> Slot {
         let clean = self.put(&image.clean);
         let dirty = self.put(&image.dirty);
+        let memory = self.put(&image.memory);
         let out = self.out_size;
         self.out_size += (image.size + SLACK).next_multiple_of(16) as u64;
-        Slot { image, clean, dirty, out, int, ext }
+        Slot { image, clean, dirty, memory, out, int, ext }
     }
 }
 
@@ -353,29 +356,28 @@ impl Plan {
     }
 }
 
+/// The attributes of an integer with `zeroext` (false), `signext` (true)
+/// or neither.
+fn ext_attrs(ext: Option<bool>) -> ParamAttrs {
+    let flag = match ext {
+        None => return ParamAttrs::NONE,
+        Some(false) => ParamAttrs::ZEROEXT,
+        Some(true) => ParamAttrs::SIGNEXT,
+    };
+    ParamAttrs::NONE.with(flag).expect("an extension attribute")
+}
+
 /// `spec/abi-a64.md` §7, the producer's duty: an integer of `bits` bits
 /// with the extension attribute `ext` is extended, by sign or by zero, to
 /// this many bits; `None` when nothing is owed.
 pub fn produced_bits(bits: u32, ext: Option<bool>) -> Option<(bool, u32)> {
-    match (bits, ext) {
-        // A lone `i1` is a byte holding 0 or 1, whatever its attributes.
-        (1, None) => Some((false, 8)),
-        (_, None) => None,
-        (..=32, Some(signed)) => Some((signed, 32)),
-        (_, Some(signed)) => Some((signed, bits.next_multiple_of(64))),
-    }
-    .filter(|&(_, to)| to != bits)
+    produced_extension(bits, ext_attrs(ext)).map(|extension| (extension.signed, extension.to))
 }
 
 /// `spec/abi-a64.md` §7, what the consumer may assume: the integer
-/// arrives extended, by sign or by zero, to this many bits.
+/// arrives extended, by sign or by zero, to this many bits (its own
+/// width when nothing may be assumed).
 pub fn assumed_bits(bits: u32, ext: Option<bool>, place: Place) -> (bool, u32) {
-    match (bits, ext, place) {
-        (1, None, _) => (false, 8),
-        (_, None, _) => (false, bits),
-        (1 | 8, Some(signed), Place::Stack(_)) => (signed, 8),
-        (16, Some(signed), Place::Stack(_)) => (signed, 16),
-        (..=32, Some(signed), _) => (signed, 32),
-        (_, Some(signed), _) => (signed, bits.next_multiple_of(64)),
-    }
+    assumed_extension(bits, ext_attrs(ext), place)
+        .map_or((false, bits), |extension| (extension.signed, extension.to))
 }

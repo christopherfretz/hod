@@ -1,7 +1,7 @@
 //! Builds a batch of cases against one `llc`, runs it natively and
 //! compares what each side received (`spec/abi-a64.md` §11).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -131,10 +131,9 @@ pub fn tail(text: &str) -> String {
 /// What a batch found.
 #[derive(Clone, Default, Debug)]
 pub struct Report {
-    /// The cases run with hod calling and with LLVM calling, summed over
-    /// the configurations.
-    pub hod_calls: usize,
-    pub llvm_calls: usize,
+    /// The cases run with hod calling and with LLVM calling, for each
+    /// configuration (`Config::tag`).
+    pub runs: BTreeMap<String, [usize; 2]>,
     /// Functions `llc` itself crashed on, which no case could then check.
     pub llc_crashes: Vec<String>,
     pub failures: Vec<String>,
@@ -142,10 +141,26 @@ pub struct Report {
 
 impl Report {
     pub fn add(&mut self, other: Report) {
-        self.hod_calls += other.hod_calls;
-        self.llvm_calls += other.llvm_calls;
+        for (tag, [hod, llvm]) in other.runs {
+            let runs = self.runs.entry(tag).or_default();
+            runs[0] += hod;
+            runs[1] += llvm;
+        }
         self.llc_crashes.extend(other.llc_crashes);
         self.failures.extend(other.failures);
+    }
+
+    /// Counts one run under the configuration `tag`.
+    pub fn count(&mut self, tag: &str, hod_calls: bool) {
+        self.runs.entry(tag.to_string()).or_default()[usize::from(!hod_calls)] += 1;
+    }
+
+    /// The runs, as "llc 22-O0: 10 hod calls, 12 LLVM calls; …".
+    pub fn summary(&self) -> String {
+        let one = |(tag, [hod, llvm]): (&String, &[usize; 2])| {
+            format!("llc {tag}: {hod} hod calls, {llvm} LLVM calls")
+        };
+        self.runs.iter().map(one).collect::<Vec<_>>().join("; ")
     }
 
     /// Fails the test if any case failed.
@@ -183,6 +198,7 @@ pub fn item(slot: &Slot) -> Item {
     });
     Item {
         src: slot.dirty,
+        memory: slot.memory,
         dst: slot.out,
         size: slot.image.size as u64,
         bytes: slot.value_bytes(),
@@ -446,11 +462,7 @@ impl Batch {
                 if !runs(&left_out, index, hod_calls) {
                     continue;
                 }
-                if hod_calls {
-                    report.hod_calls += 1;
-                } else {
-                    report.llvm_calls += 1;
-                }
+                report.count(&tag, hod_calls);
                 let blob = if hod_calls { &out[..size] } else { &out[size..] };
                 let problem = if crashed[index * 2 + usize::from(!hod_calls)] {
                     Some("the step crashed".to_string())
@@ -507,6 +519,13 @@ fn compare_slot(
             let place = place.unwrap_or(Place::Stack(0));
             let (signed, to) = assumed_bits(bits, slot.ext, place);
             slot.image.extended(bits, signed, to)
+        }
+        // LLVM stored an aggregate member by member, an integer as its
+        // store-size bytes: a false belief about the bits above a
+        // member's width (§7 gives it none) would show in those bytes.
+        None if llvm_consumes => {
+            let whole = |&bits: &u8| if bits == 0 { 0 } else { 0xff };
+            (slot.image.clean.clone(), slot.image.mask.iter().map(whole).collect())
         }
         None => (slot.image.clean.clone(), slot.image.mask.clone()),
     };

@@ -191,6 +191,10 @@ pub struct Image {
     pub mask: Vec<u8>,
     /// `clean` with every other bit random.
     pub dirty: Vec<u8>,
+    /// `clean` with every byte that carries no bit of the value random:
+    /// what a `store` of the value may leave in memory (`spec/ir.md` §4.3
+    /// keeps the bits above an integer's width zero; padding is anything).
+    pub memory: Vec<u8>,
 }
 
 impl Image {
@@ -206,12 +210,14 @@ impl Image {
         });
         let mut clean = vec![0u8; size + SLACK];
         let mut dirty = vec![0u8; size + SLACK];
+        let mut memory = vec![0u8; size + SLACK];
         for index in 0..size + SLACK {
             let (value, junk) = (rng.byte(), rng.byte());
             clean[index] = value & mask[index];
             dirty[index] = clean[index] | (junk & !mask[index]);
+            memory[index] = if mask[index] == 0 { junk } else { clean[index] };
         }
-        Image { size, clean, mask, dirty }
+        Image { size, clean, mask, dirty, memory }
     }
 
     /// `size` random bytes, every bit of which carries: the pointee of a
@@ -221,7 +227,7 @@ impl Image {
         clean.resize(size + SLACK, 0);
         let mut mask = vec![0xff; size];
         mask.resize(size + SLACK, 0);
-        Image { size, dirty: clean.clone(), clean, mask }
+        Image { size, dirty: clean.clone(), memory: clean.clone(), clean, mask }
     }
 
     /// The image of the integer of `bits` bits in `self`, extended to

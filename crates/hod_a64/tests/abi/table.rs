@@ -6,7 +6,7 @@ use hod_a64::reg;
 use hod_cg::abi::{Assignment, Part, PartKind, Place, RetMemory, VaInfo};
 use hod_ir::CallConv;
 
-use crate::sigs::{Attr, Case, byval, p, pa, table};
+use crate::sigs::{Attr, Case, assumed_bits, byval, p, pa, produced_bits, table};
 use crate::ty::{I1, I8, I16, I32, I64, I128, Ty, arr, st, vec};
 
 fn x(n: u8) -> Place {
@@ -503,6 +503,39 @@ fn musttail_pairs() {
     let (a, b) = (plain.assign(&mut types), extended.assign(&mut types));
     assert_eq!(a, b);
     assert_eq!(a.expect("supported").stack_size, 32);
+}
+
+/// `spec/abi-a64.md` §7: the two tables, row by row.
+#[test]
+fn extension() {
+    // (bits, attribute, the producer's duty, what may be assumed in a
+    // register, and on the stack); a width equal to `bits` is "nothing".
+    type Extended = (bool, u32);
+    let (reg, stack) = (x(0), s(0));
+    let rows: [(u32, Option<bool>, Extended, Extended, Extended); 16] = [
+        (1, None, (false, 8), (false, 8), (false, 8)),
+        (8, None, (false, 8), (false, 8), (false, 8)),
+        (7, None, (false, 7), (false, 7), (false, 7)),
+        (32, None, (false, 32), (false, 32), (false, 32)),
+        (1, Some(false), (false, 32), (false, 32), (false, 8)),
+        (1, Some(true), (true, 32), (true, 32), (true, 8)),
+        (7, Some(true), (true, 32), (true, 32), (true, 32)),
+        (8, Some(true), (true, 32), (true, 32), (false, 8)),
+        (16, Some(false), (false, 32), (false, 32), (false, 16)),
+        (17, Some(false), (false, 32), (false, 32), (false, 32)),
+        (32, Some(true), (false, 32), (false, 32), (false, 32)),
+        (33, Some(true), (true, 64), (true, 64), (true, 64)),
+        (64, Some(false), (false, 64), (false, 64), (false, 64)),
+        (65, Some(true), (true, 128), (true, 128), (true, 128)),
+        (128, Some(true), (false, 128), (false, 128), (false, 128)),
+        (129, Some(false), (false, 192), (false, 192), (false, 192)),
+    ];
+    for (bits, ext, produced, in_register, on_stack) in rows {
+        let what = format!("i{bits} {ext:?}");
+        assert_eq!(produced_bits(bits, ext).unwrap_or((false, bits)), produced, "{what}");
+        assert_eq!(assumed_bits(bits, ext, reg), in_register, "{what}, register");
+        assert_eq!(assumed_bits(bits, ext, stack), on_stack, "{what}, stack");
+    }
 }
 
 /// `spec/abi-a64.md` §2: `assign` reuses the buffers of its output, and

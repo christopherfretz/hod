@@ -14,7 +14,11 @@ use std::path::Path;
 pub const MANIFEST: &str = "MANIFEST.tsv";
 pub const SKIPPED: &str = "SKIPPED.tsv";
 
-const MANIFEST_HEADER: &str =
+const MANIFEST_HEADER: &str = "entry\tsource\tllvm\ttest\trevision\tproducer\tproducer_args\tllc_args\tdelivered\tsha256\tbytes\tkey";
+/// The header of a manifest written before entries recorded how their
+/// modules were delivered: read as all `text`. The keys of such a corpus
+/// are of an older format, so the next capture makes every entry again.
+const OLD_MANIFEST_HEADER: &str =
     "entry\tsource\tllvm\ttest\trevision\tproducer\tproducer_args\tllc_args\tsha256\tbytes\tkey";
 const SKIPPED_HEADER: &str = "source\tllvm\ttest\treason\tdetail\tkey";
 
@@ -36,9 +40,12 @@ pub struct Row {
     pub producer: String,
     /// The arguments the producer was given, without paths of this machine.
     pub producer_args: String,
-    /// The arguments `llc` was given for this module, without the output
-    /// and the input.
+    /// The arguments `llc` was given for the entry's modules, without the
+    /// output and the input.
     pub llc_args: String,
+    /// How each module reached `llc`, one word per module in order:
+    /// `text`, or `bitcode` (written as text by `llvm-dis`).
+    pub delivered: String,
     /// SHA-256 of the entry file.
     pub sha256: String,
     /// Size of the entry file.
@@ -118,17 +125,19 @@ pub struct Skips {
     pub rows: BTreeMap<TestKey, Skip>,
 }
 
-/// The lines of a table after its header; a missing file is an empty table.
-fn table(path: &Path, header: &str) -> Result<Vec<Vec<String>>, String> {
+/// The lines of a table after its header, which is one of `headers`; a
+/// missing file is an empty table.
+fn table(path: &Path, headers: &[&str]) -> Result<Vec<Vec<String>>, String> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(format!("cannot read '{}': {e}", path.display())),
     };
     let mut lines = text.lines();
-    if lines.next() != Some(header) {
+    let first = lines.next();
+    let Some(header) = headers.iter().find(|header| first == Some(**header)) else {
         return Err(format!("'{}' does not start with the expected header line", path.display()));
-    }
+    };
     let columns = header.split('\t').count();
     let mut rows = Vec::new();
     for (index, line) in lines.enumerate() {
@@ -163,7 +172,10 @@ impl Manifest {
     pub fn read(dir: &Path) -> Result<Self, String> {
         let path = dir.join(MANIFEST);
         let mut rows = BTreeMap::new();
-        for fields in table(&path, MANIFEST_HEADER)? {
+        for mut fields in table(&path, &[MANIFEST_HEADER, OLD_MANIFEST_HEADER])? {
+            if fields.len() == 11 {
+                fields.insert(8, "text".to_owned());
+            }
             let [
                 entry,
                 source,
@@ -173,10 +185,11 @@ impl Manifest {
                 producer,
                 producer_args,
                 llc_args,
+                delivered,
                 sha256,
                 bytes,
                 key,
-            ] = <[String; 11]>::try_from(fields).map_err(|_| "unreachable field count")?;
+            ] = <[String; 12]>::try_from(fields).map_err(|_| "unreachable field count")?;
             let row = Row {
                 llvm: number(&llvm, "LLVM major", &path)?,
                 bytes: number(&bytes, "size", &path)?,
@@ -187,6 +200,7 @@ impl Manifest {
                 producer,
                 producer_args,
                 llc_args,
+                delivered,
                 sha256,
                 key,
             };
@@ -208,6 +222,7 @@ impl Manifest {
                 escape(&row.producer),
                 escape(&row.producer_args),
                 escape(&row.llc_args),
+                escape(&row.delivered),
                 escape(&row.sha256),
                 row.bytes.to_string(),
                 escape(&row.key),
@@ -234,7 +249,7 @@ impl Skips {
     pub fn read(dir: &Path) -> Result<Self, String> {
         let path = dir.join(SKIPPED);
         let mut rows = BTreeMap::new();
-        for fields in table(&path, SKIPPED_HEADER)? {
+        for fields in table(&path, &[SKIPPED_HEADER])? {
             let [source, llvm, test, reason, detail, key] =
                 <[String; 6]>::try_from(fields).map_err(|_| "unreachable field count")?;
             let llvm: u32 = number(&llvm, "LLVM major", &path)?;
@@ -284,6 +299,7 @@ mod tests {
             producer: "kiln version 1.0.1 (C++26 frontend)".to_owned(),
             producer_args: "-std=c++26 -DX=\"a\tb\"".to_owned(),
             llc_args: "-O0 -relocation-model=pic -filetype=obj".to_owned(),
+            delivered: "text".to_owned(),
             sha256: "ab".repeat(32),
             bytes: 1234,
             key: "cd".repeat(32),
@@ -328,6 +344,20 @@ mod tests {
         assert_eq!(fs::read_to_string(dir.join(MANIFEST)).unwrap(), text);
         assert_eq!(manifest.of_test("kiln", 22, "tests/a b.cpp").unwrap().entry, lines[1][..20]);
         assert!(manifest.of_test("kiln", 19, "tests/a b.cpp").is_none());
+        assert!(lines[1].contains("\t-O0 -relocation-model=pic -filetype=obj\ttext\t"));
+        // A manifest of before the `delivered` column: every module text.
+        let old: String = text
+            .lines()
+            .map(|line| {
+                let mut fields: Vec<&str> = line.split('\t').collect();
+                fields.remove(8);
+                fields.join("\t") + "\n"
+            })
+            .collect();
+        assert!(old.starts_with(OLD_MANIFEST_HEADER));
+        fs::write(dir.join(MANIFEST), old).unwrap();
+        assert_eq!(Manifest::read(dir).unwrap(), manifest);
+        manifest.write(dir).unwrap();
 
         let mut skips = Skips::default();
         for (test, reason, detail) in
@@ -362,7 +392,7 @@ mod tests {
         fs::write(dir.join(MANIFEST), "something else\n").unwrap();
         assert!(Manifest::read(dir).unwrap_err().contains("expected header"));
         fs::write(dir.join(MANIFEST), format!("{MANIFEST_HEADER}\na\tb\n")).unwrap();
-        assert!(Manifest::read(dir).unwrap_err().contains("line 2: 2 fields, expected 11"));
+        assert!(Manifest::read(dir).unwrap_err().contains("line 2: 2 fields, expected 12"));
         let mut bad = row("x.ll");
         bad.sha256 = "s".to_owned();
         let line = Manifest { rows: [("x.ll".to_owned(), bad)].into() }.text();

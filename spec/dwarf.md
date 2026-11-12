@@ -353,9 +353,11 @@ non-zero line written (file and line, initially none):
 4. **A location**: a row with its file, line and column, unless it equals
    the current row in all three and carries no flag the current row
    lacks (a change of scope alone, which `llc` writes as a duplicate row).
-5. A row at the same offset as the current one replaces it (the earlier
-   location describes no instruction). A transition at or beyond `size`
-   is dropped (an epilogue row of an empty epilogue).
+5. A transition at or beyond `size` is dropped (an epilogue row of an
+   empty epilogue). Rows at one offset are all kept: the start row and a
+   line-0 or no-prologue row at offset 0 both stand, as in `llc`, and a
+   consumer takes the last row at an address (DWARF 5 §6.2.5.1 makes
+   each a row of the matrix).
 
 ### 5.2 Flags
 

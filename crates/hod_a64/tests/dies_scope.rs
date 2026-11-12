@@ -255,6 +255,30 @@ fn refusals_are_named() {
     }
 }
 
+/// An out-of-line definition whose return type differs from its
+/// declaration's (`auto` declared, `int` deduced): llc writes the
+/// definition's own `DW_AT_type` beside `DW_AT_specification`. Neither
+/// clang nor kiln++ emits this today, so the IR is written by hand.
+#[test]
+fn definition_with_its_own_return_type() {
+    let scratch = Scratch::new("dies-scope-auto");
+    let text = format!(
+        "{}define dso_local i32 @_ZN1C3getEv() !dbg !10 {{\nentry:\n  ret i32 1, !dbg !15\n}}\n\n{UNIT}\
+         !5 = !{{}}\n\
+         !10 = distinct !DISubprogram(name: \"get\", linkageName: \"_ZN1C3getEv\", scope: !20, file: !1, line: 3, type: !40, scopeLine: 3, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !0, declaration: !22, retainedNodes: !4)\n\
+         !20 = distinct !DICompositeType(tag: DW_TAG_structure_type, name: \"C\", file: !1, line: 1, size: 8, flags: DIFlagTypePassByValue, elements: !21, identifier: \"_ZTS1C\")\n\
+         !21 = !{{!22}}\n\
+         !22 = !DISubprogram(name: \"get\", linkageName: \"_ZN1C3getEv\", scope: !20, file: !1, line: 2, type: !42, scopeLine: 2, flags: DIFlagPrototyped | DIFlagStaticMember, spFlags: 0)\n\
+         !40 = !DISubroutineType(types: !41)\n!41 = !{{!6}}\n\
+         !42 = !DISubroutineType(types: !43)\n!43 = !{{!44}}\n\
+         !44 = !DIBasicType(tag: DW_TAG_unspecified_type, name: \"auto\")\n",
+        ll_header(22)
+    );
+    let Some(u) = compare(&scratch, 22, "auto-return", &text) else { return };
+    assert_eq!(has_attr(&u, "DW_TAG_subprogram", "DW_AT_specification"), 1);
+    assert_eq!(count_tag(&u, "DW_TAG_unspecified_type"), 1);
+}
+
 /// A bug outside WP-059: `crates/hod_dwarf/src/types.rs:613` (`is_unsigned`)
 /// treats every enumeration as signed, where `llc` 19 and 22 follow an
 /// enumeration's base type (`isUnsignedDIType`): a static member

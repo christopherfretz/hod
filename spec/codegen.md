@@ -559,6 +559,80 @@ These are decisions the group packages (WP-035..041) build on.
   refused by another group's name is counted as skipped, by name, never
   as agreeing, and the proportion that ran end to end is printed.
 
+#### Mem-class values (WP-040)
+
+`src/aggr.rs`: integers wider than 64 bits, structs, arrays and `Mem`
+vectors (§2.2), and the overflow intrinsics. Every entry point of
+`target.rs` that meets a `Mem` value routes to `aggr`; `phi` of a `Mem`
+value is the glue's copy (§4.5), so no other group's file has a hook.
+
+- **The slot image.** A `Mem` value is the first store-size bytes of its
+  slot; the bytes after are unspecified. A wide `iN` is `n = ⌈N/64⌉`
+  little-endian limbs, and **the bits above `N` in the top limb are
+  unspecified**, like a narrow value's (§2.2): an argument or a call
+  result stores only the bytes of its last piece, and `add`, `sub`,
+  `mul`, `shl` and the bitwise operations leave whatever the top limb
+  computes. A consumer that depends on those bits extends the top limb
+  first (`ubfx`/`sbfx` in a scratch register): compares, `lshr`, `ashr`,
+  division, `zext`, `sext`, `store` and the integer fields an
+  `insertvalue` writes, the wide overflow checks. A constant is
+  materialized canonical. An aggregate or vector holds its exact memory
+  image: its integer fields canonical, its padding unspecified.
+- **A `store` writes exactly the store size**, the bits above an
+  integer's width zero (a `load` then reads a canonical value); a `load`
+  copies the store size. Both go through `x16`/`x17` and the pointer's
+  register; an atomic one is `a64:atomic`.
+- **Arithmetic** is limb by limb through `x16`/`x17`: `adds`/`adcs`/`adc`
+  and `subs`/`sbcs`/`sbc` chains; `mul` of two limbs is `mul` + `umulh`
+  + two `madd`s, wider a schoolbook product into the zeroed result. A
+  constant shift is `extr` per limb (an amount of the width or more
+  emits nothing, §4.7). A variable shift copies the source into a frame
+  area of `2n` limbs whose other half is the fill (0, or the sign), picks
+  the limb offset `min(s >> 6, n - 1)` by `csel` and combines two limbs
+  per result limb with `lslv`/`lsrv` and a `lsr #1` · shift by `~s`
+  (so a bit offset of 0 needs no branch); `ashr` also uses `lsrv`, the
+  sign coming from the fill. `mul` and variable shifts are quadratic or
+  need twice the frame, so beyond `MAX_QUADRATIC_BITS` (4096) they are
+  refused as `a64:wide-mul` and `a64:wide-shift`; the linear operations
+  have no limit.
+- **Division up to 128 bits** calls `__udivti3`, `__divti3`,
+  `__umodti3`, `__modti3` (`RuntimeFn`) with the operands in 16-byte
+  slots, extended there first when narrower than 128 bits. Wider is
+  `a64:wide-division`.
+- **Compares**: `eq`/`ne` accumulate `eor`/`orr` over the limbs (the top
+  limb shifted left by `64 - N mod 64`); the orderings are a `cmp`/`sbcs`
+  chain over the limbs with both top limbs shifted the same way, which
+  orders signed and unsigned alike; the operands are swapped for
+  `ugt`/`ule`/`sgt`/`sle`. The result is a `cset` (no deferral).
+- **Casts**: `zext`/`sext` fill with `xzr` or `asr #63` of the extended
+  top limb; `trunc` to a `Gpr` width is the low limb, wider copies limbs;
+  `ptrtoint`/`ptrtoaddr`/`inttoptr` go through the low limb; `bitcast`
+  between `Mem` types copies, from a `Gpr` stores the masked register,
+  from or to an `Fpr` value goes through `v31`. Conversions between wide
+  integers and floating point are `a64:wide-fp-cast`.
+- **Aggregates**: `extractvalue` reads the field at its offset (a `Gpr`
+  or `Fpr` field into its register, a `Mem` field copied);
+  `insertvalue` copies the aggregate, then writes the field (an integer
+  masked to its width). `select` with a non-constant condition forms both
+  addresses, `tst #1`, `csel` and copies; `freeze` copies (`freeze` of
+  `poison`/`undef` is 0, as everywhere in hod). Layouts are `hod_ir`'s
+  (`field_offsets`, `element_stride`); `{}` and `[0 x T]` have no bytes.
+- **`Mem` vectors** (`<3 x i32>`, `<N x i1>`, 256-bit vectors, …) are
+  loaded, stored, selected (scalar condition), frozen, merged by `phi`
+  and bitcast; any element-wise operation, a vector `select` condition
+  and a vector `icmp` are `a64:mem-vector`.
+- **Overflow intrinsics** up to 64 bits extend the operands in their
+  registers, then: unsigned add `adds` + `cs` at 64 bits, else `add` and
+  a test of the bits above the width; signed add/sub `adds`/`subs` + `vs`
+  at 64 bits, else the result compared with its own `sbfx`; unsigned sub
+  `subs` + `cc`; multiply up to 32 bits is one `mul` with the same
+  checks, wider `umulh`/`smulh` with `mul` (the signed form checks both
+  that the high half is the sign of the low and the bits between the
+  width and 64). The `{ iN, i1 }` result is written to its slot (the
+  value masked to its width, the flag a byte at the field offset). Add
+  and sub wider than 64 bits are a limb chain on extended operands;
+  `mul` wider than 64 bits is `a64:wide-mul-overflow`.
+
 #### Floating point (WP-039)
 
 `crates/hod_a64/src/float.rs`; the evidence is `spec/landed/codegen/WP-039.md`.
@@ -638,6 +712,61 @@ These are decisions the group packages (WP-035..041) build on.
   `a64:fp-cast`, `a64:fcmp`, `a64:vector-icmp`, `a64:fp-select` (the
   skeleton's), and `a64:bfloat`, `a64:fp128-libcall`, `a64:half-frem`,
   `a64:vector-fcmp`, `a64:vector-select`, `a64:vector-op`.
+
+#### Floating point, the leftovers (WP-067)
+
+`crates/hod_a64/src/float.rs`; the evidence is `spec/landed/codegen/WP-067.md`.
+This supersedes the `a64:half-frem` and `a64:fp128-libcall` sentences of
+"Floating point (WP-039)" above and the `a64:load-fpr` / `a64:store-fpr`
+refusal of "Memory (WP-036)" below: those names are no longer produced.
+
+- **Loads and stores** of an `Fpr`-class value are one `ldr`/`str`
+  (`ldur`/`stur` when the offset is not scaled) of the value's store
+  size: 2 bytes for `half` and `bfloat`, 4 for `float`, 8 for `double`
+  and 64-bit vectors, 16 for `fp128` and 128-bit vectors. A vector of
+  elements narrower than a byte is bit-packed in the register as in
+  memory, so its store size is also its register view. `mem.rs` refuses
+  an atomic access, then hands the access to `float::load` /
+  `float::store` with its own address computation (a deferred `ptradd`
+  fused, an index added into its register when there is one): every
+  addressing form of the integer accesses applies. Unaligned accesses
+  are plain accesses (normal memory on Linux allows them).
+- **`fp128` compares** call one runtime function and compare its `int`
+  result with 0, as LLVM's `softenSetCCOperands`, relying only on the
+  signs that libgcc and compiler-rt share: `oeq`/`une` `__eqtf2` EQ/NE;
+  `olt`/`uge` `__lttf2(a, b)` LT/GE; `ogt`/`ule` `__lttf2(b, a)` LT/GE;
+  `ole`/`ugt` `__letf2(a, b)` LE/GT; `oge`/`ult` `__letf2(b, a)` LE/GT;
+  `ord`/`uno` `__unordtf2` EQ/NE. `ueq` and `one` keep copies of the
+  operands in a 48-byte frame slot, call `__eqtf2` (result kept in the
+  slot) and `__unordtf2`, then `cmp unord, #0` · `ccmp eq, #0, #Z, eq`:
+  `ueq` is EQ, `one` is NE. `float::flags` does the calls, so a caller
+  (`select`, `condbr`) asks for its other operands after it.
+- **`fp128` conversions** are one call each: `fpext` from `float` and
+  `double` (`half` widened to `float` first, exactly) by
+  `__extendsftf2`/`__extenddftf2`; `fptrunc` to `half`, `float` and
+  `double` by `__trunctfhf2`/`__trunctfsf2`/`__trunctfdf2` (one rounding:
+  never through a wider intermediate); `fptosi`/`fptoui` to at most 32
+  bits by `__fixtfsi`/`__fixunstfsi`, to 33..64 bits by the `di`
+  versions; `sitofp`/`uitofp` likewise by `__float[un]sitf` and
+  `__float[un]ditf`, a width other than 32 and 64 extended first.
+  `frem` of `fp128` calls `fmodl`.
+- **`frem` of `half`** widens both operands to `float` into
+  temporaries (one pinned at a time, through `v31`), calls `fmodf`, and
+  narrows the result: `fmod` is exact, so the narrowing is the only
+  rounding.
+- **Vector constants** (and any other `Fpr`-class constant that is not a
+  scalar float or zero) are materialized from the constant's in-memory
+  image, 8 bytes at a time through `x16` and `fmov dN, x16` /
+  `fmov vN.d[1], x16` (`xzr` for a zero word, `common::sym_address` for
+  an aligned 8-byte symbol address). No literal pool: no new relocation
+  kind, nothing out of reach in far mode. Another relocation in the
+  image is `a64:constant-relocation`.
+- **`phi`s** of `Fpr`-class values need nothing of this group: WP-037's
+  copies move them (tested with loops carrying 19 values of `double`,
+  `float`, `half`, `fp128` and vectors, a swap cycle among them).
+- **Still refused**: vector `icmp`, `fcmp` and `select` with a vector
+  condition (their `<N x i1>` is WP-040's), `bfloat` arithmetic, and the
+  vector operations of WP-039's list.
 
 #### Memory (WP-036)
 
@@ -757,6 +886,64 @@ These are decisions the group packages (WP-035..041) build on.
   the exception's type, not with `llvm.eh.typeid.for` (the intrinsic
   group's): `llc` numbers type ids in reverse clause order, hod in
   order (`FnCx::type_id`), so a selector constant is not portable.
+
+#### Intrinsics (WP-041)
+
+- **Integer intrinsics** take `i1` to `i64` (`Gpr`); the bits above the
+  width are unspecified in operands and results (§2.2). An `i128`
+  operand is `a64:intrinsic-wide`, a vector one `a64:intrinsic-vector`.
+  For a width `N` in a register of `R` = 32 or 64 bits:
+  - `ctlz`: when `N < R`, `lsl #(R-N)` and `orr #(1 << (R-N-1))` first,
+    so a zero counts `N`; then `clz`. `cttz`: `orr #(1 << N)` when
+    `N < R`, then `rbit` and `clz`. The poison flag is ignored.
+  - `ctpop`: `ubfx` to the width, `fmov` into `v31`, `cnt v31.8b`,
+    `uaddlv h31`, `fmov w`.
+  - `bswap`: `rev16 w` at 16 bits, else `rev` and `lsr #(R-N)`; a width
+    that is not a multiple of 16 is `a64:intrinsic`. `bitreverse`:
+    `rbit` and `lsr #(R-N)`.
+  - `abs`: `sbfx`, `cmp #0`, `cneg mi` (`INT_MIN` maps to itself).
+    `smax`/`smin`/`umax`/`umin`: both operands extended, `cmp`, `csel`.
+  - `fshl`/`fshr`: the amount is taken modulo `N`. A constant amount
+    `k = c % N` of 0 is the first (`fshl`) or second (`fshr`) operand;
+    otherwise `extr` at `N = R`, `ubfx` + `orr ..., lsl` below. A
+    variable amount at `N = R` uses the register shifts' own modulo
+    (`lslv`, `mvn`, `lsr #1`, `lsrv`, `orr`); below it the amount is
+    reduced by `and #(N-1)` for a power of two, else by `udiv` + `msub`
+    against `N` in `x16`, and both shifts are by `k` and `N - k`.
+- **Memory intrinsics.** A length of 0 emits nothing (the pointers may
+  be null). A constant length of at most 64 bytes (`memcpy`, `memset`)
+  or 32 bytes (`memmove`) is inline and touches exactly the bytes of the
+  range: the largest power-of-two accesses, the tail overlapping the
+  previous access for copies, exact-size stores for sets. An inline
+  `memmove` reads every byte (into `x16`, `x17`, `v30`, `v31`) before
+  it writes one, so overlap in either direction is correct; 32 is what
+  those four registers hold. 64 keeps the inline code to a few
+  loads and stores while covering the common small
+  struct copies and clears; beyond it the library routine is as fast
+  and the code stays small. Anything longer, and every
+  variable length, calls `memcpy`, `memmove` or `memset` through
+  `hod_cg`'s runtime-call sequence, so live values are saved as for any
+  call; a length narrower than 64 bits is zero-extended first. The
+  `.inline` forms never call: a constant length above 64 is a loop of
+  16-byte post-indexed `q31` accesses counted in `x16` with an
+  overlapping last access, the fill byte replicated by `dup v31.16b`;
+  a variable length is `a64:mem-inline-length`. Volatile is lowered as
+  the plain form (each byte is accessed once).
+- **Traps:** `trap` is `brk #1`, `debugtrap` `brk #0xf000`,
+  `ubsantrap(k)` `brk #(0x5500 | k)`, as `llc`.
+- **Frame:** `frameaddress(0)` is `x29`; `frameaddress(n)` loads the
+  saved `x29` `n` times; `returnaddress(n)` loads `[record, #8]` of the
+  `n`-th record. Every hod function saves `lr` in its frame record, so
+  `returnaddress(0)` is a load too. A depth above 256 is
+  `a64:frame-depth`.
+- **Folded:** `objectsize` is `-1` (`min` false) or `0`; `is.constant`
+  is true for a literal constant operand (an integer, a float, `null`,
+  `zeroinitializer`, `undef`, `poison`) and false otherwise, as `llc`'s
+  `LowerConstantIntrinsics`; `prefetch` emits nothing; `ptrmask` is an
+  `and` of the 64-bit registers.
+- **Refused:** every other intrinsic (floating-point math, saturating
+  arithmetic, `scmp`/`ucmp`, `clmul`, reductions, ...) is
+  `a64:intrinsic`.
 
 ### 5.6 x86-64 (planned)
 
@@ -1405,6 +1592,15 @@ defines a `GCC_except_table<n>` label at each LSDA that nothing refers
 to. `.debug_frame`, for a `nounwind` function without `uwtable` that has
 debug information, is not written (`spec/dwarf.md`'s, a follow-up).
 
+**Debug information** (`src/emit/lines.rs`, `spec/dwarf.md` §5.7, §9):
+for each `FullDebug` compile unit, the line table (one sequence per
+function with a subprogram, encoded as the function is placed, against
+the section symbol of its code plus its offset) and the unit's DIEs
+(`DW_AT_stmt_list`, the ranges of its functions' code, its globals),
+written after the unwind tables. Nothing is done for a module without
+`!llvm.dbg.cu` or whose units are all `NoDebug`: the bytes are those of
+the module without debug information.
+
 **`Emitted`**: the object; `funcs: Vec<PlacedFunc>` in module order, each
 the function's `FuncRecord` with `code` its byte range in `section`, the
 row ranges ranges of `Emitted::rows`, and `relocs` empty; `rows`, every
@@ -1429,7 +1625,9 @@ in maps sized by their count).
 `init:blockaddress-unplaced`, `module:linker-option-not-a-pair` (an
 `!llvm.linker.options` entry of other than two strings: `llc` writes
 `.linker-options` as pairs), `eh:unknown-personality-without-pads`
-(`spec/eh.md` §1.1).
+(`spec/eh.md` §1.1), `debug:emission-kind` (a `LineTablesOnly` or
+`DebugDirectivesOnly` unit), `debug:die-unsupported` (a unit with a node
+the DIE writer does not write yet, `spec/dwarf.md` §6.5).
 
 **Known differences from `llc`**, none of which changes what a linker
 makes of the object (`tests/emit_link.rs` links both with GNU ld, lld and

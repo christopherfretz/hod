@@ -13,6 +13,7 @@
 //! and the merged rows.
 
 mod data;
+mod lines;
 mod section;
 mod unwind;
 
@@ -29,6 +30,7 @@ use hod_obj::{
 };
 
 use self::data::Relocs;
+use self::lines::DebugLines;
 use self::section::{Found, Kind, NO_GROUP, Sections};
 use crate::access::prefers_local_alias;
 use crate::error::{CgError, CgResult};
@@ -66,6 +68,13 @@ pub mod unsupported {
     /// An `!llvm.linker.options` entry that is not a pair of strings,
     /// which ELF `llc` refuses ("invalid llvm.linker.options").
     pub const LINKER_OPTION: &str = "module:linker-option-not-a-pair";
+    /// A compile unit whose `emissionKind` is `LineTablesOnly` or
+    /// `DebugDirectivesOnly`: their DIEs (a unit and its subprograms
+    /// only) are not written yet (`spec/dwarf.md` §9).
+    pub const DEBUG_EMISSION_KIND: &str = "debug:emission-kind";
+    /// A compile unit with a node the DIE writer does not write yet
+    /// (`spec/dwarf.md` §6.5).
+    pub const DEBUG_DIE: &str = "debug:die-unsupported";
     /// A function with an unwind-table entry, no landing pads and a
     /// personality LLVM does not know: `llc` gives it the personality and
     /// an LSDA of call sites hod does not record (`spec/eh.md` §1.1).
@@ -159,6 +168,8 @@ pub struct ModuleEmitter<'m> {
     mapping_names: [hod_obj::StrId; 2],
     funcs: Vec<PlacedFunc>,
     rows: Chunk,
+    /// The line tables and DIEs, when the module has a unit to write.
+    debug: Option<Box<DebugLines<'m>>>,
 }
 
 fn obj_err(error: hod_obj::Error) -> CgError {
@@ -316,6 +327,7 @@ impl<'m> ModuleEmitter<'m> {
             mapping_names,
             funcs: Vec::new(),
             rows: Chunk::new(),
+            debug: None,
         };
         if !module.module_asm().is_empty() {
             return Err(CgError::unsupported(unsupported::MODULE_ASM));
@@ -325,6 +337,7 @@ impl<'m> ModuleEmitter<'m> {
             return Err(CgError::unsupported(unsupported::LINKER_OPTION));
         }
         emitter.declare()?;
+        emitter.debug = DebugLines::new(module, arch)?;
         // `.text` exists in every object `llc` writes.
         let text = emitter.arch().text_align();
         let mut name = std::mem::take(&mut emitter.name);
@@ -622,6 +635,18 @@ impl<'m> ModuleEmitter<'m> {
             kind: SymbolKind::Func,
             common: false,
         };
+        if let Some(debug) = &mut self.debug {
+            let lines = &chunk.lines[func.lines.start as usize..func.lines.end as usize];
+            debug.add_function(
+                self.module,
+                &mut self.obj,
+                func.sym,
+                lines,
+                section,
+                offset,
+                len as u32,
+            )?;
+        }
         let record = self.merge_rows(chunk, func, offset);
         self.funcs.push(PlacedFunc { record, section });
         Ok(())
@@ -842,9 +867,27 @@ impl<'m> ModuleEmitter<'m> {
         self.structors(false)?;
         self.linker_options()?;
         self.unwind_tables()?;
+        self.debug_tables()?;
         self.define()?;
         let ModuleEmitter { obj, funcs, rows, .. } = self;
         Ok(Emitted { object: obj, funcs, rows })
+    }
+
+    /// The line tables and DIEs (`spec/dwarf.md` §9), after the
+    /// functions are placed.
+    fn debug_tables(&mut self) -> CgResult<()> {
+        let Some(debug) = self.debug.take() else { return Ok(()) };
+        let module = self.module;
+        let places = &self.places;
+        debug.finish(module, &mut self.obj, |obj, sym| {
+            let place = places[sym.index()];
+            if !place.is_placed() {
+                return None;
+            }
+            let section = (place.section != NOWHERE).then(|| SectionId::from_index(place.section));
+            let linkage = binding(module.symbol(sym).linkage());
+            Some(lines::variable_address(obj, linkage, section, place.value, Self::obj_sym(sym)))
+        })
     }
 
     /// Places an alias at its aliasee plus offset.

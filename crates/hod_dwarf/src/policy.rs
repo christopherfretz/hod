@@ -24,6 +24,17 @@ pub struct Transition {
     pub offset: u32,
     /// The location.
     pub loc: Option<SourceLoc>,
+    /// The instruction is the first that emits code in a block other
+    /// than the entry block (§5.3): without a location it is then a
+    /// line-0 row, not an inherited one.
+    pub block_start: bool,
+}
+
+impl Transition {
+    /// A transition that is not at a block start.
+    pub const fn at(offset: u32, loc: Option<SourceLoc>) -> Self {
+        Self { offset, loc, block_start: false }
+    }
 }
 
 /// One function's recorded transitions (`spec/codegen.md` §9.5) with
@@ -79,9 +90,10 @@ pub fn function_rows(f: &FunctionLines<'_>, out: &mut Vec<Row>) -> Result<(), Er
         let current = out[base..].last().copied();
         let (file, line, column) = match (t.loc, current) {
             (Some(l), _) => (l.file, l.line, l.column),
-            // Rule 2: inherit. The epilogue row instead is a line-0 row
-            // (§5.4), keeping the file and column of the current row.
-            (None, Some(c)) if epilogue => (c.file, 0, c.column),
+            // Rule 2: inherit. The epilogue row and the start of a block
+            // instead are a line-0 row (§5.3, §5.4), keeping the file and
+            // column of the current row.
+            (None, Some(c)) if epilogue || t.block_start => (c.file, 0, c.column),
             (None, _) => continue,
         };
         let mut row_flags = 0;

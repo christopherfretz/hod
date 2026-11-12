@@ -93,6 +93,11 @@ pub struct LineRow {
     pub offset: u32,
     /// The location; [`LocId::NONE`] for none.
     pub loc: LocId,
+    /// The row's instruction is the first that emitted code in its
+    /// block, and the block is not the entry block (`spec/dwarf.md`
+    /// §5.3): a row without a location is then "no line", not the line
+    /// of whatever was emitted before the block.
+    pub block_start: bool,
 }
 
 /// Where the address a `#dbg_declare` names is, for the whole function

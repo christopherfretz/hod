@@ -32,8 +32,8 @@ fn object(arch: Arch) -> (Object, SymbolId) {
 
 const DIRS: [&[u8]; 2] = [b"/src", b"/usr/include"];
 const FILES: [FileEntry<'static>; 2] = [
-    FileEntry { name: b"main.cpp", dir: 0, md5: Some([1; 16]) },
-    FileEntry { name: b"stdio.h", dir: 1, md5: Some([2; 16]) },
+    FileEntry { name: b"main.cpp", dir: 0, md5: Some([1; 16]), source: None },
+    FileEntry { name: b"stdio.h", dir: 1, md5: Some([2; 16]), source: None },
 ];
 
 fn header() -> LineHeader<'static> {
@@ -78,9 +78,9 @@ fn md5_only_when_every_file_has_one() {
 fn line_strings_are_pooled() {
     let dirs: [&[u8]; 3] = [b"/a", b"x", b"/a/x"];
     let files = [
-        FileEntry { name: b"x", dir: 0, md5: None },
-        FileEntry { name: b"y", dir: 2, md5: None },
-        FileEntry { name: b"x", dir: 2, md5: None },
+        FileEntry { name: b"x", dir: 0, md5: None, source: None },
+        FileEntry { name: b"y", dir: 2, md5: None, source: None },
+        FileEntry { name: b"x", dir: 2, md5: None, source: None },
     ];
     let (mut obj, _) = object(Arch::AArch64);
     let s = write_debug_line(&mut obj, &LineHeader { dirs: &dirs, files: &files }, &[]).unwrap();
@@ -216,8 +216,8 @@ fn order_of_input_does_not_matter() {
 #[test]
 fn errors_leave_the_object_unchanged() {
     let good = [row(0, 0, 1, 0, STMT), row(4, 1, 2, 0, STMT)];
-    let dirs_bad = [FileEntry { name: b"a", dir: 2, md5: None }];
-    let nul = [FileEntry { name: b"a\0b", dir: 0, md5: None }];
+    let dirs_bad = [FileEntry { name: b"a", dir: 2, md5: None, source: None }];
+    let nul = [FileEntry { name: b"a\0b", dir: 0, md5: None, source: None }];
     let bad_file = [row(0, 2, 1, 0, 0)];
     let backwards = [row(4, 0, 1, 0, 0), row(0, 0, 1, 0, 0)];
     let bad_flags = [row(0, 0, 1, 0, 8)];
@@ -270,7 +270,7 @@ fn policy(transitions: &[Transition], size: u32, epilogue: bool) -> Vec<Row> {
 }
 
 fn t(offset: u32, loc: Option<SourceLoc>) -> Transition {
-    Transition { offset, loc }
+    Transition { offset, loc, block_start: false }
 }
 
 /// §5.1 rules 1 and 2, §5.2: the start row, inherited entry code, the
@@ -408,7 +408,12 @@ fn sweep_decodes_as_written() {
         let files: Vec<FileEntry<'_>> = names
             .iter()
             .enumerate()
-            .map(|(k, n)| FileEntry { name: n, dir: (k % 40) as u32, md5: Some([k as u8; 16]) })
+            .map(|(k, n)| FileEntry {
+                name: n,
+                dir: (k % 40) as u32,
+                md5: Some([k as u8; 16]),
+                source: None,
+            })
             .collect();
 
         let mut obj = Object::new(arch);

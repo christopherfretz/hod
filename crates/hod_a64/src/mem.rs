@@ -379,7 +379,7 @@ fn check_access(mem: MemFlags) -> CgResult<()> {
 pub fn load<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, ptr: Value, mem: MemFlags) -> CgResult<()> {
     check_access(mem)?;
     if A64.class_of(cx.types(), inst.ty()) != Class::Gpr {
-        return unsupported(LOAD_FPR);
+        return crate::float::load(cx, inst, ptr, |cx| address(cx, ptr).map(|a| flat(cx, a)));
     }
     let fused = fusable(cx, ptr).map(|_| ptr);
     deferred_first(cx, inst, fused)?;
@@ -428,7 +428,9 @@ pub fn store<'a>(
 ) -> CgResult<()> {
     check_access(mem)?;
     if cx.class_of(value) != Class::Gpr {
-        return unsupported(STORE_FPR);
+        return crate::float::store(cx, inst, value, ptr, |cx| {
+            address(cx, ptr).map(|a| flat(cx, a))
+        });
     }
     let fused = fusable(cx, ptr).map(|_| ptr);
     deferred_first(cx, inst, fused)?;

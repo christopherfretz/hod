@@ -113,10 +113,9 @@ impl Leaf {
 }
 
 /// A C structure and the IR clang 22 passes and returns it as on this
-/// target, less the `alignstack` clang puts on an HFA argument (the
-/// `attr:alignstack` row is unplanned): it changes nothing for the
-/// naturally aligned ones kept here, and HFAs of `float` (where it moves
-/// stack arguments) are only results: `(C name, C definition, argument IR or "" (not an argument),
+/// target, with the `alignstack` clang puts on an HFA argument (which
+/// moves a block of `float`s on the stack, `abi-a64.md` §3.3):
+/// `(C name, C definition, argument IR or "" (not an argument),
 /// return IR, the leaves of the IR value, which are also the C fields'
 /// bytes in order)`. `ret` "" is a structure returned in memory.
 pub struct AggTy {
@@ -145,35 +144,35 @@ pub const AGGS: &[AggTy] = &[
     AggTy {
         c: "struct hfa1",
         def: "struct hfa1 { float a; };",
-        arg: "",
+        arg: "[1 x float] alignstack(8)",
         ret: "{ float }",
         leaves: &[Leaf::F32],
     },
     AggTy {
         c: "struct hfa3",
         def: "struct hfa3 { float a, b, c; };",
-        arg: "",
+        arg: "[3 x float] alignstack(8)",
         ret: "{ float, float, float }",
         leaves: &[Leaf::F32, Leaf::F32, Leaf::F32],
     },
     AggTy {
         c: "struct hda2",
         def: "struct hda2 { double a, b; };",
-        arg: "[2 x double]",
+        arg: "[2 x double] alignstack(8)",
         ret: "{ double, double }",
         leaves: &[Leaf::F64, Leaf::F64],
     },
     AggTy {
         c: "struct hda4",
         def: "struct hda4 { double a, b, c, d; };",
-        arg: "[4 x double]",
+        arg: "[4 x double] alignstack(8)",
         ret: "{ double, double, double, double }",
         leaves: &[Leaf::F64, Leaf::F64, Leaf::F64, Leaf::F64],
     },
     AggTy {
         c: "struct hq2",
         def: "struct hq2 { long double a, b; };",
-        arg: "[2 x fp128]",
+        arg: "[2 x fp128] alignstack(16)",
         ret: "{ fp128, fp128 }",
         leaves: &[Leaf::F128, Leaf::F128],
     },
@@ -370,8 +369,6 @@ pub fn random_type(rng: &mut Rng, ret: bool, variable: bool) -> T {
             } else {
                 128
             };
-            // `a64:call-wide-int-extension`.
-            let ext = if n > 64 && !n.is_multiple_of(64) { Ext::No } else { ext };
             let k = carrier_for(rng, n, ext, carrier);
             if n == 1 && ext == Ext::No && rng.chance(50) {
                 return T::Bool;
@@ -970,33 +967,9 @@ pub fn random_case(rng: &mut Rng, k: usize) -> Case {
     }
     shuffle(rng, &mut h_have, &mut [&mut h_call]);
 
-    // `a64:call-narrow-ext-stack-arg`: an extended integer of an odd
-    // width only in a signature short enough to keep it in a register.
-    let mut variable = variable;
-    let mut m_params: Vec<T> = m_have.into_iter().map(|(t, _)| t).collect();
-    let mut c_params: Vec<T> = c_named.into_iter().map(|(t, _)| t).collect();
-    let mut h_params = h_have;
-    let long = |named: &[T], variable: &[(T, V)]| {
-        named.iter().chain(variable.iter().map(|(t, _)| t)).map(|t| gpr_cost(*t)).sum::<u32>() > 6
-    };
-    let strip_variable = (variadic == Variadic::C && long(&c_params, &variable))
-        || (variadic == Variadic::M && long(&m_params, &variable));
-    if long(&c_params, &variable) {
-        c_params.iter_mut().for_each(strip);
-    }
-    if long(&m_params, &variable) {
-        m_params.iter_mut().for_each(strip);
-    }
-    if strip_variable {
-        for (t, _) in &mut variable {
-            strip(t);
-        }
-    }
-    if h_params.iter().map(|(t, _)| gpr_cost(*t)).sum::<u32>() > 6 {
-        for (t, _) in &mut h_params {
-            strip(t);
-        }
-    }
+    let m_params: Vec<T> = m_have.into_iter().map(|(t, _)| t).collect();
+    let c_params: Vec<T> = c_named.into_iter().map(|(t, _)| t).collect();
+    let h_params = h_have;
     let retype = |call: &mut Call, named: &[T]| {
         for (index, (_, t, _)) in call.args.iter_mut().enumerate() {
             *t = named.get(index).copied().unwrap_or_else(|| variable[index - named.len()].0);
@@ -1022,27 +995,6 @@ pub fn random_case(rng: &mut Rng, k: usize) -> Case {
         ret: rets,
         ret_value,
         cc,
-    }
-}
-
-/// How many general registers an argument of `t` takes, at most.
-fn gpr_cost(t: T) -> u32 {
-    match t {
-        T::Int { n, .. } if n > 64 => 3,
-        T::Int { .. } | T::Bool | T::Ptr | T::BigRef => 1,
-        T::Agg(a) if AGGS[a as usize].leaves[0] == Leaf::I64 => 2,
-        _ => 0,
-    }
-}
-
-/// `t` without an extension attribute where one would make the argument
-/// refused on the stack.
-fn strip(t: &mut T) {
-    if let T::Int { n, ext, .. } = t
-        && *n < 64
-        && !matches!(*n, 1 | 8 | 16 | 32)
-    {
-        *ext = Ext::No;
     }
 }
 
@@ -1108,7 +1060,8 @@ fn call_ir(
             Src::Param(p) => format!("{}{attrs} %p{p}", t.ir(false)),
             Src::Const(v) => {
                 let text = ir_const(*t, v, false);
-                let (ty, rest) = text.split_once(' ').expect("type and value");
+                let ty = t.ir(false);
+                let rest = text.strip_prefix(&format!("{ty} ")).expect("type and value");
                 format!("{ty}{attrs} {rest}")
             }
         };

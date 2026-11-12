@@ -1521,7 +1521,12 @@ rows (constant expressions without a normal form, §4.2).
 - A direct call through a function type other than the callee's is not
   an error: the call's own function type and attributes govern; the
   callee's declaration is not consulted (beyond `returns_twice`), nor are
-  a declaration's attributes.
+  a declaration's attributes. A direct call through the callee's own
+  type is walked with its effective attributes (`spec/codegen.md` §7.1:
+  the call site's merged with the declaration's, `call_arg_attrs`), so
+  that `classify` sees what the call sequence passes; where the two sides
+  conflict (`call:attribute-conflict`, refused by the call sequence) both
+  sides' rows are reported.
 - The constant walk has a depth limit of 64 and no memo: a shared
   sub-constant is walked at each use.
 

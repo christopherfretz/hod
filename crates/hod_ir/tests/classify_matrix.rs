@@ -487,8 +487,8 @@ const RICH_BODY: [&str; 16] = [
     "inst:ret",
 ];
 
-/// The rows of `RICH_BODY` AArch64 supports (WP-033, WP-035, WP-036, WP-038, WP-039, WP-049).
-const A64_SUPPORTED_BODY: [&str; 15] = [
+/// The rows of `RICH_BODY` AArch64 supports (WP-033, WP-035, WP-036, WP-038, WP-039, WP-049, WP-069).
+const A64_SUPPORTED_BODY: [&str; 16] = [
     "cc:ccc",
     "function:parameters",
     "type:int",
@@ -504,6 +504,7 @@ const A64_SUPPORTED_BODY: [&str; 15] = [
     "mem:volatile",
     "function:may-unwind",
     "inst:call",
+    "tail:musttail",
 ];
 
 /// What the shipped matrix finds in the rich body on `arch`.
@@ -557,8 +558,13 @@ fn findings_come_in_the_specified_order() {
         let module_reason = classifier.module(&program.m).unwrap_err();
         let first = if arch == Arch::Aarch64 { "debug:module-flags" } else { "module:pic" };
         assert_eq!((module_reason.construct.as_ref(), module_reason.symbol), (first, None));
+        // AArch64 supports the whole body (WP-069: `tail:musttail`).
+        let Some(&first_body) = body.first() else {
+            assert_eq!(classifier.body(&program.m, &program.bodies[0]), Ok(()), "{arch:?}");
+            continue;
+        };
         let body_reason = classifier.body(&program.m, &program.bodies[0]).unwrap_err();
-        assert_eq!(body_reason.construct, body[0]);
+        assert_eq!(body_reason.construct, first_body);
         // Whether it names an instruction depends on the row.
         assert_eq!(body_reason.symbol, Some(program.bodies[0].symbol()));
     }

@@ -40,6 +40,11 @@ pub const GROUPS: &[(&str, Enable)] = &[
     }),
     // The memory group: loads, stores, `ptradd`, slots, globals.
     ("WP-036", |e| (e.options.memory, e.options.globals) = (true, true)),
+    // Control flow: `condbr`, `switch`, loops with `phi`s, `indirectbr`.
+    ("WP-037", |e| {
+        let o = &mut e.options;
+        (o.branches, o.loops, o.switches, o.block_addresses) = (true, true, true, true);
+    }),
     // The floating-point group: `float`, `double`, `fcmp`, conversions.
     ("WP-039", |e| e.options.floats = true),
 ];

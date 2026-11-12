@@ -28,22 +28,22 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `visibility` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `tls` | 4 | 0 | 4 | 0 | 0 | 4 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
-| `init` | 8 | 4 | 4 | 0 | 0 | 8 | 0 |
+| `init` | 8 | 5 | 3 | 0 | 0 | 8 | 0 |
 | `function` | 6 | 4 | 2 | 0 | 0 | 6 | 0 |
 | `cc` | 15 | 1 | 12 | 2 | 0 | 12 | 3 |
-| `attr` | 56 | 12 | 41 | 3 | 9 | 39 | 8 |
+| `attr` | 56 | 13 | 40 | 3 | 9 | 39 | 8 |
 | `type` | 15 | 4 | 8 | 3 | 0 | 13 | 2 |
-| `inst` | 67 | 43 | 16 | 8 | 0 | 59 | 8 |
+| `inst` | 67 | 47 | 12 | 8 | 0 | 59 | 8 |
 | `mem` | 3 | 1 | 2 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 0 | 21 | 0 | 0 | 21 | 0 |
 | `call` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
 | `tail` | 3 | 2 | 1 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
-| `operand` | 9 | 3 | 6 | 0 | 0 | 9 | 0 |
+| `operand` | 9 | 4 | 5 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 133 | 2 | 131 | 0 | 0 | 133 | 0 |
-| total | 434 | 111 | 277 | 46 | 16 | 363 | 55 |
+| total | 434 | 118 | 270 | 46 | 16 | 363 | 55 |
 
 ## `module`
 
@@ -172,7 +172,7 @@ What a variable's initializer contains.
 |---|---|---|---|
 | `init:data` | supported | not-implemented | any initializer: numbers, zero, `undef`, aggregates, bytes |
 | `init:symbol` | supported | not-implemented | a symbol's address, with or without an offset |
-| `init:blockaddress` | not-implemented | not-implemented | WP-037 |
+| `init:blockaddress` | supported | not-implemented | of a block of a function with an `indirectbr` (§9.6) |
 | `init:sym-diff` | supported | not-implemented | the difference of two symbol addresses |
 | `init:sym-diff-plt` | not-implemented | not-implemented | unplanned. the same through `dso_local_equivalent` (relative vtables) |
 | `init:int-of-addr` | supported | not-implemented | an address in an integer field |
@@ -273,7 +273,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:zero-call-used-regs` | not-implemented | not-implemented | unplanned |
 | `attr:stack-protector-buffer-size` | supported | supported | a parameter of `attr:ssp`, read with it |
 | `attr:min-legal-vector-width` | supported | not-implemented | read by x86 only |
-| `attr:no-jump-tables` | not-implemented | not-implemented | WP-037 |
+| `attr:no-jump-tables` | supported | not-implemented | hod emits no jump table (`spec/codegen.md` §6.2) |
 | `attr:no-builtins` | supported | supported | hod recognises no library call |
 | `attr:no-builtin` | supported | supported | every `no-builtin-<function>`; hod recognises no library call |
 
@@ -352,7 +352,7 @@ Instructions.
 | `inst:extractelement` | not-implemented | not-implemented | M2 (vectors) |
 | `inst:insertelement` | not-implemented | not-implemented | M2 (vectors) |
 | `inst:shufflevector` | not-implemented | not-implemented | M2 (vectors) |
-| `inst:phi` | not-implemented | not-implemented | WP-037 |
+| `inst:phi` | supported | not-implemented | for every class whose `type:*` row is supported |
 | `inst:select` | supported (int, ptr) | not-implemented |  |
 | `inst:freeze` | supported (int, ptr) | not-implemented |  |
 | `inst:va_arg` | rejected | rejected | `llc` miscompiles it on AArch64, so there is no oracle; frontends do not emit it |
@@ -361,9 +361,9 @@ Instructions.
 | `inst:catchpad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:cleanuppad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:br` | supported | not-implemented |  |
-| `inst:condbr` | not-implemented | not-implemented | WP-037. LLVM's two-way `br` |
-| `inst:switch` | not-implemented | not-implemented | WP-037 |
-| `inst:indirectbr` | not-implemented | not-implemented | WP-037 |
+| `inst:condbr` | supported | not-implemented | LLVM's two-way `br` |
+| `inst:switch` | supported (int) | not-implemented |  |
+| `inst:indirectbr` | supported | not-implemented |  |
 | `inst:ret` | supported | not-implemented |  |
 | `inst:unreachable` | supported | not-implemented |  |
 | `inst:callbr` | rejected | rejected | its only use is inline assembly with labels (`spec/codegen.md` §1) |
@@ -466,7 +466,7 @@ Constant addresses as instruction operands.
 |---|---|---|---|
 | `operand:symbol` | supported | not-implemented | a symbol's address as a value, with or without an offset |
 | `operand:slot` | supported | not-implemented | the address of a stack slot |
-| `operand:blockaddress` | not-implemented | not-implemented | WP-037. of a block of the same function |
+| `operand:blockaddress` | supported | not-implemented | of a block of the same function |
 | `operand:addr-of-int` | supported | not-implemented | `inttoptr` of a constant number |
 | `operand:int-of-addr` | not-implemented | not-implemented | unplanned. `ptrtoint` of a constant address |
 | `operand:sym-diff` | not-implemented | not-implemented | unplanned |

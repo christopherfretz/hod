@@ -778,6 +778,7 @@ impl<'a> UnitPlan<'a> {
             let die = self.funcs[i].die;
             let sp_id = self.dies[die as usize].node;
             let DiNode::Subprogram(sp) = self.debug.node(sp_id) else { continue };
+            self.seal_definition(i)?; // before the return type (WP-094: §6.13)
             // One with an abstract instance names it instead (WP-085).
             if sp.declaration.is_none()
                 && self.inline.die(sp_id).is_none()
@@ -785,7 +786,6 @@ impl<'a> UnitPlan<'a> {
             {
                 self.reference_type(sp_id, "type", t)?;
             }
-            self.seal_definition(i)?;
         }
         self.finish_entities()?; // `finishEntityDefinitions` (WP-094: §6.13)
         self.finish_types()?;

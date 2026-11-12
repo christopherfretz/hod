@@ -639,6 +639,61 @@ These are decisions the group packages (WP-035..041) build on.
   skeleton's), and `a64:bfloat`, `a64:fp128-libcall`, `a64:half-frem`,
   `a64:vector-fcmp`, `a64:vector-select`, `a64:vector-op`.
 
+#### Floating point, the leftovers (WP-067)
+
+`crates/hod_a64/src/float.rs`; the evidence is `spec/landed/codegen/WP-067.md`.
+This supersedes the `a64:half-frem` and `a64:fp128-libcall` sentences of
+"Floating point (WP-039)" above and the `a64:load-fpr` / `a64:store-fpr`
+refusal of "Memory (WP-036)" below: those names are no longer produced.
+
+- **Loads and stores** of an `Fpr`-class value are one `ldr`/`str`
+  (`ldur`/`stur` when the offset is not scaled) of the value's store
+  size: 2 bytes for `half` and `bfloat`, 4 for `float`, 8 for `double`
+  and 64-bit vectors, 16 for `fp128` and 128-bit vectors. A vector of
+  elements narrower than a byte is bit-packed in the register as in
+  memory, so its store size is also its register view. `mem.rs` refuses
+  an atomic access, then hands the access to `float::load` /
+  `float::store` with its own address computation (a deferred `ptradd`
+  fused, an index added into its register when there is one): every
+  addressing form of the integer accesses applies. Unaligned accesses
+  are plain accesses (normal memory on Linux allows them).
+- **`fp128` compares** call one runtime function and compare its `int`
+  result with 0, as LLVM's `softenSetCCOperands`, relying only on the
+  signs that libgcc and compiler-rt share: `oeq`/`une` `__eqtf2` EQ/NE;
+  `olt`/`uge` `__lttf2(a, b)` LT/GE; `ogt`/`ule` `__lttf2(b, a)` LT/GE;
+  `ole`/`ugt` `__letf2(a, b)` LE/GT; `oge`/`ult` `__letf2(b, a)` LE/GT;
+  `ord`/`uno` `__unordtf2` EQ/NE. `ueq` and `one` keep copies of the
+  operands in a 48-byte frame slot, call `__eqtf2` (result kept in the
+  slot) and `__unordtf2`, then `cmp unord, #0` · `ccmp eq, #0, #Z, eq`:
+  `ueq` is EQ, `one` is NE. `float::flags` does the calls, so a caller
+  (`select`, `condbr`) asks for its other operands after it.
+- **`fp128` conversions** are one call each: `fpext` from `float` and
+  `double` (`half` widened to `float` first, exactly) by
+  `__extendsftf2`/`__extenddftf2`; `fptrunc` to `half`, `float` and
+  `double` by `__trunctfhf2`/`__trunctfsf2`/`__trunctfdf2` (one rounding:
+  never through a wider intermediate); `fptosi`/`fptoui` to at most 32
+  bits by `__fixtfsi`/`__fixunstfsi`, to 33..64 bits by the `di`
+  versions; `sitofp`/`uitofp` likewise by `__float[un]sitf` and
+  `__float[un]ditf`, a width other than 32 and 64 extended first.
+  `frem` of `fp128` calls `fmodl`.
+- **`frem` of `half`** widens both operands to `float` into
+  temporaries (one pinned at a time, through `v31`), calls `fmodf`, and
+  narrows the result: `fmod` is exact, so the narrowing is the only
+  rounding.
+- **Vector constants** (and any other `Fpr`-class constant that is not a
+  scalar float or zero) are materialized from the constant's in-memory
+  image, 8 bytes at a time through `x16` and `fmov dN, x16` /
+  `fmov vN.d[1], x16` (`xzr` for a zero word, `common::sym_address` for
+  an aligned 8-byte symbol address). No literal pool: no new relocation
+  kind, nothing out of reach in far mode. Another relocation in the
+  image is `a64:constant-relocation`.
+- **`phi`s** of `Fpr`-class values need nothing of this group: WP-037's
+  copies move them (tested with loops carrying 19 values of `double`,
+  `float`, `half`, `fp128` and vectors, a swap cycle among them).
+- **Still refused**: vector `icmp`, `fcmp` and `select` with a vector
+  condition (their `<N x i1>` is WP-040's), `bfloat` arithmetic, and the
+  vector operations of WP-039's list.
+
 #### Memory (WP-036)
 
 - **Addresses.** An access is `[base, #off]` (scaled unsigned, else

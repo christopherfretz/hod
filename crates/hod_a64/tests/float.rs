@@ -1594,7 +1594,7 @@ fn random_chains_agree_with_llc_and_the_interpreter() {
 #[test]
 fn generated_functions_compile() {
     for f in hand_written().iter().chain((0..50).map(random_chain).collect::<Vec<_>>().iter()) {
-        let text = f.text("");
+        let text = format!("declare i32 @putchar(i32)\n{}", f.text(""));
         assert_eq!(compile_ll(&text), Ok::<(), CgError>(()), "{text}");
     }
 }

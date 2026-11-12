@@ -100,6 +100,12 @@ machine: good for proportions, not for baselines. The benchmark harness
    `llvm-dis`, which also means hod sees those modules already inlined.
    The in-process path receives the module before any LLVM pass.
 
+   This interim step is done (WP-020): hod runs the installation's
+   `llvm-dis` itself, over pipes, when the shim names one (`spec/cli.md`
+   "Bitcode conversion", `spec/harness.md` "shim"). Its cost, which is
+   what `hod_bc` has to remove, is measured in
+   `spec/landed/cli/WP-020.md`.
+
 ## Beyond LLVM IR: facts the producer already has
 
 "LLVM semantics" is the floor, not the ceiling. `hod_ir` is hod's own format

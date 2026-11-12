@@ -3,6 +3,7 @@
 //! Contract: `spec/cli.md`.
 
 mod args;
+mod convert;
 mod coverage;
 mod driver;
 

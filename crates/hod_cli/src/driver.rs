@@ -1,5 +1,5 @@
 //! What one invocation does. Contract: `spec/cli.md` "Behaviour",
-//! "Fallback protocol" and "Exit status".
+//! "Bitcode conversion", "Fallback protocol" and "Exit status".
 //!
 //! [`run`] takes the code generator and the standard streams as parameters,
 //! so the paths hod cannot reach yet (a successful compile, a malformed
@@ -12,10 +12,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use hod::{CompileError, InputKind, Options, OutputKind};
+use hod::{CompileError, Construct, InputKind, Options, OutputKind};
 
 use crate::args::{self, Action, CommandLine, Input};
-use crate::coverage::{Log, Outcome, Record};
+use crate::convert;
+use crate::coverage::{FallbackStatus, Log, Outcome, Record};
 
 /// Exit status: success.
 pub const EXIT_OK: u8 = 0;
@@ -31,9 +32,15 @@ pub const ENV_FALLBACK: &str = "HOD_FALLBACK_LLC";
 pub const ENV_STRICT: &str = "HOD_STRICT";
 /// Environment variable: the coverage log (`--coverage-log=`).
 pub const ENV_COVERAGE_LOG: &str = "HOD_COVERAGE_LOG";
-/// Environment variable hod sets for the fallback process. A hod that
-/// starts with it set is its own fallback, and stops instead of recursing.
+/// Environment variable: the `llvm-dis` for bitcode (`--bitcode-via=`).
+pub const ENV_BITCODE_VIA: &str = "HOD_BITCODE_VIA";
+/// Environment variable hod sets for the processes it starts, the fallback
+/// and the bitcode converter. A hod that starts with it set stands where
+/// one of them should be, and stops instead of recursing.
 pub const ENV_IN_FALLBACK: &str = "HOD_IN_FALLBACK";
+/// The variables that are settings. The bitcode converter is started
+/// without them.
+pub const SETTINGS: [&str; 4] = [ENV_FALLBACK, ENV_STRICT, ENV_COVERAGE_LOG, ENV_BITCODE_VIA];
 
 /// hod's settings from the environment.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -44,7 +51,10 @@ pub struct Environment {
     pub strict: bool,
     /// `HOD_COVERAGE_LOG`, if set and not empty.
     pub coverage_log: Option<PathBuf>,
-    /// `HOD_IN_FALLBACK` is set: this process was started as a fallback.
+    /// `HOD_BITCODE_VIA`, if set and not empty.
+    pub bitcode_via: Option<PathBuf>,
+    /// `HOD_IN_FALLBACK` is set: this process was started by another hod,
+    /// as its fallback or its bitcode converter.
     pub in_fallback: bool,
     /// A variable with a value hod does not accept.
     pub error: Option<String>,
@@ -57,6 +67,7 @@ impl Environment {
         let mut env = Environment {
             fallback: non_empty(ENV_FALLBACK).map(PathBuf::from),
             coverage_log: non_empty(ENV_COVERAGE_LOG).map(PathBuf::from),
+            bitcode_via: non_empty(ENV_BITCODE_VIA).map(PathBuf::from),
             in_fallback: non_empty(ENV_IN_FALLBACK).is_some(),
             ..Environment::default()
         };
@@ -95,6 +106,7 @@ impl std::fmt::Debug for Io<'_> {
 struct Settings {
     fallback: Option<PathBuf>,
     strict: bool,
+    bitcode_via: Option<PathBuf>,
 }
 
 impl Settings {
@@ -154,13 +166,11 @@ impl Job<'_, '_> {
             Ok(status) => {
                 self.record.outcome = Outcome::Fallback;
                 self.record.fallback_time = Some(started.elapsed());
-                let exit = match exit_code(status) {
-                    Ok(code) => code,
-                    Err((code, how)) => {
-                        self.diagnostic(&format!("fallback '{}' {how}", llc.display()));
-                        code
-                    }
-                };
+                let (exit, ended, how) = fallback_end(status);
+                self.record.fallback_status = Some(ended);
+                if let Some(how) = how {
+                    self.diagnostic(&format!("fallback '{}' {how}", llc.display()));
+                }
                 Finished { exit, record: self.record }
             }
             Err(e) => {
@@ -179,8 +189,8 @@ impl Job<'_, '_> {
         }
         if env.in_fallback {
             let message = format!(
-                "this hod was started as the fallback of another hod ({ENV_IN_FALLBACK} is set); \
-                 the fallback must be the real llc"
+                "this hod was started by another hod, as its fallback or its bitcode converter \
+                 ({ENV_IN_FALLBACK} is set); those must be the real llc and the real llvm-dis"
             );
             return self.fail(EXIT_ERROR, "fallback-loop", &message);
         }
@@ -204,7 +214,42 @@ impl Job<'_, '_> {
         let output = output_name(line);
         self.record.output = output.to_string_lossy().into_owned();
 
-        let error = match compile(&input, &line.options) {
+        // The fallback reads a file input itself; standard input was
+        // consumed, so it gets the same bytes on a pipe: the module as it
+        // arrived, also when hod went on with a conversion of it.
+        let piped = matches!(line.input, Input::Stdin).then_some(input.as_slice());
+
+        let mut compiled = compile(&input, &line.options);
+        if let Err(CompileError::Unsupported(unsupported)) = &compiled
+            && unsupported.construct == Construct::BitcodeInput
+            && let Some(llvm_dis) = self.settings.bitcode_via.clone()
+        {
+            // Everything else about the invocation is acceptable and only
+            // the encoding is in the way: go on with the module as text.
+            let started = Instant::now();
+            let converted = convert::run(&llvm_dis, &input);
+            self.record.conversion_time = Some(started.elapsed());
+            match converted {
+                Ok(text) => {
+                    self.record.target =
+                        hod::effective_triple(&text, &line.options).map(str::to_owned);
+                    compiled = compile(&text, &line.options);
+                }
+                Err(failure) => {
+                    if let Some(llc) = self.settings.hybrid().map(Path::to_path_buf) {
+                        return self.fall_back(&llc, failure.reason(), piped);
+                    }
+                    let message = format!(
+                        "{}{}",
+                        failure.message(&llvm_dis),
+                        self.settings.no_fallback_note()
+                    );
+                    return self.fail(EXIT_ERROR, failure.reason(), &message);
+                }
+            }
+        }
+
+        let error = match compiled {
             Ok(object) => {
                 return match write_output(&output, &object, self.io.stdout) {
                     Ok(()) => {
@@ -225,9 +270,6 @@ impl Job<'_, '_> {
             CompileError::InvalidOptions(_) => ("invalid-options", EXIT_ERROR),
         };
         if let Some(llc) = self.settings.hybrid().map(Path::to_path_buf) {
-            // The fallback reads a file input itself; standard input was
-            // consumed, so it gets the same bytes on a pipe.
-            let piped = matches!(line.input, Input::Stdin).then_some(input.as_slice());
             return self.fall_back(&llc, reason, piped);
         }
         let message = format!("{error}{}", self.settings.no_fallback_note());
@@ -264,7 +306,11 @@ pub fn run(args: &[OsString], env: &Environment, compile: Compile<'_>, io: &mut 
     };
     let job = Job {
         line: &line,
-        settings: Settings { fallback, strict: line.strict.unwrap_or(env.strict) },
+        settings: Settings {
+            fallback,
+            strict: line.strict.unwrap_or(env.strict),
+            bitcode_via: line.bitcode_via.clone().or_else(|| env.bitcode_via.clone()),
+        },
         io,
         start,
         record: Record {
@@ -276,6 +322,8 @@ pub fn run(args: &[OsString], env: &Environment, compile: Compile<'_>, io: &mut 
             target: line.options.triple.clone(),
             hod_time: Duration::ZERO,
             fallback_time: None,
+            conversion_time: None,
+            fallback_status: None,
         },
     };
     let Finished { exit, record } = job.run(env, compile);
@@ -389,18 +437,22 @@ fn run_fallback(
     child.wait()
 }
 
-/// The exit status hod passes on: the fallback's exit code, or, for a
-/// fallback killed by a signal, 128 plus the signal number and a note.
-fn exit_code(status: ExitStatus) -> Result<u8, (u8, String)> {
+/// How the fallback ended: the exit status hod passes on, what the
+/// coverage log records, and a note when hod has something to add. The
+/// status is the fallback's exit code or, for a fallback killed by a
+/// signal, 128 plus the signal number.
+fn fallback_end(status: ExitStatus) -> (u8, FallbackStatus, Option<String>) {
     if let Some(code) = status.code() {
-        return Ok(u8::try_from(code & 0xFF).unwrap_or(EXIT_ERROR));
+        let exit = u8::try_from(code & 0xFF).unwrap_or(EXIT_ERROR);
+        return (exit, FallbackStatus::Exited(code), None);
     }
     #[cfg(unix)]
     if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&status) {
-        let code = u8::try_from(128 + signal).unwrap_or(u8::MAX);
-        return Err((code, format!("was terminated by signal {signal}")));
+        let exit = u8::try_from(128 + signal).unwrap_or(u8::MAX);
+        let how = format!("was terminated by signal {signal}");
+        return (exit, FallbackStatus::Signaled(signal), Some(how));
     }
-    Err((EXIT_ERROR, "ended without an exit status".to_owned()))
+    (EXIT_ERROR, FallbackStatus::Unknown, Some("ended without an exit status".to_owned()))
 }
 
 #[cfg(test)]
@@ -452,16 +504,19 @@ mod tests {
             ("HOD_FALLBACK_LLC", "/usr/lib/llvm-22/bin/llc"),
             ("HOD_STRICT", "1"),
             ("HOD_COVERAGE_LOG", "cov.tsv"),
+            ("HOD_BITCODE_VIA", "/usr/lib/llvm-22/bin/llvm-dis"),
             ("HOD_IN_FALLBACK", "1"),
         ]);
         assert_eq!(all.fallback, Some("/usr/lib/llvm-22/bin/llc".into()));
         assert_eq!(all.coverage_log, Some("cov.tsv".into()));
+        assert_eq!(all.bitcode_via, Some("/usr/lib/llvm-22/bin/llvm-dis".into()));
         assert!(all.strict && all.in_fallback && all.error.is_none());
         // Empty is unset; HOD_STRICT=0 is off.
         let empty = vars(&[
             ("HOD_FALLBACK_LLC", ""),
             ("HOD_STRICT", ""),
             ("HOD_COVERAGE_LOG", ""),
+            ("HOD_BITCODE_VIA", ""),
             ("HOD_IN_FALLBACK", ""),
         ]);
         assert_eq!(empty, Environment::default());
@@ -511,7 +566,7 @@ mod tests {
             ]
         );
         assert!(line[6].parse::<u64>().is_ok(), "{line:?}");
-        assert_eq!(line[7], "-");
+        assert_eq!(line[7..], ["-", "-", "-"], "no fallback, no conversion: {line:?}");
 
         // Standard output: `-o -`, and no `-o` with standard input.
         for args in [&["-filetype=obj", "-o", "-"][..], &["-filetype=obj"]] {
@@ -571,6 +626,167 @@ mod tests {
         assert_eq!(options.relocation_model, Some(hod::RelocModel::Pic));
         assert_eq!(options.output_kind, OutputKind::Object);
         assert!(options.function_sections && !options.data_sections);
+    }
+
+    /// A stand-in for a hod that compiles text and has no bitcode reader;
+    /// it keeps what it was given.
+    fn text_only(
+        seen: &std::cell::RefCell<Vec<Vec<u8>>>,
+    ) -> impl Fn(&[u8], &Options) -> Result<Vec<u8>, CompileError> + '_ {
+        |input: &[u8], _: &Options| {
+            seen.borrow_mut().push(input.to_vec());
+            match InputKind::detect(input) {
+                InputKind::Bitcode => Err(Unsupported::module(Construct::BitcodeInput).into()),
+                InputKind::Text => Ok(OBJECT.to_vec()),
+            }
+        }
+    }
+
+    const BITCODE: &[u8] = b"BC\xC0\xDE\x35\x14\x00\x00\x05\x00\x00\x00";
+    /// What the stand-in converters print: a module as `llvm-dis` writes it.
+    const CONVERTED: &str = "; ModuleID = '<stdin>'\n\
+        target triple = \"x86_64-unknown-linux-gnu\"\n\ndefine i32 @f() {\n  ret i32 7\n}\n";
+
+    // spec/cli.md "Bitcode conversion" and "Behaviour" step 8: with a
+    // converter, a bitcode module is compiled from its text, and the log
+    // line says so: the kind and size are the bitcode's, the target is the
+    // text's, field 9 is the conversion's time.
+    #[test]
+    fn converted_bitcode_is_compiled() {
+        let scratch = Scratch::new("driver-convert");
+        // The converter is a child of this test: it holds a jobserver slot.
+        let _slot = hod_testutil::jobs::global().acquire();
+        scratch.write("llvm-dis.text", CONVERTED);
+        let converter = scratch.write_script(
+            "llvm-dis",
+            "cat > \"$0.stdin\"\nprintf '%s\\n' \"$@\" > \"$0.args\"\ncat \"$0.text\"",
+        );
+        let log = scratch.join("cov.tsv");
+        let out = scratch.join("a.o");
+        let env = Environment {
+            coverage_log: Some(log.clone()),
+            bitcode_via: Some(converter.clone()),
+            ..Environment::default()
+        };
+        let seen = std::cell::RefCell::new(Vec::new());
+        let ran = run_with(
+            &["-O0", "-filetype=obj", "-o", out.to_str().unwrap()],
+            &env,
+            &text_only(&seen),
+            BITCODE,
+        );
+        assert_eq!((ran.exit, ran.stderr.as_str()), (EXIT_OK, ""));
+        assert_eq!(std::fs::read(&out).unwrap(), OBJECT);
+        assert_eq!(*seen.borrow(), [BITCODE.to_vec(), CONVERTED.as_bytes().to_vec()]);
+        assert_eq!(std::fs::read(scratch.join("llvm-dis.stdin")).unwrap(), BITCODE);
+        assert_eq!(std::fs::read_to_string(scratch.join("llvm-dis.args")).unwrap(), "-o\n-\n-\n");
+        let lines = fields(&log);
+        assert_eq!(lines.len(), 1);
+        let line = &lines[0];
+        assert_eq!(line.len(), crate::coverage::FIELDS);
+        assert_eq!(
+            line[..6],
+            [
+                "hod",
+                "-",
+                "bitcode",
+                &BITCODE.len().to_string(),
+                out.to_str().unwrap(),
+                "x86_64-unknown-linux-gnu"
+            ]
+        );
+        let micros = |field: &str| field.parse::<u64>().unwrap_or_else(|_| panic!("{line:?}"));
+        assert!(micros(&line[6]) >= micros(&line[8]), "hod's time includes the conversion");
+        assert_eq!((line[7].as_str(), line[9].as_str()), ("-", "-"));
+
+        // The command line's converter wins over the environment's, and
+        // -mtriple over the converted module's own triple.
+        let unused = Environment { bitcode_via: Some(scratch.join("missing")), ..env.clone() };
+        let ran = run_with(
+            &[
+                "-filetype=obj",
+                "-mtriple=aarch64-unknown-linux-gnu",
+                &format!("--bitcode-via={}", converter.display()),
+                "-o",
+                "-",
+            ],
+            &unused,
+            &text_only(&seen),
+            BITCODE,
+        );
+        assert_eq!((ran.exit, ran.stderr.as_str()), (EXIT_OK, ""));
+        assert_eq!(ran.stdout, OBJECT);
+        assert_eq!(fields(&log)[1][5], "aarch64-unknown-linux-gnu");
+
+        // What the text reader says of converted text is the reason.
+        let malformed = |input: &[u8], _: &Options| match InputKind::detect(input) {
+            InputKind::Bitcode => Err(Unsupported::module(Construct::BitcodeInput).into()),
+            InputKind::Text => Err(CompileError::MalformedInput("line 2: expected type".into())),
+        };
+        let ran = run_with(&["-filetype=obj"], &env, &malformed, BITCODE);
+        assert_eq!(ran.exit, EXIT_ERROR);
+        assert!(ran.stderr.starts_with("hod: error: malformed input: line 2"), "{}", ran.stderr);
+        let line = &fields(&log)[2];
+        assert_eq!(line[..3], ["error", "malformed-input", "bitcode"]);
+        assert!(line[8].parse::<u64>().is_ok(), "{line:?}");
+    }
+
+    // spec/cli.md "Bitcode conversion": the converter runs only when the
+    // encoding is all that stands in the way. Here it does not exist, so
+    // running it would be an error.
+    #[test]
+    fn conversion_only_when_bitcode_is_the_reason() {
+        let scratch = Scratch::new("driver-no-convert");
+        let log = scratch.join("cov.tsv");
+        let env = Environment {
+            coverage_log: Some(log.clone()),
+            bitcode_via: Some(scratch.join("no-llvm-dis")),
+            ..Environment::default()
+        };
+        // Text; assembly output of bitcode; a rejected command line.
+        let ran = run_with(&["-filetype=obj"], &env, &hod::compile, MODULE);
+        assert_eq!(ran.exit, EXIT_UNSUPPORTED);
+        let ran = run_with(&["-filetype=asm"], &env, &hod::compile, BITCODE);
+        assert_eq!(ran.exit, EXIT_UNSUPPORTED);
+        let ran = run_with(&["-filetype=obj", "-bogus"], &env, &hod::compile, BITCODE);
+        assert_eq!(ran.exit, EXIT_ERROR);
+        // A generator that reads bitcode itself never asks for a conversion.
+        let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &object, BITCODE);
+        assert_eq!(ran.exit, EXIT_OK);
+        let lines = fields(&log);
+        let summary: Vec<(&str, &str, &str, &str)> = lines
+            .iter()
+            .map(|l| (l[0].as_str(), l[1].as_str(), l[2].as_str(), l[8].as_str()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("error", "codegen-not-implemented", "text", "-"),
+                ("error", "assembly-output", "bitcode", "-"),
+                ("error", "unknown-option", "-", "-"),
+                ("hod", "-", "bitcode", "-"),
+            ]
+        );
+
+        // Bitcode is the reason: the converter is tried, and its absence is
+        // the error (status 1: hod failed, not "unsupported").
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile, BITCODE);
+        assert_eq!(ran.exit, EXIT_ERROR);
+        assert!(
+            ran.stderr.starts_with("hod: error: cannot run bitcode converter '")
+                && ran.stderr.ends_with(" (strict mode: no fallback)\n"),
+            "{}",
+            ran.stderr
+        );
+        let line = &fields(&log)[4];
+        assert_eq!(line[..4], ["error", "bitcode-converter-unavailable", "bitcode", "12"]);
+        assert!(line[8].parse::<u64>().is_ok(), "an attempt has a time: {line:?}");
+        // Without a converter, bitcode is declined as before.
+        let plain = Environment { bitcode_via: None, ..env };
+        let ran = run_with(&["-filetype=obj"], &plain, &hod::compile, BITCODE);
+        assert_eq!(ran.exit, EXIT_UNSUPPORTED);
+        let line = &fields(&log)[5];
+        assert_eq!((line[1].as_str(), line[8].as_str()), ("bitcode-input", "-"));
     }
 
     // spec/cli.md "Exit status": unsupported without a fallback is 2 and
@@ -707,6 +923,7 @@ mod tests {
         let ran = run_with(&["-filetype=obj"], &env, &hod::compile, MODULE);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.contains("HOD_IN_FALLBACK"), "{}", ran.stderr);
+        assert!(ran.stderr.contains("fallback or its bitcode converter"), "{}", ran.stderr);
     }
 
     // spec/cli.md "Exit status": I/O failures are errors with one line.

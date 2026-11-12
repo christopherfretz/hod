@@ -2,10 +2,12 @@
 //! `docs/VALIDATION.md`. Contract: `spec/harness.md` "irdiff" and "Test
 //! directives".
 //!
-//! Each test is an LLVM IR module with a `main`. It is compiled by the
-//! oracle (`llc -O0`) and by hod, each object is linked by every linker of
-//! the matrix, and the programs must behave as the test's `;@` directives
-//! say and as each other.
+//! Each test is an LLVM IR module with a `main`, or several modules that
+//! make one program. It is compiled by the oracle (`llc -O0` with the
+//! SelectionDAG selector) and by hod, the objects are linked by every
+//! linker of the matrix, and the programs must behave as the test's `;@`
+//! directives say and as each other. With the witness, a second oracle
+//! build (`llc -O2`) must behave the same.
 //!
 //! - [`run`] is the command as a function: find the tools, read the tests,
 //!   run them, write the results file.
@@ -34,9 +36,9 @@ pub use tools::{Linker, Search, Toolchain};
 pub const USAGE: &str = "\
 usage: cargo xtask irdiff [options] [<file.ll or directory>...]
 
-Builds each test with the oracle (llc -O0) and with hod, links both objects
-with every linker of the matrix, runs the programs and compares them.
-The default is every test under tests/ir/.
+Builds each test with the oracle (llc -O0, SelectionDAG) and with hod, links
+both objects with every linker of the matrix, runs the programs and compares
+them. The default is every test under tests/ir/.
 
   -j <N>, --jobs <N>   tests run at once (default 4, at most 16)
   --llvm <major|dir>   the oracle: an LLVM major (22, 19) or an installation
@@ -47,6 +49,8 @@ The default is every test under tests/ir/.
   --tier <quick|all>   the tests to run (default: all)
   --hod <binary>       the hod to test (default: build this workspace's)
   --hybrid             let hod fall back to the oracle, and report coverage
+  --witness            also build each test with llc -O2 and require its
+                       program to behave as the oracle's (else an ERROR)
   --keep               keep the work directory of the failing tests
   --results <file>     the results file (default: under the build directory)
   -v, --verbose        list every result, not only the notable ones
@@ -89,6 +93,8 @@ pub struct Config {
     pub jobs: usize,
     /// Keep the work directory of failing tests.
     pub keep: bool,
+    /// Confirm the oracle of every test with an `llc -O2` build.
+    pub witness: bool,
     /// List every result in the summary (used by the command, not by
     /// [`run`]).
     pub verbose: bool,
@@ -123,6 +129,7 @@ impl Config {
             hod: None,
             jobs: DEFAULT_JOBS.min(cores),
             keep: false,
+            witness: false,
             verbose: false,
             build_dir,
             results: None,
@@ -354,6 +361,7 @@ pub fn run(config: &Config) -> Result<Report, String> {
             run_limits: config.run_limits,
             work: config.build_dir.join("irdiff").join(run),
             keep: config.keep,
+            witness: config.witness,
         };
         let jobs = config.jobs.clamp(1, MAX_JOBS);
         report.configuration = describe(&session, jobs);
@@ -418,7 +426,7 @@ fn describe(session: &Session, jobs: usize) -> String {
         .describe()
         .map_or_else(String::new, |pool| format!(" (jobserver {pool})"));
     format!(
-        "LLVM {} ({}); hod {}; target {}; linkers {}; {}; -j {jobs}{pool}",
+        "LLVM {} ({}); hod {}; target {}; linkers {}; {}{}; -j {jobs}{pool}",
         tools.llvm_major,
         tools.llc.display(),
         tools.hod.display(),
@@ -428,6 +436,7 @@ fn describe(session: &Session, jobs: usize) -> String {
             Mode::Strict => "strict",
             Mode::Hybrid => "hybrid",
         },
+        if session.witness { "; witness" } else { "" },
     )
 }
 
@@ -471,6 +480,10 @@ pub fn parse_args(args: &[String], config: &mut Config) -> Result<bool, String> 
             "--keep" => {
                 flag(&joined)?;
                 config.keep = true;
+            }
+            "--witness" => {
+                flag(&joined)?;
+                config.witness = true;
             }
             "-v" | "--verbose" => {
                 flag(&joined)?;
@@ -542,7 +555,7 @@ mod tests {
         );
         assert_eq!(config.tier, TierFilter::All);
         assert_eq!(config.mode, Mode::Strict);
-        assert!(!config.keep && !config.verbose && !config.require_tools);
+        assert!(!config.keep && !config.verbose && !config.require_tools && !config.witness);
         assert!((1..=DEFAULT_JOBS).contains(&config.jobs));
         assert_eq!(
             config.tool_limits,
@@ -575,6 +588,7 @@ mod tests {
             "/h/hod",
             "--hybrid",
             "--keep",
+            "--witness",
             "--results=/r.tsv",
             "-v",
             "tests/ir/a.ll",
@@ -588,7 +602,7 @@ mod tests {
         assert_eq!(config.tier, TierFilter::Quick);
         assert_eq!(config.hod.as_deref(), Some(Path::new("/h/hod")));
         assert_eq!(config.mode, Mode::Hybrid);
-        assert!(config.keep && config.verbose);
+        assert!(config.keep && config.verbose && config.witness);
         assert_eq!(config.results.as_deref(), Some(Path::new("/r.tsv")));
         assert_eq!(config.paths, [PathBuf::from("tests/ir/a.ll"), PathBuf::from("some dir")]);
 
@@ -629,6 +643,7 @@ mod tests {
             (&["--tier", "full"], "unknown tier 'full'"),
             (&["--hybrid=yes"], "'--hybrid' takes no value"),
             (&["--keep=1"], "'--keep' takes no value"),
+            (&["--witness=1"], "'--witness' takes no value"),
             (&["--hod"], "'--hod' requires a value"),
         ] {
             let error = parsed(args).unwrap_err();

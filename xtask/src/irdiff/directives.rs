@@ -184,6 +184,12 @@ pub struct Expectations {
     pub libs: Vec<Lib>,
     /// Position-independent executable (the default) or not.
     pub pie: bool,
+    /// The link may warn (`link: allow-warnings`): it is done without
+    /// `-Wl,--fatal-warnings`.
+    pub allow_warnings: bool,
+    /// Arguments both compilers get besides the harness's own
+    /// (`llc-args`); each satisfies [`llc_arg_allowed`].
+    pub llc_args: Vec<String>,
     /// The set the test belongs to.
     pub tier: Tier,
     /// Where the test is expected to fail, and why.
@@ -205,6 +211,8 @@ impl Default for Expectations {
             llvm: Vec::new(),
             libs: Vec::new(),
             pie: true,
+            allow_warnings: false,
+            llc_args: Vec::new(),
             tier: Tier::default(),
             xfail: Vec::new(),
             unsupported: Vec::new(),
@@ -247,8 +255,9 @@ impl Expectations {
     /// The directives that say this, in the canonical order of
     /// `spec/harness.md`. Parsing the result gives `self` back, provided
     /// the text fields hold what directives can express: `stdout` and
-    /// `stdin` are UTF-8 lines each ended by a newline, and no argument,
-    /// reason or `covers` text is empty or has surrounding white space.
+    /// `stdin` are UTF-8, `stdin` ends with a newline unless it is empty,
+    /// no argument, reason or `covers` text is empty or has surrounding
+    /// white space, and every `llc_args` item is an allowed one.
     pub fn to_directives(&self) -> String {
         let mut out = String::new();
         let mut line = |key: &str, value: &str| {
@@ -276,13 +285,17 @@ impl Expectations {
                 })),
             );
         }
-        if !self.libs.is_empty() || !self.pie {
+        if !self.libs.is_empty() || !self.pie || self.allow_warnings {
             let libs = self.libs.iter().map(|lib| match lib {
                 Lib::M => "m",
                 Lib::Cxx => "c++",
             });
             let pie = (!self.pie).then_some("no-pie");
-            line("link", &join(libs.chain(pie).map(str::to_owned)));
+            let warnings = self.allow_warnings.then_some("allow-warnings");
+            line("link", &join(libs.chain(pie).chain(warnings).map(str::to_owned)));
+        }
+        if !self.llc_args.is_empty() {
+            line("llc-args", &self.llc_args.join(" "));
         }
         for (key, directives) in [("unsupported", &self.unsupported), ("xfail", &self.xfail)] {
             for directive in directives {
@@ -303,11 +316,75 @@ impl Expectations {
         if self.exit != Exit::default() {
             line("exit", &self.exit.to_string());
         }
-        for text in String::from_utf8_lossy(&self.stdout).split_terminator('\n') {
+        // The complete lines, then what follows the last newline.
+        let stdout = String::from_utf8_lossy(&self.stdout);
+        let (lines, rest) = match stdout.rsplit_once('\n') {
+            Some((lines, rest)) => (Some(lines), rest),
+            None => (None, &*stdout),
+        };
+        for text in lines.iter().flat_map(|lines| lines.split('\n')) {
             line("stdout", text);
+        }
+        if !rest.is_empty() {
+            line("stdout-no-newline", rest);
         }
         out
     }
+}
+
+/// The `llc` options a test may pass with `llc-args`, by name: the ones a
+/// compiler driver gives `llc` that change the code and name no file. A
+/// name that ends in `=` takes a value.
+const LLC_ARGS: [&str; 7] = [
+    "-code-model=",
+    "-data-sections",
+    "-debugger-tune=",
+    "-fp-contract=",
+    "-function-sections",
+    "-mcpu=",
+    "-x86-branches-within-32B-boundaries",
+];
+
+/// The option of [`LLC_ARGS`] that `arg` is, if it is one: a flag exactly,
+/// or `-name=<value>` with a value of letters, digits, `.`, `_`, `+`, `-`.
+fn llc_option(arg: &str) -> Option<&'static str> {
+    LLC_ARGS.into_iter().find(|option| match option.strip_suffix('=') {
+        None => arg == *option,
+        Some(_) => arg.strip_prefix(option).is_some_and(|value| {
+            !value.is_empty()
+                && value.bytes().all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
+        }),
+    })
+}
+
+/// Whether a test may pass `arg` to both compilers with `llc-args`.
+pub fn llc_arg_allowed(arg: &str) -> bool {
+    llc_option(arg).is_some()
+}
+
+/// One module of a test file that holds several (`;@ module: <name>`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Module {
+    pub name: String,
+    /// The module's text, with one empty line for each line of the file
+    /// before it, so that a tool's diagnostics give the file's line numbers.
+    pub text: String,
+}
+
+/// The modules of a test file: empty for a file without `module`
+/// directives, which is one module as it stands. The file's directives
+/// must parse ([`parse`] reports what is wrong with its `module` lines).
+pub fn modules(text: &str) -> Vec<Module> {
+    let mut found: Vec<Module> = Vec::new();
+    for (index, line) in text.split_inclusive('\n').enumerate() {
+        if let Some(name) = line.strip_prefix(";@ module:") {
+            found.push(Module { name: name.trim().to_owned(), text: "\n".repeat(index) });
+        }
+        if let Some(module) = found.last_mut() {
+            module.text.push_str(line);
+        }
+    }
+    found
 }
 
 fn join(items: impl Iterator<Item = String>) -> String {
@@ -333,10 +410,12 @@ impl fmt::Display for DirectiveError {
 pub fn parse(text: &str) -> Result<Expectations, Vec<DirectiveError>> {
     let mut parser = Parser::default();
     for (index, line) in text.split('\n').enumerate() {
-        if let Some(rest) = line.strip_prefix(";@")
-            && let Err(message) = parser.directive(rest, index + 1)
-        {
-            parser.errors.push(DirectiveError { line: index + 1, message });
+        if let Some(rest) = line.strip_prefix(";@") {
+            if let Err(message) = parser.directive(rest, index + 1) {
+                parser.errors.push(DirectiveError { line: index + 1, message });
+            }
+        } else if parser.modules.is_empty() && !(line.trim().is_empty() || line.starts_with(';')) {
+            parser.code_first = true;
         }
     }
     if parser.errors.is_empty() { Ok(parser.found) } else { Err(parser.errors) }
@@ -349,6 +428,10 @@ struct Parser {
     found: Expectations,
     /// The keys that may appear once, with the line each was seen on.
     seen: Vec<(String, usize)>,
+    /// The names of the `module` directives so far.
+    modules: Vec<String>,
+    /// Code was seen before any `module` directive.
+    code_first: bool,
     errors: Vec<DirectiveError>,
 }
 
@@ -388,6 +471,9 @@ impl Parser {
                     | "link"
                     | "tier"
                     | "covers"
+                    | "llc-args"
+                    | "stdout-no-newline"
+                    | "module"
             );
         if !known {
             return Err(format!("unknown directive '{key}'"));
@@ -395,20 +481,53 @@ impl Parser {
         if conds.is_some() && !conditional {
             return Err(format!("directive '{key}' takes no conditions"));
         }
-        if !conditional && !matches!(key, "stdout" | "stdin") {
+        if !conditional && !matches!(key, "stdout" | "stdin" | "module") {
             if let Some((_, first)) = self.seen.iter().find(|(seen, _)| seen == key) {
                 return Err(format!("duplicate directive '{key}' (first on line {first})"));
             }
             self.seen.push((key.to_owned(), line));
-            if value.trim().is_empty() {
+            // The text of an unterminated line is verbatim, white space too.
+            let empty = if key == "stdout-no-newline" { value } else { value.trim() }.is_empty();
+            if empty {
                 return Err(format!("directive '{key}' requires a value"));
             }
         }
+        let unterminated =
+            self.seen.iter().find(|(seen, _)| seen == "stdout-no-newline").map(|(_, line)| *line);
         let found = &mut self.found;
         match key {
             "stdout" => {
+                if let Some(first) = unterminated {
+                    return Err(format!(
+                        "'stdout' after 'stdout-no-newline' (line {first}): \
+                         the line without a newline is the last of the output"
+                    ));
+                }
                 found.stdout.extend_from_slice(value.as_bytes());
                 found.stdout.push(b'\n');
+            }
+            "stdout-no-newline" => found.stdout.extend_from_slice(value.as_bytes()),
+            "llc-args" => found.llc_args = parse_llc_args(value)?,
+            "module" => {
+                let name = value.trim();
+                let valid = name.starts_with(|c: char| c.is_ascii_alphanumeric())
+                    && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+                if !valid {
+                    return Err(format!(
+                        "invalid module name '{name}': expected letters, digits, '.', '_' \
+                         and '-', starting with a letter or a digit"
+                    ));
+                }
+                if self.modules.iter().any(|earlier| earlier == name) {
+                    return Err(format!("module '{name}' is named twice"));
+                }
+                self.modules.push(name.to_owned());
+                if self.modules.len() == 1 && self.code_first {
+                    return Err(format!(
+                        "module '{name}' starts after code: only directives, comments and \
+                         empty lines may come before the first 'module' directive"
+                    ));
+                }
             }
             "stdin" => {
                 found.stdin.extend_from_slice(value.as_bytes());
@@ -418,7 +537,7 @@ impl Parser {
             "args" => found.args = words(value).map(str::to_owned).collect(),
             "target" => found.targets = parse_targets(value)?,
             "llvm" => found.llvm = parse_llvm(value)?,
-            "link" => (found.libs, found.pie) = parse_link(value)?,
+            "link" => (found.libs, found.pie, found.allow_warnings) = parse_link(value)?,
             "tier" => {
                 found.tier = match value.trim() {
                     "quick" => Tier::Quick,
@@ -512,13 +631,48 @@ fn parse_llvm(value: &str) -> Result<Vec<LlvmReq>, String> {
         .collect()
 }
 
-fn parse_link(value: &str) -> Result<(Vec<Lib>, bool), String> {
+fn parse_llc_args(value: &str) -> Result<Vec<String>, String> {
+    /// The options the harness sets itself, for each compiler.
+    const OWN: [&str; 6] =
+        ["-o", "-filetype", "-mtriple", "-relocation-model", "-global-isel", "-fast-isel"];
+    let mut args: Vec<String> = Vec::new();
+    let mut options = Vec::new();
+    for word in words(value) {
+        let Some(option) = llc_option(word) else {
+            let name = word.split('=').next().unwrap_or(word);
+            return Err(if word.starts_with("-O") || OWN.contains(&name) {
+                format!("llc argument '{word}' is the harness's to give")
+            } else {
+                format!(
+                    "llc argument '{word}' is not one a test may give: expected {}",
+                    LLC_ARGS.map(|option| option.replace('=', "=<value>")).join(", ")
+                )
+            });
+        };
+        if options.contains(&option) {
+            return Err(format!("llc argument '{}' is given twice", option.trim_end_matches('=')));
+        }
+        options.push(option);
+        args.push(word.to_owned());
+    }
+    Ok(args)
+}
+
+fn parse_link(value: &str) -> Result<(Vec<Lib>, bool, bool), String> {
     let mut libs = Vec::new();
     let mut pie = None;
+    let mut allow_warnings = false;
     for word in words(value) {
         let lib = match word {
             "m" => Lib::M,
             "c++" => Lib::Cxx,
+            "allow-warnings" => {
+                if allow_warnings {
+                    return Err(format!("link item '{word}' is listed twice"));
+                }
+                allow_warnings = true;
+                continue;
+            }
             "pie" | "no-pie" => {
                 let wanted = word == "pie";
                 if pie.is_some_and(|earlier| earlier != wanted) {
@@ -528,7 +682,9 @@ fn parse_link(value: &str) -> Result<(Vec<Lib>, bool), String> {
                 continue;
             }
             _ => {
-                return Err(format!("unknown link item '{word}': expected m, c++, pie or no-pie"));
+                return Err(format!(
+                    "unknown link item '{word}': expected m, c++, pie, no-pie or allow-warnings"
+                ));
             }
         };
         if libs.contains(&lib) {
@@ -536,7 +692,7 @@ fn parse_link(value: &str) -> Result<(Vec<Lib>, bool), String> {
         }
         libs.push(lib);
     }
-    Ok((libs, pie.unwrap_or(true)))
+    Ok((libs, pie.unwrap_or(true), allow_warnings))
 }
 
 /// `list` is the text between the parentheses, if there were any.
@@ -622,6 +778,136 @@ mod tests {
         assert_eq!(ok(";@ stdout: end").stdout, b"end\n");
     }
 
+    // "Test directives", `stdout-no-newline`: the end of an output that
+    // does not end in a newline, verbatim; once, and last.
+    #[test]
+    fn output_without_a_final_newline() {
+        assert_eq!(ok(";@ stdout: a\n;@ stdout-no-newline: b").stdout, b"a\nb");
+        assert_eq!(ok(";@ stdout-no-newline:  two  ").stdout, b" two  ");
+        assert_eq!(ok(";@ stdout-no-newline:  ").stdout, b" ");
+        assert_eq!(ok(";@ stdout-no-newline:tight\n;@ exit: 1\n").stdout, b"tight");
+        for (text, printed) in [
+            (&b"a\nb"[..], ";@ stdout: a\n;@ stdout-no-newline: b\n"),
+            (b"only", ";@ stdout-no-newline: only\n"),
+            (b"\n\n x", ";@ stdout:\n;@ stdout:\n;@ stdout-no-newline:  x\n"),
+            (b"a\n", ";@ stdout: a\n"),
+        ] {
+            let expect = Expectations { stdout: text.to_vec(), ..Expectations::default() };
+            assert_eq!(expect.to_directives(), printed);
+            assert_eq!(ok(printed), expect);
+        }
+        for (text, needle) in [
+            (";@ stdout-no-newline:", "directive 'stdout-no-newline' requires a value"),
+            (
+                ";@ stdout-no-newline: a\n;@ stdout-no-newline: b",
+                "line 2: duplicate directive 'stdout-no-newline' (first on line 1)",
+            ),
+            (
+                ";@ stdout-no-newline: a\n;@ stdout: b",
+                "line 2: 'stdout' after 'stdout-no-newline' (line 1)",
+            ),
+            (";@ stdout-no-newline(mold): a", "directive 'stdout-no-newline' takes no conditions"),
+        ] {
+            let message = error(text);
+            assert!(message.contains(needle), "{text:?}: {message}");
+        }
+    }
+
+    // "Test directives", `llc-args`: an allow-list, each option once, in
+    // the order written.
+    #[test]
+    fn llc_arguments() {
+        assert!(ok("").llc_args.is_empty());
+        let found = ok(";@ llc-args:  -debugger-tune=gdb\t-function-sections  -mcpu=cortex-a76 ");
+        assert_eq!(
+            found.llc_args,
+            ["-debugger-tune=gdb", "-function-sections", "-mcpu=cortex-a76"]
+        );
+        let printed = found.to_directives();
+        assert_eq!(
+            printed,
+            ";@ llc-args: -debugger-tune=gdb -function-sections -mcpu=cortex-a76\n"
+        );
+        assert_eq!(ok(&printed), found);
+        for allowed in [
+            "-code-model=small",
+            "-data-sections",
+            "-debugger-tune=lldb",
+            "-fp-contract=fast",
+            "-function-sections",
+            "-mcpu=apple-m1",
+            "-x86-branches-within-32B-boundaries",
+        ] {
+            assert!(llc_arg_allowed(allowed), "{allowed}");
+            assert_eq!(ok(&format!(";@ llc-args: {allowed}")).llc_args, [allowed]);
+        }
+        for (bad, needle) in [
+            ("-O2", "llc argument '-O2' is the harness's to give"),
+            ("-O0", "is the harness's to give"),
+            ("-o x.o", "llc argument '-o' is the harness's to give"),
+            ("-filetype=asm", "llc argument '-filetype=asm' is the harness's to give"),
+            ("-mtriple=x86_64-unknown-linux-gnu", "is the harness's to give"),
+            ("-relocation-model=static", "is the harness's to give"),
+            ("-global-isel=1", "llc argument '-global-isel=1' is the harness's to give"),
+            ("-fast-isel", "llc argument '-fast-isel' is the harness's to give"),
+            ("-split-dwarf-file=a.dwo", "is not one a test may give: expected -code-model=<value>"),
+            ("-debugger-tune", "llc argument '-debugger-tune' is not one a test may give"),
+            ("-debugger-tune=", "is not one a test may give"),
+            ("-mcpu=a/b", "is not one a test may give"),
+            ("-function-sections=1", "is not one a test may give"),
+            ("--function-sections", "is not one a test may give"),
+            ("input.ll", "llc argument 'input.ll' is not one a test may give"),
+            ("-mcpu=a -mcpu=b", "llc argument '-mcpu' is given twice"),
+            ("-data-sections -data-sections", "llc argument '-data-sections' is given twice"),
+        ] {
+            assert!(!llc_arg_allowed(bad), "{bad}");
+            let message = error(&format!(";@ llc-args: {bad}"));
+            assert!(message.contains(needle), "{bad}: {message}");
+        }
+        assert!(error(";@ llc-args:").contains("directive 'llc-args' requires a value"));
+        assert!(
+            error(";@ llc-args: -data-sections\n;@ llc-args: -function-sections")
+                .contains("duplicate directive 'llc-args'")
+        );
+    }
+
+    // "Test directives", "Several modules": `module` lines split the file.
+    #[test]
+    fn several_modules() {
+        assert_eq!(modules("define i32 @main() {\n  ret i32 0\n}\n"), []);
+        let text = "; a comment\n;@ stdout: x\n\n;@ module: lib\n@g = global i32 1\n\
+                    ;@ exit: 1\n;@ module:  main.cpp \ndeclare void @f()\nlast";
+        let found = ok(text);
+        assert_eq!((found.stdout.as_slice(), found.exit), (&b"x\n"[..], Exit::Code(1)));
+        let split = modules(text);
+        assert_eq!(split.len(), 2);
+        assert_eq!(split[0].name, "lib");
+        assert_eq!(split[0].text, "\n\n\n;@ module: lib\n@g = global i32 1\n;@ exit: 1\n");
+        assert_eq!(split[1].name, "main.cpp");
+        assert_eq!(split[1].text, "\n\n\n\n\n\n;@ module:  main.cpp \ndeclare void @f()\nlast");
+        // The directives are not part of the canonical header: they are
+        // where the modules are.
+        assert_eq!(found.to_directives(), ";@ exit: 1\n;@ stdout: x\n");
+        // One module is a file of one module.
+        assert_eq!(modules(";@ module: only\n@g = global i32 1\n").len(), 1);
+
+        for (text, needle) in [
+            (";@ module:", "invalid module name ''"),
+            (";@ module: a b", "invalid module name 'a b'"),
+            (";@ module: .hidden", "invalid module name '.hidden'"),
+            (";@ module: dir/a", "invalid module name 'dir/a'"),
+            (";@ module(aarch64): a", "directive 'module' takes no conditions"),
+            (";@ module: a\n;@ module: b\n;@ module: a", "line 3: module 'a' is named twice"),
+            (
+                "; fine\n\n@g = global i32 1\n;@ module: a\n;@ module: b",
+                "line 4: module 'a' starts after code",
+            ),
+        ] {
+            let message = error(text);
+            assert!(message.contains(needle), "{text:?}: {message}");
+        }
+    }
+
     // "Test directives", `exit`.
     #[test]
     fn exit_status() {
@@ -656,6 +942,12 @@ mod tests {
         assert!(one.pie && one.libs.is_empty());
         assert_eq!(one.tier, Tier::Full);
         assert!(ok(";@ link: pie m pie").pie);
+        assert!(!one.allow_warnings && !found.allow_warnings);
+        let lax = ok(";@ link: allow-warnings");
+        assert!(lax.allow_warnings && lax.pie && lax.libs.is_empty());
+        assert_eq!(lax.to_directives(), ";@ link: allow-warnings\n");
+        let all = ok(";@ link: allow-warnings no-pie m");
+        assert_eq!(all.to_directives(), ";@ link: m no-pie allow-warnings\n");
     }
 
     // "Test directives", `unsupported` and `xfail`, and their conditions.
@@ -730,6 +1022,10 @@ mod tests {
             (";@ link: stdc++", "unknown link item 'stdc++'"),
             (";@ link: m m", "link item 'm' is listed twice"),
             (";@ link: pie no-pie", "'link' has both 'pie' and 'no-pie'"),
+            (
+                ";@ link: allow-warnings m allow-warnings",
+                "link item 'allow-warnings' is listed twice",
+            ),
             (";@ tier: slow", "unknown tier 'slow'"),
             (";@ xfail:", "'xfail' requires a reason"),
             (";@ xfail(mold):  ", "'xfail' requires a reason"),
@@ -823,7 +1119,7 @@ mod tests {
     #[test]
     fn canonical_form() {
         let all = Expectations {
-            stdout: b"out 1\n\nout 3\n".to_vec(),
+            stdout: b"out 1\n\nout 3\nend".to_vec(),
             stdin: b"in\n".to_vec(),
             exit: Exit::Signal(11),
             args: vec!["a".to_owned(), "b".to_owned()],
@@ -831,6 +1127,8 @@ mod tests {
             llvm: vec![LlvmReq::Exactly(19), LlvmReq::AtLeast(22)],
             libs: vec![Lib::M, Lib::Cxx],
             pie: false,
+            allow_warnings: true,
+            llc_args: vec!["-function-sections".to_owned(), "-debugger-tune=gdb".to_owned()],
             tier: Tier::Quick,
             xfail: vec![
                 Conditional {
@@ -849,10 +1147,12 @@ mod tests {
         assert_eq!(
             printed,
             ";@ covers: spec/ir.md §5.4\n;@ tier: quick\n;@ target: aarch64 x86_64\n\
-             ;@ llvm: 19 22+\n;@ link: m c++ no-pie\n\
+             ;@ llvm: 19 22+\n;@ link: m c++ no-pie allow-warnings\n\
+             ;@ llc-args: -function-sections -debugger-tune=gdb\n\
              ;@ unsupported(x86_64): codegen-not-implemented\n\
              ;@ xfail(wild,llvm19): why: it fails\n;@ xfail: everywhere\n;@ args: a b\n\
-             ;@ stdin: in\n;@ exit: signal 11\n;@ stdout: out 1\n;@ stdout:\n;@ stdout: out 3\n"
+             ;@ stdin: in\n;@ exit: signal 11\n;@ stdout: out 1\n;@ stdout:\n;@ stdout: out 3\n\
+             ;@ stdout-no-newline: end\n"
         );
         assert_eq!(ok(&printed), all);
         assert_eq!(Expectations::default().to_directives(), "");

@@ -3,7 +3,8 @@
 //! Contract: `spec/harness.md` "irdiff", "What a test does" and "Outcomes".
 //!
 //! Nothing here knows about `tests/ir/`: a [`Test`] is a path and an
-//! [`Expectations`], wherever they came from.
+//! [`Expectations`], wherever they came from. The file is one module, or
+//! several that `;@ module:` lines separate ("Several modules").
 
 use std::ffi::OsString;
 use std::fs;
@@ -11,20 +12,36 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 
-use super::directives::{Arch, Exit, Expectations, Lib};
+use super::directives::{self, Arch, Exit, Expectations, Lib};
 use super::process::{self, End, Limits, Output};
 use super::report::{BuiltBy, Outcome, Record};
 use super::tools::{self, Linker, Toolchain};
 
-/// One test: an IR module with a `main`, and how its program must behave.
+/// One test: IR with a `main`, and how its program must behave.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Test {
     /// The name in reports.
     pub name: String,
-    /// The module, LLVM text.
+    /// The test file, LLVM text: one module, or several, each after a
+    /// `;@ module: <name>` line.
     pub ir: PathBuf,
     pub expect: Expectations,
 }
+
+/// What the oracle's `llc` gets after `-O0` and hod does not: the
+/// instruction selector. At `-O0` the default selectors (GlobalISel on
+/// AArch64, FastISel on both targets) are the ones only `-O0` builds use,
+/// and both miscompile correct programs on AArch64 (`spec/interp.md`
+/// §10.1); SelectionDAG is the selector every optimized build uses.
+pub const REFERENCE_SELECTOR: [&str; 2] = ["-global-isel=0", "-fast-isel=0"];
+
+/// How the detail of an ERROR starts when the witness raised it: the
+/// `llc -O2` build of the test did not confirm the reference's.
+pub const WITNESS: &str = "witness: ";
+
+/// The name, in the work directory, of the fallback hod gets in hybrid
+/// mode: a script that runs the oracle's `llc` as the reference is run.
+const REFERENCE_LLC: &str = "reference-llc";
 
 /// What hod may do with a module it does not support.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +72,39 @@ pub struct Session {
     pub work: PathBuf,
     /// Keep the work directory of a test with a failing outcome.
     pub keep: bool,
+    /// Also build every test with `llc -O2` and require its program to
+    /// behave as the reference's ("The witness").
+    pub witness: bool,
+}
+
+/// Which compiler configuration builds an object.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Build {
+    /// The oracle: `llc -O0` with [`REFERENCE_SELECTOR`].
+    Reference,
+    /// The oracle's second opinion: `llc -O2`.
+    Witness,
+    /// hod: `-O0`.
+    Hod,
+}
+
+/// One module of a test and where its objects go.
+struct Part {
+    /// The module's name, for a test of several.
+    name: Option<String>,
+    ir: PathBuf,
+    oracle: PathBuf,
+    witness: PathBuf,
+    hod: PathBuf,
+    /// hod's coverage log for this module.
+    log: PathBuf,
+}
+
+impl Part {
+    /// "module 'name': " for a test of several modules.
+    fn label(&self) -> String {
+        self.name.as_ref().map_or_else(String::new, |name| format!("module '{name}': "))
+    }
 }
 
 /// The variables that configure hod; the harness passes options instead.
@@ -102,7 +152,28 @@ impl Session {
                 .map_err(|e| format!("cannot create '{}': {e}", link.display()))?;
         }
         fs::create_dir_all(&self.work)
-            .map_err(|e| format!("cannot create '{}': {e}", self.work.display()))
+            .map_err(|e| format!("cannot create '{}': {e}", self.work.display()))?;
+        if self.mode == Mode::Hybrid {
+            self.write_reference_llc()?;
+        }
+        Ok(())
+    }
+
+    /// The fallback of hybrid mode: hod runs it with its own arguments
+    /// (`-O0 ...`), and it adds the reference's selector, so that what the
+    /// fallback builds is what the oracle builds.
+    fn reference_llc(&self) -> PathBuf {
+        self.work.join(REFERENCE_LLC)
+    }
+
+    fn write_reference_llc(&self) -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+        let path = self.reference_llc();
+        let llc = self.toolchain.llc.to_string_lossy().replace('\'', "'\\''");
+        let script = format!("#!/bin/sh\nexec '{llc}' \"$@\" {}\n", REFERENCE_SELECTOR.join(" "));
+        fs::write(&path, script)
+            .and_then(|()| fs::set_permissions(&path, fs::Permissions::from_mode(0o755)))
+            .map_err(|e| format!("cannot write '{}': {e}", path.display()))
     }
 
     fn linker_dir(&self, linker: &Linker) -> PathBuf {
@@ -208,15 +279,29 @@ impl Session {
             return vec![self.record(test, None, Outcome::Skip, detail)];
         }
 
-        let oracle_object = dir.join("oracle.o");
-        if let Err(Trouble::Failed(detail) | Trouble::Broken(detail)) =
-            self.compile_with_oracle(test, &oracle_object)
-        {
-            return vec![self.record(test, None, Outcome::Error, format!("oracle: {detail}"))];
+        let error = |detail: String| vec![self.record(test, None, Outcome::Error, detail)];
+        let parts = match self.parts(test, dir) {
+            Ok(parts) => parts,
+            Err(detail) => return error(detail),
+        };
+        for part in &parts {
+            if let Err(Trouble::Failed(detail) | Trouble::Broken(detail)) =
+                self.compile_with_llc(test, Build::Reference, part)
+            {
+                return error(format!("oracle: {}{detail}", part.label()));
+            }
+        }
+        if self.witness {
+            for part in &parts {
+                if let Err(Trouble::Failed(detail) | Trouble::Broken(detail)) =
+                    self.compile_with_llc(test, Build::Witness, part)
+                {
+                    return error(format!("{WITNESS}{}{detail}", part.label()));
+                }
+            }
         }
 
-        let hod_object = dir.join("hod.o");
-        let (build, built_by, reason) = self.compile_with_hod(test, dir, &hod_object);
+        let (build, built_by, reason) = self.compile_all_with_hod(test, &parts);
         let plan = plan(&build, built_by, reason.as_deref(), expect.unsupported_reason(arch, llvm));
         let case = Case { session: self, test, built_by, reason, plan };
 
@@ -225,29 +310,110 @@ impl Session {
             let record = case.settled(None, &note);
             return vec![record.unwrap_or_else(|| case.finish(None, Outcome::Skip, why))];
         }
-        self.toolchain
-            .linkers
-            .iter()
-            .map(|linker| case.with_linker(linker, dir, &oracle_object, &hod_object))
-            .collect()
+        let objects = |object: fn(&Part) -> &PathBuf| -> Vec<PathBuf> {
+            parts.iter().map(|part| object(part).clone()).collect()
+        };
+        let (oracle, hod) = (objects(|part| &part.oracle), objects(|part| &part.hod));
+        let witness = self.witness.then(|| objects(|part| &part.witness));
+        // The witness is asked once, with the first linker whose program
+        // of the oracle's objects is what the directives say: what it
+        // checks is the compiler. An oracle it does not confirm is an
+        // ERROR for that linker and every later one.
+        let mut unconfirmed: Option<String> = None;
+        let mut asked = false;
+        let mut records = Vec::new();
+        for linker in &self.toolchain.linkers {
+            if let Some(detail) = &unconfirmed {
+                records.push(case.finish(Some(linker), Outcome::Error, detail.clone()));
+                continue;
+            }
+            let witness = witness.as_deref().filter(|_| !asked);
+            records.push(match case.with_linker(linker, dir, &oracle, &hod, witness, &mut asked) {
+                Ok(record) => record,
+                Err(detail) => {
+                    let record = case.finish(Some(linker), Outcome::Error, detail.clone());
+                    unconfirmed = Some(detail);
+                    record
+                }
+            });
+        }
+        records
     }
 
-    /// The code-generation arguments both compilers get.
-    fn codegen_args(&self, test: &Test, object: &Path) -> Vec<OsString> {
+    /// The modules of the test and where their objects go: the file
+    /// itself, or one file per `;@ module:` part, written under `dir`.
+    fn parts(&self, test: &Test, dir: &Path) -> Result<Vec<Part>, String> {
+        // A file that is not text is one module; `llc` says what is wrong
+        // with it.
+        let modules =
+            fs::read_to_string(&test.ir).map(|text| directives::modules(&text)).unwrap_or_default();
+        if modules.is_empty() {
+            return Ok(vec![Part {
+                name: None,
+                ir: test.ir.clone(),
+                oracle: dir.join("oracle.o"),
+                witness: dir.join("witness.o"),
+                hod: dir.join("hod.o"),
+                log: dir.join("coverage.tsv"),
+            }]);
+        }
+        let dir = dir.join("modules");
+        fs::create_dir_all(&dir).map_err(|e| format!("cannot create '{}': {e}", dir.display()))?;
+        let mut parts = Vec::new();
+        for module in modules {
+            let file = |suffix: &str| dir.join(format!("{}.{suffix}", module.name));
+            let ir = file("ll");
+            fs::write(&ir, &module.text)
+                .map_err(|e| format!("cannot write '{}': {e}", ir.display()))?;
+            parts.push(Part {
+                ir,
+                oracle: file("oracle.o"),
+                witness: file("witness.o"),
+                hod: file("hod.o"),
+                log: file("coverage.tsv"),
+                name: Some(module.name),
+            });
+        }
+        Ok(parts)
+    }
+
+    /// The code-generation arguments of one build of one module. hod gets
+    /// what a compiler driver gives `llc` at `-O0`; the selector is the
+    /// oracle's own.
+    fn codegen_args(&self, test: &Test, build: Build, part: &Part) -> Vec<OsString> {
         let model = if test.expect.pie { "pic" } else { "static" };
-        vec![
-            "-O0".into(),
-            "-filetype=obj".into(),
-            format!("-mtriple={}", self.arch.triple()).into(),
-            format!("-relocation-model={model}").into(),
-            "-o".into(),
-            object.into(),
-            test.ir.clone().into(),
-        ]
+        let mut args: Vec<OsString> = match build {
+            Build::Reference => {
+                std::iter::once("-O0").chain(REFERENCE_SELECTOR).map(OsString::from).collect()
+            }
+            Build::Witness => vec!["-O2".into()],
+            Build::Hod => vec!["-O0".into()],
+        };
+        args.push("-filetype=obj".into());
+        args.push(format!("-mtriple={}", self.arch.triple()).into());
+        args.push(format!("-relocation-model={model}").into());
+        args.extend(test.expect.llc_args.iter().map(OsString::from));
+        args.push("-o".into());
+        args.push(
+            match build {
+                Build::Reference => &part.oracle,
+                Build::Witness => &part.witness,
+                Build::Hod => &part.hod,
+            }
+            .into(),
+        );
+        args.push(part.ir.clone().into());
+        args
     }
 
-    fn compile_with_oracle(&self, test: &Test, object: &Path) -> Result<(), Trouble> {
-        let args = self.codegen_args(test, object);
+    /// Builds one module with the oracle's `llc`, as the reference or as
+    /// the witness.
+    fn compile_with_llc(&self, test: &Test, build: Build, part: &Part) -> Result<(), Trouble> {
+        let (tool, object) = match build {
+            Build::Witness => ("llc -O2", &part.witness),
+            _ => ("llc", &part.oracle),
+        };
+        let args = self.codegen_args(test, build, part);
         let output = process::run(
             &self.toolchain.llc,
             |c| {
@@ -259,26 +425,50 @@ impl Session {
         .map_err(Trouble::Broken)?;
         match output.end {
             End::Exit(0) if object.is_file() => Ok(()),
-            End::Exit(0) => Err(Trouble::Failed("llc wrote no object".to_owned())),
-            end => Err(Trouble::Failed(tool_failure("llc", end, &output, self.tool_limits))),
+            End::Exit(0) => Err(Trouble::Failed(format!("{tool} wrote no object"))),
+            end => Err(Trouble::Failed(tool_failure(tool, end, &output, self.tool_limits))),
         }
     }
 
-    /// Runs hod on the test. Besides what became of the build: who built
-    /// the object, and the coverage-log reason.
-    fn compile_with_hod(
+    /// Runs hod on each module in order, until one is not built. A test
+    /// is built by hod when every module is, and by the fallback when
+    /// one is: the reason is the first such module's. The first module
+    /// hod declines or fails on decides the test.
+    fn compile_all_with_hod(
         &self,
         test: &Test,
-        dir: &Path,
-        object: &Path,
+        parts: &[Part],
     ) -> (HodBuild, BuiltBy, Option<String>) {
-        let log = dir.join("coverage.tsv");
-        let mut args = vec![tools::prefixed("--coverage-log=", &log)];
+        let mut fallback: Option<Option<String>> = None;
+        for part in parts {
+            match self.compile_with_hod(test, part) {
+                (HodBuild::Built, BuiltBy::Hod, _) => {}
+                (HodBuild::Built, _, reason) => {
+                    fallback.get_or_insert(reason);
+                }
+                (HodBuild::Failed(detail), built_by, reason) => {
+                    let detail = format!("{}{detail}", part.label());
+                    return (HodBuild::Failed(detail), built_by, reason);
+                }
+                declined => return declined,
+            }
+        }
+        match fallback {
+            Some(reason) => (HodBuild::Built, BuiltBy::Fallback, reason),
+            None => (HodBuild::Built, BuiltBy::Hod, None),
+        }
+    }
+
+    /// Runs hod on one module. Besides what became of the build: who built
+    /// the object, and the coverage-log reason.
+    fn compile_with_hod(&self, test: &Test, part: &Part) -> (HodBuild, BuiltBy, Option<String>) {
+        let (log, object) = (&part.log, &part.hod);
+        let mut args = vec![tools::prefixed("--coverage-log=", log)];
         args.push(match self.mode {
             Mode::Strict => "--strict".into(),
-            Mode::Hybrid => tools::prefixed("--fallback=", &self.toolchain.llc),
+            Mode::Hybrid => tools::prefixed("--fallback=", &self.reference_llc()),
         });
-        args.extend(self.codegen_args(test, object));
+        args.extend(self.codegen_args(test, Build::Hod, part));
         let configure = |command: &mut std::process::Command| {
             command.args(&args);
             for variable in HOD_VARIABLES {
@@ -290,7 +480,7 @@ impl Session {
             Ok(output) => output,
             Err(detail) => return failed(detail),
         };
-        let (outcome, reason) = match read_coverage(&log) {
+        let (outcome, reason) = match read_coverage(log) {
             Ok(line) => line,
             Err(problem) => {
                 let detail = tool_failure("hod", output.end, &output, self.tool_limits);
@@ -313,12 +503,12 @@ impl Session {
         }
     }
 
-    /// Links `object` with `linker` into `<dir>/<side>` and runs the
+    /// Links `objects` with `linker` into `<dir>/<side>` and runs the
     /// program.
     fn link_and_run(
         &self,
         linker: &Linker,
-        object: &Path,
+        objects: &[PathBuf],
         dir: &Path,
         side: &str,
         expect: &Expectations,
@@ -327,11 +517,13 @@ impl Session {
         let program = dir.join(side);
         let mut args = vec![tools::prefixed("-B", &self.linker_dir(linker))];
         args.push(if expect.pie { "-pie" } else { "-no-pie" }.into());
-        args.push("-Wl,--fatal-warnings".into());
+        if !expect.allow_warnings {
+            args.push("-Wl,--fatal-warnings".into());
+        }
         args.extend(tools::linker_flags(&linker.name).iter().map(OsString::from));
         args.push("-o".into());
         args.push(program.clone().into());
-        args.push(object.into());
+        args.extend(objects.iter().map(OsString::from));
         for lib in [Lib::Cxx, Lib::M] {
             if expect.libs.contains(&lib) {
                 args.push(if lib == Lib::Cxx { "-lstdc++" } else { "-lm" }.into());
@@ -392,15 +584,16 @@ impl Session {
         }
     }
 
-    /// Compares the program of hod's object with the program of the
-    /// oracle's. The error completes "the program of hod's object ...".
-    fn compare(&self, hod: &Output, oracle: &Output) -> Result<(), String> {
+    /// Compares the program of hod's object, or of the witness's, with
+    /// the program of the oracle's, which is `whose` ("llc's"). The error
+    /// completes "the program of hod's object ...".
+    fn compare(&self, hod: &Output, oracle: &Output, whose: &str) -> Result<(), String> {
         if hod.end == End::TimedOut {
             return Err(format!("timed out after {}", seconds(self.run_limits)));
         }
         if hod.end != oracle.end {
             return Err(format!(
-                "ended with {}, llc's with {}",
+                "ended with {}, {whose} with {}",
                 ended_with(hod.end),
                 ended_with(oracle.end)
             ));
@@ -409,7 +602,7 @@ impl Session {
             return Err("wrote more output than the harness keeps".to_owned());
         }
         match first_difference(&oracle.stdout, &hod.stdout) {
-            Some(difference) => Err(format!("wrote stdout that differs from llc's {difference}")),
+            Some(difference) => Err(format!("wrote stdout that differs from {whose} {difference}")),
             None => Ok(()),
         }
     }
@@ -469,17 +662,22 @@ impl Case<'_> {
         Some(self.finish(linker, outcome, detail))
     }
 
-    /// Links and runs both sides with one linker.
+    /// Links and runs both sides with one linker, and before hod's side
+    /// the witness's, if its objects are given and the oracle's program is
+    /// what the directives say (`asked` is then set). `Err` is the detail
+    /// of an oracle the witness does not confirm.
     fn with_linker(
         &self,
         linker: &Linker,
         dir: &Path,
-        oracle_object: &Path,
-        hod_object: &Path,
-    ) -> Record {
+        oracle_objects: &[PathBuf],
+        hod_objects: &[PathBuf],
+        witness_objects: Option<&[PathBuf]>,
+        asked: &mut bool,
+    ) -> Result<Record, String> {
         let session = self.session;
         let expect = &self.test.expect;
-        let error = |detail: String| self.finish(Some(linker), Outcome::Error, detail);
+        let error = |detail: String| Ok(self.finish(Some(linker), Outcome::Error, detail));
         let linker_dir = dir.join(&linker.name);
         if let Err(e) = fs::create_dir_all(&linker_dir) {
             return error(format!("cannot create '{}': {e}", linker_dir.display()));
@@ -487,7 +685,7 @@ impl Case<'_> {
         // The oracle's side validates the test itself: any trouble there
         // is an ERROR, whatever hod did.
         let oracle =
-            match session.link_and_run(linker, oracle_object, &linker_dir, "oracle", expect) {
+            match session.link_and_run(linker, oracle_objects, &linker_dir, "oracle", expect) {
                 Ok(output) => output,
                 Err(Trouble::Failed(detail) | Trouble::Broken(detail)) => {
                     return error(format!("oracle: {detail}"));
@@ -496,20 +694,33 @@ impl Case<'_> {
         if let Err(detail) = session.check_directives(&oracle, expect) {
             return error(format!("oracle: the program of llc's object {detail}"));
         }
+        if let Some(objects) = witness_objects {
+            *asked = true;
+            match session.link_and_run(linker, objects, &linker_dir, "witness", expect) {
+                Err(Trouble::Failed(detail) | Trouble::Broken(detail)) => {
+                    return Err(format!("{WITNESS}{detail}"));
+                }
+                Ok(witness) => {
+                    if let Err(detail) = session.compare(&witness, &oracle, "llc -O0's") {
+                        return Err(format!("{WITNESS}the program of llc -O2's object {detail}"));
+                    }
+                }
+            }
+        }
         if let Some(record) = self.settled(Some(linker), "") {
-            return record;
+            return Ok(record);
         }
         let (outcome, detail) =
-            match session.link_and_run(linker, hod_object, &linker_dir, "hod", expect) {
+            match session.link_and_run(linker, hod_objects, &linker_dir, "hod", expect) {
                 Err(Trouble::Broken(detail)) => return error(detail),
                 Err(Trouble::Failed(detail)) => (Outcome::Fail, format!("hod's object: {detail}")),
-                Ok(hod) => match session.compare(&hod, &oracle) {
+                Ok(hod) => match session.compare(&hod, &oracle, "llc's") {
                     Ok(()) => (Outcome::Pass, String::new()),
                     Err(detail) => (Outcome::Fail, format!("the program of hod's object {detail}")),
                 },
             };
         let (outcome, detail) = self.expected_failure(Some(linker), outcome, detail);
-        self.finish(Some(linker), outcome, detail)
+        Ok(self.finish(Some(linker), outcome, detail))
     }
 }
 

@@ -4,9 +4,10 @@
 //!
 //! One group is one source with one LLVM major. A group's tests are
 //! captured in parallel, each in a job directory of its own; what was
-//! captured is then admitted: built by the oracle, linked with every linker
-//! and run by the code `irdiff` itself uses, so that an entry of the corpus
-//! is a test whose oracle side is known to pass.
+//! captured is then admitted: built by the oracle and by its witness,
+//! linked with every linker and run by the code `irdiff` itself uses, so
+//! that an entry of the corpus is a test whose oracle side is known to
+//! pass.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -17,7 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use super::entry::{self, Recipe, Unfit};
+use super::entry::{self, Delivered, Module, Recipe, Unfit};
 use super::manifest::{self, Manifest, Row, Skip, Skips};
 use super::{kiln, sha256, torture};
 use crate::irdiff::directives::{Arch, Expectations, Lib};
@@ -25,7 +26,7 @@ use crate::irdiff::process::{self, End, Limits, Output};
 use crate::irdiff::tools::{self, Llvm};
 use crate::irdiff::{
     BuiltBy, LINKER_NAMES, Linker, MAX_JOBS, Mode, Outcome, Record, Search, Session, Test,
-    Toolchain,
+    Toolchain, engine,
 };
 use crate::shim;
 
@@ -36,7 +37,7 @@ pub const SOURCES: [&str; 2] = [KILN, TORTURE];
 
 /// Part of every entry's key: changing how entries are made changes it,
 /// and the next capture makes every entry again.
-const FORMAT: &str = "hod-corpus-1";
+const FORMAT: &str = "hod-corpus-2";
 
 /// The table of what the captures of a corpus did, in the corpus
 /// directory. Unlike the manifest it holds times.
@@ -373,14 +374,30 @@ enum Work {
     Torture(torture::TortureTest),
 }
 
-/// A module that was captured and whose program ran: an entry, if it is
-/// admitted.
+/// The modules of a test that were captured and whose program ran: an
+/// entry, if it is admitted.
 struct Candidate {
     expect: Expectations,
-    text: String,
     producer_args: String,
     llc_args: String,
+    modules: Vec<Module>,
 }
+
+impl Candidate {
+    /// The entry file.
+    fn text(&self) -> Result<String, Unfit> {
+        entry::compose(&self.expect, &self.producer_args, &self.llc_args, &self.modules)
+    }
+
+    /// A candidate that can be written as an entry.
+    fn checked(self) -> Result<Self, Unfit> {
+        self.text().map(|_| self)
+    }
+}
+
+/// One `llc` run of kiln, and the entry's name for its module if the test
+/// has several.
+type Call = (Option<String>, kiln::BackendCall);
 
 /// Everything the tests of one group share.
 struct Group<'a> {
@@ -389,6 +406,9 @@ struct Group<'a> {
     llvm: &'a Llvm,
     host: Arch,
     producer: Producer,
+    /// The group's `llvm-dis`: what writes a module that reached `llc` as
+    /// bitcode as text.
+    llvm_dis: Option<PathBuf>,
     /// This run's directory under the work directory.
     run: PathBuf,
 }
@@ -408,8 +428,8 @@ impl Group<'_> {
             fs::create_dir_all(&dir).map_err(|e| broken(io("create", &dir, &e)))?;
         }
         match (&self.producer, &item.work) {
-            (Producer::Kiln { kiln, root, llvm_dir, cache }, Work::Kiln(test, header)) => {
-                self.capture_kiln(test, header, job, kiln, root, llvm_dir, cache)
+            (Producer::Kiln { .. }, Work::Kiln(test, header)) => {
+                self.capture_kiln(test, header, job)
             }
             (Producer::Torture { clang, execute, driver }, Work::Torture(test)) => {
                 self.capture_torture(test, job, clang, execute, driver)
@@ -418,76 +438,237 @@ impl Group<'_> {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the parts of one producer, taken apart by the caller"
-    )]
+    /// Runs kiln++ in its root with `args`; what it gives its backend is
+    /// saved under `calls`.
+    fn run_kiln(
+        &self,
+        args: &[std::ffi::OsString],
+        calls: &Path,
+        job: &Path,
+    ) -> Result<Output, Unfit> {
+        let Producer::Kiln { kiln, root, cache, .. } = &self.producer else {
+            return Err(Unfit::new("capture-broken", "the group's producer is not kiln"));
+        };
+        let configure = |command: &mut std::process::Command| {
+            command
+                .args(args)
+                .current_dir(root)
+                .env("TMPDIR", job.join("tmp"))
+                .env("XDG_CACHE_HOME", cache)
+                .env("HOD_CORPUS_CAPTURE", calls)
+                .env("LC_ALL", "C")
+                .env_remove("KILN_LLVM_DIR");
+        };
+        process::run(kiln, configure, b"", self.options.compile_limits)
+            .map_err(|what| Unfit::new("capture-broken", what))
+    }
+
+    /// kiln's arguments for one command: `--llvm-dir=`, `args` with one
+    /// more before its last (the source): debug information names the
+    /// directory kiln ran in, which is this machine's; it is written as
+    /// `.` instead. Then `-o <output>`.
+    fn kiln_args(&self, args: &[String], output: &Path) -> Vec<std::ffi::OsString> {
+        let Producer::Kiln { root, llvm_dir, .. } = &self.producer else { return Vec::new() };
+        let (source, before) = args.split_last().expect("the source is an argument");
+        let mut all = vec![tools::prefixed("--llvm-dir=", llvm_dir)];
+        all.extend(before.iter().map(Into::into));
+        let mut map = tools::prefixed("-fdebug-prefix-map=", root);
+        map.push("=.");
+        all.push(map);
+        all.push(source.into());
+        all.push("-o".into());
+        all.push(output.into());
+        all
+    }
+
+    /// What kiln gave `llc` for a test, in the order of the link, and the
+    /// arguments it was run with as the tables show them.
+    fn kiln_calls(
+        &self,
+        plan: &kiln::Plan,
+        job: &Path,
+        program: &Path,
+    ) -> Result<(Vec<Call>, String), Unfit> {
+        let broken = |what: String| Unfit::new("capture-broken", what);
+        let shown = |args: &[String]| {
+            let mut shown = args.to_vec();
+            shown.insert(shown.len() - 1, "-fdebug-prefix-map=<cwd>=.".to_owned());
+            shown.join(" ")
+        };
+        let no_module = |plan: &kiln::Plan| {
+            if plan.compile_args.iter().any(|arg| arg.starts_with("-flto")) {
+                Unfit::new("opt-first-lto", "link-time optimization: kiln++ did not run llc")
+            } else {
+                Unfit::new("no-module", "kiln++ did not run llc")
+            }
+        };
+        let Some(steps) = plan.two_step(&job.join("bmi").to_string_lossy()) else {
+            // One command.
+            let built = self.run_kiln(&self.kiln_args(&plan.compile_args, program), job, job)?;
+            let calls = kiln::backend_calls(job).map_err(broken)?;
+            if !(built.end == End::Exit(0) && program.is_file()) {
+                // kiln stops at the first tool that fails: with a module
+                // already given to llc, it was llc or the link.
+                let reason = if calls.is_empty() { "compile-fails" } else { "link-fails" };
+                return Err(Unfit::new(reason, self.tidy(&failure("kiln++", &built), job)));
+            }
+            let count = calls.len();
+            let calls = match count {
+                0 => return Err(no_module(plan)),
+                1 => calls.into_iter().map(|call| (None, call)).collect(),
+                // Several files on one command line.
+                _ => kiln::in_link_order(calls)
+                    .ok_or_else(|| {
+                        let detail = format!(
+                            "kiln++ ran llc {count} times and its objects do not say in which order they are linked"
+                        );
+                        Unfit::new("multi-file", detail)
+                    })?
+                    .into_iter()
+                    .map(|(name, call)| (Some(name), call))
+                    .collect(),
+            };
+            return Ok((calls, shown(&plan.compile_args)));
+        };
+        // Separate steps, as kiln's own harness builds the test.
+        let steps = steps?;
+        for dir in ["bmi", "obj"] {
+            let dir = job.join(dir);
+            fs::create_dir_all(&dir).map_err(|e| broken(io("create", &dir, &e)))?;
+        }
+        let object = |name: &str| job.join("obj").join(format!("{name}.o"));
+        let mut made: Vec<(String, kiln::BackendCall)> = Vec::new();
+        for (index, compile) in steps.compiles.iter().enumerate() {
+            let calls_dir = job.join(format!("step-{index}"));
+            fs::create_dir_all(&calls_dir).map_err(|e| broken(io("create", &calls_dir, &e)))?;
+            let output = object(&compile.name);
+            let built = self.run_kiln(&self.kiln_args(&compile.args, &output), &calls_dir, job)?;
+            let mut calls = kiln::backend_calls(&calls_dir).map_err(broken)?;
+            if !(built.end == End::Exit(0) && output.is_file()) {
+                let reason = if calls.is_empty() { "compile-fails" } else { "llc-fails" };
+                let detail = format!("module '{}': {}", compile.name, failure("kiln++", &built));
+                return Err(Unfit::new(reason, self.tidy(&detail, job)));
+            }
+            match (calls.pop(), calls.len()) {
+                (Some(call), 0) => made.push((compile.name.clone(), call)),
+                (None, _) => return Err(no_module(plan)),
+                (Some(_), more) => {
+                    let detail = format!(
+                        "kiln++ ran llc {} times for the one file of module '{}'",
+                        more + 1,
+                        compile.name
+                    );
+                    return Err(Unfit::new("multi-file", detail));
+                }
+            }
+        }
+        let mut link: Vec<std::ffi::OsString> = Vec::new();
+        if let Producer::Kiln { llvm_dir, .. } = &self.producer {
+            link.push(tools::prefixed("--llvm-dir=", llvm_dir));
+        }
+        link.extend(steps.link_args.iter().map(Into::into));
+        link.extend(steps.link_order.iter().map(|name| object(name).into_os_string()));
+        link.push("-o".into());
+        link.push(program.into());
+        let linked = self.run_kiln(&link, &job.join("obj"), job)?;
+        if !(linked.end == End::Exit(0) && program.is_file()) {
+            return Err(Unfit::new("link-fails", self.tidy(&failure("kiln++", &linked), job)));
+        }
+        // In the order of the link; a test of one file is one module.
+        let alone = steps.link_order.len() == 1;
+        let mut calls = Vec::new();
+        for name in &steps.link_order {
+            let at = made.iter().position(|(made, _)| made == name).expect("every step was run");
+            let (name, call) = made.swap_remove(at);
+            calls.push(((!alone).then_some(name), call));
+        }
+        // The same steps, with a name in place of this job's directory.
+        let named = plan.two_step("<job>/bmi").expect("the plan has steps")?;
+        let mut commands: Vec<String> = named
+            .compiles
+            .iter()
+            .map(|compile| format!("{} -o {}.o", shown(&compile.args), compile.name))
+            .collect();
+        let objects: Vec<String> =
+            named.link_order.iter().map(|name| format!("{name}.o")).collect();
+        commands.push(format!("{} {} -o test.out", named.link_args.join(" "), objects.join(" ")));
+        Ok((calls, commands.join(" && ")))
+    }
+
+    /// The module of one `llc` run as an entry holds it: bitcode is
+    /// written as text by the group's `llvm-dis`.
+    fn module_of_call(
+        &self,
+        name: Option<String>,
+        module: Vec<u8>,
+        test: &kiln::KilnTest,
+        plan: &kiln::Plan,
+        job: &Path,
+    ) -> Result<Module, Unfit> {
+        let broken = |what: String| Unfit::new("capture-broken", what);
+        if !kiln::is_bitcode(&module) {
+            return Ok(Module { name, text: module, delivered: Delivered::Text });
+        }
+        let Some(llvm_dis) = &self.llvm_dis else {
+            // Without the tool the test is skipped for what made kiln run
+            // `opt`, as a capture without this step skipped it.
+            let source = kiln::source_with_includes(&test.path);
+            let reason = kiln::opt_first_reason(&plan.compile_args, &source);
+            let detail = "llc was given bitcode (opt ran first) and no llvm-dis is installed to \
+                          write it as text";
+            return Err(Unfit::new(reason, detail));
+        };
+        let text = job.join("module.ll");
+        let configure = |command: &mut std::process::Command| {
+            command.arg("-o").arg(&text).arg("-").env("LC_ALL", "C");
+        };
+        let output =
+            process::run(llvm_dis, configure, &module, self.options.tool_limits).map_err(broken)?;
+        if output.end != End::Exit(0) {
+            let detail = self.tidy(&failure("llvm-dis", &output), job);
+            return Err(Unfit::new("llvm-dis-fails", detail));
+        }
+        let text = fs::read(&text).map_err(|e| broken(io("read", &text, &e)))?;
+        Ok(Module { name, text, delivered: Delivered::Bitcode })
+    }
+
     fn capture_kiln(
         &self,
         test: &kiln::KilnTest,
         header: &kiln::Header,
         job: &Path,
-        kiln: &Path,
-        root: &Path,
-        llvm_dir: &Path,
-        cache: &Path,
     ) -> Result<Candidate, Unfit> {
         let broken = |what: String| Unfit::new("capture-broken", what);
         let plan = kiln::plan(test, header, self.host, self.llvm.major)?;
         let program = job.join("test.out");
-        // The arguments of kiln's own harness, and one more: debug
-        // information names the directory kiln ran in, which is this
-        // machine's; it is written as `.` instead.
-        let (test_file, before) = plan.compile_args.split_last().expect("the test is an argument");
-        let mut args = vec![tools::prefixed("--llvm-dir=", llvm_dir)];
-        args.extend(before.iter().map(Into::into));
-        let mut map = tools::prefixed("-fdebug-prefix-map=", root);
-        map.push("=.");
-        args.push(map);
-        args.push(test_file.into());
-        args.push("-o".into());
-        args.push(program.clone().into());
-        let configure = |command: &mut std::process::Command| {
-            command
-                .args(&args)
-                .current_dir(root)
-                .env("TMPDIR", job.join("tmp"))
-                .env("XDG_CACHE_HOME", cache)
-                .env("HOD_CORPUS_CAPTURE", job)
-                .env("LC_ALL", "C")
-                .env_remove("KILN_LLVM_DIR");
-        };
-        let built =
-            process::run(kiln, configure, b"", self.options.compile_limits).map_err(broken)?;
-        let calls = kiln::backend_calls(job).map_err(broken)?;
-        if !(built.end == End::Exit(0) && program.is_file()) {
-            // kiln stops at the first tool that fails: with a module
-            // already given to llc, it was llc or the link.
-            let reason = if calls.is_empty() { "compile-fails" } else { "link-fails" };
-            return Err(Unfit::new(reason, self.tidy(&failure("kiln++", &built), job)));
-        }
-        let call = match &calls[..] {
-            [call] => call,
-            [] if plan.compile_args.iter().any(|arg| arg.starts_with("-flto")) => {
-                let detail = "link-time optimization: kiln++ did not run llc";
-                return Err(Unfit::new("opt-first-lto", detail));
+        let (calls, producer_args) = self.kiln_calls(&plan, job, &program)?;
+
+        // What llc was given besides the modules: the same for each.
+        let mut llc_args: Option<Vec<String>> = None;
+        for (_, call) in &calls {
+            let Some(args) = kiln::llc_args(&call.args) else {
+                let detail =
+                    format!("llc's command line is not '... -o <object> -': {:?}", call.args);
+                return Err(Unfit::new("llc-args-unexpected", self.tidy(&detail, job)));
+            };
+            match &llc_args {
+                Some(first) if *first != args => {
+                    let detail = format!(
+                        "the test's modules were given different llc arguments: '{}' and '{}'",
+                        first.join(" "),
+                        args.join(" ")
+                    );
+                    return Err(Unfit::new("multi-file", detail));
+                }
+                _ => llc_args = Some(args),
             }
-            [] => return Err(Unfit::new("no-module", "kiln++ did not run llc")),
-            many => {
-                let detail = format!("kiln++ ran llc {} times", many.len());
-                return Err(Unfit::new("multi-file", detail));
-            }
-        };
-        if kiln::is_bitcode(&call.stdin) {
-            let source = kiln::source_with_includes(&test.path);
-            let reason = kiln::opt_first_reason(&plan.compile_args, &source);
-            return Err(Unfit::new(reason, "llc was given bitcode: opt ran first"));
         }
-        let Some(llc_args) = kiln::llc_args(&call.args) else {
-            let detail = format!("llc's command line is not '... -o <object> -': {:?}", call.args);
-            return Err(Unfit::new("llc-args-unexpected", self.tidy(&detail, job)));
-        };
+        let llc_args = llc_args.expect("a test has a module");
         let pie = !llc_args.iter().any(|arg| arg == "-relocation-model=static");
+        let mut modules = Vec::new();
+        for (name, call) in calls {
+            modules.push(self.module_of_call(name, call.stdin, test, &plan, job)?);
+        }
 
         let ran = self.run_program(&program, &plan.run_args, &plan.stdin, job).map_err(broken)?;
         let recipe = Recipe {
@@ -498,6 +679,7 @@ impl Group<'_> {
             pie,
             args: plan.run_args.clone(),
             stdin: plan.stdin.clone(),
+            llc_args: kiln::repeated_llc_args(&llc_args),
         };
         if !matches!(ran.end, End::Exit(_)) {
             // Not an exit: the reason and detail of `expectations`.
@@ -516,11 +698,7 @@ impl Group<'_> {
             return Err(Unfit::new("expectation-mismatch", detail));
         }
         let expect = entry::expectations(&recipe, &ran)?;
-        let mut shown = plan.compile_args.clone();
-        shown.insert(shown.len() - 1, "-fdebug-prefix-map=<cwd>=.".to_owned());
-        let (producer_args, llc_args) = (shown.join(" "), llc_args.join(" "));
-        let entry = entry::compose(&expect, &producer_args, &llc_args, &call.stdin)?;
-        Ok(Candidate { expect, text: entry, producer_args, llc_args })
+        Candidate { expect, producer_args, llc_args: llc_args.join(" "), modules }.checked()
     }
 
     fn capture_torture(
@@ -543,9 +721,6 @@ impl Group<'_> {
             x_file.as_deref(),
             self.host,
         )?;
-        let clang_args = torture::clang_args(&test.name, &flags);
-        let (module, object, program) =
-            (job.join("module.ll"), job.join("module.o"), job.join("program"));
         let tool_limits = self.options.tool_limits;
         let step = |tool: &Path,
                     name: &str,
@@ -564,16 +739,41 @@ impl Group<'_> {
                 Err(Unfit::new(reason, self.tidy(&failure(name, &output), job)))
             }
         };
-        let mut args: Vec<&std::ffi::OsStr> = clang_args.iter().map(AsRef::as_ref).collect();
-        args.insert(args.len() - 1, "-o".as_ref());
-        args.insert(args.len() - 1, module.as_ref());
-        step(clang, "clang", "clang-rejects", &args, &module)?;
+        // The test, and the files it is built with: each a module.
+        let mut files: Vec<(Option<&str>, &str)> = vec![(None, &test.name)];
+        if !test.with.is_empty() {
+            files[0].0 = Some(torture::TEST_MODULE);
+            files.extend(test.with.iter().map(|(name, file)| (Some(*name), file.as_str())));
+        }
+        // The program the expectations are read from is the oracle's.
         let llc_args = kiln::harness_llc_args(true);
-        let mut args: Vec<&std::ffi::OsStr> = llc_args.iter().map(AsRef::as_ref).collect();
-        args.extend(["-o".as_ref(), object.as_os_str(), module.as_os_str()]);
-        step(&self.llvm.llc, "llc", "llc-fails", &args, &object)?;
-        let args: [&std::ffi::OsStr; 5] =
-            ["-pie".as_ref(), "-o".as_ref(), program.as_ref(), object.as_ref(), "-lm".as_ref()];
+        let (mut commands, mut modules, mut objects) = (Vec::new(), Vec::new(), Vec::new());
+        for (index, (name, file)) in files.iter().enumerate() {
+            let module = job.join(format!("module-{index}.ll"));
+            let object = job.join(format!("module-{index}.o"));
+            let clang_args = torture::clang_args(file, &flags);
+            let mut args: Vec<&std::ffi::OsStr> = clang_args.iter().map(AsRef::as_ref).collect();
+            args.insert(args.len() - 1, "-o".as_ref());
+            args.insert(args.len() - 1, module.as_ref());
+            step(clang, "clang", "clang-rejects", &args, &module)?;
+            let mut args: Vec<&std::ffi::OsStr> = llc_args.iter().map(AsRef::as_ref).collect();
+            args.extend(engine::REFERENCE_SELECTOR.iter().map(AsRef::<std::ffi::OsStr>::as_ref));
+            args.extend(["-o".as_ref(), object.as_os_str(), module.as_os_str()]);
+            step(&self.llvm.llc, "llc", "llc-fails", &args, &object)?;
+            let text = fs::read(&module).map_err(|e| broken(io("read", &module, &e)))?;
+            modules.push(Module {
+                name: name.map(str::to_owned),
+                text,
+                delivered: Delivered::Text,
+            });
+            commands.push(clang_args.join(" "));
+            objects.push(object);
+        }
+        let program = job.join("program");
+        let mut args: Vec<&std::ffi::OsStr> =
+            vec!["-pie".as_ref(), "-o".as_ref(), program.as_ref()];
+        args.extend(objects.iter().map(AsRef::<std::ffi::OsStr>::as_ref));
+        args.push("-lm".as_ref());
         step(driver, "link", "link-fails", &args, &program)?;
 
         let ran = self.run_program(&program, &[], b"", job).map_err(broken)?;
@@ -585,16 +785,15 @@ impl Group<'_> {
             pie: true,
             args: Vec::new(),
             stdin: Vec::new(),
+            llc_args: Vec::new(),
         };
         let expect = entry::expectations(&recipe, &ran)?;
         if ran.end != End::Exit(0) {
             // The suite's tests report failure by `abort` or a status.
             return Err(Unfit::new("program-fails", ended(ran.end)));
         }
-        let module = fs::read(&module).map_err(|e| broken(io("read", &module, &e)))?;
-        let (producer_args, llc_args) = (clang_args.join(" "), llc_args.join(" "));
-        let entry = entry::compose(&expect, &producer_args, &llc_args, &module)?;
-        Ok(Candidate { expect, text: entry, producer_args, llc_args })
+        let (producer_args, llc_args) = (commands.join(" && "), llc_args.join(" "));
+        Candidate { expect, producer_args, llc_args, modules }.checked()
     }
 
     fn run_program(
@@ -663,9 +862,28 @@ struct Common {
     run: PathBuf,
 }
 
-/// Whether the oracle's side of a test passed with every linker: the
-/// records are those of a run in which hod declined.
-fn admitted(records: &[Record], linkers: usize) -> Result<(), String> {
+/// Why a candidate is not admitted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Refused {
+    detail: String,
+    /// The oracle's own side passed and its witness did not confirm it.
+    unconfirmed: bool,
+    /// The oracle's objects did not link: what a link that tolerates
+    /// warnings may get past.
+    link: bool,
+}
+
+impl Refused {
+    /// The skip reason.
+    fn reason(&self) -> &'static str {
+        if self.unconfirmed { "oracle-unconfirmed" } else { "not-reproducible" }
+    }
+}
+
+/// Whether the oracle's side of a test passed with every linker, and its
+/// witness agreed: the records are those of a run with the witness in
+/// which hod declined.
+fn admitted(records: &[Record], linkers: usize) -> Result<(), Refused> {
     let passed = |record: &Record| {
         record.outcome == Outcome::Fail
             && record.built_by == BuiltBy::Declined
@@ -676,22 +894,29 @@ fn admitted(records: &[Record], linkers: usize) -> Result<(), String> {
         Some(record) => {
             // Output that differs from run to run (an address, a time) is
             // not quoted: the table is the same after every capture.
-            const DIFFERS: &str = "differs from the directives";
-            let detail = match record.detail.find(DIFFERS) {
-                Some(at) => &record.detail[..at + DIFFERS.len()],
-                None => &record.detail,
-            };
-            Err(format!(
-                "{}{detail}",
-                record
-                    .linker
-                    .as_ref()
-                    .map_or_else(String::new, |linker| format!("with {linker}: ")),
-            ))
+            const DIFFERS: [&str; 2] = ["differs from the directives", "differs from llc -O0's"];
+            let cut = DIFFERS
+                .iter()
+                .find_map(|differs| record.detail.find(differs).map(|at| at + differs.len()));
+            let detail = &record.detail[..cut.unwrap_or(record.detail.len())];
+            let error = record.outcome == Outcome::Error;
+            Err(Refused {
+                detail: format!(
+                    "{}{detail}",
+                    record
+                        .linker
+                        .as_ref()
+                        .map_or_else(String::new, |linker| format!("with {linker}: ")),
+                ),
+                unconfirmed: error && record.detail.starts_with(engine::WITNESS),
+                link: error && record.detail.starts_with("oracle: link with "),
+            })
         }
-        None if records.len() != linkers => {
-            Err(format!("{} results for {linkers} linkers", records.len()))
-        }
+        None if records.len() != linkers => Err(Refused {
+            detail: format!("{} results for {linkers} linkers", records.len()),
+            unconfirmed: false,
+            link: false,
+        }),
         None => Ok(()),
     }
 }
@@ -818,15 +1043,6 @@ fn capture_group(
 
     // Admit: the oracle's side of every candidate, by irdiff's own code.
     let stage = group.run.join("stage");
-    let mut staged = Vec::new();
-    for (index, result) in captured.iter().enumerate() {
-        if let Ok(candidate) = result {
-            let entry = entry_path(source, major, &todo[index].test);
-            let path = stage.join(&entry);
-            write_file(&path, candidate.text.as_bytes(), 0o644)?;
-            staged.push((index, Test { name: entry, ir: path, expect: candidate.expect.clone() }));
-        }
-    }
     let session = Session {
         toolchain: Toolchain {
             llc: group.llvm.llc.clone(),
@@ -842,16 +1058,58 @@ fn capture_group(
         run_limits: options.run_limits,
         work: group.run.join(format!("admit-{source}-llvm{major}")),
         keep: false,
+        // An entry is a program the oracle is sure of ("Admission").
+        witness: true,
     };
-    if !staged.is_empty() {
-        eprintln!("corpus: {label}: admitting {} of {total} captured tests", staged.len());
+    let mut captured = captured;
+    let admit = |captured: &[Result<Candidate, Unfit>],
+                 which: &[usize]|
+     -> Result<BTreeMap<usize, Result<(), Refused>>, String> {
+        let mut tests = Vec::new();
+        for index in which {
+            let Ok(candidate) = &captured[*index] else { continue };
+            let Ok(text) = candidate.text() else { continue };
+            let entry = entry_path(source, major, &todo[*index].test);
+            let path = stage.join(&entry);
+            write_file(&path, text.as_bytes(), 0o644)?;
+            tests.push((*index, Test { name: entry, ir: path, expect: candidate.expect.clone() }));
+        }
+        let run: Vec<Test> = tests.iter().map(|(_, test)| test.clone()).collect();
+        let records = session.run_tests(&run, jobs)?;
+        let _ = fs::remove_dir_all(&session.work);
+        Ok(tests
+            .iter()
+            .zip(&records)
+            .map(|((index, _), records)| (*index, admitted(records, common.linkers.len())))
+            .collect())
+    };
+    let all: Vec<usize> = (0..captured.len()).filter(|index| captured[*index].is_ok()).collect();
+    if !all.is_empty() {
+        eprintln!("corpus: {label}: admitting {} of {total} captured tests", all.len());
     }
-    let tests: Vec<Test> = staged.iter().map(|(_, test)| test.clone()).collect();
-    let records = session.run_tests(&tests, jobs)?;
-    let _ = fs::remove_dir_all(&session.work);
-    let mut verdicts: BTreeMap<usize, Result<(), String>> = BTreeMap::new();
-    for ((index, _), records) in staged.iter().zip(&records) {
-        verdicts.insert(*index, admitted(records, common.linkers.len()));
+    let mut verdicts = admit(&captured, &all)?;
+    // A candidate whose objects do not link is tried once more with a
+    // link that tolerates warnings; if that is what it takes, the entry
+    // says so (`link: allow-warnings`).
+    let warned: Vec<usize> = verdicts
+        .iter()
+        .filter(|(_, verdict)| verdict.as_ref().is_err_and(|refused| refused.link))
+        .map(|(index, _)| *index)
+        .collect();
+    if !warned.is_empty() {
+        for index in &warned {
+            if let Ok(candidate) = &mut captured[*index] {
+                candidate.expect.allow_warnings = true;
+            }
+        }
+        for (index, verdict) in admit(&captured, &warned)? {
+            match (verdict, &mut captured[index]) {
+                (Ok(()), _) => _ = verdicts.insert(index, Ok(())),
+                // The first verdict stands.
+                (Err(_), Ok(candidate)) => candidate.expect.allow_warnings = false,
+                (Err(_), Err(_)) => {}
+            }
+        }
     }
     let _ = fs::remove_dir_all(&stage);
 
@@ -860,15 +1118,15 @@ fn capture_group(
         let entry = entry_path(source, major, &item.test);
         let slot = (source.to_owned(), major, item.test.clone());
         let result = result.and_then(|candidate| match verdicts.remove(&index) {
-            Some(Ok(())) => Ok(candidate),
-            Some(Err(detail)) => {
-                Err(Unfit::new("not-reproducible", admission_detail(&detail, &group.run)))
+            Some(Ok(())) => candidate.text().map(|text| (candidate, text)),
+            Some(Err(refused)) => {
+                Err(Unfit::new(refused.reason(), admission_detail(&refused.detail, &group.run)))
             }
             None => Err(Unfit::new("capture-broken", "the candidate was not admitted")),
         });
         match result {
-            Ok(candidate) => {
-                write_file(&options.out.join(&entry), candidate.text.as_bytes(), 0o644)?;
+            Ok((candidate, text)) => {
+                write_file(&options.out.join(&entry), text.as_bytes(), 0o644)?;
                 let row = Row {
                     entry: entry.clone(),
                     source: source.to_owned(),
@@ -878,8 +1136,9 @@ fn capture_group(
                     producer: producer.to_owned(),
                     producer_args: candidate.producer_args,
                     llc_args: candidate.llc_args,
-                    sha256: sha256::hex(candidate.text.as_bytes()),
-                    bytes: candidate.text.len() as u64,
+                    delivered: entry::delivered(&candidate.modules),
+                    sha256: sha256::hex(text.as_bytes()),
+                    bytes: text.len() as u64,
                     key: item.key.clone(),
                 };
                 manifest.rows.insert(entry, row);
@@ -1180,8 +1439,26 @@ pub fn capture(options: &Options) -> Result<CaptureReport, String> {
                     };
                     (producer, version, found)
                 };
-                let group =
-                    Group { options, source, llvm, host, producer, run: common.run.clone() };
+                // What writes a module kiln gave llc as bitcode as text.
+                let llvm_dis = options.search.versioned("llvm-dis", major);
+                if source == KILN && llvm_dis.is_none() {
+                    missing(
+                        &mut report,
+                        format!(
+                            "llvm-dis {major} not found; kiln's modules that reach llc as bitcode are not captured with it"
+                        ),
+                        true,
+                    );
+                }
+                let group = Group {
+                    options,
+                    source,
+                    llvm,
+                    host,
+                    producer,
+                    llvm_dis,
+                    run: common.run.clone(),
+                };
                 let stats = capture_group(
                     &group,
                     &common,
@@ -1256,6 +1533,9 @@ mod tests {
         let declined = |linker| {
             record(Outcome::Fail, BuiltBy::Declined, Some(ADMISSION), Some(linker), "hod declined")
         };
+        let admitted = |records: &[Record], linkers| {
+            admitted(records, linkers).map_err(|refused| refused.detail)
+        };
         assert_eq!(admitted(&[declined("bfd"), declined("lld")], 2), Ok(()));
         assert_eq!(admitted(&[declined("bfd")], 2), Err("1 results for 2 linkers".to_owned()));
         assert!(admitted(&[], 0).is_ok());
@@ -1302,6 +1582,38 @@ mod tests {
         );
         let no_object = record(Outcome::Error, BuiltBy::Nobody, None, None, "oracle: llc failed");
         assert_eq!(admitted(&[no_object], 1), Err("oracle: llc failed".to_owned()));
+        // "Skip reasons": an oracle its witness does not confirm, and a
+        // link that a warning may be all that is wrong with.
+        let error = |linker, detail| {
+            record(Outcome::Error, BuiltBy::Declined, Some(ADMISSION), Some(linker), detail)
+        };
+        let unconfirmed = super::admitted(
+            &[error(
+                "bfd",
+                "witness: the program of llc -O2's object wrote stdout that differs from \
+                 llc -O0's at line 2: expected \"1\\n\", got \"2\\n\"",
+            )],
+            1,
+        )
+        .unwrap_err();
+        assert_eq!(
+            unconfirmed.detail,
+            "with bfd: witness: the program of llc -O2's object wrote stdout that differs from \
+             llc -O0's"
+        );
+        assert_eq!((unconfirmed.reason(), unconfirmed.link), ("oracle-unconfirmed", false));
+        let link = super::admitted(
+            &[
+                error("bfd", "oracle: link with bfd failed (exit status 1): warning"),
+                declined("lld"),
+            ],
+            2,
+        )
+        .unwrap_err();
+        assert_eq!((link.reason(), link.link, link.unconfirmed), ("not-reproducible", true, false));
+        let run = super::admitted(&[error("bfd", "oracle: the program of llc's object x")], 1);
+        let run = run.unwrap_err();
+        assert_eq!((run.reason(), run.link), ("not-reproducible", false));
         // A record the stand-in did not cause is not an admission.
         let other = record(Outcome::Fail, BuiltBy::Declined, Some("other"), Some("bfd"), "x");
         assert!(admitted(&[other], 1).is_err());

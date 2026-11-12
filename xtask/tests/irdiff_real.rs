@@ -15,7 +15,9 @@ use std::time::Duration;
 use common::Scratch;
 use hod_testutil::write_script;
 use xtask::irdiff::tools::{self, LLVM_MAJORS, REQUIRED_LINKERS};
-use xtask::irdiff::{self, Arch, BuiltBy, Config, Mode, Outcome, Report, Search, TierFilter};
+use xtask::irdiff::{
+    self, Arch, BuiltBy, Config, Mode, Outcome, Report, Search, TierFilter, engine,
+};
 
 /// The LLVM majors of the oracle that are installed, if the machine can
 /// run the harness at all: an oracle, the linker driver and a linker.
@@ -157,6 +159,18 @@ fn the_seed_corpus_builds_for_the_other_target() {
 /// the module with a `sed` expression: a hod that builds everything, and
 /// (with an expression that changes the program) one that miscompiles.
 fn rewriting_hod(scratch: &Scratch, name: &str, llc: &Path, expression: &str) -> PathBuf {
+    selecting_hod(scratch, name, llc, expression, "")
+}
+
+/// [`rewriting_hod`] whose `llc` also gets the arguments `extra`: a hod
+/// that is `llc -O0` with the instruction selector `extra` chooses.
+fn selecting_hod(
+    scratch: &Scratch,
+    name: &str,
+    llc: &Path,
+    expression: &str,
+    extra: &str,
+) -> PathBuf {
     let path = scratch.join(name);
     let body = format!(
         r#"PATH=/usr/bin:/bin
@@ -172,7 +186,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 sed -e '{expression}' "$in" > "$out.ll" || exit 1
-'{llc}' $args -o "$out" "$out.ll" || exit 1
+'{llc}' $args {extra} -o "$out" "$out.ll" || exit 1
 printf 'hod\t-\ttext\t1\t%s\t-\t5\t-\n' "$out" >> "$log""#,
         llc = llc.display()
     );
@@ -317,4 +331,399 @@ fn limits_hold_for_real_programs() {
     assert_eq!(report.count(Outcome::Error), report.records.len(), "{all}");
     assert!(all.contains("oracle: the program of llc's object timed out after 2 s"), "{all}");
     assert_eq!(report.exit_status(), 3);
+}
+
+/// A copy of a test of the seed corpus without its `unsupported`
+/// directives, and with `replace`d text: the test for a hod that builds
+/// everything.
+fn seed_test(scratch: &Scratch, name: &str, replace: &[(&str, &str)]) -> PathBuf {
+    let source = irdiff::workspace_root().join("tests/ir").join(name);
+    let text = std::fs::read_to_string(&source).unwrap();
+    let mut text: String = text
+        .lines()
+        .filter(|line| !line.starts_with(";@ unsupported:"))
+        .flat_map(|line| [line, "\n"])
+        .collect();
+    for (from, to) in replace {
+        assert!(text.contains(from), "{name} has no '{from}'");
+        text = text.replace(from, to);
+    }
+    let path = scratch.join(name);
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+/// An LLVM installation directory whose `llc` is the real one without the
+/// arguments `dropped`: the oracle the harness would have with another
+/// instruction selector.
+fn llvm_without(scratch: &Scratch, name: &str, llc: &Path, dropped: &[&str]) -> PathBuf {
+    let dir = scratch.join(name);
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    let body = format!(
+        "for arg; do\n  shift\n  case \"$arg\" in\n    {}) ;;\n    *) set -- \"$@\" \"$arg\" ;;\n  \
+         esac\ndone\nexec '{}' \"$@\"",
+        dropped.join("|"),
+        llc.display()
+    );
+    write_script(&dir.join("bin/llc"), &body);
+    dir
+}
+
+/// A line on this process's stderr that the test harness does not capture:
+/// what a passing test has to tell whoever reads the gate's log.
+fn report(line: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{line}");
+}
+
+const NARROW_LOAD: &str = "selector_narrow_load.ll";
+const I1_COMPARE: &str = "selector_i1_compare.ll";
+
+// "The oracle": the reference is `llc -O0` with SelectionDAG because each
+// of the other two selectors `llc -O0` can use miscompiles one of the two
+// reproducers of spec/interp.md §10.1 on AArch64. A hod that is the
+// reference passes both; a hod that is plain `llc -O0` (GlobalISel on
+// AArch64) fails the narrow load, and one that is `llc -O0 -global-isel=0`
+// (FastISel) fails the i1 compare. When an LLVM no longer does, the test
+// says so and passes: the workaround can then be reconsidered.
+#[test]
+fn the_reference_is_not_plain_o0() {
+    let Some(majors) = installed() else { return };
+    let scratch = Scratch::new("irdiff-reference");
+    let search = Search::from_env();
+    let tests = [seed_test(&scratch, NARROW_LOAD, &[]), seed_test(&scratch, I1_COMPARE, &[])];
+    for major in majors {
+        let llvm = tools::find_llvm(Some(&major.to_string()), &search).unwrap().unwrap();
+        let run = |name: &str, extra: &str| {
+            let mut config = config(&scratch);
+            config.paths = tests.to_vec();
+            config.llvm = Some(major.to_string());
+            config.hod = Some(selecting_hod(&scratch, name, &llvm.llc, "s/^$//", extra));
+            irdiff::run(&config).unwrap()
+        };
+        let of = |report: &Report, test: &str| -> Vec<(Outcome, String)> {
+            let records = report.records.iter().filter(|record| record.test.ends_with(test));
+            records.map(|record| (record.outcome, record.detail.clone())).collect()
+        };
+
+        // The reference agrees with the directives and with itself.
+        let reference = run("hod-reference", &engine::REFERENCE_SELECTOR.join(" "));
+        let all = reference.summary(true);
+        assert_eq!(reference.exit_status(), 0, "LLVM {major}:\n{all}");
+        assert_eq!(reference.count(Outcome::Pass), reference.records.len(), "{all}");
+        let linkers = of(&reference, NARROW_LOAD).len();
+        assert!(linkers >= 1 && reference.records.len() == 2 * linkers, "{all}");
+
+        // The other two selectors, each on the reproducer it gets wrong.
+        for (name, extra, selector, wrong, got) in [
+            ("hod-plain", "", "GlobalISel (plain llc -O0)", NARROW_LOAD, "-5408"),
+            ("hod-fast", "-global-isel=0", "FastISel (llc -O0 -global-isel=0)", I1_COMPARE, "1"),
+        ] {
+            let other = run(name, extra);
+            let all = other.summary(true);
+            assert_eq!(other.count(Outcome::Error), 0, "LLVM {major}, {name}:\n{all}");
+            let records = of(&other, wrong);
+            assert_eq!(records.len(), linkers, "{all}");
+            if Arch::host() != Some(Arch::Aarch64) {
+                // The two bugs are AArch64's; elsewhere every selector of
+                // `llc -O0` is expected to be right about these programs.
+                assert_eq!(other.count(Outcome::Pass), other.records.len(), "{all}");
+            } else if records.iter().all(|(outcome, _)| *outcome == Outcome::Pass) {
+                report(&format!(
+                    "note: LLVM {major}: {selector} no longer miscompiles tests/ir/{wrong} on \
+                     AArch64; the oracle's '-global-isel=0 -fast-isel=0' can be reconsidered \
+                     (spec/harness.md \"irdiff\", \"The oracle\")"
+                ));
+            } else {
+                let expected = printed(wrong);
+                let detail = format!(
+                    "the program of hod's object wrote stdout that differs from llc's at line \
+                     1: expected \"{expected}\\n\", got \"{got}\\n\""
+                );
+                assert_eq!(records, vec![(Outcome::Fail, detail); linkers], "{all}");
+                assert_eq!(other.exit_status(), 1, "{all}");
+            }
+        }
+    }
+}
+
+/// What the reproducer `test` prints, without the newline.
+fn printed(test: &str) -> &'static str {
+    if test == NARROW_LOAD { "60128" } else { "0" }
+}
+
+// "The witness", on real tools: the seed corpus is confirmed by `llc -O2`
+// with every LLVM (what the full gate runs), and an oracle that is plain
+// `llc -O0` is caught on the narrow load even when the test's directives
+// say what that oracle prints, which is how such a program would have
+// entered the corpus.
+#[test]
+fn the_witness_confirms_the_reference_and_catches_plain_o0() {
+    let Some(majors) = installed() else { return };
+    let scratch = Scratch::new("irdiff-witness");
+    let search = Search::from_env();
+    for major in majors {
+        let mut seed = config(&scratch);
+        seed.hod = Some(workspace_hod());
+        seed.llvm = Some(major.to_string());
+        seed.witness = true;
+        let report_of_seed = irdiff::run(&seed).unwrap();
+        let all = report_of_seed.summary(true);
+        assert_eq!(report_of_seed.exit_status(), 0, "LLVM {major}:\n{all}");
+        assert_eq!(report_of_seed.tests(), corpus_size(), "{all}");
+        assert!(all.contains("; witness"), "{all}");
+
+        // The same oracle without its selector arguments, and a test that
+        // was written from what that oracle's program prints.
+        let llvm = tools::find_llvm(Some(&major.to_string()), &search).unwrap().unwrap();
+        let plain = llvm_without(
+            &scratch,
+            &format!("plain-llvm-{major}"),
+            &llvm.llc,
+            &engine::REFERENCE_SELECTOR,
+        );
+        let wrong = seed_test(&scratch, NARROW_LOAD, &[(";@ stdout: 60128", ";@ stdout: -5408")]);
+        let mut config = config(&scratch);
+        config.paths = vec![wrong];
+        config.llvm = Some(plain.to_str().unwrap().to_owned());
+        config.hod = Some(rewriting_hod(&scratch, "hod-plain", &llvm.llc, "s/^$//"));
+        let unwitnessed = irdiff::run(&config).unwrap();
+        config.witness = true;
+        let witnessed = irdiff::run(&config).unwrap();
+        let all = format!("{}{}", unwitnessed.summary(true), witnessed.summary(true));
+        assert!(!witnessed.records.is_empty(), "{all}");
+        assert_eq!(witnessed.records.len(), unwitnessed.records.len(), "{all}");
+        if unwitnessed.count(Outcome::Pass) == unwitnessed.records.len() {
+            // Plain `-O0` prints -5408 and hod agrees with it: without the
+            // witness the wrong program is the expectation.
+            assert_eq!(Arch::host(), Some(Arch::Aarch64), "{all}");
+            let detail = "witness: the program of llc -O2's object wrote stdout that differs \
+                          from llc -O0's at line 1: expected \"-5408\\n\", got \"60128\\n\"";
+            for record in &witnessed.records {
+                assert_eq!((record.outcome, record.detail.as_str()), (Outcome::Error, detail));
+            }
+            assert_eq!(witnessed.exit_status(), 3, "{all}");
+        } else {
+            // This `llc -O0` prints 60128: the test is the wrong one, with
+            // or without the witness.
+            for record in unwitnessed.records.iter().chain(&witnessed.records) {
+                assert_eq!(record.outcome, Outcome::Error, "{all}");
+                assert!(record.detail.starts_with("oracle: the program of llc's object"), "{all}");
+            }
+            if Arch::host() == Some(Arch::Aarch64) {
+                report(&format!(
+                    "note: LLVM {major}: plain llc -O0 no longer miscompiles \
+                     tests/ir/{NARROW_LOAD} on AArch64; the oracle's '-global-isel=0 \
+                     -fast-isel=0' can be reconsidered (spec/harness.md \"irdiff\", \"The \
+                     oracle\")"
+                ));
+            }
+        }
+    }
+}
+
+const SECTIONS: &str = r#";@ llc-args: -code-model=small -data-sections -debugger-tune=gdb -fp-contract=off -function-sections -mcpu=generic -x86-branches-within-32B-boundaries
+;@ stdout: 42
+@value = global i32 40
+@.fmt = private unnamed_addr constant [4 x i8] c"%d\0A\00"
+
+declare i32 @printf(ptr, ...)
+
+define i32 @sum_of_two(i32 %a, i32 %b) {
+  %r = add i32 %a, %b
+  ret i32 %r
+}
+
+define i32 @main() {
+  %v = load i32, ptr @value
+  %r = call i32 @sum_of_two(i32 %v, i32 2)
+  call i32 (ptr, ...) @printf(ptr @.fmt, i32 %r)
+  ret i32 0
+}
+"#;
+
+/// Whether the file has `needle` in it.
+fn contains(path: &Path, needle: &str) -> bool {
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    bytes.windows(needle.len()).any(|window| window == needle.as_bytes())
+}
+
+// "Test directives", `llc-args`: the real `llc` takes every argument of
+// the allow-list, and the oracle, the witness and hod all get them: each
+// object has a section per function and per variable.
+#[test]
+fn llc_args_reach_every_compiler() {
+    let Some(majors) = installed() else { return };
+    let scratch = Scratch::new("irdiff-llc-args");
+    let search = Search::from_env();
+    for major in majors {
+        let llvm = tools::find_llvm(Some(&major.to_string()), &search).unwrap().unwrap();
+        let test = scratch.join("sections.ll");
+        std::fs::write(&test, SECTIONS).unwrap();
+        let mut config = config(&scratch);
+        config.paths = vec![test.clone()];
+        config.llvm = Some(major.to_string());
+        config.witness = true;
+        config.hod = Some(rewriting_hod(&scratch, "hod-right", &llvm.llc, "s/^$//"));
+        let right = irdiff::run(&config).unwrap();
+        let all = right.summary(true);
+        assert_eq!(right.exit_status(), 0, "LLVM {major}:\n{all}");
+        assert!(right.count(Outcome::Pass) == right.records.len() && !right.records.is_empty());
+
+        // A failing run keeps its files: the three objects.
+        config.keep = true;
+        config.hod = Some(rewriting_hod(&scratch, "hod-wrong", &llvm.llc, "s/i32 2)/i32 3)/"));
+        let wrong = irdiff::run(&config).unwrap();
+        let all = wrong.summary(true);
+        assert_eq!(wrong.count(Outcome::Fail), wrong.records.len(), "{all}");
+        let kept = wrong.kept.clone().expect("a failing test is kept");
+        let dir = std::fs::read_dir(&kept)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.to_string_lossy().ends_with("sections.ll"))
+            .expect("the test's directory is kept");
+        for object in ["oracle.o", "witness.o", "hod.o"] {
+            for section in [".text.sum_of_two", ".text.main", ".data.value"] {
+                assert!(contains(&dir.join(object), section), "{object} has no {section}");
+            }
+        }
+        std::fs::remove_dir_all(&kept).unwrap();
+
+        // Without the directive there is one `.text`.
+        let plain = scratch.join("plain.ll");
+        std::fs::write(&plain, SECTIONS.split_once('\n').unwrap().1).unwrap();
+        config.paths = vec![plain];
+        let wrong = irdiff::run(&config).unwrap();
+        assert_eq!(wrong.count(Outcome::Fail), wrong.records.len(), "{}", wrong.summary(true));
+        let kept = wrong.kept.clone().expect("a failing test is kept");
+        let dir = std::fs::read_dir(&kept)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.to_string_lossy().ends_with("plain.ll"))
+            .expect("the test's directory is kept");
+        for object in ["oracle.o", "witness.o", "hod.o"] {
+            assert!(!contains(&dir.join(object), ".text.sum_of_two"), "{object}");
+        }
+        std::fs::remove_dir_all(&kept).unwrap();
+    }
+}
+
+const WARNS: &str = r#";@ stdout-no-newline: named
+@.s = private unnamed_addr constant [6 x i8] c"named\00"
+@buffer = global [64 x i8] zeroinitializer
+
+declare ptr @tmpnam(ptr)
+declare i32 @printf(ptr, ...)
+
+define i32 @main() {
+  %p = call ptr @tmpnam(ptr @buffer)
+  call i32 (ptr, ...) @printf(ptr @.s)
+  ret i32 0
+}
+"#;
+
+// "Test directives", `link: allow-warnings` and `stdout-no-newline`, on a
+// real program: the C library warns at link time about `tmpnam`, which
+// `ld.bfd` reports and `--fatal-warnings` makes an error of the oracle's
+// side; with the directive every linker links it, and the output without
+// a final newline is compared exactly.
+#[test]
+fn a_link_that_warns_and_an_output_without_a_newline() {
+    let Some(majors) = installed() else { return };
+    let scratch = Scratch::new("irdiff-warnings");
+    let search = Search::from_env();
+    let llvm = tools::find_llvm(Some(&majors[0].to_string()), &search).unwrap().unwrap();
+    let mut config = config(&scratch);
+    config.llvm = Some(llvm.major.to_string());
+    config.hod = Some(rewriting_hod(&scratch, "hod", &llvm.llc, "s/^$//"));
+
+    let strict = scratch.join("strict.ll");
+    std::fs::write(&strict, WARNS).unwrap();
+    config.paths = vec![strict];
+    let report = irdiff::run(&config).unwrap();
+    let all = report.summary(true);
+    let bfd: Vec<_> =
+        report.records.iter().filter(|record| record.linker.as_deref() == Some("bfd")).collect();
+    for record in &bfd {
+        assert_eq!(record.outcome, Outcome::Error, "{all}");
+        assert!(record.detail.starts_with("oracle: link with bfd failed"), "{all}");
+        assert!(record.detail.contains("tmpnam"), "{all}");
+    }
+    if bfd.is_empty() {
+        eprintln!("note: ld.bfd not found; the link that warns is not shown to fail");
+    }
+
+    let tolerant = scratch.join("tolerant.ll");
+    std::fs::write(&tolerant, format!(";@ link: allow-warnings\n{WARNS}")).unwrap();
+    config.paths = vec![tolerant.clone()];
+    let report = irdiff::run(&config).unwrap();
+    let all = report.summary(true);
+    assert_eq!(report.exit_status(), 0, "{all}");
+    assert!(report.count(Outcome::Pass) == report.records.len() && !report.records.is_empty());
+
+    // The output is compared to the last byte.
+    let text =
+        format!(";@ link: allow-warnings\n{}", WARNS.replace("no-newline: named", ": named"));
+    std::fs::write(&tolerant, text).unwrap();
+    let report = irdiff::run(&config).unwrap();
+    let all = report.summary(true);
+    assert_eq!(report.count(Outcome::Error), report.records.len(), "{all}");
+    assert!(
+        all.contains(
+            "oracle: the program of llc's object wrote stdout that differs from the directives"
+        ),
+        "{all}"
+    );
+}
+
+// "Several modules", with the real tools: every module of
+// `tests/ir/two_modules.ll` is compiled by the oracle, the witness and a
+// hod that builds everything, the objects are linked in the test's order
+// with every linker, and a hod that miscompiles one module is a FAIL.
+#[test]
+fn a_real_program_of_two_modules() {
+    let Some(majors) = installed() else { return };
+    let scratch = Scratch::new("irdiff-modules");
+    let search = Search::from_env();
+    let test = seed_test(&scratch, "two_modules.ll", &[]);
+    for major in majors {
+        let llvm = tools::find_llvm(Some(&major.to_string()), &search).unwrap().unwrap();
+        let mut config = config(&scratch);
+        config.paths = vec![test.clone()];
+        config.llvm = Some(major.to_string());
+        config.witness = true;
+        config.hod = Some(rewriting_hod(&scratch, "hod-right", &llvm.llc, "s/^$//"));
+        let right = irdiff::run(&config).unwrap();
+        let all = right.summary(true);
+        assert_eq!(right.exit_status(), 0, "LLVM {major}:\n{all}");
+        assert!(right.count(Outcome::Pass) == right.records.len() && !right.records.is_empty());
+        assert!(right.records.iter().all(|r| r.built_by == BuiltBy::Hod && r.linker.is_some()));
+        assert!(all.contains("hod built 2 of 2 objects"), "{all}");
+
+        // A miscompile in the module that is not `main`'s.
+        config.hod =
+            Some(rewriting_hod(&scratch, "hod-wrong", &llvm.llc, "s/ret i32 202/ret i32 203/"));
+        let wrong = irdiff::run(&config).unwrap();
+        let all = wrong.summary(true);
+        assert_eq!(wrong.exit_status(), 1, "{all}");
+        assert_eq!(wrong.records.len(), right.records.len(), "{all}");
+        for record in &wrong.records {
+            assert_eq!(record.outcome, Outcome::Fail, "{all}");
+            assert_eq!(
+                record.detail,
+                "the program of hod's object wrote stdout that differs from llc's at line 4: \
+                 expected \"local=101 other=202\\n\", got \"local=101 other=203\\n\"",
+                "{all}"
+            );
+        }
+
+        // Hybrid: the real hod builds what it can and the reference the
+        // rest, module by module.
+        config.hod = Some(workspace_hod());
+        config.mode = Mode::Hybrid;
+        let hybrid = irdiff::run(&config).unwrap();
+        let all = hybrid.summary(true);
+        assert_eq!(hybrid.exit_status(), 0, "{all}");
+        assert_eq!(hybrid.count(Outcome::Pass), hybrid.records.len(), "{all}");
+    }
 }

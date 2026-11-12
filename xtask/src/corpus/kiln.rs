@@ -13,7 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::entry::Unfit;
-use crate::irdiff::directives::Arch;
+use crate::irdiff::directives::{self, Arch};
 
 /// The test roots of kiln's default run that hold `run` tests, relative to
 /// the repository.
@@ -23,15 +23,18 @@ pub const ROOTS: [&str; 3] = ["tests/c", "tests/conformance", "tests/stress"];
 /// "shim"): it saves the arguments and the standard input kiln gives its
 /// backend into a new directory `llc-<pid>` of `$HOD_CORPUS_CAPTURE`, then
 /// runs the real `llc` (the shim's `$HOD_FALLBACK_LLC`) on what it saved,
-/// so that kiln's build completes exactly as without it.
+/// with the oracle's selector (`spec/harness.md` "irdiff", "The oracle")
+/// after kiln's arguments: kiln's build completes, and its program is the
+/// one the reference compiler makes.
 pub const CAPTURE_SCRIPT: &str = "#!/bin/sh\n\
 # Written by `cargo xtask corpus capture` (spec/harness.md \"corpus\").\n\
-# Saves what kiln gives its backend, then runs the real llc on it.\n\
+# Saves what kiln gives its backend, then runs the real llc on it, with\n\
+# the selector of irdiff's oracle.\n\
 call=\"${HOD_CORPUS_CAPTURE:?}/llc-$$\"\n\
 mkdir \"$call\" || exit 97\n\
 for arg in \"$@\"; do printf '%s\\n' \"$arg\"; done > \"$call/args\" || exit 97\n\
 cat > \"$call/stdin\" || exit 97\n\
-exec \"${HOD_FALLBACK_LLC:?}\" \"$@\" < \"$call/stdin\"\n";
+exec \"${HOD_FALLBACK_LLC:?}\" \"$@\" -global-isel=0 -fast-isel=0 < \"$call/stdin\"\n";
 
 /// The source language of a test, from its extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +79,11 @@ pub struct Header {
     /// The keys, each once, of the directives that make a test something
     /// other than one translation unit built by one command.
     pub multi_file: Vec<String>,
+    /// The `module: <name>=<path>` lines, in order; a path is relative to
+    /// the test's directory.
+    pub modules: Vec<(String, String)>,
+    /// The `unit: <path>` lines, in order.
+    pub units: Vec<String>,
     /// `env:` is present.
     pub env: bool,
     /// The reason of a `skip` that applies to kiln.
@@ -201,6 +209,22 @@ pub fn parse_header(source: &str) -> Header {
             "module" | "unit" | "header-unit" | "pch" | "two-step" => {
                 let seen = header.multi_file.iter().any(|seen| seen == name);
                 header.multi_file.extend((!seen).then(|| name.to_owned()));
+                let one_word = !value.is_empty() && !value.contains(char::is_whitespace);
+                match (name, value.split_once('=')) {
+                    ("module", Some((module, path))) if one_word && !module.is_empty() => {
+                        header.modules.push((module.to_owned(), path.to_owned()));
+                    }
+                    ("module", _) => {
+                        header
+                            .errors
+                            .push(format!("module: expected <name>=<path>, got '{value}'"));
+                    }
+                    ("unit", _) if one_word => header.units.push(value.to_owned()),
+                    ("unit", _) => {
+                        header.errors.push(format!("unit: expected <path>, got '{value}'"));
+                    }
+                    _ => {}
+                }
             }
             "requires" => header.requires.push(value.to_owned()),
             "min-oracle" => header.requires.push(format!("clang>={value}")),
@@ -333,17 +357,148 @@ fn link_only(arg: &str) -> bool {
         || matches!(arg, "-shared" | "-rdynamic" | "-nostdlib" | "-nodefaultlibs" | "-nostartfiles")
 }
 
+/// One compilation of a test that is built in several steps: the module
+/// it gives `llc` is the entry's module `name`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Compile {
+    pub name: String,
+    /// kiln's arguments after `--llvm-dir=` and before `-o <object>`; the
+    /// source is the last.
+    pub args: Vec<String>,
+}
+
+/// The separate compilations of a test and its link, as kiln's harness
+/// does them (kiln `xtask/src/test/runner.rs`, `build_two_step`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TwoStep {
+    /// In the order they are run: every `module:` unit, then the test,
+    /// then every `unit:` file.
+    pub compiles: Vec<Compile>,
+    /// The names of `compiles` in the order of the link: the modules, the
+    /// units, the test last.
+    pub link_order: Vec<String>,
+    /// kiln's arguments of the link before the objects.
+    pub link_args: Vec<String>,
+}
+
 /// How to build one test, and how its program is to be run and checked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Plan {
     /// kiln's arguments after `--llvm-dir=` and before `-o <program>`: as
     /// kiln's harness passes them, the test by its name.
     pub compile_args: Vec<String>,
+    /// The test is built in separate steps (`module:`, `unit:`,
+    /// `header-unit:` or `two-step` in its header): what
+    /// [`Plan::two_step`] needs.
+    pub separate: Option<Separate>,
     pub run_args: Vec<String>,
     pub stdin: Vec<u8>,
     /// What the test itself expects of its program.
     pub want_stdout: Option<String>,
     pub want_exit: u8,
+}
+
+/// What the steps of a separately built test are made of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Separate {
+    /// `-x c` or `-x c++`, if the test file needs one.
+    language: Vec<String>,
+    std: String,
+    major: u32,
+    /// The test's `args:`, substituted.
+    args: Vec<String>,
+    /// Each `module:` line: the name, and the source as kiln is given it.
+    modules: Vec<(String, String)>,
+    /// Each `unit:` line's source, and whether it is C.
+    units: Vec<(String, bool)>,
+    test: String,
+    is_c: bool,
+}
+
+/// The entry's name for a module unit: `m.part` for `m:part`; what is not
+/// a letter, a digit, `.`, `_` or `-` is `_`.
+fn module_name(name: &str) -> String {
+    let mut out: String = name
+        .chars()
+        .map(|c| match c {
+            ':' => '.',
+            c if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') => c,
+            _ => '_',
+        })
+        .collect();
+    if !out.starts_with(|c: char| c.is_ascii_alphanumeric()) {
+        out.insert(0, 'm');
+    }
+    out
+}
+
+impl Plan {
+    /// The steps of a separately built test; the module files are written
+    /// into the directory `dir`. `Err` if two modules would have the same
+    /// name in the entry.
+    pub fn two_step(&self, dir: &str) -> Option<Result<TwoStep, Unfit>> {
+        let parts = self.separate.as_ref()?;
+        let common = |std: &str| {
+            let mut args = vec![format!("-std={std}"), "-fno-crash-diagnostics".to_owned()];
+            args.push(format!("-fclang-compat={}", parts.major));
+            args.extend(parts.args.iter().cloned());
+            args
+        };
+        let module_file = |name: &str| format!("{dir}/{}.pcm", module_name(name));
+        let module_flags = |count: usize| {
+            parts.modules[..count]
+                .iter()
+                .map(|(name, _)| format!("-fmodule-file={name}={}", module_file(name)))
+        };
+        let mut compiles = Vec::new();
+        let mut link_order = Vec::new();
+        for (index, (name, source)) in parts.modules.iter().enumerate() {
+            let mut args = common(&parts.std);
+            args.extend(module_flags(index));
+            args.push(format!("-fmodule-output={}", module_file(name)));
+            args.extend(["-c", "-x", "c++-module"].map(str::to_owned));
+            args.push(source.clone());
+            link_order.push(module_name(name));
+            compiles.push(Compile { name: module_name(name), args });
+        }
+        let mut args = parts.language.clone();
+        args.extend(common(&parts.std));
+        args.extend(module_flags(parts.modules.len()));
+        args.extend(["-c".to_owned(), parts.test.clone()]);
+        compiles.push(Compile { name: "test".to_owned(), args });
+        for (index, (source, is_c)) in parts.units.iter().enumerate() {
+            // A unit in the other language is compiled as that language at
+            // its default standard; kiln++ compiles a `.c` file as C++
+            // unless told otherwise.
+            let other = *is_c != parts.is_c;
+            let mut args: Vec<String> = match (is_c, other) {
+                (true, _) => vec!["-x".to_owned(), "c".to_owned()],
+                (false, true) => vec!["-x".to_owned(), "c++".to_owned()],
+                (false, false) => Vec::new(),
+            };
+            args.extend(common(match (other, is_c) {
+                (true, true) => "c17",
+                (true, false) => "c++26",
+                (false, _) => &parts.std,
+            }));
+            args.extend(module_flags(parts.modules.len()));
+            args.extend(["-c".to_owned(), source.clone()]);
+            link_order.push(format!("unit{index}"));
+            compiles.push(Compile { name: format!("unit{index}"), args });
+        }
+        link_order.push("test".to_owned());
+        let mut seen: Vec<&str> = Vec::new();
+        for name in &link_order {
+            if seen.contains(&name.as_str()) {
+                let detail = format!("two of the test's modules would be named '{name}'");
+                return Some(Err(Unfit::new("multi-file", detail)));
+            }
+            seen.push(name);
+        }
+        let mut link_args = vec!["-Qunused-arguments".to_owned()];
+        link_args.extend(parts.args.iter().cloned());
+        Some(Ok(TwoStep { compiles, link_order, link_args }))
+    }
 }
 
 /// Decides, before anything is run, whether `test` can be a corpus entry
@@ -359,8 +514,9 @@ pub fn plan(test: &KilnTest, header: &Header, host: Arch, major: u32) -> Result<
     if let Some(why) = &header.xfail {
         return skip("marked-xfail", why.clone());
     }
-    if !header.multi_file.is_empty() {
-        return skip("multi-file", format!("directives: {}", header.multi_file.join(", ")));
+    if header.multi_file.iter().any(|key| key == "pch") {
+        let detail = "directives: pch (a precompiled header is built by a step of its own)";
+        return skip("multi-file", detail.to_owned());
     }
     if header.env {
         return skip("needs-env", "the test sets environment variables (env:)".to_owned());
@@ -413,7 +569,38 @@ pub fn plan(test: &KilnTest, header: &Header, host: Arch, major: u32) -> Result<
         (Lang::Cxx, false) => {}
     }
     let default_std = if test.lang == Lang::C { "c17" } else { "c++26" };
-    compile_args.push(format!("-std={}", header.std.as_deref().unwrap_or(default_std)));
+    let std = header.std.as_deref().unwrap_or(default_std);
+    let separate = if header.multi_file.is_empty() {
+        None
+    } else {
+        // A path of the header is relative to the test's directory.
+        let beside = |path: &str, key: &str| match substitute(path, test_dir) {
+            Ok(path) if test.path.parent().is_some_and(|dir| dir.join(&path).is_file()) => {
+                Ok(format!("{test_dir}/{path}"))
+            }
+            Ok(path) => Err(Unfit::new("header-error", format!("{key}: no file '{path}'"))),
+            Err(name) => Err(Unfit::new("needs-toolchain", format!("{key}: uses %{{{name}}}"))),
+        };
+        let mut modules = Vec::new();
+        for (name, path) in &header.modules {
+            modules.push((name.clone(), beside(path, "module")?));
+        }
+        let mut units = Vec::new();
+        for path in &header.units {
+            units.push((beside(path, "unit")?, path.ends_with(".c")));
+        }
+        Some(Separate {
+            language: compile_args.clone(),
+            std: std.to_owned(),
+            major,
+            args: args.clone(),
+            modules,
+            units,
+            test: test.name.clone(),
+            is_c: test.lang == Lang::C,
+        })
+    };
+    compile_args.push(format!("-std={std}"));
     compile_args.push("-fno-crash-diagnostics".to_owned());
     compile_args.push(format!("-fclang-compat={major}"));
     compile_args.extend(args);
@@ -435,6 +622,7 @@ pub fn plan(test: &KilnTest, header: &Header, host: Arch, major: u32) -> Result<
     };
     Ok(Plan {
         compile_args,
+        separate,
         run_args: header.run_args.clone(),
         stdin,
         want_stdout,
@@ -468,6 +656,25 @@ pub fn backend_calls(dir: &Path) -> Result<Vec<BackendCall>, String> {
         calls.push(BackendCall { args: args.lines().map(str::to_owned).collect(), stdin });
     }
     Ok(calls)
+}
+
+/// The `llc` runs of one kiln++ command that compiled several files, in
+/// the order of the link, each with the entry's name for its module.
+/// kiln's driver names the object of its `n`th input `<n>-<stem>.o`
+/// (kiln `crates/kiln_driver/src/codegen_cmd.rs`) and links the objects in
+/// that order. `None` if an object is not named so.
+pub fn in_link_order(calls: Vec<BackendCall>) -> Option<Vec<(String, BackendCall)>> {
+    let mut found = Vec::new();
+    for call in calls {
+        let at = call.args.iter().position(|arg| arg == "-o")?;
+        let file = call.args.get(at + 1)?.rsplit('/').next()?;
+        let stem = file.strip_suffix(".o").unwrap_or(file);
+        let index: usize = stem.split_once('-')?.0.parse().ok()?;
+        found.push((index, module_name(stem), call));
+    }
+    found.sort_by_key(|(index, _, _)| *index);
+    let distinct = found.windows(2).all(|pair| pair[0].0 != pair[1].0);
+    distinct.then(|| found.into_iter().map(|(_, name, call)| (name, call)).collect())
 }
 
 /// Whether `module` is LLVM bitcode (or its wrapper), as hod tells
@@ -560,9 +767,26 @@ pub fn llc_args(args: &[String]) -> Option<Vec<String>> {
 
 /// The arguments `llc` gets from `irdiff` for a module with relocation
 /// model `model`, in kiln's order (`spec/harness.md` "irdiff", "What a
-/// test does"; the triple is the module's own).
+/// test does"; the triple is the module's own, and the oracle also gets
+/// its selector).
 pub fn harness_llc_args(pie: bool) -> [&'static str; 3] {
     ["-O0", if pie { "-relocation-model=pic" } else { "-relocation-model=static" }, "-filetype=obj"]
+}
+
+/// The arguments of a producer's `llc` run ([`llc_args`]) that an entry's
+/// `llc-args` directive repeats: those on the directive's allow-list
+/// (`spec/harness.md` "Test directives"). The optimization level, the
+/// relocation model and the file type are the harness's own; anything
+/// else is recorded and not repeated.
+pub fn repeated_llc_args(args: &[String]) -> Vec<String> {
+    args.iter().filter(|arg| directives::llc_arg_allowed(arg)).cloned().collect()
+}
+
+/// Whether an argument of a producer's `llc` run is one the harness gives
+/// in its own way: `-O<level>` (always `-O0`), `-relocation-model=` (the
+/// entry's `link:` line) and `-filetype=obj`.
+pub fn harness_owned(arg: &str) -> bool {
+    arg.starts_with("-O") || arg.starts_with("-relocation-model=") || arg == "-filetype=obj"
 }
 
 #[cfg(test)]
@@ -613,8 +837,12 @@ mod tests {
         assert_eq!(outcome.status.and_then(|status| status.code()), Some(5));
         assert_eq!(
             outcome.stdout,
-            b"real: [-O0] [-o] [/tmp/a b.o] [-]\ndefine void @f()\n\x00\xff"
+            b"real: [-O0] [-o] [/tmp/a b.o] [-] [-global-isel=0] [-fast-isel=0]\n\
+              define void @f()\n\x00\xff"
         );
+        // The selector is the oracle's ("irdiff", "The oracle").
+        let selector = crate::irdiff::engine::REFERENCE_SELECTOR.join(" ");
+        assert!(CAPTURE_SCRIPT.contains(&format!("\"$@\" {selector} <")));
         let calls = backend_calls(&captures).unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].args, ["-O0", "-o", "/tmp/a b.o", "-"]);
@@ -676,7 +904,19 @@ mod tests {
         assert_eq!(header.xfail.as_deref(), Some("known"));
         assert!(header.env);
         assert_eq!(header.multi_file, ["module", "unit", "two-step"]);
+        assert_eq!(
+            header.modules,
+            [
+                ("m".to_owned(), "Inputs/m.cppm".to_owned()),
+                ("n".to_owned(), "Inputs/n.cppm".to_owned())
+            ]
+        );
+        assert_eq!(header.units, ["u.cpp"]);
         assert_eq!(header.errors.len(), 2, "{:?}", header.errors);
+        assert_eq!(
+            parse_header("//@ module: m\n//@ unit: a b\n").errors,
+            ["module: expected <name>=<path>, got 'm'", "unit: expected <path>, got 'a b'"]
+        );
         assert_eq!(header.stdout_file.as_deref(), Some("out.txt"));
         assert_eq!(header.stdin_file.as_deref(), Some("in.txt"));
         assert_eq!(parse_header("int main() {}\n//@ expect: run\n").expect, None);
@@ -748,9 +988,12 @@ mod tests {
         assert_eq!(on_arm("//@ skip(kiln): no\n"), "marked-skip");
         assert_eq!(on_arm("//@ skip(clang): no\n"), "captured");
         assert_eq!(on_arm("//@ xfail(kiln): no\n"), "marked-xfail");
-        assert_eq!(on_arm("//@ module: m=m.cppm\n"), "multi-file");
-        assert_eq!(on_arm("//@ unit: u.cpp\n"), "multi-file");
-        assert_eq!(on_arm("//@ header-unit: <vector>\n"), "multi-file");
+        // A file the header names is not there (the test is `/kiln/...`).
+        assert_eq!(on_arm("//@ module: m=m.cppm\n"), "header-error");
+        assert_eq!(on_arm("//@ unit: u.cpp\n"), "header-error");
+        assert_eq!(on_arm("//@ module: std=%{libcxx_modules}/std.cppm\n"), "needs-toolchain");
+        assert_eq!(on_arm("//@ header-unit: <vector>\n"), "captured");
+        assert_eq!(on_arm("//@ two-step\n"), "captured");
         assert_eq!(on_arm("//@ pch: p.h\n"), "multi-file");
         assert_eq!(on_arm("//@ env: TZ=UTC\n"), "needs-env");
         assert_eq!(on_arm("//@ args: 'x\n"), "header-error");
@@ -775,6 +1018,95 @@ mod tests {
         assert_eq!(on_arm("//@ args: -fuse-ld=lld\n"), "link-flags");
         assert_eq!(on_arm("//@ args: -lm -pthread\n"), "captured");
         assert_eq!(on_arm("//@ stdout-file: missing.txt\n"), "header-error");
+    }
+
+    // "The kiln source", "Several translation units": the steps of a
+    // separately built test are those of kiln's own harness.
+    #[test]
+    fn separate_steps() {
+        let scratch = Scratch::new("corpus-kiln-two-step");
+        for file in ["t.cpp", "Inputs/m.cppm", "Inputs/part.cppm", "Inputs/u.cpp", "Inputs/c.c"] {
+            let path = scratch.join("tests/x").join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "").unwrap();
+        }
+        let test = KilnTest {
+            name: "tests/x/t.cpp".to_owned(),
+            path: scratch.join("tests/x/t.cpp"),
+            lang: Lang::Cxx,
+            is_header: false,
+        };
+        let header = parse_header(
+            "//@ expect: run\n//@ std: c++20\n//@ args: -DA\n\
+             //@ module: m:part=Inputs/part.cppm\n//@ module: m=Inputs/m.cppm\n\
+             //@ unit: Inputs/u.cpp\n//@ unit: Inputs/c.c\n",
+        );
+        let plan = plan(&test, &header, Arch::Aarch64, 22).unwrap();
+        // One command would be this; the steps replace it.
+        assert_eq!(plan.compile_args.last().unwrap(), "tests/x/t.cpp");
+        let steps = plan.two_step("/job").unwrap().unwrap();
+        let shown: Vec<String> = steps
+            .compiles
+            .iter()
+            .map(|compile| format!("{}: {}", compile.name, compile.args.join(" ")))
+            .collect();
+        let common = "-fno-crash-diagnostics -fclang-compat=22 -DA";
+        let both = "-fmodule-file=m:part=/job/m.part.pcm -fmodule-file=m=/job/m.pcm";
+        assert_eq!(
+            shown,
+            [
+                format!(
+                    "m.part: -std=c++20 {common} -fmodule-output=/job/m.part.pcm -c -x c++-module \
+                     tests/x/Inputs/part.cppm"
+                ),
+                format!(
+                    "m: -std=c++20 {common} -fmodule-file=m:part=/job/m.part.pcm \
+                     -fmodule-output=/job/m.pcm -c -x c++-module tests/x/Inputs/m.cppm"
+                ),
+                format!("test: -std=c++20 {common} {both} -c tests/x/t.cpp"),
+                format!("unit0: -std=c++20 {common} {both} -c tests/x/Inputs/u.cpp"),
+                format!("unit1: -x c -std=c17 {common} {both} -c tests/x/Inputs/c.c"),
+            ]
+        );
+        assert_eq!(steps.link_order, ["m.part", "m", "unit0", "unit1", "test"]);
+        assert_eq!(steps.link_args, ["-Qunused-arguments", "-DA"]);
+
+        // A test of one file built in two steps; a test with one command.
+        let alone = plan_of(&test, "//@ expect: run\n//@ two-step\n");
+        let steps = alone.two_step("/job").unwrap().unwrap();
+        assert_eq!(steps.link_order, ["test"]);
+        assert_eq!(
+            steps.compiles[0].args,
+            ["-std=c++26", "-fno-crash-diagnostics", "-fclang-compat=22", "-c", "tests/x/t.cpp"]
+        );
+        assert!(plan_of(&test, "//@ expect: run\n").two_step("/job").is_none());
+        // Two modules with one name in the entry.
+        let clash = plan_of(&test, "//@ expect: run\n//@ module: test=Inputs/m.cppm\n");
+        assert_eq!(clash.two_step("/job").unwrap().unwrap_err().reason, "multi-file");
+
+        // One command that compiled several files: the link's order is the
+        // order of the inputs, which the objects' names carry.
+        let call = |object: &str| BackendCall {
+            args: strings(&["-O0", "-o", object, "-"]),
+            stdin: object.as_bytes().to_vec(),
+        };
+        let ordered = in_link_order(vec![
+            call("/tmp/kiln-7/10-t.o"),
+            call("/tmp/kiln-7/0-other+x.o"),
+            call("/tmp/kiln-7/2-b.o"),
+        ])
+        .unwrap();
+        let names: Vec<&str> = ordered.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["0-other_x", "2-b", "10-t"]);
+        assert_eq!(ordered[0].1.stdin, b"/tmp/kiln-7/0-other+x.o");
+        assert!(in_link_order(vec![call("/tmp/a.o")]).is_none());
+        assert!(in_link_order(vec![call("/tmp/0-a.o"), call("/tmp/0-b.o")]).is_none());
+        assert_eq!(module_name("std.compat:x"), "std.compat.x");
+        assert_eq!(module_name("_m"), "m_m");
+    }
+
+    fn plan_of(test: &KilnTest, header: &str) -> Plan {
+        plan(test, &parse_header(header), Arch::Aarch64, 22).unwrap()
     }
 
     // "The kiln source": which files are tests.
@@ -851,6 +1183,21 @@ mod tests {
         assert_eq!(llc_args(&[]), None);
         assert_eq!(harness_llc_args(true), ["-O0", "-relocation-model=pic", "-filetype=obj"]);
         assert_eq!(harness_llc_args(false)[1], "-relocation-model=static");
+        // "Entries": what an entry's `llc-args` directive repeats.
+        let given = strings(&[
+            "-O2",
+            "-relocation-model=pic",
+            "-filetype=obj",
+            "-function-sections",
+            "-debugger-tune=gdb",
+            "-split-dwarf-file=a.dwo",
+        ]);
+        assert_eq!(repeated_llc_args(&given), ["-function-sections", "-debugger-tune=gdb"]);
+        let other: Vec<&String> = given
+            .iter()
+            .filter(|arg| !harness_owned(arg) && !directives::llc_arg_allowed(arg))
+            .collect();
+        assert_eq!(other, ["-split-dwarf-file=a.dwo"]);
 
         assert!(is_bitcode(b"BC\xc0\xde rest") && is_bitcode(&[0xDE, 0xC0, 0x17, 0x0B, 0]));
         assert!(!is_bitcode(b"; ModuleID") && !is_bitcode(b""));

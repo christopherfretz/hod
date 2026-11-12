@@ -1,0 +1,71 @@
+# The benchmark inputs of `cargo xtask bench`.
+# Format and meaning: spec/harness.md "bench", "Manifest".
+#
+# Each section is one source file of bench/src/ and gives two inputs: the
+# section's name (compiled without debug information) and `<name>-g`
+# (with -g). An input is LLVM IR, produced in bench/src/ by
+#
+#   <compiler> <common> <flags> [-g] -o <build directory>/bench/inputs/<producer>/<input>.ll <source>
+#
+# where <compiler> is the C or C++ compiler of the run's LLVM (clang-22,
+# clang++-22), by the source's extension, or kiln with --kiln.
+
+common = -O0 -S -emit-llvm -fdebug-compilation-dir=.
+
+# small: a few functions; start-up cost is most of the time.
+
+[small-c]
+class = small
+source = small.c
+flags = -std=c17
+
+[small-cxx]
+class = small
+source = small.cpp
+flags = -std=c++23
+
+# typical: a normal translation unit.
+
+[interp]
+class = typical
+source = interp.c
+flags = -std=c17
+
+[tables]
+class = typical
+source = tables.c
+flags = -std=c17
+
+[exceptions]
+class = typical
+source = exceptions.cpp
+flags = -std=c++23
+
+[containers]
+class = typical
+source = containers.cpp
+flags = -std=c++23
+
+# large: thousands of functions, most of them instantiated templates.
+
+[templates]
+class = large
+source = templates.cpp
+flags = -std=c++23
+
+[stl-heavy]
+class = large
+source = stl_heavy.cpp
+flags = -std=c++23
+
+# pathological: one shape taken to an extreme.
+
+[huge-function]
+class = pathological
+source = huge_function.c
+flags = -std=c17
+
+[tiny-functions]
+class = pathological
+source = tiny_functions.c
+flags = -std=c17

@@ -14,6 +14,7 @@ usage: cargo xtask ci [--quick]
        cargo xtask shim --llvm <dir> --hod <hod binary> --out <dir> [--kiln <kiln++>]
        cargo xtask irdiff [options] [<file.ll or directory>...]   (--help for the options)
        cargo xtask corpus capture|verify|census|fetch [options]   (--help for the options)
+       cargo xtask bench [options]                                (--help for the options)
 ";
 
 fn main() -> ExitCode {
@@ -24,6 +25,8 @@ fn main() -> ExitCode {
         Some("shim") => shim(&args[1..]),
         Some("irdiff") => irdiff(&args[1..]),
         Some("corpus") => corpus(&args[1..]),
+        #[cfg(unix)]
+        Some("bench") => xtask::bench::main(&args[1..]),
         _ => {
             eprint!("{USAGE}");
             ExitCode::from(2)

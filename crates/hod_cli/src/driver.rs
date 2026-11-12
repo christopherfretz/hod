@@ -16,6 +16,7 @@ use hod::{CompileError, InputKind, Options, OutputKind};
 
 use crate::args::{self, Action, CommandLine, Input};
 use crate::coverage::{Log, Outcome, Record};
+use crate::phases::Phases;
 
 /// Exit status: success.
 pub const EXIT_OK: u8 = 0;
@@ -34,6 +35,8 @@ pub const ENV_COVERAGE_LOG: &str = "HOD_COVERAGE_LOG";
 /// Environment variable hod sets for the fallback process. A hod that
 /// starts with it set is its own fallback, and stops instead of recursing.
 pub const ENV_IN_FALLBACK: &str = "HOD_IN_FALLBACK";
+/// Environment variable: the file the phase report is appended to.
+pub const ENV_TIME_PHASES: &str = "HOD_TIME_PHASES";
 
 /// hod's settings from the environment.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -46,6 +49,8 @@ pub struct Environment {
     pub coverage_log: Option<PathBuf>,
     /// `HOD_IN_FALLBACK` is set: this process was started as a fallback.
     pub in_fallback: bool,
+    /// `HOD_TIME_PHASES`, if set and not empty.
+    pub time_phases: Option<PathBuf>,
     /// A variable with a value hod does not accept.
     pub error: Option<String>,
 }
@@ -58,6 +63,7 @@ impl Environment {
             fallback: non_empty(ENV_FALLBACK).map(PathBuf::from),
             coverage_log: non_empty(ENV_COVERAGE_LOG).map(PathBuf::from),
             in_fallback: non_empty(ENV_IN_FALLBACK).is_some(),
+            time_phases: non_empty(ENV_TIME_PHASES).map(PathBuf::from),
             ..Environment::default()
         };
         match non_empty(ENV_STRICT) {
@@ -126,6 +132,7 @@ struct Job<'a, 'io> {
     io: &'a mut Io<'io>,
     start: Instant,
     record: Record,
+    phases: &'a mut Phases,
 }
 
 impl Job<'_, '_> {
@@ -152,6 +159,7 @@ impl Job<'_, '_> {
         let started = Instant::now();
         match run_fallback(llc, &self.line.forwarded, input) {
             Ok(status) => {
+                self.phases.end("fallback");
                 self.record.outcome = Outcome::Fallback;
                 self.record.fallback_time = Some(started.elapsed());
                 let exit = match exit_code(status) {
@@ -198,16 +206,20 @@ impl Job<'_, '_> {
             Ok(input) => input,
             Err(message) => return self.fail(EXIT_ERROR, "input-unreadable", &message),
         };
+        self.phases.end("read");
         self.record.input_kind = Some(InputKind::detect(&input));
         self.record.input_bytes = Some(input.len());
         self.record.target = hod::effective_triple(&input, &line.options).map(str::to_owned);
         let output = output_name(line);
         self.record.output = output.to_string_lossy().into_owned();
 
-        let error = match compile(&input, &line.options) {
+        let compiled = compile(&input, &line.options);
+        self.phases.end("compile");
+        let error = match compiled {
             Ok(object) => {
                 return match write_output(&output, &object, self.io.stdout) {
                     Ok(()) => {
+                        self.phases.end("write");
                         self.record.outcome = Outcome::Hod;
                         self.record.hod_time = self.start.elapsed();
                         Finished { exit: EXIT_OK, record: self.record }
@@ -262,6 +274,7 @@ pub fn run(args: &[OsString], env: &Environment, compile: Compile<'_>, io: &mut 
             return EXIT_ERROR;
         }
     };
+    let mut phases = Phases::new(start);
     let job = Job {
         line: &line,
         settings: Settings { fallback, strict: line.strict.unwrap_or(env.strict) },
@@ -277,6 +290,7 @@ pub fn run(args: &[OsString], env: &Environment, compile: Compile<'_>, io: &mut 
             hod_time: Duration::ZERO,
             fallback_time: None,
         },
+        phases: &mut phases,
     };
     let Finished { exit, record } = job.run(env, compile);
     if let Some(log) = &mut log
@@ -285,6 +299,13 @@ pub fn run(args: &[OsString], env: &Environment, compile: Compile<'_>, io: &mut 
         let path = log_path.unwrap_or_default();
         let _ =
             writeln!(io.stderr, "hod: error: cannot write coverage log '{}': {e}", path.display());
+        return if exit == EXIT_OK { EXIT_ERROR } else { exit };
+    }
+    if let Some(path) = &env.time_phases
+        && let Err(e) = phases.append(path)
+    {
+        let _ =
+            writeln!(io.stderr, "hod: error: cannot write phase report '{}': {e}", path.display());
         return if exit == EXIT_OK { EXIT_ERROR } else { exit };
     }
     exit
@@ -469,6 +490,61 @@ mod tests {
         let bad = vars(&[("HOD_STRICT", "yes")]);
         assert!(!bad.strict);
         assert!(bad.error.unwrap().contains("invalid value 'yes' for HOD_STRICT"));
+    }
+
+    // spec/cli.md "Phase report": with `HOD_TIME_PHASES`, each compile
+    // invocation appends its phases, in order, and `total`.
+    #[test]
+    fn phase_report() {
+        let scratch = Scratch::new("driver-phases");
+        let file = scratch.join("phases.tsv");
+        let env = Environment::from_vars(|name| {
+            (name == "HOD_TIME_PHASES").then(|| file.clone().into_os_string())
+        });
+        assert_eq!(env, Environment { time_phases: Some(file.clone()), ..Environment::default() });
+        let phases = || {
+            let text = std::fs::read_to_string(&file).unwrap();
+            let _ = std::fs::remove_file(&file);
+            assert!(text.ends_with('\n'), "{text:?}");
+            let names: Vec<String> = text
+                .lines()
+                .map(|line| {
+                    let (name, micros) = line.split_once('\t').expect("a tab");
+                    assert!(micros.parse::<u64>().is_ok(), "{line:?}");
+                    name.to_owned()
+                })
+                .collect();
+            names.join(" ")
+        };
+
+        let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &object, MODULE);
+        assert_eq!((ran.exit, ran.stderr.as_str()), (EXIT_OK, ""));
+        assert_eq!(phases(), "read compile write total");
+        // A decline is the phases up to it.
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile, MODULE);
+        assert_eq!(ran.exit, EXIT_UNSUPPORTED);
+        assert_eq!(phases(), "read compile total");
+        // Reports are appended; an invocation that compiles nothing has none.
+        run_with(&["-filetype=obj", "-o", "-"], &env, &object, MODULE);
+        run_with(&["--version"], &env, &object, b"");
+        run_with(&["-filetype=obj", "-o", "-"], &env, &object, MODULE);
+        assert_eq!(phases(), "read compile write total read compile write total");
+
+        // A report that cannot be written is an error, like a coverage line.
+        let nowhere = scratch.join("no-such-dir/phases.tsv");
+        let env = Environment { time_phases: Some(nowhere.clone()), ..Environment::default() };
+        let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &object, MODULE);
+        assert_eq!(ran.exit, EXIT_ERROR);
+        assert!(
+            ran.stderr.starts_with(&format!(
+                "hod: error: cannot write phase report '{}': ",
+                nowhere.display()
+            )),
+            "{}",
+            ran.stderr
+        );
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile, MODULE);
+        assert_eq!(ran.exit, EXIT_UNSUPPORTED, "the first failure's status stands");
     }
 
     // spec/cli.md "Behaviour": a successful compile writes the object to

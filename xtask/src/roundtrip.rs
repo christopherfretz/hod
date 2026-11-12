@@ -156,8 +156,9 @@ expected; 3 a required tool missing (HOD_REQUIRE_TOOLS=1); 2 usage, or no
 corpus
 ";
 
-/// A run of the command.
+/// A run of the command: one field per option.
 #[derive(Clone, Debug)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Options {
     pub corpus: PathBuf,
     /// The majors to run; empty is every major of the corpus.

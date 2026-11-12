@@ -3,6 +3,7 @@
 //! "Expectation file" and "Verdicts".
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -108,12 +109,13 @@ impl Expectations {
     pub fn text(&self) -> String {
         let mut out = HEADER.to_owned();
         for (entry, expected) in &self.entries {
-            out.push_str(&format!(
-                "{}\t{}\t{}\n",
+            let _ = writeln!(
+                out,
+                "{}\t{}\t{}",
                 escape(entry),
                 expected.outcome.name(),
                 escape(&expected.detail)
-            ));
+            );
         }
         out
     }

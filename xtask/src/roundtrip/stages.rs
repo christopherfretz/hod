@@ -15,7 +15,7 @@ use super::Outcome;
 pub const DECLINED: &str = "corpus-admission";
 
 /// The reference `llc` configuration (`docs/VALIDATION.md` "Oracles"):
-/// SelectionDAG at `-O0`. The engine gives `llc` `-O0` and the rest; the
+/// `SelectionDAG` at `-O0`. The engine gives `llc` `-O0` and the rest; the
 /// wrapper adds the selector flags unless they are there already.
 pub const REFERENCE_FLAGS: [&str; 2] = ["-global-isel=0", "-fast-isel=0"];
 

@@ -240,7 +240,6 @@ fn x86_64_is_a_stable_refusal() {
 #[test]
 #[ignore = "a measurement, not a test"]
 fn break_even() {
-    use std::time::Instant;
     for functions in [8, 16, 32, 64, 128, 256, 512, 1024, 4096] {
         let input = module(functions, |_| PLAIN);
         let mut line = format!("{:>7} insts:", functions * PER_FUNCTION);

@@ -309,7 +309,7 @@ fn kiln_builds_and_runs_programs_through_the_shim() {
     let Some(kiln) = kiln() else { return };
     for llvm in llvm_installations() {
         eprintln!("note: kiln through a shim of '{}'", llvm.display());
-        through_the_shim(&kiln, llvm);
+        through_the_shim(&kiln, &llvm);
     }
 }
 
@@ -368,10 +368,10 @@ impl Shimmed {
 }
 
 /// The test, with the LLVM installation `llvm`.
-fn through_the_shim(kiln: &Path, llvm: PathBuf) {
+fn through_the_shim(kiln: &Path, llvm: &Path) {
     let scratch = Scratch::new("kiln-e2e");
     let built = shim::build(&shim::Request {
-        llvm: llvm.clone(),
+        llvm: llvm.to_path_buf(),
         hod: PathBuf::from(env!("CARGO_BIN_EXE_hod")),
         out: scratch.join("llvm"),
         kiln: Some(kiln.to_path_buf()),
@@ -431,7 +431,7 @@ fn through_the_shim(kiln: &Path, llvm: PathBuf) {
 
     // Code hod generates: strict mode succeeds, and the object links and
     // runs under every linker as the LLVM route's does.
-    shimmed.hod_builds(kiln, &llvm);
+    shimmed.hod_builds(kiln, llvm);
 }
 
 impl Shimmed {

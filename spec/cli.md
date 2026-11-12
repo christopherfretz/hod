@@ -21,14 +21,31 @@ pub fn compile_with(input: &[u8], options: &Options, settings: &Settings, report
     -> Result<Vec<u8>, CompileError>;
 pub fn generate(module: &hod_ir::Module, bodies: &[hod_ir::Body], options: &Options)
     -> Result<Vec<u8>, CompileError>;
+pub fn generate_with(module: &hod_ir::Module, bodies: &[hod_ir::Body], options: &Options,
+    threads: &Threads, report: &mut Report) -> Result<Vec<u8>, CompileError>;
 
 pub enum CompileError {
     Unsupported(Unsupported),   // a named construct hod does not handle
     MalformedInput(String),     // the module is not valid; the message says why
     InvalidOptions(String),     // the options contradict each other or the module
+    Internal(String),           // a bug of hod's: an invariant of code generation broke
 }
 
-pub struct Unsupported { pub construct: Construct, pub function: Option<String> }
+pub struct Unsupported {
+    pub construct: Construct,
+    pub function: Option<String>,
+    pub detail: Option<String>, // what exactly, when the name is a family (a target feature)
+}
+
+pub struct Threads {
+    pub max: usize,                               // threads in all, the caller's included
+    pub tokens: Option<Arc<dyn ThreadTokens>>,    // where every thread but the first comes from
+    pub per_thread: usize,                        // instructions each thread needs; 0: PARALLEL_MIN_INSTS
+}
+pub trait ThreadTokens: Send + Sync + Debug {
+    fn take(&self, wanted: usize) -> usize;       // at most `wanted`, never waiting
+    fn give_back(&self, count: usize);
+}
 ```
 
 - `input` is one whole module, LLVM text or bitcode (see "Input"), read
@@ -39,7 +56,8 @@ pub struct Unsupported { pub construct: Construct, pub function: Option<String> 
   converts bitcode itself, which then gets `bitcode-input`), `census`
   (every reason, "Reasons"), `support` (the `hod_ir::Support` to classify
   with; `None` is `Support::shipped` of the module's target; for tests and
-  measurements).
+  measurements), `threads` (how many code generation may use, "Threads";
+  the default is the calling thread alone).
 - `Report` is what `compile_with` tells besides its answer: the stated
   target as it came to know it (`target`), the phases that ended with the
   moment each ended (`phases`, "Phase report"), and with `census` every
@@ -47,9 +65,8 @@ pub struct Unsupported { pub construct: Construct, pub function: Option<String> 
   (`reasons`).
 - `generate` is **the seam**: the back half, given the module `classify`
   accepted whole and its bodies, every one classified and verified, in the
-  module's order. Until code generation exists it declines with
-  `codegen-not-implemented`; the code generator replaces its body and
-  nothing before it.
+  module's order ("The back half"). `generate` is `generate_with` on one
+  thread with a report nobody reads.
 - `Options` holds the `llc` options of the table in "Options", one field
   each, with `llc`'s defaults (`Options::default()` is `llc` with no
   options: assembly output, `-O2`, nothing else set).
@@ -57,7 +74,14 @@ pub struct Unsupported { pub construct: Construct, pub function: Option<String> 
   to LLVM instead. `function` is the function the construct was found in,
   `None` for a property of the module or the command line. It displays as
   `unsupported construct '<name>'` or
-  `unsupported construct '<name>' in function '<f>'`.
+  `unsupported construct '<name>' in function '<f>'`, followed by
+  `: <detail>` when there is one.
+- `Internal` is a failure, not an answer: hod broke one of its own
+  invariants (a code generator's `CgError::Internal`, an object that
+  cannot be written for a reason other than a limit). It displays as
+  `internal error: <message>`, the message naming the function
+  (`function '<f>': ...`) or `module emission: ...`. It is never a
+  decline: a harness counts it as a bug of hod's, not a gap.
 - `Construct` is the vocabulary of reasons. Each has a stable name
   (`Construct::name`), which is what the coverage log records; the names
   are listed in "Reasons". The enum is `#[non_exhaustive]`: code generation
@@ -70,6 +94,65 @@ pub struct Unsupported { pub construct: Construct, pub function: Option<String> 
 Helpers the tool uses, also part of the facade: `InputKind::detect`,
 `module_triple`, `effective_triple`, `target_supported` (see "Input" and
 "Reasons").
+
+## The back half
+
+`generate_with`, in order; the first refusal is the answer and no object
+is produced, partial or otherwise:
+
+1. An x86-64 module declines with `codegen-not-implemented` (its code
+   generator is planned, `spec/codegen.md` §5.6).
+2. The options code generation cannot honour: `-relocation-model=ropi`,
+   `rwpi` or `ropi-rwpi` is `option:relocation-model`, `-split-dwarf-output`
+   is `option:split-dwarf-output`. A relocation model left unset is
+   `static`, `llc`'s default for these targets. The optimization level is
+   accepted and ignored: hod generates the same code at every `-O`.
+3. Each `-mattr` item, then each function's `target-features` attribute,
+   is judged by `hod_a64::features::check` (`spec/codegen.md` §5.5.2):
+   a refusal is `attr:target-feature-<class>`, with the item as the
+   detail, in the function for an attribute and of the module for
+   `-mattr`.
+4. Every body is compiled (`hod_cg::compile_function` with `hod_a64`),
+   on the threads of "Threads", each with its own scratch state, into
+   chunks of whole functions in module order. A `CgError::Unsupported`
+   is that name, in the function (`a64:...`, `abi:...`, `limit:...`,
+   `call:...`, ...); a `CgError::Internal` is `CompileError::Internal`.
+   When several functions fail, the answer is the one first in module
+   order, whatever thread met it first.
+5. `hod_cg::emit_module` lays out the module from the chunks in module
+   order, and `hod_obj::elf::to_vec` writes the object in memory: their
+   `Unsupported` is a module refusal; `hod_obj`'s `NulInName` is
+   `object:nul-in-name`, `TooLarge` is `limit:object`, anything else
+   `Internal`.
+
+The object is the same bytes for every thread count and every run: the
+chunks are merged in module order, and `emit_module`'s output does not
+depend on how the functions were grouped into chunks.
+
+## Threads
+
+A build system already runs one compiler per core, so hod takes no thread
+it is not given (`docs/ARCHITECTURE.md`, "Parallelism"):
+
+- With `HOD_THREADS=<n>` (a positive integer; anything else is the error
+  `invalid value '<v>' for HOD_THREADS: expected a positive integer`,
+  `usage`), hod may use `n` threads.
+- Otherwise, under a GNU make jobserver (`MAKEFLAGS` holding
+  `--jobserver-auth=fifo:<path>`, make 4.4's form; the last such word
+  wins), up to 16 threads: hod runs on its implicit token and, for a
+  module large enough, takes as many more tokens as are idle at that
+  moment, never waiting (the fifo is opened without blocking, and only
+  then), and gives each back when code generation ends, also when it
+  refuses. The older descriptor forms (`--jobserver-fds=R,W`,
+  `--jobserver-auth=R,W`) are not used.
+- Otherwise one thread.
+
+Threads are worth it only above a break-even: a module gets one thread per
+`PARALLEL_MIN_INSTS` (4096) instructions of its bodies, at most one per
+function and at most what it may use; below 2 it asks for no token.
+Measured in `spec/landed/cli/WP-043.md`: a thread costs 20-60 µs to start
+and join, and code generation about 90 ns per instruction, so two threads
+beat one from about 2-4k instructions and eight beat four from about 30k.
 
 ## Options
 
@@ -180,6 +263,8 @@ The four variables of this table are hod's **settings**.
   costs reading every body. It has no command-line form: it is for
   `cargo xtask corpus reasons` and for whoever asks what to implement
   next.
+- `HOD_THREADS` and `MAKEFLAGS` set the threads of code generation
+  ("Threads"). They have no command-line form.
 - `HOD_TIME_PHASES=<file>` asks for a phase report ("Phase report"). It
   has no command-line form: it is a measurement hook for the benchmark
   harness, not a setting of a build.
@@ -319,7 +404,7 @@ coverage line with outcome `error` and the reason given.
    input, else to the input's name with a final `.ll` or `.bc` removed and
    `.o` added (`llc`'s rule). Failure: `output-unwritable`, 1. Outcome
    `hod`, exit status 0.
-9. On `Unsupported`, `MalformedInput` or `InvalidOptions`: run the fallback
+9. On `Unsupported`, `MalformedInput`, `InvalidOptions` or `Internal`: run the fallback
    if one is configured and strict mode is off; otherwise fail with the
    reason of "Reasons" and the exit status of "Exit status". The diagnostic
    is the error's text followed by the note of "Strict mode".
@@ -399,7 +484,11 @@ that applies is the reason:
 | `unsupported-target` | `-mtriple` names another target than the module's (retargeting is not implemented) |
 | a `classify` name | `hod_ir::classify`'s module pass refused the module (`module:pic`, `global:function-definition`, `debug:module-flags`, ...; `docs/status/support.md`) |
 | a body's reason | for each body in the module's order: the reader's error (the table below), the body reader's own refusal (`call:forwarded-varargs`, ...), `classify`'s body pass, then `Body::verify` (`malformed-input`) |
-| `codegen-not-implemented` | everything else: the module reached `generate` |
+| `codegen-not-implemented` | the module reached `generate` and its target is x86-64 |
+| `option:relocation-model`, `option:split-dwarf-output` | an option code generation cannot honour ("The back half") |
+| `attr:target-feature-<class>` | an `-mattr` item or a function's `target-features` item hod's code is not correct under (`spec/codegen.md` §5.5.2); the item is the detail |
+| a code generator's name | `hod_cg`/`hod_a64` refused a function (`a64:`, `abi:`, `limit:`, `call:`, ...), in the function; or `emit_module` refused the module |
+| `object:nul-in-name`, `limit:object` | the object cannot be written: a symbol or section name with a NUL, or more than ELF can hold |
 
 A supported target (`target_supported`) is a triple whose first component
 is `aarch64` or `x86_64`, with a later component `linux`, followed by
@@ -452,6 +541,7 @@ From the tool:
 |---|---|---|
 | `malformed-input` | `CompileError::MalformedInput` | yes |
 | `invalid-options` | `CompileError::InvalidOptions` | yes |
+| `internal-error` | `CompileError::Internal`: a bug of hod's, not a decline | yes |
 | `unknown-option` | an unknown option or option value | yes |
 | `usage` | a missing value or a second input; a mistake in hod's own options or environment | the first two; never the last |
 | `input-unreadable` | the input could not be read | no |
@@ -474,7 +564,7 @@ the text got.
 | status | meaning |
 |---|---|
 | 0 | hod wrote the output (or printed the version or the help) |
-| 1 | an error in hod: usage, I/O, `malformed-input`, `invalid-options`, the coverage log, the fallback could not be started, the bitcode conversion failed (`bitcode-converter-*`) and no fallback ran |
+| 1 | an error in hod: usage, I/O, `malformed-input`, `invalid-options`, `internal-error`, the coverage log, the fallback could not be started, the bitcode conversion failed (`bitcode-converter-*`) and no fallback ran |
 | 2 | the module is unsupported (`CompileError::Unsupported`) and no fallback ran |
 | other | when the fallback ran: its exit status, whatever it is (including 0, 1 and 2) |
 
@@ -578,13 +668,15 @@ no phase covers (the coverage line).
 | `parse` | the module level has been read (`hod_ll::parse_module`, `hod_bc::read_module`) |
 | `classify` | `classify`'s module pass has judged the module |
 | `bodies` | every body has been read and judged (only when the walk did not stop at a reason) |
+| `emission` | every body has been compiled to machine code ("The back half", step 4) |
+| `object` | the module has been laid out and its object written in memory |
 | `convert` | the bitcode converter ended ("Bitcode conversion"), with text or a failure; the attempt that declined the bitcode is in it. Only an invocation that started a conversion has it |
 | `compile` | `hod::compile` returned, with an object or an error: what follows the last of `parse`, `classify`, `bodies` (code generation, today the seam's decline), or the whole call when it declined before reading |
 | `write` | the object has been written |
 | `fallback` | the fallback process ended |
 
 A phase is in the report only if the invocation reached its end: a module
-hod builds reports `read`, `parse`, `classify`, `bodies`, `compile`,
+hod builds reports `read`, `parse`, `classify`, `bodies`, `emission`, `object`, `compile`,
 `write`; one it declines in strict mode at the module pass `read`,
 `parse`, `classify`, `compile`, and one it declines before reading `read`,
 `compile`; one it hands to the fallback `read`, `compile`,
@@ -603,11 +695,10 @@ total⇥640
 ```
 
 `parse`, `classify` and `bodies` are the front half's (they were `ingest`
-in the names reserved before). The code generator's own phases will
-come between `bodies` and `compile`, which then shrinks to the rest. The
-names reserved for them are `analysis`, `emission` (machine
-code), `debug-info` and `object` (the object file built in memory). A
-reader of the report takes whatever names it finds.
+in the names reserved before); `emission` and `object` the back half's,
+and `compile` is then what is left of the call. `analysis` and
+`debug-info` stay reserved. A reader of the report takes whatever names it
+finds.
 
 If the report cannot be written: `hod: error: cannot write phase report
 '<path>': <cause>`, and an exit status of 0 becomes 1. The fallback
@@ -625,12 +716,13 @@ inherits the variable with the rest of the environment; `llc` ignores it.
 | Behaviour | `driver.rs`: `success_writes_the_object`, `options_reach_the_code_generator`, `output_names_follow_llc`, `io_errors` |
 | Fallback protocol | `cli.rs`: `fallback_receives_original_arguments_and_identical_input`, `file_input`, `hod_is_not_its_own_fallback`, `real_llc_fallback_text`, `real_llc_fallback_bitcode`, and the "Bitcode conversion" tests for the original bytes after a conversion; `driver.rs`: `fallback_loop_is_refused` |
 | Strict mode | `cli.rs`: `strict_mode_fails_with_the_construct_named`; `crates/hod_cli/tests/kiln_e2e.rs` |
-| Reasons | `cli.rs`: `reasons_reach_the_log`; `driver.rs`: `malformed_input_and_invalid_options` |
+| Reasons | `cli.rs`: `reasons_reach_the_log`; `driver.rs`: `malformed_input_and_invalid_options`, `internal_errors_are_not_declines` |
+| The back half, Threads | `crates/hod/tests/back.rs`: `object_is_the_same_for_every_thread_count` (1, 2, 3, 8 threads), `tokens_are_asked_for_large_modules_and_given_back`, `the_first_refusal_in_module_order_wins`, `target_features`, `x86_64_is_a_stable_refusal`, `break_even` (ignored: the measurement); `crates/hod/src/back.rs`: `threads_wanted`, `options_for_code_generation`, `errors_of_the_back_half`; `crates/hod_cli/src/jobs.rs`: `makeflags_forms`, `where_threads_come_from`, `tokens_are_taken_without_waiting_and_given_back`; `crates/hod_a64/src/features.rs` (§5.5.2); `kiln_e2e.rs`: kiln's integer code in strict mode at -O0 and -O1, linked with a C program under each linker and checked against LLVM's; `tests/ir/exit_*.ll` |
 | Exit status | `cli.rs`: `fallback_exit_status_propagates`; `driver.rs`: `unsupported_without_fallback`, `malformed_input_and_invalid_options`, `io_errors` |
 | Coverage log | `crates/hod_cli/src/coverage.rs`: `line_format`, `free_form_fields_are_escaped`, `appends_to_an_existing_file`; `cli.rs`: `coverage_log_survives_concurrent_writers` (16 concurrent writers), `fallback_exit_status_propagates` (field 10, signal included), every test's `coverage` helper (eleven fields, their vocabulary); `xtask/src/irdiff/engine.rs`: `coverage_log_reading` (a reader under the append-only rule) |
 
 The tests that need LLVM tools (`real_llc_*`, `real_llvm_dis_*`) and kiln
 (`kiln_e2e.rs`) skip with a note when the tool is missing and fail instead
-under `HOD_REQUIRE_TOOLS=1`. The paths `hod::compile` cannot take yet (success,
-`MalformedInput`, `InvalidOptions`) are tested in `driver.rs` with a
-stand-in code generator.
+under `HOD_REQUIRE_TOOLS=1`. The paths a real module rarely takes
+(`MalformedInput`, `InvalidOptions`, `Internal`) are tested in
+`driver.rs` with a stand-in code generator.

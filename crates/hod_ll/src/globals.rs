@@ -106,6 +106,27 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The name token of the declaration `item` if it is a number. The
+    /// index has the names of assignments and definitions only.
+    fn declared_number(&mut self, item: Item) -> PResult<Option<Token>> {
+        let text = &self.src[item.start as usize..item.end as usize];
+        if !text.windows(2).any(|pair| pair[0] == b'@' && pair[1].is_ascii_digit()) {
+            return Ok(None);
+        }
+        self.goto(item.start);
+        while self.tok.start < item.end {
+            match self.tok.kind {
+                Tok::GlobalId => return Ok(Some(self.tok)),
+                Tok::Global | Tok::GlobalQuoted | Tok::Eof => break,
+                Tok::LParen | Tok::LBracket | Tok::LBrace => {
+                    self.skip_brackets()?;
+                }
+                _ => self.bump(),
+            }
+        }
+        Ok(None)
+    }
+
     /// Gives every numbered global its symbol, before anything refers to
     /// one (`spec/ll.md` §5.6). One with internal or private linkage is an
     /// anonymous symbol. One with any other linkage needs a name in the
@@ -115,7 +136,13 @@ impl<'a> Parser<'a> {
     pub(crate) fn number_globals(&mut self) -> PResult<()> {
         let mut ordinal = 0u32;
         for at in 0..self.index.items.len() {
-            let item = self.index.items[at];
+            let mut item = self.index.items[at];
+            if item.kind == ItemKind::Declare {
+                match self.declared_number(item)? {
+                    Some(name) => item.name = name,
+                    None => continue,
+                }
+            }
             if item.name.kind != Tok::GlobalId {
                 continue;
             }
@@ -136,16 +163,22 @@ impl<'a> Parser<'a> {
                 self.flush(Some(sym));
                 sym
             };
-            match self.numbered_globals.binary_search_by_key(&number, |&(n, _)| n) {
-                Ok(_) => {
-                    return fail(
-                        LlErrorKind::Redefined,
-                        item.name.start,
-                        format!("redefinition of global '@{number}'"),
-                    );
-                }
-                Err(place) => self.numbered_globals.insert(place, (number, sym)),
+            // As in LLVM, the numbers ascend: the table is sorted as it
+            // is filled.
+            if let Some(&(last, _)) = self.numbered_globals.last()
+                && number <= last
+            {
+                let known = self.numbered_globals.binary_search_by_key(&number, |&(n, _)| n);
+                return if known.is_ok() {
+                    let message = format!("redefinition of global '@{number}'");
+                    fail(LlErrorKind::Redefined, item.name.start, message)
+                } else {
+                    let message =
+                        format!("global expected to be numbered '@{}' or greater", last + 1);
+                    fail(LlErrorKind::Syntax, item.name.start, message)
+                };
             }
+            self.numbered_globals.push((number, sym));
             if sym.index() >= self.first_ref.len() {
                 self.first_ref.resize(sym.index() + 1, item.name.start);
                 self.described.resize(sym.index() + 1, false);
@@ -336,7 +369,11 @@ impl<'a> Parser<'a> {
                 (Tok::Meta, _) => self.attachment()?,
                 (Tok::Word, b"code_model") => {
                     self.bump();
-                    self.expect(Tok::Str, "expected a code model")?;
+                    let model = self.expect(Tok::Str, "expected a code model")?;
+                    let known: [&[u8]; 5] = [b"tiny", b"small", b"kernel", b"medium", b"large"];
+                    if !known.contains(&&*self.string(model)) {
+                        return fail(LlErrorKind::Syntax, model.start, "invalid code model");
+                    }
                     self.note("global-code-model");
                 }
                 (Tok::Word, b"sanitize_memtag") => {

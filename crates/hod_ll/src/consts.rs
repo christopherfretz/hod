@@ -2,10 +2,12 @@
 //! LLVM 19 to 22, built through `hod_ir`'s folding functions so that an
 //! address always arrives in its normal form.
 
+use std::collections::HashMap;
+
 use hod_ir::{BlockId, ConstId, ConstOp, SymId, TypeId, TypeKind};
 
 use crate::error::{LlErrorKind, PResult, fail};
-use crate::float::{Narrow, decimal, fp80, fp128, hex_u64, narrow};
+use crate::float::{Narrow, decimal, fp80, fp128, hex_u64, hex_value_u64, narrow};
 use crate::index::{ItemKind, parse_u32};
 use crate::lexer::{Lexer, Tok, Token, hex_value, unescape};
 use crate::limits::MAX_INT_LITERAL_DIGITS;
@@ -47,11 +49,15 @@ impl Parser<'_> {
                 self.bump();
                 self.address_of(sym, ty, at)
             }
-            Tok::LBrace => self.aggregate(ty, Tok::RBrace),
+            Tok::LBrace => {
+                self.packing(ty, false)?;
+                self.aggregate(ty, Tok::RBrace)
+            }
             Tok::LBracket => self.aggregate(ty, Tok::RBracket),
             Tok::Less => {
                 self.bump();
                 if self.tok.kind == Tok::LBrace {
+                    self.packing(ty, true)?;
                     let id = self.aggregate(ty, Tok::RBrace)?;
                     self.expect(Tok::Greater, "expected '>' at the end of a packed struct")?;
                     return Ok(id);
@@ -60,6 +66,19 @@ impl Parser<'_> {
             }
             Tok::Word => self.word_const(ty),
             _ => self.syntax("expected a value"),
+        }
+    }
+
+    /// Checks that a struct constant written packed or not (`<{ … }>` or
+    /// `{ … }`) is given a struct type that is the same.
+    fn packing(&mut self, ty: TypeId, written: bool) -> PResult<()> {
+        match self.module.types.kind(ty) {
+            TypeKind::Struct { packed, .. } if packed != written => fail(
+                LlErrorKind::Type,
+                self.tok.start,
+                "the initializer and its type are not both packed",
+            ),
+            _ => Ok(()),
         }
     }
 
@@ -241,7 +260,7 @@ impl Parser<'_> {
         };
         let as_double = match token.kind {
             Tok::Float => decimal(text),
-            Tok::HexDouble => hex_u64(&text[2..]),
+            Tok::HexDouble => hex_value_u64(&text[2..]),
             Tok::HexFp80 => return wide(fp80(&text[3..]), kind == TypeKind::X86Fp80),
             // `ppc_fp128` is stood in for by `fp128` (and noted), so its
             // constants land here too.
@@ -324,7 +343,6 @@ impl Parser<'_> {
             b"sub" => binary(ConstOp::Sub),
             b"mul" => binary(ConstOp::Mul),
             b"xor" => binary(ConstOp::Xor),
-            b"shl" => binary(ConstOp::Shl),
             _ => None,
         };
         self.enter()?;
@@ -472,19 +490,20 @@ impl Parser<'_> {
     /// by `function` that the label token `label` names (§5.5); `None`
     /// if no label of the body is that one.
     fn block_ordinal(&mut self, function: Token, label: Token) -> PResult<Option<u32>> {
-        let wanted = self.name(function);
-        let number = |parser: &Self, token: Token| parse_u32(&parser.tok_text(token)[1..]);
-        let found = (0..self.index.items.len()).find(|&at| {
-            let item = self.index.items[at];
-            item.kind == ItemKind::Define
-                && match &wanted {
-                    Some(name) => self.name(item.name).as_deref() == Some(&**name),
-                    None => {
-                        item.name.kind == Tok::GlobalId
-                            && number(self, item.name) == number(self, function)
-                    }
+        if self.defined.is_none() {
+            let mut defined = HashMap::new();
+            for (at, item) in self.index.items.iter().enumerate() {
+                if item.kind == ItemKind::Define
+                    && let Some(key) = self.label_key(item.name)
+                {
+                    defined.entry(key).or_insert(at);
                 }
-        });
+            }
+            self.defined = Some(defined);
+        }
+        let found = self
+            .label_key(function)
+            .and_then(|key| self.defined.as_ref().expect("filled above").get(&key).copied());
         let Some(found) = found else {
             return fail(
                 LlErrorKind::Undefined,
@@ -492,19 +511,23 @@ impl Parser<'_> {
                 "blockaddress of a function this module does not define",
             );
         };
-        if self.labels.as_ref().is_none_or(|(item, _)| *item != found) {
-            let labels = block_labels(self.src, self.index.items[found].body);
-            self.labels = Some((found, labels));
-        }
-        let key = match self.name(label) {
-            Some(name) => (false, name.into_owned()),
-            None => match number(self, label) {
-                Some(number) => (true, number.to_string().into_bytes()),
-                None => return Ok(None),
-            },
+        let Some(key) = self.label_key(label) else {
+            return Ok(None);
         };
-        let labels = &self.labels.as_ref().expect("set above").1;
-        Ok(labels.iter().find(|(name, _)| *name == key).map(|&(_, ordinal)| ordinal))
+        let (src, body) = (self.src, self.index.items[found].body);
+        let labels = self.labels.entry(found).or_insert_with(|| block_labels(src, body));
+        let at = labels.binary_search_by(|(name, _)| name.cmp(&key));
+        Ok(at.ok().map(|at| labels[at].1))
+    }
+
+    /// The key of a `@name`, `%name`, `@42` or `%42` token: a number and
+    /// a name that is its digits are not the same thing.
+    fn label_key(&self, token: Token) -> Option<LabelKey> {
+        if let Some(name) = self.name(token) {
+            return Some((false, name.into_owned()));
+        }
+        let number = parse_u32(&self.tok_text(token)[1..])?;
+        Some((true, number.to_string().into_bytes()))
     }
 }
 
@@ -512,19 +535,23 @@ impl Parser<'_> {
 pub(crate) type LabelKey = (bool, Vec<u8>);
 
 /// Every label of the body `body`, with the ordinal of the block it
-/// starts. A block has exactly one terminator, so a label's ordinal is
-/// the number of terminators before it; a terminator keyword is nothing
-/// else anywhere in a body, and a label outside parentheses is a block's
+/// starts, sorted by label; of two blocks with one label, the first. A
+/// block has exactly one terminator, so a label's ordinal is the number
+/// of terminators before it; a terminator keyword is nothing else
+/// anywhere in a body, and a label outside parentheses is a block's
 /// (inside, `line:` is a field of a debug location).
 fn block_labels(src: &[u8], body: crate::Span) -> Vec<(LabelKey, u32)> {
     let mut lexer = Lexer::new(src);
     lexer.set_pos(body.start as usize);
-    let mut labels = Vec::new();
+    let mut labels: Vec<(LabelKey, u32)> = Vec::new();
     let mut ordinal = 0u32;
     let mut parens = 0u32;
     loop {
         let token = lexer.next_token();
         if token.start >= body.end || token.kind == Tok::Eof {
+            // Stable: equal labels stay in layout order.
+            labels.sort_by(|a, b| a.0.cmp(&b.0));
+            labels.dedup_by(|later, first| later.0 == first.0);
             return labels;
         }
         let text = lexer.text(token);

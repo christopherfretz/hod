@@ -65,6 +65,13 @@ pub(crate) fn narrow(bits: u64, to: Narrow) -> Option<u64> {
     (significand & ((1u64 << total) - 1) == 0).then_some(sign | (significand >> total))
 }
 
+/// The value of any number of hexadecimal digits, if it fits 64 bits:
+/// the digits of `0x…`, which LLVM reads as a number.
+pub(crate) fn hex_value_u64(digits: &[u8]) -> Option<u64> {
+    let zeros = digits.iter().take_while(|&&digit| digit == b'0').count();
+    hex_u64(&digits[zeros..])
+}
+
 /// The value of at most 16 hexadecimal digits.
 pub(crate) fn hex_u64(digits: &[u8]) -> Option<u64> {
     if digits.len() > 16 {
@@ -173,6 +180,9 @@ mod tests {
         assert_eq!(hex_u64(b"3FF0000000000000"), Some(0x3FF0_0000_0000_0000));
         assert_eq!(hex_u64(b"1f"), Some(31));
         assert_eq!(hex_u64(b"00000000000000001"), None);
+        assert_eq!(hex_value_u64(b"00000000000000001"), Some(1));
+        assert_eq!(hex_value_u64(b"0FFFFFFFFFFFFFFFF"), Some(u64::MAX));
+        assert_eq!(hex_value_u64(b"10000000000000000"), None);
         assert_eq!(fp80(b"3FFF8000000000000000"), Some(0x3FFF_8000_0000_0000_0000));
         assert_eq!(fp80(b"1"), Some(1 << 64 | 0x7FFE << 64));
         assert_eq!(fp80(b"00008000000000000000"), Some(0x0001_8000_0000_0000_0000));

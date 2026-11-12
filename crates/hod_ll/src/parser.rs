@@ -1,11 +1,13 @@
 //! The module-level parser's state and its phases (`spec/ll.md` §4.3).
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 
 use hod_ir::{
     ConstId, FnAttrs, FnAttrsId, IrResult, Module, ParamAttrs, SymId, TargetSpec, TypeId,
 };
 
+use crate::consts::LabelKey;
 use crate::error::{LlErrorKind, PResult, fail, ir_fail};
 use crate::index::{Index, scan};
 use crate::lexer::{Lexer, MAX_SOURCE_BYTES, Tok, Token, unescape};
@@ -78,9 +80,11 @@ pub(crate) struct Parser<'a> {
     pub md: MetadataIndex,
     pub functions: Vec<FunctionText>,
     pub symbol_dbg: Vec<(SymId, MdRef)>,
-    /// The labels of the last function a `blockaddress` named: the index
-    /// of its item, and each label with the ordinal of its block.
-    pub labels: Option<(usize, Vec<(crate::consts::LabelKey, u32)>)>,
+    /// For `blockaddress`: the definitions by name, filled at the first
+    /// one; and, per definition named by one, each label of its body
+    /// with the ordinal of its block, sorted.
+    pub defined: Option<HashMap<LabelKey, usize>>,
+    pub labels: HashMap<usize, Vec<(LabelKey, u32)>>,
 }
 
 /// Maps a refusal of `hod_ir` to a failure at `at`.
@@ -125,7 +129,8 @@ pub(crate) fn run<'a>(src: &'a [u8], options: &ParseOptions) -> PResult<ParsedMo
         md: MetadataIndex::default(),
         functions: Vec::new(),
         symbol_dbg: Vec::new(),
-        labels: None,
+        defined: None,
+        labels: HashMap::new(),
     };
     for at in 0..parser.index.module_asm.len() {
         let text = parser.string(parser.index.module_asm[at]);

@@ -103,6 +103,9 @@ impl Parser<'_> {
                 let ent = self.index.groups[order[next].1];
                 at = ent.id.start;
                 self.goto(ent.span.start);
+                if self.tok.start >= ent.span.end {
+                    return self.syntax("attribute group has no attributes");
+                }
                 while self.tok.start < ent.span.end {
                     if !self.fn_attr(true)? {
                         return self.syntax("expected a function attribute");

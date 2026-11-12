@@ -14,21 +14,21 @@ impl Parser<'_> {
         self.type_slots = vec![TypeSlot::Pending; self.index.types.len()];
         for at in 0..self.index.types.len() {
             let token = self.index.types[at].name;
-            let fresh = if let Some(name) = self.name(token) {
-                self.type_names.insert(&name, at as u32).is_ok()
+            if let Some(name) = self.name(token) {
+                if self.type_names.insert(&name, at as u32).is_err() {
+                    return fail(LlErrorKind::Redefined, token.start, "redefinition of type");
+                }
             } else {
                 let number = self.type_number(token)?;
-                match self.type_numbers.binary_search_by_key(&number, |&(n, _)| n) {
-                    Ok(_) => false,
-                    Err(place) => {
-                        self.type_numbers.insert(place, (number, at as u32));
-                        true
-                    }
-                }
-            };
-            if !fresh {
-                return fail(LlErrorKind::Redefined, token.start, "redefinition of type");
+                self.type_numbers.push((number, at as u32));
             }
+        }
+        // Numbered types come in any order: sorted once, and two of one
+        // number are then neighbours, the later definition second.
+        self.type_numbers.sort_unstable();
+        if let Some(pair) = self.type_numbers.windows(2).find(|pair| pair[0].0 == pair[1].0) {
+            let token = self.index.types[pair[1].1 as usize].name;
+            return fail(LlErrorKind::Redefined, token.start, "redefinition of type");
         }
         for at in 0..self.index.types.len() {
             let token = self.index.types[at].name;
@@ -131,12 +131,33 @@ impl Parser<'_> {
         loop {
             match self.tok.kind {
                 Tok::LParen => ty = self.function_type(ty, at)?,
+                // `T*` and `T addrspace(N)*`: the pointer types of LLVM
+                // before 15, which its reader still takes for `ptr`.
                 Tok::Star => {
-                    return self.syntax("typed pointers are not supported: the type is 'ptr'");
+                    self.pointee(ty)?;
+                    self.bump();
+                    ty = TypeId::PTR;
+                }
+                Tok::Word if self.at_word(b"addrspace") => {
+                    self.pointee(ty)?;
+                    self.bump();
+                    self.expect(Tok::LParen, "expected '(' in an address space")?;
+                    let space = self.expect_u32("expected an address space number")?;
+                    self.expect(Tok::RParen, "expected ')' in an address space")?;
+                    self.expect(Tok::Star, "expected '*' after an address space")?;
+                    ty = ir(at, self.module.types.ptr(space))?;
                 }
                 _ => return Ok(ty),
             }
         }
+    }
+
+    /// Checks that `ty` is something a pointer was once written to.
+    fn pointee(&mut self, ty: TypeId) -> PResult<()> {
+        if matches!(ty, TypeId::VOID | TypeId::LABEL | TypeId::METADATA | TypeId::TOKEN) {
+            return self.syntax("a pointer to this type is invalid");
+        }
+        Ok(())
     }
 
     fn word_type(&mut self) -> PResult<TypeId> {
@@ -167,6 +188,12 @@ impl Parser<'_> {
                 // other 128-bit format so that the parse goes on.
                 self.note("type:ppc_fp128");
                 TypeId::FP128
+            }
+            b"x86_mmx" => {
+                // A type of LLVM 19 and before; LLVM 20 reads it out of
+                // old bitcode as the vector it now uses in its place.
+                self.note("type:x86_mmx");
+                ir(at, self.module.types.vector(TypeId::I64, 1))?
             }
             b"x86_amx" => {
                 self.note("type:x86_amx");

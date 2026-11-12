@@ -1,0 +1,16 @@
+[package]
+name = "hod_a64"
+description = "AArch64 code generation target."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+hod_cg.workspace = true
+hod_ir.workspace = true
+hod_mc_a64.workspace = true
+
+[lints]
+workspace = true

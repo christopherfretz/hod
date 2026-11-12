@@ -1,0 +1,13 @@
+[package]
+name = "hod_mc_a64"
+description = "AArch64 instruction encoder."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

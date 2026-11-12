@@ -1,0 +1,15 @@
+[package]
+name = "hod_asm"
+description = "Assembler-syntax parser for module-level and inline assembly."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+hod_mc_a64.workspace = true
+hod_mc_x64.workspace = true
+
+[lints]
+workspace = true

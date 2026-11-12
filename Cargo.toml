@@ -1,0 +1,48 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+repository = "https://github.com/christopherfretz/hod"
+publish = false
+
+# No third-party dependencies (docs/ARCHITECTURE.md, principle 4).
+[workspace.dependencies]
+hod_ir     = { path = "crates/hod_ir" }
+hod_ll     = { path = "crates/hod_ll" }
+hod_bc     = { path = "crates/hod_bc" }
+hod_obj    = { path = "crates/hod_obj" }
+hod_mc_a64 = { path = "crates/hod_mc_a64" }
+hod_mc_x64 = { path = "crates/hod_mc_x64" }
+hod_cg     = { path = "crates/hod_cg" }
+hod_a64    = { path = "crates/hod_a64" }
+hod_x64    = { path = "crates/hod_x64" }
+hod_eh     = { path = "crates/hod_eh" }
+hod_dwarf  = { path = "crates/hod_dwarf" }
+hod_xform  = { path = "crates/hod_xform" }
+hod_asm    = { path = "crates/hod_asm" }
+hod        = { path = "crates/hod" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+
+[profile.release]
+debug = 1
+lto = "thin"
+codegen-units = 4

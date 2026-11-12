@@ -1,0 +1,15 @@
+[package]
+name = "hod_dwarf"
+description = "DWARF 5 debug information writer."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+hod_ir.workspace = true
+hod_obj.workspace = true
+
+[lints]
+workspace = true

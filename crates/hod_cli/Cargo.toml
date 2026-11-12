@@ -1,0 +1,19 @@
+[package]
+name = "hod_cli"
+description = "The hod command-line tool (llc-compatible)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "hod"
+path = "src/main.rs"
+
+[dependencies]
+hod.workspace = true
+hod_ll.workspace = true
+
+[lints]
+workspace = true

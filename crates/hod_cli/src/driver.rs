@@ -534,8 +534,11 @@ mod tests {
     use hod::{Construct, Unsupported};
     use hod_testutil::Scratch;
 
+    /// A module declined in the module pass (`module:asm`) with a body
+    /// the body pass refuses (`cc:ghccc`): constructs no code-generation
+    /// package turns on, so the reasons do not move with the matrix.
     const MODULE: &[u8] = b"target triple = \"aarch64-unknown-linux-gnu\"\n\
-        define i32 @f() {\n  ret i32 7\n}\n";
+        module asm \"nop\"\ndefine ghccc void @f() nounwind {\n  ret void\n}\n";
     /// A module `classify` accepts whole: declarations only.
     const DECLARATIONS: &[u8] = b"target triple = \"aarch64-unknown-linux-gnu\"\n\
         declare i32 @g()\n";
@@ -637,13 +640,10 @@ mod tests {
         assert_eq!(
             summary,
             [
-                ("global:function-definition", "-"),
+                ("module:asm", "-"),
                 ("codegen-not-implemented", "-"),
                 ("assembly-output", "-"),
-                (
-                    "global:function-definition",
-                    "global:function-definition,cc:ccc,function:may-unwind,inst:ret,type:int"
-                ),
+                ("module:asm", "module:asm,cc:ghccc"),
                 ("codegen-not-implemented", "codegen-not-implemented"),
                 ("assembly-output", "assembly-output"),
             ]
@@ -976,7 +976,7 @@ mod tests {
         assert_eq!(
             summary,
             [
-                ("error", "global:function-definition", "text", "-"),
+                ("error", "module:asm", "text", "-"),
                 ("error", "assembly-output", "bitcode", "-"),
                 ("error", "unknown-option", "-", "-"),
                 ("hod", "-", "bitcode", "-"),

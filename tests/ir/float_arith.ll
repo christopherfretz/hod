@@ -6,8 +6,7 @@
 ;@ covers: spec/ir.md §5.4 float
 ;@ tier: quick
 ;@ link: m
-;@ unsupported(aarch64): global:function-definition
-;@ unsupported(x86_64): global:variable-definition
+;@ unsupported: *
 ;@ stdout: double: add=9.7500 sub=5.2500 mul=16.8750 div=3.333333 rem=0.7500 neg=-7.5000
 ;@ stdout: double: add=-9999999997.0000 sub=-10000000003.0000 mul=-30000000000.0000 div=-3333333333.333333 rem=-1.0000 neg=10000000000.0000
 ;@ stdout: float: add=1.7500 sub=1.2500 mul=0.3750 div=6.000000 rem=0.0000 neg=-1.5000

@@ -2,8 +2,7 @@
 ; structs and arrays; structs passed and returned by value; whole-aggregate
 ; load and store; and aggregate phi and select.
 ;@ covers: spec/ir.md §5.4 aggregate (ExtractValue, InsertValue)
-;@ unsupported(aarch64): global:function-definition
-;@ unsupported(x86_64): global:variable-definition
+;@ unsupported: *
 ;@ stdout: made: { 7, -9000000000 }
 ;@ stdout: swapped: { -410065403, 2 }
 ;@ stdout: picked: { -410065403, 2 }

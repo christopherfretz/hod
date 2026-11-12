@@ -1,8 +1,7 @@
 ; select on integers, pointers and floating-point values, with conditions
 ; computed at run time and with constant arms.
 ;@ covers: spec/ir.md §5.4 other (Select)
-;@ unsupported(aarch64): global:function-definition
-;@ unsupported(x86_64): global:variable-definition
+;@ unsupported: *
 ;@ stdout: max(3,7)=7 min=3 abs(3)=3
 ;@ stdout: max(-9,-20)=-9 min=-20 abs(-9)=9
 ;@ stdout: max(-2147483647,0)=0 min=-2147483647 abs(-2147483647)=2147483647

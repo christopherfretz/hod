@@ -3,8 +3,7 @@
 ; destructors run after main returns in the reverse order. A constructor
 ; also fills in a table that main reads.
 ;@ covers: spec/ir.md §2.2 symbols (Module::ctors, Module::dtors)
-;@ unsupported(aarch64): global:function-definition
-;@ unsupported(x86_64): module:global-ctors
+;@ unsupported: *
 ;@ stdout: ctor early (101), step 1
 ;@ stdout: ctor middle (200), step 2
 ;@ stdout: ctor first (default), step 3

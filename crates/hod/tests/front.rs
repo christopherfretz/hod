@@ -3,8 +3,12 @@
 //!
 //! `data/front.ll` and `data/front.bc` (its LLVM 19 bitcode, checked in so
 //! the bitcode path runs without LLVM) carry a reason in the module pass,
-//! one the body reader names and several in the body pass. Bitcode for the
+//! one the body reader names and one in the body pass. Bitcode for the
 //! other cases is made by `llvm-as` when it is installed.
+//!
+//! Every reason a test names is one no code-generation package turns on
+//! (`module:asm`, `alloca:scalable`, `cc:ghccc`, or a row taken away from
+//! `Support`), so the tests do not move with the support matrix.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -85,16 +89,16 @@ fn assemble(llvm_as: &Path, text: &[u8]) -> Vec<u8> {
 fn fixture_first_refusal_and_census() {
     for input in [FRONT_LL, FRONT_BC] {
         let (result, report) = run(input, &Settings::default());
-        assert_eq!(result, unsupported("global:function-definition", None));
+        assert_eq!(result, unsupported("module:asm", None));
         assert_eq!(phases(&report), ["parse", "classify"], "no body is read");
         assert_eq!(report.target.as_deref(), Some("aarch64-unknown-linux-gnu"));
         assert!(report.reasons.is_empty());
 
         let (result, report) = run(input, &census());
-        assert_eq!(result, unsupported("global:function-definition", None));
+        assert_eq!(result, unsupported("module:asm", None));
         assert_eq!(phases(&report), ["parse", "classify", "bodies"]);
-        assert_eq!(report.reasons[0], "global:function-definition");
-        for name in ["call:forwarded-varargs", "cc:ccc", "inst:add", "inst:ret"] {
+        assert_eq!(report.reasons[0], "module:asm");
+        for name in ["alloca:scalable", "cc:ghccc"] {
             assert!(report.reasons.iter().any(|r| r == name), "{name}: {:?}", report.reasons);
         }
         let mut sorted = report.reasons.clone();
@@ -113,11 +117,17 @@ fn fixture_first_refusal_and_census() {
 fn body_reasons_name_the_function() {
     for input in [FRONT_LL, FRONT_BC] {
         let (result, report) = run(input, &everything());
-        assert_eq!(result, unsupported("call:forwarded-varargs", Some("forward")));
+        assert_eq!(result, unsupported("alloca:scalable", Some("scalable")));
         assert_eq!(phases(&report), ["parse", "classify"], "stopped in the first body");
     }
-    let add =
-        format!("{TRIPLE}define i32 @add(i32 %a) {{\n  %s = add i32 %a, 1\n  ret i32 %s\n}}\n");
+    // The body pass's refusal, `ghccc` taken away.
+    let ghc = format!("{TRIPLE}define ghccc void @ghc() nounwind {{\n  ret void\n}}\n");
+    let support = Support::everything_implemented(Arch::Aarch64).without("cc:ghccc");
+    let settings = Settings { support, ..Settings::default() };
+    assert_eq!(run(ghc.as_bytes(), &settings).0, unsupported("cc:ghccc", Some("ghc")));
+    let add = format!(
+        "{TRIPLE}define i32 @add(i32 %a) nounwind {{\n  %s = add i32 %a, 1\n  ret i32 %s\n}}\n"
+    );
     let (result, report) = run(add.as_bytes(), &everything());
     assert_eq!(result, module_reason(Construct::CodegenNotImplemented));
     assert_eq!(phases(&report), ["parse", "classify", "bodies"]);
@@ -132,7 +142,7 @@ fn body_reasons_name_the_function() {
 #[test]
 fn verify_is_on_the_path_to_code_generation() {
     let text = format!(
-        "{TRIPLE}define i32 @f() {{\n  %a = add i32 %b, 1\n  %b = add i32 1, 1\n  ret i32 %a\n}}\n"
+        "{TRIPLE}define i32 @f() nounwind {{\n  %a = add i32 %b, 1\n  %b = add i32 1, 1\n  ret i32 %a\n}}\n"
     );
     match run(text.as_bytes(), &everything()).0 {
         Err(CompileError::MalformedInput(message)) => {
@@ -140,10 +150,10 @@ fn verify_is_on_the_path_to_code_generation() {
         }
         other => panic!("expected malformed input, got {other:?}"),
     }
-    assert_eq!(
-        run(text.as_bytes(), &Settings::default()).0,
-        unsupported("global:function-definition", None)
-    );
+    let refused_first = format!("module asm \"nop\"\n{text}");
+    let without = Support::everything_implemented(Arch::Aarch64).without("module:asm");
+    let settings = Settings { support: without, ..Settings::default() };
+    assert_eq!(run(refused_first.as_bytes(), &settings).0, unsupported("module:asm", None));
     let (_, report) = run(text.as_bytes(), &Settings { census: true, ..everything() });
     assert_eq!(report.reasons, ["malformed-input"]);
 }

@@ -3,8 +3,7 @@
 ; Each line prints eq ne ugt uge ult ule sgt sge slt sle as 0 or 1.
 ;@ covers: spec/ir.md §5.4 compare, terminator (Br, CondBr)
 ;@ tier: quick
-;@ unsupported(aarch64): global:function-definition
-;@ unsupported(x86_64): global:variable-definition
+;@ unsupported: *
 ;@ stdout: i8  0100110011
 ;@ stdout: i8  0111000011
 ;@ stdout: i8  0111000011

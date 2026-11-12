@@ -7,8 +7,7 @@
 ;@ covers: spec/ir.md §5.4 call (Invoke), exception (LandingPad, Resume), §5.5 intrinsics (eh.typeid.for)
 ;@ tier: quick
 ;@ link: c++
-;@ unsupported(aarch64): global:function-definition
-;@ unsupported(x86_64): global:variable-definition
+;@ unsupported: *
 ;@ stdout: catch_int(0, 5) = 5
 ;@ stdout: catch_int(1, 7) = 1007
 ;@ stdout: returned 1

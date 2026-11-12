@@ -4,8 +4,7 @@
 ; (already promoted to i32, as C requires), pointers, and a call that
 ; writes into a buffer.
 ;@ covers: spec/ir.md §5.4 call (Call with a variadic function type)
-;@ unsupported(aarch64): global:function-definition
-;@ unsupported(x86_64): global:variable-definition
+;@ unsupported: *
 ;@ stdout: ints: 1 2 3 4 5 6 7 8 9 10 11 12
 ;@ stdout: mixed: -1 2.5 text -4000000000 0.25 z 4294967295 1000.000
 ;@ stdout: fps: 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 9.0 10.0

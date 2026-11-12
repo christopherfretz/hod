@@ -3,8 +3,7 @@
 ; a real stack frame per call.
 ;@ covers: spec/ir.md §5.4 call (Call), terminator (Ret)
 ;@ tier: quick
-;@ unsupported(aarch64): global:function-definition
-;@ unsupported(x86_64): global:variable-definition
+;@ unsupported: *
 ;@ stdout: fact(1) = 1
 ;@ stdout: fact(20) = 2432902008176640000
 ;@ stdout: fib(20) = 6765

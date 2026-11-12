@@ -386,9 +386,27 @@ mod tests {
         let obj = object_options();
         let named = |name: &'static str| Construct::Named(name.into());
         assert_eq!(reason(DECLARATIONS, &obj), Construct::CodegenNotImplemented);
-        let definition = b"target triple = \"aarch64-unknown-linux-gnu\"\n\
-            define i32 @f() {\n  ret i32 7\n}\n";
-        assert_eq!(reason(definition, &obj), named("global:function-definition"));
+        // The stages, with constructs no package is about to support:
+        // `module asm` (`module:asm`, the module pass) and `ghccc`
+        // (`cc:ghccc`, unplanned, the body pass).
+        let triple = "target triple = \"aarch64-unknown-linux-gnu\"\n";
+        let module_asm = format!("{triple}module asm \"nop\"\ndeclare i32 @g()\n");
+        assert_eq!(reason(module_asm.as_bytes(), &obj), named("module:asm"));
+        let ghc = "define ghccc void @h() nounwind {\n  ret void\n}\n";
+        let body = format!("{triple}{ghc}");
+        let refused = Unsupported { construct: named("cc:ghccc"), function: Some("h".into()) };
+        assert_eq!(compile(body.as_bytes(), &obj), Err(refused.into()));
+        // The module pass comes before any body.
+        let both = format!("{module_asm}{ghc}");
+        assert_eq!(reason(both.as_bytes(), &obj), named("module:asm"));
+        // A definition `classify` accepts whole reaches `generate`, its
+        // body read, classified and verified.
+        let accepted = format!("{triple}define i32 @f() nounwind {{\n  ret i32 7\n}}\n");
+        let mut report = Report::default();
+        let generated = compile_with(accepted.as_bytes(), &obj, &Settings::default(), &mut report);
+        assert_eq!(generated, Err(Unsupported::module(Construct::CodegenNotImplemented).into()));
+        let phases: Vec<&str> = report.phases.iter().map(|&(name, _)| name).collect();
+        assert_eq!(phases, ["parse", "classify", "bodies"]);
         // MODULE's data layout is not the target's.
         assert_eq!(reason(MODULE, &obj), Construct::UnsupportedTarget);
         // No stated target: hod does not guess the host's.

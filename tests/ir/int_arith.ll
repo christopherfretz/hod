@@ -3,8 +3,7 @@
 ; nothing is folded.
 ;@ covers: spec/ir.md §5.4 integer
 ;@ tier: quick
-;@ unsupported(aarch64): global:function-definition
-;@ unsupported(x86_64): global:variable-definition
+;@ unsupported: *
 ;@ stdout: i8 add=127 sub=73 mul=-116 and=0 or=127 xor=127
 ;@ stdout: i8 add=-127 sub=127 mul=-128 and=0 or=-127 xor=-127
 ;@ stdout: i16 add=31000 sub=29000 mul=-15488 and=288 or=30712 xor=30424

@@ -4,6 +4,8 @@
 
 Every module of the captured corpus (`docs/status/corpus.md`), given to hod in strict mode with its `llc` arguments: as bitcode from its LLVM's `llvm-as`, read natively (the default route). The first refusal is the reason the coverage log records; the census (`HOD_CENSUS=1`) is every reason, the list of what to implement next (`spec/cli.md` "Reasons"). A count is of modules.
 
+Measured before WP-033 merged: the first refusal was then `module:pic` for every module, and it moves as matrix rows turn on (run the command again for today's).
+
 ## First refusal
 
 | reason | LLVM 22 | LLVM 19 |

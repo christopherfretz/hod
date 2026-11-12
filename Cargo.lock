@@ -75,6 +75,7 @@ name = "hod_cli"
 version = "0.0.0"
 dependencies = [
  "hod",
+ "hod_ir",
  "hod_ll",
  "hod_testutil",
  "xtask",

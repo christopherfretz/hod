@@ -128,10 +128,12 @@ const WORD: u8 = 8;
 const ALPHA: u8 = 16;
 const BLANK: u8 = 32;
 const META: u8 = 64;
+const SKIP: u8 = 128;
 
 /// Character classes: `LABEL` is `[-a-zA-Z$._0-9]`, `WORD` is
 /// `[a-zA-Z0-9_]`, `BLANK` is white space and the zero byte, `META` is
-/// what a metadata name is made of (`LABEL` and `\\`).
+/// what a metadata name is made of (`LABEL` and `\\`), `SKIP` is what
+/// may start white space or a comment (`BLANK`, `;` and `/`).
 const CLASS: [u8; 256] = {
     let mut table = [0u8; 256];
     let mut c = 0usize;
@@ -158,6 +160,9 @@ const CLASS: [u8; 256] = {
         }
         if class & LABEL != 0 || b == b'\\' {
             class |= META;
+        }
+        if class & BLANK != 0 || b == b';' || b == b'/' {
+            class |= SKIP;
         }
         table[c] = class;
         c += 1;
@@ -237,6 +242,12 @@ impl<'a> Lexer<'a> {
     /// Whether the label characters from `from` on end in a colon; the
     /// offset after it.
     fn label_tail(&mut self, from: usize) -> Option<usize> {
+        // Most words and numbers end at a byte that neither goes on a
+        // label nor ends one: no run to look at (and none to remember).
+        let next = self.at(from);
+        if !is(next, LABEL) && next != b':' {
+            return None;
+        }
         let end = self.label_run_end(from);
         (self.at(end) == b':').then_some(end + 1)
     }
@@ -263,6 +274,15 @@ impl<'a> Lexer<'a> {
     fn skip_blank(&mut self) -> Result<usize, Token> {
         let src = self.src;
         let mut pos = self.pos;
+        // Tokens most often follow one another directly or after one
+        // space.
+        for _ in 0..2 {
+            match src.get(pos) {
+                Some(&b) if !is(b, SKIP) => return Ok(pos),
+                Some(b' ') => pos += 1,
+                _ => break,
+            }
+        }
         loop {
             pos = self.skip_while(pos, BLANK);
             match src.get(pos) {
@@ -748,8 +768,9 @@ mod tests {
     }
 
     /// WP-096: white space and metadata names are skipped by class, a
-    /// table lookup per byte; the classes are exactly the sets §2 names,
-    /// for every byte value.
+    /// table lookup per byte, and a token is looked for after one byte's
+    /// test when no blank or comment can start; the classes are exactly
+    /// the sets §2 names, for every byte value.
     #[test]
     fn classes_are_the_sets_of_section_2() {
         for b in 0..=255u8 {
@@ -757,6 +778,7 @@ mod tests {
             assert_eq!(is(b, BLANK), b" \t\n\r\0".contains(&b), "BLANK {b:#04x}");
             assert_eq!(is(b, META), label || b == b'\\', "META {b:#04x}");
             assert_eq!(is(b, LABEL), label, "LABEL {b:#04x}");
+            assert_eq!(is(b, SKIP), b" \t\n\r\0;/".contains(&b), "SKIP {b:#04x}");
         }
         assert_eq!(
             lex("!a\\b-c.d$e_9 \0\r\t\n!x"),

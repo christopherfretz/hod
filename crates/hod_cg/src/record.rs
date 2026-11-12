@@ -72,7 +72,8 @@ pub const NO_PAD: u32 = u32::MAX;
 /// One call instruction (§9.4), in code order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CallSiteRow {
-    /// The offset of the call instruction.
+    /// The offset of the start of what `Target::emit_call` emitted for
+    /// the call: the row covers all of it.
     pub start: u32,
     /// Its length in bytes.
     pub len: u32,

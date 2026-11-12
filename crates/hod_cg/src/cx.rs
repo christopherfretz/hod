@@ -162,44 +162,57 @@ impl Scratch {
 /// A lowering asks for its operands, asks for a place for its result,
 /// emits, and says where the result is. Three lowerings of the test
 /// target (`crates/hod_cg/tests/common/target.rs`), whose machine has
-/// three-operand instructions `BIN op, bits, dst, a, b`:
+/// instructions `BIN op, bits, dst, a, b` with register-or-slot
+/// operands, slightly shortened:
 ///
 /// ```ignore
 /// // %r = add i32 %a, %b                         (class Gpr)
-/// fn binary(cx: &mut FnCx<'_, Tm>, inst: Inst<'_>, lhs: Value, rhs: Value) -> CgResult<()> {
-///     let a = cx.use_reg(lhs)?;        // in a register, pinned; loaded or materialized if need be
-///     let b = cx.use_reg(rhs)?;
-///     let d = cx.def_reg(inst)?;       // a register for the result (or reuse `a`: it is dead now)
-///     emit_bin(cx, inst.opcode(), bits, d, a, b);
-///     cx.finish(inst, d)               // §4.1: keep it there, or store it to its home
+/// fn binary(cx: Cx, inst: Inst, lhs: Value, rhs: Value) -> CgResult<()> {
+///     // Computed into the first operand's register: it is dead after
+///     // this instruction, or a temporary.
+///     let a = cx.use_reg(lhs)?;                 // in a register, pinned
+///     let b = if matches!(cx.loc(rhs)?, Loc::Frame(_)) {
+///         mem(cx.use_mem(rhs)?)                 // read from its slot
+///     } else {
+///         reg(cx.use_reg(rhs)?)
+///     };
+///     cx.put_ins(Enc::op(isa::BIN).u8(op).u8(bits).opnd(reg(a)).opnd(reg(a)).opnd(b));
+///     cx.finish(inst, a)                        // §4.1: keep it there, or store it to its home
 /// }
 ///
-/// // %r = add i128 %a, %b                        (class Mem: slot to slot)
-/// fn binary_mem(cx: &mut FnCx<'_, Tm>, inst: Inst<'_>, lhs: Value, rhs: Value) -> CgResult<()> {
-///     let a = cx.use_mem(lhs)?;        // the home of %a, or a slot a constant was written to
-///     let b = cx.use_mem(rhs)?;
-///     let d = cx.def_mem(inst)?;       // the home of %r
-///     emit_bin_mem(cx, inst.opcode(), 128, d, a, b);
-///     Ok(())                           // nothing to finish: the home is the value
+/// // %c = icmp ult i32 %a, %b                    (§4.6: deferred when it may be)
+/// fn icmp(cx: Cx, inst: Inst, pred: IntPredicate, lhs: Value, rhs: Value) -> CgResult<()> {
+///     if cx.may_defer(inst) {
+///         return cx.defer(inst);                // emit nothing; the operands stay where they are
+///     }
+///     let (bits, a, b) = compare_operands(cx, lhs, rhs)?;
+///     let d = cx.def_reg(inst)?;
+///     cx.put_ins(Enc::op(isa::ICMP).u8(pred as u8).u8(bits).u8(d.index()).opnd(a).opnd(b));
+///     cx.finish(inst, d)
 /// }
 ///
-/// // %c = icmp ult i32 %a, %b ; br i1 %c, ...    (fusing, §4.6)
-/// fn icmp(cx: &mut FnCx<'_, Tm>, inst: Inst<'_>, ..) -> CgResult<()> {
-///     if cx.may_defer(inst) && next_is_cond_br(cx, inst) {
-///         return cx.defer(inst);       // emit nothing; the operands stay where they are
+/// // br i1 %c, label %t, label %f                (a deferred compare fused into JCMP)
+/// fn cond_br(cx: Cx, cond: Value, if_true: BlockId, if_false: BlockId) -> CgResult<()> {
+///     let to = cx.block_label(if_true);
+///     if let Some(compare) = cx.deferred(cond)
+///         && let InstKind::ICmp { pred, lhs, rhs } = compare.kind()
+///     {
+///         let (bits, a, b) = compare_operands(cx, lhs, rhs)?;   // the compare's own operands
+///         branch(cx, isa::JCMP, |ins| ins.u8(pred as u8).u8(bits).opnd(a).opnd(b), to)?;
+///     } else {
+///         let c = cx.use_reg(cond)?;            // not deferred (or: asking emits it now)
+///         branch(cx, isa::JNZ, |ins| ins.u8(c.index()), to)?;
 ///     }
-///     ..                               // otherwise as `binary`
-/// }
-/// fn cond_br(cx: &mut FnCx<'_, Tm>, cond: Value, t: BlockId, f: BlockId) -> CgResult<()> {
-///     if let Some(cmp) = cx.deferred(cond) {
-///         let InstKind::ICmp { pred, lhs, rhs } = cmp.kind() else { .. };
-///         let (a, b) = (cx.use_reg(lhs)?, cx.use_reg(rhs)?);   // the compare's own operands
-///         return emit_compare_and_branch(cx, pred, a, b, t, f);
+///     if !cx.falls_through(if_false) {
+///         cx.target.jump(cx, cx.block_label(if_false))?;
 ///     }
-///     let c = cx.use_reg(cond)?;       // not deferred (or: asking emits it now)
-///     ..
+///     Ok(())
 /// }
 /// ```
+///
+/// Before any lowering runs, the test target asks for an operand that
+/// is [`deferred`](FnCx::deferred) and that the instruction does not
+/// fuse, so that it is emitted while no other operand holds a register.
 ///
 /// What a lowering must not do: keep a register across a call it makes
 /// (a call clobbers every register; pass the value as an operand of the

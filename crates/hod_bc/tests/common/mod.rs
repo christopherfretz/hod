@@ -6,7 +6,10 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use hod_ir::{Const, ConstId, Module, ParamAttrs, SymId, SymbolKind, TypeId, TypeKind};
+use hod_ir::{
+    Const, ConstId, DiFieldOut, DiId, DiKind, DiNode, Module, ParamAttrs, SymId, SymbolKind,
+    TypeId, TypeKind,
+};
 use hod_testutil::{DEFAULT_TIMEOUT, run_with};
 
 /// The `bin` directory of LLVM `major`.
@@ -338,6 +341,28 @@ pub fn body_dump(module: &Module, numbered: &[SymId], body: &hod_ir::Body) -> St
     let name = |sym: SymId| sym_name(module, numbered, sym);
     let mut out = String::new();
     let _ = writeln!(out, "slots {:?}", body.slots());
+    for var in body.slot_vars() {
+        let _ = writeln!(
+            out,
+            "slot var {:?} di{} expr={} loc={}",
+            var.slot,
+            var.var.raw(),
+            expr_text(module, var.expr),
+            loc_text(module, var.loc)
+        );
+    }
+    for declare in body.declares() {
+        let address = format!("{:?}", declare.address);
+        let _ = writeln!(
+            out,
+            "declare {} di{} expr={} loc={}",
+            ids_written_out(module, &address, &name),
+            declare.var.raw(),
+            expr_text(module, declare.expr),
+            loc_text(module, declare.loc)
+        );
+    }
+    let mut records = body.dbg_records().peekable();
     for block in body.blocks() {
         let _ = writeln!(out, "{:?}:", block.id());
         for inst in block.insts() {
@@ -358,9 +383,31 @@ pub fn body_dump(module: &Module, numbered: &[SymId], body: &hod_ir::Body) -> St
                 }
                 kind => format!("{kind:?}"),
             };
+            while let Some(record) = records.peek().filter(|r| r.before == inst.id()) {
+                let values = format!("{:?}", record.values);
+                let _ = writeln!(
+                    out,
+                    "  #dbg {:?} var=di{} expr={} loc={} values={} list={} address={} {}",
+                    record.kind,
+                    record.var.raw(),
+                    expr_text(module, record.expr),
+                    loc_text(module, record.loc),
+                    ids_written_out(module, &values, &name),
+                    record.arg_list,
+                    ids_written_out(module, &format!("{:?}", record.address), &name),
+                    expr_text(module, record.address_expr),
+                );
+                records.next();
+            }
+            let loc = inst.loc();
+            let loc = if loc == hod_ir::LocId::NONE {
+                String::new()
+            } else {
+                format!(" !dbg {}", loc_text(module, loc))
+            };
             let _ = writeln!(
                 out,
-                "  {:?} {:?} {} {}",
+                "  {:?} {:?} {} {}{loc}",
                 inst.id(),
                 inst.opcode(),
                 ty(module, inst.ty()),
@@ -369,6 +416,158 @@ pub fn body_dump(module: &Module, numbered: &[SymId], body: &hod_ir::Body) -> St
         }
     }
     out
+}
+
+/// An expression: its elements.
+pub fn expr_text(module: &Module, expr: hod_ir::ExprId) -> String {
+    format!("{:?}", module.debug.expr_elements(expr))
+}
+
+/// A location, written out: line, column, scope (as `di<raw>`, which
+/// [`debug_dump`] replaces) and inlined-at, recursively.
+pub fn loc_text(module: &Module, loc: hod_ir::LocId) -> String {
+    if loc == hod_ir::LocId::NONE {
+        return "none".into();
+    }
+    let Some(at) = module.debug.location(loc) else { return "undefined".into() };
+    let distinct = if module.debug.is_distinct_loc(loc) { " distinct" } else { "" };
+    format!(
+        "({}:{} di{} at {}{distinct})",
+        at.line,
+        at.column,
+        at.scope.raw(),
+        loc_text(module, at.inlined_at)
+    )
+}
+
+/// The children of `node` a dump labels: the nodes its fields name.
+fn di_children(module: &Module, node: DiId, out: &mut Vec<DiId>) {
+    module.debug.node(node).each_field(&mut |_, value| match value {
+        DiFieldOut::Node(id) | DiFieldOut::Bound(hod_ir::DiBound::Node(id)) => out.push(id),
+        DiFieldOut::List(ids) => out.extend(ids.iter().filter(|id| !id.is_none())),
+        _ => {}
+    });
+}
+
+/// Whether `node` is written in place (a string or a constant).
+fn di_inline(module: &Module, node: DiId) -> bool {
+    matches!(module.debug.find_kind(node), Some(DiKind::String | DiKind::Constant))
+}
+
+/// The debug tables of `module`, written so that two readers that made
+/// them in another order give the same text: every node reachable from
+/// the compile units, the global-variable expressions (by symbol), the
+/// subprograms of the functions (by name) and the `di<raw>` ids of
+/// `bodies` (in order) is labelled `#n` in the order a walk from those
+/// roots meets it, and `bodies`' ids are replaced by the labels.
+#[allow(clippy::too_many_lines)] // The labelling, then the writing.
+pub fn debug_dump(module: &Module, numbered: &[SymId], bodies: &mut String) -> String {
+    let name = |sym: SymId| sym_name(module, numbered, sym);
+    let debug = &module.debug;
+    let mut roots: Vec<DiId> = debug.compile_units().to_vec();
+    let mut exprs: Vec<(String, usize, DiId)> =
+        module.global_exprs().iter().enumerate().map(|(i, &(s, e))| (name(s), i, e)).collect();
+    exprs.sort();
+    roots.extend(exprs.iter().map(|e| e.2));
+    let mut subprograms: Vec<(String, DiId)> = module
+        .symbols()
+        .filter_map(|symbol| match symbol.kind() {
+            SymbolKind::Function { subprogram: Some(sp), .. } => Some((name(symbol.id()), sp)),
+            _ => None,
+        })
+        .collect();
+    subprograms.sort();
+    roots.extend(subprograms.iter().map(|s| s.1));
+    // The `di<raw>` ids of the bodies, in order.
+    let text = bodies.as_bytes();
+    let mut placeholders = Vec::new();
+    let mut i = 0;
+    while let Some(at) = bodies[i..].find("di").map(|at| at + i) {
+        let digits = text[at + 2..].iter().take_while(|b| b.is_ascii_digit()).count();
+        let word = at == 0 || !(text[at - 1].is_ascii_alphanumeric() || text[at - 1] == b'_');
+        if word && digits > 0 {
+            let raw: u32 = bodies[at + 2..at + 2 + digits].parse().unwrap_or(u32::MAX);
+            placeholders.push((at, at + 2 + digits, raw));
+        }
+        i = at + 2 + digits;
+    }
+    roots.extend(placeholders.iter().map(|p| DiId::new(p.2)));
+    let mut labels: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    let mut order = Vec::new();
+    let mut stack = Vec::new();
+    let mut children = Vec::new();
+    for &root in &roots {
+        stack.push(root);
+        while let Some(node) = stack.pop() {
+            if node.is_none() || labels.contains_key(&node.raw()) || di_inline(module, node) {
+                continue;
+            }
+            if !debug.contains(node) {
+                continue;
+            }
+            labels.insert(node.raw(), order.len());
+            order.push(node);
+            children.clear();
+            di_children(module, node, &mut children);
+            stack.extend(children.iter().rev());
+        }
+    }
+    let label = |node: DiId| -> String {
+        if node.is_none() {
+            return "null".into();
+        }
+        if !debug.contains(node) {
+            return format!("undefined{}", node.raw());
+        }
+        match debug.node(node) {
+            DiNode::String(s) => format!("{:?}", String::from_utf8_lossy(s.text)),
+            DiNode::Constant(c) => format!("({})", constant(module, c.value, &name)),
+            _ => labels.get(&node.raw()).map_or_else(|| "unlabelled".into(), |l| format!("#{l}")),
+        }
+    };
+    let mut rewritten = String::with_capacity(bodies.len());
+    let mut last = 0;
+    for &(start, end, raw) in &placeholders {
+        rewritten.push_str(&bodies[last..start]);
+        rewritten.push_str(&label(DiId::new(raw)));
+        last = end;
+    }
+    rewritten.push_str(&bodies[last..]);
+    *bodies = rewritten;
+    let mut out = String::new();
+    let _ = writeln!(out, "compile units {:?}", roots_of(debug.compile_units(), &label));
+    for (sym, _, expr) in &exprs {
+        let _ = writeln!(out, "global expr {sym} {}", label(*expr));
+    }
+    for (function, sp) in &subprograms {
+        let _ = writeln!(out, "subprogram {function} {}", label(*sp));
+    }
+    for (n, &node) in order.iter().enumerate() {
+        let distinct = if debug.is_distinct(node) { "distinct " } else { "" };
+        let _ = write!(out, "#{n} = {distinct}{:?} {{", debug.kind(node));
+        debug.node(node).each_field(&mut |field, value| {
+            let value = match value {
+                DiFieldOut::Node(id) | DiFieldOut::Bound(hod_ir::DiBound::Node(id)) => label(id),
+                DiFieldOut::List(ids) => {
+                    let ids: Vec<String> = ids.iter().map(|&id| label(id)).collect();
+                    format!("[{}]", ids.join(", "))
+                }
+                DiFieldOut::Expr(expr) | DiFieldOut::Bound(hod_ir::DiBound::Expr(expr)) => {
+                    expr_text(module, expr)
+                }
+                DiFieldOut::Const(c) => format!("({})", constant(module, c, &name)),
+                DiFieldOut::Str(text) => format!("{:?}", String::from_utf8_lossy(text)),
+                other => format!("{other:?}"),
+            };
+            let _ = write!(out, " {field}: {value},");
+        });
+        out.push_str(" }\n");
+    }
+    out
+}
+
+fn roots_of(ids: &[DiId], label: &dyn Fn(DiId) -> String) -> Vec<String> {
+    ids.iter().map(|&id| label(id)).collect()
 }
 
 /// One function's lines: its name, and its body dump or the names that
@@ -410,8 +609,9 @@ pub fn read_text_bodies(text: &[u8]) -> Result<String, String> {
     })
     .map_err(|e| format!("{:?}: {e}", e.kind))?;
     functions.sort();
-    functions.push(dump(&module, &numbered));
-    Ok(functions.concat())
+    let mut bodies = functions.concat();
+    let debug = debug_dump(&module, &numbered, &mut bodies);
+    Ok(bodies + &debug + &dump(&module, &numbered))
 }
 
 /// `hod_bc`'s reading of `bitcode` with every body, as
@@ -434,6 +634,7 @@ pub fn read_bitcode_bodies(bitcode: &[u8]) -> Result<String, String> {
     })
     .map_err(|e| format!("{:?}: {e}", e.kind))?;
     functions.sort();
-    functions.push(dump(&module, &numbered));
-    Ok(functions.concat())
+    let mut bodies = functions.concat();
+    let debug = debug_dump(&module, &numbered, &mut bodies);
+    Ok(bodies + &debug + &dump(&module, &numbered))
 }

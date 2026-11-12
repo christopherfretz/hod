@@ -1290,6 +1290,19 @@ impl Fx<'_, '_, '_> {
             if self.s.bundle_metadata && !bundles.is_empty() {
                 self.note("bundle:metadata-input");
             }
+            if let Target::Sym(sym) = target {
+                // Metadata arguments: metadata ids, relative as values are.
+                let mut args = [0u64; 6];
+                let count = o.left().min(args.len() + 1);
+                if count > args.len() {
+                    return self.invalid("a call of a debug intrinsic with the wrong arguments");
+                }
+                for arg in &mut args[..count] {
+                    *arg = self.absolute(o.next()?);
+                }
+                let name = self.module.symbol(sym).name().to_vec();
+                self.debug_call(&name, &args[..count])?;
+            }
             return self.stand_in_call(kind, ret, normal);
         }
 

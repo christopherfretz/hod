@@ -22,14 +22,22 @@ pub struct TortureTest {
     /// The path below `execute/`, with `/`: `20000112-1.c`, `ieee/fp-cmp-1.c`.
     pub name: String,
     pub path: PathBuf,
+    /// The other files the test's program is built from, each compiled on
+    /// its own and linked after the test, in order: the entry's name for
+    /// the module, and the file below `execute/`.
+    pub with: Vec<(&'static str, String)>,
     /// Why the test is never captured, if it is known from where it is.
     pub unfit: Option<Unfit>,
 }
 
+/// The entry's name for the module of a test that is built with others
+/// ([`TortureTest::with`]).
+pub const TEST_MODULE: &str = "test";
+
 /// Finds the tests of `execute` (the suite's directory): the `*.c` files
-/// of the directory itself and of `ieee/`, and those of `builtins/`, which
-/// are built from several files and are found only to be counted. Sorted
-/// by name.
+/// of the directory itself and of `ieee/`, and those of `builtins/`, each
+/// of which is built with its `-lib.c` file and the directory's
+/// `lib/main.c` (`builtins/builtins.exp`). Sorted by name.
 pub fn discover(execute: &Path) -> Result<Vec<TortureTest>, String> {
     let mut found = Vec::new();
     for sub in ["", "ieee", "builtins"] {
@@ -54,10 +62,19 @@ pub fn discover(execute: &Path) -> Result<Vec<TortureTest>, String> {
                 continue;
             }
             let name = if sub.is_empty() { file.to_owned() } else { format!("{sub}/{file}") };
-            let unfit = (sub == "builtins").then(|| {
-                Unfit::new("multi-file", "built from the test, its -lib.c and builtins/lib/")
-            });
-            found.push(TortureTest { name, path, unfit });
+            let mut with = Vec::new();
+            let mut unfit = None;
+            if sub == "builtins" {
+                let lib = format!("{}-lib.c", file.strip_suffix(".c").unwrap_or(file));
+                if dir.join(&lib).is_file() && dir.join("lib/main.c").is_file() {
+                    with.push(("lib", format!("{sub}/{lib}")));
+                    with.push(("main", format!("{sub}/lib/main.c")));
+                } else {
+                    let detail = format!("no {sub}/{lib} or no {sub}/lib/main.c to build it with");
+                    unfit = Some(Unfit::new("multi-file", detail));
+                }
+            }
+            found.push(TortureTest { name, path, with, unfit });
         }
     }
     found.sort_by(|a, b| a.name.cmp(&b.name));
@@ -287,6 +304,7 @@ mod tests {
             "ieee/fp.x",
             "builtins/abs.c",
             "builtins/abs-lib.c",
+            "builtins/alone.c",
             "builtins/lib/main.c",
             "other/x.c",
         ] {
@@ -304,11 +322,18 @@ mod tests {
             [
                 ("a.c", None),
                 ("b.c", None),
-                ("builtins/abs.c", Some("multi-file")),
+                ("builtins/abs.c", None),
+                ("builtins/alone.c", Some("multi-file")),
                 ("ieee/fp.c", None)
             ]
         );
-        assert_eq!(found[3].path, scratch.join("ieee/fp.c"));
+        assert_eq!(found[4].path, scratch.join("ieee/fp.c"));
+        // A `builtins/` test is three files; any other is one.
+        assert_eq!(
+            found[2].with,
+            [("lib", "builtins/abs-lib.c".to_owned()), ("main", "builtins/lib/main.c".to_owned())]
+        );
+        assert!(found[0].with.is_empty() && found[3].with.is_empty());
         assert!(discover(&scratch.join("missing")).is_err());
     }
 

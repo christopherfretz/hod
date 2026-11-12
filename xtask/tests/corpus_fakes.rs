@@ -5,11 +5,15 @@
 //!
 //! How the fakes work (the linkers and the objects are those of
 //! `irdiff_fakes.rs`). A test's source holds its "module" in lines that
-//! start with `//; `: the fake producers write them out as `; ` lines. A
-//! module's `; program: <command>` lines become the program; `;
-//! program(mold): ...` only when mold links it. Other marker lines make a
-//! tool misbehave: `//; kiln: fail|twice|bitcode|nollc|static|tune`,
-//! `//; clang: reject`, `; llc: fail`, `; link-fail: llc bfd`.
+//! start with `//; `: the fake producers write them out as `; ` lines. The
+//! modules' `; program: <command>` lines, in link order, become the
+//! program; `; program(mold): ...` only when mold links it, `;
+//! program(O2): ...` only in a program of `llc -O2`'s objects (the
+//! witness's), `; program(llc): ...` only in one of `llc -O0`'s. Other
+//! marker lines make a tool misbehave:
+//! `//; kiln: fail|twice|bitcode|nollc|static|tune`, `//; clang: reject`,
+//! `; llc: fail`, `; dis: fail`, `; link-fail: llc bfd`, `; link-warn: bfd`
+//! (a warning, which fails the link under `--fatal-warnings`).
 #![cfg(target_os = "linux")]
 
 mod common;
@@ -39,7 +43,19 @@ while [ $# -gt 0 ]; do
 done
 if [ "$in" = - ]; then in="$out.in"; cat > "$in"; fi
 if grep -q '^; llc: fail' "$in"; then echo "llc: error: bad module" >&2; exit 1; fi
-{ echo "built-by llc"; echo "args$args"; cat "$in"; } > "$out""#;
+case "$args " in *" -O2 "*) builder=O2 ;; *) builder=llc ;; esac
+{ echo "built-by $builder"; echo "args$args"; cat "$in"; } > "$out""#;
+
+/// Writes "bitcode" (the magic, then the module) as text: the module.
+const FAKE_LLVM_DIS: &str = r#"PATH=/usr/bin:/bin
+out=
+while [ $# -gt 0 ]; do
+  case "$1" in -o) out=$2; shift ;; esac
+  shift
+done
+tail -c +5 > "$out.in"
+if grep -q '^; dis: fail' "$out.in"; then echo "llvm-dis: error: invalid record" >&2; exit 1; fi
+mv "$out.in" "$out""#;
 
 /// Declines every module: in hybrid mode the fallback builds it.
 const FAKE_HOD: &str = r#"PATH=/usr/bin:/bin
@@ -81,25 +97,39 @@ fn fake_linker(name: &str) -> String {
     format!(
         r#"PATH=/usr/bin:/bin
 me={name}
-out= obj=
+out= objs= flags=
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) out=$2; shift ;;
-    -*) ;;
-    *) obj=$1 ;;
+    -B*|-l*|-pie|-no-pie) ;;
+    -*) flags="$flags $1" ;;
+    *) objs="$objs $1" ;;
   esac
   shift
 done
-builder=$(sed -n '1s/^built-by //p' "$obj")
-if grep -q "^; link-fail: $builder $me\$" "$obj"; then
-  echo "$me: error: undefined symbol: main" >&2
-  exit 1
-fi
+first=
+for obj in $objs; do
+  [ -n "$first" ] || first=$obj
+  builder=$(sed -n '1s/^built-by //p' "$obj")
+  if grep -q "^; link-fail: $builder $me\$" "$obj"; then
+    echo "$me: error: undefined symbol: main" >&2
+    exit 1
+  fi
+  if grep -q "^; link-warn: $me\$" "$obj"; then
+    echo "$me: warning: the use of 'tmpnam' is dangerous" >&2
+    case "$flags" in *--fatal-warnings*) exit 1 ;; esac
+  fi
+done
 {{
   echo '#!/bin/sh'
   {signature}
   echo "PATH=/usr/bin:/bin"
-  sed -n -e 's/^; program: //p' -e "s/^; program($me): //p" "$obj"
+  echo "CODEGEN='$(sed -n '2s/^args //p' "$first")'"
+  for obj in $objs; do
+    builder=$(sed -n '1s/^built-by //p' "$obj")
+    sed -n -e 's/^; program: //p' -e "s/^; program($me): //p" \
+      -e "s/^; program($builder): //p" "$obj"
+  done
 }} > "$out"
 chmod 755 "$out""#
     )
@@ -110,37 +140,52 @@ fn fake_kiln(calls: &Path) -> String {
     format!(
         r#"PATH=/usr/bin:/bin
 if [ "$1" = --version ]; then echo "fake kiln version 0.1"; exit 0; fi
-dir= out= src= opts=
+dir= out= srcs= objs= opts= compile= bmi=
 while [ $# -gt 0 ]; do
   case "$1" in
     --llvm-dir=*) dir=${{1#--llvm-dir=}} ;;
     -o) out=$2; shift ;;
     -x) shift ;;
+    -c) compile=1 ;;
+    -fmodule-output=*) bmi=${{1#-fmodule-output=}} ;;
+    -fmodule-file=*)
+      file=${{1#-fmodule-file=}}; file=${{file#*=}}
+      if [ ! -f "$file" ]; then echo "kiln++: error: no module file: $file" >&2; exit 1; fi ;;
     -std=*|-D*) opts="$opts $1" ;;
     -*) ;;
-    *) src=$1 ;;
+    *.o) objs="$objs $1" ;;
+    *) srcs="$srcs $1" ;;
   esac
   shift
 done
-echo "kiln $src" >> '{calls}'
-if [ ! -f "$src" ]; then echo "kiln++: error: no such file: $src" >&2; exit 1; fi
-has() {{ grep -q "^//; kiln: $1" "$src"; }}
-if has fail; then echo "$src:1:1: error: this is not C++" >&2; exit 1; fi
-if has nollc; then printf '#!/bin/sh\n' > "$out"; chmod 755 "$out"; exit 0; fi
+echo "kiln$srcs$objs" >> '{calls}'
 tmp="${{TMPDIR:?}}/kiln-$$"
 mkdir -p "$tmp" || exit 1
-model=pic; if has static; then model=static; fi
-tune=; if has tune; then tune=-debugger-tune=gdb; fi
-module() {{
-  if has bitcode; then printf 'BC\300\336'; fi
-  echo "; options:$opts"
-  sed -n 's|^//; |; |p' "$src"
-}}
-module | "$dir/bin/llc" -O0 -relocation-model=$model -filetype=obj $tune -o "$tmp/0-t.o" - || exit 1
-if has twice; then
-  module | "$dir/bin/llc" -O0 -relocation-model=$model -filetype=obj -o "$tmp/1-t.o" - || exit 1
-fi
-"$dir/bin/clang++" "$tmp/0-t.o" -o "$out" || exit 1"#,
+n=0
+for src in $srcs; do
+  if [ ! -f "$src" ]; then echo "kiln++: error: no such file: $src" >&2; exit 1; fi
+  has() {{ grep -q "^//; kiln: $1" "$src"; }}
+  if has fail; then echo "$src:1:1: error: this is not C++" >&2; exit 1; fi
+  if has nollc; then printf '#!/bin/sh\n' > "$out"; chmod 755 "$out"; exit 0; fi
+  model=pic; if has static; then model=static; fi
+  tune=; if has tune; then tune=-debugger-tune=gdb; fi
+  module() {{
+    if has bitcode; then printf 'BC\300\336'; fi
+    echo "; options:$opts"
+    sed -n 's|^//; |; |p' "$src"
+  }}
+  stem=${{src##*/}}; stem=${{stem%.*}}
+  if [ -n "$compile" ]; then obj=$out; else obj="$tmp/$n-$stem.o"; fi
+  module | "$dir/bin/llc" -O0 -relocation-model=$model -filetype=obj $tune -o "$obj" - || exit 1
+  if has twice; then
+    module | "$dir/bin/llc" -O0 -relocation-model=$model -filetype=obj -o "$tmp/extra.o" - || exit 1
+  fi
+  objs="$objs $obj"
+  n=$((n+1))
+done
+if [ -n "$bmi" ]; then : > "$bmi"; fi
+if [ -n "$compile" ]; then exit 0; fi
+"$dir/bin/clang++" $objs -o "$out" || exit 1"#,
         calls = calls.display()
     )
 }
@@ -197,6 +242,7 @@ impl World {
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::fs::create_dir_all(dir.join("lib/clang").join(major.to_string())).unwrap();
         write_script(&dir.join("bin/llc"), FAKE_LLC);
+        write_script(&dir.join("bin/llvm-dis"), FAKE_LLVM_DIS);
         write_script(&dir.join("bin/opt"), "exit 1");
         let link = format!("exec '{}' \"$@\"", self.scratch.join("bin/ld.bfd").display());
         write_script(&dir.join("bin/clang++"), &link);
@@ -305,8 +351,15 @@ fn entries(world: &World) -> Vec<String> {
 fn full_world(label: &str) -> World {
     let world = World::new(label);
     let run = "//@ expect: run\n";
+    // What both the capture's own llc and the oracle of the admission must
+    // have been given: the oracle's selector.
+    let selector = "//; program(llc): case \"$CODEGEN\" in *' -global-isel=0 -fast-isel=0'*) ;; \
+                    *) exit 7 ;; esac\n";
     for (name, text) in [
-        ("conformance/a/hello.cpp", "//@ stdout: hello\n//; program: echo hello\n".to_owned()),
+        (
+            "conformance/a/hello.cpp",
+            format!("//@ stdout: hello\n//; program: echo hello\n{selector}"),
+        ),
         (
             "conformance/a/status.cpp",
             "//@ std: c++23\n//@ exit: 3\n//@ run-args: x y\n//@ run-stdin: in\n\
@@ -315,12 +368,22 @@ fn full_world(label: &str) -> World {
                 .to_owned(),
         ),
         ("conformance/a/static.cpp", "//; kiln: static\n//; program: exit 0\n".to_owned()),
-        ("conformance/a/tune.cpp", "//; kiln: tune\n//; program: exit 0\n".to_owned()),
+        // The program needs the argument its producer gave llc.
+        (
+            "conformance/a/tune.cpp",
+            "//; kiln: tune\n\
+             //; program: case \"$CODEGEN\" in *-debugger-tune=gdb*) ;; *) exit 9 ;; esac\n"
+                .to_owned(),
+        ),
         ("c/run/plain.c", "//; program: echo c\n".to_owned()),
         ("conformance/b/two.cpp", "//; kiln: twice\n".to_owned()),
-        ("conformance/b/opt.cpp", "//@ args: -O2\n//; kiln: bitcode\n".to_owned()),
+        // Bitcode to llc: text by llvm-dis.
+        (
+            "conformance/b/opt.cpp",
+            "//@ args: -O2\n//; kiln: bitcode\n//; program: echo opt\n".to_owned(),
+        ),
         ("conformance/b/coro.cpp", "//; kiln: bitcode\n// co_await x;\n".to_owned()),
-        ("conformance/b/inline.cpp", "//; kiln: bitcode\n".to_owned()),
+        ("conformance/b/inline.cpp", "//; kiln: bitcode\n//; dis: fail\n".to_owned()),
         ("conformance/b/lto.cpp", "//@ args: -flto\n//; kiln: nollc\n".to_owned()),
         ("conformance/b/nollc.cpp", "//; kiln: nollc\n".to_owned()),
         ("conformance/b/bad.cpp", "//; kiln: fail\n".to_owned()),
@@ -329,27 +392,68 @@ fn full_world(label: &str) -> World {
         ("conformance/b/status.cpp", "//; program: exit 1\n".to_owned()),
         ("conformance/b/mold.cpp", "//; program(mold): echo more\n".to_owned()),
         ("conformance/b/xfail.cpp", "//@ xfail: not yet\n".to_owned()),
-        ("conformance/b/unit.cpp", "//@ unit: other.cpp\n".to_owned()),
+        ("conformance/b/unit.cpp", "//@ unit: missing.cpp\n".to_owned()),
+        ("conformance/b/pch.cpp", "//@ pch: p.h\n".to_owned()),
+        // What `llc -O2` builds behaves differently.
+        ("conformance/b/unsure.cpp", "//; program(O2): echo more\n".to_owned()),
+        // A linker that warns, and one that fails with or without.
+        ("conformance/c/warns.cpp", "//; link-warn: bfd\n//; link-warn: mold\n".to_owned()),
+        ("conformance/b/nomold.cpp", "//; link-fail: llc mold\n".to_owned()),
+        ("conformance/c/open.cpp", "//; program: printf 'a\\nb'\n".to_owned()),
+        // Several translation units: separate steps, and one command.
+        (
+            "conformance/c/units.cpp",
+            "//@ module: m:part=Inputs/part.cppm\n//@ module: m=Inputs/m.cppm\n\
+             //@ unit: Inputs/u.cpp\n//@ stdout: part m u t\n//; program: echo t\n"
+                .to_owned(),
+        ),
+        ("conformance/c/hu.cpp", "//@ header-unit: \"h.h\"\n//; program: echo hu\n".to_owned()),
+        (
+            "conformance/c/args.cpp",
+            "//@ args: %{test_dir}/Inputs/other.cpp\n//@ stdout: other args\n\
+             //; program: echo args\n"
+                .to_owned(),
+        ),
+        (
+            "conformance/c/failing-unit.cpp",
+            "//@ unit: Inputs/bad.cpp\n//; program: exit 0\n".to_owned(),
+        ),
     ] {
         world.kiln_test(name, &format!("{run}{text}"));
+    }
+    // Not tests: under `Inputs`.
+    for (name, text) in [
+        ("part.cppm", "//; program: printf 'part '\n"),
+        ("m.cppm", "//; kiln: bitcode\n//; program: printf 'm '\n"),
+        ("u.cpp", "//; program: printf 'u '\n"),
+        ("other.cpp", "//; program: printf 'other '\n"),
+        ("bad.cpp", "//; llc: fail\n"),
+    ] {
+        world.kiln_test(&format!("conformance/c/Inputs/{name}"), text);
     }
     // Not an executing test: not seen at all.
     world.kiln_test("conformance/a/compile.cpp", "//@ expect: compile\n");
     for (name, text) in [
-        ("ok-1.c", "//; program: exit 0\n"),
-        ("out.c", "//; program: echo out\n"),
-        ("flags.c", "/* { dg-options \"-fwrapv\" } */\n//; program: exit 0\n"),
-        ("ieee/inf.c", "//; program: exit 0\n"),
-        ("abort.c", "//; program: kill -ABRT $$\n"),
-        ("status.c", "//; program: exit 1\n"),
-        ("nested.c", "//; clang: reject\n"),
-        ("llc.c", "//; llc: fail\n"),
-        ("ld.c", "//; link-fail: llc bfd\n"),
-        ("special.c", "/* { dg-options \"-Wl,--defsym,x=1\" } */\n"),
-        ("builtins/abs.c", "//; program: exit 0\n"),
-        ("mold.c", "//; program(mold): echo more\n"),
+        ("ok-1.c", "//; program: exit 0\n".to_owned()),
+        ("out.c", format!("//; program: echo out\n{selector}")),
+        ("flags.c", "/* { dg-options \"-fwrapv\" } */\n//; program: exit 0\n".to_owned()),
+        ("ieee/inf.c", "//; program: exit 0\n".to_owned()),
+        ("abort.c", "//; program: kill -ABRT $$\n".to_owned()),
+        ("status.c", "//; program: exit 1\n".to_owned()),
+        ("nested.c", "//; clang: reject\n".to_owned()),
+        ("llc.c", "//; llc: fail\n".to_owned()),
+        ("ld.c", "//; link-fail: llc bfd\n".to_owned()),
+        ("special.c", "/* { dg-options \"-Wl,--defsym,x=1\" } */\n".to_owned()),
+        // Built with its `-lib.c` and the directory's `lib/main.c`.
+        ("builtins/abs.c", "//; program: test=1\n".to_owned()),
+        ("builtins/abs-lib.c", "//; program: lib=2\n".to_owned()),
+        ("builtins/lib/main.c", "//; program: exit $((test + lib - 3))\n".to_owned()),
+        ("builtins/alone.c", "//; program: exit 0\n".to_owned()),
+        ("mold.c", "//; program(mold): echo more\n".to_owned()),
+        ("unsure.c", "//; program(O2): exit 3\n".to_owned()),
+        ("warns.c", "//; link-warn: bfd\n".to_owned()),
     ] {
-        world.torture_test(name, text);
+        world.torture_test(name, &text);
     }
     world
 }
@@ -371,44 +475,76 @@ fn capture_then_verify() {
     assert_eq!(
         entries(&world),
         [
+            "gcc-torture/llvm22/builtins/abs.c.ll",
             "gcc-torture/llvm22/flags.c.ll",
             "gcc-torture/llvm22/ieee/inf.c.ll",
             "gcc-torture/llvm22/ok-1.c.ll",
             "gcc-torture/llvm22/out.c.ll",
+            "gcc-torture/llvm22/warns.c.ll",
             "kiln/llvm22/c/run/plain.c.ll",
             "kiln/llvm22/conformance/a/hello.cpp.ll",
             "kiln/llvm22/conformance/a/static.cpp.ll",
             "kiln/llvm22/conformance/a/status.cpp.ll",
             "kiln/llvm22/conformance/a/tune.cpp.ll",
+            "kiln/llvm22/conformance/b/coro.cpp.ll",
+            "kiln/llvm22/conformance/b/opt.cpp.ll",
+            "kiln/llvm22/conformance/c/args.cpp.ll",
+            "kiln/llvm22/conformance/c/hu.cpp.ll",
+            "kiln/llvm22/conformance/c/open.cpp.ll",
+            "kiln/llvm22/conformance/c/units.cpp.ll",
+            "kiln/llvm22/conformance/c/warns.cpp.ll",
         ]
     );
     let wanted: BTreeMap<String, String> = [
         ("gcc-torture/22/abort.c", "program-fails"),
-        ("gcc-torture/22/builtins/abs.c", "multi-file"),
+        ("gcc-torture/22/builtins/alone.c", "multi-file"),
         ("gcc-torture/22/ld.c", "link-fails"),
         ("gcc-torture/22/llc.c", "llc-fails"),
         ("gcc-torture/22/mold.c", "not-reproducible"),
         ("gcc-torture/22/nested.c", "clang-rejects"),
         ("gcc-torture/22/special.c", "special-flags"),
         ("gcc-torture/22/status.c", "program-fails"),
-        ("kiln/22/tests/conformance/b/unit.cpp", "multi-file"),
+        ("gcc-torture/22/unsure.c", "oracle-unconfirmed"),
+        ("kiln/22/tests/conformance/b/unit.cpp", "header-error"),
         ("kiln/22/tests/conformance/b/bad.cpp", "compile-fails"),
-        ("kiln/22/tests/conformance/b/coro.cpp", "opt-first-coroutine"),
-        ("kiln/22/tests/conformance/b/inline.cpp", "opt-first-always-inline"),
+        ("kiln/22/tests/conformance/b/inline.cpp", "llvm-dis-fails"),
         ("kiln/22/tests/conformance/b/lto.cpp", "opt-first-lto"),
         ("kiln/22/tests/conformance/b/mold.cpp", "not-reproducible"),
         ("kiln/22/tests/conformance/b/nolink.cpp", "link-fails"),
         ("kiln/22/tests/conformance/b/nollc.cpp", "no-module"),
-        ("kiln/22/tests/conformance/b/opt.cpp", "opt-first-optimized"),
+        ("kiln/22/tests/conformance/b/nomold.cpp", "not-reproducible"),
+        ("kiln/22/tests/conformance/b/pch.cpp", "multi-file"),
         ("kiln/22/tests/conformance/b/status.cpp", "expectation-mismatch"),
         ("kiln/22/tests/conformance/b/two.cpp", "multi-file"),
+        ("kiln/22/tests/conformance/b/unsure.cpp", "oracle-unconfirmed"),
         ("kiln/22/tests/conformance/b/wrong.cpp", "expectation-mismatch"),
         ("kiln/22/tests/conformance/b/xfail.cpp", "marked-xfail"),
+        ("kiln/22/tests/conformance/c/failing-unit.cpp", "llc-fails"),
     ]
     .into_iter()
     .map(|(test, reason)| (test.to_owned(), reason.to_owned()))
     .collect();
     assert_eq!(reasons(&world), wanted);
+    let skips = Skips::read(&world.out()).unwrap();
+    let detail = |test: &str| {
+        let key = (KILN.to_owned(), 22, format!("tests/conformance/{test}"));
+        skips.rows[&key].detail.clone()
+    };
+    assert_eq!(
+        detail("b/unsure.cpp"),
+        "with bfd: witness: the program of llc -O2's object wrote stdout that differs from \
+         llc -O0's"
+    );
+    // A link that fails with warnings tolerated too.
+    assert!(detail("b/nomold.cpp").starts_with("with mold: oracle: link with mold failed"));
+    assert_eq!(
+        detail("c/failing-unit.cpp"),
+        "module 'unit0': kiln++: exit status 1: llc: error: bad module"
+    );
+    assert_eq!(
+        detail("b/two.cpp"),
+        "kiln++ ran llc 2 times and its objects do not say in which order they are linked"
+    );
 
     // The report's numbers are the tables'.
     let stats: Vec<(&str, u32, usize, usize, usize)> = report
@@ -416,15 +552,14 @@ fn capture_then_verify() {
         .iter()
         .map(|g| (g.source.as_str(), g.llvm, g.tests, g.captured, g.skipped.values().sum()))
         .collect();
-    assert_eq!(stats, [(KILN, 22, 18, 5, 13), (TORTURE, 22, 12, 4, 8)]);
-    assert_eq!(report.entries, 9);
+    assert_eq!(stats, [(KILN, 22, 27, 12, 15), (TORTURE, 22, 15, 6, 9)]);
+    assert_eq!(report.entries, 18);
 
     // An entry: the directives, the provenance, the module as the
     // producer gave it to llc.
     let arch = host().name();
-    let entry =
-        std::fs::read_to_string(world.out().join("kiln/llvm22/conformance/a/status.cpp.ll"))
-            .unwrap();
+    let read = |entry: &str| std::fs::read_to_string(world.out().join(entry)).unwrap();
+    let entry = read("kiln/llvm22/conformance/a/status.cpp.ll");
     let (head, module) = entry.split_once("; llc-args: ").unwrap();
     assert_eq!(
         module,
@@ -447,16 +582,78 @@ fn capture_then_verify() {
     );
     assert!(head.contains("; source: kiln tests/conformance/a/status.cpp\n"), "{head}");
     assert!(head.contains("; producer-args: -std=c++23 "), "{head}");
-    let entry =
-        std::fs::read_to_string(world.out().join("kiln/llvm22/conformance/a/static.cpp.ll"))
-            .unwrap();
+    assert!(head.ends_with("; delivered: text\n"), "{head}");
+    let entry = read("kiln/llvm22/conformance/a/static.cpp.ll");
     assert!(entry.contains(";@ link: c++ m no-pie\n"), "{entry}");
-    let entry =
-        std::fs::read_to_string(world.out().join("gcc-torture/llvm22/ieee/inf.c.ll")).unwrap();
+    let entry = read("gcc-torture/llvm22/ieee/inf.c.ll");
     assert!(entry.contains(";@ covers: gcc-torture ieee/inf.c\n;"), "{entry}");
     assert!(entry.contains(";@ link: m\n"), "{entry}");
     assert!(
         entry.ends_with("; flags: -O0 -S -emit-llvm -w -fno-inline\n; program: exit 0\n"),
+        "{entry}"
+    );
+
+    // "Entries": the directives a capture writes besides those. An
+    // argument of the producer's llc run that `irdiff` repeats; a link
+    // that needs warnings tolerated; output without a final newline.
+    let entry = read("kiln/llvm22/conformance/a/tune.cpp.ll");
+    assert!(entry.contains(";@ link: c++ m\n;@ llc-args: -debugger-tune=gdb\n"), "{entry}");
+    let entry = read("kiln/llvm22/conformance/c/warns.cpp.ll");
+    assert!(entry.contains(";@ link: c++ m allow-warnings\n"), "{entry}");
+    let entry = read("gcc-torture/llvm22/warns.c.ll");
+    assert!(entry.contains(";@ link: m allow-warnings\n"), "{entry}");
+    let entry = read("kiln/llvm22/conformance/c/open.cpp.ll");
+    assert!(entry.contains(";@ stdout: a\n;@ stdout-no-newline: b\n; corpus entry"), "{entry}");
+
+    // "Bitcode": a module that reached llc as bitcode is the text
+    // llvm-dis writes, and the entry and the manifest say so.
+    let entry = read("kiln/llvm22/conformance/b/opt.cpp.ll");
+    assert!(
+        entry.ends_with(
+            "; delivered: bitcode\n; llc-args: -O0 -relocation-model=pic -filetype=obj\n\
+             ; options: -std=c++26\n; kiln: bitcode\n; program: echo opt\n"
+        ),
+        "{entry}"
+    );
+
+    // "Several translation units": the modules of a test built in
+    // separate steps, in the order of the link, and those of one command
+    // over several files.
+    let entry = read("kiln/llvm22/conformance/c/units.cpp.ll");
+    let modules: Vec<&str> = entry.lines().filter(|line| line.starts_with(";@ module:")).collect();
+    assert_eq!(
+        modules,
+        [";@ module: m.part", ";@ module: m", ";@ module: unit0", ";@ module: test"]
+    );
+    assert!(entry.contains("; delivered: text bitcode text text\n"), "{entry}");
+    assert!(entry.contains(";@ stdout: part m u t\n"), "{entry}");
+    assert!(
+        entry.contains(
+            " -fmodule-file=m:part=<job>/bmi/m.part.pcm -fmodule-output=<job>/bmi/m.pcm -c -x \
+             c++-module -fdebug-prefix-map=<cwd>=. tests/conformance/c/Inputs/m.cppm -o m.o && "
+        ),
+        "{entry}"
+    );
+    assert!(
+        entry.contains(" && -Qunused-arguments m.part.o m.o unit0.o test.o -o test.out\n"),
+        "{entry}"
+    );
+    let entry = read("kiln/llvm22/conformance/c/args.cpp.ll");
+    assert!(entry.contains("\n;@ module: 0-other\n; options: -std=c++26\n; program: printf 'other '\n;@ module: 1-args\n"), "{entry}");
+    // A test of one file built in two steps is one module.
+    let entry = read("kiln/llvm22/conformance/c/hu.cpp.ll");
+    assert!(!entry.contains(";@ module:") && entry.contains("; delivered: text\n"), "{entry}");
+    assert!(
+        entry.contains(" -c -fdebug-prefix-map=<cwd>=. tests/conformance/c/hu.cpp -o test.o && ")
+    );
+    let entry = read("gcc-torture/llvm22/builtins/abs.c.ll");
+    let modules: Vec<&str> = entry.lines().filter(|line| line.starts_with(";@ module:")).collect();
+    assert_eq!(modules, [";@ module: test", ";@ module: lib", ";@ module: main"]);
+    assert!(
+        entry.contains(
+            "; producer-args: -O0 -S -emit-llvm -w builtins/abs.c && -O0 -S -emit-llvm -w \
+             builtins/abs-lib.c && -O0 -S -emit-llvm -w builtins/lib/main.c\n"
+        ),
         "{entry}"
     );
 
@@ -470,6 +667,12 @@ fn capture_then_verify() {
     );
     assert_eq!(row.producer, "fake kiln version 0.1");
     assert_eq!(row.revision, "unknown");
+    assert_eq!(row.delivered, "text");
+    assert_eq!(manifest.rows["kiln/llvm22/conformance/b/coro.cpp.ll"].delivered, "bitcode");
+    assert_eq!(
+        manifest.rows["kiln/llvm22/conformance/c/units.cpp.ll"].delivered,
+        "text bitcode text text"
+    );
     let row = &manifest.rows["gcc-torture/llvm22/flags.c.ll"];
     assert_eq!(row.producer_args, "-O0 -S -emit-llvm -w -fwrapv flags.c");
     assert_eq!(row.producer, "fake clang version 22.0.0");
@@ -491,23 +694,26 @@ fn capture_then_verify() {
     let verified = verify::verify(&world.verify_options()).unwrap();
     assert_eq!(verified.problems, [""; 0]);
     assert_eq!(verified.exit_status(), 0, "{}", verified.summary(true));
-    assert_eq!(verified.entries, 9);
+    assert_eq!(verified.entries, 18);
     assert_eq!(verified.runs.len(), 1);
     let (major, run) = &verified.runs[0];
     assert_eq!(*major, 22);
-    assert_eq!(run.records.len(), 9 * 3, "{}", run.summary(true));
+    assert_eq!(run.records.len(), 18 * 3, "{}", run.summary(true));
 
     // And it can be counted; the same corpus gives the same report.
     let text = census::render(&world.out(), 2).unwrap();
     assert_eq!(text, census::render(&world.out(), 1).unwrap());
     for wanted in [
-        "| `kiln/llvm22` | 18 | 5 | 13 |",
-        "| `gcc-torture/llvm22` | 12 | 4 | 8 |",
-        "| `-O0 -relocation-model=pic -filetype=obj -debugger-tune=gdb` |  | 1 | no |",
-        "1 of 9 entries were built by their producer with `llc` arguments `irdiff` does not repeat.",
+        "| `kiln/llvm22` | 27 | 12 | 15 |",
+        "| `gcc-torture/llvm22` | 15 | 6 | 9 |",
+        "| `-O0 -relocation-model=pic -filetype=obj -debugger-tune=gdb` |  | 1 | yes |",
+        "0 of 18 entries were built by their producer with `llc` arguments `irdiff` does not repeat.",
+        "| of several modules | 1 | 2 |",
+        "| with a module delivered as bitcode |  | 3 |",
+        "- `tests/conformance/b/unsure.cpp` (LLVM 22): `oracle-unconfirmed`: ",
         "- `tests/conformance/b/bad.cpp` (LLVM 22): `compile-fails`: ",
         "- `tests/conformance/b/mold.cpp` (LLVM 22): `not-reproducible`: ",
-        "| modules | 4 | 5 |",
+        "| modules | 8 | 16 |",
     ] {
         assert!(text.contains(wanted), "no '{wanted}' in:\n{text}");
     }
@@ -523,20 +729,21 @@ fn capture_then_verify() {
 fn incremental_and_reproducible() {
     let world = full_world("corpus-incremental");
     let first = world.capture();
-    assert_eq!(first.entries, 9);
+    assert_eq!(first.entries, 18);
     let snapshot = world.snapshot();
     let calls = world.call_count();
-    // 16 kiln tests reach kiln++ (two are skipped by their header), 10
-    // torture tests reach clang (a multi-file one and one with special
-    // flags do not).
-    assert_eq!(calls, 16 + 10);
+    // Of the 27 kiln tests, 3 are skipped by their header, 21 are one
+    // kiln++ command, and 3 are built in steps (4 compilations and a link;
+    // 1 and a link; 2 of which the second fails). Of the 15 torture
+    // tests, 2 never reach clang, 12 are one file and 1 is three.
+    assert_eq!(calls, (21 + 5 + 2 + 2) + (12 + 3));
 
     let second = world.capture();
     assert_eq!(world.call_count(), calls, "nothing is made twice");
     assert_eq!(world.snapshot(), snapshot);
     let stats: Vec<(usize, usize, usize)> =
         second.groups.iter().map(|g| (g.captured, g.reused, g.skipped.values().sum())).collect();
-    assert_eq!(stats, [(0, 5, 13), (0, 4, 8)]);
+    assert_eq!(stats, [(0, 12, 15), (0, 6, 9)]);
 
     // A changed test, a fixed test, a removed test.
     world.kiln_test(
@@ -552,7 +759,7 @@ fn incremental_and_reproducible() {
         .iter()
         .map(|g| (g.captured, g.reused, g.skipped.values().sum(), g.removed))
         .collect();
-    assert_eq!(stats, [(1, 4, 13, 0), (1, 3, 7, 1)]);
+    assert_eq!(stats, [(1, 11, 15, 0), (1, 5, 8, 1)]);
     assert!(!world.out().join("gcc-torture/llvm22/out.c.ll").exists());
     assert!(world.out().join("gcc-torture/llvm22/status.c.ll").is_file());
     assert_eq!(reasons(&world).get("gcc-torture/22/status.c"), None);
@@ -568,11 +775,11 @@ fn incremental_and_reproducible() {
     let mut options = world.options();
     options.force = true;
     let forced = capture::capture(&options).unwrap();
-    assert_eq!(world.call_count(), calls + 16 + 9);
+    assert_eq!(world.call_count(), calls + 30 + 14);
     assert_eq!(world.snapshot(), snapshot);
     assert_eq!(
         forced.groups.iter().map(|g| (g.captured, g.reused)).collect::<Vec<_>>(),
-        [(5, 0), (4, 0)]
+        [(12, 0), (6, 0)]
     );
 
     // The skipped again.
@@ -580,7 +787,7 @@ fn incremental_and_reproducible() {
     let mut options = world.options();
     options.retry_skipped = true;
     capture::capture(&options).unwrap();
-    assert_eq!(world.call_count(), calls + 11 + 5);
+    assert_eq!(world.call_count(), calls + 13 + 6);
     assert_eq!(world.snapshot(), snapshot);
 
     // A bounded capture into a new corpus takes the first tests by name,
@@ -592,14 +799,18 @@ fn incremental_and_reproducible() {
     assert_eq!(world.snapshot(), snapshot);
     options.out = world.scratch.join("small");
     let bounded = capture::capture(&options).unwrap();
-    // (The first two torture tests by name are both skipped.)
-    assert_eq!(bounded.entries, 2, "{}", bounded.summary(&options.out));
+    // (Of the first two torture tests by name, one is skipped.)
+    assert_eq!(bounded.entries, 3, "{}", bounded.summary(&options.out));
     let small = Manifest::read(&options.out).unwrap();
     assert_eq!(
         small.rows.keys().collect::<Vec<_>>(),
-        ["kiln/llvm22/c/run/plain.c.ll", "kiln/llvm22/conformance/a/hello.cpp.ll"]
+        [
+            "gcc-torture/llvm22/builtins/abs.c.ll",
+            "kiln/llvm22/c/run/plain.c.ll",
+            "kiln/llvm22/conformance/a/hello.cpp.ll"
+        ]
     );
-    assert_eq!(Skips::read(&options.out).unwrap().rows.len(), 2);
+    assert_eq!(Skips::read(&options.out).unwrap().rows.len(), 1);
     // The same test in another corpus directory is the same entry, with
     // the same row.
     let here = Manifest::read(&world.out()).unwrap();
@@ -699,6 +910,42 @@ fn missing_sources_and_tools() {
     assert_eq!(report.exit_status(), 3);
     assert_eq!(report.missing_tools.len(), 2, "{:?}", report.missing_tools);
     assert!(report.summary(&world.out()).contains("MISSING LLVM 19 (llc) not found"));
+}
+
+// spec/harness.md "corpus", "Bitcode" and "Skip reasons": without an
+// `llvm-dis` a module that reached llc as bitcode is not captured; the
+// test is skipped for what made kiln run `opt`, and the missing tool is a
+// note, or a failure when tools are required.
+#[test]
+fn bitcode_without_llvm_dis() {
+    let world = World::new("corpus-no-dis");
+    std::fs::remove_file(world.scratch.join("llvm/llvm-22/bin/llvm-dis")).unwrap();
+    let run = "//@ expect: run\n//; kiln: bitcode\n";
+    world.kiln_test("conformance/a/opt.cpp", &format!("{run}//@ args: -O2\n"));
+    world.kiln_test("conformance/a/coro.cpp", &format!("{run}// co_yield 1;\n"));
+    world.kiln_test("conformance/a/inline.cpp", run);
+    world.kiln_test("conformance/a/san.cpp", &format!("{run}//@ args: -fsanitize=undefined\n"));
+    world.kiln_test("conformance/a/text.cpp", "//@ expect: run\n");
+    let mut options = world.options();
+    options.sources = vec![KILN];
+    let report = capture::capture(&options).unwrap();
+    assert_eq!(report.exit_status(), 0);
+    assert!(report.notes.join("\n").contains("llvm-dis 22 not found"), "{:?}", report.notes);
+    assert_eq!(entries(&world), ["kiln/llvm22/conformance/a/text.cpp.ll"]);
+    let wanted: BTreeMap<String, String> = [
+        ("kiln/22/tests/conformance/a/coro.cpp", "opt-first-coroutine"),
+        ("kiln/22/tests/conformance/a/inline.cpp", "opt-first-always-inline"),
+        ("kiln/22/tests/conformance/a/opt.cpp", "opt-first-optimized"),
+        ("kiln/22/tests/conformance/a/san.cpp", "opt-first-sanitizer"),
+    ]
+    .into_iter()
+    .map(|(test, reason)| (test.to_owned(), reason.to_owned()))
+    .collect();
+    assert_eq!(reasons(&world), wanted);
+    options.require_tools = true;
+    let report = capture::capture(&options).unwrap();
+    assert_eq!(report.exit_status(), 3);
+    assert!(report.summary(&world.out()).contains("MISSING llvm-dis 22 not found"));
 }
 
 // spec/harness.md "corpus", "Layout": each LLVM major has its own entries,

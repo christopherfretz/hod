@@ -637,7 +637,80 @@ fn the_remaining_forms_are_refused_by_name() {
             "declare void @g()\ndefine void @f() { call void @g() [ \"deopt\"() ]\n ret void }",
             call::CALL_BUNDLE,
         ),
+        (
+            "declare void @g(i100)\ndefine void @f(i100 %x) { call void @g(i100 signext %x)\n ret void }",
+            call::CALL_WIDE_EXT_ARG,
+        ),
+        (
+            "declare void @g(i100 zeroext)\ndefine void @f(i100 %x) { call void @g(i100 %x)\n ret void }",
+            call::CALL_WIDE_EXT_ARG,
+        ),
+        (
+            "declare void @g(i64, i64, i64, i64, i64, i64, i64, i64, i7 zeroext)\n\
+             define void @f(i7 %x) { call void @g(i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i7 zeroext %x)\n ret void }",
+            call::CALL_NARROW_EXT_STACK_ARG,
+        ),
+        (
+            "declare void @g(ptr byval([5 x i64]) align 8)\n\
+             define void @f(ptr %p) { call void (ptr, i64) @g(ptr %p, i64 1)\n ret void }",
+            call::CALL_MISMATCHED_DECLARATION,
+        ),
+        (
+            "declare i32 @p(...)\ndeclare { i7, i64 } @g()\n\
+             define void @f() personality ptr @p { %r = invoke { i7, i64 } @g() to label %a unwind label %b\n\
+             a:\n ret void\nb:\n %l = landingpad { ptr, i32 } cleanup\n ret void }",
+            call::INVOKE_ODD_RESULT,
+        ),
+        (
+            "declare i32 @p(...)\ndeclare void @g()\n\
+             define void @f() personality ptr @p { invoke void @g() to label %a unwind label %b\n\
+             a:\n ret void\nb:\n %l = landingpad { ptr, i64 } cleanup\n ret void }",
+            call::LANDING_PAD,
+        ),
     ]);
+    // An `i7 zeroext` in a register, and a matching direct call that takes
+    // the declaration's attributes, are lowered.
+    for lowered in [
+        "declare void @g(i7 zeroext)\ndefine void @f(i7 %x) { call void @g(i7 zeroext %x)\n ret void }",
+        "declare void @g(ptr byval([5 x i64]) align 8)\ndefine void @f(ptr %p) { call void @g(ptr %p)\n ret void }",
+    ] {
+        assert_eq!(common::compile_ll(lowered), Ok(()), "{lowered}");
+    }
+}
+
+/// A return value wider than 64 bits with `signext` is owed extended to
+/// 128 bits (`abi-a64.md` §7), but `A64::extend_arg` returns early for 64
+/// bits and more (`crates/hod_a64/src/target.rs:349`) and `place_return`
+/// loads a `Mem`-class value without extending it
+/// (`crates/hod_cg/src/call.rs:339`). The same gap is why calls refuse
+/// `call::CALL_WIDE_EXT_ARG`.
+#[test]
+#[ignore = "target.rs:349 and hod_cg/src/call.rs:339 do not extend an integer wider than 64 bits"]
+fn a_wide_signext_return_is_extended() {
+    let dir = Scratch::new("a64-call-wide-ret");
+    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let text = "define signext i65 @f(i65 %x) {\n  ret i65 %x\n}\n";
+    let obj = object_with(&dir, "wide", text, false, &Options::default()).expect("hod");
+    let c = "#include <stdio.h>\n__int128 f(__int128);\nint main(void) {\n\
+             __int128 r = f(((__int128)1 << 64) | 5);\n\
+             int ok = (unsigned long long)(r >> 64) == ~0ULL;\n\
+             printf(\"done\\n\");\n  return !ok;\n}\n";
+    let driver = toolchain.compile_c(&dir, "driver", c, &[]);
+    link_run_all(&toolchain, &dir, "wide", &[], &[&driver, &obj], "done", true);
+}
+
+/// `hod_cg`'s call sequence takes a direct call's missing attributes from
+/// the callee's declaration whatever the call's function type
+/// (`crates/hod_cg/src/call.rs:143`); `llc` only when the types are the
+/// same (`CallBase::paramHasAttr` through `getCalledFunction`). Until the
+/// core checks the type, `hod_a64` refuses such a call
+/// (`call::CALL_MISMATCHED_DECLARATION`) and this test fails.
+#[test]
+#[ignore = "hod_cg/src/call.rs:143 takes a declaration's attributes for a call of another function type"]
+fn a_mismatched_direct_call_takes_no_declared_attributes() {
+    let functions = "declare void @g(ptr byval([5 x i64]) align 8)\n\
+                     define void @f(ptr %p) { call void (ptr, i64) @g(ptr %p, i64 1)\n ret void }";
+    assert_eq!(common::compile_ll(functions), Ok(()));
 }
 
 #[test]

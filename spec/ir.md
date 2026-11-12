@@ -647,8 +647,8 @@ Rules that are LLVM's and are checked against LLVM 22 (§11):
 **Calls.** `call`, `invoke` and `callbr` take a `CallDesc`: the callee (a
 `Value`, or an `Intrinsic` with its overload types), the function type the
 call is made with, arguments, `CallConv`, `TailKind`, `noreturn`,
-`nounwind`, `returns_twice`, the `ParamAttrs` of the return value and of
-each argument (§5.7; stored only for calls that have any), and operand
+`nounwind`, `returns_twice`, `convergent`, the `ParamAttrs` of the return
+value and of each argument (§5.7; stored only for calls that have any), and operand
 bundles (a tag and input values each). The instruction record points into
 the **call side table**, which holds one record per call in layout order.
 `Body::calls()` iterates it without walking instructions, which is how a
@@ -795,8 +795,8 @@ does not have is `Rejected`. The lists below are the table, in full.
   `sanitize_address`, `sanitize_alloc_token`, `sanitize_hwaddress`,
   `sanitize_memory`, `sanitize_memtag`, `sanitize_numerical_stability`,
   `sanitize_realtime`, `sanitize_realtime_blocking`, `sanitize_thread`,
-  `sanitize_type`; with a value: `uwtable` (`UwTable`: `sync` or `async`)
-  and `alignstack(N)`.
+  `sanitize_type`, `convergent` (below); with a value: `uwtable`
+  (`UwTable`: `sync` or `async`) and `alignstack(N)`.
 - On functions, as strings (`FnStr`, 21 keys): `target-cpu`,
   `target-features`, `tune-cpu`, `frame-pointer`,
   `patchable-function-entry`, `patchable-function-prefix`,
@@ -808,8 +808,9 @@ does not have is `Rejected`. The lists below are the table, in full.
   `min-legal-vector-width`, `no-jump-tables`, `no-builtins`, and every
   name that starts with `no-builtin-` (the one prefix entry of the
   table).
-- On calls: `noreturn`, `nounwind`, `returns_twice`, the tail kind and
-  the calling convention (the call instruction's own fields, §5.4).
+- On calls: `noreturn`, `nounwind`, `returns_twice`, `convergent`, the
+  tail kind and the calling convention (the call instruction's own
+  fields, §5.4).
 
   Five of the strings were not in the first version of this list:
   `branch-protection-pauth-lr` and `guarded-control-stack` are the two
@@ -818,6 +819,37 @@ does not have is `Rejected`. The lists below are the table, in full.
   and is on every function clang emits; `min-legal-vector-width` bounds
   the vector registers an x86 function may use and is on every x86
   function clang emits; `no-jump-tables` forbids a code shape.
+
+  `convergent` (WP-086) is kept although it changes no code hod
+  generates, on declarations, definitions and call sites, and `classify`
+  accepts it on every target (`attr:convergent`, row `ON`). The LLVM
+  Language Reference ("Function Attributes", `convergent`) defines it as
+  a restriction on *transformations*: a convergent call may not be made
+  control-dependent on additional values, so an optimizer must not, for
+  example, duplicate it into the arms of a branch, sink or hoist it across
+  control flow, or unswitch a loop around it; "Convergent Operations"
+  adds that, absent convergence control tokens, the set of threads that
+  execute the call together is left to the implementation and is only
+  constrained relative to the input. hod makes none of those
+  transformations: code generation is one walk over each body in layout
+  order that emits every call once, in its block (`spec/codegen.md` §1),
+  and its only reordering, deferral (§4.6), delays a result to the
+  instruction immediately after it, never past a terminator, so no call
+  changes the branches it depends on, and the "converged-with" relation
+  of the output is the input's, which is all the attribute asks. It is kept rather than dropped so that a
+  module hod prints (§9) forbids what the input forbade, should anything
+  downstream transform it. On targets without SIMT execution (AArch64,
+  x86-64) it has no further meaning. What would need real support stays
+  refused by name: the `convergencectrl` operand bundle
+  (`bundle:convergencectrl`, LangRef "Convergence Control Tokens"), whose
+  token fixes *which* dynamic instances converge, and the intrinsics
+  that produce those tokens, `llvm.experimental.convergence.entry`,
+  `.anchor` and `.loop` (`intrinsic:llvm.experimental.convergence.*`,
+  `Intrinsic::Other`, and `type:token` for their result). Clang and kiln
+  put `convergent` on every intrinsic LLVM declares convergent, notably
+  `declare i1 @llvm.is.constant.*` (`__builtin_constant_p`, all over
+  libc++), and on calls in CUDA, OpenCL and HIP code; no CPU front end
+  emits the bundle.
 
 **Dropped**, because only an optimizer (or a pass that runs before any
 backend) reads them:
@@ -863,7 +895,7 @@ backend) reads them:
 **Rejected**: anything else. An attribute that is in neither list is a
 `classify` failure naming the attribute (`attr:<name>`, which the
 producer records with `record_unsupported`, §2). It is never silently
-dropped. Of LLVM 19's and 22's attribute names these are: `convergent`,
+dropped. Of LLVM 19's and 22's attribute names these are:
 `coro_elide_safe`, `coro_only_destroy_when_complete`,
 `fn_ret_thunk_extern`, `hybrid_patchable`, `jumptable`, `nocf_check`,
 `nodivergencesource`, `noduplicate`, `noimplicitfloat`, `nonlazybind`,
@@ -1016,7 +1048,7 @@ array lookup and none allocates.
 | a block | `Block::id`, `inst_range`, `insts()`, `has_phis()`, `phis()`, `non_phis()`, `terminator()`, `successors()` |
 | an instruction | `Body::inst(id)`, `insts()`; `Inst::id`, `opcode`, `ty`, `result`, `uses`, `loc`, `operands()` (the value operands as one slice, whatever the opcode), `is_terminator`, `successors()`, `call()`, and `kind()`, an `InstKind` with one variant per instruction shape and named fields |
 | lists | `PtrAdd::{base, offset, indices()}`, `Phi::{values(), blocks(), incoming()}`, `Switch::{cond, default, cases()}`, `InstKind::ShuffleVector { mask }`, `InstKind::IndirectBr { targets }` |
-| calls | `Body::calls()`, `call_count()`; `CallSite::{inst, opcode, ty, callee, callee_value, intrinsic, overloads, fn_type, args, cc, tail, is_noreturn, is_nounwind, returns_twice, has_param_attrs, ret_attrs, arg_attrs(i), bundles(), normal_dest, unwind_dest, indirect_dests}` |
+| calls | `Body::calls()`, `call_count()`; `CallSite::{inst, opcode, ty, callee, callee_value, intrinsic, overloads, fn_type, args, cc, tail, is_noreturn, is_nounwind, returns_twice, is_convergent, has_param_attrs, ret_attrs, arg_attrs(i), bundles(), normal_dest, unwind_dest, indirect_dests}` |
 | exceptions | `Body::landing_pads()`, `has_landing_pads()`; `LandingPad::{inst, is_cleanup, clauses}` |
 | the frame | `Body::slots()`, `slot_vars()` |
 | types of values | `Body::value_type(&m, value)` |
@@ -1818,7 +1850,7 @@ than the entry (`blockaddress-of-entry-block`).
 - Calls: tail markers on `call` only (`invoke:<tail>`, `callbr:<tail>`
   otherwise); the full function type is written for a variadic callee; a
   `musttail` call in a variadic function ends its arguments with `...`;
-  `noreturn`, `nounwind`, `returns_twice` call attributes, operand
+  `noreturn`, `nounwind`, `returns_twice`, `convergent` call attributes, operand
   bundles as `[ "tag"(...) ]`, `to label ... unwind label ...` for
   `invoke`, the indirect labels for `callbr`; inline assembly as `asm
   sideeffect "template", "constraints"`.

@@ -986,7 +986,7 @@ scope is noted `syncscope:<name>`.
   [sideeffect] [alignstack] [inteldialect] [unwind] "…", "…"`, interned
   with the call's function type) or any other pointer constant.
 - Of the call-site function attributes, in place or through `#N`, only
-  `noreturn`, `nounwind` and `returns_twice` are kept (`spec/ir.md`
+  `noreturn`, `nounwind`, `returns_twice` and `convergent` are kept (`spec/ir.md`
   §5.7); the callee's own are not merged in. A rejected attribute is
   noted `attr:<name>`, also through a group.
 - Argument and return attributes are those of §5.6.

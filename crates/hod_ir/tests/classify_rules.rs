@@ -12,10 +12,10 @@ use classify_support::{
     define, define_as, defined, everything, fx, module, sym, variable, verdict,
 };
 use hod_ir::{
-    Arch, AsmId, AtomicOrdering, BlockId, Bundle, CallConv, CallDesc, CallSite, Classifier, Clause,
-    ConstId, FlagValue, FnAttrs, FnAttrsId, FunctionDesc, INVALID_RULES, Intrinsic, Module, Opcode,
-    Rejection, RejectionKind, RmwOp, STRUCTURAL_RULES, StackArgs, Support, SymId, Symbol, TailKind,
-    TlsModel, TypeId, TypeKind, Value, VariableDesc,
+    Arch, AsmId, AtomicOrdering, BlockId, Bundle, CallConv, CallDesc, CallSite, Census, Classifier,
+    Clause, ConstId, FlagValue, FnAttrs, FnAttrsId, FunctionDesc, INVALID_RULES, Intrinsic, Module,
+    Opcode, Rejection, RejectionKind, RmwOp, STRUCTURAL_RULES, StackArgs, Support, SymId, Symbol,
+    TailKind, TlsModel, TypeId, TypeKind, Value, VariableDesc,
 };
 
 const ARCH: Arch = Arch::Aarch64;
@@ -948,4 +948,67 @@ fn the_rule_lists_are_the_rules() {
     for name in structural.iter().chain(&invalid) {
         assert_eq!(support.supports(name), None, "{name}");
     }
+}
+
+// ---- §5.7: `convergent` (WP-086) ----
+
+/// The construct names of the census of `program` under `support`.
+fn census_names(support: &Support, program: &Program) -> Vec<String> {
+    let classifier = Classifier::new(support).with_stack_args(&NO_STACK);
+    let mut census = Census::new();
+    classifier.census_module(&program.m, &mut census);
+    for body in &program.bodies {
+        classifier.census_body(&program.m, body, &mut census);
+    }
+    census.entries().iter().map(|entry| entry.construct.to_string()).collect()
+}
+
+/// §5.7: `convergent` constrains transformations only, so the shipped
+/// matrix accepts it on a declaration, on a definition and on a call
+/// site, as clang and kiln write it on `llvm.is.constant`; what does
+/// need convergence semantics, a `convergencectrl` bundle and the
+/// intrinsics that make its token, stays refused by name.
+#[test]
+fn convergent_is_accepted_and_convergence_control_is_not() {
+    let program = |bundle: bool| {
+        let mut m = module(ARCH);
+        let mut attrs = FnAttrs::new();
+        attrs.set(FnAttrs::CONVERGENT | FnAttrs::NOUNWIND).unwrap();
+        let attrs = m.intern_fn_attrs(&attrs).unwrap();
+        let ty = m.types.function(VOID, &[], false).unwrap();
+        let desc = FunctionDesc { attrs, ..FunctionDesc::new(ty) };
+        let f = define_as(&mut m, "f", &desc);
+        let g = m.add_function(b"g", &desc).unwrap();
+        let entry_ty = m.types.function(TypeId::TOKEN, &[], false).unwrap();
+        let body = body(&m, f, |b, _| {
+            let mut inputs = Vec::new();
+            if bundle {
+                let entry = Intrinsic::Other("llvm.experimental.convergence.entry");
+                let token = CallDesc::intrinsic(entry, &[], entry_ty, &[]);
+                inputs.push(b.call(TypeId::TOKEN, &token).unwrap());
+            }
+            let bundles = [Bundle { tag: "convergencectrl", inputs: &inputs }];
+            let call = CallDesc {
+                convergent: true,
+                bundles: if bundle { &bundles } else { &[] },
+                ..CallDesc::new(sym(g), ty, &[])
+            };
+            b.call(VOID, &call).unwrap();
+        });
+        Program { m, bodies: vec![body] }
+    };
+    let shipped = Support::shipped(ARCH);
+    let plain = program(false);
+    assert_eq!(verdict(shipped, &plain), Ok(()));
+    assert_eq!(Support::shipped(Arch::X86_64).supports("attr:convergent"), Some(true));
+
+    let controlled = program(true);
+    let names = census_names(shipped, &controlled);
+    for name in
+        ["intrinsic:llvm.experimental.convergence.entry", "type:token", "bundle:convergencectrl"]
+    {
+        assert!(names.iter().any(|found| found == name), "{name} in {names:?}");
+    }
+    assert!(!names.iter().any(|found| found == "attr:convergent"), "{names:?}");
+    assert!(verdict(shipped, &controlled).is_err());
 }

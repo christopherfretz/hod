@@ -631,6 +631,11 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
     a64("attr:sanitize_realtime_blocking", LATER, ""),
     a64("attr:sanitize_thread", LATER, ""),
     a64("attr:sanitize_type", LATER, ""),
+    both(
+        "attr:convergent",
+        ON,
+        "constrains transformations only, and hod makes none (§5.7); `bundle:convergencectrl` and the `llvm.experimental.convergence.*` intrinsics stay refused",
+    ),
 ];
 
 /// In `FnStr::ALL` order.

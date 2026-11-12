@@ -259,6 +259,16 @@ impl Session {
     /// half"), with the report; `out` is then as it was. Also a misuse:
     /// before [`Session::end_module`], or a function with a body that
     /// was never delivered.
+    ///
+    /// `finish` takes the session, so it cannot be called twice:
+    ///
+    /// ```compile_fail
+    /// fn twice(session: hod::Session) {
+    ///     let mut out = Vec::new();
+    ///     let _ = session.finish(&mut out);
+    ///     let _ = session.finish(&mut out);
+    /// }
+    /// ```
     #[allow(clippy::result_large_err, reason = "design 0004 §4: the report comes with the answer")]
     pub fn finish(mut self, out: &mut Vec<u8>) -> Result<Report, (CompileError, Report)> {
         let entered = self.enter();

@@ -9,3 +9,5 @@
 pub mod irdiff;
 #[cfg(unix)]
 pub mod shim;
+
+pub mod jobs;

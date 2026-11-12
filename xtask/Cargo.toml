@@ -9,9 +9,14 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-
-[dev-dependencies]
+# The jobserver client, shared with the test binaries (spec/harness.md
+# "Jobserver"); also the support of xtask's own tests.
 hod_testutil.workspace = true
+
+# Kills the children and returns the held jobserver tokens on SIGINT/SIGTERM
+# (spec/harness.md "Jobserver").
+[target.'cfg(unix)'.dependencies]
+signal-hook.workspace = true
 
 [lints]
 workspace = true

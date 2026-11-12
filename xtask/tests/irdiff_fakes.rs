@@ -1039,8 +1039,14 @@ fn parallel_runs_are_deterministic() {
             .collect();
         (report, file, stable)
     };
+    // The jobs shown: the last field, without the jobserver pool that
+    // follows it when this test runs under one ("Jobserver").
+    let jobs_shown = |report: &Report| {
+        let last = report.configuration.rsplit("; ").next().unwrap_or_default();
+        last.split(" (jobserver ").next().unwrap_or_default().to_owned()
+    };
     let (serial, serial_file, serial_summary) = run(1);
-    assert!(serial.configuration.ends_with("; -j 1"), "{}", serial.configuration);
+    assert_eq!(jobs_shown(&serial), "-j 1", "{}", serial.configuration);
     for jobs in [4, 16, 1000] {
         let (parallel, file, summary) = run(jobs);
         assert_eq!(parallel.records, serial.records, "-j {jobs}");
@@ -1048,7 +1054,7 @@ fn parallel_runs_are_deterministic() {
         assert_eq!(summary, serial_summary, "-j {jobs}");
         // The cap.
         let shown = jobs.min(irdiff::MAX_JOBS);
-        assert!(parallel.configuration.ends_with(&format!("; -j {shown}")));
+        assert_eq!(jobs_shown(&parallel), format!("-j {shown}"), "{}", parallel.configuration);
     }
     // By test name, then by linker in matrix order.
     let names: Vec<&str> = serial.records.iter().map(|r| file_name(&r.test)).collect();
@@ -1251,7 +1257,7 @@ fn command_exit_status() {
     assert!(!out.contains("pass.ll"), "{out}");
     let verbose = command(&world, &["-v", "--linker", "mold", "-j", "2"], &[]);
     assert!(verbose.stdout_text().contains("pass.ll [mold]\n"), "{}", verbose.stdout_text());
-    assert!(verbose.stdout_text().contains("; linkers mold; strict; -j 2\n"));
+    assert!(verbose.stdout_text().contains("; linkers mold; strict; -j 2"));
 
     world.test("error.ll", "; llc: fail\n");
     let error = command(&world, &[], &[]);

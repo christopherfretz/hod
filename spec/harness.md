@@ -170,7 +170,7 @@ options.
 
 | option | meaning | default |
 |---|---|---|
-| `-j <N>`, `-j<N>`, `--jobs <N>` | tests run at once, at least 1 | the smaller of 4 and the machine's cores; more than 16 is 16 |
+| `-j <N>`, `-j<N>`, `--jobs <N>` | tests run at once, at least 1; under a jobserver an upper bound ("Jobserver") | the smaller of 4 and the machine's cores; more than 16 is 16 |
 | `--llvm <major or dir>` | the oracle: an LLVM major, or an installation directory (its `bin/llc`) | the first of 22 and 19 that is installed |
 | `--target <arch>` | `aarch64` or `x86_64` | this host's |
 | `--linker <name>` | `bfd`, `lld`, `mold` or `wild`; repeatable; the order given does not matter | every one that is found |
@@ -335,6 +335,10 @@ A harness run therefore ends whatever its children do, and `-j` bounds
 the processes alive at once to one per job (plus a linker under its
 driver).
 
+Each process also holds a jobserver token for its lifetime when the
+harness inherited a pool, and its wall-clock limit starts once the token
+is held ("Jobserver").
+
 ### Work directory
 
 Each run works in `<build directory>/irdiff/run-<pid>-<time>/`, a new
@@ -374,7 +378,7 @@ does not depend on `-j`.
 ### Summary
 
 On standard output: one line that says what ran (oracle, hod, target,
-linkers, mode, jobs); a line `irdiff: note: ...` per note and `irdiff:
+linkers, mode, jobs, and the jobserver pool if there is one); a line `irdiff: note: ...` per note and `irdiff:
 error: ... (HOD_REQUIRE_TOOLS=1)` per missing required tool; one line per
 FAIL, XPASS, ERROR, XFAIL and SKIP (per PASS and UNSUPPORTED too with
 `-v`), where the linkers of a test with the same result share a line, and
@@ -531,6 +535,234 @@ every outcome is provoked on any Linux machine: `pass_with_every_linker`,
 on a rewritten module: a wrong result, wrong output, a hang and a missing
 `main` are each a FAIL with every linker, and the unmodified module is a
 PASS), `limits_hold_for_real_programs`.
+
+## Jobserver
+
+Every agent on a machine shares one CPU and memory budget, so the harness
+is a GNU make **jobserver client**, like the cargo and rustc it runs
+alongside. The client is ported from kiln's (`xtask/src/jobs.rs` there);
+"Differences from kiln" lists what hod changed.
+
+- **The pool.** `scripts/jobserver.sh` owns it: `start` makes a fifo
+  (`$HOD_JOBSERVER_FIFO`, else `/run/hod/jobserver.fifo`) holding one byte
+  per token (`$HOD_JOBS`, else 12), a holder process that keeps it open,
+  and a loop that runs `refill` every 60 s. `scripts/env.sh` exports
+  `MAKEFLAGS=--jobserver-auth=fifo:<path>` while that fifo exists (and
+  `HOD_NO_JOBSERVER` is unset); otherwise it caps `CARGO_BUILD_JOBS`
+  and there is no pool.
+- **What is honoured.** `MAKEFLAGS` containing `--jobserver-auth=fifo:<path>`
+  (make 4.4's fifo style; the last `--jobserver-auth=` word wins), read
+  once per process. The fifo is opened read+write and stays open until the
+  process ends; a token is one byte read from it, and the same byte is
+  written back on release.
+- **The clients.** One implementation, `hod_testutil::jobs` (`Client`,
+  `Token`, `global()`), for the two kinds of process that start children:
+  - a **test binary**: every child started through `hod_testutil::run_with`
+    (and so `run` and `write_script`) holds one token for its whole
+    lifetime;
+  - **xtask**: every child started through `irdiff::process::run` holds one
+    token for its whole lifetime: each oracle, hod, linker-driver and
+    program process of `cargo xtask irdiff` (and of the `irdiff` step of
+    `cargo xtask ci`), the `llc --version` probes, and the `llvm-config
+    --version` of `cargo xtask shim`.
+
+  A time limit starts once the token is held: waiting for the pool is never
+  a timeout. The `cargo` steps (`fmt`, `clippy`, `test` of `cargo xtask
+  ci`; the `cargo build` of the workspace's hod for `irdiff`) hold no token
+  of xtask's: cargo is a client itself, and so are the test binaries it
+  runs. The `/bin/sh` that delivers a signal to a process group is not
+  counted. What a child starts itself (hod's fallback `llc`, a linker
+  under its driver) runs on the child's token.
+- **The implicit token.** As with make, each client process owns one token
+  that is not in the pool: one child may run without reading the fifo;
+  each further concurrent child needs a pool byte. So N concurrent clients
+  on a pool of P tokens run at most P + N children. (A client that is
+  itself the child of a client runs on the token its parent holds for it,
+  so the bound holds for a tree of them.)
+- **`-j`** and the test threads stay what they are: `irdiff -j N` has N
+  worker threads and a test binary has `RUST_TEST_THREADS` test threads, so
+  they are an upper bound on in-flight children; the pool can only lower
+  the effective parallelism. A worker waits for a token in `acquire`, and
+  takes the implicit token if that becomes free first.
+- **Release.** Tokens are released by `Drop`: on a normal exit, an error
+  return, a panic of the thread, and a child killed by a limit.
+- **What the pool's refill sees.** Tokens get lost (a client killed with
+  SIGKILL takes its tokens with it), so the pool script's `refill` tops the
+  pool up to its size less the tokens in use, which it must never
+  under-count. It counts as in use, besides the compilers it knows by
+  name, **one token per child process of every process that has the fifo
+  open**. The client fits that accounting, and must keep doing so:
+  - it keeps the fifo open from its first use to the end of the process;
+  - it holds a pool token only for a child process of its own, from just
+    before the child is started until just after it is reaped and its
+    output is read, and one token per child at most;
+  - a byte read for a waiting thread is handed to that thread or written
+    straight back; nothing is kept in reserve.
+
+  So the tokens a client holds never exceed its live children for longer
+  than a spawn or a reap takes, and `refill` adds a token only for a
+  deficit that two passes a minute apart both saw. (A test's child that
+  leaves a descendant holding its output keeps `run_with`, and its token,
+  waiting without a child; that is a defect of the test, not of the
+  accounting.) `scripts/jobserver.sh refill` run twice while a client
+  holds tokens for sleeping children adds nothing.
+- **Signals.** xtask catches **SIGINT and SIGTERM** on a dedicated thread
+  (the `signal-hook` crate, a dependency of `xtask` alone), with or without
+  a pool. The thread starts with the first child or cargo step. The
+  handler's `unsafe` stays inside that dependency, so xtask remains
+  `forbid(unsafe_code)`. On either signal:
+  1. **The children die first.** Every child started through
+     `irdiff::process::run` is in a table from spawn to reap
+     (`xtask::jobs::children`), and each is the leader of its own process
+     group.
+     - Each live group is killed with `SIGKILL`: the limit wrapper, the
+       tool, and what the tool started all go together.
+     - The `cargo` steps go through `jobs::children::run_step`, which puts
+       them in the same table when the signal thread is running. Their
+       group gets `SIGTERM` first, so cargo can stop its rustc and test
+       children, and `SIGKILL` 3 s later if it is still alive. Cargo is a
+       jobserver client of its own and holds no xtask token, so tokens
+       that cargo or a test binary still held when it died are lost until
+       the pool is refilled.
+     - The thread then waits until each child is reaped and no spawn is in
+       flight. It waits at most 10 s, for a child in uninterruptible sleep.
+     - A child whose spawn was in flight is killed as it registers.
+     - From then on nothing is started: `process::run` and `run_step` do
+       not return to their callers any more (their threads park), so a
+       child the interrupt killed is nobody's result, no results file is
+       written, and nothing races the signal thread to the exit.
+     - stderr says `xtask: signal N: killed K child process(es)`.
+  2. Every pool byte the process still holds (by live tokens, or already
+     read for waiting workers) is written back to the fifo. This happens
+     only after step 1, so an orphan never runs on a returned token. Tokens
+     whose children were reaped in step 1 went back through their normal
+     `Drop`. The helper thread may still be in a read that nobody waits
+     for any more; it takes the next byte that reaches the fifo, as likely
+     as not one of those just written, and writes it straight back. The
+     signal thread waits until that read is done (at most 200 ms: with an
+     empty pool the read gets nothing), so that the process does not end
+     with a byte in the helper's hands; no other read is started.
+  3. Later token drops return nothing, and new acquisitions are free. Each
+     token is therefore returned exactly once.
+  4. The signal's default action ends the process (falling back to exit
+     status 128 + signal). stderr says `xtask: signal N: returned K
+     jobserver token(s)` when K is not 0.
+
+  The memory and time limits are unchanged: they kill one child's group
+  and leave the table to its normal reap.
+- **A test binary handles no signal.** `hod_testutil` has no dependency to
+  do it with, and libtest owns the process. A test binary that is killed
+  loses the pool tokens it held, and its children live on until they end
+  or their limits stop them. (The test binaries that call `xtask` as a
+  library, its own and `hod_cli`'s, get xtask's signal thread with their
+  first `process::run` and behave as xtask does.)
+- **What a normal exit can lose.** A helper thread left in a read that
+  nobody waits for takes a byte that reaches the fifo and writes it back
+  at once. A process that ends between those two steps takes the byte with
+  it. Nothing in a process can close that window for an exit it does not
+  control; the pool script's refill covers it.
+- **SIGKILL cannot be handled.** No process can catch it, so `kill -9`
+  (including the kernel's OOM killer), or any other fatal signal a client
+  does not catch, loses the tokens the client held, as it would for make
+  and cargo. The pool script's refill loop restores them within two
+  minutes; `cargo xtask jobserver refill` does it at once.
+- **`cargo xtask jobserver status|refill [--fifo <path>] [--jobs <n>]`.**
+  - The fifo is `MAKEFLAGS`' `fifo:` path, else `$HOD_JOBSERVER_FIFO`,
+    else `/run/hod/jobserver.fifo`.
+  - `<n>` is `$HOD_JOBS`, else the number `scripts/jobserver.sh` recorded
+    beside the fifo (`jobserver.jobs` for `jobserver.fifo`: the fifo's
+    path with `.fifo` replaced by `.jobs`), else 12.
+  - Both open the fifo read+write with `O_NONBLOCK`. They count the idle
+    tokens by reading until `EWOULDBLOCK` and write the same bytes back.
+    `status` prints `jobserver <path>: I idle token(s) of <n>`.
+  - `refill` also writes `+` bytes up to `<n>` idle tokens. It is only
+    correct while no client holds tokens (nothing building or testing):
+    tokens in use come back on top of the refill. It leaves a pool above
+    `<n>` alone and reports it. (`scripts/jobserver.sh refill` is the one
+    that is safe while clients run.)
+  - Neither ever blocks, whatever the state of the pool: a fifo nobody
+    holds open has no idle token. The non-blocking open uses a hard-coded
+    `O_NONBLOCK` per OS (Linux, Android, macOS and the BSDs); on other
+    platforms both fail with an error.
+  - A usage error, or a path that is not a fifo, is exit status 2.
+- **Fallback.** With no `MAKEFLAGS`, the descriptor forms
+  (`--jobserver-auth=R,W`, `--jobserver-fds=R,W`, which need inherited
+  descriptors), a path that is not a fifo or cannot be opened (one warning
+  per process, `jobserver: warning: cannot use jobserver fifo <path>
+  (<why>); running without it`), or a later fifo I/O error (a warning;
+  acquisition becomes free), `-j` and the test threads alone bound the
+  parallelism, exactly as without a jobserver. A fifo that has no token
+  and never gets one (its holder is gone) is still a pool: a client runs
+  its children one at a time, on its implicit token, and does not hang.
+- **The run header** of `irdiff` names the pool after the jobs: `-j N
+  (jobserver fifo:<path>)`; without a pool it is `-j N` as before.
+
+### Differences from kiln
+
+- The client is in `hod_testutil` (a crate of test support that is never
+  shipped, and has no dependency), not in `xtask`, because hod's tests
+  start most of their oracle processes from the test binaries, which kiln's
+  do not. `xtask` depends on `hod_testutil` for it and adds the signal
+  thread, the table of children and the command (`xtask/src/jobs.rs`,
+  `xtask/src/jobs/children.rs`).
+- Test binaries are clients, without signal handling.
+- `process::run` does not return once xtask is interrupted (kiln's returns
+  `Interrupted` to a runner that is about to be ended anyway); see
+  "Signals".
+- `release_all` waits for the helper's read in flight ("Signals", step 2);
+  kiln's returns at once, and an interrupted kiln harness can end with one
+  byte in its helper's hands.
+- Signals are delivered to a process group by `/bin/sh -c 'kill ...'`,
+  whatever `PATH` is, as "irdiff", "Child processes" already did.
+- The pool size defaults to 12 and is read from the file the pool script
+  writes; the fifo defaults to `/run/hod/jobserver.fifo`.
+- hod has no measured runs yet (`bench`): when it does, their clock too
+  starts once the token is held.
+
+### Tests
+
+`crates/hod_testutil/src/jobs.rs` (the client, each over a pool of the
+test's own): `parses_makeflags`, `no_jobserver_is_free`,
+`rejects_a_non_fifo`, `bounds_concurrency_by_pool_plus_implicit`,
+`implicit_token_frees_a_waiter`,
+`release_all_returns_held_and_spare_bytes`,
+`release_all_waits_for_the_helpers_read`,
+`refill_tops_up_without_blocking`,
+`a_stale_fifo_is_counted_without_blocking`, `tokens_return_on_panic`,
+`a_broken_pool_is_free`. `crates/hod_testutil/src/lib.rs`:
+`run_holds_a_token_for_the_childs_lifetime` (and returns it when the
+child is killed at its time limit),
+`the_time_limit_starts_once_the_token_is_held`.
+
+`crates/hod_testutil/tests/jobserver.rs` runs the test binary itself as a
+client of a private pool: `a_test_binary_is_bounded_by_the_pool` (8
+threads on 2 tokens: never more than 3 children alive, measured by the
+children), `without_a_usable_pool_nothing_waits` (each fallback, and the
+one warning), `a_pool_without_tokens_serializes_and_does_not_hang`,
+`the_pool_script_does_not_mint_tokens_for_this_client`
+(`scripts/jobserver.sh start`, `refill` twice while the client's children
+sleep, `stop`, on a pool of its own).
+
+`xtask/src/jobs.rs`: `jobserver_cli`, `jobserver_cli_defaults`.
+`xtask/src/jobs/children.rs` ("Signals", step 1):
+`shutdown_kills_and_reaps_live_children`,
+`run_step_is_registered_and_terminated`,
+`run_step_ignoring_term_is_killed`, `run_step_without_table`,
+`run_step_runs_a_command`.
+
+`xtask/tests/jobserver.rs` runs the command: `irdiff_is_bounded_by_the_pool`
+(`-j 8` over fake tools on 2 tokens: at most 3 children, the header, the
+pool left full), `irdiff_without_a_usable_pool`,
+`an_interrupted_irdiff_kills_its_children_and_returns_its_tokens` (SIGTERM
+and SIGINT: the children are gone, the pool has all its tokens, xtask ended
+by the signal, no results file), `the_jobserver_command` (the defaults from
+the environment; a fifo nobody holds does not block it),
+`env_sh_names_the_pool_while_its_fifo_exists`.
+
+Every one of these makes its fifo in the system's temporary directory
+(`hod_testutil::jobs::PrivatePool`, `LocalDir`), not in the build
+directory: a fifo is unreliable on a bind mount. None reads or writes the
+machine's pool, and all pass with and without one.
 
 ## Test directives
 

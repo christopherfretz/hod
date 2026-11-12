@@ -3,8 +3,8 @@
 //! constructor is specified to produce (`spec/mc-x64.md`).
 //!
 //! A row ending in `*` is a family: the constructor takes an operation-kind
-//! operand (a condition, or the instruction `lock` prefixes), and each case
-//! states its exact mnemonic.
+//! operand (a condition, a precision, a compare predicate, or the
+//! instruction `lock` prefixes), and each case states its exact mnemonic.
 //!
 //! Where a row lists more than one mnemonic, the constructor's bytes print
 //! as either: `mov_ri`'s 64-bit immediate form is `movabs`, and
@@ -167,12 +167,30 @@ pub const CONSTRUCTORS: &[(&str, &[&str])] = &[
     ("lzcnt_rm", &["lzcnt"]),
     ("popcnt_rm", &["popcnt"]),
     ("bswap", &["bswap"]),
+    // bt
+    ("bt_rr", &["bt"]),
+    ("bts_rr", &["bts"]),
+    ("btr_rr", &["btr"]),
+    ("btc_rr", &["btc"]),
+    ("bt_mr", &["bt"]),
+    ("bts_mr", &["bts"]),
+    ("btr_mr", &["btr"]),
+    ("btc_mr", &["btc"]),
+    ("bt_ri", &["bt"]),
+    ("bts_ri", &["bts"]),
+    ("btr_ri", &["btr"]),
+    ("btc_ri", &["btc"]),
+    ("bt_mi", &["bt"]),
+    ("bts_mi", &["bts"]),
+    ("btr_mi", &["btr"]),
+    ("btc_mi", &["btc"]),
     // atomic
     ("lock", &["lock *"]),
     ("xchg_rr", &["xchg", "nop"]),
     ("xchg_mr", &["xchg"]),
     ("xadd_mr", &["xadd"]),
     ("cmpxchg_mr", &["cmpxchg"]),
+    ("cmpxchg8b_m", &["cmpxchg8b"]),
     ("cmpxchg16b_m", &["cmpxchg16b"]),
     ("mfence", &["mfence"]),
     ("lfence", &["lfence"]),
@@ -183,6 +201,57 @@ pub const CONSTRUCTORS: &[(&str, &[&str])] = &[
     ("int3", &["int3"]),
     ("endbr64", &["endbr64"]),
     ("nop", &["nop"]),
+    // sse: a family row's cases name the precision's mnemonic.
+    ("movs_rr", &["movs*"]),
+    ("movs_rm", &["movs*"]),
+    ("movs_mr", &["movs*"]),
+    ("movap_rr", &["movap*"]),
+    ("movap_rm", &["movap*"]),
+    ("movap_mr", &["movap*"]),
+    ("movup_rm", &["movup*"]),
+    ("movup_mr", &["movup*"]),
+    ("movdqa_rr", &["movdqa"]),
+    ("movdqa_rm", &["movdqa"]),
+    ("movdqa_mr", &["movdqa"]),
+    ("movdqu_rm", &["movdqu"]),
+    ("movdqu_mr", &["movdqu"]),
+    ("movd_xr", &["movd*", "movq*"]),
+    ("movd_rx", &["movd*", "movq*"]),
+    ("adds_rr", &["adds*"]),
+    ("subs_rr", &["subs*"]),
+    ("muls_rr", &["muls*"]),
+    ("divs_rr", &["divs*"]),
+    ("sqrts_rr", &["sqrts*"]),
+    ("adds_rm", &["adds*"]),
+    ("subs_rm", &["subs*"]),
+    ("muls_rm", &["muls*"]),
+    ("divs_rm", &["divs*"]),
+    ("sqrts_rm", &["sqrts*"]),
+    ("andp_rr", &["andp*"]),
+    ("andnp_rr", &["andnp*"]),
+    ("orp_rr", &["orp*"]),
+    ("xorp_rr", &["xorp*"]),
+    ("andp_rm", &["andp*"]),
+    ("andnp_rm", &["andnp*"]),
+    ("orp_rm", &["orp*"]),
+    ("xorp_rm", &["xorp*"]),
+    ("ucomis_rr", &["ucomis*"]),
+    ("comis_rr", &["comis*"]),
+    ("ucomis_rm", &["ucomis*"]),
+    ("comis_rm", &["comis*"]),
+    ("cmps_rr", &["cmp*"]),
+    ("cmps_rm", &["cmp*"]),
+    ("cvtsi2s_rr", &["cvtsi2s*"]),
+    ("cvtsi2s_rm", &["cvtsi2s*"]),
+    ("cvtts2si_rr", &["cvtts*"]),
+    ("cvtts2si_rm", &["cvtts*"]),
+    ("cvtss2sd_rr", &["cvtss2sd"]),
+    ("cvtss2sd_rm", &["cvtss2sd"]),
+    ("cvtsd2ss_rr", &["cvtsd2ss"]),
+    ("cvtsd2ss_rm", &["cvtsd2ss"]),
+    // tls
+    ("tls_gd_lea", &["lea"]),
+    ("tls_gd_call", &["call"]),
 ];
 
 /// The mnemonics a constructor's bytes may print as.

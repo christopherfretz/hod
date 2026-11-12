@@ -3,12 +3,47 @@
 //! memory operands are formatted from the parameters they were built from,
 //! operation names come from tables written out below.
 
-use hod_mc_x64::{Cond, Index, Mem, Reg, Scale, Seg, Size};
+use hod_mc_x64::{Cond, FpCmp, FpSize, Index, Mem, Reg, Scale, Seg, Size, Xmm};
 
 /// The register numbered `n`.
 pub fn r(n: u8) -> Reg {
     Reg::new(n).expect("register number 0..=15")
 }
+
+/// The SSE register numbered `n`.
+pub fn x(n: u8) -> Xmm {
+    Xmm::new(n).expect("register number 0..=15")
+}
+
+/// The name of SSE register `n`.
+pub fn xmm(n: u8) -> String {
+    format!("xmm{n}")
+}
+
+/// The precisions and the letter that ends their mnemonics (`addss`,
+/// `addsd`, `xorps`, `xorpd`).
+pub const FPS: [(FpSize, char); 2] = [(FpSize::S, 's'), (FpSize::D, 'd')];
+
+/// `dword ptr` or `qword ptr`: a scalar of `fp`.
+pub fn fp_ptr(fp: FpSize) -> &'static str {
+    match fp {
+        FpSize::S => "dword ptr",
+        FpSize::D => "qword ptr",
+    }
+}
+
+/// The `cmpss` predicates in `imm8` order, as LLVM names them
+/// (`cmpunordss`).
+pub const FP_CMPS: [(FpCmp, &str); 8] = [
+    (FpCmp::Eq, "eq"),
+    (FpCmp::Lt, "lt"),
+    (FpCmp::Le, "le"),
+    (FpCmp::Unord, "unord"),
+    (FpCmp::Neq, "neq"),
+    (FpCmp::Nlt, "nlt"),
+    (FpCmp::Nle, "nle"),
+    (FpCmp::Ord, "ord"),
+];
 
 /// The index register numbered `n` (not 4).
 pub fn ix(n: u8) -> Index {
@@ -171,6 +206,20 @@ impl M {
     /// `dword ptr fs:[..]`.
     pub fn sized(self, size: Size) -> String {
         format!("{} {}", ptr(size), self.text())
+    }
+
+    /// `dword ptr` or `qword ptr`: a scalar of `fp`.
+    pub fn fp(self, fp: FpSize) -> String {
+        format!("{} {}", fp_ptr(fp), self.text())
+    }
+
+    /// `xmmword ptr`: 128 bits.
+    pub fn xmmword(self) -> String {
+        format!("xmmword ptr {}", self.text())
+    }
+
+    pub fn is_rip(self) -> bool {
+        matches!(self.base, MBase::Rip)
     }
 }
 

@@ -206,6 +206,14 @@ fn pathological() -> Vec<(&'static str, Vec<u8>)> {
     inputs.extend([
         ("types that name the next", lines(chain, &|n| format!("%T{n} = type {{ %T{} }}", n + 1))),
         (
+            "types that hold the next",
+            lines(chain, &|n| match chain - 1 - n {
+                0 => format!("%T{n} = type {{ i8 }}"),
+                _ => format!("%T{n} = type {{ ptr, %T{} }}", n + 1),
+            }),
+        ),
+        ("types in a ring", lines(chain, &|n| format!("%T{n} = type {{ %T{} }}", (n + 1) % chain))),
+        (
             "types that hold the last",
             lines(chain, &|n| match n {
                 0 => "%T0 = type { i8 }".to_owned(),
@@ -267,13 +275,14 @@ fn pathological() -> Vec<(&'static str, Vec<u8>)> {
 }
 
 /// The pathological inputs that are modules; the others are errors.
-const MODULES: [&str; 18] = [
+const MODULES: [&str; 19] = [
     "a line comment",
     "zero bytes",
     "alignments",
     "attributes",
     "one group many times",
     "module asm",
+    "types that hold the next",
     "types that hold the last",
     "numbered types, descending",
     "numbered globals",

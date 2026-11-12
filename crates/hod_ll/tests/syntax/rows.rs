@@ -34,6 +34,8 @@ const PICLEVEL: &str = "hod_ir has the PIC levels 0, 1 and 2";
 const BLOCKNUM: &str =
     "LLVM takes the address of a numbered block only before the function is defined";
 const LINKOPT: &str = "a linker option is a list of strings (§7.2)";
+const SELFPTR: &str =
+    "of the pointers of old to a type under definition, only `%T*` itself is read (§3.2)";
 const PPC: &str = "ppc_fp128 is read as fp128 and noted (§3.4), so fp128 takes its literals too";
 
 #[rustfmt::skip]
@@ -106,6 +108,12 @@ pub const ROWS: &[Row] = &[
     ("%T = type { %T }\n@x = external global %T", "Type@1:13", "+-", RECURSIVE),
     ("%T = type { ptr, [2 x %U] }\n%U = type { %T }\n@x = external global %U", "Type@2:13", "+-", RECURSIVE),
     ("%T = type { [2 x %T] }", "Type@1:18", "+-", RECURSIVE),
+    ("%T = type { %T* }", "ok", "++", ""),
+    ("%T = type { %U* }", "Undefined@1:13", "--", ""),
+    ("%T = type { [2 x %T]* }", "Type@1:18", "++", SELFPTR),
+    ("%T = type { void (%T)* }", "Type@1:19", "+-", SELFPTR),
+    ("%T = type { %U* }\n%U = type { %T }\n@x = global %U zeroinitializer", "ok", "++", ""),
+    ("%T = type { %U }\n%U = type { %V }\n%V = type { i32 }\n@x = global %T zeroinitializer", "ok", "++", ""),
     ("%T = type %T", "Type@1:11", "--", ""),
     ("%T = type { ptr }\n%U = type %T\n@x = global %U zeroinitializer", "ok", "--", ALIAS),
     ("@x = external global %Missing", "Undefined@1:22", "--", ""),

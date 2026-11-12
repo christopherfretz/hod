@@ -80,8 +80,9 @@ fn lossy(name: &[u8]) -> String {
 }
 
 impl Parser<'_> {
-    /// Parses every attribute group. A number defined more than once is
-    /// one group with the attributes of all its definitions, as in LLVM.
+    /// Parses every attribute group. Of two definitions of one number
+    /// the later one is the group, as in LLVM; the earlier one is still
+    /// read, and an error in it is an error.
     pub(crate) fn define_groups(&mut self) -> PResult<()> {
         let mut order: Vec<(u32, usize)> = Vec::with_capacity(self.index.groups.len());
         for (at, ent) in self.index.groups.iter().enumerate() {
@@ -96,12 +97,13 @@ impl Parser<'_> {
         let mut next = 0;
         while next < order.len() {
             let id = order[next].0;
-            self.fa.clear();
-            self.fa_align = None;
             let mut at = 0;
             while next < order.len() && order[next].0 == id {
                 let ent = self.index.groups[order[next].1];
                 at = ent.id.start;
+                self.fa.clear();
+                self.fa_align = None;
+                self.pending.clear();
                 self.goto(ent.span.start);
                 if self.tok.start >= ent.span.end {
                     return self.syntax("attribute group has no attributes");

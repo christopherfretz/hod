@@ -5,7 +5,7 @@ use hod_ir::TypeId;
 
 use crate::error::{LlErrorKind, PResult, fail};
 use crate::index::parse_u32;
-use crate::lexer::{Tok, Token};
+use crate::lexer::{Lexer, Tok, Token};
 use crate::parser::{Parser, TypeSlot, ir};
 
 impl Parser<'_> {
@@ -30,11 +30,90 @@ impl Parser<'_> {
             let token = self.index.types[pair[1].1 as usize].name;
             return fail(LlErrorKind::Redefined, token.start, "redefinition of type");
         }
-        for at in 0..self.index.types.len() {
-            let token = self.index.types[at].name;
-            self.resolve_type(at, token.start)?;
+        for at in self.type_order()? {
+            let token = self.index.types[at as usize].name;
+            self.resolve_type(at as usize, token.start)?;
         }
         Ok(())
+    }
+
+    /// The definitions in an order in which each comes after the types it
+    /// holds, wherever they stand in the file: a walk over the names each
+    /// definition mentions, with its own stack, so that a chain of types
+    /// each holding the next may be as long as the file. A type that
+    /// holds itself is refused here, at the name that closes the circle.
+    fn type_order(&mut self) -> PResult<Vec<u32>> {
+        const NEW: u8 = 0;
+        const OPEN: u8 = 1;
+        const DONE: u8 = 2;
+        let count = self.index.types.len();
+        let mut state = vec![NEW; count];
+        let mut order = Vec::with_capacity(count);
+        // A definition being walked, and the offset to go on from.
+        let mut stack: Vec<(u32, u32)> = Vec::new();
+        let mut lexer = Lexer::new(self.src);
+        for root in 0..count {
+            if state[root] != NEW {
+                continue;
+            }
+            state[root] = OPEN;
+            stack.push((root as u32, self.index.types[root].start));
+            while let Some(&(slot, from)) = stack.last() {
+                let end = self.index.types[slot as usize].end;
+                lexer.set_pos(from as usize);
+                let mut held = None;
+                loop {
+                    let token = lexer.next_token();
+                    if token.start >= end || matches!(token.kind, Tok::Eof | Tok::Error) {
+                        break;
+                    }
+                    if !matches!(token.kind, Tok::Local | Tok::LocalQuoted | Tok::LocalId) {
+                        continue;
+                    }
+                    // `%T*`, the pointer of old: it does not hold `%T`.
+                    let after = lexer.pos();
+                    let pointer = lexer.next_token().kind == Tok::Star;
+                    lexer.set_pos(after);
+                    if pointer {
+                        continue;
+                    }
+                    let Some(to) = self.type_slot(token) else {
+                        continue;
+                    };
+                    match state[to as usize] {
+                        NEW => {
+                            held = Some((to, token.end));
+                            break;
+                        }
+                        OPEN => {
+                            let message = "a type cannot contain itself";
+                            return fail(LlErrorKind::Type, token.start, message);
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some((to, resume)) = held {
+                    stack.last_mut().expect("the definition being walked").1 = resume;
+                    state[to as usize] = OPEN;
+                    stack.push((to, self.index.types[to as usize].start));
+                } else {
+                    state[slot as usize] = DONE;
+                    order.push(slot);
+                    stack.pop();
+                }
+            }
+        }
+        Ok(order)
+    }
+
+    /// The definition a `%name` or `%42` token names, if there is one.
+    fn type_slot(&self, token: Token) -> Option<u32> {
+        if let Some(name) = self.name(token) {
+            return self.type_names.get(&name);
+        }
+        let number = parse_u32(&self.tok_text(token)[1..])?;
+        let found = self.type_numbers.binary_search_by_key(&number, |&(n, _)| n);
+        found.ok().map(|place| self.type_numbers[place].1)
     }
 
     fn type_number(&self, token: Token) -> PResult<u32> {
@@ -76,16 +155,15 @@ impl Parser<'_> {
         Ok(ty)
     }
 
-    /// The type a `%name` token refers to.
-    fn named_type(&mut self, token: Token) -> PResult<TypeId> {
-        let slot = if let Some(name) = self.name(token) {
-            self.type_names.get(&name)
-        } else {
-            let number = self.type_number(token)?;
-            let found = self.type_numbers.binary_search_by_key(&number, |&(n, _)| n);
-            found.ok().map(|place| self.type_numbers[place].1)
-        };
-        match slot {
+    /// The type a `%name` token refers to. `pointer` says that a `*`
+    /// follows: the pointer of old needs the name to be a type's, not
+    /// the type, so a type may hold a pointer to itself.
+    fn named_type(&mut self, token: Token, pointer: bool) -> PResult<TypeId> {
+        if token.kind == Tok::LocalId {
+            self.type_number(token)?;
+        }
+        match self.type_slot(token) {
+            Some(_) if pointer => Ok(TypeId::PTR),
             Some(slot) => self.resolve_type(slot as usize, token.start),
             None => fail(
                 LlErrorKind::Undefined,
@@ -119,8 +197,13 @@ impl Parser<'_> {
             }
             Tok::Word => self.word_type()?,
             Tok::Local | Tok::LocalQuoted | Tok::LocalId => {
-                let ty = self.named_type(self.tok)?;
+                let name = self.tok;
                 self.bump();
+                let pointer = self.tok.kind == Tok::Star;
+                let ty = self.named_type(name, pointer)?;
+                if pointer {
+                    self.bump();
+                }
                 ty
             }
             Tok::LBrace => self.struct_type(false)?,

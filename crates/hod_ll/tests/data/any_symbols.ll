@@ -225,6 +225,9 @@ define void @f_group_align() #2 {
 define void @f_group_align_override() #2 align 4 {
   ret void
 }
+define void @f_group_twice() #3 {
+  ret void
+}
 define ptr @f_dropped(i64 %n) cold minsize optsize noinline nofree nosync willreturn mustprogress memory(none) allocsize(0) allockind("alloc,zeroed") vscale_range(1,16) speculatable nobuiltin norecurse nomerge inlinehint nocallback "no-trapping-math"="true" "unsafe-fp-math"="false" {
   ret ptr null
 }
@@ -287,6 +290,8 @@ define void @f_align_attr_order() align 16 nounwind {
 attributes #0 = { nounwind uwtable(sync) "frame-pointer"="non-leaf" "target-cpu"="generic" "no-trapping-math"="true" }
 attributes #1 = { noreturn "frame-pointer"="all" "stack-protector-buffer-size"="4" cold }
 attributes #2 = { align=64 alignstack=32 nounwind }
+attributes #3 = { noreturn uwtable(sync) "frame-pointer"="all" convergent align=32 alignstack=64 }
+attributes #3 = { nounwind "frame-pointer"="none" }
 
 !llvm.module.flags = !{!0, !1, !2, !3, !4, !5}
 !llvm.linker.options = !{!6, !7}

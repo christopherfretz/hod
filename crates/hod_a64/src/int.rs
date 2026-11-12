@@ -574,6 +574,17 @@ pub fn fusable<'a>(cx: &FnCx<'a, A64>, value: Value) -> Option<Inst<'a>> {
 /// `Internal` when `compare` is not a deferred `icmp` of `Gpr` operands;
 /// what placing the operands reports.
 pub fn flags<'a>(cx: &mut FnCx<'a, A64>, compare: Inst<'a>) -> CgResult<Cond> {
+    // `spec/dwarf.md` §5.8: the compare's code is at the compare's
+    // location, inside its consumer's.
+    let outer = cx.line_loc();
+    cx.line_switch(cx.row_loc_of(compare));
+    let flags = compare_flags(cx, compare);
+    cx.line_switch(outer);
+    flags
+}
+
+/// [`flags`] without the line switch.
+fn compare_flags<'a>(cx: &mut FnCx<'a, A64>, compare: Inst<'a>) -> CgResult<Cond> {
     let InstKind::ICmp { pred, lhs, rhs } = compare.kind() else {
         return cx.bug("flags of an instruction that is no icmp");
     };

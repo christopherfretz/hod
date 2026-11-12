@@ -39,6 +39,7 @@ pub mod emit;
 pub mod error;
 mod frame;
 mod label;
+mod line_rows;
 mod loc;
 mod options;
 mod phi;

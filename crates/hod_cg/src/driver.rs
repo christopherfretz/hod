@@ -181,6 +181,8 @@ impl<'a, T: Target> FnCx<'a, T> {
             ret_attrs: ParamAttrs::NONE,
             lines: body.has_locs(),
             last_loc: None,
+            line_seg: (0, LocId::NONE),
+            line_block_start: false,
             rets: 0,
             ret_loc: LocId::NONE,
         }
@@ -529,7 +531,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         let mut start = self.offset();
         // §9.5, `spec/dwarf.md` §5.3: whether no instruction of the block
         // has emitted code yet.
-        let mut block_start = id != self.body.entry();
+        self.line_block_start = id != self.body.entry();
         if self.block_addrs {
             self.out.block_offsets.push(BlockOffset { block: id, offset: start });
         }
@@ -545,6 +547,7 @@ impl<'a, T: Target> FnCx<'a, T> {
 
         for inst in block.non_phis() {
             self.cur = inst.id();
+            self.line_begin(crate::line_rows::row_loc(inst));
             if !self.s.dbg_labels.is_empty() {
                 self.label_rows(inst.id().raw());
             }
@@ -581,17 +584,11 @@ impl<'a, T: Target> FnCx<'a, T> {
                 self.displace_all()?;
             }
 
+            // §9.5: transitions only, and an instruction without a
+            // location that starts a block (`spec/dwarf.md` §5.3, §5.8).
+            self.line_end();
             let end = self.offset();
             if end != start {
-                let loc = inst.loc();
-                // §9.5: transitions only, and an instruction without a
-                // location that starts a block (`spec/dwarf.md` §5.3).
-                if self.lines && (self.last_loc != Some(loc) || (block_start && loc == LocId::NONE))
-                {
-                    self.last_loc = Some(loc);
-                    self.out.lines.push(LineRow { offset: start, loc, block_start });
-                }
-                block_start = false;
                 if end > MAX_FUNCTION_SIZE {
                     return Err(CgError::unsupported(LIMIT_FUNCTION_SIZE));
                 }

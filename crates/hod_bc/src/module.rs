@@ -267,13 +267,15 @@ struct Upgrade {
     sign_b_key: bool,
 }
 
-/// The four arrays that are not symbols.
+/// The arrays that are not symbols.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Special {
     Ctors,
     Dtors,
     Used,
     CompilerUsed,
+    /// `llvm.global.annotations` (WP-095, `hod_ll`'s).
+    Annotations,
 }
 
 pub(crate) struct Build<'r, 'a> {
@@ -861,7 +863,12 @@ impl<'r, 'a> Build<'r, 'a> {
         let Some(sym) = self.sym(index) else {
             let name = self.strtab_name(ops, at)?;
             let special = special_of(name).expect("only the special arrays have no symbol");
-            if let Some(init) = init {
+            if special == Special::Annotations {
+                // `llc` emits nothing of a variable in `llvm.metadata`.
+                if section.as_deref() != Some(&b"llvm.metadata"[..]) {
+                    self.notes.add("special-global:llvm.global.annotations");
+                }
+            } else if let Some(init) = init {
                 self.special(special, init, at)?;
             }
             let mut notes = std::mem::take(&mut self.notes);
@@ -956,6 +963,7 @@ impl<'r, 'a> Build<'r, 'a> {
                     };
                     ir(at, self.module.retain(sym, how))?;
                 }
+                Special::Annotations => {}
                 Special::Ctors | Special::Dtors => {
                     let fields = match self.module.consts.get(elem) {
                         Const::Aggregate { elems, .. } if matches!(elems.len(), 2 | 3) => {
@@ -1620,6 +1628,7 @@ fn special_of(name: &[u8]) -> Option<Special> {
         b"llvm.global_dtors" => Some(Special::Dtors),
         b"llvm.used" => Some(Special::Used),
         b"llvm.compiler.used" => Some(Special::CompilerUsed),
+        b"llvm.global.annotations" => Some(Special::Annotations),
         _ => None,
     }
 }

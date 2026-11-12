@@ -537,13 +537,19 @@ const COMDAT: [SupportRow; ComdatKind::ALL.len()] = [
     both("comdat:samesize", never(ELF_COMDAT), ""),
 ];
 
-const INIT: [SupportRow; 8] = [
+const INIT: [SupportRow; 9] = [
     row("init:data", ON, todo(X64), "any initializer: numbers, zero, `undef`, aggregates, bytes"),
     row("init:symbol", ON, todo(X64), "a symbol's address, with or without an offset"),
     row("init:blockaddress", ON, todo(X64), "of a block of a function with an `indirectbr` (§9.6)"),
     row("init:sym-diff", ON, todo(X64), "the difference of two symbol addresses"),
     a64("init:sym-diff-plt", LATER, "the same through `dso_local_equivalent` (relative vtables)"),
     row("init:int-of-addr", ON, todo(X64), "an address in an integer field"),
+    row(
+        "init:block-diff",
+        ON,
+        todo(X64),
+        "a label difference `&&a - &&b` of two blocks of one function, a number (WP-095)",
+    ),
     a64("init:dso-local-equivalent", LATER, ""),
     a64("init:no-cfi", LATER, ""),
 ];
@@ -569,7 +575,12 @@ const CC: [SupportRow; 15] = [
     a64("cc:coldcc", LATER, ""),
     a64("cc:ghccc", LATER, ""),
     a64("cc:anyregcc", LATER, ""),
-    a64("cc:preserve_mostcc", LATER, ""),
+    row(
+        "cc:preserve_mostcc",
+        ON,
+        todo(X64),
+        "assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095)",
+    ),
     a64("cc:preserve_allcc", LATER, ""),
     row("cc:swiftcc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     row("cc:cxx_fast_tlscc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
@@ -709,7 +720,12 @@ const TYPE: [SupportRow; TypeClass::ALL.len()] = [
     row("type:int-wide", ON, todo(X64), "integers wider than 64 bits other than `i128` (WP-040)"),
     row("type:ptr", ON, todo(X64), "pointers in address space 0"),
     row("type:half", ON, todo(X64), "arithmetic in single precision"),
-    a64("type:bfloat", LATER, ""),
+    row(
+        "type:bfloat",
+        ON,
+        todo(X64),
+        "computed in single precision, rounded as `llc` without `+bf16` (WP-095)",
+    ),
     row("type:float", ON, todo(X64), ""),
     row("type:double", ON, todo(X64), ""),
     row("type:fp128", ON, todo(X64), "arithmetic, compares and conversions are calls"),
@@ -814,6 +830,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -826,6 +843,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -838,6 +856,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -850,6 +869,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -862,6 +882,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "a call of `fmod`",
@@ -874,6 +895,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -899,6 +921,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "vectors: masks of up to 64 lanes (WP-081)",
@@ -929,6 +952,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -941,6 +965,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -956,6 +981,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -971,6 +997,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -986,6 +1013,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -1001,6 +1029,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -1135,6 +1164,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Fp128,
             TypeClass::Aggregate,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -1152,6 +1182,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Fp128,
             TypeClass::Aggregate,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -1166,6 +1197,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Float,
             TypeClass::Double,
             TypeClass::Vector,
+            TypeClass::I128,
         ]),
         todo(X64),
         "byte-sized elements, up to 256 lanes (WP-079)",
@@ -1327,7 +1359,7 @@ const LANDINGPAD: [SupportRow; 3] = [
     row("landingpad:filter", ON, todo(X64), ""),
 ];
 
-const OPERAND: [SupportRow; 9] = [
+const OPERAND: [SupportRow; 10] = [
     row(
         "operand:symbol",
         ON,
@@ -1339,6 +1371,7 @@ const OPERAND: [SupportRow; 9] = [
     row("operand:addr-of-int", ON, todo(X64), "`inttoptr` of a constant number"),
     row("operand:int-of-addr", ON, todo(X64), "`ptrtoint` of a constant address (WP-072)"),
     row("operand:sym-diff", ON, todo(X64), "a difference of two symbol addresses (WP-072)"),
+    a64("operand:block-diff", LATER, "a label difference as an operand (WP-095)"),
     a64("operand:dso-local-equivalent", LATER, ""),
     a64("operand:no-cfi", LATER, ""),
     row(
@@ -2455,6 +2488,7 @@ pub(crate) mod at {
     pub(crate) const INIT_BLOCKADDRESS: usize = find("init:blockaddress");
     pub(crate) const INIT_SYM_DIFF: usize = find("init:sym-diff");
     pub(crate) const INIT_SYM_DIFF_PLT: usize = find("init:sym-diff-plt");
+    pub(crate) const INIT_BLOCK_DIFF: usize = find("init:block-diff");
     pub(crate) const INIT_INT_OF_ADDR: usize = find("init:int-of-addr");
     pub(crate) const INIT_DSO_LOCAL_EQUIVALENT: usize = find("init:dso-local-equivalent");
     pub(crate) const INIT_NO_CFI: usize = find("init:no-cfi");
@@ -2517,6 +2551,7 @@ pub(crate) mod at {
     pub(crate) const OPERAND_ADDR_OF_INT: usize = find("operand:addr-of-int");
     pub(crate) const OPERAND_INT_OF_ADDR: usize = find("operand:int-of-addr");
     pub(crate) const OPERAND_SYM_DIFF: usize = find("operand:sym-diff");
+    pub(crate) const OPERAND_BLOCK_DIFF: usize = find("operand:block-diff");
     pub(crate) const OPERAND_DSO_LOCAL_EQUIVALENT: usize = find("operand:dso-local-equivalent");
     pub(crate) const OPERAND_NO_CFI: usize = find("operand:no-cfi");
     pub(crate) const OPERAND_ADDRESS_IN_AGGREGATE: usize = find("operand:address-in-aggregate");

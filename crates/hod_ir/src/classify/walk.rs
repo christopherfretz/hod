@@ -17,7 +17,7 @@ use super::{Rejection, RejectionKind, StackArgs};
 use crate::attrs::{CallConv, FnAttrs, FnAttrsView, ParamAttrs, ParamMem, UwTable};
 use crate::body::{Body, CallSite, Clause};
 use crate::constant::Const;
-use crate::ids::{ConstId, SymId, TypeId};
+use crate::ids::{BlockId, ConstId, SymId, TypeId};
 use crate::inst::{InstData, MemFlags, Opcode, RmwOp, TailKind};
 use crate::intrinsic::Intrinsic;
 use crate::module::Module;
@@ -344,6 +344,30 @@ impl<'a, S: Sink> Walker<'a, S> {
         }
     }
 
+    /// Checks that `blockaddress(func, block)` names a block of a
+    /// function with a body, and of the function walked when in a body.
+    fn block_address(&mut self, cx: Option<&Cx<'_>>, func: SymId, block: BlockId, at: At) -> Flow {
+        let module = self.module;
+        if func.index() >= module.symbol_count() {
+            return self.invalid(rules::SYMBOL, at);
+        }
+        match cx {
+            Some(cx) if cx.sym == func => {
+                if block.index() >= cx.body.blocks.len() {
+                    self.invalid(rules::BLOCKADDRESS, at)?;
+                }
+            }
+            Some(_) => return self.rule(rules::BLOCKADDRESS_OTHER, at),
+            None => {
+                let function = module.symbol(func).kind();
+                if !matches!(function, SymbolKind::Function { has_body: true, .. }) {
+                    self.invalid(rules::BLOCKADDRESS, at)?;
+                }
+            }
+        }
+        GO
+    }
+
     /// Walks constant `id`, which exists. `nested` says it is an element
     /// of an aggregate; `depth` counts the constants around it.
     fn constant(
@@ -391,23 +415,7 @@ impl<'a, S: Sink> Walker<'a, S> {
                 self.address(place, nested, at::INIT_SYMBOL, at::OPERAND_SYMBOL, at)
             }
             Const::BlockAddr { func, block } => {
-                if func.index() >= module.symbol_count() {
-                    return self.invalid(rules::SYMBOL, at);
-                }
-                match cx {
-                    Some(cx) if cx.sym == func => {
-                        if block.index() >= cx.body.blocks.len() {
-                            self.invalid(rules::BLOCKADDRESS, at)?;
-                        }
-                    }
-                    Some(_) => return self.rule(rules::BLOCKADDRESS_OTHER, at),
-                    None => {
-                        let function = module.symbol(func).kind();
-                        if !matches!(function, SymbolKind::Function { has_body: true, .. }) {
-                            self.invalid(rules::BLOCKADDRESS, at)?;
-                        }
-                    }
-                }
+                self.block_address(cx, func, block, at)?;
                 self.address(place, nested, at::INIT_BLOCKADDRESS, at::OPERAND_BLOCKADDRESS, at)
             }
             Const::SymDiff { a, b, plt, .. } => {
@@ -439,6 +447,19 @@ impl<'a, S: Sink> Walker<'a, S> {
                 self.address(place, nested, at::INIT_NO_CFI, at::OPERAND_NO_CFI, at)
             }
             Const::Expr { op, args, .. } => {
+                if let Some(diff) = module.consts.block_diff(id) {
+                    // A label difference (WP-095): its two blocks are
+                    // checked as `blockaddress` constants are.
+                    for block in [diff.a, diff.b] {
+                        self.block_address(cx, diff.func, block, at)?;
+                    }
+                    // Inside an aggregate operand too: no lowering forms it.
+                    return match place {
+                        Place::Init => self.row(at::INIT_BLOCK_DIFF, at),
+                        Place::Operand => self.row(at::OPERAND_BLOCK_DIFF, at),
+                        Place::Clause => GO,
+                    };
+                }
                 self.row(at::const_expr(op), at)?;
                 for &arg in args {
                     self.constant(cx, arg, place, nested, depth + 1, at)?;

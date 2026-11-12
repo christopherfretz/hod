@@ -655,7 +655,7 @@ pub const UNSUPPORTED: &[Unsupported] = &[
     ("@x = global i32 0, !absolute_symbol !0\n!0 = !{i64 0, i64 256}", &["global-metadata:absolute_symbol"], "++"),
     ("@x = global i32 0 #0\nattributes #0 = { \"bss-section\"=\".b\" }", &["attr:bss-section"], "++"),
     ("@x = global i32 0 #0\nattributes #0 = { nounwind }", &["global-attributes"], "++"),
-    ("@llvm.global.annotations = appending global [0 x { ptr, ptr, ptr, i32, ptr }] zeroinitializer, section \"llvm.metadata\"", &["special-global:llvm.global.annotations"], "++"),
+    ("@llvm.global.annotations = appending global [0 x { ptr, ptr, ptr, i32, ptr }] zeroinitializer, section \"other\"", &["special-global:llvm.global.annotations"], "++"),
     ("@llvm.frobnicate = global i32 0", &["special-global:llvm.frobnicate"], "++"),
     ("!custom = !{}", &["named-metadata:custom"], "++"),
     ("!llvm.commandline = !{!0}\n!0 = !{!\"clang\"}", &["named-metadata:llvm.commandline"], "++"),

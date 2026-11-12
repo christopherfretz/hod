@@ -204,7 +204,7 @@ anything has to, is given.
 | `global-sanitize-memtag` | `sanitize_memtag` on a variable | nothing |
 | `global-metadata:<kind>` | an attachment on a global value other than `!dbg` and the dropped ones | nothing |
 | `global-attributes` | kept attributes on a variable, in place or through a group | nothing |
-| `special-global:<name>` | a variable named `llvm.…` other than the four arrays of §5.9 (`llvm.global.annotations`) | the variable, as written |
+| `special-global:<name>` | a variable named `llvm.…` other than the four arrays of §5.9 (`llvm.global.annotations` outside section `llvm.metadata`) | the variable, as written |
 | `named-metadata:<name>` | module: named metadata other than those of §7 | nothing |
 | `debug:invalid` | module or body: debug information LLVM's parser takes and its verifier would drop or reject, when the module uses it (§7.4): a reference to a node of the wrong kind, a location without one, a `DIAssignID` where a node goes, a module without `"Debug Info Version"` 3, a module or body that fails `verify_debug` | the module's debug information is kept; the body is not delivered |
 | `debug:<kind>` | module: a `DI*` node `hod_ir` keeps as `DiOther` (`DIStringType`, `DISubrangeType`, `DIFixedPointType`, `DIGenericSubrange`, `DICommonBlock`, `DIModule`, `DIObjCProperty`, `DIMacro`, `DIMacroFile`, `GenericDINode`) | the node as `DiOther`; `classify` refuses it |
@@ -525,8 +525,15 @@ Not symbols (`spec/ir.md` §2.2):
   symbol is an error.
 
 An array that is `zeroinitializer` or `undef` is empty. Each may appear
-once. Any other variable named `llvm.…` is delivered as an ordinary
-variable and recorded (`special-global:<name>`).
+once.
+
+`@llvm.global.annotations` in section `llvm.metadata` (clang's
+`__attribute__((annotate))`) is dropped: no symbol, no note, as `llc`
+emits nothing of a variable in that section. In any other section it is
+noted (WP-095).
+
+Any other variable named `llvm.…` is delivered as an ordinary variable
+and recorded (`special-global:<name>`).
 
 ## 6. The interface to a body parser
 

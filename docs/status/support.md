@@ -28,11 +28,11 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `visibility` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `tls` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
-| `init` | 8 | 5 | 3 | 0 | 0 | 8 | 0 |
+| `init` | 9 | 6 | 3 | 0 | 0 | 9 | 0 |
 | `function` | 6 | 6 | 0 | 0 | 0 | 6 | 0 |
-| `cc` | 15 | 4 | 9 | 2 | 0 | 12 | 3 |
+| `cc` | 15 | 5 | 8 | 2 | 0 | 12 | 3 |
 | `attr` | 57 | 23 | 31 | 3 | 10 | 39 | 8 |
-| `type` | 15 | 10 | 2 | 3 | 0 | 13 | 2 |
+| `type` | 15 | 11 | 1 | 3 | 0 | 13 | 2 |
 | `inst` | 67 | 59 | 0 | 8 | 0 | 59 | 8 |
 | `mem` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 21 | 0 | 0 | 0 | 21 | 0 |
@@ -40,10 +40,10 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `tail` | 3 | 3 | 0 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
-| `operand` | 9 | 7 | 2 | 0 | 0 | 9 | 0 |
+| `operand` | 10 | 7 | 3 | 0 | 0 | 10 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 143 | 118 | 25 | 0 | 0 | 135 | 8 |
-| total | 448 | 310 | 92 | 46 | 17 | 368 | 63 |
+| total | 450 | 313 | 91 | 46 | 17 | 370 | 63 |
 
 ## `module`
 
@@ -178,6 +178,7 @@ What a variable's initializer contains.
 | `init:sym-diff` | supported | not-implemented | the difference of two symbol addresses |
 | `init:sym-diff-plt` | not-implemented | not-implemented | unplanned. the same through `dso_local_equivalent` (relative vtables) |
 | `init:int-of-addr` | supported | not-implemented | an address in an integer field |
+| `init:block-diff` | supported | not-implemented | a label difference `&&a - &&b` of two blocks of one function, a number (WP-095) |
 | `init:dso-local-equivalent` | not-implemented | not-implemented | unplanned |
 | `init:no-cfi` | not-implemented | not-implemented | unplanned |
 
@@ -205,7 +206,7 @@ Calling conventions, of a body's function and of a call.
 | `cc:coldcc` | not-implemented | not-implemented | unplanned |
 | `cc:ghccc` | not-implemented | not-implemented | unplanned |
 | `cc:anyregcc` | not-implemented | not-implemented | unplanned |
-| `cc:preserve_mostcc` | not-implemented | not-implemented | unplanned |
+| `cc:preserve_mostcc` | supported | not-implemented | assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095) |
 | `cc:preserve_allcc` | not-implemented | not-implemented | unplanned |
 | `cc:swiftcc` | supported | not-implemented | assigned as `ccc` (`spec/abi-a64.md` §1.2) |
 | `cc:cxx_fast_tlscc` | supported | not-implemented | assigned as `ccc` (`spec/abi-a64.md` §1.2) |
@@ -291,7 +292,7 @@ Type classes of the values instructions produce and consume.
 | `type:int-wide` | supported | not-implemented | integers wider than 64 bits other than `i128` (WP-040) |
 | `type:ptr` | supported | not-implemented | pointers in address space 0 |
 | `type:half` | supported | not-implemented | arithmetic in single precision |
-| `type:bfloat` | not-implemented | not-implemented | unplanned |
+| `type:bfloat` | supported | not-implemented | computed in single precision, rounded as `llc` without `+bf16` (WP-095) |
 | `type:float` | supported | not-implemented |  |
 | `type:double` | supported | not-implemented |  |
 | `type:fp128` | supported | not-implemented | arithmetic, compares and conversions are calls |
@@ -321,23 +322,23 @@ Instructions.
 | `inst:and` | supported (int, i128, int-wide, vector) | not-implemented |  |
 | `inst:or` | supported (int, i128, int-wide, vector) | not-implemented |  |
 | `inst:xor` | supported (int, i128, int-wide, vector) | not-implemented |  |
-| `inst:fadd` | supported (half, float, double, fp128, vector) | not-implemented |  |
-| `inst:fsub` | supported (half, float, double, fp128, vector) | not-implemented |  |
-| `inst:fmul` | supported (half, float, double, fp128, vector) | not-implemented |  |
-| `inst:fdiv` | supported (half, float, double, fp128, vector) | not-implemented |  |
-| `inst:frem` | supported (half, float, double, fp128, vector) | not-implemented | a call of `fmod` |
-| `inst:fneg` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `inst:fadd` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
+| `inst:fsub` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
+| `inst:fmul` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
+| `inst:fdiv` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
+| `inst:frem` | supported (half, bfloat, float, double, fp128, vector) | not-implemented | a call of `fmod` |
+| `inst:fneg` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
 | `inst:icmp` | supported (int, i128, int-wide, ptr, vector) | not-implemented | vectors: masks of up to 64 lanes (WP-081) |
-| `inst:fcmp` | supported (int, half, float, double, fp128, vector) | not-implemented | vectors: masks of up to 64 lanes (WP-081) |
+| `inst:fcmp` | supported (int, half, bfloat, float, double, fp128, vector) | not-implemented | vectors: masks of up to 64 lanes (WP-081) |
 | `inst:trunc` | supported (int, i128, int-wide, vector) | not-implemented |  |
 | `inst:zext` | supported (int, i128, int-wide, vector) | not-implemented |  |
 | `inst:sext` | supported (int, i128, int-wide, vector) | not-implemented |  |
-| `inst:fptrunc` | supported (half, float, double, fp128, vector) | not-implemented |  |
-| `inst:fpext` | supported (half, float, double, fp128, vector) | not-implemented |  |
-| `inst:fptoui` | supported (int, i128, int-wide, half, float, double, fp128, vector) | not-implemented |  |
-| `inst:fptosi` | supported (int, i128, int-wide, half, float, double, fp128, vector) | not-implemented |  |
-| `inst:uitofp` | supported (int, i128, int-wide, half, float, double, fp128, vector) | not-implemented |  |
-| `inst:sitofp` | supported (int, i128, int-wide, half, float, double, fp128, vector) | not-implemented |  |
+| `inst:fptrunc` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
+| `inst:fpext` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
+| `inst:fptoui` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | not-implemented |  |
+| `inst:fptosi` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | not-implemented |  |
+| `inst:uitofp` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | not-implemented |  |
+| `inst:sitofp` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | not-implemented |  |
 | `inst:ptrtoint` | supported (int, i128, int-wide, ptr, vector) | not-implemented |  |
 | `inst:ptrtoaddr` | supported (int, i128, int-wide, ptr, vector) | not-implemented |  |
 | `inst:inttoptr` | supported (int, i128, int-wide, ptr, vector) | not-implemented |  |
@@ -350,9 +351,9 @@ Instructions.
 | `inst:cmpxchg` | supported (int, i128, ptr, aggregate) | not-implemented | WP-074; the `{ T, i1 }` result is an aggregate |
 | `inst:atomicrmw` | supported (int, i128, ptr, half, bfloat, float, double) | not-implemented | and the operation's `atomicrmw:` row; WP-074 |
 | `inst:ptradd` | supported | not-implemented | LLVM's `getelementptr` (§5.4); not a vector of pointers |
-| `inst:extractvalue` | supported (int, i128, int-wide, ptr, half, float, double, fp128, vector, aggregate) | not-implemented |  |
-| `inst:insertvalue` | supported (int, i128, int-wide, ptr, half, float, double, fp128, vector, aggregate) | not-implemented |  |
-| `inst:extractelement` | supported (int, ptr, half, bfloat, float, double, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
+| `inst:extractvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented |  |
+| `inst:insertvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented |  |
+| `inst:extractelement` | supported (int, i128, ptr, half, bfloat, float, double, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:insertelement` | supported (int, ptr, half, bfloat, float, double, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:shufflevector` | supported (vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:phi` | supported | not-implemented | for every class whose `type:*` row is supported |
@@ -474,6 +475,7 @@ Constant addresses as instruction operands.
 | `operand:addr-of-int` | supported | not-implemented | `inttoptr` of a constant number |
 | `operand:int-of-addr` | supported | not-implemented | `ptrtoint` of a constant address (WP-072) |
 | `operand:sym-diff` | supported | not-implemented | a difference of two symbol addresses (WP-072) |
+| `operand:block-diff` | not-implemented | not-implemented | unplanned. a label difference as an operand (WP-095) |
 | `operand:dso-local-equivalent` | not-implemented | not-implemented | unplanned |
 | `operand:no-cfi` | not-implemented | not-implemented | unplanned |
 | `operand:address-in-aggregate` | supported | not-implemented | an aggregate or vector constant with an address (WP-072) |

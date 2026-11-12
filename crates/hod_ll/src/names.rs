@@ -12,7 +12,7 @@ pub(crate) struct NameMap {
     slots: Vec<u32>,
 }
 
-fn hash(key: &[u8]) -> u64 {
+pub(crate) fn hash(key: &[u8]) -> u64 {
     let mut h = 0x9E37_79B9_7F4A_7C15 ^ key.len() as u64;
     for chunk in key.chunks(8) {
         let mut word = [0u8; 8];

@@ -5,6 +5,7 @@
 //! `cargo xtask shim ...` builds the LLVM directory that plugs hod into kiln.
 //! `cargo xtask irdiff ...` is the IR differential harness (layer L4).
 //! `cargo xtask corpus ...` captures, verifies and counts the IR corpus.
+//! `cargo xtask roundtrip ...` parses and prints the corpus (layer L2).
 
 use std::process::ExitCode;
 
@@ -15,6 +16,7 @@ usage: cargo xtask ci [--quick]
        cargo xtask irdiff [options] [<file.ll or directory>...]   (--help for the options)
        cargo xtask corpus capture|verify|census|fetch [options]   (--help for the options)
        cargo xtask bench [options]                                (--help for the options)
+       cargo xtask roundtrip [options]                            (--help for the options)
 ";
 
 fn main() -> ExitCode {
@@ -25,6 +27,8 @@ fn main() -> ExitCode {
         Some("shim") => shim(&args[1..]),
         Some("irdiff") => irdiff(&args[1..]),
         Some("corpus") => corpus(&args[1..]),
+        #[cfg(unix)]
+        Some("roundtrip") => ExitCode::from(xtask::roundtrip::command(&args[1..])),
         #[cfg(unix)]
         Some("bench") => xtask::bench::main(&args[1..]),
         _ => {
@@ -65,7 +69,7 @@ fn ci(quick: bool) -> ExitCode {
 
 /// The L4 step of the gate (spec/harness.md "irdiff", "In the gate"): the
 /// quick tier against the preferred oracle, or every test against each
-/// oracle LLVM.
+/// oracle LLVM, with the witness.
 #[cfg(unix)]
 fn irdiff_gate(quick: bool) -> bool {
     use xtask::irdiff::{Config, TierFilter, run, tools::LLVM_MAJORS};
@@ -77,7 +81,7 @@ fn irdiff_gate(quick: bool) -> bool {
     let mut ok = true;
     for (llvm, tier) in runs {
         let mut config = Config::for_workspace();
-        (config.llvm, config.tier) = (llvm, tier);
+        (config.llvm, config.tier, config.witness) = (llvm, tier, !quick);
         match run(&config) {
             Ok(report) => {
                 eprint!("{}", report.summary(false));

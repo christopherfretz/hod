@@ -1,0 +1,252 @@
+//! The `Target` trait: `spec/codegen.md` §8.2.
+//!
+//! The driver owns the walk; a target owns everything that depends on the
+//! instruction set. The value-location policy (§4), the `phi` protocol
+//! (§4.5), the call sequence (§7.1) and the entry code for arguments
+//! (§4.8) are implemented once, in this crate, on top of a target's
+//! **glue** (the primitive moves) and its `assign`.
+
+use hod_ir::{Inst, ParamAttrs, TypeId, TypeTable, Value};
+
+use crate::abi::{AbiUnsupported, Assignment, Sig};
+use crate::cx::FnCx;
+use crate::error::CgResult;
+use crate::frame::FrameRef;
+use crate::label::{FixupKind, Label};
+use crate::loc::Class;
+use crate::reg::{PReg, RegInfo};
+use crate::sym::SymRef;
+
+/// What a call instruction transfers control to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CallTarget {
+    /// A symbol: a direct call. The target emits the instruction with its
+    /// relocation ([`FnCx::reloc`]).
+    Sym(SymRef),
+    /// The address in this register: [`RegInfo::callee`].
+    Reg(PReg),
+}
+
+/// What the call sequence tells the target about the call instruction it
+/// asks for ([`Target::emit_call`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CallEmit {
+    /// The callee.
+    pub target: CallTarget,
+    /// Whether the call is made through a variadic function type.
+    pub variadic: bool,
+    /// [`Assignment::vector_regs_used`] of the call: for a convention
+    /// that passes that count to a variadic callee.
+    pub vector_regs_used: u8,
+}
+
+/// A code generator for one instruction set (§8.2).
+///
+/// A target is a zero-sized or small `Sync` value. Everything generic in
+/// this crate is monomorphized over it, so its lowering is inlined into
+/// the walk: there is no trait object on the per-instruction path.
+///
+/// # Glue
+///
+/// [`load`](Target::load), [`store`](Target::store),
+/// [`copy`](Target::copy), [`copy_from_ptr`](Target::copy_from_ptr),
+/// [`mov`](Target::mov), [`materialize`](Target::materialize),
+/// [`materialize_mem`](Target::materialize_mem),
+/// [`frame_addr`](Target::frame_addr), [`adjust_sp`](Target::adjust_sp),
+/// [`extend_arg`](Target::extend_arg) and [`jump`](Target::jump) are the
+/// primitive moves the generic policy is made of. The rules for all of
+/// them:
+///
+/// - Besides its operands a glue function writes only **scratch**
+///   registers ([`RegInfo::scratch`]), and never the register it was
+///   given as an operand: the policy passes scratch registers to glue
+///   (a `phi` copy loads into one and stores from it), so a glue function
+///   that needs a register for a far offset takes a scratch register
+///   *other than its operand*. That is why a target has two general
+///   scratch registers.
+/// - It calls nothing and allocates no register from the pool.
+/// - It never fails for an offset or a size: a far offset costs a scratch
+///   register, not an error.
+/// - It does not change the stack pointer, except `adjust_sp`.
+pub trait Target: Sized + Sync {
+    /// What the target remembers about the function being compiled
+    /// between `begin_function`, the lowerings and `end_function` (a
+    /// reserved slot, whether the function allocates dynamically). Reset
+    /// to its default before each function: keep it plain data. Lists
+    /// that grow belong in this crate's tables (tail exits are one).
+    type FnState: Default;
+
+    /// The target's trap instruction: what `unreachable` emits, what
+    /// follows a `noreturn` call, and what stands for an unreachable
+    /// block whose address is taken (§4.7, §6.1, §7.1).
+    const TRAP: &'static [u8];
+
+    /// The alignment of a function's code, in bytes.
+    const FN_ALIGN: u32;
+
+    /// The byte that pads the space between functions.
+    const PAD_BYTE: u8;
+
+    /// The stack alignment in bytes: the largest alignment the local area
+    /// gives a slot (§5.1), and what a call's stack-argument area is
+    /// rounded to (§5.3).
+    const STACK_ALIGN: u32;
+
+    /// The registers (§2.1).
+    fn reg_info(&self) -> &RegInfo;
+
+    /// The class of a first-class type (§2.2). Total over the types
+    /// `classify` accepts.
+    fn class_of(&self, types: &TypeTable, ty: TypeId) -> Class;
+
+    /// Where the arguments and the return value of `sig` travel (§7.2).
+    /// Serves a call's outgoing placement and a function's incoming
+    /// arguments alike.
+    ///
+    /// # Errors
+    /// The name of what the target cannot pass. The facade runs `assign`
+    /// over a module's signatures when it decides support, so code
+    /// generation does not normally meet one; if it does, the function is
+    /// `Unsupported` under that name.
+    fn assign(
+        &self,
+        types: &TypeTable,
+        sig: &Sig<'_>,
+        out: &mut Assignment,
+    ) -> Result<(), AbiUnsupported>;
+
+    /// Emits the prologue in its fixed-size form and reserves what the
+    /// target needs in the frame (§5.4): the frame record, a register
+    /// save area for a variadic function, the incoming-argument base.
+    /// Called first, when the local area is empty, so the reservations
+    /// are its first bytes. It may write scratch registers only: the
+    /// argument registers still hold the arguments.
+    ///
+    /// The body's stack slots are laid out and the entry code for the
+    /// arguments (§4.8) is emitted *after* this returns, by the driver.
+    fn begin_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()>;
+
+    /// Called when the body has been emitted and the local area's size is
+    /// final (§5.4): patches the prologue, emits the epilogue at
+    /// [`FnCx::epilogue`] and after it one tail exit per entry of
+    /// [`FnCx::tail_exit`], with their CFI rows ([`FnCx::cfi`]), and
+    /// fills the frame description ([`FnCx::set_frame_desc`]).
+    ///
+    /// # Errors
+    /// `Unsupported("limit:frame-size")` for a frame the prologue cannot
+    /// express.
+    fn end_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()>;
+
+    /// Lowers one instruction that is not a `phi`: terminators and calls
+    /// included. One `match` on the opcode that dispatches to the
+    /// target's modules, one per instruction group.
+    ///
+    /// The driver has already skipped the instruction if it is dead and
+    /// has no effect (§4.7), has written the incoming slots of the
+    /// successors' `phi`s if it is a terminator other than `invoke`
+    /// (§4.5), and releases the operands afterwards (§4.2).
+    ///
+    /// # Errors
+    /// `Internal` for a case `classify` should have rejected.
+    fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()>;
+
+    /// Glue: loads the low `bytes` bytes of `reg` from `src`. What the
+    /// bits above them become is the target's choice (§2.2: unspecified).
+    fn load(&self, cx: &mut FnCx<'_, Self>, reg: PReg, src: FrameRef, bytes: u32);
+
+    /// Glue: stores the low `bytes` bytes of `reg` to `dst`.
+    fn store(&self, cx: &mut FnCx<'_, Self>, reg: PReg, dst: FrameRef, bytes: u32);
+
+    /// Glue: copies `bytes` bytes from `src` to `dst`. The two do not
+    /// overlap, or are the same place.
+    fn copy(&self, cx: &mut FnCx<'_, Self>, dst: FrameRef, src: FrameRef, bytes: u32);
+
+    /// Glue: copies `bytes` bytes from the memory at `ptr + offset` to
+    /// `dst`: the pointee of a `byval` argument into the stack-argument
+    /// area (§7.2, `PartKind::Pointee`). `ptr` is left unchanged.
+    fn copy_from_ptr(
+        &self,
+        cx: &mut FnCx<'_, Self>,
+        dst: FrameRef,
+        ptr: PReg,
+        offset: u32,
+        bytes: u32,
+    );
+
+    /// Glue: copies register `src` to `dst`, whole. Both are of one
+    /// class.
+    fn mov(&self, cx: &mut FnCx<'_, Self>, dst: PReg, src: PReg);
+
+    /// Glue: produces an operand that has no location (§3) in `reg`: a
+    /// constant of class `Gpr` or `Fpr` (`undef` and `poison` are zero),
+    /// a symbol's address (§7.4), a stack slot's address
+    /// ([`FnCx::slot_place`]; a load of the pointer slot for an
+    /// over-aligned one).
+    ///
+    /// # Errors
+    /// `Internal` for a value `classify` should have rejected in this
+    /// position (a thread-local symbol, a constant expression).
+    fn materialize(&self, cx: &mut FnCx<'_, Self>, reg: PReg, value: Value) -> CgResult<()>;
+
+    /// Glue: writes a constant of class `Mem` (a wide integer, an
+    /// aggregate, `undef` of either: zero) to the frame slot `dst`, in
+    /// its in-memory image (`spec/ir.md` §4.3).
+    ///
+    /// # Errors
+    /// `Internal` for a constant `classify` should have rejected.
+    fn materialize_mem(&self, cx: &mut FnCx<'_, Self>, dst: FrameRef, value: Value)
+    -> CgResult<()>;
+
+    /// Glue: puts the address of `of` in general register `reg`.
+    fn frame_addr(&self, cx: &mut FnCx<'_, Self>, reg: PReg, of: FrameRef);
+
+    /// Glue: adds `delta` bytes, a multiple of the stack alignment, to
+    /// the stack pointer: negative before the stack arguments of a call
+    /// are placed, positive after it returns (§5.3).
+    fn adjust_sp(&self, cx: &mut FnCx<'_, Self>, delta: i64);
+
+    /// Glue: brings the value in `reg`, an argument or return value of
+    /// integer type `ty` with attributes `attrs`, to the form the
+    /// target's ABI requires of its *producer* (§2.2: `zeroext`,
+    /// `signext`, a plain `i1`), in place. The low bits of the type's
+    /// width are unchanged; nothing to do for most values. Called by the
+    /// call sequence for each general-register argument part before it is
+    /// placed, and by [`FnCx::place_return`].
+    fn extend_arg(&self, cx: &mut FnCx<'_, Self>, reg: PReg, ty: TypeId, attrs: ParamAttrs);
+
+    /// Glue: an unconditional branch to `label`, in the form
+    /// [`FnCx::far`] asks for, recorded with [`FnCx::fixup`].
+    ///
+    /// # Errors
+    /// What [`FnCx::fixup`] reports.
+    fn jump(&self, cx: &mut FnCx<'_, Self>, label: Label) -> CgResult<()>;
+
+    /// Emits the call instruction itself, with its relocation for a
+    /// direct callee, and whatever the target's convention wants right
+    /// before it (x86-64: the vector-register count of a variadic call).
+    /// Arguments are placed and registers displaced already; the call
+    /// sequence records the call site around what this emits (§7.1), so
+    /// it must emit exactly one instruction that can return here, last.
+    fn emit_call(&self, cx: &mut FnCx<'_, Self>, call: &CallEmit) -> CgResult<()>;
+
+    /// Entry code for an over-aligned stack slot (§5.1): lowers the stack
+    /// pointer by `size` bytes, aligns it to `align`, and stores the
+    /// resulting address in the pointer slot `ptr`. Called after the
+    /// entry code for the arguments; it may write scratch registers only.
+    fn dynamic_slot(
+        &self,
+        cx: &mut FnCx<'_, Self>,
+        ptr: FrameRef,
+        size: u64,
+        align: u64,
+    ) -> CgResult<()>;
+
+    /// Writes `displacement` into the field of `kind` at offset `at` of
+    /// `code`, the function's code so far (§6.2). The displacement is
+    /// the label's offset minus `at`; what `at` points at (the
+    /// instruction, the field) is the target's convention with itself.
+    /// Returns `false`, leaving the code alone, when the field cannot
+    /// hold the displacement: the function is then compiled again in far
+    /// mode (§6.3).
+    fn patch_branch(code: &mut [u8], at: u32, kind: FixupKind, displacement: i64) -> bool;
+}

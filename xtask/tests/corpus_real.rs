@@ -81,17 +81,53 @@ const ABORTS: &str = "#include <stdlib.h>\nint main(void) { abort(); }\n";
 /// GNU C that only GCC compiles: a nested function.
 const NESTED: &str = "int main(void) { int f(void) { return 0; } return f(); }\n";
 
+/// Output without a final newline (`stdout-no-newline`).
+const UNENDED: &str = "#include <stdio.h>\nint main(void) { printf(\"no newline\"); return 0; }\n";
+
+/// A program the C library warns about at link time, which `ld.bfd`
+/// reports and `--fatal-warnings` makes an error (`link: allow-warnings`).
+const WARNS: &str = r"#include <stdio.h>
+static char buffer[64];
+int main(void) {
+  return tmpnam(buffer) == buffer ? 0 : 1;
+}
+";
+
+/// A `builtins/` test: the test, its `-lib.c` and the directory's
+/// `lib/main.c`, three modules linked in that order.
+const BUILTIN: &str = r#"#include <stdio.h>
+#include <stdlib.h>
+extern int twice(int);
+void main_test(void) {
+  if (twice(21) != 42) abort();
+  puts("twice");
+}
+"#;
+const BUILTIN_LIB: &str = "int twice(int x) { return 2 * x; }\n";
+const BUILTIN_MAIN: &str =
+    "extern void main_test(void);\nint main(void) { main_test(); return 0; }\n";
+
 // spec/harness.md "corpus": "The gcc-torture source", "Entries",
 // "Admission", "verify", "census", with the real clang, llc and linkers.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn capture_verify_and_count_real_programs() {
     let Some(majors) = installed() else { return };
     let scratch = Scratch::new("corpus-real");
     let execute = scratch.join("suite").join(torture::EXECUTE_DIR);
     std::fs::create_dir_all(&execute).unwrap();
-    for (name, text) in
-        [("hello.c", HELLO), ("shapes.c", SHAPES), ("aborts.c", ABORTS), ("nested.c", NESTED)]
-    {
+    std::fs::create_dir_all(execute.join("builtins/lib")).unwrap();
+    for (name, text) in [
+        ("hello.c", HELLO),
+        ("shapes.c", SHAPES),
+        ("aborts.c", ABORTS),
+        ("nested.c", NESTED),
+        ("unended.c", UNENDED),
+        ("warns.c", WARNS),
+        ("builtins/twice.c", BUILTIN),
+        ("builtins/twice-lib.c", BUILTIN_LIB),
+        ("builtins/lib/main.c", BUILTIN_MAIN),
+    ] {
         std::fs::write(execute.join(name), text).unwrap();
     }
 
@@ -104,7 +140,7 @@ fn capture_verify_and_count_real_programs() {
     let report = capture::capture(&options).unwrap();
     let summary = report.summary(&out);
     assert_eq!(report.exit_status(), 0, "{summary}");
-    assert_eq!(report.entries, 2 * majors.len(), "{summary}");
+    assert_eq!(report.entries, 5 * majors.len(), "{summary}");
 
     let manifest = Manifest::read(&out).unwrap();
     let skips = Skips::read(&out).unwrap();
@@ -124,6 +160,28 @@ fn capture_verify_and_count_real_programs() {
         assert!(entry.contains(";@ link: m\n"), "{entry}");
         assert!(entry.contains(";@ stdout: hello, corpus\n"), "{entry}");
         assert!(entry.contains("\ndefine dso_local i32 @main("), "{entry}");
+        assert!(entry.contains("\n; delivered: text\n"), "{entry}");
+        let entry_of = |test: &str| {
+            std::fs::read_to_string(out.join(format!("gcc-torture/llvm{major}/{test}.ll"))).unwrap()
+        };
+        // "Test directives": an output without a final newline.
+        let entry = entry_of("unended.c");
+        assert!(entry.contains("\n;@ stdout-no-newline: no newline\n"), "{entry}");
+        // "Admission": only ld.bfd refuses the link that warns, so the
+        // entry is admitted on the second pass, which allows warnings.
+        let entry = entry_of("warns.c");
+        assert!(entry.contains("\n;@ link: m allow-warnings\n"), "{entry}");
+        assert!(!entry_of("hello.c").contains("allow-warnings"));
+        // "Several translation units": the three files, in link order.
+        let entry = entry_of("builtins/twice.c");
+        assert!(entry.contains("\n;@ stdout: twice\n"), "{entry}");
+        assert!(entry.contains("\n; delivered: text text text\n"), "{entry}");
+        let names: Vec<&str> =
+            entry.lines().filter_map(|line| line.strip_prefix(";@ module: ")).collect();
+        assert_eq!(names, ["test", "lib", "main"], "{entry}");
+        let row = manifest.of_test(TORTURE, *major, "builtins/twice.c").unwrap();
+        assert_eq!(row.delivered, "text text text");
+        assert_eq!(row.producer_args.matches(" && ").count(), 2, "{}", row.producer_args);
         let reason = |test: &str| {
             skips
                 .rows
@@ -139,7 +197,7 @@ fn capture_verify_and_count_real_programs() {
     let tables = |name: &str| std::fs::read(out.join(name)).unwrap();
     let before = (tables("MANIFEST.tsv"), tables("SKIPPED.tsv"));
     let again = capture::capture(&options).unwrap();
-    assert!(again.groups.iter().all(|group| group.captured == 0 && group.reused == 2));
+    assert!(again.groups.iter().all(|group| group.captured == 0 && group.reused == 5));
     assert_eq!(before, (tables("MANIFEST.tsv"), tables("SKIPPED.tsv")));
 
     // Every entry passes `irdiff --hybrid` with the workspace's hod and
@@ -155,13 +213,14 @@ fn capture_verify_and_count_real_programs() {
     assert_eq!(verified.exit_status(), 0, "{}", verified.summary(true));
     assert_eq!(verified.runs.len(), majors.len());
     for (_, run) in &verified.runs {
-        assert_eq!(run.tests(), 2, "{}", run.summary(true));
+        assert_eq!(run.tests(), 5, "{}", run.summary(true));
     }
 
-    // The census of real modules.
+    // The census of real modules, of the two entries the counts are for.
     let entries: Vec<(String, String)> = manifest
         .rows
         .iter()
+        .filter(|(_, row)| row.test == "hello.c" || row.test == "shapes.c")
         .map(|(entry, row)| (format!("{}/llvm{}", row.source, row.llvm), entry.clone()))
         .collect();
     let counts = census::count_corpus(&out, &entries, 2).unwrap();
@@ -182,6 +241,6 @@ fn capture_verify_and_count_real_programs() {
     }
     let text = census::render(&out, 2).unwrap();
     for major in &majors {
-        assert!(text.contains(&format!("| `gcc-torture/llvm{major}` | 4 | 2 | 2 |")), "{text}");
+        assert!(text.contains(&format!("| `gcc-torture/llvm{major}` | 7 | 5 | 2 |")), "{text}");
     }
 }

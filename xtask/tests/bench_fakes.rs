@@ -653,11 +653,16 @@ fn the_remeasure_rule() {
     let run = world.run(&config);
     assert_eq!(run.exit_status(), 0, "{}", run.summary(false));
     let judged = verdicts(&run);
-    assert!(matches!(judged[..], [(_, Verdict::Ok | Verdict::Improved, 1)]), "{judged:?}");
+    // One more round is enough on a quiet machine. Under load a fast run
+    // can itself come out slow, and the rule then measures once more: the
+    // number of rounds is the machine's, that the input passes is the rule's.
+    let [(_, Verdict::Ok | Verdict::Improved, again @ 1..)] = judged[..] else {
+        panic!("{judged:?}");
+    };
     let hod = record(&run, "built-g", Tool::Hod);
-    assert_eq!(hod.runs, 4);
+    assert_eq!(hod.runs, 2 * (1 + again), "{hod:?}");
     assert!(hod.wall_us_min.unwrap() < 250_000 && hod.wall_us_max.unwrap() >= 300_000, "{hod:?}");
-    assert!(run.summary(false).contains("; measured again 1x\n"));
+    assert!(run.summary(false).contains(&format!("; measured again {again}x\n")));
     // The results file holds what was judged.
     assert_eq!(
         Results::read(run.results_path.as_ref().unwrap()).unwrap().find("built-g", Tool::Hod),

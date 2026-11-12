@@ -12,6 +12,7 @@ publish.workspace = true
 hod_ir.workspace = true
 
 [dev-dependencies]
+hod_interp.workspace = true
 hod_testutil.workspace = true
 
 [lints]

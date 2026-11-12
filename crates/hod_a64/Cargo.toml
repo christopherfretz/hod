@@ -18,6 +18,8 @@ hod_obj.workspace = true
 hod_testutil = { workspace = true }
 hod_interp.workspace = true
 hod_ll.workspace = true
+# WP-038: the unwind glue of tests/common/unwind.rs.
+hod_eh.workspace = true
 
 [lints]
 workspace = true

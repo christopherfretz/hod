@@ -5,6 +5,8 @@
 #[path = "common/callgen.rs"]
 mod callgen;
 mod common;
+#[path = "common/unwind.rs"]
+mod unwind;
 
 use std::path::PathBuf;
 
@@ -56,10 +58,6 @@ fn places(module: &Module, cases: &[Case]) -> Vec<Vec<Place>> {
 }
 
 /// Compiles module text with hod (or `llc` when `with_llc`).
-fn object(dir: &Scratch, name: &str, text: &str, with_llc: bool) -> Option<PathBuf> {
-    object_with(dir, name, text, with_llc, &Options::default())
-}
-
 fn object_with(
     dir: &Scratch,
     name: &str,
@@ -302,6 +300,59 @@ fn handwritten_calls_run() {
             &[driver, &obj],
             "done:",
             tag != "hod",
+        );
+    }
+}
+
+/// Real exceptions through hod's frames (`tests/data/call/eh.ll`, driven
+/// by the C++ program `eh.cpp` built with g++): cleanups and `resume`, a
+/// catch by type, a rethrow from a handler, nested pads, two clauses, a
+/// satisfied filter, a `noreturn` thrower, an `invoke` with stack
+/// arguments (its pad stub), a frame without a personality. The tables
+/// are written by the glue of `common/unwind.rs` until WP-049; `llc`'s
+/// object of the same module is the control.
+#[test]
+fn exceptions_unwind_through_hod_frames() {
+    let dir = Scratch::new("a64-call-eh");
+    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(gxx) = hod_testutil::tool("g++") else { return };
+    let source = dir.write("eh.cpp", data("eh.cpp"));
+    let driver = dir.join("eh-driver.o");
+    let mut command = std::process::Command::new(&gxx);
+    command.args(["-c", "-O1"]).arg(&source).arg("-o").arg(&driver);
+    let built = hod_testutil::run_with(&mut command, &[], std::time::Duration::from_mins(2));
+    assert!(built.success(), "g++: {}", built.stderr_text());
+    let libstdcxx = hod_testutil::run(&gxx, ["-print-file-name=libstdc++.so"]).stdout_text();
+    let libstdcxx = PathBuf::from(libstdcxx.trim());
+    let ll = data("eh.ll");
+    let (module, bodies) = parse(&format!("{}{ll}", ll_header(22)));
+    for (tag, options) in [
+        ("hod", Options::default()),
+        ("stress", Options { stress: hod_cg::Stress::ALL, ..Options::default() }),
+    ] {
+        let mut emitted = emit(&module, &bodies, &options);
+        unwind::add_eh_tables(&module, &mut emitted);
+        let obj = write_object(&dir, &format!("eh-{tag}.o"), &emitted);
+        let first_only = tag != "hod";
+        link_run_all(
+            &toolchain,
+            &dir,
+            &format!("eh-{tag}"),
+            &[],
+            &[&driver, &obj, &libstdcxx],
+            "eh done",
+            first_only,
+        );
+    }
+    if let Some(obj) = llc(&dir, "eh-llc", &format!("{}{ll}", ll_header(llc_major())), &[]) {
+        link_run_all(
+            &toolchain,
+            &dir,
+            "eh-llc",
+            &[],
+            &[&driver, &obj, &libstdcxx],
+            "eh done",
+            true,
         );
     }
 }

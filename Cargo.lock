@@ -31,6 +31,7 @@ name = "hod_a64"
 version = "0.0.0"
 dependencies = [
  "hod_cg",
+ "hod_eh",
  "hod_interp",
  "hod_ir",
  "hod_ll",

@@ -74,13 +74,19 @@ pub fn chunk_from(
                 }
             };
             let target = target.strip_prefix(".L").unwrap_or(&target);
-            let sym = module
-                .find_symbol(target.as_bytes())
-                .unwrap_or_else(|| panic!("{name}: llc refers to {target}, not a module symbol"));
+            // A module symbol, or a runtime function the module does not
+            // declare (`_Unwind_Resume`).
+            let sym =
+                module.find_symbol(target.as_bytes()).map(SymRef::Module).unwrap_or_else(|| {
+                    let runtime = hod_cg::RuntimeFn::ALL.iter().find(|f| f.name() == target);
+                    SymRef::Runtime(*runtime.unwrap_or_else(|| {
+                        panic!("{name}: llc refers to {target}, not a module symbol")
+                    }))
+                });
             chunk.relocs.push(Reloc {
                 offset: (offset - start) as u32,
                 kind: RelocKind::from_elf_type(Arch::AArch64, kind),
-                sym: SymRef::Module(sym),
+                sym,
                 addend,
             });
         }

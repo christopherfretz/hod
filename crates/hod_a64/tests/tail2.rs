@@ -194,6 +194,13 @@ define i64 @bf_widen(i64 %a) {
         acc = format!("%ca{k}");
     }
     writeln!(body, "  ret i64 {acc}\n}}").unwrap();
+    body += &bfloat_int_body();
+    body
+}
+
+/// The conversions between `bfloat` and integers.
+fn bfloat_int_body() -> String {
+    let mut body = String::new();
     // From integers of each width, signed and unsigned.
     for (name, op) in [("bf_sitofp", "sitofp"), ("bf_uitofp", "uitofp")] {
         writeln!(body, "\ndefine i64 @{name}(i64 %a) {{").unwrap();

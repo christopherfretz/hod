@@ -415,7 +415,7 @@ pub fn preserved_rows(cx: &mut FnCx<'_, A64>, at: Option<u32>, frame: u32) -> Cg
     }
     for (index, reg) in PRESERVED.iter().enumerate() {
         let saved = SAVE_AREA as i32 + 8 * index as i32;
-        let op = CfiOp::Offset { reg: reg.index() as u16, cfa_offset: saved - frame as i32 };
+        let op = CfiOp::Offset { reg: u16::from(reg.index()), cfa_offset: saved - frame as i32 };
         match at {
             Some(at) => cx.cfi_at(at, op)?,
             None => cx.cfi(op),
@@ -440,6 +440,6 @@ pub fn restore_preserved(cx: &mut FnCx<'_, A64>) {
         }
     }
     for reg in PRESERVED {
-        cx.cfi(CfiOp::Restore { reg: reg.index() as u16 });
+        cx.cfi(CfiOp::Restore { reg: u16::from(reg.index()) });
     }
 }

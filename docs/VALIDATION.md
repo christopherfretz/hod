@@ -16,8 +16,10 @@ hod never has to decide by itself what the right answer is.
   `-O2` agree with the reference interpreter (`spec/interp.md` §10.1). The
   reference is therefore SelectionDAG at `-O0`
   (`-global-isel=0 -fast-isel=0`), and where two LLVM configurations
-  disagree the test is an oracle error, never a hod failure (WP-023 moves
-  `xtask irdiff` to this; until then it runs plain `-O0`).
+  disagree the test is an oracle error, never a hod failure: `xtask
+  irdiff` builds with that reference, its `--witness` (on in the full gate
+  and in corpus admission) checks it against `-O2`, and a disagreement is
+  an ERROR (`spec/harness.md` "irdiff", "The oracle", "The witness").
 - **`hod_interp`** is the oracle for the code generator's own tests: a
   generated program has one result, which every correct compilation gives.
 - **LLVM's assembler and disassembler** (`llvm-mc`, `llvm-objdump`) are the

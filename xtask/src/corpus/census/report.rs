@@ -9,21 +9,22 @@ use std::path::Path;
 
 use super::{APPROXIMATIONS, D, GroupCensus, T, count_corpus};
 use crate::corpus::capture::{self, KILN};
-use crate::corpus::kiln::harness_llc_args;
+use crate::corpus::kiln::harness_owned;
 use crate::corpus::manifest::{Manifest, Skips};
+use crate::irdiff::directives::llc_arg_allowed;
 
 /// The skip reasons and what each means, in the order the report lists
 /// them (`spec/harness.md` "corpus", "Skip reasons"). A reason that is not
 /// here is listed after these, without a meaning.
-pub const REASONS: [(&str, &str); 31] = [
+pub const REASONS: [(&str, &str); 33] = [
     ("header-error", "the test's `//@` header does not parse"),
     ("marked-skip", "the test's header says `skip:`"),
     ("marked-xfail", "the test's header says `xfail:`: kiln's own suite expects it to fail"),
     (
         "multi-file",
-        "more than one translation unit built by one command (`module:`, `unit:`, \
-         `header-unit:`, `pch:` or `two-step:` in the header, or kiln++ ran llc more than \
-         once); for gcc-torture, a test in `builtins/` that is built with a second file",
+        "a test of several translation units whose build the capture does not replay (`pch:` \
+         in the header; modules that were given different `llc` arguments or would have one \
+         name; objects whose link order is not known)",
     ),
     ("needs-env", "the test needs an environment or input files the capture does not set up"),
     ("other-target", "the test names a target that is not the host"),
@@ -39,7 +40,11 @@ pub const REASONS: [(&str, &str); 31] = [
         "a link option the entry's link cannot repeat (`-l...`, `-fuse-ld=`, `-static`)",
     ),
     ("opt-first-lto", "`-flto`: kiln++ gives llc nothing; the link runs the code generator"),
-    ("opt-first-sanitizer", "`-fsanitize=`: kiln++ runs `opt` first and gives llc bitcode"),
+    (
+        "opt-first-sanitizer",
+        "`-fsanitize=`: kiln++ runs `opt` first and gives llc bitcode (skipped only where no \
+         `llvm-dis` is installed, as the next four)",
+    ),
     ("opt-first-coverage", "coverage or profiling instrumentation: `opt` first, bitcode to llc"),
     ("opt-first-optimized", "`-O1` or higher: `opt` first, bitcode to llc"),
     ("opt-first-coroutine", "coroutines are lowered by `opt`: bitcode to llc"),
@@ -48,6 +53,7 @@ pub const REASONS: [(&str, &str); 31] = [
         "an `always_inline` function (most often a standard library one) makes kiln++ run \
          `opt`: bitcode to llc",
     ),
+    ("llvm-dis-fails", "`llvm-dis` does not write the bitcode llc was given as text"),
     ("no-module", "kiln++ succeeded without running llc"),
     ("module-not-text", "llc was given something that is neither bitcode nor text IR"),
     ("llc-args-unexpected", "llc's command line is not the shape kiln's driver writes"),
@@ -69,19 +75,26 @@ pub const REASONS: [(&str, &str); 31] = [
         "the entry does not pass `irdiff` with every linker when llc alone builds it \
          (see \"Admission\")",
     ),
+    (
+        "oracle-unconfirmed",
+        "the program `llc -O2` builds from the entry does not behave as the oracle's: one of \
+         the two is wrong, or the program depends on how it is compiled (see \"Admission\")",
+    ),
     ("capture-broken", "the capture itself failed for this test (a tool could not be run)"),
 ];
 
 /// The reasons that are a failure of the test with the real tools, not a
 /// limit of the capture.
-const FAILURES: [&str; 7] = [
+const FAILURES: [&str; 9] = [
     "compile-fails",
+    "llvm-dis-fails",
     "llc-fails",
     "link-fails",
     "program-fails",
     "expectation-mismatch",
     "no-module",
     "not-reproducible",
+    "oracle-unconfirmed",
 ];
 
 /// `text` as a Markdown code span that is safe in a table cell.
@@ -161,6 +174,10 @@ fn majors_of(majors: &BTreeSet<Reverse<u32>>) -> String {
     let list: Vec<String> = majors.iter().map(|major| major.0.to_string()).collect();
     format!("LLVM {}", list.join(", "))
 }
+
+/// A label of the table "Modules of an entry" and the manifest's
+/// `delivered` values it counts.
+type ModuleKind = (&'static str, fn(&str) -> bool);
 
 /// The report's "Capture" part: what the tables of the corpus say.
 #[expect(
@@ -284,14 +301,21 @@ fn capture_part(dir: &Path, manifest: &Manifest, skips: &Skips, groups: &[Group]
             *by_args.entry(&entry.llc_args).or_default().entry(group).or_default() += 1;
         }
     }
-    let expressible =
-        |args: &str| [true, false].iter().any(|pie| harness_llc_args(*pie).join(" ") == args);
+    // Repeated: every argument is the harness's own in its own way, or
+    // one the entry's `llc-args` directive holds.
+    let expressible = |args: &str| {
+        args.split(' ').all(|arg| {
+            arg == "-O0" || (!arg.starts_with("-O") && harness_owned(arg)) || llc_arg_allowed(arg)
+        })
+    };
     text.push_str(
         "\n### `llc` arguments\n\nThe arguments the producer's driver gave `llc` (without `-o \
          <object>` and the input). `irdiff` builds an entry with `-O0 -filetype=obj \
-         -relocation-model=pic` or `static` (by the entry's `link:` line) and the module's own \
-         triple; arguments beyond those are recorded in the manifest and in the entry's header \
-         comment, and are not repeated by `irdiff`.\n\n",
+         -relocation-model=pic` or `static` (by the entry's `link:` line), the module's own \
+         triple, and the arguments of the entry's `llc-args` directive: those of the \
+         producer's that are on the directive's list. Anything else (an optimization level \
+         above `-O0`, an argument that names a file) is recorded in the manifest and in the \
+         entry's header comment, and is not repeated by `irdiff`.\n\n",
     );
     let mut cells = vec!["llc arguments".to_owned()];
     cells.extend(names.iter().map(|name| code(name)));
@@ -320,6 +344,34 @@ fn capture_part(dir: &Path, manifest: &Manifest, skips: &Skips, groups: &[Group]
         number(beyond),
         number(manifest.rows.len() as u64)
     );
+
+    // How the modules reached llc, and how many an entry has.
+    text.push_str(
+        "\n### Modules of an entry\n\nAn entry of several modules is a test of several \
+         translation units, each compiled on its own and linked into one program. A module \
+         that reached `llc` as bitcode (`opt` ran first) is in the entry as the text \
+         `llvm-dis` writes for it.\n\n",
+    );
+    let mut cells = vec!["entries".to_owned()];
+    cells.extend(names.iter().map(|name| code(name)));
+    text.push_str(&header(&cells, 1));
+    // The manifest has one word per module.
+    let kinds: [ModuleKind; 2] = [
+        ("of several modules", |delivered| delivered.contains(' ')),
+        ("with a module delivered as bitcode", |delivered| delivered.contains("bitcode")),
+    ];
+    for (label, is) in kinds {
+        let mut cells = vec![label.to_owned()];
+        for group in groups {
+            let count = manifest
+                .rows
+                .values()
+                .filter(|row| row.source == group.0 && row.llvm == group.1.0 && is(&row.delivered))
+                .count() as u64;
+            cells.push(if count == 0 { String::new() } else { number(count) });
+        }
+        text.push_str(&row(&cells));
+    }
     text
 }
 

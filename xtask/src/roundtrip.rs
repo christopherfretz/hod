@@ -558,6 +558,9 @@ fn groups(
                     run_limits: options.run_limits,
                     work: work.join("engine"),
                     keep: false,
+                    // The corpus was admitted with the witness; a round
+                    // trip compares with the entry's recorded behaviour.
+                    witness: false,
                 };
                 session.prepare()?;
                 Some(session)

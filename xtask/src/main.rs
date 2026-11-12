@@ -69,7 +69,7 @@ fn ci(quick: bool) -> ExitCode {
 
 /// The L4 step of the gate (spec/harness.md "irdiff", "In the gate"): the
 /// quick tier against the preferred oracle, or every test against each
-/// oracle LLVM.
+/// oracle LLVM, with the witness.
 #[cfg(unix)]
 fn irdiff_gate(quick: bool) -> bool {
     use xtask::irdiff::{Config, TierFilter, run, tools::LLVM_MAJORS};
@@ -81,7 +81,7 @@ fn irdiff_gate(quick: bool) -> bool {
     let mut ok = true;
     for (llvm, tier) in runs {
         let mut config = Config::for_workspace();
-        (config.llvm, config.tier) = (llvm, tier);
+        (config.llvm, config.tier, config.witness) = (llvm, tier, !quick);
         match run(&config) {
             Ok(report) => {
                 eprint!("{}", report.summary(false));

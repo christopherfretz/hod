@@ -104,6 +104,7 @@ fn real_tools_round_trip() {
                 producer: "hand".to_owned(),
                 producer_args: "-".to_owned(),
                 llc_args: "-".to_owned(),
+                delivered: "text".to_owned(),
                 sha256: "0".repeat(64),
                 bytes: 0,
                 key: "0".repeat(64),

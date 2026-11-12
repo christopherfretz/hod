@@ -211,8 +211,8 @@ register value is **displaced**: stored to a spill slot (allocated from
 the frame, 8 or 16 bytes by class; spill slots are reused once their
 value's use has been emitted). A spill slot that is occupied at a call to
 a `returns_twice` function is never reused: the code after such a call
-can run a second time and reads the slot again. The choice must not depend on anything but
-the function's IR: v1 takes the lowest-numbered unpinned occupied pool
+can run a second time and reads the slot again. The choice of register
+must not depend on anything but the function's IR: v1 takes the lowest-numbered unpinned occupied pool
 register. A lowering that needs one particular register (a return
 register, a shift count register on x86-64) displaces its occupant the
 same way, or moves it to a free pool register.
@@ -265,8 +265,8 @@ that is not taken is dead (every edge into a block rewrites the slots
 before the block reads them).
 
 `invoke` is the one supported terminator whose result can be a
-successor's incoming value. Its unwind destination's incoming slots are written **before** the
-call (the result is not available on that edge); its normal destination's
+successor's incoming value. Its unwind destination's incoming slots are
+written **before** the call (the result is not available on that edge); its normal destination's
 incoming slots are written **after** the call, once the result has its
 location.
 

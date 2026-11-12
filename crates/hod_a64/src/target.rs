@@ -56,6 +56,8 @@ pub struct FnState {
     pub frame: frame::FrameState,
     /// The variadic save area (`call`, WP-038).
     pub va: call::VaState,
+    /// The scratch images of vectors (`vector`, WP-079).
+    pub vector: crate::vector::VectorState,
 }
 
 /// DWARF numbers: `x<n>` is `n`, `sp` is 31, `v<n>` is `64 + n`.

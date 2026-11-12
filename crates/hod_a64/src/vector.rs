@@ -765,7 +765,10 @@ pub fn shuffle_vector<'a>(
 /// Whether `ty` is, or has as a leaf, a vector of class `Mem`.
 fn has_mem_vector(types: &TypeTable, ty: TypeId, depth: u32) -> bool {
     match types.kind(ty) {
-        TypeKind::Vector { .. } => A64.class_of(types, ty) == Class::Mem,
+        // A mask (class `Gpr`, WP-081) is passed lane by lane: WP-082.
+        TypeKind::Vector { elem, .. } => {
+            elem == TypeId::I1 || A64.class_of(types, ty) == Class::Mem
+        }
         TypeKind::Array { elem, .. } => depth < 64 && has_mem_vector(types, elem, depth + 1),
         TypeKind::Struct { .. } => types.struct_fields(ty).is_some_and(|fields| {
             fields.iter().any(|&f| depth < 64 && has_mem_vector(types, f, depth + 1))
@@ -809,7 +812,7 @@ mod tests {
             (TypeId::I8, 4, Class::Mem, 4, 4, 4),
             (TypeId::I64, 4, Class::Mem, 32, 32, 32),
             (TypeId::DOUBLE, 1, Class::Fpr, 8, 8, 8),
-            (TypeId::I1, 8, Class::Mem, 1, 1, 1),
+            (TypeId::I1, 8, Class::Gpr, 1, 1, 1),
         ];
         for (elem, len, class, size, alloc, align) in cases {
             let ty = t.vector(elem, len).unwrap();

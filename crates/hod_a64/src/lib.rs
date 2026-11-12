@@ -31,7 +31,8 @@
 //! | `call` | WP-038 | calls, `invoke`, `musttail`, landing pads, `resume`, variadics | `tests/call.rs` |
 //! | `float` | WP-039 | floating-point and vector-register instructions | `tests/float.rs` |
 //! | `aggr` | WP-040 | `Mem`-class values: wide integers, aggregates, overflow intrinsics | `tests/aggr.rs` |
-//! | `intrinsic` | WP-041 | the other intrinsics | `tests/intrinsic.rs` |
+//! | `intrinsic` | WP-041, WP-070 | the other intrinsics | `tests/intrinsic.rs` |
+//! | `fpintr` | WP-070 | the floating-point intrinsics | `tests/fpintr.rs` |
 //!
 //! The differential harness that runs generated programs natively and
 //! compares them with `hod_interp` is `tests/diff.rs`.
@@ -42,6 +43,7 @@ pub mod call;
 pub mod common;
 pub mod control;
 pub mod float;
+pub mod fpintr;
 pub mod frame;
 pub mod int;
 pub mod intrinsic;

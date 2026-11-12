@@ -11,7 +11,12 @@
 //! - what the interpreter does not run, checked natively by a C driver
 //!   and against `llc`: the traps, `frameaddress`/`returnaddress`,
 //!   `objectsize`, `is.constant`, `prefetch`, `ptrmask`;
-//! - the exact words of the short forms; what is refused, by name.
+//! - the exact words of the short forms; what is refused, by name;
+//! - the second set's integer intrinsics (WP-070,
+//!   `common/intrinsic2_gen.rs` on `aggr_gen`): the saturating
+//!   arithmetic at every width, `scmp`/`ucmp` at every pair of widths,
+//!   the `i128` forms, against the interpreter and `llc`, from memory
+//!   and from registers with garbage above the widths.
 
 #![allow(clippy::many_single_char_names, reason = "the C driver's parameters")]
 
@@ -23,6 +28,10 @@ mod int_gen;
 mod intrinsic_gen;
 #[path = "common/intrinsic_mem.rs"]
 mod intrinsic_mem;
+#[path = "common/aggr_gen.rs"]
+mod aggr_gen;
+#[path = "common/intrinsic2_gen.rs"]
+mod intrinsic2_gen;
 
 use common::{assert_refused, code_words, compile_ll, ll_header, parse};
 use hod_a64::intrinsic;
@@ -65,6 +74,44 @@ fn random_intrinsic_functions_agree() {
         .unwrap_or(1200);
     let g = intrinsic_gen::random(&mut Rng(0x0410), count);
     check("random", &g);
+}
+
+/// Checks an `aggr_gen` suite of the second set (WP-070).
+fn check2(name: &str, suite: &aggr_gen::Suite) {
+    let report = aggr_gen::run(name, suite);
+    eprintln!(
+        "a64 intrinsic {name}: {} functions, {} cases against the interpreter, {} by llc only, \
+         {} from registers, {} undefined; {} IR instructions compiled in {:?}; tools {:?}",
+        suite.funcs.len(),
+        report.interp,
+        report.llc_only,
+        report.regs,
+        report.undefined,
+        report.insts,
+        report.compile,
+        report.tools,
+    );
+    assert!(report.interp > 0, "{name}: nothing compared with the interpreter");
+    aggr_gen::assert_agrees(&report);
+}
+
+/// `{s,u}{add,sub}.sat` at every width 1 to 64 and at 128 (WP-070).
+#[test]
+fn saturating_arithmetic_agrees() {
+    check2("sat", &intrinsic2_gen::sat_table(&mut aggr_gen::Rng(70)));
+}
+
+/// `scmp`/`ucmp` for operand widths 1 to 128 by result widths 2 to 128
+/// (WP-070).
+#[test]
+fn three_way_compares_agree() {
+    check2("cmp3", &intrinsic2_gen::three_way_table(&mut aggr_gen::Rng(71)));
+}
+
+/// WP-041's integer intrinsics at `i128` (WP-070).
+#[test]
+fn wide_integer_intrinsics_agree() {
+    check2("i128", &intrinsic2_gen::wide_table(&mut aggr_gen::Rng(72)));
 }
 
 /// The words of the only function of `text` (the header added).

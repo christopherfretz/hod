@@ -4,7 +4,10 @@
 //! intrinsics, bit manipulation, `abs` and min/max, traps, the frame
 //! intrinsics, and those that fold to a constant or to nothing.
 //!
-//! **Owner: WP-041.** Tests: `tests/intrinsic.rs`. The dispatch in
+//! **Owner: WP-041; the second set WP-070** (the saturating arithmetic,
+//! `scmp`/`ucmp`, the `i128` forms, `eh.typeid.for`, `clear_cache`;
+//! the floating-point intrinsics are `fpintr`'s, dispatched from here).
+//! Tests: `tests/intrinsic.rs`. The dispatch in
 //! `target.rs` is final. Thread-local addresses are refused by the
 //! dispatch (`a64:thread-local`, milestone M2). The intrinsics that
 //! generate no code at all (`llvm.lifetime.*`, `llvm.assume`,
@@ -37,9 +40,18 @@
 //! - **Folded**: `objectsize` is `-1` (`min` false) or `0`; `is.constant`
 //!   is true for a literal constant operand, false otherwise (as `llc`);
 //!   `prefetch` emits nothing; `ptrmask` is an `and`.
+//! - **Saturating** `{s,u}{add,sub}.sat` (WP-070): at 32 and 64 bits the
+//!   flags of `adds`/`subs` pick the bound (`csel`/`csinv`); narrower
+//!   widths compute exactly in 64 bits from extended operands and clamp
+//!   by `cmp` + `csel`. `scmp`/`ucmp`: `cmp`, `cset gt|hi`,
+//!   `csinv ge|hs`.
+//! - **`i128`** (class `Mem`, WP-070): every integer intrinsic above and
+//!   the saturating ones work on the two limbs of the slots through
+//!   `x16`/`x17` and at most four temporaries; a wider width is
+//!   [`WIDE`].
 
-use hod_cg::{CallArg, CgResult, Class, FnCx, RuntimeFn};
-use hod_ir::{Const, Inst, Intrinsic, TypeKind, Value};
+use hod_cg::{CallArg, CgResult, Class, FnCx, FrameRef, RuntimeFn};
+use hod_ir::{Const, Inst, Intrinsic, TypeKind, Value, ValueKind};
 use hod_mc_a64 as mc;
 use hod_mc_a64::{Arr, Cond, Load, MemSize, Reg, RegZr, Shift, Size, VMemSize, VecBits};
 
@@ -79,6 +91,12 @@ pub const INLINE_MAX: u64 = 64;
 /// vector registers at most).
 pub const INLINE_MOVE_MAX: u64 = 32;
 
+/// `llvm.readcyclecounter`: `mrs CNTVCT_EL0`, which the encoder has no
+/// system register for (WP-070).
+pub const READCYCLECOUNTER: &str = "a64:readcyclecounter";
+/// `llvm.eh.typeid.for` of something that is not a symbol (WP-070).
+pub const TYPEID: &str = "a64:eh-typeid";
+
 /// A call of intrinsic `which` with arguments `args`.
 ///
 /// # Errors
@@ -92,22 +110,64 @@ pub fn intrinsic<'a>(
     args: &'a [Value],
 ) -> CgResult<()> {
     use Intrinsic as I;
+    if crate::fpintr::is_fp(which) {
+        return crate::fpintr::fp_intrinsic(cx, inst, which, args);
+    }
     match (which, args) {
         (I::Ctlz | I::Cttz | I::Ctpop | I::Bswap | I::BitReverse | I::Abs, &[x, ..]) => {
-            let bits = int_type(cx, inst)?;
+            let Some(bits) = int_or_quad(cx, inst)? else {
+                deferred_first(cx, inst, None)?;
+                return wide_unary(cx, inst, which, x);
+            };
             deferred_first(cx, inst, None)?;
             unary(cx, inst, which, x, bits)
         }
         (I::Smax | I::Smin | I::Umax | I::Umin, &[a, b]) => {
-            let bits = int_type(cx, inst)?;
+            let Some(bits) = int_or_quad(cx, inst)? else {
+                deferred_first(cx, inst, None)?;
+                return wide_two(cx, inst, which, a, b);
+            };
             deferred_first(cx, inst, None)?;
             min_max(cx, inst, which, a, b, bits)
         }
+        (I::SaddSat | I::UaddSat | I::SsubSat | I::UsubSat, &[a, b]) => {
+            let Some(bits) = int_or_quad(cx, inst)? else {
+                deferred_first(cx, inst, None)?;
+                return wide_two(cx, inst, which, a, b);
+            };
+            deferred_first(cx, inst, None)?;
+            saturating(cx, inst, which, a, b, bits)
+        }
+        (I::Scmp | I::Ucmp, &[a, b]) => {
+            deferred_first(cx, inst, None)?;
+            three_way(cx, inst, which == I::Scmp, a, b)
+        }
         (I::Fshl | I::Fshr, &[a, b, c]) => {
-            let bits = int_type(cx, inst)?;
+            let Some(bits) = int_or_quad(cx, inst)? else {
+                deferred_first(cx, inst, None)?;
+                return wide_funnel(cx, inst, which == I::Fshl, [a, b, c]);
+            };
             deferred_first(cx, inst, None)?;
             funnel(cx, inst, which == I::Fshl, [a, b, c], bits)
         }
+        (I::EhTypeidFor, &[info]) => {
+            let ValueKind::Sym(sym) = info.kind() else { return unsupported(TYPEID) };
+            deferred_first(cx, inst, None)?;
+            let id = cx.type_id(Some(sym));
+            let rd = cx.def_reg(inst)?;
+            mov_imm(cx, Size::W, xr(rd), u64::from(id));
+            cx.finish(inst, rd)
+        }
+        (I::ClearCache, &[start, end]) => {
+            deferred_first(cx, inst, None)?;
+            cx.call_runtime(
+                RuntimeFn::ClearCache,
+                &[CallArg::Value(start), CallArg::Value(end)],
+                None,
+            )?;
+            Ok(())
+        }
+        (I::ReadCycleCounter, _) => unsupported(READCYCLECOUNTER),
         (I::Memcpy | I::MemcpyInline | I::Memmove, &[dst, src, len, _volatile]) => {
             deferred_first(cx, inst, None)?;
             copy(cx, which, dst, src, len)
@@ -184,7 +244,7 @@ pub fn intrinsic<'a>(
 
 /// The integer `value` is, zero-extended from its width, when it is an
 /// integer constant (or a zero-like one).
-fn const_int(cx: &FnCx<'_, A64>, value: Value) -> Option<u64> {
+pub(crate) fn const_int(cx: &FnCx<'_, A64>, value: Value) -> Option<u64> {
     let id = value.as_const()?;
     match cx.module.consts.get(id) {
         Const::Int { value, .. } => Some(value),
@@ -198,6 +258,18 @@ fn const_int(cx: &FnCx<'_, A64>, value: Value) -> Option<u64> {
 fn int_type(cx: &FnCx<'_, A64>, inst: Inst<'_>) -> CgResult<u32> {
     match cx.types().kind(inst.ty()) {
         TypeKind::Int(bits) if (1..=64).contains(&bits) => Ok(bits),
+        TypeKind::Int(_) => unsupported(WIDE),
+        _ => unsupported(VECTOR),
+    }
+}
+
+/// The width of the integer result of `inst` (`Some`, class `Gpr`), or
+/// `None` for `i128` (class `Mem`, WP-070); the refusal for any other
+/// type.
+fn int_or_quad(cx: &FnCx<'_, A64>, inst: Inst<'_>) -> CgResult<Option<u32>> {
+    match cx.types().kind(inst.ty()) {
+        TypeKind::Int(bits) if (1..=64).contains(&bits) => Ok(Some(bits)),
+        TypeKind::Int(128) => Ok(None),
         TypeKind::Int(_) => unsupported(WIDE),
         _ => unsupported(VECTOR),
     }
@@ -413,6 +485,363 @@ fn funnel<'a>(
     put(cx, mc::lslv(sz, x, x, z));
     put(cx, mc::orr(sz, y, y, x));
     cx.finish(inst, rbv)
+}
+
+// ---- saturating arithmetic and three-way compares (WP-070) ----
+
+/// `{s,u}{add,sub}.sat` of `a` and `b` at `bits` (1 to 64) bits.
+///
+/// At 32 and 64 bits `adds`/`subs` set the flags: a signed overflow
+/// (`vs`) gives `(r >> (N-1)) ^ (1 << (N-1))` (the wrapped result's sign
+/// is the opposite of the true one), an unsigned add's carry all ones
+/// (`csinv cc`), an unsigned sub's borrow 0 (`csel hs`). Narrower, the
+/// operands are extended to 64 bits, where the exact result fits, and it
+/// is clamped to the width's range.
+fn saturating<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    which: Intrinsic<'a>,
+    a: Value,
+    b: Value,
+    bits: u32,
+) -> CgResult<()> {
+    let signed = matches!(which, Intrinsic::SaddSat | Intrinsic::SsubSat);
+    let add = matches!(which, Intrinsic::SaddSat | Intrinsic::UaddSat);
+    let ra = cx.use_reg(a)?;
+    let rb = cx.use_reg(b)?;
+    let (x, y) = (xr(ra), xr(rb));
+    let (xz, yz) = (x.zr(), y.zr());
+    if bits == 32 || bits == 64 {
+        let sz = size_for_bits(bits);
+        put(cx, if add { mc::adds(sz, xz, xz, yz) } else { mc::subs(sz, xz, xz, yz) });
+        if signed {
+            put(cx, mc::asr_imm(sz, X16.zr(), xz, bits - 1));
+            put(cx, mc::eor_imm(sz, X16.sp(), X16.zr(), 1 << (bits - 1)));
+            put(cx, mc::csel(sz, xz, X16.zr(), xz, Cond::Vs));
+        } else if add {
+            put(cx, mc::csinv(sz, xz, xz, RegZr::ZR, Cond::Lo));
+        } else {
+            put(cx, mc::csel(sz, xz, xz, RegZr::ZR, Cond::Hs));
+        }
+        return cx.finish(inst, ra);
+    }
+    let extend = if signed { mc::sbfx } else { mc::ubfx };
+    put(cx, extend(Size::X, xz, xz, 0, bits));
+    put(cx, extend(Size::X, yz, yz, 0, bits));
+    put(cx, if add { mc::add(Size::X, xz, xz, yz) } else { mc::sub(Size::X, xz, xz, yz) });
+    if signed {
+        let max = (1u64 << (bits - 1)) - 1;
+        mov_imm(cx, Size::X, X16, max);
+        put(cx, mc::cmp(Size::X, xz, X16.zr()));
+        put(cx, mc::csel(Size::X, xz, xz, X16.zr(), Cond::Lt));
+        mov_imm(cx, Size::X, X16, !max);
+        put(cx, mc::cmp(Size::X, xz, X16.zr()));
+        put(cx, mc::csel(Size::X, xz, xz, X16.zr(), Cond::Gt));
+    } else if add {
+        mov_imm(cx, Size::X, X16, (1u64 << bits) - 1);
+        put(cx, mc::cmp(Size::X, xz, X16.zr()));
+        put(cx, mc::csel(Size::X, xz, xz, X16.zr(), Cond::Ls));
+    } else {
+        // Both operands are below 2^63: the difference is negative
+        // exactly when it saturates.
+        put(cx, mc::cmp_imm(Size::X, x.sp(), 0));
+        put(cx, mc::csel(Size::X, xz, xz, RegZr::ZR, Cond::Ge));
+    }
+    cx.finish(inst, ra)
+}
+
+/// `scmp`/`ucmp` (`signed`) of `a` and `b`: -1, 0 or 1 in the result
+/// type, whose width may differ from the operands' (2 to 64 bits, or
+/// `i128`). Operands of 1 to 64 bits are extended and compared; `i128`
+/// ones are ordered by two `cmp` + `sbcs` chains (which set `N`, `V`
+/// and `C` but not `Z` for the whole value).
+fn three_way<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    signed: bool,
+    a: Value,
+    b: Value,
+) -> CgResult<()> {
+    let wide_result = match cx.types().kind(inst.ty()) {
+        TypeKind::Int(bits) if (2..=64).contains(&bits) => false,
+        TypeKind::Int(128) => true,
+        TypeKind::Int(_) => return unsupported(WIDE),
+        _ => return unsupported(VECTOR),
+    };
+    let operand_bits = match cx.types().kind(value_ty(cx, a)) {
+        TypeKind::Int(bits) if (1..=64).contains(&bits) || bits == 128 => bits,
+        TypeKind::Int(_) => return unsupported(WIDE),
+        _ => return unsupported(VECTOR),
+    };
+    let (lt, gt) = if signed { (Cond::Lt, Cond::Gt) } else { (Cond::Lo, Cond::Hi) };
+    let rd = if operand_bits == 128 {
+        let (sa, sb) = (cx.use_mem(a)?, cx.use_mem(b)?);
+        let (t1, t2) = (xr(cx.temp(Class::Gpr)?), xr(cx.temp(Class::Gpr)?));
+        let rd = cx.temp(Class::Gpr)?;
+        let r = xr(rd).zr();
+        ld(cx, X16, sa, 0);
+        ld(cx, X17, sa, 1);
+        ld(cx, t1, sb, 0);
+        ld(cx, t2, sb, 1);
+        // a < b: -1.
+        put(cx, mc::cmp(Size::X, X16.zr(), t1.zr()));
+        put(cx, mc::sbcs(Size::X, RegZr::ZR, X17.zr(), t2.zr()));
+        put(cx, mc::csetm(Size::X, r, lt));
+        // b < a: 1.
+        put(cx, mc::cmp(Size::X, t1.zr(), X16.zr()));
+        put(cx, mc::sbcs(Size::X, RegZr::ZR, t2.zr(), X17.zr()));
+        put(cx, mc::cset(Size::X, X16.zr(), lt));
+        put(cx, mc::orr(Size::X, r, r, X16.zr()));
+        rd
+    } else {
+        let sz = size_for_bits(operand_bits);
+        let ra = cx.use_reg(a)?;
+        let rb = cx.use_reg(b)?;
+        let (x, y) = (xr(ra), xr(rb));
+        if signed {
+            sign_extend(cx, x, operand_bits);
+            sign_extend(cx, y, operand_bits);
+        } else {
+            zero_extend(cx, x, operand_bits);
+            zero_extend(cx, y, operand_bits);
+        }
+        put(cx, mc::cmp(sz, x.zr(), y.zr()));
+        let r = xr(ra).zr();
+        put(cx, mc::cset(Size::X, r, gt));
+        // r = (a >= b) ? r : -1.
+        let ge = if signed { Cond::Ge } else { Cond::Hs };
+        put(cx, mc::csinv(Size::X, r, r, RegZr::ZR, ge));
+        ra
+    };
+    if !wide_result {
+        return cx.finish(inst, rd);
+    }
+    let dst = cx.def_mem(inst)?;
+    let r = xr(rd);
+    st(cx, r.zr(), X16, dst, 0);
+    put(cx, mc::asr_imm(Size::X, X17.zr(), r.zr(), 63));
+    st(cx, X17.zr(), X16, dst, 1);
+    Ok(())
+}
+
+// ---- `i128` (class `Mem`, WP-070) ----
+
+/// `slot` moved `off` bytes on.
+fn slot_at(slot: FrameRef, off: u32) -> FrameRef {
+    match slot {
+        FrameRef::Local(o) => FrameRef::Local(o + off),
+        FrameRef::Incoming(o) => FrameRef::Incoming(o + off),
+        FrameRef::Outgoing(o) => FrameRef::Outgoing(o + off),
+    }
+}
+
+/// `ldr rt, [slot + 8 * limb]`; a far offset is rebased into `rt`.
+fn ld(cx: &mut FnCx<'_, A64>, rt: Reg, slot: FrameRef, limb: u32) {
+    let mut c = Cursor::frame(cx, slot_at(slot, 8 * limb), rt);
+    load_gpr_at(cx, Load::X, rt, &mut c);
+}
+
+/// `str rt, [slot + 8 * limb]`; a far offset is rebased into `tmp`.
+fn st(cx: &mut FnCx<'_, A64>, rt: RegZr, tmp: Reg, slot: FrameRef, limb: u32) {
+    let mut c = Cursor::frame(cx, slot_at(slot, 8 * limb), tmp);
+    store_gpr_at(cx, MemSize::X, rt, &mut c);
+}
+
+/// Writes `lo` and `hi` as the two limbs of the `i128` result of `inst`.
+fn wide_result<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, lo: RegZr, hi: RegZr, tmp: Reg) -> CgResult<()> {
+    let dst = cx.def_mem(inst)?;
+    st(cx, lo, tmp, dst, 0);
+    st(cx, hi, tmp, dst, 1);
+    Ok(())
+}
+
+/// `ctlz`, `cttz`, `ctpop`, `bswap`, `bitreverse`, `abs` of an `i128`:
+/// the limbs in `x16` (low) and `x17` (high).
+fn wide_unary<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    which: Intrinsic<'a>,
+    x: Value,
+) -> CgResult<()> {
+    use Intrinsic as I;
+    let src = cx.use_mem(x)?;
+    let t = xr(cx.temp(Class::Gpr)?);
+    let (lo, hi, tz) = (X16.zr(), X17.zr(), t.zr());
+    ld(cx, X16, src, 0);
+    ld(cx, X17, src, 1);
+    match which {
+        I::Ctlz => {
+            // clz(hi), or 64 + clz(lo) when hi is 0.
+            put(cx, mc::clz(Size::X, tz, hi));
+            put(cx, mc::clz(Size::X, lo, lo));
+            put(cx, mc::add_imm(Size::X, X16.sp(), X16.sp(), 64));
+            put(cx, mc::cmp_imm(Size::X, X17.sp(), 0));
+            put(cx, mc::csel(Size::X, tz, tz, lo, Cond::Ne));
+            wide_result(cx, inst, tz, RegZr::ZR, X16)
+        }
+        I::Cttz => {
+            put(cx, mc::rbit(Size::X, tz, lo));
+            put(cx, mc::clz(Size::X, tz, tz));
+            put(cx, mc::rbit(Size::X, hi, hi));
+            put(cx, mc::clz(Size::X, hi, hi));
+            put(cx, mc::add_imm(Size::X, X17.sp(), X17.sp(), 64));
+            put(cx, mc::cmp_imm(Size::X, X16.sp(), 0));
+            put(cx, mc::csel(Size::X, tz, tz, hi, Cond::Ne));
+            wide_result(cx, inst, tz, RegZr::ZR, X16)
+        }
+        I::Ctpop => {
+            put(cx, mc::fmov_gpr_to_fp(Size::X, V31, lo));
+            put(cx, mc::fmov_gpr_to_hi(V31, hi));
+            put(cx, mc::cnt(VecBits::V128, V31, V31));
+            put(cx, mc::uaddlv(Arr::B16, V31, V31));
+            put(cx, mc::fmov_fp_to_gpr(Size::W, tz, V31));
+            wide_result(cx, inst, tz, RegZr::ZR, X16)
+        }
+        I::Bswap | I::BitReverse => {
+            let word = if which == I::Bswap { mc::rev } else { mc::rbit };
+            put(cx, word(Size::X, lo, lo));
+            put(cx, word(Size::X, hi, hi));
+            wide_result(cx, inst, hi, lo, t)
+        }
+        I::Abs => {
+            // (x ^ s) - s with s the sign: INT_MIN maps to itself.
+            put(cx, mc::asr_imm(Size::X, tz, hi, 63));
+            put(cx, mc::eor(Size::X, lo, lo, tz));
+            put(cx, mc::eor(Size::X, hi, hi, tz));
+            put(cx, mc::subs(Size::X, lo, lo, tz));
+            put(cx, mc::sbc(Size::X, hi, hi, tz));
+            wide_result(cx, inst, lo, hi, t)
+        }
+        _ => cx.bug("an i128 intrinsic without a lowering"),
+    }
+}
+
+/// `smax`, `smin`, `umax`, `umin` and the saturating arithmetic of two
+/// `i128`s: `a` in `x16`/`x17`, `b` in two temporaries.
+fn wide_two<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    which: Intrinsic<'a>,
+    a: Value,
+    b: Value,
+) -> CgResult<()> {
+    use Intrinsic as I;
+    let (sa, sb) = (cx.use_mem(a)?, cx.use_mem(b)?);
+    let (t1, t2) = (xr(cx.temp(Class::Gpr)?), xr(cx.temp(Class::Gpr)?));
+    let (lo, hi, blo, bhi) = (X16.zr(), X17.zr(), t1.zr(), t2.zr());
+    ld(cx, X16, sa, 0);
+    ld(cx, X17, sa, 1);
+    ld(cx, t1, sb, 0);
+    ld(cx, t2, sb, 1);
+    match which {
+        I::Smax | I::Smin | I::Umax | I::Umin => {
+            // The flags of a - b order the whole values (not `Z`).
+            put(cx, mc::cmp(Size::X, lo, blo));
+            put(cx, mc::sbcs(Size::X, RegZr::ZR, hi, bhi));
+            let keep_a = match which {
+                I::Smax => Cond::Ge,
+                I::Smin => Cond::Lt,
+                I::Umax => Cond::Hs,
+                _ => Cond::Lo,
+            };
+            put(cx, mc::csel(Size::X, lo, lo, blo, keep_a));
+            put(cx, mc::csel(Size::X, hi, hi, bhi, keep_a));
+        }
+        I::SaddSat | I::SsubSat => {
+            if which == I::SaddSat {
+                put(cx, mc::adds(Size::X, lo, lo, blo));
+                put(cx, mc::adcs(Size::X, hi, hi, bhi));
+            } else {
+                put(cx, mc::subs(Size::X, lo, lo, blo));
+                put(cx, mc::sbcs(Size::X, hi, hi, bhi));
+            }
+            // On overflow: the bound of the sign opposite to the wrapped
+            // result's, low limb s, high limb s ^ (1 << 63).
+            put(cx, mc::asr_imm(Size::X, blo, hi, 63));
+            put(cx, mc::eor_imm(Size::X, t2.sp(), blo, 1 << 63));
+            put(cx, mc::csel(Size::X, lo, blo, lo, Cond::Vs));
+            put(cx, mc::csel(Size::X, hi, bhi, hi, Cond::Vs));
+        }
+        I::UaddSat => {
+            put(cx, mc::adds(Size::X, lo, lo, blo));
+            put(cx, mc::adcs(Size::X, hi, hi, bhi));
+            put(cx, mc::csinv(Size::X, lo, lo, RegZr::ZR, Cond::Lo));
+            put(cx, mc::csinv(Size::X, hi, hi, RegZr::ZR, Cond::Lo));
+        }
+        I::UsubSat => {
+            put(cx, mc::subs(Size::X, lo, lo, blo));
+            put(cx, mc::sbcs(Size::X, hi, hi, bhi));
+            put(cx, mc::csel(Size::X, lo, lo, RegZr::ZR, Cond::Hs));
+            put(cx, mc::csel(Size::X, hi, hi, RegZr::ZR, Cond::Hs));
+        }
+        _ => return cx.bug("an i128 intrinsic without a lowering"),
+    }
+    wide_result(cx, inst, lo, hi, t1)
+}
+
+/// `fshl`/`fshr` (`left`) of three `i128`s: with `k = c mod 128`,
+/// `q = k >> 6` picks three consecutive limbs of `a:b` by `csel`
+/// (`tst k, #64`), and each result limb is a 64-bit funnel of two of
+/// them by `r = k mod 64` (the register shifts take `r` and `~r` modulo
+/// 64; the other limb moves by one more, so `r = 0` needs no branch).
+/// Four temporaries.
+#[allow(clippy::many_single_char_names, reason = "the operands are LangRef's a, b, c")]
+fn wide_funnel<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    left: bool,
+    [a, b, c]: [Value; 3],
+) -> CgResult<()> {
+    let (sa, sb, sc) = (cx.use_mem(a)?, cx.use_mem(b)?, cx.use_mem(c)?);
+    let k = xr(cx.temp(Class::Gpr)?);
+    let p = xr(cx.temp(Class::Gpr)?);
+    let q = xr(cx.temp(Class::Gpr)?);
+    let r = xr(cx.temp(Class::Gpr)?);
+    let (kz, pz, qz, rz) = (k.zr(), p.zr(), q.zr(), r.zr());
+    let (x, y) = (X16.zr(), X17.zr());
+    ld(cx, k, sc, 0);
+    // `ldr` and a rebasing `add` leave the flags alone.
+    put(cx, mc::tst_imm(Size::X, kz, 64));
+    if left {
+        // p, q, r = a.hi, a.lo, b.hi (q = 0) or a.lo, b.hi, b.lo.
+        ld(cx, X16, sa, 0);
+        ld(cx, X17, sa, 1);
+        put(cx, mc::csel(Size::X, pz, x, y, Cond::Ne));
+        ld(cx, X17, sb, 1);
+        put(cx, mc::csel(Size::X, qz, y, x, Cond::Ne));
+        ld(cx, X16, sb, 0);
+        put(cx, mc::csel(Size::X, rz, x, y, Cond::Ne));
+        put(cx, mc::mvn(Size::X, y, kz));
+        // hi = (p << r) | (q >> 1 >> ~r); lo = (q << r) | (r_ >> 1 >> ~r).
+        put(cx, mc::lslv(Size::X, pz, pz, kz));
+        put(cx, mc::lsr_imm(Size::X, x, qz, 1));
+        put(cx, mc::lsrv(Size::X, x, x, y));
+        put(cx, mc::orr(Size::X, pz, pz, x));
+        put(cx, mc::lslv(Size::X, qz, qz, kz));
+        put(cx, mc::lsr_imm(Size::X, x, rz, 1));
+        put(cx, mc::lsrv(Size::X, x, x, y));
+        put(cx, mc::orr(Size::X, qz, qz, x));
+        return wide_result(cx, inst, qz, pz, r);
+    }
+    // p, q, r = b.lo, b.hi, a.lo (q = 0) or b.hi, a.lo, a.hi.
+    ld(cx, X16, sb, 0);
+    ld(cx, X17, sb, 1);
+    put(cx, mc::csel(Size::X, pz, y, x, Cond::Ne));
+    ld(cx, X16, sa, 0);
+    put(cx, mc::csel(Size::X, qz, x, y, Cond::Ne));
+    ld(cx, X17, sa, 1);
+    put(cx, mc::csel(Size::X, rz, y, x, Cond::Ne));
+    put(cx, mc::mvn(Size::X, y, kz));
+    // lo = (p >> r) | (q << 1 << ~r); hi = (q >> r) | (r_ << 1 << ~r).
+    put(cx, mc::lsrv(Size::X, pz, pz, kz));
+    put(cx, mc::lsl_imm(Size::X, x, qz, 1));
+    put(cx, mc::lslv(Size::X, x, x, y));
+    put(cx, mc::orr(Size::X, pz, pz, x));
+    put(cx, mc::lsrv(Size::X, qz, qz, kz));
+    put(cx, mc::lsl_imm(Size::X, x, rz, 1));
+    put(cx, mc::lslv(Size::X, x, x, y));
+    put(cx, mc::orr(Size::X, qz, qz, x));
+    wide_result(cx, inst, pz, qz, r)
 }
 
 // ---- memory ----

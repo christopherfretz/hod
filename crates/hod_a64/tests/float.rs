@@ -709,6 +709,41 @@ fn n(name: &str) -> String {
     name.replace(['<', '>', ' '], "")
 }
 
+/// A loop of `I & 7` + 1 iterations carrying a swap cycle and `live`
+/// accumulators of type `t` through `phi`s; returns their sum.
+fn phi_loop(t: Ty, live: usize) -> Func {
+    let tl = t.ll();
+    let op = match t {
+        Ty::V(_, El::I(_)) => "add",
+        _ => "fadd",
+    };
+    let konst = match t {
+        H => "0xH3C00",
+        F | D => "1.5",
+        Q => "0xL00000000000000003FFF800000000000",
+        _ => "zeroinitializer",
+    };
+    let mut b = String::from(
+        "entry:\n%n = and i32 %a2, 7\nbr label %loop\nloop:\n%i = phi i32 [0, %entry], [%i1, %loop]\n",
+    );
+    let _ = writeln!(b, "%x0 = phi {tl} [%a0, %entry], [%x1, %loop]");
+    let _ = writeln!(b, "%x1 = phi {tl} [%a1, %entry], [%x0, %loop]");
+    for k in 0..live {
+        let init = ["%a0", "%a1", konst][k % 3];
+        let _ = writeln!(b, "%y{k} = phi {tl} [{init}, %entry], [%z{k}, %loop]");
+    }
+    for k in 0..live {
+        let _ = writeln!(b, "%z{k} = {op} {tl} %y{k}, %y{}", (k + 1) % live);
+    }
+    b.push_str("%i1 = add i32 %i, 1\n%c = icmp sle i32 %i1, %n\nbr i1 %c, label %loop, label %exit\nexit:\n");
+    let _ = writeln!(b, "%s0 = {op} {tl} %x0, %x1");
+    for k in 0..live {
+        let _ = writeln!(b, "%s{} = {op} {tl} %s{k}, %z{k}", k + 1);
+    }
+    let _ = write!(b, "ret {tl} %s{live}");
+    Func::new(format!("phi_{}", n(&tl)), t, &[t, t, I(32)], b)
+}
+
 /// The C expression of `fcmp <p>` of `a0` and `a1`.
 fn c_predicate(p: &str) -> String {
     match p {
@@ -1154,6 +1189,52 @@ fn hand_written() -> Vec<Func> {
         )
         .with(make));
     }
+    // Loops carrying `Fpr`-class values through `phi`s (WP-067 checks
+    // WP-037's `control.rs` with them): more live values than the pool
+    // has, a swap cycle, calls in the loop for `fp128`.
+    for t in [D, F, H, Q, Ty::V(2, El::D), Ty::V(4, El::I(32)), Ty::V(8, El::I(8))] {
+        add(phi_loop(t, 17));
+    }
+    // Non-zero vector constants (WP-067): `materialize_fpr_const`.
+    for (t, op, c) in [
+        (Ty::V(4, El::I(32)), "add", "<i32 1, i32 -1, i32 0, i32 2147483647>"),
+        (Ty::V(2, El::I(64)), "xor", "<i64 -1, i64 0>"),
+        (Ty::V(2, El::I(64)), "add", "<i64 0, i64 81985529216486895>"),
+        (
+            Ty::V(16, El::I(8)),
+            "sub",
+            "<i8 1, i8 2, i8 3, i8 4, i8 5, i8 6, i8 7, i8 8, i8 -1, i8 -2, i8 -3, i8 -4, i8 -5, i8 -6, i8 -7, i8 -128>",
+        ),
+        (Ty::V(8, El::I(8)), "or", "<i8 1, i8 0, i8 3, i8 0, i8 5, i8 0, i8 7, i8 -128>"),
+        (Ty::V(4, El::I(16)), "mul", "<i16 -7, i16 -7, i16 -7, i16 -7>"),
+        (Ty::V(1, El::I(64)), "and", "<i64 -81985529216486896>"),
+        (Ty::V(2, El::I(32)), "shl", "<i32 1, i32 31>"),
+        (Ty::V(2, El::D), "fadd", "<double 1.5, double -0.0>"),
+        (Ty::V(4, El::F), "fmul", "<float 1.0, float 2.0, float 0.5, float -3.0>"),
+        (Ty::V(2, El::F), "fsub", "<float 0x7FF8000000000000, float 0x36A0000000000000>"),
+        (Ty::V(1, El::D), "fdiv", "<double 0x7FEFFFFFFFFFFFFF>"),
+    ] {
+        let tl = t.ll();
+        add(Func::new(
+            format!("vc_{op}_{}", n(&tl)),
+            t,
+            &[t],
+            format!("%r = {op} {tl} %a0, {c}\nret {tl} %r"),
+        ));
+        add(Func::new(format!("vcret_{op}_{}", n(&tl)), t, &[], format!("ret {tl} {c}")));
+    }
+    add(Func::new(
+        "vc_half".into(),
+        Ty::V(4, El::H),
+        &[],
+        "%r = fneg <4 x half> <half 0xH3C00, half 0xH0001, half 0xH7E00, half 0xHFC00>\nret <4 x half> %r".into(),
+    ));
+    add(Func::new(
+        "vc_ptrs".into(),
+        Ty::V(2, El::I(64)),
+        &[],
+        "%r = ptrtoint <2 x ptr> <ptr @putchar, ptr getelementptr (i8, ptr @putchar, i64 16)> to <2 x i64>\nret <2 x i64> %r".into(),
+    ));
     // `fptoui` of non-negative small lanes.
     add(Func::new(
         "ptrvec".into(),
@@ -1312,6 +1393,7 @@ static void nl(void) { putchar('\n'); }
 /// The module text of `funcs` with every symbol prefixed by `prefix`.
 fn module_text(funcs: &[Func], prefix: &str) -> String {
     let mut text = ll_header(22);
+    text.push_str("declare i32 @putchar(i32)\n");
     for f in funcs {
         text.push_str(&f.text(prefix));
     }
@@ -1983,9 +2065,52 @@ fn mem_constants(t: &MemTy) -> Vec<(String, Vec<u8>)> {
             "0xL0123456789ABCDEF7FFF800000000001".into(),
             le(0x7fff_8000_0000_0001_0123_4567_89ab_cdef),
         )),
-        _ => {}
+        _ => {
+            if let Some(v) = vector_constant(t) {
+                out.push(v);
+            }
+        }
     }
     out
+}
+
+/// A non-zero constant of a vector type of `MEM_TYPES`, lane by lane.
+fn vector_constant(t: &MemTy) -> Option<(String, Vec<u8>)> {
+    let ll = t.ll.strip_prefix('<')?.strip_suffix('>')?;
+    let (n, elem) = ll.split_once(" x ")?;
+    let n: u32 = n.parse().ok()?;
+    let mut bits = 0u128;
+    let mut lanes = Vec::new();
+    let width = match elem {
+        "half" | "bfloat" => 16,
+        "float" => 32,
+        "double" => 64,
+        "ptr" => return None,
+        _ => elem.strip_prefix('i')?.parse().ok()?,
+    };
+    for k in 0..n {
+        let (text, lane) = match elem {
+            "half" => {
+                (format!("half 0xH{:04X}", 0x3c00 + k * 0x111), u128::from(0x3c00 + k * 0x111))
+            }
+            "bfloat" => (format!("bfloat 0xR{:04X}", 0xbf80 + k), u128::from(0xbf80 + k)),
+            "float" => {
+                let x = 1.5f32 - k as f32 * 0.75;
+                (format!("float 0x{:016X}", f64::from(x).to_bits()), u128::from(x.to_bits()))
+            }
+            "double" => {
+                let x = -2.25f64 + f64::from(k);
+                (format!("double 0x{:016X}", x.to_bits()), u128::from(x.to_bits()))
+            }
+            _ => {
+                let v = (u128::from(k) * 0x9e37_79b9_7f4a_7c15 + 1) & ((1u128 << width) - 1);
+                (format!("{elem} {v}"), v)
+            }
+        };
+        bits |= lane << (k * width);
+        lanes.push(text);
+    }
+    Some((format!("<{}>", lanes.join(", ")), bits.to_le_bytes()[..t.size as usize].to_vec()))
 }
 
 /// The C literal of a value of `t` with bytes `x`.

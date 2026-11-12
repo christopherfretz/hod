@@ -1,6 +1,7 @@
 //! `.debug_str` and `.debug_str_offsets` (`spec/dwarf.md` §6.3).
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::Error;
@@ -44,16 +45,23 @@ impl Hasher for FxHasher {
         self.add(i as u64);
     }
 
+    /// A last mix: the product's high bits are its best mixed, and the
+    /// table takes the bucket from the low ones and a tag from the top
+    /// seven, so both must depend on every input bit. (Without it,
+    /// strings that differ only in the high bytes of their last word,
+    /// `v12345` and `v12346`, share a bucket.)
     #[inline]
     fn finish(&self) -> u64 {
-        self.0
+        let h = self.0 ^ (self.0 >> 32);
+        let h = h.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        h ^ (h >> 29)
     }
 }
 
 pub(crate) type FxBuild = BuildHasherDefault<FxHasher>;
 
 #[derive(Clone, Copy, Debug)]
-struct Entry {
+struct Slot {
     /// The offset in `.debug_str`.
     offset: u32,
     /// The unit that last named the string, and its index there.
@@ -72,7 +80,7 @@ struct Entry {
 #[derive(Debug)]
 pub struct DebugStrings<'a> {
     data: Vec<u8>,
-    map: HashMap<&'a [u8], Entry, FxBuild>,
+    map: HashMap<&'a [u8], Slot, FxBuild>,
     unit: u32,
     offsets: Vec<u32>,
 }
@@ -103,35 +111,32 @@ impl<'a> DebugStrings<'a> {
     /// would reach 4 GiB.
     #[inline]
     pub fn index(&mut self, s: &'a [u8]) -> Result<u32, Error> {
-        if let Some(e) = self.map.get_mut(s) {
-            if e.unit == self.unit {
-                return Ok(e.index);
+        let next = self.offsets.len() as u32;
+        match self.map.entry(s) {
+            Entry::Occupied(mut o) => {
+                let e = o.get_mut();
+                if e.unit != self.unit {
+                    e.unit = self.unit;
+                    e.index = next;
+                    self.offsets.push(e.offset);
+                }
+                Ok(e.index)
             }
-            let index = self.offsets.len() as u32;
-            e.unit = self.unit;
-            e.index = index;
-            self.offsets.push(e.offset);
-            return Ok(index);
+            Entry::Vacant(v) => {
+                if s.contains(&0) {
+                    return Err(Error::NulInName);
+                }
+                let offset = u32::try_from(self.data.len()).map_err(|_| Error::TooLarge)?;
+                if self.data.len() + s.len() >= u32::MAX as usize {
+                    return Err(Error::TooLarge);
+                }
+                self.data.extend_from_slice(s);
+                self.data.push(0);
+                self.offsets.push(offset);
+                v.insert(Slot { offset, unit: self.unit, index: next });
+                Ok(next)
+            }
         }
-        self.add(s)
-    }
-
-    #[cold]
-    #[inline(never)]
-    fn add(&mut self, s: &'a [u8]) -> Result<u32, Error> {
-        if s.contains(&0) {
-            return Err(Error::NulInName);
-        }
-        let offset = u32::try_from(self.data.len()).map_err(|_| Error::TooLarge)?;
-        if self.data.len() + s.len() >= u32::MAX as usize {
-            return Err(Error::TooLarge);
-        }
-        self.data.extend_from_slice(s);
-        self.data.push(0);
-        let index = self.offsets.len() as u32;
-        self.offsets.push(offset);
-        self.map.insert(s, Entry { offset, unit: self.unit, index });
-        Ok(index)
     }
 
     /// The current unit's `.debug_str` offsets, by index.
@@ -152,6 +157,34 @@ impl<'a> DebugStrings<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hash spreads names that differ in a few digits over the
+    /// buckets (by the low bits) and the tags (the top seven) as a random
+    /// function would: about `1 - 1/e` of `n` buckets used by `n` keys.
+    #[test]
+    fn hash_spreads() {
+        use std::hash::BuildHasher;
+        let n = 1usize << 16;
+        for shape in ["v{}", "_ZN4top13mid24low1v{}E", "{}x", "a_rather_long_prefix_{}_and_suffix"]
+        {
+            let keys: Vec<String> = (0..n).map(|i| shape.replace("{}", &i.to_string())).collect();
+            let mut buckets = vec![false; n];
+            let mut tags = [0usize; 128];
+            for k in &keys {
+                let h = FxBuild::default().hash_one(k.as_bytes());
+                buckets[(h as usize) & (n - 1)] = true;
+                tags[(h >> 57) as usize] += 1;
+            }
+            let used = buckets.iter().filter(|&&b| b).count();
+            eprintln!(
+                "{shape}: {used} of {n} buckets, tags {}..{}",
+                tags.iter().min().unwrap(),
+                tags.iter().max().unwrap()
+            );
+            assert!(used > n * 6 / 10, "{shape}: {used} of {n} buckets");
+            assert!(*tags.iter().max().unwrap() < 2 * n / 128, "{shape}: tags");
+        }
+    }
 
     /// §6.3: one copy per object, indices per unit in order of first use.
     #[test]

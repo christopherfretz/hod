@@ -22,8 +22,10 @@
 //! `aggr`; `condbr`, `switch`, `indirectbr` are `control`; calls,
 //! `invoke`, `landingpad`, `resume`, `va_arg` and the `llvm.va_*`
 //! intrinsics are `call`; every other intrinsic is `intrinsic`; `br`,
-//! `ret` and `unreachable` are `term`. Atomics, vector element
-//! operations and funclets have no package yet and are refused here.
+//! `ret` and `unreachable` are `term`; atomic `load` and `store`,
+//! `fence`, `cmpxchg` and `atomicrmw` are `atomic` (WP-074). Vector
+//! element operations and funclets have no package yet and are refused
+//! here.
 
 use hod_cg::abi::{AbiUnsupported, Assignment, Sig};
 use hod_cg::{
@@ -39,7 +41,7 @@ use crate::common::{
     self, Cursor, V30, V31, X16, X17, copy_bytes, fixup_field, gpr_load_op, load_fpr_at,
     load_gpr_at, other_scratch, put, store_fpr_bytes, store_gpr_bytes, unsupported, vr, xr,
 };
-use crate::{abi, aggr, call, control, float, frame, int, intrinsic, mem, reg, term};
+use crate::{abi, aggr, atomic, call, control, float, frame, int, intrinsic, mem, reg, term};
 
 /// The AArch64 Linux target (AAPCS64, `spec/abi-a64.md`). A zero-sized
 /// value: everything it knows is in constants.
@@ -188,6 +190,12 @@ impl Target for A64 {
                 Class::Mem => aggr::icmp(cx, inst, pred, lhs, rhs),
             },
             InstKind::FCmp { pred, lhs, rhs } => float::fcmp(cx, inst, pred, lhs, rhs),
+            InstKind::Load { ptr, mem } if mem.ordering().is_some() => {
+                atomic::load(cx, inst, ptr, mem)
+            }
+            InstKind::Store { value, ptr, mem } if mem.ordering().is_some() => {
+                atomic::store(cx, inst, value, ptr, mem)
+            }
             InstKind::Load { ptr, mem } => match class {
                 Class::Mem => aggr::load(cx, inst, ptr, mem),
                 _ => mem::load(cx, inst, ptr, mem),
@@ -241,8 +249,12 @@ impl Target for A64 {
             InstKind::IndirectBr { addr, .. } => control::indirect_br(cx, inst, addr),
             InstKind::Ret { value } => term::ret(cx, inst, value),
             InstKind::Unreachable => term::unreachable(cx),
-            InstKind::Fence { .. } | InstKind::CmpXchg { .. } | InstKind::AtomicRmw { .. } => {
-                unsupported(ATOMIC)
+            InstKind::Fence { ordering, scope } => atomic::fence(cx, ordering, scope),
+            InstKind::CmpXchg { ptr, expected, replacement, mem, failure, weak } => {
+                atomic::cmpxchg(cx, inst, ptr, expected, replacement, mem, failure, weak)
+            }
+            InstKind::AtomicRmw { op, ptr, value, mem } => {
+                atomic::rmw(cx, inst, op, ptr, value, mem)
             }
             InstKind::ExtractElement { .. }
             | InstKind::InsertElement { .. }
@@ -397,7 +409,8 @@ impl Target for A64 {
     }
 }
 
-/// An atomic instruction: no package yet.
+/// An atomic `load` or `store` reaching `mem` or `aggr`: never, since
+/// WP-074 (`atomic`) takes every atomic instruction.
 pub const ATOMIC: &str = "a64:atomic";
 /// A vector element operation: no package yet.
 pub const VECTOR: &str = "a64:vector-element";

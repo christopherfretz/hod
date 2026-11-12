@@ -33,12 +33,14 @@
 //! | `aggr` | WP-040 | `Mem`-class values: wide integers, aggregates, overflow intrinsics | `tests/aggr.rs` |
 //! | `intrinsic` | WP-041, WP-070 | the other intrinsics | `tests/intrinsic.rs` |
 //! | `fpintr` | WP-070 | the floating-point intrinsics | `tests/fpintr.rs` |
+//! | `atomic` | WP-074 | atomic `load`/`store`, `atomicrmw`, `cmpxchg`, `fence` | `tests/atomic.rs` |
 //!
 //! The differential harness that runs generated programs natively and
 //! compares them with `hod_interp` is `tests/diff.rs`.
 
 pub mod abi;
 pub mod aggr;
+pub mod atomic;
 pub mod call;
 pub mod common;
 pub mod control;

@@ -346,7 +346,6 @@ const X64: &str = "T-X64";
 /// No backlog row covers it yet.
 const LATER: &str = "unplanned";
 const TLS: &str = "M2 (TLS)";
-const ATOMICS: &str = "M2 (atomics)";
 const VECTORS: &str = "M2 (vectors)";
 const CORO: &str = "T-XF (coroutine splitting)";
 const DEBUG: &str = "T-DW";
@@ -909,9 +908,27 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         "a plain store; see `mem:`; FP and vector values: WP-067",
     ),
     row("inst:alloca", ON, todo(X64), "a dynamic allocation; fixed ones are `function:slots`"),
-    a64("inst:fence", ATOMICS, ""),
-    a64("inst:cmpxchg", ATOMICS, ""),
-    a64("inst:atomicrmw", ATOMICS, "and the operation's `atomicrmw:` row"),
+    row("inst:fence", ON, todo(X64), "WP-074"),
+    row(
+        "inst:cmpxchg",
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::Ptr, TypeClass::Aggregate]),
+        todo(X64),
+        "WP-074; the `{ T, i1 }` result is an aggregate",
+    ),
+    row(
+        "inst:atomicrmw",
+        on(&[
+            TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::Ptr,
+            TypeClass::Half,
+            TypeClass::BFloat,
+            TypeClass::Float,
+            TypeClass::Double,
+        ]),
+        todo(X64),
+        "and the operation's `atomicrmw:` row; WP-074",
+    ),
     row("inst:ptradd", ON, todo(X64), "LLVM's `getelementptr` (§5.4); not a vector of pointers"),
     row(
         "inst:extractvalue",
@@ -1008,33 +1025,33 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
 
 const MEM: [SupportRow; 3] = [
     row("mem:volatile", ON, todo(X64), "a volatile `load`, `store`, `cmpxchg` or `atomicrmw`"),
-    a64("mem:atomic-load", ATOMICS, ""),
-    a64("mem:atomic-store", ATOMICS, ""),
+    row("mem:atomic-load", ON, todo(X64), "WP-074; `fp128` and vectors: `a64:atomic-type`"),
+    row("mem:atomic-store", ON, todo(X64), "WP-074; `fp128` and vectors: `a64:atomic-type`"),
 ];
 
 /// In `RmwOp::ALL` order.
 const ATOMICRMW: [SupportRow; RmwOp::ALL.len()] = [
-    a64("atomicrmw:xchg", ATOMICS, ""),
-    a64("atomicrmw:add", ATOMICS, ""),
-    a64("atomicrmw:sub", ATOMICS, ""),
-    a64("atomicrmw:and", ATOMICS, ""),
-    a64("atomicrmw:nand", ATOMICS, ""),
-    a64("atomicrmw:or", ATOMICS, ""),
-    a64("atomicrmw:xor", ATOMICS, ""),
-    a64("atomicrmw:max", ATOMICS, ""),
-    a64("atomicrmw:min", ATOMICS, ""),
-    a64("atomicrmw:umax", ATOMICS, ""),
-    a64("atomicrmw:umin", ATOMICS, ""),
-    a64("atomicrmw:fadd", ATOMICS, ""),
-    a64("atomicrmw:fsub", ATOMICS, ""),
-    a64("atomicrmw:fmax", ATOMICS, ""),
-    a64("atomicrmw:fmin", ATOMICS, ""),
-    a64("atomicrmw:uinc_wrap", ATOMICS, ""),
-    a64("atomicrmw:udec_wrap", ATOMICS, ""),
-    a64("atomicrmw:usub_cond", ATOMICS, ""),
-    a64("atomicrmw:usub_sat", ATOMICS, ""),
-    a64("atomicrmw:fmaximum", ATOMICS, ""),
-    a64("atomicrmw:fminimum", ATOMICS, ""),
+    row("atomicrmw:xchg", ON, todo(X64), "WP-074"),
+    row("atomicrmw:add", ON, todo(X64), "WP-074"),
+    row("atomicrmw:sub", ON, todo(X64), "WP-074"),
+    row("atomicrmw:and", ON, todo(X64), "WP-074"),
+    row("atomicrmw:nand", ON, todo(X64), "WP-074"),
+    row("atomicrmw:or", ON, todo(X64), "WP-074"),
+    row("atomicrmw:xor", ON, todo(X64), "WP-074"),
+    row("atomicrmw:max", ON, todo(X64), "WP-074"),
+    row("atomicrmw:min", ON, todo(X64), "WP-074"),
+    row("atomicrmw:umax", ON, todo(X64), "WP-074"),
+    row("atomicrmw:umin", ON, todo(X64), "WP-074"),
+    row("atomicrmw:fadd", ON, todo(X64), "WP-074"),
+    row("atomicrmw:fsub", ON, todo(X64), "WP-074"),
+    row("atomicrmw:fmax", ON, todo(X64), "WP-074"),
+    row("atomicrmw:fmin", ON, todo(X64), "WP-074"),
+    row("atomicrmw:uinc_wrap", ON, todo(X64), "WP-074"),
+    row("atomicrmw:udec_wrap", ON, todo(X64), "WP-074"),
+    row("atomicrmw:usub_cond", ON, todo(X64), "WP-074"),
+    row("atomicrmw:usub_sat", ON, todo(X64), "WP-074"),
+    row("atomicrmw:fmaximum", ON, todo(X64), "WP-074"),
+    row("atomicrmw:fminimum", ON, todo(X64), "WP-074"),
 ];
 
 const CALL: [SupportRow; 3] = [

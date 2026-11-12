@@ -19,6 +19,8 @@ hod_ll.workspace = true
 [dev-dependencies]
 # The vocabulary of reasons, for tests that check a reason's shape.
 hod_ir.workspace = true
+# The kiln end-to-end test links hod's objects with the object tests' toolchain.
+hod_obj.workspace = true
 hod_testutil.workspace = true
 # The kiln end-to-end test builds its shim with the harness's own code.
 xtask.workspace = true

@@ -11,6 +11,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+#[path = "../../hod_obj/tests/common/linking.rs"]
+#[allow(dead_code)]
+mod linking;
+
 use hod_testutil::{LLVM_MAJORS, Outcome, Scratch, run_with, tool, tools_required};
 use xtask::shim;
 
@@ -109,6 +113,57 @@ int main() {
 }
 "#;
 
+/// Integer code inside what hod generates code for, with no call: loops,
+/// a switch, globals, a constant table, pointers and a struct.
+const INTEGERS: &str = r#"
+long g_counter = 3;
+static const int primes[] = {2, 3, 5, 7, 11, 13};
+extern "C" long accumulate(long n) {
+    long sum = 0;
+    for (long i = 0; i < n; ++i) {
+        switch (i % 4) {
+        case 0: sum += i; break;
+        case 1: sum -= 2 * i; break;
+        case 2: sum ^= i; break;
+        default: sum += g_counter++;
+        }
+    }
+    return sum;
+}
+extern "C" int prime_sum(const int* first, int count) {
+    int total = 0;
+    for (int i = 0; i < count; ++i) total += first[i] * primes[i % 6];
+    return total;
+}
+extern "C" unsigned collatz(unsigned x) {
+    unsigned steps = 0;
+    while (x != 1) { x = (x & 1) ? 3 * x + 1 : x / 2; ++steps; }
+    return steps;
+}
+struct Pair { long a; long b; };
+extern "C" void swap_pair(Pair* p) { long t = p->a; p->a = p->b; p->b = t; }
+"#;
+
+/// The C program that calls [`INTEGERS`], and what it prints.
+const DRIVER: &str = r#"
+#include <stdio.h>
+struct Pair { long a, b; };
+long accumulate(long);
+int prime_sum(const int*, int);
+unsigned collatz(unsigned);
+void swap_pair(struct Pair*);
+extern long g_counter;
+int main(void) {
+    int xs[] = {1, -2, 3, 40, 5, 6, 7};
+    struct Pair p = {1, 2};
+    swap_pair(&p);
+    printf("%ld %d %u %u %ld %ld %ld\n", accumulate(1000), prime_sum(xs, 7), collatz(27),
+           collatz(97), p.a, p.b, g_counter);
+    return 0;
+}
+"#;
+const DRIVER_PRINTS: &str = "-96401 438 111 118 2 1 253\n";
+
 /// The `kiln++` to test with, or `None` to skip.
 fn kiln() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("HOD_KILN").filter(|v| !v.is_empty()) {
@@ -189,19 +244,34 @@ fn run_in(dir: &Path, command: &mut Command) -> Outcome {
     outcome
 }
 
-/// Whether `reason` is one `classify` gives (`spec/ir.md` §8.5): a name
-/// of its vocabulary or of one of its families. Which one is the support
-/// matrix's business, and moves as code generation lands, so a test of
-/// real programs checks only the shape.
+/// Whether `reason` is one hod gives for a decline: a name of
+/// `classify`'s vocabulary or of one of its families (`spec/ir.md` §8.5),
+/// or a code generator's (`spec/cli.md` "The back half"). Which one is the
+/// support matrix's business, and moves as code generation lands, so a
+/// test of real programs checks only the shape.
 fn is_construct(reason: &str) -> bool {
+    const FAMILIES: [&str; 12] = [
+        "intrinsic:",
+        "module-flag:",
+        "cc:",
+        "bundle:",
+        "a64:",
+        "abi:",
+        "attr:",
+        "call:",
+        "limit:",
+        "object:",
+        "option:",
+        "eh:",
+    ];
     hod_ir::CONSTRUCT_NAMES.contains(&reason)
-        || ["intrinsic:", "module-flag:", "cc:", "bundle:"].iter().any(|f| reason.starts_with(f))
+        || FAMILIES.iter().any(|f| reason.starts_with(f))
         || reason.split_once('/').is_some_and(|(row, _)| hod_ir::CONSTRUCT_NAMES.contains(&row))
 }
 
-/// Asserts that a coverage line's reason is a construct `classify` names.
+/// Asserts that a coverage line's reason is a construct hod names.
 fn assert_construct(line: &[String]) {
-    assert!(is_construct(&line[1]), "a construct of classify's: {line:?}");
+    assert!(is_construct(&line[1]), "a construct hod names: {line:?}");
 }
 
 /// The coverage log as rows of fields.
@@ -211,7 +281,7 @@ fn coverage(log: &Path) -> Vec<Vec<String>> {
 }
 
 /// Asserts that `log` holds the one line of a bitcode module that hod
-/// converted to text, declined as it declines text today, and handed to
+/// converted to text, declined as text is, and handed to
 /// the fallback, which succeeded (`spec/cli.md` "Coverage log").
 fn assert_converted_then_fell_back(log: &Path) {
     let lines = coverage(log);
@@ -277,7 +347,7 @@ impl Shimmed {
                 .env("HOD_COVERAGE_LOG", &log)
                 .env("HOD_STRICT", "1"),
         );
-        assert!(!compile.success(), "strict mode must fail while hod generates no code");
+        assert!(!compile.success(), "strict mode must fail on a module hod declines");
         let stderr = compile.stderr_text();
         assert!(!self.work.join(object).exists());
         let mut lines = coverage(&log);
@@ -301,7 +371,7 @@ impl Shimmed {
 fn through_the_shim(kiln: &Path, llvm: PathBuf) {
     let scratch = Scratch::new("kiln-e2e");
     let built = shim::build(&shim::Request {
-        llvm,
+        llvm: llvm.clone(),
         hod: PathBuf::from(env!("CARGO_BIN_EXE_hod")),
         out: scratch.join("llvm"),
         kiln: Some(kiln.to_path_buf()),
@@ -358,4 +428,66 @@ fn through_the_shim(kiln: &Path, llvm: PathBuf) {
     let line = shimmed.strict_fails("hello.cpp", "strict.o");
     assert_eq!(line[2], "text", "{line:?}");
     assert_eq!(line[8], "-", "no conversion: {line:?}");
+
+    // Code hod generates: strict mode succeeds, and the object links and
+    // runs under every linker as the LLVM route's does.
+    shimmed.hod_builds(kiln, &llvm);
+}
+
+impl Shimmed {
+    /// Compiles [`INTEGERS`] in strict mode at -O0 (text) and -O1
+    /// (bitcode), checks the object with LLVM's tools, links it with
+    /// [`DRIVER`] under every linker present, runs it, and compares with
+    /// the same source compiled by kiln with `llvm` itself.
+    fn hod_builds(&self, kiln: &Path, llvm: &Path) {
+        let scratch = Scratch::new("kiln-e2e-link");
+        let Some(toolchain) = linking::Toolchain::host(&scratch) else { return };
+        assert!(!toolchain.linkers.is_empty(), "no linker");
+        let driver = toolchain.compile_c(&scratch, "driver", DRIVER, &[]);
+        std::fs::write(self.work.join("integers.cpp"), INTEGERS).unwrap();
+        let bin = llvm.join("bin");
+        for (opt, form) in [("-O0", "text"), ("-O1", "bitcode")] {
+            let object = format!("integers{opt}.o");
+            let log = self.scratch.join(format!("{object}.tsv"));
+            let compile = run_in(
+                &self.work,
+                command(&self.compiler)
+                    .args([opt, "-c", "integers.cpp", "-o", &object])
+                    .env("HOD_COVERAGE_LOG", &log)
+                    .env("HOD_STRICT", "1"),
+            );
+            assert!(compile.success(), "{object}: {}", compile.stderr_text());
+            let lines = coverage(&log);
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert_eq!((&*lines[0][0], &*lines[0][1], &*lines[0][2]), ("hod", "-", form));
+            let ours = self.work.join(&object);
+            // LLVM's tools read the object without complaint.
+            for (tool, args, shows) in [
+                ("llvm-readelf", &["-h", "-S", "-r", "-s"][..], "AArch64"),
+                ("llvm-objdump", &["-d", "-r"][..], "<accumulate>:"),
+                ("llvm-dwarfdump", &["--eh-frame"][..], "FDE"),
+            ] {
+                let mut read = Command::new(bin.join(tool));
+                let read = run_in(&self.work, read.args(args).arg(&ours));
+                let text = read.stdout_text();
+                assert!(read.success() && read.stderr_text().is_empty(), "{tool}: {read:?}");
+                assert!(text.contains(shows), "{tool} {object}: {text}");
+                assert!(!text.contains("<unknown>"), "{tool} {object}: {text}");
+            }
+            let theirs = self.work.join(format!("llvm{opt}.o"));
+            let mut reference = command(kiln);
+            reference.arg(format!("--llvm-dir={}", llvm.display()));
+            let reference =
+                run_in(&self.work, reference.args([opt, "-c", "integers.cpp", "-o"]).arg(&theirs));
+            assert!(reference.success(), "{}", reference.stderr_text());
+            for linker in &toolchain.linkers {
+                for (route, input) in [("hod", &ours), ("llvm", &theirs)] {
+                    let program = scratch.join(format!("{route}{opt}-{}", linker.name));
+                    let ran = toolchain.link_and_run(linker, &[], &[&driver, input], &program);
+                    assert!(ran.success(), "{route} {opt} {}: {ran:?}", linker.name);
+                    assert_eq!(ran.stdout_text(), DRIVER_PRINTS, "{route} {opt} {}", linker.name);
+                }
+            }
+        }
+    }
 }

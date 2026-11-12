@@ -26,11 +26,13 @@
 //! | `body` | §5.1, §5.2, §5.6 | `Body` and the API code generation reads |
 //! | `builder` | §5.1, §5.3 | `FunctionBuilder` |
 //! | `verify` | §5.1 | `Body::verify` |
+//! | `classify` | §8 | the support matrix, `classify`, the census |
 
 mod asm;
 mod attrs;
 mod body;
 mod builder;
+mod classify;
 mod comdat;
 mod constant;
 mod error;
@@ -93,3 +95,10 @@ pub use intrinsic::{
     Intrinsic, IntrinsicRef, NoCode, no_code_intrinsic, no_code_names, resolve_intrinsic,
 };
 pub use value::{InstId, SlotId, Value, ValueKind};
+
+pub use classify::{
+    CONSTRUCT_FAMILIES, CONSTRUCT_NAMES, Census, CensusEntry, Classifier, ConstructInfo,
+    INVALID_RULES, Rejection, RejectionKind, STRUCTURAL_RULES, SUPPORT_GROUPS, SUPPORT_ROWS,
+    StackArgs, Support, SupportCell, SupportRow, SupportStatus, TypeClass, TypeClasses, census,
+    classify, classify_body, support_markdown,
+};

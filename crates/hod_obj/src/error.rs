@@ -20,6 +20,8 @@ pub enum Limit {
     Relocations,
     /// More groups than a 32-bit index can number.
     Groups,
+    /// The file would pass 2^64 bytes, or what memory can hold.
+    FileBytes,
 }
 
 /// Why a symbol cannot be written.
@@ -128,6 +130,7 @@ impl fmt::Display for Error {
                     Limit::Symbols => "too many symbols",
                     Limit::Relocations => "too many relocations",
                     Limit::Groups => "too many groups",
+                    Limit::FileBytes => "the file is too large",
                 };
                 f.write_str(what)
             }

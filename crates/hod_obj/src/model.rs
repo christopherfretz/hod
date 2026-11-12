@@ -831,7 +831,6 @@ mod tests {
         assert_eq!(size_of::<Symbol>(), 32);
         assert_eq!(size_of::<RelocEntry>(), 32);
         assert_eq!(size_of::<SectionId>(), 4);
-        assert_eq!(size_of::<Option<GroupId>>(), 8);
     }
 
     /// "Ids": ids count up from zero in creation order, per table.

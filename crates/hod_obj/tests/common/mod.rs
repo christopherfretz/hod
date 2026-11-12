@@ -175,7 +175,9 @@ impl Elf {
         for (index, sec) in sections.iter().enumerate().skip(1) {
             assert_eq!(sec.addr, 0, "sh_addr of section {index}");
             assert!(sec.align.is_power_of_two(), "sh_addralign of section {index}");
-            assert_eq!(sec.offset % sec.align, 0, "file alignment of section {index}");
+            if sec.kind != SHT_NOBITS {
+                assert_eq!(sec.offset % sec.align, 0, "file alignment of section {index}");
+            }
             assert!(sec.offset >= 64 && sec.offset <= shoff as u64, "offset of section {index}");
             if sec.kind != SHT_NOBITS && sec.size != 0 {
                 assert!(sec.offset + sec.size <= shoff as u64, "end of section {index}");

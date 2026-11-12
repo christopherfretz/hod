@@ -129,6 +129,41 @@ fn section_kinds() {
     assert!(tdata.offset - bss.offset < 16);
 }
 
+/// "File layout": contents are aligned in the file to the section's
+/// alignment; a section without file space takes none, not even padding.
+#[test]
+fn file_alignment() {
+    let mut obj = Object::new(Arch::AArch64);
+    let text = obj.add_section(b".text", SectionKind::Text, 4).unwrap();
+    obj.append(text, &[1; 5]);
+    let bss = obj.add_section(b".bss", SectionKind::Bss, 1 << 20).unwrap();
+    obj.append_zeros(bss, 1 << 30);
+    let data = obj.add_section(b".data", SectionKind::Data, 4096).unwrap();
+    obj.append(data, &[2; 3]);
+    let rodata = obj.add_section(b".rodata", SectionKind::ReadOnlyData, 1).unwrap();
+    obj.append(rodata, &[3; 3]);
+    let elf = parse(&obj);
+    let offsets: Vec<_> = (1..=4).map(|i| elf.sections[i].offset).collect();
+    assert_eq!(offsets, [64, 69, 4096, 4099]);
+    assert_eq!(elf.sections[2].size, 1 << 30);
+    assert_eq!(elf.sections[2].align, 1 << 20);
+    assert_eq!(elf.data(3), [2; 3]);
+    assert!(elf.bytes[69..4096].iter().all(|&b| b == 0), "padding is zeros");
+    assert!(elf.bytes.len() < 8192);
+
+    // An alignment no file can honor is an error, not an endless file.
+    let mut obj = Object::new(Arch::AArch64);
+    for _ in 0..2 {
+        let huge = obj.add_section(b".huge", SectionKind::Data, 1 << 63).unwrap();
+        obj.append(huge, &[0]);
+    }
+    assert_eq!(elf::to_vec(&obj), Err(Error::TooLarge(Limit::FileBytes)));
+    assert_eq!(elf::file_size(&obj), Err(Error::TooLarge(Limit::FileBytes)));
+    let mut sink = Vec::new();
+    assert!(matches!(elf::write(&obj, &mut sink), Err(WriteError::Invalid(_))));
+    assert!(sink.is_empty());
+}
+
 /// "Section names": equal names are stored once, and a relocation section's
 /// name is its section's name with `.rela` in front, sharing its bytes.
 #[test]

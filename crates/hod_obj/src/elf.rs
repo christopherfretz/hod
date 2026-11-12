@@ -244,8 +244,10 @@ struct Layout {
     file_size: u64,
 }
 
-const fn align_up(value: u64, align: u64) -> u64 {
-    (value + align - 1) & !(align - 1)
+/// `value` rounded up to a multiple of `align`; an error when the file
+/// would pass 2^64 bytes.
+fn align_up(value: u64, align: u64) -> Result<u64, Error> {
+    value.checked_next_multiple_of(align).ok_or(Error::TooLarge(Limit::FileBytes))
 }
 
 /// Checks the sections and places their contents after the file header.
@@ -273,9 +275,14 @@ fn plan_sections(obj: &Object, first_rela: u64) -> Result<SectionPlan, Error> {
         if let SectionKind::Elf { sh_flags, .. } = sec.kind {
             plan.uses_gnu_abi |= sh_flags & SHF_GNU_RETAIN != 0;
         }
-        plan.end = align_up(plan.end, sec.align);
+        // A section without file space is not aligned in the file: its
+        // offset only says where it would be.
+        if !sec.kind.is_nobits() {
+            plan.end = align_up(plan.end, sec.align)?;
+        }
         plan.offsets.push(plan.end);
-        plan.end += sec.data.len() as u64;
+        plan.end =
+            plan.end.checked_add(sec.data.len() as u64).ok_or(Error::TooLarge(Limit::FileBytes))?;
     }
     Ok(plan)
 }
@@ -386,13 +393,13 @@ impl Layout {
         // File order after the sections' contents: groups, relocations,
         // `.symtab`, `.symtab_shndx`, `.strtab`, `.shstrtab`, headers.
         let symbol_count = u64::from(symbols.count);
-        let groups_off = align_up(sections.end, 4);
-        let relas_off = align_up(groups_off + 4 * group_words, 8);
+        let groups_off = align_up(sections.end, 4)?;
+        let relas_off = align_up(groups_off + 4 * group_words, 8)?;
         let symtab_off = relas_off + RELA_SIZE * sections.reloc_total;
         let shndx_off = symtab_off + SYM_SIZE * symbol_count;
         let strtab_off = shndx_off + if symbols.need_shndx { 4 * symbol_count } else { 0 };
         let shstrtab_off = strtab_off + obj.strings.len() as u64;
-        let shdr_off = align_up(shstrtab_off + names.size, 8);
+        let shdr_off = align_up(shstrtab_off + names.size, 8)?;
 
         Ok(Self {
             os_abi: if sections.uses_gnu_abi || symbols.uses_gnu_abi { ELFOSABI_GNU } else { 0 },
@@ -978,7 +985,12 @@ pub fn file_size(obj: &Object) -> Result<u64, Error> {
 /// `spec/object.md` "Errors" find.
 pub fn to_vec(obj: &Object) -> Result<Vec<u8>, Error> {
     let layout = Layout::new(obj)?;
-    let mut sink = VecSink(Vec::with_capacity(usize::try_from(layout.file_size).unwrap_or(0)));
+    let mut bytes = Vec::new();
+    usize::try_from(layout.file_size)
+        .ok()
+        .and_then(|size| bytes.try_reserve_exact(size).ok())
+        .ok_or(Error::TooLarge(Limit::FileBytes))?;
+    let mut sink = VecSink(bytes);
     let Ok(()) = emit(obj, &layout, &mut sink);
     Ok(sink.0)
 }

@@ -57,6 +57,42 @@ fn reloc_targets(elf: &Elf, section: &str) -> Vec<String> {
     out
 }
 
+/// `text` with each `DW_AT_count` or `DW_AT_friend` that is a reference
+/// (an offset at which a DIE starts) named by that DIE's `DW_AT_name`:
+/// `llvm-dwarfdump` prints those two as bare offsets, which differ
+/// between the two layouts; the DIEs they name must not.
+fn name_refs(text: &str) -> String {
+    let mut names = std::collections::HashMap::new();
+    let mut at = None;
+    for line in text.lines() {
+        if let Some((off, _)) = line.split_once(": ")
+            && let Some(hex) = off.strip_prefix("0x")
+            && let Ok(o) = u64::from_str_radix(hex, 16)
+        {
+            at = Some(o);
+        } else if let Some(o) = at
+            && let Some(name) = line.trim_start().strip_prefix("DW_AT_name\t(")
+        {
+            names.insert(o, name.trim_end_matches(')').to_string());
+            at = None;
+        }
+    }
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let named = ["DW_AT_count", "DW_AT_friend"].into_iter().find_map(|a| {
+            let v = line.trim_start().strip_prefix(a)?.strip_prefix("\t(0x")?.strip_suffix(')')?;
+            let o = u64::from_str_radix(v, 16).ok().filter(|_| v.len() == 8)?;
+            Some((a, names.get(&o)?))
+        });
+        match named {
+            Some((a, n)) => out.push_str(&format!("{a}\t(the DIE of {n})")),
+            None => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// What one comparison found.
 #[derive(Default)]
 struct Tally {
@@ -89,8 +125,8 @@ fn compare(major: u32, label: &str, ir: &str, tally: &mut Tally) {
             dump(dwarfdump, &scratch, &format!("{label}.orig.o"), &object, &["--debug-info"]);
         let ours_text =
             dump(dwarfdump, &scratch, &format!("{label}.hod.o"), &patched, &["--debug-info"]);
-        let theirs = parse_tree(&theirs_text, &addr_targets(&elf));
-        let ours_tree = parse_tree(&ours_text, &addr_targets(&ours));
+        let theirs = parse_tree(&name_refs(&theirs_text), &addr_targets(&elf));
+        let ours_tree = parse_tree(&name_refs(&ours_text), &addr_targets(&ours));
         assert_eq!(theirs.len(), 1, "{label}: one unit");
         assert_eq!(ours_tree.len(), 1, "{label}: one unit");
         let (a, b) = (sorted(&theirs[0]), sorted(&ours_tree[0]));

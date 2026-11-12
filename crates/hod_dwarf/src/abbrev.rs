@@ -551,8 +551,8 @@ pub const FAMILIES: &[Family] = &[
         "WP-058",
         &[
             s(at::TYPE, REF4),
-            o(0, at::COUNT, UDATA),
             o(1, at::LOWER_BOUND, SDATA),
+            o(0, at::COUNT, UDATA),
             o(2, at::UPPER_BOUND, SDATA),
         ],
     ),

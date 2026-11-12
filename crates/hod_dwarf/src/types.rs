@@ -1302,11 +1302,11 @@ impl<'a> Writer<'a> {
                 let mask = b(count.is_some()) | b(lower.is_some()) << 1 | b(upper.is_some()) << 2;
                 self.abbrev(code(fam::SUBRANGE, mask, false));
                 self.ref4(plan.index_die);
-                if let Some(c) = count {
-                    write_uleb(&mut self.info, c);
-                }
                 if let Some(l) = lower {
                     write_sleb(&mut self.info, l);
+                }
+                if let Some(c) = count {
+                    write_uleb(&mut self.info, c);
                 }
                 if let Some(u) = upper {
                     write_sleb(&mut self.info, u);

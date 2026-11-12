@@ -15,7 +15,7 @@
 //!    class, or reach something function-local (WP-059's and WP-057's);
 //!    their `!dbg` attachments go too;
 //! 3. the unit's `imports` go (WP-059's), and so do its function-local
-//!    `enums`;
+//!    `enums` and `retainedTypes` (a typedef in a function template);
 //! 4. `private` globals become `internal`, so that `llc` gives them a
 //!    symbol hod's addresses can name;
 //! 5. `llvm-extract --delete --rfunc '.*'` deletes the functions' bodies.
@@ -168,7 +168,8 @@ pub fn oracle_input(ir: &str) -> String {
     let cu = *order.iter().find(|&&n| kind(n) == "!DICompileUnit").expect("a unit");
     let cu_text = nodes[&cu];
     let list = |f: &str| field(cu_text, f).map(|t| tuple(nodes[&t])).unwrap_or_default();
-    let mut retained = list("retainedTypes");
+    let mut retained: Vec<u32> =
+        list("retainedTypes").into_iter().filter(|t| !bad.contains(t)).collect();
     for &n in &order {
         let is_root = kind(n) == "!DILocalVariable" || (local(n) && kind(n) == "!DISubprogram");
         if let Some(t) = field(nodes[&n], "type").filter(|_| is_root)

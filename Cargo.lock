@@ -87,6 +87,7 @@ name = "hod_dwarf"
 version = "0.0.0"
 dependencies = [
  "hod_ir",
+ "hod_ll",
  "hod_obj",
  "hod_testutil",
 ]

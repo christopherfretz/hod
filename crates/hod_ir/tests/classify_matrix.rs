@@ -204,7 +204,7 @@ fn the_free_functions_use_the_shipped_matrix() {
 fn support_flips_rows() {
     let shipped = Support::shipped(Arch::Aarch64);
     // A row no package of the first AArch64 wave flips.
-    let row = "inst:extractelement";
+    let row = "cc:ghccc";
     assert_eq!(shipped.supports(row), Some(false));
     let flipped = shipped.clone().with(row).unwrap();
     assert_eq!(flipped.supports(row), Some(true));
@@ -223,7 +223,9 @@ fn support_flips_rows() {
         assert!(shipped.clone().with(unknown).is_none(), "{unknown:?}");
         assert!(shipped.clone().without(unknown).is_none(), "{unknown:?}");
     }
-    assert_eq!(shipped.supports("inst:extractelement/int"), Some(false));
+    // WP-079: lanes of byte-sized elements, not of the wide integers.
+    assert_eq!(shipped.supports("inst:extractelement/int"), Some(true));
+    assert_eq!(shipped.supports("inst:extractelement/i128"), Some(false));
     // WP-035: integer arithmetic on integers, not on pointers.
     assert_eq!(shipped.supports("inst:add/int"), Some(true));
     assert_eq!(shipped.supports("inst:add/ptr"), Some(false));

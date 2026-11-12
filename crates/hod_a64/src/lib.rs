@@ -36,6 +36,7 @@
 //! | `barrier` | WP-075 | inline assembly whose template assembles to nothing | `tests/barrier.rs` |
 //! | `constaddr` | WP-072 | constant operands that hold addresses: differences, relocated images | `tests/constaddr.rs` |
 //! | `tls` | WP-073 | thread-local addresses, `llvm.threadlocal.address`, `llvm.thread.pointer` | `tests/tls.rs` |
+//! | `vector` | WP-079 | vector helpers (shape, lanes, images, indices); `extractelement`, `insertelement`, `shufflevector` | `tests/vector.rs` |
 //!
 //! The differential harness that runs generated programs natively and
 //! compares them with `hod_interp` is `tests/diff.rs`.
@@ -58,6 +59,7 @@ pub mod reg;
 pub mod target;
 pub mod term;
 pub mod tls;
+pub mod vector;
 
 use std::fmt;
 

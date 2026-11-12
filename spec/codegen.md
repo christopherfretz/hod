@@ -519,7 +519,8 @@ These are decisions the group packages (WP-035..041) build on.
   `adrp`+`ldr` from the GOT then the addend added; a code model other
   than small is `a64:code-model`.
 - **Other reason names of the target**: `a64:atomic`,
-  `a64:vector-element` (no package yet), `a64:thread-local` (no longer returned: WP-073 lowers TLS),
+  `a64:vector-element` (no longer emitted: WP-079 lowers the element
+  operations), `a64:thread-local` (no longer returned: WP-073 lowers TLS),
   `a64:funclet` (never on ELF), `a64:blockaddress` (WP-037),
   `a64:variadic-definition` (WP-038).
 - **The differential harness** is `crates/hod_a64/tests/diff.rs`: what it
@@ -1063,6 +1064,83 @@ A template that is not empty stays `call:inline-asm`. The tests are
 `crates/hod_a64/tests/barrier.rs`: one module of every form, built by hod
 and by `llc` 19 and 22, linked with a C driver that checks each effect
 under every linker, dynamic and static.
+
+#### Vectors, the base (WP-079)
+
+Design note `docs/design/0003-vectors.md` (V1); the code is
+`crates/hod_a64/src/vector.rs`, whose module docs are part of this
+section.
+
+- **Shapes.** A fixed vector `<N x E>` has `hod_ir`'s layout: lanes
+  packed, lane `i` at byte `i × size(E)` of its image, the store size
+  `N × size(E)` for byte-sized `E`, the alloc size and alignment of the
+  layout. Its class is §2's: `Fpr` for a power-of-two `N` of 64 or 128
+  bits (element not `i1`), else `Mem`, whose value is its image in a
+  frame slot (the bytes after the store size, up to the alloc size, are
+  unspecified and never read).
+- **The helper API** (used by every later vector package, WP-080..083,
+  instead of their own): `Shape::of` / `lanes` (the shape, refused by
+  name unless its lanes are 1, 2, 4 or 8 bytes and at most 256);
+  `Lanes::offset` (where lane `i` is); `image` / `spill` / `reload` (a
+  frame place holding an operand's image: a `Mem` vector's own slot, or
+  one of three 48-byte scratch images per function for an `Fpr` one,
+  allocated on first use); `index` / `lane_cursor` (a lane index
+  operand and a cursor at that lane, never outside the image);
+  `load_lane` / `store_lane` (one lane to or from a general or a vector
+  register).
+- **Lane indices.** A constant index `< N` names its lane. A constant
+  `≥ N`, `undef` or `poison` is poison: `extractelement` reads lane 0,
+  `insertelement` writes nothing (either result is poison). A variable
+  index is reduced to its width (the bits above are unspecified), then
+  masked with `N − 1` for a power-of-two `N`, else clamped to lane 0
+  when `≥ N` (`cmp` + `csel` with `xzr`): the access stays inside the
+  image whatever the value. An index wider than 64 bits is
+  `a64:vector-index`.
+- **`extractelement`.** `Fpr` vector, constant index: `umov` into a
+  general register, `dup` (scalar) into a vector one. Otherwise one load
+  of the lane from the image (an `Fpr` vector spilled to scratch image
+  0).
+- **`insertelement`.** `Fpr` vector, constant index: `ins` (from a
+  general or a vector register) into the vector's register, which is the
+  result. Variable index: spilled, the lane stored, reloaded. A `Mem`
+  vector: copied (or its constant written) into the result's slot, the
+  lane stored there.
+- **`shufflevector`.** Unrolled lane by lane (at most 256 lanes); an
+  undefined mask entry gives zero; a source no entry names is not asked
+  for; `%a, %a` asks once. `Fpr` result: a splat of a register source is
+  one `dup`; otherwise the lanes are inserted into `v31` (`ins` element,
+  or a load into `x16` and `ins` for a `Mem` source), then moved into an
+  operand's register, which dies here, so two sources and the result fit
+  the smallest pool (stress `min_pool`, two vector registers). `Mem`
+  result: each lane through `x16` (`umov` or a load), stored into the
+  slot. Widening, narrowing and changes of class all take these paths.
+- **Whole values.** `load`, `store`, `select` on a scalar condition,
+  `phi`, `freeze`, constants (poison lanes included), `bitcast` and
+  vectors as fields of aggregates take the paths of WP-039 (`Fpr`) and
+  WP-040 (`Mem`), masks and odd elements included (their images are
+  `hod_ir`'s); only lane operations refuse those shapes. The
+  element-wise operations WP-039 lowers on `Fpr` vectors are on in the
+  matrix for `Vector`; on a `Mem` vector they are `a64:mem-vector`
+  (WP-080).
+- **Calls.** `Fpr` vectors are passed and returned as `abi::assign`
+  places them (`v0`..`v7`, then the stack; the AAPCS64 short-vector
+  rules, checked against `llc` by the ABI grid and here against gcc's
+  `vector_size`). A `Mem` vector anywhere in a signature (parameter,
+  result, or a leaf of an aggregate one) is `a64:vector-call` until
+  WP-082 (the hook is the first line of `A64::assign`).
+- **Refused, by name** (`hod_a64::vector`): `a64:vector-mask` (a lane
+  operation on `<N x i1>`, `N ≤ 64`: WP-081), `a64:mask-wide` (more
+  than 64 `i1`), `a64:vector-odd-element` (integer lanes of a width other
+  than 8, 16, 32, 64 and at most 64), `a64:vector-wide-element`
+  (`i128` or `fp128` lanes), `a64:vector-length` (more than 256 lanes),
+  `a64:vector-index`, `a64:vector-call`; `getelementptr` over a vector
+  of pointers stays `a64:ptradd-vector`, element-wise arithmetic
+  `a64:vector-op` / `a64:mem-vector` (WP-080). `a64:vector-bfloat` and
+  `a64:intrinsic-target` are defined for WP-080 and WP-083.
+- **Tests**: `crates/hod_a64/tests/vector.rs` (the generator over shapes
+  × operations × indices against a model, `llc` and clang
+  `ext_vector_type`, under bfd, lld and mold; calls both ways with gcc;
+  the refusals), `tests/ir/vectors.ll`.
 
 #### Constant operands with addresses (WP-072)
 

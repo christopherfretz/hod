@@ -23,7 +23,7 @@ int main(void) {
   m = make(7);
   return m.v[5] == 12 ? 0 : 1;
 }
-//@ xfail: llc's location list of the sret variable has a gap at the first line's row; hod's shows the value
+//@ xfail: llc's location list of the sret variable has a gap at the first line's row; hod's shows the value (a permitted difference: spec/dwarf.md §6.7)
 //@ gdb: break make
 //@ gdb: run
 //@ gdb: print out

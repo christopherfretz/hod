@@ -121,12 +121,7 @@ fn vmem(bytes: u32) -> VMemSize {
 ///
 /// # Errors
 /// `Internal` for a part `abi::assign` does not make.
-pub fn lanes_out(
-    cx: &mut FnCx<'_, A64>,
-    part: &Part,
-    from: LaneLoc,
-    to: LaneLoc,
-) -> CgResult<()> {
+pub fn lanes_out(cx: &mut FnCx<'_, A64>, part: &Part, from: LaneLoc, to: LaneLoc) -> CgResult<()> {
     let l = Lanes::of(cx, part)?;
     if l.bits != 1 {
         return promoted_out(cx, l, from, to);

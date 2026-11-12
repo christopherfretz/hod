@@ -13,9 +13,7 @@ use hod_ir::{
 
 use crate::abi::{AbiUnsupported, Assignment, LaneLoc, Part, PartKind, Place, Sig};
 use crate::cx::{FnCx, TailExit};
-use crate::error::{
-    CALL_MUSTTAIL_RET_MEMORY, CALL_PART_CLASS, CALL_PART_LANES, CgError, CgResult,
-};
+use crate::error::{CALL_MUSTTAIL_RET_MEMORY, CALL_PART_CLASS, CALL_PART_LANES, CgError, CgResult};
 use crate::frame::FrameRef;
 use crate::loc::{Class, Key, Loc};
 use crate::record::{CallSiteRow, NO_PAD};
@@ -496,8 +494,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         // received in a buffer of this instruction's own.
         let ret_buffer = match (asg.ret_memory, call.ret_mem) {
             (Some(_), None)
-                if call.ret != TypeId::VOID
-                    && t.class_of(self.types(), call.ret) != Class::Mem =>
+                if call.ret != TypeId::VOID && t.class_of(self.types(), call.ret) != Class::Mem =>
             {
                 Some(self.s.frame.alloc_temp(self.types().alloc_size_of(call.ret))?)
             }

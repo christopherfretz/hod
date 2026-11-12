@@ -744,7 +744,12 @@ impl<'a, S: Sink> Walker<'a, S> {
         }
         let types = &self.module.types;
         (data.ty == TypeId::VOID || has_class(classes, class_code(types, data.ty)))
-            && cx.body.inst(id).operands().iter().all(|&value| self.accepts_operand(cx, classes, value))
+            && cx
+                .body
+                .inst(id)
+                .operands()
+                .iter()
+                .all(|&value| self.accepts_operand(cx, classes, value))
     }
 
     /// Whether `value` is accepted as an operand of an instruction whose
@@ -803,7 +808,8 @@ impl<'a, S: Sink> Walker<'a, S> {
                 }
                 _ => false,
             };
-        if !fixed || !(data.ty == TypeId::VOID || has_class(classes, class_code(&module.types, data.ty)))
+        if !fixed
+            || !(data.ty == TypeId::VOID || has_class(classes, class_code(&module.types, data.ty)))
         {
             return false;
         }
@@ -1001,12 +1007,11 @@ impl<'a, S: Sink> Walker<'a, S> {
         if id.index() >= module.consts.len() {
             return self.invalid(rules::CONSTANT, at);
         }
-        let ty = match module.consts.leaf_type(id) {
-            Some(ty) => ty,
-            None => {
-                self.constant(Some(cx), id, Place::Operand, false, 0, at)?;
-                module.consts.ty(id)
-            }
+        let ty = if let Some(ty) = module.consts.leaf_type(id) {
+            ty
+        } else {
+            self.constant(Some(cx), id, Place::Operand, false, 0, at)?;
+            module.consts.ty(id)
         };
         self.subject(row, classes, ty, at)
     }

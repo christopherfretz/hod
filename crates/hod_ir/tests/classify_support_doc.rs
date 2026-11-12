@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use hod_ir::{SUPPORT_GROUPS, SUPPORT_ROWS, STRUCTURAL_RULES, support_markdown};
+use hod_ir::{STRUCTURAL_RULES, SUPPORT_GROUPS, SUPPORT_ROWS, support_markdown};
 
 fn checked_in() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/status/support.md")
@@ -51,7 +51,8 @@ fn the_generated_file_is_deterministic_and_complete() {
     let mut from = 0;
     for row in &SUPPORT_ROWS {
         let cell = format!("| `{}` |", row.name);
-        let at = generated[from..].find(&cell).unwrap_or_else(|| panic!("{} out of order", row.name));
+        let at =
+            generated[from..].find(&cell).unwrap_or_else(|| panic!("{} out of order", row.name));
         from += at + cell.len();
         assert_eq!(generated.matches(&cell).count(), 1, "{}", row.name);
     }

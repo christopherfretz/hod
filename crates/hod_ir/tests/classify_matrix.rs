@@ -334,7 +334,9 @@ fn well_formed(name: &str) -> bool {
     let Some((group, rest)) = name.split_once(':') else { return false };
     let lower = |text: &str, also: &str| {
         !text.is_empty()
-            && text.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || also.contains(c))
+            && text
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || also.contains(c))
     };
     lower(group, "-") && lower(rest, "-._")
 }
@@ -479,7 +481,10 @@ fn findings_come_in_the_specified_order() {
         assert_eq!((module_reason.construct.as_ref(), module_reason.symbol), ("module:pic", None));
         let body_reason = classifier.body(&program.m, &program.bodies[0]).unwrap_err();
         assert_eq!(body_reason.construct, "cc:ccc");
-        assert_eq!((body_reason.symbol, body_reason.inst), (Some(program.bodies[0].symbol()), None));
+        assert_eq!(
+            (body_reason.symbol, body_reason.inst),
+            (Some(program.bodies[0].symbol()), None)
+        );
     }
 }
 
@@ -549,7 +554,8 @@ fn the_first_census_entry_is_the_first_reason() {
             for row in &SUPPORT_ROWS {
                 let program = program_for(row.name, arch);
                 let census = census_of(&support, &program);
-                let first = census.entries().first().map(|entry| (entry.construct.clone(), entry.kind));
+                let first =
+                    census.entries().first().map(|entry| (entry.construct.clone(), entry.kind));
                 let reason = verdict(&support, &program)
                     .err()
                     .map(|rejection| (rejection.construct.into_owned(), rejection.kind));

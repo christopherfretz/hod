@@ -248,9 +248,9 @@ fn world(rng: &mut Rng, arch: Arch, wild: bool) -> World {
                     m.consts.block_addr(rng.pick(&[nothing, personality]), BlockId::new(3)).unwrap()
                 })
             }
-            5 if ty == I64 && variables.len() > 1 => {
-                Some(m.consts.sym_diff(&m.types, I64, variables[0], variables[1], 4, false).unwrap())
-            }
+            5 if ty == I64 && variables.len() > 1 => Some(
+                m.consts.sym_diff(&m.types, I64, variables[0], variables[1], 4, false).unwrap(),
+            ),
             _ => Some(m.consts.zero(&m.types, ty).unwrap()),
         };
         let tls = if rng.chance(5) { TlsModel::InitialExec } else { TlsModel::None };
@@ -372,7 +372,7 @@ impl Gen<'_> {
         }
     }
 
-    fn constant(&mut self, id: IrResult<ConstId>) -> Value {
+    fn constant(id: IrResult<ConstId>) -> Value {
         Value::constant(id.unwrap()).unwrap()
     }
 
@@ -382,7 +382,6 @@ impl Gen<'_> {
         let variable = self.rng.pick(&self.w.variables);
         let function = self.rng.pick(&self.w.functions).0;
         match self.rng.below(12) {
-            0 | 1 => Value::sym(variable).unwrap(),
             2 => Value::sym(function).unwrap(),
             3 => {
                 let align = self.rng.pick(&[8, 16, 64]);
@@ -398,30 +397,30 @@ impl Gen<'_> {
             }
             4 => {
                 let id = m.consts.addr(variable, 8);
-                self.constant(id)
+                Self::constant(id)
             }
             5 => {
                 let id = m.consts.addr_of_int(4096);
-                self.constant(id)
+                Self::constant(id)
             }
             6 => {
                 let block = self.rng.below(self.blocks.len() + usize::from(self.w.wild));
                 let other = self.w.functions[0].0;
                 let function = if self.rng.chance(6) { other } else { self.function };
                 let id = m.consts.block_addr(function, BlockId::new(block as u32));
-                self.constant(id)
+                Self::constant(id)
             }
             7 => {
                 let id = m.consts.null(&m.types, PTR);
-                self.constant(id)
+                Self::constant(id)
             }
             8 => {
                 let id = m.consts.dso_local_equivalent(function);
-                self.constant(id)
+                Self::constant(id)
             }
             9 => {
                 let id = m.consts.no_cfi(function);
-                self.constant(id)
+                Self::constant(id)
             }
             10 => {
                 let base = m.consts.addr(variable, 0).unwrap();
@@ -451,7 +450,7 @@ impl Gen<'_> {
         let m = &mut self.w.m;
         if ty.index() >= m.types.len() {
             let id = m.consts.int(&m.types, I32, 0);
-            return self.constant(id);
+            return Self::constant(id);
         }
         if ty == I64 && self.rng.chance(4) {
             let (a, b) = (self.rng.pick(&self.w.variables), self.rng.pick(&self.w.variables));
@@ -470,12 +469,10 @@ impl Gen<'_> {
             1 => m.consts.poison(&m.types, ty),
             _ => m.consts.zero(&m.types, ty),
         };
-        match id {
-            Ok(id) => Value::constant(id).unwrap(),
-            Err(_) => {
-                let id = m.consts.int(&m.types, I32, 0);
-                self.constant(id)
-            }
+        if let Ok(id) = id {
+            Value::constant(id).unwrap()
+        } else {
+            Self::constant(m.consts.int(&m.types, I32, 0))
         }
     }
 
@@ -641,8 +638,7 @@ impl Gen<'_> {
             }
             19 => {
                 let vec4 = self.w.vec4;
-                let (vector, element, index) =
-                    (self.value(vec4), self.value(I32), self.value(I32));
+                let (vector, element, index) = (self.value(vec4), self.value(I32), self.value(I32));
                 match self.rng.below(3) {
                     0 => (self.b.extract_element(I32, vector, index), I32),
                     1 => (self.b.insert_element(vec4, vector, element, index), vec4),
@@ -750,7 +746,7 @@ fn random_body(rng: &mut Rng, w: &mut World, index: usize) -> Option<Body> {
     let (_, params, _) = signature(&w.m, fn_ty);
     let values: Vec<(Value, TypeId)> =
         params.iter().enumerate().map(|(at, &ty)| (b.arg(at as u32).unwrap(), ty)).collect();
-    let mut generator = Gen { rng, w, b, function, values, blocks, };
+    let mut generator = Gen { rng, w, b, function, values, blocks };
     if generator.rng.chance(6) {
         generator.b.set_loc(LocId::new(1));
     }
@@ -779,7 +775,8 @@ fn random_body(rng: &mut Rng, w: &mut World, index: usize) -> Option<Body> {
 fn program(seed: u64, arch: Arch, wild: bool) -> Program {
     let mut rng = Rng(seed);
     let mut w = world(&mut rng, arch, wild);
-    let bodies: Vec<Body> = (0..3).filter_map(|index| random_body(&mut rng, &mut w, index)).collect();
+    let bodies: Vec<Body> =
+        (0..3).filter_map(|index| random_body(&mut rng, &mut w, index)).collect();
     Program { m: w.m, bodies }
 }
 

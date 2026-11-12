@@ -9,13 +9,13 @@ mod classify_support;
 
 use classify_support::{
     DOUBLE, I32, I64, NO_STACK, PTR, Program, Stack, VOID, align, atomic, body, constant, declare,
-    define, define_as, defined, everything, fx, int, module, sym, variable, verdict,
+    define, define_as, defined, everything, fx, module, sym, variable, verdict,
 };
 use hod_ir::{
     Arch, AsmId, AtomicOrdering, BlockId, Bundle, CallConv, CallDesc, CallSite, Classifier, Clause,
     ConstId, FlagValue, FnAttrs, FnAttrsId, FunctionDesc, INVALID_RULES, Intrinsic, Module, Opcode,
-    Rejection, RejectionKind, RmwOp, STRUCTURAL_RULES, StackArgs, Support, SymId, Symbol,
-    TailKind, TlsModel, TypeId, TypeKind, Value, VariableDesc,
+    Rejection, RejectionKind, RmwOp, STRUCTURAL_RULES, StackArgs, Support, SymId, Symbol, TailKind,
+    TlsModel, TypeId, TypeKind, Value, VariableDesc,
 };
 
 const ARCH: Arch = Arch::Aarch64;
@@ -206,7 +206,8 @@ fn naked_callbr_and_va_arg_are_refused_by_design() {
         let mut attrs = FnAttrs::new();
         attrs.set(flag).unwrap();
         let ty = m.types.function(VOID, &[], false).unwrap();
-        let desc = FunctionDesc { attrs: m.intern_fn_attrs(&attrs).unwrap(), ..FunctionDesc::new(ty) };
+        let desc =
+            FunctionDesc { attrs: m.intern_fn_attrs(&attrs).unwrap(), ..FunctionDesc::new(ty) };
         if has_body {
             let f = define_as(&mut m, "f", &desc);
             let body = body(&m, f, |_, _| {});
@@ -231,7 +232,12 @@ fn naked_callbr_and_va_arg_are_refused_by_design() {
                 b.callbr(VOID, &call, then, &[other]).unwrap();
             } else {
                 b.call(VOID, &call).unwrap();
-                let truth = b.icmp(hod_ir::IntPredicate::Eq, TypeId::I1, b.arg(0).unwrap(), b.arg(0).unwrap());
+                let truth = b.icmp(
+                    hod_ir::IntPredicate::Eq,
+                    TypeId::I1,
+                    b.arg(0).unwrap(),
+                    b.arg(0).unwrap(),
+                );
                 b.cond_br(truth.unwrap(), then, other).unwrap();
             }
             b.begin_block(then).unwrap();
@@ -252,7 +258,8 @@ fn naked_callbr_and_va_arg_are_refused_by_design() {
                 b.va_arg(I32, list).unwrap();
             } else {
                 let args = [list];
-                b.call(VOID, &CallDesc::intrinsic(Intrinsic::VaStart, &[PTR], start, &args)).unwrap();
+                b.call(VOID, &CallDesc::intrinsic(Intrinsic::VaStart, &[PTR], start, &args))
+                    .unwrap();
             }
         })
     };
@@ -351,7 +358,10 @@ fn musttail_needs_the_stack_argument_areas() {
         assert_eq!(with_hook(&pop, None), err("musttail:callee-pop"), "{cc:?}");
         assert_eq!(with_hook(&tail_call(TailKind::Tail, cc, 2), None), Ok(()), "{cc:?}");
     }
-    assert_eq!(with_hook(&tail_call(TailKind::MustTail, CallConv::FAST, 2), Some(&NO_STACK)), Ok(()));
+    assert_eq!(
+        with_hook(&tail_call(TailKind::MustTail, CallConv::FAST, 2), Some(&NO_STACK)),
+        Ok(())
+    );
 }
 
 // ---- §8.6: atomics of scalable vectors ----
@@ -426,7 +436,8 @@ fn only_address_space_zero_exists() {
 
     let global = |space: u32| {
         let mut m = module(ARCH);
-        m.add_variable(b"g", &VariableDesc { addr_space: space, ..VariableDesc::new(I32) }).unwrap();
+        m.add_variable(b"g", &VariableDesc { addr_space: space, ..VariableDesc::new(I32) })
+            .unwrap();
         Program { m, bodies: Vec::new() }
     };
     let rejection = refused(&global(1), rule("addrspace:global"));
@@ -551,7 +562,8 @@ fn a_constant_nests_at_most_64_deep() {
 /// §8.6 `target:support-mismatch`: a matrix decides for its own target.
 #[test]
 fn a_matrix_is_of_one_target() {
-    for (module_arch, support_arch) in [(Arch::Aarch64, Arch::X86_64), (Arch::X86_64, Arch::Aarch64)]
+    for (module_arch, support_arch) in
+        [(Arch::Aarch64, Arch::X86_64), (Arch::X86_64, Arch::Aarch64)]
     {
         let program = fx(module_arch).with(|_, _| {});
         let support = everything(support_arch);
@@ -782,7 +794,10 @@ fn ids_must_name_something() {
     let rejection = Classifier::new(&support).body(&program.m, &program.bodies[0]).unwrap_err();
     assert_eq!(rejection.construct, "invalid:function-attributes");
     assert_eq!(rejection.kind, RejectionKind::Invalid);
-    assert_eq!(rejection.to_string(), format!("malformed input: invalid:function-attributes at {:?}", f.0));
+    assert_eq!(
+        rejection.to_string(),
+        format!("malformed input: invalid:function-attributes at {:?}", f.0)
+    );
 }
 
 /// §8.7: a symbol that was named and never given a kind.
@@ -817,7 +832,8 @@ fn a_blockaddress_must_name_a_block() {
 
     let in_init = |has_body: bool| {
         let mut m = module(ARCH);
-        let f = if has_body { define(&mut m, "f", VOID, &[]) } else { declare(&mut m, "f", VOID, &[]) };
+        let f =
+            if has_body { define(&mut m, "f", VOID, &[]) } else { declare(&mut m, "f", VOID, &[]) };
         let address = m.consts.block_addr(f.0, BlockId::new(0)).unwrap();
         defined(&mut m, "table", address);
         Program { m, bodies: Vec::new() }
@@ -914,5 +930,4 @@ fn the_rule_lists_are_the_rules() {
     for name in structural.iter().chain(&invalid) {
         assert_eq!(support.supports(name), None, "{name}");
     }
-    let _ = int;
 }

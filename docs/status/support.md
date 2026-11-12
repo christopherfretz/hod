@@ -663,17 +663,17 @@ Refused whatever the matrix says (`spec/ir.md` §8.6), on both targets.
 ## Malformed input
 
 Not a missing feature: the module or body is not well formed (`spec/ir.md` §8.7).
-The driver reports `malformed-input`.
+No matrix accepts it; the producer of the input has a bug.
 
 | construct | when |
 |---|---|
 | `invalid:body-symbol` | a body's symbol is not a symbol of the module |
 | `invalid:body-not-function` | a body's symbol is not a function |
 | `invalid:body-type` | a body's function type is not its symbol's |
-| `invalid:body` | an operand of a body names an instruction, parameter or call record the body does not have |
-| `invalid:symbol` | a symbol id in an operand, a constant, a personality, a resolver or a constructor entry names no symbol |
+| `invalid:body` | a body's tables disagree: its argument count is not its type's, or an operand names an instruction, parameter, stack slot or record the body does not have |
+| `invalid:symbol` | a symbol id in an operand, a constant, a personality, a resolver or a constructor entry names no symbol; a COMDAT id names no COMDAT |
 | `invalid:unresolved-symbol` | a symbol was named and never described |
-| `invalid:inline-asm` | an inline-assembly callee names no entry of the module's table |
+| `invalid:inline-asm` | an inline-assembly callee names no entry of the module's table, or inline assembly is an operand other than a callee |
 | `invalid:constant` | a constant id names no constant |
 | `invalid:type` | a value's type is no type, or a type without values; a call's function type is not one |
 | `invalid:blockaddress` | a `blockaddress` names a symbol that is not a function with a body, or a block its function does not have |

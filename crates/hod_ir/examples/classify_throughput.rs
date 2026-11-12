@@ -16,9 +16,8 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use hod_ir::{
-    Arch, Body, CallDesc, Census, Classifier, FnAttrs, FunctionBuilder, FunctionDesc,
-    IntPredicate, IrResult, MemFlags, Module, Opcode, Support, SymId, TargetSpec, TypeId, Value,
-    VariableDesc,
+    Arch, Body, CallDesc, Census, Classifier, FnAttrs, FunctionBuilder, FunctionDesc, IntPredicate,
+    IrResult, MemFlags, Module, Opcode, Support, SymId, TargetSpec, TypeId, Value, VariableDesc,
 };
 
 /// The instructions of one block of [`build`].
@@ -106,7 +105,9 @@ fn symbols(count: usize) -> IrResult<Module> {
         let name = name.as_bytes();
         match index % 10 {
             0..=4 => {
-                last = Some(m.add_function(name, &FunctionDesc { attrs, ..FunctionDesc::new(fn_ty) })?);
+                last = Some(
+                    m.add_function(name, &FunctionDesc { attrs, ..FunctionDesc::new(fn_ty) })?,
+                );
             }
             5..=7 => {
                 let desc = FunctionDesc { attrs, has_body: true, ..FunctionDesc::new(fn_ty) };
@@ -191,9 +192,8 @@ fn main() -> IrResult<()> {
         bodies.iter().filter(|body| accepting.body(black_box(&m), body).is_err()).count()
     });
     assert_eq!(refused, 0, "everything implemented accepts the bodies");
-    let (reject, refused) = fastest(|| {
-        bodies.iter().filter(|body| shipped.body(black_box(&m), body).is_err()).count()
-    });
+    let (reject, refused) =
+        fastest(|| bodies.iter().filter(|body| shipped.body(black_box(&m), body).is_err()).count());
     assert_eq!(refused, functions, "the shipped matrix refuses the bodies");
     println!("{functions} bodies of {} instructions", total / functions);
     println!("  classify, accepted           {:7.2} ns/instruction", per(accept, total));

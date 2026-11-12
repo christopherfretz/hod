@@ -10,9 +10,8 @@ use hod_ir::{
     CallSite, Classifier, Clause, CodeModel, ComdatKind, ConstId, ConstOp, DiId, FloatPredicate,
     FnAttrs, FnStr, FramePointer, FunctionBuilder, FunctionDesc, IFuncDesc, InlineAsm,
     IntPredicate, Intrinsic, Linkage, LocId, MemFlags, Module, Opcode, ParamAttrs, ParamMem,
-    PicLevel, Rejection, Retained, RmwOp, StackArgs, Support, Symbol, SymId, SyncScope, TailKind,
-    TargetSpec, TlsModel, TypeClass, TypeId, UnnamedAddr, UwTable, Value, VariableDesc,
-    Visibility,
+    PicLevel, Rejection, Retained, RmwOp, StackArgs, Support, SymId, Symbol, SyncScope, TailKind,
+    TargetSpec, TlsModel, TypeClass, TypeId, UnnamedAddr, UwTable, Value, VariableDesc, Visibility,
 };
 
 pub const I1: TypeId = TypeId::I1;
@@ -724,9 +723,7 @@ fn inst_row(op: Opcode, arch: Arch) -> Program {
             Opcode::Store => b.store(a, p, align(4)),
             Opcode::Alloca => b.alloca(PTR, a, 4, 4),
             Opcode::Fence => b.fence(AtomicOrdering::SeqCst, SyncScope::System),
-            Opcode::CmpXchg => {
-                b.cmpxchg(pair, p, a, a, atomic(4), AtomicOrdering::SeqCst, false)
-            }
+            Opcode::CmpXchg => b.cmpxchg(pair, p, a, a, atomic(4), AtomicOrdering::SeqCst, false),
             Opcode::AtomicRmw => b.atomic_rmw(RmwOp::Add, I32, p, a, atomic(4)),
             Opcode::PtrAdd => b.ptr_add(PTR, p, 8, &[(a, 4)]),
             Opcode::ExtractValue => b.extract_value(I32, agg, 0),
@@ -752,7 +749,11 @@ fn inst_row(op: Opcode, arch: Arch) -> Program {
             Opcode::Unreachable => b.unreachable(),
             Opcode::Resume => b.resume(agg),
             Opcode::CatchSwitch | Opcode::CatchRet | Opcode::CleanupRet => b.funclet(op, VOID),
-            Opcode::CondBr | Opcode::Switch | Opcode::IndirectBr | Opcode::CallBr | Opcode::Invoke => {
+            Opcode::CondBr
+            | Opcode::Switch
+            | Opcode::IndirectBr
+            | Opcode::CallBr
+            | Opcode::Invoke => {
                 let (then, other) = (b.create_block().unwrap(), b.create_block().unwrap());
                 match op {
                     Opcode::CondBr => b.cond_br(truth, then, other),

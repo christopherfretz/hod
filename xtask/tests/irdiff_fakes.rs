@@ -4,16 +4,19 @@
 //! Linux machine, without LLVM.
 //!
 //! How the fakes work. A "module" is any text. The fake compilers write an
-//! "object" that is a first line `built-by llc` or `built-by hod`, a second
-//! line with their code-generation arguments, and the module. The fake
-//! linkers turn an object into a "program", a shell script made of the
-//! module's `; program: <command>` lines; `; program(hod): ...` is kept
-//! only for an object hod built, `; program(llc): ...` only for one `llc`
-//! built, `; program(mold): ...` only by that linker, and
+//! "object" that is a first line `built-by llc`, `built-by O2` (`llc -O2`:
+//! the witness) or `built-by hod`, a second line with their
+//! code-generation arguments, and the module. The fake linkers turn the
+//! objects into a "program", a shell script made of the modules'
+//! `; program: <command>` lines in link order; `; program(hod): ...` is
+//! kept only for an object hod built, `; program(llc): ...` only for one
+//! `llc -O0` built, `; program(O2): ...` only for the witness's,
+//! `; program(mold): ...` only by that linker, and
 //! `; program(hod,mold): ...` needs both. Other comment lines make a tool
-//! misbehave: `; llc: crash|hang|fail|silent`,
+//! misbehave: `; llc: crash|hang|fail|silent`, `; llc(O2): fail`,
 //! `; hod: decline <reason>|crash|error|hang|nolog|noobject|hog`,
-//! `; link-fail: <builder> <linker>`.
+//! `; link-fail: <builder> <linker>`, `; link-warn: <linker>` (a warning,
+//! which fails the link under `--fatal-warnings`).
 #![cfg(target_os = "linux")]
 
 mod common;
@@ -43,7 +46,9 @@ if grep -q '^; llc: crash' "$in"; then kill -SEGV $$; fi
 if grep -q '^; llc: hang' "$in"; then exec sleep 60; fi
 if grep -q '^; llc: fail' "$in"; then echo "llc: error: bad module" >&2; exit 1; fi
 if grep -q '^; llc: silent' "$in"; then exit 0; fi
-{ echo "built-by llc"; echo "args$args"; cat "$in"; } > "$out""#;
+case "$args " in *" -O2 "*) builder=O2 ;; *) builder=llc ;; esac
+if grep -q "^; llc($builder): fail" "$in"; then echo "llc: error: cannot optimize" >&2; exit 1; fi
+{ echo "built-by $builder"; echo "args$args"; cat "$in"; } > "$out""#;
 
 /// Refuses to run with any of hod's configuration variables set, or with
 /// both or neither of `--strict` and `--fallback`: the harness configures
@@ -108,7 +113,8 @@ const DEAF_DRIVER: &str = r#"exec "$(dirname "$0")/ld.bfd" "$@""#;
 
 /// The fake linker called `name`. Its programs carry the signature the
 /// real linker leaves, and the variables `PIE`, `LIBS`, `LINKER_FLAGS` and
-/// `CODEGEN` for the module's commands to print.
+/// `CODEGEN` (the arguments the first object was compiled with) for the
+/// modules' commands to print.
 fn fake_linker(name: &str) -> String {
     let signature = match name {
         "lld" => "echo '# Linker: LLD 22.0.0'",
@@ -118,7 +124,7 @@ fn fake_linker(name: &str) -> String {
     format!(
         r#"PATH=/usr/bin:/bin
 me={name}
-out= obj= pie= libs= flags=
+out= objs= pie= libs= flags=
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) out=$2; shift ;;
@@ -126,22 +132,33 @@ while [ $# -gt 0 ]; do
     -pie|-no-pie) pie=$1 ;;
     -l*) libs="$libs $1" ;;
     -*) flags="$flags $1" ;;
-    *) obj=$1 ;;
+    *) objs="$objs $1" ;;
   esac
   shift
 done
-builder=$(sed -n '1s/^built-by //p' "$obj")
-if grep -q "^; link-fail: $builder $me\$" "$obj"; then
-  echo "$me: error: undefined symbol: main" >&2
-  exit 1
-fi
+first=
+for obj in $objs; do
+  [ -n "$first" ] || first=$obj
+  builder=$(sed -n '1s/^built-by //p' "$obj")
+  if grep -q "^; link-fail: $builder $me\$" "$obj"; then
+    echo "$me: error: undefined symbol: main" >&2
+    exit 1
+  fi
+  if grep -q "^; link-warn: $me\$" "$obj"; then
+    echo "$me: warning: the use of 'tmpnam' is dangerous" >&2
+    case "$flags" in *--fatal-warnings*) exit 1 ;; esac
+  fi
+done
 {{
   echo '#!/bin/sh'
   {signature}
   echo "PATH=/usr/bin:/bin PIE='$pie' LIBS='$libs' LINKER_FLAGS='$flags'"
-  echo "CODEGEN='$(sed -n '2s/^args //p' "$obj")'"
-  sed -n -e 's/^; program: //p' -e "s/^; program($builder): //p" \
-    -e "s/^; program($me): //p" -e "s/^; program($builder,$me): //p" "$obj"
+  echo "CODEGEN='$(sed -n '2s/^args //p' "$first")'"
+  for obj in $objs; do
+    builder=$(sed -n '1s/^built-by //p' "$obj")
+    sed -n -e 's/^; program: //p' -e "s/^; program($builder): //p" \
+      -e "s/^; program($me): //p" -e "s/^; program($builder,$me): //p" "$obj"
+  done
 }} > "$out"
 chmod 755 "$out""#
     )
@@ -272,23 +289,25 @@ fn left_behind(world: &World) -> Vec<String> {
     names
 }
 
-// spec/harness.md "irdiff", "What a test does" and "Outcomes": PASS. Both
-// compilers get the same code-generation arguments, each object is linked
-// by every linker of the matrix (and by that linker), and nothing is left
-// behind but the results file.
+// spec/harness.md "irdiff", "What a test does" and "Outcomes": PASS. The
+// oracle gets its selector and hod does not ("The oracle"); otherwise both
+// get the same code-generation arguments, each object is linked by every
+// linker of the matrix (and by that linker), and nothing is left behind
+// but the results file.
 #[test]
 fn pass_with_every_linker() {
     let world = World::new("irdiff-pass");
     let triple = host().triple();
+    let common = format!("-filetype=obj -mtriple={triple} -relocation-model=pic");
     world.test(
         "pass.ll",
         &format!(
             ";@ covers: spec/harness.md irdiff\n\
              ;@ stdout: hello\n\
-             ;@ stdout: -O0 -filetype=obj -mtriple={triple} -relocation-model=pic\n\
              ;@ stdout: -pie [] one thread\n\
              ; program: echo hello\n\
-             ; program: echo \"$CODEGEN\"\n\
+             ; program(llc): [ \"$CODEGEN\" = \"-O0 -global-isel=0 -fast-isel=0 {common}\" ] || echo \"llc: $CODEGEN\"\n\
+             ; program(hod): [ \"$CODEGEN\" = \"-O0 {common}\" ] || echo \"hod: $CODEGEN\"\n\
              ; program(bfd): [ \"$LINKER_FLAGS\" = \" -Wl,--fatal-warnings\" ] && threads=one\n\
              ; program(lld): case \"$LINKER_FLAGS\" in *' -Wl,--threads=1') threads=one ;; esac\n\
              ; program(mold): case \"$LINKER_FLAGS\" in *' -Wl,--thread-count=1') threads=one ;; esac\n\
@@ -957,7 +976,13 @@ fn the_wrong_linker_is_detected() {
 fn hybrid_mode() {
     let world = World::new("irdiff-hybrid");
     world.test("own.ll", ";@ stdout: x\n; program: echo x\n");
-    world.test("falls-back.ll", ";@ stdout: x\n; program: echo x\n; hod: decline inline-asm\n");
+    // What the fallback builds is built as the oracle builds: with its
+    // selector ("Hybrid mode").
+    world.test(
+        "falls-back.ll",
+        ";@ stdout: x\n; program: echo x\n; hod: decline inline-asm\n\
+         ; program(llc): case \"$CODEGEN\" in *' -global-isel=0 -fast-isel=0'*) ;; *) echo \"$CODEGEN\" ;; esac\n",
+    );
     world.test(
         "expected.ll",
         ";@ unsupported: vector-type\n;@ stdout: x\n; program: echo x\n; hod: decline vector-type\n",
@@ -1001,6 +1026,373 @@ fn hybrid_mode() {
     assert!(line.contains("\tbfd\tfallback\tinline-asm\t-\t-\n"), "{line}");
     let results = format!("results-{}-llvm22-hybrid.tsv", host().name());
     assert_eq!(report.results_file, Some(world.build().join("irdiff").join(results)));
+}
+
+// "The witness": with `--witness` every test is also built by `llc -O2`,
+// linked with the first linker and run; a program that does not behave as
+// the reference's is an ERROR with every linker, whatever hod did. Off by
+// default.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn the_witness() {
+    let world = World::new("irdiff-witness");
+    let triple = host().triple();
+    world.test(
+        "agrees.ll",
+        &format!(
+            ";@ stdout: x\n; program: echo x\n\
+             ; program(O2): [ \"$CODEGEN\" = \"-O2 -filetype=obj -mtriple={triple} -relocation-model=pic\" ] || echo \"$CODEGEN\"\n"
+        ),
+    );
+    world.test("stdout.ll", ";@ stdout: x\n; program: echo x\n; program(O2): echo more\n");
+    world.test("status.ll", "; program(O2): exit 3\n");
+    world.test("hangs.ll", "; program(O2): exec sleep 60\n");
+    world.test("build.ll", "; llc(O2): fail\n");
+    world.test("link.ll", "; link-fail: O2 bfd\n");
+    // Only one linker links the witness: this one would fail.
+    world.test("later-linker.ll", "; link-fail: O2 mold\n");
+    // The first linker whose program of the oracle's objects is good: bfd
+    // does not link the oracle's, so lld is asked.
+    world.test("next-linker.ll", "; link-fail: llc bfd\n; program(O2,lld): exit 3\n");
+    // The oracle is in doubt: nothing is said about hod.
+    world.test("hod-wrong.ll", "; program(O2): exit 3\n; program(hod): exit 4\n");
+    world.test("hod-declines.ll", "; program(O2): exit 3\n; hod: decline vector-type\n");
+    // The directives are checked first; a confirmed oracle leaves hod's
+    // outcome as it is.
+    world.test("directives.ll", ";@ stdout: x\n; program(O2): exit 3\n");
+    world.test("hod-fails.ll", "; program(hod): exit 4\n");
+    world.test("unsupported.ll", ";@ unsupported: vector-type\n; hod: decline vector-type\n");
+    let mut config = short(world.config());
+    config.witness = true;
+    config.keep = true;
+    let report = irdiff::run(&config).unwrap();
+    let all = report.summary(true);
+    assert!(all.contains("; strict; witness; -j "), "{all}");
+    for file in ["agrees.ll", "later-linker.ll"] {
+        assert_eq!(outcomes(&report, file), [Outcome::Pass; 3], "{file}: {all}");
+    }
+    assert_eq!(outcomes(&report, "hod-fails.ll"), [Outcome::Fail; 3], "{all}");
+    assert_eq!(outcomes(&report, "unsupported.ll"), [Outcome::Unsupported; 3], "{all}");
+    assert_eq!(outcomes(&report, "next-linker.ll"), [Outcome::Error; 3], "{all}");
+    assert_eq!(
+        details(&report, "next-linker.ll"),
+        [
+            "oracle: link with bfd failed (exit status 1): bfd: error: undefined symbol: main",
+            "witness: the program of llc -O2's object ended with exit status 3, \
+             llc -O0's with exit status 0",
+            "witness: the program of llc -O2's object ended with exit status 3, \
+             llc -O0's with exit status 0",
+        ]
+    );
+    for (file, records, detail) in [
+        (
+            "stdout.ll",
+            3,
+            "witness: the program of llc -O2's object wrote stdout that differs from llc -O0's \
+             at line 2: expected the end of the output, got \"more\\n\"",
+        ),
+        (
+            "status.ll",
+            3,
+            "witness: the program of llc -O2's object ended with exit status 3, \
+             llc -O0's with exit status 0",
+        ),
+        ("hangs.ll", 3, "witness: the program of llc -O2's object timed out after 3 s"),
+        ("build.ll", 1, "witness: llc -O2 failed (exit status 1): llc: error: cannot optimize"),
+        (
+            "link.ll",
+            3,
+            "witness: link with bfd failed (exit status 1): bfd: error: undefined symbol: main",
+        ),
+        (
+            "hod-wrong.ll",
+            3,
+            "witness: the program of llc -O2's object ended with exit status 3, \
+             llc -O0's with exit status 0",
+        ),
+        (
+            "hod-declines.ll",
+            3,
+            "witness: the program of llc -O2's object ended with exit status 3, \
+             llc -O0's with exit status 0",
+        ),
+        (
+            "directives.ll",
+            3,
+            "oracle: the program of llc's object wrote stdout that differs from the directives \
+             at line 1: expected \"x\\n\", got the end of the output",
+        ),
+    ] {
+        assert_eq!(outcomes(&report, file), vec![Outcome::Error; records], "{file}: {all}");
+        assert_eq!(details(&report, file), vec![detail; records], "{file}");
+        assert!(details(&report, file)[0].starts_with(irdiff::engine::WITNESS) || records == 3);
+    }
+    // The witness is its own object and one program, by the first linker.
+    let kept = report.kept.clone().expect("failing tests are kept");
+    let dir = std::fs::read_dir(&kept)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.to_string_lossy().ends_with("status.ll"))
+        .expect("the test's directory is kept");
+    for file in ["oracle.o", "witness.o", "bfd/oracle", "bfd/witness"] {
+        assert!(dir.join(file).is_file(), "{file} is kept");
+    }
+    assert!(!dir.join("lld/witness").exists() && !dir.join("lld/oracle").exists());
+    std::fs::remove_dir_all(&kept).unwrap();
+
+    // Alone, an oracle the witness does not confirm is exit status 3.
+    let alone = World::new("irdiff-witness-alone");
+    alone.test("status.ll", "; program(O2): exit 3\n");
+    let mut config = alone.config();
+    config.witness = true;
+    assert_eq!(irdiff::run(&config).unwrap().exit_status(), 3);
+    // Without `--witness` nobody asks llc -O2.
+    let report = alone.run();
+    assert_eq!(outcomes(&report, "status.ll"), [Outcome::Pass; 3], "{}", report.summary(true));
+    assert!(report.summary(true).contains("; strict; -j "));
+    // For a target that cannot run here the witness is still built.
+    alone.test("build.ll", "; llc(O2): fail\n");
+    config.target = Some(other_arch());
+    let report = irdiff::run(&config).unwrap();
+    assert_eq!(rows(&report), ["ERROR build.ll -", "SKIP status.ll -"], "{}", report.summary(true));
+}
+
+// "Test directives": `llc-args` reaches both compilers and the witness,
+// `link: allow-warnings` takes `--fatal-warnings` off the link, and
+// `stdout-no-newline` is output without a final newline.
+#[test]
+fn directives_reach_the_tools() {
+    let world = World::new("irdiff-directives");
+    let triple = host().triple();
+    let tail = format!(
+        "-filetype=obj -mtriple={triple} -relocation-model=pic -debugger-tune=gdb -function-sections"
+    );
+    world.test(
+        "llc-args.ll",
+        &format!(
+            ";@ llc-args: -debugger-tune=gdb  -function-sections\n\
+             ; program(llc): [ \"$CODEGEN\" = \"-O0 -global-isel=0 -fast-isel=0 {tail}\" ] || echo \"llc: $CODEGEN\"\n\
+             ; program(O2): [ \"$CODEGEN\" = \"-O2 {tail}\" ] || echo \"O2: $CODEGEN\"\n\
+             ; program(hod): [ \"$CODEGEN\" = \"-O0 {tail}\" ] || echo \"hod: $CODEGEN\"\n"
+        ),
+    );
+    world.test("llc-args-bad.ll", ";@ llc-args: -O2 -filetype=asm\n");
+    world.test("warns.ll", "; link-warn: bfd\n; link-warn: mold\n");
+    world.test(
+        "warns-allowed.ll",
+        ";@ link: m allow-warnings\n;@ stdout:  -lm\n\
+         ; link-warn: bfd\n; link-warn: mold\n\
+         ; program: case \"$LINKER_FLAGS\" in *fatal-warnings*) echo fatal ;; esac\n\
+         ; program: echo \"$LIBS\"\n",
+    );
+    world.test(
+        "no-newline.ll",
+        ";@ stdout: a\n;@ stdout-no-newline: b \n; program: printf 'a\\nb '\n",
+    );
+    world.test("only-no-newline.ll", ";@ stdout-no-newline: b\n; program: printf b\n");
+    world.test("newline.ll", ";@ stdout-no-newline: b\n; program: echo b\n");
+    world.test(
+        "hod-newline.ll",
+        ";@ stdout-no-newline: b\n; program: printf b\n; program(hod): echo\n",
+    );
+    let mut config = world.config();
+    config.witness = true;
+    let report = irdiff::run(&config).unwrap();
+    let all = report.summary(true);
+    for file in ["llc-args.ll", "warns-allowed.ll", "no-newline.ll", "only-no-newline.ll"] {
+        assert_eq!(outcomes(&report, file), [Outcome::Pass; 3], "{file}: {all}");
+    }
+    assert_eq!(
+        details(&report, "llc-args-bad.ll"),
+        ["directives: line 1: llc argument '-O2' is the harness's to give"]
+    );
+    assert_eq!(
+        outcomes(&report, "warns.ll"),
+        [Outcome::Error, Outcome::Pass, Outcome::Error],
+        "{all}"
+    );
+    assert_eq!(
+        details(&report, "warns.ll")[0],
+        "oracle: link with bfd failed (exit status 1): bfd: warning: the use of 'tmpnam' is dangerous"
+    );
+    assert_eq!(
+        details(&report, "newline.ll"),
+        ["oracle: the program of llc's object wrote stdout that differs from the directives \
+          at line 1: expected \"b\", got \"b\\n\""; 3]
+    );
+    assert_eq!(outcomes(&report, "hod-newline.ll"), [Outcome::Fail; 3], "{all}");
+    assert_eq!(
+        details(&report, "hod-newline.ll")[0],
+        "the program of hod's object wrote stdout that differs from llc's at line 1: \
+         expected \"b\", got \"b\\n\""
+    );
+}
+
+// "Test directives", "Several modules": each module is compiled on its
+// own by each compiler and the objects are linked in order into one
+// program. The first module hod does not build decides the test.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn several_modules() {
+    let world = World::new("irdiff-modules");
+    world.test(
+        "pass.ll",
+        "; a comment before the first module\n;@ stdout: from a\n;@ stdout: from b\n\n\
+         ;@ module: a\n; program: echo from a\n;@ stdout: last\n\
+         ;@ module: b.cpp\n; program: echo from b\n; program: echo last\n",
+    );
+    world.test("one.ll", ";@ stdout: only\n;@ module: only\n; program: echo only\n");
+    world.test(
+        "declines.ll",
+        ";@ unsupported: vector-type\n;@ module: a\n;@ module: b\n; hod: decline vector-type\n",
+    );
+    world.test("unexpected.ll", ";@ module: a\n; hod: decline vector-type\n;@ module: b\n");
+    // The first module that is not built decides: `b` declines before `c`
+    // is tried.
+    world.test(
+        "first.ll",
+        ";@ unsupported: vector-type\n;@ module: a\n;@ module: b\n; hod: decline vector-type\n\
+         ;@ module: c\n; hod: crash\n",
+    );
+    world.test("crashes.ll", ";@ module: a\n;@ module: b\n; hod: crash\n");
+    world.test("differs.ll", ";@ module: a\n;@ module: b\n; program(hod): exit 4\n");
+    world.test("hod-link.ll", ";@ module: a\n;@ module: b\n; link-fail: hod lld\n");
+    world.test("oracle-link.ll", ";@ module: a\n;@ module: b\n; link-fail: llc bfd\n");
+    world.test("oracle-build.ll", ";@ module: a\n;@ module: b\n; llc: fail\n");
+    world.test("witness.ll", ";@ module: a\n;@ module: b\n; program(O2): exit 3\n");
+    world.test("witness-build.ll", ";@ module: a\n; llc(O2): fail\n;@ module: b\n");
+    world.test("twice.ll", ";@ module: a\n;@ module: b\n;@ module: a\n");
+    world.test("code-first.ll", "@g = global i32 0\n;@ module: a\n");
+    let mut config = world.config();
+    config.witness = true;
+    config.keep = true;
+    let report = irdiff::run(&config).unwrap();
+    let all = report.summary(true);
+    for file in ["pass.ll", "one.ll"] {
+        assert_eq!(outcomes(&report, file), [Outcome::Pass; 3], "{file}: {all}");
+    }
+    for file in ["declines.ll", "first.ll"] {
+        assert_eq!(outcomes(&report, file), [Outcome::Unsupported; 3], "{file}: {all}");
+    }
+    for (file, outcome, detail) in [
+        (
+            "unexpected.ll",
+            Outcome::Fail,
+            "hod declined the module and the test has no 'unsupported: vector-type' directive",
+        ),
+        (
+            "differs.ll",
+            Outcome::Fail,
+            "the program of hod's object ended with exit status 4, llc's with exit status 0",
+        ),
+        (
+            "witness.ll",
+            Outcome::Error,
+            "witness: the program of llc -O2's object ended with exit status 3, \
+             llc -O0's with exit status 0",
+        ),
+    ] {
+        assert_eq!(outcomes(&report, file), [outcome; 3], "{file}: {all}");
+        assert_eq!(details(&report, file), [detail; 3], "{file}");
+    }
+    assert_eq!(outcomes(&report, "crashes.ll"), [Outcome::Fail; 3], "{all}");
+    assert!(
+        details(&report, "crashes.ll")[0]
+            .starts_with("module 'b': hod was terminated by signal 11"),
+        "{all}"
+    );
+    assert_eq!(
+        outcomes(&report, "hod-link.ll"),
+        [Outcome::Pass, Outcome::Fail, Outcome::Pass],
+        "{all}"
+    );
+    assert_eq!(
+        details(&report, "hod-link.ll")[1],
+        "hod's object: link with lld failed (exit status 1): lld: error: undefined symbol: main"
+    );
+    assert_eq!(
+        outcomes(&report, "oracle-link.ll"),
+        [Outcome::Error, Outcome::Pass, Outcome::Pass],
+        "{all}"
+    );
+    for (file, detail) in [
+        (
+            "oracle-build.ll",
+            "oracle: module 'b': llc failed (exit status 1): llc: error: bad module",
+        ),
+        (
+            "witness-build.ll",
+            "witness: module 'a': llc -O2 failed (exit status 1): llc: error: cannot optimize",
+        ),
+        ("twice.ll", "directives: line 3: module 'a' is named twice"),
+        (
+            "code-first.ll",
+            "directives: line 2: module 'a' starts after code: only directives, comments and \
+             empty lines may come before the first 'module' directive",
+        ),
+    ] {
+        assert_eq!(outcomes(&report, file), [Outcome::Error], "{file}: {all}");
+        assert_eq!(details(&report, file), [detail], "{file}");
+    }
+    // Counted per test, not per module.
+    assert!(
+        all.contains("irdiff: coverage: hod built 6 of 9 objects; declined vector-type: 3\n"),
+        "{all}"
+    );
+
+    // "Work directory": the modules, each with its objects and its log; a
+    // module's file has the test file's line numbers.
+    let kept = report.kept.clone().expect("failing tests are kept");
+    let dir = std::fs::read_dir(&kept)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.to_string_lossy().ends_with("differs.ll"))
+        .expect("the test's directory is kept");
+    for file in [
+        "modules/a.ll",
+        "modules/a.oracle.o",
+        "modules/a.witness.o",
+        "modules/a.hod.o",
+        "modules/a.coverage.tsv",
+        "modules/b.ll",
+        "modules/b.hod.o",
+        "mold/hod",
+    ] {
+        assert!(dir.join(file).is_file(), "{file} is kept");
+    }
+    assert!(!dir.join("oracle.o").exists());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("modules/b.ll")).unwrap(),
+        "\n;@ module: b\n; program(hod): exit 4\n"
+    );
+    std::fs::remove_dir_all(&kept).unwrap();
+
+    // "Hybrid mode": a program of objects hod built and objects its
+    // fallback built; the test is the fallback's, with the first reason.
+    let hybrid = World::new("irdiff-modules-hybrid");
+    hybrid.test(
+        "mixed.ll",
+        ";@ stdout: hod llc llc\n\
+         ;@ module: a\n; program(hod): printf 'hod '\n; program(llc): printf 'llc '\n\
+         ;@ module: b\n; hod: decline inline-asm\n; program(hod): printf 'hod '\n; program(llc): printf 'llc '\n\
+         ;@ module: c\n; hod: decline vector-type\n; program(hod): echo hod\n; program(llc): echo llc\n",
+    );
+    let mut config = hybrid.config();
+    config.mode = Mode::Hybrid;
+    let report = irdiff::run(&config).unwrap();
+    // The oracle's program prints `llc llc llc`: the directives say what
+    // hod's prints, so the oracle's side is an ERROR that names both.
+    assert_eq!(outcomes(&report, "mixed.ll"), [Outcome::Error; 3], "{}", report.summary(true));
+    let record = &report.records[0];
+    assert_eq!(
+        (record.built_by, record.reason.as_deref()),
+        (BuiltBy::Fallback, Some("inline-asm"))
+    );
+    assert_eq!(
+        record.detail,
+        "oracle: the program of llc's object wrote stdout that differs from the directives \
+         at line 1: expected \"hod llc llc\\n\", got \"llc llc llc\\n\""
+    );
 }
 
 /// A mix of every outcome.

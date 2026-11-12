@@ -49,6 +49,8 @@ name = "hod_bc"
 version = "0.0.0"
 dependencies = [
  "hod_ir",
+ "hod_ll",
+ "hod_testutil",
 ]
 
 [[package]]
@@ -85,6 +87,7 @@ name = "hod_eh"
 version = "0.0.0"
 dependencies = [
  "hod_obj",
+ "hod_testutil",
 ]
 
 [[package]]
@@ -121,6 +124,9 @@ dependencies = [
 [[package]]
 name = "hod_mc_x64"
 version = "0.0.0"
+dependencies = [
+ "hod_testutil",
+]
 
 [[package]]
 name = "hod_obj"
@@ -194,6 +200,8 @@ dependencies = [
 name = "xtask"
 version = "0.0.0"
 dependencies = [
+ "hod_ir",
+ "hod_ll",
  "hod_testutil",
  "signal-hook",
 ]

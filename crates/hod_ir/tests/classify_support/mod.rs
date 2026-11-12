@@ -598,7 +598,30 @@ fn init_row(name: &str, arch: Arch) -> Program {
 
 fn attr_row(name: &str, arch: Arch) -> Program {
     if let Some(&(_, flag)) = PARAM_FLAGS.iter().find(|(key, _)| *key == name) {
-        return param_program(arch, I32, ParamAttrs::NONE.with(flag).unwrap());
+        // `nest` and `swifterror` are on pointers, `zeroext` and `signext`
+        // on integers (§5.8).
+        let pointer = flag & (ParamAttrs::NEST | ParamAttrs::SWIFT_ERROR) != 0;
+        return param_program(
+            arch,
+            if pointer { PTR } else { I32 },
+            ParamAttrs::NONE.with(flag).unwrap(),
+        );
+    }
+    if name == "elementtype" {
+        // On an intrinsic's argument: a function's parameter may not
+        // have it (§5.8).
+        let mut fx = fx(arch);
+        let fn_ty = fx.m.types.function(VOID, &[PTR], false).unwrap();
+        let attrs = [ParamAttrs::NONE.with_mem(ParamMem::ElementType, I32).unwrap()];
+        return fx.with(|b, _| {
+            let p = b.arg(1).unwrap();
+            let args = [p];
+            let desc = CallDesc {
+                arg_attrs: &attrs,
+                ..CallDesc::intrinsic(Intrinsic::VaEnd, &[PTR], fn_ty, &args)
+            };
+            b.call(VOID, &desc).unwrap();
+        });
     }
     if let Some(&(_, mem)) = PARAM_MEMS.iter().find(|(key, _)| *key == name) {
         return param_program(arch, PTR, ParamAttrs::NONE.with_mem(mem, I32).unwrap());

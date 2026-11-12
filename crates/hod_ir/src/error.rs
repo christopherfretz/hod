@@ -68,6 +68,16 @@ pub enum IrErrorKind {
     /// A debug node, expression or location is referred to and does not
     /// exist, or was reserved and never defined (§6.3).
     UndefinedDebugNode,
+    /// A use in a block control reaches that its definition does not
+    /// dominate, as LLVM defines dominance (§5.8).
+    NotDominated,
+    /// A call that breaks a rule of LLVM's for calls: a callee its opcode
+    /// cannot have, a tail marker, `musttail`'s conditions, an immediate
+    /// argument that is not a constant, an operand bundle's shape (§5.8).
+    InvalidCall,
+    /// Parameter, return or function attributes that do not fit their
+    /// type or position, or that LLVM calls incompatible (§5.7, §5.8).
+    InvalidAttribute,
 }
 
 /// An error from building IR. Never a panic.

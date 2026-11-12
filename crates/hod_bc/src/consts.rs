@@ -207,6 +207,7 @@ impl Values {
     }
 
     /// Builds constant `c`, whose operands are built.
+    #[allow(clippy::too_many_lines)] // One record table, read in one place.
     fn build(
         &self,
         module: &mut Module,
@@ -406,7 +407,7 @@ impl Values {
                 else {
                     return short();
                 };
-                if first >= ops.len() || (ops.len() - first) % 2 != 0 {
+                if first >= ops.len() || !(ops.len() - first).is_multiple_of(2) {
                     return short();
                 }
                 let source_ty = self.ty(source, at)?;

@@ -1,4 +1,4 @@
-//! Attributes (`spec/bc.md` §5.3): the PARAMATTR_GROUP entries, decoded
+//! Attributes (`spec/bc.md` §5.3): the `PARAMATTR_GROUP` entries, decoded
 //! into what `hod_ll` makes of the same attributes in text — function
 //! attributes as a group's, return and parameter attributes as written in
 //! place — with the same names noted.
@@ -142,7 +142,8 @@ pub(crate) fn decode<'r>(ops: &'r [u64], at: u64, out: &mut Vec<Attr<'r>>) -> Bc
         let tag = ops[i];
         let need = |n: usize| if i + n < ops.len() { Ok(()) } else { short() };
         match tag {
-            0 => {
+            // 5 is a type attribute written without its type.
+            0 | 5 => {
                 need(1)?;
                 out.push(Attr::Keyword { kind: ops[i + 1], value: None, ty: None });
                 i += 2;
@@ -168,11 +169,6 @@ pub(crate) fn decode<'r>(ops: &'r [u64], at: u64, out: &mut Vec<Attr<'r>>) -> Bc
                     i += len + 1;
                 }
                 out.push(Attr::Str { key, value });
-            }
-            5 => {
-                need(1)?;
-                out.push(Attr::Keyword { kind: ops[i + 1], value: None, ty: None });
-                i += 2;
             }
             6 => {
                 need(2)?;

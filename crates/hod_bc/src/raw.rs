@@ -39,7 +39,7 @@ pub(crate) struct MdStrings<'a> {
 pub(crate) enum MdSlot {
     /// The `index`th string of `strings[table]`.
     String { table: u32, index: u32 },
-    /// A NODE, DISTINCT_NODE or VALUE record, with its operands.
+    /// A NODE, `DISTINCT_NODE` or VALUE record, with its operands.
     Kept(Rec),
     /// A debug-info node (or another record that defines an id), not kept.
     Skipped,
@@ -320,16 +320,16 @@ fn walk_module<'a>(
                     | block::FULL_LTO_GLOBALVAL_SUMMARY => cursor.skip(),
                     block::TYPE => collect(cursor, ops, &mut raw.pool, &mut raw.types)?,
                     block::PARAMATTR_GROUP => {
-                        collect(cursor, ops, &mut raw.pool, &mut raw.attr_groups)?
+                        collect(cursor, ops, &mut raw.pool, &mut raw.attr_groups)?;
                     }
                     block::PARAMATTR => collect(cursor, ops, &mut raw.pool, &mut raw.attr_lists)?,
                     block::CONSTANTS => collect(cursor, ops, &mut raw.pool, &mut raw.constants)?,
                     block::METADATA_KIND => collect(cursor, ops, &mut raw.pool, &mut raw.md_kinds)?,
                     block::OPERAND_BUNDLE_TAGS => {
-                        collect(cursor, ops, &mut raw.pool, &mut raw.bundle_tags)?
+                        collect(cursor, ops, &mut raw.pool, &mut raw.bundle_tags)?;
                     }
                     block::SYNC_SCOPE_NAMES => {
-                        collect(cursor, ops, &mut raw.pool, &mut raw.sync_scopes)?
+                        collect(cursor, ops, &mut raw.pool, &mut raw.sync_scopes)?;
                     }
                     block::METADATA => {
                         cursor.enter()?;
@@ -419,7 +419,7 @@ fn walk_metadata<'a>(
             md::KIND => md_kinds.push(push(pool, code, at, ops)?),
             md::GLOBAL_DECL_ATTACHMENT => md_decl_attachments.push(push(pool, code, at, ops)?),
             md::NODE | md::DISTINCT_NODE | md::VALUE => {
-                slots.push(MdSlot::Kept(push(pool, code, at, ops)?))
+                slots.push(MdSlot::Kept(push(pool, code, at, ops)?));
             }
             md::STRING_OLD => {
                 return fail(

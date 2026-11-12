@@ -42,7 +42,7 @@ impl BitWriter {
     }
 
     pub fn align32(&mut self) {
-        while self.bit % 32 != 0 {
+        while !self.bit.is_multiple_of(32) {
             self.emit(0, 1);
         }
     }

@@ -248,6 +248,16 @@ fn text(raw: &Raw<'_>, rec: Rec) -> BcResult<Vec<u8>> {
 impl<'r, 'a> Build<'r, 'a> {
     fn new(raw: &'r Raw<'a>, options: &ReadOptions) -> BcResult<Self> {
         let at = raw.module_pos;
+        // The bitcode epoch has been 0 since LLVM 4; LLVM refuses others.
+        if let Some(rec) = raw.epoch
+            && rec.ops(&raw.pool) != [0]
+        {
+            return fail(
+                BcErrorKind::Unsupported("epoch"),
+                rec.pos,
+                "a bitcode epoch other than 0",
+            );
+        }
         match raw.version.map(|rec| (rec.pos, rec.ops(&raw.pool))) {
             Some((_, [2])) => {}
             Some((pos, [version])) if *version < 2 => {
@@ -637,6 +647,7 @@ impl<'r, 'a> Build<'r, 'a> {
         self.values.globals[index].sym
     }
 
+    #[allow(clippy::too_many_lines)] // One record's fields, in order.
     fn variable(&mut self, index: usize, rec: Rec) -> BcResult<()> {
         let at = rec.pos;
         let ops = rec.ops(self.pool());
@@ -837,6 +848,7 @@ impl<'r, 'a> Build<'r, 'a> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)] // One record's fields, in order.
     fn function(&mut self, index: usize, rec: Rec, span: Option<BlockSpan>) -> BcResult<()> {
         let at = rec.pos;
         let ops = rec.ops(self.pool());
@@ -882,7 +894,7 @@ impl<'r, 'a> Build<'r, 'a> {
             };
             let mut pending = Vec::new();
             let built = attrs::param_attrs(&scratch, grec.pos, &mut type_of, &mut |name| {
-                pending.push(name)
+                pending.push(name);
             });
             self.scratch = scratch;
             for name in pending {

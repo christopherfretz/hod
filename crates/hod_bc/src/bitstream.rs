@@ -176,7 +176,7 @@ impl<'a> BitReader<'a> {
     /// # Errors
     /// `Malformed` if fewer are left.
     pub fn bytes(&mut self, len: u64) -> BcResult<&'a [u8]> {
-        debug_assert!(self.pos % 8 == 0, "bytes are read at a byte boundary");
+        debug_assert!(self.pos.is_multiple_of(8), "bytes are read at a byte boundary");
         if len > (self.end - self.pos) / 8 {
             return self.truncated();
         }
@@ -419,6 +419,7 @@ impl<'a, 'b> Cursor<'a, 'b> {
     /// # Errors
     /// `Malformed` for a bitstream that is not well formed; `Limit` past
     /// [`MAX_BLOCK_DEPTH`] or [`MAX_ABBREV_OPS`].
+    #[allow(clippy::should_implement_trait)] // Fallible: not an iterator.
     pub fn next(&mut self) -> BcResult<Entry> {
         if self.pending.is_some() {
             return fail(BcErrorKind::Malformed, self.at, "a block header that was not consumed");

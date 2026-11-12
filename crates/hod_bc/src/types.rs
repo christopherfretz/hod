@@ -62,7 +62,7 @@ impl Types {
 /// One entry of the table, before it is built.
 struct Entry {
     rec: Rec,
-    /// For a struct, opaque or target type: whether a STRUCT_NAME named it.
+    /// For a struct, opaque or target type: whether a `STRUCT_NAME` named it.
     named: bool,
     name: Option<Rec>,
 }
@@ -81,7 +81,11 @@ fn child(entry: &Entry, ops: &[u64], k: usize) -> Option<u64> {
 }
 
 /// Builds the TYPE block's table into `module`.
+#[allow(clippy::too_many_lines)] // The records, then the walk that resolves them.
 pub(crate) fn build(raw: &Raw<'_>, module: &mut Module) -> BcResult<Types> {
+    const NEW: u8 = 0;
+    const OPEN: u8 = 1;
+    const DONE: u8 = 2;
     let pool = &raw.pool[..];
     let mut entries: Vec<Entry> = Vec::new();
     let mut name: Option<Rec> = None;
@@ -161,9 +165,6 @@ pub(crate) fn build(raw: &Raw<'_>, module: &mut Module) -> BcResult<Types> {
     }
     let count = entries.len();
     let mut out = Types { ids: vec![TypeId::VOID; count], notes: vec![0; count], defined_notes: 0 };
-    const NEW: u8 = 0;
-    const OPEN: u8 = 1;
-    const DONE: u8 = 2;
     let mut state = vec![NEW; count];
     let mut stack: Vec<(usize, usize)> = Vec::new();
     let mut fields: Vec<TypeId> = Vec::new();

@@ -731,8 +731,9 @@ The rest follows `hod_ll`'s order:
    return and argument attributes as `hod_ll` keeps them, and the
    names the groups reject are notes;
 4. an intrinsic's signature is checked as `hod_ll` checks it;
-5. a `musttail` call in a variadic function gives
-   `call:forwarded-varargs`;
+5. a `musttail` call in a variadic function forwards the function's
+   variable arguments; the record does not say so and nothing is
+   recorded for it, as in `hod_ll` (`spec/ll.md` §11.6);
 6. the operand bundles, then the call is emitted; `invoke` and `callbr`
    end their block.
 

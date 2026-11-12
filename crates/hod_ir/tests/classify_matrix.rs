@@ -236,6 +236,9 @@ fn support_flips_rows() {
     // WP-101: the `bfloat` NEON intrinsics.
     assert_eq!(shipped.supports("intrinsic:llvm.aarch64.neon.bfdot"), Some(true));
     assert_eq!(shipped.supports("intrinsic:llvm.aarch64.neon.bfcvtn2"), Some(true));
+    // WP-101: a number minus an address, as an operand only.
+    assert_eq!(shipped.supports("operand:neg-addr"), Some(true));
+    assert_eq!(shipped.supports("init:neg-addr"), Some(false));
     // WP-035: integer arithmetic on integers, not on pointers.
     assert_eq!(shipped.supports("inst:add/int"), Some(true));
     assert_eq!(shipped.supports("inst:add/ptr"), Some(false));

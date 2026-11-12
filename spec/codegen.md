@@ -1826,6 +1826,11 @@ that refused it before (WP-084's "stays refused" list is settled here).
   instruction itself (FEAT_BF16), as `llc` emits for a function with
   `+bf16`; the accumulator operand is the result register. Another
   signature is `a64:intrinsic-target`.
+- **A number minus an address** as an operand (`operand:neg-addr`,
+  `spec/ir.md` §4.2; `common::materialize_gpr_const` hands an `Expr` to
+  `tail3::neg_addr`): the symbol's address with `offset - addend` added,
+  by the symbol access of §7.4, then `neg`. Data and aggregate operands
+  are `init:neg-addr`.
 
 #### 5.5.2 Target features (WP-043)
 

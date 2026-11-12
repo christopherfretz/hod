@@ -1390,3 +1390,135 @@ fn bf16_intrinsics_agree_with_llc() {
     let calls = bf_calls(&names, 0x0101_bfd0);
     run("a64-tail3-bf16-intrinsics", &[&body], &calls, None);
 }
+
+// ---- a number minus an address ----
+
+/// Functions whose operands are a number minus an address
+/// (`sub (i64 k, ptrtoint @s)`), each adding the address back at run
+/// time so that the result does not depend on where the program loads:
+/// a local array (direct), an external function (through the GOT under
+/// PIC), an offset into the array, and the forms clang and GCC's torture
+/// suite write (`and (sub 0, @s), 63`).
+fn neg_addr_body() -> (String, Vec<String>) {
+    let body = "@nb = internal global [64 x i8] zeroinitializer, align 64
+@ng = global [64 x i8] zeroinitializer, align 64
+declare i32 @puts(ptr)
+define i64 @na(i64 %a) {
+  %s = ptrtoint ptr @nb to i64
+  %x = add i64 sub (i64 4, i64 ptrtoint (ptr @nb to i64)), %s
+  %r = add i64 %x, %a
+  ret i64 %r
+}
+define i64 @nc(i64 %a) {
+  %s = ptrtoint ptr @ng to i64
+  %x = and i64 sub nsw (i64 0, i64 ptrtoint (ptr getelementptr (i8, ptr @ng, i64 5) to i64)), 63
+  %y = add i64 sub (i64 4, i64 ptrtoint (ptr getelementptr (i8, ptr @ng, i64 12) to i64)), %s
+  %r = add i64 %x, %y
+  %q = xor i64 %r, %a
+  ret i64 %q
+}
+define i64 @nd(i64 %a) {
+  %s = ptrtoint ptr @puts to i64
+  %x = add i64 add (i64 sub (i64 123456789012, i64 ptrtoint (ptr @puts to i64)), i64 -5), %s
+  %r = mul i64 %x, %a
+  ret i64 %r
+}
+define i64 @ne(i64 %a) {
+  %s = ptrtoint ptr @ng to i64
+  %x = add i64 sub (i64 sub (i64 0, i64 ptrtoint (ptr getelementptr (i8, ptr @ng, i64 33) to i64)), i64 -70000000000), %s
+  %c = icmp ult i64 %a, sub (i64 -1, i64 ptrtoint (ptr @nb to i64))
+  %z = zext i1 %c to i64
+  %r = add i64 %x, %z
+  ret i64 %r
+}
+";
+    (body.to_owned(), ["na", "nc", "nd", "ne"].map(str::to_owned).to_vec())
+}
+
+#[test]
+fn numbers_minus_addresses_agree_with_llc() {
+    let (body, names) = neg_addr_body();
+    let calls = calls_of(&names, &mut Rng(0x0101_5ab0), 8);
+    run("a64-tail3-neg-addr", &[&body], &calls, None);
+}
+
+/// Data and an aggregate operand's image have no relocation for a
+/// number minus an address (`llc` reports "Cannot represent a difference
+/// across sections" for data); a thread-local symbol is no constant.
+#[test]
+fn numbers_minus_addresses_in_images_are_refused() {
+    let classify = |text: &str| {
+        let (module, bodies) = parse(&format!("{}{text}", ll_header(22)));
+        let module_pass = hod_ir::classify(&module).err();
+        let body_pass = bodies.iter().find_map(|b| hod_ir::classify_body(&module, b).err());
+        module_pass.or(body_pass).map(|r| r.construct.into_owned())
+    };
+    let cases = [
+        (
+            "@a = global i64 0
+@g = global i64 sub (i64 4, i64 ptrtoint (ptr @a to i64))",
+            "init:neg-addr",
+        ),
+        (
+            "@a = global i64 0
+define void @f(ptr %p) {
+  store <2 x i64> <i64 1, i64 sub (i64 4, i64 ptrtoint (ptr @a to i64))>, ptr %p
+  ret void
+}",
+            "init:neg-addr",
+        ),
+        (
+            "@t = thread_local global i64 0
+define i64 @f() {
+  ret i64 sub (i64 4, i64 ptrtoint (ptr @t to i64))
+}",
+            "tls:address-in-constant",
+        ),
+        (
+            "@a = global i64 0
+define i64 @f() {
+  ret i64 sub (i64 4, i64 ptrtoint (ptr getelementptr (i8, ptr @a, i64 3) to i64))
+}",
+            "",
+        ),
+        (
+            "@a = global i64 0
+define i64 @f() {
+  ret i64 add (i64 4, i64 ptrtoint (ptr @a to i64))
+}",
+            "",
+        ),
+        (
+            "@a = global i64 0
+define i64 @f() {
+  ret i64 sub (i64 ptrtoint (ptr @a to i64), i64 ptrtoint (ptr @a to i64))
+}",
+            "",
+        ),
+        (
+            "@a = global i64 0
+define i64 @f() {
+  ret i64 sub (i64 0, i64 sub (i64 ptrtoint (ptr @a to i64), i64 ptrtoint (ptr @b to i64)))
+}
+@b = global i64 0",
+            "",
+        ),
+        (
+            "@a = global i64 0
+define i64 @f() {
+  ret i64 sub (i64 0, i64 add (i64 ptrtoint (ptr @a to i64), i64 ptrtoint (ptr @a to i64)))
+}",
+            "const-expr:sub",
+        ),
+        (
+            "@a = global i64 0
+define i32 @f() {
+  ret i32 sub (i32 0, i32 ptrtoint (ptr @a to i32))
+}",
+            "const-expr:sub",
+        ),
+    ];
+    for (text, want) in cases {
+        assert_eq!(classify(text).unwrap_or_default(), want, "{text}");
+    }
+}

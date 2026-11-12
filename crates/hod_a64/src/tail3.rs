@@ -38,8 +38,8 @@
 
 use hod_cg::{CallArg, CgResult, Class, FnCx, FrameRef, PReg, RuntimeFn, Target};
 use hod_ir::{
-    FloatPredicate, Inst, InstKind, IntPredicate, Intrinsic, Opcode, TypeId, TypeKind, TypeTable,
-    Value,
+    ConstId, FloatPredicate, Inst, InstKind, IntPredicate, Intrinsic, Opcode, TypeId, TypeKind,
+    TypeTable, Value,
 };
 use hod_mc_a64 as mc;
 use hod_mc_a64::{
@@ -1061,4 +1061,23 @@ pub fn bf16_intrinsic<'a>(
     let rm = rm.map_or(0, |r| u32::from(r.index()) << 16);
     put(cx, clear | rm | u32::from(rn.index()) << 5 | u32::from(regs[0].index()));
     cx.finish(inst, d)
+}
+
+// ---- a number minus an address ----
+
+/// Puts the constant `id`, a number minus an address
+/// (`hod_ir::ConstPool::neg_addr`), in `rd`, writing nothing else:
+/// `addend - (sym + offset)` is the negation of the symbol's address
+/// with `offset - addend` added, as `llc` computes it in code.
+///
+/// # Errors
+/// [`crate::common::CONSTANT`] for any other constant expression; what
+/// [`crate::common::sym_address`] reports.
+pub fn neg_addr(cx: &mut FnCx<'_, A64>, rd: Reg, id: ConstId) -> CgResult<()> {
+    let Some(neg) = cx.module.consts.neg_addr(&cx.module.types, id) else {
+        return unsupported(crate::common::CONSTANT);
+    };
+    crate::common::sym_address(cx, rd, neg.sym, neg.addend.wrapping_neg())?;
+    put(cx, mc::sub_shifted(Size::X, rd.zr(), RegZr::ZR, rd.zr(), Shift::Lsl, 0));
+    Ok(())
 }

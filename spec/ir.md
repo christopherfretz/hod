@@ -496,12 +496,23 @@ a number, and integer arithmetic on numbers. Everything else stays `Expr`.
 - An addend is reduced to the signed range of the field it will be
   written to, so that equal values are one constant. LLVM keeps the
   unreduced sum; the two agree modulo the field's width.
-- Two expressions LLVM can emit are deliberately left as `Expr`, and so
-  are declined by `classify`: a number minus an address (`sub (i64 4,
-  ptrtoint @a)`), and an address in an integer whose width is not 8, 16,
-  32 or 64 bits. Neither has been seen from a C++ front end; a normal
-  form is added when one is. (A number minus an address is in one GCC
-  torture module, C; it stays declined, WP-095.)
+- Two expressions LLVM can emit are deliberately left as `Expr`: a
+  number minus an address (`sub (i64 4, ptrtoint @a)`), and an address
+  in an integer whose width is not 8, 16, 32 or 64 bits. The second is
+  declined by `classify` (its `const-expr:<op>`); neither has been seen
+  from a C++ front end.
+- A number minus an address stays an `Expr`, and
+  `ConstPool::neg_addr(types, c)` recognizes one (WP-101): an `i64`
+  expression of only numbers, `add`, `sub` and one `ptrtoint` to `i64`
+  of an `Addr`, in which the address is subtracted, returning `NegAddr {
+  sym, addend }` whose value is `addend - sym` modulo 2^64 (the
+  `Addr`'s own offset is folded into `addend`). `classify` names it
+  `operand:neg-addr` as an operand on its own, and `init:neg-addr` in
+  an initializer or inside an aggregate operand, whose image has no
+  relocation for it (`llc`: "Cannot represent a difference across
+  sections"); a thread-local symbol is `tls:address-in-constant`. Any
+  other shape (two addresses subtracted, another width) keeps
+  `const-expr:<op>`.
 - `fold_cast` also folds a `bitcast` of a fixed vector of at most 128
   bits whose elements are all numbers to an integer or float: the
   vector's image (§4.3), as `llc` folds it (WP-095).

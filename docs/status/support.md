@@ -28,7 +28,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `visibility` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `tls` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
-| `init` | 9 | 6 | 3 | 0 | 0 | 9 | 0 |
+| `init` | 10 | 6 | 3 | 1 | 0 | 10 | 0 |
 | `function` | 6 | 6 | 0 | 0 | 0 | 6 | 0 |
 | `cc` | 15 | 5 | 8 | 2 | 0 | 12 | 3 |
 | `attr` | 57 | 23 | 31 | 3 | 10 | 39 | 8 |
@@ -40,10 +40,10 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `tail` | 3 | 3 | 0 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
-| `operand` | 10 | 7 | 3 | 0 | 0 | 10 | 0 |
+| `operand` | 11 | 8 | 3 | 0 | 0 | 11 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 351 | 326 | 25 | 0 | 0 | 135 | 216 |
-| total | 658 | 521 | 91 | 46 | 17 | 370 | 271 |
+| total | 660 | 522 | 91 | 47 | 17 | 372 | 271 |
 
 ## `module`
 
@@ -181,6 +181,7 @@ What a variable's initializer contains.
 | `init:block-diff` | supported | not-implemented | a label difference `&&a - &&b` of two blocks of one function, a number (WP-095) |
 | `init:dso-local-equivalent` | not-implemented | not-implemented | unplanned |
 | `init:no-cfi` | not-implemented | not-implemented | unplanned |
+| `init:neg-addr` | rejected | not-implemented | no ELF relocation subtracts a symbol's address; `llc` refuses it too. a number minus an address, `sub (i64 4, i64 ptrtoint (ptr @a to i64))`, in data or in an aggregate operand's image |
 
 ## `function`
 
@@ -478,6 +479,7 @@ Constant addresses as instruction operands.
 | `operand:block-diff` | not-implemented | not-implemented | unplanned. a label difference as an operand (WP-095) |
 | `operand:dso-local-equivalent` | not-implemented | not-implemented | unplanned |
 | `operand:no-cfi` | not-implemented | not-implemented | unplanned |
+| `operand:neg-addr` | supported | not-implemented | a number minus an address, alone (`init:neg-addr`) |
 | `operand:address-in-aggregate` | supported | not-implemented | an aggregate or vector constant with an address (WP-072) |
 
 ## `const-expr`

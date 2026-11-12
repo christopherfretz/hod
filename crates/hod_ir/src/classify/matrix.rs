@@ -2180,6 +2180,11 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
     row("intrinsic:llvm.prefetch", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
     row("intrinsic:llvm.clear_cache", on(&[TypeClass::Ptr]), todo(X64), ""),
     row("intrinsic:llvm.readcyclecounter", on(&[TypeClass::Int]), todo(X64), ""),
+    // WP-064: named registers; the target refuses a register it does not
+    // read or write by name (`spec/codegen.md`).
+    row("intrinsic:llvm.read_register", on(&[TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.read_volatile_register", on(&[TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.write_register", on(&[TypeClass::Int]), todo(X64), ""),
     row("intrinsic:llvm.is.constant", ON, todo(X64), ""),
     row("intrinsic:llvm.objectsize", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
     row(

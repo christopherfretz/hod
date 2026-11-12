@@ -79,6 +79,9 @@ pub(crate) struct State {
     pub old_record: Option<crate::body_debug::OldRecord>,
     /// The values of the debug record being read.
     pub dbg_vals: Vec<Value>,
+    /// In a module without debug information, the function's local
+    /// metadata (strings and nodes for metadata operands, WP-064).
+    pub plain_md: crate::debug::DebugBits,
 }
 
 /// Reads the bodies of one module's functions (`spec/bc.md` §11).
@@ -188,6 +191,9 @@ impl<'b, 'a> BodyReader<'b, 'a> {
         st.params.clear();
         st.params.extend_from_slice(params);
         st.old_record = None;
+        st.plain_md.local.clear();
+        st.plain_md.args.clear();
+        st.plain_md.strs.clear();
         if let Some(notes) = self.bits.types.param_notes(function.type_id) {
             st.param_notes.extend_from_slice(notes);
         }
@@ -421,6 +427,10 @@ impl Fx<'_, '_, '_> {
                         block::METADATA_ATTACHMENT => {
                             cursor.enter()?;
                             self.attachments(cursor, ops)?;
+                        }
+                        block::METADATA if !self.bits.debug.on => {
+                            cursor.enter()?;
+                            self.plain_local_metadata(cursor, ops)?;
                         }
                         _ => cursor.skip(),
                     }

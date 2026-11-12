@@ -1021,8 +1021,12 @@ scope is noted `syncscope:<name>`.
   also refuses variable arguments of the call itself before the `...`,
   which LLVM's accepts (`spec/ir.md` §5.8).
 - A `metadata` argument is read (`!"…"`, `!N`, `!{…}`, `!DIKind(…)`, or a
-  value as metadata) and, if the call would be emitted, noted
-  `metadata-arg:<callee>`: `hod_ir` has no metadata operand.
+  value as metadata). A string `!"…"`, or a node that is not `distinct`
+  and holds only strings (in place, or `!N` defined so), each valid
+  UTF-8, becomes a metadata operand (`spec/ir.md` §5.3, WP-064) when the
+  callee is an intrinsic on hod's list (§5.5 there: the named
+  registers). Anything else, and any metadata argument of another
+  callee, is noted `metadata-arg:<callee>` if the call would be emitted.
 
 ### 11.7 Calls that generate no code
 

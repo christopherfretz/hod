@@ -1069,7 +1069,7 @@ impl<'a, S: Sink> Walker<'a, S> {
                 self.subject(row, classes, TypeId::PTR, at)
             }
             ValueKind::Asm(_) => self.invalid(rules::INLINE_ASM, at),
-            ValueKind::None => self.invalid(rules::BODY, at),
+            ValueKind::Meta(_) | ValueKind::None => self.invalid(rules::BODY, at),
         }
     }
 
@@ -1164,6 +1164,10 @@ impl<'a, S: Sink> Walker<'a, S> {
                     self.symbol_use(sym, None, at)?;
                     self.subject(row, classes, TypeId::PTR, at)?;
                 }
+                // A metadata operand (§5.3) is the intrinsic's business:
+                // its row and its target judge what it names.
+                ValueKind::Meta(meta)
+                    if site.intrinsic().is_some() && meta.index() < cx.body.meta_count() => {}
                 _ => self.operand(cx, row, classes, arg, at)?,
             }
             if has_attrs {

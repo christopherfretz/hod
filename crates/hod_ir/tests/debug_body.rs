@@ -666,6 +666,7 @@ fn a_body_without_debug_information_pays_two_empty_tables() {
     }
     assert_eq!(plain.arg_uses(0), with.arg_uses(0));
     // Two more empty tables than before debug records existed: 48 bytes
-    // in a struct there is one of per function being compiled.
-    assert_eq!(size_of::<Body>(), 544);
+    // in a struct there is one of per function being compiled; one more
+    // for metadata operands (WP-064).
+    assert_eq!(size_of::<Body>(), 568);
 }

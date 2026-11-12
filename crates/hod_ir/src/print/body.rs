@@ -269,6 +269,18 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
             ValueKind::Asm(_) => {
                 return self.malformed("inline assembly that is not the callee of a call");
             }
+            // §5.3: written in place, `!"…"` or `!{!"…", …}`.
+            ValueKind::Meta(id) => {
+                let Some(meta) = body.metadata(id) else {
+                    return self.malformed(format!("{id:?} is not metadata of the body"));
+                };
+                self.s(if meta.is_node() { "!{" } else { "" })?;
+                for (index, text) in meta.strings().enumerate() {
+                    self.s(if index > 0 { ", !" } else { "!" })?;
+                    write_quoted(self.out, text.as_bytes())?;
+                }
+                self.s(if meta.is_node() { "}" } else { "" })?;
+            }
             ValueKind::None => return self.malformed("an operand that is no value"),
             other => return self.malformed(format!("{other:?} is not a value of the body")),
         }

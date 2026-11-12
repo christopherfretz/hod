@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `operand` | 10 | 7 | 3 | 0 | 0 | 10 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 351 | 319 | 32 | 0 | 0 | 135 | 216 |
-| total | 658 | 514 | 98 | 46 | 17 | 370 | 271 |
+| `intrinsic` | 354 | 322 | 32 | 0 | 0 | 138 | 216 |
+| total | 661 | 517 | 98 | 46 | 17 | 373 | 271 |
 
 ## `module`
 
@@ -605,6 +605,9 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.prefetch` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.clear_cache` | supported (ptr) | not-implemented |  |
 | `intrinsic:llvm.readcyclecounter` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.read_register` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.read_volatile_register` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.write_register` | supported (int) | not-implemented |  |
 | `intrinsic:llvm.is.constant` | supported | not-implemented |  |
 | `intrinsic:llvm.objectsize` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.ptrmask` | supported (int, ptr, vector) | not-implemented |  |

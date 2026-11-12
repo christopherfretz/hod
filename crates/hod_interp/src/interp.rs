@@ -900,6 +900,10 @@ impl<'a> Machine<'_, 'a> {
                 _ => invalid(format!("{slot:?} is not a slot of the body")),
             },
             ValueKind::Asm(_) => unsupported("call:inline-asm"),
+            // `spec/ir.md` §5.3: an argument of an intrinsic, which the
+            // intrinsic reads itself; the named-register ones are refused
+            // by name (`intrinsic:llvm.read_register`, ...).
+            ValueKind::Meta(_) => invalid("metadata where a value is required"),
             ValueKind::None => invalid("an operand is missing"),
         }
     }

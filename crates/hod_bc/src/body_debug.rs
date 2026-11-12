@@ -78,7 +78,7 @@ impl Fx<'_, '_, '_> {
             LocalMd::Value { ty, value } => Use::Value { ty, value },
             LocalMd::EmptyTuple => Use::EmptyTuple,
             LocalMd::ArgList { start, len } => Use::ArgList { start, len },
-            LocalMd::Other => Use::Other,
+            LocalMd::String { .. } | LocalMd::Node { .. } | LocalMd::Other => Use::Other,
         })
     }
 

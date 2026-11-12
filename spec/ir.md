@@ -642,9 +642,10 @@ expression.
 
 A `Value` is 4 bytes: a 3-bit tag and a 29-bit index. Tags: instruction
 result, argument, constant, symbol address, stack slot address, inline
-assembly (callee position only), and "none" (`Value::NONE`: the value of
-`ret void`, the callee of an intrinsic call). `Value::kind()` decodes it
-to a `ValueKind`. Blocks are `BlockId`s and appear only in terminators,
+assembly (callee position only), metadata (an argument of an intrinsic
+call only, below), and "none" (`Value::NONE`: the value of `ret void`,
+the callee of an intrinsic call). `Value::kind()` decodes it to a
+`ValueKind`. Blocks are `BlockId`s and appear only in terminators,
 `phi` and `BlockAddr`; they are never `Value`s.
 
 Values may be referred to before they are defined (a `phi` operand, or a
@@ -661,6 +662,20 @@ checked against the definition.
 The builder cannot hand out the final instruction id ahead of time, because
 ids are layout positions (§5.1) and a producer that meets a use first does
 not know how many instructions come before the definition.
+
+**Metadata operands** (WP-064). `FunctionBuilder::metadata(node,
+strings)` adds a metadata operand to the body and returns its `Value`
+(`ValueKind::Meta(MetaId)`, type `metadata`): a string `!"s"` (`node`
+false, exactly one string) or a node of strings `!{!"a", ...}` (`node`
+true, any number, the empty node included). Nothing else LLVM writes as
+metadata (numbers, values, nested or `distinct` nodes, debug nodes) has a
+form; a producer refuses it as `metadata-arg:<callee>`. The operand
+belongs to the body (`Body::metadata(id)` reads it back: `is_node`,
+`strings`, `single_node_string`), so bodies stay independent of each
+other and of the module. It is allowed only as an argument of a call
+whose callee is an intrinsic, in a parameter of type `metadata` (the
+builder checks the first, `verify` both, §5.8); the producers make one
+only for an intrinsic on hod's list (§5.5).
 
 ### 5.4 Instructions
 
@@ -753,7 +768,7 @@ suffix, so a producer reading LLVM's output never sees one. One exception:
 the member. `Intrinsic::mangled_name(types, overloads)` is the inverse, for
 the printer.
 
-The list (351; each with every overload LLVM allows):
+The list (354; each with every overload LLVM allows):
 
 - memory: `memcpy memcpy.inline memmove memset memset.inline`
 - variable arguments and stack: `va_start va_end va_copy stacksave
@@ -784,12 +799,18 @@ The list (351; each with every overload LLVM allows):
   `aarch64.sisd.*` that clang 22 or 19 emits for `<arm_neon.h>` (178 of
   them; `bfcvt`, `bfcvtn` and `bfcvtn2` are LLVM 19's, which LLVM 22
   upgrades to other IR on reading) but the SM3/SM4, FP8, `famax`/`famin`
-  and `vluti` ones. The list in
+  and `vluti` ones.
+- named registers (WP-064): `read_register read_volatile_register
+  write_register`, whose first argument is a metadata operand (§5.3)
+  naming the register. Which names a target reads or writes is the
+  target's to judge. The list in
   `crates/hod_ir/src/intrinsic.rs` is the reference.
 
 Not on the list, and therefore `Other`: the other target-specific
-intrinsics (`llvm.aarch64.*` not above, `llvm.x86.*`), intrinsics with metadata arguments (the
-constrained floating-point family, `llvm.read_register`), the masked
+intrinsics (`llvm.aarch64.*` not above, `llvm.x86.*`), the other
+intrinsics with metadata arguments (the constrained floating-point family,
+whose producers refuse the call as `metadata-arg:<callee>`: no input in
+the corpus has one), the masked
 vector family (its signatures differ between LLVM 19 and 22), and anything
 no frontend in scope emits at `-O0`.
 
@@ -1063,7 +1084,7 @@ so that it also judges a body that did not come from the builder:
 | check | error |
 |---|---|
 | the tables are consistent: block ranges tile the instructions in layout order, each block ends in its only terminator, `phi`s first, landing pads placed as in §5.4, `phi` lists match predecessor edges | `BadBlock` |
-| operands, ids, pool ranges, side-table links and counts are in range and allowed in their position; atomic orderings (§5.4); `switch` cases; call argument counts against the function type; an inline-assembly value only as a callee | `InvalidOperand` |
+| operands, ids, pool ranges, side-table links and counts are in range and allowed in their position; atomic orderings (§5.4); `switch` cases; call argument counts against the function type; an inline-assembly value only as a callee; a metadata operand (§5.3) only as an argument of an intrinsic call in a `metadata` parameter, naming an operand of this body whose strings are in range and a string operand with one string | `InvalidOperand` |
 | types that must agree do: operands with each other and with the result, call arguments with the function type's parameters, the result with its return type, `ret` with the function's, `resume` and landing pads, a known intrinsic's overload types with its function type | `TypeMismatch` |
 | a type is of the class the instruction needs (integer, float, pointer, vector, aggregate, a valid cast, an atomic type) | `InvalidType` |
 | a loaded, stored or `va_arg` type is sized | `UnsizedType` |
@@ -1935,6 +1956,8 @@ than the entry (`blockaddress-of-entry-block`).
   bundles as `[ "tag"(...) ]`, `to label ... unwind label ...` for
   `invoke`, the indirect labels for `callbr`; inline assembly as `asm
   sideeffect "template", "constraints"`.
+- A metadata operand is written in place: `metadata !"s"` or `metadata
+  !{!"a", !"b"}`, each string quoted as a string constant's name is.
 - An intrinsic's name is `Intrinsic::mangled_name`'s: the base name and
   one suffix per overload type (§9.2 for `llvm.thread.pointer`), and
   `Other(name)` as it is. A dialect without the intrinsic is

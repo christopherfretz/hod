@@ -1014,8 +1014,42 @@ them there, and has the saturating arithmetic, `scmp`/`ucmp`, the
 - **`clear_cache`** calls `__clear_cache`. **`readcyclecounter`** is
   `mrs rd, CNTVCT_EL0` since WP-084 (`a64:readcyclecounter` is no longer
   produced).
+- **Named registers** (`read_register`, `read_volatile_register`,
+  `write_register`) are `hod_a64::named_reg`'s since WP-064 ("Named
+  registers" below).
 - `sshl.sat`/`ushl.sat` are lowered by WP-084 (below). Vector forms are `a64:intrinsic-vector`,
   `bfloat` ones `a64:intrinsic-bfloat`.
+
+#### Named registers (WP-064)
+
+`hod_a64::named_reg` lowers `llvm.read_register`,
+`llvm.read_volatile_register` and `llvm.write_register` of an `i64`
+whose metadata operand (`spec/ir.md` §5.3) is a node of one string, as
+`llc -O0 -global-isel=0 -fast-isel=0` of LLVM 19 and 22 does
+(`tests/named_reg.rs` compares 39 accesses with both, and runs 16):
+
+- `sp`, `x29`, `x30` (exactly so spelled; `llc` refuses `SP`, `fp`,
+  `lr`) read as `mov xd, sp` (`add xd, sp, #0`) or `mov xd, x29`/`x30`;
+  written, they are `a64:write-register-gpr` (the frame `llc` and hod
+  address slots through would break). The facade declines a body that
+  reads one of them where it may still be always-inlined
+  (`alwaysinline:frame-address`): inlined, it reads the caller's frame.
+- A system register named in `SYSREGS` (any case, as `llc`; the timer,
+  `CTR_EL0`, `DCZID_EL0`, `DAIF`, `NZCV`, `FPCR`, `FPSR`, `TPIDR_EL0`,
+  `TPIDRRO_EL0`, `MIDR_EL1`, `MPIDR_EL1`, `REVIDR_EL1`), or as
+  `op0:op1:CRn:CRm:op2` in decimal with `op0` 2 or 3 and every field in
+  range, reads with `mrs` and writes with `msr`. A write of a register
+  the table marks read-only is `a64:named-register`, as `llc` 22 refuses
+  it (`llc` 19 aborts).
+- Anything else is `a64:named-register`: the general registers `llc`
+  takes only when reserved (`-ffixed-xN`, which hod does not model),
+  `x0` and `xzr` (`llc` reads nothing), the `w` names (`llc` misreads
+  them as `NZCV`), a system register outside the table, a numeric form
+  out of range (`llc` encodes garbage). Another type than `i64` is
+  `a64:named-register-width` (`llc` emits an unencodable `mrs w0`).
+
+The interpreter refuses the three by name (`intrinsic:<name>`): what a
+register holds is the machine's.
 
 #### Assembly that needs no assembler (WP-075)
 

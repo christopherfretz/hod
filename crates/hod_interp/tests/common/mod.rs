@@ -60,6 +60,28 @@ impl Fx {
         self.bodies.push(body);
     }
 
+    /// As [`Fx::func`], for a body `Body::verify` may refuse. Returns
+    /// whether it accepts this one.
+    pub fn func_unverified(
+        &mut self,
+        name: &str,
+        ret: TypeId,
+        params: &[TypeId],
+        build: impl FnOnce(&mut Module, &mut FunctionBuilder) -> IrResult<()>,
+    ) -> (SymId, bool) {
+        let sym = self.declare(name, ret, params);
+        let ty = self.m.symbol(sym).ty();
+        let mut b = FunctionBuilder::new(&self.m, sym, ty).unwrap();
+        let entry = b.create_block().unwrap();
+        b.begin_block(entry).unwrap();
+        build(&mut self.m, &mut b).unwrap();
+        let body = b.finish().unwrap();
+        let verified = body.verify(&self.m).is_ok();
+        self.m.set_has_body(sym).unwrap();
+        self.bodies.push(body);
+        (sym, verified)
+    }
+
     /// Declares and defines `ret name(params)`.
     pub fn func(
         &mut self,

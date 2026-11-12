@@ -20,9 +20,9 @@ use hod_testutil::{DEFAULT_TIMEOUT, Scratch, run_with};
 
 use common::{Lcg, Llvm};
 
-/// Functions in the synthetic module: about 16 MiB of text when
-/// optimized, an eighth of that otherwise.
-const FUNCTIONS: usize = if cfg!(debug_assertions) { 1_500 } else { 12_000 };
+/// Functions in the synthetic module: about 19 MiB of text when
+/// optimized, a quarter of that otherwise.
+const FUNCTIONS: usize = if cfg!(debug_assertions) { 500 } else { 2_000 };
 /// Timed runs of each step; the fastest counts.
 const RUNS: usize = if cfg!(debug_assertions) { 1 } else { 5 };
 
@@ -229,8 +229,10 @@ fn peak_kib(text: &[u8]) -> Option<u64> {
     line.trim().parse().ok()
 }
 
-/// Measures the four steps on `text` and prints them under `title`.
-fn measure(title: &str, text: &[u8], options: &ParseOptions) -> ParsedModule<'static> {
+/// Measures the steps on `text`: the parsed module, and the lines to
+/// print, headed by `title`. Tests run side by side, so each prints its
+/// lines at once.
+fn measure(title: &str, text: &[u8], options: &ParseOptions) -> (ParsedModule<'static>, String) {
     // The parsed module borrows the text: leaked, once per measured text.
     let text: &'static [u8] = Box::leak(text.to_vec().into_boxed_slice());
     let mut lines = Vec::new();
@@ -252,6 +254,30 @@ fn measure(title: &str, text: &[u8], options: &ParseOptions) -> ParsedModule<'st
     let peak = peak_kib(text);
     lines.push(report("module-level parse", text.len(), time));
 
+    // What the module-level parse has to lex after the scan: everything
+    // but the bodies.
+    let body_bytes: usize = parsed.functions().iter().map(|f| f.body.of(text).len()).sum();
+    let (time, outside) = timed(|| {
+        let mut lexer = Lexer::new(text);
+        let mut functions = parsed.functions().iter();
+        let mut next = functions.next();
+        let mut tokens = 0usize;
+        loop {
+            let token = lexer.next_token();
+            if token.kind == Tok::Eof {
+                return tokens;
+            }
+            tokens += 1;
+            if let Some(function) = next
+                && token.end == function.body.start
+            {
+                lexer.set_pos(function.body.end as usize);
+                next = functions.next();
+            }
+        }
+    });
+    lines.push(report("lexing outside bodies", text.len() - body_bytes, time));
+
     let mut bodies = b"define void @f() {".to_vec();
     for function in parsed.functions() {
         bodies.extend_from_slice(function.body.of(text));
@@ -261,11 +287,10 @@ fn measure(title: &str, text: &[u8], options: &ParseOptions) -> ParsedModule<'st
     assert_eq!(skipped, (1, bodies.len() - 19), "the bodies are one body");
     lines.push(report("stepping over bodies", bodies.len(), time));
 
-    let body_bytes: usize = parsed.functions().iter().map(|f| f.body.of(text).len()).sum();
     assert_eq!(scanned.1, body_bytes, "the scan and the parse find the same bodies");
-    println!(
-        "{title}: {:.2} MiB, {tokens} tokens, {} top-level entities, {} symbols, {} bodies \
-         ({:.0}% of the text), {} metadata nodes",
+    let mut out = format!(
+        "{title}: {:.2} MiB, {tokens} tokens ({outside} outside bodies), {} top-level entities, \
+         {} symbols, {} bodies ({:.0}% of the text), {} metadata nodes",
         text.len() as f64 / 1_048_576.0,
         scanned.0,
         parsed.module.symbol_count(),
@@ -274,27 +299,29 @@ fn measure(title: &str, text: &[u8], options: &ParseOptions) -> ParsedModule<'st
         parsed.metadata().nodes().len()
     );
     for line in lines {
-        println!("{line}");
+        let _ = write!(out, "\n{line}");
     }
-    match peak {
-        Some(kib) => println!(
-            "  peak memory of the parse {:8.2} MiB, {:.2} bytes per byte of text",
+    let _ = match peak {
+        Some(kib) => write!(
+            out,
+            "\n  peak memory of the parse {:8.2} MiB, {:.2} bytes per byte of text",
             kib as f64 / 1024.0,
             kib as f64 * 1024.0 / text.len() as f64
         ),
-        None => println!("  peak memory of the parse: not measurable here"),
-    }
-    parsed
+        None => write!(out, "\n  peak memory of the parse: not measurable here"),
+    };
+    (parsed, out)
 }
 
 /// §9: the synthetic module, without and with debug information.
 #[test]
 fn rates_on_a_synthetic_module() {
-    println!("perf ({}), best of {RUNS}:", if cfg!(debug_assertions) { "dev" } else { "release" });
+    let profile = if cfg!(debug_assertions) { "dev" } else { "release" };
     for debug_info in [false, true] {
         let (text, body_bytes) = synthetic(debug_info);
         let title = if debug_info { "synthetic, -g" } else { "synthetic" };
-        let parsed = measure(title, &text, &ParseOptions::default());
+        let (parsed, lines) = measure(title, &text, &ParseOptions::default());
+        println!("perf ({profile}), best of {RUNS}: {lines}");
         assert_eq!(parsed.functions().len(), FUNCTIONS);
         let bodies: usize = parsed.functions().iter().map(|f| f.body.of(&text).len()).sum();
         // A span is the inside of the braces: the newline after `{` too.
@@ -316,14 +343,14 @@ fn rates_on_clang_output_beside_llvm_as() {
         for options in [&[][..], &["-g"][..]] {
             let text = llvm.clang("stl.cpp", Arch::X86_64, options);
             let title = format!("clang {} stl.cpp {}", llvm.major, options.join(" "));
-            let parsed = measure(title.trim_end(), &text, &ParseOptions::default());
+            let (parsed, lines) = measure(title.trim_end(), &text, &ParseOptions::default());
             assert!(parsed.functions().len() > 1000, "{title}: a large module");
             let (time, ()) = timed(|| {
                 let mut command = Command::new(llvm.tool("llvm-as"));
                 command.args(["-o", "/dev/null", "-"]);
                 assert!(run_with(&mut command, &text, DEFAULT_TIMEOUT).success());
             });
-            println!("{}", report(&format!("llvm-as {}", llvm.major), text.len(), time));
+            println!("{lines}\n{}", report(&format!("llvm-as {}", llvm.major), text.len(), time));
         }
     }
 }

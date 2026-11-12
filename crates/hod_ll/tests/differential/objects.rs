@@ -429,7 +429,7 @@ impl<'a> View<'a> {
         tally.aliases += 1;
     }
 
-    /// §5.6: something declared; the object names it only if it is used.
+    /// §5.8: something declared; the object names it only if it is used.
     fn declaration(&self, symbol: Symbol<'_>) {
         let context = self.context(symbol.id());
         let Some((_, entry)) = self.elf.symbol(&self.names[symbol.id().index()]) else {

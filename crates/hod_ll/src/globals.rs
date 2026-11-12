@@ -128,7 +128,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Gives every numbered global its symbol, before anything refers to
-    /// one (`spec/ll.md` §5.6). One with internal or private linkage is an
+    /// one (`spec/ll.md` §5.7). One with internal or private linkage is an
     /// anonymous symbol. One with any other linkage needs a name in the
     /// object: it takes `__unnamed_K`, `K` counting the numbered globals
     /// from 1 in file order, and is noted, because LLVM numbers such

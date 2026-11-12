@@ -363,7 +363,7 @@ fn expect_header(
     true
 }
 
-/// §5.8, §5.9, §7.3: every function header as the newest LLVM prints it
+/// §5.6, §5.8, §7.3: every function header as the newest LLVM prints it
 /// (linkage, visibility, `dso_local`, calling convention, return and
 /// parameter attributes, the attribute groups with LLVM's upgrades
 /// applied, `unnamed_addr`, section, COMDAT, alignment, personality)

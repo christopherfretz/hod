@@ -62,6 +62,12 @@ section, under about 2000 lines.
   `CARGO_BUILD_JOBS`. Test runs are capped too (`RUST_TEST_THREADS`, the
   harness's `-j`, per-process time and memory limits). Do not raise the
   caps, and do not unset `MAKEFLAGS`.
+- Every process a test or the harness starts holds a token of that pool
+  for its lifetime (`spec/harness.md` "Jobserver"). Start one through
+  `hod_testutil::run_with` (or `run`) in a test and through
+  `irdiff::process::run` in `xtask`, never with a bare `Command`: a bare
+  child is not counted. A test of the jobserver itself uses a pool of its
+  own (`hod_testutil::jobs::PrivatePool`), never the machine's.
 - Temporary files go under the worktree's build directory, never in a
   shared location with a fixed name.
 

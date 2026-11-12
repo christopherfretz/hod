@@ -567,8 +567,13 @@ fn tool_failure(tool: &str, end: End, output: &Output, limits: Limits) -> String
 }
 
 /// The outcome and reason of hod's coverage log, which must hold exactly
-/// one line of eight tab-separated fields (`spec/cli.md` "Coverage log").
+/// one line of tab-separated fields (`spec/cli.md` "Coverage log"). Fields
+/// are only ever appended to that format, and a reader takes the ones it
+/// knows: this one was written for the first eight, so it accepts a line
+/// of eight or more (hod writes ten today; the stand-ins for hod that the
+/// harness and its tests use write eight).
 fn read_coverage(log: &Path) -> Result<(String, String), String> {
+    const FIELDS: usize = 8;
     let text = match fs::read_to_string(log) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -581,7 +586,7 @@ fn read_coverage(log: &Path) -> Result<(String, String), String> {
         return Err(format!("its coverage log has {} lines, not one", lines.len()));
     };
     let fields: Vec<&str> = line.split('\t').collect();
-    if fields.len() != 8 || !text.ends_with('\n') {
+    if fields.len() < FIELDS || !text.ends_with('\n') {
         return Err("its coverage log line is malformed".to_owned());
     }
     Ok((fields[0].to_owned(), fields[1].to_owned()))
@@ -672,18 +677,31 @@ mod tests {
         let scratch = hod_testutil::Scratch::new("irdiff-coverage");
         let log = scratch.join("coverage.tsv");
         assert_eq!(read_coverage(&log).unwrap_err(), "it wrote no coverage log");
-        fs::write(&log, "error\tcodegen-not-implemented\ttext\t10\ta.o\t-\t5\t-\n").unwrap();
+        fs::write(&log, "error\tcodegen-not-implemented\ttext\t10\ta.o\t-\t5\t-\t-\t-\n").unwrap();
         assert_eq!(
             read_coverage(&log).unwrap(),
             ("error".to_owned(), "codegen-not-implemented".to_owned())
         );
+        // A converted bitcode module that fell back: fields 9 and 10 are set.
+        fs::write(&log, "fallback\tinline-asm\tbitcode\t10\ta.o\t-\t5\t90\t40\tsignal:9\n")
+            .unwrap();
+        assert_eq!(read_coverage(&log).unwrap(), ("fallback".to_owned(), "inline-asm".to_owned()));
+        // Fields are only ever appended: a later hod's longer line is read,
+        // and so is the line of the eight fields this reader knows.
+        fs::write(&log, "hod\t-\ttext\t1\ta.o\t-\t5\t-\t-\t-\tlater\n").unwrap();
+        assert_eq!(read_coverage(&log).unwrap(), ("hod".to_owned(), "-".to_owned()));
+        fs::write(&log, "error\tinline-asm\ttext\t1\ta.o\t-\t5\t-\n").unwrap();
+        assert_eq!(read_coverage(&log).unwrap(), ("error".to_owned(), "inline-asm".to_owned()));
+        // Fewer than it knows is not the format.
+        fs::write(&log, "hod\t-\ttext\t1\ta.o\t-\t5\n").unwrap();
+        assert_eq!(read_coverage(&log).unwrap_err(), "its coverage log line is malformed");
         fs::write(&log, "").unwrap();
         assert_eq!(read_coverage(&log).unwrap_err(), "its coverage log has 0 lines, not one");
         fs::write(&log, "hod\t-\n").unwrap();
         assert_eq!(read_coverage(&log).unwrap_err(), "its coverage log line is malformed");
-        fs::write(&log, "hod\t-\ttext\t1\ta.o\t-\t5\t-").unwrap();
+        fs::write(&log, "hod\t-\ttext\t1\ta.o\t-\t5\t-\t-\t-").unwrap();
         assert_eq!(read_coverage(&log).unwrap_err(), "its coverage log line is malformed");
-        let two = "hod\t-\ttext\t1\ta.o\t-\t5\t-\n".repeat(2);
+        let two = "hod\t-\ttext\t1\ta.o\t-\t5\t-\t-\t-\n".repeat(2);
         fs::write(&log, two).unwrap();
         assert_eq!(read_coverage(&log).unwrap_err(), "its coverage log has 2 lines, not one");
     }

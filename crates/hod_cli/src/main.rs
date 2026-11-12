@@ -3,8 +3,10 @@
 //! Contract: `spec/cli.md`.
 
 mod args;
+mod convert;
 mod coverage;
 mod driver;
+mod phases;
 
 use std::ffi::OsString;
 use std::process::ExitCode;

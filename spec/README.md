@@ -7,7 +7,7 @@ crate could be re-implemented from its spec and its tests alone.
 | file | covers | status |
 |---|---|---|
 | `ir.md` | `hod_ir`: the IR model, builder API, printer, `classify` | §2..§5 implemented (WP-002, WP-003, WP-004); debug metadata, the printer and `classify` are WP-005, WP-006, WP-009 |
-| `ll.md` | `hod_ll`: accepted text dialects, errors | planned (WP-007, WP-008) |
+| `ll.md` | `hod_ll`: accepted text dialects, errors | current for the lexer and the module level (WP-007); function bodies planned (WP-008) |
 | `object.md` | `hod_obj`: object model, ELF64 writer, linked sections, ELF convention helpers | current (WP-010, WP-011) |
 | `mc-a64.md` | `hod_mc_a64`: register model, instruction constructors, logical and floating-point immediates, constant materialization, fixups | current: base integer set (WP-012), scalar floating point, FP/SIMD loads and stores and a SIMD subset (WP-013) |
 | `mc-x64.md` | `hod_mc_x64` | planned |
@@ -18,7 +18,8 @@ crate could be re-implemented from its spec and its tests alone.
 | `dwarf.md` | `hod_dwarf` | planned |
 | `xform.md` | `hod_xform`: required lowerings | planned |
 | `cli.md` | the `hod` command line, the `hod` facade's `compile`, fallback, coverage log | current (WP-015); reasons grow with code generation |
-| `harness.md` | `xtask`: the kiln shim, test formats, differential runs, benchmarks | "shim" current (WP-015); the rest planned (WP-016..018) |
+| `harness.md` | `xtask`: the kiln shim, test formats, differential runs, benchmarks | current: "ci", "shim" (WP-015), "irdiff" and "Test directives" (WP-016), "corpus" (WP-017), "bench" (WP-018), "Jobserver" (WP-024); `bisect` planned |
+| `interp.md` | `hod_interp`: the reference interpreter (values, memory, traps, unsupported reasons, host functions, limits), the program generator, the LLVM oracle | current (WP-031) |
 
 ## Conventions
 

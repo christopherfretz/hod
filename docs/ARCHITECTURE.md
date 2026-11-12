@@ -86,7 +86,7 @@ between the IR and the bytes.
 | `hod_asm` | Assembler-syntax parser for `module asm` and inline `asm` bodies. (Later.) | `hod_mc_*` |
 | `hod` | The library facade: `compile(module, options) -> Result<Object, Unsupported>`. | all of the above |
 | `hod_cli` | The `hod` binary: an `llc`-compatible command line, so it drops into any driver that runs `llc`. | `hod`, `hod_ll` |
-| `hod_interp` | A reference interpreter for `hod_ir`, for tests: the oracle for the code generator's policy tests and for fuzzing. Not shipped. | `hod_ir` |
+| `hod_interp` | A reference interpreter for `hod_ir`, for tests: the oracle for the code generator's policy tests and for fuzzing; and a generator of random programs that it runs to a result. Not shipped. | `hod_ir` |
 | `xtask` | The harness: differential runs, linker matrix, benchmarks, bisection, CI entry point. Not shipped. | - |
 
 Dependency direction is top-down in the pipeline. The encoders and the

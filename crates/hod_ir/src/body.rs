@@ -22,6 +22,7 @@ use std::fmt;
 use std::ops::Range;
 
 use crate::attrs::{CallConv, ParamAttrs};
+use crate::debug::expr::ExprId;
 use crate::ids::{BlockId, ConstId, DiId, LocId, SymId, TypeId};
 use crate::inst::{
     AtomicOrdering, FloatPredicate, InstData, IntPredicate, MemFlags, Opcode, PTRADD_POOLED, RmwOp,
@@ -38,6 +39,10 @@ pub(crate) const UNSET: u32 = u32::MAX;
 /// What the body records about the uses of one instruction result or
 /// argument (§5.6). Four bytes.
 ///
+/// Besides the three facts about uses it carries one that is not about a
+/// use: whether a `#dbg_declare` names the value as a variable's address
+/// ([`UseFacts::named_by_declare`], §6.6).
+///
 /// A *use* is one operand position of one instruction; an instruction that
 /// names a value twice uses it twice. A use is *located* in the block of the
 /// instruction that has the operand, except that an incoming value of a
@@ -46,7 +51,8 @@ pub(crate) const UNSET: u32 = u32::MAX;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct UseFacts(u32);
 
-const COUNT_MASK: u32 = (1 << 30) - 1;
+const COUNT_MASK: u32 = (1 << 29) - 1;
+const DECLARED: u32 = 1 << 29;
 const OUTSIDE: u32 = 1 << 30;
 const NEXT: u32 = 1 << 31;
 
@@ -54,7 +60,7 @@ impl UseFacts {
     /// No uses.
     pub const NONE: UseFacts = UseFacts(0);
 
-    /// The number of uses. Saturates at 2^30 - 1.
+    /// The number of uses. Saturates at 2^29 - 1.
     #[inline]
     pub const fn count(self) -> u32 {
         self.0 & COUNT_MASK
@@ -78,7 +84,23 @@ impl UseFacts {
     /// a use by a `phi`, nor for an argument.
     #[inline]
     pub const fn only_use_is_next(self) -> bool {
-        self.0 == NEXT | 1
+        self.0 & !DECLARED == NEXT | 1
+    }
+
+    /// Whether a `#dbg_declare` names the value as the address of a
+    /// variable ([`Body::declares`], §6.6). Not a use: the count and the
+    /// two facts about uses are the same with and without it. It is the
+    /// one way debug information changes code: such a value needs a
+    /// home for the whole function (`spec/codegen.md` §4.1).
+    #[inline]
+    pub const fn named_by_declare(self) -> bool {
+        self.0 & DECLARED != 0
+    }
+
+    /// Records that a `#dbg_declare` names the value.
+    #[inline]
+    pub(crate) fn declare(&mut self) {
+        self.0 |= DECLARED;
     }
 
     /// The bits, for tests that damage them.
@@ -112,6 +134,9 @@ impl fmt::Debug for UseFacts {
         }
         if self.0 & NEXT != 0 {
             f.write_str(" next")?;
+        }
+        if self.0 & DECLARED != 0 {
+            f.write_str(" declared")?;
         }
         Ok(())
     }
@@ -169,19 +194,109 @@ impl Slot {
 }
 
 /// A source variable that lives in a stack slot for the whole function:
-/// what `#dbg_declare` of a static `alloca` says (§5.2, §6).
+/// what `#dbg_declare` of a static `alloca` says (§5.2, §6.6). 16 bytes.
 ///
-/// The debug expression of the declaration is the attachment point left
-/// for the debug-information work package: it is not represented yet, so a
-/// producer may record only declarations whose expression is empty.
+/// A slot can have several: the variables of an inlined call and of the
+/// caller, or the pieces of one variable, each with a fragment
+/// expression.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SlotVar {
     /// The slot holding the variable.
     pub slot: SlotId,
     /// The variable (a local-variable debug node).
     pub var: DiId,
-    /// Where it is declared: the location of the `#dbg_declare`.
+    /// Where it is declared: the location of the `#dbg_declare`, whose
+    /// scope and inlined-at say which instance of the variable this is.
     pub loc: LocId,
+    /// How the variable is found from the slot's address:
+    /// [`ExprId::EMPTY`] when it is simply there.
+    pub expr: ExprId,
+}
+
+/// A source variable declared to live, for the whole function, at an
+/// address that is not a stack slot: `#dbg_declare` of an argument, of an
+/// instruction's result, of a constant address (§6.6). 16 bytes.
+///
+/// The value is not used by the declaration, and an instruction result
+/// or argument named by one says so in its use facts
+/// ([`UseFacts::named_by_declare`]).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct DbgDeclare {
+    /// The address: an instruction result, an argument, a constant or a
+    /// symbol; [`Value::NONE`] for a declaration whose address was
+    /// dropped (`#dbg_declare(!{}, ...)`). Never a slot: that is a
+    /// [`SlotVar`].
+    pub address: Value,
+    /// The variable (a local-variable debug node).
+    pub var: DiId,
+    /// How the variable is found from the address.
+    pub expr: ExprId,
+    /// The location of the `#dbg_declare`.
+    pub loc: LocId,
+}
+
+/// What a [`DbgRecord`] is.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(u8)]
+pub enum DbgRecordKind {
+    /// `#dbg_value`: from here on the variable has this value.
+    Value = 0,
+    /// `#dbg_assign`: the source assigns this value to the variable
+    /// here, and the variable's memory is at `address`. Read as a
+    /// `#dbg_value` of the same value by a consumer that does not track
+    /// assignments.
+    Assign = 1,
+    /// `#dbg_label`: the label is here.
+    Label = 2,
+}
+
+/// A stored debug record. 28 bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct DbgRecordData {
+    pub(crate) before: u32,
+    pub(crate) var: DiId,
+    pub(crate) expr: ExprId,
+    pub(crate) loc: LocId,
+    /// Start of the values in `Body::vals`; an assign's address follows
+    /// them.
+    pub(crate) vals: u32,
+    pub(crate) addr_expr: ExprId,
+    pub(crate) count: u16,
+    pub(crate) kind: DbgRecordKind,
+    pub(crate) arg_list: bool,
+}
+
+/// A debug record positioned in the instruction stream: a `#dbg_value`,
+/// a `#dbg_assign` or a `#dbg_label` (§6.6). Obtained from
+/// [`Body::dbg_records`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct DbgRecord<'a> {
+    /// What the record is.
+    pub kind: DbgRecordKind,
+    /// The instruction the record stands before, in the same block: the
+    /// record takes effect when control reaches that instruction.
+    pub before: InstId,
+    /// The variable (a local-variable debug node); for a label, the
+    /// label node.
+    pub var: DiId,
+    /// The expression that makes the variable's value from `values`.
+    pub expr: ExprId,
+    /// The record's location: its scope and inlined-at say which
+    /// instance of the variable or label this is.
+    pub loc: LocId,
+    /// The values. Without an argument list there is one, which the
+    /// expression starts from; with one, the expression names them by
+    /// `DW_OP_LLVM_arg`. A value can be [`Value::NONE`] (LLVM's empty
+    /// metadata) or an `undef` or `poison` constant: the variable has no
+    /// location from here on. Empty for a label.
+    pub values: &'a [Value],
+    /// Whether `values` is a `DIArgList`.
+    pub arg_list: bool,
+    /// For an assign: the address of the variable's memory;
+    /// [`Value::NONE`] otherwise.
+    pub address: Value,
+    /// For an assign: the expression applied to `address`.
+    pub address_expr: ExprId,
 }
 
 /// One clause of a landing pad.
@@ -329,6 +444,10 @@ pub struct Body {
     pub(crate) layout: Vec<BlockId>,
     pub(crate) slots: Vec<Slot>,
     pub(crate) slot_vars: Vec<SlotVar>,
+    /// `#dbg_declare` of what is not a slot.
+    pub(crate) declares: Vec<DbgDeclare>,
+    /// `#dbg_value`, `#dbg_assign` and `#dbg_label`, in position order.
+    pub(crate) dbg_records: Vec<DbgRecordData>,
     pub(crate) calls: Vec<CallData>,
     pub(crate) param_attrs: Vec<ParamAttrs>,
     pub(crate) bundles: Vec<BundleData>,
@@ -361,6 +480,8 @@ impl Body {
             layout: Vec::new(),
             slots: Vec::new(),
             slot_vars: Vec::new(),
+            declares: Vec::new(),
+            dbg_records: Vec::new(),
             calls: Vec::new(),
             param_attrs: Vec::new(),
             bundles: Vec::new(),
@@ -389,6 +510,8 @@ impl Body {
         self.layout.clear();
         self.slots.clear();
         self.slot_vars.clear();
+        self.declares.clear();
+        self.dbg_records.clear();
         self.calls.clear();
         self.param_attrs.clear();
         self.bundles.clear();
@@ -554,6 +677,48 @@ impl Body {
         &self.slot_vars
     }
 
+    /// The variables declared to live at an address that is not a stack
+    /// slot, in the order the producer recorded them (§6.6). Each
+    /// instruction result and argument named here has
+    /// [`UseFacts::named_by_declare`].
+    #[inline]
+    pub fn declares(&self) -> &[DbgDeclare] {
+        &self.declares
+    }
+
+    /// The number of debug records.
+    #[inline]
+    pub fn dbg_record_count(&self) -> usize {
+        self.dbg_records.len()
+    }
+
+    /// The debug records (`#dbg_value`, `#dbg_assign`, `#dbg_label`) in
+    /// position order: by [`DbgRecord::before`], and among the records
+    /// before one instruction in the order the producer gave them
+    /// (§6.6). A consumer that walks the instructions in layout order
+    /// walks this beside them.
+    pub fn dbg_records(&self) -> impl ExactSizeIterator<Item = DbgRecord<'_>> + Clone {
+        self.dbg_records.iter().map(move |record| {
+            let start = record.vals as usize;
+            let end = start + usize::from(record.count);
+            let assign = record.kind == DbgRecordKind::Assign;
+            DbgRecord {
+                kind: record.kind,
+                before: InstId::new(record.before),
+                var: record.var,
+                expr: record.expr,
+                loc: record.loc,
+                values: self.vals.get(start..end).unwrap_or(&[]),
+                arg_list: record.arg_list,
+                address: match self.vals.get(end) {
+                    Some(&address) if assign => address,
+                    _ => Value::NONE,
+                },
+                address_expr: record.addr_expr,
+            }
+        })
+    }
+
     /// The number of calls, `invoke`s and `callbr`s.
     #[inline]
     pub fn call_count(&self) -> usize {
@@ -594,6 +759,8 @@ impl Body {
             + bytes(&self.layout)
             + bytes(&self.slots)
             + bytes(&self.slot_vars)
+            + bytes(&self.declares)
+            + bytes(&self.dbg_records)
             + bytes(&self.calls)
             + bytes(&self.param_attrs)
             + bytes(&self.bundles)
@@ -618,6 +785,8 @@ impl Body {
             + bytes(&self.layout)
             + bytes(&self.slots)
             + bytes(&self.slot_vars)
+            + bytes(&self.declares)
+            + bytes(&self.dbg_records)
             + bytes(&self.calls)
             + bytes(&self.param_attrs)
             + bytes(&self.bundles)
@@ -1619,7 +1788,9 @@ mod tests {
         assert_eq!(size_of::<UseFacts>(), 4);
         assert_eq!(size_of::<BlockData>(), 12);
         assert_eq!(size_of::<Slot>(), 16);
-        assert_eq!(size_of::<SlotVar>(), 12);
+        assert_eq!(size_of::<SlotVar>(), 16);
+        assert_eq!(size_of::<DbgDeclare>(), 16);
+        assert_eq!(size_of::<DbgRecordData>(), 28);
         assert_eq!(size_of::<Clause>(), 8);
         assert_eq!(size_of::<CallData>(), 40);
         assert_eq!(size_of::<BundleData>(), 16);
@@ -1640,6 +1811,17 @@ mod tests {
         assert!(!f.only_use_is_next(), "two uses are not one");
         assert!(f.used_outside_block());
         assert_eq!(format!("{f:?}"), "uses=2 outside next");
+
+        // §6.6: being named by a declare is not a use.
+        let mut declared = UseFacts::NONE;
+        declared.declare();
+        assert!(declared.named_by_declare() && declared.is_unused() && !f.named_by_declare());
+        declared.add(false, true);
+        assert!(declared.only_use_is_next() && declared.named_by_declare());
+        assert_eq!(
+            (declared.count(), format!("{declared:?}")),
+            (1, "uses=1 next declared".to_string())
+        );
 
         let mut g = UseFacts::NONE;
         g.add(false, false);

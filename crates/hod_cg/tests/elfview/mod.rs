@@ -250,6 +250,31 @@ impl Elf {
     }
 }
 
+impl Elf {
+    /// The relocations of the section named `name`: type, symbol name
+    /// (for a section symbol, `[section]`), addend.
+    pub fn relocs_of(&self, name: &str) -> Vec<(u32, String, i64)> {
+        let mut out = Vec::new();
+        for s in &self.sections {
+            if s.sh_type != SHT_RELA || self.sections[s.info as usize].name != name {
+                continue;
+            }
+            for r in 0..(s.size / 24) as usize {
+                let o = s.offset as usize + r * 24;
+                let info = u64_at(&self.bytes, o + 8);
+                let sym = &self.symbols[(info >> 32) as usize];
+                let symbol = if sym.info & 0xf == 3 {
+                    format!("[{}]", self.sections[sym.shndx as usize].name)
+                } else {
+                    sym.name.clone()
+                };
+                out.push(((info & 0xffff_ffff) as u32, symbol, u64_at(&self.bytes, o + 16) as i64));
+            }
+        }
+        out
+    }
+}
+
 /// An AArch64 mapping symbol: `$x`, `$d`, or one with a suffix.
 pub fn is_mapping(name: &str) -> bool {
     name == "$x" || name == "$d" || name.starts_with("$x.") || name.starts_with("$d.")

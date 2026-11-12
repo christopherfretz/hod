@@ -48,7 +48,7 @@ mod reg;
 mod sym;
 mod target;
 
-pub use access::{Access, CallAccess, TlsAccess, call_access, sym_access};
+pub use access::{Access, CallAccess, TlsAccess, call_access, prefers_local_alias, sym_access};
 pub use call::CallArg;
 pub use cx::{FnCx, Scratch, TailExit};
 pub use driver::{MAX_FUNCTION_SIZE, compile_function};

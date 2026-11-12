@@ -104,7 +104,7 @@ fn tls_access(module: &Module, options: Options, dso_local: bool, asked: TlsMode
 /// external linkage and default visibility is still preemptible as far as
 /// the linker knows, so a direct reference to its global symbol would be
 /// refused. Module emission makes the alias (§9.7).
-pub(crate) fn prefers_local_alias(module: &Module, options: Options, sym: SymId) -> bool {
+pub fn prefers_local_alias(module: &Module, options: Options, sym: SymId) -> bool {
     if !options.reloc_model.is_pic() || module.props.pie != PicLevel::None {
         return false;
     }

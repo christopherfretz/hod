@@ -50,8 +50,6 @@ fn named(module: &Module, obj: &mut hod_obj::Object, id: hod_ir::SymId) -> Symbo
 /// # Panics
 /// Panics when a writer refuses the rows.
 pub fn add_eh_tables(module: &Module, emitted: &mut Emitted) {
-    let rows = &emitted.rows;
-    let obj = &mut emitted.object;
     struct Func {
         rows: Vec<Row>,
         call_sites: Vec<CallSite>,
@@ -60,6 +58,8 @@ pub fn add_eh_tables(module: &Module, emitted: &mut Emitted) {
         type_ids: Vec<Option<SymbolId>>,
         personality: Option<SymbolId>,
     }
+    let rows = &emitted.rows;
+    let obj = &mut emitted.object;
     let mut funcs = Vec::new();
     for placed in &emitted.funcs {
         let r = &placed.record;

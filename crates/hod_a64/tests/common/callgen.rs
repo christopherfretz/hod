@@ -30,7 +30,7 @@
 
 use std::fmt::Write as _;
 
-/// A small deterministic generator (SplitMix64).
+/// A small deterministic generator (`SplitMix64`).
 #[derive(Clone, Debug)]
 pub struct Rng(pub u64);
 
@@ -371,7 +371,7 @@ pub fn random_type(rng: &mut Rng, ret: bool, variable: bool) -> T {
                 128
             };
             // `a64:call-wide-int-extension`.
-            let ext = if n > 64 && n % 64 != 0 { Ext::No } else { ext };
+            let ext = if n > 64 && !n.is_multiple_of(64) { Ext::No } else { ext };
             let k = carrier_for(rng, n, ext, carrier);
             if n == 1 && ext == Ext::No && rng.chance(50) {
                 return T::Bool;
@@ -514,7 +514,7 @@ pub fn random_value(rng: &mut Rng, t: T) -> V {
             }
             bytes.truncate(t.bytes());
             if rng.chance(15) {
-                bytes.iter_mut().for_each(|b| *b = 0);
+                bytes.fill(0);
             }
             V::Bytes(bytes)
         }
@@ -550,7 +550,10 @@ pub fn has_const(t: T, v: &V) -> bool {
 }
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("\\x{b:02x}")).collect()
+    bytes.iter().fold(String::new(), |mut s, b| {
+        let _ = write!(s, "\\x{b:02x}");
+        s
+    })
 }
 
 fn u64_at(bytes: &[u8], at: usize) -> u64 {
@@ -842,7 +845,7 @@ fn variant(rng: &mut Rng, t: T) -> T {
             } else {
                 128
             };
-            let ext = if n > 64 && n % 64 != 0 { Ext::No } else { ext };
+            let ext = if n > 64 && !n.is_multiple_of(64) { Ext::No } else { ext };
             let k = carrier_for(rng, n, ext, carrier);
             T::Int { n, ext, k }
         }
@@ -985,10 +988,14 @@ pub fn random_case(rng: &mut Rng, k: usize) -> Case {
         m_params.iter_mut().for_each(strip);
     }
     if strip_variable {
-        variable.iter_mut().for_each(|(t, _)| strip(t));
+        for (t, _) in &mut variable {
+            strip(t);
+        }
     }
     if h_params.iter().map(|(t, _)| gpr_cost(*t)).sum::<u32>() > 6 {
-        h_params.iter_mut().for_each(|(t, _)| strip(t));
+        for (t, _) in &mut h_params {
+            strip(t);
+        }
     }
     let retype = |call: &mut Call, named: &[T]| {
         for (index, (_, t, _)) in call.args.iter_mut().enumerate() {
@@ -1239,7 +1246,7 @@ pub type Places = Vec<Place>;
 /// gives where each argument of `c_k` arrives.
 pub fn driver(cases: &[Case], places: &dyn Fn(usize) -> Places) -> String {
     let mut out = String::from(C_PRELUDE);
-    let mut rng = Rng(0xc0ffee);
+    let mut rng = Rng(0x00c0_ffee);
     for agg in AGGS {
         let _ = writeln!(out, "{}", agg.def);
     }

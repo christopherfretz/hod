@@ -2,12 +2,15 @@
 //! `musttail`, landing pads, `resume`, variadic definitions and the
 //! `va_*` intrinsics, run natively against gcc and `llc`.
 
+#![allow(clippy::similar_names, clippy::too_many_lines, clippy::too_many_arguments)]
+
 #[path = "common/callgen.rs"]
 mod callgen;
 mod common;
 #[path = "common/unwind.rs"]
 mod unwind;
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use callgen::{Case, Place, Rng};
@@ -63,7 +66,7 @@ fn object_with(
     name: &str,
     text: &str,
     with_llc: bool,
-    options: &Options,
+    options: Options,
 ) -> Option<PathBuf> {
     if with_llc {
         let pic = options.reloc_model == hod_cg::RelocModel::Pic;
@@ -71,7 +74,7 @@ fn object_with(
         return llc(dir, name, &format!("{}{text}", ll_header(llc_major())), flags);
     }
     let (module, bodies) = parse(&format!("{}{text}", ll_header(22)));
-    let emitted = emit(&module, &bodies, options);
+    let emitted = emit(&module, &bodies, &options);
     Some(write_object(dir, &format!("{name}.o"), &emitted))
 }
 
@@ -108,6 +111,7 @@ fn link_run_all(
 }
 
 /// How the two modules of a generated program are built.
+#[allow(clippy::struct_excessive_bools)]
 struct Build {
     tag: &'static str,
     /// Modules A and B by `llc` rather than hod.
@@ -135,11 +139,11 @@ fn run_cases(label: &str, seed: u64, count: usize, builds: &[Build]) {
     let mut objects_a = Vec::new();
     for build in builds {
         let tag = build.tag;
-        let Some(obj_a) = object_with(&dir, &format!("a-{tag}"), &a, build.a_llc, &build.options)
+        let Some(obj_a) = object_with(&dir, &format!("a-{tag}"), &a, build.a_llc, build.options)
         else {
             return;
         };
-        let Some(obj_b) = object_with(&dir, &format!("b-{tag}"), &b, build.b_llc, &build.options)
+        let Some(obj_b) = object_with(&dir, &format!("b-{tag}"), &b, build.b_llc, build.options)
         else {
             return;
         };
@@ -162,14 +166,13 @@ fn run_cases(label: &str, seed: u64, count: usize, builds: &[Build]) {
                 toolchain.link_and_run(linker, &[], &[&driver, &obj_a, &obj_b], &exe)
             };
             let out = ran.stdout_text();
-            if exit_code(&ran) != Some(0) || !out.contains("checked") {
-                panic!(
-                    "{label} {tag} {}: {out}{}\n{}",
-                    linker.name,
-                    ran.stderr_text(),
-                    failing_cases(&out, &[&a, &b, &c])
-                );
-            }
+            assert!(
+                exit_code(&ran) == Some(0) && out.contains("checked"),
+                "{label} {tag} {}: {out}{}\n{}",
+                linker.name,
+                ran.stderr_text(),
+                failing_cases(&out, &[&a, &b, &c])
+            );
         }
     }
     // Calls and function addresses take the relocations `llc` gives them
@@ -256,7 +259,7 @@ fn random_signatures_agree_with_gcc_and_llc() {
         tag,
         a_llc,
         b_llc,
-        options: options.clone(),
+        options: *options,
         shared,
         all_linkers,
     };
@@ -299,7 +302,7 @@ fn handwritten_calls_run() {
         ("llc", true, Options::default()),
     ];
     for (tag, with_llc, options) in runs {
-        let Some(obj) = object_with(&dir, &format!("hand-{tag}"), &ll, with_llc, &options) else {
+        let Some(obj) = object_with(&dir, &format!("hand-{tag}"), &ll, with_llc, options) else {
             return;
         };
         let driver = if with_llc { &llc_driver } else { &hod_driver };
@@ -462,6 +465,36 @@ fn oracle_line(k: usize, v: &hod_interp::Val) -> String {
     format!("r {k} {:016x}{:016x}", (bits >> 64) as u64, bits as u64)
 }
 
+/// `nest` (in `x15`) and `byref` (a plain pointer) between a module
+/// compiled by hod and one compiled by `llc`, both ways.
+#[test]
+fn nest_and_byref_agree_with_llc() {
+    let dir = Scratch::new("a64-call-nest");
+    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let half = |me: &str, other: &str| {
+        format!(
+            "declare ptr @{other}_nest(ptr nest, i64)\n\
+             declare ptr @{other}_byref(i64, ptr byref([5 x i64]) align 8)\n\
+             define ptr @{me}_nest(ptr nest %p, i64 %x) {{\n  ret ptr %p\n}}\n\
+             define ptr @{me}_byref(i64 %x, ptr byref([5 x i64]) align 8 %p) {{\n  ret ptr %p\n}}\n\
+             define ptr @{me}_call_nest(ptr %p) {{\n  %r = call ptr @{other}_nest(ptr nest %p, i64 1)\n  ret ptr %r\n}}\n\
+             define ptr @{me}_call_byref(ptr %p) {{\n  %r = call ptr @{other}_byref(i64 1, ptr byref([5 x i64]) align 8 %p)\n  ret ptr %r\n}}\n"
+        )
+    };
+    let Some(theirs) = object_with(&dir, "llc-half", &half("l", "h"), true, Options::default())
+    else {
+        return;
+    };
+    let ours =
+        object_with(&dir, "hod-half", &half("h", "l"), false, Options::default()).expect("hod");
+    let c = "#include <stdio.h>\nlong g[5];\n\
+             void *h_call_nest(void *), *l_call_nest(void *), *h_call_byref(void *), *l_call_byref(void *);\n\
+             int main(void) {\n  int ok = h_call_nest(g) == g && l_call_nest(g) == g\n\
+             && h_call_byref(g) == g && l_call_byref(g) == g;\n  printf(\"done\\n\");\n  return !ok;\n}\n";
+    let driver = toolchain.compile_c(&dir, "driver", c, &[]);
+    link_run_all(&toolchain, &dir, "nest", &[], &[&driver, &ours, &theirs], "done", true);
+}
+
 /// `hod_interp` is the oracle: chains `o_k` -> `p_k` -> `q_k` of IR
 /// functions passing integers of every width (with the extension
 /// attributes on the inner calls), `float` and `double` in registers and
@@ -480,7 +513,7 @@ fn chains_agree_with_the_interpreter() {
     let mut entries = Vec::new();
     for k in 0..150 {
         // q_k: its parameters and the one it returns.
-        let q: Vec<OT> = (0..1 + rng.below(16)).map(|_| oracle_type(&mut rng)).collect();
+        let q: Vec<OT> = (0..=rng.below(16)).map(|_| oracle_type(&mut rng)).collect();
         let pick = rng.below(q.len() as u64) as usize;
         let ret = q[pick];
         // A caller's arguments for `callee`: its own parameters (`have`,
@@ -539,24 +572,26 @@ fn chains_agree_with_the_interpreter() {
         };
         let rty = ret.ir();
         let rattr = ret.attr();
-        ir.push_str(&format!(
-            "define{rattr} {rty} @q_{k}({}) {{\n  ret {rty} %a{pick}\n}}\n",
-            list(&q)
-        ));
-        ir.push_str(&format!(
+        write!(ir, "define{rattr} {rty} @q_{k}({}) {{\n  ret {rty} %a{pick}\n}}\n", list(&q))
+            .unwrap();
+        write!(
+            ir,
             "define {rty} @p_{k}({}) {{\n  %r = call{rattr} {rty} @q_{k}({})\n  ret {rty} %r\n}}\n",
             list(&p_types),
             q_args.join(", ")
-        ));
-        ir.push_str(&format!(
+        )
+        .unwrap();
+        write!(
+            ir,
             "define {rty} @o_{k}({}) {{\n  %r = call {rty} @p_{k}({})\n  ret {rty} %r\n}}\n",
             list(&o_types),
             p_args.join(", ")
-        ));
+        )
+        .unwrap();
         // The driver.
         let protos: Vec<&str> = o_types.iter().map(|t| t.c()).collect();
         let protos = if protos.is_empty() { "void".to_owned() } else { protos.join(", ") };
-        c.push_str(&format!("{} o_{k}({protos});\n", ret.c()));
+        writeln!(c, "{} o_{k}({protos});", ret.c()).unwrap();
         let args: Vec<String> = o_have
             .iter()
             .map(|(_, v)| match *v {
@@ -593,9 +628,9 @@ fn chains_agree_with_the_interpreter() {
                 args.join(", ")
             ),
         };
-        main.push_str(&format!(
-            "  {{ {read} printf(\"r {k} %016llx%016llx\\n\", (unsigned long long)(v >> 64), (unsigned long long)v); }}\n"
-        ));
+        writeln!(main,
+            "  {{ {read} printf(\"r {k} %016llx%016llx\\n\", (unsigned long long)(v >> 64), (unsigned long long)v); }}"
+        ).unwrap();
         entries.push((k, o_have.into_iter().map(|(_, v)| v).collect::<Vec<Val>>()));
     }
     main.push_str("  return 0;\n}\n");
@@ -629,7 +664,8 @@ fn chains_agree_with_the_interpreter() {
 
 /// An extension attribute for an argument of `n` bits a caller adds.
 fn oracle_type_ext(rng: &mut Rng, n: u32) -> &'static str {
-    if matches!(n, 1 | 8 | 16 | 32) { *rng.pick(&["", " zeroext", " signext"]) } else { "" }
+    const EXTS: [&str; 3] = ["", " zeroext", " signext"];
+    if matches!(n, 1 | 8 | 16 | 32) { EXTS[rng.below(3) as usize] } else { "" }
 }
 
 #[test]
@@ -701,7 +737,7 @@ fn a_wide_signext_return_is_extended() {
     let dir = Scratch::new("a64-call-wide-ret");
     let Some(toolchain) = Toolchain::host(&dir) else { return };
     let text = "define signext i65 @f(i65 %x) {\n  ret i65 %x\n}\n";
-    let obj = object_with(&dir, "wide", text, false, &Options::default()).expect("hod");
+    let obj = object_with(&dir, "wide", text, false, Options::default()).expect("hod");
     let c = "#include <stdio.h>\n__int128 f(__int128);\nint main(void) {\n\
              __int128 r = f(((__int128)1 << 64) | 5);\n\
              int ok = (unsigned long long)(r >> 64) == ~0ULL;\n\
@@ -722,14 +758,4 @@ fn a_mismatched_direct_call_takes_no_declared_attributes() {
     let functions = "declare void @g(ptr byval([5 x i64]) align 8)\n\
                      define void @f(ptr %p) { call void (ptr, i64) @g(ptr %p, i64 1)\n ret void }";
     assert_eq!(common::compile_ll(functions), Ok(()));
-}
-
-#[test]
-#[ignore = "debugging aid"]
-fn dbg_dump() {
-    let text = std::fs::read_to_string(std::env::var("DBG_LL").unwrap()).unwrap();
-    let (module, bodies) = parse(&format!("{}{text}", ll_header(22)));
-    let emitted = emit(&module, &bodies, &Options::default());
-    std::fs::write(std::env::var("DBG_O").unwrap(), hod_obj::elf::to_vec(&emitted.object).unwrap())
-        .unwrap();
 }

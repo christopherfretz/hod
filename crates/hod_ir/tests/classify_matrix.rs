@@ -129,8 +129,8 @@ const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 26] = [
     ("comdat:any", "", "global:variable-definition", "", ""),
     ("init:symbol", "", "global:variable-definition", "", ""),
     ("function:slots", "", "global:function-definition", "type:double", "cc:ccc"),
-    ("cc:fastcc", "", "global:function-definition", "cc:fastcc", "cc:fastcc"),
-    ("attr:zeroext", "", "global:function-definition", "attr:zeroext", "cc:ccc"),
+    ("cc:fastcc", "", "global:function-definition", "function:may-unwind", "cc:fastcc"),
+    ("attr:zeroext", "", "global:function-definition", "function:may-unwind", "cc:ccc"),
     ("type:double", "", "global:function-definition", "type:double", "cc:ccc"),
     ("inst:add", "", "global:function-definition", "type:double", "cc:ccc"),
     ("mem:volatile", "", "global:function-definition", "type:double", "cc:ccc"),
@@ -474,9 +474,16 @@ const RICH_BODY: [&str; 16] = [
     "inst:ret",
 ];
 
-/// The rows of `RICH_BODY` AArch64 supports (WP-033).
-const A64_SUPPORTED_BODY: [&str; 6] =
-    ["cc:ccc", "function:parameters", "type:int", "type:ptr", "operand:symbol", "inst:ret"];
+/// The rows of `RICH_BODY` AArch64 supports (WP-033, WP-038).
+const A64_SUPPORTED_BODY: [&str; 7] = [
+    "cc:ccc",
+    "function:parameters",
+    "type:int",
+    "type:ptr",
+    "operand:symbol",
+    "inst:call",
+    "inst:ret",
+];
 
 /// What the shipped matrix finds in the rich body on `arch`.
 fn rich_body(arch: Arch) -> Vec<&'static str> {

@@ -29,6 +29,11 @@ pub const GROUPS: &[(&str, Enable)] = &[
     // The skeleton: `br`, `ret`, `unreachable`, constants, arguments,
     // blocks without predecessors (through `common::skeleton`).
     ("WP-033", |e| e.options.unreachable_blocks = true),
+    ("WP-038", |e| {
+        e.options.calls = true;
+        e.options.indirect_calls = true;
+        e.options.many_args = true;
+    }),
     // WP-035 adds: ("WP-035", |e| { e.generator = true; e.options.casts = true; ... }),
 ];
 

@@ -29,21 +29,21 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `tls` | 4 | 0 | 4 | 0 | 0 | 4 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
 | `init` | 8 | 4 | 4 | 0 | 0 | 8 | 0 |
-| `function` | 6 | 1 | 5 | 0 | 0 | 6 | 0 |
-| `cc` | 15 | 1 | 12 | 2 | 0 | 12 | 3 |
-| `attr` | 56 | 11 | 42 | 3 | 9 | 39 | 8 |
+| `function` | 6 | 2 | 4 | 0 | 0 | 6 | 0 |
+| `cc` | 15 | 4 | 9 | 2 | 0 | 12 | 3 |
+| `attr` | 56 | 18 | 35 | 3 | 9 | 39 | 8 |
 | `type` | 15 | 2 | 10 | 3 | 0 | 13 | 2 |
-| `inst` | 67 | 3 | 56 | 8 | 0 | 59 | 8 |
+| `inst` | 67 | 4 | 55 | 8 | 0 | 59 | 8 |
 | `mem` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 0 | 21 | 0 | 0 | 21 | 0 |
-| `call` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
+| `call` | 3 | 2 | 1 | 0 | 0 | 3 | 0 |
 | `tail` | 3 | 2 | 1 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
 | `operand` | 9 | 2 | 7 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 133 | 0 | 133 | 0 | 0 | 133 | 0 |
-| total | 434 | 60 | 328 | 46 | 16 | 363 | 55 |
+| `intrinsic` | 133 | 3 | 130 | 0 | 0 | 133 | 0 |
+| total | 434 | 77 | 311 | 46 | 16 | 363 | 55 |
 
 ## `module`
 
@@ -186,7 +186,7 @@ Properties of a function that has a body.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `function:parameters` | supported | not-implemented | a body with parameters; per class of parameter |
-| `function:variadic` | not-implemented | not-implemented | WP-038. a variadic function with a body |
+| `function:variadic` | supported | not-implemented | a variadic function with a body |
 | `function:may-unwind` | not-implemented | not-implemented | WP-042. a body without `nounwind`: it needs unwind tables |
 | `function:personality` | not-implemented | not-implemented | M2 (exceptions). a body with a personality function |
 | `function:slots` | not-implemented | not-implemented | WP-036. a body with fixed stack objects (`Body::slots`) |
@@ -199,14 +199,14 @@ Calling conventions, of a body's function and of a call.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `cc:ccc` | supported | not-implemented |  |
-| `cc:fastcc` | not-implemented | not-implemented | WP-038. assigned as `ccc` (`spec/abi-a64.md` §1.2) |
+| `cc:fastcc` | supported | not-implemented | assigned as `ccc` (`spec/abi-a64.md` §1.2) |
 | `cc:coldcc` | not-implemented | not-implemented | unplanned |
 | `cc:ghccc` | not-implemented | not-implemented | unplanned |
 | `cc:anyregcc` | not-implemented | not-implemented | unplanned |
 | `cc:preserve_mostcc` | not-implemented | not-implemented | unplanned |
 | `cc:preserve_allcc` | not-implemented | not-implemented | unplanned |
-| `cc:swiftcc` | not-implemented | not-implemented | WP-038. assigned as `ccc` (`spec/abi-a64.md` §1.2) |
-| `cc:cxx_fast_tlscc` | not-implemented | not-implemented | WP-038. assigned as `ccc` (`spec/abi-a64.md` §1.2) |
+| `cc:swiftcc` | supported | not-implemented | assigned as `ccc` (`spec/abi-a64.md` §1.2) |
+| `cc:cxx_fast_tlscc` | supported | not-implemented | assigned as `ccc` (`spec/abi-a64.md` §1.2) |
 | `cc:tailcc` | not-implemented | not-implemented | unplanned |
 | `cc:cfguard_checkcc` | rejected | rejected | a Windows construct |
 | `cc:swifttailcc` | not-implemented | not-implemented | unplanned |
@@ -220,16 +220,16 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `attr:zeroext` | not-implemented | not-implemented | WP-038 |
-| `attr:signext` | not-implemented | not-implemented | WP-038 |
+| `attr:zeroext` | supported | not-implemented |  |
+| `attr:signext` | supported | not-implemented |  |
 | `attr:inreg` | not-implemented | not-implemented | unplanned |
-| `attr:nest` | not-implemented | not-implemented | WP-038 |
+| `attr:nest` | supported | not-implemented |  |
 | `attr:swiftself` | not-implemented | not-implemented | unplanned |
 | `attr:swifterror` | not-implemented | not-implemented | unplanned |
 | `attr:swiftasync` | not-implemented | not-implemented | unplanned |
-| `attr:sret` | not-implemented | not-implemented | WP-038 |
-| `attr:byval` | not-implemented | not-implemented | WP-038 |
-| `attr:byref` | not-implemented | not-implemented | WP-038 |
+| `attr:sret` | supported | not-implemented |  |
+| `attr:byval` | supported | not-implemented |  |
+| `attr:byref` | supported | not-implemented |  |
 | `attr:inalloca` | rejected | rejected | a Windows construct |
 | `attr:preallocated` | rejected | rejected | a Windows construct |
 | `attr:elementtype` | not-implemented | not-implemented | unplanned. on an inline-assembly or intrinsic argument |
@@ -239,7 +239,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:noreturn` | supported | supported | a promise: nothing to do in the function itself |
 | `attr:naked` | rejected | rejected | a naked function is its inline assembly, with no frame (`spec/codegen.md` §1) |
 | `attr:nounwind` | supported | supported | its absence is `function:may-unwind` |
-| `attr:returns_twice` | not-implemented | not-implemented | WP-038. on a body, a call, or a function called directly |
+| `attr:returns_twice` | supported | not-implemented | on a body, a call, or a function called directly |
 | `attr:alwaysinline` | supported | supported | by itself; see `linkage:available_externally` |
 | `attr:ssp` | not-implemented | not-implemented | spec/codegen.md §13. open question: accept and ignore, or implement |
 | `attr:sspreq` | not-implemented | not-implemented | spec/codegen.md §13 |
@@ -356,7 +356,7 @@ Instructions.
 | `inst:select` | not-implemented | not-implemented | WP-035 |
 | `inst:freeze` | not-implemented | not-implemented | WP-035 |
 | `inst:va_arg` | rejected | rejected | `llc` miscompiles it on AArch64, so there is no oracle; frontends do not emit it |
-| `inst:call` | not-implemented | not-implemented | WP-038. a call of anything but an intrinsic |
+| `inst:call` | supported | not-implemented | a call of anything but an intrinsic |
 | `inst:landingpad` | not-implemented | not-implemented | M2 (exceptions) |
 | `inst:catchpad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:cleanuppad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
@@ -417,9 +417,9 @@ Kinds of callee.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `call:indirect` | not-implemented | not-implemented | WP-038. the callee is a computed address |
+| `call:indirect` | supported | not-implemented | the callee is a computed address |
 | `call:inline-asm` | not-implemented | not-implemented | hod_asm. the callee is inline assembly |
-| `call:variadic` | not-implemented | not-implemented | WP-038. a call through a variadic function type |
+| `call:variadic` | supported | not-implemented | a call through a variadic function type |
 
 ## `tail`
 
@@ -511,9 +511,9 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.memmove` | not-implemented | not-implemented | WP-041 |
 | `intrinsic:llvm.memset` | not-implemented | not-implemented | WP-041 |
 | `intrinsic:llvm.memset.inline` | not-implemented | not-implemented | unplanned |
-| `intrinsic:llvm.va_start` | not-implemented | not-implemented | WP-038 |
-| `intrinsic:llvm.va_end` | not-implemented | not-implemented | WP-038 |
-| `intrinsic:llvm.va_copy` | not-implemented | not-implemented | WP-038 |
+| `intrinsic:llvm.va_start` | supported | not-implemented |  |
+| `intrinsic:llvm.va_end` | supported | not-implemented |  |
+| `intrinsic:llvm.va_copy` | supported | not-implemented |  |
 | `intrinsic:llvm.stacksave` | not-implemented | not-implemented | WP-036 |
 | `intrinsic:llvm.stackrestore` | not-implemented | not-implemented | WP-036 |
 | `intrinsic:llvm.frameaddress` | not-implemented | not-implemented | WP-041 |

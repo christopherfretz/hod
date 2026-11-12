@@ -47,8 +47,10 @@ never a guess (§10). The IR is valid in LLVM's sense (definitions dominate
 uses in reachable code); code generation does not verify it. Besides whole
 instructions and types, this design relies on `classify` rejecting:
 
-- a thread-local symbol as an operand of anything but
-  `llvm.threadlocal.address` (§3);
+- a thread-local symbol as the callee of a call, and the address of a
+  thread-local symbol inside a constant other than a plain address
+  operand (an initializer, an aggregate or nested constant, a symbol
+  difference, a landing-pad clause) (§3);
 - a `blockaddress` in a body that names a block of another function
   (§9.2);
 - `naked` functions (§5.4) and `callbr`;
@@ -147,10 +149,12 @@ the frame directly.
 
 Producing an operand never calls anything and writes no register but its
 destination and `scratch`, so it is safe at any point of an instruction's
-lowering, argument placement included. A thread-local address, whose
-access sequence may call and clobber argument registers, is therefore
-never an operand: it is the result of `llvm.threadlocal.address` (§1),
-lowered as an instruction.
+lowering, argument placement included. A thread-local address is an
+operand too (WP-073): its access sequence may call the TLS descriptor
+resolver, but it saves and restores what that call clobbers, so it
+writes its destination and nothing else either (§5.5.1, "Thread-local
+storage and symbol offsets (WP-073)"). `llvm.threadlocal.address` is
+the operand's value.
 
 ## 4. Value-location policy v1
 
@@ -509,11 +513,13 @@ These are decisions the group packages (WP-035..041) build on.
   constant is stored into its home: zero-like ones with `xzr`, wide
   integers word by word, other aggregates from their flattened image,
   whose only accepted relocations are aligned 8-byte symbol addresses
-  (else `a64:constant-relocation`). Symbol addresses follow §7.4:
-  `adrp`+`add` with the addend folded, or `adrp`+`ldr` from the GOT then
-  the addend added; a code model other than small is `a64:code-model`.
+  (else `a64:constant-relocation`; WP-072 writes every other relocation
+  of a non-vector image, "Constant operands with addresses" below). Symbol addresses follow §7.4:
+  `adrp`+`add` with the addend folded as `llc` folds it (WP-073), or
+  `adrp`+`ldr` from the GOT then the addend added; a code model other
+  than small is `a64:code-model`.
 - **Other reason names of the target**: `a64:atomic`,
-  `a64:vector-element` (no package yet), `a64:thread-local` (TLS, M2),
+  `a64:vector-element` (no package yet), `a64:thread-local` (no longer returned: WP-073 lowers TLS),
   `a64:funclet` (never on ELF), `a64:blockaddress` (WP-037),
   `a64:variadic-definition` (WP-038).
 - **The differential harness** is `crates/hod_a64/tests/diff.rs`: what it
@@ -784,9 +790,10 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
   widths are sign-extended with `sbfx`, other scales multiply (`lsl`,
   or `mov x16, #scale` and `mul`); further variable indices are added
   into the first. Unfused, the same sum is computed into the result.
-- **Symbol offsets** are folded into the relocation's addend when the
-  total is below 2^20 in magnitude, as `llc` does; beyond it the offset
-  is added after the address (§7.4).
+- **Symbol offsets** are passed to `common::sym_address` when the
+  total is below 2^20 in magnitude; it folds them into the relocation's
+  addend only as `llc` does (WP-073, §7.4); beyond 2^20 the offset is
+  added after the address.
 - **Widths.** An access reads or writes exactly the store size. Sizes 1,
   2, 4, 8 are one access; 3 is `h` + `b`, 5 `w` + `b`, 6 `w` + `h`, 7
   `w` + `h` + `b`, joined on a load by `orr … lsl` through `x16`, split
@@ -1085,6 +1092,131 @@ the class-based arms.
 Tests: `crates/hod_a64/tests/atomic.rs` (the table, the window scan,
 the helpers, the refusals, the threaded programs of
 `tests/common/atomic_threads.rs`), `crates/hod/tests/atomic_cxx.rs`.
+
+#### Constant operands with addresses (WP-072)
+
+`src/constaddr.rs`, hooked from `common::materialize_gpr_const` and
+`common::materialize_mem_const`. Rows `operand:int-of-addr`,
+`operand:sym-diff` and `operand:address-in-aggregate` are on.
+
+- **Everything is computed in code.** An address in an operand constant
+  is formed by §7.4's access (`common::sym_address`: `adrp`+`add`, or the
+  GOT) or by the function's own block address (`common::block_address`),
+  then stored or kept in the register. No constant pool and no data
+  relocation: the code is the same shape for PIC and non-PIC, a
+  preemptible or `extern_weak` symbol comes from its GOT entry (0 for an
+  undefined weak one), and a difference of symbols in different sections
+  or a truncated address needs no relocation that could not express it.
+- **`IntOfAddr`** of class `Gpr` is its address in the register (the bits
+  above a narrower type's width are unspecified, §2.2); in an image it is
+  a field of 1, 2, 4 or 8 bytes.
+- **`SymDiff`** of class `Gpr` (`operand:sym-diff`) is `a + addend` in
+  the destination, `b` in the other scratch register
+  (`common::other_scratch`), `sub`. Writes the destination and that
+  scratch register only, as a block address does.
+- **`Mem`-class images.** An image whose relocations are all aligned
+  8-byte symbol addresses is written by `common` as before. Any other
+  (a field of 1, 2 or 4 bytes, an unaligned field of a packed struct, a
+  block address, `dso_local_equivalent`, a difference) is written by
+  `constaddr::write_image`: the bytes between fields as 8/4/2/1-byte
+  stores (`xzr` for zero), each field computed in `x17` (`x16` the second
+  register of a difference) and stored with its width, a fresh frame
+  cursor (scratch `x16`) per store. Writes `x16` and `x17` only.
+- **`dso_local_equivalent @f`** in an image, or in a difference, is `f`'s
+  own address: what a call through it needs. As a scalar operand it is
+  still `operand:dso-local-equivalent` (and `no_cfi` `operand:no-cfi`).
+- **Refused**: an address in an integer whose width is not 8, 16, 32 or
+  64 bits inside an image, and an `i128` (or wider) `ptrtoint` of an
+  address, have no image: `a64:constant`. A vector constant with an
+  address that is not an aligned 8-byte symbol address stays
+  `a64:constant-relocation` (vectors are WP-078 and after). A
+  thread-local symbol in a constant is `classify`'s `tls:address-in-constant` rule.
+  Every other expression `hod_ir` keeps (`Expr`) is `const-expr:<op>`.
+
+#### The groups together (WP-066)
+
+- **Fused `condbr`** (`control.rs`): a `br i1 %c, ...` with two
+  different targets whose `%c` is deferred (§4.6: its only use is the
+  branch, the next instruction) does not materialize `%c`. If
+  `int::fusable` accepts the compare, its other deferred operands are
+  emitted (`deferred_first`), `int::flags` sets the flags and yields one
+  condition; an `fcmp` goes through `float::flags`, which yields one or
+  two conditions (`one`/`ueq` need two; `fp128` calls `__lttf2` and
+  friends first). Then: with one condition and the true block next,
+  `b.<inverse>` to the false block and fall through; otherwise
+  `b.<first>` to the true block, `b.<second>` to it when there is a
+  second, and `term::br` to the false block (omitted when it is next).
+  `branch_cond` keeps its far form. A compare with another use, or one
+  not right before the branch, is materialized and tested with `tbnz`,
+  as before. Phi stores precede the compare's flag setting, so they
+  cannot clobber the flags.
+- **The facade's classifier** (`crates/hod/src/front.rs`): for
+  `Arch::Aarch64` the `Judge` and the census use
+  `Classifier::with_stack_args(&TargetStackArgs::new(&A64))`, so a
+  `musttail` whose stack argument area fits the caller's is judged
+  (`musttail:stack-args-grow` when it does not); x86-64 keeps no rule
+  (`musttail:stack-args-unknown`).
+- **`invoke` with an odd-leaf `Mem` result** stays refused
+  (`a64:invoke-odd-int-result`): clearing the bits above the leaves must
+  happen after the call and before the normal edge's phi stores, which
+  `FnCx::call` (`hod_cg/src/call.rs`) emits with the branch; no target
+  hook sits between them. No corpus module needs it.
+- Tests: `tests/fused.rs` (every predicate × width or float type ×
+  operand form × block layout, the two-use and separated shapes, and an
+  object check that a fused branch has no `cset`), `tests/phis.rs`
+  (diamonds with critical edges, loops with permuted phis, selects, of
+  every class), `tests/mem_calls.rs` (`Mem`-class arguments and results
+  in registers, on the stack, `byval`, `sret`, between hod, `llc` and
+  `gcc` both ways), `crates/hod/tests/musttail.rs`; `tests/diff.rs`
+  with every `groups.rs` line on.
+
+#### Thread-local storage and symbol offsets (WP-073)
+
+`src/tls.rs` writes the address of a thread-local symbol by the model
+`hod_cg::sym_access` names (§7.4), the sequences AArch64 Linux `llc`
+writes with the same relocations, so every linker recognizes and relaxes
+them; `common::sym_address` calls it for `Access::Tls`.
+
+- **General and local dynamic** are TLS descriptors (LLVM lowers local
+  dynamic so, on the symbol itself; in a shared library a `dso_local`
+  symbol goes through `.L<name>$local`, §7.4): `adrp x0, :tlsdesc:s`;
+  `ldr x1, [x0, :tlsdesc_lo12:s]`; `add x0, x0, :tlsdesc_lo12:s`;
+  `blr x1` (`R_AARCH64_TLSDESC_ADR_PAGE21`, `_LD64_LO12`, `_ADD_LO12`,
+  `_CALL`); then `mrs x1, tpidr_el0`; `add rd, x1, x0`. The call
+  clobbers `x0`, `x1`, `NZCV` and `x30` (`llc`'s `TLSDESC_CALLSEQ`; the
+  resolver keeps the rest, `CSR_AArch64_TLS_ELF`), so the sequence is
+  bracketed by `stp x0, x1, [sp, #-32]!`; `mrs x1, nzcv`;
+  `str x1, [sp, #16]` and, after it, `ldr t, [sp, #16]`; `msr nzcv, t`
+  (`t` is `x1`, `x0` when `rd` is `x1`), the reload of `x0`/`x1` but
+  `rd`, `add sp, sp, #32`. `x30` holds no value in a body (the prologue
+  saved it); the CFA is `x29`-based, so the stack-pointer moves need no
+  CFI row. The `blr` is a call site (§7.1, `record_call_site`).
+- **Initial exec**: `adrp rd, :gottprel:s`; `ldr rd, [rd,
+  :gottprel_lo12:s]` (`R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21`,
+  `_LD64_GOTTPREL_LO12_NC`); `t` (`x0`, `x1` when `rd` is `x0`) saved
+  with `str t, [sp, #-16]!`, `mrs t, tpidr_el0`, `add rd, t, rd`,
+  `ldr t, [sp], #16`.
+- **Local exec** (`llc`'s default TLS size, 24 bits): `mrs rd,
+  tpidr_el0`; `add rd, rd, #:tprel_hi12:s, lsl #12`; `add rd, rd,
+  #:tprel_lo12_nc:s` (`R_AARCH64_TLSLE_ADD_TPREL_HI12`, `_LO12_NC`).
+- **Offsets.** TLS relocations carry addend 0, as `llc`'s; an offset is
+  added after the sequence. `common::add_addend` adds up to 2^24 - 1 in
+  magnitude with `add`/`sub` immediates; beyond, it borrows `x0` (`x1`
+  when `rd` is `x0`) for a `mov`-built constant and restores it. The same
+  rule serves `Direct` offsets that do not fold and every `Got` offset
+  (§7.4, "Offsets from a symbol").
+- **Operands.** A thread-local symbol, alone or with a constant offset
+  (`getelementptr` of it), is an ordinary address operand (§3): it may be
+  a call argument, a phi or `select` arm, a stored value.
+  `llvm.threadlocal.address(p)` is the operand `p`; `llvm.thread.pointer`
+  is `mrs rd, tpidr_el0`. `classify` still refuses a thread-local callee
+  (`tls:direct-operand`) and a thread-local address in data or inside
+  another constant (`tls:address-in-constant`).
+- **Linker relaxations** seen (`tests/tls.rs`): bfd and lld relax
+  descriptors to local or initial exec and initial exec to local exec in
+  an executable; mold relaxes descriptors of preemptible symbols to
+  initial exec (its form puts the two `nop`s first), even in a static
+  link, and keeps initial exec as it is.
 
 #### 5.5.2 Target features (WP-043)
 
@@ -1431,6 +1563,17 @@ static, PIC and PIC with `PIE Level` (2880 answers; the section-symbol
 rule is checked on the same relocations). Each target has one access
 sequence per answer.
 
+**Offsets from a symbol** (WP-073) fold into the relocation's addend as
+`llc`'s `performGlobalAddressCombine` folds them: for a `Direct` access,
+only when `0 <= offset < 2^20` and the offset is at most the allocation
+size of the symbol's value type (one past the end folds; a negative
+offset never does). Otherwise, and always for `Got` and `Tls`, the
+relocation carries the rest of the offset (0 for `Got` and `Tls`) and
+the offset is added in code after the address (`common::add_addend`).
+An addend so folded stays within the object the symbol names, which
+the linker can place anywhere: an offset outside it in the relocation
+can overflow `R_AARCH64_ADR_PREL_PG_HI21` (gcc-torture `pr79286.c`).
+
 ### 7.5 Constants in code
 
 An integer constant is materialized by the encoder's shortest sequence
@@ -1651,24 +1794,30 @@ Recorded only when the module has debug information.
   `end_function`, adds a row at the epilogue: the location of the function's `ret` if
   exactly one was emitted, `LocId::NONE` otherwise, so that the shared
   epilogue does not inherit the line of whichever block was emitted last.
-- `vars`: one row per `#dbg_declare`: the variable, the record's
-  expression, its declaration location, and where the declared address
-  is: a frame-base offset (a stack slot), a frame-base offset holding the
-  address (an over-aligned slot, §5.1), or the home of a value that is
-  not a slot (an `sret` argument, a dynamic `alloca`; §4.1 gives it a
-  home). `hod_dwarf` composes the location with the expression. Several
-  rows may name one slot (structured bindings do), each with its own
+- `vars` (`VarRow`, implemented in WP-057): one row per `#dbg_declare`:
+  the variable, the record's expression (`ExprId`), its location, and
+  where the declared address is (`VarPlace`): `Frame(off)`, the variable
+  is `off` bytes from the DWARF frame base (a stack slot), or
+  `FrameIndirect(off)`, the address is stored there (an over-aligned
+  slot, §5.1, or the home of a value that is not a slot, such as an
+  `sret` or by-reference argument; §4.1 gives it a home). The driver
+  records `Slot`/`Indirect` places while the frame grows and rewrites them
+  through `Target::frame_base_offset` once the frame is final; a place
+  the target cannot reach by a fixed offset is `Refused("debug:frame-place")`.
+  `hod_dwarf` composes the location with the expression. Several rows
+  may name one slot (structured bindings do), each with its own
   expression. At `-O0` a row's location holds for the whole function. The
   body is dropped after its function is compiled, so everything
   `hod_dwarf` needs from it is copied here.
-- `labels`: one row per `#dbg_label` in a reachable block: the label and
-  the code offset of the instruction that follows it.
-- `#dbg_value` records describe values that policy v1 keeps in registers
-  for a few instructions; unoptimized input does not contain them. v1
-  records the ones whose value has a home (as a location valid from the
-  definition to the end of the function) and drops the rest: the variable
-  then shows as unavailable, which is not wrong. The count dropped is
-  reported in the coverage log.
+- labels are rows of `vars` too: one `VarPlace::Label(offset)` row per
+  `#dbg_label` in a reachable block, the label and the code offset of
+  the instruction that follows it.
+- a record hod cannot describe exactly is a `VarPlace::Refused(name)`
+  row; a `FullDebug` unit then refuses the function under that name:
+  `debug:dbg-value` (any `#dbg_value`: clang and kiln do not emit them at
+  `-O0`, and none is described yet, `spec/dwarf.md` open question 9),
+  `debug:dbg-assign`, `debug:declare-address` (a `#dbg_declare` of a
+  constant, a symbol, or a value that never got a home).
 
 ### 9.6 Block addresses
 

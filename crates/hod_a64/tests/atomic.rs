@@ -548,9 +548,8 @@ fn contended_programs_on_threads_agree() {
 /// `.bss` plus the offset, which no linker can relocate
 /// ("relocation truncated to fit: `R_AARCH64_ADR_PREL_PG_HI21`"); `llc`'s
 /// object links. The address computation is `mem.rs`'s (WP-036) /
-/// constants with addresses (WP-072).
+/// constants with addresses (WP-072); fixed by WP-073 (`sym_address`).
 #[test]
-#[ignore = "a bug outside WP-074: a far constant offset from a symbol does not link"]
 fn a_far_constant_offset_from_a_global_links() {
     let text = format!(
         "{}@d = internal global [0 x [8 x i32]] zeroinitializer, align 4\n\

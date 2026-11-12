@@ -377,7 +377,7 @@ impl UnitPlan<'_> {
             // block's DIE first, and the type is then its child.
             DiKind::Subprogram | DiKind::LexicalBlock | DiKind::LexicalBlockFile => {
                 match self.slot[s.index()] {
-                    NONE => Err(unsupported(of, "a function-local type (WP-057)")),
+                    NONE => Err(unsupported(of, "debug:local-type-scope")),
                     d => Ok(d),
                 }
             }
@@ -948,7 +948,7 @@ fn type_size(plan: &UnitPlan<'_>, t: DiId) -> u64 {
 
 impl<'a> Writer<'a> {
     /// `DW_AT_decl_file` and `DW_AT_decl_line`, when `line` is set.
-    fn decl_of(
+    pub(crate) fn decl_of(
         plan: &UnitPlan<'_>,
         node: DiId,
         file: Option<DiId>,
@@ -961,7 +961,7 @@ impl<'a> Writer<'a> {
         Ok(Some((f, line)))
     }
 
-    fn decl(&mut self, decl: Option<(u32, u32)>) {
+    pub(crate) fn decl(&mut self, decl: Option<(u32, u32)>) {
         if let Some((f, l)) = decl {
             write_uleb(&mut self.info, u64::from(f));
             write_uleb(&mut self.info, u64::from(l));
@@ -980,7 +980,7 @@ impl<'a> Writer<'a> {
         }
     }
 
-    fn opt_name(&mut self, name: &'a [u8]) -> Result<(), Error> {
+    pub(crate) fn opt_name(&mut self, name: &'a [u8]) -> Result<(), Error> {
         if !name.is_empty() {
             self.strx(name)?;
         }

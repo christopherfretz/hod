@@ -8,14 +8,15 @@
 //! operands, the records, and the retry in far mode.
 
 use hod_ir::{
-    Block, BlockId, Body, FnAttrs, Inst, InstKind, LocId, Module, Opcode, ParamAttrs, SymbolKind,
-    TypeId, TypeKind, UwTable,
+    Block, BlockId, Body, DbgRecordKind, FnAttrs, Inst, InstKind, LocId, Module, Opcode,
+    ParamAttrs, SymbolKind, TypeId, TypeKind, UwTable, Value,
 };
 
 use crate::abi::{AbiUnsupported, PartKind, Place, Sig};
 use crate::cx::{FnCx, Scratch};
 use crate::error::{
-    CALL_BYVAL_PLACE, CALL_PART_CLASS, CgError, CgResult, LIMIT_FUNCTION_SIZE, internal,
+    CALL_BYVAL_PLACE, CALL_PART_CLASS, CgError, CgResult, DEBUG_DBG_ASSIGN, DEBUG_DBG_VALUE,
+    DEBUG_DECLARE_ADDRESS, DEBUG_FRAME_PLACE, LIMIT_FUNCTION_SIZE, internal,
 };
 use crate::frame::{FrameRef, SlotPlace};
 use crate::label::Label;
@@ -142,6 +143,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         s.tail_exits.clear();
         s.islands.clear();
         s.island_data.clear();
+        s.dbg_labels.clear();
         let epilogue = s.labels.create();
         let ri = *target.reg_info();
         let pool = if options.stress.min_pool {
@@ -304,14 +306,34 @@ impl<'a, T: Target> FnCx<'a, T> {
             };
             self.s.slots.push(place);
         }
-        // §9.5: one row per declared variable. (WP-005: the record's
-        // expression, and declarations of values that are not slots.)
+        // §9.5: one row per declared variable; `finish_function` adds
+        // the declarations of values that are not slots, once their
+        // homes are known, and makes every place an offset.
         for var in self.body.slot_vars() {
             let place = match self.slot_place(var.slot)? {
                 SlotPlace::Direct(slot) => VarPlace::Slot(slot),
                 SlotPlace::Indirect(pointer) => VarPlace::Indirect(pointer),
             };
-            self.out.vars.push(VarRow { var: var.var, loc: var.loc, place });
+            self.out.vars.push(VarRow { var: var.var, loc: var.loc, expr: var.expr, place });
+        }
+        // §9.5: a label is a row at the offset of the instruction it
+        // stands before; a `#dbg_value` or `#dbg_assign` is a refused row.
+        for record in self.body.dbg_records() {
+            let refused = match record.kind {
+                DbgRecordKind::Label => {
+                    self.s.dbg_labels.push((record.before.raw(), record.var, record.loc));
+                    continue;
+                }
+                DbgRecordKind::Value => DEBUG_DBG_VALUE,
+                DbgRecordKind::Assign => DEBUG_DBG_ASSIGN,
+            };
+            let place = VarPlace::Refused(refused);
+            self.out.vars.push(VarRow {
+                var: record.var,
+                loc: record.loc,
+                expr: record.expr,
+                place,
+            });
         }
         Ok(())
     }
@@ -342,7 +364,8 @@ impl<'a, T: Target> FnCx<'a, T> {
             while self.s.fn_asg.args.get(next).is_some_and(|part| part.arg as usize == index) {
                 next += 1;
             }
-            if self.body.arg_uses(index as u32).is_unused() || first == next {
+            let uses = self.body.arg_uses(index as u32);
+            if (uses.is_unused() && !uses.named_by_declare()) || first == next {
                 // Dead, or an argument that takes no space.
                 self.ensure(key)?;
                 continue;
@@ -466,6 +489,9 @@ impl<'a, T: Target> FnCx<'a, T> {
 
         for inst in block.non_phis() {
             self.cur = inst.id();
+            if !self.s.dbg_labels.is_empty() {
+                self.label_rows(inst.id().raw());
+            }
             let dead = inst.ty() != TypeId::VOID && inst.uses().is_unused() && has_no_effect(inst);
             if !dead {
                 if inst.is_terminator() && inst.opcode() != Opcode::Invoke {
@@ -570,6 +596,60 @@ impl<'a, T: Target> FnCx<'a, T> {
         }
     }
 
+    /// §9.5: the rows of the `#dbg_label`s that stand before instruction
+    /// `raw`, at the offset where its code starts.
+    fn label_rows(&mut self, raw: u32) {
+        let labels = &self.s.dbg_labels;
+        let mut at = labels.partition_point(|&(before, _, _)| before < raw);
+        let offset = self.offset();
+        while let Some(&(before, var, loc)) = self.s.dbg_labels.get(at) {
+            if before != raw {
+                break;
+            }
+            let row =
+                VarRow { var, loc, expr: hod_ir::ExprId::EMPTY, place: VarPlace::Label(offset) };
+            self.out.vars.push(row);
+            at += 1;
+        }
+    }
+
+    /// §9.5, once the frame is final: the rows of the declarations of
+    /// values that are not slots, and every frame place made an offset
+    /// from the frame base.
+    fn finish_vars(&mut self) {
+        let body = self.body;
+        for declare in body.declares() {
+            if declare.address == Value::NONE {
+                // The address was dropped: no row, as `llc` writes none.
+                continue;
+            }
+            // §4.1: a declared value has a home for the whole function.
+            let place = match Key::of(declare.address).map(|key| self.state(key)) {
+                Some(Ok(ValState { kind: Kind::Home, loc: Loc::Frame(home), .. })) => {
+                    VarPlace::Indirect(home)
+                }
+                _ => VarPlace::Refused(DEBUG_DECLARE_ADDRESS),
+            };
+            let row = VarRow { var: declare.var, loc: declare.loc, expr: declare.expr, place };
+            self.out.vars.push(row);
+        }
+        let t = self.target;
+        let desc = self.frame_desc;
+        let start = self.mark.vars as usize;
+        for row in self.out.vars.get_mut(start..).unwrap_or_default() {
+            let (place, indirect) = match row.place {
+                VarPlace::Slot(place) => (place, false),
+                VarPlace::Indirect(place) => (place, true),
+                _ => continue,
+            };
+            row.place = match t.frame_base_offset(&desc, place) {
+                Some(offset) if indirect => VarPlace::FrameIndirect(offset),
+                Some(offset) => VarPlace::Frame(offset),
+                None => VarPlace::Refused(DEBUG_FRAME_PLACE),
+            };
+        }
+    }
+
     /// What follows the target's exit sequences: the trap that stands
     /// for unreachable blocks, the data islands, the last checks, the
     /// function's record.
@@ -631,6 +711,8 @@ impl<'a, T: Target> FnCx<'a, T> {
                 row.landing = offset;
             }
         }
+
+        self.finish_vars();
 
         let mut record = self.out.record(self.mark, self.body.symbol());
         record.align = T::FN_ALIGN.max(self.island_align);

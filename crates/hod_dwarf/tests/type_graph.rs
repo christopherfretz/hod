@@ -85,8 +85,8 @@ fn missing_sizes_are_named() {
     }
 }
 
-/// §6.8: a type scoped in a function is WP-057's, refused by name until
-/// then.
+/// §6.8: a type scoped in a function that has no DIE (here, a retained
+/// type of a function that was not placed) is refused by name.
 #[test]
 fn function_local_types_are_refused() {
     let body = "!3 = !DIDerivedType(tag: DW_TAG_typedef, name: \"t\", scope: !4, file: !1, line: 3, baseType: !9)\n\
@@ -94,7 +94,9 @@ fn function_local_types_are_refused() {
         !5 = !DISubroutineType(types: !6)\n\
         !6 = !{null}\n";
     match plan(body) {
-        Err(e @ Error::Unsupported { .. }) => assert!(e.to_string().contains("WP-057"), "{e}"),
+        Err(e @ Error::Unsupported { .. }) => {
+            assert!(e.to_string().contains("debug:local-type-scope"), "{e}");
+        }
         other => panic!("{other:?}"),
     }
 }

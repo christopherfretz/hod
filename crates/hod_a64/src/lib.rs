@@ -33,6 +33,8 @@
 //! | `aggr` | WP-040 | `Mem`-class values: wide integers, aggregates, overflow intrinsics | `tests/aggr.rs` |
 //! | `intrinsic` | WP-041, WP-070 | the other intrinsics | `tests/intrinsic.rs` |
 //! | `fpintr` | WP-070 | the floating-point intrinsics | `tests/fpintr.rs` |
+//! | `constaddr` | WP-072 | constant operands that hold addresses: differences, relocated images | `tests/constaddr.rs` |
+//! | `tls` | WP-073 | thread-local addresses, `llvm.threadlocal.address`, `llvm.thread.pointer` | `tests/tls.rs` |
 //! | `atomic` | WP-074 | atomic `load`/`store`, `atomicrmw`, `cmpxchg`, `fence` | `tests/atomic.rs` |
 //!
 //! The differential harness that runs generated programs natively and
@@ -43,6 +45,7 @@ pub mod aggr;
 pub mod atomic;
 pub mod call;
 pub mod common;
+pub mod constaddr;
 pub mod control;
 pub mod features;
 pub mod float;
@@ -54,6 +57,7 @@ pub mod mem;
 pub mod reg;
 pub mod target;
 pub mod term;
+pub mod tls;
 
 use std::fmt;
 

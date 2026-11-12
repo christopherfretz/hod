@@ -270,7 +270,7 @@ fn check_programs(
 fn programs_agree_with_the_interpreter() {
     let e = enabled();
     eprintln!("a64 diff: missing {}", missing(&e).join(", "));
-    let checked = check_seeds(0..200, 100);
+    let checked = check_seeds(0..1000, 250);
     eprintln!("a64 diff: {}", checked.summary());
 }
 

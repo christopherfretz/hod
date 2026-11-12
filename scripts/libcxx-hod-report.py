@@ -80,7 +80,8 @@ def family(r):
     """The construct family a reason belongs to (for the census by family)."""
     if r.startswith(("mem:atomic", "inst:atomicrmw", "atomicrmw:", "inst:cmpxchg", "inst:fence")):
         return "atomics"
-    if r == "type:vector" or r.endswith(("element", "shufflevector")) or r.startswith("intrinsic:llvm.vector."):
+    if (r == "type:vector" or r.endswith(("element", "shufflevector", "/vector"))
+            or r.startswith("intrinsic:llvm.vector.")):
         return "vectors"
     if r.endswith("/i128"):
         return "i128 operations"

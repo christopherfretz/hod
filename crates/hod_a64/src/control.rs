@@ -34,8 +34,7 @@ use hod_mc_a64 as mc;
 use hod_mc_a64::{Cond, Shift, Size};
 
 use crate::common::{
-    X16, block_address, branch, branch_bit, branch_cond, deferred_first, mov_imm, put, unsupported,
-    value_ty, xr,
+    X16, block_address, branch, branch_bit, branch_cond, deferred_first, mov_imm, put, value_ty, xr,
 };
 use crate::target::A64;
 use crate::{float, int, term};
@@ -48,8 +47,8 @@ pub const SWITCH: &str = "a64:switch";
 /// `indirectbr`: not refused any more.
 pub const INDIRECT_BR: &str = "a64:indirectbr";
 
-/// A `switch` on an integer wider than a register (`Mem` class:
-/// `classify` rejects it, `inst:switch` being supported for `int` only).
+/// A `switch` on an integer wider than a register: not refused any more
+/// (`tail`, WP-084); kept for the coverage log's history.
 pub const SWITCH_WIDE: &str = "a64:switch-wide";
 
 /// A run of at most this many sorted cases is a linear chain; a longer
@@ -147,7 +146,7 @@ thread_local! {
 pub fn switch<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, switch: &Switch<'a>) -> CgResult<()> {
     deferred_first(cx, inst, None)?;
     if cx.class_of(switch.cond) != Class::Gpr {
-        return unsupported(SWITCH_WIDE);
+        return crate::tail::switch_wide(cx, switch);
     }
     let bits = cx.types().int_bits(value_ty(cx, switch.cond)).unwrap_or(64);
     let mask = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };

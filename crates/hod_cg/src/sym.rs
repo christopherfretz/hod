@@ -483,6 +483,36 @@ runtime_fns! {
     Ldset8Rel = "__aarch64_ldset8_rel": (I64, PTR) -> I64;
     /// `__aarch64_ldset8_acq_rel`: outline atomics (WP-074).
     Ldset8AcqRel = "__aarch64_ldset8_acq_rel": (I64, PTR) -> I64;
+    /// `fptosi half` to at most 128 bits (WP-084).
+    FixHfTi = "__fixhfti": (HALF) -> I128;
+    /// `fptosi float` to at most 128 bits (WP-084).
+    FixSfTi = "__fixsfti": (FLOAT) -> I128;
+    /// `fptosi double` to at most 128 bits (WP-084).
+    FixDfTi = "__fixdfti": (DOUBLE) -> I128;
+    /// `fptosi fp128` to at most 128 bits (WP-084).
+    FixTfTi = "__fixtfti": (FP128) -> I128;
+    /// `fptoui half` to at most 128 bits (WP-084).
+    FixunsHfTi = "__fixunshfti": (HALF) -> I128;
+    /// `fptoui float` to at most 128 bits (WP-084).
+    FixunsSfTi = "__fixunssfti": (FLOAT) -> I128;
+    /// `fptoui double` to at most 128 bits (WP-084).
+    FixunsDfTi = "__fixunsdfti": (DOUBLE) -> I128;
+    /// `fptoui fp128` to at most 128 bits (WP-084).
+    FixunsTfTi = "__fixunstfti": (FP128) -> I128;
+    /// `sitofp` of at most 128 bits to `float` (and `half` through it)
+    /// (WP-084).
+    FloatTiSf = "__floattisf": (I128) -> FLOAT;
+    /// `sitofp` of at most 128 bits to `double` (WP-084).
+    FloatTiDf = "__floattidf": (I128) -> DOUBLE;
+    /// `sitofp` of at most 128 bits to `fp128` (WP-084).
+    FloatTiTf = "__floattitf": (I128) -> FP128;
+    /// `uitofp` of at most 128 bits to `float` (and `half` through it)
+    /// (WP-084).
+    FloatunTiSf = "__floatuntisf": (I128) -> FLOAT;
+    /// `uitofp` of at most 128 bits to `double` (WP-084).
+    FloatunTiDf = "__floatuntidf": (I128) -> DOUBLE;
+    /// `uitofp` of at most 128 bits to `fp128` (WP-084).
+    FloatunTiTf = "__floatuntitf": (I128) -> FP128;
 }
 
 #[cfg(test)]

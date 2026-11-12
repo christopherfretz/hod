@@ -39,6 +39,7 @@
 //! | `lanes` | WP-080 | element-wise vector operations, one lane at a time over the scalar kernels | `tests/lanes.rs` |
 //! | `vector` | WP-079 | vector helpers (shape, lanes, images, indices); `extractelement`, `insertelement`, `shufflevector` | `tests/vector.rs` |
 //! | `atomic` | WP-074 | atomic `load`/`store`, `atomicrmw`, `cmpxchg`, `fence` | `tests/atomic.rs` |
+//! | `tail` | WP-084 | wide fp conversions, wide `mul.with.overflow`, wide `switch`, `readcyclecounter`, `is.constant`, `{s,u}shl.sat`, `crc32` | `tests/tail.rs` |
 //!
 //! The differential harness that runs generated programs natively and
 //! compares them with `hod_interp` is `tests/diff.rs`.
@@ -60,6 +61,7 @@ pub mod intrinsic;
 pub mod lanes;
 pub mod mem;
 pub mod reg;
+pub mod tail;
 pub mod target;
 pub mod term;
 pub mod tls;

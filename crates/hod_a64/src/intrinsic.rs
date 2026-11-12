@@ -91,8 +91,8 @@ pub const INLINE_MAX: u64 = 64;
 /// vector registers at most).
 pub const INLINE_MOVE_MAX: u64 = 32;
 
-/// `llvm.readcyclecounter`: `mrs CNTVCT_EL0`, which the encoder has no
-/// system register for (WP-070).
+/// `llvm.readcyclecounter`: not refused any more (`tail`, WP-084); kept
+/// for the coverage log's history.
 pub const READCYCLECOUNTER: &str = "a64:readcyclecounter";
 /// `llvm.eh.typeid.for` of something that is not a symbol (WP-070).
 pub const TYPEID: &str = "a64:eh-typeid";
@@ -171,7 +171,7 @@ pub fn intrinsic<'a>(
             )?;
             Ok(())
         }
-        (I::ReadCycleCounter, _) => unsupported(READCYCLECOUNTER),
+        (I::ReadCycleCounter, _) => crate::tail::read_cycle_counter(cx, inst),
         (I::Memcpy | I::MemcpyInline | I::Memmove, &[dst, src, len, _volatile]) => {
             deferred_first(cx, inst, None)?;
             copy(cx, which, dst, src, len)
@@ -206,23 +206,8 @@ pub fn intrinsic<'a>(
             cx.finish(inst, rd)
         }
         (I::IsConstant, &[x]) => {
-            // As `llc`'s `LowerConstantIntrinsics`: true for a manifest
-            // constant (a literal number, `null`, a zero, `undef`), false
-            // for anything else, a symbol's address and aggregates
-            // included (LangRef lets the result be false for anything).
-            let manifest = x.as_const().is_some_and(|id| {
-                matches!(
-                    cx.module.consts.get(id),
-                    Const::Int { .. }
-                        | Const::WideInt { .. }
-                        | Const::Float { .. }
-                        | Const::WideFloat { .. }
-                        | Const::Null(_)
-                        | Const::Zero(_)
-                        | Const::Undef(_)
-                        | Const::Poison(_)
-                )
-            });
+            // As `llc`'s `LowerConstantIntrinsics` (`tail`, WP-084).
+            let manifest = crate::tail::is_manifest(cx, x);
             let rd = cx.def_reg(inst)?;
             mov_imm(cx, Size::W, xr(rd), u64::from(manifest));
             cx.finish(inst, rd)
@@ -240,6 +225,19 @@ pub fn intrinsic<'a>(
             put(cx, mc::and(Size::X, xr(p).zr(), xr(p).zr(), xr(m).zr()));
             cx.finish(inst, p)
         }
+        (
+            I::SshlSat
+            | I::UshlSat
+            | I::Aarch64Crc32b
+            | I::Aarch64Crc32h
+            | I::Aarch64Crc32w
+            | I::Aarch64Crc32x
+            | I::Aarch64Crc32cb
+            | I::Aarch64Crc32ch
+            | I::Aarch64Crc32cw
+            | I::Aarch64Crc32cx,
+            _,
+        ) => crate::tail::intrinsic(cx, inst, which, args),
         _ => unsupported(INTRINSIC),
     }
 }

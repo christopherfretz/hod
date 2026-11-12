@@ -85,6 +85,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hod_interp"
+version = "0.0.0"
+dependencies = [
+ "hod_ir",
+ "hod_testutil",
+]
+
+[[package]]
 name = "hod_ir"
 version = "0.0.0"
 dependencies = [

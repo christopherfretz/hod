@@ -19,6 +19,7 @@ crate could be re-implemented from its spec and its tests alone.
 | `xform.md` | `hod_xform`: required lowerings | planned |
 | `cli.md` | the `hod` command line, the `hod` facade's `compile`, fallback, coverage log | current (WP-015); reasons grow with code generation |
 | `harness.md` | `xtask`: the kiln shim, test formats, differential runs, benchmarks | "shim" current (WP-015); the rest planned (WP-016..018) |
+| `interp.md` | `hod_interp`: the reference interpreter (values, memory, traps, unsupported reasons, host functions, limits), the program generator, the LLVM oracle | current (WP-031) |
 
 ## Conventions
 

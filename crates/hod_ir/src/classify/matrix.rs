@@ -455,11 +455,29 @@ const STRUCTOR: [SupportRow; 2] = [
     ),
 ];
 
-const DEBUG_ROWS: [SupportRow; 4] = [
-    a64("debug:module-flags", DEBUG, "`Dwarf Version` or `Debug Info Version` is set"),
-    a64("debug:subprogram", DEBUG, "a function with a body and a `DISubprogram`"),
-    a64("debug:slot-variables", DEBUG, "a stack slot that is a source variable"),
-    a64("debug:locations", DEBUG, "a body whose instructions carry source locations"),
+// WP-087: debug modules reach `hod_dwarf`, which declines what it cannot
+// write exactly by a `debug:*` name of its own (`spec/dwarf.md` §6.12).
+const DEBUG_ROWS: [SupportRow; 5] = [
+    row(
+        "debug:module-flags",
+        ON,
+        todo(X64),
+        "`Dwarf Version` or `Debug Info Version` is set (WP-087)",
+    ),
+    a64(
+        "debug:dwarf-version",
+        DEBUG,
+        "a compile unit with debug information and a `Dwarf Version` other than 5 (absent is \
+         LLVM's 4): `hod_dwarf` writes DWARF 5 only",
+    ),
+    row("debug:subprogram", ON, todo(X64), "a function with a body and a `DISubprogram` (WP-087)"),
+    row("debug:slot-variables", ON, todo(X64), "a stack slot that is a source variable (WP-087)"),
+    row(
+        "debug:locations",
+        ON,
+        todo(X64),
+        "a body whose instructions carry source locations (WP-087)",
+    ),
 ];
 
 const GLOBAL: [SupportRow; 12] = [
@@ -1937,6 +1955,7 @@ pub(crate) mod at {
     pub(crate) const STRUCTOR_ASSOCIATED: usize = find("structor:associated");
 
     pub(crate) const DEBUG_MODULE_FLAGS: usize = find("debug:module-flags");
+    pub(crate) const DEBUG_DWARF_VERSION: usize = find("debug:dwarf-version");
     pub(crate) const DEBUG_SUBPROGRAM: usize = find("debug:subprogram");
     pub(crate) const DEBUG_SLOT_VARIABLES: usize = find("debug:slot-variables");
     pub(crate) const DEBUG_LOCATIONS: usize = find("debug:locations");

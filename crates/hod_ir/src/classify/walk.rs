@@ -25,6 +25,7 @@ use crate::props::{FramePointer, PicLevel};
 use crate::symbol::{Symbol, SymbolKind, TlsModel, UnnamedAddr, Visibility};
 use crate::types::TypeKind;
 use crate::value::{InstId, Value, ValueKind};
+use crate::{DiNode, EmissionKind};
 
 pub(crate) type Flow = ControlFlow<()>;
 
@@ -202,6 +203,16 @@ const PARAM_FLAGS: [u16; 7] = [
 fn bundle_row(tag: &str) -> Option<usize> {
     (at::BUNDLE..at::BUNDLE + at::BUNDLE_COUNT)
         .find(|&row| SUPPORT_ROWS[row].name.strip_prefix("bundle:") == Some(tag))
+}
+
+/// Whether `module` has a compile unit `llc` writes debug information
+/// for: one that is not `NoDebug` (a module without one gets none, so
+/// its `Dwarf Version` does not matter).
+fn writes_debug_info(module: &Module) -> bool {
+    let debug = &module.debug;
+    debug.compile_units().iter().any(|&unit| {
+        !matches!(debug.node(unit), DiNode::CompileUnit(cu) if cu.emission_kind == EmissionKind::NoDebug)
+    })
 }
 
 pub(crate) struct Walker<'a, S> {
@@ -476,6 +487,11 @@ impl<'a, S: Sink> Walker<'a, S> {
         }
         if props.dwarf_version.is_some() || props.debug_info_version.is_some() {
             self.row(at::DEBUG_MODULE_FLAGS, at)?;
+        }
+        // `llc` writes the version the flag asks for, and DWARF 4 when
+        // there is none; `hod_dwarf` writes DWARF 5 (WP-087).
+        if props.dwarf_version != Some(5) && writes_debug_info(module) {
+            self.row(at::DEBUG_DWARF_VERSION, at)?;
         }
         for flag in module.other_flags() {
             if !flag.ignorable {

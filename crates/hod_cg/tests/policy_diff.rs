@@ -64,6 +64,7 @@ fn unwinding_programs_run_as_the_interpreter_runs_them() {
     assert!(tally.rejected.is_empty(), "{report}");
     assert_eq!(tally.compared, tally.attempted, "{report}");
     assert!(tally.throws > 0 && tally.landings > tally.throws, "{report}");
+    assert!(tally.lsdas > 0 && tally.fdes > tally.lsdas, "the unwinder read no tables: {report}");
     for construct in [
         "eh:invoke-throw",
         "eh:invoke-call",

@@ -323,6 +323,7 @@ pub fn globals_module(n: usize) -> String {
     let mut next = 30;
     let mut namespaces: BTreeMap<Vec<usize>, u32> = BTreeMap::new();
     let mut list = Vec::new();
+    let mut shared = std::collections::BTreeSet::new();
     for i in 0..n {
         let depth = i % 4;
         let path: Vec<usize> = (0..depth).map(|d| (i / (1 + d * 3)) % (8 >> d)).collect();
@@ -340,7 +341,11 @@ pub fn globals_module(n: usize) -> String {
                 id
             });
         }
-        let name = if depth > 0 && i % 10 == 1 { "shared".to_string() } else { format!("v{i}") };
+        let name = if depth > 0 && i % 10 == 1 && shared.insert(path.clone()) {
+            "shared".to_string()
+        } else {
+            format!("v{i}")
+        };
         let symbol =
             if depth == 0 { name.clone() } else { format!("_ZN{mangled}{}{name}E", name.len()) };
         let kind = i % 14;

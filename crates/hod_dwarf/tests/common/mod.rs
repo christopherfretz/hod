@@ -8,6 +8,7 @@
 pub mod dies;
 pub mod generate;
 pub mod meta;
+pub mod session;
 
 use std::path::{Path, PathBuf};
 

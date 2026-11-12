@@ -9,6 +9,7 @@
 //! chunk carries `llc`'s bytes for them, so the comparison is of the
 //! placement, not of instruction selection.
 
+mod borrow;
 mod elfview;
 
 use std::fmt::Write as _;
@@ -17,7 +18,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use elfview::{Elf, diff};
-use hod_cg::{Chunk, FrameDesc, FuncRecord, Options, RelocModel, emit_module};
+use hod_cg::{Options, RelocModel, emit_module};
 use hod_ir::{AARCH64_LINUX_DATA_LAYOUT, AARCH64_LINUX_DATA_LAYOUT_LLVM19};
 use hod_testutil::{LLVM_MAJORS, Scratch, run_with, tools_required};
 
@@ -320,6 +321,51 @@ define void @d1() {
 @d64 = global i64 sub (i64 ptrtoint (ptr @t1 to i64), i64 ptrtoint (ptr @d64 to i64))
 ",
     },
+    Snippet {
+        name: "code-relocs",
+        flags: &[],
+        ir: r#"
+@g = global i32 1
+@l = internal global i32 2
+@s = private unnamed_addr constant [3 x i8] c"ab\00"
+@dl = dso_local global i32 3
+@t = thread_local global i32 4
+@tl = internal thread_local global i32 5
+define i32 @f() {
+  %a = load i32, ptr @g
+  %b = load i32, ptr @l
+  %c = add i32 %a, %b
+  ret i32 %c
+}
+define ptr @h() {
+  ret ptr @s
+}
+define ptr @k() {
+  ret ptr getelementptr (i8, ptr @s, i64 1)
+}
+define ptr @m() {
+  ret ptr @dl
+}
+define ptr @n() {
+  ret ptr @t
+}
+define ptr @o() {
+  ret ptr @tl
+}
+define ptr @q() {
+  ret ptr @later
+}
+define internal void @later() {
+  ret void
+}
+define dso_local void @dlf() {
+  ret void
+}
+define ptr @r() {
+  ret ptr @dlf
+}
+"#,
+    },
 ];
 
 fn header(major: u32) -> String {
@@ -362,46 +408,6 @@ fn options(flags: &[&str]) -> Options {
     options
 }
 
-/// A chunk holding `llc`'s code for every function `text` defines, in
-/// file order.
-fn chunk_from(parsed: &hod_ll::ParsedModule<'_>, theirs: &Elf, name: &str) -> Chunk {
-    let mut chunk = Chunk::new();
-    for function in parsed.functions() {
-        let symbol = parsed.module.symbol(function.sym);
-        let fname = String::from_utf8_lossy(symbol.name()).into_owned();
-        let sym = theirs
-            .symbols
-            .iter()
-            .find(|s| s.name == fname && s.info & 0xf == 2)
-            .unwrap_or_else(|| panic!("{name}: llc has no function {fname}"));
-        let section = sym.shndx as usize;
-        let code = &theirs.data(section)[sym.value as usize..(sym.value + sym.size) as usize];
-        let start = chunk.code.len() as u32;
-        chunk.code.extend_from_slice(code);
-        let end = chunk.code.len() as u32;
-        let empty = 0..0;
-        chunk.funcs.push(FuncRecord {
-            sym: function.sym,
-            align: if fname == "wk" { 16 } else { 4 },
-            frame: FrameDesc::default(),
-            has_pads: false,
-            code: start..end,
-            relocs: empty.clone(),
-            cfi: empty.clone(),
-            call_sites: empty.clone(),
-            pads: empty.clone(),
-            clauses: empty.clone(),
-            type_ids: empty.clone(),
-            filter_ids: empty.clone(),
-            lines: empty.clone(),
-            vars: empty.clone(),
-            islands: empty.clone(),
-            block_offsets: empty,
-        });
-    }
-    chunk
-}
-
 /// Sections whose contents are not compared: code `hod` copied, and
 /// what `llc` writes that `hod` does not compare here.
 fn ignore_data(_name: &str) -> bool {
@@ -430,7 +436,9 @@ fn snippets_agree_with_llc() {
             let theirs = Elf::parse(llc(&scratch, *major, snippet.name, &text, snippet.flags));
             let parsed = hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default())
                 .unwrap_or_else(|e| panic!("{}: hod_ll: {e}", snippet.name));
-            let chunk = chunk_from(&parsed, &theirs, snippet.name);
+            let functions: Vec<_> = parsed.functions().iter().map(|f| f.sym).collect();
+            let align = |name: &str| if name == "wk" { 16 } else { 4 };
+            let chunk = borrow::chunk_from(&parsed.module, &functions, &theirs, &align);
             let emitted = emit_module(&parsed.module, &options(snippet.flags), &[chunk])
                 .unwrap_or_else(|e| panic!("{}: emit_module: {e}", snippet.name));
             let ours = Elf::parse(hod_obj::elf::to_vec(&emitted.object).unwrap());

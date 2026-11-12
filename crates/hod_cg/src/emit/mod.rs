@@ -136,6 +136,9 @@ pub struct ModuleEmitter<'m> {
     /// The group of each signature symbol: `MCContext` has one group per
     /// signature name, whether a COMDAT or an associated structor made it.
     signatures: HashMap<SymbolId, GroupId>,
+    /// Code relocations whose target is placed later: section, offset,
+    /// kind, target, addend.
+    pending: Vec<(SectionId, u64, RelocKind, SymRef, i64)>,
     /// The initializers' fixups, by section, with section offsets.
     fixups: Vec<(SectionId, Fixup)>,
     /// Scratch: one initializer's image and fixups.
@@ -295,6 +298,7 @@ impl<'m> ModuleEmitter<'m> {
             runtime: vec![NOWHERE; RuntimeFn::ALL.len()],
             local_aliases: HashMap::new(),
             signatures: HashMap::new(),
+            pending: Vec::new(),
             fixups: Vec::new(),
             image: Vec::new(),
             image_fixups: Vec::new(),
@@ -577,9 +581,13 @@ impl<'m> ModuleEmitter<'m> {
             self.mapping_symbols(chunk, func, section, offset, len);
         }
         for reloc in &chunk.relocs[func.relocs.start as usize..func.relocs.end as usize] {
-            let (target, addend) = self.code_target(reloc.sym, reloc.addend);
             let at = offset + u64::from(reloc.offset);
-            self.obj.add_relocation(section, at, reloc.kind, target, addend);
+            match self.code_target(reloc.sym, reloc.addend) {
+                Some((target, addend)) => {
+                    self.obj.add_relocation(section, at, reloc.kind, target, addend);
+                }
+                None => self.pending.push((section, at, reloc.kind, reloc.sym, reloc.addend)),
+            }
         }
         self.places[func.sym.index()] = Place {
             section: section.index(),
@@ -668,17 +676,28 @@ impl<'m> ModuleEmitter<'m> {
     }
 
     /// The symbol and addend a code relocation names.
-    fn code_target(&mut self, sym: SymRef, addend: i64) -> (SymbolId, i64) {
+    fn code_target(&mut self, sym: SymRef, addend: i64) -> Option<(SymbolId, i64)> {
         let sym = match sym {
-            SymRef::Runtime(func) => return (self.runtime_symbol(func), addend),
+            SymRef::Runtime(func) => return Some((self.runtime_symbol(func), addend)),
             SymRef::Module(sym) => sym,
         };
-        let symbol = self.module.symbol(sym);
         let local_alias = prefers_local_alias(self.module, self.options, sym);
-        if symbol.is_variable()
-            && (local_alias || binding(symbol.linkage()) == Binding::Local)
-            && let Some(target) = self.via_section(sym, addend)
-        {
+        if !local_alias && binding(self.module.symbol(sym).linkage()) != Binding::Local {
+            return Some((Self::obj_sym(sym), addend));
+        }
+        // A function, alias or IFUNC not placed yet: decided in `finish`,
+        // when everything is.
+        if !self.places[sym.index()].is_placed() {
+            return None;
+        }
+        Some(self.local_target(sym, addend, local_alias))
+    }
+
+    /// The target of a reference to a local symbol, or to one reached
+    /// through its local alias: the section if a relocation may name it,
+    /// else the symbol or its alias.
+    fn local_target(&mut self, sym: SymId, addend: i64, local_alias: bool) -> (SymbolId, i64) {
+        if let Some(target) = self.via_section(sym, addend) {
             return target;
         }
         if local_alias {
@@ -710,13 +729,8 @@ impl<'m> ModuleEmitter<'m> {
     /// `prefer_local` is false there.
     fn data_target(&mut self, sym: SymId, addend: i64, prefer_local: bool) -> (SymbolId, i64) {
         let local_alias = prefer_local && prefers_local_alias(self.module, self.options, sym);
-        if (local_alias || binding(self.module.symbol(sym).linkage()) == Binding::Local)
-            && let Some(target) = self.via_section(sym, addend)
-        {
-            return target;
-        }
-        if local_alias {
-            return (self.local_alias(sym), addend);
+        if local_alias || binding(self.module.symbol(sym).linkage()) == Binding::Local {
+            return self.local_target(sym, addend, local_alias);
         }
         (Self::obj_sym(sym), addend)
     }
@@ -787,6 +801,12 @@ impl<'m> ModuleEmitter<'m> {
                 }
                 _ => {}
             }
+        }
+        for (section, at, kind, target, addend) in std::mem::take(&mut self.pending) {
+            let SymRef::Module(sym) = target else { continue };
+            let local_alias = prefers_local_alias(module, self.options, sym);
+            let (target, addend) = self.local_target(sym, addend, local_alias);
+            self.obj.add_relocation(section, at, kind, target, addend);
         }
         self.relocate_data()?;
         self.structors(true)?;

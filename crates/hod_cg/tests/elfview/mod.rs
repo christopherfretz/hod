@@ -251,6 +251,30 @@ impl Elf {
 }
 
 impl Elf {
+    /// The relocations of section `index`: offset, type, the symbol's
+    /// name or (for a section symbol) its section, addend.
+    pub fn relocs_in(&self, index: usize) -> Vec<(u64, u32, Result<String, usize>, i64)> {
+        let mut out = Vec::new();
+        for s in &self.sections {
+            if s.sh_type != SHT_RELA || s.info as usize != index {
+                continue;
+            }
+            for r in 0..(s.size / 24) as usize {
+                let o = s.offset as usize + r * 24;
+                let info = u64_at(&self.bytes, o + 8);
+                let sym = &self.symbols[(info >> 32) as usize];
+                let symbol = if sym.info & 0xf == 3 {
+                    Err(sym.shndx as usize)
+                } else {
+                    Ok(sym.name.clone())
+                };
+                let addend = u64_at(&self.bytes, o + 16) as i64;
+                out.push((u64_at(&self.bytes, o), (info & 0xffff_ffff) as u32, symbol, addend));
+            }
+        }
+        out
+    }
+
     /// The relocations of the section named `name`: type, symbol name
     /// (for a section symbol, `[section]`), addend.
     pub fn relocs_of(&self, name: &str) -> Vec<(u32, String, i64)> {

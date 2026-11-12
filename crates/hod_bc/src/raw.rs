@@ -18,6 +18,11 @@ pub(crate) struct Rec {
 }
 
 impl Rec {
+    /// A record whose operands are `pool[start..start + len]`.
+    pub fn new(code: u32, pos: u64, start: u32, len: u32) -> Rec {
+        Rec { code, pos, start, len }
+    }
+
     /// Its operands.
     pub fn ops<'p>(&self, pool: &'p [u64]) -> &'p [u64] {
         &pool[self.start as usize..][..self.len as usize]

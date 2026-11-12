@@ -31,7 +31,7 @@ enum Memo {
 }
 
 /// The value table of the module level.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Values {
     pub globals: Vec<GlobalValue>,
     /// Each module constant: its type, the notes its type makes, and its
@@ -40,6 +40,28 @@ pub(crate) struct Values {
     memo: Vec<Memo>,
     ty_ids: Vec<TypeId>,
     ty_notes: Vec<u8>,
+    /// The function layer (`spec/bc.md` §11.3): the value id of the first
+    /// constant of the function's CONSTANTS block, and its constants, as
+    /// `consts` (the records index the function's own list).
+    local_base: u64,
+    local: Vec<(TypeId, u8, u32)>,
+    local_memo: Vec<Memo>,
+}
+
+/// The records constants are read from: the module's, and the current
+/// function's.
+#[derive(Clone, Copy)]
+pub(crate) struct Recs<'r> {
+    pub module: (&'r [Rec], &'r [u64]),
+    pub local: (&'r [Rec], &'r [u64]),
+}
+
+/// Where a value id points.
+#[derive(Clone, Copy)]
+enum Place {
+    Global(usize),
+    /// A constant: module constants first, then the function's.
+    Const(usize),
 }
 
 /// A walk's step: a constant, and the next of its operands to look at.
@@ -84,7 +106,97 @@ impl Values {
             memo,
             ty_ids: types.ids.clone(),
             ty_notes: types.notes.clone(),
+            local_base: 0,
+            local: Vec::new(),
+            local_memo: Vec::new(),
         })
+    }
+
+    /// Starts a function's layer: its CONSTANTS block's records
+    /// (SETTYPE included) number from value id `base`.
+    pub fn begin_function(&mut self, base: u64, records: &[Rec], pool: &[u64]) -> BcResult<()> {
+        self.local.clear();
+        self.local_memo.clear();
+        self.local_base = base;
+        let mut current = (TypeId::I32, 0u8);
+        for (index, rec) in records.iter().enumerate() {
+            if rec.code == cst::SETTYPE {
+                let [id] = rec.ops(pool) else {
+                    return fail(
+                        BcErrorKind::Invalid,
+                        rec.pos,
+                        "a SETTYPE record without its type",
+                    );
+                };
+                let ty = self.ty(*id, rec.pos)?;
+                if matches!(ty, TypeId::VOID | TypeId::LABEL | TypeId::METADATA) {
+                    return fail(
+                        BcErrorKind::Type,
+                        rec.pos,
+                        "a constant of a type no constant has",
+                    );
+                }
+                current = (ty, self.ty_notes.get(*id as usize).copied().unwrap_or(0));
+                continue;
+            }
+            self.local.push((current.0, current.1, index as u32));
+        }
+        self.local_memo.resize(self.local.len(), Memo::New);
+        Ok(())
+    }
+
+    /// The number of constants of the function's layer.
+    pub fn local_len(&self) -> usize {
+        self.local.len()
+    }
+
+    /// The type, type notes and record index of the function's constant
+    /// `index`.
+    pub fn local_slot(&self, index: usize) -> Option<(TypeId, u8, u32)> {
+        self.local.get(index).copied()
+    }
+
+    fn place(&self, id: u64) -> Option<Place> {
+        let globals = self.globals.len() as u64;
+        if id < globals {
+            return Some(Place::Global(id as usize));
+        }
+        if id < self.len() as u64 {
+            return Some(Place::Const((id - globals) as usize));
+        }
+        let local = id.checked_sub(self.local_base)?;
+        (local < self.local.len() as u64).then(|| Place::Const(self.consts.len() + local as usize))
+    }
+
+    fn slot(&self, c: usize) -> (TypeId, u8, u32) {
+        match self.consts.get(c) {
+            Some(&slot) => slot,
+            None => self.local[c - self.consts.len()],
+        }
+    }
+
+    fn memo(&self, c: usize) -> Memo {
+        match self.memo.get(c) {
+            Some(&memo) => memo,
+            None => self.local_memo[c - self.consts.len()],
+        }
+    }
+
+    fn set_memo(&mut self, c: usize, memo: Memo) {
+        let modules = self.consts.len();
+        if c < modules {
+            self.memo[c] = memo;
+        } else {
+            self.local_memo[c - modules] = memo;
+        }
+    }
+
+    fn rec<'r>(&self, c: usize, recs: Recs<'r>) -> (Rec, &'r [u64]) {
+        let (index, (records, pool)) = match c.checked_sub(self.consts.len()) {
+            None => (self.consts[c].2, recs.module),
+            Some(local) => (self.local[local].2, recs.local),
+        };
+        (records[index as usize], pool)
     }
 
     /// The number of values.
@@ -116,56 +228,79 @@ impl Values {
         id: u64,
         at: u64,
     ) -> BcResult<(ConstId, u8)> {
-        let globals = self.globals.len();
-        let Some(index) = usize::try_from(id).ok().filter(|&id| id < self.len()) else {
-            return fail(
-                BcErrorKind::Invalid,
-                at,
-                format!("value id {id} names no module-level value"),
-            );
+        let recs = Recs { module: (records, pool), local: (&[], &[]) };
+        self.value(module, recs, id, at)
+    }
+
+    /// Value `id`, of the module or of the function's layer, as a
+    /// constant, built if it was not, with the notes it makes.
+    pub fn value(
+        &mut self,
+        module: &mut Module,
+        recs: Recs<'_>,
+        id: u64,
+        at: u64,
+    ) -> BcResult<(ConstId, u8)> {
+        let root = match self.place(id) {
+            Some(Place::Global(index)) => return Ok((self.address(module, index, at)?, 0)),
+            Some(Place::Const(c)) => c,
+            None => {
+                return fail(
+                    BcErrorKind::Invalid,
+                    at,
+                    format!("value id {id} names no constant"),
+                );
+            }
         };
-        if index < globals {
-            return Ok((self.address(module, index, at)?, 0));
-        }
-        let root = index - globals;
-        if let Memo::Done(built, notes) = self.memo[root] {
+        if let Memo::Done(built, notes) = self.memo(root) {
             return Ok((built, notes));
         }
         let mut stack: Vec<Step> = vec![(root, 0)];
-        self.memo[root] = Memo::Open;
+        self.set_memo(root, Memo::Open);
         while let Some(&mut (c, ref mut next)) = stack.last_mut() {
-            let rec = records[self.consts[c].2 as usize];
+            let (rec, pool) = self.rec(c, recs);
             let ops = rec.ops(pool);
             if let Some(dep) = operand(rec.code, ops, *next) {
                 *next += 1;
-                let Some(dep) = usize::try_from(dep).ok().filter(|&d| d < self.len()) else {
-                    return fail(
-                        BcErrorKind::Invalid,
-                        rec.pos,
-                        format!("value id {dep} names no module-level value"),
-                    );
+                let dep = match self.place(dep) {
+                    Some(Place::Global(_)) => continue,
+                    Some(Place::Const(dep)) => dep,
+                    None => {
+                        return fail(
+                            BcErrorKind::Invalid,
+                            rec.pos,
+                            format!("value id {dep} names no constant"),
+                        );
+                    }
                 };
-                if dep < globals {
-                    continue;
-                }
-                let dep = dep - globals;
-                match self.memo[dep] {
+                match self.memo(dep) {
                     Memo::Done(..) => {}
                     Memo::Open => {
                         return fail(BcErrorKind::Invalid, rec.pos, "a constant that uses itself");
                     }
                     Memo::New => {
-                        self.memo[dep] = Memo::Open;
+                        self.set_memo(dep, Memo::Open);
                         stack.push((dep, 0));
                     }
                 }
                 continue;
             }
-            let built = self.build(module, rec, ops, c)?;
-            self.memo[c] = Memo::Done(built.0, built.1);
+            let built = self.build(module, rec, ops, c);
+            let built = match built {
+                Ok(built) => built,
+                Err(error) => {
+                    // Nothing open stays open: a later use fails the same
+                    // way rather than as a cycle.
+                    for &(open, _) in &stack {
+                        self.set_memo(open, Memo::New);
+                    }
+                    return Err(error);
+                }
+            };
+            self.set_memo(c, Memo::Done(built.0, built.1));
             stack.pop();
         }
-        match self.memo[root] {
+        match self.memo(root) {
             Memo::Done(built, notes) => Ok((built, notes)),
             _ => unreachable!("the walk built its root"),
         }
@@ -189,13 +324,13 @@ impl Values {
 
     /// The built value `id`, whose constants are built.
     fn get(&self, module: &mut Module, id: u64, at: u64) -> BcResult<(ConstId, u8)> {
-        let index = id as usize;
-        if index < self.globals.len() {
-            return Ok((self.address(module, index, at)?, 0));
-        }
-        match self.memo[index - self.globals.len()] {
-            Memo::Done(built, notes) => Ok((built, notes)),
-            _ => unreachable!("operands are built first"),
+        match self.place(id) {
+            Some(Place::Global(index)) => Ok((self.address(module, index, at)?, 0)),
+            Some(Place::Const(c)) => match self.memo(c) {
+                Memo::Done(built, notes) => Ok((built, notes)),
+                _ => fail(BcErrorKind::Invalid, at, "a constant operand not built"),
+            },
+            None => fail(BcErrorKind::Invalid, at, format!("value id {id} names no constant")),
         }
     }
 
@@ -216,7 +351,7 @@ impl Values {
         c: usize,
     ) -> BcResult<(ConstId, u8)> {
         let at = rec.pos;
-        let (ty, mut notes, _) = self.consts[c];
+        let (ty, mut notes, _) = self.slot(c);
         let short = || fail(BcErrorKind::Invalid, at, "a constant record cut short");
         let mut args: Vec<ConstId> = Vec::new();
         let mut take = |module: &mut Module, id: u64, args: &mut Vec<ConstId>| -> BcResult<()> {

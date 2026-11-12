@@ -42,6 +42,8 @@ pub struct FunctionBits {
     pub sym: SymId,
     /// Its function type.
     pub ty: TypeId,
+    /// Its function type's bitcode type id.
+    pub type_id: u64,
     /// Its FUNCTION block; read it with
     /// [`crate::bitstream::Cursor::enter_at`] and [`ModuleBits::block_info`].
     pub span: BlockSpan,
@@ -52,9 +54,11 @@ pub struct FunctionBits {
 #[derive(Debug)]
 pub struct ModuleBits<'a> {
     data: &'a [u8],
-    raw: Raw<'a>,
-    types: Types,
-    values: Values,
+    pub(crate) raw: Raw<'a>,
+    pub(crate) types: Types,
+    pub(crate) values: Values,
+    /// Attribute group entries: (group id, index, record), sorted.
+    pub(crate) groups: Vec<(u64, u64, Rec)>,
     numbered: Vec<SymId>,
     functions: Vec<FunctionBits>,
     md_kinds: Vec<(u64, Vec<u8>)>,
@@ -152,7 +156,7 @@ pub fn read_module<'a>(data: &'a [u8], options: &ReadOptions) -> BcResult<BcModu
     let raw = crate::raw::walk(data)?;
     let mut b = Build::new(&raw, options)?;
     b.run()?;
-    let Build { module, types, values, numbered, functions, md_kinds, .. } = b;
+    let Build { module, types, values, groups, numbered, functions, md_kinds, .. } = b;
     let sync_scopes = text_list(&raw, &raw.sync_scopes)?;
     let bundle_tags = text_list(&raw, &raw.bundle_tags)?;
     let bits = ModuleBits {
@@ -160,6 +164,7 @@ pub fn read_module<'a>(data: &'a [u8], options: &ReadOptions) -> BcResult<BcModu
         raw,
         types,
         values,
+        groups,
         numbered,
         functions,
         md_kinds,
@@ -1005,7 +1010,7 @@ impl<'r, 'a> Build<'r, 'a> {
         };
         ir(at, self.module.set_function(sym, &desc))?;
         if let Some(span) = span {
-            self.functions.push(FunctionBits { sym, ty, span });
+            self.functions.push(FunctionBits { sym, ty, type_id: field(2), span });
         }
         self.flush(sym);
         Ok(())

@@ -42,6 +42,9 @@ pub(crate) struct Types {
     /// The notes of the named struct definitions, recorded against no
     /// symbol.
     pub defined_notes: u8,
+    /// The function types with a parameter whose type makes a note: the
+    /// type id and the notes of each parameter.
+    pub param_notes: Vec<(u64, Vec<u8>)>,
 }
 
 impl Types {
@@ -51,6 +54,11 @@ impl Types {
             Some(&ty) => Ok(ty),
             None => fail(BcErrorKind::Invalid, at, format!("type id {id} names no type")),
         }
+    }
+
+    /// The notes of the parameters of function type `id`, if any has one.
+    pub fn param_notes(&self, id: u64) -> Option<&[u8]> {
+        self.param_notes.iter().find(|(fid, _)| *fid == id).map(|(_, notes)| &notes[..])
     }
 
     /// The notes a use of bitcode type `id` makes (0 for an unknown id).
@@ -164,7 +172,12 @@ pub(crate) fn build(raw: &Raw<'_>, module: &mut Module) -> BcResult<Types> {
         );
     }
     let count = entries.len();
-    let mut out = Types { ids: vec![TypeId::VOID; count], notes: vec![0; count], defined_notes: 0 };
+    let mut out = Types {
+        ids: vec![TypeId::VOID; count],
+        notes: vec![0; count],
+        defined_notes: 0,
+        param_notes: Vec::new(),
+    };
     let mut state = vec![NEW; count];
     let mut stack: Vec<(usize, usize)> = Vec::new();
     let mut fields: Vec<TypeId> = Vec::new();
@@ -204,6 +217,12 @@ pub(crate) fn build(raw: &Raw<'_>, module: &mut Module) -> BcResult<Types> {
             }
             let (built, notes) = build_one(entry, ops, pool, &out, module, &mut fields)?;
             out.ids[at] = built;
+            if entry.rec.code == ty::FUNCTION && notes != 0 {
+                let params = (1..ops.len().saturating_sub(1))
+                    .map(|k| child(entry, ops, k).map_or(0, |id| out.notes_of(id)))
+                    .collect();
+                out.param_notes.push((at as u64, params));
+            }
             if entry.named && matches!(entry.rec.code, ty::STRUCT_NAMED | ty::OPAQUE) {
                 out.defined_notes |= notes;
             } else {

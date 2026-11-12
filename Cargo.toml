@@ -6,6 +6,7 @@ members = ["crates/*", "xtask"]
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.95"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/christopherfretz/hod"
 publish = false
 
@@ -26,6 +27,7 @@ hod_xform  = { path = "crates/hod_xform" }
 hod_asm    = { path = "crates/hod_asm" }
 hod        = { path = "crates/hod" }
 hod_testutil = { path = "crates/hod_testutil" }
+xtask        = { path = "xtask" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

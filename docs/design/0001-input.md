@@ -77,12 +77,28 @@ machine: good for proportions, not for baselines. The benchmark harness
    test input. The in-process bridge follows once the IR contract is stable
    (M5); it needs a small hook in kiln's driver, to be agreed with kiln's
    maintainers.
-6. **IR that today needs an LLVM pass at `-O0`** is hod's to lower
-   (`hod_xform`), in this order: `alwaysinline` (no pass needed when the
-   definition is in the module: calling it out of line is correct),
-   coroutines (a splitting pass of hod's own), coverage. Sanitizers that
-   LLVM instruments stay on the LLVM path. Until each lands, such
-   translation units take the fallback.
+6. **IR that today needs an LLVM pass at `-O0`** is hod's to handle, in
+   this order: `alwaysinline`, coroutines (a splitting pass of hod's own,
+   `hod_xform`), coverage. Sanitizers that LLVM instruments stay on the
+   LLVM path. Until each lands, such translation units take the fallback.
+
+   `alwaysinline` needs no inliner, with one exception. A call to an
+   `alwaysinline` function whose definition has ordinary linkage is
+   correct out of line. But kiln, like clang, emits some `alwaysinline`
+   bodies with `available_externally` linkage (extern-template and
+   `gnu_inline` cases), for which no out-of-line definition may exist
+   anywhere: such programs link only because every call is inlined. For
+   those, hod emits the body as a local copy in this object and directs
+   the module's calls to it. An `available_externally` body that is not
+   `alwaysinline` is discarded and referenced as an external symbol, as
+   LLVM does at `-O0`.
+
+   This matters for the text-first integration: nearly every translation
+   unit that includes the standard library contains an `alwaysinline`
+   function, so kiln runs `opt` and hands `llc` bitcode in the common
+   case. Until `hod_bc` exists, the shim converts bitcode to text with
+   `llvm-dis`, which also means hod sees those modules already inlined.
+   The in-process path receives the module before any LLVM pass.
 
 ## Beyond LLVM IR: facts the producer already has
 
@@ -111,6 +127,41 @@ with no intermediate LLVM-shaped module. That removes the copy in point 2
 and one whole IR build from the compile. The `hod_ir` spec (WP-002 to
 WP-005) is written with this end state in mind, and its design is reviewed
 with kiln's maintainers before it is fixed.
+
+## Review by kiln's maintainers (2026-11-11)
+
+Facts established for the stages above, at kiln `bd60e182`:
+
+- A backend seam in kiln's driver is acceptable. Today the built module
+  never reaches the driver (only its text does), so the seam starts with
+  returning the module. kiln will depend on hod through an optional cargo
+  feature on its driver (off by default), with the bridge crate in kiln's
+  workspace and hod pinned by revision (decided 2026-11-11).
+- **Frame up front:** available. Entry-block allocas go through one helper
+  and are recorded in a list; debug declarations are recorded separately
+  and can be joined. Variable-length arrays and `__builtin_alloca` are
+  dynamic allocations.
+- **Resolved addresses:** available cheaply. Field offsets are already
+  computed where field accesses are emitted.
+- **Use facts:** not available without a counting pass on kiln's side. hod's
+  builder maintains them as operands are appended (`spec/ir.md` §5.6), so
+  no producer needs to supply them.
+- **Call shapes:** the ABI classification is computed per signature and per
+  call but not stored in kiln's IR model. Only a producer that lowers
+  directly into `hod_ir` can supply it.
+- **Function at a time, from kiln's lowering:** a function is final when
+  lowered except when (a) a finished body is later discarded and redefined,
+  (b) a declaration is later replaced by an alias, IFUNC or another
+  function, changing what earlier references mean, (c) a body refers to a
+  constructor or destructor variant not yet resolved and is parked until
+  the end, (d) a variadic virtual body is cloned for thunks. A streaming
+  producer must either hold back the functions these touch or hod must
+  accept late symbol resolution. `hod_ir` symbols are referred to by id,
+  never by name, so (b) can be a change to the symbol's definition rather
+  than a rewrite of its users; the rule will be fixed with the stage-3
+  design.
+- `musttail` is required for correctness in variadic thunks. `naked`
+  functions have no prologue.
 
 ## Measurement that can overturn point 2
 

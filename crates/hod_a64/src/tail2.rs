@@ -15,14 +15,21 @@
 //! - `extractelement` from a vector of `i128` ([`extract_element`], from
 //!   the dispatch in `target.rs`): the lane's 16 bytes copied into the
 //!   result's slot.
+//! - `preserve_mostcc`, as callee and as caller: assigned as `ccc`
+//!   ([`assign_preserve_most`], from `Target::assign`); a function of that
+//!   convention saves and restores `x9`..`x15` with their unwind rules
+//!   ([`save_preserved`], [`preserved_rows`], [`restore_preserved`], from
+//!   `frame.rs`). A caller needs nothing: hod keeps no value in a register
+//!   across a call.
 
-use hod_cg::{CallArg, CgResult, Class, FnCx, PReg, RuntimeFn};
-use hod_ir::{FloatPredicate, Inst, Opcode, TypeKind, Value};
+use hod_cg::abi::{AbiUnsupported, Assignment, Sig};
+use hod_cg::{CallArg, CfiOp, CgResult, Class, FnCx, FrameRef, PReg, RuntimeFn};
+use hod_ir::{CallConv, FloatPredicate, Inst, Opcode, SymbolKind, TypeKind, TypeTable, Value};
 use hod_mc_a64 as mc;
-use hod_mc_a64::{Cond, FpFormat, FpSize, RegZr, Size, VMemSize, VReg};
+use hod_mc_a64::{Cond, FpFormat, FpSize, Load, MemSize, Reg, RegZr, Size, VMemSize, VReg};
 
 use crate::common::{
-    Cursor, V31, X16, X17, copy_bytes, deferred_first, put, size_for_bits, store_fpr_at,
+    Cursor, FP, V31, X16, X17, copy_bytes, deferred_first, put, size_for_bits, store_fpr_at,
     unsupported, value_ty, vr, xr,
 };
 use crate::float::{self, FpCond};
@@ -156,7 +163,7 @@ pub fn bfloat_cast<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> Cg
 /// `FCVTXN`; wider as `llc` does it, the conversion to double made to
 /// round to odd by hand (the bits below the 53rd folded into a sticky
 /// bit). Writes `ra`, `x16`, `x17` and the flags.
-fn int_to_bfloat(cx: &mut FnCx<'_, A64>, ra: mc::Reg, bits: u32, signed: bool, vd: VReg) {
+fn int_to_bfloat(cx: &mut FnCx<'_, A64>, ra: Reg, bits: u32, signed: bool, vd: VReg) {
     let sz = size_for_bits(bits);
     let r = ra.zr();
     if bits != 32 && bits != 64 {
@@ -340,4 +347,99 @@ pub fn extract_element<'a>(
     let mut dst = Cursor::frame(cx, r, X17);
     copy_bytes(cx, &mut dst, &mut src, 16);
     Ok(())
+}
+
+// ---- preserve_mostcc ----
+
+/// The registers `preserve_mostcc` adds to the AAPCS64 callee-saved set
+/// (LLVM's `CSR_AArch64_RT_MostRegs`): `x9`..`x15`. Nothing else: `x8`,
+/// `x16`..`x18` and the vector registers stay as `ccc` has them.
+pub const PRESERVED: [Reg; 7] =
+    [Reg::X9, Reg::X10, Reg::X11, Reg::X12, Reg::X13, Reg::X14, Reg::X15];
+
+/// Where a `preserve_mostcc` function saves [`PRESERVED`]: the 64 bytes
+/// after the frame record, `x9` lowest.
+const SAVE_AREA: u32 = 16;
+
+/// Whether the function being compiled is `preserve_mostcc`.
+pub fn is_preserve_most(cx: &FnCx<'_, A64>) -> bool {
+    matches!(
+        cx.module.symbol(cx.body.symbol()).kind(),
+        SymbolKind::Function { cc: CallConv::PRESERVE_MOST, .. }
+    )
+}
+
+/// `Target::assign` for `preserve_mostcc`: arguments and results travel
+/// as for `ccc`; only the callee-saved set differs. `None` for another
+/// convention.
+pub fn assign_preserve_most(
+    types: &TypeTable,
+    sig: &Sig<'_>,
+    out: &mut Assignment,
+) -> Option<Result<(), AbiUnsupported>> {
+    (sig.cc == CallConv::PRESERVE_MOST)
+        .then(|| crate::abi::assign(types, &Sig { cc: CallConv::C, ..*sig }, out))
+}
+
+/// From `frame::begin`, right after `mov x29, sp`: a `preserve_mostcc`
+/// function stores [`PRESERVED`] in its save area. Every lowering may
+/// write them and every call clobbers them, so all seven are saved (`llc`
+/// saves those its allocator touched).
+pub fn save_preserved(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
+    if !is_preserve_most(cx) {
+        return Ok(());
+    }
+    if cx.alloc_slot(64, 16)? != FrameRef::Local(SAVE_AREA) {
+        return cx.bug("the preserve_most save area is not after the frame record");
+    }
+    for (index, pair) in PRESERVED.chunks(2).enumerate() {
+        let at = i64::from(SAVE_AREA) + 16 * index as i64;
+        match *pair {
+            [a, b] => put(cx, mc::stp_off(Size::X, a.zr(), b.zr(), FP, at)),
+            [a] => put(cx, mc::str_off(MemSize::X, a.zr(), FP, at)),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The bytes [`save_preserved`] emits.
+pub const SAVE_BYTES: u32 = 16;
+
+/// The rules saying where [`PRESERVED`] are saved, given the CFA is
+/// `x29 + frame`: from `at` in `end` (the offset after the stores), and
+/// again in the body rows a tail exit restates.
+pub fn preserved_rows(cx: &mut FnCx<'_, A64>, at: Option<u32>, frame: u32) -> CgResult<()> {
+    if !is_preserve_most(cx) {
+        return Ok(());
+    }
+    for (index, reg) in PRESERVED.iter().enumerate() {
+        let saved = SAVE_AREA as i32 + 8 * index as i32;
+        let op = CfiOp::Offset { reg: reg.index() as u16, cfa_offset: saved - frame as i32 };
+        match at {
+            Some(at) => cx.cfi_at(at, op)?,
+            None => cx.cfi(op),
+        }
+    }
+    Ok(())
+}
+
+/// From `frame::teardown`, before the frame record is reloaded:
+/// [`PRESERVED`] reloaded from the save area, each rule back to "same
+/// value".
+pub fn restore_preserved(cx: &mut FnCx<'_, A64>) {
+    if !is_preserve_most(cx) {
+        return;
+    }
+    for (index, pair) in PRESERVED.chunks(2).enumerate() {
+        let at = i64::from(SAVE_AREA) + 16 * index as i64;
+        match *pair {
+            [a, b] => put(cx, mc::ldp_off(Size::X, a.zr(), b.zr(), FP, at)),
+            [a] => put(cx, mc::ldr_off(Load::X, a.zr(), FP, at)),
+            _ => {}
+        }
+    }
+    for reg in PRESERVED {
+        cx.cfi(CfiOp::Restore { reg: reg.index() as u16 });
+    }
 }

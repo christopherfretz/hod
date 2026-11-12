@@ -196,7 +196,8 @@ impl ConstPool {
     /// - `inttoptr` gives the absolute address of an integer (`null` for
     ///   zero) and undoes a `ptrtoint` that kept all 64 bits.
     /// - `bitcast` is the identity on equal types and reinterprets the bits
-    ///   between integers and floats of one width.
+    ///   between integers and floats of one width, and from a vector of
+    ///   numbers of at most 128 bits to an integer or float (its image).
     /// - `poison` folds to `poison`, and `undef` to `undef` (to zero for
     ///   `zext` and `sext`, whose high bits are not arbitrary).
     /// - Anything else, including every cast between vectors of a non-zero
@@ -225,6 +226,12 @@ impl ConstPool {
         if shape(types, from).1.is_some() || shape(types, to).1.is_some() {
             if op == ConstOp::BitCast && self.is_zero(value) {
                 return self.zero(types, to);
+            }
+            if op == ConstOp::BitCast
+                && shape(types, to).1.is_none()
+                && let Some(bits) = self.vector_bits(types, value)
+            {
+                return self.bits_as(types, to, bits);
             }
             return self.expr(op, to, None, &[value]);
         }
@@ -277,6 +284,36 @@ impl ConstPool {
             }
             _ => self.expr(op, to, None, &[value]),
         }
+    }
+
+    /// The bits of `value`, a fixed vector of at most 128 bits whose
+    /// elements are all integers or floats (WP-095): its image as
+    /// [`ConstPool::flatten`] lays it out, which is how `llc` folds a
+    /// `bitcast` of it to a scalar (`<8 x i1>` packs element 0 in bit 0).
+    fn vector_bits(&self, types: &TypeTable, value: ConstId) -> Option<u128> {
+        let plain = |c: ConstId| {
+            matches!(
+                self.get(c),
+                Const::Int { .. }
+                    | Const::WideInt { .. }
+                    | Const::Float { .. }
+                    | Const::WideFloat { .. }
+            )
+        };
+        let all_plain = match self.get(value) {
+            Const::Aggregate { elems, .. } => elems.iter().all(|&elem| plain(elem)),
+            Const::Splat { elem, .. } => plain(elem),
+            _ => false,
+        };
+        if !all_plain || types.size_in_bits_of(self.ty(value)) > 128 {
+            return None;
+        }
+        let (mut bytes, mut fixups) = (Vec::with_capacity(16), Vec::new());
+        self.flatten(types, value, &mut bytes, &mut fixups).ok()?;
+        let mut le = [0u8; 16];
+        let size = bytes.len().min(16);
+        le[..size].copy_from_slice(&bytes[..size]);
+        Some(u128::from_le_bytes(le))
     }
 
     /// The integer or float of type `to` with this bit pattern.

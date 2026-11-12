@@ -435,6 +435,9 @@ fn image_text(module: &Module, init: ConstId, name: &dyn Fn(SymId) -> String) ->
             FixupTarget::PltDiff { a, b } => format!("plt({})-{}", name(a), name(b)),
             FixupTarget::Plt(sym) => format!("plt({})", name(sym)),
             FixupTarget::Block { func, block } => format!("block({}, {block:?})", name(func)),
+            FixupTarget::BlockDiff { func, a, b } => {
+                format!("block({}, {a:?})-block({}, {b:?})", name(func), name(func))
+            }
         };
         let _ = write!(text, " [{}+{}: {target}{:+}]", fixup.offset, fixup.size, fixup.addend);
     }

@@ -361,6 +361,11 @@ impl<'a> View<'a> {
                 };
                 assert_eq!(theirs, mine, "{field}: the block is in its function's section");
             }
+            // A label difference is a number the assembler folds (WP-095);
+            // its value depends on the code layout, which differs.
+            FixupTarget::BlockDiff { .. } => {
+                assert!(class.is_none(), "{field}: a label difference has no relocation");
+            }
             FixupTarget::Diff { a, b } | FixupTarget::PltDiff { a, b } => {
                 let plt = matches!(fixup.target, FixupTarget::PltDiff { .. });
                 let minus = self.place(b, 0);

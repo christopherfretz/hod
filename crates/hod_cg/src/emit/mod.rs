@@ -956,7 +956,9 @@ impl<'m> ModuleEmitter<'m> {
         let fixups = std::mem::take(&mut self.fixups);
         let arch = self.arch();
         let mut blocks: Vec<(u32, u32, u32)> = Vec::new();
-        if fixups.iter().any(|(_, f)| matches!(f.target, FixupTarget::Block { .. })) {
+        if fixups.iter().any(|(_, f)| {
+            matches!(f.target, FixupTarget::Block { .. } | FixupTarget::BlockDiff { .. })
+        }) {
             for func in &self.funcs {
                 let rows = &self.rows.block_offsets[func.record.block_offsets.start as usize
                     ..func.record.block_offsets.end as usize];
@@ -1023,6 +1025,24 @@ impl<'m> ModuleEmitter<'m> {
                         .addend
                         .wrapping_add((fplace.value + u64::from(blocks[found].2)) as i64);
                     self.obj.add_relocation(section, place, kind, target, addend);
+                }
+                FixupTarget::BlockDiff { func, a, b } => {
+                    // A label difference (WP-095): a number once the
+                    // function is laid out, as the assembler folds `llc`'s
+                    // `.word .Ltmp1-.Ltmp0`.
+                    let offset = |block: hod_ir::BlockId| {
+                        let key = (func.index() as u32, block.index() as u32);
+                        blocks
+                            .binary_search_by(|&(f, b, _)| (f, b).cmp(&key))
+                            .map(|found| u64::from(blocks[found].2))
+                            .map_err(|_| CgError::unsupported(unsupported::BLOCK_ADDRESS))
+                    };
+                    let value =
+                        offset(a)?.wrapping_sub(offset(b)?).wrapping_add(fixup.addend as u64);
+                    let bytes = value.to_le_bytes();
+                    let data = self.obj.data_mut(section);
+                    data[place as usize..][..usize::from(width)]
+                        .copy_from_slice(&bytes[..usize::from(width)]);
                 }
             }
         }

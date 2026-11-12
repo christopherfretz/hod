@@ -192,6 +192,9 @@ impl Target for A64 {
         out: &mut Assignment,
     ) -> Result<(), AbiUnsupported> {
         vector::check_signature(types, sig)?;
+        if let Some(assigned) = crate::tail2::assign_preserve_most(types, sig, out) {
+            return assigned;
+        }
         abi::assign(types, sig, out)
     }
 

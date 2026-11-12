@@ -24,7 +24,7 @@
 //!
 //! Only little-endian targets are supported.
 
-use crate::constant::{Const, ConstPool};
+use crate::constant::{Const, ConstOp, ConstPool};
 use crate::error::{IrErrorKind, IrResult, err};
 use crate::ids::{BlockId, ConstId, SymId, TypeId};
 use crate::types::{TypeKind, TypeTable};
@@ -75,9 +75,91 @@ pub enum FixupTarget {
         /// The block.
         block: BlockId,
     },
+    /// The address of block `a` minus the address of block `b`, both of
+    /// function `func` (a label difference, WP-095): a number once the
+    /// function is laid out, never a relocation.
+    BlockDiff {
+        /// The function.
+        func: SymId,
+        /// The block added.
+        a: BlockId,
+        /// The block subtracted.
+        b: BlockId,
+    },
+}
+
+/// A label difference: `a - b + addend` of two blocks of one function
+/// (see [`ConstPool::block_diff`]).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct BlockDiff {
+    /// The function.
+    pub func: SymId,
+    /// The block added.
+    pub a: BlockId,
+    /// The block subtracted.
+    pub b: BlockId,
+    /// The number added.
+    pub addend: i64,
 }
 
 impl ConstPool {
+    /// Constant `c` as a label difference (WP-095): an integer expression
+    /// built only of `ptrtoint` of a `blockaddress`, numbers, `add`, `sub`
+    /// and `trunc`, in which exactly one block address is added and one
+    /// subtracted, both of the same function. Clang writes
+    /// `trunc (sub (ptrtoint blockaddress(@f, %a)), (ptrtoint
+    /// blockaddress(@f, %b)))` for `&&a - &&b` in a static initializer.
+    ///
+    /// Arithmetic modulo 2^n commutes with truncation, so the value of `c`
+    /// is the low bits of `a - b + addend` whatever the widths in between.
+    /// `None` for any other constant.
+    pub fn block_diff(&self, c: ConstId) -> Option<BlockDiff> {
+        let mut term = Term::default();
+        self.block_terms(c, false, 0, &mut term)?;
+        match term {
+            Term { func: Some(func), pos: Some(a), neg: Some(b), addend } => {
+                Some(BlockDiff { func, a, b, addend })
+            }
+            _ => None,
+        }
+    }
+
+    /// Adds `c` (negated when `negate`) to `term`; `None` when `c` has
+    /// another form or `term` would hold more than one block each way.
+    fn block_terms(&self, c: ConstId, negate: bool, depth: u32, term: &mut Term) -> Option<()> {
+        if depth > 8 {
+            return None;
+        }
+        match self.get(c) {
+            Const::Int { value, .. } => {
+                let value = value as i64;
+                term.addend =
+                    term.addend.wrapping_add(if negate { value.wrapping_neg() } else { value });
+            }
+            Const::IntOfAddr { addr, .. } => {
+                let Const::BlockAddr { func, block } = self.get(addr) else { return None };
+                if term.func.is_some_and(|f| f != func) {
+                    return None;
+                }
+                term.func = Some(func);
+                let side = if negate { &mut term.neg } else { &mut term.pos };
+                if side.replace(block).is_some() {
+                    return None;
+                }
+            }
+            Const::Expr { op: ConstOp::Trunc, args, .. } => {
+                self.block_terms(*args.first()?, negate, depth + 1, term)?;
+            }
+            Const::Expr { op: op @ (ConstOp::Add | ConstOp::Sub), args, .. } => {
+                let [lhs, rhs] = args[..] else { return None };
+                self.block_terms(lhs, negate, depth + 1, term)?;
+                self.block_terms(rhs, negate != (op == ConstOp::Sub), depth + 1, term)?;
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+
     /// Appends the image of constant `c` to `bytes`, and a [`Fixup`] to
     /// `fixups` for each address in it.
     ///
@@ -133,6 +215,15 @@ impl ConstPool {
         }
         result
     }
+}
+
+/// The blocks and number gathered by [`ConstPool::block_terms`].
+#[derive(Default)]
+struct Term {
+    func: Option<SymId>,
+    pos: Option<BlockId>,
+    neg: Option<BlockId>,
+    addend: i64,
 }
 
 struct Writer<'a> {
@@ -216,11 +307,16 @@ impl Writer<'_> {
             Const::NoneToken => {
                 return err(IrErrorKind::UnsupportedInitializer, "a token has no image");
             }
-            Const::Expr { op, .. } => {
-                return err(
-                    IrErrorKind::UnsupportedInitializer,
-                    format!("constant expression '{}' in an initializer", op.name()),
-                );
+            Const::Expr { ty, op, .. } => {
+                let Some(BlockDiff { func, a, b, addend }) = pool.block_diff(c) else {
+                    return err(
+                        IrErrorKind::UnsupportedInitializer,
+                        format!("constant expression '{}' in an initializer", op.name()),
+                    );
+                };
+                let size = self.relocatable_size(ty, "label difference")?;
+                let target = FixupTarget::BlockDiff { func, a, b };
+                self.fixups.push(Fixup { offset: at as u64, size, target, addend });
             }
         }
         Ok(())

@@ -130,7 +130,7 @@ fn resolve(
             };
             reloc(kind, a, addend)
         }
-        FixupTarget::Plt(_) | FixupTarget::Block { .. } => {
+        FixupTarget::Plt(_) | FixupTarget::Block { .. } | FixupTarget::BlockDiff { .. } => {
             panic!("no object-level case has {:?}", fixup.target)
         }
     }

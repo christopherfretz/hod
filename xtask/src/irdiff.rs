@@ -171,14 +171,23 @@ pub fn build_workspace_hod(build_dir: &Path) -> Result<PathBuf, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| env!("CARGO").into());
     // A cargo step: a jobserver client of its own, stopped with xtask
     // ("Jobserver").
-    let mut step = Command::new(&cargo);
-    step.args(["build", "--quiet", "--package", "hod_cli", "--bin", "hod"])
-        .current_dir(workspace_root())
-        .env("CARGO_TARGET_DIR", build_dir);
-    let (built, _) = crate::jobs::children::run_step(&mut step, false)
-        .map_err(|e| format!("cannot run '{}': {e}", Path::new(&cargo).display()))?;
-    if !built.success() {
-        return Err("building the workspace's hod failed".to_owned());
+    // It is run once more if an artifact vanished under it ("ci").
+    let mut retried = false;
+    loop {
+        let mut step = Command::new(&cargo);
+        step.args(["build", "--quiet", "--package", "hod_cli", "--bin", "hod"])
+            .current_dir(workspace_root())
+            .env("CARGO_TARGET_DIR", build_dir);
+        let (built, stderr) = crate::jobs::children::run_step(&mut step, true)
+            .map_err(|e| format!("cannot run '{}': {e}", Path::new(&cargo).display()))?;
+        if built.success() {
+            break;
+        }
+        if !crate::ci::should_retry(&stderr, retried) {
+            return Err("building the workspace's hod failed".to_owned());
+        }
+        eprintln!("xtask irdiff: [retry] the build of hod failed with error[E0463]; once more");
+        retried = true;
     }
     let hod = build_dir.join("debug").join("hod");
     if hod.is_file() {

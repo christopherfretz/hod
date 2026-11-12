@@ -108,8 +108,14 @@ impl Part {
 }
 
 /// The variables that configure hod; the harness passes options instead.
-const HOD_VARIABLES: [&str; 4] =
-    ["HOD_FALLBACK_LLC", "HOD_STRICT", "HOD_COVERAGE_LOG", "HOD_IN_FALLBACK"];
+const HOD_VARIABLES: [&str; 6] = [
+    "HOD_FALLBACK_LLC",
+    "HOD_STRICT",
+    "HOD_COVERAGE_LOG",
+    "HOD_BITCODE_VIA",
+    "HOD_IN_FALLBACK",
+    "HOD_TIME_PHASES",
+];
 
 /// What became of hod's side of the build.
 enum HodBuild {

@@ -257,6 +257,9 @@ fn session_of(read: Read) -> (Session, Vec<(SymId, Body)>) {
     (session, bodies)
 }
 
+/// Picks the symbol and body a misuse case hands over.
+type Pick = Box<dyn Fn(&mut Vec<(SymId, Body)>) -> (SymId, Body)>;
+
 // spec/cli.md "Session", "Misuse": each is an error value, the session
 // answers it from then on, and nothing panics.
 #[test]
@@ -299,7 +302,7 @@ fn misuse_is_an_error() {
     // A symbol the module does not have, a declaration, another
     // symbol's body.
     let (read, d) = two_functions();
-    let cases: [(Box<dyn Fn(&mut Vec<(SymId, Body)>) -> (SymId, Body)>, &str); 3] = [
+    let cases: [(Pick, &str); 3] = [
         (
             Box::new(|bodies| (SymId::new(1000), bodies.remove(0).1)),
             "a body for sym1000, not a symbol of the module",

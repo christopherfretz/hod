@@ -247,6 +247,37 @@ int main() {
 }
 "#;
 
+/// libstdc++'s `<iostream>` writes module assembly (`.globl
+/// _ZSt21ios_base_library_initv`) whose reference links the library's
+/// stream initializer: a static constructor that prints works only if
+/// the streams are initialized first (WP-075, `spec/ir.md` §2.3).
+const IOSTREAM_INIT: &str = r#"
+#include <iostream>
+struct Early {
+    Early() { std::cout << "early " << 6 * 7 << '\n'; }
+} early;
+int main() {
+    std::cout << "main" << std::endl;
+    return 0;
+}
+"#;
+
+/// File-scope `asm(".weak ...")` of a function nothing defines: without
+/// the directive the program does not link (WP-075).
+const WEAK_HOOK: &str = r#"
+#include <cstdio>
+asm(".weak hod_e2e_hook");
+extern "C" int hod_e2e_hook();
+int main() {
+    int (*volatile hook)() = hod_e2e_hook;
+    std::printf("hook %s\n", hook ? "present" : "absent");
+    return 0;
+}
+"#;
+
+/// Programs whose module assembly must also hold in a static link.
+const STATIC_TOO: &[&str] = &["iostream-init", "weak-hook"];
+
 /// Integer code inside what hod generates code for, with no call: loops,
 /// a switch, globals, a constant table, pointers and a struct.
 const INTEGERS: &str = r#"
@@ -548,6 +579,22 @@ const PROGRAMS: &[Program] = &[
         path: Route::Either,
     },
     Program {
+        name: "iostream-init",
+        source: IOSTREAM_INIT,
+        args: &[],
+        form: "text",
+        prints: "early 42\nmain\n",
+        path: Route::Either,
+    },
+    Program {
+        name: "weak-hook",
+        source: WEAK_HOOK,
+        args: &[],
+        form: "text",
+        prints: "hook absent\n",
+        path: Route::Either,
+    },
+    Program {
         name: "module-asm",
         source: MODULE_ASM,
         args: &[],
@@ -667,12 +714,24 @@ impl Shimmed {
     /// checks what it prints.
     /// `libraries` follow the objects (`-lstdc++`: the C driver links).
     fn links_and_prints(&self, what: &str, objects: &[&Path], libraries: &[&str], prints: &str) {
+        self.links_with(what, &[], objects, libraries, prints);
+    }
+
+    /// [`Shimmed::links_and_prints`] with the linker driver's `flags`.
+    fn links_with(
+        &self,
+        what: &str,
+        flags: &[&str],
+        objects: &[&Path],
+        libraries: &[&str],
+        prints: &str,
+    ) {
         let Some(toolchain) = &self.toolchain else { return };
         let mut inputs = objects.to_vec();
         inputs.extend(libraries.iter().map(Path::new));
         for linker in &toolchain.linkers {
             let program = self.scratch.join(format!("{what}-{}", linker.name));
-            let ran = toolchain.link_and_run(linker, &[], &inputs, &program);
+            let ran = toolchain.link_and_run(linker, flags, &inputs, &program);
             assert!(ran.success(), "{what} {}: {ran:?}", linker.name);
             assert_eq!(ran.stdout_text(), prints, "{what} {}", linker.name);
         }
@@ -709,6 +768,10 @@ impl Shimmed {
         let flags = ["-lstdc++", "-lm"];
         self.links_and_prints(&format!("{name}-hod"), &[&ours], &flags, program.prints);
         self.links_and_prints(&format!("{name}-llvm"), &[&reference], &flags, program.prints);
+        if STATIC_TOO.contains(&name) {
+            let what = format!("{name}-hod-static");
+            self.links_with(&what, &["-static"], &[&ours], &flags, program.prints);
+        }
     }
 
     /// [`INTEGERS`] in strict mode at -O0 (text) and -O1 (bitcode): hod

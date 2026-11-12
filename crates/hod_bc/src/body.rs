@@ -293,6 +293,7 @@ pub(crate) struct Fx<'s, 'b, 'a> {
 }
 
 /// The operands of one record, read in order.
+#[allow(clippy::struct_field_names)] // `ops` are what the record holds.
 pub(crate) struct Ops<'o> {
     pub ops: &'o [u64],
     pub i: usize,
@@ -454,7 +455,7 @@ impl Fx<'_, '_, '_> {
         Ok(())
     }
 
-    /// The METADATA_ATTACHMENT block: the definition's own attachments
+    /// The `METADATA_ATTACHMENT` block: the definition's own attachments
     /// are noted as `hod_ll` notes `define … !kind !N`; an instruction's
     /// are stepped over.
     fn attachments(&mut self, cursor: &mut Cursor<'_, '_>, ops: &mut Vec<u64>) -> BcResult<()> {
@@ -521,8 +522,10 @@ impl Fx<'_, '_, '_> {
                 self.declared = n as u32;
                 Ok(())
             }
-            func::DEBUG_LOC | func::DEBUG_LOC_AGAIN | func::BLOCKADDR_USERS => Ok(()),
-            func::DEBUG_RECORD_FIRST..=func::DEBUG_RECORD_LAST => Ok(()),
+            func::DEBUG_LOC
+            | func::DEBUG_LOC_AGAIN
+            | func::BLOCKADDR_USERS
+            | func::DEBUG_RECORD_FIRST..=func::DEBUG_RECORD_LAST => Ok(()),
             func::OPERAND_BUNDLE => self.bundle(o),
             func::GEP_OLD
             | func::SELECT
@@ -603,9 +606,10 @@ impl Fx<'_, '_, '_> {
             };
             match self.s.insts.get(number as usize) {
                 Some(&local) => local,
-                None => match self.s.forwards.get(&number) {
-                    Some(&(value, used)) => Local { value, ty: used, notes: 0 },
-                    None => {
+                None => {
+                    if let Some(&(value, used)) = self.s.forwards.get(&number) {
+                        Local { value, ty: used, notes: 0 }
+                    } else {
                         let Some(ty) = ty else {
                             return self.invalid("a forward reference without its type");
                         };
@@ -619,7 +623,7 @@ impl Fx<'_, '_, '_> {
                         self.s.forwards.insert(number, (value, ty));
                         Local { value, ty, notes: 0 }
                     }
-                },
+                }
             }
         };
         if let Some(ty) = ty

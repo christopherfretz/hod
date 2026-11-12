@@ -399,7 +399,7 @@ impl Fx<'_, '_, '_> {
         }
     }
 
-    /// Sync scope `id`, by the module's SYNC_SCOPE_NAMES.
+    /// Sync scope `id`, by the module's `SYNC_SCOPE_NAMES`.
     fn scope(&mut self, id: u64) -> BcResult<SyncScope> {
         let names = self.bits.sync_scopes();
         if names.is_empty() {
@@ -1271,7 +1271,7 @@ impl Fx<'_, '_, '_> {
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // `hod_ll`'s steps, in order.
     fn call_rest(
         &mut self,
         o: &mut Ops<'_>,

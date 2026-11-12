@@ -164,7 +164,7 @@ pub mod md {
 }
 
 /// The `SYNC_SCOPE_NAME` record.
-/// FUNCTION_BLOCK records (`FunctionCodes`).
+/// `FUNCTION_BLOCK` records (`FunctionCodes`).
 pub mod func {
     pub const DECLAREBLOCKS: u32 = 1;
     pub const BINOP: u32 = 2;

@@ -241,6 +241,21 @@ handler:
   catchret from %cp to label %ok
 }
 
+; Unsupported: cleanup funclets and a swifterror alloca.
+define void @cleanups() personality ptr @__gxx_personality_v0 {
+entry:
+  %e = alloca swifterror ptr, align 8
+  invoke void @sink(ptr null)
+          to label %ok unwind label %cleanup
+
+ok:
+  ret void
+
+cleanup:
+  %c = cleanuppad within none []
+  cleanupret from %c unwind to caller
+}
+
 define void @scopes(ptr %p) {
   %v = load atomic i32, ptr %p syncscope("agent") acquire, align 4
   ret void

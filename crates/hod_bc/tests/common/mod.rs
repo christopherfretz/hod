@@ -295,31 +295,28 @@ fn ids_written_out(module: &Module, text: &str, name: &dyn Fn(SymId) -> String) 
                 })
             })
             .flatten();
-        match found {
-            Some((prefix, n, len)) => {
-                let written = match prefix {
-                    "sym" => format!("@{}", name(SymId::new(n))),
-                    "ty" => ty(module, TypeId::new(n)),
-                    "c" => format!("({})", constant(module, ConstId::new(n), name)),
-                    _ => {
-                        let asm = module.asm(hod_ir::AsmId::new(n));
-                        format!(
-                            "asm({:?}, {:?}, {}, {})",
-                            String::from_utf8_lossy(asm.template),
-                            String::from_utf8_lossy(asm.constraints),
-                            asm.flags,
-                            ty(module, asm.ty)
-                        )
-                    }
-                };
-                out.push_str(&written);
-                i += len;
-            }
-            None => {
-                let c = text[i..].chars().next().unwrap_or(' ');
-                out.push(c);
-                i += c.len_utf8();
-            }
+        if let Some((prefix, n, len)) = found {
+            let written = match prefix {
+                "sym" => format!("@{}", name(SymId::new(n))),
+                "ty" => ty(module, TypeId::new(n)),
+                "c" => format!("({})", constant(module, ConstId::new(n), name)),
+                _ => {
+                    let asm = module.asm(hod_ir::AsmId::new(n));
+                    format!(
+                        "asm({:?}, {:?}, {}, {})",
+                        String::from_utf8_lossy(asm.template),
+                        String::from_utf8_lossy(asm.constraints),
+                        asm.flags,
+                        ty(module, asm.ty)
+                    )
+                }
+            };
+            out.push_str(&written);
+            i += len;
+        } else {
+            let c = text[i..].chars().next().unwrap_or(' ');
+            out.push(c);
+            i += c.len_utf8();
         }
     }
     out
@@ -384,13 +381,12 @@ fn function_lines(
     unsupported: &[std::borrow::Cow<'static, str>],
 ) -> String {
     let name = sym_name(module, numbered, sym);
-    match body {
-        Some(body) => format!("define {name}\n{}", body_dump(module, numbered, body)),
-        None => {
-            let mut names: Vec<&str> = unsupported.iter().map(|n| &**n).collect();
-            names.sort_unstable();
-            format!("define {name} unsupported {names:?}\n")
-        }
+    if let Some(body) = body {
+        format!("define {name}\n{}", body_dump(module, numbered, body))
+    } else {
+        let mut names: Vec<&str> = unsupported.iter().map(|n| &**n).collect();
+        names.sort_unstable();
+        format!("define {name} unsupported {names:?}\n")
     }
 }
 

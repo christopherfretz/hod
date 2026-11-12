@@ -497,7 +497,13 @@ const GLOBAL: [SupportRow; 12] = [
 
 const LINKAGE: [SupportRow; Linkage::ALL.len()] = [
     both("linkage:external", ON, "by itself; a definition also meets its `global:` row"),
-    a64("linkage:available_externally", "WP-021", "design 0001, point 6"),
+    row(
+        "linkage:available_externally",
+        ON,
+        todo(X64),
+        "a function's body is discarded, or copied when `alwaysinline` and called directly \
+         (design 0001 point 6, WP-021)",
+    ),
     row("linkage:linkonce", ON, todo(X64), ""),
     row("linkage:linkonce_odr", ON, todo(X64), ""),
     row("linkage:weak", ON, todo(X64), ""),
@@ -650,7 +656,12 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
     ),
     both("attr:nounwind", ON, "its absence is `function:may-unwind`"),
     row("attr:returns_twice", ON, todo(X64), "on a body, a call, or a function called directly"),
-    both("attr:alwaysinline", ON, "by itself; see `linkage:available_externally`"),
+    both(
+        "attr:alwaysinline",
+        ON,
+        "an ordinary call; a body whose meaning depends on being inlined is declined \
+         (`spec/cli.md` \"Always-inline\", WP-021)",
+    ),
     a64("attr:ssp", "spec/codegen.md §13", "open question: accept and ignore, or implement"),
     a64("attr:sspreq", "spec/codegen.md §13", ""),
     a64("attr:sspstrong", "spec/codegen.md §13", ""),

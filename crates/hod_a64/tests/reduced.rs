@@ -289,8 +289,19 @@ fn refused(text: &str) -> Option<CgError> {
 fn refusals_by_name() {
     let Some(clang) = tool("clang++-22") else { return };
     let scratch = Scratch::new("reduced-refused");
-    // Code inlined into a function of a line-tables-only unit.
+    // Code inlined into a function of a line-tables-only unit is written
+    // (WP-094, §6.13); with template parameters, which no producer writes
+    // there, it is refused.
     let text = ir_with(&clang, &scratch, "inlined", "inlined.cpp", "-gline-tables-only");
+    assert_eq!(refused(&text), None);
+    let at = text.find("!DISubprogram(name: \"caller\"").unwrap();
+    let at = at + text[at..].find("unit: !").unwrap();
+    let text = format!(
+        "{}templateParams: !900, {}\n!900 = !{{!901}}\n\
+         !901 = !DITemplateTypeParameter(name: \"T\", type: null)\n",
+        &text[..at],
+        &text[at..]
+    );
     assert_eq!(refused(&text), Some(CgError::unsupported(hod_dwarf_names::LINE_TABLES_INLINED)));
 
     // A function of a line-tables-only unit with variable records: the

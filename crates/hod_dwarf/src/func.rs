@@ -217,9 +217,10 @@ const fn has(flags: DiFlags, f: DiFlags) -> bool {
 /// in a way hod does not yet write, and is refused.
 /// `DIFlagThunk` (kiln's virtual thunks) changes nothing in `llc`'s DIE
 /// (WP-087, checked with `llc` 19 and 22).
-const DEF_FLAGS: u32 =
+pub(crate) const DEF_FLAGS: u32 =
     DiFlags::PROTOTYPED.0 | DiFlags::ARTIFICIAL.0 | DiFlags::NO_RETURN.0 | DiFlags::THUNK.0;
-const DEF_SP_FLAGS: u32 = SpFlags::DEFINITION.0 | SpFlags::LOCAL_TO_UNIT.0 | SpFlags::OPTIMIZED.0;
+pub(crate) const DEF_SP_FLAGS: u32 =
+    SpFlags::DEFINITION.0 | SpFlags::LOCAL_TO_UNIT.0 | SpFlags::OPTIMIZED.0;
 
 /// `dwarf::isC`, as the type graph has it.
 const fn is_c(language: u16) -> bool {
@@ -229,8 +230,8 @@ const fn is_c(language: u16) -> bool {
 /// The expression ops of a declared location after `DW_OP_fbreg`, or
 /// the stable name of why there are none (§6.4). Each op is a standard
 /// DWARF operation written as itself; LLVM's own operations are refused.
-fn check_expr(plan: &UnitPlan<'_>, expr: ExprId) -> Result<(), &'static str> {
-    for op in plan.debug.ops(expr) {
+pub(crate) fn check_expr(debug: &hod_ir::DebugInfo, expr: ExprId) -> Result<(), &'static str> {
+    for op in debug.ops(expr) {
         match op {
             DiOp::Fragment(..) => return Err("debug:fragment"),
             DiOp::StackValue
@@ -314,8 +315,12 @@ impl<'a> UnitPlan<'a> {
         let DiNode::Subprogram(sp) = self.debug.node(sp_id) else {
             return Err(bad(sp_id, "subprogram"));
         };
-        if self.cu.emission_kind != hod_ir::EmissionKind::FullDebug {
-            return crate::reduced::add_function(self, f); // WP-061: §6.10
+        // WP-061 (§6.10); a `LineTablesOnly` function with inlined code
+        // goes on in minimal form (WP-094, §6.13).
+        if self.cu.emission_kind != hod_ir::EmissionKind::FullDebug
+            && crate::reduced::add_function(self, f)?
+        {
+            return Ok(());
         }
         // A DIE made before its function, for its statics (WP-085), is
         // the function's.
@@ -341,6 +346,7 @@ impl<'a> UnitPlan<'a> {
             s.scope_of[sc.node.index()] = NONE;
         }
         self.fn_scratch = s;
+        self.record_entities(f, result.is_ok()); // WP-094: §6.13
         result.map(|_| ())
     }
 
@@ -352,6 +358,9 @@ impl<'a> UnitPlan<'a> {
         sp_id: DiId,
         sp: &DiSubprogram<'a>,
     ) -> Result<u32, Error> {
+        if self.cu.emission_kind != hod_ir::EmissionKind::FullDebug {
+            return crate::reduced::minimal_parent(self, sp_id, sp); // WP-094: §6.13
+        }
         if !sp.sp_flags.contains(SpFlags::DEFINITION) || sp.unit != Some(self.unit) {
             return Err(unsupported(sp_id, "debug:subprogram-not-definition"));
         }
@@ -434,7 +443,12 @@ impl<'a> UnitPlan<'a> {
                 let parent = self.subprogram_parent(sp_id, sp)?;
                 self.push(sp_id, parent, Kind::Subprogram)
             }
-            early => early,
+            // Made for a local type its own inlined code reached
+            // (WP-094, §6.13): the function's from now on.
+            early => {
+                self.inline.take_early(early);
+                early
+            }
         };
         let func = self.funcs.len() as u32;
         self.funcs.push(FnData {
@@ -473,7 +487,7 @@ impl<'a> UnitPlan<'a> {
                         return Err(unsupported(v.node, "debug:variable-alignment"));
                     }
                     if let LocalPlace::Frame(_) | LocalPlace::FrameIndirect(_) = v.place
-                        && let Err(name) = check_expr(self, v.expr)
+                        && let Err(name) = check_expr(self.debug, v.expr)
                     {
                         return Err(unsupported(v.node, name));
                     }
@@ -516,6 +530,13 @@ impl<'a> UnitPlan<'a> {
             if class != 2 {
                 s.scopes[scope as usize].vars = true;
             }
+        }
+        // A block with an imported entity is written too (WP-094, §6.13).
+        if let DiNode::Subprogram(sp) = self.debug.node(sp_id) {
+            self.import_blocks(&sp, |b| match find(s, b, LocId::NONE) {
+                NONE => {}
+                i => s.scopes[i as usize].vars = true,
+            });
         }
 
         Ok(())
@@ -757,6 +778,7 @@ impl<'a> UnitPlan<'a> {
             let die = self.funcs[i].die;
             let sp_id = self.dies[die as usize].node;
             let DiNode::Subprogram(sp) = self.debug.node(sp_id) else { continue };
+            self.seal_definition(i)?; // before the return type (WP-094: §6.13)
             // One with an abstract instance names it instead (WP-085).
             if sp.declaration.is_none()
                 && self.inline.die(sp_id).is_none()
@@ -764,19 +786,8 @@ impl<'a> UnitPlan<'a> {
             {
                 self.reference_type(sp_id, "type", t)?;
             }
-            self.seal_definition(i)?;
         }
-        // `finishEntityDefinitions`: the variables' types, in DIE order.
-        for i in 0..self.locals.len() {
-            let die = self.locals[i].die;
-            let d = self.dies[die as usize];
-            if let (Kind::LocalParam | Kind::LocalVar, DiNode::LocalVariable(v)) =
-                (d.kind, self.debug.node(d.node))
-                && self.inline.die(d.node).is_none()
-            {
-                self.reference_type(d.node, "type", v.ty.unwrap_or(DiId::NONE))?;
-            }
-        }
+        self.finish_entities()?; // `finishEntityDefinitions` (WP-094: §6.13)
         self.finish_types()?;
         self.seal_inline()?;
         self.seal_tables();
@@ -821,6 +832,9 @@ impl<'a> Writer<'a> {
         let index = self.push_addr(fd.code.symbol, fd.code.addend);
         if let Some(a) = self.fn_addr.get_mut(func) {
             *a = index;
+        }
+        if plan.cu.emission_kind != hod_ir::EmissionKind::FullDebug {
+            return self.minimal_subprogram(plan, sp_id, sp, index, fd.code.size, children); // WP-094
         }
         // The frame base: `DW_OP_reg<n>`.
         self.expr.clear();

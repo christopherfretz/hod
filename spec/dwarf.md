@@ -662,6 +662,7 @@ exclusive `low_pc` forms), and pin the bytes of one entry.
 | 86 | `subprogram` (specification, any): `low_pc`, `high_pc`, `frame_base`, `object_pointer` (0), `type` (1), `decl_file` (2), `decl_line` (3), `linkage_name` (4), `specification`, children optional | 64 | 10567 | WP-059 |
 | 87 | `variable` (local, unnamed): `location` (0), decl (1), `type`, `artificial` (2) | 8 | 10631 | WP-087 |
 | 88 | `variable` (local, aligned): `location` (0), `name`, `alignment`, decl (1), `type`, `artificial` (2) | 8 | 10639 | WP-087 |
+| 89 | `subprogram` (line tables only, §6.13): `low_pc`, `high_pc`, `name` (0), `abstract_origin` (1), children optional | 8 | 10647 | WP-094 |
 
 Families 2 to 45 that WP-058 owns are used for the common shape of each
 kind (they keep the codes the reserved shapes promised); the "any"
@@ -677,7 +678,7 @@ WP-057 uses its reserved families 0 (`formal_parameter`), 1 (local
 `low_pc`/`high_pc` or `ranges` as `DW_FORM_sec_offset`) and 39 (`label`),
 and appends 69 to 71 for the other shapes.
 
-`CODE_END` is 10647 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085, 10631 after WP-059). Since the core families come last, their codes take
+`CODE_END` is 10655 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085, 10631 after WP-059, 10647 after WP-087). Since the core families come last, their codes take
 two ULEB bytes where `llc`'s take one (the cost is in §7.2; open question
 7).
 
@@ -980,6 +981,42 @@ is the whole list of permitted differences:
     under an empty `DW_TAG_subprogram` of its own, after the abstract
     instance (`llc` 22, and hod, under the abstract instance). `llc`
     19's tree of `statics.cpp` is not compared.
+- **what code generation changes in the tree** (WP-094, §6.13;
+  `crates/hod_a64/tests/dies_decline.rs` holds each to exactly this
+  shape, for clang 19, clang 22 and kiln++):
+  - *an inlined call whose only code is a branch hod falls through*
+    (§5.7 P1; `fallthrough.cpp`): `llc` keeps a
+    `DW_TAG_inlined_subroutine` over one unconditional branch to the next
+    instruction, with its abstract instance and the types only that
+    instance names; hod has none of them. `llc`'s tree without them is
+    hod's, the unit's children compared as a multiset (the abstract
+    instance changes the order types are made in). A debugger user sees,
+    under `llc`, `break category` resolve to the branch and `step` stop
+    once in an inlined `category` frame; under hod `break category`
+    finds no code and `step` goes on to the next call. The function had
+    no code, so no value is lost;
+  - *blocks under an `llvm.is.constant` `llc` folds to false*
+    (`LowerConstantIntrinsics`, run even at `-O0`; `isconst.cpp`): hod's
+    code generator keeps the never-run code, so hod keeps the block and
+    its variables' DIEs; `llc` has neither. hod's tree without that one
+    block is `llc`'s. A debugger user sees a breakpoint on a line of the
+    dead block never hit under hod (its code never runs); under `llc` the
+    line has no code, the breakpoint moves to the next line with code,
+    and hits there;
+  - *an `sret` result variable* (a named local returned by value through
+    `x8`; `sret.cpp`): `llc` writes a location list,
+    `[low+4, low+8) DW_OP_breg8; [low+8, high) DW_OP_breg9`, whose only
+    gap is the function's first instruction (at the function's line,
+    before `prologue_end`); hod writes `DW_OP_fbreg N, DW_OP_deref` (the
+    slot holding the result's address) over the whole function, and
+    writes no location lists, so its unit has no `DW_AT_loclists_base`.
+    The trees are equal without that attribute. A debugger user stopped
+    at the function's first instruction (`break *make`, `stepi` into the
+    call) sees `print ret` give `<optimized out>` under `llc` and an
+    unset value under hod, which reads the slot before the prologue has
+    stored the address (the parameters there are unset under both).
+    From `prologue_end`, where `break make` and `step` stop, both print
+    the same.
 
 The relocations of `.debug_info`, `.debug_str_offsets` (by the string
 each one points at) and `.debug_addr` must name the same targets.
@@ -1241,15 +1278,14 @@ A `LineTablesOnly` function with code inlined into it (a scope row with
 `low_pc`, `high_pc` and `name`, an abstract subprogram per inlined
 function (`name`, `DW_AT_inline`) and `DW_TAG_inlined_subroutine`
 children (`abstract_origin`, `low_pc`/`high_pc`, `call_file`,
-`call_line`, `call_column`). Inlined subroutines are WP-085's; until
-they land, such a function is refused. A `DebugDirectivesOnly` function
+`call_line`, `call_column`). hod writes it since WP-094 (§6.13). A `DebugDirectivesOnly` function
 with inlined code needs nothing more than its rows and is written.
 
 Refusals (`pub const` in `reduced.rs`, re-exported by the crate):
 
 | name | what |
 |---|---|
-| `debug:line-tables-inlined` | a `LineTablesOnly` function with inlined code (above) |
+| `debug:line-tables-inlined` | a `LineTablesOnly` function with inlined code whose subprogram has a declaration, template parameters, retained nodes or a subroutine type with elements (the plain shape is written since WP-094, §6.13) |
 | `debug:line-tables-variables` | a `LineTablesOnly` function with variable or label records: no producer writes them, and `llc` 22 crashes on them |
 | `debug:reduced-unit-entities` | a `LineTablesOnly` or `DebugDirectivesOnly` unit that lists globals, enumerations, retained types or imported entities: no producer writes them; `llc` 22 crashes on such a `LineTablesOnly` unit and writes a stray `.debug_addr` for such a `DebugDirectivesOnly` one (an empty list, `globals: !{}`, is accepted) |
 
@@ -1399,8 +1435,9 @@ module whose `Dwarf Version` is not 5. No flag is LLVM's DWARF 4 (`llc`
 **Declines, not errors** (`crates/hod/src/back.rs`, the bridge): the
 module's `ModuleEmitter` is made before any function is compiled, so
 what the unit plans refuse (§6.4 to §6.11 names) is declined before code
-generation; what the function DIEs refuse is still found as functions
-are added. What the DWARF writer finds wrong with the input is an
+generation; what the function DIEs refuse is found as functions are
+added, except what depends only on metadata, which is checked before
+code generation too since WP-094 (§6.13). What the DWARF writer finds wrong with the input is an
 ordinary decline by name, never an internal error and never an object
 without its DIEs:
 
@@ -1454,6 +1491,116 @@ On those modules 92% of the 239 416 functions' line tables are `llc`'s
 under §5.7; the rest differ in rows `llc` gives instructions hod does
 not emit (an empty `asm`, a branch), which the debuggers do not see
 when they stop at lines.
+
+### 6.13 The declines left after WP-087 (implemented, WP-094)
+
+**Imports in lexical blocks.** An imported entity a function retains
+whose `scope:` is one of that function's lexical blocks goes under the
+block's DIE, as `llc` writes a scope's deferred local declarations
+(`DeferredLocalDecls`, `createAndAddScopeChildren`). A block with an
+import is written even if it has no variable (`skipLexicalScope`); an
+import whose block has no code is not written (`llc` never visits the
+scope). The imports are made at the end of the module (§6.11): each
+function's own first, in `retainedNodes` order, then those of its blocks
+in the order of the blocks' DIEs (depth first), each block's in
+`retainedNodes` order. Still `debug:import-scope`: an import scoped in a
+block file or in another function's block, and an import in a block of
+a function that has an abstract instance (where `llc` puts it then
+depends on what is inlined, §6.9). kiln++ writes no imported entities.
+
+**The order of the unit's types.** Two rules of `llc`'s, seen in five
+census modules:
+- `finishEntityDefinitions` makes the types of the functions' variables
+  (those of a function without an abstract instance) after the whole
+  module, function by function, and within a function in the order of
+  its variables' records (the frame table of `dbg_declare`s, then the
+  `dbg_value`s: `ConcreteEntities`), not in the order of their DIEs. A
+  catch parameter whose record comes before a block's variable gets its
+  type first. hod records each function's variable DIEs in the order of
+  `FunctionInput::vars` (`Inline::record_entities`) and makes their types
+  in that order (`finish_entities`).
+- `applySubprogramAttributes`: a definition's template parameters (and
+  their types) are made before its return type, so `seal` adds them
+  first.
+
+**A function's own early DIE.** §6.12 makes a function's concrete DIE
+early for a function-local type reached before its function. Such a type
+may be reached by the function's *own* inlined code (a typedef local to
+the function kept as a template argument of an inlined callee, as
+libstdc++'s `_DistanceType` under kiln++): the early DIE is then the
+function's DIE when its body is added. It was left over and refused as
+`debug:local-static` (kiln's `regex-match-libstdcxx.cpp` at `-g`).
+
+**A function's thread-local `static`** (a function's, a block's, a member
+function's, an inlined function's; with or without a dynamic
+initializer) goes where §6.9 puts a function's statics, with no
+`DW_AT_location` on AArch64, as `llc` writes every thread-local variable
+there (§6.11). hod wrote `DW_OP_addrx` of the variable's symbol, an
+address that is not the thread's variable. gdb prints `<optimized out>`,
+lldb `<no location, value may have been optimized out>`, for hod's
+program as for `llc`'s. x86-64 stays `debug:tls-location`.
+
+**Line-tables-only units with inlined code** (`debug:line-tables-inlined`
+narrowed). In a `LineTablesOnly` unit (`-gline-tables-only`, `-gmlt`)
+`llc`'s `includeMinimalInlineScopes` writes a function only if it has
+inlined code: a `DW_TAG_subprogram` under the unit whatever its scope,
+with `low_pc`, `high_pc` and `name` (family 89), and its inlined
+subroutines (`abstract_origin`, code, call file, line, column) as
+children, nested as they are inlined. Each inlined function has an
+abstract instance of only `name` and `DW_AT_inline`; a function that is
+also out of line has `DW_AT_abstract_origin` in place of the name. No
+types, parameters, variables or blocks. A function with
+`DIFlagAllCallsDescribed` (`-O1 -gmlt`) stays
+`debug:subprogram-attribute`: its call-site entries need the generated
+code's return addresses. What no producer writes in such a unit stays
+`debug:line-tables-inlined`: a function with inlined code whose
+subprogram has a declaration, template parameters, retained nodes or a
+subroutine type with elements.
+
+**`debug:inlined-member` stays** (§6.9: an abstract instance of a member
+function whose declaration is not among its class's elements, or an
+out-of-line definition outside a class): no source reaches it through
+clang 19, clang 22 or kiln++, which list every member function's
+declaration among its class's elements and scope its definitions in
+the class.
+
+**Refusals before code generation.** `hod_dwarf::check_functions`, called
+by the bridge after the `ModuleEmitter` is made (`crates/hod/src/back.rs`),
+declines a module for each function-DIE refusal that depends only on
+metadata, before any function is compiled, with the same names as the
+writer's (`tests/early.rs`):
+
+| name | what |
+|---|---|
+| `debug:subprogram-not-definition` | a function whose subprogram is not a definition |
+| `debug:subprogram-attribute` | thrown types, `spFlags` or (without a declaration) flags hod does not write |
+| `debug:variable-without-type`, `debug:variable-alignment` | a variable record's variable (§6.4, §6.12) |
+| `debug:fragment`, `debug:expression` | a variable record's expression |
+| `debug:label-attribute` | a label without a name, artificial, or a coroutine suspend point |
+| `debug:import-scope`, `debug:import` | a function's import with no scope, or scoped in a block file or another function; one in its own scope of a shape hod does not write |
+| `debug:subprogram-twice` | two bodies with one subprogram |
+
+What still needs the generated code or the plan's state, and is found as
+the function's DIEs are written: a variable whose location the code
+generator refused (its names, as `dbg-value`); the inlined-code refusals
+that depend on which locations survive (`debug:retained-nodes`,
+`debug:inlined-foreign-unit`, `debug:inlined-discriminator`,
+`debug:inlined-local-type`, `debug:inlined-member`);
+`debug:variable-twice` and `debug:object-pointer` (by the DIEs made);
+the type graph's refusals (made at seal); `debug:local-type-scope`; an
+import in a function with an abstract instance, `debug:import-entity`,
+a unit's import scope; `debug:subprogram-scope` and
+`debug:declaration-scope` (by the plan's DIEs); and a function whose
+early DIE got no code (`debug:local-static`).
+
+**The census** (§6.12's, regenerated, with four of kiln's libstdc++
+units: 148 modules): 147 built (140 before), all `--verify` clean; 83
+trees equal to `llc`'s (75 before). Of the other 64, 26 show only the
+permitted differences above, 35 only a scope that is one address range
+in hod's code and several in `llc`'s, and 3 only the bare offset of one
+nameless reference. The one decline is `debug:label-attribute`
+(coroutine suspend labels). `spec/landed/dwarf/WP-094.md` has the
+numbers.
 
 ## 7. Speed and memory
 
@@ -1672,13 +1819,88 @@ over 40 lines of transcript, and lldb stopped 20 times over 224 lines.
 hod's transcripts were identical to the originals, and the wrong table's
 differed every time.
 
-### 8.4 L7 (planned)
+### 8.4 L7 (`cargo xtask debug`, WP-060)
 
-`xtask` sessions over kiln's debugger tests on hod's objects, gdb and
-lldb; `llvm-dwarfdump --verify` over the corpus; the line tables of hod
-and `llc` compared on the set of `(function, line)` breakpoint locations
-(the addresses at which gdb would stop for each line: the first
-`is_stmt` row of each line in each function).
+The contract of the command is `spec/harness.md` "debug". Four parts:
+
+1. **Sessions** over `tests/debug/`: each program built from the same IR
+   by hod and by `llc -O0 -global-isel=0 -fast-isel=0`, linked by every
+   linker present (GNU ld, lld, mold; wild when installed), and the same
+   gdb and lldb scripts run on both. The masked transcripts must be equal;
+   what is masked is exactly the program's directory, `0x` numbers,
+   process and thread ids, and code offsets (`<main+20>`, `` prog`main +
+   20 ``). Lines, columns, values, names, frames and the number and order
+   of stops are not masked. A debugger crash is its own outcome.
+2. **kiln's debugger tests** (`tests/debuginfo` of kiln) compiled by
+   kiln++ with hod (through the shim, strict) and with `llc`, judged by
+   their own checks.
+3. **`--verify`**: every `-g` module of the corpus hod builds is
+   `llvm-dwarfdump --verify` clean (LLVM 22 and 19).
+4. **`(function, line)`**: the set of `(function, file, line)` of the
+   non-empty `is_stmt` rows with a line of each program, compared; a pair
+   one side lacks is P1 or P3 of §5.7 or unclassified, and an
+   unclassified pair fails.
+
+**Seeds** (`tests/debug/`): `step.c` (breakpoints by line and function,
+`step`, `next`, `finish`, `up`/`down`; lldb's step-in, -over and
+-out), `places.c` (locals and parameters in every place hod puts them,
+§6.4: integer and floating-point arguments spilled to their slots, a
+small struct by value, a large one by reference to a copy, a struct
+returned through memory, an over-aligned local, arrays, pointers,
+shadowing in nested blocks, a variadic function), `globals.c` (globals, file statics, function
+statics, a constant table, a pointer to a function), `classes.cpp`
+(members, `this`, a base with a vtable, a class and a function template,
+a static member, a scoped enumeration, nested namespaces, `ptype`),
+`inlined.cpp` (a backtrace through an always-inline frame, `finish` out
+of it), `exception.cpp` (a throw, the backtrace, the handler with the
+caught reference after unwinding through hod's CFI), `tls.c`
+(thread-local globals in two threads) and `comdat.cpp` with
+`comdat_other.cpp` (the same inline function with `-g` in two objects,
+one from hod and one from `llc`, in both orders: one copy kept, a
+breakpoint on it, both callers in the backtrace). C tests run on clang
+19 and 22; C++ on those and kiln++ (`classes.cpp` on clang only: kiln
+describes its `Box` as incomplete with `llc` and hod alike).
+
+**Result** (WP-060; AArch64, gdb 16.3, lldb 19; three linkers): 198
+results over 12 tests, 360 sessions: 168 PASS and 30 XFAIL, every XFAIL
+one of the findings below. `(function, line)`: 458
+pairs, all the same, none unclassified. kiln's 4 debugger tests with gdb
+and lldb: 8 of 8 pass with `llc` and 8 of 8 with hod; 7 of 8 transcripts
+equal (the eighth is finding 4). Corpus: 14 `-g` modules, 10 built and
+all clean, 4 declined (`debug:dbg-value` 2, `debug:dwarf-version` 2).
+
+**Findings**, each reduced to a seed with an `xfail` naming it:
+
+1. `tls_static.c` (gdb): a function's `_Thread_local` static gets
+   `DW_AT_location (DW_OP_addrx <symbol>)`, as an ordinary static does,
+   and gdb prints the word at the TLS offset as a value (wrong).
+   `llc` writes no location for any thread-local variable on AArch64
+   (gdb: `<optimized out>`). `discover_scope_global`
+   (`crates/hod_dwarf/src/global.rs:51-58`) returns for a variable
+   scoped in a function before the thread-local check at line 59, and the
+   static path writes the address. Not a permitted difference: a wrong
+   value. lldb shows neither program's value.
+2. `sret_entry.c` (gdb, lldb): at a breakpoint on a function returning a
+   struct in memory, `llc`'s location list of the result variable has a
+   gap at the first line's address (x8 until the instruction before, the
+   spilled pointer from the one after): `<optimized out>` /
+   `<variable not available>`. hod's single location shows the caller's
+   object. In hod's favour; not in §6.7's list, so XFAIL until §6.7 says
+   so.
+3. `gep_column.c` (lldb): the first instruction of `Pair p = {n * 10,
+   3};` is, in hod's program, the field's `getelementptr` (column 12);
+   `llc` folds it into the store and its first is the load of `n`
+   (column 13). Same address and line; lldb prints the column.
+   Instruction selection (`crates/hod_cg`).
+4. `finish_column.c` (lldb), reduced from kiln's `step_finish.cpp`: the
+   instruction after a call has the call's column in `llc`'s program and
+   the assignment's in hod's; `finish` stops there and lldb prints it.
+   Instruction selection.
+
+Findings 3 and 4 are columns only (gdb shows none, and the `(function,
+line)` sets are equal); a §5.7 entry that permits a different column at
+a row's address, or code generation that matches `llc`'s first
+instruction, would retire them.
 
 ### 8.5 Throughput (`tests/throughput.rs`, implemented)
 
@@ -1932,7 +2154,7 @@ Rows for `docs/BACKLOG.md` (ids to be assigned; "this" is WP-052):
 | subprograms and variables (WP-057, **landed**: `spec/landed/dwarf/WP-057.md`) | subprogram DIEs (`low_pc`/`high_pc`, `frame_base`), parameters and locals from `vars` with `DIExpression` composed onto the frame-base offset (`VarRow` gains its expression), lexical blocks from `lines` (§6.4), labels (the `labels` table); gdb `info locals`/`print`/`bt` on hod-compiled programs | DIE writer core, line tables in `emit_module` |
 | the type graph (WP-058, **landed**: `spec/landed/dwarf/WP-058.md`) | basic, derived (pointer, reference, rvalue reference, typedef, const/volatile, member, inheritance, pointer to member, friend), composite (class, struct, union, enum with enumerators, array with subranges), subroutine types, declarations and completion, `vtableHolder`; compared with `llc` by `llvm-dwarfdump` structure; gdb `ptype` | DIE writer core |
 | globals, namespaces, templates (WP-059, **landed**: `spec/landed/dwarf/WP-059.md`) | global and static-member variables (`DW_OP_addrx`, TLS with `DW_OP_form_tls_address`), namespaces, imported entities, template type and value parameters (packs), `DW_AT_specification` for out-of-line definitions | subprograms and variables, the type graph |
-| L7 harness | §8.4: `xtask` gdb and lldb sessions, kiln's debugger tests, corpus `--verify`, `(function, line)` comparison with `llc`; the two-object COMDAT case | line tables in `emit_module`, subprograms and variables |
+| L7 harness (WP-060, **landed**: `spec/landed/dwarf/WP-060.md`) | §8.4: `xtask` gdb and lldb sessions, kiln's debugger tests, corpus `--verify`, `(function, line)` comparison with `llc`; the two-object COMDAT case | line tables in `emit_module`, subprograms and variables |
 | line-tables-only and compressed sections (WP-061, **landed**: `spec/landed/dwarf/WP-061.md`) | §6.10 (`LineTablesOnly`, `DebugDirectivesOnly`, mixed units) and §1.1 (`SHF_COMPRESSED` with zlib, written in safe Rust by `hod_obj::deflate`) | DIE writer core |
 | split DWARF | `-gsplit-dwarf`: skeleton unit, `.dwo` sections, `DW_UT_skeleton`/`split_compile`; `hod_ir` must first map `splitDebugFilename` and `dwoId` | DIE writer core |
 

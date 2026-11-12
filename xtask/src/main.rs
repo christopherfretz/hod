@@ -6,6 +6,7 @@
 //! `cargo xtask irdiff ...` is the IR differential harness (layer L4).
 //! `cargo xtask corpus ...` captures, verifies and counts the IR corpus.
 //! `cargo xtask roundtrip ...` parses and prints the corpus (layer L2).
+//! `cargo xtask debug ...` runs the debuggers on hod's programs (layer L7).
 
 use std::process::ExitCode;
 
@@ -17,6 +18,7 @@ usage: cargo xtask ci [--quick]
        cargo xtask corpus capture|verify|census|fetch [options]   (--help for the options)
        cargo xtask bench [options]                                (--help for the options)
        cargo xtask roundtrip [options]                            (--help for the options)
+       cargo xtask debug [run|kiln|verify] [options]              (--help for the options)
 ";
 
 fn main() -> ExitCode {
@@ -31,6 +33,8 @@ fn main() -> ExitCode {
         Some("roundtrip") => ExitCode::from(xtask::roundtrip::command(&args[1..])),
         #[cfg(unix)]
         Some("bench") => xtask::bench::main(&args[1..]),
+        #[cfg(unix)]
+        Some("debug") => ExitCode::from(xtask::debug::command(&args[1..])),
         _ => {
             eprint!("{USAGE}");
             ExitCode::from(2)
@@ -64,6 +68,13 @@ fn ci(quick: bool) -> ExitCode {
     eprintln!("ci: roundtrip");
     if !roundtrip_gate(quick) {
         eprintln!("ci: roundtrip FAILED");
+        return ExitCode::FAILURE;
+    }
+    // L7: the full gate runs every debugger test (the quick tests ran in
+    // `cargo test`).
+    #[cfg(unix)]
+    if !quick && !xtask::debug::gate() {
+        eprintln!("ci: debug FAILED");
         return ExitCode::FAILURE;
     }
     // The full gate adds the cross-linking layer and the later ones as they

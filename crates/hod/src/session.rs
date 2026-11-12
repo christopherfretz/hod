@@ -23,6 +23,8 @@ use crate::back::generate_with;
 use crate::front::{Report, Settings, reason_name, symbol_name};
 use crate::{CompileError, Construct, Options, OutputKind, Unsupported};
 
+pub(crate) mod inlining;
+
 /// What the producer may do next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage {
@@ -68,6 +70,8 @@ pub struct Session {
     delivered: Vec<u64>,
     /// When the session last returned to the producer.
     idle_since: Instant,
+    /// What `-O0`'s always-inliner would have done (WP-021).
+    inlining: inlining::Inlining,
 }
 
 /// A producer's mistake (`spec/cli.md` "Session").
@@ -188,6 +192,7 @@ impl Session {
             in_order: true,
             delivered: Vec::new(),
             idle_since: Instant::now(),
+            inlining: inlining::Inlining::default(),
         })
     }
 
@@ -436,7 +441,6 @@ impl Session {
             return Err(error.clone());
         }
         self.check_delivery(sym, body.as_ref().ok())?;
-        let arch = self.module.target().arch();
         match body {
             Err(refused) => {
                 let mut first = None;
@@ -464,39 +468,50 @@ impl Session {
                 };
                 self.note(error);
             }
-            Ok(body) => {
-                if let Some(census) = &mut self.census {
-                    let classifier = classifier_for(arch, support_of(&self.settings, arch));
-                    classifier.census_body(&self.module, &body, census);
-                    self.drain_census();
-                }
-                if self.first.is_none() {
-                    let classifier = classifier_for(arch, support_of(&self.settings, arch));
-                    match classifier.body(&self.module, &body) {
-                        Err(rejection) => {
-                            let error = from_rejection(&self.module, rejection, true);
-                            self.note(error);
-                        }
-                        // Code generation may assume what `verify` checks
-                        // (`spec/ir.md` §5.8): a body that reaches it is
-                        // verified, always.
-                        Ok(()) => match body.verify(&self.module) {
-                            Err(error) => {
-                                let function = symbol_name(&self.module, sym).unwrap_or_default();
-                                self.note(CompileError::MalformedInput(format!(
-                                    "function '{function}': {error}"
-                                )));
-                            }
-                            Ok(()) => self.accept(body),
-                        },
-                    }
-                }
-            }
+            // WP-021: an `available_externally` body waits for `finish`.
+            Ok(body) => match self.inlining.divert(&self.module, body) {
+                Ok(Some(body)) => self.judge_built(body),
+                Ok(None) => {}
+                Err(error) => self.note(error),
+            },
         }
         self.verdict()
     }
 
+    /// A body the producer built: census, `classify`, `verify`, accepted.
+    fn judge_built(&mut self, body: Body) {
+        let arch = self.module.target().arch();
+        let sym = body.symbol();
+        if let Some(census) = &mut self.census {
+            let classifier = classifier_for(arch, support_of(&self.settings, arch));
+            classifier.census_body(&self.module, &body, census);
+            self.drain_census();
+        }
+        if self.first.is_none() {
+            let classifier = classifier_for(arch, support_of(&self.settings, arch));
+            match classifier.body(&self.module, &body) {
+                Err(rejection) => {
+                    let error = from_rejection(&self.module, rejection, true);
+                    self.note(error);
+                }
+                // Code generation may assume what `verify` checks
+                // (`spec/ir.md` §5.8): a body that reaches it is
+                // verified, always.
+                Ok(()) => match body.verify(&self.module) {
+                    Err(error) => {
+                        let function = symbol_name(&self.module, sym).unwrap_or_default();
+                        self.note(CompileError::MalformedInput(format!(
+                            "function '{function}': {error}"
+                        )));
+                    }
+                    Ok(()) => self.accept(body),
+                },
+            }
+        }
+    }
+
     fn accept(&mut self, body: Body) {
+        self.inlining.note(&self.module, &body);
         if self.bodies.last().is_some_and(|last| last.symbol().index() > body.symbol().index()) {
             self.in_order = false;
         }
@@ -527,9 +542,22 @@ impl Session {
             let name = symbol_name(module, SymId::new(index as u32)).unwrap_or_default();
             return Err(misuse(&format!("no body was delivered for '{name}'")));
         }
+        // WP-021: the `available_externally` copies, judged now.
+        match self.inlining.conclude(&self.module, &self.bodies) {
+            Ok(copies) => {
+                for copy in copies {
+                    self.judge_built(copy);
+                }
+            }
+            Err(error) => self.note(error),
+        }
+        if let Some(error) = self.first.take() {
+            return Err(error);
+        }
         if !self.in_order {
             self.bodies.sort_by_key(|body| body.symbol().index());
         }
+        let module = &self.module;
         generate_with(module, &self.bodies, &self.options, &self.settings.threads, &mut self.report)
     }
 }

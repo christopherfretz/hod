@@ -52,7 +52,7 @@ pub use access::{Access, CallAccess, TlsAccess, call_access, prefers_local_alias
 pub use call::CallArg;
 pub use cx::{FnCx, Scratch, TailExit};
 pub use driver::{MAX_FUNCTION_SIZE, compile_function};
-pub use emit::{Emitted, ModuleEmitter, PlacedFunc, emit_module};
+pub use emit::{COPY_SUFFIX, Emitted, ModuleEmitter, PlacedFunc, emit_module};
 pub use error::{CgError, CgResult, LIMIT_FRAME_SIZE, LIMIT_FUNCTION_SIZE};
 pub use frame::{Frame, FrameRef, MAX_FRAME, SlotPlace};
 pub use label::{FixupKind, Label, Labels, OutOfRange};

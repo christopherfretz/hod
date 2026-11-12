@@ -24,7 +24,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `structor` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `debug` | 5 | 4 | 1 | 0 | 0 | 5 | 0 |
 | `global` | 12 | 11 | 1 | 0 | 2 | 10 | 0 |
-| `linkage` | 11 | 9 | 1 | 1 | 1 | 9 | 1 |
+| `linkage` | 11 | 10 | 0 | 1 | 1 | 9 | 1 |
 | `visibility` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `tls` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 10 | 7 | 3 | 0 | 0 | 10 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 143 | 118 | 25 | 0 | 0 | 135 | 8 |
-| total | 450 | 312 | 92 | 46 | 17 | 370 | 63 |
+| total | 450 | 313 | 91 | 46 | 17 | 370 | 63 |
 
 ## `module`
 
@@ -123,7 +123,7 @@ Linkages, on declarations and definitions.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `linkage:external` | supported | supported | by itself; a definition also meets its `global:` row |
-| `linkage:available_externally` | not-implemented | not-implemented | WP-021. design 0001, point 6 |
+| `linkage:available_externally` | supported | not-implemented | a function's body is discarded, or copied when `alwaysinline` and called directly (design 0001 point 6, WP-021) |
 | `linkage:linkonce` | supported | not-implemented |  |
 | `linkage:linkonce_odr` | supported | not-implemented |  |
 | `linkage:weak` | supported | not-implemented |  |
@@ -243,7 +243,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:naked` | rejected | rejected | a naked function is its inline assembly, with no frame (`spec/codegen.md` §1) |
 | `attr:nounwind` | supported | supported | its absence is `function:may-unwind` |
 | `attr:returns_twice` | supported | not-implemented | on a body, a call, or a function called directly |
-| `attr:alwaysinline` | supported | supported | by itself; see `linkage:available_externally` |
+| `attr:alwaysinline` | supported | supported | an ordinary call; a body whose meaning depends on being inlined is declined (`spec/cli.md` "Always-inline", WP-021) |
 | `attr:ssp` | not-implemented | not-implemented | spec/codegen.md §13. open question: accept and ignore, or implement |
 | `attr:sspreq` | not-implemented | not-implemented | spec/codegen.md §13 |
 | `attr:sspstrong` | not-implemented | not-implemented | spec/codegen.md §13 |

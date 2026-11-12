@@ -11,21 +11,29 @@
 //! anything in unreachable blocks, and nothing in code generation depends
 //! on dominance being verified here), and that a symbol or inline-assembly
 //! id exists, which needs tables this crate does not have yet.
+//!
+//! Debug information (§6.8): the declarations and records are checked
+//! against the body always, and against the module's debug tables when
+//! the module has any.
 
 use std::fmt::Display;
 
-use crate::body::{Body, CallData, Clause, Inst, UNSET, UseFacts};
+use crate::body::{Body, CallData, Clause, DbgRecordKind, Inst, UNSET, UseFacts};
 use crate::constant::Const;
+use crate::debug::expr::{DiOp, ExprId};
+use crate::debug::node::DiNode;
 use crate::error::{IrError, IrErrorKind, IrResult};
-use crate::ids::{BlockId, ConstId, TypeId};
+use crate::ids::{BlockId, ConstId, DiId, LocId, TypeId};
 use crate::inst::{AtomicOrdering, InstData, MemFlags, Opcode, PTRADD_POOLED, RmwOp};
 use crate::intrinsic::{CODE_OTHER, Intrinsic};
 use crate::module::Module;
+use crate::symbol::SymbolKind;
 use crate::types::{TypeKind, TypeTable};
 use crate::value::{InstId, TAG_ASM, Value, ValueKind};
 
 use IrErrorKind::{
-    BadBlock, BadIndex, InvalidOperand, InvalidType, TypeMismatch, UnsizedType, UseFactsMismatch,
+    BadBlock, BadIndex, InvalidDebugInfo, InvalidOperand, InvalidType, TypeMismatch, UnsizedType,
+    UseFactsMismatch,
 };
 
 impl Body {
@@ -40,7 +48,9 @@ impl Body {
     /// types that must agree and do not, `InvalidType` or `UnsizedType`
     /// for a type of the wrong class, `BadIndex` for an aggregate offset
     /// or shuffle index that names nothing, `UseFactsMismatch` for use
-    /// facts that differ from the recomputed ones.
+    /// facts that differ from the recomputed ones, `InvalidDebugInfo`
+    /// for a debug declaration, record or location that breaks a rule of
+    /// §6.8.
     ///
     /// # Panics
     /// May panic if `module` is not the module the body was built for.
@@ -54,6 +64,10 @@ impl Body {
         }
         v.control_flow()?;
         v.side_tables()?;
+        v.debug_records()?;
+        if !module.debug.is_empty() {
+            v.debug_ids()?;
+        }
         v.use_facts()
     }
 }
@@ -939,6 +953,174 @@ impl Verifier<'_> {
         Ok(())
     }
 
+    /// Whether a debug declaration or record can name `value`: nothing,
+    /// or something that exists. Unlike an operand it may be an
+    /// instruction without a result, which LLVM's metadata can name too.
+    fn debug_value(&self, value: Value) -> bool {
+        let body = self.body;
+        match value.kind() {
+            ValueKind::None | ValueKind::Sym(_) => true,
+            ValueKind::Inst(def) => def.index() < body.insts.len(),
+            ValueKind::Arg(index) => index < body.arg_count,
+            ValueKind::Const(constant) => constant.index() < self.module.consts.len(),
+            ValueKind::Slot(slot) => slot.index() < body.slots.len(),
+            ValueKind::Asm(_) => false,
+        }
+    }
+
+    /// §6.8, the rules that need only the body: declarations and records
+    /// name values of this body, and records are in position order, each
+    /// before an instruction that is not a `phi`.
+    fn debug_records(&self) -> IrResult<()> {
+        let body = self.body;
+        let fail = |what: String| Err(IrError::new(InvalidDebugInfo, what));
+        for declare in &body.declares {
+            if matches!(declare.address.kind(), ValueKind::Slot(_)) {
+                return fail(format!(
+                    "the declaration of {:?} at a slot is not a slot variable",
+                    declare.var
+                ));
+            }
+            if !self.debug_value(declare.address) {
+                let what = "names a value that does not exist";
+                return fail(format!(
+                    "the declaration of {:?} {what}: {:?}",
+                    declare.var, declare.address
+                ));
+            }
+        }
+        let mut previous = 0;
+        for (index, record) in body.dbg_records.iter().enumerate() {
+            let fail = |what: &str| {
+                Err(IrError::new(InvalidDebugInfo, format!("debug record {index} {what}")))
+            };
+            let Some(inst) = body.insts.get(record.before as usize) else {
+                return fail("stands before no instruction");
+            };
+            if inst.op == Opcode::Phi {
+                return fail("stands before a phi");
+            }
+            if record.before < previous {
+                return fail("is out of position order");
+            }
+            previous = record.before;
+            let count = usize::from(record.count);
+            let assign = record.kind == DbgRecordKind::Assign;
+            let Some(values) = body
+                .vals
+                .get(record.vals as usize..)
+                .and_then(|rest| rest.get(..count + usize::from(assign)))
+            else {
+                return fail("has its values outside the operand pool");
+            };
+            let shaped = match record.kind {
+                DbgRecordKind::Label => count == 0 && !record.arg_list,
+                DbgRecordKind::Value | DbgRecordKind::Assign => record.arg_list || count == 1,
+            };
+            if !shaped {
+                return fail("has a number of values its kind cannot have");
+            }
+            if !values.iter().all(|&value| self.debug_value(value)) {
+                return fail("names a value that does not exist");
+            }
+        }
+        Ok(())
+    }
+
+    /// §6.8, the rules that need the module's debug tables. Run when the
+    /// module has debug information.
+    fn debug_ids(&self) -> IrResult<()> {
+        let body = self.body;
+        let debug = &self.module.debug;
+        // The subprogram the function is attached to, if it has one.
+        let function = (body.sym.index() < self.module.symbol_count())
+            .then(|| self.module.symbol(body.sym).kind())
+            .and_then(|kind| match kind {
+                SymbolKind::Function { subprogram, .. } => subprogram,
+                _ => None,
+            });
+        // A location is defined and, when the function has a subprogram,
+        // is in it or in something inlined into it.
+        let location = |loc: LocId, what: &dyn Display| {
+            let fail =
+                |why: &str| Err(IrError::new(InvalidDebugInfo, format!("{what}: {loc:?} {why}")));
+            if debug.location(loc).is_none() {
+                return fail("is not a location");
+            }
+            let owner = debug.function_of(loc);
+            if owner.is_none() {
+                return fail("does not lead to a subprogram");
+            }
+            if function.is_some() && owner != function {
+                return fail("belongs to another function's subprogram");
+            }
+            Ok(())
+        };
+        let mut previous = LocId::NONE;
+        for (index, &loc) in body.locs.iter().enumerate() {
+            if loc != previous {
+                previous = loc;
+                if loc != LocId::NONE {
+                    location(loc, &format_args!("%{index}"))?;
+                }
+            }
+        }
+        // A variable or label is of the right kind, in the subprogram its
+        // record's location is in, and its expression exists and names
+        // only arguments the record has.
+        let named =
+            |var: DiId, label: bool, expr: ExprId, loc: LocId, args: u64, what: &dyn Display| {
+                let fail =
+                    |why: &str| Err(IrError::new(InvalidDebugInfo, format!("{what}: {why}")));
+                let scope = match (debug.contains(var).then(|| debug.node(var)), label) {
+                    (Some(DiNode::LocalVariable(node)), false) => node.scope,
+                    (Some(DiNode::Label(node)), true) => node.scope,
+                    (_, false) => return fail("its variable is not a DILocalVariable"),
+                    (_, true) => return fail("its label is not a DILabel"),
+                };
+                location(loc, what)?;
+                let here = debug.location(loc).and_then(|loc| debug.subprogram_of(loc.scope));
+                if scope.and_then(|scope| debug.subprogram_of(scope)) != here {
+                    return fail(
+                        "its location is in another subprogram than its variable or label",
+                    );
+                }
+                if expr.index() >= debug.expr_count() {
+                    return fail("its expression does not exist");
+                }
+                if debug.ops(expr).any(|op| matches!(op, DiOp::Arg(index) if index >= args)) {
+                    return fail("its expression names an argument the record does not have");
+                }
+                Ok(())
+            };
+        for var in &body.slot_vars {
+            named(
+                var.var,
+                false,
+                var.expr,
+                var.loc,
+                1,
+                &format_args!("the variable of {:?}", var.slot),
+            )?;
+        }
+        for declare in &body.declares {
+            let what = format_args!("the declaration of {:?}", declare.var);
+            named(declare.var, false, declare.expr, declare.loc, 1, &what)?;
+        }
+        for (index, record) in body.dbg_records.iter().enumerate() {
+            let what = format_args!("debug record {index}");
+            let label = record.kind == DbgRecordKind::Label;
+            named(record.var, label, record.expr, record.loc, u64::from(record.count), &what)?;
+            if record.addr_expr.index() >= debug.expr_count() {
+                return Err(IrError::new(
+                    InvalidDebugInfo,
+                    format!("{what}: its address expression does not exist"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Recomputes the use facts from the instructions and compares (§5.6).
     fn use_facts(&self) -> IrResult<()> {
         let body = self.body;
@@ -968,6 +1150,14 @@ impl Verifier<'_> {
                 }
             }
         }
+        // §6.6: a value a declaration names says so; that is not a use.
+        for declare in &body.declares {
+            match declare.address.kind() {
+                ValueKind::Inst(def) => uses[def.index()].declare(),
+                ValueKind::Arg(index) => arg_uses[index as usize].declare(),
+                _ => {}
+            }
+        }
         if let Some(index) = (0..uses.len()).find(|&index| uses[index] != body.uses[index]) {
             let what = format!(
                 "{:?} records {:?} and its uses give {:?}",
@@ -987,5 +1177,109 @@ impl Verifier<'_> {
             return Err(IrError::new(UseFactsMismatch, what));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::body::{DbgRecordKind, UseFacts};
+    use crate::debug::expr::ExprId;
+    use crate::{
+        Body, DiId, FunctionBuilder, IrErrorKind, LocId, Module, Opcode, SymId, TargetSpec, TypeId,
+        Value,
+    };
+
+    /// `i32 f(i32 %0, ptr %1)` whose two blocks hold a declaration of
+    /// `%1`, a value record, a label and an assign record; in a module
+    /// without debug tables, so that only the body's own rules apply.
+    fn body() -> (Module, Body) {
+        let mut m = Module::new(TargetSpec::aarch64_linux_gnu());
+        let fn_ty = m.types.function(TypeId::I32, &[TypeId::I32, TypeId::PTR], false).unwrap();
+        let mut b = FunctionBuilder::new(&m, SymId::new(0), fn_ty).unwrap();
+        let (entry, next) = (b.create_block().unwrap(), b.create_block().unwrap());
+        b.begin_block(entry).unwrap();
+        let (number, pointer) = (b.arg(0).unwrap(), b.arg(1).unwrap());
+        let (var, at) = (DiId::new(1), LocId::new(1));
+        b.dbg_declare(pointer, var, ExprId::EMPTY, at).unwrap();
+        let sum = b.binary(Opcode::Add, TypeId::I32, number, number).unwrap();
+        b.dbg_value(sum, var, ExprId::EMPTY, at).unwrap();
+        b.br(next).unwrap();
+        b.begin_block(next).unwrap();
+        let phi = b.phi(TypeId::I32, &[(sum, entry)]).unwrap();
+        b.dbg_label(DiId::new(2), at).unwrap();
+        b.dbg_assign(phi, var, ExprId::EMPTY, pointer, ExprId::EMPTY, at).unwrap();
+        b.ret(Some(phi)).unwrap();
+        let body = b.finish().unwrap();
+        body.verify(&m).unwrap();
+        (m, body)
+    }
+
+    /// `spec/ir.md` §6.8: the rules about a body's debug tables that the
+    /// builder cannot be made to break, each broken in the tables.
+    #[test]
+    fn damaged_debug_tables_do_not_verify() {
+        let verdict = |damage: &dyn Fn(&mut Body)| {
+            let (m, mut body) = body();
+            damage(&mut body);
+            body.verify(&m).err().map(|error| error.kind)
+        };
+        let invalid = Some(IrErrorKind::InvalidDebugInfo);
+        assert_eq!(verdict(&|_| {}), None);
+        // A record stands before an instruction of the body that is not
+        // a phi, at or after the record before it.
+        assert_eq!(verdict(&|body| body.dbg_records[2].before = 4), invalid);
+        assert_eq!(verdict(&|body| body.dbg_records[1].before = 2), invalid, "the phi");
+        assert_eq!(verdict(&|body| body.dbg_records[1].before = 0), invalid, "out of order");
+        assert_eq!(verdict(&|body| body.dbg_records[2].before = 1), invalid, "out of order");
+        // Its values are in the operand pool and exist.
+        assert_eq!(verdict(&|body| body.dbg_records[0].vals = body.vals.len() as u32), invalid);
+        assert_eq!(verdict(&|body| body.dbg_records[2].vals = body.vals.len() as u32 - 1), invalid);
+        assert_eq!(verdict(&|body| body.dbg_records[0].count = u16::MAX), invalid);
+        let missing = Value::inst(crate::InstId::new(40)).unwrap();
+        assert_eq!(
+            verdict(&|body| {
+                let at = body.dbg_records[0].vals as usize;
+                body.vals[at] = missing;
+            }),
+            invalid
+        );
+        assert_eq!(
+            verdict(&|body| {
+                let at = body.dbg_records[2].vals as usize + 1;
+                body.vals[at] = Value::arg(7).unwrap();
+            }),
+            invalid,
+            "the address of the assign"
+        );
+        // A label has no values; a value record without a list has one.
+        assert_eq!(verdict(&|body| body.dbg_records[1].count = 1), invalid);
+        assert_eq!(verdict(&|body| body.dbg_records[1].arg_list = true), invalid);
+        assert_eq!(verdict(&|body| body.dbg_records[0].count = 0), invalid);
+        assert_eq!(verdict(&|body| body.dbg_records[0].count = 2), invalid);
+        assert_eq!(
+            verdict(&|body| {
+                body.dbg_records[0].count = 0;
+                body.dbg_records[0].arg_list = true;
+            }),
+            None,
+            "an empty list is a list"
+        );
+        assert_eq!(verdict(&|body| body.dbg_records[1].kind = DbgRecordKind::Value), invalid);
+        // A declaration names a value of the body that is not a slot.
+        assert_eq!(verdict(&|body| body.declares[0].address = missing), invalid);
+        assert_eq!(
+            verdict(&|body| {
+                body.slots.push(crate::body::Slot::new(8, 3));
+                body.declares[0].address = Value::slot(crate::SlotId::new(0)).unwrap();
+            }),
+            invalid
+        );
+        // "Named by a declaration" is a use fact: it is recomputed.
+        let facts = Some(IrErrorKind::UseFactsMismatch);
+        assert_eq!(verdict(&|body| body.arg_uses[1] = UseFacts::NONE), facts);
+        assert_eq!(verdict(&|body| body.arg_uses[0].declare()), facts);
+        assert_eq!(verdict(&|body| body.uses[0].declare()), facts);
+        assert_eq!(verdict(&|body| body.declares.clear()), facts);
+        assert_eq!(verdict(&|body| body.declares[0].address = Value::NONE), facts);
     }
 }

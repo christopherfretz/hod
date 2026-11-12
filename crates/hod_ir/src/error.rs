@@ -57,6 +57,17 @@ pub enum IrErrorKind {
     /// The use facts a body records differ from the ones its instructions
     /// imply (§5.6).
     UseFactsMismatch,
+    /// Debug information that breaks a rule of §6: a node that must be
+    /// distinct and is not, a reference to a node of the wrong kind, a
+    /// location whose scope is not a local scope, an expression whose
+    /// operation lacks an operand, a record that names a value of
+    /// another body.
+    InvalidDebugInfo,
+    /// A reserved debug node or location is defined a second time (§6.3).
+    DebugRedefined,
+    /// A debug node, expression or location is referred to and does not
+    /// exist, or was reserved and never defined (§6.3).
+    UndefinedDebugNode,
 }
 
 /// An error from building IR. Never a panic.

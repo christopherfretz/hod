@@ -1,9 +1,17 @@
-//! Test support shared by hod's crates. Not shipped; a dev-dependency only.
+//! Test support shared by hod's crates. Not shipped: a dev-dependency of
+//! the crates, and a dependency of the harness (`xtask`).
 //!
 //! Tests that compare against an external oracle (LLVM's tools, binutils, a
 //! linker) find it with [`tool`]. A missing tool makes the test skip with a
 //! note, unless `HOD_REQUIRE_TOOLS=1`, which makes it a failure
 //! (`docs/VALIDATION.md` "Oracles").
+//!
+//! Every process a test starts through [`run_with`], [`run`] or
+//! [`write_script`] holds a token of the machine's jobserver for its
+//! lifetime, when there is one ([`jobs`], `spec/harness.md` "Jobserver"): a
+//! test binary is a jobserver client like the cargo that built it.
+
+pub mod jobs;
 
 use std::ffi::OsStr;
 use std::io::{Read, Write};
@@ -196,9 +204,27 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_mins(1);
 /// Runs a command with `stdin` as its input and a time limit, capturing its
 /// output. The process is killed when the limit passes.
 ///
+/// The process holds one token of the jobserver this test binary inherited
+/// ([`jobs::global`]) from before it starts until it has ended, however it
+/// ends; the time limit starts once the token is held, so waiting for the
+/// pool is never a timeout. Without a jobserver nothing waits.
+///
 /// # Panics
 /// Panics if the process cannot be started.
 pub fn run_with(command: &mut Command, stdin: &[u8], timeout: Duration) -> Outcome {
+    run_on(jobs::global(), command, stdin, timeout)
+}
+
+/// [`run_with`] as a client of `client`.
+fn run_on(
+    client: &jobs::Client,
+    command: &mut Command,
+    stdin: &[u8],
+    timeout: Duration,
+) -> Outcome {
+    // One jobserver slot for the child's lifetime (released on every return
+    // path, kill or panic by `Drop`); the time limit starts once it is held.
+    let _slot = client.acquire();
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = spawn(command)
         .unwrap_or_else(|e| panic!("cannot run {}: {e}", command.get_program().display()));
@@ -315,5 +341,64 @@ mod tests {
     fn run_kills_at_the_time_limit() {
         let outcome = run_with(Command::new("sleep").arg("30"), &[], Duration::from_millis(100));
         assert!(outcome.timed_out());
+    }
+
+    // spec/harness.md "Jobserver", "Scope" and "Release": a child of
+    // `run_with` holds a token from before it starts until it has ended,
+    // and a child killed at the time limit returns it too.
+    #[test]
+    fn run_holds_a_token_for_the_childs_lifetime() {
+        let scratch = Scratch::new("run-token");
+        let pool = jobs::PrivatePool::new("run-token", 1);
+        let client = jobs::Client::open(pool.path()).unwrap();
+        // With the implicit token taken, the child needs the pool's.
+        let implicit = client.acquire();
+        let (started, release) = (scratch.join("started"), scratch.join("release"));
+        let script = format!(
+            ": > '{}'; while [ ! -e '{}' ]; do sleep 0.02; done; echo done",
+            started.display(),
+            release.display()
+        );
+        std::thread::scope(|scope| {
+            let child = scope.spawn(|| {
+                run_on(&client, Command::new("sh").args(["-c", &script]), &[], DEFAULT_TIMEOUT)
+            });
+            let waited = Instant::now();
+            while !started.exists() {
+                assert!(waited.elapsed() < DEFAULT_TIMEOUT, "the child never started");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(pool.idle(), 0, "the running child holds the pool's token");
+            std::fs::write(&release, "").unwrap();
+            let outcome = child.join().unwrap();
+            assert_eq!(outcome.stdout_text(), "done\n");
+        });
+        assert_eq!(pool.idle(), 1, "the token came back when the child ended");
+
+        let killed =
+            run_on(&client, Command::new("sleep").arg("30"), &[], Duration::from_millis(100));
+        assert!(killed.timed_out());
+        assert_eq!(pool.idle(), 1, "a child killed at the time limit returns its token");
+        drop(implicit);
+    }
+
+    // "Jobserver", "Scope": the time limit starts once the token is held:
+    // a child that waited for the pool longer than its limit is not timed
+    // out.
+    #[test]
+    fn the_time_limit_starts_once_the_token_is_held() {
+        let pool = jobs::PrivatePool::new("run-wait", 0);
+        let client = jobs::Client::open(pool.path()).unwrap();
+        let implicit = client.acquire();
+        let limit = Duration::from_millis(600);
+        std::thread::scope(|scope| {
+            let child = scope.spawn(|| run_on(&client, Command::new("true").arg("x"), &[], limit));
+            // Longer than the child's limit, with no slot for it.
+            std::thread::sleep(limit + Duration::from_millis(300));
+            assert!(!child.is_finished(), "the child ran without a token");
+            drop(implicit);
+            let outcome = child.join().unwrap();
+            assert!(outcome.success() && !outcome.timed_out());
+        });
     }
 }

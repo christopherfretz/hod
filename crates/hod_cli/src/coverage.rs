@@ -50,11 +50,41 @@ pub struct Record {
     pub hod_time: Duration,
     /// Time the fallback process ran.
     pub fallback_time: Option<Duration>,
+    /// Time the bitcode conversion took, successful or not; `None` when
+    /// none was attempted.
+    pub conversion_time: Option<Duration>,
+    /// How the fallback ended; `None` when none ran.
+    pub fallback_status: Option<FallbackStatus>,
+}
+
+/// How a fallback process ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FallbackStatus {
+    /// It exited with this code.
+    Exited(i32),
+    /// A signal ended it.
+    Signaled(i32),
+    /// Neither is known (no Unix host reports this).
+    Unknown,
+}
+
+impl FallbackStatus {
+    /// The exit code in decimal, `signal:<N>`, or `unknown`.
+    fn write(self, out: &mut String) {
+        match self {
+            FallbackStatus::Exited(code) => out.push_str(&code.to_string()),
+            FallbackStatus::Signaled(signal) => {
+                out.push_str("signal:");
+                out.push_str(&signal.to_string());
+            }
+            FallbackStatus::Unknown => out.push_str("unknown"),
+        }
+    }
 }
 
 /// Number of tab-separated fields in a line.
 #[cfg(test)]
-pub const FIELDS: usize = 8;
+pub const FIELDS: usize = 10;
 
 /// Makes a free-form field safe for one tab-separated line: backslash, tab,
 /// newline and carriage return become `\\`, `\t`, `\n`, `\r`; an empty
@@ -72,6 +102,11 @@ fn escape(field: &str, out: &mut String) {
             c => out.push(c),
         }
     }
+}
+
+/// A time in whole microseconds, or `-`.
+fn micros(time: Option<Duration>) -> String {
+    time.map_or_else(|| "-".to_owned(), |t| t.as_micros().to_string())
 }
 
 impl Record {
@@ -92,9 +127,14 @@ impl Record {
         line.push('\t');
         line.push_str(&self.hod_time.as_micros().to_string());
         line.push('\t');
-        line.push_str(
-            &self.fallback_time.map_or_else(|| "-".to_owned(), |t| t.as_micros().to_string()),
-        );
+        line.push_str(&micros(self.fallback_time));
+        line.push('\t');
+        line.push_str(&micros(self.conversion_time));
+        line.push('\t');
+        match self.fallback_status {
+            Some(status) => status.write(&mut line),
+            None => line.push('-'),
+        }
         line.push('\n');
         line
     }
@@ -141,17 +181,37 @@ mod tests {
             target: Some("aarch64-unknown-linux-gnu".to_owned()),
             hod_time: Duration::from_micros(250),
             fallback_time: Some(Duration::from_millis(41)),
+            conversion_time: None,
+            fallback_status: Some(FallbackStatus::Exited(0)),
         }
     }
 
-    // spec/cli.md "Coverage log": the eight fields, in order.
+    // spec/cli.md "Coverage log": the ten fields, in order.
     #[test]
     fn line_format() {
         assert_eq!(
             record().line(),
             "fallback\tcodegen-not-implemented\ttext\t1234\t/tmp/kiln-1/0-a.o\t\
-             aarch64-unknown-linux-gnu\t250\t41000\n"
+             aarch64-unknown-linux-gnu\t250\t41000\t-\t0\n"
         );
+        // A converted module: the kind and the size are the bitcode's, the
+        // conversion's time is field 9.
+        let converted = Record {
+            input_kind: Some(InputKind::Bitcode),
+            conversion_time: Some(Duration::from_micros(9300)),
+            fallback_status: Some(FallbackStatus::Exited(1)),
+            ..record()
+        };
+        assert_eq!(
+            converted.line(),
+            "fallback\tcodegen-not-implemented\tbitcode\t1234\t/tmp/kiln-1/0-a.o\t\
+             aarch64-unknown-linux-gnu\t250\t41000\t9300\t1\n"
+        );
+        // Field 10 for a fallback that a signal ended.
+        let killed = Record { fallback_status: Some(FallbackStatus::Signaled(9)), ..record() };
+        assert!(killed.line().ends_with("\t41000\t-\tsignal:9\n"), "{}", killed.line());
+        let unknown = Record { fallback_status: Some(FallbackStatus::Unknown), ..record() };
+        assert!(unknown.line().ends_with("\t-\tunknown\n"), "{}", unknown.line());
         let hod = Record {
             outcome: Outcome::Hod,
             reason: None,
@@ -161,8 +221,10 @@ mod tests {
             target: None,
             hod_time: Duration::from_millis(3),
             fallback_time: None,
+            conversion_time: None,
+            fallback_status: None,
         };
-        assert_eq!(hod.line(), "hod\t-\tbitcode\t0\t-\t-\t3000\t-\n");
+        assert_eq!(hod.line(), "hod\t-\tbitcode\t0\t-\t-\t3000\t-\t-\t-\n");
         let error = Record {
             outcome: Outcome::Error,
             reason: Some("usage"),
@@ -170,7 +232,7 @@ mod tests {
             input_bytes: None,
             ..hod
         };
-        assert_eq!(error.line(), "error\tusage\t-\t-\t-\t-\t3000\t-\n");
+        assert_eq!(error.line(), "error\tusage\t-\t-\t-\t-\t3000\t-\t-\t-\n");
     }
 
     // spec/cli.md "Coverage log": a field never contains a tab or a newline.

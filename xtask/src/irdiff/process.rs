@@ -7,6 +7,11 @@
 //! address-space and a CPU-time limit the kernel enforces, which also hold
 //! if this process dies first. No `unsafe` and no dependency: the limits
 //! are set by a `/bin/sh` wrapper that then `exec`s the program.
+//!
+//! Each child holds one jobserver token for its lifetime
+//! (`spec/harness.md` "Jobserver"; [`crate::jobs`]), and is in the table
+//! of live children from spawn to reap, so that an interrupted xtask kills
+//! it before the tokens go back ([`crate::jobs::children`]).
 
 use std::io::{Read, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -15,6 +20,8 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
+
+use crate::jobs::children::{self, Stop, kill_group};
 
 /// What a child may use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,15 +98,41 @@ const WRAPPER: &str = "ulimit -c 0 && ulimit -v \"$1\" && ulimit -t \"$2\" || \
 /// An error is a failure of the harness or the machine, not of the
 /// program: the program is missing, the process cannot be started, or a
 /// limit cannot be set.
+///
+/// The child holds one jobserver token from before it starts until it has
+/// ended and its output is read; the time limit starts once the token is
+/// held. When xtask is being interrupted (SIGINT, SIGTERM) this does not
+/// return: no child is started any more, the result of a child the
+/// interrupt killed is nobody's to report, and the signal thread ends the
+/// process.
 pub fn run(
     program: &Path,
     configure: impl FnOnce(&mut Command),
     stdin: &[u8],
     limits: Limits,
 ) -> Result<Output, String> {
+    let result = run_from(program, configure, stdin, limits);
+    // The token and the table entry are released by now.
+    children::park_if_interrupted();
+    result.map(|(output, _)| output)
+}
+
+/// [`run`], and when the child's time started: once its jobserver token
+/// was held.
+fn run_from(
+    program: &Path,
+    configure: impl FnOnce(&mut Command),
+    stdin: &[u8],
+    limits: Limits,
+) -> Result<(Output, Instant), String> {
     if !program.is_file() {
         return Err(format!("cannot run '{}': no such file", program.display()));
     }
+    // One jobserver slot for the child's lifetime (released on every return
+    // path, kill or panic by `Drop`, after the table entry below); the time
+    // limit starts once it is held.
+    let _slot = crate::jobs::global().acquire();
+    let started = Instant::now();
     let mut command = Command::new("/bin/sh");
     command.arg("-c").arg(WRAPPER).arg("sh");
     command.arg(limits.memory_kib.to_string()).arg(limits.cpu_seconds().to_string());
@@ -110,8 +143,12 @@ pub fn run(
     // Its own process group, so that the time limit reaches everything the
     // child started (a compiler driver's linker, a script's commands).
     command.process_group(0);
-    let mut child =
-        command.spawn().map_err(|e| format!("cannot run '{}': {e}", program.display()))?;
+    let cannot = |e: std::io::Error| format!("cannot run '{}': {e}", program.display());
+    let spawning = children::begin_spawn().map_err(cannot)?;
+    let child = command.spawn();
+    // Deregistered when this returns, after the child is reaped.
+    let _live = spawning.spawned(child.as_ref().map(Child::id).ok(), Stop::Kill);
+    let mut child = child.map_err(cannot)?;
 
     if let Some(mut pipe) = child.stdin.take() {
         let input = stdin.to_vec();
@@ -148,7 +185,7 @@ pub fn run(
             limits.cpu_seconds()
         ));
     }
-    Ok(Output { end, stdout, stderr, truncated: out_truncated || err_truncated })
+    Ok((Output { end, stdout, stderr, truncated: out_truncated || err_truncated }, started))
 }
 
 /// Waits for the child; at the deadline kills its process group and
@@ -172,18 +209,6 @@ fn wait_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
             }
         }
     }
-}
-
-/// Sends `SIGKILL` to every process of the group `pgid`. The standard
-/// library can only signal one process; the shell's `kill` takes a group.
-fn kill_group(pgid: u32) {
-    let _ = Command::new("/bin/sh")
-        .args(["-c", "kill -KILL \"-$1\"", "sh"])
-        .arg(pgid.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
 }
 
 /// One output stream being read on its own thread.
@@ -241,7 +266,13 @@ mod tests {
     const ROOMY: Limits = Limits { time: Duration::from_secs(20), memory_kib: 1 << 20 };
 
     fn sh(script: &str, stdin: &[u8], limits: Limits) -> Output {
-        run(
+        sh_from(script, stdin, limits).0
+    }
+
+    /// The output, and when the child's time started: a test that measures
+    /// time does not count the wait for a jobserver token ("Jobserver").
+    fn sh_from(script: &str, stdin: &[u8], limits: Limits) -> (Output, Instant) {
+        run_from(
             Path::new("/bin/sh"),
             |c| {
                 c.arg("-c").arg(script);
@@ -296,8 +327,7 @@ mod tests {
             marker.display()
         );
         let limits = Limits { time: Duration::from_millis(400), ..ROOMY };
-        let started = Instant::now();
-        let output = sh(&script, b"", limits);
+        let (output, started) = sh_from(&script, b"", limits);
         assert_eq!(output.end, End::TimedOut);
         assert_eq!(output.stdout, b"started\n");
         assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
@@ -313,8 +343,7 @@ mod tests {
         let big = vec![b'x'; 1 << 20];
         assert_eq!(sh("exit 0", &big, ROOMY).end, End::Exit(0));
 
-        let started = Instant::now();
-        let output = sh("echo first; (sleep 30 &) ; exit 4", b"", ROOMY);
+        let (output, started) = sh_from("echo first; (sleep 30 &) ; exit 4", b"", ROOMY);
         assert_eq!(output.end, End::Exit(4));
         assert_eq!(output.stdout, b"first\n");
         assert!(started.elapsed() < Duration::from_secs(15), "{:?}", started.elapsed());

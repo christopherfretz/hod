@@ -29,7 +29,17 @@ pub const GROUPS: &[(&str, Enable)] = &[
     // The skeleton: `br`, `ret`, `unreachable`, constants, arguments,
     // blocks without predecessors (through `common::skeleton`).
     ("WP-033", |e| e.options.unreachable_blocks = true),
-    // WP-035 adds: ("WP-035", |e| { e.generator = true; e.options.casts = true; ... }),
+    // The integer group: the generator itself, integers of every width, compares, selects, casts.
+    ("WP-035", |e| {
+        e.generator = true;
+        e.options.narrow_ints = true;
+        e.options.odd_ints = true;
+        e.options.casts = true;
+        e.options.compares = true;
+        e.options.selects = true;
+    }),
+    // The floating-point group: `float`, `double`, `fcmp`, conversions.
+    ("WP-039", |e| e.options.floats = true),
 ];
 
 /// What every landed group enables together.

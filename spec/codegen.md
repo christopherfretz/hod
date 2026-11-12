@@ -523,6 +523,122 @@ These are decisions the group packages (WP-035..041) build on.
   until WP-035 switches the generator on; it prints the missing mask (the
   generator switches still off).
 
+#### Integers (WP-035)
+
+`src/int.rs`: binary operations, `icmp`, casts, `select`, `freeze` on
+`Gpr` values of every width (`i1` to `i64`, pointers).
+
+- **Narrow values** follow §2.2: the bits above the width are
+  unspecified, so an operation extends an operand only where its result
+  depends on them: the left operand of `lshr`, `udiv`, `urem` (`ubfx`)
+  and `ashr`, `sdiv`, `srem` (`sbfx`), and the divisor; a register shift
+  amount of a width below 5 (`lslv` reads 5 or 6 bits). A constant is
+  materialized already extended. A constant `lshr`/`ashr` of an odd
+  width is one `ubfx`/`sbfx`. A remainder is `udiv`/`sdiv` into `x17`,
+  then `msub`.
+- **Compares of an odd width** shift instead of extending: with `s` =
+  register width − width, `lsl a, a, #s` then `cmp a, b, lsl #s`, which
+  orders both signed and unsigned. With a constant, the operand is
+  extended and compared with `cmp #k`, `cmn #-k`, or `x16`. A constant
+  left operand swaps the predicate.
+- **Every `icmp` defers itself** when `may_defer` allows (§4.6), and is
+  otherwise `cmp` + `cset`. `int::fusable(cx, value)` is the deferred
+  compare of an integer or pointer a value is, if any; `int::flags(cx,
+  compare)` emits it and returns the condition true when the predicate
+  holds. The consumer calls it after `deferred_first(cx, inst,
+  Some(value))`, once per compare, and emits nothing that writes NZCV
+  between it and its use; it pins at most two registers and writes them,
+  NZCV and `x16`. `select` fuses into `csel`, `zext`/`sext` of an `i1`
+  into `cset`/`csetm`; a non-fused `i1` condition is `tst #1`.
+- **Undefined results** (§4.7): a constant shift amount of the width or
+  more emits nothing; a `select` arm that is the constant 0 is `xzr`.
+- **`addrspacecast`** is refused as `a64:addrspacecast` (classify
+  rejects it first). `i128` is `Mem`: `aggr` (WP-040).
+- **The differential harness** runs the generator from this package on
+  (`narrow_ints`, `odd_ints`, `casts`, `compares`, `selects`); a program
+  refused by another group's name is counted as skipped, by name, never
+  as agreeing, and the proportion that ran end to end is printed.
+
+#### Floating point (WP-039)
+
+`crates/hod_a64/src/float.rs`; the evidence is `spec/landed/codegen/WP-039.md`.
+
+- **Register contents.** A `float` lives in `Sn`, a `double` in `Dn`, a
+  `half` in `Hn`, an `fp128` in `Qn`, a 64-bit vector in `Dn`, a 128-bit
+  vector in `Qn`. The bits of the register above the value's width are
+  unspecified, the same rule as for integers in a `Gpr` (§2). Every
+  lowering reads only the value's own width.
+- **`half`** is computed in single precision: `fcvt` to `S`, then the
+  operation, then `fcvt` back to `H`. This is correctly rounded for
+  `fadd`, `fsub`, `fmul` and `fdiv`. The reason is that single precision
+  has more than `2·11+2` significand bits, so rounding twice gives the
+  same result as rounding once. An integer converted to `half` goes
+  through `S` the same way. That is exact as well: an integer of at least
+  2^24 overflows `half` to infinity either way, and a smaller one is
+  exact in `S`. `frem` of `half` is refused as `a64:half-frem`. `bfloat`
+  has no arithmetic without FEAT_BF16, which the baseline lacks, so it is
+  refused as `a64:bfloat` (but `fneg`, `bitcast`, `freeze` and `select`
+  of it only move bits and are lowered).
+- **`frem`** calls `fmodf` or `fmod` (LangRef: `frem` is `fmod`).
+  `fadd`, `fsub`, `fmul` and `fdiv` of `fp128` call `__addtf3`,
+  `__subtf3`, `__multf3` and `__divtf3`. `fneg` of `fp128` flips bit 127
+  through `x16`. The other `fp128` operations are refused as
+  `a64:fp128-libcall`, because their runtime functions are not in
+  `hod_cg::RuntimeFn`: the compares (`__eqtf2` and others), the
+  conversions (`__extend*tf2`, `__trunctf*`, `__fix*tf*`, `__float*tf`)
+  and `frem` (`fmodl`).
+- **NaNs.** hod emits the hardware instruction for each operation and
+  keeps whatever NaN the hardware produces: the default NaN rules of
+  FPCR with DN=0, with NaN operands propagated and made quiet. LangRef
+  "Behavior of Floating-Point NaN values" allows any NaN, and
+  `hod_interp` with `NanPolicy::Host` (`spec/interp.md` §5.1) gives the
+  same bits. The tests compare hod with the interpreter bit for bit,
+  NaNs included. `llc` is allowed to differ, and does: its SelectionDAG
+  folds `x + -0.0` to `x` and `-0.0 - x` to `fneg x`, which changes the
+  sign or the quietness of a NaN. So the `llc` comparison treats two
+  NaNs as equal and counts how often it had to. `fneg` flips only the
+  sign bit, a NaN's too.
+- **`fptoui`/`fptosi` out of range** (a NaN, an infinity, or a value
+  whose truncation does not fit) is poison (LangRef). hod's result is
+  whatever `fcvtzs`/`fcvtzu` give: a saturated value at the W or X width,
+  then truncated. Results narrower than 32 bits are converted at W width.
+- **Fast-math flags** do not exist in `hod_ir`, which drops them. A
+  function with flags compiles to the same words as one without.
+- **`fcmp`** sets the flags with `fcmp`. Each predicate then needs one or
+  two conditions (`float::FpCond { first, second }`; the result is
+  `first || second`), the same table as LLVM's `changeFPCCToAArch64CC`:
+  `oeq` EQ, `ogt` GT, `oge` GE, `olt` MI, `ole` LS, `one` MI|GT, `ord`
+  VC, `uno` VS, `ueq` EQ|VS, `ugt` HI, `uge` PL, `ult` LT, `ule` LE,
+  `une` NE. `false` and `true` emit `cmp xzr, xzr`, then use NE and EQ.
+  An unfused result is `cset`, plus `csinc r, r, wzr, inv(second)` when
+  there is a second condition.
+- **Fusing (§4.6).** `fcmp` defers when `may_defer` allows it. `select`
+  on a deferred `fcmp` sets the flags itself. `float::flags(cx, compare)`
+  is the contract for `condbr` (WP-037): it emits the compare of a
+  deferred `fcmp` and returns its `FpCond`. A branch then takes
+  `b.first` and, if there is a `second`, `b.second` to the same target.
+  The operands' registers are given back before it returns, so the
+  caller may allocate freely.
+- **`select`** of a value of at most 64 bits uses `fcsel` on the `D`
+  view. With two conditions it takes two steps: first `b' = second ? a :
+  b`, then `r = first ? a : b'`. A 128-bit value (`fp128` or a `Q`
+  vector) uses `csetm x16` (with `csinv` for the second condition), then
+  `dup v31.2d, x16` and `bsl`. A vector condition is `a64:vector-select`.
+- **Vectors.** The FP vector arithmetic of `2S`, `4S` and `2D`; the
+  integer vector `add`, `sub`, `mul` (not of `i64` elements), `and`,
+  `or`, `xor`, and shifts through `ushl`/`sshl` (with the amount negated
+  for right shifts); `fneg`; the casts with an instruction for them
+  (`fcvtl`, `fcvtn`, `fcvtz*`, `*cvtf`, `xtn`, `uxtl`/`sxtl` by a factor
+  of two). Everything else is `a64:vector-op` (integer division and
+  remainder, `i64`-element `mul`, vector `frem`, arithmetic on `half`
+  vectors) or `a64:fp-cast`. Vector `fcmp` and `icmp` are
+  `a64:vector-fcmp` and `a64:vector-icmp`, because their `<N x i1>`
+  result is `Mem` class (WP-040).
+- **Reason names**: `a64:fp-binary`, `a64:fneg`, `a64:fp-freeze`,
+  `a64:fp-cast`, `a64:fcmp`, `a64:vector-icmp`, `a64:fp-select` (the
+  skeleton's), and `a64:bfloat`, `a64:fp128-libcall`, `a64:half-frem`,
+  `a64:vector-fcmp`, `a64:vector-select`, `a64:vector-op`.
+
 ### 5.6 x86-64 (planned)
 
 `push rbp` · `mov rbp, rsp` · pushes of the save set · `sub rsp, imm32`

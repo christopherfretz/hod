@@ -26,7 +26,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `global` | 12 | 11 | 1 | 0 | 2 | 10 | 0 |
 | `linkage` | 11 | 9 | 1 | 1 | 1 | 9 | 1 |
 | `visibility` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
-| `tls` | 4 | 0 | 4 | 0 | 0 | 4 | 0 |
+| `tls` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
 | `init` | 8 | 5 | 3 | 0 | 0 | 8 | 0 |
 | `function` | 6 | 6 | 0 | 0 | 0 | 6 | 0 |
@@ -40,10 +40,10 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `tail` | 3 | 3 | 0 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
-| `operand` | 9 | 4 | 5 | 0 | 0 | 9 | 0 |
+| `operand` | 9 | 7 | 2 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 133 | 92 | 41 | 0 | 0 | 133 | 0 |
-| total | 434 | 243 | 145 | 46 | 16 | 363 | 55 |
+| `intrinsic` | 133 | 94 | 39 | 0 | 0 | 133 | 0 |
+| total | 434 | 252 | 136 | 46 | 16 | 363 | 55 |
 
 ## `module`
 
@@ -147,10 +147,10 @@ Thread-local models of variables and aliases.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `tls:general-dynamic` | not-implemented | not-implemented | M2 (TLS). `thread_local` |
-| `tls:local-dynamic` | not-implemented | not-implemented | M2 (TLS). `thread_local(localdynamic)` |
-| `tls:initial-exec` | not-implemented | not-implemented | M2 (TLS). `thread_local(initialexec)` |
-| `tls:local-exec` | not-implemented | not-implemented | M2 (TLS). `thread_local(localexec)` |
+| `tls:general-dynamic` | supported | not-implemented | `thread_local` |
+| `tls:local-dynamic` | supported | not-implemented | `thread_local(localdynamic)` |
+| `tls:initial-exec` | supported | not-implemented | `thread_local(initialexec)` |
+| `tls:local-exec` | supported | not-implemented | `thread_local(localexec)` |
 
 ## `comdat`
 
@@ -468,11 +468,11 @@ Constant addresses as instruction operands.
 | `operand:slot` | supported | not-implemented | the address of a stack slot |
 | `operand:blockaddress` | supported | not-implemented | of a block of the same function |
 | `operand:addr-of-int` | supported | not-implemented | `inttoptr` of a constant number |
-| `operand:int-of-addr` | not-implemented | not-implemented | unplanned. `ptrtoint` of a constant address |
-| `operand:sym-diff` | not-implemented | not-implemented | unplanned |
+| `operand:int-of-addr` | supported | not-implemented | `ptrtoint` of a constant address (WP-072) |
+| `operand:sym-diff` | supported | not-implemented | a difference of two symbol addresses (WP-072) |
 | `operand:dso-local-equivalent` | not-implemented | not-implemented | unplanned |
 | `operand:no-cfi` | not-implemented | not-implemented | unplanned |
-| `operand:address-in-aggregate` | not-implemented | not-implemented | unplanned. an aggregate or vector constant with an address |
+| `operand:address-in-aggregate` | supported | not-implemented | an aggregate or vector constant with an address (WP-072) |
 
 ## `const-expr`
 
@@ -594,8 +594,8 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.fptoui.sat` | supported (int, half, float, double) | not-implemented |  |
 | `intrinsic:llvm.is.fpclass` | supported (int, half, float, double, fp128) | not-implemented |  |
 | `intrinsic:llvm.eh.typeid.for` | supported (int, ptr) | not-implemented |  |
-| `intrinsic:llvm.threadlocal.address` | not-implemented | not-implemented | M2 (TLS) |
-| `intrinsic:llvm.thread.pointer` | not-implemented | not-implemented | M2 (TLS) |
+| `intrinsic:llvm.threadlocal.address` | supported (ptr) | not-implemented |  |
+| `intrinsic:llvm.thread.pointer` | supported (ptr) | not-implemented |  |
 | `intrinsic:llvm.prefetch` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.clear_cache` | supported (ptr) | not-implemented |  |
 | `intrinsic:llvm.readcyclecounter` | not-implemented | not-implemented | unplanned |
@@ -646,8 +646,8 @@ Refused whatever the matrix says (`spec/ir.md` §8.6), on both targets.
 
 | construct | when |
 |---|---|
-| `tls:direct-operand` | a thread-local symbol as an operand of anything but the first argument of `llvm.threadlocal.address` |
-| `tls:address-in-constant` | the address of a thread-local symbol inside a constant: an initializer, a constant operand, a landing-pad clause |
+| `tls:direct-operand` | a thread-local symbol as the callee of a call |
+| `tls:address-in-constant` | the address of a thread-local symbol inside a constant other than a plain address operand (`@t`, `getelementptr (@t, ...)`): an initializer, an aggregate or expression operand, a landing-pad clause |
 | `blockaddress:other-function` | a `blockaddress` in a body that names a block of another function |
 | `musttail:callee-pop` | a `musttail` call with a convention whose callee pops its arguments (`tailcc`, `swifttailcc`) |
 | `musttail:stack-args-grow` | a `musttail` call whose stack-argument area is larger than its caller's |

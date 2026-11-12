@@ -128,7 +128,7 @@ const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 26] = [
     ("global:ifunc", "", "global:ifunc", "", ""),
     ("linkage:extern_weak", "", "linkage:extern_weak", "", ""),
     ("visibility:hidden", "", "global:variable-definition", "", ""),
-    ("tls:initial-exec", "tls:initial-exec", "global:variable-definition", "", ""),
+    ("tls:initial-exec", "", "global:variable-definition", "", ""),
     ("comdat:any", "", "global:variable-definition", "", ""),
     ("init:symbol", "", "global:variable-definition", "", ""),
     ("function:slots", "", "global:function-definition", "*", "cc:ccc"),

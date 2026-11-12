@@ -8,36 +8,28 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `(compiled)` | 2984 | 2952 |
+| `(compiled)` | 3068 | 3034 |
 | `call:inline-asm` | 74 | 74 |
-| `type:vector` | 61 | 58 |
-| `intrinsic:llvm.eh.typeid.for` | 35 | 34 |
+| `type:vector` | 62 | 59 |
 | `operand:address-in-aggregate` | 32 | 32 |
-| `attr:alignstack` | 27 | 27 |
 | `operand:int-of-addr` | 23 | 23 |
 | `tls:general-dynamic` | 11 | 11 |
-| `intrinsic:llvm.fmuladd` | 8 | 8 |
 | `mem:atomic-load` | 8 | 7 |
 | `debug:module-flags` | 7 | 7 |
 | `inst:atomicrmw` | 6 | 6 |
 | `inst:insertelement` | 6 | 6 |
 | `musttail:stack-args-unknown` | 6 | 6 |
 | `attr:convergent` | 5 | 5 |
-| `intrinsic:llvm.copysign` | 5 | 5 |
-| `intrinsic:llvm.is.fpclass` | 5 | 5 |
+| `inst:extractvalue/fp128` | 4 | 4 |
 | `module:asm` | 4 | 4 |
-| `intrinsic:llvm.fabs` | 3 | 3 |
-| `intrinsic:llvm.floor` | 3 | 3 |
+| `inst:callbr` | 3 | 3 |
 | `intrinsic:llvm.smul.with.overflow/int-wide` | 3 | 3 |
+| `type:bfloat` | 3 | 3 |
 | `const-expr:trunc` | 2 | 3 |
-| `inst:callbr` | 2 | 2 |
-| `intrinsic:llvm.fma` | 2 | 2 |
 | `intrinsic:llvm.umul.with.overflow/i128` | 2 | 2 |
 | `mem:atomic-store` | 2 | 2 |
 | `special-global:llvm.global.annotations` | 2 | 2 |
-| `type:bfloat` | 2 | 2 |
 | `cc:preserve_mostcc` | 1 | 1 |
-| `inst:extractvalue/fp128` | 1 | 1 |
 | `inst:fptosi/i128` | 1 | 1 |
 | `inst:sitofp/i128` | 1 | 1 |
 | `inst:switch/i128` | 1 | 1 |
@@ -45,14 +37,12 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 | `intrinsic:llvm.aarch64.neon.ld2.v16i8.p0` | 1 | 1 |
 | `intrinsic:llvm.aarch64.neon.ld2.v8i16.p0` | 1 | 1 |
 | `intrinsic:llvm.aarch64.neon.ld3.v8i8.p0` | 1 | 1 |
-| `intrinsic:llvm.clear_cache` | 1 | 1 |
 | `intrinsic:llvm.readcyclecounter` | 1 | 1 |
 | `intrinsic:llvm.thread.pointer` | 1 | 1 |
 | `metadata-arg:llvm.read_volatile_register.i64` | 1 | 1 |
 | `tls:local-dynamic` | 1 | 1 |
 | `attr:fmv-features` | 1 | 0 |
 | `const-expr:bitcast` | 1 | 0 |
-| `intrinsic:llvm.sadd.sat` | 1 | 0 |
 | all | 3347 | 3308 |
 
 ## Every reason (census)
@@ -62,33 +52,25 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 | `call:inline-asm` | 80 | 80 |
 | `type:vector` | 76 | 72 |
 | `inst:extractelement` | 45 | 41 |
-| `intrinsic:llvm.eh.typeid.for` | 38 | 37 |
 | `operand:address-in-aggregate` | 34 | 34 |
 | `operand:int-of-addr` | 31 | 31 |
 | `inst:insertelement` | 30 | 29 |
-| `attr:alignstack` | 27 | 27 |
 | `inst:shufflevector` | 24 | 20 |
 | `mem:atomic-load` | 14 | 13 |
 | `intrinsic:llvm.threadlocal.address` | 13 | 13 |
 | `tls:general-dynamic` | 13 | 13 |
-| `intrinsic:llvm.fmuladd` | 12 | 12 |
 | `inst:atomicrmw` | 11 | 10 |
-| `intrinsic:llvm.fabs` | 10 | 10 |
 | `attr:elementtype` | 9 | 9 |
 | `mem:atomic-store` | 8 | 7 |
-| `debug-info` | 7 | 7 |
+| `debug:locations` | 7 | 7 |
 | `debug:module-flags` | 7 | 7 |
+| `debug:subprogram` | 7 | 7 |
 | `atomicrmw:xchg` | 7 | 6 |
-| `intrinsic:llvm.copysign` | 6 | 6 |
 | `musttail:stack-args-unknown` | 6 | 6 |
-| `tail:musttail` | 6 | 6 |
 | `atomicrmw:add` | 5 | 5 |
 | `attr:convergent` | 5 | 5 |
+| `debug:slot-variables` | 5 | 5 |
 | `inst:extractvalue/fp128` | 5 | 5 |
-| `intrinsic:llvm.is.fpclass` | 5 | 5 |
-| `intrinsic:llvm.floor` | 4 | 4 |
-| `intrinsic:llvm.fma` | 4 | 4 |
-| `intrinsic:llvm.maxnum` | 4 | 4 |
 | `intrinsic:llvm.vector.reduce.add` | 4 | 4 |
 | `module:asm` | 4 | 4 |
 | `tls:direct-operand` | 4 | 4 |
@@ -247,17 +229,8 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 | `intrinsic:llvm.aarch64.neon.vsli.v4i32` | 1 | 1 |
 | `intrinsic:llvm.aarch64.neon.vsli.v8i8` | 1 | 1 |
 | `intrinsic:llvm.aarch64.neon.vsri.v16i8` | 1 | 1 |
-| `intrinsic:llvm.ceil` | 1 | 1 |
-| `intrinsic:llvm.clear_cache` | 1 | 1 |
-| `intrinsic:llvm.frexp` | 1 | 1 |
-| `intrinsic:llvm.minnum` | 1 | 1 |
 | `intrinsic:llvm.readcyclecounter` | 1 | 1 |
-| `intrinsic:llvm.rint` | 1 | 1 |
-| `intrinsic:llvm.round` | 1 | 1 |
-| `intrinsic:llvm.roundeven` | 1 | 1 |
-| `intrinsic:llvm.sqrt` | 1 | 1 |
 | `intrinsic:llvm.thread.pointer` | 1 | 1 |
-| `intrinsic:llvm.trunc` | 1 | 1 |
 | `intrinsic:llvm.umul.with.overflow/int-wide` | 1 | 1 |
 | `metadata-arg:llvm.read_volatile_register.i64` | 1 | 1 |
 | `tls:initial-exec` | 1 | 1 |
@@ -268,8 +241,6 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 | `intrinsic:llvm.aarch64.neon.bfcvtn` | 0 | 1 |
 | `intrinsic:llvm.aarch64.neon.bfcvtn2` | 0 | 1 |
 | `intrinsic:llvm.aarch64.neon.tbl1.v16i8` | 0 | 1 |
-| `intrinsic:llvm.sadd.sat` | 1 | 0 |
-| `intrinsic:llvm.usub.sat` | 1 | 0 |
 | `intrinsic:llvm.vector.reduce.or` | 1 | 0 |
 
 ## The routes agree
@@ -278,25 +249,13 @@ Modules whose outcome and first reason are the same by two routes, and whose cen
 
 | LLVM | modules | text = native | native = `llvm-dis` | census: text = native | census: native = `llvm-dis` | census in the same order |
 |---|---:|---:|---:|---:|---:|---:|
-| 22 | 3347 | 3347 | 3346 | 3340 | 3340 | 3340 |
-| 19 | 3308 | 3308 | 3307 | 3301 | 3301 | 3301 |
+| 22 | 3347 | 3347 | 3346 | 3347 | 3346 | 3346 |
+| 19 | 3308 | 3308 | 3307 | 3308 | 3307 | 3307 |
 
 The modules that differ (at most 20):
 
-- `kiln/llvm22/conformance/class.temporary/lifetime-markers-O2-g-fpic-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations,inst:insertelement,type:vector,inst:shufflevector,intrinsic:llvm.vector.reduce.add,debug:slot-variables,intrinsic:llvm.eh.typeid.for), native `debug:module-flags` (debug:module-flags,debug-info,inst:insertelement,type:vector,inst:shufflevector,intrinsic:llvm.vector.reduce.add,intrinsic:llvm.eh.typeid.for), `llvm-dis` `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations,inst:insertelement,type:vector,inst:shufflevector,intrinsic:llvm.vector.reduce.add,debug:slot-variables,intrinsic:llvm.eh.typeid.for)
-- `kiln/llvm22/conformance/dcl.struct.bind/namespace-scope-debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), native `debug:module-flags` (debug:module-flags,debug-info), `llvm-dis` `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations)
-- `kiln/llvm22/conformance/expr.reflect/debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:slot-variables,debug:locations), native `debug:module-flags` (debug:module-flags,debug-info), `llvm-dis` `debug:module-flags` (debug:module-flags,debug:subprogram,debug:slot-variables,debug:locations)
-- `kiln/llvm22/conformance/ext.complex/complex-int-debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:slot-variables,debug:locations), native `debug:module-flags` (debug:module-flags,debug-info), `llvm-dis` `debug:module-flags` (debug:module-flags,debug:subprogram,debug:slot-variables,debug:locations)
-- `kiln/llvm22/conformance/meta.reflection.define.aggregate/define-debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:slot-variables,debug:locations), native `debug:module-flags` (debug:module-flags,debug-info), `llvm-dis` `debug:module-flags` (debug:module-flags,debug:subprogram,debug:slot-variables,debug:locations)
-- `kiln/llvm22/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), native `debug:module-flags` (debug:module-flags,debug-info), `llvm-dis` `malformed-input` (malformed-input)
-- `kiln/llvm22/conformance/temp.dep.type/pattern-typedef-debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:slot-variables,debug:locations), native `debug:module-flags` (debug:module-flags,debug-info), `llvm-dis` `debug:module-flags` (debug:module-flags,debug:subprogram,debug:slot-variables,debug:locations)
-- `kiln/llvm19/conformance/class.temporary/lifetime-markers-O2-g-fpic-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations,inst:insertelement,type:vector,inst:shufflevector,intrinsic:llvm.vector.reduce.add,debug:slot-variables,intrinsic:llvm.eh.typeid.for), native `debug:module-flags` (debug:module-flags,debug-info,inst:insertelement,type:vector,inst:shufflevector,intrinsic:llvm.vector.reduce.add,intrinsic:llvm.eh.typeid.for), `llvm-dis` `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations,inst:insertelement,type:vector,inst:shufflevector,intrinsic:llvm.vector.reduce.add,debug:slot-variables,intrinsic:llvm.eh.typeid.for)
-- `kiln/llvm19/conformance/dcl.struct.bind/namespace-scope-debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), native `debug:module-flags` (debug:module-flags,debug-info), `llvm-dis` `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations)
-- `kiln/llvm19/conformance/expr.reflect/debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:slot-variables,debug:locations), native `debug:module-flags` (debug:module-flags,debug-info), `llvm-dis` `debug:module-flags` (debug:module-flags,debug:subprogram,debug:slot-variables,debug:locations)
-- `kiln/llvm19/conformance/ext.complex/complex-int-debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:slot-variables,debug:locations), native `debug:module-flags` (debug:module-flags,debug-info), `llvm-dis` `debug:module-flags` (debug:module-flags,debug:subprogram,debug:slot-variables,debug:locations)
-- `kiln/llvm19/conformance/meta.reflection.define.aggregate/define-debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:slot-variables,debug:locations), native `debug:module-flags` (debug:module-flags,debug-info), `llvm-dis` `debug:module-flags` (debug:module-flags,debug:subprogram,debug:slot-variables,debug:locations)
-- `kiln/llvm19/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), native `debug:module-flags` (debug:module-flags,debug-info), `llvm-dis` `malformed-input` (malformed-input)
-- `kiln/llvm19/conformance/temp.dep.type/pattern-typedef-debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:slot-variables,debug:locations), native `debug:module-flags` (debug:module-flags,debug-info), `llvm-dis` `debug:module-flags` (debug:module-flags,debug:subprogram,debug:slot-variables,debug:locations)
+- `kiln/llvm22/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), native `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), `llvm-dis` `malformed-input` (malformed-input)
+- `kiln/llvm19/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), native `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), `llvm-dis` `malformed-input` (malformed-input)
 
 ## What a decline costs
 
@@ -304,13 +263,13 @@ Coverage-log field 7 (from the process's start to the decline) of the first-refu
 
 | LLVM | route | median | p99 | worst | share of `llc`: median | p99 | worst |
 |---|---|---:|---:|---:|---:|---:|---:|
-| 22 | text | 4767 | 19502 | 197681 | 9.7% | 38.6% | 168.6% |
-| 22 | bitcode, native | 4678 | 17353 | 157117 | 9.6% | 35.8% | 310.2% |
-| 22 | bitcode, `llvm-dis` | 41879 | 122703 | 542630 | 86.6% | 197.7% | 311.3% |
-| 22 | `llc -O0` | 49741 | 138254 | 3850820 | | | |
-| 22 | the `convert` of the `llvm-dis` route | 37242 | 115668 | 371930 | | | |
-| 19 | text | 5198 | 18845 | 255023 | 9.9% | 34.5% | 101.8% |
-| 19 | bitcode, native | 4799 | 17566 | 114848 | 9.3% | 30.9% | 68.4% |
-| 19 | bitcode, `llvm-dis` | 46677 | 132033 | 682193 | 87.6% | 181.4% | 297.1% |
-| 19 | `llc -O0` | 50934 | 143918 | 3219962 | | | |
-| 19 | the `convert` of the `llvm-dis` route | 42256 | 121430 | 451458 | | | |
+| 22 | text | 5027 | 22504 | 263918 | 11.8% | 42.0% | 123.3% |
+| 22 | bitcode, native | 4726 | 19825 | 162793 | 11.2% | 38.4% | 114.7% |
+| 22 | bitcode, `llvm-dis` | 35512 | 103811 | 595057 | 84.0% | 180.2% | 476.7% |
+| 22 | `llc -O0` | 39828 | 97899 | 3562324 | | | |
+| 22 | the `convert` of the `llvm-dis` route | 31310 | 81825 | 366800 | | | |
+| 19 | text | 4572 | 19739 | 287473 | 11.1% | 38.3% | 102.1% |
+| 19 | bitcode, native | 4363 | 16313 | 194692 | 10.6% | 33.7% | 101.8% |
+| 19 | bitcode, `llvm-dis` | 34497 | 92976 | 781623 | 84.8% | 163.6% | 560.6% |
+| 19 | `llc -O0` | 39619 | 96267 | 3628976 | | | |
+| 19 | the `convert` of the `llvm-dis` route | 30028 | 81807 | 499056 | | | |

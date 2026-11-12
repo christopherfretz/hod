@@ -91,7 +91,10 @@ impl<'a, T: Target> FnCx<'a, T> {
             return internal(format!("value {:#x} has no type: it is not a value", key.0));
         }
         let class = self.target.class_of(self.types(), ty);
-        let kind = if uses.is_unused() {
+        let kind = if uses.named_by_declare() {
+            // §4.1: a variable's address for the whole function.
+            Kind::Home
+        } else if uses.is_unused() {
             Kind::Dead
         } else if class == Class::Mem || uses.count() > 1 || uses.used_outside_block() {
             Kind::Home

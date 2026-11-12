@@ -554,7 +554,7 @@ and lldb, `lines_debugger.rs`):
   `epilogue_begin` (§5.4); `llc` has an epilogue per `ret`, each on its
   `ret`'s line.
 
-## 6. DIEs (core implemented, WP-053; the type graph, WP-058)
+## 6. DIEs (core implemented, WP-053; the type graph, WP-058; functions, WP-057)
 
 ### 6.1 Abbreviations: a fixed table (implemented)
 
@@ -630,6 +630,9 @@ exclusive `low_pc` forms), and pin the bytes of one entry.
 | 66 | `subprogram` (member declaration, qualified): as 65 without `explicit`, with `reference`, `rvalue_reference`, `noreturn` before accessibility | 4096 | 4604 | WP-058 |
 | 67 | `variable` (global, no name: a structured binding's hidden object) | 32 | 8700 | WP-058 |
 | 68 | `base_type` (the array index type, `__ARRAY_SIZE_TYPE__`: `name`, `byte_size`, `encoding`, in `llc`'s order) | 1 | 8732 | WP-058 |
+| 69 | `subprogram` (definition, any): `low_pc`, `high_pc`, `frame_base`, then `linkage_name` (0), `name` (1), `decl_file`/`decl_line` (2), `prototyped` (3), `type` (4), `artificial` (5), `external` (6), `noreturn` (7), children optional | 512 | 8733 | WP-057 |
+| 70 | `subprogram` (member definition): `low_pc`, `high_pc`, `frame_base`, `object_pointer` (0), `decl_file` (1), `decl_line` (2), `linkage_name` (3), `specification`, children optional | 32 | 9245 | WP-057 |
+| 71 | `label` (with `decl_column`, LLVM 21 and later), `low_pc` (0) | 2 | 9277 | WP-057 |
 
 Families 2 to 45 that WP-058 owns are used for the common shape of each
 kind (they keep the codes the reserved shapes promised); the "any"
@@ -639,7 +642,13 @@ ORs. Subroutine parameters use WP-057's `formal_parameter` family (its
 reserved families 29 (`lower_bound` before `count`) and 36–37 to `llc`'s
 order.
 
-`CODE_END` is 8733 (it was 754). Since the core families come last, their codes take
+WP-057 uses its reserved families 0 (`formal_parameter`), 1 (local
+`variable`), 4 (the common definition: no `prototyped`, `artificial` or
+`noreturn`, a name), 38 (`lexical_block`; bit 0 chooses
+`low_pc`/`high_pc` or `ranges` as `DW_FORM_sec_offset`) and 39 (`label`),
+and appends 69 to 71 for the other shapes.
+
+`CODE_END` is 9279 (754 after WP-053, 8733 after WP-058). Since the core families come last, their codes take
 two ULEB bytes where `llc`'s take one (the cost is in §7.2; open question
 7).
 
@@ -661,10 +670,9 @@ each DIE from its node's record into the output buffer, with a 0
 terminator after each run of children (a DIE with no children has the
 no-children code, so it gets no terminator). A `DW_FORM_ref4` to a DIE
 already written is written at once; a forward one is recorded as a patch
-`(position, DIE)` and filled in when the unit ends. Per-function DIEs
-(the subprogram's children) will be written the same way by the worker
-that compiled the function, with references to unit-level DIEs resolved
-as patches at the merge (§7.1).
+`(position, DIE)` and filled in when the unit ends. The function DIEs
+(WP-057) are DIEs of the same tree, added by `add_function` (§6.4) and
+written by the same walk.
 
 ### 6.3 Strings (implemented)
 
@@ -687,13 +695,109 @@ Planned optimization: `hod_ir`'s names are already interned, so a pool
 keyed by `hod_ir`'s string id would index an array instead of hashing.
 `hod_ir` does not expose that id from a decoded node yet (§2).
 
-### 6.4 Lexical blocks (planned, WP-057)
+### 6.4 Subprograms, variables, blocks and labels (implemented, WP-057)
 
-A block's ranges are derived from the function's transitions: each
-transition's location names a scope; the intervals between transitions
-are attributed to every block on that scope's chain. A block with one
-interval gets `DW_AT_low_pc`/`DW_AT_high_pc`, one with several a range
-list in `.debug_rnglists`, as `llc` does.
+**Interface** (`src/func.rs`). `UnitPlan::for_functions(&module, unit)`
+is `of_module`'s plan left open. The code generator adds each placed
+function, in module order, with `add_function(&FunctionInput)`, then
+calls `seal()`; `write_debug_info` takes only a sealed plan. A
+`FunctionInput` is the `DISubprogram`, the `CodeSpan`, the DWARF register
+of the frame base, the function's line-table transitions (`ScopeRow`:
+code offset and `LocId`) and its `LocalRow`s. A `LocalRow` is a
+`DILocalVariable` or `DILabel`, the location of its record, the
+record's `DIExpression`, and a `LocalPlace`: `Frame(off)` (the variable
+is `off` bytes from the frame base), `FrameIndirect(off)` (its address is
+stored there), `Label(code offset)`, or `Refused(name)`, a stable name
+the code generator gave for a row it cannot describe. Nothing is
+allocated per DIE: a function's scopes, ranges and entities live in
+scratch reused across functions, and the writer reads three side tables
+sorted by DIE (functions, locals, block ranges).
+
+**The subprogram DIE**, as `llc` writes it at `endFunction`:
+- `low_pc` (`addrx` of the function's section symbol plus offset, §1.3),
+  `high_pc` (the size, `data4`), `frame_base` (`DW_OP_reg<n>`, or
+  `DW_OP_regx`; hod's is x29 on AArch64);
+- a function that is not a member: `linkage_name`, `name`, `decl_file`/
+  `decl_line`, `prototyped` (C only), `type` (the return type; none for
+  `void`), `artificial`, `external` (unless `DISPFlagLocalToUnit`),
+  `noreturn`. Its parent is its namespace (made as for a global) or the
+  unit;
+- a member function's definition (a `declaration:` whose scope is a
+  class): the class is made first (the declaration is among its members),
+  then the definition is a child of the unit with `specification` to the
+  declaration, `object_pointer` to its `this` parameter, and
+  `decl_file`, `decl_line` and `linkage_name` only where they differ from
+  the declaration's (`llc`'s `applySubprogramDefinitionAttributes`);
+- children in `llc`'s order: the parameters (by `arg:`), the locals (in
+  record order), the labels, then the blocks; a variadic definition (its
+  type's last element `null`) ends with `DW_TAG_unspecified_parameters`.
+
+The return types are made at `seal()` (`finishSubprogramDefinitions`),
+then the variables' types in DIE order (`finishEntityDefinitions`), so
+the type DIEs come after every function, in `llc`'s order.
+
+**Variables.** `name`, `decl_file`/`decl_line`, `type`, `artificial`
+(the parameters' slot), and `location`: `DW_OP_fbreg off` (plus
+`DW_OP_deref` for `FrameIndirect`) followed by the record's
+`DIExpression`, each op written as itself. LLVM's own ops
+(`DW_OP_LLVM_*`), `stack_value`, conversions, entry values and a
+fragment are refused (§ below). `llc -O0` writes the same location for
+a slot as `DW_OP_fbreg` from its own frame base, so locations are
+compared by behaviour, under the debuggers (§6.7, §8.8).
+
+**Lexical blocks** (`scope_ranges`). `llc`'s `LexicalScopes` over the
+function's transitions: for each transition with a location, the scopes
+from its scope out to the first open one are opened (outermost first);
+every open scope not on that chain is closed at the end of the last
+located code. Code without a location belongs to whatever range is open
+around it; a `DILexicalBlockFile` stands for its enclosing block. A
+scope's ranges are the intervals it was open, so a block whose code is
+interrupted by its parent's has several. A block with one range gets
+`low_pc`/`high_pc`, one with several `DW_AT_ranges`, a list of
+`DW_RLE_startx_length` in `.debug_rnglists` (`DW_FORM_sec_offset`, §6.7).
+Linear in the transitions plus the scopes opened; no recursion, so a
+scope chain 20,000 deep costs what 20,000 siblings do (§8.8).
+
+A block is written only when it has variables (`needToEmitLexicalScope`):
+a block with only labels, or with nothing, is flattened, and its labels
+and inner blocks go to its parent. A variable or label whose scope never
+has code is dropped, as `llc` drops it.
+
+**Labels**: `name`, `decl_file`/`decl_line`, `decl_column` when the
+`DILabel` has a column (LLVM 21 and later write it; family 71), and
+`low_pc` (`addrx` of the function's symbol plus the label's offset).
+
+**Function-local types** reached from a variable are nested under the
+subprogram (or block) DIE by the type graph (§6.8), since the function's
+DIE exists by the time `seal()` makes them.
+
+**Refused**, as `Unsupported { node, what }` with these names (the bridge
+reports a `debug:*` name as itself and §6.5's unnamed shapes as
+`debug:die-unsupported`, §9; the code generator's own names are in
+`spec/codegen.md` §9.5):
+
+| name | what |
+|---|---|
+| `debug:subprogram-not-definition` | a function whose `DISubprogram` is not a definition of this unit |
+| `debug:subprogram-attribute` | flags beyond prototyped, artificial, noreturn, local-to-unit, optimized; thrown types |
+| `debug:subprogram-scope` | a definition scoped in something that is not a namespace or the unit |
+| `debug:subprogram-twice` | two functions with one `DISubprogram` |
+| `debug:out-of-line-definition` | a definition with a `declaration:` not scoped in a class (WP-059) |
+| `debug:specification` | a member definition whose declaration is not among its class's elements (`llc` makes it on demand; member templates) |
+| `debug:specification-type` | a definition whose return type differs from its declaration's |
+| `debug:inlined-subroutine` | a location with `inlinedAt` (`always_inline` at `-O0`) |
+| `debug:foreign-scope` | a variable or row in another function's scope |
+| `debug:local-static` | a global scoped in a function or block (in `die.rs`) |
+| `debug:fragment` | a `DW_OP_LLVM_fragment` in a declared variable's expression |
+| `debug:expression` | any other op that is not a plain DWARF op |
+| `debug:variable-without-type`, `debug:variable-alignment`, `debug:variable-without-name`, `debug:variable-twice` | as named |
+| `debug:label-attribute` | an artificial or coroutine label, or one without a name |
+| `debug:object-pointer` | two `this` parameters |
+| `debug:local-type-scope` | a function-local type reached before its function was added (in `types.rs`) |
+
+`LineTablesOnly` is not written by WP-057: the subprogram DIE it needs
+exists now, but the unit, the bridge and `classify` still refuse it
+(§9; WP-061).
 
 ### 6.5 What the core writes (implemented)
 
@@ -802,8 +906,9 @@ is the whole list of permitted differences:
   name, which is equal;
 - **not written**: Apple and sysroot attributes and name tables (§1.1);
 - **the oracle input of the type graph** (WP-058, `tests/common/types.rs`):
-  hod writes no function DIEs, template parameters or imported entities
-  yet (WP-057, WP-059), so a module with them is compared as a module
+  `hod_dwarf`'s own tests write no function DIEs (they have no code;
+  WP-057's are compared in `hod_a64`, §8.8), and template parameters and
+  imported entities are WP-059's, so a module with them is compared as a module
   that has none. Functions' bodies are deleted (`llvm-extract`), and the
   types of their locals and of the definitions join `retainedTypes`
   unless they reach something function-local. Globals that are
@@ -817,7 +922,22 @@ is the whole list of permitted differences:
 - **sizes**: hod's `.debug_info` is 1.07 to 1.16 times `llc`'s on the type
   graph (§7.2): every type family's code is two bytes, and a string index
   or a line from 128 to 255 is two ULEB bytes where `llc` uses `strx1`
-  or `data1`.
+  or `data1`;
+- **function DIEs** (WP-057, §8.8), compared on hod's whole object
+  against `llc`'s from the same IR:
+  - `low_pc`, `high_pc`, `ranges` and `location` are masked in the tree
+    comparison: hod's code is not `llc`'s, so addresses, sizes and frame
+    offsets differ. They are compared by behaviour instead, under gdb and
+    lldb (the sessions must be equal);
+  - `frame_base`: hod's is `DW_OP_reg29` (x29) on AArch64; `llc` writes
+    `DW_OP_reg29` or `DW_OP_reg31`;
+  - `object_pointer` is compared as present, not by offset;
+  - a block's range list is `DW_FORM_sec_offset` into `.debug_rnglists`
+    where `llc` writes `DW_FORM_rnglistx` and a unit `rnglists_base`; the
+    unit's `rnglists_base` is therefore not compared;
+  - the line table under function DIEs keeps §5.7's differences (P1),
+    which the debugger sessions avoid by breaking at lines, not at
+    `llc`'s branch rows.
 
 The relocations of `.debug_info`, `.debug_str_offsets` (by the string
 each one points at) and `.debug_addr` must name the same targets.
@@ -901,13 +1021,13 @@ DIE per unit.
 - **forward declarations**: name, `declaration`, and the byte size of a
   declared enumeration.
 
-**Function-local types (WP-057).** A type whose scope is a subprogram
-or a lexical block is placed under that scope's DIE. Until WP-057 makes
-those DIEs, the context lookup finds none and refuses with
-`Unsupported("a function-local type (WP-057)")`. WP-057 makes the
-subprogram's (or block's) DIE first and then calls `reference_type`. The
-context lookup then finds the DIE and nests the type there, as `llc`
-does, with no change to the type graph.
+**Function-local types (implemented, WP-057).** A type whose scope is
+a subprogram or a lexical block is placed under that scope's DIE. The
+function's DIEs are made by `add_function` and the variables' types at
+`seal()` (§6.4), so the context lookup finds the DIE and nests the type
+there, as `llc` does. A local type reached while no DIE of its scope
+exists (a global's type that names it, or a retained type of a function
+that was not placed) is `Unsupported("debug:local-type-scope")`.
 
 **Template parameters (WP-059)** are skipped. Neither `templateParams`
 nor a template alias's `extraData` is read, so no DIE and no error comes
@@ -982,9 +1102,10 @@ the rows into one to five chunks joined in random order, and building
 plans and writing on other threads. Every variant gives the same bytes
 on both targets.
 
-Per-function DIE runs (WP-057) will be encoded by the workers. A run
-needs its string and address indices fixed before the merge. The two
-options, to be chosen by WP-057:
+Function DIEs are not encoded by the workers (WP-057, §9, open question
+8): the unit writer writes them after the merge. Should per-function runs
+be wanted later, a run needs its string and address indices fixed before
+the merge. The two options:
 - the plan assigns the indices of unit-level strings up front, and a
   run's own strings get per-run indices rebased at the merge (`strx` is a
   ULEB, so a rebase changes lengths: use `strx4` in runs, or patch before
@@ -1044,6 +1165,27 @@ best of five) on the oracle input of `stl.cpp` (clang 19; `std::vector`,
   a module made of small types), 1.122× (hand-written) and 1.086× (the
   corpus) `llc`'s: two-byte codes and two-byte ULEB values from 128 to 255
   (§6.7).
+
+Function DIEs (WP-057, `dies_throughput`, same host, release, best of
+five; the module emission timed with and without `FullDebug`):
+- 20,000 locals in one function: 181 ns per DIE (3.66 ms); at 40,000,
+  190 ns (ratio 1.05);
+- one function with scopes nested 20,000 deep, a local in each (40,000
+  DIEs): 166 ns per DIE; at 40,000 deep, 178 ns (ratio 1.07);
+- 2,000 functions of ten locals in two blocks: 162 ns per DIE; at 4,000,
+  163 (ratio 1.00).
+So the cost per DIE stays flat from N to 2N on all three shapes: linear.
+Size against `llc` 22 on the same IR (§8.8's sources; hod's code is
+larger, so the totals include more `.text`): `.debug_info` 999 bytes
+against 955 (`vars.c`, clang 22; 991 against 956 by kiln++), 633 against
+633 (`members.cpp`), 183 against 177 (`hand.ll`); all sections 5,176
+against 4,634, 3,929 against 3,463, 1,205 against 951. The extra
+`.debug_info` bytes are the block range lists' `sec_offset` (4 bytes
+where `rnglistx` takes 1) and the two-byte codes. `stl.cpp` cannot be
+measured end to end yet: its functions are refused (§6.4:
+`debug:inlined-subroutine` in 52 of 383, `debug:specification` in 43,
+then `debug:local-type-scope`), as are 2 by the code generator
+(`a64:atomic`) and its module `asm`.
 
 ## 8. Tests
 
@@ -1207,8 +1349,8 @@ some over-aligned globals, with 400 to 100,000 globals.
   named error of §6.6 (a member scoped in a namespace; typedef,
   qualifier and array cycles; a base type, an enumeration and a bit field
   without a size); a struct whose members point back at it and a pointer
-  to itself, with one DIE per node; a function-local type refused naming
-  WP-057; template parameters skipped; a 20,000-deep chain.
+  to itself, with one DIE per node; a function-local type with no DIE
+  of its scope refused as `debug:local-type-scope`; template parameters skipped; a 20,000-deep chain.
 - **`tests/type_oracle.rs`** (WP-058; `llc` × AArch64 and x86-64; the
   oracle input of §6.7, read by `hod_ll`, the DIEs from
   `UnitPlan::of_module`): both objects verify, the trees are equal, the
@@ -1261,7 +1403,59 @@ some over-aligned globals, with 400 to 100,000 globals.
   (206 000 rows): what the tables cost per row and function, peak
   memory, against `llc -O0`. Numbers in `spec/landed/dwarf/WP-056.md`.
 
-## 9. The bridge in `hod_cg` (implemented for lines and the unit, WP-056)
+### 8.8 Function DIEs (`crates/hod_a64/tests/dies*.rs`, WP-057)
+
+Sources in `crates/hod_a64/tests/data/dies/`: `vars.c` (recursion,
+shadowing in nested blocks, by-value structs in registers, on the stack
+and by memory, `float`/`double`, a variadic function, a label),
+`members.cpp` (a constructor, `const` and static member functions with
+and without `this`, in a namespace; a function template and an inline
+function, both COMDAT; a function-local struct), `hand.ll`
+(a block with two ranges, a dropped variable, a label in a label-only
+block, an unused parameter, a function without variables), with `main.c`,
+`main.cpp` and `hand_main.c` to drive them. Shared support is
+`tests/dies_support/mod.rs`: the tree of `llvm-dwarfdump --debug-info`,
+normalized as §6.7 says.
+
+- `dies.rs`:
+  - `trees_match_llc`: `vars.c` and `members.cpp` by clang 19 (`llc` 19
+    and 22), clang 22 and kiln++ (`llc` 22), and `hand.ll` (19 and 22):
+    hod's object and `llc`'s verify (`--verify`) and their trees are
+    equal, in `llc`'s order. Result: 20 objects, 664 DIEs, 96
+    subprograms, 324 variables;
+  - `hand_written_cases`: the block with two ranges has `DW_AT_ranges`;
+    the dropped variable has no DIE; the label-only block is flattened;
+  - `refusals_are_named`: `debug:dbg-value`, `debug:dbg-assign`,
+    `debug:fragment`, `debug:declare-address`,
+    `debug:out-of-line-definition`, `debug:inlined-subroutine`,
+    `debug:local-static`, each in a module with that construct only;
+  - `function_pointer_global_is_written`: a global of function-pointer
+    type, refused before `of_module`, now has its DIE;
+  - `bytes_are_independent_of_chunks_and_threads`;
+  - `corpus_survey` (`HOD_DIES_CORPUS`): every DWARF 5 `-g` module of the
+    corpus compiled; those hod compiles verify and equal `llc`'s trees.
+    Result: 14 modules with debug information, 2 DWARF 4 (not compared),
+    8 equal (204 DIEs, 36 subprograms); refused: 2 `a64:vector-element`,
+    2 `debug:die-unsupported` (both a global with a non-empty expression,
+    WP-059).
+- `dies_debugger.rs` (AArch64 hosts): each case linked from hod's object
+  and from `llc`'s, by GNU ld, lld and mold, for LLVM 19 and 22. gdb runs
+  `break`, `run`, `bt`, `info args`, `info locals`, `print`, `finish`,
+  `up`/`down`; lldb `frame variable` and `bt`. The masked transcripts of
+  hod's program and `llc`'s must be equal and contain the expected
+  values. Result: 3 cases × 2 majors × 3 linkers × 2 debuggers, all
+  equal.
+- `dies_throughput.rs`: `twenty_thousand_scale` compiles 20,000 locals,
+  a 20,000-deep scope chain and 2,000 functions and counts their DIEs
+  (the deep one at 2,000: `llvm-dwarfdump` overflows its own stack at
+  20,000); `function_die_cost` (ignored) is §7.2's measurement.
+
+Mutations the tests catch (each made, run and reverted): dropping the
+variadic `DW_TAG_unspecified_parameters` (`trees_match_llc`); frame
+offsets 8 bytes off in `frame::base_offset` (every `dies_debugger`
+session); writing label-only blocks (`trees_match_llc`, `hand.ll`).
+
+## 9. The bridge in `hod_cg` (implemented: lines and the unit, WP-056; function DIEs, WP-057)
 
 `emit_module` owns the mapping from `hod_ir` and `FuncRecord` to
 `hod_dwarf`'s rows (§5.7, §6). It reads the subprogram of each function
@@ -1271,29 +1465,53 @@ records. `hod_dwarf` never sees a `LocId` or a `DiId`.
 `DebugLines` (`crates/hod_cg/src/emit/lines.rs`):
 
 1. `new`, once, before any function is placed: a `UnitPlan` per compile
-   unit of `!llvm.dbg.cu` whose `emissionKind` is `FullDebug`. A module
-   without `!llvm.dbg.cu`, or whose units are all `NoDebug`, gets `None`
-   and nothing else is done or written: the same bytes as the module
-   without any debug information (tested). `LineTablesOnly` and
+   unit of `!llvm.dbg.cu` whose `emissionKind` is `FullDebug`
+   (`UnitPlan::for_functions`, the open form of `of_module`, so the
+   static member constants and the whole type graph are available). A
+   module without `!llvm.dbg.cu`, or whose units are all `NoDebug`, gets
+   `None` and nothing else is done or written: the same bytes as the
+   module without any debug information (tested). `LineTablesOnly` and
    `DebugDirectivesOnly` are refused as `debug:emission-kind`; a unit
-   the DIE core does not write (§6.5) as `debug:die-unsupported`.
-2. `add_function`, as each function is placed (§5.7): its sequence, and
-   a `CodeSpan` (section symbol, offset, size) for the unit's ranges.
-3. `finish`, after the unwind tables: per unit with code or globals (in
-   `!llvm.dbg.cu` order), its line-table unit (`write_debug_line_units`),
-   then `write_debug_info` with `DW_AT_stmt_list`, the code spans and the
-   placed globals. No subprogram DIEs yet (WP-057): gdb and lldb name
-   the functions from the symbol table, and break, step and backtrace by
-   line (§8.7).
+   the DIE core does not write (§6.5) as `debug:die-unsupported`, a
+   `debug:*` name of §6.4 as itself.
+2. `add_function`, as each function is placed (§5.7), in module order:
+   its sequence; a `CodeSpan` (section symbol, offset, size) for the
+   unit's ranges; and the `FunctionInput` of §6.4, made from the record:
+   the line transitions as `ScopeRow`s, the `vars` rows as `LocalRow`s
+   (a frame place is turned into a frame-base offset by the target's
+   `Target::frame_base_offset`, `crates/hod_cg/src/target.rs`; a place
+   the target cannot express is `debug:frame-place`), and the frame
+   base register from the frame description.
+3. `finish`, after the unwind tables: each plan is sealed; per unit with
+   code or globals (in `!llvm.dbg.cu` order), its line-table unit
+   (`write_debug_line_units`), then `write_debug_info` with
+   `DW_AT_stmt_list`, the code spans and the placed globals.
 
-**What `LineTablesOnly` needs end to end.** (1) `UnitPlan` accepting a
-`LineTablesOnly` unit: only the unit DIE and a subprogram DIE per
-function (name, linkage name, `low_pc`/`high_pc`, `decl_file`/`decl_line`,
-no types, variables or globals); (2) those subprogram DIEs, which are
-WP-057's (the bridge has the code span per function); (3) lifting the
-`debug:emission-kind` refusal in `DebugLines::new`, and `classify`'s
-`debug:*` refusals in `crates/hod`. The line table is the same as for
-`FullDebug`.
+The function DIEs are written by the one unit writer at `finish`, not
+per chunk: the plan is filled serially as functions are placed, so every
+string and address index is assigned in one order (open question 8).
+
+**What `LineTablesOnly` needs end to end** (WP-061). (1) `UnitPlan`
+accepting a `LineTablesOnly` unit: only the unit DIE and a subprogram DIE
+per function (name, linkage name, `low_pc`/`high_pc`,
+`decl_file`/`decl_line`, no types, variables or globals); (2) those
+subprogram DIEs: WP-057's family 69 writes them, so this is a mode of
+`add_function` that skips the variables, blocks and types; (3) lifting
+the `debug:emission-kind` refusal in `DebugLines::new`, and `classify`'s
+`debug:*` refusals (`crates/hod_ir/src/classify/matrix.rs:456`). The
+line table is the same as for `FullDebug`.
+
+**What must land before `classify`'s `debug:*` refusals can drop**
+(`debug:subprogram`, `debug:slot-variables`, `debug:locations`,
+`debug:module-flags`). On the corpus (§8.8), 8 of the 12 DWARF 5 `-g`
+modules already compile and match `llc`; the other 4 need `a64:vector-element`
+(2, the code generator) and global expressions (2, WP-059). On
+`stl.cpp`, in the order hit: inlined subroutines (52 of 383 functions,
+`always_inline` at `-O0`), on-demand member declarations (43,
+`debug:specification`), early function-local types
+(`debug:local-type-scope`), local statics (`debug:local-static`), and
+WP-059's globals (declarations, static members, expressions). DWARF 4
+(2 corpus modules) is open question 6.
 
 ## 10. Follow-on work packages
 
@@ -1303,7 +1521,7 @@ Rows for `docs/BACKLOG.md` (ids to be assigned; "this" is WP-052):
 |---|---|---|
 | line tables in `emit_module` (WP-056, **landed**: `spec/landed/dwarf/WP-056.md`) | §5.7 and §9 in `hod_cg::emit`: `FileTable` from `DiFile` nodes, `LocId` → `SourceLoc`, `function_rows`, one `Sequence` per function; `encode_sequence` into the chunk and the merge of encoded runs (§7.1); `LineRow` gains a block-start bit (§5.3); `DW_LNCT_LLVM_source` for `DiFile.source`; gdb/lldb sessions on hod-compiled programs (§8.3 without `llc`); 1-vs-N-thread identity | this, WP-032 |
 | DIE writer core (WP-053, **landed**: `spec/landed/dwarf/WP-053.md`) | §6.1 to §6.3, §6.5 to §6.7: the fixed abbreviation table, `.debug_info` unit header, compile unit DIE, `.debug_str`/`.debug_str_offsets`/`.debug_addr`/`.debug_rnglists`, the scope inversion, reference patching; `--verify` clean and compared with `llc` on modules with globals only | this |
-| subprograms and variables | subprogram DIEs (`low_pc`/`high_pc`, `frame_base`), parameters and locals from `vars` with `DIExpression` composed onto the frame-base offset (`VarRow` gains its expression), lexical blocks from `lines` (§6.4), labels (the `labels` table); gdb `info locals`/`print`/`bt` on hod-compiled programs | DIE writer core, line tables in `emit_module` |
+| subprograms and variables (WP-057, **landed**: `spec/landed/dwarf/WP-057.md`) | subprogram DIEs (`low_pc`/`high_pc`, `frame_base`), parameters and locals from `vars` with `DIExpression` composed onto the frame-base offset (`VarRow` gains its expression), lexical blocks from `lines` (§6.4), labels (the `labels` table); gdb `info locals`/`print`/`bt` on hod-compiled programs | DIE writer core, line tables in `emit_module` |
 | the type graph (WP-058, **landed**: `spec/landed/dwarf/WP-058.md`) | basic, derived (pointer, reference, rvalue reference, typedef, const/volatile, member, inheritance, pointer to member, friend), composite (class, struct, union, enum with enumerators, array with subranges), subroutine types, declarations and completion, `vtableHolder`; compared with `llc` by `llvm-dwarfdump` structure; gdb `ptype` | DIE writer core |
 | globals, namespaces, templates | global and static-member variables (`DW_OP_addrx`, TLS with `DW_OP_form_tls_address`), namespaces, imported entities, template type and value parameters (packs), `DW_AT_specification` for out-of-line definitions | subprograms and variables, the type graph |
 | L7 harness | §8.4: `xtask` gdb and lldb sessions, kiln's debugger tests, corpus `--verify`, `(function, line)` comparison with `llc`; the two-object COMDAT case | line tables in `emit_module`, subprograms and variables |
@@ -1345,6 +1563,12 @@ Rows for `docs/BACKLOG.md` (ids to be assigned; "this" is WP-052):
    the corpus shows which shapes are frequent (subprograms, parameters,
    locals, members, cv types), one deliberate renumbering can put them
    below 128.
-8. How per-function DIE runs fix their string and address indices before
-   the merge (§7.1): pre-assigned by the plan, or patches. To be decided
-   by WP-057.
+8. Answered for now (WP-057): neither. Function DIEs are not written per
+   chunk; the bridge adds each placed function to the unit's plan in
+   module order and the unit writer writes them all (§9), at 160 to 190
+   ns per DIE (§7.2). Per-chunk DIE runs become worth it only if that
+   shows up in a whole-module profile; the plan's side tables are by DIE,
+   so either scheme can be added behind `add_function`.
+9. `#dbg_value` (`debug:dbg-value`) is refused outright: clang and kiln
+   do not emit it at `-O0`, so no exact form has been needed. When one
+   is (a value with a home), it becomes a `LocalPlace` like `Frame`.

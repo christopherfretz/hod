@@ -47,6 +47,7 @@ use std::fmt;
 
 pub mod abbrev;
 mod die;
+mod func;
 mod leb;
 mod line;
 mod policy;
@@ -55,6 +56,7 @@ mod target;
 mod types;
 
 pub use die::{CodeSpan, DieSections, GlobalAddr, UnitInput, UnitPlan, write_debug_info};
+pub use func::{FunctionInput, LocalPlace, LocalRow, ScopeRow};
 pub use strings::DebugStrings;
 
 pub use leb::{write_sleb, write_uleb};

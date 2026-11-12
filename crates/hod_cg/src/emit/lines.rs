@@ -24,15 +24,17 @@
 //! is found through a cache by scope.
 
 use hod_dwarf::{
-    CodeSpan, FunctionLines, GlobalAddr, LineProgram, LineUnit, Row, Sequence, SourceLoc,
-    Transition, UnitInput, UnitPlan, function_rows, write_debug_info, write_debug_line_units,
+    CodeSpan, FunctionInput, FunctionLines, GlobalAddr, LineProgram, LineUnit, LocalPlace,
+    LocalRow, Row, ScopeRow, Sequence, SourceLoc, Transition, UnitInput, UnitPlan, function_rows,
+    write_debug_info, write_debug_line_units,
 };
 use hod_ir::{DebugInfo, DiId, DiKind, DiNode, EmissionKind, Module, SymId, SymbolKind};
 use hod_obj::{Arch, Binding, Object, SectionId, SymbolId};
 
 use super::unsupported;
+use crate::error::DEBUG_FRAME_PLACE;
 use crate::error::{CgError, CgResult};
-use crate::record::LineRow;
+use crate::record::{FrameDesc, LineRow, VarPlace, VarRow};
 
 /// "Not looked up yet" in [`DebugLines::scope_file`].
 const UNKNOWN: u32 = u32::MAX;
@@ -63,10 +65,30 @@ pub(super) struct DebugLines<'m> {
     last: Option<(u32, DiId, u32)>,
     transitions: Vec<Transition>,
     rows: Vec<Row>,
+    scopes: Vec<ScopeRow>,
+    locals: Vec<LocalRow>,
+}
+
+/// Where a function was placed, and its frame.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Placed {
+    /// Its section.
+    pub(super) section: SectionId,
+    /// Its offset there.
+    pub(super) offset: u64,
+    /// Its code's size.
+    pub(super) size: u32,
+    /// Its frame.
+    pub(super) frame: FrameDesc,
 }
 
 fn dwarf_err(error: hod_dwarf::Error) -> CgError {
     match error {
+        // `spec/dwarf.md` §6.4: what the function DIEs refuse has a
+        // stable name of its own.
+        hod_dwarf::Error::Unsupported { what, .. } if what.starts_with("debug:") => {
+            CgError::unsupported(what)
+        }
         hod_dwarf::Error::Unsupported { .. } => CgError::unsupported(unsupported::DEBUG_DIE),
         error => CgError::internal(format!("debug information: {error}")),
     }
@@ -94,7 +116,7 @@ impl<'m> DebugLines<'m> {
                     return Err(CgError::unsupported(unsupported::DEBUG_EMISSION_KIND));
                 }
             }
-            let plan = UnitPlan::new(debug, unit).map_err(dwarf_err)?;
+            let plan = UnitPlan::for_functions(module, unit).map_err(dwarf_err)?;
             let mut globals = cu.globals.to_vec();
             globals.sort_unstable();
             units.push(Unit { plan, program: LineProgram::new(arch), code: Vec::new(), globals });
@@ -109,6 +131,8 @@ impl<'m> DebugLines<'m> {
             last: None,
             transitions: Vec::new(),
             rows: Vec::new(),
+            scopes: Vec::new(),
+            locals: Vec::new(),
         })))
     }
 
@@ -160,24 +184,25 @@ impl<'m> DebugLines<'m> {
     }
 
     /// Encodes the sequence of the function `sym` whose transitions are
-    /// `lines`, placed at `offset` in `section` with `size` bytes of
-    /// code, and records its code span. A function without a subprogram
-    /// of a written unit gets nothing.
+    /// `lines`, placed as `placed` says, records its code span, and adds
+    /// its DIEs (`spec/dwarf.md` §6.4) from `lines` and its variable rows
+    /// `vars`. A function without a subprogram of a written unit gets
+    /// nothing.
     ///
     /// # Errors
-    /// An internal error for rows the line writer refuses (a broken
-    /// record).
-    #[allow(clippy::too_many_arguments, reason = "the placed function's facts, by value")]
+    /// A `debug:*` name for a function whose DIEs are not written
+    /// exactly; an internal error for rows the line writer refuses (a
+    /// broken record).
     pub(super) fn add_function(
         &mut self,
         module: &Module,
         obj: &mut Object,
         sym: SymId,
         lines: &[LineRow],
-        section: SectionId,
-        offset: u64,
-        size: u32,
+        vars: &[VarRow],
+        placed: Placed,
     ) -> CgResult<()> {
+        let Placed { section, offset, size, frame } = placed;
         let subprogram = match module.symbol(sym).kind() {
             SymbolKind::Function { subprogram, .. } => subprogram,
             _ => None,
@@ -185,7 +210,8 @@ impl<'m> DebugLines<'m> {
         // A function without a subprogram has no line information, even
         // when its instructions have locations: `llc` writes neither rows
         // nor a range for it (§5.7).
-        let Some((unit, scope)) = subprogram.and_then(|sp| self.unit_of(sp)) else {
+        let Some(sp) = subprogram else { return Ok(()) };
+        let Some((unit, scope)) = self.unit_of(sp) else {
             return Ok(());
         };
         if size == 0 {
@@ -193,7 +219,33 @@ impl<'m> DebugLines<'m> {
         }
         let symbol = obj.section_symbol(section);
         let addend = offset as i64;
-        self.units[unit].code.push(CodeSpan { symbol, addend, size: u64::from(size) });
+        let code = CodeSpan { symbol, addend, size: u64::from(size) };
+        self.units[unit].code.push(code);
+
+        // The DIEs (§6.4).
+        self.scopes.clear();
+        self.scopes.extend(lines.iter().map(|r| ScopeRow { offset: r.offset, loc: r.loc }));
+        self.locals.clear();
+        self.locals.extend(vars.iter().map(|v| LocalRow {
+            node: v.var,
+            loc: v.loc,
+            expr: v.expr,
+            place: match v.place {
+                VarPlace::Frame(o) => LocalPlace::Frame(o),
+                VarPlace::FrameIndirect(o) => LocalPlace::FrameIndirect(o),
+                VarPlace::Label(o) => LocalPlace::Label(o),
+                VarPlace::Refused(name) => LocalPlace::Refused(name),
+                VarPlace::Slot(_) | VarPlace::Indirect(_) => LocalPlace::Refused(DEBUG_FRAME_PLACE),
+            },
+        }));
+        let input = FunctionInput {
+            subprogram: sp,
+            code,
+            frame_base: frame.frame_base,
+            scopes: &self.scopes,
+            vars: &self.locals,
+        };
+        self.units[unit].plan.add_function(&input).map_err(dwarf_err)?;
         if lines.is_empty() {
             return Ok(());
         }
@@ -228,7 +280,7 @@ impl<'m> DebugLines<'m> {
     /// [`unsupported::DEBUG_DIE`]; an internal error for what the writers
     /// refuse.
     pub(super) fn finish(
-        &self,
+        &mut self,
         module: &Module,
         obj: &mut Object,
         mut place: impl FnMut(&mut Object, SymId) -> Option<(SymbolId, i64)>,
@@ -243,6 +295,9 @@ impl<'m> DebugLines<'m> {
             if let Some((symbol, addend)) = place(obj, sym) {
                 globals[unit].push(GlobalAddr { expr, symbol, addend });
             }
+        }
+        for u in &mut self.units {
+            u.plan.seal().map_err(dwarf_err)?;
         }
         // `llc` writes nothing for a unit with neither code nor globals
         // (`spec/dwarf.md` §1.2).

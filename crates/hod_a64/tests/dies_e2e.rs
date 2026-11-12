@@ -199,13 +199,18 @@ struct Tally {
 }
 
 fn verify_ok(dwarfdump: &Path, object: &Path) -> bool {
-    let out = run_with(Command::new(dwarfdump).arg("--verify").arg(object), &[], Duration::from_mins(2));
+    let out =
+        run_with(Command::new(dwarfdump).arg("--verify").arg(object), &[], Duration::from_mins(2));
     out.success() && out.stdout_text().contains("No errors.")
 }
 
 fn llc_census(llc: &Path, input: &Path, out: &Path) -> bool {
     let mut command = Command::new(llc);
-    command.args(["-O0", "-global-isel=0", "-fast-isel=0", "-filetype=obj"]).arg(input).arg("-o").arg(out);
+    command
+        .args(["-O0", "-global-isel=0", "-fast-isel=0", "-filetype=obj"])
+        .arg(input)
+        .arg("-o")
+        .arg(out);
     run_with(&mut command, &[], Duration::from_mins(5)).success()
 }
 
@@ -224,7 +229,13 @@ fn link_flags(text: &str) -> Vec<String> {
     flags
 }
 
-fn link(toolchain: &Toolchain, linker: &Linker, flags: &[String], object: &Path, out: &Path) -> bool {
+fn link(
+    toolchain: &Toolchain,
+    linker: &Linker,
+    flags: &[String],
+    object: &Path,
+    out: &Path,
+) -> bool {
     // The libraries after the object, as inputs.
     let mut inputs = vec![object];
     inputs.extend(flags.iter().map(Path::new));
@@ -236,7 +247,11 @@ fn run(program: &Path) -> (Option<i32>, String) {
     (out.status.and_then(|s| s.code()), out.stdout_text())
 }
 
-#[allow(clippy::too_many_lines, reason = "one pass per module, step by step")]
+#[allow(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    reason = "one pass per module, step by step; hod's and llc's side by side"
+)]
 fn census_one(
     file: &Path,
     scratch: &Scratch,
@@ -294,8 +309,10 @@ fn census_one(
     }
     t.linked += 1;
     // Lines, per function of the linked programs (one code section).
-    let (lh, ll) =
-        (lines::rows_by_function(&dwarfdump, &nm, &ph), lines::rows_by_function(&dwarfdump, &nm, &pl));
+    let (lh, ll) = (
+        lines::rows_by_function(&dwarfdump, &nm, &ph),
+        lines::rows_by_function(&dwarfdump, &nm, &pl),
+    );
     let branches = lines::branch_locations(&text);
     let mut first_line_note = None;
     for (f, rows) in &ll {
@@ -330,7 +347,9 @@ fn census_one(
         std::fs::create_dir_all(&dir_h).unwrap();
         std::fs::create_dir_all(&dir_l).unwrap();
         let (ph, pl) = (dir_h.join("prog"), dir_l.join("prog"));
-        if !(link(toolchain, linker, &flags, &hod, &ph) && link(toolchain, linker, &flags, &llc_o, &pl)) {
+        if !(link(toolchain, linker, &flags, &hod, &ph)
+            && link(toolchain, linker, &flags, &llc_o, &pl))
+        {
             t.notes.push(format!("{name}: does not link with {}", linker.name));
             continue;
         }
@@ -410,7 +429,8 @@ fn e2e_ir(compiler: &Path, scratch: &Scratch, name: &str) -> String {
 /// 19, clang 22's and kiln++'s by `llc` 22.
 fn pairs() -> Vec<(&'static str, PathBuf, PathBuf)> {
     let mut out = Vec::new();
-    for (name, compiler, llc) in [("c19", "clang++-19", "llc-19"), ("c22", "clang++-22", "llc-22")] {
+    for (name, compiler, llc) in [("c19", "clang++-19", "llc-19"), ("c22", "clang++-22", "llc-22")]
+    {
         if let (Some(c), Some(l)) = (tool(compiler), tool(llc)) {
             out.push((name, c, l));
         }
@@ -423,7 +443,13 @@ fn pairs() -> Vec<(&'static str, PathBuf, PathBuf)> {
 
 /// The DIEs of `tree` with `tag` whose attributes include `attr`
 /// (any, when empty), with their parents' tags.
-fn find<'a>(tree: &'a Node, tag: &str, attr: &str, parent: &'a str, out: &mut Vec<(&'a str, &'a Node)>) {
+fn find<'a>(
+    tree: &'a Node,
+    tag: &str,
+    attr: &str,
+    parent: &'a str,
+    out: &mut Vec<(&'a str, &'a Node)>,
+) {
     if tree.tag == tag && (attr.is_empty() || tree.attrs.iter().any(|a| a.contains(attr))) {
         out.push((parent, tree));
     }
@@ -455,7 +481,8 @@ fn e2e_trees_match_llc() {
         assert!(v.iter().any(|(p, _)| *p == "DW_TAG_subprogram"), "{name}: the local typedef");
         v.clear();
         find(unit, "DW_TAG_variable", "", "", &mut v);
-        let unnamed = v.iter().filter(|(_, n)| !n.attrs.iter().any(|a| a.starts_with("DW_AT_name"))).count();
+        let unnamed =
+            v.iter().filter(|(_, n)| !n.attrs.iter().any(|a| a.starts_with("DW_AT_name"))).count();
         assert!(unnamed >= 1, "{name}: the unnamed catch parameter");
         if name != "kiln" {
             // kiln++ gives the array no `align:`.
@@ -466,7 +493,10 @@ fn e2e_trees_match_llc() {
         v.clear();
         find(unit, "DW_TAG_subprogram", "DW_AT_inline", "", &mut v);
         assert!(
-            v.iter().any(|(_, n)| n.children.first().is_some_and(|c| c.tag == "DW_TAG_template_type_parameter")),
+            v.iter().any(|(_, n)| n
+                .children
+                .first()
+                .is_some_and(|c| c.tag == "DW_TAG_template_type_parameter")),
             "{name}: the abstract instance's template parameter, first"
         );
         compared += 1;
@@ -604,4 +634,3 @@ fn e2e_sessions_match_llc() {
     }
     eprintln!("e2e.cpp: {sessions} sessions, hod's equal to llc's");
 }
-

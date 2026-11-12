@@ -8,6 +8,7 @@ use hod_ir::{
 };
 
 use crate::consts::{BlockLabels, LabelKey};
+use crate::debug::{DebugMap, DebugScratch};
 use crate::error::{LlErrorKind, PResult, fail, ir_fail};
 use crate::index::{Index, scan};
 use crate::lexer::{Lexer, MAX_SOURCE_BYTES, Tok, Token, unescape};
@@ -84,7 +85,12 @@ pub(crate) struct Parser<'a, 'm> {
 
     pub md: MetadataIndex,
     pub functions: Vec<FunctionText>,
-    pub symbol_dbg: Vec<(SymId, MdRef)>,
+    /// What each numbered metadata node became (`spec/ll.md` §7.4), the
+    /// scratch storage of the debug nodes, and the inside of
+    /// `!llvm.dbg.cu`.
+    pub dmap: DebugMap,
+    pub dscratch: DebugScratch,
+    pub dbg_cu: Option<Span>,
     /// For `blockaddress`: the definitions by name, filled at the first
     /// one; and, per definition named by one, each label of its body
     /// with the ordinal of its block, sorted.
@@ -135,8 +141,10 @@ pub(crate) fn run<'a>(src: &'a [u8], options: &ParseOptions) -> PResult<ParsedMo
     parser.define_groups()?;
     parser.index_metadata()?;
     parser.named_metadata()?;
+    parser.build_debug()?;
     parser.flush(None);
     parser.items()?;
+    parser.finish_debug()?;
     let text = parser.finish()?;
     Ok(ParsedModule { module, text })
 }
@@ -206,7 +214,9 @@ impl<'a, 'm> Parser<'a, 'm> {
             upgraded: Vec::new(),
             md: MetadataIndex::default(),
             functions: Vec::new(),
-            symbol_dbg: Vec::new(),
+            dmap: DebugMap::default(),
+            dscratch: DebugScratch::default(),
+            dbg_cu: None,
             defined: scratch.defined,
             labels: scratch.labels,
             by_sym: scratch.by_sym,
@@ -427,7 +437,7 @@ impl<'a, 'm> Parser<'a, 'm> {
             numbered_globals: self.numbered_globals,
             groups: self.groups,
             metadata: self.md,
-            symbol_dbg: self.symbol_dbg,
+            debug_map: self.dmap,
         })
     }
 }

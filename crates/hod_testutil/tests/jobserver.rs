@@ -22,6 +22,16 @@ use hod_testutil::{DEFAULT_TIMEOUT, Outcome, Scratch, run_with};
 const SCRIPT: &str = "HOD_JOBS_TEST_SCRIPT";
 const THREADS: &str = "HOD_JOBS_TEST_THREADS";
 const ROUNDS: &str = "HOD_JOBS_TEST_ROUNDS";
+/// The time limit of each child, in seconds (default: `DEFAULT_TIMEOUT`).
+const LIMIT: &str = "HOD_JOBS_TEST_LIMIT";
+
+/// The limit of children that live until the test lets them go. Not a
+/// verdict: a hang guard, far above any wait under load. (At the default
+/// minute the held children of `the_pool_script_does_not_mint_tokens_...`
+/// were killed while the test waited for a token of the machine's pool at
+/// load 20; their client ended in the middle of a refill pass, and the
+/// pass, rightly finding no client, refilled what it had last seen held.)
+const HELD_LIMIT: Duration = Duration::from_mins(10);
 
 /// Writes the child script. It stays alive for a tenth of a second, and
 /// while `<marks>/hold` exists until `<marks>/release` does.
@@ -154,19 +164,34 @@ impl Drop for Release {
     }
 }
 
-/// `scripts/jobserver.sh` with a pool of its own.
+/// `scripts/jobserver.sh` with a pool of its own. The script's idea of
+/// the machine's shared pool (`HOD_JOBSERVER_SHARED_FIFO`) is moved into
+/// the test's directory as well, so no command of these tests can reach
+/// the machine's pool, even one that loses its `HOD_JOBSERVER_FIFO`.
 struct PoolScript {
     fifo: PathBuf,
+    shared: PathBuf,
     build_root: PathBuf,
     jobs: usize,
 }
 
 impl PoolScript {
+    /// A pool at `local/jobserver.fifo`; the "shared" one is elsewhere.
+    fn new(local: &LocalDir, build_root: &Path, jobs: usize) -> Self {
+        Self {
+            fifo: local.join("jobserver.fifo"),
+            shared: local.join("not-this-pool.fifo"),
+            build_root: build_root.to_owned(),
+            jobs,
+        }
+    }
+
     fn command(&self, verb: &str) -> Command {
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/jobserver.sh");
         let mut command = Command::new("bash");
-        command.arg(script).arg(verb);
+        command.arg(script).args(verb.split(' '));
         command.env("HOD_JOBSERVER_FIFO", &self.fifo).env("HOD_BUILD_ROOT", &self.build_root);
+        command.env("HOD_JOBSERVER_SHARED_FIFO", &self.shared).env_remove("HOD_JOBSERVER_SHARED");
         command.env("HOD_JOBS", self.jobs.to_string());
         command
     }
@@ -181,12 +206,20 @@ impl PoolScript {
 
 impl Drop for PoolScript {
     /// The holder and the refill loop must not outlive the test, whatever
-    /// became of it.
+    /// became of it. (`--shared`: the guard test makes its pool the
+    /// "shared" one.)
     fn drop(&mut self) {
         let _slot = jobs::global().acquire();
-        let mut stop = self.command("stop");
+        let mut stop = self.command("stop --shared");
         let _ = stop.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
     }
+}
+
+/// The tools `scripts/jobserver.sh` needs, present.
+fn pool_script_tools() -> bool {
+    ["bash", "python3", "ps", "pgrep", "mkfifo", "nohup", "realpath"]
+        .iter()
+        .all(|tool| hod_testutil::tool(tool).is_some())
 }
 
 // "Jobserver", "What the pool's refill sees": `scripts/jobserver.sh refill`
@@ -199,18 +232,12 @@ impl Drop for PoolScript {
 fn the_pool_script_does_not_mint_tokens_for_this_client() {
     const POOL: usize = 4;
     const CHILDREN: usize = 3;
-    for tool in ["bash", "python3", "ps", "pgrep", "mkfifo", "nohup"] {
-        if hod_testutil::tool(tool).is_none() {
-            return;
-        }
+    if !pool_script_tools() {
+        return;
     }
     let scratch = Scratch::new("jobs-script");
     let local = LocalDir::new("script");
-    let script = PoolScript {
-        fifo: local.join("jobserver.fifo"),
-        build_root: scratch.path().to_owned(),
-        jobs: POOL,
-    };
+    let script = PoolScript::new(&local, scratch.path(), POOL);
     let started = script.run("start");
     assert!(started.contains(&format!("with {POOL} tokens")), "{started}");
     assert_eq!(jobs::idle(&script.fifo), POOL);
@@ -224,8 +251,9 @@ fn the_pool_script_does_not_mint_tokens_for_this_client() {
     let child = write_child(&scratch, marks.path());
     let mut client = inner("inner_children", &child, CHILDREN, 1);
     client.env("MAKEFLAGS", format!("--jobserver-auth=fifo:{}", script.fifo.display()));
+    client.env(LIMIT, HELD_LIMIT.as_secs().to_string());
     std::thread::scope(|scope| {
-        let client = scope.spawn(move || run_with(&mut client, b"", Duration::from_mins(5)));
+        let client = scope.spawn(move || run_with(&mut client, b"", HELD_LIMIT * 2));
         // Whatever fails below, the children are let go.
         let _release = Release(marks.join("release"));
         let waited = Instant::now();
@@ -239,6 +267,9 @@ fn the_pool_script_does_not_mint_tokens_for_this_client() {
 
         for pass in 1..=2 {
             let log = script.run("refill");
+            // A pass is judged only if the client lived through it: one
+            // that ended in the middle has given its tokens back.
+            assert!(!client.is_finished(), "pass {pass}: the client ended early: {log}");
             assert!(!log.contains("refilled"), "pass {pass} minted tokens: {log}");
             assert!(!log.contains("drained"), "pass {pass}: {log}");
             let idle = jobs::idle(&script.fifo);
@@ -260,6 +291,59 @@ fn the_pool_script_does_not_mint_tokens_for_this_client() {
     assert_eq!(jobs::idle(&script.fifo), POOL);
 }
 
+// "Jobserver", "The shared pool's guard": `refill`, `resize` and `stop`
+// refuse the shared pool (here a pool of the test's own that the script is
+// told is the shared one) without `--shared` or `HOD_JOBSERVER_SHARED=1`,
+// also when `HOD_JOBSERVER_FIFO` is missing; `start` and `status` do not.
+#[test]
+fn the_pool_script_refuses_the_shared_pool_unless_told() {
+    if !pool_script_tools() {
+        return;
+    }
+    let scratch = Scratch::new("jobs-guard");
+    let local = LocalDir::new("guard");
+    let mut script = PoolScript::new(&local, scratch.path(), 3);
+    script.shared.clone_from(&script.fifo);
+    assert!(script.run("start").contains("with 3 tokens"));
+    let refused = |verb: &str, lose_fifo: bool| {
+        let mut command = script.command(verb);
+        if lose_fifo {
+            command.env_remove("HOD_JOBSERVER_FIFO");
+        }
+        let outcome = run_with(&mut command, b"", DEFAULT_TIMEOUT);
+        let err = outcome.stderr_text();
+        assert_eq!(outcome.status.and_then(|s| s.code()), Some(3), "{verb}: {err}");
+        assert!(
+            err.contains(&format!(
+                "refusing '{}' on the shared pool",
+                verb.split(' ').next().unwrap()
+            )),
+            "{err}"
+        );
+        assert!(err.contains("--shared") && err.contains("HOD_JOBSERVER_FIFO=<path>"), "{err}");
+    };
+    for lose_fifo in [false, true] {
+        for verb in ["stop", "refill", "resize 5"] {
+            refused(verb, lose_fifo);
+        }
+    }
+    // Nothing happened to the pool.
+    assert!(script.run("status").contains("idle tokens 3 of 3"));
+    assert_eq!(jobs::idle(&script.fifo), 3);
+    // Confirmed, each acts.
+    assert!(script.run("refill --shared").contains("no refill"));
+    assert!(script.run("resize 4 --shared").contains("pool size now 4"));
+    let mut confirmed = script.command("stop");
+    confirmed.env("HOD_JOBSERVER_SHARED", "1");
+    let stopped = run_with(&mut confirmed, b"", DEFAULT_TIMEOUT);
+    assert!(
+        stopped.success() && stopped.stdout_text().contains("stopped"),
+        "{}",
+        stopped.stderr_text()
+    );
+    assert!(!script.fifo.exists());
+}
+
 /// Run by the tests above in a child process: `THREADS` threads, each
 /// running the script `ROUNDS` times through `hod_testutil::run`.
 #[test]
@@ -268,11 +352,13 @@ fn inner_children() {
     let Some(script) = std::env::var_os(SCRIPT) else { return };
     let number = |name: &str| std::env::var(name).unwrap().parse::<usize>().unwrap();
     let (threads, rounds) = (number(THREADS), number(ROUNDS));
+    let limit = std::env::var(LIMIT)
+        .map_or(DEFAULT_TIMEOUT, |secs| Duration::from_secs(secs.parse().unwrap()));
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| {
                 for _ in 0..rounds {
-                    let outcome = hod_testutil::run(&script, [""; 0]);
+                    let outcome = run_with(&mut Command::new(&script), b"", limit);
                     assert!(outcome.success(), "{}", outcome.stderr_text());
                 }
             });

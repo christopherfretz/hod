@@ -249,6 +249,11 @@ impl Client {
     /// (at most [`HELPER_GRACE`]) until the helper has no read in flight;
     /// it starts no other.
     pub fn release_all(&self) -> usize {
+        self.release_all_within(HELPER_GRACE)
+    }
+
+    /// [`Client::release_all`], waiting at most `grace` for the helper.
+    fn release_all_within(&self, grace: Duration) -> usize {
         let Some(pool) = &self.pool else { return 0 };
         let bytes: Vec<u8> = {
             let mut st = pool.lock();
@@ -262,7 +267,7 @@ impl Client {
         for &b in &bytes {
             pool.give_back(b);
         }
-        let deadline = Instant::now() + HELPER_GRACE;
+        let deadline = Instant::now() + grace;
         let mut st = pool.lock();
         while st.reading {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -738,10 +743,13 @@ mod tests {
                 while !pool.lock().reading {
                     std::thread::sleep(Duration::from_millis(1));
                 }
-                let started = Instant::now();
-                assert_eq!(c.release_all(), 1);
+                // The grace of a real exit is HELPER_GRACE, which a helper
+                // thread that is not scheduled for that long (a loaded
+                // machine) outlasts. What is tested is that the wait is for
+                // the read in flight, so the grace here is a hang guard.
+                assert_eq!(c.release_all_within(Duration::from_mins(1)), 1);
+                assert!(!pool.lock().reading, "round {round}: the wait timed out");
                 assert_eq!(refill(&path, None).unwrap().idle, 1, "round {round}");
-                assert!(started.elapsed() < HELPER_GRACE, "round {round}: the wait timed out");
                 assert_eq!(waiter.join().unwrap(), Kind::Free);
             });
             drop((implicit, held));
@@ -791,23 +799,45 @@ mod tests {
         let (path, _dir) = PrivatePool::new("stale", 4).abandon();
         // A child another test of this process is starting holds a copy of
         // the pool's descriptors from its fork to its exec, and the bytes
-        // live that long: the count is taken again until that window has
-        // passed. Every count returns at once either way.
-        let deadline = Instant::now() + Duration::from_secs(10);
+        // live that long, which under load has been longer than any fixed
+        // wait. So the count is judged once no process has the fifo open
+        // (none can open it any more: it was never shared by path). The
+        // wait has a bound only so that it cannot hang; every count must
+        // still return without blocking.
+        let hang_guard = Instant::now() + Duration::from_mins(5);
         loop {
             let (tx, rx) = std::sync::mpsc::channel();
             let p = path.clone();
+            let quiet = openers(&p) == Some(0);
             std::thread::spawn(move || {
                 let _ = tx.send(refill(&p, None));
             });
-            let counted = rx.recv_timeout(Duration::from_secs(10)).expect("refill blocked");
+            // A refill that blocks blocks for good: the bound is a hang
+            // guard, not a speed requirement.
+            let counted = rx.recv_timeout(Duration::from_mins(1)).expect("refill blocked");
             let counted = counted.unwrap();
             if counted == (Refill { idle: 0, added: 0 }) {
                 break;
             }
-            assert!(Instant::now() < deadline, "the abandoned fifo still holds {counted:?}");
+            assert!(!quiet, "nobody had the abandoned fifo open, yet it held {counted:?}");
+            assert!(Instant::now() < hang_guard, "the abandoned fifo still holds {counted:?}");
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// How many processes have the fifo at `path` open, by `/proc`; `None`
+    /// where that cannot be seen (no `/proc`).
+    fn openers(path: &Path) -> Option<usize> {
+        let path = std::fs::canonicalize(path).ok()?;
+        let procs = std::fs::read_dir("/proc").ok()?;
+        let mut n = 0;
+        for proc in procs.flatten() {
+            let Ok(fds) = std::fs::read_dir(proc.path().join("fd")) else { continue };
+            if fds.flatten().any(|fd| std::fs::read_link(fd.path()).is_ok_and(|to| to == path)) {
+                n += 1;
+            }
+        }
+        Some(n)
     }
 
     // "Jobserver", "Release": a panic returns the token.

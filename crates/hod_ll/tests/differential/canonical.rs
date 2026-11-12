@@ -9,10 +9,11 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use hod_ir::{
-    AttrClass, AttrSyntax, CallConv, Const, ConstId, FixupTarget, FnAttrs, FnStr, Linkage, Module,
-    ParamAttrs, ParamMem, SymId, Symbol, SymbolKind, UnnamedAddr, UwTable, Visibility, attr_class,
+    AttrClass, AttrSyntax, CallConv, Const, ConstId, DiKind, FixupTarget, FnAttrs, FnStr, Linkage,
+    Module, ParamAttrs, ParamMem, SymId, Symbol, SymbolKind, UnnamedAddr, UwTable, Visibility,
+    attr_class,
 };
-use hod_ll::{FunctionText, Lexer, MdKind, MdRef, ModuleText, ParsedModule, Tok, unescape};
+use hod_ll::{FunctionText, Lexer, MdKind, ModuleText, ParsedModule, Tok, unescape};
 
 use crate::common::{Case, corpus, parse, parsed};
 
@@ -713,33 +714,41 @@ fn the_body_parser_interface_matches_the_text() {
     }
 }
 
-/// The `!dbg` of each definition is the node the text names, and it is
-/// of the kind LLVM requires there.
+/// The `!dbg` of each global value became the module's: a function's
+/// subprogram, a variable's global-variable expressions (`spec/ll.md`
+/// §7.4), each of the kind LLVM requires there.
 fn debug_attachments(case: &Case, parsed: &ParsedModule<'_>, canonical: &str) {
-    let mut expected = 0;
+    let (mut functions, mut variables) = (0, 0);
     for line in canonical.lines() {
         if !["define ", "declare ", "@"].iter().any(|start| line.starts_with(start)) {
             continue;
         }
         let words = split_top(line, b' ');
-        expected += words.iter().filter(|word| **word == "!dbg" || **word == "!dbg,").count();
-    }
-    assert_eq!(parsed.symbol_dbg().len(), expected, "{}: !dbg attachments", case.name);
-    for &(sym, reference) in parsed.symbol_dbg() {
-        let MdRef::Node(id) = reference else {
-            panic!("{}: an inline !dbg", case.name);
-        };
-        let node = parsed.metadata().node(id).expect("a defined node");
-        let wanted = if parsed.module.symbol(sym).is_function() {
-            MdKind::Subprogram
+        let count = words.iter().filter(|word| **word == "!dbg" || **word == "!dbg,").count();
+        if line.starts_with('@') {
+            variables += count;
         } else {
-            MdKind::GlobalVariableExpression
-        };
-        assert_eq!(node.kind, wanted, "{}: !{id}", case.name);
+            functions += count;
+        }
+    }
+    let module = &parsed.module;
+    let mut subprograms = 0;
+    for symbol in module.symbols() {
+        if let SymbolKind::Function { subprogram: Some(id), .. } = symbol.kind() {
+            assert_eq!(module.debug.kind(id), DiKind::Subprogram, "{}", case.name);
+            subprograms += 1;
+        }
+    }
+    assert_eq!(subprograms, functions, "{}: !dbg of functions", case.name);
+    assert_eq!(module.global_exprs().len(), variables, "{}: !dbg of variables", case.name);
+    for &(_, expr) in module.global_exprs() {
+        assert_eq!(module.debug.kind(expr), DiKind::GlobalVariableExpression, "{}", case.name);
     }
     for function in parsed.functions() {
-        let listed = parsed.symbol_dbg().iter().find(|(sym, _)| *sym == function.sym);
-        assert_eq!(function.dbg, listed.map(|&(_, reference)| reference), "{}", case.name);
+        let SymbolKind::Function { subprogram, .. } = module.symbol(function.sym).kind() else {
+            panic!("{}: a definition that is not a function", case.name);
+        };
+        assert_eq!(function.dbg.is_some(), subprogram.is_some(), "{}", case.name);
     }
 }
 

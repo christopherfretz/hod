@@ -25,15 +25,31 @@ release candidate, which sets the variable, cannot pass without the
 oracle, the linkers and the corpus. The corpus is the default one
 ("corpus", "Where things are"): the gate takes no corpus option.
 
-A cargo step that fails with rustc's `error[E0463]` (can't find crate) at
-the start of a line of its standard error is run **once** more, after the
-note `ci: [retry] cargo <step> failed with error[E0463] ...`. The build
-directory is on a workspace file system that, under concurrent builds,
-now and then does not show a dependent compile the artifact cargo has just
-written; nothing is wrong with the code, and the rerun finds or rebuilds
-the artifact. Any other failure, and a second `error[E0463]`, fails the
-gate. (Ported from kiln's `xtask ci`, which met the same file system.)
-Test: `xtask::ci::tests::retries_only_missing_crates_once`.
+A cargo step whose standard error has, as a whole line (leading and
+trailing blanks aside), one of these two rustc errors is run **once**
+more, after the note `ci: [retry] cargo <step> failed with <which>: ...`:
+
+- a line that starts with `error[E0463]` (can't find crate);
+- exactly ``error: crate `<name>` required to be available in rlib format,
+  but was not found in this form`` (`<name>` one word).
+
+The build directory is on a workspace file system (a bind mount of the
+host) whose directory listings, under concurrent builds, now and then lag
+behind the files cargo has just written. rustc finds a dependency that is
+not on its command line (a crate of the workspace used through another)
+by listing `-L dependency=<deps>`: when neither the dependency's `.rlib`
+nor its `.rmeta` is listed it says E0463; when the `.rmeta` (written at
+the end of analysis, seconds earlier) is listed and the `.rlib` (renamed
+into place at the end of code generation) is not yet, and a binary is
+being linked, it says the second. One cause; nothing is wrong with the
+code, and the rerun finds the artifacts or rebuilds them. The gate's steps
+run one after another, each a single cargo, and `clippy` and `test`
+artifacts have different names, so nothing of the gate's own provokes it.
+Any other failure (the `dylib` form of the second message among them: hod
+links no dylib), and a second failure of the step, fails the gate.
+(Ported from kiln's `xtask ci`, which met the same file system.) Tests:
+`xtask::ci::tests::retries_only_missing_crates_once`,
+`retries_a_crate_seen_only_as_rmeta_once`.
 
 ## shim
 
@@ -751,6 +767,41 @@ alongside. The client is ported from kiln's (`xtask/src/jobs.rs` there);
   waiting without a child; that is a defect of the test, not of the
   accounting.) `scripts/jobserver.sh refill` run twice while a client
   holds tokens for sleeping children adds nothing.
+
+  A pass looks at the pool in one process, in milliseconds: it counts the
+  idle tokens, finds the clients and the tokens they hold, and counts the
+  idle tokens again, keeping the larger count. A client whose tokens go
+  back while the pass looks is then counted idle, not missed by both
+  counts. (The pass was a shell scan of `/proc`, one `readlink` per
+  descriptor of the machine, which under load took seconds; a client that
+  ended in that time had its tokens seen neither idle nor held, and the
+  pass, finding no client, refilled them: minted. That is how the shared
+  pool could go above its size.) A process whose descriptors cannot be
+  read counts as a client. A deficit is refilled only when two
+  consecutive passes saw it, by the smaller of the two, with or without
+  clients: a pool that lost tokens while nothing ran is whole again two
+  passes later.
+- **The shared pool's guard.** `scripts/jobserver.sh refill`, `resize`
+  and `stop` refuse the shared pool, the default fifo
+  (`/run/hod/jobserver.fifo`), with exit status 3 and a line on standard
+  error that says why and how to name a private pool, unless the caller
+  confirms with `--shared` (any position after the verb) or
+  `HOD_JOBSERVER_SHARED=1`. The refill loop the script starts (the
+  process whose pid is in `<pool>.refill.pid`) needs no confirmation, so
+  a loop that is running when the script changes keeps working. `start`
+  and `status` are not guarded. (A check meant for a private pool, whose
+  `HOD_JOBSERVER_FIFO` was lost on the way, once stopped the shared pool
+  under every build of the machine.) A private pool is named on the
+  command itself: `HOD_JOBSERVER_FIFO=<path> scripts/jobserver.sh <verb>`.
+  `HOD_JOBSERVER_SHARED_FIFO` moves what the script takes for the shared
+  pool; only its tests set it, to a path of their own, so that no command
+  of theirs can reach the machine's pool even without
+  `HOD_JOBSERVER_FIFO`.
+- **No pool.** `scripts/env.sh` without a fifo exports
+  `CARGO_BUILD_JOBS=8` (unless set) and says so once on standard error
+  (`env.sh: no jobserver pool at <fifo>: ...`; once per environment: a
+  second `source` in it is quiet), unless `HOD_NO_JOBSERVER` is set, which
+  asks for no pool. Nothing parses the standard error of `env.sh`.
 - **Signals.** xtask catches **SIGINT and SIGTERM** on a dedicated thread
   (the `signal-hook` crate, a dependency of `xtask` alone), with or without
   a pool. The thread starts with the first child or cargo step. The
@@ -886,7 +937,28 @@ children), `without_a_usable_pool_nothing_waits` (each fallback, and the
 one warning), `a_pool_without_tokens_serializes_and_does_not_hang`,
 `the_pool_script_does_not_mint_tokens_for_this_client`
 (`scripts/jobserver.sh start`, `refill` twice while the client's children
-sleep, `stop`, on a pool of its own).
+sleep, `stop`, on a pool of its own; each pass is judged only while the
+client lives, and the held children's limit is ten minutes, a hang guard),
+`the_pool_script_refuses_the_shared_pool_unless_told` (the guard, with
+the test's pool made the "shared" one, with and without
+`HOD_JOBSERVER_FIFO`). `xtask/tests/jobserver.rs`:
+`env_sh_names_the_pool_while_its_fifo_exists` (and the one line without
+it).
+
+**Time in these tests.** No verdict depends on how busy the machine is.
+`a_stale_fifo_is_counted_without_blocking` judges the count once no
+process has the abandoned fifo open (a child forked by another test
+thread keeps its bytes alive until it calls `exec`, which under load has
+outlasted any fixed wait); `release_all_waits_for_the_helpers_read`
+checks that the wait ended with the helper's read, under a grace that is
+a hang guard (`release_all` itself keeps its 200 ms);
+`the_time_limit_starts_once_the_token_is_held` gives `true` 3 s.
+`xtask/tests/bench_fakes.rs` counts a time only when it differs by 1 s
+and makes a slow run sleep 1.5 s (a run of fakes is assumed under 0.5 s
+at load 32); `xtask/tests/irdiff_fakes.rs` makes a hang sleep 600 s and
+bounds a run with hangs at 4 minutes (the details prove each hang was
+killed at its 3 s limit; the bound says nothing waited for one, and
+waits for the shared pool are in it).
 
 `xtask/src/jobs.rs`: `jobserver_cli`, `jobserver_cli_defaults`.
 `xtask/src/jobs/children.rs` ("Signals", step 1):

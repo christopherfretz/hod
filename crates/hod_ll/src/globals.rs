@@ -585,16 +585,14 @@ impl<'a> Parser<'a, '_> {
             init,
         };
         ir(ty_at, self.module.set_variable(sym, &desc))?;
+        self.variable_dbg(sym)?;
         self.finish_symbol(sym);
         Ok(())
     }
 
-    /// Records what was noted and the `!dbg` attachments against `sym`.
+    /// Records what was noted against `sym`.
     fn finish_symbol(&mut self, sym: SymId) {
         self.flush(Some(sym));
-        for at in 0..self.dbg.len() {
-            self.symbol_dbg.push((sym, self.dbg[at]));
-        }
     }
 
     /// `alias type, ptr target` or `ifunc type, ptr resolver`.
@@ -845,6 +843,7 @@ impl<'a> Parser<'a, '_> {
         while used > attrs_base && self.pattrs[used - 1].is_none() {
             used -= 1;
         }
+        let subprogram = self.function_dbg()?;
         let desc = FunctionDesc {
             linkage: prefix.linkage,
             visibility: prefix.visibility,
@@ -859,7 +858,7 @@ impl<'a> Parser<'a, '_> {
             param_attrs: &self.pattrs[attrs_base..used],
             attrs,
             personality,
-            subprogram: None,
+            subprogram,
             addr_space,
             has_body: defined,
         };

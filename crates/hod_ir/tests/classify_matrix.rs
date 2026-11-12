@@ -132,8 +132,8 @@ const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 26] = [
     ("comdat:any", "", "global:variable-definition", "", ""),
     ("init:symbol", "", "global:variable-definition", "", ""),
     ("function:slots", "", "global:function-definition", "*", "cc:ccc"),
-    ("cc:fastcc", "", "global:function-definition", "cc:fastcc", "cc:fastcc"),
-    ("attr:zeroext", "", "global:function-definition", "attr:zeroext", "cc:ccc"),
+    ("cc:fastcc", "", "global:function-definition", "*", "cc:fastcc"),
+    ("attr:zeroext", "", "global:function-definition", "*", "cc:ccc"),
     ("type:double", "", "global:function-definition", "*", "cc:ccc"),
     ("inst:add", "", "global:function-definition", "*", "cc:ccc"),
     ("mem:volatile", "", "global:function-definition", "*", "cc:ccc"),
@@ -487,8 +487,8 @@ const RICH_BODY: [&str; 16] = [
     "inst:ret",
 ];
 
-/// The rows of `RICH_BODY` AArch64 supports (WP-033, WP-035, WP-036, WP-039, WP-049).
-const A64_SUPPORTED_BODY: [&str; 14] = [
+/// The rows of `RICH_BODY` AArch64 supports (WP-033, WP-035, WP-036, WP-038, WP-039, WP-049).
+const A64_SUPPORTED_BODY: [&str; 15] = [
     "cc:ccc",
     "function:parameters",
     "type:int",
@@ -503,6 +503,7 @@ const A64_SUPPORTED_BODY: [&str; 14] = [
     "inst:load",
     "mem:volatile",
     "function:may-unwind",
+    "inst:call",
 ];
 
 /// What the shipped matrix finds in the rich body on `arch`.

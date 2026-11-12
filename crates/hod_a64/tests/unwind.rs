@@ -202,7 +202,6 @@ fn gdb_backtraces_through_hod_leaves() {
 /// A C++ exception thrown by an external function, through a hod frame
 /// that calls it, into a C++ handler, under every linker. Needs calls.
 #[test]
-#[ignore = "WP-038: hod_a64 lowers no call yet"]
 fn a_throw_passes_through_a_hod_frame() {
     let scratch = Scratch::new("a64-unwind-throw");
     let Some(toolchain) = host_toolchain(&scratch) else { return };

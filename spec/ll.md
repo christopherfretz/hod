@@ -206,7 +206,13 @@ anything has to, is given.
 | `global-attributes` | kept attributes on a variable, in place or through a group | nothing |
 | `special-global:<name>` | a variable named `llvm.…` other than the four arrays of §5.9 (`llvm.global.annotations`) | the variable, as written |
 | `named-metadata:<name>` | module: named metadata other than those of §7 | nothing |
-| `debug-info` | module: `!llvm.dbg.cu` is present | the index, §7 |
+| `debug:invalid` | module or body: debug information LLVM's parser takes and its verifier would drop or reject, when the module uses it (§7.4): a reference to a node of the wrong kind, a location without one, a `DIAssignID` where a node goes, a module without `"Debug Info Version"` 3, a module or body that fails `verify_debug` | the module's debug information is kept; the body is not delivered |
+| `debug:<kind>` | module: a `DI*` node `hod_ir` keeps as `DiOther` (`DIStringType`, `DISubrangeType`, `DIFixedPointType`, `DIGenericSubrange`, `DICommonBlock`, `DIModule`, `DIObjCProperty`, `DIMacro`, `DIMacroFile`, `GenericDINode`) | the node as `DiOther`; `classify` refuses it |
+| `debug:<kind>.<field>` | module: a field `hod_ir` has no place for at a value other than its default (`spec/ir.md` §6.9) | the field's default |
+| `debug:DIEnumerator.wide` | module: an enumerator whose value does not fit 64 bits | 0 |
+| `debug:#dbg_declare_value`, `debug:#dbg_assign.DIArgList` | body: a record `hod_ir` has no form for | nothing |
+| `debug:node-in-body` | body: a debug node written in place in a record (LLVM's text never does) | nothing |
+| `debug:llvm.dbg.<other>` | body: a call of an `llvm.dbg.*` intrinsic other than `declare`, `value`, `assign` and `label` | nothing |
 | `type:ppc_fp128` | the type | `fp128` |
 | `type:x86_amx` | the type | a target extension type named `x86_amx` |
 | `type:x86_mmx` | the type (§3.2) | `<1 x i64>` |
@@ -316,11 +322,14 @@ In this order, each over its entries of the index:
 3. Type definitions (§5.2).
 4. COMDATs.
 5. Attribute groups (§5.6).
-6. The metadata index, then named metadata (§7).
+6. The metadata index, then named metadata (§7), then the debug nodes
+   (§7.4), skipped when the module has none.
 7. Numbered globals get their symbols (§5.7).
 8. Global values in file order: variables, aliases, IFUNCs and function
-   headers (§5.7, §5.8), with their constants (§5.3).
-9. The end checks: a global that was used and never defined is an error
+   headers (§5.7, §5.8), with their constants (§5.3) and their `!dbg`
+   attachments.
+9. The end of the debug information (`Module::finish_debug`, §7.4).
+10. The end checks: a global that was used and never defined is an error
    at its first use; then `Module::verify_symbols`.
 
 ## 5. Entities
@@ -539,7 +548,6 @@ impl<'a> ModuleText<'a> {
     pub fn attr_group(&self, id: u32) -> Option<&AttrGroup>;
     pub fn attr_groups(&self) -> &[AttrGroup];
     pub fn metadata(&self) -> &MetadataIndex;
-    pub fn symbol_dbg(&self) -> &[(SymId, MdRef)];
 }
 
 pub struct FunctionText {
@@ -588,8 +596,8 @@ What a body parser finds there, without scanning the file again:
   against the function.
 - **Metadata**: `metadata()` is the index of §7. `MdRef` is a node by
   number (`Node(id)`) or written in place (`Inline(kind, span)`).
-  `symbol_dbg()` lists the `!dbg` attachments of global values in file
-  order, for the work package that delivers debug nodes.
+  The debug nodes are in the module already (§7.4); the parser keeps,
+  inside the crate, which metadata number became which node or location.
 - **Block numbers.** A body parser must number a function's blocks in the
   order of the text, the entry block 0: that is the `BlockId` a
   `blockaddress` constant already holds (§5.5).
@@ -629,7 +637,7 @@ Named metadata:
 | `!llvm.module.flags` | §7.1 |
 | `!llvm.linker.options`, `!llvm.dependent-libraries` | §7.2 |
 | `!llvm.ident`, `!llvm.errno.tbaa` | dropped |
-| `!llvm.dbg.cu` | `has_debug_info()`, and `debug-info` is recorded: debug nodes are indexed, not delivered |
+| `!llvm.dbg.cu` | `has_debug_info()`; its compile units, §7.4 |
 | any other | recorded, `named-metadata:<name>` |
 
 An attachment on a global value is `!kind` and a node, by number (which
@@ -676,6 +684,39 @@ definition:
   module flag is 1.
 
 Declarations are not changed, and no other target is.
+
+### 7.4 Debug information
+
+The `DI*` nodes, and the tuples and expressions they name, are read into
+`hod_ir`'s tables (`spec/ir.md` §6) by `crates/hod_ll/src/debug.rs`, in
+two passes over the index: the first gives each numbered node a handle
+(a node, a location, an expression, or a `DIAssignID`), reserving every
+node and location first so that forward references and cycles cost
+nothing; the second reads each node's fields by `DiKind::field_shape`
+and defines it, `distinct` or uniqued as written. Expressions are read
+first, since nodes name them; a tuple that only a list field names is
+read in place; a tuple named as a single node (a retained-nodes list
+named twice, say) is defined last. `!DIExpression(…)` and
+`!DILocation(…)` in place are read as their node would be.
+
+As LLVM's parser, a field is named once, has a value of its shape, and
+the fields LLVM requires are present; the errors are LLVM's. As LLVM, an
+omitted `spFlags` (with no `isDefinition`) is a definition, and so is a
+global variable without `isDefinition`. `!llvm.dbg.cu` adds its compile
+units; a function's `!dbg` is its subprogram; a variable's `!dbg`s are
+its global-variable expressions. Key Instructions (`atomGroup`,
+`atomRank` on a location) are dropped: they change only `is_stmt` and
+the line rows of optimized code.
+
+After the global values, `Module::finish_debug` checks that every
+reserved node was defined; and when the debug information is used (a
+compile unit, a global-variable expression or a subprogram attached to
+a function), a module without `"Debug Info Version"` 3 or one that
+fails `Module::verify_debug` is noted `debug:invalid`, since LLVM would
+drop or reject it. Debug information that nothing uses is not checked,
+as LLVM's verifier does not check it.
+
+A module without debug nodes pays one test for the whole phase.
 
 ## 8. Errors and limits
 
@@ -731,11 +772,11 @@ like clang's C++ output.
 | text | size | bodies | lexing every token | index scan | module-level parse | stepping over bodies | peak memory | `llvm-as` |
 |---|---|---|---|---|---|---|---|---|
 | clang 22 | 3.65 MiB | 75% | 649 MiB/s, 1.47 ns/byte | 2296 MiB/s, 0.42 ns/byte | 827 MiB/s, 1.15 ns/byte (4.4 ms) | 4954 MiB/s | 1.3 MiB | 103 ms |
-| clang 22 `-g` | 9.68 MiB | 35% | 602 MiB/s, 1.58 ns/byte | 1248 MiB/s, 0.76 ns/byte | 892 MiB/s, 1.07 ns/byte (10.9 ms) | 5368 MiB/s | 3.3 MiB | 298 ms |
+| clang 22 `-g` | 9.68 MiB | 35% | 583 MiB/s, 1.63 ns/byte | 1227 MiB/s, 0.78 ns/byte | 289 MiB/s, 3.30 ns/byte (33.5 ms) | 5411 MiB/s | 5.9 MiB | 375 ms |
 | clang 19 | 3.59 MiB | 74% | 652 MiB/s, 1.46 ns/byte | 2259 MiB/s, 0.42 ns/byte | 832 MiB/s, 1.15 ns/byte (4.3 ms) | 4886 MiB/s | 1.3 MiB | 100 ms |
-| clang 19 `-g` | 9.52 MiB | 35% | 580 MiB/s, 1.64 ns/byte | 1232 MiB/s, 0.77 ns/byte | 862 MiB/s, 1.11 ns/byte (11.1 ms) | 5319 MiB/s | 3.3 MiB | 284 ms |
+| clang 19 `-g` | 9.52 MiB | 35% | 573 MiB/s, 1.67 ns/byte | 1130 MiB/s, 0.84 ns/byte | 266 MiB/s, 3.59 ns/byte (35.8 ms) | 5185 MiB/s | 6.3 MiB | 335 ms |
 | synthetic | 18.9 MiB | 96% | 591 MiB/s, 1.61 ns/byte | 5110 MiB/s, 0.19 ns/byte | 2957 MiB/s, 0.32 ns/byte (6.4 ms) | 6056 MiB/s | 1.2 MiB | |
-| synthetic, `-g` | 20.6 MiB | 94% | 555 MiB/s, 1.72 ns/byte | 4755 MiB/s, 0.20 ns/byte | 2894 MiB/s, 0.33 ns/byte (7.1 ms) | 6121 MiB/s | 1.3 MiB | |
+| synthetic, `-g` | 20.6 MiB | 94% | 548 MiB/s, 1.74 ns/byte | 4746 MiB/s, 0.20 ns/byte | 2069 MiB/s, 0.46 ns/byte (10.0 ms) | 5798 MiB/s | 1.7 MiB | |
 
 "Lexing every token" is the lexer run over the whole text and nothing
 else. "Stepping over bodies" is §4.2 on the bodies alone, concatenated.
@@ -757,7 +798,12 @@ then lex are the ones outside bodies (1.0 ms for that text, measured as
 with their types, constants and attributes, so the module level is
 bounded by the builder and not by the lexer. With debug information the
 scan is slower per byte because most of the text is 54,000 small
-entities, and the parse then leaves them unread.
+entities, and the parse reads every one into `hod_ir`'s tables (§7.4):
+about 22 ms of the 33.5, and 0.6 bytes of memory per byte of text where
+`llvm-as` 22's whole process peaks at 104 MiB on the same text. Module
+and bodies together take 51 ms there, against `llvm-as`'s 375 ms. A
+module without debug information parses as fast as before (4.35 ms for
+the clang 22 text, 4.4 ms before WP-054).
 
 Stepping over a body costs 0.16 to 0.20 ns per byte and is what lets a
 body be handed to another thread unread.
@@ -822,16 +868,15 @@ impl<'t, 'a> BodyParser<'t, 'a> {
     pub fn parse(&mut self, module: &mut Module, function: &FunctionText)
         -> Result<Option<Body>, LlError>;
     pub fn unsupported(&self) -> impl ExactSizeIterator<Item = &str>;
-    pub fn debug(&self) -> &BodyDebug;
     pub fn recycle(&mut self, body: Body);
 }
 pub fn parse_bodies<E: From<LlError>>(module: &mut Module, text: &ModuleText<'_>,
     each: impl FnMut(&Module, ParsedBody<'_>) -> Result<(), E>) -> Result<(), E>;
 pub struct ParsedBody<'p> { pub function: &'p FunctionText, pub body: Option<&'p Body>,
-    pub unsupported: &'p [Cow<'static, str>], pub debug: &'p BodyDebug }
-pub struct BodyDebug { pub locations: Vec<(u32, MdRef)>, pub records: Vec<DebugRecordText> }
-pub struct DebugRecordText { pub name: Span, pub args: Span, pub before: u32 }
+    pub unsupported: &'p [Cow<'static, str>] }
 ```
+
+A body's debug information is in the body itself (§11.9).
 
 - `parse` adds to `module` the types, constants and inline-assembly
   callees the body mentions, and the body is valid against that module.
@@ -961,7 +1006,7 @@ By `spec/ir.md` §5.5: a call of a `Drop` intrinsic leaves no
 instruction, and its result, if any, is poison; a `FirstArg` intrinsic's
 result is its first argument (whose type must be the result type); a
 `DebugRecord` intrinsic (`llvm.dbg.*`) is a debug record in the old
-form: its argument list is stepped over and handed to §11.9. An `invoke`
+form: its arguments are read as §11.9 reads a record's. An `invoke`
 or `callbr` of one is noted `invoke:no-code-intrinsic`. A ring of
 `FirstArg` calls that stand for each other leaves values that never
 resolve: noted `no-code-cycle`.
@@ -971,21 +1016,38 @@ resolve: noted `no-code-cycle`.
 As at the module level, the body parser is not a verifier. It does not
 check dominance, that phi incomings match the predecessors, where
 landing pads and funclet pads stand, inline-assembly constraints, the
-rules of `musttail`, the operands of a debug record, or the metadata of
-an attachment beyond that the node exists. A body that parses need not
+rules of `musttail`, or the metadata of an attachment other than `!dbg`
+beyond that the node exists. Debug records and `!dbg` are checked as
+LLVM's verifier would keep them (§11.9). A body that parses need not
 pass `Body::verify`, though every body of the corpus does (§11.11).
 
 ### 11.9 Debug information
 
-`hod_ir`'s debug nodes are not delivered yet (WP-005). The body parser
-keeps where the text has them (`BodyParser::debug`): the `!dbg`
-attachment of each instruction that left one in the body, by its
-position, and each debug record (`#dbg_value(…)` and kin, and calls of
-`llvm.dbg.*`) as the spans of its name and arguments with the position
-of the instruction it stands before. Every other attachment is checked
-to name a node and dropped. Both pass through one seam in `body.rs`
-(`SEAM(WP-005)`), where the work package that delivers debug nodes
-turns them into `FunctionBuilder` calls.
+A body's debug information is `hod_ir`'s (`spec/ir.md` §6.6): each
+instruction's location, the slot variables, the declarations and the
+positioned records, the same form the bitcode reader fills.
+
+- `, !dbg !N` on an instruction is its location (a `DILocation`, by
+  number or in place); it is given, with `FunctionBuilder::set_loc_since`,
+  to every instruction the statement became (none, or several, for a
+  call that generates no code or an instruction `hod_ir` expands).
+- `#dbg_declare(ptr %a, !var, !DIExpression(), !loc)` of an `alloca` of
+  the entry block is a slot variable; of anything else, a declaration.
+  `#dbg_value` (one value, `!{}` for none, or `!DIArgList(…)`),
+  `#dbg_label` and `#dbg_assign` are records before the next
+  instruction; `#dbg_assign`'s `DIAssignID` is checked to be one and not
+  kept. Another record name is `debug:<name>` from `hod_ir`'s table.
+- `call void @llvm.dbg.declare(metadata …)` and kin are the same records
+  in the old form; their location is the call's `!dbg`, which the call
+  must have.
+- A reference to a node of the wrong kind, a location whose scope is
+  missing, or a body that fails `Body::verify_debug` is `debug:invalid`
+  and the body is not delivered. Every other attachment is checked to
+  name a node and dropped.
+
+The printer writes it back (`spec/ir.md` §9.7); `tests/debug.rs` checks
+that text, clang's `-g` output and kiln's read and print back to text
+whose objects `llvm-dwarfdump` describes as the originals'.
 
 ### 11.10 Cost
 
@@ -1009,3 +1071,6 @@ blocks referred to ahead (`tests/robustness.rs`). Figures:
 | §11 | `corpus::every_corpus_body_parses_and_verifies` (with `HOD_LL_CORPUS`) | `Body::verify` over the captured corpus |
 | §8, §11.10 | `robustness` (prefixes and mutations now parse bodies too; body inputs) | each returns in time |
 | §11.10 | `perf` | printed |
+| §7.4, §11.9 | `debug::debug_information_round_trips_with_the_same_dwarf` | clang 19 and 22 `-g` (at `-O0`, and at `-O2` without assignment tracking) and kiln's `-g` output: read, printed in each dialect, through `llc -O0`; `llvm-dwarfdump --debug-info --debug-line` of the two objects is the same, offsets aside |
+| §7.4, §11.9 | `debug::malformed_debug_information_is_an_error_where_llvm_as_says_so` | `llvm-as` 19 and 22 on some 57 snippets: an error, a refusal by name, or read |
+| §11.9 | `debug::a_body_keeps_its_records_and_locations`, `assign_records_are_read_and_refused_by_the_printer` | the records and locations, by hand |

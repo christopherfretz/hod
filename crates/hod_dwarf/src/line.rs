@@ -349,7 +349,7 @@ pub fn write_debug_line(
 
     // The header (§4.1).
     let rows: usize = seqs.iter().map(|s| s.rows.len()).sum();
-    let mut out = Vec::with_capacity(64 + names * 22 + seqs.len() * 20 + rows * 3);
+    let mut out = Vec::with_capacity(64 + names * 22 + seqs.len() * 20 + rows * 5);
     let mut relocs = Vec::with_capacity(names + seqs.len());
     out.extend_from_slice(&[0; 4]); // unit_length, patched below
     out.extend_from_slice(&5u16.to_le_bytes());

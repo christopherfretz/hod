@@ -508,9 +508,15 @@ encoded runs) is row 1 of §10.
 For scale: `llc -O0` takes about twice as long with `-g` on a large
 module. hod's budget for DWARF is **at most 25% of its own code
 generation time** for the same module, of which the line table at most
-5%. The line writer's measured cost (§8.5) is a few nanoseconds per row,
-and `hod_cg` records about one transition per 4 to 6 bytes of `-O0` code,
-so the line table costs well under 1% of code generation. Memory: the line
+5%. Measured (§8.5, on a shared host at load 25 on 24 cores, so
+pessimistic): the policy costs about 6 ns per row and the writer about
+12 ns per row (some 340 MB/s of `.debug_line`), so about 18 ns per row in
+all. `hod_cg` records about one transition per 4 to 6 bytes of `-O0`
+code, so the line table costs about 4 ns per byte of code; whether that
+stays under 5% is to be measured against `hod_cg`'s own ns per byte with
+the bridge (§10 row 1). Neither reserving more output nor encoding each
+row into a stack buffer before appending it changed the writer's time.
+It is spent in the data-dependent branches of the encoding. Memory: the line
 writer allocates the two output buffers (reserved from the row count)
 and one pending-relocation table; nothing per row or per sequence. The
 policy appends into the caller's `Vec<Row>`, reused across functions.
@@ -541,6 +547,8 @@ spliced into the object. Asserted:
   types and targets) and `.debug_line_str`;
 - the decoded rows of the spliced object equal `llc`'s (address, file,
   line, column, flags) and `llvm-dwarfdump --verify` is clean;
+- the bytes of one sequence per function (hod's grouping, §5.6) also
+  verify clean, and are measured against `llc`'s;
 - the **policy** against `llc`: each function's rows are turned back into
   transitions (the start row dropped, its line taken as `scope`; the
   `epilogue_begin` row as the epilogue), passed through `function_rows`,
@@ -548,23 +556,40 @@ spliced into the object. Asserted:
   file change at the same line is a statement) and §5.1 rule 4
   (duplicates merged), which the test counts and reports.
 
+Result (WP-052, both majors alike): with the corpus, 18 objects with
+164 sequences and 19,387 rows were byte-identical. Of 212 functions, 60
+came out exactly as `llc` writes them. All 152 with differences are in the
+generated module, and all of them are the named file-change statements
+(1,476 rows). No duplicates were merged. Every clang and kiln function
+matched exactly. One sequence per function took 102,211 bytes against
+`llc`'s 103,031 (0.992x; `llc` ends a sequence at every section switch,
+and the generated module switches often). Kiln modules that ask for
+DWARF 4 are skipped with a note (open question 6).
+
 ### 8.3 Debuggers (`tests/debugger.rs`, implemented for the line table)
 
 `tests/data/lines/` holds a two-file C++ program (a header with a
 template and a static function; a second translation unit instantiating
 the same template, so the linked program has a discarded COMDAT copy),
-compiled by clang 19 at `-O0 -g`. `llc` 19 and 22 compile it; in the
-main object `.debug_line`, `.rela.debug_line` and `.debug_line_str` are
-replaced by hod's (§8.2's round trip, but written as one sequence per
-function, hod's policy of §5.6). Linked with GNU ld, lld and mold, a gdb
-batch session sets breakpoints by `file:line` in both files and on a
-function name, runs, and at each stop prints the frame and the backtrace,
-then `next`, `step`, `finish`, `info locals`. The transcript, with
-addresses masked, must equal the session on the original object. A
-deliberately wrong table (every line shifted by one) must give a
-different transcript, so the test can fail. lldb (when installed) runs
-the same session (`breakpoint set -f -l`, `thread step-over`,
-`thread step-in`, `bt`, `frame variable`).
+compiled by clang 19 at `-O0 -g` (AArch64 hosts only). `llc` 19 and 22
+compile it. In both objects, `.debug_line`, `.rela.debug_line` and
+`.debug_line_str` are replaced by hod's: the policy's rows (§5), one
+sequence per function (§5.6). Linked with GNU ld, lld and mold, a gdb
+batch session sets breakpoints by `file:line` in the header (two
+locations, one of them the COMDAT copy), in `main.cpp` and in
+`second.cpp`. It then runs, takes a `bt` and `info locals`, and goes
+through `continue`, `next`, `step` and `finish`, with gdb printing the
+frame and source line at each stop. The transcript must equal the
+session on the original program, with addresses and pids masked. A
+deliberately wrong table (every line shifted by one) must give a different
+transcript, so the test can fail. lldb (found by `find_tool`, optional)
+runs the same session with `breakpoint set --file --line`,
+`thread step-over`, `step-in` and `step-out`.
+
+Result (WP-052): on every pair of major and linker, gdb stopped 11 times
+over 40 lines of transcript, and lldb stopped 20 times over 224 lines.
+hod's transcripts were identical to the originals, and the wrong table's
+differed every time.
 
 ### 8.4 L7 (planned)
 
@@ -576,10 +601,15 @@ and `llc` compared on the set of `(function, line)` breakpoint locations
 
 ### 8.5 Throughput (`tests/throughput.rs`, implemented)
 
-`--release`, `--ignored`: a synthetic unit of 20,000 sequences and
-2,000,000 rows (deltas drawn to cover every opcode), reported as ns per
-row, MB/s of `.debug_line`, and the size per row; `spec/landed/dwarf/`
-records the numbers. The size relative to `llc` is measured on §8.2's
+`--release`, `--ignored`: 20,000 functions of 100 transitions shaped
+like `-O0` code (4-byte instructions, a new location every 1 to 6
+instructions, small line steps with occasional jumps and file changes,
+columns changing at every row), passed through `function_rows`
+(1,985,902 rows) and written as one sequence each. The output reports ns
+per row for the policy and for the writer, MB/s of `.debug_line`, and
+bytes per row, taking the best of five runs. WP-052 measured 6.1 ns/row
+for the policy and 12.4 ns/row for the writer (336 MB/s; 4.16 bytes/row,
+8.27 MB). The size relative to `llc` is measured on §8.2's
 modules (hod writes the same bytes for the same sequences; with one
 sequence per function the overhead is §4.7's).
 
@@ -620,3 +650,10 @@ Rows for `docs/BACKLOG.md` (ids to be assigned; "this" is WP-052):
    package's debugger tests on a hand-written module with two `ret`s.
 5. The block-start rule of §5.3 needs `hod_cg` to mark block starts;
    until then hod inherits where `llc` writes line 0.
+6. DWARF 4: a module flag `"Dwarf Version", i32 4` (one kiln corpus
+   module, `-gdwarf-4`) makes `llc` write version 4 tables with
+   `include_directories` strings inline and no `.debug_line_str`. hod
+   writes DWARF 5 only and ignores the flag, which every current gdb and
+   lldb read. Write version 4 only if a consumer that needs it shows up
+   (`hod_ir` maps the flag as `ModuleProps::dwarf_version`,
+   `crates/hod_ir/src/props.rs:140`, so the bridge can refuse or warn).

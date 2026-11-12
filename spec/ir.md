@@ -544,13 +544,15 @@ A slot is not typed. Use facts (§5.6) are not kept for slots: a slot's
 address is a constant, never a value that needs a location.
 
 `Body::slot_vars` lists the source variables that live in a slot for the
-whole function: `SlotVar { slot, var: DiId, loc: LocId }`, recorded with
-`set_slot_var` for a `#dbg_declare` of a static `alloca`. It is a separate
-list, in recording order, so that a body without debug information pays
-nothing and several variables can share a slot. The declaration's
-`DIExpression` is the attachment point left for §6: `SlotVar` gains the
-expression when expressions exist, and until then a producer records only
-declarations whose expression is empty.
+whole function: `SlotVar { slot, var: DiId, loc: LocId, expr: ExprId }`,
+recorded by `FunctionBuilder::dbg_declare` for a `#dbg_declare` of a
+static `alloca` (§6.6), with the declaration's `DIExpression`
+(`ExprId::EMPTY` when the variable is simply at the slot's address;
+`set_slot_var(slot, var, loc)` records that case). It is a separate list,
+in recording order, so that a body without debug information pays nothing
+and several variables can share a slot: the variables of an inlined call
+and of its caller, or the pieces of one variable, each with a fragment
+expression.
 
 ### 5.3 Values
 
@@ -962,29 +964,309 @@ unoptimized-C++ instruction mix; the figures of record are in
 
 ## 6. Debug information
 
-Present only when the producer was asked for it. Typed, not generic
-name-and-field nodes: one Rust type per kind hod emits DWARF for.
+`Module::debug` is a `DebugInfo`: the module's debug nodes, expressions,
+source locations and compile units. The nodes are typed: one Rust record
+per kind hod writes DWARF for, with fields named after LLVM's. Everything
+a debugger needs from LLVM's metadata has a field; what LLVM can write and
+`hod_ir` cannot represent is named, by the field table (§6.9), as a
+construct `classify` reports. The mapping is recorded in
+`spec/landed/ir/WP-005.md`.
 
-- `LocId`: an interned `(line, column, scope, inlined-at)`. Each
-  instruction has a `LocId` in a side array of the body that exists only
-  with debug info (`LocId::NONE` for "no location").
-- `DiId` nodes: compile unit, file, subprogram, lexical block (and block
-  file), namespace, local variable, global variable (with expression),
-  label, imported entity, basic type, derived type, composite type,
-  subroutine type, subrange, enumerator, template type and value
-  parameters. Fields are the LLVM fields that DWARF emission reads.
-- A function symbol has an optional subprogram; a variable symbol has its
-  global-variable expressions.
-- Variable locations: a stack slot (§5.2) carries `(variable, expression,
-  declaration location)` when a `#dbg_declare` (or `llvm.dbg.declare`)
-  names its address. A declare of anything else, and every `#dbg_value`,
-  is a `Body::dbg_records` entry positioned before an instruction.
-- `DIExpression` is a sequence of typed operations (`Deref`, `PlusUconst`,
-  `Constu`, `StackValue`, `Fragment`, ..., and `Other(opcode)` for
-  `classify` to name).
+### 6.1 Tables, and what no debug information costs
 
-Signatures: WP-005, which also owns `spec/landed/ir/WP-005.md` listing the
-LLVM field → hod field mapping.
+`DebugInfo` follows the crate's rules: `u32` ids into append-only arenas,
+strings and expressions interned, no allocation per node.
+
+- Nodes are `DiId`s, `0..node_count()`. `DiId::NONE` is "no node" as an
+  element of a node list (the `void` that starts a subroutine type's
+  `types`); a single reference is `Option<DiId>`.
+- Expressions are `ExprId`s, `0..expr_count()`; `ExprId::EMPTY` (id 0) is
+  `!DIExpression()` and always exists.
+- Locations are `LocId`s, `0..loc_count()`. They are a module table, not
+  a body's: code generation keeps `LocId`s after a body is dropped, and a
+  location names module nodes. A body's per-instruction location array
+  (§5.9) holds `LocId`s, `LocId::NONE` for none.
+- `compile_units()` lists the compile units, in the order of
+  `!llvm.dbg.cu`.
+
+A module without debug information has an empty `DebugInfo`
+(`is_empty()`), which has allocated nothing, and a body without debug
+records has two empty `Vec`s more than before (§6.6). Nothing else is
+paid.
+
+The tables are append-only, with two exceptions that happen before
+anything reads the node: a reserved node or location is defined once, and
+a forward-declared composite type is completed once (§6.3).
+
+### 6.2 Nodes
+
+`DiKind` names the kinds; `DiNode` is a node, one variant per kind, each a
+record with public fields. A producer fills a record and hands it to the
+table; a reader gets the same record back from `node(id)`, its strings
+(`&[u8]`) and lists (`&[DiId]`) borrowed from the table. Stored, a node is
+an 8-byte head (where its cells start, its kind, its distinctness, its
+DWARF tag) and a mask of the fields that are not at their default followed
+by those fields' 4-byte cells: a field at its default costs nothing.
+`kind`, `tag`, `is_distinct` and `node` read a node; `subprogram_of` and
+`enclosing_block_scope` walk scopes.
+
+The kinds, the record of each, and each field's LLVM name, Rust type and
+the kinds of node a reference may name (a "scope" is LLVM's `DIScope`, a
+"local scope" a subprogram or a block, a "type" a basic, derived,
+composite or subroutine type, or an unknown kind):
+
+| LLVM kind | record | fields |
+|---|---|---|
+| `DICompileUnit` | `DiCompileUnit` | `language`: `u16`; `file`: `Option<DiId>` → file; `producer`: `&[u8]`; `isOptimized`: `bool`; `flags`: `&[u8]`; `runtimeVersion`: `u32`; `emissionKind`: `EmissionKind`; `enums`: `&[DiId]` → composite; `retainedTypes`: `&[DiId]` → type | subprogram; `globals`: `&[DiId]` → global expr; `imports`: `&[DiId]` → imported; `nameTableKind`: `NameTableKind`; `sysroot`: `&[u8]`; `sdk`: `&[u8]` |
+| `DIFile` | `DiFile` | `filename`: `&[u8]`; `directory`: `&[u8]`; `checksumkind`: `ChecksumKind`; `checksum`: `&[u8]`; `source`: `&[u8]` |
+| `DISubprogram` | `DiSubprogram` | `name`: `&[u8]`; `linkageName`: `&[u8]`; `scope`: `Option<DiId>` → scope; `file`: `Option<DiId>` → file; `line`: `u32`; `type`: `Option<DiId>` → subroutine; `scopeLine`: `u32`; `containingType`: `Option<DiId>` → type; `virtualIndex`: `u32`; `flags`: `DiFlags`; `spFlags`: `SpFlags`; `unit`: `Option<DiId>` → unit; `templateParams`: `&[DiId]` → template param; `declaration`: `Option<DiId>` → subprogram; `retainedNodes`: `&[DiId]`; `thrownTypes`: `&[DiId]` → type |
+| `DILexicalBlock` | `DiLexicalBlock` | `scope`: `Option<DiId>` → local scope; `file`: `Option<DiId>` → file; `line`: `u32`; `column`: `u16` |
+| `DILexicalBlockFile` | `DiLexicalBlockFile` | `scope`: `Option<DiId>` → local scope; `file`: `Option<DiId>` → file; `discriminator`: `u32` |
+| `DINamespace` | `DiNamespace` | `name`: `&[u8]`; `scope`: `Option<DiId>` → scope; `exportSymbols`: `bool` |
+| `DILocalVariable` | `DiLocalVariable` | `name`: `&[u8]`; `arg`: `u16`; `scope`: `Option<DiId>` → local scope; `file`: `Option<DiId>` → file; `line`: `u32`; `type`: `Option<DiId>` → type; `flags`: `DiFlags`; `align`: `u32` |
+| `DIGlobalVariable` | `DiGlobalVariable` | `name`: `&[u8]`; `linkageName`: `&[u8]`; `scope`: `Option<DiId>` → scope; `file`: `Option<DiId>` → file; `line`: `u32`; `type`: `Option<DiId>` → type; `isLocal`: `bool`; `isDefinition`: `bool`; `templateParams`: `&[DiId]` → template param; `declaration`: `Option<DiId>` → derived; `align`: `u32` |
+| `DIGlobalVariableExpression` | `DiGlobalVariableExpression` | `var`: `Option<DiId>` → global; `expr`: `ExprId` |
+| `DILabel` | `DiLabel` | `scope`: `Option<DiId>` → local scope; `name`: `&[u8]`; `file`: `Option<DiId>` → file; `line`: `u32`; `column`: `u32`; `isArtificial`: `bool`; `coroSuspendIdx`: `Option<u32>` |
+| `DIImportedEntity` | `DiImportedEntity` | tag (default `0`); `name`: `&[u8]`; `scope`: `Option<DiId>` → scope; `entity`: `Option<DiId>`; `file`: `Option<DiId>` → file; `line`: `u32`; `elements`: `&[DiId]` |
+| `DIBasicType` | `DiBasicType` | tag (default `DW_TAG_BASE_TYPE`); `name`: `&[u8]`; `size`: `u64`; `align`: `u32`; `encoding`: `u16`; `flags`: `DiFlags`; `dataSize`: `u32` |
+| `DIDerivedType` | `DiDerivedType` | tag (default `0`); `name`: `&[u8]`; `scope`: `Option<DiId>` → scope; `file`: `Option<DiId>` → file; `line`: `u32`; `baseType`: `Option<DiId>` → type; `size`: `u64`; `align`: `u32`; `offset`: `u64`; `flags`: `DiFlags`; `extraData`: `Option<DiId>`; `dwarfAddressSpace`: `Option<u32>` |
+| `DICompositeType` | `DiCompositeType` | tag (default `0`); `name`: `&[u8]`; `scope`: `Option<DiId>` → scope; `file`: `Option<DiId>` → file; `line`: `u32`; `baseType`: `Option<DiId>` → type; `size`: `u64`; `align`: `u32`; `offset`: `u64`; `flags`: `DiFlags`; `elements`: `&[DiId]`; `runtimeLang`: `u16`; `vtableHolder`: `Option<DiId>` → type; `templateParams`: `&[DiId]` → template param; `identifier`: `&[u8]` |
+| `DISubroutineType` | `DiSubroutineType` | `flags`: `DiFlags`; `cc`: `u16`; `types`: `&[DiId]` → type |
+| `DISubrange` | `DiSubrange` | `count`: `DiBound`; `lowerBound`: `DiBound`; `upperBound`: `DiBound`; `stride`: `DiBound` |
+| `DIEnumerator` | `DiEnumerator` | `name`: `&[u8]`; `value`: `i64`; `isUnsigned`: `bool` |
+| `DITemplateTypeParameter` | `DiTemplateTypeParameter` | `name`: `&[u8]`; `type`: `Option<DiId>` → type; `defaulted`: `bool` |
+| `DITemplateValueParameter` | `DiTemplateValueParameter` | tag (default `DW_TAG_TEMPLATE_VALUE_PARAMETER`); `name`: `&[u8]`; `type`: `Option<DiId>` → type; `defaulted`: `bool`; `value`: `Option<DiId>` |
+| `(constant)` | `DiConstant` | `value`: `ConstId` |
+| `(string)` | `DiString` | `text`: `&[u8]` |
+| `(tuple)` | `DiTuple` | `elements`: `&[DiId]` |
+| `(other)` | `DiOther` | `kind`: `&[u8]` |
+
+Four kinds are not LLVM node kinds: `DiConstant` is `ValueAsMetadata` of
+a constant (a template value parameter's value, a bound), `DiString` an
+`!"..."` operand, `DiTuple` a `!{...}` list, and `DiOther` a node of a
+kind `hod_ir` does not represent, kept with its kind's name so that
+`classify` reports `debug:<kind>` (§6.9). The fields' vocabulary (tags,
+languages, encodings, `DiFlags`, `SpFlags`, `EmissionKind`,
+`NameTableKind`, `ChecksumKind`) is in `debug::names`, with LLVM's
+spellings.
+
+`DiNode::new(kind)` is a node with every field at its default;
+`DiNode::llvm_default(kind)` is a node as LLVM's parser starts one, which
+differs in one place: a global variable is a definition.
+`DiNode::set(field, value)` sets a field by its LLVM name, for a producer
+that holds LLVM's names; it also takes the older spellings of a
+subprogram's flags (`isLocal`, `isDefinition`, `isOptimized`,
+`virtuality`).
+
+### 6.3 Building
+
+- `add(node)` is a node LLVM would unique: it hash-conses, and an equal
+  node added before (same kind, same fields) is returned again.
+- `add_distinct(node)` is a `distinct` node: never equal to another id.
+- `reserve()` hands out an id whose node `define(id, node)` or
+  `define_distinct(id, node)` gives later, once. This is how cycles are
+  built (a class names its members, each member names the class) and how
+  a producer refers to `!7` before it has read it. A reserved node is
+  never the answer to a later `add`.
+- A compile unit, and a subprogram that is a definition, must be distinct
+  (`DiNode::must_be_distinct`); `add` and `define` refuse them.
+- `complete(id, node)` replaces a forward-declared composite type (with
+  `DIFlagFwdDecl` and an `identifier`) by its definition with the same
+  identifier, in place: every reference to `id` then names the
+  definition. There is no uniquing by `identifier` otherwise (no ODR
+  uniquing): equal ids mean one node; equal content does not mean equal
+  ids.
+- `add_compile_unit(unit)` appends to `!llvm.dbg.cu`; a unit that is not
+  listed is not emitted.
+- A node may name only ids that exist (reserved or defined):
+  `UndefinedDebugNode` otherwise. Defining twice is `DebugRedefined`.
+- `Module::finish_debug()` closes the tables: the producer calls it once,
+  after the last node and before the first body is compiled. It checks
+  that every reserved node and location was defined (two compares when
+  that holds) and records with `Module::record_unsupported` the construct
+  of each `DiOther` kind and each unknown expression operation (§6.9).
+
+### 6.4 Expressions
+
+An expression (`DIExpression`) is stored as LLVM stores it, a list of
+64-bit elements, operation codes followed by their operands, and read as
+typed operations: `ops(id)` yields `DiOp`s, `expr_elements(id)` the
+elements. `expr(&[DiOp])` and `expr_from_elements(&[u64])` intern: equal
+expressions have equal ids. `DiOp` has a member for each operation in
+`DI_OPS` (the field table, §6.9, lists them with their codes and operand
+counts); any other element is `DiOp::Other(element)`, kept so that
+nothing is dropped, and reported as `debug:DW_OP_<name or number>`. A
+known operation without its operands is `InvalidDebugInfo`.
+
+Placement rules, checked by `verify` (§6.8) as LLVM's verifier checks
+them: `DW_OP_LLVM_entry_value` is first (after a leading
+`DW_OP_LLVM_arg 0`) and covers one operation; `DW_OP_LLVM_fragment` is
+last; `DW_OP_stack_value` is last or just before the fragment;
+`DW_OP_swap` is not alone.
+
+### 6.5 Locations
+
+`DiLocation { line, column, scope, inlined_at }` is LLVM's `DILocation`:
+line 0 for none, a 16-bit column (LLVM stores a larger column as 0, and so
+must a producer), the innermost local scope, and, for code inlined from
+another function, the location of the call it was inlined at
+(`LocId::NONE` otherwise).
+
+- `loc(l)` interns: one hash of four words and usually one probe.
+- `distinct_loc(l)` is LLVM's `distinct !DILocation`, which `clang` uses
+  for an inlined-at call so that two calls on one line stay two inlined
+  instances; also the cheapest way in for a producer whose locations are
+  unique already (one push, no hash).
+- `reserve_loc()` and `define_loc(id, l)`: for `!dbg !7` met before `!7`.
+  A defined reserved location is not interned.
+- `location(id)` is one array read; `function_of(id)` is the subprogram
+  of the scope at the end of the inlined-at chain: the function the
+  instruction is in.
+
+A location's scope and inlined-at must exist when it is made
+(`UndefinedDebugNode`).
+
+### 6.6 Variables, values and labels in a body
+
+A body carries its debug records in three tables, each empty without
+debug information.
+
+- `Body::slot_vars()`: `SlotVar { slot, var, loc, expr }`, a variable
+  that lives in a stack slot for the whole function (§5.2).
+- `Body::declares()`: `DbgDeclare { address, var, expr, loc }`, a
+  variable that lives for the whole function at an address that is not a
+  slot: an argument, an instruction result, a constant or a symbol, or
+  `Value::NONE` for a declaration whose address was dropped
+  (`#dbg_declare(!{}, ...)`).
+- `Body::dbg_records()`: the positioned records, a `DbgRecord` each, in
+  position order (by `before`, and among the records before one
+  instruction in the order given), so that a consumer walking the
+  instructions in layout order walks this beside them.
+  `DbgRecordKind::Value` is `#dbg_value`: from `before` on, the variable
+  has the value `expr` makes from `values`. `Assign` is `#dbg_assign`:
+  the same, and the variable's memory is at `address` with
+  `address_expr`; a consumer that does not track assignments reads it as
+  a value record. `Label` is `#dbg_label`: the label `var` is at
+  `before`, and `values` is empty.
+
+A record has one value, which the expression starts from, or a list
+(`arg_list`, LLVM's `DIArgList`) that the expression names by
+`DW_OP_LLVM_arg`. A value may be `Value::NONE` (LLVM's empty metadata) or
+`undef` or `poison`: the variable has no location from there on. A
+record's `loc` says, by its scope and inlined-at, which instance of the
+variable or label it is.
+
+The builder (`FunctionBuilder`) records them, and each also takes the
+older intrinsic-call spelling (`llvm.dbg.declare` ...):
+
+- `dbg_declare(address, var, expr, loc)`: a slot's address becomes a
+  `SlotVar`, anything else a `DbgDeclare`. It has no position and needs no
+  open block. `set_slot_var(slot, var, loc)` is `dbg_declare` of the
+  slot's address with the empty expression.
+- `dbg_value(value, var, expr, loc)`, `dbg_value_list(values, var, expr,
+  loc)` (at most 65535 values), `dbg_assign(value, var, expr, address,
+  address_expr, loc)` (one value: a `DIArgList` there is unsupported,
+  §6.9; the `DIAssignID` is not kept), `dbg_label(label, loc)`: before the
+  next instruction appended to the open block (`BadBlock` without one).
+
+A record or declaration does not use the value it names: use counts and
+the two facts about uses (§5.6) are the same with and without debug
+information. A name may be a reserved value; it is rewritten to what the
+value was defined as, and a declaration whose address turns out to be a
+slot becomes a `SlotVar`. The one exception is
+`UseFacts::named_by_declare()`: the instruction results and arguments a
+`DbgDeclare` names say so, because such a value needs a home for the
+whole function (`spec/codegen.md` §4.1). That bit takes one bit of the use
+count, which saturates at 2^29 − 1; `only_use_is_next` ignores it.
+
+### 6.7 Attachments
+
+- A function symbol's optional subprogram (§2.2, `FunctionDesc`) is its
+  `!dbg`. The subprogram of a function with a body is distinct, and is no
+  other such function's.
+- A variable's `!dbg` attachments are global-variable expressions:
+  `Module::attach_global_expr(sym, expr)`, one per fragment or per
+  variable that shares the storage. `global_exprs()` lists every
+  attachment in the order made (the DWARF writer reads it once);
+  `global_exprs_of(sym)` scans it for one symbol. The symbol's kind is
+  checked by `verify_debug`, because a producer may attach before it has
+  described the symbol.
+- An instruction's `!dbg` is its entry in the body's location array
+  (§5.9).
+
+### 6.8 Verification
+
+`DebugInfo::verify()` checks the tables in one pass:
+
+- everything reserved was defined;
+- every reference names a node of a kind its field allows (§6.2);
+- every listed compile unit is one;
+- a location's scope is a local scope whose chain of blocks ends at a
+  subprogram, and its inlined-at chain ends;
+- an expression's operations are placed as §6.4 says.
+
+`Module::verify_debug()` runs it, and checks that a `DiConstant` names a
+constant of the pool, that a function's subprogram is a subprogram, that
+the subprogram of a function with a body is distinct and no other such
+function's, and that a global-variable expression is attached to a
+variable. Like `verify_symbols` it is for tests and for producers that
+want their output checked; code generation does not need it to have run.
+
+`Body::verify` (§5.8) checks a body's debug records:
+
+- always: declarations and records name values of this body (or
+  nothing); a declaration names no slot; records are in position order,
+  each before an instruction of the body that is not a `phi`; a label has
+  no values and a value record without a list one; "named by a declare"
+  is recomputed with the other use facts;
+- when the module has debug tables: every instruction location exists,
+  leads to a subprogram and, when the function has one, to the
+  function's; the variable of a slot variable, declaration or record is a
+  `DILocalVariable` and a label a `DILabel`, in the subprogram of the
+  record's location; its expressions exist and name only arguments the
+  record has. A function without a subprogram may have locations in any
+  function, as in LLVM.
+
+Errors are `UndefinedDebugNode` (an id that does not exist or was never
+defined), `DebugRedefined`, and `InvalidDebugInfo` for every other rule.
+LLVM's verifier checks more (required fields, tag validity, flag
+consistency, fragment bounds, ...); the rules not checked are listed in
+`spec/landed/ir/WP-005.md`, and a consumer treats every optional
+reference as possibly absent.
+
+### 6.9 The field table, and the producer's duty
+
+`debug::map` is data saying what becomes of every node kind, field and
+debug record LLVM 19 to 22 can write: **mapped** (`hod_ir` has a field
+for it), **dropped** (it cannot change the DWARF hod writes, with the
+reason), or **unsupported** (it would, and `hod_ir` cannot represent it:
+the construct name). A producer looks each one up (`di_kind`, `di_field`,
+`di_record`) and:
+
+- sets a mapped field (`DiNode::set`);
+- ignores a dropped one;
+- for an unsupported field with a value other than its default, records
+  the construct (`debug:<kind>.<field>`) with
+  `Module::record_unsupported`;
+- makes an unsupported or unknown kind a `DiOther` (`debug:<kind>`), and
+  records an unknown field as `debug:<kind>.<field>`.
+
+`finish_debug` (§6.3) records the `DiOther` kinds and unknown expression
+operations. `classify` then refuses the module by those names: a module
+whose debug information hod cannot represent is unsupported, never
+silently degraded. `di_field_table()` lists every row; the landed file
+prints the table, and a test keeps it current. `tests/debug_survey.rs`
+holds what `clang` 19 and 22 and kiln write against it.
+
+### 6.10 Sizes and speed
+
+A node head is 8 bytes and a node 8 + 4·(1 + stored cells); a location
+16; `SlotVar`, `DbgDeclare` 16; a debug record 28 bytes plus 4 per value;
+`ExprId` 4. `stats()` (`DebugStats`) reports the nodes, expressions,
+locations and strings held and their bytes. The tests assert the record
+sizes and that an empty table has allocated nothing; the example
+`debug_throughput` measures building, reading and verifying, with the
+numbers in `spec/landed/ir/WP-005.md`.
 
 ## 7. Not represented
 
@@ -1000,40 +1282,565 @@ change the object file (§2). So is every module flag (§2.1).
 
 ## 8. classify
 
-`classify(&Module)` and `classify_body(&Module, &Body)` return
-`Ok(())` or `Unsupported { construct, symbol }`, where `construct` is a
-stable kebab-case name (`intrinsic:llvm.coro.id`, `type:x86_fp80`,
-`inst:catchswitch`, `attr:preallocated`, `cc:swifttailcc`,
-`const-expr:...`, `module-flag:...`). It is the single place where
+`classify` (`crates/hod_ir/src/classify/`) is the single place where
 "supported" is decided:
 
 - the driver calls it before code generation, and a rejection becomes the
-  fallback reason in the coverage log;
+  fallback reason in the coverage log (`spec/cli.md`);
 - code generation may assume everything `classify` accepts, and reaching
   an unhandled case there is a bug, reported as an internal error, never a
   guess;
-- `docs/status/support.md` is generated from it.
+- `docs/status/support.md` is generated from it (§8.10).
 
 `classify` starts by rejecting nearly everything. A work package that
-implements a construct flips its entry and adds the tests in the same
+implements a construct flips its row and adds the tests in the same
 change.
+
+### 8.1 API and outcomes
+
+- `classify(&Module)`: the module pass (§8.8) under `Support::shipped` for
+  the module's target. `classify_body(&Module, &Body)`: the body pass for
+  one function. A driver classifies every body it compiles: the
+  function-level checks (convention, parameters, attributes) are made in
+  the body pass, not the module pass.
+- `census(&Module, bodies)`: every finding of both passes (§8.9).
+- `Classifier` is the general form: `Classifier::new(&Support)`,
+  `with_stack_args(&dyn StackArgs)` (the hook the `musttail` rules need,
+  §8.6), `support()`, `module`, `body`, `census_module`, `census_body`.
+- A refusal is `Rejection { kind, construct, symbol, inst }`: `kind` is
+  `RejectionKind::Unsupported` (a matrix row that is not supported, or a
+  structural rule) or `RejectionKind::Invalid` (malformed input, §8.7);
+  `construct` is the stable name (§8.5); `symbol` is the symbol in the
+  module pass and the function in the body pass, `None` for a property of
+  the module; `inst` is the instruction in the body pass, `None` for the
+  function's signature and attributes.
+- `classify` does not panic, for any module and any body a
+  `FunctionBuilder` finished, including a body classified against another
+  module than its own: everything it cannot trust is `Invalid`.
+
+### 8.2 The matrix and `Support`
+
+The matrix is data (`matrix.rs`, `SUPPORT_ROWS`): one `SupportRow` per
+construct, with a `SupportCell` per target whose status is `supported`
+(for a set of type classes where the row operates on values, §8.3),
+`not-implemented(<what>)` (the work package, milestone or track that
+flips it, or `unplanned`), or `rejected(<why>)` (by design).
+
+`Support` is the matrix as a value a walk consults, for one target:
+
+- `Support::shipped(arch)`: the matrix as checked in; what `classify`
+  uses.
+- `Support::everything_implemented(arch)`: every row that is not
+  `rejected` supported for every class. What it still refuses is refused
+  by design.
+- `with(name)`, `with_classes(row, classes)`, `without(name)` switch a
+  row, or one class of it (`row/class`); `with` of a `rejected` row is
+  `None`. `supports(name)` and `classes(row)` read it.
+
+Flipping a construct is a one-line change in `matrix.rs` plus a test.
+
+### 8.3 Type classes and subjects
+
+`TypeClass` has 15 members: `int` (at most 64 bits), `i128`, `int-wide`,
+`ptr` (address space 0), `half`, `bfloat`, `float`, `double`, `fp128`,
+`x86_fp80`, `vector` (fixed length; element kinds are not examined),
+`scalable-vector`, `aggregate` (a struct or array as a first-class
+value), `token`, `target-ext`. Each has a row `type:<class>`.
+
+The **subjects** of an instruction are its result type, unless `void`,
+and the type of every value operand. Pointee types, aggregate member
+types and global value types are not examined. For each subject:
+
+- the class's `type:` row is not supported: `type:<class>`;
+- otherwise the instruction's row is supported, but not for this class:
+  the pair `<row>/<class>` (e.g. `inst:select/double`);
+- a pointer in a non-zero address space: `addrspace:pointer`
+  (`addrspace:alloca` for the result of an `alloca`).
+
+Results of `cmpxchg`, `landingpad` and the `*.with.overflow` intrinsics
+are of class `aggregate`, and wait for `type:aggregate`.
+
+### 8.4 Groups
+
+A row's group is its name up to the colon. `SUPPORT_GROUPS` lists the 23
+groups in the order of `docs/status/support.md`: `module`, `structor`,
+`debug`, `global`, `linkage`, `visibility`, `tls`, `comdat`, `init`,
+`function`, `cc`, `attr`, `type`, `inst`, `mem`, `atomicrmw`, `call`,
+`tail`, `bundle`, `landingpad`, `operand`, `const-expr`, `intrinsic`.
+There are 434 rows.
+
+### 8.5 Vocabulary
+
+Every name has the form `group:name`, in lower case, with LLVM's spelling
+after the colon where LLVM has one (`intrinsic:llvm.memcpy`,
+`cc:swifttailcc`, `attr:preallocated`, `inst:catchswitch`).
+`CONSTRUCT_NAMES` lists every fixed name: the rows, then the structural
+rules (§8.6), then the malformed-input names (§8.7). `CONSTRUCT_FAMILIES`
+lists the six families of names built from the input:
+`intrinsic:<name>` (`Intrinsic::Other`, always refused),
+`module-flag:<name>`, `cc:<number>`, `bundle:<tag>`, `<row>/<class>`, and
+a producer's record (`Module::record_unsupported`, §2.2), passed through
+unchanged.
+
+The `abi:*` names of a target's argument assignment and the facade's
+`Construct` names (`spec/cli.md`) share this namespace: no two mean
+different things.
+
+### 8.6 Structural rules
+
+Reasons no `Support` takes away (`STRUCTURAL_RULES`):
+
+| name | when |
+|---|---|
+| `tls:direct-operand` | a thread-local symbol as an operand of anything but the first argument of `llvm.threadlocal.address` |
+| `tls:address-in-constant` | the address of a thread-local symbol inside a constant: an initializer, a constant operand (also as the argument of `llvm.threadlocal.address`), a landing-pad clause |
+| `blockaddress:other-function` | a `blockaddress` in a body that names a block of another function |
+| `musttail:callee-pop` | a `musttail` call with a convention whose callee pops its arguments (`tailcc`, `swifttailcc`) |
+| `musttail:stack-args-grow` | a `musttail` call whose stack-argument area is larger than its caller's |
+| `musttail:stack-args-unknown` | a `musttail` call whose stack-argument areas are not known: no `StackArgs` was given, or it had no answer |
+| `atomic:scalable-vector` | an atomic access to a scalable vector |
+| `addrspace:pointer` | a value whose type is a pointer in a non-zero address space |
+| `addrspace:global` | a variable, alias or IFUNC in a non-zero address space |
+| `addrspace:function` | a function in a non-zero address space |
+| `addrspace:alloca` | an `alloca` in a non-zero address space |
+| `limit:constant-nesting` | a constant nested more than 64 aggregates deep |
+| `target:support-mismatch` | the `Support` given is for another architecture than the module's |
+
+Also refused on both targets, as matrix rows whose status is `rejected`:
+`attr:naked`, `inst:callbr`, `inst:va_arg`, and the 19 `const-expr:*`
+rows (constant expressions without a normal form, §4.2).
+
+- Producer records (`Module::unsupported()`) are reported unchanged.
+- A module flag that is neither known nor ignorable (§2.1), or any
+  `Require` flag, is `module-flag:<name>`.
+- `returns_twice` (`attr:returns_twice`) is checked on the body's
+  function, on the call and on a direct callee's declaration.
+- A direct call through a function type other than the callee's is not
+  an error: the call's own function type and attributes govern; the
+  callee's declaration is not consulted (beyond `returns_twice`), nor are
+  a declaration's attributes.
+- The constant walk has a depth limit of 64 and no memo: a shared
+  sub-constant is walked at each use.
+
+### 8.7 Malformed input
+
+Outcomes of kind `Invalid` (`INVALID_RULES`): what `Body::verify` and the
+builders cannot see, mostly because it needs the module.
+
+| name | when |
+|---|---|
+| `invalid:body-symbol` | a body's symbol is not a symbol of the module |
+| `invalid:body-not-function` | a body's symbol is not a function |
+| `invalid:body-type` | a body's function type is not its symbol's |
+| `invalid:body` | a body's tables disagree: its argument count is not its type's, or an operand names an instruction, parameter, stack slot or record the body does not have |
+| `invalid:symbol` | a symbol id in an operand, a constant, a personality, a resolver or a constructor entry names no symbol; a COMDAT id names no COMDAT |
+| `invalid:unresolved-symbol` | a symbol was named and never described |
+| `invalid:inline-asm` | an inline-assembly callee names no entry of the module's table, or inline assembly is an operand other than a callee |
+| `invalid:constant` | a constant id names no constant |
+| `invalid:type` | a value's type is no type, or a type without values; a call's function type is not one |
+| `invalid:blockaddress` | a `blockaddress` names a symbol that is not a function with a body, or a block its function does not have |
+| `invalid:initializer` | an initializer contains the `none` token, or an alias target is not an address |
+| `invalid:function-attributes` | a function's attribute set is no set of the module |
+
+`invalid:initializer` and the personality case of `invalid:symbol` are
+defensive: the current builders cannot produce them. The first four
+stop the body pass (nothing else in the body can be trusted). Whether a
+malformed input goes to the fallback is `spec/cli.md`'s rule, not this
+crate's.
+
+### 8.8 Order
+
+The first reason is deterministic: the first finding of the walk, which
+visits, in order:
+
+- **Module pass.** `target:support-mismatch`; the module properties
+  (`module:pic`, `module:pie`, code model, large-data threshold,
+  `module:uwtable`, `module:frame-pointer`, the branch-protection bits in
+  order, `debug:module-flags`); the other module flags in table order;
+  module assembly, linker options, dependent libraries; constructors,
+  then destructors, entry by entry (the entry, its priority, its
+  associated symbol, then the symbols it names); producer records; then
+  every symbol in id order: what it is (declaration or definition of a
+  variable or function, alias, IFUNC), linkage, visibility, TLS model,
+  address space; for a definition `unnamed_addr`, section, COMDAT,
+  alignment, `used`; then a variable's initializer, a function's
+  attribute set and personality, an alias's target, an IFUNC's resolver.
+- **Body pass.** `target:support-mismatch`; the four stopping
+  malformed-input checks (§8.7); the function's convention, variadic,
+  parameters and their types, return and parameter attributes, function
+  attributes (flags in order, `function:may-unwind`, `uwtable`, `alignstack`,
+  string attributes), personality, debug subprogram, stack slots and
+  over-aligned slots, slot variables, debug locations; then every
+  instruction in layout order. For one instruction: its row; then (by
+  opcode) memory access, atomic operation, landing-pad clauses or switch
+  cases; its result's subject; its operands in order. For a call: its
+  row (a plain call of a known intrinsic is the intrinsic's row only),
+  the callee (indirect, inline assembly, variadic, convention), the tail
+  marker (`musttail`'s rules before its row), `returns_twice`, bundles by
+  tag, return attributes, the result, the callee operand, each argument
+  then its attributes, the bundle inputs.
+
+A structural rule or a malformed-input outcome comes where the walk meets
+it, not first. `findings_come_in_the_specified_order` and
+`a_rejection_names_where_it_was_found` in `tests/classify_matrix.rs` pin
+this order.
+
+Under `Support::shipped` today every body is refused first at `cc:ccc`,
+and every module with a definition at `global:function-definition` or
+`global:variable-definition`; a module of external declarations only is
+accepted. `debug:*` rows wait for the debug-information track, so a
+module with the `Dwarf Version` or `Debug Info Version` flags is refused
+at `debug:module-flags`.
+
+### 8.9 Census
+
+`Census` collects every finding instead of the first: one `CensusEntry {
+construct, kind, occurrences, symbols }` per construct, in the order of
+first occurrence, where `symbols` counts the distinct symbols it was met
+at. Its first entry is the first reason. It is for coverage reports, not
+for the compile path.
+
+### 8.10 `docs/status/support.md`
+
+`support_markdown()` writes the matrix as a document: a per-group
+summary of the counts per target and status, then one table per group,
+then the structural rules, the malformed-input names and the families.
+The checked-in file is that text; `tests/classify_support_doc.rs` fails
+when it is stale, and `HOD_BLESS=1 cargo test -p hod_ir --test
+classify_support_doc` rewrites it.
+
+### 8.11 Cost
+
+The accept path does not allocate and does not format: a walk reads the
+tables once and consults an array of bit sets per row. A short way
+(`Walker::accepts`) decides the ordinary instruction with ordinary
+operands; everything else goes the long way (`Walker::inst`), which is
+the definition, and debug builds check on every instruction that the
+short way never accepts what the long way refuses.
+
+Measured by `examples/classify_throughput.rs` (release, aarch64, on a
+shared host under heavy load, so only ratios to building in the same run
+mean anything): classifying an accepted body costs about half of
+building it (about 8 ns per instruction against 16 ns to build). That
+misses the goal of a small fraction; `spec/landed/ir/WP-009.md` has the
+numbers.
 
 ## 9. Printer
 
 `Module::print` writes LLVM textual IR (dialect selected by an LLVM major,
-19 to 22) for the module and for a body. Guarantees:
+19 to 22) for the module and the bodies it is given. Guarantees:
 
-- `llvm-as` accepts it and `opt -passes=verify` verifies it;
-- compiled by `llc`, it behaves as the producer's input did (checked by
-  the differential harness, which is also how producers are validated:
+- `llvm-as` of the dialect's major accepts it and `opt -passes=verify`
+  verifies it, for a module that passes `Module::verify_symbols` with
+  bodies that pass `Body::verify` and keep the rules of §9.8;
+- compiled by `llc`, it behaves as the IR says (checked by the
+  differential harness, which is also how producers are validated:
   `input → producer → print → llc` against `input → llc`);
-- it is deterministic.
+- it is deterministic (§9.7);
+- where LLVM's text cannot say what hod means, the printer returns an
+  error naming the construct (§9.5, §9.6). It never prints text that
+  means something else.
 
-It is not a round trip of the input text: `PtrAdd` prints as an `i8`
-`getelementptr` plus explicit index arithmetic, slots print as entry-block
-`alloca`s, values and blocks are numbered, dropped information stays
-dropped. Uses: debugging, reduced reproducers, and splitting a module into
-"functions for hod" and "functions for `llc`" for bisection.
+Uses: debugging, reduced reproducers, handing hod's IR to LLVM's tools in
+tests, and splitting a module into "functions for hod" and "functions for
+`llc`" for bisection.
+
+### 9.1 Interface
+
+- `Dialect`: `LLVM19`, `LLVM20`, `LLVM21`, `LLVM22`, `ALL`;
+  `Dialect::new(major)` (any other major is `Unsupported`
+  `dialect:llvm-<major>`), `major()`.
+- `Module::print(out, dialect, bodies)`: the whole module. The module does
+  not own bodies: `bodies` (any `IntoIterator<Item = &Body>`, any order)
+  supplies them, and a function with none is written as a declaration.
+- `Module::print_part(out, dialect, part, bodies)`: one `Part` (§9.6).
+  `print` is `print_part` with `Part::Whole`.
+- `Module::print_body(out, dialect, body)`: one `define` as it stands in
+  the module's text and nothing else, a fragment for reading. It names
+  the module's symbols, attribute groups and intrinsics without
+  declaring them, and checks nothing that needs the other bodies.
+- `out` is any `fmt::Write` (`String`, ...). `IoSink::new(w)` makes an
+  `io::Write` one; `IoSink::finish` gives the writer back, or the
+  `io::Error` that stopped the printer. The printer makes many small
+  writes: give it a buffered writer.
+- `PrintError`: `Unsupported { construct, symbol }` (the construct names
+  of §9.5 and §9.6 are stable; `symbol` is the one being printed);
+  `Malformed { what, symbol }` (an id that names nothing, a body for a
+  symbol that is not a function with a body or whose function type is
+  not the symbol's, two bodies for one function, a `blockaddress` of a
+  block the function lacks); `Write` (the sink refused the text). On an
+  error the sink may hold part of the text.
+
+### 9.2 Dialects
+
+The text is the same for every major but for these differences (checked
+against LLVM 19.1.7 and 22.1.8; 20 and 21 are specified by this table and
+not tested, their tools not being installed):
+
+| construct | 19 | 20 | 21 | 22 |
+|---|---|---|---|---|
+| `ptrtoaddr` (instruction and constant expression) | `ptrtoint`, where the address is the whole pointer; else `inst:ptrtoaddr` / `const-expr:ptrtoaddr` | as 19 | as 19 | `ptrtoaddr` |
+| `llvm.thread.pointer` | no suffix (only `ptr`; else `intrinsic-overload:`) | as 19 | as 19 | `.p0` |
+| function attributes `sanitize_realtime`, `sanitize_realtime_blocking`, `sanitize_type` | `attr:<name>` | yes | yes | yes |
+| function attribute `sanitize_alloc_token` | `attr:<name>` | `attr:<name>` | `attr:<name>` | yes |
+| `atomicrmw usub_cond`, `usub_sat` | `atomicrmw:<op>` | yes | yes | yes |
+| `atomicrmw fmaximum`, `fminimum` | `atomicrmw:<op>` | `atomicrmw:<op>` | yes | yes |
+| intrinsics `minimumnum`, `maximumnum`, `atan2` | `intrinsic:<name>` | yes | yes | yes |
+| intrinsics `clmul`, `coro.is_in_ramp` | `intrinsic:<name>` | `intrinsic:<name>` | `intrinsic:<name>` | yes |
+| constant expression `mul` | yes | yes | `const-expr:mul` | `const-expr:mul` |
+| module flag `frame-pointer` value 4 | `module-flag:frame-pointer=4` | same | same | yes |
+| AArch64 branch-protection module flags (`branch-target-enforcement`, ...) | value 1 | value 2 | 2 | 2 |
+| AArch64 Linux data layout | LLVM 19's string, without `p270`..`p272` | the target's | the target's | the target's |
+| an `i1` global, or an array of them, without an alignment | `, align` of §3 written | none written | none | none |
+
+The constant expressions `zext`, `sext`, `and`, `or` and `shl` are gone
+from every dialect (`const-expr:<op>`). On LLVM 19's AArch64 layout a
+pointer in address space 270 to 272 has another width than §3 gives it:
+`type:ptr addrspace(N)`. LLVM 19 aligns an `i1` global to 1 and later
+majors (and §3) to `i8`'s preferred alignment, hence the explicit
+alignment. From LLVM 20 on, branch-protection value 2 says that each
+function states its own protection, as the attribute sets do; 1 would
+make LLVM add it to functions that say nothing.
+
+### 9.3 Module-level text
+
+In this order:
+
+1. `target datalayout` (§9.2) and `target triple`.
+2. `module asm`, one per line of the module assembly, quoted (§9.3's
+   escaping).
+3. `%hod.opaque.<n> = type opaque` per opaque struct. Other struct types
+   are written as literal types (`{ i8, i64 }`, `<{ ... }>`): no names
+   are kept.
+4. `$name = comdat <kind>` per COMDAT, in id order.
+5. Every symbol, in id order:
+   - a variable: `@name = [linkage] [dso_local] [visibility]
+     [thread_local(...)] [unnamed_addr] [addrspace(N)] global|constant
+     <type> [<initializer>][, section "s"][, comdat($c)][, align A]`. It
+     is defined when it has an initializer (§9.6 for `Part::Rest`); a
+     declaration says `external` (or `extern_weak`).
+   - a function: `define` when its body is supplied, else `declare`;
+     `[linkage] [dso_local] [visibility] [cc] [return attributes] <ret>
+     @name(<type> [attributes] [%a<n>], ... [, ...])
+     [unnamed_addr] [addrspace(N)] [#<set>] [section "s"]
+     [comdat($c)] [align A] [personality ptr @p] { body }`. A `declare`
+     keeps the calling convention, the parameter and return attributes
+     and the attribute set. `cc` is the keyword (`fastcc`, `coldcc`, ...)
+     or `cc <n>`.
+   - an alias: `@name = [linkage] ... alias <type>, <aliasee>`; an IFUNC:
+     `@name = ... ifunc <type>, ptr @resolver`.
+   - `dso_local` is written only where LLVM does not imply it (a local
+     linkage, or a visibility other than default on a symbol that is not
+     `extern_weak`).
+6. `@llvm.used` and `@llvm.compiler.used`: the retained symbols this
+   text defines, in id order, `section "llvm.metadata"`. An anonymous
+   member in `Part::Whole` is `<list>:anonymous-symbol` (LLVM wants them
+   named).
+7. `@llvm.global_ctors` and `@llvm.global_dtors`: `{ i32 priority, ptr
+   f, ptr associated-or-null }` in the order they were added.
+8. A `declare` for every intrinsic the printed bodies call, by name and
+   overloads, with the function type of the calls, unless the module has
+   a symbol of that name. One name called with two function types is
+   `intrinsic-signature:<name>`.
+9. `attributes #<id> = { ... }` for each attribute set a printed
+   function names (`#<id>` is the set's id): the flags in
+   `FnAttrs::FLAG_NAMES` order, `uwtable` / `uwtable(sync)`,
+   `alignstack=N`, then the strings in key order, `"key"="value"`,
+   `"key"` for an empty value, and `"no-builtin-<value>"`.
+10. The module flags as `!N = !{i32 behavior, !"name", value}`: `PIC
+    Level` (8), `PIE Level` (7), `Code Model` (1), `Large Data Threshold`
+    (1, always `i64`), `uwtable` (7), `frame-pointer` (7), `Dwarf
+    Version` (7), `Debug Info Version` (2), the branch-protection flags
+    (8, §9.2), then the other flags in the order they were set. An
+    integer value is `i32` when it fits, else `i64`; a string value is
+    `!"..."`; `FlagValue::Other` is `module-flag:<name>`. Then
+    `!llvm.module.flags`, one node of strings per linker option
+    (`!llvm.linker.options`) and per dependent library
+    (`!llvm.dependent-libraries`). Nodes are numbered from 0 in that
+    order.
+
+Names: `@name`, `$name` are bare when the name is LLVM identifier
+characters (`[A-Za-z0-9$._-]`) not starting with a digit, else quoted.
+In a quoted string or name, printable ASCII but `"` and `\` is written as
+it is, and every other byte as `\XX`. An anonymous symbol is `@<id>`
+(`@__hod_anon.<id>` in a split, §9.6); LLVM renumbers them, so the
+number is a name for reading only.
+
+Constants: integers as signed decimals (`i1` as `true` / `false`),
+integers wider than 64 bits as `u0x<hex>`; `half` `0xH`, `bfloat` `0xR`,
+`float` as the hexadecimal `double` of the same value (a NaN keeps its
+payload and signaling bit, as LLVM's printer does), `double` `0x`,
+`fp128` `0xL` (low word first), `x86_fp80` `0xK`; `null`,
+`zeroinitializer`, `undef`, `poison`, `none`; aggregates in braces,
+brackets or angles; `splat (...)`; bytes as `c"..."`. A symbol's address
+plus an addend is `getelementptr (i8, ptr @s, i64 addend)` (the bare
+`@s` for 0); `blockaddress(@f, %b<n>)`; a symbol difference as
+`sub (i64 ptrtoint ..., i64 ptrtoint ...)`, with `add` for an addend,
+`trunc` for a narrower type and `dso_local_equivalent` for a PLT
+reference; `ptrtoint (...)`, `inttoptr (i64 N to ptr)`,
+`dso_local_equivalent @s`, `no_cfi @s`; the expressions of §4.2 that
+have no normal form as LLVM's constant expressions. An initializer means
+to LLVM what `flatten` (§4.3) makes of it, byte for byte and relocation
+for relocation. The address of a symbol in an address space other than
+0 is `address-of-symbol-in-address-space` (hod types it `ptr`, LLVM
+`ptr addrspace(N)`); a target extension type is `type:target("name")`
+(its parameters are not kept). A `blockaddress` needs the function's
+body in the same text (`blockaddress-of-declaration`) and a block other
+than the entry (`blockaddress-of-entry-block`).
+
+### 9.4 Bodies
+
+- Blocks are `b<id>:` in layout order (labels `%b<id>`), values `%v<id>`,
+  arguments `%a<n>`.
+- Stack slots are `%s<n> = alloca [size x i8], align A` at the top of
+  the entry block, in slot order.
+- `PtrAdd` is a chain of `getelementptr i8` steps: one for the constant
+  offset (or a zero offset when there are no indices), then one per
+  index, the index first brought to the pointer's index width
+  (`sext`/`trunc`, `.c<k>`) and multiplied by its scale (`mul`, `.m<k>`).
+  The last step has the instruction's name, the ones before it
+  `%v<id>.g<n>`. A vector index makes the later steps vectors. An index
+  width outside 1 to 64 bits is `ptradd:index-width`.
+- An aggregate access by byte offset (`extractvalue`, `insertvalue`)
+  prints the index path that `aggregate_field` maps back to that offset
+  and type: depth first, a struct's fields in ascending order, the first
+  field with the type at the offset.
+- A `phi` without incoming values (its block has no predecessor) is
+  `freeze <ty> poison`.
+- Calls: tail markers on `call` only (`invoke:<tail>`, `callbr:<tail>`
+  otherwise); the full function type is written for a variadic callee; a
+  `musttail` call in a variadic function ends its arguments with `...`;
+  `noreturn`, `nounwind`, `returns_twice` call attributes, operand
+  bundles as `[ "tag"(...) ]`, `to label ... unwind label ...` for
+  `invoke`, the indirect labels for `callbr`; inline assembly as `asm
+  sideeffect "template", "constraints"`.
+- An intrinsic's name is `Intrinsic::mangled_name`'s: the base name and
+  one suffix per overload type (§9.2 for `llvm.thread.pointer`), and
+  `Other(name)` as it is. A dialect without the intrinsic is
+  `intrinsic:<name>`; an overload type without a spelling in a name is
+  `intrinsic-overload:<name>`.
+- A scalable `shufflevector` mask is `shufflevector:scalable-mask`
+  (LLVM's text has only `zeroinitializer` and `poison` for one).
+- Constants of an index width are written as signed numbers.
+
+### 9.5 Instructions without text
+
+`catchswitch`, `catchpad`, `cleanuppad`, `catchret` and `cleanupret` are
+`inst:<opcode>`: `hod_ir` keeps none of their operands (§5.4). Also an
+error in a body: `atomicrmw:<op>` and `inst:ptrtoaddr` (§9.2).
+
+### 9.6 Parts and the split
+
+`Part::Whole` is the module. `Part::Main` and `Part::Rest` split it into
+two texts: printed as `Main` with some bodies and as `Rest` with the
+others, their objects link to what the whole module's object is.
+
+- In both: a function is defined when its body is supplied; a symbol of
+  local linkage becomes external and `hidden`, so that the other text
+  can name it; anonymous symbols are `@__hod_anon.<id>` in both.
+- `Main` also defines every variable with an initializer and has the
+  module assembly, the constructors and destructors, the linker options
+  and dependent libraries. `Rest` declares every variable and has none
+  of these.
+- An alias or IFUNC is defined where what it names is defined; elsewhere
+  it is a declaration (a function's with the convention and attributes
+  of the function it names, else `global` of its type).
+- The retained lists hold the symbols the text defines.
+- A COMDAT is kept in a text that defines all its members. Elsewhere a
+  member that the linker may see twice anyway (`linkonce`, `weak`, or
+  local before the split) leaves it; any other member is `split:comdat`.
+- A function whose blocks are addressed by a `blockaddress` in a
+  variable must be defined in `Main` (`blockaddress-of-declaration`).
+
+Module-level errors, checked before any text: the first construct a
+producer recorded with `Module::record_unsupported` is returned as it was
+recorded (the object would lack what it stands for), and a symbol
+neither defined nor declared is `unresolved-symbol`.
+
+The constructs, all told: `dialect:llvm-<major>`, `unresolved-symbol`,
+the recorded ones, `type:target("name")`, `type:ptr addrspace(N)`,
+`module-flag:<name>`, `module-flag:frame-pointer=4`,
+`address-of-symbol-in-address-space`, `<list>:anonymous-symbol`,
+`split:comdat`, `blockaddress-of-declaration`,
+`blockaddress-of-entry-block`, `const-expr:<op>`, `attr:<name>`,
+`intrinsic:<name>`, `intrinsic-overload:<name>`,
+`intrinsic-signature:<name>`, `invoke:<tail>`, `callbr:<tail>`,
+`atomicrmw:<op>`, `inst:<opcode>`, `ptradd:index-width`,
+`shufflevector:scalable-mask`.
+
+### 9.7 Determinism, normal form, debug information
+
+The same module and bodies give the same text, byte for byte, whatever
+the order of the bodies and whatever the sink. The text is a normal
+form, not a round trip of what a producer read: `PtrAdd` as `i8`
+`getelementptr`s, slots as `alloca`s, numbered values and blocks,
+literal struct types, and what the IR dropped stays dropped.
+
+No debug information is written yet. The hooks are `dbg_function` (` !dbg
+!N` on the `define` line), `dbg_slot_vars` (the slot variables:
+`#dbg_declare` records, `llvm.dbg.declare` calls in dialect 19) and
+`dbg_inst` (`, !dbg !N` after an instruction), in
+`crates/hod_ir/src/print/body.rs`, with the nodes written by the
+metadata step of §9.3.
+
+### 9.8 LLVM's rules that `hod_ir` does not check
+
+The printer prints what `Body::verify` and `Module::verify_symbols`
+accept. LLVM refuses some of it; a producer that wants text LLVM takes
+keeps these rules:
+
+- a use is dominated by its definition (no self-use in a reachable
+  block; an `invoke` or `callbr` result is used only past the normal
+  edge);
+- `callbr` calls inline assembly (LLVM 22's verifier crashes on
+  `callbr` of a function);
+- `invoke` does not call an intrinsic;
+- tail markers only on `call`; `musttail`: the caller's signature and
+  calling convention, and `ret` (of the result) directly after;
+- an `immarg` parameter gets a constant (LLVM 22 also refuses `undef`);
+- a `"kcfi"` bundle has exactly one operand;
+- parameter attributes fit their types and positions (`signext` and
+  `zeroext` on integers, `sret` on the first or second parameter of a
+  function returning `void`, ...);
+- `sanitize_realtime` and `sanitize_realtime_blocking` are not both in
+  one attribute set;
+- a module flag of behavior 5 (`append`) or 6 (`append-unique`) has a
+  node as its value, not a string;
+- in an ELF object (`llc`), each linker option is a pair.
+
+What the model does not keep: a symbol's address is typed `ptr` whatever
+its address space; branch-protection value 1 versus 2, the behaviors and
+integer widths of the known module flags, and `TargetExt` parameters are
+not kept.
+
+### 9.9 Tests
+
+- Unit (`print/mod.rs`, `print/body.rs`): dialect numbers, `IoSink`
+  errors, `float` spelling, name quoting, intrinsic names against
+  `Intrinsic::mangled_name`, the index path against `aggregate_field`.
+- Random bodies (`print/random_tests.rs`): 1500 generator bodies printed
+  for LLVM 19 and 22; those that keep §9.8's rules pass `llvm-as` and
+  `opt -passes=verify`, the others pass `llvm-as -disable-verify`, and a
+  body that is not printed holds a construct its dialect lacks.
+- Initializers (`tests/print_data.rs`): every kind of initializer, both
+  targets, LLVM 19 and 22: `llc`'s `.data` bytes and relocations equal
+  `flatten`'s.
+- Every instruction (`tests/print_bodies.rs`): every opcode, predicate,
+  `RmwOp` and `TailKind` printed and accepted; the funclet opcodes are
+  errors; the dialect differences of §9.2 for bodies.
+- Programs (`tests/print_run.rs`): a program of many functions compiled
+  by `llc` 19 and 22 at `-O0` and `-O2`, linked and run; the same
+  program split (§9.6) into two objects; landing pads catching a C++
+  exception.
+- The module (`tests/print_module.rs`): one module with every kind of
+  symbol, linkage, visibility, thread-local model, COMDAT, alias, IFUNC,
+  attribute, parameter attribute, retained list, constructor, module
+  flag, linker option and quoted name: accepted by LLVM 19 and 22; LLVM's
+  own text (`opt -S`) has the line hod means for each; the object `llc`
+  makes has each symbol's type, binding, visibility, section and size,
+  the COMDAT groups, linker options, dependent libraries and string
+  bytes; each module-level error of §9.6; determinism and `IoSink`.
+- Speed (`tests/print_perf.rs`): a printed measurement, not a gate.
 
 ## 10. Planned extensions
 
@@ -1085,3 +1892,4 @@ IR").
 - What clang emits: no module flag or attribute in clang 19 and 22 output
   for §2.1's option list is unknown or rejected.
 - Printer: §9's guarantees over the IR corpus.
+- classify (§8): every row, rule and malformed-input name, the subject rule and the order (`tests/classify_matrix.rs`, `tests/classify_rules.rs`); consistency and no panic on random tame and wild programs (`tests/classify_random.rs`); `docs/status/support.md` is the generated text (`tests/classify_support_doc.rs`); the cost, not a gate (`examples/classify_throughput.rs`).

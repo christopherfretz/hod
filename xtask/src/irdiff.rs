@@ -161,11 +161,13 @@ pub fn default_build_dir() -> PathBuf {
 /// hod`, the development profile) into `build_dir` and returns the binary.
 pub fn build_workspace_hod(build_dir: &Path) -> Result<PathBuf, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| env!("CARGO").into());
-    let built = Command::new(&cargo)
-        .args(["build", "--quiet", "--package", "hod_cli", "--bin", "hod"])
+    // A cargo step: a jobserver client of its own, stopped with xtask
+    // ("Jobserver").
+    let mut step = Command::new(&cargo);
+    step.args(["build", "--quiet", "--package", "hod_cli", "--bin", "hod"])
         .current_dir(workspace_root())
-        .env("CARGO_TARGET_DIR", build_dir)
-        .status()
+        .env("CARGO_TARGET_DIR", build_dir);
+    let (built, _) = crate::jobs::children::run_step(&mut step, false)
         .map_err(|e| format!("cannot run '{}': {e}", Path::new(&cargo).display()))?;
     if !built.success() {
         return Err("building the workspace's hod failed".to_owned());
@@ -407,12 +409,16 @@ pub fn run(config: &Config) -> Result<Report, String> {
     Ok(report)
 }
 
-/// The line of the summary that says what ran.
+/// The line of the summary that says what ran. It names the jobserver
+/// pool when there is one: `-j` is then an upper bound ("Jobserver").
 fn describe(session: &Session, jobs: usize) -> String {
     let tools = &session.toolchain;
     let linkers: Vec<&str> = tools.linkers.iter().map(|linker| linker.name.as_str()).collect();
+    let pool = crate::jobs::global()
+        .describe()
+        .map_or_else(String::new, |pool| format!(" (jobserver {pool})"));
     format!(
-        "LLVM {} ({}); hod {}; target {}; linkers {}; {}; -j {jobs}",
+        "LLVM {} ({}); hod {}; target {}; linkers {}; {}; -j {jobs}{pool}",
         tools.llvm_major,
         tools.llc.display(),
         tools.hod.display(),

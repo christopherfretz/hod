@@ -1,26 +1,32 @@
 //! Developer tasks. Contract: `spec/harness.md`.
 //!
 //! `cargo xtask ci [--quick]` is the gate described in `docs/VALIDATION.md`.
+//! `cargo xtask jobserver ...` counts and refills the machine's token pool.
 //! `cargo xtask shim ...` builds the LLVM directory that plugs hod into kiln.
 //! `cargo xtask irdiff ...` is the IR differential harness (layer L4).
 //! `cargo xtask corpus ...` captures, verifies and counts the IR corpus.
 
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 const USAGE: &str = "\
 usage: cargo xtask ci [--quick]
+       cargo xtask jobserver <status|refill> [--fifo <path>] [--jobs <n>]
        cargo xtask shim --llvm <dir> --hod <hod binary> --out <dir> [--kiln <kiln++>]
        cargo xtask irdiff [options] [<file.ll or directory>...]   (--help for the options)
        cargo xtask corpus capture|verify|census|fetch [options]   (--help for the options)
+       cargo xtask bench [options]                                (--help for the options)
 ";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("jobserver") => xtask::jobs::main(args[1..].iter().cloned()),
         Some("ci") => ci(args.iter().any(|a| a == "--quick")),
         Some("shim") => shim(&args[1..]),
         Some("irdiff") => irdiff(&args[1..]),
         Some("corpus") => corpus(&args[1..]),
+        #[cfg(unix)]
+        Some("bench") => xtask::bench::main(&args[1..]),
         _ => {
             eprint!("{USAGE}");
             ExitCode::from(2)
@@ -37,10 +43,10 @@ fn ci(quick: bool) -> ExitCode {
     ];
     for (name, cargo_args) in steps {
         eprintln!("ci: {name}");
-        let ok = Command::new(env!("CARGO"))
-            .args(*cargo_args)
-            .status()
-            .is_ok_and(|status| status.success());
+        // A cargo step is a jobserver client of its own (spec/harness.md
+        // "Jobserver"), and is run once more if an artifact vanished under
+        // it ("ci").
+        let ok = xtask::ci::cargo_step(cargo_args);
         if !ok {
             eprintln!("ci: {name} FAILED");
             return ExitCode::FAILURE;

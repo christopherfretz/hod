@@ -1,5 +1,5 @@
 //! kiln with hod as its code generator, end to end: `spec/harness.md`
-//! "shim" and `spec/cli.md` "Fallback protocol" together.
+//! "shim" with `spec/cli.md` "Fallback protocol" and "Bitcode conversion".
 //!
 //! Needs a built `kiln++`: `$HOD_KILN`, or the kiln build beside this
 //! checkout's target directory (`<build root>/target-kiln/release/kiln++`,
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use hod_testutil::{Outcome, Scratch, run_with, tool, tools_required};
+use hod_testutil::{LLVM_MAJORS, Outcome, Scratch, run_with, tool, tools_required};
 use xtask::shim;
 
 /// A C++ program with a virtual call, an exception and iostream.
@@ -96,6 +96,19 @@ int main() {
 }
 "#;
 
+/// A function that must be inlined: kiln runs `opt` for it at `-O0` and
+/// hands `llc` bitcode (`docs/design/0001-input.md`, point 6).
+const ALWAYS_INLINE: &str = r#"
+#include <cstdio>
+
+[[gnu::always_inline]] inline int twice(int value) { return value + value; }
+
+int main() {
+    std::printf("twice: %d\n", twice(21));
+    return 0;
+}
+"#;
+
 /// The `kiln++` to test with, or `None` to skip.
 fn kiln() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("HOD_KILN").filter(|v| !v.is_empty()) {
@@ -118,22 +131,42 @@ fn kiln() -> Option<PathBuf> {
     }
 }
 
-/// The LLVM installation that holds the `llc` the tests use, if it is a
-/// complete one.
-fn llvm_installation() -> Option<PathBuf> {
-    let llc = std::fs::canonicalize(tool("llc")?).ok()?;
-    let dir = llc.parent()?.parent()?.to_path_buf();
-    let complete = shim::REQUIRED_TOOLS.iter().all(|t| dir.join("bin").join(t).is_file());
-    if !complete {
+/// Whether `dir` has what kiln requires of an LLVM installation.
+fn complete(dir: &Path) -> bool {
+    shim::REQUIRED_TOOLS.iter().all(|t| dir.join("bin").join(t).is_file())
+}
+
+/// The LLVM installations to test with: the one that holds the `llc` the
+/// tests use, which must be complete, and then every other supported LLVM
+/// installed in `/usr/lib/llvm-<N>` (kiln supports each of
+/// `LLVM_MAJORS`, and bitcode is read only by the LLVM that wrote it).
+fn llvm_installations() -> Vec<PathBuf> {
+    let Some(llc) = tool("llc").and_then(|llc| std::fs::canonicalize(llc).ok()) else {
+        return Vec::new();
+    };
+    let Some(dir) = llc.parent().and_then(Path::parent).map(Path::to_path_buf) else {
+        return Vec::new();
+    };
+    if !complete(&dir) {
         assert!(
             !tools_required(),
             "'{}' is not a complete LLVM installation (HOD_REQUIRE_TOOLS=1)",
             dir.display()
         );
         eprintln!("note: '{}' has no opt or clang++; skipping", dir.display());
-        return None;
+        return Vec::new();
     }
-    Some(dir)
+    let mut found = vec![dir];
+    for major in LLVM_MAJORS {
+        let other = std::fs::canonicalize(format!("/usr/lib/llvm-{major}"));
+        if let Ok(other) = other
+            && complete(&other)
+            && !found.contains(&other)
+        {
+            found.push(other);
+        }
+    }
+    found
 }
 
 /// A command that inherits none of hod's settings from the test's own
@@ -143,6 +176,8 @@ fn command(program: &Path) -> Command {
     for var in ["HOD_FALLBACK_LLC", "HOD_STRICT", "HOD_COVERAGE_LOG", "HOD_IN_FALLBACK"] {
         command.env_remove(var);
     }
+    // The shim's `llc` names its own converter; a caller's must not win.
+    command.env("HOD_BITCODE_VIA", "/nonexistent/llvm-dis");
     // kiln's own harness sets this; the wrapper's flag must win over it.
     command.env("KILN_LLVM_DIR", "/nonexistent/llvm");
     command
@@ -160,85 +195,151 @@ fn coverage(log: &Path) -> Vec<Vec<String>> {
     text.lines().map(|line| line.split('\t').map(str::to_owned).collect()).collect()
 }
 
+/// Asserts that `log` holds the one line of a bitcode module that hod
+/// converted to text, declined as it declines text today, and handed to
+/// the fallback, which succeeded (`spec/cli.md` "Coverage log").
+fn assert_converted_then_fell_back(log: &Path) {
+    let lines = coverage(log);
+    assert_eq!(lines.len(), 1, "one translation unit, one line: {lines:?}");
+    let line = &lines[0];
+    assert_eq!(line.len(), 10, "{line:?}");
+    assert_eq!(line[..3], ["fallback", "codegen-not-implemented", "bitcode"], "{line:?}");
+    assert!(line[3].parse::<u64>().is_ok_and(|bytes| bytes > 0), "the bitcode's size: {line:?}");
+    assert!(line[5].contains("linux"), "the triple, known from the converted text: {line:?}");
+    let micros = |field: &str| field.parse::<u64>().unwrap_or_else(|_| panic!("{line:?}"));
+    assert!(micros(&line[8]) > 0, "the conversion ran: {line:?}");
+    assert!(micros(&line[6]) >= micros(&line[8]), "hod's time includes it: {line:?}");
+    assert!(micros(&line[7]) > 0, "the fallback ran: {line:?}");
+    assert_eq!(line[9], "0", "the fallback's exit status: {line:?}");
+}
+
 // spec/harness.md "shim": kiln accepts the shim directory, compiles through
-// hod, and hod's fallback produces working programs; spec/cli.md "Strict
-// mode" surfaces as a failed compile.
+// hod, and hod's fallback produces working programs; the bitcode kiln hands
+// over after `opt` is converted with the installation's own llvm-dis
+// (spec/cli.md "Bitcode conversion"); spec/cli.md "Strict mode" surfaces as
+// a failed compile.
 #[test]
 fn kiln_builds_and_runs_programs_through_the_shim() {
-    let (Some(kiln), Some(llvm)) = (kiln(), llvm_installation()) else { return };
+    let Some(kiln) = kiln() else { return };
+    for llvm in llvm_installations() {
+        eprintln!("note: kiln through a shim of '{}'", llvm.display());
+        through_the_shim(&kiln, llvm);
+    }
+}
+
+/// One kiln, wrapped to use a shim, and where it works.
+struct Shimmed {
+    scratch: Scratch,
+    compiler: PathBuf,
+    work: PathBuf,
+}
+
+impl Shimmed {
+    /// Compiles and links with `args` to `program`, runs the program and
+    /// checks what it prints. Returns the coverage log of the compile.
+    fn builds(&self, args: &[&str], program: &str, prints: &str) -> PathBuf {
+        let log = self.scratch.join(format!("{program}.tsv"));
+        let compile = run_in(
+            &self.work,
+            command(&self.compiler).args(args).args(["-o", program]).env("HOD_COVERAGE_LOG", &log),
+        );
+        assert!(compile.success(), "{program}: {}", compile.stderr_text());
+        let ran = run_in(&self.work, &mut command(&self.work.join(program)));
+        assert!(ran.success(), "{program}: {ran:?}");
+        assert_eq!(ran.stdout_text(), prints, "{program}");
+        log
+    }
+
+    /// Compiles `source` to `object` in strict mode, which must fail with
+    /// hod's diagnostic and no object. Returns the one coverage line.
+    fn strict_fails(&self, source: &str, object: &str) -> Vec<String> {
+        let log = self.scratch.join(format!("{object}.tsv"));
+        let compile = run_in(
+            &self.work,
+            command(&self.compiler)
+                .args(["-c", source, "-o", object])
+                .env("HOD_COVERAGE_LOG", &log)
+                .env("HOD_STRICT", "1"),
+        );
+        assert!(!compile.success(), "strict mode must fail while hod generates no code");
+        let stderr = compile.stderr_text();
+        assert!(
+            stderr.contains(
+                "hod: error: unsupported construct 'codegen-not-implemented' \
+                 (strict mode: no fallback)"
+            ),
+            "{stderr}"
+        );
+        assert!(!self.work.join(object).exists());
+        let mut lines = coverage(&log);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        let line = lines.remove(0);
+        assert_eq!(line.len(), 10, "{line:?}");
+        assert_eq!(line[..2], ["error", "codegen-not-implemented"], "{line:?}");
+        assert_eq!(line[4], object, "{line:?}");
+        assert_eq!(line[9], "-", "no fallback ran: {line:?}");
+        line
+    }
+}
+
+/// The test, with the LLVM installation `llvm`.
+fn through_the_shim(kiln: &Path, llvm: PathBuf) {
     let scratch = Scratch::new("kiln-e2e");
     let built = shim::build(&shim::Request {
         llvm,
         hod: PathBuf::from(env!("CARGO_BIN_EXE_hod")),
         out: scratch.join("llvm"),
-        kiln: Some(kiln),
+        kiln: Some(kiln.to_path_buf()),
     })
     .unwrap_or_else(|e| panic!("cannot build the shim: {e}"));
-    let compiler = built.compiler.as_deref().expect("a kiln was given");
+    assert!(built.real_llvm_dis.is_some(), "the installation has an llvm-dis: {built:?}");
+    let compiler = built.compiler.clone().expect("a kiln was given");
     let work = scratch.join("work");
     std::fs::create_dir(&work).unwrap();
 
     // The wrapper is kiln, and kiln took the shim as its LLVM.
-    let version = run_in(&work, command(compiler).arg("--version"));
+    let version = run_in(&work, command(&compiler).arg("--version"));
     assert!(version.success(), "{}", version.stderr_text());
     let text = version.stdout_text();
     assert!(text.starts_with("kiln version"), "{text}");
     assert!(text.contains(&built.dir.display().to_string()), "kiln names its LLVM: {text}");
 
-    // A program with a virtual call, an exception and iostream.
     std::fs::write(work.join("hello.cpp"), HELLO).unwrap();
-    let log = scratch.join("hello.tsv");
-    let compile = run_in(
-        &work,
-        command(compiler).args(["hello.cpp", "-o", "hello"]).env("HOD_COVERAGE_LOG", &log),
-    );
-    assert!(compile.success(), "{}", compile.stderr_text());
-    let ran = run_in(&work, &mut command(&work.join("hello")));
-    assert!(ran.success(), "{ran:?}");
-    assert_eq!(ran.stdout_text(), "sides: 3\ncaught: too many sides\n");
+    std::fs::write(work.join("coro.cpp"), COROUTINE).unwrap();
+    std::fs::write(work.join("inline.cpp"), ALWAYS_INLINE).unwrap();
+    let shimmed = Shimmed { scratch, compiler, work };
+    let hello = "sides: 3\ncaught: too many sides\n";
+
+    // A program with a virtual call, an exception and iostream: text.
+    let log = shimmed.builds(&["hello.cpp"], "hello", hello);
     let lines = coverage(&log);
     assert_eq!(lines.len(), 1, "one translation unit, one line: {lines:?}");
-    assert_eq!(lines[0].len(), 8, "{lines:?}");
+    assert_eq!(lines[0].len(), 10, "{lines:?}");
     assert_eq!(lines[0][..3], ["fallback", "codegen-not-implemented", "text"], "{lines:?}");
     assert!(lines[0][5].contains("linux"), "the module's triple: {lines:?}");
+    assert_eq!(lines[0][8..], ["-", "0"], "no conversion; the fallback succeeded: {lines:?}");
 
     // A coroutine: kiln runs `opt` first, so `llc` (hod) is handed bitcode.
-    std::fs::write(work.join("coro.cpp"), COROUTINE).unwrap();
-    let log = scratch.join("coro.tsv");
-    let compile = run_in(
-        &work,
-        command(compiler)
-            .args(["-std=c++20", "coro.cpp", "-o", "coro"])
-            .env("HOD_COVERAGE_LOG", &log),
-    );
-    assert!(compile.success(), "{}", compile.stderr_text());
-    let ran = run_in(&work, &mut command(&work.join("coro")));
-    assert!(ran.success(), "{ran:?}");
-    assert_eq!(ran.stdout_text(), "sum of squares: 30\n");
-    let lines = coverage(&log);
-    assert_eq!(lines.len(), 1, "{lines:?}");
-    assert_eq!(lines[0][..3], ["fallback", "bitcode-input", "bitcode"], "{lines:?}");
+    let log = shimmed.builds(&["-std=c++20", "coro.cpp"], "coro", "sum of squares: 30\n");
+    assert_converted_then_fell_back(&log);
 
-    // Strict mode: the compile fails with hod's diagnostic and no object.
-    let log = scratch.join("strict.tsv");
-    let compile = run_in(
-        &work,
-        command(compiler)
-            .args(["-c", "hello.cpp", "-o", "strict.o"])
-            .env("HOD_COVERAGE_LOG", &log)
-            .env("HOD_STRICT", "1"),
-    );
-    assert!(!compile.success(), "strict mode must fail while hod generates no code");
-    let stderr = compile.stderr_text();
-    assert!(
-        stderr.contains(
-            "hod: error: unsupported construct 'codegen-not-implemented' (strict mode: no fallback)"
-        ),
-        "{stderr}"
-    );
-    assert!(!work.join("strict.o").exists());
-    let lines = coverage(&log);
-    assert_eq!(lines.len(), 1, "{lines:?}");
-    assert_eq!(lines[0][..3], ["error", "codegen-not-implemented", "text"], "{lines:?}");
-    assert_eq!(lines[0][4], "strict.o", "{lines:?}");
+    // An `always_inline` function, the common reason for bitcode in code
+    // that uses the standard library: again `opt` first, bitcode to hod.
+    let log = shimmed.builds(&["inline.cpp"], "inline", "twice: 42\n");
+    assert_converted_then_fell_back(&log);
+
+    // Optimization: at -O1 every translation unit goes through `opt`.
+    let log = shimmed.builds(&["-O1", "hello.cpp"], "hello-o1", hello);
+    assert_converted_then_fell_back(&log);
+
+    // Strict mode on bitcode: hod's decline is the text path's, which shows
+    // that the module was converted and looked at as text.
+    let line = shimmed.strict_fails("inline.cpp", "strict-inline.o");
+    assert_eq!(line[2], "bitcode", "{line:?}");
+    assert!(line[8].parse::<u64>().is_ok(), "the conversion ran: {line:?}");
+
+    // Strict mode on text: the compile fails with hod's diagnostic.
+    let line = shimmed.strict_fails("hello.cpp", "strict.o");
+    assert_eq!(line[2], "text", "{line:?}");
+    assert_eq!(line[8], "-", "no conversion: {line:?}");
 }

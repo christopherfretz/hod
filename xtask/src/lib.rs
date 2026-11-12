@@ -6,8 +6,13 @@
 //! build-link-run-compare core of [`irdiff`]).
 
 #[cfg(unix)]
+pub mod bench;
+pub mod ci;
+#[cfg(unix)]
 pub mod corpus;
 #[cfg(unix)]
 pub mod irdiff;
 #[cfg(unix)]
 pub mod shim;
+
+pub mod jobs;

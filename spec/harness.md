@@ -2,8 +2,27 @@
 
 `xtask` is the project's harness: `cargo xtask <command>`. This file is the
 contract of its commands: `shim`, `irdiff` (with the directive format of
-its tests, "Test directives"), `corpus` and the gate, `ci`. Commands still
-to be specified here: benchmarks (`bench`), `bisect`.
+its tests, "Test directives"), `corpus`, `bench` and the gate, `ci`. Still
+to be specified here: `bisect`.
+
+## ci
+
+`cargo xtask ci [--quick]` is the gate (`docs/VALIDATION.md` "Gates"): in
+order `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --
+-D warnings`, `cargo test --workspace --quiet`, then the `irdiff` runs of
+"irdiff", "In the gate". It stops at the first step that fails, printing
+`ci: <step> FAILED`, and ends with `ci: ok` and exit status 0 only if every
+step passed.
+
+A cargo step that fails with rustc's `error[E0463]` (can't find crate) at
+the start of a line of its standard error is run **once** more, after the
+note `ci: [retry] cargo <step> failed with error[E0463] ...`. The build
+directory is on a workspace file system that, under concurrent builds,
+now and then does not show a dependent compile the artifact cargo has just
+written; nothing is wrong with the code, and the rerun finds or rebuilds
+the artifact. Any other failure, and a second `error[E0463]`, fails the
+gate. (Ported from kiln's `xtask ci`, which met the same file system.)
+Test: `xtask::ci::tests::retries_only_missing_crates_once`.
 
 ## shim
 
@@ -11,11 +30,13 @@ to be specified here: benchmarks (`bench`), `bisect`.
 cargo xtask shim --llvm <dir> --hod <hod binary> --out <dir> [--kiln <kiln++>]
 ```
 
-Builds `<out>`: a directory that kiln accepts as an LLVM installation and
-in which `llc` is hod. This is how hod is plugged into kiln, and through
-kiln into every C++ test suite, without changing kiln. Unix hosts only.
-Arguments are `--name <value>` or `--name=<value>`. Exit status: 0; 1 when
-the directory cannot be built; 2 for a usage error.
+Builds `<out>`: a directory that kiln accepts as an LLVM installation and in
+which `llc` is hod, with the installation's `llc` as its fallback and the
+installation's `llvm-dis` as its bitcode converter (`spec/cli.md` "Fallback
+protocol", "Bitcode conversion"). This is how hod is plugged into kiln, and
+through kiln into every C++ test suite, without changing kiln. Unix hosts
+only. Arguments are `--name <value>` or `--name=<value>`. Exit status: 0; 1
+when the directory cannot be built; 2 for a usage error.
 
 ### What kiln requires of an LLVM directory
 
@@ -52,7 +73,8 @@ discovery".)
 <out>/
   .hod-shim            marker: this directory was made by `cargo xtask shim`
   bin/                 a real directory
-    llc                script: hod, with the real llc as its fallback
+    llc                script: hod, with the real llc as its fallback and
+                       the real llvm-dis as its bitcode converter
     <every other entry of <llvm>/bin>     symbolic links to the real ones
   <every other entry of <llvm>>           symbolic links to the real ones
   kiln++-hod           script, with --kiln only: kiln++ using this directory
@@ -65,12 +87,29 @@ discovery".)
 - `bin/llc` is a `/bin/sh` script, mode 755:
 
   ```sh
-  HOD_FALLBACK_LLC='<llvm>/bin/llc' exec '<hod>' "$@"
+  HOD_FALLBACK_LLC='<llvm>/bin/llc' HOD_BITCODE_VIA='<llvm>/bin/llvm-dis' exec '<hod>' "$@"
   ```
 
-  It sets the fallback and nothing else: `HOD_STRICT` and
-  `HOD_COVERAGE_LOG` reach hod from the caller's environment, so the same
-  shim serves hybrid and strict runs (`spec/cli.md`).
+  It sets the fallback and the bitcode converter and nothing else:
+  `HOD_STRICT` and `HOD_COVERAGE_LOG` reach hod from the caller's
+  environment, so the same shim serves hybrid and strict runs
+  (`spec/cli.md`). Both are the installation's own, whatever the caller's
+  environment says of either: the bitcode hod is handed was written by
+  this installation's `opt`, and only the `llvm-dis` of the same LLVM
+  reads it reliably. kiln does not require an `llvm-dis`. If
+  `<llvm>/bin/llvm-dis` is not a file, the script sets `HOD_BITCODE_VIA=''`
+  (unset, for hod): nothing is converted, bitcode goes to the fallback as
+  `bitcode-input`, and a caller's converter is still not let through. The
+  command's summary says which it is (`bitcode:  converted to text by
+  <path>`, or `bitcode:  not converted (the installation has no
+  llvm-dis)`); running the command again after the tool arrives takes it
+  up.
+- `bin/llvm-dis` is a link to the real one, like every other tool: hod is
+  never its own converter through a shim.
+- The script costs one `sh` start per translation unit before hod runs
+  (measured: `spec/landed/cli/WP-020.md`). It stays a script because the
+  corpus capture puts its own program where hod stands and relies on the
+  variables the script exports (`spec/harness.md` "corpus").
 - `kiln++-hod` is a `/bin/sh` script, mode 755:
 
   ```sh
@@ -125,7 +164,8 @@ kiln_e2e.rs`).
 
 ### Tests
 
-`xtask/src/shim.rs`: `layout`, `llc_runs_hod_with_the_real_llc_as_fallback`,
+`xtask/src/shim.rs`: `layout`, `llc_runs_hod_with_the_real_llc_as_fallback`
+(and the real `llvm-dis` as its converter), `no_converter_without_llvm_dis`,
 `wrapper_runs_kiln_with_the_shim`, `paths_with_spaces_and_quotes`,
 `idempotent`, `rebuild_follows_the_request`,
 `refuses_a_directory_it_did_not_make`, `never_writes_through_links`,
@@ -133,12 +173,20 @@ kiln_e2e.rs`).
 use a fake installation and need no tools.
 
 `crates/hod_cli/tests/kiln_e2e.rs`,
-`kiln_builds_and_runs_programs_through_the_shim`: with a real kiln and the
-host's LLVM, a program with iostream, a virtual call and an exception is
-compiled through `kiln++-hod`, linked, run and its output checked, and the
-coverage log has one line per translation unit; a coroutine program
-reaches hod as bitcode; with `HOD_STRICT=1` the compile fails with hod's
-diagnostic. The test needs `kiln++`: `$HOD_KILN`, else
+`kiln_builds_and_runs_programs_through_the_shim`: with a real kiln and a
+shim of the host's LLVM, and then of every other supported LLVM installed
+as `/usr/lib/llvm-<N>`, a program with iostream, a virtual call and an
+exception is compiled through `kiln++-hod`, linked, run and its output
+checked, and the coverage log has one line per translation unit, which
+says the module was text and was not converted. Three programs reach hod
+as bitcode (a coroutine, an `always_inline` function, and the first
+program at `-O1`): each is linked, run and checked, and its coverage line
+says that hod was given bitcode, converted it (a conversion time, the
+triple known), declined it as text and that the fallback exited 0. A
+caller's `HOD_BITCODE_VIA` naming a file that does not exist is set
+throughout and must not matter. With `HOD_STRICT=1` the compile fails
+with hod's diagnostic for text and for converted bitcode alike. The test
+needs `kiln++`: `$HOD_KILN`, else
 `<build root>/target-kiln/release/kiln++` beside this checkout's target
 directory. Without one it skips with a note; under `HOD_REQUIRE_TOOLS=1`
 it fails.
@@ -170,7 +218,7 @@ options.
 
 | option | meaning | default |
 |---|---|---|
-| `-j <N>`, `-j<N>`, `--jobs <N>` | tests run at once, at least 1 | the smaller of 4 and the machine's cores; more than 16 is 16 |
+| `-j <N>`, `-j<N>`, `--jobs <N>` | tests run at once, at least 1; under a jobserver an upper bound ("Jobserver") | the smaller of 4 and the machine's cores; more than 16 is 16 |
 | `--llvm <major or dir>` | the oracle: an LLVM major, or an installation directory (its `bin/llc`) | the first of 22 and 19 that is installed |
 | `--target <arch>` | `aarch64` or `x86_64` | this host's |
 | `--linker <name>` | `bfd`, `lld`, `mold` or `wild`; repeatable; the order given does not matter | every one that is found |
@@ -335,6 +383,10 @@ A harness run therefore ends whatever its children do, and `-j` bounds
 the processes alive at once to one per job (plus a linker under its
 driver).
 
+Each process also holds a jobserver token for its lifetime when the
+harness inherited a pool, and its wall-clock limit starts once the token
+is held ("Jobserver").
+
 ### Work directory
 
 Each run works in `<build directory>/irdiff/run-<pid>-<time>/`, a new
@@ -374,7 +426,7 @@ does not depend on `-j`.
 ### Summary
 
 On standard output: one line that says what ran (oracle, hod, target,
-linkers, mode, jobs); a line `irdiff: note: ...` per note and `irdiff:
+linkers, mode, jobs, and the jobserver pool if there is one); a line `irdiff: note: ...` per note and `irdiff:
 error: ... (HOD_REQUIRE_TOOLS=1)` per missing required tool; one line per
 FAIL, XPASS, ERROR, XFAIL and SKIP (per PASS and UNSUPPORTED too with
 `-v`), where the linkers of a test with the same result share a line, and
@@ -531,6 +583,234 @@ every outcome is provoked on any Linux machine: `pass_with_every_linker`,
 on a rewritten module: a wrong result, wrong output, a hang and a missing
 `main` are each a FAIL with every linker, and the unmodified module is a
 PASS), `limits_hold_for_real_programs`.
+
+## Jobserver
+
+Every agent on a machine shares one CPU and memory budget, so the harness
+is a GNU make **jobserver client**, like the cargo and rustc it runs
+alongside. The client is ported from kiln's (`xtask/src/jobs.rs` there);
+"Differences from kiln" lists what hod changed.
+
+- **The pool.** `scripts/jobserver.sh` owns it: `start` makes a fifo
+  (`$HOD_JOBSERVER_FIFO`, else `/run/hod/jobserver.fifo`) holding one byte
+  per token (`$HOD_JOBS`, else 12), a holder process that keeps it open,
+  and a loop that runs `refill` every 60 s. `scripts/env.sh` exports
+  `MAKEFLAGS=--jobserver-auth=fifo:<path>` while that fifo exists (and
+  `HOD_NO_JOBSERVER` is unset); otherwise it caps `CARGO_BUILD_JOBS`
+  and there is no pool.
+- **What is honoured.** `MAKEFLAGS` containing `--jobserver-auth=fifo:<path>`
+  (make 4.4's fifo style; the last `--jobserver-auth=` word wins), read
+  once per process. The fifo is opened read+write and stays open until the
+  process ends; a token is one byte read from it, and the same byte is
+  written back on release.
+- **The clients.** One implementation, `hod_testutil::jobs` (`Client`,
+  `Token`, `global()`), for the two kinds of process that start children:
+  - a **test binary**: every child started through `hod_testutil::run_with`
+    (and so `run` and `write_script`) holds one token for its whole
+    lifetime;
+  - **xtask**: every child started through `irdiff::process::run` holds one
+    token for its whole lifetime: each oracle, hod, linker-driver and
+    program process of `cargo xtask irdiff` (and of the `irdiff` step of
+    `cargo xtask ci`), the `llc --version` probes, and the `llvm-config
+    --version` of `cargo xtask shim`.
+
+  A time limit starts once the token is held: waiting for the pool is never
+  a timeout. The `cargo` steps (`fmt`, `clippy`, `test` of `cargo xtask
+  ci`; the `cargo build` of the workspace's hod for `irdiff`) hold no token
+  of xtask's: cargo is a client itself, and so are the test binaries it
+  runs. The `/bin/sh` that delivers a signal to a process group is not
+  counted. What a child starts itself (hod's fallback `llc`, a linker
+  under its driver) runs on the child's token.
+- **The implicit token.** As with make, each client process owns one token
+  that is not in the pool: one child may run without reading the fifo;
+  each further concurrent child needs a pool byte. So N concurrent clients
+  on a pool of P tokens run at most P + N children. (A client that is
+  itself the child of a client runs on the token its parent holds for it,
+  so the bound holds for a tree of them.)
+- **`-j`** and the test threads stay what they are: `irdiff -j N` has N
+  worker threads and a test binary has `RUST_TEST_THREADS` test threads, so
+  they are an upper bound on in-flight children; the pool can only lower
+  the effective parallelism. A worker waits for a token in `acquire`, and
+  takes the implicit token if that becomes free first.
+- **Release.** Tokens are released by `Drop`: on a normal exit, an error
+  return, a panic of the thread, and a child killed by a limit.
+- **What the pool's refill sees.** Tokens get lost (a client killed with
+  SIGKILL takes its tokens with it), so the pool script's `refill` tops the
+  pool up to its size less the tokens in use, which it must never
+  under-count. It counts as in use, besides the compilers it knows by
+  name, **one token per child process of every process that has the fifo
+  open**. The client fits that accounting, and must keep doing so:
+  - it keeps the fifo open from its first use to the end of the process;
+  - it holds a pool token only for a child process of its own, from just
+    before the child is started until just after it is reaped and its
+    output is read, and one token per child at most;
+  - a byte read for a waiting thread is handed to that thread or written
+    straight back; nothing is kept in reserve.
+
+  So the tokens a client holds never exceed its live children for longer
+  than a spawn or a reap takes, and `refill` adds a token only for a
+  deficit that two passes a minute apart both saw. (A test's child that
+  leaves a descendant holding its output keeps `run_with`, and its token,
+  waiting without a child; that is a defect of the test, not of the
+  accounting.) `scripts/jobserver.sh refill` run twice while a client
+  holds tokens for sleeping children adds nothing.
+- **Signals.** xtask catches **SIGINT and SIGTERM** on a dedicated thread
+  (the `signal-hook` crate, a dependency of `xtask` alone), with or without
+  a pool. The thread starts with the first child or cargo step. The
+  handler's `unsafe` stays inside that dependency, so xtask remains
+  `forbid(unsafe_code)`. On either signal:
+  1. **The children die first.** Every child started through
+     `irdiff::process::run` is in a table from spawn to reap
+     (`xtask::jobs::children`), and each is the leader of its own process
+     group.
+     - Each live group is killed with `SIGKILL`: the limit wrapper, the
+       tool, and what the tool started all go together.
+     - The `cargo` steps go through `jobs::children::run_step`, which puts
+       them in the same table when the signal thread is running. Their
+       group gets `SIGTERM` first, so cargo can stop its rustc and test
+       children, and `SIGKILL` 3 s later if it is still alive. Cargo is a
+       jobserver client of its own and holds no xtask token, so tokens
+       that cargo or a test binary still held when it died are lost until
+       the pool is refilled.
+     - The thread then waits until each child is reaped and no spawn is in
+       flight. It waits at most 10 s, for a child in uninterruptible sleep.
+     - A child whose spawn was in flight is killed as it registers.
+     - From then on nothing is started: `process::run` and `run_step` do
+       not return to their callers any more (their threads park), so a
+       child the interrupt killed is nobody's result, no results file is
+       written, and nothing races the signal thread to the exit.
+     - stderr says `xtask: signal N: killed K child process(es)`.
+  2. Every pool byte the process still holds (by live tokens, or already
+     read for waiting workers) is written back to the fifo. This happens
+     only after step 1, so an orphan never runs on a returned token. Tokens
+     whose children were reaped in step 1 went back through their normal
+     `Drop`. The helper thread may still be in a read that nobody waits
+     for any more; it takes the next byte that reaches the fifo, as likely
+     as not one of those just written, and writes it straight back. The
+     signal thread waits until that read is done (at most 200 ms: with an
+     empty pool the read gets nothing), so that the process does not end
+     with a byte in the helper's hands; no other read is started.
+  3. Later token drops return nothing, and new acquisitions are free. Each
+     token is therefore returned exactly once.
+  4. The signal's default action ends the process (falling back to exit
+     status 128 + signal). stderr says `xtask: signal N: returned K
+     jobserver token(s)` when K is not 0.
+
+  The memory and time limits are unchanged: they kill one child's group
+  and leave the table to its normal reap.
+- **A test binary handles no signal.** `hod_testutil` has no dependency to
+  do it with, and libtest owns the process. A test binary that is killed
+  loses the pool tokens it held, and its children live on until they end
+  or their limits stop them. (The test binaries that call `xtask` as a
+  library, its own and `hod_cli`'s, get xtask's signal thread with their
+  first `process::run` and behave as xtask does.)
+- **What a normal exit can lose.** A helper thread left in a read that
+  nobody waits for takes a byte that reaches the fifo and writes it back
+  at once. A process that ends between those two steps takes the byte with
+  it. Nothing in a process can close that window for an exit it does not
+  control; the pool script's refill covers it.
+- **SIGKILL cannot be handled.** No process can catch it, so `kill -9`
+  (including the kernel's OOM killer), or any other fatal signal a client
+  does not catch, loses the tokens the client held, as it would for make
+  and cargo. The pool script's refill loop restores them within two
+  minutes; `cargo xtask jobserver refill` does it at once.
+- **`cargo xtask jobserver status|refill [--fifo <path>] [--jobs <n>]`.**
+  - The fifo is `MAKEFLAGS`' `fifo:` path, else `$HOD_JOBSERVER_FIFO`,
+    else `/run/hod/jobserver.fifo`.
+  - `<n>` is `$HOD_JOBS`, else the number `scripts/jobserver.sh` recorded
+    beside the fifo (`jobserver.jobs` for `jobserver.fifo`: the fifo's
+    path with `.fifo` replaced by `.jobs`), else 12.
+  - Both open the fifo read+write with `O_NONBLOCK`. They count the idle
+    tokens by reading until `EWOULDBLOCK` and write the same bytes back.
+    `status` prints `jobserver <path>: I idle token(s) of <n>`.
+  - `refill` also writes `+` bytes up to `<n>` idle tokens. It is only
+    correct while no client holds tokens (nothing building or testing):
+    tokens in use come back on top of the refill. It leaves a pool above
+    `<n>` alone and reports it. (`scripts/jobserver.sh refill` is the one
+    that is safe while clients run.)
+  - Neither ever blocks, whatever the state of the pool: a fifo nobody
+    holds open has no idle token. The non-blocking open uses a hard-coded
+    `O_NONBLOCK` per OS (Linux, Android, macOS and the BSDs); on other
+    platforms both fail with an error.
+  - A usage error, or a path that is not a fifo, is exit status 2.
+- **Fallback.** With no `MAKEFLAGS`, the descriptor forms
+  (`--jobserver-auth=R,W`, `--jobserver-fds=R,W`, which need inherited
+  descriptors), a path that is not a fifo or cannot be opened (one warning
+  per process, `jobserver: warning: cannot use jobserver fifo <path>
+  (<why>); running without it`), or a later fifo I/O error (a warning;
+  acquisition becomes free), `-j` and the test threads alone bound the
+  parallelism, exactly as without a jobserver. A fifo that has no token
+  and never gets one (its holder is gone) is still a pool: a client runs
+  its children one at a time, on its implicit token, and does not hang.
+- **The run header** of `irdiff` names the pool after the jobs: `-j N
+  (jobserver fifo:<path>)`; without a pool it is `-j N` as before.
+
+### Differences from kiln
+
+- The client is in `hod_testutil` (a crate of test support that is never
+  shipped, and has no dependency), not in `xtask`, because hod's tests
+  start most of their oracle processes from the test binaries, which kiln's
+  do not. `xtask` depends on `hod_testutil` for it and adds the signal
+  thread, the table of children and the command (`xtask/src/jobs.rs`,
+  `xtask/src/jobs/children.rs`).
+- Test binaries are clients, without signal handling.
+- `process::run` does not return once xtask is interrupted (kiln's returns
+  `Interrupted` to a runner that is about to be ended anyway); see
+  "Signals".
+- `release_all` waits for the helper's read in flight ("Signals", step 2);
+  kiln's returns at once, and an interrupted kiln harness can end with one
+  byte in its helper's hands.
+- Signals are delivered to a process group by `/bin/sh -c 'kill ...'`,
+  whatever `PATH` is, as "irdiff", "Child processes" already did.
+- The pool size defaults to 12 and is read from the file the pool script
+  writes; the fifo defaults to `/run/hod/jobserver.fifo`.
+- hod has no measured runs yet (`bench`): when it does, their clock too
+  starts once the token is held.
+
+### Tests
+
+`crates/hod_testutil/src/jobs.rs` (the client, each over a pool of the
+test's own): `parses_makeflags`, `no_jobserver_is_free`,
+`rejects_a_non_fifo`, `bounds_concurrency_by_pool_plus_implicit`,
+`implicit_token_frees_a_waiter`,
+`release_all_returns_held_and_spare_bytes`,
+`release_all_waits_for_the_helpers_read`,
+`refill_tops_up_without_blocking`,
+`a_stale_fifo_is_counted_without_blocking`, `tokens_return_on_panic`,
+`a_broken_pool_is_free`. `crates/hod_testutil/src/lib.rs`:
+`run_holds_a_token_for_the_childs_lifetime` (and returns it when the
+child is killed at its time limit),
+`the_time_limit_starts_once_the_token_is_held`.
+
+`crates/hod_testutil/tests/jobserver.rs` runs the test binary itself as a
+client of a private pool: `a_test_binary_is_bounded_by_the_pool` (8
+threads on 2 tokens: never more than 3 children alive, measured by the
+children), `without_a_usable_pool_nothing_waits` (each fallback, and the
+one warning), `a_pool_without_tokens_serializes_and_does_not_hang`,
+`the_pool_script_does_not_mint_tokens_for_this_client`
+(`scripts/jobserver.sh start`, `refill` twice while the client's children
+sleep, `stop`, on a pool of its own).
+
+`xtask/src/jobs.rs`: `jobserver_cli`, `jobserver_cli_defaults`.
+`xtask/src/jobs/children.rs` ("Signals", step 1):
+`shutdown_kills_and_reaps_live_children`,
+`run_step_is_registered_and_terminated`,
+`run_step_ignoring_term_is_killed`, `run_step_without_table`,
+`run_step_runs_a_command`.
+
+`xtask/tests/jobserver.rs` runs the command: `irdiff_is_bounded_by_the_pool`
+(`-j 8` over fake tools on 2 tokens: at most 3 children, the header, the
+pool left full), `irdiff_without_a_usable_pool`,
+`an_interrupted_irdiff_kills_its_children_and_returns_its_tokens` (SIGTERM
+and SIGINT: the children are gone, the pool has all its tokens, xtask ended
+by the signal, no results file), `the_jobserver_command` (the defaults from
+the environment; a fifo nobody holds does not block it),
+`env_sh_names_the_pool_while_its_fifo_exists`.
+
+Every one of these makes its fifo in the system's temporary directory
+(`hod_testutil::jobs::PrivatePool`, `LocalDir`), not in the build
+directory: a fifo is unreliable on a bind mount. None reads or writes the
+machine's pool, and all pass with and without one.
 
 ## Test directives
 
@@ -1075,3 +1355,616 @@ two sources' rules, `kiln::{discover, parse_header, plan}` and
   verified through `irdiff --hybrid` with the workspace's hod, and
   counted. Skips without the tools; fails under `HOD_REQUIRE_TOOLS=1`. It
   needs neither kiln nor the GCC suite.
+
+## bench
+
+```
+cargo xtask bench [--generate | --check | --update-baseline --reason <text> | --report] [options]
+```
+
+The measurement harness: how long `llc -O0` and hod take to turn a set of
+pinned inputs into object files, how much memory they need, and how large
+the objects are. Speed and memory are tested properties of hod
+(`docs/VALIDATION.md`), and this command is where they are measured,
+compared with `llc`, and gated against a recorded baseline. Unix hosts
+only; the memory probe needs GNU `time`.
+
+Without an action the command produces the inputs that are not up to
+date, measures every input with every tool configuration, writes a
+results file and prints a summary. The default run (20 inputs, 3 runs)
+takes well under a minute on the development host, and everything the
+command starts runs serially, one process at a time.
+
+### Options
+
+One action at most; value options are `--name <value>` or
+`--name=<value>`. The command takes no other arguments.
+
+| option | meaning | default |
+|---|---|---|
+| `--generate` | action: produce every selected input's IR again, list the inputs, measure nothing ("Inputs") | |
+| `--check` | action: measure, then judge hod against a baseline ("The gate") | |
+| `--update-baseline` | action: measure, then record the run as this machine's baseline ("Baselines"); needs `--reason`; takes neither `--filter` nor `--kiln`, and only the preferred LLVM (22) | |
+| `--report` | action: write the report from a results file, measure nothing ("The report") | |
+| `--reason <text>` | why the baseline changes; only with `--update-baseline`, and not blank | |
+| `--runs <N>` | runs per input and tool configuration, 1 to 100 | 3 |
+| `--filter <text>` | only the inputs whose name contains `<text>`; repeatable (any of them); matching no input is a usage error | every input |
+| `--llvm <major or dir>` | the LLVM whose `llc` is the reference, as for `irdiff` | the first of 22 and 19 that is installed |
+| `--hod <binary>` | the hod to measure | build the workspace's with the release profile (`cargo build --release --package hod_cli --bin hod`, into the build directory) |
+| `--kiln <kiln++>` | produce the inputs with kiln instead of clang ("Inputs") | clang |
+| `--judge <tool>` | the configuration `--check` judges: `hod` or `hod+fallback` | `hod` |
+| `--baseline <file>` | the baseline to check against or to write | `bench/baselines/<machine id>.tsv` |
+| `--results <file>` | the results file to write; for `--report`, to read | under the build directory ("Results file") |
+| `--out <file>` | what `--report` writes | `docs/status/perf.md` |
+| `-v`, `--verbose` | also print hod's phase times | |
+| `-h`, `--help` | print the usage and exit 0 | |
+
+The build directory is that of `irdiff`. Everything the command writes is
+under `<build directory>/bench/`, except a `--results` file, the baseline
+and its log (`--update-baseline`), and the report (`--report`).
+
+### Tools
+
+- **Reference.** `llc`, found as `irdiff` finds its oracle ("irdiff",
+  "Tools").
+- **Producer.** The C and C++ compilers of the same LLVM: for `clang` and
+  `clang++`, the file beside `llc` under `llc`'s own naming (`llc-22` has
+  `clang-22`, a plain `llc` has `clang`), else `<name>-<major>` on
+  `PATH`, else `/usr/lib/llvm-<major>/bin/<name>`. With `--kiln <kiln++>`:
+  that file for C++ and the file beside it named without the `++` for C.
+  The producer's version is the first non-empty line of its C++ compiler's
+  `--version` (the C compiler's when there is no C++ compiler).
+- **hod.** `--hod`, or the workspace's built with the release profile:
+  what is measured is what a user would run.
+- **Memory probe.** GNU `time` at `/usr/bin/time`. It is used if a trial
+  run of it (`-f '%M %U %S' -o <file> -- /bin/sh -c :`) writes its three
+  numbers. Without it only wall time is measured, and the summary says so.
+
+Without `llc` or without a producer nothing is measured: the summary says
+what was not found and the exit status is 0, or 3 under
+`HOD_REQUIRE_TOOLS=1`, which also makes a missing memory probe a failure
+(the run is still made).
+
+### Manifest
+
+`bench/manifest` lists the inputs. It is read line by line; surrounding
+blanks are ignored, as are empty lines and lines that start with `#`.
+
+```
+common = -O0 -S -emit-llvm -fdebug-compilation-dir=.
+
+[stl-heavy]
+class = large
+source = stl_heavy.cpp
+flags = -std=c++23
+```
+
+- `[name]` starts a section. A name is lower-case letters, digits and `-`,
+  starts with a letter or a digit, does not end in `-` or `-g`, and is
+  used once.
+- Any other line is `key = value`, split at the first `=`.
+- Before the first section the only key is `common`, required, once: the
+  flags of every compile, separated by blanks (there is no quoting).
+- In a section: `class` (required): `small`, `typical`, `large` or
+  `pathological`. `source` (required): a file under `bench/src/`, as a
+  relative path without `..`, ending in `.c` (C) or `.cpp`, `.cc`, `.cxx`
+  (C++). `flags` (optional, may be empty): more flags for this source.
+  Each key once.
+- `-o` and `-g` may not appear in `common` or `flags`: the harness adds
+  them.
+
+Every error of the file is reported with its line (`line 7: unknown class
+'huge': ...`), and a manifest with an error, or without a section, is
+exit status 2.
+
+A section gives two inputs, in this order: `<name>`, compiled with
+`common` then `flags`, and `<name>-g`, compiled with `-g` after those.
+
+### Inputs
+
+The sources in `bench/src/` are written for this repository, each with a
+comment that says what it stands for, each a complete program whose `main`
+checks its own results and returns 0. The classes:
+
+| class | inputs | what it is |
+|---|---|---|
+| `small` | `small-c`, `small-cxx` | a few functions; process start-up is most of the time |
+| `typical` | `interp` (C: an interpreter with one large `switch`), `tables` (C: large initialised data with relocations, a large zero-initialised array), `exceptions` (C++: nested handlers, cleanups, rethrow), `containers` (C++: standard containers and strings) | an ordinary translation unit, hundreds of KiB to a few MiB of IR |
+| `large` | `templates` (thousands of small `linkonce_odr` functions from our own templates), `stl-heavy` (streams, regular expressions, variants, hash maps) | thousands of functions, several MiB of IR |
+| `pathological` | `huge-function` (one function of tens of thousands of instructions), `tiny-functions` (five thousand functions of a few instructions) | one shape taken to an extreme |
+
+An input's IR is `<build directory>/bench/inputs/<producer>/<input>.ll`,
+where `<producer>` is `clang<major>` or `kiln`. It is produced by running,
+in `bench/src/`,
+
+```
+<compiler> <common> <flags> [-g] -o <temporary file> <source>
+```
+
+under the limits of "Child processes" below with 3 minutes and 8 GiB, and
+renaming the result. The compile runs in the source's directory with the
+source named relatively, and `common` carries
+`-fdebug-compilation-dir=.`, so that the IR, and with it its hash, does
+not depend on where the checkout is. Beside the IR, `<input>.stamp`
+records, as `key<TAB>value` lines, `key` (the hash of the producer's
+version, the compile's arguments and the source's bytes, each ended by a
+NUL), `ir_bytes`, `functions` and `ir_hash`.
+
+An input is up to date when its stamp has the key the manifest, source
+and producer give now and the IR file has the recorded size. A run
+produces the inputs that are not up to date; `--generate` produces every
+selected input again and prints, per input, its class, size, function
+count, hash and whether it was produced. (The stamp does not see the
+headers a source includes. The sources include standard-library headers
+only, which change with the toolchain; `--generate` is the remedy.)
+
+An input is identified by:
+
+- **`ir_bytes`**, the size of the IR file;
+- **`functions`**, the number of lines of it that start with `define `;
+- **`ir_hash`**, `fnv1a64:` and the 16 lower-case hexadecimal digits of
+  the 64-bit FNV-1a hash of its bytes (offset `cbf29ce484222325`, prime
+  `100000001b3`).
+
+An input that cannot be produced (the compiler fails, times out, writes
+nothing, or there is no compiler for its language) is one `error` record
+with the tool `generate` and is not measured.
+
+### Measurement
+
+Each input is measured with three tool configurations:
+
+| tool | command | what it is |
+|---|---|---|
+| `llc` | `<llc> -O0 -filetype=obj -relocation-model=pic -o <object> <input>.ll` | the reference |
+| `hod` | `<hod> --strict --coverage-log=<file>` and the same arguments | what hod does by itself |
+| `hod+fallback` | `<hod> --fallback=<llc> --coverage-log=<file>` and the same arguments | what a hybrid build runs: hod, and `llc` for what hod declines |
+
+A **round** runs each configuration once, in that order. An input is
+measured in `--runs` rounds, then the next input: so a burst of load on
+the machine falls on all three configurations and not on every run of
+one. Nothing else is started by the harness while a child is measured.
+
+A measured child:
+
+- runs in the run's work directory, with the harness's environment
+  without `MAKEFLAGS` and `CARGO_MAKEFLAGS` (a measured child is one
+  process and is not to find a jobserver), and, for hod, without
+  `HOD_FALLBACK_LLC`, `HOD_STRICT`, `HOD_COVERAGE_LOG` and
+  `HOD_IN_FALLBACK` and with `HOD_TIME_PHASES=<file>` ("Phases");
+- has no standard input or output; the first 64 KiB of its standard error
+  are kept for diagnostics;
+- is started as `/bin/sh -c '<set the limits>; exec "$@"' sh <KiB>
+  <seconds> [/usr/bin/time -f '%M %U %S' -o <file> --] <program>
+  <arguments>`, in its own process group, with the limits of "irdiff",
+  "Child processes" (2 minutes, 8 GiB), set outside GNU `time` so that its
+  report is the program's alone;
+- has its object, coverage log, phase report and usage report removed
+  before it starts.
+
+What is measured:
+
+- **Wall time**: from just before the child is started to the return of
+  `wait`, taken by a thread that is blocked in `wait` (not by polling, which
+  would add its interval). It includes starting the shell and GNU `time`
+  ("The method's error").
+- **CPU time**: user plus system seconds of the program, from GNU `time`
+  (`%U`, `%S`), in microseconds.
+- **Peak memory**: the peak resident set size of the program in KiB, from
+  GNU `time` (`%M`). GNU `time` is used because the kernel's resource
+  record of a child (`wait4`) cannot be read from safe Rust without a
+  dependency.
+- **Object size**: the size of the object file after the run.
+
+Over the runs of one configuration on one input:
+
+| figure | value |
+|---|---|
+| wall time | the fastest run (`wall_us_min`), the gate's figure and the one in every ratio; also the middle (`wall_us_median`) and the slowest (`wall_us_max`) |
+| CPU time | the smallest |
+| peak memory | the middle run (`rss_kib`); also the smallest and the largest |
+| object size | the last run's |
+| phases | those of the fastest run |
+
+The middle of an even number of values is the lower of the two middle
+values plus half their difference, rounded down. The fastest run is the
+estimate because noise on a shared machine only ever adds time; the
+spread, `(wall_us_median - wall_us_min) / wall_us_min`, says how much it
+added to a typical run.
+
+### Outcomes
+
+Every record has one of four statuses.
+
+| status | when |
+|---|---|
+| `ok` | the tool exited with status 0 and wrote a non-empty object itself: `llc` always; hod when its coverage line says `hod` |
+| `fallback` | `hod+fallback` exited with status 0, its coverage line says `fallback`, and the object is there. The detail is the coverage reason |
+| `declined` | `hod` (strict) exited with status 2 and its coverage line says `error`. The detail is the coverage reason. No object |
+| `error` | anything else: another exit status, a signal, the time limit, no object, no coverage line, a malformed phase report, runs of the same tool that did not end the same way, a harness failure; or the input could not be produced |
+
+A **decline is not a time for building an object**. Its record keeps what
+declining cost (hod reads the whole module before it declines), but has
+no object size, no ratio to `llc` and no throughput, and the summary shows
+it as `declined: <reason>`, never in the column of build times.
+
+An **error is not a zero**. An `error` record has no numbers at all, 0
+runs, and the detail says what happened (`llc exited with status 1: <first
+line of its standard error>`, `hod was terminated by signal 11`, `llc timed
+out after 120 s`, `hod+fallback exited with status 0 and wrote no object`).
+The tool is not run again on that input; the other tools and inputs are
+measured, and the run's exit status is 3.
+
+### The method's error
+
+Each run measures its own method first and records the result in the
+header of the results file:
+
+- **`floor_us`**: the fastest of 5 runs of `/bin/true` as a measured
+  child. Every wall time includes about this much (the shell, GNU `time`,
+  a process start). It is recorded, not subtracted: the same amount is in
+  `llc`'s and hod's times, which makes ratios of small inputs closer to 1
+  than the tools are, and the reader can see by how much.
+- **`rss_error_kib`**: the peak memory measured for `dd if=/dev/zero
+  of=/dev/null count=1` with a block of 64 MiB plus 4 KiB, minus that for
+  a block of 4 KiB, minus 65536. `dd` allocates its block and fills it, so
+  this is the error of the probe on a known allocation, signed.
+
+The stated error of the peak-memory figure is 1% of a 64 MiB allocation
+(655 KiB) and a test holds the probe to it; on the development host the
+measured error is under 100 KiB. CPU time has the resolution of GNU
+`time`'s report, 10 ms, and is therefore reported but neither gated nor
+meaningful for the small inputs.
+
+### Ratios and throughput
+
+Every record of hod that produced an object (`ok` or `fallback`) carries,
+besides its absolute figures, the ratio of each to `llc`'s for the same
+input in the same run: `wall_ratio` (fastest over fastest), `cpu_ratio`,
+`rss_ratio` (middle over middle), `size_ratio`. A ratio is a decimal with
+four digits after the point, rounded to nearest (`0.1250`); it is absent
+when either side lacks the figure, when `llc`'s record is not `ok`, and
+for `llc` itself.
+
+Every record that produced an object carries its throughput on the
+fastest run: `ir_bytes_per_s` = `ir_bytes` × 1000000 / `wall_us_min` and
+`functions_per_s` likewise, rounded down.
+
+### Phases
+
+hod reports where its time went through the phase report of `spec/cli.md`
+("Phase report"): the harness sets `HOD_TIME_PHASES` to a file in the work
+directory for every run of hod and reads it afterwards. A record carries
+the phases of its fastest run, in hod's order, `total` included. A hod
+that writes no report (one older than the mechanism) has no phases; a
+report with a line that is not `<phase><TAB><digits>` is an error.
+
+The harness takes whatever phase names it finds. Today they are `read`,
+`compile`, `write` or `fallback`, and `total`; the names reserved for the
+code generator's own phases are `ingest`, `analysis`, `emission`,
+`debug-info` and `object`.
+
+### Results file
+
+`<build directory>/bench/results-llvm<major>.tsv`
+(`results-kiln-llvm<major>.tsv` with `--kiln`), or the `--results` file.
+Each run replaces it (written to a temporary name beside it and renamed).
+A baseline is the same format. The file is text:
+
+```
+# hod-bench 1
+# <key>⇥<value>            (the header, one line per key)
+# fields⇥status⇥input⇥...  (the names of the 25 fields)
+<record>                   (one line per input and tool)
+```
+
+The header keys, in order; a key whose value is not known is left out:
+
+| key | value |
+|---|---|
+| `date` | when the measurement started, UTC, `YYYY-MM-DDThh:mm:ssZ` |
+| `machine` | the machine id ("Machine") |
+| `cpu`, `cores`, `arch` | what the id is made of |
+| `llc_version` | `LLVM version <x.y.z>`, from `llc --version` |
+| `hod_version` | the first line of `hod --version` |
+| `hod_build` | `workspace, release profile` or `given with --hod` |
+| `producer` | the producer's version |
+| `runs` | `--runs` |
+| `usage` | `gnu-time (<path> -f '%M %U %S')` or `none` |
+| `floor_us`, `rss_error_kib` | "The method's error"; the latter with its sign |
+| `load` | the three load averages of `/proc/loadavg` when the measurement started |
+
+Records are in manifest order, and for each input `llc`, `hod`,
+`hod+fallback` (or the one `generate` record). The fields, separated by
+tabs; a figure that does not exist is `-`:
+
+| # | field | value |
+|---|---|---|
+| 1 | `status` | `ok`, `fallback`, `declined`, `error` |
+| 2 | `input` | the input's name |
+| 3 | `class` | its class |
+| 4 | `debug` | `g` for a `-g` input, else `-` |
+| 5 | `tool` | `llc`, `hod`, `hod+fallback`, `generate` |
+| 6 | `ir_bytes` | |
+| 7 | `functions` | |
+| 8 | `ir_hash` | |
+| 9 | `runs` | the runs the figures are from; 0 for an error |
+| 10–12 | `wall_us_min`, `wall_us_median`, `wall_us_max` | microseconds |
+| 13 | `cpu_us` | microseconds |
+| 14–16 | `rss_kib`, `rss_kib_min`, `rss_kib_max` | KiB |
+| 17 | `object_bytes` | |
+| 18–21 | `wall_ratio`, `cpu_ratio`, `rss_ratio`, `size_ratio` | to `llc` |
+| 22–23 | `ir_bytes_per_s`, `functions_per_s` | |
+| 24 | `phases` | `<phase>=<microseconds>` joined by `,` |
+| 25 | `detail` | the reason of a decline or a fallback; what failed |
+
+Every number is a decimal integer except the ratios. Header values and
+fields 2, 8, 24 and 25 are free text, escaped as in hod's coverage log
+(`\\`, `\t`, `\n`, `\r`; an empty value is `-`, and a value that is
+exactly `-` is written `\-`). Fields 22 and 23 are derived from 6, 7 and
+10 and are ignored when a file is read. A file read and written again is
+the same bytes. A reader refuses a first line that is not `# hod-bench
+1`, a `fields` line that differs from its own, a header key that appears
+twice or after a record, and a record that is not 25 well-formed fields,
+with the line number.
+
+### Machine
+
+The machine id says which runs' absolute numbers may be compared. It is
+`<arch>-<cpu>-<cores>c`, where `<arch>` is the architecture the harness
+was built for, `<cpu>` is the first `model name` of `/proc/cpuinfo`, else
+`implementer <CPU implementer> part <CPU part>` from its first such lines
+(Arm), else `unknown`, and `<cores>` is the parallelism available to the
+process; then every run of characters other than ASCII letters and digits
+becomes one `-`, letters become lower-case, and no `-` is left at the
+ends. Example: `aarch64-implementer-0x61-part-0x000-24c`. It names no
+host and no user. Two machines of the same model share an id, and their
+numbers are comparable to the extent that they are the same machine.
+
+### Summary
+
+On standard output: a line per missing tool and per note; one line that
+says how many inputs, on which machine, produced by what; one that states
+the method (runs, floor, memory error, load); a table of `llc`'s figures
+per input (class, IR size, functions, fastest time, spread, peak memory,
+object size, IR MB/s, functions/s); a table of hod's (time and memory of
+what hod built itself with their ratios to `llc`, the same for
+`hod+fallback`, and in words what strict hod did: `built`, or `declined:
+<reason> (in <time>, <memory>)`); with `-v` a line of phases per record
+that has them; a line `bench: ERROR <input> <tool>: <detail>` per error;
+the sums of the fastest runs of hod and of `llc` over the inputs both
+produced, with their ratio; the middle and the largest spread of `llc`'s
+times, with the input of the largest; the counts; and where the results
+are. Times are in milliseconds, memory in MiB, sizes in KiB.
+
+### Baselines
+
+A baseline is the results file of a run on one machine, committed as
+`bench/baselines/<machine id>.tsv`, with every tool's records: hod's are
+what the gate compares, `llc`'s are its control.
+
+`--update-baseline --reason "<text>"` measures every input and then
+
+- refuses, with exit status 3 and nothing written, if the run has an
+  `error` record;
+- writes the run as the baseline (`--baseline <file>` or this machine's);
+- appends one line to the log beside it (the baseline's name with `.log`
+  for `.tsv`): `<date><TAB><reason><TAB><N> inputs, hod built <M>;
+  <hod_version>; <runs> runs`, with tabs and line ends in the reason
+  replaced by blanks;
+- says how many inputs have a time, of any tool that built them, whose
+  spread is above 5%: the gate will not fail on those times ("The gate",
+  "Spread"). A baseline that is to bind times is recorded on a quiet
+  machine, or with more `--runs`.
+
+The baseline is replaced deliberately, by a person or agent who can say
+why hod's numbers changed; the log is the history of those reasons, next
+to the numbers in the repository's own history. A baseline holds every
+input of the manifest, produced by clang, measured against the preferred
+LLVM: `--update-baseline` with `--filter`, with `--kiln`, without a
+reason, or with another LLVM is a usage error.
+
+### The gate
+
+`--check` measures, then judges every record of the judged configuration
+(`hod`; `hod+fallback` with `--judge`) against the baseline: the one
+named with `--baseline`, else this machine's, else the first by name of
+the baselines recorded for other machines; with none at all there is
+nothing to judge, the summary says so, and the exit status is 0.
+
+The baseline **binds** the run when its `machine` and its `llc_version`
+are the run's. Per input, with `base` the baseline's record and `now` the
+run's, the verdict is the first of these that applies:
+
+| verdict | when | effect |
+|---|---|---|
+| not judged: the run has an error for this input | `now` is an `error` | the run's exit status is 3 for the error |
+| new: the baseline does not have this input | no `base`, or `base` is an `error` | |
+| advisory: the input changed since the baseline | the `ir_hash` differs | |
+| not judged: declined, as in the baseline | both are `declined` | |
+| advisory: another machine (`<id>`), another llc (`<version>`) | the baseline does not bind | |
+| LOST | `base` is `ok` and `now` is not: hod no longer builds what it built | fails |
+| new: hod builds this input now | `now` is `ok` and `base` is not | |
+| REGRESSED (time), (memory), (time, memory) | below | fails |
+| NOISY | below | exit status 3 |
+| improved | not regressed, and `base` is above `now` by more than the same margins (without drift) in time or in memory | a line that reminds of `--update-baseline` |
+| ok | otherwise | |
+
+A decline is not judged: it is not a time for building an object, and a
+3 ms process is below what the method resolves. The table shows what it
+cost then and now. What hod hands to its
+fallback (`--judge hod+fallback`, status `fallback` on both sides) is a
+build and is judged like one.
+
+**Memory** is regressed when `now.rss_kib` > `base.rss_kib` × 1.02 and
+by more than 512 KiB. It is judged whatever the machine is doing.
+
+**Time** is slower when `now.wall_us_min` > `base.wall_us_min` × drift ×
+1.05 and by more than 1 ms. A slower time is a regression, unless the
+measurement cannot carry it (drift, spread), in which case the input is
+NOISY if its memory did not regress.
+
+The **5% and 2%** are hod's performance contract: a change that makes
+hod more than 5% slower or 2% larger on any input does not pass without
+a baseline update that says why. The **absolute margins** keep the gate
+from judging differences the method cannot resolve: a process start
+varies by more than 1 ms on a busy machine, and the resident set of one
+program on one input by a few hundred KiB with the state of the page
+cache (up to 316 KiB between runs was measured for hod reading a module,
+and 436 KiB for `llc`).
+
+**Drift.** `llc` is the control: it is the same program as when the
+baseline was recorded, so what it lost since, the machine lost. The drift
+of an input is `now_llc.wall_us_min / base_llc.wall_us_min`, at least 1
+(a faster machine does not tighten the gate), and 1 when either record is
+missing or not `ok`. It scales the time threshold only. A drift above
+1.25 means the machine is too busy for a time measured now to say
+anything about hod, slower or faster: the time is not judged.
+
+**Spread.** "Slower" rests on four fastest runs: hod's and `llc`'s, in
+the baseline and now. If the spread of any of the four
+(`(wall_us_median - wall_us_min) / wall_us_min`) is above 5%, the
+threshold itself, its runs disagree with each other by more than the
+difference being claimed, and the time is not a regression. (A time that
+is not slower needs no such care: noise only adds time, so a fastest run
+under the threshold was really that fast.)
+
+**NOISY** is the verdict of an input whose time could not be judged for
+either reason and whose memory did not regress. It is not a failure of
+hod and not a pass: the exit status is 3.
+
+**Measuring again.** An input whose verdict is REGRESSED or NOISY is
+measured again, `--runs` more rounds, up to twice. The new runs join the
+old ones (so the fastest of all of them is judged, the spread is that of
+all of them, and `llc`'s drift is taken from all of them) and the input
+is judged again; only a verdict that stands after that counts. The
+summary says how often each input was measured again, and the results
+file holds what was judged.
+
+**On another machine.** When the baseline does not bind, the check is
+advisory: the table compares the ratios to `llc` (`wall_ratio`,
+`rss_ratio`) of baseline and run instead of absolute figures, nothing is
+measured again, and the exit status is 0.
+
+The summary of a check is a table (input, baseline and current time and
+their difference, `llc`'s drift, baseline and current memory and their
+difference, verdict, with `; declined` and `; measured again <n>x` where
+they apply) and a line of counts with the thresholds.
+
+**Where the gate means something.** The time half of the gate needs a
+machine that repeats itself to well under 5%. The shared development
+host does not. With eight agents building on it (load average 10 to 18 on
+24 cores), over five runs of the command within five minutes the fastest
+of 3 runs of `llc` on one input ranged over 27% for the middle input and
+62% for the worst; the fastest of 15, over four runs, still over 23%.
+The ratio of two tools measured in the same rounds, which is what the
+drift correction relies on, was steadier and still moved by 5% to 20%
+from one set of 9 rounds to the next. Against a baseline recorded there,
+a time verdict that is not `ok` is usually NOISY. The memory half holds
+everywhere: `llc`'s peak memory on one input stayed within 0.75% across
+the same runs, hod's within 316 KiB.
+
+So `--check` is run where a baseline exists for the machine and the
+machine is quiet, and it is not part of `cargo xtask ci`, whose runs
+share the machine with other work by design. On the shared host it is a
+memory gate and a detector of large time regressions, and says NOISY for
+the rest.
+
+### The report
+
+`--report` reads a results file (`--results`, else the default file of
+the preferred LLVM, or of `--llvm <major>`) and writes
+`docs/status/perf.md` (`--out`): where and how the numbers were measured
+(date, machine, reference, hod, producer, method, spread), a table of
+`llc`'s figures per input, a table of hod's with what it declined, hod's
+phases, and the errors. The report is a function of the results file; it
+says that it is generated and that its numbers are those of one machine.
+It is regenerated when the baseline is.
+
+### Work directory
+
+Each measuring run works in `<build directory>/bench/run-<pid>-<time>/`,
+which holds the objects, coverage logs, phase and usage reports of the
+child being measured, and is removed when the run ends.
+
+### Exit status
+
+| status | when |
+|---|---|
+| 0 | measured (or listed, or reported) without an error; a check passed, was advisory, or had no baseline |
+| 1 | `--check`: an input is REGRESSED or LOST against a binding baseline |
+| 3 | not 1, and: a record is an `error`, an input could not be produced, a required tool is missing, an input is NOISY, or the baseline update was refused |
+| 2 | the request cannot be carried out: a usage error, a manifest with errors, a filter that matches nothing, an unusable `--llvm`, `--hod` or `--kiln`, a file that cannot be read or written |
+
+### Library
+
+`xtask::bench`: `run(&Config) -> Result<Run, String>` is the command as a
+function (`Err` is exit status 2); `Config` has a field per option, plus
+the checkout, the build directory, the tool search, the probe's path, the
+child limits, the machine, the gate's `Thresholds` and the number of
+retries, which is how the tests run it against fake tools. `Run` has the
+results, the check, `summary(verbose)` and `exit_status()`.
+`measure::run_measured` is the measured child; `record::Results` reads
+and writes the file; `check::judge` is the gate's rule for one input;
+`report::perf_md` is the report.
+
+`measure::run_measured` duplicates the limit wrapper of
+`irdiff::process::run` because that one polls for its child's end. A
+measured child holds one jobserver token ("Jobserver") from before the
+clock starts until it is reaped, so waiting for the pool is never part of
+a measurement; the build of the workspace's hod is a cargo step
+(`jobs::children::run_step`).
+
+### Tests
+
+`xtask/src/bench/manifest.rs` ("Manifest", "Inputs", "Tools"):
+`manifest_is_parsed`, `manifest_errors`, `the_repository_manifest`,
+`inputs_are_generated_and_cached`, `generation_failures`,
+`producers_are_found`.
+
+`xtask/src/bench/measure.rs` ("Measurement", "The method's error"):
+`usage_report_parsing`, `fastest_of_n_selection`, `a_measured_run`,
+`signals_and_the_time_limit`, `harness_errors_and_probe_detection`,
+`real_probe_measures_a_known_allocation` (the real GNU `time`: within 1%
+of a 64 MiB allocation; skipped without it, required under
+`HOD_REQUIRE_TOOLS=1`).
+
+`xtask/src/bench/record.rs` ("Ratios and throughput", "Results file",
+"Machine"): `ratio_computation`, `throughput`, `record_lines_round_trip`,
+`malformed_lines`, `results_file_round_trip`,
+`results_are_written_and_read`, `input_hash`, `machine_id`.
+
+`xtask/src/bench/check.rs` ("The gate", "Baselines"):
+`check_pass_and_fail`, `small_differences_are_not_judged`,
+`the_reference_tool_is_the_control`,
+`an_unsteady_measurement_is_not_a_regression`,
+`advisory_on_another_machine`,
+`inputs_without_a_comparison`, `judging_a_run_and_its_text`,
+`number_formats`, `baseline_update_with_reason`.
+
+`xtask/src/bench/report.rs` ("Summary", "The report"): `summary_text`,
+`perf_report`, `units`. `xtask/src/bench.rs` ("Options", "Phases"):
+`options`, `utc_dates`, `phase_reports`.
+
+`xtask/tests/bench_fakes.rs` runs the whole command against fake tools
+(shell scripts standing in for the compiler, `llc`, hod and GNU `time`;
+files beside them make a tool slow, large or unwilling), so every outcome
+and verdict is provoked on any Linux machine:
+`a_run_measures_every_tool` (every input and tool, fastest of N, ratios,
+a decline reported as a decline, phases, the order of a round, the file
+round trip), `failures_are_error_lines_not_zeros`,
+`a_tool_that_hangs_is_an_error`, `check_pass_and_fail` (pass; a decline
+is not judged; slower; larger; LOST; `--judge`), `the_remeasure_rule`,
+`advisory_on_another_machine`, `a_busy_machine_is_not_judged`,
+`baseline_update_with_reason`, `missing_tools`, `generate_and_report`.
+Their gate thresholds are the contract's except the absolute time margin
+(100 ms) and the drift and spread limits (off, but for the test of a
+busy machine): the fakes run for milliseconds, and the tests that judge
+time make a tool sleep for far longer than that.
+
+`xtask/tests/bench_real.rs` uses the real tools and skips without them
+(fails under `HOD_REQUIRE_TOOLS=1`): `one_input_end_to_end` (clang, `llc`,
+GNU `time`, the workspace's hod: `llc`'s record is a time, a peak memory
+and an object; hod's is a decline with its reason or an object; hod with
+its fallback costs `llc`'s memory and reports its phases; the memory
+probe is within its stated error).

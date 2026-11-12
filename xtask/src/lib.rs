@@ -5,11 +5,11 @@
 //! end-to-end test builds its shim here; later commands reuse the
 //! build-link-run-compare core of [`irdiff`]).
 
+#[cfg(unix)]
+pub mod bench;
 pub mod ci;
 #[cfg(unix)]
 pub mod corpus;
-#[cfg(unix)]
-pub mod bench;
 #[cfg(unix)]
 pub mod irdiff;
 #[cfg(unix)]

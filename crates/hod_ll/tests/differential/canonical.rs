@@ -9,8 +9,9 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use hod_ir::{
-    AttrClass, AttrSyntax, CallConv, Const, ConstId, DiKind, FixupTarget, FnAttrs, FnStr, Linkage, Module,
-    ParamAttrs, ParamMem, SymId, Symbol, SymbolKind, UnnamedAddr, UwTable, Visibility, attr_class,
+    AttrClass, AttrSyntax, CallConv, Const, ConstId, DiKind, FixupTarget, FnAttrs, FnStr, Linkage,
+    Module, ParamAttrs, ParamMem, SymId, Symbol, SymbolKind, UnnamedAddr, UwTable, Visibility,
+    attr_class,
 };
 use hod_ll::{FunctionText, Lexer, MdKind, ModuleText, ParsedModule, Tok, unescape};
 

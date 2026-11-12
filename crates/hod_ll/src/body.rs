@@ -14,10 +14,10 @@ use hod_ir::{
     ParamAttrs, TypeId, TypeKind, Value,
 };
 
+use crate::debug::{Handle, INVALID};
 use crate::error::{LlErrorKind, PResult, fail, ir_fail};
 use crate::index::{Index, parse_u32};
 use crate::lexer::{Lexer, Tok, Token, unescape};
-use crate::debug::{Handle, INVALID};
 use crate::meta::{MdKind, MdRef};
 use crate::names::hash;
 use crate::parser::{Parser, Scratch, ir};
@@ -321,11 +321,7 @@ pub fn parse_bodies<E: From<LlError>>(
     let mut parser = BodyParser::new(text);
     for function in text.functions() {
         let body = parser.parse(module, function)?;
-        let parsed = ParsedBody {
-            function,
-            body: body.as_ref(),
-            unsupported: &parser.unsupported,
-        };
+        let parsed = ParsedBody { function, body: body.as_ref(), unsupported: &parser.unsupported };
         each(module, parsed)?;
         if let Some(body) = body {
             parser.recycle(body);
@@ -1069,9 +1065,10 @@ impl<'a> Fx<'_, 'a, '_> {
                     return fail(LlErrorKind::Syntax, at, "expected a value of a debug record");
                 }
                 let span = self.skip_group()?;
-                if span.start != span.end && !self.p.src[span.start as usize..span.end as usize]
-                    .iter()
-                    .all(u8::is_ascii_whitespace)
+                if span.start != span.end
+                    && !self.p.src[span.start as usize..span.end as usize]
+                        .iter()
+                        .all(u8::is_ascii_whitespace)
                 {
                     return fail(LlErrorKind::Syntax, at, "expected a value of a debug record");
                 }
@@ -1096,7 +1093,11 @@ impl<'a> Fx<'_, 'a, '_> {
                 let at = self.p.tok.start;
                 let (ty, value) = self.typed()?;
                 if ty == TypeId::METADATA {
-                    return fail(LlErrorKind::Syntax, at, "invalid metadata-value-metadata roundtrip");
+                    return fail(
+                        LlErrorKind::Syntax,
+                        at,
+                        "invalid metadata-value-metadata roundtrip",
+                    );
                 }
                 self.s.dbg_vals.push(value);
                 Ok(false)
@@ -1107,7 +1108,6 @@ impl<'a> Fx<'_, 'a, '_> {
     /// The variable or label of a record: a numbered node of `kind`.
     fn record_node(&mut self, old: bool, kind: MdKind) -> PResult<DiId> {
         self.metadata_word(old)?;
-        let at = self.p.tok.start;
         match self.p.md_ref()? {
             MdRef::Node(id) => match self.p.handle(id) {
                 Handle::Node(node) if self.p.md_kind(id) == Some(kind) => Ok(node),
@@ -1121,7 +1121,6 @@ impl<'a> Fx<'_, 'a, '_> {
                 Ok(DiId::NONE)
             }
             MdRef::Inline(..) => {
-                let _ = at;
                 self.p.note(INVALID);
                 Ok(DiId::NONE)
             }

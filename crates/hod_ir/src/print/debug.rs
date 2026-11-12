@@ -13,13 +13,13 @@ use std::fmt::Write;
 
 use super::{PrintError, R, Writer, write_quoted};
 use crate::body::{Body, DbgDeclare, DbgRecord, DbgRecordKind, Inst};
-use crate::inst::Opcode;
 use crate::debug::expr::{DI_OPS, ExprId};
 use crate::debug::names::{
     DiFlags, SpFlags, dw_ate_name, dw_cc_name, dw_lang_name, dw_op_name, dw_tag_name,
 };
 use crate::debug::node::{DiBound, DiEnumerator, DiFieldOut, DiKind, DiNode};
 use crate::ids::{DiId, LocId, SymId};
+use crate::inst::Opcode;
 use crate::symbol::{Symbol, SymbolKind};
 use crate::value::{InstId, Value, ValueKind};
 
@@ -410,7 +410,7 @@ impl<W: Write + ?Sized> Writer<'_, W> {
 
     fn dbg_loc_close(&mut self, loc: LocId) -> R {
         let number = self.loc_number(loc)?;
-        write!(self.out, ", !{number})\n")?;
+        writeln!(self.out, ", !{number})")?;
         Ok(())
     }
 

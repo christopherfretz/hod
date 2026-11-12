@@ -14,9 +14,9 @@
 use std::borrow::Cow;
 
 use hod_ir::{
-    ChecksumKind, ConstId, DiConstant, DiFieldValue, DiFlags, DiId, DiKind, DiLocation,
-    DiMapping, DiNode, DiOther, DiShape, DiString, DiTuple, EmissionKind, ExprId, LocId,
-    NameTableKind, SpFlags, di_field, di_kind, dw_ate, dw_cc, dw_lang, dw_op, dw_tag,
+    ChecksumKind, ConstId, DiConstant, DiFieldValue, DiFlags, DiId, DiKind, DiLocation, DiMapping,
+    DiNode, DiOther, DiShape, DiString, DiTuple, EmissionKind, ExprId, LocId, NameTableKind,
+    SpFlags, di_field, di_kind, dw_ate, dw_cc, dw_lang, dw_op, dw_tag,
 };
 
 use crate::Span;
@@ -218,7 +218,6 @@ impl<'a> Parser<'a, '_> {
         Ok(())
     }
 
-
     /// The handle of the node numbered `id`: at the module level from the
     /// map being built, in a body from the module's text.
     pub(crate) fn handle(&self, id: u32) -> Handle {
@@ -227,9 +226,7 @@ impl<'a> Parser<'a, '_> {
                 let md = text.metadata();
                 md.position(id).map_or(Handle::None, |at| text.debug_map().handle(at))
             }
-            None => {
-                self.md.position(id).map_or(Handle::None, |at| self.dmap.handle(at))
-            }
+            None => self.md.position(id).map_or(Handle::None, |at| self.dmap.handle(at)),
         }
     }
 
@@ -255,7 +252,9 @@ impl<'a> Parser<'a, '_> {
             let node = self.md.nodes()[at];
             *handle = match node.kind {
                 MdKind::Tuple => Handle::None,
-                MdKind::Location => Handle::Loc(ir(node.span.start, self.module.debug.reserve_loc())?),
+                MdKind::Location => {
+                    Handle::Loc(ir(node.span.start, self.module.debug.reserve_loc())?)
+                }
                 MdKind::AssignId => Handle::AssignId,
                 MdKind::ArgList => {
                     return fail(
@@ -299,7 +298,8 @@ impl<'a> Parser<'a, '_> {
                     scratch.strs.clear();
                 }
                 Handle::Loc(id) => {
-                    let (loc, distinct) = self.location_body(node.span, node.distinct, &mut scratch)?;
+                    let (loc, distinct) =
+                        self.location_body(node.span, node.distinct, &mut scratch)?;
                     let debug = &mut self.module.debug;
                     let result = if distinct {
                         debug.define_distinct_loc(id, loc)
@@ -308,7 +308,7 @@ impl<'a> Parser<'a, '_> {
                     };
                     ir(node.span.start, result)?;
                 }
-                    Handle::None | Handle::Expr(_) | Handle::AssignId => {}
+                Handle::None | Handle::Expr(_) | Handle::AssignId => {}
             }
             self.define_tuples(&mut scratch)?;
         }
@@ -384,7 +384,11 @@ impl<'a> Parser<'a, '_> {
                         let number = self.tok;
                         self.bump();
                         let Some(id) = crate::index::parse_u32(self.tok_text(number)) else {
-                            return fail(LlErrorKind::Syntax, at, "expected a metadata node number");
+                            return fail(
+                                LlErrorKind::Syntax,
+                                at,
+                                "expected a metadata node number",
+                            );
                         };
                         self.numbered_node(at, id, scratch).map(Some)
                     }
@@ -457,7 +461,11 @@ impl<'a> Parser<'a, '_> {
                         let number = self.tok;
                         self.bump();
                         let Some(id) = crate::index::parse_u32(self.tok_text(number)) else {
-                            return fail(LlErrorKind::Syntax, at, "expected a metadata node number");
+                            return fail(
+                                LlErrorKind::Syntax,
+                                at,
+                                "expected a metadata node number",
+                            );
                         };
                         let Some(position) = self.md.position(id) else {
                             let message = format!("use of undefined metadata '!{id}'");
@@ -523,9 +531,11 @@ impl<'a> Parser<'a, '_> {
                 match self.md_position(id).map(|at| self.handle_at(at)) {
                     Some(Handle::Expr(expr)) => Ok(expr),
                     Some(_) => fail(LlErrorKind::Syntax, at, "expected a DIExpression"),
-                    None => {
-                        fail(LlErrorKind::Undefined, at, format!("use of undefined metadata '!{id}'"))
-                    }
+                    None => fail(
+                        LlErrorKind::Undefined,
+                        at,
+                        format!("use of undefined metadata '!{id}'"),
+                    ),
                 }
             }
             _ => self.syntax("expected a DIExpression"),
@@ -561,7 +571,11 @@ impl<'a> Parser<'a, '_> {
             };
             let Some(element) = element else {
                 let what = String::from_utf8_lossy(text);
-                return fail(LlErrorKind::Syntax, at, format!("invalid element '{what}' of a DIExpression"));
+                return fail(
+                    LlErrorKind::Syntax,
+                    at,
+                    format!("invalid element '{what}' of a DIExpression"),
+                );
             };
             scratch.elems.push(element);
             self.bump();
@@ -585,7 +599,10 @@ impl<'a> Parser<'a, '_> {
         }
         let span = self.skip_brackets()?;
         let resume = self.tok.start;
-        if matches!(kind, MdKind::Location | MdKind::Expression | MdKind::ArgList | MdKind::AssignId) {
+        if matches!(
+            kind,
+            MdKind::Location | MdKind::Expression | MdKind::ArgList | MdKind::AssignId
+        ) {
             // Not a node a field may name.
             self.module.record_unsupported(INVALID, None);
             let node = DiNode::Tuple(DiTuple { elements: &[] });
@@ -718,7 +735,10 @@ impl<'a> Parser<'a, '_> {
         let text = self.tok_text(start);
         let default = match tokens {
             1 => matches!(text, b"0" | b"false" | b"null" | b"\"\""),
-            2 => text == b"!" && self.src.get(start.end as usize..start.end as usize + 2) == Some(b"{}"),
+            2 => {
+                text == b"!"
+                    && self.src.get(start.end as usize..start.end as usize + 2) == Some(b"{}")
+            }
             _ => false,
         };
         Ok(default)
@@ -742,52 +762,11 @@ impl<'a> Parser<'a, '_> {
             }
             Some(DiShape::Expr) => return Ok(Val::Expr(self.expr_ref(scratch)?)),
             Some(DiShape::Flags | DiShape::SpFlags) => {
-                let mut bits = 0u64;
-                loop {
-                    let at = self.tok.start;
-                    let text = self.text();
-                    let flag = match self.tok.kind {
-                        Tok::Int => parse_u64(text),
-                        Tok::Word if shape == Some(DiShape::Flags) => {
-                            DiFlags::named(text).map(|flags| u64::from(flags.0))
-                        }
-                        Tok::Word => SpFlags::named(text).map(|flags| u64::from(flags.0)),
-                        _ => None,
-                    };
-                    let Some(flag) = flag else {
-                        let what = String::from_utf8_lossy(text);
-                        return fail(LlErrorKind::Syntax, at, format!("invalid flag '{what}'"));
-                    };
-                    bits |= flag;
-                    self.bump();
-                    if !self.eat(Tok::Bar) {
-                        break;
-                    }
-                }
-                return Ok(Val::UInt(bits));
+                return Ok(Val::UInt(self.flag_bits(shape == Some(DiShape::Flags))?));
             }
             _ => {}
         }
-        let named = |text: &[u8]| -> Option<u64> {
-            let code = match shape {
-                Some(DiShape::EmissionKind) => EmissionKind::named(text).map(|k| k.code()),
-                Some(DiShape::NameTableKind) => NameTableKind::named(text).map(|k| k.code()),
-                Some(DiShape::ChecksumKind) => ChecksumKind::named(text).map(|k| k.code()),
-                _ => None,
-            };
-            if let Some(code) = code {
-                return Some(u64::from(code));
-            }
-            let code = match field {
-                b"tag" => dw_tag(text),
-                b"encoding" => dw_ate(text),
-                b"language" | b"runtimeLang" => dw_lang(text),
-                b"cc" => dw_cc(text),
-                b"virtuality" => virtuality(text),
-                _ => None,
-            };
-            code.map(u64::from)
-        };
+        let named = |text: &[u8]| named_code(shape, field, text);
         let value = match token.kind {
             Tok::Str => {
                 let string = self.string(token);
@@ -857,6 +836,30 @@ impl<'a> Parser<'a, '_> {
         Ok(value)
     }
 
+    /// `A | B | 7`: a set of `DIFlag*` (`di`) or `DISPFlag*` names.
+    fn flag_bits(&mut self, di: bool) -> PResult<u64> {
+        let mut bits = 0u64;
+        loop {
+            let at = self.tok.start;
+            let text = self.text();
+            let flag = match self.tok.kind {
+                Tok::Int => parse_u64(text),
+                Tok::Word if di => DiFlags::named(text).map(|flags| u64::from(flags.0)),
+                Tok::Word => SpFlags::named(text).map(|flags| u64::from(flags.0)),
+                _ => None,
+            };
+            let Some(flag) = flag else {
+                let what = String::from_utf8_lossy(text);
+                return fail(LlErrorKind::Syntax, at, format!("invalid flag '{what}'"));
+            };
+            bits |= flag;
+            self.bump();
+            if !self.eat(Tok::Bar) {
+                return Ok(bits);
+            }
+        }
+    }
+
     /// An integer that does not fit 64 bits: a wide enumerator.
     fn wide(&mut self, kind: DiKind, at: u32) -> PResult<Val> {
         if kind == DiKind::Enumerator {
@@ -883,7 +886,11 @@ impl<'a> Parser<'a, '_> {
                 b"column" => {
                     let column = self.expect_u32("expected a column number")?;
                     let Ok(column) = u16::try_from(column) else {
-                        return fail(LlErrorKind::Syntax, at, "value for 'column' too large, limit is 65535");
+                        return fail(
+                            LlErrorKind::Syntax,
+                            at,
+                            "value for 'column' too large, limit is 65535",
+                        );
                     };
                     loc.column = column;
                 }
@@ -891,19 +898,24 @@ impl<'a> Parser<'a, '_> {
                     scope = true;
                     match self.node_ref(scratch)? {
                         Some(node) => loc.scope = node,
-                        None => return fail(LlErrorKind::Syntax, at, "a DILocation's scope is not null"),
+                        None => {
+                            return fail(
+                                LlErrorKind::Syntax,
+                                at,
+                                "a DILocation's scope is not null",
+                            );
+                        }
                     }
                 }
                 b"inlinedAt" => loc.inlined_at = self.loc_ref(scratch)?.unwrap_or(LocId::NONE),
-                _ => match di_field(b"DILocation", field) {
-                    Some(DiMapping::Dropped(_)) => {
+                _ => {
+                    if let Some(DiMapping::Dropped(_)) = di_field(b"DILocation", field) {
                         self.skip_value()?;
-                    }
-                    _ => {
+                    } else {
                         let field = String::from_utf8_lossy(field);
                         return fail(LlErrorKind::Syntax, at, format!("invalid field '{field}'"));
                     }
-                },
+                }
             }
             if self.tok.start < span.end {
                 self.expect(Tok::Comma, "expected ',' between fields")?;
@@ -978,6 +990,29 @@ impl<'a> Parser<'a, '_> {
     }
 }
 
+/// The number a named value of `field` stands for: an enumeration's
+/// keyword, or a DWARF constant by name.
+fn named_code(shape: Option<DiShape>, field: &[u8], text: &[u8]) -> Option<u64> {
+    let code = match shape {
+        Some(DiShape::EmissionKind) => EmissionKind::named(text).map(EmissionKind::code),
+        Some(DiShape::NameTableKind) => NameTableKind::named(text).map(NameTableKind::code),
+        Some(DiShape::ChecksumKind) => ChecksumKind::named(text).map(ChecksumKind::code),
+        _ => None,
+    };
+    if let Some(code) = code {
+        return Some(u64::from(code));
+    }
+    let code = match field {
+        b"tag" => dw_tag(text),
+        b"encoding" => dw_ate(text),
+        b"language" | b"runtimeLang" => dw_lang(text),
+        b"cc" => dw_cc(text),
+        b"virtuality" => virtuality(text),
+        _ => None,
+    };
+    code.map(u64::from)
+}
+
 /// The `'static` name of a field LLVM calls `field`: one of the kind's
 /// record fields, or one of the older spellings a subprogram takes.
 fn static_field(kind: DiKind, field: &[u8]) -> &'static str {
@@ -1001,7 +1036,7 @@ pub(crate) struct Made<'a> {
     first: usize,
 }
 
-impl<'a> Made<'a> {
+impl Made<'_> {
     /// The node, its fields set from `fields`.
     fn node<'s>(
         &'s self,
@@ -1019,7 +1054,9 @@ impl<'a> Made<'a> {
                 Val::Int(value) => DiFieldValue::Int(value),
                 Val::Bool(value) => DiFieldValue::Bool(value),
                 Val::Src(start, end) => DiFieldValue::Str(&src[start as usize..end as usize]),
-                Val::Buf(start, end) => DiFieldValue::Str(&scratch.strs[start as usize..end as usize]),
+                Val::Buf(start, end) => {
+                    DiFieldValue::Str(&scratch.strs[start as usize..end as usize])
+                }
                 Val::Node(id) => DiFieldValue::Node(id),
                 Val::List(start, end) => {
                     DiFieldValue::List(&scratch.lists[start as usize..end as usize])

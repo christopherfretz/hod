@@ -8,10 +8,10 @@ use hod_ir::{
 };
 
 use crate::consts::{BlockLabels, LabelKey};
+use crate::debug::{DebugMap, DebugScratch};
 use crate::error::{LlErrorKind, PResult, fail, ir_fail};
 use crate::index::{Index, scan};
 use crate::lexer::{Lexer, MAX_SOURCE_BYTES, Tok, Token, unescape};
-use crate::debug::{DebugMap, DebugScratch};
 use crate::meta::{MdRef, MetadataIndex, Upgrade};
 use crate::names::NameMap;
 use crate::skip::skip_group;

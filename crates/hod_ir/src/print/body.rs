@@ -208,8 +208,10 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
         let entry = body.entry();
         let mut records = body.dbg_records().peekable();
         // Whether a declaration is written after an instruction.
-        let placed =
-            body.declares().iter().any(|declare| super::debug::placed_after(body, declare.address).is_some());
+        let placed = body
+            .declares()
+            .iter()
+            .any(|declare| super::debug::placed_after(body, declare.address).is_some());
         for block in body.blocks() {
             writeln!(self.out, "b{}:", block.id().raw())?;
             if block.id() == entry {
@@ -221,7 +223,8 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
                 self.dbg_declares(body)?;
             }
             for inst in block.insts() {
-                while let Some(record) = records.peek().filter(|record| record.before == inst.id()) {
+                while let Some(record) = records.peek().filter(|record| record.before == inst.id())
+                {
                     let record = *record;
                     self.dbg_record(body, &record)?;
                     records.next();

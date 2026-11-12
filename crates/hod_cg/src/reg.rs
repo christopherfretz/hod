@@ -91,6 +91,22 @@ impl RegSet {
         if self.0 == 0 { None } else { Some(PReg(self.0.trailing_zeros() as u8)) }
     }
 
+    /// The `count` lowest registers of the set (all of it if it has
+    /// fewer).
+    #[must_use]
+    pub const fn lowest_n(self, count: u32) -> RegSet {
+        let mut rest = self.0;
+        let mut out = 0;
+        let mut taken = 0;
+        while rest != 0 && taken < count {
+            let bit = rest & rest.wrapping_neg();
+            out |= bit;
+            rest &= !bit;
+            taken += 1;
+        }
+        RegSet(out)
+    }
+
     /// The registers, lowest index first.
     pub fn iter(self) -> impl Iterator<Item = PReg> {
         let mut bits = self.0;
@@ -99,6 +115,95 @@ impl RegSet {
             bits &= bits - 1;
             Some(reg)
         })
+    }
+}
+
+/// The least number of general registers a target's pool has (§2.1). A
+/// lowering pins at most this many general registers at once.
+pub const MIN_POOL_GPR: u32 = 4;
+
+/// The least number of vector registers a target's pool has (§2.1).
+pub const MIN_POOL_FPR: u32 = 2;
+
+/// A target's registers, described once (`spec/codegen.md` §2.1).
+///
+/// Invariants, checked by [`RegInfo::check`]: `pool` is a subset of
+/// `holdable`; `holdable` and `scratch` are disjoint; every one of them is
+/// inside `gpr` or `fpr`, which are disjoint; the pool has at least
+/// [`MIN_POOL_GPR`] general and [`MIN_POOL_FPR`] vector registers;
+/// `scratch` has at least two general and one vector register, `callee`
+/// among the general ones.
+#[derive(Clone, Copy, Debug)]
+pub struct RegInfo {
+    /// The general registers.
+    pub gpr: RegSet,
+    /// The floating-point/vector registers.
+    pub fpr: RegSet,
+    /// Registers a fresh value may be allocated to. None is written by
+    /// argument placement or by a return under any supported calling
+    /// convention; each is caller-saved or in the target's save set.
+    pub pool: RegSet,
+    /// Registers a value may rest in: `pool` plus the registers argument
+    /// placement and returns write.
+    pub holdable: RegSet,
+    /// Registers that never hold a value across instructions: they belong
+    /// to whatever is being emitted right now (glue, large offsets, `phi`
+    /// copies, stack-argument placement).
+    pub scratch: RegSet,
+    /// The two registers a landing pad receives: the exception pointer
+    /// and the selector.
+    pub eh_data: [PReg; 2],
+    /// The general scratch register an indirect callee's address is
+    /// brought into, last, by the call sequence (§7.1). The target's exit
+    /// sequences leave it alone, so a `musttail` exit can branch through
+    /// it.
+    pub callee: PReg,
+    /// The bytes of a general register: the size and alignment of a home
+    /// or spill slot of class `Gpr` (§2.2).
+    pub gpr_bytes: u8,
+    /// The bytes of a vector register that a home or spill slot of class
+    /// `Fpr` holds.
+    pub fpr_bytes: u8,
+    /// Each register's DWARF number, for CFI rows (§9.3).
+    pub dwarf: fn(PReg) -> u16,
+}
+
+impl RegInfo {
+    /// Whether the description satisfies the invariants above.
+    pub fn check(&self) -> Result<(), &'static str> {
+        let all = self.gpr.union(self.fpr);
+        if !self.gpr.intersection(self.fpr).is_empty() {
+            return Err("gpr and fpr overlap");
+        }
+        if !self.pool.difference(self.holdable).is_empty() {
+            return Err("pool is not a subset of holdable");
+        }
+        if !self.holdable.intersection(self.scratch).is_empty() {
+            return Err("holdable and scratch overlap");
+        }
+        if !self.holdable.union(self.scratch).difference(all).is_empty() {
+            return Err("a holdable or scratch register is in no class");
+        }
+        if self.pool.intersection(self.gpr).len() < MIN_POOL_GPR
+            || self.pool.intersection(self.fpr).len() < MIN_POOL_FPR
+        {
+            return Err("the pool is below the minimum of four general and two vector registers");
+        }
+        if self.scratch.intersection(self.gpr).len() < 2
+            || self.scratch.intersection(self.fpr).is_empty()
+        {
+            return Err("scratch needs two general and one vector register");
+        }
+        if !self.scratch.intersection(self.gpr).contains(self.callee) {
+            return Err("the callee register is not a general scratch register");
+        }
+        if !self.holdable.contains(self.eh_data[0]) || !self.holdable.contains(self.eh_data[1]) {
+            return Err("an eh_data register is not holdable");
+        }
+        if !self.gpr_bytes.is_power_of_two() || !self.fpr_bytes.is_power_of_two() {
+            return Err("a register size is not a power of two");
+        }
+        Ok(())
     }
 }
 
@@ -119,6 +224,9 @@ mod tests {
         assert_eq!(set.intersection(RegSet::of(&[a, b])), RegSet::of(&[a]));
         assert_eq!(set.difference(RegSet::of(&[a])), RegSet::of(&[c]));
         assert!(RegSet::EMPTY.is_empty() && RegSet::EMPTY.lowest().is_none());
+        assert_eq!(set.with(b).lowest_n(2), RegSet::of(&[a, b]));
+        assert_eq!(set.lowest_n(5), set);
+        assert_eq!(set.lowest_n(0), RegSet::EMPTY);
     }
 
     #[test]

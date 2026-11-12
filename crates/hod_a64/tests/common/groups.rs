@@ -53,6 +53,8 @@ pub const GROUPS: &[(&str, Enable)] = &[
     }),
     // The floating-point group: `float`, `double`, `fcmp`, conversions.
     ("WP-039", |e| e.options.floats = true),
+    // The intrinsic group: integer and memory intrinsics.
+    ("WP-041", |e| e.options.intrinsics = true),
 ];
 
 /// What every landed group enables together.

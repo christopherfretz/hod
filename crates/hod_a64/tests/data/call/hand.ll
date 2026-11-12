@@ -66,6 +66,15 @@ define void @h_thunk(i32 %n, ...) {
   ret void
 }
 
+; A variadic thunk that calls first: the argument registers hold other
+; values at the `musttail` call, so the unnamed ones must be reloaded.
+declare void @c_clobber(i64, i64, i64, i64, i64, i64, i64, i64, double, double, double, double, double, double, double, double)
+define void @h_thunk_call(i32 %n, ...) {
+  call void @c_clobber(i64 -1, i64 -1, i64 -1, i64 -1, i64 -1, i64 -1, i64 -1, i64 -1, double -9.0, double -9.0, double -9.0, double -9.0, double -9.0, double -9.0, double -9.0, double -9.0)
+  musttail call void (i32, ...) @c_vsum(i32 %n, ...)
+  ret void
+}
+
 ; An indirect musttail call.
 define i64 @h_mti(ptr %f, i64 %x) {
   %r = musttail call i64 %f(ptr %f, i64 %x)

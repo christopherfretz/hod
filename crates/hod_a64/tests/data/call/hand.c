@@ -61,6 +61,13 @@ long c_mt(long a0, long a1, long a2, long a3, long a4, long a5, long a6, long a7
 }
 
 static int vsum_seen;
+void c_clobber(long a, long b, long c, long d, long e, long f, long g, long h,
+               double i, double j, double k, double l, double m, double n,
+               double o, double p) {
+    CHK(a + b + c + d + e + f + g + h == -8);
+    CHK(i + j + k + l + m + n + o + p == -72.0);
+}
+
 void c_vsum(int n, ...) {
     va_list ap;
     va_start(ap, n);
@@ -99,6 +106,7 @@ void h_byval_caller(void);
 void h_sj(long);
 long h_mt(long, long, long, long, long, long, long, long, long, long);
 void h_thunk(int, ...);
+void h_thunk_call(int, ...);
 long h_mti(void *, long);
 long h_ext(int8_t, uint16_t, _Bool, int32_t, uint8_t, uint16_t);
 long h_ext_decl(int8_t, uint16_t, _Bool, int32_t, uint8_t, uint16_t);
@@ -116,6 +124,9 @@ int main(void) {
     CHK(h_mt(100, 101, 102, 103, 104, 105, 106, 107, 108, 109)
         == c_mt(109, 101, 102, 103, 104, 105, 106, 107, 100, 108));
     h_thunk(10, 11L, 22L, 33L, 44L, 55L, 66L, 77L, 88L, 99L, 2.5, 3.25L, -1.0);
+    CHK(vsum_seen);
+    vsum_seen = 0;
+    h_thunk_call(10, 11L, 22L, 33L, 44L, 55L, 66L, 77L, 88L, 99L, 2.5, 3.25L, -1.0);
     CHK(vsum_seen);
     CHK(h_mti((void *)c_mti, 5) == (5 ^ 0x55));
     CHK(h_ext(-3, 0xfffe, 1, -7, 0xab, 0xcdef) == 1);

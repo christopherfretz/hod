@@ -1513,6 +1513,15 @@ defines a `GCC_except_table<n>` label at each LSDA that nothing refers
 to. `.debug_frame`, for a `nounwind` function without `uwtable` that has
 debug information, is not written (`spec/dwarf.md`'s, a follow-up).
 
+**Debug information** (`src/emit/lines.rs`, `spec/dwarf.md` §5.7, §9):
+for each `FullDebug` compile unit, the line table (one sequence per
+function with a subprogram, encoded as the function is placed, against
+the section symbol of its code plus its offset) and the unit's DIEs
+(`DW_AT_stmt_list`, the ranges of its functions' code, its globals),
+written after the unwind tables. Nothing is done for a module without
+`!llvm.dbg.cu` or whose units are all `NoDebug`: the bytes are those of
+the module without debug information.
+
 **`Emitted`**: the object; `funcs: Vec<PlacedFunc>` in module order, each
 the function's `FuncRecord` with `code` its byte range in `section`, the
 row ranges ranges of `Emitted::rows`, and `relocs` empty; `rows`, every
@@ -1537,7 +1546,9 @@ in maps sized by their count).
 `init:blockaddress-unplaced`, `module:linker-option-not-a-pair` (an
 `!llvm.linker.options` entry of other than two strings: `llc` writes
 `.linker-options` as pairs), `eh:unknown-personality-without-pads`
-(`spec/eh.md` §1.1).
+(`spec/eh.md` §1.1), `debug:emission-kind` (a `LineTablesOnly` or
+`DebugDirectivesOnly` unit), `debug:die-unsupported` (a unit with a node
+the DIE writer does not write yet, `spec/dwarf.md` §6.5).
 
 **Known differences from `llc`**, none of which changes what a linker
 makes of the object (`tests/emit_link.rs` links both with GNU ld, lld and

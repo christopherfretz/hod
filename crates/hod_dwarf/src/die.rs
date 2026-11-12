@@ -87,6 +87,12 @@ fn md5_of(f: &DiFile<'_>) -> Option<[u8; 16]> {
     Some(out)
 }
 
+/// A file's embedded source (`DW_LNCT_LLVM_source`); an empty one is
+/// none (`spec/ir.md` §6).
+fn source_of<'a>(f: &DiFile<'a>) -> Option<&'a [u8]> {
+    (!f.source.is_empty()).then_some(f.source)
+}
+
 const fn unsupported(node: DiId, what: &'static str) -> Error {
     Error::Unsupported { node: node.raw(), what }
 }
@@ -125,14 +131,20 @@ impl<'a> UnitPlan<'a> {
 
         // The file table: directory 0 and file 0 from the unit, then every
         // file node in id order (`spec/dwarf.md` §4.4, §5.7).
-        let mut files = FileTable::new(file.directory, file.filename, md5_of(&file));
+        let mut files = FileTable::new_with_source(
+            file.directory,
+            file.filename,
+            md5_of(&file),
+            source_of(&file),
+        );
         let mut file_index = Vec::new();
         let count = debug.node_count();
         for raw in 0..count as u32 {
             let id = DiId::new(raw);
             if debug.kind(id) == DiKind::File {
                 let DiNode::File(f) = debug.node(id) else { continue };
-                file_index.push((raw, files.add(f.directory, f.filename, md5_of(&f))));
+                let at = files.add_with_source(f.directory, f.filename, md5_of(&f), source_of(&f));
+                file_index.push((raw, at));
             }
         }
 

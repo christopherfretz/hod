@@ -24,13 +24,13 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use common::linking::{Toolchain, exit_code};
-use mem_gen::{BUF, Func, GLOBAL, generate, int_text};
 use common::{assert_refused, chunk, code_words, compile_ll, ll_header, llc, parse, write_object};
 use hod_a64::{compile_module, mem, target};
 use hod_cg::{CgError, Options, RelocModel, Stress};
 use hod_interp::{Interp, Program, Val};
 use hod_mc_a64 as mc;
 use hod_testutil::{Scratch, run_with};
+use mem_gen::{BUF, Func, GLOBAL, generate, int_text};
 
 // ---- the generated functions ----
 
@@ -144,7 +144,10 @@ fn driver(funcs: &[Func]) -> String {
     writeln!(c, "  unsigned char *buf = map + pg - {BUF};").unwrap();
     for f in funcs {
         let name = &f.name;
-        let args: String = f.params.iter().map(|p| format!(", {}ULL", p.native())).collect();
+        let args = f.params.iter().fold(String::new(), |mut out, p| {
+            write!(out, ", {}ULL", p.native()).unwrap();
+            out
+        });
         writeln!(c, "  memcpy(buf, {name}_init, {BUF});").unwrap();
         writeln!(
             c,
@@ -522,3 +525,32 @@ fn the_limits_are_refused_by_name() {
     );
 }
 
+/// A bug in `hod_ir`'s classifier, found while flipping this group's
+/// rows: the census omits a `row/class` pair that an unsupported
+/// `type:` row masks, so it lists less than repeated classification
+/// finds (`crates/hod_ir/tests/classify_random.rs:850` asserts they
+/// agree). It is why `inst:load`, `inst:store`, `inst:alloca` and
+/// `inst:ptradd` are `ON` rather than `on(&[Int, Ptr])`: the first row
+/// written with classes trips that test.
+#[test]
+#[ignore = "hod_ir: the census omits pairs masked by a type row (classify_random.rs:850)"]
+fn the_census_lists_what_repeated_classification_finds() {
+    use hod_ir::{Arch, Census, Classifier, Support};
+    let (m, bodies) = parse(&format!(
+        "{}define double @f(ptr %p) {{\n  %v = load double, ptr %p\n  ret double %v\n}}\n",
+        ll_header(22)
+    ));
+    let arch = Arch::Aarch64;
+    let support = Support::shipped(arch).clone().without("inst:load/double").unwrap();
+    let mut census = Census::new();
+    let classifier = Classifier::new(&support);
+    classifier.census_module(&m, &mut census);
+    classifier.census_body(&m, &bodies[0], &mut census);
+    let names: Vec<String> = census.entries().iter().map(|e| e.construct.clone()).collect();
+    let (mut found, mut wider) = (Vec::new(), support.clone());
+    while let Err(rejection) = Classifier::new(&wider).body(&m, &bodies[0]) {
+        found.push(rejection.construct.into_owned());
+        wider = wider.with(found.last().unwrap()).unwrap();
+    }
+    assert_eq!(found, names);
+}

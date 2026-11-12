@@ -286,7 +286,7 @@ fn symbol(
 
 /// The address of a `load` or `store` operand, fusing a deferred
 /// `ptradd`; a base without a register of its own goes to `x17`.
-fn address<'a>(cx: &mut FnCx<'a, A64>, ptr: Value) -> CgResult<Addr> {
+fn address(cx: &mut FnCx<'_, A64>, ptr: Value) -> CgResult<Addr> {
     match fusable(cx, ptr) {
         Some(add) => compute(cx, add.base, add.offset, Some(&add), X17),
         None => compute(cx, ptr, 0, None, X17),
@@ -441,7 +441,7 @@ pub fn store<'a>(
         // §2.2: the bits above the width are unspecified in the
         // register and zero in memory. An integer constant has them clear.
         let bits = cx.types().int_bits(ty).unwrap_or(64);
-        if bits % 8 != 0 && !matches!(value.kind(), ValueKind::Const(_)) {
+        if !bits.is_multiple_of(8) && !matches!(value.kind(), ValueKind::Const(_)) {
             let sz = if bits <= 32 { Size::W } else { Size::X };
             put(cx, mc::and_imm(sz, r.sp(), r.zr(), (1u64 << bits) - 1));
         }

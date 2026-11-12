@@ -29,21 +29,21 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `tls` | 4 | 0 | 4 | 0 | 0 | 4 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
 | `init` | 8 | 4 | 4 | 0 | 0 | 8 | 0 |
-| `function` | 6 | 1 | 5 | 0 | 0 | 6 | 0 |
+| `function` | 6 | 3 | 3 | 0 | 0 | 6 | 0 |
 | `cc` | 15 | 1 | 12 | 2 | 0 | 12 | 3 |
 | `attr` | 56 | 11 | 42 | 3 | 9 | 39 | 8 |
 | `type` | 15 | 2 | 10 | 3 | 0 | 13 | 2 |
-| `inst` | 67 | 3 | 56 | 8 | 0 | 59 | 8 |
-| `mem` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
+| `inst` | 67 | 7 | 52 | 8 | 0 | 59 | 8 |
+| `mem` | 3 | 1 | 2 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 0 | 21 | 0 | 0 | 21 | 0 |
 | `call` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
 | `tail` | 3 | 2 | 1 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
-| `operand` | 9 | 2 | 7 | 0 | 0 | 9 | 0 |
+| `operand` | 9 | 3 | 6 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 133 | 0 | 133 | 0 | 0 | 133 | 0 |
-| total | 434 | 60 | 328 | 46 | 16 | 363 | 55 |
+| `intrinsic` | 133 | 2 | 131 | 0 | 0 | 133 | 0 |
+| total | 434 | 70 | 318 | 46 | 16 | 363 | 55 |
 
 ## `module`
 
@@ -189,8 +189,8 @@ Properties of a function that has a body.
 | `function:variadic` | not-implemented | not-implemented | WP-038. a variadic function with a body |
 | `function:may-unwind` | not-implemented | not-implemented | WP-042. a body without `nounwind`: it needs unwind tables |
 | `function:personality` | not-implemented | not-implemented | M2 (exceptions). a body with a personality function |
-| `function:slots` | not-implemented | not-implemented | WP-036. a body with fixed stack objects (`Body::slots`) |
-| `function:over-aligned-slot` | not-implemented | not-implemented | WP-036. a stack object aligned above 16 bytes |
+| `function:slots` | supported | not-implemented | a body with fixed stack objects (`Body::slots`) |
+| `function:over-aligned-slot` | supported | not-implemented | a stack object aligned above 16 bytes |
 
 ## `cc`
 
@@ -340,13 +340,13 @@ Instructions.
 | `inst:inttoptr` | not-implemented | not-implemented | WP-035 |
 | `inst:bitcast` | not-implemented | not-implemented | WP-035. between integers and floats with WP-039 |
 | `inst:addrspacecast` | rejected | rejected | it has a pointer in a non-zero address space on one side |
-| `inst:load` | not-implemented | not-implemented | WP-036. a plain load; see `mem:` |
-| `inst:store` | not-implemented | not-implemented | WP-036. a plain store; see `mem:` |
-| `inst:alloca` | not-implemented | not-implemented | WP-036. a dynamic allocation; fixed ones are `function:slots` |
+| `inst:load` | supported | not-implemented | a plain load; see `mem:`; FP and vector values: WP-039 |
+| `inst:store` | supported | not-implemented | a plain store; see `mem:`; FP and vector values: WP-039 |
+| `inst:alloca` | supported | not-implemented | a dynamic allocation; fixed ones are `function:slots` |
 | `inst:fence` | not-implemented | not-implemented | M2 (atomics) |
 | `inst:cmpxchg` | not-implemented | not-implemented | M2 (atomics) |
 | `inst:atomicrmw` | not-implemented | not-implemented | M2 (atomics). and the operation's `atomicrmw:` row |
-| `inst:ptradd` | not-implemented | not-implemented | WP-036. LLVM's `getelementptr` (§5.4) |
+| `inst:ptradd` | supported | not-implemented | LLVM's `getelementptr` (§5.4); not a vector of pointers |
 | `inst:extractvalue` | not-implemented | not-implemented | WP-040 |
 | `inst:insertvalue` | not-implemented | not-implemented | WP-040 |
 | `inst:extractelement` | not-implemented | not-implemented | M2 (vectors) |
@@ -379,7 +379,7 @@ Kinds of memory access.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `mem:volatile` | not-implemented | not-implemented | WP-036. a volatile `load`, `store`, `cmpxchg` or `atomicrmw` |
+| `mem:volatile` | supported | not-implemented | a volatile `load`, `store`, `cmpxchg` or `atomicrmw` |
 | `mem:atomic-load` | not-implemented | not-implemented | M2 (atomics) |
 | `mem:atomic-store` | not-implemented | not-implemented | M2 (atomics) |
 
@@ -465,7 +465,7 @@ Constant addresses as instruction operands.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `operand:symbol` | supported | not-implemented | a symbol's address as a value, with or without an offset |
-| `operand:slot` | not-implemented | not-implemented | WP-036. the address of a stack slot |
+| `operand:slot` | supported | not-implemented | the address of a stack slot |
 | `operand:blockaddress` | not-implemented | not-implemented | WP-037. of a block of the same function |
 | `operand:addr-of-int` | supported | not-implemented | `inttoptr` of a constant number |
 | `operand:int-of-addr` | not-implemented | not-implemented | unplanned. `ptrtoint` of a constant address |
@@ -514,8 +514,8 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.va_start` | not-implemented | not-implemented | WP-038 |
 | `intrinsic:llvm.va_end` | not-implemented | not-implemented | WP-038 |
 | `intrinsic:llvm.va_copy` | not-implemented | not-implemented | WP-038 |
-| `intrinsic:llvm.stacksave` | not-implemented | not-implemented | WP-036 |
-| `intrinsic:llvm.stackrestore` | not-implemented | not-implemented | WP-036 |
+| `intrinsic:llvm.stacksave` | supported | not-implemented |  |
+| `intrinsic:llvm.stackrestore` | supported | not-implemented |  |
 | `intrinsic:llvm.frameaddress` | not-implemented | not-implemented | WP-041 |
 | `intrinsic:llvm.returnaddress` | not-implemented | not-implemented | WP-041 |
 | `intrinsic:llvm.trap` | not-implemented | not-implemented | WP-041 |

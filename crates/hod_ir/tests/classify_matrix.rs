@@ -474,9 +474,20 @@ const RICH_BODY: [&str; 16] = [
     "inst:ret",
 ];
 
-/// The rows of `RICH_BODY` AArch64 supports (WP-033).
-const A64_SUPPORTED_BODY: [&str; 6] =
-    ["cc:ccc", "function:parameters", "type:int", "type:ptr", "operand:symbol", "inst:ret"];
+/// The rows of `RICH_BODY` AArch64 supports (WP-033, WP-036).
+const A64_SUPPORTED_BODY: [&str; 11] = [
+    "cc:ccc",
+    "function:parameters",
+    "type:int",
+    "type:ptr",
+    "operand:symbol",
+    "inst:ret",
+    "function:slots",
+    "inst:store",
+    "operand:slot",
+    "inst:load",
+    "mem:volatile",
+];
 
 /// What the shipped matrix finds in the rich body on `arch`.
 fn rich_body(arch: Arch) -> Vec<&'static str> {
@@ -646,9 +657,9 @@ fn the_census_counts_occurrences_and_symbols() {
         (entry.occurrences, entry.symbols)
     };
     assert_eq!(count("inst:add"), (3, 2));
-    assert_eq!(count("inst:store"), (1, 1));
-    // Supported since WP-032 and WP-033: not counted.
+    // Supported since WP-032, WP-033 and WP-036: not counted.
     for row in [
+        "inst:store",
         "global:variable-definition",
         "module:pic",
         "global:function-definition",

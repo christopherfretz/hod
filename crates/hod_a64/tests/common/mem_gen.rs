@@ -152,8 +152,14 @@ impl Func {
         let mut out = String::new();
         for g in &self.globals {
             let local = if g.dso_local { "dso_local " } else { "" };
-            writeln!(out, "@{} = {local}global [{} x i8] {}, align 16", g.name, g.init.len(), bytes(&g.init))
-                .unwrap();
+            writeln!(
+                out,
+                "@{} = {local}global [{} x i8] {}, align 16",
+                g.name,
+                g.init.len(),
+                bytes(&g.init)
+            )
+            .unwrap();
         }
         out
     }
@@ -297,6 +303,7 @@ impl Gen<'_> {
     /// The address of `offset` in region `r` as an operand, by one of the
     /// forms `ptradd` takes; sometimes with an instruction between it and
     /// its use, so that it is not fused.
+    #[allow(clippy::many_single_char_names)]
     fn address(&mut self, r: usize, offset: u64) -> String {
         let base = self.regions[r].base.clone();
         let off = offset as i64;
@@ -380,7 +387,8 @@ impl Gen<'_> {
 
     fn store(&mut self) {
         let ty = self.width();
-        let same: Vec<usize> = (0..self.values.len()).filter(|&v| self.values[v].ty == ty).collect();
+        let same: Vec<usize> =
+            (0..self.values.len()).filter(|&v| self.values[v].ty == ty).collect();
         let (text, value) = if ty.ptr || (!same.is_empty() && self.rng.chance(1, 2)) {
             if same.is_empty() {
                 return;
@@ -413,9 +421,11 @@ impl Gen<'_> {
         let spare = (ty.store() * 8) as u32 - ty.bits;
         let ok = |bytes: &[Option<u8>]| {
             bytes.iter().all(Option::is_some)
-                && bytes.last().copied().flatten().is_some_and(|top| {
-                    spare == 0 || u32::from(top) >> (8 - spare) == 0
-                })
+                && bytes
+                    .last()
+                    .copied()
+                    .flatten()
+                    .is_some_and(|top| spare == 0 || u32::from(top) >> (8 - spare) == 0)
         };
         let Some((r, off)) = self.location(ty.store(), align, ok) else { return };
         let mut image = [0u8; 8];

@@ -266,3 +266,174 @@ pub fn read_bitcode(bitcode: &[u8]) -> Result<(Module, Vec<SymId>), String> {
         hod_bc::read_module(bitcode, &hod_bc::ReadOptions::default()).map_err(|e| e.to_string())?;
     Ok((read.module, read.bits.numbered_globals().to_vec()))
 }
+
+/// `text` with every id `hod_ir` prints by number (`c12`, `ty3`, `sym4`,
+/// `asm0`) written out structurally, so that two modules that made their
+/// tables in another order give the same text.
+fn ids_written_out(module: &Module, text: &str, name: &dyn Fn(SymId) -> String) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let word_start = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+        let found = word_start
+            .then(|| {
+                ["sym", "asm", "ty", "c"].iter().find_map(|prefix| {
+                    let rest = &bytes[i..];
+                    if !rest.starts_with(prefix.as_bytes()) {
+                        return None;
+                    }
+                    let digits =
+                        rest[prefix.len()..].iter().take_while(|b| b.is_ascii_digit()).count();
+                    let end = prefix.len() + digits;
+                    let ends_word =
+                        rest.get(end).is_none_or(|b| !(b.is_ascii_alphanumeric() || *b == b'_'));
+                    (digits > 0 && ends_word).then(|| {
+                        let n: u32 = text[i + prefix.len()..i + end].parse().unwrap_or(u32::MAX);
+                        (*prefix, n, end)
+                    })
+                })
+            })
+            .flatten();
+        if let Some((prefix, n, len)) = found {
+            let written = match prefix {
+                "sym" => format!("@{}", name(SymId::new(n))),
+                "ty" => ty(module, TypeId::new(n)),
+                "c" => format!("({})", constant(module, ConstId::new(n), name)),
+                _ => {
+                    let asm = module.asm(hod_ir::AsmId::new(n));
+                    format!(
+                        "asm({:?}, {:?}, {}, {})",
+                        String::from_utf8_lossy(asm.template),
+                        String::from_utf8_lossy(asm.constraints),
+                        asm.flags,
+                        ty(module, asm.ty)
+                    )
+                }
+            };
+            out.push_str(&written);
+            i += len;
+        } else {
+            let c = text[i..].chars().next().unwrap_or(' ');
+            out.push(c);
+            i += c.len_utf8();
+        }
+    }
+    out
+}
+
+/// The name of `sym` as `dump` writes it.
+pub fn sym_name(module: &Module, numbered: &[SymId], sym: SymId) -> String {
+    let symbol = module.symbol(sym);
+    if symbol.is_anonymous() {
+        let at = numbered.iter().position(|&other| other == sym);
+        return format!("<anonymous {at:?}>");
+    }
+    String::from_utf8_lossy(symbol.name()).into_owned()
+}
+
+/// A body, one line per block and instruction, every operand written out
+/// structurally (`spec/bc.md` §9.2).
+pub fn body_dump(module: &Module, numbered: &[SymId], body: &hod_ir::Body) -> String {
+    let name = |sym: SymId| sym_name(module, numbered, sym);
+    let mut out = String::new();
+    let _ = writeln!(out, "slots {:?}", body.slots());
+    for block in body.blocks() {
+        let _ = writeln!(out, "{:?}:", block.id());
+        for inst in block.insts() {
+            // A switch's Debug prints its case constants as raw ids:
+            // write them as constants.
+            let kind = match inst.kind() {
+                hod_ir::InstKind::Switch(switch) => {
+                    let cases: Vec<String> = switch
+                        .cases()
+                        .map(|(c, block)| format!("c{} -> {block:?}", c.raw()))
+                        .collect();
+                    format!(
+                        "Switch {{ cond: {:?}, default: {:?}, cases: [{}] }}",
+                        switch.cond,
+                        switch.default,
+                        cases.join(", ")
+                    )
+                }
+                kind => format!("{kind:?}"),
+            };
+            let _ = writeln!(
+                out,
+                "  {:?} {:?} {} {}",
+                inst.id(),
+                inst.opcode(),
+                ty(module, inst.ty()),
+                ids_written_out(module, &kind, &name)
+            );
+        }
+    }
+    out
+}
+
+/// One function's lines: its name, and its body dump or the names that
+/// made it unsupported.
+fn function_lines(
+    module: &Module,
+    numbered: &[SymId],
+    sym: SymId,
+    body: Option<&hod_ir::Body>,
+    unsupported: &[std::borrow::Cow<'static, str>],
+) -> String {
+    let name = sym_name(module, numbered, sym);
+    if let Some(body) = body {
+        format!("define {name}\n{}", body_dump(module, numbered, body))
+    } else {
+        let mut names: Vec<&str> = unsupported.iter().map(|n| &**n).collect();
+        names.sort_unstable();
+        format!("define {name} unsupported {names:?}\n")
+    }
+}
+
+/// `hod_ll`'s reading of `text` with every body: the bodies in name
+/// order, then the module's dump; or the kind of its refusal.
+pub fn read_text_bodies(text: &[u8]) -> Result<String, String> {
+    let parsed = hod_ll::parse_module(text, &hod_ll::ParseOptions::default())
+        .map_err(|e| format!("{:?}: {e}", e.kind))?;
+    let numbered: Vec<SymId> = (0..).map_while(|n| parsed.text.numbered_global(n)).collect();
+    let mut module = parsed.module;
+    let mut functions = Vec::new();
+    hod_ll::parse_bodies(&mut module, &parsed.text, |module, read| {
+        functions.push(function_lines(
+            module,
+            &numbered,
+            read.function.sym,
+            read.body,
+            read.unsupported,
+        ));
+        Ok::<(), hod_ll::LlError>(())
+    })
+    .map_err(|e| format!("{:?}: {e}", e.kind))?;
+    functions.sort();
+    functions.push(dump(&module, &numbered));
+    Ok(functions.concat())
+}
+
+/// `hod_bc`'s reading of `bitcode` with every body, as
+/// [`read_text_bodies`].
+pub fn read_bitcode_bodies(bitcode: &[u8]) -> Result<String, String> {
+    let read = hod_bc::read_module(bitcode, &hod_bc::ReadOptions::default())
+        .map_err(|e| format!("{:?}: {e}", e.kind))?;
+    let numbered = read.bits.numbered_globals().to_vec();
+    let mut module = read.module;
+    let mut functions = Vec::new();
+    hod_bc::read_bodies(&mut module, &read.bits, |module, body| {
+        functions.push(function_lines(
+            module,
+            &numbered,
+            body.function.sym,
+            body.body,
+            body.unsupported,
+        ));
+        Ok::<(), hod_bc::BcError>(())
+    })
+    .map_err(|e| format!("{:?}: {e}", e.kind))?;
+    functions.sort();
+    functions.push(dump(&module, &numbered));
+    Ok(functions.concat())
+}

@@ -2,7 +2,7 @@
 ; sitofp, ptrtoint, inttoptr and bitcast, each with an operand that
 ; arrives as an argument. No conversion here is out of range.
 ;@ covers: spec/ir.md §5.4 cast
-;@ unsupported: *
+;@ unsupported(x86_64): *
 ;@ stdout: trunc: i32=-1698898192 i16=-8464/57072 i8=-16/240 i1=0
 ;@ stdout: trunc: i32=-1 i16=-1/65535 i8=-1/255 i1=1
 ;@ stdout: ext: sext=-2 zext=4294967294 sext8=-128 zext8=128 sext1=-1

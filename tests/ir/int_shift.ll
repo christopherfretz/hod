@@ -1,7 +1,7 @@
 ; shl, lshr and ashr at i8, i16, i32 and i64, with shift amounts that are
 ; only known at run time, including 0 and width-1.
 ;@ covers: spec/ir.md §5.4 integer
-;@ unsupported: *
+;@ unsupported(x86_64): *
 ;@ stdout: i8 by 3: shl=-80 lshr=18 ashr=-14
 ;@ stdout: i8 by 0: shl=-106 lshr=150 ashr=-106
 ;@ stdout: i8 by 7: shl=0 lshr=1 ashr=-1

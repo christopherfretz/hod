@@ -46,6 +46,7 @@ fn unsupported(name: &str, function: Option<&str>) -> Result<Vec<u8>, CompileErr
     Err(Unsupported {
         construct: Construct::Named(name.to_owned().into()),
         function: function.map(str::to_owned),
+        detail: None,
     }
     .into())
 }
@@ -112,7 +113,7 @@ fn fixture_first_refusal_and_census() {
 
 // spec/cli.md "Reasons": past the module pass, the body reader's refusal
 // and the body pass's name the function; a module accepted whole reaches
-// the last line, `codegen-not-implemented`.
+// code generation and becomes an object.
 #[test]
 fn body_reasons_name_the_function() {
     for input in [FRONT_LL, FRONT_BC] {
@@ -129,8 +130,8 @@ fn body_reasons_name_the_function() {
         "{TRIPLE}define i32 @add(i32 %a) nounwind {{\n  %s = add i32 %a, 1\n  ret i32 %s\n}}\n"
     );
     let (result, report) = run(add.as_bytes(), &everything());
-    assert_eq!(result, module_reason(Construct::CodegenNotImplemented));
-    assert_eq!(phases(&report), ["parse", "classify", "bodies"]);
+    assert!(result.is_ok_and(|object| object.starts_with(b"\x7FELF")));
+    assert_eq!(phases(&report), ["parse", "classify", "bodies", "emission", "object"]);
     // A body pass refusal: only `inst:add` is taken away.
     let support = Support::everything_implemented(Arch::Aarch64).without("inst:add");
     let settings = Settings { support, ..Settings::default() };
@@ -184,7 +185,7 @@ fn target_reasons() {
         }
         let bitcode = assemble(&llvm_as, format!("{TRIPLE}{declare}").as_bytes());
         let (result, report) = run(&bitcode, &Settings::default());
-        assert_eq!(result, module_reason(Construct::CodegenNotImplemented));
+        assert!(result.is_ok(), "{result:?}");
         assert_eq!(report.target.as_deref(), Some("aarch64-unknown-linux-gnu"));
         let x64 = Options { triple: Some("x86_64-unknown-linux-gnu".into()), ..obj() };
         let mut report = Report::default();

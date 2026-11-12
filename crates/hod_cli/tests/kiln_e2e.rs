@@ -11,6 +11,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+#[path = "../../hod_obj/tests/common/linking.rs"]
+#[allow(dead_code)]
+mod linking;
+
 use hod_testutil::{LLVM_MAJORS, Outcome, Scratch, run_with, tool, tools_required};
 use xtask::shim;
 
@@ -109,6 +113,191 @@ int main() {
 }
 "#;
 
+/// Exceptions through frames with destructors, a rethrow, and catches
+/// by type (`llvm.eh.typeid.for`).
+const EXCEPTIONS: &str = r#"
+#include <cstdio>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+struct Guard {
+    const char* name;
+    ~Guard() { std::printf("unwind %s\n", name); }
+};
+
+static int depth(int n) {
+    Guard guard{n % 2 ? "odd" : "even"};
+    if (n == 0) throw std::runtime_error("bottom");
+    return depth(n - 1) + 1;
+}
+
+static void noisy() {
+    std::vector<int> v(3, 7);
+    throw 42;
+}
+
+int main() {
+    int caught = 0;
+    try { depth(3); } catch (...) { ++caught; std::printf("caught one\n"); }
+    try { noisy(); } catch (...) { ++caught; }
+    try {
+        try { noisy(); } catch (...) { std::printf("rethrow\n"); throw; }
+    } catch (...) { ++caught; }
+    try { depth(1); } catch (const std::exception& e) { std::printf("typed %s\n", e.what()); }
+    try { throw 7; } catch (int v) { std::printf("int %d\n", v); }
+    try {
+        std::string s = "abc";
+        std::printf("%c\n", s.at(10));
+    } catch (const std::out_of_range&) { std::printf("range\n"); }
+    std::printf("caught %d\n", caught);
+    return 0;
+}
+"#;
+const EXCEPTIONS_PRINTS: &str = "unwind even\nunwind odd\nunwind even\nunwind odd\ncaught one\n\
+rethrow\nunwind even\nunwind odd\ntyped bottom\nint 7\nrange\ncaught 3\n";
+
+/// Exceptions caught without a type: unwinding through destructors,
+/// cleanups of a `std::vector`, a rethrow.
+const UNWINDING: &str = r#"
+#include <cstdio>
+#include <stdexcept>
+#include <vector>
+
+struct Guard {
+    const char* name;
+    ~Guard() { std::printf("unwind %s\n", name); }
+};
+
+static int depth(int n) {
+    Guard guard{n % 2 ? "odd" : "even"};
+    if (n == 0) throw std::runtime_error("bottom");
+    return depth(n - 1) + 1;
+}
+
+static void noisy() {
+    std::vector<int> v(3, 7);
+    throw 42;
+}
+
+int main() {
+    int caught = 0;
+    try { depth(3); } catch (...) { ++caught; std::printf("caught one\n"); }
+    try { noisy(); } catch (...) { ++caught; }
+    try {
+        try { noisy(); } catch (...) { std::printf("rethrow\n"); throw; }
+    } catch (...) { ++caught; }
+    std::printf("caught %d\n", caught);
+    return 0;
+}
+"#;
+const UNWINDING_PRINTS: &str =
+    "unwind even\nunwind odd\nunwind even\nunwind odd\ncaught one\nrethrow\ncaught 3\n";
+
+/// Standard containers, algorithms, virtual calls through `unique_ptr`,
+/// `std::function`, `double` and `long double` (fp128) arithmetic.
+const CONTAINERS: &str = r#"
+#include <algorithm>
+#include <cstdio>
+#include <functional>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+struct Animal {
+    virtual ~Animal() = default;
+    virtual std::string name() const = 0;
+};
+struct Cat : Animal { std::string name() const override { return "cat"; } };
+struct Dog : Animal { std::string name() const override { return "dog"; } };
+
+int main() {
+    std::vector<int> v{5, 3, 9, 1, 7};
+    std::sort(v.begin(), v.end());
+    for (int x : v) std::printf("%d ", x);
+    std::printf("\n");
+    std::map<std::string, int> m;
+    for (const char* w : {"b", "a", "c", "a"}) ++m[w];
+    for (auto& [k, c] : m) std::printf("%s=%d ", k.c_str(), c);
+    std::printf("\n");
+    std::vector<std::unique_ptr<Animal>> zoo;
+    zoo.push_back(std::make_unique<Cat>());
+    zoo.push_back(std::make_unique<Dog>());
+    for (auto& a : zoo) std::printf("%s ", a->name().c_str());
+    std::function<double(double)> f = [](double x) { return x * 1.5 + 0.25; };
+    std::printf("\n%.3f %g\n", f(2.0), 1.0 / 3.0);
+    long double ld = 1.0L / 7.0L;
+    std::printf("%.10Lf\n", ld);
+    return 0;
+}
+"#;
+const CONTAINERS_PRINTS: &str =
+    "1 3 5 7 9 \na=2 b=1 c=1 \ncat dog \n3.250 0.333333\n0.1428571429\n";
+
+/// File-scope `asm`: a module hod declines (`module:asm`) for as long as
+/// it has no assembler, so the fallback path stays tested.
+const MODULE_ASM: &str = r#"
+#include <cstdio>
+asm(".globl hod_e2e_marker\n.set hod_e2e_marker, 0x2a");
+[[gnu::always_inline]] inline int twice(int value) { return value + value; }
+int main() {
+    std::printf("module asm %d\n", twice(21));
+    return 0;
+}
+"#;
+
+/// Integer code inside what hod generates code for, with no call: loops,
+/// a switch, globals, a constant table, pointers and a struct.
+const INTEGERS: &str = r#"
+long g_counter = 3;
+static const int primes[] = {2, 3, 5, 7, 11, 13};
+extern "C" long accumulate(long n) {
+    long sum = 0;
+    for (long i = 0; i < n; ++i) {
+        switch (i % 4) {
+        case 0: sum += i; break;
+        case 1: sum -= 2 * i; break;
+        case 2: sum ^= i; break;
+        default: sum += g_counter++;
+        }
+    }
+    return sum;
+}
+extern "C" int prime_sum(const int* first, int count) {
+    int total = 0;
+    for (int i = 0; i < count; ++i) total += first[i] * primes[i % 6];
+    return total;
+}
+extern "C" unsigned collatz(unsigned x) {
+    unsigned steps = 0;
+    while (x != 1) { x = (x & 1) ? 3 * x + 1 : x / 2; ++steps; }
+    return steps;
+}
+struct Pair { long a; long b; };
+extern "C" void swap_pair(Pair* p) { long t = p->a; p->a = p->b; p->b = t; }
+"#;
+
+/// The C program that calls [`INTEGERS`], and what it prints.
+const DRIVER: &str = r#"
+#include <stdio.h>
+struct Pair { long a, b; };
+long accumulate(long);
+int prime_sum(const int*, int);
+unsigned collatz(unsigned);
+void swap_pair(struct Pair*);
+extern long g_counter;
+int main(void) {
+    int xs[] = {1, -2, 3, 40, 5, 6, 7};
+    struct Pair p = {1, 2};
+    swap_pair(&p);
+    printf("%ld %d %u %u %ld %ld %ld\n", accumulate(1000), prime_sum(xs, 7), collatz(27),
+           collatz(97), p.a, p.b, g_counter);
+    return 0;
+}
+"#;
+const DRIVER_PRINTS: &str = "-96401 438 111 118 2 1 253\n";
+
 /// The `kiln++` to test with, or `None` to skip.
 fn kiln() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("HOD_KILN").filter(|v| !v.is_empty()) {
@@ -189,19 +378,34 @@ fn run_in(dir: &Path, command: &mut Command) -> Outcome {
     outcome
 }
 
-/// Whether `reason` is one `classify` gives (`spec/ir.md` §8.5): a name
-/// of its vocabulary or of one of its families. Which one is the support
-/// matrix's business, and moves as code generation lands, so a test of
-/// real programs checks only the shape.
+/// Whether `reason` is one hod gives for a decline: a name of
+/// `classify`'s vocabulary or of one of its families (`spec/ir.md` §8.5),
+/// or a code generator's (`spec/cli.md` "The back half"). Which one is the
+/// support matrix's business, and moves as code generation lands, so a
+/// test of real programs checks only the shape.
 fn is_construct(reason: &str) -> bool {
+    const FAMILIES: [&str; 12] = [
+        "intrinsic:",
+        "module-flag:",
+        "cc:",
+        "bundle:",
+        "a64:",
+        "abi:",
+        "attr:",
+        "call:",
+        "limit:",
+        "object:",
+        "option:",
+        "eh:",
+    ];
     hod_ir::CONSTRUCT_NAMES.contains(&reason)
-        || ["intrinsic:", "module-flag:", "cc:", "bundle:"].iter().any(|f| reason.starts_with(f))
+        || FAMILIES.iter().any(|f| reason.starts_with(f))
         || reason.split_once('/').is_some_and(|(row, _)| hod_ir::CONSTRUCT_NAMES.contains(&row))
 }
 
-/// Asserts that a coverage line's reason is a construct `classify` names.
+/// Asserts that a coverage line's reason is a construct hod names.
 fn assert_construct(line: &[String]) {
-    assert!(is_construct(&line[1]), "a construct of classify's: {line:?}");
+    assert!(is_construct(&line[1]), "a construct hod names: {line:?}");
 }
 
 /// The coverage log as rows of fields.
@@ -210,49 +414,163 @@ fn coverage(log: &Path) -> Vec<Vec<String>> {
     text.lines().map(|line| line.split('\t').map(str::to_owned).collect()).collect()
 }
 
-/// Asserts that `log` holds the one line of a bitcode module that hod
-/// converted to text, declined as it declines text today, and handed to
-/// the fallback, which succeeded (`spec/cli.md` "Coverage log").
-fn assert_converted_then_fell_back(log: &Path) {
-    let lines = coverage(log);
-    assert_eq!(lines.len(), 1, "one translation unit, one line: {lines:?}");
-    let line = &lines[0];
-    assert_eq!(line.len(), 11, "{line:?}");
-    assert_eq!((&*line[0], &*line[2]), ("fallback", "bitcode"), "{line:?}");
-    assert_construct(line);
-    assert!(line[3].parse::<u64>().is_ok_and(|bytes| bytes > 0), "the bitcode's size: {line:?}");
-    assert!(line[5].contains("linux"), "the triple, known from the converted text: {line:?}");
-    let micros = |field: &str| field.parse::<u64>().unwrap_or_else(|_| panic!("{line:?}"));
-    assert!(micros(&line[8]) > 0, "the conversion ran: {line:?}");
-    assert!(micros(&line[6]) >= micros(&line[8]), "hod's time includes it: {line:?}");
-    assert!(micros(&line[7]) > 0, "the fallback ran: {line:?}");
-    assert_eq!(line[9], "0", "the fallback's exit status: {line:?}");
-}
-
-// spec/harness.md "shim": kiln accepts the shim directory, compiles through
-// hod, and hod's fallback produces working programs; the bitcode kiln hands
-// over after `opt` is converted with the installation's own llvm-dis
-// (spec/cli.md "Bitcode conversion"); spec/cli.md "Strict mode" surfaces as
-// a failed compile.
+// spec/harness.md "shim": kiln accepts the shim directory and compiles
+// through hod; whatever hod does with each program (builds it, or hands
+// it to the fallback with a construct's name), the program links under
+// every linker and prints what the same source built by kiln with LLVM
+// prints. One program is pinned to hod's code and one to the fallback, so
+// both paths stay tested as the support matrix moves. Bitcode (after
+// kiln's `opt`) is converted with the installation's llvm-dis
+// (spec/cli.md "Bitcode conversion"); spec/cli.md "Strict mode" surfaces
+// as a failed compile.
 #[test]
 fn kiln_builds_and_runs_programs_through_the_shim() {
     let Some(kiln) = kiln() else { return };
     for llvm in llvm_installations() {
         eprintln!("note: kiln through a shim of '{}'", llvm.display());
-        through_the_shim(&kiln, llvm);
+        through_the_shim(&kiln, &llvm);
     }
 }
+
+/// Which path a program must take through hod.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Route {
+    /// hod builds it.
+    Hod,
+    /// hod declines it with this reason; the fallback builds it.
+    Fallback(&'static str),
+    /// Either: the support matrix decides.
+    Either,
+}
+
+/// One C++ program of the test.
+struct Program {
+    name: &'static str,
+    source: &'static str,
+    args: &'static [&'static str],
+    /// What kiln hands `llc`: text, or bitcode after `opt`.
+    form: &'static str,
+    prints: &'static str,
+    path: Route,
+}
+
+const HELLO_PRINTS: &str = "sides: 3\ncaught: too many sides\n";
+
+const PROGRAMS: &[Program] = &[
+    Program {
+        name: "hello",
+        source: HELLO,
+        args: &[],
+        form: "text",
+        prints: HELLO_PRINTS,
+        path: Route::Either,
+    },
+    Program {
+        name: "hello-o1",
+        source: HELLO,
+        args: &["-O1"],
+        form: "bitcode",
+        prints: HELLO_PRINTS,
+        path: Route::Either,
+    },
+    Program {
+        name: "coro",
+        source: COROUTINE,
+        args: &["-std=c++20"],
+        form: "bitcode",
+        prints: "sum of squares: 30\n",
+        path: Route::Either,
+    },
+    Program {
+        name: "coro-o1",
+        source: COROUTINE,
+        args: &["-std=c++20", "-O1"],
+        form: "bitcode",
+        prints: "sum of squares: 30\n",
+        path: Route::Either,
+    },
+    // An `always_inline` function, the common reason for bitcode in code
+    // that uses the standard library: kiln runs `opt` at -O0.
+    Program {
+        name: "inline",
+        source: ALWAYS_INLINE,
+        args: &[],
+        form: "bitcode",
+        prints: "twice: 42\n",
+        path: Route::Hod,
+    },
+    Program {
+        name: "exceptions",
+        source: EXCEPTIONS,
+        args: &[],
+        form: "bitcode",
+        prints: EXCEPTIONS_PRINTS,
+        path: Route::Either,
+    },
+    Program {
+        name: "exceptions-o1",
+        source: EXCEPTIONS,
+        args: &["-O1"],
+        form: "bitcode",
+        prints: EXCEPTIONS_PRINTS,
+        path: Route::Either,
+    },
+    Program {
+        name: "unwinding",
+        source: UNWINDING,
+        args: &[],
+        form: "bitcode",
+        prints: UNWINDING_PRINTS,
+        path: Route::Either,
+    },
+    Program {
+        name: "unwinding-o1",
+        source: UNWINDING,
+        args: &["-O1"],
+        form: "bitcode",
+        prints: UNWINDING_PRINTS,
+        path: Route::Either,
+    },
+    Program {
+        name: "containers",
+        source: CONTAINERS,
+        args: &["-std=c++20"],
+        form: "bitcode",
+        prints: CONTAINERS_PRINTS,
+        path: Route::Either,
+    },
+    Program {
+        name: "containers-nocontract",
+        source: CONTAINERS,
+        args: &["-std=c++20", "-ffp-contract=off", "-O1"],
+        form: "bitcode",
+        prints: CONTAINERS_PRINTS,
+        path: Route::Either,
+    },
+    Program {
+        name: "module-asm",
+        source: MODULE_ASM,
+        args: &[],
+        form: "bitcode",
+        prints: "module asm 42\n",
+        path: Route::Fallback("module:asm"),
+    },
+];
 
 /// One kiln, wrapped to use a shim, and where it works.
 struct Shimmed {
     scratch: Scratch,
     compiler: PathBuf,
     work: PathBuf,
+    kiln: PathBuf,
+    llvm: PathBuf,
+    toolchain: Option<linking::Toolchain>,
 }
 
 impl Shimmed {
-    /// Compiles and links with `args` to `program`, runs the program and
-    /// checks what it prints. Returns the coverage log of the compile.
+    /// Compiles and links with `args` to `program` through kiln's own
+    /// driver, runs the program and checks what it prints. Returns the
+    /// coverage log of the compile.
     fn builds(&self, args: &[&str], program: &str, prints: &str) -> PathBuf {
         let log = self.scratch.join(format!("{program}.tsv"));
         let compile = run_in(
@@ -277,7 +595,7 @@ impl Shimmed {
                 .env("HOD_COVERAGE_LOG", &log)
                 .env("HOD_STRICT", "1"),
         );
-        assert!(!compile.success(), "strict mode must fail while hod generates no code");
+        assert!(!compile.success(), "strict mode must fail on a module hod declines");
         let stderr = compile.stderr_text();
         assert!(!self.work.join(object).exists());
         let mut lines = coverage(&log);
@@ -295,13 +613,131 @@ impl Shimmed {
         assert_eq!(line[9], "-", "no fallback ran: {line:?}");
         line
     }
+
+    /// Compiles `source` with `args` to `object` through the shim (with
+    /// the fallback, or in strict mode) and returns the coverage line.
+    fn compile(&self, source: &str, args: &[&str], object: &str, strict: bool) -> Vec<String> {
+        let log = self.scratch.join(format!("{object}.tsv"));
+        let mut compile = command(&self.compiler);
+        compile.args(args).args(["-c", source, "-o", object]).env("HOD_COVERAGE_LOG", &log);
+        if strict {
+            compile.env("HOD_STRICT", "1");
+        }
+        let compile = run_in(&self.work, &mut compile);
+        assert!(compile.success(), "{object}: {}", compile.stderr_text());
+        let mut lines = coverage(&log);
+        assert_eq!(lines.len(), 1, "one translation unit, one line: {lines:?}");
+        let line = lines.remove(0);
+        assert_eq!(line.len(), 11, "{line:?}");
+        assert!(line[5].contains("linux"), "the module's triple: {line:?}");
+        line
+    }
+
+    /// The same source compiled by kiln with the LLVM installation itself.
+    fn reference(&self, source: &str, args: &[&str], object: &str) -> PathBuf {
+        let output = self.work.join(object);
+        let mut compile = command(&self.kiln);
+        compile.arg(format!("--llvm-dir={}", self.llvm.display()));
+        let compile =
+            run_in(&self.work, compile.args(args).args(["-c", source, "-o"]).arg(&output));
+        assert!(compile.success(), "{object}: {}", compile.stderr_text());
+        output
+    }
+
+    /// LLVM's tools read an object hod wrote without complaint.
+    fn inspect(&self, object: &Path, shows: &str) {
+        let bin = self.llvm.join("bin");
+        for (tool, args, expect) in [
+            ("llvm-readelf", &["-h", "-S", "-r", "-s"][..], "AArch64"),
+            ("llvm-objdump", &["-d", "-r"][..], shows),
+            ("llvm-dwarfdump", &["--eh-frame"][..], "FDE"),
+            ("llvm-dwarfdump", &["--verify"][..], "No errors."),
+        ] {
+            let mut read = Command::new(bin.join(tool));
+            let read = run_in(&self.work, read.args(args).arg(object));
+            let text = read.stdout_text();
+            let what = format!("{tool} {args:?} {}", object.display());
+            assert!(read.success() && read.stderr_text().is_empty(), "{what}: {read:?}");
+            assert!(text.contains(expect), "{what}: {text}");
+            assert!(!text.contains("<unknown>"), "{what}: {text}");
+        }
+    }
+
+    /// Links `objects` under every linker present, runs each program and
+    /// checks what it prints.
+    /// `libraries` follow the objects (`-lstdc++`: the C driver links).
+    fn links_and_prints(&self, what: &str, objects: &[&Path], libraries: &[&str], prints: &str) {
+        let Some(toolchain) = &self.toolchain else { return };
+        let mut inputs = objects.to_vec();
+        inputs.extend(libraries.iter().map(Path::new));
+        for linker in &toolchain.linkers {
+            let program = self.scratch.join(format!("{what}-{}", linker.name));
+            let ran = toolchain.link_and_run(linker, &[], &inputs, &program);
+            assert!(ran.success(), "{what} {}: {ran:?}", linker.name);
+            assert_eq!(ran.stdout_text(), prints, "{what} {}", linker.name);
+        }
+    }
+
+    /// One program: through hod (built or handed on, as `program.path`
+    /// allows), and by the LLVM route; both link and print the same.
+    fn check(&self, program: &Program) {
+        let source = format!("{}.cpp", program.name);
+        std::fs::write(self.work.join(&source), program.source).unwrap();
+        let object = format!("{}.o", program.name);
+        let line = self.compile(&source, program.args, &object, false);
+        let name = program.name;
+        assert_eq!(line[2], program.form, "{name}: {line:?}");
+        // The shim converts bitcode with llvm-dis: field 9 is its time.
+        assert_eq!(line[8] != "-", program.form == "bitcode", "{name}: {line:?}");
+        match (&*line[0], program.path) {
+            ("hod", Route::Hod | Route::Either) => {
+                assert_eq!((&*line[1], &*line[7], &*line[9]), ("-", "-", "-"), "{name}: {line:?}");
+                self.inspect(&self.work.join(&object), "<main>:");
+            }
+            ("fallback", Route::Fallback(_) | Route::Either) => {
+                assert_construct(&line);
+                if let Route::Fallback(reason) = program.path {
+                    assert_eq!(line[1], reason, "{name}: {line:?}");
+                }
+                assert_eq!(line[9], "0", "the fallback succeeded: {line:?}");
+            }
+            _ => panic!("{name}: expected {:?}: {line:?}", program.path),
+        }
+        eprintln!("note: {name}: {} {}", line[0], line[1]);
+        let reference = self.reference(&source, program.args, &format!("{name}-llvm.o"));
+        let ours = self.work.join(&object);
+        let flags = ["-lstdc++", "-lm"];
+        self.links_and_prints(&format!("{name}-hod"), &[&ours], &flags, program.prints);
+        self.links_and_prints(&format!("{name}-llvm"), &[&reference], &flags, program.prints);
+    }
+
+    /// [`INTEGERS`] in strict mode at -O0 (text) and -O1 (bitcode): hod
+    /// builds it, LLVM's tools read it, and with [`DRIVER`] it prints what
+    /// the LLVM route's object prints.
+    fn hod_builds_integers(&self) {
+        let Some(toolchain) = &self.toolchain else { return };
+        let driver = toolchain.compile_c(&self.scratch, "driver", DRIVER, &[]);
+        std::fs::write(self.work.join("integers.cpp"), INTEGERS).unwrap();
+        for (opt, form) in [("-O0", "text"), ("-O1", "bitcode")] {
+            let object = format!("integers{opt}.o");
+            let line = self.compile("integers.cpp", &[opt], &object, true);
+            assert_eq!((&*line[0], &*line[1], &*line[2]), ("hod", "-", form), "{line:?}");
+            let ours = self.work.join(&object);
+            self.inspect(&ours, "<accumulate>:");
+            let theirs = self.reference("integers.cpp", &[opt], &format!("integers-llvm{opt}.o"));
+            for (route, input) in [("hod", &ours), ("llvm", &theirs)] {
+                let what = format!("integers-{route}{opt}");
+                self.links_and_prints(&what, &[&driver, input], &[], DRIVER_PRINTS);
+            }
+        }
+    }
 }
 
 /// The test, with the LLVM installation `llvm`.
-fn through_the_shim(kiln: &Path, llvm: PathBuf) {
+fn through_the_shim(kiln: &Path, llvm: &Path) {
     let scratch = Scratch::new("kiln-e2e");
     let built = shim::build(&shim::Request {
-        llvm,
+        llvm: llvm.to_path_buf(),
         hod: PathBuf::from(env!("CARGO_BIN_EXE_hod")),
         out: scratch.join("llvm"),
         kiln: Some(kiln.to_path_buf()),
@@ -319,43 +755,34 @@ fn through_the_shim(kiln: &Path, llvm: PathBuf) {
     assert!(text.starts_with("kiln version"), "{text}");
     assert!(text.contains(&built.dir.display().to_string()), "kiln names its LLVM: {text}");
 
-    std::fs::write(work.join("hello.cpp"), HELLO).unwrap();
-    std::fs::write(work.join("coro.cpp"), COROUTINE).unwrap();
-    std::fs::write(work.join("inline.cpp"), ALWAYS_INLINE).unwrap();
-    let shimmed = Shimmed { scratch, compiler, work };
-    let hello = "sides: 3\ncaught: too many sides\n";
+    let toolchain = linking::Toolchain::host(&scratch);
+    if let Some(toolchain) = &toolchain {
+        assert!(!toolchain.linkers.is_empty(), "no linker");
+    }
+    let shimmed = Shimmed {
+        scratch,
+        compiler,
+        work,
+        kiln: kiln.to_path_buf(),
+        llvm: llvm.to_path_buf(),
+        toolchain,
+    };
 
-    // A program with a virtual call, an exception and iostream: text.
-    let log = shimmed.builds(&["hello.cpp"], "hello", hello);
-    let lines = coverage(&log);
-    assert_eq!(lines.len(), 1, "one translation unit, one line: {lines:?}");
-    assert_eq!(lines[0].len(), 11, "{lines:?}");
-    assert_eq!((&*lines[0][0], &*lines[0][2]), ("fallback", "text"), "{lines:?}");
-    assert_construct(&lines[0]);
-    assert!(lines[0][5].contains("linux"), "the module's triple: {lines:?}");
-    assert_eq!(lines[0][8..], ["-", "0", "-"], "no conversion; the fallback succeeded: {lines:?}");
+    // kiln's own driver compiles through the shim and links.
+    std::fs::write(shimmed.work.join("hello.cpp"), HELLO).unwrap();
+    let log = shimmed.builds(&["hello.cpp"], "hello", HELLO_PRINTS);
+    assert_eq!(coverage(&log).len(), 1, "one translation unit, one line");
 
-    // A coroutine: kiln runs `opt` first, so `llc` (hod) is handed bitcode.
-    let log = shimmed.builds(&["-std=c++20", "coro.cpp"], "coro", "sum of squares: 30\n");
-    assert_converted_then_fell_back(&log);
+    for program in PROGRAMS {
+        shimmed.check(program);
+    }
 
-    // An `always_inline` function, the common reason for bitcode in code
-    // that uses the standard library: again `opt` first, bitcode to hod.
-    let log = shimmed.builds(&["inline.cpp"], "inline", "twice: 42\n");
-    assert_converted_then_fell_back(&log);
-
-    // Optimization: at -O1 every translation unit goes through `opt`.
-    let log = shimmed.builds(&["-O1", "hello.cpp"], "hello-o1", hello);
-    assert_converted_then_fell_back(&log);
+    // Code hod generates: strict mode succeeds.
+    shimmed.hod_builds_integers();
 
     // Strict mode on bitcode: hod's decline is the text path's, which shows
     // that the module was converted and looked at as text.
-    let line = shimmed.strict_fails("inline.cpp", "strict-inline.o");
-    assert_eq!(line[2], "bitcode", "{line:?}");
+    let line = shimmed.strict_fails("module-asm.cpp", "strict-asm.o");
+    assert_eq!((&*line[1], &*line[2]), ("module:asm", "bitcode"), "{line:?}");
     assert!(line[8].parse::<u64>().is_ok(), "the conversion ran: {line:?}");
-
-    // Strict mode on text: the compile fails with hod's diagnostic.
-    let line = shimmed.strict_fails("hello.cpp", "strict.o");
-    assert_eq!(line[2], "text", "{line:?}");
-    assert_eq!(line[8], "-", "no conversion: {line:?}");
 }

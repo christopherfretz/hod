@@ -637,7 +637,12 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
 /// In `FnStr::ALL` order.
 const ATTR_STRING: [SupportRow; FnStr::ALL.len()] = [
     row("attr:target-cpu", ON, todo(X64), "AArch64: the code is ARMv8.0, which every CPU runs"),
-    a64("attr:target-features", "WP-033", "the target has to read it"),
+    row(
+        "attr:target-features",
+        ON,
+        todo(X64),
+        "each feature judged by code generation (`spec/codegen.md` §5.5.2)",
+    ),
     both("attr:tune-cpu", ON, "tuning only: hod does not tune"),
     both("attr:frame-pointer", ON, "any value: hod always keeps a frame pointer"),
     a64("attr:patchable-function-entry", LATER, ""),

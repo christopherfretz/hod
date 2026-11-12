@@ -3,7 +3,7 @@
 ; parallel-copy case), a nested loop, and a loop with two exits.
 ;@ covers: spec/ir.md §5.4 other (Phi), terminator (CondBr)
 ;@ tier: quick
-;@ unsupported: *
+;@ unsupported(x86_64): *
 ;@ stdout: sum(1..100) = 5050
 ;@ stdout: sum(1..1) = 1
 ;@ stdout: fib(0) = 0

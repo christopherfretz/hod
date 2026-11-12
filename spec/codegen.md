@@ -1011,6 +1011,52 @@ them there, and has the saturating arithmetic, `scmp`/`ucmp`, the
   refuses them as `intrinsic:<name>`. Vector forms are `a64:intrinsic-vector`,
   `bfloat` ones `a64:intrinsic-bfloat`.
 
+#### 5.5.2 Target features (WP-043)
+
+`hod_a64::features::check` judges a `target-features` string (a
+function's attribute) and each `-mattr` item: items separated by `,`,
+each `+name` or `-name`, empty items skipped. hod emits ARMv8.0 code with
+FP and Advanced SIMD and never chooses an instruction by a feature, so:
+
+- **Accepted, either sign**: a feature that only makes instructions or
+  system registers available. The architecture versions `v8a`..`v8.9a`,
+  `v9a`..`v9.6a`; `fp-armv8` and `neon` enabled; the extensions of LLVM
+  19's and 22's `AArch64Features.td` (`aes`, `sha2`, `sha3`, `sm4`,
+  `crypto`, `crc`, `lse`, `lse2`, `rdm`, `ras`, `rcpc`, `fullfp16`,
+  `dotprod`, `i8mm`, `bf16`, `pauth`, `bti`, `mte`, `sve*`, `sme*`, `gcs`,
+  ...; the full list is `AVAILABILITY` in `crates/hod_a64/src/features.rs`);
+  and `fmv` and `outline-atomics`, which change no code hod emits (no
+  function multi-versioning; `classify` refuses atomics). `+bti` and
+  `+pauth` are availability: whether a function must begin with `bti` or
+  sign its return address is the branch-protection attributes and module
+  flags, which `classify` refuses (§5.5).
+- **Refused by name**: a feature that changes the contract the code
+  keeps. Disabling one of the last eight is accepted: it is the default,
+  which hod's code keeps.
+
+  | item | reason |
+  |---|---|
+  | `-fp-armv8` | `attr:target-feature-soft-float` |
+  | `-neon` | `attr:target-feature-no-neon` |
+  | `+strict-align` | `attr:target-feature-strict-align` |
+  | `+reserve-<reg>` | `attr:target-feature-reserve` |
+  | `+call-saved-<reg>` | `attr:target-feature-call-saved` |
+  | `+tagged-globals` | `attr:target-feature-tagged-globals` |
+  | `+execute-only` | `attr:target-feature-execute-only` (hod writes data islands) |
+  | `+harden-sls-*` | `attr:target-feature-harden-sls` |
+  | `+fix-cortex-*` | `attr:target-feature-erratum` |
+  | `+v8r` | `attr:target-feature-profile` |
+
+- **Unknown, refused**: any other name, either sign, and an item without a
+  sign: `attr:target-feature-unknown`. A feature hod has not judged is not
+  assumed harmless; adding one to a list is a decision with a test.
+
+The first refused item of the string is the answer, and the facade
+reports it as the refusal's detail (`spec/cli.md` "The back half").
+Tests: `features.rs` (`what_compilers_write_is_accepted`,
+`contract_features_are_refused_by_name`, `unknown_features_are_refused`),
+`crates/hod/tests/back.rs` `target_features`.
+
 ### 5.6 x86-64 (planned)
 
 `push rbp` · `mov rbp, rsp` · pushes of the save set · `sub rsp, imm32`

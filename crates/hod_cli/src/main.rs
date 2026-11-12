@@ -6,6 +6,7 @@ mod args;
 mod convert;
 mod coverage;
 mod driver;
+mod jobs;
 mod phases;
 
 use std::ffi::OsString;

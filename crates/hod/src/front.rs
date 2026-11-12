@@ -7,7 +7,7 @@
 //! one at a time (read, the reader's own refusals, `classify`'s body pass,
 //! `Body::verify`). A declined module is handed to `llc` next, so the
 //! first refusal ends the work unless [`Settings::census`] asks for every
-//! reason.
+//! reason. The back half is `back.rs`.
 
 use std::borrow::Cow;
 use std::time::Instant;
@@ -17,6 +17,7 @@ use hod_ir::{Body, Census, Classifier, IrErrorKind, Module, Rejection, Rejection
 use hod_ir::{Support, TargetSpec};
 use hod_ll::{LlError, LlErrorKind};
 
+use crate::back::{Threads, generate_with};
 use crate::{
     CompileError, Construct, InputKind, Options, OutputKind, Unsupported, module_triple,
     target_supported,
@@ -47,6 +48,9 @@ pub struct Settings {
     /// `Support::shipped` for the module's target. For tests and
     /// measurements of what is not supported yet.
     pub support: Option<Support>,
+    /// The threads code generation may use (`spec/cli.md` "Threads");
+    /// the default is the calling thread alone.
+    pub threads: Threads,
 }
 
 /// What [`compile_with`] tells besides its answer.
@@ -65,7 +69,7 @@ pub struct Report {
 }
 
 impl Report {
-    fn phase(&mut self, name: &'static str) {
+    pub(crate) fn phase(&mut self, name: &'static str) {
         self.phases.push((name, Instant::now()));
     }
 
@@ -82,6 +86,7 @@ fn reason_name(error: &CompileError) -> &str {
         CompileError::Unsupported(unsupported) => unsupported.construct.name(),
         CompileError::MalformedInput(_) => "malformed-input",
         CompileError::InvalidOptions(_) => "invalid-options",
+        CompileError::Internal(_) => INTERNAL_ERROR,
     }
 }
 
@@ -104,6 +109,10 @@ fn ir_reason(kind: IrErrorKind) -> Option<Construct> {
         _ => None,
     }
 }
+
+/// The reason name of [`CompileError::Internal`] (`spec/cli.md`
+/// "Reasons").
+pub const INTERNAL_ERROR: &str = "internal-error";
 
 /// The reason for a limit of a reader (`hod_ll`'s or `hod_bc`'s, or a
 /// table of `hod_ir` they fill): LLVM may take what hod does not.
@@ -147,7 +156,7 @@ impl From<BcError> for Stop {
     }
 }
 
-fn symbol_name(module: &Module, sym: SymId) -> Option<String> {
+pub(crate) fn symbol_name(module: &Module, sym: SymId) -> Option<String> {
     (sym.index() < module.symbol_count())
         .then(|| String::from_utf8_lossy(module.symbol(sym).name()).into_owned())
 }
@@ -159,7 +168,7 @@ fn from_rejection(module: &Module, rejection: Rejection, body: bool) -> CompileE
         if body { rejection.symbol.and_then(|sym| symbol_name(module, sym)) } else { None };
     match rejection.kind {
         RejectionKind::Unsupported => {
-            Unsupported { construct: Construct::Named(rejection.construct), function }.into()
+            Unsupported::in_function(Construct::Named(rejection.construct), function).into()
         }
         RejectionKind::Invalid => CompileError::MalformedInput(match function {
             Some(function) => format!("{} in function '{function}'", rejection.construct),
@@ -173,6 +182,7 @@ fn from_rejection(module: &Module, rejection: Rejection, body: bool) -> CompileE
 struct Judge<'s> {
     census: Option<Census>,
     support: &'s Support,
+    threads: &'s Threads,
     first: Option<CompileError>,
     report: &'s mut Report,
     accepted: Vec<Body>,
@@ -187,6 +197,7 @@ impl<'s> Judge<'s> {
                 .support
                 .as_ref()
                 .unwrap_or_else(|| Support::shipped(module.target().arch())),
+            threads: &settings.threads,
             first: None,
             report,
             accepted: Vec::new(),
@@ -261,7 +272,7 @@ impl<'s> Judge<'s> {
                 let function = symbol_name(module, sym);
                 let error = match refused.first() {
                     Some(first) => {
-                        Unsupported { construct: Construct::Named(first.clone()), function }.into()
+                        Unsupported::in_function(Construct::Named(first.clone()), function).into()
                     }
                     // Defensive: a reader names what it refused.
                     None => CompileError::MalformedInput(format!(
@@ -306,7 +317,7 @@ impl<'s> Judge<'s> {
         walked: Result<(), Stop>,
         options: &Options,
     ) -> Result<Vec<u8>, CompileError> {
-        let Judge { first, report, accepted, census, .. } = self;
+        let Judge { first, report, accepted, census, threads, .. } = self;
         if let Err(Stop(error)) = walked {
             if census.is_some() {
                 report.reason(reason_name(&error));
@@ -317,7 +328,7 @@ impl<'s> Judge<'s> {
         if let Some(error) = first {
             return Err(error);
         }
-        generate(module, &accepted, options)
+        generate_with(module, &accepted, options, threads, report)
     }
 }
 
@@ -325,15 +336,18 @@ impl<'s> Judge<'s> {
 /// whole, and its function bodies, every one classified and verified, in
 /// the order the module defines them.
 ///
-/// There is no code generator yet: every module that gets here is
-/// declined with `codegen-not-implemented`. WP-043 replaces this body.
+/// On the calling thread alone; [`generate_with`] says how many threads
+/// and records the phases (`spec/cli.md` "The back half").
+///
+/// # Errors
+/// Code generation's refusal ([`CompileError::Unsupported`]), or an
+/// internal error ([`CompileError::Internal`]). Nothing is written.
 pub fn generate(
     module: &Module,
     bodies: &[Body],
     options: &Options,
 ) -> Result<Vec<u8>, CompileError> {
-    let _ = (module, bodies, options);
-    Err(decline(Construct::CodegenNotImplemented))
+    generate_with(module, bodies, options, &Threads::default(), &mut Report::default())
 }
 
 /// [`crate::compile`] with its settings and report (`spec/cli.md` "The
@@ -493,10 +507,7 @@ mod tests {
         let rejection =
             |kind| Rejection { kind, construct: "cc:ccc".into(), symbol: sym, inst: None };
         let body = from_rejection(&module, rejection(RejectionKind::Unsupported), true);
-        assert_eq!(
-            body,
-            Unsupported { construct: named("cc:ccc"), function: Some("f".into()) }.into()
-        );
+        assert_eq!(body, Unsupported::in_function(named("cc:ccc"), Some("f".into())).into());
         let pass = from_rejection(&module, rejection(RejectionKind::Unsupported), false);
         assert_eq!(pass, decline(named("cc:ccc")));
         let invalid = from_rejection(&module, rejection(RejectionKind::Invalid), true);

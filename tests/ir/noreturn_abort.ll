@@ -3,7 +3,7 @@
 ; blocks after the noreturn call end in unreachable.
 ;@ covers: spec/ir.md §5.4 terminator (Unreachable), §5.7 attributes (noreturn)
 ;@ exit: signal 6
-;@ unsupported: *
+;@ unsupported(x86_64): *
 ;@ stdout: checking 1
 ;@ stdout: checking 100
 ;@ stdout: checking 101

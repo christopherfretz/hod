@@ -435,7 +435,7 @@ fn kiln_builds_and_runs_programs_through_the_shim() {
 /// Which path a program must take through hod.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Route {
-    /// hod builds it (strict mode must succeed).
+    /// hod builds it.
     Hod,
     /// hod declines it with this reason; the fallback builds it.
     Fallback(&'static str),
@@ -497,7 +497,7 @@ const PROGRAMS: &[Program] = &[
         args: &[],
         form: "bitcode",
         prints: "twice: 42\n",
-        path: Route::Either,
+        path: Route::Hod,
     },
     Program {
         name: "exceptions",

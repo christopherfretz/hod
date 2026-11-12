@@ -260,3 +260,47 @@ fn break_even() {
         println!("{line}");
     }
 }
+
+/// gcc-torture `pr79286.c`, reduced: a load through a constant
+/// `getelementptr` 9.6e18 bytes past an internal global, on a path that
+/// never runs. LLVM materializes the global's address and adds the offset;
+/// hod folds the whole offset into the `adrp`/`add` relocations
+/// (`crates/hod_a64/src/common.rs:510`, `sym_address`, `Access::Direct`),
+/// which no linker can resolve (`R_AARCH64_ADR_PREL_PG_HI21 against .bss
+/// out of range`). Found by `cargo xtask corpus verify --strict`
+/// (spec/landed/cli/WP-043.md).
+#[test]
+#[ignore = "code-generation bug: a huge constant offset folded into ADRP's addend (hod_a64 sym_address)"]
+fn huge_constant_offset_from_a_global_links() {
+    let input = format!(
+        "{TRIPLE}@d = internal global [0 x [8 x i32]] zeroinitializer, align 4
+@a = global i32 0, align 4
+define i32 @main() {{
+entry:
+  %c = load volatile i32, ptr @a, align 4
+  %t = icmp ne i32 %c, 0
+  br i1 %t, label %far, label %done
+far:
+  %v = load i32, ptr getelementptr inbounds ([0 x [8 x i32]], ptr @d, i64 0, i64 300000000000000000), align 4
+  ret i32 %v
+done:
+  ret i32 0
+}}
+"
+    );
+    let object = compile(&input, max(1)).expect("hod compiles the module");
+    let Some(gcc) = hod_testutil::tool("gcc") else { return };
+    let scratch = hod_testutil::Scratch::new("hod-huge-offset");
+    let path = scratch.write("huge.o", object);
+    let program = scratch.join("huge");
+    let mut link = std::process::Command::new(gcc);
+    link.arg(&path).arg("-o").arg(&program);
+    let linked = hod_testutil::run_with(&mut link, b"", std::time::Duration::from_mins(1));
+    assert!(linked.success(), "the object links: {}", linked.stderr_text());
+    let ran = hod_testutil::run_with(
+        &mut std::process::Command::new(&program),
+        b"",
+        std::time::Duration::from_mins(1),
+    );
+    assert!(ran.success(), "{ran:?}");
+}

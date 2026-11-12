@@ -5,7 +5,10 @@
 
 #![allow(dead_code, clippy::too_many_lines, clippy::format_push_string, clippy::format_collect)]
 
+pub mod lsda;
+
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use hod_eh::{Fde, Lsda, Op, Row, write_eh_frame};
@@ -160,6 +163,23 @@ impl Elf {
             .map_or_else(|| panic!("no function at {}+{addend}", s.name), |f| f.name.clone())
     }
 
+    /// The file with the contents of each `(section, bytes)` replaced, as
+    /// [`Self::replace`] does it.
+    pub fn splice(&self, replacements: &[(usize, Vec<u8>)]) -> Vec<u8> {
+        let mut out = self.data.clone();
+        let shoff = u64_at(&out, 0x28) as usize;
+        let shentsize = usize::from(u16_at(&out, 0x3a));
+        for (section, bytes) in replacements {
+            out.resize(out.len().next_multiple_of(8), 0);
+            let at = out.len() as u64;
+            out.extend_from_slice(bytes);
+            let h = shoff + section * shentsize;
+            out[h + 24..h + 32].copy_from_slice(&at.to_le_bytes());
+            out[h + 32..h + 40].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
+        }
+        out
+    }
+
     /// The file with the contents of section `index` and of its relocation
     /// section `rela` replaced: the new contents are appended at the end
     /// of the file and the two section headers point at them; every other
@@ -177,15 +197,38 @@ impl Elf {
             out[h + 32..h + 40].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
         };
         put(&mut out, index, data);
-        let mut raw = Vec::with_capacity(relas.len() * 24);
-        for r in relas {
-            raw.extend_from_slice(&r.offset.to_le_bytes());
-            raw.extend_from_slice(&((u64::from(r.sym) << 32) | u64::from(r.ty)).to_le_bytes());
-            raw.extend_from_slice(&r.addend.to_le_bytes());
-        }
-        put(&mut out, rela, &raw);
+        put(&mut out, rela, &raw_relas(relas));
         out
     }
+}
+
+/// `Elf64_Rela` entries as bytes.
+pub fn raw_relas(relas: &[Rela]) -> Vec<u8> {
+    let mut raw = Vec::with_capacity(relas.len() * 24);
+    for r in relas {
+        raw.extend_from_slice(&r.offset.to_le_bytes());
+        raw.extend_from_slice(&((u64::from(r.sym) << 32) | u64::from(r.ty)).to_le_bytes());
+        raw.extend_from_slice(&r.addend.to_le_bytes());
+    }
+    raw
+}
+
+/// The linkers, each as the `g++` flags that select it.
+pub fn linkers(scratch: &Scratch) -> Vec<(&'static str, Vec<OsString>)> {
+    let mut out = Vec::new();
+    for (name, program) in [("bfd", "ld.bfd"), ("lld", "ld.lld"), ("mold", "ld.mold")] {
+        let Some(found) = tool(program) else { continue };
+        let dir = scratch.join(format!("use-{name}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let link = dir.join(format!("ld.{name}"));
+        if !link.exists() {
+            std::os::unix::fs::symlink(&found, &link).unwrap();
+        }
+        let mut prefix = OsString::from("-B");
+        prefix.push(&dir);
+        out.push((name, vec![prefix, format!("-fuse-ld={name}").into()]));
+    }
+    out
 }
 
 // ------------------------------------------------------ llvm-dwarfdump ----
@@ -451,6 +494,7 @@ pub fn round_trip(
     ir: &str,
     object: &[u8],
     reverse: bool,
+    lsda_of: Option<&dyn Fn(&str) -> Lsda>,
 ) -> Option<RoundTrip> {
     let original = dwarfdump(scratch, &format!("{label}.orig.o"), object)?;
     let elf = Elf::parse(object.to_vec());
@@ -484,7 +528,11 @@ pub fn round_trip(
             .iter()
             .find(|r| r.offset > cie.offset && r.offset < cie.offset + cie.length + 4)
             .map(|r| sym(r.sym));
-        let lsda = reloc_at(e.offset + 17).map(|r| Lsda { symbol: sym(r.sym), addend: r.addend });
+        let mut lsda =
+            reloc_at(e.offset + 17).map(|r| Lsda { symbol: sym(r.sym), addend: r.addend });
+        if let (Some(lsda_of), Some(l)) = (lsda_of, lsda.as_mut()) {
+            *l = lsda_of(&elf.function_at(pc.sym, pc.addend));
+        }
         let (rows, state) = rows_of(arch, e);
         used_state |= state;
         rows_store.push(rows);
@@ -590,10 +638,23 @@ pub fn llc(major: u32) -> Option<PathBuf> {
 
 /// Compiles LLVM text with `llc` at the oracle's flags.
 pub fn compile(llc: &Path, scratch: &Scratch, name: &str, ir: &str, triple: &str) -> Vec<u8> {
+    compile_with(llc, scratch, name, ir, triple, &[])
+}
+
+/// [`compile`] with more `llc` flags.
+pub fn compile_with(
+    llc: &Path,
+    scratch: &Scratch,
+    name: &str,
+    ir: &str,
+    triple: &str,
+    extra: &[&str],
+) -> Vec<u8> {
     let input = scratch.write(&format!("{name}.ll"), ir);
     let output = scratch.join(format!("{name}.o"));
-    let mut args: Vec<std::ffi::OsString> = LLC_FLAGS.iter().map(Into::into).collect();
+    let mut args: Vec<OsString> = LLC_FLAGS.iter().map(Into::into).collect();
     args.push(format!("-mtriple={triple}").into());
+    args.extend(extra.iter().map(Into::into));
     args.push(input.into());
     args.push("-o".into());
     args.push(output.clone().into());

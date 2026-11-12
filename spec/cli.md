@@ -60,9 +60,13 @@ pub trait ThreadTokens: Send + Sync + Debug {
   the default is the calling thread alone).
 - `Report` is what `compile_with` tells besides its answer: the stated
   target as it came to know it (`target`), the phases that ended with the
-  moment each ended (`phases`, "Phase report"), and with `census` every
+  moment each ended (`phases`, "Phase report"), with `census` every
   reason found, each once, in the order met, the answer's first
-  (`reasons`).
+  (`reasons`), and the session's two clocks (`bridge`, `session`:
+  "Session").
+- The front half is a producer of a `Session` ("Session"): it reads the
+  module level, starts the session with it, and hands each body to it as
+  the reader delivers it.
 - `generate` is **the seam**: the back half, given the module `classify`
   accepted whole and its bodies, every one classified and verified, in the
   module's order ("The back half"). `generate` is `generate_with` on one
@@ -94,6 +98,98 @@ pub trait ThreadTokens: Send + Sync + Debug {
 Helpers the tool uses, also part of the facade: `InputKind::detect`,
 `module_triple`, `effective_triple`, `target_supported` (see "Input" and
 "Reasons").
+
+## Session
+
+`hod::Session` compiles one module that a producer builds in process and
+hands over piece by piece (`docs/design/0004-in-process-seam.md` §4, as
+amended by its §10). It is the one judge of hod: `compile_with` (the
+front half, `crates/hod/src/front.rs`) is a producer of it that reads
+with `hod_ll` or `hod_bc`, and kiln's bridge is another.
+
+```rust
+impl Session {
+    pub fn new(target: TargetSpec, options: &Options, settings: Settings)
+        -> Result<Session, CompileError>;
+    pub fn with_module(module: hod_ir::Module, options: &Options, settings: Settings)
+        -> Result<Session, CompileError>;
+    pub fn module(&mut self) -> &mut hod_ir::Module;
+    pub fn end_module(&mut self) -> Result<(), CompileError>;
+    pub fn body(&mut self, sym: SymId, body: Body) -> Result<(), CompileError>;
+    pub fn unsupported_body<'c>(&mut self, sym: SymId,
+        constructs: impl IntoIterator<Item = &'c str>) -> Result<(), CompileError>;
+    pub fn finish(self, out: &mut Vec<u8>) -> Result<Report, (CompileError, Report)>;
+}
+```
+
+**The calls**, in this order:
+
+1. `new` makes an empty module of `target`; `with_module` takes one the
+   producer built already (the readers make their own), its module level
+   only. Both decline, in this order, `assembly-output` (the output is not
+   an object) and `unsupported-target` (`-march` is given, or `-mtriple`
+   is not the module's target): what "Reasons" judges before reading.
+   The other options are judged where "Reasons" puts them, after the
+   bodies (`option:*`, `-mattr`), so that one module gets one answer
+   from every producer. `Report::target` starts as `-mtriple`, else the
+   module's triple.
+2. The producer builds the module level through `module()`: symbols in
+   LLVM's module order (`spec/ir.md` §2.2), their descriptions, the
+   debug tables.
+3. `end_module` closes the debug tables (`Module::finish_debug`; their
+   error is `malformed-input`, or a reason as for the readers' `Ir`
+   errors) and runs `classify`'s module pass; the phase `classify` ends.
+4. For each function with a body, in any order: `body(sym, body)`, the
+   body built against `module()` (which a body may grow: types,
+   constants, inline assembly), taken by value; or
+   `unsupported_body(sym, names)` when the producer could not build it,
+   `names` being what it refused, the first the reason (a reader's
+   `unsupported()`; the producer records them in the module too, as the
+   readers do). A body is classified (`classify`'s body pass), then
+   verified (`Body::verify`), on arrival; an accepted body is kept,
+   never copied.
+5. `finish` ends the phase `bodies`, then runs the back half ("The back
+   half") on the accepted bodies **in module order** (`SymId` order,
+   whatever order they came in), and appends the object to `out`: the
+   bytes `compile` writes for the same module and options, at any thread
+   count. On an error `out` is as it was.
+
+**The answer** is the first reason in the order of the calls, then the
+back half's. After a refusal every later call returns it again, and
+`finish` returns it with the report (no `bodies` phase): the producer
+stops at the first `Err`. With `Settings::census` the calls go on (every
+reason into `Report::reasons`, as for `compile_with`) and `finish`
+returns the first.
+
+**Misuse** is an error, never a panic: `CompileError::Internal` with a
+message starting `session: `, which the session then answers from every
+later call (a harness counts it as hod's bug, `internal-error`):
+
+| misuse | message |
+|---|---|
+| `body` or `unsupported_body` before `end_module` | `session: a body before end_module` |
+| `end_module` twice | `session: end_module after end_module` |
+| `finish` before `end_module` | `session: finish before end_module` |
+| a symbol id the module does not have | `session: a body for sym<n>, not a symbol of the module` |
+| a symbol that is not a function with a body | `session: a body for '<f>', not a function with a body` |
+| a body whose `symbol()` is not `sym` | `session: the body of sym<n> handed over for '<f>'` |
+| a second delivery for one symbol | `session: a second body for '<f>'` |
+| `finish` with a function's body never delivered | `session: no body was delivered for '<f>'` |
+
+`finish` twice cannot be written: `finish` takes the session.
+
+**The `bridge` phase.** The session keeps two clocks in its `Report`:
+`session`, the time spent inside its calls (from `new` returning to
+`finish` returning), and `bridge`, the time between them, which is the
+producer's (in kiln, the bridge's copy of its module; on the command
+line, reading the bodies). `bridge / (bridge + session)` is the copy's
+share of design 0004 §3 and §7.4. Neither is a line of the phase report.
+
+What the session does not do yet (design 0004 §8): options from `llc`'s
+command line and settings from the environment (WP-091), containing a
+panic and `hod::EMBED_API` (WP-093). Nothing in it treats a delivered body
+as final before `finish`, and it reads no symbol property for code
+generation before `finish` (§6).
 
 ## The back half
 
@@ -731,7 +827,8 @@ inherits the variable with the rest of the environment; `llc` ignores it.
 
 | section | tests |
 |---|---|
-| The facade, Input, Reasons | `crates/hod/src/lib.rs`: `input_kind_detection`, `reasons_in_order`, `construct_names_are_stable_and_distinct`, `module_triple_scan`, `supported_targets`, `error_text`; `crates/hod/src/front.rs`: `reader_errors_and_their_reasons`, `rejections_and_their_reasons`; `crates/hod/tests/front.rs` (text, the checked-in `data/front.bc`, and bitcode from each installed `llvm-as`): `fixture_first_refusal_and_census`, `body_reasons_name_the_function`, `verify_is_on_the_path_to_code_generation`, `target_reasons`, `reader_refusals`, `installed_llvm_bitcode_agrees_with_text`; `driver.rs`: `census_of_every_reason`; the whole corpus: `cargo xtask corpus reasons` (`docs/status/reasons.md`) |
+| The facade, Input, Reasons | `crates/hod/src/lib.rs`: `input_kind_detection`, `reasons_in_order`, `construct_names_are_stable_and_distinct`, `module_triple_scan`, `supported_targets`, `error_text`; `crates/hod/src/front.rs`: `reader_errors_and_their_reasons`; `crates/hod/tests/front.rs` (text, the checked-in `data/front.bc`, and bitcode from each installed `llvm-as`): `fixture_first_refusal_and_census`, `body_reasons_name_the_function`, `verify_is_on_the_path_to_code_generation`, `target_reasons`, `reader_refusals`, `installed_llvm_bitcode_agrees_with_text`; `driver.rs`: `census_of_every_reason`; the whole corpus: `cargo xtask corpus reasons` (`docs/status/reasons.md`) |
+| Session | `crates/hod/tests/session.rs`: `seed_corpus_through_the_session_is_compile` (every `tests/ir` module through the public session equals `compile`; bodies last to first give the same object), `the_object_is_appended_and_an_error_leaves_the_buffer`, `what_new_declines_and_an_empty_module`, `census_through_the_session`, `misuse_is_an_error` (every row of the misuse table), `the_unit_plan_comes_before_code_generation`; `crates/hod/src/session.rs`: `rejections_and_their_reasons`, `errors_from_hod_ir`, the `compile_fail` doctest of `finish`; the whole corpus: `crates/hod/tests/session_corpus.rs` (ignored; two builds compared by their dumps) |
 | Bitcode conversion | `crates/hod_cli/src/convert.rs`: `usable_output`, `quoted_line`, `standard_error_is_bounded`, `reasons_and_messages`; `driver.rs`: `converted_bitcode_is_compiled`, `conversion_only_when_bitcode_is_the_reason`; `cli.rs`: `bitcode_is_converted_and_goes_on_as_text`, `conversion_failures` (every row of the result table, with a fallback, in strict mode and with neither; a megabyte of input the converter may not read; a megabyte on its standard error), `converter_that_cannot_be_started`, `bitcode_file_input`, `converter_settings`, `hod_is_not_its_own_converter`, `real_llvm_dis_converts_bitcode` (each installed LLVM; plain and wrapped bitcode; the native census equals the converted one), `real_llvm_dis_of_another_major`; `kiln_e2e.rs` |
 | Options | `crates/hod_cli/src/args.rs`: `defaults`, `everything_kiln_passes`, `spellings`, `spellings_of_the_rest`, `rejected_command_lines`, `rejection_reasons_and_messages`, `non_utf8_arguments`, `version_and_help`; `crates/hod_cli/src/driver.rs`: `unknown_option_without_fallback`, `version_and_help`; `crates/hod_cli/tests/cli.rs`: `unknown_options`, `version_and_help` |
 | hod's own options, Environment | `args.rs`: `hod_options_are_parsed_and_not_forwarded`, `mistakes_in_hod_options_are_fatal`; `driver.rs`: `environment`, `mistakes_in_hod_settings`; `cli.rs`: `settings_from_the_environment`, `converter_settings` |

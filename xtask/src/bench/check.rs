@@ -17,11 +17,17 @@ pub struct Thresholds {
     /// A time difference below this many microseconds is not judged: it
     /// is inside what starting a process varies by.
     pub time_slack_us: u64,
-    /// A memory difference below this many KiB is not judged.
+    /// A memory difference below this many KiB is not judged: the
+    /// resident set of one program on one input varies by a few hundred
+    /// KiB with the state of the page cache.
     pub mem_slack_kib: u64,
     /// How much slower than in the baseline the reference tool may be
-    /// before the machine is too busy to judge anything: 25%.
+    /// before the machine is too busy to time anything: 25%.
     pub max_drift_bp: u64,
+    /// How far the middle run of a measurement may be above its fastest
+    /// before the measurement cannot show a time regression: 5%, the time
+    /// threshold itself.
+    pub max_spread_bp: u64,
 }
 
 impl Default for Thresholds {
@@ -30,8 +36,9 @@ impl Default for Thresholds {
             time_bp: 500,
             mem_bp: 200,
             time_slack_us: 1000,
-            mem_slack_kib: 256,
+            mem_slack_kib: 512,
             max_drift_bp: 2500,
+            max_spread_bp: 500,
         }
     }
 }
@@ -48,8 +55,9 @@ pub enum Verdict {
     Regressed { time: bool, mem: bool },
     /// The baseline says hod built this input, and now it does not.
     Lost,
-    /// The reference tool is so much slower than in the baseline that the
-    /// machine cannot be trusted to time anything now.
+    /// The times cannot be judged: the reference tool is far slower than
+    /// in the baseline, or a time that says "slower" is one whose own runs
+    /// disagree by more than the threshold.
     Noisy,
     /// Nothing to compare with; the text says why.
     New(String),
@@ -157,6 +165,17 @@ pub fn judge(
         judged.verdict = Verdict::Advisory("the input changed since the baseline".to_owned());
         return judged;
     }
+    if base.status == Status::Declined && now.status == Status::Declined {
+        // A decline is not a time for building an object: there is
+        // nothing of hod's to hold to the thresholds. What declining
+        // costs is shown where the baseline's machine is this one.
+        if comparable.is_ok() {
+            judged.time = base.wall_us_min.zip(now.wall_us_min);
+            judged.mem = base.rss_kib.zip(now.rss_kib);
+        }
+        judged.verdict = Verdict::Unjudged("declined, as in the baseline".to_owned());
+        return judged;
+    }
     if let Err(why) = comparable {
         // Absolute numbers mean nothing here; the ratios to llc do.
         judged.ratios = true;
@@ -192,18 +211,25 @@ pub fn judge(
         .zip(reference(now_llc))
         .and_then(|(base, now)| u64::try_from(u128::from(now) * 10_000 / u128::from(base)).ok());
     let drift = judged.drift.unwrap_or(10_000).max(10_000);
-    if drift > 10_000 + thresholds.max_drift_bp {
-        judged.verdict = Verdict::Noisy;
-        return judged;
-    }
+    let busy = drift > 10_000 + thresholds.max_drift_bp;
     let scaled =
         |us: u64| u64::try_from(u128::from(us) * u128::from(drift) / 10_000).unwrap_or(u64::MAX);
-    let (time_worse, time_better) = judged.time.map_or((false, false), |(base, now)| {
+    let (slower, faster) = judged.time.map_or((false, false), |(base, now)| {
         (
             over(scaled(base), now, thresholds.time_bp, thresholds.time_slack_us),
             over(now, base, thresholds.time_bp, thresholds.time_slack_us),
         )
     });
+    // "Slower" needs four fastest runs to be right: hod's and the
+    // reference tool's, then and now. One whose own runs disagree by more
+    // than the threshold cannot carry that.
+    let unsteady = [Some(base), base_llc, Some(now), now_llc]
+        .into_iter()
+        .flatten()
+        .any(|record| record.spread_bp().is_some_and(|bp| bp > thresholds.max_spread_bp));
+    let time_unknown = busy || (slower && unsteady);
+    let (time_worse, time_better) = (slower && !time_unknown, faster && !busy);
+    // Memory does not depend on the load, and is judged whatever it is.
     let (mem_worse, mem_better) = judged.mem.map_or((false, false), |(base, now)| {
         (
             over(base, now, thresholds.mem_bp, thresholds.mem_slack_kib),
@@ -212,12 +238,30 @@ pub fn judge(
     });
     judged.verdict = if time_worse || mem_worse {
         Verdict::Regressed { time: time_worse, mem: mem_worse }
+    } else if time_unknown {
+        Verdict::Noisy
     } else if time_better || mem_better {
         Verdict::Improved
     } else {
         Verdict::Ok
     };
     judged
+}
+
+/// How many inputs of `results` have a time, of any tool, whose runs
+/// disagree by more than the gate allows: against such a baseline a
+/// slower time is NOISY, not REGRESSED.
+pub fn unsteady(results: &Results, thresholds: &Thresholds) -> usize {
+    let mut inputs: Vec<&str> = results
+        .records
+        .iter()
+        .filter(|record| matches!(record.status, Status::Ok | Status::Fallback))
+        .filter(|record| record.spread_bp().is_some_and(|bp| bp > thresholds.max_spread_bp))
+        .map(|record| record.input.as_str())
+        .collect();
+    inputs.sort_unstable();
+    inputs.dedup();
+    inputs.len()
 }
 
 /// Whether a baseline's absolute numbers bind a run: the same machine and
@@ -350,6 +394,12 @@ impl Check {
             percent(Some(self.thresholds.time_bp as i64)).trim_start_matches('+'),
             percent(Some(self.thresholds.mem_bp as i64)).trim_start_matches('+'),
         );
+        if self.noisy() > 0 {
+            text.push_str(
+                "bench: check: NOISY: the machine is too busy to time those inputs; \
+                 neither a failure of hod nor a pass\n",
+            );
+        }
         if count(|v| *v == Verdict::Improved) > 0 {
             text.push_str("bench: check: an improvement is a reason to update the baseline (--update-baseline --reason)\n");
         }
@@ -531,17 +581,17 @@ mod tests {
     #[test]
     fn small_differences_are_not_judged() {
         let base = hod(1_300, 1_900);
-        // +70% in time, but 0.9 ms; +13% in memory, but 250 KiB.
-        assert_eq!(verdict(&base, &hod(2_200, 2_150), 500_000, 500_000), Verdict::Ok);
+        // +70% in time, but 0.9 ms; +26% in memory, but 500 KiB.
+        assert_eq!(verdict(&base, &hod(2_200, 2_400), 500_000, 500_000), Verdict::Ok);
         assert_eq!(
             verdict(&base, &hod(2_301, 1_900), 500_000, 500_000),
             Verdict::Regressed { time: true, mem: false }
         );
         assert_eq!(
-            verdict(&base, &hod(1_300, 2_157), 500_000, 500_000),
+            verdict(&base, &hod(1_300, 2_413), 500_000, 500_000),
             Verdict::Regressed { time: false, mem: true }
         );
-        assert_eq!(verdict(&hod(2_200, 2_150), &base, 500_000, 500_000), Verdict::Ok);
+        assert_eq!(verdict(&hod(2_200, 2_400), &base, 500_000, 500_000), Verdict::Ok);
     }
 
     // "The gate", "Drift": when llc itself is slower than in the baseline
@@ -566,7 +616,13 @@ mod tests {
         // Too busy to judge.
         assert_eq!(verdict(&base, &hod(100_000, 50_000), 500_000, 625_000), Verdict::Ok);
         assert_eq!(verdict(&base, &hod(100_000, 50_000), 500_000, 625_100), Verdict::Noisy);
-        assert_eq!(verdict(&base, &hod(900_000, 90_000), 500_000, 700_000), Verdict::Noisy);
+        assert_eq!(verdict(&base, &hod(900_000, 50_000), 500_000, 700_000), Verdict::Noisy);
+        assert_eq!(verdict(&base, &hod(50_000, 50_000), 500_000, 700_000), Verdict::Noisy);
+        // ... except memory, which a busy machine does not change.
+        assert_eq!(
+            verdict(&base, &hod(900_000, 90_000), 500_000, 700_000),
+            Verdict::Regressed { time: false, mem: true }
+        );
         assert!(
             Verdict::Noisy.remeasure() && Verdict::Regressed { time: true, mem: false }.remeasure()
         );
@@ -597,6 +653,59 @@ mod tests {
             (alone.drift, alone.verdict),
             (None, Verdict::Regressed { time: true, mem: false })
         );
+    }
+
+    // "The gate", "Spread": a time that says "slower" does not fail the
+    // gate when one of the four measurements behind it is unsteady.
+    #[test]
+    fn an_unsteady_measurement_is_not_a_regression() {
+        let unsteady = |mut record: Record| {
+            // The middle run is 5.01% above the fastest.
+            record.wall_us_median = record.wall_us_min.map(|us| us + us * 501 / 10_000);
+            record
+        };
+        let (base, now) = (hod(100_000, 50_000), hod(130_000, 50_000));
+        let (base_llc, now_llc) = (llc(500_000), llc(500_000));
+        let t = Thresholds::default();
+        let of = |base: &Record, base_llc: &Record, now: &Record, now_llc: &Record| {
+            judge(Some(base), Some(base_llc), now, Some(now_llc), Ok(()), &t).verdict
+        };
+        let regressed = Verdict::Regressed { time: true, mem: false };
+        // At the limit (the helper's records are at 5.00%) the time stands.
+        assert_eq!(of(&base, &base_llc, &now, &now_llc), regressed);
+        assert_eq!(of(&unsteady(base.clone()), &base_llc, &now, &now_llc), Verdict::Noisy);
+        assert_eq!(of(&base, &unsteady(base_llc.clone()), &now, &now_llc), Verdict::Noisy);
+        assert_eq!(of(&base, &base_llc, &unsteady(now.clone()), &now_llc), Verdict::Noisy);
+        assert_eq!(of(&base, &base_llc, &now, &unsteady(now_llc.clone())), Verdict::Noisy);
+        // Unsteady runs that do not say "slower" pass: noise only adds time.
+        let same = unsteady(hod(101_000, 50_000));
+        assert_eq!(of(&base, &base_llc, &same, &unsteady(now_llc.clone())), Verdict::Ok);
+        let faster = unsteady(hod(80_000, 50_000));
+        assert_eq!(of(&base, &base_llc, &faster, &now_llc), Verdict::Improved);
+        // Memory is judged all the same.
+        let larger = unsteady(hod(130_000, 60_000));
+        assert_eq!(
+            of(&base, &base_llc, &larger, &now_llc),
+            Verdict::Regressed { time: false, mem: true }
+        );
+
+        // A baseline says how many of its inputs are like that.
+        let named = |name: &str, mut record: Record| {
+            record.input = name.to_owned();
+            record
+        };
+        let records = vec![
+            named("a", llc(500_000)),
+            named("a", hod(100_000, 50_000)),
+            named("b", unsteady(llc(500_000))),
+            named("b", unsteady(hod(100_000, 50_000))),
+            named("c", llc(500_000)),
+            named("c", unsteady(record(Tool::Hod, Status::Declined, 1_300, 1_900))),
+            named("d", llc(500_000)),
+            named("d", unsteady(record(Tool::HodFallback, Status::Fallback, 510_000, 60_000))),
+        ];
+        let results = Results { records, ..Results::default() };
+        assert_eq!(super::unsteady(&results, &t), 2);
     }
 
     // "The gate": on another machine, or against another llc, the check
@@ -665,11 +774,25 @@ mod tests {
         assert!(
             matches!(of(Some(&declined), &base), Verdict::New(why) if why.starts_with("hod builds this input now"))
         );
-        // Two declines are compared like any two records.
-        assert_eq!(of(Some(&declined), &declined), Verdict::Ok);
-        let slow_decline = record(Tool::Hod, Status::Declined, 60_000, 1_900);
+        // Two declines are not judged: a decline is not a build time.
+        let slow_decline = record(Tool::Hod, Status::Declined, 60_000, 90_000);
+        for now in [&declined, &slow_decline] {
+            assert_eq!(
+                of(Some(&declined), now),
+                Verdict::Unjudged("declined, as in the baseline".to_owned())
+            );
+        }
+        // ... but what declining costs is shown.
+        let shown = judge(Some(&declined), None, &slow_decline, None, Ok(()), &t);
+        assert_eq!((shown.time, shown.mem), (Some((1_300, 60_000)), Some((1_900, 90_000))));
+        let elsewhere =
+            judge(Some(&declined), None, &slow_decline, None, Err("another machine"), &t);
+        assert_eq!((elsewhere.time, elsewhere.mem, elsewhere.ratios), (None, None, false));
+        // What hod hands to its fallback is a build, and is compared.
+        let fallback = |wall: u64| record(Tool::HodFallback, Status::Fallback, wall, 60_000);
+        assert_eq!(of(Some(&fallback(100_000)), &fallback(104_000)), Verdict::Ok);
         assert_eq!(
-            of(Some(&declined), &slow_decline),
+            of(Some(&fallback(100_000)), &fallback(120_000)),
             Verdict::Regressed { time: true, mem: false }
         );
         // An error in the run is the run's failure, not the gate's.

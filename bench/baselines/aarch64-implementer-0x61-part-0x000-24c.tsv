@@ -1,0 +1,76 @@
+# hod-bench 1
+# date	2026-11-12T04:56:31Z
+# machine	aarch64-implementer-0x61-part-0x000-24c
+# cpu	implementer 0x61 part 0x000
+# cores	24
+# arch	aarch64
+# llc_version	LLVM version 22.1.8
+# hod_version	hod version 0.0.0
+# hod_build	workspace, release profile
+# producer	Debian clang version 22.1.8 (1~deb13u4)
+# runs	5
+# usage	gnu-time (/usr/bin/time -f '%M %U %S')
+# floor_us	3845
+# rss_error_kib	-48
+# load	14.54 13.68 15.17
+# fields	status	input	class	debug	tool	ir_bytes	functions	ir_hash	runs	wall_us_min	wall_us_median	wall_us_max	cpu_us	rss_kib	rss_kib_min	rss_kib_max	object_bytes	wall_ratio	cpu_ratio	rss_ratio	size_ratio	ir_bytes_per_s	functions_per_s	phases	detail
+ok	small-c	small	-	llc	10757	6	fnv1a64:f041330de9daed47	5	21721	22929	24901	0	63376	63096	63432	3464	-	-	-	-	495235	276	-	-
+declined	small-c	small	-	hod	10757	6	fnv1a64:f041330de9daed47	5	6503	7118	9796	0	1692	1676	1692	-	-	-	-	-	-	-	read=649,compile=2,total=777	codegen-not-implemented
+fallback	small-c	small	-	hod+fallback	10757	6	fnv1a64:f041330de9daed47	5	25500	34057	45411	0	63312	62780	63460	3464	1.1740	-	0.9990	1.0000	421843	235	read=568,compile=2,fallback=19172,total=19872	codegen-not-implemented
+ok	small-c-g	small	g	llc	24762	6	fnv1a64:e95a350601b68310	5	23526	27860	33634	0	63564	63384	63832	7296	-	-	-	-	1052537	255	-	-
+declined	small-c-g	small	g	hod	24762	6	fnv1a64:e95a350601b68310	5	6888	7662	9861	0	1692	1676	1692	-	-	-	-	-	-	-	read=575,compile=2,total=881	codegen-not-implemented
+fallback	small-c-g	small	g	hod+fallback	24762	6	fnv1a64:e95a350601b68310	5	29075	31270	33415	0	63428	63276	63620	7296	1.2359	-	0.9979	1.0000	851659	206	read=604,compile=2,fallback=21690,total=22491	codegen-not-implemented
+ok	small-cxx	small	-	llc	23414	18	fnv1a64:b318559991d7db41	5	22866	25329	26893	0	63196	63196	63196	14064	-	-	-	-	1023965	787	-	-
+declined	small-cxx	small	-	hod	23414	18	fnv1a64:b318559991d7db41	5	6868	7299	8779	0	1692	1676	1692	-	-	-	-	-	-	-	read=648,compile=2,total=826	codegen-not-implemented
+fallback	small-cxx	small	-	hod+fallback	23414	18	fnv1a64:b318559991d7db41	5	29285	31128	37622	0	63112	62864	63184	14064	1.2807	-	0.9987	1.0000	799521	614	read=494,compile=2,fallback=22524,total=23126	codegen-not-implemented
+ok	small-cxx-g	small	g	llc	55091	18	fnv1a64:4241f47964e18227	5	26586	26687	28871	0	63328	63200	63560	22728	-	-	-	-	2072180	677	-	-
+declined	small-cxx-g	small	g	hod	55091	18	fnv1a64:4241f47964e18227	5	6192	6278	7566	0	1692	1504	1692	-	-	-	-	-	-	-	read=452,compile=67,total=618	codegen-not-implemented
+fallback	small-cxx-g	small	g	hod+fallback	55091	18	fnv1a64:4241f47964e18227	5	28668	30424	31876	10000	63496	63456	63636	22728	1.0783	-	1.0027	1.0000	1921689	627	read=382,compile=2,fallback=23114,total=23628	codegen-not-implemented
+ok	interp	typical	-	llc	205691	10	fnv1a64:8bf51ae07333b8c4	5	33263	34471	35484	10000	65008	64832	65096	25072	-	-	-	-	6183777	300	-	-
+declined	interp	typical	-	hod	205691	10	fnv1a64:8bf51ae07333b8c4	5	4408	6678	7228	0	1884	1816	1884	-	-	-	-	-	-	-	read=481,compile=1,total=564	codegen-not-implemented
+fallback	interp	typical	-	hod+fallback	205691	10	fnv1a64:8bf51ae07333b8c4	5	38325	41342	52245	20000	64876	64624	64996	25072	1.1522	2.0000	0.9980	1.0000	5367018	260	read=1038,compile=3,fallback=31244,total=32629	codegen-not-implemented
+ok	interp-g	typical	g	llc	373676	10	fnv1a64:0e8ed8b033bc0553	5	41672	45669	53499	20000	66408	66044	66884	46248	-	-	-	-	8967076	239	-	-
+declined	interp-g	typical	g	hod	373676	10	fnv1a64:0e8ed8b033bc0553	5	5288	7166	13569	0	2076	1868	2076	-	-	-	-	-	-	-	read=704,compile=2,total=849	codegen-not-implemented
+fallback	interp-g	typical	g	hod+fallback	373676	10	fnv1a64:0e8ed8b033bc0553	5	47448	49537	73286	20000	66400	66316	66892	46248	1.1386	1.0000	0.9999	1.0000	7875484	210	read=799,compile=2,fallback=41040,total=41965	codegen-not-implemented
+ok	tables	typical	-	llc	938803	4	fnv1a64:b092ade8970b7b83	5	46646	53796	68026	30000	68352	68200	68464	400888	-	-	-	-	20126120	85	-	-
+declined	tables	typical	-	hod	938803	4	fnv1a64:b092ade8970b7b83	5	6685	8045	13402	0	2640	2208	2652	-	-	-	-	-	-	-	read=963,compile=3,total=1113	codegen-not-implemented
+fallback	tables	typical	-	hod+fallback	938803	4	fnv1a64:b092ade8970b7b83	5	49937	64135	83590	20000	68536	68536	68660	400888	1.0706	0.6667	1.0027	1.0000	18799747	80	read=878,compile=1,fallback=42852,total=43887	codegen-not-implemented
+ok	tables-g	typical	g	llc	1562972	4	fnv1a64:f50224bb5eb5f5b8	5	67937	74093	83653	50000	71132	71092	71344	534728	-	-	-	-	23006196	58	-	-
+declined	tables-g	typical	g	hod	1562972	4	fnv1a64:f50224bb5eb5f5b8	5	5709	6246	7684	0	3224	3220	3228	-	-	-	-	-	-	-	read=2232,compile=2,total=2480	codegen-not-implemented
+fallback	tables-g	typical	g	hod+fallback	1562972	4	fnv1a64:f50224bb5eb5f5b8	5	74550	82316	91964	50000	71152	71060	71184	534728	1.0973	1.0000	1.0003	1.0000	20965419	53	read=1242,compile=1,fallback=69477,total=70910	codegen-not-implemented
+ok	exceptions	typical	-	llc	872915	163	fnv1a64:6ad52afc3056c3f4	5	75993	79336	86055	50000	67372	67264	67580	233728	-	-	-	-	11486781	2144	-	-
+declined	exceptions	typical	-	hod	872915	163	fnv1a64:6ad52afc3056c3f4	5	5751	6549	7985	0	2652	2640	2652	-	-	-	-	-	-	-	read=1185,compile=2,total=1406	codegen-not-implemented
+fallback	exceptions	typical	-	hod+fallback	872915	163	fnv1a64:6ad52afc3056c3f4	5	82629	88137	90342	60000	67408	67152	67528	233728	1.0873	1.2000	1.0005	1.0000	10564269	1972	read=1022,compile=2,fallback=77235,total=78406	codegen-not-implemented
+ok	exceptions-g	typical	g	llc	1732146	163	fnv1a64:53278517e1d1f487	5	117132	122101	131481	90000	75200	75108	75472	367920	-	-	-	-	14787982	1391	-	-
+declined	exceptions-g	typical	g	hod	1732146	163	fnv1a64:53278517e1d1f487	5	6021	7066	36600	0	3420	3420	3420	-	-	-	-	-	-	-	read=1470,compile=2,total=1645	codegen-not-implemented
+fallback	exceptions-g	typical	g	hod+fallback	1732146	163	fnv1a64:53278517e1d1f487	5	121723	127003	133239	100000	75264	75124	75328	367920	1.0392	1.1111	1.0009	1.0000	14230227	1339	read=2356,compile=3,fallback=115607,total=118186	codegen-not-implemented
+ok	containers	typical	-	llc	1161604	643	fnv1a64:cfed1b307295e35b	5	95874	106520	111802	70000	70184	69932	70184	402912	-	-	-	-	12115943	6706	-	-
+declined	containers	typical	-	hod	1161604	643	fnv1a64:cfed1b307295e35b	5	6363	7890	9969	0	2844	2840	2844	-	-	-	-	-	-	-	read=1710,compile=2,total=2185	codegen-not-implemented
+fallback	containers	typical	-	hod+fallback	1161604	643	fnv1a64:cfed1b307295e35b	5	101846	109161	121802	80000	70172	69824	70184	402912	1.0623	1.1429	0.9998	1.0000	11405494	6313	read=843,compile=2,fallback=96375,total=97392	codegen-not-implemented
+ok	containers-g	typical	g	llc	3259337	643	fnv1a64:54e752947b750db8	5	187934	196362	220494	150000	82436	82360	82496	962680	-	-	-	-	17342987	3421	-	-
+declined	containers-g	typical	g	hod	3259337	643	fnv1a64:54e752947b750db8	5	7532	9573	12669	0	4784	4556	4956	-	-	-	-	-	-	-	read=2193,compile=2,total=2353	codegen-not-implemented
+fallback	containers-g	typical	g	hod+fallback	3259337	643	fnv1a64:54e752947b750db8	5	196849	199539	204319	160000	82204	82180	82488	962680	1.0474	1.0667	0.9972	1.0000	16557549	3266	read=2330,compile=3,fallback=189648,total=192241	codegen-not-implemented
+ok	templates	large	-	llc	4540936	3318	fnv1a64:cb7559e2c2ec3157	5	370384	395860	408035	320000	93656	93520	93964	1624728	-	-	-	-	12260076	8958	-	-
+declined	templates	large	-	hod	4540936	3318	fnv1a64:cb7559e2c2ec3157	5	8223	11806	12334	0	6112	5940	6244	-	-	-	-	-	-	-	read=3057,compile=2,total=3256	codegen-not-implemented
+fallback	templates	large	-	hod+fallback	4540936	3318	fnv1a64:cb7559e2c2ec3157	5	377851	392769	424327	330000	93656	93468	93844	1624728	1.0202	1.0313	1.0000	1.0000	12017795	8781	read=5582,compile=3,fallback=365942,total=371774	codegen-not-implemented
+ok	templates-g	large	g	llc	9655923	3318	fnv1a64:8ca93d4af608f205	5	621796	692472	731964	560000	125212	125052	125280	2554664	-	-	-	-	15529085	5336	-	-
+declined	templates-g	large	g	hod	9655923	3318	fnv1a64:8ca93d4af608f205	5	11401	13962	27135	0	11048	10828	11176	-	-	-	-	-	-	-	read=6189,compile=3,total=6350	codegen-not-implemented
+fallback	templates-g	large	g	hod+fallback	9655923	3318	fnv1a64:8ca93d4af608f205	5	629316	652454	670550	570000	125148	125076	125356	2554664	1.0121	1.0179	0.9995	1.0000	15343520	5272	read=7303,compile=4,fallback=617700,total=625194	codegen-not-implemented
+ok	stl-heavy	large	-	llc	5983380	3308	fnv1a64:c33be619756ef01e	5	439672	456419	470430	380000	101096	100872	101124	2167368	-	-	-	-	13608735	7523	-	-
+declined	stl-heavy	large	-	hod	5983380	3308	fnv1a64:c33be619756ef01e	5	12036	12978	16556	0	7588	7520	7656	-	-	-	-	-	-	-	read=5752,compile=2,total=5982	codegen-not-implemented
+fallback	stl-heavy	large	-	hod+fallback	5983380	3308	fnv1a64:c33be619756ef01e	5	448125	450802	477595	400000	100940	100812	101120	2167368	1.0192	1.0526	0.9985	1.0000	13352033	7381	read=5887,compile=3,fallback=436420,total=442533	codegen-not-implemented
+ok	stl-heavy-g	large	g	llc	16384454	3308	fnv1a64:7fc7d8c85ba68ba6	5	879892	886553	922765	800000	157956	157828	157988	4980240	-	-	-	-	18620983	3759	-	-
+declined	stl-heavy-g	large	g	hod	16384454	3308	fnv1a64:7fc7d8c85ba68ba6	5	14850	20254	23467	0	17628	17508	17812	-	-	-	-	-	-	-	read=10636,compile=3,total=11247	codegen-not-implemented
+fallback	stl-heavy-g	large	g	hod+fallback	16384454	3308	fnv1a64:7fc7d8c85ba68ba6	5	903536	948299	1043573	820000	157816	157772	157848	4980240	1.0269	1.0250	0.9991	1.0000	18133703	3661	read=13863,compile=3,fallback=882553,total=896804	codegen-not-implemented
+ok	huge-function	pathological	-	llc	3393527	3	fnv1a64:80bacf77c20845ca	5	263354	276559	292025	240000	114168	113944	114284	311792	-	-	-	-	12885800	11	-	-
+declined	huge-function	pathological	-	hod	3393527	3	fnv1a64:80bacf77c20845ca	5	7175	9990	21991	0	4956	4768	4956	-	-	-	-	-	-	-	read=2682,compile=3,total=2970	codegen-not-implemented
+fallback	huge-function	pathological	-	hod+fallback	3393527	3	fnv1a64:80bacf77c20845ca	5	268636	296625	301722	250000	114092	114024	114376	311792	1.0201	1.0417	0.9993	1.0000	12632435	11	read=2514,compile=3,fallback=260865,total=263649	codegen-not-implemented
+ok	huge-function-g	pathological	g	llc	4973600	3	fnv1a64:01a0ab6ad4e9f23d	5	401383	413641	435278	370000	127100	126836	127136	336968	-	-	-	-	12391157	7	-	-
+declined	huge-function-g	pathological	g	hod	4973600	3	fnv1a64:01a0ab6ad4e9f23d	5	10850	17155	27805	0	6388	6312	6668	-	-	-	-	-	-	-	read=4925,compile=3,total=5181	codegen-not-implemented
+fallback	huge-function-g	pathological	g	hod+fallback	4973600	3	fnv1a64:01a0ab6ad4e9f23d	5	410432	415633	458752	370000	127116	126752	127188	336968	1.0225	1.0000	1.0001	1.0000	12117963	7	read=5856,compile=3,fallback=397071,total=403358	codegen-not-implemented
+ok	tiny-functions	pathological	-	llc	1287142	5001	fnv1a64:3ebea88f94562169	5	323237	331356	343625	280000	81664	81540	81764	699048	-	-	-	-	3982037	15471	-	-
+declined	tiny-functions	pathological	-	hod	1287142	5001	fnv1a64:3ebea88f94562169	5	6557	9747	13384	0	2844	2592	3036	-	-	-	-	-	-	-	read=1461,compile=2,total=1671	codegen-not-implemented
+fallback	tiny-functions	pathological	-	hod+fallback	1287142	5001	fnv1a64:3ebea88f94562169	5	320639	332175	334065	280000	81728	81612	81828	699048	0.9920	1.0000	1.0008	1.0000	4014302	15596	read=1451,compile=7,fallback=313443,total=315073	codegen-not-implemented
+ok	tiny-functions-g	pathological	g	llc	3510058	5001	fnv1a64:f2a17068530b47cf	5	472884	500461	574711	390000	100216	99964	100408	1256128	-	-	-	-	7422661	10575	-	-
+declined	tiny-functions-g	pathological	g	hod	3510058	5001	fnv1a64:f2a17068530b47cf	5	11347	17698	34861	0	4956	4704	5148	-	-	-	-	-	-	-	read=4108,compile=4,total=4347	codegen-not-implemented
+fallback	tiny-functions-g	pathological	g	hod+fallback	3510058	5001	fnv1a64:f2a17068530b47cf	5	471176	504151	619345	400000	100252	100128	100340	1256128	0.9964	1.0256	1.0004	1.0000	7449568	10613	read=4183,compile=3,fallback=459589,total=464218	codegen-not-implemented

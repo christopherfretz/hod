@@ -282,6 +282,9 @@ pub struct Run {
     pub check: Option<Check>,
     /// The baseline that was written.
     pub updated: Option<PathBuf>,
+    /// How many inputs of a written baseline have a time the gate will
+    /// not hold anything to ("The gate", "Spread").
+    pub unsteady: usize,
     /// Why the baseline was not written.
     pub refused: Option<String>,
     /// The report that was written.
@@ -300,6 +303,7 @@ impl Run {
             results_path: None,
             check: None,
             updated: None,
+            unsteady: 0,
             refused: None,
             report: None,
         }
@@ -378,6 +382,14 @@ impl Run {
             text.push_str(&check.text());
         }
         if let Some(path) = &self.updated {
+            if self.unsteady > 0 {
+                let _ = writeln!(
+                    text,
+                    "bench: baseline: {} inputs have a time whose runs disagree by more than the gate \
+                     allows; it will not fail on their times (a quieter machine, or more --runs)",
+                    self.unsteady
+                );
+            }
             let _ = writeln!(text, "bench: baseline written: {}", path.display());
         }
         if let Some(why) = &self.refused {
@@ -827,7 +839,10 @@ pub fn run(config: &Config) -> Result<Run, String> {
         let path =
             config.baseline.clone().unwrap_or_else(|| baseline_path(&dir, &config.machine.id));
         match update_baseline(&path, &results, config.reason.as_deref().unwrap_or("")) {
-            Ok(()) => run.updated = Some(path),
+            Ok(()) => {
+                run.unsteady = check::unsteady(&results, &config.thresholds);
+                run.updated = Some(path);
+            }
             Err(why) => run.refused = Some(why),
         }
     }

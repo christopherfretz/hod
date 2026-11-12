@@ -241,6 +241,7 @@ impl World {
         config.limits.time = Duration::from_secs(20);
         config.thresholds.time_slack_us = 100_000;
         config.thresholds.max_drift_bp = 10_000_000;
+        config.thresholds.max_spread_bp = 10_000_000;
         config
     }
 
@@ -578,8 +579,12 @@ fn check_pass_and_fail() {
         judged.iter().map(|(input, ..)| input.as_str()).collect::<Vec<_>>(),
         ["plain", "plain-g", "built", "built-g"]
     );
+    // What hod declines, then and now, is not judged: a decline is not a
+    // build time.
+    let declined = Verdict::Unjudged("declined, as in the baseline".to_owned());
+    assert!(judged[..2].iter().all(|(_, verdict, again)| *verdict == declined && *again == 0));
     assert!(
-        judged
+        judged[2..]
             .iter()
             .all(|(_, verdict, again)| matches!(verdict, Verdict::Ok | Verdict::Improved)
                 && *again == 0),
@@ -590,7 +595,7 @@ fn check_pass_and_fail() {
     assert!(pass.summary(false).contains("bench: check: 4 inputs: "));
 
     // hod takes 0.3 s longer: a failure that being measured again twice
-    // does not cure. A slower decline is a regression of declining.
+    // does not cure. A slower decline is still a decline, and not judged.
     world.control("hod.delay", "0.3");
     let mut config = world.config(Action::Check);
     (config.filters, config.runs) = (vec!["built-g".to_owned(), "plain-g".to_owned()], 1);
@@ -599,13 +604,13 @@ fn check_pass_and_fail() {
     let regressed = Verdict::Regressed { time: true, mem: false };
     assert_eq!(
         verdicts(&slow),
-        [("plain-g".to_owned(), regressed.clone(), 2), ("built-g".to_owned(), regressed, 2)]
+        [("plain-g".to_owned(), declined, 0), ("built-g".to_owned(), regressed, 2)]
     );
     assert_eq!(record(&slow, "built-g", Tool::Hod).runs, 3, "the new runs join the old ones");
     assert_eq!(record(&slow, "built-g", Tool::Llc).runs, 3);
     let text = slow.summary(false);
     assert!(text.contains("REGRESSED (time); measured again 2x\n"), "{text}");
-    assert!(text.contains("REGRESSED (time); declined; measured again 2x\n"), "{text}");
+    assert!(text.contains("not judged: declined, as in the baseline\n"), "{text}");
     world.clear("hod.delay");
 
     // hod takes more memory: a failure, whatever the time.

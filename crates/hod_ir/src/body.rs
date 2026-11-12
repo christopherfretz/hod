@@ -1559,6 +1559,14 @@ impl<'a> Phi<'a> {
     pub fn incoming(&self) -> impl ExactSizeIterator<Item = (Value, BlockId)> + 'a {
         self.values.iter().copied().zip(Blocks::new(self.blocks))
     }
+
+    /// The value for the edge from `pred`, the first listed (LLVM requires
+    /// the entries of one predecessor to agree); `None` if `pred` is not
+    /// listed (WP-064).
+    pub fn value_for(&self, pred: BlockId) -> Option<Value> {
+        let at = self.blocks.iter().position(|&raw| raw == pred.raw())?;
+        Some(self.values[at])
+    }
 }
 
 /// A `switch`.

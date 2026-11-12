@@ -69,7 +69,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         let from = self.block;
         for phi in block.phis() {
             let InstKind::Phi(list) = phi.kind() else { continue };
-            let Some((value, _)) = list.incoming().find(|&(_, pred)| pred == from) else {
+            let Some(value) = list.value_for(from) else {
                 return self.bug("a phi of a successor does not list this block");
             };
             let key = Key::inst(phi.id().raw());

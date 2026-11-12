@@ -2415,10 +2415,11 @@ the block's offset as addend, as LLVM emits it. It must not be against the
 function's own symbol: that symbol may be preemptible, and the table
 would then point into whatever definition the dynamic linker chose. A
 `blockaddress` in code is formed PC-relative by the function itself
-(§6.3). (`hod_ir` has no address-taken marker on blocks; until it does,
-a function without an `IndirectBr` has no `block_offsets`; what a
-`blockaddress` in data of one of its blocks refers to is an open
-question, §13.)
+(§6.3). (`hod_ir` marks address-taken blocks since WP-064,
+`ConstPool::is_address_taken`; `hod_cg` does not use the mark yet, so
+a function without an `IndirectBr` has no `block_offsets` and a
+`blockaddress` in data of one of its blocks is
+`init:blockaddress-unplaced`, §13.)
 
 ### 9.7 Merge and module emission
 
@@ -2715,9 +2716,11 @@ pub enum CgError {
 - (Closed by WP-069.) A direct call's attributes: §7.1, "Effective
   attributes", measured against `llc` 19 and 22.
 - Address-taken blocks without an `indirectbr` in their function (§9.6):
-  `hod_ir` has no marker, so `block_offsets` is not recorded for them.
-  Either `hod_ir` marks address-taken blocks, or `hod_cg` scans the
-  module's constants for `blockaddress`es of each function.
+  `block_offsets` is not recorded for them. `hod_ir` marks them since
+  WP-064 (`ConstPool::has_address_taken_block`, `is_address_taken`);
+  what remains is `hod_cg`'s `mark_reachable` recording offsets for such
+  a function, and binding only its unreachable address-taken blocks to
+  the trap, measured against `llc`.
 
 - Stack protector attributes (`ssp`, `sspstrong`, `sspreq`): accept and
   ignore (hod is a debug backend; the IR's meaning is unchanged) or

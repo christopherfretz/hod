@@ -334,6 +334,9 @@ pub struct ConstPool {
     elems: Vec<ConstId>,
     bytes: Vec<u8>,
     interner: InternTable,
+    /// The `BlockAddr` constants, in id order: the address-taken mark
+    /// (§4.2, WP-064).
+    block_addrs: Vec<ConstId>,
 }
 
 impl ConstPool {
@@ -861,7 +864,32 @@ impl ConstPool {
 
     /// `blockaddress(func, block)`.
     pub fn block_addr(&mut self, func: SymId, block: BlockId) -> IrResult<ConstId> {
-        self.intern(Repr::BlockAddr { func, block })
+        let before = self.data.len();
+        let id = self.intern(Repr::BlockAddr { func, block })?;
+        if self.data.len() != before {
+            self.block_addrs.push(id);
+        }
+        Ok(id)
+    }
+
+    /// Every `blockaddress` constant of the pool, in id order (WP-064):
+    /// the blocks whose address is taken, anywhere in the module.
+    pub fn block_addresses(&self) -> impl Iterator<Item = (ConstId, SymId, BlockId)> + '_ {
+        self.block_addrs.iter().filter_map(|&id| match self.data[id.index()] {
+            Repr::BlockAddr { func, block } => Some((id, func, block)),
+            _ => None,
+        })
+    }
+
+    /// Whether `blockaddress(func, block)` is a constant of the pool:
+    /// the block's address is taken (§4.2, WP-064).
+    pub fn is_address_taken(&self, func: SymId, block: BlockId) -> bool {
+        self.block_addresses().any(|(_, f, b)| f == func && b == block)
+    }
+
+    /// Whether a block of `func` has its address taken.
+    pub fn has_address_taken_block(&self, func: SymId) -> bool {
+        self.block_addresses().any(|(_, f, _)| f == func)
     }
 
     /// `dso_local_equivalent @sym`.

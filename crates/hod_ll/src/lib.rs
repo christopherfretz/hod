@@ -28,7 +28,7 @@ mod types;
 use hod_ir::{FnAttrsId, Module, SymId, TargetSpec, TypeId};
 
 pub use attrs::call_conv_keyword;
-pub use body::{BodyParser, ParsedBody, parse_bodies};
+pub use body::{BodyParser, HAND_OVER_BYTES, ParsedBody, parse_bodies};
 pub use error::{LlError, LlErrorKind};
 pub use lexer::{Lexer, MAX_SOURCE_BYTES, Tok, Token, unescape};
 pub use meta::{MdKind, MdNode, MdRef, MetadataIndex, NamedMetadata};

@@ -500,7 +500,19 @@ a number, and integer arithmetic on numbers. Everything else stays `Expr`.
   are declined by `classify`: a number minus an address (`sub (i64 4,
   ptrtoint @a)`), and an address in an integer whose width is not 8, 16,
   32 or 64 bits. Neither has been seen from a C++ front end; a normal
-  form is added when one is.
+  form is added when one is. (A number minus an address is in one GCC
+  torture module, C; it stays declined, WP-095.)
+- `fold_cast` also folds a `bitcast` of a fixed vector of at most 128
+  bits whose elements are all numbers to an integer or float: the
+  vector's image (§4.3), as `llc` folds it (WP-095).
+- A label difference stays an `Expr` (`trunc (sub (ptrtoint
+  blockaddress(@f, %a)), (ptrtoint blockaddress(@f, %b)))`): its value is
+  known only once the function is laid out. `ConstPool::block_diff`
+  recognizes one: an integer expression of only `ptrtoint` of a
+  `blockaddress`, numbers, `add`, `sub` and `trunc` that adds one block
+  and subtracts another of the same function, returning `BlockDiff {
+  func, a, b, addend }`. Arithmetic modulo 2^n commutes with truncation,
+  so its value is the low bits of `a - b + addend` (WP-095).
 
 ### 4.3 Initializer images
 
@@ -524,14 +536,18 @@ on error both buffers are left as they were.
   in its lowest bits.
 - An address leaves zero bytes and a fixup: `Sym(s)` for `Addr` and
   `no_cfi`; `Plt(s)` for `dso_local_equivalent`; `Block { func, block }`;
-  `Diff { a, b }` and `PltDiff { a, b }` for `SymDiff`. The field's value
+  `Diff { a, b }` and `PltDiff { a, b }` for `SymDiff`; `BlockDiff {
+  func, a, b }` for an `Expr` that is a label difference (§4.2, WP-095),
+  whose addend is the `BlockDiff`'s (a number once the function is laid
+  out: the code generator writes it, no relocation). The field's value
   is target + addend, truncated to `size` bytes (8 for a pointer; 1, 2, 4
   or 8 for an integer).
 - A `Diff { a, b }` can be written only when `a` and `b` are defined in
   one section, or `b` is defined in the section that holds the field.
   `flatten` cannot know sections; whoever turns fixups into relocations
   checks this and reports the variable as unsupported otherwise.
-- No image (`UnsupportedInitializer`): `Expr`, the `none` token, an
+- No image (`UnsupportedInitializer`): an `Expr` other than a label
+  difference, the `none` token, an
   address in an integer whose width is not 8, 16, 32 or 64 bits, an
   address in a vector whose elements are not whole bytes. `UnsizedType`
   and `InvalidType` (scalable) for types without a fixed size.
@@ -737,7 +753,7 @@ suffix, so a producer reading LLVM's output never sees one. One exception:
 the member. `Intrinsic::mangled_name(types, overloads)` is the inverse, for
 the printer.
 
-The list (133; each with every overload LLVM allows):
+The list (351; each with every overload LLVM allows):
 
 - memory: `memcpy memcpy.inline memmove memset memset.inline`
 - variable arguments and stack: `va_start va_end va_copy stacksave
@@ -746,7 +762,7 @@ The list (133; each with every overload LLVM allows):
 - bits: `bswap bitreverse ctpop ctlz cttz fshl fshr abs smax smin umax
   umin scmp ucmp clmul`
 - checked and saturating arithmetic: `{s,u}{add,sub,mul}.with.overflow`,
-  `{s,u}{add,sub}.sat`
+  `{s,u}{add,sub,shl}.sat`
 - floating point: `fabs sqrt floor ceil trunc round roundeven nearbyint
   rint copysign fma fmuladd minnum maxnum minimum maximum minimumnum
   maximumnum canonicalize arithmetic.fence pow powi ldexp frexp sin cos tan
@@ -761,9 +777,18 @@ The list (133; each with every overload LLVM allows):
   coro.align coro.save coro.suspend coro.resume coro.destroy coro.done
   coro.promise coro.frame coro.noop coro.is_in_ramp
   coro.await.suspend.{void,bool,handle}`
+- AArch64 (WP-084, WP-083; the variants are `Aarch64` and the name's
+  parts in camel case): `aarch64.crc32{b,h,w,x,cb,ch,cw,cx}`,
+  `aarch64.{cls,cls64,dmb,dsb,isb,hint}`, the `aarch64.crypto.*` of AES,
+  SHA1, SHA256, SHA512 and SHA3, and the `aarch64.neon.*` and
+  `aarch64.sisd.*` that clang 22 or 19 emits for `<arm_neon.h>` (178 of
+  them; `bfcvt`, `bfcvtn` and `bfcvtn2` are LLVM 19's, which LLVM 22
+  upgrades to other IR on reading) but the SM3/SM4, FP8, `famax`/`famin`
+  and `vluti` ones. The list in
+  `crates/hod_ir/src/intrinsic.rs` is the reference.
 
-Not on the list, and therefore `Other`: target-specific intrinsics
-(`llvm.aarch64.*`, `llvm.x86.*`), intrinsics with metadata arguments (the
+Not on the list, and therefore `Other`: the other target-specific
+intrinsics (`llvm.aarch64.*` not above, `llvm.x86.*`), intrinsics with metadata arguments (the
 constrained floating-point family, `llvm.read_register`), the masked
 vector family (its signatures differ between LLVM 19 and 22), and anything
 no frontend in scope emits at `-O0`.
@@ -924,12 +949,13 @@ backend) reads them:
   `no-infs-fp-math`, `no-nans-fp-math`, `no-signed-zeros-fp-math`,
   `unsafe-fp-math`, and `no-trapping-math`;
 - `sample-profile-suffix-elision-policy`, a string LLVM defines where it
-  is read (sample-profile loading), not in its attribute list.
+  is read (sample-profile loading), not in its attribute list; and
+  `fmv-features`, likewise (WP-095).
 
   Fifteen of these were added when the table was built against LLVM's
   attribute list and clang's output, each because clang emits it in an
   ordinary build or because it is the twin of a name already here, and
-  one later, because LLVM 22 bitcode modules carry it:
+  two later, because LLVM 22 modules carry them:
 
   | attribute | why only an optimizer reads it |
   |---|---|
@@ -945,6 +971,7 @@ backend) reads them:
   | `noprofile`, `skipprofile` | read by the profile instrumentation passes |
   | `"no-trapping-math"` | on every function clang emits; without `strictfp` (rejected) the default floating-point environment is assumed either way |
   | `"sample-profile-suffix-elision-policy"` | steers how the sample-profile loader matches symbol names with suffixes (`"selected"`); no effect on code generation; on functions of LLVM 22 bitcode modules (WP-029) |
+  | `"fmv-features"` | the feature set of a function-multiversioning version (`target_version`/`target_clones`), read by the optimizer's static resolution of calls to versions (`getFeatureMask`); the resolver and the version names are already in the IR. `llc` 22 writes the same object with it removed or with a value (`"dotprod,sve2"`); on functions of clang 22 with `-fmv` (WP-095) |
 
 **Rejected**: anything else. An attribute that is in neither list is a
 `classify` failure naming the attribute (`attr:<name>`, which the

@@ -335,7 +335,9 @@ encodings are:
 - **The special arrays** (`llvm.global_ctors`, `llvm.global_dtors`,
   `llvm.used`, `llvm.compiler.used`) are not symbols. They are read into
   the module lists as in `ll.md §5.9`, and their notes go to no symbol.
-  Any other `llvm.` variable is noted `special-global:<name>`.
+  `llvm.global.annotations` in section `llvm.metadata` is dropped, as in
+  `ll.md §5.9` (WP-095). Any other `llvm.` variable is noted
+  `special-global:<name>`.
 
 ### 5.6 Values and constants
 

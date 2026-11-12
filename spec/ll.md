@@ -204,7 +204,7 @@ anything has to, is given.
 | `global-sanitize-memtag` | `sanitize_memtag` on a variable | nothing |
 | `global-metadata:<kind>` | an attachment on a global value other than `!dbg` and the dropped ones | nothing |
 | `global-attributes` | kept attributes on a variable, in place or through a group | nothing |
-| `special-global:<name>` | a variable named `llvm.…` other than the four arrays of §5.9 (`llvm.global.annotations`) | the variable, as written |
+| `special-global:<name>` | a variable named `llvm.…` other than the four arrays of §5.9 (`llvm.global.annotations` outside section `llvm.metadata`) | the variable, as written |
 | `named-metadata:<name>` | module: named metadata other than those of §7 | nothing |
 | `debug:invalid` | module or body: debug information LLVM's parser takes and its verifier would drop or reject, when the module uses it (§7.4): a reference to a node of the wrong kind, a location without one, a `DIAssignID` where a node goes, a module without `"Debug Info Version"` 3, a module or body that fails `verify_debug` | the module's debug information is kept; the body is not delivered |
 | `debug:<kind>` | module: a `DI*` node `hod_ir` keeps as `DiOther` (`DIStringType`, `DISubrangeType`, `DIFixedPointType`, `DIGenericSubrange`, `DICommonBlock`, `DIModule`, `DIObjCProperty`, `DIMacro`, `DIMacroFile`, `GenericDINode`) | the node as `DiOther`; `classify` refuses it |
@@ -525,8 +525,15 @@ Not symbols (`spec/ir.md` §2.2):
   symbol is an error.
 
 An array that is `zeroinitializer` or `undef` is empty. Each may appear
-once. Any other variable named `llvm.…` is delivered as an ordinary
-variable and recorded (`special-global:<name>`).
+once.
+
+`@llvm.global.annotations` in section `llvm.metadata` (clang's
+`__attribute__((annotate))`) is dropped: no symbol, no note, as `llc`
+emits nothing of a variable in that section. In any other section it is
+noted (WP-095).
+
+Any other variable named `llvm.…` is delivered as an ordinary variable
+and recorded (`special-global:<name>`).
 
 ## 6. The interface to a body parser
 
@@ -886,10 +893,17 @@ A body's debug information is in the body itself (§11.9).
   symbol. The rest of the body is still read and checked, with the
   stand-in the table gives, so an error after an unsupported construct
   is still an error.
-- A parser keeps its tables from one function to the next; with
-  `recycle`, the next body is built in the storage of the last one
-  (`spec/ir.md` §5.1), so peak memory follows the largest function.
-  `parse_bodies` does that for every function, in file order.
+- A parser keeps its tables from one function to the next, and builds
+  every body in storage of its own, which grows to the largest function
+  (`spec/ir.md` §5.1); `parse` returns a copy of exactly the size of
+  the body's tables (one allocation per table, no spare capacity in the
+  bodies a consumer keeps; WP-096), except for a body whose tables take
+  `HAND_OVER_BYTES` (256 KiB) or more: that one is the storage itself,
+  handed over, so that a large body is not held twice, and the next body
+  is built in new storage. `recycle` gives the parser a body for that
+  storage while it has none. `parse_bodies` hands out each body
+  in the storage itself, in file order, so peak memory follows the
+  largest function.
 - **Parallel parsing.** `spec/ir.md` §5.1 has bodies parsed in parallel
   against a frozen `&Module`. That is not implementable on `hod_ir` as it
   is: there is no lookup-only access to the type and constant tables,

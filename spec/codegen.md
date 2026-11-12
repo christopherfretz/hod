@@ -456,6 +456,73 @@ entry sp -> +--------------------------------------+  = fp + FRAME   (CFA)
   the matching `bti`/`paciasp` forms. They are not specified yet
   (`abi-a64.md` §1.1); until they are, `classify` rejects the property.
 
+#### 5.5.1 Settled by the skeleton (WP-033)
+
+These are decisions the group packages (WP-035..041) build on.
+
+- **Crate layout.** One module per instruction group; the ownership table
+  is the crate documentation of `hod_a64` (`src/lib.rs`). The dispatch in
+  `target.rs` is final: it routes each instruction by opcode and by the
+  class of the value it operates on (the result's; for `icmp` and a store
+  the operand's; for a cast either side, `Mem` before `Fpr`): `Gpr` to
+  `int`, `Fpr` to `float` (with `fcmp`), `Mem` to `aggr` (with
+  `extractvalue`, `insertvalue`); loads and stores of a `Gpr` or `Fpr`
+  value to `mem`, of a `Mem` value to `aggr`; control to `control`, calls and unwinding to
+  `call`, intrinsics other than the stack, `va_*` and overflow ones to
+  `intrinsic`. A stub refuses with its group's stable name
+  (`a64:int-binary`, `a64:load`, `a64:condbr`, `a64:call`,
+  `a64:fp-binary`, `a64:mem-binary`, `a64:intrinsic`, …; each a `pub
+  const` of its module), so `cargo test` of a package's file is its whole
+  contract. Shared helpers live in `common.rs`, one function each.
+- **Classes.** Integers up to 64 bits and pointers are `Gpr`; `half`,
+  `bfloat`, `float`, `double`, `fp128` are `Fpr`; a vector is `Fpr` when
+  its length is a power of two, its size 64 or 128 bits and its element
+  not `i1`; everything else (wider integers, aggregates, other vectors)
+  is `Mem`.
+- **Prologue rows.** The prologue is emitted with placeholder immediates
+  by `begin_function` and patched in `end_function`, when `FRAME` is
+  known. Its CFI rows are added then too, with `FnCx::cfi_at` (§8.1),
+  which inserts rows at an offset that is already emitted as long as the
+  rows stay in offset order. For the prologue at `p`: `def_cfa_offset lo`
+  at `p+4` (if `lo != 0`), `def_cfa_offset FRAME` at `p+8` (if `hi !=
+  0`), `offset x29, -FRAME` and `offset x30, -FRAME+8` at `p+12`,
+  `def_cfa_register x29` at `p+16`. An exit sequence at `e` (after
+  `mov sp, x29`, if any): `def_cfa sp, FRAME` at `e`, `restore x29, x30`
+  after the `ldp`, `def_cfa_offset lo` between the two `add`s when there
+  are two, `def_cfa_offset 0` after the last; a tail exit then restates
+  the body's rows for the code that follows it.
+- **Incoming base slot** is `Local(16)`, directly above the frame record,
+  when the function needs one; the saved `x8` of a function that returns
+  in memory follows it. A function without the slot that addresses
+  `Incoming` is a bug and traps (`brk #0xf000`).
+- **Far mode.** `b`, `bl` reach ±128 MiB in far mode as well; a
+  conditional branch, `cbz`/`cbnz` and `tbz`/`tbnz` become their inverse
+  over a `b`. A function that a `b` cannot span is
+  `limit:function-size`.
+- **Fixup kinds** (`FixupKind(n)`, patched by `hod_mc_a64::Fixup`): 0
+  `b`/`bl` imm26, 1 `b.cond`/`cbz` imm19, 2 `tbz` imm14, 3 `ldr`
+  literal imm19, 4 `adr` imm21. `at` is the instruction's own offset.
+- **Constants.** `fp128` is built in the register from its two halves
+  (`mov_imm` into `x16`, `fmov d`, `fmov v.d[1]`), not loaded from a data
+  island (§7.5): no island, no fixup, and the same in far mode. A vector
+  constant other than zero is `a64:constant` until WP-039. A `Mem`-class
+  constant is stored into its home: zero-like ones with `xzr`, wide
+  integers word by word, other aggregates from their flattened image,
+  whose only accepted relocations are aligned 8-byte symbol addresses
+  (else `a64:constant-relocation`). Symbol addresses follow §7.4:
+  `adrp`+`add` with the addend folded, or `adrp`+`ldr` from the GOT then
+  the addend added; a code model other than small is `a64:code-model`.
+- **Other reason names of the target**: `a64:atomic`,
+  `a64:vector-element` (no package yet), `a64:thread-local` (TLS, M2),
+  `a64:funclet` (never on ELF), `a64:blockaddress` (WP-037),
+  `a64:variadic-definition` (WP-038).
+- **The differential harness** is `crates/hod_a64/tests/diff.rs`: what it
+  generates is the table `tests/common/groups.rs`, one line per landed
+  group. `hod_interp`'s generator always emits integer arithmetic, so the
+  harness runs the skeleton's own programs (`tests/common/skeleton.rs`)
+  until WP-035 switches the generator on; it prints the missing mask (the
+  generator switches still off).
+
 ### 5.6 x86-64 (planned)
 
 `push rbp` · `mov rbp, rsp` · pushes of the save set · `sub rsp, imm32`
@@ -678,7 +745,7 @@ that (a vector, `fp128`) is placed in a **data island** after the
 function's code, inside the function's own section, and loaded
 PC-relative through an internal fixup: no relocation, no separate section,
 nothing shared between functions. Islands are aligned to their contents
-and counted in the function's size.
+and counted in the function's size. (AArch64 builds `fp128` in the register instead, §5.5.1.)
 
 ## 8. The `Target` trait
 
@@ -702,7 +769,7 @@ else is a method:
 | calls | `call`, `call_runtime`, `record_call_site`, `place_return`, `fn_assignment`, `tail_exit_count`, `tail_exit`, `phi_stores` | the sequence of §7.1 for the instruction being lowered, and for a `RuntimeFn` with `CallArg` operands (§7.3); the function's own assignment and its tail exits (§7.1) |
 | frame | `alloc_slot`, `slot_place`, `frame_size` | a slot; the `FrameRef` or `SlotPlace` of a body slot |
 | code | `offset`, `emit` and the `emit_*` family, `code_mut`, `block_label`, `epilogue`, `new_label`, `bind`, `fixup`, `falls_through`, `far`, `trap` | bytes; labels, fixups and binding (§6.2); patching emitted bytes |
-| records | `reloc`, `island`, `cfi`, `set_frame_desc`, `type_id`, `pad_clause`, `pad_filter` | a relocation (§9.2), a data island (§7.5), CFI rows and the frame description (§9.3), type ids and clauses (§9.4) |
+| records | `reloc`, `island`, `cfi`, `cfi_at`, `set_frame_desc`, `type_id`, `pad_clause`, `pad_filter` | a relocation (§9.2), a data island (§7.5), CFI rows and the frame description (§9.3), type ids and clauses (§9.4) |
 
 Call sites, line rows and block offsets are recorded by the driver, not by
 lowerings. `FrameRef` is `Local(u32)`, `Incoming(u32)` or `Outgoing(u32)`:
@@ -1122,6 +1189,14 @@ pub enum CgError {
   gate.
 
 ## 13. Open questions
+
+- AArch64: the shared trap that `hod_cg` emits for unreachable
+  address-taken blocks comes after the exit sequences, so it is covered
+  by the CFI state at the end of the last epilogue (CFA `sp + 0`), not
+  the body's. Harmless for a trap; revisit with unwind tables (WP-038).
+- AArch64: `attr:target-features` stays refused: the target must read it
+  (refuse a feature set without FP/SIMD, accept the default ones). Until
+  then everything kiln emits with features is refused there.
 
 - A direct call's attributes: `hod_cg` falls back to the callee
   declaration's argument and return attributes when the call site has

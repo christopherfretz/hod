@@ -26,6 +26,7 @@
 //! | `body` | §5.1, §5.2, §5.6 | `Body` and the API code generation reads |
 //! | `builder` | §5.1, §5.3 | `FunctionBuilder` |
 //! | `verify` | §5.1 | `Body::verify` |
+//! | `debug` | §6 | `DebugInfo`: debug nodes, expressions, locations, the field table |
 
 mod asm;
 mod attrs;
@@ -51,6 +52,8 @@ mod types;
 mod value;
 mod verify;
 mod wide;
+
+mod debug;
 
 pub use asm::InlineAsm;
 pub use attrs::{
@@ -93,3 +96,19 @@ pub use intrinsic::{
     Intrinsic, IntrinsicRef, NoCode, no_code_intrinsic, no_code_names, resolve_intrinsic,
 };
 pub use value::{InstId, SlotId, Value, ValueKind};
+
+pub use debug::expr::{DI_OPS, DiOp, DiOps, ExprId, di_op_named};
+pub use debug::map::{
+    DI_FIELD_NOTES, DI_KIND_NOTES, DI_RECORDS, DiMapping, di_field, di_field_table, di_kind,
+    di_record,
+};
+// The `DW_TAG_*` numbers, the name tables and lookups, the flag sets.
+pub use debug::names::*;
+pub use debug::node::{
+    DiBasicType, DiBound, DiCompileUnit, DiCompositeType, DiConstant, DiDerivedType, DiEnumerator,
+    DiFieldValue, DiFile, DiGlobalVariable, DiGlobalVariableExpression, DiImportedEntity, DiKind,
+    DiLabel, DiLexicalBlock, DiLexicalBlockFile, DiLocalVariable, DiNamespace, DiNode, DiOther,
+    DiString, DiSubprogram, DiSubrange, DiSubroutineType, DiTemplateTypeParameter,
+    DiTemplateValueParameter, DiTuple,
+};
+pub use debug::{DebugInfo, DebugStats, DiLocation};

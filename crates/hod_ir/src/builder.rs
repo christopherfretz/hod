@@ -19,9 +19,10 @@
 use crate::attrs::{CallConv, ParamAttrs};
 use crate::body::{
     BlockData, Body, Bundle, BundleData, CALL_NORETURN, CALL_NOUNWIND, CALL_RETURNS_TWICE,
-    CallData, Callee, Clause, Fixup, Incoming, PadData, Place, Reserved, Slot, SlotVar, UNSET,
-    UseFacts,
+    CallData, Callee, Clause, DbgDeclare, DbgRecordData, DbgRecordKind, Fixup, Incoming, PadData,
+    Place, Reserved, Slot, SlotVar, UNSET, UseFacts,
 };
+use crate::debug::expr::ExprId;
 use crate::error::{IrErrorKind, IrResult, err};
 use crate::ids::{BlockId, ConstId, DiId, LocId, SymId, TypeId};
 use crate::inst::{
@@ -384,14 +385,155 @@ impl FunctionBuilder {
     }
 
     /// Records that the source variable `var`, declared at `loc`, lives in
-    /// `slot` for the whole function (§5.2).
+    /// `slot` for the whole function (§5.2):
+    /// [`FunctionBuilder::dbg_declare`] of the slot's address with the
+    /// empty expression.
     ///
     /// # Errors
     /// `InvalidOperand` if `slot` is not a slot of this builder.
     pub fn set_slot_var(&mut self, slot: SlotId, var: DiId, loc: LocId) -> IrResult<()> {
-        self.slot(slot)?;
-        room(self.body.slot_vars.len(), 1, "slot variables")?;
-        self.body.slot_vars.push(SlotVar { slot, var, loc });
+        let address = self.slot(slot)?;
+        self.dbg_declare(address, var, ExprId::EMPTY, loc)
+    }
+
+    // ---- debug records (§6.6) ----
+
+    /// `#dbg_declare(address, var, expr)` at `loc`, or a call of
+    /// `llvm.dbg.declare`: the source variable `var` lives, for the whole
+    /// function, where `expr` says starting from `address`.
+    ///
+    /// `address` is a slot's address (the usual case, which becomes a
+    /// [`SlotVar`]), or an argument, an instruction result, a constant or
+    /// a symbol (a [`DbgDeclare`]), or [`Value::NONE`] for LLVM's empty
+    /// metadata. It may be a reserved value. The declaration does not use
+    /// the value; it has no position and needs no open block.
+    ///
+    /// # Errors
+    /// `InvalidOperand` if `address` is neither [`Value::NONE`] nor
+    /// something that exists in this body.
+    pub fn dbg_declare(
+        &mut self,
+        address: Value,
+        var: DiId,
+        expr: ExprId,
+        loc: LocId,
+    ) -> IrResult<()> {
+        if !address.is_none() {
+            self.check(address)?;
+        }
+        let body = &mut self.body;
+        room(body.slot_vars.len() + body.declares.len(), 1, "declared variables")?;
+        if !address.is_none() && address.tag() == TAG_SLOT {
+            let slot = SlotId::new(address.payload());
+            body.slot_vars.push(SlotVar { slot, var, loc, expr });
+        } else {
+            body.declares.push(DbgDeclare { address, var, expr, loc });
+        }
+        Ok(())
+    }
+
+    /// `#dbg_value(value, var, expr)` at `loc`, or a call of
+    /// `llvm.dbg.value`, before the next instruction appended: from there
+    /// on `var` has the value `expr` makes from `value`.
+    ///
+    /// `value` is anything an operand can be, a reserved value included,
+    /// or [`Value::NONE`] for LLVM's empty metadata. The record does not
+    /// use it.
+    ///
+    /// # Errors
+    /// `BadBlock` without an open block; `InvalidOperand` if `value` is
+    /// neither [`Value::NONE`] nor something that exists in this body.
+    pub fn dbg_value(&mut self, value: Value, var: DiId, expr: ExprId, loc: LocId) -> IrResult<()> {
+        self.dbg_record(DbgRecordKind::Value, &[value], false, var, expr, None, loc)
+    }
+
+    /// [`FunctionBuilder::dbg_value`] of a `DIArgList`: `expr` names the
+    /// values by `DW_OP_LLVM_arg`.
+    ///
+    /// # Errors
+    /// As [`FunctionBuilder::dbg_value`]; `InvalidOperand` for more than
+    /// 65535 values.
+    pub fn dbg_value_list(
+        &mut self,
+        values: &[Value],
+        var: DiId,
+        expr: ExprId,
+        loc: LocId,
+    ) -> IrResult<()> {
+        self.dbg_record(DbgRecordKind::Value, values, true, var, expr, None, loc)
+    }
+
+    /// `#dbg_assign(value, var, expr, id, address, address_expr)` at
+    /// `loc`, or a call of `llvm.dbg.assign`, before the next instruction
+    /// appended. The `DIAssignID` is not kept (§6.9).
+    ///
+    /// # Errors
+    /// As [`FunctionBuilder::dbg_value`], for `value` and `address`.
+    pub fn dbg_assign(
+        &mut self,
+        value: Value,
+        var: DiId,
+        expr: ExprId,
+        address: Value,
+        address_expr: ExprId,
+        loc: LocId,
+    ) -> IrResult<()> {
+        let address = Some((address, address_expr));
+        self.dbg_record(DbgRecordKind::Assign, &[value], false, var, expr, address, loc)
+    }
+
+    /// `#dbg_label(label)` at `loc`, or a call of `llvm.dbg.label`,
+    /// before the next instruction appended.
+    ///
+    /// # Errors
+    /// `BadBlock` without an open block.
+    pub fn dbg_label(&mut self, label: DiId, loc: LocId) -> IrResult<()> {
+        self.dbg_record(DbgRecordKind::Label, &[], false, label, ExprId::EMPTY, None, loc)
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "the fields of one record")]
+    fn dbg_record(
+        &mut self,
+        kind: DbgRecordKind,
+        values: &[Value],
+        arg_list: bool,
+        var: DiId,
+        expr: ExprId,
+        address: Option<(Value, ExprId)>,
+        loc: LocId,
+    ) -> IrResult<()> {
+        let before = self.open()?;
+        let Ok(count) = u16::try_from(values.len()) else {
+            return bad(IrErrorKind::InvalidOperand, "a debug record has too many values".into());
+        };
+        for &value in values.iter().chain(address.iter().map(|(value, _)| value)) {
+            if !value.is_none() {
+                self.check(value)?;
+            }
+        }
+        let body = &mut self.body;
+        room(body.vals.len(), values.len() + 1, "operands")?;
+        room(body.dbg_records.len(), 1, "debug records")?;
+        let vals = body.vals.len() as u32;
+        body.vals.extend_from_slice(values);
+        let addr_expr = match address {
+            Some((value, expr)) => {
+                body.vals.push(value);
+                expr
+            }
+            None => ExprId::EMPTY,
+        };
+        body.dbg_records.push(DbgRecordData {
+            before,
+            var,
+            expr,
+            loc,
+            vals,
+            addr_expr,
+            count,
+            kind,
+            arg_list,
+        });
         Ok(())
     }
 
@@ -1311,7 +1453,43 @@ impl FunctionBuilder {
             }
         }
         body.fixups.clear();
+
+        // Debug records and declarations name what a reserved value was
+        // defined as, and do not use it. A declaration whose address
+        // turns out to be a slot is a slot variable.
+        if !body.reserved.is_empty() {
+            let reserved = &body.reserved;
+            let resolve = |value: &mut Value| {
+                if is_reserved(*value) {
+                    *value = reserved[(value.payload() - RESERVED_BASE) as usize].target;
+                }
+            };
+            for record in &body.dbg_records {
+                let count = usize::from(record.count)
+                    + usize::from(record.kind == DbgRecordKind::Assign);
+                body.vals[record.vals as usize..][..count].iter_mut().for_each(resolve);
+            }
+            let slot_vars = &mut body.slot_vars;
+            body.declares.retain_mut(|declare| {
+                resolve(&mut declare.address);
+                if declare.address.is_none() || declare.address.tag() != TAG_SLOT {
+                    return true;
+                }
+                let slot = SlotId::new(declare.address.payload());
+                slot_vars.push(SlotVar { slot, var: declare.var, loc: declare.loc, expr: declare.expr });
+                false
+            });
+        }
         body.reserved.clear();
+        for declare in &body.declares {
+            let index = declare.address.payload() as usize;
+            match declare.address.tag() {
+                _ if declare.address.is_none() => {}
+                TAG_INST => body.uses[index].declare(),
+                TAG_ARG => body.arg_uses[index].declare(),
+                _ => {}
+            }
+        }
 
         // The incoming lists move to the pools, grouped by `phi`: count,
         // lay out in instruction order, fill.

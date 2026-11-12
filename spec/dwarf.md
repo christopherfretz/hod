@@ -65,6 +65,18 @@ Not written, with the reason:
 - `.debug_types` / type units: only with `-fdebug-types-section`, which is
   not a module property.
 
+**Compressed** (WP-061): with `debug_compression: Zlib` (`hod
+--compress-debug-sections=zlib`, what `clang -gz=zlib` asks of LLVM's
+object writer; `llc` has no such option) every `.debug_*` section that
+shrinks is written as `SHF_COMPRESSED`: an `Elf64_Chdr`
+(`ELFCOMPRESS_ZLIB`, the plain size, the plain alignment 1), a zlib
+stream, `sh_addralign` 8, the other flags kept (`.debug_str` is `MSC`).
+A section that would not shrink stays as above, as in LLVM. Relocations
+are unchanged: their offsets are into the uncompressed bytes, which
+linkers and debuggers decompress before applying them. The format, the
+compressor and its limits are `spec/object.md` "Compressed sections";
+zstd is not written.
+
 ### 1.2 Units
 
 One `.debug_info` unit per compile unit listed in `!llvm.dbg.cu`
@@ -795,9 +807,7 @@ reports a `debug:*` name as itself and §6.5's unnamed shapes as
 | `debug:object-pointer` | two `this` parameters |
 | `debug:local-type-scope` | a function-local type reached before its function was added (in `types.rs`) |
 
-`LineTablesOnly` is not written by WP-057: the subprogram DIE it needs
-exists now, but the unit, the bridge and `classify` still refuse it
-(§9; WP-061).
+`LineTablesOnly` and `DebugDirectivesOnly` units are §6.9 (WP-061).
 
 ### 6.5 What the core writes (implemented)
 
@@ -839,7 +849,8 @@ All debug sections stay outside every group (§1.3).
 Anything else the plan meets is `Unsupported { node, what }`, not a
 wrong DIE:
 
-- a unit whose `emissionKind` is not `FullDebug`;
+- a unit whose `emissionKind` is `NoDebug` (the bridge gives the plan
+  none; other reduced kinds are §6.9);
 - a variable with several expressions, a non-empty expression, no
   type, a line without a file, or template parameters (a variable with
   no name is written without one since WP-058, as `llc` does);
@@ -1053,6 +1064,55 @@ from them (`tests/type_graph.rs`). WP-059 adds them as children at
   `declaration` among a class's elements, or a combination of flags no
   family has;
 - a function-local type (above).
+
+### 6.9 Reduced units: `LineTablesOnly` and `DebugDirectivesOnly` (implemented, WP-061)
+
+`crates/hod_dwarf/src/reduced.rs`. What `llc` 19 and 22 write, read from
+their output (the two agree):
+
+| `emissionKind` | sections of the unit | DIEs |
+|---|---|---|
+| `FullDebug` | §1.1 | §6 |
+| `LineTablesOnly` (`-gline-tables-only`, `-g1`) | §1.1 | the unit DIE, attribute for attribute as for `FullDebug` (§6.5), and **no child** for a function without inlined code: `DwarfDebug::endFunctionImpl` returns before creating a subprogram when the function has no abstract scopes; the function's code is only in the unit's `low_pc`/`high_pc` or `DW_AT_ranges` |
+| `DebugDirectivesOnly` (`-gline-directives-only`) | `.debug_line` and `.debug_line_str` only (no `.debug_info`, `.debug_abbrev`, strings, addresses or ranges) | none |
+| `NoDebug` (`-g0` units in a linked module) | none: the unit is skipped, its functions get no rows | none |
+
+The line table of a reduced unit is the one a `FullDebug` unit of the
+same functions gets, byte for byte (`hod_a64/tests/reduced.rs` checks it
+against hod's `-g` object of the same source). A module mixes kinds
+freely: units are written in `!llvm.dbg.cu` order, each as its kind
+says; the `DebugDirectivesOnly` and `NoDebug` units are left out of
+`write_debug_info`'s inputs (`DebugLines::finish`), so a module whose
+units are all `DebugDirectivesOnly` has no `.debug_info` at all.
+
+A `LineTablesOnly` function with code inlined into it (a scope row with
+`inlinedAt` that covers a byte) gets, from `llc`, a subprogram with only
+`low_pc`, `high_pc` and `name`, an abstract subprogram per inlined
+function (`name`, `DW_AT_inline`) and `DW_TAG_inlined_subroutine`
+children (`abstract_origin`, `low_pc`/`high_pc`, `call_file`,
+`call_line`, `call_column`). Inlined subroutines are WP-085's; until
+they land, such a function is refused. A `DebugDirectivesOnly` function
+with inlined code needs nothing more than its rows and is written.
+
+Refusals (`pub const` in `reduced.rs`, re-exported by the crate):
+
+| name | what |
+|---|---|
+| `debug:line-tables-inlined` | a `LineTablesOnly` function with inlined code (above) |
+| `debug:line-tables-variables` | a `LineTablesOnly` function with variable or label records: no producer writes them, and `llc` 22 crashes on them |
+| `debug:reduced-unit-entities` | a `LineTablesOnly` or `DebugDirectivesOnly` unit that lists globals, enumerations, retained types or imported entities: no producer writes them; `llc` 22 crashes on such a `LineTablesOnly` unit and writes a stray `.debug_addr` for such a `DebugDirectivesOnly` one (an empty list, `globals: !{}`, is accepted) |
+
+The hooks: `UnitPlan::build` calls `reduced::check_unit` for a unit that
+is not `FullDebug` (`die.rs`), and `UnitPlan::add_function` hands such a
+unit's functions to `reduced::add_function` (`func.rs`), which adds no
+DIE. `has_dies(kind)` tells the bridge which units go to
+`write_debug_info`.
+
+`debugInfoForProfiling: true` makes `llc` write a subprogram for every
+function of a `LineTablesOnly` unit; `hod_ir` does not map the flag
+(`crates/hod_ir/src/debug/map.rs`), so hod writes none. No producer of
+hod's inputs sets it without `-fdebug-info-for-profiling`; open question
+in §11.
 
 ## 7. Speed and memory
 
@@ -1465,13 +1525,13 @@ records. `hod_dwarf` never sees a `LocId` or a `DiId`.
 `DebugLines` (`crates/hod_cg/src/emit/lines.rs`):
 
 1. `new`, once, before any function is placed: a `UnitPlan` per compile
-   unit of `!llvm.dbg.cu` whose `emissionKind` is `FullDebug`
+   unit of `!llvm.dbg.cu` whose `emissionKind` is not `NoDebug` (§6.9)
    (`UnitPlan::for_functions`, the open form of `of_module`, so the
    static member constants and the whole type graph are available). A
    module without `!llvm.dbg.cu`, or whose units are all `NoDebug`, gets
    `None` and nothing else is done or written: the same bytes as the
-   module without any debug information (tested). `LineTablesOnly` and
-   `DebugDirectivesOnly` are refused as `debug:emission-kind`; a unit
+   module without any debug information (tested). A
+   `DebugDirectivesOnly` unit gets its line table and no DIEs (§6.9); a unit
    the DIE core does not write (§6.5) as `debug:die-unsupported`, a
    `debug:*` name of §6.4 as itself.
 2. `add_function`, as each function is placed (§5.7), in module order:
@@ -1491,15 +1551,17 @@ The function DIEs are written by the one unit writer at `finish`, not
 per chunk: the plan is filled serially as functions are placed, so every
 string and address index is assigned in one order (open question 8).
 
-**What `LineTablesOnly` needs end to end** (WP-061). (1) `UnitPlan`
-accepting a `LineTablesOnly` unit: only the unit DIE and a subprogram DIE
-per function (name, linkage name, `low_pc`/`high_pc`,
-`decl_file`/`decl_line`, no types, variables or globals); (2) those
-subprogram DIEs: WP-057's family 69 writes them, so this is a mode of
-`add_function` that skips the variables, blocks and types; (3) lifting
-the `debug:emission-kind` refusal in `DebugLines::new`, and `classify`'s
-`debug:*` refusals (`crates/hod_ir/src/classify/matrix.rs:456`). The
-line table is the same as for `FullDebug`.
+**Reduced units** (WP-061, §6.9): every unit but a `NoDebug` one gets a
+plan and a line table; `Unit::dies` (`has_dies`) says whether it goes to
+`write_debug_info`. `classify` still refuses debug modules up front
+(`debug:*` rows, `crates/hod_ir/src/classify/walk.rs`), so a
+`-gline-tables-only` build reaches this through `emit_module` and the
+tests only; lifting those rows for modules without `FullDebug` units is
+a follow-up.
+
+**Compressed sections** (WP-061): with `Options::debug_compression`
+`Zlib`, `ModuleEmitter::finish` compresses the `.debug_*` sections last
+(§1.1, `spec/object.md` "Compressed sections").
 
 **What must land before `classify`'s `debug:*` refusals can drop**
 (`debug:subprogram`, `debug:slot-variables`, `debug:locations`,
@@ -1525,7 +1587,7 @@ Rows for `docs/BACKLOG.md` (ids to be assigned; "this" is WP-052):
 | the type graph (WP-058, **landed**: `spec/landed/dwarf/WP-058.md`) | basic, derived (pointer, reference, rvalue reference, typedef, const/volatile, member, inheritance, pointer to member, friend), composite (class, struct, union, enum with enumerators, array with subranges), subroutine types, declarations and completion, `vtableHolder`; compared with `llc` by `llvm-dwarfdump` structure; gdb `ptype` | DIE writer core |
 | globals, namespaces, templates | global and static-member variables (`DW_OP_addrx`, TLS with `DW_OP_form_tls_address`), namespaces, imported entities, template type and value parameters (packs), `DW_AT_specification` for out-of-line definitions | subprograms and variables, the type graph |
 | L7 harness | §8.4: `xtask` gdb and lldb sessions, kiln's debugger tests, corpus `--verify`, `(function, line)` comparison with `llc`; the two-object COMDAT case | line tables in `emit_module`, subprograms and variables |
-| line-tables-only and compressed sections | `emissionKind: LineTablesOnly` (CU and subprogram DIEs only), `SHF_COMPRESSED` with zlib written in safe Rust (no dependency) | DIE writer core |
+| line-tables-only and compressed sections (WP-061, **landed**: `spec/landed/dwarf/WP-061.md`) | §6.9 (`LineTablesOnly`, `DebugDirectivesOnly`, mixed units) and §1.1 (`SHF_COMPRESSED` with zlib, written in safe Rust by `hod_obj::deflate`) | DIE writer core |
 | split DWARF | `-gsplit-dwarf`: skeleton unit, `.dwo` sections, `DW_UT_skeleton`/`split_compile`; `hod_ir` must first map `splitDebugFilename` and `dwoId` | DIE writer core |
 
 ## 11. Open questions
@@ -1572,3 +1634,8 @@ Rows for `docs/BACKLOG.md` (ids to be assigned; "this" is WP-052):
 9. `#dbg_value` (`debug:dbg-value`) is refused outright: clang and kiln
    do not emit it at `-O0`, so no exact form has been needed. When one
    is (a value with a home), it becomes a `LocalPlace` like `Frame`.
+10. `debugInfoForProfiling` (WP-061, §6.9): `llc` writes a subprogram
+    for every function of a `LineTablesOnly` unit with the flag set;
+    `hod_ir` drops the flag (`crates/hod_ir/src/debug/map.rs:72`). Map it
+    and refuse such units, or write those subprograms, when an input with
+    `-fdebug-info-for-profiling` shows up.

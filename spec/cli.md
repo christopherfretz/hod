@@ -236,6 +236,7 @@ installation directory, see `spec/harness.md` "shim".)
 | `--strict` | `HOD_STRICT=1` | no fallback ("Strict mode") |
 | `--coverage-log=<file>` | `HOD_COVERAGE_LOG` | append one line per invocation ("Coverage log") |
 | `--bitcode-via=<llvm-dis>` | `HOD_BITCODE_VIA` | the `llvm-dis` that turns a bitcode input into text, or `native`, the default: hod's own reader ("Bitcode conversion") |
+| `--compress-debug-sections=<none\|zlib>` | `HOD_COMPRESS_DEBUG_SECTIONS` | `Options::debug_compression` (WP-061): `zlib` writes the `.debug_*` sections as `SHF_COMPRESSED` zlib streams (`spec/object.md` "Compressed sections"); `none`, the default, does not |
 
 They follow the grammar above (`--fallback <llc>`, `-strict=false`, ...).
 They are never passed to the fallback. A mistake in one of them is an error
@@ -243,7 +244,20 @@ They are never passed to the fallback. A mistake in one of them is an error
 fallback: `--strict=maybe`, `--fallback=` (empty), `--bitcode-via=`
 (empty), `--coverage-log` as the last argument.
 
-The four variables of this table are hod's **settings**.
+The first four variables of this table are hod's **settings**
+(`SETTINGS`, which the bitcode converter is started without);
+`HOD_COMPRESS_DEBUG_SECTIONS` is read like them but is not one.
+
+`--compress-debug-sections` is hod's, not `llc`'s (`llc` has no such
+option; it is `clang -gz=` and `llvm-mc --compress-debug-sections=`), so
+it is never forwarded: a module handed to the fallback is written
+uncompressed, as `llc` writes it. Its value must be `none` or `zlib`;
+`zstd` is an error naming it (`compression 'zstd' is not supported: hod
+writes zlib only`), any other value `invalid compression '<v>': expected
+none or zlib`, both of reason `usage`, as is a bad value of the variable.
+While `classify` refuses debug modules (`spec/dwarf.md` §9) a `-g`
+module reaches the fallback, so the option compresses nothing through
+the command line yet; `emit_module` with `debug_compression` does.
 
 ## Environment
 

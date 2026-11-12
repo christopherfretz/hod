@@ -10,16 +10,12 @@ use std::time::Instant;
 use hod_testutil::{DEFAULT_TIMEOUT, LLVM_MAJORS, run_with, tool};
 
 use super::{Dialect, PrintError};
-use crate::attrs::ParamAttrs;
-use crate::body::{Body, Inst, InstKind};
-use crate::constant::Const;
-use crate::ids::{BlockId, SymId, TypeId};
-use crate::inst::{Opcode, TailKind};
-use crate::intrinsic::Intrinsic;
+use crate::body::{Body, Inst};
+use crate::ids::{SymId, TypeId};
+use crate::inst::Opcode;
 use crate::module::Module;
 use crate::random::generate;
 use crate::symbol::{FunctionDesc, VariableDesc};
-use crate::value::{Value, ValueKind};
 
 /// The first seed: the generator's bodies name the symbols 0 to 99, and a
 /// body's own symbol has its seed as id.
@@ -53,16 +49,24 @@ fn generated(seed: u64) -> (Module, Body) {
 }
 
 /// Many printed modules as one: the lines that are not part of a
-/// definition once each, then the definitions.
+/// definition once each, then the definitions. Each module's numbered
+/// metadata is renumbered past the ones before it; a named metadata list
+/// gathers every module's entries, except the module flags, which are the
+/// first module's that has any (every generated module has the same).
 #[derive(Default)]
 struct Batch {
     shared: BTreeSet<String>,
+    named: BTreeMap<String, Vec<String>>,
+    nodes: String,
     defines: String,
     bodies: usize,
+    next_node: u64,
 }
 
 impl Batch {
     fn add(&mut self, text: &str) {
+        let offset = self.next_node;
+        let text = renumber(text, offset, &mut self.next_node);
         let mut in_define = false;
         for line in text.lines() {
             in_define |= line.starts_with("define ");
@@ -70,6 +74,14 @@ impl Batch {
                 self.defines.push_str(line);
                 self.defines.push('\n');
                 in_define = line != "}";
+            } else if let Some((name, list)) = named_metadata(line) {
+                let entries = self.named.entry(name.to_string()).or_default();
+                if name != "llvm.module.flags" || entries.is_empty() {
+                    entries.extend(list.split(", ").filter(|e| !e.is_empty()).map(str::to_string));
+                }
+            } else if line.starts_with('!') {
+                self.nodes.push_str(line);
+                self.nodes.push('\n');
             } else if !line.is_empty() {
                 self.shared.insert(line.to_string());
             }
@@ -86,153 +98,52 @@ impl Batch {
             writeln!(text, "{line}").unwrap();
         }
         text.push_str(&self.defines);
+        for (name, entries) in &self.named {
+            writeln!(text, "!{name} = !{{{}}}", entries.join(", ")).unwrap();
+        }
+        text.push_str(&self.nodes);
         text
     }
 }
 
-/// Why LLVM's verifier refuses a body that `Body::verify` accepts, if it
-/// does: the rules LLVM has and `hod_ir` does not (the list is §9.8's).
-/// `None` is a prediction that LLVM accepts the printed body.
-fn llvm_objection(m: &Module, body: &Body) -> Option<&'static str> {
-    for call in body.calls() {
-        let asm = matches!(call.callee_value().kind(), ValueKind::Asm(_));
-        if call.opcode() == Opcode::CallBr && !asm {
-            // LLVM 22's verifier crashes on a `callbr` of an unknown
-            // intrinsic instead of refusing it.
-            return Some("callbr of something that is not inline assembly");
-        }
-        if call.opcode() == Opcode::Invoke && call.intrinsic().is_some() {
-            return Some("invoke of an intrinsic");
-        }
-        // LLVM 19 takes `undef` for an immediate argument; LLVM 22 does not.
-        let immediate = |flag: &Value| {
-            flag.as_const()
-                .is_some_and(|id| !matches!(m.consts.get(id), Const::Undef(_) | Const::Poison(_)))
-        };
-        if call.intrinsic() == Some(Intrinsic::Memcpy)
-            && call.args().get(3).is_some_and(|flag| !immediate(flag))
-        {
-            return Some("an immediate argument that is not a constant");
-        }
-        if call.bundles().any(|bundle| bundle.tag == "kcfi" && bundle.inputs.len() != 1) {
-            return Some("a kcfi bundle without its one operand");
-        }
-        if call.tail() == TailKind::MustTail {
-            // LLVM wants the caller's signature and convention, and a
-            // `ret` of the result next.
-            return Some("musttail");
-        }
-        let signext = |attrs: ParamAttrs, ty: TypeId| {
-            attrs.has(ParamAttrs::SIGNEXT) && m.types.int_bits(ty).is_none()
-        };
-        let args = call.args().iter().enumerate();
-        if signext(call.ret_attrs(), call.ty())
-            || args
-                .into_iter()
-                .any(|(at, &arg)| signext(call.arg_attrs(at), body.value_type(m, arg)))
-        {
-            return Some("signext on a value that is not an integer");
-        }
-    }
-    dominance_objection(body)
+/// `!name = !{list}`, as `(name, list)`.
+fn named_metadata(line: &str) -> Option<(&str, &str)> {
+    let rest = line.strip_prefix('!')?;
+    let (name, list) = rest.split_once(" = !{")?;
+    let first = name.chars().next()?;
+    (!first.is_ascii_digit()).then_some(())?;
+    Some((name, list.strip_suffix('}')?))
 }
 
-/// LLVM's rule that a definition dominates its uses, which `Body::verify`
-/// does not have. A use of the result of an `invoke` or `callbr` counts
-/// as a violation: where LLVM allows one depends on the edge.
-fn dominance_objection(body: &Body) -> Option<&'static str> {
-    let count = body.block_count();
-    assert!(count <= 64);
-    let successors =
-        |block: usize| body.block(BlockId::new(block as u32)).successors().map(BlockId::index);
-    // Which blocks control reaches, and each one's dominators as a set.
-    let entry = body.entry().index();
-    let mut reachable = 1u64 << entry;
-    let mut work = vec![entry];
-    while let Some(block) = work.pop() {
-        for next in successors(block) {
-            if reachable & (1 << next) == 0 {
-                reachable |= 1 << next;
-                work.push(next);
-            }
+/// `text` with every metadata number `!n` made `!(n + offset)`, raising
+/// `next` past the largest.
+fn renumber(text: &str, offset: u64, next: &mut u64) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('!') {
+        out.push_str(&rest[..=at]);
+        rest = &rest[at + 1..];
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        if digits > 0 {
+            let n: u64 = rest[..digits].parse().unwrap();
+            write!(out, "{}", n + offset).unwrap();
+            *next = (*next).max(n + offset + 1);
+            rest = &rest[digits..];
         }
     }
-    let mut dominators = vec![reachable; count];
-    dominators[entry] = 1 << entry;
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for block in (0..count).filter(|&block| reachable & (1 << block) != 0) {
-            let mut preds = u64::MAX;
-            for pred in (0..count).filter(|&pred| reachable & (1 << pred) != 0) {
-                if successors(pred).any(|next| next == block) {
-                    preds &= dominators[pred];
-                }
-            }
-            let new = if block == entry { 1 << entry } else { preds | (1 << block) };
-            changed |= new != dominators[block];
-            dominators[block] = new;
-        }
-    }
-    // Where each instruction is.
-    let mut home = vec![(0usize, 0usize); body.inst_count()];
-    for block in body.blocks() {
-        for (position, inst) in block.insts().enumerate() {
-            home[inst.id().index()] = (block.id().index(), position);
-        }
-    }
-    let is_reachable = |block: usize| reachable & (1 << block) != 0;
-    for block in body.blocks() {
-        let here = block.id().index();
-        for (position, inst) in block.insts().enumerate() {
-            let phi = match inst.kind() {
-                InstKind::Phi(phi) => Some(phi),
-                _ => None,
-            };
-            for (at, &operand) in inst.operands().iter().enumerate() {
-                let ValueKind::Inst(def) = operand.kind() else { continue };
-                let (def_block, def_position) = home[def.index()];
-                let edge_result =
-                    matches!(body.inst(def).opcode(), Opcode::Invoke | Opcode::CallBr);
-                // A `phi` uses its value at the end of the incoming block.
-                let (use_block, in_block_ok) = match phi {
-                    Some(phi) => (phi.blocks().nth(at).unwrap().index(), !edge_result),
-                    None => (here, def_position < position),
-                };
-                // LLVM asks nothing of a use in a block control cannot reach.
-                if !is_reachable(use_block) {
-                    continue;
-                }
-                if def == inst.id() && phi.is_none() {
-                    return Some("an instruction that uses its own result");
-                }
-                let dominated = if def_block == use_block {
-                    in_block_ok
-                } else {
-                    !edge_result && dominators[use_block] & (1 << def_block) != 0
-                };
-                if !dominated {
-                    return Some("a use its definition does not dominate");
-                }
-            }
-        }
-    }
-    None
+    out.push_str(rest);
+    out
 }
 
-/// One dialect's printed bodies, sorted by what LLVM's verifier is
-/// predicted to say of them.
+/// One dialect's printed bodies: every body `Body::verify` accepts is
+/// printed or holds a construct the dialect cannot express.
 #[derive(Default)]
 struct Sorted {
-    /// Bodies LLVM accepts.
+    /// The printed bodies.
     clean: Batch,
-    /// Bodies LLVM's parser accepts and its verifier refuses, with how
-    /// many of each objection.
-    refused: Batch,
-    objections: BTreeMap<&'static str, usize>,
     /// The constructs the dialect cannot express, with how many of each.
     unsupported: BTreeMap<String, usize>,
-    /// The opcodes of the clean bodies.
+    /// The opcodes of the printed bodies.
     opcodes: BTreeSet<Opcode>,
     /// The bytes of text printed.
     bytes: usize,
@@ -260,16 +171,8 @@ impl Sorted {
         m.print_body(&mut again, dialect, body).unwrap();
         assert_eq!(alone, again, "seed {seed}");
         self.bytes += text.len();
-        match llvm_objection(m, body) {
-            None => {
-                self.clean.add(&text);
-                self.opcodes.extend(body.insts().map(Inst::opcode));
-            }
-            Some(objection) => {
-                self.refused.add(&text);
-                *self.objections.entry(objection).or_default() += 1;
-            }
-        }
+        self.clean.add(&text);
+        self.opcodes.extend(body.insts().map(Inst::opcode));
     }
 }
 
@@ -277,10 +180,6 @@ impl Sorted {
 /// cannot express (§9.6).
 fn expected_unsupported(dialect: Dialect, construct: &str) -> bool {
     match construct {
-        // `Body::verify` allows a tail marker on any call; LLVM has them
-        // on `call` alone.
-        "invoke:tail" | "invoke:musttail" | "invoke:notail" | "callbr:tail" | "callbr:musttail"
-        | "callbr:notail" => true,
         "atomicrmw:usub_cond" | "atomicrmw:usub_sat" => dialect.major() < 20,
         "atomicrmw:fmaximum" | "atomicrmw:fminimum" => dialect.major() < 21,
         _ => false,
@@ -293,13 +192,14 @@ fn accept(tool: &Path, args: &[&str], text: &str, what: &str) {
     let stderr = outcome.stderr_text();
     let shown: String = stderr.chars().take(4000).collect();
     assert!(outcome.success(), "{} refused {what}:\n{shown}", tool.display());
+    // A module whose debug tables LLVM drops instead of checking.
+    assert!(!stderr.contains("ignoring debug info"), "{}: {shown}", tool.display());
 }
 
-/// `spec/ir.md` §9.9: LLVM 19 and LLVM 22 take every printed random body.
-/// `llvm-as` and `opt -passes=verify` accept the ones that keep the rules
-/// LLVM has and `Body::verify` lacks; `llvm-as -disable-verify` parses the
-/// others; and a body that is not printed holds a construct its dialect
-/// lacks.
+/// `spec/ir.md` §9.9: LLVM 19 and LLVM 22 take every random body
+/// `Body::verify` accepts: `llvm-as` and `opt -passes=verify` accept each
+/// printed one, and a body that is not printed holds a construct its
+/// dialect lacks.
 #[test]
 fn random_bodies_are_accepted_by_llvm() {
     const SEEDS: u64 = 1500;
@@ -317,21 +217,16 @@ fn random_bodies_are_accepted_by_llvm() {
         for construct in all.unsupported.keys() {
             assert!(expected_unsupported(*dialect, construct), "LLVM {major}: {construct}");
         }
-        assert!(all.clean.bodies >= 300, "LLVM {major}: {} clean bodies", all.clean.bodies);
-        // Every opcode but the funclet ones (not printed, §9.5) and
-        // `callbr`, which LLVM has for inline assembly alone and the
-        // generator makes with other callees.
+        assert!(all.clean.bodies >= 1000, "LLVM {major}: {} clean bodies", all.clean.bodies);
+        // Every opcode but the funclet ones (not printed, §9.5).
         for &opcode in Opcode::ALL {
-            let wanted = !opcode.is_funclet() && opcode != Opcode::CallBr;
+            let wanted = !opcode.is_funclet();
             assert_eq!(all.opcodes.contains(&opcode), wanted, "LLVM {major}: {}", opcode.name());
         }
         eprintln!(
-            "LLVM {major}: {} bytes of text: {} bodies verified, {} parsed {:?}, \
-             {} not expressible {:?}",
+            "LLVM {major}: {} bytes of text: {} bodies verified, {} not expressible {:?}",
             all.bytes,
             all.clean.bodies,
-            all.refused.bodies,
-            all.objections,
             all.unsupported.values().sum::<usize>(),
             all.unsupported,
         );
@@ -345,14 +240,9 @@ fn random_bodies_are_accepted_by_llvm() {
         assert_eq!(clean.matches("\ndefine ").count(), all.clean.bodies);
         accept(&llvm_as, &["-o", "/dev/null", "-"], &clean, "a verified body");
         accept(&opt, &["-passes=verify", "-disable-output", "-"], &clean, "a verified body");
-        let refused = all.refused.text();
-        assert_eq!(refused.matches("\ndefine ").count(), all.refused.bodies);
-        accept(&llvm_as, &["-disable-verify", "-o", "/dev/null", "-"], &refused, "a parsed body");
         eprintln!(
-            "LLVM {major}: llvm-as and opt on {} bytes, llvm-as -disable-verify on {} bytes, \
-             in {:.2?}",
+            "LLVM {major}: llvm-as and opt on {} bytes in {:.2?}",
             clean.len(),
-            refused.len(),
             start.elapsed()
         );
     }

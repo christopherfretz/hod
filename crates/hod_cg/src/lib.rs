@@ -22,17 +22,20 @@
 //! | `cx` | §8.1, §11 | `FnCx`: what a lowering is given; `Scratch` |
 //! | `record` | §9.1 to §9.6 | `Chunk`, `FuncRecord` and the rows |
 //! | `error` | §10 | `CgError`, the named limits |
-//! | `options` | §12 | `Options`, the stress options |
+//! | `options` | §7.4, §9.7, §12 | `Options`: relocation and code model, sections, the stress options |
+//! | `access` | §7.4 | `sym_access`, `call_access` |
+//! | `emit` | §9.7 | `ModuleEmitter`, `emit_module`: the module's object |
 //! | `driver` | §1, §4.7, §4.8, §6.1, §6.3 | `compile_function`: the walk, entry code, reachability, the far-mode retry |
 //!
-//! Not here yet: `sym_access` (§7.4) and `emit_module` (§9.7), which are
-//! their own work packages, and any real target. The test target that
-//! exercises this crate is in `tests/common/`.
+//! Not here: any real target. The test target that exercises this crate
+//! is in `tests/common/`.
 
 pub mod abi;
+mod access;
 mod call;
 mod cx;
 mod driver;
+pub mod emit;
 pub mod error;
 mod frame;
 mod label;
@@ -45,14 +48,16 @@ mod reg;
 mod sym;
 mod target;
 
+pub use access::{Access, CallAccess, TlsAccess, call_access, prefers_local_alias, sym_access};
 pub use call::CallArg;
 pub use cx::{FnCx, Scratch, TailExit};
 pub use driver::{MAX_FUNCTION_SIZE, compile_function};
+pub use emit::{Emitted, ModuleEmitter, PlacedFunc, emit_module};
 pub use error::{CgError, CgResult, LIMIT_FRAME_SIZE, LIMIT_FUNCTION_SIZE};
 pub use frame::{Frame, FrameRef, MAX_FRAME, SlotPlace};
 pub use label::{FixupKind, Label, Labels, OutOfRange};
 pub use loc::{Class, Loc};
-pub use options::{Options, Stress};
+pub use options::{Options, RelocModel, Stress};
 pub use policy::MAX_DEFERRED_RUN;
 pub use record::{
     BlockOffset, CallSiteRow, CfiOp, CfiRow, Chunk, ClauseRow, FrameDesc, FuncRecord, IslandRow,

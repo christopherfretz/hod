@@ -651,12 +651,21 @@ impl FnAttrs {
     /// Adds the flags in `flags` (an OR of the flag constants).
     ///
     /// # Errors
-    /// `InvalidOperand` for a bit that is not a flag constant.
+    /// `InvalidOperand` for a bit that is not a flag constant;
+    /// `InvalidAttribute` for `sanitize_realtime` with
+    /// `sanitize_realtime_blocking`, which LLVM calls incompatible (§5.7).
     pub fn set(&mut self, flags: u32) -> IrResult<()> {
         if flags & !Self::ALL_FLAGS != 0 {
             return err(
                 IrErrorKind::InvalidOperand,
                 format!("{flags:#x} is not a set of function flags"),
+            );
+        }
+        let both = Self::SANITIZE_REALTIME | Self::SANITIZE_REALTIME_BLOCKING;
+        if (self.flags | flags) & both == both {
+            return err(
+                IrErrorKind::InvalidAttribute,
+                "sanitize_realtime and sanitize_realtime_blocking on one function",
             );
         }
         self.flags |= flags;

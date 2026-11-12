@@ -25,7 +25,9 @@ pub const MODES: [(&str, Stress); 5] = [
 
 /// The generator options the differential tests run over: the default,
 /// the minimum, sizes, each feature off, and the minimum with groups of
-/// features on.
+/// features on; then exceptions and block addresses, alone, together,
+/// sized, and with each other feature off. (New sets go at the end: a
+/// set's seeds follow from its position.)
 pub fn option_sets() -> Vec<(String, GenOptions)> {
     let default = GenOptions::default;
     let minimal = GenOptions::minimal;
@@ -82,6 +84,26 @@ pub fn option_sets() -> Vec<(String, GenOptions)> {
         "only-floats".to_owned(),
         GenOptions { floats: true, casts: true, compares: true, selects: true, ..minimal() },
     ));
+    let everything = GenOptions::everything;
+    sets.push(("everything".to_owned(), everything()));
+    sets.push(("exceptions".to_owned(), GenOptions { exceptions: true, ..default() }));
+    sets.push(("block-addresses".to_owned(), GenOptions { block_addresses: true, ..default() }));
+    sets.push(("everything-8x30".to_owned(), everything().sized(8, 30)));
+    sets.push(("everything-2x200".to_owned(), everything().sized(2, 200)));
+    sets.push(("everything-12x100".to_owned(), everything().sized(12, 100)));
+    sets.push((
+        "only-exceptions".to_owned(),
+        GenOptions { exceptions: true, calls: true, hosts: true, functions: 6, ..minimal() },
+    ));
+    macro_rules! everything_but {
+        ($($field:ident),+) => {
+            $(sets.push((
+                concat!("everything-no-", stringify!($field)).to_owned(),
+                GenOptions { $field: false, ..everything() },
+            ));)+
+        };
+    }
+    everything_but!(compares, memory, globals, branches, loops, calls, hosts, floats, i128);
     sets
 }
 
@@ -106,6 +128,9 @@ pub struct Tally {
     /// Machine instructions executed and host calls compared.
     pub steps: u64,
     pub events: u64,
+    /// Exceptions thrown and landing pads entered in compared runs.
+    pub throws: u64,
+    pub landings: u64,
     /// What the generated programs contained.
     pub coverage: Coverage,
 }
@@ -127,6 +152,8 @@ impl Tally {
         let _ = writeln!(text, "code bytes emitted:        {}", self.code_bytes);
         let _ = writeln!(text, "machine steps executed:    {}", self.steps);
         let _ = writeln!(text, "host calls compared:       {}", self.events);
+        let _ = writeln!(text, "exceptions thrown:         {}", self.throws);
+        let _ = writeln!(text, "landing pads entered:      {}", self.landings);
         text
     }
 }
@@ -188,7 +215,7 @@ impl Harness {
                 &self.tm,
                 &program.module,
                 &program.bodies,
-                Options { stress },
+                Options { stress, ..Options::default() },
                 &mut self.scratch,
                 &mut self.chunk,
             );
@@ -225,6 +252,8 @@ impl Harness {
             self.tally.code_bytes += self.chunk.code.len() as u64;
             self.tally.steps += ran.steps;
             self.tally.events += ran.trace.len() as u64;
+            self.tally.throws += ran.throws;
+            self.tally.landings += ran.landings;
         }
         Ok(())
     }

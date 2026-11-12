@@ -323,3 +323,75 @@ fn throughput() {
         assert!(generating.as_secs() < 30 && running.as_secs() < 30);
     }
 }
+
+/// FNV-1a of the printed programs of `seeds` under `options`.
+fn fingerprint(options: &Options, seeds: std::ops::Range<u64>) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for seed in seeds {
+        let generated = generate(seed, options);
+        let mut text = String::new();
+        let dialect = hod_ir::Dialect::new(22).unwrap();
+        generated.module.print(&mut text, dialect, &generated.bodies).unwrap();
+        for byte in text.bytes().chain(format!("{:?}", generated.args).bytes()) {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    hash
+}
+
+/// §9.3: the switches added after a seed's program was fixed leave it as
+/// it was: these are the programs from before `exceptions` and
+/// `block_addresses` (WP-044).
+#[test]
+fn existing_seeds_keep_their_programs() {
+    let got = [
+        fingerprint(&Options::default(), 0..40),
+        fingerprint(&Options::minimal(), 0..40),
+        fingerprint(&Options::default().sized(8, 300), 100..110),
+    ];
+    assert_eq!(
+        got,
+        [0xd1e2_dc50_cbac_df6d, 0xae1e_f268_d0f2_68f5, 0x659f_e721_23c9_dc93],
+        "{got:#x?}"
+    );
+}
+
+/// §9.3, §9.4: with `exceptions` and `block_addresses` on, programs that
+/// throw, catch and branch through block addresses verify and run to an
+/// `i64` within their bound, and every construct occurs.
+#[test]
+fn unwinding_programs_cover_every_construct() {
+    let all = coverage(&Options::everything(), SEEDS);
+    let missing: Vec<_> = Coverage::NAMES
+        .iter()
+        .chain(Coverage::UNWIND_NAMES)
+        .filter(|name| all.get(name) == 0)
+        .collect();
+    assert!(missing.is_empty(), "never generated: {missing:?}");
+    for (sizes, seeds) in [((2, 12), 0..200), ((8, 300), 500..520), ((3, 2000), 900..903)] {
+        for seed in seeds {
+            check(seed, &generate(seed, &Options::everything().sized(sizes.0, sizes.1)));
+        }
+    }
+}
+
+/// §9.3: the default options generate none of the constructs of
+/// `exceptions` and `block_addresses`; each switch takes out its own.
+#[test]
+fn unwinding_switches() {
+    let none = coverage(&Options::default(), 100);
+    for name in Coverage::UNWIND_NAMES {
+        assert_eq!(none.get(name), 0, "{name} with the default options");
+    }
+    let only_eh = coverage(&Options { block_addresses: true, ..Options::default() }, 100);
+    let only_ba = coverage(&Options { exceptions: true, ..Options::default() }, 100);
+    for name in Coverage::UNWIND_NAMES {
+        let ours = if name.starts_with("eh:") { &only_ba } else { &only_eh };
+        let theirs = if name.starts_with("eh:") { &only_eh } else { &only_ba };
+        assert!(ours.get(name) > 0, "{name} never occurs with its switch on");
+        assert_eq!(theirs.get(name), 0, "{name} occurs with its switch off");
+    }
+    // What they need.
+    let o = Options { compares: false, globals: false, ..Options::everything() }.effective();
+    assert!(!o.exceptions && !o.block_addresses);
+}

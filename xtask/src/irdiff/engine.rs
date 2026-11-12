@@ -14,7 +14,7 @@ use std::sync::{Mutex, PoisonError};
 
 use super::directives::{self, Arch, Exit, Expectations, Lib};
 use super::process::{self, End, Limits, Output};
-use super::report::{BuiltBy, Outcome, Record};
+use super::report::{BuiltBy, Failure, Outcome, Record};
 use super::tools::{self, Linker, Toolchain};
 
 /// One test: IR with a `main`, and how its program must behave.
@@ -132,15 +132,25 @@ enum Plan {
     /// Link hod's object, run it, compare.
     Compare,
     /// The outcome on hod's side is already known, whatever the linker.
-    Settled { outcome: Outcome, detail: String, may_xfail: bool },
+    Settled { outcome: Outcome, failure: Option<Failure>, detail: String, may_xfail: bool },
 }
 
 /// Why a step did not give a result.
 enum Trouble {
-    /// The step ran and failed.
-    Failed(String),
+    /// The step ran and failed, in the way the kind says.
+    Failed(Failure, String),
     /// The harness or a tool broke: an ERROR on either side.
     Broken(String),
+}
+
+impl Trouble {
+    /// The kind and the detail; a broken step is the harness's.
+    fn split(self) -> (Failure, String) {
+        match self {
+            Self::Failed(failure, detail) => (failure, detail),
+            Self::Broken(detail) => (Failure::Harness, detail),
+        }
+    }
 }
 
 impl Session {
@@ -241,7 +251,7 @@ impl Session {
             Err(e) => vec![self.record(
                 test,
                 None,
-                Outcome::Error,
+                (Outcome::Error, Some(Failure::Harness)),
                 format!("cannot create '{}': {e}", dir.display()),
             )],
         };
@@ -255,11 +265,12 @@ impl Session {
         &self,
         test: &Test,
         linker: Option<&Linker>,
-        outcome: Outcome,
+        (outcome, failure): (Outcome, Option<Failure>),
         detail: String,
     ) -> Record {
         Record {
             outcome,
+            failure,
             test: test.name.clone(),
             target: self.arch.triple().to_owned(),
             llvm: Some(self.toolchain.llvm_major),
@@ -278,31 +289,31 @@ impl Session {
             let wanted: Vec<&str> = expect.targets.iter().map(|arch| arch.name()).collect();
             let detail =
                 format!("requires target {} (this run: {})", wanted.join(" "), arch.name());
-            return vec![self.record(test, None, Outcome::Skip, detail)];
+            return vec![self.record(test, None, (Outcome::Skip, None), detail)];
         }
         if !expect.accepts_llvm(llvm) {
             let detail = format!("requires another LLVM (this run: {llvm})");
-            return vec![self.record(test, None, Outcome::Skip, detail)];
+            return vec![self.record(test, None, (Outcome::Skip, None), detail)];
         }
 
-        let error = |detail: String| vec![self.record(test, None, Outcome::Error, detail)];
+        let error = |failure: Failure, detail: String| {
+            vec![self.record(test, None, (Outcome::Error, Some(failure)), detail)]
+        };
         let parts = match Self::parts(test, dir) {
             Ok(parts) => parts,
-            Err(detail) => return error(detail),
+            Err(detail) => return error(Failure::Harness, detail),
         };
         for part in &parts {
-            if let Err(Trouble::Failed(detail) | Trouble::Broken(detail)) =
-                self.compile_with_llc(test, Build::Reference, part)
-            {
-                return error(format!("oracle: {}{detail}", part.label()));
+            if let Err(trouble) = self.compile_with_llc(test, Build::Reference, part) {
+                let (failure, detail) = trouble.split();
+                return error(failure, format!("oracle: {}{detail}", part.label()));
             }
         }
         if self.witness {
             for part in &parts {
-                if let Err(Trouble::Failed(detail) | Trouble::Broken(detail)) =
-                    self.compile_with_llc(test, Build::Witness, part)
-                {
-                    return error(format!("{WITNESS}{}{detail}", part.label()));
+                if let Err(trouble) = self.compile_with_llc(test, Build::Witness, part) {
+                    let detail = trouble.split().1;
+                    return error(Failure::Witness, format!("{WITNESS}{}{detail}", part.label()));
                 }
             }
         }
@@ -314,7 +325,7 @@ impl Session {
         if let Some(why) = self.cannot_run() {
             let note = format!("the oracle's program was not run: {why}");
             let record = case.settled(None, &note);
-            return vec![record.unwrap_or_else(|| case.finish(None, Outcome::Skip, why))];
+            return vec![record.unwrap_or_else(|| case.finish(None, (Outcome::Skip, None), why))];
         }
         let objects = |object: fn(&Part) -> &PathBuf| -> Vec<PathBuf> {
             parts.iter().map(|part| object(part).clone()).collect()
@@ -330,14 +341,16 @@ impl Session {
         let mut records = Vec::new();
         for linker in &self.toolchain.linkers {
             if let Some(detail) = &unconfirmed {
-                records.push(case.finish(Some(linker), Outcome::Error, detail.clone()));
+                let error = (Outcome::Error, Some(Failure::Witness));
+                records.push(case.finish(Some(linker), error, detail.clone()));
                 continue;
             }
             let witness = witness.as_deref().filter(|_| !asked);
             records.push(match case.with_linker(linker, dir, &oracle, &hod, witness, &mut asked) {
                 Ok(record) => record,
                 Err(detail) => {
-                    let record = case.finish(Some(linker), Outcome::Error, detail.clone());
+                    let error = (Outcome::Error, Some(Failure::Witness));
+                    let record = case.finish(Some(linker), error, detail.clone());
                     unconfirmed = Some(detail);
                     record
                 }
@@ -429,10 +442,12 @@ impl Session {
             self.tool_limits,
         )
         .map_err(Trouble::Broken)?;
+        let failed =
+            |detail| Trouble::Failed(Failure::of_tool(Failure::ReferenceBuild, output.end), detail);
         match output.end {
             End::Exit(0) if object.is_file() => Ok(()),
-            End::Exit(0) => Err(Trouble::Failed(format!("{tool} wrote no object"))),
-            end => Err(Trouble::Failed(tool_failure(tool, end, &output, self.tool_limits))),
+            End::Exit(0) => Err(failed(format!("{tool} wrote no object"))),
+            end => Err(failed(tool_failure(tool, end, &output, self.tool_limits))),
         }
     }
 
@@ -540,12 +555,16 @@ impl Session {
         };
         let output =
             process::run(driver, configure, b"", self.tool_limits).map_err(Trouble::Broken)?;
+        let failure = Failure::of_tool(Failure::Link, output.end);
         match output.end {
             End::Exit(0) if program.is_file() => {}
-            End::Exit(0) => return Err(Trouble::Failed("the link wrote no program".to_owned())),
+            End::Exit(0) => {
+                return Err(Trouble::Failed(failure, "the link wrote no program".to_owned()));
+            }
             end => {
                 let name = format!("link with {}", linker.name);
-                return Err(Trouble::Failed(tool_failure(&name, end, &output, self.tool_limits)));
+                let detail = tool_failure(&name, end, &output, self.tool_limits);
+                return Err(Trouble::Failed(failure, detail));
             }
         }
         let bytes = fs::read(&program)
@@ -560,10 +579,17 @@ impl Session {
 
     /// Compares a program's behaviour with the test's directives. The
     /// error completes "the program ...".
-    fn check_directives(&self, output: &Output, expect: &Expectations) -> Result<(), String> {
+    fn check_directives(
+        &self,
+        output: &Output,
+        expect: &Expectations,
+    ) -> Result<(), (Failure, String)> {
         let ended = match (output.end, expect.exit) {
             (End::TimedOut, _) => {
-                return Err(format!("timed out after {}", seconds(self.run_limits)));
+                return Err((
+                    Failure::Run,
+                    format!("timed out after {}", seconds(self.run_limits)),
+                ));
             }
             (End::Exit(code), Exit::Code(wanted)) => code == i32::from(wanted),
             (End::Signal(signal), Exit::Signal(wanted)) => signal == i32::from(wanted),
@@ -574,18 +600,19 @@ impl Session {
                 Exit::Code(code) => format!("exit status {code}"),
                 Exit::Signal(signal) => format!("signal {signal}"),
             };
-            return Err(format!(
-                "ended with {}, the directives say {wanted}",
-                ended_with(output.end)
+            return Err((
+                Failure::Comparison,
+                format!("ended with {}, the directives say {wanted}", ended_with(output.end)),
             ));
         }
         if output.truncated {
-            return Err("wrote more output than the harness keeps".to_owned());
+            return Err((Failure::Run, "wrote more output than the harness keeps".to_owned()));
         }
         match first_difference(&expect.stdout, &output.stdout) {
-            Some(difference) => {
-                Err(format!("wrote stdout that differs from the directives {difference}"))
-            }
+            Some(difference) => Err((
+                Failure::Comparison,
+                format!("wrote stdout that differs from the directives {difference}"),
+            )),
             None => Ok(()),
         }
     }
@@ -593,22 +620,28 @@ impl Session {
     /// Compares the program of hod's object, or of the witness's, with
     /// the program of the oracle's, which is `whose` ("llc's"). The error
     /// completes "the program of hod's object ...".
-    fn compare(&self, hod: &Output, oracle: &Output, whose: &str) -> Result<(), String> {
+    fn compare(&self, hod: &Output, oracle: &Output, whose: &str) -> Result<(), (Failure, String)> {
         if hod.end == End::TimedOut {
-            return Err(format!("timed out after {}", seconds(self.run_limits)));
+            return Err((Failure::Run, format!("timed out after {}", seconds(self.run_limits))));
         }
         if hod.end != oracle.end {
-            return Err(format!(
-                "ended with {}, {whose} with {}",
-                ended_with(hod.end),
-                ended_with(oracle.end)
+            return Err((
+                Failure::Comparison,
+                format!(
+                    "ended with {}, {whose} with {}",
+                    ended_with(hod.end),
+                    ended_with(oracle.end)
+                ),
             ));
         }
         if hod.truncated {
-            return Err("wrote more output than the harness keeps".to_owned());
+            return Err((Failure::Run, "wrote more output than the harness keeps".to_owned()));
         }
         match first_difference(&oracle.stdout, &hod.stdout) {
-            Some(difference) => Err(format!("wrote stdout that differs from {whose} {difference}")),
+            Some(difference) => Err((
+                Failure::Comparison,
+                format!("wrote stdout that differs from {whose} {difference}"),
+            )),
             None => Ok(()),
         }
     }
@@ -624,7 +657,12 @@ struct Case<'a> {
 }
 
 impl Case<'_> {
-    fn finish(&self, linker: Option<&Linker>, outcome: Outcome, detail: String) -> Record {
+    fn finish(
+        &self,
+        linker: Option<&Linker>,
+        outcome: (Outcome, Option<Failure>),
+        detail: String,
+    ) -> Record {
         Record {
             built_by: self.built_by,
             reason: self.reason.clone(),
@@ -654,7 +692,7 @@ impl Case<'_> {
     /// The record of a test whose outcome on hod's side does not depend
     /// on the linker, if this is one. `note` is added to its detail.
     fn settled(&self, linker: Option<&Linker>, note: &str) -> Option<Record> {
-        let Plan::Settled { outcome, detail, may_xfail } = &self.plan else { return None };
+        let Plan::Settled { outcome, failure, detail, may_xfail } = &self.plan else { return None };
         let (outcome, detail) = if *may_xfail {
             self.expected_failure(linker, *outcome, detail.clone())
         } else {
@@ -665,7 +703,7 @@ impl Case<'_> {
             (true, false) => note.to_owned(),
             (false, false) => format!("{detail}; {note}"),
         };
-        Some(self.finish(linker, outcome, detail))
+        Some(self.finish(linker, (outcome, *failure), detail))
     }
 
     /// Links and runs both sides with one linker, and before hod's side
@@ -683,31 +721,37 @@ impl Case<'_> {
     ) -> Result<Record, String> {
         let session = self.session;
         let expect = &self.test.expect;
-        let error = |detail: String| Ok(self.finish(Some(linker), Outcome::Error, detail));
+        let error = |failure: Failure, detail: String| {
+            Ok(self.finish(Some(linker), (Outcome::Error, Some(failure)), detail))
+        };
         let linker_dir = dir.join(&linker.name);
         if let Err(e) = fs::create_dir_all(&linker_dir) {
-            return error(format!("cannot create '{}': {e}", linker_dir.display()));
+            return error(
+                Failure::Harness,
+                format!("cannot create '{}': {e}", linker_dir.display()),
+            );
         }
         // The oracle's side validates the test itself: any trouble there
         // is an ERROR, whatever hod did.
         let oracle =
             match session.link_and_run(linker, oracle_objects, &linker_dir, "oracle", expect) {
                 Ok(output) => output,
-                Err(Trouble::Failed(detail) | Trouble::Broken(detail)) => {
-                    return error(format!("oracle: {detail}"));
+                Err(trouble) => {
+                    let (failure, detail) = trouble.split();
+                    return error(failure, format!("oracle: {detail}"));
                 }
             };
-        if let Err(detail) = session.check_directives(&oracle, expect) {
-            return error(format!("oracle: the program of llc's object {detail}"));
+        if let Err((failure, detail)) = session.check_directives(&oracle, expect) {
+            return error(failure, format!("oracle: the program of llc's object {detail}"));
         }
         if let Some(objects) = witness_objects {
             *asked = true;
             match session.link_and_run(linker, objects, &linker_dir, "witness", expect) {
-                Err(Trouble::Failed(detail) | Trouble::Broken(detail)) => {
-                    return Err(format!("{WITNESS}{detail}"));
+                Err(trouble) => {
+                    return Err(format!("{WITNESS}{}", trouble.split().1));
                 }
                 Ok(witness) => {
-                    if let Err(detail) = session.compare(&witness, &oracle, "llc -O0's") {
+                    if let Err((_, detail)) = session.compare(&witness, &oracle, "llc -O0's") {
                         return Err(format!("{WITNESS}the program of llc -O2's object {detail}"));
                     }
                 }
@@ -716,17 +760,24 @@ impl Case<'_> {
         if let Some(record) = self.settled(Some(linker), "") {
             return Ok(record);
         }
-        let (outcome, detail) =
+        let (outcome, failure, detail) =
             match session.link_and_run(linker, hod_objects, &linker_dir, "hod", expect) {
-                Err(Trouble::Broken(detail)) => return error(detail),
-                Err(Trouble::Failed(detail)) => (Outcome::Fail, format!("hod's object: {detail}")),
+                Err(Trouble::Broken(detail)) => return error(Failure::Harness, detail),
+                Err(Trouble::Failed(failure, detail)) => {
+                    (Outcome::Fail, Some(failure), format!("hod's object: {detail}"))
+                }
                 Ok(hod) => match session.compare(&hod, &oracle, "llc's") {
-                    Ok(()) => (Outcome::Pass, String::new()),
-                    Err(detail) => (Outcome::Fail, format!("the program of hod's object {detail}")),
+                    Ok(()) => (Outcome::Pass, None, String::new()),
+                    Err((failure, detail)) => (
+                        Outcome::Fail,
+                        Some(failure),
+                        format!("the program of hod's object {detail}"),
+                    ),
                 },
             };
         let (outcome, detail) = self.expected_failure(Some(linker), outcome, detail);
-        Ok(self.finish(Some(linker), outcome, detail))
+        let failure = failure.filter(|_| matches!(outcome, Outcome::Fail | Outcome::Xfail));
+        Ok(self.finish(Some(linker), (outcome, failure), detail))
     }
 }
 
@@ -735,15 +786,19 @@ impl Case<'_> {
 fn plan(build: &HodBuild, built_by: BuiltBy, reason: Option<&str>, expected: Option<&str>) -> Plan {
     let fail = |detail: String, may_xfail: bool| Plan::Settled {
         outcome: Outcome::Fail,
+        failure: Some(if may_xfail { Failure::HodBuild } else { Failure::Declined }),
         detail,
         may_xfail,
     };
     let reason = reason.unwrap_or("-");
     match (build, built_by, expected) {
         (HodBuild::Failed(detail), _, _) => fail(detail.clone(), true),
-        (HodBuild::Declined, _, Some(expected)) if reason == expected => {
-            Plan::Settled { outcome: Outcome::Unsupported, detail: String::new(), may_xfail: false }
-        }
+        (HodBuild::Declined, _, Some(expected)) if reason == expected => Plan::Settled {
+            outcome: Outcome::Unsupported,
+            failure: None,
+            detail: String::new(),
+            may_xfail: false,
+        },
         (HodBuild::Declined, _, Some(expected)) => fail(
             format!(
                 "hod declined with reason '{reason}'; the 'unsupported' directive says '{expected}'"

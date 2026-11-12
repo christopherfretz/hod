@@ -10,10 +10,12 @@
 use std::collections::BTreeMap;
 
 use hod_ir::{
-    Body, CallDesc, FloatPredicate, FunctionBuilder, FunctionDesc, IntPredicate, IrResult,
-    MemFlags, Module, Opcode, SymId, TargetSpec, TypeId, Value, VariableDesc, resolve_intrinsic,
+    BlockId, Body, CallDesc, Clause, FloatPredicate, FunctionBuilder, FunctionDesc, IntPredicate,
+    IrResult, MemFlags, Module, Opcode, SymId, TargetSpec, TypeId, Value, VariableDesc,
+    resolve_intrinsic,
 };
 
+use crate::eh::{self, Eh};
 use crate::host::{self, Standard};
 use crate::interp::{Config, Interp, Outcome, Program};
 use crate::value::{Val, mask};
@@ -75,6 +77,17 @@ pub struct Options {
     pub many_args: bool,
     /// Calls of the standard host functions `sink` and `source`.
     pub hosts: bool,
+    /// C++ exceptions (§5.9): throws of `hod_throw`, `invoke`s of it and
+    /// of the generated functions, landing pads with catch, catch-all,
+    /// filter and cleanup clauses, `llvm.eh.typeid.for`, `resume`, and
+    /// `nounwind` calls. Needs `compares`. Off by default, so that the
+    /// programs of the seeds from before it stay the same.
+    pub exceptions: bool,
+    /// Computed gotos (§5.5): a constant table of `blockaddress`es, an
+    /// `indirectbr` through it, and a loaded address compared with
+    /// `null` (the one comparison LLVM defines). Needs `globals` and `compares`. Off by
+    /// default, as `exceptions`.
+    pub block_addresses: bool,
 }
 
 impl Default for Options {
@@ -104,6 +117,8 @@ impl Default for Options {
             indirect_calls: true,
             many_args: true,
             hosts: true,
+            exceptions: false,
+            block_addresses: false,
         }
     }
 }
@@ -136,6 +151,12 @@ impl Options {
         }
     }
 
+    /// The default options with `exceptions` and `block_addresses` on:
+    /// everything the generator makes.
+    pub fn everything() -> Options {
+        Options { exceptions: true, block_addresses: true, ..Options::default() }
+    }
+
     /// These options with the size knobs set.
     #[must_use]
     pub fn sized(mut self, functions: u32, insts: u32) -> Options {
@@ -160,6 +181,8 @@ impl Options {
         o.ptr_int &= o.memory;
         o.indirect_calls &= o.calls && (o.selects || o.globals);
         o.many_args &= o.calls;
+        o.exceptions &= o.compares;
+        o.block_addresses &= o.globals && o.compares;
         if !o.calls {
             o.functions = 1;
         }
@@ -232,6 +255,27 @@ impl Coverage {
         "use:across-call",
     ];
 
+    /// The counters of the constructs of `exceptions` and
+    /// `block_addresses` (§9.4), which the default options leave out.
+    pub const UNWIND_NAMES: &'static [&'static str] = &[
+        "eh:throw",
+        "eh:invoke-throw",
+        "eh:invoke-call",
+        "eh:shared-pad",
+        "eh:pad-phi",
+        "eh:catch",
+        "eh:catch-all",
+        "eh:filter",
+        "eh:filter-empty",
+        "eh:cleanup",
+        "eh:typeid-for",
+        "eh:nounwind-call",
+        "eh:normal-phi",
+        "cf:indirectbr",
+        "blockaddress:table",
+        "blockaddress:compare",
+    ];
+
     /// The count of `name`; 0 for a name that is not a counter.
     pub fn get(&self, name: &str) -> u64 {
         self.0.get(name).copied().unwrap_or(0)
@@ -250,7 +294,10 @@ impl Coverage {
     }
 
     fn hit(&mut self, name: &'static str) {
-        debug_assert!(Coverage::NAMES.contains(&name), "{name}");
+        debug_assert!(
+            Coverage::NAMES.contains(&name) || Coverage::UNWIND_NAMES.contains(&name),
+            "{name}"
+        );
         *self.0.entry(name).or_default() += 1;
     }
 
@@ -483,6 +530,9 @@ struct Func {
     sig: usize,
     /// A call takes at most this many steps. Known once generated.
     cost: u64,
+    /// The exceptions a call may end in: bit `t` for type
+    /// [`eh::TYPE_INFOS`]`[t]`. Known once generated.
+    escapes: u8,
 }
 
 fn width_key(bits: u32) -> &'static str {
@@ -515,6 +565,7 @@ struct Gen {
     fns: Vec<Func>,
     globals: Vec<Arr>,
     std: Option<Standard>,
+    eh: Option<Eh>,
 }
 
 impl Gen {
@@ -540,9 +591,13 @@ impl Gen {
             fns: Vec::new(),
             globals: Vec::new(),
             std: None,
+            eh: None,
         };
         if g.opt.hosts {
             g.std = Some(host::declare(&mut g.m)?);
+        }
+        if g.opt.exceptions {
+            g.eh = Some(eh::declare(&mut g.m)?);
         }
         g.declare_functions()?;
         if g.opt.globals {
@@ -629,12 +684,17 @@ impl Gen {
                 1 + self.rng.below(self.sigs.len() as u64 - 1) as usize
             };
             let name = if index == 0 { "entry".to_owned() } else { format!("f{index}") };
-            let desc = FunctionDesc { has_body: true, ..FunctionDesc::new(self.sigs[sig].fn_ty) };
+            let personality = self.eh.map(|eh| eh.personality);
+            let desc = FunctionDesc {
+                has_body: true,
+                personality,
+                ..FunctionDesc::new(self.sigs[sig].fn_ty)
+            };
             let sym = self.m.add_function(name.as_bytes(), &desc)?;
             if index != 0 {
                 self.sigs[sig].members.push(index);
             }
-            self.fns.push(Func { sym, sig, cost: 0 });
+            self.fns.push(Func { sym, sig, cost: 0, escapes: 0 });
         }
         Ok(())
     }
@@ -789,6 +849,12 @@ struct FnGen<'g> {
     cost: u64,
     /// Instructions charged so far.
     charged: usize,
+    /// The exceptions that may leave the function (see [`Func::escapes`]).
+    escapes: u8,
+    /// How many landing pads the builder is in.
+    pads: u32,
+    /// Computed gotos so far, for the names of their tables.
+    gotos: u32,
 }
 
 impl<'g> FnGen<'g> {
@@ -796,7 +862,19 @@ impl<'g> FnGen<'g> {
         let (sym, sig) = (g.fns[index].sym, g.fns[index].sig);
         let b = FunctionBuilder::new(&g.m, sym, g.sigs[sig].fn_ty)?;
         let arrs = g.globals.clone();
-        let mut f = FnGen { g, b, index, pool: Vec::new(), arrs, mult: 1, cost: 0, charged: 0 };
+        let mut f = FnGen {
+            g,
+            b,
+            index,
+            pool: Vec::new(),
+            arrs,
+            mult: 1,
+            cost: 0,
+            charged: 0,
+            escapes: 0,
+            pads: 0,
+            gotos: 0,
+        };
         let entry = f.b.create_block()?;
         f.b.begin_block(entry)?;
         let params = f.g.sigs[sig].params.clone();
@@ -830,6 +908,8 @@ impl<'g> FnGen<'g> {
         f.finish(sig)?;
         f.charge();
         f.g.fns[index].cost = f.cost;
+        debug_assert!(index != 0 || f.escapes == 0, "an exception may leave the entry function");
+        f.g.fns[index].escapes = f.escapes;
         f.b.finish()
     }
 
@@ -1534,6 +1614,15 @@ impl<'g> FnGen<'g> {
         Ok(())
     }
 
+    /// A call of `sink(value)`, if the host functions are on.
+    fn sink(&mut self, value: Value) -> IrResult<()> {
+        let Some(std) = self.g.std else { return Ok(()) };
+        let args = [value];
+        self.b.call(TypeId::VOID, &CallDesc::new(Value::sym(std.sink)?, std.sink_ty, &args))?;
+        self.hit("call:sink");
+        Ok(())
+    }
+
     fn host_call(&mut self) -> IrResult<()> {
         let Some(std) = self.g.std else { return Ok(()) };
         if self.rng().chance(30) {
@@ -1615,7 +1704,16 @@ impl<'g> FnGen<'g> {
             Some(ty) => self.tid(ty)?,
             None => TypeId::VOID,
         };
-        let value = self.b.call(ret_id, &CallDesc::new(target, fn_ty, &args))?;
+        let desc = CallDesc::new(target, fn_ty, &args);
+        let value = if self.g.eh.is_some() {
+            let escapes = self.g.fns[callee].escapes | self.g.fns[other].escapes;
+            match self.eh_call(&desc, ret, ret_id, escapes)? {
+                Some(value) => value,
+                None => return Ok(()),
+            }
+        } else {
+            self.b.call(ret_id, &desc)?
+        };
         self.charge();
         self.cost += self.mult * callee_cost;
         match ret {
@@ -1692,6 +1790,319 @@ impl<'g> FnGen<'g> {
         }
     }
 
+    // ---- exceptions (§5.9) ----
+
+    /// The steps an exception may take to unwind (§5.9): two for each
+    /// frame of the deepest call chain, and some more.
+    fn charge_throw(&mut self) {
+        self.charge();
+        self.cost += self.mult * (2 * self.g.fns.len() as u64 + 8);
+    }
+
+    /// The call of `desc`, of a callee that may end in the exceptions
+    /// `escapes`: a call, `nounwind` when nothing can escape, or an
+    /// `invoke` whose landing pad rejoins the normal destination with a
+    /// `phi` of the result. `None` when no call fits here: the entry
+    /// function lets nothing escape, and pads nest only so deep.
+    fn eh_call(
+        &mut self,
+        desc: &CallDesc<'_>,
+        ret: Option<Ty>,
+        ret_id: TypeId,
+        escapes: u8,
+    ) -> IrResult<Option<Value>> {
+        let contained = self.index == 0;
+        if escapes == 0 {
+            let nounwind = self.rng().chance(30);
+            if nounwind {
+                self.hit("eh:nounwind-call");
+            }
+            return Ok(Some(self.b.call(ret_id, &CallDesc { nounwind, ..*desc })?));
+        }
+        let invoke = self.pads < 2 && (contained || self.rng().chance(60));
+        if !invoke {
+            if contained {
+                return Ok(None);
+            }
+            self.escapes |= escapes;
+            return Ok(Some(self.b.call(ret_id, desc)?));
+        }
+        let from = self.here();
+        let (normal, pad) = (self.b.create_block()?, self.b.create_block()?);
+        let value = self.b.invoke(ret_id, desc, normal, pad)?;
+        self.hit("eh:invoke-call");
+        let types: Vec<Ty> = ret.into_iter().collect();
+        let caught =
+            self.landing(pad, escapes, &[], &[(from, Vec::new())], normal, &types, MAX_DEPTH)?;
+        self.b.begin_block(normal)?;
+        let Some(ty) = ret else { return Ok(Some(value)) };
+        let id = self.tid(ty)?;
+        let phi = self.b.phi(id, &[(value, from), (caught.1[0].value, caught.0)])?;
+        self.hit("phi");
+        self.hit("eh:normal-phi");
+        Ok(Some(phi))
+    }
+
+    /// A landing pad in block `pad` for the exceptions `incoming`, with
+    /// `phi`s of `pad_types` from `froms`: random clauses, a dispatch on
+    /// the selector through `llvm.eh.typeid.for` and its sign, a cleanup
+    /// that resumes, and a handler that catches the exception, runs a
+    /// region and branches to `join` with values of `types`. Returns the
+    /// handler's last block and those values.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn landing(
+        &mut self,
+        pad: BlockId,
+        incoming: u8,
+        pad_types: &[Ty],
+        froms: &[(BlockId, Vec<Avail>)],
+        join: BlockId,
+        types: &[Ty],
+        depth: u32,
+    ) -> IrResult<(BlockId, Vec<Avail>)> {
+        let eh = self.g.eh.expect("exceptions are on");
+        let scope = self.scope();
+        self.pads += 1;
+        self.b.begin_block(pad)?;
+        if !pad_types.is_empty() {
+            self.phis(pad_types, froms)?;
+            self.hit("eh:pad-phi");
+        }
+        let live: Vec<Avail> = self.pool[self.pool.len() - pad_types.len()..].to_vec();
+        // The clauses, and which of the incoming types one handles.
+        let mut clauses = Vec::new();
+        let mut handled = 0u8;
+        for _ in 0..=self.rng().below(3) {
+            match self.rng().below(100) {
+                0..50 => {
+                    let t = self.rng().below(4) as usize;
+                    clauses.push(Clause::Catch(self.g.m.consts.addr(eh.type_infos[t], 0)?));
+                    handled |= 1 << t;
+                    self.hit("eh:catch");
+                }
+                50..65 => {
+                    clauses
+                        .push(Clause::Catch(self.g.m.consts.null(&self.g.m.types, TypeId::PTR)?));
+                    handled = 0xf;
+                    self.hit("eh:catch-all");
+                }
+                roll => {
+                    // A handler for the types it does not list.
+                    let listed = if roll < 85 { 1 + self.rng().below(15) as u8 } else { 0 };
+                    let mut elems = Vec::new();
+                    for t in 0..4 {
+                        if listed & (1 << t) != 0 {
+                            elems.push(self.g.m.consts.addr(eh.type_infos[t], 0)?);
+                        }
+                    }
+                    let m = &mut self.g.m;
+                    let array = m.types.array(TypeId::PTR, elems.len() as u64)?;
+                    let filter = if elems.is_empty() {
+                        m.consts.zero(&m.types, array)?
+                    } else {
+                        m.consts.aggregate(&m.types, array, &elems)?
+                    };
+                    clauses.push(Clause::Filter(filter));
+                    handled |= !listed & 0xf;
+                    self.hit(if listed == 0 { "eh:filter-empty" } else { "eh:filter" });
+                }
+            }
+        }
+        let cleanup = self.rng().chance(50);
+        let mut unhandled = incoming & !handled;
+        if self.index == 0 && unhandled != 0 {
+            // Nothing leaves the entry function.
+            clauses.push(Clause::Catch(self.g.m.consts.null(&self.g.m.types, TypeId::PTR)?));
+            self.hit("eh:catch-all");
+            unhandled = 0;
+        }
+        self.escapes |= unhandled;
+        let pair = self.b.landing_pad(eh.pad_ty, cleanup, &clauses)?;
+        // Which pad was entered and the values live into it, observed.
+        let mark = 0x9AD0_0000 + ((self.index as u128) << 16) + pad.index() as u128;
+        let mark = self.cint(64, mark)?;
+        self.sink(mark)?;
+        for avail in live {
+            let value = match avail.ty {
+                Ty::Int(64) => avail.value,
+                Ty::Int(bits @ 1..64) if self.g.opt.casts => self.resize(avail.value, bits, 64)?,
+                _ => continue,
+            };
+            self.sink(value)?;
+        }
+        let exn = self.b.extract_value(TypeId::PTR, pair, 0)?;
+        let sel = self.b.extract_value(TypeId::I32, pair, 8)?;
+        // The dispatch: one type, then a catch, a filter, a cleanup.
+        let t = self.rng().below(4) as usize;
+        let info = [Value::sym(eh.type_infos[t])?];
+        let id =
+            self.intrinsic_call("llvm.eh.typeid.for.p0", TypeId::I32, &[TypeId::PTR], &info)?;
+        self.hit("eh:typeid-for");
+        let (caught, positive, negative, clean) = (
+            self.b.create_block()?,
+            self.b.create_block()?,
+            self.b.create_block()?,
+            self.b.create_block()?,
+        );
+        let is_t = self.b.icmp(IntPredicate::Eq, TypeId::I1, sel, id)?;
+        let first = self.here();
+        self.b.cond_br(is_t, caught, positive)?;
+        self.b.begin_block(positive)?;
+        let zero = self.cint(32, 0)?;
+        let is_catch = self.b.icmp(IntPredicate::Sgt, TypeId::I1, sel, zero)?;
+        self.b.cond_br(is_catch, caught, negative)?;
+        self.b.begin_block(negative)?;
+        let is_filter = self.b.icmp(IntPredicate::Slt, TypeId::I1, sel, zero)?;
+        self.b.cond_br(is_filter, caught, clean)?;
+        self.b.begin_block(clean)?;
+        if cleanup {
+            let inner = self.scope();
+            let budget = 2 + self.rng().below(6) as usize;
+            self.region(budget, MAX_DEPTH)?;
+            self.leave(inner);
+            self.hit("eh:cleanup");
+        }
+        self.b.resume(pair)?;
+        self.b.begin_block(caught)?;
+        let tags = [self.cint(64, 1)?, self.cint(64, 2)?, self.cint(64, 3)?];
+        let tag = self
+            .b
+            .phi(TypeId::I64, &[(tags[0], first), (tags[1], positive), (tags[2], negative)])?;
+        self.hit("phi");
+        self.sink(tag)?;
+        self.push(tag, Ty::Int(64));
+        let args = [exn];
+        let payload =
+            self.b.call(TypeId::I64, &CallDesc::new(Value::sym(eh.catch)?, eh.catch_ty, &args))?;
+        self.push(payload, Ty::Int(64));
+        let budget = 2 + self.rng().below(10) as usize;
+        self.region(budget, depth.max(1))?;
+        let values = self.merge_values(types)?;
+        let end = self.here();
+        self.b.br(join)?;
+        self.pads -= 1;
+        self.leave(scope);
+        Ok((end, values))
+    }
+
+    /// One or two `invoke`s of `hod_throw`, each under a condition, to one
+    /// landing pad whose handler joins the code after them.
+    fn try_throw(&mut self, depth: u32) -> IrResult<()> {
+        let eh = self.g.eh.expect("exceptions are on");
+        let types = self.merge_types();
+        let pad_types = if self.rng().chance(40) { self.merge_types() } else { Vec::new() };
+        let throws = if self.rng().chance(30) { 2 } else { 1 };
+        let (pad, never, join) =
+            (self.b.create_block()?, self.b.create_block()?, self.b.create_block()?);
+        let mut incoming = 0u8;
+        let mut froms = Vec::new();
+        // What the blocks of the chain define dominates neither the pad
+        // nor the join.
+        let chain = self.scope();
+        for _ in 0..throws {
+            let cond = self.cond()?;
+            let (site, next) = (self.b.create_block()?, self.b.create_block()?);
+            self.b.cond_br(cond, site, next)?;
+            self.b.begin_block(site)?;
+            let scope = self.scope();
+            let t = self.rng().below(4) as usize;
+            incoming |= 1 << t;
+            let payload = self.pick_int(64)?;
+            let values = self.merge_values(&pad_types)?;
+            let args = [Value::sym(eh.type_infos[t])?, payload];
+            let desc = CallDesc::new(Value::sym(eh.throw)?, eh.throw_ty, &args);
+            self.b.invoke(TypeId::VOID, &desc, never, pad)?;
+            froms.push((site, values));
+            self.leave(scope);
+            self.charge_throw();
+            self.hit("eh:invoke-throw");
+            self.b.begin_block(next)?;
+        }
+        if throws == 2 {
+            self.hit("eh:shared-pad");
+        }
+        let skip = (self.here(), self.merge_values(&types)?);
+        self.b.br(join)?;
+        self.leave(chain);
+        self.b.begin_block(never)?;
+        self.b.unreachable()?;
+        let caught = self.landing(pad, incoming, &pad_types, &froms, join, &types, depth + 1)?;
+        self.b.begin_block(join)?;
+        self.phis(&types, &[skip, caught])
+    }
+
+    /// A call of `hod_throw` without a landing pad, under a condition:
+    /// the exception leaves the function.
+    fn throw_plain(&mut self) -> IrResult<()> {
+        let eh = self.g.eh.expect("exceptions are on");
+        let cond = self.cond()?;
+        let (site, on) = (self.b.create_block()?, self.b.create_block()?);
+        self.b.cond_br(cond, site, on)?;
+        self.b.begin_block(site)?;
+        let scope = self.scope();
+        let t = self.rng().below(4) as usize;
+        let payload = self.pick_int(64)?;
+        let args = [Value::sym(eh.type_infos[t])?, payload];
+        self.b.call(TypeId::VOID, &CallDesc::new(Value::sym(eh.throw)?, eh.throw_ty, &args))?;
+        self.b.unreachable()?;
+        self.leave(scope);
+        self.escapes |= 1 << t;
+        self.charge_throw();
+        self.hit("eh:throw");
+        self.b.begin_block(on)
+    }
+
+    // ---- block addresses (§5.5) ----
+
+    /// A computed goto: an `indirectbr` to an address loaded from a
+    /// constant table of `blockaddress`es, with arms that join.
+    fn computed_goto(&mut self, budget: usize, depth: u32) -> IrResult<()> {
+        let n: u64 = if self.rng().chance(50) { 2 } else { 4 };
+        let types = self.merge_types();
+        let mut targets = Vec::new();
+        for _ in 0..n {
+            targets.push(self.b.create_block()?);
+        }
+        let join = self.b.create_block()?;
+        let sym = self.g.fns[self.index].sym;
+        let mut addrs = Vec::new();
+        for &target in &targets {
+            addrs.push(self.g.m.consts.block_addr(sym, target)?);
+        }
+        let m = &mut self.g.m;
+        let array = m.types.array(TypeId::PTR, n)?;
+        let init = m.consts.aggregate(&m.types, array, &addrs)?;
+        let name = format!("bt{}_{}", self.index, self.gotos);
+        self.gotos += 1;
+        let desc = VariableDesc {
+            init: Some(init),
+            constant: true,
+            align: Some(8),
+            ..VariableDesc::new(array)
+        };
+        let table = m.add_variable(name.as_bytes(), &desc)?;
+        self.hit("blockaddress:table");
+        let any = self.pick_int(64)?;
+        let low = self.cint(64, u128::from(n - 1))?;
+        let index = self.bin(Opcode::And, 64, any, low)?;
+        let at = self.b.ptr_add(TypeId::PTR, Value::sym(table)?, 0, &[(index, 8)])?;
+        let addr = self.b.load(TypeId::PTR, at, aligned(8)?)?;
+        // Comparing with `null` is all that is defined (§5.5).
+        let null = Value::constant(self.g.m.consts.null(&self.g.m.types, TypeId::PTR)?)?;
+        let pred = if self.rng().chance(50) { IntPredicate::Eq } else { IntPredicate::Ne };
+        let is = self.b.icmp(pred, TypeId::I1, addr, null)?;
+        self.hit("blockaddress:compare");
+        self.finish_int(is, 1)?;
+        self.b.indirect_br(addr, &targets)?;
+        self.hit("cf:indirectbr");
+        let mut edges = Vec::new();
+        for &target in &targets {
+            edges.push(self.arm(target, join, &types, budget / n as usize, depth)?);
+        }
+        self.b.begin_block(join)?;
+        self.phis(&types, &edges)
+    }
+
     // ---- memory of the function ----
 
     /// The function's stack slots, each written in full in the entry
@@ -1755,6 +2166,8 @@ impl<'g> FnGen<'g> {
             let (branches, loops, switches) =
                 (nest && opt.branches, nest && opt.loops, nest && opt.switches);
             let dead_end = opt.unreachable_blocks;
+            let (tries, gotos) = (nest && opt.exceptions, nest && opt.block_addresses);
+            let throws = tries && self.index != 0;
             match self.rng().below(100) {
                 0..3 if branches => self.diamond(left / 3, depth)?,
                 3..5 if branches => self.triangle(left / 3, depth)?,
@@ -1764,6 +2177,9 @@ impl<'g> FnGen<'g> {
                 10..12 if loops => self.counted_loop(4, depth, true)?,
                 12..15 if switches => self.switch(left / 4, depth)?,
                 15..16 if dead_end => self.unreachable_block()?,
+                16..19 if tries => self.try_throw(depth)?,
+                19..20 if throws => self.throw_plain()?,
+                20..22 if gotos => self.computed_goto(left / 3, depth)?,
                 _ => self.op()?,
             }
         }
@@ -1792,7 +2208,7 @@ impl<'g> FnGen<'g> {
 
     /// The `phi`s of the current block: `phi` number `n` gets `edges[e].1[n]`
     /// from block `edges[e].0`.
-    fn phis(&mut self, types: &[Ty], edges: &[(hod_ir::BlockId, Vec<Avail>)]) -> IrResult<()> {
+    fn phis(&mut self, types: &[Ty], edges: &[(BlockId, Vec<Avail>)]) -> IrResult<()> {
         for (at, &ty) in types.iter().enumerate() {
             let id = self.tid(ty)?;
             let incoming: Vec<_> =
@@ -1805,7 +2221,7 @@ impl<'g> FnGen<'g> {
         Ok(())
     }
 
-    fn here(&self) -> hod_ir::BlockId {
+    fn here(&self) -> BlockId {
         self.b.current_block().expect("a block is open between constructs")
     }
 
@@ -1813,12 +2229,12 @@ impl<'g> FnGen<'g> {
     /// Returns the block the branch is in and the values for the `phi`s.
     fn arm(
         &mut self,
-        block: hod_ir::BlockId,
-        to: hod_ir::BlockId,
+        block: BlockId,
+        to: BlockId,
         types: &[Ty],
         budget: usize,
         depth: u32,
-    ) -> IrResult<(hod_ir::BlockId, Vec<Avail>)> {
+    ) -> IrResult<(BlockId, Vec<Avail>)> {
         self.b.begin_block(block)?;
         let scope = self.scope();
         self.region(budget, depth + 1)?;

@@ -109,36 +109,37 @@ fn the_matrices_are_the_table() {
 
 /// §8.2: one representative of each group, compiled against the shipped
 /// matrix: the first reason of the module pass (empty: it is accepted)
-/// and of the body pass (empty: the program has no body). A flip of the
+/// and of the body pass (empty: the program has no body), on AArch64
+/// and on x86-64. A flip of the
 /// matrix that changes one of these is a deliberate change of this
 /// table.
-const SHIPPED_REASONS: [(&str, &str, &str); 26] = [
-    ("module:pic", "module:pic", ""),
-    ("module:frame-pointer", "", ""),
-    ("structor:priority", "module:global-ctors", ""),
-    ("debug:module-flags", "debug:module-flags", ""),
-    ("debug:locations", "global:function-definition", "cc:ccc"),
-    ("global:function-declaration", "", ""),
-    ("global:variable-definition", "global:variable-definition", ""),
-    ("global:ifunc", "global:ifunc", ""),
-    ("linkage:extern_weak", "linkage:extern_weak", ""),
-    ("visibility:hidden", "global:variable-definition", ""),
-    ("tls:initial-exec", "global:variable-definition", ""),
-    ("comdat:any", "global:variable-definition", ""),
-    ("init:symbol", "global:variable-definition", ""),
-    ("function:slots", "global:function-definition", "cc:ccc"),
-    ("cc:fastcc", "global:function-definition", "cc:fastcc"),
-    ("attr:zeroext", "global:function-definition", "cc:ccc"),
-    ("type:double", "global:function-definition", "cc:ccc"),
-    ("inst:add", "global:function-definition", "cc:ccc"),
-    ("mem:volatile", "global:function-definition", "cc:ccc"),
-    ("atomicrmw:add", "global:function-definition", "cc:ccc"),
-    ("call:indirect", "global:function-definition", "cc:ccc"),
-    ("tail:musttail", "global:function-definition", "cc:ccc"),
-    ("bundle:deopt", "global:function-definition", "cc:ccc"),
-    ("landingpad:catch", "global:function-definition", "cc:ccc"),
-    ("operand:slot", "global:function-definition", "cc:ccc"),
-    ("intrinsic:llvm.memcpy", "global:function-definition", "cc:ccc"),
+const SHIPPED_REASONS: [(&str, &str, &str, &str); 26] = [
+    ("module:pic", "module:pic", "module:pic", ""),
+    ("module:frame-pointer", "", "", ""),
+    ("structor:priority", "", "module:global-ctors", ""),
+    ("debug:module-flags", "debug:module-flags", "debug:module-flags", ""),
+    ("debug:locations", "global:function-definition", "global:function-definition", "cc:ccc"),
+    ("global:function-declaration", "", "", ""),
+    ("global:variable-definition", "", "global:variable-definition", ""),
+    ("global:ifunc", "", "global:ifunc", ""),
+    ("linkage:extern_weak", "", "linkage:extern_weak", ""),
+    ("visibility:hidden", "", "global:variable-definition", ""),
+    ("tls:initial-exec", "tls:initial-exec", "global:variable-definition", ""),
+    ("comdat:any", "", "global:variable-definition", ""),
+    ("init:symbol", "", "global:variable-definition", ""),
+    ("function:slots", "global:function-definition", "global:function-definition", "cc:ccc"),
+    ("cc:fastcc", "global:function-definition", "global:function-definition", "cc:fastcc"),
+    ("attr:zeroext", "global:function-definition", "global:function-definition", "cc:ccc"),
+    ("type:double", "global:function-definition", "global:function-definition", "cc:ccc"),
+    ("inst:add", "global:function-definition", "global:function-definition", "cc:ccc"),
+    ("mem:volatile", "global:function-definition", "global:function-definition", "cc:ccc"),
+    ("atomicrmw:add", "global:function-definition", "global:function-definition", "cc:ccc"),
+    ("call:indirect", "global:function-definition", "global:function-definition", "cc:ccc"),
+    ("tail:musttail", "global:function-definition", "global:function-definition", "cc:ccc"),
+    ("bundle:deopt", "global:function-definition", "global:function-definition", "cc:ccc"),
+    ("landingpad:catch", "global:function-definition", "global:function-definition", "cc:ccc"),
+    ("operand:slot", "global:function-definition", "global:function-definition", "cc:ccc"),
+    ("intrinsic:llvm.memcpy", "global:function-definition", "global:function-definition", "cc:ccc"),
 ];
 
 #[test]
@@ -151,7 +152,8 @@ fn shipped_refuses_with_the_expected_first_reason() {
     }
     for arch in ARCHES {
         let shipped = Classifier::new(Support::shipped(arch)).with_stack_args(&NO_STACK);
-        for (row, module_reason, body_reason) in SHIPPED_REASONS {
+        for (row, a64_reason, x64_reason, body_reason) in SHIPPED_REASONS {
+            let module_reason = if arch == Arch::Aarch64 { a64_reason } else { x64_reason };
             let program = program_for(row, arch);
             let reason = |result: Result<(), Rejection>| {
                 result.err().map_or(String::new(), |rejection| rejection.construct.into_owned())
@@ -427,6 +429,27 @@ const RICH_MODULE: [&str; 13] = [
     "init:symbol",
 ];
 
+/// The rows of `RICH_MODULE` AArch64 supports (WP-032).
+const A64_SUPPORTED: [&str; 8] = [
+    "module:global-ctors",
+    "structor:priority",
+    "global:variable-definition",
+    "linkage:weak",
+    "visibility:hidden",
+    "global:section",
+    "init:data",
+    "init:symbol",
+];
+
+/// What the shipped matrix finds in the rich module on `arch`.
+fn rich_module(arch: Arch) -> Vec<&'static str> {
+    RICH_MODULE
+        .iter()
+        .copied()
+        .filter(|row| arch != Arch::Aarch64 || !A64_SUPPORTED.contains(row))
+        .collect()
+}
+
 const RICH_BODY: [&str; 16] = [
     "cc:ccc",
     "function:parameters",
@@ -469,9 +492,10 @@ fn names(census: &Census) -> Vec<&str> {
 fn findings_come_in_the_specified_order() {
     for arch in ARCHES {
         let program = rich(arch, true);
-        let mut expected: Vec<&str> = RICH_MODULE.to_vec();
+        let mut expected: Vec<&str> = rich_module(arch);
         expected.insert(3, "module-flag:mystery");
-        expected.insert(7, "attr:jumptable");
+        let at = expected.iter().position(|row| *row == "global:function-definition").unwrap();
+        expected.insert(at, "attr:jumptable");
         expected.extend(RICH_BODY);
         let shipped = Support::shipped(arch);
         assert_eq!(names(&census_of(shipped, &program)), expected, "{arch:?}");
@@ -536,7 +560,7 @@ fn the_census_equals_repeated_classification() {
         }
         let census = census_of(Support::shipped(arch), &program);
         assert_eq!(names(&census), found, "{arch:?}");
-        let expected: Vec<&str> = RICH_MODULE.iter().chain(&RICH_BODY).copied().collect();
+        let expected: Vec<&str> = rich_module(arch).into_iter().chain(RICH_BODY).collect();
         assert_eq!(found, expected, "{arch:?}");
         // And what is accepted has an empty census.
         assert!(census_of(&support, &program).is_empty());
@@ -597,7 +621,8 @@ fn the_census_counts_occurrences_and_symbols() {
     };
     assert_eq!(count("module:pic"), (1, 0));
     assert_eq!(count("global:function-definition"), (2, 2));
-    assert_eq!(count("global:variable-definition"), (2, 2));
+    // Supported since WP-032: not counted.
+    assert!(census.get("global:variable-definition").is_none());
     assert_eq!(count("cc:ccc"), (2, 2));
     assert_eq!(count("inst:add"), (3, 2));
     assert_eq!(count("inst:store"), (1, 1));

@@ -783,8 +783,8 @@ fn module_flag_rules_match_llvm_as() {
         // LLVM checks that some flags are integers; hod checks all it reads.
         ("pic-level-string", false, false, vec![(1, "PIC Level", Value::Str("2"))]),
         ("bti-string", false, false, vec![(1, "branch-target-enforcement", Value::Str("2"))]),
-        // A flag hod ignores is not looked at.
-        ("wchar-size-string", false, true, vec![(1, "wchar_size", Value::Str("4"))]),
+        // LLVM's verifier wants `wchar_size` an integer, and so does hod.
+        ("wchar-size-string", false, false, vec![(1, "wchar_size", Value::Str("4"))]),
     ];
     for major in MAJORS {
         let Some(assembler) = Assembler::new(major) else { continue };

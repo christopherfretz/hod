@@ -765,7 +765,7 @@ impl SymbolTable {
                 align: desc.align,
             },
         )?;
-        let TypeKind::Function { params, .. } = types.kind(desc.ty) else {
+        let TypeKind::Function { ret, params, .. } = types.kind(desc.ty) else {
             return err(
                 IrErrorKind::InvalidType,
                 format!("{}: {:?} is not a function type", self.label(sym), desc.ty),
@@ -784,6 +784,17 @@ impl SymbolTable {
                     params.len()
                 ),
             );
+        }
+        let sig = crate::verify::Signature {
+            ret: (ret, desc.ret_attrs),
+            params: params.len(),
+            args: params,
+            // LLVM has it on a call's argument alone.
+            elementtype: false,
+        };
+        let attrs = |index: usize| desc.param_attrs.get(index).copied().unwrap_or(ParamAttrs::NONE);
+        if let Err(what) = crate::verify::signature(types, &sig, attrs) {
+            return err(IrErrorKind::InvalidAttribute, format!("{}: {what}", self.label(sym)));
         }
         self.check_addr_space(sym, desc.addr_space)?;
         if let Some(personality) = desc.personality {

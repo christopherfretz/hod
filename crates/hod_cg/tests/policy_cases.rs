@@ -113,7 +113,7 @@ impl Fx {
             &Tm::default(),
             &self.m,
             &self.bodies,
-            Options { stress },
+            Options { stress, ..Options::default() },
             &mut Scratch::default(),
             &mut chunk,
         )?;
@@ -588,7 +588,7 @@ fn determinism_alone_and_among_others() {
     });
     let tm = Tm::default();
     for (name, stress) in MODES {
-        let options = Options { stress };
+        let options = Options { stress, ..Options::default() };
         let mut scratch = Scratch::default();
         let mut alone = Chunk::new();
         compile_function(&tm, &fx.m, &fx.bodies[0], &options, &mut scratch, &mut alone).unwrap();

@@ -71,9 +71,7 @@ impl Body {
         v.control_flow()?;
         v.side_tables()?;
         v.debug_records()?;
-        if !module.debug.is_empty() {
-            v.debug_ids()?;
-        }
+        v.debug_ids()?;
         v.use_facts()
     }
 }
@@ -1307,28 +1305,49 @@ mod tests {
     use crate::body::{DbgRecordKind, UseFacts};
     use crate::debug::expr::ExprId;
     use crate::{
-        Body, DiId, FunctionBuilder, IrErrorKind, LocId, Module, Opcode, SymId, TargetSpec, TypeId,
-        Value,
+        Body, FunctionBuilder, IrErrorKind, LocId, Module, Opcode, SymId, TargetSpec, TypeId, Value,
     };
 
     /// `i32 f(i32 %0, ptr %1)` whose two blocks hold a declaration of
-    /// `%1`, a value record, a label and an assign record; in a module
-    /// without debug tables, so that only the body's own rules apply.
+    /// `%1`, a value record, a label and an assign record, with the
+    /// debug tables they name: a variable and a label of a subprogram,
+    /// and a location in it.
     fn body() -> (Module, Body) {
+        use crate::{
+            DiCompileUnit, DiFile, DiLabel, DiLocalVariable, DiLocation, DiSubprogram, SpFlags,
+        };
         let mut m = Module::new(TargetSpec::aarch64_linux_gnu());
+        let d = &mut m.debug;
+        let file = d.add(&DiFile { filename: b"a.c", ..Default::default() }.into()).unwrap();
+        let unit = DiCompileUnit { file: Some(file), ..Default::default() };
+        let unit = d.add_distinct(&unit.into()).unwrap();
+        d.add_compile_unit(unit).unwrap();
+        let sp = DiSubprogram {
+            name: b"f",
+            file: Some(file),
+            sp_flags: SpFlags::DEFINITION,
+            unit: Some(unit),
+            ..Default::default()
+        };
+        let sp = d.add_distinct(&sp.into()).unwrap();
+        let var = DiLocalVariable { name: b"x", scope: Some(sp), ..Default::default() };
+        let var = d.add(&var.into()).unwrap();
+        let label = d.add(&DiLabel { scope: Some(sp), name: b"l", ..Default::default() }.into());
+        let label = label.unwrap();
+        let at = d.loc(DiLocation { line: 1, column: 1, scope: sp, inlined_at: LocId::NONE });
+        let at = at.unwrap();
         let fn_ty = m.types.function(TypeId::I32, &[TypeId::I32, TypeId::PTR], false).unwrap();
         let mut b = FunctionBuilder::new(&m, SymId::new(0), fn_ty).unwrap();
         let (entry, next) = (b.create_block().unwrap(), b.create_block().unwrap());
         b.begin_block(entry).unwrap();
         let (number, pointer) = (b.arg(0).unwrap(), b.arg(1).unwrap());
-        let (var, at) = (DiId::new(1), LocId::new(1));
         b.dbg_declare(pointer, var, ExprId::EMPTY, at).unwrap();
         let sum = b.binary(Opcode::Add, TypeId::I32, number, number).unwrap();
         b.dbg_value(sum, var, ExprId::EMPTY, at).unwrap();
         b.br(next).unwrap();
         b.begin_block(next).unwrap();
         let phi = b.phi(TypeId::I32, &[(sum, entry)]).unwrap();
-        b.dbg_label(DiId::new(2), at).unwrap();
+        b.dbg_label(label, at).unwrap();
         b.dbg_assign(phi, var, ExprId::EMPTY, pointer, ExprId::EMPTY, at).unwrap();
         b.ret(Some(phi)).unwrap();
         let body = b.finish().unwrap();

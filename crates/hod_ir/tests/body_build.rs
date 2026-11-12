@@ -63,6 +63,32 @@ struct Fx {
     st: TypeId,
 }
 
+/// Debug tables for bodies that name debug ids (`spec/ir.md` §6.8: ids
+/// are checked whether or not the module has tables): nodes 0 to 2 are a
+/// file, a compile unit and a subprogram, nodes 3 to `count + 2` local
+/// variables of it, and locations 0 to `count - 1` lines in it.
+fn debug_tables(m: &mut Module, count: u32) {
+    use hod_ir::{DiCompileUnit, DiFile, DiLocalVariable, DiLocation, DiSubprogram, SpFlags};
+    let d = &mut m.debug;
+    let file = d.add(&DiFile { filename: b"a.c", ..Default::default() }.into()).unwrap();
+    let unit = DiCompileUnit { file: Some(file), ..Default::default() };
+    let unit = d.add_distinct(&unit.into()).unwrap();
+    d.add_compile_unit(unit).unwrap();
+    let sp = DiSubprogram {
+        name: b"f",
+        file: Some(file),
+        sp_flags: SpFlags::DEFINITION,
+        unit: Some(unit),
+        ..Default::default()
+    };
+    let sp = d.add_distinct(&sp.into()).unwrap();
+    for line in 0..count {
+        let var = DiLocalVariable { name: b"x", scope: Some(sp), ..Default::default() };
+        d.add_distinct(&var.into()).unwrap();
+        d.loc(DiLocation { line, column: 1, scope: sp, inlined_at: LocId::NONE }).unwrap();
+    }
+}
+
 fn fx() -> Fx {
     let mut m = Module::new(TargetSpec::aarch64_linux_gnu());
     let v4 = m.types.vector(I32, 4).unwrap();
@@ -1016,13 +1042,14 @@ fn use_facts_through_reserved_values() {
 #[test]
 fn stack_slots_and_locations() {
     let mut f = fx();
+    debug_tables(&mut f.m, 16);
     let b = &mut f.b;
     let small = b.add_slot(4, 4).unwrap();
     let big = b.add_slot(1 << 33, 64).unwrap();
     let empty = b.add_slot(0, 1).unwrap();
     assert_eq!([small, big, empty], [SlotId::new(0), SlotId::new(1), SlotId::new(2)]);
     b.set_slot_var(big, DiId::new(11), LocId::new(3)).unwrap();
-    b.set_slot_var(small, DiId::new(12), LocId::NONE).unwrap();
+    b.set_slot_var(small, DiId::new(12), LocId::new(2)).unwrap();
     let address = b.slot(small).unwrap();
     assert_eq!(address, Value::slot(small).unwrap());
     let first = b.store(f.a, address, align(4)).unwrap();
@@ -1039,7 +1066,7 @@ fn stack_slots_and_locations() {
     assert_eq!((body.slots()[1].size(), body.slots()[1].align_log2()), (1 << 33, 6));
     assert_eq!((body.slots()[2].size(), body.slots()[2].align()), (0, 1));
     let vars: Vec<_> = body.slot_vars().iter().map(|var| (var.slot, var.var, var.loc)).collect();
-    assert_eq!(vars, [(big, DiId::new(11), LocId::new(3)), (small, DiId::new(12), LocId::NONE)]);
+    assert_eq!(vars, [(big, DiId::new(11), LocId::new(3)), (small, DiId::new(12), LocId::new(2))]);
     assert_eq!(body.value_type(m, address), PTR);
     assert_eq!(address.as_slot(), Some(small));
     assert!(body.has_locs());
@@ -1187,6 +1214,7 @@ fn recycling_storage() {
         let callee_ty = m.types.function(I32, &[I32], false).unwrap();
         let exn = m.types.struct_type(&[PTR, I32], false).unwrap();
         let one = m.consts.int(&m.types, I32, 1).unwrap();
+        debug_tables(&mut m, 41);
         let sym = SymId::new(seed);
         let mut b = match storage {
             Some(storage) => FunctionBuilder::reusing(&m, sym, fn_ty, storage).unwrap(),
@@ -1195,7 +1223,7 @@ fn recycling_storage() {
         let (a, p) = (b.arg(0).unwrap(), b.arg(1).unwrap());
         let [entry, body_block, pad, exit] = [(); 4].map(|()| b.create_block().unwrap());
         let slot = b.add_slot(8, 8).unwrap();
-        b.set_slot_var(slot, DiId::new(seed), LocId::new(seed)).unwrap();
+        b.set_slot_var(slot, DiId::new(seed + 3), LocId::new(seed)).unwrap();
         let address = b.slot(slot).unwrap();
         b.begin_block(entry).unwrap();
         b.set_loc(LocId::new(1));

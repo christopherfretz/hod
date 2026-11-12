@@ -1815,8 +1815,8 @@ ci` the whole corpus, after the `irdiff` step, with the default corpus,
 expectation file, linkers and jobs ("ci" for a missing corpus). The step
 fails if the run would exit non-zero; it prints the totals line when it
 passes and the summary when it fails. The quick tier costs about 20 s at
-`-j 4` on the reference machine, the whole corpus about ten minutes
-(`spec/landed/harness/WP-045.md`).
+`-j 4` on the reference machine, the whole corpus 10 to 20 minutes
+depending on the shared host's load (`spec/landed/harness/WP-045.md`).
 
 ## bench
 

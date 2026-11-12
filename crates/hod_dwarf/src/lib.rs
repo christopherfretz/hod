@@ -52,6 +52,7 @@ mod line;
 mod policy;
 mod strings;
 mod target;
+mod types;
 
 pub use die::{CodeSpan, DieSections, GlobalAddr, UnitInput, UnitPlan, write_debug_info};
 pub use strings::DebugStrings;
@@ -174,6 +175,25 @@ pub enum Error {
         /// The span's index in the unit's `code`.
         index: u32,
     },
+    /// A member, inheritance, friend, static member or member function
+    /// whose `scope` names a node that is not a type (§6.8).
+    MemberOutsideType {
+        /// The member.
+        node: u32,
+    },
+    /// A type that would be infinite: a cycle through the `baseType` of
+    /// typedefs, template aliases, qualifiers or arrays, or through the
+    /// `scope` of types (§6.8).
+    TypeCycle {
+        /// A type on the cycle.
+        node: u32,
+    },
+    /// A base type, enumeration, vector or bit field with no size
+    /// (§6.8).
+    MissingSize {
+        /// The node.
+        node: u32,
+    },
     /// An encoded line program is for another architecture than the
     /// object or the program it is appended to.
     ArchMismatch,
@@ -222,6 +242,13 @@ impl fmt::Display for Error {
             Self::BadSpan { index } => {
                 write!(f, "code span {index}: a negative or overflowing range")
             }
+            Self::MemberOutsideType { node } => {
+                write!(f, "debug node {node}: a member whose scope is not a type")
+            }
+            Self::TypeCycle { node } => {
+                write!(f, "debug node {node}: a type that contains itself")
+            }
+            Self::MissingSize { node } => write!(f, "debug node {node}: a type without a size"),
             Self::ArchMismatch => write!(f, "a line program of another architecture"),
             Self::Object(e) => write!(f, "{e}"),
         }

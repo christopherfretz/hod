@@ -299,7 +299,9 @@ fn the_jobserver_command() {
 }
 
 // "Jobserver", "The pool": `scripts/env.sh` makes cargo, rustc, the test
-// binaries and xtask clients of the pool exactly while its fifo exists.
+// binaries and xtask clients of the pool exactly while its fifo exists;
+// without it, unless told so, it says once on standard error that it fell
+// back.
 #[test]
 fn env_sh_names_the_pool_while_its_fifo_exists() {
     if hod_testutil::tool("bash").is_none() {
@@ -309,9 +311,12 @@ fn env_sh_names_the_pool_while_its_fifo_exists() {
     let pool = PrivatePool::new("env", 1);
     let sourced = |fifo: &Path, off: bool| {
         let mut command = Command::new("bash");
-        command.args(["-c", "source \"$0\"; echo \"${MAKEFLAGS-none} ${CARGO_BUILD_JOBS-none}\""]);
+        command.args([
+            "-c",
+            "source \"$0\"; source \"$0\"; echo \"${MAKEFLAGS-none} ${CARGO_BUILD_JOBS-none}\"",
+        ]);
         command.arg(&env_sh).env("HOD_JOBSERVER_FIFO", fifo);
-        for name in ["MAKEFLAGS", "CARGO_BUILD_JOBS", "HOD_NO_JOBSERVER"] {
+        for name in ["MAKEFLAGS", "CARGO_BUILD_JOBS", "HOD_NO_JOBSERVER", "_HOD_NO_POOL_SAID"] {
             command.env_remove(name);
         }
         if off {
@@ -319,9 +324,11 @@ fn env_sh_names_the_pool_while_its_fifo_exists() {
         }
         let outcome = run_with(&mut command, b"", Duration::from_mins(1));
         assert!(outcome.success(), "{}", text(&outcome));
-        outcome.stdout_text()
+        let said = outcome.stderr_text().matches("env.sh: no jobserver pool at ").count();
+        (outcome.stdout_text(), said)
     };
-    assert_eq!(sourced(pool.path(), false), format!("{} none\n", pool.makeflags()));
-    assert_eq!(sourced(pool.path(), true), "none 8\n");
-    assert_eq!(sourced(&pool.path().with_file_name("missing.fifo"), false), "none 8\n");
+    assert_eq!(sourced(pool.path(), false), (format!("{} none\n", pool.makeflags()), 0));
+    assert_eq!(sourced(pool.path(), true), ("none 8\n".to_owned(), 0));
+    let missing = pool.path().with_file_name("missing.fifo");
+    assert_eq!(sourced(&missing, false), ("none 8\n".to_owned(), 1), "said once, sourced twice");
 }

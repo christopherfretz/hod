@@ -74,6 +74,9 @@ traps! {
     Host = "host",
     /// `indirectbr` to an address that is not one of its destinations.
     IndirectBrTarget = "indirectbr-target",
+    /// A `blockaddress` compared with anything but `null`, or converted
+    /// to an integer: LLVM leaves both undefined (§5.5).
+    BlockAddressInspected = "blockaddress-inspected",
     /// An exception for which the search phase finds no handler: the
     /// Itanium runtime calls `std::terminate` without unwinding (§5.9).
     UncaughtException = "uncaught-exception",

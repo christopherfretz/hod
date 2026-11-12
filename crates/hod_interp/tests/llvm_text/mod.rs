@@ -293,6 +293,14 @@ impl Printer<'_> {
         // inlined and specialized.
         let (linkage, mut attrs) =
             if entry { ("", " noinline".to_owned()) } else { ("internal ", String::new()) };
+        // LLVM's inliner appends the caller's clauses to an inlined
+        // landing pad, which changes the selector the pad's code sees: it
+        // relies on that code looking at the selector only by equality
+        // with `llvm.eh.typeid.for` of the pad's own types, and the
+        // generator's code also tests its sign (`spec/interp.md` §10.2).
+        if body.has_landing_pads() && !entry {
+            attrs.push_str(" noinline");
+        }
         if let SymbolKind::Function { personality: Some(personality), .. } =
             self.m.symbol(body.symbol()).kind()
         {

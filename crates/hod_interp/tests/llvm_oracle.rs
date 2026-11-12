@@ -247,7 +247,24 @@ fn unwinding_cases_agree_with_llvm() {
         check_programs(tools, target.triple(), &labels, &cases)
     });
     for (major, count) in counts {
-        println!("LLVM {major}: {count} unwinding and computed-goto cases agree with llc at -O0 and -O2");
+        println!(
+            "LLVM {major}: {count} unwinding and computed-goto cases agree with llc at -O0 and -O2"
+        );
+    }
+}
+
+/// §9.3, §10.2: generated programs with `exceptions` and
+/// `block_addresses` on agree with LLVM.
+#[test]
+fn unwinding_programs_agree_with_llvm() {
+    let counts = per_major(|tools, target| {
+        let options = Options { target: target.clone(), ..Options::everything() };
+        check_with(tools, &options, 0..48, 48)
+            + check_with(tools, &options.clone().sized(2, 12), 100..148, 48)
+            + check_with(tools, &options.sized(8, 300), 1000..1006, 6)
+    });
+    for (major, count) in counts {
+        println!("LLVM {major}: {count} programs that unwind agree with llc at -O0 and -O2");
     }
 }
 
@@ -314,4 +331,23 @@ fn many_programs_agree_with_llvm() {
     checked += check(&Options::default().sized(6, 400), 30_000..30_000 + seeds / 10, 20);
     checked += check(&Options::default().sized(3, 3000), 40_000..40_000 + seeds / 50, 4);
     println!("{checked} programs agree with llc at -O0 and -O2");
+}
+
+/// §10.2: many programs that unwind, at several sizes, with each LLVM
+/// major. Minutes. `HOD_ORACLE_SEEDS` as for the test above.
+#[test]
+#[ignore = "minutes; run with --ignored"]
+fn many_unwinding_programs_agree_with_llvm() {
+    let seeds: u64 =
+        std::env::var("HOD_ORACLE_SEEDS").ok().and_then(|text| text.parse().ok()).unwrap_or(2000);
+    let counts = per_major(|tools, target| {
+        let options = Options { target: target.clone(), ..Options::everything() };
+        check_with(tools, &options, 10_000..10_000 + seeds, 100)
+            + check_with(tools, &options.clone().sized(2, 12), 20_000..20_000 + seeds, 250)
+            + check_with(tools, &options.clone().sized(6, 400), 30_000..30_000 + seeds / 10, 20)
+            + check_with(tools, &options.sized(3, 3000), 40_000..40_000 + seeds / 50, 4)
+    });
+    for (major, count) in counts {
+        println!("LLVM {major}: {count} programs that unwind agree with llc at -O0 and -O2");
+    }
 }

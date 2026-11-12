@@ -293,14 +293,15 @@ fn computed_goto(target: &TargetSpec, a: u64) -> Generated {
         ..hod_ir::VariableDesc::new(table_ty)
     };
     let table = m.add_variable(b"table", &desc).unwrap();
-    let two = addrs[1];
     cx.define(entry, &|m, b, _, _| {
         let targets = [b.create_block()?, b.create_block()?, b.create_block()?];
         let three = int(m, I64, 3);
         let k = b.binary(Opcode::URem, I64, b.arg(0)?, three)?;
         let at = b.ptr_add(PTR, Value::sym(table)?, 0, &[(k, 8)])?;
         let addr = b.load(PTR, at, hod_ir::MemFlags::aligned(8)?)?;
-        let is_two = b.icmp(IntPredicate::Eq, I1, addr, Value::constant(two)?)?;
+        // `null` is the one thing a block address may be compared with.
+        let null = Value::constant(m.consts.null(&m.types, PTR)?)?;
+        let is_two = b.icmp(IntPredicate::Ne, I1, addr, null)?;
         let is_two = b.cast(Opcode::ZExt, I64, is_two)?;
         b.indirect_br(addr, &targets)?;
         for (n, &block) in targets.iter().enumerate() {

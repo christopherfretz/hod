@@ -1194,6 +1194,11 @@ impl<'a> Machine<'_, 'a> {
                     Val::i1(ops::icmp(pred, bits, a, b))
                 }
                 (Val::Ptr(a), Val::Ptr(b)) => {
+                    // Only the comparison with `null` is defined (§5.5).
+                    let label = |addr: u64| self.block_at.contains_key(&addr);
+                    if (label(a) && b != 0) || (label(b) && a != 0) {
+                        return Err(Trap::BlockAddressInspected.into());
+                    }
                     Val::i1(ops::icmp(pred, 64, u128::from(a), u128::from(b)))
                 }
                 _ => {
@@ -1417,6 +1422,11 @@ impl<'a> Machine<'_, 'a> {
             }
             (Opcode::SIToFP, Val::Int { bits, value }, Class::Double) => {
                 Val::f64(sext(bits, value) as f64)
+            }
+            (Opcode::PtrToInt | Opcode::PtrToAddr, Val::Ptr(addr), Class::Int(_))
+                if self.block_at.contains_key(&addr) =>
+            {
+                return Err(Trap::BlockAddressInspected.into());
             }
             (Opcode::PtrToInt | Opcode::PtrToAddr, Val::Ptr(addr), Class::Int(bits)) => {
                 Val::int(bits, u128::from(addr))

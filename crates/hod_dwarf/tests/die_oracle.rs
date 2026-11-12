@@ -72,6 +72,8 @@ struct Tally {
     same_order: usize,
     llc_bytes: u64,
     hod_bytes: u64,
+    /// Per section of `COMPARED`: (llc, hod).
+    sections: [(u64, u64); 5],
 }
 
 const COMPARED: [&str; 5] =
@@ -145,6 +147,11 @@ fn oracle(major: u32) {
                     "{label}: targets of the relocations of {section}"
                 );
             }
+            for (k, n) in COMPARED.iter().enumerate() {
+                let of = |e: &Elf| e.section(n).map_or(0, |i| e.sections[i].size);
+                tally.sections[k].0 += of(&elf);
+                tally.sections[k].1 += of(&ours);
+            }
             tally.llc_bytes += size(&elf);
             tally.hod_bytes += size(&ours);
         }
@@ -159,6 +166,9 @@ fn oracle(major: u32) {
         tally.llc_bytes,
         tally.hod_bytes as f64 / tally.llc_bytes as f64
     );
+    for (n, (l, h)) in COMPARED.iter().zip(tally.sections) {
+        eprintln!("llc {major}: {n}: hod {h}, llc {l}");
+    }
 }
 
 /// §8.6 with LLVM 19.

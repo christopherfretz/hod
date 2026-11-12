@@ -3,16 +3,18 @@
 `hod_dwarf` writes an object's DWARF 5 debug information at `-O0`: the line
 table from what the code generator records per function (`spec/codegen.md`
 §9.5), and the debugging information entries (DIEs) from `hod_ir`'s debug
-tables (`spec/ir.md` §6) plus the same record. Like `hod_eh` it depends on
-`hod_obj` only: it writes sections and relocations into an `Object` from
-plain input rows of its own types, and knows nothing of `hod_cg` or of
-`hod_ir`. The bridge that fills those rows from a module and its
-`FuncRecord`s belongs to the caller (`hod_cg::emit_module`, §9).
+tables (`spec/ir.md` §6) plus the same record. It depends on `hod_obj`,
+and on `hod_ir` for the DIEs only: the line table is written from plain
+rows of its own types, the DIEs straight from `hod_ir`'s `DebugInfo`
+(decided by WP-053, §2), with the addresses the code generator placed
+passed in as plain rows. It knows nothing of `hod_cg`. The bridge that
+fills the rows from a module and its `FuncRecord`s belongs to the caller
+(`hod_cg::emit_module`, §9).
 
 This file is the design of the whole crate (§1 to §8) and the contract of
-what is implemented: the line-table writer and its policy (§4, §5).
-Everything else is marked *planned* and is split into work packages in
-§10.
+what is implemented: the line-table writer and its policy (§4, §5), and
+the core of the DIE writer (§6.1 to §6.3, §6.5 to §6.7). Everything else
+is marked *planned* and is split into work packages in §10.
 
 External formats are cited as **DWARF 5** (section numbers of the DWARF
 Debugging Information Format, Version 5); **AArch64 ELF** and the **x86-64
@@ -33,7 +35,7 @@ What `llc -O0 -g` writes for a DWARF 5 Linux object, and therefore hod:
 | section | contents | flags | relocations (AArch64 / x86-64) |
 |---|---|---|---|
 | `.debug_abbrev` | the abbreviation table (§6.1) | none | none |
-| `.debug_info` | one `DW_UT_compile` unit per compile unit | none | `ABS32` / `R_X86_64_32` against the section symbols of `.debug_abbrev` (`abbr_offset`), `.debug_str_offsets` (`DW_AT_str_offsets_base`, addend 8), `.debug_line` (`DW_AT_stmt_list`), `.debug_addr` (`DW_AT_addr_base`, addend 8), `.debug_rnglists` (`DW_AT_rnglists_base`, addend 12); `ABS64` / `R_X86_64_64` for the unit's `DW_AT_low_pc` (`DW_FORM_addr`) |
+| `.debug_info` | one `DW_UT_compile` unit per compile unit | none | `ABS32` / `R_X86_64_32` against the section symbols of `.debug_abbrev` (`abbr_offset`), `.debug_str_offsets` (`DW_AT_str_offsets_base`, addend 8), `.debug_line` (`DW_AT_stmt_list`), `.debug_addr` (`DW_AT_addr_base`, addend 8), `.debug_rnglists` (`DW_AT_rnglists_base`, addend 12); nothing else: the unit's `DW_AT_low_pc` is a `DW_FORM_addrx` when its code is in one section, and `DW_FORM_addr` 0 **without a relocation** when it has ranges (checked with `llc` 19 and 22 by WP-053) |
 | `.debug_str` | DIE strings, NUL-terminated, pooled | `SHF_MERGE\|SHF_STRINGS`, entsize 1 | none |
 | `.debug_str_offsets` | header (length, version 5, padding) and one 4-byte offset per string the unit names by `DW_FORM_strx*` | none | one `ABS32` / `R_X86_64_32` per entry against `.debug_str` |
 | `.debug_addr` | header (length, version 5, address size 8, segment selector size 0) and one 8-byte address per `DW_FORM_addrx`/`DW_OP_addrx`/`DW_RLE_*x` use | none | one `ABS64` / `R_X86_64_64` per entry, against the **section symbol** of the code section plus the function's offset (a variable: against its symbol, or its section's symbol for a local one) |
@@ -75,6 +77,11 @@ module; several appear only in linked IR (`llvm-link`). The line writer of
 §4 writes one line-table unit per call; several units are several calls
 appending to the same two sections (planned: the writer today creates the
 sections, §4.6).
+
+A unit with neither globals nor code gets no debug sections at all from
+`llc` (checked with `llc` 19 by WP-053). `write_debug_info` still writes
+such a unit when asked to (it verifies clean); skipping it as `llc` does
+is the bridge's choice (§9).
 
 ### 1.3 Functions in COMDAT groups and in their own sections
 
@@ -140,6 +147,36 @@ first, while `hod_ir` nodes name their parent (`scope`). The DIE writer
 inverts the scope links once per unit (one pass over the nodes, a
 counting sort by parent, §6.2).
 
+**Where the input comes from (decided, WP-053).** The DIE writer reads
+`hod_ir::DebugInfo` directly: `UnitPlan::new(&debug, unit)` decodes the
+nodes it needs (`DebugInfo::node`) and borrows their strings, and no
+intermediate row type mirrors the debug tables. Reasons: the tables are
+already the frontend's data, interned and verified once (`spec/ir.md`
+§6); a copy into `hod_dwarf`'s own types would be a second schema to keep
+in step with every field later packages need (the type graph alone is
+some forty fields), and a copy per node costs what the writer costs. What
+only code generation knows (where each global's symbol is, where the
+unit's code is) comes in as plain rows (`GlobalAddr`, `CodeSpan`), so the
+writer depends on nothing in `hod_cg`. A frontend that serializes its own
+format directly (kiln, without LLVM IR) fills the same `DebugInfo` with
+its builder API (`reserve`, `define`, `DiNode::set`), as the tests do.
+
+What `hod_ir` lacks for the DIE writer, found by WP-053 (none blocks the
+core; `hod_ir` was not changed):
+
+- a decoded node's strings are `&[u8]`, not the interned `StrId` they
+  came from (`crates/hod_ir/src/debug/node.rs:64`, `DiFieldValue::Str`;
+  the records of `node.rs:787` on), so the string pool hashes bytes where
+  an id-keyed pool would index an array (§6.3);
+- no per-unit index of nodes: the plan walks `cu.globals` and follows
+  links, which finds every global DIE of the core; the later packages'
+  types reached only through `retainedTypes`, `enums` and `imports` are
+  in the same unit record (`DiCompileUnit`, `node.rs:790`), so no index
+  is needed yet;
+- no TLS flag on a global: whether a variable's symbol is thread-local is
+  the symbol's (`hod_obj::SymbolKind::Tls`), and `GlobalAddr` will carry
+  it for `DW_OP_form_tls_address` (WP-059).
+
 ## 3. Interface (implemented)
 
 ```rust
@@ -163,7 +200,32 @@ pub fn function_rows(f: &FunctionLines<'_>, out: &mut Vec<Row>) -> Result<(), Er
 
 // the file table (§4.4)
 pub struct FileTable<'a> { .. }   // new(comp_dir, primary), add(directory, filename, md5)
+
+// DIEs (§6, §7.1)
+pub struct UnitPlan<'a> { .. }    // new(&'a DebugInfo, unit: DiId) -> Result<Self, Error>;
+                                  // unit(), files() -> &FileTable, file_index(DiId),
+                                  // die_count(), die_of(DiId)
+pub struct GlobalAddr { pub expr: DiId, pub symbol: SymbolId, pub addend: i64 }
+pub struct CodeSpan { pub symbol: SymbolId, pub addend: i64, pub size: u64 }
+pub struct UnitInput<'p, 'a> { pub plan: &'p UnitPlan<'a>, pub line_offset: u32,
+                               pub globals: &'p [GlobalAddr], pub code: &'p [CodeSpan] }
+pub struct DieSections { pub abbrev, pub info, pub str_offsets, pub str: SectionId,
+                         pub addr: Option<SectionId>, pub rnglists: Option<SectionId> }
+pub fn write_debug_info(obj: &mut Object, line: SectionId, units: &[UnitInput<'_, '_>])
+    -> Result<DieSections, Error>;
+pub struct DebugStrings<'a> { .. } // new(), begin_unit(), index(&'a [u8]) -> Result<u32, Error>,
+                                   // unit_offsets(), data()
+pub mod abbrev;                    // the fixed table: FAMILIES, BASES, CODE_END, tag, at, form
 ```
+
+`UnitPlan::new` builds a unit's DIE tree from the tables alone (§6.2);
+it is read-only afterwards and can be shared by every worker. Its
+`files()` is the unit's `FileTable` (the unit's file, then every `DiFile`
+in id order), whose `header()` is what `write_debug_line` takes, so the
+`DW_AT_decl_file` numbers and the line table agree. `write_debug_info`
+writes every unit's DIEs and its contributions to the string, address
+and range sections, with all relocations, and returns the sections; its
+output depends on `globals` and `code` as sets (§7.1).
 
 `write_debug_line` writes one line-table unit into new `.debug_line` and
 `.debug_line_str` sections with their relocations, and returns them. The
@@ -433,56 +495,229 @@ a subprogram but with locations (possible in LLVM) gets its rows in the
 unit of the locations' subprogram. A function without debug information
 has no sequence.
 
-## 6. DIEs (planned)
+## 6. DIEs (core implemented, WP-053)
 
-### 6.1 Abbreviations: a fixed table
+### 6.1 Abbreviations: a fixed table (implemented)
 
-hod writes `.debug_abbrev` from a table built at compile time of hod: one
-abbreviation per (tag, attribute set, form choice) that the DIE writer
-can produce, numbered once. Reasons: no hashing or interning per DIE, the
-abbreviation codes are known before any DIE is written (so per-function
-DIE runs can be written in parallel and concatenated), and the table is
-the same for every object (a few hundred bytes to a few kilobytes,
-against `llc`'s computed table of 0.2 to 2 KB). Forms are fixed per
-attribute: strings `DW_FORM_strx` (a ULEB128 index: variable-length, yet
-one form per abbreviation); addresses
-`DW_FORM_addrx`; references `DW_FORM_ref4`; line and file numbers
-`DW_FORM_udata`; sizes `DW_FORM_udata`; flags `DW_FORM_flag_present`
-(an absent flag is a different abbreviation). `llc` chooses the smallest
-fixed form (`data1`, `strx1`) per value, which makes its abbreviation set
-depend on the values; hod's ULEB forms are as small for small values and
-need no choice. The cost is a few bytes per DIE against `llc`'s table,
-measured by the DIE package.
+hod writes `.debug_abbrev` from a table built at compile time of hod
+(`src/abbrev.rs`). Reasons: no hashing or interning per DIE; the codes
+are known before any DIE is written, so per-function DIE runs can be
+written in parallel and concatenated; and the table is the same for every
+object.
 
-### 6.2 Writing straight from the tables
+**Families.** Every DIE shape is a *family*: a tag, whether it has
+children (no, yes, or optional), and an ordered list of attribute slots.
+A slot is either always present or controlled by one option bit; several
+slots may share a bit (`decl_file` with `decl_line`). A family owns a
+fixed block of codes, `base .. base + block`. A DIE's code is its family's
+base plus the mask of its option bits, plus, when children are optional,
+a children bit above them. So the code is a few ORs, and every
+combination of options has its abbreviation without a table lookup.
+`.debug_abbrev` holds only the codes the object used, in code order, and
+ends with the 0 entry.
 
-No DIE tree is built. Per unit: one pass over the nodes counting children
-per parent scope (namespaces, composite types, subprograms, blocks) and a
-prefix sum giving each parent's run of children; then a depth-first walk
-that writes each DIE from its node's record directly into the output
-buffer. References (`DW_FORM_ref4`) to a DIE not written yet are patched
-when it is: a table `DiId → offset` (4 bytes per node) and a list of
-patches. Per-function DIEs (the subprogram's children: parameters,
-variables, blocks, labels) come from the function's `vars` and `lines`
-and can be written by the worker that compiled the function into a
-buffer of its own, with references to unit-level DIEs (types) as patches
-resolved at the merge.
+**Forms** are fixed per slot: strings `DW_FORM_strx` (a ULEB128 index,
+variable length yet one form); addresses `DW_FORM_addrx`; references
+`DW_FORM_ref4`; file, line, sizes and alignment `DW_FORM_udata`;
+encodings and accessibility `DW_FORM_data1`; `DW_AT_language` `data2`
+(as `llc`); flags `DW_FORM_flag_present` (an absent flag is a different
+code); locations `DW_FORM_exprloc`; `DW_AT_high_pc` `data4`; the bases
+`DW_FORM_sec_offset`. `llc` picks the smallest fixed form per value
+(`strx1`, `data1`), which makes its abbreviation set depend on the
+values; hod's ULEB forms are as small for small values and need no
+choice.
 
-### 6.3 Strings
+**Extending it.** The table is append-only: a family's position and
+block never change, so codes never renumber. A package that needs a
+shape no family has appends a family at the end. The shapes of M3's later
+packages are listed and reserved now, each with its owner; a reserved
+family may have its slots refined by its owner within its block (a slot
+added under a new bit, if the block has room). The unit tests
+(`abbrev::tests`) pin the bases, check that every code in `1..CODE_END`
+gives a valid abbreviation (no attribute twice, except the CU's two
+exclusive `low_pc` forms), and pin the bytes of one entry.
 
-`.debug_str` is pooled per object with one hash table keyed by bytes;
-`.debug_str_offsets` gets one entry per distinct string a unit names, in
-order of first use by the walk (deterministic, because the walk order is).
-Names come from `hod_ir` already interned, so a pool keyed by `hod_ir`'s
-string id avoids hashing the bytes again (planned optimization).
+| # | family | block | base | owner |
+|---|---|---|---|---|
+| 0 | `formal_parameter` | 16 | 1 | WP-057 |
+| 1 | `variable` (local) | 8 | 17 | WP-057 |
+| 2 | `member` | 32 | 25 | WP-058 |
+| 3 | `subprogram` (declaration) | 32 | 57 | WP-058 |
+| 4 | `subprogram` (definition) | 32 | 89 | WP-057 |
+| 5 | `pointer_type` | 8 | 121 | WP-053 |
+| 6 | `base_type` | 2 | 129 | WP-053 |
+| 7–12 | `const`, `reference`, `rvalue_reference`, `volatile`, `restrict`, `atomic` types | 2 each | 131–141 | WP-058 |
+| 13 | `typedef` | 8 | 143 | WP-058 |
+| 14–18 | template type parameter, value parameter, value parameter (address), `GNU_template_parameter_pack`, `GNU_template_template_param` | 8, 16, 4, 4, 2 | 151–183 | WP-059 |
+| 19 | `inheritance` | 4 | 185 | WP-058 |
+| 20–25 | `structure`, `class`, `union` types, then their declarations | 32 each, 4 each | 189–293 | WP-058 |
+| 26–34 | `enumeration_type`, `enumerator`, `array_type`, `subrange_type`, `subrange_type` (variable count), `subroutine_type`, `unspecified_parameters`, `ptr_to_member_type`, `unspecified_type` | 32, 4, 2, 8, 2, 4, 1, 2, 2 | 297–352 | WP-058 |
+| 35 | `subprogram` (out-of-line definition) | 16 | 354 | WP-059 |
+| 36–37 | `subprogram` (virtual declaration; special member declaration) | 32, 256 | 370, 402 | WP-058 |
+| 38–39 | `lexical_block`, `label` | 4, 4 | 658, 662 | WP-057 |
+| 40 | `member` (static, as `DW_TAG_variable` declaration) | 16 | 666 | WP-058 |
+| 41–44 | `variable` (specification), `variable` (constant), `imported_module`, `imported_declaration` | 4 each, 2 | 682–692 | WP-059 |
+| 45 | `friend` | 2 | 696 | WP-058 |
+| 46 | `namespace`: `name` (bit 0), `export_symbols` (bit 1), children optional | 8 | 698 | WP-053 |
+| 47 | `variable` (global): `name`, `type`, `external` (0), `decl_file`/`decl_line` (1), `alignment` (2), `location` (3), `linkage_name` (4) | 32 | 706 | WP-053 |
+| 48 | `compile_unit`: `producer`, `language`, `name`, `str_offsets_base`, `stmt_list`, `comp_dir`, `low_pc` addrx + `high_pc` (0), `low_pc` addr + `ranges` + `rnglists_base` (1), `addr_base` (2), children optional | 16 | 738 | WP-053 |
 
-### 6.4 Lexical blocks
+`CODE_END` is 754. Since the core families come last, their codes take
+two ULEB bytes where `llc`'s take one (the cost is in §7.2; open question
+7).
+
+### 6.2 Writing straight from the tables (implemented)
+
+No DIE tree of nodes is built. `UnitPlan::new` makes one pass over the
+unit's `globals`: for each global, its namespace chain from the outermost
+(a cycle is `BadReference`), then the variable, then its type chain, each
+node getting a DIE the first time it is reached. A DIE is a node id, a
+parent index and a kind (twelve bytes); the node-to-DIE map is four bytes
+per node of the table. The parents' runs of children come from a stable
+counting sort of the DIEs by parent. This discovery order is `llc`'s, so
+the trees come out in `llc`'s order (§8.6).
+
+The writer walks the tree depth first with an explicit stack and writes
+each DIE from its node's record into the output buffer, with a 0
+terminator after each run of children (a DIE with no children has the
+no-children code, so it gets no terminator). A `DW_FORM_ref4` to a DIE
+already written is written at once; a forward one is recorded as a patch
+`(position, DIE)` and filled in when the unit ends. Per-function DIEs
+(the subprogram's children) will be written the same way by the worker
+that compiled the function, with references to unit-level DIEs resolved
+as patches at the merge (§7.1).
+
+### 6.3 Strings (implemented)
+
+`DebugStrings` keeps `.debug_str` pooled per object, so each distinct
+string is stored once, and keeps `.debug_str_offsets` per unit, so each
+distinct string the unit names has one entry, in order of first use by
+the walk. The walk order is deterministic, so the indices are too. One
+hash table keyed by the bytes serves both. A string's entry remembers the
+last unit that named it and its index there, so a lookup is one probe,
+whether the string is new to the object, new to the unit, or neither.
+
+The hash takes eight bytes per multiply, Fx style, and ends with a mix.
+Without that mix, the low bits of the product (the bucket) depend only on
+the low bits of the last word. 65,536 names `v0`…`v65535` then shared 43
+buckets; with it they fill 41,542 of 65,536, which is what a random
+function gives (`strings::tests::hash_spreads`). A string with a NUL is
+`NulInName`.
+
+Planned optimization: `hod_ir`'s names are already interned, so a pool
+keyed by `hod_ir`'s string id would index an array instead of hashing.
+`hod_ir` does not expose that id from a decoded node yet (§2).
+
+### 6.4 Lexical blocks (planned, WP-057)
 
 A block's ranges are derived from the function's transitions: each
 transition's location names a scope; the intervals between transitions
 are attributed to every block on that scope's chain. A block with one
 interval gets `DW_AT_low_pc`/`DW_AT_high_pc`, one with several a range
 list in `.debug_rnglists`, as `llc` does.
+
+### 6.5 What the core writes (implemented)
+
+- **The unit header**: `DW_UT_compile`, version 5, address size 8, 32-bit
+  `abbrev_offset` against `.debug_abbrev`.
+- **The compile unit DIE**, as `llc -O0` writes it:
+  - `producer`, `language`, `name` and `comp_dir` (from the unit's
+    `DIFile`), `str_offsets_base` and `stmt_list`;
+  - for code in one section, `low_pc` (`addrx`) and `high_pc` (the
+    length, `data4`);
+  - for code in several sections, `low_pc` 0 (`DW_FORM_addr`, no
+    relocation) and `ranges` (`rnglistx` 0) with `rnglists_base`;
+  - `addr_base` when the unit has an address.
+  The unit's range list has one `DW_RLE_startx_length` per merged span,
+  where `llc` uses `base_addressx` and `offset_pair` for `.text` (§6.7).
+- **Global variables**:
+  - `name`, `type`, `external` (unless `isLocal`), `decl_file` and
+    `decl_line` (when `line` is not 0), `alignment` in bytes (when
+    `align` is set);
+  - `location` as `DW_OP_addrx` of the variable's `.debug_addr` entry
+    (when the caller gave its address; without one the variable was
+    optimized out and has no location);
+  - `linkage_name` (when set).
+- **Namespaces**: `name` (absent for an anonymous one) and
+  `export_symbols` (inline), with their children.
+- **Base types**: `name`, `encoding`, `byte_size`.
+- **Pointer types**: `type` (absent for `void *`), `name` (when set).
+- **`.debug_addr`**, per unit: the globals' entries in DIE order, then
+  one per merged code span. Each entry is relocated `ABS64` /
+  `R_X86_64_64` against the symbol the caller gave (the variable's own,
+  or its section's for an internal one, as `llc` does; a function's
+  section symbol plus offset, §1.3). Spans of one symbol that touch or
+  overlap are merged before numbering.
+- **`.debug_rnglists`**: written only when some unit's code is in several
+  sections.
+
+All debug sections stay outside every group (§1.3).
+
+Anything else the plan meets is `Unsupported { node, what }`, not a
+wrong DIE:
+
+- a unit whose `emissionKind` is not `FullDebug`;
+- a variable with several expressions, a non-empty expression, no name,
+  no type, a line without a file, or template parameters;
+- a declaration or a static member's definition;
+- a type other than a base or pointer type;
+- a base type without a name, with an encoding beyond one byte, or with
+  `dataSize` or endianity;
+- a pointer with an address space;
+- a scope other than a namespace or the unit, or a namespace inside
+  anything else.
+
+These are the later packages' shapes (§10).
+
+### 6.6 Errors (implemented)
+
+`UnitPlan::new` fails with:
+- `NotACompileUnit` if the node is not a unit;
+- `BadReference { node, field }` if a link names no node, names a node of
+  the wrong kind, or forms a namespace cycle;
+- `Unsupported` (§6.5).
+
+`write_debug_info` fails with:
+- `NoUnit` for no units;
+- `GlobalNotInUnit` if an address names an expression that is not one of
+  the unit's globals;
+- `DuplicateGlobal` if an expression is given twice;
+- `BadSymbol` if a symbol is not in the object;
+- `BadSpan` for a negative start, or an end past `i64::MAX`;
+- `NulInName`, `TooLarge` (a section of 4 GiB or more), or `Object`.
+
+Every check runs before the object is touched: on an error the object is
+unchanged (tested for each error). The writer panics only on its own
+broken invariants (`unreachable!` where the plan made both a DIE's kind
+and its node).
+
+### 6.7 Permitted differences from `llc` (implemented)
+
+The `llc` comparison (§8.6) decodes both objects with `llvm-dwarfdump
+--debug-info` and compares the DIE trees after this normalization, which
+is the whole list of permitted differences:
+
+- **abbreviation codes and forms**: `strx`/`udata` against
+  `strx1`/`data1`, and two-byte codes for the core families. The dump
+  prints values, not forms, so these vanish;
+- **the offset of a reference**: a reference is compared by the name its
+  target prints;
+- **string and address indices**: `DW_OP_addrx` is compared by the
+  relocation target of its entry (section and offset of the symbol plus
+  addend);
+- **the radix of a constant** (`0x8` against `8`);
+- **sibling and attribute order**: compared as sorted. hod in fact
+  matches `llc`'s order on every compared object;
+- **the encoding of the unit's range list** (startx_length for every
+  span). No compared module has code, so this is not seen there; it is
+  checked by `--verify` in `tests/dies.rs`;
+- **`DW_AT_decl_file` numbers**: hod's file table holds every `DiFile` of
+  the module, `llc`'s only the files it uses. The dump prints the file's
+  name, which is equal;
+- **not written**: Apple and sysroot attributes and name tables (§1.1).
+
+The relocations of `.debug_info`, `.debug_str_offsets` (by the string
+each one points at) and `.debug_addr` must name the same targets.
 
 ## 7. Speed and memory
 
@@ -503,6 +738,39 @@ Part 1 (this WP) encodes all sequences in one call; the per-chunk API
 (`encode_sequence` into a caller's buffer, and `write_debug_line` taking
 encoded runs) is row 1 of §10.
 
+**The DIEs (implemented, WP-053): one function per phase.**
+
+1. `UnitPlan::new(&debug, unit)`, once per unit, before or while code is
+   generated. It needs only `hod_ir`. The plan is read-only from then on,
+   so every worker can share it.
+2. The workers record, per chunk, where things landed: a `GlobalAddr`
+   per global they emitted (the expression its symbol names, the symbol,
+   the addend) and a `CodeSpan` per function. These are plain rows, in
+   any order.
+3. `write_debug_info(obj, line, &[UnitInput])` at the merge. It takes
+   each unit's rows as one slice: the chunks' rows concatenated in any
+   order.
+
+The writer makes the output independent of how the rows arrive. A
+global's address-table entry is numbered by its DIE's place in the walk,
+not by its place in the input. Spans are sorted by (symbol, start, size)
+and merged before they are numbered. So the bytes depend on the rows as
+sets. `tests/dies.rs` checks this by shuffling the globals and the spans,
+cutting every span in two at a random point, repeating pieces, dealing
+the rows into one to five chunks joined in random order, and building
+plans and writing on other threads. Every variant gives the same bytes
+on both targets.
+
+Per-function DIE runs (WP-057) will be encoded by the workers. A run
+needs its string and address indices fixed before the merge. The two
+options, to be chosen by WP-057:
+- the plan assigns the indices of unit-level strings up front, and a
+  run's own strings get per-run indices rebased at the merge (`strx` is a
+  ULEB, so a rebase changes lengths: use `strx4` in runs, or patch before
+  the lengths are fixed);
+- a run carries its strings as `(position, string)` patches, resolved by
+  the merge in run order.
+
 ### 7.2 Budget
 
 For scale: `llc -O0` takes about twice as long with `-g` on a large
@@ -520,6 +788,26 @@ It is spent in the data-dependent branches of the encoding. Memory: the line
 writer allocates the two output buffers (reserved from the row count)
 and one pending-relocation table; nothing per row or per sequence. The
 policy appends into the caller's `Vec<Row>`, reused across functions.
+
+The DIEs (WP-053, §8.6) were measured on the same shared host, best of
+five runs, on 100,000 generated globals: 100,037 DIEs and 5.8 MB of DIE
+sections (2.3 MB of them `.debug_str`), with 275,016 relocations.
+- The plan costs about 38 ns per DIE (3.8 ms).
+- The writer costs 350 to 450 ns per DIE (35 to 45 ms, 125 to 165 MB/s).
+  Most of that is the string pool: each global brings two or three new
+  strings (its name, its linkage name, and its namespaces' names the
+  first time), and the pool alone costs 80 to 100 ns per string, 46 to
+  60% of the writer's time. A table that does not fit in cache misses on
+  nearly every new string, so the id-keyed pool of §6.3 is the next step.
+- Before the hash's final mix (§6.3), the writer cost 2,900 ns per DIE.
+- Reserving the table up front changed nothing.
+- Size: on §8.6's `llc` modules (6 objects, 4,222 DIEs), hod's DIE
+  sections are 1.020× `llc`'s (215,748 bytes against 211,560).
+  `.debug_str`, `.debug_str_offsets` and `.debug_addr` are the same size.
+  `.debug_abbrev` is smaller (884 bytes against 1,422).
+  `.debug_info` is larger (67,438 against 62,712), about 1.1 bytes per
+  DIE, nearly all of it the second byte of the core families' codes (open
+  question 7).
 
 ## 8. Tests
 
@@ -613,6 +901,75 @@ for the policy and 12.4 ns/row for the writer (336 MB/s; 4.16 bytes/row,
 modules (hod writes the same bytes for the same sequences; with one
 sequence per function the overhead is §4.7's).
 
+### 8.6 DIEs (`tests/dies.rs`, `die_oracle.rs`, `die_debugger.rs`, implemented)
+
+The parser does not read debug metadata yet (WP-054), so the tests fill
+`hod_ir`'s tables with the builder API. `tests/common/meta.rs` reads
+`!DI*` nodes, tuples, `!llvm.dbg.cu` and the `!dbg` of globals from LLVM
+text into `reserve`, `define` and `DiNode::set`, skipping the fields
+`hod_ir` does not map. One test builds its tables by hand.
+
+The inputs are clang 19 `-g -O0` output in `tests/data/dies/`:
+- `globals`: every C++ base type, pointers (with `void *` and `int **`),
+  nested, inline and anonymous namespaces, a `static`, `alignas(32)`;
+- `strings`: a 307-character name, names repeated across namespaces,
+  `café`;
+- `main`: a function only.
+
+There is also a generator, `globals_module(n)`: namespaces up to three
+deep whose inner names repeat under different parents, some internal and
+some over-aligned globals, with 400 to 100,000 globals.
+
+- **`tests/dies.rs`** (objects built with `hod_obj`: the globals in
+  `.data`, the code in `.text`, more sections, and two COMDAT groups):
+  - `llvm-dwarfdump --verify` of 19 and 22 is clean, together with the
+    line table written from `plan.files().header()`, on both targets, for:
+    - no globals (with no code, one section, or several);
+    - the three data modules;
+    - 3,000 generated globals with code in four sections, two of them
+      COMDAT;
+  - the dumps contain what was written;
+  - `.debug_str` holds each string once;
+  - the kinds, offsets and targets of every relocation on both targets.
+    The unit's `low_pc` has no relocation when it has ranges. No debug
+    section is in a group. The code entries are against each code
+    section's symbol, COMDAT included;
+  - the same bytes under shuffling, splitting, chunking and threads
+    (§7.1);
+  - every error of §6.6 leaves the object unchanged;
+  - an unsupported shape (a `const` type, a struct scope) is
+    `Unsupported`.
+- **`tests/die_oracle.rs`** (`llc` 19 and 22 × AArch64 and x86-64 on
+  `globals`, `strings` and 2,000 generated globals):
+  - hod's sections, written from the tables for `llc`'s symbols, are
+    spliced into `llc`'s object, and both objects verify;
+  - the DIE trees are equal after §6.7's normalization;
+  - the relocation targets of `.debug_info`, `.debug_str_offsets` and
+    `.debug_addr` are equal;
+  - addresses four bytes off are caught.
+  - Result (WP-053, both majors alike): 6 objects and 4,222 DIEs, equal,
+    and in `llc`'s order in all 6; sizes in §7.2.
+- **`tests/die_debugger.rs`** (AArch64 hosts):
+  - `globals.o` from `llc` with hod's debug sections in place of
+    `llc`'s, linked with `main.o` by GNU ld, lld and mold;
+  - a gdb session runs `info variables -n`, `ptype` and `whatis` of 16
+    globals, and `info address` of 2. It then breaks in `main` and
+    `print`s 34 expressions: globals in nested, inline and anonymous
+    namespaces, `**pp`, `*outer::inner::deep_ptr`, `&aligned % 32`,
+    `sizeof(ld)`;
+  - an lldb session runs `target variable` of 29 names (one per command:
+    lldb stops a batch at its first error) and `expression` of 7
+    dereferences;
+  - stdout and stderr, masked, must equal the session on the original
+    program, and an address four bytes off must differ.
+  - Result (WP-053): identical on every pair of major and linker (104
+    lines for gdb 16.3, 86 for lldb 19); the wrong table differs every
+    time. lldb cannot find `outer::half` (a namespace member declared
+    after a nested namespace) in `llc`'s program either, so it is
+    skipped.
+- **Throughput** (`tests/throughput.rs`, `die_throughput`, ignored):
+  §7.2.
+
 ## 9. The bridge in `hod_cg` (planned)
 
 `emit_module` owns the mapping from `hod_ir` and `FuncRecord` to
@@ -627,7 +984,7 @@ Rows for `docs/BACKLOG.md` (ids to be assigned; "this" is WP-052):
 | title | scope | dependencies |
 |---|---|---|
 | line tables in `emit_module` | §5.7 and §9 in `hod_cg::emit`: `FileTable` from `DiFile` nodes, `LocId` → `SourceLoc`, `function_rows`, one `Sequence` per function; `encode_sequence` into the chunk and the merge of encoded runs (§7.1); `LineRow` gains a block-start bit (§5.3); `DW_LNCT_LLVM_source` for `DiFile.source`; gdb/lldb sessions on hod-compiled programs (§8.3 without `llc`); 1-vs-N-thread identity | this, WP-032 |
-| DIE writer core | §6.1 to §6.3: the fixed abbreviation table, `.debug_info` unit header, compile unit DIE, `.debug_str`/`.debug_str_offsets`/`.debug_addr`/`.debug_rnglists`, the scope inversion, reference patching; `--verify` clean and compared with `llc` on modules with globals only | this |
+| DIE writer core (WP-053, **landed**: `spec/landed/dwarf/WP-053.md`) | §6.1 to §6.3, §6.5 to §6.7: the fixed abbreviation table, `.debug_info` unit header, compile unit DIE, `.debug_str`/`.debug_str_offsets`/`.debug_addr`/`.debug_rnglists`, the scope inversion, reference patching; `--verify` clean and compared with `llc` on modules with globals only | this |
 | subprograms and variables | subprogram DIEs (`low_pc`/`high_pc`, `frame_base`), parameters and locals from `vars` with `DIExpression` composed onto the frame-base offset (`VarRow` gains its expression), lexical blocks from `lines` (§6.4), labels (the `labels` table); gdb `info locals`/`print`/`bt` on hod-compiled programs | DIE writer core, line tables in `emit_module` |
 | the type graph | basic, derived (pointer, reference, rvalue reference, typedef, const/volatile, member, inheritance, pointer to member, friend), composite (class, struct, union, enum with enumerators, array with subranges), subroutine types, declarations and completion, `vtableHolder`; compared with `llc` by `llvm-dwarfdump` structure; gdb `ptype` | DIE writer core |
 | globals, namespaces, templates | global and static-member variables (`DW_OP_addrx`, TLS with `DW_OP_form_tls_address`), namespaces, imported entities, template type and value parameters (packs), `DW_AT_specification` for out-of-line definitions | subprograms and variables, the type graph |
@@ -657,3 +1014,18 @@ Rows for `docs/BACKLOG.md` (ids to be assigned; "this" is WP-052):
    lldb read. Write version 4 only if a consumer that needs it shows up
    (`hod_ir` maps the flag as `ModuleProps::dwarf_version`,
    `crates/hod_ir/src/props.rs:140`, so the bridge can refuse or warn).
+7. Every code from 128 up takes two ULEB bytes, where `llc`'s codes take
+   one. That covers the core families (698 to 753) and most type families
+   (`base_type` at 129, and the cv-qualified, reference and composite
+   types). On globals-only modules it costs about 1.1 bytes per DIE, 7.5%
+   of `.debug_info` (§7.2). Codes mean something only inside one object,
+   so they need to agree only between the writers of that object.
+   Renumbering in a later version of hod changes no format and no
+   consumer, only the pinned tests. "Append-only" (§6.1) keeps the
+   packages from renumbering one another while M3 is being built. Once
+   the corpus shows which shapes are frequent (subprograms, parameters,
+   locals, members, cv types), one deliberate renumbering can put them
+   below 128.
+8. How per-function DIE runs fix their string and address indices before
+   the merge (§7.1): pre-assigned by the plan, or patches. To be decided
+   by WP-057.

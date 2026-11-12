@@ -602,9 +602,12 @@ impl FnAttrs {
     pub const SANITIZE_THREAD: u32 = 1 << 17;
     /// `sanitize_type`.
     pub const SANITIZE_TYPE: u32 = 1 << 18;
+    /// `convergent`: a constraint on transformations only (§5.7); hod
+    /// keeps it so that the module it prints forbids what its input did.
+    pub const CONVERGENT: u32 = 1 << 19;
 
     /// Every flag with LLVM's keyword for it, in bit order.
-    pub const FLAG_NAMES: [(&'static str, u32); 19] = [
+    pub const FLAG_NAMES: [(&'static str, u32); 20] = [
         ("noreturn", Self::NORETURN),
         ("naked", Self::NAKED),
         ("nounwind", Self::NOUNWIND),
@@ -624,9 +627,10 @@ impl FnAttrs {
         ("sanitize_realtime_blocking", Self::SANITIZE_REALTIME_BLOCKING),
         ("sanitize_thread", Self::SANITIZE_THREAD),
         ("sanitize_type", Self::SANITIZE_TYPE),
+        ("convergent", Self::CONVERGENT),
     ];
 
-    const ALL_FLAGS: u32 = (1 << 19) - 1;
+    const ALL_FLAGS: u32 = (1 << 20) - 1;
 
     /// No attributes.
     pub fn new() -> FnAttrs {
@@ -1053,7 +1057,7 @@ pub const ATTRIBUTES: [AttrInfo; 139] = [
     kw("byval", Kept),
     kw("captures", Dropped),
     kw("cold", Dropped),
-    kw("convergent", Rejected),
+    kw("convergent", Kept),
     kw("coro_elide_safe", Rejected),
     kw("coro_only_destroy_when_complete", Rejected),
     kw("dead_on_return", Dropped),
@@ -1415,7 +1419,7 @@ mod tests {
         assert_eq!(a.strings().count(), 0);
 
         let kind = |r: IrResult<()>| r.unwrap_err().kind;
-        assert_eq!(kind(a.set(1 << 19)), IrErrorKind::InvalidOperand);
+        assert_eq!(kind(a.set(1 << 20)), IrErrorKind::InvalidOperand);
         assert_eq!(kind(a.set_stack_align(24)), IrErrorKind::InvalidOperand);
         assert_eq!(kind(a.set_string(FnStr::NoBuiltin, b"")), IrErrorKind::InvalidOperand);
         assert!(a.is_empty());

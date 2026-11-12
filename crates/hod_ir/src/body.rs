@@ -332,6 +332,7 @@ pub(crate) const CALL_TAIL_MASK: u8 = 0b11;
 pub(crate) const CALL_NORETURN: u8 = 1 << 2;
 pub(crate) const CALL_NOUNWIND: u8 = 1 << 3;
 pub(crate) const CALL_RETURNS_TWICE: u8 = 1 << 4;
+pub(crate) const CALL_CONVERGENT: u8 = 1 << 5;
 
 /// The record of one call, `invoke` or `callbr`. 40 bytes.
 ///
@@ -1647,6 +1648,12 @@ impl<'a> CallSite<'a> {
         self.data().flags & CALL_RETURNS_TWICE != 0
     }
 
+    /// `convergent` on the call (`spec/ir.md` §5.7).
+    #[inline]
+    pub fn is_convergent(&self) -> bool {
+        self.data().flags & CALL_CONVERGENT != 0
+    }
+
     /// Whether the return value or any argument has an attribute.
     #[inline]
     pub fn has_param_attrs(&self) -> bool {
@@ -1754,7 +1761,8 @@ impl fmt::Debug for CallSite<'_> {
             .field("tail", &self.tail())
             .field("noreturn", &self.is_noreturn())
             .field("nounwind", &self.is_nounwind())
-            .field("returns_twice", &self.returns_twice());
+            .field("returns_twice", &self.returns_twice())
+            .field("convergent", &self.is_convergent());
         if self.has_param_attrs() {
             s.field("ret_attrs", &self.ret_attrs());
             for index in 0..self.args().len() {

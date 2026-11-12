@@ -14,6 +14,11 @@ use crate::body::{CalleeInfo, Fx, Local, Ops};
 use crate::codes::func;
 use crate::error::{BcErrorKind, BcResult, fail, ir};
 
+/// The call-site function attributes `hod_ir` keeps (`spec/ir.md` §5.7):
+/// `CallDesc`'s flags.
+const CALL_SITE_FLAGS: u32 =
+    FnAttrs::NORETURN | FnAttrs::NOUNWIND | FnAttrs::RETURNS_TWICE | FnAttrs::CONVERGENT;
+
 /// What an instruction leaves: its result type and value (`void` and no
 /// value for most), and whether it ended the block.
 pub(crate) type Done = (TypeId, Value, bool);
@@ -1180,11 +1185,7 @@ impl Fx<'_, '_, '_> {
                 self.note(name);
             }
         }
-        Ok((
-            flags & (FnAttrs::NORETURN | FnAttrs::NOUNWIND | FnAttrs::RETURNS_TWICE),
-            ret_attrs,
-            any,
-        ))
+        Ok((flags & CALL_SITE_FLAGS, ret_attrs, any))
     }
 
     /// The end of a call that is not emitted: an `invoke` or `callbr`
@@ -1420,6 +1421,7 @@ impl Fx<'_, '_, '_> {
         desc.noreturn = flags & FnAttrs::NORETURN != 0;
         desc.nounwind = flags & FnAttrs::NOUNWIND != 0;
         desc.returns_twice = flags & FnAttrs::RETURNS_TWICE != 0;
+        desc.convergent = flags & FnAttrs::CONVERGENT != 0;
         desc.ret_attrs = ret_attrs;
         desc.arg_attrs = if any_attrs { &self.s.arg_attrs } else { &[] };
         desc.bundles = &bundle_list;

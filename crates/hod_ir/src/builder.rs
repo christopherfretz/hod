@@ -18,9 +18,9 @@
 
 use crate::attrs::{CallConv, ParamAttrs};
 use crate::body::{
-    BlockData, Body, Bundle, BundleData, CALL_NORETURN, CALL_NOUNWIND, CALL_RETURNS_TWICE,
-    CallData, Callee, Clause, DbgDeclare, DbgRecordData, DbgRecordKind, Fixup, Incoming, PadData,
-    Place, Reserved, Slot, SlotVar, UNSET, UseFacts,
+    BlockData, Body, Bundle, BundleData, CALL_CONVERGENT, CALL_NORETURN, CALL_NOUNWIND,
+    CALL_RETURNS_TWICE, CallData, Callee, Clause, DbgDeclare, DbgRecordData, DbgRecordKind, Fixup,
+    Incoming, PadData, Place, Reserved, Slot, SlotVar, UNSET, UseFacts,
 };
 use crate::debug::expr::ExprId;
 use crate::error::{IrErrorKind, IrResult, err};
@@ -40,6 +40,8 @@ use crate::value::{
 ///
 /// Start from [`CallDesc::new`] or [`CallDesc::intrinsic`] and set the
 /// fields that differ from a plain C call.
+// One field per kept call-site flag of LLVM's, as written in the IR.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy, Debug)]
 pub struct CallDesc<'a> {
     /// What is called.
@@ -61,6 +63,9 @@ pub struct CallDesc<'a> {
     pub nounwind: bool,
     /// `returns_twice` on the call.
     pub returns_twice: bool,
+    /// `convergent` on the call: kept, and constrains transformations
+    /// only (`spec/ir.md` §5.7).
+    pub convergent: bool,
     /// The kept attributes of the return value.
     pub ret_attrs: ParamAttrs,
     /// The kept attributes of each argument: empty when none has any,
@@ -84,6 +89,7 @@ impl<'a> CallDesc<'a> {
             noreturn: false,
             nounwind: false,
             returns_twice: false,
+            convergent: false,
             ret_attrs: ParamAttrs::NONE,
             arg_attrs: &[],
             bundles: &[],
@@ -1203,7 +1209,8 @@ impl FunctionBuilder {
         let flags = desc.tail as u8
             | if desc.noreturn { CALL_NORETURN } else { 0 }
             | if desc.nounwind { CALL_NOUNWIND } else { 0 }
-            | if desc.returns_twice { CALL_RETURNS_TWICE } else { 0 };
+            | if desc.returns_twice { CALL_RETURNS_TWICE } else { 0 }
+            | if desc.convergent { CALL_CONVERGENT } else { 0 };
         let index = body.calls.len() as u32;
         body.calls.push(CallData {
             inst: user,

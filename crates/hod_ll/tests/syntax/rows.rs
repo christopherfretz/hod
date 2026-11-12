@@ -625,8 +625,8 @@ pub type Unsupported = (&'static str, &'static [&'static str], &'static str);
 
 #[rustfmt::skip]
 pub const UNSUPPORTED: &[Unsupported] = &[
-    ("declare void @f() #0\nattributes #0 = { convergent }", &["attr:convergent"], "++"),
-    ("declare void @f() convergent speculative_load_hardening", &["attr:convergent", "attr:speculative_load_hardening"], "++"),
+    ("declare void @f() #0\nattributes #0 = { convergent }", &[], "++"),
+    ("declare void @f() convergent speculative_load_hardening", &["attr:speculative_load_hardening"], "++"),
     ("define void @f() noduplicate {\n  ret void\n}", &["attr:noduplicate"], "++"),
     ("declare void @f(ptr inalloca(i32) %a)", &[], "++"),
     ("declare void @f(ptr preallocated(i32) %a)", &[], "++"),
@@ -680,8 +680,8 @@ pub const UNSUPPORTED: &[Unsupported] = &[
     ("define i32 @f(ptr %p) {\n  %r = atomicrmw add ptr %p, i32 1 syncscope(\"agent\") seq_cst\n  ret i32 %r\n}", &["syncscope:agent"], "++"),
     ("define void @f() {\n  %a = alloca inalloca i32\n  ret void\n}", &["alloca:inalloca"], "++"),
     ("declare double @llvm.experimental.constrained.fadd.f64(double, double, metadata, metadata)\ndefine double @f(double %a) strictfp {\n  %r = call double @llvm.experimental.constrained.fadd.f64(double %a, double %a, metadata !\"round.dynamic\", metadata !\"fpexcept.strict\") strictfp\n  ret double %r\n}", &["attr:strictfp", "metadata-arg:llvm.experimental.constrained.fadd.f64"], "++"),
-    ("declare void @g()\ndefine void @f() {\n  call void @g() #0\n  ret void\n}\nattributes #0 = { convergent }", &["attr:convergent"], "++"),
-    ("declare void @g()\ndefine void @f() {\n  call void @g() convergent\n  ret void\n}", &["attr:convergent"], "++"),
+    ("declare void @g()\ndefine void @f() {\n  call void @g() #0\n  ret void\n}\nattributes #0 = { convergent }", &[], "++"),
+    ("declare void @g()\ndefine void @f() {\n  call void @g() convergent\n  ret void\n}", &[], "++"),
     ("declare void @llvm.donothing()\ndeclare i32 @p(...)\ndefine void @f() personality ptr @p {\n  invoke void @llvm.donothing() to label %ok unwind label %bad\nok:\n  ret void\nbad:\n  %lp = landingpad { ptr, i32 } cleanup\n  resume { ptr, i32 } %lp\n}", &["invoke:no-code-intrinsic"], "++"),
     ("declare void @llvm.assume(i1)\ndeclare i32 @p(...)\ndefine void @f() personality ptr @p {\n  invoke void @llvm.assume(i1 true) to label %ok unwind label %bad\nok:\n  ret void\nbad:\n  %lp = landingpad { ptr, i32 } cleanup\n  resume { ptr, i32 } %lp\n}", &["invoke:no-code-intrinsic"], "vv"),
     ("declare void @g()\ndeclare i32 @p(...)\ndefine void @f() personality ptr @p {\n  invoke void @g() to label %ok unwind label %bad\nok:\n  ret void\nbad:\n  %c = cleanuppad within none []\n  cleanupret from %c unwind to caller\n}", &["inst:cleanuppad", "inst:cleanupret"], "++"),

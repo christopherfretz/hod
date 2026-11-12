@@ -21,7 +21,6 @@ use common::{corpus, parse, parsed};
 /// fails the test: every unsupported construct of the corpus is known by
 /// name.
 const CLANG_UNSUPPORTED: &[&str] = &[
-    "attr:convergent",
     "attr:no_caller_saved_registers",
     "attr:nocf_check",
     "attr:noduplicate",

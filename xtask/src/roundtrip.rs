@@ -218,6 +218,13 @@ impl Options {
         }
     }
 
+    /// Whether the run selects the whole corpus (no filter, limit,
+    /// `--llvm` or quick tier): only such a run can tell that a listed
+    /// entry is gone.
+    pub fn complete(&self) -> bool {
+        self.filters.is_empty() && self.limit.is_none() && self.llvm.is_empty() && !self.quick
+    }
+
     /// The defaults for this workspace and environment
     /// (`HOD_REQUIRE_TOOLS`).
     pub fn for_workspace() -> Self {
@@ -334,6 +341,8 @@ pub struct Report {
     /// meet: the file is stale.
     pub stale: Vec<String>,
     pub expected_file: PathBuf,
+    /// The expectation file names another corpus than this run's.
+    pub other_corpus: bool,
     pub updated: bool,
     pub results_file: Option<PathBuf>,
     pub kept: Option<PathBuf>,
@@ -385,7 +394,7 @@ impl Report {
     pub fn totals_line(&self) -> String {
         format!(
             "roundtrip: {} entries, {} as expected, {} worse, {} better, {} unchecked, {} stale \
-             (against {}) in {:.1}s",
+             (against {}{}) in {:.1}s",
             self.results.len(),
             self.with_verdict(Verdict::Expected),
             self.with_verdict(Verdict::Worse),
@@ -393,6 +402,7 @@ impl Report {
             self.with_verdict(Verdict::Unchecked),
             self.stale.len(),
             self.expected_file.display(),
+            if self.other_corpus { ", which is for another corpus" } else { "" },
             self.elapsed.as_secs_f64()
         )
     }
@@ -837,6 +847,15 @@ pub fn corpus_identity(corpus_dir: &Path, manifest: &Manifest) -> Result<String,
     ))
 }
 
+/// The note of a run against another corpus than the expectation file's.
+fn other_corpus(named: Option<&str>, identity: &str) -> String {
+    let named = named.map_or_else(|| "an unnamed corpus".to_owned(), |c| format!("'{c}'"));
+    format!(
+        "the expectation file is for {named}, this corpus is {identity}: entries are compared \
+         by name, and the entries it lists that this corpus lacks are not reported"
+    )
+}
+
 /// Runs the command. `Err` is exit status 2: nothing was run.
 pub fn run(options: &Options) -> Result<Report, String> {
     let started = Instant::now();
@@ -855,11 +874,7 @@ pub fn run(options: &Options) -> Result<Report, String> {
         return Err("no corpus entry is selected".to_owned());
     }
     let mut file = Expectations::read(&options.expected)?;
-    // A complete run also checks that every listed entry still exists.
-    let complete = options.filters.is_empty()
-        && options.limit.is_none()
-        && options.llvm.is_empty()
-        && !options.quick;
+    let complete = options.complete();
     let same_corpus = file.corpus.as_deref() == Some(identity.as_str());
     if options.update && !same_corpus && !complete {
         return Err(format!(
@@ -872,14 +887,9 @@ pub fn run(options: &Options) -> Result<Report, String> {
     majors.dedup();
 
     let mut report = Report { expected_file: options.expected.clone(), ..Report::default() };
+    report.other_corpus = !same_corpus;
     if !same_corpus {
-        report.notes.push(format!(
-            "the expectation file is for {}, this corpus is {identity}: entries are compared \
-             by name, and the entries it lists that this corpus lacks are not reported",
-            file.corpus
-                .as_deref()
-                .map_or_else(|| "an unnamed corpus".to_owned(), |c| format!("'{c}'"))
-        ));
+        report.notes.push(other_corpus(file.corpus.as_deref(), &identity));
     }
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -897,23 +907,7 @@ pub fn run(options: &Options) -> Result<Report, String> {
     let jobs = options.jobs.clamp(1, irdiff::MAX_JOBS);
     report.configuration = describe(options, &groups, jobs);
 
-    let next = AtomicUsize::new(0);
-    let slots = Mutex::new(vec![None; selected.len()]);
-    std::thread::scope(|scope| {
-        for _ in 0..jobs.min(selected.len()) {
-            scope.spawn(|| {
-                loop {
-                    let index = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(entry) = selected.get(index) else { break };
-                    let group =
-                        groups.iter().find(|g| g.major == entry.major).expect("a group per major");
-                    let result = run_entry(options, group, host, index, entry);
-                    slots.lock().unwrap_or_else(PoisonError::into_inner)[index] = Some(result);
-                }
-            });
-        }
-    });
-    let slots = slots.into_inner().unwrap_or_else(PoisonError::into_inner);
+    let slots = run_all(options, &groups, host, &selected, jobs);
     for (Selected { major, entry, .. }, slot) in selected.iter().zip(slots) {
         let (outcome, detail) = slot.unwrap_or((Outcome::HarnessError, "not run".to_owned()));
         let expected = file.outcome(entry);
@@ -964,6 +958,34 @@ pub fn run(options: &Options) -> Result<Report, String> {
     Ok(report)
 }
 
+/// Runs the selected entries, `jobs` at a time; one result per entry,
+/// in the order of `selected`.
+fn run_all(
+    options: &Options,
+    groups: &[Group],
+    host: Arch,
+    selected: &[Selected],
+    jobs: usize,
+) -> Vec<Option<(Outcome, String)>> {
+    let next = AtomicUsize::new(0);
+    let slots = Mutex::new(vec![None; selected.len()]);
+    std::thread::scope(|scope| {
+        for _ in 0..jobs.min(selected.len()) {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(entry) = selected.get(index) else { break };
+                    let group =
+                        groups.iter().find(|g| g.major == entry.major).expect("a group per major");
+                    let result = run_entry(options, group, host, index, entry);
+                    slots.lock().unwrap_or_else(PoisonError::into_inner)[index] = Some(result);
+                }
+            });
+        }
+    });
+    slots.into_inner().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// The summary's first line: what ran.
 fn describe(options: &Options, groups: &[Group], jobs: usize) -> String {
     let majors: Vec<String> = groups.iter().map(|g| g.major.to_string()).collect();
@@ -983,6 +1005,28 @@ fn describe(options: &Options, groups: &[Group], jobs: usize) -> String {
         irdiff::engine::REFERENCE_SELECTOR.join(" "),
         if linkers.is_empty() { "none".to_owned() } else { linkers.join(" ") },
     )
+}
+
+/// The L2 step of the gate (`spec/harness.md` "ci"), quick tier or
+/// whole corpus as `options.quick` says. `Ok` is a step that passed or
+/// was skipped, `Err` one that failed; each is the text to print. A
+/// missing corpus is a failure when tools are required, else the step
+/// is skipped with a notice.
+pub fn gate(options: &Options) -> Result<String, String> {
+    if !options.corpus.join(corpus::manifest::MANIFEST).is_file() {
+        let why =
+            format!("no corpus at '{}' (cargo xtask corpus capture)", options.corpus.display());
+        return if options.require_tools {
+            Err(format!("roundtrip: error: {why} (HOD_REQUIRE_TOOLS=1)\n"))
+        } else {
+            Ok(format!("roundtrip: skipped: {why}; under HOD_REQUIRE_TOOLS=1 this fails\n"))
+        };
+    }
+    match run(options) {
+        Ok(report) if report.exit_status() == 0 => Ok(format!("{}\n", report.totals_line())),
+        Ok(report) => Err(report.summary(false)),
+        Err(message) => Err(format!("xtask roundtrip: {message}\n")),
+    }
 }
 
 /// `cargo xtask roundtrip`: the exit status.

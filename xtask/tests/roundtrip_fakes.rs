@@ -579,3 +579,33 @@ fn the_quick_tier() {
     assert_eq!(ran, quick);
     assert!(report.configuration.contains("(quick tier)"), "{}", report.configuration);
 }
+
+// spec/harness.md "ci": the gate's step. Without a corpus it is skipped
+// with a notice, or fails under HOD_REQUIRE_TOOLS=1; with one it prints
+// one line when it passes and the summary when it fails.
+#[test]
+fn the_gate_step() {
+    let fakes = Fakes::new("roundtrip-ci");
+    let mut options = fakes.options();
+    options.corpus = fakes.scratch.join("no-corpus");
+    let skipped = xtask::roundtrip::gate(&options).unwrap();
+    assert!(skipped.starts_with("roundtrip: skipped: no corpus at "), "{skipped}");
+    assert_eq!(skipped.lines().count(), 1);
+    options.require_tools = true;
+    let failed = xtask::roundtrip::gate(&options).unwrap_err();
+    assert!(failed.contains("(HOD_REQUIRE_TOOLS=1)"), "{failed}");
+
+    let mut options = fakes.options();
+    fakes.entry("pass", "hello", &module(None));
+    let passed = xtask::roundtrip::gate(&options).unwrap();
+    assert_eq!(passed.lines().count(), 1, "{passed}");
+    assert!(passed.starts_with("roundtrip: 1 entries, 1 as expected, 0 worse"), "{passed}");
+    assert!(passed.contains(", which is for another corpus)"), "{passed}");
+    fakes.entry("fake_llc_fail", "hello", &module(Some("fake_llc_fail")));
+    let failed = xtask::roundtrip::gate(&options).unwrap_err();
+    assert!(failed.contains("WORSE     fake/llvm22/fake_llc_fail.ll: llc-failed"), "{failed}");
+    options.quick = true;
+    // Neither entry is in the quick tier.
+    assert!(!xtask::roundtrip::in_quick_tier("fake/llvm22/pass.ll"));
+    assert!(xtask::roundtrip::gate(&options).unwrap_err().contains("no corpus entry is selected"));
+}

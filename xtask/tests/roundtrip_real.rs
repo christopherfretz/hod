@@ -45,14 +45,14 @@ exit:
 
 /// The two modules of an entry of several: `lib` defines what `test`'s
 /// `main` calls.
-const LIB: &str = r#"@base = global i32 40, align 4
+const LIB: &str = r"@base = global i32 40, align 4
 
 define i32 @plus(i32 %x) {
   %b = load i32, ptr @base, align 4
   %y = add i32 %x, %b
   ret i32 %y
 }
-"#;
+";
 
 const TEST: &str = r#"@text = private unnamed_addr constant [8 x i8] c"bye %d\0A\00", align 1
 

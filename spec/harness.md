@@ -10,9 +10,20 @@ to be specified here: `bisect`.
 `cargo xtask ci [--quick]` is the gate (`docs/VALIDATION.md` "Gates"): in
 order `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --
 -D warnings`, `cargo test --workspace --quiet`, then the `irdiff` runs of
-"irdiff", "In the gate". It stops at the first step that fails, printing
+"irdiff", "In the gate", then the `roundtrip` run of "roundtrip", "In the
+gate". It stops at the first step that fails, printing
 `ci: <step> FAILED`, and ends with `ci: ok` and exit status 0 only if every
 step passed.
+
+**A step that needs build output or tools** follows one rule. What it
+needs and does not find is a note and the step passes with what there is
+(for `roundtrip`, a missing corpus skips the step with the one line
+`roundtrip: skipped: no corpus at '<dir>' (cargo xtask corpus capture);
+under HOD_REQUIRE_TOOLS=1 this fails`); under `HOD_REQUIRE_TOOLS=1` it
+fails the step. So a fresh checkout passes `cargo xtask ci --quick`, and a
+release candidate, which sets the variable, cannot pass without the
+oracle, the linkers and the corpus. The corpus is the default one
+("corpus", "Where things are"): the gate takes no corpus option.
 
 A cargo step that fails with rustc's `error[E0463]` (can't find crate) at
 the start of a line of its standard error is run **once** more, after the
@@ -534,6 +545,25 @@ driver, or `bfd`, `lld` or `mold` fails it.
 - `Report` has the records, the notes, the missing tools,
   `exit_status()`, `summary(verbose)`, `results_text()` and
   `write_results(path)`.
+- `Record::failure` is which step went wrong, for a caller to decide on
+  (the detail says the same for a reader, and its words may change). It
+  is set on every ERROR, FAIL and XFAIL, and is `None` on the others; it
+  is not in the results file. An ERROR's kind is about the oracle's side,
+  the witness or the harness; a FAIL's about hod's side.
+
+  | `Failure` | the step |
+  |---|---|
+  | `ReferenceBuild` | the oracle's `llc` failed or wrote no object |
+  | `Witness` | the witness did not confirm the oracle (every witness ERROR) |
+  | `HodBuild` | hod failed on a module (step 2), whatever the way |
+  | `Declined` | hod declined, or did what the `unsupported` directives do not describe |
+  | `Link` | a link failed or wrote no program |
+  | `Run` | a program ran into its time limit or wrote more than is kept |
+  | `Comparison` | a program ended or printed otherwise than the directives or the oracle's program |
+  | `Timeout` | `llc`, the driver or the linker ran into its time limit |
+  | `Crash` | `llc`, the driver or the linker was killed by a signal |
+  | `Harness` | the harness could not do its work, the directives do not parse, or the program was linked by another linker |
+
 - `process::run` is the bounded child process of "Child processes".
 - `engine::REFERENCE_SELECTOR` is the oracle's selector arguments, and
   `engine::WITNESS` the start of a witness ERROR's detail.
@@ -1508,7 +1538,7 @@ two sources' rules, `kiln::{discover, parse_header, plan}` and
 
 ```
 cargo xtask roundtrip [--corpus <dir>] [--llvm <N>]... [--filter <text>]...
-                      [--limit <N>] [--linker <name>]... [-j <N>]
+                      [--limit <N>] [--tier <quick or all>] [--linker <name>]... [-j <N>]
                       [--expected <file>] [--update-expected]
                       [--results <file>] [--keep] [-v]
 ```
@@ -1533,6 +1563,7 @@ programs are run on Linux, on the corpus's own architecture.
 | `--llvm <N>` | only the entries of LLVM major `N` (22 or 19); repeatable | every major of the corpus |
 | `--filter <text>` | only the entries whose path in the corpus contains `<text>`; repeatable, any one must match | all |
 | `--limit <N>` | only the first `N` selected entries of each major, in path order | all |
+| `--tier <quick or all>` | `quick`: only the entries of the quick tier | `all` |
 | `--linker <name>` | `bfd`, `lld`, `mold` or `wild`; repeatable | every one found, as for `irdiff` |
 | `-j <N>`, `--jobs <N>` | entries at once, at most 16; under a jobserver an upper bound | as `irdiff` |
 | `--expected <file>` | the expectation file | `tests/roundtrip/expected-<arch>.tsv` of the workspace |
@@ -1544,7 +1575,15 @@ programs are run on Linux, on the corpus's own architecture.
 Entries are taken from the corpus's `MANIFEST.tsv`, newest major first,
 then in path order. The selection is deterministic, so a filtered,
 limited run is the way to iterate; the whole corpus is thousands of
-compile-link-run cycles and runs in the background.
+compile-link-run cycles and runs in the background. The tier is applied
+before the limit.
+
+**The quick tier** is the entries whose path in the corpus has a SHA-256
+whose first byte is below 8: one in 32, by the path alone, so it is
+spread over every source, major and directory in proportion, and an
+entry's membership does not change when others are added or removed.
+On the 6,250-entry corpus it is 206 entries (188 of the 5,760 before it)
+(`spec/landed/harness/WP-045.md`).
 
 ### Tools
 
@@ -1557,34 +1596,55 @@ failure (exit status 3); `wild` is optional. Without them the entries are
 still parsed and printed, and those that get that far are `skipped`.
 
 The **reference `llc` configuration** is SelectionDAG at `-O0`
-(`docs/VALIDATION.md` "Oracles"): `llc` is run through a wrapper script in
-the run's directory that adds `-global-isel=0 -fast-isel=0` to the
-arguments `irdiff`'s engine gives it, unless they hold a `-global-isel=`
-or `-fast-isel=` already.
+(`docs/VALIDATION.md` "Oracles"), which is what `irdiff`'s engine gives
+its oracle ("irdiff", "What a test does", step 1): the round trip passes
+`llc` itself, and the witness is not asked for (the corpus was admitted
+with it; a round trip compares with the entry's recorded behaviour).
 
 ### What an entry goes through
 
-1. **Parse.** The entry file, directives and all (they are comments), by
-   `hod_ll::parse_module` with default options (the entry has its own
-   triple), then every body by a `BodyParser` in file order. Each body
-   must pass `Body::verify`. Then, if `hod_ir` recorded any unsupported
-   construct (`Module::unsupported`, module level and bodies), the
+An entry is one module, or several (`;@ module:` lines, "Test
+directives", "Several modules"); its directives (`directives::parse`)
+are the whole entry's. Before step 1 the entry's module count must equal
+the number of words of its manifest row's `delivered` column ("corpus",
+"Manifest"), else the outcome is `harness-error`. How a module was
+delivered changes nothing here: a bitcode module is stored as text.
+
+1. **Parse.** Each module's text (the whole file for one module, with
+   its directives, which are comments; for several, the module's text
+   as `directives::modules` cuts it), by `hod_ll::parse_module` with
+   default options (the module has its own triple), then every body by
+   a `BodyParser` in file order. Each body must pass `Body::verify`.
+   Then, if `hod_ir` recorded any unsupported construct
+   (`Module::unsupported`, module level and bodies), the module's
    outcome is `parser-unsupported` with the distinct construct names;
    else the symbols must pass `Module::verify_symbols`.
 2. **Print.** `Module::print` with every body, in `Dialect::new(N)`.
    Steps 1 and 2 run in the harness's own process, under
-   `catch_unwind`: a panic is an outcome of its own.
-3. **Assemble.** `llvm-as -disable-verify -o printed.bc printed.ll`.
-4. **Verify.** `opt -passes=verify -disable-output printed.bc`.
+   `catch_unwind`: a panic is an outcome of its own. Every module goes
+   through steps 1 and 2; if any fails, the entry's outcome is that of
+   the first module whose outcome has rank 2, else of the first of rank 1
+   (a bug is not hidden behind an earlier module's honest
+   "unsupported").
+3. **Assemble.** Each module in turn: `llvm-as -disable-verify -o
+   <m>.bc <m>.ll`.
+4. **Verify.** And then `opt -passes=verify -disable-output <m>.bc`.
+   Steps 3 and 4 stop at the first module that fails.
 5. **Build, link, run.** `irdiff`'s engine (`Session::run_test`), in
-   strict mode, with the entry's directives and the printed text as the
-   test, the reference `llc` as the oracle, and `corpus capture`'s
-   stand-in for hod that declines every module ("corpus", "Admission"):
-   the oracle's side is the whole check. The printed module is built
-   with every linker of the run, each program is run, and its exit
-   status and standard output must be what the directives say. An entry
-   passes when every linker's record is the stand-in's decline after the
-   oracle's side passed.
+   strict mode, with the entry's directives as the test's `Expectations`,
+   the printed text as the test file (for several modules, each printed
+   module after its `;@ module: <name>` line, in the entry's order), the
+   oracle's `llc`, and `corpus capture`'s stand-in for hod that declines
+   every module ("corpus", "Admission"): the oracle's side is the whole
+   check. The engine applies every directive (`llc-args`, `link`,
+   `args`, `stdin`, `exit`, `stdout`, `stdout-no-newline`), builds each
+   module, links the objects into one program with every linker of the
+   run and runs it; its exit status and standard output must be what
+   the directives say. An entry passes when every linker's record is the
+   stand-in's decline after the oracle's side passed.
+
+For an entry of several modules, the detail of a step-1-to-4 outcome,
+and of an `llc-failed`, starts with `module '<name>': `.
 
 Every child of steps 3 to 5 is started by `irdiff::process::run`: it
 holds a jobserver token and has `irdiff`'s limits ("Child processes").
@@ -1615,12 +1675,16 @@ otherwise: the corpus was admitted with these very tools, so the original
 of every entry passes step 5. The first failing step decides; the detail
 says what failed, with the linker when it is step 5.
 
-The engine's outcome is read from its records: trouble on the oracle's
-side is an `ERROR` whose detail starts `oracle: ` and names the step
-(`llc ...`, `link with <linker> ...`, `the link wrote no program`, `the
-program of llc's object ...`). A record of another shape is a
-`harness-error`, so a change of those words cannot turn a failure into
-a pass.
+The engine's outcome is read from its records' kind of failure
+("irdiff", "Library", `Record::failure`), never from their words: an
+ERROR of kind `ReferenceBuild` is `llc-failed`, `Link` is `link-failed`,
+`Run` or `Comparison` is `behaviour-differs` (the program's own crash,
+hang or flood is behaviour), `Crash` is `tool-crashed`, `Timeout` is
+`tool-timed-out`. A passing record is a FAIL of kind `Declined` built by
+`declined` with the stand-in's reason; any other record is a
+`harness-error`, so nothing the engine says can turn a failure into a
+pass. The detail is the record's, without the engine's leading
+`oracle: `.
 
 ### Verdicts
 
@@ -1634,8 +1698,9 @@ it (an entry not listed must pass):
   rank, which is a different failure to look at;
 - **unchecked**: the outcome is `skipped`.
 
-A run with no filter, no limit and no `--llvm` also reports the entries
-the file lists that are not in the corpus (**stale**).
+A complete run (no filter, no limit, no `--llvm`, tier `all`) against the
+corpus the file is for also reports the entries the file lists that are
+not in the corpus (**stale**).
 
 ### Expectation file
 
@@ -1646,9 +1711,27 @@ detail (for the reader; not compared), escaped as the corpus's tables
 are. `--update-expected` writes it, by a new file and a rename: the
 selected entries' lines are replaced by what the run found (a pass
 removes the line, `skipped` leaves it), the others are kept, and a
-complete run drops the stale ones. Since the corpus is captured on the
-machine where it is used ("corpus", "Incremental"), the file is that of
-the reference machine's corpus.
+complete run drops the lines of entries the corpus does not have. Since
+the corpus is captured on the machine where it is used ("corpus",
+"Incremental"), the file is that of the reference machine's corpus.
+
+**The file names its corpus**, in one comment line after the header:
+
+```
+# corpus: 6250 entries, MANIFEST.tsv sha256 <64 hex digits>
+```
+
+the corpus's entry count and the SHA-256 of its `MANIFEST.tsv`, which is
+a function of the capture's inputs alone (the suites' revisions, the
+producers, the entries' bytes) and not of where the corpus is: moving or
+renaming the directory keeps it, a capture that changes any entry does
+not. `--update-expected` writes the line for the run's corpus. A run
+against another corpus than the file names (or a file without the line)
+says so in a note and in the totals line (`against <file>, which is for
+another corpus`), compares entries by name as usual, and does not report
+stale lines: the entries the other corpus had are not news. Updating the
+file for another corpus needs a complete run, else it is a usage error
+(exit status 2), so that one file never mixes two corpora.
 
 ### Results file
 
@@ -1676,6 +1759,8 @@ roundtrip: LLVM 22: 2896 entries: 2890 pass, 4 parser-unsupported, 2 printer-not
 roundtrip: 5760 entries, 5760 as expected, 0 worse, 0 better, 0 unchecked, 0 stale (against tests/roundtrip/expected-aarch64.tsv) in 600.0s
 ```
 
+The first line says `(quick tier)` after the corpus for `--tier quick`.
+
 ### Exit status
 
 | status | when |
@@ -1683,44 +1768,55 @@ roundtrip: 5760 entries, 5760 as expected, 0 worse, 0 better, 0 unchecked, 0 sta
 | 0 | every entry as expected (or `--update-expected`), and no required tool missing |
 | 1 | an entry worse or better than expected, or a stale line, without `--update-expected` |
 | 3 | no such entry, but a required tool is missing |
-| 2 | a usage error, no corpus, no entry selected, an unreadable expectation file, a linker asked for and not found; nothing was run |
+| 2 | a usage error, no corpus, no entry selected, an unreadable expectation file, a linker asked for and not found, `--update-expected` of a partial run for another corpus; nothing was run |
 
 ### Work directory
 
 `<build directory>/roundtrip/run-<pid>-<time>/`: the stand-in for hod,
-the `llc` wrappers, and per major `llvm<N>/` with the engine's directory
-and one directory per entry (`NNNNN/printed.ll`, `printed.bc`), removed
-when the entry is done. With `--keep` the directories of entries of
+and per major `llvm<N>/` with the engine's directory and one directory
+per entry (`NNNNN/printed.ll`, `printed.bc`; for several modules
+`NNNNN/printed.ll`, the engine's test, and `NNNNN/modules/<name>.ll`,
+`<name>.bc`), removed when the entry is done. With `--keep` the directories of entries of
 rank 2 are kept, and the run's directory with them.
 
 ### Library
 
 `xtask::roundtrip`: `Options`, `parse_args`, `run(&Options) ->
 Result<Report, String>` (`Err` is exit status 2), `Report` (`results`,
-`exit_status`, `summary`, `results_text`), `Outcome`; `ingest::ingest`
-(steps 1 and 2 for one text); `expected::{Expectations, Verdict,
-verdict}`; `stages` (steps 3 to 5).
+`exit_status`, `summary`, `totals_line`, `results_text`), `Outcome`,
+`in_quick_tier`, `corpus_identity`, `gate` (the step of "ci");
+`ingest::ingest` (steps 1 and 2 for one module's text);
+`expected::{Expectations, Verdict, verdict}`; `stages` (steps 3 to 5).
 
 ### Tests
 
-Unit: `roundtrip::tests::{outcome_names, options}`,
+Unit: `roundtrip::tests::{outcome_names, options, quick_tier}`,
 `roundtrip::ingest::tests::ingest_outcomes`,
-`roundtrip::stages::tests::{records_map_to_outcomes,
-the_reference_llc_script}`, `roundtrip::expected::tests::{verdicts,
-the_file}`. `xtask/tests/roundtrip_fakes.rs` runs the command over small
+`roundtrip::stages::tests::records_map_to_outcomes`,
+`roundtrip::expected::tests::{verdicts, the_file}`.
+`xtask/tests/roundtrip_fakes.rs` runs the command over small
 corpora of real LLVM text with fake `llvm-as`, `opt`, `llc`, driver and
 linker that misbehave on the names of the module's globals:
 `every_outcome_is_named`, `the_expectation_file_is_a_gate`, `selection`,
-`missing_tools`, `work_directory_and_keep`.
-`xtask/tests/roundtrip_real.rs` (`real_tools_round_trip`) builds two
+`missing_tools`, `work_directory_and_keep`, `several_modules`,
+`directives_are_the_engines`, `the_file_names_its_corpus`,
+`the_quick_tier`, `the_gate_step`.
+`xtask/tests/roundtrip_real.rs` (`real_tools_round_trip`) builds four
 hand-made entries per installed major with the real tools: one passes,
-one differs from its directives. It skips without the tools and fails
-under `HOD_REQUIRE_TOOLS=1`.
+one differs from its directives, one of two modules linked together
+passes, and one with `llc-args`, `link: allow-warnings` and
+`stdout-no-newline` passes. It skips without the tools and fails under
+`HOD_REQUIRE_TOOLS=1`.
 
 ### In the gate
 
-Not yet: the command needs the corpus, which is build output. The cost
-of a quick tier is in `spec/landed/harness/WP-019.md`.
+`cargo xtask ci --quick` runs `roundtrip --tier quick`, and `cargo xtask
+ci` the whole corpus, after the `irdiff` step, with the default corpus,
+expectation file, linkers and jobs ("ci" for a missing corpus). The step
+fails if the run would exit non-zero; it prints the totals line when it
+passes and the summary when it fails. The quick tier costs about 20 s at
+`-j 4` on the reference machine, the whole corpus about ten minutes
+(`spec/landed/harness/WP-045.md`).
 
 ## bench
 

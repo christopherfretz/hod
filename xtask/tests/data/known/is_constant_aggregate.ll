@@ -5,7 +5,6 @@
 ;@ covers: spec/ir.md §5.5 intrinsics (is.constant)
 ;@ unsupported(x86_64): *
 ;@ exit: 3
-;@ xfail: hod_a64 folds is.constant of an aggregate literal to false (crates/hod_a64/src/intrinsic.rs, the IsConstant arm); llc folds it to true
 
 declare i1 @llvm.is.constant.sl_i32i32s({ i32, i32 }) #0
 declare i1 @llvm.is.constant.a2i32([2 x i32]) #0

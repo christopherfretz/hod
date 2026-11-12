@@ -6,7 +6,6 @@
 ; main returns 0. Found by WP-086 (corpus `gcc-torture/llvm*/bcp-1.c.ll`).
 ;@ covers: spec/ir.md §5.5 intrinsics (is.constant)
 ;@ unsupported(x86_64): *
-;@ xfail: hod_a64 folds is.constant to false but still emits its operand's load (crates/hod_a64/src/intrinsic.rs, the IsConstant arm), which faults; llc deletes the dead load
 
 @null = global ptr null
 

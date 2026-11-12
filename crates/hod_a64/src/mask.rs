@@ -297,9 +297,8 @@ fn images<const K: usize>(
         };
         out[i] = Some(Image { at, lanes: l });
     }
-    let first = match out.iter().flatten().next() {
-        Some(&image) => image,
-        None => return cx.bug("a lane loop without operands"),
+    let Some(&first) = out.iter().flatten().next() else {
+        return cx.bug("a lane loop without operands");
     };
     Ok(out.map(|o| o.unwrap_or(first)))
 }
@@ -415,6 +414,7 @@ fn set_lane(cx: &mut FnCx<'_, A64>, r: Reg, lane: u32, first: Cond, second: Opti
 /// # Errors
 /// [`MASK_WIDE`]; [`vector::BFLOAT`]; what [`vector::lanes`] refuses;
 /// what asking for the operands reports.
+#[allow(clippy::many_single_char_names, reason = "registers named as in the instructions")]
 pub fn fcmp<'a>(
     cx: &mut FnCx<'a, A64>,
     inst: Inst<'a>,
@@ -547,6 +547,7 @@ fn result_image<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, result: Lanes) -> Cg
 /// [`MASK_WIDE`]; what [`vector::lanes`] refuses for the lanes' side;
 /// `float::CAST` for a conversion it refuses; `common`'s cast name for
 /// another opcode.
+#[allow(clippy::many_single_char_names, reason = "registers named as in the instructions")]
 pub fn cast<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
     use Opcode as O;
     let op = inst.opcode();
@@ -785,15 +786,14 @@ pub fn store<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, value: Value, ptr: Valu
     let n = mask_of(cx, value_ty(cx, value))?;
     deferred_first(cx, inst, None)?;
     let bytes = n.div_ceil(8);
-    let src = match const_operand(cx, value, n) {
-        Some(0) => None,
-        _ => {
-            let r = xr(cx.use_reg(value)?);
-            if n % 8 != 0 {
-                put(cx, mc::and_imm(Size::X, r.sp(), r.zr(), low_bits(n)));
-            }
-            Some(r)
+    let src = if const_operand(cx, value, n) == Some(0) {
+        None
+    } else {
+        let r = xr(cx.use_reg(value)?);
+        if n % 8 != 0 {
+            put(cx, mc::and_imm(Size::X, r.sp(), r.zr(), low_bits(n)));
         }
+        Some(r)
     };
     let p = xr(cx.use_reg(ptr)?);
     let mut at = Cursor::at_reg(p, 0, X16);

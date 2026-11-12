@@ -768,15 +768,12 @@ impl Out {
 
 /// A float fold of `e` lanes in `e`'s precision (not `half`).
 fn fold(e: E, op: &str, acc: u64, x: u64) -> u64 {
-    match (e, op) {
-        (Float, _) => {
-            let (a, b) = (f32::from_bits(acc as u32), f32::from_bits(x as u32));
-            u64::from(if op == "fadd" { a + b } else { a * b }.to_bits())
-        }
-        _ => {
-            let (a, b) = (f64::from_bits(acc), f64::from_bits(x));
-            if op == "fadd" { a + b } else { a * b }.to_bits()
-        }
+    if e == Float {
+        let (a, b) = (f32::from_bits(acc as u32), f32::from_bits(x as u32));
+        u64::from(if op == "fadd" { a + b } else { a * b }.to_bits())
+    } else {
+        let (a, b) = (f64::from_bits(acc), f64::from_bits(x));
+        if op == "fadd" { a + b } else { a * b }.to_bits()
     }
 }
 

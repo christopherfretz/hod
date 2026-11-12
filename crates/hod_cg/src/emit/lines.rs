@@ -27,7 +27,7 @@ use hod_dwarf::{
     CodeSpan, FunctionLines, GlobalAddr, LineProgram, LineUnit, Row, Sequence, SourceLoc,
     Transition, UnitInput, UnitPlan, function_rows, write_debug_info, write_debug_line_units,
 };
-use hod_ir::{DebugInfo, DiId, DiKind, DiNode, EmissionKind, LocId, Module, SymId, SymbolKind};
+use hod_ir::{DebugInfo, DiId, DiKind, DiNode, EmissionKind, Module, SymId, SymbolKind};
 use hod_obj::{Arch, Binding, Object, SectionId, SymbolId};
 
 use crate::error::{CgError, CgResult};
@@ -181,8 +181,8 @@ impl<'m> DebugLines<'m> {
 
     /// Encodes the sequence of the function `sym` whose transitions are
     /// `lines`, placed at `offset` in `section` with `size` bytes of
-    /// code, and records its code span. A function without debug
-    /// information gets nothing.
+    /// code, and records its code span. A function without a subprogram
+    /// of a written unit gets nothing.
     ///
     /// # Errors
     /// An internal error for rows the line writer refuses (a broken
@@ -202,13 +202,9 @@ impl<'m> DebugLines<'m> {
             SymbolKind::Function { subprogram, .. } => subprogram,
             _ => None,
         };
-        // A function without a subprogram but with locations belongs to
-        // the unit of their subprogram (§5.7).
-        let subprogram = subprogram.or_else(|| {
-            lines.iter().find_map(|row| {
-                (row.loc != LocId::NONE).then(|| self.debug.function_of(row.loc)).flatten()
-            })
-        });
+        // A function without a subprogram has no line information, even
+        // when its instructions have locations: `llc` writes neither rows
+        // nor a range for it (§5.7).
         let Some((unit, scope)) = subprogram.and_then(|sp| self.unit_of(sp)) else {
             return Ok(());
         };

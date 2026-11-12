@@ -3,8 +3,10 @@
 //! The contract is `spec/ll.md`. This crate has the lexer ([`Lexer`]) and
 //! the module-level parser ([`parse_module`]): everything of an `.ll`
 //! file except the bodies of its functions, which are found, stepped
-//! over, and handed on as byte spans ([`ParsedModule::functions`]) with
-//! the tables a body parser needs.
+//! over, and handed on as byte spans ([`ModuleText::functions`]) with
+//! the tables a body parser needs; and the body parser ([`BodyParser`],
+//! [`parse_bodies`], `spec/ll.md` §11), which reads those spans into
+//! `hod_ir` bodies, one at a time or in parallel.
 
 mod attrs;
 mod body;

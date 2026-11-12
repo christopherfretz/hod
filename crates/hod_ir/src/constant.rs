@@ -456,6 +456,21 @@ impl ConstPool {
         }
     }
 
+    /// Whether `id` is zero, `undef` or `poison`, or an aggregate or vector
+    /// of nothing but such constants: its image is all zero bytes with no
+    /// relocations. This is LLVM's test for placing a writable variable in
+    /// `.bss` (`isNullOrUndef` in `TargetLoweringObjectFile`).
+    pub fn is_zero_or_undef(&self, id: ConstId) -> bool {
+        match self.data[id.index()] {
+            Repr::Undef(_) | Repr::Poison(_) => true,
+            Repr::Aggregate { elems, len, .. } => self.elems[elems as usize..][..len as usize]
+                .iter()
+                .all(|&elem| self.is_zero_or_undef(elem)),
+            Repr::Splat { elem, .. } => self.is_zero_or_undef(elem),
+            _ => self.is_zero(id),
+        }
+    }
+
     /// The value of an integer constant at most 64 bits wide, zero-extended.
     pub fn int_value(&self, id: ConstId) -> Option<u64> {
         match self.data[id.index()] {
@@ -1230,6 +1245,21 @@ mod tests {
         assert_eq!(c.aggregate(t, arr, &[poison, poison]).unwrap(), c.poison(t, arr).unwrap());
         let mixed = c.aggregate(t, arr, &[undef, poison]).unwrap();
         assert_eq!(c.get(mixed), Const::Aggregate { ty: arr, elems: &[undef, poison] });
+        // §4.3: what LLVM places in `.bss`.
+        let zero = c.int(t, TypeId::I32, 0).unwrap();
+        let one = c.int(t, TypeId::I32, 1).unwrap();
+        let half_undef = c.aggregate(t, arr, &[zero, undef]).unwrap();
+        let nested_ty = t.array(arr, 2).unwrap();
+        let nested = c.aggregate(t, nested_ty, &[half_undef, mixed]).unwrap();
+        let not_zero = c.aggregate(t, arr, &[one, undef]).unwrap();
+        let minus_zero = c.f64(-0.0).unwrap();
+        for id in [undef, poison, zero, mixed, half_undef, nested] {
+            assert!(c.is_zero_or_undef(id));
+        }
+        for id in [one, not_zero, minus_zero] {
+            assert!(!c.is_zero_or_undef(id));
+        }
+        assert!(!c.is_zero(half_undef) && !c.is_zero(undef));
         let vec = t.vector(TypeId::I32, 2).unwrap();
         assert_eq!(c.splat(t, vec, poison).unwrap(), c.poison(t, vec).unwrap());
         assert_eq!(c.splat(t, vec, undef).unwrap(), c.undef(t, vec).unwrap());

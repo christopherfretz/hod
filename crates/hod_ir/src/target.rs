@@ -129,7 +129,14 @@ const fn prim(bits: u32, abi: u64, pref: u64) -> PrimSpec {
 }
 
 impl Default for DataLayout {
-    /// LLVM's defaults: the layout of the empty string.
+    /// LLVM 22's defaults: the layout of the empty string.
+    ///
+    /// There is no entry for `i1`: it takes the alignment of the next wider
+    /// integer with one, usually `i8`. (LLVM 19 and earlier had a default
+    /// `i1:8:8`. The same string read by LLVM 19 is this parser's reading
+    /// of the string with `i1:8-` in front; the two differ only in the
+    /// preferred alignment of `i1` when `i8` has a larger one, as on
+    /// AArch64.)
     fn default() -> Self {
         DataLayout {
             big_endian: false,
@@ -142,13 +149,7 @@ impl Default for DataLayout {
             native_int_widths: Vec::new(),
             non_integral_addr_spaces: Vec::new(),
             aggregate_align: AlignPair { abi: 1, pref: 8 },
-            ints: vec![
-                prim(1, 1, 1),
-                prim(8, 1, 1),
-                prim(16, 2, 2),
-                prim(32, 4, 4),
-                prim(64, 4, 8),
-            ],
+            ints: vec![prim(8, 1, 1), prim(16, 2, 2), prim(32, 4, 4), prim(64, 4, 8)],
             floats: vec![prim(16, 2, 2), prim(32, 4, 4), prim(64, 8, 8), prim(128, 16, 16)],
             vectors: vec![prim(64, 8, 8), prim(128, 16, 16)],
             pointers: vec![PointerSpec {
@@ -721,14 +722,7 @@ mod tests {
         assert_eq!(dl.aggregate_align, pair(1, 8));
         assert_eq!(
             dl.int_specs(),
-            [
-                prim(1, 1, 1),
-                prim(8, 1, 4),
-                prim(16, 2, 4),
-                prim(32, 4, 4),
-                prim(64, 8, 8),
-                prim(128, 16, 16)
-            ]
+            [prim(8, 1, 4), prim(16, 2, 4), prim(32, 4, 4), prim(64, 8, 8), prim(128, 16, 16)]
         );
         assert_eq!(dl.pointer(0).bits, 64);
         assert_eq!(dl.pointer(0).align, pair(8, 8));
@@ -774,7 +768,8 @@ mod tests {
     #[test]
     fn integer_alignment_uses_next_larger_then_largest() {
         let dl = parse(AARCH64_LINUX_DATA_LAYOUT);
-        assert_eq!(dl.int_align(1), pair(1, 1));
+        // `i1` has no entry of its own (LLVM 20 and later): it is `i8`'s.
+        assert_eq!(dl.int_align(1), pair(1, 4));
         assert_eq!(dl.int_align(2), pair(1, 4));
         assert_eq!(dl.int_align(9), pair(2, 4));
         assert_eq!(dl.int_align(24), pair(4, 4));
@@ -786,6 +781,17 @@ mod tests {
         let defaults = parse("");
         assert_eq!(defaults.int_align(64), pair(4, 8));
         assert_eq!(defaults.int_align(128), pair(4, 8));
+        assert_eq!(defaults.int_align(1), pair(1, 1));
+        // LLVM 19's reading of a string is this parser's with `i1:8-` in
+        // front; an explicit `i1` entry is honoured, and narrower widths
+        // than the narrowest entry use it.
+        let llvm19 = parse(&format!("i1:8-{AARCH64_LINUX_DATA_LAYOUT_LLVM19}"));
+        assert_eq!(llvm19.int_align(1), pair(1, 1));
+        assert_eq!(llvm19.int_align(2), pair(1, 4));
+        let narrow = parse("i4:32:64");
+        assert_eq!(narrow.int_align(1), pair(4, 8));
+        assert_eq!(narrow.int_align(4), pair(4, 8));
+        assert_eq!(narrow.int_align(5), pair(1, 1));
     }
 
     /// §2.1: float and vector alignment fall back to the natural alignment.
@@ -926,7 +932,7 @@ mod tests {
         }
         assert_eq!(
             parse("").to_string(),
-            "e-p0:64:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:32:64-f16:16:16-f32:32:32\
+            "e-p0:64:64:64:64-i8:8:8-i16:16:16-i32:32:32-i64:32:64-f16:16:16-f32:32:32\
              -f64:64:64-f128:128:128-v64:64:64-v128:128:128-a:0:64"
         );
     }

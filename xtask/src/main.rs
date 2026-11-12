@@ -3,6 +3,7 @@
 //! `cargo xtask ci [--quick]` is the gate described in `docs/VALIDATION.md`.
 //! `cargo xtask shim ...` builds the LLVM directory that plugs hod into kiln.
 //! `cargo xtask irdiff ...` is the IR differential harness (layer L4).
+//! `cargo xtask corpus ...` captures, verifies and counts the IR corpus.
 
 use std::process::{Command, ExitCode};
 
@@ -10,6 +11,7 @@ const USAGE: &str = "\
 usage: cargo xtask ci [--quick]
        cargo xtask shim --llvm <dir> --hod <hod binary> --out <dir> [--kiln <kiln++>]
        cargo xtask irdiff [options] [<file.ll or directory>...]   (--help for the options)
+       cargo xtask corpus capture|verify|census|fetch [options]   (--help for the options)
 ";
 
 fn main() -> ExitCode {
@@ -18,6 +20,7 @@ fn main() -> ExitCode {
         Some("ci") => ci(args.iter().any(|a| a == "--quick")),
         Some("shim") => shim(&args[1..]),
         Some("irdiff") => irdiff(&args[1..]),
+        Some("corpus") => corpus(&args[1..]),
         _ => {
             eprint!("{USAGE}");
             ExitCode::from(2)
@@ -120,6 +123,18 @@ fn irdiff(args: &[String]) -> ExitCode {
 #[cfg(not(unix))]
 fn irdiff(_: &[String]) -> ExitCode {
     eprintln!("xtask irdiff: only available on Unix hosts");
+    ExitCode::FAILURE
+}
+
+/// `cargo xtask corpus` (spec/harness.md "corpus").
+#[cfg(unix)]
+fn corpus(args: &[String]) -> ExitCode {
+    ExitCode::from(xtask::corpus::command(args))
+}
+
+#[cfg(not(unix))]
+fn corpus(_: &[String]) -> ExitCode {
+    eprintln!("xtask corpus: only available on Unix hosts");
     ExitCode::FAILURE
 }
 

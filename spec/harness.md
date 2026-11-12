@@ -2,8 +2,8 @@
 
 `xtask` is the project's harness: `cargo xtask <command>`. This file is the
 contract of its commands: `shim`, `irdiff` (with the directive format of
-its tests, "Test directives") and the gate, `ci`. Commands still to be
-specified here: corpus capture (`corpus`), benchmarks (`bench`), `bisect`.
+its tests, "Test directives"), `corpus` and the gate, `ci`. Commands still
+to be specified here: benchmarks (`bench`), `bisect`.
 
 ## shim
 
@@ -642,3 +642,436 @@ out everything that is the default: `covers`, `tier`, `target`, `llvm`,
 `link` (libraries, then `no-pie`), each `unsupported`, each `xfail`,
 `args`, each `stdin`, `exit`, each `stdout`. Reading what it writes gives
 the same `Expectations` back. Files need not be in this order.
+
+## corpus
+
+```
+cargo xtask corpus capture [--source kiln|gcc-torture|all] [--llvm <major>]
+                           [--out <dir>] [--kiln <kiln++>] [--kiln-repo <dir>]
+                           [--torture <dir>] [--limit <N>] [-j <N>]
+                           [--force] [--retry-skipped]
+cargo xtask corpus verify  [-j <N>] [--hod <binary>] [--strict]
+                           [--manifest-only] [--keep] [-v] [<corpus dir>]
+cargo xtask corpus census  [--report <file>] [<corpus dir>]
+cargo xtask corpus fetch   [--torture <dir>]
+```
+
+The corpus is the IR hod really has to compile: the modules its front
+ends give their backend, each kept as an `irdiff` test that says what the
+program built from it does. `capture` makes it, `verify` proves it,
+`census` counts what is in it, `fetch` gets the one suite that is not on
+the machine already. The corpus is build output: it is not in the
+repository, and nothing in the gate needs it, kiln, or the suite.
+
+A **source** is a producer with its suite: `kiln` (kiln++ over kiln's own
+executing tests) and `gcc-torture` (clang over GCC's `gcc.c-torture/execute`).
+A **group** is a source with an LLVM major (22, 19): the major whose `llc`,
+`clang` and installation produced and built the group's modules. Groups
+share nothing.
+
+### Where things are
+
+| what | default | set by |
+|---|---|---|
+| the corpus | `<build root>/corpus` | `--out`, or the directory argument |
+| kiln++ | `<build root>/target-kiln/release/kiln++` | `--kiln`, `$HOD_KILN` |
+| kiln's repository | `<build root>/../kiln` | `--kiln-repo`, `$HOD_KILN_REPO` |
+| the GCC checkout | `<build root>/../.toolchain/gcc-tests` | `--torture`, `$HOD_GCC_TESTS` |
+| the work directory | `<corpus>.work`, beside the corpus | |
+
+`<build root>` is the build directory (`CARGO_TARGET_DIR`, else `target/`
+of the workspace), or its parent when the build directory is named
+`target-<something>` (one of several per-checkout directories,
+`scripts/env.sh`). LLVM, the linker driver and the linkers are found as
+for `irdiff` ("Tools"); `clang` for a major is `clang-<N>` on `PATH`, else
+`/usr/lib/llvm-<N>/bin/clang`.
+
+A source that is not there (no kiln++, no kiln repository, no suite) is a
+note and is skipped, also under `HOD_REQUIRE_TOOLS=1`: they are not tools
+of the gate. A missing oracle, `clang`, linker driver or required linker
+is a note, and under `HOD_REQUIRE_TOOLS=1` a failure (exit status 3) after
+everything that can be captured has been; `wild` is optional, as for
+`irdiff`. Nothing in kiln's repository or the GCC checkout is written.
+
+### capture
+
+| option | meaning |
+|---|---|
+| `--source <name>` | `kiln`, `gcc-torture` or `all`; repeatable. Default: all. |
+| `--llvm <major>` | 22 or 19; repeatable. Default: each one installed, newest first. |
+| `--out <dir>` | The corpus directory. |
+| `--kiln`, `--kiln-repo`, `--torture` | "Where things are". |
+| `--limit <N>` | Only the first N tests, in name order, of each group. |
+| `-j <N>`, `--jobs <N>` | Tests captured at once, and `irdiff`'s jobs in admission. Default 3, at most 16. |
+| `--force` | Capture again what is already in the corpus. |
+| `--retry-skipped` | Capture again what the last capture skipped. |
+
+The default is every source with every installed LLVM major and no
+limit: on the reference machine that is 5760 entries in 164 MiB, made in
+about eleven minutes at `-j 3` (`docs/status/corpus.md` has the numbers
+of the last capture). `--limit` is the bounded, deterministic selection
+for a quick look.
+
+For each group, in the order kiln before gcc-torture and newer LLVM
+first, a capture:
+
+1. lists the suite's tests and decides, from each test alone, whether it
+   can be an entry ("Skip reasons");
+2. leaves alone the tests it has already dealt with ("Incremental");
+3. builds and runs the others, at most `-j` at once, each in a directory
+   of its own under the work directory and every child process within
+   `irdiff`'s kind of limits ("Child processes"); what passes is a
+   **candidate**, staged outside the corpus;
+4. runs the candidates through admission ("Admission");
+5. moves the admitted entries into the corpus and writes the three
+   tables ("Manifest"), each by writing a new file and renaming it.
+
+A capture interrupted before step 5 leaves the group as it was. Step 5
+only writes, entries before tables; interrupted there, it can leave
+entry files the manifest does not name, which `verify` reports and the
+next capture makes again.
+
+A progress line is printed every 200 tests; at the end, per group, one
+line `corpus: <group>: N tests: N captured, N reused, N skipped, N
+removed; <seconds>` and one line per skip reason with its count, then the
+corpus's entries and size.
+
+Exit status: 0 also when tests were skipped (a skip is a result, not an
+error); 3 when a required tool is missing under `HOD_REQUIRE_TOOLS=1`,
+or the corpus cannot be read or written; 2 for a usage error.
+
+### The kiln source
+
+The tests are the files with `//@ expect: run` in their header under
+`tests/c`, `tests/conformance` and `tests/stress` of kiln's repository
+(`.c`, `.cpp`, and headers that carry a header), in name order. A test's
+name is its path from the repository's root.
+
+Each is built the way kiln's own harness builds it, by one command, run in
+a directory that mirrors the repository's root (links to `tests` and
+`resource`), so that the paths in the module are relative and the same on
+every machine:
+
+```
+kiln++ --llvm-dir=<capture directory> [-x c | -x c++] -std=<std> \
+       -fno-crash-diagnostics -fclang-compat=<major> <the header's args> \
+       -fdebug-prefix-map=<cwd>=. <test> -o <program>
+```
+
+- kiln++ is run **under the name it is given**. `kiln++` is a link to
+  `kiln`, and the name is what selects the C++ driver; resolved to `kiln`
+  it links C++ programs without the C++ library.
+- `<std>` is the header's `std:`, else `c17` for a `.c` test and `c++26`.
+  In the arguments `%{test_dir}` is the test's directory relative to the
+  root, `%{repo_root}` is `.`, `%{resource_dir}` is `resource`.
+- The **capture directory** is a shim ("shim") of the group's LLVM
+  installation whose `bin/llc` is a script instead of hod: it saves its
+  arguments and its standard input, then runs the real `llc` on them. So
+  the module kept is byte for byte what kiln gave its backend, and the
+  program is built by the real tools exactly as without the capture.
+  `TMPDIR` and `XDG_CACHE_HOME` point into the work directory; `LC_ALL=C`.
+- The program is then run in an empty directory with the header's
+  `run-args:` and `run-stdin:` (or `run-stdin-file:`), within the run
+  limits (10 s, 1 GiB; the compile has 120 s and 8 GiB, as in kiln's
+  harness). It must exit with the header's `exit:` (default 0) and, if the
+  header has `stdout:` lines or a `stdout-file:`, write exactly that.
+
+The entry's expectations are what the program **did**: its exit status and
+its standard output. Its link is `link: c++ m`, with `no-pie` when llc was
+given `-relocation-model=static`.
+
+### The gcc-torture source
+
+The tests are the `.c` files of `gcc.c-torture/execute`, of its `ieee/`
+and of its `builtins/` (each of which is built with a second file and is
+therefore skipped), in name order. Each is compiled in the suite's
+directory:
+
+```
+clang-<N> -O0 -S -emit-llvm -w <flags> -o <module> <test>
+llc-<N> -O0 -relocation-model=pic -filetype=obj -o <object> <module>
+gcc -pie -o <program> <object> -lm
+```
+
+`<flags>` are the test's `dg-options` and `dg-additional-options` (those
+without a target selector, or whose selector does not name the host's
+architecture; one that does is `special-flags`) and the options of its
+`.x` file, translated: language, warning, `-f[no-]` code-generation and
+`-D`/`-U`/`-I` options clang knows are kept; GCC-only tuning options
+(`-ftree-*`, `-fno-ipa-*`, `--param`, `-fdump-*`, ...) are dropped;
+`-fpermissive` becomes `-Wno-error=` for implicit function declarations,
+implicit `int`, and `int` and pointer conversions; `-Wl,`, `-Wa,`, `-Wp,`
+and anything unknown make the test `special-flags`. Tests of `ieee/` get
+`-fno-inline`, as in the suite's own driver. The program is run without
+arguments and must exit with status 0: the suite's tests report failure
+by `abort` or a non-zero status. The entry's link is `link: m`.
+
+### Entries
+
+An entry is one file:
+
+```
+;@ covers: <source> <test>
+;@ target: <host architecture>
+;@ llvm: <major>
+;@ link: [c++] m [no-pie]
+;@ args: ...            (if any)
+;@ stdin: ...           (one per line of input)
+;@ exit: <status>       (if not 0)
+;@ stdout: ...          (one per line of output)
+; corpus entry written by `cargo xtask corpus capture`; do not edit
+; source: <source> <test>
+; producer-args: <the producer's arguments, the machine's directory as <cwd>>
+; llc-args: <what the producer's driver gave llc, without -o <object> and the input>
+<the module, unchanged>
+```
+
+The directives are in canonical form ("Test directives"). `covers` names
+the test the entry was captured from, not a part of a specification. An
+entry is for the architecture it was captured on and for one LLVM major:
+the module carries its own triple and data layout.
+
+Only what the directive format can say is an entry. `llc`'s arguments are
+recorded but not replayed: `irdiff` builds an entry with `-O0
+-filetype=obj -relocation-model=pic|static` and the module's triple. An
+entry whose producer gave `llc` more than that (kiln passes
+`-debugger-tune=gdb` for `-g` tests) is still an entry if it passes
+admission; the manifest and the census report say which those are.
+
+### Skip reasons
+
+A test without an entry has one row in `SKIPPED.tsv` with one of these
+reasons and a detail: the failing tool's first line of output, with the
+machine's paths replaced, and for a failed admission without the
+program's output and cut before the first path of the run, so that the
+table is the same after every capture. Counted per group by `capture` and
+in the census report.
+
+Decided from the test alone, without running anything:
+
+| reason | the test |
+|---|---|
+| `header-error` | has a header that cannot be read, or names a file that is not there |
+| `marked-skip`, `marked-xfail` | is marked `skip:` or `xfail:` for kiln |
+| `multi-file` | is more than one translation unit built by one command (`module:`, `unit:`, `header-unit:`, `pch:`, `two-step:`; a torture test of `builtins/`) |
+| `needs-env` | needs an environment (`env:`) |
+| `other-target` | names a target other than the host (`--target`) |
+| `requires` | has a `requires:` or `min-oracle:` the host or the group's LLVM does not meet |
+| `needs-toolchain` | uses a `%{...}` placeholder that needs a toolchain kiln's suite locates (`%{gcc_toolchain}`, ...) |
+| `libc++` | is built with `-stdlib=libc++`; an entry's link is against libstdc++ |
+| `link-flags` | has link options the entry's link cannot repeat (`-l`, `-L`, `-Wl,`, `-fuse-ld=`, `-static`, ...) |
+| `special-flags` | (torture) asks for options that are not translated |
+
+Found by running:
+
+| reason | what happened |
+|---|---|
+| `compile-fails`, `clang-rejects` | the producer failed before a module reached llc |
+| `llc-fails` | (torture) llc failed on the module |
+| `link-fails` | the module was compiled and the link failed |
+| `no-module` | kiln++ succeeded without running llc |
+| `multi-file` | kiln++ ran llc more than once |
+| `opt-first-lto`, `-sanitizer`, `-coverage`, `-optimized`, `-coroutine`, `-always-inline` | llc was given bitcode (or, for LTO, nothing): kiln ran `opt` first. Which one is told from the arguments, else from the source text (a coroutine keyword or header, searched through the test's own `#include "..."` files), else it is `always-inline`, the remaining cause. A guess, good enough to count. |
+| `llc-args-unexpected` | llc's command line was not `... -o <object> -` |
+| `module-not-text` | the module is not UTF-8 text, has a NUL, or has a line that starts with `;@` |
+| `program-fails` | the program was killed, timed out, or (torture) exited with a non-zero status |
+| `expectation-mismatch` | (kiln) the program did not do what the header says |
+| `stdout-not-expressible`, `stdin-not-expressible`, `args-not-expressible` | the directive format cannot hold the output (not lines of UTF-8, more than 256 KiB), the input, or an argument |
+| `not-reproducible` | the entry did not pass admission |
+| `capture-broken` | the capture itself failed (a tool could not be run) |
+
+### Admission
+
+Before anything enters the corpus, the group's candidates are run by
+`irdiff`'s own engine ("What a test does") in strict mode, with a stand-in
+for hod that declines every module: the real `llc` builds the entry file
+as `irdiff` will build it, the program is linked by every linker found and
+must do what the directives say. A candidate is admitted when that holds
+for every linker; otherwise it is `not-reproducible` with the first
+failure as its detail. So every entry is, by construction, a test whose
+oracle side passes with every linker, built from the entry file alone.
+
+### Layout
+
+```
+<corpus>/MANIFEST.tsv
+<corpus>/SKIPPED.tsv
+<corpus>/CAPTURE.tsv
+<corpus>/<source>/llvm<N>/<test>.ll
+<corpus>.work/                       shims, kiln's caches, per-run directories
+```
+
+`<test>` is the test's name, for kiln without the leading `tests/`
+(`kiln/llvm22/conformance/expr.add/x.cpp.ll`, `gcc-torture/llvm19/ieee/inf-1.c.ll`).
+Each `<corpus>/<source>/llvm<N>` is a directory of `irdiff` tests: `cargo
+xtask irdiff --llvm <N> --hybrid <that directory>` runs it. Given the
+whole corpus, `irdiff` runs the entries of its oracle's major and reports
+the others as SKIP. A capture
+removes its per-run directory when it ends; the rest of the work directory
+is reusable and can be deleted at any time.
+
+### Manifest
+
+Three tab-separated tables with a header line, sorted, in which a
+backslash, tab, newline and carriage return are written `\\`, `\t`, `\n`,
+`\r` and an empty value is `-`.
+
+- `MANIFEST.tsv`, one row per entry: `entry` (the path in the corpus),
+  `source`, `llvm`, `test`, `revision` (the commit of the suite's
+  checkout, with `-dirty` if tracked files differ, `unknown` if it is not
+  the top of a checkout), `producer` (the first line of its `--version`),
+  `producer_args`, `llc_args`, `sha256` and `bytes` of the entry file,
+  `key`.
+- `SKIPPED.tsv`, one row per skipped test: `source`, `llvm`, `test`,
+  `reason`, `detail`, `key`.
+- `CAPTURE.tsv`, one row per group: what the last capture that made the
+  whole group anew (nothing reused, no `--limit`) did, how long it took
+  and with how many jobs. It is the one file of the corpus that is not a
+  function of the inputs.
+
+### Incremental
+
+The `key` of a test is the SHA-256 of: a format tag (`hod-corpus-1`,
+changed when entries are made differently), the source, the LLVM major,
+`llc`'s `LLVM version` line, the producer's version line, the suite's
+revision, the test's name and the SHA-256 of the test's file. A capture
+leaves a test alone when its manifest row has the same key and the entry
+file still has the row's hash, or when its skip row has the same key;
+everything else is captured again. `--force` captures everything again;
+`--retry-skipped` captures the skipped again (a skip can be the machine's
+fault). Entries and rows of tests that are no longer in the suite are
+removed, except by a capture with `--limit`, which looks at the first N
+tests of each group and removes nothing. A capture of one source or one
+major leaves the other groups as they are.
+
+The key does not see what a test includes: a changed header under a
+test's directory, a changed system header, or a changed `xtask` that
+captures differently without a new format tag need `--force`.
+
+**What is reproducible.** With the same machine and inputs, a repeated
+capture, forced or not, writes `MANIFEST.tsv`, `SKIPPED.tsv` and every
+entry byte for byte: the tables hold no times or process ids, kiln runs
+in a mirror of its repository so that modules name relative paths, and
+details have the machine's directories replaced. The corpus directory's
+own location does not matter. Across machines the corpus is stable only
+as far as its inputs are: an entry depends on the architecture (it is
+captured for the host), on kiln's revision and build, on the exact
+versions of clang and LLVM, and on the system's C and C++ library headers
+(their inline functions and macros are in the modules). The manifest
+records the first three; the last is why a corpus is captured where it is
+used and not committed.
+
+### verify
+
+1. **Manifest.** Every row's file is there, at the path its test gives,
+   with the row's size and hash, and reads as directives that accept the
+   row's LLVM and carry `covers`; no other `.ll` file is under the corpus.
+   Each difference is one `MANIFEST <entry>: <what>` line.
+2. **irdiff.** For each LLVM major of the corpus, newest first, one
+   `irdiff` run over that major's group directories, in hybrid mode
+   (`--strict` for strict), with the workspace's hod (or `--hod`); results
+   in `<build>/corpus/verify-llvm<N>-<mode>.tsv`. `--manifest-only` stops
+   after step 1.
+
+Exit status: 1 when an `irdiff` run has a FAIL or XPASS; else 3 when the
+corpus differs from its manifest, or a run has an ERROR or a missing
+required tool; else 0. A directory without a corpus is an error (status
+3), not a pass.
+
+### census
+
+Reads the tables and every entry's module and writes one Markdown report,
+`docs/status/corpus.md` (`--report`); the same corpus gives the same
+report. Its parts:
+
+- **Capture**: per group, tests seen, captured and skipped, bytes,
+  producer and revision; the last capture's times; skip reasons by group;
+  `llc` argument sets and how many entries have arguments `irdiff` does
+  not repeat.
+- **Census**: per group, each table below as `occurrences (modules with at
+  least one)`, rows sorted by total count, long tables cut with a line
+  that says how much was cut; totals; and median, 90th percentile and
+  maximum of module size (bytes, lines), definitions, declarations, global
+  variables, basic blocks, instructions and metadata nodes per module, and
+  blocks and instructions per function.
+- **Tests that are not in the corpus**: the kiln tests that fail with
+  plain kiln++ and the real `llc` (the reasons `compile-fails`,
+  `llc-fails`, `link-fails`, `program-fails`, `expectation-mismatch`,
+  `no-module`, `not-reproducible`), then every skipped test by source and
+  reason.
+
+The tables: top-level statements; triples, data layouts and producers;
+instructions by opcode, and by opcode and operand type; casts by source
+and destination; comparison predicates; instruction flags and atomic
+orderings; `getelementptr` shapes; alignments; `switch` sizes; calls by
+kind (direct, indirect, intrinsic, inline assembly, through a constant
+expression, `tail`/`musttail`/`notail`, explicit function type);
+intrinsics called and declared, by name with the overload suffix folded
+(`llvm.memcpy.p0.p0.i64` is `llvm.memcpy`); inline assembly; module
+assembly; calling conventions; linkage; visibility, preemption, DLL
+storage and `unnamed_addr`; thread-local models; COMDATs; global variable
+kinds; sections; function signatures; function attributes on definitions
+and on declarations (through attribute groups too); parameter, return,
+call-site and call-argument attributes; operand bundles; integer widths;
+other type mentions (floating-point kinds, pointers with address spaces,
+arrays by element); vector types; aggregates passed and returned by value,
+by shape with named types expanded; constant expressions and constant
+kinds, in initializers and as operands; exception handling (`invoke`,
+`landingpad` clauses, `resume`, personalities, funclet instructions);
+module flags; named metadata; metadata attachments on instructions and on
+globals; `#dbg_*` records against `llvm.dbg.*` calls; metadata node
+kinds; DWARF constants; and what the scanner did not recognise.
+
+The census is **lexical**, not a parse. The scanner splits a module into
+tokens, in which a comment is nothing and a string, a `c"..."` constant
+and a quoted name are one token each, so text inside them is never
+counted as code; it joins lines into statements (a line continues the one
+before while a bracket is open, and inside a function body when it starts
+with `to`, `unwind`, `catch`, `cleanup` or `filter`); and it reads of each
+statement only what a table needs. What that approximates is printed in
+the report: type mentions are counted per token, so a constant's type is
+a mention; constant expressions are recognised by keyword and `(`;
+instruction counts leave out `#dbg_*` records; a basic block is a label
+line or a function's unlabelled entry block. Anything the scanner cannot
+place is counted under "Not recognised", so a gap is visible.
+
+### fetch
+
+Clones `https://github.com/gcc-mirror/gcc.git` at the tag
+`releases/gcc-16.1.0` into the `--torture` directory: shallow, without
+blobs, with a sparse checkout of `gcc/testsuite/gcc.c-torture/execute/`
+only (about 32 MB). The tag is the pin; the checkout's commit is what the
+manifest records as the suite's revision
+(`6afcc4f6da931eb93f3ab001a0dd9650ea71d1ea` for this tag). A directory
+that already holds the suite is left alone. This is the command's only
+use of the network.
+
+### Library
+
+`xtask::corpus`: `capture::{Options, capture, CaptureReport}`,
+`verify::{Options, verify, VerifyReport, check_manifest}`,
+`census::{scan_module, count_corpus, render, write_report, GroupCensus, T,
+D}`, `manifest::{Manifest, Skips}`, `entry::{compose, module_of}`, and the
+two sources' rules, `kiln::{discover, parse_header, plan}` and
+`torture::{discover, flags, clang_args}`. `irdiff`'s `Search::on_path` and
+`Search::versioned` are public for it.
+
+### Tests
+
+- Unit tests beside the code: the tables' escaping and round trip, the
+  key, entry composition and what cannot be an entry, kiln's header rules
+  and every static skip, the capture script, the torture suite's flag
+  translation, admission verdicts, the pinned fetch, the command line; for
+  the census, the tokens, a module that has a row in every table checked
+  row by row, code inside comments, strings and quoted names, intrinsic
+  folding, rarer constructs, and module counts.
+- `xtask/tests/corpus_fakes.rs`: capture, admission, both tables, entries,
+  every run-time skip reason, incremental and forced captures, `--limit`,
+  `--retry-skipped`, two LLVM majors, missing sources and tools, `verify`
+  on a sound and on a damaged corpus, and the report, with a kiln++, a
+  clang, an `llc`, a driver and linkers that are shell scripts.
+- `xtask/tests/corpus_real.rs`: a few C programs laid out as the torture
+  suite, captured with the real clang and `llc` for each installed major,
+  verified through `irdiff --hybrid` with the workspace's hod, and
+  counted. Skips without the tools; fails under `HOD_REQUIRE_TOOLS=1`. It
+  needs neither kiln nor the GCC suite.

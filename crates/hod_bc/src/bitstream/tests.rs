@@ -127,7 +127,8 @@ fn fixed_fields_of_every_width_and_alignment() {
     // §2.1: a field of 0 to 64 bits at every bit offset.
     for offset in 0..64u32 {
         for width in 0..=64u32 {
-            let value = 0xdead_beef_cafe_f00d_u64 & if width == 64 { u64::MAX } else { (1 << width) - 1 };
+            let value =
+                0xdead_beef_cafe_f00d_u64 & if width == 64 { u64::MAX } else { (1 << width) - 1 };
             let mut writer = BitWriter::new();
             writer.emit(0, offset);
             writer.emit(value, width);

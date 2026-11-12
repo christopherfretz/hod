@@ -8,12 +8,17 @@
 //! their length and handed on as bit spans ([`ModuleBits::functions`])
 //! with the tables a body reader needs.
 
+mod attrs;
 pub mod bitstream;
 pub mod codes;
+mod consts;
 mod error;
+mod module;
 mod raw;
+mod types;
 
 pub use error::{BcError, BcErrorKind, BcResult};
+pub use module::{BcModule, FunctionBits, ModuleBits, ReadOptions, read_module};
 
 /// The limits an input may not pass (`spec/bc.md` §8); passing one is a
 /// [`BcErrorKind::Limit`] error.
@@ -29,7 +34,7 @@ pub mod limits {
 /// alone, for tests and timing.
 ///
 /// # Errors
-/// As the first pass of the module read.
+/// As the first pass of [`read_module`].
 #[doc(hidden)]
 pub fn walk_only(data: &[u8]) -> BcResult<usize> {
     raw::walk(data).map(|raw| raw.pool.len())

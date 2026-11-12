@@ -134,7 +134,11 @@ impl<'a> BitReader<'a> {
             let payload = chunk & (high - 1);
             if shift < 64 {
                 if shift + payload_bits > 64 && payload >> (64 - shift) != 0 {
-                    return fail(BcErrorKind::Malformed, at, "a variable-width number over 64 bits");
+                    return fail(
+                        BcErrorKind::Malformed,
+                        at,
+                        "a variable-width number over 64 bits",
+                    );
                 }
                 value |= payload << shift;
             } else if payload != 0 {
@@ -145,7 +149,11 @@ impl<'a> BitReader<'a> {
             }
             shift += payload_bits;
             if shift > 128 {
-                return fail(BcErrorKind::Malformed, at, "a variable-width number that does not end");
+                return fail(
+                    BcErrorKind::Malformed,
+                    at,
+                    "a variable-width number that does not end",
+                );
             }
         }
     }
@@ -441,11 +449,19 @@ impl<'a, 'b> Cursor<'a, 'b> {
                         return fail(BcErrorKind::Malformed, self.at, "a block id over 32 bits");
                     };
                     if !(1..=32).contains(&width) {
-                        return fail(BcErrorKind::Malformed, self.at, "an abbreviation width of 0 or over 32");
+                        return fail(
+                            BcErrorKind::Malformed,
+                            self.at,
+                            "an abbreviation width of 0 or over 32",
+                        );
                     }
                     let end = start + words * 32;
                     if end > self.bits.end() {
-                        return fail(BcErrorKind::Malformed, self.at, "a block longer than what holds it");
+                        return fail(
+                            BcErrorKind::Malformed,
+                            self.at,
+                            "a block longer than what holds it",
+                        );
                     }
                     self.pending = Some(Pending { id: block, width: width as u32, start, end });
                     return Ok(Entry::Block(block));
@@ -550,18 +566,30 @@ impl<'a, 'b> Cursor<'a, 'b> {
                     let words = self.bits.read(32)?;
                     let end = self.bits.pos() + words * 32;
                     if end > self.bits.end() {
-                        return fail(BcErrorKind::Malformed, self.at, "a block longer than what holds it");
+                        return fail(
+                            BcErrorKind::Malformed,
+                            self.at,
+                            "a block longer than what holds it",
+                        );
                     }
                     let limit = self.bits.end();
                     self.bits.seek(end, limit)?;
                 }
                 DEFINE_ABBREV => {
                     let Some(block) = current else {
-                        return fail(BcErrorKind::Malformed, self.at, "an abbreviation in BLOCKINFO before SETBID");
+                        return fail(
+                            BcErrorKind::Malformed,
+                            self.at,
+                            "an abbreviation in BLOCKINFO before SETBID",
+                        );
                     };
                     let range = self.define_abbrev(true)?;
                     let InfoRef::Owned(info) = &mut self.info else {
-                        return fail(BcErrorKind::Malformed, self.at, "BLOCKINFO inside a block read on its own");
+                        return fail(
+                            BcErrorKind::Malformed,
+                            self.at,
+                            "BLOCKINFO inside a block read on its own",
+                        );
                     };
                     info.add(block, range);
                 }
@@ -570,10 +598,18 @@ impl<'a, 'b> Cursor<'a, 'b> {
                     // SETBID; BLOCKNAME and SETRECORDNAME are names only.
                     if code == 1 {
                         let Some(&block) = ops.first() else {
-                            return fail(BcErrorKind::Malformed, self.at, "SETBID without a block id");
+                            return fail(
+                                BcErrorKind::Malformed,
+                                self.at,
+                                "SETBID without a block id",
+                            );
                         };
                         let Ok(block) = u32::try_from(block) else {
-                            return fail(BcErrorKind::Malformed, self.at, "a block id over 32 bits");
+                            return fail(
+                                BcErrorKind::Malformed,
+                                self.at,
+                                "a block id over 32 bits",
+                            );
                         };
                         current = Some(block);
                     }
@@ -588,7 +624,11 @@ impl<'a, 'b> Cursor<'a, 'b> {
         let count = self.bits.vbr(5)?;
         // Each operand is at least two bits.
         if count == 0 || count > self.bits.left() / 2 {
-            return fail(BcErrorKind::Malformed, at, "an abbreviation with no operands or more than the bits left");
+            return fail(
+                BcErrorKind::Malformed,
+                at,
+                "an abbreviation with no operands or more than the bits left",
+            );
         }
         let arena_len = match (&self.info, info) {
             (InfoRef::Owned(block_info), true) => block_info.ops.len(),
@@ -613,7 +653,11 @@ impl<'a, 'b> Cursor<'a, 'b> {
                     let width = self.bits.vbr(5)?;
                     let limit = if encoding == 1 { 64 } else { 32 };
                     if width > limit {
-                        return fail(BcErrorKind::Malformed, at, "an abbreviation field that is too wide");
+                        return fail(
+                            BcErrorKind::Malformed,
+                            at,
+                            "an abbreviation field that is too wide",
+                        );
                     }
                     match (encoding, width) {
                         // LLVM reads a zero-width field as the literal 0.
@@ -641,9 +685,16 @@ impl<'a, 'b> Cursor<'a, 'b> {
                 AbbrevOp::Array => {
                     let element = parsed.get(at_op + 1);
                     let fits = at_op + 2 == parsed.len()
-                        && matches!(element, Some(AbbrevOp::Fixed(_) | AbbrevOp::Vbr(_) | AbbrevOp::Char6));
+                        && matches!(
+                            element,
+                            Some(AbbrevOp::Fixed(_) | AbbrevOp::Vbr(_) | AbbrevOp::Char6)
+                        );
                     if !fits || at_op == 0 {
-                        return fail(BcErrorKind::Malformed, at, "an array that is not next to last with a scalar element");
+                        return fail(
+                            BcErrorKind::Malformed,
+                            at,
+                            "an array that is not next to last with a scalar element",
+                        );
                     }
                 }
                 AbbrevOp::Blob if !last || at_op == 0 => {
@@ -673,7 +724,11 @@ impl<'a, 'b> Cursor<'a, 'b> {
         let base = self.stack.last().map_or(0, |open| open.local);
         match self.local.get(base + index - inherited.len()) {
             Some(&(start, len)) => Ok(&self.ops[start as usize..][..len as usize]),
-            None => fail(BcErrorKind::Malformed, self.at, format!("abbreviation id {id} is not defined")),
+            None => fail(
+                BcErrorKind::Malformed,
+                self.at,
+                format!("abbreviation id {id} is not defined"),
+            ),
         }
     }
 
@@ -691,7 +746,11 @@ impl<'a, 'b> Cursor<'a, 'b> {
             let code = self.bits.vbr(6)?;
             let count = self.bits.vbr(6)?;
             if count > self.bits.left() / 6 {
-                return fail(BcErrorKind::Malformed, at, "a record with more operands than the bits left");
+                return fail(
+                    BcErrorKind::Malformed,
+                    at,
+                    "a record with more operands than the bits left",
+                );
             }
             ops.reserve(count as usize);
             for _ in 0..count {
@@ -726,7 +785,11 @@ impl<'a, 'b> Cursor<'a, 'b> {
                         _ => 6,
                     };
                     if count > self.bits.left() / min {
-                        return fail(BcErrorKind::Malformed, at, "an array with more elements than the bits left");
+                        return fail(
+                            BcErrorKind::Malformed,
+                            at,
+                            "an array with more elements than the bits left",
+                        );
                     }
                     ops.reserve(count as usize);
                     for _ in 0..count {

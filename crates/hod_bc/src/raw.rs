@@ -4,9 +4,9 @@
 //! the container; the build ([`crate::module`]) reads the records in the
 //! order `hod_ll` decides things in.
 
-use crate::bitstream::{BlockInfo, BlockSpan, Cursor, Entry, BLOCKINFO_BLOCK};
+use crate::bitstream::{BLOCKINFO_BLOCK, BlockInfo, BlockSpan, Cursor, Entry};
 use crate::codes::{self, block, md, module};
-use crate::error::{fail, BcErrorKind, BcResult};
+use crate::error::{BcErrorKind, BcResult, fail};
 
 /// A record kept: its code, where it is, and its operands in the pool.
 #[derive(Clone, Copy, Debug)]
@@ -32,8 +32,6 @@ pub(crate) struct MdStrings<'a> {
     pub count: u64,
     pub offset: u64,
     pub blob: &'a [u8],
-    /// The metadata id of the first string.
-    pub first: u32,
 }
 
 /// One metadata id: the record that defined it (`None` for a string).
@@ -44,7 +42,7 @@ pub(crate) enum MdSlot {
     /// A NODE, DISTINCT_NODE or VALUE record, with its operands.
     Kept(Rec),
     /// A debug-info node (or another record that defines an id), not kept.
-    Skipped { code: u32, pos: u64 },
+    Skipped,
 }
 
 /// What the first pass keeps.
@@ -139,7 +137,11 @@ pub(crate) fn walk(data: &[u8]) -> BcResult<Raw<'_>> {
                             raw.strtab = Some((at, blob));
                         }
                         (codes::STRTAB_BLOB, _) => {
-                            return fail(BcErrorKind::Invalid, at, "a second string table, or one without a blob");
+                            return fail(
+                                BcErrorKind::Invalid,
+                                at,
+                                "a second string table, or one without a blob",
+                            );
                         }
                         _ => return unknown_record(at, "STRTAB", code),
                     }
@@ -179,14 +181,22 @@ fn stream_range(data: &[u8]) -> BcResult<(u64, u64)> {
         };
         let (offset, size) = (offset as usize, size as usize);
         if offset.checked_add(size).is_none_or(|end| end > data.len()) {
-            return fail(BcErrorKind::Malformed, 64, "a wrapper header whose stream is not in the file");
+            return fail(
+                BcErrorKind::Malformed,
+                64,
+                "a wrapper header whose stream is not in the file",
+            );
         }
         (offset, size)
     } else {
         (0, data.len())
     };
     if data.get(offset..offset + 4) != Some(&MAGIC[..]) || size < 4 {
-        return fail(BcErrorKind::Malformed, offset as u64 * 8, "not LLVM bitcode: no 'BC' 0xC0DE magic number");
+        return fail(
+            BcErrorKind::Malformed,
+            offset as u64 * 8,
+            "not LLVM bitcode: no 'BC' 0xC0DE magic number",
+        );
     }
     // LLVM writes whole words; trailing bytes of a word cut short are
     // padding the walk never reaches.
@@ -237,7 +247,11 @@ fn each_record<'a>(
     }
 }
 
-fn walk_module<'a>(cursor: &mut Cursor<'a, '_>, raw: &mut Raw<'a>, ops: &mut Vec<u64>) -> BcResult<()> {
+fn walk_module<'a>(
+    cursor: &mut Cursor<'a, '_>,
+    raw: &mut Raw<'a>,
+    ops: &mut Vec<u64>,
+) -> BcResult<()> {
     loop {
         match cursor.next()? {
             Entry::End => return Ok(()),
@@ -266,15 +280,25 @@ fn walk_module<'a>(cursor: &mut Cursor<'a, '_>, raw: &mut Raw<'a>, ops: &mut Vec
                     module::SECTIONNAME => &mut raw.section_names,
                     module::GCNAME => &mut raw.gc_names,
                     module::COMDAT => &mut raw.comdats,
-                    module::GLOBALVAR | module::FUNCTION | module::ALIAS | module::IFUNC => &mut raw.globals,
+                    module::GLOBALVAR | module::FUNCTION | module::ALIAS | module::IFUNC => {
+                        &mut raw.globals
+                    }
                     // The offset of the function-level symbol table, and the
                     // module hash: neither says anything about the module.
                     module::VSTOFFSET | module::HASH => continue,
                     module::DEPLIB => {
-                        return fail(BcErrorKind::Unsupported("deplib"), at, "the pre-3.0 DEPLIB record");
+                        return fail(
+                            BcErrorKind::Unsupported("deplib"),
+                            at,
+                            "the pre-3.0 DEPLIB record",
+                        );
                     }
                     module::ALIAS_OLD => {
-                        return fail(BcErrorKind::Unsupported("alias-old"), at, "the pre-3.8 ALIAS record");
+                        return fail(
+                            BcErrorKind::Unsupported("alias-old"),
+                            at,
+                            "the pre-3.8 ALIAS record",
+                        );
                     }
                     _ => return unknown_record(at, "MODULE", code),
                 };
@@ -295,12 +319,18 @@ fn walk_module<'a>(cursor: &mut Cursor<'a, '_>, raw: &mut Raw<'a>, ops: &mut Vec
                     | block::GLOBALVAL_SUMMARY
                     | block::FULL_LTO_GLOBALVAL_SUMMARY => cursor.skip(),
                     block::TYPE => collect(cursor, ops, &mut raw.pool, &mut raw.types)?,
-                    block::PARAMATTR_GROUP => collect(cursor, ops, &mut raw.pool, &mut raw.attr_groups)?,
+                    block::PARAMATTR_GROUP => {
+                        collect(cursor, ops, &mut raw.pool, &mut raw.attr_groups)?
+                    }
                     block::PARAMATTR => collect(cursor, ops, &mut raw.pool, &mut raw.attr_lists)?,
                     block::CONSTANTS => collect(cursor, ops, &mut raw.pool, &mut raw.constants)?,
                     block::METADATA_KIND => collect(cursor, ops, &mut raw.pool, &mut raw.md_kinds)?,
-                    block::OPERAND_BUNDLE_TAGS => collect(cursor, ops, &mut raw.pool, &mut raw.bundle_tags)?,
-                    block::SYNC_SCOPE_NAMES => collect(cursor, ops, &mut raw.pool, &mut raw.sync_scopes)?,
+                    block::OPERAND_BUNDLE_TAGS => {
+                        collect(cursor, ops, &mut raw.pool, &mut raw.bundle_tags)?
+                    }
+                    block::SYNC_SCOPE_NAMES => {
+                        collect(cursor, ops, &mut raw.pool, &mut raw.sync_scopes)?
+                    }
                     block::METADATA => {
                         cursor.enter()?;
                         walk_metadata(cursor, raw, ops)?;
@@ -319,7 +349,12 @@ fn walk_module<'a>(cursor: &mut Cursor<'a, '_>, raw: &mut Raw<'a>, ops: &mut Vec
 }
 
 /// Keeps every record of the block whose header was just read.
-fn collect(cursor: &mut Cursor<'_, '_>, ops: &mut Vec<u64>, pool: &mut Vec<u64>, out: &mut Vec<Rec>) -> BcResult<()> {
+fn collect(
+    cursor: &mut Cursor<'_, '_>,
+    ops: &mut Vec<u64>,
+    pool: &mut Vec<u64>,
+    out: &mut Vec<Rec>,
+) -> BcResult<()> {
     cursor.enter()?;
     each_record(cursor, ops, |code, at, ops, _| {
         out.push(push(pool, code, at, ops)?);
@@ -330,13 +365,21 @@ fn collect(cursor: &mut Cursor<'_, '_>, ops: &mut Vec<u64>, pool: &mut Vec<u64>,
 /// The module METADATA block: strings and the records the module level
 /// reads are kept; debug-info nodes only take their id (`spec/bc.md`
 /// §6).
-fn walk_metadata<'a>(cursor: &mut Cursor<'a, '_>, raw: &mut Raw<'a>, ops: &mut Vec<u64>) -> BcResult<()> {
+fn walk_metadata<'a>(
+    cursor: &mut Cursor<'a, '_>,
+    raw: &mut Raw<'a>,
+    ops: &mut Vec<u64>,
+) -> BcResult<()> {
     let mut name: Option<Rec> = None;
     let Raw { pool, md: slots, md_strings, md_names, md_kinds, md_decl_attachments, .. } = raw;
     each_record(cursor, ops, |code, at, ops, blob| {
         if let Some(pending) = name.take() {
             if code != md::NAMED_NODE {
-                return fail(BcErrorKind::Invalid, pending.pos, "a metadata NAME not followed by its NAMED_NODE");
+                return fail(
+                    BcErrorKind::Invalid,
+                    pending.pos,
+                    "a metadata NAME not followed by its NAMED_NODE",
+                );
             }
             md_names.push((pending, push(pool, code, at, ops)?));
             return Ok(());
@@ -344,31 +387,49 @@ fn walk_metadata<'a>(cursor: &mut Cursor<'a, '_>, raw: &mut Raw<'a>, ops: &mut V
         match code {
             md::STRINGS => {
                 let (&[count, offset], Some(blob)) = (ops, blob) else {
-                    return fail(BcErrorKind::Invalid, at, "a METADATA_STRINGS record without its count, offset and blob");
+                    return fail(
+                        BcErrorKind::Invalid,
+                        at,
+                        "a METADATA_STRINGS record without its count, offset and blob",
+                    );
                 };
                 // Each string takes at least its length's six bits.
                 if count > blob.len() as u64 * 8 / 6 || offset > blob.len() as u64 {
-                    return fail(BcErrorKind::Invalid, at, "a METADATA_STRINGS count or offset past its blob");
+                    return fail(
+                        BcErrorKind::Invalid,
+                        at,
+                        "a METADATA_STRINGS count or offset past its blob",
+                    );
                 }
-                let (Ok(table), Ok(first)) = (u32::try_from(md_strings.len()), u32::try_from(slots.len())) else {
+                let (Ok(table), Ok(_)) =
+                    (u32::try_from(md_strings.len()), u32::try_from(slots.len() as u64 + count))
+                else {
                     return fail(BcErrorKind::Limit, at, "more than 2^32 metadata");
                 };
-                md_strings.push(MdStrings { pos: at, count, offset, blob, first });
+                md_strings.push(MdStrings { pos: at, count, offset, blob });
                 slots.reserve(count as usize);
                 for index in 0..count as u32 {
                     slots.push(MdSlot::String { table, index });
                 }
             }
             md::NAME => name = Some(push(pool, code, at, ops)?),
-            md::NAMED_NODE => return fail(BcErrorKind::Invalid, at, "a NAMED_NODE without its NAME"),
+            md::NAMED_NODE => {
+                return fail(BcErrorKind::Invalid, at, "a NAMED_NODE without its NAME");
+            }
             md::KIND => md_kinds.push(push(pool, code, at, ops)?),
             md::GLOBAL_DECL_ATTACHMENT => md_decl_attachments.push(push(pool, code, at, ops)?),
-            md::NODE | md::DISTINCT_NODE | md::VALUE => slots.push(MdSlot::Kept(push(pool, code, at, ops)?)),
+            md::NODE | md::DISTINCT_NODE | md::VALUE => {
+                slots.push(MdSlot::Kept(push(pool, code, at, ops)?))
+            }
             md::STRING_OLD => {
-                return fail(BcErrorKind::Unsupported("metadata-string-old"), at, "a pre-4.0 METADATA_STRING_OLD record");
+                return fail(
+                    BcErrorKind::Unsupported("metadata-string-old"),
+                    at,
+                    "a pre-4.0 METADATA_STRING_OLD record",
+                );
             }
             _ => match md::defines_id(code) {
-                Some(true) => slots.push(MdSlot::Skipped { code, pos: at }),
+                Some(true) => slots.push(MdSlot::Skipped),
                 Some(false) => {}
                 None => return unknown_record(at, "METADATA", code),
             },

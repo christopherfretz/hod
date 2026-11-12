@@ -4,6 +4,8 @@ use std::fmt;
 
 use hod_ir::TypeId;
 
+use crate::vector::Lanes;
+
 /// The widest integer the interpreter computes with.
 pub const MAX_INT_BITS: u32 = 128;
 
@@ -39,7 +41,7 @@ pub enum Val {
     Float(u32),
     /// `double`, as its IEEE binary64 encoding.
     Double(u64),
-    /// A struct or an array.
+    /// A struct, an array, or a fixed-width vector (§3.1).
     Agg(Agg),
 }
 
@@ -156,7 +158,7 @@ impl Val {
 }
 
 /// `i32 7`, `ptr 0x10040`, `float 0x3f800000`, `double 0x3ff0000000000000`,
-/// `agg 0102..`: integers in decimal (unsigned), floats as their encoding.
+/// `agg 0102..`, `<i32 1, poison>`: integers in decimal (unsigned), floats as their encoding.
 impl fmt::Display for Val {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -164,6 +166,7 @@ impl fmt::Display for Val {
             Val::Ptr(addr) => write!(f, "ptr {addr:#x}"),
             Val::Float(bits) => write!(f, "float {bits:#010x}"),
             Val::Double(bits) => write!(f, "double {bits:#018x}"),
+            Val::Agg(agg) if agg.is_vector() => agg.fmt_lanes(f),
             Val::Agg(agg) => {
                 f.write_str("agg ")?;
                 agg.bytes.iter().try_for_each(|byte| write!(f, "{byte:02x}"))
@@ -172,19 +175,24 @@ impl fmt::Display for Val {
     }
 }
 
-/// A first-class struct or array value: its type and its image.
+/// A first-class struct, array or vector value: its type and its image.
 ///
-/// The image is what `hod_ir`'s `flatten` writes for a constant of the
-/// type (`spec/ir.md` §4.3): `alloc_size_of(ty)` bytes, each scalar at its
-/// offset in its store size, little-endian, padding zero.
+/// The image of a struct or an array is what `hod_ir`'s `flatten` writes
+/// for a constant of the type (`spec/ir.md` §4.3): `alloc_size_of(ty)`
+/// bytes, each scalar at its offset in its store size, little-endian,
+/// padding zero. That of a vector is its store size, as §3.1 lays it out,
+/// and a vector also knows which of its lanes are poison (see
+/// [`Vector`](crate::Vector)).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Agg {
     pub(crate) ty: TypeId,
     pub(crate) bytes: Box<[u8]>,
+    /// `Some` for a vector.
+    pub(crate) lanes: Option<Lanes>,
 }
 
 impl Agg {
-    /// The struct or array type.
+    /// The struct, array or vector type.
     pub fn ty(&self) -> TypeId {
         self.ty
     }
@@ -229,7 +237,7 @@ mod tests {
         assert_eq!(Val::Ptr(0x10040).to_string(), "ptr 0x10040");
         assert_eq!(Val::f32(1.0).to_string(), "float 0x3f800000");
         assert_eq!(Val::f64(1.0).to_string(), "double 0x3ff0000000000000");
-        let agg = Agg { ty: TypeId::I8, bytes: vec![1, 0xab].into() };
+        let agg = Agg { ty: TypeId::I8, bytes: vec![1, 0xab].into(), lanes: None };
         assert_eq!(Val::Agg(agg.clone()).to_string(), "agg 01ab");
         assert_eq!((agg.ty(), agg.bytes()), (TypeId::I8, &[1, 0xab][..]));
     }

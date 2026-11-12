@@ -61,17 +61,25 @@ fn types() {
     assert_eq!(frozen(|_| Ok(TypeId::BFLOAT)), "type:bfloat");
     assert_eq!(frozen(|_| Ok(TypeId::FP128)), "type:fp128");
     assert_eq!(frozen(|_| Ok(TypeId::X86_FP80)), "type:x86_fp80");
-    assert_eq!(frozen(|m| m.types.vector(I32, 4)), "type:vector");
+    // Vectors are supported (§3.1) but for these lanes.
+    assert_eq!(frozen(|m| m.types.vector(TypeId::HALF, 4)), "type:half");
+    assert_eq!(
+        frozen(|m| {
+            let i4 = m.types.int(4)?;
+            m.types.vector(i4, 4)
+        }),
+        "type:vector-odd-element"
+    );
     assert_eq!(frozen(|m| m.types.scalable_vector(I32, 4)), "type:scalable-vector");
     assert_eq!(frozen(|m| m.types.int(129)), "type:int-over-128");
     assert_eq!(frozen(|m| m.types.target_ext("spirv.Image")), "type:target-ext");
     // Inside an aggregate too.
     assert_eq!(
         frozen(|m| {
-            let vector = m.types.vector(I32, 4)?;
+            let vector = m.types.vector(TypeId::BFLOAT, 4)?;
             m.types.struct_type(&[I32, vector], false)
         }),
-        "type:vector"
+        "type:bfloat"
     );
     let loaded = reason(|_, b| {
         let p = slot(b)?;
@@ -80,13 +88,13 @@ fn types() {
     });
     assert_eq!(loaded, "type:half");
     let element = reason(|m, b| {
-        let vector = m.types.vector(I32, 4)?;
+        let vector = m.types.vector(TypeId::HALF, 4)?;
         let undef = Value::constant(m.consts.undef(&m.types, vector)?)?;
         let zero = int(m, I32, 0);
-        b.extract_element(I32, undef, zero)?;
+        b.extract_element(TypeId::HALF, undef, zero)?;
         Ok(())
     });
-    assert_eq!(element, "type:vector");
+    assert_eq!(element, "type:half");
     let token = loose_reason(|m, b| {
         let none = Value::constant(m.consts.none_token()?)?;
         b.freeze(TypeId::TOKEN, none)?;

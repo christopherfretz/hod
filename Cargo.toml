@@ -10,7 +10,8 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/christopherfretz/hod"
 publish = false
 
-# No third-party dependencies (docs/ARCHITECTURE.md, principle 4).
+# No third-party dependencies in the shipped crates (docs/ARCHITECTURE.md,
+# principle 4). The harness has the one below.
 [workspace.dependencies]
 hod_ir     = { path = "crates/hod_ir" }
 hod_ll     = { path = "crates/hod_ll" }
@@ -27,7 +28,14 @@ hod_xform  = { path = "crates/hod_xform" }
 hod_asm    = { path = "crates/hod_asm" }
 hod        = { path = "crates/hod" }
 hod_testutil = { path = "crates/hod_testutil" }
+hod_interp   = { path = "crates/hod_interp" }
 xtask        = { path = "xtask" }
+# Third-party (each approved in a work package; docs/AGENTS.md rule 3).
+# signal-hook: xtask, and only xtask, kills its children and returns its
+# held jobserver tokens on SIGINT/SIGTERM (WP-024, spec/harness.md
+# "Jobserver"); the signal-handler `unsafe` stays in the dependency, xtask
+# itself remains `forbid(unsafe_code)`.
+signal-hook = { version = "0.3", default-features = false, features = ["iterator"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

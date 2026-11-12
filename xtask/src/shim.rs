@@ -14,7 +14,10 @@ use std::fs;
 use std::io::ErrorKind;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
+
+use crate::irdiff::process::{self, Limits};
 
 /// The file that marks a directory as made by this command.
 pub const MARKER: &str = ".hod-shim";
@@ -78,6 +81,9 @@ fn sh_quote(path: &Path) -> Result<String, String> {
     Ok(format!("'{}'", text.replace('\'', "'\\''")))
 }
 
+/// The limits of `llvm-config --version`.
+const PROBE: Limits = Limits { time: Duration::from_secs(20), memory_kib: 4 << 20 };
+
 /// The major of an installation as kiln tells it (kiln
 /// `crates/kiln_driver/src/llvm.rs`, `dir_major`), by the two means that
 /// carry over to a mirror of the directory: the one numeric entry of
@@ -95,13 +101,14 @@ fn mirrored_major(dir: &Path) -> Option<u32> {
     if !llvm_config.is_file() {
         return None;
     }
-    let output = Command::new(llvm_config)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
+    // A bounded child that holds a jobserver token, like every process the
+    // harness starts ("irdiff", "Child processes"; "Jobserver").
+    let asked = |c: &mut Command| {
+        c.arg("--version");
+    };
+    let output = process::run(&llvm_config, asked, b"", PROBE)
         .ok()
-        .filter(|o| o.status.success())?;
+        .filter(|output| output.end == process::End::Exit(0))?;
     let text = String::from_utf8_lossy(&output.stdout);
     let major = text.trim().split('.').next()?;
     if major.is_empty() || !major.bytes().all(|b| b.is_ascii_digit()) {

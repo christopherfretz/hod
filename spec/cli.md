@@ -145,6 +145,9 @@ last argument.
   `invalid value '<v>' for HOD_STRICT: expected 1 or 0`.
 - `HOD_IN_FALLBACK` is set by hod for the fallback process ("Fallback
   protocol"). It is not a setting.
+- `HOD_TIME_PHASES=<file>` asks for a phase report ("Phase report"). It
+  has no command-line form: it is a measurement hook for the benchmark
+  harness, not a setting of a build.
 
 ## Input
 
@@ -336,6 +339,58 @@ no header and no per-function records yet; both arrive with code
 generation (`docs/VALIDATION.md` counts functions as well as translation
 units).
 
+## Phase report
+
+With `HOD_TIME_PHASES=<file>` (set and not empty), every compile
+invocation appends a report of where its time went to `<file>`, after its
+coverage line: opened in append mode, created if missing, written with a
+single `write` call (a short write is a failure), like a coverage line.
+`--version` and `--help` write none, and neither does an invocation that
+ended because its coverage log could not be opened or written.
+
+The report is one line per phase, in the order the phases ended, then a
+line for `total`:
+
+```
+<phase>⇥<microseconds>
+```
+
+A phase's name is made of lower-case letters, digits and `-`. Its time is
+decimal wall-clock microseconds from the end of the phase before it (the
+first one: from process start, as in the coverage log) to its own end, so
+the phases do not overlap. `total` is from process start to the moment the
+report is written; it is at least the sum of the phases, and more by what
+no phase covers (the coverage line).
+
+| phase | ends when |
+|---|---|
+| `read` | the input has been read (command-line parsing and opening the coverage log are in it) |
+| `compile` | `hod::compile` returned, with an object or an error |
+| `write` | the object has been written |
+| `fallback` | the fallback process ended |
+
+A phase is in the report only if the invocation reached its end: a module
+hod builds reports `read`, `compile`, `write`; one it declines in strict
+mode `read`, `compile`; one it hands to the fallback `read`, `compile`,
+`fallback`; a command line it hands on unread `fallback` alone. Example of
+a decline:
+
+```
+read⇥212
+compile⇥3
+total⇥301
+```
+
+`compile` is one phase until the code generator reports its own. The names
+reserved for that, which will then replace `compile` in the report, are
+`ingest` (the module parsed and checked), `analysis`, `emission` (machine
+code), `debug-info` and `object` (the object file built in memory). A
+reader of the report takes whatever names it finds.
+
+If the report cannot be written: `hod: error: cannot write phase report
+'<path>': <cause>`, and an exit status of 0 becomes 1. The fallback
+inherits the variable with the rest of the environment; `llc` ignores it.
+
 ## Tests
 
 | section | tests |
@@ -343,6 +398,7 @@ units).
 | The facade, Input, Reasons | `crates/hod/src/lib.rs`: `input_kind_detection`, `reasons_in_order`, `construct_names_are_stable_and_distinct`, `module_triple_scan`, `supported_targets`, `error_text` |
 | Options | `crates/hod_cli/src/args.rs`: `defaults`, `everything_kiln_passes`, `spellings`, `spellings_of_the_rest`, `rejected_command_lines`, `rejection_reasons_and_messages`, `non_utf8_arguments`, `version_and_help`; `crates/hod_cli/src/driver.rs`: `unknown_option_without_fallback`, `version_and_help`; `crates/hod_cli/tests/cli.rs`: `unknown_options`, `version_and_help` |
 | hod's own options, Environment | `args.rs`: `hod_options_are_parsed_and_not_forwarded`, `mistakes_in_hod_options_are_fatal`; `driver.rs`: `environment`, `mistakes_in_hod_settings`; `cli.rs`: `settings_from_the_environment` |
+| Phase report | `driver.rs`: `phase_report`; `cli.rs`: `phase_report_with_a_fallback` |
 | Behaviour | `driver.rs`: `success_writes_the_object`, `options_reach_the_code_generator`, `output_names_follow_llc`, `io_errors` |
 | Fallback protocol | `cli.rs`: `fallback_receives_original_arguments_and_identical_input`, `file_input`, `hod_is_not_its_own_fallback`, `real_llc_fallback_text`, `real_llc_fallback_bitcode`; `driver.rs`: `fallback_loop_is_refused` |
 | Strict mode | `cli.rs`: `strict_mode_fails_with_the_construct_named`; `crates/hod_cli/tests/kiln_e2e.rs` |

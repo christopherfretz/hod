@@ -1282,23 +1282,248 @@ change the object file (§2). So is every module flag (§2.1).
 
 ## 8. classify
 
-`classify(&Module)` and `classify_body(&Module, &Body)` return
-`Ok(())` or `Unsupported { construct, symbol }`, where `construct` is a
-stable kebab-case name (`intrinsic:llvm.coro.id`, `type:x86_fp80`,
-`inst:catchswitch`, `attr:preallocated`, `cc:swifttailcc`,
-`const-expr:...`, `module-flag:...`). It is the single place where
+`classify` (`crates/hod_ir/src/classify/`) is the single place where
 "supported" is decided:
 
 - the driver calls it before code generation, and a rejection becomes the
-  fallback reason in the coverage log;
+  fallback reason in the coverage log (`spec/cli.md`);
 - code generation may assume everything `classify` accepts, and reaching
   an unhandled case there is a bug, reported as an internal error, never a
   guess;
-- `docs/status/support.md` is generated from it.
+- `docs/status/support.md` is generated from it (§8.10).
 
 `classify` starts by rejecting nearly everything. A work package that
-implements a construct flips its entry and adds the tests in the same
+implements a construct flips its row and adds the tests in the same
 change.
+
+### 8.1 API and outcomes
+
+- `classify(&Module)`: the module pass (§8.8) under `Support::shipped` for
+  the module's target. `classify_body(&Module, &Body)`: the body pass for
+  one function. A driver classifies every body it compiles: the
+  function-level checks (convention, parameters, attributes) are made in
+  the body pass, not the module pass.
+- `census(&Module, bodies)`: every finding of both passes (§8.9).
+- `Classifier` is the general form: `Classifier::new(&Support)`,
+  `with_stack_args(&dyn StackArgs)` (the hook the `musttail` rules need,
+  §8.6), `support()`, `module`, `body`, `census_module`, `census_body`.
+- A refusal is `Rejection { kind, construct, symbol, inst }`: `kind` is
+  `RejectionKind::Unsupported` (a matrix row that is not supported, or a
+  structural rule) or `RejectionKind::Invalid` (malformed input, §8.7);
+  `construct` is the stable name (§8.5); `symbol` is the symbol in the
+  module pass and the function in the body pass, `None` for a property of
+  the module; `inst` is the instruction in the body pass, `None` for the
+  function's signature and attributes.
+- `classify` does not panic, for any module and any body a
+  `FunctionBuilder` finished, including a body classified against another
+  module than its own: everything it cannot trust is `Invalid`.
+
+### 8.2 The matrix and `Support`
+
+The matrix is data (`matrix.rs`, `SUPPORT_ROWS`): one `SupportRow` per
+construct, with a `SupportCell` per target whose status is `supported`
+(for a set of type classes where the row operates on values, §8.3),
+`not-implemented(<what>)` (the work package, milestone or track that
+flips it, or `unplanned`), or `rejected(<why>)` (by design).
+
+`Support` is the matrix as a value a walk consults, for one target:
+
+- `Support::shipped(arch)`: the matrix as checked in; what `classify`
+  uses.
+- `Support::everything_implemented(arch)`: every row that is not
+  `rejected` supported for every class. What it still refuses is refused
+  by design.
+- `with(name)`, `with_classes(row, classes)`, `without(name)` switch a
+  row, or one class of it (`row/class`); `with` of a `rejected` row is
+  `None`. `supports(name)` and `classes(row)` read it.
+
+Flipping a construct is a one-line change in `matrix.rs` plus a test.
+
+### 8.3 Type classes and subjects
+
+`TypeClass` has 15 members: `int` (at most 64 bits), `i128`, `int-wide`,
+`ptr` (address space 0), `half`, `bfloat`, `float`, `double`, `fp128`,
+`x86_fp80`, `vector` (fixed length; element kinds are not examined),
+`scalable-vector`, `aggregate` (a struct or array as a first-class
+value), `token`, `target-ext`. Each has a row `type:<class>`.
+
+The **subjects** of an instruction are its result type, unless `void`,
+and the type of every value operand. Pointee types, aggregate member
+types and global value types are not examined. For each subject:
+
+- the class's `type:` row is not supported: `type:<class>`;
+- otherwise the instruction's row is supported, but not for this class:
+  the pair `<row>/<class>` (e.g. `inst:select/double`);
+- a pointer in a non-zero address space: `addrspace:pointer`
+  (`addrspace:alloca` for the result of an `alloca`).
+
+Results of `cmpxchg`, `landingpad` and the `*.with.overflow` intrinsics
+are of class `aggregate`, and wait for `type:aggregate`.
+
+### 8.4 Groups
+
+A row's group is its name up to the colon. `SUPPORT_GROUPS` lists the 23
+groups in the order of `docs/status/support.md`: `module`, `structor`,
+`debug`, `global`, `linkage`, `visibility`, `tls`, `comdat`, `init`,
+`function`, `cc`, `attr`, `type`, `inst`, `mem`, `atomicrmw`, `call`,
+`tail`, `bundle`, `landingpad`, `operand`, `const-expr`, `intrinsic`.
+There are 434 rows.
+
+### 8.5 Vocabulary
+
+Every name has the form `group:name`, in lower case, with LLVM's spelling
+after the colon where LLVM has one (`intrinsic:llvm.memcpy`,
+`cc:swifttailcc`, `attr:preallocated`, `inst:catchswitch`).
+`CONSTRUCT_NAMES` lists every fixed name: the rows, then the structural
+rules (§8.6), then the malformed-input names (§8.7). `CONSTRUCT_FAMILIES`
+lists the six families of names built from the input:
+`intrinsic:<name>` (`Intrinsic::Other`, always refused),
+`module-flag:<name>`, `cc:<number>`, `bundle:<tag>`, `<row>/<class>`, and
+a producer's record (`Module::record_unsupported`, §2.2), passed through
+unchanged.
+
+The `abi:*` names of a target's argument assignment and the facade's
+`Construct` names (`spec/cli.md`) share this namespace: no two mean
+different things.
+
+### 8.6 Structural rules
+
+Reasons no `Support` takes away (`STRUCTURAL_RULES`):
+
+| name | when |
+|---|---|
+| `tls:direct-operand` | a thread-local symbol as an operand of anything but the first argument of `llvm.threadlocal.address` |
+| `tls:address-in-constant` | the address of a thread-local symbol inside a constant: an initializer, a constant operand (also as the argument of `llvm.threadlocal.address`), a landing-pad clause |
+| `blockaddress:other-function` | a `blockaddress` in a body that names a block of another function |
+| `musttail:callee-pop` | a `musttail` call with a convention whose callee pops its arguments (`tailcc`, `swifttailcc`) |
+| `musttail:stack-args-grow` | a `musttail` call whose stack-argument area is larger than its caller's |
+| `musttail:stack-args-unknown` | a `musttail` call whose stack-argument areas are not known: no `StackArgs` was given, or it had no answer |
+| `atomic:scalable-vector` | an atomic access to a scalable vector |
+| `addrspace:pointer` | a value whose type is a pointer in a non-zero address space |
+| `addrspace:global` | a variable, alias or IFUNC in a non-zero address space |
+| `addrspace:function` | a function in a non-zero address space |
+| `addrspace:alloca` | an `alloca` in a non-zero address space |
+| `limit:constant-nesting` | a constant nested more than 64 aggregates deep |
+| `target:support-mismatch` | the `Support` given is for another architecture than the module's |
+
+Also refused on both targets, as matrix rows whose status is `rejected`:
+`attr:naked`, `inst:callbr`, `inst:va_arg`, and the 19 `const-expr:*`
+rows (constant expressions without a normal form, §4.2).
+
+- Producer records (`Module::unsupported()`) are reported unchanged.
+- A module flag that is neither known nor ignorable (§2.1), or any
+  `Require` flag, is `module-flag:<name>`.
+- `returns_twice` (`attr:returns_twice`) is checked on the body's
+  function, on the call and on a direct callee's declaration.
+- A direct call through a function type other than the callee's is not
+  an error: the call's own function type and attributes govern; the
+  callee's declaration is not consulted (beyond `returns_twice`), nor are
+  a declaration's attributes.
+- The constant walk has a depth limit of 64 and no memo: a shared
+  sub-constant is walked at each use.
+
+### 8.7 Malformed input
+
+Outcomes of kind `Invalid` (`INVALID_RULES`): what `Body::verify` and the
+builders cannot see, mostly because it needs the module.
+
+| name | when |
+|---|---|
+| `invalid:body-symbol` | a body's symbol is not a symbol of the module |
+| `invalid:body-not-function` | a body's symbol is not a function |
+| `invalid:body-type` | a body's function type is not its symbol's |
+| `invalid:body` | a body's tables disagree: its argument count is not its type's, or an operand names an instruction, parameter, stack slot or record the body does not have |
+| `invalid:symbol` | a symbol id in an operand, a constant, a personality, a resolver or a constructor entry names no symbol; a COMDAT id names no COMDAT |
+| `invalid:unresolved-symbol` | a symbol was named and never described |
+| `invalid:inline-asm` | an inline-assembly callee names no entry of the module's table, or inline assembly is an operand other than a callee |
+| `invalid:constant` | a constant id names no constant |
+| `invalid:type` | a value's type is no type, or a type without values; a call's function type is not one |
+| `invalid:blockaddress` | a `blockaddress` names a symbol that is not a function with a body, or a block its function does not have |
+| `invalid:initializer` | an initializer contains the `none` token, or an alias target is not an address |
+| `invalid:function-attributes` | a function's attribute set is no set of the module |
+
+`invalid:initializer` and the personality case of `invalid:symbol` are
+defensive: the current builders cannot produce them. The first four
+stop the body pass (nothing else in the body can be trusted). Whether a
+malformed input goes to the fallback is `spec/cli.md`'s rule, not this
+crate's.
+
+### 8.8 Order
+
+The first reason is deterministic: the first finding of the walk, which
+visits, in order:
+
+- **Module pass.** `target:support-mismatch`; the module properties
+  (`module:pic`, `module:pie`, code model, large-data threshold,
+  `module:uwtable`, `module:frame-pointer`, the branch-protection bits in
+  order, `debug:module-flags`); the other module flags in table order;
+  module assembly, linker options, dependent libraries; constructors,
+  then destructors, entry by entry (the entry, its priority, its
+  associated symbol, then the symbols it names); producer records; then
+  every symbol in id order: what it is (declaration or definition of a
+  variable or function, alias, IFUNC), linkage, visibility, TLS model,
+  address space; for a definition `unnamed_addr`, section, COMDAT,
+  alignment, `used`; then a variable's initializer, a function's
+  attribute set and personality, an alias's target, an IFUNC's resolver.
+- **Body pass.** `target:support-mismatch`; the four stopping
+  malformed-input checks (§8.7); the function's convention, variadic,
+  parameters and their types, return and parameter attributes, function
+  attributes (flags in order, `function:may-unwind`, `uwtable`, `alignstack`,
+  string attributes), personality, debug subprogram, stack slots and
+  over-aligned slots, slot variables, debug locations; then every
+  instruction in layout order. For one instruction: its row; then (by
+  opcode) memory access, atomic operation, landing-pad clauses or switch
+  cases; its result's subject; its operands in order. For a call: its
+  row (a plain call of a known intrinsic is the intrinsic's row only),
+  the callee (indirect, inline assembly, variadic, convention), the tail
+  marker (`musttail`'s rules before its row), `returns_twice`, bundles by
+  tag, return attributes, the result, the callee operand, each argument
+  then its attributes, the bundle inputs.
+
+A structural rule or a malformed-input outcome comes where the walk meets
+it, not first. `findings_come_in_the_specified_order` and
+`a_rejection_names_where_it_was_found` in `tests/classify_matrix.rs` pin
+this order.
+
+Under `Support::shipped` today every body is refused first at `cc:ccc`,
+and every module with a definition at `global:function-definition` or
+`global:variable-definition`; a module of external declarations only is
+accepted. `debug:*` rows wait for the debug-information track, so a
+module with the `Dwarf Version` or `Debug Info Version` flags is refused
+at `debug:module-flags`.
+
+### 8.9 Census
+
+`Census` collects every finding instead of the first: one `CensusEntry {
+construct, kind, occurrences, symbols }` per construct, in the order of
+first occurrence, where `symbols` counts the distinct symbols it was met
+at. Its first entry is the first reason. It is for coverage reports, not
+for the compile path.
+
+### 8.10 `docs/status/support.md`
+
+`support_markdown()` writes the matrix as a document: a per-group
+summary of the counts per target and status, then one table per group,
+then the structural rules, the malformed-input names and the families.
+The checked-in file is that text; `tests/classify_support_doc.rs` fails
+when it is stale, and `HOD_BLESS=1 cargo test -p hod_ir --test
+classify_support_doc` rewrites it.
+
+### 8.11 Cost
+
+The accept path does not allocate and does not format: a walk reads the
+tables once and consults an array of bit sets per row. A short way
+(`Walker::accepts`) decides the ordinary instruction with ordinary
+operands; everything else goes the long way (`Walker::inst`), which is
+the definition, and debug builds check on every instruction that the
+short way never accepts what the long way refuses.
+
+Measured by `examples/classify_throughput.rs` (release, aarch64, on a
+shared host under heavy load, so only ratios to building in the same run
+mean anything): classifying an accepted body costs about half of
+building it (about 8 ns per instruction against 16 ns to build). That
+misses the goal of a small fraction; `spec/landed/ir/WP-009.md` has the
+numbers.
 
 ## 9. Printer
 
@@ -1367,3 +1592,4 @@ IR").
 - What clang emits: no module flag or attribute in clang 19 and 22 output
   for §2.1's option list is unknown or rejected.
 - Printer: §9's guarantees over the IR corpus.
+- classify (§8): every row, rule and malformed-input name, the subject rule and the order (`tests/classify_matrix.rs`, `tests/classify_rules.rs`); consistency and no panic on random tame and wild programs (`tests/classify_random.rs`); `docs/status/support.md` is the generated text (`tests/classify_support_doc.rs`); the cost, not a gate (`examples/classify_throughput.rs`).

@@ -6,7 +6,7 @@ crate could be re-implemented from its spec and its tests alone.
 
 | file | covers | status |
 |---|---|---|
-| `ir.md` | `hod_ir`: the IR model, builder API, printer, `classify` | planned (WP-002..009) |
+| `ir.md` | `hod_ir`: the IR model, builder API, printer, `classify` | design written; implementation WP-002..009 |
 | `ll.md` | `hod_ll`: accepted text dialects, errors | planned (WP-007, WP-008) |
 | `object.md` | `hod_obj`: object model, ELF64 writer | planned (WP-010, WP-011) |
 | `mc-a64.md` | `hod_mc_a64`: instruction forms, fixups | planned (WP-012, WP-013) |

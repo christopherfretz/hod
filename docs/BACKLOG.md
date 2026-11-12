@@ -9,7 +9,7 @@ Milestones and tracks are in `docs/ROADMAP.md`.
 | WP | track | scope | depends on | status |
 |---|---|---|---|---|
 | WP-001 | T-H | Cargo workspace, lints (`forbid(unsafe_code)`, clippy pedantic), `rust-toolchain.toml`, `scripts/env.sh`, empty crates per `docs/ARCHITECTURE.md`, `xtask ci --quick` (fmt, clippy, test), GitHub Actions running it on aarch64 and x86_64 | - | done |
-| WP-002 | T-IR | `spec/ir.md` + `hod_ir` types and constants: the type table, constant pool, interning, sizes asserted | WP-001 | todo |
+| WP-002 | T-IR | `hod_ir` types and constants per `spec/ir.md` §3-§4: the type table with layout, constant pool, address normal forms and folding, interning, sizes asserted | WP-001 | todo |
 | WP-003 | T-IR | `hod_ir` module level: globals, functions, aliases, IFUNCs, COMDATs, attributes, module flags; the builder API for producers | WP-002 | todo |
 | WP-004 | T-IR | `hod_ir` functions: blocks, instructions, operand pools, call and landing-pad side tables; function-at-a-time delivery | WP-002 | todo |
 | WP-005 | T-IR | `hod_ir` debug metadata: typed `DI*` nodes, `DILocation`, debug records | WP-003 | todo |
@@ -26,7 +26,7 @@ Milestones and tracks are in `docs/ROADMAP.md`.
 | WP-016 | T-H | `xtask irdiff`: build with `llc` and with hod, link with each linker in the matrix, run under limits, compare; `tests/ir/` directive format | WP-015 | todo |
 | WP-017 | T-H | `xtask corpus`: capture IR from kiln's executing tests and from clang on the GCC torture suite into `.build/corpus`, pinned and reproducible | WP-015 | todo |
 | WP-018 | T-H | `xtask bench` and `bench/`: size classes, wall/RSS/size measurement for hod and `llc`, baselines, phase timings | WP-015 | todo |
-| WP-019 | T-H | L2 gate: parse, print, `llvm-as` equivalence over the captured corpus | WP-006, WP-008, WP-017 | todo |
+| WP-019 | T-H | L2 gate: parse, print, `llvm-as` acceptance and behavioral equivalence through `llc` over the captured corpus | WP-006, WP-008, WP-017 | todo |
 
 ## M1 and later
 

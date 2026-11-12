@@ -40,7 +40,7 @@ Everything needed before code generation can be worked on in parallel.
   `llc`-compatible command line with fallback and the coverage log.
 
 **Gate:** L2 passes on all IR kiln emits for its own corpus (parse,
-print, `llvm-as` equivalence). `hod_obj` writes an object containing a
+print, accepted by `llvm-as`, same behavior through `llc`). `hod_obj` writes an object containing a
 hand-encoded `main` that returns 42; it links with GNU ld, lld and mold and
 runs. `xtask bench` reports `llc`'s numbers on the benchmark corpus.
 

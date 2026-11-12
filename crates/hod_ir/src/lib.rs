@@ -102,6 +102,8 @@ pub use intrinsic::{
     Intrinsic, IntrinsicRef, NoCode, no_code_intrinsic, no_code_names, resolve_intrinsic,
 };
 pub use value::{InstId, SlotId, Value, ValueKind};
+pub use verify::cast_is_valid;
+pub use wide::sext64;
 
 pub use debug::expr::{DI_OPS, DiOp, DiOps, ExprId, di_op_named};
 pub use debug::map::{

@@ -178,6 +178,9 @@ pub(crate) struct FnState {
     pub unlabelled: Vec<(u32, u32)>,
     pub need_numbering: bool,
     pub numbered: bool,
+    /// Whether the function is variadic: a `musttail` call in it ends its
+    /// arguments with `...` (§11.6).
+    pub variadic: bool,
 
     pub vals: Vec<Value>,
     pub arg_tys: Vec<TypeId>,
@@ -372,14 +375,12 @@ fn build(
     numbering: bool,
 ) -> PResult<Option<Body>> {
     let fn_ty = p.module.symbol(function.sym).ty();
-    let TypeKind::Function { ret, .. } = p.module.types.kind(fn_ty) else {
+    let TypeKind::Function { ret, variadic, .. } = p.module.types.kind(fn_ty) else {
         return fail(LlErrorKind::Type, function.header.start, "this symbol is not a function");
     };
     let at = function.body.start;
-    let builder = match state.storage.take() {
-        Some(storage) => FunctionBuilder::reusing(p.module, function.sym, fn_ty, storage),
-        None => FunctionBuilder::new(p.module, function.sym, fn_ty),
-    };
+    let storage = state.storage.take().unwrap_or_else(Body::empty);
+    let builder = FunctionBuilder::reusing(p.module, function.sym, fn_ty, storage);
     let builder = ir(at, builder)?;
     state.nums.clear();
     state.sparse.clear();
@@ -389,6 +390,7 @@ fn build(
     state.debug.records.clear();
     p.pending.clear();
     p.depth = 0;
+    state.variadic = variadic;
     let mut fx = Fx {
         p,
         b: builder,

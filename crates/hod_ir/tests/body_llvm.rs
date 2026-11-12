@@ -829,6 +829,12 @@ const NO_CODE_CALLS: &[(&str, &str, &str, &str)] = &[
     ("llvm.assume", "void", "i1", "i1 %c"),
     ("llvm.donothing", "void", "", ""),
     (
+        "llvm.experimental.noalias.scope.decl",
+        "void",
+        "metadata",
+        "metadata !{!{!\"s\", !{!\"d\"}}}",
+    ),
+    (
         "llvm.var.annotation.p0.p0",
         "void",
         "ptr, ptr, ptr, i32, ptr",

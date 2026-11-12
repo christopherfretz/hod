@@ -1040,7 +1040,7 @@ use AttrClass::{Dropped, Kept, Rejected};
 /// Keyword rows first, each group ordered by name. A name with no row is
 /// [`AttrClass::Rejected`]; the `Rejected` rows are the names LLVM defines
 /// that were looked at and deliberately left there.
-pub const ATTRIBUTES: [AttrInfo; 138] = [
+pub const ATTRIBUTES: [AttrInfo; 139] = [
     kw("align", Kept),
     kw("alignstack", Kept),
     kw("allocalign", Dropped),
@@ -1168,6 +1168,7 @@ pub const ATTRIBUTES: [AttrInfo; 138] = [
     st("patchable-function-prefix", Kept),
     st("probe-stack", Kept),
     st("profile-sample-accurate", Rejected),
+    st("sample-profile-suffix-elision-policy", Dropped),
     st("sign-return-address", Kept),
     st("sign-return-address-key", Kept),
     st("split-stack", Kept),
@@ -1196,10 +1197,20 @@ pub fn attr_info(syntax: AttrSyntax, name: &[u8]) -> Option<&'static AttrInfo> {
     {
         return Some(&rows[at]);
     }
-    rows.iter().find(|row| {
-        row.prefix && name.len() > row.name.len() && name.starts_with(row.name.as_bytes())
-    })
+    // A miss looks only at the prefixed rows, not at every row.
+    let prefixed = match syntax {
+        AttrSyntax::Keyword => &[][..],
+        AttrSyntax::String => &PREFIXED_STRING_ROWS[..],
+    };
+    prefixed
+        .iter()
+        .map(|&at| &ATTRIBUTES[at])
+        .find(|row| name.len() > row.name.len() && name.starts_with(row.name.as_bytes()))
 }
+
+/// The positions in [`ATTRIBUTES`] of the string rows that match by
+/// prefix; a test checks that they are all of them.
+const PREFIXED_STRING_ROWS: [usize; 1] = [KEYWORD_ROWS + 13];
 
 /// The class of the attribute `name` written as `syntax` (§5.7). A name
 /// the table does not have is [`AttrClass::Rejected`].
@@ -1495,6 +1506,9 @@ mod tests {
         let (keywords, strings) = ATTRIBUTES.split_at(KEYWORD_ROWS);
         assert!(keywords.iter().all(|row| row.syntax == AttrSyntax::Keyword && !row.prefix));
         assert!(strings.iter().all(|row| row.syntax == AttrSyntax::String));
+        let prefixed: Vec<usize> =
+            (0..ATTRIBUTES.len()).filter(|&at| ATTRIBUTES[at].prefix).collect();
+        assert_eq!(prefixed, PREFIXED_STRING_ROWS, "the prefixed rows a miss looks at");
         for rows in [keywords, strings] {
             for pair in rows.windows(2) {
                 assert!(pair[0].name < pair[1].name, "{} before {}", pair[0].name, pair[1].name);

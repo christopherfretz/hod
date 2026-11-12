@@ -165,7 +165,7 @@ impl<'b, 'a> BodyReader<'b, 'a> {
 
     fn body(&mut self, module: &mut Module, function: &FunctionBits) -> BcResult<Option<Body>> {
         let at = function.span.start;
-        let TypeKind::Function { ret, params, variadic } = module.types.kind(function.ty) else {
+        let TypeKind::Function { ret, params, .. } = module.types.kind(function.ty) else {
             return fail(BcErrorKind::Type, at, "this function's type is not a function type");
         };
         let arg_count = params.len() as u64;
@@ -195,7 +195,6 @@ impl<'b, 'a> BodyReader<'b, 'a> {
             b: builder,
             s: &mut self.state,
             ret_ty: ret,
-            variadic,
             base,
             arg_count,
             local_end: base + arg_count,
@@ -273,7 +272,6 @@ pub(crate) struct Fx<'s, 'b, 'a> {
     pub b: FunctionBuilder,
     pub s: &'s mut State,
     pub ret_ty: TypeId,
-    pub variadic: bool,
     /// The first value id of the function: the module's value count.
     pub base: u64,
     pub arg_count: u64,

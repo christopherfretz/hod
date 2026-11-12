@@ -201,6 +201,15 @@ whatever it turns out to be. A name is not empty and has no zero byte
 (LLVM's `@0`); it can only become an `internal` or `private` symbol.
 `find_symbol(name) -> Option<SymId>` looks a name up without creating it.
 
+**Order.** `SymId`s are given in creation order, and `symbols()` walks
+them so. The producers create every symbol first and in LLVM's module
+order: the variables, then the functions, then the aliases, then the
+IFUNCs, each kind in the order its module lists them (the text's order
+of definitions and declarations, which is the bitcode's record order).
+That is the order `llc` lays the sections' contents out in, and the
+order in which one module read from its text and from its bitcode
+delivers the same ids (`ll.md` §5.7, `bc.md` §5.5).
+
 **States.** A symbol is in one of three states:
 
 - *unresolved*: it has an id, which constants and instructions may use,
@@ -712,7 +721,7 @@ and what a producer does with the call:
 
 | names | rule |
 |---|---|
-| `llvm.lifetime.start/end`, `llvm.invariant.start/end`, `llvm.assume`, `llvm.donothing`, `llvm.var.annotation` | `NoCode::Drop`: omit the call. (The `{}*` result of `invariant.start` can only be used by `invariant.end`.) |
+| `llvm.lifetime.start/end`, `llvm.invariant.start/end`, `llvm.assume`, `llvm.donothing`, `llvm.var.annotation`, `llvm.experimental.noalias.scope.decl` | `NoCode::Drop`: omit the call. (The `{}*` result of `invariant.start` can only be used by `invariant.end`.) |
 | `llvm.expect`, `llvm.expect.with.probability`, `llvm.annotation`, `llvm.ptr.annotation`, `llvm.launder.invariant.group`, `llvm.strip.invariant.group` | `NoCode::FirstArg`: omit the call and use its first argument as its result |
 | `llvm.dbg.*` | `NoCode::DebugRecord`: a debug record (§6), not a call |
 
@@ -827,11 +836,14 @@ backend) reads them:
   `nosanitize_coverage`, `noprofile`, `skipprofile`;
 - the fast-math strings `approx-func-fp-math`, `less-precise-fpmad`,
   `no-infs-fp-math`, `no-nans-fp-math`, `no-signed-zeros-fp-math`,
-  `unsafe-fp-math`, and `no-trapping-math`.
+  `unsafe-fp-math`, and `no-trapping-math`;
+- `sample-profile-suffix-elision-policy`, a string LLVM defines where it
+  is read (sample-profile loading), not in its attribute list.
 
   Fifteen of these were added when the table was built against LLVM's
   attribute list and clang's output, each because clang emits it in an
-  ordinary build or because it is the twin of a name already here:
+  ordinary build or because it is the twin of a name already here, and
+  one later, because LLVM 22 bitcode modules carry it:
 
   | attribute | why only an optimizer reads it |
   |---|---|
@@ -846,6 +858,7 @@ backend) reads them:
   | `disable_sanitizer_instrumentation`, `nosanitize_bounds`, `nosanitize_coverage` | read by the sanitizer instrumentation passes, which run before a backend; clang emits the first without any sanitizer enabled |
   | `noprofile`, `skipprofile` | read by the profile instrumentation passes |
   | `"no-trapping-math"` | on every function clang emits; without `strictfp` (rejected) the default floating-point environment is assumed either way |
+  | `"sample-profile-suffix-elision-policy"` | steers how the sample-profile loader matches symbol names with suffixes (`"selected"`); no effect on code generation; on functions of LLVM 22 bitcode modules (WP-029) |
 
 **Rejected**: anything else. An attribute that is in neither list is a
 `classify` failure naming the attribute (`attr:<name>`, which the

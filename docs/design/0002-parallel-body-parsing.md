@@ -1,4 +1,10 @@
-# WP-029 — parked at item 1
+# 0002: parsing bodies in parallel (the plan WP-029 left)
+
+This is the park note of WP-029, kept as the plan for its first item,
+which is now the backlog row WP-063: type and constant tables that
+workers can read while they parse, so that bodies are parsed in parallel
+without a copy of the module per worker. Today `hod_ll::parse_bodies`
+and `hod_bc::read_bodies` are sequential. "Done" below is on `main`.
 
 ## Done (branch `wp/029-ir-gaps`, each with its tests and spec lines)
 

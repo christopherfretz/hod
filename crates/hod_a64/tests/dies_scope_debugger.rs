@@ -1,5 +1,5 @@
 //! The DIEs outside function bodies under the debuggers (`spec/dwarf.md`
-//! §6.9, WP-059): `dies_scope.rs` compares the trees with the addresses
+//! §6.11, WP-059): `dies_scope.rs` compares the trees with the addresses
 //! masked; here the addresses are compared by behaviour. Each program of
 //! `data/dies_scope` is compiled from clang's IR (LLVM 19 IR by `llc` 19,
 //! LLVM 22 IR by `llc` 22) once by hod and once by `llc`, linked with

@@ -101,7 +101,7 @@ fn function_local_types_are_refused() {
     }
 }
 
-/// §6.8, §6.9: template parameters (`templateParams`, a template alias's
+/// §6.8, §6.11: template parameters (`templateParams`, a template alias's
 /// `extraData`) are children of their owner (WP-059).
 #[test]
 fn template_parameters_are_children() {

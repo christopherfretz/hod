@@ -158,7 +158,7 @@ pub fn call<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>) -> CgResult<()> {
         return unsupported(CALL);
     }
     if matches!(site.callee_value().kind(), ValueKind::Asm(_)) {
-        return unsupported(CALL_INLINE_ASM);
+        return crate::barrier::call(cx, inst);
     }
     if site.bundle_count() != 0 {
         return unsupported(CALL_BUNDLE);

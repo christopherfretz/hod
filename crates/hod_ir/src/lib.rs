@@ -31,6 +31,7 @@
 //! | `print` | §9 | the printer: LLVM text from a module and its bodies |
 
 mod asm;
+mod asm_text;
 mod attrs;
 mod body;
 mod builder;
@@ -61,6 +62,10 @@ mod wide;
 mod debug;
 
 pub use asm::InlineAsm;
+pub use asm_text::{
+    AsmBinding, AsmDirectives, AsmRefusal, AsmSymbolEffect, AsmSymbolType, asm_template_is_empty,
+    module_asm_effects, read_module_asm,
+};
 pub use attrs::{
     ATTRIBUTES, AttrClass, AttrInfo, AttrSyntax, FnAttrs, FnAttrsId, FnAttrsView, FnStr, UwTable,
     attr_class, attr_info,

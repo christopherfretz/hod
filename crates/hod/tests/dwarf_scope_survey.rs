@@ -1,4 +1,4 @@
-//! The per-function survey of WP-059 (`spec/dwarf.md` §6.9): what stops
+//! The per-function survey of WP-059 (`spec/dwarf.md` §6.11): what stops
 //! each function's DIEs, by refusal name. With `HOD_SCOPE_SURVEY` (`.ll`
 //! files or directories, `:`-separated), each module's functions are
 //! compiled one by one and added to their unit's plan the way the bridge

@@ -1,5 +1,5 @@
 //! The declarations a definition's `DW_AT_specification` refers to, and
-//! the definitions' late attributes (`spec/dwarf.md` §6.9, WP-059), as
+//! the definitions' late attributes (`spec/dwarf.md` §6.11, WP-059), as
 //! `llc`'s `getOrCreateSubprogramDIE` and
 //! `applySubprogramDefinitionAttributes` write them:
 //!
@@ -118,7 +118,7 @@ impl UnitPlan<'_> {
 
     /// What `finishSubprogramDefinitions` adds to definition `i` of the
     /// plan before its return type: its type beside a specification, then
-    /// its template parameters (§6.9).
+    /// its template parameters (§6.11).
     pub(crate) fn seal_definition(&mut self, i: usize) -> Result<(), Error> {
         let die = self.funcs[i].die;
         let sp_id = self.dies[die as usize].node;
@@ -132,7 +132,7 @@ impl UnitPlan<'_> {
 
 impl<'a> Writer<'a> {
     /// Writes a definition with a declaration whose return type differs
-    /// (§6.9); `index` is its `.debug_addr` entry, its frame base is in
+    /// (§6.11); `index` is its `.debug_addr` entry, its frame base is in
     /// `self.expr`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn typed_definition_die(

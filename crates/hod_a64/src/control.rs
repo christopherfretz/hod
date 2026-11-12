@@ -2,7 +2,8 @@
 //! `indirectbr`, and the `blockaddress` constants it consumes
 //! ([`crate::common::block_address`]).
 //!
-//! **Owner: WP-037.** Tests: `tests/control.rs`. The dispatch in
+//! **Owner: WP-037**; `condbr` fused with a deferred compare: WP-066
+//! (`tests/fused.rs`). Tests: `tests/control.rs`. The dispatch in
 //! `target.rs` is final. Branches use `crate::common::branch*`, which know
 //! far mode.
 //!
@@ -28,7 +29,7 @@
 use std::cell::RefCell;
 
 use hod_cg::{CgResult, Class, FnCx};
-use hod_ir::{BlockId, Const, Inst, Switch, Value, ValueKind};
+use hod_ir::{BlockId, Const, Inst, InstKind, Switch, Value, ValueKind};
 use hod_mc_a64 as mc;
 use hod_mc_a64::{Cond, Shift, Size};
 
@@ -37,7 +38,7 @@ use crate::common::{
     value_ty, xr,
 };
 use crate::target::A64;
-use crate::term;
+use crate::{float, int, term};
 
 /// `br i1 %cond, label %t, label %f`: not refused any more; kept for the
 /// coverage log's history.
@@ -59,6 +60,16 @@ pub const LINEAR_CASES: usize = 4;
 /// only bit 0 of an `i1` is defined), the branch omitted for a target
 /// emitted next; a constant condition or two equal targets are a `br`.
 ///
+/// A condition that is a deferred compare (§4.6: an `icmp` or `fcmp`
+/// whose only use is this branch, right after it) is fused (WP-066): the
+/// compare sets NZCV by `int::flags` or `float::flags`, and `b.<cond>`
+/// branches on the condition it returns, inverted to the false block
+/// when the true block is emitted next. An `fcmp` predicate of two
+/// conditions (`one`, `ueq`) branches on each to the true block, then
+/// goes to the false block. An `fcmp` of `fp128` is calls (WP-067);
+/// nothing is held in a register across them, as the phi stores of
+/// §4.5 are written before this lowering runs.
+///
 /// # Errors
 /// What emitting a deferred condition or the branches' fixups report.
 pub fn cond_br<'a>(
@@ -68,12 +79,20 @@ pub fn cond_br<'a>(
     if_true: BlockId,
     if_false: BlockId,
 ) -> CgResult<()> {
-    // FUSION POINT (the integration package after WP-035 and WP-039):
-    // when `cx.deferred(cond)` is an integer or floating-point compare,
-    // set the flags with `int::flags` / `float::flags` and branch with
-    // `branch_cond` on the condition they return, passing `Some(cond)` to
-    // `deferred_first` so that the compare is not emitted. Until then a
-    // deferred compare is asked for here and its `i1` tested below.
+    if if_true != if_false
+        && let Some(compare) = cx.deferred(cond)
+    {
+        if let Some(compare) = int::fusable(cx, cond) {
+            deferred_first(cx, inst, Some(cond))?;
+            let c = int::flags(cx, compare)?;
+            return branch_on(cx, c, None, if_true, if_false);
+        }
+        if matches!(compare.kind(), InstKind::FCmp { .. }) {
+            deferred_first(cx, inst, Some(cond))?;
+            let c = float::flags(cx, compare)?;
+            return branch_on(cx, c.first, c.second, if_true, if_false);
+        }
+    }
     deferred_first(cx, inst, None)?;
     if if_true == if_false {
         return term::br(cx, if_true);
@@ -91,6 +110,26 @@ pub fn cond_br<'a>(
         return branch_bit(cx, rt, 0, false, cx.block_label(if_false));
     }
     branch_bit(cx, rt, 0, true, cx.block_label(if_true))?;
+    term::br(cx, if_false)
+}
+
+/// The branches of a fused `condbr` (NZCV set): to `if_true` when
+/// `first` or `second` holds, else to `if_false`; a block emitted next
+/// is not branched to.
+fn branch_on(
+    cx: &mut FnCx<'_, A64>,
+    first: Cond,
+    second: Option<Cond>,
+    if_true: BlockId,
+    if_false: BlockId,
+) -> CgResult<()> {
+    if second.is_none() && cx.falls_through(if_true) {
+        return branch_cond(cx, first.invert(), cx.block_label(if_false));
+    }
+    branch_cond(cx, first, cx.block_label(if_true))?;
+    if let Some(second) = second {
+        branch_cond(cx, second, cx.block_label(if_true))?;
+    }
     term::br(cx, if_false)
 }
 

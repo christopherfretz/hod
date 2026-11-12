@@ -1,4 +1,4 @@
-//! What WP-059's DIEs cost (`spec/dwarf.md` §6.9, §7.2): a generated
+//! What WP-059's DIEs cost (`spec/dwarf.md` §6.11, §7.2): a generated
 //! module of `N` class template instances `C<i>`, each with a type and a
 //! value parameter and a static member, the member's definition (a
 //! global with `DW_AT_specification`), and a `using` declaration of it

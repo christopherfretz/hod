@@ -515,7 +515,9 @@ fn module_row(name: &str, arch: Arch) -> Program {
             "large-data-threshold" => m.props.large_data_threshold = Some(65536),
             "uwtable" => m.props.uwtable = UwTable::Async,
             "frame-pointer" => m.props.frame_pointer = FramePointer::All,
-            "asm" => m.append_module_asm(b".globl x\n"),
+            "asm" => m.append_module_asm(b"  nop\n"),
+            // WP-075: symbol directives only (`spec/ir.md` §2.3).
+            "asm-symbols" => m.append_module_asm(b".globl x\n"),
             "linker-options" => m.add_linker_option(&[b"-lm"]).unwrap(),
             "dependent-libraries" => m.add_dependent_library(b"m").unwrap(),
             "global-ctors" => {
@@ -657,6 +659,15 @@ fn call_row(name: &str, arch: Arch) -> Program {
         "inline-asm" => {
             let ty = fx.callee.1;
             let asm = InlineAsm { template: b"nop", constraints: b"", flags: 0, ty };
+            let asm = Value::asm(fx.m.inline_asm(&asm).unwrap()).unwrap();
+            fx.with(|b, _| {
+                b.call(VOID, &CallDesc::new(asm, ty, &[])).unwrap();
+            })
+        }
+        // WP-075: a template that assembles to nothing.
+        "inline-asm-empty" => {
+            let ty = fx.callee.1;
+            let asm = InlineAsm { template: b" ", constraints: b"~{memory}", flags: 1, ty };
             let asm = Value::asm(fx.m.inline_asm(&asm).unwrap()).unwrap();
             fx.with(|b, _| {
                 b.call(VOID, &CallDesc::new(asm, ty, &[])).unwrap();

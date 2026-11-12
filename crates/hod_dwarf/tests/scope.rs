@@ -1,4 +1,4 @@
-//! `spec/dwarf.md` §6.9 (WP-059): the plan's refusals of what it still
+//! `spec/dwarf.md` §6.11 (WP-059): the plan's refusals of what it still
 //! does not write outside function bodies, each by name in a module with
 //! that one construct, and the shapes it writes counted.
 

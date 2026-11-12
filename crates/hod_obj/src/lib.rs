@@ -22,12 +22,15 @@
 //! # Ok::<(), hod_obj::Error>(())
 //! ```
 
+mod compress;
+pub mod deflate;
 pub mod elf;
 mod error;
 mod model;
 mod names;
 mod reloc;
 
+pub use compress::{CHDR_SIZE, Compression, ELFCOMPRESS_ZLIB};
 pub use error::{Error, Limit, SymbolProblem, WriteError};
 pub use model::{
     Arch, Binding, GroupId, GroupKind, Object, Relocation, SectionId, SectionKind, StackNote,

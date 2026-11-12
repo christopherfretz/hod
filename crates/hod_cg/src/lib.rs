@@ -57,7 +57,7 @@ pub use error::{CgError, CgResult, LIMIT_FRAME_SIZE, LIMIT_FUNCTION_SIZE};
 pub use frame::{Frame, FrameRef, MAX_FRAME, SlotPlace};
 pub use label::{FixupKind, Label, Labels, OutOfRange};
 pub use loc::{Class, Loc};
-pub use options::{Options, RelocModel, Stress};
+pub use options::{LIMIT_COMPRESSED_SECTION, Options, RelocModel, Stress};
 pub use policy::MAX_DEFERRED_RUN;
 pub use record::{
     BlockOffset, CallSiteRow, CfiOp, CfiRow, Chunk, ClauseRow, FrameDesc, FuncRecord, IslandRow,

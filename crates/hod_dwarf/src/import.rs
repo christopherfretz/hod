@@ -1,4 +1,4 @@
-//! Imported entities (`spec/dwarf.md` §6.9, WP-059): `using namespace`
+//! Imported entities (`spec/dwarf.md` §6.11, WP-059): `using namespace`
 //! (`DW_TAG_imported_module`), `using` declarations and namespace aliases
 //! (`DW_TAG_imported_declaration`), as `llc`'s
 //! `getOrCreateImportedEntityDIE` writes them at the end of the module: a
@@ -16,7 +16,7 @@ use crate::scope::{IMPORT, IMPORT_ENTITY, IMPORT_SCOPE};
 
 impl UnitPlan<'_> {
     /// The imported entities of the unit, then of each function, in
-    /// `llc`'s order (§6.9): the first step of [`UnitPlan::seal`].
+    /// `llc`'s order (§6.11): the first step of [`UnitPlan::seal`].
     pub(crate) fn seal_imports(&mut self) -> Result<(), Error> {
         let mut chain = Vec::new();
         for &ie in self.cu.imports {
@@ -114,7 +114,7 @@ impl UnitPlan<'_> {
 }
 
 impl<'a> Writer<'a> {
-    /// Writes an imported entity (§6.9).
+    /// Writes an imported entity (§6.11).
     pub(crate) fn imported_die(&mut self, plan: &UnitPlan<'a>, node: DiId) -> Result<(), Error> {
         let DiNode::ImportedEntity(e) = plan.debug.node(node) else {
             return Err(bad(node, "imports"));

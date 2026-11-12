@@ -2294,18 +2294,14 @@ fn loads_and_stores_agree_with_the_model_and_llc() {
     eprintln!("{} functions, {calls} calls compared", funcs.len());
 }
 
-/// An atomic load or store of an `Fpr`-class value stays refused by
-/// `mem.rs`'s check, before the hook.
+/// An atomic load or store of an `Fpr`-class value compiles since
+/// WP-074 (`tests/atomic.rs` checks what it does).
 #[test]
-fn atomic_fp_accesses_stay_refused() {
-    assert_refused(&[
-        (
-            "define double @f(ptr %p) { %r = load atomic double, ptr %p seq_cst, align 8\n ret double %r }",
-            hod_a64::target::ATOMIC,
-        ),
-        (
-            "define void @f(ptr %p, float %v) { store atomic float %v, ptr %p release, align 4\n ret void }",
-            hod_a64::target::ATOMIC,
-        ),
-    ]);
+fn atomic_fp_accesses_compile() {
+    for text in [
+        "define double @f(ptr %p) { %r = load atomic double, ptr %p seq_cst, align 8\n ret double %r }",
+        "define void @f(ptr %p, float %v) { store atomic float %v, ptr %p release, align 4\n ret void }",
+    ] {
+        assert_eq!(compile_ll(text), Ok(()), "{text}");
+    }
 }

@@ -1,7 +1,6 @@
 ; An instruction inlined from another file (spec/dwarf.md 5.4): its
-; row keeps its own scope's file and line. The DIEs of inlined code
-; (DW_TAG_inlined_subroutine) are not written yet, so module emission
-; refuses it as debug:inlined-subroutine (spec/dwarf.md 6.4).
+; row keeps its own scope's file and line, and the function's DIEs have
+; a DW_TAG_inlined_subroutine for it (spec/dwarf.md 6.9, WP-085).
 
 @g = dso_local global i32 0, align 4
 

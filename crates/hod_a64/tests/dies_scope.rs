@@ -1,4 +1,4 @@
-//! The DIEs outside function bodies (`spec/dwarf.md` §6.9, WP-059),
+//! The DIEs outside function bodies (`spec/dwarf.md` §6.11, WP-059),
 //! compared with `llc`'s:
 //!
 //! - the oracle: `data/dies_scope/{globals,templates,scope}.cpp` by
@@ -148,7 +148,7 @@ fn check_wants(source: &str, unit: &Node) {
     }
 }
 
-/// §6.9: each source by every compiler, by default and with
+/// §6.11: each source by every compiler, by default and with
 /// `-fstandalone-debug`; by clang, also with `-gtemplate-alias` (which
 /// kiln++ does not take), where `scope.cpp` has a template alias with
 /// its parameters.

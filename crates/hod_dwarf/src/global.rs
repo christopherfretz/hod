@@ -1,5 +1,5 @@
 //! Global and static-member variables of every shape (`spec/dwarf.md`
-//! §6.9, WP-059), as `llc`'s `getOrCreateGlobalVariableDIE` and
+//! §6.11, WP-059), as `llc`'s `getOrCreateGlobalVariableDIE` and
 //! `addLocationAttribute` write them: a static member's definition with
 //! `DW_AT_specification` (made before its class), a declaration, a
 //! constant (`DW_AT_const_value` for `DW_OP_constu`/`DW_OP_consts` +
@@ -37,7 +37,7 @@ impl UnitPlan<'_> {
         Ok(Some(value))
     }
 
-    /// The hook of `discover_global` (§6.9): a global of a shape the core
+    /// The hook of `discover_global` (§6.11): a global of a shape the core
     /// does not write gets its DIE here; `None` leaves a plain global (and
     /// a function's `static`) to the core.
     pub(crate) fn discover_scope_global(
@@ -146,7 +146,7 @@ impl<'a> Writer<'a> {
         (at != NONE).then(|| self.cur[at as usize])
     }
 
-    /// Writes a global of WP-059's shapes (§6.9).
+    /// Writes a global of WP-059's shapes (§6.11).
     pub(crate) fn scope_variable_die(
         &mut self,
         plan: &UnitPlan<'a>,

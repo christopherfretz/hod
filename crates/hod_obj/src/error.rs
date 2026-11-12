@@ -22,6 +22,9 @@ pub enum Limit {
     Groups,
     /// The file would pass 2^64 bytes, or what memory can hold.
     FileBytes,
+    // WP-061: compressed sections.
+    /// A section to compress holds 4 GiB or more.
+    CompressedBytes,
 }
 
 /// Why a symbol cannot be written.
@@ -110,6 +113,13 @@ pub enum Error {
         /// The section.
         section: SectionId,
     },
+    // WP-061: compressed sections.
+    /// A section asked to be compressed is part of the loaded image,
+    /// occupies no file space, or is compressed already.
+    NotCompressible {
+        /// The section.
+        section: SectionId,
+    },
 }
 
 impl fmt::Display for Error {
@@ -136,6 +146,7 @@ impl fmt::Display for Error {
                     Limit::Relocations => "too many relocations",
                     Limit::Groups => "too many groups",
                     Limit::FileBytes => "the file is too large",
+                    Limit::CompressedBytes => "a section to compress holds 4 GiB or more",
                 };
                 f.write_str(what)
             }
@@ -176,6 +187,11 @@ impl fmt::Display for Error {
             Self::LinkedToItself { section } => {
                 write!(f, "section #{} is linked to itself", section.index())
             }
+            Self::NotCompressible { section } => write!(
+                f,
+                "section #{} cannot be compressed: it is loaded, has no file space or is compressed",
+                section.index()
+            ),
         }
     }
 }

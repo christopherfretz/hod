@@ -103,6 +103,9 @@ pub(crate) enum LocalWhat {
     Block { first: u32, count: u32 },
     /// A label at a code offset.
     Label { offset: u32 },
+    /// An inlined subroutine (WP-085): its ranges, and the call's
+    /// location (its `inlinedAt`).
+    Inlined { first: u32, count: u32, call: LocId },
 }
 
 /// A local DIE's facts for the writer.
@@ -118,6 +121,9 @@ pub(crate) struct LocalData {
 #[derive(Clone, Copy, Debug)]
 struct Scope {
     node: DiId,
+    /// The `inlinedAt` of the scope's key (`LocId::NONE` for the
+    /// function's own scopes): `llc` keys a scope by both.
+    ia: LocId,
     parent: u32,
     open: bool,
     first: u32,
@@ -147,6 +153,17 @@ pub(crate) struct FnScratch {
     ents: Vec<(u32, u8, u32, u32)>,
     walk: Vec<(u32, u32, u32)>,
     fill: Vec<u32>,
+    /// The inlined scopes' keys and the abstract scopes (WP-085).
+    inl: crate::inline::FnInline,
+}
+
+/// The index of the scope keyed `(node, ia)`, or `NONE`.
+fn find(s: &FnScratch, node: DiId, ia: LocId) -> u32 {
+    if ia == LocId::NONE {
+        s.scope_of.get(node.index()).copied().unwrap_or(NONE)
+    } else {
+        s.inl.scope(node, ia)
+    }
 }
 
 impl FnScratch {
@@ -247,7 +264,7 @@ fn write_ops(plan: &UnitPlan<'_>, expr: ExprId, out: &mut Vec<u8>) {
 impl<'a> UnitPlan<'a> {
     /// The scope a `DILexicalBlockFile` stands for: its nearest enclosing
     /// scope that is not one.
-    fn non_file(&self, mut s: DiId) -> Result<DiId, Error> {
+    pub(crate) fn non_file(&self, mut s: DiId) -> Result<DiId, Error> {
         let mut steps = 0;
         while let Some(DiKind::LexicalBlockFile) = self.debug.find_kind(s) {
             let DiNode::LexicalBlockFile(f) = self.debug.node(s) else { break };
@@ -261,7 +278,7 @@ impl<'a> UnitPlan<'a> {
     }
 
     /// The parent scope of a block, or `None` for a subprogram.
-    fn parent_scope(&self, s: DiId) -> Result<Option<DiId>, Error> {
+    pub(crate) fn parent_scope(&self, s: DiId) -> Result<Option<DiId>, Error> {
         match self.debug.find_kind(s) {
             Some(DiKind::Subprogram) => Ok(None),
             Some(DiKind::LexicalBlock) => {
@@ -294,42 +311,44 @@ impl<'a> UnitPlan<'a> {
         let DiNode::Subprogram(sp) = self.debug.node(sp_id) else {
             return Err(bad(sp_id, "subprogram"));
         };
-        if self.slot[sp_id.index()] != NONE {
+        if self.cu.emission_kind != hod_ir::EmissionKind::FullDebug {
+            return crate::reduced::add_function(self, f); // WP-061: §6.10
+        }
+        // A DIE made before its function, for its statics (WP-085), is
+        // the function's.
+        let early = self.inline.take_early(self.slot[sp_id.index()]);
+        if self.slot[sp_id.index()] != NONE && !early {
             return Err(unsupported(sp_id, "debug:subprogram-twice"));
         }
         if u32::try_from(f.code.size).is_err() {
             return Err(Error::TooLarge);
         }
         let variadic = self.variadic(sp_id, &sp)?;
-        let parent = self.subprogram_parent(sp_id, &sp)?;
-        let die = self.push(sp_id, parent, Kind::Subprogram);
-        let func = self.funcs.len() as u32;
-        self.funcs.push(FnData {
-            die,
-            code: f.code,
-            frame_base: f.frame_base,
-            object_pointer: NONE,
-        });
-        self.code_addrs += 1;
 
         let mut s = std::mem::take(&mut self.fn_scratch);
-        let result = self.function_body(f, func, die, &mut s);
+        let result = self.function_body(f, &sp, &mut s);
         // A variadic function's last child (`llc`'s
         // `constructSubprogramScopeDIE`).
-        if result.is_ok() && variadic {
+        if let Ok(die) = result
+            && variadic
+        {
             self.push_anon(sp_id, die, Kind::Unspecified);
         }
         for sc in &s.scopes {
             s.scope_of[sc.node.index()] = NONE;
         }
         self.fn_scratch = s;
-        result
+        result.map(|_| ())
     }
 
     /// The parent DIE of a definition (§6.4): the unit for a member
     /// function's (after its class, as `llc` builds the declaration
     /// first), else its namespace or the unit.
-    fn subprogram_parent(&mut self, sp_id: DiId, sp: &DiSubprogram<'a>) -> Result<u32, Error> {
+    pub(crate) fn subprogram_parent(
+        &mut self,
+        sp_id: DiId,
+        sp: &DiSubprogram<'a>,
+    ) -> Result<u32, Error> {
         if !sp.sp_flags.contains(SpFlags::DEFINITION) || sp.unit != Some(self.unit) {
             return Err(unsupported(sp_id, "debug:subprogram-not-definition"));
         }
@@ -353,7 +372,7 @@ impl<'a> UnitPlan<'a> {
         // A member function's definition: the class is made (with the
         // declaration among its members), then the definition goes to
         // the unit.
-        // Made on demand, in its class or its scope (§6.9).
+        // Made on demand, in its class or its scope (§6.11).
         let spec = self.declaration_die(sp_id, decl)?;
         if spec == NONE || self.dies[spec as usize].kind != Kind::Method {
             return Err(unsupported(sp_id, "debug:specification"));
@@ -383,13 +402,16 @@ impl<'a> UnitPlan<'a> {
         Ok(t.types.first().copied().filter(|&t| t != DiId::NONE))
     }
 
+    /// `llc`'s `endFunctionImpl`: the scopes and entities, the abstract
+    /// instances of what the function inlines (WP-085), then the
+    /// function's DIE and its scopes'. The subprogram DIE.
     fn function_body(
         &mut self,
         f: &FunctionInput<'_>,
-        func: u32,
-        sp_die: u32,
+        sp: &DiSubprogram<'a>,
         s: &mut FnScratch,
-    ) -> Result<(), Error> {
+    ) -> Result<u32, Error> {
+        let sp_id = f.subprogram;
         if s.scope_of.len() < self.slot.len() {
             s.scope_of.resize(self.slot.len(), NONE);
         }
@@ -397,15 +419,34 @@ impl<'a> UnitPlan<'a> {
         s.stack.clear();
         s.ranges.clear();
         s.ents.clear();
+        s.inl.clear();
         self.scope_ranges(f, s)?;
 
         self.collect_entities(f, s)?;
         s.group();
-        self.scope_dies(f, func, sp_die, s)
+        self.abstract_instances(&mut s.inl)?;
+
+        let die = match self.slot[sp_id.index()] {
+            NONE => {
+                let parent = self.subprogram_parent(sp_id, sp)?;
+                self.push(sp_id, parent, Kind::Subprogram)
+            }
+            early => early,
+        };
+        let func = self.funcs.len() as u32;
+        self.funcs.push(FnData {
+            die,
+            code: f.code,
+            frame_base: f.frame_base,
+            object_pointer: NONE,
+        });
+        self.code_addrs += 1;
+        self.scope_dies(f, func, die, s)?;
+        Ok(die)
     }
 
     /// The function's variables and labels, by scope (§6.4).
-    fn collect_entities(&self, f: &FunctionInput<'_>, s: &mut FnScratch) -> Result<(), Error> {
+    fn collect_entities(&mut self, f: &FunctionInput<'_>, s: &mut FnScratch) -> Result<(), Error> {
         let sp_id = f.subprogram;
         // A variable or label whose scope has no code is dropped, as
         // `llc` drops it.
@@ -446,22 +487,25 @@ impl<'a> UnitPlan<'a> {
                 }
                 _ => return Err(bad(v.node, "variable")),
             };
-            let scope = match self.debug.location(v.loc) {
-                Some(DiLocation { inlined_at, .. }) if inlined_at != LocId::NONE => {
-                    return Err(unsupported(v.node, "debug:inlined-subroutine"));
-                }
-                Some(l) => l.scope,
-                None => scope.ok_or(bad(v.node, "scope"))?,
+            let (scope, ia) = match self.debug.location(v.loc) {
+                Some(DiLocation { scope, inlined_at, .. }) => (scope, inlined_at),
+                None => (scope.ok_or(bad(v.node, "scope"))?, LocId::NONE),
             };
             let scope = self.non_file(scope)?;
-            let index = s.scope_of.get(scope.index()).copied().unwrap_or(NONE);
+            let index = find(s, scope, ia);
             if index == NONE {
-                if self.owner_of(scope)? != sp_id {
+                let owner =
+                    if ia == LocId::NONE { self.owner_of(scope)? } else { self.call_root(ia)? };
+                if owner != sp_id {
                     return Err(unsupported(v.node, "debug:foreign-scope"));
                 }
                 continue;
             }
+            if ia != LocId::NONE && !s.inl.first_of(v.node, ia) {
+                return Err(unsupported(v.node, "debug:variable-twice"));
+            }
             s.ents.push((index, class, key, row as u32));
+            self.abstract_entity(&mut s.inl, v.node, scope, class, key);
         }
         s.ents.sort_unstable();
         // `llc`'s `needToEmitLexicalScope`: a block is written when it
@@ -502,8 +546,15 @@ impl<'a> UnitPlan<'a> {
             }
             let child = s.children[cursor as usize];
             let c = s.scopes[child as usize];
-            let parent = if c.vars {
-                let block = self.push(c.node, die, Kind::Block);
+            // An inlined subroutine is always written (WP-085).
+            let inlined = c.ia != LocId::NONE && self.parent_scope(c.node)?.is_none();
+            let parent = if c.vars || inlined {
+                let kind = if inlined { Kind::Inlined } else { Kind::Block };
+                let block = if c.ia == LocId::NONE {
+                    self.push(c.node, die, kind)
+                } else {
+                    self.push_anon(c.node, die, kind)
+                };
                 let (first, end) =
                     (s.range_start[child as usize], s.range_start[child as usize + 1]);
                 let first_range = self.ranges.len() as u32;
@@ -512,11 +563,12 @@ impl<'a> UnitPlan<'a> {
                 if count == 1 {
                     self.code_addrs += 1;
                 }
-                self.locals.push(LocalData {
-                    die: block,
-                    func,
-                    what: LocalWhat::Block { first: first_range, count },
-                });
+                let what = if inlined {
+                    LocalWhat::Inlined { first: first_range, count, call: c.ia }
+                } else {
+                    LocalWhat::Block { first: first_range, count }
+                };
+                self.locals.push(LocalData { die: block, func, what });
                 self.entities(f, func, child, block, s)?;
                 block
             } else {
@@ -530,7 +582,7 @@ impl<'a> UnitPlan<'a> {
     }
 
     /// The subprogram a local scope belongs to.
-    fn owner_of(&self, mut scope: DiId) -> Result<DiId, Error> {
+    pub(crate) fn owner_of(&self, mut scope: DiId) -> Result<DiId, Error> {
         let mut steps = 0;
         while let Some(p) = self.parent_scope(scope)? {
             scope = p;
@@ -561,7 +613,9 @@ impl<'a> UnitPlan<'a> {
             }
             e += 1;
             let v = f.vars[row as usize];
-            if self.slot[v.node.index()] != NONE {
+            // An inlined instance's entities are not keyed (WP-085).
+            let inlined = s.scopes[sc as usize].ia != LocId::NONE;
+            if !inlined && self.slot[v.node.index()] != NONE {
                 return Err(unsupported(v.node, "debug:variable-twice"));
             }
             let kind = match class {
@@ -569,7 +623,11 @@ impl<'a> UnitPlan<'a> {
                 1 => Kind::LocalVar,
                 _ => Kind::Label,
             };
-            let d = self.push(v.node, die, kind);
+            let d = if inlined {
+                self.push_anon(v.node, die, kind)
+            } else {
+                self.push(v.node, die, kind)
+            };
             let what = match v.place {
                 LocalPlace::Frame(offset) => {
                     LocalWhat::Var { offset, indirect: false, expr: v.expr }
@@ -584,6 +642,7 @@ impl<'a> UnitPlan<'a> {
                 LocalPlace::Refused(name) => return Err(unsupported(v.node, name)),
             };
             if class == 0
+                && !inlined
                 && let DiNode::LocalVariable(n) = self.debug.node(v.node)
                 && has(n.flags, DiFlags::OBJECT_POINTER)
             {
@@ -612,25 +671,33 @@ impl<'a> UnitPlan<'a> {
             if end <= row.offset {
                 continue;
             }
+            // An inlined location: `llc` makes the abstract scope of
+            // its scope first (WP-085).
             if loc.inlined_at != LocId::NONE {
-                return Err(unsupported(loc.scope, "debug:inlined-subroutine"));
+                self.abstract_scope(&mut s.inl, loc.scope)?;
             }
-            // The scopes from the row's out to the first one open.
-            s.path.clear();
-            let mut at = self.non_file(loc.scope)?;
+            // The scopes from the row's out to the first one open, keyed
+            // `(scope, inlinedAt)`; an inlined subprogram's parent is
+            // its call's scope.
+            s.inl.kpath.clear();
+            let mut at = (self.non_file(loc.scope)?, loc.inlined_at);
+            let bound = self.slot.len() + self.debug.loc_count();
             let ancestor = loop {
-                let index = s.scope_of.get(at.index()).copied().ok_or(bad(at, "scope"))?;
+                let index = find(s, at.0, at.1);
                 if index != NONE && s.scopes[index as usize].open {
                     break index;
                 }
-                s.path.push(at);
-                if s.path.len() > self.slot.len() {
-                    return Err(bad(at, "scope"));
+                s.inl.kpath.push(at);
+                if s.inl.kpath.len() > bound {
+                    return Err(bad(at.0, "scope"));
                 }
-                match self.parent_scope(at)? {
-                    Some(p) => at = p,
-                    None if at == f.subprogram => break NONE,
-                    None => return Err(unsupported(at, "debug:foreign-scope")),
+                match self.parent_scope(at.0)? {
+                    Some(p) => at.0 = p,
+                    None if at.1 != LocId::NONE => {
+                        at = self.call_parent(&mut s.inl, at.0, at.1, index == NONE)?;
+                    }
+                    None if at.0 == f.subprogram => break NONE,
+                    None => return Err(unsupported(at.0, "debug:foreign-scope")),
                 }
             };
             // Close what does not contain the row's scope.
@@ -644,13 +711,18 @@ impl<'a> UnitPlan<'a> {
                 s.ranges.push((top, sc.first, last_end));
             }
             // Open the new ones, outermost first.
-            for &node in s.path.iter().rev() {
+            for k in (0..s.inl.kpath.len()).rev() {
+                let (node, ia) = s.inl.kpath[k];
                 let parent = s.stack.last().copied().unwrap_or(NONE);
-                let mut index = s.scope_of[node.index()];
+                let mut index = find(s, node, ia);
                 if index == NONE {
                     index = s.scopes.len() as u32;
-                    s.scope_of[node.index()] = index;
-                    s.scopes.push(Scope { node, parent, open: false, first: 0, vars: false });
+                    if ia == LocId::NONE {
+                        s.scope_of[node.index()] = index;
+                    } else {
+                        s.inl.set_scope(node, ia, index);
+                    }
+                    s.scopes.push(Scope { node, ia, parent, open: false, first: 0, vars: false });
                 }
                 let sc = &mut s.scopes[index as usize];
                 sc.open = true;
@@ -683,7 +755,9 @@ impl<'a> UnitPlan<'a> {
             let die = self.funcs[i].die;
             let sp_id = self.dies[die as usize].node;
             let DiNode::Subprogram(sp) = self.debug.node(sp_id) else { continue };
+            // One with an abstract instance names it instead (WP-085).
             if sp.declaration.is_none()
+                && self.inline.die(sp_id).is_none()
                 && let Some(t) = self.return_type(sp_id, &sp)?
             {
                 self.reference_type(sp_id, "type", t)?;
@@ -696,11 +770,13 @@ impl<'a> UnitPlan<'a> {
             let d = self.dies[die as usize];
             if let (Kind::LocalParam | Kind::LocalVar, DiNode::LocalVariable(v)) =
                 (d.kind, self.debug.node(d.node))
+                && self.inline.die(d.node).is_none()
             {
                 self.reference_type(d.node, "type", v.ty.unwrap_or(DiId::NONE))?;
             }
         }
         self.finish_types()?;
+        self.seal_inline()?;
         self.seal_tables();
         Ok(())
     }
@@ -708,7 +784,7 @@ impl<'a> UnitPlan<'a> {
     /// The index and facts of the function whose subprogram DIE is
     /// `die`.
     pub(crate) fn fn_data(&self, die: u32) -> Option<(usize, FnData)> {
-        let i = self.funcs.binary_search_by_key(&die, |f| f.die).ok()?;
+        let i = self.inline.fn_index(die)?;
         Some((i, self.funcs[i]))
     }
 
@@ -724,7 +800,7 @@ impl<'a> UnitPlan<'a> {
 }
 
 impl<'a> Writer<'a> {
-    fn exprloc(&mut self) {
+    pub(crate) fn exprloc(&mut self) {
         write_uleb(&mut self.info, self.expr.len() as u64);
         self.info.extend_from_slice(&self.expr);
     }
@@ -751,6 +827,10 @@ impl<'a> Writer<'a> {
         } else {
             self.expr.push(DW_OP_REGX);
             write_uleb(&mut self.expr, u64::from(fd.frame_base));
+        }
+        if let Some(origin) = plan.inline.die(sp_id) {
+            self.subprogram_of_abstract(index, &fd, origin, children);
+            return Ok(());
         }
         let decl_of = |file: Option<DiId>, line: u32| Writer::decl_of(plan, sp_id, file, line);
         if let Some(decl) = sp.declaration {
@@ -827,7 +907,7 @@ impl<'a> Writer<'a> {
     }
 
     /// `DW_AT_low_pc` (addrx `index`) and `DW_AT_high_pc` (`size`).
-    fn addr_attrs(&mut self, index: u32, size: u64) {
+    pub(crate) fn addr_attrs(&mut self, index: u32, size: u64) {
         write_uleb(&mut self.info, u64::from(index));
         self.info.extend_from_slice(&(size as u32).to_le_bytes());
     }
@@ -854,6 +934,10 @@ impl<'a> Writer<'a> {
                 let mut ops = std::mem::take(&mut self.expr);
                 write_ops(plan, expr, &mut ops);
                 self.expr = ops;
+                if let Some(origin) = plan.inline.die(node) {
+                    self.var_of_abstract(kind, origin);
+                    return Ok(());
+                }
                 let decl = Writer::decl_of(plan, node, v.file, v.line)?;
                 let art = has(v.flags, DiFlags::ARTIFICIAL);
                 if kind == Kind::LocalParam {
@@ -872,7 +956,9 @@ impl<'a> Writer<'a> {
                 self.ref_to(plan, node, v.ty.unwrap_or(DiId::NONE))?;
             }
             (LocalWhat::Block { first, count }, DiNode::LexicalBlock(_)) => {
-                if count == 1 {
+                if let Some(origin) = plan.inline.die(node) {
+                    self.block_of_abstract(plan, &l, first, count, origin);
+                } else if count == 1 {
                     let (start, end) = plan.ranges[first as usize];
                     self.abbrev(code(fam::LEXICAL_BLOCK, 1, true));
                     let index = self.push_addr(fd.code.symbol, fd.code.addend + i64::from(start));
@@ -896,6 +982,10 @@ impl<'a> Writer<'a> {
                 }
             }
             (LocalWhat::Label { offset }, DiNode::Label(n)) => {
+                if let Some(origin) = plan.inline.die(node) {
+                    self.label_of_abstract(&fd, offset, origin);
+                    return Ok(());
+                }
                 let decl = Writer::decl_of(plan, node, n.file, n.line)?;
                 if let Some(d) = decl
                     && n.column != 0

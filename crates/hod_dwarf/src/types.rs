@@ -46,7 +46,7 @@ pub(crate) enum Task {
     Create { node: DiId, want: Want },
     /// Step `step` of the construction of DIE `die`.
     Construct { die: u32, step: u32 },
-    /// Template parameter `node`'s DIE under DIE `parent` (§6.9).
+    /// Template parameter `node`'s DIE under DIE `parent` (§6.11).
     Template { parent: u32, node: DiId },
 }
 

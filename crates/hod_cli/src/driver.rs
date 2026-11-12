@@ -37,6 +37,8 @@ pub const ENV_STRICT: &str = "HOD_STRICT";
 pub const ENV_COVERAGE_LOG: &str = "HOD_COVERAGE_LOG";
 /// Environment variable: the `llvm-dis` for bitcode (`--bitcode-via=`).
 pub const ENV_BITCODE_VIA: &str = "HOD_BITCODE_VIA";
+/// Environment variable: `--compress-debug-sections=` (WP-061).
+pub const ENV_COMPRESS_DEBUG_SECTIONS: &str = "HOD_COMPRESS_DEBUG_SECTIONS";
 /// Environment variable hod sets for the processes it starts, the fallback
 /// and the bitcode converter. A hod that starts with it set stands where
 /// one of them should be, and stops instead of recursing.
@@ -67,6 +69,8 @@ pub struct Environment {
     pub coverage_log: Option<PathBuf>,
     /// `HOD_BITCODE_VIA`, if set and not empty.
     pub bitcode_via: Option<PathBuf>,
+    /// `HOD_COMPRESS_DEBUG_SECTIONS`, if set and not empty.
+    pub compress_debug_sections: Option<hod::Compression>,
     /// `HOD_IN_FALLBACK` is set: this process was started by another hod,
     /// as its fallback or its bitcode converter.
     pub in_fallback: bool,
@@ -95,6 +99,14 @@ impl Environment {
             makeflags: non_empty("MAKEFLAGS").and_then(|flags| flags.into_string().ok()),
             ..Environment::default()
         };
+        if let Some(value) = non_empty(ENV_COMPRESS_DEBUG_SECTIONS) {
+            match args::compression(&value) {
+                Ok(c) => env.compress_debug_sections = Some(c),
+                Err(message) => {
+                    env.error = Some(format!("{ENV_COMPRESS_DEBUG_SECTIONS}: {message}"));
+                }
+            }
+        }
         if let Some(value) = non_empty(ENV_THREADS) {
             match value.to_str().and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0) {
                 Some(threads) => env.threads = Some(threads),
@@ -367,7 +379,9 @@ impl Job<'_, '_> {
 /// returns the exit status.
 pub fn run(args: &[OsString], env: &Environment, compile: Compile<'_>, io: &mut Io<'_>) -> u8 {
     let start = Instant::now();
-    let line = args::parse(args);
+    let mut line = args::parse(args);
+    line.options.debug_compression =
+        line.compress_debug_sections.or(env.compress_debug_sections).unwrap_or_default();
     let fallback = line.fallback.clone().or_else(|| env.fallback.clone());
     match line.action {
         Action::Compile => {}
@@ -636,6 +650,11 @@ mod tests {
         let bad = vars(&[("HOD_STRICT", "yes")]);
         assert!(!bad.strict);
         assert!(bad.error.unwrap().contains("invalid value 'yes' for HOD_STRICT"));
+        // WP-061: HOD_COMPRESS_DEBUG_SECTIONS takes the option's values.
+        let zlib = vars(&[("HOD_COMPRESS_DEBUG_SECTIONS", "zlib")]);
+        assert_eq!(zlib.compress_debug_sections, Some(hod::Compression::Zlib));
+        let zstd = vars(&[("HOD_COMPRESS_DEBUG_SECTIONS", "zstd")]);
+        assert!(zstd.error.unwrap().contains("compression 'zstd' is not supported"));
         // HOD_CENSUS is read like HOD_STRICT.
         assert!(vars(&[("HOD_CENSUS", "1")]).census);
         assert_eq!(vars(&[("HOD_CENSUS", "0")]), Environment::default());

@@ -8,98 +8,92 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `(compiled)` | 3068 | 3034 |
-| `call:inline-asm` | 74 | 74 |
-| `type:vector` | 62 | 59 |
-| `operand:address-in-aggregate` | 32 | 32 |
-| `operand:int-of-addr` | 23 | 23 |
-| `tls:general-dynamic` | 11 | 11 |
-| `mem:atomic-load` | 8 | 7 |
+| `(compiled)` | 3262 | 3226 |
 | `debug:module-flags` | 7 | 7 |
-| `inst:atomicrmw` | 6 | 6 |
-| `inst:insertelement` | 6 | 6 |
-| `musttail:stack-args-unknown` | 6 | 6 |
+| `inst:icmp/vector` | 8 | 6 |
 | `attr:convergent` | 5 | 5 |
-| `inst:extractvalue/fp128` | 4 | 4 |
-| `module:asm` | 4 | 4 |
+| `inst:extractvalue/fp128` | 5 | 5 |
+| `inst:sdiv/vector` | 4 | 4 |
+| `inst:udiv/vector` | 4 | 4 |
 | `inst:callbr` | 3 | 3 |
 | `intrinsic:llvm.smul.with.overflow/int-wide` | 3 | 3 |
+| `intrinsic:llvm.vector.reduce.add` | 3 | 3 |
+| `module:asm` | 3 | 3 |
 | `type:bfloat` | 3 | 3 |
 | `const-expr:trunc` | 2 | 3 |
+| `a64:mem-vector` | 2 | 2 |
+| `call:inline-asm` | 2 | 2 |
+| `inst:srem/vector` | 2 | 2 |
+| `intrinsic:llvm.aarch64.neon.udot.v4i32.v16i8` | 2 | 2 |
 | `intrinsic:llvm.umul.with.overflow/i128` | 2 | 2 |
-| `mem:atomic-store` | 2 | 2 |
 | `special-global:llvm.global.annotations` | 2 | 2 |
+| `a64:inline-asm-operand` | 1 | 1 |
+| `a64:vector-op` | 1 | 1 |
 | `cc:preserve_mostcc` | 1 | 1 |
+| `const-expr:sub` | 1 | 1 |
+| `init:blockaddress-unplaced` | 1 | 1 |
+| `inst:fcmp/vector` | 1 | 1 |
 | `inst:fptosi/i128` | 1 | 1 |
 | `inst:sitofp/i128` | 1 | 1 |
 | `inst:switch/i128` | 1 | 1 |
 | `intrinsic:llvm.aarch64.crc32b` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crypto.sha256h` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.addp.v16i8` | 1 | 1 |
 | `intrinsic:llvm.aarch64.neon.ld2.v16i8.p0` | 1 | 1 |
 | `intrinsic:llvm.aarch64.neon.ld2.v8i16.p0` | 1 | 1 |
 | `intrinsic:llvm.aarch64.neon.ld3.v8i8.p0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.tbl2.v16i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.umull.v2i64` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.vsri.v16i8` | 1 | 1 |
 | `intrinsic:llvm.readcyclecounter` | 1 | 1 |
-| `intrinsic:llvm.thread.pointer` | 1 | 1 |
 | `metadata-arg:llvm.read_volatile_register.i64` | 1 | 1 |
-| `tls:local-dynamic` | 1 | 1 |
 | `attr:fmv-features` | 1 | 0 |
 | `const-expr:bitcast` | 1 | 0 |
+| `intrinsic:llvm.aarch64.neon.bfcvtn` | 0 | 1 |
+| `intrinsic:llvm.aarch64.neon.bfdot.v4f32.v8bf16` | 1 | 0 |
 | all | 3347 | 3308 |
 
 ## Every reason (census)
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `call:inline-asm` | 80 | 80 |
-| `type:vector` | 76 | 72 |
-| `inst:extractelement` | 45 | 41 |
-| `operand:address-in-aggregate` | 34 | 34 |
-| `operand:int-of-addr` | 31 | 31 |
-| `inst:insertelement` | 30 | 29 |
-| `inst:shufflevector` | 24 | 20 |
-| `mem:atomic-load` | 14 | 13 |
-| `intrinsic:llvm.threadlocal.address` | 13 | 13 |
-| `tls:general-dynamic` | 13 | 13 |
-| `inst:atomicrmw` | 11 | 10 |
-| `attr:elementtype` | 9 | 9 |
-| `mem:atomic-store` | 8 | 7 |
+| `inst:icmp/vector` | 10 | 8 |
 | `debug:locations` | 7 | 7 |
 | `debug:module-flags` | 7 | 7 |
 | `debug:subprogram` | 7 | 7 |
-| `atomicrmw:xchg` | 7 | 6 |
-| `musttail:stack-args-unknown` | 6 | 6 |
-| `atomicrmw:add` | 5 | 5 |
+| `inst:sdiv/vector` | 6 | 6 |
 | `attr:convergent` | 5 | 5 |
 | `debug:slot-variables` | 5 | 5 |
 | `inst:extractvalue/fp128` | 5 | 5 |
+| `inst:srem/vector` | 5 | 5 |
+| `inst:udiv/vector` | 4 | 4 |
 | `intrinsic:llvm.vector.reduce.add` | 4 | 4 |
-| `module:asm` | 4 | 4 |
-| `tls:direct-operand` | 4 | 4 |
 | `const-expr:sub` | 3 | 4 |
-| `inst:cmpxchg` | 4 | 3 |
+| `call:inline-asm` | 3 | 3 |
 | `inst:callbr` | 3 | 3 |
 | `intrinsic:llvm.smul.with.overflow/int-wide` | 3 | 3 |
+| `module:asm` | 3 | 3 |
 | `type:bfloat` | 3 | 3 |
 | `const-expr:trunc` | 2 | 3 |
+| `a64:mem-vector` | 2 | 2 |
+| `inst:urem/vector` | 2 | 2 |
 | `intrinsic:llvm.aarch64.neon.ld3.v8i8.p0` | 2 | 2 |
 | `intrinsic:llvm.aarch64.neon.st2.v8i16.p0` | 2 | 2 |
 | `intrinsic:llvm.aarch64.neon.tbl1.v8i8` | 2 | 2 |
 | `intrinsic:llvm.aarch64.neon.udot.v4i32.v16i8` | 2 | 2 |
+| `intrinsic:llvm.fma/vector` | 2 | 2 |
 | `intrinsic:llvm.umul.with.overflow/i128` | 2 | 2 |
 | `linkage:appending` | 2 | 2 |
 | `special-global:llvm.global.annotations` | 2 | 2 |
-| `atomicrmw:and` | 1 | 1 |
-| `atomicrmw:fadd` | 1 | 1 |
-| `atomicrmw:fmax` | 1 | 1 |
-| `atomicrmw:fmin` | 1 | 1 |
-| `atomicrmw:nand` | 1 | 1 |
-| `atomicrmw:or` | 1 | 1 |
-| `atomicrmw:sub` | 1 | 1 |
-| `atomicrmw:xor` | 1 | 1 |
+| `a64:inline-asm-operand` | 1 | 1 |
+| `a64:vector-op` | 1 | 1 |
 | `cc:79` | 1 | 1 |
 | `cc:aarch64_vector_pcs` | 1 | 1 |
 | `cc:preserve_allcc` | 1 | 1 |
 | `cc:preserve_mostcc` | 1 | 1 |
-| `inst:fence` | 1 | 1 |
+| `init:blockaddress-unplaced` | 1 | 1 |
+| `inst:extractelement/i128` | 1 | 1 |
+| `inst:fcmp/vector` | 1 | 1 |
 | `inst:fptosi/i128` | 1 | 1 |
 | `inst:sitofp/i128` | 1 | 1 |
 | `inst:switch/i128` | 1 | 1 |
@@ -229,13 +223,18 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 | `intrinsic:llvm.aarch64.neon.vsli.v4i32` | 1 | 1 |
 | `intrinsic:llvm.aarch64.neon.vsli.v8i8` | 1 | 1 |
 | `intrinsic:llvm.aarch64.neon.vsri.v16i8` | 1 | 1 |
+| `intrinsic:llvm.ceil/vector` | 1 | 1 |
+| `intrinsic:llvm.ctlz/vector` | 1 | 1 |
+| `intrinsic:llvm.ctpop/vector` | 1 | 1 |
+| `intrinsic:llvm.fabs/vector` | 1 | 1 |
+| `intrinsic:llvm.floor/vector` | 1 | 1 |
 | `intrinsic:llvm.readcyclecounter` | 1 | 1 |
-| `intrinsic:llvm.thread.pointer` | 1 | 1 |
+| `intrinsic:llvm.round/vector` | 1 | 1 |
+| `intrinsic:llvm.roundeven/vector` | 1 | 1 |
+| `intrinsic:llvm.sqrt/vector` | 1 | 1 |
+| `intrinsic:llvm.trunc/vector` | 1 | 1 |
 | `intrinsic:llvm.umul.with.overflow/int-wide` | 1 | 1 |
 | `metadata-arg:llvm.read_volatile_register.i64` | 1 | 1 |
-| `tls:initial-exec` | 1 | 1 |
-| `tls:local-dynamic` | 1 | 1 |
-| `tls:local-exec` | 1 | 1 |
 | `attr:fmv-features` | 1 | 0 |
 | `const-expr:bitcast` | 1 | 0 |
 | `intrinsic:llvm.aarch64.neon.bfcvtn` | 0 | 1 |
@@ -263,13 +262,13 @@ Coverage-log field 7 (from the process's start to the decline) of the first-refu
 
 | LLVM | route | median | p99 | worst | share of `llc`: median | p99 | worst |
 |---|---|---:|---:|---:|---:|---:|---:|
-| 22 | text | 5027 | 22504 | 263918 | 11.8% | 42.0% | 123.3% |
-| 22 | bitcode, native | 4726 | 19825 | 162793 | 11.2% | 38.4% | 114.7% |
-| 22 | bitcode, `llvm-dis` | 35512 | 103811 | 595057 | 84.0% | 180.2% | 476.7% |
-| 22 | `llc -O0` | 39828 | 97899 | 3562324 | | | |
-| 22 | the `convert` of the `llvm-dis` route | 31310 | 81825 | 366800 | | | |
-| 19 | text | 4572 | 19739 | 287473 | 11.1% | 38.3% | 102.1% |
-| 19 | bitcode, native | 4363 | 16313 | 194692 | 10.6% | 33.7% | 101.8% |
-| 19 | bitcode, `llvm-dis` | 34497 | 92976 | 781623 | 84.8% | 163.6% | 560.6% |
-| 19 | `llc -O0` | 39619 | 96267 | 3628976 | | | |
-| 19 | the `convert` of the `llvm-dis` route | 30028 | 81807 | 499056 | | | |
+| 22 | text | 4235 | 14825 | 259875 | 12.3% | 35.5% | 158.8% |
+| 22 | bitcode, native | 3934 | 14093 | 167002 | 11.4% | 35.4% | 218.1% |
+| 22 | bitcode, `llvm-dis` | 27390 | 74064 | 667561 | 79.7% | 171.1% | 373.9% |
+| 22 | `llc -O0` | 37967 | 75245 | 3594118 | | | |
+| 22 | the `convert` of the `llvm-dis` route | 23888 | 64650 | 440798 | | | |
+| 19 | text | 4411 | 14772 | 354513 | 12.4% | 38.6% | 131.4% |
+| 19 | bitcode, native | 4025 | 14437 | 220406 | 11.2% | 39.3% | 148.4% |
+| 19 | bitcode, `llvm-dis` | 29422 | 69693 | 794227 | 82.4% | 178.3% | 374.9% |
+| 19 | `llc -O0` | 38792 | 73423 | 3916936 | | | |
+| 19 | the `convert` of the `llvm-dis` route | 25337 | 59325 | 510064 | | | |

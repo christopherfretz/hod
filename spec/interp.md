@@ -31,8 +31,9 @@ defines for hod.
 The interpreter is itself checked against LLVM (§10).
 
 It is single-threaded, little-endian, and has 64-bit pointers. It models
-C++ exceptions of the Itanium ABI (§5.9) and computed gotos (§5.5). It does
-not model variadic calls, vectors, thread-local storage, `callbr` or inline
+C++ exceptions of the Itanium ABI (§5.9), computed gotos (§5.5) and
+fixed-width vectors (§3.1, §5.10). It does
+not model variadic calls, thread-local storage, `callbr` or inline
 assembly: those are **unsupported** (§8), which is a third kind of answer,
 neither a result nor a trap.
 
@@ -108,9 +109,11 @@ pub enum Val {
     Ptr(u64),
     Float(u32),                       // IEEE-754 binary32 bit pattern
     Double(u64),                      // IEEE-754 binary64 bit pattern
-    Agg(Agg),                         // an array or struct: its type and memory image
+    Agg(Agg),                         // an array, a struct or a vector (§3.1): its type and memory image
 }
 pub const MAX_INT_BITS: u32 = 128;
+pub type Vector = Agg;
+pub enum Lane { Int(u32), Ptr, Float, Double }
 ```
 
 `Val::int(bits, value)` masks `value` to `bits`; `i1` .. `i128`, `f32`,
@@ -125,9 +128,53 @@ element's allocation size), with padding bytes zero. `Agg::ty()`,
 
 The types a value may have: `iN` for N ≤ 128, `ptr` (any address space is
 accepted as a type; `addrspacecast` is unsupported), `float`, `double`,
-arrays and structs of these. Every other type is unsupported (§8).
+arrays and structs of these, and the vectors of §3.1. Every other type is
+unsupported (§8).
 
 Tests: `tests/memory.rs` (`aggregates`), unit tests of `value.rs`.
+
+### 3.1 Vectors
+
+A fixed-width vector `<N x T>` (WP-078) is a `Val::Agg` whose type is the
+vector type, and like every aggregate it is **its memory image** (design
+0003 §1): the image LLVM stores for it on a little-endian target.
+
+- **Lanes** (`Lane`): `T` is `iN` with N a multiple of 8 up to 128, `i1`,
+  `ptr`, `float` or `double`. `N` is 1 or more; the image must fit
+  `Config::max_memory` (else `limit-memory`).
+- **Layout.** Lane `i` of a byte-sized lane is at byte `i × size(T)`, low
+  byte first (`<4 x i32> <1, 2, 3, 4>` is `01 00 00 00 02 00 ...`). An
+  `<N x i1>` mask is **bit-packed**: lane `i` is bit `i % 8` of byte
+  `i / 8` (bit 0 the least significant), the image is ⌈N/8⌉ bytes, and the
+  bits above lane N-1 are zero. So `<3 x i1> <1, 0, 1>` is `05`, `<13 x
+  i1>` alternating from 1 is `55 15`, and `bitcast <8 x i1> to i8` is the
+  byte. Evidence: compiled by `llc` 19 and 22 (`-O0 -global-isel=0
+  -fast-isel=0`) and run, a store of `<3 x i1> <1, 0, 1>` writes `05` and
+  of the alternating `<13 x i1>` writes `55 15`, a load of `01 12` as
+  `<13 x i1>` has lanes 0, 9 and 12 set, `bitcast <8 x i1> <1, 0, 0, 1, 0,
+  0, 0, 1>` to `i8` is `0x89`, and a global `<3 x i1> <1, 0, 1>` is the
+  byte `05`. `tests/vectors.rs` (`layout_in_memory`) has the 13-lane store,
+  the bitcasts and the padding rule; the oracle (§10.3) checks thousands of
+  mask stores, loads and bitcasts more.
+- **Poison per lane.** A vector carries a poison flag per lane
+  (`is_poison(i)`, `has_poison()`; `lane(i)` is `None` for one). The bytes
+  of a poison lane are zero in the image. A poison lane is created only by
+  the rules of §5.10 and is **observed**, trapping `poison-lane`, only where
+  §5.10 says.
+- `Agg::is_vector()`, `lane_kind()`, `lane_count()`, `lane(i)`,
+  `from_lanes(types, ty, &[Option<Val>])` (`None` a poison lane) and
+  `from_image(types, ty, bytes)` read and build them; `bytes()` is the
+  image. A vector prints as `<i32 1, poison,
+  i32 3>`.
+- **Odd lanes are refused**, `type:vector-odd-element`: an `iN` lane with N
+  neither 1 nor a multiple of 8 (`<4 x i3>`, `<2 x i33>`). LangRef packs
+  them like masks, but `llc` 19 and 22 store `trunc <4 x i8> <1, 2, 7, 253>
+  to <4 x i3>` at SelectionDAG `-O0` as bytes that are not that packing
+  (while `<2 x i33>` comes out packed), so no image could be proven; no
+  front end emits them.
+
+Tests: `tests/vectors.rs` (`layout_in_memory`, `vectors_as_values`), unit
+tests of `vector.rs`.
 
 ## 4. Memory
 
@@ -180,6 +227,15 @@ alignment, a kind and, for every byte, a **written** flag.
   multiple of 8 from bytes whose high bits are not zero is
   `non-zero-padding-bits` (LangRef "'load' Instruction": the result is
   undefined when the memory was not written by a store of the same type).
+- **Vectors in memory** (§3.1): a load or store is one access of the
+  image's bytes. A load is lenient per lane, as LangRef's `load` makes an
+  unwritten byte `undef` and not undefined behavior: a lane with a byte
+  whose written flag is clear is **poison** instead of `uninitialized-load`;
+  a mask whose last byte was written with bits above the lanes set is
+  `non-zero-padding-bits`. A store writes the image and then **clears** the
+  written flags of every byte that holds a poison lane (for a mask, the
+  whole byte of a poison bit), so a scalar load of them traps
+  `uninitialized-load` and a vector load gives the poison back.
 - **Limit.** The live bytes of variables and stack never exceed
   `Config::max_memory`: an allocation that would is `limit-memory` (§7).
 - **Module variables.** The initializer is flattened by
@@ -222,6 +278,7 @@ impl Trap { pub const ALL: &[Trap]; pub const fn name(self) -> &'static str;
 | `float-to-int-overflow` | §5.3 |
 | `nan-result` | §5.1 |
 | `intrinsic-poison` | §5.6 |
+| `poison-lane` | §5.10 |
 | `out-of-bounds`, `use-after-free`, `misaligned`, `uninitialized-load`, `non-zero-padding-bits`, `write-to-constant` | §4 |
 | `overlapping-copy` | §5.6 |
 | `undefined-value` | §5.5 |
@@ -334,8 +391,8 @@ LangRef "Memory Access and Addressing Operations", "Aggregate Operations".
   defines. `fmax`, `fmin`, `fmaximum`, `fminimum` are unsupported.
 - `extractvalue`, `insertvalue`: the scalar or aggregate at the byte offset
   of the image (§3).
-- `extractelement`, `insertelement`, `shufflevector`: vectors are
-  unsupported.
+- `extractelement`, `insertelement`, `shufflevector`, and every other
+  instruction on vectors: §5.10.
 
 Tests: `tests/memory.rs` (`ptr_add_indices`, `dynamic_allocation`,
 `aggregates`, `atomics_are_sequential`).
@@ -425,7 +482,8 @@ same, so this is not a place where compilations differ. Consequently
 `freeze` copies its operand (LangRef "'freeze' Instruction").
 
 Poison that an operation would *produce* is a trap (§5.1, §5.3, §5.6).
-Unwritten memory is never read (§4).
+Unwritten memory is never read (§4). Vectors are the exception: there it
+is a poison lane, observed only later, and `freeze` keeps it (§5.10).
 
 Test: `tests/instructions.rs` (`undef_is_zero_and_freeze_copies`).
 
@@ -553,6 +611,49 @@ Tests: `tests/unwind.rs` (`catch_clauses_in_order`, `filters`,
 `misuse`, `null_type`); the cases of `tests/eh_cases` against LLVM
 (§10.2).
 
+### 5.10 Vectors
+
+LangRef "Vector Type", "Vector Operations", "'llvm.vector.reduce.*'
+Intrinsics" (WP-078; the census of design 0003 §1). A vector operation
+applies the scalar rule of §5.1..§5.6 to each lane, lane 0 first, through
+the same kernels, with one difference: **what the scalar rules call poison
+makes the lane poison instead of trapping**, and a poison lane is
+**observed** (traps `poison-lane`) only where a scalar would be made of it.
+Undefined behavior in any lane traps as for a scalar, and the first lane
+that traps is the trap.
+
+| construct | meaning |
+|---|---|
+| `add` .. `xor`, `shl`, `lshr`, `ashr` | per lane; a poison operand lane gives a poison lane; a shift amount of the width or more gives a poison lane (scalar: `shift-too-large`) |
+| `udiv`, `sdiv`, `urem`, `srem` | per lane; a divisor lane that is 0 **or poison** traps `division-by-zero` (LangRef: undefined behavior either way); a signed division by -1 traps `division-overflow` when the dividend lane is the smallest value or poison |
+| `fadd` .. `frem`, `fneg` | per lane, NaN policy of §5.1 (a computed NaN in any lane traps `nan-result`) |
+| `icmp`, `fcmp` | `<N x i1>`; on pointer lanes as for scalars (§5.2, §5.5's `blockaddress-inspected`) |
+| `select` | with an `i1` condition, the chosen vector whole; with an `<N x i1>` condition, lane by lane, and a poison condition lane gives a poison lane |
+| casts | `trunc`, `zext`, `sext`, `fptrunc`, `fpext`, `uitofp`, `sitofp`, `fptoui`, `fptosi`, `ptrtoint`, `inttoptr` per lane (an `fptoui`/`fptosi` that does not fit gives a poison lane); `bitcast` between a vector and a scalar or vector of the same number of bits is the image (§3.1): a poison lane makes every result lane that holds one of its bits poison, and a bitcast to a scalar of a vector with a poison lane is observed |
+| `extractelement` | the lane; an index (unsigned, any width) out of range, or a poison lane, is observed |
+| `insertelement` | the vector with the lane replaced; an index out of range makes every lane poison (LangRef: poison) |
+| `shufflevector` | lane `i` of the result is lane `mask[i]` of the two operands concatenated; a `poison` mask entry (`SHUFFLE_UNDEF`) gives a poison lane |
+| `freeze` | **keeps** poison lanes: each compilation may fix one to a different value, so there is still no one result (§12) |
+| `load`, `store`, `phi`, call arguments and returns, `extractvalue` of a vector field | as any value (§4 for memory). `insertvalue` of a vector with a poison lane into an aggregate is observed |
+| `llvm.vector.reduce.add`, `mul`, `and`, `or`, `xor`, `smax`, `smin`, `umax`, `umin` | the fold of the integer lanes in order, result the lane type; any poison lane is observed |
+| `llvm.vector.reduce.fadd`, `fmul` | ordered: `((start op v0) op v1) ...`, NaN policy per step (`hod_ir` has no `reassoc`); any poison lane is observed |
+| `llvm.vector.extract`, `llvm.vector.insert` | the subvector at a lane index that is a multiple of its length; past the end the result is all poison |
+| the integer intrinsics of §5.6 on vectors | `abs`, `smax` .. `umin`, `ctpop`, `ctlz`, `cttz`, `bitreverse`, `bswap`, `fshl`, `fshr`, the saturating four, `scmp`, `ucmp`, per lane; the `i1` flag of `abs`/`ctlz`/`cttz` is one scalar for all lanes; what §5.6 calls `intrinsic-poison` gives a poison lane |
+| the float intrinsics of §5.6 on vectors | `fabs`, `copysign`, `sqrt`, `floor`, `ceil`, `trunc`, `round`, `roundeven`, `rint`, `nearbyint`, `fma`, per lane, NaN policy of §5.1 |
+
+`hod_ir` carries no `nsw`/`nuw`/`exact` flags, so no lane is poison by a
+flag. Refused (§8): vector `getelementptr` (`inst:ptradd-vector`), vector
+`atomicrmw` (`inst:atomicrmw-vector`), vector forms of the `with.overflow`
+intrinsics (`intrinsic-vector:<name>`), and every vector intrinsic not
+listed, by its scalar rule (`intrinsic:<name>`: `llvm.vector.reduce.fmax`,
+the masked loads and stores, `llvm.experimental.*`, ...).
+
+Tests: `tests/vectors.rs` (`integer_lanes_and_poison`,
+`float_lanes_and_casts`, `compares_and_selects`,
+`element_access_and_shuffles`, `reductions`, `vector_intrinsics`,
+`vectors_as_values`, `truncation_of_wide_lanes`, `refused_vector_forms`),
+`tests/vector_oracle.rs` (§10.3).
+
 ## 6. Host functions and the trace
 
 A host function stands for a function the module declares and does not
@@ -645,8 +746,12 @@ starts.
 |---|---|
 | `target:pointer-width` | pointers are not 64 bits |
 | `target:big-endian` | the target is big-endian |
-| `type:half`, `type:bfloat`, `type:fp128`, `type:x86_fp80` | a value of that type |
-| `type:vector`, `type:scalable-vector` | a vector value |
+| `type:half`, `type:bfloat`, `type:fp128`, `type:x86_fp80` | a value of that type, or a vector of lanes of it |
+| `type:vector-odd-element` | a vector whose lanes are `iN` with N neither 1 nor a multiple of 8 (§3.1) |
+| `type:scalable-vector` | a `<vscale x N x T>` value |
+| `type:vector` | a vector of lanes that are not of §3.1 and have no reason of their own. Defensive: `hod_ir` makes no such type |
+| `inst:ptradd-vector`, `inst:atomicrmw-vector` | a vector `getelementptr`; a vector `atomicrmw` (§5.10) |
+| `intrinsic-vector:<name>` | a vector form of a `with.overflow` intrinsic (§5.10) |
 | `type:int-over-128` | an integer wider than 128 bits |
 | `type:target-ext`, `type:token` | a value of that type; the `none` token constant |
 | `type:opaque`, `type:function`, `type:label`, `type:metadata` | a value of that type. The builder does not make such values: defensive |
@@ -667,9 +772,11 @@ starts.
 | `attr:byval`, `attr:inalloca`, `attr:preallocated` | a call with such an argument |
 
 Tests: `tests/unsupported.rs` checks every reason that can be provoked
-through `hod_ir`'s builder. The two `target:` reasons and the four defensive
-`type:` reasons cannot (both of `hod_ir`'s targets are 64-bit and
-little-endian).
+through `hod_ir`'s builder, and `tests/vectors.rs`
+(`refused_vector_forms`, `reductions`, `vector_intrinsics`) the vector
+ones. The two `target:` reasons and the five defensive `type:` reasons
+cannot be (both of `hod_ir`'s targets are 64-bit and little-endian);
+`inst:atomicrmw-vector` is not yet provoked by a test.
 
 ## 9. The program generator
 
@@ -740,6 +847,7 @@ operation that could trap operands that cannot make it:
 | the call traps | calls use the callee's type; indirect calls choose among functions of one signature |
 | `limit-fuel` | `fuel_bound` is computed (§9.5) |
 | `limit-call-depth` | the call graph is acyclic and at most `functions` deep |
+| `poison-lane` (with `vectors`) | no vector has a poison lane: vectors are built from pool integers by `insertelement` at constant in-range indices and a `shufflevector` of in-range mask entries; shift amounts are `b & splat(width - 1)`, unsigned divisors `b \| splat(1)`; there is no signed division of vectors, no float vector, and `ctlz`/`cttz`/`abs` have the flag false |
 
 **Addresses.** `ptrtoint` results depend on the layout, so they never join
 the pool of values. They occur only in three forms whose results do not:
@@ -792,6 +900,7 @@ impl Options {
 | `hosts` | calls of `sink` and `source` | |
 | `exceptions` | §5.9: a `hod_throw` under a condition that leaves the function; one or two `invoke`s of `hod_throw` under conditions to one shared pad, with `phi`s in the pad; `invoke`s of generated functions that may throw, the pad rejoining the normal destination with a `phi` of the result; calls marked `nounwind` of functions that cannot throw. A pad has 1 to 3 clauses (`catch` of one of the four types, catch-all, `filter` of 1 to 4 types or empty) and maybe `cleanup`; it dispatches on `selector == llvm.eh.typeid.for(@ti)`, then on the selector's sign; the cleanup runs code and `resume`s; the handler `hod_catch`es and runs code. With `hosts` each pad sinks a number of its own and its integer `phi`s, and the handler sinks which test of the selector matched. The entry function catches everything; pads nest two deep | `compares` |
 | `block_addresses` | §5.5: a constant table of 2 or 4 `blockaddress`es of the function's own blocks, an `indirectbr` to one loaded by a masked index, the arms joining with `phi`s; the loaded address compared with `null` | `globals`, `compares` |
+| `vectors` | §5.10 on `<N x iW>`, N in {1, 2, 3, 4, 8, 16}, W the widths of 8..64 in use: built by `insertelement` into `zeroinitializer` and a broadcasting `shufflevector`, then up to three more `insertelement`s (`i32` or `i64` index); integer binary operations; with `compares` an `icmp` to `<N x i1>`, then a lane-wise `select` (with `selects`), a `bitcast` of the mask to `iN`, or a `sext`; `shufflevector` to 1, 2, 4, N or 2N lanes; with `casts` `trunc`/`zext`/`sext` between widths; with `intrinsics` `ctpop`, `bitreverse`, `ctlz`, `cttz`, `abs`, `smax` .. `umin` and the saturating four; back to a scalar by a `bitcast` to `i(N·W)` (when that width is in use), a `llvm.vector.reduce.*` of the nine integer kinds, or an `extractelement` at a constant index | |
 
 Constructs nest up to three deep. A switch that is off removes its
 constructs entirely; a switch whose needs are not met is off.
@@ -800,6 +909,14 @@ constructs entirely; a switch whose needs are not met is off.
 and when off they draw nothing from the random stream: every seed gives
 the program it gave before they existed. `Options::everything()` is the
 default with both on. A switch added later must keep this property.
+
+`vectors` (WP-078) keeps it too: it is off in `Options::default()` **and
+in `Options::everything()`** (which other crates' tests use, for code
+generators that may not yet lower vectors), and when off the generator's
+choice of construct skips it without drawing, so every existing seed gives
+its old program (`vector_switch_keeps_existing_programs` fixes hashes of
+three option sets taken before the switch existed). Turn it on with
+`Options { vectors: true, ..Options::default() }`.
 
 Tests: `tests/generate.rs` (`minimal_options_leave_only_integer_arithmetic`,
 `each_option_switches_its_constructs`, `size_knobs`, `unwinding_switches`,
@@ -833,6 +950,13 @@ change).
 `eh:normal-phi`, `cf:indirectbr`, `blockaddress:table`,
 `blockaddress:compare`. They are zero for the default options and
 positive over a few hundred seeds of `Options::everything()`.
+
+`Coverage::VECTOR_NAMES` are the counters of `vectors`: `vector:build`,
+`vector:int`, `vector:compare`, `vector:select`, `vector:shuffle`,
+`vector:cast`, `vector:intrinsic`, `vector:extract`, `vector:reduce`,
+`vector:bitcast`, `vector:mask-bitcast`. They are zero when `vectors` is
+off and positive over a few hundred seeds with it on
+(`vector_programs_cover_every_construct`).
 
 Six more are counted from the finished bodies with `Body::uses`: `use:dead`,
 `use:next`, `use:once-later`, `use:many` (each instruction with a result is
@@ -1013,6 +1137,55 @@ Anything that takes plain `llc -O0` for AArch64 as the truth about what a
 program does meets these miscompilations when the program computes in
 widths that are not a power of two or in `i1`.
 
+### 10.3 Vectors
+
+`tests/vector_oracle.rs` (WP-078) checks §3.1, §4 and §5.10 against
+`llc -O0 -global-isel=0 -fast-isel=0` (§10.1) of each LLVM major installed
+of 22 and 19, natively on AArch64. It writes LLVM text itself (the
+generator's vectors, §9.3, are narrower): `HOD_VECTOR_ORACLE_COUNT`
+functions (default 3,000), 300 to a file, so a run is ten files, each
+compiled once per major, linked with a C driver by `gcc` and run once.
+
+- Each function draws a shape: lanes `i1`, `i8`, `i16`, `i32`, `i64`,
+  `i128`, `ptr`, `float` or `double`; 1, 2, 3, 4, 5, 8, 13 or 16 lanes, or
+  a large count (64 for lanes up to 32 bits, else 32; `i128` at most 4).
+- Inputs are loaded from variables with random and edge values (0, 1,
+  all ones, the smallest and largest signed, values near them; `±0.0`,
+  infinity, the largest finite and the smallest denormal, 2^24 + 1), so
+  nothing is folded; pointer lanes are addresses into one array, reported
+  as offsets.
+- 1 to 4 operations: every row of the table of §5.10 at the shape, plus
+  type puns through memory at alignment 1, `phi` of vectors through a
+  diamond, and vectors passed to and returned from an `internal` helper
+  function. Each result is stored to a global and printed by
+  `emit(ptr, len)`; the interpreter's `emit` prints an unwritten byte (a
+  poison lane, §4) as `??`, which matches any byte.
+- A function the interpreter traps on is compiled but not run, and
+  counted; an unsupported answer fails the test.
+
+Result at WP-078 (LLVM 22.1 and 19.1): 2,917 of 3,000 functions agree with
+both majors, byte for byte, with 3,940 poison bytes; 83 are not run (68
+`nan-result`, 13 `poison-lane`, 2 `division-by-zero`). About 20 s for both
+majors. `functions_are_deterministic` checks the text is a function of the
+seed. `tests/llvm_oracle.rs` (`vector_programs_agree_with_llvm`) also runs
+66 generated programs with `vectors` at `-O0` and `-O2` per major.
+
+Where LLVM is wrong, the oracle steers around it, each with a comment:
+
+- **`trunc <3 x i64>` and `<3 x i128>` to `<3 x i8>` (llc 19 and 22,
+  SelectionDAG at every level).** `<3 x i64> <-1, 11, -1>` truncates to
+  `ff ff 00`, `<3 x i128> <-1, 1, …d7>` to `ff 00 00`; the low bytes are
+  `ff 0b ff` and `ff 01 d7`, which GlobalISel (`llc -O0`) gives. A probe
+  of lengths {2, 3, 4, 5, 6, 7, 8, 13, 16}, sources {16, 32, 64, 128} and
+  results {1, 8, 16, 32} found only these two wrong. The oracle truncates
+  such lanes to `i16` instead; `truncation_of_wide_lanes` in
+  `tests/vectors.rs` has both.
+- **`llvm.vector.insert` (llc 19)** crashes ("Don't know how to widen the
+  operands for INSERT_SUBVECTOR") for a length that is not a power of two,
+  a one-lane subvector or masks; the oracle uses it on power-of-two
+  vectors of byte lanes with subvectors of two or more lanes.
+- **Odd lanes**: §3.1.
+
 ## 11. Tests
 
 | file | checks |
@@ -1026,10 +1199,13 @@ widths that are not a power of two or in `i1`.
 | `tests/unwind.rs` | §5.9 |
 | `tests/block_addr.rs` | §5.5: `blockaddress`, `indirectbr` |
 | `tests/generate.rs` | §9 |
-| `tests/llvm_oracle.rs` | §10, §10.2 (with the cases of `tests/eh_cases`) |
+| `tests/llvm_oracle.rs` | §10, §10.2 (with the cases of `tests/eh_cases`), the generated vector programs of §10.3 |
+| `tests/vectors.rs` | §3.1, §4 (vectors in memory), §5.10, the vector reasons of §8: hand-computed lanes, poison and traps |
+| `tests/vector_oracle.rs` | §10.3 |
 
 Each test names its section. `tests/common` builds one-function modules;
-`tests/llvm_text` is the printer of §10.
+`tests/llvm_text` is the printer of §10; `tests/vector_text` reads LLVM
+text through `hod_ll` (a dev-dependency) for the vector tests.
 
 ## 12. Open questions and follow-ups
 
@@ -1069,6 +1245,13 @@ Open, with the conservative choice taken:
   that only reaches an ordered compare is harmless). `NanPolicy::Host` is
   the escape hatch.
 - **Module constructors** (`llvm.global_ctors`) are not run.
+- **`freeze` of a vector keeps its poison lanes** (§5.10). LangRef fixes
+  each to an arbitrary value, which compilations may choose differently,
+  so a later observation still has no one result. Conservative: a trap
+  where a program that never looks at the frozen lane's value would have
+  one.
+- **A vector division by a poison lane traps** although LangRef makes only
+  that lane's result undefined behavior; the same is true of a scalar.
 
 Follow-ups, none of which the code generator's first milestones need:
 
@@ -1080,7 +1263,11 @@ Follow-ups, none of which the code generator's first milestones need:
   `llvm.va_copy`;
 - `byval` arguments (a copy in the callee's frame);
 - thread-local variables (one thread: a plain variable), aliases;
-- vectors;
+- vectors beyond §5.10: `half`/`bfloat` lanes; scalable vectors; vector
+  `getelementptr`; vector `with.overflow`; the masked, gather and scatter
+  intrinsics; `llvm.vector.reduce.fmax`/`fmin`/`fmaximum`/`fminimum`;
+  lanes of odd widths (once `llc` stores them as LangRef packs them); in
+  the generator, float and pointer lanes and signed division;
 - `llvm.fmuladd` (unspecified whether fused: needs a "both agree" rule),
   the `min`/`max` float intrinsics, `llvm.stacksave`/`stackrestore`;
 - in the generator: dynamic `alloca`, atomics, aggregates as values

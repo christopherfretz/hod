@@ -215,7 +215,7 @@ fn refusals_are_named() {
     let (module, bodies) = parse(&base);
     compile_to_object(&module, &bodies, &Options::default()).expect("the base case");
 
-    let cases: [(&str, String, &str); 6] = [
+    let cases: [(&str, String, &str); 4] = [
         (
             "debug:dbg-value",
             one_function("    #dbg_value(i32 %v, !14, !DIExpression(), !15)", PLAIN_SP),
@@ -245,33 +245,9 @@ fn refusals_are_named() {
             ),
             "a declare of an address that is not a frame slot",
         ),
-        (
-            "debug:inlined-subroutine",
-            one_function(
-                "  store i32 %v, ptr %a, align 4, !dbg !33",
-                &format!(
-                    "{PLAIN_SP}!32 = distinct !DISubprogram(name: \"g\", scope: !1, file: !1, line: 5, type: !11, scopeLine: 5, spFlags: DISPFlagDefinition, unit: !0)\n\
-                     !33 = !DILocation(line: 6, column: 1, scope: !32, inlinedAt: !15)\n"
-                ),
-            ),
-            "an inlined location",
-        ),
-        (
-            "debug:local-static",
-            format!(
-                "@s = internal global i32 0, align 4, !dbg !40\n{}",
-                one_function(
-                    declare,
-                    &format!(
-                        "{PLAIN_SP}!40 = !DIGlobalVariableExpression(var: !41, expr: !DIExpression())\n\
-                         !41 = distinct !DIGlobalVariable(name: \"s\", scope: !10, file: !1, line: 3, type: !6, isLocal: true, isDefinition: true)\n\
-                         !42 = !{{!40}}\n"
-                    ),
-                )
-                .replace("nameTableKind: None)", "globals: !42, nameTableKind: None)")
-            ),
-            "a function's static",
-        ),
+        // Inlined locations and functions' statics are written
+        // (WP-085, `dies_inline.rs`), out-of-line definitions too
+        // (WP-059, `dies_scope.rs`).
     ];
     for (name, text, what) in &cases {
         assert_eq!(refusal(text), CgError::unsupported(name), "{what}");

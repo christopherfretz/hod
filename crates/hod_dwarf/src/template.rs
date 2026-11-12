@@ -1,4 +1,4 @@
-//! Template parameters (`spec/dwarf.md` §6.9, WP-059), as `llc`'s
+//! Template parameters (`spec/dwarf.md` §6.11, WP-059), as `llc`'s
 //! `addTemplateParams` writes them: `DW_TAG_template_type_parameter`
 //! (`type`, `name`, `default_value`), `DW_TAG_template_value_parameter`
 //! (`type`, `name`, `default_value`, then an integer as
@@ -113,7 +113,7 @@ impl UnitPlan<'_> {
     }
 
     /// `isUnsignedDIType` as `llc` 19 and 22 have it: an enumeration
-    /// with a base type is its base type's signedness (§6.9).
+    /// with a base type is its base type's signedness (§6.11).
     fn unsigned_di_type(&self, mut t: DiId) -> Result<bool, Error> {
         for _ in 0..=self.slot.len() {
             match self.node_of(t, "type", t)? {
@@ -192,7 +192,7 @@ impl UnitPlan<'_> {
     }
 
     /// Gives the symbols template parameters take the address of their
-    /// places, after the code generator placed them (§6.9): the symbol
+    /// places, after the code generator placed them (§6.11): the symbol
     /// the `.debug_addr` entry is relocated against and the offset from
     /// it, or `None` for one this object does not define. Called after
     /// [`UnitPlan::seal`], before the unit is written; the bridge calls it
@@ -213,7 +213,7 @@ impl UnitPlan<'_> {
 }
 
 impl<'a> Writer<'a> {
-    /// Writes a template parameter (§6.9).
+    /// Writes a template parameter (§6.11).
     pub(crate) fn template_param_die(
         &mut self,
         plan: &UnitPlan<'a>,

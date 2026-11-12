@@ -1,5 +1,5 @@
 //! The DIEs outside function bodies that WP-059 writes (`spec/dwarf.md`
-//! §6.9): global and static-member variables of every shape, template
+//! §6.11): global and static-member variables of every shape, template
 //! parameters, imported entities, and the declarations a definition's
 //! `DW_AT_specification` refers to. This module holds the stable names of
 //! what is still refused and the plan's state for them; the work is in

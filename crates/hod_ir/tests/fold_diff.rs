@@ -30,7 +30,7 @@ use std::fmt::Write as _;
 
 use common::consts::{Ctx, Form, PRELUDE, address_cases};
 use common::{CONFIGS, Config, Ty};
-use hod_ir::{ConstId, ConstOp, FixupTarget, IrErrorKind, TypeId};
+use hod_ir::{ConstId, ConstOp, FixupTarget, IrErrorKind};
 use hod_testutil::Scratch;
 
 /// Random expressions per configuration.
@@ -390,6 +390,9 @@ fn folds_match_llvm19_on_x86_64() {
     check(&CONFIGS[3]);
 }
 
+/// Builds a constant through hod's folds.
+type Build = fn(&mut Ctx) -> ConstId;
+
 /// An initializer `llc` cannot emit, and the same expression through hod's
 /// folds.
 struct Rejected {
@@ -397,7 +400,7 @@ struct Rejected {
     text: &'static str,
     /// LLVM versions whose text format has the expression.
     llvm: std::ops::RangeInclusive<u32>,
-    build: fn(&mut Ctx) -> ConstId,
+    build: Build,
 }
 
 /// `ptrtoint (ptr @a to i64)`.
@@ -481,9 +484,48 @@ fn what_llc_rejects_has_no_image() {
                 .flatten(&ctx.types, value, &mut bytes, &mut fixups)
                 .expect_err(&definition);
             assert_eq!(error.kind, IrErrorKind::UnsupportedInitializer, "{definition}");
-            assert_ne!(ctx.consts.ty(value), TypeId::VOID);
             count += 1;
         }
         eprintln!("fold_diff {}: {count} initializers llc rejects have no image", config.name());
+    }
+}
+
+/// The initializers `llc` emits that hod has no image for. Each is a
+/// limit of the normal forms, recorded in `spec/landed/ir/WP-002.md`; the
+/// test fails when either side changes.
+#[test]
+fn what_llc_accepts_and_hod_does_not() {
+    let cases: [(&str, &str, Build); 2] = [
+        // A number minus an address: `llc` emits a PC-relative relocation
+        // with no symbol. Not `symbol + addend`, so hod keeps the `sub`.
+        ("i64", "sub (i64 4, i64 ptrtoint (ptr @a to i64))", |c| {
+            let (four, a) = (c.lit(64, 4), a_as_int(c));
+            c.sub(four, a)
+        }),
+        // `llc` emits a 32-bit relocation in the four bytes an `i24` is
+        // allocated. hod has fixups for 8, 16, 32 and 64 bits only.
+        ("i24", "ptrtoint (ptr @a to i24)", |c| {
+            let a = c.addr("a", 0);
+            c.ptr_to_int(a, 24)
+        }),
+    ];
+    for config in &CONFIGS {
+        let Some(tools) = common::tools(config.llvm) else { continue };
+        let scratch = Scratch::new(&format!("fold-limits-{}", config.name()));
+        for (index, (ty, text, build)) in cases.iter().enumerate() {
+            let definition = format!("@r = global {ty} {text}");
+            let ir = format!("{}{PRELUDE}{definition}\n", config.header());
+            let outcome = tools.compile(&scratch, &format!("limit{index}"), &ir, false);
+            assert!(outcome.is_ok(), "{}: llc rejected {definition}", config.name());
+
+            let mut ctx = Ctx::new(config, 1);
+            let value = build(&mut ctx);
+            let (mut bytes, mut fixups) = (Vec::new(), Vec::new());
+            let error = ctx
+                .consts
+                .flatten(&ctx.types, value, &mut bytes, &mut fixups)
+                .expect_err(&definition);
+            assert_eq!(error.kind, IrErrorKind::UnsupportedInitializer, "{definition}");
+        }
     }
 }

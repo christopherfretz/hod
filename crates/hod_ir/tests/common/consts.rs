@@ -876,14 +876,23 @@ pub fn address_cases() -> Vec<Case> {
             },
         ),
     ];
-    // An addend that does not fit the field: 70000 for `llc`, 4464 for hod.
-    cases.push(Case {
-        exact_addend: false,
-        ..case(int(16), "ptrtoint (ptr getelementptr (i8, ptr @x, i64 70000) to i16)", |c| {
-            let x = c.addr("x", 70000);
-            c.ptr_to_int(x, 16)
-        })
-    });
+    // Addends that do not fit the field as `llc` writes them: 70000 in
+    // sixteen bits (4464 for hod), and a negative literal, which `llc`
+    // zero-extends to 4294967288 (-8 for hod).
+    cases.extend(
+        [
+            case(int(16), "ptrtoint (ptr getelementptr (i8, ptr @x, i64 70000) to i16)", |c| {
+                let x = c.addr("x", 70000);
+                c.ptr_to_int(x, 16)
+            }),
+            case(int(32), "add (i32 ptrtoint (ptr @x to i32), i32 -8)", |c| {
+                let x = c.addr("x", 0);
+                let (number, addend) = (c.ptr_to_int(x, 32), c.lit(32, -8));
+                c.add(number, addend)
+            }),
+        ]
+        .map(|case| Case { exact_addend: false, ..case }),
+    );
     // Forms an assembler cannot put in an object file on every target.
     cases.extend(
         [

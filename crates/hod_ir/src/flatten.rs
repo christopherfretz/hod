@@ -1,6 +1,9 @@
 //! Flattening a constant initializer into bytes and fixups (`spec/ir.md`
 //! §4.3): what a data section holds for a global variable.
 //!
+//! `spec/ir.md` has no §4.3 yet; its proposed text is in
+//! `spec/landed/ir/WP-002.md`.
+//!
 //! The image of a constant of type `T` is `alloc_size_of(T)` bytes, laid
 //! out as LLVM's `AsmPrinter` emits a global:
 //!

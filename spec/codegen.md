@@ -2410,6 +2410,31 @@ symbols and relocations of hod's object equal `llc`'s (19 and 22), which
 must compile each case without a diagnostic; what `llc` warns about or
 refuses is refused.
 
+#### 9.7.2 Copies of `available_externally` functions (WP-021)
+
+`emit_module` writes nothing for an `available_externally` function or
+alias: each stays an undefined symbol, as in `llc`'s object. When it is
+given a chunk for an `available_externally` function whose attributes
+are `alwaysinline` (the session gives one only for a function a body of
+the object calls directly, `spec/cli.md` "Always-inline"), it places the
+code as a copy:
+
+- a new symbol `<name>.alwaysinline` (`hod_cg::COPY_SUFFIX`; GNU
+  demanglers print it as `[clone .alwaysinline]`), `STB_LOCAL`,
+  `STT_FUNC`, sized to the code, in `.symtab` like any local function;
+- in the text section the function's own name selects (`.text` or
+  `.text.<name>` under `function_sections`), in no group: a copy is
+  private to the object, so nothing may discard or merge it;
+- its unwind entry and its DWARF subprogram are written as any
+  function's (both refer to section symbols and offsets, not to the
+  function's symbol);
+- `R_AARCH64_CALL26`/`JUMP26` (x86-64: `R_X86_64_PLT32`) relocations of
+  the object's code to the function go to the copy, resolved when every
+  chunk is placed; every other relocation (an address, data, an alias)
+  stays on the external symbol, which stays undefined.
+
+A function whose chunk is not given keeps `llc`'s layout exactly.
+
 ## 10. Errors and limits
 
 ```rust

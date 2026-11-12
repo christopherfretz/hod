@@ -843,7 +843,8 @@ does not have is `Rejected`. The lists below are the table, in full.
   `preallocated`, `elementtype` (inline assembly).
 - On functions, as keywords (`FnAttrs` flags): `noreturn`, `naked`,
   `nounwind`, `returns_twice`, `alwaysinline` (it decides what happens to
-  an `available_externally` body: design 0001, point 6), `ssp`, `sspreq`,
+  an `available_externally` body and which bodies decline a pre-opt
+  module: design 0001, point 6, `spec/cli.md` "Always-inline"), `ssp`, `sspreq`,
   `sspstrong`, `presplitcoroutine`, and the sanitizers
   `sanitize_address`, `sanitize_alloc_token`, `sanitize_hwaddress`,
   `sanitize_memory`, `sanitize_memtag`, `sanitize_numerical_stability`,

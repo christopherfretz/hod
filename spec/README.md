@@ -11,7 +11,7 @@ crate could be re-implemented from its spec and its tests alone.
 | `bc.md` | `hod_bc`: LLVM bitcode — the bitstream container, the module level and function bodies read as `hod_ll` reads text | current for the module level (WP-028) and function bodies (WP-046); debug information is a later stage |
 | `object.md` | `hod_obj`: object model, ELF64 writer, linked sections, ELF convention helpers | current (WP-010, WP-011) |
 | `mc-a64.md` | `hod_mc_a64`: register model, instruction constructors, logical and floating-point immediates, constant materialization, fixups | current: base integer set (WP-012), scalar floating point, FP/SIMD loads and stores and a SIMD subset (WP-013) |
-| `mc-x64.md` | `hod_mc_x64`: register and memory-operand model, instruction constructors, PC-relative sites, fixups and the small PIC relocations | current: base integer set (WP-050); scalar SSE planned |
+| `mc-x64.md` | `hod_mc_x64`: register and memory-operand model, instruction constructors, PC-relative sites, fixups and the small PIC relocations | current: base integer set (WP-050); scalar SSE, bit tests, absolute fields and TLS sequences (WP-051) |
 | `codegen.md` | `hod_cg`: the walk, value-location policy, frame, `Target` trait, per-function output record | design written (WP-014); core and test target landed (WP-030), `sym_access` and `emit_module` landed (WP-032, `spec/landed/codegen/`), unwind tables in `emit_module` (WP-049); targets to come |
 | `abi-a64.md` | `hod_a64::abi::assign`: how IR-level signatures are passed and returned on AArch64 Linux as LLVM does it, extension duties, variadic functions, what is unsupported | current (WP-034); the code generator's duties of §8 are implemented by WP-038 |
 | `abi-x64.md` | the same for x86-64 SysV | planned |

@@ -134,11 +134,7 @@ impl Spec {
     /// all operations are alike), 2 only the sum of those and the final
     /// value (an exchange: the final value depends on the interleaving).
     fn sums(&self) -> u8 {
-        if self.op == "xchg" {
-            2
-        } else {
-            u8::from(matches!(self.val, Val::Const(_)))
-        }
+        if self.op == "xchg" { 2 } else { u8::from(matches!(self.val, Val::Const(_))) }
     }
 }
 
@@ -172,8 +168,8 @@ fn specs() -> Vec<Spec> {
         push(ty, "umin", Val::Ramp, m, false);
         push(ty, "uinc_wrap", Val::Const(97), 0, false);
         push(ty, "udec_wrap", Val::Const(89), 3, false);
-        push(ty, "usub_cond", Val::Const(7), 3000 & m, false);
-        push(ty, "usub_sat", Val::Const(5), 7000 & m, false);
+        push(ty, "usub_cond", Val::Const(7), 0x0bb8 & m, false);
+        push(ty, "usub_sat", Val::Const(5), 0x1b58 & m, false);
         push(ty, "casinc", Val::Const(1), m - 5, false);
         push(ty, "casinc", Val::Const(1), 7, true);
     }
@@ -212,8 +208,10 @@ fn ll_value(spec: &Spec) -> String {
         Ty::Int(_) => writeln!(s, "  %v = trunc i64 {from} to i{b}").unwrap(),
         Ty::Ptr => writeln!(s, "  %v = inttoptr i64 {from} to ptr").unwrap(),
         Ty::Double => writeln!(s, "  %v = bitcast i64 {from} to double").unwrap(),
-        _ => write!(s, "  %vt = trunc i64 {from} to i{b}\n  %v = bitcast i{b} %vt to {}\n", ty.ll())
-            .unwrap(),
+        _ => {
+            write!(s, "  %vt = trunc i64 {from} to i{b}\n  %v = bitcast i{b} %vt to {}\n", ty.ll())
+                .unwrap();
+        }
     };
     match spec.val {
         Val::Const(c) => match ty {
@@ -230,7 +228,9 @@ fn ll_value(spec: &Spec) -> String {
             int(&mut s, "%v64");
         }
         Val::Ramp | Val::RampF => {
-            s.push_str("  %v0 = mul i64 %tid, %n\n  %v1 = add i64 %v0, %i\n  %v64 = add i64 %v1, 1\n");
+            s.push_str(
+                "  %v0 = mul i64 %tid, %n\n  %v1 = add i64 %v0, %i\n  %v64 = add i64 %v1, 1\n",
+            );
             if matches!(spec.val, Val::RampF) {
                 writeln!(s, "  %v = uitofp i64 %v64 to {}", ty.ll()).unwrap();
             } else {
@@ -306,7 +306,7 @@ fn ll_worker(k: usize, spec: &Spec) -> String {
 
 /// The structural workers (spinlocks, the stack, tearing, message
 /// passing).
-const STRUCTURES: &str = r#"
+const STRUCTURES: &str = r"
 define void @spin_strong(ptr %lock, ptr %data, i64 %n) {
 entry:
   br label %loop
@@ -577,7 +577,7 @@ release:
 done:
   ret i64 %bad1
 }
-"#;
+";
 
 /// The workers' module.
 fn module(specs: &[Spec], outline: bool) -> String {
@@ -646,7 +646,7 @@ fn c_value(spec: &Spec) -> String {
 /// The C driver: the reference workers under a mutex, and the runs.
 fn driver(specs: &[Spec]) -> String {
     let mut c = String::from(
-        r#"#include <pthread.h>
+        r"#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -666,7 +666,7 @@ static inline uint64_t fold_uint32_t(uint32_t o) { return o; }
 static inline uint64_t fold_uint16_t(uint16_t o) { return o; }
 static inline uint64_t fold_uint8_t(uint8_t o) { return o; }
 typedef uint64_t (*worker)(void *, int64_t, int64_t);
-"#,
+",
     );
     for (k, spec) in specs.iter().enumerate() {
         let u = spec.ty.c_bits();
@@ -876,7 +876,8 @@ pub fn check() {
         let seq = if outline { "outline" } else { "llsc" };
         let text = module(&specs, outline);
         let (m, bodies) = parse(&text);
-        for (mode, stress) in [("plain", hod_cg::Stress::default()), ("stress", hod_cg::Stress::ALL)]
+        for (mode, stress) in
+            [("plain", hod_cg::Stress::default()), ("stress", hod_cg::Stress::ALL)]
         {
             let options = Options { stress, ..Options::default() };
             let emitted = compile_module(&m, &bodies, &options)

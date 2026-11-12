@@ -664,14 +664,15 @@ fn the_census_counts_occurrences_and_symbols() {
         let a = b.arg(0).unwrap();
         let sum = b.binary(Opcode::Add, I32, a, a).unwrap();
         b.binary(Opcode::Add, I32, sum, a).unwrap();
+        b.va_arg(I32, sym(g)).unwrap();
         b.fence(AtomicOrdering::SeqCst, SyncScope::System).unwrap();
-        b.fence(AtomicOrdering::Acquire, SyncScope::System).unwrap();
+        b.va_arg(I32, sym(g)).unwrap();
         b.store(a, sym(g), align(4)).unwrap();
     });
     let second = body(&m, two, |b, _| {
         let a = b.arg(0).unwrap();
         b.binary(Opcode::Add, I32, a, a).unwrap();
-        b.fence(AtomicOrdering::SeqCst, SyncScope::System).unwrap();
+        b.va_arg(I32, sym(g)).unwrap();
     });
     let program = Program { m, bodies: vec![first, second] };
     let census = census_of(Support::shipped(arch), &program);
@@ -680,8 +681,10 @@ fn the_census_counts_occurrences_and_symbols() {
         assert_eq!((entry.construct.as_str(), entry.kind), (name, RejectionKind::Unsupported));
         (entry.occurrences, entry.symbols)
     };
-    assert_eq!(count("inst:fence"), (3, 2));
-    // Supported since WP-032, WP-033, WP-035 and WP-036: not counted.
+    // `va_arg` is never compiled (`docs/status/support.md`); `fence` was
+    // the example until WP-074.
+    assert_eq!(count("inst:va_arg"), (3, 2));
+    // Supported since WP-032, WP-033, WP-035, WP-036 and WP-074: not counted.
     for row in [
         "inst:store",
         "global:variable-definition",
@@ -692,6 +695,7 @@ fn the_census_counts_occurrences_and_symbols() {
         "operand:symbol",
         "inst:ret",
         "inst:add",
+        "inst:fence",
     ] {
         assert!(census.get(row).is_none(), "{row}");
     }
@@ -701,5 +705,5 @@ fn the_census_counts_occurrences_and_symbols() {
     let classifier = Classifier::new(Support::shipped(arch));
     let mut again = census.clone();
     classifier.census_body(&program.m, &program.bodies[1], &mut again);
-    assert_eq!(again.get("inst:fence").map(|e| (e.occurrences, e.symbols)), Some((4, 2)));
+    assert_eq!(again.get("inst:va_arg").map(|e| (e.occurrences, e.symbols)), Some((4, 2)));
 }

@@ -6,6 +6,8 @@
 //! between an exclusive load and its store; contended programs on real
 //! threads (`common/atomic_threads.rs`); what is refused, by name.
 
+#![allow(clippy::many_single_char_names, reason = "`.ll` text built by hand")]
+
 mod common;
 
 #[path = "common/aggr_gen.rs"]
@@ -86,7 +88,7 @@ impl Ty {
     }
 
     /// `%<name>` of this type from the integer `%<from>`.
-    fn from_int(self, name: &str, from: &str) -> String {
+    fn of_int(self, name: &str, from: &str) -> String {
         let b = self.bits();
         match self {
             Ty::Int(_) => format!("  %{name} = add i{b} %{from}, 0\n"),
@@ -110,11 +112,22 @@ impl Ty {
 /// (zeros, ones, fractions, infinities, a NaN, the largest finite).
 fn float_edges(ty: Ty) -> Vec<u128> {
     match ty {
-        Ty::Half => vec![0, 0x8000, 0x3c00, 0xbc00, 0x4100, 0xc500, 0x7c00, 0xfc00, 0x7e00, 0x7bff, 1],
+        Ty::Half => {
+            vec![0, 0x8000, 0x3c00, 0xbc00, 0x4100, 0xc500, 0x7c00, 0xfc00, 0x7e00, 0x7bff, 1]
+        }
         Ty::BFloat => vec![0, 0x8000, 0x3f80, 0xbf80, 0x4020, 0x7f80, 0xff80, 0x7fc0, 0x7f7f],
         Ty::Float => vec![
-            0, 0x8000_0000, 0x3f80_0000, 0xbf80_0000, 0x4020_0000, 0xc0a0_0000, 0x7f80_0000,
-            0xff80_0000, 0x7fc0_0000, 0x7f7f_ffff, 1,
+            0,
+            0x8000_0000,
+            0x3f80_0000,
+            0xbf80_0000,
+            0x4020_0000,
+            0xc0a0_0000,
+            0x7f80_0000,
+            0xff80_0000,
+            0x7fc0_0000,
+            0x7f7f_ffff,
+            1,
         ],
         _ => vec![
             0,
@@ -157,7 +170,7 @@ fn pair(ty: Ty) -> T {
 fn prologue(ty: Ty, operands: usize) -> String {
     let mut core = String::new();
     for name in ["a", "b", "c"].iter().take(operands) {
-        core.push_str(&ty.from_int(&format!("p{name}"), name));
+        core.push_str(&ty.of_int(&format!("p{name}"), name));
     }
     let (t, a) = (ty.ll(), ty.align());
     writeln!(core, "  %p = alloca {t}, align {a}\n  store {t} %pa, ptr %p, align {a}").unwrap();
@@ -434,8 +447,8 @@ fn scan(words: &[u32]) -> Result<usize, String> {
                 open = None;
                 windows += 1;
             }
-            (Word::StoreExclusive | Word::Clrex, None) => {}
-            (Word::Other, _) | (Word::Access | Word::Call, None) => {}
+            (Word::Other, _)
+            | (Word::StoreExclusive | Word::Clrex | Word::Access | Word::Call, None) => {}
             (kind, Some(at)) => {
                 return Err(format!("{kind:?} {w:#010x} at word {i} inside the window from {at}"));
             }

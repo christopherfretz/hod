@@ -26,7 +26,6 @@ const CLANG_UNSUPPORTED: &[&str] = &[
     "attr:nocf_check",
     "attr:noduplicate",
     "attr:speculative_load_hardening",
-    "debug-info",
     "special-global:llvm.global.annotations",
 ];
 

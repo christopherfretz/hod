@@ -78,6 +78,8 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
             write_name(self.out, '$', comdat.name)?;
             writeln!(self.out, " = comdat {}", comdat.kind.keyword())?;
         }
+        self.global_dbg = m.global_exprs().to_vec();
+        self.global_dbg.sort_by_key(|&(sym, _)| sym);
         for symbol in m.symbols() {
             self.symbol(symbol)?;
         }
@@ -303,6 +305,7 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
         if let Some(align) = align {
             write!(self.out, ", align {align}")?;
         }
+        self.dbg_variable(symbol.id())?;
         self.s("\n")
     }
 
@@ -412,6 +415,9 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
         };
         let define = body.is_some();
         self.s(if define { "\ndefine " } else { "declare " })?;
+        if !define {
+            self.dbg_declare_fn(symbol)?;
+        }
         self.linkage(symbol, define, false)?;
         if let Some(cc) = cc {
             self.call_conv(cc)?;
@@ -471,7 +477,7 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
             self.s(" personality ptr ")?;
             self.sym_ref(personality)?;
         }
-        self.dbg_function(symbol)?;
+        self.dbg_define(symbol)?;
         self.s(" {\n")?;
         self.body(body)?;
         self.s("}\n")
@@ -690,7 +696,9 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
         let m = self.m;
         let major = self.dialect.major();
         let props = m.props;
-        let mut next = 0u32;
+        self.debug_metadata()?;
+        let mut next = self.debug_numbers();
+        let first_flag = next;
         if props.pic as u8 != 0 {
             self.flag(&mut next, 8, "PIC Level", u64::from(props.pic as u8))?;
         }
@@ -750,7 +758,7 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
             self.s("}\n")?;
             next += 1;
         }
-        self.named_metadata("llvm.module.flags", 0, next)?;
+        self.named_metadata("llvm.module.flags", first_flag, next)?;
         if self.part != Part::Rest {
             let first = next;
             self.string_lists(m.linker_options(), &mut next)?;

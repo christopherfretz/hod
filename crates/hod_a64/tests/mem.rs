@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use common::linking::{Toolchain, exit_code};
 use common::{assert_refused, chunk, code_words, compile_ll, ll_header, llc, parse, write_object};
-use hod_a64::{compile_module, mem, target};
+use hod_a64::{compile_module, mem};
 use hod_cg::{CgError, Options, RelocModel, Stress};
 use hod_interp::{Interp, Program, Val};
 use hod_mc_a64 as mc;
@@ -486,20 +486,10 @@ fn a_dead_volatile_load_is_emitted_once() {
 /// What the group does not lower is refused by name.
 #[test]
 fn the_other_forms_are_refused_by_name() {
-    assert_refused(&[
-        (
-            "define i64 @f(ptr %p) { %r = load atomic i64, ptr %p seq_cst, align 8\n ret i64 %r }",
-            target::ATOMIC,
-        ),
-        (
-            "define void @f(ptr %p) { store atomic i64 0, ptr %p release, align 8\n ret void }",
-            target::ATOMIC,
-        ),
-        (
-            "define <2 x ptr> @f(ptr %p, <2 x i64> %i) { %r = getelementptr i8, ptr %p, <2 x i64> %i\n ret <2 x ptr> %r }",
-            mem::PTRADD_VECTOR,
-        ),
-    ]);
+    assert_refused(&[(
+        "define <2 x ptr> @f(ptr %p, <2 x i64> %i) { %r = getelementptr i8, ptr %p, <2 x i64> %i\n ret <2 x ptr> %r }",
+        mem::PTRADD_VECTOR,
+    )]);
 }
 
 /// A frame beyond what the prologue expresses is the skeleton's

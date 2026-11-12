@@ -20,7 +20,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 
 | group | constructs | aarch64 supported | not-implemented | rejected | x86_64 supported | not-implemented | rejected |
 |---|---|---|---|---|---|---|---|
-| `module` | 23 | 9 | 12 | 2 | 2 | 15 | 6 |
+| `module` | 24 | 10 | 12 | 2 | 2 | 16 | 6 |
 | `structor` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `debug` | 4 | 0 | 4 | 0 | 0 | 4 | 0 |
 | `global` | 12 | 11 | 1 | 0 | 2 | 10 | 0 |
@@ -33,17 +33,17 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `cc` | 15 | 4 | 9 | 2 | 0 | 12 | 3 |
 | `attr` | 56 | 22 | 31 | 3 | 9 | 39 | 8 |
 | `type` | 15 | 10 | 2 | 3 | 0 | 13 | 2 |
-| `inst` | 67 | 56 | 3 | 8 | 0 | 59 | 8 |
-| `mem` | 3 | 1 | 2 | 0 | 0 | 3 | 0 |
-| `atomicrmw` | 21 | 0 | 21 | 0 | 0 | 21 | 0 |
-| `call` | 3 | 2 | 1 | 0 | 0 | 3 | 0 |
+| `inst` | 67 | 59 | 0 | 8 | 0 | 59 | 8 |
+| `mem` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
+| `atomicrmw` | 21 | 21 | 0 | 0 | 0 | 21 | 0 |
+| `call` | 4 | 3 | 1 | 0 | 0 | 4 | 0 |
 | `tail` | 3 | 3 | 0 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `operand` | 9 | 7 | 2 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 133 | 94 | 39 | 0 | 0 | 133 | 0 |
-| total | 434 | 252 | 136 | 46 | 16 | 363 | 55 |
+| total | 436 | 280 | 110 | 46 | 16 | 365 | 55 |
 
 ## `module`
 
@@ -69,7 +69,8 @@ Module properties (`ModuleProps`, §2.1) and module-level tables.
 | `module:branch-protection-pauth-lr` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
 | `module:cf-protection-branch` | rejected | not-implemented | an x86 property |
 | `module:cf-protection-return` | rejected | not-implemented | an x86 property |
-| `module:asm` | not-implemented | not-implemented | hod_asm. module-level inline assembly |
+| `module:asm` | not-implemented | not-implemented | hod_asm. module-level inline assembly an assembler must read |
+| `module:asm-symbols` | supported | not-implemented | module-level assembly made only of symbol directives (`spec/ir.md` §2.3) |
 | `module:linker-options` | supported | not-implemented | `!llvm.linker.options` |
 | `module:dependent-libraries` | supported | not-implemented | `!llvm.dependent-libraries` |
 | `module:global-ctors` | supported | not-implemented | an entry of `llvm.global_ctors` |
@@ -343,9 +344,9 @@ Instructions.
 | `inst:load` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented | a plain load; see `mem:`; FP and vector values: WP-067 |
 | `inst:store` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented | a plain store; see `mem:`; FP and vector values: WP-067 |
 | `inst:alloca` | supported | not-implemented | a dynamic allocation; fixed ones are `function:slots` |
-| `inst:fence` | not-implemented | not-implemented | M2 (atomics) |
-| `inst:cmpxchg` | not-implemented | not-implemented | M2 (atomics) |
-| `inst:atomicrmw` | not-implemented | not-implemented | M2 (atomics). and the operation's `atomicrmw:` row |
+| `inst:fence` | supported | not-implemented | WP-074 |
+| `inst:cmpxchg` | supported (int, i128, ptr, aggregate) | not-implemented | WP-074; the `{ T, i1 }` result is an aggregate |
+| `inst:atomicrmw` | supported (int, i128, ptr, half, bfloat, float, double) | not-implemented | and the operation's `atomicrmw:` row; WP-074 |
 | `inst:ptradd` | supported | not-implemented | LLVM's `getelementptr` (§5.4); not a vector of pointers |
 | `inst:extractvalue` | supported (int, i128, int-wide, ptr, float, double, vector, aggregate) | not-implemented |  |
 | `inst:insertvalue` | supported (int, i128, int-wide, ptr, float, double, vector, aggregate) | not-implemented |  |
@@ -380,8 +381,8 @@ Kinds of memory access.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `mem:volatile` | supported | not-implemented | a volatile `load`, `store`, `cmpxchg` or `atomicrmw` |
-| `mem:atomic-load` | not-implemented | not-implemented | M2 (atomics) |
-| `mem:atomic-store` | not-implemented | not-implemented | M2 (atomics) |
+| `mem:atomic-load` | supported | not-implemented | WP-074; `fp128` and vectors: `a64:atomic-type` |
+| `mem:atomic-store` | supported | not-implemented | WP-074; `fp128` and vectors: `a64:atomic-type` |
 
 ## `atomicrmw`
 
@@ -389,27 +390,27 @@ Kinds of memory access.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `atomicrmw:xchg` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:add` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:sub` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:and` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:nand` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:or` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:xor` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:max` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:min` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:umax` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:umin` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:fadd` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:fsub` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:fmax` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:fmin` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:uinc_wrap` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:udec_wrap` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:usub_cond` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:usub_sat` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:fmaximum` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:fminimum` | not-implemented | not-implemented | M2 (atomics) |
+| `atomicrmw:xchg` | supported | not-implemented | WP-074 |
+| `atomicrmw:add` | supported | not-implemented | WP-074 |
+| `atomicrmw:sub` | supported | not-implemented | WP-074 |
+| `atomicrmw:and` | supported | not-implemented | WP-074 |
+| `atomicrmw:nand` | supported | not-implemented | WP-074 |
+| `atomicrmw:or` | supported | not-implemented | WP-074 |
+| `atomicrmw:xor` | supported | not-implemented | WP-074 |
+| `atomicrmw:max` | supported | not-implemented | WP-074 |
+| `atomicrmw:min` | supported | not-implemented | WP-074 |
+| `atomicrmw:umax` | supported | not-implemented | WP-074 |
+| `atomicrmw:umin` | supported | not-implemented | WP-074 |
+| `atomicrmw:fadd` | supported | not-implemented | WP-074 |
+| `atomicrmw:fsub` | supported | not-implemented | WP-074 |
+| `atomicrmw:fmax` | supported | not-implemented | WP-074 |
+| `atomicrmw:fmin` | supported | not-implemented | WP-074 |
+| `atomicrmw:uinc_wrap` | supported | not-implemented | WP-074 |
+| `atomicrmw:udec_wrap` | supported | not-implemented | WP-074 |
+| `atomicrmw:usub_cond` | supported | not-implemented | WP-074 |
+| `atomicrmw:usub_sat` | supported | not-implemented | WP-074 |
+| `atomicrmw:fmaximum` | supported | not-implemented | WP-074 |
+| `atomicrmw:fminimum` | supported | not-implemented | WP-074 |
 
 ## `call`
 
@@ -418,7 +419,8 @@ Kinds of callee.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `call:indirect` | supported | not-implemented | the callee is a computed address |
-| `call:inline-asm` | not-implemented | not-implemented | hod_asm. the callee is inline assembly |
+| `call:inline-asm` | not-implemented | not-implemented | hod_asm. the callee is inline assembly an assembler must read |
+| `call:inline-asm-empty` | supported | not-implemented | the callee is inline assembly whose template assembles to nothing (`spec/ir.md` §2.3) |
 | `call:variadic` | supported | not-implemented | a call through a variadic function type |
 
 ## `tail`

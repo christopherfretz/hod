@@ -60,6 +60,8 @@ pub mod unsupported {
     /// A variable of `appending` linkage that is not one of the special
     /// arrays `hod_ir` reads.
     pub const APPENDING: &str = "linkage:appending";
+    /// Module-level inline assembly (`hod_asm`'s, not yet).
+    pub const MODULE_ASM: &str = "module:asm";
 }
 
 /// Not in a section.
@@ -307,6 +309,9 @@ impl<'m> ModuleEmitter<'m> {
             funcs: Vec::new(),
             rows: Chunk::new(),
         };
+        if !module.module_asm().is_empty() {
+            return Err(CgError::unsupported(unsupported::MODULE_ASM));
+        }
         emitter.declare()?;
         // `.text` exists in every object `llc` writes.
         let text = emitter.arch().text_align();
@@ -1040,10 +1045,19 @@ impl<'m> ModuleEmitter<'m> {
         for symbol in module.symbols() {
             let sym = symbol.id();
             let place = self.places[sym.index()];
+            let id = Self::obj_sym(sym);
             if !place.is_placed() {
+                // `llc` writes a declaration it has a directive for
+                // (`.hidden`, `.protected`, `.weak`) even when nothing
+                // refers to it; such a symbol has no type.
+                let directive = symbol.visibility() != hod_ir::Visibility::Default
+                    || symbol.linkage() == Linkage::ExternWeak;
+                if directive && !symbol.is_unresolved() && !self.obj.is_referenced(id) {
+                    self.obj.symbol_mut(id).kind = SymbolKind::NoType;
+                    self.obj.retain_symbol(id);
+                }
                 continue;
             }
-            let id = Self::obj_sym(sym);
             if symbol.linkage() == Linkage::Private && !self.obj.is_referenced(id) {
                 continue;
             }

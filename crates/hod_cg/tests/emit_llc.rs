@@ -464,3 +464,43 @@ fn snippets_agree_with_llc() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// What module emission cannot express is refused by name (§10): each
+/// module here, read by `hod_ll`, must give exactly that error.
+#[test]
+fn unsupported_constructs_are_refused_by_name() {
+    use hod_cg::CgError;
+    use hod_cg::emit::unsupported as u;
+    let cases: &[(&str, &str)] = &[
+        (u::MODULE_ASM, "module asm \".globl x\"\n@v = global i32 1\n"),
+        (u::COMDAT_KIND, "$c = comdat largest\n@c = global i32 1, comdat\n"),
+        (u::FIELD_WIDTH, "@y = global i32 0\n@x = global i8 ptrtoint (ptr @y to i8)\n"),
+        (
+            u::SYM_DIFF,
+            "@a = external global i32\n@b = external global i32\n@d = global i64 sub (i64 ptrtoint (ptr @a to i64), i64 ptrtoint (ptr @b to i64))\n",
+        ),
+        (u::NOBITS_INIT, "@x = global i32 5, section \".bss.mine\"\n"),
+        (
+            u::DSO_LOCAL_EQUIVALENT,
+            "declare void @f()\n@p = global ptr dso_local_equivalent @f\n",
+        ),
+    ];
+    let mut checked = 0;
+    for &(name, ir) in cases {
+        let text = format!("{}{ir}", header(22));
+        let parsed = match hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default()) {
+            Ok(parsed) if parsed.module.unsupported().next().is_none() => parsed,
+            Ok(_) | Err(_) => {
+                eprintln!("note: {name}: hod_ll does not pass this module on");
+                continue;
+            }
+        };
+        let options = Options { reloc_model: RelocModel::Pic, ..Options::default() };
+        match emit_module(&parsed.module, &options, &[]) {
+            Err(CgError::Unsupported { construct }) => assert_eq!(construct, name),
+            other => panic!("{name}: {other:?}"),
+        }
+        checked += 1;
+    }
+    assert!(checked >= 4, "only {checked} cases reached emission");
+}

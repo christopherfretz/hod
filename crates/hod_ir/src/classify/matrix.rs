@@ -427,15 +427,15 @@ const MODULE: [SupportRow; 23] = [
     row("module:cf-protection-branch", never(X64_ONLY), todo(X64), ""),
     row("module:cf-protection-return", never(X64_ONLY), todo(X64), ""),
     a64("module:asm", ASM, "module-level inline assembly"),
-    a64("module:linker-options", "WP-032", "`!llvm.linker.options`"),
-    a64("module:dependent-libraries", "WP-032", "`!llvm.dependent-libraries`"),
-    a64("module:global-ctors", "WP-032", "an entry of `llvm.global_ctors`"),
-    a64("module:global-dtors", "WP-032", "an entry of `llvm.global_dtors`"),
+    row("module:linker-options", ON, todo(X64), "`!llvm.linker.options`"),
+    row("module:dependent-libraries", ON, todo(X64), "`!llvm.dependent-libraries`"),
+    row("module:global-ctors", ON, todo(X64), "an entry of `llvm.global_ctors`"),
+    row("module:global-dtors", ON, todo(X64), "an entry of `llvm.global_dtors`"),
 ];
 
 const STRUCTOR: [SupportRow; 2] = [
-    a64("structor:priority", "WP-032", "a constructor or destructor priority other than 65535"),
-    a64("structor:associated", "WP-032", "a constructor or destructor with an associated symbol"),
+    row("structor:priority", ON, todo(X64), "a constructor or destructor priority other than 65535"),
+    row("structor:associated", ON, todo(X64), "a constructor or destructor with an associated symbol"),
 ];
 
 const DEBUG_ROWS: [SupportRow; 4] = [
@@ -449,37 +449,37 @@ const GLOBAL: [SupportRow; 12] = [
     both("global:function-declaration", ON, "nothing is emitted for a declaration"),
     both("global:variable-declaration", ON, "nothing is emitted for a declaration"),
     a64("global:function-definition", "WP-033", "a function that gets a body"),
-    a64("global:variable-definition", "WP-032", "a variable with an initializer"),
-    a64("global:alias", "WP-032", ""),
-    a64("global:alias-offset", "WP-032", "an alias of a symbol plus a non-zero offset"),
+    row("global:variable-definition", ON, todo(X64), "a variable with an initializer"),
+    row("global:alias", ON, todo(X64), ""),
+    row("global:alias-offset", ON, todo(X64), "an alias of a symbol plus a non-zero offset"),
     a64("global:alias-absolute", LATER, "an alias of a number"),
-    a64("global:ifunc", "WP-032", ""),
-    a64("global:section", "WP-032", "a definition with an explicit section"),
-    a64("global:align", "WP-032", "a definition with a stated alignment"),
-    a64("global:unnamed-addr", "WP-032", "`unnamed_addr` on a definition: mergeable sections"),
-    a64("global:used", "WP-032", "a definition in `llvm.used` (`SHF_GNU_RETAIN`)"),
+    row("global:ifunc", ON, todo(X64), ""),
+    row("global:section", ON, todo(X64), "a definition with an explicit section"),
+    row("global:align", ON, todo(X64), "a definition with a stated alignment"),
+    row("global:unnamed-addr", ON, todo(X64), "`unnamed_addr` on a definition: mergeable sections"),
+    row("global:used", ON, todo(X64), "a definition in `llvm.used` (`SHF_GNU_RETAIN`)"),
 ];
 
 const LINKAGE: [SupportRow; Linkage::ALL.len()] = [
     both("linkage:external", ON, "by itself; a definition also meets its `global:` row"),
     a64("linkage:available_externally", "WP-021", "design 0001, point 6"),
-    a64("linkage:linkonce", "WP-032", ""),
-    a64("linkage:linkonce_odr", "WP-032", ""),
-    a64("linkage:weak", "WP-032", ""),
-    a64("linkage:weak_odr", "WP-032", ""),
+    row("linkage:linkonce", ON, todo(X64), ""),
+    row("linkage:linkonce_odr", ON, todo(X64), ""),
+    row("linkage:weak", ON, todo(X64), ""),
+    row("linkage:weak_odr", ON, todo(X64), ""),
     both(
         "linkage:appending",
         never("only LLVM's special arrays have it, and those are not symbols (§2.2)"),
         "",
     ),
-    a64("linkage:internal", "WP-032", ""),
-    a64("linkage:private", "WP-032", ""),
-    a64("linkage:extern_weak", "WP-032", ""),
-    a64("linkage:common", "WP-032", ""),
+    row("linkage:internal", ON, todo(X64), ""),
+    row("linkage:private", ON, todo(X64), ""),
+    row("linkage:extern_weak", ON, todo(X64), ""),
+    row("linkage:common", ON, todo(X64), ""),
 ];
 
 const VISIBILITY: [SupportRow; 2] =
-    [a64("visibility:hidden", "WP-032", ""), a64("visibility:protected", "WP-032", "")];
+    [row("visibility:hidden", ON, todo(X64), ""), row("visibility:protected", ON, todo(X64), "")];
 
 const TLS_ROWS: [SupportRow; 4] = [
     a64("tls:general-dynamic", TLS, "`thread_local`"),
@@ -489,20 +489,20 @@ const TLS_ROWS: [SupportRow; 4] = [
 ];
 
 const COMDAT: [SupportRow; ComdatKind::ALL.len()] = [
-    a64("comdat:any", "WP-032", ""),
+    row("comdat:any", ON, todo(X64), ""),
     both("comdat:exactmatch", never(ELF_COMDAT), ""),
     both("comdat:largest", never(ELF_COMDAT), ""),
-    a64("comdat:nodeduplicate", "WP-032", ""),
+    row("comdat:nodeduplicate", ON, todo(X64), ""),
     both("comdat:samesize", never(ELF_COMDAT), ""),
 ];
 
 const INIT: [SupportRow; 8] = [
-    a64("init:data", "WP-032", "any initializer: numbers, zero, `undef`, aggregates, bytes"),
-    a64("init:symbol", "WP-032", "a symbol's address, with or without an offset"),
+    row("init:data", ON, todo(X64), "any initializer: numbers, zero, `undef`, aggregates, bytes"),
+    row("init:symbol", ON, todo(X64), "a symbol's address, with or without an offset"),
     a64("init:blockaddress", "WP-037", ""),
-    a64("init:sym-diff", "WP-032", "the difference of two symbol addresses"),
+    row("init:sym-diff", ON, todo(X64), "the difference of two symbol addresses"),
     a64("init:sym-diff-plt", LATER, "the same through `dso_local_equivalent` (relative vtables)"),
-    a64("init:int-of-addr", "WP-032", "an address in an integer field"),
+    row("init:int-of-addr", ON, todo(X64), "an address in an integer field"),
     a64("init:dso-local-equivalent", LATER, ""),
     a64("init:no-cfi", LATER, ""),
 ];

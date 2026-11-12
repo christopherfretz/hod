@@ -262,8 +262,16 @@ impl<'t, 'a> BodyParser<'t, 'a> {
         // have grown to the largest function so far; the caller gets a
         // copy of exactly the size of its tables: one allocation per
         // table instead of one per doubling, and no spare capacity in the
-        // bodies a consumer keeps (WP-096).
-        Ok(self.read(module, function)?.then(|| self.built().clone()))
+        // bodies a consumer keeps (WP-096). A large body is the storage
+        // itself, handed over: a copy would double the memory it takes
+        // while the consumer holds it.
+        if !self.read(module, function)? {
+            return Ok(None);
+        }
+        if self.built().table_bytes() >= HAND_OVER_BYTES {
+            return Ok(self.state.storage.take());
+        }
+        Ok(Some(self.built().clone()))
     }
 
     /// Parses the body of `function` into the parser's storage; whether
@@ -330,6 +338,11 @@ pub struct ParsedBody<'p> {
     /// The unsupported constructs of the body, each once.
     pub unsupported: &'p [Cow<'static, str>],
 }
+
+/// The size of a body's tables from which [`BodyParser::parse`] hands
+/// over the storage it was built in rather than a copy (`spec/ll.md`
+/// §11.1).
+pub const HAND_OVER_BYTES: usize = 256 << 10;
 
 /// Parses the body of every function of `text`, in file order, and hands
 /// each to `each` with the module as it then is. One body is alive at a

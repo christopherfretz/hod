@@ -71,7 +71,9 @@ instructions and types, this design relies on `classify` rejecting:
 | `holdable` | registers a value may rest in: `pool` plus the registers argument placement and returns write. An incoming argument rests in its argument register and a call's result in the return register until used or displaced |
 | `scratch` | at least two general and one vector register that never hold a value across instructions. They belong to whatever is being emitted right now: glue (§8.2), large offsets, phi copies. On AArch64 these include `x16`/`x17`, which a linker veneer may clobber at any call |
 | `eh_data` | the two registers a landing pad receives (exception pointer, selector) |
-| `dwarf` | each register's DWARF number, for CFI |
+| `dwarf` | each register's DWARF number, for CFI (a function from `PReg`) |
+| `callee` | the scratch register an indirect callee's address is brought into (§7.1) |
+| `gpr_bytes`, `fpr_bytes` | the size of a register of each class: the size of its home and spill slots |
 
 Never touched: the platform register (`x18`), the thread pointer. `pool`
 and `holdable` are disjoint from `scratch`.
@@ -212,9 +214,10 @@ use, so blocks may be laid out in any order. Home slots are never reused.
 When a register is needed and no pool register is free, an unpinned
 register value is **displaced**: stored to a spill slot (allocated from
 the frame, 8 or 16 bytes by class; spill slots are reused once their
-value's use has been emitted). A spill slot that is occupied at a call to
-a `returns_twice` function is never reused: the code after such a call
-can run a second time and reads the slot again. The choice of register
+value's use has been emitted). After a call to a `returns_twice`
+function no spill slot is reused for the rest of the function: the code
+after such a call can run a second time and reads its slots again (v1
+does not track which ones were occupied at the call). The choice of register
 must not depend on anything but the function's IR: v1 takes the lowest-numbered unpinned occupied pool
 register. A lowering that needs one particular register (a return
 register, a shift count register on x86-64) displaces its occupant the
@@ -260,6 +263,10 @@ out like a home slot of its class (§2.2). The protocol:
 - At the head of its block a `phi` is lowered like a load from its
   incoming slot, with the result placed by §4.1.
 
+The driver does these stores before it lowers the terminator (for an
+`invoke`, the call sequence does them at their two places), so a
+terminator's lowering does not.
+
 No edge is ever split and no parallel copy is ever sequenced: the values
 read (locations) and the slots written (incoming slots) are disjoint, so
 the "swap" and "lost copy" problems cannot occur, a conditional branch,
@@ -287,14 +294,20 @@ emitted in between. The next instruction's lowering either fuses the pair
 (a compare into the branch or `select` that consumes it, a `PtrAdd` into
 the addressing mode of a load or store) or asks for the value, which
 emits the deferred instruction then. Deferral is an option of each
-lowering, never an obligation, and is the only peephole in v1.
+lowering, never an obligation, and is the only peephole in v1. A run of
+deferred instructions (one deferred instruction consuming another) is at
+most `MAX_DEFERRED_RUN` (8) long. A lowering asks for an operand that may
+be deferred before it pins any other operand (§8.1), and the call
+sequence emits deferred arguments before it displaces anything.
 
 ### 4.7 Dead results and undefined operands
 
 - An instruction with no use is skipped when it has no effect: arithmetic,
   compares, casts, `PtrAdd`, `select`, `freeze`, the aggregate and vector
   element instructions, and a load that is neither volatile nor atomic.
-  Everything else is emitted and its result dropped.
+  Everything else is emitted and its result dropped. A `Mem`-class result
+  with no use gets a slot that lives for the instruction only
+  (`FnCx::def_mem`).
 - `undef` and `poison` operands are zero (`spec/ir.md` §4.1). `freeze` is
   a copy.
 - Behavior LLVM leaves undefined (a shift by the width or more, a
@@ -308,7 +321,8 @@ lowering, never an obligation, and is the only peephole in v1.
 - On entry an argument passed in a register rests there, as a register
   value, if its use facts say "one use, in the entry block"; otherwise the
   function's entry code stores it to its home. An argument passed on the
-  stack has its incoming location as its home (`FrameRef::Incoming`); a
+  stack has its incoming location as its home (`FrameRef::Incoming`, when
+the argument is wholly in one stack part: of that part's width); a
   `Mem`-class argument passed in registers is stored to a home slot in the
   entry code. An argument whose value is the address of memory the caller
   passed on the stack (`byval`) is computed by the entry code from the
@@ -330,14 +344,16 @@ into an addressing mode (§5.4). The local area holds, in this order:
 1. what the target reserves in `begin_function` (the frame record, a
    register save area for a variadic function, the incoming-argument base
    when the target needs one);
-2. the body's stack slots (`Body::slots`), laid out before the first
-   instruction, so `Value::slot(n)` is a constant from the start;
+2. the body's stack slots (`Body::slots`), laid out by the driver after
+   `begin_function` and before the first instruction, so `Value::slot(n)`
+   is a constant from the start;
 3. home slots, incoming slots and spill slots, in order of first need.
 
 `FrameRef::Incoming(offset)` names the caller's stack-argument area.
 
 **Over-aligned slots.** A stack slot whose alignment exceeds the stack
-alignment is not in the local area. The entry code allocates it
+alignment is not in the local area. The entry code
+(`Target::dynamic_slot`) allocates it
 dynamically (as §5.2) and keeps its address in an ordinary pointer slot;
 `Value::slot(n)` for it is a load of that pointer, and its debug location
 is the pointer slot, dereferenced. The frame itself is never realigned,
@@ -356,8 +372,10 @@ frame pointer.
 
 There is no reserved outgoing-argument area. A call that passes anything
 on the stack lowers the stack pointer by the (aligned) size before placing
-arguments and raises it after the call returns. Calls without stack
-arguments, the usual case, emit neither. The canonical frame address is
+arguments and raises it after the call returns; stack arguments are
+written through `FrameRef::Outgoing(offset)`, an offset from the lowered
+stack pointer. Calls without stack arguments, the usual case, emit
+neither. The canonical frame address is
 defined from the frame pointer (§5.5), so these adjustments need no CFI.
 
 An `invoke` that lowered the stack pointer must have it raised on the
@@ -462,7 +480,7 @@ instead of handling it. Having its address taken does not make a block
 reachable: an `indirectbr` lists every block it may jump to, so a block
 that no reachable terminator names cannot be entered. A label that must
 exist for an unreachable block (its address is taken) is bound to a trap
-at the end of the function.
+at the end of the function; all unreachable blocks share one trap.
 
 ### 6.2 Labels and fixups
 
@@ -483,7 +501,8 @@ itself.
 
 A target's short branch forms may not reach across a very large function
 (AArch64 conditional branches reach ±1 MiB). If a fixup cannot be patched,
-the function's compile fails internally with "branch out of range", the
+the function's compile fails with an internal "branch out of range" flag
+(not a `CgError` variant: the public error keeps two, §10), the
 driver truncates the chunk (§1) and compiles the function again with
 `FnCx::far` set; a target must then emit only branch forms that reach the
 whole function (AArch64: an inverted short branch over an unconditional
@@ -512,6 +531,12 @@ For `Call` and `Invoke`, in this order:
 5. Raise the stack pointer again if step 3 lowered it. Take the result
    from the return registers (§4.4), or copy it into the result's home for
    a `Mem` class.
+
+A direct call's argument or return attributes that the call site lacks
+are taken from the callee's declaration, as `CallBase::paramHasAttr` reads
+them (open question, §13). `FnCx::place_return` places a `ret`'s value in
+the return registers; a value returned in memory (`ret_memory`) is the
+target's to copy.
 6. (`Invoke`) write the normal destination's incoming slots and branch to
    it; then, if step 3 lowered the stack pointer, emit the pad stub
    (§5.3).
@@ -625,60 +650,103 @@ and counted in the function's size.
 ## 8. The `Target` trait
 
 A target is a zero-sized or small `Sync` value. The driver owns the walk;
-the target owns everything that depends on the instruction set.
+the target owns everything that depends on the instruction set. The
+signatures below are `crates/hod_cg/src/target.rs` and `cx.rs` (WP-030);
+the rustdoc there is the detailed contract.
 
 ### 8.1 What `hod_cg` provides to a lowering (`FnCx<T>`)
 
-- read access to the module, the body, the options, and the instruction
-  being lowered;
-- **operands**: the location of a value; "give me this value in a
-  register" (pinning it, loading or materializing as needed); "put this
-  value in that register" (for arguments and return values); "give me this
-  value's address" for a `Mem` value or a home;
-- **results**: a register for the result (optionally taking over an
-  operand's); "the result is in this register"; the home of a `Mem`
-  result; `finish`, which applies §4.1 (store to the home, or keep);
-  `defer` (§4.6);
-- **registers**: a temporary of a class for the duration of the
-  instruction; displacing one register or all of them (§4.3, §4.4);
-- **calls**: the sequence of §7.1 for the instruction being lowered, and
-  for a `RuntimeFn` with given operands and result (§7.3); registering a
-  tail exit (§7.1). The target supplies only the call instruction itself;
-- **frame**: allocate a slot; the `FrameRef` of a body slot, a home, an
-  incoming slot;
-- **code**: append bytes or instruction words; the current offset; labels,
-  branches with fixups and binding (§6.2); patching already emitted bytes;
-- **records**: add a relocation at an offset (§9.2), a data island, the
-  type id for a type-info symbol (§9.4). Call sites, line rows and debug
-  labels are recorded by the driver, not by lowerings.
+`FnCx<'a, T: Target>` is one function being compiled. Its public fields
+are read access to the inputs (`module`, `body`, `options`, `target`,
+and `state: T::FnState`, the target's own per-function state); everything
+else is a method:
+
+| group | methods | responsibility |
+|---|---|---|
+| operands | `loc`, `use_reg`, `put`, `use_mem`, `deferred`, `class_of` | the location of a value; "this value in a register" (pinned; loaded or materialized as needed); "this value in that register" (arguments, return values); the address of a `Mem` value or a home |
+| results | `def_reg`, `finish`, `def_mem`, `may_defer`, `defer` | a register for the result (optionally an operand's); `finish` applies §4.1 (store to the home, or keep); the home of a `Mem` result; deferral (§4.6) |
+| registers | `temp`, `take_reg`, `free_temp`, `release`, `displace`, `displace_all`, `scratch_reg` | a temporary for the instruction; displacing one register or all (§4.3, §4.4) |
+| calls | `call`, `call_runtime`, `record_call_site`, `place_return`, `fn_assignment`, `tail_exit_count`, `tail_exit`, `phi_stores` | the sequence of §7.1 for the instruction being lowered, and for a `RuntimeFn` with `CallArg` operands (§7.3); the function's own assignment and its tail exits (§7.1) |
+| frame | `alloc_slot`, `slot_place`, `frame_size` | a slot; the `FrameRef` or `SlotPlace` of a body slot |
+| code | `offset`, `emit` and the `emit_*` family, `code_mut`, `block_label`, `epilogue`, `new_label`, `bind`, `fixup`, `falls_through`, `far`, `trap` | bytes; labels, fixups and binding (§6.2); patching emitted bytes |
+| records | `reloc`, `island`, `cfi`, `set_frame_desc`, `type_id`, `pad_clause`, `pad_filter` | a relocation (§9.2), a data island (§7.5), CFI rows and the frame description (§9.3), type ids and clauses (§9.4) |
+
+Call sites, line rows and block offsets are recorded by the driver, not by
+lowerings. `FrameRef` is `Local(u32)`, `Incoming(u32)` or `Outgoing(u32)`:
+the last addresses a stack argument from the lowered stack pointer between
+`adjust_sp` and the call (§5.3).
+
+**A lowering's obligations.** It does not keep a register across a call it
+makes; it pins at most the pool's minimum of a class (§2.1); it leaves no
+result in a scratch register; and it asks for an operand that may be
+`Deferred` (`FnCx::deferred`) **before** it pins any other operand, since
+emitting the deferred instruction needs registers of its own. A run of
+deferred instructions is at most `MAX_DEFERRED_RUN` (8) long.
 
 ### 8.2 What a target provides
+
+```rust
+pub trait Target: Sized + Sync {
+    type FnState: Default;            // per-function state, in FnCx::state
+    const TRAP: &'static [u8];        // the trap instruction (lengths differ)
+    const FN_ALIGN: u32;
+    const PAD_BYTE: u8;
+    const STACK_ALIGN: u32;
+
+    fn reg_info(&self) -> &RegInfo;                                    // §2.1
+    fn class_of(&self, types: &TypeTable, ty: TypeId) -> Class;        // §2.2
+    fn assign(&self, types: &TypeTable, sig: &Sig<'_>, out: &mut Assignment)
+        -> Result<(), AbiUnsupported>;                                 // §7.2
+    fn begin_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()>;
+    fn end_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()>;
+    fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()>;
+
+    // glue
+    fn load(&self, cx: &mut FnCx<'_, Self>, reg: PReg, src: FrameRef, bytes: u32);
+    fn store(&self, cx: &mut FnCx<'_, Self>, reg: PReg, dst: FrameRef, bytes: u32);
+    fn copy(&self, cx: &mut FnCx<'_, Self>, dst: FrameRef, src: FrameRef, bytes: u32);
+    fn copy_from_ptr(&self, cx: &mut FnCx<'_, Self>, dst: FrameRef, ptr: PReg,
+        offset: u32, bytes: u32);
+    fn mov(&self, cx: &mut FnCx<'_, Self>, dst: PReg, src: PReg);
+    fn materialize(&self, cx: &mut FnCx<'_, Self>, reg: PReg, value: Value) -> CgResult<()>;
+    fn materialize_mem(&self, cx: &mut FnCx<'_, Self>, dst: FrameRef, value: Value)
+        -> CgResult<()>;
+    fn frame_addr(&self, cx: &mut FnCx<'_, Self>, reg: PReg, of: FrameRef);
+    fn adjust_sp(&self, cx: &mut FnCx<'_, Self>, delta: i64);
+    fn extend_arg(&self, cx: &mut FnCx<'_, Self>, reg: PReg, ty: TypeId, attrs: ParamAttrs);
+    fn jump(&self, cx: &mut FnCx<'_, Self>, label: Label) -> CgResult<()>;
+    fn emit_call(&self, cx: &mut FnCx<'_, Self>, call: &CallEmit) -> CgResult<()>;
+    fn dynamic_slot(&self, cx: &mut FnCx<'_, Self>, ptr: FrameRef, size: u64, align: u64)
+        -> CgResult<()>;
+
+    fn patch_branch(code: &mut [u8], at: u32, kind: FixupKind, displacement: i64) -> bool;
+}
+```
 
 | member | responsibility |
 |---|---|
 | `reg_info()` | §2.1 |
 | `class_of(types, ty)` | §2.2; total over the types `classify` accepts |
-| `begin_function(cx)` | the fixed-size prologue; target reservations in the frame; entry code for arguments (§4.8) and for over-aligned slots (§5.1) |
-| `end_function(cx)` | patch the prologue; emit the epilogue and the tail exits, with their CFI rows; fill the frame description (§9.3) |
-| glue: `load(cx, reg, frame_ref, width)`, `store(..)`, `copy(cx, dst_ref, src_ref, bytes)`, `mov(cx, dst, src)`, `materialize(cx, reg, value)` | the primitive moves the generic policy is made of. They use only `scratch` registers besides their operands, and never fail for an offset or size: a far offset costs a scratch register, not an error |
+| `begin_function(cx)` | the fixed-size prologue and target reservations in the frame. The driver then emits the entry code for arguments (§4.8) and lays out the body's slots, calling `dynamic_slot` for an over-aligned one (§5.1) |
+| `end_function(cx)` | patch the prologue; emit the epilogue and the tail exits, with their CFI rows; fill the frame description (§9.3). The driver has added the epilogue's line row (§9.5) |
+| glue: `load`, `store`, `copy`, `copy_from_ptr`, `mov`, `materialize`, `materialize_mem`, `frame_addr`, `adjust_sp`, `extend_arg`, `jump` | the primitive moves the generic policy, the `phi` protocol and the call sequence are made of. They use only `scratch` registers besides their operands, and never fail for an offset or size: a far offset costs a scratch register, not an error. `extend_arg` widens a narrow integer argument or return value as the convention asks |
+| `emit_call(cx, call)` | the call instruction itself, to a `CallTarget` (a symbol, or a register the sequence loaded); the sequence records the row around what it emits (§9.4) |
+| `dynamic_slot(cx, ptr, size, align)` | the entry code for one over-aligned slot: allocate it (§5.2) and store its address to `ptr` |
 | `lower(cx, inst)` | every instruction that is not a `phi`, including terminators and calls. One `match` on the opcode that dispatches to the target's modules, one per instruction group, so that groups are separate work packages |
-| `assign(sig, out)` | §7.2 |
+| `assign(types, sig, out)` | §7.2 |
 | `patch_branch(code, at, kind, displacement) -> bool` | §6.2; `false` when the field cannot hold the displacement |
-| constants: `TRAP`, the function alignment, the padding byte between functions, the stack alignment | |
+| constants | `TRAP` (a byte slice), the function alignment, the padding byte between functions, the stack alignment |
 
 The call sequence of §7.1 and the `phi` protocol of §4.5 are implemented
 once, in `hod_cg`, on top of glue and `assign`; a target's `lower` for
-`Call` supplies only the call instruction itself and what is special to
-the target (variadic conventions, TLS call sequences).
+`Call` calls `FnCx::call` and supplies, through `emit_call`, only the call
+instruction itself and what is special to the target (variadic
+conventions, TLS call sequences).
 
 A data-dependent operand of an encoder call uses the encoder's checked
 (`try_`) form, with the scratch-register fallback when it does not fit
 (`spec/mc-a64.md` "Checked and unchecked forms"); the unchecked forms are
 for operands the lowering itself fixed.
-
-Signatures: the first T-CG work package (the `hod_cg` core with a test
-target, §12) writes the trait and `FnCx` out in Rust and replaces this
-section's tables with them.
 
 ## 9. Output
 
@@ -697,10 +765,10 @@ which chunk it is in, nor on what else is in it.
 | `relocs` | `(offset, RelocKind, SymRef, addend)` | `hod_obj` relocations (§9.2) |
 | `cfi` | `(offset, CfiOp)` | `hod_eh` (§9.3) |
 | `call_sites` | `(start, length, pad, landing)` | `hod_eh` (§9.4) |
-| `pads`, `clauses`, `type_ids` | §9.4 | `hod_eh` |
+| `pads`, `clauses`, `type_ids`, `filter_ids` | §9.4 | `hod_eh` |
 | `lines` | `(offset, LocId)` | `hod_dwarf` (§9.5) |
 | `vars` | `(variable, expression, declared-at, location)` | `hod_dwarf` (§9.5) |
-| `labels` | `(label, offset)` | `hod_dwarf` (§9.5) |
+| `labels` | `(label, offset)` | `hod_dwarf` (§9.5); not yet: `hod_ir` has no `#dbg_label` (WP-005) |
 | `islands` | `(offset, length)` | mapping symbols (§5.5) |
 | `block_offsets` | `(BlockId, offset)` | `blockaddress` in data (§9.6) |
 
@@ -747,13 +815,18 @@ them has no LSDA, and exceptions pass through it by its CFI alone.
   and its range of `clauses`; a clause is `Catch(type id)` or
   `Filter(range of type ids)`.
 - `call_sites`: one row per call instruction emitted (§7.1), in code
-  order: the instruction's code range, its pad (none for a plain `call`
+  order: the code range of everything `Target::emit_call` emitted for it,
+  its pad (none for a plain `call`
   or a runtime call) and its **landing offset**: the pad's block, or the
   pad stub of an `invoke` with stack arguments (§5.3). The pad gives the
   row's action, the landing offset its landing address. `hod_eh` merges
   adjacent rows that agree in both and writes the table; a call that can
   throw and has no pad must still be covered by a row, or the personality
-  routine terminates the program instead of unwinding through.
+  routine terminates the program instead of unwinding through. The pad
+  and landing offset are resolved when the function ends; a landing
+  offset of 0 in the row means the pad block's own offset.
+- `filter_ids`: the type ids of the `filter` clauses, which a clause
+  names by range.
 
 ### 9.5 Debug information
 
@@ -764,8 +837,10 @@ Recorded only when the module has debug information.
   generator records transitions only; which rows become line-table
   entries, where `prologue_end` goes and what a location-less instruction
   inherits is `dwarf.md`'s policy. The entry code of §4.8 and the prologue
-  have no row of their own, so they precede the first row. `end_function`
-  adds a row at the epilogue: the location of the function's `ret` if
+  have no row of their own, so they precede the first row. Only an
+  instruction that emitted code gets a row; the loads of a block's `phi`s
+  count as its first emitting instruction's. The driver, before
+  `end_function`, adds a row at the epilogue: the location of the function's `ret` if
   exactly one was emitted, `LocId::NONE` otherwise, so that the shared
   epilogue does not inherit the line of whichever block was emitted last.
 - `vars`: one row per `#dbg_declare`: the variable, the record's
@@ -789,8 +864,7 @@ Recorded only when the module has debug information.
 
 ### 9.6 Block addresses
 
-For a function that contains an `IndirectBr` or has blocks the producer
-marked address-taken, `block_offsets` gives the code offset of each
+For a function that contains an `IndirectBr`, `block_offsets` gives the code offset of each
 reachable block (and of the trap that stands for an unreachable one,
 §6.1). A `blockaddress` in a global initializer (`Fixup::Block`,
 `spec/ir.md` §4.3) becomes a relocation against the **section symbol** of
@@ -799,7 +873,10 @@ the block's offset as addend, as LLVM emits it. It must not be against the
 function's own symbol: that symbol may be preemptible, and the table
 would then point into whatever definition the dynamic linker chose. A
 `blockaddress` in code is formed PC-relative by the function itself
-(§6.3).
+(§6.3). (`hod_ir` has no address-taken marker on blocks; until it does,
+a function without an `IndirectBr` has no `block_offsets`; what a
+`blockaddress` in data of one of its blocks refers to is an open
+question, §13.)
 
 ### 9.7 Merge and module emission
 
@@ -839,7 +916,11 @@ pub enum CgError {
 - `classify` decides what is supported, before code generation
   (`spec/ir.md` §8). Code generation reports `Unsupported` only for what
   cannot be known until code exists: `limit:frame-size`,
-  `limit:function-size`, and limits of the same kind added with a test.
+  `limit:function-size`, and limits of the same kind added with a test;
+  also the `call:` reasons for a call the assignment cannot place
+  (`call:musttail-ret-memory`, `call:part-register-class`,
+  `call:byval-not-on-stack`). A function has at most 1 GiB of code
+  (`MAX_FUNCTION_SIZE`), a chunk less than 2 GiB.
   The facade turns it into the coverage-log reason (`spec/cli.md`
   "Reasons").
 - `Internal` means a lowering met a case `classify` should have rejected,
@@ -902,6 +983,15 @@ pub enum CgError {
   gate.
 
 ## 13. Open questions
+
+- A direct call's attributes: `hod_cg` falls back to the callee
+  declaration's argument and return attributes when the call site has
+  none (§7.1), as LLVM's `CallBase::paramHasAttr` does. Confirm, or make
+  the frontend's call sites carry them.
+- Address-taken blocks without an `indirectbr` in their function (§9.6):
+  `hod_ir` has no marker, so `block_offsets` is not recorded for them.
+  Either `hod_ir` marks address-taken blocks, or `hod_cg` scans the
+  module's constants for `blockaddress`es of each function.
 
 - Stack protector attributes (`ssp`, `sspstrong`, `sspreq`): accept and
   ignore (hod is a debug backend; the IR's meaning is unchanged) or

@@ -472,7 +472,7 @@ fn unsupported_constructs_are_refused_by_name() {
     use hod_cg::CgError;
     use hod_cg::emit::unsupported as u;
     let cases: &[(&str, &str)] = &[
-        (u::MODULE_ASM, "module asm \".globl x\"\n@v = global i32 1\n"),
+        (u::MODULE_ASM, "module asm \"  nop\"\n@v = global i32 1\n"),
         (u::COMDAT_KIND, "$c = comdat largest\n@c = global i32 1, comdat\n"),
         (u::FIELD_WIDTH, "@y = global i32 0\n@x = global i8 ptrtoint (ptr @y to i8)\n"),
         (

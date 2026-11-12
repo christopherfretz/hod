@@ -194,6 +194,99 @@ Bytes stored in a section without file space (through `append`,
 `append_owned` or `data_mut`) are an error the writer reports:
 `DataInNobits`.
 
+#### Compressed sections
+
+WP-061, `src/compress.rs` and `src/deflate.rs`.
+
+```rust
+enum Compression { None, Zlib }          // Default: None
+fn compress_section(&mut self, section: SectionId, c: Compression) -> Result<bool, Error>
+fn compress_debug_sections(&mut self, c: Compression) -> Result<u32, Error>
+```
+
+- `compress_section` with `Zlib` replaces the section's bytes by an
+  `Elf64_Chdr` (`ch_type` = `ELFCOMPRESS_ZLIB` (1), `ch_reserved` 0,
+  `ch_size` the old size, `ch_addralign` the old alignment, all
+  little-endian, 24 bytes) followed by the zlib stream of the old bytes
+  (`deflate`, below). The kind becomes `SectionKind::Elf` with the old
+  kind's type, flags plus `SHF_COMPRESSED` and entry size (so
+  `.debug_str` keeps `SHF_MERGE|SHF_STRINGS`, entsize 1), and the
+  alignment becomes 8. It returns `true`.
+- When the result would not be smaller than the old bytes, or `c` is
+  `None`, the section is left as it was and the call returns `false`
+  (LLVM's rule: such a section stays uncompressed).
+- Relocations keep their offsets: they are offsets into the uncompressed
+  bytes, and the writer's `RelocationOutOfBounds` check of a section
+  whose kind has `SHF_COMPRESSED` is against `ch_size` (read from its
+  header; a section too short to hold one has size 0), not against its
+  stored size. Nothing may be appended to a section once it is
+  compressed: the header would no longer describe it.
+- Refused: `NotCompressible { section }` for a section that is
+  `SHF_ALLOC`, has no file space, or is compressed already (ELF forbids
+  `SHF_COMPRESSED` on allocated sections); `TooLarge(CompressedBytes)` for
+  4 GiB or more of bytes. Both leave the section unchanged.
+- `compress_debug_sections` does `compress_section` for every section
+  whose name starts with `.debug_` and which is not `SHF_ALLOC`, has file
+  space and is not compressed, in section order, with one compressor, and
+  returns how many shrank. It is what `clang -gz=zlib` compresses.
+
+**The compressor** (`hod_obj::deflate`, public: `zlib`, `Deflater`,
+`adler32`, `SEGMENT`, `HASH_SIZE`, `MAX_INPUT`). The stream of an input
+is, exactly:
+
+1. the zlib header `78 01` (deflate, 32 KiB window, level "fastest");
+2. the input cut into segments of `SEGMENT` (256 KiB) bytes, the last
+   shorter, each compressed **independently** (no match reaches into an
+   earlier segment) into one non-final block of the cheapest kind by
+   exact bit count: dynamic Huffman, else fixed Huffman, else stored
+   (stored ties lose; a stored segment is several stored blocks of at
+   most 65 535 bytes); a Huffman block that does not end on a byte is
+   followed by an empty non-final stored block, so each segment ends on a
+   byte boundary;
+3. an empty final fixed block, `03 00`;
+4. the Adler-32 of the input (RFC 1950 §8.2), big-endian.
+
+The empty input is `78 01 03 00 00 00 00 01`.
+
+The matcher is greedy LZ77 with one candidate per position: a hash
+table of `HASH_SIZE` (2^15) `u32` entries indexed by a multiplicative
+hash of the next four bytes, no chains; matches of 4 to 258 bytes at
+distances up to 32 768, extended eight bytes at a time. Inside a match
+only the two positions after its start and its last position are
+hashed. After 32 consecutive misses the scan steps over more bytes (one
+more per 32 misses), emitted as literals, so incompressible bytes are
+crossed fast. Huffman code lengths are minimum-redundancy (Moffat and
+Katajainen, in place), limited to 15 bits (7 for the code-length code)
+as zlib and miniz limit them, with at least two codes per tree so every
+code is complete.
+
+- **Determinism.** The stream depends only on the input: not on the
+  compressor's earlier inputs (stale hash entries are recognized by a
+  base that grows per segment, so they are never used), threads, time or
+  addresses. Segments are independent, so a parallel compressor can
+  produce the same bytes by concatenation; the current one is serial (one
+  `Deflater` per `compress_debug_sections`).
+- **Memory.** A `Deflater` holds the 128 KiB table and one 4-byte token
+  per byte of the largest segment it has seen (at most 1 MiB), allocated
+  once and reused; the output vector is reserved once per section from a
+  bound. Nothing is allocated per match or per block. The table is never
+  cleared between inputs (it is cleared only when the base would pass
+  2^32), so a small section costs no 128 KiB clear.
+- **Limits.** `MAX_INPUT` is 4 GiB less one byte; longer input is
+  refused (`zlib` returns `Err(())`, `compress_section`
+  `TooLarge(CompressedBytes)`). The format itself has no limit; larger
+  input has never been tested, and no length is ever truncated.
+- **Size bound.** At most 5 bytes per 65 535 of input above the input's
+  size, plus 8 and 5 per segment (stored fallback): incompressible bytes
+  never grow more than that.
+- **Speed and ratio** (`tests/deflate_throughput.rs`, ignored; clang 22
+  `-g -O0` objects of two standard-library translation units, 1.8 MB of
+  `.debug_*` in all, release build, best of five): hod 306 MB/s at a
+  ratio of 4.83; zlib level 1 (Python's `zlib.compress(data, 1)`, best of
+  five) 199 MB/s at 4.85; LLVM's `-gz=zlib` 5.54 (its level is zlib's
+  default, slower). `.debug_info` 130 MB/s at 2.07 (zlib -1 88 MB/s at
+  2.13), `.debug_str` 573 MB/s at 9.84 (381 MB/s at 9.71).
+
 ### Symbols
 
 ```rust
@@ -632,7 +725,8 @@ involved.
 | `RelocationInNobits { section }` | writer | relocations in a section without file space |
 | `RelocationOutOfBounds { section, offset }` | writer | the section's largest relocation offset is greater than its size |
 | `BadSymbol { symbol, problem }` | writer | see "Symbols" |
-| `TooLarge(Limit)` | `add_string`, `add_section`, writer | `StringBytes`, `SectionNameBytes`: more than 4 GiB of names; `Sections`, `Symbols`, `Relocations`, `Groups`: the 32-bit index space is exhausted; `FileBytes`: the file would pass 2^64 bytes or cannot be allocated by `to_vec` |
+| `TooLarge(Limit)` | `add_string`, `add_section`, writer, `compress_section` | `StringBytes`, `SectionNameBytes`: more than 4 GiB of names; `Sections`, `Symbols`, `Relocations`, `Groups`: the 32-bit index space is exhausted; `FileBytes`: the file would pass 2^64 bytes or cannot be allocated by `to_vec`; `CompressedBytes`: a section to compress holds 4 GiB or more |
+| `NotCompressible { section }` | `compress_section` | the section is `SHF_ALLOC`, has no file space, or is compressed (WP-061) |
 
 No call panics on any input other than an id that the object did not issue
 (see "Ids"). Internal invariants (the layout's sizes against the bytes
@@ -712,9 +806,10 @@ same. Deliberate differences:
 - `SHF_LINK_ORDER` with `sh_link` 0 (the form without a target), and
   removing a link.
 - `STB_GNU_UNIQUE`, symbol versioning, `STT_COMMON`.
-- Compressing sections: `SHF_COMPRESSED` may be set through
-  `SectionKind::Elf`, with the caller providing the compressed bytes and
-  their header.
+- Compression other than zlib (`ELFCOMPRESS_ZSTD`), and `SHF_COMPRESSED`
+  on allocated sections. A caller may still set `SHF_COMPRESSED` through
+  `SectionKind::Elf` and provide the header and bytes itself; the
+  relocation bound is then its header's `ch_size`.
 - Removing or renaming anything once added, and merging two objects.
 - Mach-O and COFF output.
 
@@ -735,6 +830,9 @@ failure.
 | `tests/link_x64.rs` | L3 | link and run for x86-64, under `qemu-x86_64` on other hosts |
 | `tests/link_tls.rs` | L3 | link and run, thread-local storage, both architectures |
 | `tests/link_conventions.rs` | L3 | link and run, "ELF conventions", both architectures |
+| `src/deflate.rs` (unit tests) | L0 | Adler-32 against RFC 1950's example and a byte-at-a-time sum, the length and distance code tables against RFC 1951's ranges, complete length-limited Huffman codes, the fixed code, the empty stream |
+| `tests/deflate.rs` | L3 | 3 000 generated inputs (empty, one byte, incompressible, single-byte runs, short periods, text-like words, sparse noise, random runs, skewed alphabets; sizes at 65 535 ± 1, at and around a segment, past three segments, and past 64 KiB) decoded by Python's `zlib.decompressobj`: the stream ends exactly at its end, decodes to the input, and its trailer is the input's Adler-32; the size bound; the same bytes from a fresh, a reused and the free compressor |
+| `tests/deflate_throughput.rs` | - | ignored: "Speed and ratio" above |
 | `examples/throughput.rs` | - | a timing and memory report, not a gate: `cargo run --release -p hod_obj --example throughput [functions [relocations-per-function]]`, and with `HOD_OBJ_MODE=one-text` for a single `.text` |
 
 ### Link-and-run tests

@@ -101,19 +101,19 @@ fn function_local_types_are_refused() {
     }
 }
 
-/// §6.8: template parameters (`templateParams`, a template alias's
-/// `extraData`) are WP-059's: skipped, no DIE and no error.
+/// §6.8, §6.11: template parameters (`templateParams`, a template alias's
+/// `extraData`) are children of their owner (WP-059).
 #[test]
-fn template_parameters_are_skipped() {
+fn template_parameters_are_children() {
     let alias = "!3 = !DIDerivedType(tag: DW_TAG_template_alias, name: \"A\", file: !1, line: 1, baseType: !9, extraData: !4)\n\
         !4 = !{!5}\n\
         !5 = !DITemplateTypeParameter(name: \"T\", type: !9)\n";
-    assert_eq!(plan(alias), Ok(3));
+    assert_eq!(plan(alias), Ok(4));
     let class = "!3 = distinct !DICompositeType(tag: DW_TAG_structure_type, name: \"C<int>\", file: !1, line: 1, size: 8, elements: !4, templateParams: !6, identifier: \"_ZTS1CIiE\")\n\
         !4 = !{}\n\
         !6 = !{!5}\n\
         !5 = !DITemplateTypeParameter(name: \"T\", type: !9)\n";
-    assert_eq!(plan(class), Ok(2));
+    assert_eq!(plan(class), Ok(4)); // the unit, the class, T and int
 }
 
 /// §6.8: the graph is walked with an explicit work list, so a deep chain

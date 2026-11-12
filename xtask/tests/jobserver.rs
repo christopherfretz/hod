@@ -204,7 +204,9 @@ fn an_interrupted_irdiff_kills_its_children_and_returns_its_tokens() {
             let waited = Instant::now();
             while world.live().len() < POOL + 1 {
                 assert!(!xtask.is_finished(), "{name}: xtask ended early");
-                assert!(waited.elapsed() < Duration::from_mins(2), "{name}: nothing started");
+                // A hang guard, not a verdict: xtask itself waits for a
+                // token of the machine's pool before it starts.
+                assert!(waited.elapsed() < Duration::from_mins(10), "{name}: nothing started");
                 std::thread::sleep(Duration::from_millis(20));
             }
             // The other five workers wait for a token; nothing more starts.
@@ -214,10 +216,15 @@ fn an_interrupted_irdiff_kills_its_children_and_returns_its_tokens() {
             assert_eq!(pool.idle(), 0, "{name}: the children hold the pool");
 
             let pid = std::fs::read_to_string(&pid_file).unwrap();
-            // The shell's own `kill`: a small machine has no other.
+            // The shell's own `kill`: a small machine has no other. Started
+            // directly, not through `hod_testutil::run`: a signal is not a
+            // job, and a wait for a token of the machine's pool here (it
+            // took minutes at load 20) outlived the fakes, whose xtask was
+            // gone when the signal came ("kill: No such process").
             let kill = ["-c", "kill \"-$1\" \"$2\"", "sh", name, pid.trim()];
-            let signalled = hod_testutil::run("/bin/sh", kill);
-            assert!(signalled.success(), "{name}: {}", signalled.stderr_text());
+            let signalled = Command::new("/bin/sh").args(kill).output().unwrap();
+            let complaint = String::from_utf8_lossy(&signalled.stderr);
+            assert!(signalled.status.success(), "{name}: {complaint}");
             (xtask.join().unwrap(), children)
         });
         let errors = outcome.stderr_text();

@@ -140,7 +140,7 @@ pub(crate) fn check_kind(kind: SectionKind) -> Result<(), Error> {
 }
 
 /// `(sh_type, sh_flags, sh_entsize)` of a section kind.
-const fn header_fields(kind: SectionKind) -> (u32, u64, u64) {
+pub(crate) const fn header_fields(kind: SectionKind) -> (u32, u64, u64) {
     match kind {
         SectionKind::Text => (SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 0),
         SectionKind::Data => (SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 0),
@@ -461,7 +461,15 @@ fn check_section(section: SectionId, sec: &SectionData) -> Result<(), Error> {
             return Err(Error::RelocationInNobits { section });
         }
     }
-    if sec.reloc_count != 0 && sec.reloc_max > sec.size() {
+    // A compressed section's relocations are offsets into its
+    // uncompressed data (WP-061).
+    let bound = match sec.kind {
+        SectionKind::Elf { sh_flags, .. } if sh_flags & SHF_COMPRESSED != 0 => {
+            crate::compress::uncompressed_size(&sec.data)
+        }
+        _ => sec.size(),
+    };
+    if sec.reloc_count != 0 && sec.reloc_max > bound {
         return Err(Error::RelocationOutOfBounds { section, offset: sec.reloc_max });
     }
     let entry = match sec.kind {

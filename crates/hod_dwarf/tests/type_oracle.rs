@@ -18,7 +18,7 @@ use common::dies::{
     addr_targets, count, die_section_list, dump, parse_tree, render, sorted, splice, target_name,
     verify_all,
 };
-use common::types::{cxx, extract, module_sections, oracle_input, read, strip_template_params};
+use common::types::{cxx, extract, module_sections, oracle_input, read};
 use common::{Elf, TRIPLES, compile, dwarfdumps, llc};
 use hod_testutil::{Scratch, tool, tools_required};
 
@@ -114,7 +114,7 @@ fn compare(major: u32, label: &str, ir: &str, tally: &mut Tally) {
     let Some((_, dwarfdump)) = dumps.iter().find(|(m, _)| *m == major) else { return };
     let scratch = Scratch::new(&format!("types-{label}-{major}"));
     let module = read(ir);
-    let for_llc = retarget(&strip_template_params(ir));
+    let for_llc = retarget(ir);
     for (arch, triple) in TRIPLES {
         let label = format!("{label}-{major}-{arch:?}");
         let object = compile(&llc, &scratch, &label, &for_llc, triple);

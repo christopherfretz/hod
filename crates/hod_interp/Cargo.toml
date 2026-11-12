@@ -13,6 +13,7 @@ hod_ir.workspace = true
 
 [dev-dependencies]
 hod_testutil = { workspace = true }
+hod_ll.workspace = true
 
 [lints]
 workspace = true

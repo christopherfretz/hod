@@ -1,14 +1,21 @@
-//! The `hod` command-line tool. Contract: `spec/cli.md` (WP-015).
+//! The `hod` command-line tool: `llc`'s command line in front of hod's code
+//! generator, with a fallback to the real `llc` and a coverage log.
+//! Contract: `spec/cli.md`.
 
+mod args;
+mod coverage;
+mod driver;
+
+use std::ffi::OsString;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1);
-    if args.next().as_deref() == Some("--version") {
-        println!("hod version {}", env!("CARGO_PKG_VERSION"));
-        ExitCode::SUCCESS
-    } else {
-        eprintln!("hod: code generation is not implemented yet");
-        ExitCode::from(2)
-    }
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let env = driver::Environment::from_vars(|name| std::env::var_os(name));
+    let mut io = driver::Io {
+        stdin: &mut std::io::stdin().lock(),
+        stdout: &mut std::io::stdout().lock(),
+        stderr: &mut std::io::stderr().lock(),
+    };
+    ExitCode::from(driver::run(&args, &env, &hod::compile, &mut io))
 }

@@ -1,3 +1,97 @@
-//! AArch64 instruction encoder.
+//! AArch64 instruction encoder: typed constructors that turn an instruction
+//! and its operands into the 32-bit instruction word.
 //!
-//! See `docs/ARCHITECTURE.md` for this crate's role and `spec/` for its contract.
+//! Contract: `spec/mc-a64.md`. Role in the pipeline: `docs/ARCHITECTURE.md`.
+//!
+//! The crate knows nothing about the IR, object files or assembly text. Its
+//! consumer is a single-pass code generator, so every constructor is a plain
+//! `const fn` returning `u32`: no allocation, no traits, no builder state.
+//!
+//! ```
+//! use hod_mc_a64::{Reg, RegSp, Size, add_imm, try_add_imm};
+//!
+//! // add x0, sp, #16
+//! assert_eq!(add_imm(Size::X, Reg::X0.sp(), RegSp::SP, 16), 0x9100_43e0);
+//! // 0x1001 is not an ADD immediate: materialize it instead.
+//! assert_eq!(try_add_imm(Size::X, Reg::X0.sp(), RegSp::SP, 0x1001), None);
+//! ```
+//!
+//! # Registers
+//!
+//! Encoding 31 means the stack pointer in some operand positions and the
+//! zero register in others. The API makes the caller say which: [`Reg`] is
+//! `X0`..`X30`, [`RegSp`] is a register or SP, [`RegZr`] is a register or
+//! ZR, and every constructor's signature states which one each position
+//! takes.
+//!
+//! # Checked and unchecked forms
+//!
+//! A constructor whose operands are all valid by type is infallible. A
+//! constructor `f` with an operand precondition (an immediate that may not
+//! fit, a shift amount, a register constraint) has a twin `try_f` that
+//! returns `None` exactly when the precondition does not hold. `f` itself
+//! checks the precondition with `debug_assert!`; with debug assertions off,
+//! violating it yields an unspecified instruction word.
+
+#![allow(
+    clippy::similar_names,
+    reason = "operand names follow the Arm ARM: rn/rm, rt/rt2, immr/imms"
+)]
+
+/// Defines an unchecked constructor and its checked `try_` twin from one
+/// statement of the precondition.
+macro_rules! checked {
+    ($(
+        $(#[$meta:meta])*
+        pub fn $name:ident / $try_name:ident ( $($arg:ident : $ty:ty),* $(,)? )
+        requires $pre:expr;
+        $body:block
+    )+) => {$(
+        $(#[$meta])*
+        ///
+        /// The precondition is checked by `debug_assert!`; the `try_` twin
+        /// returns `None` instead.
+        #[inline]
+        pub const fn $name($($arg: $ty),*) -> u32 {
+            debug_assert!($pre, concat!(stringify!($name), ": operand precondition violated"));
+            $body
+        }
+
+        #[doc = concat!(
+            "Checked form of [`", stringify!($name),
+            "`]: `None` exactly when its precondition does not hold."
+        )]
+        #[inline]
+        pub const fn $try_name($($arg: $ty),*) -> Option<u32> {
+            if $pre { Some($name($($arg),*)) } else { None }
+        }
+    )+};
+}
+
+pub mod arith;
+pub mod atomic;
+pub mod bitfield;
+pub mod branch;
+pub mod condsel;
+pub mod fixup;
+pub mod fp;
+pub mod imm;
+pub mod logical;
+pub mod mem;
+pub mod reg;
+pub mod simd;
+pub mod system;
+pub mod wide;
+
+pub use arith::*;
+pub use atomic::*;
+pub use bitfield::*;
+pub use branch::*;
+pub use condsel::*;
+pub use fixup::Fixup;
+pub use imm::{decode_bitmask, encode_bitmask, is_arith_imm};
+pub use logical::*;
+pub use mem::*;
+pub use reg::{Cond, Extend, Reg, RegSp, RegZr, Shift, Size};
+pub use system::*;
+pub use wide::*;

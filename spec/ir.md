@@ -247,6 +247,8 @@ implementation as one table (attribute name → class) that `hod_ll` and
   `inreg`, `nest`, `swiftself`/`swifterror`/`swiftasync`, `alignstack`,
   `preallocated`, `inalloca`, `elementtype` (inline assembly); on functions
   `noreturn`, `naked`, `nounwind`, `uwtable`, `returns_twice`,
+  `alwaysinline` (it decides what happens to an `available_externally`
+  body: design 0001, point 6),
   `alignstack`, the stack-protector levels, `sanitize_*`,
   `presplitcoroutine`, and the string attributes `target-cpu`,
   `target-features`, `tune-cpu`, `frame-pointer`,
@@ -258,7 +260,7 @@ implementation as one table (attribute name → class) that `hod_ll` and
 - **dropped**, because only an optimizer reads them: `noundef`, `nonnull`,
   `dereferenceable*`, `noalias`, `nocapture`/`captures`, `readonly` and the
   `memory(...)` family, `nofree`, `nosync`, `willreturn`, `mustprogress`,
-  `noinline`, `alwaysinline` (see design 0001, point 6), `optnone`,
+  `noinline`, `optnone`,
   `minsize`, `optsize`, `cold`, `hot`, `speculatable`, `allocsize`,
   `allockind`, `nofpclass`, `range`, `writable`, `dead_on_unwind`,
   `dead_on_return`, `initializes`, `returned`, `immarg`, `nocallback`,

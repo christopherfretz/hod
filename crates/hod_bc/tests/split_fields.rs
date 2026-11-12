@@ -45,13 +45,19 @@ fn unit(fields: &str) -> String {
     )
 }
 
+/// `(fields, (splitDebugFilename, dwoId, splitDebugInlining))`.
+type Case = (&'static str, (&'static [u8], u64, bool));
+
 /// What clang writes for `-gsplit-dwarf`, and what a clang module's
 /// skeleton reference writes, with and without `splitDebugInlining`.
 #[test]
 fn split_fields_read_alike_from_text_and_bitcode() {
-    let cases: [(&str, (&[u8], u64, bool)); 4] = [
+    let cases: [Case; 4] = [
         (", splitDebugFilename: \"a.dwo\", splitDebugInlining: false", (b"a.dwo", 0, false)),
-        (", splitDebugFilename: \"m.pcm\", dwoId: 1234567890123", (b"m.pcm", 1_234_567_890_123, true)),
+        (
+            ", splitDebugFilename: \"m.pcm\", dwoId: 1234567890123",
+            (b"m.pcm", 1_234_567_890_123, true),
+        ),
         ("", (b"", 0, true)),
         (", splitDebugInlining: true", (b"", 0, true)),
     ];

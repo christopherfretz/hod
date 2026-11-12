@@ -49,6 +49,19 @@ fn reserve(&mut self, sections: usize, symbols: usize, relocations: usize, strin
 
 `reserve` only pre-sizes tables; it never changes behavior.
 
+**The `.dwo` companion** (WP-062, `crates/hod_obj/src/dwo.rs`):
+
+```rust
+fn set_dwo(&mut self, dwo: Object)      // attach (replaces one attached before)
+fn dwo(&self) -> Option<&Object>
+fn take_dwo(&mut self) -> Option<Object>
+```
+
+A second object carried by the first: the split-DWARF sections that go
+to their own file (`spec/dwarf.md` §6.14). It is never part of the
+object's own bytes (`elf::to_vec` ignores it); the caller writes it with
+`elf::to_vec` on its own.
+
 ### Strings
 
 ```rust

@@ -21,6 +21,12 @@ pub struct Options {
     /// "Compressed sections"): how the `.debug_*` sections are written.
     /// `llc` has no such option; `clang -gz=zlib` does this.
     pub debug_compression: hod_obj::Compression,
+    /// `-split-dwarf-file=` and `-split-dwarf-output=` (WP-062,
+    /// `spec/dwarf.md` §6.14): a skeleton unit in the object and a split
+    /// unit in `.dwo` sections, in the object or in a companion object
+    /// (`hod_obj::Object::dwo`). The `.dwo` name is the unit's
+    /// `splitDebugFilename`; the caller checks it is the option's.
+    pub split_dwarf: hod_dwarf::SplitDwarf,
 }
 
 /// A `.debug_*` section of 4 GiB or more with compression asked for: the

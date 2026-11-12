@@ -27,6 +27,7 @@ hod_xform  = { path = "crates/hod_xform" }
 hod_asm    = { path = "crates/hod_asm" }
 hod        = { path = "crates/hod" }
 hod_testutil = { path = "crates/hod_testutil" }
+hod_interp   = { path = "crates/hod_interp" }
 xtask        = { path = "xtask" }
 
 [workspace.lints.rust]

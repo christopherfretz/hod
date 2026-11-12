@@ -281,7 +281,14 @@ impl Job<'_, '_> {
                 return self.fall_back(&llc, rejected.reason(), None);
             }
             let message = format!("{rejected}{}", self.settings.no_fallback_note());
-            return self.fail(EXIT_ERROR, rejected.reason(), &message);
+            // WP-021: in strict mode an option hod does not know is a
+            // decline (`llc` may know it), a usage mistake an error.
+            let exit = if self.settings.strict && rejected.reason() == "unknown-option" {
+                EXIT_UNSUPPORTED
+            } else {
+                EXIT_ERROR
+            };
+            return self.fail(exit, rejected.reason(), &message);
         }
 
         let input = match read_input(&line.input, self.io.stdin) {
@@ -1224,7 +1231,9 @@ mod tests {
         let strict =
             Environment { fallback: Some("/nonexistent/llc".into()), strict: true, ..env.clone() };
         let ran = run_with(&["-filetype=null"], &strict, &never, MODULE);
-        assert_eq!(ran.exit, EXIT_ERROR);
+        // WP-021: in strict mode an unknown option is a decline, status 2;
+        // a usage mistake stays an error.
+        assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert_eq!(
             ran.stderr,
             "hod: error: unknown value 'null' for option '-filetype' (strict mode: no fallback)\n"
@@ -1244,6 +1253,11 @@ mod tests {
                 ("error", "usage", "-", "-", "-"),
             ]
         );
+        // WP-021: strict mode changes the status of `unknown-option` only.
+        let ran = run_with(&["-filetype=obj", "a.ll", "b.ll"], &strict, &never, MODULE);
+        assert_eq!(ran.exit, EXIT_ERROR);
+        let ran = run_with(&["-filetype=obj", "-bogus"], &strict, &never, MODULE);
+        assert_eq!(ran.exit, EXIT_UNSUPPORTED);
     }
 
     // spec/cli.md "hod's own options" and "Environment": mistakes in them

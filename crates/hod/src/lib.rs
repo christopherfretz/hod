@@ -32,6 +32,9 @@ pub use front::{
     BitcodeReading, INTERNAL_ERROR, LIMIT_READER, Report, Settings, compile_with, generate,
 };
 pub use session::Session;
+/// The names of the bodies declined because their meaning depends on being
+/// inlined (`spec/cli.md` "Always-inline").
+pub use session::inlining::reason as inline_reason;
 
 /// What [`compile`] writes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

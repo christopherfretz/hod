@@ -315,8 +315,12 @@ invocation's *rejection*:
 A rejected command line is handed to the fallback whole when one is
 configured and strict mode is off ("Fallback protocol"): hod cannot know
 what the rest of such a command line means, so it does not read the input
-either. Otherwise it is an error: `hod: error: <text><note>`, exit status
-1, where `<note>` is as in "Strict mode".
+either. Otherwise it is an error: `hod: error: <text><note>`, where
+`<note>` is as in "Strict mode", with exit status 1, except in strict mode
+for the reason `unknown-option`: exit status 2 (WP-021). An option or
+value hod does not know is something `llc` may know, so a caller in strict
+mode reads it as it reads an unsupported module: hod declined, run `llc`.
+A `usage` rejection is a mistake in the command line, for `llc` too: 1.
 
 **`--version`** prints `hod version <version>` as its first line and exits
 0. With a fallback configured, two more things follow: a line
@@ -684,7 +688,7 @@ the text got.
 |---|---|
 | 0 | hod wrote the output (or printed the version or the help) |
 | 1 | an error in hod: usage, I/O, `malformed-input`, `invalid-options`, `internal-error`, the coverage log, the fallback could not be started, the bitcode conversion failed (`bitcode-converter-*`) and no fallback ran |
-| 2 | the module is unsupported (`CompileError::Unsupported`) and no fallback ran |
+| 2 | the module is unsupported (`CompileError::Unsupported`) and no fallback ran; in strict mode, also a command line rejected as `unknown-option` (WP-021) |
 | other | when the fallback ran: its exit status, whatever it is (including 0, 1 and 2) |
 
 `llc` itself exits 1 for its errors. Status 2 lets a harness in strict

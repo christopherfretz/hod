@@ -563,7 +563,8 @@ fn unknown_options() {
     assert_eq!(exit_code(&outcome), 0, "{}", outcome.stderr_text());
     assert_eq!(llc.args(), ["-filetype=null", "-o", "/dev/null"]);
 
-    // Strict mode: an error even with a fallback.
+    // Strict mode: no fallback even with one configured; the status is
+    // a decline's, 2 (spec/cli.md "Exit status", WP-021).
     let outcome = run_hod(
         hod()
             .env("HOD_COVERAGE_LOG", &log)
@@ -572,7 +573,7 @@ fn unknown_options() {
             .args(args),
         MODULE.as_bytes(),
     );
-    assert_eq!(exit_code(&outcome), 1);
+    assert_eq!(exit_code(&outcome), 2);
     assert_eq!(
         outcome.stderr_text(),
         "hod: error: unknown option '-frobnicate=3' (strict mode: no fallback)\n"

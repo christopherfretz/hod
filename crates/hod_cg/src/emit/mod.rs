@@ -13,6 +13,7 @@
 //! and the merged rows.
 
 mod asm;
+mod copy;
 mod data;
 mod lines;
 mod section;
@@ -30,6 +31,7 @@ use hod_obj::{
     SymbolId, SymbolKind, SymbolPlace, Visibility, X64Reloc,
 };
 
+pub use self::copy::COPY_SUFFIX;
 use self::data::Relocs;
 use self::lines::DebugLines;
 use self::section::{Found, Kind, NO_GROUP, Sections};
@@ -158,6 +160,8 @@ pub struct ModuleEmitter<'m> {
     groups: Vec<Group>,
     runtime: Vec<u32>,
     local_aliases: HashMap<SymId, SymbolId>,
+    /// The local copies of `available_externally` functions (WP-021).
+    copies: HashMap<SymId, SymbolId>,
     /// The group of each signature symbol: `MCContext` has one group per
     /// signature name, whether a COMDAT or an associated structor made it.
     signatures: HashMap<SymbolId, GroupId>,
@@ -324,6 +328,7 @@ impl<'m> ModuleEmitter<'m> {
             groups: Vec::new(),
             runtime: vec![NOWHERE; RuntimeFn::ALL.len()],
             local_aliases: HashMap::new(),
+            copies: HashMap::new(),
             signatures: HashMap::new(),
             pending: Vec::new(),
             fixups: Vec::new(),
@@ -611,7 +616,8 @@ impl<'m> ModuleEmitter<'m> {
         if self.places[func.sym.index()].is_placed() {
             return Err(CgError::internal("a function placed twice"));
         }
-        if symbol.linkage() == Linkage::AvailableExternally {
+        let copy = symbol.linkage() == Linkage::AvailableExternally;
+        if copy && !self.is_copy(func.sym) {
             return Ok(());
         }
         let arch = self.arch();
@@ -625,20 +631,28 @@ impl<'m> ModuleEmitter<'m> {
         }
         for reloc in &chunk.relocs[func.relocs.start as usize..func.relocs.end as usize] {
             let at = offset + u64::from(reloc.offset);
-            match self.code_target(reloc.sym, reloc.addend) {
+            let target = match self.copy_target(reloc.kind, reloc.sym, false) {
+                Some(copy) => copy.map(|copy| (copy, reloc.addend)),
+                None => self.code_target(reloc.sym, reloc.addend),
+            };
+            match target {
                 Some((target, addend)) => {
                     self.obj.add_relocation(section, at, reloc.kind, target, addend);
                 }
                 None => self.pending.push((section, at, reloc.kind, reloc.sym, reloc.addend)),
             }
         }
-        self.places[func.sym.index()] = Place {
-            section: section.index(),
-            value: offset,
-            size: len,
-            kind: SymbolKind::Func,
-            common: false,
-        };
+        if copy {
+            self.place_copy(func.sym, section, offset, len)?;
+        } else {
+            self.places[func.sym.index()] = Place {
+                section: section.index(),
+                value: offset,
+                size: len,
+                kind: SymbolKind::Func,
+                common: false,
+            };
+        }
         if let Some(debug) = &mut self.debug {
             let lines = &chunk.lines[func.lines.start as usize..func.lines.end as usize];
             let vars = &chunk.vars[func.vars.start as usize..func.vars.end as usize];
@@ -840,6 +854,9 @@ impl<'m> ModuleEmitter<'m> {
                         String::from_utf8_lossy(symbol.name())
                     )));
                 }
+                // `llc` writes nothing for an `available_externally`
+                // alias (WP-021).
+                IrKind::Alias { .. } if symbol.linkage() == Linkage::AvailableExternally => {}
                 IrKind::Alias { .. } => {
                     self.place_alias(symbol.id(), 0)?;
                 }
@@ -855,6 +872,10 @@ impl<'m> ModuleEmitter<'m> {
             }
         }
         for (section, at, kind, target, addend) in std::mem::take(&mut self.pending) {
+            if let Some(Some(copy)) = self.copy_target(kind, target, true) {
+                self.obj.add_relocation(section, at, kind, copy, addend);
+                continue;
+            }
             let SymRef::Module(sym) = target else { continue };
             let local_alias = prefers_local_alias(module, self.options, sym);
             let (target, addend) = self.local_target(sym, addend, local_alias);

@@ -37,13 +37,13 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `mem` | 3 | 1 | 2 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 0 | 21 | 0 | 0 | 21 | 0 |
 | `call` | 3 | 2 | 1 | 0 | 0 | 3 | 0 |
-| `tail` | 3 | 2 | 1 | 0 | 2 | 1 | 0 |
+| `tail` | 3 | 3 | 0 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `operand` | 9 | 4 | 5 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 133 | 5 | 128 | 0 | 0 | 133 | 0 |
-| total | 434 | 143 | 245 | 46 | 16 | 363 | 55 |
+| total | 434 | 144 | 244 | 46 | 16 | 363 | 55 |
 
 ## `module`
 
@@ -429,7 +429,7 @@ Tail-call markers.
 |---|---|---|---|
 | `tail:tail` | supported | supported | a permission: ignored (`spec/codegen.md` §7.1) |
 | `tail:notail` | supported | supported | hod makes no tail call of its own |
-| `tail:musttail` | not-implemented | not-implemented | M2 (musttail). and the `musttail:` rules of §8.6 |
+| `tail:musttail` | supported | not-implemented | and the `musttail:` rules of §8.6, which need the `StackArgs` hook (`hod_cg::abi::TargetStackArgs`) |
 
 ## `bundle`
 

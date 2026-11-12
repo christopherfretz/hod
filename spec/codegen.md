@@ -933,6 +933,38 @@ not emitted. In a variadic function the argument registers that carry no
 named argument are passed through unchanged; the target's ABI file states
 how.
 
+**The `musttail` hook.** `classify` refuses a `musttail` call whose
+stack-argument area is larger than its caller's (`musttail:stack-args-
+grow`), or whose areas it cannot learn (`musttail:stack-args-unknown`,
+`spec/ir.md` §8.6); only `assign` knows them. `hod_cg::abi::
+TargetStackArgs::new(&target)` is that `hod_ir::StackArgs` hook for any
+`Target`, handed to `Classifier::with_stack_args`:
+
+- `of_function`: `assign` of the function's own signature (its symbol's
+  convention, return and parameter attributes, its type; the named
+  parameters only, also for a variadic function), as the entry assigns
+  it (§4.8); its `stack_size`.
+- `of_call`: `assign` of the call with its effective attributes (above),
+  its convention and its function type; its `stack_size`. A call that
+  lists more arguments than its type names has no answer (the types of
+  the variable arguments are the body's, which the hook is not given):
+  a variadic thunk forwards `...`, which the call site does not list, so
+  its call is answered.
+- No answer when `assign` refuses the signature.
+
+The sizes are compared as `assign` gives them; the call sequence's own
+check (step 2) allows the caller's area rounded up to `STACK_ALIGN`, so
+`classify` is the stricter. A `musttail` call of a function returned in
+memory without `sret` stays `call:musttail-ret-memory`, which only the
+call sequence sees. The driver side (staging, the copy over the incoming
+area, the branch to a tail exit) is the target-independent sequence
+above; a target owes the tail exits after its epilogue
+(`FnCx::tail_exit`; AArch64 `frame.rs`) and, in a variadic function, the
+pass-through of the variable-argument registers (AArch64 `call.rs`,
+`abi-a64.md` §8.5). AArch64 has both (WP-038).
+The facade has to hand the hook to its classifier; until it does,
+every `musttail` call is `musttail:stack-args-unknown` there.
+
 ### 7.2 Argument assignment
 
 `Target::assign` maps a signature (function type, calling convention,

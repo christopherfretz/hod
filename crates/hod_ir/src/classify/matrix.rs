@@ -842,7 +842,12 @@ const CALL: [SupportRow; 3] = [
 const TAIL: [SupportRow; 3] = [
     both("tail:tail", ON, "a permission: ignored (`spec/codegen.md` §7.1)"),
     both("tail:notail", ON, "hod makes no tail call of its own"),
-    a64("tail:musttail", "M2 (musttail)", "and the `musttail:` rules of §8.6"),
+    row(
+        "tail:musttail",
+        ON,
+        todo(X64),
+        "and the `musttail:` rules of §8.6, which need the `StackArgs` hook (`hod_cg::abi::TargetStackArgs`)",
+    ),
 ];
 
 const BUNDLE: [SupportRow; 10] = [

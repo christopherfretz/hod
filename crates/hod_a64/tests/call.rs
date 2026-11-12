@@ -908,6 +908,81 @@ fn alignstack_arguments_and_functions_run() {
     }
 }
 
+/// `spec/codegen.md` §7.1, "Tail kinds": `hod_cg::abi::TargetStackArgs`
+/// is the `StackArgs` hook `classify` decides `musttail` calls with
+/// (`spec/ir.md` §8.6). With it, the handwritten `musttail` forms that
+/// `handwritten_calls_run` runs (stack and register arguments exchanged,
+/// variadic thunks forwarding `...`, an indirect call) meet no
+/// `musttail:` rule; a call that needs a larger stack-argument area than
+/// its caller's has is `musttail:stack-args-grow`, one that lists
+/// variable arguments is `musttail:stack-args-unknown`, and so is every
+/// `musttail` call without the hook. The areas are those of the
+/// effective attributes: a `byval` the call takes from the declaration
+/// counts.
+#[test]
+fn the_stack_args_hook_decides_musttail() {
+    use hod_ir::{Arch, Census, Classifier, Support};
+    let hook = hod_cg::abi::TargetStackArgs::new(&hod_a64::A64);
+    let shipped = Support::shipped(Arch::Aarch64);
+    let musttail_rules = |text: &str, with_hook: bool| -> Vec<String> {
+        let (module, bodies) = parse(&format!("{}{text}", ll_header(22)));
+        let classifier = Classifier::new(shipped);
+        let classifier = if with_hook { classifier.with_stack_args(&hook) } else { classifier };
+        let mut census = Census::new();
+        for body in &bodies {
+            classifier.census_body(&module, body, &mut census);
+        }
+        let mut found: Vec<String> = census
+            .entries()
+            .iter()
+            .map(|entry| entry.construct.clone())
+            .filter(|name| name.starts_with("musttail:") || name == "tail:musttail")
+            .collect();
+        found.dedup();
+        found
+    };
+    let hand = data("hand.ll");
+    let hand = hand.lines().filter(|line| !line.starts_with("target ")).collect::<Vec<_>>();
+    let hand = hand.join("\n");
+    assert_eq!(musttail_rules(&hand, true), Vec::<String>::new());
+    assert_eq!(musttail_rules(&hand, false), ["musttail:stack-args-unknown"]);
+
+    let nine = "i64, i64, i64, i64, i64, i64, i64, i64, i64";
+    let cases: [(String, &[&str]); 4] = [
+        (
+            format!(
+                "declare i64 @g({nine})\n\
+                 define i64 @f({nine}) {{\n  %r = musttail call i64 @g(i64 0, i64 0, i64 0, i64 0, \
+                 i64 0, i64 0, i64 0, i64 0, i64 1)\n  ret i64 %r\n}}\n"
+            ),
+            &[],
+        ),
+        (
+            format!(
+                "declare i64 @g({nine})\n\
+                 define i64 @f(i64 %x) {{\n  %r = musttail call i64 @g(i64 0, i64 0, i64 0, i64 0, \
+                 i64 0, i64 0, i64 0, i64 0, i64 %x)\n  ret i64 %r\n}}\n"
+            ),
+            &["musttail:stack-args-grow"],
+        ),
+        (
+            "declare void @g(ptr byval([4 x i64]) align 8)\n\
+             define void @f(ptr %p) {\n  musttail call void @g(ptr %p)\n  ret void\n}\n"
+                .into(),
+            &["musttail:stack-args-grow"],
+        ),
+        (
+            "declare void @g(i32, ...)\n\
+             define void @f(i32 %n) {\n  musttail call void (i32, ...) @g(i32 %n, i64 1)\n  ret void\n}\n"
+                .into(),
+            &["musttail:stack-args-unknown"],
+        ),
+    ];
+    for (text, want) in &cases {
+        assert_eq!(musttail_rules(text, true), *want, "{text}");
+    }
+}
+
 /// `spec/codegen.md` §7.1, effective attributes, as a property:
 /// `classify` and the call sequence see the same attributes for random
 /// combinations of a declaration's and a call site's attributes, with

@@ -544,13 +544,15 @@ A slot is not typed. Use facts (§5.6) are not kept for slots: a slot's
 address is a constant, never a value that needs a location.
 
 `Body::slot_vars` lists the source variables that live in a slot for the
-whole function: `SlotVar { slot, var: DiId, loc: LocId }`, recorded with
-`set_slot_var` for a `#dbg_declare` of a static `alloca`. It is a separate
-list, in recording order, so that a body without debug information pays
-nothing and several variables can share a slot. The declaration's
-`DIExpression` is the attachment point left for §6: `SlotVar` gains the
-expression when expressions exist, and until then a producer records only
-declarations whose expression is empty.
+whole function: `SlotVar { slot, var: DiId, loc: LocId, expr: ExprId }`,
+recorded by `FunctionBuilder::dbg_declare` for a `#dbg_declare` of a
+static `alloca` (§6.6), with the declaration's `DIExpression`
+(`ExprId::EMPTY` when the variable is simply at the slot's address;
+`set_slot_var(slot, var, loc)` records that case). It is a separate list,
+in recording order, so that a body without debug information pays nothing
+and several variables can share a slot: the variables of an inlined call
+and of its caller, or the pieces of one variable, each with a fragment
+expression.
 
 ### 5.3 Values
 
@@ -962,29 +964,309 @@ unoptimized-C++ instruction mix; the figures of record are in
 
 ## 6. Debug information
 
-Present only when the producer was asked for it. Typed, not generic
-name-and-field nodes: one Rust type per kind hod emits DWARF for.
+`Module::debug` is a `DebugInfo`: the module's debug nodes, expressions,
+source locations and compile units. The nodes are typed: one Rust record
+per kind hod writes DWARF for, with fields named after LLVM's. Everything
+a debugger needs from LLVM's metadata has a field; what LLVM can write and
+`hod_ir` cannot represent is named, by the field table (§6.9), as a
+construct `classify` reports. The mapping is recorded in
+`spec/landed/ir/WP-005.md`.
 
-- `LocId`: an interned `(line, column, scope, inlined-at)`. Each
-  instruction has a `LocId` in a side array of the body that exists only
-  with debug info (`LocId::NONE` for "no location").
-- `DiId` nodes: compile unit, file, subprogram, lexical block (and block
-  file), namespace, local variable, global variable (with expression),
-  label, imported entity, basic type, derived type, composite type,
-  subroutine type, subrange, enumerator, template type and value
-  parameters. Fields are the LLVM fields that DWARF emission reads.
-- A function symbol has an optional subprogram; a variable symbol has its
-  global-variable expressions.
-- Variable locations: a stack slot (§5.2) carries `(variable, expression,
-  declaration location)` when a `#dbg_declare` (or `llvm.dbg.declare`)
-  names its address. A declare of anything else, and every `#dbg_value`,
-  is a `Body::dbg_records` entry positioned before an instruction.
-- `DIExpression` is a sequence of typed operations (`Deref`, `PlusUconst`,
-  `Constu`, `StackValue`, `Fragment`, ..., and `Other(opcode)` for
-  `classify` to name).
+### 6.1 Tables, and what no debug information costs
 
-Signatures: WP-005, which also owns `spec/landed/ir/WP-005.md` listing the
-LLVM field → hod field mapping.
+`DebugInfo` follows the crate's rules: `u32` ids into append-only arenas,
+strings and expressions interned, no allocation per node.
+
+- Nodes are `DiId`s, `0..node_count()`. `DiId::NONE` is "no node" as an
+  element of a node list (the `void` that starts a subroutine type's
+  `types`); a single reference is `Option<DiId>`.
+- Expressions are `ExprId`s, `0..expr_count()`; `ExprId::EMPTY` (id 0) is
+  `!DIExpression()` and always exists.
+- Locations are `LocId`s, `0..loc_count()`. They are a module table, not
+  a body's: code generation keeps `LocId`s after a body is dropped, and a
+  location names module nodes. A body's per-instruction location array
+  (§5.9) holds `LocId`s, `LocId::NONE` for none.
+- `compile_units()` lists the compile units, in the order of
+  `!llvm.dbg.cu`.
+
+A module without debug information has an empty `DebugInfo`
+(`is_empty()`), which has allocated nothing, and a body without debug
+records has two empty `Vec`s more than before (§6.6). Nothing else is
+paid.
+
+The tables are append-only, with two exceptions that happen before
+anything reads the node: a reserved node or location is defined once, and
+a forward-declared composite type is completed once (§6.3).
+
+### 6.2 Nodes
+
+`DiKind` names the kinds; `DiNode` is a node, one variant per kind, each a
+record with public fields. A producer fills a record and hands it to the
+table; a reader gets the same record back from `node(id)`, its strings
+(`&[u8]`) and lists (`&[DiId]`) borrowed from the table. Stored, a node is
+an 8-byte head (where its cells start, its kind, its distinctness, its
+DWARF tag) and a mask of the fields that are not at their default followed
+by those fields' 4-byte cells: a field at its default costs nothing.
+`kind`, `tag`, `is_distinct` and `node` read a node; `subprogram_of` and
+`enclosing_block_scope` walk scopes.
+
+The kinds, the record of each, and each field's LLVM name, Rust type and
+the kinds of node a reference may name (a "scope" is LLVM's `DIScope`, a
+"local scope" a subprogram or a block, a "type" a basic, derived,
+composite or subroutine type, or an unknown kind):
+
+| LLVM kind | record | fields |
+|---|---|---|
+| `DICompileUnit` | `DiCompileUnit` | `language`: `u16`; `file`: `Option<DiId>` → file; `producer`: `&[u8]`; `isOptimized`: `bool`; `flags`: `&[u8]`; `runtimeVersion`: `u32`; `emissionKind`: `EmissionKind`; `enums`: `&[DiId]` → composite; `retainedTypes`: `&[DiId]` → type | subprogram; `globals`: `&[DiId]` → global expr; `imports`: `&[DiId]` → imported; `nameTableKind`: `NameTableKind`; `sysroot`: `&[u8]`; `sdk`: `&[u8]` |
+| `DIFile` | `DiFile` | `filename`: `&[u8]`; `directory`: `&[u8]`; `checksumkind`: `ChecksumKind`; `checksum`: `&[u8]`; `source`: `&[u8]` |
+| `DISubprogram` | `DiSubprogram` | `name`: `&[u8]`; `linkageName`: `&[u8]`; `scope`: `Option<DiId>` → scope; `file`: `Option<DiId>` → file; `line`: `u32`; `type`: `Option<DiId>` → subroutine; `scopeLine`: `u32`; `containingType`: `Option<DiId>` → type; `virtualIndex`: `u32`; `flags`: `DiFlags`; `spFlags`: `SpFlags`; `unit`: `Option<DiId>` → unit; `templateParams`: `&[DiId]` → template param; `declaration`: `Option<DiId>` → subprogram; `retainedNodes`: `&[DiId]`; `thrownTypes`: `&[DiId]` → type |
+| `DILexicalBlock` | `DiLexicalBlock` | `scope`: `Option<DiId>` → local scope; `file`: `Option<DiId>` → file; `line`: `u32`; `column`: `u16` |
+| `DILexicalBlockFile` | `DiLexicalBlockFile` | `scope`: `Option<DiId>` → local scope; `file`: `Option<DiId>` → file; `discriminator`: `u32` |
+| `DINamespace` | `DiNamespace` | `name`: `&[u8]`; `scope`: `Option<DiId>` → scope; `exportSymbols`: `bool` |
+| `DILocalVariable` | `DiLocalVariable` | `name`: `&[u8]`; `arg`: `u16`; `scope`: `Option<DiId>` → local scope; `file`: `Option<DiId>` → file; `line`: `u32`; `type`: `Option<DiId>` → type; `flags`: `DiFlags`; `align`: `u32` |
+| `DIGlobalVariable` | `DiGlobalVariable` | `name`: `&[u8]`; `linkageName`: `&[u8]`; `scope`: `Option<DiId>` → scope; `file`: `Option<DiId>` → file; `line`: `u32`; `type`: `Option<DiId>` → type; `isLocal`: `bool`; `isDefinition`: `bool`; `templateParams`: `&[DiId]` → template param; `declaration`: `Option<DiId>` → derived; `align`: `u32` |
+| `DIGlobalVariableExpression` | `DiGlobalVariableExpression` | `var`: `Option<DiId>` → global; `expr`: `ExprId` |
+| `DILabel` | `DiLabel` | `scope`: `Option<DiId>` → local scope; `name`: `&[u8]`; `file`: `Option<DiId>` → file; `line`: `u32`; `column`: `u32`; `isArtificial`: `bool`; `coroSuspendIdx`: `Option<u32>` |
+| `DIImportedEntity` | `DiImportedEntity` | tag (default `0`); `name`: `&[u8]`; `scope`: `Option<DiId>` → scope; `entity`: `Option<DiId>`; `file`: `Option<DiId>` → file; `line`: `u32`; `elements`: `&[DiId]` |
+| `DIBasicType` | `DiBasicType` | tag (default `DW_TAG_BASE_TYPE`); `name`: `&[u8]`; `size`: `u64`; `align`: `u32`; `encoding`: `u16`; `flags`: `DiFlags`; `dataSize`: `u32` |
+| `DIDerivedType` | `DiDerivedType` | tag (default `0`); `name`: `&[u8]`; `scope`: `Option<DiId>` → scope; `file`: `Option<DiId>` → file; `line`: `u32`; `baseType`: `Option<DiId>` → type; `size`: `u64`; `align`: `u32`; `offset`: `u64`; `flags`: `DiFlags`; `extraData`: `Option<DiId>`; `dwarfAddressSpace`: `Option<u32>` |
+| `DICompositeType` | `DiCompositeType` | tag (default `0`); `name`: `&[u8]`; `scope`: `Option<DiId>` → scope; `file`: `Option<DiId>` → file; `line`: `u32`; `baseType`: `Option<DiId>` → type; `size`: `u64`; `align`: `u32`; `offset`: `u64`; `flags`: `DiFlags`; `elements`: `&[DiId]`; `runtimeLang`: `u16`; `vtableHolder`: `Option<DiId>` → type; `templateParams`: `&[DiId]` → template param; `identifier`: `&[u8]` |
+| `DISubroutineType` | `DiSubroutineType` | `flags`: `DiFlags`; `cc`: `u16`; `types`: `&[DiId]` → type |
+| `DISubrange` | `DiSubrange` | `count`: `DiBound`; `lowerBound`: `DiBound`; `upperBound`: `DiBound`; `stride`: `DiBound` |
+| `DIEnumerator` | `DiEnumerator` | `name`: `&[u8]`; `value`: `i64`; `isUnsigned`: `bool` |
+| `DITemplateTypeParameter` | `DiTemplateTypeParameter` | `name`: `&[u8]`; `type`: `Option<DiId>` → type; `defaulted`: `bool` |
+| `DITemplateValueParameter` | `DiTemplateValueParameter` | tag (default `DW_TAG_TEMPLATE_VALUE_PARAMETER`); `name`: `&[u8]`; `type`: `Option<DiId>` → type; `defaulted`: `bool`; `value`: `Option<DiId>` |
+| `(constant)` | `DiConstant` | `value`: `ConstId` |
+| `(string)` | `DiString` | `text`: `&[u8]` |
+| `(tuple)` | `DiTuple` | `elements`: `&[DiId]` |
+| `(other)` | `DiOther` | `kind`: `&[u8]` |
+
+Four kinds are not LLVM node kinds: `DiConstant` is `ValueAsMetadata` of
+a constant (a template value parameter's value, a bound), `DiString` an
+`!"..."` operand, `DiTuple` a `!{...}` list, and `DiOther` a node of a
+kind `hod_ir` does not represent, kept with its kind's name so that
+`classify` reports `debug:<kind>` (§6.9). The fields' vocabulary (tags,
+languages, encodings, `DiFlags`, `SpFlags`, `EmissionKind`,
+`NameTableKind`, `ChecksumKind`) is in `debug::names`, with LLVM's
+spellings.
+
+`DiNode::new(kind)` is a node with every field at its default;
+`DiNode::llvm_default(kind)` is a node as LLVM's parser starts one, which
+differs in one place: a global variable is a definition.
+`DiNode::set(field, value)` sets a field by its LLVM name, for a producer
+that holds LLVM's names; it also takes the older spellings of a
+subprogram's flags (`isLocal`, `isDefinition`, `isOptimized`,
+`virtuality`).
+
+### 6.3 Building
+
+- `add(node)` is a node LLVM would unique: it hash-conses, and an equal
+  node added before (same kind, same fields) is returned again.
+- `add_distinct(node)` is a `distinct` node: never equal to another id.
+- `reserve()` hands out an id whose node `define(id, node)` or
+  `define_distinct(id, node)` gives later, once. This is how cycles are
+  built (a class names its members, each member names the class) and how
+  a producer refers to `!7` before it has read it. A reserved node is
+  never the answer to a later `add`.
+- A compile unit, and a subprogram that is a definition, must be distinct
+  (`DiNode::must_be_distinct`); `add` and `define` refuse them.
+- `complete(id, node)` replaces a forward-declared composite type (with
+  `DIFlagFwdDecl` and an `identifier`) by its definition with the same
+  identifier, in place: every reference to `id` then names the
+  definition. There is no uniquing by `identifier` otherwise (no ODR
+  uniquing): equal ids mean one node; equal content does not mean equal
+  ids.
+- `add_compile_unit(unit)` appends to `!llvm.dbg.cu`; a unit that is not
+  listed is not emitted.
+- A node may name only ids that exist (reserved or defined):
+  `UndefinedDebugNode` otherwise. Defining twice is `DebugRedefined`.
+- `Module::finish_debug()` closes the tables: the producer calls it once,
+  after the last node and before the first body is compiled. It checks
+  that every reserved node and location was defined (two compares when
+  that holds) and records with `Module::record_unsupported` the construct
+  of each `DiOther` kind and each unknown expression operation (§6.9).
+
+### 6.4 Expressions
+
+An expression (`DIExpression`) is stored as LLVM stores it, a list of
+64-bit elements, operation codes followed by their operands, and read as
+typed operations: `ops(id)` yields `DiOp`s, `expr_elements(id)` the
+elements. `expr(&[DiOp])` and `expr_from_elements(&[u64])` intern: equal
+expressions have equal ids. `DiOp` has a member for each operation in
+`DI_OPS` (the field table, §6.9, lists them with their codes and operand
+counts); any other element is `DiOp::Other(element)`, kept so that
+nothing is dropped, and reported as `debug:DW_OP_<name or number>`. A
+known operation without its operands is `InvalidDebugInfo`.
+
+Placement rules, checked by `verify` (§6.8) as LLVM's verifier checks
+them: `DW_OP_LLVM_entry_value` is first (after a leading
+`DW_OP_LLVM_arg 0`) and covers one operation; `DW_OP_LLVM_fragment` is
+last; `DW_OP_stack_value` is last or just before the fragment;
+`DW_OP_swap` is not alone.
+
+### 6.5 Locations
+
+`DiLocation { line, column, scope, inlined_at }` is LLVM's `DILocation`:
+line 0 for none, a 16-bit column (LLVM stores a larger column as 0, and so
+must a producer), the innermost local scope, and, for code inlined from
+another function, the location of the call it was inlined at
+(`LocId::NONE` otherwise).
+
+- `loc(l)` interns: one hash of four words and usually one probe.
+- `distinct_loc(l)` is LLVM's `distinct !DILocation`, which `clang` uses
+  for an inlined-at call so that two calls on one line stay two inlined
+  instances; also the cheapest way in for a producer whose locations are
+  unique already (one push, no hash).
+- `reserve_loc()` and `define_loc(id, l)`: for `!dbg !7` met before `!7`.
+  A defined reserved location is not interned.
+- `location(id)` is one array read; `function_of(id)` is the subprogram
+  of the scope at the end of the inlined-at chain: the function the
+  instruction is in.
+
+A location's scope and inlined-at must exist when it is made
+(`UndefinedDebugNode`).
+
+### 6.6 Variables, values and labels in a body
+
+A body carries its debug records in three tables, each empty without
+debug information.
+
+- `Body::slot_vars()`: `SlotVar { slot, var, loc, expr }`, a variable
+  that lives in a stack slot for the whole function (§5.2).
+- `Body::declares()`: `DbgDeclare { address, var, expr, loc }`, a
+  variable that lives for the whole function at an address that is not a
+  slot: an argument, an instruction result, a constant or a symbol, or
+  `Value::NONE` for a declaration whose address was dropped
+  (`#dbg_declare(!{}, ...)`).
+- `Body::dbg_records()`: the positioned records, a `DbgRecord` each, in
+  position order (by `before`, and among the records before one
+  instruction in the order given), so that a consumer walking the
+  instructions in layout order walks this beside them.
+  `DbgRecordKind::Value` is `#dbg_value`: from `before` on, the variable
+  has the value `expr` makes from `values`. `Assign` is `#dbg_assign`:
+  the same, and the variable's memory is at `address` with
+  `address_expr`; a consumer that does not track assignments reads it as
+  a value record. `Label` is `#dbg_label`: the label `var` is at
+  `before`, and `values` is empty.
+
+A record has one value, which the expression starts from, or a list
+(`arg_list`, LLVM's `DIArgList`) that the expression names by
+`DW_OP_LLVM_arg`. A value may be `Value::NONE` (LLVM's empty metadata) or
+`undef` or `poison`: the variable has no location from there on. A
+record's `loc` says, by its scope and inlined-at, which instance of the
+variable or label it is.
+
+The builder (`FunctionBuilder`) records them, and each also takes the
+older intrinsic-call spelling (`llvm.dbg.declare` ...):
+
+- `dbg_declare(address, var, expr, loc)`: a slot's address becomes a
+  `SlotVar`, anything else a `DbgDeclare`. It has no position and needs no
+  open block. `set_slot_var(slot, var, loc)` is `dbg_declare` of the
+  slot's address with the empty expression.
+- `dbg_value(value, var, expr, loc)`, `dbg_value_list(values, var, expr,
+  loc)` (at most 65535 values), `dbg_assign(value, var, expr, address,
+  address_expr, loc)` (one value: a `DIArgList` there is unsupported,
+  §6.9; the `DIAssignID` is not kept), `dbg_label(label, loc)`: before the
+  next instruction appended to the open block (`BadBlock` without one).
+
+A record or declaration does not use the value it names: use counts and
+the two facts about uses (§5.6) are the same with and without debug
+information. A name may be a reserved value; it is rewritten to what the
+value was defined as, and a declaration whose address turns out to be a
+slot becomes a `SlotVar`. The one exception is
+`UseFacts::named_by_declare()`: the instruction results and arguments a
+`DbgDeclare` names say so, because such a value needs a home for the
+whole function (`spec/codegen.md` §4.1). That bit takes one bit of the use
+count, which saturates at 2^29 − 1; `only_use_is_next` ignores it.
+
+### 6.7 Attachments
+
+- A function symbol's optional subprogram (§2.2, `FunctionDesc`) is its
+  `!dbg`. The subprogram of a function with a body is distinct, and is no
+  other such function's.
+- A variable's `!dbg` attachments are global-variable expressions:
+  `Module::attach_global_expr(sym, expr)`, one per fragment or per
+  variable that shares the storage. `global_exprs()` lists every
+  attachment in the order made (the DWARF writer reads it once);
+  `global_exprs_of(sym)` scans it for one symbol. The symbol's kind is
+  checked by `verify_debug`, because a producer may attach before it has
+  described the symbol.
+- An instruction's `!dbg` is its entry in the body's location array
+  (§5.9).
+
+### 6.8 Verification
+
+`DebugInfo::verify()` checks the tables in one pass:
+
+- everything reserved was defined;
+- every reference names a node of a kind its field allows (§6.2);
+- every listed compile unit is one;
+- a location's scope is a local scope whose chain of blocks ends at a
+  subprogram, and its inlined-at chain ends;
+- an expression's operations are placed as §6.4 says.
+
+`Module::verify_debug()` runs it, and checks that a `DiConstant` names a
+constant of the pool, that a function's subprogram is a subprogram, that
+the subprogram of a function with a body is distinct and no other such
+function's, and that a global-variable expression is attached to a
+variable. Like `verify_symbols` it is for tests and for producers that
+want their output checked; code generation does not need it to have run.
+
+`Body::verify` (§5.8) checks a body's debug records:
+
+- always: declarations and records name values of this body (or
+  nothing); a declaration names no slot; records are in position order,
+  each before an instruction of the body that is not a `phi`; a label has
+  no values and a value record without a list one; "named by a declare"
+  is recomputed with the other use facts;
+- when the module has debug tables: every instruction location exists,
+  leads to a subprogram and, when the function has one, to the
+  function's; the variable of a slot variable, declaration or record is a
+  `DILocalVariable` and a label a `DILabel`, in the subprogram of the
+  record's location; its expressions exist and name only arguments the
+  record has. A function without a subprogram may have locations in any
+  function, as in LLVM.
+
+Errors are `UndefinedDebugNode` (an id that does not exist or was never
+defined), `DebugRedefined`, and `InvalidDebugInfo` for every other rule.
+LLVM's verifier checks more (required fields, tag validity, flag
+consistency, fragment bounds, ...); the rules not checked are listed in
+`spec/landed/ir/WP-005.md`, and a consumer treats every optional
+reference as possibly absent.
+
+### 6.9 The field table, and the producer's duty
+
+`debug::map` is data saying what becomes of every node kind, field and
+debug record LLVM 19 to 22 can write: **mapped** (`hod_ir` has a field
+for it), **dropped** (it cannot change the DWARF hod writes, with the
+reason), or **unsupported** (it would, and `hod_ir` cannot represent it:
+the construct name). A producer looks each one up (`di_kind`, `di_field`,
+`di_record`) and:
+
+- sets a mapped field (`DiNode::set`);
+- ignores a dropped one;
+- for an unsupported field with a value other than its default, records
+  the construct (`debug:<kind>.<field>`) with
+  `Module::record_unsupported`;
+- makes an unsupported or unknown kind a `DiOther` (`debug:<kind>`), and
+  records an unknown field as `debug:<kind>.<field>`.
+
+`finish_debug` (§6.3) records the `DiOther` kinds and unknown expression
+operations. `classify` then refuses the module by those names: a module
+whose debug information hod cannot represent is unsupported, never
+silently degraded. `di_field_table()` lists every row; the landed file
+prints the table, and a test keeps it current. `tests/debug_survey.rs`
+holds what `clang` 19 and 22 and kiln write against it.
+
+### 6.10 Sizes and speed
+
+A node head is 8 bytes and a node 8 + 4·(1 + stored cells); a location
+16; `SlotVar`, `DbgDeclare` 16; a debug record 28 bytes plus 4 per value;
+`ExprId` 4. `stats()` (`DebugStats`) reports the nodes, expressions,
+locations and strings held and their bytes. The tests assert the record
+sizes and that an empty table has allocated nothing; the example
+`debug_throughput` measures building, reading and verifying, with the
+numbers in `spec/landed/ir/WP-005.md`.
 
 ## 7. Not represented
 

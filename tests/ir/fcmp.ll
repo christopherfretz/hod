@@ -6,7 +6,7 @@
 ; ord), the seven unordered ones (ueq ugt uge ult ule une uno), then true
 ; and false.
 ;@ covers: spec/ir.md §5.4 compare (fcmp)
-;@ unsupported: codegen-not-implemented
+;@ unsupported: *
 ;@ stdout: 1 < 2      0001111 0001110 10
 ;@ stdout: 2 > 1      0110011 0110010 10
 ;@ stdout: 2 == 2     1010101 1010100 10

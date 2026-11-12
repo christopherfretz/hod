@@ -258,6 +258,9 @@ pub struct FnCx<'a, T: Target> {
     /// How many instructions in a row are deferred right now (§4.6).
     pub(crate) deferred_run: u32,
     pub(crate) epilogue: Label,
+    /// The number of the function's CFI rows when the epilogue was bound:
+    /// the rows that state the body's rules (§9.3); `u32::MAX` before.
+    pub(crate) body_cfi: u32,
     pub(crate) has_pads: bool,
     /// Whether the function's block offsets are recorded (§9.6).
     pub(crate) block_addrs: bool,
@@ -392,6 +395,9 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// for a label bound twice.
     pub fn bind(&mut self, label: Label) -> CgResult<()> {
         let at = self.offset();
+        if label == self.epilogue {
+            self.body_cfi = self.out.cfi.len() as u32 - self.mark.cfi;
+        }
         let code = &mut self.out.code[self.mark.code as usize..];
         match self.s.labels.bind(label, at, |at, kind, disp| T::patch_branch(code, at, kind, disp))
         {
@@ -511,6 +517,27 @@ impl<'a, T: Target> FnCx<'a, T> {
     pub fn cfi(&mut self, op: CfiOp) {
         let offset = self.offset();
         self.out.cfi.push(CfiRow { offset, op });
+    }
+
+    /// Adds a call-frame instruction that holds from `offset`, an offset
+    /// of code already emitted (§9.3): for the rows of a prologue that
+    /// `begin_function` emitted before the frame size its rows state was
+    /// known, added in `end_function`. Rows stay in offset order, so
+    /// `offset` is at least that of the function's last row and at most
+    /// the current offset.
+    ///
+    /// # Errors
+    /// `Internal` for an offset out of that order.
+    pub fn cfi_at(&mut self, offset: u32, op: CfiOp) -> CgResult<()> {
+        let last = self.out.cfi[self.mark.cfi as usize..].last().map_or(0, |row| row.offset);
+        if offset < last || offset > self.offset() {
+            return internal(format!(
+                "a CFI row at {offset}, out of order (last row at {last}, code at {})",
+                self.offset()
+            ));
+        }
+        self.out.cfi.push(CfiRow { offset, op });
+        Ok(())
     }
 
     /// Sets the function's frame description (§9.3), in `end_function`.

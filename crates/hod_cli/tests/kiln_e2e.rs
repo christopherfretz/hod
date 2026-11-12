@@ -189,6 +189,21 @@ fn run_in(dir: &Path, command: &mut Command) -> Outcome {
     outcome
 }
 
+/// Whether `reason` is one `classify` gives (`spec/ir.md` §8.5): a name
+/// of its vocabulary or of one of its families. Which one is the support
+/// matrix's business, and moves as code generation lands, so a test of
+/// real programs checks only the shape.
+fn is_construct(reason: &str) -> bool {
+    hod_ir::CONSTRUCT_NAMES.contains(&reason)
+        || ["intrinsic:", "module-flag:", "cc:", "bundle:"].iter().any(|f| reason.starts_with(f))
+        || reason.split_once('/').is_some_and(|(row, _)| hod_ir::CONSTRUCT_NAMES.contains(&row))
+}
+
+/// Asserts that a coverage line's reason is a construct `classify` names.
+fn assert_construct(line: &[String]) {
+    assert!(is_construct(&line[1]), "a construct of classify's: {line:?}");
+}
+
 /// The coverage log as rows of fields.
 fn coverage(log: &Path) -> Vec<Vec<String>> {
     let text = std::fs::read_to_string(log).unwrap_or_default();
@@ -202,8 +217,9 @@ fn assert_converted_then_fell_back(log: &Path) {
     let lines = coverage(log);
     assert_eq!(lines.len(), 1, "one translation unit, one line: {lines:?}");
     let line = &lines[0];
-    assert_eq!(line.len(), 10, "{line:?}");
-    assert_eq!(line[..3], ["fallback", "codegen-not-implemented", "bitcode"], "{line:?}");
+    assert_eq!(line.len(), 11, "{line:?}");
+    assert_eq!((&*line[0], &*line[2]), ("fallback", "bitcode"), "{line:?}");
+    assert_construct(line);
     assert!(line[3].parse::<u64>().is_ok_and(|bytes| bytes > 0), "the bitcode's size: {line:?}");
     assert!(line[5].contains("linux"), "the triple, known from the converted text: {line:?}");
     let micros = |field: &str| field.parse::<u64>().unwrap_or_else(|_| panic!("{line:?}"));
@@ -263,19 +279,18 @@ impl Shimmed {
         );
         assert!(!compile.success(), "strict mode must fail while hod generates no code");
         let stderr = compile.stderr_text();
-        assert!(
-            stderr.contains(
-                "hod: error: unsupported construct 'codegen-not-implemented' \
-                 (strict mode: no fallback)"
-            ),
-            "{stderr}"
-        );
         assert!(!self.work.join(object).exists());
         let mut lines = coverage(&log);
         assert_eq!(lines.len(), 1, "{lines:?}");
         let line = lines.remove(0);
-        assert_eq!(line.len(), 10, "{line:?}");
-        assert_eq!(line[..2], ["error", "codegen-not-implemented"], "{line:?}");
+        assert_eq!(line.len(), 11, "{line:?}");
+        assert_eq!(line[0], "error", "{line:?}");
+        assert_construct(&line);
+        // The diagnostic names the construct, and the function for a
+        // body's reason.
+        let construct = format!("hod: error: unsupported construct '{}'", line[1]);
+        assert!(stderr.contains(&construct), "{stderr}");
+        assert!(stderr.contains("(strict mode: no fallback)"), "{stderr}");
         assert_eq!(line[4], object, "{line:?}");
         assert_eq!(line[9], "-", "no fallback ran: {line:?}");
         line
@@ -314,10 +329,11 @@ fn through_the_shim(kiln: &Path, llvm: PathBuf) {
     let log = shimmed.builds(&["hello.cpp"], "hello", hello);
     let lines = coverage(&log);
     assert_eq!(lines.len(), 1, "one translation unit, one line: {lines:?}");
-    assert_eq!(lines[0].len(), 10, "{lines:?}");
-    assert_eq!(lines[0][..3], ["fallback", "codegen-not-implemented", "text"], "{lines:?}");
+    assert_eq!(lines[0].len(), 11, "{lines:?}");
+    assert_eq!((&*lines[0][0], &*lines[0][2]), ("fallback", "text"), "{lines:?}");
+    assert_construct(&lines[0]);
     assert!(lines[0][5].contains("linux"), "the module's triple: {lines:?}");
-    assert_eq!(lines[0][8..], ["-", "0"], "no conversion; the fallback succeeded: {lines:?}");
+    assert_eq!(lines[0][8..], ["-", "0", "-"], "no conversion; the fallback succeeded: {lines:?}");
 
     // A coroutine: kiln runs `opt` first, so `llc` (hod) is handed bitcode.
     let log = shimmed.builds(&["-std=c++20", "coro.cpp"], "coro", "sum of squares: 30\n");

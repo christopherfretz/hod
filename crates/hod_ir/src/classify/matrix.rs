@@ -366,7 +366,6 @@ const ON: SupportCell = SupportCell::SUPPORTED;
 
 /// Supported for `classes`: what a work package writes when it flips a
 /// row that operates on values.
-#[allow(dead_code)] // The shipped matrix has no such row yet.
 const fn on(classes: &[TypeClass]) -> SupportCell {
     SupportCell::supported_for(classes)
 }
@@ -402,8 +401,8 @@ const fn a64(name: &'static str, by: &'static str, note: &'static str) -> Suppor
 // ---- the groups, in the order of `docs/status/support.md` ----
 
 const MODULE: [SupportRow; 23] = [
-    a64("module:pic", "WP-033", "`PIC Level` is not 0"),
-    a64("module:pie", "WP-033", "`PIE Level` is not 0"),
+    row("module:pic", ON, todo(X64), "`PIC Level` is not 0"),
+    row("module:pie", ON, todo(X64), "`PIE Level` is not 0"),
     // `CodeModel` order.
     a64("module:code-model-tiny", LATER, ""),
     both("module:code-model-small", ON, "the default of both targets: nothing changes"),
@@ -411,7 +410,12 @@ const MODULE: [SupportRow; 23] = [
     a64("module:code-model-medium", LATER, ""),
     a64("module:code-model-large", LATER, ""),
     a64("module:large-data-threshold", LATER, ""),
-    a64("module:uwtable", "WP-042", "the module's default unwind-table kind is not `none`"),
+    row(
+        "module:uwtable",
+        ON,
+        todo(X64),
+        "the module's default unwind-table kind is not `none` (WP-049)",
+    ),
     both(
         "module:frame-pointer",
         ON,
@@ -458,7 +462,7 @@ const DEBUG_ROWS: [SupportRow; 4] = [
 const GLOBAL: [SupportRow; 12] = [
     both("global:function-declaration", ON, "nothing is emitted for a declaration"),
     both("global:variable-declaration", ON, "nothing is emitted for a declaration"),
-    a64("global:function-definition", "WP-033", "a function that gets a body"),
+    row("global:function-definition", ON, todo(X64), "a function that gets a body"),
     row("global:variable-definition", ON, todo(X64), "a variable with an initializer"),
     row("global:alias", ON, todo(X64), ""),
     row("global:alias-offset", ON, todo(X64), "an alias of a symbol plus a non-zero offset"),
@@ -509,7 +513,7 @@ const COMDAT: [SupportRow; ComdatKind::ALL.len()] = [
 const INIT: [SupportRow; 8] = [
     row("init:data", ON, todo(X64), "any initializer: numbers, zero, `undef`, aggregates, bytes"),
     row("init:symbol", ON, todo(X64), "a symbol's address, with or without an offset"),
-    a64("init:blockaddress", "WP-037", ""),
+    row("init:blockaddress", ON, todo(X64), "of a block of a function with an `indirectbr` (§9.6)"),
     row("init:sym-diff", ON, todo(X64), "the difference of two symbol addresses"),
     a64("init:sym-diff-plt", LATER, "the same through `dso_local_equivalent` (relative vtables)"),
     row("init:int-of-addr", ON, todo(X64), "an address in an integer field"),
@@ -518,17 +522,22 @@ const INIT: [SupportRow; 8] = [
 ];
 
 const FUNCTION: [SupportRow; 6] = [
-    a64("function:parameters", "WP-033", "a body with parameters; per class of parameter"),
+    row("function:parameters", ON, todo(X64), "a body with parameters; per class of parameter"),
     a64("function:variadic", "WP-038", "a variadic function with a body"),
-    a64("function:may-unwind", "WP-042", "a body without `nounwind`: it needs unwind tables"),
+    row(
+        "function:may-unwind",
+        ON,
+        todo(X64),
+        "a body without `nounwind`: it needs unwind tables (WP-049)",
+    ),
     a64("function:personality", EH, "a body with a personality function"),
-    a64("function:slots", "WP-036", "a body with fixed stack objects (`Body::slots`)"),
-    a64("function:over-aligned-slot", "WP-036", "a stack object aligned above 16 bytes"),
+    row("function:slots", ON, todo(X64), "a body with fixed stack objects (`Body::slots`)"),
+    row("function:over-aligned-slot", ON, todo(X64), "a stack object aligned above 16 bytes"),
 ];
 
 /// In the order of [`cc_index`].
 const CC: [SupportRow; 15] = [
-    a64("cc:ccc", "WP-033", ""),
+    row("cc:ccc", ON, todo(X64), ""),
     a64("cc:fastcc", "WP-038", "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     a64("cc:coldcc", LATER, ""),
     a64("cc:ghccc", LATER, ""),
@@ -591,7 +600,7 @@ const ATTR_MEM: [SupportRow; 6] = [
 const ATTR_VALUE: [SupportRow; 3] = [
     both("attr:align", ON, "on a parameter or return: an assumption, no code"),
     a64("attr:alignstack", LATER, "on a parameter and on a function"),
-    a64("attr:uwtable", "WP-042", "on a function with a body"),
+    row("attr:uwtable", ON, todo(X64), "on a function with a body (WP-049)"),
 ];
 
 /// In the order of `FnAttrs::FLAG_NAMES`.
@@ -623,7 +632,7 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
 
 /// In `FnStr::ALL` order.
 const ATTR_STRING: [SupportRow; FnStr::ALL.len()] = [
-    a64("attr:target-cpu", "WP-033", "the target has to read it"),
+    row("attr:target-cpu", ON, todo(X64), "AArch64: the code is ARMv8.0, which every CPU runs"),
     a64("attr:target-features", "WP-033", "the target has to read it"),
     both("attr:tune-cpu", ON, "tuning only: hod does not tune"),
     both("attr:frame-pointer", ON, "any value: hod always keeps a frame pointer"),
@@ -641,21 +650,21 @@ const ATTR_STRING: [SupportRow; FnStr::ALL.len()] = [
     a64("attr:zero-call-used-regs", LATER, ""),
     both("attr:stack-protector-buffer-size", ON, "a parameter of `attr:ssp`, read with it"),
     row("attr:min-legal-vector-width", ON, todo(X64), "read by x86 only"),
-    a64("attr:no-jump-tables", "WP-037", ""),
+    row("attr:no-jump-tables", ON, todo(X64), "hod emits no jump table (`spec/codegen.md` §6.2)"),
     both("attr:no-builtins", ON, "hod recognises no library call"),
     both("attr:no-builtin", ON, "every `no-builtin-<function>`; hod recognises no library call"),
 ];
 
 /// In `TypeClass::ALL` order.
 const TYPE: [SupportRow; TypeClass::ALL.len()] = [
-    a64("type:int", "WP-033", "integers of at most 64 bits"),
+    row("type:int", ON, todo(X64), "integers of at most 64 bits"),
     a64("type:i128", "WP-040", ""),
     a64("type:int-wide", LATER, "integers wider than 64 bits other than `i128`"),
-    a64("type:ptr", "WP-033", "pointers in address space 0"),
+    row("type:ptr", ON, todo(X64), "pointers in address space 0"),
     a64("type:half", LATER, ""),
     a64("type:bfloat", LATER, ""),
-    a64("type:float", "WP-039", ""),
-    a64("type:double", "WP-039", ""),
+    row("type:float", ON, todo(X64), ""),
+    row("type:double", ON, todo(X64), ""),
     a64("type:fp128", LATER, ""),
     row("type:x86_fp80", never("not an AArch64 type"), todo(X64), ""),
     a64("type:vector", VECTORS, "vectors of fixed length"),
@@ -667,60 +676,100 @@ const TYPE: [SupportRow; TypeClass::ALL.len()] = [
 
 /// In `Opcode::ALL` order.
 const INST: [SupportRow; Opcode::ALL.len()] = [
-    a64("inst:add", "WP-035", ""),
-    a64("inst:sub", "WP-035", ""),
-    a64("inst:mul", "WP-035", ""),
-    a64("inst:udiv", "WP-035", ""),
-    a64("inst:sdiv", "WP-035", ""),
-    a64("inst:urem", "WP-035", ""),
-    a64("inst:srem", "WP-035", ""),
-    a64("inst:shl", "WP-035", ""),
-    a64("inst:lshr", "WP-035", ""),
-    a64("inst:ashr", "WP-035", ""),
-    a64("inst:and", "WP-035", ""),
-    a64("inst:or", "WP-035", ""),
-    a64("inst:xor", "WP-035", ""),
-    a64("inst:fadd", "WP-039", ""),
-    a64("inst:fsub", "WP-039", ""),
-    a64("inst:fmul", "WP-039", ""),
-    a64("inst:fdiv", "WP-039", ""),
-    a64("inst:frem", "WP-039", ""),
-    a64("inst:fneg", "WP-039", ""),
-    a64("inst:icmp", "WP-035", ""),
-    a64("inst:fcmp", "WP-039", ""),
-    a64("inst:trunc", "WP-035", ""),
-    a64("inst:zext", "WP-035", ""),
-    a64("inst:sext", "WP-035", ""),
-    a64("inst:fptrunc", "WP-039", ""),
-    a64("inst:fpext", "WP-039", ""),
-    a64("inst:fptoui", "WP-039", ""),
-    a64("inst:fptosi", "WP-039", ""),
-    a64("inst:uitofp", "WP-039", ""),
-    a64("inst:sitofp", "WP-039", ""),
-    a64("inst:ptrtoint", "WP-035", ""),
-    a64("inst:ptrtoaddr", "WP-035", ""),
-    a64("inst:inttoptr", "WP-035", ""),
-    a64("inst:bitcast", "WP-035", "between integers and floats with WP-039"),
+    row("inst:add", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:sub", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:mul", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:udiv", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:sdiv", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:urem", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:srem", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:shl", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:lshr", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:ashr", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:and", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:or", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:xor", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:fadd", on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double]), todo(X64), ""),
+    row("inst:fsub", on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double]), todo(X64), ""),
+    row("inst:fmul", on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double]), todo(X64), ""),
+    row("inst:fdiv", on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double]), todo(X64), ""),
+    row("inst:frem", on(&[TypeClass::Float, TypeClass::Double]), todo(X64), "a call of `fmod`"),
+    row("inst:fneg", on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double]), todo(X64), ""),
+    row("inst:icmp", on(&[TypeClass::Int, TypeClass::Ptr]), todo(X64), ""),
+    row(
+        "inst:fcmp",
+        on(&[TypeClass::Int, TypeClass::Half, TypeClass::Float, TypeClass::Double]),
+        todo(X64),
+        "",
+    ),
+    row("inst:trunc", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:zext", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:sext", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:fptrunc", on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double]), todo(X64), ""),
+    row("inst:fpext", on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double]), todo(X64), ""),
+    row(
+        "inst:fptoui",
+        on(&[TypeClass::Int, TypeClass::Half, TypeClass::Float, TypeClass::Double]),
+        todo(X64),
+        "",
+    ),
+    row(
+        "inst:fptosi",
+        on(&[TypeClass::Int, TypeClass::Half, TypeClass::Float, TypeClass::Double]),
+        todo(X64),
+        "",
+    ),
+    row(
+        "inst:uitofp",
+        on(&[TypeClass::Int, TypeClass::Half, TypeClass::Float, TypeClass::Double]),
+        todo(X64),
+        "",
+    ),
+    row(
+        "inst:sitofp",
+        on(&[TypeClass::Int, TypeClass::Half, TypeClass::Float, TypeClass::Double]),
+        todo(X64),
+        "",
+    ),
+    row("inst:ptrtoint", on(&[TypeClass::Int, TypeClass::Ptr]), todo(X64), ""),
+    row("inst:ptrtoaddr", on(&[TypeClass::Int, TypeClass::Ptr]), todo(X64), ""),
+    row("inst:inttoptr", on(&[TypeClass::Int, TypeClass::Ptr]), todo(X64), ""),
+    row(
+        "inst:bitcast",
+        on(&[TypeClass::Int, TypeClass::Ptr]),
+        todo(X64),
+        "between integers and floats with WP-039",
+    ),
     both(
         "inst:addrspacecast",
         never("it has a pointer in a non-zero address space on one side"),
         "",
     ),
-    a64("inst:load", "WP-036", "a plain load; see `mem:`"),
-    a64("inst:store", "WP-036", "a plain store; see `mem:`"),
-    a64("inst:alloca", "WP-036", "a dynamic allocation; fixed ones are `function:slots`"),
+    row(
+        "inst:load",
+        on(&[TypeClass::Int, TypeClass::Ptr]),
+        todo(X64),
+        "a plain load; see `mem:`; FP and vector values: WP-067",
+    ),
+    row(
+        "inst:store",
+        on(&[TypeClass::Int, TypeClass::Ptr]),
+        todo(X64),
+        "a plain store; see `mem:`; FP and vector values: WP-067",
+    ),
+    row("inst:alloca", ON, todo(X64), "a dynamic allocation; fixed ones are `function:slots`"),
     a64("inst:fence", ATOMICS, ""),
     a64("inst:cmpxchg", ATOMICS, ""),
     a64("inst:atomicrmw", ATOMICS, "and the operation's `atomicrmw:` row"),
-    a64("inst:ptradd", "WP-036", "LLVM's `getelementptr` (§5.4)"),
+    row("inst:ptradd", ON, todo(X64), "LLVM's `getelementptr` (§5.4); not a vector of pointers"),
     a64("inst:extractvalue", "WP-040", ""),
     a64("inst:insertvalue", "WP-040", ""),
     a64("inst:extractelement", VECTORS, ""),
     a64("inst:insertelement", VECTORS, ""),
     a64("inst:shufflevector", VECTORS, ""),
-    a64("inst:phi", "WP-037", ""),
-    a64("inst:select", "WP-035", ""),
-    a64("inst:freeze", "WP-035", ""),
+    row("inst:phi", ON, todo(X64), "for every class whose `type:*` row is supported"),
+    row("inst:select", on(&[TypeClass::Int, TypeClass::Ptr]), todo(X64), ""),
+    row("inst:freeze", on(&[TypeClass::Int, TypeClass::Ptr]), todo(X64), ""),
     both(
         "inst:va_arg",
         never("`llc` miscompiles it on AArch64, so there is no oracle; frontends do not emit it"),
@@ -730,12 +779,12 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
     a64("inst:landingpad", EH, ""),
     both("inst:catchpad", never(WINDOWS_EH), ""),
     both("inst:cleanuppad", never(WINDOWS_EH), ""),
-    a64("inst:br", "WP-033", ""),
-    a64("inst:condbr", "WP-037", "LLVM's two-way `br`"),
-    a64("inst:switch", "WP-037", ""),
-    a64("inst:indirectbr", "WP-037", ""),
-    a64("inst:ret", "WP-033", ""),
-    a64("inst:unreachable", "WP-033", ""),
+    row("inst:br", ON, todo(X64), ""),
+    row("inst:condbr", ON, todo(X64), "LLVM's two-way `br`"),
+    row("inst:switch", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:indirectbr", ON, todo(X64), ""),
+    row("inst:ret", ON, todo(X64), ""),
+    row("inst:unreachable", ON, todo(X64), ""),
     both(
         "inst:callbr",
         never("its only use is inline assembly with labels (`spec/codegen.md` §1)"),
@@ -749,7 +798,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
 ];
 
 const MEM: [SupportRow; 3] = [
-    a64("mem:volatile", "WP-036", "a volatile `load`, `store`, `cmpxchg` or `atomicrmw`"),
+    row("mem:volatile", ON, todo(X64), "a volatile `load`, `store`, `cmpxchg` or `atomicrmw`"),
     a64("mem:atomic-load", ATOMICS, ""),
     a64("mem:atomic-store", ATOMICS, ""),
 ];
@@ -811,10 +860,15 @@ const LANDINGPAD: [SupportRow; 3] = [
 ];
 
 const OPERAND: [SupportRow; 9] = [
-    a64("operand:symbol", "WP-033", "a symbol's address as a value, with or without an offset"),
-    a64("operand:slot", "WP-036", "the address of a stack slot"),
-    a64("operand:blockaddress", "WP-037", "of a block of the same function"),
-    a64("operand:addr-of-int", "WP-033", "`inttoptr` of a constant number"),
+    row(
+        "operand:symbol",
+        ON,
+        todo(X64),
+        "a symbol's address as a value, with or without an offset",
+    ),
+    row("operand:slot", ON, todo(X64), "the address of a stack slot"),
+    row("operand:blockaddress", ON, todo(X64), "of a block of the same function"),
+    row("operand:addr-of-int", ON, todo(X64), "`inttoptr` of a constant number"),
     a64("operand:int-of-addr", LATER, "`ptrtoint` of a constant address"),
     a64("operand:sym-diff", LATER, ""),
     a64("operand:dso-local-equivalent", LATER, ""),
@@ -880,8 +934,8 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len()] = [
     a64("intrinsic:llvm.va_start", "WP-038", ""),
     a64("intrinsic:llvm.va_end", "WP-038", ""),
     a64("intrinsic:llvm.va_copy", "WP-038", ""),
-    a64("intrinsic:llvm.stacksave", "WP-036", ""),
-    a64("intrinsic:llvm.stackrestore", "WP-036", ""),
+    row("intrinsic:llvm.stacksave", ON, todo(X64), ""),
+    row("intrinsic:llvm.stackrestore", ON, todo(X64), ""),
     a64("intrinsic:llvm.frameaddress", "WP-041", ""),
     a64("intrinsic:llvm.returnaddress", "WP-041", ""),
     a64("intrinsic:llvm.trap", "WP-041", ""),

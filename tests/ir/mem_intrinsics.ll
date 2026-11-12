@@ -3,7 +3,7 @@
 ; only at run time, a zero length, and overlapping moves in both
 ; directions.
 ;@ covers: spec/ir.md §5.5 intrinsics (memcpy, memmove, memset)
-;@ unsupported: codegen-not-implemented
+;@ unsupported: *
 ;@ stdout: copy 27: abcdefghijklmnopqrstuvwxyz
 ;@ stdout: copy 5: abcuvwxyijklmnopqrstuvwxyz
 ;@ stdout: copy n: abcuvwxyijabcdefghijklmxyz

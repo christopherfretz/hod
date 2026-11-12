@@ -456,6 +456,266 @@ entry sp -> +--------------------------------------+  = fp + FRAME   (CFA)
   the matching `bti`/`paciasp` forms. They are not specified yet
   (`abi-a64.md` §1.1); until they are, `classify` rejects the property.
 
+#### 5.5.1 Settled by the skeleton (WP-033)
+
+These are decisions the group packages (WP-035..041) build on.
+
+- **Crate layout.** One module per instruction group; the ownership table
+  is the crate documentation of `hod_a64` (`src/lib.rs`). The dispatch in
+  `target.rs` is final: it routes each instruction by opcode and by the
+  class of the value it operates on (the result's; for `icmp` and a store
+  the operand's; for a cast either side, `Mem` before `Fpr`): `Gpr` to
+  `int`, `Fpr` to `float` (with `fcmp`), `Mem` to `aggr` (with
+  `extractvalue`, `insertvalue`); loads and stores of a `Gpr` or `Fpr`
+  value to `mem`, of a `Mem` value to `aggr`; control to `control`, calls and unwinding to
+  `call`, intrinsics other than the stack, `va_*` and overflow ones to
+  `intrinsic`. A stub refuses with its group's stable name
+  (`a64:int-binary`, `a64:load`, `a64:condbr`, `a64:call`,
+  `a64:fp-binary`, `a64:mem-binary`, `a64:intrinsic`, …; each a `pub
+  const` of its module), so `cargo test` of a package's file is its whole
+  contract. Shared helpers live in `common.rs`, one function each.
+- **Classes.** Integers up to 64 bits and pointers are `Gpr`; `half`,
+  `bfloat`, `float`, `double`, `fp128` are `Fpr`; a vector is `Fpr` when
+  its length is a power of two, its size 64 or 128 bits and its element
+  not `i1`; everything else (wider integers, aggregates, other vectors)
+  is `Mem`.
+- **Prologue rows.** The prologue is emitted with placeholder immediates
+  by `begin_function` and patched in `end_function`, when `FRAME` is
+  known. Its CFI rows are added then too, with `FnCx::cfi_at` (§8.1),
+  which inserts rows at an offset that is already emitted as long as the
+  rows stay in offset order. For the prologue at `p`: `def_cfa_offset lo`
+  at `p+4` (if `lo != 0`), `def_cfa_offset FRAME` at `p+8` (if `hi !=
+  0`), `offset x29, -FRAME` and `offset x30, -FRAME+8` at `p+12`,
+  `def_cfa_register x29` at `p+16`. An exit sequence at `e` (after
+  `mov sp, x29`, if any): `def_cfa sp, FRAME` at `e`, `restore x29, x30`
+  after the `ldp`, `def_cfa_offset lo` between the two `add`s when there
+  are two, `def_cfa_offset 0` after the last; a tail exit then restates
+  the body's rows for the code that follows it.
+- **Incoming base slot** is `Local(16)`, directly above the frame record,
+  when the function needs one; the saved `x8` of a function that returns
+  in memory follows it. A function without the slot that addresses
+  `Incoming` is a bug and traps (`brk #0xf000`).
+- **Far mode.** `b`, `bl` reach ±128 MiB in far mode as well; a
+  conditional branch, `cbz`/`cbnz` and `tbz`/`tbnz` become their inverse
+  over a `b`. A function that a `b` cannot span is
+  `limit:function-size`.
+- **Fixup kinds** (`FixupKind(n)`, patched by `hod_mc_a64::Fixup`): 0
+  `b`/`bl` imm26, 1 `b.cond`/`cbz` imm19, 2 `tbz` imm14, 3 `ldr`
+  literal imm19, 4 `adr` imm21. `at` is the instruction's own offset.
+- **Constants.** `fp128` is built in the register from its two halves
+  (`mov_imm` into `x16`, `fmov d`, `fmov v.d[1]`), not loaded from a data
+  island (§7.5): no island, no fixup, and the same in far mode. A vector
+  constant other than zero is `a64:constant` until WP-039. A `Mem`-class
+  constant is stored into its home: zero-like ones with `xzr`, wide
+  integers word by word, other aggregates from their flattened image,
+  whose only accepted relocations are aligned 8-byte symbol addresses
+  (else `a64:constant-relocation`). Symbol addresses follow §7.4:
+  `adrp`+`add` with the addend folded, or `adrp`+`ldr` from the GOT then
+  the addend added; a code model other than small is `a64:code-model`.
+- **Other reason names of the target**: `a64:atomic`,
+  `a64:vector-element` (no package yet), `a64:thread-local` (TLS, M2),
+  `a64:funclet` (never on ELF), `a64:blockaddress` (WP-037),
+  `a64:variadic-definition` (WP-038).
+- **The differential harness** is `crates/hod_a64/tests/diff.rs`: what it
+  generates is the table `tests/common/groups.rs`, one line per landed
+  group. `hod_interp`'s generator always emits integer arithmetic, so the
+  harness runs the skeleton's own programs (`tests/common/skeleton.rs`)
+  until WP-035 switches the generator on; it prints the missing mask (the
+  generator switches still off).
+
+#### Integers (WP-035)
+
+`src/int.rs`: binary operations, `icmp`, casts, `select`, `freeze` on
+`Gpr` values of every width (`i1` to `i64`, pointers).
+
+- **Narrow values** follow §2.2: the bits above the width are
+  unspecified, so an operation extends an operand only where its result
+  depends on them: the left operand of `lshr`, `udiv`, `urem` (`ubfx`)
+  and `ashr`, `sdiv`, `srem` (`sbfx`), and the divisor; a register shift
+  amount of a width below 5 (`lslv` reads 5 or 6 bits). A constant is
+  materialized already extended. A constant `lshr`/`ashr` of an odd
+  width is one `ubfx`/`sbfx`. A remainder is `udiv`/`sdiv` into `x17`,
+  then `msub`.
+- **Compares of an odd width** shift instead of extending: with `s` =
+  register width − width, `lsl a, a, #s` then `cmp a, b, lsl #s`, which
+  orders both signed and unsigned. With a constant, the operand is
+  extended and compared with `cmp #k`, `cmn #-k`, or `x16`. A constant
+  left operand swaps the predicate.
+- **Every `icmp` defers itself** when `may_defer` allows (§4.6), and is
+  otherwise `cmp` + `cset`. `int::fusable(cx, value)` is the deferred
+  compare of an integer or pointer a value is, if any; `int::flags(cx,
+  compare)` emits it and returns the condition true when the predicate
+  holds. The consumer calls it after `deferred_first(cx, inst,
+  Some(value))`, once per compare, and emits nothing that writes NZCV
+  between it and its use; it pins at most two registers and writes them,
+  NZCV and `x16`. `select` fuses into `csel`, `zext`/`sext` of an `i1`
+  into `cset`/`csetm`; a non-fused `i1` condition is `tst #1`.
+- **Undefined results** (§4.7): a constant shift amount of the width or
+  more emits nothing; a `select` arm that is the constant 0 is `xzr`.
+- **`addrspacecast`** is refused as `a64:addrspacecast` (classify
+  rejects it first). `i128` is `Mem`: `aggr` (WP-040).
+- **The differential harness** runs the generator from this package on
+  (`narrow_ints`, `odd_ints`, `casts`, `compares`, `selects`); a program
+  refused by another group's name is counted as skipped, by name, never
+  as agreeing, and the proportion that ran end to end is printed.
+
+#### Floating point (WP-039)
+
+`crates/hod_a64/src/float.rs`; the evidence is `spec/landed/codegen/WP-039.md`.
+
+- **Register contents.** A `float` lives in `Sn`, a `double` in `Dn`, a
+  `half` in `Hn`, an `fp128` in `Qn`, a 64-bit vector in `Dn`, a 128-bit
+  vector in `Qn`. The bits of the register above the value's width are
+  unspecified, the same rule as for integers in a `Gpr` (§2). Every
+  lowering reads only the value's own width.
+- **`half`** is computed in single precision: `fcvt` to `S`, then the
+  operation, then `fcvt` back to `H`. This is correctly rounded for
+  `fadd`, `fsub`, `fmul` and `fdiv`. The reason is that single precision
+  has more than `2·11+2` significand bits, so rounding twice gives the
+  same result as rounding once. An integer converted to `half` goes
+  through `S` the same way. That is exact as well: an integer of at least
+  2^24 overflows `half` to infinity either way, and a smaller one is
+  exact in `S`. `frem` of `half` is refused as `a64:half-frem`. `bfloat`
+  has no arithmetic without FEAT_BF16, which the baseline lacks, so it is
+  refused as `a64:bfloat` (but `fneg`, `bitcast`, `freeze` and `select`
+  of it only move bits and are lowered).
+- **`frem`** calls `fmodf` or `fmod` (LangRef: `frem` is `fmod`).
+  `fadd`, `fsub`, `fmul` and `fdiv` of `fp128` call `__addtf3`,
+  `__subtf3`, `__multf3` and `__divtf3`. `fneg` of `fp128` flips bit 127
+  through `x16`. The other `fp128` operations are refused as
+  `a64:fp128-libcall`, because their runtime functions are not in
+  `hod_cg::RuntimeFn`: the compares (`__eqtf2` and others), the
+  conversions (`__extend*tf2`, `__trunctf*`, `__fix*tf*`, `__float*tf`)
+  and `frem` (`fmodl`).
+- **NaNs.** hod emits the hardware instruction for each operation and
+  keeps whatever NaN the hardware produces: the default NaN rules of
+  FPCR with DN=0, with NaN operands propagated and made quiet. LangRef
+  "Behavior of Floating-Point NaN values" allows any NaN, and
+  `hod_interp` with `NanPolicy::Host` (`spec/interp.md` §5.1) gives the
+  same bits. The tests compare hod with the interpreter bit for bit,
+  NaNs included. `llc` is allowed to differ, and does: its SelectionDAG
+  folds `x + -0.0` to `x` and `-0.0 - x` to `fneg x`, which changes the
+  sign or the quietness of a NaN. So the `llc` comparison treats two
+  NaNs as equal and counts how often it had to. `fneg` flips only the
+  sign bit, a NaN's too.
+- **`fptoui`/`fptosi` out of range** (a NaN, an infinity, or a value
+  whose truncation does not fit) is poison (LangRef). hod's result is
+  whatever `fcvtzs`/`fcvtzu` give: a saturated value at the W or X width,
+  then truncated. Results narrower than 32 bits are converted at W width.
+- **Fast-math flags** do not exist in `hod_ir`, which drops them. A
+  function with flags compiles to the same words as one without.
+- **`fcmp`** sets the flags with `fcmp`. Each predicate then needs one or
+  two conditions (`float::FpCond { first, second }`; the result is
+  `first || second`), the same table as LLVM's `changeFPCCToAArch64CC`:
+  `oeq` EQ, `ogt` GT, `oge` GE, `olt` MI, `ole` LS, `one` MI|GT, `ord`
+  VC, `uno` VS, `ueq` EQ|VS, `ugt` HI, `uge` PL, `ult` LT, `ule` LE,
+  `une` NE. `false` and `true` emit `cmp xzr, xzr`, then use NE and EQ.
+  An unfused result is `cset`, plus `csinc r, r, wzr, inv(second)` when
+  there is a second condition.
+- **Fusing (§4.6).** `fcmp` defers when `may_defer` allows it. `select`
+  on a deferred `fcmp` sets the flags itself. `float::flags(cx, compare)`
+  is the contract for `condbr` (WP-037): it emits the compare of a
+  deferred `fcmp` and returns its `FpCond`. A branch then takes
+  `b.first` and, if there is a `second`, `b.second` to the same target.
+  The operands' registers are given back before it returns, so the
+  caller may allocate freely.
+- **`select`** of a value of at most 64 bits uses `fcsel` on the `D`
+  view. With two conditions it takes two steps: first `b' = second ? a :
+  b`, then `r = first ? a : b'`. A 128-bit value (`fp128` or a `Q`
+  vector) uses `csetm x16` (with `csinv` for the second condition), then
+  `dup v31.2d, x16` and `bsl`. A vector condition is `a64:vector-select`.
+- **Vectors.** The FP vector arithmetic of `2S`, `4S` and `2D`; the
+  integer vector `add`, `sub`, `mul` (not of `i64` elements), `and`,
+  `or`, `xor`, and shifts through `ushl`/`sshl` (with the amount negated
+  for right shifts); `fneg`; the casts with an instruction for them
+  (`fcvtl`, `fcvtn`, `fcvtz*`, `*cvtf`, `xtn`, `uxtl`/`sxtl` by a factor
+  of two). Everything else is `a64:vector-op` (integer division and
+  remainder, `i64`-element `mul`, vector `frem`, arithmetic on `half`
+  vectors) or `a64:fp-cast`. Vector `fcmp` and `icmp` are
+  `a64:vector-fcmp` and `a64:vector-icmp`, because their `<N x i1>`
+  result is `Mem` class (WP-040).
+- **Reason names**: `a64:fp-binary`, `a64:fneg`, `a64:fp-freeze`,
+  `a64:fp-cast`, `a64:fcmp`, `a64:vector-icmp`, `a64:fp-select` (the
+  skeleton's), and `a64:bfloat`, `a64:fp128-libcall`, `a64:half-frem`,
+  `a64:vector-fcmp`, `a64:vector-select`, `a64:vector-op`.
+
+#### Memory (WP-036)
+
+- **Addresses.** An access is `[base, #off]` (scaled unsigned, else
+  unscaled; else the offset is added into `x17`), `[base, xI, lsl #s]`
+  or `[base, wI, sxtw #s]`. The base is `x29` for a directly placed
+  slot, the pointer's register otherwise; a symbol, a constant address
+  or an indirectly placed (over-aligned) slot is computed into `x17` for
+  a load or store and into the result's register for a `ptradd`.
+- **Fusion (§4.6).** A `ptradd` is deferred whenever `may_defer` allows;
+  the access through it folds constant offsets and constant indices
+  (taken as signed, truncated to 64 bits) into `off`, and its variable
+  indices into the index register: the first one stays a `sxtw` index
+  when it is an `i32` and its scale is a power of two up to 16; other
+  widths are sign-extended with `sbfx`, other scales multiply (`lsl`,
+  or `mov x16, #scale` and `mul`); further variable indices are added
+  into the first. Unfused, the same sum is computed into the result.
+- **Symbol offsets** are folded into the relocation's addend when the
+  total is below 2^20 in magnitude, as `llc` does; beyond it the offset
+  is added after the address (§7.4).
+- **Widths.** An access reads or writes exactly the store size. Sizes 1,
+  2, 4, 8 are one access; 3 is `h` + `b`, 5 `w` + `b`, 6 `w` + `h`, 7
+  `w` + `h` + `b`, joined on a load by `orr … lsl` through `x16`, split
+  on a store by `lsr` into `x16`. A store of a width that is not a
+  multiple of 8 masks the value in its register first (`and`; the
+  register is the store's own operand, §4.2), so padding bits are zero.
+  A zero constant is stored from `xzr`/`wzr`.
+- **Volatile** accesses are lowered as plain ones; `hod_cg` never drops
+  or repeats them. Atomic loads and stores are `a64:atomic`.
+- **`alloca`** with a constant count rounds the size up to 16 and
+  subtracts it from `sp` (`sub` immediates, or `mov x17` and `sub`
+  extended); a variable count is zero-extended from its width, scaled,
+  rounded up to 16 and subtracted. An alignment above 16 then rounds
+  `x16` down (`and`); an alignment that is not a power of two or above
+  2^32 is `limit:frame-size`. The result is the new `sp`; the frame is
+  marked dynamic. `llvm.stacksave` is `mov xD, sp`;
+  `llvm.stackrestore` is `mov sp, xS` and marks the frame dynamic.
+- **Refused:** a `load`/`store` of an `Fpr` value, `a64:load-fpr` and
+  `a64:store-fpr` (WP-039); a `ptradd` producing a vector of pointers,
+  `a64:ptradd-vector`. `Mem`-class values are `aggr`'s (WP-040).
+
+##### Control flow (WP-037)
+
+- **`condbr`** tests bit 0 (§2.2): `tbz` to the false block when the
+  true block is emitted next, else `tbnz` to the true block and `b` to
+  the false one unless it comes next. A constant condition, and two
+  equal targets, are a `br`. A deferred condition is asked for (emitted)
+  first; fusing a deferred compare into the branch is left to the
+  integration package after WP-035 and WP-039, at the place marked in
+  `control.rs`.
+- **`switch`** zero-extends the condition in its register (`ubfx`, below
+  64 bits), drops the cases that go to the default, sorts the others by
+  unsigned value (skipped when they come sorted) and emits a binary
+  search: a node compares with its middle case (`b.eq` to its block,
+  `b.hi` to the upper half), a run of at most four cases is a chain of
+  `cmp` · `b.eq` ending in `b default` (or `b.ne default` when the last
+  case's block comes next). A case value is compared by `cmp #imm`,
+  `cmn #-imm`, or through `x16`. Code is linear in the cases; a run does
+  about `log2(n) + 4` compares; no jump table and no data island. A
+  constant condition is a `br`. A `switch` wider than 64 bits is
+  `a64:switch-wide` (`classify` supports `inst:switch` for `int` only).
+- **`indirectbr`** is `br` of the address in its register; a
+  `blockaddress` constant operand is formed in `x16` first.
+- **`blockaddress` in code** (`common::block_address`): `adr rd, label`
+  (fixup kind 4, ±1 MiB). In far mode: `adr rd, 1f` · `ldr wT, [rd]` ·
+  `sbfx xT, xT, #0, #26` · `add rd, rd, xT, lsl #2` · `b 2f` ·
+  `1: b label` · `2:`: the distance is read back from the `imm26` of a
+  `b` that is never executed, so the only fixup is a `b`'s, which reaches
+  the whole function. This reads `.text` as data: an execute-only text
+  mapping would break it (none of the supported linkers makes one by
+  default). The glue's constant path (`materialize_gpr_const`) still
+  refuses `blockaddress` (`a64:blockaddress`) until it calls this helper,
+  so a `blockaddress` reaches code only as `indirectbr`'s own operand;
+  `operand:blockaddress` stays not-implemented until then.
+- **`phi`** needs nothing from the target beyond the glue (§4.5); the
+  protocol is tested here on the real target for `int` and `ptr`; its
+  matrix row is supported for every class, the `type:*` rows gating.
+
 ### 5.6 x86-64 (planned)
 
 `push rbp` · `mov rbp, rsp` · pushes of the save set · `sub rsp, imm32`
@@ -678,7 +938,7 @@ that (a vector, `fp128`) is placed in a **data island** after the
 function's code, inside the function's own section, and loaded
 PC-relative through an internal fixup: no relocation, no separate section,
 nothing shared between functions. Islands are aligned to their contents
-and counted in the function's size.
+and counted in the function's size. (AArch64 builds `fp128` in the register instead, §5.5.1.)
 
 ## 8. The `Target` trait
 
@@ -702,7 +962,7 @@ else is a method:
 | calls | `call`, `call_runtime`, `record_call_site`, `place_return`, `fn_assignment`, `tail_exit_count`, `tail_exit`, `phi_stores` | the sequence of §7.1 for the instruction being lowered, and for a `RuntimeFn` with `CallArg` operands (§7.3); the function's own assignment and its tail exits (§7.1) |
 | frame | `alloc_slot`, `slot_place`, `frame_size` | a slot; the `FrameRef` or `SlotPlace` of a body slot |
 | code | `offset`, `emit` and the `emit_*` family, `code_mut`, `block_label`, `epilogue`, `new_label`, `bind`, `fixup`, `falls_through`, `far`, `trap` | bytes; labels, fixups and binding (§6.2); patching emitted bytes |
-| records | `reloc`, `island`, `cfi`, `set_frame_desc`, `type_id`, `pad_clause`, `pad_filter` | a relocation (§9.2), a data island (§7.5), CFI rows and the frame description (§9.3), type ids and clauses (§9.4) |
+| records | `reloc`, `island`, `cfi`, `cfi_at`, `set_frame_desc`, `type_id`, `pad_clause`, `pad_filter` | a relocation (§9.2), a data island (§7.5), CFI rows and the frame description (§9.3), type ids and clauses (§9.4) |
 
 Call sites, line rows and block offsets are recorded by the driver, not by
 lowerings. `FrameRef` is `Local(u32)`, `Incoming(u32)` or `Outgoing(u32)`:
@@ -797,7 +1057,7 @@ which chunk it is in, nor on what else is in it.
 | `code` | bytes | the function's instructions and data islands |
 | `relocs` | `(offset, RelocKind, SymRef, addend)` | `hod_obj` relocations (§9.2) |
 | `cfi` | `(offset, CfiOp)` | `hod_eh` (§9.3) |
-| `call_sites` | `(start, length, pad, landing)` | `hod_eh` (§9.4) |
+| `call_sites` | `(start, length, pad, landing, nounwind)` | `hod_eh` (§9.4) |
 | `pads`, `clauses`, `type_ids`, `filter_ids` | §9.4 | `hod_eh` |
 | `lines` | `(offset, LocId)` | `hod_dwarf` (§9.5) |
 | `vars` | `(variable, expression, declared-at, location)` | `hod_dwarf` (§9.5) |
@@ -806,7 +1066,11 @@ which chunk it is in, nor on what else is in it.
 | `block_offsets` | `(BlockId, offset)` | `blockaddress` in data (§9.6) |
 
 `FuncRecord`: the function's `SymId`; its ranges in each table; its code
-alignment; its frame description (§9.3); whether it has landing pads.
+alignment; its frame description (§9.3); whether it has landing pads; and
+what its unwind-table entry needs (`spec/eh.md` §1.1), read from the
+module when the function ends: its personality, whether it is `nounwind`
+and whether it has `uwtable`. `FuncRecord::needs_unwind_entry` is the FDE
+rule.
 
 ### 9.2 Relocations
 
@@ -828,7 +1092,12 @@ its prologue and its exit sequences. The exit sequences are the last code
 of the function, so nothing after them needs the body's state back; each
 tail exit, coming after another exit sequence, starts with rows that
 state the body's rules again (the CFA and the saved registers) rather
-than relying on remembered state. The rows are
+than relying on remembered state. So does the shared trap of §6.1, which
+the core places after the exit sequences and the body branches to: before
+it, the core restates the net effect of the rows emitted before the
+epilogue was bound (one CFA rule, then the last rule of each saved
+register). `CfiOp` and `CfiRow` are `hod_eh`'s `Op` and `Row`,
+re-exported, so the rows reach `.eh_frame` as they are. The rows are
 exact at every instruction boundary (asynchronous unwind tables), which
 is what debuggers and profilers need; `hod_eh` writes them into
 `.eh_frame` and may share a CIE between all functions of an object that
@@ -857,7 +1126,11 @@ them has no LSDA, and exceptions pass through it by its CFI alone.
   throw and has no pad must still be covered by a row, or the personality
   routine terminates the program instead of unwinding through. The pad
   and landing offset are resolved when the function ends; a landing
-  offset of 0 in the row means the pad block's own offset.
+  offset of 0 in a row with a pad means the pad block's own offset, and
+  it is 0 in a row without one. `nounwind` is set for a direct call of a
+  function declared `nounwind` (`llc`'s `callToNoUnwindFunction`); such
+  a row without a pad gets no LSDA entry (`spec/eh.md` §9.3). Calls a
+  target records itself (`FnCx::record_call_site`) are not `nounwind`.
 - `filter_ids`: the type ids of the `filter` clauses, which a clause
   names by range.
 
@@ -985,6 +1258,26 @@ COMDAT if it has one. `!llvm.linker.options` become `.linker-options`
 (`SHT_LLVM_LINKER_OPTIONS`, `SHF_EXCLUDE`), `!llvm.dependent-libraries`
 `.deplibs` (`SHT_LLVM_DEPENDENT_LIBRARIES`, `SHF_MERGE|SHF_STRINGS`).
 
+**Unwind tables** (`src/emit/unwind.rs`, `spec/eh.md` §1.1, §9) are
+written by `finish`, after the linker options and before the symbols are
+defined: the LSDAs of the functions with landing pads in one
+`hod_eh::write_lsdas` call (`.gcc_except_table`, or
+`.gcc_except_table.<name>` in the function's group or with
+`function_sections`; type-information stubs in `.data`), then one FDE per
+function that needs one (`FuncRecord::needs_unwind_entry`) in one
+`write_eh_frame` call, each starting at the function's section symbol
+plus its offset after the merge, so a COMDAT member's FDE refers into its
+group as `llc`'s does. The personality slot `DW.ref.<personality>` comes
+from `hod_eh::personality_ref`, one per personality. The rows are read
+from `Emitted::rows` and the placed records only, so the tables do not
+depend on the chunking; nothing is allocated per function (the mapped
+LSDA rows are in three buffers sized from the row counts). The tables
+are byte-identical to `llc`'s (`tests/emit_eh.rs`), except that `llc`
+orders the CIEs of two personalities by a pointer (`spec/eh.md` §5) and
+defines a `GCC_except_table<n>` label at each LSDA that nothing refers
+to. `.debug_frame`, for a `nounwind` function without `uwtable` that has
+debug information, is not written (`spec/dwarf.md`'s, a follow-up).
+
 **`Emitted`**: the object; `funcs: Vec<PlacedFunc>` in module order, each
 the function's `FuncRecord` with `code` its byte range in `section`, the
 row ranges ranges of `Emitted::rows`, and `relocs` empty; `rows`, every
@@ -1006,7 +1299,10 @@ in maps sized by their count).
 `global:ifunc-resolver`, `init:sym-diff-unencodable`,
 `init:address-width` (an address in a 1-byte field),
 `init:dso-local-equivalent` (outside a difference),
-`init:blockaddress-unplaced`.
+`init:blockaddress-unplaced`, `module:linker-option-not-a-pair` (an
+`!llvm.linker.options` entry of other than two strings: `llc` writes
+`.linker-options` as pairs), `eh:unknown-personality-without-pads`
+(`spec/eh.md` §1.1).
 
 **Known differences from `llc`**, none of which changes what a linker
 makes of the object (`tests/emit_link.rs` links both with GNU ld, lld and
@@ -1122,6 +1418,14 @@ pub enum CgError {
   gate.
 
 ## 13. Open questions
+
+- AArch64: the shared trap that `hod_cg` emits for unreachable
+  address-taken blocks comes after the exit sequences, so it is covered
+  by the CFI state at the end of the last epilogue (CFA `sp + 0`), not
+  the body's. Harmless for a trap; revisit with unwind tables (WP-038).
+- AArch64: `attr:target-features` stays refused: the target must read it
+  (refuse a feature set without FP/SIMD, accept the default ones). Until
+  then everything kiln emits with features is refused there.
 
 - A direct call's attributes: `hod_cg` falls back to the callee
   declaration's argument and return attributes when the call site has

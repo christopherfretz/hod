@@ -3,6 +3,7 @@
 //! One line per compile invocation, appended with a single `write` on a file
 //! opened in append mode, so lines from concurrent compilers never interleave.
 
+use std::borrow::Cow;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
@@ -36,7 +37,7 @@ impl Outcome {
 pub struct Record {
     pub outcome: Outcome,
     /// The construct or condition behind a fallback or an error.
-    pub reason: Option<&'static str>,
+    pub reason: Option<Cow<'static, str>>,
     /// `None` when hod did not read the input.
     pub input_kind: Option<InputKind>,
     /// `None` when hod did not read the input.
@@ -55,6 +56,9 @@ pub struct Record {
     pub conversion_time: Option<Duration>,
     /// How the fallback ended; `None` when none ran.
     pub fallback_status: Option<FallbackStatus>,
+    /// With `HOD_CENSUS=1`: every reason hod found in the module, in the
+    /// order first met (field 11). `None` otherwise.
+    pub reasons: Option<Vec<String>>,
 }
 
 /// How a fallback process ended.
@@ -84,7 +88,7 @@ impl FallbackStatus {
 
 /// Number of tab-separated fields in a line.
 #[cfg(test)]
-pub const FIELDS: usize = 10;
+pub const FIELDS: usize = 11;
 
 /// Makes a free-form field safe for one tab-separated line: backslash, tab,
 /// newline and carriage return become `\\`, `\t`, `\n`, `\r`; an empty
@@ -115,7 +119,7 @@ impl Record {
         let mut line = String::with_capacity(96 + self.output.len());
         line.push_str(self.outcome.name());
         line.push('\t');
-        line.push_str(self.reason.unwrap_or("-"));
+        escape(self.reason.as_deref().unwrap_or("-"), &mut line);
         line.push('\t');
         line.push_str(self.input_kind.map_or("-", InputKind::name));
         line.push('\t');
@@ -134,6 +138,20 @@ impl Record {
         match self.fallback_status {
             Some(status) => status.write(&mut line),
             None => line.push('-'),
+        }
+        line.push('\t');
+        match self.reasons.as_deref() {
+            Some(reasons) if !reasons.is_empty() => {
+                for (at, reason) in reasons.iter().enumerate() {
+                    if at > 0 {
+                        line.push(',');
+                    }
+                    let mut name = String::new();
+                    escape(reason, &mut name);
+                    line.push_str(&name.replace(',', "\\,"));
+                }
+            }
+            _ => line.push('-'),
         }
         line.push('\n');
         line
@@ -174,7 +192,7 @@ mod tests {
     fn record() -> Record {
         Record {
             outcome: Outcome::Fallback,
-            reason: Some("codegen-not-implemented"),
+            reason: Some("codegen-not-implemented".into()),
             input_kind: Some(InputKind::Text),
             input_bytes: Some(1234),
             output: "/tmp/kiln-1/0-a.o".to_owned(),
@@ -183,16 +201,17 @@ mod tests {
             fallback_time: Some(Duration::from_millis(41)),
             conversion_time: None,
             fallback_status: Some(FallbackStatus::Exited(0)),
+            reasons: None,
         }
     }
 
-    // spec/cli.md "Coverage log": the ten fields, in order.
+    // spec/cli.md "Coverage log": the eleven fields, in order.
     #[test]
     fn line_format() {
         assert_eq!(
             record().line(),
             "fallback\tcodegen-not-implemented\ttext\t1234\t/tmp/kiln-1/0-a.o\t\
-             aarch64-unknown-linux-gnu\t250\t41000\t-\t0\n"
+             aarch64-unknown-linux-gnu\t250\t41000\t-\t0\t-\n"
         );
         // A converted module: the kind and the size are the bitcode's, the
         // conversion's time is field 9.
@@ -205,13 +224,13 @@ mod tests {
         assert_eq!(
             converted.line(),
             "fallback\tcodegen-not-implemented\tbitcode\t1234\t/tmp/kiln-1/0-a.o\t\
-             aarch64-unknown-linux-gnu\t250\t41000\t9300\t1\n"
+             aarch64-unknown-linux-gnu\t250\t41000\t9300\t1\t-\n"
         );
         // Field 10 for a fallback that a signal ended.
         let killed = Record { fallback_status: Some(FallbackStatus::Signaled(9)), ..record() };
-        assert!(killed.line().ends_with("\t41000\t-\tsignal:9\n"), "{}", killed.line());
+        assert!(killed.line().ends_with("\t41000\t-\tsignal:9\t-\n"), "{}", killed.line());
         let unknown = Record { fallback_status: Some(FallbackStatus::Unknown), ..record() };
-        assert!(unknown.line().ends_with("\t-\tunknown\n"), "{}", unknown.line());
+        assert!(unknown.line().ends_with("\t-\tunknown\t-\n"), "{}", unknown.line());
         let hod = Record {
             outcome: Outcome::Hod,
             reason: None,
@@ -223,29 +242,51 @@ mod tests {
             fallback_time: None,
             conversion_time: None,
             fallback_status: None,
+            reasons: None,
         };
-        assert_eq!(hod.line(), "hod\t-\tbitcode\t0\t-\t-\t3000\t-\t-\t-\n");
+        assert_eq!(hod.line(), "hod\t-\tbitcode\t0\t-\t-\t3000\t-\t-\t-\t-\n");
         let error = Record {
             outcome: Outcome::Error,
-            reason: Some("usage"),
+            reason: Some("usage".into()),
             input_kind: None,
             input_bytes: None,
             ..hod
         };
-        assert_eq!(error.line(), "error\tusage\t-\t-\t-\t-\t3000\t-\t-\t-\n");
+        assert_eq!(error.line(), "error\tusage\t-\t-\t-\t-\t3000\t-\t-\t-\t-\n");
+        // Field 11, the census of `HOD_CENSUS=1`: the reasons in order; an
+        // empty census is `-`.
+        let census = Record {
+            reason: Some("module:pic".into()),
+            reasons: Some(vec!["module:pic".into(), "cc:ccc".into(), "attr:\"a,b\"".into()]),
+            ..record()
+        };
+        assert!(
+            census.line().ends_with("\t0\tmodule:pic,cc:ccc,attr:\"a\\,b\"\n"),
+            "{}",
+            census.line()
+        );
+        let empty = Record { reasons: Some(Vec::new()), ..record() };
+        assert!(empty.line().ends_with("\t0\t-\n"), "{}", empty.line());
     }
 
     // spec/cli.md "Coverage log": a field never contains a tab or a newline.
     #[test]
     fn free_form_fields_are_escaped() {
-        let odd =
-            Record { output: "a\tb\nc\rd\\e".to_owned(), target: Some(String::new()), ..record() };
+        let odd = Record {
+            output: "a\tb\nc\rd\\e".to_owned(),
+            target: Some(String::new()),
+            reason: Some("attr:\"x\ty\"".into()),
+            reasons: Some(vec!["intrinsic:a\nb".into()]),
+            ..record()
+        };
         let line = odd.line();
         assert_eq!(line.matches('\n').count(), 1);
         let fields: Vec<&str> = line.trim_end_matches('\n').split('\t').collect();
         assert_eq!(fields.len(), FIELDS);
         assert_eq!(fields[4], "a\\tb\\nc\\rd\\\\e");
         assert_eq!(fields[5], "-");
+        assert_eq!(fields[1], "attr:\"x\\ty\"");
+        assert_eq!(fields[10], "intrinsic:a\\nb");
     }
 
     #[test]

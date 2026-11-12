@@ -1,5 +1,5 @@
-//! `spec/dwarf.md` §8.5: line-table throughput on a large synthetic
-//! input. Ignored by default; measure with
+//! `spec/dwarf.md` §8.5: line-table and DIE throughput on large
+//! synthetic inputs. Ignored by default; measure with
 //!
 //! ```text
 //! cargo test --release -p hod_dwarf --test throughput -- --ignored --nocapture
@@ -10,14 +10,23 @@
 //! instructions, small line steps with an occasional jump or file
 //! change. Reports the policy and the writer separately, the best of
 //! five runs each.
+//!
+//! The DIEs: a generated globals-only module of 100 000 globals (base
+//! and pointer types, namespaces up to three deep), read into `hod_ir`'s
+//! tables (not timed); the plan and the writer timed separately, and the
+//! string pool alone on the strings the writer names.
+
+mod common;
 
 use std::time::Instant;
 
+use hod_dwarf::{DebugStrings, GlobalAddr, UnitInput, UnitPlan, write_debug_info};
 use hod_dwarf::{
     FileEntry, FunctionLines, LineHeader, Row, Sequence, SourceLoc, Transition, function_rows,
     write_debug_line,
 };
-use hod_obj::{Arch, Object, SectionKind};
+use hod_ir::{DiId, DiNode};
+use hod_obj::{Arch, Object, SectionKind, Symbol, SymbolKind, SymbolPlace};
 
 const FUNCTIONS: u32 = 20_000;
 const PER_FUNCTION: u32 = 100;
@@ -154,4 +163,112 @@ fn line_table_throughput() {
         str_bytes,
     );
     assert!(rows.len() > (FUNCTIONS * PER_FUNCTION) as usize * 9 / 10);
+}
+
+/// The strings the writer names, in its order: per variable its
+/// namespaces' names (the first time), its name, its type's name and its
+/// linkage name. (Close enough to the writer's sequence for the cost of
+/// the pool: every string the writer names is here, about as often.)
+fn named_strings<'a>(debug: &'a hod_ir::DebugInfo, globals: &[(String, DiId)]) -> Vec<&'a [u8]> {
+    let mut out: Vec<&[u8]> = vec![b"hod generated", b"gen.cpp", b"/hod/gen"];
+    let mut seen = std::collections::HashSet::new();
+    for &(_, expr) in globals {
+        let DiNode::GlobalVariableExpression(e) = debug.node(expr) else { continue };
+        let DiNode::GlobalVariable(v) = debug.node(e.var.unwrap()) else { continue };
+        let mut scope = v.scope;
+        while let Some(s) = scope {
+            let DiNode::Namespace(ns) = debug.node(s) else { break };
+            if seen.insert(s) {
+                out.push(ns.name);
+            }
+            scope = ns.scope;
+        }
+        out.push(v.name);
+        if let Some(t) = v.ty {
+            match debug.node(t) {
+                DiNode::BasicType(b) => out.push(b.name),
+                DiNode::DerivedType(d) => out.push(d.name),
+                _ => {}
+            }
+        }
+        out.push(v.linkage_name);
+    }
+    out.retain(|s| !s.is_empty());
+    out
+}
+
+#[test]
+#[ignore = "a measurement; run in release with --ignored --nocapture"]
+#[allow(clippy::cast_precision_loss)] // the counts are far below 2^52
+fn die_throughput() {
+    const GLOBALS: usize = 100_000;
+    let loaded = common::meta::load(&common::dies::globals_module(GLOBALS));
+    let unit = loaded.units[0];
+    let (plan_s, plan) = best(|| UnitPlan::new(&loaded.debug, unit).unwrap());
+    let dies = plan.die_count();
+
+    let mut obj = Object::new(Arch::AArch64);
+    let data = obj.add_section(b".data", SectionKind::Data, 8).unwrap();
+    let globals: Vec<GlobalAddr> = loaded
+        .globals
+        .iter()
+        .map(|(name, expr)| {
+            let value = obj.append_zeros(data, 8);
+            let name = obj.add_string(name.as_bytes()).unwrap();
+            let symbol = obj.add_symbol(Symbol {
+                value,
+                size: 8,
+                place: SymbolPlace::Section(data),
+                kind: SymbolKind::Object,
+                ..Symbol::undefined(name)
+            });
+            GlobalAddr { expr: *expr, symbol, addend: 0 }
+        })
+        .collect();
+    let line = obj.add_section(b".debug_line", SectionKind::Debug, 1).unwrap();
+    let base = obj;
+    let mut write_s = f64::MAX;
+    let (_, (bytes, str_bytes, relocs)) = best(|| {
+        // `Object` is not `Clone`: start each run from an object with only
+        // the sections the writer needs.
+        let mut obj = Object::new(Arch::AArch64);
+        for _ in 0..base.symbol_count() {
+            obj.add_symbol(Symbol::undefined(hod_obj::StrId::EMPTY));
+        }
+        let line = obj.add_section(base.section_name(line), SectionKind::Debug, 1).unwrap();
+        let input = UnitInput { plan: &plan, line_offset: 0, globals: &globals, code: &[] };
+        let start = Instant::now();
+        let out = write_debug_info(&mut obj, line, &[input]).unwrap();
+        write_s = write_s.min(start.elapsed().as_secs_f64());
+        let secs =
+            [Some(out.abbrev), Some(out.info), Some(out.str_offsets), Some(out.str), out.addr];
+        let bytes: usize = secs.iter().flatten().map(|&s| obj.data(s).len()).sum();
+        let relocs: u32 = secs.iter().flatten().map(|&s| obj.relocation_count(s)).sum();
+        (bytes, obj.data(out.str).len(), relocs)
+    });
+
+    let strings = named_strings(&loaded.debug, &loaded.globals);
+    let (pool_s, pooled) = best(|| {
+        let mut p = DebugStrings::new();
+        for s in &strings {
+            p.index(s).unwrap();
+        }
+        p.data().len()
+    });
+    let n = dies as f64;
+    eprintln!(
+        "{GLOBALS} globals, {dies} DIEs: plan {:.1} ns/DIE ({:.1} ms); writer {:.1} ns/DIE ({:.1} ms, {:.0} MB/s of DIE sections); \
+         {bytes} bytes ({:.2} bytes/DIE, {str_bytes} of .debug_str), {relocs} relocations; \
+         string pool alone {:.1} ns/string over {} strings ({:.0}% of the writer)",
+        plan_s * 1e9 / n,
+        plan_s * 1e3,
+        write_s * 1e9 / n,
+        write_s * 1e3,
+        bytes as f64 / 1e6 / write_s,
+        bytes as f64 / n,
+        pool_s * 1e9 / strings.len() as f64,
+        strings.len(),
+        pool_s * 100.0 / write_s,
+    );
+    assert_eq!(pooled, str_bytes, "the pool alone makes the same .debug_str");
 }

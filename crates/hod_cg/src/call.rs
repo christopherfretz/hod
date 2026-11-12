@@ -275,15 +275,35 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// at offset `start`. The lowering has displaced what the sequence
     /// clobbers.
     pub fn record_call_site(&mut self, start: u32, len: u32) {
-        self.push_call_site(start, len, None);
+        self.push_call_site(start, len, None, false);
     }
 
-    fn push_call_site(&mut self, start: u32, len: u32, unwind: Option<BlockId>) -> Option<usize> {
+    /// Whether a call of `target` cannot unwind, as `llc` decides it
+    /// (`EHStreamer::callToNoUnwindFunction`): a direct call of a
+    /// function declared `nounwind`. A runtime function, an indirect
+    /// callee, an alias and a call-site `nounwind` do not count.
+    fn callee_is_nounwind(&self, target: CallTarget) -> bool {
+        let CallTarget::Sym(SymRef::Module(sym)) = target else { return false };
+        match self.module.symbol(sym).kind() {
+            SymbolKind::Function { attrs, .. } => {
+                self.module.fn_attrs(attrs).has(hod_ir::FnAttrs::NOUNWIND)
+            }
+            _ => false,
+        }
+    }
+
+    fn push_call_site(
+        &mut self,
+        start: u32,
+        len: u32,
+        unwind: Option<BlockId>,
+        nounwind: bool,
+    ) -> Option<usize> {
         // §9.4: recorded only for a function that has landing pads.
         if !self.has_pads {
             return None;
         }
-        self.out.call_sites.push(CallSiteRow { start, len, pad: NO_PAD, landing: 0 });
+        self.out.call_sites.push(CallSiteRow { start, len, pad: NO_PAD, landing: 0, nounwind });
         self.s.site_pads.push(unwind.map_or(u32::MAX, BlockId::raw));
         Some(self.out.call_sites.len() - 1)
     }
@@ -515,7 +535,8 @@ impl<'a, T: Target> FnCx<'a, T> {
             CallEmit { target, variadic: call.variadic, vector_regs_used: asg.vector_regs_used };
         t.emit_call(self, &emit)?;
         let len = self.offset() - start;
-        let row = self.push_call_site(start, len, call.unwind);
+        let nounwind = self.callee_is_nounwind(target);
+        let row = self.push_call_site(start, len, call.unwind, nounwind);
         if call.noreturn {
             self.trap();
         }

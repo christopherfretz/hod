@@ -5,6 +5,7 @@
 //! so the paths hod cannot reach yet (a successful compile, a malformed
 //! module) are tested with a stand-in generator.
 
+use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::io::{Read, Write};
@@ -12,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use hod::{CompileError, Construct, InputKind, Options, OutputKind};
+use hod::{BitcodeReading, CompileError, Construct, InputKind, Options, OutputKind, Report};
 
 use crate::args::{self, Action, CommandLine, Input};
 use crate::convert;
@@ -44,6 +45,11 @@ pub const ENV_IN_FALLBACK: &str = "HOD_IN_FALLBACK";
 pub const SETTINGS: [&str; 4] = [ENV_FALLBACK, ENV_STRICT, ENV_COVERAGE_LOG, ENV_BITCODE_VIA];
 /// Environment variable: the file the phase report is appended to.
 pub const ENV_TIME_PHASES: &str = "HOD_TIME_PHASES";
+/// Environment variable: `1` asks for every reason of a declined module
+/// (coverage field 11), not only the first.
+pub const ENV_CENSUS: &str = "HOD_CENSUS";
+/// The value of `--bitcode-via` that names hod's own bitcode reader.
+pub const BITCODE_NATIVE: &str = "native";
 
 /// hod's settings from the environment.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -61,6 +67,8 @@ pub struct Environment {
     pub in_fallback: bool,
     /// `HOD_TIME_PHASES`, if set and not empty.
     pub time_phases: Option<PathBuf>,
+    /// `HOD_CENSUS=1`.
+    pub census: bool,
     /// A variable with a value hod does not accept.
     pub error: Option<String>,
 }
@@ -77,23 +85,26 @@ impl Environment {
             time_phases: non_empty(ENV_TIME_PHASES).map(PathBuf::from),
             ..Environment::default()
         };
-        match non_empty(ENV_STRICT) {
-            None => {}
-            Some(value) if value == "1" => env.strict = true,
-            Some(value) if value == "0" => {}
-            Some(value) => {
-                env.error = Some(format!(
-                    "invalid value '{}' for {ENV_STRICT}: expected 1 or 0",
-                    value.to_string_lossy()
-                ));
+        for (name, flag) in [(ENV_STRICT, &mut env.strict), (ENV_CENSUS, &mut env.census)] {
+            match non_empty(name) {
+                None => {}
+                Some(value) if value == "1" => *flag = true,
+                Some(value) if value == "0" => {}
+                Some(value) => {
+                    env.error.get_or_insert(format!(
+                        "invalid value '{}' for {name}: expected 1 or 0",
+                        value.to_string_lossy()
+                    ));
+                }
             }
         }
         env
     }
 }
 
-/// The code generator: `hod::compile` in the binary.
-pub type Compile<'a> = &'a dyn Fn(&[u8], &Options) -> Result<Vec<u8>, CompileError>;
+/// The code generator: `hod::compile_with` in the binary.
+pub type Compile<'a> =
+    &'a dyn Fn(&[u8], &Options, &hod::Settings, &mut Report) -> Result<Vec<u8>, CompileError>;
 
 /// The process's standard streams.
 pub struct Io<'a> {
@@ -113,9 +124,30 @@ struct Settings {
     fallback: Option<PathBuf>,
     strict: bool,
     bitcode_via: Option<PathBuf>,
+    census: bool,
 }
 
 impl Settings {
+    /// The `llvm-dis` a bitcode input goes through, if it is not read
+    /// natively (`spec/cli.md` "Bitcode conversion"): native is the
+    /// default and `--bitcode-via=native`.
+    fn converter(&self) -> Option<&Path> {
+        self.bitcode_via.as_deref().filter(|via| via.as_os_str() != BITCODE_NATIVE)
+    }
+
+    /// What `hod::compile_with` is asked to do.
+    fn compile(&self) -> hod::Settings {
+        hod::Settings {
+            bitcode: if self.converter().is_some() {
+                BitcodeReading::Decline
+            } else {
+                BitcodeReading::Native
+            },
+            census: self.census,
+            support: None,
+        }
+    }
+
     /// The fallback to run when hod declines, unless strict.
     fn hybrid(&self) -> Option<&Path> {
         if self.strict { None } else { self.fallback.as_deref() }
@@ -154,10 +186,10 @@ impl Job<'_, '_> {
     }
 
     /// Ends the invocation in hod, with a diagnostic.
-    fn fail(mut self, exit: u8, reason: &'static str, message: &str) -> Finished {
+    fn fail(mut self, exit: u8, reason: impl Into<Cow<'static, str>>, message: &str) -> Finished {
         self.diagnostic(message);
         self.record.outcome = Outcome::Error;
-        self.record.reason = Some(reason);
+        self.record.reason = Some(reason.into());
         self.record.hod_time = self.start.elapsed();
         Finished { exit, record: self.record }
     }
@@ -165,8 +197,13 @@ impl Job<'_, '_> {
     /// Hands the invocation to the real `llc`: the original arguments
     /// without hod's own, and `input` on its standard input when hod has
     /// consumed it (otherwise the fallback inherits standard input).
-    fn fall_back(mut self, llc: &Path, reason: &'static str, input: Option<&[u8]>) -> Finished {
-        self.record.reason = Some(reason);
+    fn fall_back(
+        mut self,
+        llc: &Path,
+        reason: impl Into<Cow<'static, str>>,
+        input: Option<&[u8]>,
+    ) -> Finished {
+        self.record.reason = Some(reason.into());
         self.record.hod_time = self.start.elapsed();
         let started = Instant::now();
         match run_fallback(llc, &self.line.forwarded, input) {
@@ -184,7 +221,7 @@ impl Job<'_, '_> {
             Err(e) => {
                 self.diagnostic(&format!("cannot run fallback '{}': {e}", llc.display()));
                 self.record.outcome = Outcome::Error;
-                self.record.reason = Some("fallback-unavailable");
+                self.record.reason = Some("fallback-unavailable".into());
                 Finished { exit: EXIT_ERROR, record: self.record }
             }
         }
@@ -228,10 +265,12 @@ impl Job<'_, '_> {
         // arrived, also when hod went on with a conversion of it.
         let piped = matches!(line.input, Input::Stdin).then_some(input.as_slice());
 
-        let mut compiled = compile(&input, &line.options);
+        let settings = self.settings.compile();
+        let mut report = Report::default();
+        let mut compiled = compile(&input, &line.options, &settings, &mut report);
         if let Err(CompileError::Unsupported(unsupported)) = &compiled
             && unsupported.construct == Construct::BitcodeInput
-            && let Some(llvm_dis) = self.settings.bitcode_via.clone()
+            && let Some(llvm_dis) = self.settings.converter().map(Path::to_path_buf)
         {
             // Everything else about the invocation is acceptable and only
             // the encoding is in the way: go on with the module as text.
@@ -244,7 +283,8 @@ impl Job<'_, '_> {
                 Ok(text) => {
                     self.record.target =
                         hod::effective_triple(&text, &line.options).map(str::to_owned);
-                    compiled = compile(&text, &line.options);
+                    report = Report::default();
+                    compiled = compile(&text, &line.options, &settings, &mut report);
                 }
                 Err(failure) => {
                     if let Some(llc) = self.settings.hybrid().map(Path::to_path_buf) {
@@ -259,7 +299,16 @@ impl Job<'_, '_> {
                 }
             }
         }
+        for &(name, at) in &report.phases {
+            self.phases.end_at(name, at);
+        }
         self.phases.end("compile");
+        if report.target.is_some() {
+            self.record.target = report.target;
+        }
+        if settings.census {
+            self.record.reasons = Some(report.reasons);
+        }
 
         let error = match compiled {
             Ok(object) => {
@@ -275,12 +324,12 @@ impl Job<'_, '_> {
             }
             Err(error) => error,
         };
-        let (reason, exit) = match &error {
+        let (reason, exit): (Cow<'static, str>, u8) = match &error {
             CompileError::Unsupported(unsupported) => {
-                (unsupported.construct.name(), EXIT_UNSUPPORTED)
+                (unsupported.construct.name().to_owned().into(), EXIT_UNSUPPORTED)
             }
-            CompileError::MalformedInput(_) => ("malformed-input", EXIT_ERROR),
-            CompileError::InvalidOptions(_) => ("invalid-options", EXIT_ERROR),
+            CompileError::MalformedInput(_) => ("malformed-input".into(), EXIT_ERROR),
+            CompileError::InvalidOptions(_) => ("invalid-options".into(), EXIT_ERROR),
         };
         if let Some(llc) = self.settings.hybrid().map(Path::to_path_buf) {
             return self.fall_back(&llc, reason, piped);
@@ -324,6 +373,7 @@ pub fn run(args: &[OsString], env: &Environment, compile: Compile<'_>, io: &mut 
             fallback,
             strict: line.strict.unwrap_or(env.strict),
             bitcode_via: line.bitcode_via.clone().or_else(|| env.bitcode_via.clone()),
+            census: env.census,
         },
         io,
         start,
@@ -338,6 +388,7 @@ pub fn run(args: &[OsString], env: &Environment, compile: Compile<'_>, io: &mut 
             fallback_time: None,
             conversion_time: None,
             fallback_status: None,
+            reasons: None,
         },
         phases: &mut phases,
     };
@@ -483,13 +534,24 @@ mod tests {
     use hod::{Construct, Unsupported};
     use hod_testutil::Scratch;
 
+    /// A module declined in the module pass (`module:asm`) with a body
+    /// the body pass refuses (`cc:ghccc`): constructs no code-generation
+    /// package turns on, so the reasons do not move with the matrix.
     const MODULE: &[u8] = b"target triple = \"aarch64-unknown-linux-gnu\"\n\
-        define i32 @f() {\n  ret i32 7\n}\n";
+        module asm \"nop\"\ndefine ghccc void @f() nounwind {\n  ret void\n}\n";
+    /// A module `classify` accepts whole: declarations only.
+    const DECLARATIONS: &[u8] = b"target triple = \"aarch64-unknown-linux-gnu\"\n\
+        declare i32 @g()\n";
     const OBJECT: &[u8] = b"\x7FELF-stand-in\n\0\xFF";
 
     /// A stand-in for `hod::compile` that succeeds.
     #[expect(clippy::unnecessary_wraps, reason = "a stand-in has the signature of the real one")]
-    fn object(_: &[u8], _: &Options) -> Result<Vec<u8>, CompileError> {
+    fn object(
+        _: &[u8],
+        _: &Options,
+        _: &hod::Settings,
+        _: &mut Report,
+    ) -> Result<Vec<u8>, CompileError> {
         Ok(OBJECT.to_vec())
     }
 
@@ -546,6 +608,46 @@ mod tests {
         let bad = vars(&[("HOD_STRICT", "yes")]);
         assert!(!bad.strict);
         assert!(bad.error.unwrap().contains("invalid value 'yes' for HOD_STRICT"));
+        // HOD_CENSUS is read like HOD_STRICT.
+        assert!(vars(&[("HOD_CENSUS", "1")]).census);
+        assert_eq!(vars(&[("HOD_CENSUS", "0")]), Environment::default());
+        assert_eq!(vars(&[("HOD_CENSUS", "")]), Environment::default());
+        let bad = vars(&[("HOD_CENSUS", "all")]);
+        assert!(!bad.census);
+        assert!(bad.error.unwrap().contains("invalid value 'all' for HOD_CENSUS: expected 1 or 0"));
+    }
+
+    // spec/cli.md "Coverage log" field 11 and "Reasons" (first refusal and
+    // census): with HOD_CENSUS=1 the line lists every reason; the reason
+    // itself, field 2, is the same.
+    #[test]
+    fn census_of_every_reason() {
+        let scratch = Scratch::new("driver-census");
+        let log = scratch.join("cov.tsv");
+        let env = Environment { coverage_log: Some(log.clone()), ..Environment::default() };
+        let census = Environment { census: true, ..env.clone() };
+        for env in [&env, &census] {
+            let ran = run_with(&["-filetype=obj"], env, &hod::compile_with, MODULE);
+            assert_eq!(ran.exit, EXIT_UNSUPPORTED);
+            let ran = run_with(&["-filetype=obj"], env, &hod::compile_with, DECLARATIONS);
+            assert_eq!(ran.exit, EXIT_UNSUPPORTED);
+            let ran = run_with(&["-filetype=asm"], env, &hod::compile_with, MODULE);
+            assert_eq!(ran.exit, EXIT_UNSUPPORTED);
+        }
+        let lines = fields(&log);
+        let summary: Vec<(&str, &str)> =
+            lines.iter().map(|l| (l[1].as_str(), l[10].as_str())).collect();
+        assert_eq!(
+            summary,
+            [
+                ("module:asm", "-"),
+                ("codegen-not-implemented", "-"),
+                ("assembly-output", "-"),
+                ("module:asm", "module:asm,cc:ghccc"),
+                ("codegen-not-implemented", "codegen-not-implemented"),
+                ("assembly-output", "assembly-output"),
+            ]
+        );
     }
 
     // spec/cli.md "Phase report": with `HOD_TIME_PHASES`, each compile
@@ -577,7 +679,15 @@ mod tests {
         assert_eq!((ran.exit, ran.stderr.as_str()), (EXIT_OK, ""));
         assert_eq!(phases(), "read compile write total");
         // A decline is the phases up to it.
-        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile, MODULE);
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_with, MODULE);
+        assert_eq!(ran.exit, EXIT_UNSUPPORTED);
+        assert_eq!(phases(), "read parse classify compile total");
+        // A module accepted whole reads its bodies too.
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_with, DECLARATIONS);
+        assert_eq!(ran.exit, EXIT_UNSUPPORTED);
+        assert_eq!(phases(), "read parse classify bodies compile total");
+        // A module declined before it is read has none of them.
+        let ran = run_with(&["-filetype=asm", "--strict"], &env, &hod::compile_with, MODULE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert_eq!(phases(), "read compile total");
         // Reports are appended; an invocation that compiles nothing has none.
@@ -599,7 +709,7 @@ mod tests {
             "{}",
             ran.stderr
         );
-        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile, MODULE);
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_with, MODULE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED, "the first failure's status stands");
     }
 
@@ -643,7 +753,7 @@ mod tests {
             ]
         );
         assert!(line[6].parse::<u64>().is_ok(), "{line:?}");
-        assert_eq!(line[7..], ["-", "-", "-"], "no fallback, no conversion: {line:?}");
+        assert_eq!(line[7..], ["-", "-", "-", "-"], "no fallback, no conversion: {line:?}");
 
         // Standard output: `-o -`, and no `-o` with standard input.
         for args in [&["-filetype=obj", "-o", "-"][..], &["-filetype=obj"]] {
@@ -655,7 +765,7 @@ mod tests {
         // A file input: read from the file, and named after it without -o.
         let input = scratch.write("m.ll", MODULE);
         let seen = std::cell::RefCell::new(Vec::new());
-        let record = |input: &[u8], _: &Options| {
+        let record = |input: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
             seen.borrow_mut().extend_from_slice(input);
             Ok(OBJECT.to_vec())
         };
@@ -687,7 +797,7 @@ mod tests {
     #[test]
     fn options_reach_the_code_generator() {
         let seen = std::cell::RefCell::new(None);
-        let record = |_: &[u8], options: &Options| {
+        let record = |_: &[u8], options: &Options, _: &hod::Settings, _: &mut Report| {
             *seen.borrow_mut() = Some(options.clone());
             Ok(Vec::new())
         };
@@ -709,8 +819,9 @@ mod tests {
     /// it keeps what it was given.
     fn text_only(
         seen: &std::cell::RefCell<Vec<Vec<u8>>>,
-    ) -> impl Fn(&[u8], &Options) -> Result<Vec<u8>, CompileError> + '_ {
-        |input: &[u8], _: &Options| {
+    ) -> impl Fn(&[u8], &Options, &hod::Settings, &mut Report) -> Result<Vec<u8>, CompileError> + '_
+    {
+        |input: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
             seen.borrow_mut().push(input.to_vec());
             match InputKind::detect(input) {
                 InputKind::Bitcode => Err(Unsupported::module(Construct::BitcodeInput).into()),
@@ -818,10 +929,15 @@ mod tests {
         assert_eq!(fields(&log)[1][5], "aarch64-unknown-linux-gnu");
 
         // What the text reader says of converted text is the reason.
-        let malformed = |input: &[u8], _: &Options| match InputKind::detect(input) {
-            InputKind::Bitcode => Err(Unsupported::module(Construct::BitcodeInput).into()),
-            InputKind::Text => Err(CompileError::MalformedInput("line 2: expected type".into())),
-        };
+        let malformed =
+            |input: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| match InputKind::detect(
+                input,
+            ) {
+                InputKind::Bitcode => Err(Unsupported::module(Construct::BitcodeInput).into()),
+                InputKind::Text => {
+                    Err(CompileError::MalformedInput("line 2: expected type".into()))
+                }
+            };
         let ran = run_with(&["-filetype=obj"], &env, &malformed, BITCODE);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.starts_with("hod: error: malformed input: line 2"), "{}", ran.stderr);
@@ -843,11 +959,11 @@ mod tests {
             ..Environment::default()
         };
         // Text; assembly output of bitcode; a rejected command line.
-        let ran = run_with(&["-filetype=obj"], &env, &hod::compile, MODULE);
+        let ran = run_with(&["-filetype=obj"], &env, &hod::compile_with, MODULE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
-        let ran = run_with(&["-filetype=asm"], &env, &hod::compile, BITCODE);
+        let ran = run_with(&["-filetype=asm"], &env, &hod::compile_with, BITCODE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
-        let ran = run_with(&["-filetype=obj", "-bogus"], &env, &hod::compile, BITCODE);
+        let ran = run_with(&["-filetype=obj", "-bogus"], &env, &hod::compile_with, BITCODE);
         assert_eq!(ran.exit, EXIT_ERROR);
         // A generator that reads bitcode itself never asks for a conversion.
         let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &object, BITCODE);
@@ -860,7 +976,7 @@ mod tests {
         assert_eq!(
             summary,
             [
-                ("error", "codegen-not-implemented", "text", "-"),
+                ("error", "module:asm", "text", "-"),
                 ("error", "assembly-output", "bitcode", "-"),
                 ("error", "unknown-option", "-", "-"),
                 ("hod", "-", "bitcode", "-"),
@@ -869,7 +985,7 @@ mod tests {
 
         // Bitcode is the reason: the converter is tried, and its absence is
         // the error (status 1: hod failed, not "unsupported").
-        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile, BITCODE);
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_with, BITCODE);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(
             ran.stderr.starts_with("hod: error: cannot run bitcode converter '")
@@ -880,12 +996,18 @@ mod tests {
         let line = &fields(&log)[4];
         assert_eq!(line[..4], ["error", "bitcode-converter-unavailable", "bitcode", "12"]);
         assert!(line[8].parse::<u64>().is_ok(), "an attempt has a time: {line:?}");
-        // Without a converter, bitcode is declined as before.
-        let plain = Environment { bitcode_via: None, ..env };
-        let ran = run_with(&["-filetype=obj"], &plain, &hod::compile, BITCODE);
-        assert_eq!(ran.exit, EXIT_UNSUPPORTED);
-        let line = &fields(&log)[5];
-        assert_eq!((line[1].as_str(), line[8].as_str()), ("bitcode-input", "-"));
+        // Without a converter, or with `native`, hod reads the bitcode
+        // itself: these twelve bytes are a bitcode header and nothing else.
+        for via in [None, Some(PathBuf::from(BITCODE_NATIVE))] {
+            let plain = Environment { bitcode_via: via, ..env.clone() };
+            let ran = run_with(&["-filetype=obj"], &plain, &hod::compile_with, BITCODE);
+            assert_eq!(ran.exit, EXIT_ERROR, "{}", ran.stderr);
+            assert!(ran.stderr.starts_with("hod: error: malformed input: bit "), "{}", ran.stderr);
+        }
+        let lines = fields(&log);
+        for line in &lines[5..] {
+            assert_eq!((line[1].as_str(), line[8].as_str()), ("malformed-input", "-"));
+        }
     }
 
     // spec/cli.md "Exit status": unsupported without a fallback is 2 and
@@ -895,7 +1017,7 @@ mod tests {
         let scratch = Scratch::new("driver-unsupported");
         let log = scratch.join("cov.tsv");
         let env = Environment { coverage_log: Some(log.clone()), ..Environment::default() };
-        let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &hod::compile, MODULE);
+        let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &hod::compile_with, DECLARATIONS);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert!(ran.stdout.is_empty());
         assert_eq!(
@@ -904,7 +1026,7 @@ mod tests {
              configured (--fallback=<llc> or HOD_FALLBACK_LLC)\n"
         );
 
-        let in_function = |_: &[u8], _: &Options| {
+        let in_function = |_: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
             Err(Unsupported {
                 construct: Construct::CodegenNotImplemented,
                 function: Some("_Z1fv".into()),
@@ -933,14 +1055,15 @@ mod tests {
         let scratch = Scratch::new("driver-malformed");
         let log = scratch.join("cov.tsv");
         let env = Environment { coverage_log: Some(log.clone()), ..Environment::default() };
-        let malformed = |_: &[u8], _: &Options| {
+        let malformed = |_: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
             Err(CompileError::MalformedInput("line 2: expected '}'".into()))
         };
         let ran = run_with(&["-filetype=obj"], &env, &malformed, b"define");
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.starts_with("hod: error: malformed input: line 2: expected '}'"));
-        let invalid =
-            |_: &[u8], _: &Options| Err(CompileError::InvalidOptions("a without b".into()));
+        let invalid = |_: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
+            Err(CompileError::InvalidOptions("a without b".into()))
+        };
         let ran = run_with(&["-filetype=obj"], &env, &invalid, b"");
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.starts_with("hod: error: invalid options: a without b"));
@@ -955,7 +1078,11 @@ mod tests {
         let scratch = Scratch::new("driver-unknown");
         let log = scratch.join("cov.tsv");
         let env = Environment { coverage_log: Some(log.clone()), ..Environment::default() };
-        let never = |_: &[u8], _: &Options| -> Result<Vec<u8>, CompileError> {
+        let never = |_: &[u8],
+                     _: &Options,
+                     _: &hod::Settings,
+                     _: &mut Report|
+         -> Result<Vec<u8>, CompileError> {
             panic!("the code generator must not run")
         };
         let ran = run_with(&["-filetype=obj", "-bogus", "-o", "a.o"], &env, &never, MODULE);
@@ -1019,7 +1146,7 @@ mod tests {
             in_fallback: true,
             ..Environment::default()
         };
-        let ran = run_with(&["-filetype=obj"], &env, &hod::compile, MODULE);
+        let ran = run_with(&["-filetype=obj"], &env, &hod::compile_with, MODULE);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.contains("HOD_IN_FALLBACK"), "{}", ran.stderr);
         assert!(ran.stderr.contains("fallback or its bitcode converter"), "{}", ran.stderr);
@@ -1041,7 +1168,7 @@ mod tests {
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.starts_with("hod: error: cannot write '"), "{}", ran.stderr);
         let unrunnable = Environment { fallback: Some(scratch.join("no-llc")), ..env.clone() };
-        let ran = run_with(&["-filetype=obj"], &unrunnable, &hod::compile, MODULE);
+        let ran = run_with(&["-filetype=obj"], &unrunnable, &hod::compile_with, MODULE);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.starts_with("hod: error: cannot run fallback '"), "{}", ran.stderr);
         let reasons: Vec<String> = fields(&log).into_iter().map(|l| l[1].clone()).collect();

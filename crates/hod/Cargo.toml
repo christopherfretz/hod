@@ -10,6 +10,8 @@ publish.workspace = true
 
 [dependencies]
 hod_ir.workspace = true
+hod_ll.workspace = true
+hod_bc.workspace = true
 hod_obj.workspace = true
 hod_cg.workspace = true
 hod_a64.workspace = true
@@ -17,6 +19,9 @@ hod_x64.workspace = true
 hod_eh.workspace = true
 hod_dwarf.workspace = true
 hod_xform.workspace = true
+
+[dev-dependencies]
+hod_testutil.workspace = true
 
 [lints]
 workspace = true

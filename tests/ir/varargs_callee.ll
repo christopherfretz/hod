@@ -8,7 +8,7 @@
 ; (an array that decays on x86-64, a struct passed by reference on AArch64).
 ;@ covers: spec/ir.md §5.4 call (variadic callee), §5.5 intrinsics (va_start, va_copy, va_end)
 ;@ tier: quick
-;@ unsupported: codegen-not-implemented
+;@ unsupported: *
 ;@ stdout: tag 0 scale 0.5: no arguments
 ;@ stdout: tag 1 scale 1.5: 1 2 3 4 5 6 7 8 9 10
 ;@ stdout: tag 2 scale 2.5: alpha 3.25 -7 0.5 123456789012 2.125 omega

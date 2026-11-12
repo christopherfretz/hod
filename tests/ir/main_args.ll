@@ -6,7 +6,7 @@
 ;@ args: alpha beta
 ;@ stdin: one line of input
 ;@ exit: 3
-;@ unsupported: codegen-not-implemented
+;@ unsupported: *
 ;@ stdout: argc=3
 ;@ stdout: alpha beta
 ;@ stdout:

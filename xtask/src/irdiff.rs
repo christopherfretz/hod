@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 pub use directives::{Arch, Expectations, LINKER_NAMES, Tier};
 pub use engine::{Mode, Session, Test};
 pub use process::Limits;
-pub use report::{BuiltBy, Outcome, Record, Report};
+pub use report::{BuiltBy, Failure, Outcome, Record, Report};
 pub use tools::{Linker, Search, Toolchain};
 
 /// The command's help.
@@ -323,6 +323,23 @@ fn toolchain(
 /// writes the results file. An error is a request that cannot be carried
 /// out at all (the command's exit status 2); everything else is in the
 /// report.
+/// The record of a test decided without the engine: skipped for want of
+/// an oracle, or broken (its directives do not parse).
+fn blank(arch: Arch, llvm: Option<u32>, name: &str, outcome: Outcome, detail: &str) -> Record {
+    Record {
+        outcome,
+        test: name.to_owned(),
+        target: arch.triple().to_owned(),
+        llvm,
+        linker: None,
+        built_by: BuiltBy::Nobody,
+        reason: None,
+        detail: detail.to_owned(),
+        covers: None,
+        failure: (outcome == Outcome::Error).then_some(Failure::Harness),
+    }
+}
+
 pub fn run(config: &Config) -> Result<Report, String> {
     let started = Instant::now();
     let host = Arch::host();
@@ -336,17 +353,8 @@ pub fn run(config: &Config) -> Result<Report, String> {
     }
     let planned = plan(config)?;
     let llvm = tools::find_llvm(config.llvm.as_deref(), &config.search)?;
-    let blank = |name: &str, outcome: Outcome, detail: &str| Record {
-        outcome,
-        test: name.to_owned(),
-        target: arch.triple().to_owned(),
-        llvm: llvm.as_ref().map(|llvm| llvm.major),
-        linker: None,
-        built_by: BuiltBy::Nobody,
-        reason: None,
-        detail: detail.to_owned(),
-        covers: None,
-    };
+    let major = llvm.as_ref().map(|llvm| llvm.major);
+    let blank = |name: &str, outcome, detail: &str| blank(arch, major, name, outcome, detail);
     let llvm_name =
         llvm.as_ref().map_or_else(|| "nollvm".to_owned(), |llvm| format!("llvm{}", llvm.major));
     let results = config.results.clone().unwrap_or_else(|| {

@@ -9,11 +9,18 @@
 //! - a narrow result leaves ones above its width (see `isa.rs`);
 //! - the stack starts out filled with `0xAA`;
 //! - a `ret` checks that the stack, frame and argument pointers are what
-//!   they were at the call;
+//!   they were at the call, and a `leave` that the stack pointer is where
+//!   the prologue left it (so a landing pad that does not raise it again
+//!   after a call with stack arguments, `spec/codegen.md` §5.3, fails);
 //! - any access outside the data and the stack is an error.
 //!
-//! Its arithmetic is its own, written from `spec/interp.md` §4: the
-//! interpreter's `ops` module is private to `hod_interp`.
+//! Its arithmetic is its own, written from `spec/interp.md` §4: it is a
+//! second statement of those semantics, not a call of the interpreter's.
+//!
+//! Exceptions are those of `spec/interp.md` §5.9: `hod_throw` and
+//! `hod_catch` are provided, and the personality is the Itanium one, read
+//! from nothing but the core's records (`spec/codegen.md` §9.4): the
+//! call-site rows, the pads, their clauses and the type-id tables.
 
 use std::sync::Arc;
 
@@ -30,6 +37,10 @@ const STACK_BYTES: usize = 256 << 10;
 const FN_BASE: u64 = 0x4000_0000_0000;
 const RT_BASE: u64 = 0x5000_0000_0000;
 const CODE_BASE: u64 = 0x6000_0000_0000;
+/// The addresses of variables without a definition (type-information
+/// objects), which are never accessed, and of exceptions.
+const EXTERN_BASE: u64 = 0x7000_0000_0000;
+const EXN_BASE: u64 = 0x7100_0000_0000;
 /// What a register holds after something clobbered it.
 const POISON: u64 = 0xDEAD_0BAD_F00D_DEAD;
 /// The most instructions a run executes.
@@ -46,6 +57,39 @@ pub struct Ran {
     pub trace: Vec<Event>,
     /// Instructions executed.
     pub steps: u64,
+    /// Exceptions thrown, and landing pads entered.
+    pub throws: u64,
+    pub landings: u64,
+}
+
+/// What became of an exception.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ExnState {
+    /// Between a throw (or a resume) and a landing pad.
+    Raised,
+    /// In the landing pad of a cleanup.
+    InCleanup,
+    /// In the landing pad of its handler, not yet caught.
+    InHandler,
+    /// Caught by `hod_catch`.
+    Caught,
+}
+
+struct Exn {
+    /// The type-information address it was thrown with.
+    ty: u64,
+    payload: u64,
+    /// The depth of the call stack at the handler's call: the frame the
+    /// search phase found.
+    handler: usize,
+    state: ExnState,
+}
+
+/// What a landing pad does for an exception.
+enum PadMatch {
+    Handler(i32),
+    Cleanup,
+    Nothing,
 }
 
 /// A call that has not returned.
@@ -63,6 +107,14 @@ struct Machine<'m> {
     code: Vec<u8>,
     /// By symbol: the offset of its code.
     entry_of: Vec<Option<usize>>,
+    /// By symbol: its address.
+    addrs: Vec<u64>,
+    exns: Vec<Exn>,
+    /// By frame pointer: the stack pointer the prologue (`enter` and any
+    /// `dynslot`) left, which `leave` must find again.
+    resting: std::collections::HashMap<u64, u64>,
+    throws: u64,
+    landings: u64,
     mem: Vec<u8>,
     regs: [u64; REGS],
     fp: u64,
@@ -253,14 +305,28 @@ impl<'m> Machine<'m> {
                     addrs[symbol.id().index()] = BASE + at as u64;
                     patches.extend(fixups.into_iter().map(|fixup| (at, fixup)));
                 }
+                SymbolKind::Variable { init: None, .. } => {
+                    addrs[symbol.id().index()] = EXTERN_BASE + 16 * symbol.id().index() as u64;
+                }
                 _ => {}
             }
         }
         for (at, fixup) in patches {
-            let hod_ir::FixupTarget::Sym(sym) = fixup.target else {
-                return Err("an initializer with a fixup that is no symbol".to_owned());
+            let target = match fixup.target {
+                hod_ir::FixupTarget::Sym(sym) => addrs[sym.index()],
+                // §9.6: the block's offset in its function's code.
+                hod_ir::FixupTarget::Block { func, block } => {
+                    let record = chunk.funcs.iter().find(|record| record.sym == func);
+                    let record = record.ok_or("a block address of a function not compiled")?;
+                    let offsets = &chunk.block_offsets
+                        [record.block_offsets.start as usize..record.block_offsets.end as usize];
+                    let row = offsets.iter().find(|row| row.block == block);
+                    let row = row.ok_or_else(|| format!("no offset for {block:?} of {func:?}"))?;
+                    CODE_BASE + u64::from(record.code.start) + u64::from(row.offset)
+                }
+                _ => return Err("an initializer with a fixup of another kind".to_owned()),
             };
-            let value = addrs[sym.index()].wrapping_add(fixup.addend as u64);
+            let value = target.wrapping_add(fixup.addend as u64);
             let (at, len) = (at + fixup.offset as usize, usize::from(fixup.size).min(8));
             mem[at..at + len].copy_from_slice(&value.to_le_bytes()[..len]);
         }
@@ -303,6 +369,11 @@ impl<'m> Machine<'m> {
             chunk,
             code,
             entry_of,
+            addrs,
+            exns: Vec::new(),
+            resting: std::collections::HashMap::new(),
+            throws: 0,
+            landings: 0,
             mem,
             regs: [POISON; REGS],
             fp: top,
@@ -412,7 +483,13 @@ impl<'m> Machine<'m> {
         }
         if let Some(index) = addr.checked_sub(RT_BASE).filter(|at| *at < 16 * 64) {
             let func = RuntimeFn::ALL.get((index / 16) as usize).copied();
-            self.runtime(func.ok_or("a call of no runtime function")?)?;
+            let func = func.ok_or("a call of no runtime function")?;
+            if func == RuntimeFn::UnwindResume {
+                // `_Unwind_Resume` does not return: the cleanup phase
+                // goes on from its call.
+                return self.resume(self.regs[0]);
+            }
+            self.runtime(func)?;
             return self.ret();
         }
         let sym = addr.checked_sub(FN_BASE).map(|at| (at / 16) as usize);
@@ -440,8 +517,18 @@ impl<'m> Machine<'m> {
                 args: Vec::new(),
                 result: Some(Val::i64(value)),
             });
-        } else if name == b"throw" {
-            return self.unwind(self.regs[0]);
+        } else if name == hod_interp::eh::THROW.as_bytes() {
+            return self.throw(self.regs[0], self.regs[1]);
+        } else if name == hod_interp::eh::CATCH.as_bytes() {
+            let exn = self.regs[0].checked_sub(EXN_BASE).map(|at| (at / 16) as usize);
+            let exn = exn.and_then(|index| self.exns.get_mut(index));
+            match exn {
+                Some(exn) if exn.state == ExnState::InHandler => {
+                    exn.state = ExnState::Caught;
+                    self.regs[0] = exn.payload;
+                }
+                _ => return Err("hod_catch of no exception in its handler".to_owned()),
+            }
         } else {
             return Err(format!("a call of {}, which has no body", String::from_utf8_lossy(name)));
         }
@@ -501,14 +588,6 @@ impl<'m> Machine<'m> {
                 let y = f32::from_bits(self.regs[usize::from(isa::FPR0) + 1] as u32);
                 self.regs[usize::from(isa::FPR0)] = u64::from((x % y).to_bits()) | (u64::MAX << 32);
             }
-            RuntimeFn::UnwindResume => {
-                // Its own frame is not one to unwind into.
-                self.calls.pop();
-                let exception = a;
-                self.unwind(exception)?;
-                // `enter` returns through `ret`: give it this frame.
-                self.calls.push(Frame { ret: self.pc, sp: self.sp, fp: self.fp, ap: self.ap });
-            }
             other => return Err(format!("runtime function {} is not provided", other.name())),
         }
         Ok(())
@@ -521,36 +600,145 @@ impl<'m> Machine<'m> {
             .find(|func| (func.code.start as usize..func.code.end as usize).contains(&pc))
     }
 
-    /// Unwinds to the innermost call site that has a landing pad
-    /// (`spec/codegen.md` §9.4): the pad is entered with the stack
-    /// pointer as it was at the call, the exception in the first
-    /// `eh_data` register and the selector in the second.
-    fn unwind(&mut self, exception: u64) -> Result<(), String> {
+    /// The landing pad of the call that frame `depth` (an index into
+    /// `calls`) returns to, by the call-site rows of its function: `None`
+    /// to unwind through it, an error if no row covers the call of a
+    /// function with landing pads (the personality terminates).
+    fn site_pad(&self, depth: usize) -> Result<Option<(&'m FuncRecord, u32, u32)>, String> {
         let chunk = self.chunk;
-        while let Some(frame) = self.calls.pop() {
-            let Some(func) = self.func_at(frame.ret.wrapping_sub(1)) else { continue };
-            let at = (frame.ret - func.code.start as usize) as u32;
-            let sites =
-                &chunk.call_sites[func.call_sites.start as usize..func.call_sites.end as usize];
-            let Some(site) = sites
-                .iter()
-                .find(|site| site.start < at && at <= site.start + site.len && site.pad != NO_PAD)
-            else {
-                continue;
-            };
-            let pad = &chunk.pads[(func.pads.start + site.pad) as usize];
-            let selector =
-                match chunk.clauses.get((func.clauses.start + pad.clauses.start) as usize) {
-                    Some(ClauseRow::Catch(id)) if !pad.clauses.is_empty() => u64::from(*id),
-                    _ => 0,
-                };
-            self.clobber(&[]);
-            (self.regs[0], self.regs[1]) = (exception, selector);
-            (self.sp, self.fp, self.ap) = (frame.sp, frame.fp, frame.ap);
-            self.pc = func.code.start as usize + site.landing as usize;
-            return Ok(());
+        let ret = self.calls[depth].ret;
+        let func = self.func_at(ret.wrapping_sub(1)).ok_or("a return into no function")?;
+        if !func.has_pads {
+            return Ok(None);
         }
-        Err("an exception that nothing catches".to_owned())
+        let at = (ret - func.code.start as usize) as u32;
+        let sites = &chunk.call_sites[func.call_sites.start as usize..func.call_sites.end as usize];
+        let Some(site) = sites.iter().find(|site| site.start < at && at <= site.start + site.len)
+        else {
+            return Err(format!(
+                "an exception through a call at {at:#x} of {}, which no call-site row covers \
+                 (std::terminate)",
+                String::from_utf8_lossy(self.module.symbol(func.sym).name())
+            ));
+        };
+        Ok((site.pad != NO_PAD).then_some((func, site.pad, site.landing)))
+    }
+
+    /// The Itanium personality at pad `pad` of `func` for an exception of
+    /// type `ty`: the clauses in order, the first that matches wins. A
+    /// filter's selector is negative: minus one more than its offset in
+    /// the function's filter table, as the LSDA's would be in entries.
+    fn pad_match(&self, func: &FuncRecord, pad: u32, ty: u64) -> Result<PadMatch, String> {
+        let chunk = self.chunk;
+        let row = chunk.pads.get((func.pads.start + pad) as usize).ok_or("no pad row")?;
+        let type_ids = &chunk.type_ids[func.type_ids.start as usize..func.type_ids.end as usize];
+        let filter_ids =
+            &chunk.filter_ids[func.filter_ids.start as usize..func.filter_ids.end as usize];
+        let type_of = |id: u32| -> Result<Option<u64>, String> {
+            let entry = id.checked_sub(1).and_then(|index| type_ids.get(index as usize));
+            let entry = entry.ok_or_else(|| format!("type id {id}, outside the table"))?;
+            Ok(entry.map(|sym| self.addrs[sym.index()]))
+        };
+        let clauses = (func.clauses.start + row.clauses.start) as usize
+            ..(func.clauses.start + row.clauses.end) as usize;
+        for clause in chunk.clauses.get(clauses).ok_or("clauses outside the table")? {
+            match clause {
+                ClauseRow::Catch(id) => match type_of(*id)? {
+                    None => return Ok(PadMatch::Handler(*id as i32)),
+                    Some(caught) if caught == ty => return Ok(PadMatch::Handler(*id as i32)),
+                    Some(_) => {}
+                },
+                ClauseRow::Filter(range) => {
+                    let ids = filter_ids
+                        .get(range.start as usize..range.end as usize)
+                        .ok_or("a filter outside the table")?;
+                    let mut listed = false;
+                    for &id in ids {
+                        listed |= type_of(id)? == Some(ty);
+                    }
+                    if !listed {
+                        return Ok(PadMatch::Handler(-(range.start as i32) - 1));
+                    }
+                }
+            }
+        }
+        Ok(if row.cleanup { PadMatch::Cleanup } else { PadMatch::Nothing })
+    }
+
+    /// `hod_throw(ty, payload)`, called through the innermost frame: the
+    /// search phase finds the handler's frame, then the cleanup phase
+    /// runs.
+    fn throw(&mut self, ty: u64, payload: u64) -> Result<(), String> {
+        if ty == 0 {
+            return Err("hod_throw of a null type".to_owned());
+        }
+        self.throws += 1;
+        let mut handler = None;
+        for depth in (0..self.calls.len()).rev() {
+            if let Some((func, pad, _)) = self.site_pad(depth)?
+                && let PadMatch::Handler(_) = self.pad_match(func, pad, ty)?
+            {
+                handler = Some(depth);
+                break;
+            }
+        }
+        // `__cxa_throw` calls `std::terminate`; no cleanup runs.
+        let handler = handler.ok_or("an exception that nothing catches (std::terminate)")?;
+        self.exns.push(Exn { ty, payload, handler, state: ExnState::Raised });
+        self.cleanup_phase(self.exns.len() - 1)
+    }
+
+    /// `_Unwind_Resume(exception)` from a cleanup.
+    fn resume(&mut self, addr: u64) -> Result<(), String> {
+        let index = addr.checked_sub(EXN_BASE).map(|at| (at / 16) as usize);
+        let index = index.filter(|&index| {
+            self.exns.get(index).is_some_and(|exn| exn.state == ExnState::InCleanup)
+        });
+        let index = index.ok_or("_Unwind_Resume of no exception in a cleanup")?;
+        self.exns[index].state = ExnState::Raised;
+        self.cleanup_phase(index)
+    }
+
+    /// Phase 2 for exception `index`: frames are left, inside out, until
+    /// one has a pad that cleans up, or the handler's frame is reached.
+    /// The pad is entered with the stack as it was at the call, the
+    /// exception in the first `eh_data` register and the selector in the
+    /// second.
+    fn cleanup_phase(&mut self, index: usize) -> Result<(), String> {
+        let Exn { ty, handler, .. } = self.exns[index];
+        while let Some(depth) = self.calls.len().checked_sub(1) {
+            if depth < handler {
+                break;
+            }
+            let found = match self.site_pad(depth)? {
+                Some((func, pad, landing)) => match self.pad_match(func, pad, ty)? {
+                    PadMatch::Handler(selector) if depth == handler => {
+                        Some((func, landing, selector, ExnState::InHandler))
+                    }
+                    PadMatch::Cleanup if depth != handler => {
+                        Some((func, landing, 0, ExnState::InCleanup))
+                    }
+                    PadMatch::Nothing if depth != handler => None,
+                    _ => return Err("the phases of an unwind disagree".to_owned()),
+                },
+                None if depth == handler => {
+                    return Err("the handler's frame has no pad any more".to_owned());
+                }
+                None => None,
+            };
+            let frame = self.calls.pop().ok_or("no frame")?;
+            if let Some((func, landing, selector, state)) = found {
+                self.exns[index].state = state;
+                self.landings += 1;
+                self.clobber(&[]);
+                self.regs[0] = EXN_BASE + 16 * index as u64;
+                self.write(Opnd::Reg(1), 32, u128::from(selector as u32))?;
+                (self.sp, self.fp, self.ap) = (frame.sp, frame.fp, frame.ap);
+                self.pc = func.code.start as usize + landing as usize;
+                return Ok(());
+            }
+        }
+        Err("the handler's frame is gone".to_owned())
     }
 
     // ---- the run loop ----
@@ -566,8 +754,17 @@ impl<'m> Machine<'m> {
                 self.store(self.sp, 8, u128::from(self.fp))?;
                 self.store(self.sp + 8, 8, u128::from(self.ap))?;
                 (self.fp, self.ap) = (self.sp, ap);
+                self.resting.insert(self.fp, self.sp);
             }
             Ins::Leave => {
+                if let Some(&resting) = self.resting.get(&self.fp)
+                    && resting != self.sp
+                {
+                    return Err(format!(
+                        "a leave with the stack pointer at {:#x}, which the prologue left at {resting:#x}",
+                        self.sp
+                    ));
+                }
                 let (fp, ap) = (self.load(self.fp, 8)? as u64, self.load(self.fp + 8, 8)? as u64);
                 self.sp = self.ap;
                 (self.fp, self.ap) = (fp, ap);
@@ -685,6 +882,7 @@ impl<'m> Machine<'m> {
                 self.sp = self.sp.wrapping_sub(u64::from(size)) & !(u64::from(align) - 1);
                 self.range(self.sp, size as usize)?;
                 self.write(ptr, 64, u128::from(self.sp))?;
+                self.resting.insert(self.fp, self.sp);
             }
             Ins::Chk { reg, bits, signed } => {
                 let value = self.reg(reg)?;
@@ -777,5 +975,7 @@ pub fn run(module: &Module, chunk: &Chunk, entry: SymId, args: &[u64]) -> Result
         fret: machine.regs[usize::from(isa::FPR0)],
         trace: machine.trace,
         steps,
+        throws: machine.throws,
+        landings: machine.landings,
     })
 }

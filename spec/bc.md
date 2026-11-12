@@ -15,8 +15,10 @@ lists, and the same refusals. Where the two could disagree, `hod_ll`'s
 decision is the contract, and this file only says how the bitcode
 reaches it. A decision `hod_ll` makes is cited as `ll.md §N`.
 
-Stage 1, this file as it stands, reads the module level and steps over
-function bodies (§7). Bodies are a later stage.
+Stage 1 reads the module level and steps over function bodies (§7).
+Stage 2 reads the bodies (§11) under the same rule: the bodies of B are
+the bodies `hod_ll::parse_bodies` reads from `llvm-dis(B)`. Debug
+information is a later stage (§6).
 
 The rules for input:
 
@@ -430,14 +432,14 @@ borrows the input and carries what a body reader needs:
 | `type_id(id)` | a bitcode type id's `hod_ir` type |
 | `attr_list(index)` | a PARAMATTR list's group ids (call-site attributes) |
 | `metadata_kinds()`, `sync_scopes()`, `bundle_tags()` | the tables of those names |
+| `metadata_count()`, `metadata(id)` | the module metadata slot table: a string, a tuple (operands as id + 1, 0 for null), a value, or a skipped (debug-info) node; function-local metadata is numbered from `metadata_count()` |
 | `numbered_globals()`, `producer()` | the numbering of §5.5 and the producer string |
 
 **Reading bodies in parallel.** Bodies are independent of each other
-given `ModuleBits`. A later stage may read them in parallel, each with
-its own cursor on the shared `data()`. The one shared mutable item is
-the module's constant table, which `constant` writes. To read bodies in
-parallel, build the constants a body uses up front, or give each body
-its own constants.
+given `ModuleBits`, which is shared read-only. Each reader
+(`BodyReader`, §11.1) keeps its own copy of the value table, and each
+thread reads into its own `Module` clone, so the constants a body
+builds go to that clone.
 
 ## 8. Errors and limits
 
@@ -559,13 +561,233 @@ numbers of each run are recorded in `landed/bc/`.
 
 ## 10. Known gaps
 
-- **Definition attachments.** A definition's metadata attachments (the
-  `global-metadata:` notes `hod_ll` gives `define … !kind !N`) are in
-  its function block. Stage 1 does not read them, so for such a
-  definition the two front doors differ until the body stage. The corpus
-  has none, because the frontends attach only `!dbg`, which is dropped.
+- **Definition attachments** are read by the body stage (§11.7): a
+  reader that reads only the module level misses their notes.
 - **blockaddress** does not check that the block exists (§5.6).
 - **`hod_ll`'s nesting limit** on constants is not mirrored. Bitcode
   constants are walked with an explicit stack, without a depth limit.
 - **Names.** A name that is not UTF-8 is read lossily where `hod_ir`
   takes a `&str`: target extension types and attribute string keys.
+
+## 11. Function bodies
+
+Stage 2 (WP-046) reads each definition's FUNCTION block into a
+`hod_ir::Body`. The rule is `hod_ll`'s: for every module, the body
+`hod_bc` reads from bitcode is the body `hod_ll` reads from `llvm-dis`
+of that bitcode, with the same unsupported names, or both refuse with
+the same error kind. Every check and decision below is a port of the one
+`hod_ll`'s body parser makes (`spec/ll.md` bodies), applied to records
+instead of text.
+
+### 11.1 The interface
+
+| item | what |
+|---|---|
+| `BodyReader::new(&ModuleBits)` | a reader: a copy of the module value table and scratch tables, reused across bodies |
+| `reader.read(&mut Module, &FunctionBits)` | `Ok(Some(body))`, `Ok(None)` when a construct is unsupported (the names in `reader.unsupported()`), or `Err(BcError)` |
+| `reader.recycle(body)` | gives a body's storage back for the next |
+| `read_bodies(&mut Module, &ModuleBits, each)` | every definition in order, `each(&Module, ReadBody { function, body, unsupported })`; the shape of `hod_ll::parse_bodies` |
+
+Bodies may be read in parallel: one `BodyReader` and one `Module` clone
+per thread over the shared `ModuleBits` (§7). The constants a body uses
+are built into the module it is read into. A body read on any thread is
+the same as read on one (`tests/bodies.rs`).
+
+### 11.2 Value numbering
+
+A body's value ids, in order:
+
+1. the module values (`value_count()`): globals, then module constants;
+2. the arguments;
+3. the function CONSTANTS block's constants (every record except
+   SETTYPE), numbered after the arguments and built on first use like
+   the module's (§5.6), over both tables;
+4. each instruction whose type is not `void`, in record order.
+
+**Operand encodings** (LLVM's relative ids, used from LLVM 3.3 on and
+by every major read here):
+
+- a value operand is relative: `abs = next − rel` (wrapping 32-bit),
+  where `next` is the id the next instruction would define;
+- a value-and-type operand (`VT` below) is followed by a type id only
+  when it is a forward reference (`abs ≥ next`);
+- `phi` incoming values are signed relative (`rel` sign-rotated:
+  bit 0 is the sign);
+- absolute: block ids, `alloca`'s count, `switch` case values, the
+  CALLBR indirect targets.
+
+**Forward references.** A reference to an instruction not yet read gets
+a reserved value of the type the record gives. When the instruction is
+read, its type must match (a `Type` error otherwise) and the reserved
+value is resolved to it. A reference never defined is an error;
+`hod_ir` reports an undefined value at `finish`, which is a cycle with
+no code and gives the note `no-code-cycle`, as `hod_ll` does.
+
+**Blocks.** DECLAREBLOCKS (once, before any instruction; count between
+1 and what the block's length allows) declares the blocks; each
+terminator ends one, and the next instruction begins the next. An
+instruction after the last declared block is `Invalid`.
+
+### 11.3 Records
+
+`ty` is a type id, `V` a relative value, `VT` a value with its type when
+forward. Trailing fields not listed are read and ignored (they carry
+flags `hod_ir` does not keep: `nuw`/`nsw`/`exact`/`disjoint`/`nneg`,
+fast-math flags, `samesign`, GEP no-wrap flags). LLVM 19 and 22 write
+the same layouts; where a field appeared later it is optional and
+ignored.
+
+| code | record | layout | reads as |
+|---|---|---|---|
+| 2 | BINOP | `[VT lhs, V rhs, opcode, flags?]` | integer or float binary by opcode and operand type |
+| 56 | UNOP | `[VT arg, opcode, flags?]` | `fneg` |
+| 3 | CAST | `[VT arg, ty, opcode, flags?]` | a cast; LLVM's `castIsValid` checked |
+| 43 | GEP | `[flags, ty source, VT base, VT index…]` | `PtrAdd`, constant indices folded (§11.4) |
+| 26 | EXTRACTVAL | `[VT agg, index…]` | `ExtractValue` at the folded byte offset |
+| 27 | INSERTVAL | `[VT agg, VT value, index…]` | `InsertValue` |
+| 29 | VSELECT | `[VT true, V false, VT cond]` | `select` |
+| 6 | EXTRACTELT | `[VT vector, VT index]` | |
+| 7 | INSERTELT | `[VT vector, V value, VT index]` | |
+| 8 | SHUFFLEVEC | `[VT first, V second, VT mask]` | mask a constant vector |
+| 28 | CMP2 | `[VT lhs, V rhs, predicate, flags?]` | `icmp` (32–41) or `fcmp` (0–15) by operand type |
+| 16 | PHI | `[ty, (signed V, block)…, flags?]` | a phi; an odd trailing field is fast-math flags |
+| 19 | ALLOCA | `[ty, ty count, count (absolute), packed, addrspace?]` | a slot or `Alloca` (§11.4) |
+| 20 | LOAD | `[VT ptr, ty, align, volatile]` | |
+| 41 | LOADATOMIC | `[VT ptr, ty, align, volatile, ordering, scope]` | |
+| 44 | STORE | `[VT ptr, VT value, align, volatile]` | |
+| 45 | STOREATOMIC | `[VT ptr, VT value, align, volatile, ordering, scope]` | |
+| 46 | CMPXCHG | `[VT ptr, VT expected, V new, volatile, success, scope, failure, weak, align?]` | result `{T, i1}` |
+| 59 | ATOMICRMW | `[VT ptr, VT value, op, volatile, ordering, scope, align?]` | |
+| 36 | FENCE | `[ordering, scope]` | |
+| 23 | VAARG | `[ty list, V list, ty result]` | |
+| 58 | FREEZE | `[VT arg]` | |
+| 47 | LANDINGPAD | `[ty, cleanup, count, (catch=0/filter=1, VT clause)…]` | |
+| 34 | CALL | `[attrs, ccinfo, fmf?, ty fn, VT callee, args…]` | §11.5 |
+| 13 | INVOKE | `[attrs, ccinfo, normal, unwind, ty fn, VT callee, args…]` | §11.5 |
+| 57 | CALLBR | `[attrs, ccinfo, default, count, indirect…, ty fn, VT callee, args…]` | §11.5 |
+| 55 | OPERAND_BUNDLE | `[tag, VT input…]` | attached to the next call |
+| 10 | RET | `[]` or `[VT value]` | |
+| 11 | BR | `[block]` or `[true, false, V cond]` | |
+| 12 | SWITCH | `[ty, V cond, default, (case value id, block)…]` | cases must be integer constants, no duplicates |
+| 31 | INDIRECTBR | `[ty, V addr, block…]` | |
+| 39 | RESUME | `[VT value]` | |
+| 15 | UNREACHABLE | `[]` | |
+
+**Funclets** (CLEANUPRET 48, CATCHRET 49, CATCHPAD 50, CLEANUPPAD 51,
+CATCHSWITCH 52) are not read further: each gives `inst:<name>` and a
+stand-in (a token value for the pads), so the body is unsupported, as
+`hod_ll` names them.
+
+**Ordering and scope.** Orderings are LLVM's codes (0 not atomic, 1
+unordered, 2 monotonic, 4 acquire, 5 release, 6 acq_rel, 7 seq_cst; 3
+is `Invalid`). A scope is a number into SYNC_SCOPE_NAMES: `""` is
+`System`, `"singlethread"` `SingleThread`, any other name gives
+`syncscope:<name>`. A module without the table has 0 singlethread and
+1 system. Load and store orderings are checked as `hod_ll` checks them.
+
+**Alignment** fields are log2 + 1, 0 for none; the default is the
+type's ABI alignment (`alloca`: its preferred one).
+
+### 11.4 Folding and slots
+
+- **GEP**: the indices walk the source type as `hod_ll` walks it;
+  constant indices fold into the byte offset, variable ones become
+  `(index, scale)` pairs; vector GEPs splat. The unsupported cases are
+  `hod_ll`'s (scalable types and the like), noted by its names.
+- **EXTRACTVAL / INSERTVAL**: the index path is folded to the byte
+  offset of the field.
+- **ALLOCA**: `packed` is `align low 5 bits | inalloca << 5 |
+  explicit-type << 6 | swifterror << 7 | align high 3 bits << 8`. Without
+  the explicit-type bit (bitcode before LLVM 3.x) it is
+  `Unsupported("record")`. `inalloca`, `swifterror` and scalable types
+  give `alloca:inalloca`, `alloca:swifterror`, `alloca:scalable`. An
+  alloca in the entry block, in address space 0, with a literal count
+  is a stack slot of `count × alloc size`; any other is an `Alloca`.
+
+### 11.5 Calls
+
+`ccinfo`:
+
+| record | calling convention | explicit type | other bits |
+|---|---|---|---|
+| CALL | `(ccinfo & 0x7ff) >> 1` | bit 15 | tail bit 0, musttail bit 14, notail bit 16, fast-math present bit 17 |
+| INVOKE | `ccinfo & !(1 << 13)` | bit 13 | |
+| CALLBR | `(ccinfo >> 1) & 0x3ff` | bit 15 | |
+
+A call without the explicit function type (bitcode before LLVM 3.x) is
+`Unsupported("record")`. The callee is a VT; a function constant that
+is INLINEASM (code 30: `[fnty, flags, asmlen, asm…, conlen,
+constraints…]`) gives an inline-asm callee, the older asm codes are
+`Unsupported("record")`.
+
+The rest follows `hod_ll`'s order:
+
+1. a call of a debug intrinsic is dropped, as `hod_ll` drops it;
+2. the arguments: one per parameter (a metadata parameter consumes one
+   operand, a metadata id; a label parameter is a `Type` error), then
+   VT operands for the variadic part;
+3. the attributes: `attrs` is a PARAMATTR list (§5.3); function flags
+   come from its groups (each group decoded once per reader), the
+   return and argument attributes as `hod_ll` keeps them, and the
+   names the groups reject are notes;
+4. an intrinsic's signature is checked as `hod_ll` checks it;
+5. a `musttail` call in a variadic function gives
+   `call:forwarded-varargs`;
+6. the operand bundles, then the call is emitted; `invoke` and `callbr`
+   end their block.
+
+### 11.6 Skipped
+
+- the function's VALUE_SYMTAB (local names: `hod_ir` keeps none), its
+  METADATA block, USELIST blocks and any other nested block;
+- DEBUG_LOC (35), DEBUG_LOC_AGAIN (33), BLOCKADDR_USERS (60);
+- debug records 61–66 (`#dbg_value` and friends), as `hod_ll` skips
+  them;
+- metadata attachments of instructions.
+
+### 11.7 Definition attachments
+
+The function block's METADATA_ATTACHMENT block holds the definition's
+own attachments in its one record of even length (`[kind, node]…`;
+an odd-length record is an instruction's, skipped). Each kind other
+than `dbg`, `type`, `vcall_visibility`, `prof`, `section_prefix` and
+`annotation` gives the module note `global-metadata:<kind>` for the
+definition, as `hod_ll` notes `define … !kind !N`. The body is still
+delivered.
+
+### 11.8 Refused
+
+- the instruction codes of bitcode before LLVM 19's format: GEP_OLD
+  (4), SELECT (5), CMP (9), STORE_OLD (24), INBOUNDS_GEP_OLD (30),
+  CMPXCHG_OLD (37), ATOMICRMW_OLD (38), LANDINGPAD_OLD (40),
+  STOREATOMIC_OLD (42), and any code not in §11.3:
+  `Unsupported("record")`;
+- a CONSTANTS block after an instruction, a second DECLAREBLOCKS,
+  operand bundles before an instruction that is not a call, an id or
+  block that names nothing, a field out of range: `Invalid`;
+- a value of the wrong type: `Type`.
+
+### 11.9 Tests
+
+`tests/bodies.rs`:
+
+- `handwritten_bodies_agree_on_every_major`: `tests/data/bodies.ll`,
+  through `llvm-as` of each installed major, read by both readers; it
+  holds every record of §11.3 and the notes of §11.3–11.7;
+- `handwritten_bodies_are_delivered`: the expected unsupported names
+  and attachment notes, so the agreement is not vacuous;
+- `bodies_read_in_parallel_are_the_same`;
+- `module_metadata_slots`: the slot table accessor of §7;
+- `corpus_bodies_agree` (`HOD_BC_CORPUS`, `HOD_BC_EVERY`,
+  `HOD_BC_DIFFS`): every corpus module, compared as `common::body_dump`
+  (each instruction with its operands, types and constants written out
+  structurally) plus the module dump of §9.2.
+
+`tests/robustness.rs` (§9.4) reads the module and then every body, over
+`tests/data/bodies-llvm19.bc` as well.
+
+### 11.10 Cost
+
+`examples/bcread.rs` modes `bc-bodies` and `ll-bodies` read the module
+and every body and print the time per instruction. The numbers are in
+`landed/bc/WP-046.md`.

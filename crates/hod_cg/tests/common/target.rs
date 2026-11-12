@@ -536,12 +536,29 @@ impl Target for Tm {
                 None => cx.call(inst),
             },
             InstKind::LandingPad(pad) => {
-                for clause in pad.clauses() {
-                    let Clause::Catch(id) = clause else { return unsup("tm:filter") };
-                    match cx.module.consts.get(*id) {
-                        Const::Null(_) => cx.pad_clause(None)?,
-                        Const::Addr { sym, addend: 0 } => cx.pad_clause(Some(sym))?,
-                        _ => return unsup("tm:catch-clause"),
+                let type_info = |cx: &FnCx<'_, Self>, id| match cx.module.consts.get(id) {
+                    Const::Null(_) => Ok(None),
+                    Const::Addr { sym, addend: 0 } => Ok(Some(sym)),
+                    _ => unsup("tm:catch-clause"),
+                };
+                for &clause in pad.clauses() {
+                    match clause {
+                        Clause::Catch(id) => {
+                            let sym = type_info(cx, id)?;
+                            cx.pad_clause(sym)?;
+                        }
+                        Clause::Filter(id) => {
+                            let elems: &[_] = match cx.module.consts.get(id) {
+                                Const::Aggregate { elems, .. } => elems,
+                                Const::Zero(_) => &[],
+                                _ => return unsup("tm:filter"),
+                            };
+                            let syms = elems
+                                .iter()
+                                .map(|&e| type_info(cx, e))
+                                .collect::<CgResult<Vec<_>>>()?;
+                            cx.pad_filter(&syms)?;
+                        }
                     }
                 }
                 let d = cx.def_mem(inst)?;
@@ -934,6 +951,21 @@ impl Tm {
             Intrinsic::Trap => {
                 cx.trap();
                 Ok(())
+            }
+            // The type id is a constant of the function's table (§9.4).
+            Intrinsic::EhTypeidFor => {
+                let sym = match arg(0)?.kind() {
+                    ValueKind::Sym(sym) => sym,
+                    ValueKind::Const(id) => match cx.module.consts.get(id) {
+                        Const::Addr { sym, addend: 0 } => sym,
+                        _ => return unsup("tm:intrinsic"),
+                    },
+                    _ => return unsup("tm:intrinsic"),
+                };
+                let id = cx.type_id(Some(sym));
+                let d = cx.def_reg(inst)?;
+                cx.put_ins(Enc::op(isa::MOVI).u8(d.index()).u64(u64::from(id)));
+                cx.finish(inst, d)
             }
             _ => unsup("tm:intrinsic"),
         }

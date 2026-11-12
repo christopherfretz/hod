@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 use common::Scratch;
 use hod_testutil::write_script;
 use xtask::irdiff::{
-    self, Arch, BuiltBy, Config, Limits, Mode, Outcome, Report, Search, TierFilter,
+    self, Arch, BuiltBy, Config, Failure, Limits, Mode, Outcome, Report, Search, TierFilter,
 };
 
 const FAKE_LLC: &str = r#"PATH=/usr/bin:/bin
@@ -261,6 +261,16 @@ fn details<'a>(report: &'a Report, file: &str) -> Vec<&'a str> {
         .collect()
 }
 
+/// The failure kinds of the records of one test, in linker order.
+fn failures(report: &Report, file: &str) -> Vec<Option<Failure>> {
+    report
+        .records
+        .iter()
+        .filter(|record| file_name(&record.test) == file)
+        .map(|record| record.failure)
+        .collect()
+}
+
 /// The outcomes of the records of one test, in linker order.
 fn outcomes(report: &Report, file: &str) -> Vec<Outcome> {
     report
@@ -400,6 +410,10 @@ fn fail_on_a_difference() {
     );
     // Standard error is not compared.
     assert_eq!(outcomes(&report, "stderr.ll"), [Outcome::Pass; 3]);
+    for file in ["stdout.ll", "status.ll", "signal.ll", "extra.ll"] {
+        assert_eq!(failures(&report, file), [Some(Failure::Comparison); 3], "{file}");
+    }
+    assert_eq!(failures(&report, "stderr.ll"), [None; 3]);
     assert_eq!(report.exit_status(), 1);
     assert_eq!((report.count(Outcome::Fail), report.count(Outcome::Error)), (12, 0));
     let summary = report.summary(false);
@@ -467,6 +481,7 @@ fn fail_when_hod_fails() {
         assert!(details(&report, file)[0].starts_with(needle), "{:?}", details(&report, file));
     }
     assert!(report.records.iter().all(|record| record.built_by == BuiltBy::Nobody));
+    assert!(report.records.iter().all(|record| record.failure == Some(Failure::HodBuild)));
     assert_eq!(report.exit_status(), 1);
 
     // With room, the hog is an ordinary pass: it was the limit.
@@ -536,7 +551,9 @@ fn unsupported_expected_and_unexpected() {
     ] {
         assert_eq!(outcomes(&report, file), [Outcome::Fail; 3], "{file}: {all}");
         assert_eq!(details(&report, file), [detail; 3]);
+        assert_eq!(failures(&report, file), [Some(Failure::Declined); 3], "{file}");
     }
+    assert_eq!(failures(&report, "expected.ll"), [None; 3]);
     assert_eq!(outcomes(&report, "oracle.ll"), [Outcome::Error; 3], "{all}");
     assert!(all.contains("UNSUPPORTED "), "{all}");
     assert!(all.contains("expected.ll [bfd lld mold]: codegen-not-implemented\n"), "{all}");
@@ -659,6 +676,22 @@ fn oracle_trouble_is_an_error() {
         assert_eq!(outcomes(&report, file), vec![Outcome::Error; records], "{file}: {all}");
         assert_eq!(details(&report, file)[0], detail, "{file}");
     }
+    // spec/harness.md "irdiff", "Library": the kind of each, which callers
+    // decide on instead of the words.
+    for (file, failure) in [
+        ("crash.ll", Failure::Crash),
+        ("hang.ll", Failure::Timeout),
+        ("fail.ll", Failure::ReferenceBuild),
+        ("silent.ll", Failure::ReferenceBuild),
+        ("stdout.ll", Failure::Comparison),
+        ("exit.ll", Failure::Comparison),
+        ("signal.ll", Failure::Comparison),
+        ("runs-long.ll", Failure::Run),
+        ("directives.ll", Failure::Harness),
+    ] {
+        assert!(failures(&report, file).iter().all(|f| *f == Some(failure)), "{file}");
+    }
+    assert_eq!(failures(&report, "link.ll"), [Some(Failure::Link), None, None]);
     // Only the linker whose link failed.
     assert_eq!(
         outcomes(&report, "link.ll"),
@@ -705,6 +738,7 @@ fn limits_are_in_force_for_programs() {
     for file in ["hod-hangs.ll", "hod-spins.ll"] {
         assert_eq!(outcomes(&report, file), [Outcome::Fail; 3], "{all}");
         assert_eq!(details(&report, file), ["the program of hod's object timed out after 3 s"; 3]);
+        assert_eq!(failures(&report, file), [Some(Failure::Run); 3]);
     }
     assert_eq!(
         details(&report, "hod-hogs.ll"),
@@ -1126,6 +1160,9 @@ fn the_witness() {
         assert_eq!(outcomes(&report, file), vec![Outcome::Error; records], "{file}: {all}");
         assert_eq!(details(&report, file), vec![detail; records], "{file}");
         assert!(details(&report, file)[0].starts_with(irdiff::engine::WITNESS) || records == 3);
+        let witness = details(&report, file).iter().all(|d| d.starts_with(irdiff::engine::WITNESS));
+        let kind = if witness { Failure::Witness } else { Failure::Comparison };
+        assert!(failures(&report, file).iter().all(|f| *f == Some(kind)), "{file}");
     }
     // The witness is its own object and one program, by the first linker.
     let kept = report.kept.clone().expect("failing tests are kept");

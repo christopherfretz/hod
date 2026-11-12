@@ -286,5 +286,6 @@ fn a_laid_out_function_matches_llvm() {
         word += 1;
     }
     assert!(mismatches.is_empty(), "{} mismatches:\n{}", mismatches.len(), mismatches.join("\n"));
-    println!("l1 fixups: {word} patched references in a laid-out function equal llvm-mc's");
+    let references: usize = used.iter().sum();
+    println!("l1 fixups: {references} patched references in a laid-out function equal llvm-mc's");
 }

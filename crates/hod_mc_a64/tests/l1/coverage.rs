@@ -80,3 +80,13 @@ fn every_constructor_is_swept() {
         assert!(counts.contains_key(name), "`{name}` is in table.rs but never checked");
     }
 }
+
+/// The unchecked form checks its precondition where debug assertions are
+/// on (`spec/mc-a64.md` "Checked and unchecked forms").
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "add_imm: operand precondition violated")]
+fn an_unchecked_form_asserts_its_precondition() {
+    use hod_mc_a64::{RegSp, Size, add_imm};
+    let _ = add_imm(Size::X, RegSp::SP, RegSp::SP, std::hint::black_box(0x1001));
+}

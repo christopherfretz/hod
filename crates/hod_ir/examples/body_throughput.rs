@@ -44,8 +44,16 @@ fn shape(m: &mut Module) -> IrResult<Shape> {
 /// A body of about `insts` instructions in blocks of [`PER_BLOCK`]: four
 /// loads, three stores, two address computations (one with a constant
 /// offset, one with a scaled index), an add, a compare, a call and a
-/// branch, on values kept in stack slots as `-O0` keeps them.
-fn build(m: &Module, shape: &Shape, insts: usize, storage: Option<Body>) -> IrResult<Body> {
+/// branch, on values kept in stack slots as `-O0` keeps them. With
+/// `cross`, each add takes the previous block's sum instead of a constant,
+/// so that `Body::verify` checks dominance across every block.
+fn build(
+    m: &Module,
+    shape: &Shape,
+    insts: usize,
+    storage: Option<Body>,
+    cross: bool,
+) -> IrResult<Body> {
     let int = MemFlags::aligned(4)?;
     let ptr = MemFlags::aligned(8)?;
     let sym = SymId::new(0);
@@ -62,6 +70,7 @@ fn build(m: &Module, shape: &Shape, insts: usize, storage: Option<Body>) -> IrRe
     let blocks = (insts / PER_BLOCK).max(1);
     let exit = b.create_block()?;
     let mut next = b.create_block()?;
+    let mut previous = shape.step;
     for index in 0..blocks {
         let block = next;
         next = if index + 1 == blocks { exit } else { b.create_block()? };
@@ -75,7 +84,10 @@ fn build(m: &Module, shape: &Shape, insts: usize, storage: Option<Body>) -> IrRe
         let field = b.ptr_add(TypeId::PTR, base, 8 + (index % 16) as i64 * 4, &[])?;
         let elem = b.ptr_add(TypeId::PTR, field, 0, &[(index_value, 4)])?;
         let value = b.load(TypeId::I32, elem, int)?;
-        let sum = b.binary(Opcode::Add, TypeId::I32, value, shape.step)?;
+        let sum = b.binary(Opcode::Add, TypeId::I32, value, previous)?;
+        if cross {
+            previous = sum;
+        }
         b.store(sum, count, int)?;
         let args = [base, sum];
         let result = b.call(TypeId::I32, &CallDesc::new(shape.callee, shape.callee_ty, &args))?;
@@ -142,11 +154,11 @@ fn main() -> IrResult<()> {
     let shape = shape(&mut m)?;
 
     // One large body.
-    let (fresh, body) = fastest(|| build(&m, &shape, insts, None))?;
+    let (fresh, body) = fastest(|| build(&m, &shape, insts, None, false))?;
     let count = body.inst_count();
     let mut storage = Some(body);
     let (recycled, ()) = fastest(|| {
-        storage = Some(build(&m, &shape, insts, storage.take())?);
+        storage = Some(build(&m, &shape, insts, storage.take(), false)?);
         Ok(())
     })?;
     let body = storage.expect("the storage");
@@ -156,6 +168,9 @@ fn main() -> IrResult<()> {
     println!("  build, fresh storage     {:6.1} ns/instruction", per_inst(fresh, count));
     println!("  build, recycled storage  {:6.1} ns/instruction", per_inst(recycled, count));
     println!("  verify                   {:6.1} ns/instruction", per_inst(verify, count));
+    let crossing = build(&m, &shape, insts, None, true)?;
+    let (verify_cross, ()) = fastest(|| crossing.verify(&m))?;
+    println!("  verify, uses across blocks {:4.1} ns/instruction", per_inst(verify_cross, count));
     println!("  read (sum {sum})  {:6.1} ns/instruction", per_inst(reading, count));
     println!(
         "  table bytes              {:6.1} bytes/instruction",
@@ -163,7 +178,7 @@ fn main() -> IrResult<()> {
     );
     println!(
         "  allocated, fresh         {:6.1} bytes/instruction",
-        ratio(build(&m, &shape, insts, None)?.allocated_bytes(), count)
+        ratio(build(&m, &shape, insts, None, false)?.allocated_bytes(), count)
     );
 
     // The same instructions as many small bodies.
@@ -172,14 +187,14 @@ fn main() -> IrResult<()> {
     let (fresh, total) = fastest(|| {
         let mut total = 0;
         for _ in 0..functions {
-            total += build(&m, &shape, small, None)?.inst_count();
+            total += build(&m, &shape, small, None, false)?.inst_count();
         }
         Ok(total)
     })?;
     let (recycled, held) = fastest(|| {
         let mut storage = None;
         for _ in 0..functions {
-            storage = Some(build(&m, &shape, small, storage)?);
+            storage = Some(build(&m, &shape, small, storage, false)?);
         }
         Ok(storage.map_or(0, |body| body.allocated_bytes()))
     })?;

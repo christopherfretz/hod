@@ -7,10 +7,10 @@
 //! body it hands over. It is the specification of "well formed" for the
 //! code generator: codegen may assume everything checked here.
 //!
-//! Not checked: that a definition dominates its uses (LLVM itself allows
-//! anything in unreachable blocks, and nothing in code generation depends
-//! on dominance being verified here), and that a symbol or inline-assembly
-//! id exists, which needs tables this crate does not have yet.
+//! Dominance (§5.8) is checked as LLVM defines it, with a dominator tree
+//! built only for a body that has a use outside its definition's block
+//! (`crate::dom`). Not checked: that a symbol or inline-assembly id
+//! exists, which needs tables this crate does not have yet.
 //!
 //! Debug information (§6.8): the declarations and records are checked
 //! against the body always, and against the module's debug tables when
@@ -22,6 +22,7 @@ use crate::body::{Body, CallData, Clause, DbgRecordKind, Inst, UNSET, UseFacts};
 use crate::constant::Const;
 use crate::debug::expr::{DiOp, ExprId};
 use crate::debug::node::DiNode;
+use crate::dom::Dominators;
 use crate::error::{IrError, IrErrorKind, IrResult};
 use crate::ids::{BlockId, ConstId, DiId, LocId, TypeId};
 use crate::inst::{AtomicOrdering, InstData, MemFlags, Opcode, PTRADD_POOLED, RmwOp};
@@ -32,8 +33,8 @@ use crate::types::{TypeKind, TypeTable};
 use crate::value::{InstId, TAG_ASM, Value, ValueKind};
 
 use IrErrorKind::{
-    BadBlock, BadIndex, InvalidDebugInfo, InvalidOperand, InvalidType, TypeMismatch, UnsizedType,
-    UseFactsMismatch,
+    BadBlock, BadIndex, InvalidDebugInfo, InvalidOperand, InvalidType, NotDominated, TypeMismatch,
+    UnsizedType, UseFactsMismatch,
 };
 
 impl Body {
@@ -1121,32 +1122,147 @@ impl Verifier<'_> {
         Ok(())
     }
 
-    /// Recomputes the use facts from the instructions and compares (§5.6).
+    /// Whether the definition `def` dominates its use by `user`, located
+    /// in `at`; `phi` is the user's block when the user is a `phi`.
+    #[cold]
+    #[inline(never)]
+    fn dominated(
+        &self,
+        dom: &mut Option<Dominators>,
+        edges: &mut Vec<u8>,
+        def: u32,
+        user: u32,
+        at: BlockId,
+        phi: Option<BlockId>,
+    ) -> IrResult<()> {
+        let body = self.body;
+        let dom = dom.get_or_insert_with(|| Dominators::new(body));
+        if !dom.reachable(at) {
+            return Ok(());
+        }
+        if def == user && phi.is_none() {
+            let what = "only a phi may use its own result in a block control reaches";
+            return self.fail(NotDominated, user, what);
+        }
+        let fail = || self.fail(NotDominated, user, format!("%{def} does not dominate this use"));
+        // The block of `def`: the last block laid out from before it.
+        let after = body.layout.partition_point(|&b| body.blocks[b.index()].first <= def);
+        let home = body.layout[after - 1];
+        if !dom.reachable(home) {
+            return fail();
+        }
+        let d = &body.insts[def as usize];
+        if d.op == Opcode::Invoke {
+            let normal = BlockId::new(body.calls[d.ops[2].bits() as usize].normal);
+            if phi == Some(normal) && at == home {
+                return Ok(());
+            }
+            if !dom.dominates(normal, at) {
+                return fail();
+            }
+            // Whether the edge dominates what its end dominates: the end
+            // is entered by that edge alone, or once by it and otherwise
+            // only from blocks it dominates. Once per invoke.
+            if edges.is_empty() {
+                edges.resize(body.blocks.len(), 0);
+            }
+            let state = &mut edges[home.index()];
+            if *state == 0 {
+                let preds = dom.preds(normal);
+                let mut from_home = 0;
+                let ok = preds.len() == 1
+                    || preds.iter().all(|&pred| {
+                        let pred = BlockId::new(pred);
+                        if pred == home {
+                            from_home += 1;
+                            from_home == 1
+                        } else {
+                            dom.dominates(normal, pred)
+                        }
+                    });
+                *state = if ok { 1 } else { 2 };
+            }
+            return if *state == 1 { Ok(()) } else { fail() };
+        }
+        if home == at {
+            // Only a phi's use reaches here for a definition in its own
+            // block that is not earlier, and the end of a block is after
+            // all of it.
+            return if phi.is_some() { Ok(()) } else { fail() };
+        }
+        if dom.dominates(home, at) { Ok(()) } else { fail() }
+    }
+
+    /// Recomputes the use facts from the instructions and compares (§5.6),
+    /// and checks that every definition dominates its uses (§5.8): LLVM's
+    /// rule, in which a use in a block control does not reach is always
+    /// allowed, a `phi`'s use is at the end of its incoming block, and an
+    /// `invoke`'s result is defined on its normal edge, so it dominates a
+    /// use when the use is that block's `phi` entry for the edge, or the
+    /// normal destination dominates the use and is entered only by that
+    /// edge or every other edge into it comes from a block it dominates.
+    /// A `callbr` result is an ordinary definition at the end of its
+    /// block.
+    ///
+    /// The dominator tree is built only for a use outside its
+    /// definition's block (or one before it in a block), in the same pass.
     fn use_facts(&self) -> IrResult<()> {
         let body = self.body;
         let mut uses = vec![UseFacts::NONE; body.insts.len()];
         let mut arg_uses = vec![UseFacts::NONE; body.arg_uses.len()];
         let entry = body.entry();
-        // A use of `value` by instruction `user`, located in block `at`.
-        let mut note = |value: Value, user: Option<u32>, at: BlockId| match value.kind() {
-            ValueKind::Inst(def) => {
-                let outside = !body.blocks[at.index()].contains(def.raw());
-                let next = !outside && user == Some(def.raw() + 1);
-                uses[def.index()].add(outside, next);
-            }
-            ValueKind::Arg(index) => arg_uses[index as usize].add(at != entry, false),
-            _ => {}
-        };
+        let mut dom: Option<Dominators> = None;
+        let mut edges: Vec<u8> = Vec::new();
         for block in body.blocks() {
-            for inst in block.insts() {
+            let here = block.id();
+            let data = body.blocks[here.index()];
+            for raw in data.first..data.end {
+                let inst = body.inst(InstId::new(raw));
                 if let crate::InstKind::Phi(list) = inst.kind() {
                     // A phi's use is at the end of the incoming block and
                     // is never "the next instruction".
-                    list.incoming().for_each(|(value, from)| note(value, None, from));
+                    for (value, from) in list.incoming() {
+                        match value.kind() {
+                            ValueKind::Inst(def) => {
+                                let def = def.raw();
+                                let inside = body.blocks[from.index()].contains(def);
+                                uses[def as usize].add(!inside, false);
+                                // Anything but an invoke in the incoming
+                                // block is defined by the end of it.
+                                if !inside || body.insts[def as usize].op == Opcode::Invoke {
+                                    self.dominated(
+                                        &mut dom,
+                                        &mut edges,
+                                        def,
+                                        raw,
+                                        from,
+                                        Some(here),
+                                    )?;
+                                }
+                            }
+                            ValueKind::Arg(index) => {
+                                arg_uses[index as usize].add(from != entry, false);
+                            }
+                            _ => {}
+                        }
+                    }
                 } else {
-                    inst.operands().iter().for_each(|&value| {
-                        note(value, Some(inst.id().raw()), block.id());
-                    });
+                    for &value in inst.operands() {
+                        match value.kind() {
+                            ValueKind::Inst(def) => {
+                                let def = def.raw();
+                                let inside = data.first <= def && def < data.end;
+                                uses[def as usize].add(!inside, inside && raw == def + 1);
+                                if !inside || def >= raw {
+                                    self.dominated(&mut dom, &mut edges, def, raw, here, None)?;
+                                }
+                            }
+                            ValueKind::Arg(index) => {
+                                arg_uses[index as usize].add(here != entry, false);
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             }
         }

@@ -634,8 +634,8 @@ fn phis_and_forward_references() {
     let more = b.icmp(IntPredicate::Slt, I1, i, n).unwrap();
     b.cond_br(more, latch, exit).unwrap();
     b.begin_block(latch).unwrap();
-    let sum = b.binary(Opcode::Add, I32, total, next).unwrap();
     let bumped = b.binary(Opcode::Add, I32, i, one).unwrap();
+    let sum = b.binary(Opcode::Add, I32, total, next).unwrap();
     b.resolve(next, bumped).unwrap();
     b.br(header).unwrap();
     b.begin_block(exit).unwrap();
@@ -666,7 +666,7 @@ fn phis_and_forward_references() {
     // The reserved operand of `sum` now names the definition.
     assert_eq!(body.inst(id(sum)).operands(), [total, bumped]);
     // `bumped`: one use by the phi (at the end of its own block) and one
-    // by `sum`, which comes before it.
+    // by `sum`, which comes after it.
     let uses = body.uses(id(bumped));
     assert_eq!((uses.count(), uses.used_outside_block()), (2, false));
     assert!(!uses.only_use_is_next());
@@ -969,7 +969,7 @@ fn use_facts_of_arguments() {
 fn use_facts_through_reserved_values() {
     let mut f = fx();
     let b = &mut f.b;
-    let [other] = [(); 1].map(|()| b.create_block().unwrap());
+    let [other, dead] = [(); 2].map(|()| b.create_block().unwrap());
     let early = b.reserve(I32).unwrap();
     let late = b.reserve(I32).unwrap();
     let from_arg = b.reserve(I32).unwrap();
@@ -977,12 +977,15 @@ fn use_facts_through_reserved_values() {
     let def = b.binary(Opcode::Add, I32, f.a, f.a).unwrap();
     b.resolve(early, def).unwrap();
     let user = b.binary(Opcode::Add, I32, early, from_arg).unwrap();
-    // Used here, defined in a later block.
-    let forward = b.binary(Opcode::Add, I32, late, late).unwrap();
     b.br(other).unwrap();
     b.begin_block(other).unwrap();
-    let late_def = b.binary(Opcode::Add, I32, user, forward).unwrap();
+    let late_def = b.binary(Opcode::Add, I32, user, user).unwrap();
     b.binary(Opcode::Add, I32, late, from_arg).unwrap();
+    b.ret(None).unwrap();
+    // Used before it is defined, in a block control does not reach
+    // (where LLVM allows it, §5.8).
+    b.begin_block(dead).unwrap();
+    b.binary(Opcode::Add, I32, late, late).unwrap();
     b.resolve(late, late_def).unwrap();
     b.resolve(from_arg, f.a).unwrap();
     let body = f.done();
@@ -992,7 +995,8 @@ fn use_facts_through_reserved_values() {
     };
     assert_eq!(facts(def), (1, false, true));
     assert_eq!(body.inst(id(user)).operands(), [def, f.a]);
-    // Two uses from the entry block, one by the instruction after it.
+    // Two uses from the unreachable block, one by the instruction after
+    // it.
     assert_eq!(facts(late_def), (3, true, false));
     // `a`: two direct uses in the entry block, one resolved use there
     // and one in the other block.

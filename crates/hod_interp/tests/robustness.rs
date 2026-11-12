@@ -231,7 +231,8 @@ impl Wild<'_> {
                 let ty = self.rng.pick(&[I8, I16, I32, I64]);
                 let bits = m.types.size_of(ty) * 8;
                 let arg = self.value(m, ty)?;
-                let flag = self.value(m, I1)?;
+                // The flag is an immediate argument: a constant.
+                let flag = Value::constant(m.consts.int(&m.types, I1, self.rng.next() & 1)?)?;
                 let name = self.rng.pick(&["ctlz", "cttz", "abs"]);
                 let name = format!("llvm.{name}.i{bits}");
                 let value = icall(m, b, &name, ty, &[ty, I1], &[arg, flag])?;
@@ -240,7 +241,7 @@ impl Wild<'_> {
             20 => {
                 let (dst, src) = (self.value(m, PTR)?, self.value(m, PTR)?);
                 let len = self.value(m, I64)?;
-                let no = self.value(m, I1)?;
+                let no = Value::constant(m.consts.int(&m.types, I1, self.rng.next() & 1)?)?;
                 let name = self.rng.pick(&["llvm.memcpy.p0.p0.i64", "llvm.memmove.p0.p0.i64"]);
                 icall(m, b, name, VOID, &[PTR, PTR, I64, I1], &[dst, src, len, no])?;
             }
@@ -293,8 +294,13 @@ fn wild_body(
             }
         })
         .collect();
+    // The values of the entry block, which dominates every other: a
+    // block uses those and its own, so that each definition dominates
+    // its uses (`spec/ir.md` §5.8).
+    let mut from_entry = wild.values.len();
     for (at, end) in ends.iter().enumerate() {
         if at != 0 {
+            wild.values.truncate(from_entry);
             b.begin_block(blocks[at])?;
             // One `phi` entry for each edge that comes here.
             let mut edges = Vec::new();
@@ -328,6 +334,9 @@ fn wild_body(
         }
         for _ in 0..wild.rng.below(8) {
             wild.inst(m, b)?;
+        }
+        if at == 0 {
+            from_entry = wild.values.len();
         }
         match end {
             End::Br(to) => {

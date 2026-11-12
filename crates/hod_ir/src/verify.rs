@@ -7,10 +7,10 @@
 //! body it hands over. It is the specification of "well formed" for the
 //! code generator: codegen may assume everything checked here.
 //!
-//! Not checked: that a definition dominates its uses (LLVM itself allows
-//! anything in unreachable blocks, and nothing in code generation depends
-//! on dominance being verified here), and that a symbol or inline-assembly
-//! id exists, which needs tables this crate does not have yet.
+//! Dominance (§5.8) is checked as LLVM defines it, with a dominator tree
+//! built only for a body that has a use outside its definition's block
+//! (`crate::dom`). Not checked: that a symbol or inline-assembly id
+//! exists, which needs tables this crate does not have yet.
 //!
 //! Debug information (§6.8): the declarations and records are checked
 //! against the body always, and against the module's debug tables when
@@ -22,6 +22,7 @@ use crate::body::{Body, CallData, Clause, DbgRecordKind, Inst, UNSET, UseFacts};
 use crate::constant::Const;
 use crate::debug::expr::{DiOp, ExprId};
 use crate::debug::node::DiNode;
+use crate::dom::Dominators;
 use crate::error::{IrError, IrErrorKind, IrResult};
 use crate::ids::{BlockId, ConstId, DiId, LocId, TypeId};
 use crate::inst::{AtomicOrdering, InstData, MemFlags, Opcode, PTRADD_POOLED, RmwOp};
@@ -32,9 +33,14 @@ use crate::types::{TypeKind, TypeTable};
 use crate::value::{InstId, TAG_ASM, Value, ValueKind};
 
 use IrErrorKind::{
-    BadBlock, BadIndex, InvalidDebugInfo, InvalidOperand, InvalidType, TypeMismatch, UnsizedType,
-    UseFactsMismatch,
+    BadBlock, BadIndex, InvalidDebugInfo, InvalidOperand, InvalidType, NotDominated, TypeMismatch,
+    UnsizedType, UseFactsMismatch,
 };
+
+mod attrs;
+mod calls;
+
+pub(crate) use attrs::{Signature, signature};
 
 impl Body {
     /// Checks every structural and type rule of §5 and that the recorded
@@ -65,9 +71,7 @@ impl Body {
         v.control_flow()?;
         v.side_tables()?;
         v.debug_records()?;
-        if !module.debug.is_empty() {
-            v.debug_ids()?;
-        }
+        v.debug_ids()?;
         v.use_facts()
     }
 }
@@ -593,7 +597,7 @@ impl Verifier<'_> {
                 }
                 Ok(())
             }
-            Opcode::Call | Opcode::Invoke | Opcode::CallBr => self.call(id, d),
+            Opcode::Call | Opcode::Invoke | Opcode::CallBr => self.call(id, d, block),
             Opcode::LandingPad => {
                 let Some(pad) = body.pads.get(a.bits() as usize) else {
                     return self.fail(InvalidOperand, id, "it has no landing-pad record");
@@ -738,7 +742,7 @@ impl Verifier<'_> {
         Ok(())
     }
 
-    fn call(&self, id: u32, d: &InstData) -> IrResult<()> {
+    fn call(&self, id: u32, d: &InstData, block: BlockId) -> IrResult<()> {
         let body = self.body;
         let types = self.types;
         let [a, b, c] = d.ops;
@@ -797,7 +801,7 @@ impl Verifier<'_> {
         match d.op {
             Opcode::Invoke => {
                 self.block_id(id, call.normal)?;
-                self.block_id(id, call.unwind)
+                self.block_id(id, call.unwind)?;
             }
             Opcode::CallBr => {
                 let list = call.unwind;
@@ -808,10 +812,11 @@ impl Verifier<'_> {
                 if dests.first() != Some(&call.normal) {
                     return self.fail(InvalidOperand, id, "its fallthrough is recorded twice");
                 }
-                dests.iter().try_for_each(|&raw| self.block_id(id, raw))
+                dests.iter().try_for_each(|&raw| self.block_id(id, raw))?;
             }
-            _ => Ok(()),
+            _ => {}
         }
+        self.call_rules(id, d.op, call, vals, bundles, block)
     }
 
     fn callee(&self, id: u32, call: &CallData, callee: Value) -> IrResult<()> {
@@ -1121,32 +1126,147 @@ impl Verifier<'_> {
         Ok(())
     }
 
-    /// Recomputes the use facts from the instructions and compares (§5.6).
+    /// Whether the definition `def` dominates its use by `user`, located
+    /// in `at`; `phi` is the user's block when the user is a `phi`.
+    #[cold]
+    #[inline(never)]
+    fn dominated(
+        &self,
+        dom: &mut Option<Dominators>,
+        edges: &mut Vec<u8>,
+        def: u32,
+        user: u32,
+        at: BlockId,
+        phi: Option<BlockId>,
+    ) -> IrResult<()> {
+        let body = self.body;
+        let dom = dom.get_or_insert_with(|| Dominators::new(body));
+        if !dom.reachable(at) {
+            return Ok(());
+        }
+        if def == user && phi.is_none() {
+            let what = "only a phi may use its own result in a block control reaches";
+            return self.fail(NotDominated, user, what);
+        }
+        let fail = || self.fail(NotDominated, user, format!("%{def} does not dominate this use"));
+        // The block of `def`: the last block laid out from before it.
+        let after = body.layout.partition_point(|&b| body.blocks[b.index()].first <= def);
+        let home = body.layout[after - 1];
+        if !dom.reachable(home) {
+            return fail();
+        }
+        let d = &body.insts[def as usize];
+        if d.op == Opcode::Invoke {
+            let normal = BlockId::new(body.calls[d.ops[2].bits() as usize].normal);
+            if phi == Some(normal) && at == home {
+                return Ok(());
+            }
+            if !dom.dominates(normal, at) {
+                return fail();
+            }
+            // Whether the edge dominates what its end dominates: the end
+            // is entered by that edge alone, or once by it and otherwise
+            // only from blocks it dominates. Once per invoke.
+            if edges.is_empty() {
+                edges.resize(body.blocks.len(), 0);
+            }
+            let state = &mut edges[home.index()];
+            if *state == 0 {
+                let preds = dom.preds(normal);
+                let mut from_home = 0;
+                let ok = preds.len() == 1
+                    || preds.iter().all(|&pred| {
+                        let pred = BlockId::new(pred);
+                        if pred == home {
+                            from_home += 1;
+                            from_home == 1
+                        } else {
+                            dom.dominates(normal, pred)
+                        }
+                    });
+                *state = if ok { 1 } else { 2 };
+            }
+            return if *state == 1 { Ok(()) } else { fail() };
+        }
+        if home == at {
+            // Only a phi's use reaches here for a definition in its own
+            // block that is not earlier, and the end of a block is after
+            // all of it.
+            return if phi.is_some() { Ok(()) } else { fail() };
+        }
+        if dom.dominates(home, at) { Ok(()) } else { fail() }
+    }
+
+    /// Recomputes the use facts from the instructions and compares (§5.6),
+    /// and checks that every definition dominates its uses (§5.8): LLVM's
+    /// rule, in which a use in a block control does not reach is always
+    /// allowed, a `phi`'s use is at the end of its incoming block, and an
+    /// `invoke`'s result is defined on its normal edge, so it dominates a
+    /// use when the use is that block's `phi` entry for the edge, or the
+    /// normal destination dominates the use and is entered only by that
+    /// edge or every other edge into it comes from a block it dominates.
+    /// A `callbr` result is an ordinary definition at the end of its
+    /// block.
+    ///
+    /// The dominator tree is built only for a use outside its
+    /// definition's block (or one before it in a block), in the same pass.
     fn use_facts(&self) -> IrResult<()> {
         let body = self.body;
         let mut uses = vec![UseFacts::NONE; body.insts.len()];
         let mut arg_uses = vec![UseFacts::NONE; body.arg_uses.len()];
         let entry = body.entry();
-        // A use of `value` by instruction `user`, located in block `at`.
-        let mut note = |value: Value, user: Option<u32>, at: BlockId| match value.kind() {
-            ValueKind::Inst(def) => {
-                let outside = !body.blocks[at.index()].contains(def.raw());
-                let next = !outside && user == Some(def.raw() + 1);
-                uses[def.index()].add(outside, next);
-            }
-            ValueKind::Arg(index) => arg_uses[index as usize].add(at != entry, false),
-            _ => {}
-        };
+        let mut dom: Option<Dominators> = None;
+        let mut edges: Vec<u8> = Vec::new();
         for block in body.blocks() {
-            for inst in block.insts() {
+            let here = block.id();
+            let data = body.blocks[here.index()];
+            for raw in data.first..data.end {
+                let inst = body.inst(InstId::new(raw));
                 if let crate::InstKind::Phi(list) = inst.kind() {
                     // A phi's use is at the end of the incoming block and
                     // is never "the next instruction".
-                    list.incoming().for_each(|(value, from)| note(value, None, from));
+                    for (value, from) in list.incoming() {
+                        match value.kind() {
+                            ValueKind::Inst(def) => {
+                                let def = def.raw();
+                                let inside = body.blocks[from.index()].contains(def);
+                                uses[def as usize].add(!inside, false);
+                                // Anything but an invoke in the incoming
+                                // block is defined by the end of it.
+                                if !inside || body.insts[def as usize].op == Opcode::Invoke {
+                                    self.dominated(
+                                        &mut dom,
+                                        &mut edges,
+                                        def,
+                                        raw,
+                                        from,
+                                        Some(here),
+                                    )?;
+                                }
+                            }
+                            ValueKind::Arg(index) => {
+                                arg_uses[index as usize].add(from != entry, false);
+                            }
+                            _ => {}
+                        }
+                    }
                 } else {
-                    inst.operands().iter().for_each(|&value| {
-                        note(value, Some(inst.id().raw()), block.id());
-                    });
+                    for &value in inst.operands() {
+                        match value.kind() {
+                            ValueKind::Inst(def) => {
+                                let def = def.raw();
+                                let inside = data.first <= def && def < data.end;
+                                uses[def as usize].add(!inside, inside && raw == def + 1);
+                                if !inside || def >= raw {
+                                    self.dominated(&mut dom, &mut edges, def, raw, here, None)?;
+                                }
+                            }
+                            ValueKind::Arg(index) => {
+                                arg_uses[index as usize].add(here != entry, false);
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             }
         }
@@ -1185,28 +1305,49 @@ mod tests {
     use crate::body::{DbgRecordKind, UseFacts};
     use crate::debug::expr::ExprId;
     use crate::{
-        Body, DiId, FunctionBuilder, IrErrorKind, LocId, Module, Opcode, SymId, TargetSpec, TypeId,
-        Value,
+        Body, FunctionBuilder, IrErrorKind, LocId, Module, Opcode, SymId, TargetSpec, TypeId, Value,
     };
 
     /// `i32 f(i32 %0, ptr %1)` whose two blocks hold a declaration of
-    /// `%1`, a value record, a label and an assign record; in a module
-    /// without debug tables, so that only the body's own rules apply.
+    /// `%1`, a value record, a label and an assign record, with the
+    /// debug tables they name: a variable and a label of a subprogram,
+    /// and a location in it.
     fn body() -> (Module, Body) {
+        use crate::{
+            DiCompileUnit, DiFile, DiLabel, DiLocalVariable, DiLocation, DiSubprogram, SpFlags,
+        };
         let mut m = Module::new(TargetSpec::aarch64_linux_gnu());
+        let d = &mut m.debug;
+        let file = d.add(&DiFile { filename: b"a.c", ..Default::default() }.into()).unwrap();
+        let unit = DiCompileUnit { file: Some(file), ..Default::default() };
+        let unit = d.add_distinct(&unit.into()).unwrap();
+        d.add_compile_unit(unit).unwrap();
+        let sp = DiSubprogram {
+            name: b"f",
+            file: Some(file),
+            sp_flags: SpFlags::DEFINITION,
+            unit: Some(unit),
+            ..Default::default()
+        };
+        let sp = d.add_distinct(&sp.into()).unwrap();
+        let var = DiLocalVariable { name: b"x", scope: Some(sp), ..Default::default() };
+        let var = d.add(&var.into()).unwrap();
+        let label = d.add(&DiLabel { scope: Some(sp), name: b"l", ..Default::default() }.into());
+        let label = label.unwrap();
+        let at = d.loc(DiLocation { line: 1, column: 1, scope: sp, inlined_at: LocId::NONE });
+        let at = at.unwrap();
         let fn_ty = m.types.function(TypeId::I32, &[TypeId::I32, TypeId::PTR], false).unwrap();
         let mut b = FunctionBuilder::new(&m, SymId::new(0), fn_ty).unwrap();
         let (entry, next) = (b.create_block().unwrap(), b.create_block().unwrap());
         b.begin_block(entry).unwrap();
         let (number, pointer) = (b.arg(0).unwrap(), b.arg(1).unwrap());
-        let (var, at) = (DiId::new(1), LocId::new(1));
         b.dbg_declare(pointer, var, ExprId::EMPTY, at).unwrap();
         let sum = b.binary(Opcode::Add, TypeId::I32, number, number).unwrap();
         b.dbg_value(sum, var, ExprId::EMPTY, at).unwrap();
         b.br(next).unwrap();
         b.begin_block(next).unwrap();
         let phi = b.phi(TypeId::I32, &[(sum, entry)]).unwrap();
-        b.dbg_label(DiId::new(2), at).unwrap();
+        b.dbg_label(label, at).unwrap();
         b.dbg_assign(phi, var, ExprId::EMPTY, pointer, ExprId::EMPTY, at).unwrap();
         b.ret(Some(phi)).unwrap();
         let body = b.finish().unwrap();

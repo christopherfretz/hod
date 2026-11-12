@@ -19,9 +19,9 @@ use std::collections::BTreeSet;
 
 use hod_ir::{
     AtomicOrdering, BlockId, Body, Bundle, CallConv, CallDesc, Clause, Dialect, FloatPredicate,
-    FunctionBuilder, FunctionDesc, InlineAsm, InstKind, IntPredicate, Intrinsic, MemFlags, Module,
-    Opcode, ParamAttrs, ParamMem, PrintError, RmwOp, SHUFFLE_UNDEF, SymId, SyncScope, TailKind,
-    TargetSpec, TypeId, Value, VariableDesc,
+    FunctionBuilder, FunctionDesc, InlineAsm, InstKind, IntPredicate, Intrinsic, IrErrorKind,
+    MemFlags, Module, Opcode, ParamAttrs, ParamMem, PrintError, RmwOp, SHUFFLE_UNDEF, SymId,
+    SyncScope, TailKind, TargetSpec, TypeId, Value, VariableDesc,
 };
 use print_support::{Fx, Llvm, declare, define, int, printed};
 
@@ -913,8 +913,14 @@ fn funclet_instructions_are_errors() {
     assert_eq!(count, 5);
 }
 
-/// §9.2: what each dialect does with `ptrtoaddr`, `llvm.thread.pointer`
-/// and a tail marker on something that is not a `call`.
+/// A function of type `ty` with a body and `personality`.
+fn desc_of(personality: SymId, ty: TypeId) -> FunctionDesc<'static> {
+    FunctionDesc { personality: Some(personality), has_body: true, ..FunctionDesc::new(ty) }
+}
+
+/// §9.2: what each dialect does with `ptrtoaddr`, `llvm.thread.pointer`,
+/// a tail marker on something that is not a `call` and `invoke` of
+/// `llvm.fake.use`.
 #[test]
 fn dialects_differ_in_instructions_as_specified() {
     let mut m = Module::new(TargetSpec::aarch64_linux_gnu());
@@ -942,32 +948,57 @@ fn dialects_differ_in_instructions_as_specified() {
         assert!(text.contains(&format!("declare ptr {pointer}")), "{text}");
     }
 
-    // LLVM has tail markers on `call` alone; `Body::verify` takes them
-    // on `invoke` and `callbr` too.
+    // LLVM has tail markers on `call` alone, and so does `Body::verify`
+    // (§5.8); the printer refuses one it is given anyway.
     let ty = m.types.function(VOID, &[], false).unwrap();
     let desc =
         FunctionDesc { personality: Some(personality), has_body: true, ..FunctionDesc::new(ty) };
     let f = m.add_function(b"marked", &desc).unwrap();
     let pad_ty = m.types.struct_type(&[PTR, I32], false).unwrap();
-    let mut x = Fx::new(&mut m, f);
-    let (normal, pad) = (x.block(), x.block());
+    let invoked = |m: &mut Module, f: SymId, desc: &CallDesc<'_>| {
+        let mut x = Fx::new(m, f);
+        let (normal, pad) = (x.block(), x.block());
+        x.b.invoke(VOID, desc, normal, pad).unwrap();
+        x.at(normal);
+        x.ret_void();
+        x.at(pad);
+        let caught = x.b.landing_pad(pad_ty, true, &[]).unwrap();
+        x.b.resume(caught).unwrap();
+        x.finish()
+    };
     let desc = CallDesc {
         tail: TailKind::Tail,
         ..CallDesc::new(Value::sym(callee).unwrap(), callee_ty, &[])
     };
-    x.b.invoke(VOID, &desc, normal, pad).unwrap();
-    x.at(normal);
-    x.ret_void();
-    x.at(pad);
-    let caught = x.b.landing_pad(pad_ty, true, &[]).unwrap();
-    x.b.resume(caught).unwrap();
-    let marked = x.done();
+    let marked = invoked(&mut m, f, &desc);
+    assert_eq!(marked.verify(&m).unwrap_err().kind, IrErrorKind::InvalidCall);
     for dialect in Dialect::ALL {
         let mut text = String::new();
         let error = m.print(&mut text, dialect, [&marked]).unwrap_err();
         let expected =
             PrintError::Unsupported { construct: "invoke:tail".to_string(), symbol: Some(f) };
         assert_eq!(error, expected);
+    }
+
+    // `invoke` of `llvm.fake.use` is LLVM 22's (§5.8, §9.6).
+    let f = m.add_function(b"kept", &desc_of(personality, ty)).unwrap();
+    let fake_use = Intrinsic::Other("llvm.fake.use");
+    let desc = CallDesc::intrinsic(fake_use, &[], ty, &[]);
+    let kept = invoked(&mut m, f, &desc);
+    kept.verify(&m).unwrap();
+    for dialect in Dialect::ALL {
+        let mut text = String::new();
+        let printed = m.print(&mut text, dialect, [&kept]);
+        if dialect.major() >= 22 {
+            printed.unwrap();
+            assert!(text.contains("invoke void @llvm.fake.use()"), "{text}");
+        } else {
+            let construct = "invoke:llvm.fake.use".to_string();
+            assert_eq!(
+                printed.unwrap_err(),
+                PrintError::Unsupported { construct, symbol: Some(f) }
+            );
+        }
     }
     let _: SymId = f;
 }

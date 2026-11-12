@@ -422,7 +422,10 @@ fn switch_and_repeated_successors() {
 fn unreachable_and_undefined_values() {
     let run = |through: bool| {
         let mut fx = Fx::new();
-        let f = fx.func("f", I32, &[I1, I1], |m, b| {
+        // `%computed` does not dominate the `ret`, so `Body::verify`
+        // refuses the body (`spec/ir.md` §5.8); the interpreter still
+        // traps on the value instead of reading garbage.
+        let (f, verified) = fx.func_unverified("f", I32, &[I1, I1], |m, b| {
             let (side, join, dead) = (b.create_block()?, b.create_block()?, b.create_block()?);
             b.cond_br(b.arg(0)?, side, join)?;
             b.begin_block(side)?;
@@ -435,6 +438,7 @@ fn unreachable_and_undefined_values() {
             b.unreachable()?;
             Ok(())
         });
+        assert!(!verified);
         (fx.run(f, &[Val::i1(through), Val::i1(false)]), fx.run(f, &[Val::i1(true), Val::i1(true)]))
     };
     let (joined, dead) = run(true);

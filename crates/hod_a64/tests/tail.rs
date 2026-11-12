@@ -715,3 +715,90 @@ fn what_stays_refused_is_refused_by_name() {
     )
     .expect("i2048 is lowered");
 }
+
+// ---- the operands of folded is.constant and objectsize ----
+
+/// `llc` folds `is.constant` and `objectsize` before instruction
+/// selection, and the operand chains nothing else uses in their block go
+/// with them: a load through an invalid pointer (GCC's `bcp-1.c`) is not
+/// run. Called with a null pointer; every build must return normally.
+const FOLDED_OPERANDS: &str = "
+declare i1 @llvm.is.constant.i8(i8)
+declare i1 @llvm.is.constant.i64(i64)
+declare i64 @llvm.objectsize.i64.p0(ptr, i1, i1, i1)
+
+; WP-086's reproducer, without `convergent` on the declaration.
+define i64 @bcp(i64 %a) {
+  %p = inttoptr i64 %a to ptr
+  %q = getelementptr inbounds i8, ptr %p, i64 123456
+  %v = load i8, ptr %q, align 1
+  %c = call i1 @llvm.is.constant.i8(i8 %v)
+  %r = zext i1 %c to i64
+  ret i64 %r
+}
+
+; The chain in another block than the call: its only use is the call.
+define i64 @cross(i64 %a) {
+entry:
+  %p = inttoptr i64 %a to ptr
+  %v = load i64, ptr %p
+  %w = mul i64 %v, 3
+  br label %next
+next:
+  %c = call i1 @llvm.is.constant.i64(i64 %w)
+  %r = zext i1 %c to i64
+  ret i64 %r
+}
+
+; objectsize of a pointer loaded through an invalid one.
+define i64 @osize(i64 %a) {
+  %pp = inttoptr i64 %a to ptr
+  %p = load ptr, ptr %pp
+  %s = call i64 @llvm.objectsize.i64.p0(ptr %p, i1 false, i1 false, i1 false)
+  ret i64 %s
+}
+
+; A dead chain beside a folded call: deleted too.
+define i64 @beside(i64 %a) {
+  %p = inttoptr i64 %a to ptr
+  %d = load i64, ptr %p
+  %e = add i64 %d, 1
+  %c = call i1 @llvm.is.constant.i64(i64 7)
+  %r = zext i1 %c to i64
+  ret i64 %r
+}
+
+; An operand that something else uses is computed.
+define i64 @kept(i64 %a) {
+  %v = add i64 %a, 40
+  %c = call i1 @llvm.is.constant.i64(i64 %v)
+  %z = zext i1 %c to i64
+  %r = add i64 %v, %z
+  ret i64 %r
+}
+
+; Used in another block by an instruction that is itself dead there:
+; still exported, so computed (here through a valid pointer).
+define i64 @exported(i64 %a) {
+entry:
+  %p = alloca i64
+  store i64 %a, ptr %p
+  %v = load i64, ptr %p
+  %c = call i1 @llvm.is.constant.i64(i64 %v)
+  br label %next
+next:
+  %dead = mul i64 %v, 5
+  %r = zext i1 %c to i64
+  ret i64 %r
+}
+";
+
+#[test]
+fn folded_operands_are_not_evaluated() {
+    let calls: Vec<native::Call> = ["bcp", "cross", "osize", "beside", "kept", "exported"]
+        .into_iter()
+        .map(|name| (name.to_owned(), [if name == "kept" || name == "exported" { 2 } else { 0 }, 0, 0, 0, 0, 0]))
+        .collect();
+    let want = format!("0\n0\n{}\n1\n42\n0\n", u64::MAX);
+    run("a64-tail-folded", FOLDED_OPERANDS, &calls, Some(&want));
+}

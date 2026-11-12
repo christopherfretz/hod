@@ -18,9 +18,17 @@
 //! - `llvm.is.constant` ([`is_manifest`]): `llc`'s `isManifestConstant`,
 //!   aggregates of manifest constants included.
 //! - `llvm.{s,u}shl.sat` and `llvm.aarch64.crc32*` ([`intrinsic`]).
+//! - In a function that calls `llvm.is.constant` or `llvm.objectsize`,
+//!   the instructions `llc` deletes once those calls are constants are
+//!   not emitted ([`begin`], [`dropped`]).
+
+use std::cell::RefCell;
 
 use hod_cg::{CallArg, CgResult, Class, FnCx, RuntimeFn};
-use hod_ir::{Const, ConstId, Inst, Intrinsic, Opcode, Switch, TypeKind, Value, ValueKind};
+use hod_ir::{
+    Body, CallSite, Const, ConstId, Inst, InstKind, Intrinsic, Opcode, Switch, TypeId, TypeKind,
+    Value, ValueKind,
+};
 use hod_mc_a64 as mc;
 use hod_mc_a64::{Cond, Crc32, FpFormat, MemSize, RegZr, Size, SysReg};
 
@@ -371,4 +379,152 @@ fn shl_sat<'a>(
         put(cx, mc::lsr_imm(Size::X, r, x, up));
     }
     cx.finish(inst, pa)
+}
+
+// ---- the operands of folded is.constant and objectsize ----
+
+/// What this module remembers about the function being compiled (part
+/// of `target::FnState`): whether [`begin`] found instructions that are
+/// not emitted.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct TailState {
+    /// Whether [`dropped`] may be true for an instruction of the function.
+    pub drops: bool,
+}
+
+/// The high bit of a use count: a use outside the block, or by a `phi`.
+const EXPORTED: u32 = 1 << 31;
+
+thread_local! {
+    /// Per instruction of the function: its uses by instructions other
+    /// than folded calls, and [`EXPORTED`]. One buffer per thread.
+    static USES: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    /// Two bitsets over the instructions: the folded calls, then the
+    /// instructions not emitted.
+    static BITS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Whether the call is one `llc`'s `LowerConstantIntrinsics` replaces by
+/// a constant before instruction selection.
+fn folds(site: &CallSite<'_>) -> bool {
+    matches!(site.intrinsic(), Some(Intrinsic::IsConstant | Intrinsic::ObjectSize))
+}
+
+/// Whether `inst` has no effect but its result: the driver's rule for a
+/// result nothing uses (`hod_cg` `driver.rs`, `has_no_effect`), which is
+/// also what SelectionDAG deletes when nothing uses its node.
+fn removable(inst: Inst<'_>) -> bool {
+    let op = inst.opcode();
+    if op.is_binary() || op.is_cast() {
+        return true;
+    }
+    match op {
+        Opcode::FNeg
+        | Opcode::ICmp
+        | Opcode::FCmp
+        | Opcode::PtrAdd
+        | Opcode::Select
+        | Opcode::Freeze
+        | Opcode::ExtractValue
+        | Opcode::InsertValue
+        | Opcode::ExtractElement
+        | Opcode::InsertElement
+        | Opcode::ShuffleVector => true,
+        Opcode::Load => matches!(
+            inst.kind(),
+            InstKind::Load { mem, .. } if !mem.is_volatile() && mem.ordering().is_none()
+        ),
+        _ => false,
+    }
+}
+
+/// `Target::begin_function`'s part (WP-084): in a function that calls
+/// `llvm.is.constant` or `llvm.objectsize`, decides which instructions
+/// are not emitted, as `llc` does. Its IR pass replaces those calls by
+/// constants and nothing else; SelectionDAG then builds each block's
+/// nodes and deletes a node nothing uses and that has no effect, which
+/// frees its operands' nodes in turn. A value used in another block (or
+/// by a `phi`) is exported and stays. So an instruction is not emitted
+/// when it has no effect, no instruction but a folded call uses it
+/// outside its block, and every user in its block is not emitted. A
+/// function without those calls costs a look at its call sites.
+pub fn begin(cx: &mut FnCx<'_, A64>) {
+    let body = cx.body;
+    cx.state.tail.drops = body.calls().any(|site| folds(&site)) && decide(body);
+}
+
+/// Fills [`USES`] and [`BITS`] for `body`; whether any instruction is
+/// not emitted.
+fn decide(body: &Body) -> bool {
+    let n = body.inst_count();
+    let words = n.div_ceil(64);
+    USES.with(|uses| {
+        BITS.with(|bits| {
+            let (mut uses, mut bits) = (uses.borrow_mut(), bits.borrow_mut());
+            uses.clear();
+            uses.resize(n, 0);
+            bits.clear();
+            bits.resize(2 * words, 0);
+            let set = |bits: &mut [u64], base: usize, i: usize| bits[base + i / 64] |= 1 << (i % 64);
+            let get = |bits: &[u64], base: usize, i: usize| bits[base + i / 64] >> (i % 64) & 1 != 0;
+            for site in body.calls() {
+                if folds(&site) {
+                    set(&mut bits, 0, site.inst().index());
+                }
+            }
+            for block in body.blocks() {
+                let range = block.inst_range();
+                for inst in block.insts() {
+                    if get(&bits, 0, inst.id().index()) {
+                        continue;
+                    }
+                    let phi = inst.opcode() == Opcode::Phi;
+                    for &op in inst.operands() {
+                        if let ValueKind::Inst(x) = op.kind() {
+                            let u = &mut uses[x.index()];
+                            *u = (*u & EXPORTED) | ((*u & !EXPORTED) + 1).min(!EXPORTED);
+                            if phi || !range.contains(&x.raw()) {
+                                *u |= EXPORTED;
+                            }
+                        }
+                    }
+                }
+            }
+            let mut any = false;
+            for block in body.blocks() {
+                for inst in block.insts().rev() {
+                    let i = inst.id().index();
+                    if uses[i] != 0
+                        || inst.ty() == TypeId::VOID
+                        || get(&bits, 0, i)
+                        || !removable(inst)
+                    {
+                        continue;
+                    }
+                    set(&mut bits, words, i);
+                    any = true;
+                    for &op in inst.operands() {
+                        if let ValueKind::Inst(x) = op.kind() {
+                            let u = &mut uses[x.index()];
+                            if *u & !EXPORTED != 0 {
+                                *u -= 1;
+                            }
+                        }
+                    }
+                }
+            }
+            any
+        })
+    })
+}
+
+/// Whether `inst` is not emitted ([`begin`]); asked only when
+/// [`TailState::drops`].
+pub fn dropped(inst: Inst<'_>) -> bool {
+    let i = inst.id().index();
+    BITS.with(|bits| {
+        let bits = bits.borrow();
+        let words = bits.len() / 2;
+        bits.get(words + i / 64).is_some_and(|w| w >> (i % 64) & 1 != 0)
+    })
 }

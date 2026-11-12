@@ -36,6 +36,11 @@ pub const CALL_MUSTTAIL_RET_MEMORY: &str = "call:musttail-ret-memory";
 /// the other class: glue moves only within a class.
 pub const CALL_PART_CLASS: &str = "call:part-register-class";
 
+/// A part of kind `PartKind::Lanes` that the target does not move
+/// (`Target::lanes_out`, `Target::lanes_in`), or one of a runtime call's
+/// own operands (WP-082).
+pub const CALL_PART_LANES: &str = "call:part-lanes";
+
 /// A `byval` argument that `assign` does not place wholly on the stack.
 pub const CALL_BYVAL_PLACE: &str = "call:byval-not-on-stack";
 

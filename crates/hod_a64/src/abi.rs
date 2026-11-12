@@ -35,7 +35,7 @@ pub const UNSUPPORTED: [&str; 23] = [
     TARGET_EXT_TYPE,
     ADDRSPACE,
     VECTOR_ELEMENT,
-    VECTOR_PROMOTED,
+    MASK_WIDE,
     WIDE_INT_ARRAY,
     BFLOAT_ARRAY,
     VECTOR_ARRAY,
@@ -60,7 +60,11 @@ const SCALABLE_VECTOR: &str = "abi:scalable-vector";
 const TARGET_EXT_TYPE: &str = "abi:target-ext-type";
 const ADDRSPACE: &str = "abi:addrspace";
 const VECTOR_ELEMENT: &str = "abi:vector-element";
-const VECTOR_PROMOTED: &str = "abi:vector-promoted";
+/// A vector of more than 64 `i1` (§4.3): not passed (WP-082).
+pub const MASK_WIDE: &str = "abi:mask-wide";
+/// No longer reported (WP-082 passes these vectors as lanes); kept for
+/// the coverage log's history.
+pub const VECTOR_PROMOTED: &str = "abi:vector-promoted";
 const WIDE_INT_ARRAY: &str = "abi:wide-int-array";
 const BFLOAT_ARRAY: &str = "abi:bfloat-array";
 const VECTOR_ARRAY: &str = "abi:vector-array";
@@ -333,7 +337,9 @@ impl Class {
 
 /// How one leaf (a scalar or a vector) is broken into pieces (§4): `count`
 /// pieces of class `class`; piece `i` holds the bytes of the leaf from
-/// `i * stride`, `size` of them (`last_size` for the last piece).
+/// `i * stride`, `size` of them (`last_size` for the last piece). A leaf
+/// whose elements travel widened to lanes (§4.3, WP-082) has `lanes`, and
+/// then `size` is the bytes of the place each piece fills.
 #[derive(Clone, Copy, Debug)]
 struct Leaf {
     class: Class,
@@ -343,15 +349,49 @@ struct Leaf {
     last_size: u32,
     /// The first piece is the first of an integer wider than a register.
     split: bool,
+    lanes: Option<LaneLeaf>,
+}
+
+/// The elements of a vector leaf as lanes (§4.3): `len` elements of
+/// `bits` bits, `lane` bytes per lane; with `each`, piece `i` carries
+/// element `i` alone, else the one piece carries them all.
+#[derive(Clone, Copy, Debug)]
+struct LaneLeaf {
+    bits: u8,
+    lane: u8,
+    len: u8,
+    each: bool,
 }
 
 impl Leaf {
     fn one(class: Class, size: u32) -> Leaf {
-        Leaf { class, count: 1, stride: 0, size, last_size: size, split: false }
+        Leaf { class, count: 1, stride: 0, size, last_size: size, split: false, lanes: None }
     }
 
     fn each(class: Class, count: u32, size: u32) -> Leaf {
-        Leaf { class, count, stride: size, size, last_size: size, split: false }
+        Leaf { class, count, stride: size, size, last_size: size, split: false, lanes: None }
+    }
+
+    /// One piece of class `class` (`D` or `Q`) whose lanes carry every
+    /// element.
+    fn lanes(class: Class, bits: u8, len: u8) -> Leaf {
+        let size = if class == Class::Q { 16 } else { 8 };
+        let lane = (size / u32::from(len)) as u8;
+        let lanes = Some(LaneLeaf { bits, lane, len, each: false });
+        Leaf { class, count: 1, stride: 0, size, last_size: size, split: false, lanes }
+    }
+
+    /// The kind of piece `piece` of this leaf.
+    fn kind(&self, piece: u32) -> PartKind {
+        match self.lanes {
+            None => PartKind::Value,
+            Some(l) => PartKind::Lanes {
+                bits: l.bits,
+                lane: l.lane,
+                first: if l.each { piece as u8 } else { 0 },
+                len: l.len,
+            },
+        }
     }
 }
 
@@ -372,6 +412,7 @@ fn leaf_of(types: &TypeTable, ty: TypeId) -> Abi<Leaf> {
                         size: 8,
                         last_size: bytes - 8 * (count - 1),
                         split: true,
+                        lanes: None,
                     }
                 }
             }
@@ -413,6 +454,7 @@ fn vector_leaf(types: &TypeTable, elem: TypeId, len: u32) -> Abi<Leaf> {
         TypeKind::Double => (Class::D, 8, false),
         TypeKind::Fp128 => return Ok(Leaf::each(Class::Q, len, 16)),
         TypeKind::Ptr { .. } => return no(ADDRSPACE),
+        TypeKind::Int(1) => return mask_leaf(len),
         _ => return no(VECTOR_ELEMENT),
     };
     let Some(total) = len.checked_mul(bytes) else { return no(SIZE_LIMIT) };
@@ -436,9 +478,14 @@ fn vector_leaf(types: &TypeTable, elem: TypeId, len: u32) -> Abi<Leaf> {
             // Split into 128-bit vectors.
             return Ok(Leaf::each(Class::Q, total / 16, 16));
         }
-        // Shorter than 64 bits: integer elements are promoted, which
-        // changes the layout; floating-point elements are widened.
-        return if integer { no(VECTOR_PROMOTED) } else { Ok(Leaf::one(Class::D, total)) };
+        // Shorter than 64 bits: integer elements are promoted to lanes
+        // of a 64-bit vector (`<2 x i8>`, `<2 x i16>` as `2s`, `<4 x i8>`
+        // as `4h`); floating-point elements are widened.
+        return Ok(if integer {
+            Leaf::lanes(Class::D, (bytes * 8) as u8, len as u8)
+        } else {
+            Leaf::one(Class::D, total)
+        });
     }
     // Not a power of two: widened to the next power of two if that is a
     // legal vector, and passed element by element otherwise.
@@ -446,6 +493,27 @@ fn vector_leaf(types: &TypeTable, elem: TypeId, len: u32) -> Abi<Leaf> {
     Ok(match widened.and_then(whole) {
         Some(class) => Leaf::one(class, total),
         None => Leaf::each(scalar, len, bytes),
+    })
+}
+
+/// §4.3: the pieces of `<len x i1>`, as LLVM promotes it: 2, 4 or 8
+/// elements as the lanes of a `D` register (`2s`, `4h`, `8b`), 16 as
+/// those of a `Q` (`16b`), any other count up to 64 one element per
+/// general register (and its 8-byte stack slot, 4 bytes written).
+fn mask_leaf(len: u32) -> Abi<Leaf> {
+    Ok(match len {
+        2 | 4 | 8 => Leaf::lanes(Class::D, 1, len as u8),
+        16 => Leaf::lanes(Class::Q, 1, 16),
+        1..=64 => Leaf {
+            class: Class::W,
+            count: len,
+            stride: 0,
+            size: 4,
+            last_size: 4,
+            split: false,
+            lanes: Some(LaneLeaf { bits: 1, lane: 4, len: len as u8, each: true }),
+        },
+        _ => return no(MASK_WIDE),
     })
 }
 
@@ -590,6 +658,7 @@ fn push(
         && let Place::Stack(last_at) = last.place
         && last.arg == arg
         && last.kind == kind
+        && !matches!(kind, PartKind::Lanes { .. })
         && last_at + last.size == at
         && last.offset + last.size == offset
     {
@@ -671,7 +740,7 @@ fn assign_return(types: &TypeTable, sig: &Sig<'_>, parts: &mut Vec<Part>) -> Abi
             let at = offset.saturating_add(u64::from(piece) * u64::from(leaf.stride));
             // An offset beyond `u32`: such a value has far more than
             // eight leaves or is mostly padding; memory serves both.
-            push(parts, 0, PartKind::Value, at, size, Loc::Reg(reg)).map_err(|_| Memory)?;
+            push(parts, 0, leaf.kind(piece), at, size, Loc::Reg(reg)).map_err(|_| Memory)?;
         }
         Ok(())
     };
@@ -777,7 +846,7 @@ fn assign_value(
                 let loc = state.piece(leaf.class, leaf.split && piece == 0);
                 let size = if piece + 1 == leaf.count { leaf.last_size } else { leaf.size };
                 let at = u64::from(piece) * u64::from(leaf.stride);
-                push(parts, arg, PartKind::Value, at, size, loc)?;
+                push(parts, arg, leaf.kind(piece), at, size, loc)?;
             }
             return Ok(());
         }
@@ -805,6 +874,7 @@ fn assign_value(
                 }
                 let placed = state.block(class, leaves, mem_align);
                 if let Block::Stack { align } = placed
+                    && leaf.lanes.is_none()
                     && u64::from(leaf.size) == class.packed()
                     && leaves.checked_mul(class.packed()) == Some(types.alloc_size_of(ty))
                 {
@@ -840,7 +910,7 @@ fn assign_value(
             };
             let size = if piece + 1 == leaf.count { leaf.last_size } else { leaf.size };
             let at = offset.saturating_add(u64::from(piece) * u64::from(leaf.stride));
-            push(parts, arg, PartKind::Value, at, size, loc)?;
+            push(parts, arg, leaf.kind(piece), at, size, loc)?;
         }
         Ok(())
     })

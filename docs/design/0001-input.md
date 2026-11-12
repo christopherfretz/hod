@@ -93,6 +93,17 @@ machine: good for proportions, not for baselines. The benchmark harness
    `alwaysinline` is discarded and referenced as an external symbol, as
    LLVM does at `-O0`.
 
+   Done (WP-021), with one refinement: a few bodies mean something else
+   out of line than inlined (their frame, return address, stack pointer,
+   a returned local address, a `setjmp`). A module that may have inlined
+   a call to one is declined by a stable name, and kiln falls back to
+   `opt` + `llc` for it. hod accepts a pre-opt module in place of
+   `opt` + `llc` when `alwaysinline` is the only trigger of `default<O0>`
+   in it; coroutines, `-finstrument-functions` and alloc tokens stay
+   refused by name. The rules, the declines and kiln's invocation are in
+   `spec/cli.md` "Always-inline"; the copy's layout in `spec/codegen.md`
+   §9.7.2; the evidence and measurements in `spec/landed/ir/WP-021.md`.
+
    This matters for the text-first integration: nearly every translation
    unit that includes the standard library contains an `alwaysinline`
    function, so kiln runs `opt` and hands `llc` bitcode in the common

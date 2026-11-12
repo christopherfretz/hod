@@ -1276,6 +1276,59 @@ part of this section.
   loaded with their padding bits set; refusals; the widest masks;
   bytes per lane), `tests/ir/vector_masks.ll`.
 
+#### Vectors across calls (WP-082)
+
+Every vector `abi::assign` places crosses a call and a return, in both
+directions, exactly as `llc -O0` passes it (`spec/abi-a64.md` §4.3);
+what `llc` passes differently from any `Part` hod can say is refused by
+name, never approximated. This supersedes the `a64:vector-call` lines
+of WP-079 and WP-081 above: `vector::check_signature` is no longer
+called, and `a64:vector-call` is no longer reported.
+
+- **Bytes.** A `Mem` vector whose pieces are bytes of its image
+  (`<3 x float>`, `<8 x i32>`, `<3 x i64>`, `<5 x i32>`, `<3 x half>`,
+  `<16 x float>`, results of more than eight pieces in memory) takes the
+  generic `Mem` path of §7.1 as any aggregate does.
+- **Lanes.** A widened vector (`<2 x i8>`, `<4 x i8>`, `<2 x i16>`) and
+  every mask of up to 64 elements has `PartKind::Lanes` parts (§7.2),
+  which the call sequence hands to `Target::lanes_out` (to a place) and
+  `Target::lanes_in` (from one). `hod_a64::vcall` implements them:
+  - a widened vector's image is loaded as `h`/`s` and widened with
+    `uxtl` (B to H, H to S), and narrowed back with `xtn` and stored as
+    its image; the consumer reads only the low bits of each lane;
+  - a mask (a `Gpr` value: bit `i` is element `i`, §5.5.1 "Vectors,
+    masks") goes to a `W` piece as `ubfx` of its bit, to a `D`/`Q`
+    piece as `movi #0` plus `ubfx`/`ins` per lane; it comes back as `bfi`
+    of bit 0 of each `W` piece or `umov`+`bfi` per lane. A `W` piece on
+    the stack is 4 bytes in an 8-byte slot; a `D`/`Q` piece is built in
+    `v31` and stored. A mask inside a `Mem` aggregate moves between its
+    bit image (padding bits zero) and the place the same way.
+  - A mask result with more than eight `W` pieces is returned in memory:
+    the callee (`vcall::ret_image`) stores its 8-byte image with the
+    bits from `N` up cleared; the caller allocates a temporary buffer,
+    passes it in `x8` and loads the mask from it.
+  - Registers: only the scratch registers (`x16`, `x17`, `v30`, `v31`)
+    and the destination are written.
+- **Refused, by name.** A mask of more than 64 elements:
+  `abi:mask-wide` (`abi:vector-promoted` is no longer reported). An
+  array of vectors of more than one piece stays `abi:vector-array`, a
+  `musttail` of a result in memory without `sret`
+  `call:musttail-ret-memory`, and `va_arg` `a64:va_arg`. x86-64 passes
+  no `Lanes` part: its `Target` keeps the default hooks
+  (`call:part-lanes`), and its `assign` is unchanged.
+- **Hooks.** `A64::assign` (no `check_signature` before
+  `abi::assign`), `A64::lanes_out` and `A64::lanes_in` (to `vcall`), and
+  the memory-return arm of `term::ret` (`vcall::ret_image`).
+- **Tests**: `crates/hod_a64/tests/vcall.rs`: hod (plain and stressed)
+  callers against `llc` 22 and 19 callees and the reverse, under bfd,
+  lld and mold; every mask length to 64 and every widened and byte shape
+  alone, after full argument registers and as results; structures and
+  arrays of them; calls through a pointer, `invoke`, `musttail`
+  forwarders; variadic callees with named vectors of every shape and
+  variable vectors and vector aggregates read by gcc's `va_arg`; gcc
+  callers and callees of every `vector_size` vector and vector
+  aggregate; refusals.
+
 #### Atomics (WP-074)
 
 `crates/hod_a64/src/atomic.rs` lowers atomic `load` and `store`,
@@ -1835,7 +1888,16 @@ params, param_attrs, fixed, variadic }`; `Part { arg, kind, offset, size,
 place }` with `place` a `Place::Reg(PReg)` or a `Place::Stack(offset)`
 measured from the stack pointer at the call, and `kind` either `Value`
 (bytes of the argument's value) or `Pointee` (bytes of the memory a
-`byval` argument points to, copied into the stack-argument area);
+`byval` argument points to, copied into the stack-argument area) or
+`Lanes { bits, lane, first, len }` (elements of a vector of `len`
+elements of `bits` bits each, element `first + i` zero-extended in lane
+`i` of the place, `lane` bytes each; the consumer reads only the
+element's bits; WP-082). The call sequence never copies a `Lanes` part
+as bytes: it hands it to the target's `lanes_out(part, from, to)` and
+`lanes_in(part, from, to)`, each side a `LaneLoc` (a register, or a
+frame place: the stack slot, or the vector's image in a `Mem` value);
+a `Gpr` mask value is gathered in the general scratch register. The
+default hooks refuse with `call:part-lanes`;
 `Assignment { args, ret, ret_memory, sret_returned_in, stack_size, va,
 vector_regs_used }`. `ret_memory` is set when a return value does not fit
 the return registers and the signature has no `sret` parameter: the
@@ -2347,6 +2409,31 @@ section. The oracle is `crates/hod_cg/tests/emit_asm.rs`: the sections,
 symbols and relocations of hod's object equal `llc`'s (19 and 22), which
 must compile each case without a diagnostic; what `llc` warns about or
 refuses is refused.
+
+#### 9.7.2 Copies of `available_externally` functions (WP-021)
+
+`emit_module` writes nothing for an `available_externally` function or
+alias: each stays an undefined symbol, as in `llc`'s object. When it is
+given a chunk for an `available_externally` function whose attributes
+are `alwaysinline` (the session gives one only for a function a body of
+the object calls directly, `spec/cli.md` "Always-inline"), it places the
+code as a copy:
+
+- a new symbol `<name>.alwaysinline` (`hod_cg::COPY_SUFFIX`; GNU
+  demanglers print it as `[clone .alwaysinline]`), `STB_LOCAL`,
+  `STT_FUNC`, sized to the code, in `.symtab` like any local function;
+- in the text section the function's own name selects (`.text` or
+  `.text.<name>` under `function_sections`), in no group: a copy is
+  private to the object, so nothing may discard or merge it;
+- its unwind entry and its DWARF subprogram are written as any
+  function's (both refer to section symbols and offsets, not to the
+  function's symbol);
+- `R_AARCH64_CALL26`/`JUMP26` (x86-64: `R_X86_64_PLT32`) relocations of
+  the object's code to the function go to the copy, resolved when every
+  chunk is placed; every other relocation (an address, data, an alias)
+  stays on the external symbol, which stays undefined.
+
+A function whose chunk is not given keeps `llc`'s layout exactly.
 
 ## 10. Errors and limits
 

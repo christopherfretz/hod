@@ -27,7 +27,7 @@
 //! `fence`, `cmpxchg` and `atomicrmw` are `atomic` (WP-074). Funclets
 //! have no package and are refused here.
 
-use hod_cg::abi::{AbiUnsupported, Assignment, Sig};
+use hod_cg::abi::{AbiUnsupported, Assignment, LaneLoc, Part, Sig};
 use hod_cg::{
     CallEmit, CgResult, Class, FixupKind, FnCx, FrameDesc, FrameRef, Label, PReg, RegInfo, RegSet,
     Target,
@@ -191,7 +191,6 @@ impl Target for A64 {
         sig: &Sig<'_>,
         out: &mut Assignment,
     ) -> Result<(), AbiUnsupported> {
-        vector::check_signature(types, sig)?;
         abi::assign(types, sig, out)
     }
 
@@ -409,6 +408,26 @@ impl Target for A64 {
             mc::ubfx(sz, rd, rd, 0, width)
         };
         put(cx, word);
+    }
+
+    fn lanes_out(
+        &self,
+        cx: &mut FnCx<'_, Self>,
+        part: &Part,
+        from: LaneLoc,
+        to: LaneLoc,
+    ) -> CgResult<()> {
+        crate::vcall::lanes_out(cx, part, from, to)
+    }
+
+    fn lanes_in(
+        &self,
+        cx: &mut FnCx<'_, Self>,
+        part: &Part,
+        from: LaneLoc,
+        to: LaneLoc,
+    ) -> CgResult<()> {
+        crate::vcall::lanes_in(cx, part, from, to)
     }
 
     fn jump(&self, cx: &mut FnCx<'_, Self>, label: Label) -> CgResult<()> {

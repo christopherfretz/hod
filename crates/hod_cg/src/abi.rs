@@ -63,6 +63,35 @@ pub enum PartKind {
     /// area. In the callee the argument's value is the address of that
     /// copy.
     Pointee,
+    /// Elements of a vector, each widened to a lane of the place (§7.2):
+    /// the vector of `len` elements of `bits` bits each (1 for a mask)
+    /// whose image starts at byte `offset` of the value; lane `i` of the
+    /// place (`lane` bytes each, `size / lane` lanes) carries element
+    /// `first + i`, extended by zero. Its consumer reads only the
+    /// element's bits of each lane. The target moves these
+    /// ([`Target::lanes_out`](crate::Target::lanes_out),
+    /// [`Target::lanes_in`](crate::Target::lanes_in)); the call sequence
+    /// never copies them as bytes.
+    Lanes {
+        /// The bits of an element: 1, 8 or 16.
+        bits: u8,
+        /// The bytes of a lane at the place.
+        lane: u8,
+        /// The element the first lane carries.
+        first: u8,
+        /// The number of elements of the vector.
+        len: u8,
+    },
+}
+
+/// One side of a [`PartKind::Lanes`] move: a register or a frame place.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LaneLoc {
+    /// A register: the place's register, or a general register holding
+    /// a mask's bits (bit `i` is element `i`).
+    Reg(PReg),
+    /// A frame place: the place's stack slot, or the vector's image.
+    Frame(crate::FrameRef),
 }
 
 /// One contiguous piece of an argument or of the return value.

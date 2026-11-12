@@ -2,8 +2,8 @@
 
 `xtask` is the project's harness: `cargo xtask <command>`. This file is the
 contract of its commands: `shim`, `irdiff` (with the directive format of
-its tests, "Test directives"), `corpus`, `roundtrip`, `bench` and the gate, `ci`. Still
-to be specified here: `bisect`.
+its tests, "Test directives"), `corpus`, `roundtrip`, `bench`, `debug` and the gate,
+`ci`. Still to be specified here: `bisect`.
 
 ## ci
 
@@ -11,7 +11,8 @@ to be specified here: `bisect`.
 order `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --
 -D warnings`, `cargo test --workspace --quiet`, then the `irdiff` runs of
 "irdiff", "In the gate", then the `roundtrip` run of "roundtrip", "In the
-gate". It stops at the first step that fails, printing
+gate", then (full gate only) the `debug` run of "debug", "In the gate". It
+stops at the first step that fails, printing
 `ci: <step> FAILED`, and ends with `ci: ok` and exit status 0 only if every
 step passed.
 
@@ -2524,3 +2525,236 @@ GNU `time`, the workspace's hod: `llc`'s record is a time, a peak memory
 and an object; hod's is a decline with its reason or an object; hod with
 its fallback costs `llc`'s memory and reports its phases; the memory
 probe is within its stated error).
+
+## debug
+
+```
+cargo xtask debug [run] [options] [<test or directory>...]
+cargo xtask debug kiln [--kiln <kiln++>] [--kiln-repo <dir>] [--hod <binary>]
+cargo xtask debug verify [-j <N>] [--hod <binary>] [-v] [<corpus dir or .ll>...]
+```
+
+Layer L7 of `docs/VALIDATION.md`: hod's debug information under the
+debuggers, against `llc`'s (`spec/dwarf.md` §8.4). Unix hosts only.
+Code: `xtask/src/debug.rs` and `xtask/src/debug/`.
+
+### Options
+
+`run` (the default):
+
+| option | meaning |
+|---|---|
+| `-j <N>`, `--jobs <N>`, `-j<N>` | units (a test and a front end) at once; default `min(4, cores)`, at most 16 |
+| `--hod <binary>` | the hod tested; default: this workspace's, built (`irdiff::build_workspace_hod`) |
+| `--linker <name>` | `bfd`, `lld`, `mold`, `wild`; repeatable; default every one found. One asked for and not found is an error |
+| `--debugger <name>` | `gdb`, `lldb` (every lldb), `lldb-19`, `lldb-22`; repeatable; default all |
+| `--frontend <name>` | `clang-19`, `clang-22`, `kiln`, `ir-19`, `ir-22`; repeatable; default every one the test allows |
+| `--tier <quick\|all>` | `quick`: only the tests with `tier: quick`; default `all` |
+| `--no-lines` | no `(function, line)` comparison |
+| `--kiln <kiln++>` | the kiln front end; default the build root's (`corpus::capture_defaults`) |
+| `--keep` | keep the work directories of units with a result other than PASS or SKIP |
+| `--results <file>` | default `<build>/l7/results.tsv` |
+| `-v`, `--verbose` | every result and every lines difference, not only the notable ones |
+| `--` | the rest are paths |
+
+### Tools
+
+Found as `irdiff`'s are (`irdiff::tools::Search`): `clang-19`,
+`clang++-19`, `clang-22`, `clang++-22` (front ends); `llc-19` and `llc-22`
+(each the reference of IR from its own major; kiln writes LLVM 22); the
+driver `gcc` and the linkers of `irdiff`'s matrix; `gdb` on `PATH`;
+`lldb-22` and `lldb-19` (on `PATH` or in `/usr/lib/llvm-<N>/bin`; a plain
+`lldb` only when neither is found, under the name its `--version` gives);
+`llvm-dwarfdump`, `llvm-nm` and `llvm-objdump` of LLVM 22, else 19, for
+the lines comparison. kiln++ is a front end of the harness, not a tool of
+the gate: without it its units are SKIP. Every other missing tool is a
+note, and under `HOD_REQUIRE_TOOLS=1` exit status 3 (`wild` excepted, as
+in `irdiff`).
+
+### Tests
+
+A debugger test is a `.c`, `.cpp` or `.ll` file under `tests/debug/` (the
+directory is walked; a file without a directive is not a test) whose
+directives are comment lines, `//@ key: value` (`;@` in IR), **at the end
+of the file**, so that editing them moves no source line:
+
+| directive | meaning |
+|---|---|
+| `gdb: <command>` | the gdb script, in order |
+| `lldb: <command>` | the lldb script, in order |
+| `gdb-check: <text>`, `lldb-check: <text>` | lines `llc`'s masked transcript must have, in order, each on a later line than the previous one's |
+| `module: <file>` | another source of the program, relative to the test; the test's own file is module 0 |
+| `objects: whole\|mixed` | `mixed`: also link each module from hod with the others from `llc` (below) |
+| `frontend: <name>...` | the front ends; default `clang-19 clang-22 kiln` for C++, `clang-19 clang-22` for C, `ir-19 ir-22` for IR |
+| `cflags: <flags>` | after `-g -O0 -S -emit-llvm` |
+| `link: <flags>` | after the objects |
+| `tier: quick\|all` | default `all` |
+| `xfail(<scope>): <reason>`, `xfail: <reason>` | a known difference (below) |
+
+A scope is words naming front ends, linkers or debuggers (`lldb` is any
+lldb), comma- or space-separated; it covers a result when, for each kind
+it names, one of its words of that kind is the result's. An unknown key, word or value
+is an ERROR of the test. A test's checks must hold on `llc`'s program: the
+checks say what the test means, the comparison with `llc` is what judges
+hod. Tests print no uninitialized value (stack contents differ between the
+programs), and a program with threads prints nothing (its output races
+the debugger's).
+
+### What a test does
+
+Per unit (a test and a front end), in its own directory under
+`<build>/l7/run-<pid>-<seconds>-<n>/`:
+
+1. each module through the front end into IR (`-g -O0 -S -emit-llvm` and
+   the `cflags`, run in the module's directory with its file name, so the
+   unit's name is the file's), then into an object by
+   `llc -O0 -global-isel=0 -fast-isel=0 -filetype=obj
+   -relocation-model=pic` and by `hod --strict` with the same options and
+   a coverage log. A front end or `llc` failure is an ERROR; hod
+   declining or failing is a FAIL;
+2. the variants: `hod` (every module from hod) and, with `objects:
+   mixed`, `hod:<file>` for each module (that one from hod, the others
+   from `llc`), so both orders of a two-object program are linked;
+3. per linker: `llc`'s program and each variant's, by `gcc -B<dir> -pie`
+   with the linker as `ld`, the `link` flags, `-lstdc++` for C++, `-lm`;
+   the program's signature checked as `irdiff` does;
+4. on the first linker, the lines comparison of `hod` against `llc`;
+5. per debugger with a script: the session on `llc`'s program, then on
+   each variant's. Each masked transcript is written beside its program
+   as `<debugger>.txt`.
+
+### Sessions
+
+gdb: `gdb -nx -batch`, then `-ex` for each of `set pagination off`, `set
+confirm off`, `set width 0`, `set debuginfod enabled off`, `set style
+enabled off`, `set print thread-events off`, then the script.
+lldb: `lldb --no-lldbinit --batch`, `-o` for each of `settings set
+use-color false`, `settings set target.disable-aslr false` (a container
+cannot turn randomization off), `settings set auto-confirm true`, then
+the script. The working directory is the program's; `LC_ALL=C`;
+`DEBUGINFOD_URLS` and `TERM` removed. The transcript is standard output
+then standard error. Every session goes through `irdiff::process::run`
+(limits, jobserver): 5 min and 8 GiB.
+
+A session ends **done**, **crashed** (killed by a signal, or its output
+has `PLEASE submit a bug report`, `Stack dump:`, `internal-error:` or `A
+fatal error internal to`) or **timed out**. A crash is its own outcome,
+never a difference.
+
+### Masking
+
+Exactly this is masked, and nothing else (`transcript::mask`):
+
+- the program's directory becomes `DIR`;
+- `0x` and the hexadecimal digits after it become `0x?` (addresses,
+  pointer values);
+- the digits after `process `, `Process `, `LWP ` and `tid = ` become `?`;
+- the digits of a code offset become `?`: ` + N` after a backtick with no
+  ` at ` between (lldb's `` prog`main + 20 ``, `` prog`geo::Box::area()
+  const + 12 ``), and `+N` closed by `>` in a word that starts with `<`
+  (gdb's `<main+20>`, `<+20>`).
+
+Values, line numbers, columns, names, frames, the number of stops and
+the order of everything must be equal. hod's prologues are not `llc`'s,
+so breakpoint addresses and offsets differ legitimately; columns do not.
+
+### Outcomes
+
+One record per session of a hod variant (and per failure before one):
+
+| outcome | when | run |
+|---|---|---|
+| PASS | the masked transcripts are equal | |
+| FAIL | they differ (the first differing line is the detail), hod declined or failed, hod's program did not link, hod's session timed out | fails |
+| XFAIL | a FAIL, or a crash on hod's program, that an `xfail` covers | |
+| XPASS | a PASS that an `xfail` covers: the directive is stale | fails |
+| CRASH | the debugger crashed: on hod's program it fails the run, on `llc`'s it is an error of the tools | fails / error |
+| ERROR | the front end or `llc` failed, `llc`'s program did not link, `llc`'s session timed out or does not meet the checks (hod's sessions still run; the detail says what hod's would have been), the directives do not parse | error |
+| SKIP | a front end or `llc` this unit needs is missing | |
+
+### Lines
+
+The `(function, line)` comparison (`spec/dwarf.md` §8.4): for each
+program, the pairs `(function, file, line)` of every `is_stmt` row of
+`.debug_line` (`llvm-dwarfdump --debug-line`, file indices resolved per
+table) whose line is not 0 and whose address range (to the next row) is
+not empty, the function being the symbol (`llvm-nm -S --defined-only`,
+`T`/`t`/`W`/`w` with a size) that contains the address. The pairs only
+one program has are classified: **P3** (`spec/dwarf.md` §5.7) a pair
+only hod's has whose line is that of its function's first row (the scope
+line of a prologue `llc` does not have); **P1** a pair only `llc`'s has
+whose every range holds only unconditional branches (`b`, by
+`llvm-objdump -d`); else **unclassified**. An unclassified pair fails the
+run.
+
+### Results file
+
+One line per record, tab-separated: test, front end, variant, linker
+(`-`), debugger (`-`), outcome, detail.
+
+### Summary and exit status
+
+The tools, the notes, every result other than PASS (`-v`: all), the lines
+of units with unclassified pairs (`-v`: all), the lines total, the counts
+and the session count. Exit status: 1 if a record fails the run or a pair
+is unclassified; else 3 for an ERROR, a crash on `llc`'s program or a
+missing required tool; else 0. 2 is a usage error.
+
+### kiln
+
+`debug kiln` runs kiln's own debugger tests (`<kiln repo>/tests/debuginfo/
+*.cpp` with `//@ expect: debugger`; kiln's `spec/harness.md`) with kiln's
+directives `std:` (default `c++26`), `args:`, `gdb:`, `lldb:`,
+`gdb-check:`, `lldb-check:`. Each is compiled and linked by `kiln++
+--llvm-dir=<dir> -std=<std> -fno-crash-diagnostics <args> -O0 -g`, from
+the kiln repository's root with the test's relative path (the checks name
+`tests/debuginfo/...`), twice: with LLVM 22's installation (`llc`), and
+with hod's shim of it (`spec/harness.md` "shim") under `HOD_STRICT=1` and
+a coverage log. Every debugger runs the test's script on both programs
+with the sessions above; a program passes when its raw output has the
+checks in order, as kiln's runner requires. The masked transcripts are
+compared and their first difference is reported, but only the checks
+judge. Exit status 1 when a test passes with `llc` and not with hod.
+kiln is read, never written.
+
+### verify
+
+`debug verify` builds every `-g` module (a `.ll` with `!llvm.dbg.cu`) of
+the corpus (default `corpus::default_dir`) or of the paths with `hod
+--strict -O0 -filetype=obj` and the module's `;@ llc-args:`, then runs
+`llvm-dwarfdump --verify` of LLVM 22 and of 19 on the object. A module
+whose `;@ target:` is not the host's is skipped; a decline is counted
+with its reason; a module that does not verify fails (exit 1), as does
+hod failing. `-j` at most 16, default 4.
+
+### In the gate
+
+The quick gate has no step of its own: `cargo test` runs
+`xtask/tests/debug_real.rs`, whose `quick_tier_matches_llc` is the quick
+tier (about 20 s on the development host at load, 120 sessions; the
+result does not depend on time or load). The full gate runs every
+debugger test, then `debug verify` (`debug::gate`), and fails on a
+non-zero exit status of either.
+
+### Library
+
+`xtask::debug::{sessions, directives, transcript, build, lines, kiln,
+verify}`; `sessions::run(&Options) -> Report`, `verify::run`,
+`kiln::run`, `debug::gate`.
+
+### Tests
+
+Unit tests: `debug::tests::run_options`; `directives::tests::
+{reads_every_directive, refuses_broken_tests, scopes, checks_in_order,
+discovery}`; `transcript::tests::{masks_what_may_differ,
+first_differing_line, crash_reports}`; `lines::tests::{reads_line_tables,
+reads_instructions, summary_counts_classes}`; `verify::tests::
+{reads_module_directives, summary_and_status}`;
+`kiln::tests::reads_kiln_directives`.
+
+`xtask/tests/debug_real.rs` (real tools; skips without them, fails under
+`HOD_REQUIRE_TOOLS=1`): `quick_tier_matches_llc` (the quick tier: no
+FAIL, ERROR, XPASS or crash; no unclassified pair, at least 95% of pairs
+the same) and `catches_differences_and_broken_tests` (a hod whose line 2
+is line 3 FAILs; the same test PASSes with hod; a check `llc`'s session
+does not meet is an ERROR; an `xfail` on a passing test is an XPASS).

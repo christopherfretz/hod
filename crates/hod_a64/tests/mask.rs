@@ -1462,22 +1462,7 @@ fn what_is_refused_is_refused_by_name() {
                 .into(),
             intrinsic::VECTOR,
         ),
-        (
-            "define <4 x i1> @f(<4 x i1> %m) {\n  ret <4 x i1> %m\n}\n".into(),
-            vector::CALL,
-        ),
-        (
-            "declare void @g(<8 x i1>)\ndefine void @f(ptr %p) {\n  %m = load <8 x i1>, ptr %p\n  \
-             call void @g(<8 x i1> %m)\n  ret void\n}\n"
-                .into(),
-            vector::CALL,
-        ),
-        (
-            "declare <16 x i1> @g()\ndefine void @f(ptr %p) {\n  %m = call <16 x i1> @g()\n  \
-             store <16 x i1> %m, ptr %p\n  ret void\n}\n"
-                .into(),
-            vector::CALL,
-        ),
+        // Masks across calls pass since WP-082 (`tests/vcall.rs`).
     ];
     let cases: Vec<(&str, &'static str)> = cases.iter().map(|(f, r)| (f.as_str(), *r)).collect();
     assert_refused(&cases);

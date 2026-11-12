@@ -98,7 +98,8 @@ fn record_refusals() {
         module(&[("!20, !DIExpression()", "!20, !DIExpression(DW_OP_LLVM_fragment, 0, 16)")], "");
     assert_eq!(check(&fragment), Err((0, "debug:fragment")));
     let label = module(&[("line: 3)", "line: 3, isArtificial: true)")], "");
-    assert_eq!(check(&label), Err((0, "debug:label-attribute")));
+    // WP-098: every label is written (spec/dwarf.md §6.14).
+    assert_eq!(check(&label), Ok(()));
 }
 
 #[test]

@@ -52,6 +52,7 @@ mod func;
 mod global;
 mod import;
 mod inline;
+mod label;
 mod leb;
 mod line;
 mod policy;

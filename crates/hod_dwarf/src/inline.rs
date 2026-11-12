@@ -613,6 +613,9 @@ impl<'a> Writer<'a> {
                 self.ref_to(plan, node, v.ty.unwrap_or(DiId::NONE))?;
             }
             (Kind::AbstractLabel, DiNode::Label(n)) => {
+                if !crate::label::is_plain(&n) {
+                    return self.label_any(plan, node, &n, None);
+                }
                 let decl = Writer::decl_of(plan, node, n.file, n.line)?;
                 if let Some(d) = decl
                     && n.column != 0

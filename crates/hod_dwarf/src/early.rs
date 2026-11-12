@@ -16,8 +16,8 @@
 //! [`LOCAL_TYPE_SCOPE`].
 
 use hod_ir::{
-    Body, DbgRecordKind, DebugInfo, DiId, DiKind, DiNode, DiSubprogram, EmissionKind, ExprId,
-    Module, SpFlags, SymbolKind, Value,
+    Body, DebugInfo, DiId, DiKind, DiNode, DiSubprogram, EmissionKind, ExprId, Module, SpFlags,
+    SymbolKind, Value,
 };
 
 use crate::Error;
@@ -137,15 +137,7 @@ fn check_records(debug: &DebugInfo, body: &Body) -> Result<(), &'static str> {
     for (var, expr) in vars.chain(declares.map(|d| (d.var, d.expr))) {
         check_variable(debug, var, expr)?;
     }
-    for record in body.dbg_records() {
-        if record.kind == DbgRecordKind::Label
-            && debug.find_kind(record.var) == Some(DiKind::Label)
-            && let DiNode::Label(n) = debug.node(record.var)
-            && (n.name.is_empty() || n.is_artificial || n.coro_suspend_idx.is_some())
-        {
-            return Err("debug:label-attribute");
-        }
-    }
+    // WP-098: every label is written (§6.14); none is refused here.
     Ok(())
 }
 

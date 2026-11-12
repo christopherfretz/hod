@@ -123,6 +123,9 @@ pub mod at {
     pub const CALL_LINE: u16 = 0x59;
     pub const GNU_VECTOR: u16 = 0x2107;
     pub const GNU_TEMPLATE_NAME: u16 = 0x2110;
+    // WP-098: the suspend point a coroutine's label marks (LLVM 21's
+    // `DW_AT_LLVM_coro_suspend_idx`, in LLVM's vendor range).
+    pub const LLVM_CORO_SUSPEND_IDX: u16 = 0x3e0d;
 }
 
 /// `DW_FORM_*` (DWARF 5 §7.5.6, table 7.6).
@@ -305,6 +308,8 @@ pub mod fam {
     pub const VARIABLE_ALIGNED: usize = 88;
     // WP-094: the declines left after WP-087.
     pub const SUBPROGRAM_MINIMAL: usize = 89;
+    // WP-098: labels beyond WP-057's.
+    pub const LABEL_ANY: usize = 90;
 }
 
 /// Every family, in code order (`spec/dwarf.md` §6.1 has the same table).
@@ -1336,6 +1341,26 @@ pub const FAMILIES: &[Family] = &[
             o(1, at::ABSTRACT_ORIGIN, REF4),
         ],
     ),
+    // WP-098. 90: a label of any shape, in `llc` 21's order
+    // (`applyLabelAttributes`): a name unless empty, the declaration
+    // unless its line is 0 (the column only then), `artificial`, the
+    // coroutine suspend index; `low_pc` unless abstract.
+    fam(
+        "label (any)",
+        tag::LABEL,
+        No,
+        64,
+        "WP-098",
+        &[
+            o(0, at::NAME, STRX),
+            o(1, at::DECL_FILE, UDATA),
+            o(1, at::DECL_LINE, UDATA),
+            o(2, at::DECL_COLUMN, UDATA),
+            o(3, at::ARTIFICIAL, FLAG_PRESENT),
+            o(4, at::LLVM_CORO_SUSPEND_IDX, UDATA),
+            o(5, at::LOW_PC, ADDRX),
+        ],
+    ),
 ];
 
 /// The slots of the general static-member families (54, 55), in `llc`'s
@@ -1501,7 +1526,9 @@ mod tests {
         assert_eq!(BASES[fam::VARIABLE_ALIGNED], 10639);
         // WP-094 appended family 89.
         assert_eq!(BASES[fam::SUBPROGRAM_MINIMAL], 10647);
-        assert_eq!(CODE_END, 10655);
+        // WP-098 appended family 90.
+        assert_eq!(BASES[fam::LABEL_ANY], 10655);
+        assert_eq!(CODE_END, 10719);
         for (index, name) in [
             (fam::CONST_TYPE, "const_type"),
             (fam::TYPEDEF, "typedef"),

@@ -1038,7 +1038,7 @@ what the gate compares, `llc`'s are its control.
 - appends one line to the log beside it (the baseline's name with `.log`
   for `.tsv`): `<date><TAB><reason><TAB><N> inputs, hod built <M>;
   <hod_version>; <runs> runs`, with tabs and line ends in the reason
-  replaced by blanks.
+  replaced by blanks;
 - says how many inputs have a time, of any tool that built them, whose
   spread is above 5%: the gate will not fail on those times ("The gate",
   "Spread"). A baseline that is to bind times is recorded on a quiet

@@ -298,6 +298,7 @@ impl<'m> DebugLines<'m> {
         }
         for u in &mut self.units {
             u.plan.seal().map_err(dwarf_err)?;
+            u.plan.place_symbols(|s| place(obj, s));
         }
         // `llc` writes nothing for a unit with neither code nor globals
         // (`spec/dwarf.md` §1.2).

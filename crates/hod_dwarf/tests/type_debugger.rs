@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use common::dies::{die_section_list, splice};
 use common::session::{linkers, masked};
-use common::types::{cxx, extract, module_sections, oracle_input, read, strip_template_params};
+use common::types::{cxx, extract, module_sections, oracle_input, read};
 use common::{Elf, compile, llc};
 use hod_obj::Arch;
 use hod_testutil::{Scratch, find_tool, run, run_with, tool};
@@ -123,7 +123,7 @@ fn debugger(major: u32) {
     let ir = cxx(&clang, &scratch, "types", Path::new(&source), Some(TRIPLE));
     let ir = extract(&extract_tool, &scratch, "types", &oracle_input(&ir));
     let module = read(&ir);
-    let original = compile(&llc, &scratch, "types", &strip_template_params(&ir), TRIPLE);
+    let original = compile(&llc, &scratch, "types", &ir, TRIPLE);
     let elf = Elf::parse(original.clone());
     let (obj, line, dies, _) = module_sections(&elf, Arch::AArch64, &module).expect("hod's DIEs");
     let ours = splice(&elf, &obj, &die_section_list(line, &dies));

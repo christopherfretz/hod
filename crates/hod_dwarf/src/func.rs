@@ -353,23 +353,10 @@ impl<'a> UnitPlan<'a> {
         // A member function's definition: the class is made (with the
         // declaration among its members), then the definition goes to
         // the unit.
-        let DiNode::Subprogram(d) = self.node_of(sp_id, "declaration", decl)? else {
-            return Err(bad(sp_id, "declaration"));
-        };
-        let class = d.scope.filter(|&c| self.debug.find_kind(c) == Some(DiKind::CompositeType));
-        let Some(class) = class else {
-            return Err(unsupported(sp_id, "debug:out-of-line-definition"));
-        };
-        self.reference_type(sp_id, "scope", class)?;
-        if self.slot[decl.index()] == NONE
-            || self.dies[self.slot[decl.index()] as usize].kind != Kind::Method
-        {
+        // Made on demand, in its class or its scope (§6.9).
+        let spec = self.declaration_die(sp_id, decl)?;
+        if spec == NONE || self.dies[spec as usize].kind != Kind::Method {
             return Err(unsupported(sp_id, "debug:specification"));
-        }
-        if self.return_type(sp_id, sp)? != self.return_type(decl, &d)?
-            && self.return_type(sp_id, sp)?.is_some()
-        {
-            return Err(unsupported(sp_id, "debug:specification-type"));
         }
         Ok(0)
     }
@@ -690,6 +677,7 @@ impl<'a> UnitPlan<'a> {
         if self.sealed {
             return Ok(());
         }
+        self.seal_imports()?;
         // `finishSubprogramDefinitions`: the return types, by function.
         for i in 0..self.funcs.len() {
             let die = self.funcs[i].die;
@@ -700,6 +688,7 @@ impl<'a> UnitPlan<'a> {
             {
                 self.reference_type(sp_id, "type", t)?;
             }
+            self.seal_definition(i)?;
         }
         // `finishEntityDefinitions`: the variables' types, in DIE order.
         for i in 0..self.locals.len() {
@@ -768,6 +757,10 @@ impl<'a> Writer<'a> {
             let DiNode::Subprogram(d) = plan.debug.node(decl) else {
                 return Err(bad(sp_id, "declaration"));
             };
+            if let Some(t) = plan.definition_type(sp_id, sp)? {
+                let (size, op) = (fd.code.size, fd.object_pointer);
+                return self.typed_definition_die(plan, sp_id, sp, t, index, size, op, children);
+            }
             let spec = plan.die_of(decl).ok_or(bad(sp_id, "declaration"))?;
             let file = sp.file.and_then(|f| plan.file_index(f));
             let decl_file = d.file.and_then(|f| plan.file_index(f));

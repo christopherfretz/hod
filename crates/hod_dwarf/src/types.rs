@@ -31,14 +31,14 @@ const INDEX_TYPE: &[u8] = b"__ARRAY_SIZE_TYPE__";
 
 /// What a node is made into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Want {
+pub(crate) enum Want {
     Type,
     StaticMember,
     Method,
 }
 
 #[derive(Clone, Copy, Debug)]
-enum Task {
+pub(crate) enum Task {
     /// `getOrCreate…`: the node's DIE, made with its context if new.
     /// `from` and `field` name the reference, for an error.
     Ensure { from: DiId, field: &'static str, node: DiId, want: Want },
@@ -46,12 +46,14 @@ enum Task {
     Create { node: DiId, want: Want },
     /// Step `step` of the construction of DIE `die`.
     Construct { die: u32, step: u32 },
+    /// Template parameter `node`'s DIE under DIE `parent` (§6.9).
+    Template { parent: u32, node: DiId },
 }
 
 /// The planner's scratch while a plan is built; empty afterwards.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Build {
-    work: Vec<Task>,
+    pub(crate) work: Vec<Task>,
     /// Per DIE: its construction is in progress.
     pub(crate) open: Vec<bool>,
     /// `(method DIE, containingType)` of the virtual member functions:
@@ -202,13 +204,14 @@ impl UnitPlan<'_> {
         Ok(self.slot[t.index()])
     }
 
-    fn drain(&mut self, work: &mut Vec<Task>) -> Result<(), Error> {
+    pub(crate) fn drain(&mut self, work: &mut Vec<Task>) -> Result<(), Error> {
         while let Some(task) = work.pop() {
             match task {
                 Task::Ensure { from, field, node, want } => {
                     self.ensure(from, field, node, want, work)?;
                 }
                 Task::Create { node, want } => self.create(node, want, work)?,
+                Task::Template { parent, node } => self.template_task(parent, node, work)?,
                 Task::Construct { die, step } => {
                     if !self.construct(die, step, work)?
                         && let Some(o) = self.build.open.get_mut(die as usize)
@@ -385,7 +388,7 @@ impl UnitPlan<'_> {
         }
     }
 
-    fn open(&mut self, die: u32, work: &mut Vec<Task>) {
+    pub(crate) fn open(&mut self, die: u32, work: &mut Vec<Task>) {
         let open = &mut self.build.open;
         if open.len() <= die as usize {
             open.resize(die as usize + 1, false);
@@ -435,6 +438,9 @@ impl UnitPlan<'_> {
                 let parent = self.context(t, c.scope, false)?;
                 let die = self.push(t, parent, kind);
                 self.open(die, work);
+                if kind == Kind::Composite {
+                    Self::template_tasks(die, c.template_params, work);
+                }
             }
             (Want::Type, DiNode::SubroutineType(_)) => {
                 let die = self.push(t, 0, Kind::Subroutine);
@@ -478,6 +484,7 @@ impl UnitPlan<'_> {
                     self.build.virtuals.push((die, sp.containing_type));
                 }
                 self.open(die, work);
+                Self::template_tasks(die, sp.template_params, work);
             }
             _ => unreachable!("`ensure` checked the node's kind"),
         }
@@ -597,7 +604,7 @@ impl UnitPlan<'_> {
 
     /// `isUnsignedDIType`: whether a constant of type `t` is written
     /// unsigned.
-    fn is_unsigned(&self, mut t: DiId) -> Result<bool, Error> {
+    pub(crate) fn is_unsigned(&self, mut t: DiId) -> Result<bool, Error> {
         for _ in 0..=self.slot.len() {
             if !self.debug.contains(t) {
                 return Err(bad(t, "baseType"));
@@ -669,6 +676,10 @@ impl UnitPlan<'_> {
                 0 => Self::then(work, die, 1, d.base_type.map(|b| ensure("baseType", b))),
                 1 if d.tag == tag::PTR_TO_MEMBER_TYPE => {
                     Self::then(work, die, 2, d.extra_data.map(|c| ensure("extraData", c)));
+                }
+                1 if d.tag == tag::TEMPLATE_ALIAS => {
+                    Self::then(work, die, 2, None);
+                    self.alias_template_tasks(die, d.extra_data, work)?;
                 }
                 _ => return Ok(false),
             },
@@ -1074,7 +1085,9 @@ impl<'a> Writer<'a> {
                     }
                     tag::TEMPLATE_ALIAS => {
                         let mask = b(ty.is_some()) | b(decl.is_some()) << 1 | b(acc != 0) << 2;
-                        self.abbrev(code(fam::TEMPLATE_ALIAS, mask, false));
+                        let family =
+                            if children { fam::TEMPLATE_ALIAS_PARAMS } else { fam::TEMPLATE_ALIAS };
+                        self.abbrev(code(family, mask, false));
                         self.opt_ref(plan, n, ty)?;
                         self.strx(t.name)?;
                         self.opt_byte(acc);

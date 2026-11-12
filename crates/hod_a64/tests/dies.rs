@@ -215,7 +215,7 @@ fn refusals_are_named() {
     let (module, bodies) = parse(&base);
     compile_to_object(&module, &bodies, &Options::default()).expect("the base case");
 
-    let cases: [(&str, String, &str); 7] = [
+    let cases: [(&str, String, &str); 6] = [
         (
             "debug:dbg-value",
             one_function("    #dbg_value(i32 %v, !14, !DIExpression(), !15)", PLAIN_SP),
@@ -244,16 +244,6 @@ fn refusals_are_named() {
                 PLAIN_SP,
             ),
             "a declare of an address that is not a frame slot",
-        ),
-        (
-            "debug:out-of-line-definition",
-            one_function(
-                declare,
-                "!10 = distinct !DISubprogram(name: \"f\", linkageName: \"_ZN1n1fEi\", scope: !30, file: !1, line: 1, type: !11, scopeLine: 1, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !0, declaration: !31, retainedNodes: !4)\n\
-                 !30 = !DINamespace(name: \"n\", scope: null)\n\
-                 !31 = !DISubprogram(name: \"f\", linkageName: \"_ZN1n1fEi\", scope: !30, file: !1, line: 1, type: !11, scopeLine: 1, flags: DIFlagPrototyped, spFlags: 0)\n",
-            ),
-            "a namespace function defined out of line",
         ),
         (
             "debug:inlined-subroutine",

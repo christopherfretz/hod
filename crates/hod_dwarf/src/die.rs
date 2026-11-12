@@ -75,6 +75,10 @@ pub(crate) enum Kind {
     Block,
     /// A label (`DILabel`, keyed).
     Label,
+    /// A template parameter (not keyed; §6.9).
+    TemplateParam,
+    /// An imported entity (`DIImportedEntity`, keyed; §6.9).
+    Imported,
 }
 
 /// One DIE of the plan: the node it is written from and its parent's
@@ -138,6 +142,8 @@ pub struct UnitPlan<'a> {
     /// The `.debug_addr` entries the functions' DIEs take.
     pub(crate) code_addrs: u32,
     pub(crate) fn_scratch: crate::func::FnScratch,
+    /// WP-059's state (§6.9).
+    pub(crate) scope_dies: crate::scope::ScopeDies,
 }
 
 fn md5_of(f: &DiFile<'_>) -> Option<[u8; 16]> {
@@ -180,7 +186,7 @@ impl<'a> UnitPlan<'a> {
     /// or a node of the wrong kind, or a namespace cycle; `Unsupported`
     /// for what this writer does not write yet (`spec/dwarf.md` §6.5).
     pub fn new(debug: &'a DebugInfo, unit: DiId) -> Result<Self, Error> {
-        let mut plan = Self::build(debug, None, unit)?;
+        let mut plan = Self::build(debug, None, None, unit)?;
         plan.seal()?;
         Ok(plan)
     }
@@ -206,11 +212,12 @@ impl<'a> UnitPlan<'a> {
     /// # Errors
     /// As [`UnitPlan::new`].
     pub fn for_functions(module: &'a Module, unit: DiId) -> Result<Self, Error> {
-        Self::build(&module.debug, Some((&module.consts, &module.types)), unit)
+        Self::build(&module.debug, Some(module), Some((&module.consts, &module.types)), unit)
     }
 
     fn build(
         debug: &'a DebugInfo,
+        module: Option<&'a Module>,
         consts: Option<(&'a ConstPool, &'a TypeTable)>,
         unit: DiId,
     ) -> Result<Self, Error> {
@@ -271,6 +278,7 @@ impl<'a> UnitPlan<'a> {
             ranges: Vec::new(),
             code_addrs: 0,
             fn_scratch: crate::func::FnScratch::default(),
+            scope_dies: crate::scope::ScopeDies::new(module),
         };
         plan.push(unit, 0, Kind::Unit);
         let mut chain = Vec::new();
@@ -339,6 +347,10 @@ impl<'a> UnitPlan<'a> {
                 return Ok(()); // listed twice
             }
             return Err(unsupported(var, "a global variable with several expressions"));
+        }
+        if let Some(die) = self.discover_scope_global(gve, var, &v, e.expr, chain)? {
+            self.by_expr.push((gve.raw(), die));
+            return Ok(());
         }
         if e.expr != ExprId::EMPTY {
             return Err(unsupported(gve, "a global variable expression that is not empty"));
@@ -582,12 +594,12 @@ pub(crate) struct Writer<'a> {
     pub(crate) offsets: Vec<u32>,
     pub(crate) patches: Vec<(usize, u32)>,
     stack: Vec<(u32, usize)>,
-    addr_of: Vec<u32>,
+    pub(crate) addr_of: Vec<u32>,
     addrs: Vec<(SymbolId, i64)>,
     spans: Vec<CodeSpan>,
     /// The current unit's start in `info`, and its globals' addresses.
     pub(crate) unit_start: usize,
-    cur: Vec<(SymbolId, i64)>,
+    pub(crate) cur: Vec<(SymbolId, i64)>,
     /// A location expression being built.
     pub(crate) expr: Vec<u8>,
     /// Per function of the unit: its `.debug_addr` index.
@@ -740,7 +752,12 @@ impl<'a> Writer<'a> {
         self.spans(u.code, symbols)?;
         // `.debug_addr`: the globals' entries in DIE order, then one per
         // span.
-        let globals = u.globals.len();
+        let globals = u
+            .globals
+            .iter()
+            .filter(|g| plan.die_of_expr(g.expr).is_some_and(|d| plan.global_takes_address(d)))
+            .count()
+            + plan.template_addrs();
         self.addrs.clear();
         self.offsets.clear();
         self.offsets.resize(n, NONE);
@@ -908,6 +925,11 @@ impl<'a> Writer<'a> {
         self.offsets[die as usize] =
             u32::try_from(self.info.len() - self.unit_start).map_err(|_| Error::TooLarge)?;
         match (d.kind, plan.debug.node(d.node)) {
+            (Kind::Variable, DiNode::GlobalVariable(v)) if plan.scope_dies.var(die).is_some() => {
+                self.scope_variable_die(plan, die, d.node, &v, children)?;
+            }
+            (Kind::TemplateParam, _) => self.template_param_die(plan, d.node, children)?,
+            (Kind::Imported, _) => self.imported_die(plan, d.node)?,
             (Kind::Variable, DiNode::GlobalVariable(v)) => {
                 let file = match v.file {
                     Some(f) if v.line != 0 => Some(plan.file_index(f).ok_or(bad(d.node, "file"))?),

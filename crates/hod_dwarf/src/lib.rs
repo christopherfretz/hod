@@ -48,11 +48,16 @@ use std::fmt;
 pub mod abbrev;
 mod die;
 mod func;
+mod global;
+mod import;
 mod leb;
 mod line;
 mod policy;
+pub mod scope;
+mod spec;
 mod strings;
 mod target;
+mod template;
 mod types;
 
 pub use die::{CodeSpan, DieSections, GlobalAddr, UnitInput, UnitPlan, write_debug_info};

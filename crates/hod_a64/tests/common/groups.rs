@@ -57,6 +57,8 @@ pub const GROUPS: &[(&str, Enable)] = &[
     ("WP-040", |e| e.options.i128 = true),
     // The intrinsic group: integer and memory intrinsics.
     ("WP-041", |e| e.options.intrinsics = true),
+    // The floating-point leftovers: loads and stores of `float` and `double`.
+    ("WP-067", |e| (e.options.floats, e.options.memory) = (true, true)),
 ];
 
 /// What every landed group enables together.

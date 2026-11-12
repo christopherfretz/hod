@@ -32,7 +32,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `function` | 6 | 6 | 0 | 0 | 0 | 6 | 0 |
 | `cc` | 15 | 4 | 9 | 2 | 0 | 12 | 3 |
 | `attr` | 56 | 20 | 33 | 3 | 9 | 39 | 8 |
-| `type` | 15 | 7 | 5 | 3 | 0 | 13 | 2 |
+| `type` | 15 | 9 | 3 | 3 | 0 | 13 | 2 |
 | `inst` | 67 | 53 | 6 | 8 | 0 | 59 | 8 |
 | `mem` | 3 | 1 | 2 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 0 | 21 | 0 | 0 | 21 | 0 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 9 | 4 | 5 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 133 | 37 | 96 | 0 | 0 | 133 | 0 |
-| total | 434 | 179 | 209 | 46 | 16 | 363 | 55 |
+| total | 434 | 181 | 207 | 46 | 16 | 363 | 55 |
 
 ## `module`
 
@@ -287,11 +287,11 @@ Type classes of the values instructions produce and consume.
 | `type:i128` | supported | not-implemented | WP-040 |
 | `type:int-wide` | supported | not-implemented | integers wider than 64 bits other than `i128` (WP-040) |
 | `type:ptr` | supported | not-implemented | pointers in address space 0 |
-| `type:half` | not-implemented | not-implemented | unplanned |
+| `type:half` | supported | not-implemented | arithmetic in single precision |
 | `type:bfloat` | not-implemented | not-implemented | unplanned |
 | `type:float` | supported | not-implemented |  |
 | `type:double` | supported | not-implemented |  |
-| `type:fp128` | not-implemented | not-implemented | unplanned |
+| `type:fp128` | supported | not-implemented | arithmetic, compares and conversions are calls |
 | `type:x86_fp80` | rejected | not-implemented | not an AArch64 type |
 | `type:vector` | not-implemented | not-implemented | M2 (vectors). vectors of fixed length |
 | `type:scalable-vector` | rejected | rejected | scalable vectors are refused by design |
@@ -318,30 +318,30 @@ Instructions.
 | `inst:and` | supported (int, i128, int-wide) | not-implemented |  |
 | `inst:or` | supported (int, i128, int-wide) | not-implemented |  |
 | `inst:xor` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:fadd` | supported (half, float, double) | not-implemented |  |
-| `inst:fsub` | supported (half, float, double) | not-implemented |  |
-| `inst:fmul` | supported (half, float, double) | not-implemented |  |
-| `inst:fdiv` | supported (half, float, double) | not-implemented |  |
-| `inst:frem` | supported (float, double) | not-implemented | a call of `fmod` |
-| `inst:fneg` | supported (half, float, double) | not-implemented |  |
+| `inst:fadd` | supported (half, float, double, fp128) | not-implemented |  |
+| `inst:fsub` | supported (half, float, double, fp128) | not-implemented |  |
+| `inst:fmul` | supported (half, float, double, fp128) | not-implemented |  |
+| `inst:fdiv` | supported (half, float, double, fp128) | not-implemented |  |
+| `inst:frem` | supported (half, float, double, fp128) | not-implemented | a call of `fmod` |
+| `inst:fneg` | supported (half, float, double, fp128) | not-implemented |  |
 | `inst:icmp` | supported (int, i128, int-wide, ptr) | not-implemented |  |
-| `inst:fcmp` | supported (int, half, float, double) | not-implemented |  |
+| `inst:fcmp` | supported (int, half, float, double, fp128) | not-implemented |  |
 | `inst:trunc` | supported (int, i128, int-wide) | not-implemented |  |
 | `inst:zext` | supported (int, i128, int-wide) | not-implemented |  |
 | `inst:sext` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:fptrunc` | supported (half, float, double) | not-implemented |  |
-| `inst:fpext` | supported (half, float, double) | not-implemented |  |
-| `inst:fptoui` | supported (int, half, float, double) | not-implemented |  |
-| `inst:fptosi` | supported (int, half, float, double) | not-implemented |  |
-| `inst:uitofp` | supported (int, half, float, double) | not-implemented |  |
-| `inst:sitofp` | supported (int, half, float, double) | not-implemented |  |
+| `inst:fptrunc` | supported (half, float, double, fp128) | not-implemented |  |
+| `inst:fpext` | supported (half, float, double, fp128) | not-implemented |  |
+| `inst:fptoui` | supported (int, half, float, double, fp128) | not-implemented |  |
+| `inst:fptosi` | supported (int, half, float, double, fp128) | not-implemented |  |
+| `inst:uitofp` | supported (int, half, float, double, fp128) | not-implemented |  |
+| `inst:sitofp` | supported (int, half, float, double, fp128) | not-implemented |  |
 | `inst:ptrtoint` | supported (int, i128, int-wide, ptr) | not-implemented |  |
 | `inst:ptrtoaddr` | supported (int, i128, int-wide, ptr) | not-implemented |  |
 | `inst:inttoptr` | supported (int, i128, int-wide, ptr) | not-implemented |  |
-| `inst:bitcast` | supported (int, i128, int-wide, ptr) | not-implemented | between integers and floats with WP-039 |
+| `inst:bitcast` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128) | not-implemented | between integers and floats with WP-039 |
 | `inst:addrspacecast` | rejected | rejected | it has a pointer in a non-zero address space on one side |
-| `inst:load` | supported (int, i128, int-wide, ptr, aggregate) | not-implemented | a plain load; see `mem:`; FP and vector values: WP-067 |
-| `inst:store` | supported (int, i128, int-wide, ptr, aggregate) | not-implemented | a plain store; see `mem:`; FP and vector values: WP-067 |
+| `inst:load` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | not-implemented | a plain load; see `mem:`; FP and vector values: WP-067 |
+| `inst:store` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | not-implemented | a plain store; see `mem:`; FP and vector values: WP-067 |
 | `inst:alloca` | supported | not-implemented | a dynamic allocation; fixed ones are `function:slots` |
 | `inst:fence` | not-implemented | not-implemented | M2 (atomics) |
 | `inst:cmpxchg` | not-implemented | not-implemented | M2 (atomics) |
@@ -353,8 +353,8 @@ Instructions.
 | `inst:insertelement` | not-implemented | not-implemented | M2 (vectors) |
 | `inst:shufflevector` | not-implemented | not-implemented | M2 (vectors) |
 | `inst:phi` | supported | not-implemented | for every class whose `type:*` row is supported |
-| `inst:select` | supported (int, i128, int-wide, ptr, aggregate) | not-implemented |  |
-| `inst:freeze` | supported (int, i128, int-wide, ptr, aggregate) | not-implemented |  |
+| `inst:select` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | not-implemented |  |
+| `inst:freeze` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | not-implemented |  |
 | `inst:va_arg` | rejected | rejected | `llc` miscompiles it on AArch64, so there is no oracle; frontends do not emit it |
 | `inst:call` | supported | not-implemented | a call of anything but an intrinsic |
 | `inst:landingpad` | supported | not-implemented |  |

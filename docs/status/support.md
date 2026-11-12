@@ -20,7 +20,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 
 | group | constructs | aarch64 supported | not-implemented | rejected | x86_64 supported | not-implemented | rejected |
 |---|---|---|---|---|---|---|---|
-| `module` | 23 | 8 | 13 | 2 | 2 | 15 | 6 |
+| `module` | 23 | 9 | 12 | 2 | 2 | 15 | 6 |
 | `structor` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `debug` | 4 | 0 | 4 | 0 | 0 | 4 | 0 |
 | `global` | 12 | 11 | 1 | 0 | 2 | 10 | 0 |
@@ -28,22 +28,22 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `visibility` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `tls` | 4 | 0 | 4 | 0 | 0 | 4 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
-| `init` | 8 | 4 | 4 | 0 | 0 | 8 | 0 |
-| `function` | 6 | 2 | 4 | 0 | 0 | 6 | 0 |
+| `init` | 8 | 5 | 3 | 0 | 0 | 8 | 0 |
+| `function` | 6 | 5 | 1 | 0 | 0 | 6 | 0 |
 | `cc` | 15 | 4 | 9 | 2 | 0 | 12 | 3 |
-| `attr` | 56 | 18 | 35 | 3 | 9 | 39 | 8 |
-| `type` | 15 | 2 | 10 | 3 | 0 | 13 | 2 |
-| `inst` | 67 | 4 | 55 | 8 | 0 | 59 | 8 |
-| `mem` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
+| `attr` | 56 | 20 | 33 | 3 | 9 | 39 | 8 |
+| `type` | 15 | 4 | 8 | 3 | 0 | 13 | 2 |
+| `inst` | 67 | 48 | 11 | 8 | 0 | 59 | 8 |
+| `mem` | 3 | 1 | 2 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 0 | 21 | 0 | 0 | 21 | 0 |
 | `call` | 3 | 2 | 1 | 0 | 0 | 3 | 0 |
 | `tail` | 3 | 2 | 1 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
-| `operand` | 9 | 2 | 7 | 0 | 0 | 9 | 0 |
+| `operand` | 9 | 4 | 5 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 133 | 3 | 130 | 0 | 0 | 133 | 0 |
-| total | 434 | 77 | 311 | 46 | 16 | 363 | 55 |
+| `intrinsic` | 133 | 5 | 128 | 0 | 0 | 133 | 0 |
+| total | 434 | 135 | 253 | 46 | 16 | 363 | 55 |
 
 ## `module`
 
@@ -59,7 +59,7 @@ Module properties (`ModuleProps`, §2.1) and module-level tables.
 | `module:code-model-medium` | not-implemented | not-implemented | unplanned |
 | `module:code-model-large` | not-implemented | not-implemented | unplanned |
 | `module:large-data-threshold` | not-implemented | not-implemented | unplanned |
-| `module:uwtable` | not-implemented | not-implemented | WP-042. the module's default unwind-table kind is not `none` |
+| `module:uwtable` | supported | not-implemented | the module's default unwind-table kind is not `none` (WP-049) |
 | `module:frame-pointer` | supported | supported | any `frame-pointer` value: hod always keeps a frame pointer (`spec/codegen.md` §5) |
 | `module:branch-target-enforcement` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
 | `module:guarded-control-stack` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
@@ -172,7 +172,7 @@ What a variable's initializer contains.
 |---|---|---|---|
 | `init:data` | supported | not-implemented | any initializer: numbers, zero, `undef`, aggregates, bytes |
 | `init:symbol` | supported | not-implemented | a symbol's address, with or without an offset |
-| `init:blockaddress` | not-implemented | not-implemented | WP-037 |
+| `init:blockaddress` | supported | not-implemented | of a block of a function with an `indirectbr` (§9.6) |
 | `init:sym-diff` | supported | not-implemented | the difference of two symbol addresses |
 | `init:sym-diff-plt` | not-implemented | not-implemented | unplanned. the same through `dso_local_equivalent` (relative vtables) |
 | `init:int-of-addr` | supported | not-implemented | an address in an integer field |
@@ -187,10 +187,10 @@ Properties of a function that has a body.
 |---|---|---|---|
 | `function:parameters` | supported | not-implemented | a body with parameters; per class of parameter |
 | `function:variadic` | supported | not-implemented | a variadic function with a body |
-| `function:may-unwind` | not-implemented | not-implemented | WP-042. a body without `nounwind`: it needs unwind tables |
+| `function:may-unwind` | supported | not-implemented | a body without `nounwind`: it needs unwind tables (WP-049) |
 | `function:personality` | not-implemented | not-implemented | M2 (exceptions). a body with a personality function |
-| `function:slots` | not-implemented | not-implemented | WP-036. a body with fixed stack objects (`Body::slots`) |
-| `function:over-aligned-slot` | not-implemented | not-implemented | WP-036. a stack object aligned above 16 bytes |
+| `function:slots` | supported | not-implemented | a body with fixed stack objects (`Body::slots`) |
+| `function:over-aligned-slot` | supported | not-implemented | a stack object aligned above 16 bytes |
 
 ## `cc`
 
@@ -235,7 +235,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:elementtype` | not-implemented | not-implemented | unplanned. on an inline-assembly or intrinsic argument |
 | `attr:align` | supported | supported | on a parameter or return: an assumption, no code |
 | `attr:alignstack` | not-implemented | not-implemented | unplanned. on a parameter and on a function |
-| `attr:uwtable` | not-implemented | not-implemented | WP-042. on a function with a body |
+| `attr:uwtable` | supported | not-implemented | on a function with a body (WP-049) |
 | `attr:noreturn` | supported | supported | a promise: nothing to do in the function itself |
 | `attr:naked` | rejected | rejected | a naked function is its inline assembly, with no frame (`spec/codegen.md` §1) |
 | `attr:nounwind` | supported | supported | its absence is `function:may-unwind` |
@@ -273,7 +273,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:zero-call-used-regs` | not-implemented | not-implemented | unplanned |
 | `attr:stack-protector-buffer-size` | supported | supported | a parameter of `attr:ssp`, read with it |
 | `attr:min-legal-vector-width` | supported | not-implemented | read by x86 only |
-| `attr:no-jump-tables` | not-implemented | not-implemented | WP-037 |
+| `attr:no-jump-tables` | supported | not-implemented | hod emits no jump table (`spec/codegen.md` §6.2) |
 | `attr:no-builtins` | supported | supported | hod recognises no library call |
 | `attr:no-builtin` | supported | supported | every `no-builtin-<function>`; hod recognises no library call |
 
@@ -289,8 +289,8 @@ Type classes of the values instructions produce and consume.
 | `type:ptr` | supported | not-implemented | pointers in address space 0 |
 | `type:half` | not-implemented | not-implemented | unplanned |
 | `type:bfloat` | not-implemented | not-implemented | unplanned |
-| `type:float` | not-implemented | not-implemented | WP-039 |
-| `type:double` | not-implemented | not-implemented | WP-039 |
+| `type:float` | supported | not-implemented |  |
+| `type:double` | supported | not-implemented |  |
 | `type:fp128` | not-implemented | not-implemented | unplanned |
 | `type:x86_fp80` | rejected | not-implemented | not an AArch64 type |
 | `type:vector` | not-implemented | not-implemented | M2 (vectors). vectors of fixed length |
@@ -305,65 +305,65 @@ Instructions.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `inst:add` | not-implemented | not-implemented | WP-035 |
-| `inst:sub` | not-implemented | not-implemented | WP-035 |
-| `inst:mul` | not-implemented | not-implemented | WP-035 |
-| `inst:udiv` | not-implemented | not-implemented | WP-035 |
-| `inst:sdiv` | not-implemented | not-implemented | WP-035 |
-| `inst:urem` | not-implemented | not-implemented | WP-035 |
-| `inst:srem` | not-implemented | not-implemented | WP-035 |
-| `inst:shl` | not-implemented | not-implemented | WP-035 |
-| `inst:lshr` | not-implemented | not-implemented | WP-035 |
-| `inst:ashr` | not-implemented | not-implemented | WP-035 |
-| `inst:and` | not-implemented | not-implemented | WP-035 |
-| `inst:or` | not-implemented | not-implemented | WP-035 |
-| `inst:xor` | not-implemented | not-implemented | WP-035 |
-| `inst:fadd` | not-implemented | not-implemented | WP-039 |
-| `inst:fsub` | not-implemented | not-implemented | WP-039 |
-| `inst:fmul` | not-implemented | not-implemented | WP-039 |
-| `inst:fdiv` | not-implemented | not-implemented | WP-039 |
-| `inst:frem` | not-implemented | not-implemented | WP-039 |
-| `inst:fneg` | not-implemented | not-implemented | WP-039 |
-| `inst:icmp` | not-implemented | not-implemented | WP-035 |
-| `inst:fcmp` | not-implemented | not-implemented | WP-039 |
-| `inst:trunc` | not-implemented | not-implemented | WP-035 |
-| `inst:zext` | not-implemented | not-implemented | WP-035 |
-| `inst:sext` | not-implemented | not-implemented | WP-035 |
-| `inst:fptrunc` | not-implemented | not-implemented | WP-039 |
-| `inst:fpext` | not-implemented | not-implemented | WP-039 |
-| `inst:fptoui` | not-implemented | not-implemented | WP-039 |
-| `inst:fptosi` | not-implemented | not-implemented | WP-039 |
-| `inst:uitofp` | not-implemented | not-implemented | WP-039 |
-| `inst:sitofp` | not-implemented | not-implemented | WP-039 |
-| `inst:ptrtoint` | not-implemented | not-implemented | WP-035 |
-| `inst:ptrtoaddr` | not-implemented | not-implemented | WP-035 |
-| `inst:inttoptr` | not-implemented | not-implemented | WP-035 |
-| `inst:bitcast` | not-implemented | not-implemented | WP-035. between integers and floats with WP-039 |
+| `inst:add` | supported (int) | not-implemented |  |
+| `inst:sub` | supported (int) | not-implemented |  |
+| `inst:mul` | supported (int) | not-implemented |  |
+| `inst:udiv` | supported (int) | not-implemented |  |
+| `inst:sdiv` | supported (int) | not-implemented |  |
+| `inst:urem` | supported (int) | not-implemented |  |
+| `inst:srem` | supported (int) | not-implemented |  |
+| `inst:shl` | supported (int) | not-implemented |  |
+| `inst:lshr` | supported (int) | not-implemented |  |
+| `inst:ashr` | supported (int) | not-implemented |  |
+| `inst:and` | supported (int) | not-implemented |  |
+| `inst:or` | supported (int) | not-implemented |  |
+| `inst:xor` | supported (int) | not-implemented |  |
+| `inst:fadd` | supported (half, float, double) | not-implemented |  |
+| `inst:fsub` | supported (half, float, double) | not-implemented |  |
+| `inst:fmul` | supported (half, float, double) | not-implemented |  |
+| `inst:fdiv` | supported (half, float, double) | not-implemented |  |
+| `inst:frem` | supported (float, double) | not-implemented | a call of `fmod` |
+| `inst:fneg` | supported (half, float, double) | not-implemented |  |
+| `inst:icmp` | supported (int, ptr) | not-implemented |  |
+| `inst:fcmp` | supported (int, half, float, double) | not-implemented |  |
+| `inst:trunc` | supported (int) | not-implemented |  |
+| `inst:zext` | supported (int) | not-implemented |  |
+| `inst:sext` | supported (int) | not-implemented |  |
+| `inst:fptrunc` | supported (half, float, double) | not-implemented |  |
+| `inst:fpext` | supported (half, float, double) | not-implemented |  |
+| `inst:fptoui` | supported (int, half, float, double) | not-implemented |  |
+| `inst:fptosi` | supported (int, half, float, double) | not-implemented |  |
+| `inst:uitofp` | supported (int, half, float, double) | not-implemented |  |
+| `inst:sitofp` | supported (int, half, float, double) | not-implemented |  |
+| `inst:ptrtoint` | supported (int, ptr) | not-implemented |  |
+| `inst:ptrtoaddr` | supported (int, ptr) | not-implemented |  |
+| `inst:inttoptr` | supported (int, ptr) | not-implemented |  |
+| `inst:bitcast` | supported (int, ptr) | not-implemented | between integers and floats with WP-039 |
 | `inst:addrspacecast` | rejected | rejected | it has a pointer in a non-zero address space on one side |
-| `inst:load` | not-implemented | not-implemented | WP-036. a plain load; see `mem:` |
-| `inst:store` | not-implemented | not-implemented | WP-036. a plain store; see `mem:` |
-| `inst:alloca` | not-implemented | not-implemented | WP-036. a dynamic allocation; fixed ones are `function:slots` |
+| `inst:load` | supported (int, ptr) | not-implemented | a plain load; see `mem:`; FP and vector values: WP-067 |
+| `inst:store` | supported (int, ptr) | not-implemented | a plain store; see `mem:`; FP and vector values: WP-067 |
+| `inst:alloca` | supported | not-implemented | a dynamic allocation; fixed ones are `function:slots` |
 | `inst:fence` | not-implemented | not-implemented | M2 (atomics) |
 | `inst:cmpxchg` | not-implemented | not-implemented | M2 (atomics) |
 | `inst:atomicrmw` | not-implemented | not-implemented | M2 (atomics). and the operation's `atomicrmw:` row |
-| `inst:ptradd` | not-implemented | not-implemented | WP-036. LLVM's `getelementptr` (§5.4) |
+| `inst:ptradd` | supported | not-implemented | LLVM's `getelementptr` (§5.4); not a vector of pointers |
 | `inst:extractvalue` | not-implemented | not-implemented | WP-040 |
 | `inst:insertvalue` | not-implemented | not-implemented | WP-040 |
 | `inst:extractelement` | not-implemented | not-implemented | M2 (vectors) |
 | `inst:insertelement` | not-implemented | not-implemented | M2 (vectors) |
 | `inst:shufflevector` | not-implemented | not-implemented | M2 (vectors) |
-| `inst:phi` | not-implemented | not-implemented | WP-037 |
-| `inst:select` | not-implemented | not-implemented | WP-035 |
-| `inst:freeze` | not-implemented | not-implemented | WP-035 |
+| `inst:phi` | supported | not-implemented | for every class whose `type:*` row is supported |
+| `inst:select` | supported (int, ptr) | not-implemented |  |
+| `inst:freeze` | supported (int, ptr) | not-implemented |  |
 | `inst:va_arg` | rejected | rejected | `llc` miscompiles it on AArch64, so there is no oracle; frontends do not emit it |
 | `inst:call` | supported | not-implemented | a call of anything but an intrinsic |
 | `inst:landingpad` | not-implemented | not-implemented | M2 (exceptions) |
 | `inst:catchpad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:cleanuppad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:br` | supported | not-implemented |  |
-| `inst:condbr` | not-implemented | not-implemented | WP-037. LLVM's two-way `br` |
-| `inst:switch` | not-implemented | not-implemented | WP-037 |
-| `inst:indirectbr` | not-implemented | not-implemented | WP-037 |
+| `inst:condbr` | supported | not-implemented | LLVM's two-way `br` |
+| `inst:switch` | supported (int) | not-implemented |  |
+| `inst:indirectbr` | supported | not-implemented |  |
 | `inst:ret` | supported | not-implemented |  |
 | `inst:unreachable` | supported | not-implemented |  |
 | `inst:callbr` | rejected | rejected | its only use is inline assembly with labels (`spec/codegen.md` §1) |
@@ -379,7 +379,7 @@ Kinds of memory access.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `mem:volatile` | not-implemented | not-implemented | WP-036. a volatile `load`, `store`, `cmpxchg` or `atomicrmw` |
+| `mem:volatile` | supported | not-implemented | a volatile `load`, `store`, `cmpxchg` or `atomicrmw` |
 | `mem:atomic-load` | not-implemented | not-implemented | M2 (atomics) |
 | `mem:atomic-store` | not-implemented | not-implemented | M2 (atomics) |
 
@@ -465,8 +465,8 @@ Constant addresses as instruction operands.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `operand:symbol` | supported | not-implemented | a symbol's address as a value, with or without an offset |
-| `operand:slot` | not-implemented | not-implemented | WP-036. the address of a stack slot |
-| `operand:blockaddress` | not-implemented | not-implemented | WP-037. of a block of the same function |
+| `operand:slot` | supported | not-implemented | the address of a stack slot |
+| `operand:blockaddress` | supported | not-implemented | of a block of the same function |
 | `operand:addr-of-int` | supported | not-implemented | `inttoptr` of a constant number |
 | `operand:int-of-addr` | not-implemented | not-implemented | unplanned. `ptrtoint` of a constant address |
 | `operand:sym-diff` | not-implemented | not-implemented | unplanned |
@@ -514,8 +514,8 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.va_start` | supported | not-implemented |  |
 | `intrinsic:llvm.va_end` | supported | not-implemented |  |
 | `intrinsic:llvm.va_copy` | supported | not-implemented |  |
-| `intrinsic:llvm.stacksave` | not-implemented | not-implemented | WP-036 |
-| `intrinsic:llvm.stackrestore` | not-implemented | not-implemented | WP-036 |
+| `intrinsic:llvm.stacksave` | supported | not-implemented |  |
+| `intrinsic:llvm.stackrestore` | supported | not-implemented |  |
 | `intrinsic:llvm.frameaddress` | not-implemented | not-implemented | WP-041 |
 | `intrinsic:llvm.returnaddress` | not-implemented | not-implemented | WP-041 |
 | `intrinsic:llvm.trap` | not-implemented | not-implemented | WP-041 |

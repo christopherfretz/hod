@@ -28,43 +28,14 @@ pub struct Reloc {
     pub addend: i64,
 }
 
-/// A DWARF call-frame instruction, as data (§9.3). Registers are DWARF
-/// register numbers.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum CfiOp {
-    /// The CFA is `reg + offset`.
-    DefCfa {
-        /// The register.
-        reg: u16,
-        /// The offset.
-        offset: i32,
-    },
-    /// The CFA keeps its register; its offset is now this.
-    DefCfaOffset(i32),
-    /// The CFA keeps its offset; its register is now this.
-    DefCfaRegister(u16),
-    /// `reg` is saved at `CFA + cfa_offset`.
-    Offset {
-        /// The saved register.
-        reg: u16,
-        /// Where, from the CFA.
-        cfa_offset: i32,
-    },
-    /// `reg` has its entry value again.
-    Restore {
-        /// The register.
-        reg: u16,
-    },
-}
-
-/// A call-frame instruction and the code offset from which it holds.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct CfiRow {
-    /// The code offset.
-    pub offset: u32,
-    /// The instruction.
-    pub op: CfiOp,
-}
+/// A DWARF call-frame instruction, as data (§9.3): `hod_eh`'s [`Op`](hod_eh::Op),
+/// the one row type of the code generator and the unwind-table writer
+/// (`spec/eh.md` §1). Registers are DWARF register numbers; offsets are
+/// bytes.
+pub use hod_eh::Op as CfiOp;
+/// A call-frame instruction and the code offset, from the function's
+/// first byte, from which it holds: `hod_eh`'s [`Row`](hod_eh::Row).
+pub use hod_eh::Row as CfiRow;
 
 /// "No landing pad" in [`CallSiteRow::pad`].
 pub const NO_PAD: u32 = u32::MAX;
@@ -81,10 +52,16 @@ pub struct CallSiteRow {
     /// [`Chunk::pads`], which gives the row's action; [`NO_PAD`] for a
     /// plain `call` or a runtime call.
     pub pad: u32,
-    /// The landing address: the offset of the pad's block, or of the pad
-    /// stub of an `invoke` with stack arguments (§5.3). Zero without a
-    /// pad.
+    /// The landing address, used only with a pad: the offset of the pad
+    /// stub of an `invoke` with stack arguments (§5.3), or 0 for the
+    /// pad's own [`PadRow::offset`]. 0 without a pad. (`spec/eh.md` §9.3
+    /// rule 1 reads it the same way.)
     pub landing: u32,
+    /// The callee cannot unwind: a direct call of a function declared
+    /// `nounwind`. A row with this flag and no pad gets no entry in the
+    /// call-site table, as `llc` (`EHStreamer::callToNoUnwindFunction`);
+    /// with a pad (an `invoke`) it is covered as any other.
+    pub nounwind: bool,
 }
 
 /// One landing pad (§9.4).
@@ -101,17 +78,12 @@ pub struct PadRow {
     pub clauses: Range<u32>,
 }
 
-/// One clause of a landing pad (§9.4). Type ids are indices + 1 into the
+/// One clause of a landing pad (§9.4): `hod_eh`'s [`Clause`](hod_eh::Clause),
+/// `Catch(type id)` or `Filter(range)`. Type ids are indices + 1 into the
 /// function's range of [`Chunk::type_ids`], the values
-/// `llvm.eh.typeid.for` yields.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum ClauseRow {
-    /// `catch` of this type id.
-    Catch(u32),
-    /// `filter`: these type ids, a range of the function's range of
-    /// [`Chunk::filter_ids`].
-    Filter(Range<u32>),
-}
+/// `llvm.eh.typeid.for` yields; a filter's range is of the function's
+/// range of [`Chunk::filter_ids`].
+pub use hod_eh::Clause as ClauseRow;
 
 /// A line-table transition (§9.5): from `offset` on, the instructions
 /// have location `loc`.
@@ -194,6 +166,13 @@ pub struct FuncRecord {
     pub frame: FrameDesc,
     /// Whether it has landing pads, and so an LSDA.
     pub has_pads: bool,
+    /// Its personality function (`hod_ir` `SymbolKind::Function {
+    /// personality }`), if it names one.
+    pub personality: Option<SymId>,
+    /// The function is `nounwind`.
+    pub nounwind: bool,
+    /// The function has `uwtable` (of either kind).
+    pub uwtable: bool,
     /// Its bytes in [`Chunk::code`].
     pub code: Range<u32>,
     /// Its rows in [`Chunk::relocs`].
@@ -218,6 +197,16 @@ pub struct FuncRecord {
     pub islands: Range<u32>,
     /// Its rows in [`Chunk::block_offsets`].
     pub block_offsets: Range<u32>,
+}
+
+impl FuncRecord {
+    /// Whether the function gets an `.eh_frame` entry (`spec/eh.md`
+    /// §1.1): LLVM's `Function::needsUnwindTableEntry`, true unless it is
+    /// `nounwind` without `uwtable` and without a personality.
+    #[inline]
+    pub fn needs_unwind_entry(&self) -> bool {
+        self.uwtable || !self.nounwind || self.personality.is_some()
+    }
 }
 
 /// The output of a run of function compiles (§9.1).
@@ -364,6 +353,9 @@ impl Chunk {
             align: 1,
             frame: FrameDesc::default(),
             has_pads: false,
+            personality: None,
+            nounwind: false,
+            uwtable: false,
             code: mark.code..now.code,
             relocs: mark.relocs..now.relocs,
             cfi: mark.cfi..now.cfi,

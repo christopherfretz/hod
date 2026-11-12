@@ -19,16 +19,113 @@
 //!
 //! Exceptions are those of `spec/interp.md` §5.9: `hod_throw` and
 //! `hod_catch` are provided, and the personality is the Itanium one, read
-//! from nothing but the core's records (`spec/codegen.md` §9.4): the
-//! call-site rows, the pads, their clauses and the type-id tables.
+//! either from the core's records (`spec/codegen.md` §9.4: the call-site
+//! rows, the pads, their clauses and the type-id tables), or, with
+//! [`Tables`], from nothing but the `.eh_frame` and the LSDAs that
+//! `emit_module` wrote for them (`spec/eh.md` §1.1): the frame of each
+//! function unwound through must have an FDE whose rule at the call is
+//! `DefCfa FP+16`, and the landing pad, the action chain and the type
+//! table are those its LSDA encodes.
 
 use std::sync::Arc;
 
-use hod_cg::{Chunk, ClauseRow, FuncRecord, NO_PAD, RuntimeFn, SymRef};
+use std::collections::HashMap;
+
+use hod_cg::{CfiOp, CfiRow, Chunk, ClauseRow, Emitted, FuncRecord, NO_PAD, RuntimeFn, SymRef};
 use hod_interp::{Event, Val, host};
 use hod_ir::{FloatPredicate, IntPredicate, Module, Opcode, SymId, SymbolKind};
 
+use super::ehview;
 use super::isa::{self, Ins, Opnd, REGS};
+
+/// An LSDA call site: start, length, landing pad, action chain.
+type Site = (u64, u64, u64, Vec<i64>);
+
+/// One function's unwind tables, decoded from an object.
+struct FuncTables {
+    /// The FDE's rows.
+    rows: Vec<CfiRow>,
+    /// The LSDA, if it has one: each call site's start, length, landing
+    /// pad (0 for none) and action chain.
+    sites: Option<Vec<Site>>,
+    /// The type table by type id from 1: the type-information symbol,
+    /// `None` for a catch-all.
+    types: Vec<Option<SymId>>,
+    /// The type ids of each filter, by its (negative) filter value.
+    filters: HashMap<i64, Vec<u64>>,
+}
+
+/// The unwind tables of the functions of an emitted object, by symbol.
+pub struct Tables {
+    funcs: HashMap<usize, FuncTables>,
+    /// FDEs and LSDAs decoded.
+    pub fdes: u64,
+    pub lsdas: u64,
+}
+
+impl Tables {
+    /// Decodes `.eh_frame` and every LSDA of `emitted`'s object, each
+    /// FDE assigned to the function placed where it starts.
+    ///
+    /// # Errors
+    /// What could not be decoded or assigned.
+    pub fn decode(emitted: &Emitted) -> Result<Tables, String> {
+        let obj = &emitted.object;
+        let mut tables = Tables { funcs: HashMap::new(), fdes: 0, lsdas: 0 };
+        let Some(eh) = ehview::find_section(obj, b".eh_frame") else { return Ok(tables) };
+        let (_, fdes) = ehview::eh_frame(obj.data(eh), &|at| ehview::object_reloc(obj, eh, at))?;
+        for fde in fdes {
+            let section = ehview::section_of(obj, fde.start.0).ok_or("an FDE against a symbol")?;
+            let placed = emitted
+                .funcs
+                .iter()
+                .find(|f| f.section == section && i64::from(f.record.code.start) == fde.start.1)
+                .ok_or("an FDE at no function")?;
+            let (mut sites, mut types, mut filters) = (None, Vec::new(), HashMap::new());
+            if let Some((lsda, at)) = fde.lsda {
+                let section = ehview::section_of(obj, lsda).ok_or("an LSDA against a symbol")?;
+                let reloc = |offset| ehview::object_reloc(obj, section, offset);
+                let view = ehview::lsda(obj.data(section), at as usize, 8, &reloc)?;
+                let mut decoded = Vec::new();
+                for &(start, len, landing, action) in &view.sites {
+                    let chain = view.chain(action)?;
+                    for &f in chain.iter().filter(|&&f| f < 0) {
+                        filters.insert(f, view.filter(f)?);
+                    }
+                    decoded.push((start, len, landing, chain));
+                }
+                for entry in &view.types {
+                    types.push(match entry {
+                        None => None,
+                        Some((stub, addend)) => {
+                            let data = ehview::section_of(obj, *stub).ok_or("a type entry")?;
+                            let (info, _) = ehview::object_reloc(obj, data, *addend as u64)
+                                .ok_or("a type entry's stub without a relocation")?;
+                            Some(SymId::new(info.index()))
+                        }
+                    });
+                }
+                sites = Some(decoded);
+                tables.lsdas += 1;
+            }
+            tables.fdes += 1;
+            let funcs = &mut tables.funcs;
+            let tables_of = FuncTables { rows: fde.rows, sites, types, filters };
+            if funcs.insert(placed.record.sym.index(), tables_of).is_some() {
+                return Err("two FDEs for one function".to_owned());
+            }
+        }
+        Ok(tables)
+    }
+}
+
+/// Where a frame's exception goes: the core's pad row and landing, or
+/// the LSDA's landing pad and action chain.
+#[derive(Clone, Copy)]
+enum PadRef<'t> {
+    Row { pad: u32, landing: u32 },
+    Lsda { landing: u32, chain: &'t [i64], tables: &'t FuncTables },
+}
 
 /// Where the data and the stack are.
 const BASE: u64 = 0x1_0000;
@@ -104,6 +201,7 @@ struct Frame {
 struct Machine<'m> {
     module: &'m Module,
     chunk: &'m Chunk,
+    tables: Option<&'m Tables>,
     code: Vec<u8>,
     /// By symbol: the offset of its code.
     entry_of: Vec<Option<usize>>,
@@ -112,7 +210,7 @@ struct Machine<'m> {
     exns: Vec<Exn>,
     /// By frame pointer: the stack pointer the prologue (`enter` and any
     /// `dynslot`) left, which `leave` must find again.
-    resting: std::collections::HashMap<u64, u64>,
+    resting: HashMap<u64, u64>,
     throws: u64,
     landings: u64,
     mem: Vec<u8>,
@@ -280,7 +378,11 @@ fn checked(op: u8, bits: u8, a: u128, b: u128) -> Result<(u128, bool), String> {
 }
 
 impl<'m> Machine<'m> {
-    fn new(module: &'m Module, chunk: &'m Chunk) -> Result<Machine<'m>, String> {
+    fn new(
+        module: &'m Module,
+        chunk: &'m Chunk,
+        tables: Option<&'m Tables>,
+    ) -> Result<Machine<'m>, String> {
         // The data: every variable with an initializer, in symbol order.
         let count = module.symbol_count();
         let mut addrs = vec![0u64; count];
@@ -367,11 +469,12 @@ impl<'m> Machine<'m> {
         Ok(Machine {
             module,
             chunk,
+            tables,
             code,
             entry_of,
             addrs,
             exns: Vec::new(),
-            resting: std::collections::HashMap::new(),
+            resting: HashMap::new(),
             throws: 0,
             landings: 0,
             mem,
@@ -604,14 +707,17 @@ impl<'m> Machine<'m> {
     /// `calls`) returns to, by the call-site rows of its function: `None`
     /// to unwind through it, an error if no row covers the call of a
     /// function with landing pads (the personality terminates).
-    fn site_pad(&self, depth: usize) -> Result<Option<(&'m FuncRecord, u32, u32)>, String> {
+    fn site_pad(&self, depth: usize) -> Result<Option<(&'m FuncRecord, PadRef<'m>)>, String> {
         let chunk = self.chunk;
         let ret = self.calls[depth].ret;
         let func = self.func_at(ret.wrapping_sub(1)).ok_or("a return into no function")?;
+        let at = (ret - func.code.start as usize) as u32;
+        if let Some(tables) = self.tables {
+            return self.site_pad_in(tables, func, at);
+        }
         if !func.has_pads {
             return Ok(None);
         }
-        let at = (ret - func.code.start as usize) as u32;
         let sites = &chunk.call_sites[func.call_sites.start as usize..func.call_sites.end as usize];
         let Some(site) = sites.iter().find(|site| site.start < at && at <= site.start + site.len)
         else {
@@ -621,14 +727,62 @@ impl<'m> Machine<'m> {
                 String::from_utf8_lossy(self.module.symbol(func.sym).name())
             ));
         };
-        Ok((site.pad != NO_PAD).then_some((func, site.pad, site.landing)))
+        Ok((site.pad != NO_PAD)
+            .then_some((func, PadRef::Row { pad: site.pad, landing: site.landing })))
+    }
+
+    /// [`Self::site_pad`] from the decoded tables: the frame needs an FDE
+    /// whose CFA rule at the call is the frame pointer plus 16, and the
+    /// call an LSDA entry if the function has an LSDA.
+    fn site_pad_in(
+        &self,
+        tables: &'m Tables,
+        func: &'m FuncRecord,
+        at: u32,
+    ) -> Result<Option<(&'m FuncRecord, PadRef<'m>)>, String> {
+        let name = || String::from_utf8_lossy(self.module.symbol(func.sym).name()).into_owned();
+        let t = tables
+            .funcs
+            .get(&func.sym.index())
+            .ok_or_else(|| format!("an exception through {}, which has no FDE", name()))?;
+        let mut cfa = None;
+        for row in t.rows.iter().take_while(|row| row.offset < at) {
+            match row.op {
+                CfiOp::DefCfa { reg, offset } => cfa = Some((reg, offset)),
+                CfiOp::DefCfaOffset(offset) => cfa = cfa.map(|(reg, _)| (reg, offset)),
+                CfiOp::DefCfaRegister(reg) => cfa = cfa.map(|(_, offset)| (reg, offset)),
+                _ => {}
+            }
+        }
+        if cfa != Some((u16::from(isa::FP), 16)) {
+            return Err(format!("{}'s FDE gives the CFA {cfa:?} at the call at {at:#x}", name()));
+        }
+        let Some(sites) = &t.sites else { return Ok(None) };
+        let at = u64::from(at);
+        let Some((_, _, landing, chain)) =
+            sites.iter().find(|&&(start, len, _, _)| start < at && at <= start + len)
+        else {
+            return Err(format!(
+                "an exception through a call at {at:#x} of {}, which no LSDA entry covers \
+                 (std::terminate)",
+                name()
+            ));
+        };
+        Ok((*landing != 0)
+            .then_some((func, PadRef::Lsda { landing: *landing as u32, chain, tables: t })))
     }
 
     /// The Itanium personality at pad `pad` of `func` for an exception of
     /// type `ty`: the clauses in order, the first that matches wins. A
     /// filter's selector is negative: minus one more than its offset in
     /// the function's filter table, as the LSDA's would be in entries.
-    fn pad_match(&self, func: &FuncRecord, pad: u32, ty: u64) -> Result<PadMatch, String> {
+    fn pad_match(&self, func: &FuncRecord, pad: PadRef<'_>, ty: u64) -> Result<PadMatch, String> {
+        let pad = match pad {
+            PadRef::Row { pad, .. } => pad,
+            PadRef::Lsda { chain, tables, .. } => {
+                return Ok(Self::chain_match(tables, chain, ty, &self.addrs));
+            }
+        };
         let chunk = self.chunk;
         let row = chunk.pads.get((func.pads.start + pad) as usize).ok_or("no pad row")?;
         let type_ids = &chunk.type_ids[func.type_ids.start as usize..func.type_ids.end as usize];
@@ -665,6 +819,33 @@ impl<'m> Machine<'m> {
         Ok(if row.cleanup { PadMatch::Cleanup } else { PadMatch::Nothing })
     }
 
+    /// [`Self::pad_match`] by an LSDA's action chain: a positive filter
+    /// catches its type table entry, a negative one is a filter of type
+    /// ids, zero a cleanup.
+    fn chain_match(tables: &FuncTables, chain: &[i64], ty: u64, addrs: &[u64]) -> PadMatch {
+        let type_of = |id: u64| {
+            tables.types.get(id as usize - 1).map(|entry| entry.map(|sym| addrs[sym.index()]))
+        };
+        let mut cleanup = false;
+        for &filter in chain {
+            match filter {
+                0 => cleanup = true,
+                f if f > 0 => match type_of(f as u64) {
+                    Some(None) => return PadMatch::Handler(f as i32),
+                    Some(Some(caught)) if caught == ty => return PadMatch::Handler(f as i32),
+                    _ => {}
+                },
+                f => {
+                    let ids = tables.filters.get(&f).map_or(&[][..], Vec::as_slice);
+                    if !ids.iter().any(|&id| type_of(id) == Some(Some(ty))) {
+                        return PadMatch::Handler(f as i32);
+                    }
+                }
+            }
+        }
+        if cleanup { PadMatch::Cleanup } else { PadMatch::Nothing }
+    }
+
     /// `hod_throw(ty, payload)`, called through the innermost frame: the
     /// search phase finds the handler's frame, then the cleanup phase
     /// runs.
@@ -675,7 +856,7 @@ impl<'m> Machine<'m> {
         self.throws += 1;
         let mut handler = None;
         for depth in (0..self.calls.len()).rev() {
-            if let Some((func, pad, _)) = self.site_pad(depth)?
+            if let Some((func, pad)) = self.site_pad(depth)?
                 && let PadMatch::Handler(_) = self.pad_match(func, pad, ty)?
             {
                 handler = Some(depth);
@@ -711,12 +892,12 @@ impl<'m> Machine<'m> {
                 break;
             }
             let found = match self.site_pad(depth)? {
-                Some((func, pad, landing)) => match self.pad_match(func, pad, ty)? {
+                Some((func, pad)) => match self.pad_match(func, pad, ty)? {
                     PadMatch::Handler(selector) if depth == handler => {
-                        Some((func, landing, selector, ExnState::InHandler))
+                        Some((func, pad, selector, ExnState::InHandler))
                     }
                     PadMatch::Cleanup if depth != handler => {
-                        Some((func, landing, 0, ExnState::InCleanup))
+                        Some((func, pad, 0, ExnState::InCleanup))
                     }
                     PadMatch::Nothing if depth != handler => None,
                     _ => return Err("the phases of an unwind disagree".to_owned()),
@@ -727,7 +908,10 @@ impl<'m> Machine<'m> {
                 None => None,
             };
             let frame = self.calls.pop().ok_or("no frame")?;
-            if let Some((func, landing, selector, state)) = found {
+            if let Some((func, pad, selector, state)) = found {
+                let landing = match pad {
+                    PadRef::Row { landing, .. } | PadRef::Lsda { landing, .. } => landing,
+                };
                 self.exns[index].state = state;
                 self.landings += 1;
                 self.clobber(&[]);
@@ -939,7 +1123,23 @@ impl<'m> Machine<'m> {
 /// What went wrong, with where: a trap, an access outside memory, a
 /// broken convention, the step limit.
 pub fn run(module: &Module, chunk: &Chunk, entry: SymId, args: &[u64]) -> Result<Ran, String> {
-    let mut machine = Machine::new(module, chunk)?;
+    run_in(module, chunk, None, entry, args)
+}
+
+/// [`run`], the personality and the unwinder reading `tables`, decoded
+/// from the object `emit_module` wrote for `chunk`.
+///
+/// # Errors
+/// As [`run`]'s; also a frame unwound through without its FDE, or with
+/// a CFA rule other than the frame's.
+pub fn run_in(
+    module: &Module,
+    chunk: &Chunk,
+    tables: Option<&Tables>,
+    entry: SymId,
+    args: &[u64],
+) -> Result<Ran, String> {
+    let mut machine = Machine::new(module, chunk, tables)?;
     let Some(start) = machine.entry_of.get(entry.index()).copied().flatten() else {
         return Err(format!("{entry:?} was not compiled"));
     };

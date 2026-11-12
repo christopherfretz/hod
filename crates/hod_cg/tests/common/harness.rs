@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::atomic::Ordering;
 
-use hod_cg::{CgError, Chunk, Options, Scratch, Stress, compile_function};
+use hod_cg::{CgError, Chunk, Options, Scratch, Stress, compile_function, emit_module};
 use hod_interp::generate::{Coverage, Options as GenOptions, generate};
 use hod_interp::{Stop, Val};
 use hod_ir::{Body, Module};
@@ -131,6 +131,9 @@ pub struct Tally {
     /// Exceptions thrown and landing pads entered in compared runs.
     pub throws: u64,
     pub landings: u64,
+    /// FDEs and LSDAs the unwinder read, from `emit_module`'s objects.
+    pub fdes: u64,
+    pub lsdas: u64,
     /// What the generated programs contained.
     pub coverage: Coverage,
 }
@@ -154,6 +157,7 @@ impl Tally {
         let _ = writeln!(text, "host calls compared:       {}", self.events);
         let _ = writeln!(text, "exceptions thrown:         {}", self.throws);
         let _ = writeln!(text, "landing pads entered:      {}", self.landings);
+        let _ = writeln!(text, "FDEs, LSDAs unwound by:    {}, {}", self.fdes, self.lsdas);
         text
     }
 }
@@ -227,8 +231,18 @@ impl Harness {
                 }
                 Err(error) => return Err(format!("mode {name}: {error}")),
             }
-            let ran = exec::run(&program.module, &self.chunk, program.entry, &args)
-                .map_err(|what| format!("mode {name}: the compiled program failed: {what}"))?;
+            // The unwinder reads the tables `emit_module` writes for the
+            // chunk (WP-049); the run is otherwise that of the chunk.
+            let options = Options { stress, ..Options::default() };
+            let emitted = emit_module(&program.module, &options, std::slice::from_ref(&self.chunk))
+                .map_err(|error| format!("mode {name}: emit_module: {error}"))?;
+            let tables = exec::Tables::decode(&emitted)
+                .map_err(|what| format!("mode {name}: the unwind tables: {what}"))?;
+            self.tally.fdes += tables.fdes;
+            self.tally.lsdas += tables.lsdas;
+            let ran =
+                exec::run_in(&program.module, &self.chunk, Some(&tables), program.entry, &args)
+                    .map_err(|what| format!("mode {name}: the compiled program failed: {what}"))?;
             if ran.ret[0] != expected {
                 return Err(format!(
                     "mode {name}: the compiled program returned {:#x}, the interpreter {expected:#x}",

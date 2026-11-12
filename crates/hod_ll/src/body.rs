@@ -1265,3 +1265,51 @@ pub(crate) fn is_terminator(word: &[u8]) -> bool {
             | b"callbr"
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Write as _;
+
+    use crate::{BodyParser, ParseOptions, parse_module};
+
+    /// A module of `functions` functions, each with `calls` calls whose
+    /// arguments and results carry the usual attributes.
+    fn calls(functions: usize, calls: usize) -> String {
+        let mut text = String::from(
+            "target triple = \"aarch64-unknown-linux-gnu\"\n\
+             declare noundef nonnull ptr @g(ptr noundef nonnull align 8 dereferenceable(16), i32 noundef signext)\n",
+        );
+        for f in 0..functions {
+            let _ = writeln!(text, "define void @f{f}(ptr %p) {{");
+            for _ in 0..calls {
+                text.push_str(
+                    "  %r{} = call noundef nonnull ptr @g(ptr noundef nonnull align 8 \
+                     dereferenceable(16) %p, i32 noundef signext 7)\n",
+                );
+            }
+            text.push_str("  ret void\n}\n");
+        }
+        let mut n = 0;
+        while let Some(at) = text.find("%r{}") {
+            text.replace_range(at..at + 4, &format!("%r{n}"));
+            n += 1;
+        }
+        text
+    }
+
+    /// WP-096: `hod_ir`'s attribute table is searched once per keyword,
+    /// not once per word after every type of every call: 800 calls of 7
+    /// attribute words and 2 type words each search it for the 8
+    /// distinct words only (`ptr` and `i32` are no attributes).
+    #[test]
+    fn attribute_keywords_are_looked_up_once() {
+        let text = calls(20, 40);
+        let mut parsed = parse_module(text.as_bytes(), &ParseOptions::default()).unwrap();
+        let mut bodies = BodyParser::new(&parsed.text);
+        for function in parsed.text.functions() {
+            assert!(bodies.parse(&mut parsed.module, function).unwrap().is_some());
+        }
+        let lookups = bodies.scratch.attr_memo.lookups;
+        assert!((5..=8).contains(&lookups), "{lookups} searches of the attribute table");
+    }
+}

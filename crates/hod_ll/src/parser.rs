@@ -7,6 +7,7 @@ use hod_ir::{
     ConstId, FnAttrs, FnAttrsId, IrResult, Module, ParamAttrs, SymId, TargetSpec, TypeId,
 };
 
+use crate::attrs::AttrMemo;
 use crate::consts::{BlockLabels, LabelKey};
 use crate::debug::{DebugMap, DebugScratch};
 use crate::error::{LlErrorKind, PResult, fail, ir_fail};
@@ -54,6 +55,7 @@ pub(crate) struct Parser<'a, 'm> {
     pub words: Vec<u64>,
     pub buf: Vec<u8>,
     pub pattrs: Vec<ParamAttrs>,
+    pub attr_memo: AttrMemo,
     /// How deeply types and constants are nested right now.
     pub depth: u32,
 
@@ -110,6 +112,7 @@ pub(crate) struct Scratch {
     pub words: Vec<u64>,
     pub buf: Vec<u8>,
     pub pattrs: Vec<ParamAttrs>,
+    pub attr_memo: AttrMemo,
     pub pending: Vec<Cow<'static, str>>,
     pub defined: Option<HashMap<LabelKey, usize>>,
     pub labels: HashMap<usize, BlockLabels>,
@@ -199,6 +202,7 @@ impl<'a, 'm> Parser<'a, 'm> {
             words: scratch.words,
             buf: scratch.buf,
             pattrs: scratch.pattrs,
+            attr_memo: scratch.attr_memo,
             depth: 0,
             first_ref: Vec::new(),
             described: Vec::new(),
@@ -235,6 +239,7 @@ impl<'a, 'm> Parser<'a, 'm> {
             words: self.words,
             buf: self.buf,
             pattrs: self.pattrs,
+            attr_memo: self.attr_memo,
             pending: self.pending,
             defined: self.defined,
             labels: self.labels,

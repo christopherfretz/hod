@@ -5,6 +5,7 @@
 //! `cargo xtask shim ...` builds the LLVM directory that plugs hod into kiln.
 //! `cargo xtask irdiff ...` is the IR differential harness (layer L4).
 //! `cargo xtask corpus ...` captures, verifies and counts the IR corpus.
+//! `cargo xtask roundtrip ...` parses and prints the corpus (layer L2).
 
 use std::process::ExitCode;
 
@@ -15,6 +16,7 @@ usage: cargo xtask ci [--quick]
        cargo xtask irdiff [options] [<file.ll or directory>...]   (--help for the options)
        cargo xtask corpus capture|verify|census|fetch [options]   (--help for the options)
        cargo xtask bench [options]                                (--help for the options)
+       cargo xtask roundtrip [options]                            (--help for the options)
 ";
 
 fn main() -> ExitCode {
@@ -25,6 +27,8 @@ fn main() -> ExitCode {
         Some("shim") => shim(&args[1..]),
         Some("irdiff") => irdiff(&args[1..]),
         Some("corpus") => corpus(&args[1..]),
+        #[cfg(unix)]
+        Some("roundtrip") => ExitCode::from(xtask::roundtrip::command(&args[1..])),
         #[cfg(unix)]
         Some("bench") => xtask::bench::main(&args[1..]),
         _ => {

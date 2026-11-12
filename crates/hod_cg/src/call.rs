@@ -666,6 +666,60 @@ impl<'a, T: Target> FnCx<'a, T> {
         Ok(())
     }
 
+    /// §2.2: clears the bits above every integer leaf of `ty` whose width
+    /// is not a multiple of 8 in the image at `at`, a `Mem`-class value's
+    /// home that an incoming argument's parts were written to. The ABI
+    /// promises nothing above a leaf (`abi-<target>.md`); hod's memory
+    /// holds zeros there. A leaf (its last piece, for a leaf wider than a
+    /// register) is loaded into a scratch register, extended by zero as
+    /// [`Target::extend_arg`] extends a `zeroext` argument, and stored
+    /// back with its own size. Elements of vectors are not leaves here.
+    pub(crate) fn clear_odd_leaves(&mut self, ty: TypeId, at: FrameRef) {
+        if !self.has_odd_leaf(ty) {
+            return;
+        }
+        match self.types().kind(ty) {
+            TypeKind::Struct { fields, .. } => {
+                let fields = fields.to_vec();
+                let offsets =
+                    self.types().field_offsets(ty).map(<[u64]>::to_vec).unwrap_or_default();
+                for (field, offset) in fields.into_iter().zip(offsets) {
+                    self.clear_odd_leaves(field, at.offset_by(offset as u32));
+                }
+            }
+            TypeKind::Array { elem, len } => {
+                let stride = self.types().alloc_size_of(elem) as u32;
+                for index in 0..len as u32 {
+                    self.clear_odd_leaves(elem, at.offset_by(index * stride));
+                }
+            }
+            TypeKind::Int(bits) => {
+                let t = self.target;
+                let reg_bytes = self.reg_bytes(Class::Gpr);
+                let last = (bits - 1) / (8 * reg_bytes) * reg_bytes;
+                let size = bits.div_ceil(8) - last;
+                let scratch = self.scratch_reg(Class::Gpr);
+                t.load(self, scratch, at.offset_by(last), size);
+                let zeroext =
+                    ParamAttrs::NONE.with(ParamAttrs::ZEROEXT).unwrap_or(ParamAttrs::NONE);
+                t.extend_arg(self, scratch, ty, zeroext);
+                t.store(self, scratch, at.offset_by(last), size);
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether `ty` has an integer leaf of a width that is not a multiple
+    /// of 8 (vectors' elements are not leaves).
+    fn has_odd_leaf(&self, ty: TypeId) -> bool {
+        match self.types().kind(ty) {
+            TypeKind::Struct { fields, .. } => fields.iter().any(|&field| self.has_odd_leaf(field)),
+            TypeKind::Array { elem, len } => len > 0 && self.has_odd_leaf(elem),
+            TypeKind::Int(bits) => bits % 8 != 0,
+            _ => false,
+        }
+    }
+
     /// §7.1: the last piece of an integer wider than a register, a
     /// `Mem`-class value whose image is in `slot`, brought to the form
     /// the ABI requires of its producer once `part` has been placed: in

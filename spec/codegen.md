@@ -885,6 +885,19 @@ whatever its width. A result returned in memory (`ret_memory`) is its
 image alone. The incoming side extends nothing: it may assume what the
 target's table promises.
 
+**Odd leaves of incoming `Mem`-class arguments.** The ABI promises
+nothing above an integer leaf of an aggregate or above an integer wider
+than a register without an extension attribute (`abi-a64.md` §7), but a
+`Mem`-class value lives in memory, where §2.2 has the bits above every
+width zero. So once an incoming `Mem`-class argument's parts are in its
+home (gathered, or its incoming stack location), every integer leaf
+whose width is not a multiple of 8 is cleared there: its bytes, or for a
+leaf wider than a register the bytes of its last piece, are loaded into
+a scratch register, extended by zero through `Target::extend_arg`, and
+stored back with their own size. Elements of vectors are not leaves.
+The callee may write its incoming area (`abi-a64.md` §8.1). A call's
+`Mem`-class result is the target's to clear (AArch64: `call.rs`).
+
 **Every call instruction in a function's code is emitted by this
 sequence** and so has a call-site row, including the calls of runtime
 functions (§7.3) that lowerings of other instructions make (`Resume`'s

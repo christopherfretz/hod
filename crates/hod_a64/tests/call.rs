@@ -831,6 +831,47 @@ fn extended_integers_of_every_width_run() {
     }
 }
 
+/// `spec/codegen.md` §2.2 and §4.8, run: a `Mem`-class argument whose
+/// integer leaves have odd widths (`{ i17, i64 }`, `i65`, `[2 x i9]`, a
+/// nest of them), in registers and on the stack, arrives with junk above
+/// every leaf (`abi-a64.md` §7 promises nothing there), and its home
+/// must hold zeros above each width (`tests/data/call/odd.ll`). The home
+/// is observed through what the callee passes on to gcc's checkers,
+/// which then also check those zeros. gcc's driver calls the callee
+/// directly and through a forwarding caller; the caller and the callee
+/// module by hod and by `llc` in every pairing, hod also stressed; every
+/// linker where hod is involved.
+#[test]
+fn odd_leaves_of_incoming_arguments_are_cleared() {
+    let dir = Scratch::new("a64-call-odd");
+    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let caller = data("odd.ll");
+    let callee = data("odd_callee.ll");
+    let c = data("odd.c");
+    let hod_driver = toolchain.compile_c(&dir, "odd-driver-hod", &c, &["-DHOD"]);
+    let llc_driver = toolchain.compile_c(&dir, "odd-driver-llc", &c, &[]);
+    let stress = Options { stress: hod_cg::Stress::ALL, ..Options::default() };
+    let plain = Options::default();
+    for (tag, caller_llc, callee_llc, options) in [
+        ("LL", true, true, plain),
+        ("HL", false, true, plain),
+        ("LH", true, false, plain),
+        ("HH", false, false, plain),
+        ("HH-stress", false, false, stress),
+    ] {
+        let Some(a) = object_with(&dir, &format!("odd-{tag}"), &caller, caller_llc, options) else {
+            return;
+        };
+        let Some(b) = object_with(&dir, &format!("odd-callee-{tag}"), &callee, callee_llc, options)
+        else {
+            return;
+        };
+        let driver = if callee_llc { &llc_driver } else { &hod_driver };
+        let name = format!("odd-{tag}");
+        link_run_all(&toolchain, &dir, &name, &[], &[driver, &a, &b], " 0 failed", tag == "LL");
+    }
+}
+
 /// `spec/codegen.md` §7.1, effective attributes, as a property:
 /// `classify` and the call sequence see the same attributes for random
 /// combinations of a declaration's and a call site's attributes, with

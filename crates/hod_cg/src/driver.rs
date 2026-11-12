@@ -330,7 +330,8 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// §4.8: the entry code for the arguments. An argument that arrived
     /// in a register rests there if it is a register value, and is
     /// stored to its home otherwise; one that arrived on the stack has
-    /// its incoming location as its home.
+    /// its incoming location as its home. A `Mem`-class home then has
+    /// the bits above its odd-width leaves cleared (§2.2).
     fn enter_arguments(&mut self) -> CgResult<()> {
         let t = self.target;
         let types = self.body.arg_types(self.module);
@@ -382,6 +383,9 @@ impl<'a, T: Target> FnCx<'a, T> {
                 && let Place::Stack(offset) = part.place
             {
                 let width = if class == Class::Mem { 0 } else { part.size.min(255) as u8 };
+                if class == Class::Mem {
+                    self.clear_odd_leaves(ty, FrameRef::Incoming(offset));
+                }
                 let state = ValState {
                     loc: Loc::Frame(FrameRef::Incoming(offset)),
                     kind: Kind::Home,
@@ -412,6 +416,7 @@ impl<'a, T: Target> FnCx<'a, T> {
                         }
                     }
                 }
+                self.clear_odd_leaves(ty, home);
                 continue;
             }
             let (Place::Reg(reg), true) = (part.place, next - first == 1) else {

@@ -727,9 +727,12 @@ fn f32_as_f64_bits(bits: u32) -> u64 {
 /// Whether `name` needs no quotes after its sigil: LLVM's identifier
 /// characters, not starting with a digit.
 fn is_plain_name(name: &[u8]) -> bool {
-    let plain = |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'$' | b'.' | b'_');
+    let plain =
+        |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'$' | b'.' | b'_');
     match name.split_first() {
-        Some((&first, rest)) => !first.is_ascii_digit() && plain(first) && rest.iter().all(|&b| plain(b)),
+        Some((&first, rest)) => {
+            !first.is_ascii_digit() && plain(first) && rest.iter().all(|&b| plain(b))
+        }
         None => false,
     }
 }

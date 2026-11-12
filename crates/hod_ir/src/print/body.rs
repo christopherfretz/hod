@@ -1,4 +1,4 @@
-//! A function body as text (`spec/ir.md` §9.5): blocks named `b<id>`,
+//! A function body as text (`spec/ir.md` §9.4): blocks named `b<id>`,
 //! values named `%v<id>`, arguments `%a<n>`, stack slots `%s<n>`.
 
 use std::collections::btree_map::Entry;
@@ -132,7 +132,7 @@ fn write_mangled<O: Write + ?Sized>(
 
 /// The index path of the field of type `field` at byte `offset` of a value
 /// of type `agg`, appended to `path`: the inverse of
-/// [`crate::aggregate_field`] (§9.5). False if there is none.
+/// [`crate::aggregate_field`] (§9.4). False if there is none.
 ///
 /// The search is depth first, a struct's fields in ascending order, and
 /// takes the first field that has the type and the offset. Two paths lead
@@ -351,8 +351,12 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
                 self.s(" to ")?;
                 self.ty(ty)
             }
-            InstKind::ICmp { pred, lhs, rhs } => self.compare(body, id, "icmp ", pred.name(), lhs, rhs),
-            InstKind::FCmp { pred, lhs, rhs } => self.compare(body, id, "fcmp ", pred.name(), lhs, rhs),
+            InstKind::ICmp { pred, lhs, rhs } => {
+                self.compare(body, id, "icmp ", pred.name(), lhs, rhs)
+            }
+            InstKind::FCmp { pred, lhs, rhs } => {
+                self.compare(body, id, "fcmp ", pred.name(), lhs, rhs)
+            }
             InstKind::Load { ptr, mem } => {
                 self.def(id)?;
                 self.s("load ")?;
@@ -652,7 +656,7 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
         self.s(if lanes.is_some() { ">" } else { "" })
     }
 
-    /// A `PtrAdd` as `getelementptr i8` steps (§9.5): one for the constant
+    /// A `PtrAdd` as `getelementptr i8` steps (§9.4): one for the constant
     /// offset, then one per index, each index first brought to the
     /// pointer's index width and multiplied by its scale. The last step
     /// has the instruction's name; the ones before it `.g<n>`, and the
@@ -870,15 +874,15 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
 
     /// `asm sideeffect "template", "constraints"`.
     fn asm(&mut self, id: AsmId) -> R {
-        if id.index() >= self.m.asm_count() {
-            return self.malformed(format!("{id:?} is not inline assembly of the module"));
-        }
         const FLAGS: [(u8, &str); 4] = [
             (InlineAsm::SIDE_EFFECT, "sideeffect "),
             (InlineAsm::ALIGN_STACK, "alignstack "),
             (InlineAsm::INTEL_DIALECT, "inteldialect "),
             (InlineAsm::UNWIND, "unwind "),
         ];
+        if id.index() >= self.m.asm_count() {
+            return self.malformed(format!("{id:?} is not inline assembly of the module"));
+        }
         let asm = self.m.asm(id);
         self.s("asm ")?;
         for (flag, keyword) in FLAGS {
@@ -939,7 +943,7 @@ mod tests {
     use crate::module::Module;
     use crate::target::TargetSpec;
 
-    /// §9.5: the name the printer writes for an intrinsic is the one
+    /// §9.4: the name the printer writes for an intrinsic is the one
     /// `Intrinsic::mangled_name` builds, for every kind of overload type.
     #[test]
     fn intrinsic_names_match_mangled_name() {
@@ -1006,11 +1010,11 @@ mod tests {
                 "llvm.thread.pointer"
             );
         }
-        let refused = |dialect, intrinsic: Intrinsic<'_>, overloads: &[TypeId]| {
-            match name(dialect, intrinsic, overloads) {
-                Err(PrintError::Unsupported { construct, symbol: None }) => construct,
-                other => panic!("{other:?}"),
-            }
+        let refused = |dialect, intrinsic: Intrinsic<'_>, overloads: &[TypeId]| match name(
+            dialect, intrinsic, overloads,
+        ) {
+            Err(PrintError::Unsupported { construct, symbol: None }) => construct,
+            other => panic!("{other:?}"),
         };
         let int = [TypeId::I32];
         let float = [TypeId::DOUBLE];
@@ -1025,7 +1029,7 @@ mod tests {
         assert_eq!(name(Dialect::LLVM19, Intrinsic::Other("llvm.x.y"), &[]).unwrap(), "llvm.x.y");
     }
 
-    /// §9.5: the index path is the inverse of `aggregate_field`: every
+    /// §9.4: the index path is the inverse of `aggregate_field`: every
     /// field of a nest of structs and arrays is found again from its
     /// offset and type, at a path with the same offset and type.
     #[test]
@@ -1100,7 +1104,7 @@ mod tests {
         assert!(path.is_empty());
     }
 
-    /// §9.5: constants of an index width are written as signed numbers.
+    /// §9.4: constants of an index width are written as signed numbers.
     #[test]
     fn index_constants_are_signed() {
         assert_eq!(signed(u64::MAX, 64), -1);

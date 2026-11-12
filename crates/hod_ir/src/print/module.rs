@@ -1,4 +1,4 @@
-//! What a module owns, as text (`spec/ir.md` §9.4): the target, module
+//! What a module owns, as text (`spec/ir.md` §9.3): the target, module
 //! assembly, COMDATs, every symbol, the retained lists, constructors,
 //! intrinsic declarations, attribute groups and the metadata.
 
@@ -97,8 +97,7 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
     /// module's: the same layout but for the preferred alignment of `i1`
     /// (§9.2) and the address spaces 270 to 272.
     fn old_aarch64_layout(&self) -> bool {
-        self.dialect.major() < 20
-            && self.m.target().data_layout_str() == AARCH64_LINUX_DATA_LAYOUT
+        self.dialect.major() < 20 && self.m.target().data_layout_str() == AARCH64_LINUX_DATA_LAYOUT
     }
 
     fn header(&mut self) -> R {
@@ -549,7 +548,8 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
     /// text defines, in id order.
     fn retained(&mut self, name: &str, pick: fn(&Symbol<'a>) -> bool) -> R {
         let m = self.m;
-        let listed = |writer: &Self, symbol: &Symbol<'a>| pick(symbol) && writer.defined(symbol.id());
+        let listed =
+            |writer: &Self, symbol: &Symbol<'a>| pick(symbol) && writer.defined(symbol.id());
         let count = m.symbols().filter(|symbol| listed(self, symbol)).count();
         if count == 0 {
             return Ok(());
@@ -702,10 +702,7 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
         }
         if let Some(threshold) = props.large_data_threshold {
             // An `i64` whatever its value.
-            writeln!(
-                self.out,
-                "!{next} = !{{i32 1, !\"Large Data Threshold\", i64 {threshold}}}"
-            )?;
+            writeln!(self.out, "!{next} = !{{i32 1, !\"Large Data Threshold\", i64 {threshold}}}")?;
             next += 1;
         }
         if props.uwtable != UwTable::None {

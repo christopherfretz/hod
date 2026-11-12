@@ -11,6 +11,7 @@
 //! each member in an accepted body, or, for what a dialect lacks, the error
 //! that names it (§9.2). The funclet opcodes have no text: each is the
 //! error `inst:<opcode>`.
+#![expect(clippy::many_single_char_names, reason = "short names for the values of a body")]
 
 mod print_support;
 
@@ -190,16 +191,7 @@ fn memory(all: &mut Bodies) {
     x.b.fence(AtomicOrdering::Acquire, SyncScope::SingleThread).unwrap();
     x.b.cmpxchg(pair, p, n, n, ordered(AtomicOrdering::SeqCst), AtomicOrdering::SeqCst, false)
         .unwrap();
-    x.b.cmpxchg(
-        pair,
-        p,
-        n,
-        n,
-        single.with_volatile(),
-        AtomicOrdering::Monotonic,
-        true,
-    )
-    .unwrap();
+    x.b.cmpxchg(pair, p, n, n, single.with_volatile(), AtomicOrdering::Monotonic, true).unwrap();
     x.b.cmpxchg(pair, p, n, n, ordered(AtomicOrdering::AcqRel), AtomicOrdering::Acquire, true)
         .unwrap();
     for &op in RmwOp::ALL {
@@ -412,6 +404,7 @@ fn variadic(all: &mut Bodies) {
 
 /// Calls: every calling convention, tail marker, flag, call-site
 /// attribute and bundle; inline-assembly callees with every flag.
+#[expect(clippy::too_many_lines, reason = "every kind of call")]
 fn calls(all: &mut Bodies) {
     let m = &mut all.m;
     let unary = m.types.function(I64, &[I64], false).unwrap();
@@ -466,7 +459,8 @@ fn calls(all: &mut Bodies) {
         | InlineAsm::ALIGN_STACK
         | InlineAsm::INTEL_DIALECT
         | InlineAsm::UNWIND;
-    let flagged = asm(m, b"nop // \"quoted\" \\ and\n\ttabbed", b"~{x0},~{memory}", all_flags, nullary);
+    let flagged =
+        asm(m, b"nop // \"quoted\" \\ and\n\ttabbed", b"~{x0},~{memory}", all_flags, nullary);
     let moved = asm(m, b"mov $0, $1", b"=r,r", InlineAsm::SIDE_EFFECT, unary);
     let indirect_ty = m.types.function(VOID, &[PTR], false).unwrap();
     let indirect = asm(m, b"ldr x0, $0", b"*m,~{x0}", InlineAsm::SIDE_EFFECT, indirect_ty);
@@ -543,8 +537,11 @@ fn calls(all: &mut Bodies) {
     x.b.call(VOID, &CallDesc::new(nop, nullary, &[])).unwrap();
     x.b.call(VOID, &CallDesc::new(flagged, nullary, &[])).unwrap();
     x.b.call(I64, &CallDesc::new(moved, unary, &[n])).unwrap();
-    x.b.call(VOID, &CallDesc { arg_attrs: &[element], ..CallDesc::new(indirect, indirect_ty, &[p]) })
-        .unwrap();
+    x.b.call(
+        VOID,
+        &CallDesc { arg_attrs: &[element], ..CallDesc::new(indirect, indirect_ty, &[p]) },
+    )
+    .unwrap();
     x.ret_void();
     let body = x.done();
     all.push(body);
@@ -648,13 +645,15 @@ fn intrinsics(all: &mut Bodies) {
 
 /// `invoke`, `landingpad` with every kind of clause, `resume`, and
 /// `callbr` of inline assembly.
+#[expect(clippy::too_many_lines, reason = "every kind of unwinding instruction")]
 fn unwinding(all: &mut Bodies) {
     let m = &mut all.m;
     let personality = declare(m, "__gxx_personality_v0", I32, &[], true);
     let may_throw = declare(m, "may_throw", I64, &[I64], false);
     let may_throw_ty = m.symbol(may_throw).ty();
-    let type_info =
-        m.add_variable(b"_ZTIi", &VariableDesc { constant: true, ..VariableDesc::new(PTR) }).unwrap();
+    let type_info = m
+        .add_variable(b"_ZTIi", &VariableDesc { constant: true, ..VariableDesc::new(PTR) })
+        .unwrap();
     let pad_ty = m.types.struct_type(&[PTR, I32], false).unwrap();
     let info = m.consts.addr(type_info, 0).unwrap();
     let null = m.consts.null(&m.types, PTR).unwrap();
@@ -698,8 +697,13 @@ fn unwinding(all: &mut Bodies) {
     };
     x.b.invoke(I64, &desc, second, catch_all).unwrap();
     x.at(second);
-    x.b.invoke(VOID, &CallDesc::new(Value::asm(throwing_asm).unwrap(), nullary, &[]), third, clauses)
-        .unwrap();
+    x.b.invoke(
+        VOID,
+        &CallDesc::new(Value::asm(throwing_asm).unwrap(), nullary, &[]),
+        third,
+        clauses,
+    )
+    .unwrap();
     x.at(third);
     x.b.invoke(I64, &CallDesc::new(callee, may_throw_ty, &[n]), done, filters).unwrap();
     x.at(done);
@@ -711,9 +715,12 @@ fn unwinding(all: &mut Bodies) {
     x.b.landing_pad(pad_ty, false, &[Clause::Catch(null)]).unwrap();
     x.ret(n);
     x.at(clauses);
-    let pad = x
-        .b
-        .landing_pad(pad_ty, true, &[Clause::Catch(info), Clause::Filter(filter), Clause::Catch(null)])
+    let pad =
+        x.b.landing_pad(
+            pad_ty,
+            true,
+            &[Clause::Catch(info), Clause::Filter(filter), Clause::Catch(null)],
+        )
         .unwrap();
     x.b.resume(pad).unwrap();
     x.at(filters);
@@ -739,8 +746,13 @@ fn unwinding(all: &mut Bodies) {
         .unwrap();
     let mut x = all.body("asm_goto", I64, &[I64]);
     let (through, taken, end) = (x.block(), x.block(), x.block());
-    x.b.callbr(VOID, &CallDesc::new(Value::asm(jump).unwrap(), jump_ty, &[x.arg(0)]), through, &[taken])
-        .unwrap();
+    x.b.callbr(
+        VOID,
+        &CallDesc::new(Value::asm(jump).unwrap(), jump_ty, &[x.arg(0)]),
+        through,
+        &[taken],
+    )
+    .unwrap();
     x.at(through);
     x.b.callbr(VOID, &CallDesc::new(Value::asm(nop).unwrap(), nullary, &[]), end, &[]).unwrap();
     x.at(taken);
@@ -853,7 +865,6 @@ fn every_instruction_is_accepted_by_llvm() {
             continue;
         }
         let Some(llvm) = Llvm::new(major) else { continue };
-        if let Ok(dir) = std::env::var("HOD_WP006_DUMP") { std::fs::write(format!("{dir}/bodies{major}.ll"), &text).unwrap(); }
         llvm.accept(&text, "the module of every instruction");
         let instructions: usize = accepted.iter().map(|body| body.inst_count()).sum();
         eprintln!(
@@ -940,8 +951,10 @@ fn dialects_differ_in_instructions_as_specified() {
     let pad_ty = m.types.struct_type(&[PTR, I32], false).unwrap();
     let mut x = Fx::new(&mut m, f);
     let (normal, pad) = (x.block(), x.block());
-    let desc =
-        CallDesc { tail: TailKind::Tail, ..CallDesc::new(Value::sym(callee).unwrap(), callee_ty, &[]) };
+    let desc = CallDesc {
+        tail: TailKind::Tail,
+        ..CallDesc::new(Value::sym(callee).unwrap(), callee_ty, &[])
+    };
     x.b.invoke(VOID, &desc, normal, pad).unwrap();
     x.at(normal);
     x.ret_void();

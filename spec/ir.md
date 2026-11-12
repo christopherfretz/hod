@@ -1021,19 +1021,319 @@ change.
 ## 9. Printer
 
 `Module::print` writes LLVM textual IR (dialect selected by an LLVM major,
-19 to 22) for the module and for a body. Guarantees:
+19 to 22) for the module and the bodies it is given. Guarantees:
 
-- `llvm-as` accepts it and `opt -passes=verify` verifies it;
-- compiled by `llc`, it behaves as the producer's input did (checked by
-  the differential harness, which is also how producers are validated:
+- `llvm-as` of the dialect's major accepts it and `opt -passes=verify`
+  verifies it, for a module that passes `Module::verify_symbols` with
+  bodies that pass `Body::verify` and keep the rules of §9.8;
+- compiled by `llc`, it behaves as the IR says (checked by the
+  differential harness, which is also how producers are validated:
   `input → producer → print → llc` against `input → llc`);
-- it is deterministic.
+- it is deterministic (§9.7);
+- where LLVM's text cannot say what hod means, the printer returns an
+  error naming the construct (§9.5, §9.6). It never prints text that
+  means something else.
 
-It is not a round trip of the input text: `PtrAdd` prints as an `i8`
-`getelementptr` plus explicit index arithmetic, slots print as entry-block
-`alloca`s, values and blocks are numbered, dropped information stays
-dropped. Uses: debugging, reduced reproducers, and splitting a module into
-"functions for hod" and "functions for `llc`" for bisection.
+Uses: debugging, reduced reproducers, handing hod's IR to LLVM's tools in
+tests, and splitting a module into "functions for hod" and "functions for
+`llc`" for bisection.
+
+### 9.1 Interface
+
+- `Dialect`: `LLVM19`, `LLVM20`, `LLVM21`, `LLVM22`, `ALL`;
+  `Dialect::new(major)` (any other major is `Unsupported`
+  `dialect:llvm-<major>`), `major()`.
+- `Module::print(out, dialect, bodies)`: the whole module. The module does
+  not own bodies: `bodies` (any `IntoIterator<Item = &Body>`, any order)
+  supplies them, and a function with none is written as a declaration.
+- `Module::print_part(out, dialect, part, bodies)`: one `Part` (§9.6).
+  `print` is `print_part` with `Part::Whole`.
+- `Module::print_body(out, dialect, body)`: one `define` as it stands in
+  the module's text and nothing else, a fragment for reading. It names
+  the module's symbols, attribute groups and intrinsics without
+  declaring them, and checks nothing that needs the other bodies.
+- `out` is any `fmt::Write` (`String`, ...). `IoSink::new(w)` makes an
+  `io::Write` one; `IoSink::finish` gives the writer back, or the
+  `io::Error` that stopped the printer. The printer makes many small
+  writes: give it a buffered writer.
+- `PrintError`: `Unsupported { construct, symbol }` (the construct names
+  of §9.5 and §9.6 are stable; `symbol` is the one being printed);
+  `Malformed { what, symbol }` (an id that names nothing, a body for a
+  symbol that is not a function with a body or whose function type is
+  not the symbol's, two bodies for one function, a `blockaddress` of a
+  block the function lacks); `Write` (the sink refused the text). On an
+  error the sink may hold part of the text.
+
+### 9.2 Dialects
+
+The text is the same for every major but for these differences (checked
+against LLVM 19.1.7 and 22.1.8; 20 and 21 are specified by this table and
+not tested, their tools not being installed):
+
+| construct | 19 | 20 | 21 | 22 |
+|---|---|---|---|---|
+| `ptrtoaddr` (instruction and constant expression) | `ptrtoint`, where the address is the whole pointer; else `inst:ptrtoaddr` / `const-expr:ptrtoaddr` | as 19 | as 19 | `ptrtoaddr` |
+| `llvm.thread.pointer` | no suffix (only `ptr`; else `intrinsic-overload:`) | as 19 | as 19 | `.p0` |
+| function attributes `sanitize_realtime`, `sanitize_realtime_blocking`, `sanitize_type` | `attr:<name>` | yes | yes | yes |
+| function attribute `sanitize_alloc_token` | `attr:<name>` | `attr:<name>` | `attr:<name>` | yes |
+| `atomicrmw usub_cond`, `usub_sat` | `atomicrmw:<op>` | yes | yes | yes |
+| `atomicrmw fmaximum`, `fminimum` | `atomicrmw:<op>` | `atomicrmw:<op>` | yes | yes |
+| intrinsics `minimumnum`, `maximumnum`, `atan2` | `intrinsic:<name>` | yes | yes | yes |
+| intrinsics `clmul`, `coro.is_in_ramp` | `intrinsic:<name>` | `intrinsic:<name>` | `intrinsic:<name>` | yes |
+| constant expression `mul` | yes | yes | `const-expr:mul` | `const-expr:mul` |
+| module flag `frame-pointer` value 4 | `module-flag:frame-pointer=4` | same | same | yes |
+| AArch64 branch-protection module flags (`branch-target-enforcement`, ...) | value 1 | value 2 | 2 | 2 |
+| AArch64 Linux data layout | LLVM 19's string, without `p270`..`p272` | the target's | the target's | the target's |
+| an `i1` global, or an array of them, without an alignment | `, align` of §3 written | none written | none | none |
+
+The constant expressions `zext`, `sext`, `and`, `or` and `shl` are gone
+from every dialect (`const-expr:<op>`). On LLVM 19's AArch64 layout a
+pointer in address space 270 to 272 has another width than §3 gives it:
+`type:ptr addrspace(N)`. LLVM 19 aligns an `i1` global to 1 and later
+majors (and §3) to `i8`'s preferred alignment, hence the explicit
+alignment. From LLVM 20 on, branch-protection value 2 says that each
+function states its own protection, as the attribute sets do; 1 would
+make LLVM add it to functions that say nothing.
+
+### 9.3 Module-level text
+
+In this order:
+
+1. `target datalayout` (§9.2) and `target triple`.
+2. `module asm`, one per line of the module assembly, quoted (§9.3's
+   escaping).
+3. `%hod.opaque.<n> = type opaque` per opaque struct. Other struct types
+   are written as literal types (`{ i8, i64 }`, `<{ ... }>`): no names
+   are kept.
+4. `$name = comdat <kind>` per COMDAT, in id order.
+5. Every symbol, in id order:
+   - a variable: `@name = [linkage] [dso_local] [visibility]
+     [thread_local(...)] [unnamed_addr] [addrspace(N)] global|constant
+     <type> [<initializer>][, section "s"][, comdat($c)][, align A]`. It
+     is defined when it has an initializer (§9.6 for `Part::Rest`); a
+     declaration says `external` (or `extern_weak`).
+   - a function: `define` when its body is supplied, else `declare`;
+     `[linkage] [dso_local] [visibility] [cc] [return attributes] <ret>
+     @name(<type> [attributes] [%a<n>], ... [, ...])
+     [unnamed_addr] [addrspace(N)] [#<set>] [section "s"]
+     [comdat($c)] [align A] [personality ptr @p] { body }`. A `declare`
+     keeps the calling convention, the parameter and return attributes
+     and the attribute set. `cc` is the keyword (`fastcc`, `coldcc`, ...)
+     or `cc <n>`.
+   - an alias: `@name = [linkage] ... alias <type>, <aliasee>`; an IFUNC:
+     `@name = ... ifunc <type>, ptr @resolver`.
+   - `dso_local` is written only where LLVM does not imply it (a local
+     linkage, or a visibility other than default on a symbol that is not
+     `extern_weak`).
+6. `@llvm.used` and `@llvm.compiler.used`: the retained symbols this
+   text defines, in id order, `section "llvm.metadata"`. An anonymous
+   member in `Part::Whole` is `<list>:anonymous-symbol` (LLVM wants them
+   named).
+7. `@llvm.global_ctors` and `@llvm.global_dtors`: `{ i32 priority, ptr
+   f, ptr associated-or-null }` in the order they were added.
+8. A `declare` for every intrinsic the printed bodies call, by name and
+   overloads, with the function type of the calls, unless the module has
+   a symbol of that name. One name called with two function types is
+   `intrinsic-signature:<name>`.
+9. `attributes #<id> = { ... }` for each attribute set a printed
+   function names (`#<id>` is the set's id): the flags in
+   `FnAttrs::FLAG_NAMES` order, `uwtable` / `uwtable(sync)`,
+   `alignstack=N`, then the strings in key order, `"key"="value"`,
+   `"key"` for an empty value, and `"no-builtin-<value>"`.
+10. The module flags as `!N = !{i32 behavior, !"name", value}`: `PIC
+    Level` (8), `PIE Level` (7), `Code Model` (1), `Large Data Threshold`
+    (1, always `i64`), `uwtable` (7), `frame-pointer` (7), `Dwarf
+    Version` (7), `Debug Info Version` (2), the branch-protection flags
+    (8, §9.2), then the other flags in the order they were set. An
+    integer value is `i32` when it fits, else `i64`; a string value is
+    `!"..."`; `FlagValue::Other` is `module-flag:<name>`. Then
+    `!llvm.module.flags`, one node of strings per linker option
+    (`!llvm.linker.options`) and per dependent library
+    (`!llvm.dependent-libraries`). Nodes are numbered from 0 in that
+    order.
+
+Names: `@name`, `$name` are bare when the name is LLVM identifier
+characters (`[A-Za-z0-9$._-]`) not starting with a digit, else quoted.
+In a quoted string or name, printable ASCII but `"` and `\` is written as
+it is, and every other byte as `\XX`. An anonymous symbol is `@<id>`
+(`@__hod_anon.<id>` in a split, §9.6); LLVM renumbers them, so the
+number is a name for reading only.
+
+Constants: integers as signed decimals (`i1` as `true` / `false`),
+integers wider than 64 bits as `u0x<hex>`; `half` `0xH`, `bfloat` `0xR`,
+`float` as the hexadecimal `double` of the same value (a NaN keeps its
+payload and signaling bit, as LLVM's printer does), `double` `0x`,
+`fp128` `0xL` (low word first), `x86_fp80` `0xK`; `null`,
+`zeroinitializer`, `undef`, `poison`, `none`; aggregates in braces,
+brackets or angles; `splat (...)`; bytes as `c"..."`. A symbol's address
+plus an addend is `getelementptr (i8, ptr @s, i64 addend)` (the bare
+`@s` for 0); `blockaddress(@f, %b<n>)`; a symbol difference as
+`sub (i64 ptrtoint ..., i64 ptrtoint ...)`, with `add` for an addend,
+`trunc` for a narrower type and `dso_local_equivalent` for a PLT
+reference; `ptrtoint (...)`, `inttoptr (i64 N to ptr)`,
+`dso_local_equivalent @s`, `no_cfi @s`; the expressions of §4.2 that
+have no normal form as LLVM's constant expressions. An initializer means
+to LLVM what `flatten` (§4.3) makes of it, byte for byte and relocation
+for relocation. The address of a symbol in an address space other than
+0 is `address-of-symbol-in-address-space` (hod types it `ptr`, LLVM
+`ptr addrspace(N)`); a target extension type is `type:target("name")`
+(its parameters are not kept). A `blockaddress` needs the function's
+body in the same text (`blockaddress-of-declaration`) and a block other
+than the entry (`blockaddress-of-entry-block`).
+
+### 9.4 Bodies
+
+- Blocks are `b<id>:` in layout order (labels `%b<id>`), values `%v<id>`,
+  arguments `%a<n>`.
+- Stack slots are `%s<n> = alloca [size x i8], align A` at the top of
+  the entry block, in slot order.
+- `PtrAdd` is a chain of `getelementptr i8` steps: one for the constant
+  offset (or a zero offset when there are no indices), then one per
+  index, the index first brought to the pointer's index width
+  (`sext`/`trunc`, `.c<k>`) and multiplied by its scale (`mul`, `.m<k>`).
+  The last step has the instruction's name, the ones before it
+  `%v<id>.g<n>`. A vector index makes the later steps vectors. An index
+  width outside 1 to 64 bits is `ptradd:index-width`.
+- An aggregate access by byte offset (`extractvalue`, `insertvalue`)
+  prints the index path that `aggregate_field` maps back to that offset
+  and type: depth first, a struct's fields in ascending order, the first
+  field with the type at the offset.
+- A `phi` without incoming values (its block has no predecessor) is
+  `freeze <ty> poison`.
+- Calls: tail markers on `call` only (`invoke:<tail>`, `callbr:<tail>`
+  otherwise); the full function type is written for a variadic callee; a
+  `musttail` call in a variadic function ends its arguments with `...`;
+  `noreturn`, `nounwind`, `returns_twice` call attributes, operand
+  bundles as `[ "tag"(...) ]`, `to label ... unwind label ...` for
+  `invoke`, the indirect labels for `callbr`; inline assembly as `asm
+  sideeffect "template", "constraints"`.
+- An intrinsic's name is `Intrinsic::mangled_name`'s: the base name and
+  one suffix per overload type (§9.2 for `llvm.thread.pointer`), and
+  `Other(name)` as it is. A dialect without the intrinsic is
+  `intrinsic:<name>`; an overload type without a spelling in a name is
+  `intrinsic-overload:<name>`.
+- A scalable `shufflevector` mask is `shufflevector:scalable-mask`
+  (LLVM's text has only `zeroinitializer` and `poison` for one).
+- Constants of an index width are written as signed numbers.
+
+### 9.5 Instructions without text
+
+`catchswitch`, `catchpad`, `cleanuppad`, `catchret` and `cleanupret` are
+`inst:<opcode>`: `hod_ir` keeps none of their operands (§5.4). Also an
+error in a body: `atomicrmw:<op>` and `inst:ptrtoaddr` (§9.2).
+
+### 9.6 Parts and the split
+
+`Part::Whole` is the module. `Part::Main` and `Part::Rest` split it into
+two texts: printed as `Main` with some bodies and as `Rest` with the
+others, their objects link to what the whole module's object is.
+
+- In both: a function is defined when its body is supplied; a symbol of
+  local linkage becomes external and `hidden`, so that the other text
+  can name it; anonymous symbols are `@__hod_anon.<id>` in both.
+- `Main` also defines every variable with an initializer and has the
+  module assembly, the constructors and destructors, the linker options
+  and dependent libraries. `Rest` declares every variable and has none
+  of these.
+- An alias or IFUNC is defined where what it names is defined; elsewhere
+  it is a declaration (a function's with the convention and attributes
+  of the function it names, else `global` of its type).
+- The retained lists hold the symbols the text defines.
+- A COMDAT is kept in a text that defines all its members. Elsewhere a
+  member that the linker may see twice anyway (`linkonce`, `weak`, or
+  local before the split) leaves it; any other member is `split:comdat`.
+- A function whose blocks are addressed by a `blockaddress` in a
+  variable must be defined in `Main` (`blockaddress-of-declaration`).
+
+Module-level errors, checked before any text: the first construct a
+producer recorded with `Module::record_unsupported` is returned as it was
+recorded (the object would lack what it stands for), and a symbol
+neither defined nor declared is `unresolved-symbol`.
+
+The constructs, all told: `dialect:llvm-<major>`, `unresolved-symbol`,
+the recorded ones, `type:target("name")`, `type:ptr addrspace(N)`,
+`module-flag:<name>`, `module-flag:frame-pointer=4`,
+`address-of-symbol-in-address-space`, `<list>:anonymous-symbol`,
+`split:comdat`, `blockaddress-of-declaration`,
+`blockaddress-of-entry-block`, `const-expr:<op>`, `attr:<name>`,
+`intrinsic:<name>`, `intrinsic-overload:<name>`,
+`intrinsic-signature:<name>`, `invoke:<tail>`, `callbr:<tail>`,
+`atomicrmw:<op>`, `inst:<opcode>`, `ptradd:index-width`,
+`shufflevector:scalable-mask`.
+
+### 9.7 Determinism, normal form, debug information
+
+The same module and bodies give the same text, byte for byte, whatever
+the order of the bodies and whatever the sink. The text is a normal
+form, not a round trip of what a producer read: `PtrAdd` as `i8`
+`getelementptr`s, slots as `alloca`s, numbered values and blocks,
+literal struct types, and what the IR dropped stays dropped.
+
+No debug information is written yet. The hooks are `dbg_function` (` !dbg
+!N` on the `define` line), `dbg_slot_vars` (the slot variables:
+`#dbg_declare` records, `llvm.dbg.declare` calls in dialect 19) and
+`dbg_inst` (`, !dbg !N` after an instruction), in
+`crates/hod_ir/src/print/body.rs`, with the nodes written by the
+metadata step of §9.3.
+
+### 9.8 LLVM's rules that `hod_ir` does not check
+
+The printer prints what `Body::verify` and `Module::verify_symbols`
+accept. LLVM refuses some of it; a producer that wants text LLVM takes
+keeps these rules:
+
+- a use is dominated by its definition (no self-use in a reachable
+  block; an `invoke` or `callbr` result is used only past the normal
+  edge);
+- `callbr` calls inline assembly (LLVM 22's verifier crashes on
+  `callbr` of a function);
+- `invoke` does not call an intrinsic;
+- tail markers only on `call`; `musttail`: the caller's signature and
+  calling convention, and `ret` (of the result) directly after;
+- an `immarg` parameter gets a constant (LLVM 22 also refuses `undef`);
+- a `"kcfi"` bundle has exactly one operand;
+- parameter attributes fit their types and positions (`signext` and
+  `zeroext` on integers, `sret` on the first or second parameter of a
+  function returning `void`, ...);
+- `sanitize_realtime` and `sanitize_realtime_blocking` are not both in
+  one attribute set;
+- a module flag of behavior 5 (`append`) or 6 (`append-unique`) has a
+  node as its value, not a string;
+- in an ELF object (`llc`), each linker option is a pair.
+
+What the model does not keep: a symbol's address is typed `ptr` whatever
+its address space; branch-protection value 1 versus 2, the behaviors and
+integer widths of the known module flags, and `TargetExt` parameters are
+not kept.
+
+### 9.9 Tests
+
+- Unit (`print/mod.rs`, `print/body.rs`): dialect numbers, `IoSink`
+  errors, `float` spelling, name quoting, intrinsic names against
+  `Intrinsic::mangled_name`, the index path against `aggregate_field`.
+- Random bodies (`print/random_tests.rs`): 1500 generator bodies printed
+  for LLVM 19 and 22; those that keep §9.8's rules pass `llvm-as` and
+  `opt -passes=verify`, the others pass `llvm-as -disable-verify`, and a
+  body that is not printed holds a construct its dialect lacks.
+- Initializers (`tests/print_data.rs`): every kind of initializer, both
+  targets, LLVM 19 and 22: `llc`'s `.data` bytes and relocations equal
+  `flatten`'s.
+- Every instruction (`tests/print_bodies.rs`): every opcode, predicate,
+  `RmwOp` and `TailKind` printed and accepted; the funclet opcodes are
+  errors; the dialect differences of §9.2 for bodies.
+- Programs (`tests/print_run.rs`): a program of many functions compiled
+  by `llc` 19 and 22 at `-O0` and `-O2`, linked and run; the same
+  program split (§9.6) into two objects; landing pads catching a C++
+  exception.
+- The module (`tests/print_module.rs`): one module with every kind of
+  symbol, linkage, visibility, thread-local model, COMDAT, alias, IFUNC,
+  attribute, parameter attribute, retained list, constructor, module
+  flag, linker option and quoted name: accepted by LLVM 19 and 22; LLVM's
+  own text (`opt -S`) has the line hod means for each; the object `llc`
+  makes has each symbol's type, binding, visibility, section and size,
+  the COMDAT groups, linker options, dependent libraries and string
+  bytes; each module-level error of §9.6; determinism and `IoSink`.
+- Speed (`tests/print_perf.rs`): a printed measurement, not a gate.
 
 ## 10. Planned extensions
 

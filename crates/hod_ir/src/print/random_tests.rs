@@ -11,7 +11,7 @@ use hod_testutil::{DEFAULT_TIMEOUT, LLVM_MAJORS, run_with, tool};
 
 use super::{Dialect, PrintError};
 use crate::attrs::ParamAttrs;
-use crate::body::{Body, InstKind};
+use crate::body::{Body, Inst, InstKind};
 use crate::constant::Const;
 use crate::ids::{BlockId, SymId, TypeId};
 use crate::inst::{Opcode, TailKind};
@@ -106,9 +106,8 @@ fn llvm_objection(m: &Module, body: &Body) -> Option<&'static str> {
         }
         // LLVM 19 takes `undef` for an immediate argument; LLVM 22 does not.
         let immediate = |flag: &Value| {
-            flag.as_const().is_some_and(|id| {
-                !matches!(m.consts.get(id), Const::Undef(_) | Const::Poison(_))
-            })
+            flag.as_const()
+                .is_some_and(|id| !matches!(m.consts.get(id), Const::Undef(_) | Const::Poison(_)))
         };
         if call.intrinsic() == Some(Intrinsic::Memcpy)
             && call.args().get(3).is_some_and(|flag| !immediate(flag))
@@ -128,7 +127,9 @@ fn llvm_objection(m: &Module, body: &Body) -> Option<&'static str> {
         };
         let args = call.args().iter().enumerate();
         if signext(call.ret_attrs(), call.ty())
-            || args.into_iter().any(|(at, &arg)| signext(call.arg_attrs(at), body.value_type(m, arg)))
+            || args
+                .into_iter()
+                .any(|(at, &arg)| signext(call.arg_attrs(at), body.value_type(m, arg)))
         {
             return Some("signext on a value that is not an integer");
         }
@@ -142,9 +143,8 @@ fn llvm_objection(m: &Module, body: &Body) -> Option<&'static str> {
 fn dominance_objection(body: &Body) -> Option<&'static str> {
     let count = body.block_count();
     assert!(count <= 64);
-    let successors = |block: usize| {
-        body.block(BlockId::new(block as u32)).successors().map(BlockId::index)
-    };
+    let successors =
+        |block: usize| body.block(BlockId::new(block as u32)).successors().map(BlockId::index);
     // Which blocks control reaches, and each one's dominators as a set.
     let entry = body.entry().index();
     let mut reachable = 1u64 << entry;
@@ -263,7 +263,7 @@ impl Sorted {
         match llvm_objection(m, body) {
             None => {
                 self.clean.add(&text);
-                self.opcodes.extend(body.insts().map(|inst| inst.opcode()));
+                self.opcodes.extend(body.insts().map(Inst::opcode));
             }
             Some(objection) => {
                 self.refused.add(&text);
@@ -318,7 +318,7 @@ fn random_bodies_are_accepted_by_llvm() {
             assert!(expected_unsupported(*dialect, construct), "LLVM {major}: {construct}");
         }
         assert!(all.clean.bodies >= 300, "LLVM {major}: {} clean bodies", all.clean.bodies);
-        // Every opcode but the funclet ones (not printed, §9.6) and
+        // Every opcode but the funclet ones (not printed, §9.5) and
         // `callbr`, which LLVM has for inline assembly alone and the
         // generator makes with other callees.
         for &opcode in Opcode::ALL {

@@ -35,7 +35,13 @@ pub fn define(m: &mut Module, name: &str, ret: TypeId, params: &[TypeId]) -> Sym
 
 /// Declares the external function `name` of type `ret (params...)`, or
 /// `ret (params..., ...)`.
-pub fn declare(m: &mut Module, name: &str, ret: TypeId, params: &[TypeId], variadic: bool) -> SymId {
+pub fn declare(
+    m: &mut Module,
+    name: &str,
+    ret: TypeId,
+    params: &[TypeId],
+    variadic: bool,
+) -> SymId {
     let ty = m.types.function(ret, params, variadic).unwrap();
     m.add_function(name.as_bytes(), &FunctionDesc::new(ty)).unwrap()
 }
@@ -73,10 +79,12 @@ impl<'m> Fx<'m> {
         self.b.arg(index).unwrap()
     }
 
+    #[allow(clippy::unused_self, reason = "read as `x.konst(..)` among the builder calls")]
     pub fn konst(&self, id: ConstId) -> Value {
         Value::constant(id).unwrap()
     }
 
+    #[allow(clippy::unused_self, reason = "read as `x.sym(..)` among the builder calls")]
     pub fn sym(&self, id: SymId) -> Value {
         Value::sym(id).unwrap()
     }
@@ -216,6 +224,7 @@ impl<'m> Fx<'m> {
 }
 
 /// The LLVM tools of one major version.
+#[allow(clippy::struct_field_names, reason = "`llvm_as` is the tool's name")]
 pub struct Llvm {
     pub major: u32,
     pub llvm_as: PathBuf,
@@ -327,10 +336,8 @@ impl Llvm {
     /// The contents of section `name` of `object`; empty when it has no
     /// such section.
     pub fn section(&self, object: &Path, name: &str) -> Vec<u8> {
-        let outcome = run(
-            &self.objdump,
-            ["-s".as_ref(), "-j".as_ref(), name.as_ref(), object.as_os_str()],
-        );
+        let outcome =
+            run(&self.objdump, ["-s".as_ref(), "-j".as_ref(), name.as_ref(), object.as_os_str()]);
         assert!(outcome.success(), "llvm-objdump failed: {}", outcome.stderr_text());
         parse_hex_dump(&outcome.stdout_text())
     }
@@ -413,7 +420,8 @@ pub fn parse_symbols(text: &str) -> (Vec<String>, Vec<ElfSymbol>) {
             Err(_) => fields[6].to_string(),
         };
         symbols.push(ElfSymbol {
-            name: fields.get(7).copied().unwrap_or("").to_string(),
+            // A name may hold spaces.
+            name: fields.get(7..).map(|rest| rest.join(" ")).unwrap_or_default(),
             value,
             size,
             kind: fields[3].to_string(),
@@ -430,7 +438,12 @@ pub fn parse_symbols(text: &str) -> (Vec<String>, Vec<ElfSymbol>) {
 ///
 /// # Panics
 /// Panics when the link fails.
-pub fn link_and_run(scratch: &Scratch, name: &str, objects: &[PathBuf], libs: &[&str]) -> Option<Outcome> {
+pub fn link_and_run(
+    scratch: &Scratch,
+    name: &str,
+    objects: &[PathBuf],
+    libs: &[&str],
+) -> Option<Outcome> {
     let gcc = tool("gcc")?;
     let program = scratch.join(name);
     let mut args: Vec<&std::ffi::OsStr> = objects.iter().map(|object| object.as_os_str()).collect();

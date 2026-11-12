@@ -320,8 +320,9 @@ fn check(config: &Config) {
             other => panic!("{what}: unexpected placement {other:?}"),
         };
         if expect_bss != (section == ".bss") {
-            failures
-                .push(format!("{what}\n  is_zero_or_undef is {expect_bss} but LLVM chose {section}"));
+            failures.push(format!(
+                "{what}\n  is_zero_or_undef is {expect_bss} but LLVM chose {section}"
+            ));
             continue;
         }
         let (mut bytes, mut fixups) = (Vec::new(), Vec::new());

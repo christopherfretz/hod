@@ -16,6 +16,11 @@
 //! prints the same and returns the same.
 //!
 //! They run only where `llc`'s target is the host: AArch64 Linux.
+#![expect(
+    clippy::many_single_char_names,
+    clippy::similar_names,
+    reason = "short names for the values of a function body"
+)]
 
 mod print_support;
 
@@ -23,9 +28,8 @@ use std::fmt::Write as _;
 
 use hod_ir::{
     AtomicOrdering, BlockId, Body, CallConv, CallDesc, Clause, Dialect, FloatPredicate,
-    FunctionDesc, IntPredicate, Intrinsic, Linkage, MemFlags, Module, Opcode, ParamAttrs,
-    ParamMem, Part, PicLevel, SymId, SyncScope, TailKind, TargetSpec, TlsModel, TypeId, Value,
-    VariableDesc,
+    FunctionDesc, IntPredicate, Intrinsic, Linkage, MemFlags, Module, Opcode, ParamAttrs, ParamMem,
+    Part, PicLevel, SymId, SyncScope, TailKind, TargetSpec, TlsModel, TypeId, Value, VariableDesc,
 };
 use hod_testutil::Scratch;
 use print_support::{Fx, Llvm, declare, define, int, link_and_run, printed};
@@ -426,6 +430,7 @@ fn floats(p: &mut Program) {
     p.bodies.push(body);
 }
 
+#[expect(clippy::float_cmp, clippy::cast_precision_loss, reason = "the model of the program")]
 fn floats_model(x: f64) -> i64 {
     let moved = x * 1.5 + 0.1;
     let single = moved as f32 + 0.1f32;
@@ -469,14 +474,14 @@ fn atomics(p: &mut Program) {
     let mut x = p.body("atomics", I64, &[]);
     let slot = x.b.add_slot(8, 8).unwrap();
     let slot = x.b.slot(slot).unwrap();
-    let atomic = MemFlags::aligned(8).unwrap().with_atomic(AtomicOrdering::SeqCst, SyncScope::System);
+    let atomic =
+        MemFlags::aligned(8).unwrap().with_atomic(AtomicOrdering::SeqCst, SyncScope::System);
     let (five, seven, twelve, ninety_nine) = (x.i64(5), x.i64(7), x.i64(12), x.i64(99));
     x.b.store(five, slot, atomic).unwrap();
     let old = x.b.atomic_rmw(hod_ir::RmwOp::Add, I64, slot, seven, atomic).unwrap();
-    let swapped = x
-        .b
-        .cmpxchg(pair, slot, twelve, ninety_nine, atomic, AtomicOrdering::SeqCst, false)
-        .unwrap();
+    let swapped =
+        x.b.cmpxchg(pair, slot, twelve, ninety_nine, atomic, AtomicOrdering::SeqCst, false)
+            .unwrap();
     let seen = x.b.extract_value(I64, swapped, 0).unwrap();
     let done = x.b.extract_value(I1, swapped, 8).unwrap();
     x.b.fence(AtomicOrdering::SeqCst, SyncScope::System).unwrap();
@@ -527,8 +532,10 @@ fn vectors(p: &mut Program) {
 fn dispatch(p: &mut Program) {
     let f = define(&mut p.m, "dispatch", I64, &[I64]);
     // The blocks the body is about to create.
-    let labels: Vec<_> =
-        [1, 2].iter().map(|&block| p.m.consts.block_addr(f, BlockId::new(block)).unwrap()).collect();
+    let labels: Vec<_> = [1, 2]
+        .iter()
+        .map(|&block| p.m.consts.block_addr(f, BlockId::new(block)).unwrap())
+        .collect();
     let table_ty = p.m.types.array(PTR, 2).unwrap();
     let init = p.m.consts.aggregate(&p.m.types, table_ty, &labels).unwrap();
     let table = p.internal_variable("labels", init, true);
@@ -600,11 +607,8 @@ fn intrinsics_model(x: i32, y: i64) -> i64 {
 /// `llvm.threadlocal.address`, incremented and returned.
 fn counter(p: &mut Program) {
     let init = int(&mut p.m, I64, 17);
-    let desc = VariableDesc {
-        tls: TlsModel::GeneralDynamic,
-        init: Some(init),
-        ..VariableDesc::new(I64)
-    };
+    let desc =
+        VariableDesc { tls: TlsModel::GeneralDynamic, init: Some(init), ..VariableDesc::new(I64) };
     let tl = p.m.add_variable(b"tl", &desc).unwrap();
     let mut x = p.body("counter", I64, &[]);
     let place = x.intrinsic(Intrinsic::ThreadLocalAddress, &[PTR], PTR, &[PTR], &[x.sym(tl)]);
@@ -668,7 +672,8 @@ fn misc_model(x: i32) -> i64 {
 fn anonymous(p: &mut Program) {
     let five = int(&mut p.m, I64, 5);
     let variable = p.m.anonymous_symbol().unwrap();
-    let desc = VariableDesc { linkage: Linkage::Private, init: Some(five), ..VariableDesc::new(I64) };
+    let desc =
+        VariableDesc { linkage: Linkage::Private, init: Some(five), ..VariableDesc::new(I64) };
     p.m.set_variable(variable, &desc).unwrap();
     let ty = p.m.types.function(I64, &[I64], false).unwrap();
     let function = p.m.anonymous_symbol().unwrap();
@@ -692,6 +697,7 @@ fn anonymous(p: &mut Program) {
 
 /// `conventions(x)`: calls with parameter attributes (`signext`,
 /// `zeroext`, `byval`, `sret`), a calling convention and a tail marker.
+#[expect(clippy::too_many_lines, reason = "one list of calls")]
 fn conventions(p: &mut Program) {
     let i16_ty = p.m.types.int(16).unwrap();
     let pair = p.m.types.struct_type(&[I64, I64], false).unwrap();
@@ -719,8 +725,7 @@ fn conventions(p: &mut Program) {
 
     // take(ptr byval({ i64, i64 }) align 8) -> i64, which writes to its copy
     let take_ty = p.m.types.function(I64, &[PTR], false).unwrap();
-    let desc =
-        FunctionDesc { param_attrs: &[byval], has_body: true, ..FunctionDesc::new(take_ty) };
+    let desc = FunctionDesc { param_attrs: &[byval], has_body: true, ..FunctionDesc::new(take_ty) };
     let take = p.m.add_function(b"take", &desc).unwrap();
     let mut x = Fx::new(&mut p.m, take);
     let first = x.load(I64, x.arg(0));
@@ -771,9 +776,8 @@ fn conventions(p: &mut Program) {
     let filled = x.b.add_slot(16, 8).unwrap();
     let (given, filled) = (x.b.slot(given).unwrap(), x.b.slot(filled).unwrap());
     let (minus_five, big) = (x.int(I8, -5), x.int(i16_ty, -1));
-    let narrowed = x
-        .b
-        .call(
+    let narrowed =
+        x.b.call(
             I32,
             &CallDesc {
                 ret_attrs: signext,
@@ -787,9 +791,8 @@ fn conventions(p: &mut Program) {
     x.store(three, given);
     let given_second = x.ptr_add(given, 8, &[]);
     x.store(four, given_second);
-    let taken = x
-        .b
-        .call(
+    let taken =
+        x.b.call(
             I64,
             &CallDesc {
                 arg_attrs: &[byval],
@@ -816,9 +819,8 @@ fn conventions(p: &mut Program) {
         sum = x.bin(Opcode::Add, I64, sum, value);
     }
     let one = x.i64(1);
-    let result = x
-        .b
-        .call(
+    let result =
+        x.b.call(
             I64,
             &CallDesc {
                 cc: CallConv::FAST,
@@ -847,6 +849,8 @@ fn conventions_model(x: i64) -> i64 {
 /// `printf`, and the exclusive or of them all, reduced to seven bits,
 /// returned.
 fn main_body(p: &mut Program) {
+    /// One call: the function, how to make its arguments, and its result.
+    type Args = fn(&mut Fx<'_>, TypeId) -> Vec<Value>;
     let printf = declare(&mut p.m, "printf", I32, &[PTR], true);
     let printf_ty = p.m.symbol(printf).ty();
     let format = p.m.consts.bytes(&mut p.m.types, b"%ld\n\0").unwrap();
@@ -860,9 +864,6 @@ fn main_body(p: &mut Program) {
     };
     let format = p.m.add_variable(b".str", &desc).unwrap();
     let i16_ty = p.m.types.int(16).unwrap();
-
-    /// One call: the function, how to make its arguments, and its result.
-    type Args = fn(&mut Fx<'_>, TypeId) -> Vec<Value>;
     let a = 0xfedc_ba98_7654_3210_u64;
     let b = 0x0123_4567_89ab_cdef_u64;
     let calls: Vec<(&str, Args, i64)> = vec![
@@ -984,7 +985,6 @@ fn printed_programs_run_as_the_ir_says() {
     for major in hod_testutil::LLVM_MAJORS {
         let Some(llvm) = Llvm::new(major) else { continue };
         let text = printed(&p.m, llvm.dialect(), &p.bodies);
-        if let Ok(dir) = std::env::var("HOD_WP006_DUMP") { std::fs::write(format!("{dir}/run{major}.ll"), &text).unwrap(); }
         llvm.accept(&text, "the program");
         for level in ["-O0", "-O2"] {
             let name = format!("run-{major}{level}");
@@ -1015,10 +1015,20 @@ fn a_split_module_links_to_the_same_program() {
     // `Part::Main` text defines (§9.6).
     let dispatch = p.function("dispatch");
     let in_rest = |at: usize, body: &Body| at % 2 == 1 && body.symbol() != dispatch;
-    let rest: Vec<&Body> =
-        p.bodies.iter().enumerate().filter(|(at, body)| in_rest(*at, body)).map(|(_, b)| b).collect();
-    let main: Vec<&Body> =
-        p.bodies.iter().enumerate().filter(|(at, body)| !in_rest(*at, body)).map(|(_, b)| b).collect();
+    let rest: Vec<&Body> = p
+        .bodies
+        .iter()
+        .enumerate()
+        .filter(|(at, body)| in_rest(*at, body))
+        .map(|(_, b)| b)
+        .collect();
+    let main: Vec<&Body> = p
+        .bodies
+        .iter()
+        .enumerate()
+        .filter(|(at, body)| !in_rest(*at, body))
+        .map(|(_, b)| b)
+        .collect();
     assert!(rest.len() >= 8 && main.len() >= 8);
     let scratch = Scratch::new("print-split");
     for major in hod_testutil::LLVM_MAJORS {
@@ -1048,6 +1058,7 @@ fn a_split_module_links_to_the_same_program() {
 /// with a cleanup landing pad that counts and resumes; `catcher(v)`
 /// invokes that with a `catch` clause for `int`, tests the selector with
 /// `llvm.eh.typeid.for`, and reads the exception.
+#[expect(clippy::too_many_lines, reason = "three functions and their landing pads")]
 fn exception_program() -> (Module, Vec<Body>) {
     let mut m = new_module();
     let mut bodies = Vec::new();
@@ -1056,13 +1067,18 @@ fn exception_program() -> (Module, Vec<Body>) {
     let begin_catch = declare(&mut m, "__cxa_begin_catch", PTR, &[PTR], false);
     let end_catch = declare(&mut m, "__cxa_end_catch", TypeId::VOID, &[], false);
     let personality = declare(&mut m, "__gxx_personality_v0", I32, &[], true);
-    let type_info =
-        m.add_variable(b"_ZTIi", &VariableDesc { constant: true, ..VariableDesc::new(PTR) }).unwrap();
+    let type_info = m
+        .add_variable(b"_ZTIi", &VariableDesc { constant: true, ..VariableDesc::new(PTR) })
+        .unwrap();
     let zero = int(&mut m, I64, 0);
     let cleanups = m
         .add_variable(
             b"cleanups",
-            &VariableDesc { linkage: Linkage::Internal, init: Some(zero), ..VariableDesc::new(I64) },
+            &VariableDesc {
+                linkage: Linkage::Internal,
+                init: Some(zero),
+                ..VariableDesc::new(I64)
+            },
         )
         .unwrap();
     let pad_ty = m.types.struct_type(&[PTR, I32], false).unwrap();

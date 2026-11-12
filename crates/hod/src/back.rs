@@ -338,6 +338,12 @@ pub fn generate_with(
     // before any code is generated.
     let mut module_emitter =
         ModuleEmitter::new(module, &cg).map_err(|error| from_cg(error, None))?;
+    // The functions' DIE refusals that need no code (`spec/dwarf.md` §6.13).
+    hod_dwarf::check_functions(module, bodies).map_err(|(at, name)| Unsupported {
+        construct: Construct::Named(name.into()),
+        function: symbol_name(module, bodies[at].symbol()),
+        detail: None,
+    })?;
 
     let work_size: usize = bodies.iter().map(Body::inst_count).sum();
     let wanted = wanted_threads(threads, work_size, bodies.len());

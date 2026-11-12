@@ -4,15 +4,26 @@
 //! `getOrCreateImportedEntityDIE` writes them at the end of the module: a
 //! unit's (`imports:`) in its namespace or the unit, then each function's
 //! (its `retainedNodes`) as the function's last children, before the
-//! template parameters `finishSubprogramDefinitions` adds. The context is
-//! made first, then the entity's DIE if it has none, then the import's.
+//! template parameters `finishSubprogramDefinitions` adds, and those
+//! scoped in its lexical blocks as the blocks' last children (WP-094,
+//! §6.13). The context is made first, then the entity's DIE if it has
+//! none, then the import's.
 
-use hod_ir::{DiId, DiKind, DiNode, ExprId, SpFlags};
+use hod_ir::{DiId, DiKind, DiNode, DiSubprogram, ExprId, SpFlags};
 
 use crate::Error;
 use crate::abbrev::{code, fam, tag};
 use crate::die::{Kind, NONE, UnitPlan, Writer, bad, unsupported};
 use crate::scope::{IMPORT, IMPORT_ENTITY, IMPORT_SCOPE};
+
+/// Where a function's import goes ([`UnitPlan::import_parent`]).
+enum BlockOf {
+    Function,
+    /// The DIE of its block.
+    Block(u32),
+    /// Its block has no code: the import is not written.
+    NoCode,
+}
 
 impl UnitPlan<'_> {
     /// The imported entities of the unit, then of each function, in
@@ -22,17 +33,76 @@ impl UnitPlan<'_> {
         for &ie in self.cu.imports {
             self.import(ie, None, &mut chain)?;
         }
+        let mut in_blocks = Vec::new();
         for i in 0..self.funcs.len() {
             let die = self.funcs[i].die;
             let sp = self.dies[die as usize].node;
             let DiNode::Subprogram(s) = self.debug.node(sp) else { continue };
-            for &n in s.retained_nodes {
-                if self.debug.find_kind(n) == Some(DiKind::ImportedEntity) {
-                    self.import(n, Some((sp, die)), &mut chain)?;
+            // `DeferredLocalDecls`: the function's own scope first, then
+            // its blocks depth first, which is the order of their DIEs
+            // (WP-094, §6.13); in each, in `retainedNodes` order.
+            in_blocks.clear();
+            for (at, &n) in s.retained_nodes.iter().enumerate() {
+                if self.debug.find_kind(n) != Some(DiKind::ImportedEntity) {
+                    continue;
                 }
+                match self.import_parent(n, sp)? {
+                    BlockOf::Function => {
+                        self.import(n, Some((sp, die)), &mut chain)?;
+                    }
+                    BlockOf::Block(b) => in_blocks.push((b, at, n)),
+                    BlockOf::NoCode => {}
+                }
+            }
+            in_blocks.sort_unstable();
+            for &(b, _, n) in &in_blocks {
+                self.import(n, Some((self.dies[b as usize].node, b)), &mut chain)?;
             }
         }
         Ok(())
+    }
+
+    /// Where an import that function `sp` retains goes (WP-094, §6.13):
+    /// the function's DIE when it is scoped in the function; the DIE of
+    /// its lexical block (written because it has an import,
+    /// [`UnitPlan::import_blocks`]); nowhere when that block has no code
+    /// (`llc` defers the imports of the scopes it visits only). An import
+    /// scoped in a block file, in another function's block, or in a
+    /// function with an abstract instance is refused.
+    fn import_parent(&self, ie: DiId, sp: DiId) -> Result<BlockOf, Error> {
+        let DiNode::ImportedEntity(e) = self.node_of(sp, "retainedNodes", ie)? else {
+            return Err(bad(sp, "retainedNodes"));
+        };
+        let Some(scope) = e.scope else { return Err(unsupported(ie, IMPORT_SCOPE)) };
+        if scope == sp {
+            return Ok(BlockOf::Function);
+        }
+        if self.debug.find_kind(scope) != Some(DiKind::LexicalBlock)
+            || self.owner_of(scope)? != sp
+            || self.inline.die(sp).is_some()
+        {
+            return Err(unsupported(ie, IMPORT_SCOPE));
+        }
+        Ok(match self.slot[scope.index()] {
+            NONE => BlockOf::NoCode,
+            b => BlockOf::Block(b),
+        })
+    }
+
+    /// Calls `mark` with each lexical block that function `sp` has an
+    /// import in: `llc`'s `skipLexicalScope` writes such a block even
+    /// without variables (WP-094, §6.13). The hook of
+    /// `UnitPlan::collect_entities`.
+    pub(crate) fn import_blocks(&self, sp: &DiSubprogram<'_>, mut mark: impl FnMut(DiId)) {
+        for &n in sp.retained_nodes {
+            if let Some(DiKind::ImportedEntity) = self.debug.find_kind(n)
+                && let DiNode::ImportedEntity(e) = self.debug.node(n)
+                && let Some(scope) = e.scope
+                && self.debug.find_kind(scope) == Some(DiKind::LexicalBlock)
+            {
+                mark(scope);
+            }
+        }
     }
 
     /// The DIE of imported entity `ie`: of the function `local` (its node
@@ -58,9 +128,10 @@ impl UnitPlan<'_> {
         {
             return Err(unsupported(ie, IMPORT));
         }
-        // `getOrCreateContextDIE(scope)`.
+        // `getOrCreateContextDIE(scope)`: the function's or its block's
+        // DIE ([`UnitPlan::import_parent`]).
         let parent = match local {
-            Some((sp, die)) if e.scope == Some(sp) => die,
+            Some((scope, die)) if e.scope == Some(scope) => die,
             Some(_) => return Err(unsupported(ie, IMPORT_SCOPE)),
             None => self.scope_parent(ie, e.scope, chain).map_err(|e| match e {
                 Error::Unsupported { node, .. } => Error::Unsupported { node, what: IMPORT_SCOPE },

@@ -54,6 +54,19 @@ impl UnitPlan<'_> {
                 Some(DiKind::Subprogram | DiKind::LexicalBlock | DiKind::LexicalBlockFile)
             )
         {
+            // A function's thread-local `static` (WP-094, §6.13): under
+            // the function's DIE as WP-085 puts it, with the location (or
+            // none) of a thread-local global. Any other shape is WP-085's.
+            if self.scope_dies.is_tls(gve)
+                && expr == ExprId::EMPTY
+                && v.is_definition
+                && v.declaration.is_none()
+                && v.template_params.is_empty()
+                && v.ty.is_some()
+                && (v.line == 0 || v.file.is_some())
+            {
+                return self.tls_static(var, v, s).map(Some);
+            }
             return Ok(None); // WP-085's
         }
         let tls = self.scope_dies.is_tls(gve);
@@ -129,6 +142,26 @@ impl UnitPlan<'_> {
         }
         self.add_template_params(die, v.template_params)?;
         self.scope_dies.vars.push((die, shape));
+        Ok(die)
+    }
+
+    /// The DIE of a function's thread-local `static` `var`, scoped in
+    /// `scope`: `discover_global`'s order (the function's DIE, the
+    /// variable, its type), the shape of a thread-local global.
+    fn tls_static(
+        &mut self,
+        var: DiId,
+        v: &DiGlobalVariable<'_>,
+        scope: DiId,
+    ) -> Result<u32, Error> {
+        if self.scope_dies.arch == Some(Arch::X86_64) {
+            return Err(unsupported(var, TLS_LOCATION));
+        }
+        let parent = self.static_parent(var, scope)?;
+        let die = self.push(var, parent, Kind::Variable);
+        let shape = VarShape { spec: NONE, spec_type: false, constant: None, tls: true };
+        self.scope_dies.vars.push((die, shape));
+        self.reference_type(var, "type", v.ty.unwrap_or(DiId::NONE))?;
         Ok(die)
     }
 

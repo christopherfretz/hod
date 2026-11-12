@@ -11,11 +11,14 @@
 //!   A function gets **no DIE** unless code was inlined into it
 //!   (`DwarfDebug::endFunctionImpl` returns early when the function has no
 //!   abstract scopes): its code is only in the unit's ranges. A function
-//!   with inlined code gets a subprogram DIE with only `low_pc`,
-//!   `high_pc` and `name`, an abstract subprogram per inlined function
-//!   (`name`, `DW_AT_inline`) and `DW_TAG_inlined_subroutine` children;
-//!   inlined subroutines are not written yet, so such a function is
-//!   refused as [`LINE_TABLES_INLINED`].
+//!   with inlined code (WP-094, `spec/dwarf.md` §6.13) goes through the
+//!   functions' path with `llc`'s `includeMinimalInlineScopes`: every
+//!   DIE is the unit's child; the function's subprogram DIE has only
+//!   `low_pc`, `high_pc` and `name` (or `DW_AT_abstract_origin`), an
+//!   abstract subprogram per inlined function only `name` and
+//!   `DW_AT_inline`, its inlined subroutines are WP-085's, and no lexical
+//!   block is written. What no producer of such a unit writes is refused
+//!   as [`LINE_TABLES_INLINED`].
 //! - `DebugDirectivesOnly`: the line table only. No `.debug_info`, no
 //!   `.debug_abbrev`, no strings: the unit is in `.debug_line` and nowhere
 //!   else. The bridge (`hod_cg`) leaves such a unit out of
@@ -29,10 +32,13 @@
 //! one), and a function of a `LineTablesOnly` unit with variable or label
 //! records ([`LINE_TABLES_VARIABLES`]: `llc` 22 crashes).
 
-use hod_ir::{DebugInfo, DiCompileUnit, DiId, EmissionKind, LocId};
+use hod_ir::{
+    DebugInfo, DiCompileUnit, DiFlags, DiId, DiNode, DiSubprogram, EmissionKind, LocId, SpFlags,
+};
 
 use crate::Error;
-use crate::die::{UnitPlan, unsupported};
+use crate::abbrev::{code, fam};
+use crate::die::{UnitPlan, Writer, unsupported};
 use crate::func::FunctionInput;
 
 /// A `LineTablesOnly` or `DebugDirectivesOnly` unit that lists globals,
@@ -40,8 +46,11 @@ use crate::func::FunctionInput;
 pub const REDUCED_UNIT_ENTITIES: &str = "debug:reduced-unit-entities";
 /// A function of a `LineTablesOnly` unit with variable or label records.
 pub const LINE_TABLES_VARIABLES: &str = "debug:line-tables-variables";
-/// A function of a `LineTablesOnly` unit with code inlined into it: its
-/// subprogram DIE needs inlined subroutines (`spec/dwarf.md` §6.10).
+/// A function of a `LineTablesOnly` unit with code inlined into it whose
+/// subprogram has a declaration, template parameters, a subroutine type
+/// with elements or retained nodes, none of which `-gline-tables-only`
+/// writes (`spec/dwarf.md` §6.13; the plain shape is written since
+/// WP-094).
 pub const LINE_TABLES_INLINED: &str = "debug:line-tables-inlined";
 
 /// Whether a unit of this kind gets DIEs: `FullDebug` and
@@ -83,19 +92,99 @@ fn has_inlined_code(debug: &DebugInfo, f: &FunctionInput<'_>) -> Option<DiId> {
     })
 }
 
-/// [`UnitPlan::add_function`] for a function of a reduced unit: no DIE.
-/// Its code is in the unit's ranges through the [`crate::CodeSpan`]s the
-/// caller gives [`crate::write_debug_info`].
-pub(crate) fn add_function(plan: &UnitPlan<'_>, f: &FunctionInput<'_>) -> Result<(), Error> {
+/// [`UnitPlan::add_function`] for a function of a reduced unit: `true`
+/// when it is done with it (no DIE: its code is in the unit's ranges
+/// through the [`crate::CodeSpan`]s the caller gives
+/// [`crate::write_debug_info`]); `false` for a `LineTablesOnly` function
+/// with inlined code, which goes on along the functions' path in minimal
+/// form (WP-094, §6.13).
+pub(crate) fn add_function(plan: &UnitPlan<'_>, f: &FunctionInput<'_>) -> Result<bool, Error> {
     if plan.cu.emission_kind != EmissionKind::LineTablesOnly {
         // `DebugDirectivesOnly`: no DIEs at all, whatever the function is.
-        return Ok(());
+        return Ok(true);
     }
     if !f.vars.is_empty() {
         return Err(unsupported(f.subprogram, LINE_TABLES_VARIABLES));
     }
-    if let Some(scope) = has_inlined_code(plan.debug, f) {
-        return Err(unsupported(scope, LINE_TABLES_INLINED));
+    if has_inlined_code(plan.debug, f).is_none() {
+        return Ok(true);
     }
-    Ok(())
+    // What `seal` would make for the function beyond its name: a return
+    // type, template parameters, a specification, imports, a
+    // variadic function's `DW_TAG_unspecified_parameters`. `llc` writes
+    // none of them in minimal form; no producer writes them in such a
+    // unit, so they are refused rather than special-cased.
+    let DiNode::Subprogram(sp) = plan.debug.node(f.subprogram) else {
+        return Err(unsupported(f.subprogram, LINE_TABLES_INLINED));
+    };
+    let typed = sp.ty.is_some_and(|t| match plan.debug.node(t) {
+        DiNode::SubroutineType(t) => !t.types.is_empty(),
+        _ => true,
+    });
+    if typed
+        || sp.declaration.is_some()
+        || !sp.template_params.is_empty()
+        || !sp.retained_nodes.is_empty()
+    {
+        return Err(unsupported(f.subprogram, LINE_TABLES_INLINED));
+    }
+    Ok(false)
+}
+
+/// The flags a minimal subprogram may have; anything else (above all
+/// `DIFlagAllCallsDescribed`, whose `DW_AT_call_all_calls` and call-site
+/// entries need the generated code's return addresses) is refused as
+/// `debug:subprogram-attribute`, as for a full unit.
+const MINIMAL_FLAGS: u32 =
+    DiFlags::PROTOTYPED.0 | DiFlags::ARTIFICIAL.0 | DiFlags::NO_RETURN.0 | DiFlags::THUNK.0;
+const MINIMAL_SP_FLAGS: u32 =
+    SpFlags::DEFINITION.0 | SpFlags::LOCAL_TO_UNIT.0 | SpFlags::OPTIMIZED.0;
+
+/// The parent of a subprogram DIE in a `LineTablesOnly` unit: the unit
+/// (`getOrCreateSubprogramDIE(SP, Minimal)`,
+/// `constructAbstractSubprogramScopeDIE`), whatever its scope.
+pub(crate) fn minimal_parent(
+    plan: &UnitPlan<'_>,
+    sp_id: DiId,
+    sp: &DiSubprogram<'_>,
+) -> Result<u32, Error> {
+    if !sp.sp_flags.contains(SpFlags::DEFINITION) || sp.unit != Some(plan.unit) {
+        return Err(unsupported(sp_id, "debug:subprogram-not-definition"));
+    }
+    if !sp.thrown_types.is_empty()
+        || sp.sp_flags.0 & !MINIMAL_SP_FLAGS != 0
+        || sp.flags.0 & !MINIMAL_FLAGS != 0
+    {
+        return Err(unsupported(sp_id, "debug:subprogram-attribute"));
+    }
+    Ok(0)
+}
+
+impl<'a> Writer<'a> {
+    /// A function's subprogram DIE in a `LineTablesOnly` unit (family 89):
+    /// `low_pc`, `high_pc`, then `name` (`applySubprogramAttributes` with
+    /// `SkipSPAttributes`), or `DW_AT_abstract_origin` when the function
+    /// also has an abstract instance (`finishSubprogramDefinition`).
+    pub(crate) fn minimal_subprogram(
+        &mut self,
+        plan: &UnitPlan<'a>,
+        sp_id: DiId,
+        sp: &DiSubprogram<'a>,
+        index: u32,
+        size: u64,
+        children: bool,
+    ) -> Result<(), Error> {
+        let origin = plan.inline.die(sp_id);
+        let name = origin.is_none() && !sp.name.is_empty();
+        let mask = u32::from(name) | u32::from(origin.is_some()) << 1;
+        self.abbrev(code(fam::SUBPROGRAM_MINIMAL, mask, children));
+        self.addr_attrs(index, size);
+        if name {
+            self.strx(sp.name)?;
+        }
+        if let Some(o) = origin {
+            self.ref4(o);
+        }
+        Ok(())
+    }
 }

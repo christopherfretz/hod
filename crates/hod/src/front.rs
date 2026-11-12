@@ -13,8 +13,8 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 use hod_bc::{BcError, BcErrorKind};
+use hod_ir::{Arch, Support, TargetSpec};
 use hod_ir::{Body, Census, Classifier, IrErrorKind, Module, Rejection, RejectionKind, SymId};
-use hod_ir::{Support, TargetSpec};
 use hod_ll::{LlError, LlErrorKind};
 
 use crate::back::{Threads, generate_with};
@@ -177,9 +177,25 @@ fn from_rejection(module: &Module, rejection: Rejection, body: bool) -> CompileE
     }
 }
 
+/// AArch64's stack-argument rule, the hook `classify` decides `musttail`
+/// calls with (WP-069, WP-066).
+static A64_STACK_ARGS: hod_cg::abi::TargetStackArgs<'static, hod_a64::A64> =
+    hod_cg::abi::TargetStackArgs::new(&hod_a64::A64);
+
+/// The classifier of `arch` with its stack-argument rule (see
+/// [`Judge::classifier`]).
+fn classifier_for(arch: Arch, support: &Support) -> Classifier<'_> {
+    let classifier = Classifier::new(support);
+    match arch {
+        Arch::Aarch64 => classifier.with_stack_args(&A64_STACK_ARGS),
+        Arch::X86_64 => classifier,
+    }
+}
+
 /// The checks and the bookkeeping shared by the text and the bitcode
 /// walks over a module.
 struct Judge<'s> {
+    arch: Arch,
     census: Option<Census>,
     support: &'s Support,
     threads: &'s Threads,
@@ -192,6 +208,7 @@ impl<'s> Judge<'s> {
     /// Judges `module`'s module level: `classify`'s module pass.
     fn new(module: &Module, settings: &'s Settings, report: &'s mut Report) -> Judge<'s> {
         let mut judge = Judge {
+            arch: module.target().arch(),
             census: settings.census.then(Census::new),
             support: settings
                 .support
@@ -206,8 +223,13 @@ impl<'s> Judge<'s> {
         judge
     }
 
-    fn classifier(&self) -> Classifier<'_> {
-        Classifier::new(self.support)
+    /// The classifier of the module's target, with its stack-argument
+    /// rule (`spec/codegen.md` §7.1, "Tail kinds"; `spec/ir.md` §8.6):
+    /// without it every `musttail` call is declined as
+    /// `musttail:stack-args-unknown`. x86-64 has no code generator, so no
+    /// rule; its modules are declined later anyway.
+    fn classifier(&self) -> Classifier<'s> {
+        classifier_for(self.arch, self.support)
     }
 
     fn note(&mut self, error: CompileError) {
@@ -284,7 +306,7 @@ impl<'s> Judge<'s> {
             }
             Some(body) => {
                 if let Some(census) = &mut self.census {
-                    Classifier::new(self.support).census_body(module, body, census);
+                    classifier_for(self.arch, self.support).census_body(module, body, census);
                     self.drain_census();
                 }
                 if self.first.is_none() {

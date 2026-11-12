@@ -836,8 +836,11 @@ fn extended_integers_of_every_width_run() {
 /// nest of them), in registers and on the stack, arrives with junk above
 /// every leaf (`abi-a64.md` §7 promises nothing there), and its home
 /// must hold zeros above each width (`tests/data/call/odd.ll`). The home
-/// is observed through what the callee passes on to gcc's checkers,
-/// which then also check those zeros. gcc's driver calls the callee
+/// is observed directly: the callee stores the argument to a buffer of
+/// the driver, which checks every leaf's bytes up to its store size
+/// (`llc` zero-masks there too, so this holds in every pairing); and
+/// through what the callee passes on to gcc's checkers, which, for hod's
+/// callee, also check those zeros. gcc's driver calls the callee
 /// directly and through a forwarding caller; the caller and the callee
 /// module by hod and by `llc` in every pairing, hod also stressed; every
 /// linker where hod is involved.

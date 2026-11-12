@@ -63,6 +63,11 @@ pub const GROUPS: &[(&str, Enable)] = &[
     // emits (no generator switch makes FP intrinsics; `exceptions`, which
     // emits `eh.typeid.for`, needs a host `hod_throw` this harness lacks).
     ("WP-070", |e| e.options.intrinsics = true),
+    // The groups together: pointer-integer casts and the host functions
+    // `sink` and `source` (the driver defines both), the last switches
+    // `missing` names (`exceptions` and `block_addresses` are off in the
+    // generator's defaults; `block_addresses` is WP-037's line).
+    ("WP-066", |e| (e.options.ptr_int, e.options.hosts) = (true, true)),
 ];
 
 /// What every landed group enables together.

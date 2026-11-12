@@ -283,6 +283,206 @@ runtime_fns! {
     Powl = "powl": (FP128, FP128) -> FP128;
     /// `llvm.clear_cache` (WP-070).
     ClearCache = "__clear_cache": (PTR, PTR) -> VOID;
+    /// `__aarch64_cas1_relax`: outline atomics (WP-074).
+    Cas1Relax = "__aarch64_cas1_relax": (I8, I8, PTR) -> I8;
+    /// `__aarch64_cas1_acq`: outline atomics (WP-074).
+    Cas1Acq = "__aarch64_cas1_acq": (I8, I8, PTR) -> I8;
+    /// `__aarch64_cas1_rel`: outline atomics (WP-074).
+    Cas1Rel = "__aarch64_cas1_rel": (I8, I8, PTR) -> I8;
+    /// `__aarch64_cas1_acq_rel`: outline atomics (WP-074).
+    Cas1AcqRel = "__aarch64_cas1_acq_rel": (I8, I8, PTR) -> I8;
+    /// `__aarch64_cas2_relax`: outline atomics (WP-074).
+    Cas2Relax = "__aarch64_cas2_relax": (I16, I16, PTR) -> I16;
+    /// `__aarch64_cas2_acq`: outline atomics (WP-074).
+    Cas2Acq = "__aarch64_cas2_acq": (I16, I16, PTR) -> I16;
+    /// `__aarch64_cas2_rel`: outline atomics (WP-074).
+    Cas2Rel = "__aarch64_cas2_rel": (I16, I16, PTR) -> I16;
+    /// `__aarch64_cas2_acq_rel`: outline atomics (WP-074).
+    Cas2AcqRel = "__aarch64_cas2_acq_rel": (I16, I16, PTR) -> I16;
+    /// `__aarch64_cas4_relax`: outline atomics (WP-074).
+    Cas4Relax = "__aarch64_cas4_relax": (I32, I32, PTR) -> I32;
+    /// `__aarch64_cas4_acq`: outline atomics (WP-074).
+    Cas4Acq = "__aarch64_cas4_acq": (I32, I32, PTR) -> I32;
+    /// `__aarch64_cas4_rel`: outline atomics (WP-074).
+    Cas4Rel = "__aarch64_cas4_rel": (I32, I32, PTR) -> I32;
+    /// `__aarch64_cas4_acq_rel`: outline atomics (WP-074).
+    Cas4AcqRel = "__aarch64_cas4_acq_rel": (I32, I32, PTR) -> I32;
+    /// `__aarch64_cas8_relax`: outline atomics (WP-074).
+    Cas8Relax = "__aarch64_cas8_relax": (I64, I64, PTR) -> I64;
+    /// `__aarch64_cas8_acq`: outline atomics (WP-074).
+    Cas8Acq = "__aarch64_cas8_acq": (I64, I64, PTR) -> I64;
+    /// `__aarch64_cas8_rel`: outline atomics (WP-074).
+    Cas8Rel = "__aarch64_cas8_rel": (I64, I64, PTR) -> I64;
+    /// `__aarch64_cas8_acq_rel`: outline atomics (WP-074).
+    Cas8AcqRel = "__aarch64_cas8_acq_rel": (I64, I64, PTR) -> I64;
+    /// `__aarch64_cas16_relax`: outline atomics (WP-074).
+    Cas16Relax = "__aarch64_cas16_relax": (I128, I128, PTR) -> I128;
+    /// `__aarch64_cas16_acq`: outline atomics (WP-074).
+    Cas16Acq = "__aarch64_cas16_acq": (I128, I128, PTR) -> I128;
+    /// `__aarch64_cas16_rel`: outline atomics (WP-074).
+    Cas16Rel = "__aarch64_cas16_rel": (I128, I128, PTR) -> I128;
+    /// `__aarch64_cas16_acq_rel`: outline atomics (WP-074).
+    Cas16AcqRel = "__aarch64_cas16_acq_rel": (I128, I128, PTR) -> I128;
+    /// `__aarch64_swp1_relax`: outline atomics (WP-074).
+    Swp1Relax = "__aarch64_swp1_relax": (I8, PTR) -> I8;
+    /// `__aarch64_swp1_acq`: outline atomics (WP-074).
+    Swp1Acq = "__aarch64_swp1_acq": (I8, PTR) -> I8;
+    /// `__aarch64_swp1_rel`: outline atomics (WP-074).
+    Swp1Rel = "__aarch64_swp1_rel": (I8, PTR) -> I8;
+    /// `__aarch64_swp1_acq_rel`: outline atomics (WP-074).
+    Swp1AcqRel = "__aarch64_swp1_acq_rel": (I8, PTR) -> I8;
+    /// `__aarch64_swp2_relax`: outline atomics (WP-074).
+    Swp2Relax = "__aarch64_swp2_relax": (I16, PTR) -> I16;
+    /// `__aarch64_swp2_acq`: outline atomics (WP-074).
+    Swp2Acq = "__aarch64_swp2_acq": (I16, PTR) -> I16;
+    /// `__aarch64_swp2_rel`: outline atomics (WP-074).
+    Swp2Rel = "__aarch64_swp2_rel": (I16, PTR) -> I16;
+    /// `__aarch64_swp2_acq_rel`: outline atomics (WP-074).
+    Swp2AcqRel = "__aarch64_swp2_acq_rel": (I16, PTR) -> I16;
+    /// `__aarch64_swp4_relax`: outline atomics (WP-074).
+    Swp4Relax = "__aarch64_swp4_relax": (I32, PTR) -> I32;
+    /// `__aarch64_swp4_acq`: outline atomics (WP-074).
+    Swp4Acq = "__aarch64_swp4_acq": (I32, PTR) -> I32;
+    /// `__aarch64_swp4_rel`: outline atomics (WP-074).
+    Swp4Rel = "__aarch64_swp4_rel": (I32, PTR) -> I32;
+    /// `__aarch64_swp4_acq_rel`: outline atomics (WP-074).
+    Swp4AcqRel = "__aarch64_swp4_acq_rel": (I32, PTR) -> I32;
+    /// `__aarch64_swp8_relax`: outline atomics (WP-074).
+    Swp8Relax = "__aarch64_swp8_relax": (I64, PTR) -> I64;
+    /// `__aarch64_swp8_acq`: outline atomics (WP-074).
+    Swp8Acq = "__aarch64_swp8_acq": (I64, PTR) -> I64;
+    /// `__aarch64_swp8_rel`: outline atomics (WP-074).
+    Swp8Rel = "__aarch64_swp8_rel": (I64, PTR) -> I64;
+    /// `__aarch64_swp8_acq_rel`: outline atomics (WP-074).
+    Swp8AcqRel = "__aarch64_swp8_acq_rel": (I64, PTR) -> I64;
+    /// `__aarch64_ldadd1_relax`: outline atomics (WP-074).
+    Ldadd1Relax = "__aarch64_ldadd1_relax": (I8, PTR) -> I8;
+    /// `__aarch64_ldadd1_acq`: outline atomics (WP-074).
+    Ldadd1Acq = "__aarch64_ldadd1_acq": (I8, PTR) -> I8;
+    /// `__aarch64_ldadd1_rel`: outline atomics (WP-074).
+    Ldadd1Rel = "__aarch64_ldadd1_rel": (I8, PTR) -> I8;
+    /// `__aarch64_ldadd1_acq_rel`: outline atomics (WP-074).
+    Ldadd1AcqRel = "__aarch64_ldadd1_acq_rel": (I8, PTR) -> I8;
+    /// `__aarch64_ldadd2_relax`: outline atomics (WP-074).
+    Ldadd2Relax = "__aarch64_ldadd2_relax": (I16, PTR) -> I16;
+    /// `__aarch64_ldadd2_acq`: outline atomics (WP-074).
+    Ldadd2Acq = "__aarch64_ldadd2_acq": (I16, PTR) -> I16;
+    /// `__aarch64_ldadd2_rel`: outline atomics (WP-074).
+    Ldadd2Rel = "__aarch64_ldadd2_rel": (I16, PTR) -> I16;
+    /// `__aarch64_ldadd2_acq_rel`: outline atomics (WP-074).
+    Ldadd2AcqRel = "__aarch64_ldadd2_acq_rel": (I16, PTR) -> I16;
+    /// `__aarch64_ldadd4_relax`: outline atomics (WP-074).
+    Ldadd4Relax = "__aarch64_ldadd4_relax": (I32, PTR) -> I32;
+    /// `__aarch64_ldadd4_acq`: outline atomics (WP-074).
+    Ldadd4Acq = "__aarch64_ldadd4_acq": (I32, PTR) -> I32;
+    /// `__aarch64_ldadd4_rel`: outline atomics (WP-074).
+    Ldadd4Rel = "__aarch64_ldadd4_rel": (I32, PTR) -> I32;
+    /// `__aarch64_ldadd4_acq_rel`: outline atomics (WP-074).
+    Ldadd4AcqRel = "__aarch64_ldadd4_acq_rel": (I32, PTR) -> I32;
+    /// `__aarch64_ldadd8_relax`: outline atomics (WP-074).
+    Ldadd8Relax = "__aarch64_ldadd8_relax": (I64, PTR) -> I64;
+    /// `__aarch64_ldadd8_acq`: outline atomics (WP-074).
+    Ldadd8Acq = "__aarch64_ldadd8_acq": (I64, PTR) -> I64;
+    /// `__aarch64_ldadd8_rel`: outline atomics (WP-074).
+    Ldadd8Rel = "__aarch64_ldadd8_rel": (I64, PTR) -> I64;
+    /// `__aarch64_ldadd8_acq_rel`: outline atomics (WP-074).
+    Ldadd8AcqRel = "__aarch64_ldadd8_acq_rel": (I64, PTR) -> I64;
+    /// `__aarch64_ldclr1_relax`: outline atomics (WP-074).
+    Ldclr1Relax = "__aarch64_ldclr1_relax": (I8, PTR) -> I8;
+    /// `__aarch64_ldclr1_acq`: outline atomics (WP-074).
+    Ldclr1Acq = "__aarch64_ldclr1_acq": (I8, PTR) -> I8;
+    /// `__aarch64_ldclr1_rel`: outline atomics (WP-074).
+    Ldclr1Rel = "__aarch64_ldclr1_rel": (I8, PTR) -> I8;
+    /// `__aarch64_ldclr1_acq_rel`: outline atomics (WP-074).
+    Ldclr1AcqRel = "__aarch64_ldclr1_acq_rel": (I8, PTR) -> I8;
+    /// `__aarch64_ldclr2_relax`: outline atomics (WP-074).
+    Ldclr2Relax = "__aarch64_ldclr2_relax": (I16, PTR) -> I16;
+    /// `__aarch64_ldclr2_acq`: outline atomics (WP-074).
+    Ldclr2Acq = "__aarch64_ldclr2_acq": (I16, PTR) -> I16;
+    /// `__aarch64_ldclr2_rel`: outline atomics (WP-074).
+    Ldclr2Rel = "__aarch64_ldclr2_rel": (I16, PTR) -> I16;
+    /// `__aarch64_ldclr2_acq_rel`: outline atomics (WP-074).
+    Ldclr2AcqRel = "__aarch64_ldclr2_acq_rel": (I16, PTR) -> I16;
+    /// `__aarch64_ldclr4_relax`: outline atomics (WP-074).
+    Ldclr4Relax = "__aarch64_ldclr4_relax": (I32, PTR) -> I32;
+    /// `__aarch64_ldclr4_acq`: outline atomics (WP-074).
+    Ldclr4Acq = "__aarch64_ldclr4_acq": (I32, PTR) -> I32;
+    /// `__aarch64_ldclr4_rel`: outline atomics (WP-074).
+    Ldclr4Rel = "__aarch64_ldclr4_rel": (I32, PTR) -> I32;
+    /// `__aarch64_ldclr4_acq_rel`: outline atomics (WP-074).
+    Ldclr4AcqRel = "__aarch64_ldclr4_acq_rel": (I32, PTR) -> I32;
+    /// `__aarch64_ldclr8_relax`: outline atomics (WP-074).
+    Ldclr8Relax = "__aarch64_ldclr8_relax": (I64, PTR) -> I64;
+    /// `__aarch64_ldclr8_acq`: outline atomics (WP-074).
+    Ldclr8Acq = "__aarch64_ldclr8_acq": (I64, PTR) -> I64;
+    /// `__aarch64_ldclr8_rel`: outline atomics (WP-074).
+    Ldclr8Rel = "__aarch64_ldclr8_rel": (I64, PTR) -> I64;
+    /// `__aarch64_ldclr8_acq_rel`: outline atomics (WP-074).
+    Ldclr8AcqRel = "__aarch64_ldclr8_acq_rel": (I64, PTR) -> I64;
+    /// `__aarch64_ldeor1_relax`: outline atomics (WP-074).
+    Ldeor1Relax = "__aarch64_ldeor1_relax": (I8, PTR) -> I8;
+    /// `__aarch64_ldeor1_acq`: outline atomics (WP-074).
+    Ldeor1Acq = "__aarch64_ldeor1_acq": (I8, PTR) -> I8;
+    /// `__aarch64_ldeor1_rel`: outline atomics (WP-074).
+    Ldeor1Rel = "__aarch64_ldeor1_rel": (I8, PTR) -> I8;
+    /// `__aarch64_ldeor1_acq_rel`: outline atomics (WP-074).
+    Ldeor1AcqRel = "__aarch64_ldeor1_acq_rel": (I8, PTR) -> I8;
+    /// `__aarch64_ldeor2_relax`: outline atomics (WP-074).
+    Ldeor2Relax = "__aarch64_ldeor2_relax": (I16, PTR) -> I16;
+    /// `__aarch64_ldeor2_acq`: outline atomics (WP-074).
+    Ldeor2Acq = "__aarch64_ldeor2_acq": (I16, PTR) -> I16;
+    /// `__aarch64_ldeor2_rel`: outline atomics (WP-074).
+    Ldeor2Rel = "__aarch64_ldeor2_rel": (I16, PTR) -> I16;
+    /// `__aarch64_ldeor2_acq_rel`: outline atomics (WP-074).
+    Ldeor2AcqRel = "__aarch64_ldeor2_acq_rel": (I16, PTR) -> I16;
+    /// `__aarch64_ldeor4_relax`: outline atomics (WP-074).
+    Ldeor4Relax = "__aarch64_ldeor4_relax": (I32, PTR) -> I32;
+    /// `__aarch64_ldeor4_acq`: outline atomics (WP-074).
+    Ldeor4Acq = "__aarch64_ldeor4_acq": (I32, PTR) -> I32;
+    /// `__aarch64_ldeor4_rel`: outline atomics (WP-074).
+    Ldeor4Rel = "__aarch64_ldeor4_rel": (I32, PTR) -> I32;
+    /// `__aarch64_ldeor4_acq_rel`: outline atomics (WP-074).
+    Ldeor4AcqRel = "__aarch64_ldeor4_acq_rel": (I32, PTR) -> I32;
+    /// `__aarch64_ldeor8_relax`: outline atomics (WP-074).
+    Ldeor8Relax = "__aarch64_ldeor8_relax": (I64, PTR) -> I64;
+    /// `__aarch64_ldeor8_acq`: outline atomics (WP-074).
+    Ldeor8Acq = "__aarch64_ldeor8_acq": (I64, PTR) -> I64;
+    /// `__aarch64_ldeor8_rel`: outline atomics (WP-074).
+    Ldeor8Rel = "__aarch64_ldeor8_rel": (I64, PTR) -> I64;
+    /// `__aarch64_ldeor8_acq_rel`: outline atomics (WP-074).
+    Ldeor8AcqRel = "__aarch64_ldeor8_acq_rel": (I64, PTR) -> I64;
+    /// `__aarch64_ldset1_relax`: outline atomics (WP-074).
+    Ldset1Relax = "__aarch64_ldset1_relax": (I8, PTR) -> I8;
+    /// `__aarch64_ldset1_acq`: outline atomics (WP-074).
+    Ldset1Acq = "__aarch64_ldset1_acq": (I8, PTR) -> I8;
+    /// `__aarch64_ldset1_rel`: outline atomics (WP-074).
+    Ldset1Rel = "__aarch64_ldset1_rel": (I8, PTR) -> I8;
+    /// `__aarch64_ldset1_acq_rel`: outline atomics (WP-074).
+    Ldset1AcqRel = "__aarch64_ldset1_acq_rel": (I8, PTR) -> I8;
+    /// `__aarch64_ldset2_relax`: outline atomics (WP-074).
+    Ldset2Relax = "__aarch64_ldset2_relax": (I16, PTR) -> I16;
+    /// `__aarch64_ldset2_acq`: outline atomics (WP-074).
+    Ldset2Acq = "__aarch64_ldset2_acq": (I16, PTR) -> I16;
+    /// `__aarch64_ldset2_rel`: outline atomics (WP-074).
+    Ldset2Rel = "__aarch64_ldset2_rel": (I16, PTR) -> I16;
+    /// `__aarch64_ldset2_acq_rel`: outline atomics (WP-074).
+    Ldset2AcqRel = "__aarch64_ldset2_acq_rel": (I16, PTR) -> I16;
+    /// `__aarch64_ldset4_relax`: outline atomics (WP-074).
+    Ldset4Relax = "__aarch64_ldset4_relax": (I32, PTR) -> I32;
+    /// `__aarch64_ldset4_acq`: outline atomics (WP-074).
+    Ldset4Acq = "__aarch64_ldset4_acq": (I32, PTR) -> I32;
+    /// `__aarch64_ldset4_rel`: outline atomics (WP-074).
+    Ldset4Rel = "__aarch64_ldset4_rel": (I32, PTR) -> I32;
+    /// `__aarch64_ldset4_acq_rel`: outline atomics (WP-074).
+    Ldset4AcqRel = "__aarch64_ldset4_acq_rel": (I32, PTR) -> I32;
+    /// `__aarch64_ldset8_relax`: outline atomics (WP-074).
+    Ldset8Relax = "__aarch64_ldset8_relax": (I64, PTR) -> I64;
+    /// `__aarch64_ldset8_acq`: outline atomics (WP-074).
+    Ldset8Acq = "__aarch64_ldset8_acq": (I64, PTR) -> I64;
+    /// `__aarch64_ldset8_rel`: outline atomics (WP-074).
+    Ldset8Rel = "__aarch64_ldset8_rel": (I64, PTR) -> I64;
+    /// `__aarch64_ldset8_acq_rel`: outline atomics (WP-074).
+    Ldset8AcqRel = "__aarch64_ldset8_acq_rel": (I64, PTR) -> I64;
 }
 
 #[cfg(test)]

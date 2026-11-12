@@ -38,6 +38,8 @@ pub const GROUPS: &[(&str, Enable)] = &[
         e.options.compares = true;
         e.options.selects = true;
     }),
+    // The floating-point group: `float`, `double`, `fcmp`, conversions.
+    ("WP-039", |e| e.options.floats = true),
 ];
 
 /// What every landed group enables together.

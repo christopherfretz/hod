@@ -32,8 +32,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `function` | 6 | 1 | 5 | 0 | 0 | 6 | 0 |
 | `cc` | 15 | 1 | 12 | 2 | 0 | 12 | 3 |
 | `attr` | 56 | 11 | 42 | 3 | 9 | 39 | 8 |
-| `type` | 15 | 2 | 10 | 3 | 0 | 13 | 2 |
-| `inst` | 67 | 26 | 33 | 8 | 0 | 59 | 8 |
+| `type` | 15 | 4 | 8 | 3 | 0 | 13 | 2 |
+| `inst` | 67 | 39 | 20 | 8 | 0 | 59 | 8 |
 | `mem` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 0 | 21 | 0 | 0 | 21 | 0 |
 | `call` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 9 | 2 | 7 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 133 | 0 | 133 | 0 | 0 | 133 | 0 |
-| total | 434 | 83 | 305 | 46 | 16 | 363 | 55 |
+| total | 434 | 98 | 290 | 46 | 16 | 363 | 55 |
 
 ## `module`
 
@@ -289,8 +289,8 @@ Type classes of the values instructions produce and consume.
 | `type:ptr` | supported | not-implemented | pointers in address space 0 |
 | `type:half` | not-implemented | not-implemented | unplanned |
 | `type:bfloat` | not-implemented | not-implemented | unplanned |
-| `type:float` | not-implemented | not-implemented | WP-039 |
-| `type:double` | not-implemented | not-implemented | WP-039 |
+| `type:float` | supported | not-implemented |  |
+| `type:double` | supported | not-implemented |  |
 | `type:fp128` | not-implemented | not-implemented | unplanned |
 | `type:x86_fp80` | rejected | not-implemented | not an AArch64 type |
 | `type:vector` | not-implemented | not-implemented | M2 (vectors). vectors of fixed length |
@@ -318,23 +318,23 @@ Instructions.
 | `inst:and` | supported (int) | not-implemented |  |
 | `inst:or` | supported (int) | not-implemented |  |
 | `inst:xor` | supported (int) | not-implemented |  |
-| `inst:fadd` | not-implemented | not-implemented | WP-039 |
-| `inst:fsub` | not-implemented | not-implemented | WP-039 |
-| `inst:fmul` | not-implemented | not-implemented | WP-039 |
-| `inst:fdiv` | not-implemented | not-implemented | WP-039 |
-| `inst:frem` | not-implemented | not-implemented | WP-039 |
-| `inst:fneg` | not-implemented | not-implemented | WP-039 |
+| `inst:fadd` | supported (half, float, double) | not-implemented |  |
+| `inst:fsub` | supported (half, float, double) | not-implemented |  |
+| `inst:fmul` | supported (half, float, double) | not-implemented |  |
+| `inst:fdiv` | supported (half, float, double) | not-implemented |  |
+| `inst:frem` | supported (float, double) | not-implemented | a call of `fmod` |
+| `inst:fneg` | supported (half, float, double) | not-implemented |  |
 | `inst:icmp` | supported (int, ptr) | not-implemented |  |
-| `inst:fcmp` | not-implemented | not-implemented | WP-039 |
+| `inst:fcmp` | supported (int, half, float, double) | not-implemented |  |
 | `inst:trunc` | supported (int) | not-implemented |  |
 | `inst:zext` | supported (int) | not-implemented |  |
 | `inst:sext` | supported (int) | not-implemented |  |
-| `inst:fptrunc` | not-implemented | not-implemented | WP-039 |
-| `inst:fpext` | not-implemented | not-implemented | WP-039 |
-| `inst:fptoui` | not-implemented | not-implemented | WP-039 |
-| `inst:fptosi` | not-implemented | not-implemented | WP-039 |
-| `inst:uitofp` | not-implemented | not-implemented | WP-039 |
-| `inst:sitofp` | not-implemented | not-implemented | WP-039 |
+| `inst:fptrunc` | supported (half, float, double) | not-implemented |  |
+| `inst:fpext` | supported (half, float, double) | not-implemented |  |
+| `inst:fptoui` | supported (int, half, float, double) | not-implemented |  |
+| `inst:fptosi` | supported (int, half, float, double) | not-implemented |  |
+| `inst:uitofp` | supported (int, half, float, double) | not-implemented |  |
+| `inst:sitofp` | supported (int, half, float, double) | not-implemented |  |
 | `inst:ptrtoint` | supported (int, ptr) | not-implemented |  |
 | `inst:ptrtoaddr` | supported (int, ptr) | not-implemented |  |
 | `inst:inttoptr` | supported (int, ptr) | not-implemented |  |

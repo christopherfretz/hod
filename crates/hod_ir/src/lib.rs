@@ -13,10 +13,17 @@
 //! | `constant` | §4.1, §4.2 | `ConstPool` |
 //! | `fold` | §4.2 | constant-expression folding |
 //! | `flatten` | §4.3 | initializers as bytes and fixups |
-//! | `attrs` | §5.7 | `CallConv`, `ParamAttrs` |
-//! | `module` | §2 | the `Module` shell |
+//! | `attrs` | §5.7 | `CallConv`, `ParamAttrs`, `FnAttrs`, the attribute table |
+//! | `module` | §2 | `Module` and its builder API |
+//! | `symbol` | §2.2 | the symbol table |
+//! | `comdat` | §2 | the COMDAT table |
+//! | `asm` | §2 | the inline-assembly table |
+//! | `props` | §2.1 | `ModuleProps` and module flags |
+//! | `strings` | §2 | interned byte strings |
 
+mod asm;
 mod attrs;
+mod comdat;
 mod constant;
 mod error;
 mod flatten;
@@ -24,16 +31,34 @@ mod fold;
 mod ids;
 mod intern;
 mod module;
+mod props;
+mod strings;
+mod symbol;
 mod target;
 mod types;
 mod wide;
 
+pub use asm::InlineAsm;
+pub use attrs::{
+    ATTRIBUTES, AttrClass, AttrInfo, AttrSyntax, FnAttrs, FnAttrsId, FnAttrsView, FnStr, UwTable,
+    attr_class, attr_info,
+};
 pub use attrs::{CallConv, ParamAttrs, ParamMem};
+pub use comdat::{Comdat, ComdatKind};
 pub use constant::{Const, ConstOp, ConstPool};
 pub use error::{IrError, IrErrorKind, IrResult};
 pub use flatten::{Fixup, FixupTarget};
 pub use ids::{AsmId, BlockId, ComdatId, ConstId, DiId, LocId, SymId, TypeId};
-pub use module::Module;
+pub use module::{Module, StringLists, Structor, Unsupported};
+pub use props::{
+    BranchProtection, CodeModel, FlagBehavior, FlagClass, FlagValue, FramePointer,
+    IGNORABLE_MODULE_FLAGS, KNOWN_MODULE_FLAGS, ModuleFlag, ModuleProps, PicLevel,
+    module_flag_class,
+};
+pub use symbol::{
+    AliasDesc, FunctionDesc, IFuncDesc, Linkage, Retained, Symbol, SymbolKind, TlsModel,
+    UnnamedAddr, VariableDesc, Visibility,
+};
 pub use target::{
     AARCH64_LINUX_DATA_LAYOUT, AARCH64_LINUX_DATA_LAYOUT_LLVM19, AlignPair, Arch, DataLayout,
     FunctionPtrAlignKind, MAX_ADDR_SPACE, Mangling, Os, PointerSpec, PrimSpec, TargetSpec,

@@ -58,6 +58,9 @@ fn compare(text: &[u8], major: u32) -> Outcome {
         }
         (Ok(a), Ok(b)) => Outcome::Differ(first_difference(&a, &b), a, b),
         (Err(a), Err(b)) => Outcome::BothRefuse(format!("{} / {}", kind(&a), kind(&b))),
+        (Err(_), Ok(_)) if !common::reassembles(major, &canonical) => {
+            Outcome::Tool("llvm-dis: text llvm-as does not take back".into())
+        }
         (Err(a), Ok(b)) => Outcome::Differ(format!("only hod_ll refuses: {}", head(&a)), a, b),
         (Ok(a), Err(b)) => Outcome::Differ(format!("only hod_bc refuses: {}", head(&b)), a, b),
     }

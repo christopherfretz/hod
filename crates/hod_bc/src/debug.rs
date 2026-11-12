@@ -1242,3 +1242,132 @@ pub(crate) fn scan_function<'a>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! `spec/bc.md` §6.3 and §6.4: the layout table against `hod_ir`'s
+    //! field mapping, and each named refusal of a record the table does
+    //! not know.
+
+    use super::*;
+    use crate::module::with_dx;
+
+    const MODULE: &[u8] = include_bytes!("../tests/data/debug-llvm22.bc");
+
+    fn codes() -> impl Iterator<Item = (u32, Layout)> {
+        (0..128).filter_map(|code| layout(code).map(|l| (code, l)))
+    }
+
+    fn noted(dx: &Dx<'_, '_>, construct: &str) -> bool {
+        dx.module.unsupported().any(|u| u.construct == construct)
+    }
+
+    /// §6.3: every field the table names is one `hod_ir` maps, drops or
+    /// refuses as the table says.
+    #[test]
+    fn the_layouts_agree_with_hod_ir() {
+        let mut checked = 0;
+        for (_, l) in codes() {
+            if l.kind.is_none() {
+                continue;
+            }
+            for &(field, how) in l.fields {
+                if field.is_empty() || matches!(how, Skip | PtrAuth) {
+                    continue;
+                }
+                let mapping = di_field(l.name.as_bytes(), field.as_bytes());
+                let ok = match how {
+                    Drop => matches!(mapping, Some(DiMapping::Dropped(_))),
+                    UnsupInt(_) | UnsupMd => matches!(mapping, Some(DiMapping::Unsupported(_))),
+                    _ => mapping == Some(DiMapping::Mapped),
+                };
+                assert!(ok, "{}.{field}: {how:?} but hod_ir says {mapping:?}", l.name);
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "{checked} fields");
+    }
+
+    /// §6.4: a record one operand short is invalid; one operand longer
+    /// than LLVM 22 writes is `debug-layout`.
+    #[test]
+    fn record_lengths_outside_the_layout_are_refused() {
+        with_dx(MODULE, |dx| {
+            for (code, l) in codes() {
+                if l.kind.is_none() {
+                    continue;
+                }
+                let node = dx.module.debug.reserve().expect("reserve");
+                let short = vec![0; l.min - 1];
+                let e = dx.node(node, code, &short, 0).expect_err(l.name);
+                assert_eq!(e.kind, BcErrorKind::Invalid, "{}: {e}", l.name);
+                if l.max == usize::MAX {
+                    continue; // DIEnumerator: any number of words.
+                }
+                let long = vec![0; l.max + 1];
+                let e = dx.node(node, code, &long, 0).expect_err(l.name);
+                assert_eq!(e.kind, LAYOUT, "{}: {e}", l.name);
+            }
+        });
+    }
+
+    /// §6.4: versions LLVM 19 to 22 do not write are `debug-layout`.
+    #[test]
+    fn unknown_versions_are_refused() {
+        with_dx(MODULE, |dx| {
+            let e = dx.expression(&[4 << 1], 0).expect_err("DIExpression version 4");
+            assert_eq!(e.kind, LAYOUT);
+            let e = dx.expression(&[], 0).expect_err("an empty EXPRESSION");
+            assert_eq!(e.kind, BcErrorKind::Invalid);
+            let node = dx.module.debug.reserve().expect("reserve");
+            let mut ops = vec![0; 13];
+            ops[0] = 1 << 1;
+            let e = dx.node(node, md::GLOBAL_VAR, &ops, 0).expect_err("DIGlobalVariable v1");
+            assert_eq!(e.kind, LAYOUT);
+            let mut ops = vec![0; 5];
+            ops[0] = 1 << 1;
+            let e = dx.node(node, md::SUBRANGE, &ops, 0).expect_err("DISubrange v1");
+            assert_eq!(e.kind, LAYOUT);
+            let loc = dx.module.debug.reserve_loc().expect("reserve");
+            let e = dx.location(loc, &[0; 9], 0).expect_err("a LOCATION of 9");
+            assert_eq!(e.kind, LAYOUT);
+            let e = dx.location(loc, &[0; 4], 0).expect_err("a LOCATION of 4");
+            assert_eq!(e.kind, BcErrorKind::Invalid);
+        });
+    }
+
+    /// §6.4: an operand naming metadata that does not exist is an error.
+    #[test]
+    fn out_of_range_operands_are_errors() {
+        with_dx(MODULE, |dx| {
+            let node = dx.module.debug.reserve().expect("reserve");
+            let mut ops = vec![0; 12];
+            ops[1] = 0x0F; // DW_TAG_pointer_type
+            ops[6] = 1 << 40; // baseType
+            let e = dx.node(node, md::DERIVED_TYPE, &ops, 0).expect_err("baseType");
+            assert_eq!(e.kind, BcErrorKind::Invalid, "{e}");
+            let loc = dx.module.debug.reserve_loc().expect("reserve");
+            let e = dx.location(loc, &[0, 1, 1, 1 << 40, 0], 0).expect_err("scope");
+            assert_eq!(e.kind, BcErrorKind::Invalid, "{e}");
+        });
+    }
+
+    /// An unknown record code is neither debug information nor a
+    /// metadata id: the block reader skips it.
+    #[test]
+    fn unknown_codes_are_not_debug_records() {
+        assert!(!is_debug(99) && !is_node(99));
+        assert_eq!(md::defines_id(99), None);
+    }
+
+    /// §6.3: an enumerator wider than 64 bits is noted, not guessed.
+    #[test]
+    fn wide_enumerators_are_noted() {
+        with_dx(MODULE, |dx| {
+            let node = dx.module.debug.reserve().expect("reserve");
+            // flags: wide; 128 bits; no name; two words.
+            dx.node(node, md::ENUMERATOR, &[4, 128, 0, 2, 2], 0).expect("a wide enumerator");
+            assert!(noted(dx, "debug:DIEnumerator.wide"));
+        });
+    }
+}

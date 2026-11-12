@@ -129,3 +129,63 @@ fn kiln_debug_module_agrees() {
     }
     assert!(read > 0, "some LLVM assembles kiln_types.ll");
 }
+
+/// §6.4: LLVM 22's `#dbg_declare_value` (record 66) is read past and its
+/// function refused by name, as `hod_ll` refuses the text.
+#[test]
+fn declare_value_is_refused_by_name() {
+    let Some(bin) = common::llvm_bin(22) else {
+        eprintln!("skipped LLVM 22: not installed");
+        return;
+    };
+    let mut command = Command::new(bin.join("clang"));
+    command
+        .args(["--target=aarch64-linux-gnu", "-S", "-emit-llvm", "-w", "-g", "-O0", "-o", "-"])
+        .arg(ll_data().join("debug_c.c"));
+    let out = run_with(&mut command, &[], DEFAULT_TIMEOUT);
+    assert!(out.success(), "clang-22: {}", out.stderr_text());
+    let text = String::from_utf8(out.stdout).expect("UTF-8 text");
+    assert!(text.contains("#dbg_declare("), "clang-22 -O0 writes #dbg_declare");
+    let text = text.replacen("#dbg_declare(", "#dbg_declare_value(", 1);
+    let bitcode = common::assemble(22, text.as_bytes()).expect("llvm-as-22 takes the record");
+    agree("declare_value-22", 22, &bitcode);
+    let read = common::read_bitcode_bodies(&bitcode).expect("hod_bc");
+    assert!(read.contains("debug:#dbg_declare_value"), "the record is refused by name");
+}
+
+/// §6: every corpus module with a compile unit, assembled and compared
+/// as above. Reads `HOD_BC_CORPUS` and skips when it is unset:
+///
+/// `HOD_BC_CORPUS=.build/corpus cargo test --release -p hod_bc --test debug corpus -- --nocapture`
+#[test]
+fn corpus_debug_modules_agree() {
+    let Some(root) = std::env::var_os("HOD_BC_CORPUS") else {
+        eprintln!("skipped: HOD_BC_CORPUS is not set");
+        return;
+    };
+    let (mut read, mut skipped) = (0, 0);
+    for path in common::modules(Path::new(&root)) {
+        let Some(major) = common::major_of(&path) else { continue };
+        let Ok(text) = std::fs::read(&path) else { continue };
+        if !text.windows(14).any(|w| w == b"\n!llvm.dbg.cu ") {
+            continue;
+        }
+        let Ok(bitcode) = common::assemble(major, &text) else {
+            skipped += 1;
+            continue;
+        };
+        // llvm-dis may write text llvm-as does not take back (a type
+        // named only in metadata): no oracle.
+        let back = common::disassemble(major, &bitcode).expect("llvm-dis");
+        if !common::reassembles(major, &back) {
+            skipped += 1;
+            continue;
+        }
+        let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into());
+        let (nodes, located) = agree(&format!("{name}-{major}"), major, &bitcode);
+        eprintln!("{name}-{major}: {nodes} nodes, {located} located instructions");
+        read += 1;
+    }
+    eprintln!("{read} debug modules agree; {skipped} with no oracle (llvm-as does not take them)");
+    assert!(read > 0, "the corpus has modules with debug information");
+}

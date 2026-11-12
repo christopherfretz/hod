@@ -1679,3 +1679,15 @@ fn alignment(field: u64, at: u64) -> BcResult<Option<u64>> {
         _ => fail(BcErrorKind::Invalid, at, format!("alignment field {field}")),
     }
 }
+
+/// The debug-record reader over the module `data`, read up to its
+/// bodies, for the unit tests of `crate::debug`.
+#[cfg(test)]
+pub(crate) fn with_dx<R>(data: &[u8], f: impl FnOnce(&mut Dx<'_, '_>) -> R) -> R {
+    let raw = crate::raw::walk(data).expect("the test module walks");
+    let mut b = Build::new(data, &raw, &ReadOptions::default()).expect("the test module");
+    b.run().expect("the test module reads");
+    let mut local = LocalBlock::default();
+    let mut dx = b.dx(&mut local);
+    f(&mut dx)
+}

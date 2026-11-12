@@ -37,6 +37,14 @@ pub fn disassemble(major: u32, bitcode: &[u8]) -> Result<Vec<u8>, String> {
     if out.success() { Ok(out.stdout) } else { Err(out.stderr_text()) }
 }
 
+/// Whether `llvm-dis` text `text` is the text of the module it came
+/// from: `llvm-as` of `major` takes it back. It is not when LLVM prints
+/// a type only metadata names (a `DITemplateValueParameter` of a struct
+/// constant) without defining it; such text is no oracle.
+pub fn reassembles(major: u32, text: &[u8]) -> bool {
+    assemble(major, text).is_ok()
+}
+
 /// Every `*.ll` under `dir`, sorted.
 pub fn modules(dir: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {

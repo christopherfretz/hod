@@ -43,6 +43,10 @@ def main():
     self_counts = collections.Counter()
     incl_counts = collections.Counter()
     lines = collections.Counter()
+    # Self time charged to the first frame of the program's own code:
+    # memcmp, malloc and the inlined helpers of the standard library are
+    # charged to the function that called them.
+    own = collections.Counter()
     kept = 0
     for _ in range(count):
         try:
@@ -56,6 +60,10 @@ def main():
         kept += 1
         self_counts[frames[0][0]] += 1
         lines[frames[0][1]] += 1
+        for name, path in frames:
+            if path.startswith("crates/"):
+                own["%s  %s" % (name, path)] += 1
+                break
         for name in {name for name, _ in frames}:
             incl_counts[name] += 1
     print("%d samples kept" % kept)
@@ -64,6 +72,9 @@ def main():
         print("%5.1f%%  %s" % (100.0 * n / kept, name))
     print("\ninclusive")
     for name, n in incl_counts.most_common(45):
+        print("%5.1f%%  %s" % (100.0 * n / kept, name))
+    print("\nself, charged to the first frame in crates/")
+    for name, n in own.most_common(30):
         print("%5.1f%%  %s" % (100.0 * n / kept, name))
     print("\nlines on top")
     for name, n in lines.most_common(30):

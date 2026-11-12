@@ -4,7 +4,7 @@
 //! reader's work alone.
 //!
 //! ```text
-//! cargo run --release -p hod_ll --example profile -- <file.ll> [runs] [scan|module|bodies|all]
+//! cargo run --release -p hod_ll --example profile -- <file.ll> [runs] [lex|scan|module|bodies|recycled|all]
 //! ```
 //!
 //! Prints, per step, the median and minimum wall time over `runs` and, for
@@ -16,7 +16,7 @@
 
 use std::time::{Duration, Instant};
 
-use hod_ll::{BodyParser, ParseOptions, parse_module, scan_only};
+use hod_ll::{BodyParser, Lexer, ParseOptions, Tok, parse_module, scan_only};
 
 fn stats(mut times: Vec<Duration>) -> (Duration, Duration) {
     times.sort();
@@ -26,7 +26,7 @@ fn stats(mut times: Vec<Duration>) -> (Duration, Duration) {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(path) = args.first() else {
-        eprintln!("usage: profile <file.ll> [runs] [scan|module|bodies|all]");
+        eprintln!("usage: profile <file.ll> [runs] [lex|scan|module|bodies|recycled|all]");
         std::process::exit(2);
     };
     let text = std::fs::read(path).expect("the input");
@@ -35,6 +35,28 @@ fn main() {
     let options = ParseOptions::default();
     let all = what == "all";
 
+    if all || what == "lex" {
+        let mut tokens = 0usize;
+        let times = (0..runs)
+            .map(|_| {
+                let start = Instant::now();
+                let mut lexer = Lexer::new(&text);
+                tokens = 0;
+                while !matches!(lexer.next_token().kind, Tok::Eof | Tok::Error) {
+                    tokens += 1;
+                }
+                start.elapsed()
+            })
+            .collect();
+        let (median, min) = stats(times);
+        println!(
+            "lex        {:>9.0} / {:>9.0} us  {tokens} tokens, {:.2} ns per byte, {:.2} ns per token",
+            median.as_micros(),
+            min.as_micros(),
+            min.as_nanos() as f64 / text.len() as f64,
+            min.as_nanos() as f64 / tokens as f64
+        );
+    }
     if all || what == "scan" {
         let times = (0..runs)
             .map(|_| {

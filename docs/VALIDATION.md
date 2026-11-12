@@ -48,8 +48,9 @@ on a schedule.
 `tests/ir/` holds `.ll` files with `;@` directives (expected stdout, exit
 status, required target, required LLVM version). Sources:
 
-1. hand-written files, one per IR construct, named after the `hod_ir` spec
-   section they exercise;
+1. hand-written files, one per IR construct, named after the construct and
+   carrying a `covers:` directive that names the `hod_ir` spec section they
+   exercise (`spec/harness.md` "Test directives");
 2. IR that kiln emits for its own test corpus and that clang emits for C
    test suites, captured by `xtask corpus` (not committed in bulk; generated
    from pinned inputs into `.build/`);
@@ -60,7 +61,8 @@ backend from the first milestone, before any C++ feature is complete.
 
 ### Linker matrix
 
-Every linking test runs with each of: GNU ld, lld, mold, wild. The same
+Every linking test runs with each of: GNU ld, lld, mold, and wild once it
+is provisioned (until then it is optional and its absence a note). The same
 object must link with all of them and the programs must behave identically.
 Linker versions are pinned in the provisioning script and recorded in
 status reports.

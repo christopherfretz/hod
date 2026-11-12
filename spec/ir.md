@@ -476,89 +476,283 @@ on error both buffers are left as they were.
 
 ### 5.1 Delivery
 
-A function body is built with `FunctionBuilder`, obtained from the module
-for a declared function symbol, and finished into a `Body`, a value that
-owns all per-function storage. The module does not keep bodies. The
-consumer may compile a `Body` and drop it before the next one is built, so
-peak memory follows the largest function. Everything a body refers to
+A function body is built with `FunctionBuilder::new(&module, sym, fn_ty)`
+for a function symbol and its function type, and finished into a `Body`, a
+value that owns all per-function storage. The module does not keep bodies.
+The consumer may compile a `Body` and drop it before the next one is built,
+so peak memory follows the largest function. Everything a body refers to
 (types, constants, symbols, debug nodes) must be in the module tables
 before the instruction that refers to it is appended.
+
+The builder reads the module only in `new` (for the parameter count). After
+that it holds no borrow of it: every append states the result type, and the
+builder looks no type up. One module can feed builders on many threads, and
+a `Body` is `Send`.
 
 While bodies are compiled on worker threads the module tables are
 read-only. (A producer that appends to the tables while earlier bodies are
 still being compiled needs snapshot semantics; that is a planned extension,
 §10.)
 
+Building, in order:
+
+1. `create_block()` returns a `BlockId`; ids count up in creation order.
+   A block may be created long before it is placed, so that branches can
+   name it.
+2. `begin_block(b)` places `b` next in the layout and opens it. The first
+   block begun is the entry block. Only one block is open at a time.
+3. Append methods, one per instruction (§5.4), add to the open block and
+   return the instruction's result as a `Value` (for an instruction
+   without a result, a value that must not be used). Appending a
+   terminator closes the block.
+4. `finish()` returns the `Body`, or fails: `BadBlock` if no block was
+   begun, a created block was never begun or the last one is still open;
+   `UndefinedValue` for a reserved value (§5.3) that was never resolved.
+
+In a finished body instruction ids are positions in layout order: the
+instructions of a block are the consecutive ids `first..end`, its `phi`s
+come first, its terminator is `end - 1`, and the blocks' ranges follow each
+other in layout order without gaps. So `id + 1` is the next instruction of
+the block unless `id` is its terminator. `Body::layout` lists the block ids
+in layout order.
+
+**Recycling.** `FunctionBuilder::reusing(&module, sym, fn_ty, storage)`
+builds into the tables of a `Body` the consumer is done with (or of one
+that `abandon()` returned from a builder given up on). Once the tables have
+grown to the largest function, building allocates nothing. The body built
+is equal (`Body: Eq`, every table compared) to the one built in fresh
+storage. A failed append leaves the builder as it was; a failed `finish`
+drops the storage.
+
+Limits, all reported as `TableFull`: 2^28 instructions and 2^28 reserved
+values per body, 2^29 arguments, slots, constants and symbols nameable by a
+`Value`, 2^32 - 1 entries in any pool.
+
 ### 5.2 Stack objects
 
-`Body::slots` lists the function's fixed stack objects: size, alignment,
-and an optional debug variable (§6). `Value::slot(n)` is the address of
-slot `n`: a constant offset from the frame pointer once the frame is laid
-out. An LLVM `alloca` in the entry block with a constant size (LLVM's
-"static alloca") is a slot. Any other `alloca` is the `Alloca`
-instruction: a dynamic stack allocation with a size operand and an
-alignment.
+`Body::slots` lists the function's fixed stack objects, each a `Slot` of a
+size in bytes (zero allowed) and a power-of-two alignment.
+`FunctionBuilder::add_slot(size, align)` returns a `SlotId`, and
+`slot(id)` its address as a `Value`: a constant offset from the frame
+pointer once the frame is laid out. An LLVM `alloca` in the entry block
+with a constant size (LLVM's "static alloca") is a slot; the producer
+multiplies the element size by the count. Any other `alloca` is the
+`Alloca` instruction: a dynamic stack allocation of `count * elem_size`
+bytes with an alignment.
+
+A slot is not typed. Use facts (§5.6) are not kept for slots: a slot's
+address is a constant, never a value that needs a location.
+
+`Body::slot_vars` lists the source variables that live in a slot for the
+whole function: `SlotVar { slot, var: DiId, loc: LocId }`, recorded with
+`set_slot_var` for a `#dbg_declare` of a static `alloca`. It is a separate
+list, in recording order, so that a body without debug information pays
+nothing and several variables can share a slot. The declaration's
+`DIExpression` is the attachment point left for §6: `SlotVar` gains the
+expression when expressions exist, and until then a producer records only
+declarations whose expression is empty.
 
 ### 5.3 Values
 
-A `Value` is 4 bytes: a tag and an index. Tags: instruction result,
-argument, constant, symbol address, stack slot address, inline assembly
-(callee position only), and "none". Blocks are `BlockId`s and appear only
-in terminators, `phi` and `BlockAddr`.
+A `Value` is 4 bytes: a 3-bit tag and a 29-bit index. Tags: instruction
+result, argument, constant, symbol address, stack slot address, inline
+assembly (callee position only), and "none" (`Value::NONE`: the value of
+`ret void`, the callee of an intrinsic call). `Value::kind()` decodes it
+to a `ValueKind`. Blocks are `BlockId`s and appear only in terminators,
+`phi` and `BlockAddr`; they are never `Value`s.
 
 Values may be referred to before they are defined (a `phi` operand, or a
-block laid out before its dominator): the builder hands out instruction ids
-ahead of definition with `reserve`, and `finish` fails with
-`UndefinedValue` if one was never defined.
+block laid out before its dominator). `reserve(ty)` returns a placeholder
+`Value` that can be used as an operand at once; `resolve(placeholder,
+value)` gives it its definition, which may be any operand, another
+placeholder included. `finish` rewrites every operand that named a
+placeholder, so a finished body has none, and fails with `UndefinedValue`
+if any placeholder, used or not, was never resolved (or only through a
+cycle of placeholders). The type given to `reserve` is what
+`FunctionBuilder::value_type` answers for the placeholder; it is not
+checked against the definition.
+
+The builder cannot hand out the final instruction id ahead of time, because
+ids are layout positions (§5.1) and a producer that meets a use first does
+not know how many instructions come before the definition.
 
 ### 5.4 Instructions
 
-An instruction is an opcode, small flags, a result type and up to three
-inline operands; longer operand lists live in the body's operand pool. The
-size is asserted (target: 20 bytes; at most 24). Blocks are in layout
-order and each ends in exactly one terminator.
+An instruction is 20 bytes (asserted): an opcode, a one-byte sub-code
+(predicate, `atomicrmw` operation), 16 bits of flags, a result type and
+three inline operand words. Longer operand lists (call arguments, `phi`
+inputs, `PtrAdd` indices, `switch` cases, shuffle masks) live in the body's
+pools, and the inline words give their position and length. Blocks are in
+layout order and each ends in exactly one terminator.
 
 | group | instructions | notes |
 |---|---|---|
 | integer | `add sub mul udiv sdiv urem srem shl lshr ashr and or xor` | `nuw`/`nsw`/`exact`/`disjoint` are not kept |
 | float | `fadd fsub fmul fdiv frem fneg` | fast-math flags are not kept, except `contract` only if a later spec section gives it meaning |
-| compare | `icmp` (10 predicates), `fcmp` (16) | |
-| cast | `trunc zext sext fptrunc fpext fptoui fptosi uitofp sitofp ptrtoint inttoptr bitcast addrspacecast` | |
-| memory | `Load`, `Store` (alignment, volatile, atomic ordering), `Alloca` (dynamic only), `Fence`, `CmpXchg`, `AtomicRmw` (17 operations) | |
-| address | `PtrAdd { base, offset, [(index, scale)] }` | replaces `getelementptr`: `base + offset + Σ sext_or_trunc(index) * scale`, computed in pointer width. A producer folds all constant indices into `offset`. Vector GEPs are element-wise `PtrAdd`s on vectors of pointers |
-| aggregate | `ExtractValue`, `InsertValue` (index path resolved to a byte offset and a field type), `ExtractElement`, `InsertElement`, `ShuffleVector` | |
-| other | `Phi`, `Select`, `Freeze`, `VaArg` | |
-| call | `Call`, `Invoke` (callee value, function type, calling convention, tail kind, the call attributes of §5.7, operand bundles by name) | intrinsics: §5.5 |
-| exception | `LandingPad` (cleanup flag, catch and filter clauses), `Resume` | the funclet instructions (`catchswitch` and the rest) exist as opcodes only so `classify` can reject them |
-| terminator | `Br`, `CondBr`, `Switch`, `IndirectBr`, `Ret`, `Unreachable`, `CallBr` | |
+| compare | `icmp` (10 predicates), `fcmp` (16) | `samesign` is not kept |
+| cast | `trunc zext sext fptrunc fpext fptoui fptosi uitofp sitofp ptrtoint ptrtoaddr inttoptr bitcast addrspacecast` | LLVM's `castIsValid`; `ptrtoaddr` (LLVM 22) yields exactly the address (index) width of the pointer's address space |
+| memory | `Load`, `Store` (`MemFlags`: alignment, volatile, atomic ordering and synchronization scope), `Alloca` (dynamic only), `Fence`, `CmpXchg` (two orderings, weak), `AtomicRmw` (21 operations: LLVM 22's) | atomic rules below |
+| address | `PtrAdd { base, offset, [(index, scale)] }` | replaces `getelementptr`: `base + offset + Σ sext_or_trunc(index) * scale`, computed in the pointer's index width. A producer folds all constant indices into `offset`. With a vector base or index it is element-wise and yields a vector of pointers. `inbounds`/`nuw`/`nusw` are not kept |
+| aggregate | `ExtractValue`, `InsertValue` (byte offset of the field and its type), `ExtractElement`, `InsertElement`, `ShuffleVector` (constant mask, `SHUFFLE_UNDEF` for an undefined element) | `aggregate_field(types, agg, path)` resolves an LLVM index path to `(offset, field type)` |
+| other | `Phi`, `Select`, `Freeze`, `VaArg` | `VaArg` exists so `classify` can reject it (`inst:va_arg`): `llc` 19 and 22 accept the instruction for AArch64 Linux and miscompile it, so there is nothing to agree with. C and C++ front ends expand `va_arg` themselves |
+| call | `Call`, `Invoke`, `CallBr` (callee, function type, calling convention, tail kind, the call attributes of §5.7, operand bundles by name) | side table below; intrinsics: §5.5 |
+| exception | `LandingPad` (cleanup flag, catch and filter clauses), `Resume` | the funclet instructions (`catchswitch`, `catchpad`, `catchret`, `cleanuppad`, `cleanupret`) exist as opcodes only, appended with `funclet(op, ty)` and carrying no operands, so `classify` can reject them |
+| terminator | `Br`, `CondBr`, `Switch`, `IndirectBr`, `Ret`, `Unreachable`, `Resume`, `Invoke`, `CallBr`, and the funclet terminators | `Opcode::is_terminator` is LLVM's set |
+
+Rules that are LLVM's and are checked against LLVM 22 (§11):
+
+- **Atomic orderings.** `load`: not `release` or `acq_rel`. `store`: not
+  `acquire` or `acq_rel`. `atomicrmw` and `cmpxchg` success: not
+  `unordered`. `cmpxchg` failure: not `unordered`, `release` or `acq_rel`
+  (it may be stronger than the success ordering). `fence`: `acquire` or
+  stronger. `not_atomic` is the absence of an ordering in `MemFlags`.
+- **Atomic types.** A type accessed atomically is an integer, pointer or
+  float, or a vector of them, whose size in bits is a power of two and at
+  least 8 (a scalable vector counts with its minimum size). `atomicrmw
+  xchg` takes an integer, float or pointer; the float operations take a
+  float or a fixed vector of floats; the others an integer. `cmpxchg`
+  takes an integer or pointer and its result is `{ T, i1 }`.
+- **Aggregate paths.** `extractvalue`/`insertvalue` paths are not empty,
+  index struct fields and array elements only (never into a vector), and
+  each index is in range. hod stores the resulting byte offset; `verify`
+  accepts an offset and field type only if some path leads to that type at
+  that offset. An `InsertValue` offset is at most 2^32 - 1.
+- **`switch`.** Case values are distinct integer literals of the
+  condition's type.
+- **`phi`.** One incoming entry per predecessor *edge* (a predecessor
+  that branches to the block twice is listed twice, with the same value),
+  and no entry for a block that is not a predecessor.
+- **Landing pads.** A `landingpad` is the first instruction after the
+  `phi`s of a block that is entered only by the unwind edges of
+  `invoke`s; every unwind destination starts with one; all landing pads
+  of a function have one type; the entry block has no predecessors.
+
+**Calls.** `call`, `invoke` and `callbr` take a `CallDesc`: the callee (a
+`Value`, or an `Intrinsic` with its overload types), the function type the
+call is made with, arguments, `CallConv`, `TailKind`, `noreturn`,
+`nounwind`, `returns_twice`, the `ParamAttrs` of the return value and of
+each argument (§5.7; stored only for calls that have any), and operand
+bundles (a tag and input values each). The instruction record points into
+the **call side table**, which holds one record per call in layout order.
+`Body::calls()` iterates it without walking instructions, which is how a
+target finds the largest outgoing-argument area; `Inst::call()` goes from
+an instruction to its `CallSite`. An inline-assembly callee is
+`Value::asm(id)`. A direct call is a call whose callee is a symbol value;
+any other callee value is an indirect call.
+
+**Landing pads** have their own side table (`Body::landing_pads()`,
+`Body::has_landing_pads()`): the instruction, the cleanup flag, and the
+clauses, each `Clause::Catch(constant)` (a type-information pointer, or
+`null` for catch-all) or `Clause::Filter(constant array)`.
 
 ### 5.5 Intrinsics
 
-A call to an LLVM intrinsic is `Call` with an `Intrinsic` callee: a member
-of a closed enum for the intrinsics hod knows (with the overload types as
-type operands), or `Intrinsic::Other(name)` for any other `llvm.*` name,
-which `classify` rejects by name. The enum is the list of intrinsics hod
-handles; adding an intrinsic means adding a variant, its `classify` entry
-and its lowering in each target.
+A call to an LLVM intrinsic is `Call` (or `Invoke`) with an `Intrinsic`
+callee: a member of a closed enum for the intrinsics hod knows, with the
+overload types as type operands of the call (`CallSite::overloads`), or
+`Intrinsic::Other(name)` for any other `llvm.*` name, which `classify`
+rejects by name. The enum is the list of intrinsics hod recognises; adding
+one means adding a variant, its `classify` entry and its lowering in each
+target. Being on the list says nothing about whether a target lowers it.
 
-Intrinsics that generate no code are dropped by producers and have no
-representation: `llvm.lifetime.*`, `llvm.invariant.*`, `llvm.assume`,
-`llvm.dbg.*` (debug records go to §6), `llvm.donothing`, and the
-annotation intrinsics (which return their first argument).
-`llvm.expect*` is replaced by its first argument.
+**One name mapping, shared by all producers.**
+`resolve_intrinsic(types, name, fn_ty)` maps an LLVM name and function
+type to an `IntrinsicRef`: the member and its overload types. It answers a
+known member only if `name` is exactly the name LLVM gives the intrinsic
+for the overload types read from `fn_ty` (LLVM's suffix mangling: `i32`,
+`f64`, `p0`, `v4i32`, `nxv2f32`, ...); anything else that starts with
+`llvm.` is `Other(name)`. LLVM itself renames a declaration with a wrong
+suffix, so a producer reading LLVM's output never sees one. One exception:
+`llvm.thread.pointer` without a suffix, which LLVM 19 writes, resolves to
+the member. `Intrinsic::mangled_name(types, overloads)` is the inverse, for
+the printer.
+
+The list (133; each with every overload LLVM allows):
+
+- memory: `memcpy memcpy.inline memmove memset memset.inline`
+- variable arguments and stack: `va_start va_end va_copy stacksave
+  stackrestore frameaddress returnaddress`
+- traps: `trap debugtrap ubsantrap`
+- bits: `bswap bitreverse ctpop ctlz cttz fshl fshr abs smax smin umax
+  umin scmp ucmp clmul`
+- checked and saturating arithmetic: `{s,u}{add,sub,mul}.with.overflow`,
+  `{s,u}{add,sub}.sat`
+- floating point: `fabs sqrt floor ceil trunc round roundeven nearbyint
+  rint copysign fma fmuladd minnum maxnum minimum maximum minimumnum
+  maximumnum canonicalize arithmetic.fence pow powi ldexp frexp sin cos tan
+  asin acos atan atan2 sinh cosh tanh exp exp2 exp10 log log2 log10 lround
+  llround lrint llrint fptosi.sat fptoui.sat is.fpclass`
+- C++ runtime support: `eh.typeid.for threadlocal.address thread.pointer
+  prefetch clear_cache readcyclecounter is.constant objectsize ptrmask
+  load.relative instrprof.increment instrprof.increment.step`
+- vectors: `vector.reduce.{add,mul,and,or,xor,smax,smin,umax,umin,fmax,
+  fmin,fadd,fmul}`, `vector.extract`, `vector.insert`
+- coroutines: `coro.id coro.alloc coro.begin coro.end coro.free coro.size
+  coro.align coro.save coro.suspend coro.resume coro.destroy coro.done
+  coro.promise coro.frame coro.noop coro.is_in_ramp
+  coro.await.suspend.{void,bool,handle}`
+
+Not on the list, and therefore `Other`: target-specific intrinsics
+(`llvm.aarch64.*`, `llvm.x86.*`), intrinsics with metadata arguments (the
+constrained floating-point family, `llvm.read_register`), the masked
+vector family (its signatures differ between LLVM 19 and 22), and anything
+no frontend in scope emits at `-O0`.
+
+**The no-code rule.** Intrinsics that generate no code have no
+representation. `no_code_intrinsic(name)` is the one place that says which
+and what a producer does with the call:
+
+| names | rule |
+|---|---|
+| `llvm.lifetime.start/end`, `llvm.invariant.start/end`, `llvm.assume`, `llvm.donothing`, `llvm.var.annotation` | `NoCode::Drop`: omit the call. (The `{}*` result of `invariant.start` can only be used by `invariant.end`.) |
+| `llvm.expect`, `llvm.expect.with.probability`, `llvm.annotation`, `llvm.ptr.annotation`, `llvm.launder.invariant.group`, `llvm.strip.invariant.group` | `NoCode::FirstArg`: omit the call and use its first argument as its result |
+| `llvm.dbg.*` | `NoCode::DebugRecord`: a debug record (§6), not a call |
+
+A producer asks `no_code_intrinsic` before `resolve_intrinsic`. A body
+that still calls one of these names carries it as `Other`, and `classify`
+rejects it.
 
 ### 5.6 Use facts
 
-For each instruction result the body records, maintained by the builder
-whenever an operand is appended:
+For each instruction result and each argument the body records `UseFacts`
+(4 bytes), maintained by the builder whenever an operand is appended:
 
-- the number of uses;
-- whether any use is in a different block from the definition;
-- whether the only use is by the instruction immediately after it.
+- the number of uses (`count`);
+- whether any use is in a different block from the definition
+  (`used_outside_block`);
+- for instruction results, whether the only use is by the instruction
+  immediately after the definition (`only_use_is_next`).
 
-These are exactly what value-location policy v1 needs (`spec/codegen.md`).
-They are derived data: `Body::verify` recomputes and compares them, and the
-tests run it on every body they build.
+Definitions:
+
+- A **use** is one operand position of one instruction. An instruction
+  that names a value twice uses it twice. The callee of a call and the
+  inputs of its operand bundles are uses. A constant, symbol or slot
+  operand is not counted anywhere.
+- A use is **located** in the block of the instruction that has the
+  operand, with one exception: an incoming value of a `phi`, `[ %v, %pred
+  ]`, is located at the end of `%pred`, where the copy for that edge is
+  made. It is "in a different block" exactly when `%pred` is not the block
+  that defines `%v`. So a value defined in a loop block and fed to that
+  block's own `phi` along the back edge is not used outside its block, and
+  a value defined in one block and fed along an edge from a second block
+  to a `phi` in a third is.
+- An **argument** is defined in the entry block: its `used_outside_block`
+  says whether any use is located outside the entry block.
+  `only_use_is_next` is never true for an argument.
+- `only_use_is_next` is true exactly when the count is 1, the use is not
+  by a `phi`, and the user is the instruction with the next id in the
+  same block. A `phi` use never satisfies it, even when the `phi` has the
+  next id (the first instruction of the next block in layout).
+
+`Body::uses(inst)`, `Inst::uses()` and `Body::arg_uses(index)` read them.
+These are exactly what value-location policy v1 needs
+(`spec/codegen.md`). They are derived data: `Body::verify` recomputes them
+from the instructions and fails with `UseFactsMismatch` on any difference,
+and the tests run it on every body they build.
+
+Uses through a placeholder (§5.3) are attributed when `finish` resolves
+it, with the same rules.
 
 ### 5.7 Attributes
 
@@ -699,6 +893,73 @@ call instructions):
 - The parameter attributes of a function symbol are interned as a list
   per distinct signature (`Symbol::kind()` returns the slice).
 
+### 5.8 What is checked, and when
+
+The builder checks, on every append, what keeps the body's tables sound.
+It needs no type table for it and costs a few compares per operand:
+
+| check | error |
+|---|---|
+| a block is open; the block being begun exists, is not open and was not begun before; a `phi` is appended before any other instruction of its block; `finish` rules of §5.1 | `BadBlock` |
+| every operand names something that exists in this body (an instruction already appended or a placeholder, an argument, a slot); a block operand was created; an alignment is a power of two up to 2^32; `resolve` and `add_incoming` are given a placeholder and a `phi` of this builder; a call's attribute list is empty or has one entry per argument; an intrinsic callee carries the number of overload types its member has | `InvalidOperand` |
+| a count or offset fits its field (§5.1 limits) | `TableFull`, `TypeTooLarge` |
+| `FunctionBuilder::new` is given a function type | `InvalidType` |
+| a placeholder is resolved by `finish` | `UndefinedValue` |
+
+`Body::verify(&module)` checks everything else that can be decided from
+the body and the module, and re-checks the above from the finished tables,
+so that it also judges a body that did not come from the builder:
+
+| check | error |
+|---|---|
+| the tables are consistent: block ranges tile the instructions in layout order, each block ends in its only terminator, `phi`s first, landing pads placed as in §5.4, `phi` lists match predecessor edges | `BadBlock` |
+| operands, ids, pool ranges, side-table links and counts are in range and allowed in their position; atomic orderings (§5.4); `switch` cases; call argument counts against the function type; an inline-assembly value only as a callee | `InvalidOperand` |
+| types that must agree do: operands with each other and with the result, call arguments with the function type's parameters, the result with its return type, `ret` with the function's, `resume` and landing pads, a known intrinsic's overload types with its function type | `TypeMismatch` |
+| a type is of the class the instruction needs (integer, float, pointer, vector, aggregate, a valid cast, an atomic type) | `InvalidType` |
+| a loaded, stored or `va_arg` type is sized | `UnsizedType` |
+| an aggregate offset names a field of that type; a shuffle mask entry selects an element | `BadIndex` |
+| the recorded use facts are the recomputed ones (§5.6) | `UseFactsMismatch` |
+
+`verify` returns the first violation. It is the definition of "well
+formed" that code generation may assume. Tests run it on every body; a
+producer under test runs it on every body it hands over; a release build
+need not run it at all.
+
+Not checked: that a definition dominates its uses (LLVM allows anything in
+unreachable blocks, and no decision in code generation rests on it), and
+that a symbol or inline-assembly id exists, which becomes checkable when
+the module has those tables (§2.2).
+
+### 5.9 Reading a body
+
+Code generation reads a body through borrowed views. Every accessor is an
+array lookup and none allocates.
+
+| question | API |
+|---|---|
+| the function | `Body::symbol`, `fn_type`, `ret_type(&m)`, `arg_count`, `arg_types(&m)`, `arg_uses(i)` |
+| blocks in layout order | `Body::blocks()` (`Block`s), `layout()` (ids), `entry()`, `block(id)`, `block_count()` |
+| a block | `Block::id`, `inst_range`, `insts()`, `has_phis()`, `phis()`, `non_phis()`, `terminator()`, `successors()` |
+| an instruction | `Body::inst(id)`, `insts()`; `Inst::id`, `opcode`, `ty`, `result`, `uses`, `loc`, `operands()` (the value operands as one slice, whatever the opcode), `is_terminator`, `successors()`, `call()`, and `kind()`, an `InstKind` with one variant per instruction shape and named fields |
+| lists | `PtrAdd::{base, offset, indices()}`, `Phi::{values(), blocks(), incoming()}`, `Switch::{cond, default, cases()}`, `InstKind::ShuffleVector { mask }`, `InstKind::IndirectBr { targets }` |
+| calls | `Body::calls()`, `call_count()`; `CallSite::{inst, opcode, ty, callee, callee_value, intrinsic, overloads, fn_type, args, cc, tail, is_noreturn, is_nounwind, returns_twice, has_param_attrs, ret_attrs, arg_attrs(i), bundles(), normal_dest, unwind_dest, indirect_dests}` |
+| exceptions | `Body::landing_pads()`, `has_landing_pads()`; `LandingPad::{inst, is_cleanup, clauses}` |
+| the frame | `Body::slots()`, `slot_vars()` |
+| types of values | `Body::value_type(&m, value)` |
+| source locations | `Body::has_locs()`, `loc(id)`; the array exists only if the builder was ever given a location (`set_loc`), §6 |
+| cost | `Body::inst_count()`, `table_bytes()`, `allocated_bytes()` |
+
+`Block::phis()` and `has_phis()` exist because a branch to a block with
+`phi`s must place the edge's copies, and every branch asks.
+
+A body costs 20 bytes per instruction, 4 for its use facts, 4 for its
+location when there is debug information, 16 per block, 40 per call plus 4
+for the callee and each argument, and 4 or 8 per entry of the other
+lists.
+`examples/body_throughput.rs` prints bytes and time per instruction for an
+unoptimized-C++ instruction mix; the figures of record are in
+`spec/landed/ir/WP-004.md`.
+
 ## 6. Debug information
 
 Present only when the producer was asked for it. Typed, not generic
@@ -791,6 +1052,23 @@ IR").
 
 - Unit: interning, the size assertions, every `IrErrorKind`, forward
   references, use facts against `verify`.
+- Function bodies (§5): each instruction group built and read back
+  through §5.9; placeholders; the use-fact rules of §5.6, one test per
+  rule, including the block-boundary and `phi` cases; recycling
+  (`tests/body_build.rs`). A deterministic generator builds random
+  well-formed bodies over every opcode but the funclets', which must
+  verify, build identically in recycled storage and not finish with a
+  placeholder unresolved; and damages finished bodies one table entry at
+  a time, which `verify` must refuse with the kind of §5.8 (`random`
+  module).
+- LLVM's rules in §5.4 and §5.5, against `llvm-as`, `llvm-dis` and `llc`
+  22 (`tests/body_llvm.rs`): hod and LLVM accept the same cases of a grid
+  of casts, of atomic accesses (orderings, types, operations) and of
+  aggregate index paths, whose byte offsets are compared with the ones
+  `llc` computes; an opcode ends a block in LLVM exactly when
+  `is_terminator`; LLVM keeps the mangled name of every listed intrinsic
+  and renames a wrong one; `llc -O0` emits the same assembly with a
+  no-code intrinsic call as with what §5.5's rule makes of it.
 - Layout: §3's grid against `llc` and `opt`, both targets, LLVM 19 and 22.
 - Constant folding: §4.2's reductions against the assembly `llc` writes
   for the same expressions as initializers (`symbol + addend` has no

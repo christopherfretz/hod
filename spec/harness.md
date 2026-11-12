@@ -2618,6 +2618,14 @@ Per unit (a test and a front end), in its own directory under
 3. per linker: `llc`'s program and each variant's, by `gcc -B<dir> -pie`
    with the linker as `ld`, the `link` flags, `-lstdc++` for C++, `-lm`;
    the program's signature checked as `irdiff` does;
+   A module whose IR records a `.dwo` name (`splitDebugFilename`, a test
+   with `cflags: -gsplit-dwarf`; WP-062) gets `-split-dwarf-file=<that
+   name> -split-dwarf-output=<its object>.dwo` on both sides, and each
+   program gets each of its objects' `.dwo` beside it under the name's
+   last component, where gdb and lldb look after the unit's directory
+   (the test's own directory, which has none). Such a test names only
+   clang front ends: kiln++ records the absolute path of its output,
+   which gdb does not look for beside the program;
 4. on the first linker, the lines comparison of `hod` against `llc`;
 5. per debugger with a script: the session on `llc`'s program, then on
    each variant's. Each masked transcript is written beside its program

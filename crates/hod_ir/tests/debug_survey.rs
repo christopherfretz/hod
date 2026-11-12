@@ -713,8 +713,6 @@ const UNSUPPORTED_UNDER_OPTIONS: &[&str] = &[
     "debug:DICompileUnit.macros",
     "debug:DIMacro",
     "debug:DIMacroFile",
-    // -gsplit-dwarf
-    "debug:DICompileUnit.splitDebugFilename",
 ];
 
 fn data(name: &str) -> PathBuf {

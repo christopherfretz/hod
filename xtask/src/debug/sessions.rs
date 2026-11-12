@@ -586,6 +586,8 @@ impl Run<'_> {
         // 1. IR, and both objects of every module.
         let (mut ours, mut theirs) = (Vec::new(), Vec::new());
         let mut facts = IrFacts::default();
+        // Split DWARF: each object with a `.dwo`, and the name it records.
+        let mut dwos: Vec<(PathBuf, String)> = Vec::new();
         for (i, module) in test.modules.iter().enumerate() {
             let ir = dir.join(format!("m{i}.ll"));
             if let Err(e) = build::frontend_ir(self.tools, test, frontend, module, &ir, limits) {
@@ -611,6 +613,10 @@ impl Run<'_> {
                     done.records.push(record("hod", None, None, Outcome::Fail, what));
                     return;
                 }
+            }
+            if let Some(name) = build::split_dwarf_name(&ir) {
+                dwos.push((hod_o.clone(), name.clone()));
+                dwos.push((llc_o.clone(), name));
             }
             ours.push(hod_o);
             theirs.push(llc_o);
@@ -648,6 +654,7 @@ impl Run<'_> {
                             limits,
                         )
                     })
+                    .and_then(|()| build::place_dwos(objects, &dwos, &out))
                     .map(|()| out)
             };
             let at_linker = Some(linker.name.as_str());

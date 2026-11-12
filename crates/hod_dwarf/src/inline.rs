@@ -381,16 +381,22 @@ impl UnitPlan<'_> {
                 1 => Kind::AbstractVar,
                 _ => Kind::AbstractLabel,
             };
+            // WP-098: the type first (`constructVariableDIE` adds the
+            // variable to its scope after its attributes), so that a type
+            // local to the function precedes the variable (§6.14).
+            if let DiNode::LocalVariable(v) = self.debug.node(node) {
+                self.reference_type(node, "type", v.ty.unwrap_or(DiId::NONE))?;
+            }
             let d = self.push_anon(node, die, kind);
             self.inline.abs.insert(node.raw(), d);
-            if let DiNode::LocalVariable(v) = self.debug.node(node) {
-                if class == 0 && has(v.flags, DiFlags::OBJECT_POINTER) {
-                    if self.inline.objptr.last().is_some_and(|&(p, _)| p == sp_die) {
-                        return Err(unsupported(node, "debug:object-pointer"));
-                    }
-                    self.inline.objptr.push((sp_die, d));
+            if let DiNode::LocalVariable(v) = self.debug.node(node)
+                && class == 0
+                && has(v.flags, DiFlags::OBJECT_POINTER)
+            {
+                if self.inline.objptr.last().is_some_and(|&(p, _)| p == sp_die) {
+                    return Err(unsupported(node, "debug:object-pointer"));
                 }
-                self.reference_type(node, "type", v.ty.unwrap_or(DiId::NONE))?;
+                self.inline.objptr.push((sp_die, d));
             }
         }
         Ok(())
@@ -596,23 +602,36 @@ impl<'a> Writer<'a> {
                     self.abbrev(code(fam::FORMAL_PARAMETER, mask, false));
                     self.opt_name(v.name)?;
                 } else {
-                    if v.align != 0 {
-                        // WP-087: written for a concrete local only.
+                    // WP-098: a named local's alignment is written in the
+                    // abstract instance too (family 88 without `location`,
+                    // `llc`'s order); an unnamed one's is refused as for a
+                    // concrete local (§6.4).
+                    let aligned = v.align >= 8;
+                    if v.align != 0 && v.name.is_empty() {
                         return Err(unsupported(node, "debug:variable-alignment"));
                     }
                     let mask = b(decl.is_some()) << 1 | b(art) << 2;
                     // WP-087: an unnamed variable has no `DW_AT_name`.
-                    let family =
-                        if v.name.is_empty() { fam::VARIABLE_UNNAMED } else { fam::VARIABLE };
+                    let family = match (v.name.is_empty(), aligned) {
+                        (true, _) => fam::VARIABLE_UNNAMED,
+                        (false, true) => fam::VARIABLE_ALIGNED,
+                        (false, false) => fam::VARIABLE,
+                    };
                     self.abbrev(code(family, mask, false));
                     if !v.name.is_empty() {
                         self.strx(v.name)?;
+                    }
+                    if aligned {
+                        write_uleb(&mut self.info, u64::from(v.align / 8));
                     }
                 }
                 self.decl(decl);
                 self.ref_to(plan, node, v.ty.unwrap_or(DiId::NONE))?;
             }
             (Kind::AbstractLabel, DiNode::Label(n)) => {
+                if !crate::label::is_plain(&n) {
+                    return self.label_any(plan, node, &n, None);
+                }
                 let decl = Writer::decl_of(plan, node, n.file, n.line)?;
                 if let Some(d) = decl
                     && n.column != 0

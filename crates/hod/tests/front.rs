@@ -159,6 +159,37 @@ fn verify_is_on_the_path_to_code_generation() {
     assert_eq!(report.reasons, ["malformed-input"]);
 }
 
+// spec/cli.md "Reasons", WP-068: the cheap order. A refusal of the module
+// pass ends the work before any body is read (a body the reader would
+// reject is never seen), and the walk over the bodies stops at the first
+// refusal (a later body the reader would reject is never seen either).
+// The census reads them all, so it finds the malformed one.
+#[test]
+fn a_refusal_ends_the_reading() {
+    let broken = "define i32 @broken() nounwind {\n  %x = frobnicate i32 1\n  ret i32 %x\n}\n";
+    let ghc = "define ghccc void @ghc() nounwind {\n  ret void\n}\n";
+    let support = Support::everything_implemented(Arch::Aarch64)
+        .without("cc:ghccc")
+        .and_then(|support| support.without("module:asm"));
+    let settings = Settings { support: support.clone(), ..Settings::default() };
+
+    let module_level = format!("{TRIPLE}module asm \"nop\"\n{broken}");
+    let (result, report) = run(module_level.as_bytes(), &settings);
+    assert_eq!(result, unsupported("module:asm", None));
+    assert_eq!(phases(&report), ["parse", "classify"], "no body was read");
+
+    let body_level = format!("{TRIPLE}{ghc}{broken}");
+    let (result, report) = run(body_level.as_bytes(), &settings);
+    assert_eq!(result, unsupported("cc:ghccc", Some("ghc")));
+    assert_eq!(phases(&report), ["parse", "classify"]);
+
+    let census = Settings { support, census: true, ..Settings::default() };
+    let (result, report) = run(body_level.as_bytes(), &census);
+    assert_eq!(result, unsupported("cc:ghccc", Some("ghc")), "the same answer");
+    assert_eq!(report.reasons.first().map(String::as_str), Some("cc:ghccc"));
+    assert!(report.reasons.iter().any(|r| r == "malformed-input"), "{:?}", report.reasons);
+}
+
 // spec/cli.md "Reasons": the target, from the command line or the module,
 // text or bitcode.
 #[test]

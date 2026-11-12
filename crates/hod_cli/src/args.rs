@@ -100,6 +100,9 @@ pub struct CommandLine {
     pub bitcode_via: Option<PathBuf>,
     /// `--compress-debug-sections=`, if given (WP-061).
     pub compress_debug_sections: Option<Compression>,
+    /// `--threads=`: the most threads code generation uses, a positive
+    /// integer (`spec/cli.md` "Threads").
+    pub threads: Option<usize>,
     /// The arguments for the fallback: the original ones, in order and as
     /// spelled, without hod's own options.
     pub forwarded: Vec<OsString>,
@@ -140,6 +143,7 @@ enum Opt {
     CoverageLog,
     BitcodeVia,
     CompressDebugSections,
+    Threads,
 }
 
 impl Opt {
@@ -170,6 +174,7 @@ impl Opt {
             "coverage-log" => Opt::CoverageLog,
             "bitcode-via" => Opt::BitcodeVia,
             "compress-debug-sections" => Opt::CompressDebugSections,
+            "threads" => Opt::Threads,
             _ => return None,
         })
     }
@@ -196,6 +201,7 @@ impl Opt {
                 | Opt::CoverageLog
                 | Opt::BitcodeVia
                 | Opt::CompressDebugSections
+                | Opt::Threads
         )
     }
 }
@@ -387,6 +393,20 @@ impl Parser {
                 *slot = Some(PathBuf::from(value));
                 return;
             }
+            Opt::Threads if value.is_empty() => {
+                self.fatal(format!("option '{written}' requires a non-empty value"));
+                return;
+            }
+            Opt::Threads => {
+                match value.to_str().and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0) {
+                    Some(threads) => self.line.threads = Some(threads),
+                    None => self.fatal(format!(
+                        "invalid value '{}' for '{written}': expected a positive integer",
+                        value.to_string_lossy()
+                    )),
+                }
+                return;
+            }
             Opt::TimeTraceFile => return,
             Opt::CompressDebugSections => {
                 match compression(value) {
@@ -449,6 +469,7 @@ pub fn parse(args: &[OsString]) -> CommandLine {
             coverage_log: None,
             bitcode_via: None,
             compress_debug_sections: None,
+            threads: None,
             forwarded: Vec::with_capacity(args.len()),
             rejected: None,
             fatal: None,
@@ -565,6 +586,9 @@ hod's own options (each also settable in the environment):
                                   HOD_COMPRESS_DEBUG_SECTIONS
                                                      Write the .debug_* sections compressed
                                                      (SHF_COMPRESSED, zlib); zstd is not supported
+  --threads=<n>                   HOD_THREADS        Use at most <n> threads for code generation
+                                                     (without either: a make jobserver's idle
+                                                     tokens, else one thread)
 
 EXIT STATUS: 0 on success; 1 on an error; 2 when the module is unsupported and no fallback
 ran; otherwise the fallback's own status. The contract is spec/cli.md.
@@ -602,6 +626,7 @@ mod tests {
         assert_eq!(line.output, None);
         assert_eq!((line.fallback, line.strict, line.coverage_log), (None, None, None));
         assert_eq!(line.bitcode_via, None);
+        assert_eq!(line.threads, None);
     }
 
     // spec/cli.md "Options": the command line kiln builds
@@ -854,6 +879,7 @@ mod tests {
             "--coverage-log=cov.tsv",
             "--bitcode-via=/usr/lib/llvm-22/bin/llvm-dis",
             "--compress-debug-sections=zlib",
+            "--threads=4",
             "-o",
             "a.o",
             "-",
@@ -864,6 +890,7 @@ mod tests {
         assert_eq!(line.strict, Some(true));
         assert_eq!(line.coverage_log, Some("cov.tsv".into()));
         assert_eq!(line.bitcode_via, Some("/usr/lib/llvm-22/bin/llvm-dis".into()));
+        assert_eq!(line.threads, Some(4));
         assert_eq!(line.forwarded, os(&["-O0", "-filetype=obj", "-o", "a.o", "-"]));
 
         let line = parsed(&[
@@ -876,6 +903,8 @@ mod tests {
             "dis",
             "-compress-debug-sections",
             "none",
+            "-threads",
+            "2",
             "m.ll",
         ]);
         assert_eq!(line.compress_debug_sections, Some(Compression::None));
@@ -884,6 +913,7 @@ mod tests {
         assert_eq!(line.coverage_log, Some("c".into()));
         assert_eq!(line.strict, Some(false));
         assert_eq!(line.bitcode_via, Some("dis".into()));
+        assert_eq!(line.threads, Some(2));
         assert_eq!(line.input, Input::Path("m.ll".into()));
         assert_eq!(line.forwarded, os(&["m.ll"]));
 
@@ -897,10 +927,13 @@ mod tests {
             "--bitcode-via=d",
             "--compress-debug-sections=zlib",
             "--compress-debug-sections=none",
+            "--threads=3",
+            "--threads=1",
         ]);
         assert_eq!(line.compress_debug_sections, Some(Compression::None));
         assert_eq!((line.fallback, line.strict), (Some("b".into()), Some(true)));
         assert_eq!(line.bitcode_via, Some("d".into()));
+        assert_eq!(line.threads, Some(1));
         assert!(line.forwarded.is_empty());
 
         // An unknown option does not hide them: the fallback is still found.
@@ -925,6 +958,12 @@ mod tests {
             (&["--compress-debug-sections=zstd"], "compression 'zstd' is not supported"),
             (&["--compress-debug-sections", "gzip"], "invalid compression 'gzip'"),
             (&["--compress-debug-sections"], "'--compress-debug-sections' requires a value"),
+            (&["--threads"], "'--threads' requires a value"),
+            (&["--threads="], "'--threads' requires a non-empty value"),
+            (&["--threads=0"], "invalid value '0' for '--threads': expected a positive integer"),
+            (&["-threads", "-1"], "invalid value '-1' for '-threads': expected a positive"),
+            (&["--threads=two"], "invalid value 'two' for '--threads'"),
+            (&["--threads= 2"], "invalid value ' 2' for '--threads'"),
         ] {
             let line = parsed(args);
             let fatal = line.fatal.unwrap_or_else(|| panic!("{args:?}: expected a fatal error"));
@@ -946,6 +985,7 @@ mod tests {
         assert!(HELP.contains("--fallback=<llc>") && HELP.contains("HOD_COVERAGE_LOG"));
         assert!(HELP.contains("--bitcode-via=<llvm-dis>") && HELP.contains("HOD_BITCODE_VIA"));
         assert!(HELP.contains("--compress-debug-sections=<none|zlib>"));
+        assert!(HELP.contains("--threads=<n>") && HELP.contains("HOD_THREADS"));
     }
 
     // Arguments are bytes: a path that is not UTF-8 is a path all the same,

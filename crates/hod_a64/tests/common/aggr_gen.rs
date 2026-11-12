@@ -32,6 +32,13 @@
 
 #![allow(clippy::many_single_char_names, clippy::too_many_lines, clippy::cast_possible_truncation)]
 #![allow(dead_code, reason = "each test uses part of it")]
+#![allow(
+    clippy::similar_names,
+    clippy::cloned_ref_to_slice_refs,
+    clippy::comparison_chain,
+    clippy::format_collect,
+    reason = "a test generator: `.ll` text built by hand"
+)]
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -569,10 +576,8 @@ pub fn binary_table(rng: &mut Rng) -> Suite {
         let ty = T::I(bits);
         let e = edges(bits);
         for op in BINARY {
-            if op.ends_with("div") || op.ends_with("rem") {
-                if bits > 128 {
-                    continue;
-                }
+            if (op.ends_with("div") || op.ends_with("rem")) && bits > 128 {
+                continue;
             }
             let shift = matches!(op, "shl" | "lshr" | "ashr");
             let f = s.add(

@@ -559,6 +559,80 @@ These are decisions the group packages (WP-035..041) build on.
   refused by another group's name is counted as skipped, by name, never
   as agreeing, and the proportion that ran end to end is printed.
 
+#### Mem-class values (WP-040)
+
+`src/aggr.rs`: integers wider than 64 bits, structs, arrays and `Mem`
+vectors (§2.2), and the overflow intrinsics. Every entry point of
+`target.rs` that meets a `Mem` value routes to `aggr`; `phi` of a `Mem`
+value is the glue's copy (§4.5), so no other group's file has a hook.
+
+- **The slot image.** A `Mem` value is the first store-size bytes of its
+  slot; the bytes after are unspecified. A wide `iN` is `n = ⌈N/64⌉`
+  little-endian limbs, and **the bits above `N` in the top limb are
+  unspecified**, like a narrow value's (§2.2): an argument or a call
+  result stores only the bytes of its last piece, and `add`, `sub`,
+  `mul`, `shl` and the bitwise operations leave whatever the top limb
+  computes. A consumer that depends on those bits extends the top limb
+  first (`ubfx`/`sbfx` in a scratch register): compares, `lshr`, `ashr`,
+  division, `zext`, `sext`, `store` and the integer fields an
+  `insertvalue` writes, the wide overflow checks. A constant is
+  materialized canonical. An aggregate or vector holds its exact memory
+  image: its integer fields canonical, its padding unspecified.
+- **A `store` writes exactly the store size**, the bits above an
+  integer's width zero (a `load` then reads a canonical value); a `load`
+  copies the store size. Both go through `x16`/`x17` and the pointer's
+  register; an atomic one is `a64:atomic`.
+- **Arithmetic** is limb by limb through `x16`/`x17`: `adds`/`adcs`/`adc`
+  and `subs`/`sbcs`/`sbc` chains; `mul` of two limbs is `mul` + `umulh`
+  + two `madd`s, wider a schoolbook product into the zeroed result. A
+  constant shift is `extr` per limb (an amount of the width or more
+  emits nothing, §4.7). A variable shift copies the source into a frame
+  area of `2n` limbs whose other half is the fill (0, or the sign), picks
+  the limb offset `min(s >> 6, n - 1)` by `csel` and combines two limbs
+  per result limb with `lslv`/`lsrv` and a `lsr #1` · shift by `~s`
+  (so a bit offset of 0 needs no branch); `ashr` also uses `lsrv`, the
+  sign coming from the fill. `mul` and variable shifts are quadratic or
+  need twice the frame, so beyond `MAX_QUADRATIC_BITS` (4096) they are
+  refused as `a64:wide-mul` and `a64:wide-shift`; the linear operations
+  have no limit.
+- **Division up to 128 bits** calls `__udivti3`, `__divti3`,
+  `__umodti3`, `__modti3` (`RuntimeFn`) with the operands in 16-byte
+  slots, extended there first when narrower than 128 bits. Wider is
+  `a64:wide-division`.
+- **Compares**: `eq`/`ne` accumulate `eor`/`orr` over the limbs (the top
+  limb shifted left by `64 - N mod 64`); the orderings are a `cmp`/`sbcs`
+  chain over the limbs with both top limbs shifted the same way, which
+  orders signed and unsigned alike; the operands are swapped for
+  `ugt`/`ule`/`sgt`/`sle`. The result is a `cset` (no deferral).
+- **Casts**: `zext`/`sext` fill with `xzr` or `asr #63` of the extended
+  top limb; `trunc` to a `Gpr` width is the low limb, wider copies limbs;
+  `ptrtoint`/`ptrtoaddr`/`inttoptr` go through the low limb; `bitcast`
+  between `Mem` types copies, from a `Gpr` stores the masked register,
+  from or to an `Fpr` value goes through `v31`. Conversions between wide
+  integers and floating point are `a64:wide-fp-cast`.
+- **Aggregates**: `extractvalue` reads the field at its offset (a `Gpr`
+  or `Fpr` field into its register, a `Mem` field copied);
+  `insertvalue` copies the aggregate, then writes the field (an integer
+  masked to its width). `select` with a non-constant condition forms both
+  addresses, `tst #1`, `csel` and copies; `freeze` copies (`freeze` of
+  `poison`/`undef` is 0, as everywhere in hod). Layouts are `hod_ir`'s
+  (`field_offsets`, `element_stride`); `{}` and `[0 x T]` have no bytes.
+- **`Mem` vectors** (`<3 x i32>`, `<N x i1>`, 256-bit vectors, …) are
+  loaded, stored, selected (scalar condition), frozen, merged by `phi`
+  and bitcast; any element-wise operation, a vector `select` condition
+  and a vector `icmp` are `a64:mem-vector`.
+- **Overflow intrinsics** up to 64 bits extend the operands in their
+  registers, then: unsigned add `adds` + `cs` at 64 bits, else `add` and
+  a test of the bits above the width; signed add/sub `adds`/`subs` + `vs`
+  at 64 bits, else the result compared with its own `sbfx`; unsigned sub
+  `subs` + `cc`; multiply up to 32 bits is one `mul` with the same
+  checks, wider `umulh`/`smulh` with `mul` (the signed form checks both
+  that the high half is the sign of the low and the bits between the
+  width and 64). The `{ iN, i1 }` result is written to its slot (the
+  value masked to its width, the flag a byte at the field offset). Add
+  and sub wider than 64 bits are a limb chain on extended operands;
+  `mul` wider than 64 bits is `a64:wide-mul-overflow`.
+
 #### Floating point (WP-039)
 
 `crates/hod_a64/src/float.rs`; the evidence is `spec/landed/codegen/WP-039.md`.

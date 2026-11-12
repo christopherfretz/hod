@@ -112,7 +112,7 @@ fn type_id(m: &mut hod_ir::Module, ty: &T) -> hod_ir::TypeId {
     }
 }
 
-/// The layouts the generator's masks are computed from are hod_ir's.
+/// The layouts the generator's masks are computed from are `hod_ir`'s.
 #[test]
 fn the_generator_layouts_are_hod_irs() {
     let mut m = common::module();

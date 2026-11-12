@@ -36,6 +36,12 @@
 //! a store (`common::Cursor`), with `add`, which keeps the flags of a carry
 //! chain.
 
+#![allow(
+    clippy::many_single_char_names,
+    reason = "limb arithmetic: r = a op b over limbs, x and y the scratch registers"
+)]
+#![allow(clippy::too_many_lines, reason = "one match per intrinsic, read top to bottom")]
+
 use hod_cg::{CallArg, CgResult, Class, FnCx, FrameRef, RuntimeFn, SlotPlace, Target};
 use hod_ir::{Const, Inst, IntPredicate, Intrinsic, MemFlags, Opcode, TypeId, Value, ValueKind};
 use hod_mc_a64 as mc;
@@ -810,7 +816,7 @@ fn truncate<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value, to_bits: u32
     Ok(())
 }
 
-/// `bitcast` with a side of class `Mem`: the same image (LangRef: the
+/// `bitcast` with a side of class `Mem`: the same image (`LangRef`: the
 /// value stored as one type and loaded as the other), moved between a
 /// register and a slot or between slots. An integer is masked to its
 /// width on its way into a vector's image.

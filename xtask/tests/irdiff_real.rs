@@ -341,7 +341,7 @@ fn seed_test(scratch: &Scratch, name: &str, replace: &[(&str, &str)]) -> PathBuf
     let text = std::fs::read_to_string(&source).unwrap();
     let mut text: String = text
         .lines()
-        .filter(|line| !line.starts_with(";@ unsupported:"))
+        .filter(|line| !line.starts_with(";@ unsupported"))
         .flat_map(|line| [line, "\n"])
         .collect();
     for (from, to) in replace {

@@ -17,6 +17,10 @@ the command-line tool:
 
 ```rust
 pub fn compile(input: &[u8], options: &Options) -> Result<Vec<u8>, CompileError>;
+pub fn compile_with(input: &[u8], options: &Options, settings: &Settings, report: &mut Report)
+    -> Result<Vec<u8>, CompileError>;
+pub fn generate(module: &hod_ir::Module, bodies: &[hod_ir::Body], options: &Options)
+    -> Result<Vec<u8>, CompileError>;
 
 pub enum CompileError {
     Unsupported(Unsupported),   // a named construct hod does not handle
@@ -27,11 +31,25 @@ pub enum CompileError {
 pub struct Unsupported { pub construct: Construct, pub function: Option<String> }
 ```
 
-- `input` is one whole module, LLVM text or bitcode (see "Input"). It is a
-  byte slice until the IR model exists; the IR-level entry point will
-  replace it, `Options` and the error types stay. `compile` declines
-  bitcode (`bitcode-input`); the tool may convert it to text first
-  ("Bitcode conversion").
+- `input` is one whole module, LLVM text or bitcode (see "Input"), read
+  by `hod_ll` or `hod_bc` ("The front half"). `compile` is `compile_with`
+  with `Settings::default()`: bitcode read natively, the first reason.
+- `Settings` is how the front half works, not an `llc` option:
+  `bitcode` (`BitcodeReading::Native`, or `Decline` for a caller that
+  converts bitcode itself, which then gets `bitcode-input`), `census`
+  (every reason, "Reasons"), `support` (the `hod_ir::Support` to classify
+  with; `None` is `Support::shipped` of the module's target; for tests and
+  measurements).
+- `Report` is what `compile_with` tells besides its answer: the stated
+  target as it came to know it (`target`), the phases that ended with the
+  moment each ended (`phases`, "Phase report"), and with `census` every
+  reason found, each once, in the order met, the answer's first
+  (`reasons`).
+- `generate` is **the seam**: the back half, given the module `classify`
+  accepted whole and its bodies, every one classified and verified, in the
+  module's order. Until code generation exists it declines with
+  `codegen-not-implemented`; the code generator replaces its body and
+  nothing before it.
 - `Options` holds the `llc` options of the table in "Options", one field
   each, with `llc`'s defaults (`Options::default()` is `llc` with no
   options: assembly output, `-O2`, nothing else set).
@@ -43,7 +61,9 @@ pub struct Unsupported { pub construct: Construct, pub function: Option<String> 
 - `Construct` is the vocabulary of reasons. Each has a stable name
   (`Construct::name`), which is what the coverage log records; the names
   are listed in "Reasons". The enum is `#[non_exhaustive]`: code generation
-  work adds constructs.
+  work adds constructs. `Construct::Named` carries the names that come
+  from `hod_ir::classify` and the readers, which are one namespace with
+  the facade's own (`hod_ir`'s `CONSTRUCT_NAMES`).
 - `compile` never panics on any `input` or `options`, and writes nothing
   but its return value.
 
@@ -132,7 +152,7 @@ installation directory, see `spec/harness.md` "shim".)
 | `--fallback=<llc>` | `HOD_FALLBACK_LLC` | the real `llc` ("Fallback protocol") |
 | `--strict` | `HOD_STRICT=1` | no fallback ("Strict mode") |
 | `--coverage-log=<file>` | `HOD_COVERAGE_LOG` | append one line per invocation ("Coverage log") |
-| `--bitcode-via=<llvm-dis>` | `HOD_BITCODE_VIA` | the `llvm-dis` that turns a bitcode input into text ("Bitcode conversion") |
+| `--bitcode-via=<llvm-dis>` | `HOD_BITCODE_VIA` | the `llvm-dis` that turns a bitcode input into text, or `native`, the default: hod's own reader ("Bitcode conversion") |
 
 They follow the grammar above (`--fallback <llc>`, `-strict=false`, ...).
 They are never passed to the fallback. A mistake in one of them is an error
@@ -154,6 +174,12 @@ The four variables of this table are hod's **settings**.
 - A setting cannot be switched off from the command line once the
   environment has it, except strict mode (`--strict=false`): an empty
   `--fallback=` or `--bitcode-via=` is a mistake, not "none".
+- `HOD_CENSUS` is `1` or `0`, read like `HOD_STRICT`: with `1` hod finds
+  every reason a module is declined for, not only the first ("Reasons"),
+  and the coverage log lists them (field 11). The answer is the same; it
+  costs reading every body. It has no command-line form: it is for
+  `cargo xtask corpus reasons` and for whoever asks what to implement
+  next.
 - `HOD_TIME_PHASES=<file>` asks for a phase report ("Phase report"). It
   has no command-line form: it is a measurement hook for the benchmark
   harness, not a setting of a build.
@@ -170,23 +196,36 @@ One module, read whole from the input file or from standard input.
 For a text module, the module's own target is the value of the first line
 that starts with `target triple` among the lines beginning in the first 64
 KiB (`module_triple`; LLVM's printer, clang and kiln write it in the module
-header). This is a header scan, in place until the IR reader exists. A
-bitcode module's triple is not read; once the module has been converted
-("Bitcode conversion") its triple is the text's.
+header). This scan decides the target checks that come before reading
+(`-march`, an unsupported triple); the reader then reads the module's
+target itself. A bitcode module's triple is known once `hod_bc` has read
+its module level: the triple of the target it made of it (normalized:
+`aarch64-unknown-linux-gnu` for any spelling LLVM accepts), and once a
+module has been converted ("Bitcode conversion"), the text's.
 
 The **stated target** of an invocation is `-mtriple` if given, else the
 module's own (`effective_triple`); it may be absent.
 
 ## Bitcode conversion
 
-hod has no bitcode reader yet (`hod_bc`, `docs/design/0001-input.md`).
-Until it has one, a **converter** can stand in: LLVM's `llvm-dis`, named
-with `--bitcode-via=<llvm-dis>` or `HOD_BITCODE_VIA`. The text it writes
-then takes the place of the input for `hod::compile`, and for nothing
-else.
+hod reads bitcode itself, with `hod_bc` (`docs/design/0001-input.md`):
+that is the default, and `--bitcode-via=native` (or `HOD_BITCODE_VIA=native`)
+says so explicitly. A **converter** can stand in instead: LLVM's
+`llvm-dis`, named with `--bitcode-via=<llvm-dis>` or `HOD_BITCODE_VIA`. The
+text it writes then takes the place of the input for `hod::compile`, and
+for nothing else. (A converter whose path is literally `native` is named
+`./native`.)
 
-- **When.** Only when `hod::compile` declined the input with
-  `bitcode-input` and a converter is configured. Whatever is checked before
+Native is the default because over the whole captured corpus every
+module gets the same outcome, the same first reason and the same census
+(as a set: its order follows each reader's numbering of symbols) through
+`hod_bc` as through `llvm-dis` and text (`docs/status/reasons.md`,
+"The routes agree"); a difference is a bug in a reader, not a choice.
+Debug information is refused by name (`debug:*`) on both routes alike.
+
+- **When.** Only when a converter is configured: hod then asks
+  `hod::compile` with `BitcodeReading::Decline`, and converts when it
+  declined the input with `bitcode-input`. Whatever is checked before
   the input's kind keeps its reason without a conversion (today
   `assembly-output`), and so does a rejected command line. Strict mode does
   not turn the conversion off: the converter is not the fallback.
@@ -354,18 +393,58 @@ that applies is the reason:
 | reason | condition |
 |---|---|
 | `assembly-output` | the output kind is not `obj` (hod has no assembly printer) |
-| `bitcode-input` | the input is bitcode (hod has no bitcode reader). With a converter configured this is not a final reason: see "Bitcode conversion" |
-| `unsupported-target` | `-march` is given (the override is not implemented), or the stated target is not supported |
-| `codegen-not-implemented` | everything else, until code generation exists |
+| `bitcode-input` | the input is bitcode and the caller asked for `BitcodeReading::Decline` (the tool does only when it then converts: see "Bitcode conversion") |
+| `unsupported-target` | `-march` is given (the override is not implemented), or the stated target known before reading is not supported (`target_supported`), or `-mtriple` is not one `hod_ir::TargetSpec` describes |
+| a reader's reason | reading the module level failed: the table below |
+| `unsupported-target` | `-mtriple` names another target than the module's (retargeting is not implemented) |
+| a `classify` name | `hod_ir::classify`'s module pass refused the module (`module:pic`, `global:function-definition`, `debug:module-flags`, ...; `docs/status/support.md`) |
+| a body's reason | for each body in the module's order: the reader's error (the table below), the body reader's own refusal (`call:forwarded-varargs`, ...), `classify`'s body pass, then `Body::verify` (`malformed-input`) |
+| `codegen-not-implemented` | everything else: the module reached `generate` |
 
 A supported target (`target_supported`) is a triple whose first component
 is `aarch64` or `x86_64`, with a later component `linux`, followed by
 nothing or by exactly one environment component that starts with `gnu` or
-`musl`. With no stated target, the target check is skipped.
+`musl`. With no stated target the check is skipped and the reader decides:
+a module with neither a triple nor `-mtriple` is `unsupported-target`, and
+so is one whose triple `hod_ir::TargetSpec` does not describe (today
+`*-linux-musl`) or whose data layout is not its target's.
 
-`codegen-not-implemented` is where the per-construct reasons of
-`hod_ir::classify` will appear as code generation lands; every new
-`Construct` is added to this table.
+**The readers' errors** (`hod_ll::LlError`, `hod_bc::BcError`), one
+namespace with the rest:
+
+| error | reason |
+|---|---|
+| `LlErrorKind::Target`, `BcErrorKind::Target`, `Ir(UnsupportedTarget)`, `Ir(DataLayoutMismatch)` | `unsupported-target` |
+| `LlErrorKind::Limit`, `BcErrorKind::Limit`, `Ir(TableFull)`, `Ir(TypeTooLarge)` | `limit:reader` (a limit of hod's; LLVM may take the module) |
+| `BcErrorKind::Unsupported(<n>)` | `bitcode:<n>` (a record or block `hod_bc` does not read) |
+| a body the reader delivers without reading, with names | the first name (`ParsedBody::unsupported`, `ReadBody::unsupported`), in the function |
+| any other kind | `malformed-input`; the message is `line <l>:<c>: <text>` for text, `bit <n> (byte <m>): <text>` for bitcode |
+
+`classify`'s `RejectionKind::Unsupported` is `Unsupported` with the
+construct's name; `RejectionKind::Invalid` is `malformed-input` with the
+name as its message. A refusal of the body pass, of the body reader or of
+`verify` names its function; the module pass's does not.
+
+**The first refusal, or every reason.** By default hod stops at the first
+refusal: what needs no reading first, then the module level (read, then
+the module pass) before any body, then the bodies streamed one at a time,
+read and judged and dropped. A declined module goes to `llc` next, so a
+decline must be cheap: its cost is measured in `docs/status/perf.md`.
+Where the cheap reason and the most useful one differ (a module refused
+at `module:pic` also has bodies `cc:ccc` refuses), **the cheap one is the
+answer**; `HOD_CENSUS=1` (`Settings::census`) finds every reason — every
+module-pass and body-pass construct the census of `hod_ir::classify`
+names, the readers' refusals, `verify`'s — and the answer stays the first
+one. A body is classified and verified only while no reason has been found:
+the census of the rest is `classify`'s census, not a verdict.
+
+**Verify.** Every body that reaches `generate` has passed `Body::verify`
+(`spec/ir.md` §5.8): code generation may assume it. It costs about 27 ns
+per instruction (`spec/landed/ir/WP-009.md`), against 220 for reading
+bitcode and 450 for text, and nothing for a module refused before its
+bodies, which is every module with a definition until code generation
+lands. A body `verify` rejects is `malformed-input` (`function '<f>':
+<error>`).
 
 From the tool:
 
@@ -386,9 +465,9 @@ From the tool:
 | `bitcode-converter-output` | the converter exited 0, silently, and wrote nothing or not one whole module of text | yes |
 
 The `bitcode-converter-*` conditions are defined exactly in "Bitcode
-conversion". In a log, `bitcode-input` now means "bitcode, and no
-converter was configured"; a converted module carries the reason the text
-got.
+conversion". The tool asks for `bitcode-input` only to convert, so it no
+longer reaches a log from this hod; a converted module carries the reason
+the text got.
 
 ## Exit status
 
@@ -411,7 +490,7 @@ any number of concurrent hod processes never interleave. A short write is
 reported as a failure (step 10 of "Behaviour"), not completed with a second
 call.
 
-A line is ten fields separated by single tabs and ended by one newline:
+A line is eleven fields separated by single tabs and ended by one newline:
 
 | # | field | values |
 |---|---|---|
@@ -420,42 +499,50 @@ A line is ten fields separated by single tabs and ended by one newline:
 | 3 | input kind | `text`, `bitcode`: what hod was given (a converted module stays `bitcode`); `-` if hod did not read the input |
 | 4 | input bytes | decimal, of what hod was given (the bitcode's, not the converted text's); `-` if hod did not read the input |
 | 5 | output path | the output as named: the `-o` value, or the derived name; `-` is standard output (and "not known" when hod did not get that far and no `-o` was given) |
-| 6 | target | the stated target; before the input is read, `-mtriple` only; `-` if none. For bitcode the module's own triple is known only after a successful conversion |
+| 6 | target | the stated target; before the input is read, `-mtriple` only; `-` if none. For bitcode the module's own triple is known once its module level was read ("Input") or it was converted |
 | 7 | hod microseconds | decimal: wall time from process start to the point hod finished its own work (its output written, its error reported, or the fallback about to start). It includes the conversion (field 9) |
 | 8 | fallback microseconds | decimal: wall time of the fallback process; `-` if none ran |
 | 9 | conversion microseconds | decimal: wall time of the bitcode conversion, from starting the converter to having judged its result, whether it succeeded or failed; `-` if none was attempted |
 | 10 | fallback status | how the fallback ended: its exit code in decimal (`0` to `255`); `signal:<N>` if signal N ended it (hod then exits `128 + N`); `unknown` if the host reported neither (hod then exits 1); `-` if none ran, including when it could not be started (`fallback-unavailable`) |
+| 11 | reasons | with `HOD_CENSUS=1`, every reason of `hod::compile`'s last answer, each once, separated by `,`, the first being field 2's when that came from `compile`; `-` without a census or when there is none |
 
-Fields 5 and 6 are free-form. In them a backslash, tab, newline and
+Fields 2, 5, 6 and 11 are free-form. In them a backslash, tab, newline and
 carriage return are written `\\`, `\t`, `\n`, `\r`, and an empty value is
 written `-`; bytes of an output path that are not UTF-8 are replaced with
-U+FFFD (a module triple that is not UTF-8 is not a stated target). No field
-is ever empty or contains a tab or a newline, so `split('\t')` on a line is
-always ten fields.
+U+FFFD (a module triple that is not UTF-8 is not a stated target); in field
+11 a `,` inside a name is written `\,`. No field is ever empty or contains
+a tab or a newline, so `split('\t')` on a line is always eleven fields.
 
 **The format grows only at the end.** Fields are never reordered, removed
 or given another meaning; a later version of hod may append fields. A
 reader takes the fields it knows by position, accepts a line with more,
 and rejects a line with fewer than it knows. Fields 9 and 10 were added
-after the first eight: a reader written for eight (`cargo xtask irdiff`
-is one) reads today's lines unchanged, and the stand-ins for hod in the
-harness that still write eight fields remain readable by it.
+after the first eight, field 11 after ten: a reader written for eight
+(`cargo xtask irdiff` and `cargo xtask bench` are such readers, and
+accept eight or more) reads today's lines unchanged, and the stand-ins for
+hod in the harness that still write eight fields remain readable by it.
 
 Examples (`⇥` is a tab):
 
 ```
-fallback⇥codegen-not-implemented⇥text⇥14437⇥/tmp/kiln-1/0-hello.o⇥aarch64-unknown-linux-gnu⇥225⇥10949⇥-⇥0
-fallback⇥codegen-not-implemented⇥bitcode⇥15664⇥/tmp/kiln-2/0-coro.o⇥aarch64-unknown-linux-gnu⇥10411⇥13898⇥10170⇥0
-fallback⇥bitcode-converter-failed⇥bitcode⇥15664⇥/tmp/kiln-2/0-coro.o⇥-⇥9120⇥13898⇥8894⇥0
-fallback⇥bitcode-input⇥bitcode⇥15664⇥/tmp/kiln-2/0-coro.o⇥-⇥226⇥13898⇥-⇥0
-error⇥codegen-not-implemented⇥text⇥14437⇥hello.o⇥aarch64-unknown-linux-gnu⇥100⇥-⇥-⇥-
-fallback⇥unknown-option⇥-⇥-⇥a.o⇥-⇥40⇥9120⇥-⇥1
-fallback⇥codegen-not-implemented⇥text⇥14437⇥a.o⇥aarch64-unknown-linux-gnu⇥231⇥2520⇥-⇥signal:9
+fallback⇥codegen-not-implemented⇥text⇥14437⇥/tmp/kiln-1/0-hello.o⇥aarch64-unknown-linux-gnu⇥225⇥10949⇥-⇥0⇥-
+fallback⇥codegen-not-implemented⇥bitcode⇥15664⇥/tmp/kiln-2/0-coro.o⇥aarch64-unknown-linux-gnu⇥10411⇥13898⇥10170⇥0⇥-
+fallback⇥bitcode-converter-failed⇥bitcode⇥15664⇥/tmp/kiln-2/0-coro.o⇥-⇥9120⇥13898⇥8894⇥0⇥-
+fallback⇥bitcode-input⇥bitcode⇥15664⇥/tmp/kiln-2/0-coro.o⇥-⇥226⇥13898⇥-⇥0⇥-
+error⇥codegen-not-implemented⇥text⇥14437⇥hello.o⇥aarch64-unknown-linux-gnu⇥100⇥-⇥-⇥-⇥-
+fallback⇥unknown-option⇥-⇥-⇥a.o⇥-⇥40⇥9120⇥-⇥1⇥-
+fallback⇥codegen-not-implemented⇥text⇥14437⇥a.o⇥aarch64-unknown-linux-gnu⇥231⇥2520⇥-⇥signal:9⇥-
 ```
 
-The second line is a bitcode module that was converted, declined as text
-and compiled by the fallback; the third, one whose conversion failed; the
-fourth, one for which no converter was configured.
+(Lines from hods before the native reader.) The second line is a bitcode
+module that was converted, declined as text and compiled by the fallback;
+the third, one whose conversion failed; the fourth, one for which no
+converter was configured. Today the reason of a kiln module is the module
+pass's, and a census adds the rest:
+
+```
+error⇥module:pic⇥text⇥14437⇥hello.o⇥aarch64-unknown-linux-gnu⇥612⇥-⇥-⇥-⇥module:pic,module:pie,global:function-definition,cc:ccc,...
+```
 
 Coverage of a build is the share of lines with outcome `hod`. The log has
 no header and no per-function records yet; both arrive with code
@@ -488,14 +575,19 @@ no phase covers (the coverage line).
 | phase | ends when |
 |---|---|
 | `read` | the input has been read (command-line parsing and opening the coverage log are in it) |
+| `parse` | the module level has been read (`hod_ll::parse_module`, `hod_bc::read_module`) |
+| `classify` | `classify`'s module pass has judged the module |
+| `bodies` | every body has been read and judged (only when the walk did not stop at a reason) |
 | `convert` | the bitcode converter ended ("Bitcode conversion"), with text or a failure; the attempt that declined the bitcode is in it. Only an invocation that started a conversion has it |
-| `compile` | `hod::compile` returned, with an object or an error |
+| `compile` | `hod::compile` returned, with an object or an error: what follows the last of `parse`, `classify`, `bodies` (code generation, today the seam's decline), or the whole call when it declined before reading |
 | `write` | the object has been written |
 | `fallback` | the fallback process ended |
 
 A phase is in the report only if the invocation reached its end: a module
-hod builds reports `read`, `compile`, `write`; one it declines in strict
-mode `read`, `compile`; one it hands to the fallback `read`, `compile`,
+hod builds reports `read`, `parse`, `classify`, `bodies`, `compile`,
+`write`; one it declines in strict mode at the module pass `read`,
+`parse`, `classify`, `compile`, and one it declines before reading `read`,
+`compile`; one it hands to the fallback `read`, `compile`,
 `fallback`; a command line it hands on unread `fallback` alone. A
 conversion adds `convert` after `read`: a converted module hod then
 declines reports `read`, `convert`, `compile`, and one whose conversion
@@ -504,13 +596,16 @@ a decline:
 
 ```
 read⇥212
-compile⇥3
-total⇥301
+parse⇥380
+classify⇥4
+compile⇥2
+total⇥640
 ```
 
-`compile` is one phase until the code generator reports its own. The names
-reserved for that, which will then replace `compile` in the report, are
-`ingest` (the module parsed and checked), `analysis`, `emission` (machine
+`parse`, `classify` and `bodies` are the front half's (they were `ingest`
+in the names reserved before). The code generator's own phases will
+come between `bodies` and `compile`, which then shrinks to the rest. The
+names reserved for them are `analysis`, `emission` (machine
 code), `debug-info` and `object` (the object file built in memory). A
 reader of the report takes whatever names it finds.
 
@@ -522,8 +617,8 @@ inherits the variable with the rest of the environment; `llc` ignores it.
 
 | section | tests |
 |---|---|
-| The facade, Input, Reasons | `crates/hod/src/lib.rs`: `input_kind_detection`, `reasons_in_order`, `construct_names_are_stable_and_distinct`, `module_triple_scan`, `supported_targets`, `error_text` |
-| Bitcode conversion | `crates/hod_cli/src/convert.rs`: `usable_output`, `quoted_line`, `standard_error_is_bounded`, `reasons_and_messages`; `driver.rs`: `converted_bitcode_is_compiled`, `conversion_only_when_bitcode_is_the_reason`; `cli.rs`: `bitcode_is_converted_and_goes_on_as_text`, `conversion_failures` (every row of the result table, with a fallback, in strict mode and with neither; a megabyte of input the converter may not read; a megabyte on its standard error), `converter_that_cannot_be_started`, `bitcode_file_input`, `converter_settings`, `hod_is_not_its_own_converter`, `real_llvm_dis_converts_bitcode` (each installed LLVM; plain and wrapped bitcode), `real_llvm_dis_of_another_major`; `kiln_e2e.rs` |
+| The facade, Input, Reasons | `crates/hod/src/lib.rs`: `input_kind_detection`, `reasons_in_order`, `construct_names_are_stable_and_distinct`, `module_triple_scan`, `supported_targets`, `error_text`; `crates/hod/src/front.rs`: `reader_errors_and_their_reasons`, `rejections_and_their_reasons`; `crates/hod/tests/front.rs` (text, the checked-in `data/front.bc`, and bitcode from each installed `llvm-as`): `fixture_first_refusal_and_census`, `body_reasons_name_the_function`, `verify_is_on_the_path_to_code_generation`, `target_reasons`, `reader_refusals`, `installed_llvm_bitcode_agrees_with_text`; `driver.rs`: `census_of_every_reason`; the whole corpus: `cargo xtask corpus reasons` (`docs/status/reasons.md`) |
+| Bitcode conversion | `crates/hod_cli/src/convert.rs`: `usable_output`, `quoted_line`, `standard_error_is_bounded`, `reasons_and_messages`; `driver.rs`: `converted_bitcode_is_compiled`, `conversion_only_when_bitcode_is_the_reason`; `cli.rs`: `bitcode_is_converted_and_goes_on_as_text`, `conversion_failures` (every row of the result table, with a fallback, in strict mode and with neither; a megabyte of input the converter may not read; a megabyte on its standard error), `converter_that_cannot_be_started`, `bitcode_file_input`, `converter_settings`, `hod_is_not_its_own_converter`, `real_llvm_dis_converts_bitcode` (each installed LLVM; plain and wrapped bitcode; the native census equals the converted one), `real_llvm_dis_of_another_major`; `kiln_e2e.rs` |
 | Options | `crates/hod_cli/src/args.rs`: `defaults`, `everything_kiln_passes`, `spellings`, `spellings_of_the_rest`, `rejected_command_lines`, `rejection_reasons_and_messages`, `non_utf8_arguments`, `version_and_help`; `crates/hod_cli/src/driver.rs`: `unknown_option_without_fallback`, `version_and_help`; `crates/hod_cli/tests/cli.rs`: `unknown_options`, `version_and_help` |
 | hod's own options, Environment | `args.rs`: `hod_options_are_parsed_and_not_forwarded`, `mistakes_in_hod_options_are_fatal`; `driver.rs`: `environment`, `mistakes_in_hod_settings`; `cli.rs`: `settings_from_the_environment`, `converter_settings` |
 | Phase report | `driver.rs`: `phase_report`, `phase_report_of_a_conversion`; `cli.rs`: `phase_report_with_a_fallback` |
@@ -532,7 +627,7 @@ inherits the variable with the rest of the environment; `llc` ignores it.
 | Strict mode | `cli.rs`: `strict_mode_fails_with_the_construct_named`; `crates/hod_cli/tests/kiln_e2e.rs` |
 | Reasons | `cli.rs`: `reasons_reach_the_log`; `driver.rs`: `malformed_input_and_invalid_options` |
 | Exit status | `cli.rs`: `fallback_exit_status_propagates`; `driver.rs`: `unsupported_without_fallback`, `malformed_input_and_invalid_options`, `io_errors` |
-| Coverage log | `crates/hod_cli/src/coverage.rs`: `line_format`, `free_form_fields_are_escaped`, `appends_to_an_existing_file`; `cli.rs`: `coverage_log_survives_concurrent_writers` (16 concurrent writers), `fallback_exit_status_propagates` (field 10, signal included), every test's `coverage` helper (ten fields, their vocabulary); `xtask/src/irdiff/engine.rs`: `coverage_log_reading` (a reader under the append-only rule) |
+| Coverage log | `crates/hod_cli/src/coverage.rs`: `line_format`, `free_form_fields_are_escaped`, `appends_to_an_existing_file`; `cli.rs`: `coverage_log_survives_concurrent_writers` (16 concurrent writers), `fallback_exit_status_propagates` (field 10, signal included), every test's `coverage` helper (eleven fields, their vocabulary); `xtask/src/irdiff/engine.rs`: `coverage_log_reading` (a reader under the append-only rule) |
 
 The tests that need LLVM tools (`real_llc_*`, `real_llvm_dis_*`) and kiln
 (`kiln_e2e.rs`) skip with a note when the tool is missing and fail instead

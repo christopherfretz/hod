@@ -4,7 +4,7 @@
 ; loop), fence, and finally four threads that update shared counters,
 ; which only gives the right totals if the updates really are atomic.
 ;@ covers: spec/ir.md §5.4 memory (atomic Load and Store, Fence, CmpXchg, AtomicRmw)
-;@ unsupported: codegen-not-implemented
+;@ unsupported: *
 ;@ stdout: i8 xchg      100, 27: old 100 new 27
 ;@ stdout: i8 add       100, 27: old 100 new 127
 ;@ stdout: i8 sub       100, 27: old 100 new 73

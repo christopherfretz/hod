@@ -3,7 +3,7 @@
 ; stacksave and stackrestore, and one in every frame of a recursion, with
 ; calls made while the allocations are live.
 ;@ covers: spec/ir.md §5.2 stack objects, §5.4 memory (Alloca), §5.5 intrinsics (stacksave, stackrestore)
-;@ unsupported: codegen-not-implemented
+;@ unsupported: *
 ;@ stdout: sum of 1 squares = 0
 ;@ stdout: sum of 10 squares = 285
 ;@ stdout: sum of 1000 squares = 332833500

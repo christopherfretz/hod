@@ -27,9 +27,14 @@ impl Phases {
     /// Ends the phase `name`: it lasted from the end of the phase before
     /// it (or from the start) until now.
     pub fn end(&mut self, name: &'static str) {
-        let now = Instant::now();
-        self.ended.push((name, now.duration_since(self.last)));
-        self.last = now;
+        self.end_at(name, Instant::now());
+    }
+
+    /// Ends the phase `name` at `at`, a moment no earlier than the end of
+    /// the phase before it: one that `hod::compile_with` reported.
+    pub fn end_at(&mut self, name: &'static str, at: Instant) {
+        self.ended.push((name, at.saturating_duration_since(self.last)));
+        self.last = self.last.max(at);
     }
 
     /// The report: `<phase><TAB><microseconds>` per phase, then `total`,

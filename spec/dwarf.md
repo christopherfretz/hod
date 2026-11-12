@@ -633,6 +633,12 @@ exclusive `low_pc` forms), and pin the bytes of one entry.
 | 69 | `subprogram` (definition, any): `low_pc`, `high_pc`, `frame_base`, then `linkage_name` (0), `name` (1), `decl_file`/`decl_line` (2), `prototyped` (3), `type` (4), `artificial` (5), `external` (6), `noreturn` (7), children optional | 512 | 8733 | WP-057 |
 | 70 | `subprogram` (member definition): `low_pc`, `high_pc`, `frame_base`, `object_pointer` (0), `decl_file` (1), `decl_line` (2), `linkage_name` (3), `specification`, children optional | 32 | 9245 | WP-057 |
 | 71 | `label` (with `decl_column`, LLVM 21 and later), `low_pc` (0) | 2 | 9277 | WP-057 |
+| 72 | `variable` (global, any): `name`, `type`, `external` (0), decl (1), `declaration` (2), `alignment` (3), `location` (4), `const_value` udata (5), sdata (6), `linkage_name` (7), children optional | 512 | 9279 | WP-059 |
+| 73 | `variable` (specification, any): `specification`, `type` (0), `alignment` (1), `location` (2), `const_value` udata (3), sdata (4), `linkage_name` (5), children optional | 128 | 9791 | WP-059 |
+| 74 | `template_value_parameter` (any): `type` (0), `name` (1), `default_value` (2), `const_value` udata (3), sdata (4), `location` (5) | 64 | 9919 | WP-059 |
+| 75 | `GNU_template_template_param` (any): `name` (0), `default_value` (1), `GNU_template_name` | 4 | 9983 | WP-059 |
+| 76 | `template_alias` (with parameters): 51's slots, children | 8 | 9987 | WP-059 |
+| 77 | `subprogram` (specification, any): `low_pc`, `high_pc`, `frame_base`, `object_pointer` (0), `type` (1), `decl_file` (2), `decl_line` (3), `linkage_name` (4), `specification`, children optional | 64 | 9995 | WP-059 |
 
 Families 2 to 45 that WP-058 owns are used for the common shape of each
 kind (they keep the codes the reserved shapes promised); the "any"
@@ -648,7 +654,7 @@ WP-057 uses its reserved families 0 (`formal_parameter`), 1 (local
 `low_pc`/`high_pc` or `ranges` as `DW_FORM_sec_offset`) and 39 (`label`),
 and appends 69 to 71 for the other shapes.
 
-`CODE_END` is 9279 (754 after WP-053, 8733 after WP-058). Since the core families come last, their codes take
+`CODE_END` is 10059 (754 after WP-053, 8733 after WP-058, 9279 after WP-057). Since the core families come last, their codes take
 two ULEB bytes where `llc`'s take one (the cost is in §7.2; open question
 7).
 
@@ -1029,10 +1035,8 @@ there, as `llc` does. A local type reached while no DIE of its scope
 exists (a global's type that names it, or a retained type of a function
 that was not placed) is `Unsupported("debug:local-type-scope")`.
 
-**Template parameters (WP-059)** are skipped. Neither `templateParams`
-nor a template alias's `extraData` is read, so no DIE and no error comes
-from them (`tests/type_graph.rs`). WP-059 adds them as children at
-`llc`'s position in the construct steps.
+**Template parameters** are children at `llc`'s position in the
+construct steps (WP-059, §6.9).
 
 **Refused** (`Unsupported`, named):
 - a pointer with an address space;
@@ -1053,6 +1057,127 @@ from them (`tests/type_graph.rs`). WP-059 adds them as children at
   `declaration` among a class's elements, or a combination of flags no
   family has;
 - a function-local type (above).
+
+### 6.9 Globals, templates, imports and specifications (implemented, WP-059)
+
+What is outside function bodies, written as `llc` 19 and 22 write it
+(`-O0 -global-isel=0 -fast-isel=0`), its order and attributes taken
+from `llc`'s output (`llvm-dwarfdump` trees), not from its source. The
+code is in new modules of `hod_dwarf`: `scope.rs` (the names of what is
+refused, the plan's state), `global.rs`, `template.rs`, `import.rs` and
+`spec.rs`. Each reaches the core through one call at the site that
+refused before (`spec/landed/dwarf/WP-059.md` lists them).
+
+**Globals** (`getOrCreateGlobalVariableDIE`). A plain global (a
+definition, an empty expression, no declaration, no template
+parameters, not thread-local) stays the core's (§6.5). Every other
+global outside a function is made here, in `llc`'s order: its context
+(namespaces), the variable, then
+- a static member's definition (`declaration:`, a `DW_TAG_variable` or
+  `DW_TAG_member` with `DIFlagStaticMember` in a class): the class (with
+  its members), then the declaration if the class does not list it
+  (appended), then the definition's type if it is not the
+  declaration's. The definition is written in the unit with
+  `DW_AT_specification`, then `type` (when it differs), `alignment`,
+  the location or constant, and `linkage_name`;
+- any other: `name`, `type`, `external`, decl, `declaration` (a
+  declaration), `alignment`, its template parameters as children, the
+  location or constant, `linkage_name`.
+
+The location is `DW_OP_addrx` of the global's `.debug_addr` entry (§6.5).
+A constant expression (`DW_OP_constu v, DW_OP_stack_value` or
+`DW_OP_consts v, DW_OP_stack_value`) is `DW_AT_const_value`, `udata` or
+`sdata` as the operator says, with no location. A thread-local
+variable on AArch64 has no location: AArch64's `llc` writes none, and
+gdb and lldb print it as `llc`'s. Its linkage name is kept. A
+thread-local constant is written as a constant. Neither a constant nor
+a thread-local variable takes a `.debug_addr` entry, even when the code
+generator placed its symbol: the unit counts the entries of the
+globals that write a location (`global_takes_address`), then the
+template parameters' (below), then the functions'.
+
+**Template parameters** (`addTemplateParams`), each a child DIE:
+- `DW_TAG_template_type_parameter`: `type`, `name`, `default_value`;
+- `DW_TAG_template_value_parameter`: `type`, `name`, `default_value`,
+  then the value:
+  - an integer is `DW_AT_const_value`, `udata` or `sdata` by
+    `isUnsignedDIType` (an enumeration with a base type takes its base
+    type's signedness, as in `llc` 19 and 22);
+  - the address of a symbol is `DW_AT_location (DW_OP_addrx N,
+    DW_OP_stack_value)`. It takes a `.debug_addr` entry, against the
+    place the code generator gave the symbol (`UnitPlan::place_symbols`,
+    called by the bridge after `seal`);
+  - a float, a null pointer or an address with an offset has no value,
+    as in `llc`;
+- `DW_TAG_GNU_template_parameter_pack`: `name`; its parameters are
+  children;
+- `DW_TAG_GNU_template_template_param`: `name`, `default_value`,
+  `DW_AT_GNU_template_name`.
+
+hod is DWARF 5 only, so `default_value` is written whenever the node
+says so. A parameter is a task of the type graph (§6.8,
+`Task::Template`): its DIE, then its type's. Where the parameters go:
+- the first children of a class, structure or union and of a member
+  function declaration (before the return type and the parameters);
+- after the base type of a template alias (its `extraData`);
+- the children of a variable;
+- the last children of a definition, after its variables, blocks and
+  imports. They are made at `seal`, as `finishSubprogramDefinitions`
+  does.
+
+**Imported entities** (`DW_TAG_imported_module`, `DW_TAG_imported_declaration`)
+are made at `seal`, before the functions' types, as `llc` emits them at
+the end of the module:
+- first the unit's `imports:`, each in its scope (the unit, a file or
+  a namespace);
+- then each function's (its `retainedNodes`), as the function's
+  children.
+
+For each, the scope comes first, then the entity's DIE if it has none
+(a namespace, a type, a function declaration, a global without a
+location), then the import: decl, `import`, `name`.
+
+**Specifications** (`getOrCreateSubprogramDIE`,
+`applySubprogramDefinitionAttributes`):
+- a member function's declaration that its class does not list (a
+  template's instance, an implicit member) is made when its definition
+  is, and appended to the class;
+- a definition whose declaration is in a namespace or the unit (an
+  out-of-line definition such as `void ns::f() {}`) has its declaration
+  made there, with the member declaration's attributes (§6.8);
+- the definition goes to the unit with `DW_AT_specification`;
+- a definition whose return type is not its declaration's (`auto`
+  deduced) writes `DW_AT_type` after the frame base and before the decl
+  (families 35 and 77). That type is made at `seal`.
+
+**Families** (§6.1): WP-059 uses its reserved families
+- 14 to 18;
+- 35, refined to `object_pointer` (0), `type`, `decl_line` (1),
+  `linkage_name` (2), `specification`;
+- 41 and 42 (42's `const_value` is `udata`), 43 and 44.
+
+It appends 72 to 77 for the other shapes.
+
+**Refused** (`Unsupported`, named in `scope.rs`):
+
+| name | what |
+|---|---|
+| `debug:global-expression` | a global's expression that is neither empty nor a constant |
+| `debug:global-shape` | a static member's definition that is not a definition; a global without a name or type that is not a static member's definition; a line without a file |
+| `debug:global-scope` | a global scoped outside the unit, a file or a namespace (a module) |
+| `debug:static-member-declaration` | a `declaration:` that is not a static member of a class |
+| `debug:tls-location` | a thread-local variable on x86-64, whose `llc` writes `DW_OP_const8u` + `DW_OP_GNU_push_tls_address` |
+| `debug:template-parameter` | a parameter of another tag; a pack with a type or a default; a template template parameter whose value is not a string; a value of the wrong kind |
+| `debug:template-value` | an integer value wider than 64 bits |
+| `debug:template-address` | the address of a symbol this object does not place (an undefined function or variable) |
+| `debug:import` | an import of another tag, with `elements:`, an `imported_module` with a name, a line without a file |
+| `debug:import-scope` | a unit's import scoped outside the unit, a file or a namespace; a function's import scoped elsewhere than its function |
+| `debug:import-entity` | an import of a module, of another import, of a function's definition or of a function-local variable |
+| `debug:declaration-scope` | a function declaration scoped outside a class, the unit, a file or a namespace, or virtual outside a class |
+
+A function's `static` (`debug:local-static`), inlined subroutines,
+`#dbg_value`, fragments and other location expressions are WP-085's. A
+unit's `LineTablesOnly` and compressed sections are WP-061's.
 
 ## 7. Speed and memory
 
@@ -1523,7 +1648,7 @@ Rows for `docs/BACKLOG.md` (ids to be assigned; "this" is WP-052):
 | DIE writer core (WP-053, **landed**: `spec/landed/dwarf/WP-053.md`) | §6.1 to §6.3, §6.5 to §6.7: the fixed abbreviation table, `.debug_info` unit header, compile unit DIE, `.debug_str`/`.debug_str_offsets`/`.debug_addr`/`.debug_rnglists`, the scope inversion, reference patching; `--verify` clean and compared with `llc` on modules with globals only | this |
 | subprograms and variables (WP-057, **landed**: `spec/landed/dwarf/WP-057.md`) | subprogram DIEs (`low_pc`/`high_pc`, `frame_base`), parameters and locals from `vars` with `DIExpression` composed onto the frame-base offset (`VarRow` gains its expression), lexical blocks from `lines` (§6.4), labels (the `labels` table); gdb `info locals`/`print`/`bt` on hod-compiled programs | DIE writer core, line tables in `emit_module` |
 | the type graph (WP-058, **landed**: `spec/landed/dwarf/WP-058.md`) | basic, derived (pointer, reference, rvalue reference, typedef, const/volatile, member, inheritance, pointer to member, friend), composite (class, struct, union, enum with enumerators, array with subranges), subroutine types, declarations and completion, `vtableHolder`; compared with `llc` by `llvm-dwarfdump` structure; gdb `ptype` | DIE writer core |
-| globals, namespaces, templates | global and static-member variables (`DW_OP_addrx`, TLS with `DW_OP_form_tls_address`), namespaces, imported entities, template type and value parameters (packs), `DW_AT_specification` for out-of-line definitions | subprograms and variables, the type graph |
+| globals, namespaces, templates (WP-059, **landed**: `spec/landed/dwarf/WP-059.md`) | global and static-member variables (`DW_OP_addrx`, TLS with `DW_OP_form_tls_address`), namespaces, imported entities, template type and value parameters (packs), `DW_AT_specification` for out-of-line definitions | subprograms and variables, the type graph |
 | L7 harness | §8.4: `xtask` gdb and lldb sessions, kiln's debugger tests, corpus `--verify`, `(function, line)` comparison with `llc`; the two-object COMDAT case | line tables in `emit_module`, subprograms and variables |
 | line-tables-only and compressed sections | `emissionKind: LineTablesOnly` (CU and subprogram DIEs only), `SHF_COMPRESSED` with zlib written in safe Rust (no dependency) | DIE writer core |
 | split DWARF | `-gsplit-dwarf`: skeleton unit, `.dwo` sections, `DW_UT_skeleton`/`split_compile`; `hod_ir` must first map `splitDebugFilename` and `dwoId` | DIE writer core |

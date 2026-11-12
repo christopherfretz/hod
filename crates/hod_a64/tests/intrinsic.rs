@@ -22,16 +22,16 @@
 
 mod common;
 
+#[path = "common/aggr_gen.rs"]
+mod aggr_gen;
 #[path = "common/int_gen.rs"]
 mod int_gen;
+#[path = "common/intrinsic2_gen.rs"]
+mod intrinsic2_gen;
 #[path = "common/intrinsic_gen.rs"]
 mod intrinsic_gen;
 #[path = "common/intrinsic_mem.rs"]
 mod intrinsic_mem;
-#[path = "common/aggr_gen.rs"]
-mod aggr_gen;
-#[path = "common/intrinsic2_gen.rs"]
-mod intrinsic2_gen;
 
 use common::{assert_refused, code_words, compile_ll, ll_header, parse};
 use hod_a64::intrinsic;
@@ -125,8 +125,8 @@ fn words(text: &str) -> Vec<u32> {
 fn what_is_not_lowered_is_refused_by_name() {
     assert_refused(&[
         (
-            "declare i128 @llvm.ctpop.i128(i128)\n\
-             define i128 @f(i128 %a) {\n  %r = call i128 @llvm.ctpop.i128(i128 %a)\n  ret i128 %r\n}\n",
+            "declare i256 @llvm.ctpop.i256(i256)\n\
+             define i256 @f(i256 %a) {\n  %r = call i256 @llvm.ctpop.i256(i256 %a)\n  ret i256 %r\n}\n",
             intrinsic::WIDE,
         ),
         (
@@ -150,17 +150,17 @@ fn what_is_not_lowered_is_refused_by_name() {
             intrinsic::FRAME_DEPTH,
         ),
         (
-            "declare double @llvm.sqrt.f64(double)\n\
-             define double @f(double %a) {\n  %r = call double @llvm.sqrt.f64(double %a)\n  ret double %r\n}\n",
-            intrinsic::INTRINSIC,
-        ),
-        (
-            "declare i32 @llvm.sadd.sat.i32(i32, i32)\n\
-             define i32 @f(i32 %a, i32 %b) {\n  %r = call i32 @llvm.sadd.sat.i32(i32 %a, i32 %b)\n  ret i32 %r\n}\n",
+            "declare i32 @llvm.sshl.sat.i32(i32, i32)\n\
+             define i32 @f(i32 %a, i32 %b) {\n  %r = call i32 @llvm.sshl.sat.i32(i32 %a, i32 %b)\n  ret i32 %r\n}\n",
             intrinsic::INTRINSIC,
         ),
     ]);
-    // The same intrinsics at 64 bits compile.
+    // The same intrinsics at 64 and 128 bits compile (WP-070: i128).
+    compile_ll(
+        "declare i128 @llvm.ctpop.i128(i128)\n\
+         define i128 @f(i128 %a) {\n  %r = call i128 @llvm.ctpop.i128(i128 %a)\n  ret i128 %r\n}\n",
+    )
+    .unwrap();
     compile_ll(
         "declare i64 @llvm.ctpop.i64(i64)\n\
          define i64 @f(i64 %a) {\n  %r = call i64 @llvm.ctpop.i64(i64 %a)\n  ret i64 %r\n}\n",
@@ -612,6 +612,58 @@ int main(int argc, char **argv) {
                     );
                 }
             }
+        }
+    }
+}
+
+/// `llvm.eh.typeid.for` in real C++ (WP-070): `tests/data/intrinsic/
+/// typeid.ll` is clang++'s `-O0` code of `typeid.cpp` (catches by
+/// several types in one landing pad, nested try blocks, a rethrow, a
+/// cleanup); `typeid_driver.cpp`, built with g++, throws each type.
+/// hod plainly and stressed, and `llc` as the control, under every
+/// linker.
+#[test]
+fn eh_typeid_for_selects_the_clause() {
+    use common::linking::{Toolchain, exit_code};
+    use common::{emit, llc, llc_major, write_object};
+    let dir = hod_testutil::Scratch::new("a64-intrinsic-typeid");
+    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(gxx) = hod_testutil::tool("g++") else { return };
+    let data = |name: &str| {
+        let path = format!("{}/tests/data/intrinsic/{name}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+    };
+    let source = dir.write("typeid_driver.cpp", &data("typeid_driver.cpp"));
+    let driver = dir.join("typeid-driver.o");
+    let mut command = std::process::Command::new(&gxx);
+    command.args(["-c", "-O1"]).arg(&source).arg("-o").arg(&driver);
+    let built = hod_testutil::run_with(&mut command, &[], std::time::Duration::from_mins(2));
+    assert!(built.success(), "g++: {}", built.stderr_text());
+    let libstdcxx = hod_testutil::run(&gxx, ["-print-file-name=libstdc++.so"]).stdout_text();
+    let libstdcxx = std::path::PathBuf::from(libstdcxx.trim());
+    let text = data("typeid.ll");
+    let (module, bodies) = parse(&format!("{}{text}", ll_header(22)));
+    let mut objects = Vec::new();
+    for (tag, stress) in [("hod", hod_cg::Stress::default()), ("stress", hod_cg::Stress::ALL)] {
+        let emitted = emit(&module, &bodies, &Options { stress, ..Options::default() });
+        objects.push((tag, write_object(&dir, &format!("typeid-{tag}.o"), &emitted)));
+    }
+    if let Some(object) = llc(&dir, "typeid-llc", &format!("{}{text}", ll_header(llc_major())), &[])
+    {
+        objects.push(("llc", object));
+    }
+    for (tag, object) in &objects {
+        for linker in &toolchain.linkers {
+            let exe = dir.join(format!("typeid-{tag}-{}", linker.name));
+            let ran = toolchain.link_and_run(linker, &[], &[&driver, object, &libstdcxx], &exe);
+            let out = ran.stdout_text();
+            assert!(
+                exit_code(&ran) == Some(0) && out.contains("typeid done"),
+                "typeid-{tag} {}: exit {:?}\n{out}{}",
+                linker.name,
+                exit_code(&ran),
+                ran.stderr_text()
+            );
         }
     }
 }

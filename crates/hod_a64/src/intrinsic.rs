@@ -648,7 +648,13 @@ fn st(cx: &mut FnCx<'_, A64>, rt: RegZr, tmp: Reg, slot: FrameRef, limb: u32) {
 }
 
 /// Writes `lo` and `hi` as the two limbs of the `i128` result of `inst`.
-fn wide_result<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, lo: RegZr, hi: RegZr, tmp: Reg) -> CgResult<()> {
+fn wide_result<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    lo: RegZr,
+    hi: RegZr,
+    tmp: Reg,
+) -> CgResult<()> {
     let dst = cx.def_mem(inst)?;
     st(cx, lo, tmp, dst, 0);
     st(cx, hi, tmp, dst, 1);

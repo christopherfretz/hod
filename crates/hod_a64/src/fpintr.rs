@@ -27,11 +27,11 @@
 use hod_cg::{CallArg, CgResult, Class, FnCx, PReg, RuntimeFn};
 use hod_ir::{Inst, Intrinsic, TypeId, TypeKind, Value};
 use hod_mc_a64 as mc;
-use hod_mc_a64::{Cond, FpFormat, FpSize, Reg, Size, VMemSize, VReg};
+use hod_mc_a64::{Cond, FpFormat, FpSize, Reg, Size, VMemSize, VReg, VecBits};
 
 use crate::common::{
-    Cursor, V31, X16, X17, deferred_first, load_gpr_at, mov_imm, put, size_for_bits,
-    store_fpr_at, store_gpr_at, unsupported, value_ty, vr, xr,
+    Cursor, V31, X16, X17, deferred_first, load_gpr_at, mov_imm, put, size_for_bits, store_fpr_at,
+    store_gpr_at, unsupported, value_ty, vr, xr,
 };
 use crate::intrinsic::{INTRINSIC, VECTOR, WIDE};
 use crate::target::A64;
@@ -197,9 +197,10 @@ pub fn fp_intrinsic<'a>(
         (I::CopySign, &[a, b]) => copysign(cx, inst, f, a, b),
         (I::Fma, &[a, b, c]) => fma(cx, inst, f, [a, b, c]),
         (I::FmulAdd, &[a, b, c]) => fmuladd(cx, inst, f, [a, b, c]),
-        (I::MinNum | I::MaxNum | I::Minimum | I::Maximum | I::MinimumNum | I::MaximumNum, &[a, b]) => {
-            min_max(cx, inst, which, f, a, b)
-        }
+        (
+            I::MinNum | I::MaxNum | I::Minimum | I::Maximum | I::MinimumNum | I::MaximumNum,
+            &[a, b],
+        ) => min_max(cx, inst, which, f, a, b),
         (I::Lround | I::Llround | I::Lrint | I::Llrint, &[x]) => to_int(cx, inst, which, f, x),
         (I::FptosiSat | I::FptouiSat, &[x]) => saturate(cx, inst, which == I::FptosiSat, f, x),
         (I::IsFpClass, &[x, mask]) => fp_class(cx, inst, f, x, mask),
@@ -350,7 +351,13 @@ fn fabs<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, f: Fmt, x: Value) -> CgResul
 }
 
 /// `copysign a, b`: the sign bit of `b` with the other bits of `a`.
-fn copysign<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, f: Fmt, a: Value, b: Value) -> CgResult<()> {
+fn copysign<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    f: Fmt,
+    a: Value,
+    b: Value,
+) -> CgResult<()> {
     deferred_first(cx, inst, None)?;
     let ra = cx.use_reg(a)?;
     let rb = cx.use_reg(b)?;
@@ -428,7 +435,12 @@ fn fmuladd<'a>(
             else {
                 return cx.bug("a runtime function returned nothing");
             };
-            finish_call(cx, inst, RuntimeFn::AddTf3, &[CallArg::Reg(p), CallArg::Value(c)], false)
+            // The product moves from the return register to a pool
+            // temporary, which a call argument must be.
+            let t = cx.temp(Class::Fpr)?;
+            put(cx, mc::orr_vec(VecBits::V128, vr(t), vr(p), vr(p)));
+            cx.free_temp(p);
+            finish_call(cx, inst, RuntimeFn::AddTf3, &[CallArg::Reg(t), CallArg::Value(c)], false)
         }
     }
 }
@@ -646,7 +658,9 @@ fn fp_class<'a>(
     put(cx, mc::lsl_imm(Size::X, X17.zr(), X16.zr(), 1));
     put(cx, mc::cmp_imm(Size::X, X17.sp(), 0));
     put(cx, mc::cset(Size::X, r.zr(), Cond::Ne));
-    for (bound, cond) in [(min_normal, Cond::Hs), (inf, Cond::Hs), (inf, Cond::Hi), (quiet, Cond::Hs)] {
+    for (bound, cond) in
+        [(min_normal, Cond::Hs), (inf, Cond::Hs), (inf, Cond::Hi), (quiet, Cond::Hs)]
+    {
         mov_imm(cx, Size::X, t, bound);
         put(cx, mc::cmp(Size::X, X17.zr(), t.zr()));
         put(cx, mc::cinc(Size::X, r.zr(), r, cond));
@@ -699,19 +713,38 @@ fn fp_arg(cx: &mut FnCx<'_, A64>, f: Fmt, x: Value) -> CgResult<CallArg> {
 
 /// An `int` argument of a call: as it is when it is 32 bits wide, else
 /// sign-extended (or truncated) to 32 bits in a temporary.
-fn int_arg(cx: &mut FnCx<'_, A64>, n: Value) -> CgResult<CallArg> {
+fn int_arg(cx: &mut FnCx<'_, A64>, n: Value, clamp: bool) -> CgResult<CallArg> {
     let bits = cx.types().int_bits(value_ty(cx, n));
     match bits {
         Some(32) => Ok(CallArg::Value(n)),
-        Some(bits @ 1..=64) => {
+        Some(bits @ 1..=31) => {
             let a = cx.use_reg(n)?;
             let t = cx.temp(Class::Gpr)?;
-            let width = bits.min(32);
-            put(cx, mc::sbfx(Size::W, xr(t).zr(), xr(a).zr(), 0, width));
+            put(cx, mc::sbfx(Size::W, xr(t).zr(), xr(a).zr(), 0, bits));
             cx.release(n);
             cx.free_temp(a);
             Ok(CallArg::Reg(t))
         }
+        // A wider exponent of `ldexp` is clamped to the `int` range:
+        // beyond it every result is already 0, infinite or `x`.
+        Some(bits @ 33..=64) if clamp => {
+            let a = cx.use_reg(n)?;
+            let t = cx.temp(Class::Gpr)?;
+            let tz = xr(t).zr();
+            put(cx, mc::sbfx(Size::X, tz, xr(a).zr(), 0, bits));
+            cx.release(n);
+            cx.free_temp(a);
+            mov_imm(cx, Size::X, X16, 0x7fff_ffff);
+            put(cx, mc::cmp(Size::X, tz, X16.zr()));
+            put(cx, mc::csel(Size::X, tz, tz, X16.zr(), Cond::Lt));
+            mov_imm(cx, Size::X, X16, 0xffff_ffff_8000_0000);
+            put(cx, mc::cmp(Size::X, tz, X16.zr()));
+            put(cx, mc::csel(Size::X, tz, tz, X16.zr(), Cond::Gt));
+            Ok(CallArg::Reg(t))
+        }
+        // `powi`'s exponent is the C `int` of `__powidf2`; a wider one
+        // has no call (as `llc`).
+        Some(1..=64) => unsupported(INTRINSIC),
         _ => unsupported(WIDE),
     }
 }
@@ -735,7 +768,8 @@ fn call_math<'a>(
         count += 1;
     }
     if let Some(n) = n {
-        list[count] = int_arg(cx, n)?;
+        let clamp = matches!(func, RuntimeFn::Ldexpf | RuntimeFn::Ldexp | RuntimeFn::Ldexpl);
+        list[count] = int_arg(cx, n, clamp)?;
         count += 1;
     }
     finish_call(cx, inst, func, &list[..count], f == Fmt::H)

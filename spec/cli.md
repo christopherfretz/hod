@@ -218,7 +218,8 @@ for nothing else. (A converter whose path is literally `native` is named
 
 Native is the default because over the whole captured corpus every
 module gets the same outcome, the same first reason and the same census
-through `hod_bc` as through `llvm-dis` and text (`docs/status/reasons.md`,
+(as a set: its order follows each reader's numbering of symbols) through
+`hod_bc` as through `llvm-dis` and text (`docs/status/reasons.md`,
 "The routes agree"); a difference is a bug in a reader, not a choice.
 Debug information is refused by name (`debug:*`) on both routes alike.
 

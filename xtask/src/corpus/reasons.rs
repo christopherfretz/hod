@@ -260,6 +260,14 @@ fn counts<'r>(
     list
 }
 
+/// The census as a set: its order is the order the reasons were met,
+/// which follows the reader's numbering of symbols.
+fn census_set(run: &Run) -> Vec<&str> {
+    let mut names = census_names(run);
+    names.sort_unstable();
+    names
+}
+
 fn census_names(run: &Run) -> Vec<&str> {
     if run.reasons == "-" { Vec::new() } else { run.reasons.split(',').collect() }
 }
@@ -320,32 +328,40 @@ fn report(rows: &[Row], options: &Options) -> String {
 fn agreement(out: &mut String, rows: &[Row], majors: &[u32]) {
     let _ = writeln!(
         out,
-        "\n## The routes agree\n\nModules whose reason (and outcome) is the same by two routes, \
-         and whose census is.\n"
+        "\n## The routes agree\n\nModules whose outcome and first reason are the same by two \
+         routes, and whose census is the same set of reasons. The census's order is the order \
+         the reasons were met, which follows each reader's numbering of symbols (`hod_ll` numbers \
+         a symbol at its first mention, `hod_bc` in record order); the last column counts the \
+         modules whose census is in the same order by all three routes.\n"
     );
     let _ = writeln!(
         out,
-        "| LLVM | modules | text = native | native = `llvm-dis` | census: native = `llvm-dis` | census: text = native |\n|---|---:|---:|---:|---:|---:|"
+        "| LLVM | modules | text = native | native = `llvm-dis` | census: text = native | census: native = `llvm-dis` | census in the same order |\n|---|---:|---:|---:|---:|---:|---:|"
     );
     let same = |a: &Run, b: &Run| a.outcome == b.outcome && a.reason == b.reason;
+    let set = |a: &Run, b: &Run| census_set(a) == census_set(b);
     let mut differ = Vec::new();
     for &major in majors {
         let of: Vec<&Row> = rows.iter().filter(|r| r.llvm == major).collect();
         let count = |f: &dyn Fn(&Row) -> bool| of.iter().filter(|r| f(r)).count();
         let _ = writeln!(
             out,
-            "| {major} | {} | {} | {} | {} | {} |",
+            "| {major} | {} | {} | {} | {} | {} | {} |",
             of.len(),
             count(&|r| same(&r.text, &r.native)),
             count(&|r| same(&r.native, &r.dis)),
-            count(&|r| r.native_census.reasons == r.dis_census.reasons),
-            count(&|r| r.text_census.reasons == r.native_census.reasons),
+            count(&|r| set(&r.text_census, &r.native_census)),
+            count(&|r| set(&r.native_census, &r.dis_census)),
+            count(&|r| {
+                r.text_census.reasons == r.native_census.reasons
+                    && r.native_census.reasons == r.dis_census.reasons
+            }),
         );
         for row in of {
             if !same(&row.text, &row.native)
                 || !same(&row.native, &row.dis)
-                || row.native_census.reasons != row.dis_census.reasons
-                || row.text_census.reasons != row.native_census.reasons
+                || !set(&row.text_census, &row.native_census)
+                || !set(&row.native_census, &row.dis_census)
             {
                 differ.push(row);
             }
@@ -356,8 +372,14 @@ fn agreement(out: &mut String, rows: &[Row], majors: &[u32]) {
         for row in differ.iter().take(20) {
             let _ = writeln!(
                 out,
-                "- `{}`: text `{}`, native `{}`, `llvm-dis` `{}`",
-                row.entry, row.text.reason, row.native.reason, row.dis.reason
+                "- `{}`: text `{}` ({}), native `{}` ({}), `llvm-dis` `{}` ({})",
+                row.entry,
+                row.text.reason,
+                row.text_census.reasons,
+                row.native.reason,
+                row.native_census.reasons,
+                row.dis.reason,
+                row.dis_census.reasons
             );
         }
     }

@@ -1017,9 +1017,10 @@ scope is noted `syncscope:<name>`.
   in non-varargs function", "expected '...' at end of argument list for
   musttail call in varargs function"). Nothing is recorded for it: a
   `musttail` call in a variadic function always forwards them, and the
-  printer writes the `...` back (`spec/ir.md` §9.4). `hod_ir`'s verifier
-  also refuses variable arguments of the call itself before the `...`,
-  which LLVM's accepts (`spec/ir.md` §5.8).
+  printer writes the `...` back (`spec/ir.md` §9.4). Variable arguments
+  of the call itself may come before the `...`, as LLVM's verifier
+  accepts them (`spec/ir.md` §5.8, WP-064); code generation refuses
+  such a call by name (`spec/codegen.md` §5.5).
 - A `metadata` argument is read (`!"…"`, `!N`, `!{…}`, `!DIKind(…)`, or a
   value as metadata). A string `!"…"`, or a node that is not `distinct`
   and holds only strings (in place, or `!N` defined so), each valid

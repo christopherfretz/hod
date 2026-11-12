@@ -870,7 +870,11 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
   (clang expands it inline). A `musttail` call in a variadic function
   reloads the unnamed argument registers from the save areas first, so
   the callee receives them as this function did; the stack area beyond
-  the named arguments is never written.
+  the named arguments is never written. Variable arguments of the call
+  before the `...`, which `hod_ir`'s verifier accepts since WP-064, are
+  `musttail:stack-args-unknown`: `TargetStackArgs::of_call` does not
+  type a call's variable arguments (`hod_cg/src/abi.rs`). `llc` places
+  them as any argument, over the forwarded registers they take.
 - **Landing pads** are `{ ptr, i32 }` only: `x0`/`x1` stored to the
   pad's home; clauses are `catch` of a symbol or `null` and `filter` of
   such arrays. `resume` calls `_Unwind_Resume` with the exception

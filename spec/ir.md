@@ -1117,7 +1117,9 @@ intervals: each query is two compares); the cost is in
 
 **`musttail`** (LLVM's `verifyMustTailCall`): the callee is not inline
 assembly; the call and the function agree in variadic-ness, return type
-and calling convention, and pass no variable arguments; the next
+and calling convention (variable arguments of the call before a
+variadic function's forwarded ones are allowed, as LLVM allows them,
+WP-064); the next
 instruction is `ret`, or a `bitcast` of the result and then `ret`, which
 returns nothing, the result (or its cast), `undef` or `poison`. With
 `tailcc` or `swifttailcc` no parameter of the function or the call has

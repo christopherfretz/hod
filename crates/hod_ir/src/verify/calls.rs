@@ -171,7 +171,7 @@ impl Verifier<'_> {
             return self.fail(InvalidCall, id, format!("{} on {}", tail.name(), op.name()));
         }
         if tail == TailKind::MustTail {
-            self.must_tail(id, call, asm.is_some(), intrinsic.is_some(), args, block)?;
+            self.must_tail(id, call, asm.is_some(), intrinsic.is_some(), block)?;
         }
         if let Some(intrinsic) = intrinsic {
             for &index in intrinsic.immediate_args() {
@@ -222,7 +222,6 @@ impl Verifier<'_> {
         call: &CallData,
         asm: bool,
         intrinsic: bool,
-        args: &[Value],
         block: crate::ids::BlockId,
     ) -> IrResult<()> {
         let body = self.body;
@@ -253,10 +252,9 @@ impl Verifier<'_> {
         if call.cc != caller_cc {
             return fail("the function and the call have different conventions");
         }
-        if args.len() > params.len() {
-            // A variadic function's own variable arguments are passed on.
-            return fail("the call passes variable arguments");
-        }
+        // Variable arguments of the call itself may come before the
+        // function's own, which a variadic function passes on (`...`):
+        // LLVM's verifier accepts them (WP-064).
         // Next: `ret`, after an optional `bitcast` of the result; it
         // returns nothing, the result, or `undef` or `poison`.
         let end = body.blocks[block.index()].end;

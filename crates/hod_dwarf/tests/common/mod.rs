@@ -5,7 +5,9 @@
 
 #![allow(dead_code, clippy::too_many_lines, clippy::format_push_string, clippy::format_collect)]
 
+pub mod dies;
 pub mod generate;
+pub mod meta;
 
 use std::path::{Path, PathBuf};
 

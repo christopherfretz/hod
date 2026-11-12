@@ -53,6 +53,8 @@ pub const GROUPS: &[(&str, Enable)] = &[
     }),
     // The floating-point group: `float`, `double`, `fcmp`, conversions.
     ("WP-039", |e| e.options.floats = true),
+    // Mem-class values: i128 (WP-040).
+    ("WP-040", |e| e.options.i128 = true),
     // The intrinsic group: integer and memory intrinsics.
     ("WP-041", |e| e.options.intrinsics = true),
 ];

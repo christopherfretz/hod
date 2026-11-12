@@ -13,6 +13,8 @@ mod common;
 #[path = "common/control.rs"]
 #[allow(dead_code, reason = "the graph generator is not used here")]
 mod graphs;
+#[path = "common/native.rs"]
+mod native;
 
 use std::fmt::Write as _;
 
@@ -470,8 +472,6 @@ struct BitFormat {
 /// `fp128`), with `llc` as the second oracle, under every linker.
 #[allow(clippy::many_single_char_names, reason = "the names of the IEEE table")]
 fn check_bit_format(seed: u64, b: &BitFormat) {
-    use common::linking::Toolchain;
-    use common::{llc, llc_major};
     let f = &b.format;
     let bits = |words: &[u64]| {
         let lo = u128::from(words[0]);
@@ -479,13 +479,8 @@ fn check_bit_format(seed: u64, b: &BitFormat) {
     };
     let mut rng = Rng(seed);
     let mut body = String::new();
-    let mut c = String::from(
-        "#include <stdio.h>\n#include <stdint.h>\n\
-         typedef uint64_t (*fn6)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n",
-    );
-    let mut table = String::from("static const struct { fn6 f; uint64_t a[6]; } calls[] = {\n");
+    let mut calls: Vec<native::Call> = Vec::new();
     let mut want = String::new();
-    let mut count = 0;
     let params = vec![Ty::Int(64); 2 * f.words + 1];
     for pred in FP_PREDS {
         let mut cases: Vec<(Shape, usize, bool)> = SHAPES.iter().map(|&s| (s, 0, false)).collect();
@@ -507,7 +502,6 @@ fn check_bit_format(seed: u64, b: &BitFormat) {
                 LAYOUTS[layout],
             );
             body.push_str(&func.text);
-            writeln!(c, "uint64_t {name}(void);").unwrap();
             for _ in 0..8 {
                 let x = f.values[rng.below(f.values.len())].clone();
                 let y = if rng.chance(1, 4) {
@@ -531,45 +525,14 @@ fn check_bit_format(seed: u64, b: &BitFormat) {
                     ieee_key(bits(&x), b.exp, b.mant),
                     ieee_key(bits(y), b.exp, b.mant),
                 );
-                let list: Vec<String> = args.iter().map(|a| format!("{a}ULL")).collect();
-                writeln!(table, "  {{ (fn6){name}, {{ {} }} }},", list.join(", ")).unwrap();
+                calls.push((name.clone(), args.try_into().expect("six arguments")));
                 writeln!(want, "{}", expected(shape, holds, k)).unwrap();
-                count += 1;
             }
         }
     }
-    c.push_str(&table);
-    c.push_str(
-        "};\nint main(void) {\n  for (unsigned i = 0; i < sizeof calls / sizeof calls[0]; i++) {\n    \
-         const uint64_t *a = calls[i].a;\n    \
-         printf(\"%llu\\n\", (unsigned long long)calls[i].f(a[0], a[1], a[2], a[3], a[4], a[5]));\n  \
-         }\n  return 0;\n}\n",
-    );
-    let dir = hod_testutil::Scratch::new(&format!("a64-fused-{}", f.name));
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
-    let driver = toolchain.compile_c(&dir, "driver", &c, &[]);
-    let (module, bodies) = parse(&format!("{}{body}", ll_header(22)));
-    let mut objects = Vec::new();
-    for mode in &MODES {
-        let emitted = emit(&module, &bodies, &mode.options);
-        objects.push((mode.name, write_object(&dir, &format!("{}.o", mode.name), &emitted)));
-    }
-    if let Some(object) = llc(&dir, "llc", &format!("{}{body}", ll_header(llc_major())), &[]) {
-        objects.push(("llc", object));
-    }
-    for linker in &toolchain.linkers {
-        for (name, object) in &objects {
-            let exe = dir.join(format!("{name}-{}", linker.name));
-            let ran = toolchain.link_and_run(linker, &[], &[&driver, object], &exe);
-            assert!(ran.success(), "{name}: {}", ran.stderr_text());
-            let got = ran.stdout_text();
-            if got != want {
-                let at = got.lines().zip(want.lines()).position(|(g, w)| g != w).unwrap_or(0);
-                let line = table.lines().nth(at + 1).unwrap_or_default();
-                panic!("{name} under {}: call {at} differs: {line}\n{body}", linker.name);
-            }
-        }
-    }
+    let modes = MODES.map(|m| (m.name, m.options));
+    let label = format!("a64-fused-{}", f.name);
+    let count = native::run_table(&label, &body, &calls, &modes, Some(&want));
     eprintln!("a64 fused {}: {count} calls agree", f.name);
 }
 

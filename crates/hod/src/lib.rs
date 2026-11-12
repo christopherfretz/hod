@@ -6,12 +6,18 @@
 //! decline, [`Unsupported`] (a named construct; the caller may fall back to
 //! LLVM) and the other [`CompileError`]s.
 //!
-//! The input is a byte slice today because no IR model exists yet. The
-//! IR-level entry point (`docs/ARCHITECTURE.md` "Input") will replace it;
-//! [`Options`] and the error types are shaped to stay.
+//! [`compile`] reads its input with `hod_ll` (text) or `hod_bc` (bitcode),
+//! checks it with `hod_ir::classify` and declines it with the first reason
+//! (the front half, `front.rs`); a module accepted whole goes to
+//! [`generate`], which is where code generation will be.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::path::PathBuf;
+
+mod front;
+
+pub use front::{BitcodeReading, LIMIT_READER, Report, Settings, compile_with, generate};
 
 /// What [`compile`] writes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -116,24 +122,29 @@ pub struct Options {
 /// Why hod declined a module: the name is what the coverage log and the
 /// strict-mode diagnostic print (`spec/cli.md` "Reasons").
 ///
-/// The per-construct reasons of `hod_ir::classify` join this list when the
-/// IR model lands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// The four fixed reasons are the facade's own; every other reason is
+/// [`Construct::Named`]: a name of `hod_ir::classify`'s vocabulary
+/// (`spec/ir.md` §8.5) or of a reader (`spec/cli.md` "Reasons").
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Construct {
-    /// No code generator exists yet: every module that passes the checks
-    /// below is declined with this.
+    /// No code generator exists yet: every module `classify` accepts whole
+    /// is declined with this.
     CodegenNotImplemented,
-    /// The input is LLVM bitcode; hod has no bitcode reader yet.
+    /// The input is LLVM bitcode and the caller asked for it not to be
+    /// read ([`BitcodeReading::Decline`]).
     BitcodeInput,
     /// Assembly output was requested; hod writes objects only.
     AssemblyOutput,
     /// The target is not one hod generates code for.
     UnsupportedTarget,
+    /// A construct named by `classify` (`group:name`) or by a reader
+    /// (`bitcode:<name>`, [`LIMIT_READER`]).
+    Named(Cow<'static, str>),
 }
 
 impl Construct {
-    /// Every construct, in the order [`compile`] checks them.
+    /// The fixed constructs, in the order [`compile`] checks them.
     pub const ALL: [Construct; 4] = [
         Construct::AssemblyOutput,
         Construct::BitcodeInput,
@@ -142,12 +153,13 @@ impl Construct {
     ];
 
     /// The stable name.
-    pub fn name(self) -> &'static str {
+    pub fn name(&self) -> &str {
         match self {
             Construct::CodegenNotImplemented => "codegen-not-implemented",
             Construct::BitcodeInput => "bitcode-input",
             Construct::AssemblyOutput => "assembly-output",
             Construct::UnsupportedTarget => "unsupported-target",
+            Construct::Named(name) => name,
         }
     }
 }
@@ -254,8 +266,8 @@ pub const TRIPLE_SCAN_LIMIT: usize = 64 * 1024;
 /// begins within the first [`TRIPLE_SCAN_LIMIT`] bytes.
 ///
 /// LLVM's printer, clang and kiln all write it in the module header. This is
-/// a header scan, not a parse; it stands in for the IR reader until that
-/// exists, and returns `None` for bitcode.
+/// a header scan, not a parse: the stated target is checked with it before
+/// the module is read. `None` for bitcode.
 pub fn module_triple(input: &[u8]) -> Option<&str> {
     const PREFIX: &[u8] = b"target triple";
     if InputKind::detect(input) == InputKind::Bitcode {
@@ -296,37 +308,36 @@ pub fn target_supported(triple: &str) -> bool {
 }
 
 /// The triple a compile of `input` with `options` targets, when one is
-/// stated: `-mtriple=`, else the module's own (text modules only, see
-/// [`module_triple`]).
+/// stated before reading it: `-mtriple=`, else the module's own (text
+/// modules only, see [`module_triple`]; [`Report::target`] has a bitcode
+/// module's).
 pub fn effective_triple<'a>(input: &'a [u8], options: &'a Options) -> Option<&'a str> {
     options.triple.as_deref().or_else(|| module_triple(input))
 }
 
 /// Compiles one module to one object file.
 ///
-/// `input` is a whole module, LLVM text or bitcode ([`InputKind::detect`]).
-/// Today every call ends in [`CompileError::Unsupported`]; the checks run in
-/// the order of [`Construct::ALL`], so the reason is deterministic:
+/// `input` is a whole module, LLVM text or bitcode ([`InputKind::detect`]),
+/// both read natively. The checks run in this order, and the first that
+/// applies is the answer (`spec/cli.md` "Reasons"):
 ///
 /// 1. `assembly-output`: `options.output_kind` is not an object;
-/// 2. `bitcode-input`: the input is bitcode;
-/// 3. `unsupported-target`: `-march=` is given (the override is not
-///    implemented), or the stated triple ([`effective_triple`]) is not one
-///    [`target_supported`] accepts;
-/// 4. `codegen-not-implemented`: everything else.
+/// 2. `unsupported-target`: `-march=` is given, or the stated triple
+///    ([`effective_triple`]) is not one [`target_supported`] accepts;
+/// 3. the module level is read: a reader's refusal by name, or malformed
+///    input;
+/// 4. `classify`'s module pass;
+/// 5. each body, as it is read: the reader's refusal, `classify`'s body
+///    pass, `Body::verify`;
+/// 6. [`generate`] for a module accepted whole: today
+///    `codegen-not-implemented`.
+///
+/// [`compile_with`] is the same with [`Settings`] and a [`Report`].
+///
+/// # Errors
+/// Why no object was produced.
 pub fn compile(input: &[u8], options: &Options) -> Result<Vec<u8>, CompileError> {
-    if options.output_kind != OutputKind::Object {
-        return Err(Unsupported::module(Construct::AssemblyOutput).into());
-    }
-    if InputKind::detect(input) == InputKind::Bitcode {
-        return Err(Unsupported::module(Construct::BitcodeInput).into());
-    }
-    let target_ok =
-        options.arch.is_none() && effective_triple(input, options).is_none_or(target_supported);
-    if !target_ok {
-        return Err(Unsupported::module(Construct::UnsupportedTarget).into());
-    }
-    Err(Unsupported::module(Construct::CodegenNotImplemented).into())
+    compile_with(input, options, &Settings::default(), &mut Report::default())
 }
 
 #[cfg(test)]
@@ -340,6 +351,10 @@ mod tests {
     fn object_options() -> Options {
         Options { output_kind: OutputKind::Object, ..Options::default() }
     }
+
+    /// Declarations only: `classify` accepts the module whole.
+    const DECLARATIONS: &[u8] =
+        b"target triple = \"aarch64-unknown-linux-gnu\"\ndeclare i32 @g()\n";
 
     fn reason(input: &[u8], options: &Options) -> Construct {
         match compile(input, options) {
@@ -364,38 +379,60 @@ mod tests {
         assert_eq!(InputKind::Bitcode.name(), "bitcode");
     }
 
-    // spec/cli.md "Reasons": the order of the checks.
+    // spec/cli.md "Reasons": the order of the checks before the module is
+    // read, and the last line.
     #[test]
     fn reasons_in_order() {
         let obj = object_options();
-        assert_eq!(reason(MODULE, &obj), Construct::CodegenNotImplemented);
-        assert_eq!(reason(b"", &obj), Construct::CodegenNotImplemented);
-        assert_eq!(reason(b"BC\xC0\xDE....", &obj), Construct::BitcodeInput);
+        let named = |name: &'static str| Construct::Named(name.into());
+        assert_eq!(reason(DECLARATIONS, &obj), Construct::CodegenNotImplemented);
+        let definition = b"target triple = \"aarch64-unknown-linux-gnu\"\n\
+            define i32 @f() {\n  ret i32 7\n}\n";
+        assert_eq!(reason(definition, &obj), named("global:function-definition"));
+        // MODULE's data layout is not the target's.
+        assert_eq!(reason(MODULE, &obj), Construct::UnsupportedTarget);
+        // No stated target: hod does not guess the host's.
+        assert_eq!(reason(b"", &obj), Construct::UnsupportedTarget);
         assert_eq!(reason(MODULE, &Options::default()), Construct::AssemblyOutput);
         assert_eq!(reason(b"BC\xC0\xDE", &Options::default()), Construct::AssemblyOutput);
         let riscv = Options { triple: Some("riscv64-unknown-linux-gnu".into()), ..obj.clone() };
         assert_eq!(reason(MODULE, &riscv), Construct::UnsupportedTarget);
-        assert_eq!(reason(b"BC\xC0\xDE", &riscv), Construct::BitcodeInput);
+        assert_eq!(reason(b"BC\xC0\xDE", &riscv), Construct::UnsupportedTarget);
         let march = Options { arch: Some("aarch64".into()), ..obj.clone() };
         assert_eq!(reason(MODULE, &march), Construct::UnsupportedTarget);
         let x64 = Options { triple: Some("x86_64-pc-linux-gnu".into()), ..obj.clone() };
-        assert_eq!(reason(MODULE, &x64), Construct::CodegenNotImplemented);
+        let x64_decls = b"target triple = \"x86_64-pc-linux-gnu\"\ndeclare i32 @g()\n";
+        assert_eq!(reason(x64_decls, &x64), Construct::CodegenNotImplemented);
+        // -mtriple names another target than the module's: not retargeted.
+        assert_eq!(reason(DECLARATIONS, &x64), Construct::UnsupportedTarget);
         let wasm = b"target triple = \"wasm32-unknown-unknown\"\n";
         assert_eq!(reason(wasm, &obj), Construct::UnsupportedTarget);
-        // -mtriple overrides the module's triple.
-        let linux = Options { triple: Some("aarch64-unknown-linux-gnu".into()), ..obj };
-        assert_eq!(reason(wasm, &linux), Construct::CodegenNotImplemented);
+        // -mtriple overrides the module's triple in the check, and the
+        // module is then read for its own.
+        let linux = Options { triple: Some("aarch64-unknown-linux-gnu".into()), ..obj.clone() };
+        assert_eq!(reason(wasm, &linux), Construct::UnsupportedTarget);
+        // -mtriple is the target of a module that names none.
+        assert_eq!(reason(b"declare i32 @g()\n", &linux), Construct::CodegenNotImplemented);
+        // Bitcode the caller does not want read.
+        let decline = Settings { bitcode: BitcodeReading::Decline, ..Settings::default() };
+        let declined = compile_with(b"BC\xC0\xDE....", &obj, &decline, &mut Report::default());
+        assert_eq!(declined, Err(Unsupported::module(Construct::BitcodeInput).into()));
+        let asm =
+            compile_with(b"BC\xC0\xDE", &Options::default(), &decline, &mut Report::default());
+        assert_eq!(asm, Err(Unsupported::module(Construct::AssemblyOutput).into()));
     }
 
     // spec/cli.md "Reasons": the names are the coverage log's vocabulary.
     #[test]
     fn construct_names_are_stable_and_distinct() {
-        let names: Vec<&str> = Construct::ALL.iter().map(|c| c.name()).collect();
+        let names: Vec<&str> = Construct::ALL.iter().map(Construct::name).collect();
         assert_eq!(
             names,
             ["assembly-output", "bitcode-input", "unsupported-target", "codegen-not-implemented"]
         );
         assert_eq!(Construct::BitcodeInput.to_string(), "bitcode-input");
+        assert_eq!(Construct::Named("cc:ccc".into()).name(), "cc:ccc");
+        assert_eq!(Construct::Named(LIMIT_READER.into()).to_string(), "limit:reader");
     }
 
     // spec/cli.md "Input": the module's own target, from its header.

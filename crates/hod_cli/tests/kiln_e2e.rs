@@ -189,6 +189,11 @@ fn run_in(dir: &Path, command: &mut Command) -> Outcome {
     outcome
 }
 
+/// Why hod declines what kiln writes for the shim's `llc` (PIC, with the
+/// `PIC Level` module flag): the first reason of `classify`'s module pass
+/// (`spec/ir.md` §8.8).
+const KILN_REASON: &str = "module:pic";
+
 /// The coverage log as rows of fields.
 fn coverage(log: &Path) -> Vec<Vec<String>> {
     let text = std::fs::read_to_string(log).unwrap_or_default();
@@ -202,8 +207,8 @@ fn assert_converted_then_fell_back(log: &Path) {
     let lines = coverage(log);
     assert_eq!(lines.len(), 1, "one translation unit, one line: {lines:?}");
     let line = &lines[0];
-    assert_eq!(line.len(), 10, "{line:?}");
-    assert_eq!(line[..3], ["fallback", "codegen-not-implemented", "bitcode"], "{line:?}");
+    assert_eq!(line.len(), 11, "{line:?}");
+    assert_eq!(line[..3], ["fallback", KILN_REASON, "bitcode"], "{line:?}");
     assert!(line[3].parse::<u64>().is_ok_and(|bytes| bytes > 0), "the bitcode's size: {line:?}");
     assert!(line[5].contains("linux"), "the triple, known from the converted text: {line:?}");
     let micros = |field: &str| field.parse::<u64>().unwrap_or_else(|_| panic!("{line:?}"));
@@ -265,8 +270,7 @@ impl Shimmed {
         let stderr = compile.stderr_text();
         assert!(
             stderr.contains(
-                "hod: error: unsupported construct 'codegen-not-implemented' \
-                 (strict mode: no fallback)"
+                "hod: error: unsupported construct 'module:pic' (strict mode: no fallback)"
             ),
             "{stderr}"
         );
@@ -274,8 +278,8 @@ impl Shimmed {
         let mut lines = coverage(&log);
         assert_eq!(lines.len(), 1, "{lines:?}");
         let line = lines.remove(0);
-        assert_eq!(line.len(), 10, "{line:?}");
-        assert_eq!(line[..2], ["error", "codegen-not-implemented"], "{line:?}");
+        assert_eq!(line.len(), 11, "{line:?}");
+        assert_eq!(line[..2], ["error", KILN_REASON], "{line:?}");
         assert_eq!(line[4], object, "{line:?}");
         assert_eq!(line[9], "-", "no fallback ran: {line:?}");
         line
@@ -314,10 +318,10 @@ fn through_the_shim(kiln: &Path, llvm: PathBuf) {
     let log = shimmed.builds(&["hello.cpp"], "hello", hello);
     let lines = coverage(&log);
     assert_eq!(lines.len(), 1, "one translation unit, one line: {lines:?}");
-    assert_eq!(lines[0].len(), 10, "{lines:?}");
-    assert_eq!(lines[0][..3], ["fallback", "codegen-not-implemented", "text"], "{lines:?}");
+    assert_eq!(lines[0].len(), 11, "{lines:?}");
+    assert_eq!(lines[0][..3], ["fallback", KILN_REASON, "text"], "{lines:?}");
     assert!(lines[0][5].contains("linux"), "the module's triple: {lines:?}");
-    assert_eq!(lines[0][8..], ["-", "0"], "no conversion; the fallback succeeded: {lines:?}");
+    assert_eq!(lines[0][8..], ["-", "0", "-"], "no conversion; the fallback succeeded: {lines:?}");
 
     // A coroutine: kiln runs `opt` first, so `llc` (hod) is handed bitcode.
     let log = shimmed.builds(&["-std=c++20", "coro.cpp"], "coro", "sum of squares: 30\n");

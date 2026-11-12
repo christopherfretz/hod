@@ -35,10 +35,11 @@ struct Line {
     fallback_micros: String,
     conversion_micros: String,
     fallback_status: String,
+    reasons: String,
 }
 
 /// Reads a coverage log, checking the shape of every line: newline
-/// terminated, ten tab-separated fields, the vocabulary of each.
+/// terminated, eleven tab-separated fields, the vocabulary of each.
 fn coverage(log: &Path) -> Vec<Line> {
     let text = std::fs::read_to_string(log).unwrap_or_else(|e| panic!("{}: {e}", log.display()));
     assert!(text.ends_with('\n'), "the log ends with a newline: {text:?}");
@@ -46,7 +47,7 @@ fn coverage(log: &Path) -> Vec<Line> {
     text.lines()
         .map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
-            assert_eq!(fields.len(), 10, "ten fields: {line:?}");
+            assert_eq!(fields.len(), 11, "eleven fields: {line:?}");
             assert!(fields.iter().all(|f| !f.is_empty()), "no empty field: {line:?}");
             assert!(["hod", "fallback", "error"].contains(&fields[0]), "outcome: {line:?}");
             assert!(["text", "bitcode", "-"].contains(&fields[2]), "input kind: {line:?}");
@@ -76,6 +77,7 @@ fn coverage(log: &Path) -> Vec<Line> {
                 fallback_micros: fields[7].to_owned(),
                 conversion_micros: fields[8].to_owned(),
                 fallback_status: fields[9].to_owned(),
+                reasons: fields[10].to_owned(),
             }
         })
         .collect()
@@ -91,6 +93,7 @@ fn hod() -> Command {
         "HOD_BITCODE_VIA",
         "HOD_IN_FALLBACK",
         "HOD_TIME_PHASES",
+        "HOD_CENSUS",
     ] {
         command.env_remove(var);
     }
@@ -197,7 +200,7 @@ fn fallback_receives_original_arguments_and_identical_input() {
     let line = &lines[0];
     assert_eq!(
         (line.outcome.as_str(), line.reason.as_str(), line.input_kind.as_str()),
-        ("fallback", "codegen-not-implemented", "text")
+        ("fallback", "global:function-definition", "text")
     );
     assert_eq!(line.input_bytes, input.len().to_string());
     assert_eq!(line.output, out.to_str().unwrap());
@@ -269,7 +272,7 @@ fn phase_report_with_a_fallback() {
     fall_back.env("HOD_TIME_PHASES", &report).env("HOD_FALLBACK_LLC", &llc.path);
     let outcome = run_hod(fall_back.args(["-filetype=obj", "-o", "x.o"]), MODULE.as_bytes());
     assert_eq!(exit_code(&outcome), 0, "{}", outcome.stderr_text());
-    assert_eq!(names(), "read compile fallback total");
+    assert_eq!(names(), "read parse classify compile fallback total");
     // A command line hod hands on unread has no phase before the fallback.
     let mut unread = hod();
     unread.env("HOD_TIME_PHASES", &report).env("HOD_FALLBACK_LLC", &llc.path);
@@ -305,7 +308,9 @@ fn fallback_exit_status_propagates() {
     // the status is the line's last field.
     let lines = coverage(&log);
     assert_eq!(lines.len(), 4);
-    assert!(lines.iter().all(|l| l.outcome == "fallback" && l.reason == "codegen-not-implemented"));
+    assert!(
+        lines.iter().all(|l| l.outcome == "fallback" && l.reason == "global:function-definition")
+    );
     let statuses: Vec<&str> = lines.iter().map(|l| l.fallback_status.as_str()).collect();
     assert_eq!(statuses, ["1", "2", "7", "255"]);
 
@@ -359,7 +364,7 @@ fn strict_mode_fails_with_the_construct_named() {
     let scratch = Scratch::new("cli-strict");
     let llc = FakeLlc::new(&scratch, "llc");
     let log = scratch.join("cov.tsv");
-    let expected = "hod: error: unsupported construct 'codegen-not-implemented' \
+    let expected = "hod: error: unsupported construct 'global:function-definition' \
                     (strict mode: no fallback)\n";
     let by_flag = run_hod(
         hod().env("HOD_FALLBACK_LLC", &llc.path).env("HOD_COVERAGE_LOG", &log).args([
@@ -390,7 +395,7 @@ fn strict_mode_fails_with_the_construct_named() {
     for line in &lines {
         assert_eq!(
             (line.outcome.as_str(), line.reason.as_str(), line.output.as_str()),
-            ("error", "codegen-not-implemented", "x.o")
+            ("error", "global:function-definition", "x.o")
         );
     }
 
@@ -399,7 +404,7 @@ fn strict_mode_fails_with_the_construct_named() {
     assert_eq!(exit_code(&outcome), 2);
     assert_eq!(
         outcome.stderr_text(),
-        "hod: error: unsupported construct 'codegen-not-implemented'; no fallback is configured \
+        "hod: error: unsupported construct 'global:function-definition'; no fallback is configured \
          (--fallback=<llc> or HOD_FALLBACK_LLC)\n"
     );
 }
@@ -419,12 +424,20 @@ fn reasons_reach_the_log() {
         (
             &["-filetype=obj"],
             MODULE.as_bytes(),
+            "global:function-definition",
+            "text",
+            "aarch64-unknown-linux-gnu",
+        ),
+        (
+            &["-filetype=obj"],
+            b"target triple = \"aarch64-unknown-linux-gnu\"\ndeclare void @g()\n",
             "codegen-not-implemented",
             "text",
             "aarch64-unknown-linux-gnu",
         ),
-        (&["-filetype=obj"], bitcode, "bitcode-input", "bitcode", "-"),
-        (&["-filetype=obj"], wrapped, "bitcode-input", "bitcode", "-"),
+        // Read natively: a bitcode header and nothing else.
+        (&["-filetype=obj"], bitcode, "malformed-input", "bitcode", "-"),
+        (&["-filetype=obj"], wrapped, "malformed-input", "bitcode", "-"),
         (&[], MODULE.as_bytes(), "assembly-output", "text", "aarch64-unknown-linux-gnu"),
         (&["-filetype=asm"], bitcode, "assembly-output", "bitcode", "-"),
         (
@@ -444,11 +457,11 @@ fn reasons_reach_the_log() {
         (
             &["-filetype=obj"],
             b"define void @f() {\n  ret void\n}\n",
-            "codegen-not-implemented",
+            "unsupported-target",
             "text",
             "-",
         ),
-        (&["-filetype=obj"], b"", "codegen-not-implemented", "text", "-"),
+        (&["-filetype=obj"], b"", "unsupported-target", "text", "-"),
     ];
     for (args, input, ..) in cases {
         let outcome = run_hod(
@@ -625,7 +638,7 @@ fn coverage_log_survives_concurrent_writers() {
     for line in &lines {
         assert_eq!(
             (line.outcome.as_str(), line.reason.as_str(), line.input_kind.as_str()),
-            ("fallback", "codegen-not-implemented", "text")
+            ("fallback", "global:function-definition", "text")
         );
         assert_eq!(line.input_bytes, MODULE.len().to_string());
     }
@@ -685,7 +698,7 @@ fn hod_is_not_its_own_fallback() {
     let lines = coverage(&log);
     let summary: Vec<(&str, &str)> =
         lines.iter().map(|l| (l.outcome.as_str(), l.reason.as_str())).collect();
-    assert_eq!(summary, [("error", "fallback-loop"), ("fallback", "codegen-not-implemented")]);
+    assert_eq!(summary, [("error", "fallback-loop"), ("fallback", "global:function-definition")]);
     assert_eq!(lines[1].fallback_status, "1");
 }
 
@@ -812,7 +825,7 @@ fn bitcode_is_converted_and_goes_on_as_text() {
     let line = &lines[0];
     assert_eq!(
         (line.outcome.as_str(), line.reason.as_str(), line.input_kind.as_str()),
-        ("fallback", "codegen-not-implemented", "bitcode"),
+        ("fallback", "global:function-definition", "bitcode"),
         "the text reached the same decline as a text input"
     );
     assert_eq!(line.input_bytes, input.len().to_string(), "the bitcode's size");
@@ -1053,7 +1066,7 @@ fn bitcode_file_input() {
     let line = &lines[0];
     assert_eq!(
         (line.reason.as_str(), line.input_kind.as_str(), line.target.as_str()),
-        ("codegen-not-implemented", "bitcode", "x86_64-unknown-linux-gnu")
+        ("global:function-definition", "bitcode", "x86_64-unknown-linux-gnu")
     );
     assert_eq!(line.input_bytes, bitcode.len().to_string());
     assert_eq!(line.output, scratch.join("m.o").to_str().unwrap());
@@ -1096,9 +1109,21 @@ fn converter_settings() {
     assert!(from_flag.ran() && !from_env.ran());
     assert_eq!(llc.args(), ["-filetype=obj"]);
 
-    // Set but empty is unset: bitcode is declined as without a converter.
+    // Set but empty is unset: bitcode is read natively (and these bytes
+    // are no module). `native` is the same, also over the environment's
+    // converter.
     let outcome = run_hod(base().env("HOD_BITCODE_VIA", "").arg("-filetype=obj"), &bitcode);
     assert_eq!(exit_code(&outcome), 0, "{}", outcome.stderr_text());
+    let outcome = run_hod(base().env("HOD_BITCODE_VIA", "native").arg("-filetype=obj"), &bitcode);
+    assert_eq!(exit_code(&outcome), 0, "{}", outcome.stderr_text());
+    let outcome = run_hod(
+        base()
+            .env("HOD_BITCODE_VIA", &from_env.path)
+            .args(["--bitcode-via=native", "-filetype=obj"]),
+        &bitcode,
+    );
+    assert_eq!(exit_code(&outcome), 0, "{}", outcome.stderr_text());
+    assert!(!from_env.ran());
 
     // Not run: a text module; assembly output; a rejected command line.
     let via = format!("--bitcode-via={}", never.path.display());
@@ -1136,10 +1161,12 @@ fn converter_settings() {
     assert_eq!(
         summary,
         [
-            ("fallback", "codegen-not-implemented", "bitcode", true),
-            ("fallback", "codegen-not-implemented", "bitcode", true),
-            ("fallback", "bitcode-input", "bitcode", false),
-            ("fallback", "codegen-not-implemented", "text", false),
+            ("fallback", "global:function-definition", "bitcode", true),
+            ("fallback", "global:function-definition", "bitcode", true),
+            ("fallback", "malformed-input", "bitcode", false),
+            ("fallback", "malformed-input", "bitcode", false),
+            ("fallback", "malformed-input", "bitcode", false),
+            ("fallback", "global:function-definition", "text", false),
             ("fallback", "assembly-output", "bitcode", false),
             ("fallback", "unknown-option", "-", false),
             ("error", "usage", "-", false),
@@ -1236,7 +1263,7 @@ fn real_llc_fallback_text() {
     assert_eq!(lines.len(), 1);
     assert_eq!(
         (lines[0].outcome.as_str(), lines[0].reason.as_str(), lines[0].input_kind.as_str()),
-        ("fallback", "codegen-not-implemented", "text")
+        ("fallback", "global:function-definition", "text")
     );
 
     // `-o -`: the object arrives on hod's standard output.
@@ -1306,10 +1333,11 @@ fn real_llc_fallback_bitcode() {
     assert_eq!(lines.len(), 1);
     assert_eq!(
         (lines[0].outcome.as_str(), lines[0].reason.as_str(), lines[0].input_kind.as_str()),
-        ("fallback", "bitcode-input", "bitcode")
+        ("fallback", "global:function-definition", "bitcode"),
+        "read natively, declined for what it contains"
     );
     assert_eq!(lines[0].input_bytes, bitcode.len().to_string());
-    assert_eq!(lines[0].target, "-", "without a converter a bitcode module's triple is not read");
+    assert_eq!(lines[0].target, "aarch64-unknown-linux-gnu", "the module's own, as read");
     assert_eq!(lines[0].conversion_micros, "-");
 }
 
@@ -1380,7 +1408,7 @@ fn real_llvm_dis_converts_bitcode() {
         assert_eq!(exit_code(&strict), 2, "LLVM {major}");
         assert_eq!(
             strict.stderr_text(),
-            "hod: error: unsupported construct 'codegen-not-implemented' \
+            "hod: error: unsupported construct 'global:function-definition' \
              (strict mode: no fallback)\n"
         );
         // The wrapper form of bitcode is bitcode too; llvm-dis reads it.
@@ -1404,7 +1432,7 @@ fn real_llvm_dis_converts_bitcode() {
         ]) {
             assert_eq!(
                 (line.outcome.as_str(), line.reason.as_str(), line.input_kind.as_str()),
-                (outcome, "codegen-not-implemented", "bitcode"),
+                (outcome, "global:function-definition", "bitcode"),
                 "LLVM {major}"
             );
             assert_eq!(line.input_bytes, bytes.to_string(), "LLVM {major}");
@@ -1412,6 +1440,35 @@ fn real_llvm_dis_converts_bitcode() {
             assert_ne!(line.conversion_micros, "-", "LLVM {major}");
         }
         assert_eq!(lines[0].fallback_status, "0");
+        assert!(lines.iter().all(|line| line.reasons == "-"), "no census asked for");
+
+        // The native reader and the converter give the same reason and
+        // the same census (field 11), for plain and wrapped bitcode.
+        let census = scratch.join("census.tsv");
+        for input in [&bitcode, &wrapped] {
+            for route in [via.as_str(), "--bitcode-via=native"] {
+                let ran = run_hod(
+                    hod()
+                        .env("HOD_COVERAGE_LOG", &census)
+                        .env("HOD_CENSUS", "1")
+                        .args([route, "-filetype=obj"]),
+                    input,
+                );
+                assert_eq!(exit_code(&ran), 2, "LLVM {major} {route}: {}", ran.stderr_text());
+            }
+        }
+        let lines = coverage(&census);
+        assert_eq!(lines.len(), 4);
+        for line in &lines {
+            assert_eq!(line.reason, "global:function-definition", "LLVM {major}: {line:?}");
+            assert_eq!(line.reasons, lines[0].reasons, "LLVM {major}: {line:?}");
+            assert_eq!(line.target, "aarch64-unknown-linux-gnu", "LLVM {major}: {line:?}");
+        }
+        assert!(lines[0].reasons.starts_with("global:function-definition,cc:ccc,"), "{lines:?}");
+        assert_eq!(
+            lines.iter().map(|l| l.conversion_micros != "-").collect::<Vec<_>>(),
+            [true, false, true, false]
+        );
     }
 }
 

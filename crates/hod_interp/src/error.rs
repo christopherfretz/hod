@@ -72,6 +72,20 @@ traps! {
     NoReturnReturned = "noreturn-returned",
     /// A host function refused its arguments.
     Host = "host",
+    /// `indirectbr` to an address that is not one of its destinations.
+    IndirectBrTarget = "indirectbr-target",
+    /// An exception for which the search phase finds no handler: the
+    /// Itanium runtime calls `std::terminate` without unwinding (§5.9).
+    UncaughtException = "uncaught-exception",
+    /// An exception would leave a call or a function marked `nounwind`.
+    UnwindFromNounwind = "unwind-from-nounwind",
+    /// The cleanup phase of an unwind meets a handler the search phase did
+    /// not choose, or does not meet the one it chose: what happens then
+    /// differs between C++ runtimes (§5.9).
+    EhPhaseMismatch = "eh-phase-mismatch",
+    /// `resume` or `hod_catch` of something that is not an exception
+    /// waiting in a landing pad.
+    NotAnException = "not-an-exception",
     /// The instruction budget ran out.
     Fuel = "limit-fuel",
     /// Calls nested deeper than the configured limit.

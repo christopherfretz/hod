@@ -5,15 +5,18 @@
 //! pushes a frame and a `ret` pops one, so the host stack does not grow
 //! with the interpreted call depth.
 
+use std::collections::HashMap;
 use std::fmt::{self, Write as _};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use hod_ir::{
-    BlockId, Body, CallSite, Callee, Const, ConstId, FixupTarget, Inst, InstId, InstKind,
-    Intrinsic, IrErrorKind, IrResult, Linkage, Module, NoCode, Opcode, ParamMem, RmwOp, SymId,
-    SymbolKind, TlsModel, TypeId, TypeKind, Value, ValueKind, no_code_intrinsic,
+    BlockId, Body, CallSite, Callee, Clause, Const, ConstId, FixupTarget, FnAttrs, Inst, InstId,
+    InstKind, Intrinsic, IrErrorKind, IrResult, Linkage, Module, NoCode, Opcode, ParamMem, RmwOp,
+    SymId, SymbolKind, TlsModel, TypeId, TypeKind, Value, ValueKind, no_code_intrinsic,
 };
 
+use crate::eh;
 use crate::error::{Stop, Trap, invalid, unsupported};
 use crate::memory::{AllocKind, Mark, Memory};
 use crate::ops::{self, Checked, IntOp};
@@ -269,6 +272,13 @@ impl<'a> Interp<'a> {
             steps: 0,
             max_depth: 0,
             pending: Vec::new(),
+            serials: 0,
+            builtin_of: Vec::new(),
+            block_addrs: HashMap::new(),
+            block_at: HashMap::new(),
+            eh_tables: HashMap::new(),
+            exns: Vec::new(),
+            landing: None,
         };
         let result = machine.run(entry, args);
         let stopped_at = match (&result, machine.frames.last()) {
@@ -352,6 +362,8 @@ struct Frame<'a> {
     block: BlockId,
     /// The call that made this frame was marked `noreturn`.
     noreturn: bool,
+    /// Which activation this is: frames of a run have distinct serials.
+    serial: u64,
 }
 
 /// What executing one instruction leads to.
@@ -364,6 +376,8 @@ enum Flow {
     Return(Option<Val>),
     /// A frame was pushed.
     Called,
+    /// An exception transferred control to a landing pad (§5.9).
+    Unwound,
 }
 
 /// What one step of the run loop leads to.
@@ -395,6 +409,84 @@ struct Machine<'r, 'a> {
     max_depth: u32,
     /// The values of a block's `phi`s while an edge is taken.
     pending: Vec<Val>,
+    /// Frames pushed so far: the next frame's serial.
+    serials: u64,
+    /// By `SymId`: which function of the model (§5.9) a declaration is.
+    builtin_of: Vec<Builtin>,
+    /// The address of each `blockaddress` of the module (§5.5).
+    block_addrs: HashMap<(SymId, BlockId), u64>,
+    block_at: HashMap<u64, (SymId, BlockId)>,
+    /// The type-id tables of the functions that unwound (§5.9).
+    eh_tables: HashMap<SymId, Rc<EhTable>>,
+    /// Every exception of the run, in the order they were thrown.
+    exns: Vec<Exn>,
+    /// The exception and selector of the landing pad being entered.
+    landing: Option<(u64, i32)>,
+}
+
+/// The functions of the exception model (§5.9) a declaration may be.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Builtin {
+    None,
+    Throw,
+    Catch,
+}
+
+/// Where an exception is (§5.9).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ExnState {
+    /// Being unwound: no code runs.
+    Raised,
+    /// A landing pad received it: it may be resumed or caught.
+    Landed,
+    /// Caught by `hod_catch`.
+    Done,
+}
+
+#[derive(Clone, Debug)]
+struct Exn {
+    /// Its address: an identity, not memory.
+    addr: u64,
+    /// The address of its type-information object.
+    ty: u64,
+    payload: Val,
+    /// The serial of the frame the search phase chose, and the call its
+    /// handler is at.
+    handler: u64,
+    handler_pc: u32,
+    /// It landed in the handler (not a cleanup): `hod_catch` may take it.
+    landed_handler: bool,
+    state: ExnState,
+}
+
+/// One landing-pad clause with the function's type ids resolved.
+#[derive(Clone, Debug)]
+enum EhClause {
+    /// Matches this type, or every type when it is 0; selector `id`.
+    Catch { ty: u64, id: i32 },
+    /// Matches every type not listed; selector `id`, which is negative.
+    Filter { tys: Vec<u64>, id: i32 },
+}
+
+/// A function's view of the personality's tables (§5.9).
+#[derive(Debug, Default)]
+struct EhTable {
+    /// Type-information addresses (0: catch-all) in order of first
+    /// mention; a type's id is its index + 1.
+    types: Vec<u64>,
+    /// The clauses of each landing pad, by the `landingpad` instruction.
+    pads: HashMap<InstId, Vec<EhClause>>,
+}
+
+/// What the personality does with an exception at one landing pad.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PadMatch {
+    /// A clause matches: the pad is a handler, with this selector.
+    Handler(i32),
+    /// No clause matches and the pad is a cleanup: selector 0.
+    Cleanup,
+    /// The pad is not entered.
+    Nothing,
 }
 
 impl<'a> Machine<'_, 'a> {
@@ -420,9 +512,20 @@ impl<'a> Machine<'_, 'a> {
         }
         self.push_frame(entry, body, args.to_vec(), false)?;
         loop {
-            if let Step::Done(result) = self.step()? {
-                return Ok(result);
+            match self.step() {
+                Ok(Step::Done(result)) => return Ok(result),
+                Ok(Step::Running) => {}
+                // §4: an access to a declared variable is not refused for
+                // the program's sake: what the variable holds is unknown.
+                Err(Stop::Trap(Trap::OutOfBounds))
+                    if let Some(sym) = self.mem.take_extern_hit() =>
+                {
+                    let name = String::from_utf8_lossy(self.module.symbol(sym).name()).into_owned();
+                    return unsupported(format!("extern:{name}"));
+                }
+                Err(stop) => return Err(stop),
             }
+            self.mem.take_extern_hit();
         }
     }
 
@@ -435,6 +538,7 @@ impl<'a> Machine<'_, 'a> {
         let count = module.symbol_count();
         self.addrs = vec![0; count];
         self.host_of = vec![0; count];
+        self.builtin_of = vec![Builtin::None; count];
         self.host_calls = vec![0; self.hosts.len()];
         for (index, host) in self.hosts.iter().enumerate() {
             if let Some(sym) = module.find_symbol(host.name.as_bytes()) {
@@ -445,12 +549,20 @@ impl<'a> Machine<'_, 'a> {
         let mut fixups = Vec::new();
         let mut patches = Vec::new();
         let mut spans = Vec::new();
+        let mut declared = Vec::new();
         for symbol in module.symbols() {
             let sym = symbol.id();
             match symbol.kind() {
                 SymbolKind::Function { .. } => {
-                    let defined =
-                        self.program.body(sym).is_some() || self.host_of[sym.index()] != 0;
+                    let builtin = match symbol.name() {
+                        name if name == eh::THROW.as_bytes() => Builtin::Throw,
+                        name if name == eh::CATCH.as_bytes() => Builtin::Catch,
+                        _ => Builtin::None,
+                    };
+                    self.builtin_of[sym.index()] = builtin;
+                    let defined = self.program.body(sym).is_some()
+                        || self.host_of[sym.index()] != 0
+                        || builtin != Builtin::None;
                     if defined || symbol.linkage() != Linkage::ExternWeak {
                         self.addrs[sym.index()] = self.mem.alloc_function(sym)?;
                     }
@@ -494,7 +606,21 @@ impl<'a> Machine<'_, 'a> {
                         patches.extend(fixups.iter().map(|fixup| (at, *fixup)));
                     }
                 }
+                SymbolKind::Variable { tls: TlsModel::None, init: None, .. } => declared.push(sym),
                 _ => {}
+            }
+        }
+        // After everything else, so that these do not move the addresses
+        // of programs without them.
+        for sym in declared {
+            self.addrs[sym.index()] = self.mem.alloc_extern(sym)?;
+        }
+        for index in 0..module.consts.len() {
+            if let Const::BlockAddr { func, block } = module.consts.get(ConstId::new(index as u32))
+            {
+                let addr = self.mem.reserve()?;
+                self.block_addrs.insert((func, block), addr);
+                self.block_at.insert(addr, (func, block));
             }
         }
         for (at, fixup) in patches {
@@ -509,7 +635,15 @@ impl<'a> Machine<'_, 'a> {
         match target {
             FixupTarget::Sym(sym) | FixupTarget::Plt(sym) => self.sym_addr(sym),
             FixupTarget::Diff { .. } | FixupTarget::PltDiff { .. } => unsupported("const:symdiff"),
-            FixupTarget::Block { .. } => unsupported("const:blockaddress"),
+            FixupTarget::Block { func, block } => self.block_addr(func, block),
+        }
+    }
+
+    /// The address of `blockaddress(func, block)` (§5.5).
+    fn block_addr(&self, func: SymId, block: BlockId) -> Result<u64, Stop> {
+        match self.block_addrs.get(&(func, block)) {
+            Some(&addr) => Ok(addr),
+            None => invalid(format!("blockaddress({func:?}, {block:?}) is not a constant")),
         }
     }
 
@@ -717,7 +851,7 @@ impl<'a> Machine<'_, 'a> {
                 (Class::Int(bits), Val::Ptr(addr)) => Val::int(bits, u128::from(addr)),
                 _ => return invalid(format!("{id:?} is not an integer of an address")),
             },
-            Const::BlockAddr { .. } => return unsupported("const:blockaddress"),
+            Const::BlockAddr { func, block } => Val::Ptr(self.block_addr(func, block)?),
             Const::SymDiff { .. } => return unsupported("const:symdiff"),
             Const::Expr { op, .. } => return unsupported(format!("const-expr:{}", op.name())),
         })
@@ -913,7 +1047,9 @@ impl<'a> Machine<'_, 'a> {
             pc: first,
             block: entry.id(),
             noreturn,
+            serial: self.serials,
         });
+        self.serials += 1;
         self.max_depth = self.max_depth.max(self.frames.len() as u32);
         Ok(())
     }
@@ -944,13 +1080,10 @@ impl<'a> Machine<'_, 'a> {
             }
             Flow::Next => self.advance(),
             Flow::Jump(to) => self.jump(&f, to)?,
-            Flow::Called => {}
+            Flow::Called | Flow::Unwound => {}
             Flow::Return(val) => {
-                self.frames.pop();
-                self.mem.release(f.mark);
-                self.vals.truncate(f.args);
-                self.slots.truncate(f.slots);
-                let Some(caller) = self.frames.last_mut() else {
+                self.pop_frame();
+                let Some(&caller) = self.frames.last() else {
                     return Ok(Step::Done(val));
                 };
                 if f.noreturn {
@@ -959,10 +1092,24 @@ impl<'a> Machine<'_, 'a> {
                 if let Some(val) = val {
                     self.vals[caller.insts + caller.pc as usize] = Some(val);
                 }
-                caller.pc += 1;
+                // An `invoke` continues at its normal destination.
+                match caller.body.inst(InstId::new(caller.pc)).call().and_then(|c| c.normal_dest())
+                {
+                    Some(normal) => self.jump(&caller, normal)?,
+                    None => self.advance(),
+                }
             }
         }
         Ok(Step::Running)
+    }
+
+    /// Ends the innermost frame: its memory dies, its values are gone.
+    fn pop_frame(&mut self) {
+        if let Some(f) = self.frames.pop() {
+            self.mem.release(f.mark);
+            self.vals.truncate(f.args);
+            self.slots.truncate(f.slots);
+        }
     }
 
     fn advance(&mut self) {
@@ -1161,11 +1308,57 @@ impl<'a> Machine<'_, 'a> {
             }
             InstKind::VaArg { .. } => return unsupported("inst:va_arg"),
             InstKind::Call(call) if op == Opcode::Call => return self.call(f, call, ty),
-            InstKind::Call(_)
-            | InstKind::LandingPad(_)
-            | InstKind::IndirectBr { .. }
-            | InstKind::Resume { .. }
-            | InstKind::Funclet => return unsupported(format!("inst:{}", op.name())),
+            InstKind::Call(call) if op == Opcode::Invoke => {
+                let Some(normal) = call.normal_dest() else {
+                    return invalid("an invoke without a normal destination");
+                };
+                return Ok(match self.call(f, call, ty)? {
+                    Flow::Value(val) => {
+                        self.vals[f.insts + f.pc as usize] = Some(val);
+                        Flow::Jump(normal)
+                    }
+                    Flow::Next => Flow::Jump(normal),
+                    other => other,
+                });
+            }
+            InstKind::LandingPad(_) => {
+                let Some((exn, selector)) = self.landing.take() else {
+                    return invalid("a landingpad reached other than by unwinding");
+                };
+                let Some(&[_, sel_ty]) = self.module.types.struct_fields(ty) else {
+                    return invalid("a landingpad whose type is not a pair");
+                };
+                if sel_ty != TypeId::I32 {
+                    return invalid("a landingpad whose selector is not an i32");
+                }
+                self.pair_of(ty, &Val::Ptr(exn), &Val::i32(selector as u32))?
+            }
+            InstKind::Resume { value } => {
+                let Val::Agg(agg) = self.get(f, value)? else {
+                    return invalid("resume of something that is not a pair");
+                };
+                let mut word = [0u8; 8];
+                match agg.bytes.get(..8) {
+                    Some(bytes) => word.copy_from_slice(bytes),
+                    None => return invalid("resume of a pair without a pointer"),
+                }
+                self.resume(u64::from_le_bytes(word))?;
+                return Ok(Flow::Unwound);
+            }
+            InstKind::IndirectBr { addr, targets } => {
+                let addr = self.ptr(f, addr)?;
+                return match self.block_at.get(&addr) {
+                    Some(&(func, block))
+                        if func == f.sym && targets.into_iter().any(|t| t == block) =>
+                    {
+                        Ok(Flow::Jump(block))
+                    }
+                    _ => Err(Trap::IndirectBrTarget.into()),
+                };
+            }
+            InstKind::Call(_) | InstKind::Funclet => {
+                return unsupported(format!("inst:{}", op.name()));
+            }
             InstKind::Br { target } => return Ok(Flow::Jump(target)),
             InstKind::CondBr { cond, if_true, if_false } => {
                 let (_, cond) = self.int(f, cond)?;
@@ -1394,6 +1587,9 @@ impl<'a> Machine<'_, 'a> {
             self.push_frame(target, body, args, call.is_noreturn())?;
             return Ok(Flow::Called);
         }
+        if self.host_of[target.index()] == 0 && self.builtin_of[target.index()] != Builtin::None {
+            return self.builtin(target, &args, ret, call.is_noreturn());
+        }
         let Some(index) = self.host_of[target.index()].checked_sub(1) else {
             return unsupported(format!("extern:{}", String::from_utf8_lossy(symbol.name())));
         };
@@ -1420,6 +1616,314 @@ impl<'a> Machine<'_, 'a> {
         }
         let _ = ty;
         Ok(result.map_or(Flow::Next, Flow::Value))
+    }
+
+    /// A call of a function of the exception model (§5.9).
+    fn builtin(
+        &mut self,
+        target: SymId,
+        args: &[Val],
+        ret: TypeId,
+        noreturn: bool,
+    ) -> Result<Flow, Stop> {
+        match (self.builtin_of[target.index()], args, ret) {
+            (Builtin::Throw, [Val::Ptr(ty), payload @ Val::Int { bits: 64, .. }], TypeId::VOID) => {
+                if *ty == 0 {
+                    // The model's own refusal, as a host function's.
+                    return Err(Trap::Host.into());
+                }
+                self.throw(*ty, payload.clone())?;
+                Ok(Flow::Unwound)
+            }
+            (Builtin::Catch, [Val::Ptr(addr)], TypeId::I64) => {
+                let exn = self.exns.iter_mut().find(|exn| exn.addr == *addr);
+                match exn {
+                    Some(exn) if exn.state == ExnState::Landed && exn.landed_handler => {
+                        exn.state = ExnState::Done;
+                        if noreturn {
+                            return Err(Trap::NoReturnReturned.into());
+                        }
+                        Ok(Flow::Value(exn.payload.clone()))
+                    }
+                    _ => Err(Trap::NotAnException.into()),
+                }
+            }
+            _ => {
+                let name = String::from_utf8_lossy(self.module.symbol(target).name());
+                invalid(format!("{name} is declared with another type"))
+            }
+        }
+    }
+
+    // ---- unwinding (§5.9) ----
+
+    /// Throws an exception of type `ty` from the call the innermost frame
+    /// is at: the search phase, then the cleanup phase.
+    fn throw(&mut self, ty: u64, payload: Val) -> Result<(), Stop> {
+        let addr = self.mem.reserve()?;
+        // Phase 1: the first frame, inside out, whose landing pad has a
+        // handler. A pad that only cleans up does not stop the search.
+        let mut left: Option<SymId> = None;
+        let mut handler = None;
+        for index in (0..self.frames.len()).rev() {
+            let f = self.frames[index];
+            let call = self.unwound_call(&f, left)?;
+            if let Some(pad) = call.and_then(|c| c.unwind_dest())
+                && let PadMatch::Handler(_) = self.pad_match(&f, pad, ty)?
+            {
+                handler = Some((f.serial, f.pc));
+                break;
+            }
+            left = Some(f.sym);
+            self.tick(1)?;
+        }
+        let Some((serial, pc)) = handler else {
+            // `__cxa_throw` calls `std::terminate`; no cleanup runs.
+            return Err(Trap::UncaughtException.into());
+        };
+        self.exns.push(Exn {
+            addr,
+            ty,
+            payload,
+            handler: serial,
+            handler_pc: pc,
+            state: ExnState::Raised,
+            landed_handler: false,
+        });
+        self.cleanup_phase(self.exns.len() - 1, None)
+    }
+
+    /// The call through which an exception leaves the frame `f`, after
+    /// leaving the function `left` (none: the thrower itself), with the
+    /// `nounwind` checks of crossing them.
+    fn unwound_call(
+        &self,
+        f: &Frame<'a>,
+        left: Option<SymId>,
+    ) -> Result<Option<CallSite<'a>>, Stop> {
+        let Some(call) = f.body.inst(InstId::new(f.pc)).call() else {
+            return invalid("an exception left something that is not a call");
+        };
+        // The function left: the callee of a body, else the thrower.
+        let leaving = left.or_else(|| call.callee_value().as_sym());
+        if call.is_nounwind() || leaving.is_some_and(|sym| self.is_nounwind_fn(sym)) {
+            return Err(Trap::UnwindFromNounwind.into());
+        }
+        Ok(Some(call))
+    }
+
+    /// `nounwind` on the function `sym`.
+    fn is_nounwind_fn(&self, sym: SymId) -> bool {
+        sym.index() < self.module.symbol_count()
+            && matches!(self.module.symbol(sym).kind(), SymbolKind::Function { attrs, .. }
+                if self.module.fn_attrs(attrs).has(FnAttrs::NOUNWIND))
+    }
+
+    /// Phase 2 for exception `index`: frames are left until one has a
+    /// landing pad that cleans up or is the handler the search found.
+    /// `left` is the function the exception just left (`resume`).
+    fn cleanup_phase(&mut self, index: usize, mut left: Option<SymId>) -> Result<(), Stop> {
+        let (ty, handler, handler_pc) = {
+            let exn = &self.exns[index];
+            (exn.ty, exn.handler, exn.handler_pc)
+        };
+        loop {
+            let Some(&f) = self.frames.last() else {
+                return Err(Trap::EhPhaseMismatch.into());
+            };
+            let call = self.unwound_call(&f, left)?;
+            let at_handler = f.serial == handler;
+            if at_handler && f.pc != handler_pc {
+                return Err(Trap::EhPhaseMismatch.into());
+            }
+            if let Some(pad) = call.and_then(|c| c.unwind_dest()) {
+                let selector = match (self.pad_match(&f, pad, ty)?, at_handler) {
+                    (PadMatch::Handler(selector), true) => Some(selector),
+                    // libstdc++ would install it, libc++abi terminates.
+                    (PadMatch::Cleanup, false) => Some(0),
+                    (PadMatch::Nothing, false) => None,
+                    // A handler where the search found none: libstdc++
+                    // would install it, libc++abi terminates. And no
+                    // handler where the search found one.
+                    (PadMatch::Handler(_), false) | (_, true) => {
+                        return Err(Trap::EhPhaseMismatch.into());
+                    }
+                };
+                if let Some(selector) = selector {
+                    let exn = &mut self.exns[index];
+                    exn.state = ExnState::Landed;
+                    exn.landed_handler = at_handler;
+                    self.landing = Some((exn.addr, selector));
+                    return self.jump(&f, pad);
+                }
+            } else if at_handler {
+                return Err(Trap::EhPhaseMismatch.into());
+            }
+            left = Some(f.sym);
+            self.tick(1)?;
+            self.pop_frame();
+        }
+    }
+
+    /// `resume` of the exception at `addr` in the innermost frame.
+    fn resume(&mut self, addr: u64) -> Result<(), Stop> {
+        let Some(index) = self.exns.iter().position(|exn| exn.addr == addr) else {
+            return Err(Trap::NotAnException.into());
+        };
+        if self.exns[index].state != ExnState::Landed {
+            return Err(Trap::NotAnException.into());
+        }
+        let Some(&f) = self.frames.last() else {
+            return invalid("no frame");
+        };
+        let handler = self.exns[index].handler;
+        // The handler must be a frame outside this one, still running.
+        if handler >= f.serial || !self.frames.iter().any(|frame| frame.serial == handler) {
+            return Err(Trap::EhPhaseMismatch.into());
+        }
+        self.exns[index].state = ExnState::Raised;
+        self.pop_frame();
+        self.cleanup_phase(index, Some(f.sym))
+    }
+
+    /// What the personality does at landing pad `pad` of frame `f` with an
+    /// exception of type `ty`: the clauses in order, the first match wins.
+    fn pad_match(&mut self, f: &Frame<'a>, pad: BlockId, ty: u64) -> Result<PadMatch, Stop> {
+        let table = self.eh_table(f)?;
+        let Some(inst) = f.body.block(pad).insts().find(|i| i.opcode() == Opcode::LandingPad)
+        else {
+            return invalid(format!("{pad:?} is not a landing pad"));
+        };
+        let Some(clauses) = table.pads.get(&inst.id()) else {
+            return invalid(format!("{pad:?} is not a landing pad"));
+        };
+        for clause in clauses {
+            match clause {
+                EhClause::Catch { ty: caught, id } if *caught == 0 || *caught == ty => {
+                    return Ok(PadMatch::Handler(*id));
+                }
+                EhClause::Filter { tys, id } if !tys.contains(&ty) => {
+                    return Ok(PadMatch::Handler(*id));
+                }
+                _ => {}
+            }
+        }
+        let InstKind::LandingPad(lp) = inst.kind() else {
+            return invalid(format!("{pad:?} is not a landing pad"));
+        };
+        Ok(if lp.is_cleanup() { PadMatch::Cleanup } else { PadMatch::Nothing })
+    }
+
+    /// The type-id table of frame `f`'s function, built on first use.
+    fn eh_table(&mut self, f: &Frame<'a>) -> Result<Rc<EhTable>, Stop> {
+        if let Some(table) = self.eh_tables.get(&f.sym) {
+            return Ok(Rc::clone(table));
+        }
+        let SymbolKind::Function { personality, .. } = self.module.symbol(f.sym).kind() else {
+            return invalid(format!("{:?} is not a function", f.sym));
+        };
+        let known = personality
+            .is_some_and(|sym| self.module.symbol(sym).name() == eh::PERSONALITY.as_bytes());
+        if !known {
+            return unsupported("eh:personality");
+        }
+        let mut table = EhTable::default();
+        let id_of = |types: &mut Vec<u64>, ty: u64| -> i32 {
+            let index = types.iter().position(|&t| t == ty).unwrap_or_else(|| {
+                types.push(ty);
+                types.len() - 1
+            });
+            index as i32 + 1
+        };
+        let mut filters = 0;
+        for pad in f.body.landing_pads() {
+            let mut clauses = Vec::new();
+            for &clause in pad.clauses() {
+                match clause {
+                    Clause::Catch(c) => {
+                        let ty = self.type_info(c)?;
+                        clauses.push(EhClause::Catch { ty, id: id_of(&mut table.types, ty) });
+                    }
+                    Clause::Filter(c) => {
+                        let tys = self.filter_types(c)?;
+                        for &ty in &tys {
+                            id_of(&mut table.types, ty);
+                        }
+                        filters += 1;
+                        clauses.push(EhClause::Filter { tys, id: -filters });
+                    }
+                }
+            }
+            table.pads.insert(pad.inst(), clauses);
+        }
+        for call in f.body.calls() {
+            if call.callee() == Callee::Intrinsic(Intrinsic::EhTypeidFor)
+                && let Some(&arg) = call.args().first()
+            {
+                let ty = self.static_ptr(arg)?;
+                id_of(&mut table.types, ty);
+            }
+        }
+        let table = Rc::new(table);
+        self.eh_tables.insert(f.sym, Rc::clone(&table));
+        Ok(table)
+    }
+
+    /// A pointer operand that is a constant or a symbol.
+    fn static_ptr(&self, value: Value) -> Result<u64, Stop> {
+        let val = match value.kind() {
+            ValueKind::Const(id) => self.constant(id)?,
+            ValueKind::Sym(sym) => Val::Ptr(self.sym_addr(sym)?),
+            _ => return invalid("a type-information operand that is not a constant"),
+        };
+        match val {
+            Val::Ptr(addr) => Ok(addr),
+            other => invalid(format!("{other} where a type-information pointer is required")),
+        }
+    }
+
+    /// A `catch` clause's type-information address; 0 is catch-all.
+    fn type_info(&self, c: ConstId) -> Result<u64, Stop> {
+        match self.constant(c)? {
+            Val::Ptr(addr) => Ok(addr),
+            other => invalid(format!("{other} where a type-information pointer is required")),
+        }
+    }
+
+    /// The types a `filter` clause lists.
+    fn filter_types(&self, c: ConstId) -> Result<Vec<u64>, Stop> {
+        let elems: &[ConstId] = match self.module.consts.get(c) {
+            Const::Aggregate { elems, .. } => elems,
+            Const::Zero(ty) | Const::Undef(ty) | Const::Poison(ty)
+                if matches!(self.module.types.kind(ty), TypeKind::Array { len: 0, .. }) =>
+            {
+                &[]
+            }
+            _ => return unsupported("eh:filter-form"),
+        };
+        let mut tys = Vec::with_capacity(elems.len());
+        for &elem in elems {
+            match self.type_info(elem)? {
+                0 => return unsupported("eh:filter-catch-all"),
+                ty => tys.push(ty),
+            }
+        }
+        Ok(tys)
+    }
+
+    /// A two-field struct of type `ty` holding `first` and `second`.
+    fn pair_of(&self, ty: TypeId, first: &Val, second: &Val) -> Result<Val, Stop> {
+        let mut image = vec![0u8; self.image_len(ty)?];
+        let Some(&[0, at]) = self.module.types.field_offsets(ty) else {
+            return invalid("the type is not a pair");
+        };
+        let at = at as usize;
+        if at < 8 || at + 4 > image.len() {
+            return invalid("the type does not hold its fields");
+        }
+        encode(first, &mut image[..8]);
+        encode(second, &mut image[at..at + 4]);
+        Ok(Val::Agg(Agg { ty, bytes: image.into() }))
     }
 
     /// An intrinsic call (§5.6). `None` for an intrinsic without a result.
@@ -1574,6 +2078,14 @@ impl<'a> Machine<'_, 'a> {
                 }))
             }
             Intrinsic::Trap => Err(Trap::TrapIntrinsic.into()),
+            Intrinsic::EhTypeidFor => {
+                let ty = self.ptr(f, arg(0)?)?;
+                let table = self.eh_table(f)?;
+                match table.types.iter().position(|&t| t == ty) {
+                    Some(index) => Ok(Some(Val::i32(index as u32 + 1))),
+                    None => invalid("llvm.eh.typeid.for of a type outside the table"),
+                }
+            }
             Intrinsic::Other(name) => match no_code_intrinsic(name) {
                 // `spec/ir.md` §5.5: these generate no code. A result that
                 // is dropped stands for poison, which is zero.

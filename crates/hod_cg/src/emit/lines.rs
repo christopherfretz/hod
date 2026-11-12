@@ -93,6 +93,16 @@ fn dwarf_err(error: hod_dwarf::Error) -> CgError {
             CgError::unsupported(what)
         }
         hod_dwarf::Error::Unsupported { .. } => CgError::unsupported(unsupported::DEBUG_DIE),
+        // §6.12: what is wrong with the input is a decline, by name; what
+        // is left (a line row, a span, a symbol, a global's address the
+        // bridge made) is the bridge's bug.
+        hod_dwarf::Error::NotACompileUnit { .. }
+        | hod_dwarf::Error::BadReference { .. }
+        | hod_dwarf::Error::MemberOutsideType { .. }
+        | hod_dwarf::Error::TypeCycle { .. }
+        | hod_dwarf::Error::MissingSize { .. }
+        | hod_dwarf::Error::NulInName => CgError::unsupported(unsupported::DEBUG_MALFORMED),
+        hod_dwarf::Error::TooLarge => CgError::unsupported(unsupported::DEBUG_TOO_LARGE),
         error => CgError::internal(format!("debug information: {error}")),
     }
 }
@@ -103,14 +113,15 @@ impl<'m> DebugLines<'m> {
     /// further.
     ///
     /// # Errors
-    /// [`unsupported::DEBUG_DIE`], a `debug:*` name of the plan; an internal
-    /// error for a unit the tables do not describe.
+    /// [`unsupported::DEBUG_DIE`], a `debug:*` name of the plan;
+    /// [`unsupported::DEBUG_MALFORMED`] for a unit the tables do not
+    /// describe.
     pub(super) fn new(module: &'m Module, arch: Arch) -> CgResult<Option<Box<DebugLines<'m>>>> {
         let debug = &module.debug;
         let mut units = Vec::new();
         for &unit in debug.compile_units() {
             let DiNode::CompileUnit(cu) = debug.node(unit) else {
-                return Err(CgError::internal("a compile unit that is not a DICompileUnit"));
+                return Err(CgError::unsupported(unsupported::DEBUG_MALFORMED));
             };
             if cu.emission_kind == EmissionKind::NoDebug {
                 continue;

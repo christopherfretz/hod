@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use hod_a64::features;
-use hod_cg::{CgError, Chunk, Scratch, compile_function, emit_module};
+use hod_cg::{CgError, Chunk, ModuleEmitter, Scratch, compile_function};
 use hod_ir::{Arch, Body, FnStr, Module, SymbolKind};
 
 use crate::front::{Report, symbol_name};
@@ -333,6 +333,11 @@ pub fn generate_with(
         }
     }
 
+    // The emitter first: what it refuses of the whole module, the debug
+    // information's plan above all (`spec/dwarf.md` §6.12), is refused
+    // before any code is generated.
+    let mut emitter = ModuleEmitter::new(module, &cg).map_err(|error| from_cg(error, None))?;
+
     let work_size: usize = bodies.iter().map(Body::inst_count).sum();
     let wanted = wanted_threads(threads, work_size, bodies.len());
     let lease = match (&threads.tokens, wanted) {
@@ -355,7 +360,11 @@ pub fn generate_with(
         }
     })?;
     report.phase("emission");
-    let emitted = emit_module(module, &cg, &chunks).map_err(|error| from_cg(error, None))?;
+    let emitted = chunks
+        .iter()
+        .try_for_each(|chunk| emitter.add_chunk(chunk))
+        .and_then(|()| emitter.finish())
+        .map_err(|error| from_cg(error, None))?;
     drop(chunks);
     let object = hod_obj::elf::to_vec(&emitted.object).map_err(from_obj)?;
     report.phase("object");

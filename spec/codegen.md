@@ -44,7 +44,17 @@ mode.
 body (`spec/ir.md` §8), so every construct met is one a work package has
 implemented and tested. Meeting anything else is `CgError::Internal`,
 never a guess (§10). The IR is valid in LLVM's sense (definitions dominate
-uses in reachable code); code generation does not verify it.
+uses in reachable code); code generation does not verify it. Besides whole
+instructions and types, this design relies on `classify` rejecting:
+
+- a thread-local symbol as an operand of anything but
+  `llvm.threadlocal.address` (§3);
+- a `blockaddress` in a body that names a block of another function
+  (§9.2);
+- `naked` functions (§5.4) and `callbr`;
+- a `musttail` call whose stack-argument area is larger than the
+  caller's own, or whose calling convention has the callee pop its
+  arguments (§7.1).
 
 ## 2. Registers and value classes
 
@@ -57,20 +67,28 @@ uses in reachable code); code generation does not verify it.
 | field | meaning |
 |---|---|
 | `gpr`, `fpr` | the registers of each class |
-| `pool` | registers a fresh value may be allocated to. All are caller-saved, and none is an argument or return register of any supported calling convention, nor reserved (below) |
-| `holdable` | registers a value may rest in: `pool` plus the argument and return registers. An incoming argument rests in its argument register and a call's result in the return register until used or displaced |
+| `pool` | registers a fresh value may be allocated to. None is reserved (below), and none is written by argument placement or by a return under any supported calling convention (argument and return registers, the indirect-result register, the `nest` register). Each is caller-saved or in the target's save set (below) |
+| `holdable` | registers a value may rest in: `pool` plus the registers argument placement and returns write. An incoming argument rests in its argument register and a call's result in the return register until used or displaced |
 | `scratch` | at least two general and one vector register that never hold a value across instructions. They belong to whatever is being emitted right now: glue (§8.2), large offsets, phi copies. On AArch64 these include `x16`/`x17`, which a linker veneer may clobber at any call |
 | `eh_data` | the two registers a landing pad receives (exception pointer, selector) |
 | `dwarf` | each register's DWARF number, for CFI |
 
-Never touched: the platform register (`x18`), the thread pointer.
-Callee-saved registers other than the frame pointer and the link register
-are **not used** in v1, so the prologue has one shape (§5) and saves
-nothing else. `pool` and `holdable` are disjoint from `scratch`.
+Never touched: the platform register (`x18`), the thread pointer. `pool`
+and `holdable` are disjoint from `scratch`.
 
-A target with few safe registers (x86-64: only `r10`/`r11` are neither
-argument nor return registers) declares a small `pool`; the rules of §4.4
-then spill more at calls. Nothing else changes.
+**Save set.** A target may name a fixed set of callee-saved registers that
+its prologue saves and its epilogue restores in *every* function, so the
+prologue keeps one shape (§5). They are then ordinary pool registers;
+§4.4 displaces them at calls like any other. No other callee-saved
+register (besides the frame pointer and the link register) is used in v1.
+AArch64 has enough caller-saved registers and an empty save set (§5.5).
+x86-64 has only `r10` and `r11` that are caller-saved and written by no
+argument placement or return, so its pool is a save set (§5.6).
+
+**Minimum.** Every target's pool has at least **four** general and **two**
+vector registers. A lowering pins at most that many of a class at once
+(§4.2), counting operands, results and temporaries; what it needs beyond
+that it takes from `scratch` or does through memory.
 
 ### 2.2 Value classes
 
@@ -91,9 +109,11 @@ registers the ABI names.
 
 **Width invariant.** In a general register the bits above an integer
 type's width are **unspecified**. A consumer that depends on them
-(`zext`, `sext`, compares, division, right shifts, `switch`, an argument
-with `zeroext`/`signext`, a conversion to floating point) extends first.
-A conditional branch on `i1` tests bit 0. In memory an integer occupies
+(`zext`, `sext`, compares, division, right shifts, `switch`, a conversion
+to floating point, `inttoptr` from a narrower integer, an index or an
+`alloca` count narrower than a pointer, an argument or a return value
+with `zeroext`/`signext`) extends first. A conditional branch or a
+`select` on `i1` tests bit 0. In memory an integer occupies
 its store size with the bits above its width zero (`spec/ir.md` §4.3);
 `store` writes that and `load` may rely on it. A frame slot hod makes for
 a `Gpr` value is a full register wide, written and read whole, so the
@@ -120,6 +140,13 @@ addressing sequence (§7.4), a stack-slot address is the frame pointer plus
 a constant, and a load or store *through* a stack-slot address addresses
 the frame directly.
 
+Producing an operand never calls anything and writes no register but its
+destination and `scratch`, so it is safe at any point of an instruction's
+lowering, argument placement included. A thread-local address, whose
+access sequence may call and clobber argument registers, is therefore
+never an operand: it is the result of `llvm.threadlocal.address` (§1),
+lowered as an instruction.
+
 ## 4. Value-location policy v1
 
 The policy is chosen for being simple to get right on unoptimized IR, where
@@ -135,11 +162,23 @@ From the use facts of the result (and its class):
 |---|---|---|
 | no use | **dead** | nowhere. The instruction is still emitted if it has an effect (§4.7) |
 | one use, in the defining block | a **register value** | in a register from its definition to its use (class `Gpr` or `Fpr`) |
-| more than one use, or a use in another block | a **home value** | in a home slot. The defining instruction computes into a register and stores it at once; the register is then free. Every use loads it |
+| more than one use, or a use in another block, or named by a `#dbg_declare` | a **home value** | in a home slot. The defining instruction computes into a register and stores it at once; the register is then free. Every use loads it |
 | any, class `Mem` | a home value | in its home slot; the defining instruction writes the slot |
 
-"A use in another block" is as `spec/ir.md` §5.6 counts it: a use by a
-`phi` is located at the end of the incoming block.
+The facts are `spec/ir.md` §5.6's, for instruction results and arguments
+alike, read as follows; the policy is only sound with these readings:
+
+- Each operand slot counts once: a value an instruction uses twice has
+  two uses.
+- A use by a `phi` is a use **at the terminator of the incoming block**,
+  not in the `phi`'s block, because that is where §4.5 reads the value.
+  Each entry of the `phi` counts.
+- "The next instruction" (§4.6) is the next instruction of the same block
+  and is not a `phi`; a use by a `phi` never qualifies.
+- A `#dbg_declare` that names a value which is not a stack slot (an `sret`
+  argument, a dynamic `alloca`) is not a use, but makes the value a home
+  value, so that the variable has one location for the whole function
+  (§9.5). This is the only way debug information changes the code.
 
 A home slot is assigned on the first mention of the value, definition or
 use, so blocks may be laid out in any order. Home slots are never reused.
@@ -156,16 +195,23 @@ use, so blocks may be laid out in any order. Home slots are never reused.
   can take a memory operand.
 - Registers holding the current instruction's operands and results are
   **pinned** until it is emitted: nothing below displaces them. A lowering
-  never pins more registers than the pool has; operand lists of unbounded
-  length (call arguments, `PtrAdd` indices, `switch` cases) are consumed
-  one at a time.
+  never pins more registers than the pool's minimum (§2.1); operand lists
+  of unbounded length (call arguments, `PtrAdd` indices, `switch` cases)
+  are consumed one at a time.
+- When an instruction has been emitted, or skipped (§4.7), **the driver**
+  releases every register value among its operands that is still held. A
+  lowering need not read every operand (`llvm.va_end` reads none), and a
+  skipped instruction's lowering never runs. Releasing a `Deferred`
+  operand (§4.6) releases the deferred instruction's operands in turn.
 
 ### 4.3 Running out of registers
 
 When a register is needed and no pool register is free, an unpinned
 register value is **displaced**: stored to a spill slot (allocated from
 the frame, 8 or 16 bytes by class; spill slots are reused once their
-value's use has been emitted). The choice must not depend on anything but
+value's use has been emitted). A spill slot that is occupied at a call to
+a `returns_twice` function is never reused: the code after such a call
+can run a second time and reads the slot again. The choice must not depend on anything but
 the function's IR: v1 takes the lowest-numbered unpinned occupied pool
 register. A lowering that needs one particular register (a return
 register, a shift count register on x86-64) displaces its occupant the
@@ -186,7 +232,8 @@ Argument placement then reads from pool registers, frame slots and
 constants and writes to argument registers and the outgoing stack, and the
 two sets are disjoint: there is no parallel-move problem to solve. The
 call's result is left in the return register as an ordinary register value
-(`holdable`), or stored to its home.
+(`holdable`), or stored to its home. (A `musttail` call writes the
+caller's own incoming arguments, which are homes; §7.1 has its rule.)
 
 ### 4.5 Block boundaries and `phi`
 
@@ -195,15 +242,18 @@ from §4.1 for valid IR (a register value's one use is in its own block);
 code generation checks it and reports `CgError::Internal` otherwise. So
 there is no register state to reconcile on any control-flow edge.
 
-A `phi` has, besides its location as a value, an **incoming slot** of its
-type's size. The protocol:
+A `phi` has, besides its location as a value, an **incoming slot**, laid
+out like a home slot of its class (§2.2). The protocol:
 
 - A terminator, before it transfers control, stores to the incoming slot
   of every `phi` of every successor the value that `phi` lists for this
   block. It does so for **all** successors, whichever is taken. (A value
   listed for this block dominates the end of this block, so it is
   available on every path out of it.) Sources are read from value
-  locations; only incoming slots are written.
+  locations; only incoming slots are written. A successor that the
+  terminator lists more than once is stored once: a `phi`'s entries for
+  one predecessor are equal (and, being several uses, make their value a
+  home value).
 - At the head of its block a `phi` is lowered like a load from its
   incoming slot, with the result placed by §4.1.
 
@@ -214,8 +264,8 @@ the "swap" and "lost copy" problems cannot occur, a conditional branch,
 that is not taken is dead (every edge into a block rewrites the slots
 before the block reads them).
 
-`invoke` is the one terminator whose result can be a successor's incoming
-value. Its unwind destination's incoming slots are written **before** the
+`invoke` is the one supported terminator whose result can be a
+successor's incoming value. Its unwind destination's incoming slots are written **before** the
 call (the result is not available on that edge); its normal destination's
 incoming slots are written **after** the call, once the result has its
 location.
@@ -257,7 +307,9 @@ lowering, never an obligation, and is the only peephole in v1.
   function's entry code stores it to its home. An argument passed on the
   stack has its incoming location as its home (`FrameRef::Incoming`); a
   `Mem`-class argument passed in registers is stored to a home slot in the
-  entry code.
+  entry code. An argument whose value is the address of memory the caller
+  passed on the stack (`byval`) is computed by the entry code from the
+  incoming area's address and then treated as a definition (§4.1).
 - On entry to a landing-pad block the two `eh_data` registers are reserved
   until the `LandingPad` instruction (the first instruction after the
   `phi`s) has stored them into its result.
@@ -305,6 +357,15 @@ arguments and raises it after the call returns. Calls without stack
 arguments, the usual case, emit neither. The canonical frame address is
 defined from the frame pointer (§5.5), so these adjustments need no CFI.
 
+An `invoke` that lowered the stack pointer must have it raised on the
+unwind edge as well: the unwinder enters a landing pad with the stack
+pointer as it was at the call, and the frame may hold dynamic allocations,
+so the pad cannot recompute it. Such an `invoke` gets a **pad stub**,
+emitted right after its branch to the normal destination: raise the stack
+pointer by the same amount, then branch to the landing-pad block. The
+stub, not the block, is the landing address in the call-site row (§9.4).
+It leaves the `eh_data` registers alone.
+
 ### 5.4 Prologue, epilogue and limits
 
 - **Always a frame pointer**, with the standard frame record, so stack
@@ -313,13 +374,18 @@ defined from the frame pointer (§5.5), so these adjustments need no CFI.
   whose immediates are not yet known, allocates what it needs from the
   frame, and emits the entry code of §4.8. `Target::end_function`, called
   when the local area's size is final, patches the prologue, emits the
-  **one epilogue** of the function at its end, and describes the frame for
-  unwinding (§9.3).
+  function's **exit sequences** at its end, and describes the frame for
+  unwinding (§9.3). The exit sequences are the **one epilogue** that
+  returns and, after it, one **tail exit** per `musttail` call (§7.1):
+  the same teardown ending in a branch to the callee.
 - `Ret` places the return value and branches to the epilogue; a `Ret` that
-  ends the last emitted block falls through. One epilogue means nothing
-  after the prologue is patched for the frame size.
+  ends the last emitted block falls through. Because every exit sequence
+  is emitted when the frame size is known, nothing but the prologue is
+  patched for it.
 - A frame the fixed-size prologue cannot express is
   `Unsupported("limit:frame-size")` for that function (§10).
+- A `naked` function has no frame and so cannot be compiled this way;
+  `classify` rejects it (§1).
 
 ### 5.5 AArch64 (normative for `hod_a64`)
 
@@ -344,19 +410,25 @@ entry sp -> +--------------------------------------+  = fp + FRAME   (CFA)
 - Prologue (16 bytes, fixed): `sub sp, sp, #lo12` · `sub sp, sp, #hi12,
   lsl #12` · `stp x29, x30, [sp]` · `mov x29, sp`. `FRAME` up to 2^24 - 16.
 - Incoming stack arguments are at `fp + FRAME + n`, which is not known
-  while the body is emitted. A function that has any keeps the address of
-  the incoming area (the entry `sp`) in a pointer slot written by the
-  entry code, and `FrameRef::Incoming(n)` is addressed through it.
-- Epilogue: `mov sp, x29` (only if the function moved `sp`) ·
-  `ldp x29, x30, [sp]` · `add sp, sp, #FRAME` (one or two instructions) ·
-  `ret`.
+  while the body is emitted. A function that needs the address of the
+  incoming area (it has stack-passed or `byval` arguments, or is variadic:
+  known from its signature before anything is emitted) keeps it in a
+  pointer slot, the **incoming base**: its prologue is preceded by
+  `mov x16, sp` and followed by a store of `x16` to that slot.
+  `FrameRef::Incoming(n)` is addressed through the slot.
+- Epilogue: `mov sp, x29` (only if the function has dynamic allocation,
+  §5.2; adjustments for outgoing arguments are undone on every path,
+  §5.3) · `ldp x29, x30, [sp]` · `add sp, sp, #FRAME` (one or two
+  instructions) · `ret`. A tail exit is the same with `b callee`, or
+  `br x16` for an indirect callee, in place of `ret`.
 - CFI: after the prologue the CFA is `x29 + FRAME`, with `x29` saved at
   `CFA - FRAME` and `x30` at `CFA - FRAME + 8`, for the whole body. The
-  rows for the four prologue instructions and for the epilogue are a
-  constant pattern in `FRAME`.
-- Pool: `x9`..`x15`, `v16`..`v29`. Holdable: the pool, `x0`..`x8`,
-  `v0`..`v7`. Scratch: `x16`, `x17`, `v30`, `v31`. Landing-pad data: `x0`,
-  `x1`.
+  rows for the prologue instructions and for each exit sequence are a
+  constant pattern in `FRAME` (§9.3).
+- Pool: `x9`..`x14`, `v16`..`v29`. Holdable: the pool, `x0`..`x8`, `x15`
+  (LLVM passes a `nest` argument there), `v0`..`v7`. Scratch: `x16`,
+  `x17`, `v30`, `v31`. Landing-pad data: `x0`, `x1`. The save set is
+  empty.
 - Mapping symbols: a function's code starts in A64 state (`$x`); a data
   island inside a function (§9.2) is bracketed `$d` … `$x`.
 - With branch protection on (module property), the function starts with
@@ -365,10 +437,13 @@ entry sp -> +--------------------------------------+  = fp + FRAME   (CFA)
 
 ### 5.6 x86-64 (planned)
 
-`push rbp` · `mov rbp, rsp` · `sub rsp, imm32` (patched). Locals at
-negative offsets from `rbp`, incoming arguments at `rbp + 16 + n`, so no
-incoming base slot is needed; the epilogue `mov rsp, rbp` · `pop rbp` ·
-`ret` does not depend on the frame size. The red zone is not used.
+`push rbp` · `mov rbp, rsp` · pushes of the save set · `sub rsp, imm32`
+(patched). Locals at negative offsets from `rbp`, incoming arguments at
+`rbp + 16 + n`, so no incoming base slot is needed, and the epilogue
+(`lea rsp, [rbp - saved]` · pops · `pop rbp` · `ret`) does not depend on
+the frame size. The save set (`rbx`, `r12`..`r15`) is the general pool
+(§2.1); `r10` and `r11` are scratch, with `r10` also the `nest` register,
+which the first work package must reconcile. The red zone is not used.
 Written out with `hod_x64`'s first work package.
 
 ## 6. Control flow
@@ -376,13 +451,15 @@ Written out with `hod_x64`'s first work package.
 ### 6.1 Reachability
 
 Before emission, one walk over terminators from the entry block marks the
-reachable blocks (successors include an `invoke`'s unwind destination,
-every `indirectbr` and `callbr` destination, and every block the producer
-marked address-taken). **Unreachable blocks are not emitted.** LLVM
-exempts them from the dominance rule, so they may contain uses with no
-definition on any path; skipping them removes that case instead of
-handling it. A label that must exist for an unreachable block (its
-address is taken) is bound to a trap at the end of the function.
+reachable blocks (successors include an `invoke`'s unwind destination and
+every destination an `indirectbr` lists). **Unreachable blocks are not
+emitted.** LLVM exempts them from the dominance rule, so they may contain
+uses with no definition on any path; skipping them removes that case
+instead of handling it. Having its address taken does not make a block
+reachable: an `indirectbr` lists every block it may jump to, so a block
+that no reachable terminator names cannot be entered. A label that must
+exist for an unreachable block (its address is taken) is bound to a trap
+at the end of the function.
 
 ### 6.2 Labels and fixups
 
@@ -407,7 +484,11 @@ the function's compile fails internally with "branch out of range", the
 driver truncates the chunk (§1) and compiles the function again with
 `FnCx::far` set; a target must then emit only branch forms that reach the
 whole function (AArch64: an inverted short branch over an unconditional
-`b`). A function that fails in far mode is
+`b`). The same holds for every other reference a function makes to its
+own code without a relocation: a load from a data island (§7.5) and the
+address of a block (§9.6) are fixups too, fail the same way, and in far
+mode are formed from the address of the referring instruction plus a
+materialized distance. A function that fails in far mode is
 `Unsupported("limit:function-size")`.
 
 ## 7. Calls, symbols and constants
@@ -429,17 +510,45 @@ For `Call` and `Invoke`, in this order:
    from the return registers (§4.4), or copy it into the result's home for
    a `Mem` class.
 6. (`Invoke`) write the normal destination's incoming slots and branch to
-   it.
+   it; then, if step 3 lowered the stack pointer, emit the pad stub
+   (§5.3).
 
 A call marked `noreturn` is followed by the trap instruction.
 
+**Every call instruction in a function's code is emitted by this
+sequence** and so has a call-site row, including the calls of runtime
+functions (§7.3) that lowerings of other instructions make (`Resume`'s
+`_Unwind_Resume`, a `memcpy`): a call that throws from a function with
+landing pads and is covered by no row terminates the program (§9.4).
+`FnCx` offers the sequence as a service (§8.1). The one call instruction
+a lowering emits itself is the one inside a TLS access sequence that the
+psABI fixes byte for byte (the linker has to recognize it to relax it):
+the lowering displaces what the sequence clobbers and records the row
+through the same service.
+
 **Tail kinds.** `tail` and `notail` are permissions and are ignored.
 `musttail` is an obligation (variadic thunks depend on it,
-`docs/design/0001-input.md`): the arguments are placed where the *caller's
-own* incoming arguments are, the frame is torn down by the epilogue
-sequence, and control transfers by a branch, not a call. In a variadic
-function the argument registers that carry no named argument are passed
-through unchanged; the target's ABI file states how.
+`docs/design/0001-input.md`). Control transfers by a branch, with the
+frame gone and the arguments where the *caller's own* incoming arguments
+were:
+
+1. Displace registers (§4.4).
+2. Stack arguments overwrite the caller's incoming area, which may hold
+   the homes of the very values being passed (§4.8), so §4.4's "disjoint"
+   does not hold. All stack arguments are first placed in a **staging**
+   slot in the local area, laid out as the callee's stack-argument area;
+   then the staging slot is copied over the incoming area. (`classify`
+   guarantees it fits, §1.)
+3. Register arguments are placed; an indirect callee's address goes into
+   a scratch register that the exit sequence does not use.
+4. Branch to a **tail exit** for this call, which `end_function` emits
+   after the epilogue (§5.4): the teardown, then a branch to the callee.
+   No call-site row is recorded: nothing returns here.
+
+The rest of the block (an optional cast of the result and the `ret`) is
+not emitted. In a variadic function the argument registers that carry no
+named argument are passed through unchanged; the target's ABI file states
+how.
 
 ### 7.2 Argument assignment
 
@@ -467,7 +576,9 @@ closed enum of them with each one's symbol name and signature. A reference
 to one is `SymRef::Runtime` (§9.2); module emission maps it to the module's
 own symbol of that name if the module declares one, and to a new undefined
 global symbol otherwise, so that the object never has two symbols with one
-name.
+name. A lowering calls one through `FnCx` (§8.1) with operands and a
+result like an IR call's; the service runs §7.1, so registers are
+displaced and the call site is recorded.
 
 ### 7.4 Symbol addresses
 
@@ -512,13 +623,16 @@ the target owns everything that depends on the instruction set.
   `defer` (§4.6);
 - **registers**: a temporary of a class for the duration of the
   instruction; displacing one register or all of them (§4.3, §4.4);
+- **calls**: the sequence of §7.1 for the instruction being lowered, and
+  for a `RuntimeFn` with given operands and result (§7.3); registering a
+  tail exit (§7.1). The target supplies only the call instruction itself;
 - **frame**: allocate a slot; the `FrameRef` of a body slot, a home, an
   incoming slot;
 - **code**: append bytes or instruction words; the current offset; labels,
   branches with fixups and binding (§6.2); patching already emitted bytes;
 - **records**: add a relocation at an offset (§9.2), a data island, the
-  type id for a type-info symbol (§9.4). Call sites and line rows are
-  recorded by the driver, not by lowerings.
+  type id for a type-info symbol (§9.4). Call sites, line rows and debug
+  labels are recorded by the driver, not by lowerings.
 
 ### 8.2 What a target provides
 
@@ -527,7 +641,7 @@ the target owns everything that depends on the instruction set.
 | `reg_info()` | §2.1 |
 | `class_of(types, ty)` | §2.2; total over the types `classify` accepts |
 | `begin_function(cx)` | the fixed-size prologue; target reservations in the frame; entry code for arguments (§4.8) and for over-aligned slots (§5.1) |
-| `end_function(cx)` | patch the prologue; emit the epilogue; fill the frame description (§9.3) |
+| `end_function(cx)` | patch the prologue; emit the epilogue and the tail exits, with their CFI rows; fill the frame description (§9.3) |
 | glue: `load(cx, reg, frame_ref, width)`, `store(..)`, `copy(cx, dst_ref, src_ref, bytes)`, `mov(cx, dst, src)`, `materialize(cx, reg, value)` | the primitive moves the generic policy is made of. They use only `scratch` registers besides their operands, and never fail for an offset or size: a far offset costs a scratch register, not an error |
 | `lower(cx, inst)` | every instruction that is not a `phi`, including terminators and calls. One `match` on the opcode that dispatches to the target's modules, one per instruction group, so that groups are separate work packages |
 | `assign(sig, out)` | §7.2 |
@@ -564,10 +678,11 @@ which chunk it is in, nor on what else is in it.
 | `code` | bytes | the function's instructions and data islands |
 | `relocs` | `(offset, RelocKind, SymRef, addend)` | `hod_obj` relocations (§9.2) |
 | `cfi` | `(offset, CfiOp)` | `hod_eh` (§9.3) |
-| `call_sites` | `(start, length, pad)` | `hod_eh` (§9.4) |
+| `call_sites` | `(start, length, pad, landing)` | `hod_eh` (§9.4) |
 | `pads`, `clauses`, `type_ids` | §9.4 | `hod_eh` |
 | `lines` | `(offset, LocId)` | `hod_dwarf` (§9.5) |
-| `vars` | `(variable, declared-at, location)` | `hod_dwarf` (§9.5) |
+| `vars` | `(variable, expression, declared-at, location)` | `hod_dwarf` (§9.5) |
+| `labels` | `(label, offset)` | `hod_dwarf` (§9.5) |
 | `islands` | `(offset, length)` | mapping symbols (§5.5) |
 | `block_offsets` | `(BlockId, offset)` | `blockaddress` in data (§9.6) |
 
@@ -579,7 +694,7 @@ alignment; its frame description (§9.3); whether it has landing pads.
 `RelocKind` is `hod_obj`'s (`spec/object.md` "Relocations"): the target
 picks the psABI relocation. `SymRef` is `Module(SymId)` or
 `Runtime(RuntimeFn)` (§7.3). Code never refers to another function's
-blocks or islands, to its own section, or to anything `hod_eh` and
+blocks (§1) or islands, to its own section, or to anything `hod_eh` and
 `hod_dwarf` generate; those references are made by their writers.
 
 ### 9.3 Frame description and CFI
@@ -590,8 +705,11 @@ locations are offsets from it). `cfi` rows are DWARF call-frame
 instructions as data: `DefCfa { reg, offset }`, `DefCfaOffset`,
 `DefCfaRegister`, `Offset { reg, cfa_offset }`, `Restore { reg }`, each
 with the code offset from which it holds. The target emits the rows for
-its prologue and its epilogue; because the epilogue is the last code of
-the function, no state has to be remembered and restored. The rows are
+its prologue and its exit sequences. The exit sequences are the last code
+of the function, so nothing after them needs the body's state back; each
+tail exit, coming after another exit sequence, starts with rows that
+state the body's rules again (the CFA and the saved registers) rather
+than relying on remembered state. The rows are
 exact at every instruction boundary (asynchronous unwind tables), which
 is what debuggers and profilers need; `hod_eh` writes them into
 `.eh_frame` and may share a CIE between all functions of an object that
@@ -610,11 +728,14 @@ them has no LSDA, and exceptions pass through it by its CFI alone.
 - `pads`: per landing pad, the code offset of its block, the cleanup flag
   and its range of `clauses`; a clause is `Catch(type id)` or
   `Filter(range of type ids)`.
-- `call_sites`: one row per call instruction emitted, in code order: the
-  instruction's code range and its pad (none for a plain `call`). `hod_eh`
-  merges adjacent rows and writes the table; a call that can throw and has
-  no pad must still be covered by a row, or the personality routine
-  terminates the program instead of unwinding through.
+- `call_sites`: one row per call instruction emitted (§7.1), in code
+  order: the instruction's code range, its pad (none for a plain `call`
+  or a runtime call) and its **landing offset**: the pad's block, or the
+  pad stub of an `invoke` with stack arguments (§5.3). The pad gives the
+  row's action, the landing offset its landing address. `hod_eh` merges
+  adjacent rows that agree in both and writes the table; a call that can
+  throw and has no pad must still be covered by a row, or the personality
+  routine terminates the program instead of unwinding through.
 
 ### 9.5 Debug information
 
@@ -625,19 +746,28 @@ Recorded only when the module has debug information.
   generator records transitions only; which rows become line-table
   entries, where `prologue_end` goes and what a location-less instruction
   inherits is `dwarf.md`'s policy. The entry code of §4.8 and the prologue
-  have no row of their own, so they precede the first row.
-- `vars`: one row per stack slot that carries a debug variable
-  (`spec/ir.md` §5.2): the variable, its declaration location, and where
-  it is: a frame-base offset, or a frame-base offset holding the address
-  (over-aligned slots, §5.1). At `-O0` this one location holds for the
-  whole function. The body is dropped after its function is compiled, so
-  everything `hod_dwarf` needs from it is copied here.
-- `#dbg_value` records (`Body::dbg_records`) describe values that policy
-  v1 keeps in registers for a few instructions; unoptimized input does not
-  contain them. v1 records the ones whose value has a home (as a location
-  valid from the definition to the end of the function) and drops the
-  rest: the variable then shows as unavailable, which is not wrong. The
-  count dropped is reported in the coverage log.
+  have no row of their own, so they precede the first row. `end_function`
+  adds a row at the epilogue: the location of the function's `ret` if
+  exactly one was emitted, `LocId::NONE` otherwise, so that the shared
+  epilogue does not inherit the line of whichever block was emitted last.
+- `vars`: one row per `#dbg_declare`: the variable, the record's
+  expression, its declaration location, and where the declared address
+  is: a frame-base offset (a stack slot), a frame-base offset holding the
+  address (an over-aligned slot, §5.1), or the home of a value that is
+  not a slot (an `sret` argument, a dynamic `alloca`; §4.1 gives it a
+  home). `hod_dwarf` composes the location with the expression. Several
+  rows may name one slot (structured bindings do), each with its own
+  expression. At `-O0` a row's location holds for the whole function. The
+  body is dropped after its function is compiled, so everything
+  `hod_dwarf` needs from it is copied here.
+- `labels`: one row per `#dbg_label` in a reachable block: the label and
+  the code offset of the instruction that follows it.
+- `#dbg_value` records describe values that policy v1 keeps in registers
+  for a few instructions; unoptimized input does not contain them. v1
+  records the ones whose value has a home (as a location valid from the
+  definition to the end of the function) and drops the rest: the variable
+  then shows as unavailable, which is not wrong. The count dropped is
+  reported in the coverage log.
 
 ### 9.6 Block addresses
 
@@ -645,9 +775,13 @@ For a function that contains an `IndirectBr` or has blocks the producer
 marked address-taken, `block_offsets` gives the code offset of each
 reachable block (and of the trap that stands for an unreachable one,
 §6.1). A `blockaddress` in a global initializer (`Fixup::Block`,
-`spec/ir.md` §4.3) becomes a relocation against the function's symbol with
-that offset as addend; one in code is formed PC-relative by the function
-itself.
+`spec/ir.md` §4.3) becomes a relocation against the **section symbol** of
+the function's section, with the function's offset in the section plus
+the block's offset as addend, as LLVM emits it. It must not be against the
+function's own symbol: that symbol may be preemptible, and the table
+would then point into whatever definition the dynamic linker chose. A
+`blockaddress` in code is formed PC-relative by the function itself
+(§6.3).
 
 ### 9.7 Merge and module emission
 
@@ -733,9 +867,18 @@ pub enum CgError {
   `tests/ir/` programs for its group and flips their expected-unsupported
   directives; behavior must equal `llc`'s with every linker.
 - **L5**: `assign` against clang, both directions (`abi-<target>.md`).
-- **Stress options**, for tests only: a pool restricted to two registers;
-  `far` forced on; every register value displaced after each instruction.
-  A program must behave the same under all of them.
+- **Stress options**, for tests only: the pool restricted to its minimum
+  (§2.1); `far` forced on; every register value displaced after each
+  instruction. A program must behave the same under all of them.
+- **Cases the design was reviewed against**, each a named test when its
+  work package lands: a dead instruction whose operands are register
+  values, and one whose operand is `Deferred` (§4.2); a value held across
+  a `returns_twice` call with a later call that `longjmp`s (§4.3); an
+  `invoke` with stack arguments caught in a loop a million times (§5.3);
+  `musttail` that swaps two stack arguments (§7.1); `resume` in a
+  function with landing pads (§7.1); an interposed function with a
+  `blockaddress` table (§9.6); an address-taken block no `indirectbr`
+  lists (§6.1).
 - **Performance** (`xtask bench`): time and peak memory per phase against
   `llc -O0`; bytes of code against `llc -O0` as a tracked ratio, not a
   gate.

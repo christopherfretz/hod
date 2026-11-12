@@ -19,6 +19,7 @@ mod common;
 mod support;
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -298,4 +299,201 @@ fn refusals_are_named() {
     for (name, text, what) in &cases {
         assert_eq!(refusal(text), CgError::unsupported(name), "{what}");
     }
+}
+
+/// `text` narrowed for the per-function survey: no `module asm` (the
+/// bridge refuses it, and `stl.cpp` has one), and the unit's `globals`
+/// only the functions' statics (the others are WP-059's: in `stl.cpp`
+/// they refuse the module whole, and so every function); and, when
+/// `free`, every member function's definition made a free function's
+/// (scoped in its file, without `declaration:`: WP-059's specifications
+/// would refuse every function of `stl.cpp` too).
+fn narrowed(text: &str, free: bool) -> String {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.starts_with("module asm")).collect();
+    let def = |id: &str| {
+        let head = format!("!{id} = ");
+        lines.iter().find_map(|l| l.strip_prefix(head.as_str()))
+    };
+    let field = |line: &str, name: &str| -> Option<String> {
+        let rest = line.split_once(name)?.1;
+        Some(rest.split([',', ')', '}']).next()?.trim().to_owned())
+    };
+    let is_static = |entry: &str| {
+        let Some(gve) = def(entry.trim().trim_start_matches('!')) else { return false };
+        let Some(var) = field(gve, "var: !") else { return false };
+        let Some(gv) = def(&var) else { return false };
+        field(gv, "scope: !")
+            .and_then(|s| def(&s))
+            .is_some_and(|s| s.starts_with("distinct !DISubprogram("))
+    };
+    let lists: Vec<String> = lines
+        .iter()
+        .filter(|l| l.contains("!DICompileUnit("))
+        .filter_map(|l| field(l, "globals: !"))
+        .collect();
+    let mut out = String::with_capacity(text.len());
+    for line in &lines {
+        let list = lists.iter().find(|g| line.starts_with(&format!("!{g} = !{{")));
+        if let Some(g) = list {
+            let inner = line.split_once("!{").unwrap().1.trim_end_matches('}');
+            let kept: Vec<&str> =
+                inner.split(',').map(str::trim).filter(|e| !e.is_empty() && is_static(e)).collect();
+            writeln!(out, "!{g} = !{{{}}}", kept.join(", ")).unwrap();
+        } else if free
+            && line.contains("distinct !DISubprogram(")
+            && let Some(decl) = field(line, "declaration: !")
+            && let (Some(scope), Some(file)) = (field(line, "scope: !"), field(line, "file: !"))
+        {
+            let line = line
+                .replace(&format!(", declaration: !{decl}"), "")
+                .replace(&format!("scope: !{scope},"), &format!("scope: !{file},"));
+            out.push_str(&line);
+            out.push('\n');
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// `lines` with every function's body but the `keep`th's replaced by
+/// `unreachable`: each function keeps its code and its subprogram, so
+/// what is refused is `keep`'s own.
+fn stubbed(lines: &[&str], keep: Option<usize>) -> String {
+    let mut out = String::with_capacity(lines.iter().map(|l| l.len() + 1).sum());
+    let (mut index, mut skipping) = (0, false);
+    for line in lines {
+        if skipping {
+            if *line == "}" {
+                out.push_str("entry:\n  unreachable\n}\n");
+                skipping = false;
+            }
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+        if line.starts_with("define ") && line.ends_with('{') {
+            skipping = keep != Some(index);
+            index += 1;
+        }
+    }
+    out
+}
+
+/// What hod refuses of `text`, by function: with every other function
+/// stubbed (`stubbed`) in `narrowed(text)`, the refusal of the module, or
+/// `None` when it compiles. `Err` is the refusal of the module with every
+/// function stubbed, which then refuses every function.
+fn per_function(text: &str, free: bool) -> Result<Vec<Option<String>>, String> {
+    let text = narrowed(text, free);
+    let lines: Vec<&str> = text.lines().collect();
+    let refusal = |t: &str| {
+        let (module, bodies) = parse(t);
+        match compile_to_object(&module, &bodies, &Options::default()) {
+            Ok(_) => None,
+            Err(ModuleError::Emit(e) | ModuleError::Function { error: e, .. }) => {
+                Some(e.to_string())
+            }
+            Err(e) => panic!("{e}"),
+        }
+    };
+    if let Some(e) = refusal(&stubbed(&lines, None)) {
+        return Err(e);
+    }
+    let n = lines.iter().filter(|l| l.starts_with("define ") && l.ends_with('{')).count();
+    Ok((0..n).map(|i| refusal(&stubbed(&lines, Some(i)))).collect())
+}
+
+#[derive(Default)]
+struct Survey {
+    modules: usize,
+    functions: usize,
+}
+
+/// §8.7 for WP-085, `HOD_DIES_CORPUS`: every module of the corpus with
+/// `!llvm.dbg.cu` (DWARF 5), and `stl.cpp` by clang 19, clang 22 and
+/// kiln++. Per refusal name: the functions refused (`per_function`), and
+/// the modules refused whole; a module hod compiles whole verifies and its
+/// tree is `llc`'s.
+#[test]
+fn corpus_survey() {
+    let Some(root) = std::env::var_os("HOD_DIES_CORPUS") else {
+        eprintln!("note: set HOD_DIES_CORPUS to a corpus directory to survey it");
+        return;
+    };
+    let scratch = Scratch::new("dies-inline-corpus");
+    let mut inputs = Vec::new();
+    let mut stack = vec![std::path::PathBuf::from(root)];
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "ll") {
+                let text = std::fs::read_to_string(&p).unwrap();
+                if text.contains("!llvm.dbg.cu") && !text.contains("!\"Dwarf Version\", i32 4") {
+                    let major = if p.to_string_lossy().contains("llvm19") { 19 } else { 22 };
+                    let name = p.file_name().unwrap().to_string_lossy().into_owned();
+                    inputs.push((
+                        format!("{name} ({major})"),
+                        major,
+                        support::strip_template_params(&text),
+                    ));
+                }
+            }
+        }
+    }
+    inputs.sort_by(|a, b| a.0.cmp(&b.0));
+    let stl = "../../../../hod_ll/tests/data/stl.cpp";
+    let compilers =
+        [("c19", 19, tool("clang++-19")), ("c22", 22, tool("clang++-22")), ("kiln", 22, kiln())];
+    for (tag, major, compiler) in compilers {
+        if let Some(c) = compiler {
+            inputs.push((
+                format!("stl.cpp ({tag})"),
+                major,
+                ir(&c, &scratch, &format!("stl-{tag}"), stl),
+            ));
+        }
+    }
+    let mut by = std::collections::BTreeMap::<String, Survey>::new();
+    let mut tally = Tally::default();
+    for (i, (name, major, text)) in inputs.iter().enumerate() {
+        let functions =
+            text.lines().filter(|l| l.starts_with("define ") && l.ends_with('{')).count();
+        let free = name.starts_with("stl.cpp");
+        let verdicts = per_function(text, free)
+            .unwrap_or_else(|e| vec![Some(format!("{e} (all stubbed)")); functions]);
+        let written = verdicts.iter().filter(|v| v.is_none()).count();
+        let mut mine = std::collections::BTreeMap::<&str, usize>::new();
+        for v in verdicts.iter().flatten() {
+            *mine.entry(v).or_default() += 1;
+            by.entry(v.clone()).or_default().functions += 1;
+        }
+        by.entry("written".to_owned()).or_default().functions += written;
+        let (module, bodies) = parse(text);
+        let whole = match compile_to_object(&module, &bodies, &Options::default()) {
+            Ok(_) => {
+                compare(&scratch, *major, &format!("m{i}"), text, &mut tally);
+                by.entry("written".to_owned()).or_default().modules += 1;
+                ", the module written, its tree equal to llc's".to_owned()
+            }
+            Err(ModuleError::Emit(e) | ModuleError::Function { error: e, .. }) => {
+                by.entry(e.to_string()).or_default().modules += 1;
+                format!(", the module refused: {e}")
+            }
+            Err(e) => panic!("{name}: {e}"),
+        };
+        eprintln!(
+            "survey: {name}: {functions} functions, {written} written{whole}; refused: {mine:?}"
+        );
+    }
+    for (key, s) in &by {
+        eprintln!("survey: {key}: {} functions; {} modules", s.functions, s.modules);
+    }
+    eprintln!(
+        "survey: trees equal to llc's: {} DIEs, {} inlined subroutines, {} abstract instances",
+        tally.dies, tally.inlined, tally.abstracts
+    );
 }

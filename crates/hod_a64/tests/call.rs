@@ -357,6 +357,270 @@ fn exceptions_unwind_through_hod_frames() {
     }
 }
 
+/// A type of the oracle chains: what `hod_interp` holds.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum OT {
+    Int(u32, &'static str),
+    Float,
+    Double,
+}
+
+impl OT {
+    fn ir(self) -> String {
+        match self {
+            OT::Int(n, _) => format!("i{n}"),
+            OT::Float => "float".into(),
+            OT::Double => "double".into(),
+        }
+    }
+    fn attr(self) -> &'static str {
+        match self {
+            OT::Int(_, ext) => ext,
+            _ => "",
+        }
+    }
+    fn same(self, other: OT) -> bool {
+        self.ir() == other.ir()
+    }
+    fn c(self) -> &'static str {
+        match self {
+            OT::Int(n, _) if n <= 64 => "uint64_t",
+            OT::Int(..) => "unsigned __int128",
+            OT::Float => "float",
+            OT::Double => "double",
+        }
+    }
+}
+
+fn oracle_type(rng: &mut Rng) -> OT {
+    const WIDTHS: [u32; 12] = [1, 8, 13, 16, 31, 32, 33, 64, 65, 100, 127, 128];
+    match rng.below(8) {
+        0 => OT::Float,
+        1 => OT::Double,
+        _ => {
+            let n = *rng.pick(&WIDTHS);
+            // `a64:call-wide-int-extension`, `a64:call-narrow-ext-stack-arg`.
+            let ext = if matches!(n, 1 | 8 | 16 | 32) {
+                *rng.pick(&["", " zeroext", " signext"])
+            } else {
+                ""
+            };
+            OT::Int(n, ext)
+        }
+    }
+}
+
+fn oracle_value(rng: &mut Rng, t: OT) -> hod_interp::Val {
+    use hod_interp::Val;
+    match t {
+        OT::Int(n, _) => {
+            let mask = if n == 128 { u128::MAX } else { (1u128 << n) - 1 };
+            Val::Int { bits: n, value: rng.u128() & mask }
+        }
+        OT::Float => Val::Float(f32::from_bits(rng.next() as u32 & 0x3fff_ffff).to_bits()),
+        OT::Double => Val::Double(rng.next() & 0x3fff_ffff_ffff_ffff),
+    }
+}
+
+fn oracle_ir_const(v: &hod_interp::Val) -> String {
+    use hod_interp::Val;
+    match *v {
+        Val::Int { bits, value } => {
+            let signed = if bits < 128 && value >> (bits - 1) & 1 == 1 {
+                (value | !((1u128 << bits) - 1)) as i128
+            } else {
+                value as i128
+            };
+            format!("i{bits} {signed}")
+        }
+        Val::Float(b) => format!("float 0x{:016X}", f64::from(f32::from_bits(b)).to_bits()),
+        Val::Double(b) => format!("double 0x{b:016X}"),
+        _ => unreachable!("only scalars"),
+    }
+}
+
+/// The result line the driver prints for case `k`.
+fn oracle_line(k: usize, v: &hod_interp::Val) -> String {
+    use hod_interp::Val;
+    let bits = match *v {
+        Val::Int { value, .. } => value,
+        Val::Float(b) => u128::from(b),
+        Val::Double(b) => u128::from(b),
+        _ => unreachable!("only scalars"),
+    };
+    format!("r {k} {:016x}{:016x}", (bits >> 64) as u64, bits as u64)
+}
+
+/// `hod_interp` is the oracle: chains `o_k` -> `p_k` -> `q_k` of IR
+/// functions passing integers of every width (with the extension
+/// attributes on the inner calls), `float` and `double` in registers and
+/// on the stack, permuted, duplicated and mixed with constants; `q_k`
+/// returns one of its parameters. The interpreter's results must be what
+/// the native program, compiled by hod plainly and stressed, prints.
+#[test]
+fn chains_agree_with_the_interpreter() {
+    use hod_interp::Val;
+    let dir = Scratch::new("a64-call-oracle");
+    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let mut rng = Rng(0x38_0e1e);
+    let mut ir = String::new();
+    let mut c = String::from("#include <stdio.h>\n#include <stdint.h>\n#include <string.h>\n");
+    let mut main = String::from("int main(void) {\n");
+    let mut entries = Vec::new();
+    for k in 0..150 {
+        // q_k: its parameters and the one it returns.
+        let q: Vec<OT> = (0..1 + rng.below(16)).map(|_| oracle_type(&mut rng)).collect();
+        let pick = rng.below(q.len() as u64) as usize;
+        let ret = q[pick];
+        // A caller's arguments for `callee`: its own parameters (`have`,
+        // with their values) or constants. Returns the argument texts.
+        let call_args = |rng: &mut Rng,
+                         callee: &[OT],
+                         values: &[Val],
+                         have: &mut Vec<(OT, Val)>| {
+            let mut args = Vec::new();
+            for (t, v) in callee.iter().zip(values) {
+                let fits: Vec<usize> =
+                    (0..have.len()).filter(|&i| have[i].0.same(*t) && have[i].1 == *v).collect();
+                let text = if !fits.is_empty() && rng.chance(50) {
+                    format!("{}{} %a{}", t.ir(), t.attr(), rng.pick(&fits))
+                } else if rng.chance(30) {
+                    let text = oracle_ir_const(v);
+                    let (ty, rest) = text.split_once(' ').expect("type and value");
+                    format!("{ty}{} {rest}", t.attr())
+                } else {
+                    let attr = if let OT::Int(n, _) = t { oracle_type_ext(rng, *n) } else { "" };
+                    have.push((
+                        match t {
+                            OT::Int(n, _) => OT::Int(*n, attr),
+                            other => *other,
+                        },
+                        v.clone(),
+                    ));
+                    format!("{}{} %a{}", t.ir(), t.attr(), have.len() - 1)
+                };
+                args.push(text);
+            }
+            args
+        };
+        let q_values: Vec<Val> = q.iter().map(|t| oracle_value(&mut rng, *t)).collect();
+        let mut p_have = Vec::new();
+        let q_args = call_args(&mut rng, &q, &q_values, &mut p_have);
+        let p_types: Vec<OT> = p_have.iter().map(|(t, _)| *t).collect();
+        let p_values: Vec<Val> = p_have.iter().map(|(_, v)| v.clone()).collect();
+        let mut o_have = Vec::new();
+        let p_args = call_args(&mut rng, &p_types, &p_values, &mut o_have);
+        // The driver passes plain values: no attributes on `o_k`.
+        let o_types: Vec<OT> = o_have
+            .iter()
+            .map(|(t, _)| match t {
+                OT::Int(n, _) => OT::Int(*n, ""),
+                o => *o,
+            })
+            .collect();
+        let list = |types: &[OT]| -> String {
+            types
+                .iter()
+                .enumerate()
+                .map(|(i, t)| format!("{}{} %a{i}", t.ir(), t.attr()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let rty = ret.ir();
+        let rattr = ret.attr();
+        ir.push_str(&format!(
+            "define{rattr} {rty} @q_{k}({}) {{\n  ret {rty} %a{pick}\n}}\n",
+            list(&q)
+        ));
+        ir.push_str(&format!(
+            "define {rty} @p_{k}({}) {{\n  %r = call{rattr} {rty} @q_{k}({})\n  ret {rty} %r\n}}\n",
+            list(&p_types),
+            q_args.join(", ")
+        ));
+        ir.push_str(&format!(
+            "define {rty} @o_{k}({}) {{\n  %r = call {rty} @p_{k}({})\n  ret {rty} %r\n}}\n",
+            list(&o_types),
+            p_args.join(", ")
+        ));
+        // The driver.
+        let protos: Vec<&str> = o_types.iter().map(|t| t.c()).collect();
+        let protos = if protos.is_empty() { "void".to_owned() } else { protos.join(", ") };
+        c.push_str(&format!("{} o_{k}({protos});\n", ret.c()));
+        let args: Vec<String> = o_have
+            .iter()
+            .map(|(_, v)| match *v {
+                Val::Int { value, .. } => format!(
+                    "((unsigned __int128)0x{:x}ULL << 64 | 0x{:x}ULL)",
+                    (value >> 64) as u64,
+                    value as u64
+                ),
+                Val::Float(b) => {
+                    format!("({{ uint32_t b_ = 0x{b:x}; float f_; memcpy(&f_, &b_, 4); f_; }})")
+                }
+                Val::Double(b) => {
+                    format!("({{ uint64_t b_ = 0x{b:x}ULL; double f_; memcpy(&f_, &b_, 8); f_; }})")
+                }
+                _ => unreachable!(),
+            })
+            .collect();
+        let read = match ret {
+            OT::Int(n, _) => {
+                let mask = if n == 128 { u128::MAX } else { (1u128 << n) - 1 };
+                format!(
+                    "unsigned __int128 v = (unsigned __int128)o_{k}({}) & ((unsigned __int128)0x{:x}ULL << 64 | 0x{:x}ULL);",
+                    args.join(", "),
+                    (mask >> 64) as u64,
+                    mask as u64
+                )
+            }
+            OT::Float => format!(
+                "float f = o_{k}({}); uint32_t b; memcpy(&b, &f, 4); unsigned __int128 v = b;",
+                args.join(", ")
+            ),
+            OT::Double => format!(
+                "double f = o_{k}({}); uint64_t b; memcpy(&b, &f, 8); unsigned __int128 v = b;",
+                args.join(", ")
+            ),
+        };
+        main.push_str(&format!(
+            "  {{ {read} printf(\"r {k} %016llx%016llx\\n\", (unsigned long long)(v >> 64), (unsigned long long)v); }}\n"
+        ));
+        entries.push((k, o_have.into_iter().map(|(_, v)| v).collect::<Vec<Val>>()));
+    }
+    main.push_str("  return 0;\n}\n");
+    c.push_str(&main);
+    let text = format!("{}{ir}", ll_header(22));
+    let (module, bodies) = parse(&text);
+    let program = hod_interp::Program::with_bodies(&module, &bodies).expect("a program");
+    let mut expected = String::new();
+    for (k, args) in &entries {
+        let entry = module.find_symbol(format!("o_{k}").as_bytes()).expect("o_k");
+        let outcome = hod_interp::Interp::new(&program).run(entry, args);
+        let result = outcome.result.unwrap_or_else(|e| panic!("o_{k}: {e:?}")).expect("a value");
+        expected.push_str(&oracle_line(*k, &result));
+        expected.push('\n');
+    }
+    let driver = toolchain.compile_c(&dir, "driver", &c, &["-w"]);
+    for (tag, stress) in [("plain", hod_cg::Stress::default()), ("stress", hod_cg::Stress::ALL)] {
+        let emitted = emit(&module, &bodies, &Options { stress, ..Options::default() });
+        let object = write_object(&dir, &format!("oracle-{tag}.o"), &emitted);
+        let exe = dir.join(format!("oracle-{tag}"));
+        let linker = &toolchain.linkers[0];
+        let ran = toolchain.link_and_run(linker, &[], &[&driver, &object], &exe);
+        assert_eq!(exit_code(&ran), Some(0), "{tag}");
+        let got = ran.stdout_text();
+        for (want, have) in expected.lines().zip(got.lines()) {
+            assert_eq!(have, want, "{tag}: the native run and the interpreter disagree\n{text}");
+        }
+        assert_eq!(got.lines().count(), entries.len(), "{tag}");
+    }
+}
+
+/// An extension attribute for an argument of `n` bits a caller adds.
+fn oracle_type_ext(rng: &mut Rng, n: u32) -> &'static str {
+    if matches!(n, 1 | 8 | 16 | 32) { *rng.pick(&["", " zeroext", " signext"]) } else { "" }
+}
+
 #[test]
 fn the_remaining_forms_are_refused_by_name() {
     assert_refused(&[

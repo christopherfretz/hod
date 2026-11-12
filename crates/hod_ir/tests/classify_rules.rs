@@ -712,7 +712,7 @@ fn a_body_must_belong_to_its_module() {
 
     // In the census they end the walk too: nothing after them counts.
     let support = everything(ARCH);
-    let mut census = hod_ir::Census::new();
+    let mut census = Census::new();
     Classifier::new(&support).census_body(&module(ARCH), &built.bodies[0], &mut census);
     assert_eq!(census.len(), 1);
     assert_eq!(census.entries()[0].kind, RejectionKind::Invalid);
@@ -960,7 +960,7 @@ fn census_names(support: &Support, program: &Program) -> Vec<String> {
     for body in &program.bodies {
         classifier.census_body(&program.m, body, &mut census);
     }
-    census.entries().iter().map(|entry| entry.construct.to_string()).collect()
+    census.entries().iter().map(|entry| entry.construct.clone()).collect()
 }
 
 /// §5.7: `convergent` constrains transformations only, so the shipped

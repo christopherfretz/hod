@@ -40,6 +40,8 @@ use crate::value::{
 ///
 /// Start from [`CallDesc::new`] or [`CallDesc::intrinsic`] and set the
 /// fields that differ from a plain C call.
+// One field per kept call-site flag of LLVM's, as written in the IR.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy, Debug)]
 pub struct CallDesc<'a> {
     /// What is called.

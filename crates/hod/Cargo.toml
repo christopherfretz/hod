@@ -4,6 +4,7 @@ description = "A debug-build code generator: the library facade."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 repository.workspace = true
 publish.workspace = true
 

@@ -4,6 +4,7 @@ description = "Unwind tables: .eh_frame and .gcc_except_table."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 repository.workspace = true
 publish.workspace = true
 

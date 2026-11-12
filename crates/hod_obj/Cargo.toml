@@ -4,6 +4,7 @@ description = "Object-file model and the ELF64 relocatable writer."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 repository.workspace = true
 publish.workspace = true
 

@@ -31,7 +31,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `init` | 8 | 5 | 3 | 0 | 0 | 8 | 0 |
 | `function` | 6 | 6 | 0 | 0 | 0 | 6 | 0 |
 | `cc` | 15 | 4 | 9 | 2 | 0 | 12 | 3 |
-| `attr` | 56 | 22 | 31 | 3 | 9 | 39 | 8 |
+| `attr` | 57 | 23 | 31 | 3 | 10 | 39 | 8 |
 | `type` | 15 | 10 | 2 | 3 | 0 | 13 | 2 |
 | `inst` | 67 | 59 | 0 | 8 | 0 | 59 | 8 |
 | `mem` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 9 | 7 | 2 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 143 | 105 | 38 | 0 | 0 | 135 | 8 |
-| total | 446 | 291 | 109 | 46 | 16 | 367 | 63 |
+| total | 447 | 292 | 109 | 46 | 17 | 367 | 63 |
 
 ## `module`
 
@@ -256,6 +256,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:sanitize_realtime_blocking` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_thread` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_type` | not-implemented | not-implemented | unplanned |
+| `attr:convergent` | supported | supported | constrains transformations only, and hod makes none (§5.7); `bundle:convergencectrl` and the `llvm.experimental.convergence.*` intrinsics stay refused |
 | `attr:target-cpu` | supported | not-implemented | AArch64: the code is ARMv8.0, which every CPU runs |
 | `attr:target-features` | supported | not-implemented | each feature judged by code generation (`spec/codegen.md` §5.5.2) |
 | `attr:tune-cpu` | supported | supported | tuning only: hod does not tune |

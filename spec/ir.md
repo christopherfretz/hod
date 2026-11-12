@@ -110,9 +110,11 @@ requires them, never as storage); target extension type (by name).
   LLVM's rules (LangRef "Data Layout"; `StructLayout`). `size_of`,
   `align_of` and `field_offset` are O(1). Scalable vectors have a known
   minimum size and a "scalable" flag.
-- Tested by: layout of a generated grid of types against `clang`'s
-  `sizeof`/`offsetof` for the equivalent C declarations and against
-  `opt`'s constant folding of `getelementptr` offsets, on both targets.
+- Tested by: layout of a generated grid of types against the sizes,
+  alignments and offsets `llc` gives them (the target's own data layout)
+  and against `opt` (custom data layouts, which `llc` ignores), on both
+  targets, with LLVM 19 and 22. Most LLVM types have no C declaration, so
+  a C compiler is not the oracle.
 
 ## 4. Constants
 
@@ -135,18 +137,70 @@ the difference) and identical for code generation: any value, here zero.
   it (folded with §3 layout), and the pointer casts LLVM still has as
   expressions, in any nesting.
 - `BlockAddr { function, block }`.
-- `SymDiff { a, b, addend, width }`: `a - b + addend`, truncated to
-  `width` bits. The normal form of `trunc (sub (ptrtoint a), (ptrtoint
-  b))` and its variants, used by relative tables.
+- `SymDiff { ty, a, b, addend, plt }`: `a - b + addend` as a value of
+  integer type `ty`. The normal form of `trunc (sub (ptrtoint a),
+  (ptrtoint b))` and its variants, used by relative tables. `plt` says
+  that `a` was named through `dso_local_equivalent` (relative vtables).
+  `a - a` without `plt` is the integer `addend`.
 - `IntOfAddr` / `AddrOfInt`: `ptrtoint` and `inttoptr` of a constant, when
   the result type differs in kind from the operand.
 - `dso_local_equivalent` and `no_cfi` wrap a function symbol.
 - `Expr`: any other constant expression, kept as an operator and operand
   ids. Its only use is to let `classify` name what was rejected.
 
-A producer must reduce to the first forms whenever the expression is
-reducible; `hod_ir` provides the folding functions so that all producers
-reduce the same way.
+A producer passes every constant expression through the folding functions
+`hod_ir` provides (`fold_gep`, `fold_cast`, `fold_binary`) and hands on
+the result, so that all producers reduce the same way. What the functions
+reduce is the definition of "reducible": address arithmetic whose result
+is again a number, a symbol plus a number, or a symbol minus a symbol plus
+a number, and integer arithmetic on numbers. Everything else stays `Expr`.
+
+- An addend is reduced to the signed range of the field it will be
+  written to, so that equal values are one constant. LLVM keeps the
+  unreduced sum; the two agree modulo the field's width.
+- Two expressions LLVM can emit are deliberately left as `Expr`, and so
+  are declined by `classify`: a number minus an address (`sub (i64 4,
+  ptrtoint @a)`), and an address in an integer whose width is not 8, 16,
+  32 or 64 bits. Neither has been seen from a C++ front end; a normal
+  form is added when one is.
+
+### 4.3 Initializer images
+
+`ConstPool::flatten(types, c, bytes, fixups)` appends the image of
+constant `c` to `bytes` and a `Fixup { offset, size, target, addend }` to
+`fixups` for each address in it. Exactly `alloc_size_of(type of c)` bytes
+are appended; fixup offsets are positions in `bytes`, in increasing order;
+on error both buffers are left as they were.
+
+- Little-endian targets only (`UnsupportedTarget` otherwise).
+- An integer or float occupies its store size, low byte first; bits above
+  an integer's width are zero. `x86_fp80` is ten bytes.
+- Padding, `undef` and `poison` are zero, with one exception for identity
+  with LLVM: the tail padding of a vector of `i8`, `i16`, `i32`, `i64`,
+  `half`, `bfloat`, `float` or `double` numbers whose bytes are all one
+  byte repeats that byte.
+- A struct field is at its field offset; array element `i` at `i` times
+  the element's alloc size; element `i` of a vector whose elements are
+  whole bytes at `i` times the element's width in bytes. A vector whose
+  elements are not whole bytes is one little-endian integer with element 0
+  in its lowest bits.
+- An address leaves zero bytes and a fixup: `Sym(s)` for `Addr` and
+  `no_cfi`; `Plt(s)` for `dso_local_equivalent`; `Block { func, block }`;
+  `Diff { a, b }` and `PltDiff { a, b }` for `SymDiff`. The field's value
+  is target + addend, truncated to `size` bytes (8 for a pointer; 1, 2, 4
+  or 8 for an integer).
+- A `Diff { a, b }` can be written only when `a` and `b` are defined in
+  one section, or `b` is defined in the section that holds the field.
+  `flatten` cannot know sections; whoever turns fixups into relocations
+  checks this and reports the variable as unsupported otherwise.
+- No image (`UnsupportedInitializer`): `Expr`, the `none` token, an
+  address in an integer whose width is not 8, 16, 32 or 64 bits, an
+  address in a vector whose elements are not whole bytes. `UnsizedType`
+  and `InvalidType` (scalable) for types without a fixed size.
+- A writable variable belongs in `.bss` exactly when
+  `ConstPool::is_zero_or_undef` holds for its initializer.
+- Tested by: `tests/flatten_diff.rs` against `llc`'s `.data` and
+  relocations, both targets, LLVM 19 and 22.
 
 ## 5. Functions
 
@@ -359,9 +413,11 @@ IR").
 
 - Unit: interning, the size assertions, every `IrErrorKind`, forward
   references, use facts against `verify`.
-- Layout: §3's grid against clang and `opt`, both targets.
-- Constant folding: §4.2's reductions against `opt`'s output for the same
-  expressions.
+- Layout: §3's grid against `llc` and `opt`, both targets, LLVM 19 and 22.
+- Constant folding: §4.2's reductions against the assembly `llc` writes
+  for the same expressions as initializers (`symbol + addend` has no
+  folded form in IR text that `opt` could print).
+- Initializer images: §4.3 against `llc`'s `.data` bytes and relocations.
 - Attribute table: every attribute name in LLVM 19's and 22's
   `Attributes.td` list is in exactly one class (the list is checked in as
   test data with its source version).

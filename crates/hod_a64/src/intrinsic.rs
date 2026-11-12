@@ -35,7 +35,8 @@
 //!   `returnaddress(n)` loads the saved `lr` of that record (every hod
 //!   function saves `lr` in its frame record, leaves included).
 //! - **Folded**: `objectsize` is `-1` (`min` false) or `0`; `is.constant`
-//!   is false; `prefetch` emits nothing; `ptrmask` is an `and`.
+//!   is true for a literal constant operand, false otherwise (as `llc`);
+//!   `prefetch` emits nothing; `ptrmask` is an `and`.
 
 use hod_cg::{CallArg, CgResult, Class, FnCx, RuntimeFn};
 use hod_ir::{Const, Inst, Intrinsic, TypeKind, Value};
@@ -140,11 +141,26 @@ pub fn intrinsic<'a>(
             mov_imm(cx, size_for_bits(bits), xr(rd), value);
             cx.finish(inst, rd)
         }
-        (I::IsConstant, _) => {
-            // At -O0 nothing is known to be a constant (LangRef: the
-            // result may be false for anything).
+        (I::IsConstant, &[x]) => {
+            // As `llc`'s `LowerConstantIntrinsics`: true for a manifest
+            // constant (a literal number, `null`, a zero, `undef`), false
+            // for anything else, a symbol's address and aggregates
+            // included (LangRef lets the result be false for anything).
+            let manifest = x.as_const().is_some_and(|id| {
+                matches!(
+                    cx.module.consts.get(id),
+                    Const::Int { .. }
+                        | Const::WideInt { .. }
+                        | Const::Float { .. }
+                        | Const::WideFloat { .. }
+                        | Const::Null(_)
+                        | Const::Zero(_)
+                        | Const::Undef(_)
+                        | Const::Poison(_)
+                )
+            });
             let rd = cx.def_reg(inst)?;
-            mov_imm(cx, Size::W, xr(rd), 0);
+            mov_imm(cx, Size::W, xr(rd), u64::from(manifest));
             cx.finish(inst, rd)
         }
         // A hint: nothing to do.

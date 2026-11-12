@@ -196,6 +196,7 @@ impl DiFlags {
     /// The accessibility field: 0 (none), [`DiFlags::PRIVATE`],
     /// [`DiFlags::PROTECTED`] or [`DiFlags::PUBLIC`].
     #[inline]
+    #[must_use]
     pub const fn accessibility(self) -> DiFlags {
         DiFlags(self.0 & 3)
     }

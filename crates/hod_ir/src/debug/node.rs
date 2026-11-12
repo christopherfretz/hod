@@ -119,7 +119,7 @@ pub(crate) struct Dec<'m> {
     pub(crate) strings: Option<&'m StrPool>,
 }
 
-impl<'m> Dec<'m> {
+impl Dec<'_> {
     #[inline]
     fn word(&mut self) -> u32 {
         let word = self.cells.get(self.at).map_or(0, |cell| cell.raw());
@@ -460,12 +460,11 @@ impl<'a> Field<'a> for DiBound {
     }
     fn put(&self, enc: &mut Enc<'_>) -> IrResult<()> {
         match *self {
-            DiBound::None | DiBound::Const(_) => {}
             DiBound::Node(id) if id.raw() >= enc.nodes => return dangling(id),
             DiBound::Expr(id) if id.raw() >= enc.exprs => {
                 return err(IrErrorKind::UndefinedDebugNode, format!("{id:?} does not exist"));
             }
-            DiBound::Node(_) | DiBound::Expr(_) => {}
+            DiBound::None | DiBound::Const(_) | DiBound::Node(_) | DiBound::Expr(_) => {}
         }
         let (tag, value) = match *self {
             DiBound::None => (0, 0),
@@ -569,8 +568,7 @@ pub(crate) mod class {
     pub(crate) const TEMPLATE_PARAM: u32 =
         of(DiKind::TemplateTypeParameter) | of(DiKind::TemplateValueParameter);
     /// LLVM's `DIType`.
-    pub(crate) const TYPE: u32 =
-        of(DiKind::BasicType) | DERIVED | COMPOSITE | SUBROUTINE | OTHER;
+    pub(crate) const TYPE: u32 = of(DiKind::BasicType) | DERIVED | COMPOSITE | SUBROUTINE | OTHER;
     /// LLVM's `DILocalScope`.
     pub(crate) const LOCAL_SCOPE: u32 =
         SUBPROGRAM | of(DiKind::LexicalBlock) | of(DiKind::LexicalBlockFile);
@@ -673,7 +671,7 @@ macro_rules! nodes {
                     Ok((nodes!(@tag_or [$($tag)?] self.tag, 0), mask))
                 }
 
-                #[allow(unused_assignments, unused_variables, reason = "the last field's bit is not read; not every kind has a tag")]
+                #[allow(unused_assignments, unused_variables, clippy::redundant_field_names, reason = "the last field's bit is not read; not every kind has a tag; the macro writes `tag: tag`")]
                 fn decode(tag: u16, mask: u32, dec: &mut Dec<'a>) -> Self {
                     let mut bit = 1u32;
                     Self {
@@ -1178,9 +1176,10 @@ impl<'a> DiNode<'a> {
     /// [`DiNode::new`] in one place: a global variable is a definition.
     pub fn llvm_default(kind: DiKind) -> DiNode<'a> {
         match kind {
-            DiKind::GlobalVariable => {
-                DiNode::GlobalVariable(DiGlobalVariable { is_definition: true, ..Default::default() })
-            }
+            DiKind::GlobalVariable => DiNode::GlobalVariable(DiGlobalVariable {
+                is_definition: true,
+                ..Default::default()
+            }),
             other => DiNode::new(other),
         }
     }
@@ -1259,7 +1258,10 @@ mod tests {
         }
         assert_eq!(DiKind::named(b"DIStringType"), None);
         assert_eq!(DiKind::from_code(99), DiKind::Undefined);
-        assert_eq!(DiKind::File.fields(), ["filename", "directory", "checksumkind", "checksum", "source"]);
+        assert_eq!(
+            DiKind::File.fields(),
+            ["filename", "directory", "checksumkind", "checksum", "source"]
+        );
         assert_eq!(DiKind::BasicType.fields()[0], "tag");
         assert_eq!(DiKind::Subprogram.fields().len(), 16);
     }
@@ -1295,20 +1297,35 @@ mod tests {
         node.set(b"retainedNodes", DiFieldValue::Node(None)).unwrap();
         let DiNode::Subprogram(sp) = node else { panic!() };
         assert_eq!((sp.name, sp.line, sp.scope), (&b"f"[..], 7, Some(DiId::new(3))));
-        assert_eq!(sp.sp_flags, SpFlags::DEFINITION | SpFlags::LOCAL_TO_UNIT | SpFlags::PURE_VIRTUAL);
+        assert_eq!(
+            sp.sp_flags,
+            SpFlags::DEFINITION | SpFlags::LOCAL_TO_UNIT | SpFlags::PURE_VIRTUAL
+        );
         assert!(node.must_be_distinct());
 
         let kind = |result: IrResult<()>| result.unwrap_err().kind;
         assert_eq!(kind(node.set(b"line", DiFieldValue::Str(b"7"))), IrErrorKind::InvalidDebugInfo);
-        assert_eq!(kind(node.set(b"line", DiFieldValue::UInt(1 << 32))), IrErrorKind::InvalidDebugInfo);
-        assert_eq!(kind(node.set(b"annotations", DiFieldValue::Node(None))), IrErrorKind::InvalidDebugInfo);
-        assert_eq!(kind(node.set(b"virtuality", DiFieldValue::UInt(3))), IrErrorKind::InvalidDebugInfo);
+        assert_eq!(
+            kind(node.set(b"line", DiFieldValue::UInt(1 << 32))),
+            IrErrorKind::InvalidDebugInfo
+        );
+        assert_eq!(
+            kind(node.set(b"annotations", DiFieldValue::Node(None))),
+            IrErrorKind::InvalidDebugInfo
+        );
+        assert_eq!(
+            kind(node.set(b"virtuality", DiFieldValue::UInt(3))),
+            IrErrorKind::InvalidDebugInfo
+        );
 
         let mut ty = DiNode::new(DiKind::DerivedType);
         ty.set(b"tag", DiFieldValue::UInt(0x0f)).unwrap();
         ty.set(b"size", DiFieldValue::UInt(1 << 40)).unwrap();
         ty.set(b"dwarfAddressSpace", DiFieldValue::UInt(0)).unwrap();
-        assert_eq!(kind(ty.set(b"tag", DiFieldValue::UInt(1 << 16))), IrErrorKind::InvalidDebugInfo);
+        assert_eq!(
+            kind(ty.set(b"tag", DiFieldValue::UInt(1 << 16))),
+            IrErrorKind::InvalidDebugInfo
+        );
         let DiNode::DerivedType(ty) = ty else { panic!() };
         assert_eq!((ty.tag, ty.size, ty.dwarf_address_space), (0x0f, 1 << 40, Some(0)));
 
@@ -1323,10 +1340,16 @@ mod tests {
 
         let mut unit = DiNode::new(DiKind::CompileUnit);
         unit.set(b"emissionKind", DiFieldValue::UInt(2)).unwrap();
-        assert_eq!(kind(unit.set(b"emissionKind", DiFieldValue::UInt(9))), IrErrorKind::InvalidDebugInfo);
+        assert_eq!(
+            kind(unit.set(b"emissionKind", DiFieldValue::UInt(9))),
+            IrErrorKind::InvalidDebugInfo
+        );
         let mut value = DiNode::new(DiKind::Enumerator);
         value.set(b"value", DiFieldValue::UInt(u64::MAX)).unwrap();
         assert_eq!(value, DiNode::Enumerator(DiEnumerator { value: -1, ..Default::default() }));
-        assert_eq!(kind(DiNode::Undefined.set(b"x", DiFieldValue::Bool(true))), IrErrorKind::InvalidDebugInfo);
+        assert_eq!(
+            kind(DiNode::Undefined.set(b"x", DiFieldValue::Bool(true))),
+            IrErrorKind::InvalidDebugInfo
+        );
     }
 }

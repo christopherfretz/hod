@@ -45,9 +45,11 @@ fn names(functions: usize) -> Vec<Names> {
 
 /// The debug information of `names.len()` functions. Returns the tables
 /// and the number of locations asked for.
+#[allow(clippy::too_many_lines)]
 fn build(names: &[Names]) -> IrResult<(DebugInfo, usize)> {
     let mut d = DebugInfo::default();
-    let file = d.add(&DiFile { filename: b"unit.cpp", directory: b"/src", ..Default::default() }.into())?;
+    let file =
+        d.add(&DiFile { filename: b"unit.cpp", directory: b"/src", ..Default::default() }.into())?;
     let unit = DiCompileUnit {
         language: 0x21,
         file: Some(file),
@@ -57,7 +59,8 @@ fn build(names: &[Names]) -> IrResult<(DebugInfo, usize)> {
     };
     let unit = d.add_distinct(&unit.into())?;
     d.add_compile_unit(unit)?;
-    let int = d.add(&DiBasicType { name: b"int", size: 32, encoding: 5, ..Default::default() }.into())?;
+    let int =
+        d.add(&DiBasicType { name: b"int", size: 32, encoding: 5, ..Default::default() }.into())?;
     let character = DiBasicType { name: b"char", size: 8, encoding: 8, ..Default::default() };
     let character = d.add(&character.into())?;
     let mut asked = 0;
@@ -105,7 +108,8 @@ fn build(names: &[Names]) -> IrResult<(DebugInfo, usize)> {
             ..Default::default()
         };
         let pointer = d.add(&pointer.into())?;
-        let signature = d.add(&DiSubroutineType { types: &[int, pointer, int], ..Default::default() }.into())?;
+        let signature =
+            d.add(&DiSubroutineType { types: &[int, pointer, int], ..Default::default() }.into())?;
         // The member declaration and the definition, which names its
         // variables and is named by them.
         let declaration = DiSubprogram {
@@ -130,7 +134,8 @@ fn build(names: &[Names]) -> IrResult<(DebugInfo, usize)> {
             ty: Some(ty),
             ..Default::default()
         };
-        let block = DiLexicalBlock { scope: Some(function), file: Some(file), line: line + 3, column: 5 };
+        let block =
+            DiLexicalBlock { scope: Some(function), file: Some(file), line: line + 3, column: 5 };
         let block = d.add_distinct(&block.into())?;
         let variables = [
             d.add(&variable(b"this", 1, function, pointer).into())?,
@@ -257,17 +262,35 @@ fn main() -> IrResult<()> {
     m.debug = debug;
     let (verifying, ()) = fastest(|| m.verify_debug())?;
     let entries = stats.nodes + asked;
-    println!("{functions} functions: {} nodes, {asked} locations asked for, {} kept", stats.nodes, stats.locs);
+    println!(
+        "{functions} functions: {} nodes, {asked} locations asked for, {} kept",
+        stats.nodes, stats.locs
+    );
     println!("  build, nodes and locations  {:6.1} ns each", ratio(building, entries));
-    println!("                              {:6.1} million a second", 1e3 / ratio(building, entries));
+    println!(
+        "                              {:6.1} million a second",
+        1e3 / ratio(building, entries)
+    );
     println!("  locations alone, new        {:6.1} ns each", ratio(locating, asked));
     println!("                              {:6.1} million a second", 1e3 / ratio(locating, asked));
     println!("  locations alone, seen       {:6.1} ns each", ratio(repeating, asked));
     println!("  locations alone, distinct   {:6.1} ns each", ratio(pushing, asked));
     println!("  read (sum {sum})   {:6.1} ns each", ratio(reading, stats.nodes + stats.locs));
-    println!("  verify                      {:6.1} ns each", ratio(verifying, stats.nodes + stats.locs));
-    println!("  node bytes                  {:6.1} bytes/node", ratio(stats.node_bytes as u128, stats.nodes));
-    println!("  string bytes                {:6.1} bytes/node", ratio(stats.string_bytes as u128, stats.nodes));
-    println!("  location bytes              {:6.1} bytes/location", ratio(stats.loc_bytes as u128, stats.locs));
+    println!(
+        "  verify                      {:6.1} ns each",
+        ratio(verifying, stats.nodes + stats.locs)
+    );
+    println!(
+        "  node bytes                  {:6.1} bytes/node",
+        ratio(stats.node_bytes as u128, stats.nodes)
+    );
+    println!(
+        "  string bytes                {:6.1} bytes/node",
+        ratio(stats.string_bytes as u128, stats.nodes)
+    );
+    println!(
+        "  location bytes              {:6.1} bytes/location",
+        ratio(stats.loc_bytes as u128, stats.locs)
+    );
     Ok(())
 }

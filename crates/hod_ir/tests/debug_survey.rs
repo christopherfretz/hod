@@ -187,7 +187,8 @@ impl Found {
                     let ops = split_top(body).into_iter().filter(|word| word.starts_with("DW_OP_"));
                     found.ops.extend(ops.map(str::to_string));
                 } else if kind != "DIArgList" {
-                    let named = fields(body).into_iter().map(|(name, _)| (kind.into(), name.into()));
+                    let named =
+                        fields(body).into_iter().map(|(name, _)| (kind.into(), name.into()));
                     found.fields.extend(named);
                 }
             }
@@ -425,7 +426,9 @@ impl<'a> Loader<'a> {
             (_, "false") => return Ok(Owned::Bool(false)),
             (_, "null") => return Ok(Owned::Node(None)),
             ("emissionKind", _) => return code(EmissionKind::named(word).map(EmissionKind::code)),
-            ("nameTableKind", _) => return code(NameTableKind::named(word).map(NameTableKind::code)),
+            ("nameTableKind", _) => {
+                return code(NameTableKind::named(word).map(NameTableKind::code));
+            }
             ("checksumkind", _) => return code(ChecksumKind::named(word).map(ChecksumKind::code)),
             _ => {}
         }
@@ -454,7 +457,8 @@ impl<'a> Loader<'a> {
         }
         // Metadata: the elements of a tuple where the field is a list,
         // a node otherwise.
-        let is_list = DiNode::llvm_default(kind).set(name.as_bytes(), DiFieldValue::List(&[])).is_ok();
+        let is_list =
+            DiNode::llvm_default(kind).set(name.as_bytes(), DiFieldValue::List(&[])).is_ok();
         let tuple = match number(text).and_then(|n| self.defs.get(&n).copied()) {
             Some(Def::Tuple(inner)) => Some(inner),
             _ => text.strip_prefix("!{").and_then(|inner| inner.strip_suffix('}')),
@@ -581,7 +585,8 @@ impl<'a> Loader<'a> {
             }
             ("value", &[value, var, expr, loc]) => {
                 let (var, expr, loc) = (self.node(var)?, self.expression(expr)?, self.loc(loc)?);
-                let list = value.strip_prefix("!DIArgList(").and_then(|list| list.strip_suffix(')'));
+                let list =
+                    value.strip_prefix("!DIArgList(").and_then(|list| list.strip_suffix(')'));
                 match list {
                     Some(list) => {
                         let values = vec![zero; split_top(list).len()];
@@ -742,9 +747,11 @@ fn unit(ir: &str, run: &str, wrong: &mut Vec<String>) -> (Found, BTreeSet<String
     match Loader::load(ir) {
         Err(why) => wrong.push(format!("{why} [{run}]")),
         Ok(loader) => {
-            let loaded = loader.unsupported_constructs();
-            if unknown.is_empty() && loaded != unsupported {
-                wrong.push(format!("loading reports {loaded:?}, the text has {unsupported:?} [{run}]"));
+            let reported = loader.unsupported_constructs();
+            if unknown.is_empty() && reported != unsupported {
+                wrong.push(format!(
+                    "loading reports {reported:?}, the text has {unsupported:?} [{run}]"
+                ));
             }
             bodies = loader.bodies;
         }
@@ -780,6 +787,7 @@ fn field_names(set: &BTreeSet<(String, String)>) -> String {
 /// §6.9: everything clang writes is in the field table; at `-g -O0`
 /// nothing of it is unsupported; and it loads and verifies (§6.3, §6.8).
 #[test]
+#[allow(clippy::too_many_lines)]
 fn clang_debug_information_is_covered() {
     let mut wrong = Vec::new();
     let (mut baseline, mut options) = (BTreeMap::new(), Found::default());
@@ -815,8 +823,10 @@ fn clang_debug_information_is_covered() {
     if runs == 0 {
         return;
     }
-    let extra: Vec<_> =
-        under_options.iter().filter(|name| !UNSUPPORTED_UNDER_OPTIONS.contains(&name.as_str())).collect();
+    let extra: Vec<_> = under_options
+        .iter()
+        .filter(|name| !UNSUPPORTED_UNDER_OPTIONS.contains(&name.as_str()))
+        .collect();
     assert!(extra.is_empty(), "unsupported constructs the list does not have: {extra:?}");
 
     // What the survey saw, for `spec/landed/ir/WP-005.md`.
@@ -853,7 +863,9 @@ fn clang_debug_information_is_covered() {
     seen.add(&options);
     let unseen: Vec<String> = hod_ir::di_field_table()
         .filter(|(_, _, mapping)| *mapping == DiMapping::Mapped)
-        .filter(|(kind, field, _)| !seen.fields.contains(&((*kind).to_string(), (*field).to_string())))
+        .filter(|(kind, field, _)| {
+            !seen.fields.contains(&((*kind).to_string(), (*field).to_string()))
+        })
         .map(|(kind, field, _)| format!("{kind}.{field}"))
         .collect();
     eprintln!("  mapped fields no run wrote: {}", unseen.join(" "));
@@ -962,7 +974,13 @@ fn kiln_debug_information_is_covered() {
             let kinds = a.kinds.difference(&b.kinds).cloned().collect();
             let ops = a.ops.difference(&b.ops).cloned().collect();
             let records = a.records.difference(&b.records).cloned().collect();
-            format!("{} {} {} {}", names(&kinds), field_names(&fields), names(&ops), names(&records))
+            format!(
+                "{} {} {} {}",
+                names(&kinds),
+                field_names(&fields),
+                names(&ops),
+                names(&records)
+            )
         };
         eprintln!("{run}: only kiln writes: {}", only(&found, &reference));
         eprintln!("{run}: only clang {} writes: {}", MAJORS[0], only(&reference, &found));
@@ -992,6 +1010,7 @@ fn a_real_translation_unit() {
     let loader = Loader::load(&ir).unwrap();
     assert!(loader.unsupported_constructs().is_empty());
     let stats = loader.m.debug.stats();
+    #[allow(clippy::cast_precision_loss, reason = "a ratio for a report")]
     let per_node = stats.node_bytes as f64 / stats.nodes as f64;
     let text = ir.lines().filter(|line| line.starts_with('!')).map(str::len).sum::<usize>();
     eprintln!(

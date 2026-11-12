@@ -175,10 +175,10 @@ pub fn di_record(name: &[u8]) -> Option<DiMapping> {
 /// of it. The records' own fields first, kind by kind, then
 /// [`DI_FIELD_NOTES`].
 pub fn di_field_table() -> impl Iterator<Item = (&'static str, &'static str, DiMapping)> {
-    let mapped = DiKind::ALL
-        .iter()
-        .filter(|kind| kind.llvm_name().starts_with("DI"))
-        .flat_map(|kind| kind.fields().iter().map(|field| (kind.llvm_name(), *field, DiMapping::Mapped)));
+    let mapped =
+        DiKind::ALL.iter().filter(|kind| kind.llvm_name().starts_with("DI")).flat_map(|kind| {
+            kind.fields().iter().map(|field| (kind.llvm_name(), *field, DiMapping::Mapped))
+        });
     mapped.chain(DI_FIELD_NOTES.iter().copied())
 }
 
@@ -193,7 +193,11 @@ mod tests {
         let rows: Vec<_> = di_field_table().collect();
         assert!(rows.len() > 150, "{}", rows.len());
         for (index, &(kind, field, mapping)) in rows.iter().enumerate() {
-            assert_eq!(di_field(kind.as_bytes(), field.as_bytes()), Some(mapping), "{kind}.{field}");
+            assert_eq!(
+                di_field(kind.as_bytes(), field.as_bytes()),
+                Some(mapping),
+                "{kind}.{field}"
+            );
             assert!(
                 rows[..index].iter().all(|other| (other.0, other.1) != (kind, field)),
                 "{kind}.{field} is listed twice"

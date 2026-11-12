@@ -670,10 +670,7 @@ impl Module {
             }
             Some(kind) => err(
                 IrErrorKind::InvalidDebugInfo,
-                format!(
-                    "{expr:?} is a {}, not a DIGlobalVariableExpression",
-                    kind.llvm_name()
-                ),
+                format!("{expr:?} is a {}, not a DIGlobalVariableExpression", kind.llvm_name()),
             ),
         }
     }
@@ -737,7 +734,10 @@ impl Module {
             if let DiNode::Constant(node) = self.debug.node(DiId::new(raw))
                 && node.value.index() >= self.consts.len()
             {
-                return invalid(format!("di{raw}: {:?} is not a constant of the module", node.value));
+                return invalid(format!(
+                    "di{raw}: {:?} is not a constant of the module",
+                    node.value
+                ));
             }
         }
         let mut owners: Vec<(DiId, SymId)> = Vec::new();
@@ -774,7 +774,9 @@ impl Module {
         }
         for &(sym, expr) in &self.global_exprs {
             if !self.symbol(sym).is_variable() {
-                return invalid(format!("{sym:?} has a global-variable expression and is no variable"));
+                return invalid(format!(
+                    "{sym:?} has a global-variable expression and is no variable"
+                ));
             }
             if self.debug.kind(expr) != DiKind::GlobalVariableExpression {
                 return invalid(format!("{sym:?}: {expr:?} is not a DIGlobalVariableExpression"));

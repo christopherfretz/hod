@@ -36,6 +36,7 @@ struct Fx {
     at: LocId,
 }
 
+#[allow(clippy::many_single_char_names)]
 fn fx() -> Fx {
     let mut m = Module::new(TargetSpec::aarch64_linux_gnu());
     let d = &mut m.debug;
@@ -316,7 +317,8 @@ fn labels() {
     let mut f = fx();
     let x = f.var(b"x", f.f);
     let label = |f: &mut Fx, name| {
-        let node = DiLabel { scope: Some(f.f), name, file: Some(f.file), line: 5, ..Default::default() };
+        let node =
+            DiLabel { scope: Some(f.f), name, file: Some(f.file), line: 5, ..Default::default() };
         f.m.debug.add(&node.into()).unwrap()
     };
     let (top, out) = (label(&mut f, b"top"), label(&mut f, b"out"));
@@ -344,7 +346,10 @@ fn labels() {
         ]
     );
     let first = body.dbg_records().next().unwrap();
-    assert_eq!((first.loc, first.expr, first.address, first.arg_list), (at, ExprId::EMPTY, Value::NONE, false));
+    assert_eq!(
+        (first.loc, first.expr, first.address, first.arg_list),
+        (at, ExprId::EMPTY, Value::NONE, false)
+    );
 }
 
 /// §6.5, §6.6: instructions inlined two deep carry locations whose
@@ -356,7 +361,10 @@ fn inlined_at_chains_two_deep() {
     let block = DiLexicalBlock { scope: Some(f.h), file: Some(f.file), line: 31, column: 3 };
     let block = f.m.debug.add_distinct(&block.into()).unwrap();
     let (in_f, in_h) = (f.var(b"a", f.f), f.var(b"c", block));
-    let call_g = f.m.debug.distinct_loc(DiLocation { line: 3, column: 9, scope: f.f, inlined_at: LocId::NONE }).unwrap();
+    let call_g =
+        f.m.debug
+            .distinct_loc(DiLocation { line: 3, column: 9, scope: f.f, inlined_at: LocId::NONE })
+            .unwrap();
     let call_h = f.loc(21, f.g, call_g);
     let deep = f.loc(32, block, call_h);
     let (at, b) = (f.at, &mut f.b);
@@ -396,6 +404,7 @@ fn inlined_at_chains_two_deep() {
 /// when its module has debug tables, each with a body that keeps it and
 /// one that breaks it.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn verify_accepts_and_rejects() {
     let invalid = Some(IrErrorKind::InvalidDebugInfo);
     let check = |build: &dyn Fn(&mut Fx)| {
@@ -582,7 +591,8 @@ fn verify_without_a_subprogram_or_without_tables() {
     // No subprogram: locations must exist, and may be in any function.
     let mut f = fx();
     let plain = f.m.symbol_named(b"plain").unwrap();
-    f.m.set_function(plain, &FunctionDesc { has_body: true, ..FunctionDesc::new(f.fn_ty) }).unwrap();
+    f.m.set_function(plain, &FunctionDesc { has_body: true, ..FunctionDesc::new(f.fn_ty) })
+        .unwrap();
     let in_g = f.loc(9, f.g, LocId::NONE);
     for (loc, verdict) in [(in_g, None), (LocId::new(77), Some(IrErrorKind::InvalidDebugInfo))] {
         let mut b = FunctionBuilder::new(&f.m, plain, f.fn_ty).unwrap();

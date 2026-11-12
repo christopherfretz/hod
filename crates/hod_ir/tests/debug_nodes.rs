@@ -6,13 +6,14 @@
 //! breaks.
 
 use hod_ir::{
-    DI_FIELD_NOTES, DI_KIND_NOTES, DI_OPS, DI_RECORDS, DiMapping, DW_TAG_CLASS_TYPE, DW_TAG_MEMBER, DW_TAG_POINTER_TYPE, DW_TAG_STRUCTURE_TYPE, DebugInfo,
-    DebugStats, DiBasicType, DiBound, DiCompileUnit, DiCompositeType, DiConstant, DiDerivedType,
-    DiEnumerator, DiFieldValue, DiFile, DiFlags, DiGlobalVariable, DiGlobalVariableExpression,
-    DiId, DiKind, DiLabel, DiLexicalBlock, DiLexicalBlockFile, DiLocalVariable, DiLocation,
-    DiNamespace, DiNode, DiOp, DiOther, DiString, DiSubprogram, DiSubrange, DiSubroutineType,
-    DiTemplateValueParameter, DiTuple, EmissionKind, ExprId, FlagValue, FunctionDesc, IrErrorKind,
-    IrResult, LocId, Module, NameTableKind, SpFlags, SymId, TargetSpec, TypeId, VariableDesc,
+    DI_FIELD_NOTES, DI_KIND_NOTES, DI_OPS, DI_RECORDS, DW_TAG_CLASS_TYPE, DW_TAG_MEMBER,
+    DW_TAG_POINTER_TYPE, DW_TAG_STRUCTURE_TYPE, DebugInfo, DebugStats, DiBasicType, DiBound,
+    DiCompileUnit, DiCompositeType, DiConstant, DiDerivedType, DiEnumerator, DiFieldValue, DiFile,
+    DiFlags, DiGlobalVariable, DiGlobalVariableExpression, DiId, DiKind, DiLabel, DiLexicalBlock,
+    DiLexicalBlockFile, DiLocalVariable, DiLocation, DiMapping, DiNamespace, DiNode, DiOp, DiOther,
+    DiString, DiSubprogram, DiSubrange, DiSubroutineType, DiTemplateValueParameter, DiTuple,
+    EmissionKind, ExprId, FlagValue, FunctionDesc, IrErrorKind, IrResult, LocId, Module,
+    NameTableKind, SpFlags, SymId, TargetSpec, TypeId, VariableDesc,
 };
 
 fn kind<T: std::fmt::Debug>(result: IrResult<T>) -> IrErrorKind {
@@ -25,6 +26,7 @@ fn module() -> Module {
 
 /// A compile unit, its file, a subprogram definition `f` and the `int`
 /// type: what most tests start from.
+#[allow(clippy::struct_field_names, reason = "`unit` is the compile unit")]
 struct Unit {
     m: Module,
     file: DiId,
@@ -76,11 +78,7 @@ fn unit() -> Unit {
 }
 
 /// The values a field of some shape can be given, a default one excluded.
-fn candidates<'a>(
-    node: DiId,
-    list: &'a [DiId],
-    expr: ExprId,
-) -> [(&'static str, DiFieldValue<'a>); 9] {
+fn candidates(node: DiId, list: &[DiId], expr: ExprId) -> [(&'static str, DiFieldValue<'_>); 9] {
     [
         ("string", DiFieldValue::Str(b"some text")),
         ("number", DiFieldValue::UInt(1)),
@@ -206,7 +204,12 @@ fn typed_records_round_trip() {
     let tuple = d.add(&DiTuple { elements: &[constant, DiId::NONE, string] }.into()).unwrap();
     let DiNode::Tuple(read) = d.node(tuple) else { panic!() };
     assert_eq!(read.elements, [constant, DiId::NONE, string]);
-    let param = DiTemplateValueParameter { name: b"N", ty: Some(int), value: Some(constant), ..Default::default() };
+    let param = DiTemplateValueParameter {
+        name: b"N",
+        ty: Some(int),
+        value: Some(constant),
+        ..Default::default()
+    };
     let id = d.add(&param.into()).unwrap();
     assert_eq!(d.node(id), DiNode::TemplateValueParameter(param));
     assert_eq!(d.tag(id), hod_ir::DW_TAG_TEMPLATE_VALUE_PARAMETER);
@@ -216,12 +219,17 @@ fn typed_records_round_trip() {
     let id = d.add(&odd.into()).unwrap();
     assert_eq!(d.node(id), DiNode::Namespace(odd));
     let anonymous = d.add(&DiNamespace::default().into()).unwrap();
-    assert_eq!(d.node(anonymous), DiNode::Namespace(DiNamespace { name: b"", ..Default::default() }));
+    assert_eq!(
+        d.node(anonymous),
+        DiNode::Namespace(DiNamespace { name: b"", ..Default::default() })
+    );
 
     let DiNode::Subprogram(read) = d.node(f) else { panic!() };
     assert_eq!((read.name, read.line, read.unit), (&b"f"[..], 3, Some(unit)));
     assert!(read.sp_flags.contains(SpFlags::DEFINITION) && read.linkage_name.is_empty());
-    assert!(d.contains(f) && !d.contains(DiId::new(d.node_count() as u32)) && !d.contains(DiId::NONE));
+    assert!(
+        d.contains(f) && !d.contains(DiId::new(d.node_count() as u32)) && !d.contains(DiId::NONE)
+    );
     assert_eq!(d.find_kind(DiId::NONE), None);
     m.finish_debug().unwrap();
     m.verify_debug().unwrap();
@@ -254,11 +262,29 @@ fn cycles_are_built_by_reserving() {
         )
         .unwrap();
     let this = d
-        .add(&DiDerivedType { tag: DW_TAG_POINTER_TYPE, base_type: Some(class), size: 64, ..Default::default() }.into())
+        .add(
+            &DiDerivedType {
+                tag: DW_TAG_POINTER_TYPE,
+                base_type: Some(class),
+                size: 64,
+                ..Default::default()
+            }
+            .into(),
+        )
         .unwrap();
-    let method_ty = d.add(&DiSubroutineType { types: &[DiId::NONE, this], ..Default::default() }.into()).unwrap();
+    let method_ty = d
+        .add(&DiSubroutineType { types: &[DiId::NONE, this], ..Default::default() }.into())
+        .unwrap();
     let declaration = d
-        .add(&DiSubprogram { name: b"get", scope: Some(class), ty: Some(method_ty), ..Default::default() }.into())
+        .add(
+            &DiSubprogram {
+                name: b"get",
+                scope: Some(class),
+                ty: Some(method_ty),
+                ..Default::default()
+            }
+            .into(),
+        )
         .unwrap();
     // The definition is met before the node it will be: reserved first.
     let definition = d.reserve().unwrap();
@@ -384,16 +410,23 @@ fn uniquing() {
     // Another kind with the same fields, and another tag.
     let block_file = DiLexicalBlockFile { scope: None, file: Some(file), discriminator: 4 };
     assert_ne!(d.add(&block_file.into()).unwrap(), first);
-    let pointer = DiDerivedType { tag: DW_TAG_POINTER_TYPE, base_type: Some(int), ..Default::default() };
+    let pointer =
+        DiDerivedType { tag: DW_TAG_POINTER_TYPE, base_type: Some(int), ..Default::default() };
     let reference = DiDerivedType { tag: hod_ir::DW_TAG_REFERENCE_TYPE, ..pointer };
     let pointer = d.add(&pointer.into()).unwrap();
     assert_ne!(d.add(&reference.into()).unwrap(), pointer);
     // Lists: by length and by element.
     let two = d.add(&DiSubroutineType { types: &[int, int], ..Default::default() }.into()).unwrap();
-    let three = d.add(&DiSubroutineType { types: &[int, int, int], ..Default::default() }.into()).unwrap();
-    let void = d.add(&DiSubroutineType { types: &[DiId::NONE, int], ..Default::default() }.into()).unwrap();
+    let three =
+        d.add(&DiSubroutineType { types: &[int, int, int], ..Default::default() }.into()).unwrap();
+    let void = d
+        .add(&DiSubroutineType { types: &[DiId::NONE, int], ..Default::default() }.into())
+        .unwrap();
     assert!(two != three && two != void && three != void);
-    assert_eq!(d.add(&DiSubroutineType { types: &[int, int, int], ..Default::default() }.into()).unwrap(), three);
+    assert_eq!(
+        d.add(&DiSubroutineType { types: &[int, int, int], ..Default::default() }.into()).unwrap(),
+        three
+    );
 
     // Distinct nodes are never found, and never equal to each other.
     let distinct = d.add_distinct(&block.into()).unwrap();
@@ -427,10 +460,22 @@ fn forward_declarations_are_completed() {
     };
     let id = d.add(&declared.into()).unwrap();
     let pointer = d
-        .add(&DiDerivedType { tag: DW_TAG_POINTER_TYPE, base_type: Some(id), ..Default::default() }.into())
+        .add(
+            &DiDerivedType { tag: DW_TAG_POINTER_TYPE, base_type: Some(id), ..Default::default() }
+                .into(),
+        )
         .unwrap();
     let member = d
-        .add(&DiDerivedType { tag: DW_TAG_MEMBER, name: b"next", scope: Some(id), base_type: Some(pointer), ..Default::default() }.into())
+        .add(
+            &DiDerivedType {
+                tag: DW_TAG_MEMBER,
+                name: b"next",
+                scope: Some(id),
+                base_type: Some(pointer),
+                ..Default::default()
+            }
+            .into(),
+        )
         .unwrap();
     let defined = DiCompositeType {
         flags: DiFlags::default(),
@@ -478,7 +523,13 @@ fn expressions() {
     assert!(d.is_empty(), "the empty expression is not debug information");
     assert_eq!(d.expr_count(), 1);
     assert_eq!(d.ops(ExprId::EMPTY).count(), 0);
-    let ops = [DiOp::Constu(4), DiOp::Consts(-4i64 as u64), DiOp::Plus, DiOp::StackValue, DiOp::Fragment(32, 32)];
+    let ops = [
+        DiOp::Constu(4),
+        DiOp::Consts(-4i64 as u64),
+        DiOp::Plus,
+        DiOp::StackValue,
+        DiOp::Fragment(32, 32),
+    ];
     let id = d.expr(&ops).unwrap();
     assert_eq!(id, ExprId::new(1));
     assert_eq!(d.expr(&ops).unwrap(), id);
@@ -508,7 +559,8 @@ fn expressions() {
     );
     m.finish_debug().unwrap();
     m.finish_debug().unwrap();
-    let names: Vec<_> = m.unsupported().map(|record| (record.construct.to_string(), record.symbol)).collect();
+    let names: Vec<_> =
+        m.unsupported().map(|record| (record.construct.to_string(), record.symbol)).collect();
     let expected = ["debug:DW_OP_regx", "debug:DW_OP_addr", "debug:DW_OP_0x1fff"];
     assert_eq!(names, expected.map(|name| (name.to_string(), None)));
     // Placement is `verify`'s.
@@ -524,7 +576,9 @@ fn locations() {
     let Unit { mut m, file, unit, f, .. } = unit();
     let d = &mut m.debug;
     let block = d
-        .add_distinct(&DiLexicalBlock { scope: Some(f), file: Some(file), line: 4, column: 3 }.into())
+        .add_distinct(
+            &DiLexicalBlock { scope: Some(f), file: Some(file), line: 4, column: 3 }.into(),
+        )
         .unwrap();
     let inner = d
         .add(&DiLexicalBlockFile { scope: Some(block), file: Some(file), discriminator: 1 }.into())
@@ -563,7 +617,12 @@ fn locations() {
     // Two calls of `g` on one line, and `h` inlined into `g`: the call
     // sites are distinct locations, and the chain is two deep.
     let callee = |d: &mut DebugInfo, name| {
-        let node = DiSubprogram { name, sp_flags: SpFlags::DEFINITION, unit: Some(unit), ..Default::default() };
+        let node = DiSubprogram {
+            name,
+            sp_flags: SpFlags::DEFINITION,
+            unit: Some(unit),
+            ..Default::default()
+        };
         d.add_distinct(&node.into()).unwrap()
     };
     let (g, h) = (callee(d, b"g"), callee(d, b"h"));
@@ -576,7 +635,8 @@ fn locations() {
     let in_h = d.loc(DiLocation { line: 30, column: 1, scope: h, inlined_at: in_g }).unwrap();
     let in_h_again = d.loc(DiLocation { line: 30, column: 1, scope: h, inlined_at: in_g }).unwrap();
     assert_eq!(in_h, in_h_again);
-    let other_g = d.loc(DiLocation { line: 20, column: 1, scope: g, inlined_at: second_call }).unwrap();
+    let other_g =
+        d.loc(DiLocation { line: 20, column: 1, scope: g, inlined_at: second_call }).unwrap();
     assert_ne!(other_g, in_g, "the two inlined instances stay apart");
     let chain = d.location(in_h).unwrap();
     assert_eq!(d.subprogram_of(chain.scope), Some(h));
@@ -629,14 +689,25 @@ fn attachments() {
     // A unit that is not listed is a node like any other, and not emitted.
     let global = d
         .add_distinct(
-            &DiGlobalVariable { name: b"g", scope: Some(unit), file: Some(file), ty: Some(int), is_definition: true, ..Default::default() }
-                .into(),
+            &DiGlobalVariable {
+                name: b"g",
+                scope: Some(unit),
+                file: Some(file),
+                ty: Some(int),
+                is_definition: true,
+                ..Default::default()
+            }
+            .into(),
         )
         .unwrap();
-    let located = d.add(&DiGlobalVariableExpression { var: Some(global), expr: ExprId::EMPTY }.into()).unwrap();
+    let located = d
+        .add(&DiGlobalVariableExpression { var: Some(global), expr: ExprId::EMPTY }.into())
+        .unwrap();
     let high = d.expr(&[DiOp::Fragment(32, 32)]).unwrap();
     let part = d.add(&DiGlobalVariableExpression { var: Some(global), expr: high }.into()).unwrap();
-    let retained = d.add(&DiBasicType { name: b"char", size: 8, encoding: 6, ..Default::default() }.into()).unwrap();
+    let retained = d
+        .add(&DiBasicType { name: b"char", size: 8, encoding: 6, ..Default::default() }.into())
+        .unwrap();
     let second = d
         .add_distinct(
             &DiCompileUnit {
@@ -655,8 +726,11 @@ fn attachments() {
     let third = d.reserve().unwrap();
     d.add_compile_unit(second).unwrap();
     d.add_compile_unit(third).unwrap();
-    d.define_distinct(third, &DiCompileUnit { emission_kind: EmissionKind::NoDebug, ..Default::default() }.into())
-        .unwrap();
+    d.define_distinct(
+        third,
+        &DiCompileUnit { emission_kind: EmissionKind::NoDebug, ..Default::default() }.into(),
+    )
+    .unwrap();
     assert_eq!(d.compile_units(), [unit, second, third]);
     let DiNode::CompileUnit(read) = d.node(second) else { panic!() };
     assert_eq!(read.emission_kind, EmissionKind::LineTablesOnly);
@@ -673,13 +747,17 @@ fn attachments() {
     // A function's subprogram; a variable's global-variable expressions.
     let fn_ty = m.types.function(TypeId::I32, &[TypeId::I32], false).unwrap();
     let func = m.symbol_named(b"f").unwrap();
-    m.set_function(func, &FunctionDesc { subprogram: Some(f), has_body: true, ..FunctionDesc::new(fn_ty) })
-        .unwrap();
+    m.set_function(
+        func,
+        &FunctionDesc { subprogram: Some(f), has_body: true, ..FunctionDesc::new(fn_ty) },
+    )
+    .unwrap();
     let var = m.symbol_named(b"g").unwrap();
     // Attached before the symbol is described.
     m.attach_global_expr(var, located).unwrap();
     let zero = m.consts.int(&m.types, TypeId::I64, 0).unwrap();
-    m.set_variable(var, &VariableDesc { init: Some(zero), ..VariableDesc::new(TypeId::I64) }).unwrap();
+    m.set_variable(var, &VariableDesc { init: Some(zero), ..VariableDesc::new(TypeId::I64) })
+        .unwrap();
     m.attach_global_expr(var, part).unwrap();
     assert_eq!(m.global_exprs(), [(var, located), (var, part)]);
     assert_eq!(m.global_exprs_of(var).collect::<Vec<_>>(), [located, part]);
@@ -705,7 +783,12 @@ fn unknown_kinds_reach_classify() {
     assert_ne!(string_type, again);
     assert_eq!(d.node(module_node), DiNode::Other(DiOther { kind: b"DIModule" }));
     // It can be named where a type or a scope can.
-    let member = DiDerivedType { tag: DW_TAG_MEMBER, scope: Some(module_node), base_type: Some(string_type), ..Default::default() };
+    let member = DiDerivedType {
+        tag: DW_TAG_MEMBER,
+        scope: Some(module_node),
+        base_type: Some(string_type),
+        ..Default::default()
+    };
     d.add(&member.into()).unwrap();
     m.verify_debug().unwrap();
     assert_eq!(m.unsupported().len(), 0, "recorded by finish_debug, not before");
@@ -715,8 +798,14 @@ fn unknown_kinds_reach_classify() {
     m.debug.add(&DiOther { kind: b"" }.into()).unwrap();
     m.finish_debug().unwrap();
     let names: Vec<_> = m.unsupported().map(|record| record.construct.to_string()).collect();
-    assert_eq!(names, ["attr:jumptable", "debug:DIStringType", "debug:DIModule", "debug:DICommonBlock", "debug:"]);
-    assert_eq!(hod_ir::di_kind(b"DIStringType"), Some(DiMapping::Unsupported("debug:DIStringType")));
+    assert_eq!(
+        names,
+        ["attr:jumptable", "debug:DIStringType", "debug:DIModule", "debug:DICommonBlock", "debug:"]
+    );
+    assert_eq!(
+        hod_ir::di_kind(b"DIStringType"),
+        Some(DiMapping::Unsupported("debug:DIStringType"))
+    );
     // Not where LLVM requires one particular kind.
     let block = DiLexicalBlock { file: Some(module_node), ..Default::default() };
     m.debug.add(&block.into()).unwrap();
@@ -746,121 +835,303 @@ struct Unit2 {
 /// §6.8: the rules of `Module::verify_debug`, each with a table that
 /// keeps it and one that breaks it.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn verify_accepts_and_rejects() {
     use IrErrorKind::{InvalidDebugInfo, UndefinedDebugNode};
     assert_eq!(verdict(|_, _| {}), None);
     assert_eq!(module().verify_debug(), Ok(()), "no debug information is well formed");
 
     // Everything reserved is defined.
-    assert_eq!(verdict(|m, _| { m.debug.reserve().unwrap(); }), Some(UndefinedDebugNode));
-    assert_eq!(verdict(|m, _| { m.debug.reserve_loc().unwrap(); }), Some(UndefinedDebugNode));
+    assert_eq!(
+        verdict(|m, _| {
+            m.debug.reserve().unwrap();
+        }),
+        Some(UndefinedDebugNode)
+    );
+    assert_eq!(
+        verdict(|m, _| {
+            m.debug.reserve_loc().unwrap();
+        }),
+        Some(UndefinedDebugNode)
+    );
 
     // A reference names a node of a kind its field allows.
     let add = |m: &mut Module, node: DiNode<'_>| m.debug.add(&node).unwrap();
     let put = |m: &mut Module, node: DiNode<'_>| {
         m.debug.add(&node).unwrap();
     };
-    assert_eq!(verdict(|m, u| put(m, DiLexicalBlock { scope: Some(u.f), file: Some(u.file), ..Default::default() }.into())), None);
-    assert_eq!(verdict(|m, u| put(m, DiLexicalBlock { scope: Some(u.f), file: Some(u.f), ..Default::default() }.into())), Some(InvalidDebugInfo));
-    assert_eq!(verdict(|m, u| put(m, DiLexicalBlock { scope: Some(u.file), ..Default::default() }.into())), Some(InvalidDebugInfo));
-    assert_eq!(verdict(|m, u| put(m, DiLocalVariable { name: b"v", scope: Some(u.f), ty: Some(u.int), ..Default::default() }.into())), None);
-    assert_eq!(verdict(|m, u| put(m, DiLocalVariable { name: b"v", scope: Some(u.f), ty: Some(u.file), ..Default::default() }.into())), Some(InvalidDebugInfo));
-    assert_eq!(verdict(|m, u| put(m, DiLocalVariable { name: b"v", scope: Some(u.unit), ..Default::default() }.into())), Some(InvalidDebugInfo));
-    assert_eq!(verdict(|m, u| put(m, DiLabel { name: b"l", scope: Some(u.int), ..Default::default() }.into())), Some(InvalidDebugInfo));
-    assert_eq!(verdict(|m, u| put(m, DiSubroutineType { types: &[DiId::NONE, u.int, DiId::NONE], ..Default::default() }.into())), None);
-    assert_eq!(verdict(|m, u| put(m, DiSubroutineType { types: &[u.int, u.unit], ..Default::default() }.into())), Some(InvalidDebugInfo));
-    assert_eq!(verdict(|m, u| put(m, DiSubprogram { unit: Some(u.file), ..Default::default() }.into())), Some(InvalidDebugInfo));
-    assert_eq!(verdict(|m, u| put(m, DiSubprogram { declaration: Some(u.int), ..Default::default() }.into())), Some(InvalidDebugInfo));
-    assert_eq!(verdict(|m, u| put(m, DiGlobalVariableExpression { var: Some(u.f), expr: ExprId::EMPTY }.into())), Some(InvalidDebugInfo));
-    assert_eq!(verdict(|m, u| put(m, DiCompositeType { tag: DW_TAG_STRUCTURE_TYPE, elements: &[u.f, u.int], vtable_holder: Some(u.int), ..Default::default() }.into())), None);
-    assert_eq!(verdict(|m, u| put(m, DiCompositeType { tag: DW_TAG_STRUCTURE_TYPE, template_params: &[u.int], ..Default::default() }.into())), Some(InvalidDebugInfo));
+    assert_eq!(
+        verdict(|m, u| put(
+            m,
+            DiLexicalBlock { scope: Some(u.f), file: Some(u.file), ..Default::default() }.into()
+        )),
+        None
+    );
+    assert_eq!(
+        verdict(|m, u| put(
+            m,
+            DiLexicalBlock { scope: Some(u.f), file: Some(u.f), ..Default::default() }.into()
+        )),
+        Some(InvalidDebugInfo)
+    );
+    assert_eq!(
+        verdict(|m, u| put(m, DiLexicalBlock { scope: Some(u.file), ..Default::default() }.into())),
+        Some(InvalidDebugInfo)
+    );
+    assert_eq!(
+        verdict(|m, u| put(
+            m,
+            DiLocalVariable { name: b"v", scope: Some(u.f), ty: Some(u.int), ..Default::default() }
+                .into()
+        )),
+        None
+    );
+    assert_eq!(
+        verdict(|m, u| put(
+            m,
+            DiLocalVariable {
+                name: b"v",
+                scope: Some(u.f),
+                ty: Some(u.file),
+                ..Default::default()
+            }
+            .into()
+        )),
+        Some(InvalidDebugInfo)
+    );
+    assert_eq!(
+        verdict(|m, u| put(
+            m,
+            DiLocalVariable { name: b"v", scope: Some(u.unit), ..Default::default() }.into()
+        )),
+        Some(InvalidDebugInfo)
+    );
+    assert_eq!(
+        verdict(|m, u| put(
+            m,
+            DiLabel { name: b"l", scope: Some(u.int), ..Default::default() }.into()
+        )),
+        Some(InvalidDebugInfo)
+    );
+    assert_eq!(
+        verdict(|m, u| put(
+            m,
+            DiSubroutineType { types: &[DiId::NONE, u.int, DiId::NONE], ..Default::default() }
+                .into()
+        )),
+        None
+    );
+    assert_eq!(
+        verdict(|m, u| put(
+            m,
+            DiSubroutineType { types: &[u.int, u.unit], ..Default::default() }.into()
+        )),
+        Some(InvalidDebugInfo)
+    );
+    assert_eq!(
+        verdict(|m, u| put(m, DiSubprogram { unit: Some(u.file), ..Default::default() }.into())),
+        Some(InvalidDebugInfo)
+    );
+    assert_eq!(
+        verdict(|m, u| put(
+            m,
+            DiSubprogram { declaration: Some(u.int), ..Default::default() }.into()
+        )),
+        Some(InvalidDebugInfo)
+    );
+    assert_eq!(
+        verdict(|m, u| put(
+            m,
+            DiGlobalVariableExpression { var: Some(u.f), expr: ExprId::EMPTY }.into()
+        )),
+        Some(InvalidDebugInfo)
+    );
+    assert_eq!(
+        verdict(|m, u| put(
+            m,
+            DiCompositeType {
+                tag: DW_TAG_STRUCTURE_TYPE,
+                elements: &[u.f, u.int],
+                vtable_holder: Some(u.int),
+                ..Default::default()
+            }
+            .into()
+        )),
+        None
+    );
+    assert_eq!(
+        verdict(|m, u| put(
+            m,
+            DiCompositeType {
+                tag: DW_TAG_STRUCTURE_TYPE,
+                template_params: &[u.int],
+                ..Default::default()
+            }
+            .into()
+        )),
+        Some(InvalidDebugInfo)
+    );
 
     // A constant used as metadata is a constant of the module.
-    assert_eq!(verdict(|m, _| {
-        let value = m.consts.int(&m.types, TypeId::I8, 1).unwrap();
-        put(m, DiConstant { value }.into());
-    }), None);
-    assert_eq!(verdict(|m, _| put(m, DiConstant { value: hod_ir::ConstId::new(1 << 20) }.into())), Some(InvalidDebugInfo));
+    assert_eq!(
+        verdict(|m, _| {
+            let value = m.consts.int(&m.types, TypeId::I8, 1).unwrap();
+            put(m, DiConstant { value }.into());
+        }),
+        None
+    );
+    assert_eq!(
+        verdict(|m, _| put(m, DiConstant { value: hod_ir::ConstId::new(1 << 20) }.into())),
+        Some(InvalidDebugInfo)
+    );
 
     // A listed compile unit is one.
-    assert_eq!(verdict(|m, u| {
-        let later = m.debug.reserve().unwrap();
-        m.debug.add_compile_unit(later).unwrap();
-        m.debug.define(later, &DiFile::default().into()).unwrap();
-        let _ = u;
-    }), Some(InvalidDebugInfo));
+    assert_eq!(
+        verdict(|m, u| {
+            let later = m.debug.reserve().unwrap();
+            m.debug.add_compile_unit(later).unwrap();
+            m.debug.define(later, &DiFile::default().into()).unwrap();
+            let _ = u;
+        }),
+        Some(InvalidDebugInfo)
+    );
 
     // A location's scope is a subprogram or a block of one.
     let loc = |scope| DiLocation { line: 1, column: 1, scope, inlined_at: LocId::NONE };
-    assert_eq!(verdict(|m, u| { m.debug.loc(loc(u.f)).unwrap(); }), None);
-    assert_eq!(verdict(|m, u| { m.debug.loc(loc(u.file)).unwrap(); }), Some(InvalidDebugInfo));
-    assert_eq!(verdict(|m, u| { m.debug.loc(loc(u.unit)).unwrap(); }), Some(InvalidDebugInfo));
+    assert_eq!(
+        verdict(|m, u| {
+            m.debug.loc(loc(u.f)).unwrap();
+        }),
+        None
+    );
+    assert_eq!(
+        verdict(|m, u| {
+            m.debug.loc(loc(u.file)).unwrap();
+        }),
+        Some(InvalidDebugInfo)
+    );
+    assert_eq!(
+        verdict(|m, u| {
+            m.debug.loc(loc(u.unit)).unwrap();
+        }),
+        Some(InvalidDebugInfo)
+    );
     // ... whose chain of blocks ends at a subprogram.
-    assert_eq!(verdict(|m, _| {
-        let orphan = add(m, DiLexicalBlock { line: 9, ..Default::default() }.into());
-        m.debug.loc(loc(orphan)).unwrap();
-    }), Some(InvalidDebugInfo));
-    assert_eq!(verdict(|m, _| {
-        let a = m.debug.reserve().unwrap();
-        let b = add(m, DiLexicalBlock { scope: Some(a), ..Default::default() }.into());
-        m.debug.define(a, &DiLexicalBlock { scope: Some(b), ..Default::default() }.into()).unwrap();
-        m.debug.loc(loc(a)).unwrap();
-    }), Some(InvalidDebugInfo));
+    assert_eq!(
+        verdict(|m, _| {
+            let orphan = add(m, DiLexicalBlock { line: 9, ..Default::default() }.into());
+            m.debug.loc(loc(orphan)).unwrap();
+        }),
+        Some(InvalidDebugInfo)
+    );
+    assert_eq!(
+        verdict(|m, _| {
+            let a = m.debug.reserve().unwrap();
+            let b = add(m, DiLexicalBlock { scope: Some(a), ..Default::default() }.into());
+            m.debug
+                .define(a, &DiLexicalBlock { scope: Some(b), ..Default::default() }.into())
+                .unwrap();
+            m.debug.loc(loc(a)).unwrap();
+        }),
+        Some(InvalidDebugInfo)
+    );
     // ... and whose inlined-at chain ends.
-    assert_eq!(verdict(|m, u| {
-        let a = m.debug.reserve_loc().unwrap();
-        let b = m.debug.loc(DiLocation { inlined_at: a, ..loc(u.f) }).unwrap();
-        m.debug.define_loc(a, DiLocation { inlined_at: b, ..loc(u.f) }).unwrap();
-    }), Some(InvalidDebugInfo));
+    assert_eq!(
+        verdict(|m, u| {
+            let a = m.debug.reserve_loc().unwrap();
+            let b = m.debug.loc(DiLocation { inlined_at: a, ..loc(u.f) }).unwrap();
+            m.debug.define_loc(a, DiLocation { inlined_at: b, ..loc(u.f) }).unwrap();
+        }),
+        Some(InvalidDebugInfo)
+    );
 
     // An expression's operations are placed as LLVM requires.
-    assert_eq!(verdict(|m, _| { m.debug.expr(&[DiOp::EntryValue(1), DiOp::StackValue]).unwrap(); }), None);
-    assert_eq!(verdict(|m, _| { m.debug.expr(&[DiOp::StackValue, DiOp::Deref]).unwrap(); }), Some(InvalidDebugInfo));
-    assert_eq!(verdict(|m, _| { m.debug.expr(&[DiOp::Swap]).unwrap(); }), Some(InvalidDebugInfo));
+    assert_eq!(
+        verdict(|m, _| {
+            m.debug.expr(&[DiOp::EntryValue(1), DiOp::StackValue]).unwrap();
+        }),
+        None
+    );
+    assert_eq!(
+        verdict(|m, _| {
+            m.debug.expr(&[DiOp::StackValue, DiOp::Deref]).unwrap();
+        }),
+        Some(InvalidDebugInfo)
+    );
+    assert_eq!(
+        verdict(|m, _| {
+            m.debug.expr(&[DiOp::Swap]).unwrap();
+        }),
+        Some(InvalidDebugInfo)
+    );
 
     // A function's subprogram is a subprogram; a defined function's is
     // distinct and its own.
     let function = |m: &mut Module, u: &Unit2, name: &[u8], subprogram, has_body| {
         let sym = m.symbol_named(name).unwrap();
-        let desc = FunctionDesc { subprogram: Some(subprogram), has_body, ..FunctionDesc::new(u.fn_ty) };
+        let desc =
+            FunctionDesc { subprogram: Some(subprogram), has_body, ..FunctionDesc::new(u.fn_ty) };
         m.set_function(sym, &desc).unwrap();
     };
     assert_eq!(verdict(|m, u| function(m, u, b"g", u.file, false)), Some(InvalidDebugInfo));
-    assert_eq!(verdict(|m, u| function(m, u, b"g", DiId::new(4000), false)), Some(InvalidDebugInfo));
+    assert_eq!(
+        verdict(|m, u| function(m, u, b"g", DiId::new(4000), false)),
+        Some(InvalidDebugInfo)
+    );
     assert_eq!(verdict(|m, u| function(m, u, b"g", u.f, true)), Some(InvalidDebugInfo), "f has it");
     assert_eq!(verdict(|m, u| function(m, u, b"g", u.f, false)), None, "a declaration may share");
-    assert_eq!(verdict(|m, u| {
-        let declaration = add(m, DiSubprogram { name: b"g", ..Default::default() }.into());
-        function(m, u, b"g", declaration, false);
-    }), None);
-    assert_eq!(verdict(|m, u| {
-        let declaration = add(m, DiSubprogram { name: b"g", ..Default::default() }.into());
-        function(m, u, b"g", declaration, true);
-    }), Some(InvalidDebugInfo));
+    assert_eq!(
+        verdict(|m, u| {
+            let declaration = add(m, DiSubprogram { name: b"g", ..Default::default() }.into());
+            function(m, u, b"g", declaration, false);
+        }),
+        None
+    );
+    assert_eq!(
+        verdict(|m, u| {
+            let declaration = add(m, DiSubprogram { name: b"g", ..Default::default() }.into());
+            function(m, u, b"g", declaration, true);
+        }),
+        Some(InvalidDebugInfo)
+    );
 
     // A global-variable expression is attached to a variable.
     let gve = |m: &mut Module, u: &Unit2| {
-        let var = m.debug.add_distinct(&DiGlobalVariable { name: b"v", ty: Some(u.int), ..Default::default() }.into()).unwrap();
+        let var = m
+            .debug
+            .add_distinct(
+                &DiGlobalVariable { name: b"v", ty: Some(u.int), ..Default::default() }.into(),
+            )
+            .unwrap();
         add(m, DiGlobalVariableExpression { var: Some(var), expr: ExprId::EMPTY }.into())
     };
-    assert_eq!(verdict(|m, u| {
-        let expr = gve(m, u);
-        let sym = m.symbol_named(b"v").unwrap();
-        m.set_variable(sym, &VariableDesc::new(TypeId::I32)).unwrap();
-        m.attach_global_expr(sym, expr).unwrap();
-    }), None);
-    assert_eq!(verdict(|m, u| {
-        let expr = gve(m, u);
-        let sym = m.symbol_named(b"f").unwrap();
-        m.attach_global_expr(sym, expr).unwrap();
-    }), Some(InvalidDebugInfo));
-    assert_eq!(verdict(|m, _| {
-        let later = m.debug.reserve().unwrap();
-        let sym = m.symbol_named(b"v").unwrap();
-        m.set_variable(sym, &VariableDesc::new(TypeId::I32)).unwrap();
-        m.attach_global_expr(sym, later).unwrap();
-        m.debug.define(later, &DiFile::default().into()).unwrap();
-    }), Some(InvalidDebugInfo));
+    assert_eq!(
+        verdict(|m, u| {
+            let expr = gve(m, u);
+            let sym = m.symbol_named(b"v").unwrap();
+            m.set_variable(sym, &VariableDesc::new(TypeId::I32)).unwrap();
+            m.attach_global_expr(sym, expr).unwrap();
+        }),
+        None
+    );
+    assert_eq!(
+        verdict(|m, u| {
+            let expr = gve(m, u);
+            let sym = m.symbol_named(b"f").unwrap();
+            m.attach_global_expr(sym, expr).unwrap();
+        }),
+        Some(InvalidDebugInfo)
+    );
+    assert_eq!(
+        verdict(|m, _| {
+            let later = m.debug.reserve().unwrap();
+            let sym = m.symbol_named(b"v").unwrap();
+            m.set_variable(sym, &VariableDesc::new(TypeId::I32)).unwrap();
+            m.attach_global_expr(sym, later).unwrap();
+            m.debug.define(later, &DiFile::default().into()).unwrap();
+        }),
+        Some(InvalidDebugInfo)
+    );
 }
 
 /// §6.10: what a stored node costs: eight bytes, four for the mask, and
@@ -878,18 +1149,44 @@ fn node_sizes() {
         d.stats().node_bytes - before.node_bytes
     };
     // A file: two strings.
-    assert_eq!(cost(DiFile { filename: b"b.c", directory: b"/src", ..Default::default() }.into()), 20);
+    assert_eq!(
+        cost(DiFile { filename: b"b.c", directory: b"/src", ..Default::default() }.into()),
+        20
+    );
     // A local variable as clang writes it: name, scope, file, line, type.
-    let local = DiLocalVariable { name: b"x", scope: Some(f), file: Some(file), line: 4, ty: Some(int), ..Default::default() };
+    let local = DiLocalVariable {
+        name: b"x",
+        scope: Some(f),
+        file: Some(file),
+        line: 4,
+        ty: Some(int),
+        ..Default::default()
+    };
     assert_eq!(cost(local.into()), 32);
     assert_eq!(cost(DiLocalVariable { arg: 1, ..local }.into()), 36);
     // A lexical block: scope, file, line, column.
-    assert_eq!(cost(DiLexicalBlock { scope: Some(f), file: Some(file), line: 4, column: 9 }.into()), 28);
+    assert_eq!(
+        cost(DiLexicalBlock { scope: Some(f), file: Some(file), line: 4, column: 9 }.into()),
+        28
+    );
     // A pointer type: base type and a 64-bit size (two cells).
-    let pointer = DiDerivedType { tag: DW_TAG_POINTER_TYPE, base_type: Some(int), size: 64, ..Default::default() };
+    let pointer = DiDerivedType {
+        tag: DW_TAG_POINTER_TYPE,
+        base_type: Some(int),
+        size: 64,
+        ..Default::default()
+    };
     assert_eq!(cost(pointer.into()), 24);
     // A member: name, scope, file, line, base type, size, offset.
-    let member = DiDerivedType { tag: DW_TAG_MEMBER, name: b"m", scope: Some(int), file: Some(file), line: 2, offset: 32, ..pointer };
+    let member = DiDerivedType {
+        tag: DW_TAG_MEMBER,
+        name: b"m",
+        scope: Some(int),
+        file: Some(file),
+        line: 2,
+        offset: 32,
+        ..pointer
+    };
     assert_eq!(cost(member.into()), 48);
     // A list costs its length and its elements; a flag costs nothing.
     assert_eq!(cost(DiSubroutineType { types: &[int, int, int], ..Default::default() }.into()), 28);
@@ -921,7 +1218,8 @@ fn node_sizes() {
     assert_eq!(size_of::<LocId>(), 4);
     // Strings are stored once.
     let before = d.stats().string_bytes;
-    d.add_distinct(&DiFile { filename: b"b.c", directory: b"/src", ..Default::default() }.into()).unwrap();
+    d.add_distinct(&DiFile { filename: b"b.c", directory: b"/src", ..Default::default() }.into())
+        .unwrap();
     assert_eq!(d.stats().string_bytes, before);
     d.add_distinct(&DiFile { filename: b"new.c", ..Default::default() }.into()).unwrap();
     assert_eq!(d.stats().string_bytes, before + 5 + 8);
@@ -981,7 +1279,8 @@ fn printed_field_table() -> String {
 /// one in the crate.
 #[test]
 fn the_landed_field_table_is_current() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec/landed/ir/WP-005.md");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec/landed/ir/WP-005.md");
     let landed = std::fs::read_to_string(&path).unwrap_or_default();
     let printed = landed
         .split_once("<!-- field table: begin -->\n")

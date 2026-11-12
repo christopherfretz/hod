@@ -103,6 +103,7 @@ pub use debug::map::{
     di_record,
 };
 // The `DW_TAG_*` numbers, the name tables and lookups, the flag sets.
+pub use body::{DbgDeclare, DbgRecord, DbgRecordKind};
 pub use debug::names::*;
 pub use debug::node::{
     DiBasicType, DiBound, DiCompileUnit, DiCompositeType, DiConstant, DiDerivedType, DiEnumerator,
@@ -112,4 +113,3 @@ pub use debug::node::{
     DiTemplateValueParameter, DiTuple,
 };
 pub use debug::{DebugInfo, DebugStats, DiLocation};
-pub use body::{DbgDeclare, DbgRecord, DbgRecordKind};

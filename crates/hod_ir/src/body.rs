@@ -1813,12 +1813,15 @@ mod tests {
         assert_eq!(format!("{f:?}"), "uses=2 outside next");
 
         // §6.6: being named by a declare is not a use.
-        let mut d = UseFacts::NONE;
-        d.declare();
-        assert!(d.named_by_declare() && d.is_unused() && !f.named_by_declare());
-        d.add(false, true);
-        assert!(d.only_use_is_next() && d.named_by_declare());
-        assert_eq!((d.count(), format!("{d:?}")), (1, "uses=1 next declared".to_string()));
+        let mut declared = UseFacts::NONE;
+        declared.declare();
+        assert!(declared.named_by_declare() && declared.is_unused() && !f.named_by_declare());
+        declared.add(false, true);
+        assert!(declared.only_use_is_next() && declared.named_by_declare());
+        assert_eq!(
+            (declared.count(), format!("{declared:?}")),
+            (1, "uses=1 next declared".to_string())
+        );
 
         let mut g = UseFacts::NONE;
         g.add(false, false);

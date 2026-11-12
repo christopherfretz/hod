@@ -24,10 +24,10 @@ use crate::debug::expr::{DiOp, ExprId};
 use crate::debug::node::DiNode;
 use crate::error::{IrError, IrErrorKind, IrResult};
 use crate::ids::{BlockId, ConstId, DiId, LocId, TypeId};
-use crate::symbol::SymbolKind;
 use crate::inst::{AtomicOrdering, InstData, MemFlags, Opcode, PTRADD_POOLED, RmwOp};
 use crate::intrinsic::{CODE_OTHER, Intrinsic};
 use crate::module::Module;
+use crate::symbol::SymbolKind;
 use crate::types::{TypeKind, TypeTable};
 use crate::value::{InstId, TAG_ASM, Value, ValueKind};
 
@@ -976,11 +976,17 @@ impl Verifier<'_> {
         let fail = |what: String| Err(IrError::new(InvalidDebugInfo, what));
         for declare in &body.declares {
             if matches!(declare.address.kind(), ValueKind::Slot(_)) {
-                return fail(format!("the declaration of {:?} at a slot is not a slot variable", declare.var));
+                return fail(format!(
+                    "the declaration of {:?} at a slot is not a slot variable",
+                    declare.var
+                ));
             }
             if !self.debug_value(declare.address) {
                 let what = "names a value that does not exist";
-                return fail(format!("the declaration of {:?} {what}: {:?}", declare.var, declare.address));
+                return fail(format!(
+                    "the declaration of {:?} {what}: {:?}",
+                    declare.var, declare.address
+                ));
             }
         }
         let mut previous = 0;
@@ -1000,8 +1006,10 @@ impl Verifier<'_> {
             previous = record.before;
             let count = usize::from(record.count);
             let assign = record.kind == DbgRecordKind::Assign;
-            let Some(values) =
-                body.vals.get(record.vals as usize..).and_then(|rest| rest.get(..count + usize::from(assign)))
+            let Some(values) = body
+                .vals
+                .get(record.vals as usize..)
+                .and_then(|rest| rest.get(..count + usize::from(assign)))
             else {
                 return fail("has its values outside the operand pool");
             };
@@ -1034,7 +1042,8 @@ impl Verifier<'_> {
         // A location is defined and, when the function has a subprogram,
         // is in it or in something inlined into it.
         let location = |loc: LocId, what: &dyn Display| {
-            let fail = |why: &str| Err(IrError::new(InvalidDebugInfo, format!("{what}: {loc:?} {why}")));
+            let fail =
+                |why: &str| Err(IrError::new(InvalidDebugInfo, format!("{what}: {loc:?} {why}")));
             if debug.location(loc).is_none() {
                 return fail("is not a location");
             }
@@ -1059,29 +1068,40 @@ impl Verifier<'_> {
         // A variable or label is of the right kind, in the subprogram its
         // record's location is in, and its expression exists and names
         // only arguments the record has.
-        let named = |var: DiId, label: bool, expr: ExprId, loc: LocId, args: u64, what: &dyn Display| {
-            let fail = |why: &str| Err(IrError::new(InvalidDebugInfo, format!("{what}: {why}")));
-            let scope = match (debug.contains(var).then(|| debug.node(var)), label) {
-                (Some(DiNode::LocalVariable(node)), false) => node.scope,
-                (Some(DiNode::Label(node)), true) => node.scope,
-                (_, false) => return fail("its variable is not a DILocalVariable"),
-                (_, true) => return fail("its label is not a DILabel"),
+        let named =
+            |var: DiId, label: bool, expr: ExprId, loc: LocId, args: u64, what: &dyn Display| {
+                let fail =
+                    |why: &str| Err(IrError::new(InvalidDebugInfo, format!("{what}: {why}")));
+                let scope = match (debug.contains(var).then(|| debug.node(var)), label) {
+                    (Some(DiNode::LocalVariable(node)), false) => node.scope,
+                    (Some(DiNode::Label(node)), true) => node.scope,
+                    (_, false) => return fail("its variable is not a DILocalVariable"),
+                    (_, true) => return fail("its label is not a DILabel"),
+                };
+                location(loc, what)?;
+                let here = debug.location(loc).and_then(|loc| debug.subprogram_of(loc.scope));
+                if scope.and_then(|scope| debug.subprogram_of(scope)) != here {
+                    return fail(
+                        "its location is in another subprogram than its variable or label",
+                    );
+                }
+                if expr.index() >= debug.expr_count() {
+                    return fail("its expression does not exist");
+                }
+                if debug.ops(expr).any(|op| matches!(op, DiOp::Arg(index) if index >= args)) {
+                    return fail("its expression names an argument the record does not have");
+                }
+                Ok(())
             };
-            location(loc, what)?;
-            let here = debug.location(loc).and_then(|loc| debug.subprogram_of(loc.scope));
-            if scope.and_then(|scope| debug.subprogram_of(scope)) != here {
-                return fail("its location is in another subprogram than its variable or label");
-            }
-            if expr.index() >= debug.expr_count() {
-                return fail("its expression does not exist");
-            }
-            if debug.ops(expr).any(|op| matches!(op, DiOp::Arg(index) if index >= args)) {
-                return fail("its expression names an argument the record does not have");
-            }
-            Ok(())
-        };
         for var in &body.slot_vars {
-            named(var.var, false, var.expr, var.loc, 1, &format_args!("the variable of {:?}", var.slot))?;
+            named(
+                var.var,
+                false,
+                var.expr,
+                var.loc,
+                1,
+                &format_args!("the variable of {:?}", var.slot),
+            )?;
         }
         for declare in &body.declares {
             let what = format_args!("the declaration of {:?}", declare.var);

@@ -177,10 +177,7 @@ impl DebugInfo {
     fn define_as(&mut self, id: DiId, node: &DiNode<'_>, flags: u8) -> IrResult<()> {
         match self.heads.get(id.index()) {
             None => {
-                return err(
-                    IrErrorKind::UndefinedDebugNode,
-                    format!("{id:?} was never reserved"),
-                );
+                return err(IrErrorKind::UndefinedDebugNode, format!("{id:?} was never reserved"));
             }
             Some(head) if head.kind != 0 => {
                 let kind = DiKind::from_code(head.kind).llvm_name();
@@ -310,7 +307,7 @@ impl DebugInfo {
         if let DiNode::Other(other) = node {
             // Interned by `encode` unless the name is empty.
             let name = self.strings.as_ref().and_then(|strings| strings.find(other.kind));
-            let raw = name.map_or(u32::MAX, |name| name.raw());
+            let raw = name.map_or(u32::MAX, crate::strings::StrId::raw);
             if !self.other_kinds.contains(&raw) {
                 self.other_kinds.push(raw);
             }
@@ -393,7 +390,8 @@ impl DebugInfo {
     #[inline]
     pub fn enclosing_block_scope(&self, id: DiId) -> Option<DiId> {
         let head = self.heads[id.index()];
-        if !matches!(DiKind::from_code(head.kind), DiKind::LexicalBlock | DiKind::LexicalBlockFile) {
+        if !matches!(DiKind::from_code(head.kind), DiKind::LexicalBlock | DiKind::LexicalBlockFile)
+        {
             return None;
         }
         // `scope` is the first field of both records.
@@ -688,7 +686,7 @@ impl DebugInfo {
             let mut wrong = None;
             node.refs(&mut |field, allowed, target| {
                 let kind = self.find_kind(target);
-                if wrong.is_none() && !kind.is_some_and(|kind| class::of(kind) & allowed != 0) {
+                if wrong.is_none() && kind.is_none_or(|kind| class::of(kind) & allowed == 0) {
                     wrong = Some((field, target, kind));
                 }
             });
@@ -765,7 +763,7 @@ impl DebugInfo {
     }
 }
 
-/// "DISubprogram that is a definition", for messages.
+/// "`DISubprogram` that is a definition", for messages.
 fn describe(node: &DiNode<'_>) -> &'static str {
     match node {
         DiNode::Subprogram(_) => "DISubprogram that is a definition",
@@ -789,7 +787,9 @@ mod tests {
         assert!(empty.is_empty());
         assert_eq!(empty.stats(), DebugStats { exprs: 1, ..DebugStats::default() });
         assert_eq!(empty.heads.capacity() + empty.cells.capacity() + empty.locs.capacity(), 0);
-        assert!(empty.strings.is_none() && empty.interner.is_none() && empty.loc_interner.is_none());
+        assert!(
+            empty.strings.is_none() && empty.interner.is_none() && empty.loc_interner.is_none()
+        );
         empty.verify().unwrap();
     }
 }

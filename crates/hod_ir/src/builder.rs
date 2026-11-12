@@ -1454,42 +1454,7 @@ impl FunctionBuilder {
         }
         body.fixups.clear();
 
-        // Debug records and declarations name what a reserved value was
-        // defined as, and do not use it. A declaration whose address
-        // turns out to be a slot is a slot variable.
-        if !body.reserved.is_empty() {
-            let reserved = &body.reserved;
-            let resolve = |value: &mut Value| {
-                if is_reserved(*value) {
-                    *value = reserved[(value.payload() - RESERVED_BASE) as usize].target;
-                }
-            };
-            for record in &body.dbg_records {
-                let count = usize::from(record.count)
-                    + usize::from(record.kind == DbgRecordKind::Assign);
-                body.vals[record.vals as usize..][..count].iter_mut().for_each(resolve);
-            }
-            let slot_vars = &mut body.slot_vars;
-            body.declares.retain_mut(|declare| {
-                resolve(&mut declare.address);
-                if declare.address.is_none() || declare.address.tag() != TAG_SLOT {
-                    return true;
-                }
-                let slot = SlotId::new(declare.address.payload());
-                slot_vars.push(SlotVar { slot, var: declare.var, loc: declare.loc, expr: declare.expr });
-                false
-            });
-        }
-        body.reserved.clear();
-        for declare in &body.declares {
-            let index = declare.address.payload() as usize;
-            match declare.address.tag() {
-                _ if declare.address.is_none() => {}
-                TAG_INST => body.uses[index].declare(),
-                TAG_ARG => body.arg_uses[index].declare(),
-                _ => {}
-            }
-        }
+        name_debug_values(body);
 
         // The incoming lists move to the pools, grouped by `phi`: count,
         // lay out in instruction order, fill.
@@ -1520,5 +1485,54 @@ impl FunctionBuilder {
         }
         body.pending.clear();
         Ok(self.body)
+    }
+}
+
+/// The end of `finish` for the debug records (§6.6): records and
+/// declarations name what a reserved value was defined as, a declaration
+/// whose address turns out to be a slot becomes a slot variable, and the
+/// values declarations name are marked in the use facts. Clears the
+/// reserved values.
+fn name_debug_values(body: &mut Body) {
+    // Debug records and declarations name what a reserved value was
+    // defined as, and do not use it. A declaration whose address
+    // turns out to be a slot is a slot variable.
+    if !body.reserved.is_empty() {
+        let reserved = &body.reserved;
+        let resolve = |value: &mut Value| {
+            if value.tag() == TAG_INST && value.payload() >= RESERVED_BASE {
+                *value = reserved[(value.payload() - RESERVED_BASE) as usize].target;
+            }
+        };
+        for record in &body.dbg_records {
+            let count =
+                usize::from(record.count) + usize::from(record.kind == DbgRecordKind::Assign);
+            body.vals[record.vals as usize..][..count].iter_mut().for_each(resolve);
+        }
+        let slot_vars = &mut body.slot_vars;
+        body.declares.retain_mut(|declare| {
+            resolve(&mut declare.address);
+            if declare.address.is_none() || declare.address.tag() != TAG_SLOT {
+                return true;
+            }
+            let slot = SlotId::new(declare.address.payload());
+            slot_vars.push(SlotVar {
+                slot,
+                var: declare.var,
+                loc: declare.loc,
+                expr: declare.expr,
+            });
+            false
+        });
+    }
+    body.reserved.clear();
+    for declare in &body.declares {
+        let index = declare.address.payload() as usize;
+        match declare.address.tag() {
+            _ if declare.address.is_none() => {}
+            TAG_INST => body.uses[index].declare(),
+            TAG_ARG => body.arg_uses[index].declare(),
+            _ => {}
+        }
     }
 }

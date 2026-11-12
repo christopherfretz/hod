@@ -17,6 +17,7 @@
     clippy::unused_self
 )]
 
+pub mod ehview;
 pub mod exec;
 pub mod harness;
 pub mod isa;

@@ -1020,7 +1020,7 @@ which chunk it is in, nor on what else is in it.
 | `code` | bytes | the function's instructions and data islands |
 | `relocs` | `(offset, RelocKind, SymRef, addend)` | `hod_obj` relocations (§9.2) |
 | `cfi` | `(offset, CfiOp)` | `hod_eh` (§9.3) |
-| `call_sites` | `(start, length, pad, landing)` | `hod_eh` (§9.4) |
+| `call_sites` | `(start, length, pad, landing, nounwind)` | `hod_eh` (§9.4) |
 | `pads`, `clauses`, `type_ids`, `filter_ids` | §9.4 | `hod_eh` |
 | `lines` | `(offset, LocId)` | `hod_dwarf` (§9.5) |
 | `vars` | `(variable, expression, declared-at, location)` | `hod_dwarf` (§9.5) |
@@ -1029,7 +1029,11 @@ which chunk it is in, nor on what else is in it.
 | `block_offsets` | `(BlockId, offset)` | `blockaddress` in data (§9.6) |
 
 `FuncRecord`: the function's `SymId`; its ranges in each table; its code
-alignment; its frame description (§9.3); whether it has landing pads.
+alignment; its frame description (§9.3); whether it has landing pads; and
+what its unwind-table entry needs (`spec/eh.md` §1.1), read from the
+module when the function ends: its personality, whether it is `nounwind`
+and whether it has `uwtable`. `FuncRecord::needs_unwind_entry` is the FDE
+rule.
 
 ### 9.2 Relocations
 
@@ -1051,7 +1055,12 @@ its prologue and its exit sequences. The exit sequences are the last code
 of the function, so nothing after them needs the body's state back; each
 tail exit, coming after another exit sequence, starts with rows that
 state the body's rules again (the CFA and the saved registers) rather
-than relying on remembered state. The rows are
+than relying on remembered state. So does the shared trap of §6.1, which
+the core places after the exit sequences and the body branches to: before
+it, the core restates the net effect of the rows emitted before the
+epilogue was bound (one CFA rule, then the last rule of each saved
+register). `CfiOp` and `CfiRow` are `hod_eh`'s `Op` and `Row`,
+re-exported, so the rows reach `.eh_frame` as they are. The rows are
 exact at every instruction boundary (asynchronous unwind tables), which
 is what debuggers and profilers need; `hod_eh` writes them into
 `.eh_frame` and may share a CIE between all functions of an object that
@@ -1080,7 +1089,11 @@ them has no LSDA, and exceptions pass through it by its CFI alone.
   throw and has no pad must still be covered by a row, or the personality
   routine terminates the program instead of unwinding through. The pad
   and landing offset are resolved when the function ends; a landing
-  offset of 0 in the row means the pad block's own offset.
+  offset of 0 in a row with a pad means the pad block's own offset, and
+  it is 0 in a row without one. `nounwind` is set for a direct call of a
+  function declared `nounwind` (`llc`'s `callToNoUnwindFunction`); such
+  a row without a pad gets no LSDA entry (`spec/eh.md` §9.3). Calls a
+  target records itself (`FnCx::record_call_site`) are not `nounwind`.
 - `filter_ids`: the type ids of the `filter` clauses, which a clause
   names by range.
 
@@ -1208,6 +1221,26 @@ COMDAT if it has one. `!llvm.linker.options` become `.linker-options`
 (`SHT_LLVM_LINKER_OPTIONS`, `SHF_EXCLUDE`), `!llvm.dependent-libraries`
 `.deplibs` (`SHT_LLVM_DEPENDENT_LIBRARIES`, `SHF_MERGE|SHF_STRINGS`).
 
+**Unwind tables** (`src/emit/unwind.rs`, `spec/eh.md` §1.1, §9) are
+written by `finish`, after the linker options and before the symbols are
+defined: the LSDAs of the functions with landing pads in one
+`hod_eh::write_lsdas` call (`.gcc_except_table`, or
+`.gcc_except_table.<name>` in the function's group or with
+`function_sections`; type-information stubs in `.data`), then one FDE per
+function that needs one (`FuncRecord::needs_unwind_entry`) in one
+`write_eh_frame` call, each starting at the function's section symbol
+plus its offset after the merge, so a COMDAT member's FDE refers into its
+group as `llc`'s does. The personality slot `DW.ref.<personality>` comes
+from `hod_eh::personality_ref`, one per personality. The rows are read
+from `Emitted::rows` and the placed records only, so the tables do not
+depend on the chunking; nothing is allocated per function (the mapped
+LSDA rows are in three buffers sized from the row counts). The tables
+are byte-identical to `llc`'s (`tests/emit_eh.rs`), except that `llc`
+orders the CIEs of two personalities by a pointer (`spec/eh.md` §5) and
+defines a `GCC_except_table<n>` label at each LSDA that nothing refers
+to. `.debug_frame`, for a `nounwind` function without `uwtable` that has
+debug information, is not written (`spec/dwarf.md`'s, a follow-up).
+
 **`Emitted`**: the object; `funcs: Vec<PlacedFunc>` in module order, each
 the function's `FuncRecord` with `code` its byte range in `section`, the
 row ranges ranges of `Emitted::rows`, and `relocs` empty; `rows`, every
@@ -1229,7 +1262,10 @@ in maps sized by their count).
 `global:ifunc-resolver`, `init:sym-diff-unencodable`,
 `init:address-width` (an address in a 1-byte field),
 `init:dso-local-equivalent` (outside a difference),
-`init:blockaddress-unplaced`.
+`init:blockaddress-unplaced`, `module:linker-option-not-a-pair` (an
+`!llvm.linker.options` entry of other than two strings: `llc` writes
+`.linker-options` as pairs), `eh:unknown-personality-without-pads`
+(`spec/eh.md` §1.1).
 
 **Known differences from `llc`**, none of which changes what a linker
 makes of the object (`tests/emit_link.rs` links both with GNU ld, lld and

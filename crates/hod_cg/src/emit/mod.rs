@@ -14,6 +14,7 @@
 
 mod data;
 mod section;
+mod unwind;
 
 use std::collections::HashMap;
 
@@ -62,6 +63,13 @@ pub mod unsupported {
     pub const APPENDING: &str = "linkage:appending";
     /// Module-level inline assembly (`hod_asm`'s, not yet).
     pub const MODULE_ASM: &str = "module:asm";
+    /// An `!llvm.linker.options` entry that is not a pair of strings,
+    /// which ELF `llc` refuses ("invalid llvm.linker.options").
+    pub const LINKER_OPTION: &str = "module:linker-option-not-a-pair";
+    /// A function with an unwind-table entry, no landing pads and a
+    /// personality LLVM does not know: `llc` gives it the personality and
+    /// an LSDA of call sites hod does not record (`spec/eh.md` §1.1).
+    pub const PERSONALITY_WITHOUT_PADS: &str = "eh:unknown-personality-without-pads";
 }
 
 /// Not in a section.
@@ -311,6 +319,10 @@ impl<'m> ModuleEmitter<'m> {
         };
         if !module.module_asm().is_empty() {
             return Err(CgError::unsupported(unsupported::MODULE_ASM));
+        }
+        // `TargetLoweringObjectFileELF::emitModuleMetadata`.
+        if module.linker_options().iter().any(|list| list.len() != 2) {
+            return Err(CgError::unsupported(unsupported::LINKER_OPTION));
         }
         emitter.declare()?;
         // `.text` exists in every object `llc` writes.
@@ -674,6 +686,9 @@ impl<'m> ModuleEmitter<'m> {
             align: func.align,
             frame: func.frame,
             has_pads: func.has_pads,
+            personality: func.personality,
+            nounwind: func.nounwind,
+            uwtable: func.uwtable,
             code: offset as u32..offset as u32 + len,
             relocs: 0..0,
             cfi: copy(&mut rows.cfi, &chunk.cfi, &func.cfi),
@@ -826,6 +841,7 @@ impl<'m> ModuleEmitter<'m> {
         self.structors(true)?;
         self.structors(false)?;
         self.linker_options()?;
+        self.unwind_tables()?;
         self.define()?;
         let ModuleEmitter { obj, funcs, rows, .. } = self;
         Ok(Emitted { object: obj, funcs, rows })
@@ -1066,8 +1082,7 @@ impl<'m> ModuleEmitter<'m> {
                     self.obj.retain_symbol(id);
                 }
                 if !symbol.is_definition() && self.obj.is_referenced(id) {
-                    let name = self.obj.add_string(symbol.name()).map_err(obj_err)?;
-                    self.obj.symbol_mut(id).name = name;
+                    self.name_symbol(sym)?;
                 }
                 continue;
             }
@@ -1075,13 +1090,7 @@ impl<'m> ModuleEmitter<'m> {
                 continue;
             }
             if symbol.linkage() == Linkage::Private && !symbol.is_anonymous() {
-                let mut name = std::mem::take(&mut self.name);
-                name.clear();
-                name.extend_from_slice(b".L");
-                name.extend_from_slice(symbol.name());
-                let added = self.obj.add_string(&name).map_err(obj_err);
-                self.name = name;
-                self.obj.symbol_mut(id).name = added?;
+                self.name_symbol(sym)?;
             }
             let target = self.obj.symbol_mut(id);
             target.binding = binding(symbol.linkage());

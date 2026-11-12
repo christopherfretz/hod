@@ -1,5 +1,5 @@
 //! Local copies of `available_externally` `alwaysinline` functions
-//! (`spec/codegen.md` §9.7.1, design 0001 point 6, WP-021).
+//! (`spec/codegen.md` §9.7.2, design 0001 point 6, WP-021).
 //!
 //! `llc` writes nothing for an `available_externally` function: every
 //! reference is to the external symbol. A module that never met `-O0`'s
@@ -28,6 +28,17 @@ use crate::sym::SymRef;
 /// The suffix of a copy's symbol name: `<name>.alwaysinline` (a GNU
 /// demangler reads it as a clone, `[clone .alwaysinline]`).
 pub const COPY_SUFFIX: &str = ".alwaysinline";
+
+/// Where a code relocation goes ([`ModuleEmitter::copy_target`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CopyTarget {
+    /// Not a relocation a copy takes: resolved as any other.
+    Not,
+    /// A call to a copy not placed yet: it waits for `finish`.
+    Pending,
+    /// A call to this placed copy.
+    Copy(SymbolId),
+}
 
 /// Whether `kind` is a branch to a function (a call or a tail call): the
 /// only relocations that go to a copy.
@@ -73,24 +84,17 @@ impl ModuleEmitter<'_> {
     }
 
     /// Where a code relocation of `kind` to `sym` goes when it may go to
-    /// a copy: `Some(Some(copy))` once the copy is placed, `Some(None)`
-    /// while it may still be (the relocation waits for `finish`), `None`
-    /// for every other relocation. In `finish` (`last`), a copy that was
-    /// never placed leaves the relocation on the external symbol.
-    pub(super) fn copy_target(
-        &self,
-        kind: RelocKind,
-        sym: SymRef,
-        last: bool,
-    ) -> Option<Option<SymbolId>> {
-        let SymRef::Module(sym) = sym else { return None };
+    /// a copy. In `finish` (`last`), a copy that was never placed leaves
+    /// the relocation on the external symbol.
+    pub(super) fn copy_target(&self, kind: RelocKind, sym: SymRef, last: bool) -> CopyTarget {
+        let SymRef::Module(sym) = sym else { return CopyTarget::Not };
         if !is_branch(kind) || !self.is_copy(sym) {
-            return None;
+            return CopyTarget::Not;
         }
         match self.copies.get(&sym) {
-            Some(&copy) => Some(Some(copy)),
-            None if last => None,
-            None => Some(None),
+            Some(&copy) => CopyTarget::Copy(copy),
+            None if last => CopyTarget::Not,
+            None => CopyTarget::Pending,
         }
     }
 }

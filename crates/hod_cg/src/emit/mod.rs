@@ -32,6 +32,7 @@ use hod_obj::{
 };
 
 pub use self::copy::COPY_SUFFIX;
+use self::copy::CopyTarget;
 use self::data::Relocs;
 use self::lines::DebugLines;
 use self::section::{Found, Kind, NO_GROUP, Sections};
@@ -632,8 +633,9 @@ impl<'m> ModuleEmitter<'m> {
         for reloc in &chunk.relocs[func.relocs.start as usize..func.relocs.end as usize] {
             let at = offset + u64::from(reloc.offset);
             let target = match self.copy_target(reloc.kind, reloc.sym, false) {
-                Some(copy) => copy.map(|copy| (copy, reloc.addend)),
-                None => self.code_target(reloc.sym, reloc.addend),
+                CopyTarget::Copy(copy) => Some((copy, reloc.addend)),
+                CopyTarget::Pending => None,
+                CopyTarget::Not => self.code_target(reloc.sym, reloc.addend),
             };
             match target {
                 Some((target, addend)) => {
@@ -872,7 +874,7 @@ impl<'m> ModuleEmitter<'m> {
             }
         }
         for (section, at, kind, target, addend) in std::mem::take(&mut self.pending) {
-            if let Some(Some(copy)) = self.copy_target(kind, target, true) {
+            if let CopyTarget::Copy(copy) = self.copy_target(kind, target, true) {
                 self.obj.add_relocation(section, at, kind, copy, addend);
                 continue;
             }

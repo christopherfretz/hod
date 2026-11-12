@@ -262,6 +262,17 @@ impl Job<'_, '_> {
         }
     }
 
+    /// The status of a rejected command line that does not fall back.
+    /// WP-021: in strict mode an option hod does not know is a decline
+    /// (`llc` may know it), status 2; a usage mistake is an error.
+    fn rejected_exit(&self, reason: &str) -> u8 {
+        if self.settings.strict && reason == "unknown-option" {
+            EXIT_UNSUPPORTED
+        } else {
+            EXIT_ERROR
+        }
+    }
+
     fn run(mut self, env: &Environment, compile: Compile<'_>) -> Finished {
         let line = self.line;
         if let Some(message) = line.fatal.as_ref().or(env.error.as_ref()) {
@@ -281,13 +292,7 @@ impl Job<'_, '_> {
                 return self.fall_back(&llc, rejected.reason(), None);
             }
             let message = format!("{rejected}{}", self.settings.no_fallback_note());
-            // WP-021: in strict mode an option hod does not know is a
-            // decline (`llc` may know it), a usage mistake an error.
-            let exit = if self.settings.strict && rejected.reason() == "unknown-option" {
-                EXIT_UNSUPPORTED
-            } else {
-                EXIT_ERROR
-            };
+            let exit = self.rejected_exit(rejected.reason());
             return self.fail(exit, rejected.reason(), &message);
         }
 

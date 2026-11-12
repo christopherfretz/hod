@@ -13,7 +13,7 @@
 //!   `alwaysinline` and called directly by a body this object contains
 //!   (transitively: a copy's calls count) is compiled as a local copy;
 //!   module emission sends the direct calls to the copy and every other
-//!   reference to the external symbol (`spec/codegen.md` §9.7.1). Its
+//!   reference to the external symbol (`spec/codegen.md` §9.7.2). Its
 //!   body is judged like any other only then: one nothing calls is never
 //!   compiled, so it cannot decline the module.
 //! - A body whose meaning depends on being inlined (its frame, its return

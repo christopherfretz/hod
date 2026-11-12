@@ -463,8 +463,10 @@ pub struct Body {
 }
 
 impl Body {
-    /// A body with nothing in it and nothing allocated.
-    pub(crate) fn empty() -> Body {
+    /// A body with nothing in it and nothing allocated: storage for
+    /// [`crate::FunctionBuilder::reusing`] before any body exists
+    /// (§5.1). It is not a finished body and has no function.
+    pub fn empty() -> Body {
         Body {
             sym: SymId::new(UNSET),
             fn_ty: TypeId::VOID,

@@ -61,7 +61,13 @@ fn compare(path: &Path, major: u32) -> Outcome {
         (Ok((ll, ll_numbered)), Ok((bc, bc_numbered))) => {
             let (a, b) = (common::dump(&ll, &ll_numbered), common::dump(&bc, &bc_numbered));
             if a == b {
-                return Outcome::Agree;
+                // `spec/ll.md` §5.7: the symbols are numbered alike, in
+                // the order of LLVM's module.
+                let (a, b) = (order(&ll, &ll_numbered), order(&bc, &bc_numbered));
+                if a == b {
+                    return Outcome::Agree;
+                }
+                return Outcome::Differ(vec!["symbol order".to_string()], a, b);
             }
             Outcome::Differ(classes(&a, &b), a, b)
         }
@@ -77,6 +83,19 @@ fn compare(path: &Path, major: u32) -> Outcome {
             error,
         ),
     }
+}
+
+/// The symbols' names in `SymId` order, one per line; an anonymous one
+/// by its place among the numbered globals.
+fn order(module: &hod_ir::Module, numbered: &[hod_ir::SymId]) -> String {
+    let line = |symbol: hod_ir::Symbol<'_>| {
+        if symbol.is_anonymous() {
+            let at = numbered.iter().position(|&other| other == symbol.id());
+            return format!("<anonymous {at:?}>\n");
+        }
+        format!("{}\n", String::from_utf8_lossy(symbol.name()))
+    };
+    module.symbols().map(line).collect()
 }
 
 /// An error's message without its position.

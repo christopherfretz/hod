@@ -211,14 +211,13 @@ anything has to, is given.
 | `type:x86_amx` | the type | a target extension type named `x86_amx` |
 | `type:x86_mmx` | the type (§3.2) | `<1 x i64>` |
 | `const-expr:ptrauth` | `ptrauth (…)` | its pointer operand |
-| `blockaddress:unlabelled-block` | a `blockaddress` whose block has no label in the text (§5.5) | a null pointer |
+| `blockaddress:unlabelled-block` | a `blockaddress` of a number in a function whose unnamed values the scan of §5.5 cannot count (hand-written text with two statements on a line) | a null pointer |
 | `symbol:anonymous-external` | a numbered global that is not `internal` or `private` (§5.7) | a symbol named `__unnamed_K` |
 | `syncscope:<name>` | body: a `syncscope("…")` other than `singlethread` (§11.5) | the system scope |
 | `alloca:inalloca`, `alloca:swifterror`, `alloca:scalable` | body: such an `alloca` | the `alloca` without it |
 | `getelementptr:scalable`, `getelementptr:vector-element-not-bytes` | body: a step of a `getelementptr` with no fixed size in bytes | poison |
 | `aggregate:no-fixed-offset`, `insertvalue:offset-over-4GiB` | body: an `extractvalue` or `insertvalue` of a field without a fixed offset, or past 4 GiB | poison |
 | `inst:catchswitch`, `inst:catchpad`, `inst:cleanuppad`, `inst:catchret`, `inst:cleanupret` | body: funclet exception handling (§11.4) | the opcode alone |
-| `call:forwarded-varargs` | body: `musttail call … (…, ...)` | poison |
 | `metadata-arg:<callee>`, `metadata-arg:indirect` | body: a call that would be emitted with a `metadata` argument (§11.6) | poison |
 | `bundle:metadata-input` | body: a `metadata` operand of an operand bundle | nothing |
 | `invoke:no-code-intrinsic` | body: an `invoke` or `callbr` of an intrinsic that generates no code (§11.7) | a branch to the normal destination |
@@ -400,9 +399,26 @@ label (`ret`, `br`, `switch`, `indirectbr`, `invoke`, `resume`,
 block has exactly one, and these words are nothing else outside
 parentheses in a body). The function must be defined in the module. The
 labels of a function are read at the first `blockaddress` that names it,
-once. A block that has no label in the text (LLVM numbers it implicitly)
-cannot be found this way and is recorded
-(`blockaddress:unlabelled-block`).
+once.
+
+A block without a label in the text takes the next number of the
+function's unnamed values, as in LLVM, and the same scan counts them: the
+unnamed parameters (a parameter is named when it ends in a local name
+that is not its only token), then, in text order, the entry block and
+every other block without a label, a written number (`%N =`, `N:`, a
+parameter `%N`) from which the count continues, and each unassigned
+instruction with a result (every instruction but `store`, `fence`, the
+terminators without a result and a call of a `void` type). The scan reads
+one statement per line, outside brackets; a line that starts with `to`,
+`unwind`, `catch`, `filter` or `cleanup` continues the one before. When it
+cannot be sure of the count it gives up, and a number it has not counted
+is recorded (`blockaddress:unlabelled-block`): an instruction word inside
+a statement that does not start a constant expression (a second
+statement on the line), a written number below the count, a line it
+cannot read. A name, or a counted number, that is no block of the
+function is `Undefined` at the label, as `llvm-as` refuses it ("referenced
+value is not a basic block", "use of undefined value"). Tested against the
+blocks that `llvm-as | llvm-dis` names (§10).
 
 ### 5.6 Attributes
 
@@ -449,6 +465,20 @@ file, as LLVM requires. One that is `internal` or `private` is
 `__unnamed_K`, `K` counting the module's numbered globals from 1 in file
 order, and recorded (`symbol:anonymous-external`), because LLVM's own `K`
 follows the order in which it emits them.
+
+**Order.** Symbols are numbered in LLVM's module order (`ir.md` §2.2):
+every variable, then every function, then every alias, then every IFUNC,
+each kind in the order of its definitions and declarations in the text.
+Which global refers to which first does not matter: LLVM keeps one list
+per kind and appends a global to its list where it is defined or
+declared, and `llvm-dis` prints, the bitcode writer numbers, and `llc`
+lays out `.text` and `.data` in the order of those lists. All symbols are
+created by this one pass over the index (§4.3) before anything else is
+read. The rule is the same as `bc.md` §5.5's record order, so the text
+and bitcode of one module give the same `SymId`s; `hod_bc`'s differential
+test checks it (`symbol order`), and `tests/syntax`
+(`symbols_are_numbered_in_llvms_module_order`) checks it against
+`llvm-dis` 19 and 22.
 
 ### 5.8 Functions, aliases, IFUNCs
 
@@ -752,6 +782,7 @@ body be handed to another thread unread.
 | §3, §8 | `syntax::verdicts_and_error_positions` | a table of some 490 snippets: accepted, or the error's kind, line and column |
 | §3.2, §3.5 | `syntax::llvm_as_agrees_or_the_difference_is_named` | `llvm-as` 19 and 22 on each snippet: the verdicts agree or the row says why not |
 | §3.4 | `syntax::unsupported_constructs_are_recorded_by_name` | the names, per snippet |
+| §5.5 | `syntax::blockaddress_of_a_block_without_a_label_is_llvms` | the blocks of `blockaddress` constants of blocks without labels, against those of the same text through `llvm-as \| llvm-dis` 19 and 22 |
 | §8 | `syntax::a_module_without_a_target_needs_a_default`, `nesting_has_a_limit`, `integer_literals_have_a_limit` | |
 | §8 | `robustness`: every prefix of the hand-written modules, seeded mutations of them and of clang's output, and some 55 inputs built to be deep, long or repetitive | each returns, within a time a quadratic loop would exceed |
 | §9 | `perf` | printed |
@@ -856,9 +887,8 @@ numbering pass that records the number and ordinal of each unlabelled
 block (whether an unnamed instruction takes a number depends on its
 type, so this needs the real grammar), then the real pass. A
 `blockaddress` inside a body resolves the function through
-`text.functions()`, by symbol; one of an unlabelled block is still
-`blockaddress:unlabelled-block` (a follow-up: LLVM prints `N:` labels,
-so only hand-written text has it).
+`text.functions()`, by symbol, and numbers blocks without a label by the
+scan of §5.5.
 
 ### 11.4 Instructions
 
@@ -911,6 +941,16 @@ scope is noted `syncscope:<name>`.
   declaration's type. It must be called with exactly the declaration's
   function type: anything else is a `Type` error, which LLVM's verifier
   also refuses ("Intrinsic called with incompatible signature").
+- `...` at the end of the arguments forwards the variable arguments of
+  the function; it is allowed in a `musttail` call only, and there only
+  in a variadic function, where it is required (LLVM's parser: "unexpected
+  ellipsis in argument list for non-musttail call", "… for musttail call
+  in non-varargs function", "expected '...' at end of argument list for
+  musttail call in varargs function"). Nothing is recorded for it: a
+  `musttail` call in a variadic function always forwards them, and the
+  printer writes the `...` back (`spec/ir.md` §9.4). `hod_ir`'s verifier
+  also refuses variable arguments of the call itself before the `...`,
+  which LLVM's accepts (`spec/ir.md` §5.8).
 - A `metadata` argument is read (`!"…"`, `!N`, `!{…}`, `!DIKind(…)`, or a
   value as metadata) and, if the call would be emitted, noted
   `metadata-arg:<callee>`: `hod_ir` has no metadata operand.

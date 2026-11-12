@@ -296,6 +296,10 @@ fn string_attributes_outside_the_td_and_unknown_names() {
         assert_eq!(attr_class(AttrSyntax::String, name.as_bytes()), AttrClass::Kept, "{name}");
     }
     assert_eq!(attr_class(AttrSyntax::String, b"no-trapping-math"), AttrClass::Dropped);
+    assert_eq!(
+        attr_class(AttrSyntax::String, b"sample-profile-suffix-elision-policy"),
+        AttrClass::Dropped
+    );
     // The two name spaces are separate, and a name with no row is rejected.
     for (syntax, name) in [
         (AttrSyntax::String, "nounwind"),

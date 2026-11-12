@@ -86,8 +86,10 @@ fn shape(types: &TypeTable, ty: TypeId) -> (TypeId, Option<(u32, bool)>) {
     }
 }
 
-/// Whether `op` can convert `src` to `dst`: LLVM's `castIsValid`.
-fn cast_is_valid(types: &TypeTable, op: Opcode, src: TypeId, dst: TypeId) -> bool {
+/// Whether the cast `op` can convert a value of type `src` to type `dst`:
+/// LLVM's `CastInst::castIsValid` (§5.4). `false` for an `op` that is not
+/// a cast.
+pub fn cast_is_valid(types: &TypeTable, op: Opcode, src: TypeId, dst: TypeId) -> bool {
     let (s, s_vec) = shape(types, src);
     let (d, d_vec) = shape(types, dst);
     let same = s_vec == d_vec;

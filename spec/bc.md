@@ -317,6 +317,10 @@ encodings are:
   references among globals resolve.
 - **Value ids.** Globals take value ids in record order, and the
   module-level constants follow them.
+- **Symbol ids.** Symbols are created in record order, which is LLVM's
+  module order (variables, functions, aliases, IFUNCs): the order
+  `ll.md` §5.7 gives the text, so both deliver the same `SymId`s. An
+  unnamed global's symbol is created in its place too.
 - **Unnamed globals.** A global with an empty name is numbered as
   `llvm-dis` numbers it: variables, then aliases, then IFUNCs, then
   functions, each group in record order. The order is
@@ -727,8 +731,9 @@ The rest follows `hod_ll`'s order:
    return and argument attributes as `hod_ll` keeps them, and the
    names the groups reject are notes;
 4. an intrinsic's signature is checked as `hod_ll` checks it;
-5. a `musttail` call in a variadic function gives
-   `call:forwarded-varargs`;
+5. a `musttail` call in a variadic function forwards the function's
+   variable arguments; the record does not say so and nothing is
+   recorded for it, as in `hod_ll` (`spec/ll.md` §11.6);
 6. the operand bundles, then the call is emitted; `invoke` and `callbr`
    end their block.
 

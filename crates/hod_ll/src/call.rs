@@ -343,7 +343,7 @@ impl Fx<'_, '_, '_> {
     /// `( type [attrs] value, … )` into `vals`, `arg_tys`, `arg_attrs`
     /// and `arg_at`. Whether any argument has attributes, whether one is
     /// metadata, and whether the list ends in `...`.
-    fn call_args(&mut self, tail: TailKind) -> PResult<(bool, bool, bool)> {
+    fn call_args(&mut self, tail: TailKind) -> PResult<(bool, bool)> {
         self.p.expect(Tok::LParen, "expected '(' in call")?;
         self.s.vals.clear();
         self.s.arg_tys.clear();
@@ -363,12 +363,21 @@ impl Fx<'_, '_, '_> {
                         .p
                         .syntax("unexpected ellipsis in argument list for non-musttail call");
                 }
+                if !self.s.variadic {
+                    return self.p.syntax(
+                        "unexpected ellipsis in argument list for musttail call in non-varargs \
+                         function",
+                    );
+                }
+                // It forwards the function's variable arguments; `hod_ir`
+                // records nothing for it, since a `musttail` call in a
+                // variadic function always does (`spec/ir.md` §5.8, §9.4).
                 self.p.bump();
                 if self.p.tok.kind != Tok::RParen {
                     return self.p.syntax("expected ')' at end of argument list");
                 }
                 self.p.bump();
-                return Ok((any_attrs, metadata, true));
+                return Ok((any_attrs, metadata));
             }
             let arg_at = self.p.tok.start;
             let ty = self.p.parse_type()?;
@@ -386,8 +395,13 @@ impl Fx<'_, '_, '_> {
             self.s.arg_attrs.push(attrs);
             self.s.arg_at.push(arg_at);
         }
+        if tail == TailKind::MustTail && self.s.variadic {
+            return self.p.syntax(
+                "expected '...' at end of argument list for musttail call in varargs function",
+            );
+        }
         self.p.bump();
-        Ok((any_attrs, metadata, false))
+        Ok((any_attrs, metadata))
     }
 
     /// The function type of the call: the one written, checked against
@@ -517,7 +531,7 @@ impl Fx<'_, '_, '_> {
             return self.stand_in_call(at, op, ret);
         }
 
-        let (any_attrs, metadata, forwarded) = self.call_args(tail)?;
+        let (any_attrs, metadata) = self.call_args(tail)?;
         let fn_ty = self.fn_type(written, ret, ty_at, target)?;
         let flags = self.call_fn_attrs()?;
         self.bundles()?;
@@ -531,11 +545,6 @@ impl Fx<'_, '_, '_> {
         {
             let message = "intrinsic called with incompatible signature";
             return fail(LlErrorKind::Type, callee_at, message);
-        }
-
-        if forwarded {
-            self.p.note("call:forwarded-varargs");
-            return self.stand_in_call(at, op, ret);
         }
 
         // The calls that generate no code (`spec/ir.md` §5.5).

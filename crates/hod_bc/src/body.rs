@@ -75,6 +75,10 @@ pub(crate) struct State {
     pub callees: Vec<CalleeInfo>,
     /// Call-site function groups: id, kept flags, names rejected.
     pub fn_groups: Vec<(u64, u32, Vec<String>)>,
+    /// The call of a debug intrinsic waiting for its location.
+    pub old_record: Option<crate::body_debug::OldRecord>,
+    /// The values of the debug record being read.
+    pub dbg_vals: Vec<Value>,
 }
 
 /// Reads the bodies of one module's functions (`spec/bc.md` §11).
@@ -183,6 +187,7 @@ impl<'b, 'a> BodyReader<'b, 'a> {
         st.param_notes.clear();
         st.params.clear();
         st.params.extend_from_slice(params);
+        st.old_record = None;
         if let Some(notes) = self.bits.types.param_notes(function.type_id) {
             st.param_notes.extend_from_slice(notes);
         }
@@ -204,9 +209,12 @@ impl<'b, 'a> BodyReader<'b, 'a> {
             open: false,
             at,
             room: (function.span.end - function.span.start) / 2,
+            fdbg: self.bits.debug.function(function.span.start),
+            inst_first: 0,
+            last_loc: None,
         };
         let walked = fx.walk(function);
-        let Fx { b, s, .. } = fx;
+        let Fx { b, s, module, .. } = fx;
         if let Err(error) = walked {
             s.storage = Some(b.abandon());
             return Err(error);
@@ -216,6 +224,13 @@ impl<'b, 'a> BodyReader<'b, 'a> {
             return Ok(None);
         }
         match b.finish() {
+            // As `hod_ll`: a body whose debug records or locations break
+            // a rule LLVM's verifier checks is `debug:invalid`.
+            Ok(body) if !module.debug.is_empty() && body.verify_debug(module).is_err() => {
+                s.pending.push(Cow::Borrowed(crate::debug::INVALID));
+                s.storage = Some(body);
+                Ok(None)
+            }
             Ok(body) => Ok(Some(body)),
             // Every value has its definition, so what is left undefined
             // is a ring of no-code calls that each stand for the next.
@@ -288,6 +303,14 @@ pub(crate) struct Fx<'s, 'b, 'a> {
     pub at: u64,
     /// The most blocks the function block has room for.
     pub room: u64,
+    /// The function's local metadata.
+    pub fdbg: crate::debug::FnDebug,
+    /// The builder's instruction count before the last instruction read:
+    /// its first instruction, where its location starts and its debug
+    /// records stand.
+    pub inst_first: usize,
+    /// The location of the last `DEBUG_LOC`.
+    pub last_loc: Option<hod_ir::LocId>,
 }
 
 /// The operands of one record, read in order.
@@ -361,6 +384,7 @@ impl Fx<'_, '_, '_> {
         let result = self.records(&mut cursor, &mut ops);
         self.s.ops = ops;
         result?;
+        self.flush_old_record();
         if self.open || self.begun != self.declared {
             return fail(
                 BcErrorKind::Invalid,
@@ -520,10 +544,12 @@ impl Fx<'_, '_, '_> {
                 self.declared = n as u32;
                 Ok(())
             }
-            func::DEBUG_LOC
-            | func::DEBUG_LOC_AGAIN
-            | func::BLOCKADDR_USERS
-            | func::DEBUG_RECORD_FIRST..=func::DEBUG_RECORD_LAST => Ok(()),
+            func::DEBUG_LOC => self.debug_loc(o),
+            func::DEBUG_LOC_AGAIN => self.debug_loc_again(),
+            func::DEBUG_RECORD_VALUE..=func::DEBUG_RECORD_DECLARE_VALUE => {
+                self.debug_record(code, o)
+            }
+            func::BLOCKADDR_USERS => Ok(()),
             func::OPERAND_BUNDLE => self.bundle(o),
             func::GEP_OLD
             | func::SELECT
@@ -552,7 +578,11 @@ impl Fx<'_, '_, '_> {
                 if !is_call && !self.s.bundles.is_empty() {
                     return self.invalid("operand bundles before an instruction not a call");
                 }
+                self.flush_old_record();
+                self.inst_first = self.b.inst_count();
                 let (ty, value, terminator) = self.instruction(code, o)?;
+                // The debug records after it stand before it.
+                ir(self.at, self.b.place_records_before(Some(self.inst_first)))?;
                 if terminator {
                     self.open = false;
                 }
@@ -683,7 +713,7 @@ impl Fx<'_, '_, '_> {
     }
 
     /// The relative value id `rel` as an absolute one.
-    fn absolute(&self, rel: u64) -> u64 {
+    pub fn absolute(&self, rel: u64) -> u64 {
         u64::from((self.next as u32).wrapping_sub(rel as u32))
     }
 

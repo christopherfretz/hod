@@ -39,15 +39,13 @@ pub(crate) struct MdStrings<'a> {
     pub blob: &'a [u8],
 }
 
-/// One metadata id: the record that defined it (`None` for a string).
+/// One metadata id: a string, or the record that defined it.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum MdSlot {
     /// The `index`th string of `strings[table]`.
     String { table: u32, index: u32 },
-    /// A NODE, `DISTINCT_NODE` or VALUE record, with its operands.
+    /// A NODE, `DISTINCT_NODE`, VALUE or debug record, with its operands.
     Kept(Rec),
-    /// A debug-info node (or another record that defines an id), not kept.
-    Skipped,
 }
 
 /// What the first pass keeps.
@@ -78,6 +76,8 @@ pub(crate) struct Raw<'a> {
     pub md_names: Vec<(Rec, Rec)>,
     pub md_kinds: Vec<Rec>,
     pub md_decl_attachments: Vec<Rec>,
+    /// Whether the module's METADATA block has a debug record.
+    pub md_debug: bool,
     pub bundle_tags: Vec<Rec>,
     pub sync_scopes: Vec<Rec>,
     pub functions: Vec<BlockSpan>,
@@ -376,7 +376,9 @@ fn walk_metadata<'a>(
     ops: &mut Vec<u64>,
 ) -> BcResult<()> {
     let mut name: Option<Rec> = None;
-    let Raw { pool, md: slots, md_strings, md_names, md_kinds, md_decl_attachments, .. } = raw;
+    let Raw {
+        pool, md: slots, md_strings, md_names, md_kinds, md_decl_attachments, md_debug, ..
+    } = raw;
     each_record(cursor, ops, |code, at, ops, blob| {
         if let Some(pending) = name.take() {
             if code != md::NAMED_NODE {
@@ -426,6 +428,8 @@ fn walk_metadata<'a>(
             md::NODE | md::DISTINCT_NODE | md::VALUE => {
                 slots.push(MdSlot::Kept(push(pool, code, at, ops)?));
             }
+            // INDEX_OFFSET and INDEX locate records for lazy loading.
+            md::INDEX_OFFSET | md::INDEX => {}
             md::STRING_OLD => {
                 return fail(
                     BcErrorKind::Unsupported("metadata-string-old"),
@@ -434,7 +438,10 @@ fn walk_metadata<'a>(
                 );
             }
             _ => match md::defines_id(code) {
-                Some(true) => slots.push(MdSlot::Skipped),
+                Some(true) => {
+                    *md_debug |= crate::debug::is_debug(code);
+                    slots.push(MdSlot::Kept(push(pool, code, at, ops)?));
+                }
                 Some(false) => {}
                 None => return unknown_record(at, "METADATA", code),
             },

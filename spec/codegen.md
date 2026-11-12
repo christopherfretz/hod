@@ -456,6 +456,189 @@ entry sp -> +--------------------------------------+  = fp + FRAME   (CFA)
   the matching `bti`/`paciasp` forms. They are not specified yet
   (`abi-a64.md` §1.1); until they are, `classify` rejects the property.
 
+#### 5.5.1 Settled by the skeleton (WP-033)
+
+These are decisions the group packages (WP-035..041) build on.
+
+- **Crate layout.** One module per instruction group; the ownership table
+  is the crate documentation of `hod_a64` (`src/lib.rs`). The dispatch in
+  `target.rs` is final: it routes each instruction by opcode and by the
+  class of the value it operates on (the result's; for `icmp` and a store
+  the operand's; for a cast either side, `Mem` before `Fpr`): `Gpr` to
+  `int`, `Fpr` to `float` (with `fcmp`), `Mem` to `aggr` (with
+  `extractvalue`, `insertvalue`); loads and stores of a `Gpr` or `Fpr`
+  value to `mem`, of a `Mem` value to `aggr`; control to `control`, calls and unwinding to
+  `call`, intrinsics other than the stack, `va_*` and overflow ones to
+  `intrinsic`. A stub refuses with its group's stable name
+  (`a64:int-binary`, `a64:load`, `a64:condbr`, `a64:call`,
+  `a64:fp-binary`, `a64:mem-binary`, `a64:intrinsic`, …; each a `pub
+  const` of its module), so `cargo test` of a package's file is its whole
+  contract. Shared helpers live in `common.rs`, one function each.
+- **Classes.** Integers up to 64 bits and pointers are `Gpr`; `half`,
+  `bfloat`, `float`, `double`, `fp128` are `Fpr`; a vector is `Fpr` when
+  its length is a power of two, its size 64 or 128 bits and its element
+  not `i1`; everything else (wider integers, aggregates, other vectors)
+  is `Mem`.
+- **Prologue rows.** The prologue is emitted with placeholder immediates
+  by `begin_function` and patched in `end_function`, when `FRAME` is
+  known. Its CFI rows are added then too, with `FnCx::cfi_at` (§8.1),
+  which inserts rows at an offset that is already emitted as long as the
+  rows stay in offset order. For the prologue at `p`: `def_cfa_offset lo`
+  at `p+4` (if `lo != 0`), `def_cfa_offset FRAME` at `p+8` (if `hi !=
+  0`), `offset x29, -FRAME` and `offset x30, -FRAME+8` at `p+12`,
+  `def_cfa_register x29` at `p+16`. An exit sequence at `e` (after
+  `mov sp, x29`, if any): `def_cfa sp, FRAME` at `e`, `restore x29, x30`
+  after the `ldp`, `def_cfa_offset lo` between the two `add`s when there
+  are two, `def_cfa_offset 0` after the last; a tail exit then restates
+  the body's rows for the code that follows it.
+- **Incoming base slot** is `Local(16)`, directly above the frame record,
+  when the function needs one; the saved `x8` of a function that returns
+  in memory follows it. A function without the slot that addresses
+  `Incoming` is a bug and traps (`brk #0xf000`).
+- **Far mode.** `b`, `bl` reach ±128 MiB in far mode as well; a
+  conditional branch, `cbz`/`cbnz` and `tbz`/`tbnz` become their inverse
+  over a `b`. A function that a `b` cannot span is
+  `limit:function-size`.
+- **Fixup kinds** (`FixupKind(n)`, patched by `hod_mc_a64::Fixup`): 0
+  `b`/`bl` imm26, 1 `b.cond`/`cbz` imm19, 2 `tbz` imm14, 3 `ldr`
+  literal imm19, 4 `adr` imm21. `at` is the instruction's own offset.
+- **Constants.** `fp128` is built in the register from its two halves
+  (`mov_imm` into `x16`, `fmov d`, `fmov v.d[1]`), not loaded from a data
+  island (§7.5): no island, no fixup, and the same in far mode. A vector
+  constant other than zero is `a64:constant` until WP-039. A `Mem`-class
+  constant is stored into its home: zero-like ones with `xzr`, wide
+  integers word by word, other aggregates from their flattened image,
+  whose only accepted relocations are aligned 8-byte symbol addresses
+  (else `a64:constant-relocation`). Symbol addresses follow §7.4:
+  `adrp`+`add` with the addend folded, or `adrp`+`ldr` from the GOT then
+  the addend added; a code model other than small is `a64:code-model`.
+- **Other reason names of the target**: `a64:atomic`,
+  `a64:vector-element` (no package yet), `a64:thread-local` (TLS, M2),
+  `a64:funclet` (never on ELF), `a64:blockaddress` (WP-037),
+  `a64:variadic-definition` (WP-038).
+- **The differential harness** is `crates/hod_a64/tests/diff.rs`: what it
+  generates is the table `tests/common/groups.rs`, one line per landed
+  group. `hod_interp`'s generator always emits integer arithmetic, so the
+  harness runs the skeleton's own programs (`tests/common/skeleton.rs`)
+  until WP-035 switches the generator on; it prints the missing mask (the
+  generator switches still off).
+
+#### Integers (WP-035)
+
+`src/int.rs`: binary operations, `icmp`, casts, `select`, `freeze` on
+`Gpr` values of every width (`i1` to `i64`, pointers).
+
+- **Narrow values** follow §2.2: the bits above the width are
+  unspecified, so an operation extends an operand only where its result
+  depends on them: the left operand of `lshr`, `udiv`, `urem` (`ubfx`)
+  and `ashr`, `sdiv`, `srem` (`sbfx`), and the divisor; a register shift
+  amount of a width below 5 (`lslv` reads 5 or 6 bits). A constant is
+  materialized already extended. A constant `lshr`/`ashr` of an odd
+  width is one `ubfx`/`sbfx`. A remainder is `udiv`/`sdiv` into `x17`,
+  then `msub`.
+- **Compares of an odd width** shift instead of extending: with `s` =
+  register width − width, `lsl a, a, #s` then `cmp a, b, lsl #s`, which
+  orders both signed and unsigned. With a constant, the operand is
+  extended and compared with `cmp #k`, `cmn #-k`, or `x16`. A constant
+  left operand swaps the predicate.
+- **Every `icmp` defers itself** when `may_defer` allows (§4.6), and is
+  otherwise `cmp` + `cset`. `int::fusable(cx, value)` is the deferred
+  compare of an integer or pointer a value is, if any; `int::flags(cx,
+  compare)` emits it and returns the condition true when the predicate
+  holds. The consumer calls it after `deferred_first(cx, inst,
+  Some(value))`, once per compare, and emits nothing that writes NZCV
+  between it and its use; it pins at most two registers and writes them,
+  NZCV and `x16`. `select` fuses into `csel`, `zext`/`sext` of an `i1`
+  into `cset`/`csetm`; a non-fused `i1` condition is `tst #1`.
+- **Undefined results** (§4.7): a constant shift amount of the width or
+  more emits nothing; a `select` arm that is the constant 0 is `xzr`.
+- **`addrspacecast`** is refused as `a64:addrspacecast` (classify
+  rejects it first). `i128` is `Mem`: `aggr` (WP-040).
+- **The differential harness** runs the generator from this package on
+  (`narrow_ints`, `odd_ints`, `casts`, `compares`, `selects`); a program
+  refused by another group's name is counted as skipped, by name, never
+  as agreeing, and the proportion that ran end to end is printed.
+
+#### Floating point (WP-039)
+
+`crates/hod_a64/src/float.rs`; the evidence is `spec/landed/codegen/WP-039.md`.
+
+- **Register contents.** A `float` lives in `Sn`, a `double` in `Dn`, a
+  `half` in `Hn`, an `fp128` in `Qn`, a 64-bit vector in `Dn`, a 128-bit
+  vector in `Qn`. The bits of the register above the value's width are
+  unspecified, the same rule as for integers in a `Gpr` (§2). Every
+  lowering reads only the value's own width.
+- **`half`** is computed in single precision: `fcvt` to `S`, then the
+  operation, then `fcvt` back to `H`. This is correctly rounded for
+  `fadd`, `fsub`, `fmul` and `fdiv`. The reason is that single precision
+  has more than `2·11+2` significand bits, so rounding twice gives the
+  same result as rounding once. An integer converted to `half` goes
+  through `S` the same way. That is exact as well: an integer of at least
+  2^24 overflows `half` to infinity either way, and a smaller one is
+  exact in `S`. `frem` of `half` is refused as `a64:half-frem`. `bfloat`
+  has no arithmetic without FEAT_BF16, which the baseline lacks, so it is
+  refused as `a64:bfloat` (but `fneg`, `bitcast`, `freeze` and `select`
+  of it only move bits and are lowered).
+- **`frem`** calls `fmodf` or `fmod` (LangRef: `frem` is `fmod`).
+  `fadd`, `fsub`, `fmul` and `fdiv` of `fp128` call `__addtf3`,
+  `__subtf3`, `__multf3` and `__divtf3`. `fneg` of `fp128` flips bit 127
+  through `x16`. The other `fp128` operations are refused as
+  `a64:fp128-libcall`, because their runtime functions are not in
+  `hod_cg::RuntimeFn`: the compares (`__eqtf2` and others), the
+  conversions (`__extend*tf2`, `__trunctf*`, `__fix*tf*`, `__float*tf`)
+  and `frem` (`fmodl`).
+- **NaNs.** hod emits the hardware instruction for each operation and
+  keeps whatever NaN the hardware produces: the default NaN rules of
+  FPCR with DN=0, with NaN operands propagated and made quiet. LangRef
+  "Behavior of Floating-Point NaN values" allows any NaN, and
+  `hod_interp` with `NanPolicy::Host` (`spec/interp.md` §5.1) gives the
+  same bits. The tests compare hod with the interpreter bit for bit,
+  NaNs included. `llc` is allowed to differ, and does: its SelectionDAG
+  folds `x + -0.0` to `x` and `-0.0 - x` to `fneg x`, which changes the
+  sign or the quietness of a NaN. So the `llc` comparison treats two
+  NaNs as equal and counts how often it had to. `fneg` flips only the
+  sign bit, a NaN's too.
+- **`fptoui`/`fptosi` out of range** (a NaN, an infinity, or a value
+  whose truncation does not fit) is poison (LangRef). hod's result is
+  whatever `fcvtzs`/`fcvtzu` give: a saturated value at the W or X width,
+  then truncated. Results narrower than 32 bits are converted at W width.
+- **Fast-math flags** do not exist in `hod_ir`, which drops them. A
+  function with flags compiles to the same words as one without.
+- **`fcmp`** sets the flags with `fcmp`. Each predicate then needs one or
+  two conditions (`float::FpCond { first, second }`; the result is
+  `first || second`), the same table as LLVM's `changeFPCCToAArch64CC`:
+  `oeq` EQ, `ogt` GT, `oge` GE, `olt` MI, `ole` LS, `one` MI|GT, `ord`
+  VC, `uno` VS, `ueq` EQ|VS, `ugt` HI, `uge` PL, `ult` LT, `ule` LE,
+  `une` NE. `false` and `true` emit `cmp xzr, xzr`, then use NE and EQ.
+  An unfused result is `cset`, plus `csinc r, r, wzr, inv(second)` when
+  there is a second condition.
+- **Fusing (§4.6).** `fcmp` defers when `may_defer` allows it. `select`
+  on a deferred `fcmp` sets the flags itself. `float::flags(cx, compare)`
+  is the contract for `condbr` (WP-037): it emits the compare of a
+  deferred `fcmp` and returns its `FpCond`. A branch then takes
+  `b.first` and, if there is a `second`, `b.second` to the same target.
+  The operands' registers are given back before it returns, so the
+  caller may allocate freely.
+- **`select`** of a value of at most 64 bits uses `fcsel` on the `D`
+  view. With two conditions it takes two steps: first `b' = second ? a :
+  b`, then `r = first ? a : b'`. A 128-bit value (`fp128` or a `Q`
+  vector) uses `csetm x16` (with `csinv` for the second condition), then
+  `dup v31.2d, x16` and `bsl`. A vector condition is `a64:vector-select`.
+- **Vectors.** The FP vector arithmetic of `2S`, `4S` and `2D`; the
+  integer vector `add`, `sub`, `mul` (not of `i64` elements), `and`,
+  `or`, `xor`, and shifts through `ushl`/`sshl` (with the amount negated
+  for right shifts); `fneg`; the casts with an instruction for them
+  (`fcvtl`, `fcvtn`, `fcvtz*`, `*cvtf`, `xtn`, `uxtl`/`sxtl` by a factor
+  of two). Everything else is `a64:vector-op` (integer division and
+  remainder, `i64`-element `mul`, vector `frem`, arithmetic on `half`
+  vectors) or `a64:fp-cast`. Vector `fcmp` and `icmp` are
+  `a64:vector-fcmp` and `a64:vector-icmp`, because their `<N x i1>`
+  result is `Mem` class (WP-040).
+- **Reason names**: `a64:fp-binary`, `a64:fneg`, `a64:fp-freeze`,
+  `a64:fp-cast`, `a64:fcmp`, `a64:vector-icmp`, `a64:fp-select` (the
+  skeleton's), and `a64:bfloat`, `a64:fp128-libcall`, `a64:half-frem`,
+  `a64:vector-fcmp`, `a64:vector-select`, `a64:vector-op`.
+
 ### 5.6 x86-64 (planned)
 
 `push rbp` · `mov rbp, rsp` · pushes of the save set · `sub rsp, imm32`
@@ -678,7 +861,7 @@ that (a vector, `fp128`) is placed in a **data island** after the
 function's code, inside the function's own section, and loaded
 PC-relative through an internal fixup: no relocation, no separate section,
 nothing shared between functions. Islands are aligned to their contents
-and counted in the function's size.
+and counted in the function's size. (AArch64 builds `fp128` in the register instead, §5.5.1.)
 
 ## 8. The `Target` trait
 
@@ -702,7 +885,7 @@ else is a method:
 | calls | `call`, `call_runtime`, `record_call_site`, `place_return`, `fn_assignment`, `tail_exit_count`, `tail_exit`, `phi_stores` | the sequence of §7.1 for the instruction being lowered, and for a `RuntimeFn` with `CallArg` operands (§7.3); the function's own assignment and its tail exits (§7.1) |
 | frame | `alloc_slot`, `slot_place`, `frame_size` | a slot; the `FrameRef` or `SlotPlace` of a body slot |
 | code | `offset`, `emit` and the `emit_*` family, `code_mut`, `block_label`, `epilogue`, `new_label`, `bind`, `fixup`, `falls_through`, `far`, `trap` | bytes; labels, fixups and binding (§6.2); patching emitted bytes |
-| records | `reloc`, `island`, `cfi`, `set_frame_desc`, `type_id`, `pad_clause`, `pad_filter` | a relocation (§9.2), a data island (§7.5), CFI rows and the frame description (§9.3), type ids and clauses (§9.4) |
+| records | `reloc`, `island`, `cfi`, `cfi_at`, `set_frame_desc`, `type_id`, `pad_clause`, `pad_filter` | a relocation (§9.2), a data island (§7.5), CFI rows and the frame description (§9.3), type ids and clauses (§9.4) |
 
 Call sites, line rows and block offsets are recorded by the driver, not by
 lowerings. `FrameRef` is `Local(u32)`, `Incoming(u32)` or `Outgoing(u32)`:
@@ -1122,6 +1305,14 @@ pub enum CgError {
   gate.
 
 ## 13. Open questions
+
+- AArch64: the shared trap that `hod_cg` emits for unreachable
+  address-taken blocks comes after the exit sequences, so it is covered
+  by the CFI state at the end of the last epilogue (CFA `sp + 0`), not
+  the body's. Harmless for a trap; revisit with unwind tables (WP-038).
+- AArch64: `attr:target-features` stays refused: the target must read it
+  (refuse a feature set without FP/SIMD, accept the default ones). Until
+  then everything kiln emits with features is refused there.
 
 - A direct call's attributes: `hod_cg` falls back to the callee
   declaration's argument and return attributes when the call site has

@@ -135,27 +135,18 @@ impl<'m> DebugLines<'m> {
             return file;
         }
         let Some(&cached) = self.scope_file.get(scope.index()) else { return 0 };
-        let raw = if cached != UNKNOWN {
-            cached
-        } else {
-            let file = match self.debug.find_kind(scope) {
-                Some(DiKind::Subprogram) => match self.debug.node(scope) {
-                    DiNode::Subprogram(n) => n.file,
-                    _ => None,
-                },
-                Some(DiKind::LexicalBlock) => match self.debug.node(scope) {
-                    DiNode::LexicalBlock(n) => n.file,
-                    _ => None,
-                },
-                Some(DiKind::LexicalBlockFile) => match self.debug.node(scope) {
-                    DiNode::LexicalBlockFile(n) => n.file,
-                    _ => None,
-                },
+        let raw = if cached == UNKNOWN {
+            let file = match self.debug.node(scope) {
+                DiNode::Subprogram(n) => n.file,
+                DiNode::LexicalBlock(n) => n.file,
+                DiNode::LexicalBlockFile(n) => n.file,
                 _ => None,
             };
             let raw = file.map_or(NO_FILE, DiId::raw);
             self.scope_file[scope.index()] = raw;
             raw
+        } else {
+            cached
         };
         // A scope without a file is in the unit's primary file, as
         // `llc` numbers it.
@@ -211,14 +202,12 @@ impl<'m> DebugLines<'m> {
         transitions.clear();
         transitions.reserve(lines.len());
         for row in lines {
-            let loc = match self.debug.location(row.loc) {
-                Some(l) => Some(SourceLoc {
-                    file: self.file_of(unit, l.scope),
-                    line: l.line,
-                    column: l.column,
-                }),
-                None => None,
-            };
+            let debug = self.debug;
+            let loc = debug.location(row.loc).map(|l| SourceLoc {
+                file: self.file_of(unit, l.scope),
+                line: l.line,
+                column: l.column,
+            });
             transitions.push(Transition { offset: row.offset, loc, block_start: row.block_start });
         }
         let f = FunctionLines { scope, size, transitions: &transitions, epilogue: true };

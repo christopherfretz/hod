@@ -34,9 +34,9 @@ fn hand(major: u32) -> String {
     format!("{}{}", ll_header(major), data("hand.ll"))
 }
 
-fn object(text: &str, options: &Options) -> Vec<u8> {
+fn object(text: &str, options: Options) -> Vec<u8> {
     let (module, bodies) = parse(text);
-    compile_to_object(&module, &bodies, options).unwrap_or_else(|e| panic!("{e}"))
+    compile_to_object(&module, &bodies, &options).unwrap_or_else(|e| panic!("{e}"))
 }
 
 fn section_names(dir: &Scratch, name: &str, bytes: &[u8]) -> Vec<String> {
@@ -65,7 +65,7 @@ fn which_units_are_written() {
     let dir = Scratch::new("lines-units");
     let full = hand(22);
     let options = Options::default();
-    let with = object(&full, &options);
+    let with = object(&full, options);
     let with_names = section_names(&dir, "full.o", &with);
     if !with_names.is_empty() {
         for s in [".debug_line", ".debug_line_str", ".debug_info", ".debug_abbrev", ".debug_str"] {
@@ -84,13 +84,13 @@ fn which_units_are_written() {
         .flat_map(|l| [l, "\n".to_owned()])
         .collect();
     assert!(!bare.contains("!dbg"), "{bare}");
-    let bare = object(&bare, &options);
+    let bare = object(&bare, options);
     assert_eq!(debug_sections(&section_names(&dir, "bare.o", &bare)), Vec::<&String>::new());
 
     let no_cu = full.replace("!llvm.dbg.cu = !{!0}\n", "");
-    assert_eq!(object(&no_cu, &options), bare, "without !llvm.dbg.cu");
+    assert_eq!(object(&no_cu, options), bare, "without !llvm.dbg.cu");
     let no_debug = full.replace("emissionKind: FullDebug", "emissionKind: NoDebug");
-    assert_eq!(object(&no_debug, &options), bare, "a NoDebug unit");
+    assert_eq!(object(&no_debug, options), bare, "a NoDebug unit");
 
     for kind in ["LineTablesOnly", "DebugDirectivesOnly"] {
         let text = full.replace("emissionKind: FullDebug", &format!("emissionKind: {kind}"));
@@ -113,37 +113,39 @@ fn dwarf_tools() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
 fn hand_written_rows() {
     let Some((dwarfdump, nm)) = dwarf_tools() else { return };
     let dir = Scratch::new("lines-hand");
-    let path = dir.write("hand.o", object(&hand(22), &Options::default()));
+    let path = dir.write("hand.o", object(&hand(22), Options::default()));
     let by = rows_by_function(&dwarfdump, &nm, &path);
     let show = |name: &str| format!("{name}: {:#?}", by.get(name));
 
     // The block that starts with an instruction without a location: a
     // line-0 row there, in the file and column of the location before
     // it, not a statement.
-    let b = &by["block_start"];
+    let block = &by["block_start"];
     assert!(
-        b.iter().any(|r| r.line == 0 && r.column == 7 && !r.stmt && r.file.ends_with("/hand.c")),
+        block
+            .iter()
+            .any(|r| r.line == 0 && r.column == 7 && !r.stmt && r.file.ends_with("/hand.c")),
         "{}",
         show("block_start")
     );
     // The inlined location keeps its own scope's file and line.
-    let i = &by["inlined"];
+    let inl = &by["inlined"];
     assert!(
-        i.iter().any(|r| r.file == "inc/inl.h" && r.line == 3 && r.column == 12),
+        inl.iter().any(|r| r.file == "inc/inl.h" && r.line == 3 && r.column == 12),
         "{}",
         show("inlined")
     );
-    assert!(i.iter().any(|r| r.line == 11 || r.line == 10), "{}", show("inlined"));
+    assert!(inl.iter().any(|r| r.line == 11 || r.line == 10), "{}", show("inlined"));
     // An explicit line 0 is a line-0 row.
-    let z = &by["line_zero"];
-    assert!(z.iter().any(|r| r.line == 0), "{}", show("line_zero"));
-    assert!(z.iter().any(|r| r.line == 17 && r.stmt), "{}", show("line_zero"));
+    let zero = &by["line_zero"];
+    assert!(zero.iter().any(|r| r.line == 0), "{}", show("line_zero"));
+    assert!(zero.iter().any(|r| r.line == 17 && r.stmt), "{}", show("line_zero"));
     // Two returns: both return lines, one epilogue.
-    let t = &by["two_rets"];
+    let two = &by["two_rets"];
     for line in [21, 22, 23] {
-        assert!(t.iter().any(|r| r.line == line && r.stmt), "{line}: {}", show("two_rets"));
+        assert!(two.iter().any(|r| r.line == line && r.stmt), "{line}: {}", show("two_rets"));
     }
-    assert_eq!(t.iter().filter(|r| r.epilogue_begin).count(), 1, "{}", show("two_rets"));
+    assert_eq!(two.iter().filter(|r| r.epilogue_begin).count(), 1, "{}", show("two_rets"));
     // No subprogram: no rows, as `llc` writes it.
     assert!(!by.contains_key("no_subprogram"), "{}", show("no_subprogram"));
     // Every function with a subprogram starts with a row at its scope
@@ -192,7 +194,7 @@ fn relocated_against_section_symbols() {
     let text = with_header(&data("prog.ll"), 22);
     for function_sections in [false, true] {
         let options = Options { function_sections, ..Options::default() };
-        let path = dir.write(&format!("prog-{function_sections}.o"), object(&text, &options));
+        let path = dir.write(&format!("prog-{function_sections}.o"), object(&text, options));
         let mut line = relocations(&path, ".rela.debug_line");
         line.retain(|(s, _)| !s.starts_with(".debug"));
         let functions = support::functions(&nm, &path);
@@ -249,7 +251,7 @@ fn oracle(major: u32) {
     let mut hod_rows = 0;
     let mut llc_rows = 0;
     for (name, text) in oracle_inputs(major) {
-        let hod_path = dir.write(&format!("{name}.hod.o"), object(&text, &Options::default()));
+        let hod_path = dir.write(&format!("{name}.hod.o"), object(&text, Options::default()));
         let input = dir.write(&format!("{name}.ll"), &text);
         let llc_path = dir.join(format!("{name}.llc.o"));
         let mut command = Command::new(&llc);
@@ -309,17 +311,14 @@ fn file_entries(dwarfdump: &Path, path: &Path) -> Vec<String> {
             if !current.is_empty() {
                 out.push(std::mem::take(&mut current));
             }
-        } else if (t.starts_with("name:")
+        } else if t.starts_with("name:")
             || t.starts_with("md5_checksum:")
-            || t.starts_with("source:"))
-            && t.len() > 1
+            || t.starts_with("source:")
         {
             current.push_str(t);
             current.push('|');
-        } else if t.starts_with("0x") || t.starts_with("Address") {
-            if !current.is_empty() {
-                out.push(std::mem::take(&mut current));
-            }
+        } else if (t.starts_with("0x") || t.starts_with("Address")) && !current.is_empty() {
+            out.push(std::mem::take(&mut current));
         }
     }
     out
@@ -393,7 +392,7 @@ fn bytes_are_independent_of_chunks_and_threads() {
 fn reader_reads_both() {
     let Some((dwarfdump, _)) = dwarf_tools() else { return };
     let dir = Scratch::new("lines-reader");
-    let path = dir.write("prog.o", object(&with_header(&data("prog.ll"), 22), &Options::default()));
+    let path = dir.write("prog.o", object(&with_header(&data("prog.ll"), 22), Options::default()));
     let all: Vec<DRow> = rows(&dwarfdump, &path);
     assert!(all.len() > 20);
     assert!(all.iter().all(|r| r.file == "/hod/tests/lines/prog.c"), "{all:#?}");

@@ -26,6 +26,7 @@ hod_xform  = { path = "crates/hod_xform" }
 hod_asm    = { path = "crates/hod_asm" }
 hod        = { path = "crates/hod" }
 hod_testutil = { path = "crates/hod_testutil" }
+xtask        = { path = "xtask" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

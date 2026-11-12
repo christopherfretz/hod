@@ -1,16 +1,24 @@
 //! Developer tasks. Contract: `spec/harness.md`.
 //!
 //! `cargo xtask ci [--quick]` is the gate described in `docs/VALIDATION.md`.
+//! `cargo xtask shim ...` builds the LLVM directory that plugs hod into kiln.
 
 use std::process::{Command, ExitCode};
 
+const USAGE: &str = "\
+usage: cargo xtask ci [--quick]
+       cargo xtask shim --llvm <dir> --hod <hod binary> --out <dir> [--kiln <kiln++>]
+";
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("ci") {
-        ci(args.iter().any(|a| a == "--quick"))
-    } else {
-        eprintln!("usage: cargo xtask ci [--quick]");
-        ExitCode::from(2)
+    match args.first().map(String::as_str) {
+        Some("ci") => ci(args.iter().any(|a| a == "--quick")),
+        Some("shim") => shim(&args[1..]),
+        _ => {
+            eprint!("{USAGE}");
+            ExitCode::from(2)
+        }
     }
 }
 
@@ -37,4 +45,37 @@ fn ci(quick: bool) -> ExitCode {
     let _ = quick;
     eprintln!("ci: ok");
     ExitCode::SUCCESS
+}
+
+/// `cargo xtask shim` (spec/harness.md "shim").
+#[cfg(unix)]
+fn shim(args: &[String]) -> ExitCode {
+    use xtask::shim::{USAGE, build, parse_args, summary};
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    let request = match parse_args(args) {
+        Ok(request) => request,
+        Err(message) => {
+            eprint!("xtask shim: {message}\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    match build(&request) {
+        Ok(shim) => {
+            print!("{}", summary(&shim));
+            ExitCode::SUCCESS
+        }
+        Err(message) => {
+            eprintln!("xtask shim: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn shim(_: &[String]) -> ExitCode {
+    eprintln!("xtask shim: only available on Unix hosts");
+    ExitCode::FAILURE
 }

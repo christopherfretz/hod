@@ -240,16 +240,20 @@ fn front(
             report.phase("parse");
             let mut session = start(module, report)?;
             if session.end_module().is_ok() {
-                let mut parser = hod_ll::BodyParser::new(&text);
-                for function in text.functions() {
-                    let fed = match parser.parse(session.module(), function) {
-                        Ok(Some(body)) => session.body(function.sym, body),
-                        Ok(None) => session.unsupported_body(function.sym, parser.unsupported()),
-                        Err(error) => return answer(Err(session.abort(from_ll(&error))), report),
-                    };
-                    if fed.is_err() {
-                        break;
-                    }
+                let functions = text.functions();
+                let work = functions.iter().map(|f| (f.body.end - f.body.start) as usize).sum();
+                let lease =
+                    ReadLease::new(&settings.threads, work, READ_TEXT_BYTES, functions.len());
+                let read = hod_ll::parse_bodies_on(
+                    &mut session,
+                    Session::module,
+                    &text,
+                    lease.threads,
+                    |session, function, read| feed(session, function.sym, read),
+                );
+                drop(lease);
+                if let Err(error) = read {
+                    return answer(Err(session.abort(from_ll(&error))), report);
                 }
             }
             session
@@ -264,16 +268,21 @@ fn front(
             }
             let mut session = start(module, report)?;
             if session.end_module().is_ok() {
-                let mut reader = hod_bc::BodyReader::new(&bits);
-                for function in bits.functions() {
-                    let fed = match reader.read(session.module(), function) {
-                        Ok(Some(body)) => session.body(function.sym, body),
-                        Ok(None) => session.unsupported_body(function.sym, reader.unsupported()),
-                        Err(error) => return answer(Err(session.abort(from_bc(&error))), report),
-                    };
-                    if fed.is_err() {
-                        break;
-                    }
+                let functions = bits.functions();
+                let work =
+                    functions.iter().map(|f| ((f.span.end - f.span.start) / 8) as usize).sum();
+                let lease =
+                    ReadLease::new(&settings.threads, work, READ_BITCODE_BYTES, functions.len());
+                let read = hod_bc::read_bodies_on(
+                    &mut session,
+                    Session::module,
+                    &bits,
+                    lease.threads,
+                    |session, function, read| feed(session, function.sym, read),
+                );
+                drop(lease);
+                if let Err(error) = read {
+                    return answer(Err(session.abort(from_bc(&error))), report);
                 }
             }
             session
@@ -281,6 +290,60 @@ fn front(
     };
     let mut object = Vec::new();
     answer(session.finish(&mut object).map(|done| (object, done)), report)
+}
+
+/// The body text, in bytes, each thread reading LLVM IR text needs: a
+/// module with less than twice this is read on the calling thread
+/// (`spec/ll.md` §11.1; measured: `spec/landed/ll/WP-063.md`).
+pub const READ_TEXT_BYTES: usize = 64 << 10;
+
+/// [`READ_TEXT_BYTES`] for bitcode, which takes about a quarter of the
+/// bytes for the same body.
+pub const READ_BITCODE_BYTES: usize = 16 << 10;
+
+/// The threads that read the bodies, and the tokens taken for them from
+/// the session's [`Threads`], given back when dropped: before code
+/// generation takes its own.
+struct ReadLease<'a> {
+    threads: usize,
+    tokens: Option<&'a dyn crate::back::ThreadTokens>,
+    taken: usize,
+}
+
+impl<'a> ReadLease<'a> {
+    /// One thread per `per_thread` bytes of `work`, at most `threads.max`
+    /// and one per function; every one past the first from the tokens,
+    /// if the threads come from tokens.
+    fn new(threads: &'a Threads, work: usize, per_thread: usize, functions: usize) -> Self {
+        let wanted = threads.max.min(functions).min(work / per_thread).max(1);
+        match threads.tokens.as_deref() {
+            Some(tokens) if wanted > 1 => {
+                let taken = tokens.take(wanted - 1);
+                ReadLease { threads: 1 + taken, tokens: Some(tokens), taken }
+            }
+            Some(_) => ReadLease { threads: 1, tokens: None, taken: 0 },
+            None => ReadLease { threads: wanted, tokens: None, taken: 0 },
+        }
+    }
+}
+
+impl Drop for ReadLease<'_> {
+    fn drop(&mut self) {
+        if let Some(tokens) = self.tokens
+            && self.taken > 0
+        {
+            tokens.give_back(self.taken);
+        }
+    }
+}
+
+/// Hands a body the reader delivered to the session; whether to go on.
+fn feed(session: &mut Session, sym: SymId, read: Result<Body, &[Box<str>]>) -> bool {
+    let fed = match read {
+        Ok(body) => session.body(sym, body),
+        Err(constructs) => session.unsupported_body(sym, constructs.iter().map(|c| &**c)),
+    };
+    fed.is_ok()
 }
 
 /// A session's answer, its report into the caller's.

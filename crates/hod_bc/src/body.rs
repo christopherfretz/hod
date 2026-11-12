@@ -279,6 +279,52 @@ pub fn read_bodies<E: From<BcError>>(
     Ok(())
 }
 
+/// [`read_bodies`] on up to `threads` threads, the calling one included
+/// (`spec/bc.md` §7): the module is `module(host)`, and each body goes to
+/// `each` in the order of the FUNCTION records, translated to the
+/// module's ids, with the module as reading the bodies before it and
+/// that one sequentially leaves it. A body is `Ok` or the constructs that
+/// made it unsupported. `each` returns whether to go on.
+///
+/// With one thread this is [`BodyReader::read`] of every function in
+/// order. With more, the module's tables, every id and every body are
+/// the same as with one (`spec/ir.md` §5.1).
+///
+/// # Errors
+/// The [`BcError`] of the first body in file order that has one: the
+/// error a sequential reading returns. `Ok`: how the reading went.
+pub fn read_bodies_on<H>(
+    host: &mut H,
+    module: fn(&mut H) -> &mut Module,
+    bits: &ModuleBits<'_>,
+    threads: usize,
+    mut each: impl FnMut(&mut H, &FunctionBits, Result<Body, &[Box<str>]>) -> bool,
+) -> Result<hod_ir::ReadStats, BcError> {
+    let functions = bits.functions();
+    let new_reader = || BodyReader::new(bits);
+    let mut deliver = |host: &mut H, index: usize, read: hod_ir::BodyRead<'_>| {
+        let read = match read {
+            hod_ir::BodyRead::Body(body) => Ok(body),
+            hod_ir::BodyRead::Unsupported(constructs) => Err(constructs),
+        };
+        each(host, &functions[index], read)
+    };
+    hod_ir::read_bodies(host, module, functions.len(), threads, &new_reader, &mut deliver)
+}
+
+impl hod_ir::BodySource for BodyReader<'_, '_> {
+    type Error = BcError;
+
+    fn read_body(&mut self, module: &mut Module, index: usize) -> BcResult<Option<Body>> {
+        let bits = self.bits;
+        self.read(module, &bits.functions()[index])
+    }
+
+    fn unsupported(&self) -> Vec<Box<str>> {
+        self.unsupported.iter().map(|construct| (**construct).into()).collect()
+    }
+}
+
 /// The reader of one function block.
 pub(crate) struct Fx<'s, 'b, 'a> {
     pub bits: &'b ModuleBits<'a>,

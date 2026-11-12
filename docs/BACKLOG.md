@@ -55,6 +55,7 @@ instruction group and can run in parallel once WP-033 has landed.
 | WP-041 | T-A64 | the intrinsics C code produces: `memcpy`/`memmove`/`memset`, bit manipulation, `abs`/min/max, `trap`, `expect`-class no-ops, `frameaddress`/`returnaddress` | WP-035, WP-036 | todo |
 | WP-042 | T-EH | `spec/eh.md` (CFI part) and `hod_eh`: `.eh_frame` from `FuncRecord` frame descriptions, CIE sharing; checked with `llvm-dwarfdump --eh-frame` and by unwinding through hod frames | WP-030 | todo |
 | WP-043 | T-H | wire code generation into `hod::compile` (parse with `hod_ll`, `classify`, compile, emit), per-construct reasons in `spec/cli.md`, `docs/status/support.md` | WP-008, WP-009, WP-033 | todo |
+| WP-050 | T-X64 | `spec/mc-x64.md` + `hod_mc_x64`: the base integer set an `-O0` code generator needs (registers of every width with REX, every ModRM/SIB/RIP-relative memory form, moves and extensions, `lea`, arithmetic and logic with register, memory and immediate operands, multiply and divide, shifts, `setcc`/`cmovcc`, branches and calls with near and short forms, stack, bit counting, `lock` forms and `cmpxchg`/`xadd`/`xchg`, `ud2`, `endbr64`, multi-byte `nop`), fixups for the ELF relocations of the small PIC code model; L1 sweep harness against `llvm-mc`. Scalar SSE floating point is the follow-up row, as WP-013 was for AArch64 | WP-001 | in-progress |
 
 ## M1 and later
 

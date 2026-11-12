@@ -772,11 +772,11 @@ like clang's C++ output.
 | text | size | bodies | lexing every token | index scan | module-level parse | stepping over bodies | peak memory | `llvm-as` |
 |---|---|---|---|---|---|---|---|---|
 | clang 22 | 3.65 MiB | 75% | 649 MiB/s, 1.47 ns/byte | 2296 MiB/s, 0.42 ns/byte | 827 MiB/s, 1.15 ns/byte (4.4 ms) | 4954 MiB/s | 1.3 MiB | 103 ms |
-| clang 22 `-g` | 9.68 MiB | 35% | 602 MiB/s, 1.58 ns/byte | 1248 MiB/s, 0.76 ns/byte | 892 MiB/s, 1.07 ns/byte (10.9 ms) | 5368 MiB/s | 3.3 MiB | 298 ms |
+| clang 22 `-g` | 9.68 MiB | 35% | 583 MiB/s, 1.63 ns/byte | 1227 MiB/s, 0.78 ns/byte | 289 MiB/s, 3.30 ns/byte (33.5 ms) | 5411 MiB/s | 5.9 MiB | 375 ms |
 | clang 19 | 3.59 MiB | 74% | 652 MiB/s, 1.46 ns/byte | 2259 MiB/s, 0.42 ns/byte | 832 MiB/s, 1.15 ns/byte (4.3 ms) | 4886 MiB/s | 1.3 MiB | 100 ms |
-| clang 19 `-g` | 9.52 MiB | 35% | 580 MiB/s, 1.64 ns/byte | 1232 MiB/s, 0.77 ns/byte | 862 MiB/s, 1.11 ns/byte (11.1 ms) | 5319 MiB/s | 3.3 MiB | 284 ms |
+| clang 19 `-g` | 9.52 MiB | 35% | 573 MiB/s, 1.67 ns/byte | 1130 MiB/s, 0.84 ns/byte | 266 MiB/s, 3.59 ns/byte (35.8 ms) | 5185 MiB/s | 6.3 MiB | 335 ms |
 | synthetic | 18.9 MiB | 96% | 591 MiB/s, 1.61 ns/byte | 5110 MiB/s, 0.19 ns/byte | 2957 MiB/s, 0.32 ns/byte (6.4 ms) | 6056 MiB/s | 1.2 MiB | |
-| synthetic, `-g` | 20.6 MiB | 94% | 555 MiB/s, 1.72 ns/byte | 4755 MiB/s, 0.20 ns/byte | 2894 MiB/s, 0.33 ns/byte (7.1 ms) | 6121 MiB/s | 1.3 MiB | |
+| synthetic, `-g` | 20.6 MiB | 94% | 548 MiB/s, 1.74 ns/byte | 4746 MiB/s, 0.20 ns/byte | 2069 MiB/s, 0.46 ns/byte (10.0 ms) | 5798 MiB/s | 1.7 MiB | |
 
 "Lexing every token" is the lexer run over the whole text and nothing
 else. "Stepping over bodies" is §4.2 on the bodies alone, concatenated.
@@ -798,7 +798,12 @@ then lex are the ones outside bodies (1.0 ms for that text, measured as
 with their types, constants and attributes, so the module level is
 bounded by the builder and not by the lexer. With debug information the
 scan is slower per byte because most of the text is 54,000 small
-entities, and the parse then leaves them unread.
+entities, and the parse reads every one into `hod_ir`'s tables (§7.4):
+about 22 ms of the 33.5, and 0.6 bytes of memory per byte of text where
+`llvm-as` 22's whole process peaks at 104 MiB on the same text. Module
+and bodies together take 51 ms there, against `llvm-as`'s 375 ms. A
+module without debug information parses as fast as before (4.35 ms for
+the clang 22 text, 4.4 ms before WP-054).
 
 Stepping over a body costs 0.16 to 0.20 ns per byte and is what lets a
 body be handed to another thread unread.

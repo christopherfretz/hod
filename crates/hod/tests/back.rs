@@ -263,14 +263,13 @@ fn break_even() {
 
 /// gcc-torture `pr79286.c`, reduced: a load through a constant
 /// `getelementptr` 9.6e18 bytes past an internal global, on a path that
-/// never runs. LLVM materializes the global's address and adds the offset;
-/// hod folds the whole offset into the `adrp`/`add` relocations
-/// (`crates/hod_a64/src/common.rs:510`, `sym_address`, `Access::Direct`),
-/// which no linker can resolve (`R_AARCH64_ADR_PREL_PG_HI21 against .bss
-/// out of range`). Found by `cargo xtask corpus verify --strict`
+/// never runs. Folded into the `adrp`/`add` relocations, the offset is
+/// out of every linker's reach (`R_AARCH64_ADR_PREL_PG_HI21 out of
+/// range`); hod folds only what `llc` folds and adds the rest in code
+/// (`spec/codegen.md` §5.5.1, "Thread-local storage and symbol offsets
+/// (WP-073)"). Found by `cargo xtask corpus verify --strict`
 /// (spec/landed/cli/WP-043.md).
 #[test]
-#[ignore = "code-generation bug: a huge constant offset folded into ADRP's addend (hod_a64 sym_address)"]
 fn huge_constant_offset_from_a_global_links() {
     let input = format!(
         "{TRIPLE}@d = internal global [0 x [8 x i32]] zeroinitializer, align 4

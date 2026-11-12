@@ -39,7 +39,7 @@ use crate::common::{
     self, Cursor, V30, V31, X16, X17, copy_bytes, fixup_field, gpr_load_op, load_fpr_at,
     load_gpr_at, other_scratch, put, store_fpr_bytes, store_gpr_bytes, unsupported, vr, xr,
 };
-use crate::{abi, aggr, call, control, float, frame, int, intrinsic, mem, reg, term};
+use crate::{abi, aggr, call, control, float, frame, int, intrinsic, mem, reg, term, tls};
 
 /// The AArch64 Linux target (AAPCS64, `spec/abi-a64.md`). A zero-sized
 /// value: everything it knows is in constants.
@@ -225,8 +225,8 @@ impl Target for A64 {
                     | Intrinsic::SmulWithOverflow
                     | Intrinsic::UmulWithOverflow),
                 ) => aggr::overflow_intrinsic(cx, inst, which, site.args()),
-                Some(Intrinsic::ThreadLocalAddress | Intrinsic::ThreadPointer) => {
-                    unsupported(THREAD_LOCAL)
+                Some(which @ (Intrinsic::ThreadLocalAddress | Intrinsic::ThreadPointer)) => {
+                    tls::intrinsic(cx, inst, which, site.args())
                 }
                 Some(which) => intrinsic::intrinsic(cx, inst, which, site.args()),
             },

@@ -33,6 +33,7 @@
 //! | `aggr` | WP-040 | `Mem`-class values: wide integers, aggregates, overflow intrinsics | `tests/aggr.rs` |
 //! | `intrinsic` | WP-041, WP-070 | the other intrinsics | `tests/intrinsic.rs` |
 //! | `fpintr` | WP-070 | the floating-point intrinsics | `tests/fpintr.rs` |
+//! | `tls` | WP-073 | thread-local addresses, `llvm.threadlocal.address`, `llvm.thread.pointer` | `tests/tls.rs` |
 //!
 //! The differential harness that runs generated programs natively and
 //! compares them with `hod_interp` is `tests/diff.rs`.
@@ -52,6 +53,7 @@ pub mod mem;
 pub mod reg;
 pub mod target;
 pub mod term;
+pub mod tls;
 
 use std::fmt;
 

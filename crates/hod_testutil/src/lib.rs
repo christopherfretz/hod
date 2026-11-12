@@ -105,6 +105,37 @@ impl Scratch {
     }
 }
 
+impl Scratch {
+    /// Writes an executable `sh` script inside the directory and returns
+    /// its path. See [`write_script`].
+    ///
+    /// # Panics
+    /// Panics if the script cannot be written.
+    pub fn write_script(&self, name: &str, body: &str) -> PathBuf {
+        let path = self.join(name);
+        write_script(&path, body);
+        path
+    }
+}
+
+/// Writes an executable `sh` script (`#!/bin/sh`, then `body`) at `path`.
+///
+/// The file is written by a child process, not by this one: a file this
+/// process has open for writing is inherited by every process another test
+/// thread forks at that moment, and running the script (here or in a
+/// grandchild) then fails with "text file busy" until that process calls
+/// `exec`.
+///
+/// # Panics
+/// Panics if the script cannot be written.
+pub fn write_script(path: &Path, body: &str) {
+    let mut writer = Command::new("sh");
+    writer.args(["-c", "cat > \"$0\" && chmod 755 \"$0\""]).arg(path);
+    let script = format!("#!/bin/sh\n{body}\n");
+    let outcome = run_with(&mut writer, script.as_bytes(), DEFAULT_TIMEOUT);
+    assert!(outcome.success(), "cannot write {}: {}", path.display(), outcome.stderr_text());
+}
+
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
@@ -151,11 +182,8 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_mins(1);
 /// # Panics
 /// Panics if the process cannot be started.
 pub fn run_with(command: &mut Command, stdin: &[u8], timeout: Duration) -> Outcome {
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = spawn(command)
         .unwrap_or_else(|e| panic!("cannot run {}: {e}", command.get_program().display()));
     let mut input = child.stdin.take().expect("piped stdin");
     let mut out = child.stdout.take().expect("piped stdout");
@@ -189,6 +217,24 @@ where
     S: AsRef<OsStr>,
 {
     run_with(Command::new(program).args(args), &[], DEFAULT_TIMEOUT)
+}
+
+/// Starts a process, trying again while the program is "busy".
+///
+/// A test that writes a script and runs it can find it busy (`ETXTBSY`) for
+/// a moment: a process forked by another test thread while the script was
+/// being written holds it open for writing until that process calls `exec`.
+fn spawn(command: &mut Command) -> std::io::Result<Child> {
+    let mut attempts = 0;
+    loop {
+        match command.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 200 => {
+                attempts += 1;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            result => return result,
+        }
+    }
 }
 
 fn wait_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
@@ -233,6 +279,15 @@ mod tests {
         assert_eq!(outcome.stderr_text(), "err\n");
         assert_eq!(outcome.status.and_then(|s| s.code()), Some(3));
         assert!(!outcome.success() && !outcome.timed_out());
+    }
+
+    #[test]
+    fn scripts_are_runnable_at_once() {
+        let scratch = Scratch::new("script");
+        let script = scratch.write_script("hello", "echo \"hello $1\"");
+        let outcome = run(&script, ["world"]);
+        assert!(outcome.success(), "{}", outcome.stderr_text());
+        assert_eq!(outcome.stdout_text(), "hello world\n");
     }
 
     #[test]

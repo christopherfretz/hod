@@ -84,6 +84,45 @@ runtime_fns! {
     UnwindResume = "_Unwind_Resume": (PTR) -> VOID;
     /// `void *__tls_get_addr(tls_index *)`: the general-dynamic TLS helper.
     TlsGetAddr = "__tls_get_addr": (PTR) -> PTR;
+    /// `fp128` equality: 0 when equal and ordered (WP-067).
+    EqTf2 = "__eqtf2": (FP128, FP128) -> I32;
+    /// `fp128` less than: negative when less and ordered, positive when
+    /// unordered (WP-067).
+    LtTf2 = "__lttf2": (FP128, FP128) -> I32;
+    /// `fp128` less or equal: at most 0 when so and ordered, positive
+    /// when unordered (WP-067).
+    LeTf2 = "__letf2": (FP128, FP128) -> I32;
+    /// `fp128` unordered: non-zero when either is a NaN (WP-067).
+    UnordTf2 = "__unordtf2": (FP128, FP128) -> I32;
+    /// `fpext float` to `fp128` (WP-067).
+    ExtendSfTf2 = "__extendsftf2": (FLOAT) -> FP128;
+    /// `fpext double` to `fp128` (WP-067).
+    ExtendDfTf2 = "__extenddftf2": (DOUBLE) -> FP128;
+    /// `fptrunc fp128` to `half` (WP-067).
+    TruncTfHf2 = "__trunctfhf2": (FP128) -> HALF;
+    /// `fptrunc fp128` to `float` (WP-067).
+    TruncTfSf2 = "__trunctfsf2": (FP128) -> FLOAT;
+    /// `fptrunc fp128` to `double` (WP-067).
+    TruncTfDf2 = "__trunctfdf2": (FP128) -> DOUBLE;
+    /// `fptosi fp128` to at most 32 bits (WP-067).
+    FixTfSi = "__fixtfsi": (FP128) -> I32;
+    /// `fptosi fp128` to at most 64 bits (WP-067).
+    FixTfDi = "__fixtfdi": (FP128) -> I64;
+    /// `fptoui fp128` to at most 32 bits (WP-067).
+    FixunsTfSi = "__fixunstfsi": (FP128) -> I32;
+    /// `fptoui fp128` to at most 64 bits (WP-067).
+    FixunsTfDi = "__fixunstfdi": (FP128) -> I64;
+    /// `sitofp` of at most 32 bits to `fp128` (WP-067).
+    FloatSiTf = "__floatsitf": (I32) -> FP128;
+    /// `sitofp` of at most 64 bits to `fp128` (WP-067).
+    FloatDiTf = "__floatditf": (I64) -> FP128;
+    /// `uitofp` of at most 32 bits to `fp128` (WP-067).
+    FloatunSiTf = "__floatunsitf": (I32) -> FP128;
+    /// `uitofp` of at most 64 bits to `fp128` (WP-067).
+    FloatunDiTf = "__floatunditf": (I64) -> FP128;
+    /// `long double fmodl(long double, long double)`: `frem fp128`
+    /// (WP-067).
+    Fmodl = "fmodl": (FP128, FP128) -> FP128;
 }
 
 #[cfg(test)]

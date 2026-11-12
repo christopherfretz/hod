@@ -183,7 +183,8 @@ core; `hod_ir` was not changed):
 
 ```rust
 pub struct LineTarget { .. }              // §4.2; AARCH64, X86_64, for_arch(arch)
-pub struct FileEntry<'a> { pub name: &'a [u8], pub dir: u32, pub md5: Option<[u8; 16]> }
+pub struct FileEntry<'a> { pub name: &'a [u8], pub dir: u32, pub md5: Option<[u8; 16]>,
+                          pub source: Option<&'a [u8]> }
 pub struct LineHeader<'a> { pub dirs: &'a [&'a [u8]], pub files: &'a [FileEntry<'a>] }
 pub struct Row { pub offset: u32, pub file: u32, pub line: u32, pub column: u16, pub flags: u8 }
 pub mod flags { IS_STMT, PROLOGUE_END, EPILOGUE_BEGIN }
@@ -192,16 +193,25 @@ pub struct Sequence<'a> { pub order: u32, pub symbol: SymbolId, pub addend: i64,
 pub struct LineSections { pub line: SectionId, pub line_str: SectionId }
 pub fn write_debug_line(obj: &mut Object, header: &LineHeader<'_>, seqs: &[Sequence<'_>])
     -> Result<LineSections, Error>;
+// encoded sequences, and several units (§7.1, WP-056)
+pub struct LineProgram { .. }    // new(arch), with_capacity(arch, rows, seqs), push(files, &Sequence),
+                                 // append(&LineProgram), clear(), bytes(), sequence_count()
+pub struct LineUnit<'a> { pub header: LineHeader<'a>, pub program: &'a LineProgram }
+pub struct LineUnits { pub sections: LineSections, pub offsets: Vec<u32> }
+pub fn write_debug_line_units(obj: &mut Object, units: &[LineUnit<'_>])
+    -> Result<LineUnits, Error>;
 
 // the policy (§5)
 pub struct SourceLoc { pub file: u32, pub line: u32, pub column: u16 }
-pub struct Transition { pub offset: u32, pub loc: Option<SourceLoc> }
+pub struct Transition { pub offset: u32, pub loc: Option<SourceLoc>, pub block_start: bool }
+                                  // Transition::at(offset, loc): not a block start
 pub struct FunctionLines<'a> { pub scope: SourceLoc, pub size: u32,
                                pub transitions: &'a [Transition], pub epilogue: bool }
 pub fn function_rows(f: &FunctionLines<'_>, out: &mut Vec<Row>) -> Result<(), Error>;
 
 // the file table (§4.4)
-pub struct FileTable<'a> { .. }   // new(comp_dir, primary), add(directory, filename, md5)
+pub struct FileTable<'a> { .. }   // new(comp_dir, primary), add(directory, filename, md5),
+                                  // new_with_source(.., source), add_with_source(.., source)
 
 // DIEs (§6, §7.1)
 pub struct UnitPlan<'a> { .. }    // new(&'a DebugInfo, unit: DiId) -> Result<Self, Error>;
@@ -235,6 +245,25 @@ header is always written, even without sequences (a unit with no
 functions still has a line table, as in `llc`). A sequence's rows are
 relative to `symbol + addend`; a caller passes the section symbol of the
 function's code section and the function's offset in it, as `llc` does.
+
+`write_debug_line_units` writes several line-table units (one per
+compile unit) whose sequences are already encoded: a `LineProgram` holds
+the encoded bytes of the sequences pushed into it, in push order, with
+their address fields, and `append` concatenates two programs. A
+sequence's bytes depend only on its rows and the target (every sequence
+starts from the initial state and ends with `end_sequence`), so programs
+encoded per chunk and appended in module order are the bytes of one
+program encoded in one go (§7.1). The units share one `.debug_line_str`
+pool; `offsets` are the units' offsets in `.debug_line`, for
+`DW_AT_stmt_list`. `write_debug_line` is `push` of every sequence in
+`order` and one unit.
+
+A file with source text (`DiFile.source`, `FileEntry::source`) adds the
+`DW_LNCT_LLVM_source` (0x2001, `DW_FORM_line_strp`) column to the file
+entry format when any file of the unit has one; files without get the
+empty string, as `llc` writes it (byte for byte with LLVM 19 and 22). The
+strings go to `.debug_line_str` in `llc`'s order: the directories, then
+per file its name, then its source.
 
 ## 4. The line table (implemented)
 
@@ -454,14 +483,15 @@ They inherit the current row: no row is made for `None`, so a
 location-less instruction in the middle of a block, and the
 location-less argument stores of the entry block, belong to the line
 before them. `llc` does the same in the middle of a block. At the
-**start of a block** `llc` writes a line-0 row instead (so that code is
-not attributed to the line of an unrelated block that happened to be laid
-out before it). hod cannot do that yet: `hod_cg`'s transitions do not say
-which instruction starts a block (`crates/hod_cg/src/record.rs:119`).
-With clang and kiln output at `-O0` every instruction outside the entry
-code has a location, so the difference has not been seen; the follow-up
-is a block-start bit on `LineRow` and rule 2 becomes "line 0 at a block
-start, inherit elsewhere".
+**start of a block** (other than the entry block) whose first
+instruction that emits code has no location, `llc` writes a line-0 row
+instead, in the file and column of the location before it and without
+`is_stmt`, so that the code is not attributed to the line of an
+unrelated block laid out before it. hod does the same (WP-056): the
+driver marks the first transition of such a block (`LineRow::block_start`,
+`spec/codegen.md` §9.5) and rule 2 of §5.1 writes line 0 for a `None`
+transition with `block_start` set, as for the epilogue. Checked against
+`llc` on `crates/hod_a64/tests/data/lines/hand.ll` (`block_start`).
 
 ### 5.4 The epilogue row
 
@@ -487,15 +517,42 @@ offset, its code size as `size`, its rows. `end_sequence` is at the end
 of the function's code, before any padding to the next function, as in
 `llc`.
 
-### 5.7 The bridge (planned, §10 row 1)
+### 5.7 The bridge (implemented, WP-056)
 
-In `emit_module`, after the merge has placed the functions: for each
-compile unit, a `FileTable` from its `DiFile` nodes in `DiId` order; for
-each function with a subprogram of that unit, `function_rows` into one
-`Vec<Row>` reused across functions, then a `Sequence`. A function without
-a subprogram but with locations (possible in LLVM) gets its rows in the
-unit of the locations' subprogram. A function without debug information
-has no sequence.
+In `emit_module` (`crates/hod_cg/src/emit/lines.rs`, §9): for each
+compile unit that is written, its `UnitPlan`, whose `FileTable` (the
+unit's file, then every `DiFile` in `DiId` order, §4.4) is the line
+table's; for each function with a subprogram of that unit, as it is
+placed, `function_rows` into one `Vec<Row>` reused across functions, and
+the rows encoded at once as its own sequence into the unit's
+`LineProgram`, relative to the section symbol of its code plus its
+offset. A location's file is the file of its own scope (an inlined
+location keeps its scope's file and line, as `llc` writes it); a scope
+without a file is the unit's primary file.
+
+A function **without a subprogram** gets no rows and no range, even when
+its instructions have locations: `llc` writes neither (checked with LLVM
+19 and 22 on `hand.ll`'s `no_subprogram`). A function of zero size gets
+nothing.
+
+**Permitted differences from `llc`** (rows compared per function modulo
+addresses, `crates/hod_a64/tests/lines.rs`; stops compared under gdb
+and lldb, `lines_debugger.rs`):
+
+- P1: `llc` has a row for the location of an unconditional `br` that hod
+  falls through (no code, so no row): the `}` of a loop body, the `for`
+  of an `i = 0` initializer's branch to the condition, a `break` before
+  the next case. A debugger stops at such a line in `llc`'s program
+  only.
+- P2: `llc` writes line-0 rows at the starts of machine blocks it makes
+  itself (reloads after register allocation, switch lowering) that hod
+  does not have.
+- P3: where `llc`'s function has no frame (an empty prologue and
+  epilogue), hod's prologue still has code: hod has a start row at the
+  scope line `llc` lacks, and an `epilogue_begin` row `llc` lacks.
+- With several `ret`s, hod's shared epilogue has one line-0 row with
+  `epilogue_begin` (§5.4); `llc` has an epilogue per `ret`, each on its
+  `ret`'s line.
 
 ## 6. DIEs (core implemented, WP-053; the type graph, WP-058)
 
@@ -892,9 +949,15 @@ as it does for code. The bytes are then the same for any thread count
 and any division into chunks, by construction; the tests compare the
 object for 1 and N threads as `spec/codegen.md` §11 does for code.
 
-Part 1 (this WP) encodes all sequences in one call; the per-chunk API
-(`encode_sequence` into a caller's buffer, and `write_debug_line` taking
-encoded runs) is row 1 of §10.
+The lines (WP-056): a sequence is encoded into a `LineProgram` (§3) as
+soon as its function is placed, and `write_debug_line_units` takes the
+encoded programs. The bridge encodes in the merge, in module order (the
+merge places functions in that order), which makes the bytes the same
+for any division into chunks and any thread count without the workers
+encoding: the encoding is about 24 ns per row (§8.7), small next to code
+generation. A worker can encode into a per-chunk `LineProgram` and the
+merge `append` them, should the merge's share ever matter; the bytes
+are the same by construction.
 
 **The DIEs (implemented, WP-053): one function per phase.**
 
@@ -1176,12 +1239,61 @@ some over-aligned globals, with 400 to 100,000 globals.
 - **Throughput** (`tests/throughput.rs`, `die_throughput` and
   `type_graph_throughput`, ignored): §7.2.
 
-## 9. The bridge in `hod_cg` (planned)
+### 8.7 The bridge (`crates/hod_a64/tests/lines*.rs`, WP-056)
+
+- `lines.rs`: which units are written (none without `!llvm.dbg.cu` or
+  for `NoDebug`, byte-identical to no debug information; the refusals),
+  the rows of `data/lines/hand.ll` (block start, inlined, explicit line
+  0, two returns, no subprogram), the relocations of the sequences and
+  of the unit's addresses against section symbols with and without
+  `-function-sections` (`--verify` clean), the `llc` oracle (LLVM 19 and
+  22: per function, the rows modulo addresses and §5.7's differences; a
+  table one line off is caught; `llc`'s file entries are hod's), and the
+  same bytes for 1, 2, 3 and 8 chunks on one thread or several.
+- `lines_debugger.rs`: `main.c` (gcc) with `prog.c`'s functions from
+  hod's object and from `llc`'s, linked with GNU ld, lld and mold; gdb
+  and lldb step from `main` through everything and the stops are
+  compared (hod's are `llc`'s less P1's); a breakpoint by line, `bt`,
+  `info line`, `next`. The COMDAT case: `tu1.cpp` and `tu2.cpp` share the
+  inline `shared`; the linked program verifies, stepping reaches it from
+  both units, a breakpoint in it has one location hit twice.
+- `lines_throughput.rs` (ignored): 2 000 functions of 100 statements
+  (206 000 rows): what the tables cost per row and function, peak
+  memory, against `llc -O0`. Numbers in `spec/landed/dwarf/WP-056.md`.
+
+## 9. The bridge in `hod_cg` (implemented for lines and the unit, WP-056)
 
 `emit_module` owns the mapping from `hod_ir` and `FuncRecord` to
 `hod_dwarf`'s rows (§5.7, §6). It reads the subprogram of each function
 (`FunctionDesc`), the location table (`DebugInfo::location`), and the
 records. `hod_dwarf` never sees a `LocId` or a `DiId`.
+
+`DebugLines` (`crates/hod_cg/src/emit/lines.rs`):
+
+1. `new`, once, before any function is placed: a `UnitPlan` per compile
+   unit of `!llvm.dbg.cu` whose `emissionKind` is `FullDebug`. A module
+   without `!llvm.dbg.cu`, or whose units are all `NoDebug`, gets `None`
+   and nothing else is done or written: the same bytes as the module
+   without any debug information (tested). `LineTablesOnly` and
+   `DebugDirectivesOnly` are refused as `debug:emission-kind`; a unit
+   the DIE core does not write (§6.5) as `debug:die-unsupported`.
+2. `add_function`, as each function is placed (§5.7): its sequence, and
+   a `CodeSpan` (section symbol, offset, size) for the unit's ranges.
+3. `finish`, after the unwind tables: per unit with code or globals (in
+   `!llvm.dbg.cu` order), its line-table unit (`write_debug_line_units`),
+   then `write_debug_info` with `DW_AT_stmt_list`, the code spans and the
+   placed globals. No subprogram DIEs yet (WP-057): gdb and lldb name
+   the functions from the symbol table, and break, step and backtrace by
+   line (§8.7).
+
+**What `LineTablesOnly` needs end to end.** (1) `UnitPlan` accepting a
+`LineTablesOnly` unit: only the unit DIE and a subprogram DIE per
+function (name, linkage name, `low_pc`/`high_pc`, `decl_file`/`decl_line`,
+no types, variables or globals); (2) those subprogram DIEs, which are
+WP-057's (the bridge has the code span per function); (3) lifting the
+`debug:emission-kind` refusal in `DebugLines::new`, and `classify`'s
+`debug:*` refusals in `crates/hod`. The line table is the same as for
+`FullDebug`.
 
 ## 10. Follow-on work packages
 
@@ -1189,7 +1301,7 @@ Rows for `docs/BACKLOG.md` (ids to be assigned; "this" is WP-052):
 
 | title | scope | dependencies |
 |---|---|---|
-| line tables in `emit_module` | §5.7 and §9 in `hod_cg::emit`: `FileTable` from `DiFile` nodes, `LocId` → `SourceLoc`, `function_rows`, one `Sequence` per function; `encode_sequence` into the chunk and the merge of encoded runs (§7.1); `LineRow` gains a block-start bit (§5.3); `DW_LNCT_LLVM_source` for `DiFile.source`; gdb/lldb sessions on hod-compiled programs (§8.3 without `llc`); 1-vs-N-thread identity | this, WP-032 |
+| line tables in `emit_module` (WP-056, **landed**: `spec/landed/dwarf/WP-056.md`) | §5.7 and §9 in `hod_cg::emit`: `FileTable` from `DiFile` nodes, `LocId` → `SourceLoc`, `function_rows`, one `Sequence` per function; `encode_sequence` into the chunk and the merge of encoded runs (§7.1); `LineRow` gains a block-start bit (§5.3); `DW_LNCT_LLVM_source` for `DiFile.source`; gdb/lldb sessions on hod-compiled programs (§8.3 without `llc`); 1-vs-N-thread identity | this, WP-032 |
 | DIE writer core (WP-053, **landed**: `spec/landed/dwarf/WP-053.md`) | §6.1 to §6.3, §6.5 to §6.7: the fixed abbreviation table, `.debug_info` unit header, compile unit DIE, `.debug_str`/`.debug_str_offsets`/`.debug_addr`/`.debug_rnglists`, the scope inversion, reference patching; `--verify` clean and compared with `llc` on modules with globals only | this |
 | subprograms and variables | subprogram DIEs (`low_pc`/`high_pc`, `frame_base`), parameters and locals from `vars` with `DIExpression` composed onto the frame-base offset (`VarRow` gains its expression), lexical blocks from `lines` (§6.4), labels (the `labels` table); gdb `info locals`/`print`/`bt` on hod-compiled programs | DIE writer core, line tables in `emit_module` |
 | the type graph (WP-058, **landed**: `spec/landed/dwarf/WP-058.md`) | basic, derived (pointer, reference, rvalue reference, typedef, const/volatile, member, inheritance, pointer to member, friend), composite (class, struct, union, enum with enumerators, array with subranges), subroutine types, declarations and completion, `vtableHolder`; compared with `llc` by `llvm-dwarfdump` structure; gdb `ptype` | DIE writer core |
@@ -1208,11 +1320,12 @@ Rows for `docs/BACKLOG.md` (ids to be assigned; "this" is WP-052):
    `llc`'s byte for byte. Measure on the corpus with the bridge.
 3. Discriminators (`DILexicalBlockFile.discriminator`): only optimized
    code and sample profiling use them; `hod_ir` keeps them. Not written.
-4. The line-0 epilogue row of a function with several `ret`s (§5.4):
-   whether gdb's and lldb's `next` stop there. To be checked by the line
-   package's debugger tests on a hand-written module with two `ret`s.
-5. The block-start rule of §5.3 needs `hod_cg` to mark block starts;
-   until then hod inherits where `llc` writes line 0.
+4. Mostly answered (WP-056): the line-0 epilogue row of a function with
+   several `ret`s (§5.4) is not a statement, and gdb and lldb stop by
+   line only at statements; `hand.ll`'s `two_rets` has both return lines
+   and one `epilogue_begin` row. A debugger session over it is left to
+   the L7 harness.
+5. Answered (WP-056): the block-start rule of §5.3 is implemented.
 6. DWARF 4: a module flag `"Dwarf Version", i32 4` (one kiln corpus
    module, `-gdwarf-4`) makes `llc` write version 4 tables with
    `include_directories` strings inline and no `.debug_line_str`. hod

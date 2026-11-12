@@ -222,7 +222,7 @@ impl<'a, T: Target> FnCx<'a, T> {
             // whichever block was emitted last.
             let loc = if self.rets == 1 { self.ret_loc } else { LocId::NONE };
             let offset = self.offset();
-            self.out.lines.push(LineRow { offset, loc });
+            self.out.lines.push(LineRow { offset, loc, block_start: false });
         }
         t.end_function(self)?;
         self.finish_function()
@@ -443,6 +443,9 @@ impl<'a, T: Target> FnCx<'a, T> {
         self.skip_rest = false;
         self.bind(self.block_label(id))?;
         let mut start = self.offset();
+        // §9.5, `spec/dwarf.md` §5.3: whether no instruction of the block
+        // has emitted code yet.
+        let mut block_start = id != self.body.entry();
         if self.block_addrs {
             self.out.block_offsets.push(BlockOffset { block: id, offset: start });
         }
@@ -493,11 +496,15 @@ impl<'a, T: Target> FnCx<'a, T> {
 
             let end = self.offset();
             if end != start {
-                if self.lines && self.last_loc != Some(inst.loc()) {
-                    // §9.5: transitions only.
-                    self.last_loc = Some(inst.loc());
-                    self.out.lines.push(LineRow { offset: start, loc: inst.loc() });
+                let loc = inst.loc();
+                // §9.5: transitions only, and an instruction without a
+                // location that starts a block (`spec/dwarf.md` §5.3).
+                if self.lines && (self.last_loc != Some(loc) || (block_start && loc == LocId::NONE))
+                {
+                    self.last_loc = Some(loc);
+                    self.out.lines.push(LineRow { offset: start, loc, block_start });
                 }
+                block_start = false;
                 if end > MAX_FUNCTION_SIZE {
                     return Err(CgError::unsupported(LIMIT_FUNCTION_SIZE));
                 }

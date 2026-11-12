@@ -60,6 +60,7 @@ fn input() -> Vec<(Vec<Transition>, u32)> {
                     let t = Transition {
                         offset,
                         loc: Some(SourceLoc { file, line, column: 1 + r.below(40) as u16 }),
+                        block_start: false,
                     };
                     offset += 4 * (1 + r.below(6) as u32);
                     match r.below(20) {
@@ -99,7 +100,12 @@ fn line_table_throughput() {
     let files: Vec<FileEntry<'_>> = names
         .iter()
         .enumerate()
-        .map(|(k, n)| FileEntry { name: n, dir: (k % 2) as u32, md5: Some([k as u8; 16]) })
+        .map(|(k, n)| FileEntry {
+            name: n,
+            dir: (k % 2) as u32,
+            md5: Some([k as u8; 16]),
+            source: None,
+        })
         .collect();
     let header = LineHeader { dirs: &dirs, files: &files };
 

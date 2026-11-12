@@ -22,8 +22,8 @@
 //! let files = FileTable::new(b"/src", b"main.cpp", None);
 //! let at = |line, column| Some(SourceLoc { file: 0, line, column });
 //! let transitions = [
-//!     Transition { offset: 8, loc: at(4, 7) },
-//!     Transition { offset: 16, loc: at(5, 3) },
+//!     Transition::at(8, at(4, 7)),
+//!     Transition::at(16, at(5, 3)),
 //! ];
 //! let lines = FunctionLines {
 //!     scope: SourceLoc { file: 0, line: 3, column: 0 },
@@ -59,7 +59,8 @@ pub use strings::DebugStrings;
 
 pub use leb::{write_sleb, write_uleb};
 pub use line::{
-    FileEntry, FileTable, LineHeader, LineSections, Row, Sequence, flags, write_debug_line,
+    FileEntry, FileTable, LineHeader, LineProgram, LineSections, LineUnit, LineUnits, Row,
+    Sequence, flags, write_debug_line, write_debug_line_units,
 };
 pub use policy::{FunctionLines, SourceLoc, Transition, function_rows};
 pub use target::{
@@ -193,6 +194,9 @@ pub enum Error {
         /// The node.
         node: u32,
     },
+    /// An encoded line program is for another architecture than the
+    /// object or the program it is appended to.
+    ArchMismatch,
     /// `hod_obj` refused a section.
     Object(hod_obj::Error),
 }
@@ -245,6 +249,7 @@ impl fmt::Display for Error {
                 write!(f, "debug node {node}: a type that contains itself")
             }
             Self::MissingSize { node } => write!(f, "debug node {node}: a type without a size"),
+            Self::ArchMismatch => write!(f, "a line program of another architecture"),
             Self::Object(e) => write!(f, "{e}"),
         }
     }

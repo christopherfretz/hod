@@ -226,7 +226,7 @@ impl<'s> Judge<'s> {
     /// The classifier of the module's target, with its stack-argument
     /// rule (`spec/codegen.md` §7.1, "Tail kinds"; `spec/ir.md` §8.6):
     /// without it every `musttail` call is declined as
-    /// `musttail:stack-args-unknown`. x86_64 has no code generator, so no
+    /// `musttail:stack-args-unknown`. x86-64 has no code generator, so no
     /// rule; its modules are declined later anyway.
     fn classifier(&self) -> Classifier<'s> {
         classifier_for(self.arch, self.support)

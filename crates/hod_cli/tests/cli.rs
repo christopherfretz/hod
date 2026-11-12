@@ -1463,7 +1463,9 @@ fn real_llvm_dis_converts_bitcode() {
             assert_eq!(line.reasons, lines[0].reasons, "LLVM {major}: {line:?}");
             assert_eq!(line.target, "aarch64-unknown-linux-gnu", "LLVM {major}: {line:?}");
         }
-        assert!(lines[0].reasons.starts_with("module:asm,"), "{lines:?}");
+        // The census begins with the refusal; what follows it moves with
+        // the support matrix.
+        assert_eq!(lines[0].reasons.split(',').next(), Some("module:asm"), "{lines:?}");
         assert_eq!(
             lines.iter().map(|l| l.conversion_micros != "-").collect::<Vec<_>>(),
             [true, false, true, false]

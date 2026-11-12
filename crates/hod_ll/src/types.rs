@@ -1,0 +1,284 @@
+//! Types (`spec/ll.md` §5.1, §5.2): every type of `spec/ir.md` §3, and
+//! named types resolved on first use, in whatever order they are written.
+
+use hod_ir::TypeId;
+
+use crate::error::{LlErrorKind, PResult, fail};
+use crate::index::parse_u32;
+use crate::lexer::{Tok, Token};
+use crate::parser::{Parser, TypeSlot, ir};
+
+impl Parser<'_> {
+    /// Registers every `%name = type …` and resolves each.
+    pub(crate) fn define_types(&mut self) -> PResult<()> {
+        self.type_slots = vec![TypeSlot::Pending; self.index.types.len()];
+        for at in 0..self.index.types.len() {
+            let token = self.index.types[at].name;
+            let fresh = if let Some(name) = self.name(token) {
+                self.type_names.insert(&name, at as u32).is_ok()
+            } else {
+                let number = self.type_number(token)?;
+                match self.type_numbers.binary_search_by_key(&number, |&(n, _)| n) {
+                    Ok(_) => false,
+                    Err(place) => {
+                        self.type_numbers.insert(place, (number, at as u32));
+                        true
+                    }
+                }
+            };
+            if !fresh {
+                return fail(LlErrorKind::Redefined, token.start, "redefinition of type");
+            }
+        }
+        for at in 0..self.index.types.len() {
+            let token = self.index.types[at].name;
+            self.resolve_type(at, token.start)?;
+        }
+        Ok(())
+    }
+
+    fn type_number(&self, token: Token) -> PResult<u32> {
+        match parse_u32(&self.tok_text(token)[1..]) {
+            Some(number) => Ok(number),
+            None => fail(LlErrorKind::Syntax, token.start, "type number is too large"),
+        }
+    }
+
+    /// The type that definition `at` gives, parsing the definition if it
+    /// has not been yet. `from` is where the reference stands.
+    fn resolve_type(&mut self, at: usize, from: u32) -> PResult<TypeId> {
+        match self.type_slots[at] {
+            TypeSlot::Done(ty) => return Ok(ty),
+            TypeSlot::Busy => {
+                return fail(LlErrorKind::Type, from, "a type cannot contain itself");
+            }
+            TypeSlot::Pending => {}
+        }
+        self.type_slots[at] = TypeSlot::Busy;
+        let saved = (self.lx.pos(), self.tok);
+        let ent = self.index.types[at];
+        self.enter()?;
+        self.goto(ent.start);
+        let ty = if self.at_word(b"opaque") {
+            let opaque = self.module.types.opaque_struct();
+            self.bump();
+            ir(ent.name.start, opaque)?
+        } else {
+            self.parse_type()?
+        };
+        if self.tok.start < ent.end {
+            return self.syntax("expected the end of the type definition");
+        }
+        self.leave();
+        self.lx.set_pos(saved.0);
+        self.tok = saved.1;
+        self.type_slots[at] = TypeSlot::Done(ty);
+        Ok(ty)
+    }
+
+    /// The type a `%name` token refers to.
+    fn named_type(&mut self, token: Token) -> PResult<TypeId> {
+        let slot = if let Some(name) = self.name(token) {
+            self.type_names.get(&name)
+        } else {
+            let number = self.type_number(token)?;
+            let found = self.type_numbers.binary_search_by_key(&number, |&(n, _)| n);
+            found.ok().map(|place| self.type_numbers[place].1)
+        };
+        match slot {
+            Some(slot) => self.resolve_type(slot as usize, token.start),
+            None => fail(
+                LlErrorKind::Undefined,
+                token.start,
+                format!(
+                    "use of undefined type named '{}'",
+                    String::from_utf8_lossy(&self.tok_text(token)[1..])
+                ),
+            ),
+        }
+    }
+
+    /// Parses one type.
+    pub(crate) fn parse_type(&mut self) -> PResult<TypeId> {
+        let at = self.tok.start;
+        let mut ty = match self.tok.kind {
+            Tok::IntType => {
+                let ty = match self.text() {
+                    b"i8" => TypeId::I8,
+                    b"i32" => TypeId::I32,
+                    b"i64" => TypeId::I64,
+                    b"i16" => TypeId::I16,
+                    b"i1" => TypeId::I1,
+                    text => {
+                        let bits = parse_u32(&text[1..]).unwrap_or(u32::MAX);
+                        ir(at, self.module.types.int(bits))?
+                    }
+                };
+                self.bump();
+                ty
+            }
+            Tok::Word => self.word_type()?,
+            Tok::Local | Tok::LocalQuoted | Tok::LocalId => {
+                let ty = self.named_type(self.tok)?;
+                self.bump();
+                ty
+            }
+            Tok::LBrace => self.struct_type(false)?,
+            Tok::LBracket => self.array_type()?,
+            Tok::Less => self.angle_type()?,
+            _ => return self.syntax("expected a type"),
+        };
+        loop {
+            match self.tok.kind {
+                Tok::LParen => ty = self.function_type(ty, at)?,
+                Tok::Star => {
+                    return self.syntax("typed pointers are not supported: the type is 'ptr'");
+                }
+                _ => return Ok(ty),
+            }
+        }
+    }
+
+    fn word_type(&mut self) -> PResult<TypeId> {
+        let at = self.tok.start;
+        let ty = match self.text() {
+            b"ptr" => {
+                self.bump();
+                if !self.eat_word(b"addrspace") {
+                    return Ok(TypeId::PTR);
+                }
+                self.expect(Tok::LParen, "expected '(' in an address space")?;
+                let space = self.expect_u32("expected an address space number")?;
+                self.expect(Tok::RParen, "expected ')' in an address space")?;
+                return ir(at, self.module.types.ptr(space));
+            }
+            b"void" => TypeId::VOID,
+            b"half" => TypeId::HALF,
+            b"bfloat" => TypeId::BFLOAT,
+            b"float" => TypeId::FLOAT,
+            b"double" => TypeId::DOUBLE,
+            b"x86_fp80" => TypeId::X86_FP80,
+            b"fp128" => TypeId::FP128,
+            b"label" => TypeId::LABEL,
+            b"metadata" => TypeId::METADATA,
+            b"token" => TypeId::TOKEN,
+            b"ppc_fp128" => {
+                // Not a type of `hod_ir`: noted, and stood in for by the
+                // other 128-bit format so that the parse goes on.
+                self.note("type:ppc_fp128");
+                TypeId::FP128
+            }
+            b"x86_amx" => {
+                self.note("type:x86_amx");
+                ir(at, self.module.types.target_ext("x86_amx"))?
+            }
+            b"target" => return self.target_type(),
+            _ => return self.syntax("expected a type"),
+        };
+        self.bump();
+        Ok(ty)
+    }
+
+    /// `target("name", types…, integers…)`.
+    fn target_type(&mut self) -> PResult<TypeId> {
+        let at = self.tok.start;
+        self.bump();
+        self.expect(Tok::LParen, "expected '(' in a target extension type")?;
+        let name = self.expect(Tok::Str, "expected the target extension type's name")?;
+        let name = self.string(name);
+        while self.eat(Tok::Comma) {
+            if self.tok.kind == Tok::Int {
+                self.bump();
+            } else {
+                self.parse_type()?;
+            }
+        }
+        self.expect(Tok::RParen, "expected ')' in a target extension type")?;
+        ir(at, self.module.types.target_ext(&String::from_utf8_lossy(&name)))
+    }
+
+    /// `{ … }`, at the brace.
+    fn struct_type(&mut self, packed: bool) -> PResult<TypeId> {
+        let at = self.tok.start;
+        self.enter()?;
+        self.bump();
+        let base = self.tys.len();
+        if self.tok.kind != Tok::RBrace {
+            loop {
+                let field = self.parse_type()?;
+                self.tys.push(field);
+                if !self.eat(Tok::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(Tok::RBrace, "expected '}' at the end of a struct type")?;
+        let ty = self.module.types.struct_type(&self.tys[base..], packed);
+        self.tys.truncate(base);
+        self.leave();
+        ir(at, ty)
+    }
+
+    /// `[N x T]`.
+    fn array_type(&mut self) -> PResult<TypeId> {
+        let at = self.tok.start;
+        self.enter()?;
+        self.bump();
+        let len = self.expect_u64("expected the number of elements")?;
+        self.expect_word(b"x", "expected 'x' after the number of elements")?;
+        let elem = self.parse_type()?;
+        self.expect(Tok::RBracket, "expected ']' at the end of an array type")?;
+        self.leave();
+        ir(at, self.module.types.array(elem, len))
+    }
+
+    /// `<N x T>`, `<vscale x N x T>` or `<{ … }>`.
+    fn angle_type(&mut self) -> PResult<TypeId> {
+        let at = self.tok.start;
+        self.enter()?;
+        self.bump();
+        if self.tok.kind == Tok::LBrace {
+            let ty = self.struct_type(true)?;
+            self.expect(Tok::Greater, "expected '>' at the end of a packed struct type")?;
+            self.leave();
+            return Ok(ty);
+        }
+        let scalable = self.eat_word(b"vscale");
+        if scalable {
+            self.expect_word(b"x", "expected 'x' after vscale")?;
+        }
+        let len = self.expect_u32("expected the number of elements")?;
+        self.expect_word(b"x", "expected 'x' after the number of elements")?;
+        let elem = self.parse_type()?;
+        self.expect(Tok::Greater, "expected '>' at the end of a vector type")?;
+        self.leave();
+        let types = &mut self.module.types;
+        ir(at, if scalable { types.scalable_vector(elem, len) } else { types.vector(elem, len) })
+    }
+
+    /// `ret (params…)`, at the parenthesis.
+    fn function_type(&mut self, ret: TypeId, at: u32) -> PResult<TypeId> {
+        self.enter()?;
+        self.bump();
+        let base = self.tys.len();
+        let mut variadic = false;
+        if self.tok.kind != Tok::RParen {
+            loop {
+                if self.eat(Tok::DotDotDot) {
+                    variadic = true;
+                    break;
+                }
+                let param = self.parse_type()?;
+                self.tys.push(param);
+                if !self.eat(Tok::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(Tok::RParen, "expected ')' at the end of a function type")?;
+        let ty = self.module.types.function(ret, &self.tys[base..], variadic);
+        self.tys.truncate(base);
+        self.leave();
+        ir(at, ty)
+    }
+}

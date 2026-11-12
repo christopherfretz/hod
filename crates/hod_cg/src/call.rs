@@ -7,8 +7,8 @@
 //! instruction itself (`Target::emit_call`).
 
 use hod_ir::{
-    BlockId, CallConv, Inst, Opcode, ParamAttrs, SymbolKind, TailKind, TypeId, TypeKind, Value,
-    ValueKind,
+    AttrConflict, BlockId, CallConv, Inst, Opcode, ParamAttrs, SymbolKind, TailKind, TypeId,
+    TypeKind, Value, ValueKind, call_arg_attrs, call_ret_attrs,
 };
 
 use crate::abi::{AbiUnsupported, Assignment, Part, PartKind, Place, Sig};
@@ -140,20 +140,11 @@ impl<'a, T: Target> FnCx<'a, T> {
                 self.use_reg(value)?;
             }
         }
-        // The signature. A direct call also has the attributes of the
-        // function it names, as `CallBase::paramHasAttr` reads them.
-        let declared = match callee.kind() {
-            ValueKind::Sym(sym) => Some(self.module.symbol(sym)),
-            _ => None,
-        };
-        let declared = declared.filter(|sym| matches!(sym.kind(), SymbolKind::Function { .. }));
-        let mut ret_attrs = site.ret_attrs();
-        if ret_attrs.is_none()
-            && let Some(SymbolKind::Function { ret_attrs: of_callee, .. }) =
-                declared.map(|sym| sym.kind())
-        {
-            ret_attrs = of_callee;
-        }
+        // The signature, with the attributes the call passes with
+        // (§7.1): its own and, for a direct call through the callee's
+        // own function type, the declaration's.
+        let conflict = |_| CgError::unsupported(AttrConflict::NAME);
+        let ret_attrs = call_ret_attrs(self.module, &site).map_err(conflict)?;
         self.s.sig_params.clear();
         self.s.sig_attrs.clear();
         for (index, &value) in args.iter().enumerate() {
@@ -161,12 +152,7 @@ impl<'a, T: Target> FnCx<'a, T> {
                 Some(&ty) => ty,
                 None => self.body.value_type(self.module, value),
             };
-            let mut attrs = site.arg_attrs(index);
-            if attrs.is_none()
-                && let Some(sym) = declared
-            {
-                attrs = sym.param_attrs(index);
-            }
+            let attrs = call_arg_attrs(self.module, &site, index).map_err(conflict)?;
             self.s.sig_params.push(ty);
             self.s.sig_attrs.push(attrs);
         }

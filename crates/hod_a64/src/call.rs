@@ -65,15 +65,6 @@ pub const CALL_WIDE_EXT_ARG: &str = "a64:call-wide-int-extension";
 /// `abi::assumed_extension`), but `assign` gives the part its store size
 /// and the call sequence stores only that many bytes.
 pub const CALL_NARROW_EXT_STACK_ARG: &str = "a64:call-narrow-ext-stack-arg";
-/// A direct call through a function type other than the callee's, where
-/// the callee's declaration has attributes the call site lacks: the call
-/// sequence would take them (`hod_cg/src/call.rs`, "A direct call also
-/// has the attributes of the function it names"), but LLVM's
-/// `CallBase::paramHasAttr` falls back to the callee's attributes only
-/// when the call's function type is the callee's (`getCalledFunction`),
-/// so `llc` passes such a call without them (a `byval` copy, an
-/// extension, `x8` for `sret`).
-pub const CALL_MISMATCHED_DECLARATION: &str = "a64:call-mismatched-declaration";
 /// `llvm.va_start`, `llvm.va_end`, `llvm.va_copy` outside what is
 /// lowered: `va_start` in a function that is not variadic, an operand
 /// that is not a pointer.
@@ -100,7 +91,6 @@ pub const UNSUPPORTED: &[&str] = &[
     INVOKE_ODD_RESULT,
     CALL_WIDE_EXT_ARG,
     CALL_NARROW_EXT_STACK_ARG,
-    CALL_MISMATCHED_DECLARATION,
     VA_INTRINSIC,
     VA_ARG,
     LANDING_PAD,
@@ -187,9 +177,6 @@ pub fn call<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>) -> CgResult<()> {
     if site.bundle_count() != 0 {
         return unsupported(CALL_BUNDLE);
     }
-    if mismatched_declaration(cx, &site) {
-        return unsupported(CALL_MISMATCHED_DECLARATION);
-    }
     if let Some(name) = refused_extension(cx, &site) {
         return unsupported(name);
     }
@@ -265,42 +252,19 @@ fn any_odd(cx: &FnCx<'_, A64>, ty: TypeId) -> bool {
 /// image is at `at + offset`: the byte holding the leaf's top bit is
 /// masked to the bits below it (`spec/ir.md` §4.3). `ty` has at most
 /// [`MAX_REG_LEAVES`] leaves. Writes `x16` and `x17`.
-/// Whether the call names a function whose type is not the call's and
-/// whose declaration has attributes the call site does not.
-fn mismatched_declaration(cx: &FnCx<'_, A64>, site: &hod_ir::CallSite<'_>) -> bool {
-    let ValueKind::Sym(sym) = site.callee_value().kind() else { return false };
-    let sym = cx.module.symbol(sym);
-    let hod_ir::SymbolKind::Function { ret_attrs, .. } = sym.kind() else { return false };
-    if sym.ty() == site.fn_type() {
-        return false;
-    }
-    (site.ret_attrs().is_none() && !ret_attrs.is_none())
-        || (0..site.args().len())
-            .any(|index| site.arg_attrs(index).is_none() && !sym.param_attrs(index).is_none())
-}
-
 /// The refusal an extended integer argument of the call needs, if any:
 /// [`CALL_WIDE_EXT_ARG`], or [`CALL_NARROW_EXT_STACK_ARG`] when `assign`
 /// puts such an argument on the stack. The attributes are those of the
 /// call site, else of the function a direct call names, as the call
 /// sequence reads them.
 fn refused_extension(cx: &FnCx<'_, A64>, site: &hod_ir::CallSite<'_>) -> Option<&'static str> {
-    let declared = match site.callee_value().kind() {
-        ValueKind::Sym(sym) => Some(cx.module.symbol(sym)),
-        _ => None,
-    };
     let types = cx.types();
     let mut narrow = false;
     let mut sig_params = Vec::new();
     let mut sig_attrs = Vec::new();
     for (index, &arg) in site.args().iter().enumerate() {
         let ty = value_ty(cx, arg);
-        let mut attrs = site.arg_attrs(index);
-        if attrs.is_none()
-            && let Some(sym) = declared
-        {
-            attrs = sym.param_attrs(index);
-        }
+        let attrs = hod_ir::call_arg_attrs(cx.module, site, index).unwrap_or(site.arg_attrs(index));
         sig_params.push(ty);
         sig_attrs.push(attrs);
         let Some(bits) = types.int_bits(ty) else { continue };
@@ -316,13 +280,7 @@ fn refused_extension(cx: &FnCx<'_, A64>, site: &hod_ir::CallSite<'_>) -> Option<
     let TypeKind::Function { ret, params, variadic } = types.kind(site.fn_type()) else {
         return None;
     };
-    let mut ret_attrs = site.ret_attrs();
-    if ret_attrs.is_none()
-        && let Some(hod_ir::SymbolKind::Function { ret_attrs: of_callee, .. }) =
-            declared.map(|sym| sym.kind())
-    {
-        ret_attrs = of_callee;
-    }
+    let ret_attrs = hod_ir::call_ret_attrs(cx.module, site).unwrap_or(site.ret_attrs());
     let sig = hod_cg::abi::Sig {
         cc: site.cc(),
         ret,

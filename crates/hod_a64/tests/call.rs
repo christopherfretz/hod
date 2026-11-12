@@ -719,9 +719,9 @@ fn the_remaining_forms_are_refused_by_name() {
             call::CALL_NARROW_EXT_STACK_ARG,
         ),
         (
-            "declare void @g(ptr byval([5 x i64]) align 8)\n\
-             define void @f(ptr %p) { call void (ptr, i64) @g(ptr %p, i64 1)\n ret void }",
-            call::CALL_MISMATCHED_DECLARATION,
+            "declare void @g(ptr sret([5 x i64]))\n\
+             define void @f(ptr %p) { call void @g(ptr byval([5 x i64]) %p)\n ret void }",
+            hod_ir::AttrConflict::NAME,
         ),
         (
             "declare i32 @p(...)\ndeclare { i7, i64 } @g()\n\
@@ -767,16 +767,145 @@ fn a_wide_signext_return_is_extended() {
     link_run_all(&toolchain, &dir, "wide", &[], &[&driver, &obj], "done", true);
 }
 
-/// `hod_cg`'s call sequence takes a direct call's missing attributes from
-/// the callee's declaration whatever the call's function type
-/// (`crates/hod_cg/src/call.rs:143`); `llc` only when the types are the
-/// same (`CallBase::paramHasAttr` through `getCalledFunction`). Until the
-/// core checks the type, `hod_a64` refuses such a call
-/// (`call::CALL_MISMATCHED_DECLARATION`) and this test fails.
+/// A direct call through a function type other than the callee's takes
+/// none of the declaration's attributes (`spec/codegen.md` §7.1, as
+/// `llc` lowers it): lowered, not refused.
 #[test]
-#[ignore = "hod_cg/src/call.rs:143 takes a declaration's attributes for a call of another function type"]
 fn a_mismatched_direct_call_takes_no_declared_attributes() {
     let functions = "declare void @g(ptr byval([5 x i64]) align 8)\n\
                      define void @f(ptr %p) { call void (ptr, i64) @g(ptr %p, i64 1)\n ret void }";
     assert_eq!(common::compile_ll(functions), Ok(()));
+}
+
+/// `spec/codegen.md` §7.1, effective attributes, run: `tests/data/call/
+/// attrs.ll` calls gcc's functions and `attrs_callee.ll`'s through
+/// declarations whose attributes the calls must not take (another
+/// function type: `byval`, `sret`, `nest`, variadic against fixed both
+/// ways, a result) and must take (the callee's own type: `byval` beside
+/// the site's `align`, `signext`). The caller and the callee module by
+/// hod and by `llc` in every pairing, hod also stressed; every linker
+/// where hod is involved.
+#[test]
+fn declared_attributes_follow_the_function_type() {
+    let dir = Scratch::new("a64-call-attrs");
+    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let caller = data("attrs.ll");
+    let callee = data("attrs_callee.ll");
+    let driver = toolchain.compile_c(&dir, "attrs-driver", &data("attrs.c"), &[]);
+    let stress = Options { stress: hod_cg::Stress::ALL, ..Options::default() };
+    let plain = Options::default();
+    for (tag, caller_llc, callee_llc, options) in [
+        ("LL", true, true, plain),
+        ("HL", false, true, plain),
+        ("LH", true, false, plain),
+        ("HH", false, false, plain),
+        ("HH-stress", false, false, stress),
+    ] {
+        let Some(a) = object_with(&dir, &format!("attrs-{tag}"), &caller, caller_llc, options)
+        else {
+            return;
+        };
+        let Some(b) =
+            object_with(&dir, &format!("attrs-callee-{tag}"), &callee, callee_llc, options)
+        else {
+            return;
+        };
+        let name = format!("attrs-{tag}");
+        link_run_all(&toolchain, &dir, &name, &[], &[&driver, &a, &b], "0 failed", tag == "LL");
+    }
+}
+
+/// `spec/codegen.md` §7.1, effective attributes, as a property:
+/// `classify` and the call sequence see the same attributes for random
+/// combinations of a declaration's and a call site's attributes, with
+/// the call through the callee's own function type or another one
+/// (an extra argument, variadic against fixed both ways). Both are
+/// observed by what they refuse: `inreg` and `swiftself` are refused by
+/// the shipped matrix (`attr:inreg`, `attr:swiftself`) and by `assign`
+/// (`abi:inreg`, `abi:swiftself`), and an `sret` on one side with a
+/// `byval` on the other is `call:attribute-conflict`. The expectation is
+/// a model of `llc`'s rule written here, not `hod_ir`'s helper.
+#[test]
+fn classify_and_the_call_sequence_see_the_same_attributes() {
+    const P0: [&str; 6] =
+        ["", "inreg", "swiftself", "sret([2 x i64])", "byval([2 x i64])", "noundef"];
+    const P1: [&str; 5] = ["", "signext", "zeroext", "inreg", "noundef"];
+    const P2: [&str; 3] = ["", "inreg", "byval([2 x i64])"];
+    const RET: [&str; 4] = ["", "signext", "zeroext", "inreg"];
+    let mut rng = Rng(0x69_0001);
+    let mut seen = [0usize; 4];
+    for case in 0..600 {
+        let pick = |rng: &mut Rng, pool: &[&'static str]| *rng.pick(pool);
+        let mut decl =
+            [pick(&mut rng, &RET), pick(&mut rng, &P0), pick(&mut rng, &P1), pick(&mut rng, &P2)];
+        let mut site =
+            [pick(&mut rng, &RET), pick(&mut rng, &P0), pick(&mut rng, &P1), pick(&mut rng, &P2)];
+        // `sret` goes with a `void` result.
+        let sret = decl[1].starts_with("sret") || site[1].starts_with("sret");
+        let ret = if sret { "void" } else { "i8" };
+        if sret {
+            (decl[0], site[0]) = ("", "");
+        }
+        // 0: the callee's type; 1: an extra i64; 2: a variadic call type
+        // of a fixed callee; 3: a variadic callee through its own type,
+        // with a variable i64; 4: a variadic callee through a fixed type.
+        let shape = rng.below(5) as usize;
+        let decl_variadic = shape >= 3;
+        let (call_ty, extra) = match shape {
+            1 => ("(ptr, i8, ptr, i64)", ", i64 1"),
+            2 => ("(ptr, i8, ptr, ...)", ""),
+            3 => ("(ptr, i8, ptr, ...)", ", i64 1"),
+            _ => ("(ptr, i8, ptr)", ""),
+        };
+        let matched = shape == 0 || shape == 3;
+        let dots = if decl_variadic { ", ..." } else { "" };
+        let text = format!(
+            "declare {} {ret} @g(ptr {} , i8 {} , ptr {} {dots})\n\
+             define void @f(ptr %p, i8 %x) {{\n  call {} {ret} {call_ty} @g(ptr {} %p, i8 {} %x, ptr {} %p{extra})\n  ret void\n}}\n",
+            decl[0], decl[1], decl[2], decl[3], site[0], site[1], site[2], site[3]
+        );
+        // The model: the call site's attributes, and the declaration's
+        // when the types match.
+        let effective: Vec<&str> =
+            site.iter().chain(if matched { &decl[..] } else { &[][..] }).copied().collect();
+        let has = |what: &str| effective.contains(&what);
+        let mem = |a: &str| {
+            if a.starts_with("sret") {
+                1
+            } else if a.starts_with("byval") {
+                2
+            } else {
+                0
+            }
+        };
+        let conflict = matched && mem(site[1]) * mem(decl[1]) == 2;
+        let refused: Vec<&str> = ["inreg", "swiftself"].into_iter().filter(|a| has(a)).collect();
+
+        let (module, bodies) = parse(&format!("{}{text}", ll_header(22)));
+        let census = hod_ir::census(&module, &bodies);
+        for what in ["inreg", "swiftself"] {
+            let row = format!("attr:{what}");
+            let found = census.entries().iter().any(|entry| entry.construct == row);
+            assert_eq!(found, refused.contains(&what), "case {case}: classify and {row}\n{text}");
+        }
+        let compiled = common::compile_ll(&text);
+        let allowed: Vec<String> = refused
+            .iter()
+            .map(|a| format!("abi:{a}"))
+            .chain(conflict.then(|| hod_ir::AttrConflict::NAME.to_owned()))
+            .collect();
+        match &compiled {
+            Ok(()) => {
+                assert!(allowed.is_empty(), "case {case}: compiled, expected {allowed:?}\n{text}");
+            }
+            Err(hod_cg::CgError::Unsupported { construct }) => assert!(
+                allowed.iter().any(|name| name == construct),
+                "case {case}: refused {construct}, expected {allowed:?}\n{text}"
+            ),
+            Err(other) => panic!("case {case}: {other}\n{text}"),
+        }
+        seen[usize::from(matched) * 2 + usize::from(compiled.is_ok())] += 1;
+    }
+    // Every quadrant of (matched, compiled) is exercised.
+    assert!(seen.iter().all(|&n| n > 10), "{seen:?}");
 }

@@ -840,11 +840,35 @@ For `Call` and `Invoke`, in this order:
    from the return registers (§4.4), or copy it into the result's home for
    a `Mem` class.
 
-A direct call's argument or return attributes that the call site lacks
-are taken from the callee's declaration, as `CallBase::paramHasAttr` reads
-them (open question, §13). `FnCx::place_return` places a `ret`'s value in
-the return registers; a value returned in memory (`ret_memory`) is the
-target's to copy.
+**Effective attributes.** A call passes its arguments and takes its
+result with its *effective* attributes, which `classify` reads too, both
+through `hod_ir::call_arg_attrs` and `call_ret_attrs` (one rule in one
+place; `hod_ir/src/classify/attrs.rs`). They are LLVM's as `llc` lowers a
+call (`CallBase::paramHasAttr` and `hasRetAttr`, which consult the callee
+through `getCalledFunction`, and that is null when the call's function
+type is not the callee's), measured with `llc` 19 and 22
+(`-O0 -global-isel=0 -fast-isel=0`) on AArch64:
+
+| call | effective attributes of an argument or the result |
+|---|---|
+| indirect, of an alias, or direct through a function type other than the callee's (another parameter list, variadic against fixed either way) | the call site's alone |
+| direct through the callee's own function type | per attribute: a flag (`zeroext`, `signext`, `inreg`, `nest`, `swiftself`, `swifterror`, `swiftasync`) if either side has it, `signext` winning over `zeroext`; the typed attribute (`sret`, `byval`, …) of the call site if it has one, else the declaration's, with its type; `align` and `alignstack` of the call site alone |
+
+So `declare void @g(ptr byval([5 x i64]) align 8)` called as `call void
+(ptr, i64) @g(ptr %p, i64 1)` passes a pointer and an `i64` in `x0` and
+`x1`; called as `call void @g(ptr align 8 %p)` it passes a copy (the
+declaration's `byval`, although the site has an attribute of its own),
+placed by the call site's alignment, not the declaration's `align 16`.
+A typed attribute that changes passing (`sret`, `byval`, `inalloca`,
+`preallocated`) on one side and a different one on the other is refused
+as `call:attribute-conflict` (`llc` passes `sret` on AArch64, whichever
+side has it; hod does not encode that precedence); `byref` and
+`elementtype` change nothing about passing and yield to the other side.
+Function attributes are not part of this rule (`returns_twice` and
+`nounwind` are read from a direct callee whatever its type, as LLVM does).
+
+`FnCx::place_return` places a `ret`'s value in the return registers; a
+value returned in memory (`ret_memory`) is the target's to copy.
 6. (`Invoke`) write the normal destination's incoming slots and branch to
    it; then, if step 3 lowered the stack pointer, emit the pad stub
    (§5.3).
@@ -1475,10 +1499,8 @@ pub enum CgError {
   (refuse a feature set without FP/SIMD, accept the default ones). Until
   then everything kiln emits with features is refused there.
 
-- A direct call's attributes: `hod_cg` falls back to the callee
-  declaration's argument and return attributes when the call site has
-  none (§7.1), as LLVM's `CallBase::paramHasAttr` does. Confirm, or make
-  the frontend's call sites carry them.
+- (Closed by WP-069.) A direct call's attributes: §7.1, "Effective
+  attributes", measured against `llc` 19 and 22.
 - Address-taken blocks without an `indirectbr` in their function (§9.6):
   `hod_ir` has no marker, so `block_offsets` is not recorded for them.
   Either `hod_ir` marks address-taken blocks, or `hod_cg` scans the

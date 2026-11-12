@@ -13,8 +13,10 @@
 //! | `constant` | §4.1, §4.2 | `ConstPool` |
 //! | `fold` | §4.2 | constant-expression folding |
 //! | `flatten` | §4.3 | initializers as bytes and fixups |
+//! | `attrs` | §5.7 | `CallConv`, `ParamAttrs` |
 //! | `module` | §2 | the `Module` shell |
 
+mod attrs;
 mod constant;
 mod error;
 mod flatten;
@@ -26,10 +28,11 @@ mod target;
 mod types;
 mod wide;
 
+pub use attrs::{CallConv, ParamAttrs, ParamMem};
 pub use constant::{Const, ConstOp, ConstPool};
 pub use error::{IrError, IrErrorKind, IrResult};
 pub use flatten::{Fixup, FixupTarget};
-pub use ids::{BlockId, ConstId, SymId, TypeId};
+pub use ids::{AsmId, BlockId, ComdatId, ConstId, DiId, LocId, SymId, TypeId};
 pub use module::Module;
 pub use target::{
     AARCH64_LINUX_DATA_LAYOUT, AARCH64_LINUX_DATA_LAYOUT_LLVM19, AlignPair, Arch, DataLayout,

@@ -322,6 +322,20 @@ implementation as one table (attribute name → class) that `hod_ll` and
 - **rejected**: anything else. An attribute that is in neither list is a
   `classify` failure naming the attribute. It is never silently dropped.
 
+Shared representation (`attrs` module, used by function symbols and by
+call instructions):
+
+- `CallConv` is LLVM's calling-convention number (0 to 1023); every number
+  is representable and `classify` names the unsupported ones.
+- `ParamAttrs` holds the kept attributes of one parameter or of the return
+  value in eight bytes: the flags (`zeroext`, `signext`, `inreg`, `nest`,
+  the three `swift*`), `align`, `alignstack`, and at most one typed
+  attribute (`ParamMem`: `sret`, `byval`, `byref`, `inalloca`,
+  `preallocated`, `elementtype`) with its type. LLVM allows `elementtype`
+  beside another typed attribute on an inline-assembly operand; that is
+  not representable, and a producer that meets it reports the function as
+  unsupported.
+
 ## 6. Debug information
 
 Present only when the producer was asked for it. Typed, not generic

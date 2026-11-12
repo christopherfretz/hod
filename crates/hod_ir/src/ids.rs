@@ -64,6 +64,34 @@ id_type!(
     "bb"
 );
 
+id_type!(
+    /// A COMDAT of a module (§2): a name and a selection kind.
+    ComdatId,
+    "comdat"
+);
+id_type!(
+    /// An inline-assembly callee of a module (§2): template, constraints,
+    /// flags and function type.
+    AsmId,
+    "asm"
+);
+id_type!(
+    /// A debug-information node of a module (§6).
+    DiId,
+    "di"
+);
+id_type!(
+    /// An interned source location of a module (§6): line, column, scope
+    /// and inlined-at.
+    LocId,
+    "loc"
+);
+
+impl LocId {
+    /// "No location": what an instruction without `!dbg` has.
+    pub const NONE: LocId = LocId(u32::MAX);
+}
+
 impl TypeId {
     /// `void`.
     pub const VOID: TypeId = TypeId(0);
@@ -114,6 +142,15 @@ mod tests {
         assert_eq!(size_of::<ConstId>(), 4);
         assert_eq!(size_of::<SymId>(), 4);
         assert_eq!(size_of::<BlockId>(), 4);
+        assert_eq!(size_of::<ComdatId>(), 4);
+        assert_eq!(size_of::<AsmId>(), 4);
+        assert_eq!(size_of::<DiId>(), 4);
+        assert_eq!(size_of::<LocId>(), 4);
+        assert_eq!(format!("{:?}", ComdatId::new(1)), "comdat1");
+        assert_eq!(format!("{:?}", AsmId::new(2)), "asm2");
+        assert_eq!(format!("{:?}", DiId::new(3)), "di3");
+        assert_eq!(format!("{:?}", LocId::new(4)), "loc4");
+        assert_ne!(LocId::NONE, LocId::new(0));
         assert_eq!(size_of::<Option<TypeId>>(), 8);
         assert_eq!(format!("{:?}", TypeId::new(12)), "ty12");
         assert_eq!(format!("{:?}", ConstId::new(0)), "c0");

@@ -1215,7 +1215,7 @@ pub fn attr_info(syntax: AttrSyntax, name: &[u8]) -> Option<&'static AttrInfo> {
 
 /// The positions in [`ATTRIBUTES`] of the string rows that match by
 /// prefix; a test checks that they are all of them.
-const PREFIXED_STRING_ROWS: [usize; 1] = [KEYWORD_ROWS + 13];
+const PREFIXED_STRING_ROWS: [usize; 1] = [KEYWORD_ROWS + 14];
 
 /// The class of the attribute `name` written as `syntax` (§5.7). A name
 /// the table does not have is [`AttrClass::Rejected`].

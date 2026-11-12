@@ -652,7 +652,8 @@ mod tests {
             fixups[1..],
             [fixup(5, 8, FixupTarget::Plt(f), 0), fixup(13, 8, FixupTarget::Sym(f), 0)]
         );
-        assert_eq!(size_of::<Fixup>(), 32);
+        // 40 since WP-095: `FixupTarget::BlockDiff` holds three ids.
+        assert_eq!(size_of::<Fixup>(), 40);
     }
 
     /// §4.3 errors: `UnsupportedInitializer`, `UnsizedType`, `InvalidType`,

@@ -821,7 +821,13 @@ mod tests {
         );
         let ones = c.int(t, TypeId::I32, 1).unwrap();
         let splat = c.splat(t, v2, ones).unwrap();
+        // WP-095: a vector of numbers folds to its image.
         let e = c.fold_cast(t, ConstOp::BitCast, splat, TypeId::I64).unwrap();
+        assert_eq!(e, c.int(t, TypeId::I64, 0x1_0000_0001).unwrap());
+        // One that is not all numbers stays.
+        let undef = c.undef(t, TypeId::I32).unwrap();
+        let mixed = c.aggregate(t, v2, &[ones, undef]).unwrap();
+        let e = c.fold_cast(t, ConstOp::BitCast, mixed, TypeId::I64).unwrap();
         assert!(is_expr(c, e, ConstOp::BitCast));
         let v2x64 = t.vector(TypeId::I64, 2).unwrap();
         let e = c.fold_cast(t, ConstOp::ZExt, splat, v2x64).unwrap();

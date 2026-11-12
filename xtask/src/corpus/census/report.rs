@@ -175,6 +175,10 @@ fn majors_of(majors: &BTreeSet<Reverse<u32>>) -> String {
     format!("LLVM {}", list.join(", "))
 }
 
+/// A label of the table "Modules of an entry" and the manifest's
+/// `delivered` values it counts.
+type ModuleKind = (&'static str, fn(&str) -> bool);
+
 /// The report's "Capture" part: what the tables of the corpus say.
 #[expect(
     clippy::too_many_lines,
@@ -352,7 +356,7 @@ fn capture_part(dir: &Path, manifest: &Manifest, skips: &Skips, groups: &[Group]
     cells.extend(names.iter().map(|name| code(name)));
     text.push_str(&header(&cells, 1));
     // The manifest has one word per module.
-    let kinds: [(&str, fn(&str) -> bool); 2] = [
+    let kinds: [ModuleKind; 2] = [
         ("of several modules", |delivered| delivered.contains(' ')),
         ("with a module delivered as bitcode", |delivered| delivered.contains("bitcode")),
     ];

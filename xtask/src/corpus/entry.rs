@@ -183,11 +183,11 @@ pub fn compose(
         }
     }
     // The file must read back as the entry it is meant to be.
-    let names: Vec<&str> = modules.iter().filter_map(|module| module.name.as_deref()).collect();
+    let given: Vec<&str> = modules.iter().filter_map(|module| module.name.as_deref()).collect();
     let read: Vec<String> =
         directives::modules(&text).into_iter().map(|module| module.name).collect();
     match directives::parse(&text) {
-        Ok(found) if found == *expect && read == names => Ok(text),
+        Ok(found) if found == *expect && read == given => Ok(text),
         _ => Err(Unfit::new("capture-broken", "the entry does not read back as written")),
     }
 }

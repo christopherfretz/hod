@@ -1033,6 +1033,7 @@ fn hybrid_mode() {
 // the reference's is an ERROR with every linker, whatever hod did. Off by
 // default.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn the_witness() {
     let world = World::new("irdiff-witness");
     let triple = host().triple();
@@ -1231,6 +1232,7 @@ fn directives_reach_the_tools() {
 // own by each compiler and the objects are linked in order into one
 // program. The first module hod does not build decides the test.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn several_modules() {
     let world = World::new("irdiff-modules");
     world.test(

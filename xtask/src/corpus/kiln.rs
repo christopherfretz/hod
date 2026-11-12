@@ -503,6 +503,10 @@ impl Plan {
 
 /// Decides, before anything is run, whether `test` can be a corpus entry
 /// for a capture on `host` with LLVM `major`, and how it is built.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one rule after another, in the order of the spec's table"
+)]
 pub fn plan(test: &KilnTest, header: &Header, host: Arch, major: u32) -> Result<Plan, Unfit> {
     let skip = |reason: &'static str, detail: String| Err(Unfit::new(reason, detail));
     if let Some(error) = header.errors.first() {
@@ -587,7 +591,9 @@ pub fn plan(test: &KilnTest, header: &Header, host: Arch, major: u32) -> Result<
         }
         let mut units = Vec::new();
         for path in &header.units {
-            units.push((beside(path, "unit")?, path.ends_with(".c")));
+            // `.C` is C++, so the extension is compared exactly.
+            let c = Path::new(path).extension() == Some(std::ffi::OsStr::new("c"));
+            units.push((beside(path, "unit")?, c));
         }
         Some(Separate {
             language: compile_args.clone(),

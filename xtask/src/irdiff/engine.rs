@@ -29,10 +29,10 @@ pub struct Test {
 }
 
 /// What the oracle's `llc` gets after `-O0` and hod does not: the
-/// instruction selector. At `-O0` the default selectors (GlobalISel on
-/// AArch64, FastISel on both targets) are the ones only `-O0` builds use,
+/// instruction selector. At `-O0` the default selectors (`GlobalISel` on
+/// AArch64, `FastISel` on both targets) are the ones only `-O0` builds use,
 /// and both miscompile correct programs on AArch64 (`spec/interp.md`
-/// §10.1); SelectionDAG is the selector every optimized build uses.
+/// §10.1); `SelectionDAG` is the selector every optimized build uses.
 pub const REFERENCE_SELECTOR: [&str; 2] = ["-global-isel=0", "-fast-isel=0"];
 
 /// How the detail of an ERROR starts when the witness raised it: the
@@ -280,7 +280,7 @@ impl Session {
         }
 
         let error = |detail: String| vec![self.record(test, None, Outcome::Error, detail)];
-        let parts = match self.parts(test, dir) {
+        let parts = match Self::parts(test, dir) {
             Ok(parts) => parts,
             Err(detail) => return error(detail),
         };
@@ -342,7 +342,7 @@ impl Session {
 
     /// The modules of the test and where their objects go: the file
     /// itself, or one file per `;@ module:` part, written under `dir`.
-    fn parts(&self, test: &Test, dir: &Path) -> Result<Vec<Part>, String> {
+    fn parts(test: &Test, dir: &Path) -> Result<Vec<Part>, String> {
         // A file that is not text is one module; `llc` says what is wrong
         // with it.
         let modules =

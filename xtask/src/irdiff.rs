@@ -4,7 +4,7 @@
 //!
 //! Each test is an LLVM IR module with a `main`, or several modules that
 //! make one program. It is compiled by the oracle (`llc -O0` with the
-//! SelectionDAG selector) and by hod, the objects are linked by every
+//! `SelectionDAG` selector) and by hod, the objects are linked by every
 //! linker of the matrix, and the programs must behave as the test's `;@`
 //! directives say and as each other. With the witness, a second oracle
 //! build (`llc -O2`) must behave the same.
@@ -75,6 +75,7 @@ pub enum TierFilter {
 
 /// A run of the command.
 #[derive(Clone, Debug)]
+#[expect(clippy::struct_excessive_bools, reason = "one field per option of the command")]
 pub struct Config {
     /// Test files and directories (searched for `*.ll`, recursively).
     /// Empty means the workspace's `tests/ir`.

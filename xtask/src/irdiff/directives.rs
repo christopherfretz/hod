@@ -437,6 +437,7 @@ struct Parser {
 
 impl Parser {
     /// `rest` is the line after `;@`.
+    #[expect(clippy::too_many_lines, reason = "one arm per key of the directive table")]
     fn directive(&mut self, rest: &str, line: usize) -> Result<(), String> {
         let rest = rest.strip_prefix(' ').ok_or(MALFORMED)?;
         let key_len = rest.bytes().take_while(|b| b.is_ascii_lowercase() || *b == b'-').count();

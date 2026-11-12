@@ -618,9 +618,9 @@ impl Group<'_> {
                           write it as text";
             return Err(Unfit::new(reason, detail));
         };
-        let text = job.join("module.ll");
+        let listing = job.join("module.ll");
         let configure = |command: &mut std::process::Command| {
-            command.arg("-o").arg(&text).arg("-").env("LC_ALL", "C");
+            command.arg("-o").arg(&listing).arg("-").env("LC_ALL", "C");
         };
         let output =
             process::run(llvm_dis, configure, &module, self.options.tool_limits).map_err(broken)?;
@@ -628,8 +628,8 @@ impl Group<'_> {
             let detail = self.tidy(&failure("llvm-dis", &output), job);
             return Err(Unfit::new("llvm-dis-fails", detail));
         }
-        let text = fs::read(&text).map_err(|e| broken(io("read", &text, &e)))?;
-        Ok(Module { name, text, delivered: Delivered::Bitcode })
+        let bytes = fs::read(&listing).map_err(|e| broken(io("read", &listing, &e)))?;
+        Ok(Module { name, text: bytes, delivered: Delivered::Bitcode })
     }
 
     fn capture_kiln(
@@ -760,10 +760,10 @@ impl Group<'_> {
             args.extend(engine::REFERENCE_SELECTOR.iter().map(AsRef::<std::ffi::OsStr>::as_ref));
             args.extend(["-o".as_ref(), object.as_os_str(), module.as_os_str()]);
             step(&self.llvm.llc, "llc", "llc-fails", &args, &object)?;
-            let text = fs::read(&module).map_err(|e| broken(io("read", &module, &e)))?;
+            let bytes = fs::read(&module).map_err(|e| broken(io("read", &module, &e)))?;
             modules.push(Module {
                 name: name.map(str::to_owned),
-                text,
+                text: bytes,
                 delivered: Delivered::Text,
             });
             commands.push(clang_args.join(" "));

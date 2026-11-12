@@ -6,13 +6,36 @@ use std::process::Command;
 use crate::jobs::children::run_step;
 
 /// Should a cargo step that failed with `stderr` be run again
-/// (`spec/harness.md` "ci")? Once, and only for rustc's `error[E0463]`
-/// (can't find crate): a dependency's artifact was not there when a
-/// dependent was compiled, which the workspace's file system does to a
-/// build under load although cargo had just written it; a rerun finds or
-/// rebuilds it. Every other failure is real.
+/// (`spec/harness.md` "ci")? Once, and only for the two errors rustc gives
+/// when a dependency's artifact is not in the build directory although
+/// cargo had just written it, which the workspace's file system does to a
+/// build under load (its directory listings lag behind fresh files):
+///
+/// - ``error[E0463]: can't find crate for `X` ``: neither the rlib nor the
+///   rmeta of a dependency found by `-L dependency=` was listed;
+/// - ``error: crate `X` required to be available in rlib format, but was not
+///   found in this form``: its rmeta was listed (written earlier, at the end
+///   of analysis) but its rlib (renamed into place at the end of codegen)
+///   not yet, and a binary is being linked.
+///
+/// A rerun finds the artifacts, or rebuilds them. Every other failure is
+/// real.
 pub fn should_retry(stderr: &str, retried: bool) -> bool {
-    !retried && stderr.lines().any(|line| line.trim_start().starts_with("error[E0463]"))
+    !retried && stderr.lines().any(|line| vanished_artifact(line).is_some())
+}
+
+/// The rustc error that `line` is, if it is one of those [`should_retry`]
+/// retries: its short name for the note.
+fn vanished_artifact(line: &str) -> Option<&'static str> {
+    let line = line.trim();
+    if line.starts_with("error[E0463]") {
+        return Some("error[E0463] (can't find crate)");
+    }
+    let rlib = line.strip_prefix("error: crate `")?.strip_suffix(
+        "` required to be available in rlib format, but was not found in this form",
+    )?;
+    (!rlib.is_empty() && !rlib.contains(char::is_whitespace))
+        .then_some("crate required in rlib format")
 }
 
 /// Runs `cargo <args>`, echoing its standard error while reading it, and
@@ -40,9 +63,10 @@ pub fn cargo_step(args: &[&str]) -> bool {
             eprintln!("ci: cargo {shown}: {status}");
             return false;
         }
+        let why = stderr.lines().find_map(vanished_artifact).unwrap_or("a missing artifact");
         eprintln!(
-            "ci: [retry] cargo {shown} failed with error[E0463] (can't find crate: an artifact \
-             vanished mid-build); running it once more"
+            "ci: [retry] cargo {shown} failed with {why}: an artifact was not visible to rustc \
+             mid-build; running it once more"
         );
         retried = true;
     }
@@ -66,5 +90,32 @@ mod tests {
         assert!(!should_retry("test result: FAILED. 1 passed; 1 failed\n", false));
         assert!(!should_retry("note: the test checks that error[E0463] is retried\n", false));
         assert!(!should_retry("", false));
+    }
+
+    // spec/harness.md "ci": the rlib form of the same cause, exactly as
+    // rustc prints it, is retried once; its relatives are not.
+    #[test]
+    fn retries_a_crate_seen_only_as_rmeta_once() {
+        let rlib = "   Compiling hod v0.0.0\n\
+                    error: crate `hod_cg` required to be available in rlib format, but was not \
+                    found in this form\n\n\
+                    error: could not compile `hod` (test \"cli\") due to 1 previous error\n";
+        assert!(should_retry(rlib, false));
+        assert!(!should_retry(rlib, true), "a second failure is real");
+        let unit = "error: crate `hod_cg` required to be available in dylib format, but was not \
+                    found in this form\n";
+        assert!(!should_retry(unit, false), "hod links no dylib: that is a real error");
+        assert!(!should_retry(
+            "error: crate `` required to be available in rlib format, but was \
+                               not found in this form\n",
+            false
+        ));
+        assert!(!should_retry(
+            "note: error: crate `a` required to be available in rlib format, \
+                               but was not found in this form\n",
+            false
+        ));
+        assert!(!should_retry("error: crate `a` required to be available in rlib format\n", false));
+        assert!(!should_retry("error: linking with `cc` failed: exit status: 1\n", false));
     }
 }

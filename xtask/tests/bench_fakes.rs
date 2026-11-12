@@ -26,6 +26,16 @@ use xtask::bench::record::{Machine, Ratio, Record, Results, Status, Tool};
 use xtask::bench::{self, Action, Config, Run};
 use xtask::irdiff::Search;
 
+/// How much a time must differ to count, and how long a slow run sleeps.
+/// A fake run takes milliseconds on a quiet machine; at load 25 to 32 a
+/// fork and an exec have taken a large part of a second, so a run of
+/// fakes is assumed to take under 0.5 s there. Then a fast run (under the
+/// baseline's fastest + 1 s) is never judged slow, and a slow one (1.5 s
+/// more, against a baseline under 0.5 s) always is. With 100 ms and 0.3 s
+/// both failed on busy machines.
+const SLACK_US: u64 = 1_000_000;
+const SLOW: &str = "1.5";
+
 const FAKE_COMPILER: &str = r#"PATH=/usr/bin:/bin
 if [ "$1" = --version ]; then echo "fake clang version 22.0.0"; exit 0; fi
 out= src= args=
@@ -218,10 +228,10 @@ impl World {
 
     /// The command's defaults on this machine of fakes, two runs each.
     /// The thresholds are those of the contract, except that a time must
-    /// differ by 100 ms to count and that the reference tool may drift by
-    /// any factor: the fakes run for a few milliseconds, and those vary
-    /// by more than 5% on a busy machine. The tests that judge time make
-    /// a tool sleep for much longer than that.
+    /// differ by [`SLACK_US`] to count and that the reference tool may
+    /// drift by any factor: the fakes run for a few milliseconds, and
+    /// those vary by more than 5% on a busy machine. The tests that judge
+    /// time make a tool sleep [`SLOW`] seconds.
     fn config(&self, action: Action) -> Config {
         let mut config = Config::new(self.scratch.join("ws"), self.scratch.join("build"));
         config.action = action;
@@ -239,7 +249,7 @@ impl World {
         };
         config.runs = 2;
         config.limits.time = Duration::from_secs(20);
-        config.thresholds.time_slack_us = 100_000;
+        config.thresholds.time_slack_us = SLACK_US;
         config.thresholds.max_drift_bp = 10_000_000;
         config.thresholds.max_spread_bp = 10_000_000;
         config
@@ -594,9 +604,9 @@ fn check_pass_and_fail() {
     assert_eq!((check.baseline.clone(), check.advisory.clone()), (world.baseline(), None));
     assert!(pass.summary(false).contains("bench: check: 4 inputs: "));
 
-    // hod takes 0.3 s longer: a failure that being measured again twice
+    // hod takes 1.5 s longer: a failure that being measured again twice
     // does not cure. A slower decline is still a decline, and not judged.
-    world.control("hod.delay", "0.3");
+    world.control("hod.delay", SLOW);
     let mut config = world.config(Action::Check);
     (config.filters, config.runs) = (vec!["built-g".to_owned(), "plain-g".to_owned()], 1);
     let slow = world.run(&config);
@@ -646,7 +656,7 @@ fn check_pass_and_fail() {
 fn the_remeasure_rule() {
     let world = World::new("bench-remeasure");
     world.record_baseline();
-    world.control("hod.delay", "0.3");
+    world.control("hod.delay", SLOW);
     world.control("hod.slow-first", "2");
     let mut config = world.config(Action::Check);
     config.filters = vec!["built-g".to_owned()];
@@ -661,7 +671,10 @@ fn the_remeasure_rule() {
     };
     let hod = record(&run, "built-g", Tool::Hod);
     assert_eq!(hod.runs, 2 * (1 + again), "{hod:?}");
-    assert!(hod.wall_us_min.unwrap() < 250_000 && hod.wall_us_max.unwrap() >= 300_000, "{hod:?}");
+    assert!(
+        hod.wall_us_min.unwrap() < 1_000_000 && hod.wall_us_max.unwrap() >= 1_500_000,
+        "{hod:?}"
+    );
     assert!(run.summary(false).contains(&format!("; measured again {again}x\n")));
     // The results file holds what was judged.
     assert_eq!(
@@ -687,7 +700,7 @@ fn the_remeasure_rule() {
 fn advisory_on_another_machine() {
     let world = World::new("bench-advisory");
     world.record_baseline();
-    world.control("hod.delay", "0.3");
+    world.control("hod.delay", SLOW);
     let mut config = world.config(Action::Check);
     (config.filters, config.runs) = (vec!["built-g".to_owned()], 1);
     config.machine.id = "another-machine-8c".to_owned();

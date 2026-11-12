@@ -45,6 +45,12 @@ pub const GROUPS: &[(&str, Enable)] = &[
         let o = &mut e.options;
         (o.branches, o.loops, o.switches, o.block_addresses) = (true, true, true, true);
     }),
+    // Calls: direct and indirect, many arguments.
+    ("WP-038", |e| {
+        e.options.calls = true;
+        e.options.indirect_calls = true;
+        e.options.many_args = true;
+    }),
     // The floating-point group: `float`, `double`, `fcmp`, conversions.
     ("WP-039", |e| e.options.floats = true),
     // The intrinsic group: integer and memory intrinsics.

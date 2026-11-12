@@ -71,6 +71,77 @@ pub enum DiFieldValue<'a> {
     Expr(ExprId),
 }
 
+/// What kind of value a field holds (§6.2): what a producer that reads
+/// LLVM's text must make of the value written there.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum DiShape {
+    /// An unsigned number ([`DiFieldValue::UInt`]): a count, a size, a
+    /// line, or a DWARF constant (`tag`, `encoding`, `language`, `cc`).
+    UInt,
+    /// A signed number ([`DiFieldValue::Int`]).
+    Int,
+    /// A number that may be absent, distinct from 0.
+    OptUInt,
+    /// `true` or `false`.
+    Bool,
+    /// A string.
+    Str,
+    /// A single node, or `null`.
+    Node,
+    /// The elements of a tuple.
+    List,
+    /// An expression.
+    Expr,
+    /// A constant of the module's pool.
+    Const,
+    /// A subrange bound: a number, a node or an expression.
+    Bound,
+    /// `DIFlag*` bits.
+    Flags,
+    /// `DISPFlag*` bits.
+    SpFlags,
+    /// An [`EmissionKind`].
+    EmissionKind,
+    /// A [`NameTableKind`].
+    NameTableKind,
+    /// A [`ChecksumKind`].
+    ChecksumKind,
+}
+
+/// A field that is not at its default, as [`DiNode::each_field`] hands
+/// it over: the value in the field's own type.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DiFieldOut<'a> {
+    /// An unsigned number; `tag` and the other DWARF constants too.
+    UInt(u64),
+    /// A signed number.
+    Int(i64),
+    /// `true` (a boolean field at its default is not handed over).
+    Bool(bool),
+    /// A string.
+    Str(&'a [u8]),
+    /// A node.
+    Node(DiId),
+    /// A list of nodes; a null element is [`DiId::NONE`].
+    List(&'a [DiId]),
+    /// An expression.
+    Expr(ExprId),
+    /// A constant.
+    Const(ConstId),
+    /// A subrange bound.
+    Bound(DiBound),
+    /// `DIFlag*` bits.
+    Flags(DiFlags),
+    /// `DISPFlag*` bits.
+    SpFlags(SpFlags),
+    /// An emission kind.
+    EmissionKind(EmissionKind),
+    /// A name-table kind.
+    NameTableKind(NameTableKind),
+    /// A checksum kind.
+    ChecksumKind(ChecksumKind),
+}
+
 /// Where a node's fields are written.
 pub(crate) struct Enc<'t> {
     pub(crate) cells: &'t mut Vec<DiId>,
@@ -145,6 +216,10 @@ pub(crate) trait Field<'a>: Copy {
     fn put(&self, enc: &mut Enc<'_>) -> IrResult<()>;
     fn get(dec: &mut Dec<'a>) -> Self;
     fn assign(value: DiFieldValue<'a>) -> Option<Self>;
+    /// What kind of value the field holds.
+    const SHAPE: DiShape;
+    /// The value, for a field that is [`Field::present`].
+    fn out(&self) -> DiFieldOut<'a>;
     /// Calls `visit` for every node the value names.
     #[inline]
     fn refs(&self, _visit: &mut dyn FnMut(DiId)) {}
@@ -153,6 +228,11 @@ pub(crate) trait Field<'a>: Copy {
 macro_rules! number_field {
     ($($ty:ty),*) => {$(
         impl<'a> Field<'a> for $ty {
+            const SHAPE: DiShape = DiShape::UInt;
+            #[inline]
+            fn out(&self) -> DiFieldOut<'a> {
+                DiFieldOut::UInt(u64::from(*self))
+            }
             #[inline]
             fn absent() -> Self {
                 0
@@ -184,6 +264,11 @@ macro_rules! number_field {
 number_field!(u16, u32);
 
 impl<'a> Field<'a> for u64 {
+    const SHAPE: DiShape = DiShape::UInt;
+    #[inline]
+    fn out(&self) -> DiFieldOut<'a> {
+        DiFieldOut::UInt(*self)
+    }
     #[inline]
     fn absent() -> Self {
         0
@@ -210,6 +295,11 @@ impl<'a> Field<'a> for u64 {
 }
 
 impl<'a> Field<'a> for i64 {
+    const SHAPE: DiShape = DiShape::Int;
+    #[inline]
+    fn out(&self) -> DiFieldOut<'a> {
+        DiFieldOut::Int(*self)
+    }
     #[inline]
     fn absent() -> Self {
         0
@@ -239,6 +329,11 @@ impl<'a> Field<'a> for i64 {
 }
 
 impl<'a> Field<'a> for bool {
+    const SHAPE: DiShape = DiShape::Bool;
+    #[inline]
+    fn out(&self) -> DiFieldOut<'a> {
+        DiFieldOut::Bool(*self)
+    }
     #[inline]
     fn absent() -> Self {
         false
@@ -265,6 +360,11 @@ impl<'a> Field<'a> for bool {
 }
 
 impl<'a> Field<'a> for Option<u32> {
+    const SHAPE: DiShape = DiShape::OptUInt;
+    #[inline]
+    fn out(&self) -> DiFieldOut<'a> {
+        DiFieldOut::UInt(u64::from(self.unwrap_or(0)))
+    }
     #[inline]
     fn absent() -> Self {
         None
@@ -291,6 +391,11 @@ impl<'a> Field<'a> for Option<u32> {
 }
 
 impl<'a> Field<'a> for &'a [u8] {
+    const SHAPE: DiShape = DiShape::Str;
+    #[inline]
+    fn out(&self) -> DiFieldOut<'a> {
+        DiFieldOut::Str(self)
+    }
     #[inline]
     fn absent() -> Self {
         &[]
@@ -326,6 +431,11 @@ impl<'a> Field<'a> for &'a [u8] {
 }
 
 impl<'a> Field<'a> for Option<DiId> {
+    const SHAPE: DiShape = DiShape::Node;
+    #[inline]
+    fn out(&self) -> DiFieldOut<'a> {
+        DiFieldOut::Node(self.unwrap_or(DiId::NONE))
+    }
     #[inline]
     fn absent() -> Self {
         None
@@ -357,6 +467,11 @@ impl<'a> Field<'a> for Option<DiId> {
 }
 
 impl<'a> Field<'a> for &'a [DiId] {
+    const SHAPE: DiShape = DiShape::List;
+    #[inline]
+    fn out(&self) -> DiFieldOut<'a> {
+        DiFieldOut::List(self)
+    }
     #[inline]
     fn absent() -> Self {
         &[]
@@ -398,6 +513,11 @@ impl<'a> Field<'a> for &'a [DiId] {
 }
 
 impl<'a> Field<'a> for ExprId {
+    const SHAPE: DiShape = DiShape::Expr;
+    #[inline]
+    fn out(&self) -> DiFieldOut<'a> {
+        DiFieldOut::Expr(*self)
+    }
     #[inline]
     fn absent() -> Self {
         ExprId::EMPTY
@@ -426,6 +546,11 @@ impl<'a> Field<'a> for ExprId {
 }
 
 impl<'a> Field<'a> for ConstId {
+    const SHAPE: DiShape = DiShape::Const;
+    #[inline]
+    fn out(&self) -> DiFieldOut<'a> {
+        DiFieldOut::Const(*self)
+    }
     #[inline]
     fn absent() -> Self {
         ConstId::new(0)
@@ -450,6 +575,11 @@ impl<'a> Field<'a> for ConstId {
 }
 
 impl<'a> Field<'a> for DiBound {
+    const SHAPE: DiShape = DiShape::Bound;
+    #[inline]
+    fn out(&self) -> DiFieldOut<'a> {
+        DiFieldOut::Bound(*self)
+    }
     #[inline]
     fn absent() -> Self {
         DiBound::None
@@ -505,8 +635,13 @@ impl<'a> Field<'a> for DiBound {
 }
 
 macro_rules! coded_field {
-    ($($ty:ty: $absent:expr, $code:expr, $make:expr;)*) => {$(
+    ($($ty:ty: $shape:ident, $absent:expr, $code:expr, $make:expr;)*) => {$(
         impl<'a> Field<'a> for $ty {
+            const SHAPE: DiShape = DiShape::$shape;
+            #[inline]
+            fn out(&self) -> DiFieldOut<'a> {
+                DiFieldOut::$shape(*self)
+            }
             #[inline]
             fn absent() -> Self {
                 $absent
@@ -538,11 +673,11 @@ macro_rules! coded_field {
 }
 
 coded_field! {
-    DiFlags: DiFlags(0), |flags| flags.0, |bits| u32::try_from(bits).ok().map(DiFlags);
-    SpFlags: SpFlags(0), |flags| flags.0, |bits| u32::try_from(bits).ok().map(SpFlags);
-    EmissionKind: EmissionKind::NoDebug, |kind| kind.code(), EmissionKind::from_code;
-    NameTableKind: NameTableKind::Default, |kind| kind.code(), NameTableKind::from_code;
-    ChecksumKind: ChecksumKind::None, |kind| kind.code(), ChecksumKind::from_code;
+    DiFlags: Flags, DiFlags(0), |flags| flags.0, |bits| u32::try_from(bits).ok().map(DiFlags);
+    SpFlags: SpFlags, SpFlags(0), |flags| flags.0, |bits| u32::try_from(bits).ok().map(SpFlags);
+    EmissionKind: EmissionKind, EmissionKind::NoDebug, |kind| kind.code(), EmissionKind::from_code;
+    NameTableKind: NameTableKind, NameTableKind::Default, |kind| kind.code(), NameTableKind::from_code;
+    ChecksumKind: ChecksumKind, ChecksumKind::None, |kind| kind.code(), ChecksumKind::from_code;
 }
 
 /// Sets of kinds, one bit per [`DiKind`]: what a reference may name.
@@ -619,6 +754,15 @@ macro_rules! nodes {
                 match self {
                     DiKind::Undefined => &[],
                     $( DiKind::$variant => &[$(nodes!(@second $tag, "tag"),)? $($fllvm,)*], )*
+                }
+            }
+
+            /// What kind of value the field LLVM calls `field` holds;
+            /// `None` for a field the kind's record does not have.
+            pub fn field_shape(self, field: &[u8]) -> Option<DiShape> {
+                match self {
+                    DiKind::Undefined => None,
+                    $( DiKind::$variant => <$name>::shape(field), )*
                 }
             }
 
@@ -706,6 +850,29 @@ macro_rules! nodes {
                     None
                 }
 
+                fn shape(field: &[u8]) -> Option<DiShape> {
+                    $(
+                        if nodes!(@second $tag, field == b"tag") {
+                            return Some(DiShape::UInt);
+                        }
+                    )?
+                    $(
+                        if field == $fllvm.as_bytes() {
+                            return Some(<$fty as Field<'_>>::SHAPE);
+                        }
+                    )*
+                    None
+                }
+
+                fn each(&self, visit: &mut dyn FnMut(&'static str, DiFieldOut<'a>)) {
+                    $( visit("tag", DiFieldOut::UInt(u64::from(nodes!(@second $tag, self.tag)))); )?
+                    $(
+                        if Field::present(&self.$field) {
+                            visit($fllvm, Field::out(&self.$field));
+                        }
+                    )*
+                }
+
                 fn refs(&self, visit: &mut dyn FnMut(&'static str, u32, DiId)) {
                     $(
                         Field::refs(&self.$field, &mut |id| {
@@ -763,6 +930,16 @@ macro_rules! nodes {
                 match self {
                     DiNode::Undefined => None,
                     $( DiNode::$variant(node) => node.set(field, value), )*
+                }
+            }
+
+            /// Calls `visit(field, value)` for every field that is not at
+            /// its default, in the order of [`DiKind::fields`]; a kind
+            /// with a tag always hands over its `tag` first.
+            pub fn each_field(&self, visit: &mut dyn FnMut(&'static str, DiFieldOut<'a>)) {
+                match self {
+                    DiNode::Undefined => {}
+                    $( DiNode::$variant(node) => node.each(visit), )*
                 }
             }
 
@@ -1173,11 +1350,17 @@ nodes! {
 impl<'a> DiNode<'a> {
     /// A node of `kind` as LLVM's parser starts one: every field at
     /// LLVM's default for an omitted field. That differs from
-    /// [`DiNode::new`] in one place: a global variable is a definition.
+    /// [`DiNode::new`] in two places: a global variable is a definition,
+    /// and so is a subprogram (LLVM's `isDefinition` defaults to `true`
+    /// when neither it nor `spFlags` is written).
     pub fn llvm_default(kind: DiKind) -> DiNode<'a> {
         match kind {
             DiKind::GlobalVariable => DiNode::GlobalVariable(DiGlobalVariable {
                 is_definition: true,
+                ..Default::default()
+            }),
+            DiKind::Subprogram => DiNode::Subprogram(DiSubprogram {
+                sp_flags: SpFlags::DEFINITION,
                 ..Default::default()
             }),
             other => DiNode::new(other),

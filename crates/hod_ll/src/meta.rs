@@ -186,6 +186,18 @@ impl MetadataIndex {
         Some(&self.nodes[at as usize])
     }
 
+    /// The position in [`MetadataIndex::nodes`] of the node numbered
+    /// `id`.
+    pub fn position(&self, id: u32) -> Option<usize> {
+        let at = if self.sparse.is_empty() {
+            (*self.dense.get(id as usize)?).checked_sub(1)?
+        } else {
+            let found = self.sparse.binary_search_by_key(&id, |&(number, _)| number).ok()?;
+            self.sparse[found].1
+        };
+        Some(at as usize)
+    }
+
     /// Every node, in file order.
     pub fn nodes(&self) -> &[MdNode] {
         &self.nodes
@@ -298,7 +310,7 @@ impl Parser<'_, '_> {
                 b"llvm.ident" | b"llvm.errno.tbaa" => {}
                 b"llvm.dbg.cu" => {
                     self.md.debug_info = true;
-                    self.module.record_unsupported("debug-info", None);
+                    self.dbg_cu = Some(ent.span);
                 }
                 other => {
                     let construct = format!("named-metadata:{}", String::from_utf8_lossy(other));

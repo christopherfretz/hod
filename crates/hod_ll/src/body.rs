@@ -10,14 +10,15 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use hod_ir::{
-    BlockId, Body, FunctionBuilder, Intrinsic, IrErrorKind, Module, NoCode, ParamAttrs, TypeId,
-    TypeKind, Value,
+    BlockId, Body, DiId, ExprId, FunctionBuilder, Intrinsic, IrErrorKind, LocId, Module, NoCode,
+    ParamAttrs, TypeId, TypeKind, Value,
 };
 
+use crate::debug::{Handle, INVALID};
 use crate::error::{LlErrorKind, PResult, fail, ir_fail};
 use crate::index::{Index, parse_u32};
 use crate::lexer::{Lexer, Tok, Token, unescape};
-use crate::meta::MdRef;
+use crate::meta::{MdKind, MdRef};
 use crate::names::hash;
 use crate::parser::{Parser, Scratch, ir};
 use crate::skip::skip_group;
@@ -130,33 +131,26 @@ pub(crate) enum CalleeInfo {
     Other,
 }
 
-/// One debug record, `#dbg_value(…)`, as text.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct DebugRecordText {
-    /// The record's name without the `#`: `dbg_declare`, `dbg_value`,
-    /// `dbg_assign`, `dbg_label`, …; or the name of the `llvm.dbg.*`
-    /// intrinsic of a call written in the old form.
-    pub name: Span,
-    /// The source between the parentheses.
-    pub args: Span,
-    /// The position, in layout order, of the instruction the record
-    /// stands before ([`hod_ir::Body::inst_count`] at that moment).
-    pub before: u32,
+/// A call of an `llvm.dbg.*` intrinsic, read and waiting for the
+/// call's `!dbg`, which is the record's location (`spec/ll.md` §11.9).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct OldRecord {
+    pub kind: RecordKind,
+    pub var: DiId,
+    pub expr: ExprId,
+    /// Whether the value is a `DIArgList` (in `FnState::dbg_vals`).
+    pub list: bool,
+    pub address: Value,
+    pub address_expr: ExprId,
 }
 
-/// The debug information of one body as the text has it
-/// (`spec/ll.md` §11.9): where each `!dbg` attachment and each debug
-/// record is. Nothing is interpreted here; this is what the work package
-/// that delivers debug nodes starts from.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
-pub struct BodyDebug {
-    /// The `!dbg` attachment of each instruction that has one: the
-    /// instruction's position in layout order, and the node. An
-    /// instruction that left nothing in the body (a static `alloca`, a
-    /// call of a no-code intrinsic) is not listed.
-    pub locations: Vec<(u32, MdRef)>,
-    /// The debug records, in the order of the text.
-    pub records: Vec<DebugRecordText>,
+/// The four debug records.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RecordKind {
+    Declare,
+    Value,
+    Assign,
+    Label,
 }
 
 /// How far a number may lie beyond the numbers met so far and still get
@@ -201,7 +195,10 @@ pub(crate) struct FnState {
     pub path: Vec<u32>,
     pub clauses: Vec<hod_ir::Clause>,
     pub callees: Vec<CalleeInfo>,
-    pub debug: BodyDebug,
+    /// The values of the debug record being read, and a call of a debug
+    /// intrinsic waiting for its `!dbg`.
+    pub dbg_vals: Vec<Value>,
+    pub old_record: Option<OldRecord>,
 }
 
 /// Parses the bodies of one module's functions (`spec/ll.md` §11).
@@ -290,12 +287,6 @@ impl<'t, 'a> BodyParser<'t, 'a> {
         self.unsupported.iter().map(|construct| &**construct)
     }
 
-    /// Where the debug information of the last body parsed is in the
-    /// text.
-    pub fn debug(&self) -> &BodyDebug {
-        &self.state.debug
-    }
-
     /// Gives the parser a body its consumer is done with: the next body
     /// is built in its storage (`spec/ir.md` §5.1).
     pub fn recycle(&mut self, body: Body) {
@@ -312,8 +303,6 @@ pub struct ParsedBody<'p> {
     pub body: Option<&'p Body>,
     /// The unsupported constructs of the body, each once.
     pub unsupported: &'p [Cow<'static, str>],
-    /// Where its debug information is.
-    pub debug: &'p BodyDebug,
 }
 
 /// Parses the body of every function of `text`, in file order, and hands
@@ -332,12 +321,7 @@ pub fn parse_bodies<E: From<LlError>>(
     let mut parser = BodyParser::new(text);
     for function in text.functions() {
         let body = parser.parse(module, function)?;
-        let parsed = ParsedBody {
-            function,
-            body: body.as_ref(),
-            unsupported: &parser.unsupported,
-            debug: &parser.state.debug,
-        };
+        let parsed = ParsedBody { function, body: body.as_ref(), unsupported: &parser.unsupported };
         each(module, parsed)?;
         if let Some(body) = body {
             parser.recycle(body);
@@ -386,8 +370,7 @@ fn build(
     state.sparse.clear();
     state.names.clear();
     state.forwards.clear();
-    state.debug.locations.clear();
-    state.debug.records.clear();
+    state.old_record = None;
     p.pending.clear();
     p.depth = 0;
     state.variadic = variadic;
@@ -416,6 +399,13 @@ fn build(
         return Ok(None);
     }
     match b.finish() {
+        // A body whose debug information breaks a rule of LLVM's
+        // verifier (`spec/ir.md` §6.8), which drops it then.
+        Ok(body) if !p.module.debug.is_empty() && body.verify_debug(p.module).is_err() => {
+            p.note(INVALID);
+            s.storage = Some(body);
+            Ok(None)
+        }
         Ok(body) => Ok(Some(body)),
         // Every name has its definition, so what is left undefined is a
         // ring of no-code calls that each stand for the next
@@ -921,17 +911,25 @@ impl<'a> Fx<'_, 'a, '_> {
         };
         let before = self.b.inst_count();
         let (ty, value, terminator) = self.instruction()?;
+        let mut loc = LocId::NONE;
         if std::mem::take(&mut self.extra_comma) || self.p.eat(Tok::Comma) {
-            let position = (self.b.inst_count() > before).then(|| self.b.inst_count() as u32 - 1);
-            self.attachments(position)?;
+            loc = self.attachments()?;
+            if loc != LocId::NONE {
+                self.b.set_loc_since(before, loc);
+            }
+        }
+        if let Some(record) = self.s.old_record.take() {
+            self.old_record(record, loc)?;
         }
         self.define(name, ty, value)?;
         Ok(terminator)
     }
 
-    /// `!kind !node {, !kind !node}` after an instruction. Only `!dbg`
-    /// is kept (`spec/ir.md` §6); every node must exist.
-    fn attachments(&mut self, position: Option<u32>) -> PResult<()> {
+    /// `!kind !node {, !kind !node}` after an instruction: the location
+    /// `!dbg` names, the only one kept (`spec/ir.md` §6); every node
+    /// must exist.
+    fn attachments(&mut self) -> PResult<LocId> {
+        let mut loc = LocId::NONE;
         loop {
             if self.p.tok.kind != Tok::Meta {
                 return self.p.syntax("expected metadata after comma");
@@ -945,52 +943,266 @@ impl<'a> Fx<'_, 'a, '_> {
             {
                 return fail(LlErrorKind::Syntax, at, "this bracket is never closed");
             }
-            if dbg && let Some(position) = position {
-                self.debug_location(position, node);
+            if dbg && !self.numbering {
+                let resume = self.p.tok.start;
+                loc = self.p.loc_of(at, node)?.unwrap_or(LocId::NONE);
+                self.p.goto(resume);
             }
             if !self.p.eat(Tok::Comma) {
-                return Ok(());
+                return Ok(loc);
             }
         }
     }
 
-    // ---- SEAM(WP-005): debug information ---------------------------------
-    //
-    // Everything a body says about debug information passes through the
-    // two functions below and nowhere else. Today they keep the text
-    // (`BodyDebug`); the work package that delivers `hod_ir`'s debug
-    // nodes turns them into `FunctionBuilder::set_loc` and
-    // `set_slot_var` calls here, where the local names are in reach.
+    // ---- debug records (`spec/ll.md` §11.9) ----
 
-    /// `!dbg node` on the instruction at `position`.
-    fn debug_location(&mut self, position: u32, node: MdRef) {
-        if !self.numbering {
-            self.s.debug.locations.push((position, node));
-        }
-    }
-
-    /// `#dbg_xxx(…)`, at the `#`: stepped over, and its text kept.
+    /// `#dbg_xxx(…)`, at the `#`.
     fn debug_record(&mut self) -> PResult<()> {
-        let name = Span { start: self.p.tok.start + 1, end: self.p.tok.end };
+        let name = self.p.text();
+        let at = self.p.tok.start;
         self.p.bump();
         if self.p.tok.kind != Tok::LParen {
             return self.p.syntax("expected '(' in a debug record");
         }
         let args = self.skip_group()?;
-        self.debug_call(name, args);
-        Ok(())
-    }
-
-    /// A debug record, or a call of an `llvm.dbg.*` intrinsic, which is
-    /// one written in the old form.
-    pub(crate) fn debug_call(&mut self, name: Span, args: Span) {
-        if !self.numbering {
-            let before = self.b.inst_count() as u32;
-            self.s.debug.records.push(DebugRecordText { name, args, before });
+        if self.numbering {
+            return Ok(());
+        }
+        let kind = match name {
+            b"#dbg_declare" => RecordKind::Declare,
+            b"#dbg_value" => RecordKind::Value,
+            b"#dbg_assign" => RecordKind::Assign,
+            b"#dbg_label" => RecordKind::Label,
+            _ => {
+                let construct = match hod_ir::di_record(name) {
+                    Some(hod_ir::DiMapping::Unsupported(construct)) => Cow::Borrowed(construct),
+                    _ => return fail(LlErrorKind::Syntax, at, "expected a debug record"),
+                };
+                self.p.note(construct);
+                return Ok(());
+            }
+        };
+        let resume = self.p.tok.start;
+        self.p.goto(args.start);
+        let record = self.record_args(kind, false)?;
+        self.p.expect(Tok::Comma, "expected ',' before the record's location")?;
+        let loc_at = self.p.tok.start;
+        let node = self.p.md_ref()?;
+        let loc = self.p.loc_of(loc_at, node)?;
+        if self.p.tok.start != args.end {
+            return self.p.syntax("expected ')' at the end of a debug record");
+        }
+        self.p.goto(resume);
+        match loc {
+            Some(loc) => self.emit_record(record, loc, at),
+            None => Ok(()),
         }
     }
 
-    // ---- end of SEAM(WP-005) ---------------------------------------------
+    /// The operands of a debug record before its location; with
+    /// `old`, of a call of the intrinsic, each after `metadata`.
+    fn record_args(&mut self, kind: RecordKind, old: bool) -> PResult<OldRecord> {
+        let mut record = OldRecord {
+            kind,
+            var: DiId::NONE,
+            expr: ExprId::EMPTY,
+            list: false,
+            address: Value::NONE,
+            address_expr: ExprId::EMPTY,
+        };
+        self.s.dbg_vals.clear();
+        if kind == RecordKind::Label {
+            record.var = self.record_node(old, MdKind::Label)?;
+            return Ok(record);
+        }
+        record.list = self.record_value(old)?;
+        self.p.expect(Tok::Comma, "expected ',' between operands")?;
+        record.var = self.record_node(old, MdKind::LocalVariable)?;
+        self.p.expect(Tok::Comma, "expected ',' between operands")?;
+        record.expr = self.record_expr(old)?;
+        if kind == RecordKind::Assign {
+            self.p.expect(Tok::Comma, "expected ',' between operands")?;
+            self.metadata_word(old)?;
+            // The `DIAssignID` is not kept (`spec/ir.md` §6.9).
+            let at = self.p.tok.start;
+            match self.p.md_ref()? {
+                MdRef::Node(id) if self.p.md_kind(id) == Some(MdKind::AssignId) => {}
+                MdRef::Inline(MdKind::AssignId, _) => {}
+                _ => return fail(LlErrorKind::Syntax, at, "expected a DIAssignID"),
+            }
+            self.p.expect(Tok::Comma, "expected ',' between operands")?;
+            let mark = self.s.dbg_vals.len();
+            if self.record_value(old)? {
+                self.p.note("debug:#dbg_assign.DIArgList");
+            }
+            record.address = self.s.dbg_vals.get(mark).copied().unwrap_or(Value::NONE);
+            self.s.dbg_vals.truncate(mark);
+            self.p.expect(Tok::Comma, "expected ',' between operands")?;
+            record.address_expr = self.record_expr(old)?;
+            if record.list {
+                self.p.note("debug:#dbg_assign.DIArgList");
+            }
+        }
+        Ok(record)
+    }
+
+    fn metadata_word(&mut self, old: bool) -> PResult<()> {
+        if old {
+            self.p.expect_word(b"metadata", "expected 'metadata' before the operand")?;
+        }
+        Ok(())
+    }
+
+    /// A record's value: `type value`, `!{}` (none), or a `DIArgList`
+    /// (true). Pushed to `dbg_vals`.
+    fn record_value(&mut self, old: bool) -> PResult<bool> {
+        self.metadata_word(old)?;
+        match self.p.tok.kind {
+            Tok::Exclaim => {
+                let at = self.p.tok.start;
+                self.p.bump();
+                if self.p.tok.kind != Tok::LBrace {
+                    return fail(LlErrorKind::Syntax, at, "expected a value of a debug record");
+                }
+                let span = self.skip_group()?;
+                if span.start != span.end
+                    && !self.p.src[span.start as usize..span.end as usize]
+                        .iter()
+                        .all(u8::is_ascii_whitespace)
+                {
+                    return fail(LlErrorKind::Syntax, at, "expected a value of a debug record");
+                }
+                self.s.dbg_vals.push(Value::NONE);
+                Ok(false)
+            }
+            Tok::Meta if self.p.text() == b"!DIArgList" => {
+                self.p.bump();
+                self.p.expect(Tok::LParen, "expected '(' here")?;
+                while self.p.tok.kind != Tok::RParen {
+                    let (_, value) = self.typed()?;
+                    self.s.dbg_vals.push(value);
+                    if !self.p.eat(Tok::Comma) {
+                        break;
+                    }
+                }
+                self.p.expect(Tok::RParen, "expected ')' here")?;
+                Ok(true)
+            }
+            Tok::Meta => self.p.syntax("expected a value of a debug record"),
+            _ => {
+                let at = self.p.tok.start;
+                let (ty, value) = self.typed()?;
+                if ty == TypeId::METADATA {
+                    return fail(
+                        LlErrorKind::Syntax,
+                        at,
+                        "invalid metadata-value-metadata roundtrip",
+                    );
+                }
+                self.s.dbg_vals.push(value);
+                Ok(false)
+            }
+        }
+    }
+
+    /// The variable or label of a record: a numbered node of `kind`.
+    fn record_node(&mut self, old: bool, kind: MdKind) -> PResult<DiId> {
+        self.metadata_word(old)?;
+        match self.p.md_ref()? {
+            MdRef::Node(id) => match self.p.handle(id) {
+                Handle::Node(node) if self.p.md_kind(id) == Some(kind) => Ok(node),
+                _ => {
+                    self.p.note(INVALID);
+                    Ok(DiId::NONE)
+                }
+            },
+            MdRef::Inline(found, _) if found == kind => {
+                self.p.note("debug:node-in-body");
+                Ok(DiId::NONE)
+            }
+            MdRef::Inline(..) => {
+                self.p.note(INVALID);
+                Ok(DiId::NONE)
+            }
+        }
+    }
+
+    /// The expression of a record.
+    fn record_expr(&mut self, old: bool) -> PResult<ExprId> {
+        self.metadata_word(old)?;
+        let mut scratch = std::mem::take(&mut self.p.dscratch);
+        let expr = self.p.expr_ref(&mut scratch);
+        self.p.dscratch = scratch;
+        expr
+    }
+
+    /// Hands a record to the builder.
+    fn emit_record(&mut self, record: OldRecord, loc: LocId, at: u32) -> PResult<()> {
+        let b = &mut self.b;
+        let value = self.s.dbg_vals.first().copied().unwrap_or(Value::NONE);
+        let made = match record.kind {
+            RecordKind::Declare if record.list => {
+                self.p.note(INVALID);
+                return Ok(());
+            }
+            RecordKind::Declare => b.dbg_declare(value, record.var, record.expr, loc),
+            RecordKind::Value if record.list => {
+                b.dbg_value_list(&self.s.dbg_vals, record.var, record.expr, loc)
+            }
+            RecordKind::Value => b.dbg_value(value, record.var, record.expr, loc),
+            RecordKind::Assign => b.dbg_assign(
+                value,
+                record.var,
+                record.expr,
+                record.address,
+                record.address_expr,
+                loc,
+            ),
+            RecordKind::Label => b.dbg_label(record.var, loc),
+        };
+        ir(at, made)
+    }
+
+    /// A call of an `llvm.dbg.*` intrinsic, at the `(` of its
+    /// arguments: read, and kept until the call's `!dbg` is known.
+    pub(crate) fn debug_call(&mut self, name: &[u8]) -> PResult<()> {
+        let at = self.p.tok.start;
+        let args = self.skip_group()?;
+        if self.numbering {
+            return Ok(());
+        }
+        let kind = match name {
+            b"llvm.dbg.declare" => RecordKind::Declare,
+            b"llvm.dbg.value" => RecordKind::Value,
+            b"llvm.dbg.assign" => RecordKind::Assign,
+            b"llvm.dbg.label" => RecordKind::Label,
+            _ => {
+                let name = String::from_utf8_lossy(name);
+                self.p.note(format!("debug:{name}"));
+                return Ok(());
+            }
+        };
+        let resume = self.p.tok.start;
+        self.p.goto(args.start);
+        let record = self.record_args(kind, true)?;
+        if self.p.tok.start != args.end {
+            return fail(LlErrorKind::Syntax, at, "expected ')' at the end of the call");
+        }
+        self.p.goto(resume);
+        self.s.old_record = Some(record);
+        Ok(())
+    }
+
+    /// The record a call of a debug intrinsic stands for, now that its
+    /// `!dbg` is known: LLVM's verifier wants one.
+    fn old_record(&mut self, record: OldRecord, loc: LocId) -> PResult<()> {
+        if loc == LocId::NONE {
+            self.p.note(INVALID);
+            return Ok(());
+        }
+        let at = self.stmt;
+        self.emit_record(record, loc, at)
+    }
 }
 
 /// Whether `word` is the keyword of an instruction that ends a block.

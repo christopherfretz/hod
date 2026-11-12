@@ -716,6 +716,54 @@ These are decisions the group packages (WP-035..041) build on.
   protocol is tested here on the real target for `int` and `ptr`; its
   matrix row is supported for every class, the `type:*` rows gating.
 
+#### WP-038: calls
+
+- **Division of labour.** `hod_cg`'s call sequence (§7.1) does the
+  placement, the stack area, `byval` copies, results in memory, the
+  extensions, `musttail` staging, pad stubs and call-site rows; `frame`
+  emits `bl`/`blr` and the tail exits. `crate::call` adds what the
+  sequence does not: the refusals below, the clearing of the bits above
+  a narrow integer leaf of a `Mem`-class result in its home after a call
+  (a producer owes nothing above a leaf, memory holds them zero), and
+  the variadic parts.
+- **Variadic definitions** always save `x[g]..x7` and `q[f]..q7` (named
+  registers excluded) in two frame slots at entry; `va_start` writes the
+  32-byte AAPCS64 `va_list` from them and the incoming base; `va_copy`
+  copies 32 bytes; `va_end` is nothing; `va_arg` stays `a64:va_arg`
+  (clang expands it inline). A `musttail` call in a variadic function
+  reloads the unnamed argument registers from the save areas first, so
+  the callee receives them as this function did; the stack area beyond
+  the named arguments is never written.
+- **Landing pads** are `{ ptr, i32 }` only: `x0`/`x1` stored to the
+  pad's home; clauses are `catch` of a symbol or `null` and `filter` of
+  such arrays. `resume` calls `_Unwind_Resume` with the exception
+  pointer, then traps.
+- **Refused by name**: `a64:call` (`callbr`), `a64:call-inline-asm`,
+  `a64:call-bundle`, `a64:invoke-odd-int-result` (an `invoke` whose
+  `Mem` result needs leaf clearing on the normal edge),
+  `a64:call-wide-int-extension` (an extended argument wider than 64 bits
+  and no multiple of 64: `A64::extend_arg` stops at 64 bits, and the
+  sequence does not extend a `Mem`-class argument),
+  `a64:call-narrow-ext-stack-arg` (an extended argument of an odd width
+  on the stack: LLVM stores it as 32 bits, the sequence stores its store
+  size), `a64:call-mismatched-declaration` (a direct call through
+  another function type whose callee declares attributes the call site
+  lacks: `llc` does not take them, the sequence would),
+  `a64:va-intrinsic`, `a64:va_arg`, `a64:landingpad`,
+  `a64:landingpad-clause`, `a64:resume`. `a64:variadic-definition` is
+  no longer produced.
+- **Tests** (`tests/call.rs`): random signatures (`tests/common/
+  callgen.rs`) linking gcc-compiled C with modules compiled by hod and
+  `llc` in every pairing, stressed, PIC with a shared object; the call
+  and GOT relocations equal `llc`'s; `hod_interp` as the oracle of IR
+  call chains; handwritten forms (`tests/data/call/hand.ll`); real C++
+  exceptions (`eh.ll`, `eh_comdat.ll`, `eh.cpp`) through `emit_module`'s
+  own tables (WP-049), static, stressed and PIC, against `llc`'s
+  objects of the same modules. Nested try in one frame dispatches on
+  the exception's type, not with `llvm.eh.typeid.for` (the intrinsic
+  group's): `llc` numbers type ids in reverse clause order, hod in
+  order (`FnCx::type_id`), so a selector constant is not portable.
+
 #### Intrinsics (WP-041)
 
 - **Integer intrinsics** take `i1` to `i64` (`Gpr`); the bits above the

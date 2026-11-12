@@ -6,32 +6,16 @@ gcc-torture/llvm19/bcp-1.c.ll	parser-unsupported	attr:convergent
 gcc-torture/llvm19/builtin-constant.c.ll	parser-unsupported	attr:convergent
 gcc-torture/llvm22/bcp-1.c.ll	parser-unsupported	attr:convergent
 gcc-torture/llvm22/builtin-constant.c.ll	parser-unsupported	attr:convergent
-kiln/llvm19/conformance/class.copy.ctor/libstdcxx-string-copy.cpp.ll	parser-unsupported	metadata-arg:llvm.experimental.noalias.scope.decl
-kiln/llvm19/conformance/class.temporary/lifetime-markers-O2-g-fpic-run.cpp.ll	parser-unsupported	debug-info
 kiln/llvm19/conformance/dcl.attr/annotate-run-O2.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
 kiln/llvm19/conformance/dcl.attr/clang-attr-valid-forms-run.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
-kiln/llvm19/conformance/dcl.struct.bind/namespace-scope-debuginfo-run.cpp.ll	parser-unsupported	debug-info
-kiln/llvm19/conformance/expr.reflect/debuginfo-run.cpp.ll	parser-unsupported	debug-info
-kiln/llvm19/conformance/ext.complex/complex-int-debuginfo-run.cpp.ll	parser-unsupported	debug-info
 kiln/llvm19/conformance/ext.gnu.builtins/constant-p-class-arg-template.cpp.ll	parser-unsupported	attr:convergent
-kiln/llvm19/conformance/meta.reflection.define.aggregate/define-debuginfo-run.cpp.ll	parser-unsupported	debug-info
-kiln/llvm19/conformance/re.alg/regex-match-libstdcxx.cpp.ll	parser-unsupported	attr:convergent, metadata-arg:llvm.experimental.noalias.scope.decl
+kiln/llvm19/conformance/re.alg/regex-match-libstdcxx.cpp.ll	parser-unsupported	attr:convergent
 kiln/llvm19/conformance/target.acle/exclusive-sysreg-run.cpp.ll	parser-unsupported	metadata-arg:llvm.read_volatile_register.i64
-kiln/llvm19/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll	parser-unsupported	debug-info
-kiln/llvm19/conformance/temp.dep.type/pattern-typedef-debuginfo-run.cpp.ll	parser-unsupported	debug-info
 kiln/llvm19/conformance/templates/builtins/builtin.constant-p.cpp.ll	parser-unsupported	attr:convergent
-kiln/llvm22/conformance/class.copy.ctor/libstdcxx-string-copy.cpp.ll	parser-unsupported	metadata-arg:llvm.experimental.noalias.scope.decl
-kiln/llvm22/conformance/class.temporary/lifetime-markers-O2-g-fpic-run.cpp.ll	parser-unsupported	debug-info
 kiln/llvm22/conformance/dcl.attr/annotate-run-O2.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
 kiln/llvm22/conformance/dcl.attr/clang-attr-valid-forms-run.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
-kiln/llvm22/conformance/dcl.struct.bind/namespace-scope-debuginfo-run.cpp.ll	parser-unsupported	debug-info
-kiln/llvm22/conformance/expr.reflect/debuginfo-run.cpp.ll	parser-unsupported	debug-info
-kiln/llvm22/conformance/ext.complex/complex-int-debuginfo-run.cpp.ll	parser-unsupported	debug-info
 kiln/llvm22/conformance/ext.gnu.builtins/constant-p-class-arg-template.cpp.ll	parser-unsupported	attr:convergent
 kiln/llvm22/conformance/ext.multiversion/multiversion-run.cpp.ll	parser-unsupported	attr:fmv-features
-kiln/llvm22/conformance/meta.reflection.define.aggregate/define-debuginfo-run.cpp.ll	parser-unsupported	debug-info
-kiln/llvm22/conformance/re.alg/regex-match-libstdcxx.cpp.ll	parser-unsupported	attr:convergent, metadata-arg:llvm.experimental.noalias.scope.decl
+kiln/llvm22/conformance/re.alg/regex-match-libstdcxx.cpp.ll	parser-unsupported	attr:convergent
 kiln/llvm22/conformance/target.acle/exclusive-sysreg-run.cpp.ll	parser-unsupported	metadata-arg:llvm.read_volatile_register.i64
-kiln/llvm22/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll	parser-unsupported	debug-info
-kiln/llvm22/conformance/temp.dep.type/pattern-typedef-debuginfo-run.cpp.ll	parser-unsupported	debug-info
 kiln/llvm22/conformance/templates/builtins/builtin.constant-p.cpp.ll	parser-unsupported	attr:convergent

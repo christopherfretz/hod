@@ -68,10 +68,9 @@ pub struct Refused<'a> {
 
 /// Features that only make instructions or system registers available
 /// (LLVM's `AArch64Features.td`, LLVM 19 and 22, and the architecture
-/// versions), plus `fmv` and `outline-atomics`, which change no code hod
-/// emits: hod has no function multi-versioning and emits no atomic
-/// operation (`classify` refuses them; when they come, an inline
-/// sequence is correct with and without the helpers).
+/// versions), plus `fmv`, which changes no code hod emits (no function
+/// multi-versioning), and `outline-atomics`, which picks the atomic
+/// sequence (`atomic.rs`, WP-074; either one is correct).
 const AVAILABILITY: &[&str] = &[
     "v8a",
     "v8.1a",

@@ -803,7 +803,7 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
   register is the store's own operand, §4.2), so padding bits are zero.
   A zero constant is stored from `xzr`/`wzr`.
 - **Volatile** accesses are lowered as plain ones; `hod_cg` never drops
-  or repeats them. Atomic loads and stores are `a64:atomic`.
+  or repeats them. Atomic loads and stores are WP-074's ("Atomics").
 - **`alloca`** with a constant count rounds the size up to 16 and
   subtracts it from `sp` (`sub` immediates, or `mov x17` and `sub`
   extended); a variable count is zero-extended from its width, scaled,
@@ -1142,6 +1142,81 @@ section.
   `ext_vector_type`, under bfd, lld and mold; calls both ways with gcc;
   the refusals), `tests/ir/vectors.ll`.
 
+#### Atomics (WP-074)
+
+`crates/hod_a64/src/atomic.rs` lowers atomic `load` and `store`,
+`atomicrmw`, `cmpxchg` and `fence`; `target.rs` dispatches them before
+the class-based arms.
+
+- **Which sequence.** The function's `target-features` decide (the last
+  `±outline-atomics` and the last `±lse` item; `-mattr` is not
+  consulted): `+outline-atomics` without `+lse` (what clang and kiln
+  write) is the **outline** strategy; anything else (no item,
+  `-outline-atomics`, or `+lse`) is **LL/SC**. hod never emits LSE
+  instructions inline: an exclusive loop is correct on every ARMv8.0
+  core, and the helpers already choose LSE at run time.
+- **Outline.** The `__aarch64_*` helpers of libgcc/compiler-rt (in
+  `hod_cg::RuntimeFn`, arguments in `x0`/`w0`, then `x1`, ..., result in
+  `x0`; `cas16` takes and returns pairs in `x0:x1`, `x2:x3`, pointer
+  `x4`) are called exactly where LLVM 22 at `-O0` calls them:
+  `cmpxchg` of 1..16 bytes (`casN`), an `i128` atomic load (`cas16` of
+  zero by zero), and `atomicrmw xchg`, `add`, `sub` (negated into
+  `ldadd`), `and` (inverted into `ldclr`), `or` (`ldset`), `xor`
+  (`ldeor`) of 1..8 bytes. Everything else (`nand`, the minimums and
+  maximums, `uinc_wrap`, `udec_wrap`, `usub_cond`, `usub_sat`, the
+  floating-point operations, an `i128` store or read-modify-write) is
+  an LL/SC loop under both strategies, as atomic as LLVM's
+  `casN`-in-a-loop.
+- **Orderings.** An operation acquires when its ordering is `acquire`,
+  `acq_rel` or `seq_cst`, releases when `release`, `acq_rel` or
+  `seq_cst`; a `cmpxchg` takes the union of its success ordering and its
+  failure ordering (a `seq_cst` failure also releases). The helper
+  suffix is `relax`, `acq`, `rel`, `acq_rel` by those two bits;
+  `seq_cst` uses `acq_rel`, as LLVM does. LL/SC uses `ldaxr`/`ldxr` and
+  `stlxr`/`stxr` (pairs: `ldaxp`/`ldxp`, `stlxp`/`stxp`). `unordered` and
+  `monotonic` are relaxed. Weak `cmpxchg` is strong (it never fails
+  spuriously, which LangRef allows).
+- **Loads and stores** of 1..8 bytes: `ldar`/`stlr` when they acquire or
+  release, else plain `ldr`/`str` (single-copy atomic when aligned).
+  `half`, `bfloat`, `float`, `double` go through `x16` and `fmov`.
+  `i128` (LL/SC): a load is a `ldxp`/`stxp` loop that stores back what it
+  read (release on the store only for `seq_cst`); a store is a
+  `ldxp`/`st(l)xp` loop.
+- **The exclusive window.** Every operand, address and temporary is in a
+  register, and the 128-bit operands are in `v30`/`v31`, before the loop
+  label is bound; the loop body is only instruction words and branches
+  (`x16`, `x17`, `w17` for the status of narrower loops). So no glue (a
+  spill, a reload, a rematerialised address) is placed between the
+  exclusive load and the exclusive store, under any `Stress` setting.
+  A `cmpxchg` whose comparison fails leaves through `clrex` (an `i128`
+  one first stores the old value back with `st(l)xp`, so the failure
+  is also an atomic read).
+- **Operations.** Sub-word signed minimum and maximum sign-extend the
+  old value into `x16` and compare with the operand sign-extended;
+  `uinc_wrap` is `old >= v ? 0 : old + 1`, `udec_wrap`
+  `old == 0 || old > v ? v : old - 1`, `usub_cond` `old >= v ? old - v
+  : old`, `usub_sat` `old >= v ? old - v : 0`. `fmax`/`fmin` are
+  `fmaxnm`/`fminnm`, `fmaximum`/`fminimum` `fmax`/`fmin`; `half`
+  arithmetic converts to single and back (exact: one rounding). `i128`
+  operations are pairwise (`adds`/`adc`, `subs`/`sbc`, `cmp` with `sbcs`
+  for the comparisons).
+- **`cmpxchg` result.** `{ T, i1 }` is a `Mem` value: the old value at
+  offset 0 and the flag byte at the second field's offset. A sub-word
+  outline compare zero-extends the expected value (`cmp ... uxtb/uxth`).
+- **`fence`**: `dmb ishld` for `acquire`, `dmb ish` otherwise;
+  `syncscope("singlethread")` emits nothing (a compiler barrier: hod
+  does not reorder).
+- **Refused, by name:** `a64:atomic-unaligned`, an access whose
+  alignment is below its size (LLVM calls `__atomic_*` there; hod has no
+  such call yet); `a64:atomic-type`, an atomic of `fp128`, a vector, an
+  integer that is not 8, 16, 32, 64 or 128 bits, or an operation whose
+  type does not fit it; `a64:atomic-bfloat-op`, `bfloat` arithmetic
+  (`xchg`, loads and stores of `bfloat` are lowered).
+
+Tests: `crates/hod_a64/tests/atomic.rs` (the table, the window scan,
+the helpers, the refusals, the threaded programs of
+`tests/common/atomic_threads.rs`), `crates/hod/tests/atomic_cxx.rs`.
+
 #### Constant operands with addresses (WP-072)
 
 `src/constaddr.rs`, hooked from `common::materialize_gpr_const` and
@@ -1281,8 +1356,9 @@ FP and Advanced SIMD and never chooses an instruction by a feature, so:
   `crypto`, `crc`, `lse`, `lse2`, `rdm`, `ras`, `rcpc`, `fullfp16`,
   `dotprod`, `i8mm`, `bf16`, `pauth`, `bti`, `mte`, `sve*`, `sme*`, `gcs`,
   ...; the full list is `AVAILABILITY` in `crates/hod_a64/src/features.rs`);
-  and `fmv` and `outline-atomics`, which change no code hod emits (no
-  function multi-versioning; `classify` refuses atomics). `+bti` and
+  `fmv`, which changes no code hod emits (no function multi-versioning);
+  and `outline-atomics` with `lse`, which pick an atomic sequence
+  ("Atomics (WP-074)"), each one correct on every ARMv8.0 core. `+bti` and
   `+pauth` are availability: whether a function must begin with `bti` or
   sign its return address is the branch-protection attributes and module
   flags, which `classify` refuses (§5.5).

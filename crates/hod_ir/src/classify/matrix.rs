@@ -523,14 +523,14 @@ const INIT: [SupportRow; 8] = [
 
 const FUNCTION: [SupportRow; 6] = [
     row("function:parameters", ON, todo(X64), "a body with parameters; per class of parameter"),
-    a64("function:variadic", "WP-038", "a variadic function with a body"),
+    row("function:variadic", ON, todo(X64), "a variadic function with a body"),
     row(
         "function:may-unwind",
         ON,
         todo(X64),
         "a body without `nounwind`: it needs unwind tables (WP-049)",
     ),
-    a64("function:personality", EH, "a body with a personality function"),
+    row("function:personality", ON, todo(X64), "a body with a personality function"),
     row("function:slots", ON, todo(X64), "a body with fixed stack objects (`Body::slots`)"),
     row("function:over-aligned-slot", ON, todo(X64), "a stack object aligned above 16 bytes"),
 ];
@@ -538,14 +538,14 @@ const FUNCTION: [SupportRow; 6] = [
 /// In the order of [`cc_index`].
 const CC: [SupportRow; 15] = [
     row("cc:ccc", ON, todo(X64), ""),
-    a64("cc:fastcc", "WP-038", "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
+    row("cc:fastcc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     a64("cc:coldcc", LATER, ""),
     a64("cc:ghccc", LATER, ""),
     a64("cc:anyregcc", LATER, ""),
     a64("cc:preserve_mostcc", LATER, ""),
     a64("cc:preserve_allcc", LATER, ""),
-    a64("cc:swiftcc", "WP-038", "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
-    a64("cc:cxx_fast_tlscc", "WP-038", "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
+    row("cc:swiftcc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
+    row("cc:cxx_fast_tlscc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     a64("cc:tailcc", LATER, ""),
     both("cc:cfguard_checkcc", never(WINDOWS), ""),
     a64("cc:swifttailcc", LATER, ""),
@@ -578,10 +578,10 @@ const fn cc_index(id: u16) -> Option<usize> {
 
 /// In the bit order of the `ParamAttrs` flags, from `ZEROEXT`.
 const ATTR_PARAM: [SupportRow; 7] = [
-    a64("attr:zeroext", "WP-038", ""),
-    a64("attr:signext", "WP-038", ""),
+    row("attr:zeroext", ON, todo(X64), ""),
+    row("attr:signext", ON, todo(X64), ""),
     a64("attr:inreg", LATER, ""),
-    a64("attr:nest", "WP-038", ""),
+    row("attr:nest", ON, todo(X64), ""),
     a64("attr:swiftself", LATER, ""),
     a64("attr:swifterror", LATER, ""),
     a64("attr:swiftasync", LATER, ""),
@@ -589,9 +589,9 @@ const ATTR_PARAM: [SupportRow; 7] = [
 
 /// In `ParamMem` order, from `Sret`.
 const ATTR_MEM: [SupportRow; 6] = [
-    a64("attr:sret", "WP-038", ""),
-    a64("attr:byval", "WP-038", ""),
-    a64("attr:byref", "WP-038", ""),
+    row("attr:sret", ON, todo(X64), ""),
+    row("attr:byval", ON, todo(X64), ""),
+    row("attr:byref", ON, todo(X64), ""),
     both("attr:inalloca", never(WINDOWS), ""),
     both("attr:preallocated", never(WINDOWS), ""),
     a64("attr:elementtype", LATER, "on an inline-assembly or intrinsic argument"),
@@ -612,7 +612,7 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
         "",
     ),
     both("attr:nounwind", ON, "its absence is `function:may-unwind`"),
-    a64("attr:returns_twice", "WP-038", "on a body, a call, or a function called directly"),
+    row("attr:returns_twice", ON, todo(X64), "on a body, a call, or a function called directly"),
     both("attr:alwaysinline", ON, "by itself; see `linkage:available_externally`"),
     a64("attr:ssp", "spec/codegen.md §13", "open question: accept and ignore, or implement"),
     a64("attr:sspreq", "spec/codegen.md §13", ""),
@@ -875,8 +875,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         never("`llc` miscompiles it on AArch64, so there is no oracle; frontends do not emit it"),
         "",
     ),
-    a64("inst:call", "WP-038", "a call of anything but an intrinsic"),
-    a64("inst:landingpad", EH, ""),
+    row("inst:call", ON, todo(X64), "a call of anything but an intrinsic"),
+    row("inst:landingpad", ON, todo(X64), ""),
     both("inst:catchpad", never(WINDOWS_EH), ""),
     both("inst:cleanuppad", never(WINDOWS_EH), ""),
     row("inst:br", ON, todo(X64), ""),
@@ -890,8 +890,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         never("its only use is inline assembly with labels (`spec/codegen.md` §1)"),
         "",
     ),
-    a64("inst:invoke", EH, ""),
-    a64("inst:resume", EH, ""),
+    row("inst:invoke", ON, todo(X64), ""),
+    row("inst:resume", ON, todo(X64), ""),
     both("inst:catchswitch", never(WINDOWS_EH), ""),
     both("inst:catchret", never(WINDOWS_EH), ""),
     both("inst:cleanupret", never(WINDOWS_EH), ""),
@@ -929,9 +929,9 @@ const ATOMICRMW: [SupportRow; RmwOp::ALL.len()] = [
 ];
 
 const CALL: [SupportRow; 3] = [
-    a64("call:indirect", "WP-038", "the callee is a computed address"),
+    row("call:indirect", ON, todo(X64), "the callee is a computed address"),
     a64("call:inline-asm", ASM, "the callee is inline assembly"),
-    a64("call:variadic", "WP-038", "a call through a variadic function type"),
+    row("call:variadic", ON, todo(X64), "a call through a variadic function type"),
 ];
 
 const TAIL: [SupportRow; 3] = [
@@ -954,9 +954,9 @@ const BUNDLE: [SupportRow; 10] = [
 ];
 
 const LANDINGPAD: [SupportRow; 3] = [
-    a64("landingpad:cleanup", EH, ""),
-    a64("landingpad:catch", EH, ""),
-    a64("landingpad:filter", EH, ""),
+    row("landingpad:cleanup", ON, todo(X64), ""),
+    row("landingpad:catch", ON, todo(X64), ""),
+    row("landingpad:filter", ON, todo(X64), ""),
 ];
 
 const OPERAND: [SupportRow; 9] = [
@@ -1026,33 +1026,33 @@ const fn const_op_index(op: ConstOp) -> usize {
 
 /// In `Intrinsic::ALL` order.
 const INTRINSIC: [SupportRow; Intrinsic::ALL.len()] = [
-    a64("intrinsic:llvm.memcpy", "WP-041", ""),
-    a64("intrinsic:llvm.memcpy.inline", LATER, ""),
-    a64("intrinsic:llvm.memmove", "WP-041", ""),
-    a64("intrinsic:llvm.memset", "WP-041", ""),
-    a64("intrinsic:llvm.memset.inline", LATER, ""),
-    a64("intrinsic:llvm.va_start", "WP-038", ""),
-    a64("intrinsic:llvm.va_end", "WP-038", ""),
-    a64("intrinsic:llvm.va_copy", "WP-038", ""),
+    row("intrinsic:llvm.memcpy", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.memcpy.inline", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.memmove", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.memset", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.memset.inline", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.va_start", ON, todo(X64), ""),
+    row("intrinsic:llvm.va_end", ON, todo(X64), ""),
+    row("intrinsic:llvm.va_copy", ON, todo(X64), ""),
     row("intrinsic:llvm.stacksave", ON, todo(X64), ""),
     row("intrinsic:llvm.stackrestore", ON, todo(X64), ""),
-    a64("intrinsic:llvm.frameaddress", "WP-041", ""),
-    a64("intrinsic:llvm.returnaddress", "WP-041", ""),
-    a64("intrinsic:llvm.trap", "WP-041", ""),
-    a64("intrinsic:llvm.debugtrap", LATER, ""),
-    a64("intrinsic:llvm.ubsantrap", LATER, ""),
-    a64("intrinsic:llvm.bswap", "WP-041", ""),
-    a64("intrinsic:llvm.bitreverse", "WP-041", ""),
-    a64("intrinsic:llvm.ctpop", "WP-041", ""),
-    a64("intrinsic:llvm.ctlz", "WP-041", ""),
-    a64("intrinsic:llvm.cttz", "WP-041", ""),
-    a64("intrinsic:llvm.fshl", "WP-041", ""),
-    a64("intrinsic:llvm.fshr", "WP-041", ""),
-    a64("intrinsic:llvm.abs", "WP-041", ""),
-    a64("intrinsic:llvm.smax", "WP-041", ""),
-    a64("intrinsic:llvm.smin", "WP-041", ""),
-    a64("intrinsic:llvm.umax", "WP-041", ""),
-    a64("intrinsic:llvm.umin", "WP-041", ""),
+    row("intrinsic:llvm.frameaddress", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.returnaddress", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.trap", ON, todo(X64), ""),
+    row("intrinsic:llvm.debugtrap", ON, todo(X64), ""),
+    row("intrinsic:llvm.ubsantrap", on(&[TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.bswap", on(&[TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.bitreverse", on(&[TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.ctpop", on(&[TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.ctlz", on(&[TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.cttz", on(&[TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.fshl", on(&[TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.fshr", on(&[TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.abs", on(&[TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.smax", on(&[TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.smin", on(&[TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.umax", on(&[TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.umin", on(&[TypeClass::Int]), todo(X64), ""),
     a64("intrinsic:llvm.scmp", LATER, ""),
     a64("intrinsic:llvm.ucmp", LATER, ""),
     a64("intrinsic:llvm.clmul", LATER, ""),
@@ -1146,12 +1146,12 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len()] = [
     a64("intrinsic:llvm.eh.typeid.for", EH, ""),
     a64("intrinsic:llvm.threadlocal.address", TLS, ""),
     a64("intrinsic:llvm.thread.pointer", TLS, ""),
-    a64("intrinsic:llvm.prefetch", LATER, ""),
+    row("intrinsic:llvm.prefetch", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
     a64("intrinsic:llvm.clear_cache", LATER, ""),
     a64("intrinsic:llvm.readcyclecounter", LATER, ""),
-    a64("intrinsic:llvm.is.constant", LATER, ""),
-    a64("intrinsic:llvm.objectsize", LATER, ""),
-    a64("intrinsic:llvm.ptrmask", LATER, ""),
+    row("intrinsic:llvm.is.constant", ON, todo(X64), ""),
+    row("intrinsic:llvm.objectsize", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
+    row("intrinsic:llvm.ptrmask", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
     a64("intrinsic:llvm.load.relative", LATER, ""),
     a64("intrinsic:llvm.instrprof.increment", LATER, ""),
     a64("intrinsic:llvm.instrprof.increment.step", LATER, ""),

@@ -12,9 +12,18 @@
 #   scripts/jobserver.sh resize N   change the pool size, live
 #   scripts/jobserver.sh stop       remove the pool
 #
+# `refill`, `resize` and `stop` refuse the machine's shared pool (the
+# default fifo) unless the caller confirms with `--shared` (or
+# HOD_JOBSERVER_SHARED=1): a test or a check meant for a private pool, run
+# with HOD_JOBSERVER_FIFO lost on the way (an `export` in a chain sent to
+# the background), once stopped the shared pool under every build of the
+# machine. The refill loop the script starts needs no confirmation. Name
+# a private pool inline: `HOD_JOBSERVER_FIFO=<path> scripts/jobserver.sh ...`.
+#
 # Run `start` when the container starts, BEFORE anything sources
 # scripts/env.sh: env.sh exports MAKEFLAGS only if the fifo exists at that
-# moment, and otherwise falls back to a per-cargo job cap without a word.
+# moment, and otherwise falls back to a per-cargo job cap (with one line on
+# standard error).
 #
 # - The fifo lives on the container's tmpfs ($HOD_JOBSERVER_FIFO, default
 #   /run/hod/jobserver.fifo), never on a workspace bind mount: fifos are
@@ -32,11 +41,15 @@
 # - A refill must never under-count the tokens in use, or it mints tokens:
 #   a pool has reached five times its size that way and run a machine out
 #   of memory. So: clients are found by who has the fifo open (/proc), not
-#   by name; compilers and the children of clients count as holders; while
-#   clients are alive a deficit is refilled only if two consecutive passes
-#   saw it; idle tokens above the pool size are drained. Over-counting
-#   holders is safe. With no client alive every token must be idle, and
-#   the pool is reset to exactly its size at once.
+#   by name; compilers and the children of clients count as holders; a
+#   deficit is refilled only if two consecutive passes saw it; idle tokens
+#   above the pool size are drained. Over-counting holders is safe. A pass
+#   looks in one process (`measure`), and counts the idle tokens before
+#   and after it looks for clients: a pass whose shell scan of /proc took
+#   seconds once saw the tokens of a client that ended meanwhile as
+#   neither idle nor held, and minted them (hod WP-065). With no client
+#   alive every token must be idle: a deficit then is a loss, refilled on
+#   the second pass that sees it.
 # - Tokens bound the number of compilers, not memory, and each cargo has
 #   one implicit job of its own: N concurrent cargos run pool + N rustc.
 #   Size the pool for the container's memory ($HOD_JOBS, default 12).
@@ -55,7 +68,10 @@ _WS="$(cd "$(dirname "$SELF")/.." && pwd)"
 _MAIN="$(cd "$(git -C "$_WS" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "$_WS/.git")/.." && pwd)"
 case "$_MAIN" in */.git/modules*) _MAIN="${_MAIN%%/.git/modules*}";; esac
 
-FIFO="${HOD_JOBSERVER_FIFO:-/run/hod/jobserver.fifo}"
+# The machine's pool. HOD_JOBSERVER_SHARED_FIFO moves it, for the tests of
+# the guard below only.
+SHARED_FIFO="${HOD_JOBSERVER_SHARED_FIFO:-/run/hod/jobserver.fifo}"
+FIFO="${HOD_JOBSERVER_FIFO:-$SHARED_FIFO}"
 PIDFILE="${FIFO%.fifo}.pid"
 JOBSFILE="${FIFO%.fifo}.jobs"
 JOBS="${HOD_JOBS:-$(cat "$JOBSFILE" 2>/dev/null || echo 12)}"
@@ -81,45 +97,75 @@ os.write(fd, got); print(len(got))
 PY
 }
 
-# Every process that has the fifo open, except the holder: by descriptor,
-# not by name (a test binary is `name-<hash>`).
-client_pids() {
-  local holder f
-  holder=$(cat "$PIDFILE" 2>/dev/null || echo 0)
-  for f in /proc/[0-9]*/fd/*; do
-    [ "$(readlink "$f" 2>/dev/null)" = "$FIFO" ] && { f=${f#/proc/}; echo "${f%%/*}"; }
-  done 2>/dev/null | sort -u | grep -vx "$holder" || true
-}
+# One look at the pool, in one process and in a few milliseconds (a scan by
+# a shell, one readlink per descriptor on the machine, took seconds under
+# load, and every token that moved in that time was a chance to
+# under-count): "<idle> <held> <rustc> <clients>".
+# - idle: the idle tokens, counted before and after the scan; the larger
+#   count. A client that ends during the scan has its tokens counted by
+#   the second count, one that starts takes them after the first.
+# - clients: the processes with the fifo open, except the holder: by
+#   descriptor, not by name (a test binary is `name-<hash>`). A process
+#   whose descriptors cannot be read counts as a client (over-counting
+#   holders is safe); one that is gone does not.
+# - held: an upper bound on the tokens in use: compilers by name, and every
+#   child of a client (a harness holds one token per child process); 0
+#   when no client is alive.
+measure() {
+  python3 - "$FIFO" "$(cat "$PIDFILE" 2>/dev/null || echo 0)" <<'PY'
+import errno, os, sys
+fifo, holder = sys.argv[1], sys.argv[2]
+me = str(os.getpid())
 
-# An upper bound on the tokens in use: compilers by name, and every child
-# of a client (a harness holds one token per child process).
-held_tokens() {
-  local clients
-  clients=$(client_pids | tr '\n' ' ')
-  ps -eo pid=,ppid=,comm= | awk -v clients=" $clients" '
-    { comm[$1] = $3; par[$1] = $2 }
-    END {
-      n = 0
-      for (p in comm) {
-        c = comm[p]
-        if (c == "rustc") { n += 2; continue }
-        if (c ~ /^(clang|clang\+\+|clang-[0-9]+|cc1|cc1plus|clippy-driver|rustdoc)$/) n += 1
-        if (index(clients, " " par[p] " ")) n += 1
-      }
-      print n
-    }'
-}
+def idle():
+    fd = os.open(fifo, os.O_RDWR | os.O_NONBLOCK); got = b""
+    try:
+        while True:
+            b = os.read(fd, 64)
+            if not b: break
+            got += b
+    except BlockingIOError: pass
+    os.write(fd, got); os.close(fd)
+    return len(got)
 
-clients_alive() {
-  [ -n "$(client_pids)" ]
+GONE = (errno.ENOENT, errno.ESRCH)
+before = idle()
+comm, par, clients = {}, {}, set()
+for pid in os.listdir("/proc"):
+    if not pid.isdigit() or pid in (me, holder): continue
+    try:
+        with open(f"/proc/{pid}/stat") as f: st = f.read()
+        r = st.rindex(")")
+        comm[pid], par[pid] = st[st.index("(") + 1:r], st[r + 2:].split()[1]
+    except (OSError, ValueError, IndexError):
+        continue  # it ended
+    try:
+        fds = os.listdir(f"/proc/{pid}/fd")
+    except OSError as e:
+        if e.errno not in GONE: clients.add(pid)
+        continue
+    for fd in fds:
+        try:
+            if os.readlink(f"/proc/{pid}/fd/{fd}") == fifo:
+                clients.add(pid); break
+        except OSError:
+            pass  # closed meanwhile
+after = idle()
+compilers = {"clang", "clang++", "cc1", "cc1plus", "clippy-driver", "rustdoc"}
+held = rustc = 0
+for pid, c in comm.items():
+    if c == "rustc":
+        rustc += 1; held += 2; continue
+    if c in compilers or (c.startswith("clang-") and c[6:].isdigit()): held += 1
+    if par[pid] in clients: held += 1
+print(max(before, after), held if clients else 0, rustc, len(clients))
+PY
 }
 
 refill_once() {
-  local idle rustc held want add
-  idle=$(idle_tokens)
-  rustc=$(pgrep -xc rustc || true)
-  held=$(held_tokens)
-  if ! clients_alive; then held=0; fi
+  local idle held rustc clients want add
+  read -r idle held rustc clients <<<"$(measure)"
+  local seen="idle $idle, held $held, rustc $rustc, clients $clients, pool $JOBS"
   if [ "$idle" -gt "$JOBS" ]; then
     python3 - "$FIFO" "$(( idle - JOBS ))" <<'PY'
 import os, sys
@@ -128,26 +174,29 @@ try:
     while got < n: got += len(os.read(fd, n - got))
 except BlockingIOError: pass
 PY
-    echo "[jobserver] $(date -u +%FT%TZ) drained $(( idle - JOBS )) excess tokens (idle $idle, rustc $rustc, pool $JOBS)"
+    echo "[jobserver] $(date -u +%FT%TZ) drained $(( idle - JOBS )) excess tokens ($seen)"
     return
   fi
   want=$(( JOBS - held ))
   add=$(( want - idle ))
+  # A deficit is refilled only if two consecutive passes saw it, and by the
+  # smaller of the two: a single pass can still under-count (a token that
+  # moves twice while it looks), with or without clients.
   local prev=0 deficit_file="${FIFO%.fifo}.deficit"
   prev=$(cat "$deficit_file" 2>/dev/null || echo 0)
   echo "$(( add > 0 ? add : 0 ))" > "$deficit_file"
-  if clients_alive && [ "$add" -gt 0 ]; then
+  if [ "$add" -gt 0 ]; then
     [ "$prev" -lt "$add" ] && add=$prev
-    [ "$add" -gt 0 ] || { echo "[jobserver] $(date -u +%FT%TZ) deficit pending (idle $idle, held $held, rustc $rustc, pool $JOBS)"; return; }
+    [ "$add" -gt 0 ] || { echo "[jobserver] $(date -u +%FT%TZ) deficit pending ($seen)"; return; }
   fi
   if [ "$add" -gt 0 ]; then
     python3 - "$FIFO" "$add" <<'PY'
 import os, sys
 fd = os.open(sys.argv[1], os.O_RDWR | os.O_NONBLOCK); os.write(fd, b"+" * int(sys.argv[2]))
 PY
-    echo "[jobserver] $(date -u +%FT%TZ) refilled $add tokens (idle $idle, held $held, rustc $rustc, pool $JOBS)"
+    echo "[jobserver] $(date -u +%FT%TZ) refilled $add tokens ($seen)"
   else
-    echo "[jobserver] $(date -u +%FT%TZ) no refill (idle $idle, held $held, rustc $rustc, pool $JOBS)"
+    echo "[jobserver] $(date -u +%FT%TZ) no refill ($seen)"
   fi
 }
 
@@ -159,7 +208,33 @@ start_refill_loop() {
   echo $! > "$REFILL_PIDFILE"
 }
 
-case "${1:-start}" in
+VERB="${1:-start}"; [ $# -gt 0 ] && shift
+SHARED_OK="${HOD_JOBSERVER_SHARED:-}"
+ARGS=()
+for a in "$@"; do
+  if [ "$a" = --shared ]; then SHARED_OK=1; else ARGS+=("$a"); fi
+done
+set -- "${ARGS[@]+"${ARGS[@]}"}"
+
+# The refill loop of this pool: the process that runs every pass.
+from_refill_loop() {
+  [ -f "$REFILL_PIDFILE" ] && [ "$(cat "$REFILL_PIDFILE" 2>/dev/null)" = "$PPID" ]
+}
+
+# `refill`, `resize` and `stop` act on the shared pool only when told so.
+guard_shared() {
+  [ "$(realpath -m -- "$FIFO")" = "$(realpath -m -- "$SHARED_FIFO")" ] || return 0
+  [ "$SHARED_OK" = 1 ] && return 0
+  from_refill_loop && return 0
+  echo "[jobserver] refusing '$VERB' on the shared pool $FIFO: every build of the machine" \
+    "draws on it. Pass --shared (or HOD_JOBSERVER_SHARED=1) if that is meant; for a private" \
+    "pool name it on the command: HOD_JOBSERVER_FIFO=<path> $0 $VERB" >&2
+  exit 3
+}
+
+case "$VERB" in refill|resize|stop) guard_shared;; esac
+
+case "$VERB" in
   start)
     if alive; then
       start_refill_loop
@@ -188,8 +263,8 @@ case "${1:-start}" in
     ;;
   resize)
     alive || { echo "[jobserver] not running"; exit 1; }
-    [ -n "${2:-}" ] || { echo "usage: $0 resize N"; exit 2; }
-    echo "$2" > "$JOBSFILE"; JOBS="$2"
+    [ -n "${1:-}" ] || { echo "usage: $0 resize N [--shared]"; exit 2; }
+    echo "$1" > "$JOBSFILE"; JOBS="$1"
     echo "[jobserver] pool size now $JOBS (held tokens are drained as they return)"
     refill_once
     ;;
@@ -199,5 +274,5 @@ case "${1:-start}" in
     rm -f "$FIFO" "$PIDFILE" "$REFILL_PIDFILE"
     echo "[jobserver] stopped"
     ;;
-  *) echo "usage: $0 start|status|refill|resize N|stop"; exit 2;;
+  *) echo "usage: $0 start|status|refill|resize N|stop [--shared]"; exit 2;;
 esac

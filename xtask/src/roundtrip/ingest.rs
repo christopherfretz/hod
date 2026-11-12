@@ -138,15 +138,13 @@ mod tests {
         assert_eq!(outcome, Outcome::ParserError, "{detail}");
         assert!(detail.starts_with("body of @main: "), "{detail}");
 
-        // `musttail` of a variadic callee forwarding `...`: a body
-        // construct the parser names (spec/ll.md §3.4).
-        let forwarded = format!(
-            "{TRIPLE}declare void @g(ptr, ...)\n\
-             define void @f(ptr %p, ...) {{\n  musttail call void (ptr, ...) @g(ptr %p, ...)\n  ret void\n}}\n"
-        );
-        let (outcome, detail) = ingest(forwarded.as_bytes(), 22).unwrap_err();
+        // `alloca inalloca`: a body construct the parser names
+        // (spec/ll.md §3.4).
+        let inalloca =
+            format!("{TRIPLE}define void @f() {{\n  %a = alloca inalloca i32\n  ret void\n}}\n");
+        let (outcome, detail) = ingest(inalloca.as_bytes(), 22).unwrap_err();
         assert_eq!(outcome, Outcome::ParserUnsupported, "{detail}");
-        assert_eq!(detail, "call:forwarded-varargs");
+        assert_eq!(detail, "alloca:inalloca");
 
         // A constant expression LLVM 21 and later cannot write.
         let mul = format!(

@@ -158,8 +158,7 @@ fn every_outcome(fakes: &Fakes) {
     fakes.entry(
         "unsupported",
         "hello",
-        "declare void @g(ptr, ...)\n\
-         define void @f(ptr %p, ...) {\n  musttail call void (ptr, ...) @g(ptr %p, ...)\n  ret void\n}\n",
+        "define void @f() {\n  %a = alloca inalloca i32\n  ret void\n}\n",
     );
     for marker in [
         "fake_as_refuse",
@@ -185,7 +184,7 @@ fn every_outcome_is_named() {
     let cases = [
         ("pass", Outcome::Pass, ""),
         ("parse_error", Outcome::ParserError, "module: "),
-        ("unsupported", Outcome::ParserUnsupported, "call:forwarded-varargs"),
+        ("unsupported", Outcome::ParserUnsupported, "alloca:inalloca"),
         (
             "fake_as_refuse",
             Outcome::LlvmAsRefused,
@@ -238,9 +237,7 @@ fn the_expectation_file_is_a_gate() {
     assert_eq!(report.exit_status(), 0);
     let file = std::fs::read_to_string(&options.expected).unwrap();
     assert_eq!(file.lines().filter(|line| !line.starts_with('#')).count(), 10, "{file}");
-    assert!(
-        file.contains("fake/llvm22/unsupported.ll\tparser-unsupported\tcall:forwarded-varargs\n")
-    );
+    assert!(file.contains("fake/llvm22/unsupported.ll\tparser-unsupported\talloca:inalloca\n"));
 
     options.update = false;
     let report = run(&options).unwrap();

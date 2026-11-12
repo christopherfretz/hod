@@ -639,6 +639,46 @@ These are decisions the group packages (WP-035..041) build on.
   skeleton's), and `a64:bfloat`, `a64:fp128-libcall`, `a64:half-frem`,
   `a64:vector-fcmp`, `a64:vector-select`, `a64:vector-op`.
 
+#### Memory (WP-036)
+
+- **Addresses.** An access is `[base, #off]` (scaled unsigned, else
+  unscaled; else the offset is added into `x17`), `[base, xI, lsl #s]`
+  or `[base, wI, sxtw #s]`. The base is `x29` for a directly placed
+  slot, the pointer's register otherwise; a symbol, a constant address
+  or an indirectly placed (over-aligned) slot is computed into `x17` for
+  a load or store and into the result's register for a `ptradd`.
+- **Fusion (§4.6).** A `ptradd` is deferred whenever `may_defer` allows;
+  the access through it folds constant offsets and constant indices
+  (taken as signed, truncated to 64 bits) into `off`, and its variable
+  indices into the index register: the first one stays a `sxtw` index
+  when it is an `i32` and its scale is a power of two up to 16; other
+  widths are sign-extended with `sbfx`, other scales multiply (`lsl`,
+  or `mov x16, #scale` and `mul`); further variable indices are added
+  into the first. Unfused, the same sum is computed into the result.
+- **Symbol offsets** are folded into the relocation's addend when the
+  total is below 2^20 in magnitude, as `llc` does; beyond it the offset
+  is added after the address (§7.4).
+- **Widths.** An access reads or writes exactly the store size. Sizes 1,
+  2, 4, 8 are one access; 3 is `h` + `b`, 5 `w` + `b`, 6 `w` + `h`, 7
+  `w` + `h` + `b`, joined on a load by `orr … lsl` through `x16`, split
+  on a store by `lsr` into `x16`. A store of a width that is not a
+  multiple of 8 masks the value in its register first (`and`; the
+  register is the store's own operand, §4.2), so padding bits are zero.
+  A zero constant is stored from `xzr`/`wzr`.
+- **Volatile** accesses are lowered as plain ones; `hod_cg` never drops
+  or repeats them. Atomic loads and stores are `a64:atomic`.
+- **`alloca`** with a constant count rounds the size up to 16 and
+  subtracts it from `sp` (`sub` immediates, or `mov x17` and `sub`
+  extended); a variable count is zero-extended from its width, scaled,
+  rounded up to 16 and subtracted. An alignment above 16 then rounds
+  `x16` down (`and`); an alignment that is not a power of two or above
+  2^32 is `limit:frame-size`. The result is the new `sp`; the frame is
+  marked dynamic. `llvm.stacksave` is `mov xD, sp`;
+  `llvm.stackrestore` is `mov sp, xS` and marks the frame dynamic.
+- **Refused:** a `load`/`store` of an `Fpr` value, `a64:load-fpr` and
+  `a64:store-fpr` (WP-039); a `ptradd` producing a vector of pointers,
+  `a64:ptradd-vector`. `Mem`-class values are `aggr`'s (WP-040).
+
 ### 5.6 x86-64 (planned)
 
 `push rbp` · `mov rbp, rsp` · pushes of the save set · `sub rsp, imm32`

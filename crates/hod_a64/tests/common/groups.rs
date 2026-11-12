@@ -38,6 +38,8 @@ pub const GROUPS: &[(&str, Enable)] = &[
         e.options.compares = true;
         e.options.selects = true;
     }),
+    // The memory group: loads, stores, `ptradd`, slots, globals.
+    ("WP-036", |e| (e.options.memory, e.options.globals) = (true, true)),
     // The floating-point group: `float`, `double`, `fcmp`, conversions.
     ("WP-039", |e| e.options.floats = true),
 ];

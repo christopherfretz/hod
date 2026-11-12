@@ -521,8 +521,8 @@ const FUNCTION: [SupportRow; 6] = [
     a64("function:variadic", "WP-038", "a variadic function with a body"),
     a64("function:may-unwind", "WP-042", "a body without `nounwind`: it needs unwind tables"),
     a64("function:personality", EH, "a body with a personality function"),
-    a64("function:slots", "WP-036", "a body with fixed stack objects (`Body::slots`)"),
-    a64("function:over-aligned-slot", "WP-036", "a stack object aligned above 16 bytes"),
+    row("function:slots", ON, todo(X64), "a body with fixed stack objects (`Body::slots`)"),
+    row("function:over-aligned-slot", ON, todo(X64), "a stack object aligned above 16 bytes"),
 ];
 
 /// In the order of [`cc_index`].
@@ -735,13 +735,23 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         never("it has a pointer in a non-zero address space on one side"),
         "",
     ),
-    a64("inst:load", "WP-036", "a plain load; see `mem:`"),
-    a64("inst:store", "WP-036", "a plain store; see `mem:`"),
-    a64("inst:alloca", "WP-036", "a dynamic allocation; fixed ones are `function:slots`"),
+    row(
+        "inst:load",
+        on(&[TypeClass::Int, TypeClass::Ptr]),
+        todo(X64),
+        "a plain load; see `mem:`; FP and vector values: WP-067",
+    ),
+    row(
+        "inst:store",
+        on(&[TypeClass::Int, TypeClass::Ptr]),
+        todo(X64),
+        "a plain store; see `mem:`; FP and vector values: WP-067",
+    ),
+    row("inst:alloca", ON, todo(X64), "a dynamic allocation; fixed ones are `function:slots`"),
     a64("inst:fence", ATOMICS, ""),
     a64("inst:cmpxchg", ATOMICS, ""),
     a64("inst:atomicrmw", ATOMICS, "and the operation's `atomicrmw:` row"),
-    a64("inst:ptradd", "WP-036", "LLVM's `getelementptr` (§5.4)"),
+    row("inst:ptradd", ON, todo(X64), "LLVM's `getelementptr` (§5.4); not a vector of pointers"),
     a64("inst:extractvalue", "WP-040", ""),
     a64("inst:insertvalue", "WP-040", ""),
     a64("inst:extractelement", VECTORS, ""),
@@ -778,7 +788,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
 ];
 
 const MEM: [SupportRow; 3] = [
-    a64("mem:volatile", "WP-036", "a volatile `load`, `store`, `cmpxchg` or `atomicrmw`"),
+    row("mem:volatile", ON, todo(X64), "a volatile `load`, `store`, `cmpxchg` or `atomicrmw`"),
     a64("mem:atomic-load", ATOMICS, ""),
     a64("mem:atomic-store", ATOMICS, ""),
 ];
@@ -846,7 +856,7 @@ const OPERAND: [SupportRow; 9] = [
         todo(X64),
         "a symbol's address as a value, with or without an offset",
     ),
-    a64("operand:slot", "WP-036", "the address of a stack slot"),
+    row("operand:slot", ON, todo(X64), "the address of a stack slot"),
     a64("operand:blockaddress", "WP-037", "of a block of the same function"),
     row("operand:addr-of-int", ON, todo(X64), "`inttoptr` of a constant number"),
     a64("operand:int-of-addr", LATER, "`ptrtoint` of a constant address"),
@@ -914,8 +924,8 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len()] = [
     a64("intrinsic:llvm.va_start", "WP-038", ""),
     a64("intrinsic:llvm.va_end", "WP-038", ""),
     a64("intrinsic:llvm.va_copy", "WP-038", ""),
-    a64("intrinsic:llvm.stacksave", "WP-036", ""),
-    a64("intrinsic:llvm.stackrestore", "WP-036", ""),
+    row("intrinsic:llvm.stacksave", ON, todo(X64), ""),
+    row("intrinsic:llvm.stackrestore", ON, todo(X64), ""),
     a64("intrinsic:llvm.frameaddress", "WP-041", ""),
     a64("intrinsic:llvm.returnaddress", "WP-041", ""),
     a64("intrinsic:llvm.trap", "WP-041", ""),

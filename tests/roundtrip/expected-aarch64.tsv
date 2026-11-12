@@ -1,28 +1,64 @@
 # The corpus entries that do not survive `cargo xtask roundtrip` today, by
 # outcome (spec/harness.md "roundtrip"). An entry not listed must pass.
 # Fields: entry, outcome, detail (for the reader; not compared).
+# corpus: 6250 entries, MANIFEST.tsv sha256 37254c252964563e22cfc7766ea576846cd31f7d107ef1f8e92fd4c4259b29c3
 gcc-torture/llvm19/bcp-1.c.ll	parser-unsupported	attr:convergent
 gcc-torture/llvm19/builtin-constant.c.ll	parser-unsupported	attr:convergent
 gcc-torture/llvm22/bcp-1.c.ll	parser-unsupported	attr:convergent
 gcc-torture/llvm22/builtin-constant.c.ll	parser-unsupported	attr:convergent
+kiln/llvm19/conformance/class.copy.ctor/libstdcxx-string-copy.cpp.ll	parser-unsupported	metadata-arg:llvm.experimental.noalias.scope.decl
+kiln/llvm19/conformance/class.temporary/lifetime-markers-O2-g-fpic-run.cpp.ll	parser-unsupported	debug-info
 kiln/llvm19/conformance/class.virtual/variadic-thunk-run.cpp.ll	parser-unsupported	call:forwarded-varargs
+kiln/llvm19/conformance/dcl.attr/annotate-run-O2.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
 kiln/llvm19/conformance/dcl.attr/clang-attr-valid-forms-run.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
 kiln/llvm19/conformance/dcl.struct.bind/namespace-scope-debuginfo-run.cpp.ll	parser-unsupported	debug-info
 kiln/llvm19/conformance/expr.reflect/debuginfo-run.cpp.ll	parser-unsupported	debug-info
 kiln/llvm19/conformance/ext.complex/complex-int-debuginfo-run.cpp.ll	parser-unsupported	debug-info
 kiln/llvm19/conformance/ext.gnu.builtins/constant-p-class-arg-template.cpp.ll	parser-unsupported	attr:convergent
 kiln/llvm19/conformance/meta.reflection.define.aggregate/define-debuginfo-run.cpp.ll	parser-unsupported	debug-info
+kiln/llvm19/conformance/re.alg/regex-match-libstdcxx.cpp.ll	parser-unsupported	attr:convergent, metadata-arg:llvm.experimental.noalias.scope.decl
+kiln/llvm19/conformance/target.acle/exclusive-sysreg-run.cpp.ll	parser-unsupported	metadata-arg:llvm.read_volatile_register.i64
 kiln/llvm19/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll	parser-unsupported	debug-info
 kiln/llvm19/conformance/temp.dep.type/pattern-typedef-debuginfo-run.cpp.ll	parser-unsupported	debug-info
 kiln/llvm19/conformance/templates/builtins/builtin.constant-p.cpp.ll	parser-unsupported	attr:convergent
+kiln/llvm22/conformance/basic.contract.eval/run-coroutine-post-enforce.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/basic.contract.eval/run-coroutine-post-ignore.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/basic.contract.eval/run-coroutine-post-observe.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/basic.contract.eval/run-coroutine-post-quick-enforce.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/class.copy.ctor/libstdcxx-string-copy.cpp.ll	parser-unsupported	metadata-arg:llvm.experimental.noalias.scope.decl
+kiln/llvm22/conformance/class.temporary/lifetime-markers-O2-g-fpic-run.cpp.ll	parser-unsupported	debug-info
 kiln/llvm22/conformance/class.virtual/variadic-thunk-run.cpp.ll	parser-unsupported	call:forwarded-varargs
+kiln/llvm22/conformance/coro.generator/libstdcxx-generator-elements-of-run.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/coro.generator/libstdcxx-generator-int-run.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/dcl.attr/annotate-run-O2.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
 kiln/llvm22/conformance/dcl.attr/clang-attr-valid-forms-run.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
+kiln/llvm22/conformance/dcl.fct.def.coroutine/aligned_frame.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/dcl.fct.def.coroutine/generator.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/dcl.fct.def.coroutine/initial-await-resume-nontrivial-result.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/dcl.fct.def.coroutine/param_copies.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/dcl.fct.def.coroutine/promise-new-delete-const-size-run.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/dcl.fct.def.coroutine/promise_alloc.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/dcl.fct.def.coroutine/promise_alloc_template.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/dcl.fct.def.coroutine/return_object.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/dcl.fct.def.coroutine/unhandled_exception.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
 kiln/llvm22/conformance/dcl.struct.bind/namespace-scope-debuginfo-run.cpp.ll	parser-unsupported	debug-info
+kiln/llvm22/conformance/expr.await/awaiter_protocol.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/expr.await/fullexpr_temporaries.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/expr.await/operator_co_await.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/expr.await/reference-result-bound-to-reference.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/expr.await/reference-result-loaded-by-value-run.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/expr.await/symmetric_transfer.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
 kiln/llvm22/conformance/expr.reflect/debuginfo-run.cpp.ll	parser-unsupported	debug-info
+kiln/llvm22/conformance/expr.yield/parenthesized-run.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/expr.yield/yield_value.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
 kiln/llvm22/conformance/ext.complex/complex-int-debuginfo-run.cpp.ll	parser-unsupported	debug-info
 kiln/llvm22/conformance/ext.gnu.builtins/constant-p-class-arg-template.cpp.ll	parser-unsupported	attr:convergent
 kiln/llvm22/conformance/ext.multiversion/multiversion-run.cpp.ll	parser-unsupported	attr:fmv-features
 kiln/llvm22/conformance/meta.reflection.define.aggregate/define-debuginfo-run.cpp.ll	parser-unsupported	debug-info
+kiln/llvm22/conformance/re.alg/regex-match-libstdcxx.cpp.ll	parser-unsupported	attr:convergent, metadata-arg:llvm.experimental.noalias.scope.decl
+kiln/llvm22/conformance/stmt.return.coroutine/immediate-invocation-in-template-operand-run.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/stmt.return.coroutine/return_value.cpp.ll	parser-unsupported	attr:sample-profile-suffix-elision-policy
+kiln/llvm22/conformance/target.acle/exclusive-sysreg-run.cpp.ll	parser-unsupported	metadata-arg:llvm.read_volatile_register.i64
 kiln/llvm22/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll	parser-unsupported	debug-info
 kiln/llvm22/conformance/temp.dep.type/pattern-typedef-debuginfo-run.cpp.ll	parser-unsupported	debug-info
 kiln/llvm22/conformance/templates/builtins/builtin.constant-p.cpp.ll	parser-unsupported	attr:convergent

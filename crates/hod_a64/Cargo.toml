@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+hod_asm.workspace = true
 hod_cg.workspace = true
 hod_ir.workspace = true
 hod_mc_a64.workspace = true

@@ -33,6 +33,7 @@ dependencies = [
 name = "hod_a64"
 version = "0.0.0"
 dependencies = [
+ "hod_asm",
  "hod_cg",
  "hod_interp",
  "hod_ir",

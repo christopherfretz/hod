@@ -167,3 +167,18 @@ pub fn llc_major() -> u32 {
         .find(|major| text.contains(&format!("-{major}")))
         .unwrap_or(22)
 }
+
+/// What compiling the `.ll` functions `functions` (the header added)
+/// reports: the first refusal, or `Ok` if every body compiles.
+pub fn compile_ll(functions: &str) -> Result<(), CgError> {
+    let (m, bodies) = parse(&format!("{}{functions}", ll_header(22)));
+    chunk(&m, &bodies, &Options::default()).map(|_| ())
+}
+
+/// Asserts that each `.ll` function of `cases` is refused with `reason`
+/// (one function per case, so that each case is checked by itself).
+pub fn assert_refused(cases: &[(&str, &'static str)]) {
+    for (functions, reason) in cases {
+        assert_eq!(compile_ll(functions), Err(CgError::unsupported(reason)), "{functions}");
+    }
+}

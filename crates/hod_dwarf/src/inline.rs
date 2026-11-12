@@ -412,6 +412,7 @@ impl UnitPlan<'_> {
             })?;
         let die = self.push_anon(sp_id, parent, Kind::AbstractSubprogram);
         self.inline.abs.insert(sp_id.raw(), die);
+        self.abstract_template_params(sp_id, &sp, die)?;
         if sp.declaration.is_none()
             && let Some(t) = self.return_type(sp_id, &sp)?
         {

@@ -15,7 +15,7 @@
 //! to a function that is not a definition of this unit stays refused as
 //! [`LOCAL_TYPE_SCOPE`].
 
-use hod_ir::DiId;
+use hod_ir::{DiId, DiSubprogram};
 
 use crate::Error;
 use crate::die::{UnitPlan, unsupported};
@@ -38,5 +38,25 @@ impl UnitPlan<'_> {
             }
             e => e,
         })
+    }
+}
+
+impl UnitPlan<'_> {
+    /// What `applySubprogramDefinitionAttributes` gives an abstract
+    /// instance when `constructAbstractSubprogramScopeDIE` makes it, before
+    /// its return type and its children: the template parameters (WP-087;
+    /// a concrete definition gets them last, [`UnitPlan::seal_definition`]).
+    /// A definition whose return type differs from its declaration's is
+    /// refused: the abstract member's family has no `DW_AT_type`.
+    pub(crate) fn abstract_template_params(
+        &mut self,
+        sp_id: DiId,
+        sp: &DiSubprogram<'_>,
+        die: u32,
+    ) -> Result<(), Error> {
+        if self.definition_type(sp_id, sp)?.is_some() {
+            return Err(unsupported(sp_id, "debug:specification-type"));
+        }
+        self.add_template_params(die, sp.template_params)
     }
 }

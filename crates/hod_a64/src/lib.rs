@@ -35,6 +35,7 @@
 //! | `fpintr` | WP-070 | the floating-point intrinsics | `tests/fpintr.rs` |
 //! | `constaddr` | WP-072 | constant operands that hold addresses: differences, relocated images | `tests/constaddr.rs` |
 //! | `tls` | WP-073 | thread-local addresses, `llvm.threadlocal.address`, `llvm.thread.pointer` | `tests/tls.rs` |
+//! | `lanes` | WP-080 | element-wise vector operations, one lane at a time over the scalar kernels | `tests/lanes.rs` |
 //! | `vector` | WP-079 | vector helpers (shape, lanes, images, indices); `extractelement`, `insertelement`, `shufflevector` | `tests/vector.rs` |
 //!
 //! The differential harness that runs generated programs natively and
@@ -52,6 +53,7 @@ pub mod fpintr;
 pub mod frame;
 pub mod int;
 pub mod intrinsic;
+pub mod lanes;
 pub mod mem;
 pub mod reg;
 pub mod target;

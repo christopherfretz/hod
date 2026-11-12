@@ -235,6 +235,140 @@ pub fn fp_intrinsic<'a>(
     }
 }
 
+// ---- one lane of a vector (WP-080) ----
+
+/// How [`lanes.rs`](crate::lanes) computes one lane of a floating-point
+/// intrinsic on vectors (WP-080).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LaneFp {
+    /// Inline, by [`lane_inline`].
+    Inline,
+    /// A call of the function, by [`lane_call`]; `n` is the width of the
+    /// `int` operand (`powi`, `ldexp`), else 0.
+    Call {
+        /// The function.
+        func: RuntimeFn,
+        /// The width of the `int` operand, 0 if there is none.
+        n: u32,
+    },
+}
+
+/// How one lane of `which` on elements of `elem` (`half`, `float`,
+/// `double`) is computed; `n_elem` is the type of the `int` operand of
+/// `powi`/`ldexp` (its element, for a vector one).
+///
+/// # Errors
+/// [`VECTOR`] for an intrinsic with no element-wise form here (`frexp`,
+/// `is.fpclass`, whose results are not one vector of lanes); what the
+/// scalar form refuses for the element.
+pub fn lane_plan(
+    cx: &FnCx<'_, A64>,
+    which: Intrinsic<'_>,
+    elem: TypeId,
+    n_elem: Option<TypeId>,
+) -> CgResult<LaneFp> {
+    use Intrinsic as I;
+    let f = fmt_of(cx, elem)?;
+    if f == Fmt::Q {
+        return cx.bug("a vector lane of fp128");
+    }
+    if let Some(funcs) = libm(which) {
+        return Ok(LaneFp::Call { func: f.pick(funcs), n: 0 });
+    }
+    let (funcs, clamp) = match which {
+        I::Powi => ([RuntimeFn::PowiSf2, RuntimeFn::PowiDf2, RuntimeFn::PowiTf2], false),
+        I::Ldexp => ([RuntimeFn::Ldexpf, RuntimeFn::Ldexp, RuntimeFn::Ldexpl], true),
+        I::Frexp | I::IsFpClass => return unsupported(VECTOR),
+        _ => return Ok(LaneFp::Inline),
+    };
+    let Some(n_elem) = n_elem else { return unsupported(INTRINSIC) };
+    let n = int_arg_bits(cx.types().int_bits(n_elem), clamp)?;
+    Ok(LaneFp::Call { func: f.pick(funcs), n })
+}
+
+/// One lane of an inline floating-point intrinsic ([`LaneFp::Inline`])
+/// on elements of `elem`, as the scalar form computes it: the operands
+/// in `v` (as many as the intrinsic has; the third may be `v31`), the
+/// result in `v[0]`, or in `rd` at `bits` bits for `lround`..`llrint`
+/// and `fptosi.sat`/`fptoui.sat`. Writes the operands, `x16` and `x17`.
+///
+/// # Errors
+/// [`INTRINSIC`] for an intrinsic that is not inline.
+pub fn lane_inline(
+    cx: &mut FnCx<'_, A64>,
+    which: Intrinsic<'_>,
+    elem: TypeId,
+    v: [VReg; 3],
+    rd: Reg,
+    bits: u32,
+) -> CgResult<()> {
+    use Intrinsic as I;
+    let f = fmt_of(cx, elem)?;
+    match which {
+        I::Sqrt
+        | I::Floor
+        | I::Ceil
+        | I::Trunc
+        | I::Round
+        | I::RoundEven
+        | I::NearbyInt
+        | I::Rint
+        | I::Canonicalize => rounding_reg(cx, which, f, v[0]),
+        I::ArithmeticFence => {}
+        I::Fabs => fabs_reg(cx, f, v[0]),
+        I::CopySign => copysign_reg(cx, f, v[0], v[1]),
+        I::Fma => fma_reg(cx, f, v[0], v[1], v[2]),
+        I::FmulAdd => fmuladd_reg(cx, f, v[0], v[1], v[2]),
+        I::MinNum | I::MaxNum | I::Minimum | I::Maximum | I::MinimumNum | I::MaximumNum => {
+            min_max_reg(cx, which, f, v[0], v[1]);
+        }
+        I::Lround | I::Llround | I::Lrint | I::Llrint => to_int_reg(cx, which, f, v[0], rd, bits),
+        I::FptosiSat | I::FptouiSat => saturate_reg(cx, which == I::FptosiSat, f, v[0], rd, bits),
+        _ => return unsupported(INTRINSIC),
+    }
+    Ok(())
+}
+
+/// One lane of a floating-point intrinsic that is a call
+/// ([`LaneFp::Call`]): `func` of the elements of `elem` in the pool
+/// temporaries `fps` (one or two) and of the `int` of `n.1` bits in the
+/// temporary `n.0`, as the scalar form calls it (`half` widened to
+/// `float`, the result narrowed). The result's register (every
+/// temporary has ended at the call).
+///
+/// # Errors
+/// What the call reports.
+pub fn lane_call(
+    cx: &mut FnCx<'_, A64>,
+    func: RuntimeFn,
+    elem: TypeId,
+    fps: &[PReg],
+    n: Option<(PReg, u32)>,
+) -> CgResult<PReg> {
+    let f = fmt_of(cx, elem)?;
+    let mut list = [CallArg::Value(Value::NONE); 3];
+    let mut count = 0;
+    for &x in fps.iter().take(2) {
+        if f == Fmt::H {
+            widen(cx, vr(x));
+        }
+        list[count] = CallArg::Reg(x);
+        count += 1;
+    }
+    if let Some((t, bits)) = n {
+        int_arg_reg(cx, xr(t), xr(t), bits);
+        list[count] = CallArg::Reg(t);
+        count += 1;
+    }
+    let Some(r) = cx.call_runtime(func, &list[..count], None)? else {
+        return cx.bug("a runtime function returned nothing");
+    };
+    if f == Fmt::H {
+        narrow(cx, vr(r));
+    }
+    Ok(r)
+}
+
 // ---- inline operations ----
 
 /// The scalar instruction of a one-operand intrinsic.
@@ -282,6 +416,15 @@ fn rounding<'a>(
         };
         return finish_call(cx, inst, func, &[CallArg::Value(x)], false);
     }
+    let r = cx.use_reg(x)?;
+    rounding_reg(cx, which, f, vr(r));
+    cx.finish(inst, r)
+}
+
+/// `sqrt`, the rounding family or `canonicalize` of the `half`, `float`
+/// or `double` in `v`, in place.
+fn rounding_reg(cx: &mut FnCx<'_, A64>, which: Intrinsic<'_>, f: Fmt, v: VReg) {
+    use Intrinsic as I;
     let op: Fp2 = match which {
         I::Sqrt => mc::fsqrt,
         I::Floor => mc::frintm,
@@ -297,8 +440,6 @@ fn rounding<'a>(
         I::Rint => mc::frintx,
         _ => canon,
     };
-    let r = cx.use_reg(x)?;
-    let v = vr(r);
     if f == Fmt::H {
         widen(cx, v);
     }
@@ -306,7 +447,6 @@ fn rounding<'a>(
     if f == Fmt::H {
         narrow(cx, v);
     }
-    cx.finish(inst, r)
 }
 
 /// `canonicalize fp128`: `__multf3(x, 1.0)`.
@@ -356,7 +496,12 @@ fn put_sign_word(cx: &mut FnCx<'_, A64>, f: Fmt, v: VReg, rs: Reg) {
 fn fabs<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, f: Fmt, x: Value) -> CgResult<()> {
     deferred_first(cx, inst, None)?;
     let r = cx.use_reg(x)?;
-    let v = vr(r);
+    fabs_reg(cx, f, vr(r));
+    cx.finish(inst, r)
+}
+
+/// `fabs` of the value in `v`, in place. Writes `x16`.
+fn fabs_reg(cx: &mut FnCx<'_, A64>, f: Fmt, v: VReg) {
     match f {
         Fmt::S | Fmt::D => put(cx, mc::fabs(f.size(), v, v)),
         Fmt::H | Fmt::Q => {
@@ -365,7 +510,6 @@ fn fabs<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, f: Fmt, x: Value) -> CgResul
             put_sign_word(cx, f, v, X16);
         }
     }
-    cx.finish(inst, r)
 }
 
 /// `copysign a, b`: the sign bit of `b` with the other bits of `a`.
@@ -379,14 +523,18 @@ fn copysign<'a>(
     deferred_first(cx, inst, None)?;
     let ra = cx.use_reg(a)?;
     let rb = cx.use_reg(b)?;
-    let (va, vb) = (vr(ra), vr(rb));
+    copysign_reg(cx, f, vr(ra), vr(rb));
+    cx.finish(inst, ra)
+}
+
+/// `va = copysign(va, vb)`. Writes `x16` and `x17`.
+fn copysign_reg(cx: &mut FnCx<'_, A64>, f: Fmt, va: VReg, vb: VReg) {
     let (sz, sign) = sign_word(cx, f, X16, va);
     sign_word(cx, f, X17, vb);
     // x17 keeps its sign bit (and what is above it) and takes the bits
     // below from x16.
     put(cx, mc::bfxil(sz, X17.zr(), X16.zr(), 0, sign));
     put_sign_word(cx, f, va, X17);
-    cx.finish(inst, ra)
 }
 
 /// The multiplicands `a` and `b` of `fma`/`fmuladd` in registers and
@@ -408,7 +556,12 @@ fn fma<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, f: Fmt, [a, b, c]: [Value; 3]
         return finish_call(cx, inst, RuntimeFn::Fmal, &args, false);
     }
     let (ra, rb) = addend_last(cx, a, b, c)?;
-    let (va, vb, vc) = (vr(ra), vr(rb), V31);
+    fma_reg(cx, f, vr(ra), vr(rb), V31);
+    cx.finish(inst, ra)
+}
+
+/// `va = fma(va, vb, vc)` of `half`, `float` or `double`.
+fn fma_reg(cx: &mut FnCx<'_, A64>, f: Fmt, va: VReg, vb: VReg, vc: VReg) {
     if f == Fmt::H {
         for v in [va, vb, vc] {
             put(cx, mc::fcvt(FpFormat::D, v, FpFormat::H, v));
@@ -418,7 +571,22 @@ fn fma<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, f: Fmt, [a, b, c]: [Value; 3]
     } else {
         put(cx, mc::fmadd(f.size(), va, va, vb, vc));
     }
-    cx.finish(inst, ra)
+}
+
+/// `va = fmuladd(va, vb, vc)` of `half` (a rounded `fmul`, then a
+/// rounded `fadd`, as `llc -O0`); `float` and `double` are [`fma_reg`].
+fn fmuladd_reg(cx: &mut FnCx<'_, A64>, f: Fmt, va: VReg, vb: VReg, vc: VReg) {
+    if f != Fmt::H {
+        return fma_reg(cx, f, va, vb, vc);
+    }
+    widen(cx, va);
+    widen(cx, vb);
+    put(cx, mc::fmul(FpSize::S, va, va, vb));
+    narrow(cx, va);
+    widen(cx, va);
+    widen(cx, vc);
+    put(cx, mc::fadd(FpSize::S, va, va, vc));
+    narrow(cx, va);
 }
 
 /// `fmuladd`, as `llc -O0` makes it: fused (`fmadd`) for `float` and
@@ -435,15 +603,7 @@ fn fmuladd<'a>(
         Fmt::H => {
             deferred_first(cx, inst, None)?;
             let (ra, rb) = addend_last(cx, a, b, c)?;
-            let (va, vb, vc) = (vr(ra), vr(rb), V31);
-            widen(cx, va);
-            widen(cx, vb);
-            put(cx, mc::fmul(FpSize::S, va, va, vb));
-            narrow(cx, va);
-            widen(cx, va);
-            widen(cx, vc);
-            put(cx, mc::fadd(FpSize::S, va, va, vc));
-            narrow(cx, va);
+            fmuladd_reg(cx, f, vr(ra), vr(rb), V31);
             cx.finish(inst, ra)
         }
         Fmt::Q => {
@@ -489,6 +649,16 @@ fn min_max<'a>(
         };
         return finish_call(cx, inst, func, &[CallArg::Value(a), CallArg::Value(b)], false);
     }
+    let ra = cx.use_reg(a)?;
+    let rb = cx.use_reg(b)?;
+    min_max_reg(cx, which, f, vr(ra), vr(rb));
+    cx.finish(inst, ra)
+}
+
+/// `va = min|max(va, vb)` of `half`, `float` or `double`, for each of
+/// the six intrinsics.
+fn min_max_reg(cx: &mut FnCx<'_, A64>, which: Intrinsic<'_>, f: Fmt, va: VReg, vb: VReg) {
+    use Intrinsic as I;
     let (op, quiet): (Op3, bool) = match which {
         I::MinNum => (mc::fminnm, false),
         I::MaxNum => (mc::fmaxnm, false),
@@ -497,9 +667,6 @@ fn min_max<'a>(
         I::MinimumNum => (mc::fminnm, true),
         _ => (mc::fmaxnm, true),
     };
-    let ra = cx.use_reg(a)?;
-    let rb = cx.use_reg(b)?;
-    let (va, vb) = (vr(ra), vr(rb));
     let sz = f.size();
     if f == Fmt::H {
         // The widening quiets a signalling NaN.
@@ -513,7 +680,6 @@ fn min_max<'a>(
     if f == Fmt::H {
         narrow(cx, va);
     }
-    cx.finish(inst, ra)
 }
 
 /// `lround`/`llround` (`fcvtas`) and `lrint`/`llrint` (`frintx` +
@@ -540,19 +706,24 @@ fn to_int<'a>(
         return finish_call(cx, inst, func, &[CallArg::Value(x)], false);
     }
     let a = cx.use_reg(x)?;
-    let v = vr(a);
+    let rd = cx.def_reg(inst)?;
+    to_int_reg(cx, which, f, vr(a), xr(rd), bits);
+    cx.finish(inst, rd)
+}
+
+/// `rd = lround|llround|lrint|llrint(v)` to `bits` bits. Writes `v`.
+fn to_int_reg(cx: &mut FnCx<'_, A64>, which: Intrinsic<'_>, f: Fmt, v: VReg, rd: Reg, bits: u32) {
+    use Intrinsic as I;
     if f == Fmt::H {
         widen(cx, v);
     }
-    let rd = cx.def_reg(inst)?;
     let sz = size_for_bits(bits);
     if matches!(which, I::Lround | I::Llround) {
-        put(cx, mc::fcvtas(sz, xr(rd).zr(), f.size(), v));
+        put(cx, mc::fcvtas(sz, rd.zr(), f.size(), v));
     } else {
         put(cx, mc::frintx(f.size(), v, v));
-        put(cx, mc::fcvtzs(sz, xr(rd).zr(), f.size(), v));
+        put(cx, mc::fcvtzs(sz, rd.zr(), f.size(), v));
     }
-    cx.finish(inst, rd)
 }
 
 /// `fptosi.sat`/`fptoui.sat` to `i1`..`i64`: `fcvtzs`/`fcvtzu` at the
@@ -571,12 +742,18 @@ fn saturate<'a>(
     }
     deferred_first(cx, inst, None)?;
     let a = cx.use_reg(x)?;
-    let v = vr(a);
+    let rd = cx.def_reg(inst)?;
+    saturate_reg(cx, signed, f, vr(a), xr(rd), bits);
+    cx.finish(inst, rd)
+}
+
+/// `rd = fptosi.sat|fptoui.sat(v)` (`signed`) to `bits` bits. Writes `v`
+/// and `x16`.
+fn saturate_reg(cx: &mut FnCx<'_, A64>, signed: bool, f: Fmt, v: VReg, rd: Reg, bits: u32) {
     if f == Fmt::H {
         widen(cx, v);
     }
-    let rd = cx.def_reg(inst)?;
-    let r = xr(rd).zr();
+    let r = rd.zr();
     let sz = size_for_bits(bits);
     let word = if signed { mc::fcvtzs } else { mc::fcvtzu };
     put(cx, word(sz, r, f.size(), v));
@@ -597,7 +774,6 @@ fn saturate<'a>(
             put(cx, mc::csel(sz, r, r, X16.zr(), Cond::Lo));
         }
     }
-    cx.finish(inst, rd)
 }
 
 /// The test of `is.fpclass` for the 6 kinds of magnitude (zero,
@@ -732,38 +908,50 @@ fn fp_arg(cx: &mut FnCx<'_, A64>, f: Fmt, x: Value) -> CgResult<CallArg> {
 /// An `int` argument of a call: as it is when it is 32 bits wide, else
 /// sign-extended (or truncated) to 32 bits in a temporary.
 fn int_arg(cx: &mut FnCx<'_, A64>, n: Value, clamp: bool) -> CgResult<CallArg> {
-    let bits = cx.types().int_bits(value_ty(cx, n));
+    let bits = int_arg_bits(cx.types().int_bits(value_ty(cx, n)), clamp)?;
+    if bits == 32 {
+        return Ok(CallArg::Value(n));
+    }
+    let a = cx.use_reg(n)?;
+    let t = cx.temp(Class::Gpr)?;
+    int_arg_reg(cx, xr(t), xr(a), bits);
+    cx.release(n);
+    cx.free_temp(a);
+    Ok(CallArg::Reg(t))
+}
+
+/// The width of an `int` argument of `bits` bits that [`int_arg_reg`]
+/// takes, or the refusal.
+fn int_arg_bits(bits: Option<u32>, clamp: bool) -> CgResult<u32> {
     match bits {
-        Some(32) => Ok(CallArg::Value(n)),
-        Some(bits @ 1..=31) => {
-            let a = cx.use_reg(n)?;
-            let t = cx.temp(Class::Gpr)?;
-            put(cx, mc::sbfx(Size::W, xr(t).zr(), xr(a).zr(), 0, bits));
-            cx.release(n);
-            cx.free_temp(a);
-            Ok(CallArg::Reg(t))
-        }
-        // A wider exponent of `ldexp` is clamped to the `int` range:
-        // beyond it every result is already 0, infinite or `x`.
-        Some(bits @ 33..=64) if clamp => {
-            let a = cx.use_reg(n)?;
-            let t = cx.temp(Class::Gpr)?;
-            let tz = xr(t).zr();
-            put(cx, mc::sbfx(Size::X, tz, xr(a).zr(), 0, bits));
-            cx.release(n);
-            cx.free_temp(a);
+        Some(bits @ 1..=32) => Ok(bits),
+        Some(bits @ 33..=64) if clamp => Ok(bits),
+        // `powi`'s exponent is the C `int` of `__powidf2`; a wider one
+        // has no call (as `llc`).
+        Some(1..=64) => unsupported(INTRINSIC),
+        _ => unsupported(WIDE),
+    }
+}
+
+/// `t` = the `int` argument made of the `bits`-bit integer in `a` (`bits`
+/// as [`int_arg_bits`] accepts it): sign-extended to 32 bits, or a wider
+/// exponent of `ldexp` clamped to the `int` range (beyond it every result
+/// is already 0, infinite or `x`). Writes `x16`.
+fn int_arg_reg(cx: &mut FnCx<'_, A64>, t: Reg, a: Reg, bits: u32) {
+    let tz = t.zr();
+    match bits {
+        32 if t == a => {}
+        32 => put(cx, mc::mov(Size::W, tz, a.zr())),
+        1..=31 => put(cx, mc::sbfx(Size::W, tz, a.zr(), 0, bits)),
+        _ => {
+            put(cx, mc::sbfx(Size::X, tz, a.zr(), 0, bits));
             mov_imm(cx, Size::X, X16, 0x7fff_ffff);
             put(cx, mc::cmp(Size::X, tz, X16.zr()));
             put(cx, mc::csel(Size::X, tz, tz, X16.zr(), Cond::Lt));
             mov_imm(cx, Size::X, X16, 0xffff_ffff_8000_0000);
             put(cx, mc::cmp(Size::X, tz, X16.zr()));
             put(cx, mc::csel(Size::X, tz, tz, X16.zr(), Cond::Gt));
-            Ok(CallArg::Reg(t))
         }
-        // `powi`'s exponent is the C `int` of `__powidf2`; a wider one
-        // has no call (as `llc`).
-        Some(1..=64) => unsupported(INTRINSIC),
-        _ => unsupported(WIDE),
     }
 }
 

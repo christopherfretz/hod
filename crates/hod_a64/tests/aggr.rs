@@ -154,10 +154,6 @@ fn what_is_refused_is_refused_by_name() {
             aggr::WIDE_MUL_OVERFLOW,
         ),
         (
-            "define void @f(ptr %p) { %v = load <3 x i32>, ptr %p\n %r = add <3 x i32> %v, %v\n store <3 x i32> %r, ptr %p\n ret void }",
-            aggr::MEM_VECTOR,
-        ),
-        (
             "define i1 @f(ptr %p) { %v = load <3 x i32>, ptr %p\n %c = icmp eq <3 x i32> %v, zeroinitializer\n %r = extractelement <3 x i1> %c, i32 0\n ret i1 %r }",
             aggr::MEM_VECTOR,
         ),

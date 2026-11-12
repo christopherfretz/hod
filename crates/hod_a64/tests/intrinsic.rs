@@ -130,11 +130,6 @@ fn what_is_not_lowered_is_refused_by_name() {
             intrinsic::WIDE,
         ),
         (
-            "declare <4 x i32> @llvm.ctpop.v4i32(<4 x i32>)\n\
-             define <4 x i32> @f(<4 x i32> %a) {\n  %r = call <4 x i32> @llvm.ctpop.v4i32(<4 x i32> %a)\n  ret <4 x i32> %r\n}\n",
-            intrinsic::VECTOR,
-        ),
-        (
             "declare void @llvm.memcpy.inline.p0.p0.i64(ptr, ptr, i64, i1)\n\
              define void @f(ptr %d, ptr %s, i64 %n) {\n  call void @llvm.memcpy.inline.p0.p0.i64(ptr %d, ptr %s, i64 %n, i1 false)\n  ret void\n}\n",
             intrinsic::INLINE_LENGTH,

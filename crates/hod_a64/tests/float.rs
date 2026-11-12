@@ -40,22 +40,6 @@ fn what_the_group_does_not_lower_is_refused_by_name() {
             float::VECTOR_ICMP,
         ),
         (
-            "define <4 x i32> @f(<4 x i32> %a, <4 x i32> %b) { %r = sdiv <4 x i32> %a, %b\n ret <4 x i32> %r }",
-            float::VECTOR_OP,
-        ),
-        (
-            "define <2 x i64> @f(<2 x i64> %a, <2 x i64> %b) { %r = mul <2 x i64> %a, %b\n ret <2 x i64> %r }",
-            float::VECTOR_OP,
-        ),
-        (
-            "define <4 x float> @f(<4 x float> %a, <4 x float> %b) { %r = frem <4 x float> %a, %b\n ret <4 x float> %r }",
-            float::VECTOR_OP,
-        ),
-        (
-            "define <4 x half> @f(<4 x half> %a, <4 x half> %b) { %r = fadd <4 x half> %a, %b\n ret <4 x half> %r }",
-            float::VECTOR_OP,
-        ),
-        (
             "define i1 @f(<2 x double> %a, <2 x double> %b) { %c = fcmp olt <2 x double> %a, %b\n %e = extractelement <2 x i1> %c, i64 0\n ret i1 %e }",
             float::VECTOR_FCMP,
         ),
@@ -74,10 +58,6 @@ fn what_the_group_does_not_lower_is_refused_by_name() {
         (
             "define i1 @f(bfloat %a, bfloat %b) { %r = fcmp oeq bfloat %a, %b\n ret i1 %r }",
             float::BFLOAT,
-        ),
-        (
-            "define <2 x i32> @f(<2 x double> %a) { %r = fptosi <2 x double> %a to <2 x i32>\n ret <2 x i32> %r }",
-            float::CAST,
         ),
     ]);
 }

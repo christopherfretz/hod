@@ -132,7 +132,8 @@ impl<'b, 'a> BodyReader<'b, 'a> {
     /// represent: each is named in [`BodyReader::unsupported`] and
     /// recorded in `module` against the function's symbol. The notes of
     /// the definition's own metadata attachments (`global-metadata:`)
-    /// are recorded in `module` as well, and do not stop the body.
+    /// come first among them and stop the body too, as `hod_ll`'s notes
+    /// of the same attachments stop the module (WP-064).
     ///
     /// # Errors
     /// [`BcError`] at the first record that is not what LLVM writes, or
@@ -143,17 +144,30 @@ impl<'b, 'a> BodyReader<'b, 'a> {
         if function.sym.index() >= module.symbol_count() {
             return fail(BcErrorKind::Invalid, at, "this function is not a symbol of the module");
         }
-        let result = self.body(module, function);
+        let mut result = self.body(module, function);
         let st = &mut self.state;
         if result.is_ok() {
             self.unsupported.append(&mut st.pending);
+            if !st.definition_notes.is_empty() {
+                // WP-064: an attachment `hod_ir` has no field for is a
+                // refusal, not a note nothing judges.
+                if let Ok(Some(body)) = result {
+                    st.storage = Some(body);
+                    result = Ok(None);
+                }
+                let own = std::mem::take(&mut self.unsupported);
+                self.unsupported.append(&mut st.definition_notes);
+                for construct in own {
+                    if !self.unsupported.contains(&construct) {
+                        self.unsupported.push(construct);
+                    }
+                }
+            }
         }
         st.pending.clear();
+        st.definition_notes.clear();
         for construct in &self.unsupported {
             module.record_unsupported(construct, Some(function.sym));
-        }
-        for construct in st.definition_notes.drain(..) {
-            module.record_unsupported(&construct, Some(function.sym));
         }
         result
     }

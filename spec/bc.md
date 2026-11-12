@@ -411,7 +411,11 @@ Only what `hod_ll` uses is built. The rest takes an id and is never read.
 - **Attachments.** GLOBAL_DECL_ATTACHMENT of a declaration gives the
   `global-metadata:<kind>` notes of `ll.md §5.7`.
   - A definition's own attachments live in its function block, so stage
-    1 does not see them (§10).
+    1 does not see them (§10). The body reader gives their
+    `global-metadata:<kind>` names as the body's first refusals, so the
+    function is refused where `hod_ll` refuses the module for the same
+    attachment (WP-064; before, they were recorded after the module was
+    judged and nothing refused them).
 
 ## 6. Debug information
 

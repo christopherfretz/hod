@@ -588,3 +588,153 @@ define void @quiet() nounwind {
     let _ = write!(note, "emit_eh: the COMDAT program ran under {linked} linkers");
     eprintln!("{note}");
 }
+
+/// The module and bodies of `text`.
+fn parse(text: &str) -> (Module, Vec<hod_ir::Body>) {
+    let parsed = hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default())
+        .unwrap_or_else(|e| panic!("hod_ll: {e}"));
+    let (side, mut module) = (parsed.text, parsed.module);
+    let mut bodies = Vec::new();
+    hod_ll::parse_bodies(&mut module, &side, |_, parsed| {
+        bodies.push(parsed.body.expect("a body").clone());
+        Ok::<(), hod_ll::LlError>(())
+    })
+    .unwrap_or_else(|e| panic!("hod_ll: {e}"));
+    (module, bodies)
+}
+
+/// `spec/eh.md` §9.3: a direct call of a function declared `nounwind`
+/// gets a row marked `nounwind`, and no LSDA entry of its own; any other
+/// call keeps its entry. A call through a pointer is not one. (A gap
+/// entry may run on across a `nounwind` call, as `llc`'s does, so only
+/// the call before every other has nothing covering it.)
+#[test]
+fn calls_of_nounwind_functions_get_no_entry() {
+    let text = format!(
+        "{}{DECLS}{}",
+        header(22),
+        r"
+define void @f(ptr %fp) personality ptr @__gxx_personality_v0 {
+entry:
+  call void @quiet()
+  invoke void @may_throw() to label %next unwind label %lpad
+next:
+  call void @may_throw()
+  call void %fp()
+  call void @quiet()
+  ret void
+lpad:
+  %lp = landingpad { ptr, i32 } cleanup
+  resume { ptr, i32 } %lp
+}
+"
+    );
+    let (module, bodies) = parse(&text);
+    let mut chunk = Chunk::new();
+    let tm = common::target::Tm::default();
+    for body in &bodies {
+        hod_cg::compile_function(
+            &tm,
+            &module,
+            body,
+            &Options::default(),
+            &mut hod_cg::Scratch::new(),
+            &mut chunk,
+        )
+        .unwrap();
+    }
+    let flags: Vec<bool> = chunk.call_sites.iter().map(|row| row.nounwind).collect();
+    // `quiet`, the `invoke`, `may_throw`, the pointer, `quiet`, and the
+    // call of `_Unwind_Resume` (a runtime function).
+    assert_eq!(flags, [true, false, false, false, true, false], "{:?}", chunk.call_sites);
+    let emitted = emit_module(&module, &Options::default(), &[chunk.clone()]).unwrap();
+    let tables = common::exec::Tables::decode(&emitted).unwrap();
+    assert_eq!((tables.fdes, tables.lsdas), (1, 1));
+    let obj = &emitted.object;
+    let section = ehview::find_section(obj, b".gcc_except_table").unwrap();
+    let reloc = |offset| ehview::object_reloc(obj, section, offset);
+    let view = ehview::lsda(obj.data(section), 0, 8, &reloc).unwrap();
+    let covered = |row: &CallSiteRow| {
+        view.sites.iter().any(|&(start, len, _, _)| {
+            start <= u64::from(row.start) && u64::from(row.start + row.len) <= start + len
+        })
+    };
+    for row in &chunk.call_sites {
+        assert!(covered(row) || row.nounwind, "{row:?} in {:?}", view.sites);
+    }
+    assert!(!covered(&chunk.call_sites[0]), "{:?}", view.sites);
+    assert_eq!(view.sites.len(), 2, "the invoke, and one gap entry for the rest");
+}
+
+/// `spec/codegen.md` §9.7: a linker option that is not a pair is refused
+/// by name (`llc` writes `.linker-options` as pairs).
+#[test]
+fn a_linker_option_that_is_not_a_pair_is_refused() {
+    for list in [&[&b"lib"[..]][..], &[b"a", b"b", b"c"]] {
+        let mut module = Module::new(hod_ir::TargetSpec::aarch64_linux_gnu());
+        module.add_linker_option(list).unwrap();
+        let result = emit_module(&module, &Options::default(), &[Chunk::new()]);
+        assert_eq!(result.err(), Some(CgError::unsupported("module:linker-option-not-a-pair")));
+    }
+    let mut module = Module::new(hod_ir::TargetSpec::aarch64_linux_gnu());
+    module.add_linker_option(&[b"key", b"value"]).unwrap();
+    assert!(emit_module(&module, &Options::default(), &[Chunk::new()]).is_ok());
+}
+
+/// `spec/eh.md` §1.1: a function with a personality LLVM does not know
+/// and no landing pads is refused by name: `llc` writes its personality
+/// and an LSDA of call sites hod does not record. A known one gets
+/// neither.
+#[test]
+fn an_unknown_personality_without_pads_is_refused() {
+    let Some(&major) = majors().last() else { return };
+    let scratch = Scratch::new("emit-eh-personality");
+    let text = format!(
+        "{}{DECLS}declare i32 @my_personality(...)\n\
+         define void @f() personality ptr @my_personality {{\n  ret void\n}}\n",
+        header(major)
+    );
+    // `llc` wrote an LSDA; the rows are those of a function without pads.
+    let no_pads = |chunk: &mut Chunk| {
+        let f = &mut chunk.funcs[0];
+        (f.has_pads, f.call_sites) = (false, 0..0);
+    };
+    let (_, _, ours) = both(&scratch, major, "unknown", &text, &[], &no_pads);
+    assert_eq!(ours.err(), Some(CgError::unsupported("eh:unknown-personality-without-pads")));
+}
+
+/// `spec/codegen.md` §6.1, §9.3: the shared trap after the exit
+/// sequences, where a block whose address is taken and that nothing
+/// reaches is bound, is reached from the body, so its rows restate the
+/// body's: the CFA rule the epilogue's rows had changed.
+#[test]
+fn the_shared_trap_restates_the_body_rows() {
+    let text = format!(
+        "{}@addr = global ptr blockaddress(@g, %dead)\n\
+         define i64 @g(ptr %p) {{\nentry:\n  indirectbr ptr %p, [label %r]\nr:\n  ret i64 1\n\
+         dead:\n  ret i64 2\n}}\n",
+        header(22)
+    );
+    let (module, bodies) = parse(&text);
+    let mut chunk = Chunk::new();
+    let tm = common::target::Tm::default();
+    hod_cg::compile_function(
+        &tm,
+        &module,
+        &bodies[0],
+        &Options::default(),
+        &mut hod_cg::Scratch::new(),
+        &mut chunk,
+    )
+    .unwrap();
+    let fp = u16::from(common::isa::FP);
+    let last = chunk.cfi.last().unwrap().offset;
+    let trap: Vec<_> =
+        chunk.cfi.iter().filter(|row| row.offset == last).map(|row| row.op).collect();
+    assert!(
+        trap.contains(&hod_cg::CfiOp::DefCfa { reg: fp, offset: 16 }),
+        "the rows at the trap: {:?}",
+        chunk.cfi
+    );
+    assert!(last < chunk.code.len() as u32, "{:?}", chunk.cfi);
+}

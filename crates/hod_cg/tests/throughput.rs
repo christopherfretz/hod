@@ -48,3 +48,64 @@ fn ir_instructions_per_second() {
     );
     assert!(rate > 0.0);
 }
+
+/// What the unwind tables cost `emit_module` (WP-049, `spec/eh.md`
+/// §9.7): one large generated module with exceptions, emitted with every
+/// function's tables, and again with every function marked `nounwind`
+/// without `uwtable`, personality or pads (no `.eh_frame`, no LSDA).
+/// Prints ns per function for each and the bytes of the tables.
+#[test]
+#[ignore = "a measurement: run in release"]
+#[allow(clippy::cast_precision_loss, reason = "a rate to print")]
+fn unwind_table_cost_per_function() {
+    let generated = GenOptions { exceptions: true, ..GenOptions::everything() }.sized(4000, 30);
+    let program = generate(0x49, &generated);
+    let tm = Tm::default();
+    let (mut scratch, mut chunk) = (Scratch::default(), Chunk::new());
+    compile_all(
+        &tm,
+        &program.module,
+        &program.bodies,
+        Options::default(),
+        &mut scratch,
+        &mut chunk,
+    )
+    .expect("the program compiles");
+    let mut bare = chunk.clone();
+    for func in &mut bare.funcs {
+        (func.nounwind, func.uwtable, func.personality, func.has_pads) = (true, false, None, false);
+    }
+    let functions = chunk.funcs.len();
+    let time = |chunk: &Chunk| {
+        let chunks = std::slice::from_ref(chunk);
+        let mut best = f64::INFINITY;
+        let mut sizes = (0, 0, 0);
+        for _ in 0..7 {
+            let start = Instant::now();
+            let emitted =
+                hod_cg::emit_module(&program.module, &Options::default(), chunks).unwrap();
+            best = best.min(start.elapsed().as_secs_f64());
+            let obj = &emitted.object;
+            let size = |prefix: &[u8]| -> usize {
+                (0..obj.section_count())
+                    .map(hod_obj::SectionId::from_index)
+                    .filter(|&s| obj.section_name(s).starts_with(prefix))
+                    .map(|s| obj.data(s).len())
+                    .sum()
+            };
+            let fdes = emitted.funcs.iter().filter(|f| f.record.needs_unwind_entry()).count();
+            sizes = (size(b".eh_frame"), size(b".gcc_except_table"), fdes);
+        }
+        (best * 1e9 / functions as f64, sizes)
+    };
+    let (with, (eh_frame, lsda, fdes)) = time(&chunk);
+    let (without, _) = time(&bare);
+    let lsdas = chunk.funcs.iter().filter(|f| f.has_pads).count();
+    println!(
+        "{functions} functions ({fdes} FDEs, {lsdas} LSDAs): emit_module {with:.0} ns/function with \
+         tables, {without:.0} without ({:.0} ns per function for the tables); .eh_frame {eh_frame} \
+         bytes, .gcc_except_table {lsda} bytes",
+        with - without
+    );
+    assert!(fdes > 0 && lsdas > 0 && eh_frame > 0 && lsda > 0);
+}

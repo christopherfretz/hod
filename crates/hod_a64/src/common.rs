@@ -554,7 +554,7 @@ pub fn materialize_gpr_const(cx: &mut FnCx<'_, A64>, rd: Reg, id: ConstId) -> Cg
         Const::Addr { sym, addend } => sym_address(cx, rd, sym, addend)?,
         Const::IntOfAddr { addr, .. } => return materialize_gpr_const(cx, rd, addr),
         Const::DsoLocalEquivalent(sym) | Const::NoCfi(sym) => sym_address(cx, rd, sym, 0)?,
-        Const::BlockAddr { .. } => return unsupported(BLOCKADDRESS),
+        Const::BlockAddr { func, block } => block_address(cx, rd, func, block)?,
         _ => return unsupported(CONSTANT),
     }
     Ok(())

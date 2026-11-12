@@ -20,7 +20,6 @@ use common::{compile_ll, emit, ll_header, parse, write_object};
 use graphs::{
     Call, Func, GenOptions, Mode, Rng, Ty, Wrong, check, function, mask, signed, text_of,
 };
-use hod_a64::common::BLOCKADDRESS;
 use hod_cg::{CgError, Options, RelocModel, Stress};
 
 /// Plain, every stress option, far mode alone.
@@ -534,21 +533,9 @@ int main(void) {
     }
 }
 
-/// `indirectbr` on a `phi` of `blockaddress` constants: the constant is
-/// materialized by the glue, which `common::materialize_gpr_const`
-/// refuses (`a64:blockaddress`) until it calls `common::block_address`.
-#[test]
-fn a_block_address_the_glue_materializes_is_refused_by_name() {
-    let f = "define i64 @f(i1 %c) {\nentry:\n  br i1 %c, label %a, label %b\na:\n  br label %go\nb:\n  br label %go\n\
-             go:\n  %t = phi ptr [ blockaddress(@f, %x), %a ], [ blockaddress(@f, %y), %b ]\n  \
-             indirectbr ptr %t, [label %x, label %y]\nx:\n  ret i64 1\ny:\n  ret i64 2\n}\n";
-    assert_eq!(compile_ll(f), Err(CgError::unsupported(BLOCKADDRESS)));
-}
-
 /// Random graphs whose `indirectbr`s go through `phi`s of `blockaddress`
 /// constants (selected by the paths into the block).
 #[test]
-#[ignore = "needs common.rs materialize_gpr_const to call block_address (WP-037 handback)"]
 fn graphs_with_block_address_phis_agree() {
     let o = GenOptions { addr_phis: true, ..GenOptions::default() };
     check_graphs(500, 4, 300, &o, false);

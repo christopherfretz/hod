@@ -60,6 +60,7 @@ dependencies = [
 name = "hod_cg"
 version = "0.0.0"
 dependencies = [
+ "hod_eh",
  "hod_interp",
  "hod_ir",
  "hod_ll",

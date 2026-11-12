@@ -18,6 +18,7 @@
 //!   [`Body::layout`] lists them in layout order, entry block first;
 //! - every operand names something that exists: no reserved values remain.
 
+use std::fmt;
 use std::ops::Range;
 
 use crate::attrs::{CallConv, ParamAttrs};
@@ -92,8 +93,8 @@ impl UseFacts {
     }
 }
 
-impl std::fmt::Debug for UseFacts {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for UseFacts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "uses={}", self.count())?;
         if self.used_outside_block() {
             f.write_str(" outside")?;
@@ -643,7 +644,7 @@ impl Body {
 }
 
 /// A block of a body.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct Block<'a> {
     body: &'a Body,
     id: BlockId,
@@ -710,7 +711,7 @@ impl<'a> Block<'a> {
 }
 
 /// An iterator over consecutive instructions.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Insts<'a> {
     body: &'a Body,
     range: Range<u32>,
@@ -798,7 +799,7 @@ impl Iterator for Successors<'_> {
 impl ExactSizeIterator for Successors<'_> {}
 
 /// An instruction of a body.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct Inst<'a> {
     body: &'a Body,
     id: InstId,
@@ -1342,7 +1343,7 @@ impl<'a> LandingPad<'a> {
 }
 
 /// A call, `invoke` or `callbr`: the call side table's view (§5.4).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct CallSite<'a> {
     body: &'a Body,
     index: u32,
@@ -1534,6 +1535,61 @@ impl<'a> CallSite<'a> {
         let start = self.data().unwind;
         let count = self.body.word(start);
         Blocks::new(self.body.word_list(start.saturating_add(2), count.saturating_sub(1)))
+    }
+}
+
+// The views print what they show, not the body behind them.
+
+impl fmt::Debug for Block<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}{:?}", self.id, self.inst_range())
+    }
+}
+
+impl fmt::Debug for Insts<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Insts({:?})", self.range)
+    }
+}
+
+impl fmt::Debug for Inst<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?} = {} {:?} {:?}", self.id, self.opcode().name(), self.ty(), self.kind())
+    }
+}
+
+impl fmt::Debug for CallSite<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut s = f.debug_struct("CallSite");
+        s.field("inst", &self.inst())
+            .field("callee", &self.callee())
+            .field("overloads", &self.overloads())
+            .field("fn_type", &self.fn_type())
+            .field("args", &self.args())
+            .field("cc", &self.cc())
+            .field("tail", &self.tail())
+            .field("noreturn", &self.is_noreturn())
+            .field("nounwind", &self.is_nounwind())
+            .field("returns_twice", &self.returns_twice());
+        if self.has_param_attrs() {
+            s.field("ret_attrs", &self.ret_attrs());
+            for index in 0..self.args().len() {
+                s.field("arg_attrs", &self.arg_attrs(index));
+            }
+        }
+        for bundle in self.bundles() {
+            s.field("bundle", &bundle);
+        }
+        if let Some(normal) = self.normal_dest() {
+            s.field("normal", &normal);
+        }
+        if let Some(unwind) = self.unwind_dest() {
+            s.field("unwind", &unwind);
+        }
+        if self.opcode() == Opcode::CallBr {
+            s.field("indirect", &self.indirect_dests());
+        }
+        s.finish()
     }
 }
 

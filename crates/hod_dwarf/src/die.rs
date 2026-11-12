@@ -221,7 +221,7 @@ impl<'a> UnitPlan<'a> {
             return Err(Error::NotACompileUnit { node: unit.raw() });
         };
         if cu.emission_kind != EmissionKind::FullDebug {
-            return Err(unsupported(unit, "a compile unit whose emissionKind is not FullDebug"));
+            crate::reduced::check_unit(unit, &cu)?; // WP-061: §6.9
         }
         let Some(file) = cu.file.filter(|&f| debug.find_kind(f) == Some(DiKind::File)) else {
             return Err(bad(unit, "file"));

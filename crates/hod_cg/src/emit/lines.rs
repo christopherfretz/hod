@@ -26,7 +26,7 @@
 use hod_dwarf::{
     CodeSpan, FunctionInput, FunctionLines, GlobalAddr, LineProgram, LineUnit, LocalPlace,
     LocalRow, Row, ScopeRow, Sequence, SourceLoc, Transition, UnitInput, UnitPlan, function_rows,
-    write_debug_info, write_debug_line_units,
+    has_dies, write_debug_info, write_debug_line_units,
 };
 use hod_ir::{DebugInfo, DiId, DiKind, DiNode, EmissionKind, Module, SymId, SymbolKind};
 use hod_obj::{Arch, Binding, Object, SectionId, SymbolId};
@@ -51,6 +51,9 @@ struct Unit<'m> {
     code: Vec<CodeSpan>,
     /// The unit's global-variable expressions, sorted.
     globals: Vec<DiId>,
+    /// Whether the unit has DIEs: not a `DebugDirectivesOnly` unit, which
+    /// is only a line table (`spec/dwarf.md` §6.9).
+    dies: bool,
 }
 
 /// The debug information of a module being emitted.
@@ -100,7 +103,7 @@ impl<'m> DebugLines<'m> {
     /// further.
     ///
     /// # Errors
-    /// [`unsupported::DEBUG_EMISSION_KIND`], [`unsupported::DEBUG_DIE`]; an internal
+    /// [`unsupported::DEBUG_DIE`], a `debug:*` name of the plan; an internal
     /// error for a unit the tables do not describe.
     pub(super) fn new(module: &'m Module, arch: Arch) -> CgResult<Option<Box<DebugLines<'m>>>> {
         let debug = &module.debug;
@@ -109,17 +112,23 @@ impl<'m> DebugLines<'m> {
             let DiNode::CompileUnit(cu) = debug.node(unit) else {
                 return Err(CgError::internal("a compile unit that is not a DICompileUnit"));
             };
-            match cu.emission_kind {
-                EmissionKind::NoDebug => continue,
-                EmissionKind::FullDebug => {}
-                EmissionKind::LineTablesOnly | EmissionKind::DebugDirectivesOnly => {
-                    return Err(CgError::unsupported(unsupported::DEBUG_EMISSION_KIND));
-                }
+            if cu.emission_kind == EmissionKind::NoDebug {
+                continue;
             }
+            // `LineTablesOnly` and `DebugDirectivesOnly` (WP-061,
+            // `spec/dwarf.md` §6.9): the plan refuses what they cannot
+            // describe; the second gets no DIEs at all.
             let plan = UnitPlan::for_functions(module, unit).map_err(dwarf_err)?;
             let mut globals = cu.globals.to_vec();
             globals.sort_unstable();
-            units.push(Unit { plan, program: LineProgram::new(arch), code: Vec::new(), globals });
+            let dies = has_dies(cu.emission_kind);
+            units.push(Unit {
+                plan,
+                program: LineProgram::new(arch),
+                code: Vec::new(),
+                globals,
+                dies,
+            });
         }
         if units.is_empty() {
             return Ok(None);
@@ -318,6 +327,7 @@ impl<'m> DebugLines<'m> {
         let inputs: Vec<UnitInput<'_, '_>> = written
             .iter()
             .zip(&lines.offsets)
+            .filter(|&(&i, _)| self.units[i].dies)
             .map(|(&i, &line_offset)| UnitInput {
                 plan: &self.units[i].plan,
                 line_offset,
@@ -325,6 +335,9 @@ impl<'m> DebugLines<'m> {
                 code: &self.units[i].code,
             })
             .collect();
+        if inputs.is_empty() {
+            return Ok(()); // only `DebugDirectivesOnly` units
+        }
         write_debug_info(obj, lines.sections.line, &inputs).map_err(dwarf_err)?;
         Ok(())
     }

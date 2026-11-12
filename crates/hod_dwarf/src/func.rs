@@ -294,6 +294,9 @@ impl<'a> UnitPlan<'a> {
         let DiNode::Subprogram(sp) = self.debug.node(sp_id) else {
             return Err(bad(sp_id, "subprogram"));
         };
+        if self.cu.emission_kind != hod_ir::EmissionKind::FullDebug {
+            return crate::reduced::add_function(self, f); // WP-061: §6.9
+        }
         if self.slot[sp_id.index()] != NONE {
             return Err(unsupported(sp_id, "debug:subprogram-twice"));
         }

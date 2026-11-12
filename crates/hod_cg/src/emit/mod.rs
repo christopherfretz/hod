@@ -68,10 +68,6 @@ pub mod unsupported {
     /// An `!llvm.linker.options` entry that is not a pair of strings,
     /// which ELF `llc` refuses ("invalid llvm.linker.options").
     pub const LINKER_OPTION: &str = "module:linker-option-not-a-pair";
-    /// A compile unit whose `emissionKind` is `LineTablesOnly` or
-    /// `DebugDirectivesOnly`: their DIEs (a unit and its subprograms
-    /// only) are not written yet (`spec/dwarf.md` §9).
-    pub const DEBUG_EMISSION_KIND: &str = "debug:emission-kind";
     /// A compile unit with a node the DIE writer does not write yet
     /// (`spec/dwarf.md` §6.5).
     pub const DEBUG_DIE: &str = "debug:die-unsupported";

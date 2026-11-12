@@ -51,12 +51,14 @@ mod func;
 mod leb;
 mod line;
 mod policy;
+mod reduced;
 mod strings;
 mod target;
 mod types;
 
 pub use die::{CodeSpan, DieSections, GlobalAddr, UnitInput, UnitPlan, write_debug_info};
 pub use func::{FunctionInput, LocalPlace, LocalRow, ScopeRow};
+pub use reduced::{LINE_TABLES_INLINED, LINE_TABLES_VARIABLES, REDUCED_UNIT_ENTITIES, has_dies};
 pub use strings::DebugStrings;
 
 pub use leb::{write_sleb, write_uleb};

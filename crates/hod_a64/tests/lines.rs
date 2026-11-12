@@ -7,8 +7,8 @@
 //! - the rows of the hand-written cases (`data/lines/hand.ll`): a block
 //!   that starts without a location, an explicit line 0, two returns, a
 //!   function without a subprogram; an inlined location
-//!   (`data/lines/hand_inlined.ll`) is refused until its DIEs are
-//!   written (`debug:inlined-subroutine`, `spec/dwarf.md` §6.4);
+//!   (`data/lines/hand_inlined.ll`) compiles (its DIEs are WP-085's,
+//!   `spec/dwarf.md` §6.9);
 //! - the relocations of the sequences and of the unit's ranges, with and
 //!   without `-function-sections`;
 //! - the oracle: per function, hod's rows against `llc`'s (LLVM 19 and
@@ -151,19 +151,15 @@ fn hand_written_rows() {
     }
 }
 
-/// An inlined location: its row would keep its own scope's file and
-/// line, but the function's DIEs need a `DW_TAG_inlined_subroutine`,
-/// which is not written yet; the module is refused by that name
-/// (`spec/dwarf.md` §6.4).
+/// An inlined location: its row keeps its own scope's file and line,
+/// and the function's DIEs have its `DW_TAG_inlined_subroutine`
+/// (WP-085, `dies_inline.rs`): the module compiles.
 #[test]
-fn inlined_locations_are_refused() {
+fn inlined_locations_are_written() {
     let text = format!("{}{}", ll_header(22), data("hand_inlined.ll"));
     let (module, bodies) = parse(&text);
-    match compile_to_object(&module, &bodies, &Options::default()) {
-        Err(ModuleError::Emit(e)) => {
-            assert_eq!(e, CgError::unsupported("debug:inlined-subroutine"));
-        }
-        other => panic!("{:?}", other.map(|b| b.len())),
+    if let Err(e) = compile_to_object(&module, &bodies, &Options::default()) {
+        panic!("{e}");
     }
 }
 

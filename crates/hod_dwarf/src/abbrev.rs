@@ -55,6 +55,8 @@ pub mod tag {
     pub const RVALUE_REFERENCE_TYPE: u16 = 0x42;
     pub const TEMPLATE_ALIAS: u16 = 0x43;
     pub const ATOMIC_TYPE: u16 = 0x47;
+    // WP-085.
+    pub const INLINED_SUBROUTINE: u16 = 0x1d;
     pub const GNU_TEMPLATE_TEMPLATE_PARAM: u16 = 0x4106;
     pub const GNU_TEMPLATE_PARAMETER_PACK: u16 = 0x4107;
 }
@@ -113,6 +115,12 @@ pub mod at {
     pub const RNGLISTS_BASE: u16 = 0x74;
     pub const ALIGNMENT: u16 = 0x88;
     pub const EXPORT_SYMBOLS: u16 = 0x89;
+    // WP-085.
+    pub const INLINE: u16 = 0x20;
+    pub const ABSTRACT_ORIGIN: u16 = 0x31;
+    pub const CALL_COLUMN: u16 = 0x57;
+    pub const CALL_FILE: u16 = 0x58;
+    pub const CALL_LINE: u16 = 0x59;
     pub const GNU_VECTOR: u16 = 0x2107;
     pub const GNU_TEMPLATE_NAME: u16 = 0x2110;
 }
@@ -264,6 +272,16 @@ pub mod fam {
     pub const LABEL_COLUMN: usize = 71;
     pub const LEXICAL_BLOCK: usize = 38;
     pub const LABEL: usize = 39;
+    // WP-085: abstract instances and inlined subroutines.
+    pub const SUBPROGRAM_ABSTRACT: usize = 72;
+    pub const SUBPROGRAM_ABSTRACT_MEMBER: usize = 73;
+    pub const SUBPROGRAM_OF_ABSTRACT: usize = 74;
+    pub const INLINED_SUBROUTINE: usize = 75;
+    pub const LEXICAL_BLOCK_OF_ABSTRACT: usize = 76;
+    pub const LEXICAL_BLOCK_ABSTRACT: usize = 77;
+    pub const FORMAL_PARAMETER_OF_ABSTRACT: usize = 78;
+    pub const VARIABLE_OF_ABSTRACT: usize = 79;
+    pub const LABEL_OF_ABSTRACT: usize = 80;
 }
 
 /// Every family, in code order (`spec/dwarf.md` §6.1 has the same table).
@@ -1036,6 +1054,112 @@ pub const FAMILIES: &[Family] = &[
             o(0, at::LOW_PC, ADDRX),
         ],
     ),
+    // 72 to 80: WP-085's abstract instances (`DW_AT_inline`, written as
+    // `data1` where `llc` writes `implicit_const`, §6.7), the concrete
+    // DIEs that name them by `DW_AT_abstract_origin`, and inlined
+    // subroutines.
+    fam(
+        "subprogram (abstract)",
+        tag::SUBPROGRAM,
+        Optional,
+        512,
+        "WP-085",
+        &[
+            o(0, at::LINKAGE_NAME, STRX),
+            o(1, at::NAME, STRX),
+            o(2, at::DECL_FILE, UDATA),
+            o(2, at::DECL_LINE, UDATA),
+            o(3, at::PROTOTYPED, FLAG_PRESENT),
+            o(4, at::TYPE, REF4),
+            o(5, at::ARTIFICIAL, FLAG_PRESENT),
+            o(6, at::EXTERNAL, FLAG_PRESENT),
+            o(7, at::NORETURN, FLAG_PRESENT),
+            s(at::INLINE, DATA1),
+        ],
+    ),
+    fam(
+        "subprogram (abstract member)",
+        tag::SUBPROGRAM,
+        Optional,
+        32,
+        "WP-085",
+        &[
+            o(0, at::DECL_FILE, UDATA),
+            o(1, at::DECL_LINE, UDATA),
+            o(2, at::LINKAGE_NAME, STRX),
+            s(at::SPECIFICATION, REF4),
+            s(at::INLINE, DATA1),
+            o(3, at::OBJECT_POINTER, REF4),
+        ],
+    ),
+    fam(
+        "subprogram (of abstract)",
+        tag::SUBPROGRAM,
+        Optional,
+        4,
+        "WP-085",
+        &[
+            s(at::LOW_PC, ADDRX),
+            s(at::HIGH_PC, DATA4),
+            s(at::FRAME_BASE, EXPRLOC),
+            o(0, at::OBJECT_POINTER, REF4),
+            s(at::ABSTRACT_ORIGIN, REF4),
+        ],
+    ),
+    fam(
+        "inlined_subroutine",
+        tag::INLINED_SUBROUTINE,
+        Optional,
+        16,
+        "WP-085",
+        &[
+            s(at::ABSTRACT_ORIGIN, REF4),
+            o(0, at::LOW_PC, ADDRX),
+            o(0, at::HIGH_PC, DATA4),
+            o(1, at::RANGES, SEC_OFFSET),
+            s(at::CALL_FILE, UDATA),
+            s(at::CALL_LINE, UDATA),
+            o(2, at::CALL_COLUMN, UDATA),
+        ],
+    ),
+    fam(
+        "lexical_block (of abstract)",
+        tag::LEXICAL_BLOCK,
+        Yes,
+        4,
+        "WP-085",
+        &[
+            o(0, at::LOW_PC, ADDRX),
+            o(0, at::HIGH_PC, DATA4),
+            o(1, at::RANGES, SEC_OFFSET),
+            s(at::ABSTRACT_ORIGIN, REF4),
+        ],
+    ),
+    fam("lexical_block (abstract)", tag::LEXICAL_BLOCK, Yes, 1, "WP-085", &[]),
+    fam(
+        "formal_parameter (of abstract)",
+        tag::FORMAL_PARAMETER,
+        No,
+        1,
+        "WP-085",
+        &[s(at::LOCATION, EXPRLOC), s(at::ABSTRACT_ORIGIN, REF4)],
+    ),
+    fam(
+        "variable (of abstract)",
+        tag::VARIABLE,
+        No,
+        1,
+        "WP-085",
+        &[s(at::LOCATION, EXPRLOC), s(at::ABSTRACT_ORIGIN, REF4)],
+    ),
+    fam(
+        "label (of abstract)",
+        tag::LABEL,
+        No,
+        1,
+        "WP-085",
+        &[s(at::ABSTRACT_ORIGIN, REF4), s(at::LOW_PC, ADDRX)],
+    ),
 ];
 
 /// The slots of the general static-member families (54, 55), in `llc`'s
@@ -1192,7 +1316,9 @@ mod tests {
         assert_eq!(BASES[fam::BASE_TYPE_ANY], 754);
         // WP-057 appended families 69 to 71.
         assert_eq!(BASES[fam::SUBPROGRAM_ANY], 8733);
-        assert_eq!(CODE_END, 9279);
+        // WP-085 appended families 72 to 80.
+        assert_eq!(BASES[fam::SUBPROGRAM_ABSTRACT], 9279);
+        assert_eq!(CODE_END, 9851);
         for (index, name) in [
             (fam::CONST_TYPE, "const_type"),
             (fam::TYPEDEF, "typedef"),

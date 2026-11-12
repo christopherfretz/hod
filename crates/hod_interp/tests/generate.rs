@@ -395,3 +395,54 @@ fn unwinding_switches() {
     let o = Options { compares: false, globals: false, ..Options::everything() }.effective();
     assert!(!o.exceptions && !o.block_addresses);
 }
+
+/// §9.3: the `vectors` switch (WP-078) leaves every program of the other
+/// options as it was: these hashes were taken before it existed.
+#[test]
+fn vector_switch_keeps_existing_programs() {
+    let got = [
+        fingerprint(&Options::everything(), 0..40),
+        fingerprint(&Options::everything().sized(2, 12), 0..40),
+        fingerprint(&Options { floats: false, ..Options::default() }, 0..20),
+    ];
+    assert_eq!(
+        got,
+        [0xe460_15a4_5de2_0f6a, 0x0253_74dd_8283_950b, 0x786b_1040_937e_e312],
+        "{got:#x?}"
+    );
+}
+
+/// §9.3, §9.4: with `vectors` on, programs verify and run to an `i64`
+/// within their bound and every vector construct occurs; with it off,
+/// none does and no vector type is made.
+#[test]
+fn vector_programs_cover_every_construct() {
+    let options = Options { vectors: true, ..Options::default() };
+    let all = coverage(&options, SEEDS);
+    let missing: Vec<_> = Coverage::NAMES
+        .iter()
+        .chain(Coverage::VECTOR_NAMES)
+        .filter(|name| all.get(name) == 0)
+        .collect();
+    assert!(missing.is_empty(), "never generated: {missing:?}");
+    for seed in 0..100 {
+        check(seed, &generate(seed, &Options { vectors: true, ..Options::everything() }));
+        check(seed, &generate(seed, &options.clone().sized(2, 12)));
+        // Vectors need nothing: of `i64` lanes, with no compares or casts.
+        check(seed, &generate(seed, &Options { vectors: true, ..Options::minimal() }));
+    }
+    for options in [Options::default(), Options::everything(), Options::minimal()] {
+        let none = coverage(&options, 50);
+        for name in Coverage::VECTOR_NAMES {
+            assert_eq!(none.get(name), 0, "{name} with vectors off");
+        }
+        for seed in 0..50 {
+            let generated = generate(seed, &options);
+            let types = &generated.module.types;
+            let vector = (0..types.len()).any(|at| {
+                types.is_vector(hod_ir::TypeId::new(u32::try_from(at).expect("a type id")))
+            });
+            assert!(!vector, "seed {seed}: a vector type with vectors off");
+        }
+    }
+}

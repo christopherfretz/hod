@@ -122,8 +122,7 @@ fn indirect_calls() {
         });
         let f = fx.func("f", I32, &[I1], |m, b| {
             let fn_ty = m.symbol(double).ty();
-            let picked =
-                b.select(PTR, b.arg(0)?, Value::sym(double)?, Value::sym(negate)?)?;
+            let picked = b.select(PTR, b.arg(0)?, Value::sym(double)?, Value::sym(negate)?)?;
             let twenty_one = int(m, I32, 21);
             let args = [twenty_one];
             let good = CallDesc::new(picked, fn_ty, &args);
@@ -293,7 +292,10 @@ fn host_functions() {
     let outcome = interp.run(f, &[Val::i32(0)]);
     assert_eq!(outcome.result, Ok(Some(Val::i64(24))));
     assert_eq!(outcome.trace.len(), 2);
-    assert_eq!(outcome.trace[1].to_string(), format!("sum({}, i64 8) = i64 24", outcome.trace[1].args[0]));
+    assert_eq!(
+        outcome.trace[1].to_string(),
+        format!("sum({}, i64 8) = i64 24", outcome.trace[1].args[0])
+    );
     assert!(matches!(outcome.trace[0].args[0], Val::Ptr(addr) if addr != 0));
 
     // A read of unwritten memory by a host is the program's trap.
@@ -460,7 +462,8 @@ fn checked_arithmetic() {
         let pair = fx.m.types.struct_type(&[I8, I1], false).unwrap();
         let f = fx.func("f", I32, &[I8, I8], |m, b| {
             let result = icall(m, b, name, pair, &[I8, I8], &[b.arg(0)?, b.arg(1)?])?;
-            let (wrapped, flag) = (b.extract_value(I8, result, 0)?, b.extract_value(I1, result, 1)?);
+            let (wrapped, flag) =
+                (b.extract_value(I8, result, 0)?, b.extract_value(I1, result, 1)?);
             // Returns `flag * 256 + wrapped`.
             let (wrapped, flag) =
                 (b.cast(Opcode::ZExt, I32, wrapped)?, b.cast(Opcode::ZExt, I32, flag)?);
@@ -500,7 +503,10 @@ fn float_and_other_intrinsics() {
     assert_eq!(d("llvm.rint.f64", 3.5), Val::f64(4.0));
     assert_eq!(d("llvm.nearbyint.f64", -0.4), Val::f64(-0.0));
     assert_eq!(trap(&unary("llvm.sqrt.f64", DOUBLE, Val::f64(-1.0))), Trap::NanResult);
-    assert_eq!(value(unary("llvm.fabs.f32", FLOAT, Val::Float(0xffc0_0001))), Val::Float(0x7fc0_0001));
+    assert_eq!(
+        value(unary("llvm.fabs.f32", FLOAT, Val::Float(0xffc0_0001))),
+        Val::Float(0x7fc0_0001)
+    );
     assert_eq!(value(unary("llvm.sqrt.f32", FLOAT, Val::f32(9.0))), Val::f32(3.0));
     let copied = binary("llvm.copysign.f64", DOUBLE, Val::f64(3.0), Val::f64(-0.0));
     assert_eq!(value(copied), Val::f64(-3.0));

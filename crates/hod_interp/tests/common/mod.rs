@@ -192,16 +192,10 @@ pub fn icall(
 }
 
 /// A direct C call of `callee`.
-pub fn call(
-    m: &Module,
-    b: &mut FunctionBuilder,
-    callee: SymId,
-    args: &[Value],
-) -> IrResult<Value> {
+pub fn call(m: &Module, b: &mut FunctionBuilder, callee: SymId, args: &[Value]) -> IrResult<Value> {
     let fn_ty = m.symbol(callee).ty();
-    let ret = match m.types.kind(fn_ty) {
-        hod_ir::TypeKind::Function { ret, .. } => ret,
-        _ => unreachable!(),
+    let hod_ir::TypeKind::Function { ret, .. } = m.types.kind(fn_ty) else {
+        unreachable!("a function symbol has a function type")
     };
     b.call(ret, &CallDesc::new(Value::sym(callee)?, fn_ty, args))
 }

@@ -3,7 +3,9 @@
 
 mod common;
 
-use common::{DOUBLE, Fx, I1, I8, I16, I32, I64, PTR, VOID, al, call, eval, icall, int, trap, value};
+use common::{
+    DOUBLE, Fx, I1, I8, I16, I32, I64, PTR, VOID, al, call, eval, icall, int, trap, value,
+};
 use hod_interp::{Config, Outcome, Trap, Val};
 use hod_ir::{
     AtomicOrdering, FunctionBuilder, IrResult, MemFlags, Module, Opcode, RmwOp, SyncScope, TypeId,
@@ -184,7 +186,10 @@ fn ptr_add_indices() {
     assert_eq!(value(run(I32, Val::i32(0xffff_fffc), 4)), Val::i32(10));
     assert_eq!(value(run(I64, Val::i64(u64::MAX - 1), 4)), Val::i32(12));
     // 2^64 + (2^64 - 2) truncates to -2.
-    assert_eq!(value(run(common::I128, Val::i128((1 << 64) + u128::from(u64::MAX - 1)), 4)), Val::i32(12));
+    assert_eq!(
+        value(run(common::I128, Val::i128((1 << 64) + u128::from(u64::MAX - 1)), 4)),
+        Val::i32(12)
+    );
     assert_eq!(trap(&run(I8, Val::i8(1), 4)), Trap::OutOfBounds);
     // Out and back in again without an access is fine.
     let roundabout = eval(I32, &[], &[], |m, b| {
@@ -348,7 +353,10 @@ fn globals() -> (Fx, [hod_ir::SymId; 4], TypeId) {
     ];
     let pair_init = m.consts.aggregate(&m.types, pair_ty, &fields).unwrap();
     let pair = m
-        .add_variable(b"pair", &VariableDesc { init: Some(pair_init), ..VariableDesc::new(pair_ty) })
+        .add_variable(
+            b"pair",
+            &VariableDesc { init: Some(pair_init), ..VariableDesc::new(pair_ty) },
+        )
         .unwrap();
     (fx, [n, table, pair, callee], pair_ty)
 }
@@ -380,10 +388,10 @@ fn module_variables() {
         let field = b.ptr_add(PTR, pair, 16, &[])?;
         let callee = b.load(PTR, field, al(8))?;
         let fn_ty = m.types.function(I32, &[], false)?;
-        let called = b.call(I32, &hod_ir::CallDesc::new(callee, fn_ty, &[]))?;
+        let returned = b.call(I32, &hod_ir::CallDesc::new(callee, fn_ty, &[]))?;
         let field = b.ptr_add(PTR, pair, 4, &[])?;
         let middle = b.load(I32, field, al(4))?;
-        let sum = b.binary(Opcode::Add, I32, second, called)?;
+        let sum = b.binary(Opcode::Add, I32, second, returned)?;
         let sum = b.binary(Opcode::Add, I32, sum, middle)?;
         b.ret(Some(sum))?;
         Ok(())
@@ -459,14 +467,7 @@ fn aggregates() {
     assert_eq!(agg.bytes()[..8], [9, 0, 0, 0, 77, 0, 0, 0]);
 }
 
-fn mem_intrinsic(
-    name: &str,
-    dst: i64,
-    src: i64,
-    len: u64,
-    read_at: i64,
-    written: u64,
-) -> Outcome {
+fn mem_intrinsic(name: &str, dst: i64, src: i64, len: u64, read_at: i64, written: u64) -> Outcome {
     eval(I8, &[], &[], |m, b| {
         let p = slot(b, 16, 8)?;
         // Bytes 0..written hold 1, 2, 3, ...

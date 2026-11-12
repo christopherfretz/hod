@@ -403,10 +403,7 @@ fn switch_and_repeated_successors() {
             b.br(join)?;
             b.begin_block(join)?;
             let (two, three) = (int(m, I32, 200), int(m, I32, 300));
-            let result = b.phi(
-                I32,
-                &[(seen, shared), (two, five), (two, five), (three, other)],
-            )?;
+            let result = b.phi(I32, &[(seen, shared), (two, five), (two, five), (three, other)])?;
             b.ret(Some(result))?;
             Ok(())
         });

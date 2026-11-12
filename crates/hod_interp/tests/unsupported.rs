@@ -164,12 +164,8 @@ fn instructions() {
     assert_eq!(indirect, "inst:indirectbr");
     let callbr = loose_reason(|m, b| {
         let void_ty = m.types.function(VOID, &[], false)?;
-        let asm = m.inline_asm(&InlineAsm {
-            template: b"nop",
-            constraints: b"",
-            flags: 0,
-            ty: void_ty,
-        })?;
+        let asm =
+            m.inline_asm(&InlineAsm { template: b"nop", constraints: b"", flags: 0, ty: void_ty })?;
         let after = b.create_block()?;
         b.callbr(VOID, &CallDesc::new(Value::asm(asm)?, void_ty, &[]), after, &[after])?;
         b.begin_block(after)?;
@@ -330,12 +326,8 @@ fn constants() {
 fn calls() {
     let asm = loose_reason(|m, b| {
         let void_ty = m.types.function(VOID, &[], false)?;
-        let asm = m.inline_asm(&InlineAsm {
-            template: b"nop",
-            constraints: b"",
-            flags: 0,
-            ty: void_ty,
-        })?;
+        let asm =
+            m.inline_asm(&InlineAsm { template: b"nop", constraints: b"", flags: 0, ty: void_ty })?;
         b.call(VOID, &CallDesc::new(Value::asm(asm)?, void_ty, &[]))?;
         Ok(())
     });

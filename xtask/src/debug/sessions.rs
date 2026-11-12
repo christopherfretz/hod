@@ -250,7 +250,9 @@ impl Report {
             }
         }
         if !self.lines.is_empty() {
-            let _ = writeln!(out, "debug: lines: {}", self.lines_total().summary());
+            let total = self.lines_total();
+            let _ = writeln!(out, "debug: lines: {}", total.summary());
+            let _ = writeln!(out, "debug: columns: {}", total.columns.summary());
         }
         let counts: Vec<String> = Outcome::ALL
             .iter()

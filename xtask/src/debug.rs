@@ -10,8 +10,11 @@
 //!   ([`kiln`]).
 //! - `verify`: every `-g` module of the corpus hod builds is
 //!   `llvm-dwarfdump --verify` clean ([`verify`]).
+//! - `columns`: the line tables, with columns, of hod's and `llc`'s
+//!   objects of every `-g` module of the corpus ([`columns`]).
 
 pub mod build;
+pub mod columns;
 pub mod directives;
 pub mod kiln;
 pub mod lines;
@@ -26,6 +29,7 @@ pub const USAGE: &str = "\
 usage: cargo xtask debug [run] [options] [<test or directory>...]
        cargo xtask debug kiln [--kiln <kiln++>] [--kiln-repo <dir>] [--hod <binary>]
        cargo xtask debug verify [-j <N>] [--hod <binary>] [-v] [<corpus dir or .ll>...]
+       cargo xtask debug columns [-j <N>] [--hod <binary>] [--dump <dir>] [-v] [<dir or .ll>...]
 
 run: builds each debugger test (default: tests/debug/) with clang 19, clang 22
 and kiln++ as front ends, compiles the IR with hod and with llc -O0
@@ -48,6 +52,8 @@ the (function, line) pairs of the two programs.
 kiln: kiln's tests/debuginfo, compiled by kiln++ with llc and with hod (strict).
 verify: llvm-dwarfdump --verify on every -g module hod builds (default: the
 corpus).
+columns: hod's and llc's line rows (function, line, column) of every -g module
+(default: the corpus); --dump writes hod's disassembly per module.
 
 exit status: 0 no failure; 1 a FAIL, XPASS or debugger crash on hod's program
 (verify: a module that does not verify; kiln: a test that passes with llc and
@@ -224,6 +230,7 @@ pub fn command(args: &[String]) -> u8 {
                 }
             }
         }
+        Some("columns") => columns::command(&args[1..], build_dir),
         Some("verify") => {
             let mut options = verify::Options {
                 paths: Vec::new(),

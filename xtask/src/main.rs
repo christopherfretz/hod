@@ -6,7 +6,7 @@
 //! `cargo xtask irdiff ...` is the IR differential harness (layer L4).
 //! `cargo xtask corpus ...` captures, verifies and counts the IR corpus.
 
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 const USAGE: &str = "\
 usage: cargo xtask ci [--quick]
@@ -41,10 +41,9 @@ fn ci(quick: bool) -> ExitCode {
     for (name, cargo_args) in steps {
         eprintln!("ci: {name}");
         // A cargo step is a jobserver client of its own (spec/harness.md
-        // "Jobserver").
-        let mut cargo = Command::new(env!("CARGO"));
-        let ok = xtask::jobs::children::run_step(cargo.args(*cargo_args), false)
-            .is_ok_and(|(status, _)| status.success());
+        // "Jobserver"), and is run once more if an artifact vanished under
+        // it ("ci").
+        let ok = xtask::ci::cargo_step(cargo_args);
         if !ok {
             eprintln!("ci: {name} FAILED");
             return ExitCode::FAILURE;

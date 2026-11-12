@@ -5,6 +5,25 @@ contract of its commands: `shim`, `irdiff` (with the directive format of
 its tests, "Test directives"), `corpus` and the gate, `ci`. Commands still
 to be specified here: benchmarks (`bench`), `bisect`.
 
+## ci
+
+`cargo xtask ci [--quick]` is the gate (`docs/VALIDATION.md` "Gates"): in
+order `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --
+-D warnings`, `cargo test --workspace --quiet`, then the `irdiff` runs of
+"irdiff", "In the gate". It stops at the first step that fails, printing
+`ci: <step> FAILED`, and ends with `ci: ok` and exit status 0 only if every
+step passed.
+
+A cargo step that fails with rustc's `error[E0463]` (can't find crate) at
+the start of a line of its standard error is run **once** more, after the
+note `ci: [retry] cargo <step> failed with error[E0463] ...`. The build
+directory is on a workspace file system that, under concurrent builds,
+now and then does not show a dependent compile the artifact cargo has just
+written; nothing is wrong with the code, and the rerun finds or rebuilds
+the artifact. Any other failure, and a second `error[E0463]`, fails the
+gate. (Ported from kiln's `xtask ci`, which met the same file system.)
+Test: `xtask::ci::tests::retries_only_missing_crates_once`.
+
 ## shim
 
 ```

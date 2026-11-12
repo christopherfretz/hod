@@ -1,6 +1,7 @@
 //! The front half of [`crate::compile`]: read the module, check it, and
 //! decline it with the first reason (`spec/cli.md` "Reasons", "The front
-//! half"). Code generation is behind one call, [`generate`].
+//! half"). The judging is the [`Session`]'s, the same for every producer;
+//! code generation is behind one call, [`generate`].
 //!
 //! The order is the cheap one: what needs no reading, then the module
 //! level (read, then `classify`'s module pass), then the bodies, streamed
@@ -10,14 +11,14 @@
 //! reason. The back half is `back.rs`.
 
 use std::borrow::Cow;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use hod_bc::{BcError, BcErrorKind};
-use hod_ir::{Arch, Support, TargetSpec};
-use hod_ir::{Body, Census, Classifier, IrErrorKind, Module, Rejection, RejectionKind, SymId};
+use hod_ir::{Body, IrErrorKind, Module, Support, SymId, TargetSpec};
 use hod_ll::{LlError, LlErrorKind};
 
 use crate::back::{Threads, generate_with};
+use crate::session::Session;
 use crate::{
     CompileError, Construct, InputKind, Options, OutputKind, Unsupported, module_triple,
     target_supported,
@@ -66,6 +67,14 @@ pub struct Report {
     /// With [`Settings::census`]: every reason found, each once, in the
     /// order first met. The first is the answer's. Empty otherwise.
     pub reasons: Vec<String>,
+    /// The `bridge` phase (`spec/cli.md` "Session"): the time the
+    /// producer spent between the [`Session`]'s calls, from the session's
+    /// start to [`Session::finish`] (in process, the bridge's copy of its
+    /// module; on the command line, reading the bodies).
+    pub bridge: Duration,
+    /// The time spent inside the [`Session`]'s calls: judging and code
+    /// generation. `bridge / (bridge + session)` is the producer's share.
+    pub session: Duration,
 }
 
 impl Report {
@@ -73,7 +82,7 @@ impl Report {
         self.phases.push((name, Instant::now()));
     }
 
-    fn reason(&mut self, name: &str) {
+    pub(crate) fn reason(&mut self, name: &str) {
         if !self.reasons.iter().any(|known| known == name) {
             self.reasons.push(name.to_owned());
         }
@@ -81,7 +90,7 @@ impl Report {
 }
 
 /// The reason name of a decline, as the coverage log writes it.
-fn reason_name(error: &CompileError) -> &str {
+pub(crate) fn reason_name(error: &CompileError) -> &str {
     match error {
         CompileError::Unsupported(unsupported) => unsupported.construct.name(),
         CompileError::MalformedInput(_) => "malformed-input",
@@ -100,7 +109,7 @@ fn decline(construct: Construct) -> CompileError {
 
 /// The reason of a reader failure that is not about the input's
 /// validity: a target hod has no description for, a limit of hod's.
-fn ir_reason(kind: IrErrorKind) -> Option<Construct> {
+pub(crate) fn ir_reason(kind: IrErrorKind) -> Option<Construct> {
     match kind {
         IrErrorKind::UnsupportedTarget | IrErrorKind::DataLayoutMismatch => {
             Some(Construct::UnsupportedTarget)
@@ -141,217 +150,9 @@ fn from_bc(error: &BcError) -> CompileError {
     construct.map_or_else(|| CompileError::MalformedInput(error.to_string()), decline)
 }
 
-/// Why the walk over the bodies stopped early.
-struct Stop(CompileError);
-
-impl From<LlError> for Stop {
-    fn from(error: LlError) -> Self {
-        Stop(from_ll(&error))
-    }
-}
-
-impl From<BcError> for Stop {
-    fn from(error: BcError) -> Self {
-        Stop(from_bc(&error))
-    }
-}
-
 pub(crate) fn symbol_name(module: &Module, sym: SymId) -> Option<String> {
     (sym.index() < module.symbol_count())
         .then(|| String::from_utf8_lossy(module.symbol(sym).name()).into_owned())
-}
-
-/// A `classify` refusal as a decline (`spec/cli.md` "Reasons"): the
-/// function is named for the body pass.
-fn from_rejection(module: &Module, rejection: Rejection, body: bool) -> CompileError {
-    let function =
-        if body { rejection.symbol.and_then(|sym| symbol_name(module, sym)) } else { None };
-    match rejection.kind {
-        RejectionKind::Unsupported => {
-            Unsupported::in_function(Construct::Named(rejection.construct), function).into()
-        }
-        RejectionKind::Invalid => CompileError::MalformedInput(match function {
-            Some(function) => format!("{} in function '{function}'", rejection.construct),
-            None => rejection.construct.into_owned(),
-        }),
-    }
-}
-
-/// AArch64's stack-argument rule, the hook `classify` decides `musttail`
-/// calls with (WP-069, WP-066).
-static A64_STACK_ARGS: hod_cg::abi::TargetStackArgs<'static, hod_a64::A64> =
-    hod_cg::abi::TargetStackArgs::new(&hod_a64::A64);
-
-/// The classifier of `arch` with its stack-argument rule (see
-/// [`Judge::classifier`]).
-fn classifier_for(arch: Arch, support: &Support) -> Classifier<'_> {
-    let classifier = Classifier::new(support);
-    match arch {
-        Arch::Aarch64 => classifier.with_stack_args(&A64_STACK_ARGS),
-        Arch::X86_64 => classifier,
-    }
-}
-
-/// The checks and the bookkeeping shared by the text and the bitcode
-/// walks over a module.
-struct Judge<'s> {
-    arch: Arch,
-    census: Option<Census>,
-    support: &'s Support,
-    threads: &'s Threads,
-    first: Option<CompileError>,
-    report: &'s mut Report,
-    accepted: Vec<Body>,
-}
-
-impl<'s> Judge<'s> {
-    /// Judges `module`'s module level: `classify`'s module pass.
-    fn new(module: &Module, settings: &'s Settings, report: &'s mut Report) -> Judge<'s> {
-        let mut judge = Judge {
-            arch: module.target().arch(),
-            census: settings.census.then(Census::new),
-            support: settings
-                .support
-                .as_ref()
-                .unwrap_or_else(|| Support::shipped(module.target().arch())),
-            threads: &settings.threads,
-            first: None,
-            report,
-            accepted: Vec::new(),
-        };
-        judge.module(module);
-        judge
-    }
-
-    /// The classifier of the module's target, with its stack-argument
-    /// rule (`spec/codegen.md` §7.1, "Tail kinds"; `spec/ir.md` §8.6):
-    /// without it every `musttail` call is declined as
-    /// `musttail:stack-args-unknown`. x86-64 has no code generator, so no
-    /// rule; its modules are declined later anyway.
-    fn classifier(&self) -> Classifier<'s> {
-        classifier_for(self.arch, self.support)
-    }
-
-    fn note(&mut self, error: CompileError) {
-        if self.census.is_some() {
-            self.report.reason(reason_name(&error));
-        }
-        self.first.get_or_insert(error);
-    }
-
-    /// The census findings so far, into the report's reasons.
-    fn drain_census(&mut self) {
-        if let Some(census) = &mut self.census {
-            for entry in census.entries() {
-                let name = &entry.construct;
-                if !self.report.reasons.iter().any(|known| known == name) {
-                    self.report.reasons.push(name.clone());
-                }
-            }
-            *census = Census::new();
-        }
-    }
-
-    fn module(&mut self, module: &Module) {
-        if self.census.is_some() {
-            let mut census = Census::new();
-            self.classifier().census_module(module, &mut census);
-            self.census = Some(census);
-            self.drain_census();
-        }
-        if let Err(rejection) = self.classifier().module(module) {
-            let error = from_rejection(module, rejection, false);
-            self.note(error);
-        }
-        self.report.phase("classify");
-    }
-
-    /// Ends a step of the walk: stop at the first reason unless every
-    /// reason is asked for.
-    fn verdict(&mut self) -> Result<(), Stop> {
-        if self.census.is_some() {
-            return Ok(());
-        }
-        self.first.take().map_or(Ok(()), |error| Err(Stop(error)))
-    }
-
-    /// One body as a reader delivered it: `None` with the reader's own
-    /// refusals, or the body.
-    fn body(
-        &mut self,
-        module: &Module,
-        sym: SymId,
-        body: Option<&Body>,
-        refused: &[Cow<'static, str>],
-    ) -> Result<(), Stop> {
-        match body {
-            None => {
-                if self.census.is_some() {
-                    for name in refused {
-                        self.report.reason(name);
-                    }
-                }
-                let function = symbol_name(module, sym);
-                let error = match refused.first() {
-                    Some(first) => {
-                        Unsupported::in_function(Construct::Named(first.clone()), function).into()
-                    }
-                    // Defensive: a reader names what it refused.
-                    None => CompileError::MalformedInput(format!(
-                        "no body was read for function '{}'",
-                        function.unwrap_or_default()
-                    )),
-                };
-                self.note(error);
-            }
-            Some(body) => {
-                if let Some(census) = &mut self.census {
-                    classifier_for(self.arch, self.support).census_body(module, body, census);
-                    self.drain_census();
-                }
-                if self.first.is_none() {
-                    match self.classifier().body(module, body) {
-                        Err(rejection) => self.note(from_rejection(module, rejection, true)),
-                        // Code generation may assume what `verify` checks
-                        // (`spec/ir.md` §5.8): a body that reaches it is
-                        // verified, always.
-                        Ok(()) => match body.verify(module) {
-                            Err(error) => {
-                                let function = symbol_name(module, sym).unwrap_or_default();
-                                self.note(CompileError::MalformedInput(format!(
-                                    "function '{function}': {error}"
-                                )));
-                            }
-                            Ok(()) => self.accepted.push(body.clone()),
-                        },
-                    }
-                }
-            }
-        }
-        self.verdict()
-    }
-
-    /// The end of the walk: the first reason, or the module and its bodies
-    /// for code generation.
-    fn finish(
-        self,
-        module: &Module,
-        walked: Result<(), Stop>,
-        options: &Options,
-    ) -> Result<Vec<u8>, CompileError> {
-        let Judge { first, report, accepted, census, threads, .. } = self;
-        if let Err(Stop(error)) = walked {
-            if census.is_some() {
-                report.reason(reason_name(&error));
-            }
-            return Err(first.unwrap_or(error));
-        }
-        report.phase("bodies");
-        if let Some(error) = first {
-            return Err(error);
-        }
-        generate_with(module, &accepted, options, threads, report)
-    }
 }
 
 /// The back half: the object for `module`, which `classify` accepted
@@ -413,50 +214,88 @@ fn front(
     if options.arch.is_some() || !report.target.as_deref().is_none_or(target_supported) {
         return Err(decline(Construct::UnsupportedTarget));
     }
-    // `-mtriple` is what the module is compiled for; a module that names
-    // another target is not retargeted (not implemented).
+    // The reader makes the module of `-mtriple`'s target when the module
+    // names none; one that names another target is declined by the
+    // session.
     let forced = match options.triple.as_deref().map(TargetSpec::from_triple) {
         None => None,
         Some(Ok(target)) => Some(target),
         Some(Err(_)) => return Err(decline(Construct::UnsupportedTarget)),
     };
-    let retargeted = |module: &Module| forced.as_ref().is_some_and(|t| t != module.target());
 
-    match kind {
+    // The module level is read, then the session judges it and each body
+    // as the reader delivers it, by value (`session.rs`).
+    let start = |module: Module, report: &mut Report| {
+        let started = std::mem::take(report);
+        Session::open(module, options, settings.clone(), started).map_err(|(error, started)| {
+            *report = started;
+            error
+        })
+    };
+    let session = match kind {
         InputKind::Text => {
-            let parse = hod_ll::ParseOptions { default_target: forced.clone() };
-            let hod_ll::ParsedModule { mut module, text } =
+            let parse = hod_ll::ParseOptions { default_target: forced };
+            let hod_ll::ParsedModule { module, text } =
                 hod_ll::parse_module(input, &parse).map_err(|error| from_ll(&error))?;
             report.phase("parse");
-            if retargeted(&module) {
-                return Err(decline(Construct::UnsupportedTarget));
+            let mut session = start(module, report)?;
+            if session.end_module().is_ok() {
+                let mut parser = hod_ll::BodyParser::new(&text);
+                for function in text.functions() {
+                    let fed = match parser.parse(session.module(), function) {
+                        Ok(Some(body)) => session.body(function.sym, body),
+                        Ok(None) => session.unsupported_body(function.sym, parser.unsupported()),
+                        Err(error) => return answer(Err(session.abort(from_ll(&error))), report),
+                    };
+                    if fed.is_err() {
+                        break;
+                    }
+                }
             }
-            let mut judge = Judge::new(&module, settings, report);
-            let walked = judge.verdict().and_then(|()| {
-                hod_ll::parse_bodies(&mut module, &text, |module, parsed| {
-                    judge.body(module, parsed.function.sym, parsed.body, parsed.unsupported)
-                })
-            });
-            judge.finish(&module, walked, options)
+            session
         }
         InputKind::Bitcode => {
-            let read = hod_bc::ReadOptions { default_target: forced.clone() };
-            let hod_bc::BcModule { mut module, bits } =
+            let read = hod_bc::ReadOptions { default_target: forced };
+            let hod_bc::BcModule { module, bits } =
                 hod_bc::read_module(input, &read).map_err(|error| from_bc(&error))?;
             report.phase("parse");
             if options.triple.is_none() {
                 report.target = Some(module.target().triple().to_owned());
             }
-            if retargeted(&module) {
-                return Err(decline(Construct::UnsupportedTarget));
+            let mut session = start(module, report)?;
+            if session.end_module().is_ok() {
+                let mut reader = hod_bc::BodyReader::new(&bits);
+                for function in bits.functions() {
+                    let fed = match reader.read(session.module(), function) {
+                        Ok(Some(body)) => session.body(function.sym, body),
+                        Ok(None) => session.unsupported_body(function.sym, reader.unsupported()),
+                        Err(error) => return answer(Err(session.abort(from_bc(&error))), report),
+                    };
+                    if fed.is_err() {
+                        break;
+                    }
+                }
             }
-            let mut judge = Judge::new(&module, settings, report);
-            let walked = judge.verdict().and_then(|()| {
-                hod_bc::read_bodies(&mut module, &bits, |module, read| {
-                    judge.body(module, read.function.sym, read.body, read.unsupported)
-                })
-            });
-            judge.finish(&module, walked, options)
+            session
+        }
+    };
+    let mut object = Vec::new();
+    answer(session.finish(&mut object).map(|done| (object, done)), report)
+}
+
+/// A session's answer, its report into the caller's.
+fn answer(
+    result: Result<(Vec<u8>, Report), (CompileError, Report)>,
+    report: &mut Report,
+) -> Result<Vec<u8>, CompileError> {
+    match result {
+        Ok((object, done)) => {
+            *report = done;
+            Ok(object)
+        }
+        Err((error, done)) => {
+            *report = done;
+            Err(error)
         }
     }
 }
@@ -516,27 +355,5 @@ mod tests {
         ] {
             assert_eq!(bc(kind), CompileError::MalformedInput("bit 64 (byte 8): what".into()));
         }
-    }
-
-    // spec/cli.md "Reasons": a refusal of the body pass names its function;
-    // malformed input from `classify` is malformed input.
-    #[test]
-    fn rejections_and_their_reasons() {
-        let source = b"target triple = \"aarch64-unknown-linux-gnu\"\ndeclare void @f()\n";
-        let module = hod_ll::parse_module(source, &hod_ll::ParseOptions::default()).unwrap().module;
-        let sym = module.find_symbol(b"f");
-        assert!(sym.is_some());
-        let rejection =
-            |kind| Rejection { kind, construct: "cc:ccc".into(), symbol: sym, inst: None };
-        let body = from_rejection(&module, rejection(RejectionKind::Unsupported), true);
-        assert_eq!(body, Unsupported::in_function(named("cc:ccc"), Some("f".into())).into());
-        let pass = from_rejection(&module, rejection(RejectionKind::Unsupported), false);
-        assert_eq!(pass, decline(named("cc:ccc")));
-        let invalid = from_rejection(&module, rejection(RejectionKind::Invalid), true);
-        assert_eq!(invalid, CompileError::MalformedInput("cc:ccc in function 'f'".into()));
-        // A symbol id the module does not have is not named.
-        let stray =
-            Rejection { symbol: Some(SymId::new(99)), ..rejection(RejectionKind::Unsupported) };
-        assert_eq!(from_rejection(&module, stray, true), decline(named("cc:ccc")));
     }
 }

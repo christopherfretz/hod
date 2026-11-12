@@ -8,30 +8,23 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `(compiled)` | 3279 | 3243 |
-| `debug:module-flags` | 7 | 7 |
-| `inst:icmp/vector` | 8 | 6 |
-| `inst:extractvalue/fp128` | 5 | 5 |
+| `(compiled)` | 3306 | 3269 |
+| `a64:vector-call` | 4 | 2 |
 | `inst:callbr` | 3 | 3 |
-| `intrinsic:llvm.smul.with.overflow/int-wide` | 3 | 3 |
-| `intrinsic:llvm.vector.reduce.add` | 3 | 3 |
 | `module:asm` | 3 | 3 |
 | `type:bfloat` | 3 | 3 |
 | `const-expr:trunc` | 2 | 3 |
 | `call:inline-asm` | 2 | 2 |
 | `intrinsic:llvm.aarch64.neon.udot.v4i32.v16i8` | 2 | 2 |
-| `intrinsic:llvm.umul.with.overflow/i128` | 2 | 2 |
 | `special-global:llvm.global.annotations` | 2 | 2 |
 | `a64:inline-asm-operand` | 1 | 1 |
-| `a64:vector-call` | 1 | 1 |
 | `cc:preserve_mostcc` | 1 | 1 |
 | `const-expr:sub` | 1 | 1 |
+| `debug:dbg-value` | 1 | 1 |
+| `debug:dwarf-version` | 1 | 1 |
 | `init:blockaddress-unplaced` | 1 | 1 |
-| `inst:fcmp/vector` | 1 | 1 |
-| `inst:fptosi/i128` | 1 | 1 |
-| `inst:sitofp/i128` | 1 | 1 |
-| `inst:switch/i128` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crc32b` | 1 | 1 |
+| `inst:extractelement/i128` | 1 | 1 |
+| `intrinsic:llvm.aarch64.cls` | 1 | 1 |
 | `intrinsic:llvm.aarch64.crypto.sha256h` | 1 | 1 |
 | `intrinsic:llvm.aarch64.neon.addp.v16i8` | 1 | 1 |
 | `intrinsic:llvm.aarch64.neon.ld2.v16i8.p0` | 1 | 1 |
@@ -40,29 +33,22 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 | `intrinsic:llvm.aarch64.neon.tbl2.v16i8` | 1 | 1 |
 | `intrinsic:llvm.aarch64.neon.umull.v2i64` | 1 | 1 |
 | `intrinsic:llvm.aarch64.neon.vsri.v16i8` | 1 | 1 |
-| `intrinsic:llvm.readcyclecounter` | 1 | 1 |
 | `metadata-arg:llvm.read_volatile_register.i64` | 1 | 1 |
 | `attr:fmv-features` | 1 | 0 |
 | `const-expr:bitcast` | 1 | 0 |
 | `intrinsic:llvm.aarch64.neon.bfcvtn` | 0 | 1 |
 | `intrinsic:llvm.aarch64.neon.bfdot.v4f32.v8bf16` | 1 | 0 |
+| `intrinsic:llvm.aarch64.neon.tbl1.v16i8` | 0 | 1 |
 | all | 3347 | 3308 |
 
 ## Every reason (census)
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `inst:icmp/vector` | 10 | 8 |
-| `debug:locations` | 7 | 7 |
-| `debug:module-flags` | 7 | 7 |
-| `debug:subprogram` | 7 | 7 |
-| `debug:slot-variables` | 5 | 5 |
-| `inst:extractvalue/fp128` | 5 | 5 |
-| `intrinsic:llvm.vector.reduce.add` | 4 | 4 |
 | `const-expr:sub` | 3 | 4 |
+| `a64:vector-call` | 4 | 2 |
 | `call:inline-asm` | 3 | 3 |
 | `inst:callbr` | 3 | 3 |
-| `intrinsic:llvm.smul.with.overflow/int-wide` | 3 | 3 |
 | `module:asm` | 3 | 3 |
 | `type:bfloat` | 3 | 3 |
 | `const-expr:trunc` | 2 | 3 |
@@ -70,31 +56,19 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 | `intrinsic:llvm.aarch64.neon.st2.v8i16.p0` | 2 | 2 |
 | `intrinsic:llvm.aarch64.neon.tbl1.v8i8` | 2 | 2 |
 | `intrinsic:llvm.aarch64.neon.udot.v4i32.v16i8` | 2 | 2 |
-| `intrinsic:llvm.umul.with.overflow/i128` | 2 | 2 |
 | `linkage:appending` | 2 | 2 |
 | `special-global:llvm.global.annotations` | 2 | 2 |
 | `a64:inline-asm-operand` | 1 | 1 |
-| `a64:vector-call` | 1 | 1 |
 | `cc:79` | 1 | 1 |
 | `cc:aarch64_vector_pcs` | 1 | 1 |
 | `cc:preserve_allcc` | 1 | 1 |
 | `cc:preserve_mostcc` | 1 | 1 |
+| `debug:dbg-value` | 1 | 1 |
+| `debug:dwarf-version` | 1 | 1 |
 | `init:blockaddress-unplaced` | 1 | 1 |
 | `inst:extractelement/i128` | 1 | 1 |
-| `inst:fcmp/vector` | 1 | 1 |
-| `inst:fptosi/i128` | 1 | 1 |
-| `inst:sitofp/i128` | 1 | 1 |
-| `inst:switch/i128` | 1 | 1 |
 | `intrinsic:llvm.aarch64.cls` | 1 | 1 |
 | `intrinsic:llvm.aarch64.cls64` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crc32b` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crc32cb` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crc32ch` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crc32cw` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crc32cx` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crc32h` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crc32w` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crc32x` | 1 | 1 |
 | `intrinsic:llvm.aarch64.crypto.aesd` | 1 | 1 |
 | `intrinsic:llvm.aarch64.crypto.aese` | 1 | 1 |
 | `intrinsic:llvm.aarch64.crypto.aesimc` | 1 | 1 |
@@ -211,15 +185,12 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 | `intrinsic:llvm.aarch64.neon.vsli.v4i32` | 1 | 1 |
 | `intrinsic:llvm.aarch64.neon.vsli.v8i8` | 1 | 1 |
 | `intrinsic:llvm.aarch64.neon.vsri.v16i8` | 1 | 1 |
-| `intrinsic:llvm.readcyclecounter` | 1 | 1 |
-| `intrinsic:llvm.umul.with.overflow/int-wide` | 1 | 1 |
 | `metadata-arg:llvm.read_volatile_register.i64` | 1 | 1 |
 | `attr:fmv-features` | 1 | 0 |
 | `const-expr:bitcast` | 1 | 0 |
 | `intrinsic:llvm.aarch64.neon.bfcvtn` | 0 | 1 |
 | `intrinsic:llvm.aarch64.neon.bfcvtn2` | 0 | 1 |
 | `intrinsic:llvm.aarch64.neon.tbl1.v16i8` | 0 | 1 |
-| `intrinsic:llvm.vector.reduce.or` | 1 | 0 |
 
 ## The routes agree
 
@@ -232,8 +203,8 @@ Modules whose outcome and first reason are the same by two routes, and whose cen
 
 The modules that differ (at most 20):
 
-- `kiln/llvm22/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), native `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), `llvm-dis` `malformed-input` (malformed-input)
-- `kiln/llvm19/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), native `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), `llvm-dis` `malformed-input` (malformed-input)
+- `kiln/llvm22/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll`: text `-` (-), native `-` (-), `llvm-dis` `malformed-input` (malformed-input)
+- `kiln/llvm19/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll`: text `-` (-), native `-` (-), `llvm-dis` `malformed-input` (malformed-input)
 
 ## What a decline costs
 
@@ -241,13 +212,13 @@ Coverage-log field 7 (from the process's start to the decline) of the first-refu
 
 | LLVM | route | median | p99 | worst | share of `llc`: median | p99 | worst |
 |---|---|---:|---:|---:|---:|---:|---:|
-| 22 | text | 5163 | 25998 | 240839 | 14.4% | 51.4% | 163.8% |
-| 22 | bitcode, native | 4387 | 18529 | 153270 | 12.3% | 40.8% | 398.0% |
-| 22 | bitcode, `llvm-dis` | 29390 | 94203 | 590011 | 86.6% | 171.4% | 613.1% |
-| 22 | `llc -O0` | 37355 | 96000 | 3663972 | | | |
-| 22 | the `convert` of the `llvm-dis` route | 24999 | 74714 | 387056 | | | |
-| 19 | text | 3588 | 16389 | 291056 | 11.8% | 45.5% | 326.2% |
-| 19 | bitcode, native | 3194 | 12947 | 182556 | 10.5% | 36.9% | 86.5% |
-| 19 | bitcode, `llvm-dis` | 23899 | 58287 | 722415 | 79.1% | 158.8% | 256.2% |
-| 19 | `llc -O0` | 28895 | 72686 | 3537572 | | | |
-| 19 | the `convert` of the `llvm-dis` route | 20465 | 50115 | 475025 | | | |
+| 22 | text | 9227 | 38800 | 278399 | 15.3% | 57.6% | 224.3% |
+| 22 | bitcode, native | 7852 | 29325 | 188415 | 13.2% | 41.5% | 257.2% |
+| 22 | bitcode, `llvm-dis` | 57140 | 151935 | 668613 | 94.8% | 223.1% | 418.9% |
+| 22 | `llc -O0` | 60111 | 153698 | 3789253 | | | |
+| 22 | the `convert` of the `llvm-dis` route | 48534 | 132831 | 403826 | | | |
+| 19 | text | 10330 | 41966 | 295972 | 16.8% | 59.5% | 343.6% |
+| 19 | bitcode, native | 8811 | 35084 | 176245 | 14.3% | 49.8% | 122.0% |
+| 19 | bitcode, `llvm-dis` | 58651 | 169306 | 823044 | 98.0% | 197.9% | 373.4% |
+| 19 | `llc -O0` | 60241 | 158071 | 4340973 | | | |
+| 19 | the `convert` of the `llvm-dis` route | 49265 | 144873 | 538176 | | | |

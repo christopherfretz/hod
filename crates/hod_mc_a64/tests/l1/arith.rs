@@ -309,6 +309,23 @@ fn carry_multiply_divide(b: &mut Batch) {
         udiv "udiv";
         sdiv "sdiv";
     }
+    // WP-084: CRC32 and CRC32C (FEAT_CRC32).
+    for (kind, mn) in [
+        (Crc32::B, "crc32b"),
+        (Crc32::H, "crc32h"),
+        (Crc32::W, "crc32w"),
+        (Crc32::X, "crc32x"),
+        (Crc32::Cb, "crc32cb"),
+        (Crc32::Ch, "crc32ch"),
+        (Crc32::Cw, "crc32cw"),
+        (Crc32::Cx, "crc32cx"),
+    ] {
+        let wide = matches!(kind, Crc32::X | Crc32::Cx);
+        for [d, n, m] in tuples([32, 32, 32]) {
+            let m_ = if wide { xz(m) } else { wz(m) };
+            emit_as!(b, mn, crc32(kind, z(d), z(n), z(m)), "{mn} {}, {}, {m_}", wz(d), wz(n));
+        }
+    }
     for sz in Size::ALL {
         for [d, n, m, a] in tuples([32, 32, 32, 32]) {
             let (d_, n_, m_, a_) = (rz(sz, d), rz(sz, n), rz(sz, m), rz(sz, a));

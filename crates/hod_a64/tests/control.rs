@@ -20,7 +20,7 @@ use common::{compile_ll, emit, ll_header, parse, write_object};
 use graphs::{
     Call, Func, GenOptions, Mode, Rng, Ty, Wrong, check, function, mask, signed, text_of,
 };
-use hod_cg::{CgError, Options, RelocModel, Stress};
+use hod_cg::{Options, RelocModel, Stress};
 
 /// Plain, every stress option, far mode alone.
 const MODES: [Mode; 3] = [
@@ -580,11 +580,11 @@ fn the_branch_forms() {
     // driver's junk bits in every native test.
 }
 
-/// A `switch` on `i128` is refused by name (`classify` rejects it first).
+/// A `switch` on `i128` is lowered (WP-084; `tests/tail.rs` runs it).
 #[test]
-fn a_wide_switch_is_refused_by_name() {
+fn a_wide_switch_is_lowered() {
     let f = "define i64 @f(i128 %x) {\n switch i128 %x, label %a [ i128 1, label %b ]\na:\n ret i64 1\nb:\n ret i64 2\n}";
-    assert_eq!(compile_ll(f), Err(CgError::unsupported(hod_a64::control::SWITCH_WIDE)));
+    assert_eq!(compile_ll(f), Ok(()));
 }
 
 #[test]

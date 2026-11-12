@@ -144,11 +144,6 @@ fn what_is_not_lowered_is_refused_by_name() {
              define ptr @f() {\n  %r = call ptr @llvm.frameaddress.p0(i32 1000)\n  ret ptr %r\n}\n",
             intrinsic::FRAME_DEPTH,
         ),
-        (
-            "declare i32 @llvm.sshl.sat.i32(i32, i32)\n\
-             define i32 @f(i32 %a, i32 %b) {\n  %r = call i32 @llvm.sshl.sat.i32(i32 %a, i32 %b)\n  ret i32 %r\n}\n",
-            intrinsic::INTRINSIC,
-        ),
     ]);
     // The same intrinsics at 64 and 128 bits compile (WP-070: i128).
     compile_ll(

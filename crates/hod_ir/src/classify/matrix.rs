@@ -913,6 +913,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         "inst:fptoui",
         on(&[
             TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::IntWide,
             TypeClass::Half,
             TypeClass::Float,
             TypeClass::Double,
@@ -926,6 +928,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         "inst:fptosi",
         on(&[
             TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::IntWide,
             TypeClass::Half,
             TypeClass::Float,
             TypeClass::Double,
@@ -939,6 +943,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         "inst:uitofp",
         on(&[
             TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::IntWide,
             TypeClass::Half,
             TypeClass::Float,
             TypeClass::Double,
@@ -952,6 +958,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         "inst:sitofp",
         on(&[
             TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::IntWide,
             TypeClass::Half,
             TypeClass::Float,
             TypeClass::Double,
@@ -1087,6 +1095,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Ptr,
             TypeClass::Float,
             TypeClass::Double,
+            TypeClass::Half,
+            TypeClass::Fp128,
             TypeClass::Aggregate,
             TypeClass::Vector,
         ]),
@@ -1102,6 +1112,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Ptr,
             TypeClass::Float,
             TypeClass::Double,
+            TypeClass::Half,
+            TypeClass::Fp128,
             TypeClass::Aggregate,
             TypeClass::Vector,
         ]),
@@ -1190,7 +1202,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
     both("inst:cleanuppad", never(WINDOWS_EH), ""),
     row("inst:br", ON, todo(X64), ""),
     row("inst:condbr", ON, todo(X64), "LLVM's two-way `br`"),
-    row("inst:switch", on(&[TypeClass::Int]), todo(X64), ""),
+    row("inst:switch", on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide]), todo(X64), ""),
     row("inst:indirectbr", ON, todo(X64), ""),
     row("inst:ret", ON, todo(X64), ""),
     row("inst:unreachable", ON, todo(X64), ""),
@@ -1477,15 +1489,15 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len()] = [
     ),
     row(
         "intrinsic:llvm.smul.with.overflow",
-        on(&[TypeClass::Int, TypeClass::Aggregate]),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         todo(X64),
-        "up to 64 bits",
+        "wider than 2048 bits refused (`a64:wide-mul-overflow`)",
     ),
     row(
         "intrinsic:llvm.umul.with.overflow",
-        on(&[TypeClass::Int, TypeClass::Aggregate]),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         todo(X64),
-        "up to 64 bits",
+        "wider than 2048 bits refused (`a64:wide-mul-overflow`)",
     ),
     row(
         "intrinsic:llvm.sadd.sat",
@@ -2087,7 +2099,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len()] = [
     row("intrinsic:llvm.thread.pointer", on(&[TypeClass::Ptr]), todo(X64), ""),
     row("intrinsic:llvm.prefetch", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
     row("intrinsic:llvm.clear_cache", on(&[TypeClass::Ptr]), todo(X64), ""),
-    a64("intrinsic:llvm.readcyclecounter", LATER, ""),
+    row("intrinsic:llvm.readcyclecounter", on(&[TypeClass::Int]), todo(X64), ""),
     row("intrinsic:llvm.is.constant", ON, todo(X64), ""),
     row("intrinsic:llvm.objectsize", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
     row(
@@ -2133,6 +2145,16 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len()] = [
     a64("intrinsic:llvm.coro.await.suspend.void", CORO, ""),
     a64("intrinsic:llvm.coro.await.suspend.bool", CORO, ""),
     a64("intrinsic:llvm.coro.await.suspend.handle", CORO, ""),
+    row("intrinsic:llvm.sshl.sat", on(&[TypeClass::Int]), todo(X64), "up to 64 bits (WP-084)"),
+    row("intrinsic:llvm.ushl.sat", on(&[TypeClass::Int]), todo(X64), "up to 64 bits (WP-084)"),
+    row("intrinsic:llvm.aarch64.crc32b", on(&[TypeClass::Int]), never(A64_ONLY), ""),
+    row("intrinsic:llvm.aarch64.crc32h", on(&[TypeClass::Int]), never(A64_ONLY), ""),
+    row("intrinsic:llvm.aarch64.crc32w", on(&[TypeClass::Int]), never(A64_ONLY), ""),
+    row("intrinsic:llvm.aarch64.crc32x", on(&[TypeClass::Int]), never(A64_ONLY), ""),
+    row("intrinsic:llvm.aarch64.crc32cb", on(&[TypeClass::Int]), never(A64_ONLY), ""),
+    row("intrinsic:llvm.aarch64.crc32ch", on(&[TypeClass::Int]), never(A64_ONLY), ""),
+    row("intrinsic:llvm.aarch64.crc32cw", on(&[TypeClass::Int]), never(A64_ONLY), ""),
+    row("intrinsic:llvm.aarch64.crc32cx", on(&[TypeClass::Int]), never(A64_ONLY), ""),
 ];
 
 // ---- the table ----

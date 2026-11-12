@@ -77,7 +77,9 @@ pub const OVERFLOW: &str = "a64:overflow-intrinsic";
 /// `udiv`, `sdiv`, `urem`, `srem` of an integer wider than 128 bits: the
 /// runtime has no function for it (`__udivti3` and its kind stop at 128).
 pub const WIDE_DIVISION: &str = "a64:wide-division";
-/// `llvm.{s,u}mul.with.overflow` of an integer wider than 64 bits.
+/// `llvm.{s,u}mul.with.overflow` of an integer wider than half of
+/// [`MAX_QUADRATIC_BITS`]: the product is formed at twice the width
+/// (`tail`, WP-084).
 pub const WIDE_MUL_OVERFLOW: &str = "a64:wide-mul-overflow";
 /// An element-wise operation (arithmetic, `icmp`, a cast other than
 /// `bitcast`) on a vector of class `Mem`: a vector that is not 64 or 128
@@ -85,8 +87,9 @@ pub const WIDE_MUL_OVERFLOW: &str = "a64:wide-mul-overflow";
 /// `select`, `freeze`, `phi` and `bitcast` of them are lowered.
 pub const MEM_VECTOR: &str = "a64:mem-vector";
 /// A conversion between a floating-point type and an integer wider than
-/// 64 bits: its runtime functions (`__floattidf`, `__fixdfti`, …) are not
-/// in `hod_cg::RuntimeFn`.
+/// 128 bits (`llc` expands those inline; up to 128 bits they are calls of
+/// `__fixdfti`, `__floattidf` and their kind, `tail`, WP-084), or between
+/// `bfloat` and a wide integer (which `llc` cannot select).
 pub const WIDE_FP_CAST: &str = "a64:wide-fp-cast";
 /// `mul` and variable shifts of integers wider than this are refused:
 /// their code grows with the square of the width (`mul`) or would need
@@ -103,19 +106,19 @@ pub const WIDE_SHIFT: &str = "a64:wide-shift";
 
 /// The 64-bit limbs of an integer of `bits` bits.
 #[inline]
-fn limbs(bits: u32) -> u32 {
+pub(crate) fn limbs(bits: u32) -> u32 {
     bits.div_ceil(64)
 }
 
 /// The meaningful bits of the top limb (1 to 64).
 #[inline]
-fn top_bits(bits: u32) -> u32 {
+pub(crate) fn top_bits(bits: u32) -> u32 {
     bits - 64 * (limbs(bits) - 1)
 }
 
 /// `slot` moved `off` bytes on.
 #[inline]
-fn at(slot: FrameRef, off: u32) -> FrameRef {
+pub(crate) fn at(slot: FrameRef, off: u32) -> FrameRef {
     match slot {
         FrameRef::Local(o) => FrameRef::Local(o + off),
         FrameRef::Incoming(o) => FrameRef::Incoming(o + off),
@@ -124,19 +127,19 @@ fn at(slot: FrameRef, off: u32) -> FrameRef {
 }
 
 /// `ldr rt, [slot + 8 * limb]`; a far offset is rebased into `rt`.
-fn ld(cx: &mut FnCx<'_, A64>, rt: Reg, slot: FrameRef, limb: u32) {
+pub(crate) fn ld(cx: &mut FnCx<'_, A64>, rt: Reg, slot: FrameRef, limb: u32) {
     let mut c = Cursor::frame(cx, at(slot, 8 * limb), rt);
     load_gpr_at(cx, Load::X, rt, &mut c);
 }
 
 /// `str rt, [slot + 8 * limb]`; a far offset is rebased into `tmp`.
-fn st(cx: &mut FnCx<'_, A64>, rt: RegZr, tmp: Reg, slot: FrameRef, limb: u32) {
+pub(crate) fn st(cx: &mut FnCx<'_, A64>, rt: RegZr, tmp: Reg, slot: FrameRef, limb: u32) {
     let mut c = Cursor::frame(cx, at(slot, 8 * limb), tmp);
     store_gpr_at(cx, MemSize::X, rt, &mut c);
 }
 
 /// Extends the top limb in `reg` from `tb` bits, in place (nothing for 64).
-fn extend(cx: &mut FnCx<'_, A64>, reg: Reg, tb: u32, signed: bool) {
+pub(crate) fn extend(cx: &mut FnCx<'_, A64>, reg: Reg, tb: u32, signed: bool) {
     if tb < 64 {
         let word = if signed {
             mc::sbfx(Size::X, reg.zr(), reg.zr(), 0, tb)
@@ -150,7 +153,14 @@ fn extend(cx: &mut FnCx<'_, A64>, reg: Reg, tb: u32, signed: bool) {
 /// Loads limb `limb` of the integer of `bits` bits at `slot` into `rt`,
 /// extended from the width when it is the top limb, and the extension
 /// word (0, or the sign) for a limb above it.
-fn ld_ext(cx: &mut FnCx<'_, A64>, rt: Reg, slot: FrameRef, bits: u32, limb: u32, signed: bool) {
+pub(crate) fn ld_ext(
+    cx: &mut FnCx<'_, A64>,
+    rt: Reg,
+    slot: FrameRef,
+    bits: u32,
+    limb: u32,
+    signed: bool,
+) {
     let n = limbs(bits);
     if limb + 1 < n {
         ld(cx, rt, slot, limb);
@@ -326,7 +336,7 @@ fn limbwise(cx: &mut FnCx<'_, A64>, op: Opcode, bits: u32, r: FrameRef, a: Frame
 
 /// `mul` modulo 2^(64n): for two limbs `lo = a0·b0`, `hi = umulh(a0,
 /// b0) + a0·b1 + a1·b0`; wider, schoolbook into the zeroed result.
-fn multiply(
+pub(crate) fn multiply(
     cx: &mut FnCx<'_, A64>,
     bits: u32,
     r: FrameRef,
@@ -709,7 +719,8 @@ fn compare(
 /// `%r = <cast> %arg` with a side of class `Mem`.
 ///
 /// # Errors
-/// [`WIDE_FP_CAST`] for a conversion to or from floating point;
+/// [`WIDE_FP_CAST`] for a conversion to or from floating point of an
+/// integer wider than 128 bits (`tail`, WP-084);
 /// [`MEM_VECTOR`] for an element-wise cast of vectors; [`CAST`] for
 /// `addrspacecast`; what the operand reports.
 pub fn cast<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
@@ -755,7 +766,7 @@ pub fn cast<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<
             if cx.types().is_vector(from) || cx.types().is_vector(to) {
                 unsupported(MEM_VECTOR)
             } else {
-                unsupported(WIDE_FP_CAST)
+                crate::tail::fp_int_cast(cx, inst, arg)
             }
         }
         _ => unsupported(CAST),
@@ -1034,7 +1045,8 @@ pub fn insert_value<'a>(
 /// holds its image) and the flag as a byte.
 ///
 /// # Errors
-/// [`WIDE_MUL_OVERFLOW`] for a multiplication wider than 64 bits;
+/// [`WIDE_MUL_OVERFLOW`] for a multiplication wider than 2048 bits
+/// (`tail`, WP-084);
 /// [`OVERFLOW`] for a vector; what the operands report.
 pub fn overflow_intrinsic<'a>(
     cx: &mut FnCx<'a, A64>,
@@ -1053,7 +1065,7 @@ pub fn overflow_intrinsic<'a>(
         .map_err(|_| hod_cg::CgError::unsupported(hod_cg::LIMIT_FRAME_SIZE))?;
     if bits > 64 {
         if matches!(which, Intrinsic::SmulWithOverflow | Intrinsic::UmulWithOverflow) {
-            return unsupported(WIDE_MUL_OVERFLOW);
+            return crate::tail::mul_overflow_wide(cx, inst, which, bits, [lhs, rhs], flag_at);
         }
         return overflow_wide(cx, inst, which, bits, lhs, rhs, flag_at);
     }

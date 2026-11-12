@@ -501,11 +501,6 @@ fn what_is_not_lowered_is_refused_by_name() {
             intr::INTRINSIC,
         ),
         (
-            "declare i64 @llvm.readcyclecounter()\n\
-             define i64 @f() {\n  %r = call i64 @llvm.readcyclecounter()\n  ret i64 %r\n}\n",
-            intr::READCYCLECOUNTER,
-        ),
-        (
             "declare i32 @llvm.eh.typeid.for.p0(ptr)\n\
              define i32 @f(ptr %p) {\n  %r = call i32 @llvm.eh.typeid.for.p0(ptr %p)\n  ret i32 %r\n}\n",
             intr::TYPEID,

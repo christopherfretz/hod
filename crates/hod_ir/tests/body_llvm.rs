@@ -730,6 +730,16 @@ const INTRINSICS: &[(&str, &str)] = &[
     ("llvm.coro.await.suspend.void", "void (ptr, ptr, ptr)"),
     ("llvm.coro.await.suspend.bool", "i1 (ptr, ptr, ptr)"),
     ("llvm.coro.await.suspend.handle", "ptr (ptr, ptr, ptr)"),
+    ("llvm.sshl.sat.i32", "i32 (i32, i32)"),
+    ("llvm.ushl.sat.i32", "i32 (i32, i32)"),
+    ("llvm.aarch64.crc32b", "i32 (i32, i32)"),
+    ("llvm.aarch64.crc32h", "i32 (i32, i32)"),
+    ("llvm.aarch64.crc32w", "i32 (i32, i32)"),
+    ("llvm.aarch64.crc32x", "i32 (i32, i64)"),
+    ("llvm.aarch64.crc32cb", "i32 (i32, i32)"),
+    ("llvm.aarch64.crc32ch", "i32 (i32, i32)"),
+    ("llvm.aarch64.crc32cw", "i32 (i32, i32)"),
+    ("llvm.aarch64.crc32cx", "i32 (i32, i64)"),
 ];
 
 /// `declare` for a function of type `fn_ty`.

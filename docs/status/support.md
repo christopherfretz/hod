@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `operand` | 9 | 7 | 2 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 133 | 94 | 39 | 0 | 0 | 133 | 0 |
-| total | 437 | 281 | 110 | 46 | 17 | 365 | 55 |
+| `intrinsic` | 143 | 105 | 38 | 0 | 0 | 135 | 8 |
+| total | 447 | 292 | 109 | 46 | 17 | 367 | 63 |
 
 ## `module`
 
@@ -333,10 +333,10 @@ Instructions.
 | `inst:sext` | supported (int, i128, int-wide, vector) | not-implemented |  |
 | `inst:fptrunc` | supported (half, float, double, fp128, vector) | not-implemented |  |
 | `inst:fpext` | supported (half, float, double, fp128, vector) | not-implemented |  |
-| `inst:fptoui` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
-| `inst:fptosi` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
-| `inst:uitofp` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
-| `inst:sitofp` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
+| `inst:fptoui` | supported (int, i128, int-wide, half, float, double, fp128, vector) | not-implemented |  |
+| `inst:fptosi` | supported (int, i128, int-wide, half, float, double, fp128, vector) | not-implemented |  |
+| `inst:uitofp` | supported (int, i128, int-wide, half, float, double, fp128, vector) | not-implemented |  |
+| `inst:sitofp` | supported (int, i128, int-wide, half, float, double, fp128, vector) | not-implemented |  |
 | `inst:ptrtoint` | supported (int, i128, int-wide, ptr, vector) | not-implemented |  |
 | `inst:ptrtoaddr` | supported (int, i128, int-wide, ptr, vector) | not-implemented |  |
 | `inst:inttoptr` | supported (int, i128, int-wide, ptr, vector) | not-implemented |  |
@@ -349,8 +349,8 @@ Instructions.
 | `inst:cmpxchg` | supported (int, i128, ptr, aggregate) | not-implemented | WP-074; the `{ T, i1 }` result is an aggregate |
 | `inst:atomicrmw` | supported (int, i128, ptr, half, bfloat, float, double) | not-implemented | and the operation's `atomicrmw:` row; WP-074 |
 | `inst:ptradd` | supported | not-implemented | LLVM's `getelementptr` (§5.4); not a vector of pointers |
-| `inst:extractvalue` | supported (int, i128, int-wide, ptr, float, double, vector, aggregate) | not-implemented |  |
-| `inst:insertvalue` | supported (int, i128, int-wide, ptr, float, double, vector, aggregate) | not-implemented |  |
+| `inst:extractvalue` | supported (int, i128, int-wide, ptr, half, float, double, fp128, vector, aggregate) | not-implemented |  |
+| `inst:insertvalue` | supported (int, i128, int-wide, ptr, half, float, double, fp128, vector, aggregate) | not-implemented |  |
 | `inst:extractelement` | supported (int, ptr, half, bfloat, float, double, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:insertelement` | supported (int, ptr, half, bfloat, float, double, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:shufflevector` | supported (vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
@@ -364,7 +364,7 @@ Instructions.
 | `inst:cleanuppad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:br` | supported | not-implemented |  |
 | `inst:condbr` | supported | not-implemented | LLVM's two-way `br` |
-| `inst:switch` | supported (int) | not-implemented |  |
+| `inst:switch` | supported (int, i128, int-wide) | not-implemented |  |
 | `inst:indirectbr` | supported | not-implemented |  |
 | `inst:ret` | supported | not-implemented |  |
 | `inst:unreachable` | supported | not-implemented |  |
@@ -543,8 +543,8 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.uadd.with.overflow` | supported (int, i128, int-wide, aggregate) | not-implemented |  |
 | `intrinsic:llvm.ssub.with.overflow` | supported (int, i128, int-wide, aggregate) | not-implemented |  |
 | `intrinsic:llvm.usub.with.overflow` | supported (int, i128, int-wide, aggregate) | not-implemented |  |
-| `intrinsic:llvm.smul.with.overflow` | supported (int, aggregate) | not-implemented | up to 64 bits |
-| `intrinsic:llvm.umul.with.overflow` | supported (int, aggregate) | not-implemented | up to 64 bits |
+| `intrinsic:llvm.smul.with.overflow` | supported (int, i128, int-wide, aggregate) | not-implemented | wider than 2048 bits refused (`a64:wide-mul-overflow`) |
+| `intrinsic:llvm.umul.with.overflow` | supported (int, i128, int-wide, aggregate) | not-implemented | wider than 2048 bits refused (`a64:wide-mul-overflow`) |
 | `intrinsic:llvm.sadd.sat` | supported (int, i128, vector) | not-implemented |  |
 | `intrinsic:llvm.uadd.sat` | supported (int, i128, vector) | not-implemented |  |
 | `intrinsic:llvm.ssub.sat` | supported (int, i128, vector) | not-implemented |  |
@@ -601,7 +601,7 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.thread.pointer` | supported (ptr) | not-implemented |  |
 | `intrinsic:llvm.prefetch` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.clear_cache` | supported (ptr) | not-implemented |  |
-| `intrinsic:llvm.readcyclecounter` | not-implemented | not-implemented | unplanned |
+| `intrinsic:llvm.readcyclecounter` | supported (int) | not-implemented |  |
 | `intrinsic:llvm.is.constant` | supported | not-implemented |  |
 | `intrinsic:llvm.objectsize` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.ptrmask` | supported (int, ptr, vector) | not-implemented |  |
@@ -642,6 +642,16 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.coro.await.suspend.void` | not-implemented | not-implemented | T-XF (coroutine splitting) |
 | `intrinsic:llvm.coro.await.suspend.bool` | not-implemented | not-implemented | T-XF (coroutine splitting) |
 | `intrinsic:llvm.coro.await.suspend.handle` | not-implemented | not-implemented | T-XF (coroutine splitting) |
+| `intrinsic:llvm.sshl.sat` | supported (int) | not-implemented | up to 64 bits (WP-084) |
+| `intrinsic:llvm.ushl.sat` | supported (int) | not-implemented | up to 64 bits (WP-084) |
+| `intrinsic:llvm.aarch64.crc32b` | supported (int) | rejected | x86_64: an AArch64 property |
+| `intrinsic:llvm.aarch64.crc32h` | supported (int) | rejected | x86_64: an AArch64 property |
+| `intrinsic:llvm.aarch64.crc32w` | supported (int) | rejected | x86_64: an AArch64 property |
+| `intrinsic:llvm.aarch64.crc32x` | supported (int) | rejected | x86_64: an AArch64 property |
+| `intrinsic:llvm.aarch64.crc32cb` | supported (int) | rejected | x86_64: an AArch64 property |
+| `intrinsic:llvm.aarch64.crc32ch` | supported (int) | rejected | x86_64: an AArch64 property |
+| `intrinsic:llvm.aarch64.crc32cw` | supported (int) | rejected | x86_64: an AArch64 property |
+| `intrinsic:llvm.aarch64.crc32cx` | supported (int) | rejected | x86_64: an AArch64 property |
 
 ## Structural rules
 

@@ -17,8 +17,8 @@ crate could be re-implemented from its spec and its tests alone.
 | `eh.md` | `hod_eh`: CFI and LSDA | planned |
 | `dwarf.md` | `hod_dwarf` | planned |
 | `xform.md` | `hod_xform`: required lowerings | planned |
-| `cli.md` | the `hod` command line, fallback, coverage log | planned (WP-015) |
-| `harness.md` | `xtask`: test formats, differential runs, benchmarks | planned (WP-016..018) |
+| `cli.md` | the `hod` command line, the `hod` facade's `compile`, fallback, coverage log | current (WP-015); reasons grow with code generation |
+| `harness.md` | `xtask`: the kiln shim, test formats, differential runs, benchmarks | "shim" current (WP-015); the rest planned (WP-016..018) |
 
 ## Conventions
 

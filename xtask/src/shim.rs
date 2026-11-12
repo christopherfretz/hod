@@ -830,6 +830,7 @@ mod tests {
         assert_eq!(dir_name_major(Path::new("/opt/llvm-main")), None);
     }
 
+    // spec/harness.md "shim": the command's arguments.
     #[test]
     fn argument_parsing() {
         let args = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();

@@ -387,6 +387,7 @@ mod tests {
         assert_eq!(reason(wasm, &linux), Construct::CodegenNotImplemented);
     }
 
+    // spec/cli.md "Reasons": the names are the coverage log's vocabulary.
     #[test]
     fn construct_names_are_stable_and_distinct() {
         let names: Vec<&str> = Construct::ALL.iter().map(|c| c.name()).collect();
@@ -397,6 +398,7 @@ mod tests {
         assert_eq!(Construct::BitcodeInput.to_string(), "bitcode-input");
     }
 
+    // spec/cli.md "Input": the module's own target, from its header.
     #[test]
     fn module_triple_scan() {
         assert_eq!(module_triple(MODULE), Some("aarch64-unknown-linux-gnu"));
@@ -418,6 +420,7 @@ mod tests {
         assert_eq!(module_triple(&late), Some("aarch64-unknown-linux-gnu"));
     }
 
+    // spec/cli.md "Reasons": what a supported target is.
     #[test]
     fn supported_targets() {
         for triple in [
@@ -445,6 +448,7 @@ mod tests {
         }
     }
 
+    // spec/cli.md "The facade": how the errors display.
     #[test]
     fn error_text() {
         let module = Unsupported::module(Construct::BitcodeInput);

@@ -757,8 +757,12 @@ These are decisions the group packages (WP-035..041) build on.
   `llc` in every pairing, stressed, PIC with a shared object; the call
   and GOT relocations equal `llc`'s; `hod_interp` as the oracle of IR
   call chains; handwritten forms (`tests/data/call/hand.ll`); real C++
-  exceptions (`eh.ll`, `eh.cpp`) with tables from `tests/common/
-  unwind.rs` until WP-049.
+  exceptions (`eh.ll`, `eh_comdat.ll`, `eh.cpp`) through `emit_module`'s
+  own tables (WP-049), static, stressed and PIC, against `llc`'s
+  objects of the same modules. Nested try in one frame dispatches on
+  the exception's type, not with `llvm.eh.typeid.for` (the intrinsic
+  group's): `llc` numbers type ids in reverse clause order, hod in
+  order (`FnCx::type_id`), so a selector constant is not portable.
 
 ### 5.6 x86-64 (planned)
 

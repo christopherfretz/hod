@@ -323,6 +323,13 @@ impl hod_ir::BodySource for BodyReader<'_, '_> {
     fn unsupported(&self) -> Vec<Box<str>> {
         self.unsupported.iter().map(|construct| (**construct).into()).collect()
     }
+
+    /// The body block's bytes, four times: bitcode takes about a quarter
+    /// of the bytes of the same body as text.
+    fn weight(&self, index: usize) -> usize {
+        let span = &self.bits.functions()[index].span;
+        ((span.end - span.start) / 2) as usize
+    }
 }
 
 /// The reader of one function block.

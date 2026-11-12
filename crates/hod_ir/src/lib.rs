@@ -78,7 +78,7 @@ pub use error::{IrError, IrErrorKind, IrResult};
 pub use flatten::{BlockDiff, Fixup, FixupTarget};
 pub use ids::{AsmId, BlockId, ComdatId, ConstId, DiId, LocId, SymId, TypeId};
 pub use module::{Delta, Mark, Module, Remap, Stamp, StringLists, Structor, Unsupported};
-pub use parallel::{BodyRead, BodySource, ReadStats, read_bodies};
+pub use parallel::{BodyRead, BodySource, CHUNK_WEIGHT, ReadStats, read_bodies};
 pub use print::{Dialect, IoSink, Part, PrintError};
 pub use props::{
     BranchProtection, CodeModel, FlagBehavior, FlagClass, FlagValue, FramePointer,

@@ -39,6 +39,14 @@ pub trait BodySource: Send {
 
     /// The constructs of the last body read that was `Ok(None)`.
     fn unsupported(&self) -> Vec<Box<str>>;
+
+    /// About what reading body `index` costs, in bytes of LLVM IR text
+    /// or their equivalent: bodies are handed to threads in runs of
+    /// consecutive bodies of about [`CHUNK_WEIGHT`].
+    fn weight(&self, index: usize) -> usize {
+        let _ = index;
+        CHUNK_WEIGHT
+    }
 }
 
 /// One body as [`read_bodies`] delivers it: built, or the constructs that
@@ -66,9 +74,14 @@ pub struct ReadStats {
     pub sequential_from: Option<usize>,
 }
 
-/// How many bodies past the last one delivered a thread may read ahead,
+/// The weight ([`BodySource::weight`]) of the run of consecutive bodies a
+/// thread takes at once, about: a lock and a wake-up per run, not per
+/// body. Smaller when the bodies would not give each thread four runs.
+pub const CHUNK_WEIGHT: usize = 16 << 10;
+
+/// How many runs past the last one delivered a thread may read ahead,
 /// per thread: bounds the bodies held at once.
-const AHEAD_PER_THREAD: usize = 16;
+const AHEAD_PER_THREAD: usize = 4;
 
 /// What a fork made of one body.
 struct Done {
@@ -78,16 +91,30 @@ struct Done {
     generation: u32,
 }
 
+/// The runs read and not yet delivered, from the first not delivered.
+struct Queue {
+    runs: VecDeque<Option<Vec<Done>>>,
+    /// The runs delivered.
+    delivered: usize,
+    /// Whether the calling thread waits for the first run.
+    merger_waits: bool,
+    /// How many threads wait for room ahead.
+    readers_wait: usize,
+}
+
 struct Shared<'s> {
     /// The frozen module's fork that every fork is made of.
     seed: &'s Module,
-    count: usize,
-    /// The next body to read.
+    /// Run `r` is the bodies `starts[r]..starts[r + 1]`.
+    starts: Vec<usize>,
+    /// The next run to read.
     next: AtomicUsize,
     stop: AtomicBool,
-    /// Results by body, from `delivered` on; and the number delivered.
     state: Mutex<Queue>,
-    ready: Condvar,
+    /// The first run is ready.
+    filled: Condvar,
+    /// A run was delivered: room ahead.
+    room: Condvar,
     ahead: usize,
 }
 
@@ -135,52 +162,91 @@ impl<R: BodySource> Worker<R> {
         }
         done
     }
-}
 
-/// The results waiting, by body from the first not delivered; and the
-/// number delivered.
-type Queue = (VecDeque<Option<Done>>, usize);
+    /// Reads run `run`, body by body.
+    fn read_run(
+        &mut self,
+        shared: &Shared<'_>,
+        run: usize,
+        new_reader: &(dyn Fn() -> R + Sync),
+    ) -> Vec<Done> {
+        let bodies = shared.starts[run]..shared.starts[run + 1];
+        bodies.map(|index| self.read(index, shared.seed, new_reader)).collect()
+    }
+}
 
 impl Shared<'_> {
     fn lock(&self) -> MutexGuard<'_, Queue> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Stores the result of body `index`.
-    fn put(&self, index: usize, done: Done) {
-        let mut state = self.lock();
-        let at = index - state.1;
-        if state.0.len() <= at {
-            state.0.resize_with(at + 1, || None);
-        }
-        state.0[at] = Some(done);
-        drop(state);
-        self.ready.notify_all();
+    fn runs(&self) -> usize {
+        self.starts.len() - 1
     }
 
-    /// The next body for a thread to read, waiting while it is too far
+    /// Stores what run `run` made; wakes the calling thread if it waits
+    /// for that run.
+    fn put(&self, run: usize, done: Vec<Done>) {
+        let mut state = self.lock();
+        let at = run - state.delivered;
+        if state.runs.len() <= at {
+            state.runs.resize_with(at + 1, || None);
+        }
+        state.runs[at] = Some(done);
+        let wake = at == 0 && state.merger_waits;
+        drop(state);
+        if wake {
+            self.filled.notify_one();
+        }
+    }
+
+    /// The next run for a thread to read, waiting while it is too far
     /// ahead of the delivered ones; `None` when there is none or the
     /// reading stopped.
     fn take(&self) -> Option<usize> {
         if self.stop.load(Ordering::Acquire) {
             return None;
         }
-        let index = self.next.fetch_add(1, Ordering::AcqRel);
-        if index >= self.count {
+        let run = self.next.fetch_add(1, Ordering::AcqRel);
+        if run >= self.runs() {
             return None;
         }
         let mut state = self.lock();
-        while index >= state.1 + self.ahead && !self.stop.load(Ordering::Acquire) {
-            state = self.ready.wait(state).unwrap_or_else(PoisonError::into_inner);
+        while run >= state.delivered + self.ahead && !self.stop.load(Ordering::Acquire) {
+            state.readers_wait += 1;
+            state = self.room.wait(state).unwrap_or_else(PoisonError::into_inner);
+            state.readers_wait -= 1;
         }
-        (!self.stop.load(Ordering::Acquire)).then_some(index)
+        (!self.stop.load(Ordering::Acquire)).then_some(run)
     }
 
     fn halt(&self) {
         self.stop.store(true, Ordering::Release);
         let _guard = self.lock();
-        self.ready.notify_all();
+        self.filled.notify_all();
+        self.room.notify_all();
     }
+}
+
+/// Run boundaries: consecutive bodies of about `CHUNK_WEIGHT` together,
+/// at least four runs per thread where there are bodies enough.
+fn runs<R: BodySource>(reader: &R, count: usize, threads: usize) -> Vec<usize> {
+    let weights: Vec<usize> = (0..count).map(|index| reader.weight(index).max(1)).collect();
+    let total: usize = weights.iter().sum();
+    let target = CHUNK_WEIGHT.min(total / (threads * 4)).max(1);
+    let mut starts = vec![0];
+    let mut weight = 0;
+    for (index, body) in weights.into_iter().enumerate() {
+        weight += body;
+        if weight >= target {
+            starts.push(index + 1);
+            weight = 0;
+        }
+    }
+    if *starts.last().expect("a start") != count {
+        starts.push(count);
+    }
+    starts
 }
 
 /// Reads the bodies `0..count` with `source`s on up to `threads` threads,
@@ -211,17 +277,21 @@ pub fn read_bodies<H, R: BodySource>(
         sequential(host, module, 0, count, &mut main, each)?;
         return Ok(ReadStats::default());
     }
+    let starts = runs(&main, count, threads);
     module(host).freeze();
     // The forks, the seed among them, are gone before the thaw.
     let result = {
         let seed = module(host).fork();
+        let queue =
+            Queue { runs: VecDeque::new(), delivered: 0, merger_waits: false, readers_wait: 0 };
         let shared = Shared {
             seed: &seed,
-            count,
+            starts,
             next: AtomicUsize::new(0),
             stop: AtomicBool::new(false),
-            state: Mutex::new((VecDeque::new(), 0)),
-            ready: Condvar::new(),
+            state: Mutex::new(queue),
+            filled: Condvar::new(),
+            room: Condvar::new(),
             ahead: AHEAD_PER_THREAD * threads,
         };
         let shared = &shared;
@@ -235,9 +305,9 @@ pub fn read_bodies<H, R: BodySource>(
                         reader: new_reader(),
                         generation: 0,
                     };
-                    while let Some(index) = shared.take() {
-                        let done = worker.read(index, shared.seed, new_reader);
-                        shared.put(index, done);
+                    while let Some(run) = shared.take() {
+                        let done = worker.read_run(shared, run, new_reader);
+                        shared.put(run, done);
                     }
                 });
             }
@@ -283,8 +353,49 @@ fn deliver_read<H, R: BodySource>(
     })
 }
 
+/// The next run in order, from the queue; the calling thread reads runs
+/// itself while it is not ready. `None` if a thread panicked.
+fn next_run<R: BodySource>(
+    shared: &Shared<'_>,
+    run: usize,
+    own: &mut Worker<R>,
+    new_reader: &(dyn Fn() -> R + Sync),
+) -> Option<Vec<Done>> {
+    loop {
+        let mut queue = shared.lock();
+        if let Some(done) = queue.runs.front_mut().and_then(Option::take) {
+            queue.runs.pop_front();
+            queue.delivered = run + 1;
+            let wake = queue.readers_wait > 0;
+            drop(queue);
+            if wake {
+                shared.room.notify_all();
+            }
+            return Some(done);
+        }
+        drop(queue);
+        // Not ready: read a run meanwhile, or wait for one.
+        let next = shared.next.fetch_add(1, Ordering::AcqRel);
+        if next < shared.runs() {
+            let done = own.read_run(shared, next, new_reader);
+            shared.put(next, done);
+            continue;
+        }
+        let mut waiting = shared.lock();
+        while waiting.runs.front().is_none_or(Option::is_none) {
+            if shared.stop.load(Ordering::Acquire) {
+                // A thread panicked: the scope passes its panic on.
+                return None;
+            }
+            waiting.merger_waits = true;
+            waiting = shared.filled.wait(waiting).unwrap_or_else(PoisonError::into_inner);
+            waiting.merger_waits = false;
+        }
+    }
+}
+
 /// The calling thread: adopts and delivers the bodies in order, reading
-/// bodies itself while the next one is not ready.
+/// runs itself while the next one is not ready.
 fn merge<H, R: BodySource>(
     host: &mut H,
     module: fn(&mut H) -> &mut Module,
@@ -297,76 +408,55 @@ fn merge<H, R: BodySource>(
     let mut own = Worker { id: 0, fork: shared.seed.fork(), reader: new_reader(), generation: 0 };
     let mut remaps: Vec<(u32, Remap)> = vec![(0, shared.seed.remap()); threads];
     let mut stats = ReadStats { threads, ..ReadStats::default() };
-    for index in 0..shared.count {
-        let done = loop {
-            let mut queue = shared.lock();
-            if let Some(done) = queue.0.front_mut().and_then(Option::take) {
-                queue.0.pop_front();
-                queue.1 = index + 1;
-                drop(queue);
-                shared.ready.notify_all();
-                break done;
+    for run in 0..shared.runs() {
+        let Some(dones) = next_run(shared, run, &mut own, new_reader) else { return Ok(stats) };
+        for (index, done) in (shared.starts[run]..).zip(dones) {
+            let Done { work, worker, generation } = done;
+            let (remap_generation, remap) = &mut remaps[worker];
+            if *remap_generation != generation {
+                *remap_generation = generation;
+                *remap = shared.seed.remap();
             }
-            drop(queue);
-            // Not ready: read a body meanwhile, or wait for one.
-            let next = shared.next.fetch_add(1, Ordering::AcqRel);
-            if next < shared.count {
-                let done = own.read(next, shared.seed, new_reader);
-                shared.put(next, done);
-                continue;
-            }
-            let waiting = shared.lock();
-            if waiting.0.front().is_none_or(Option::is_none) {
-                if shared.stop.load(Ordering::Acquire) {
-                    // A thread panicked: the scope passes its panic on.
-                    return Ok(stats);
-                }
-                drop(shared.ready.wait(waiting).unwrap_or_else(PoisonError::into_inner));
-            }
-        };
-        let Done { work, worker, generation } = done;
-        let (remap_generation, remap) = &mut remaps[worker];
-        if *remap_generation != generation {
-            *remap_generation = generation;
-            *remap = shared.seed.remap();
-        }
-        let adopted = work.and_then(|(delta, body, unsupported)| {
-            module(host).adopt(&delta, remap).ok()?;
-            match body {
-                Some(mut body) => {
-                    body.remap(remap).ok()?;
-                    Some(Ok(body))
-                }
-                None => Some(Err(unsupported)),
-            }
-        });
-        let go_on = match adopted {
-            Some(Ok(body)) => each(host, index, BodyRead::Body(body)),
-            Some(Err(unsupported)) => each(host, index, BodyRead::Unsupported(&unsupported)),
-            None => {
-                // Read on the module itself, in its turn. If that changed
-                // what the forks share, they read a module that is no
-                // longer this one: the rest is read here, in order.
-                stats.read_again += 1;
-                let before = module(host).stamp();
-                let go_on = match deliver_read(host, module, index, main, each) {
-                    Ok(go_on) => go_on,
-                    Err(error) => {
-                        shared.halt();
-                        return Err(error);
+            let adopted = work.and_then(|(delta, body, unsupported)| {
+                module(host).adopt(&delta, remap).ok()?;
+                match body {
+                    Some(mut body) => {
+                        body.remap(remap).ok()?;
+                        Some(Ok(body))
                     }
-                };
-                if go_on && module(host).stamp() != before {
-                    shared.halt();
-                    stats.sequential_from = Some(index + 1);
-                    sequential(host, module, index + 1, shared.count, main, each)?;
-                    return Ok(stats);
+                    None => Some(Err(unsupported)),
                 }
-                go_on
+            });
+            let go_on = match adopted {
+                Some(Ok(body)) => each(host, index, BodyRead::Body(body)),
+                Some(Err(unsupported)) => each(host, index, BodyRead::Unsupported(&unsupported)),
+                None => {
+                    // Read on the module itself, in its turn. If that
+                    // changed what the forks share, they read a module
+                    // that is no longer this one: the rest is read here,
+                    // in order.
+                    stats.read_again += 1;
+                    let before = module(host).stamp();
+                    let go_on = match deliver_read(host, module, index, main, each) {
+                        Ok(go_on) => go_on,
+                        Err(error) => {
+                            shared.halt();
+                            return Err(error);
+                        }
+                    };
+                    let count = *shared.starts.last().expect("a start");
+                    if go_on && module(host).stamp() != before {
+                        shared.halt();
+                        stats.sequential_from = Some(index + 1);
+                        sequential(host, module, index + 1, count, main, each)?;
+                        return Ok(stats);
+                    }
+                    go_on
+                }
+            };
+            if !go_on {
+                return Ok(stats);
             }
-        };
-        if !go_on {
-            break;
         }
     }
     Ok(stats)

@@ -886,9 +886,10 @@ pub struct Mark {
 #[derive(Clone, Debug)]
 pub struct Delta {
     types_from: usize,
-    types: TypeTable,
+    /// `None`: no type added (an empty table costs allocations).
+    types: Option<Box<TypeTable>>,
     consts_from: usize,
-    consts: ConstPool,
+    consts: Option<Box<ConstPool>>,
     asms: Vec<OwnedAsm>,
     fn_attrs: Vec<FnAttrs>,
     debug: DebugDelta,
@@ -1043,9 +1044,10 @@ impl Module {
         let Some(debug) = self.debug.delta(mark.debug) else { return Ok(None) };
         Ok(Some(Delta {
             types_from: mark.types,
-            types: self.types.tail(mark.types),
+            types: (self.types.len() > mark.types).then(|| Box::new(self.types.tail(mark.types))),
             consts_from: mark.consts,
-            consts: self.consts.tail(mark.consts),
+            consts: (self.consts.len() > mark.consts)
+                .then(|| Box::new(self.consts.tail(mark.consts))),
             asms: self.asms.owned_since(mark.asms),
             fn_attrs: self.fn_attrs.owned_since(mark.fn_attrs)?,
             debug,
@@ -1062,15 +1064,19 @@ impl Module {
     /// # Errors
     /// `TableFull`, as reading the bodies would have.
     pub fn adopt(&mut self, delta: &Delta, remap: &mut Remap) -> IrResult<()> {
-        self.types.adopt(&delta.types, delta.types_from, &mut remap.types, remap.types_base)?;
-        self.consts.adopt(
-            &delta.consts,
-            delta.consts_from,
-            &mut remap.consts,
-            remap.consts_base,
-            &remap.types,
-            remap.types_base,
-        )?;
+        if let Some(types) = &delta.types {
+            self.types.adopt(types, delta.types_from, &mut remap.types, remap.types_base)?;
+        }
+        if let Some(consts) = &delta.consts {
+            self.consts.adopt(
+                consts,
+                delta.consts_from,
+                &mut remap.consts,
+                remap.consts_base,
+                &remap.types,
+                remap.types_base,
+            )?;
+        }
         for asm in &delta.asms {
             let id = self.asms.intern(&self.types, &asm.view(remap.ty(asm.ty)))?;
             remap.asms.push(id);

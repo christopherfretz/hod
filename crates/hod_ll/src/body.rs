@@ -410,6 +410,12 @@ impl hod_ir::BodySource for BodyParser<'_, '_> {
     fn unsupported(&self) -> Vec<Box<str>> {
         self.unsupported.iter().map(|construct| (**construct).into()).collect()
     }
+
+    /// The body's bytes of text.
+    fn weight(&self, index: usize) -> usize {
+        let body = &self.text.functions()[index].body;
+        (body.end - body.start) as usize
+    }
 }
 
 /// Parses one body; with a second pass before it if the text refers to a

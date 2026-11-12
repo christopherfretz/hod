@@ -364,6 +364,7 @@ impl<'a> UnitPlan<'a> {
         if !sp.sp_flags.contains(SpFlags::DEFINITION) || sp.unit != Some(self.unit) {
             return Err(unsupported(sp_id, "debug:subprogram-not-definition"));
         }
+        crate::call_sites::check(sp).map_err(|name| unsupported(sp_id, name))?; // WP-098: §6.14
         if !sp.thrown_types.is_empty() || sp.sp_flags.0 & !DEF_SP_FLAGS != 0 {
             return Err(unsupported(sp_id, "debug:subprogram-attribute"));
         }

@@ -13,7 +13,7 @@ int main(void) {
   return twice(3) == 6 ? 0 : 1;
 }
 //@ cflags: -O1 -Xclang -disable-llvm-passes
-//@ xfail: hod declines a subprogram with DISPFlagOptimized (debug:subprogram-attribute)
+//@ xfail: DIFlagAllCallsDescribed: llc writes call-site entries (the calls' return addresses), hod declines them (debug:call-sites, spec/dwarf.md §6.14)
 //@ gdb: break twice
 //@ gdb: run
 //@ gdb: print x

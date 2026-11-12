@@ -611,3 +611,90 @@ fn sessions_match_llc() {
     }
     eprintln!("{sessions} sessions, hod's equal to llc's");
 }
+
+// ------------------------------------------- WP-099's three findings ----
+
+/// An `alignas` local of a function that is only inlined
+/// (`align_inlined.cpp`, as libstdc++'s atomic `exchange`): the abstract
+/// instance's variable has `DW_AT_alignment` after its name (§6.14).
+#[test]
+fn aligned_local_of_inlined_function_matches_llc() {
+    let Some(dwarfdump) = tool("llvm-dwarfdump") else { return };
+    let scratch = Scratch::new("dies-label-align-inlined");
+    for (name, cc, llc) in pairs("align_inlined.cpp", true) {
+        let tag = format!("align-inlined-{name}");
+        let text = ir(&cc, &scratch, &tag, "align_inlined.cpp");
+        let (h, _) = compare(&scratch, &dwarfdump, &llc, &tag, &text);
+        if !text.lines().any(|l| l.contains("!DILocalVariable(") && l.contains("align: ")) {
+            // kiln++ writes no `align:` on a local variable.
+            eprintln!("note: {tag}: no aligned local in the IR");
+            continue;
+        }
+        let mut vars = Vec::new();
+        all(&h, "DW_TAG_variable", &mut vars);
+        assert!(
+            vars.iter().any(|v| has(v, "DW_AT_alignment (8)") && !has(v, "DW_AT_location")),
+            "{tag}: the abstract variable's alignment"
+        );
+    }
+}
+
+/// A type local to a function that is only inlined (the lambda of an
+/// `always_inline` member, `local_type_inlined.cpp`): under the
+/// function's abstract instance, before the variable that names it
+/// (§6.14).
+#[test]
+fn local_type_of_inlined_function_matches_llc() {
+    let Some(dwarfdump) = tool("llvm-dwarfdump") else { return };
+    let scratch = Scratch::new("dies-label-local-type");
+    for (name, cc, llc) in pairs("local_type_inlined.cpp", true) {
+        let tag = format!("local-type-{name}");
+        let text = ir(&cc, &scratch, &tag, "local_type_inlined.cpp");
+        let (h, _) = compare(&scratch, &dwarfdump, &llc, &tag, &text);
+        let mut subprograms = Vec::new();
+        all(&h, "DW_TAG_subprogram", &mut subprograms);
+        let abs = subprograms.iter().find(|s| has(s, "DW_AT_inline")).expect("abstract instance");
+        let tags: Vec<&str> = abs.children.iter().map(|c| c.tag.as_str()).collect();
+        let class = tags.iter().position(|t| *t == "DW_TAG_class_type");
+        let var = tags.iter().position(|t| *t == "DW_TAG_variable");
+        assert!(class.is_some() && class < var, "{tag}: {tags:?}");
+    }
+}
+
+/// clang's `-O1 -Xclang -disable-llvm-passes` IR of `source`: every
+/// subprogram `DISPFlagOptimized` and `DIFlagAllCallsDescribed`.
+fn optimized_ir(compiler: &Path, scratch: &Scratch, name: &str, source: &str) -> String {
+    let out = scratch.join(format!("{name}.ll"));
+    let mut command = Command::new(compiler);
+    command.args(["-g", "-O1", "-Xclang", "-disable-llvm-passes", "-S", "-emit-llvm", "-w"]);
+    command.arg(data_dir().join(source)).arg("-o").arg(&out);
+    let outcome = run_with(&mut command, &[], Duration::from_mins(2));
+    assert!(outcome.success(), "{command:?}: {}", outcome.stderr_text());
+    std::fs::read_to_string(out).unwrap()
+}
+
+/// An optimized unit (`optimized_unit.c`): `DISPFlagOptimized` changes
+/// nothing in `llc`'s tree off Apple targets, so without
+/// `DIFlagAllCallsDescribed` the trees are equal; with it, `llc` writes
+/// `DW_AT_call_all_calls` and call-site entries (the calls' return
+/// addresses), which hod refuses as `debug:call-sites` (§6.14).
+#[test]
+fn optimized_unit_matches_llc() {
+    let Some(dwarfdump) = tool("llvm-dwarfdump") else { return };
+    let scratch = Scratch::new("dies-label-optimized");
+    for (name, cc, llc) in pairs("optimized_unit.c", true) {
+        if name == "kiln" {
+            continue;
+        }
+        let tag = format!("optimized-{name}");
+        let text = optimized_ir(&cc, &scratch, &tag, "optimized_unit.c");
+        assert!(text.contains("DISPFlagOptimized") && text.contains("DIFlagAllCallsDescribed"));
+        let (module, bodies) = common::parse(&text);
+        let refused = hod_a64::compile_to_object(&module, &bodies, &hod_cg::Options::default());
+        let message = refused.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(message.contains("debug:call-sites"), "{tag}: {message}");
+        let text = text.replace(" | DIFlagAllCallsDescribed", "");
+        let (h, _) = compare(&scratch, &dwarfdump, &llc, &format!("{tag}-plain"), &text);
+        assert_eq!(count_tag(&h, "DW_TAG_subprogram"), 2, "{tag}");
+    }
+}

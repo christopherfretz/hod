@@ -86,6 +86,21 @@ fn subprogram_refusals() {
     assert_eq!(check(&not_def), Err((0, "debug:subprogram-not-definition")));
     let thrown = module(&[("retainedNodes: !12", "retainedNodes: !12, thrownTypes: !13")], "");
     assert_eq!(check(&thrown), Err((0, "debug:subprogram-attribute")));
+    // WP-098: call-site entries need the code (spec/dwarf.md §6.14);
+    // `DISPFlagOptimized` alone is written.
+    let calls = module(
+        &[(
+            "spFlags: DISPFlagDefinition",
+            "flags: DIFlagAllCallsDescribed, spFlags: DISPFlagDefinition",
+        )],
+        "",
+    );
+    assert_eq!(check(&calls), Err((0, "debug:call-sites")));
+    let optimized = module(
+        &[("spFlags: DISPFlagDefinition", "spFlags: DISPFlagDefinition | DISPFlagOptimized")],
+        "",
+    );
+    assert_eq!(check(&optimized), Ok(()));
 }
 
 #[test]

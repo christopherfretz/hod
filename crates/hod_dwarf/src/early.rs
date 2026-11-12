@@ -35,6 +35,11 @@ impl UnitPlan<'_> {
     /// The parent DIE of type `of`, local to subprogram `scope`, which has
     /// no DIE yet: the function's early DIE.
     pub(crate) fn local_type_parent(&mut self, of: DiId, scope: DiId) -> Result<u32, Error> {
+        // WP-098: a type local to a function that is only inlined, reached
+        // once its abstract instance exists, goes under it (§6.14).
+        if let Some(d) = crate::local_type::abstract_parent(self, scope) {
+            return Ok(d);
+        }
         if !self.inline.has_body(scope) {
             return Err(unsupported(of, LOCAL_TYPE_SCOPE));
         }
@@ -120,6 +125,7 @@ fn check_subprogram(sp: &DiSubprogram<'_>) -> Result<(), &'static str> {
     if !sp.sp_flags.contains(SpFlags::DEFINITION) {
         return Err("debug:subprogram-not-definition");
     }
+    crate::call_sites::check(sp)?; // WP-098: §6.14
     if !sp.thrown_types.is_empty()
         || sp.sp_flags.0 & !DEF_SP_FLAGS != 0
         || (sp.declaration.is_none() && sp.flags.0 & !DEF_FLAGS != 0)

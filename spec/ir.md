@@ -1495,8 +1495,8 @@ Reasons no `Support` takes away (`STRUCTURAL_RULES`):
 
 | name | when |
 |---|---|
-| `tls:direct-operand` | a thread-local symbol as an operand of anything but the first argument of `llvm.threadlocal.address` |
-| `tls:address-in-constant` | the address of a thread-local symbol inside a constant: an initializer, a constant operand (also as the argument of `llvm.threadlocal.address`), a landing-pad clause |
+| `tls:direct-operand` | a thread-local symbol as the callee of a call |
+| `tls:address-in-constant` | the address of a thread-local symbol inside a constant other than a plain address operand (`@t`, `getelementptr (@t, ...)`): an initializer, an aggregate or expression operand, a landing-pad clause |
 | `blockaddress:other-function` | a `blockaddress` in a body that names a block of another function |
 | `musttail:callee-pop` | a `musttail` call with a convention whose callee pops its arguments (`tailcc`, `swifttailcc`) |
 | `musttail:stack-args-grow` | a `musttail` call whose stack-argument area is larger than its caller's |

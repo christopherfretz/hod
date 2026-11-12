@@ -567,6 +567,21 @@ They are specified in `abi-<target>.md` and tested by layer L5
 (`sret`, `byval`, coerced aggregates); the assigner never looks at a
 source-level type.
 
+Signatures (`hod_cg::abi`, fixed ahead of the code generator so that the
+ABI work packages can proceed independently): `Sig { cc, ret, ret_attrs,
+params, param_attrs, fixed, variadic }`; `Part { arg, kind, offset, size,
+place }` with `place` a `Place::Reg(PReg)` or a `Place::Stack(offset)`
+measured from the stack pointer at the call, and `kind` either `Value`
+(bytes of the argument's value) or `Pointee` (bytes of the memory a
+`byval` argument points to, copied into the stack-argument area);
+`Assignment { args, ret, ret_memory, sret_returned_in, stack_size, va,
+vector_regs_used }`. `ret_memory` is set when a return value does not fit
+the return registers and the signature has no `sret` parameter: the
+caller then passes the address of a buffer, as LLVM does. A target's
+`assign(types, sig, out) -> Result<(), AbiUnsupported>` names what it
+cannot pass (`abi:<what>`); the facade runs it over a module's signatures
+as part of deciding support, so code generation never meets a failure.
+
 ### 7.3 Runtime functions
 
 Some instructions lower to calls of functions that are not in the module:

@@ -575,8 +575,9 @@ driver, or `bfd`, `lld` or `mold` fails it.
 the C library; its expected output was derived independently of any
 compiler and then confirmed with the oracle, on LLVM 22 and 19. Each is
 valid for both targets and both LLVM majors, names what it covers in a
-`covers` directive, and carries `unsupported: codegen-not-implemented`
-until hod compiles it.
+`covers` directive, and carries the reason hod declines it with per
+target (`unsupported(aarch64): ...`, `unsupported(x86_64): ...`, the first
+refusal of `spec/cli.md` "Reasons") until hod compiles it.
 
 | file | covers | tier |
 |---|---|---|
@@ -942,7 +943,7 @@ everywhere.
 | `module` | starts the next module of a test of several, and names it ("Several modules") | any | one module |
 | `tier` | `quick` or `full` | once | `full` |
 | `covers` | the spec section the test exercises, free text | once | none |
-| `unsupported` | the coverage-log reason hod declines this test with (lower-case letters, digits, `-`) | any | hod must compile it |
+| `unsupported` | the coverage-log reason hod declines this test with (lower-case letters, digits, `-`, `:`, `.`, `_`: the names of `spec/cli.md` "Reasons", `global:function-definition`, `intrinsic:llvm.memcpy`) | any | hod must compile it |
 | `xfail` | why hod is known to fail this test, free text; never empty | any | it must pass |
 
 - `stdout` and `stdin` lines are taken verbatim, in order, each followed
@@ -991,7 +992,8 @@ directives of `tests/ir/main_args.ll`):
 ;@ args: alpha beta
 ;@ stdin: one line of input
 ;@ exit: 3
-;@ unsupported: codegen-not-implemented
+;@ unsupported(aarch64): global:function-definition
+;@ unsupported(x86_64): global:variable-definition
 ;@ stdout: argc=3
 ;@ stdout: alpha beta
 ;@ stdout:
@@ -1036,7 +1038,7 @@ a file is reported, with its line:
 - an `llvm` item that is not `N` or `N+` with `N` a number without a
   leading zero;
 - an `unsupported` reason with other characters than lower-case letters,
-  digits and `-`;
+  digits, `-`, `:`, `.` and `_`;
 - an unknown condition, an empty one, a second condition of the same
   kind, or a linker condition on `unsupported`.
 

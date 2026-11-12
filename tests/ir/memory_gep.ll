@@ -4,7 +4,8 @@
 ; i64 with explicit alignments.
 ;@ covers: spec/ir.md §5.4 memory (Load, Store), address (PtrAdd)
 ;@ tier: quick
-;@ unsupported: codegen-not-implemented
+;@ unsupported(aarch64): global:function-definition
+;@ unsupported(x86_64): global:variable-definition
 ;@ stdout: squares: 0 9 49 sum=140
 ;@ stdout: record: -3 70000 -5000000000 77 -1234 size=24
 ;@ stdout: grid[2][3]=23 grid[1][0]=10 total=138

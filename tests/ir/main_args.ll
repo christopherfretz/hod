@@ -6,7 +6,8 @@
 ;@ args: alpha beta
 ;@ stdin: one line of input
 ;@ exit: 3
-;@ unsupported: codegen-not-implemented
+;@ unsupported(aarch64): global:function-definition
+;@ unsupported(x86_64): global:variable-definition
 ;@ stdout: argc=3
 ;@ stdout: alpha beta
 ;@ stdout:

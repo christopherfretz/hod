@@ -4,7 +4,8 @@
 ; constant data, and an internal counter that is written at run time.
 ;@ covers: spec/ir.md §4.2 addresses, §4.3 initializer images
 ;@ tier: quick
-;@ unsupported: codegen-not-implemented
+;@ unsupported(aarch64): global:function-definition
+;@ unsupported(x86_64): global:variable-definition
 ;@ stdout: number=7 third=30 bytes=world self=1
 ;@ stdout: first: tag=1 f(9)=18
 ;@ stdout: second: tag=2 f(9)=81

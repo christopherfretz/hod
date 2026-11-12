@@ -2,7 +2,8 @@
 ; and loaded, compared, and called with integer, pointer and
 ; floating-point signatures.
 ;@ covers: spec/ir.md §5.4 call (Call through a value)
-;@ unsupported: codegen-not-implemented
+;@ unsupported(aarch64): global:function-definition
+;@ unsupported(x86_64): global:variable-definition
 ;@ stdout: apply(inc, 5) = 7
 ;@ stdout: apply(dbl, 5) = 20
 ;@ stdout: fold(add) = 15

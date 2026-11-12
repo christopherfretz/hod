@@ -6,7 +6,8 @@
 ; reasons the oracle is `llc -O0` with SelectionDAG (spec/harness.md
 ; "irdiff", "The oracle").
 ;@ covers: spec/ir.md §5.4 cast, memory (ZExt and SExt of a narrow Load)
-;@ unsupported: codegen-not-implemented
+;@ unsupported(aarch64): global:function-definition
+;@ unsupported(x86_64): global:variable-definition
 ;@ stdout: 60128
 
 @g = global i16 -5408

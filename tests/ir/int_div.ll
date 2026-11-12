@@ -2,7 +2,8 @@
 ; i64, with negative operands (truncation toward zero; the remainder takes
 ; the dividend's sign).
 ;@ covers: spec/ir.md §5.4 integer
-;@ unsupported: codegen-not-implemented
+;@ unsupported(aarch64): global:function-definition
+;@ unsupported(x86_64): global:variable-definition
 ;@ stdout: i8 udiv=124 sdiv=-3 urem=1 srem=-1
 ;@ stdout: i8 udiv=0 sdiv=-11 urem=100 srem=1
 ;@ stdout: i16 udiv=32764 sdiv=-3 urem=1 srem=-1

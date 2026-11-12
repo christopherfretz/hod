@@ -6,7 +6,8 @@
 ; the oracle is `llc -O0` with SelectionDAG (spec/harness.md "irdiff",
 ; "The oracle").
 ;@ covers: spec/ir.md §5.4 compare, cast (ICmp at i1 on a Trunc)
-;@ unsupported: codegen-not-implemented
+;@ unsupported(aarch64): global:function-definition
+;@ unsupported(x86_64): global:variable-definition
 ;@ stdout: 0
 
 @.fmt = private unnamed_addr constant [4 x i8] c"%d\0A\00"

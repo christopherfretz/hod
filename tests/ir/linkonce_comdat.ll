@@ -4,7 +4,8 @@
 ; address is null and they are not called), hidden and internal symbols,
 ; aliases, and a table of pointers to all of them.
 ;@ covers: spec/ir.md §2.2 symbols (linkage, visibility, COMDAT, alias)
-;@ unsupported: codegen-not-implemented
+;@ unsupported(aarch64): global:function-definition
+;@ unsupported(x86_64): global:variable-definition
 ;@ stdout: square=144 bump=11,12 weak=101 weak_odr=42 hidden=9 internal=240
 ;@ stdout: table=16 weak_value=5 hidden_value=21 internal_value=4
 ;@ stdout: missing function: absent, missing value: absent

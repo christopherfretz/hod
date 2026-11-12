@@ -561,13 +561,13 @@ impl Parser {
                 let when = parse_conds(conds, false)?;
                 let reason = value.trim();
                 let valid = !reason.is_empty()
-                    && reason
-                        .bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+                    && reason.bytes().all(|b| {
+                        b.is_ascii_lowercase() || b.is_ascii_digit() || b"-:._".contains(&b)
+                    });
                 if !valid {
                     return Err(format!(
                         "'unsupported' requires a coverage-log reason \
-                         (lower-case letters, digits and '-'), not '{reason}'"
+                         (lower-case letters, digits, '-', ':', '.' and '_'), not '{reason}'"
                     ));
                 }
                 found.unsupported.push(Conditional { when, reason: reason.to_owned() });
@@ -954,6 +954,13 @@ mod tests {
     // "Test directives", `unsupported` and `xfail`, and their conditions.
     #[test]
     fn conditional_directives() {
+        let names = ok(
+            ";@ unsupported: intrinsic:llvm.memcpy.inline\n;@ unsupported: attr:returns_twice\n",
+        );
+        assert_eq!(
+            names.unsupported_reason(Arch::Aarch64, 22),
+            Some("intrinsic:llvm.memcpy.inline")
+        );
         let found = ok(";@ unsupported(x86_64): codegen-not-implemented\n\
                         ;@ unsupported(aarch64,llvm19): bitcode-input\n\
                         ;@ xfail(mold): BACKLOG WP-099: mold rejects the note section\n\
@@ -1099,7 +1106,8 @@ mod tests {
         assert_eq!(first.stdin, b"one line of input\n");
         assert_eq!(first.exit, Exit::Code(3));
         assert_eq!(first.stdout, b"argc=3\nalpha beta\n\none line of input\n");
-        assert_eq!(first.unsupported, [Conditional::always("codegen-not-implemented")]);
+        assert_eq!(first.unsupported_reason(Arch::Aarch64, 22), Some("global:function-definition"));
+        assert_eq!(first.unsupported_reason(Arch::X86_64, 19), Some("global:variable-definition"));
 
         let second = ok(&examples[1]);
         assert_eq!(second.targets, [Arch::Aarch64]);

@@ -72,7 +72,7 @@ fn debug_module(node: &str) -> String {
     )
 }
 
-/// §7.4 and WP-096 cut 5: a field named twice is refused at its second
+/// §7.4: a field named twice is refused at its second
 /// spelling, and a required field missing at the closing parenthesis,
 /// whatever the length of the name, and a node written in place inside
 /// a field has fields of its own: the same name inside it is no repeat.
@@ -111,4 +111,25 @@ fn field_rules_of_debug_nodes() {
         "name: \"u\"",
         "field 'name' cannot be specified more than once",
     );
+}
+
+/// §11.1: a body of `HAND_OVER_BYTES` or more is the parser's storage
+/// handed over, not a copy, so it is held once; the next body is built
+/// in new storage and is a copy again.
+#[test]
+fn a_large_body_is_handed_over_not_copied() {
+    let mut text = String::from("define void @big(ptr %p) {\n");
+    for _ in 0..20_000 {
+        text.push_str("  store i32 1, ptr %p, align 4\n");
+    }
+    text.push_str("  ret void\n}\ndefine void @small() {\n  ret void\n}\n");
+    let mut parsed = parse(text.as_bytes(), Arch::X86_64).expect("the module");
+    let ParsedModule { module, text } = &mut parsed;
+    let mut parser = BodyParser::new(text);
+    let [big, small] = text.functions() else { panic!("two functions") };
+    let big = parser.parse(module, big).expect("parsed").expect("a body");
+    assert!(big.table_bytes() >= hod_ll::HAND_OVER_BYTES, "{}", big.table_bytes());
+    assert!(big.allocated_bytes() > big.table_bytes(), "the storage, grown by doubling");
+    let small = parser.parse(module, small).expect("parsed").expect("a body");
+    assert_eq!(small.allocated_bytes(), small.table_bytes());
 }

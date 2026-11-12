@@ -112,70 +112,6 @@ pub(crate) struct DebugScratch {
     /// Tuples that a field names as a single node: reserved, defined
     /// after the pass.
     tuples: Vec<(DiId, Span)>,
-    /// What each field of each kind is, once found (WP-096).
-    pub(crate) field_memo: FieldMemo,
-    /// The fields of the node being read: name packed (or 0), offset and
-    /// length.
-    seen: Vec<(u128, u32, u32)>,
-}
-
-/// How many fields of a node are remembered for LLVM's rules (none
-/// twice, the required ones present).
-const MAX_SEEN: usize = 48;
-
-/// What `hod_ir`'s tables say of one field of one node kind: what
-/// becomes of it, what its value is, and its `'static` name.
-#[derive(Clone, Copy, Debug)]
-struct FieldInfo {
-    mapping: Option<DiMapping>,
-    shape: Option<DiShape>,
-    key: &'static str,
-}
-
-/// The answers of [`field_info`] for the fields met (WP-096): a
-/// direct-mapped table keyed by the kind and the field's name packed in
-/// 16 bytes, so that a field costs one probe instead of several searches
-/// by name. A longer name is looked up each time.
-#[derive(Debug, Default)]
-pub(crate) struct FieldMemo {
-    slots: Vec<Option<(DiKind, u128, FieldInfo)>>,
-    /// How many times the tables themselves were searched.
-    pub(crate) lookups: u64,
-}
-
-/// Slots of [`FieldMemo`]: a power of two.
-const FIELD_SLOTS: usize = 256;
-
-impl FieldMemo {
-    fn get(&mut self, kind: DiKind, name: &[u8], field: &[u8]) -> FieldInfo {
-        let Some(key) = crate::attrs::packed(field) else {
-            self.lookups += 1;
-            return field_info(kind, name, field);
-        };
-        if self.slots.is_empty() {
-            self.slots.resize(FIELD_SLOTS, None);
-        }
-        let mixed = (key as u64) ^ ((key >> 64) as u64).rotate_left(23) ^ (kind as u64) << 40;
-        let at = (mixed.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56) as usize % FIELD_SLOTS;
-        match self.slots[at] {
-            Some((known, known_key, info)) if known == kind && known_key == key => info,
-            _ => {
-                self.lookups += 1;
-                let info = field_info(kind, name, field);
-                self.slots[at] = Some((kind, key, info));
-                info
-            }
-        }
-    }
-}
-
-/// [`FieldInfo`] from the tables: `name` is `kind`'s LLVM name.
-fn field_info(kind: DiKind, name: &[u8], field: &[u8]) -> FieldInfo {
-    FieldInfo {
-        mapping: di_field(name, field),
-        shape: kind.field_shape(field),
-        key: static_field(kind, field),
-    }
 }
 
 /// The name of the node kind written before `span`: the word between the
@@ -706,38 +642,26 @@ impl<'a> Parser<'a, '_> {
         };
         let first = scratch.fields.len();
         // The fields met, for LLVM's two rules: none twice, and the
-        // required ones present. The first `MAX_SEEN` are kept, each as
-        // its name packed in 16 bytes, or 0 and where the longer name is
-        // (WP-096: no array to clear per node, no byte comparison for a
-        // short name).
-        let src = self.src;
-        let same = |(key, at, len): (u128, u32, u32), other: u128, field: &[u8]| {
-            if key != 0 || other != 0 {
-                key == other
-            } else {
-                &src[at as usize..(at + len) as usize] == field
-            }
-        };
-        // A node written in place inside a field is read before this one
-        // ends: each node has the entries from `base` on.
-        let base = scratch.seen.len();
+        // required ones present.
+        let mut seen: [&[u8]; 48] = [b""; 48];
+        let mut count = 0;
         self.goto(span.start);
         while self.tok.start < span.end {
             let (field, at) = self.field_name()?;
-            let packed = crate::attrs::packed(field).unwrap_or(0);
-            if scratch.seen[base..].iter().any(|&entry| same(entry, packed, field)) {
+            if seen[..count].contains(&field) {
                 let field = String::from_utf8_lossy(field);
                 let message = format!("field '{field}' cannot be specified more than once");
                 return fail(LlErrorKind::Syntax, at, message);
             }
-            if scratch.seen.len() - base < MAX_SEEN {
-                scratch.seen.push((packed, at, field.len() as u32));
+            if count < seen.len() {
+                seen[count] = field;
+                count += 1;
             }
-            let info = scratch.field_memo.get(kind, name, field);
-            match info.mapping {
+            match di_field(name, field) {
                 Some(DiMapping::Mapped) => {
-                    let value = self.field_value(kind, field, info.shape, scratch)?;
-                    scratch.fields.push((info.key, value));
+                    let value = self.field_value(kind, field, scratch)?;
+                    let key = static_field(kind, field);
+                    scratch.fields.push((key, value));
                 }
                 Some(DiMapping::Dropped(_)) => {
                     self.skip_value()?;
@@ -757,16 +681,11 @@ impl<'a> Parser<'a, '_> {
             }
         }
         for &(required, field) in REQUIRED {
-            if required != kind {
-                continue;
-            }
-            let packed = crate::attrs::packed(field.as_bytes()).unwrap_or(0);
-            if !scratch.seen[base..].iter().any(|&entry| same(entry, packed, field.as_bytes())) {
+            if required == kind && !seen[..count].contains(&field.as_bytes()) {
                 let message = format!("missing required field '{field}'");
                 return fail(LlErrorKind::Syntax, span.end, message);
             }
         }
-        scratch.seen.truncate(base);
         Ok(Made { kind: Some(kind), name, first })
     }
 
@@ -830,9 +749,9 @@ impl<'a> Parser<'a, '_> {
         &mut self,
         kind: DiKind,
         field: &[u8],
-        shape: Option<DiShape>,
         scratch: &mut DebugScratch,
     ) -> PResult<Val> {
+        let shape = kind.field_shape(field);
         let at = self.tok.start;
         let token = self.tok;
         let text = self.text();
@@ -1187,40 +1106,5 @@ impl DebugMap {
     /// The handle of the node at `position` in the metadata index.
     pub(crate) fn handle(&self, position: usize) -> Handle {
         self.handles.get(position).copied().unwrap_or(Handle::None)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// WP-096 cut 5: the memo answers what the tables answer, for every
-    /// row of the field table, and searches them once per kind and field
-    /// however often the field is met.
-    #[test]
-    fn field_memo_is_the_tables_searched_once() {
-        let mut memo = FieldMemo::default();
-        let mut rows = 0;
-        for _ in 0..3 {
-            for (name, field, _) in hod_ir::di_field_table() {
-                let Some(kind) = DiKind::named(name.as_bytes()) else { continue };
-                let (name, field) = (name.as_bytes(), field.as_bytes());
-                let got = memo.get(kind, name, field);
-                let want = field_info(kind, name, field);
-                assert_eq!(got.mapping, want.mapping);
-                assert_eq!(got.shape, want.shape);
-                assert_eq!(got.key, want.key);
-                rows += 1;
-            }
-        }
-        assert!(rows > 300, "{rows}");
-        // A field met once more is not looked up again while its slot
-        // holds it.
-        let before = memo.lookups;
-        for _ in 0..1000 {
-            memo.get(DiKind::DerivedType, b"DIDerivedType", b"baseType");
-        }
-        assert!(memo.lookups <= before + 1, "{} lookups", memo.lookups - before);
-        assert!(memo.lookups < rows, "{} lookups for {rows} rows", memo.lookups);
     }
 }

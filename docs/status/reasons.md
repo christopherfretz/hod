@@ -8,187 +8,42 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `(compiled)` | 3310 | 3271 |
+| `(compiled)` | 3330 | 3291 |
 | `inst:callbr` | 3 | 3 |
 | `module:asm` | 3 | 3 |
-| `type:bfloat` | 3 | 3 |
-| `const-expr:trunc` | 2 | 3 |
 | `call:inline-asm` | 2 | 2 |
-| `intrinsic:llvm.aarch64.neon.udot.v4i32.v16i8` | 2 | 2 |
-| `special-global:llvm.global.annotations` | 2 | 2 |
 | `a64:inline-asm-operand` | 1 | 1 |
-| `cc:preserve_mostcc` | 1 | 1 |
+| `a64:vector-wide-element` | 1 | 1 |
+| `abi:bfloat-array` | 1 | 1 |
+| `cc:preserve_allcc` | 1 | 1 |
 | `const-expr:sub` | 1 | 1 |
-| `debug:dbg-value` | 1 | 1 |
 | `debug:dwarf-version` | 1 | 1 |
-| `init:blockaddress-unplaced` | 1 | 1 |
-| `inst:extractelement/i128` | 1 | 1 |
-| `intrinsic:llvm.aarch64.cls` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crypto.sha256h` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.addp.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.ld2.v16i8.p0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.ld2.v8i16.p0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.ld3.v8i8.p0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.tbl2.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.umull.v2i64` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.vsri.v16i8` | 1 | 1 |
+| `debug:subprogram-attribute` | 1 | 1 |
 | `metadata-arg:llvm.read_volatile_register.i64` | 1 | 1 |
-| `attr:fmv-features` | 1 | 0 |
-| `const-expr:bitcast` | 1 | 0 |
 | `intrinsic:llvm.aarch64.neon.bfcvtn` | 0 | 1 |
-| `intrinsic:llvm.aarch64.neon.bfdot.v4f32.v8bf16` | 1 | 0 |
-| `intrinsic:llvm.aarch64.neon.tbl1.v16i8` | 0 | 1 |
+| `intrinsic:llvm.aarch64.neon.bfdot` | 1 | 0 |
 | all | 3347 | 3308 |
 
 ## Every reason (census)
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `const-expr:sub` | 3 | 4 |
 | `call:inline-asm` | 3 | 3 |
 | `inst:callbr` | 3 | 3 |
 | `module:asm` | 3 | 3 |
-| `type:bfloat` | 3 | 3 |
-| `const-expr:trunc` | 2 | 3 |
-| `intrinsic:llvm.aarch64.neon.ld3.v8i8.p0` | 2 | 2 |
-| `intrinsic:llvm.aarch64.neon.st2.v8i16.p0` | 2 | 2 |
-| `intrinsic:llvm.aarch64.neon.tbl1.v8i8` | 2 | 2 |
-| `intrinsic:llvm.aarch64.neon.udot.v4i32.v16i8` | 2 | 2 |
-| `linkage:appending` | 2 | 2 |
-| `special-global:llvm.global.annotations` | 2 | 2 |
 | `a64:inline-asm-operand` | 1 | 1 |
+| `a64:vector-wide-element` | 1 | 1 |
+| `abi:bfloat-array` | 1 | 1 |
 | `cc:79` | 1 | 1 |
 | `cc:aarch64_vector_pcs` | 1 | 1 |
 | `cc:preserve_allcc` | 1 | 1 |
-| `cc:preserve_mostcc` | 1 | 1 |
-| `debug:dbg-value` | 1 | 1 |
+| `const-expr:sub` | 1 | 1 |
 | `debug:dwarf-version` | 1 | 1 |
-| `init:blockaddress-unplaced` | 1 | 1 |
-| `inst:extractelement/i128` | 1 | 1 |
-| `intrinsic:llvm.aarch64.cls` | 1 | 1 |
-| `intrinsic:llvm.aarch64.cls64` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crypto.aesd` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crypto.aese` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crypto.aesimc` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crypto.aesmc` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crypto.sha1c` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crypto.sha1h` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crypto.sha1m` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crypto.sha1p` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crypto.sha1su0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crypto.sha1su1` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crypto.sha256h` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crypto.sha256h2` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crypto.sha256su0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.crypto.sha256su1` | 1 | 1 |
-| `intrinsic:llvm.aarch64.dmb` | 1 | 1 |
-| `intrinsic:llvm.aarch64.dsb` | 1 | 1 |
-| `intrinsic:llvm.aarch64.hint` | 1 | 1 |
-| `intrinsic:llvm.aarch64.isb` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.abs.v4i32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.addp.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.bfdot.v4f32.v8bf16` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.fabd.v4f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.faddv.f32.v4f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.fcvtas.v2i32.v2f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.fcvtas.v4i32.v4f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.fcvtms.v4i32.v4f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.fcvtns.v4i32.v4f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.fcvtnu.v2i32.v2f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.fcvtps.v4i32.v4f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.fcvtzs.v4i16.v4f16` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.fcvtzs.v4i32.v4f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.fcvtzu.v4i32.v4f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.fmax.v4f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.fmaxnm.v2f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.fmaxv.f16.v4f16` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.fmin.v4f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.fminnm.v2f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.fminv.f16.v4f16` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.frecpe.v4f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.frecps.v4f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.frsqrte.v4f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.frsqrts.v2f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.ld2.v16i8.p0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.ld2.v2f32.p0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.ld2.v8i16.p0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.ld4.v16i8.p0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.ld4.v2i32.p0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.ld4.v4f32.p0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.pmull.v8i16` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.pmull64` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.rshrn.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.saddlp.v4i16.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.saddlv.i32.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.saddlv.i64.v4i32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.sdot.v2i32.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.sdot.v4i32.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.shadd.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.shsub.v4i16` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.smull.v4i32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.smull.v8i16` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.sqabs.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.sqadd.v4i16` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.sqneg.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.sqrshrn.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.sqrshrun.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.sqshl.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.sqshrun.v4i16` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.sqsub.v8i16` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.sqxtn.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.sqxtun.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.srshl.v4i16` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.st3.v4i16.p0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.st3.v8i8.p0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.st4.v2i32.p0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.st4.v4f32.p0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.st4.v4i32.p0` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.tbl2.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.tbl2.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.tbl3.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.tbl4.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.tbx1.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.tbx1.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.tbx2.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.tbx2.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.tbx3.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.tbx4.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.uabd.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.uaddlp.v8i16.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.uaddlv.i32.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.uaddlv.i32.v4i16` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.uaddv.i64.v2i64` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.udot.v2i32.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.umax.v4i16` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.umaxp.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.umaxv.i32.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.uminp.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.uminv.i32.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.umull.v2i64` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.uqadd.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.uqrshl.v8i16` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.uqshl.v8i16` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.uqshrn.v4i16` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.uqsub.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.uqxtn.v4i16` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.urecpe.v2i32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.urhadd.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.urshl.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.ushl.v16i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.vcmla.rot0.v2f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.vcmla.rot90.v2f32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.vcvtfp2hf` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.vcvthf2fp` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.vsli.v1i64` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.vsli.v4i32` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.vsli.v8i8` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.vsri.v16i8` | 1 | 1 |
+| `debug:subprogram-attribute` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.bfdot` | 1 | 1 |
 | `metadata-arg:llvm.read_volatile_register.i64` | 1 | 1 |
-| `attr:fmv-features` | 1 | 0 |
-| `const-expr:bitcast` | 1 | 0 |
 | `intrinsic:llvm.aarch64.neon.bfcvtn` | 0 | 1 |
 | `intrinsic:llvm.aarch64.neon.bfcvtn2` | 0 | 1 |
-| `intrinsic:llvm.aarch64.neon.tbl1.v16i8` | 0 | 1 |
 
 ## The routes agree
 
@@ -210,13 +65,13 @@ Coverage-log field 7 (from the process's start to the decline) of the first-refu
 
 | LLVM | route | median | p99 | worst | share of `llc`: median | p99 | worst |
 |---|---|---:|---:|---:|---:|---:|---:|
-| 22 | text | 8549 | 29917 | 262580 | 15.4% | 47.0% | 157.0% |
-| 22 | bitcode, native | 7746 | 27113 | 231670 | 14.1% | 44.6% | 326.7% |
-| 22 | bitcode, `llvm-dis` | 51618 | 123049 | 641729 | 93.3% | 188.1% | 520.5% |
-| 22 | `llc -O0` | 50656 | 136248 | 3386840 | | | |
-| 22 | the `convert` of the `llvm-dis` route | 43477 | 107852 | 404315 | | | |
-| 19 | text | 8067 | 28619 | 286525 | 15.8% | 52.9% | 106.6% |
-| 19 | bitcode, native | 7546 | 25345 | 183911 | 14.8% | 45.5% | 134.2% |
-| 19 | bitcode, `llvm-dis` | 47567 | 122035 | 814777 | 95.5% | 184.6% | 631.1% |
-| 19 | `llc -O0` | 49618 | 161873 | 3603515 | | | |
-| 19 | the `convert` of the `llvm-dis` route | 39984 | 101040 | 521673 | | | |
+| 22 | text | 8887 | 39869 | 267552 | 17.9% | 62.8% | 424.8% |
+| 22 | bitcode, native | 7938 | 32497 | 196549 | 16.1% | 58.0% | 140.4% |
+| 22 | bitcode, `llvm-dis` | 46020 | 125070 | 684591 | 93.4% | 210.2% | 800.5% |
+| 22 | `llc -O0` | 49324 | 127052 | 4332221 | | | |
+| 22 | the `convert` of the `llvm-dis` route | 38256 | 102372 | 443075 | | | |
+| 19 | text | 7467 | 27678 | 244183 | 17.3% | 49.9% | 312.0% |
+| 19 | bitcode, native | 6622 | 26486 | 160450 | 15.5% | 45.0% | 139.9% |
+| 19 | bitcode, `llvm-dis` | 40262 | 95811 | 729293 | 92.2% | 187.5% | 943.5% |
+| 19 | `llc -O0` | 40045 | 93855 | 3617986 | | | |
+| 19 | the `convert` of the `llvm-dis` route | 33648 | 78494 | 518741 | | | |

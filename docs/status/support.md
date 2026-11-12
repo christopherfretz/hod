@@ -305,36 +305,36 @@ Instructions.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `inst:add` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:sub` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:mul` | supported (int, i128, int-wide) | not-implemented |  |
+| `inst:add` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:sub` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:mul` | supported (int, i128, int-wide, vector) | not-implemented |  |
 | `inst:udiv` | supported (int, i128) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
 | `inst:sdiv` | supported (int, i128) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
 | `inst:urem` | supported (int, i128) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
 | `inst:srem` | supported (int, i128) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
-| `inst:shl` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:lshr` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:ashr` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:and` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:or` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:xor` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:fadd` | supported (half, float, double, fp128) | not-implemented |  |
-| `inst:fsub` | supported (half, float, double, fp128) | not-implemented |  |
-| `inst:fmul` | supported (half, float, double, fp128) | not-implemented |  |
-| `inst:fdiv` | supported (half, float, double, fp128) | not-implemented |  |
+| `inst:shl` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:lshr` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:ashr` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:and` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:or` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:xor` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:fadd` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `inst:fsub` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `inst:fmul` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `inst:fdiv` | supported (half, float, double, fp128, vector) | not-implemented |  |
 | `inst:frem` | supported (half, float, double, fp128) | not-implemented | a call of `fmod` |
-| `inst:fneg` | supported (half, float, double, fp128) | not-implemented |  |
+| `inst:fneg` | supported (half, float, double, fp128, vector) | not-implemented |  |
 | `inst:icmp` | supported (int, i128, int-wide, ptr) | not-implemented |  |
 | `inst:fcmp` | supported (int, half, float, double, fp128) | not-implemented |  |
-| `inst:trunc` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:zext` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:sext` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:fptrunc` | supported (half, float, double, fp128) | not-implemented |  |
-| `inst:fpext` | supported (half, float, double, fp128) | not-implemented |  |
-| `inst:fptoui` | supported (int, half, float, double, fp128) | not-implemented |  |
-| `inst:fptosi` | supported (int, half, float, double, fp128) | not-implemented |  |
-| `inst:uitofp` | supported (int, half, float, double, fp128) | not-implemented |  |
-| `inst:sitofp` | supported (int, half, float, double, fp128) | not-implemented |  |
+| `inst:trunc` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:zext` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:sext` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:fptrunc` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `inst:fpext` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `inst:fptoui` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
+| `inst:fptosi` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
+| `inst:uitofp` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
+| `inst:sitofp` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
 | `inst:ptrtoint` | supported (int, i128, int-wide, ptr) | not-implemented |  |
 | `inst:ptrtoaddr` | supported (int, i128, int-wide, ptr) | not-implemented |  |
 | `inst:inttoptr` | supported (int, i128, int-wide, ptr) | not-implemented |  |

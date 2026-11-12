@@ -67,7 +67,7 @@ use hod_mc_a64 as mc;
 use hod_mc_a64::{Arr, Cond, Load, MemSize, Reg, Shift, Size, VMemSize, VReg, VecBits};
 
 use crate::common::{
-    Cursor, X16, X17, copy_bytes, deferred_first, frame_address, load_fpr_at, load_gpr_at,
+    Cursor, V31, X16, X17, copy_bytes, deferred_first, frame_address, load_fpr_at, load_gpr_at,
     materialize_mem_const, put, store_fpr_at, store_gpr_at, unsupported, value_ty, vr, xr,
 };
 use crate::reg;
@@ -80,8 +80,8 @@ use crate::target::A64;
 pub const MASK: &str = "a64:vector-mask";
 /// A lane operation on a vector of more than 64 `i1`.
 pub const MASK_WIDE: &str = "a64:mask-wide";
-/// A lane operation on a vector of integers whose width is not a whole
-/// number of bytes, other than `i1` (`<4 x i4>`).
+/// A lane operation on a vector of integers of a width other than 8, 16,
+/// 32 or 64 bits, at most 64, and not `i1` (`<4 x i4>`, `<2 x i24>`).
 pub const ODD_ELEMENT: &str = "a64:vector-odd-element";
 /// A lane operation on a vector of `i128` (or wider) or `fp128`.
 pub const WIDE_ELEMENT: &str = "a64:vector-wide-element";
@@ -226,8 +226,8 @@ impl Shape {
             16 => 1,
             32 => 2,
             64 => 3,
-            bits if bits % 8 != 0 => return unsupported(ODD_ELEMENT),
-            _ => return unsupported(WIDE_ELEMENT),
+            bits if bits > 64 => return unsupported(WIDE_ELEMENT),
+            _ => return unsupported(ODD_ELEMENT),
         };
         Ok(Lanes { shape: self, log2 })
     }
@@ -656,10 +656,12 @@ enum Operand {
 
 /// `%r = shufflevector %first, %second, <mask>`: lane by lane, each
 /// result lane the source lane its mask entry names, an undefined one
-/// zero. `Fpr` to `Fpr`: `dup` for a splat, else `ins` (element) per
-/// lane into a new register; with a `Mem` side, each lane through `x16`
-/// (`umov` or a load, then `ins` or a store). A source no entry names is
-/// not asked for.
+/// zero. `Fpr` result: `dup` for a splat of a register source, else the
+/// lanes inserted into `v31` (`ins` element, or a load into `x16` then
+/// `ins` for a `Mem` source) and moved to an operand's register (which
+/// dies here) or a new one. `Mem` result: each lane through `x16`
+/// (`umov` or a load), then stored. A source no entry names is not asked
+/// for. Writes `x16`, `x17` and `v31`.
 ///
 /// # Errors
 /// What [`lanes`] refuses for either type; what asking for the operands
@@ -682,6 +684,7 @@ pub fn shuffle_vector<'a>(
         }
     }
     let mut ops = [None; 2];
+    let mut operand_reg: Option<PReg> = None;
     for (which, value) in [first, second].into_iter().enumerate() {
         if !used[which] {
             continue;
@@ -691,7 +694,9 @@ pub fn shuffle_vector<'a>(
             continue;
         }
         ops[which] = Some(if src.shape.class == Class::Fpr {
-            Operand::Reg(vr(cx.use_reg(value)?))
+            let reg = cx.use_reg(value)?;
+            operand_reg.get_or_insert(reg);
+            Operand::Reg(vr(reg))
         } else {
             Operand::Image(cx.use_mem(value)?)
         });
@@ -702,16 +707,22 @@ pub fn shuffle_vector<'a>(
     };
     let elem = src.elem();
     if dst.shape.class == Class::Fpr {
-        let rd = cx.def_reg(inst)?;
-        let d = vr(rd);
+        // The result is built in `v31` and left in an operand's register
+        // (which dies here, `FnCx::use_reg`), so that two register
+        // sources and the result fit the smallest pool.
+        let rd = match operand_reg {
+            Some(reg) => reg,
+            None => cx.def_reg(inst)?,
+        };
         let defined: Option<u32> = mask.iter().copied().find(|&e| source(e, n).is_some());
         let splat = defined
             .filter(|&e| mask.iter().all(|&m| source(m, n).is_none() || m == e))
             .and_then(lane_of);
         if let Some((Operand::Reg(v), lane)) = splat {
-            put(cx, mc::dup_elem(dst.arr(), d, v, lane));
+            put(cx, mc::dup_elem(dst.arr(), vr(rd), v, lane));
             return cx.finish(inst, rd);
         }
+        let d = V31;
         if mask.iter().any(|&m| source(m, n).is_none()) {
             put(cx, mc::movi_mask(VecBits::V128, d, 0));
         }
@@ -726,6 +737,7 @@ pub fn shuffle_vector<'a>(
                 }
             }
         }
+        put(cx, mc::orr_vec(VecBits::V128, vr(rd), d, d));
         return cx.finish(inst, rd);
     }
     let r = cx.def_mem(inst)?;

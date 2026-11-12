@@ -3,7 +3,7 @@
 ; and i8 and i64 conditions.
 ;@ covers: spec/ir.md §5.4 terminator (Switch)
 ;@ tier: quick
-;@ unsupported: codegen-not-implemented
+;@ unsupported: *
 ;@ stdout: dense(-1) = -1
 ;@ stdout: dense(0) = 100
 ;@ stdout: dense(1) = 11

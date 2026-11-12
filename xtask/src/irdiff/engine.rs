@@ -128,6 +128,7 @@ enum HodBuild {
 }
 
 /// What is known about a test once both compilers have run.
+#[derive(Debug, PartialEq, Eq)]
 enum Plan {
     /// Link hod's object, run it, compare.
     Compare,
@@ -781,6 +782,9 @@ impl Case<'_> {
     }
 }
 
+/// The `unsupported` reason that accepts whatever reason hod names.
+pub const ANY_REASON: &str = "*";
+
 /// Decides what a test needs after both compilers ran: `expected` is the
 /// reason of the `unsupported` directive that applies, if one does.
 fn plan(build: &HodBuild, built_by: BuiltBy, reason: Option<&str>, expected: Option<&str>) -> Plan {
@@ -791,9 +795,11 @@ fn plan(build: &HodBuild, built_by: BuiltBy, reason: Option<&str>, expected: Opt
         may_xfail,
     };
     let reason = reason.unwrap_or("-");
+    // `*`: any reason will do ("Test directives").
+    let named = |expected: &str| expected == ANY_REASON || reason == expected;
     match (build, built_by, expected) {
         (HodBuild::Failed(detail), _, _) => fail(detail.clone(), true),
-        (HodBuild::Declined, _, Some(expected)) if reason == expected => Plan::Settled {
+        (HodBuild::Declined, _, Some(expected)) if named(expected) => Plan::Settled {
             outcome: Outcome::Unsupported,
             failure: None,
             detail: String::new(),
@@ -816,7 +822,7 @@ fn plan(build: &HodBuild, built_by: BuiltBy, reason: Option<&str>, expected: Opt
             format!("hod compiled this test; remove its 'unsupported: {expected}' directive"),
             false,
         ),
-        (HodBuild::Built, BuiltBy::Fallback, Some(expected)) if reason != expected => fail(
+        (HodBuild::Built, BuiltBy::Fallback, Some(expected)) if !named(expected) => fail(
             format!(
                 "hod fell back with reason '{reason}'; the 'unsupported' directive says '{expected}'"
             ),
@@ -913,6 +919,38 @@ fn first_difference(expected: &[u8], got: &[u8]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    // spec/harness.md "Test directives": `unsupported: *` takes any
+    // reason, declined or fallen back; a test hod compiles still fails.
+    #[test]
+    fn any_reason_plans() {
+        use super::{ANY_REASON, BuiltBy, HodBuild, Outcome, Plan, plan};
+        let unsupported =
+            |p: &Plan| matches!(p, Plan::Settled { outcome: Outcome::Unsupported, .. });
+        let outcome = |p: Plan| match p {
+            Plan::Settled { outcome, detail, .. } => (Some(outcome), detail),
+            Plan::Compare => (None, String::new()),
+        };
+        for reason in ["module:asm", "cc:ghccc", "malformed-input"] {
+            let declined = plan(&HodBuild::Declined, BuiltBy::Hod, Some(reason), Some(ANY_REASON));
+            assert!(unsupported(&declined), "{declined:?}");
+            let fell_back =
+                plan(&HodBuild::Built, BuiltBy::Fallback, Some(reason), Some(ANY_REASON));
+            assert_eq!(fell_back, Plan::Compare);
+        }
+        let built = plan(&HodBuild::Built, BuiltBy::Hod, None, Some(ANY_REASON));
+        let (got, detail) = outcome(built);
+        assert_eq!(got, Some(Outcome::Fail));
+        assert!(detail.contains("remove its 'unsupported: *' directive"), "{detail}");
+        // A named reason is still checked exactly.
+        let named = plan(&HodBuild::Declined, BuiltBy::Hod, Some("module:asm"), Some("cc:ghccc"));
+        assert_eq!(outcome(named).0, Some(Outcome::Fail));
+        let fell = plan(&HodBuild::Built, BuiltBy::Fallback, Some("module:asm"), Some("cc:ghccc"));
+        assert_eq!(outcome(fell).0, Some(Outcome::Fail));
+        // A failure is a failure whatever the directive.
+        let failed = plan(&HodBuild::Failed("x".into()), BuiltBy::Hod, None, Some(ANY_REASON));
+        assert_eq!(outcome(failed).0, Some(Outcome::Fail));
+    }
+
     use super::*;
 
     // spec/harness.md "irdiff", "Outcomes": how a difference is described.

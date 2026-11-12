@@ -1,10 +1,13 @@
 //! DWARF 5 debug information writer (`spec/dwarf.md`).
 //!
-//! Implemented: the line table (§4) and the line policy (§5). The DIE
-//! writer (§6) is planned. Like `hod_eh`, this crate depends on `hod_obj`
-//! only: it writes sections and relocations into an `Object` from plain
-//! rows of its own types, which the caller fills from `hod_ir`'s debug
-//! tables and `hod_cg`'s per-function records.
+//! Implemented: the line table (§4), the line policy (§5), and the core
+//! of the DIE writer (§6.1 to §6.3): the fixed abbreviation table, the
+//! compile unit, `.debug_str`/`.debug_str_offsets`/`.debug_addr`/
+//! `.debug_rnglists`, and the global variables, namespaces, base and
+//! pointer types of a unit. The line writer takes plain rows of its own
+//! types; the DIE writer reads `hod_ir`'s debug tables directly
+//! ([`UnitPlan`]), with the addresses the code generator placed given as
+//! symbol references ([`GlobalAddr`], [`CodeSpan`]).
 //!
 //! ```
 //! use hod_dwarf::{FileTable, FunctionLines, Sequence, SourceLoc, Transition};
@@ -42,10 +45,16 @@
 
 use std::fmt;
 
+pub mod abbrev;
+mod die;
 mod leb;
 mod line;
 mod policy;
+mod strings;
 mod target;
+
+pub use die::{CodeSpan, DieSections, GlobalAddr, UnitInput, UnitPlan, write_debug_info};
+pub use strings::DebugStrings;
 
 pub use leb::{write_sleb, write_uleb};
 pub use line::{
@@ -57,8 +66,8 @@ pub use target::{
     for_arch,
 };
 
-/// Why a table was not written (`spec/dwarf.md` §4.6). The object is
-/// unchanged.
+/// Why a table was not written (`spec/dwarf.md` §4.6, §6.6). The object
+/// is unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The header has no directory or no file: DWARF 5 requires entry 0
@@ -120,6 +129,50 @@ pub enum Error {
     },
     /// A section would reach 4 GiB, beyond 32-bit DWARF.
     TooLarge,
+    /// [`write_debug_info`] was given no unit.
+    NoUnit,
+    /// A unit is not a `DICompileUnit` node.
+    NotACompileUnit {
+        /// The node.
+        node: u32,
+    },
+    /// A node's field names no node or a node of a kind the field does
+    /// not allow, or a namespace's scopes form a cycle.
+    BadReference {
+        /// The node.
+        node: u32,
+        /// LLVM's name of the field.
+        field: &'static str,
+    },
+    /// A construct the DIE writer does not write yet (`spec/dwarf.md`
+    /// §6.5), by description.
+    Unsupported {
+        /// The node.
+        node: u32,
+        /// What it is.
+        what: &'static str,
+    },
+    /// An address names a global-variable expression that is not one of
+    /// the unit's `globals`.
+    GlobalNotInUnit {
+        /// The `DIGlobalVariableExpression` node.
+        expr: u32,
+    },
+    /// Two addresses name one global-variable expression.
+    DuplicateGlobal {
+        /// The `DIGlobalVariableExpression` node.
+        expr: u32,
+    },
+    /// A symbol that is not a symbol of the object.
+    BadSymbol {
+        /// The symbol's index.
+        symbol: u32,
+    },
+    /// A code span with a negative addend, or whose end overflows.
+    BadSpan {
+        /// The span's index in the unit's `code`.
+        index: u32,
+    },
     /// `hod_obj` refused a section.
     Object(hod_obj::Error),
 }
@@ -146,7 +199,25 @@ impl fmt::Display for Error {
             Self::TransitionOutOfOrder { index } => {
                 write!(f, "transition {index}: offset below the previous transition's")
             }
-            Self::TooLarge => write!(f, "line table of 4 GiB or more"),
+            Self::TooLarge => write!(f, "a debug section of 4 GiB or more"),
+            Self::NoUnit => write!(f, "no compile unit to write"),
+            Self::NotACompileUnit { node } => write!(f, "debug node {node} is not a compile unit"),
+            Self::BadReference { node, field } => {
+                write!(f, "debug node {node}: `{field}` names no node of a kind it allows")
+            }
+            Self::Unsupported { node, what } => {
+                write!(f, "debug node {node}: {what} is not written yet")
+            }
+            Self::GlobalNotInUnit { expr } => {
+                write!(f, "debug node {expr}: an address for a global the unit does not list")
+            }
+            Self::DuplicateGlobal { expr } => {
+                write!(f, "debug node {expr}: two addresses for one global")
+            }
+            Self::BadSymbol { symbol } => write!(f, "symbol {symbol} is not in the object"),
+            Self::BadSpan { index } => {
+                write!(f, "code span {index}: a negative or overflowing range")
+            }
             Self::Object(e) => write!(f, "{e}"),
         }
     }

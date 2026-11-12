@@ -22,6 +22,7 @@ mod bt;
 mod cond;
 mod coverage;
 mod fixups;
+mod link;
 mod mem;
 mod mov;
 mod selftest;

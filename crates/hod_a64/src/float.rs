@@ -233,6 +233,9 @@ pub fn flags<'a>(cx: &mut FnCx<'a, A64>, compare: Inst<'a>) -> CgResult<FpCond> 
     let InstKind::FCmp { pred, lhs, rhs } = compare.kind() else {
         return cx.bug("flags of an instruction that is not an fcmp");
     };
+    if shape(cx, value_ty(cx, lhs)) == Shape::BFloat {
+        return crate::tail2::bfloat_flags(cx, compare, pred, lhs, rhs);
+    }
     let format = compare_format(cx, lhs)?;
     deferred_first(cx, compare, None)?;
     if matches!(pred, FloatPredicate::True | FloatPredicate::False) {
@@ -258,7 +261,8 @@ fn compare_format(cx: &FnCx<'_, A64>, operand: Value) -> CgResult<Option<Fp>> {
     match shape(cx, value_ty(cx, operand)) {
         Shape::Scalar(fp) => Ok(Some(fp)),
         Shape::Quad => Ok(None),
-        Shape::BFloat => unsupported(BFLOAT),
+        // WP-095: `flags` hands a `bfloat` compare to `tail2` first.
+        Shape::BFloat => Ok(Some(Fp::S)),
         _ => unsupported(VECTOR_FCMP),
     }
 }
@@ -491,7 +495,7 @@ pub fn binary<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, lhs: Value, rhs: Value
             };
             libcall(cx, inst, func, lhs, rhs)
         }
-        Shape::BFloat => unsupported(BFLOAT),
+        Shape::BFloat => crate::tail2::bfloat_binary(cx, inst, lhs, rhs),
         Shape::FpVec(arr) => {
             let word = match op {
                 Opcode::FAdd => mc::fadd_vec,
@@ -738,7 +742,7 @@ pub fn cast<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<
     let from = if from_gpr { None } else { Some(shape(cx, from_ty)) };
     let to = if to_gpr { None } else { Some(shape(cx, to_ty)) };
     if from == Some(Shape::BFloat) || to == Some(Shape::BFloat) {
-        return unsupported(BFLOAT);
+        return crate::tail2::bfloat_cast(cx, inst, arg);
     }
     if from == Some(Shape::Quad) || to == Some(Shape::Quad) {
         return quad_cast(cx, inst, arg, from, to);

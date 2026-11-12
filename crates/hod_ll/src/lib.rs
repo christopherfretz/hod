@@ -12,6 +12,7 @@ mod attrs;
 mod body;
 mod call;
 mod consts;
+mod debug;
 mod error;
 mod float;
 mod globals;
@@ -27,7 +28,7 @@ mod types;
 use hod_ir::{FnAttrsId, Module, SymId, TargetSpec, TypeId};
 
 pub use attrs::call_conv_keyword;
-pub use body::{BodyDebug, BodyParser, DebugRecordText, ParsedBody, parse_bodies};
+pub use body::{BodyParser, ParsedBody, parse_bodies};
 pub use error::{LlError, LlErrorKind};
 pub use lexer::{Lexer, MAX_SOURCE_BYTES, Tok, Token, unescape};
 pub use meta::{MdKind, MdNode, MdRef, MetadataIndex, NamedMetadata};
@@ -116,7 +117,7 @@ pub struct ModuleText<'a> {
     numbered_globals: Vec<(u32, SymId)>,
     groups: Vec<AttrGroup>,
     metadata: MetadataIndex,
-    symbol_dbg: Vec<(SymId, MdRef)>,
+    debug_map: debug::DebugMap,
 }
 
 impl<'a> ModuleText<'a> {
@@ -165,11 +166,10 @@ impl<'a> ModuleText<'a> {
         &self.metadata
     }
 
-    /// The `!dbg` attachments of global values, in file order: of
-    /// variables (`DIGlobalVariableExpression`) and of functions
-    /// (`DISubprogram`).
-    pub fn symbol_dbg(&self) -> &[(SymId, MdRef)] {
-        &self.symbol_dbg
+    /// What each numbered metadata node became, by position in the
+    /// metadata index.
+    pub(crate) fn debug_map(&self) -> &debug::DebugMap {
+        &self.debug_map
     }
 }
 

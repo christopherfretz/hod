@@ -13,6 +13,7 @@
 //! `body.rs` prints a function body.
 
 mod body;
+mod debug;
 mod module;
 #[cfg(test)]
 mod random_tests;
@@ -23,7 +24,7 @@ use std::io;
 
 use crate::body::Body;
 use crate::constant::{Const, ConstOp};
-use crate::ids::{ConstId, SymId, TypeId};
+use crate::ids::{ConstId, DiId, SymId, TypeId};
 use crate::module::Module;
 use crate::symbol::{Linkage, SymbolKind};
 use crate::types::TypeKind;
@@ -300,6 +301,8 @@ struct Writer<'a, W: Write + ?Sized> {
     attrs_used: Vec<bool>,
     /// `Part::Rest`: whether each COMDAT has all its members here.
     comdat_whole: Vec<bool>,
+    /// The `!dbg` attachments of variables, sorted by symbol.
+    global_dbg: Vec<(SymId, DiId)>,
 }
 
 impl<'a, W: Write + ?Sized> Writer<'a, W> {
@@ -316,6 +319,7 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
             decls: BTreeMap::new(),
             attrs_used: vec![false; m.fn_attrs_count()],
             comdat_whole: Vec::new(),
+            global_dbg: Vec::new(),
         }
     }
 

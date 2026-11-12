@@ -548,6 +548,24 @@ impl FunctionBuilder {
         }
     }
 
+    /// Sets the source location of the instructions appended since the
+    /// builder held `first` of them ([`FunctionBuilder::inst_count`]
+    /// then), and of no other: for a producer that learns an
+    /// instruction's location after the instructions it became (LLVM's
+    /// text writes `!dbg` last). The location of the instructions
+    /// appended from now on is not changed.
+    pub fn set_loc_since(&mut self, first: usize, loc: LocId) {
+        if loc == LocId::NONE && !self.with_locs {
+            return;
+        }
+        if !self.with_locs {
+            self.with_locs = true;
+            self.body.locs.resize(self.body.insts.len(), LocId::NONE);
+        }
+        let first = first.min(self.body.locs.len());
+        self.body.locs[first..].fill(loc);
+    }
+
     // ---- the checks and the bookkeeping every append shares ----
 
     /// The id the next instruction gets, if one can be appended.

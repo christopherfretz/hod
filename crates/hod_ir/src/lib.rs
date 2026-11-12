@@ -121,9 +121,9 @@ pub use classify::{
 pub use debug::names::*;
 pub use debug::node::{
     DiBasicType, DiBound, DiCompileUnit, DiCompositeType, DiConstant, DiDerivedType, DiEnumerator,
-    DiFieldValue, DiFile, DiGlobalVariable, DiGlobalVariableExpression, DiImportedEntity, DiKind,
+    DiFieldOut, DiFieldValue, DiFile, DiGlobalVariable, DiGlobalVariableExpression, DiImportedEntity, DiKind,
     DiLabel, DiLexicalBlock, DiLexicalBlockFile, DiLocalVariable, DiNamespace, DiNode, DiOther,
-    DiString, DiSubprogram, DiSubrange, DiSubroutineType, DiTemplateTypeParameter,
+    DiShape, DiString, DiSubprogram, DiSubrange, DiSubroutineType, DiTemplateTypeParameter,
     DiTemplateValueParameter, DiTuple,
 };
 pub use debug::{DebugInfo, DebugStats, DiLocation};

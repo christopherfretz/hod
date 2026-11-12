@@ -6,34 +6,13 @@
 use std::path::Path;
 
 use crate::irdiff::process::{self, End, Limits, Output};
-use crate::irdiff::{BuiltBy, Outcome as IrdiffOutcome, Record};
+use crate::irdiff::{BuiltBy, Failure, Outcome as IrdiffOutcome, Record};
 
 use super::Outcome;
 
 /// The decline reason of the stand-in for hod that the engine runs:
 /// `corpus capture`'s ([`crate::corpus::capture::DECLINE_SCRIPT`]).
 pub const DECLINED: &str = "corpus-admission";
-
-/// The reference `llc` configuration (`docs/VALIDATION.md` "Oracles"):
-/// `SelectionDAG` at `-O0`. The engine gives `llc` `-O0` and the rest; the
-/// wrapper adds the selector flags unless they are there already.
-pub const REFERENCE_FLAGS: [&str; 2] = ["-global-isel=0", "-fast-isel=0"];
-
-/// A shell script that runs `llc` in the reference configuration.
-pub fn reference_llc_script(llc: &Path) -> Result<String, String> {
-    let path = llc.to_string_lossy();
-    if path.contains('\'') {
-        return Err(format!("cannot quote the path '{path}' for a shell script"));
-    }
-    let flags = REFERENCE_FLAGS.join(" ");
-    Ok(format!(
-        "#!/bin/sh\n\
-         # Written by `cargo xtask roundtrip` (spec/harness.md \"roundtrip\"):\n\
-         # llc in the reference configuration, SelectionDAG at -O0.\n\
-         case \" $* \" in *\" -global-isel=\"*|*\" -fast-isel=\"*) exec '{path}' \"$@\" ;; esac\n\
-         exec '{path}' {flags} \"$@\"\n"
-    ))
-}
 
 /// Runs one tool on the printed module; `refused` is the outcome of a
 /// tool that ran and said no.
@@ -89,6 +68,7 @@ pub fn from_records(records: &[Record], linkers: usize) -> Result<(), (Outcome, 
         record.outcome == IrdiffOutcome::Fail
             && record.built_by == BuiltBy::Declined
             && record.reason.as_deref() == Some(DECLINED)
+            && record.failure == Some(Failure::Declined)
             && record.linker.is_some()
     };
     if let Some(record) = records.iter().find(|record| !passed(record)) {
@@ -103,36 +83,27 @@ pub fn from_records(records: &[Record], linkers: usize) -> Result<(), (Outcome, 
     }
 }
 
-/// What one record of the engine says went wrong. The engine reports
-/// trouble on the oracle's side as an ERROR whose detail starts with
-/// `oracle: ` and names the step (`spec/harness.md` "irdiff", "Outcomes").
+/// What one record of the engine says went wrong, from its kind of
+/// failure (`spec/harness.md` "irdiff", "Library"): only an ERROR of the
+/// oracle's side is about the printed module. The detail is the record's,
+/// without the engine's `oracle: `.
 fn classify(record: &Record) -> (Outcome, String) {
-    let detail = record.detail.clone();
-    let Some(step) =
-        detail.strip_prefix("oracle: ").filter(|_| record.outcome == IrdiffOutcome::Error)
-    else {
-        return (Outcome::HarnessError, format!("{}: {detail}", record.outcome.name()));
+    let detail = &record.detail;
+    let step = detail.strip_prefix("oracle: ").unwrap_or(detail).to_owned();
+    let outcome = match (record.outcome, record.failure) {
+        (IrdiffOutcome::Error, Some(Failure::ReferenceBuild)) => Outcome::LlcFailed,
+        (IrdiffOutcome::Error, Some(Failure::Link)) => Outcome::LinkFailed,
+        // The program's own crash, hang or flood is behaviour.
+        (IrdiffOutcome::Error, Some(Failure::Run | Failure::Comparison)) => {
+            Outcome::BehaviourDiffers
+        }
+        (IrdiffOutcome::Error, Some(Failure::Crash)) => Outcome::ToolCrashed,
+        (IrdiffOutcome::Error, Some(Failure::Timeout)) => Outcome::ToolTimedOut,
+        (outcome, _) => {
+            return (Outcome::HarnessError, format!("{}: {detail}", outcome.name()));
+        }
     };
-    let crashed = step.contains(" was terminated by signal ");
-    let timed_out = step.contains(" timed out after ");
-    let outcome = if step.starts_with("llc ") || step.starts_with("llc:") {
-        Outcome::LlcFailed
-    } else if step.starts_with("link with ") || step.starts_with("the link wrote no program") {
-        Outcome::LinkFailed
-    } else if step.starts_with("the program of llc's object ") {
-        // The program's own crash or hang is behaviour.
-        return (Outcome::BehaviourDiffers, step.to_owned());
-    } else {
-        return (Outcome::HarnessError, detail);
-    };
-    let outcome = if crashed {
-        Outcome::ToolCrashed
-    } else if timed_out {
-        Outcome::ToolTimedOut
-    } else {
-        outcome
-    };
-    (outcome, step.to_owned())
+    (outcome, step)
 }
 
 /// `text`, cut to at most `max` bytes at a character boundary.
@@ -155,6 +126,7 @@ mod tests {
         outcome: IrdiffOutcome,
         built_by: BuiltBy,
         linker: Option<&str>,
+        failure: Option<Failure>,
         detail: &str,
     ) -> Record {
         Record {
@@ -167,57 +139,57 @@ mod tests {
             reason: (built_by == BuiltBy::Declined).then(|| DECLINED.to_owned()),
             detail: detail.to_owned(),
             covers: None,
+            failure,
         }
     }
 
-    // spec/harness.md "roundtrip", "Outcomes": the engine's records name
-    // the step that failed on the oracle's side.
+    // spec/harness.md "roundtrip", "Outcomes": the kind of the engine's
+    // records decides, never their wording.
     #[test]
     fn records_map_to_outcomes() {
-        let declined = |linker| record(IrdiffOutcome::Fail, BuiltBy::Declined, Some(linker), "x");
+        let declined = |linker| {
+            let failure = Some(Failure::Declined);
+            record(IrdiffOutcome::Fail, BuiltBy::Declined, Some(linker), failure, "x")
+        };
         assert_eq!(from_records(&[declined("bfd"), declined("lld")], 2), Ok(()));
         assert_eq!(from_records(&[declined("bfd")], 2).unwrap_err().0, Outcome::HarnessError);
-        let error = |linker: Option<&str>, detail: &str| {
-            let records = [record(IrdiffOutcome::Error, BuiltBy::Nobody, linker, detail)];
+        let error = |linker: Option<&str>, failure: Option<Failure>, detail: &str| {
+            let records = [record(IrdiffOutcome::Error, BuiltBy::Nobody, linker, failure, detail)];
             from_records(&records, 1).unwrap_err()
         };
         let cases = [
-            ("oracle: llc failed (exit status 1): error: bad", Outcome::LlcFailed),
-            ("oracle: llc wrote no object", Outcome::LlcFailed),
-            ("oracle: llc was terminated by signal 11", Outcome::ToolCrashed),
-            ("oracle: llc timed out after 60 s", Outcome::ToolTimedOut),
-            ("oracle: link with bfd failed (exit status 1): undefined", Outcome::LinkFailed),
-            ("oracle: the link wrote no program", Outcome::LinkFailed),
-            ("oracle: link with mold was terminated by signal 6", Outcome::ToolCrashed),
-            (
-                "oracle: the program of llc's object ended with signal 11, the directives say exit status 0",
-                Outcome::BehaviourDiffers,
-            ),
-            ("oracle: the program of llc's object timed out after 10 s", Outcome::BehaviourDiffers),
-            ("oracle: the driver did not link with lld", Outcome::HarnessError),
-            ("cannot create '/x': denied", Outcome::HarnessError),
+            (Failure::ReferenceBuild, Outcome::LlcFailed),
+            (Failure::Link, Outcome::LinkFailed),
+            (Failure::Run, Outcome::BehaviourDiffers),
+            (Failure::Comparison, Outcome::BehaviourDiffers),
+            (Failure::Crash, Outcome::ToolCrashed),
+            (Failure::Timeout, Outcome::ToolTimedOut),
+            (Failure::Harness, Outcome::HarnessError),
+            (Failure::Witness, Outcome::HarnessError),
+            (Failure::HodBuild, Outcome::HarnessError),
         ];
-        for (detail, outcome) in cases {
-            let (got, text) = error(None, detail);
-            assert_eq!(got, outcome, "{detail}");
-            assert!(!text.starts_with("oracle: ") || outcome == Outcome::HarnessError, "{text}");
+        for (failure, outcome) in cases {
+            // The same words whatever the kind: the words do not decide.
+            let (got, text) = error(None, Some(failure), "oracle: llc failed (exit status 1)");
+            assert_eq!(got, outcome, "{failure:?}");
+            assert_eq!(text.starts_with("ERROR: "), outcome == Outcome::HarnessError, "{text}");
+            assert!(text.ends_with("llc failed (exit status 1)"), "{text}");
         }
-        assert!(
-            error(Some("mold"), "oracle: the link wrote no program").1.starts_with("with mold: ")
-        );
-        let skip = [record(IrdiffOutcome::Skip, BuiltBy::Nobody, None, "requires another LLVM")];
+        assert_eq!(error(None, None, "oracle: llc failed").0, Outcome::HarnessError);
+        let (_, text) =
+            error(Some("mold"), Some(Failure::Link), "oracle: the link wrote no program");
+        assert_eq!(text, "with mold: the link wrote no program");
+        let skip = [record(IrdiffOutcome::Skip, BuiltBy::Nobody, None, None, "another LLVM")];
         assert_eq!(from_records(&skip, 1).unwrap_err().0, Outcome::HarnessError);
-    }
-
-    // "What an entry goes through", step 5: the reference configuration.
-    #[test]
-    fn the_reference_llc_script() {
-        let script = reference_llc_script(Path::new("/usr/lib/llvm-22/bin/llc")).unwrap();
-        assert!(script.starts_with("#!/bin/sh\n"));
-        assert!(
-            script.contains("exec '/usr/lib/llvm-22/bin/llc' -global-isel=0 -fast-isel=0 \"$@\"")
-        );
-        assert!(reference_llc_script(Path::new("/it's/llc")).is_err());
+        // hod's side failing is not the stand-in's decline.
+        let hod = [record(
+            IrdiffOutcome::Fail,
+            BuiltBy::Nobody,
+            Some("bfd"),
+            Some(Failure::HodBuild),
+            "hod failed",
+        )];
+        assert_eq!(from_records(&hod, 1).unwrap_err().0, Outcome::HarnessError);
         assert_eq!(clip("häh", 2), "h...");
     }
 }

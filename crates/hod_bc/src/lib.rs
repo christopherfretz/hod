@@ -10,15 +10,18 @@
 
 mod attrs;
 pub mod bitstream;
+mod body;
 pub mod codes;
 mod consts;
 mod error;
+mod inst;
 mod module;
 mod raw;
 mod types;
 
+pub use body::{BodyReader, ReadBody, read_bodies};
 pub use error::{BcError, BcErrorKind, BcResult};
-pub use module::{BcModule, FunctionBits, ModuleBits, ReadOptions, read_module};
+pub use module::{BcModule, FunctionBits, Metadata, ModuleBits, ReadOptions, read_module};
 
 /// The limits an input may not pass (`spec/bc.md` §8); passing one is a
 /// [`BcErrorKind::Limit`] error.

@@ -164,6 +164,65 @@ pub mod md {
 }
 
 /// The `SYNC_SCOPE_NAME` record.
+/// `FUNCTION_BLOCK` records (`FunctionCodes`).
+pub mod func {
+    pub const DECLAREBLOCKS: u32 = 1;
+    pub const BINOP: u32 = 2;
+    pub const CAST: u32 = 3;
+    pub const GEP_OLD: u32 = 4;
+    pub const SELECT: u32 = 5;
+    pub const EXTRACTELT: u32 = 6;
+    pub const INSERTELT: u32 = 7;
+    pub const SHUFFLEVEC: u32 = 8;
+    pub const CMP: u32 = 9;
+    pub const RET: u32 = 10;
+    pub const BR: u32 = 11;
+    pub const SWITCH: u32 = 12;
+    pub const INVOKE: u32 = 13;
+    pub const UNREACHABLE: u32 = 15;
+    pub const PHI: u32 = 16;
+    pub const ALLOCA: u32 = 19;
+    pub const LOAD: u32 = 20;
+    pub const VAARG: u32 = 23;
+    pub const STORE_OLD: u32 = 24;
+    pub const EXTRACTVAL: u32 = 26;
+    pub const INSERTVAL: u32 = 27;
+    pub const CMP2: u32 = 28;
+    pub const VSELECT: u32 = 29;
+    pub const INBOUNDS_GEP_OLD: u32 = 30;
+    pub const INDIRECTBR: u32 = 31;
+    pub const DEBUG_LOC_AGAIN: u32 = 33;
+    pub const CALL: u32 = 34;
+    pub const DEBUG_LOC: u32 = 35;
+    pub const FENCE: u32 = 36;
+    pub const CMPXCHG_OLD: u32 = 37;
+    pub const ATOMICRMW_OLD: u32 = 38;
+    pub const RESUME: u32 = 39;
+    pub const LANDINGPAD_OLD: u32 = 40;
+    pub const LOADATOMIC: u32 = 41;
+    pub const STOREATOMIC_OLD: u32 = 42;
+    pub const GEP: u32 = 43;
+    pub const STORE: u32 = 44;
+    pub const STOREATOMIC: u32 = 45;
+    pub const CMPXCHG: u32 = 46;
+    pub const LANDINGPAD: u32 = 47;
+    pub const CLEANUPRET: u32 = 48;
+    pub const CATCHRET: u32 = 49;
+    pub const CATCHPAD: u32 = 50;
+    pub const CLEANUPPAD: u32 = 51;
+    pub const CATCHSWITCH: u32 = 52;
+    pub const OPERAND_BUNDLE: u32 = 55;
+    pub const UNOP: u32 = 56;
+    pub const CALLBR: u32 = 57;
+    pub const FREEZE: u32 = 58;
+    pub const ATOMICRMW: u32 = 59;
+    pub const BLOCKADDR_USERS: u32 = 60;
+    /// `DEBUG_RECORD_VALUE` (61) to `DEBUG_RECORD_VALUE_SIMPLE` (65), and
+    /// 66, which LLVM 22 adds: debug records, stepped over.
+    pub const DEBUG_RECORD_FIRST: u32 = 61;
+    pub const DEBUG_RECORD_LAST: u32 = 66;
+}
+
 pub const SYNC_SCOPE_NAME: u32 = 1;
 /// The `OPERAND_BUNDLE_TAG` record.
 pub const OPERAND_BUNDLE_TAG: u32 = 1;

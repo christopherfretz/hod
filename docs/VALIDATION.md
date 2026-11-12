@@ -116,11 +116,19 @@ Speed and memory are properties with tests, not goals with hopes.
 ## Gates
 
 **Every change (local, minutes):** `cargo xtask ci --quick`: format, clippy
-with warnings denied, L0 to L3, and the small L4 set.
+with warnings denied, L0 to L3, and the small L4 set. L2 is the round trip's
+quick tier: one corpus entry in 32, a fixed selection by path (about 200
+entries, some 20 s; `spec/harness.md` "roundtrip").
 
-**Merge to main (CI):** `cargo xtask ci`: everything above plus full L4, L5,
+**Merge to main (CI):** `cargo xtask ci`: everything above plus the whole
+corpus for L2, full L4, L5,
 and, from the milestones that enable them, L6 and L7 in strict mode for the
 constructs claimed as supported.
+
+Steps that need tools or build output (the oracle, the linkers, the IR
+corpus) pass with a notice without them, so a fresh checkout passes the
+quick gate; `HOD_REQUIRE_TOOLS=1` makes each missing one a failure
+(`spec/harness.md` "ci").
 
 **Release candidate:** all of the above with `HOD_REQUIRE_TOOLS=1`, on both
 targets, with every linker; L8 strict at the pass rate kiln achieves with

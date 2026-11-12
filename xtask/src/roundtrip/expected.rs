@@ -17,6 +17,9 @@ const HEADER: &str = "\
 # Fields: entry, outcome, detail (for the reader; not compared).
 ";
 
+/// The comment line that names the corpus the file is for.
+const CORPUS: &str = "# corpus: ";
+
 /// What the file says of one entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Expected {
@@ -27,6 +30,9 @@ pub struct Expected {
 /// The file: entry (its path in the corpus) to what it is expected to do.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Expectations {
+    /// The corpus the file is for (`roundtrip::corpus_identity`), from
+    /// its `# corpus: ` line; `None` without one.
+    pub corpus: Option<String>,
     pub entries: BTreeMap<String, Expected>,
 }
 
@@ -84,7 +90,14 @@ impl Expectations {
     /// Reads the file's text.
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut entries = BTreeMap::new();
+        let mut corpus = None;
         for (number, line) in text.lines().enumerate() {
+            if let Some(name) = line.strip_prefix(CORPUS) {
+                if corpus.replace(name.trim().to_owned()).is_some() {
+                    return Err(format!("line {}: a second '{}' line", number + 1, CORPUS.trim()));
+                }
+                continue;
+            }
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
@@ -102,12 +115,15 @@ impl Expectations {
                 return Err(format!("line {}: a second line for '{entry}'", number + 1));
             }
         }
-        Ok(Self { entries })
+        Ok(Self { corpus, entries })
     }
 
     /// The file's text: the header, then one line per entry in order.
     pub fn text(&self) -> String {
         let mut out = HEADER.to_owned();
+        if let Some(corpus) = &self.corpus {
+            let _ = writeln!(out, "{CORPUS}{corpus}");
+        }
         for (entry, expected) in &self.entries {
             let _ = writeln!(
                 out,
@@ -194,6 +210,12 @@ mod tests {
         assert_eq!(read.outcome("kiln/llvm22/c.ll"), None);
         file.update("kiln/llvm22/b.ll", Outcome::Pass, "-");
         assert_eq!(file.entries.len(), 1);
+        // The corpus it is for.
+        file.corpus = Some("2 entries, MANIFEST.tsv sha256 ab".to_owned());
+        let text = file.text();
+        assert!(text.contains("\n# corpus: 2 entries, MANIFEST.tsv sha256 ab\nkiln/"), "{text}");
+        assert_eq!(Expectations::parse(&text).unwrap(), file);
+        assert!(Expectations::parse("# corpus: a\n# corpus: b\n").is_err());
 
         assert!(Expectations::parse("a\tpass\t-\n").unwrap_err().contains("not a failing"));
         assert!(Expectations::parse("a\tnonsense\t-\n").is_err());

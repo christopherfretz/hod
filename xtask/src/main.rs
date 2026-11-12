@@ -61,6 +61,11 @@ fn ci(quick: bool) -> ExitCode {
         eprintln!("ci: irdiff FAILED");
         return ExitCode::FAILURE;
     }
+    eprintln!("ci: roundtrip");
+    if !roundtrip_gate(quick) {
+        eprintln!("ci: roundtrip FAILED");
+        return ExitCode::FAILURE;
+    }
     // The full gate adds the cross-linking layer and the later ones as they
     // land (docs/VALIDATION.md "Gates").
     eprintln!("ci: ok");
@@ -99,6 +104,30 @@ fn irdiff_gate(quick: bool) -> bool {
 #[cfg(not(unix))]
 fn irdiff_gate(_: bool) -> bool {
     eprintln!("ci: irdiff is only available on Unix hosts; skipped");
+    true
+}
+
+/// The L2 step of the gate (spec/harness.md "roundtrip", "In the gate"):
+/// the quick tier of the corpus, or all of it.
+#[cfg(unix)]
+fn roundtrip_gate(quick: bool) -> bool {
+    let mut options = xtask::roundtrip::Options::for_workspace();
+    options.quick = quick;
+    match xtask::roundtrip::gate(&options) {
+        Ok(text) => {
+            eprint!("{text}");
+            true
+        }
+        Err(text) => {
+            eprint!("{text}");
+            false
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn roundtrip_gate(_: bool) -> bool {
+    eprintln!("ci: roundtrip is only available on Unix hosts; skipped");
     true
 }
 

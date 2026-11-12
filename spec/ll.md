@@ -893,10 +893,17 @@ A body's debug information is in the body itself (§11.9).
   symbol. The rest of the body is still read and checked, with the
   stand-in the table gives, so an error after an unsupported construct
   is still an error.
-- A parser keeps its tables from one function to the next; with
-  `recycle`, the next body is built in the storage of the last one
-  (`spec/ir.md` §5.1), so peak memory follows the largest function.
-  `parse_bodies` does that for every function, in file order.
+- A parser keeps its tables from one function to the next, and builds
+  every body in storage of its own, which grows to the largest function
+  (`spec/ir.md` §5.1); `parse` returns a copy of exactly the size of
+  the body's tables (one allocation per table, no spare capacity in the
+  bodies a consumer keeps; WP-096), except for a body whose tables take
+  `HAND_OVER_BYTES` (256 KiB) or more: that one is the storage itself,
+  handed over, so that a large body is not held twice, and the next body
+  is built in new storage. `recycle` gives the parser a body for that
+  storage while it has none. `parse_bodies` hands out each body
+  in the storage itself, in file order, so peak memory follows the
+  largest function.
 - **Parallel parsing.** `spec/ir.md` §5.1 has bodies parsed in parallel
   against a frozen `&Module`. That is not implementable on `hod_ir` as it
   is: there is no lookup-only access to the type and constant tables,

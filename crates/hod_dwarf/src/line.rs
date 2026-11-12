@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use hod_obj::elf::{SHF_MERGE, SHF_STRINGS, SHT_PROGBITS};
-use hod_obj::{Object, SectionId, SectionKind, SymbolId};
+use hod_obj::{Arch, Object, SectionId, SectionKind, SymbolId};
 
 use crate::Error;
 use crate::leb::{write_sleb, write_uleb};
@@ -68,6 +68,10 @@ pub struct FileEntry<'a> {
     /// The file's MD5 (`DW_LNCT_MD5`), written only when every file has
     /// one.
     pub md5: Option<[u8; 16]>,
+    /// The file's embedded source text (LLVM's `DW_LNCT_LLVM_source`),
+    /// written for every file, as an empty string for a file without
+    /// one, when some file has one.
+    pub source: Option<&'a [u8]>,
 }
 
 /// The directory and file tables of a line-table unit. Entry 0 of each
@@ -105,6 +109,8 @@ const DW_LNE_SET_ADDRESS: u8 = 0x02;
 const DW_LNCT_PATH: u8 = 0x1;
 const DW_LNCT_DIRECTORY_INDEX: u8 = 0x2;
 const DW_LNCT_MD5: u8 = 0x5;
+/// LLVM's `DW_LNCT_LLVM_source`: a file's embedded source text.
+const DW_LNCT_LLVM_SOURCE: u64 = 0x2001;
 const DW_FORM_LINE_STRP: u8 = 0x1f;
 const DW_FORM_UDATA: u8 = 0x0f;
 const DW_FORM_DATA16: u8 = 0x1e;
@@ -206,59 +212,177 @@ fn check_sequence(seq: &Sequence<'_>, files: usize, min: u32) -> Result<(), Erro
     Ok(())
 }
 
-/// Appends one sequence's program (§4.5). Relocations are pushed with
-/// offsets into `out`.
-fn write_sequence(
-    out: &mut Vec<u8>,
-    relocs: &mut Vec<Pending>,
-    target: &LineTarget,
-    seq: &Sequence<'_>,
-) -> Result<(), Error> {
-    let Some(first) = seq.rows.first() else { return Ok(()) };
-    let min = u32::from(target.min_inst_length);
-    let (mut file, mut line, mut column, mut stmt) = (1u32, 1u32, 0u16, true);
-    let mut at = first.offset;
-    for (i, r) in seq.rows.iter().enumerate() {
-        if r.file != file {
-            file = r.file;
-            out.push(DW_LNS_SET_FILE);
-            write_uleb(out, u64::from(file));
-        }
-        if r.column != column {
-            column = r.column;
-            out.push(DW_LNS_SET_COLUMN);
-            write_uleb(out, u64::from(column));
-        }
-        let is_stmt = r.flags & flags::IS_STMT != 0;
-        if is_stmt != stmt {
-            stmt = is_stmt;
-            out.push(DW_LNS_NEGATE_STMT);
-        }
-        if r.flags & flags::PROLOGUE_END != 0 {
-            out.push(DW_LNS_SET_PROLOGUE_END);
-        }
-        if r.flags & flags::EPILOGUE_BEGIN != 0 {
-            out.push(DW_LNS_SET_EPILOGUE_BEGIN);
-        }
-        let delta = i64::from(r.line) - i64::from(line);
-        if i == 0 {
-            out.extend_from_slice(&[0, 1 + target.address_size, DW_LNE_SET_ADDRESS]);
-            let offset = u32::try_from(out.len()).map_err(|_| Error::TooLarge)?;
-            relocs.push(Pending {
-                offset,
-                symbol: Some(seq.symbol),
-                addend: seq.addend + i64::from(first.offset),
-            });
-            out.extend_from_slice(&[0; 8][..usize::from(target.address_size)]);
-            write_advance(out, delta, 0);
-        } else {
-            write_advance(out, delta, u64::from((r.offset - at) / min));
-        }
-        line = r.line;
-        at = r.offset;
+/// An address field of an encoded program: its offset in the program's
+/// bytes, and what it is relative to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AddrField {
+    offset: u32,
+    symbol: SymbolId,
+    addend: i64,
+}
+
+/// The program of one line-table unit (`spec/dwarf.md` §4.5), encoded
+/// one sequence at a time (§7.1).
+///
+/// A sequence's bytes depend only on its own rows (each sequence starts
+/// from the state machine's initial state), and its one address is a
+/// relocation recorded relative to the program's start. So a worker can
+/// encode the sequences of its functions into a program of its own and
+/// the merge can [`append`](LineProgram::append) the programs in module
+/// order: the bytes are those of encoding every sequence into one
+/// program.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineProgram {
+    target: &'static LineTarget,
+    bytes: Vec<u8>,
+    addrs: Vec<AddrField>,
+}
+
+impl LineProgram {
+    /// An empty program for `arch`.
+    pub fn new(arch: Arch) -> Self {
+        Self { target: for_arch(arch), bytes: Vec::new(), addrs: Vec::new() }
     }
-    write_end(out, u64::from((seq.size - at) / min));
-    Ok(())
+
+    /// An empty program with room for about `rows` rows in `seqs`
+    /// sequences.
+    pub fn with_capacity(arch: Arch, rows: usize, seqs: usize) -> Self {
+        Self {
+            target: for_arch(arch),
+            bytes: Vec::with_capacity(rows * 5 + seqs * 16),
+            addrs: Vec::with_capacity(seqs),
+        }
+    }
+
+    /// The architecture.
+    pub fn arch(&self) -> Arch {
+        self.target.arch
+    }
+
+    /// Empties the program, keeping its allocations.
+    pub fn clear(&mut self) {
+        self.bytes.clear();
+        self.addrs.clear();
+    }
+
+    /// The encoded bytes.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// The number of sequences written (a sequence without rows writes
+    /// nothing and is not counted).
+    pub fn sequence_count(&self) -> usize {
+        self.addrs.len()
+    }
+
+    /// Appends `seq`'s program, for a header of `files` files. Its
+    /// `order` is used only to name it in an error: sequences are in the
+    /// order they are pushed.
+    ///
+    /// # Errors
+    /// `BadFile`, `RowOutOfOrder`, `RowBeyondEnd`, `Unaligned`,
+    /// `BadFlags` (§4.6), `TooLarge`; the program is then unchanged.
+    pub fn push(&mut self, files: usize, seq: &Sequence<'_>) -> Result<(), Error> {
+        check_sequence(seq, files, u32::from(self.target.min_inst_length))?;
+        let len = self.bytes.len();
+        let result = self.encode(seq);
+        if result.is_err() {
+            self.bytes.truncate(len);
+        }
+        result
+    }
+
+    /// Appends `other`'s sequences after this program's.
+    ///
+    /// # Errors
+    /// `TooLarge`; `ArchMismatch` if the two are for different
+    /// architectures. The program is then unchanged.
+    pub fn append(&mut self, other: &LineProgram) -> Result<(), Error> {
+        if other.target.arch != self.target.arch {
+            return Err(Error::ArchMismatch);
+        }
+        let base = u32::try_from(self.bytes.len()).map_err(|_| Error::TooLarge)?;
+        if u32::try_from(self.bytes.len() + other.bytes.len()).is_err() {
+            return Err(Error::TooLarge);
+        }
+        self.bytes.extend_from_slice(&other.bytes);
+        self.addrs.extend(other.addrs.iter().map(|a| AddrField { offset: base + a.offset, ..*a }));
+        Ok(())
+    }
+
+    /// Appends one checked sequence (§4.5).
+    fn encode(&mut self, seq: &Sequence<'_>) -> Result<(), Error> {
+        let Some(first) = seq.rows.first() else { return Ok(()) };
+        let target = self.target;
+        let out = &mut self.bytes;
+        let min = u32::from(target.min_inst_length);
+        let (mut file, mut line, mut column, mut stmt) = (1u32, 1u32, 0u16, true);
+        let mut at = first.offset;
+        let mut addr = None;
+        for (i, r) in seq.rows.iter().enumerate() {
+            if r.file != file {
+                file = r.file;
+                out.push(DW_LNS_SET_FILE);
+                write_uleb(out, u64::from(file));
+            }
+            if r.column != column {
+                column = r.column;
+                out.push(DW_LNS_SET_COLUMN);
+                write_uleb(out, u64::from(column));
+            }
+            let is_stmt = r.flags & flags::IS_STMT != 0;
+            if is_stmt != stmt {
+                stmt = is_stmt;
+                out.push(DW_LNS_NEGATE_STMT);
+            }
+            if r.flags & flags::PROLOGUE_END != 0 {
+                out.push(DW_LNS_SET_PROLOGUE_END);
+            }
+            if r.flags & flags::EPILOGUE_BEGIN != 0 {
+                out.push(DW_LNS_SET_EPILOGUE_BEGIN);
+            }
+            let delta = i64::from(r.line) - i64::from(line);
+            if i == 0 {
+                out.extend_from_slice(&[0, 1 + target.address_size, DW_LNE_SET_ADDRESS]);
+                addr = Some(out.len());
+                out.extend_from_slice(&[0; 8][..usize::from(target.address_size)]);
+                write_advance(out, delta, 0);
+            } else {
+                write_advance(out, delta, u64::from((r.offset - at) / min));
+            }
+            line = r.line;
+            at = r.offset;
+        }
+        write_end(out, u64::from((seq.size - at) / min));
+        if u32::try_from(out.len()).is_err() {
+            return Err(Error::TooLarge);
+        }
+        if let Some(offset) = addr {
+            let addend = seq.addend + i64::from(first.offset);
+            self.addrs.push(AddrField { offset: offset as u32, symbol: seq.symbol, addend });
+        }
+        Ok(())
+    }
+}
+
+/// One line-table unit for [`write_debug_line_units`]: its header and
+/// its encoded program.
+#[derive(Clone, Copy, Debug)]
+pub struct LineUnit<'a> {
+    /// The directories and files.
+    pub header: LineHeader<'a>,
+    /// The sequences.
+    pub program: &'a LineProgram,
+}
+
+/// What [`write_debug_line_units`] made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineUnits {
+    /// The sections.
+    pub sections: LineSections,
+    /// The offset of each unit in `.debug_line`: its `DW_AT_stmt_list`.
+    pub offsets: Vec<u32>,
 }
 
 /// The line strings: each distinct name once, in order of first use
@@ -285,9 +409,8 @@ impl<'a> LineStrings<'a> {
     }
 }
 
-/// Checks the whole input (§4.6) and returns the sequences' indices in
-/// `order`.
-fn check(header: &LineHeader<'_>, seqs: &[Sequence<'_>], min: u32) -> Result<Vec<u32>, Error> {
+/// Checks a header (§4.6).
+fn check_header(header: &LineHeader<'_>) -> Result<(), Error> {
     if header.dirs.is_empty() || header.files.is_empty() {
         return Err(Error::NoPrimary);
     }
@@ -295,13 +418,20 @@ fn check(header: &LineHeader<'_>, seqs: &[Sequence<'_>], min: u32) -> Result<Vec
         if f.dir as usize >= header.dirs.len() {
             return Err(Error::BadDirectory { file: i as u32 });
         }
-        if f.name.contains(&0) {
+        if f.name.contains(&0) || f.source.is_some_and(|s| s.contains(&0)) {
             return Err(Error::NulInName);
         }
     }
     if header.dirs.iter().any(|d| d.contains(&0)) {
         return Err(Error::NulInName);
     }
+    Ok(())
+}
+
+/// Checks the whole input of [`write_debug_line`] (§4.6) and returns
+/// the sequences' indices in `order`.
+fn check(header: &LineHeader<'_>, seqs: &[Sequence<'_>], min: u32) -> Result<Vec<u32>, Error> {
+    check_header(header)?;
     for seq in seqs {
         check_sequence(seq, header.files.len(), min)?;
     }
@@ -315,6 +445,73 @@ fn check(header: &LineHeader<'_>, seqs: &[Sequence<'_>], min: u32) -> Result<Vec
         }
     }
     Ok(sorted)
+}
+
+/// Appends one unit's header (§4.1) to `out`, with its string fields as
+/// pending relocations.
+fn write_header<'a>(
+    out: &mut Vec<u8>,
+    relocs: &mut Vec<Pending>,
+    strings: &mut LineStrings<'a>,
+    target: &LineTarget,
+    header: &LineHeader<'a>,
+) -> Result<usize, Error> {
+    let start = out.len();
+    out.extend_from_slice(&[0; 4]); // unit_length, patched by the caller
+    out.extend_from_slice(&5u16.to_le_bytes());
+    out.push(target.address_size);
+    out.push(0); // segment_selector_size
+    out.extend_from_slice(&[0; 4]); // header_length, patched below
+    let header_start = out.len();
+    out.push(target.min_inst_length);
+    out.push(1); // maximum_operations_per_instruction
+    out.push(1); // default_is_stmt
+    out.push(LINE_BASE as u8);
+    out.push(LINE_RANGE);
+    out.push(OPCODE_BASE);
+    out.extend_from_slice(&STANDARD_OPCODE_LENGTHS);
+    let mut strp = |out: &mut Vec<u8>, s: &'a [u8]| -> Result<(), Error> {
+        let at = strings.add(s)?;
+        let offset = u32::try_from(out.len()).map_err(|_| Error::TooLarge)?;
+        relocs.push(Pending { offset, symbol: None, addend: i64::from(at) });
+        out.extend_from_slice(&[0; 4]);
+        Ok(())
+    };
+    out.extend_from_slice(&[1, DW_LNCT_PATH, DW_FORM_LINE_STRP]);
+    write_uleb(out, header.dirs.len() as u64);
+    for d in header.dirs {
+        strp(out, d)?;
+    }
+    let md5 = header.files.iter().all(|f| f.md5.is_some());
+    let source = header.files.iter().any(|f| f.source.is_some());
+    out.push(2 + u8::from(md5) + u8::from(source));
+    out.extend_from_slice(&[
+        DW_LNCT_PATH,
+        DW_FORM_LINE_STRP,
+        DW_LNCT_DIRECTORY_INDEX,
+        DW_FORM_UDATA,
+    ]);
+    if md5 {
+        out.extend_from_slice(&[DW_LNCT_MD5, DW_FORM_DATA16]);
+    }
+    if source {
+        write_uleb(out, DW_LNCT_LLVM_SOURCE);
+        out.push(DW_FORM_LINE_STRP);
+    }
+    write_uleb(out, header.files.len() as u64);
+    for f in header.files {
+        strp(out, f.name)?;
+        write_uleb(out, u64::from(f.dir));
+        if let Some(sum) = f.md5.filter(|_| md5) {
+            out.extend_from_slice(&sum);
+        }
+        if source {
+            strp(out, f.source.unwrap_or(b""))?;
+        }
+    }
+    let header_length = u32::try_from(out.len() - header_start).map_err(|_| Error::TooLarge)?;
+    out[header_start - 4..header_start].copy_from_slice(&header_length.to_le_bytes());
+    Ok(start)
 }
 
 /// Writes one DWARF 5 line-table unit into new `.debug_line` and
@@ -337,74 +534,73 @@ pub fn write_debug_line(
 
     // Check everything before writing anything.
     let sorted = check(header, seqs, min)?;
+    let rows: usize = seqs.iter().map(|s| s.rows.len()).sum();
+    let mut program = LineProgram::with_capacity(obj.arch(), rows, seqs.len());
+    for &i in &sorted {
+        program.encode(&seqs[i as usize])?;
+    }
+    let unit = LineUnit { header: *header, program: &program };
+    Ok(write_debug_line_units(obj, &[unit])?.sections)
+}
+
+/// Writes line-table units, one after another, into new `.debug_line`
+/// and `.debug_line_str` sections of `obj` (`spec/dwarf.md` §1.2, §4):
+/// each unit's header, then its encoded program, with the relocations of
+/// both. The line strings are pooled across the units. On an error `obj`
+/// is unchanged.
+///
+/// # Errors
+/// The header errors of §4.6 (`NoPrimary`, `BadDirectory`,
+/// `NulInName`), `TooLarge`, `ArchMismatch` for a program of another
+/// architecture than `obj`'s, and `Object`.
+pub fn write_debug_line_units(
+    obj: &mut Object,
+    units: &[LineUnit<'_>],
+) -> Result<LineUnits, Error> {
+    let target = for_arch(obj.arch());
+    for u in units {
+        check_header(&u.header)?;
+        if u.program.target.arch != target.arch {
+            return Err(Error::ArchMismatch);
+        }
+    }
     if obj.section_count() >= u32::MAX - 3 {
         return Err(Error::Object(hod_obj::Error::TooLarge(hod_obj::Limit::Sections)));
     }
 
     // The strings.
-    let names = header.dirs.len() + header.files.len();
-    let name_bytes = header.dirs.iter().map(|d| d.len()).sum::<usize>()
-        + header.files.iter().map(|f| f.name.len()).sum::<usize>();
+    let names: usize = units.iter().map(|u| u.header.dirs.len() + 2 * u.header.files.len()).sum();
+    let name_bytes: usize = units
+        .iter()
+        .map(|u| {
+            u.header.dirs.iter().map(|d| d.len()).sum::<usize>()
+                + u.header.files.iter().map(|f| f.name.len()).sum::<usize>()
+        })
+        .sum();
     let mut strings = LineStrings::new(names, name_bytes);
 
-    // The header (§4.1).
-    let rows: usize = seqs.iter().map(|s| s.rows.len()).sum();
-    let mut out = Vec::with_capacity(64 + names * 22 + seqs.len() * 20 + rows * 5);
-    let mut relocs = Vec::with_capacity(names + seqs.len());
-    out.extend_from_slice(&[0; 4]); // unit_length, patched below
-    out.extend_from_slice(&5u16.to_le_bytes());
-    out.push(target.address_size);
-    out.push(0); // segment_selector_size
-    out.extend_from_slice(&[0; 4]); // header_length, patched below
-    let header_start = out.len();
-    out.push(target.min_inst_length);
-    out.push(1); // maximum_operations_per_instruction
-    out.push(1); // default_is_stmt
-    out.push(LINE_BASE as u8);
-    out.push(LINE_RANGE);
-    out.push(OPCODE_BASE);
-    out.extend_from_slice(&STANDARD_OPCODE_LENGTHS);
-    let mut strp = |out: &mut Vec<u8>, relocs: &mut Vec<Pending>, s| -> Result<(), Error> {
-        let at = strings.add(s)?;
-        relocs.push(Pending { offset: out.len() as u32, symbol: None, addend: i64::from(at) });
-        out.extend_from_slice(&[0; 4]);
-        Ok(())
-    };
-    out.extend_from_slice(&[1, DW_LNCT_PATH, DW_FORM_LINE_STRP]);
-    write_uleb(&mut out, header.dirs.len() as u64);
-    for d in header.dirs {
-        strp(&mut out, &mut relocs, d)?;
+    let bytes: usize = units.iter().map(|u| u.program.bytes.len()).sum();
+    let addrs: usize = units.iter().map(|u| u.program.addrs.len()).sum();
+    let mut out = Vec::with_capacity(units.len() * 64 + names * 22 + bytes);
+    let mut relocs = Vec::with_capacity(names + addrs);
+    let mut offsets = Vec::with_capacity(units.len());
+    for u in units {
+        let start = write_header(&mut out, &mut relocs, &mut strings, target, &u.header)?;
+        let base = u32::try_from(out.len()).map_err(|_| Error::TooLarge)?;
+        out.extend_from_slice(&u.program.bytes);
+        relocs.extend(u.program.addrs.iter().map(|a| Pending {
+            offset: base.wrapping_add(a.offset),
+            symbol: Some(a.symbol),
+            addend: a.addend,
+        }));
+        let unit_length = u32::try_from(out.len() - start - 4)
+            .ok()
+            .filter(|&n| n < 0xffff_fff0)
+            .ok_or(Error::TooLarge)?;
+        out[start..start + 4].copy_from_slice(&unit_length.to_le_bytes());
+        offsets.push(start as u32);
     }
-    let md5 = header.files.iter().all(|f| f.md5.is_some());
-    out.extend_from_slice(&[
-        if md5 { 3 } else { 2 },
-        DW_LNCT_PATH,
-        DW_FORM_LINE_STRP,
-        DW_LNCT_DIRECTORY_INDEX,
-        DW_FORM_UDATA,
-    ]);
-    if md5 {
-        out.extend_from_slice(&[DW_LNCT_MD5, DW_FORM_DATA16]);
-    }
-    write_uleb(&mut out, header.files.len() as u64);
-    for f in header.files {
-        strp(&mut out, &mut relocs, f.name)?;
-        write_uleb(&mut out, u64::from(f.dir));
-        if let Some(sum) = f.md5.filter(|_| md5) {
-            out.extend_from_slice(&sum);
-        }
-    }
-    let header_length = u32::try_from(out.len() - header_start).map_err(|_| Error::TooLarge)?;
-    out[8..12].copy_from_slice(&header_length.to_le_bytes());
-
-    // The program (§4.5).
-    for &i in &sorted {
-        write_sequence(&mut out, &mut relocs, target, &seqs[i as usize])?;
-    }
-    let unit_length =
-        u32::try_from(out.len() - 4).ok().filter(|&n| n < 0xffff_fff0).ok_or(Error::TooLarge)?;
-    out[..4].copy_from_slice(&unit_length.to_le_bytes());
-    if u32::try_from(strings.data.len()).is_err() {
+    if u32::try_from(out.len()).is_err() || u32::try_from(strings.data.len()).is_err() {
         return Err(Error::TooLarge);
     }
 
@@ -427,7 +623,7 @@ pub fn write_debug_line(
         };
         obj.add_relocation(line, u64::from(r.offset), kind, symbol, r.addend);
     }
-    Ok(LineSections { line, line_str })
+    Ok(LineUnits { sections: LineSections { line, line_str }, offsets })
 }
 
 /// Builds a line-table header from DWARF file descriptions with `llc`'s
@@ -443,11 +639,21 @@ pub struct FileTable<'a> {
 impl<'a> FileTable<'a> {
     /// A table whose directory 0 is `comp_dir` and file 0 `primary`.
     pub fn new(comp_dir: &'a [u8], primary: &'a [u8], md5: Option<[u8; 16]>) -> Self {
+        Self::new_with_source(comp_dir, primary, md5, None)
+    }
+
+    /// [`FileTable::new`], with the primary file's embedded source.
+    pub fn new_with_source(
+        comp_dir: &'a [u8],
+        primary: &'a [u8],
+        md5: Option<[u8; 16]>,
+        source: Option<&'a [u8]>,
+    ) -> Self {
         let mut file_index = HashMap::new();
         file_index.insert((0, primary), 0);
         Self {
             dirs: vec![comp_dir],
-            files: vec![FileEntry { name: primary, dir: 0, md5 }],
+            files: vec![FileEntry { name: primary, dir: 0, md5, source }],
             dir_index: HashMap::new(),
             file_index,
         }
@@ -455,6 +661,18 @@ impl<'a> FileTable<'a> {
 
     /// The index of the file `filename` in `directory`, added if it is new.
     pub fn add(&mut self, directory: &'a [u8], filename: &'a [u8], md5: Option<[u8; 16]>) -> u32 {
+        self.add_with_source(directory, filename, md5, None)
+    }
+
+    /// [`FileTable::add`], with the file's embedded source. A file added
+    /// again keeps what it was first added with.
+    pub fn add_with_source(
+        &mut self,
+        directory: &'a [u8],
+        filename: &'a [u8],
+        md5: Option<[u8; 16]>,
+        source: Option<&'a [u8]>,
+    ) -> u32 {
         let comp_dir = self.dirs[0];
         if directory == comp_dir && self.file_index.contains_key(&(0, filename)) {
             return self.file_index[&(0, filename)];
@@ -483,7 +701,7 @@ impl<'a> FileTable<'a> {
         let next = self.files.len() as u32;
         let at = *self.file_index.entry((dir, name)).or_insert(next);
         if at == next {
-            self.files.push(FileEntry { name, dir, md5 });
+            self.files.push(FileEntry { name, dir, md5, source });
         }
         at
     }

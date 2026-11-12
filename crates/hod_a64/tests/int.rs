@@ -163,8 +163,8 @@ fn narrow_forms_are_short() {
 }
 
 /// What the group does not lower, by name: `addrspacecast` (`classify`
-/// rejects its non-zero address spaces anyway), and `i128` (class `Mem`,
-/// WP-040), which the dispatch sends to `aggr`.
+/// rejects its non-zero address spaces anyway), and a `Mem` division wider
+/// than 128 bits, which the dispatch sends to `aggr` (WP-040).
 #[test]
 fn what_is_not_lowered_is_refused_by_name() {
     assert_refused(&[
@@ -173,7 +173,10 @@ fn what_is_not_lowered_is_refused_by_name() {
              %r = ptrtoint ptr addrspace(1) %q to i64\n  ret i64 %r\n}\n",
             int::ADDRSPACECAST,
         ),
-        ("define i128 @f(i128 %a) {\n  %r = add i128 %a, 1\n  ret i128 %r\n}\n", aggr::BINARY),
+        (
+            "define i256 @f(i256 %a, i256 %b) {\n  %r = udiv i256 %a, %b\n  ret i256 %r\n}\n",
+            aggr::WIDE_DIVISION,
+        ),
     ]);
     // Everything else of the group compiles.
     compile_ll("define i64 @f(i64 %a) {\n  %r = add i64 %a, 1\n  ret i64 %r\n}\n").unwrap();

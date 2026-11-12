@@ -487,8 +487,6 @@ fn a_dead_volatile_load_is_emitted_once() {
 #[test]
 fn the_other_forms_are_refused_by_name() {
     assert_refused(&[
-        ("define double @f(ptr %p) { %r = load double, ptr %p\n ret double %r }", mem::LOAD_FPR),
-        ("define void @f(ptr %p, float %x) { store float %x, ptr %p\n ret void }", mem::STORE_FPR),
         (
             "define i64 @f(ptr %p) { %r = load atomic i64, ptr %p seq_cst, align 8\n ret i64 %r }",
             target::ATOMIC,

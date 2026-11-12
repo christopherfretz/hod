@@ -64,30 +64,6 @@ fn what_the_group_does_not_lower_is_refused_by_name() {
             float::VECTOR_SELECT,
         ),
         (
-            "define half @f(half %a, half %b) { %r = frem half %a, %b\n ret half %r }",
-            float::HALF_FREM,
-        ),
-        (
-            "define fp128 @f(fp128 %a, fp128 %b) { %r = frem fp128 %a, %b\n ret fp128 %r }",
-            float::FP128_LIBCALL,
-        ),
-        (
-            "define i1 @f(fp128 %a, fp128 %b) { %r = fcmp olt fp128 %a, %b\n ret i1 %r }",
-            float::FP128_LIBCALL,
-        ),
-        (
-            "define double @f(fp128 %a) { %r = fptrunc fp128 %a to double\n ret double %r }",
-            float::FP128_LIBCALL,
-        ),
-        (
-            "define fp128 @f(i64 %a) { %r = sitofp i64 %a to fp128\n ret fp128 %r }",
-            float::FP128_LIBCALL,
-        ),
-        (
-            "define i32 @f(fp128 %a) { %r = fptosi fp128 %a to i32\n ret i32 %r }",
-            float::FP128_LIBCALL,
-        ),
-        (
             "define bfloat @f(bfloat %a, bfloat %b) { %r = fadd bfloat %a, %b\n ret bfloat %r }",
             float::BFLOAT,
         ),
@@ -330,6 +306,31 @@ fn same_but_nan(ty: Ty, a: u128, b: u128) -> bool {
     })
 }
 
+/// Whether `fptosi`/`fptoui` of the `fp128` pattern `bits` to `i<width>`
+/// is poison: exactly, from the bits (an `f64` would round).
+fn quad_to_int_poison(bits: u128, width: u32, signed: bool) -> bool {
+    let exp = ((bits >> 112) & 0x7fff) as i32;
+    let negative = bits >> 127 != 0;
+    if exp == 0x7fff {
+        return true;
+    }
+    let e = exp - 16383;
+    if e < 0 {
+        return false; // |x| < 1 truncates to 0.
+    }
+    if e > 80 {
+        return true;
+    }
+    let mant = (bits & ((1u128 << 112) - 1)) | (1u128 << 112);
+    let int = if e >= 112 { mant << (e - 112) } else { mant >> (112 - e) };
+    match (signed, negative) {
+        (false, true) => int != 0,
+        (false, false) => width < 128 && int >> width != 0,
+        (true, false) => int >> (width - 1) != 0,
+        (true, true) => int > 1u128 << (width - 1),
+    }
+}
+
 /// The value of a `half` pattern.
 fn half_value(bits: u128) -> f64 {
     let b = bits as u32;
@@ -450,6 +451,27 @@ fn specials(ty: Ty) -> Vec<u128> {
             (0x7fff_u128 << 112) | 1,
             (0x7fff_8000_u128 << 96) | 0x1234_5678,
             0x4000_921f_b544_42d1_8469_898c_c517_01b8,
+            // 15..: the largest subnormal, the negative smallest one, a
+            // negative NaN, the negative largest number (WP-067).
+            0x0000_ffff_ffff_ffff_ffff_ffff_ffff_ffff,
+            (1 << 127) | 1,
+            0xffff_8000_u128 << 96,
+            0xfffe_ffff_ffff_ffff_ffff_ffff_ffff_ffff,
+            // 19..: the integer boundaries, 3 and 100.
+            0x401e_u128 << 112,
+            0x401d_ffff_fffc_u128 << 80,
+            0x401f_u128 << 112,
+            0x401e_ffff_fffe_u128 << 80,
+            0x403e_u128 << 112,
+            0x403d_ffff_ffff_ffff_fffc_u128 << 48,
+            0x403f_u128 << 112,
+            0x403e_ffff_ffff_ffff_fffe_u128 << 48,
+            0xc01e_u128 << 112,
+            0xc01e_0000_0002_u128 << 80,
+            0xc03e_u128 << 112,
+            0xc03e_0000_0000_0000_0002_u128 << 48,
+            0x4000_8000_u128 << 96,
+            0x4005_9000_u128 << 96,
         ],
         _ => panic!("no specials for {ty:?}"),
     };
@@ -462,6 +484,7 @@ fn pair_specials(ty: Ty) -> Vec<u128> {
     let all = specials(ty);
     let pick: &[usize] = match ty {
         H | F | D => &[0, 1, 2, 3, 4, 7, 9, 10, 12, 13, 14, 15, 16, 18],
+        Q => &[0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 15, 16, 17, 18],
         _ => return all,
     };
     pick.iter().map(|&i| all[i]).collect()
@@ -559,6 +582,10 @@ struct Func {
     /// Whether `llc`'s result is comparable: not for `freeze undef`,
     /// which may be any value.
     llc: bool,
+    /// A C expression of the parameters `a0`, `a1`, ... that computes
+    /// the result: the oracle for `fp128` (AArch64's `long double`) and
+    /// `half`, which the interpreter does not have (WP-067).
+    c: Option<String>,
 }
 
 impl Func {
@@ -571,7 +598,13 @@ impl Func {
             make: Gen::Any,
             poison: Poison::Never,
             llc: true,
+            c: None,
         }
+    }
+
+    fn c(mut self, expr: impl Into<String>) -> Func {
+        self.c = Some(expr.into());
+        self
     }
 
     fn with(mut self, make: Gen) -> Func {
@@ -605,6 +638,7 @@ impl Func {
                     H => half_value(args[0]),
                     F => f64::from(f32::from_bits(args[0] as u32)),
                     D => f64::from_bits(args[0] as u64),
+                    Q => return quad_to_int_poison(args[0], bits, signed),
                     _ => unreachable!(),
                 };
                 hod_interp::ops::float_to_int(x, bits, signed).is_err()
@@ -675,6 +709,65 @@ fn n(name: &str) -> String {
     name.replace(['<', '>', ' '], "")
 }
 
+/// A loop of `I & 7` + 1 iterations carrying a swap cycle and `live`
+/// accumulators of type `t` through `phi`s; returns their sum.
+fn phi_loop(t: Ty, live: usize) -> Func {
+    let tl = t.ll();
+    let op = match t {
+        Ty::V(_, El::I(_)) => "add",
+        _ => "fadd",
+    };
+    let konst = match t {
+        H => "0xH3C00",
+        F | D => "1.5",
+        Q => "0xL00000000000000003FFF800000000000",
+        _ => "zeroinitializer",
+    };
+    let mut b = String::from(
+        "entry:\n%n = and i32 %a2, 7\nbr label %loop\nloop:\n%i = phi i32 [0, %entry], [%i1, %loop]\n",
+    );
+    let _ = writeln!(b, "%x0 = phi {tl} [%a0, %entry], [%x1, %loop]");
+    let _ = writeln!(b, "%x1 = phi {tl} [%a1, %entry], [%x0, %loop]");
+    for k in 0..live {
+        let init = ["%a0", "%a1", konst][k % 3];
+        let _ = writeln!(b, "%y{k} = phi {tl} [{init}, %entry], [%z{k}, %loop]");
+    }
+    for k in 0..live {
+        let _ = writeln!(b, "%z{k} = {op} {tl} %y{k}, %y{}", (k + 1) % live);
+    }
+    b.push_str("%i1 = add i32 %i, 1\n%c = icmp sle i32 %i1, %n\nbr i1 %c, label %loop, label %exit\nexit:\n");
+    let _ = writeln!(b, "%s0 = {op} {tl} %x0, %x1");
+    for k in 0..live {
+        let _ = writeln!(b, "%s{} = {op} {tl} %s{k}, %z{k}", k + 1);
+    }
+    let _ = write!(b, "ret {tl} %s{live}");
+    Func::new(format!("phi_{}", n(&tl)), t, &[t, t, I(32)], b)
+}
+
+/// The C expression of `fcmp <p>` of `a0` and `a1`.
+fn c_predicate(p: &str) -> String {
+    match p {
+        "false" => "0",
+        "true" => "1",
+        "oeq" => "a0 == a1",
+        "une" => "!(a0 == a1)",
+        "olt" => "a0 < a1",
+        "ole" => "a0 <= a1",
+        "ogt" => "a0 > a1",
+        "oge" => "a0 >= a1",
+        "ult" => "!(a0 >= a1)",
+        "ule" => "!(a0 > a1)",
+        "ugt" => "!(a0 <= a1)",
+        "uge" => "!(a0 < a1)",
+        "ord" => "!__builtin_isunordered(a0, a1)",
+        "uno" => "__builtin_isunordered(a0, a1)",
+        "one" => "__builtin_islessgreater(a0, a1)",
+        "ueq" => "!__builtin_islessgreater(a0, a1)",
+        _ => unreachable!("{p}"),
+    }
+    .into()
+}
+
 /// Every hand-written function of the group.
 fn hand_written() -> Vec<Func> {
     let mut out = Vec::new();
@@ -683,18 +776,27 @@ fn hand_written() -> Vec<Func> {
     // Binary operations, with two arguments and with constants.
     for t in [H, F, D, Q] {
         for op in ["fadd", "fsub", "fmul", "fdiv", "frem"] {
-            if op == "frem" && matches!(t, H | Q) {
-                continue;
-            }
             let tl = t.ll();
             let make = if t == Q { Gen::Any } else { Gen::Pairs };
-            add(Func::new(
+            let f = Func::new(
                 format!("{op}_{tl}"),
                 t,
                 &[t, t],
                 format!("%r = {op} {tl} %a0, %a1\nret {tl} %r"),
             )
-            .with(make));
+            .with(make);
+            let sym = match op {
+                "fadd" => "+",
+                "fsub" => "-",
+                "fmul" => "*",
+                _ => "/",
+            };
+            add(match (t, op) {
+                (Q, "frem") => f.c("fmodl(a0, a1)"),
+                (H, "frem") => f.c("(_Float16)fmodf(a0, a1)"),
+                (Q, _) => f.c(format!("a0 {sym} a1")),
+                _ => f,
+            });
         }
     }
     let constants: &[(Ty, &[&str])] = &[
@@ -778,23 +880,27 @@ fn hand_written() -> Vec<Func> {
     // Compares: every predicate, every pair of specials; returned
     // (deferred, then asked for by `ret`), across a block (`cset` without
     // deferral) and fused into a `select` of each width.
-    for t in scalars {
+    for t in [H, F, D, Q] {
         let tl = t.ll();
         for p in PREDICATES {
-            add(Func::new(
-                format!("fcmp_{p}_{tl}"),
-                I(1),
-                &[t, t],
-                format!("%c = fcmp {p} {tl} %a0, %a1\nret i1 %c"),
-            )
-            .with(Gen::Pairs));
-            add(Func::new(
+            let c = c_predicate(p);
+            let with_c = |f: Func| if t == Q { f.c(c.clone()) } else { f };
+            add(with_c(
+                Func::new(
+                    format!("fcmp_{p}_{tl}"),
+                    I(1),
+                    &[t, t],
+                    format!("%c = fcmp {p} {tl} %a0, %a1\nret i1 %c"),
+                )
+                .with(Gen::Pairs),
+            ));
+            add(with_c(Func::new(
                 format!("fcmpb_{p}_{tl}"),
                 I(1),
                 &[t, t],
                 format!("%c = fcmp {p} {tl} %a0, %a1\nbr label %next\nnext:\nret i1 %c"),
-            ));
-            add(Func::new(
+            )));
+            let f = Func::new(
                 format!("fsel_{p}_{tl}"),
                 t,
                 &[t, t, t, t],
@@ -802,8 +908,31 @@ fn hand_written() -> Vec<Func> {
                     "%c = fcmp {p} {tl} %a0, %a1\n%r = select i1 %c, {tl} %a2, {tl} %a3\nret {tl} %r"
                 ),
             )
-            .with(Gen::Pairs));
+            .with(Gen::Pairs);
+            add(if t == Q { f.c(format!("({c}) ? a2 : a3")) } else { f });
         }
+    }
+    // `fp128` compares fused into selects of other types, and a compare
+    // whose operands are one value (WP-067).
+    for (p, sel) in [("ueq", D), ("one", F), ("olt", Ty::V(4, El::I(32))), ("uge", H)] {
+        let sl = sel.ll();
+        add(Func::new(
+            format!("qsel_{p}_{}", n(&sl)),
+            sel,
+            &[Q, Q, sel, sel],
+            format!(
+                "%c = fcmp {p} fp128 %a0, %a1\n%r = select i1 %c, {sl} %a2, {sl} %a3\nret {sl} %r"
+            ),
+        ));
+    }
+    for p in ["oeq", "uno", "one", "ueq"] {
+        add(Func::new(
+            format!("qself_{p}"),
+            I(1),
+            &[Q],
+            format!("%c = fcmp {p} fp128 %a0, %a0\nret i1 %c"),
+        )
+        .c(c_predicate(p).replace("a1", "a0")));
     }
     for (p, cmp, sel) in [
         ("one", D, Ty::V(4, El::I(32))),
@@ -850,6 +979,50 @@ fn hand_written() -> Vec<Func> {
             format!("%r = {op} {fl} %a0 to {tl}\nret {tl} %r"),
         ));
     }
+    for (op, from, to, c) in [
+        ("fpext", H, Q, "(long double)a0"),
+        ("fpext", F, Q, "(long double)a0"),
+        ("fpext", D, Q, "(long double)a0"),
+        ("fptrunc", Q, H, "(_Float16)a0"),
+        ("fptrunc", Q, F, "(float)a0"),
+        ("fptrunc", Q, D, "(double)a0"),
+    ] {
+        let (fl, tl) = (from.ll(), to.ll());
+        add(Func::new(
+            format!("{op}_{fl}_{tl}"),
+            to,
+            &[from],
+            format!("%r = {op} {fl} %a0 to {tl}\nret {tl} %r"),
+        )
+        .c(c));
+    }
+    for w in WIDTHS {
+        let mask = if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
+        for (op, signed) in [("fptosi", true), ("fptoui", false)] {
+            let mut f = Func::new(
+                format!("{op}_fp128_i{w}"),
+                I(w),
+                &[Q],
+                format!("%r = {op} fp128 %a0 to i{w}\nret i{w} %r"),
+            )
+            .c(if signed { "(int64_t)a0" } else { "(uint64_t)a0" });
+            f.poison = Poison::ToInt { from: Q, bits: w, signed };
+            add(f);
+        }
+        let shift = 64 - w;
+        for (op, c) in [
+            ("sitofp", format!("(long double)((int64_t)((uint64_t)a0 << {shift}) >> {shift})")),
+            ("uitofp", format!("(long double)((uint64_t)a0 & 0x{mask:x}ull)")),
+        ] {
+            add(Func::new(
+                format!("{op}_i{w}_fp128"),
+                Q,
+                &[I(w)],
+                format!("%r = {op} i{w} %a0 to fp128\nret fp128 %r"),
+            )
+            .c(c));
+        }
+    }
     for t in scalars {
         let tl = t.ll();
         for w in WIDTHS {
@@ -888,6 +1061,12 @@ fn hand_written() -> Vec<Func> {
         (Ty::V(2, El::I(64)), Q),
         (Q, Ty::V(2, El::I(64))),
         (Ty::V(4, El::H), D),
+        // Between `Fpr` values (WP-067: the matrix rows).
+        (Ty::V(2, El::F), D),
+        (D, Ty::V(4, El::H)),
+        (Q, Ty::V(4, El::F)),
+        (Ty::V(8, El::I(16)), Q),
+        (Ty::V(1, El::D), Ty::V(8, El::I(8))),
     ];
     for &(from, to) in bitcasts {
         let (fl, tl) = (from.ll(), to.ll());
@@ -1010,6 +1189,52 @@ fn hand_written() -> Vec<Func> {
         )
         .with(make));
     }
+    // Loops carrying `Fpr`-class values through `phi`s (WP-067 checks
+    // WP-037's `control.rs` with them): more live values than the pool
+    // has, a swap cycle, calls in the loop for `fp128`.
+    for t in [D, F, H, Q, Ty::V(2, El::D), Ty::V(4, El::I(32)), Ty::V(8, El::I(8))] {
+        add(phi_loop(t, 17));
+    }
+    // Non-zero vector constants (WP-067): `materialize_fpr_const`.
+    for (t, op, c) in [
+        (Ty::V(4, El::I(32)), "add", "<i32 1, i32 -1, i32 0, i32 2147483647>"),
+        (Ty::V(2, El::I(64)), "xor", "<i64 -1, i64 0>"),
+        (Ty::V(2, El::I(64)), "add", "<i64 0, i64 81985529216486895>"),
+        (
+            Ty::V(16, El::I(8)),
+            "sub",
+            "<i8 1, i8 2, i8 3, i8 4, i8 5, i8 6, i8 7, i8 8, i8 -1, i8 -2, i8 -3, i8 -4, i8 -5, i8 -6, i8 -7, i8 -128>",
+        ),
+        (Ty::V(8, El::I(8)), "or", "<i8 1, i8 0, i8 3, i8 0, i8 5, i8 0, i8 7, i8 -128>"),
+        (Ty::V(4, El::I(16)), "mul", "<i16 -7, i16 -7, i16 -7, i16 -7>"),
+        (Ty::V(1, El::I(64)), "and", "<i64 -81985529216486896>"),
+        (Ty::V(2, El::I(32)), "shl", "<i32 1, i32 31>"),
+        (Ty::V(2, El::D), "fadd", "<double 1.5, double -0.0>"),
+        (Ty::V(4, El::F), "fmul", "<float 1.0, float 2.0, float 0.5, float -3.0>"),
+        (Ty::V(2, El::F), "fsub", "<float 0x7FF8000000000000, float 0x36A0000000000000>"),
+        (Ty::V(1, El::D), "fdiv", "<double 0x7FEFFFFFFFFFFFFF>"),
+    ] {
+        let tl = t.ll();
+        add(Func::new(
+            format!("vc_{op}_{}", n(&tl)),
+            t,
+            &[t],
+            format!("%r = {op} {tl} %a0, {c}\nret {tl} %r"),
+        ));
+        add(Func::new(format!("vcret_{op}_{}", n(&tl)), t, &[], format!("ret {tl} {c}")));
+    }
+    add(Func::new(
+        "vc_half".into(),
+        Ty::V(4, El::H),
+        &[],
+        "%r = fneg <4 x half> <half 0xH3C00, half 0xH0001, half 0xH7E00, half 0xHFC00>\nret <4 x half> %r".into(),
+    ));
+    add(Func::new(
+        "vc_ptrs".into(),
+        Ty::V(2, El::I(64)),
+        &[],
+        "%r = ptrtoint <2 x ptr> <ptr @putchar, ptr getelementptr (i8, ptr @putchar, i64 16)> to <2 x i64>\nret <2 x i64> %r".into(),
+    ));
     // `fptoui` of non-negative small lanes.
     add(Func::new(
         "ptrvec".into(),
@@ -1144,6 +1369,7 @@ const DRIVER_HEAD: &str = r#"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 typedef uint64_t q_t __attribute__((vector_size(16)));
 typedef uint64_t d_t __attribute__((vector_size(8)));
 static inline _Float16 H(uint16_t b) { _Float16 v; memcpy(&v, &b, 2); return v; }
@@ -1167,6 +1393,7 @@ static void nl(void) { putchar('\n'); }
 /// The module text of `funcs` with every symbol prefixed by `prefix`.
 fn module_text(funcs: &[Func], prefix: &str) -> String {
     let mut text = ll_header(22);
+    text.push_str("declare i32 @putchar(i32)\n");
     for f in funcs {
         text.push_str(&f.text(prefix));
     }
@@ -1213,6 +1440,18 @@ fn run_native(label: &str, funcs: &[Func], per: usize, seed: u64) -> usize {
             let params = if params.is_empty() { "void".to_string() } else { params.join(", ") };
             let _ = writeln!(c, "{} {prefix}{}({params});", f.ret.c(), f.name);
         }
+        if let Some(expr) = &f.c {
+            let params: Vec<String> =
+                f.params.iter().enumerate().map(|(i, t)| format!("{} a{i}", t.c())).collect();
+            let _ = writeln!(
+                c,
+                "static {} c_{}({}) {{ return ({}) ({expr}); }}",
+                f.ret.c(),
+                f.name,
+                params.join(", "),
+                f.ret.c()
+            );
+        }
     }
     for (index, f) in funcs.iter().enumerate() {
         let _ = writeln!(c, "static void t{index}(void) {{");
@@ -1224,6 +1463,9 @@ fn run_native(label: &str, funcs: &[Func], per: usize, seed: u64) -> usize {
             let list = list.join(", ");
             for prefix in &prefixes {
                 let _ = write!(c, "{}({prefix}{}({list})); ", f.ret.c_print(), f.name);
+            }
+            if f.c.is_some() {
+                let _ = write!(c, "{}(c_{}({list})); ", f.ret.c_print(), f.name);
             }
             let _ = writeln!(c, "nl();");
             calls.push((index, args));
@@ -1282,7 +1524,17 @@ fn run_native(label: &str, funcs: &[Func], per: usize, seed: u64) -> usize {
             if hod != stressed {
                 why.push(format!("stressed {stressed:x}"));
             }
-            if let Some(&theirs) = got.get(2)
+            if f.c.is_some()
+                && !f.poisoned(args)
+                && let Some(&theirs) = got.last()
+                && theirs != hod
+                && !same_but_nan(f.ret, theirs, hod)
+            {
+                why.push(format!("C {theirs:x}"));
+            }
+            let llc_column = if f.c.is_some() { got.len() > 3 } else { got.len() > 2 };
+            if llc_column
+                && let Some(&theirs) = got.get(2)
                 && theirs != hod
                 && f.llc
                 && !f.poisoned(args)
@@ -1304,7 +1556,8 @@ fn run_native(label: &str, funcs: &[Func], per: usize, seed: u64) -> usize {
         }
     }
     let by_interp = expected.iter().filter(|e| e.is_some()).count();
-    eprintln!("{label}: {by_interp} calls also compared with hod_interp");
+    let by_c = calls.iter().filter(|(index, _)| funcs[*index].c.is_some()).count();
+    eprintln!("{label}: {by_interp} calls also compared with hod_interp, {by_c} with C");
     eprintln!(
         "{label}: {nan_only} results where llc's NaN differs from hod's (and the interpreter's)"
     );
@@ -1341,7 +1594,718 @@ fn random_chains_agree_with_llc_and_the_interpreter() {
 #[test]
 fn generated_functions_compile() {
     for f in hand_written().iter().chain((0..50).map(random_chain).collect::<Vec<_>>().iter()) {
-        let text = f.text("");
+        let text = format!("declare i32 @putchar(i32)\n{}", f.text(""));
         assert_eq!(compile_ll(&text), Ok::<(), CgError>(()), "{text}");
     }
+}
+
+// ---- loads and stores of `Fpr`-class values (WP-067) ----
+//
+// Each function loads a value of type `T` through one addressing form
+// and stores its argument through another; the C driver gives it a
+// pointer into a buffer whose end is a guard page, fills the buffer and
+// two variables (one through the GOT, one `dso_local`) with a pattern,
+// and prints the loaded bits and every byte that changed. The model
+// below computes the same lines (a load reads exactly the store size, a
+// store writes exactly it), and so do hod plain, hod stressed and `llc`.
+
+/// The buffer: `p` is `PBASE` bytes into it; it ends at a guard page.
+const MEM_BUF: i64 = 0x30000;
+const PBASE: i64 = 0x10000;
+const MEM_END: i64 = MEM_BUF - PBASE;
+/// The size of each variable.
+const GSIZE: i64 = 256;
+
+/// A type of class `Fpr` as the memory tests use it: its `.ll` name, its
+/// store size, and the C type it travels as. `carrier` is the `.ll` type
+/// it travels as when that is not the type itself, with the casts to and
+/// from it.
+#[derive(Clone, Copy, Debug)]
+struct MemTy {
+    ll: &'static str,
+    size: i64,
+    c: &'static str,
+    carrier: Option<(&'static str, &'static str, &'static str)>,
+}
+
+const fn mt(ll: &'static str, size: i64, c: &'static str) -> MemTy {
+    MemTy { ll, size, c, carrier: None }
+}
+
+const fn mtc(ll: &'static str, size: i64, c: &'static str, car: &'static str) -> MemTy {
+    MemTy { ll, size, c, carrier: Some((car, "bitcast", "bitcast")) }
+}
+
+const MEM_TYPES: &[MemTy] = &[
+    mt("half", 2, "_Float16"),
+    mtc("bfloat", 2, "uint16_t", "i16"),
+    mt("float", 4, "float"),
+    mt("double", 8, "double"),
+    mt("fp128", 16, "long double"),
+    mt("<2 x float>", 8, "d_t"),
+    mt("<4 x float>", 16, "q_t"),
+    mt("<2 x double>", 16, "q_t"),
+    mt("<1 x double>", 8, "d_t"),
+    mt("<8 x i8>", 8, "d_t"),
+    mt("<16 x i8>", 16, "q_t"),
+    mt("<4 x i16>", 8, "d_t"),
+    mt("<8 x i16>", 16, "q_t"),
+    mt("<2 x i32>", 8, "d_t"),
+    mt("<4 x i32>", 16, "q_t"),
+    mt("<1 x i64>", 8, "d_t"),
+    mt("<2 x i64>", 16, "q_t"),
+    mt("<4 x half>", 8, "d_t"),
+    mt("<8 x half>", 16, "q_t"),
+    mtc("<16 x i4>", 8, "uint64_t", "i64"),
+    mtc("<32 x i4>", 16, "q_t", "<2 x i64>"),
+    mtc("<4 x bfloat>", 8, "uint64_t", "i64"),
+    MemTy {
+        ll: "<2 x ptr>",
+        size: 16,
+        c: "q_t",
+        carrier: Some(("<2 x i64>", "inttoptr", "ptrtoint")),
+    },
+];
+
+/// Where an address points.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Region {
+    Buf,
+    /// `@<prefix>g` (preemptible: through the GOT) or `@<prefix>d`
+    /// (`dso_local`: direct).
+    Global(bool),
+}
+
+/// An addressing form. `I` and `J` are the `i64 %i` and `i32 %j`
+/// arguments.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Form {
+    /// `%p` itself.
+    P,
+    /// `%p` + a byte offset.
+    C(i64),
+    /// `%p` + `k` elements.
+    CT(i64),
+    /// `%p` + `I` elements.
+    Xi,
+    /// `%p` + `J` elements (`sxtw`).
+    Xj,
+    /// `%p` + `I` bytes.
+    Xi8,
+    /// `%p` + `I` × 3 elements + 1 element (a stride that is no power of
+    /// two).
+    Xi3,
+    /// `%p` + `I` bytes + `k`, by two `ptradd`s.
+    Two(i64),
+    /// A variable + `k` bytes, as a constant expression.
+    G(bool, i64),
+    /// A variable + `I` elements.
+    Gi(bool),
+}
+
+impl Form {
+    fn region(self) -> Region {
+        match self {
+            Form::G(direct, _) | Form::Gi(direct) => Region::Global(direct),
+            _ => Region::Buf,
+        }
+    }
+
+    /// The offset as `a * x + b`, with `x` the index argument it uses
+    /// (`Some(true)` for `I`, `Some(false)` for `J`).
+    fn affine(self, size: i64) -> (Option<bool>, i64, i64) {
+        match self {
+            Form::P => (None, 0, 0),
+            Form::C(k) | Form::G(_, k) => (None, 0, k),
+            Form::CT(k) => (None, 0, k * size),
+            Form::Xi | Form::Gi(_) => (Some(true), size, 0),
+            Form::Xj => (Some(false), size, 0),
+            Form::Xi8 => (Some(true), 1, 0),
+            Form::Xi3 => (Some(true), 3 * size, size),
+            Form::Two(k) => (Some(true), 1, k),
+        }
+    }
+
+    /// The lines that form the address in `%<tag>`, and the operand.
+    fn text(self, t: &MemTy, tag: &str, prefix: &str) -> (String, String) {
+        let tl = t.ll;
+        let gname = |direct: bool| format!("@{prefix}{}", if direct { "d" } else { "g" });
+        let gep = |what: String| (format!("%{tag} = getelementptr {what}\n"), format!("%{tag}"));
+        match self {
+            Form::P => (String::new(), "%p".into()),
+            Form::C(k) => gep(format!("i8, ptr %p, i64 {k}")),
+            Form::CT(k) => gep(format!("{tl}, ptr %p, i64 {k}")),
+            Form::Xi => gep(format!("{tl}, ptr %p, i64 %i")),
+            Form::Xj => gep(format!("{tl}, ptr %p, i32 %j")),
+            Form::Xi8 => gep("i8, ptr %p, i64 %i".to_string()),
+            Form::Xi3 => gep(format!("[3 x {tl}], ptr %p, i64 %i, i64 1")),
+            Form::Two(k) => (
+                format!(
+                    "%{tag}0 = getelementptr i8, ptr %p, i64 %i\n%{tag} = getelementptr i8, ptr %{tag}0, i64 {k}\n"
+                ),
+                format!("%{tag}"),
+            ),
+            Form::G(direct, k) => {
+                (String::new(), format!("getelementptr (i8, ptr {}, i64 {k})", gname(direct)))
+            }
+            Form::Gi(direct) => gep(format!("{tl}, ptr {}, i64 %i", gname(direct))),
+        }
+    }
+}
+
+/// The byte forms of the buffer's and the variables' initial contents.
+fn buf_init(k: i64) -> u8 {
+    ((k as u64).wrapping_mul(0x9e37_79b1) >> 11) as u8
+}
+
+fn global_init(direct: bool, k: i64) -> u8 {
+    (k * 37 + if direct { 101 } else { 11 }) as u8
+}
+
+/// What a memory function does.
+#[derive(Clone, Debug)]
+enum MemKind {
+    /// Load through one form (if any), store the argument through another
+    /// (if any); `early` computes the store's address before the load
+    /// (no fusing).
+    Access { load: Option<Form>, store: Option<Form>, volatile: (bool, bool), early: bool },
+    /// Through a frame slot of `count` elements aligned to `align`, at
+    /// element `I & (count - 1)` or at constant element `at`.
+    Slot { count: i64, align: u64, at: Option<i64> },
+    /// Store the constant (its `.ll` text and its bytes) to the buffer at
+    /// `%p` and return a volatile load of it.
+    Const(String, Vec<u8>),
+}
+
+struct MemFunc {
+    name: String,
+    ty: MemTy,
+    kind: MemKind,
+}
+
+impl MemFunc {
+    fn text(&self, prefix: &str) -> String {
+        let t = &self.ty;
+        let tl = t.ll;
+        let (pl, conv_in, conv_out) = match t.carrier {
+            Some((car, to, from)) => (car, Some(to), Some(from)),
+            None => (tl, None, None),
+        };
+        let mut b = String::new();
+        let v = if let Some(to) = conv_in {
+            let _ = writeln!(b, "%v = {to} {pl} %x to {tl}");
+            "%v"
+        } else {
+            "%x"
+        };
+        let r = match &self.kind {
+            MemKind::Access { load, store, volatile, early } => {
+                let st = store.map(|f| f.text(t, "s", prefix));
+                if *early && let Some((pre, _)) = &st {
+                    b.push_str(pre);
+                }
+                let r = if let Some(f) = load {
+                    let (pre, op) = f.text(t, "l", prefix);
+                    b.push_str(&pre);
+                    let vol = if volatile.0 { "volatile " } else { "" };
+                    let _ = writeln!(b, "%r = load {vol}{tl}, ptr {op}");
+                    "%r"
+                } else {
+                    v
+                };
+                if let Some((pre, op)) = st {
+                    if !*early {
+                        b.push_str(&pre);
+                    }
+                    let vol = if volatile.1 { "volatile " } else { "" };
+                    let _ = writeln!(b, "store {vol}{tl} {v}, ptr {op}");
+                }
+                r
+            }
+            MemKind::Slot { count, align, at } => {
+                let _ = writeln!(b, "%s = alloca [{count} x {tl}], align {align}");
+                if let Some(k) = at {
+                    let _ = writeln!(b, "%q = getelementptr {tl}, ptr %s, i64 {k}");
+                } else {
+                    let _ = writeln!(b, "%m = and i64 %i, {}", count - 1);
+                    let _ = writeln!(b, "%q = getelementptr {tl}, ptr %s, i64 %m");
+                }
+                let _ = writeln!(b, "store {tl} {v}, ptr %q\n%r = load {tl}, ptr %q");
+                "%r"
+            }
+            MemKind::Const(c, _) => {
+                let _ = writeln!(b, "store {tl} {c}, ptr %p\n%r = load volatile {tl}, ptr %p");
+                "%r"
+            }
+        };
+        let ret = if let Some(from) = conv_out {
+            let _ = writeln!(b, "%o = {from} {tl} {r} to {pl}");
+            "%o"
+        } else {
+            r
+        };
+        let _ = write!(b, "ret {pl} {ret}");
+        format!("define {pl} @{prefix}{}(ptr %p, i64 %i, i32 %j, {pl} %x) {{\n{b}\n}}\n", self.name)
+    }
+
+    /// The forms that use index argument `I` (`true`) or `J`.
+    fn forms(&self) -> Vec<Form> {
+        match &self.kind {
+            MemKind::Access { load, store, .. } => {
+                load.iter().chain(store.iter()).copied().collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The range of index argument `I` (`which`) or `J` every form allows.
+    fn range(&self, which: bool) -> (i64, i64) {
+        let size = self.ty.size;
+        let (mut lo, mut hi) = if which { (-(1 << 40), 1 << 40) } else { (-(1 << 30), 1 << 30) };
+        for f in self.forms() {
+            let (x, a, b) = f.affine(size);
+            if x != Some(which) {
+                continue;
+            }
+            let (min, max) = match f.region() {
+                Region::Buf => (-PBASE, MEM_END - size),
+                Region::Global(_) => (0, GSIZE - size),
+            };
+            lo = lo.max((min - b).div_euclid(a) + i64::from((min - b).rem_euclid(a) != 0));
+            hi = hi.min((max - b).div_euclid(a));
+        }
+        (lo, hi)
+    }
+
+    /// The driver's line for arguments `i`, `j` and value bytes `x`.
+    fn expect(&self, i: i64, j: i64, x: &[u8]) -> String {
+        let size = self.ty.size;
+        let mut buf: Vec<(i64, u8)> = Vec::new();
+        let mut globals: [Vec<(i64, u8)>; 2] = [Vec::new(), Vec::new()];
+        let at = |f: Form| {
+            let (which, a, b) = f.affine(size);
+            let arg = match which {
+                Some(true) => i,
+                Some(false) => j,
+                None => 0,
+            };
+            (f.region(), a * arg + b)
+        };
+        let init = |region: Region, k: i64| match region {
+            Region::Buf => buf_init(k + PBASE),
+            Region::Global(direct) => global_init(direct, k),
+        };
+        let result: Vec<u8> = match &self.kind {
+            MemKind::Access { load, store, .. } => {
+                let r = match load {
+                    Some(f) => {
+                        let (region, off) = at(*f);
+                        (0..size).map(|k| init(region, off + k)).collect()
+                    }
+                    None => x.to_vec(),
+                };
+                if let Some(f) = store {
+                    let (region, off) = at(*f);
+                    let list = match region {
+                        Region::Buf => &mut buf,
+                        Region::Global(direct) => &mut globals[usize::from(direct)],
+                    };
+                    for (k, &byte) in x.iter().enumerate() {
+                        let pos = off + k as i64;
+                        if byte != init(region, pos) {
+                            list.push((
+                                if region == Region::Buf { pos + PBASE } else { pos },
+                                byte,
+                            ));
+                        }
+                    }
+                }
+                r
+            }
+            MemKind::Slot { .. } => x.to_vec(),
+            MemKind::Const(_, bytes) => {
+                for (k, &byte) in bytes.iter().enumerate() {
+                    let pos = k as i64;
+                    if byte != init(Region::Buf, pos) {
+                        buf.push((pos + PBASE, byte));
+                    }
+                }
+                bytes.clone()
+            }
+        };
+        let list = |l: &[(i64, u8)]| {
+            l.iter().fold(String::new(), |mut s, (o, b)| {
+                let _ = write!(s, " {o:x}:{b:02x}");
+                s
+            })
+        };
+        format!(
+            "r {} b{} g{} d{}",
+            hex_bytes(&result),
+            list(&buf),
+            list(&globals[0]),
+            list(&globals[1])
+        )
+    }
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().fold(String::new(), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
+/// The memory functions: for each type, every form as the load's with a
+/// random store form and as the store's with a random load form, slots,
+/// both accesses at one address.
+fn mem_funcs() -> Vec<MemFunc> {
+    let mut rng = Rng(67);
+    let mut out = Vec::new();
+    for (ti, t) in MEM_TYPES.iter().enumerate() {
+        let s = t.size;
+        let mut forms = vec![
+            Form::P,
+            Form::C(1),
+            Form::C(s),
+            Form::C(255),
+            Form::C(256),
+            Form::C(-256),
+            Form::C(-257),
+            Form::C(4095 * s),
+            Form::C(4096 * s),
+            Form::C(65520),
+            Form::C(-PBASE),
+            Form::C(MEM_END - s),
+            Form::C(0x1_fff1 - s),
+            Form::CT(1),
+            Form::CT(-1),
+            Form::CT(4095),
+            Form::CT(-16),
+            Form::Xi,
+            Form::Xj,
+            Form::Xi8,
+            Form::Xi3,
+            Form::Two(3),
+            Form::Two(-70000 + PBASE),
+            Form::G(false, 0),
+            Form::G(true, 3),
+            Form::G(false, GSIZE - s),
+            Form::Gi(true),
+            Form::Gi(false),
+        ];
+        forms.dedup();
+        let pick = |rng: &mut Rng| forms[rng.below(forms.len() as u64) as usize];
+        let mut add = |name: String, kind: MemKind| {
+            out.push(MemFunc { name: format!("{name}_t{ti}"), ty: *t, kind });
+        };
+        for (k, &f) in forms.iter().enumerate() {
+            let other = pick(&mut rng);
+            let vol = (rng.below(4) == 0, rng.below(4) == 0);
+            let early = rng.below(3) == 0;
+            add(
+                format!("ld{k}"),
+                MemKind::Access { load: Some(f), store: Some(other), volatile: vol, early },
+            );
+            let other = pick(&mut rng);
+            add(
+                format!("st{k}"),
+                MemKind::Access { load: Some(other), store: Some(f), volatile: vol, early: !early },
+            );
+        }
+        add(
+            "ldonly".into(),
+            MemKind::Access {
+                load: Some(Form::P),
+                store: None,
+                volatile: (true, false),
+                early: false,
+            },
+        );
+        add(
+            "stonly".into(),
+            MemKind::Access {
+                load: None,
+                store: Some(Form::P),
+                volatile: (false, true),
+                early: false,
+            },
+        );
+        add(
+            "same".into(),
+            MemKind::Access {
+                load: Some(Form::Xi),
+                store: Some(Form::Xi),
+                volatile: (false, false),
+                early: true,
+            },
+        );
+        add("slot1".into(), MemKind::Slot { count: 1, align: 1, at: None });
+        add("slot8".into(), MemKind::Slot { count: 8, align: 64, at: None });
+        add("slotbig".into(), MemKind::Slot { count: 8192, align: 16, at: Some(8191) });
+        add("slotmid".into(), MemKind::Slot { count: 8192, align: 128, at: Some(4095) });
+        for (k, (text, bytes)) in mem_constants(t).into_iter().enumerate() {
+            add(format!("const{k}"), MemKind::Const(text, bytes));
+        }
+    }
+    out
+}
+
+/// Constants of `t` to store: `.ll` text and bytes.
+fn mem_constants(t: &MemTy) -> Vec<(String, Vec<u8>)> {
+    let size = t.size as usize;
+    let mut out = vec![("zeroinitializer".to_string(), vec![0; size])];
+    let le = |v: u128| v.to_le_bytes()[..size].to_vec();
+    match t.ll {
+        "half" => out.push(("0xH3C01".into(), le(0x3c01))),
+        "bfloat" => out.push(("0xR8001".into(), le(0x8001))),
+        "float" => out.push(("-1.5".into(), le(0xbfc0_0000))),
+        "double" => out.push(("0x7FF4000000000001".into(), le(0x7ff4_0000_0000_0001))),
+        "fp128" => out.push((
+            "0xL0123456789ABCDEF7FFF800000000001".into(),
+            le(0x7fff_8000_0000_0001_0123_4567_89ab_cdef),
+        )),
+        _ => {
+            if let Some(v) = vector_constant(t) {
+                out.push(v);
+            }
+        }
+    }
+    out
+}
+
+/// A non-zero constant of a vector type of `MEM_TYPES`, lane by lane.
+fn vector_constant(t: &MemTy) -> Option<(String, Vec<u8>)> {
+    let ll = t.ll.strip_prefix('<')?.strip_suffix('>')?;
+    let (n, elem) = ll.split_once(" x ")?;
+    let n: u32 = n.parse().ok()?;
+    let mut bits = 0u128;
+    let mut lanes = Vec::new();
+    let width = match elem {
+        "half" | "bfloat" => 16,
+        "float" => 32,
+        "double" => 64,
+        "ptr" => return None,
+        _ => elem.strip_prefix('i')?.parse().ok()?,
+    };
+    for k in 0..n {
+        let (text, lane) = match elem {
+            "half" => {
+                (format!("half 0xH{:04X}", 0x3c00 + k * 0x111), u128::from(0x3c00 + k * 0x111))
+            }
+            "bfloat" => (format!("bfloat 0xR{:04X}", 0xbf80 + k), u128::from(0xbf80 + k)),
+            "float" => {
+                let x = 1.5f32 - k as f32 * 0.75;
+                (format!("float 0x{:016X}", f64::from(x).to_bits()), u128::from(x.to_bits()))
+            }
+            "double" => {
+                let x = -2.25f64 + f64::from(k);
+                (format!("double 0x{:016X}", x.to_bits()), u128::from(x.to_bits()))
+            }
+            _ => {
+                let v = (u128::from(k) * 0x9e37_79b9_7f4a_7c15 + 1) & ((1u128 << width) - 1);
+                (format!("{elem} {v}"), v)
+            }
+        };
+        bits |= lane << (k * width);
+        lanes.push(text);
+    }
+    Some((format!("<{}>", lanes.join(", ")), bits.to_le_bytes()[..t.size as usize].to_vec()))
+}
+
+/// The C literal of a value of `t` with bytes `x`.
+fn mem_c_value(t: &MemTy, x: &[u8]) -> String {
+    let word = |k: usize| {
+        let mut w = [0u8; 8];
+        let end = (k + 8).min(x.len());
+        w[..end - k].copy_from_slice(&x[k..end]);
+        u64::from_le_bytes(w)
+    };
+    match (t.c, t.size) {
+        ("_Float16", _) => format!("H(0x{:x})", word(0)),
+        ("float", _) => format!("F(0x{:x}u)", word(0)),
+        ("double", _) => format!("D(0x{:x}ull)", word(0)),
+        ("long double", _) => format!("Q(0x{:x}ull, 0x{:x}ull)", word(0), word(8)),
+        ("d_t", _) => format!("VD(0x{:x}ull)", word(0)),
+        ("q_t", _) => format!("VQ(0x{:x}ull, 0x{:x}ull)", word(0), word(8)),
+        ("uint16_t", _) => format!("(uint16_t)0x{:x}", word(0)),
+        ("uint64_t", _) => format!("0x{:x}ull", word(0)),
+        _ => unreachable!("{t:?}"),
+    }
+}
+
+const MEM_DRIVER: &str = r#"
+#include <sys/mman.h>
+#include <unistd.h>
+static unsigned char *buf;
+static void pb(const void *v, int n) { const unsigned char *b = v; printf("r "); for (int k = 0; k < n; k++) printf("%02x", b[k]); }
+static unsigned char ib(long k) { return (unsigned char)(((unsigned long)k * 0x9e3779b1ul) >> 11); }
+static unsigned char ig(int direct, long k) { return (unsigned char)(k * 37 + (direct ? 101 : 11)); }
+static void fill(unsigned char *g, unsigned char *d) {
+  for (long k = 0; k < 256; k++) { g[k] = ig(0, k); d[k] = ig(1, k); }
+}
+static void diff(unsigned char *g, unsigned char *d) {
+  printf(" b");
+  for (long k = 0; k < 0x30000; k++) if (buf[k] != ib(k)) { printf(" %lx:%02x", k, buf[k]); buf[k] = ib(k); }
+  printf(" g");
+  for (long k = 0; k < 256; k++) if (g[k] != ig(0, k)) printf(" %lx:%02x", k, g[k]);
+  printf(" d");
+  for (long k = 0; k < 256; k++) if (d[k] != ig(1, k)) printf(" %lx:%02x", k, d[k]);
+  printf("\n");
+  fill(g, d);
+}
+"#;
+
+/// Runs the memory functions natively; returns the calls compared.
+fn run_mem(label: &str, funcs: &[MemFunc], per: usize) -> usize {
+    let dir = hod_testutil::Scratch::new(label);
+    let Some(toolchain) = Toolchain::host(&dir) else { return 0 };
+    let globals = |prefix: &str| {
+        format!(
+            "@{prefix}g = global [{GSIZE} x i8] zeroinitializer, align 16\n@{prefix}d = dso_local global [{GSIZE} x i8] zeroinitializer, align 16\n"
+        )
+    };
+    let text = |prefix: &str| {
+        let mut text = globals(prefix);
+        for f in funcs {
+            text.push_str(&f.text(prefix));
+        }
+        text
+    };
+    let mut objects = Vec::new();
+    for (prefix, stress) in [("h_", Stress::default()), ("s_", Stress::ALL)] {
+        let (m, bodies) = parse(&format!("{}{}", ll_header(22), text(prefix)));
+        let emitted = emit(&m, &bodies, &Options { stress, ..Options::default() });
+        objects.push(write_object(&dir, &format!("{prefix}hod.o"), &emitted));
+    }
+    let mut prefixes = vec!["h_", "s_"];
+    if let Some(object) = llc(
+        &dir,
+        "llc",
+        &format!("{}{}", ll_header(common::llc_major()), text("l_")),
+        &["-relocation-model=pic"],
+    ) {
+        objects.push(object);
+        prefixes.push("l_");
+    }
+    eprintln!("{label}: compared {}", prefixes.join(", "));
+    let mut c = String::from(DRIVER_HEAD);
+    c.push_str(MEM_DRIVER);
+    for prefix in &prefixes {
+        let _ = writeln!(c, "extern unsigned char {prefix}g[{GSIZE}], {prefix}d[{GSIZE}];");
+        for f in funcs {
+            let pc = f.ty.c;
+            let _ =
+                writeln!(c, "{pc} {prefix}{}(unsigned char *, int64_t, int32_t, {pc});", f.name);
+        }
+    }
+    let mut rng = Rng(670);
+    let mut expected: Vec<String> = Vec::new();
+    let mut calls = 0;
+    for (index, f) in funcs.iter().enumerate() {
+        let _ = writeln!(c, "static void t{index}(void) {{");
+        let (ilo, ihi) = f.range(true);
+        let (jlo, jhi) = f.range(false);
+        let pick = |rng: &mut Rng, lo: i64, hi: i64, k: usize| match k {
+            0 => lo,
+            1 => hi,
+            2 if lo <= 0 && 0 <= hi => 0,
+            _ => lo + (rng.next() % ((hi - lo) as u64 + 1).min(1 << 40)) as i64,
+        };
+        for k in 0..per {
+            let (i, j) = (pick(&mut rng, ilo, ihi, k), pick(&mut rng, jlo, jhi, (k + 1) % per));
+            let x: Vec<u8> = (0..f.ty.size).map(|_| rng.next() as u8).collect();
+            let lit = mem_c_value(&f.ty, &x);
+            for prefix in &prefixes {
+                let _ = writeln!(
+                    c,
+                    "{{ {} r = {prefix}{}(buf + 0x{PBASE:x}, {i}ll, {j}, {lit}); pb(&r, {}); diff({prefix}g, {prefix}d); }}",
+                    f.ty.c, f.name, f.ty.size
+                );
+                expected.push(f.expect(i, j, &x));
+            }
+            calls += 1;
+        }
+        let _ = writeln!(c, "}}");
+    }
+    c.push_str("int main(void) {\n  long pg = sysconf(_SC_PAGESIZE);\n");
+    c.push_str("  unsigned char *m = mmap(0, 0x30000 + pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);\n");
+    c.push_str(
+        "  if (m == MAP_FAILED || mprotect(m + 0x30000, pg, PROT_NONE)) return 2;\n  buf = m;\n",
+    );
+    c.push_str("  for (long k = 0; k < 0x30000; k++) buf[k] = ib(k);\n");
+    for prefix in &prefixes {
+        let _ = writeln!(c, "  fill({prefix}g, {prefix}d);");
+    }
+    for index in 0..funcs.len() {
+        let _ = writeln!(c, "  t{index}();");
+    }
+    c.push_str("  return 0;\n}\n");
+    let driver = toolchain.compile_c(&dir, "driver", &c, &[]);
+    let mut inputs: Vec<&std::path::Path> = vec![&driver];
+    inputs.extend(objects.iter().map(std::path::PathBuf::as_path));
+    let mut failures = Vec::new();
+    for (k, linker) in toolchain.linkers.iter().enumerate() {
+        let program = dir.join(format!("mem-{}", linker.name));
+        let ran = toolchain.link_and_run(linker, &[], &inputs, &program);
+        assert_eq!(exit_code(&ran), Some(0), "{}: {}", linker.name, ran.stderr_text());
+        if k > 0 {
+            continue;
+        }
+        let stdout = ran.stdout_text();
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.len(), expected.len(), "the driver's output");
+        for (n, line) in lines.iter().enumerate() {
+            let call = n / prefixes.len();
+            let f = &funcs[call / per];
+            let first = lines[n - n % prefixes.len()];
+            let want = &expected[n];
+            if want != line {
+                failures.push(format!(
+                    "{}{}: {line}\n   want {want}",
+                    prefixes[n % prefixes.len()],
+                    f.name
+                ));
+            } else if *line != first {
+                failures.push(format!(
+                    "{}{}: {line}\n   but {first}",
+                    prefixes[n % prefixes.len()],
+                    f.name
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} lines differ:\n{}\n{}",
+        failures.len(),
+        failures.iter().take(30).cloned().collect::<Vec<_>>().join("\n"),
+        funcs[0].text("h_"),
+    );
+    calls
+}
+
+/// Loads and stores of every `Fpr`-class type through every addressing
+/// form, natively against the model and `llc`.
+#[test]
+fn loads_and_stores_agree_with_the_model_and_llc() {
+    let funcs = mem_funcs();
+    let calls = run_mem("a64-float-mem", &funcs, 6);
+    eprintln!("{} functions, {calls} calls compared", funcs.len());
+}
+
+/// An atomic load or store of an `Fpr`-class value stays refused by
+/// `mem.rs`'s check, before the hook.
+#[test]
+fn atomic_fp_accesses_stay_refused() {
+    assert_refused(&[
+        (
+            "define double @f(ptr %p) { %r = load atomic double, ptr %p seq_cst, align 8\n ret double %r }",
+            hod_a64::target::ATOMIC,
+        ),
+        (
+            "define void @f(ptr %p, float %v) { store atomic float %v, ptr %p release, align 4\n ret void }",
+            hod_a64::target::ATOMIC,
+        ),
+    ]);
 }

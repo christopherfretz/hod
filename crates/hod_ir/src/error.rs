@@ -36,6 +36,16 @@ pub enum IrErrorKind {
     UnsupportedInitializer,
     /// A table has no id left for another entry (§1: ids are `u32`).
     TableFull,
+    /// A value reserved in a function builder was never defined (§5.3).
+    UndefinedValue,
+    /// The blocks of a function body are not well formed: an instruction
+    /// outside a block or after a terminator, a block without a
+    /// terminator, a `phi` or a landing pad out of place, a `phi` whose
+    /// incoming blocks are not the block's predecessors (§5.1, §5.4).
+    BadBlock,
+    /// The use facts a body records differ from the ones its instructions
+    /// imply (§5.6).
+    UseFactsMismatch,
 }
 
 /// An error from building IR. Never a panic.

@@ -15,17 +15,29 @@
 //! | `flatten` | §4.3 | initializers as bytes and fixups |
 //! | `attrs` | §5.7 | `CallConv`, `ParamAttrs` |
 //! | `module` | §2 | the `Module` shell |
+//! | `value` | §5.3 | `Value`, `InstId`, `SlotId` |
+//! | `inst` | §5.4 | opcodes, predicates, memory flags, the instruction record |
+//! | `intrinsic` | §5.5 | `Intrinsic`, name resolution, the no-code rule |
+//! | `body` | §5.1, §5.2, §5.6 | `Body` and the API code generation reads |
+//! | `builder` | §5.1, §5.3 | `FunctionBuilder` |
+//! | `verify` | §5.1 | `Body::verify` |
 
 mod attrs;
+mod body;
+mod builder;
 mod constant;
 mod error;
 mod flatten;
 mod fold;
 mod ids;
+mod inst;
 mod intern;
+mod intrinsic;
 mod module;
 mod target;
 mod types;
+mod value;
+mod verify;
 mod wide;
 
 pub use attrs::{CallConv, ParamAttrs, ParamMem};
@@ -40,3 +52,17 @@ pub use target::{
     X86_64_LINUX_DATA_LAYOUT,
 };
 pub use types::{MAX_INT_BITS, MAX_TYPE_SIZE, TypeKind, TypeTable};
+
+pub use body::{
+    Block, Blocks, Body, Bundle, CallSite, Callee, Clause, Inst, InstKind, Insts, LandingPad, Phi,
+    PtrAdd, SHUFFLE_UNDEF, Slot, SlotVar, Successors, Switch, UseFacts,
+};
+pub use builder::{CallDesc, FunctionBuilder};
+pub use inst::{
+    AtomicOrdering, FloatPredicate, IntPredicate, MemFlags, Opcode, RmwOp, SyncScope, TailKind,
+    aggregate_field,
+};
+pub use intrinsic::{
+    Intrinsic, IntrinsicRef, NoCode, no_code_intrinsic, no_code_names, resolve_intrinsic,
+};
+pub use value::{InstId, SlotId, Value, ValueKind};

@@ -500,6 +500,18 @@ impl<'a> Fx<'_, 'a, '_> {
                 }
                 if at >= len {
                     self.s.nums.resize(at + 1, Local::Undef);
+                    // A number is in one table only, and in the sparse one
+                    // only beyond the dense one: what the dense table now
+                    // covers moves into it, or a block the label scan put
+                    // in the sparse table would read as undefined once a
+                    // later number grew the dense table over it.
+                    if !self.s.sparse.is_empty() {
+                        for moved in len..at {
+                            if let Some(found) = self.s.sparse.remove(&(moved as u32)) {
+                                self.s.nums[moved] = found;
+                            }
+                        }
+                    }
                 }
                 self.s.nums[at] = local;
                 if !self.s.sparse.is_empty() {
@@ -614,10 +626,13 @@ impl<'a> Fx<'_, 'a, '_> {
                     return fail(LlErrorKind::Syntax, token.start, "expected a number");
                 };
                 if u64::from(number) < self.next {
+                    // LLVM's words: a label's number is written without
+                    // its `%`.
+                    let sigil = if what == "label" { "" } else { "%" };
                     return fail(
                         LlErrorKind::Syntax,
                         token.start,
-                        format!("{what} expected to be numbered '%{}' or greater", self.next),
+                        format!("{what} expected to be numbered '{sigil}{}' or greater", self.next),
                     );
                 }
                 u64::from(number)
@@ -819,6 +834,7 @@ impl<'a> Fx<'_, 'a, '_> {
             if self.p.eat(Tok::DotDotDot) {
                 break;
             }
+            let param_at = self.p.tok.start;
             let ty = self.p.parse_type()?;
             self.p.param_attrs()?;
             let token = self.p.tok;
@@ -826,7 +842,12 @@ impl<'a> Fx<'_, 'a, '_> {
             let key = match token.kind {
                 Tok::LocalId => {
                     self.p.bump();
-                    self.take_number(Some(token), "argument")?
+                    // LLVM places a number out of order at the
+                    // parameter's type.
+                    self.take_number(Some(token), "argument").map_err(|mut failure| {
+                        failure.offset = param_at;
+                        failure
+                    })?
                 }
                 Tok::Local | Tok::LocalQuoted => {
                     self.p.bump();

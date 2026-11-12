@@ -133,7 +133,10 @@ pub fn objdump(object: &Path) -> Option<Vec<String>> {
             .stdout_text()
             .lines()
             .filter(|line| line.starts_with(char::is_whitespace) && !line.trim().is_empty())
-            .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+            .map(|line| {
+                let line = line.split("//").next().unwrap_or(line);
+                line.split_whitespace().collect::<Vec<_>>().join(" ")
+            })
             .collect(),
     )
 }

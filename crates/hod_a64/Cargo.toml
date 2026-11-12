@@ -18,6 +18,7 @@ hod_obj.workspace = true
 hod_testutil = { workspace = true }
 hod_interp.workspace = true
 hod_ll.workspace = true
+hod_dwarf.workspace = true
 
 [lints]
 workspace = true

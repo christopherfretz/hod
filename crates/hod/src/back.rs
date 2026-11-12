@@ -270,7 +270,8 @@ pub const OBJECT_NUL_IN_NAME: &str = "object:nul-in-name";
 pub const LIMIT_OBJECT: &str = "limit:object";
 /// A `-relocation-model` of 32-bit ARM (`ropi`, `rwpi`, `ropi-rwpi`).
 pub const OPTION_RELOCATION_MODEL: &str = "option:relocation-model";
-/// `-split-dwarf-output`: a `.dwo` file to write, which hod does not.
+/// `-split-dwarf-output` without `-split-dwarf-file`: `llc` writes an
+/// ordinary object and an empty `.dwo` file; hod does not.
 pub const OPTION_SPLIT_DWARF: &str = "option:split-dwarf-output";
 
 /// `llc`'s options as code generation takes them.
@@ -285,9 +286,14 @@ fn cg_options(options: &Options) -> Result<hod_cg::Options, CompileError> {
             return option(OPTION_RELOCATION_MODEL);
         }
     };
-    if options.split_dwarf_output.is_some() {
-        return option(OPTION_SPLIT_DWARF);
-    }
+    // WP-062 (`spec/dwarf.md` §6.15): `-split-dwarf-file` splits, and
+    // `-split-dwarf-output` puts the `.dwo` sections in a file.
+    let split_dwarf = match (&options.split_dwarf_file, &options.split_dwarf_output) {
+        (None, None) => hod_dwarf::SplitDwarf::Off,
+        (None, Some(_)) => return option(OPTION_SPLIT_DWARF),
+        (Some(_), None) => hod_dwarf::SplitDwarf::Single,
+        (Some(_), Some(_)) => hod_dwarf::SplitDwarf::Separate,
+    };
     let code_model = options.code_model.map(|model| match model {
         CodeModel::Tiny => hod_ir::CodeModel::Tiny,
         CodeModel::Small => hod_ir::CodeModel::Small,
@@ -302,6 +308,50 @@ fn cg_options(options: &Options) -> Result<hod_cg::Options, CompileError> {
         data_sections: options.data_sections,
         stress: hod_cg::Stress::default(),
         debug_compression: options.debug_compression,
+        split_dwarf,
+    })
+}
+
+/// What split DWARF refuses of the module before any code is generated
+/// (`spec/dwarf.md` §6.15): a `Dwarf Version` below 5, and a unit whose
+/// `.dwo` name is not `-split-dwarf-file`'s (hod writes the unit's).
+fn check_split_dwarf(module: &Module, options: &Options) -> Result<(), CompileError> {
+    let Some(file) = &options.split_dwarf_file else { return Ok(()) };
+    let refuse =
+        |name: &'static str| Err(Unsupported::module(Construct::Named(name.into())).into());
+    let units = module.debug.compile_units();
+    if units.is_empty() {
+        return Ok(());
+    }
+    if module.props.dwarf_version.is_some_and(|v| v < 5) {
+        return refuse(hod_dwarf::SPLIT_DWARF_4);
+    }
+    let file = file.as_os_str().as_encoded_bytes();
+    for &unit in units {
+        if let hod_ir::DiNode::CompileUnit(cu) = module.debug.node(unit)
+            && !cu.split_debug_filename.is_empty()
+            && cu.split_debug_filename != file
+        {
+            return refuse(hod_dwarf::SPLIT_NAME);
+        }
+    }
+    Ok(())
+}
+
+/// Writes the `.dwo` file of [`hod_dwarf::SplitDwarf::Separate`]: the
+/// companion the DIE writer attached, or an empty object as `llc` writes
+/// for a module without split unit, compressed as the object's debug
+/// sections are.
+fn write_dwo(
+    object: &mut hod_obj::Object,
+    path: &std::path::Path,
+    compression: hod_obj::Compression,
+) -> Result<(), CompileError> {
+    let mut dwo = object.take_dwo().unwrap_or_else(|| hod_obj::Object::new(object.arch()));
+    dwo.compress_debug_sections(compression).map_err(from_obj)?;
+    let bytes = hod_obj::elf::to_vec(&dwo).map_err(from_obj)?;
+    std::fs::write(path, bytes).map_err(|e| {
+        CompileError::InvalidOptions(format!("cannot write '{}': {e}", path.display()))
     })
 }
 
@@ -321,6 +371,7 @@ pub fn generate_with(
         return Err(Unsupported::module(Construct::CodegenNotImplemented).into());
     }
     let cg = cg_options(options)?;
+    check_split_dwarf(module, options)?;
     // `-mattr` applies to every function.
     for item in &options.features {
         if let Err(refused) = features::check_one(item) {
@@ -367,13 +418,18 @@ pub fn generate_with(
         }
     })?;
     report.phase("emission");
-    let emitted = chunks
+    let mut emitted = chunks
         .iter()
         .try_for_each(|chunk| module_emitter.add_chunk(chunk))
         .and_then(|()| module_emitter.finish())
         .map_err(|error| from_cg(error, None))?;
     drop(chunks);
     let object = hod_obj::elf::to_vec(&emitted.object).map_err(from_obj)?;
+    if let Some(path) = &options.split_dwarf_output
+        && cg.split_dwarf == hod_dwarf::SplitDwarf::Separate
+    {
+        write_dwo(&mut emitted.object, path, cg.debug_compression)?;
+    }
     report.phase("object");
     Ok(object)
 }
@@ -407,6 +463,35 @@ mod tests {
         assert_eq!(cg_options(&ropi), refused(OPTION_RELOCATION_MODEL));
         let dwo = Options { split_dwarf_output: Some("a.dwo".into()), ..Options::default() };
         assert_eq!(cg_options(&dwo), refused(OPTION_SPLIT_DWARF));
+        let single = Options { split_dwarf_file: Some("a.dwo".into()), ..Options::default() };
+        assert_eq!(cg_options(&single).unwrap().split_dwarf, hod_dwarf::SplitDwarf::Single);
+        let separate = Options { split_dwarf_output: Some("o/a.dwo".into()), ..single.clone() };
+        assert_eq!(cg_options(&separate).unwrap().split_dwarf, hod_dwarf::SplitDwarf::Separate);
+        assert_eq!(
+            cg_options(&Options::default()).unwrap().split_dwarf,
+            hod_dwarf::SplitDwarf::Off
+        );
+        // `Dwarf Version` below 5 (today `classify` refuses it first, as
+        // `debug:dwarf-version`).
+        let text = "target triple = \"aarch64-unknown-linux-gnu\"\n\
+                    !llvm.dbg.cu = !{!0}\n!llvm.module.flags = !{!2}\n\
+                    !0 = distinct !DICompileUnit(language: DW_LANG_C11, file: !1, \
+                    splitDebugFilename: \"a.dwo\", emissionKind: FullDebug)\n\
+                    !1 = !DIFile(filename: \"a.c\", directory: \"/w\")\n\
+                    !2 = !{i32 7, !\"Dwarf Version\", i32 4}\n";
+        let module =
+            hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default()).unwrap().module;
+        let named = |name: &'static str| {
+            Err::<(), _>(CompileError::from(Unsupported::module(Construct::Named(name.into()))))
+        };
+        assert_eq!(check_split_dwarf(&module, &single), named(hod_dwarf::SPLIT_DWARF_4));
+        assert_eq!(check_split_dwarf(&module, &Options::default()), Ok(()));
+        let v5 = text.replace("i32 4}", "i32 5}");
+        let module =
+            hod_ll::parse_module(v5.as_bytes(), &hod_ll::ParseOptions::default()).unwrap().module;
+        assert_eq!(check_split_dwarf(&module, &single), Ok(()));
+        let other = Options { split_dwarf_file: Some("b.dwo".into()), ..Options::default() };
+        assert_eq!(check_split_dwarf(&module, &other), named(hod_dwarf::SPLIT_NAME));
         let pic = Options {
             relocation_model: Some(RelocModel::Pic),
             code_model: Some(CodeModel::Large),

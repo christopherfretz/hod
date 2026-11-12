@@ -142,7 +142,7 @@ keeps the per-function facts that only exist after code generation
 
 | DIE (M3) | from `hod_ir` | from the function's record | missing today |
 |---|---|---|---|
-| compile unit | `DiCompileUnit` (`producer`, `language`, `file` → `DW_AT_name`/`DW_AT_comp_dir`, `isOptimized`, `flags`, `runtimeVersion`, `emissionKind`, `enums`, `retainedTypes`, `globals`, `imports`, `nameTableKind`, `sysroot`, `sdk`) | the placed functions' sections and offsets (`DW_AT_ranges`) | nothing for `-O0` units; split DWARF (`splitDebugFilename`, `dwoId`) and `macros` are `unsupported` (`spec/landed/ir/WP-005.md` field table) |
+| compile unit | `DiCompileUnit` (`producer`, `language`, `file` → `DW_AT_name`/`DW_AT_comp_dir`, `isOptimized`, `flags`, `runtimeVersion`, `emissionKind`, `enums`, `retainedTypes`, `globals`, `imports`, `nameTableKind`, `sysroot`, `sdk`) | the placed functions' sections and offsets (`DW_AT_ranges`) | nothing for `-O0` units; `splitDebugFilename` and `splitDebugInlining` drive split DWARF (§6.15), a `dwoId` is refused there; `macros` is `unsupported` (`spec/landed/ir/WP-005.md` field table) |
 | line table | `DiFile` (`filename`, `directory`, `checksumkind`, `checksum`, `source`); `DiLocation` (`line`, `column`, `scope` → file) | `lines` (offset, `LocId`) | a block-start mark on a transition (§5.3, `crates/hod_cg/src/record.rs:119`) |
 | subprogram | `DiSubprogram` (name, linkage name, scope, file, line, type, `scopeLine`, flags, `spFlags`, `declaration`, `templateParams`, `containingType`, `virtualIndex`), `FunctionDesc`'s subprogram | code size and placement (`DW_AT_low_pc`/`high_pc`), `FrameDesc::frame_base` (`DW_AT_frame_base`) | nothing |
 | lexical block | `DiLexicalBlock` (`scope`, `file`, `line`, `column`), `DiLexicalBlockFile` | code ranges, derived from `lines`: the union of the transitions whose location's scope chain contains the block (§6.4) | nothing; the ranges are derived, not recorded |
@@ -664,6 +664,11 @@ exclusive `low_pc` forms), and pin the bytes of one entry.
 | 88 | `variable` (local, aligned): `location` (0), `name`, `alignment`, decl (1), `type`, `artificial` (2) | 8 | 10639 | WP-087 |
 | 89 | `subprogram` (line tables only, §6.13): `low_pc`, `high_pc`, `name` (0), `abstract_origin` (1), children optional | 8 | 10647 | WP-094 |
 | 90 | `label` (any, §6.14): `name` (0), decl (1), `decl_column` (2), `artificial` (3), `LLVM_coro_suspend_idx` (4), `low_pc` (5) | 64 | 10655 | WP-098 |
+| 91 | `skeleton_unit` (§6.15): `stmt_list`, `str_offsets_base`, `comp_dir`, `dwo_name`, `low_pc`, `high_pc` (0), `addr_base` (1) | 4 | 10719 | WP-062 |
+| 92 | `skeleton_unit` (ranges): `stmt_list`, `str_offsets_base`, `comp_dir`, `dwo_name`, `low_pc`, `ranges`, `addr_base`, `rnglists_base` | 1 | 10723 | WP-062 |
+| 93 | `skeleton_unit` (no split unit): `stmt_list`, `str_offsets_base`, `comp_dir`, `producer`, `language`, `name`, `low_pc`, `high_pc` (0), `addr_base` (1) | 4 | 10724 | WP-062 |
+| 94 | `skeleton_unit` (no split unit, ranges): 93's fixed attributes, `low_pc`, `ranges`, `addr_base`, `rnglists_base` | 1 | 10728 | WP-062 |
+| 95 | `compile_unit` (split, `.debug_info.dwo`): `producer`, `language`, `name`, `dwo_name`, children optional | 2 | 10729 | WP-062 |
 
 Families 2 to 45 that WP-058 owns are used for the common shape of each
 kind (they keep the codes the reserved shapes promised); the "any"
@@ -679,7 +684,7 @@ WP-057 uses its reserved families 0 (`formal_parameter`), 1 (local
 `low_pc`/`high_pc` or `ranges` as `DW_FORM_sec_offset`) and 39 (`label`),
 and appends 69 to 71 for the other shapes.
 
-`CODE_END` is 10719 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085, 10631 after WP-059, 10647 after WP-087, 10655 after WP-094). Since the core families come last, their codes take
+`CODE_END` is 10731 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085, 10631 after WP-059, 10647 after WP-087, 10655 after WP-094, 10719 after WP-098). Since the core families come last, their codes take
 two ULEB bytes where `llc`'s take one (the cost is in §7.2; open question
 7).
 
@@ -1715,6 +1720,102 @@ measurement of `docs/status/debug.md` went from 12 declines among 212
 modules to 4: `debug:call-sites` 2 and `debug:dwarf-version` 2
 (`spec/landed/dwarf/WP-098.md`).
 
+### 6.15 Split DWARF (implemented, WP-062)
+
+`crates/hod_dwarf/src/split.rs`. `-gsplit-dwarf` reaches the backend as
+`llc -split-dwarf-file=<name> [-split-dwarf-output=<file>]` and, in the
+IR, as the unit's `splitDebugFilename` (clang and kiln write the name
+they pass, `splitDebugInlining: false`). What `llc` 19 and 22 write for a
+DWARF 5 unit, read from their output, and therefore hod:
+
+| options | `llc` | hod (`hod_cg::Options::split_dwarf`) |
+|---|---|---|
+| neither | §6 | `SplitDwarf::Off`, §6 |
+| `-split-dwarf-file` (`-gsplit-dwarf=single`) | skeleton in the object, the `.dwo` sections in the object too, `SHF_EXCLUDE` | `SplitDwarf::Single` |
+| both (`-gsplit-dwarf`) | skeleton in the object, the `.dwo` sections in `<file>`; the file is written even when it is empty | `SplitDwarf::Separate`: the sections in a companion `Object` (`Object::set_dwo`, `spec/object.md`), which the facade writes to `<file>` (an empty object when there is no split unit) |
+| `-split-dwarf-output` alone | an ordinary unit and an empty `.dwo` file | `option:split-dwarf-output` |
+
+**The skeleton unit** (`.debug_info`, `DW_UT_skeleton`, the header's
+DWO id at offset 12; `DW_TAG_skeleton_unit`, families 91 and 92):
+`DW_AT_stmt_list`, `DW_AT_str_offsets_base`, `DW_AT_comp_dir`,
+`DW_AT_dwo_name`, the unit's code (`DW_AT_low_pc` `addrx` and
+`DW_AT_high_pc`, or `DW_AT_low_pc` 0 and a `DW_FORM_rnglistx` list),
+`DW_AT_addr_base` and, with a list, `DW_AT_rnglists_base`. The object
+keeps the line table, the unit's `.debug_addr` (every address of the
+split unit is an index of it) and its `.debug_rnglists` (only the unit's
+own list), and gets its own `.debug_abbrev`, `.debug_str` and
+`.debug_str_offsets`, all with the relocations of §1.1.
+
+**The split unit** (`.debug_info.dwo`, `DW_UT_split_compile`; family
+95: `DW_AT_producer`, `DW_AT_language`, `DW_AT_name`, `DW_AT_dwo_name`)
+holds every other DIE, written by the full writer's code
+(`Writer::die`), so §6.4 to §6.13 hold unchanged. Its sections are
+`.debug_str_offsets.dwo`, `.debug_str.dwo` (`SHF_MERGE|SHF_STRINGS`),
+`.debug_info.dwo`, `.debug_abbrev.dwo` and, when a block has a range
+list, `.debug_rnglists.dwo`, in that order, all `SHF_EXCLUDE`, with **no
+relocation**: string offsets are resolved in place, `DW_AT_decl_file`
+numbers are the skeleton's line table's, addresses are `.debug_addr`
+indices. A block's list is written as in a full unit (a four-byte
+`DW_FORM_sec_offset`) and then made a `DW_FORM_rnglistx` index of the
+same four bytes, a ULEB128 padded with continuation bytes, and the
+`.dwo` abbreviation table names `DW_FORM_rnglistx` for that pair: no
+DIE moves. Any other attribute that would need a relocation is
+refused (`Unsupported`, no `debug:` name: an internal error).
+
+**A unit without a split unit**: a unit whose only DIE is its own (a
+`-gline-tables-only` unit, §6.10) gets, as from `llc`, a skeleton with
+`DW_AT_producer`, `DW_AT_language` and `DW_AT_name` in place of
+`DW_AT_dwo_name` (families 93 and 94), DWO id 0, and no `.dwo` section.
+clang writes no `splitDebugFilename` for it, which is then not needed.
+
+**The DWO id.** `llc`'s is `DIEHash::computeCUSignature`, an MD5 over the
+unit's DIEs under LLVM's type-signature rules; it includes the frame
+offsets of locals, which hod lays out differently (§6.7), so hod cannot
+reproduce it and does not try. hod's is `hod_dwarf::dwo_id` of the `.dwo`
+name and the split unit's five sections (the info with a zero id):
+each part hashed as its length and then 8-byte words through
+`h = rotl((h ^ w) * K, 31)`, finished by MurmurHash3's `fmix64`, 0
+replaced by 1. It is computed once and written into both headers, so
+the two always agree; it depends only on the bytes, so it is
+deterministic and the same for every thread count. Consumers only
+compare the two (gdb, lldb, `llvm-dwp`).
+
+**Permitted differences** (besides §6.7's):
+
+- `llc` names the code of a function or a block that does not start its
+  section by a range list in a split unit (`useRangesForSplitDwarf`,
+  "minimize addresses"); hod keeps `low_pc`/`high_pc`, as in a full
+  unit. Both are valid; the debuggers read both;
+- `DW_AT_GNU_pubnames` (`nameTableKind: GNU`, clang's default with
+  `-gsplit-dwarf`): hod writes no name index (§1.1);
+- the DWO id's value (above);
+- the empty `.dwo` file of a unit without split unit: `llc`'s has only
+  `.strtab`, hod's is `hod_obj`'s empty object.
+
+**Refusals** (`pub const` in `split.rs`, re-exported by the crate; the
+two module-level ones are checked by the facade before code generation,
+`crates/hod/src/back.rs`):
+
+| name | what |
+|---|---|
+| `debug:DICompileUnit.dwoId` | a unit with a DWO id, split or not: a clang module's skeleton (`-gmodules`), for which `llc` writes `DW_AT_GNU_dwo_id`/`DW_AT_GNU_dwo_name` on an ordinary unit |
+| `debug:split-several-units` | split DWARF for a module with several units with DIEs (linked IR): one `.dwo` would hold several split units |
+| `debug:split-dwarf-inlining` | `splitDebugInlining: true` (LLVM's default when the field is omitted) and inlined code: `llc` then repeats the inlined subroutines in the skeleton |
+| `debug:split-reduced-unit` | a `LineTablesOnly` unit with function DIEs in split mode (today refused earlier as `debug:line-tables-inlined`; kept for when that is lifted) |
+| `debug:split-dwarf-name` | a unit with a split unit and no `splitDebugFilename`, or (facade) a name that is not `-split-dwarf-file`'s: hod writes the unit's name, `llc` the option's |
+| `debug:split-dwarf-4` | (facade) split DWARF with `Dwarf Version` below 5 (GNU fission: `DW_AT_GNU_dwo_name`, `DW_FORM_GNU_addr_index`); today `debug:dwarf-version` refuses such a module first |
+
+**Hooks** (one call each): `UnitPlan::build` calls `split::check_unit`
+(`die.rs`); `DebugLines::finish` calls `write_unit_dies` with the
+emitter's `split_dwarf` in place of `write_debug_info`
+(`crates/hod_cg/src/emit/lines.rs`), set in `debug_tables`
+(`emit/mod.rs`); the facade maps the options (`cg_options`), checks the
+module (`check_split_dwarf`) and writes the companion (`write_dwo`,
+compressed as the object's debug sections are).
+
+Evidence: `crates/hod_a64/tests/dies_split.rs` (§8.8),
+`tests/debug/split.cpp` (L7, §8.4), `spec/landed/dwarf/WP-062.md`.
+
 ## 7. Speed and memory
 
 ### 7.1 Parallel emission and determinism
@@ -2269,7 +2370,7 @@ Rows for `docs/BACKLOG.md` (ids to be assigned; "this" is WP-052):
 | globals, namespaces, templates (WP-059, **landed**: `spec/landed/dwarf/WP-059.md`) | global and static-member variables (`DW_OP_addrx`, TLS with `DW_OP_form_tls_address`), namespaces, imported entities, template type and value parameters (packs), `DW_AT_specification` for out-of-line definitions | subprograms and variables, the type graph |
 | L7 harness (WP-060, **landed**: `spec/landed/dwarf/WP-060.md`) | §8.4: `xtask` gdb and lldb sessions, kiln's debugger tests, corpus `--verify`, `(function, line)` comparison with `llc`; the two-object COMDAT case | line tables in `emit_module`, subprograms and variables |
 | line-tables-only and compressed sections (WP-061, **landed**: `spec/landed/dwarf/WP-061.md`) | §6.10 (`LineTablesOnly`, `DebugDirectivesOnly`, mixed units) and §1.1 (`SHF_COMPRESSED` with zlib, written in safe Rust by `hod_obj::deflate`) | DIE writer core |
-| split DWARF | `-gsplit-dwarf`: skeleton unit, `.dwo` sections, `DW_UT_skeleton`/`split_compile`; `hod_ir` must first map `splitDebugFilename` and `dwoId` | DIE writer core |
+| split DWARF (WP-062, **landed**: `spec/landed/dwarf/WP-062.md`) | §6.15: `-gsplit-dwarf`: skeleton unit, `.dwo` sections or file, `DW_UT_skeleton`/`split_compile`; `hod_ir` maps `splitDebugFilename`, `dwoId` and `splitDebugInlining` | DIE writer core |
 
 ## 11. Open questions
 

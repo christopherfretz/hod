@@ -59,6 +59,8 @@ pub mod tag {
     pub const INLINED_SUBROUTINE: u16 = 0x1d;
     pub const GNU_TEMPLATE_TEMPLATE_PARAM: u16 = 0x4106;
     pub const GNU_TEMPLATE_PARAMETER_PACK: u16 = 0x4107;
+    // WP-062.
+    pub const SKELETON_UNIT: u16 = 0x4a;
 }
 
 /// `DW_AT_*` (DWARF 5 §7.5.4, table 7.5).
@@ -126,6 +128,8 @@ pub mod at {
     // WP-098: the suspend point a coroutine's label marks (LLVM 21's
     // `DW_AT_LLVM_coro_suspend_idx`, in LLVM's vendor range).
     pub const LLVM_CORO_SUSPEND_IDX: u16 = 0x3e0d;
+    // WP-062.
+    pub const DWO_NAME: u16 = 0x76;
 }
 
 /// `DW_FORM_*` (DWARF 5 §7.5.6, table 7.6).
@@ -310,6 +314,12 @@ pub mod fam {
     pub const SUBPROGRAM_MINIMAL: usize = 89;
     // WP-098: labels beyond WP-057's.
     pub const LABEL_ANY: usize = 90;
+    // WP-062: split DWARF's units (`spec/dwarf.md` §6.15).
+    pub const SKELETON_UNIT: usize = 91;
+    pub const SKELETON_UNIT_RANGES: usize = 92;
+    pub const SKELETON_UNIT_ALONE: usize = 93;
+    pub const SKELETON_UNIT_ALONE_RANGES: usize = 94;
+    pub const SPLIT_COMPILE_UNIT: usize = 95;
 }
 
 /// Every family, in code order (`spec/dwarf.md` §6.1 has the same table).
@@ -1361,6 +1371,93 @@ pub const FAMILIES: &[Family] = &[
             o(5, at::LOW_PC, ADDRX),
         ],
     ),
+    // WP-062 (`spec/dwarf.md` §6.15): split DWARF. 91: the skeleton unit
+    // of a unit whose DIEs are in the `.dwo`, in `llc`'s order; its code
+    // in one section (bit 0), its address table (bit 1).
+    fam(
+        "skeleton_unit",
+        tag::SKELETON_UNIT,
+        No,
+        4,
+        "WP-062",
+        &[
+            s(at::STMT_LIST, SEC_OFFSET),
+            s(at::STR_OFFSETS_BASE, SEC_OFFSET),
+            s(at::COMP_DIR, STRX),
+            s(at::DWO_NAME, STRX),
+            o(0, at::LOW_PC, ADDRX),
+            o(0, at::HIGH_PC, DATA4),
+            o(1, at::ADDR_BASE, SEC_OFFSET),
+        ],
+    ),
+    // 92: the same, its code in several sections.
+    fam(
+        "skeleton_unit (ranges)",
+        tag::SKELETON_UNIT,
+        No,
+        1,
+        "WP-062",
+        &[
+            s(at::STMT_LIST, SEC_OFFSET),
+            s(at::STR_OFFSETS_BASE, SEC_OFFSET),
+            s(at::COMP_DIR, STRX),
+            s(at::DWO_NAME, STRX),
+            s(at::LOW_PC, ADDR),
+            s(at::RANGES, RNGLISTX),
+            s(at::ADDR_BASE, SEC_OFFSET),
+            s(at::RNGLISTS_BASE, SEC_OFFSET),
+        ],
+    ),
+    // 93: the skeleton of a unit with no DIE but its own (no split unit,
+    // DWO id 0: `llc`'s `-gline-tables-only` case): the unit's names
+    // instead of `DW_AT_dwo_name`.
+    fam(
+        "skeleton_unit (no split unit)",
+        tag::SKELETON_UNIT,
+        No,
+        4,
+        "WP-062",
+        &[
+            s(at::STMT_LIST, SEC_OFFSET),
+            s(at::STR_OFFSETS_BASE, SEC_OFFSET),
+            s(at::COMP_DIR, STRX),
+            s(at::PRODUCER, STRX),
+            s(at::LANGUAGE, DATA2),
+            s(at::NAME, STRX),
+            o(0, at::LOW_PC, ADDRX),
+            o(0, at::HIGH_PC, DATA4),
+            o(1, at::ADDR_BASE, SEC_OFFSET),
+        ],
+    ),
+    // 94
+    fam(
+        "skeleton_unit (no split unit, ranges)",
+        tag::SKELETON_UNIT,
+        No,
+        1,
+        "WP-062",
+        &[
+            s(at::STMT_LIST, SEC_OFFSET),
+            s(at::STR_OFFSETS_BASE, SEC_OFFSET),
+            s(at::COMP_DIR, STRX),
+            s(at::PRODUCER, STRX),
+            s(at::LANGUAGE, DATA2),
+            s(at::NAME, STRX),
+            s(at::LOW_PC, ADDR),
+            s(at::RANGES, RNGLISTX),
+            s(at::ADDR_BASE, SEC_OFFSET),
+            s(at::RNGLISTS_BASE, SEC_OFFSET),
+        ],
+    ),
+    // 95: the split unit in `.debug_info.dwo` (`DW_UT_split_compile`).
+    fam(
+        "compile_unit (split)",
+        tag::COMPILE_UNIT,
+        Optional,
+        2,
+        "WP-062",
+        &[s(at::PRODUCER, STRX), s(at::LANGUAGE, DATA2), s(at::NAME, STRX), s(at::DWO_NAME, STRX)],
+    ),
 ];
 
 /// The slots of the general static-member families (54, 55), in `llc`'s
@@ -1528,7 +1625,9 @@ mod tests {
         assert_eq!(BASES[fam::SUBPROGRAM_MINIMAL], 10647);
         // WP-098 appended family 90.
         assert_eq!(BASES[fam::LABEL_ANY], 10655);
-        assert_eq!(CODE_END, 10719);
+        // WP-062 appended families 91 to 95.
+        assert_eq!(BASES[fam::SKELETON_UNIT], 10719);
+        assert_eq!(CODE_END, 10731);
         for (index, name) in [
             (fam::CONST_TYPE, "const_type"),
             (fam::TYPEDEF, "typedef"),

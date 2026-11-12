@@ -24,10 +24,12 @@ use crate::symbol::{Symbol, SymbolKind};
 use crate::value::{InstId, Value, ValueKind};
 
 /// The fields LLVM's parser requires, and those whose default there is
-/// not hod's (`spFlags`, `isDefinition`): written even at hod's default.
+/// not hod's (`spFlags`, `isDefinition`, `splitDebugInlining`): written even at hod's default.
 const REQUIRED: &[(DiKind, &str)] = &[
     (DiKind::Subprogram, "spFlags"),
     (DiKind::GlobalVariable, "isDefinition"),
+    // WP-062: LLVM's default is `true`, hod's `false`.
+    (DiKind::CompileUnit, "splitDebugInlining"),
     (DiKind::File, "filename"),
     (DiKind::File, "directory"),
     (DiKind::Enumerator, "name"),

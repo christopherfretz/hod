@@ -1,4 +1,4 @@
-//! The LSDA round trip of `spec/eh.md` §9.8: llc's `.gcc_except_table`
+//! The LSDA round trip of `spec/eh.md` §9.9: llc's `.gcc_except_table`
 //! decoded (with its relocations and the `DW.stub` words they reach), turned
 //! into `hod_eh`'s input rows, written again by `write_lsdas`, compared, and
 //! spliced into llc's object.
@@ -311,7 +311,7 @@ pub struct Rows {
 }
 
 /// The rows `hod_cg` would record for the function whose LSDA llc wrote
-/// as `d` (`spec/eh.md` §9.8): the type table as llc's; one pad per
+/// as `d` (`spec/eh.md` §9.9): the type table as llc's; one pad per
 /// landing address with the clauses of its chain; a row per call that can
 /// throw (a padded entry split at each such call, so that hod has to merge
 /// them again), none for a `nounwind` callee.
@@ -418,7 +418,7 @@ pub struct LsdaTrip {
 }
 
 /// Re-writes the LSDAs of `object` (llc's, from `ir`) with `hod_eh`, checks
-/// them against llc's (`spec/eh.md` §9.8), and splices them in.
+/// them against llc's (`spec/eh.md` §9.9), and splices them in.
 /// `mutate` may change the rows first (the wrong-table test); with `check`
 /// false the tables are only written and spliced, not compared.
 pub fn lsda_trip(

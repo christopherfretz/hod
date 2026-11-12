@@ -1,4 +1,4 @@
-//! `spec/eh.md` §9.8: units of the LSDA writer: exact bytes of small
+//! `spec/eh.md` §9.9: units of the LSDA writer: exact bytes of small
 //! tables, the type table and its stubs, filters sharing a terminator, the
 //! call-site merge and gap rules, the `TType` base offset at every size,
 //! sections and groups, independence from the input order, and every error

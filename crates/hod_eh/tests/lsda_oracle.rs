@@ -1,4 +1,4 @@
-//! `spec/eh.md` §9.8: `llc` is the oracle for the LSDA. Each case is
+//! `spec/eh.md` §9.9: `llc` is the oracle for the LSDA. Each case is
 //! C++-shaped LLVM text that `llc` (every installed major, `-O0`, PIC, with
 //! and without `-function-sections`) compiles for AArch64 and x86-64. Its
 //! `.gcc_except_table` sections are decoded (with their relocations and the
@@ -406,13 +406,13 @@ fn oracle(major: u32) {
     eprintln!("{}", summary.join("\n"));
 }
 
-/// §9.8 with LLVM 19.
+/// §9.9 with LLVM 19.
 #[test]
 fn llc19_lsda_round_trips() {
     oracle(19);
 }
 
-/// §9.8 with LLVM 22.
+/// §9.9 with LLVM 22.
 #[test]
 fn llc22_lsda_round_trips() {
     oracle(22);

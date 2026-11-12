@@ -1,4 +1,4 @@
-// The program of spec/eh.md §9.8 (real unwinding through hod's LSDAs).
+// The program of spec/eh.md §9.9 (real unwinding through hod's LSDAs).
 // Compiled to lsda.ll with
 //   clang++-19 -std=c++14 -O0 -S -emit-llvm -fno-discard-value-names \
 //     --target=aarch64-unknown-linux-gnu lsda.cpp -o lsda.ll

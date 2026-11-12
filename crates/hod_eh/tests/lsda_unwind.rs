@@ -1,4 +1,4 @@
-//! `spec/eh.md` §9.8: real unwinding through hod's LSDAs.
+//! `spec/eh.md` §9.9: real unwinding through hod's LSDAs.
 //! `tests/data/lsda.ll` (C++ compiled by clang 19 at `-O0`; the source is
 //! `tests/data/lsda.cpp`) catches by type after a handler that does not
 //! match, falls through non-matching inner handlers to an outer one with a
@@ -70,6 +70,7 @@ fn hod_object(
     let t = lsda_trip(label, Arch::AArch64, IR, object, false, false, mutate, check);
     if check {
         assert!(t.identical, "{label}: hod's LSDAs are llc's");
+        eprintln!("{label}: {} LSDAs, {} call sites, byte-identical", t.functions, t.sites);
     }
     let lsda_of = |name: &str| t.lsdas[name];
     let rt = round_trip(scratch, label, Arch::AArch64, IR, &t.patched, false, Some(&lsda_of))?;
@@ -138,13 +139,13 @@ fn unwind(major: u32) {
     eprintln!("{}", report.join("\n"));
 }
 
-/// §9.8 with LLVM 19.
+/// §9.9 with LLVM 19.
 #[test]
 fn llc19_objects_unwind_through_hod_lsdas() {
     unwind(19);
 }
 
-/// §9.8 with LLVM 22.
+/// §9.9 with LLVM 22.
 #[test]
 fn llc22_objects_unwind_through_hod_lsdas() {
     unwind(22);

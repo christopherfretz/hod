@@ -1065,7 +1065,10 @@ section.
   `phi`, `freeze`, constants (poison lanes included), `bitcast` and
   vectors as fields of aggregates take the paths of WP-039 (`Fpr`) and
   WP-040 (`Mem`), masks and odd elements included (their images are
-  `hod_ir`'s); only lane operations refuse those shapes.
+  `hod_ir`'s); only lane operations refuse those shapes. The
+  element-wise operations WP-039 lowers on `Fpr` vectors are on in the
+  matrix for `Vector`; on a `Mem` vector they are `a64:mem-vector`
+  (WP-080).
 - **Calls.** `Fpr` vectors are passed and returned as `abi::assign`
   places them (`v0`..`v7`, then the stack; the AAPCS64 short-vector
   rules, checked against `llc` by the ABI grid and here against gcc's

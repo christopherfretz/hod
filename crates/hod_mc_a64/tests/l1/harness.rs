@@ -150,7 +150,12 @@ pub struct Tools {
     scratch: Scratch,
 }
 
-const TARGET: [&str; 2] = ["--triple=aarch64-unknown-linux-gnu", "-mattr=+lse,+bti,+pauth"];
+/// The features the oracle assembles and disassembles with. Without
+/// `+fullfp16`, half-precision arithmetic is an error to it, as it is
+/// absent from the crate.
+const FEATURES: &str = "+lse,+bti,+pauth,+fp-armv8,+neon";
+
+const TRIPLE: &str = "--triple=aarch64-unknown-linux-gnu";
 
 impl Tools {
     pub fn find() -> Option<Self> {
@@ -170,8 +175,8 @@ impl Tools {
         let outcome = run(
             &self.mc,
             [
-                TARGET[0].as_ref(),
-                TARGET[1].as_ref(),
+                TRIPLE.as_ref(),
+                format!("-mattr={FEATURES}").as_ref(),
                 "-filetype=obj".as_ref(),
                 "-o".as_ref(),
                 obj.as_os_str(),
@@ -219,7 +224,7 @@ impl Tools {
                 "--no-show-raw-insn".as_ref(),
                 "-M".as_ref(),
                 "no-aliases".as_ref(),
-                "--mattr=+lse,+bti,+pauth".as_ref(),
+                format!("--mattr={FEATURES}").as_ref(),
                 obj.as_os_str(),
             ],
         );

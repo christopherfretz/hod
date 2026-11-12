@@ -9,7 +9,7 @@ use crate::harness::Batch;
 use crate::text::{Rng, bitmask_patterns, decode_bitmask_reference, g, rz};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum First {
+pub enum First {
     Movz,
     Movn,
     Orr,
@@ -18,7 +18,7 @@ enum First {
 /// Executes a materialization sequence: MOVZ, MOVN or ORR-from-ZR first,
 /// then MOVKs, all on register `rd` at one operand size. Returns the kind
 /// of the first instruction and the register's final value.
-fn execute(words: &[u32], sz: Size, rd: u32) -> (First, u64) {
+pub fn execute(words: &[u32], sz: Size, rd: u32) -> (First, u64) {
     let mask = u64::MAX >> (64 - sz.bits());
     let mut first = None;
     let mut value = 0u64;

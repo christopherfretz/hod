@@ -8,7 +8,7 @@ use hod_mc_a64::*;
 
 use crate::branch::{HUGE, bad_displacements, displacements, unit};
 use crate::harness::{Batch, Tools};
-use crate::text::{Rng, z};
+use crate::text::{Rng, v, z};
 
 /// The field each kind occupies, stated independently of the crate.
 fn expected_mask(kind: Fixup) -> u32 {
@@ -126,6 +126,12 @@ fn constructors_agree_with_patching() {
             try_ldr_lit(LitLoad::X, z(3), disp),
             Fixup::Literal19.patch(ldr_lit(LitLoad::X, z(3), 0), disp)
         );
+        for sz in VPairSize::ALL {
+            assert_eq!(
+                try_ldr_fp_lit(sz, v(3), disp),
+                Fixup::Literal19.patch(ldr_fp_lit(sz, v(3), 0), disp)
+            );
+        }
     }
 }
 
@@ -173,6 +179,9 @@ pub fn build(batch: &mut Batch) {
         "patch_adr21" Adr21 "adr" adr(z(9), 0), "x9, ";
         "patch_literal19" Literal19 "ldr" ldr_lit(LitLoad::X, z(9), 0), "x9, ";
         "patch_literal19" Literal19 "ldrsw" ldr_lit(LitLoad::SwX, z(9), 0), "x9, ";
+        "patch_literal19" Literal19 "ldr" ldr_fp_lit(VPairSize::S, v(9), 0), "s9, ";
+        "patch_literal19" Literal19 "ldr" ldr_fp_lit(VPairSize::D, v(9), 0), "d9, ";
+        "patch_literal19" Literal19 "ldr" ldr_fp_lit(VPairSize::Q, v(9), 0), "q9, ";
     }
 }
 
@@ -208,6 +217,8 @@ fn a_laid_out_function_matches_llvm() {
         Form { asm: "tbnz x4, #63, {}", zero: tbnz(z(4), 63, 0), kind: Fixup::Test14 },
         Form { asm: "adr x4, {}", zero: adr(z(4), 0), kind: Fixup::Adr21 },
         Form { asm: "ldr w4, {}", zero: ldr_lit(LitLoad::W, z(4), 0), kind: Fixup::Literal19 },
+        Form { asm: "ldr d4, {}", zero: ldr_fp_lit(VPairSize::D, v(4), 0), kind: Fixup::Literal19 },
+        Form { asm: "ldr q4, {}", zero: ldr_fp_lit(VPairSize::Q, v(4), 0), kind: Fixup::Literal19 },
     ];
     let mut rng = Rng::new(0x1a7);
     let mut items = Vec::new();
@@ -241,7 +252,7 @@ fn a_laid_out_function_matches_llvm() {
     // patch.
     let mut source = String::new();
     let mut expected = Vec::new();
-    let mut used = [0usize; 9];
+    let mut used = [0usize; 11];
     for item in &items {
         match item {
             Item::Label(index) => writeln!(source, "L{index}:").unwrap(),

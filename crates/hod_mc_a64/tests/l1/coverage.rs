@@ -8,7 +8,15 @@ use crate::harness::Batch;
 use crate::table::{CONSTRUCTORS, OTHER};
 
 /// Public `const fn`s of the crate that are not instruction constructors.
-const NOT_CONSTRUCTORS: [&str; 4] = ["is_arith_imm", "encode_bitmask", "decode_bitmask", "mov_imm"];
+const NOT_CONSTRUCTORS: [&str; 7] = [
+    "is_arith_imm",
+    "encode_bitmask",
+    "decode_bitmask",
+    "mov_imm",
+    "encode_fp_imm8",
+    "decode_fp_imm8",
+    "fmov_const",
+];
 
 fn identifier(text: &str) -> &str {
     let end = text.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(text.len());
@@ -16,8 +24,10 @@ fn identifier(text: &str) -> &str {
 }
 
 /// The constructors the crate's source defines: `(name, has a checked
-/// form)`. Free functions are `pub const fn` at the start of a line; the
-/// `checked!` macro's entries are `pub fn name / try_name(`.
+/// form)`. Free functions are `pub const fn` at the start of a line. An
+/// entry of the `checked!` or `family!` macro is `pub fn` indented once,
+/// with ` / try_name` after the name when it has a checked form; nothing
+/// else in the crate is written that way (methods are `pub const fn`).
 fn defined() -> BTreeMap<String, bool> {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut found = BTreeMap::new();
@@ -26,11 +36,18 @@ fn defined() -> BTreeMap<String, bool> {
         let text = std::fs::read_to_string(&path).expect("a source file");
         for line in text.lines() {
             if let Some(rest) = line.strip_prefix("pub const fn ") {
-                found.insert(identifier(rest).to_string(), false);
-            } else if let Some(rest) = line.strip_prefix("    pub fn ")
-                && rest.contains(" / try_")
-            {
-                found.insert(identifier(rest).to_string(), true);
+                let name = identifier(rest);
+                assert!(
+                    found.insert(name.to_string(), false).is_none(),
+                    "`{name}` is defined twice"
+                );
+            } else if let Some(rest) = line.strip_prefix("    pub fn ") {
+                let name = identifier(rest);
+                let checked = rest[name.len()..].starts_with(" / try_");
+                assert!(
+                    found.insert(name.to_string(), checked).is_none(),
+                    "`{name}` is defined twice"
+                );
             }
         }
     }
@@ -65,7 +82,7 @@ fn every_constructor_is_swept() {
         build(&mut total);
     }
     println!("l1 total: {encodings} encodings, {rejections} rejections");
-    assert!(encodings >= 30_000, "the sweeps shrank to {encodings} encodings");
+    assert!(encodings >= 150_000, "the sweeps shrank to {encodings} encodings");
 
     let counts = total.counts();
     for (name, checked) in &defined {

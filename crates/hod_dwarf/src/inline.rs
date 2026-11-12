@@ -412,6 +412,10 @@ impl UnitPlan<'_> {
             })?;
         let die = self.push_anon(sp_id, parent, Kind::AbstractSubprogram);
         self.inline.abs.insert(sp_id.raw(), die);
+        // A `LineTablesOnly` unit's has only its name (WP-094, §6.13).
+        if self.cu.emission_kind != hod_ir::EmissionKind::FullDebug {
+            return Ok(die);
+        }
         self.abstract_template_params(sp_id, &sp, die)?;
         if sp.declaration.is_none()
             && let Some(t) = self.return_type(sp_id, &sp)?
@@ -614,6 +618,15 @@ impl<'a> Writer<'a> {
         children: bool,
     ) -> Result<(), Error> {
         let b = u32::from;
+        // A `LineTablesOnly` unit's: `name`, `DW_AT_inline` (WP-094,
+        // `applySubprogramAttributes` with `SkipSPAttributes`).
+        if plan.cu.emission_kind != hod_ir::EmissionKind::FullDebug {
+            let name = !sp.name.is_empty();
+            self.abbrev(code(fam::SUBPROGRAM_ABSTRACT, b(name) << 1, children));
+            self.opt_name(sp.name)?;
+            self.info.push(DW_INL_INLINED);
+            return Ok(());
+        }
         let objptr = plan.inline.object_pointer(die);
         if let Some(decl) = sp.declaration {
             let DiNode::Subprogram(d) = plan.debug.node(decl) else {

@@ -314,8 +314,12 @@ impl<'a> UnitPlan<'a> {
         let DiNode::Subprogram(sp) = self.debug.node(sp_id) else {
             return Err(bad(sp_id, "subprogram"));
         };
-        if self.cu.emission_kind != hod_ir::EmissionKind::FullDebug {
-            return crate::reduced::add_function(self, f); // WP-061: §6.10
+        // WP-061 (§6.10); a `LineTablesOnly` function with inlined code
+        // goes on in minimal form (WP-094, §6.13).
+        if self.cu.emission_kind != hod_ir::EmissionKind::FullDebug
+            && crate::reduced::add_function(self, f)?
+        {
+            return Ok(());
         }
         // A DIE made before its function, for its statics (WP-085), is
         // the function's.
@@ -352,6 +356,9 @@ impl<'a> UnitPlan<'a> {
         sp_id: DiId,
         sp: &DiSubprogram<'a>,
     ) -> Result<u32, Error> {
+        if self.cu.emission_kind != hod_ir::EmissionKind::FullDebug {
+            return crate::reduced::minimal_parent(self, sp_id, sp); // WP-094: §6.13
+        }
         if !sp.sp_flags.contains(SpFlags::DEFINITION) || sp.unit != Some(self.unit) {
             return Err(unsupported(sp_id, "debug:subprogram-not-definition"));
         }
@@ -516,6 +523,13 @@ impl<'a> UnitPlan<'a> {
             if class != 2 {
                 s.scopes[scope as usize].vars = true;
             }
+        }
+        // A block with an imported entity is written too (WP-094, §6.13).
+        if let DiNode::Subprogram(sp) = self.debug.node(sp_id) {
+            self.import_blocks(&sp, |b| match find(s, b, LocId::NONE) {
+                NONE => {}
+                i => s.scopes[i as usize].vars = true,
+            });
         }
 
         Ok(())
@@ -821,6 +835,9 @@ impl<'a> Writer<'a> {
         let index = self.push_addr(fd.code.symbol, fd.code.addend);
         if let Some(a) = self.fn_addr.get_mut(func) {
             *a = index;
+        }
+        if plan.cu.emission_kind != hod_ir::EmissionKind::FullDebug {
+            return self.minimal_subprogram(plan, sp_id, sp, index, fd.code.size, children); // WP-094
         }
         // The frame base: `DW_OP_reg<n>`.
         self.expr.clear();

@@ -444,6 +444,7 @@ impl<'a> Machine<'_, 'a> {
         let mut image = Vec::new();
         let mut fixups = Vec::new();
         let mut patches = Vec::new();
+        let mut spans = Vec::new();
         for symbol in module.symbols() {
             let sym = symbol.id();
             match symbol.kind() {
@@ -480,6 +481,16 @@ impl<'a> Machine<'_, 'a> {
                         // A fresh allocation: the access cannot fail.
                         let at = self.mem.check(base, size, 1, false)?;
                         self.mem.put(at, &image);
+                        // Padding is in the image as zeros, but no
+                        // compilation promises to keep it: unwritten.
+                        spans.clear();
+                        self.spans(ty, 0, &mut spans);
+                        if spans != [(0, size)] {
+                            self.mem.set_written(at, size as usize, false);
+                            for &(offset, len) in &spans {
+                                self.mem.set_written(at + offset as usize, len as usize, true);
+                            }
+                        }
                         patches.extend(fixups.iter().map(|fixup| (at, *fixup)));
                     }
                 }
@@ -577,6 +588,34 @@ impl<'a> Machine<'_, 'a> {
             return Err(Trap::Memory.into());
         }
         Ok(size as usize)
+    }
+
+    /// The byte ranges of an object of type `ty` that hold its scalars:
+    /// everything but padding. Unlike [`Machine::leaves`] this takes any
+    /// sized type.
+    fn spans(&self, ty: TypeId, offset: u64, out: &mut Vec<(u64, u64)>) {
+        let types = &self.module.types;
+        match types.kind(ty) {
+            TypeKind::Struct { fields, .. } => {
+                let offsets = types.field_offsets(ty).unwrap_or(&[]);
+                for (&field, &at) in fields.iter().zip(offsets) {
+                    self.spans(field, offset + at, out);
+                }
+            }
+            TypeKind::Array { elem, len } => {
+                let stride = types.alloc_size_of(elem);
+                let nested =
+                    matches!(types.kind(elem), TypeKind::Struct { .. } | TypeKind::Array { .. });
+                if !nested && types.size_of(elem) == stride {
+                    out.push((offset, len * stride));
+                } else if stride != 0 {
+                    for index in 0..len {
+                        self.spans(elem, offset + index * stride, out);
+                    }
+                }
+            }
+            _ => out.push((offset, types.size_of(ty))),
+        }
     }
 
     /// The scalars of aggregate type `ty` as `(byte offset, class)`.

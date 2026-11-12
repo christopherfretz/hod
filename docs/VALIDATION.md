@@ -10,7 +10,16 @@ hod never has to decide by itself what the right answer is.
 
 - **`llc -O0`** (LLVM 22, and 19) is the oracle for behavior: the same IR
   through `llc` and through hod, linked the same way, must produce programs
-  with identical stdout and exit status.
+  with identical stdout and exit status. An oracle can be wrong: on
+  AArch64 the two selectors plain `-O0` uses (GlobalISel, FastISel) each
+  miscompile a small correct function, while SelectionDAG at `-O0` and
+  `-O2` agree with the reference interpreter (`spec/interp.md` §10.1). The
+  reference is therefore SelectionDAG at `-O0`
+  (`-global-isel=0 -fast-isel=0`), and where two LLVM configurations
+  disagree the test is an oracle error, never a hod failure (WP-023 moves
+  `xtask irdiff` to this; until then it runs plain `-O0`).
+- **`hod_interp`** is the oracle for the code generator's own tests: a
+  generated program has one result, which every correct compilation gives.
 - **LLVM's assembler and disassembler** (`llvm-mc`, `llvm-objdump`) are the
   oracle for instruction encodings.
 - **`llvm-readelf`, `llvm-dwarfdump --verify`, and the linkers themselves**

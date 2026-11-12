@@ -712,7 +712,7 @@ and what a producer does with the call:
 
 | names | rule |
 |---|---|
-| `llvm.lifetime.start/end`, `llvm.invariant.start/end`, `llvm.assume`, `llvm.donothing`, `llvm.var.annotation` | `NoCode::Drop`: omit the call. (The `{}*` result of `invariant.start` can only be used by `invariant.end`.) |
+| `llvm.lifetime.start/end`, `llvm.invariant.start/end`, `llvm.assume`, `llvm.donothing`, `llvm.var.annotation`, `llvm.experimental.noalias.scope.decl` | `NoCode::Drop`: omit the call. (The `{}*` result of `invariant.start` can only be used by `invariant.end`.) |
 | `llvm.expect`, `llvm.expect.with.probability`, `llvm.annotation`, `llvm.ptr.annotation`, `llvm.launder.invariant.group`, `llvm.strip.invariant.group` | `NoCode::FirstArg`: omit the call and use its first argument as its result |
 | `llvm.dbg.*` | `NoCode::DebugRecord`: a debug record (§6), not a call |
 

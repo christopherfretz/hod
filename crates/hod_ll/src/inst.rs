@@ -4,7 +4,8 @@
 
 use hod_ir::{
     AtomicOrdering, Clause, Const, ConstId, FloatPredicate, IntPredicate, MemFlags, Opcode, RmwOp,
-    SHUFFLE_UNDEF, SyncScope, TailKind, TypeId, TypeKind, Value, aggregate_field,
+    SHUFFLE_UNDEF, SyncScope, TailKind, TypeId, TypeKind, Value, aggregate_field, cast_is_valid,
+    sext64,
 };
 
 use crate::body::Fx;
@@ -22,16 +23,6 @@ type Shape = Option<(u32, bool)>;
 
 const FAST_MATH: &[&[u8]] =
     &[b"nnan", b"ninf", b"nsz", b"arcp", b"contract", b"afn", b"reassoc", b"fast"];
-
-/// `value` as a signed integer, sign-extended from `bits` bits.
-fn sext64(value: u64, bits: u32) -> i64 {
-    if bits >= 64 {
-        value as i64
-    } else {
-        let shift = 64 - bits;
-        ((value << shift) as i64) >> shift
-    }
-}
 
 fn mistyped<T>(at: u32, message: &str) -> PResult<T> {
     fail(LlErrorKind::Type, at, message)
@@ -145,53 +136,6 @@ impl Fx<'_, '_, '_> {
         let class = types.is_int(scalar) || types.is_ptr(scalar) || types.is_float(scalar);
         let bits = types.size_in_bits_of(scalar) * shape.map_or(1, |(len, _)| u64::from(len));
         class && bits >= 8 && bits.is_power_of_two()
-    }
-
-    /// LLVM's `castIsValid`.
-    fn cast_is_valid(&self, op: Opcode, src: TypeId, dst: TypeId) -> bool {
-        let types = &self.p.module.types;
-        let (s, s_shape) = self.shape(src);
-        let (d, d_shape) = self.shape(dst);
-        let same = s_shape == d_shape;
-        let bits = |ty| types.size_in_bits_of(ty);
-        let (int, float, ptr) =
-            (|ty| types.is_int(ty), |ty| types.is_float(ty), |ty| types.is_ptr(ty));
-        match op {
-            Opcode::Trunc => same && int(s) && int(d) && bits(s) > bits(d),
-            Opcode::ZExt | Opcode::SExt => same && int(s) && int(d) && bits(s) < bits(d),
-            Opcode::FPTrunc => same && float(s) && float(d) && bits(s) > bits(d),
-            Opcode::FPExt => same && float(s) && float(d) && bits(s) < bits(d),
-            Opcode::FPToUI | Opcode::FPToSI => same && float(s) && int(d),
-            Opcode::UIToFP | Opcode::SIToFP => same && int(s) && float(d),
-            Opcode::PtrToInt => same && ptr(s) && int(d),
-            Opcode::PtrToAddr => {
-                let TypeKind::Ptr { addr_space } = types.kind(s) else { return false };
-                let address = types.data_layout().pointer(addr_space).index_bits;
-                same && int(d) && bits(d) == u64::from(address)
-            }
-            Opcode::IntToPtr => same && int(s) && ptr(d),
-            Opcode::AddrSpaceCast => same && ptr(s) && ptr(d) && s != d,
-            Opcode::BitCast => {
-                if ptr(s) != ptr(d) {
-                    return false;
-                }
-                if ptr(s) {
-                    return s == d
-                        && match (s_shape, d_shape) {
-                            (Some(a), Some(b)) => a == b,
-                            (Some(one), None) | (None, Some(one)) => one == (1, false),
-                            (None, None) => true,
-                        };
-                }
-                let value = |ty| int(ty) || float(ty);
-                let scalable = |shape: Shape| shape.is_some_and(|(_, scalable)| scalable);
-                value(s)
-                    && value(d)
-                    && bits(src) == bits(dst)
-                    && scalable(s_shape) == scalable(d_shape)
-            }
-            _ => false,
-        }
     }
 
     // ---- the instruction ----
@@ -404,7 +348,7 @@ impl Fx<'_, '_, '_> {
         let (from, arg) = self.typed()?;
         self.p.expect_word(b"to", "expected 'to' after cast value")?;
         let to = self.p.parse_type()?;
-        if !self.cast_is_valid(op, from, to) {
+        if !cast_is_valid(&self.p.module.types, op, from, to) {
             return mistyped(from_at, "invalid cast opcode for cast between these types");
         }
         Ok((to, ir(at, self.b.cast(op, to, arg))?))

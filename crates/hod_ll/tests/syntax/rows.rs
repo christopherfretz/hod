@@ -626,6 +626,7 @@ pub const UNSUPPORTED: &[Unsupported] = &[
     ("declare void @f(ptr swifterror %a)", &[], "++"),
     ("declare void @f(ptr swiftself %a, ptr swiftasync %b)", &[], "++"),
     ("declare void @f(ptr nest %a)", &[], "++"),
+    ("declare void @llvm.experimental.noalias.scope.decl(metadata)\ndefine void @f() {\n  call void @llvm.experimental.noalias.scope.decl(metadata !0)\n  ret void\n}\n!0 = !{!1}\n!1 = distinct !{!1, !2}\n!2 = distinct !{!2}", &[], "++"),
     ("define void @f() #0 {\n  ret void\n}\nattributes #0 = { \"sample-profile-suffix-elision-policy\"=\"selected\" }", &[], "++"),
     ("declare void @f(i32 inreg %a)", &[], "++"),
     ("declare void @f(ptr byref(i32) %a)", &[], "++"),

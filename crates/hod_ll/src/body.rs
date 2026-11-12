@@ -376,10 +376,8 @@ fn build(
         return fail(LlErrorKind::Type, function.header.start, "this symbol is not a function");
     };
     let at = function.body.start;
-    let builder = match state.storage.take() {
-        Some(storage) => FunctionBuilder::reusing(p.module, function.sym, fn_ty, storage),
-        None => FunctionBuilder::new(p.module, function.sym, fn_ty),
-    };
+    let storage = state.storage.take().unwrap_or_else(Body::empty);
+    let builder = FunctionBuilder::reusing(p.module, function.sym, fn_ty, storage);
     let builder = ir(at, builder)?;
     state.nums.clear();
     state.sparse.clear();

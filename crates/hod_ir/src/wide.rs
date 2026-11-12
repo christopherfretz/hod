@@ -14,8 +14,9 @@ pub(crate) fn mask(bits: u32) -> u64 {
     if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 }
 }
 
-/// `value` as a signed integer, sign-extended from `bits` bits (`<= 64`).
-pub(crate) fn sext64(value: u64, bits: u32) -> i64 {
+/// `value` as a signed integer, sign-extended from its low `bits` bits;
+/// `value` itself for 64 bits or more.
+pub fn sext64(value: u64, bits: u32) -> i64 {
     if bits >= 64 {
         value as i64
     } else {

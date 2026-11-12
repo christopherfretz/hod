@@ -21,9 +21,6 @@ const CLANG_BODY_UNSUPPORTED: &[&str] = &[
     "inst:catchswitch",
     "inst:cleanuppad",
     "inst:cleanupret",
-    // Generates no code in LLVM, and is not in hod_ir's list of
-    // intrinsics that generate none (`spec/ir.md` §5.5): a gap of hod_ir.
-    "metadata-arg:llvm.experimental.noalias.scope.decl",
 ];
 
 /// A function's name, and its body's blocks and instructions.

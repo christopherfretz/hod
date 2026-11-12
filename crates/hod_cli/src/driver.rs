@@ -18,6 +18,7 @@ use hod::{BitcodeReading, CompileError, Construct, InputKind, Options, OutputKin
 use crate::args::{self, Action, CommandLine, Input};
 use crate::convert;
 use crate::coverage::{FallbackStatus, Log, Outcome, Record};
+use crate::jobs;
 use crate::phases::Phases;
 
 /// Exit status: success.
@@ -48,6 +49,10 @@ pub const ENV_TIME_PHASES: &str = "HOD_TIME_PHASES";
 /// Environment variable: `1` asks for every reason of a declined module
 /// (coverage field 11), not only the first.
 pub const ENV_CENSUS: &str = "HOD_CENSUS";
+/// Environment variable: the most threads code generation uses
+/// (`spec/cli.md` "Threads"), a positive integer; without it, extra
+/// threads come only from a jobserver.
+pub const ENV_THREADS: &str = "HOD_THREADS";
 /// The value of `--bitcode-via` that names hod's own bitcode reader.
 pub const BITCODE_NATIVE: &str = "native";
 
@@ -69,6 +74,10 @@ pub struct Environment {
     pub time_phases: Option<PathBuf>,
     /// `HOD_CENSUS=1`.
     pub census: bool,
+    /// `HOD_THREADS`, if set and not empty.
+    pub threads: Option<usize>,
+    /// `MAKEFLAGS`, for a jobserver (`spec/cli.md` "Threads").
+    pub makeflags: Option<String>,
     /// A variable with a value hod does not accept.
     pub error: Option<String>,
 }
@@ -83,8 +92,20 @@ impl Environment {
             bitcode_via: non_empty(ENV_BITCODE_VIA).map(PathBuf::from),
             in_fallback: non_empty(ENV_IN_FALLBACK).is_some(),
             time_phases: non_empty(ENV_TIME_PHASES).map(PathBuf::from),
+            makeflags: non_empty("MAKEFLAGS").and_then(|flags| flags.into_string().ok()),
             ..Environment::default()
         };
+        if let Some(value) = non_empty(ENV_THREADS) {
+            match value.to_str().and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0) {
+                Some(threads) => env.threads = Some(threads),
+                None => {
+                    env.error = Some(format!(
+                        "invalid value '{}' for {ENV_THREADS}: expected a positive integer",
+                        value.to_string_lossy()
+                    ));
+                }
+            }
+        }
         for (name, flag) in [(ENV_STRICT, &mut env.strict), (ENV_CENSUS, &mut env.census)] {
             match non_empty(name) {
                 None => {}
@@ -125,6 +146,7 @@ struct Settings {
     strict: bool,
     bitcode_via: Option<PathBuf>,
     census: bool,
+    threads: hod::Threads,
 }
 
 impl Settings {
@@ -145,6 +167,7 @@ impl Settings {
             },
             census: self.census,
             support: None,
+            threads: self.threads.clone(),
         }
     }
 
@@ -330,6 +353,7 @@ impl Job<'_, '_> {
             }
             CompileError::MalformedInput(_) => ("malformed-input".into(), EXIT_ERROR),
             CompileError::InvalidOptions(_) => ("invalid-options".into(), EXIT_ERROR),
+            CompileError::Internal(_) => (hod::INTERNAL_ERROR.into(), EXIT_ERROR),
         };
         if let Some(llc) = self.settings.hybrid().map(Path::to_path_buf) {
             return self.fall_back(&llc, reason, piped);
@@ -374,6 +398,7 @@ pub fn run(args: &[OsString], env: &Environment, compile: Compile<'_>, io: &mut 
             strict: line.strict.unwrap_or(env.strict),
             bitcode_via: line.bitcode_via.clone().or_else(|| env.bitcode_via.clone()),
             census: env.census,
+            threads: jobs::threads(env.threads, env.makeflags.as_deref()),
         },
         io,
         start,
@@ -539,9 +564,12 @@ mod tests {
     /// package turns on, so the reasons do not move with the matrix.
     const MODULE: &[u8] = b"target triple = \"aarch64-unknown-linux-gnu\"\n\
         module asm \"nop\"\ndefine ghccc void @f() nounwind {\n  ret void\n}\n";
-    /// A module `classify` accepts whole: declarations only.
+    /// A module hod compiles: declarations only.
     const DECLARATIONS: &[u8] = b"target triple = \"aarch64-unknown-linux-gnu\"\n\
         declare i32 @g()\n";
+    /// A module of the target without a code generator
+    /// (`codegen-not-implemented`, stable until x86-64 has one).
+    const X64: &[u8] = b"target triple = \"x86_64-unknown-linux-gnu\"\ndeclare i32 @g()\n";
     const OBJECT: &[u8] = b"\x7FELF-stand-in\n\0\xFF";
 
     /// A stand-in for `hod::compile` that succeeds.
@@ -615,6 +643,19 @@ mod tests {
         let bad = vars(&[("HOD_CENSUS", "all")]);
         assert!(!bad.census);
         assert!(bad.error.unwrap().contains("invalid value 'all' for HOD_CENSUS: expected 1 or 0"));
+        // HOD_THREADS is a positive integer; MAKEFLAGS is kept for a
+        // jobserver ("Threads").
+        assert_eq!(vars(&[("HOD_THREADS", "8")]).threads, Some(8));
+        assert_eq!(vars(&[("HOD_THREADS", "")]), Environment::default());
+        for value in ["0", "-1", "many", "1.5"] {
+            let pairs: &'static [(&str, &str)] = Box::leak(Box::new([("HOD_THREADS", value)]));
+            let bad = vars(pairs);
+            assert_eq!(bad.threads, None);
+            let expected = format!("invalid value '{value}' for HOD_THREADS: expected a positive");
+            assert!(bad.error.unwrap().contains(&expected), "{value}");
+        }
+        let make = vars(&[("MAKEFLAGS", "-j4 --jobserver-auth=fifo:/tmp/fifo")]);
+        assert_eq!(make.makeflags.as_deref(), Some("-j4 --jobserver-auth=fifo:/tmp/fifo"));
     }
 
     // spec/cli.md "Coverage log" field 11 and "Reasons" (first refusal and
@@ -630,7 +671,8 @@ mod tests {
             let ran = run_with(&["-filetype=obj"], env, &hod::compile_with, MODULE);
             assert_eq!(ran.exit, EXIT_UNSUPPORTED);
             let ran = run_with(&["-filetype=obj"], env, &hod::compile_with, DECLARATIONS);
-            assert_eq!(ran.exit, EXIT_UNSUPPORTED);
+            assert_eq!(ran.exit, EXIT_OK);
+            assert!(ran.stdout.starts_with(b"\x7FELF"));
             let ran = run_with(&["-filetype=asm"], env, &hod::compile_with, MODULE);
             assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         }
@@ -641,10 +683,10 @@ mod tests {
             summary,
             [
                 ("module:asm", "-"),
-                ("codegen-not-implemented", "-"),
+                ("-", "-"),
                 ("assembly-output", "-"),
                 ("module:asm", "module:asm,cc:ghccc"),
-                ("codegen-not-implemented", "codegen-not-implemented"),
+                ("-", "-"),
                 ("assembly-output", "assembly-output"),
             ]
         );
@@ -682,8 +724,12 @@ mod tests {
         let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_with, MODULE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert_eq!(phases(), "read parse classify compile total");
-        // A module accepted whole reads its bodies too.
+        // A module hod builds reads its bodies and generates code.
         let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_with, DECLARATIONS);
+        assert_eq!(ran.exit, EXIT_OK);
+        assert_eq!(phases(), "read parse classify bodies emission object compile write total");
+        // One declined by the code generator reads its bodies too.
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_with, X64);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert_eq!(phases(), "read parse classify bodies compile total");
         // A module declined before it is read has none of them.
@@ -1017,7 +1063,7 @@ mod tests {
         let scratch = Scratch::new("driver-unsupported");
         let log = scratch.join("cov.tsv");
         let env = Environment { coverage_log: Some(log.clone()), ..Environment::default() };
-        let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &hod::compile_with, DECLARATIONS);
+        let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &hod::compile_with, X64);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert!(ran.stdout.is_empty());
         assert_eq!(
@@ -1027,11 +1073,8 @@ mod tests {
         );
 
         let in_function = |_: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
-            Err(Unsupported {
-                construct: Construct::CodegenNotImplemented,
-                function: Some("_Z1fv".into()),
-            }
-            .into())
+            Err(Unsupported::in_function(Construct::CodegenNotImplemented, Some("_Z1fv".into()))
+                .into())
         };
         let ran = run_with(&["-filetype=obj", "--strict"], &env, &in_function, MODULE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
@@ -1069,6 +1112,31 @@ mod tests {
         assert!(ran.stderr.starts_with("hod: error: invalid options: a without b"));
         let reasons: Vec<String> = fields(&log).into_iter().map(|l| l[1].clone()).collect();
         assert_eq!(reasons, ["malformed-input", "invalid-options"]);
+    }
+
+    // spec/cli.md "Reasons", "Exit status": an internal error of code
+    // generation is not a decline: status 1, reason `internal-error`, and
+    // in hybrid mode the fallback builds the module.
+    #[test]
+    fn internal_errors_are_not_declines() {
+        let scratch = Scratch::new("driver-internal");
+        let log = scratch.join("cov.tsv");
+        let env = Environment { coverage_log: Some(log.clone()), ..Environment::default() };
+        let internal = |_: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
+            Err(CompileError::Internal("function 'f': a lost value".into()))
+        };
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &internal, MODULE);
+        assert_eq!(ran.exit, EXIT_ERROR);
+        assert_eq!(
+            ran.stderr,
+            "hod: error: internal error: function 'f': a lost value (strict mode: no fallback)\n"
+        );
+        let ran = run_with(&["-filetype=obj", "--fallback=/bin/true"], &env, &internal, MODULE);
+        assert_eq!((ran.exit, ran.stderr.as_str()), (EXIT_OK, ""));
+        let lines = fields(&log);
+        let summary: Vec<(&str, &str)> =
+            lines.iter().map(|l| (l[0].as_str(), l[1].as_str())).collect();
+        assert_eq!(summary, [("error", "internal-error"), ("fallback", "internal-error")]);
     }
 
     // spec/cli.md "Options": without a fallback an unknown option is an

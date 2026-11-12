@@ -31,7 +31,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `init` | 8 | 5 | 3 | 0 | 0 | 8 | 0 |
 | `function` | 6 | 4 | 2 | 0 | 0 | 6 | 0 |
 | `cc` | 15 | 1 | 12 | 2 | 0 | 12 | 3 |
-| `attr` | 56 | 13 | 40 | 3 | 9 | 39 | 8 |
+| `attr` | 56 | 14 | 39 | 3 | 9 | 39 | 8 |
 | `type` | 15 | 4 | 8 | 3 | 0 | 13 | 2 |
 | `inst` | 67 | 47 | 12 | 8 | 0 | 59 | 8 |
 | `mem` | 3 | 1 | 2 | 0 | 0 | 3 | 0 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 9 | 4 | 5 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 133 | 2 | 131 | 0 | 0 | 133 | 0 |
-| total | 434 | 118 | 270 | 46 | 16 | 363 | 55 |
+| total | 434 | 119 | 269 | 46 | 16 | 363 | 55 |
 
 ## `module`
 
@@ -256,7 +256,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:sanitize_thread` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_type` | not-implemented | not-implemented | unplanned |
 | `attr:target-cpu` | supported | not-implemented | AArch64: the code is ARMv8.0, which every CPU runs |
-| `attr:target-features` | not-implemented | not-implemented | WP-033. the target has to read it |
+| `attr:target-features` | supported | not-implemented | each feature judged by code generation (`spec/codegen.md` §5.5.2) |
 | `attr:tune-cpu` | supported | supported | tuning only: hod does not tune |
 | `attr:frame-pointer` | supported | supported | any value: hod always keeps a frame pointer |
 | `attr:patchable-function-entry` | not-implemented | not-implemented | unplanned |

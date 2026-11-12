@@ -134,9 +134,9 @@ Facts established for the stages above, at kiln `bd60e182`:
 
 - A backend seam in kiln's driver is acceptable. Today the built module
   never reaches the driver (only its text does), so the seam starts with
-  returning the module. How kiln depends on hod is the operator's decision;
-  the proposal is an optional cargo feature, a bridge crate in kiln's
-  workspace, and hod pinned by revision.
+  returning the module. kiln will depend on hod through an optional cargo
+  feature on its driver (off by default), with the bridge crate in kiln's
+  workspace and hod pinned by revision (decided 2026-11-11).
 - **Frame up front:** available. Entry-block allocas go through one helper
   and are recorded in a list; debug declarations are recorded separately
   and can be joined. Variable-length arrays and `__builtin_alloca` are

@@ -334,6 +334,13 @@ own `code_model` (`global-code-model`), `sanitize_memtag` on a variable
 change where `llc` puts the variable, the others are read by
 instrumentation passes only.
 
+Metadata attached to a symbol, other than `!dbg` (§6): `!type`,
+`!vcall_visibility`, `!prof`, `!section_prefix` and `!annotation` are
+dropped (they are read by link-time or profile-guided passes, or only
+move a function between sections). Any other kind is recorded as
+`global-metadata:<kind>`: `!associated`, `!absolute_symbol` and
+`!kcfi_type` change the object, and a kind hod does not know may.
+
 **The special LLVM arrays are not symbols.** `llvm.global_ctors` and
 `llvm.global_dtors` become `add_ctor` / `add_dtor(priority, function,
 associated)` and are read as `ctors()` / `dtors() -> &[Structor {

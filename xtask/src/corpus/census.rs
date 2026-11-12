@@ -471,7 +471,15 @@ pub fn count_corpus(
                         let text = std::fs::read_to_string(&path)
                             .map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
                         let census = mine.entry(group.clone()).or_default();
-                        scan_module(census, super::entry::module_of(&text));
+                        // Each module of an entry is counted on its own.
+                        let code = super::entry::module_of(&text);
+                        let parts = crate::irdiff::directives::modules(code);
+                        if parts.is_empty() {
+                            scan_module(census, code);
+                        }
+                        for part in &parts {
+                            scan_module(census, &part.text);
+                        }
                     }
                     Ok(mine)
                 })

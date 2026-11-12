@@ -215,7 +215,7 @@ impl Harness {
                 &self.tm,
                 &program.module,
                 &program.bodies,
-                Options { stress },
+                Options { stress, ..Options::default() },
                 &mut self.scratch,
                 &mut self.chunk,
             );

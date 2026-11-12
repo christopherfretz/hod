@@ -347,8 +347,24 @@ impl FlagTable {
         let Some(behavior) = FlagBehavior::from_llvm(behavior) else {
             return bad(name, &format!("behavior {behavior} is not 1 to 8"));
         };
+        // The value shapes LLVM's verifier wants (§2.1): a node (for
+        // `require`, a pair) for the behaviors that combine or check
+        // values, an integer for two flags it reads.
+        let node = matches!(value, FlagValue::Other);
+        if matches!(
+            behavior,
+            FlagBehavior::Require | FlagBehavior::Append | FlagBehavior::AppendUnique
+        ) && !node
+        {
+            return bad(name, "a require, append or append-unique flag needs a metadata node");
+        }
         if behavior == FlagBehavior::Require {
             return self.keep(behavior, name, value, false);
+        }
+        if matches!(name, b"wchar_size" | b"SemanticInterposition")
+            && !matches!(value, FlagValue::Int(_))
+        {
+            return bad(name, "the value is not an integer");
         }
         if matches!(behavior, FlagBehavior::Max | FlagBehavior::Min)
             && !matches!(value, FlagValue::Int(_))

@@ -75,6 +75,11 @@ impl<'m> Fx<'m> {
         body
     }
 
+    /// The finished body, not verified.
+    pub fn finish(self) -> Body {
+        self.b.finish().unwrap()
+    }
+
     pub fn arg(&self, index: u32) -> Value {
         self.b.arg(index).unwrap()
     }

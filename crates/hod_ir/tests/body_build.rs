@@ -13,9 +13,10 @@ mod body_support;
 use body_support::dump;
 use hod_ir::{
     AsmId, AtomicOrdering, Block, BlockId, Body, Bundle, CallConv, CallDesc, CallSite, Callee,
-    Clause, DiId, FloatPredicate, FunctionBuilder, Inst, InstId, InstKind, IntPredicate, Intrinsic,
-    IrErrorKind, IrResult, LocId, MemFlags, Module, Opcode, ParamAttrs, RmwOp, SHUFFLE_UNDEF,
-    SlotId, SymId, SyncScope, TailKind, TargetSpec, TypeId, Value, ValueKind, aggregate_field,
+    Clause, DiId, FloatPredicate, FunctionBuilder, InlineAsm, Inst, InstId, InstKind, IntPredicate,
+    Intrinsic, IrErrorKind, IrResult, LocId, MemFlags, Module, Opcode, ParamAttrs, RmwOp,
+    SHUFFLE_UNDEF, SlotId, SymId, SyncScope, TailKind, TargetSpec, TypeId, Value, ValueKind,
+    aggregate_field,
 };
 
 const I1: TypeId = TypeId::I1;
@@ -60,6 +61,32 @@ struct Fx {
     c: Value,
     v4: TypeId,
     st: TypeId,
+}
+
+/// Debug tables for bodies that name debug ids (`spec/ir.md` §6.8: ids
+/// are checked whether or not the module has tables): nodes 0 to 2 are a
+/// file, a compile unit and a subprogram, nodes 3 to `count + 2` local
+/// variables of it, and locations 0 to `count - 1` lines in it.
+fn debug_tables(m: &mut Module, count: u32) {
+    use hod_ir::{DiCompileUnit, DiFile, DiLocalVariable, DiLocation, DiSubprogram, SpFlags};
+    let d = &mut m.debug;
+    let file = d.add(&DiFile { filename: b"a.c", ..Default::default() }.into()).unwrap();
+    let unit = DiCompileUnit { file: Some(file), ..Default::default() };
+    let unit = d.add_distinct(&unit.into()).unwrap();
+    d.add_compile_unit(unit).unwrap();
+    let sp = DiSubprogram {
+        name: b"f",
+        file: Some(file),
+        sp_flags: SpFlags::DEFINITION,
+        unit: Some(unit),
+        ..Default::default()
+    };
+    let sp = d.add_distinct(&sp.into()).unwrap();
+    for line in 0..count {
+        let var = DiLocalVariable { name: b"x", scope: Some(sp), ..Default::default() };
+        d.add_distinct(&var.into()).unwrap();
+        d.loc(DiLocation { line, column: 1, scope: sp, inlined_at: LocId::NONE }).unwrap();
+    }
 }
 
 fn fx() -> Fx {
@@ -334,6 +361,8 @@ fn calls_read_back_from_the_side_table() {
     let void_ty = f.m.types.function(VOID, &[], false).unwrap();
     let memcpy_ty = f.m.types.function(VOID, &[PTR, PTR, I64, I1], false).unwrap();
     let no = int(&mut f.m, I1, 0);
+    let asm = InlineAsm { template: b"nop", constraints: b"", flags: 0, ty: void_ty };
+    let asm_id = f.m.inline_asm(&asm).unwrap();
     let b = &mut f.b;
     let direct = Value::sym(SymId::new(9)).unwrap();
 
@@ -343,13 +372,14 @@ fn calls_read_back_from_the_side_table() {
     let zeroext = ParamAttrs::NONE.with(ParamAttrs::ZEROEXT).unwrap();
     let args = [f.a, f.p, f.l];
     let inputs = [f.a, f.l];
-    let bundles = [Bundle { tag: "deopt", inputs: &inputs }, Bundle { tag: "kcfi", inputs: &[] }];
+    let bundles =
+        [Bundle { tag: "deopt", inputs: &inputs }, Bundle { tag: "hod.test", inputs: &[] }];
     let rich = b
         .call(
             I32,
             &CallDesc {
                 cc: CallConv::FAST,
-                tail: TailKind::MustTail,
+                tail: TailKind::Tail,
                 noreturn: true,
                 returns_twice: true,
                 ret_attrs: signext,
@@ -373,7 +403,7 @@ fn calls_read_back_from_the_side_table() {
         .unwrap();
     let unknown = Intrinsic::Other("llvm.aarch64.hint");
     let other = b.call(VOID, &CallDesc::intrinsic(unknown, &[], void_ty, &[])).unwrap();
-    let asm = Value::asm(AsmId::new(4)).unwrap();
+    let asm = Value::asm(asm_id).unwrap();
     let inline = b.call(VOID, &CallDesc::new(asm, void_ty, &[])).unwrap();
 
     let body = f.done();
@@ -404,7 +434,7 @@ fn calls_read_back_from_the_side_table() {
     assert_eq!(call.callee(), Callee::Value(f.p));
     assert_eq!(call.callee_value(), f.p);
     assert_eq!((call.fn_type(), call.ty(), call.cc()), (callee_ty, I32, CallConv::FAST));
-    assert_eq!(call.tail(), TailKind::MustTail);
+    assert_eq!(call.tail(), TailKind::Tail);
     assert!(call.is_noreturn() && !call.is_nounwind() && call.returns_twice());
     assert_eq!(call.args(), args);
     assert!(call.has_param_attrs());
@@ -430,7 +460,7 @@ fn calls_read_back_from_the_side_table() {
 
     let call = calls[4];
     assert_eq!(call.callee(), Callee::Value(asm));
-    assert_eq!(asm.kind(), ValueKind::Asm(AsmId::new(4)));
+    assert_eq!(asm.kind(), ValueKind::Asm(asm_id));
 }
 
 /// §5.4 "exception", "terminator": `invoke`, `landingpad` with its
@@ -443,13 +473,17 @@ fn invoke_landing_pad_and_callbr_read_back() {
     let null = f.m.consts.null(&f.m.types, PTR).unwrap();
     let filter_ty = f.m.types.array(PTR, 1).unwrap();
     let filter = f.m.consts.zero(&f.m.types, filter_ty).unwrap();
+    // `callbr` calls inline assembly with a label for each indirect
+    // destination (§5.8).
+    let goto = InlineAsm { template: b"", constraints: b"!i,!i", flags: 0, ty: void_ty };
+    let goto = f.m.inline_asm(&goto).unwrap();
     let b = &mut f.b;
     let [normal, pad_block, after, side] = [(); 4].map(|()| b.create_block().unwrap());
     let callee = Value::sym(SymId::new(2)).unwrap();
     let invoke = b.invoke(VOID, &CallDesc::new(callee, void_ty, &[]), normal, pad_block).unwrap();
     assert_eq!(b.current_block(), None, "an invoke ends its block");
     b.begin_block(normal).unwrap();
-    let asm = Value::asm(AsmId::new(0)).unwrap();
+    let asm = Value::asm(goto).unwrap();
     let callbr = b.callbr(VOID, &CallDesc::new(asm, void_ty, &[]), after, &[side, after]).unwrap();
     b.begin_block(pad_block).unwrap();
     let clauses = [Clause::Catch(null), Clause::Filter(filter)];
@@ -634,8 +668,8 @@ fn phis_and_forward_references() {
     let more = b.icmp(IntPredicate::Slt, I1, i, n).unwrap();
     b.cond_br(more, latch, exit).unwrap();
     b.begin_block(latch).unwrap();
-    let sum = b.binary(Opcode::Add, I32, total, next).unwrap();
     let bumped = b.binary(Opcode::Add, I32, i, one).unwrap();
+    let sum = b.binary(Opcode::Add, I32, total, next).unwrap();
     b.resolve(next, bumped).unwrap();
     b.br(header).unwrap();
     b.begin_block(exit).unwrap();
@@ -666,7 +700,7 @@ fn phis_and_forward_references() {
     // The reserved operand of `sum` now names the definition.
     assert_eq!(body.inst(id(sum)).operands(), [total, bumped]);
     // `bumped`: one use by the phi (at the end of its own block) and one
-    // by `sum`, which comes before it.
+    // by `sum`, which comes after it.
     let uses = body.uses(id(bumped));
     assert_eq!((uses.count(), uses.used_outside_block()), (2, false));
     assert!(!uses.only_use_is_next());
@@ -969,7 +1003,7 @@ fn use_facts_of_arguments() {
 fn use_facts_through_reserved_values() {
     let mut f = fx();
     let b = &mut f.b;
-    let [other] = [(); 1].map(|()| b.create_block().unwrap());
+    let [other, dead] = [(); 2].map(|()| b.create_block().unwrap());
     let early = b.reserve(I32).unwrap();
     let late = b.reserve(I32).unwrap();
     let from_arg = b.reserve(I32).unwrap();
@@ -977,12 +1011,15 @@ fn use_facts_through_reserved_values() {
     let def = b.binary(Opcode::Add, I32, f.a, f.a).unwrap();
     b.resolve(early, def).unwrap();
     let user = b.binary(Opcode::Add, I32, early, from_arg).unwrap();
-    // Used here, defined in a later block.
-    let forward = b.binary(Opcode::Add, I32, late, late).unwrap();
     b.br(other).unwrap();
     b.begin_block(other).unwrap();
-    let late_def = b.binary(Opcode::Add, I32, user, forward).unwrap();
+    let late_def = b.binary(Opcode::Add, I32, user, user).unwrap();
     b.binary(Opcode::Add, I32, late, from_arg).unwrap();
+    b.ret(None).unwrap();
+    // Used before it is defined, in a block control does not reach
+    // (where LLVM allows it, §5.8).
+    b.begin_block(dead).unwrap();
+    b.binary(Opcode::Add, I32, late, late).unwrap();
     b.resolve(late, late_def).unwrap();
     b.resolve(from_arg, f.a).unwrap();
     let body = f.done();
@@ -992,7 +1029,8 @@ fn use_facts_through_reserved_values() {
     };
     assert_eq!(facts(def), (1, false, true));
     assert_eq!(body.inst(id(user)).operands(), [def, f.a]);
-    // Two uses from the entry block, one by the instruction after it.
+    // Two uses from the unreachable block, one by the instruction after
+    // it.
     assert_eq!(facts(late_def), (3, true, false));
     // `a`: two direct uses in the entry block, one resolved use there
     // and one in the other block.
@@ -1004,13 +1042,14 @@ fn use_facts_through_reserved_values() {
 #[test]
 fn stack_slots_and_locations() {
     let mut f = fx();
+    debug_tables(&mut f.m, 16);
     let b = &mut f.b;
     let small = b.add_slot(4, 4).unwrap();
     let big = b.add_slot(1 << 33, 64).unwrap();
     let empty = b.add_slot(0, 1).unwrap();
     assert_eq!([small, big, empty], [SlotId::new(0), SlotId::new(1), SlotId::new(2)]);
     b.set_slot_var(big, DiId::new(11), LocId::new(3)).unwrap();
-    b.set_slot_var(small, DiId::new(12), LocId::NONE).unwrap();
+    b.set_slot_var(small, DiId::new(12), LocId::new(2)).unwrap();
     let address = b.slot(small).unwrap();
     assert_eq!(address, Value::slot(small).unwrap());
     let first = b.store(f.a, address, align(4)).unwrap();
@@ -1027,7 +1066,7 @@ fn stack_slots_and_locations() {
     assert_eq!((body.slots()[1].size(), body.slots()[1].align_log2()), (1 << 33, 6));
     assert_eq!((body.slots()[2].size(), body.slots()[2].align()), (0, 1));
     let vars: Vec<_> = body.slot_vars().iter().map(|var| (var.slot, var.var, var.loc)).collect();
-    assert_eq!(vars, [(big, DiId::new(11), LocId::new(3)), (small, DiId::new(12), LocId::NONE)]);
+    assert_eq!(vars, [(big, DiId::new(11), LocId::new(3)), (small, DiId::new(12), LocId::new(2))]);
     assert_eq!(body.value_type(m, address), PTR);
     assert_eq!(address.as_slot(), Some(small));
     assert!(body.has_locs());
@@ -1175,6 +1214,7 @@ fn recycling_storage() {
         let callee_ty = m.types.function(I32, &[I32], false).unwrap();
         let exn = m.types.struct_type(&[PTR, I32], false).unwrap();
         let one = m.consts.int(&m.types, I32, 1).unwrap();
+        debug_tables(&mut m, 41);
         let sym = SymId::new(seed);
         let mut b = match storage {
             Some(storage) => FunctionBuilder::reusing(&m, sym, fn_ty, storage).unwrap(),
@@ -1183,7 +1223,7 @@ fn recycling_storage() {
         let (a, p) = (b.arg(0).unwrap(), b.arg(1).unwrap());
         let [entry, body_block, pad, exit] = [(); 4].map(|()| b.create_block().unwrap());
         let slot = b.add_slot(8, 8).unwrap();
-        b.set_slot_var(slot, DiId::new(seed), LocId::new(seed)).unwrap();
+        b.set_slot_var(slot, DiId::new(seed + 3), LocId::new(seed)).unwrap();
         let address = b.slot(slot).unwrap();
         b.begin_block(entry).unwrap();
         b.set_loc(LocId::new(1));
@@ -1207,7 +1247,8 @@ fn recycling_storage() {
             value = b.call(I32, &desc).unwrap();
         }
         b.resolve(hole, value).unwrap();
-        let unknown = Intrinsic::Other("llvm.unknown.thing");
+        // An intrinsic hod does not know that LLVM lets `invoke` call.
+        let unknown = Intrinsic::Other("llvm.experimental.patchpoint.i32");
         let void_ty_args = [value];
         let desc = CallDesc::intrinsic(unknown, &[], callee_ty, &void_ty_args);
         let last = b.invoke(I32, &desc, exit, pad).unwrap();

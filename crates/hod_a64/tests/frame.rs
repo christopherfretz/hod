@@ -97,7 +97,11 @@ fn disassembly(frame: u32) -> Vec<String> {
     let (lo, hi) = (frame & 0xfff, frame & 0xff_f000);
     let mut out = vec![
         format!("sub sp, sp, #{lo:#x}"),
-        if hi == 0 { "sub sp, sp, #0x0".into() } else { format!("sub sp, sp, #{:#x}, lsl #12", hi >> 12) },
+        if hi == 0 {
+            "sub sp, sp, #0x0".into()
+        } else {
+            format!("sub sp, sp, #{:#x}, lsl #12", hi >> 12)
+        },
         "stp x29, x30, [sp]".into(),
         "mov x29, sp".into(),
         "mov w0, #0x7".into(),
@@ -153,7 +157,8 @@ fn cfi_at_adds_the_prologue_rows_after_the_body() {
 fn a_frame_beyond_the_prologue_is_the_frame_size_limit() {
     let (m, body) = with_slot(u64::from(MAX_A64_FRAME), 16);
     let mut chunk = Chunk::new();
-    let result = compile_function(&A64, &m, &body, &Options::default(), &mut Scratch::new(), &mut chunk);
+    let result =
+        compile_function(&A64, &m, &body, &Options::default(), &mut Scratch::new(), &mut chunk);
     assert_eq!(result, Err(CgError::unsupported(LIMIT_FRAME_SIZE)));
     assert!(chunk.code.is_empty() && chunk.cfi.is_empty());
 }

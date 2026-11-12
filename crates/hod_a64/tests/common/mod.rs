@@ -3,6 +3,10 @@
 //! Each test file uses part of it.
 
 #![allow(dead_code, reason = "each test binary uses part of the support")]
+#![allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "`Options` by reference, as `hod_cg` takes it"
+)]
 
 pub mod groups;
 #[path = "../../../hod_obj/tests/common/linking.rs"]
@@ -76,9 +80,9 @@ pub fn parse(text: &str) -> (Module, Vec<Body>) {
     let mut module = parsed.module;
     let mut bodies = Vec::new();
     hod_ll::parse_bodies(&mut module, &text_side, |_, parsed| {
-        let body = parsed.body.unwrap_or_else(|| {
-            panic!("hod_ll: unsupported {:?} in\n{text}", parsed.unsupported)
-        });
+        let body = parsed
+            .body
+            .unwrap_or_else(|| panic!("hod_ll: unsupported {:?} in\n{text}", parsed.unsupported));
         bodies.push(body.clone());
         Ok::<(), hod_ll::LlError>(())
     })

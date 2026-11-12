@@ -13,7 +13,10 @@ fn the_group_is_refused_by_name_until_it_lands() {
         ("define i64 @f(ptr %p) { %r = load i64, ptr %p\n ret i64 %r }", mem::LOAD),
         ("define void @f(ptr %p) { store i64 1, ptr %p\n ret void }", mem::STORE),
         ("define ptr @f(i64 %n) { %r = alloca i8, i64 %n\n ret ptr %r }", mem::ALLOCA),
-        ("define ptr @f(ptr %p, i64 %i) { %r = getelementptr i8, ptr %p, i64 %i\n ret ptr %r }", mem::PTRADD),
+        (
+            "define ptr @f(ptr %p, i64 %i) { %r = getelementptr i8, ptr %p, i64 %i\n ret ptr %r }",
+            mem::PTRADD,
+        ),
         (
             "declare ptr @llvm.stacksave.p0()\ndefine ptr @f() { %r = call ptr @llvm.stacksave.p0()\n ret ptr %r }",
             mem::STACK_INTRINSIC,

@@ -16,8 +16,14 @@ fn the_group_is_refused_by_name_until_it_lands() {
         ("define i1 @f(i128 %a) { %r = icmp eq i128 %a, 0\n ret i1 %r }", aggr::ICMP),
         ("define i128 @f(ptr %p) { %r = load i128, ptr %p\n ret i128 %r }", aggr::LOAD),
         ("define void @f(ptr %p, i128 %a) { store i128 %a, ptr %p\n ret void }", aggr::STORE),
-        ("define i128 @f(i1 %c, i128 %a) { %r = select i1 %c, i128 %a, i128 0\n ret i128 %r }", aggr::SELECT),
-        ("define i64 @f({ i64, i64 } %a) { %r = extractvalue { i64, i64 } %a, 1\n ret i64 %r }", aggr::EXTRACT_VALUE),
+        (
+            "define i128 @f(i1 %c, i128 %a) { %r = select i1 %c, i128 %a, i128 0\n ret i128 %r }",
+            aggr::SELECT,
+        ),
+        (
+            "define i64 @f({ i64, i64 } %a) { %r = extractvalue { i64, i64 } %a, 1\n ret i64 %r }",
+            aggr::EXTRACT_VALUE,
+        ),
         (
             "define { i64, i64 } @f({ i64, i64 } %a) { %r = insertvalue { i64, i64 } %a, i64 1, 0\n ret { i64, i64 } %r }",
             aggr::INSERT_VALUE,

@@ -14,6 +14,9 @@ fn the_group_is_refused_by_name_until_it_lands() {
         ("define i32 @f(i32 %a) { %r = freeze i32 %a\n ret i32 %r }", int::FREEZE),
         ("define i64 @f(i32 %a) { %r = sext i32 %a to i64\n ret i64 %r }", int::CAST),
         ("define i1 @f(i64 %a) { %r = icmp eq i64 %a, 0\n ret i1 %r }", int::ICMP),
-        ("define i64 @f(i1 %c, i64 %a) { %r = select i1 %c, i64 %a, i64 0\n ret i64 %r }", int::SELECT),
+        (
+            "define i64 @f(i1 %c, i64 %a) { %r = select i1 %c, i64 %a, i64 0\n ret i64 %r }",
+            int::SELECT,
+        ),
     ]);
 }

@@ -20,9 +20,12 @@ pub struct Enabled {
     pub options: GenOptions,
 }
 
+/// What a group switches on.
+pub type Enable = fn(&mut Enabled);
+
 /// The groups that have landed, in landing order, each with what it
 /// switches on.
-pub const GROUPS: &[(&str, fn(&mut Enabled))] = &[
+pub const GROUPS: &[(&str, Enable)] = &[
     // The skeleton: `br`, `ret`, `unreachable`, constants, arguments,
     // blocks without predecessors (through `common::skeleton`).
     ("WP-033", |e| e.options.unreachable_blocks = true),

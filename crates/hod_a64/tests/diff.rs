@@ -217,6 +217,7 @@ fn many_programs_agree() {
     let start = Instant::now();
     let checked = check_seeds(1_000_000..1_000_000 + seeds, 500);
     let elapsed = start.elapsed();
-    let per_1000 = elapsed.as_secs_f64() * 1000.0 / checked.max(1) as f64;
+    let per_1000 =
+        elapsed.as_secs_f64() * 1000.0 / f64::from(u32::try_from(checked.max(1)).unwrap());
     eprintln!("a64 diff: {checked} programs agree in {elapsed:?}: {per_1000:.2} s per 1000");
 }

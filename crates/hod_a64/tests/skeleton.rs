@@ -61,10 +61,10 @@ fn the_smallest_function_is_prologue_constant_epilogue() {
 fn classes() {
     let mut m = module();
     let t = &mut m.types;
-    let v2i32 = t.vector(TypeId::I32, 2).unwrap();
-    let v4f32 = t.vector(TypeId::FLOAT, 4).unwrap();
-    let v3i32 = t.vector(TypeId::I32, 3).unwrap();
-    let v8i32 = t.vector(TypeId::I32, 8).unwrap();
+    let two_i32 = t.vector(TypeId::I32, 2).unwrap();
+    let four_f32 = t.vector(TypeId::FLOAT, 4).unwrap();
+    let three_i32 = t.vector(TypeId::I32, 3).unwrap();
+    let eight_i32 = t.vector(TypeId::I32, 8).unwrap();
     let st = t.struct_type(&[TypeId::I32, TypeId::I64], false).unwrap();
     let i128 = t.int(128).unwrap();
     let i33 = t.int(33).unwrap();
@@ -81,10 +81,10 @@ fn classes() {
         (TypeId::FLOAT, Class::Fpr),
         (TypeId::DOUBLE, Class::Fpr),
         (fp128, Class::Fpr),
-        (v2i32, Class::Fpr),
-        (v4f32, Class::Fpr),
-        (v3i32, Class::Mem),
-        (v8i32, Class::Mem),
+        (two_i32, Class::Fpr),
+        (four_f32, Class::Fpr),
+        (three_i32, Class::Mem),
+        (eight_i32, Class::Mem),
         (i128, Class::Mem),
         (st, Class::Mem),
     ] {

@@ -52,6 +52,13 @@ impl Rng {
     }
 }
 
+/// What a block ends with.
+enum End {
+    Br(usize),
+    Ret(Value),
+    Unreachable,
+}
+
 /// The program of `seed`, mutated by `mutation`.
 pub fn generate(seed: u64, mutation: Option<Mutation>) -> Generated {
     let mut rng = Rng(seed ^ 0x5eed_a64a_64a6_4a64);
@@ -81,11 +88,6 @@ pub fn generate(seed: u64, mutation: Option<Mutation>) -> Generated {
     };
     // What each block ends with, the constants interned before the
     // builder borrows the module.
-    enum End {
-        Br(usize),
-        Ret(Value),
-        Unreachable,
-    }
     let decoy_value = int(&mut m, value ^ 0x100);
     if mutation == Some(Mutation::WrongConstant) {
         value ^= 1;

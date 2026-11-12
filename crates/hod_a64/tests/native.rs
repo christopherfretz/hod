@@ -16,7 +16,7 @@ use common::{emit, ll_header, llc, llc_major, parse, write_object};
 use hod_cg::{Options, RelocModel};
 use hod_testutil::{run_with, tool};
 
-const FUNCTIONS: &str = r#"
+const FUNCTIONS: &str = r"
 @g = global [4 x i64] [i64 10, i64 20, i64 30, i64 40]
 @h = external global i64
 @w = extern_weak global i64
@@ -66,7 +66,7 @@ define ptr @p_w() { ret ptr @w }
 define ptr @p_loc() { ret ptr @loc }
 define ptr @p_fn() { ret ptr @r_i32 }
 define i64 @p_int() { ret i64 ptrtoint (ptr @g to i64) }
-"#;
+";
 
 const DRIVER: &str = r#"
 #include <stdint.h>

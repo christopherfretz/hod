@@ -1058,6 +1058,43 @@ them there, and has the saturating arithmetic, `scmp`/`ucmp`, the
   thread-local symbol in a constant is `classify`'s `tls:address-in-constant` rule.
   Every other expression `hod_ir` keeps (`Expr`) is `const-expr:<op>`.
 
+#### The groups together (WP-066)
+
+- **Fused `condbr`** (`control.rs`): a `br i1 %c, ...` with two
+  different targets whose `%c` is deferred (§4.6: its only use is the
+  branch, the next instruction) does not materialize `%c`. If
+  `int::fusable` accepts the compare, its other deferred operands are
+  emitted (`deferred_first`), `int::flags` sets the flags and yields one
+  condition; an `fcmp` goes through `float::flags`, which yields one or
+  two conditions (`one`/`ueq` need two; `fp128` calls `__lttf2` and
+  friends first). Then: with one condition and the true block next,
+  `b.<inverse>` to the false block and fall through; otherwise
+  `b.<first>` to the true block, `b.<second>` to it when there is a
+  second, and `term::br` to the false block (omitted when it is next).
+  `branch_cond` keeps its far form. A compare with another use, or one
+  not right before the branch, is materialized and tested with `tbnz`,
+  as before. Phi stores precede the compare's flag setting, so they
+  cannot clobber the flags.
+- **The facade's classifier** (`crates/hod/src/front.rs`): for
+  `Arch::Aarch64` the `Judge` and the census use
+  `Classifier::with_stack_args(&TargetStackArgs::new(&A64))`, so a
+  `musttail` whose stack argument area fits the caller's is judged
+  (`musttail:stack-args-grow` when it does not); x86-64 keeps no rule
+  (`musttail:stack-args-unknown`).
+- **`invoke` with an odd-leaf `Mem` result** stays refused
+  (`a64:invoke-odd-int-result`): clearing the bits above the leaves must
+  happen after the call and before the normal edge's phi stores, which
+  `FnCx::call` (`hod_cg/src/call.rs`) emits with the branch; no target
+  hook sits between them. No corpus module needs it.
+- Tests: `tests/fused.rs` (every predicate × width or float type ×
+  operand form × block layout, the two-use and separated shapes, and an
+  object check that a fused branch has no `cset`), `tests/phis.rs`
+  (diamonds with critical edges, loops with permuted phis, selects, of
+  every class), `tests/mem_calls.rs` (`Mem`-class arguments and results
+  in registers, on the stack, `byval`, `sret`, between hod, `llc` and
+  `gcc` both ways), `crates/hod/tests/musttail.rs`; `tests/diff.rs`
+  with every `groups.rs` line on.
+
 #### Thread-local storage and symbol offsets (WP-073)
 
 `src/tls.rs` writes the address of a thread-local symbol by the model

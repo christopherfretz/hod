@@ -1,6 +1,8 @@
 //! Memory instructions (`spec/codegen.md` §5.2, §5.5.1 "Memory"):
-//! `load` and `store` of `Gpr`-class values, `alloca`, `ptradd`,
-//! `llvm.stacksave` and `llvm.stackrestore`.
+//! `load` and `store` of `Gpr`-class values (an `Fpr`-class value goes to
+//! `float::load`/`float::store`, WP-067, through the hook at the top of
+//! [`load`] and [`store`]), `alloca`, `ptradd`, `llvm.stacksave` and
+//! `llvm.stackrestore`.
 //!
 //! **Owner: WP-036.** Tests: `tests/mem.rs`. Each entry point starts with
 //! [`deferred_first`](crate::common::deferred_first), naming the address
@@ -53,9 +55,11 @@ pub const ALLOCA: &str = "a64:alloca";
 pub const PTRADD: &str = "a64:ptradd";
 /// `llvm.stacksave`, `llvm.stackrestore`: the group's name.
 pub const STACK_INTRINSIC: &str = "a64:stack-intrinsic";
-/// A `load` of a floating-point or vector-register value: WP-039.
+/// A `load` of a floating-point or vector-register value: not refused
+/// any more (`float::load`, WP-067); kept for the coverage log's history.
 pub const LOAD_FPR: &str = "a64:load-fpr";
-/// A `store` of a floating-point or vector-register value: WP-039.
+/// A `store` of a floating-point or vector-register value: not refused
+/// any more (`float::store`, WP-067); kept for the coverage log's history.
 pub const STORE_FPR: &str = "a64:store-fpr";
 /// A `ptradd` whose result is a vector of pointers: no package yet (the
 /// vector element operations, `target::VECTOR`).
@@ -371,11 +375,12 @@ fn check_access(mem: MemFlags) -> CgResult<()> {
     Ok(())
 }
 
-/// `%r = load <ty>, ptr %ptr` of class `Gpr` or `Fpr`.
+/// `%r = load <ty>, ptr %ptr` of class `Gpr`, or of class `Fpr` by
+/// `float::load` (WP-067) with this module's addressing.
 ///
 /// # Errors
-/// [`LOAD_FPR`] for an `Fpr`-class value; `a64:atomic` for an atomic
-/// load; what asking for the operands reports.
+/// `a64:atomic` for an atomic load; what asking for the operands
+/// reports.
 pub fn load<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, ptr: Value, mem: MemFlags) -> CgResult<()> {
     check_access(mem)?;
     if A64.class_of(cx.types(), inst.ty()) != Class::Gpr {
@@ -414,11 +419,12 @@ fn is_zero(cx: &FnCx<'_, A64>, value: Value) -> bool {
     matches!(const_int(cx, value), Some((0, _)))
 }
 
-/// `store <ty> %value, ptr %ptr` of class `Gpr` or `Fpr`.
+/// `store <ty> %value, ptr %ptr` of class `Gpr`, or of class `Fpr` by
+/// `float::store` (WP-067) with this module's addressing.
 ///
 /// # Errors
-/// [`STORE_FPR`] for an `Fpr`-class value; `a64:atomic` for an atomic
-/// store; what asking for the operands reports.
+/// `a64:atomic` for an atomic store; what asking for the operands
+/// reports.
 pub fn store<'a>(
     cx: &mut FnCx<'a, A64>,
     inst: Inst<'a>,

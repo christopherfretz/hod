@@ -3,7 +3,7 @@
 use hod_mc_x64::*;
 
 use crate::harness::Batch;
-use crate::text::{SIZES, r, reg, some_mems};
+use crate::text::{SIZES, WIDE, r, reg, some_mems};
 
 pub fn build(b: &mut Batch) {
     for size in SIZES {
@@ -22,6 +22,7 @@ pub fn build(b: &mut Batch) {
         }
     }
     for m in some_mems() {
+        emit!(b, cmpxchg8b_m(m.mem()), "cmpxchg8b qword ptr {}", m.text());
         emit!(b, cmpxchg16b_m(m.mem()), "cmpxchg16b xmmword ptr {}", m.text());
     }
     locked(b);
@@ -65,7 +66,24 @@ fn locked(b: &mut Batch) {
             lock_m!(size, m; inc_m "inc", dec_m "dec", not_m "not", neg_m "neg");
         }
     }
+    for size in WIDE {
+        for m in some_mems() {
+            for n in [2, 11] {
+                lock_mr!(size, m, n; bts_mr "bts", btr_mr "btr", btc_mr "btc");
+            }
+            for v in [0, 63] {
+                lock_mi!(size, m, v; bts_mi "bts", btr_mi "btr", btc_mi "btc");
+            }
+        }
+    }
     for m in some_mems() {
+        emit_as!(
+            b,
+            "lock cmpxchg8b",
+            try_lock(cmpxchg8b_m(m.mem())),
+            "lock cmpxchg8b qword ptr {}",
+            m.text()
+        );
         emit_as!(
             b,
             "lock cmpxchg16b",
@@ -92,6 +110,13 @@ fn locked(b: &mut Batch) {
         xchg_rr(Size::D, r(1), r(2)),
         lock(add_mr(Size::D, m, r(1))),
         nop(1),
+        bt_mr(Size::D, m, r(1)),
+        bt_mi(Size::Q, m, 3),
+        bts_rr(Size::D, r(0), r(1)),
+        btr_ri(Size::Q, r(0), 1),
+        lock(btc_mi(Size::W, m, 1)),
+        movs_mr(FpSize::D, m, Xmm::Xmm0),
+        tls_gd_call(),
     ];
     for inst in refused {
         reject!(b, try_lock(inst));

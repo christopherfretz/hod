@@ -591,8 +591,8 @@ driver, or `bfd`, `lld` or `mold` fails it.
 the C library; its expected output was derived independently of any
 compiler and then confirmed with the oracle, on LLVM 22 and 19. Each is
 valid for both targets and both LLVM majors, names what it covers in a
-`covers` directive, and carries `unsupported: *` until hod compiles it
-(any reason: which construct hod names first is the support matrix's
+`covers` directive, and carries `unsupported: *` until hod compiles it,
+then `unsupported(x86_64): *` until the x86-64 code generator does (any reason: which construct hod names first is the support matrix's
 business, not the program's; "Test directives").
 
 | file | covers | tier |
@@ -629,6 +629,15 @@ business, not the program's; "Test directives").
 | `selector_narrow_load.ll` | `spec/interp.md` §10.1: a narrow load GlobalISel miscompiles on AArch64 | |
 | `selector_i1_compare.ll` | `spec/interp.md` §10.1: an `i1` compare FastISel miscompiles on AArch64 | |
 | `two_modules.ll` | two modules: definitions and declarations across them, internal linkage, linkonce_odr | quick |
+| `exit_int.ll` | call-free: integer operations, shifts, compares, casts, select at i8 to i64 | quick |
+| `exit_float.ll` | call-free: floating-point arithmetic, conversions, the fcmp predicates with NaN | quick |
+| `exit_control.ll` | call-free: loops, phi, switch, indirectbr, local arrays, narrow loads and stores, a pointer table | quick |
+
+The three `exit_*.ll` programs make no call, so hod compiled them before
+it had calls (WP-043): each checks its results against values derived
+independently of any compiler and reports through its exit status alone
+(7 when every check passed, `100 + n` for check `n`). They carry
+`unsupported(x86_64): *`, since x86-64 has no code generator yet.
 
 The `va_arg` instruction is not in the corpus, because it has no oracle:
 for AArch64 Linux, `llc` (19 and 22) accepts it and reads the `va_list` as
@@ -1068,8 +1077,8 @@ one program, which is run once per linker. The first module hod does not
 build (declines, falls back on, or fails on) decides the test, with the
 module's name in the detail (`module 'lib': ...`).
 
-A test that is unsupported today, with input, arguments and a status (the
-directives of `tests/ir/main_args.ll`):
+A test hod builds on AArch64 and declines on x86-64, with input,
+arguments and a status (the directives of `tests/ir/main_args.ll`):
 
 ```llvm
 ;@ covers: spec/ir.md §5.4 call, memory (the process interface every other test relies on)
@@ -1077,7 +1086,7 @@ directives of `tests/ir/main_args.ll`):
 ;@ args: alpha beta
 ;@ stdin: one line of input
 ;@ exit: 3
-;@ unsupported: *
+;@ unsupported(x86_64): *
 ;@ stdout: argc=3
 ;@ stdout: alpha beta
 ;@ stdout:

@@ -9,15 +9,23 @@
 //! [`compile`] reads its input with `hod_ll` (text) or `hod_bc` (bitcode),
 //! checks it with `hod_ir::classify` and declines it with the first reason
 //! (the front half, `front.rs`); a module accepted whole goes to
-//! [`generate`], which is where code generation will be.
+//! [`generate`], the back half (`back.rs`): code generation with
+//! `hod_a64`, on worker threads for a large module, and the object.
 
 use std::borrow::Cow;
 use std::fmt;
 use std::path::PathBuf;
 
+mod back;
 mod front;
 
-pub use front::{BitcodeReading, LIMIT_READER, Report, Settings, compile_with, generate};
+pub use back::{
+    LIMIT_OBJECT, OBJECT_NUL_IN_NAME, OPTION_RELOCATION_MODEL, OPTION_SPLIT_DWARF,
+    PARALLEL_MIN_INSTS, ThreadTokens, Threads, generate_with,
+};
+pub use front::{
+    BitcodeReading, INTERNAL_ERROR, LIMIT_READER, Report, Settings, compile_with, generate,
+};
 
 /// What [`compile`] writes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -128,8 +136,8 @@ pub struct Options {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Construct {
-    /// No code generator exists yet: every module `classify` accepts whole
-    /// is declined with this.
+    /// The target has no code generator (x86-64): every module of it
+    /// that `classify` accepts whole is declined with this.
     CodegenNotImplemented,
     /// The input is LLVM bitcode and the caller asked for it not to be
     /// read ([`BitcodeReading::Decline`]).
@@ -178,20 +186,31 @@ pub struct Unsupported {
     pub construct: Construct,
     /// The function it was found in, when it is inside one.
     pub function: Option<String>,
+    /// What the name does not say, for the diagnostic: the feature an
+    /// `attr:target-feature-*` reason refused. Not in the coverage log.
+    pub detail: Option<String>,
 }
 
 impl Unsupported {
     /// A module-level reason (no function).
     pub fn module(construct: Construct) -> Self {
-        Self { construct, function: None }
+        Self { construct, function: None, detail: None }
+    }
+
+    /// A reason found in `function`.
+    pub fn in_function(construct: Construct, function: Option<String>) -> Self {
+        Self { construct, function, detail: None }
     }
 }
 
 impl fmt::Display for Unsupported {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "unsupported construct '{}'", self.construct)?;
-        match &self.function {
-            Some(function) => write!(f, " in function '{function}'"),
+        if let Some(function) = &self.function {
+            write!(f, " in function '{function}'")?;
+        }
+        match &self.detail {
+            Some(detail) => write!(f, ": {detail}"),
             None => Ok(()),
         }
     }
@@ -207,6 +226,11 @@ pub enum CompileError {
     MalformedInput(String),
     /// The options contradict each other or the input; the message says how.
     InvalidOptions(String),
+    /// Code generation failed in a way that is a bug in hod (or input
+    /// `classify` and `verify` should have refused), not an unsupported
+    /// construct: `CgError::Internal` (`spec/codegen.md` §10). Nothing was
+    /// written; the caller may still hand the module to LLVM.
+    Internal(String),
 }
 
 impl fmt::Display for CompileError {
@@ -215,6 +239,7 @@ impl fmt::Display for CompileError {
             CompileError::Unsupported(unsupported) => unsupported.fmt(f),
             CompileError::MalformedInput(message) => write!(f, "malformed input: {message}"),
             CompileError::InvalidOptions(message) => write!(f, "invalid options: {message}"),
+            CompileError::Internal(message) => write!(f, "internal error: {message}"),
         }
     }
 }
@@ -329,8 +354,8 @@ pub fn effective_triple<'a>(input: &'a [u8], options: &'a Options) -> Option<&'a
 /// 4. `classify`'s module pass;
 /// 5. each body, as it is read: the reader's refusal, `classify`'s body
 ///    pass, `Body::verify`;
-/// 6. [`generate`] for a module accepted whole: today
-///    `codegen-not-implemented`.
+/// 6. [`generate`] for a module accepted whole: the object, or code
+///    generation's refusal (`spec/cli.md` "The back half").
 ///
 /// [`compile_with`] is the same with [`Settings`] and a [`Report`].
 ///
@@ -385,7 +410,9 @@ mod tests {
     fn reasons_in_order() {
         let obj = object_options();
         let named = |name: &'static str| Construct::Named(name.into());
-        assert_eq!(reason(DECLARATIONS, &obj), Construct::CodegenNotImplemented);
+        // A module `classify` and code generation accept whole is an
+        // object (`DECLARATIONS` has nothing to compile).
+        assert!(compile(DECLARATIONS, &obj).is_ok_and(|o| o.starts_with(b"\x7FELF")));
         // The stages, with constructs no package is about to support:
         // `module asm` (`module:asm`, the module pass) and `ghccc`
         // (`cc:ghccc`, unplanned, the body pass).
@@ -394,19 +421,19 @@ mod tests {
         assert_eq!(reason(module_asm.as_bytes(), &obj), named("module:asm"));
         let ghc = "define ghccc void @h() nounwind {\n  ret void\n}\n";
         let body = format!("{triple}{ghc}");
-        let refused = Unsupported { construct: named("cc:ghccc"), function: Some("h".into()) };
+        let refused = Unsupported::in_function(named("cc:ghccc"), Some("h".into()));
         assert_eq!(compile(body.as_bytes(), &obj), Err(refused.into()));
         // The module pass comes before any body.
         let both = format!("{module_asm}{ghc}");
         assert_eq!(reason(both.as_bytes(), &obj), named("module:asm"));
         // A definition `classify` accepts whole reaches `generate`, its
-        // body read, classified and verified.
+        // body read, classified and verified, and becomes an object.
         let accepted = format!("{triple}define i32 @f() nounwind {{\n  ret i32 7\n}}\n");
         let mut report = Report::default();
         let generated = compile_with(accepted.as_bytes(), &obj, &Settings::default(), &mut report);
-        assert_eq!(generated, Err(Unsupported::module(Construct::CodegenNotImplemented).into()));
+        assert!(generated.is_ok_and(|o| o.starts_with(b"\x7FELF")));
         let phases: Vec<&str> = report.phases.iter().map(|&(name, _)| name).collect();
-        assert_eq!(phases, ["parse", "classify", "bodies"]);
+        assert_eq!(phases, ["parse", "classify", "bodies", "emission", "object"]);
         // MODULE's data layout is not the target's.
         assert_eq!(reason(MODULE, &obj), Construct::UnsupportedTarget);
         // No stated target: hod does not guess the host's.
@@ -430,7 +457,7 @@ mod tests {
         let linux = Options { triple: Some("aarch64-unknown-linux-gnu".into()), ..obj.clone() };
         assert_eq!(reason(wasm, &linux), Construct::UnsupportedTarget);
         // -mtriple is the target of a module that names none.
-        assert_eq!(reason(b"declare i32 @g()\n", &linux), Construct::CodegenNotImplemented);
+        assert!(compile(b"declare i32 @g()\n", &linux).is_ok());
         // Bitcode the caller does not want read.
         let decline = Settings { bitcode: BitcodeReading::Decline, ..Settings::default() };
         let declined = compile_with(b"BC\xC0\xDE....", &obj, &decline, &mut Report::default());
@@ -508,13 +535,24 @@ mod tests {
     fn error_text() {
         let module = Unsupported::module(Construct::BitcodeInput);
         assert_eq!(module.to_string(), "unsupported construct 'bitcode-input'");
-        let function = Unsupported {
-            construct: Construct::CodegenNotImplemented,
-            function: Some("_Z1fv".into()),
-        };
+        let function =
+            Unsupported::in_function(Construct::CodegenNotImplemented, Some("_Z1fv".into()));
         assert_eq!(
             CompileError::from(function).to_string(),
             "unsupported construct 'codegen-not-implemented' in function '_Z1fv'"
+        );
+        let feature = Unsupported {
+            construct: Construct::Named("attr:target-feature-unknown".into()),
+            function: Some("f".into()),
+            detail: Some("+bogus".into()),
+        };
+        assert_eq!(
+            feature.to_string(),
+            "unsupported construct 'attr:target-feature-unknown' in function 'f': +bogus"
+        );
+        assert_eq!(
+            CompileError::Internal("function 'f': a lost value".into()).to_string(),
+            "internal error: function 'f': a lost value"
         );
         assert_eq!(
             CompileError::MalformedInput("line 3: expected type".into()).to_string(),

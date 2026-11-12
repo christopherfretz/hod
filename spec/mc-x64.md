@@ -5,12 +5,13 @@ It knows nothing about the IR, object files or assembly text. Its consumer
 is a single-pass code generator that calls it once per emitted instruction,
 so the whole API is plain functions on small `Copy` values.
 
-This document covers the base integer instruction set an `-O0` code
-generator needs, in 64-bit mode. Scalar SSE floating point and vectors are
-a later work package. The oracle and the crate assume the x86-64 baseline
-plus the instructions named below that need a CPUID feature (`LZCNT`,
-`TZCNT` (BMI1), `POPCNT`, `CMPXCHG16B`, `ENDBR64`); the crate does not check
-features, the code generator does.
+This document covers the base integer instruction set and the scalar
+SSE/SSE2 floating point an `-O0` code generator needs, in 64-bit mode, and
+the fixed forms of the thread-local storage accesses. Vectors are a later
+work package. The oracle and the crate assume the x86-64 baseline (which
+includes SSE2 and `CMPXCHG8B`) plus the instructions named below that need
+a CPUID feature (`LZCNT`, `TZCNT` (BMI1), `POPCNT`, `CMPXCHG16B`,
+`ENDBR64`); the crate does not check features, the code generator does.
 
 Instructions are cited by their Intel SDM names (Intel 64 and IA-32
 Architectures Software Developer's Manual, Volume 2, "Instruction Set
@@ -45,6 +46,11 @@ immediate of 1, 2, 4 or 8 bytes, `cb`/`cd` a relative displacement.
   | `_rcl` / `_mcl` | register / memory, shift count in `cl` |
   | `_rri`, `_rrcl`, `_mri`, `_mrcl`, `_rmi` | three operands, in order |
   | `_r` / `_m` | one register / one memory operand |
+  | `_xr` / `_rx` | an `xmm` and a general register / the reverse, where the kinds would otherwise share a suffix |
+
+  An `xmm` register is an `r` in every other suffix: `adds_rr` takes two
+  `xmm` registers, `cvtsi2s_rr` an `xmm` and a general register, and the
+  parameter types say which.
 
   A constructor with no suffix has one form.
 
@@ -79,6 +85,9 @@ Both forms are generated from one statement of the precondition (the
 | `Scale` | `S1`, `S2`, `S4`, `S8` | the SIB scale |
 | `Seg` | `Fs`, `Gs` | a segment override (`64`, `65`) of a memory operand |
 | `Cond` | `O`, `No`, `B`, `Ae`, `E`, `Ne`, `Be`, `A`, `S`, `Ns`, `P`, `Np`, `L`, `Ge`, `Le`, `G` (the `cc` field 0..15, in that order; `.invert()` flips bit 0) | `Jcc`, `SETcc`, `CMOVcc` |
+| `Xmm` | `Xmm0`..`Xmm15` (numbers 0..15; `Xmm::new(n)` is `None` for `n > 15`; `.code()` the number) | every SSE register operand |
+| `FpSize` | `S` (single, 32 bits), `D` (double, 64 bits); `.bits()` | the precision of a scalar operation, the element type of a packed logical one |
+| `FpCmp` | `Eq`, `Lt`, `Le`, `Unord`, `Neq`, `Nlt`, `Nle`, `Ord` (the `cmpss` `imm8` 0..7, in that order; `.invert()` flips bit 2, the negation including the unordered case) | `cmps_rr`, `cmps_rm` |
 
 The size is not part of a register: `Reg::Rsi` with `Size::B` is `sil`,
 with `Size::W` `si`. The 8-bit registers are `al`, `cl`, `dl`, `bl`, `spl`,
@@ -100,9 +109,10 @@ It is built by one of:
 | `Mem::abs(disp: i32)` | `[disp]`: the sign-extended absolute address (not RIP-relative) |
 | `Mem::rip(disp: i32)` | `[rip + disp]`: `disp` from the end of the instruction |
 | `m.with_seg(seg: Seg)` | the same operand with a segment override |
+| `m.with_abs32() -> Option<Mem>` | the same operand with its displacement an **absolute field** ("Fixups and relocations"); `None` for a RIP-relative operand, whose displacement is already the PC-relative field |
 
-`get_base()` (a `Base`: `None`, `Reg(Reg)`, `Rip`), `get_index()`, `disp()`
-and `seg()` read the parts back. Every value of `Mem` has an encoding:
+`get_base()` (a `Base`: `None`, `Reg(Reg)`, `Rip`), `get_index()`, `disp()`,
+`seg()` and `is_abs32()` read the parts back. Every value of `Mem` has an encoding:
 `rsp` is not an `Index` and a RIP-relative operand has no index, by
 construction. A segment override on `lea`'s operand is encoded and has no
 effect.
@@ -120,8 +130,13 @@ effect.
   byte is present when there is an index or the base is `rsp` or `r12`
   (low bits 100), with index 100 in the second case. Base and index are
   never swapped.
+- An absolute field: as above, except that with a base the displacement
+  is always `disp32` (`mod` 10), even for `disp == 0` or a `disp8` value;
+  with no base it is the `disp32` it always is. Either way that `disp32` is
+  the instruction's site.
 
-This is exactly LLVM's choice for the same operand.
+This is exactly LLVM's choice for the same operand (with `{disp32}` for an
+absolute field, which is also what LLVM writes for `[base + sym]`).
 
 ## Instruction layout
 
@@ -131,12 +146,18 @@ opcode (`0F` first for the two-byte map); ModRM; SIB; displacement;
 immediate. This is the order LLVM emits (it puts `66` before `F0` and
 before a mandatory `F3`).
 
+An SSE instruction's mandatory prefix (`66`, `F2` or `F3`) takes the place
+of `66` or `F2`/`F3` in that order, so it precedes REX and follows a
+segment override.
+
 REX is `0100WRXB`: `W` for a 64-bit operand size where the instruction's
 default is not 64 bits; `R`, `X`, `B` the high bit of the reg field,
 the SIB index and the base (or `rm`, or the `+r` register). A REX prefix
 is emitted when any bit is set, and also, as `40`, when an 8-bit register
 operand is `spl`, `bpl`, `sil` or `dil`, which exist only with REX.
-`inst.has_rex()` says whether the instruction has one.
+`inst.has_rex()` says whether the instruction has one. An `xmm` register
+never needs a REX prefix of its own; `xmm8`..`xmm15` set `R` or `B` like
+`r8`..`r15`.
 
 Instructions whose default operand size is 64 bits (`push`, `pop`, `jmp`
 and `call` through a register or memory, `leave`) take no size and no
@@ -303,6 +324,23 @@ Each `_rr` takes `(size, dst: Reg, src: Reg)` and each `_rm`
 and `LZCNT` execute as `BSF` and `BSR`; choosing them is the code
 generator's business.
 
+## Bit tests
+
+`op` is `bt`, `bts`, `btr`, `btc`: each copies the selected bit to CF;
+`bts`, `btr`, `btc` then set, clear or complement it.
+
+| constructor | encodes | precondition |
+|---|---|---|
+| `op_rr(size, dst: Reg, bit: Reg)` | BT `0F A3 /r`, BTS `0F AB /r`, BTR `0F B3 /r`, BTC `0F BB /r`; `dst` in `rm`, `bit` in reg | `size != B` |
+| `op_mr(size, dst: Mem, bit: Reg)` | the same with a memory operand; lockable except `bt` | `size != B` |
+| `op_ri(size, dst: Reg, bit: u8)` | `0F BA /4 ib` (BT), `/5` (BTS), `/6` (BTR), `/7` (BTC) | `size != B` |
+| `op_mi(size, dst: Mem, bit: u8)` | the same with a memory operand; lockable except `bt` | `size != B` |
+
+An immediate bit index is any `u8`, taken modulo the operand size. A
+register bit index with a memory operand is a signed offset in bits from
+the operand's address, not reduced: the instruction may access memory
+outside the operand.
+
 ## Atomics
 
 | constructor | encodes | precondition |
@@ -312,6 +350,7 @@ generator's business.
 | `xchg_mr(size, m: Mem, r: Reg)` | XCHG `86`/`87 /r` (atomic without `lock`); lockable | |
 | `xadd_mr(size, m: Mem, r: Reg)` | XADD `0F C0`/`C1 /r`; lockable | |
 | `cmpxchg_mr(size, m: Mem, r: Reg)` | CMPXCHG `0F B0`/`B1 /r`; lockable | |
+| `cmpxchg8b_m(m: Mem)` | CMPXCHG8B `0F C7 /1`: `edx:eax` against the 8 bytes at `m`, `ecx:ebx` stored if equal; lockable | |
 | `cmpxchg16b_m(m: Mem)` | CMPXCHG16B `REX.W 0F C7 /1`; lockable | |
 | `mfence()`, `lfence()`, `sfence()` | `0F AE F0`, `0F AE E8`, `0F AE F8` | |
 | `pause()` | PAUSE `F3 90` | |
@@ -319,7 +358,8 @@ generator's business.
 An instruction is **lockable** when the SDM allows `LOCK` on it: the
 memory-destination forms marked lockable in the tables above (`op_mr` and
 `op_mi` except `cmp`, `inc_m`, `dec_m`, `not_m`, `neg_m`, `xchg_mr`,
-`xadd_mr`, `cmpxchg_mr`, `cmpxchg16b_m`) and nothing else. A locked
+`xadd_mr`, `cmpxchg_mr`, `cmpxchg8b_m`, `cmpxchg16b_m`, and `bts`, `btr`,
+`btc` in their `_mr` and `_mi` forms) and nothing else. A locked
 instruction is not lockable again. `lock` moves the instruction's
 PC-relative field one byte later.
 
@@ -346,19 +386,66 @@ is LLVM's choice; `xchg ax, ax` is `66 90`.
 `66 2E 0F 1F 84 00` + 4, and for 11 to 15 bytes that with one more `66`
 per byte in front. This is LLVM's padding (`.nops len, len`).
 
+## Scalar floating point
+
+SSE and SSE2 in their legacy encodings: the `0F` map with a mandatory
+prefix. `X` is an `Xmm`, `fp` an `FpSize`. For a precision-taking
+constructor the SDM instruction is the name with the precision letter put
+back: `adds` is ADDSS (`fp = S`, prefix `F3`) or ADDSD (`D`, `F2`); `xorp`
+is XORPS (no prefix) or XORPD (`66`); `cvtts2si` is CVTTSS2SI or
+CVTTSD2SI. A scalar memory operand is 32 bits for `S`, 64 for `D`; a
+128-bit one (`movap`, `movup`, `movdq*`, the packed logical forms) must be
+16-byte aligned except for `movup_*` and `movdqu_*`, or the instruction
+faults.
+
+| constructor | encodes | precondition |
+|---|---|---|
+| `movs_rr(fp, dst: X, src: X)` | MOVSS/MOVSD `F3`/`F2 0F 10 /r`, `dst` in reg: the low element, the rest of `dst` kept | |
+| `movs_rm(fp, dst: X, src: Mem)` | the same, a load: the rest of `dst` zeroed | |
+| `movs_mr(fp, dst: Mem, src: X)` | MOVSS/MOVSD `F3`/`F2 0F 11 /r`: a store | |
+| `movap_rr(fp, dst: X, src: X)` | MOVAPS/MOVAPD `[66] 0F 28 /r`, `dst` in reg: all 128 bits | |
+| `movap_rm(fp, dst: X, src: Mem)`, `movap_mr(fp, dst: Mem, src: X)` | `[66] 0F 28 /r`, `[66] 0F 29 /r` | |
+| `movup_rm(fp, dst: X, src: Mem)`, `movup_mr(fp, dst: Mem, src: X)` | MOVUPS/MOVUPD `[66] 0F 10 /r`, `[66] 0F 11 /r` | |
+| `movdqa_rr(dst: X, src: X)`, `movdqa_rm(dst: X, src: Mem)`, `movdqa_mr(dst: Mem, src: X)` | MOVDQA `66 0F 6F /r` (register and load), `66 0F 7F /r` (store) | |
+| `movdqu_rm(dst: X, src: Mem)`, `movdqu_mr(dst: Mem, src: X)` | MOVDQU `F3 0F 6F /r`, `F3 0F 7F /r` | |
+| `movd_xr(size, dst: X, src: Reg)` | MOVD/MOVQ `66 [REX.W] 0F 6E /r`: the general register's 32 or 64 bits into the low element, the rest zeroed | `size` is `D` or `Q` |
+| `movd_rx(size, dst: Reg, src: X)` | MOVD/MOVQ `66 [REX.W] 0F 7E /r`, the `xmm` in reg: the low 32 or 64 bits | `size` is `D` or `Q` |
+| `adds_rr`, `subs_rr`, `muls_rr`, `divs_rr`, `sqrts_rr` `(fp, dst: X, src: X)` | ADD/SUB/MUL/DIV/SQRT SS/SD `F3`/`F2 0F 58`, `5C`, `59`, `5E`, `51 /r` | |
+| `adds_rm`, `subs_rm`, `muls_rm`, `divs_rm`, `sqrts_rm` `(fp, dst: X, src: Mem)` | the same with a memory source | |
+| `andp_rr`, `andnp_rr`, `orp_rr`, `xorp_rr` `(fp, dst: X, src: X)` | AND/ANDN/OR/XOR PS/PD `[66] 0F 54`, `55`, `56`, `57 /r`: the bitwise operations on 128 bits (`andnp`: `dst = !dst & src`) for absolute value, negation, copysign and the zero idiom `xorp_rr(S, x, x)` | |
+| `andp_rm`, `andnp_rm`, `orp_rm`, `xorp_rm` `(fp, dst: X, src: Mem)` | the same with a 128-bit memory source | |
+| `ucomis_rr(fp, a: X, b: X)`, `ucomis_rm(fp, a: X, b: Mem)` | UCOMISS/UCOMISD `[66] 0F 2E /r`: the low elements into ZF, PF, CF (all three set when unordered), OF, SF, AF cleared; an exception only for a signaling NaN | |
+| `comis_rr(fp, a: X, b: X)`, `comis_rm(fp, a: X, b: Mem)` | COMISS/COMISD `[66] 0F 2F /r`: the same, signaling on any NaN | |
+| `cmps_rr(pred: FpCmp, fp, dst: X, src: X)`, `cmps_rm(pred, fp, dst: X, src: Mem)` | CMPSS/CMPSD `F3`/`F2 0F C2 /r ib`, `ib` the predicate: the low element of `dst` all ones where it holds, else zero | |
+| `cvtsi2s_rr(fp, dst: X, size, src: Reg)`, `cvtsi2s_rm(fp, dst: X, size, src: Mem)` | CVTSI2SS/CVTSI2SD `F3`/`F2 [REX.W] 0F 2A /r`: the signed 32- or 64-bit integer, rounded as MXCSR says; the rest of `dst` kept | `size` is `D` or `Q` |
+| `cvtts2si_rr(size, dst: Reg, fp, src: X)`, `cvtts2si_rm(size, dst: Reg, fp, src: Mem)` | CVTTSS2SI/CVTTSD2SI `F3`/`F2 [REX.W] 0F 2C /r`: toward zero; `1 << (size.bits() - 1)` (the "integer indefinite") when NaN or out of range | `size` is `D` or `Q` |
+| `cvtss2sd_rr(dst: X, src: X)`, `cvtss2sd_rm(dst: X, src: Mem)` | CVTSS2SD `F3 0F 5A /r`: exact | |
+| `cvtsd2ss_rr(dst: X, src: X)`, `cvtsd2ss_rm(dst: X, src: Mem)` | CVTSD2SS `F2 0F 5A /r`: rounded as MXCSR says | |
+
+Register-register moves use the load opcode with `dst` in reg (`0F 10`,
+`0F 28`, `66 0F 6F`), as LLVM encodes them. The conversions' operand order
+follows `movzx`: destination, then the source and its size or precision.
+An unsigned conversion, a 64-bit unsigned one in particular, is a sequence
+the code generator writes from these.
+
 ## Fixups and relocations
 
-An instruction has at most one **PC-relative field**: the `rel8`/`rel32` of
-a branch or call, or the `disp32` of a RIP-relative memory operand. The
-field holds the distance from the end of the instruction to the target.
+An instruction has at most one **relocatable field**, its *site*: the
+**PC-relative field**, the `rel8`/`rel32` of a branch or call or the
+`disp32` of a RIP-relative memory operand, which holds the distance from
+the end of the instruction to the target; or the **absolute field**, the
+`disp32` of a memory operand marked `with_abs32`, which holds a value (a
+thread-pointer offset, a `sym` in `[base + sym]`). A RIP-relative operand
+cannot be marked, so no instruction has two.
 
 ```rust
-pub enum Fixup { Rel8, Rel32 }
+pub enum Fixup { Rel8, Rel32, Abs32 }
 impl Fixup {
-    pub const ALL: [Fixup; 2];
-    pub const fn size(self) -> usize;                     // 1, 4
-    pub const fn min(self) -> i64;                        // -128, -(1 << 31)
-    pub const fn max(self) -> i64;                        // 127, (1 << 31) - 1
+    pub const ALL: [Fixup; 3];
+    pub const fn is_pc_relative(self) -> bool;            // Abs32 is not
+    pub const fn size(self) -> usize;                     // 1, 4, 4
+    pub const fn min(self) -> i64;                        // -128, -(1 << 31), -(1 << 31)
+    pub const fn max(self) -> i64;                        // 127, (1 << 31) - 1, (1 << 31) - 1
     pub const fn fits(self, disp: i64) -> bool;
     pub const fn patch(self, code: &mut [u8], at: usize, disp: i64) -> bool;
     pub const fn extract(self, code: &[u8], at: usize) -> Option<i64>;
@@ -377,16 +464,17 @@ impl Inst {
   or the field does not lie inside `code`. It touches no other byte and
   does not look at the opcode. `extract` is its inverse; `None` when the
   field does not lie inside `code`.
-- `site()` is `None` for an instruction without a PC-relative field.
-  `offset` is the field's offset from the start of the instruction and
-  `addend` is `offset as i64 - len`: minus the bytes from the field to the
-  end of the instruction (including an immediate after a RIP-relative
-  operand). A relocation at `start + offset` with that addend computes
+- `site()` is `None` for an instruction without a relocatable field.
+  `offset` is the field's offset from the start of the instruction. For
+  a PC-relative field `addend` is `offset as i64 - len`: minus the bytes
+  from the field to the end of the instruction (including an immediate
+  after a RIP-relative operand). For `Abs32` it is 0: the relocation
+  computes the value itself (`S + A`, `S + A - TP`, ...). A relocation at `start + offset` with that addend computes
   `S + A - P` = the distance from the end of the instruction to `S`, so
   the same `Site` serves an ELF relocation and an internal fixup: to patch
   for a target at section offset `t`, write `t + addend - (start + offset)`.
-- `with_disp(d)` is the instruction with its field set to `d`; `None` when
-  it has no field or `d` does not fit. Each constructor with a displacement
+- `with_disp(d)` is the instruction with its field set to `d` (for
+  `Abs32`, the value); `None` when it has no field or `d` does not fit. Each constructor with a displacement
   operand equals its zero-displacement form with that displacement:
   `jmp_near(d) == jmp_near(0).with_disp(d.into())`, and so on.
 
@@ -401,24 +489,64 @@ symbol offset):
 | load of a GOT entry | `mov_rm(Size::Q, ..)`, the ALU `_rm` forms, `test_mr` (GOT-relaxable by the linker) | `R_X86_64_REX_GOTPCRELX` when `has_rex()`, else `R_X86_64_GOTPCRELX` |
 | call or jump through a GOT entry | `call_m`, `jmp_m` | `R_X86_64_GOTPCRELX` |
 | initial-exec TLS offset | `mov_rm(Size::Q, ..)` or `add_rm(Size::Q, ..)` | `R_X86_64_GOTTPOFF` |
+| general-dynamic TLS: the `tls_index` and the call | `tls_gd_lea`, `tls_gd_call` | `R_X86_64_TLSGD`, `R_X86_64_PLT32` (against `__tls_get_addr`) |
+| local-dynamic TLS: the module's `tls_index` | `lea(Size::Q, Reg::Rdi, Mem::rip(0))` | `R_X86_64_TLSLD` |
+| TLS descriptor | `lea(Size::Q, Reg::Rax, Mem::rip(0))` | `R_X86_64_GOTPC32_TLSDESC` |
+| offset of a variable in its module's TLS block | an absolute field | `R_X86_64_DTPOFF32` |
+| offset of a variable from the thread pointer | an absolute field | `R_X86_64_TPOFF32` |
+| absolute address in the low or high 2 GiB (non-PIC) | an absolute field | `R_X86_64_32S` |
 
 The code generator picks the relocation and gives it to the object writer
 (`spec/object.md` "Relocations"); this crate names only the place and the
 addend.
 
+## Thread-local storage
+
+The access sequences of the x86-64 psABI ("Thread-Local Storage") and
+Drepper's *ELF Handling For Thread-Local Storage*, §4.3. A linker that
+links the access into an executable rewrites ("relaxes") it into a
+cheaper model by recognizing its exact bytes, so each dynamic model has a
+fixed form. `x` is the variable; the relocations are those of the table
+above, at each instruction's site.
+
+| model | sequence | result |
+|---|---|---|
+| general dynamic | `tls_gd_lea()`, `tls_gd_call()`: 16 bytes | `rax` = `&x` |
+| local dynamic | `lea(Size::Q, Reg::Rdi, Mem::rip(0))` (`TLSLD`), `call(0)` (`PLT32` against `__tls_get_addr`): 12 bytes; then any number of accesses `[rax + x@dtpoff]` through an absolute field (`DTPOFF32`) | `rax` = the module's TLS block |
+| initial exec | `mov_rm(Size::Q, r, Mem::rip(0))` or `add_rm(Size::Q, r, Mem::rip(0))` (`GOTTPOFF`), with the thread pointer `mov_rm(Size::Q, r, Mem::abs(0).with_seg(Seg::Fs))` | `r` = `x`'s offset from the thread pointer, or added to it |
+| local exec | the thread pointer as above, then `lea(Size::Q, r, Mem::base(r, 0).with_abs32())` (`TPOFF32`); or any access to `fs:[x@tpoff]`, `Mem::abs(0).with_seg(Seg::Fs).with_abs32()` (`TPOFF32`) | `&x`, or `x` itself |
+
+| constructor | encodes |
+|---|---|
+| `tls_gd_lea()` | `data16 lea rdi, [rip + disp32]`: `66 48 8D 3D cd`, field at offset 4 |
+| `tls_gd_call()` | `data16 data16 rex64 call rel32`: `66 66 48 E8 cd`, field at offset 4 |
+
+The `66` and `48` prefixes change nothing for these instructions; they
+pad the general-dynamic pair to the 16 bytes of the local-exec sequence
+the linker writes over it (`mov rax, fs:0; lea rax, [rax + x@tpoff]`).
+The local-dynamic pair is unpadded: the linker writes the 12-byte
+`data16 data16 data16 mov rax, fs:0`, or an equivalent, over it. Both
+pairs need `x@tlsgd`/`x@tlsld` in `rdi` and the result in `rax` exactly as
+given, and nothing between the two instructions. The initial-exec load
+may use any register (the linkers relax `mov r64, [rip + x@gottpoff]` to
+`mov r64, imm32` and the `add` to `lea` or `add` with an immediate).
+
 ## Not provided
 
-By decision of this WP's scope: the high-byte registers `ah`..`bh`; the
-string instructions (`movs`, `stos`, `rep` prefixes); `bt`/`bts`/`btr`/
-`btc`; `cmpxchg8b`; `xadd` and `cmpxchg` with a register destination;
-`movabs` to and from the accumulator with a 64-bit address; `enter`; 16-bit
-`push`/`pop`; far branches; `jrcxz` and `loop`; `cpuid`, `rdtsc`, `hlt` and
-the other system instructions; the TLS access sequences that need fixed
-padding prefixes (general and local dynamic: `data16 lea` / `data16 data16
-rex64 call`) and the absolute `TPOFF32` field of local exec, which is not a
-PC-relative site; scalar SSE and everything VEX- or EVEX-encoded (APX
-included). Adding an instruction is a constructor, a row here, a row in
-`tests/l1/table.rs` and a sweep.
+By decision of the scope so far: the high-byte registers `ah`..`bh`; the
+string instructions (`movs`, `stos`, `rep` prefixes); `xadd` and `cmpxchg`
+with a register destination; `movabs` to and from the accumulator with a
+64-bit address; `enter`; 16-bit `push`/`pop`; far branches; `jrcxz` and
+`loop`; `cpuid`, `rdtsc`, `hlt` and the other system instructions; an
+absolute field in an immediate (`mov r32, imm32` against `R_X86_64_32`)
+rather than a displacement; the `-fno-plt` general-dynamic call through
+the GOT (`data16 rex64 call [rip + __tls_get_addr@GOTPCREL]`) and the
+descriptor call `call [rax]`, whose `R_X86_64_TLSDESC_CALL` marks an
+instruction rather than a field; the SSE instructions not listed in
+"Scalar floating point" (`min`/`max`, `rounds`, the rounding conversions
+`cvtss2si`, packed arithmetic, shuffles and integer SIMD); and everything
+VEX- or EVEX-encoded (AVX, APX). Adding an instruction is a constructor, a
+row here, a row in `tests/l1/table.rs` and a sweep.
 
 ## Test method
 
@@ -462,10 +590,17 @@ return `None`.
    that LLVM does not silently re-express, `llvm-mc` must report an error
    on that line.
 
+The `xmm-memory-operands` sweep takes every form of "Memory operands"
+through a scalar load and store with every `xmm` in the reg field and
+through a 128-bit load; `absolute-fields` takes every form but
+RIP-relative, marked `with_abs32`, through a load with every register, a
+store with an immediate and `lea`, against LLVM's `{disp32}` text, and
+checks each load's site (`Abs32`, the last four bytes, addend 0).
+
 **Coverage.** `coverage::every_constructor_is_swept` reads the crate's
 source for its public constructors (as `hod_mc_a64`'s does) and fails if
 one has no row in the table, no case in any sweep, or (for a checked form)
-no rejected operands, or if the sweeps together fall below 150,000
+no rejected operands, or if the sweeps together fall below 250,000
 encodings.
 
 **The harness itself.** `selftest` gives the harness batches that disagree
@@ -483,11 +618,32 @@ test; constructors equal their zero form patched. With tools,
 loads, an immediate after the field, a `lock` and a segment prefix before
 it) the bytes equal LLVM's, and LLVM's relocation is at hod's site, with
 hod's addend and the type the table gives, `has_rex` deciding between the
-two GOTPCRELX kinds; and `a_laid_out_function_matches_llvm`: a function
+two GOTPCRELX kinds (86 instructions now, with the RIP-relative SSE and
+bit-test operands, every TLS relocation of the table and `R_X86_64_32S`);
+and `a_laid_out_function_matches_llvm`: a function
 with forward and backward short and near branches, a call, RIP-relative
 operands with and without an immediate after the field, under `lock` and
 a segment override, and padding, encoded with zero fields and patched
 through its sites, equals LLVM's assembly of the same source.
+
+**TLS through the linkers**, `link`: for each model of "Thread-local
+storage" (general dynamic; local dynamic with two `DTPOFF32` accesses;
+initial exec with `mov` and `add` into six registers, `r12` and `r13`
+among them; local exec in all three forms) an object is assembled from
+hod's bytes with a `.reloc` at each of hod's sites and addends, and one
+from the compiler's text for the same sequence; their code and
+relocations must be equal, at every major. Both objects are linked by GNU
+ld (`x86_64-linux-gnu-ld.bfd` on a non-x86-64 host), lld and mold, each
+with `-m elf_x86_64 --fatal-warnings`, into a static executable, a PIE and
+(except local exec) a shared object, silently, into identical files. In
+an executable the dynamic models' first instruction has been rewritten;
+in a shared object it has not, and the dynamic relocations
+`R_X86_64_DTPMOD64` (general and local dynamic) and `R_X86_64_TPOFF64`
+(initial exec) are present. The programs are not run. The control,
+`tls_padding_is_what_the_linkers_see`: the general-dynamic pair without
+its prefixes is refused (GNU ld 2.44: "TLS transition ... failed") or
+rewritten into other bytes (lld 22, mold 2.37: into a load without the
+`fs` override, that is, wrong code), so a missing prefix cannot pass.
 
 ### Where hod and LLVM's assembler differ
 

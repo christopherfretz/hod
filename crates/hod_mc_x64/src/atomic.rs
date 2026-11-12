@@ -56,6 +56,14 @@ pub const fn cmpxchg_mr(size: Size, m: Mem, r: Reg) -> Inst {
     rmem(Op::two(0xb0).sized(size, 1), size, r, m).lockable()
 }
 
+/// `CMPXCHG8B m64` (`0F C7 /1`): compares `edx:eax` with the 8 bytes at
+/// `m` and stores `ecx:ebx` if equal, else loads them into `edx:eax`.
+/// Lockable.
+#[inline]
+pub const fn cmpxchg8b_m(m: Mem) -> Inst {
+    digit_m(Op::two(0xc7), 1, m).lockable()
+}
+
 /// `CMPXCHG16B m128` (`REX.W 0F C7 /1`): compares `rdx:rax` with the 16
 /// bytes at `m` (16-byte aligned) and stores `rcx:rbx` if equal. Lockable.
 #[inline]

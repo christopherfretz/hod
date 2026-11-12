@@ -4,162 +4,89 @@
 
 Every module of the captured corpus (`docs/status/corpus.md`), given to hod in strict mode with its `llc` arguments: as bitcode from its LLVM's `llvm-as`, read natively (the default route). The first refusal is the reason the coverage log records; the census (`HOD_CENSUS=1`) is every reason, the list of what to implement next (`spec/cli.md` "Reasons"). A count is of modules.
 
-Measured before WP-033 merged: the first refusal was then `module:pic` for every module, and it moves as matrix rows turn on (run the command again for today's).
-
 ## First refusal
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `module:pic` | 2896 | 2864 |
-| all | 2896 | 2864 |
+| `(compiled)` | 3068 | 3034 |
+| `call:inline-asm` | 74 | 74 |
+| `type:vector` | 62 | 59 |
+| `operand:address-in-aggregate` | 32 | 32 |
+| `operand:int-of-addr` | 23 | 23 |
+| `tls:general-dynamic` | 11 | 11 |
+| `mem:atomic-load` | 8 | 7 |
+| `debug:module-flags` | 7 | 7 |
+| `inst:atomicrmw` | 6 | 6 |
+| `inst:insertelement` | 6 | 6 |
+| `musttail:stack-args-unknown` | 6 | 6 |
+| `attr:convergent` | 5 | 5 |
+| `inst:extractvalue/fp128` | 4 | 4 |
+| `module:asm` | 4 | 4 |
+| `inst:callbr` | 3 | 3 |
+| `intrinsic:llvm.smul.with.overflow/int-wide` | 3 | 3 |
+| `type:bfloat` | 3 | 3 |
+| `const-expr:trunc` | 2 | 3 |
+| `intrinsic:llvm.umul.with.overflow/i128` | 2 | 2 |
+| `mem:atomic-store` | 2 | 2 |
+| `special-global:llvm.global.annotations` | 2 | 2 |
+| `cc:preserve_mostcc` | 1 | 1 |
+| `inst:fptosi/i128` | 1 | 1 |
+| `inst:sitofp/i128` | 1 | 1 |
+| `inst:switch/i128` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crc32b` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.ld2.v16i8.p0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.ld2.v8i16.p0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.ld3.v8i8.p0` | 1 | 1 |
+| `intrinsic:llvm.readcyclecounter` | 1 | 1 |
+| `intrinsic:llvm.thread.pointer` | 1 | 1 |
+| `metadata-arg:llvm.read_volatile_register.i64` | 1 | 1 |
+| `tls:local-dynamic` | 1 | 1 |
+| `attr:fmv-features` | 1 | 0 |
+| `const-expr:bitcast` | 1 | 0 |
+| all | 3347 | 3308 |
 
 ## Every reason (census)
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `attr:target-cpu` | 2896 | 2864 |
-| `attr:target-features` | 2896 | 2864 |
-| `attr:uwtable` | 2896 | 2864 |
-| `cc:ccc` | 2896 | 2864 |
-| `global:function-definition` | 2896 | 2864 |
-| `module:pic` | 2896 | 2864 |
-| `module:pie` | 2896 | 2864 |
-| `module:uwtable` | 2896 | 2864 |
-| `type:int` | 2896 | 2864 |
-| `type:ptr` | 2894 | 2862 |
-| `inst:store` | 2833 | 2803 |
-| `function:slots` | 2829 | 2798 |
-| `operand:slot` | 2828 | 2797 |
-| `inst:call` | 2818 | 2791 |
-| `inst:ret` | 2751 | 2719 |
-| `inst:load` | 2738 | 2715 |
-| `inst:icmp` | 2164 | 2153 |
-| `inst:condbr` | 2088 | 2078 |
-| `function:parameters` | 2093 | 2069 |
-| `operand:symbol` | 2003 | 1984 |
-| `inst:unreachable` | 1695 | 1690 |
-| `inst:ptradd` | 1507 | 1488 |
-| `inst:br` | 1459 | 1447 |
-| `inst:add` | 1386 | 1373 |
-| `inst:zext` | 1232 | 1170 |
-| `function:may-unwind` | 1058 | 1030 |
-| `call:variadic` | 1017 | 998 |
-| `inst:sext` | 691 | 691 |
-| `inst:trunc` | 677 | 611 |
-| `intrinsic:llvm.memset` | 643 | 623 |
-| `intrinsic:llvm.memcpy` | 549 | 543 |
-| `inst:phi` | 545 | 543 |
-| `inst:sub` | 481 | 481 |
-| `inst:and` | 371 | 372 |
-| `inst:mul` | 347 | 342 |
-| `type:aggregate` | 311 | 304 |
-| `inst:select` | 288 | 282 |
-| `type:double` | 283 | 281 |
-| `inst:or` | 255 | 255 |
-| `inst:extractvalue` | 233 | 225 |
-| `inst:fcmp` | 204 | 203 |
-| `inst:shl` | 198 | 198 |
-| `inst:xor` | 181 | 182 |
-| `inst:ashr` | 171 | 172 |
-| `mem:volatile` | 145 | 144 |
-| `function:personality` | 147 | 140 |
-| `inst:invoke` | 147 | 140 |
-| `inst:landingpad` | 147 | 140 |
-| `call:indirect` | 137 | 136 |
-| `inst:lshr` | 132 | 132 |
-| `type:float` | 120 | 118 |
-| `inst:insertvalue` | 118 | 113 |
-| `inst:resume` | 118 | 113 |
-| `landingpad:cleanup` | 111 | 106 |
-| `inst:sdiv` | 101 | 100 |
-| `function:variadic` | 97 | 96 |
-| `landingpad:catch` | 99 | 92 |
-| `inst:ptrtoint` | 86 | 98 |
-| `inst:switch` | 89 | 88 |
 | `call:inline-asm` | 80 | 80 |
-| `inst:fadd` | 79 | 78 |
-| `intrinsic:llvm.va_start` | 78 | 78 |
-| `intrinsic:llvm.va_end` | 75 | 75 |
-| `inst:inttoptr` | 64 | 75 |
-| `inst:srem` | 65 | 65 |
-| `inst:udiv` | 61 | 61 |
-| `inst:fmul` | 54 | 54 |
-| `inst:sitofp` | 51 | 51 |
-| `inst:fpext` | 51 | 50 |
-| `type:vector` | 52 | 48 |
-| `type:fp128` | 47 | 47 |
-| `attr:sret` | 46 | 46 |
-| `inst:fptosi` | 43 | 43 |
-| `inst:urem` | 41 | 41 |
-| `inst:fdiv` | 37 | 37 |
-| `intrinsic:llvm.eh.typeid.for` | 34 | 33 |
-| `inst:fsub` | 32 | 32 |
-| `operand:address-in-aggregate` | 32 | 32 |
-| `inst:extractelement` | 32 | 28 |
-| `operand:int-of-addr` | 28 | 28 |
-| `attr:alignstack` | 27 | 27 |
-| `type:i128` | 24 | 24 |
-| `inst:alloca` | 23 | 23 |
-| `inst:fneg` | 22 | 22 |
-| `inst:indirectbr` | 15 | 17 |
-| `inst:bitcast` | 17 | 14 |
-| `inst:insertelement` | 15 | 14 |
-| `init:blockaddress` | 13 | 15 |
-| `inst:fptrunc` | 14 | 14 |
-| `intrinsic:llvm.stacksave` | 13 | 13 |
-| `intrinsic:llvm.stackrestore` | 12 | 12 |
-| `operand:addr-of-int` | 12 | 12 |
-| `inst:uitofp` | 11 | 11 |
-| `intrinsic:llvm.fmuladd` | 10 | 10 |
-| `intrinsic:llvm.trap` | 10 | 10 |
-| `intrinsic:llvm.umul.with.overflow` | 10 | 10 |
-| `mem:atomic-load` | 10 | 9 |
+| `type:vector` | 76 | 72 |
+| `inst:extractelement` | 45 | 41 |
+| `operand:address-in-aggregate` | 34 | 34 |
+| `operand:int-of-addr` | 31 | 31 |
+| `inst:insertelement` | 30 | 29 |
+| `inst:shufflevector` | 24 | 20 |
+| `mem:atomic-load` | 14 | 13 |
+| `intrinsic:llvm.threadlocal.address` | 13 | 13 |
+| `tls:general-dynamic` | 13 | 13 |
+| `inst:atomicrmw` | 11 | 10 |
 | `attr:elementtype` | 9 | 9 |
-| `inst:fptoui` | 9 | 9 |
-| `intrinsic:llvm.fabs` | 9 | 9 |
-| `type:int-wide` | 9 | 9 |
-| `inst:atomicrmw` | 9 | 8 |
-| `intrinsic:llvm.abs` | 8 | 8 |
-| `intrinsic:llvm.cttz` | 8 | 8 |
-| `intrinsic:llvm.ptrmask` | 8 | 8 |
-| `inst:shufflevector` | 9 | 6 |
-| `intrinsic:llvm.smul.with.overflow` | 7 | 7 |
-| `intrinsic:llvm.threadlocal.address` | 7 | 7 |
-| `operand:blockaddress` | 6 | 8 |
-| `tls:general-dynamic` | 7 | 7 |
-| `debug-info` | 6 | 6 |
-| `debug:module-flags` | 6 | 6 |
-| `intrinsic:llvm.copysign` | 6 | 6 |
-| `intrinsic:llvm.memmove` | 6 | 6 |
-| `intrinsic:llvm.prefetch` | 6 | 6 |
-| `intrinsic:llvm.sadd.with.overflow` | 6 | 6 |
-| `intrinsic:llvm.uadd.with.overflow` | 6 | 6 |
-| `intrinsic:llvm.ubsantrap` | 6 | 6 |
-| `atomicrmw:xchg` | 6 | 5 |
-| `mem:atomic-store` | 6 | 5 |
-| `intrinsic:llvm.bswap` | 5 | 5 |
-| `intrinsic:llvm.ctlz` | 5 | 5 |
-| `intrinsic:llvm.is.fpclass` | 5 | 5 |
-| `intrinsic:llvm.returnaddress` | 5 | 5 |
-| `atomicrmw:add` | 4 | 4 |
-| `attr:convergent` | 4 | 4 |
-| `intrinsic:llvm.is.constant` | 4 | 4 |
-| `intrinsic:llvm.maxnum` | 4 | 4 |
-| `intrinsic:llvm.ssub.with.overflow` | 4 | 4 |
-| `intrinsic:llvm.va_copy` | 4 | 4 |
+| `mem:atomic-store` | 8 | 7 |
+| `debug:locations` | 7 | 7 |
+| `debug:module-flags` | 7 | 7 |
+| `debug:subprogram` | 7 | 7 |
+| `atomicrmw:xchg` | 7 | 6 |
+| `musttail:stack-args-unknown` | 6 | 6 |
+| `atomicrmw:add` | 5 | 5 |
+| `attr:convergent` | 5 | 5 |
+| `debug:slot-variables` | 5 | 5 |
+| `inst:extractvalue/fp128` | 5 | 5 |
+| `intrinsic:llvm.vector.reduce.add` | 4 | 4 |
 | `module:asm` | 4 | 4 |
+| `tls:direct-operand` | 4 | 4 |
 | `const-expr:sub` | 3 | 4 |
 | `inst:cmpxchg` | 4 | 3 |
-| `attr:returns_twice` | 3 | 3 |
 | `inst:callbr` | 3 | 3 |
-| `intrinsic:llvm.ctpop` | 3 | 3 |
-| `intrinsic:llvm.floor` | 3 | 3 |
-| `tls:direct-operand` | 3 | 3 |
+| `intrinsic:llvm.smul.with.overflow/int-wide` | 3 | 3 |
 | `type:bfloat` | 3 | 3 |
-| `type:half` | 3 | 3 |
 | `const-expr:trunc` | 2 | 3 |
-| `function:over-aligned-slot` | 2 | 2 |
-| `intrinsic:llvm.usub.with.overflow` | 2 | 2 |
+| `intrinsic:llvm.aarch64.neon.ld3.v8i8.p0` | 2 | 2 |
+| `intrinsic:llvm.aarch64.neon.st2.v8i16.p0` | 2 | 2 |
+| `intrinsic:llvm.aarch64.neon.tbl1.v8i8` | 2 | 2 |
+| `intrinsic:llvm.aarch64.neon.udot.v4i32.v16i8` | 2 | 2 |
+| `intrinsic:llvm.umul.with.overflow/i128` | 2 | 2 |
+| `linkage:appending` | 2 | 2 |
+| `special-global:llvm.global.annotations` | 2 | 2 |
 | `atomicrmw:and` | 1 | 1 |
 | `atomicrmw:fadd` | 1 | 1 |
 | `atomicrmw:fmax` | 1 | 1 |
@@ -168,29 +95,153 @@ Measured before WP-033 merged: the first refusal was then `module:pic` for every
 | `atomicrmw:or` | 1 | 1 |
 | `atomicrmw:sub` | 1 | 1 |
 | `atomicrmw:xor` | 1 | 1 |
-| `call:forwarded-varargs` | 1 | 1 |
+| `cc:79` | 1 | 1 |
+| `cc:aarch64_vector_pcs` | 1 | 1 |
+| `cc:preserve_allcc` | 1 | 1 |
+| `cc:preserve_mostcc` | 1 | 1 |
 | `inst:fence` | 1 | 1 |
-| `intrinsic:llvm.bitreverse` | 1 | 1 |
-| `intrinsic:llvm.clear_cache` | 1 | 1 |
-| `intrinsic:llvm.fma` | 1 | 1 |
-| `intrinsic:llvm.frameaddress` | 1 | 1 |
-| `intrinsic:llvm.frexp` | 1 | 1 |
-| `intrinsic:llvm.fshl` | 1 | 1 |
-| `intrinsic:llvm.fshr` | 1 | 1 |
-| `intrinsic:llvm.memcpy.inline` | 1 | 1 |
-| `intrinsic:llvm.minnum` | 1 | 1 |
-| `intrinsic:llvm.objectsize` | 1 | 1 |
+| `inst:fptosi/i128` | 1 | 1 |
+| `inst:sitofp/i128` | 1 | 1 |
+| `inst:switch/i128` | 1 | 1 |
+| `intrinsic:llvm.aarch64.cls` | 1 | 1 |
+| `intrinsic:llvm.aarch64.cls64` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crc32b` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crc32cb` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crc32ch` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crc32cw` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crc32cx` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crc32h` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crc32w` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crc32x` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crypto.aesd` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crypto.aese` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crypto.aesimc` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crypto.aesmc` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crypto.sha1c` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crypto.sha1h` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crypto.sha1m` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crypto.sha1p` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crypto.sha1su0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crypto.sha1su1` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crypto.sha256h` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crypto.sha256h2` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crypto.sha256su0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.crypto.sha256su1` | 1 | 1 |
+| `intrinsic:llvm.aarch64.dmb` | 1 | 1 |
+| `intrinsic:llvm.aarch64.dsb` | 1 | 1 |
+| `intrinsic:llvm.aarch64.hint` | 1 | 1 |
+| `intrinsic:llvm.aarch64.isb` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.abs.v4i32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.addp.v16i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.bfdot.v4f32.v8bf16` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.fabd.v4f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.faddv.f32.v4f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.fcvtas.v2i32.v2f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.fcvtas.v4i32.v4f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.fcvtms.v4i32.v4f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.fcvtns.v4i32.v4f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.fcvtnu.v2i32.v2f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.fcvtps.v4i32.v4f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.fcvtzs.v4i16.v4f16` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.fcvtzs.v4i32.v4f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.fcvtzu.v4i32.v4f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.fmax.v4f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.fmaxnm.v2f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.fmaxv.f16.v4f16` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.fmin.v4f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.fminnm.v2f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.fminv.f16.v4f16` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.frecpe.v4f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.frecps.v4f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.frsqrte.v4f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.frsqrts.v2f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.ld2.v16i8.p0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.ld2.v2f32.p0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.ld2.v8i16.p0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.ld4.v16i8.p0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.ld4.v2i32.p0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.ld4.v4f32.p0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.pmull.v8i16` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.pmull64` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.rshrn.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.saddlp.v4i16.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.saddlv.i32.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.saddlv.i64.v4i32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.sdot.v2i32.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.sdot.v4i32.v16i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.shadd.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.shsub.v4i16` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.smull.v4i32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.smull.v8i16` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.sqabs.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.sqadd.v4i16` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.sqneg.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.sqrshrn.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.sqrshrun.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.sqshl.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.sqshrun.v4i16` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.sqsub.v8i16` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.sqxtn.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.sqxtun.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.srshl.v4i16` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.st3.v4i16.p0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.st3.v8i8.p0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.st4.v2i32.p0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.st4.v4f32.p0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.st4.v4i32.p0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.tbl2.v16i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.tbl2.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.tbl3.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.tbl4.v16i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.tbx1.v16i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.tbx1.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.tbx2.v16i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.tbx2.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.tbx3.v16i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.tbx4.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.uabd.v16i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.uaddlp.v8i16.v16i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.uaddlv.i32.v16i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.uaddlv.i32.v4i16` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.uaddv.i64.v2i64` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.udot.v2i32.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.umax.v4i16` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.umaxp.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.umaxv.i32.v16i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.uminp.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.uminv.i32.v16i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.umull.v2i64` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.uqadd.v16i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.uqrshl.v8i16` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.uqshl.v8i16` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.uqshrn.v4i16` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.uqsub.v16i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.uqxtn.v4i16` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.urecpe.v2i32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.urhadd.v16i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.urshl.v16i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.ushl.v16i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.vcmla.rot0.v2f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.vcmla.rot90.v2f32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.vcvtfp2hf` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.vcvthf2fp` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.vsli.v1i64` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.vsli.v4i32` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.vsli.v8i8` | 1 | 1 |
+| `intrinsic:llvm.aarch64.neon.vsri.v16i8` | 1 | 1 |
 | `intrinsic:llvm.readcyclecounter` | 1 | 1 |
-| `intrinsic:llvm.rint` | 1 | 1 |
 | `intrinsic:llvm.thread.pointer` | 1 | 1 |
-| `linkage:appending` | 1 | 1 |
-| `musttail:stack-args-unknown` | 1 | 1 |
-| `special-global:llvm.global.annotations` | 1 | 1 |
-| `tail:musttail` | 1 | 1 |
+| `intrinsic:llvm.umul.with.overflow/int-wide` | 1 | 1 |
+| `metadata-arg:llvm.read_volatile_register.i64` | 1 | 1 |
+| `tls:initial-exec` | 1 | 1 |
+| `tls:local-dynamic` | 1 | 1 |
+| `tls:local-exec` | 1 | 1 |
 | `attr:fmv-features` | 1 | 0 |
 | `const-expr:bitcast` | 1 | 0 |
-| `intrinsic:llvm.sadd.sat` | 1 | 0 |
-| `intrinsic:llvm.usub.sat` | 1 | 0 |
+| `intrinsic:llvm.aarch64.neon.bfcvtn` | 0 | 1 |
+| `intrinsic:llvm.aarch64.neon.bfcvtn2` | 0 | 1 |
+| `intrinsic:llvm.aarch64.neon.tbl1.v16i8` | 0 | 1 |
+| `intrinsic:llvm.vector.reduce.or` | 1 | 0 |
 
 ## The routes agree
 
@@ -198,26 +249,27 @@ Modules whose outcome and first reason are the same by two routes, and whose cen
 
 | LLVM | modules | text = native | native = `llvm-dis` | census: text = native | census: native = `llvm-dis` | census in the same order |
 |---|---:|---:|---:|---:|---:|---:|
-| 22 | 2896 | 2896 | 2896 | 2896 | 2896 | 2882 |
-| 19 | 2864 | 2864 | 2864 | 2864 | 2864 | 2848 |
+| 22 | 3347 | 3347 | 3346 | 3347 | 3346 | 3346 |
+| 19 | 3308 | 3308 | 3307 | 3308 | 3307 | 3307 |
+
+The modules that differ (at most 20):
+
+- `kiln/llvm22/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), native `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), `llvm-dis` `malformed-input` (malformed-input)
+- `kiln/llvm19/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), native `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), `llvm-dis` `malformed-input` (malformed-input)
 
 ## What a decline costs
 
-Coverage-log field 7 (from the process's start to the decline) of the first-refusal runs, in microseconds, with `before` an older hod on the same input; `llc` is its wall time on the bitcode (`-o /dev/null`, from the jobserver token to its end, a shell wrapper included).
+Coverage-log field 7 (from the process's start to the decline) of the first-refusal runs, in microseconds; `llc` is its wall time on the bitcode (`-o /dev/null`, from the jobserver token to its end, a shell wrapper included).
 
 | LLVM | route | median | p99 | worst | share of `llc`: median | p99 | worst |
 |---|---|---:|---:|---:|---:|---:|---:|
-| 22 | text | 2039 | 8478 | 53274 | 6.8% | 27.0% | 63.9% |
-| 22 | bitcode, native | 1769 | 7062 | 20616 | 5.9% | 23.7% | 68.2% |
-| 22 | bitcode, `llvm-dis` | 22159 | 44634 | 392008 | 74.6% | 139.7% | 304.4% |
-| 22 | before: text | 616 | 3050 | 27051 | 2.1% | 9.5% | 40.5% |
-| 22 | before: bitcode | 607 | 2992 | 16548 | 2.0% | 9.4% | 25.3% |
-| 22 | `llc -O0` | 28948 | 52817 | 3680225 | | | |
-| 22 | the `convert` of the `llvm-dis` route | 20345 | 39893 | 376861 | | | |
-| 19 | text | 2269 | 8934 | 74334 | 6.5% | 23.3% | 61.9% |
-| 19 | bitcode, native | 2067 | 7066 | 16163 | 5.8% | 21.0% | 35.4% |
-| 19 | bitcode, `llvm-dis` | 26541 | 64505 | 519687 | 77.7% | 146.8% | 292.2% |
-| 19 | before: text | 704 | 3178 | 29425 | 2.0% | 8.4% | 77.0% |
-| 19 | before: bitcode | 695 | 2919 | 11292 | 2.0% | 7.6% | 29.0% |
-| 19 | `llc -O0` | 31575 | 72695 | 3524776 | | | |
-| 19 | the `convert` of the `llvm-dis` route | 24361 | 59876 | 502891 | | | |
+| 22 | text | 5027 | 22504 | 263918 | 11.8% | 42.0% | 123.3% |
+| 22 | bitcode, native | 4726 | 19825 | 162793 | 11.2% | 38.4% | 114.7% |
+| 22 | bitcode, `llvm-dis` | 35512 | 103811 | 595057 | 84.0% | 180.2% | 476.7% |
+| 22 | `llc -O0` | 39828 | 97899 | 3562324 | | | |
+| 22 | the `convert` of the `llvm-dis` route | 31310 | 81825 | 366800 | | | |
+| 19 | text | 4572 | 19739 | 287473 | 11.1% | 38.3% | 102.1% |
+| 19 | bitcode, native | 4363 | 16313 | 194692 | 10.6% | 33.7% | 101.8% |
+| 19 | bitcode, `llvm-dis` | 34497 | 92976 | 781623 | 84.8% | 163.6% | 560.6% |
+| 19 | `llc -O0` | 39619 | 96267 | 3628976 | | | |
+| 19 | the `convert` of the `llvm-dis` route | 30028 | 81807 | 499056 | | | |

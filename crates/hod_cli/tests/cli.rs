@@ -427,10 +427,10 @@ fn reasons_reach_the_log() {
         (&["-filetype=obj"], MODULE.as_bytes(), "module:asm", "text", "aarch64-unknown-linux-gnu"),
         (
             &["-filetype=obj"],
-            b"target triple = \"aarch64-unknown-linux-gnu\"\ndeclare void @g()\n",
+            b"target triple = \"x86_64-unknown-linux-gnu\"\ndeclare void @g()\n",
             "codegen-not-implemented",
             "text",
-            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
         ),
         // Read natively: a bitcode header and nothing else.
         (&["-filetype=obj"], bitcode, "malformed-input", "bitcode", "-"),

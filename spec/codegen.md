@@ -945,6 +945,118 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
   arithmetic, `scmp`/`ucmp`, `clmul`, reductions, ...) is
   `a64:intrinsic`.
 
+#### Intrinsics, the second set (WP-070)
+
+`fpintr.rs` lowers the floating-point intrinsics; `intrinsic.rs` routes
+them there, and has the saturating arithmetic, `scmp`/`ucmp`, the
+`i128` forms, `eh.typeid.for` and `clear_cache`.
+
+- **`float`, `double`**: the instruction where ARMv8.0 has one: `fsqrt`;
+  `frintm`/`frintp`/`frintz`/`frinta` (round)/`frintn` (roundeven)/
+  `frintx` (rint)/`frinti` (nearbyint); `fmadd` for `fma` and for
+  `fmuladd` (fused, as `llc`); `fminnm`/`fmaxnm` for `minnum`/`maxnum`;
+  `fmin`/`fmax` for `minimum`/`maximum`; `minimumnum`/`maximumnum` quiet
+  each operand with `fminnm x, x` first, then `fminnm`/`fmaxnm`;
+  `canonicalize` is `fminnm x, x`; `lround` is `fcvtas`, `lrint`
+  `frintx` + `fcvtzs`; `fptosi.sat`/`fptoui.sat` are `fcvtzs`/`fcvtzu`
+  at 32 or 64 bits (which saturate) clamped with `cmp` + `csel` below
+  32 bits and between 33 and 63.
+- **Bit operations**: `fabs`, `copysign` and `is.fpclass` act on the
+  bits in `x16`/`x17`, NaNs untouched. `is.fpclass` needs a constant
+  mask (0 and all ten bits fold); it counts the class of the magnitude
+  (zero, subnormal, normal, infinity, signalling, quiet NaN) with
+  `cset` and four `cinc`s and indexes a 6-bit table chosen by the sign.
+- **`half`**: computed as `llc` does: widened to `float` (to `double` for
+  `fma`, where one rounding of the exact product sum to `half` is
+  correct), the operation, narrowed. `fmuladd` of `half` is a rounded
+  multiply then a rounded add. Widening quiets a signalling NaN, so the
+  `num` forms treat it as missing, as `llc`.
+- **`fp128`**: a call of the `long double` function: `sqrtl`, `floorl`,
+  ..., `fmal`, `fminl`/`fmaxl`, the C23 `fminimuml`, `fmaximuml`,
+  `fminimum_numl`, `fmaximum_numl` (glibc 2.35+; `llc` 22 cannot select
+  `minimum`/`maximum` of `fp128` at all), `lroundl`/`llroundl`/`lrintl`/
+  `llrintl`; `fmuladd` is `__multf3` + `__addtf3`; `canonicalize`
+  `__multf3(x, 1.0)`. `fabs`, `copysign`, `is.fpclass` are inline.
+  `fptosi.sat`/`fptoui.sat` of `fp128` are refused
+  (`a64:intrinsic-fp128`).
+- **Calls**: `sin` .. `log10`, `pow`, `atan2` call libm (`sinf`/`sin`/
+  `sinl`); `powi` `__powisf2`/`__powidf2`/`__powitf2`; `ldexp`
+  `ldexpf`/`ldexp`/`ldexpl`; `frexp` `frexpf`/`frexp`/`frexpl` with the
+  address of a 4-byte slot, its `{T, i32}` result a `Mem`-class value.
+  `half` goes through the `float` function. An exponent narrower than 32
+  bits is sign-extended; a wider `ldexp` exponent is clamped to the
+  `int` range (`llc` truncates it); a wider `powi` exponent is refused
+  (`a64:intrinsic`).
+- **Saturating arithmetic** at 32 and 64 bits uses the flags of
+  `adds`/`subs` (`csel vs` with `(r asr N-1) eor 1<<(N-1)`, `csinv lo`,
+  `csel hs`); narrower, the operands are extended to 64 bits, where the
+  exact result fits, and clamped. `scmp`/`ucmp`: extend, `cmp`, `cset
+  gt|hi`, `csinv ge|hs`, any result width from 2 to 128 bits.
+- **`i128`** (class `Mem`, through the slots, limbs in `x16`/`x17` and
+  at most four temporaries): `ctlz`/`cttz` select between the limbs'
+  counts; `ctpop` is `cnt` + `uaddlv` over both limbs in `v31`;
+  `bswap`/`bitreverse` reverse each limb and swap them; `abs` is
+  `(x ^ s) - s`; min/max and `scmp`/`ucmp` order by `cmp` + `sbcs`;
+  the saturating forms use `adds`/`adcs`, `subs`/`sbcs`; `fshl`/`fshr`
+  pick three consecutive limbs by `tst k, #64` + `csel` and funnel each
+  result limb by `k mod 64` (the other limb moved by one more, so no
+  branch for `k mod 64 = 0`).
+- **`eh.typeid.for`** of a symbol is `mov w, #FnCx::type_id(sym)`, the
+  index `emit_module` gives the type in the LSDA's type table; of
+  anything else it is refused (`a64:eh-typeid`).
+- **`clear_cache`** calls `__clear_cache`. **`readcyclecounter`** needs
+  `mrs CNTVCT_EL0`, which the encoder's `SysReg` lacks: refused
+  (`a64:readcyclecounter`).
+- `sshl.sat`/`ushl.sat` are not in `hod_ir`'s intrinsic list: classify
+  refuses them as `intrinsic:<name>`. Vector forms are `a64:intrinsic-vector`,
+  `bfloat` ones `a64:intrinsic-bfloat`.
+
+#### 5.5.2 Target features (WP-043)
+
+`hod_a64::features::check` judges a `target-features` string (a
+function's attribute) and each `-mattr` item: items separated by `,`,
+each `+name` or `-name`, empty items skipped. hod emits ARMv8.0 code with
+FP and Advanced SIMD and never chooses an instruction by a feature, so:
+
+- **Accepted, either sign**: a feature that only makes instructions or
+  system registers available. The architecture versions `v8a`..`v8.9a`,
+  `v9a`..`v9.6a`; `fp-armv8` and `neon` enabled; the extensions of LLVM
+  19's and 22's `AArch64Features.td` (`aes`, `sha2`, `sha3`, `sm4`,
+  `crypto`, `crc`, `lse`, `lse2`, `rdm`, `ras`, `rcpc`, `fullfp16`,
+  `dotprod`, `i8mm`, `bf16`, `pauth`, `bti`, `mte`, `sve*`, `sme*`, `gcs`,
+  ...; the full list is `AVAILABILITY` in `crates/hod_a64/src/features.rs`);
+  and `fmv` and `outline-atomics`, which change no code hod emits (no
+  function multi-versioning; `classify` refuses atomics). `+bti` and
+  `+pauth` are availability: whether a function must begin with `bti` or
+  sign its return address is the branch-protection attributes and module
+  flags, which `classify` refuses (§5.5).
+- **Refused by name**: a feature that changes the contract the code
+  keeps. Disabling one of the last eight is accepted: it is the default,
+  which hod's code keeps.
+
+  | item | reason |
+  |---|---|
+  | `-fp-armv8` | `attr:target-feature-soft-float` |
+  | `-neon` | `attr:target-feature-no-neon` |
+  | `+strict-align` | `attr:target-feature-strict-align` |
+  | `+reserve-<reg>` | `attr:target-feature-reserve` |
+  | `+call-saved-<reg>` | `attr:target-feature-call-saved` |
+  | `+tagged-globals` | `attr:target-feature-tagged-globals` |
+  | `+execute-only` | `attr:target-feature-execute-only` (hod writes data islands) |
+  | `+harden-sls-*` | `attr:target-feature-harden-sls` |
+  | `+fix-cortex-*` | `attr:target-feature-erratum` |
+  | `+v8r` | `attr:target-feature-profile` |
+
+- **Unknown, refused**: any other name, either sign, and an item without a
+  sign: `attr:target-feature-unknown`. A feature hod has not judged is not
+  assumed harmless; adding one to a list is a decision with a test.
+
+The first refused item of the string is the answer, and the facade
+reports it as the refusal's detail (`spec/cli.md` "The back half").
+Tests: `features.rs` (`what_compilers_write_is_accepted`,
+`contract_features_are_refused_by_name`, `unknown_features_are_refused`),
+`crates/hod/tests/back.rs` `target_features`.
+
 ### 5.6 x86-64 (planned)
 
 `push rbp` · `mov rbp, rsp` · pushes of the save set · `sub rsp, imm32`

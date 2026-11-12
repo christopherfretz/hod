@@ -16,6 +16,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use super::manifest::Manifest;
+use crate::irdiff::directives;
 use crate::irdiff::process::{self, End, Limits};
 
 /// What to run.
@@ -140,15 +141,13 @@ fn measure(
     options: &Options,
     log: &Path,
     entry: &str,
+    text: &[u8],
     llvm: u32,
     llc_args: &str,
 ) -> Result<Row, String> {
-    let path = options.dir.join(entry);
-    let text =
-        std::fs::read(&path).map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
     let args: Vec<&str> = llc_args.split_whitespace().collect();
     let assembled =
-        process::run(&bin(llvm, "llvm-as"), |c| _ = c.args(["-o", "-", "-"]), &text, LIMITS)?;
+        process::run(&bin(llvm, "llvm-as"), |c| _ = c.args(["-o", "-", "-"]), text, LIMITS)?;
     ended_well(&format!("llvm-as of {entry}"), &assembled)?;
     let bitcode = assembled.stdout;
     let dis = bin(llvm, "llvm-dis").display().to_string();
@@ -156,16 +155,16 @@ fn measure(
     let mut row = Row {
         entry: entry.to_owned(),
         llvm,
-        text: ask(hod, log, &text, &args, None, false)?,
+        text: ask(hod, log, text, &args, None, false)?,
         native: ask(hod, log, &bitcode, &args, Some("native"), false)?,
         dis: ask(hod, log, &bitcode, &args, Some(&dis), false)?,
-        text_census: ask(hod, log, &text, &args, None, true)?,
+        text_census: ask(hod, log, text, &args, None, true)?,
         native_census: ask(hod, log, &bitcode, &args, Some("native"), true)?,
         dis_census: ask(hod, log, &bitcode, &args, Some(&dis), true)?,
         ..Row::default()
     };
     if let Some(before) = &options.before {
-        row.before_text = Some(ask(before, log, &text, &args, None, false)?.hod_micros);
+        row.before_text = Some(ask(before, log, text, &args, None, false)?.hod_micros);
         row.before_bitcode = Some(ask(before, log, &bitcode, &args, None, false)?.hod_micros);
     }
     if options.llc {
@@ -180,6 +179,20 @@ fn measure(
         row.llc_micros = Some(u64::try_from(took.as_micros()).unwrap_or(u64::MAX));
     }
     Ok(row)
+}
+
+/// The modules of an entry, each with its name: the entry's own for an
+/// entry of one module, `<entry>#<module>` for each of several
+/// (`;@ module:`, `spec/harness.md` "Test directives").
+fn modules_of(options: &Options, entry: &str) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let path = options.dir.join(entry);
+    let text =
+        std::fs::read(&path).map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
+    let modules = std::str::from_utf8(&text).map(directives::modules).unwrap_or_default();
+    if modules.is_empty() {
+        return Ok(vec![(entry.to_owned(), text)]);
+    }
+    Ok(modules.into_iter().map(|m| (format!("{entry}#{}", m.name), m.text.into_bytes())).collect())
 }
 
 /// The median, the 99th percentile and the largest of `values`.
@@ -224,8 +237,16 @@ pub fn run(options: &Options) -> Result<String, String> {
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some((entry, llvm, llc_args)) = entries.get(index) else { break };
-                    match measure(options, &log, entry, *llvm, llc_args) {
-                        Ok(row) => rows.lock().unwrap_or_else(PoisonError::into_inner).push(row),
+                    let measured = modules_of(options, entry).and_then(|modules| {
+                        modules
+                            .iter()
+                            .map(|(name, text)| measure(options, &log, name, text, *llvm, llc_args))
+                            .collect::<Result<Vec<_>, _>>()
+                    });
+                    match measured {
+                        Ok(found) => {
+                            rows.lock().unwrap_or_else(PoisonError::into_inner).extend(found);
+                        }
                         Err(message) => {
                             failures.lock().unwrap_or_else(PoisonError::into_inner).push(message);
                         }
@@ -311,7 +332,17 @@ fn report(rows: &[Row], options: &Options) -> String {
         majors.iter().map(|&m| (m, rows.iter().filter(|r| r.llvm == m).count())).collect();
     let _ = writeln!(out, "## First refusal\n");
     header(&mut out, "reason");
-    table(&mut out, &counts(rows, |row| vec![row.native.reason.as_str()]));
+    // A module hod compiled has no reason; it is counted as compiled.
+    table(
+        &mut out,
+        &counts(rows, |row| {
+            vec![if row.native.outcome == "hod" {
+                "(compiled)"
+            } else {
+                row.native.reason.as_str()
+            }]
+        }),
+    );
     let _ = write!(out, "| all |");
     for major in &majors {
         let _ = write!(out, " {} |", total[major]);

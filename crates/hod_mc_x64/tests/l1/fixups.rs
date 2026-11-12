@@ -15,7 +15,13 @@ use crate::text::{Rng, r};
 
 #[test]
 fn ranges_are_the_architectures() {
-    assert_eq!(Fixup::ALL, [Fixup::Rel8, Fixup::Rel32]);
+    assert_eq!(Fixup::ALL, [Fixup::Rel8, Fixup::Rel32, Fixup::Abs32]);
+    assert_eq!(
+        (Fixup::Abs32.size(), Fixup::Abs32.min(), Fixup::Abs32.max()),
+        (4, -(1 << 31), (1 << 31) - 1)
+    );
+    assert!(Fixup::Rel8.is_pc_relative() && Fixup::Rel32.is_pc_relative());
+    assert!(!Fixup::Abs32.is_pc_relative());
     assert_eq!((Fixup::Rel8.size(), Fixup::Rel8.min(), Fixup::Rel8.max()), (1, -128, 127));
     assert_eq!(
         (Fixup::Rel32.size(), Fixup::Rel32.min(), Fixup::Rel32.max()),
@@ -26,7 +32,7 @@ fn ranges_are_the_architectures() {
 fn displacements(kind: Fixup, rng: &mut Rng) -> Vec<i64> {
     match kind {
         Fixup::Rel8 => (-128..=127).collect(),
-        Fixup::Rel32 => {
+        Fixup::Rel32 | Fixup::Abs32 => {
             let mut out = vec![0, 1, -1, 127, -128, 128, -129, i32::MAX.into(), i32::MIN.into()];
             out.extend((0..2000).map(|_| i64::from(rng.next() as i32)));
             out
@@ -92,7 +98,21 @@ fn sites() -> Vec<(Inst, usize, Fixup, usize)> {
         (mov_rm(Size::Q, Reg::Rax, rip.with_seg(Seg::Fs)), 4, Fixup::Rel32, 0),
         (call_m(rip), 2, Fixup::Rel32, 0),
         (popcnt_rm(Size::W, Reg::R10, rip), 6, Fixup::Rel32, 0),
+        (movs_rm(FpSize::D, Xmm::Xmm9, rip), 5, Fixup::Rel32, 0),
+        (cmps_rm(FpCmp::Nle, FpSize::S, Xmm::Xmm0, rip), 4, Fixup::Rel32, 1),
+        (bts_mi(Size::Q, rip, 9), 4, Fixup::Rel32, 1),
+        (tls_gd_lea(), 4, Fixup::Rel32, 0),
+        (tls_gd_call(), 4, Fixup::Rel32, 0),
+        (lea(Size::Q, Reg::Rax, abs32(Mem::base(Reg::Rax, 0))), 3, Fixup::Abs32, 0),
+        (lea(Size::Q, Reg::Rax, abs32(Mem::base(Reg::Rsp, 0))), 4, Fixup::Abs32, 0),
+        (mov_rm(Size::D, Reg::Rax, abs32(Mem::abs(0).with_seg(Seg::Fs))), 4, Fixup::Abs32, 0),
+        (mov_mi(Size::W, abs32(Mem::base(Reg::R13, 0)), 1), 4, Fixup::Abs32, 2),
+        (lock(inc_m(Size::Q, abs32(Mem::base(Reg::Rbx, 0)))), 4, Fixup::Abs32, 0),
     ]
+}
+
+fn abs32(m: Mem) -> Mem {
+    m.with_abs32().expect("not RIP-relative")
 }
 
 #[test]
@@ -102,7 +122,8 @@ fn sites_are_where_the_fields_are() {
         assert_eq!(site.offset, offset, "{:02x?}", inst.bytes());
         assert_eq!(site.fixup, fixup, "{:02x?}", inst.bytes());
         assert_eq!(inst.len(), offset + fixup.size() + after, "{:02x?}", inst.bytes());
-        assert_eq!(site.addend, -((fixup.size() + after) as i64));
+        let addend = if fixup.is_pc_relative() { -((fixup.size() + after) as i64) } else { 0 };
+        assert_eq!(site.addend, addend, "{:02x?}", inst.bytes());
         assert_eq!(fixup.extract(inst.bytes(), offset), Some(0));
     }
     for inst in [
@@ -110,10 +131,16 @@ fn sites_are_where_the_fields_are() {
         mov_rm(Size::Q, Reg::Rax, Mem::abs(0)),
         lea(Size::Q, Reg::Rax, Mem::base(Reg::Rbp, 0x100)),
         jmp_r(Reg::Rax),
+        movd_xr(Size::Q, Xmm::Xmm0, Reg::Rax),
+        movs_rm(FpSize::S, Xmm::Xmm0, Mem::base(Reg::Rax, 0x1000)),
     ] {
         assert_eq!(inst.site(), None, "{:02x?}", inst.bytes());
         assert_eq!(inst.with_disp(0), None);
     }
+    // A RIP-relative displacement is already a field.
+    assert_eq!(Mem::rip(0).with_abs32(), None);
+    assert_eq!(Mem::rip(0).with_seg(Seg::Gs).with_abs32(), None);
+    assert!(abs32(Mem::index(Reg::Rcx.index().unwrap(), Scale::S2, 0)).is_abs32());
 }
 
 #[test]
@@ -137,6 +164,38 @@ fn constructors_agree_with_patching() {
                         (call(d), call(0)),
                         (lea(Size::Q, Reg::R12, Mem::rip(d)), lea(Size::Q, Reg::R12, Mem::rip(0))),
                         (mov_mi(Size::D, Mem::rip(d), -7), mov_mi(Size::D, Mem::rip(0), -7)),
+                        (
+                            movs_rm(FpSize::D, Xmm::Xmm9, Mem::rip(d)),
+                            movs_rm(FpSize::D, Xmm::Xmm9, Mem::rip(0)),
+                        ),
+                        (
+                            cmps_rm(FpCmp::Le, FpSize::S, Xmm::Xmm1, Mem::rip(d)),
+                            cmps_rm(FpCmp::Le, FpSize::S, Xmm::Xmm1, Mem::rip(0)),
+                        ),
+                    ]
+                }
+                Fixup::Abs32 => {
+                    let d = disp as i32;
+                    let field = |m: Mem| m.with_abs32().expect("not RIP-relative");
+                    let fs = |disp| field(Mem::abs(disp).with_seg(Seg::Fs));
+                    vec![
+                        (
+                            lea(Size::Q, Reg::Rax, field(Mem::base(Reg::Rax, d))),
+                            lea(Size::Q, Reg::Rax, field(Mem::base(Reg::Rax, 0))),
+                        ),
+                        (mov_rm(Size::D, Reg::R9, fs(d)), mov_rm(Size::D, Reg::R9, fs(0))),
+                        (
+                            mov_mi(Size::Q, field(Mem::base(Reg::Rbp, d)), 1),
+                            mov_mi(Size::Q, field(Mem::base(Reg::Rbp, 0)), 1),
+                        ),
+                        (
+                            lock(add_mr(Size::D, field(Mem::base(Reg::R12, d)), Reg::Rcx)),
+                            lock(add_mr(Size::D, field(Mem::base(Reg::R12, 0)), Reg::Rcx)),
+                        ),
+                        (
+                            movs_rm(FpSize::S, Xmm::Xmm3, fs(d)),
+                            movs_rm(FpSize::S, Xmm::Xmm3, fs(0)),
+                        ),
                     ]
                 }
             };
@@ -262,6 +321,8 @@ fn references() -> Vec<(&'static str, Inst, String, &'static str)> {
             "GOTTPOFF",
         ),
     ];
+    out.extend(sse_references());
+    out.extend(tls_references());
     for n in 0..16 {
         let text = |size| crate::text::reg(size, n);
         out.push((
@@ -286,6 +347,115 @@ fn references() -> Vec<(&'static str, Inst, String, &'static str)> {
     out
 }
 
+/// RIP-relative SSE and bit-test operands, with and without an immediate
+/// after the field.
+fn sse_references() -> Vec<(&'static str, Inst, String, &'static str)> {
+    let rip = Mem::rip(0);
+    vec![
+        (
+            "movs_rm",
+            movs_rm(FpSize::D, Xmm::Xmm1, rip),
+            "movsd xmm1, qword ptr [rip + foo]".into(),
+            "PC32",
+        ),
+        (
+            "movs_mr",
+            movs_mr(FpSize::S, rip, Xmm::Xmm12),
+            "movss dword ptr [rip + foo], xmm12".into(),
+            "PC32",
+        ),
+        (
+            "cmps_rm",
+            cmps_rm(FpCmp::Lt, FpSize::S, Xmm::Xmm2, rip),
+            "cmpltss xmm2, dword ptr [rip + foo]".into(),
+            "PC32",
+        ),
+        (
+            "cvtsi2s_rm",
+            cvtsi2s_rm(FpSize::D, Xmm::Xmm3, Size::Q, rip),
+            "cvtsi2sd xmm3, qword ptr [rip + foo]".into(),
+            "PC32",
+        ),
+        (
+            "movap_rm",
+            movap_rm(FpSize::S, Xmm::Xmm8, rip),
+            "movaps xmm8, xmmword ptr [rip + foo]".into(),
+            "PC32",
+        ),
+        ("bt_mi", bt_mi(Size::D, rip, 5), "bt dword ptr [rip + foo], 5".into(), "PC32"),
+    ]
+}
+
+/// The TLS references (`spec/mc-x64.md` "Thread-local storage") and the
+/// absolute fields.
+fn tls_references() -> Vec<(&'static str, Inst, String, &'static str)> {
+    let rip = Mem::rip(0);
+    let fs = abs32(Mem::abs(0).with_seg(Seg::Fs));
+    vec![
+        ("tls_gd_lea", tls_gd_lea(), "data16 lea rdi, [rip + foo@TLSGD]".into(), "TLSGD"),
+        (
+            "tls_gd_call",
+            tls_gd_call(),
+            "data16 data16 rex64 call __tls_get_addr@PLT".into(),
+            "PLT32",
+        ),
+        ("lea", lea(Size::Q, Reg::Rdi, rip), "lea rdi, [rip + foo@TLSLD]".into(), "TLSLD"),
+        (
+            "lea",
+            lea(Size::Q, Reg::Rax, rip),
+            "lea rax, [rip + foo@TLSDESC]".into(),
+            "GOTPC32_TLSDESC",
+        ),
+        (
+            "lea",
+            lea(Size::Q, Reg::Rax, abs32(Mem::base(Reg::Rax, 0))),
+            "lea rax, [rax + foo@DTPOFF]".into(),
+            "DTPOFF32",
+        ),
+        (
+            "mov_rm",
+            mov_rm(Size::D, Reg::Rcx, abs32(Mem::base(Reg::Rax, 0))),
+            "mov ecx, dword ptr [rax + foo@DTPOFF]".into(),
+            "DTPOFF32",
+        ),
+        (
+            "lea",
+            lea(Size::Q, Reg::R13, abs32(Mem::base(Reg::R13, 0))),
+            "lea r13, [r13 + foo@TPOFF]".into(),
+            "TPOFF32",
+        ),
+        (
+            "mov_rm",
+            mov_rm(Size::D, Reg::Rax, fs),
+            "mov eax, dword ptr fs:[foo@TPOFF]".into(),
+            "TPOFF32",
+        ),
+        ("mov_mi", mov_mi(Size::D, fs, 7), "mov dword ptr fs:[foo@TPOFF], 7".into(), "TPOFF32"),
+        (
+            "mov_rm",
+            mov_rm(Size::Q, Reg::Rcx, abs32(Mem::abs(0))),
+            "mov rcx, qword ptr [foo]".into(),
+            "32S",
+        ),
+        (
+            "mov_mr",
+            mov_mr(
+                Size::D,
+                abs32(Mem::base_index(Reg::Rbx, Reg::Rsi.index().unwrap(), Scale::S8, 0)),
+                Reg::Rdx,
+            ),
+            "mov dword ptr [rbx + rsi*8 + foo], edx".into(),
+            "32S",
+        ),
+        (
+            "movs_rm",
+            movs_rm(FpSize::S, Xmm::Xmm4, abs32(Mem::base(Reg::Rsp, 0))),
+            "movss xmm4, dword ptr [rsp + foo]".into(),
+            "32S",
+        ),
+    ]
+}
+
 /// The `R_X86_64_*` type the spec's rule gives for a GOT load through
 /// `inst`.
 fn got_load(inst: Inst) -> &'static str {
@@ -307,6 +477,12 @@ fn relocation_sites_match_llvm() {
             let family = match *name {
                 "jcc_near" => Some("jne".to_string()),
                 "lock" => Some("lock add".to_string()),
+                "movs_rm" | "movs_mr" => {
+                    Some(if asm.starts_with("movsd") { "movsd" } else { "movss" }.to_string())
+                }
+                "cmps_rm" => Some("cmpltss".to_string()),
+                "cvtsi2s_rm" => Some("cvtsi2sd".to_string()),
+                "movap_rm" => Some("movaps".to_string()),
                 _ => None,
             };
             batch.push(name, *inst, family, asm.clone());

@@ -6,7 +6,7 @@
 //! The crate knows nothing about the IR, object files or assembly text. Its
 //! consumer is a single-pass code generator, so every constructor is a plain
 //! `const fn` returning a small `Copy` value, [`Inst`]: up to 15 bytes, the
-//! length, and where the PC-relative field is. No allocation, no traits, no
+//! length, and where the relocatable field is. No allocation, no traits, no
 //! builder state.
 //!
 //! ```
@@ -23,9 +23,11 @@
 //!
 //! # Registers and sizes
 //!
-//! [`Reg`] is the register number, `rax`..`r15`; the operand size is a
-//! separate operand, [`Size`] (`B`, `W`, `D`, `Q`), so `Reg::Rsi` with
-//! `Size::B` is `sil` and gets the REX prefix that needs. The high-byte
+//! [`Reg`] is the register number, `rax`..`r15`, and [`Xmm`] that of an
+//! SSE register, `xmm0`..`xmm15`; the operand size is a separate operand,
+//! [`Size`] (`B`, `W`, `D`, `Q`) or, for floating point, [`FpSize`] (`S`,
+//! `D`), so `Reg::Rsi` with `Size::B` is `sil` and gets the REX prefix
+//! that needs. The high-byte
 //! registers `ah`..`bh` are not provided. A `SIB` index is an [`Index`], which
 //! cannot be `rsp`; a memory operand is a [`Mem`], every value of which has
 //! an encoding.
@@ -118,22 +120,28 @@ pub mod alu;
 pub mod atomic;
 pub mod bits;
 pub mod branch;
+pub mod bt;
 pub mod cond;
 pub mod fixup;
 pub mod inst;
 pub mod mov;
 pub mod reg;
 pub mod shift;
+pub mod sse;
 pub mod system;
+pub mod tls;
 
 pub use alu::*;
 pub use atomic::*;
 pub use bits::*;
 pub use branch::*;
+pub use bt::*;
 pub use cond::*;
 pub use fixup::Fixup;
 pub use inst::{Inst, MAX_LEN, Site};
 pub use mov::*;
-pub use reg::{Base, Cond, Index, Mem, Reg, Scale, Seg, Size};
+pub use reg::{Base, Cond, FpCmp, FpSize, Index, Mem, Reg, Scale, Seg, Size, Xmm};
 pub use shift::*;
+pub use sse::*;
 pub use system::*;
+pub use tls::*;

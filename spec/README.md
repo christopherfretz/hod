@@ -6,7 +6,7 @@ crate could be re-implemented from its spec and its tests alone.
 
 | file | covers | status |
 |---|---|---|
-| `ir.md` | `hod_ir`: the IR model, builder API, printer, `classify` | planned (WP-002..009) |
+| `ir.md` | `hod_ir`: the IR model, builder API, printer, `classify` | design written; implementation WP-002..009 |
 | `ll.md` | `hod_ll`: accepted text dialects, errors | planned (WP-007, WP-008) |
 | `object.md` | `hod_obj`: object model, ELF64 writer | WP-010 landed; WP-011 planned |
 | `mc-a64.md` | `hod_mc_a64`: instruction forms, fixups | planned (WP-012, WP-013) |
@@ -17,8 +17,8 @@ crate could be re-implemented from its spec and its tests alone.
 | `eh.md` | `hod_eh`: CFI and LSDA | planned |
 | `dwarf.md` | `hod_dwarf` | planned |
 | `xform.md` | `hod_xform`: required lowerings | planned |
-| `cli.md` | the `hod` command line, fallback, coverage log | planned (WP-015) |
-| `harness.md` | `xtask`: test formats, differential runs, benchmarks | planned (WP-016..018) |
+| `cli.md` | the `hod` command line, the `hod` facade's `compile`, fallback, coverage log | current (WP-015); reasons grow with code generation |
+| `harness.md` | `xtask`: the kiln shim, test formats, differential runs, benchmarks | "shim" current (WP-015); the rest planned (WP-016..018) |
 
 ## Conventions
 

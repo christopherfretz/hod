@@ -19,3 +19,8 @@ Goals:
   GNU ld, lld, mold and wild link.
 
 Status: bootstrapping. Nothing here is usable yet.
+
+## License
+
+Dual-licensed under MIT ([LICENSE-MIT](LICENSE-MIT)) or Apache-2.0
+([LICENSE-APACHE](LICENSE-APACHE)), at your option.

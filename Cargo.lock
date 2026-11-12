@@ -54,6 +54,8 @@ version = "0.0.0"
 dependencies = [
  "hod",
  "hod_ll",
+ "hod_testutil",
+ "xtask",
 ]
 
 [[package]]
@@ -120,3 +122,6 @@ dependencies = [
 [[package]]
 name = "xtask"
 version = "0.0.0"
+dependencies = [
+ "hod_testutil",
+]

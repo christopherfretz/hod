@@ -8,6 +8,14 @@
 
 // Each test binary uses its own part of this module.
 #![allow(dead_code)]
+// The executor states the machine's semantics: floats compare exactly,
+// operands are `a`, `b`, `c`, and decoding is one long match.
+#![allow(
+    clippy::float_cmp,
+    clippy::many_single_char_names,
+    clippy::too_many_lines,
+    clippy::unused_self
+)]
 
 pub mod exec;
 pub mod harness;

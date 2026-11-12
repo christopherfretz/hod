@@ -251,7 +251,9 @@ impl<'a, T: Target> FnCx<'a, T> {
             }
             for succ in terminator.successors() {
                 let Some(seen) = self.s.reachable.get_mut(succ.index()) else {
-                    return internal(format!("block {raw} branches to a block that does not exist"));
+                    return internal(format!(
+                        "block {raw} branches to a block that does not exist"
+                    ));
                 };
                 if !*seen {
                     *seen = true;
@@ -269,23 +271,15 @@ impl<'a, T: Target> FnCx<'a, T> {
         let SymbolKind::Function { cc, ret_attrs, param_attrs, .. } = symbol.kind() else {
             return internal("a body whose symbol is no function");
         };
-        let TypeKind::Function { ret, params, variadic } =
-            self.types().kind(self.body.fn_type())
+        let TypeKind::Function { ret, params, variadic } = self.types().kind(self.body.fn_type())
         else {
             return internal("a body whose type is no function type");
         };
         if params.len() != self.body.arg_count() as usize {
             return internal("a body whose argument count is not its type's");
         }
-        let sig = Sig {
-            cc,
-            ret,
-            ret_attrs,
-            params,
-            param_attrs,
-            fixed: params.len() as u32,
-            variadic,
-        };
+        let sig =
+            Sig { cc, ret, ret_attrs, params, param_attrs, fixed: params.len() as u32, variadic };
         let mut asg = std::mem::take(&mut self.s.fn_asg);
         asg.clear();
         let assigned = self.target.assign(self.types(), &sig, &mut asg);
@@ -550,7 +544,9 @@ impl<'a, T: Target> FnCx<'a, T> {
                 let at = trap.unwrap_or(0);
                 self.bind_at(label, at)?;
                 if self.block_addrs {
-                    self.out.block_offsets.push(BlockOffset { block: BlockId::new(raw), offset: at });
+                    self.out
+                        .block_offsets
+                        .push(BlockOffset { block: BlockId::new(raw), offset: at });
                 }
             }
         }

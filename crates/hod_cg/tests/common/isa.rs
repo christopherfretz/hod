@@ -213,7 +213,8 @@ struct Dec<'a> {
 
 impl Dec<'_> {
     fn take<const N: usize>(&mut self) -> Result<[u8; N], String> {
-        let bytes = self.code.get(self.at..self.at + N).ok_or("an instruction runs off the code")?;
+        let bytes =
+            self.code.get(self.at..self.at + N).ok_or("an instruction runs off the code")?;
         self.at += N;
         let mut out = [0; N];
         out.copy_from_slice(bytes);
@@ -273,15 +274,11 @@ pub fn decode(code: &[u8], pc: usize) -> Result<(Ins, usize), String> {
         LOAD => Ins::Load { dst: d.u8()?, src: d.opnd()?, bits: d.u8()? },
         STORE => Ins::Store { src: d.u8()?, dst: d.opnd()?, bits: d.u8()? },
         COPY => Ins::Copy { dst: d.opnd()?, src: d.opnd()?, bytes: d.u32()? },
-        BIN => {
-            Ins::Bin { op: d.u8()?, bits: d.u8()?, dst: d.opnd()?, a: d.opnd()?, b: d.opnd()? }
-        }
+        BIN => Ins::Bin { op: d.u8()?, bits: d.u8()?, dst: d.opnd()?, a: d.opnd()?, b: d.opnd()? },
         ICMP => {
             Ins::ICmp { pred: d.u8()?, bits: d.u8()?, dst: d.u8()?, a: d.opnd()?, b: d.opnd()? }
         }
-        FBIN => {
-            Ins::FBin { op: d.u8()?, double: d.flag()?, dst: d.u8()?, a: d.u8()?, b: d.u8()? }
-        }
+        FBIN => Ins::FBin { op: d.u8()?, double: d.flag()?, dst: d.u8()?, a: d.u8()?, b: d.u8()? },
         FNEG => Ins::FNeg { double: d.flag()?, dst: d.u8()?, src: d.u8()? },
         FCMP => {
             Ins::FCmp { pred: d.u8()?, double: d.flag()?, dst: d.u8()?, a: d.u8()?, b: d.u8()? }

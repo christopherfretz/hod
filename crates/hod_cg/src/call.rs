@@ -69,6 +69,7 @@ enum Callee {
 /// A call, as far as the engine needs to know it. The parameter types
 /// and attributes are in the scratch lists.
 #[derive(Clone, Copy)]
+#[allow(clippy::struct_excessive_bools, reason = "independent facts of one call site")]
 struct CallDesc {
     cc: CallConv,
     ret: TypeId,
@@ -118,8 +119,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         if site.intrinsic().is_some() || inst.opcode() == Opcode::CallBr {
             return self.bug("the call sequence was asked for an intrinsic or a callbr");
         }
-        let TypeKind::Function { ret, params, variadic } = self.types().kind(site.fn_type())
-        else {
+        let TypeKind::Function { ret, params, variadic } = self.types().kind(site.fn_type()) else {
             return self.bug("a call through a type that is no function type");
         };
         let args = site.args();
@@ -146,8 +146,7 @@ impl<'a, T: Target> FnCx<'a, T> {
             ValueKind::Sym(sym) => Some(self.module.symbol(sym)),
             _ => None,
         };
-        let declared =
-            declared.filter(|sym| matches!(sym.kind(), SymbolKind::Function { .. }));
+        let declared = declared.filter(|sym| matches!(sym.kind(), SymbolKind::Function { .. }));
         let mut ret_attrs = site.ret_attrs();
         if ret_attrs.is_none()
             && let Some(SymbolKind::Function { ret_attrs: of_callee, .. }) =
@@ -193,18 +192,18 @@ impl<'a, T: Target> FnCx<'a, T> {
             unwind,
             ret_mem,
         };
-        let called = self.run_call(&desc, Args::Values(args))?;
+        let done = self.run_call(&desc, Args::Values(args))?;
         if musttail {
             return Ok(());
         }
-        if let Some(reg) = called.reg {
+        if let Some(reg) = done.reg {
             self.finish(inst, reg)?;
         }
         // §7.1 step 6.
         if let (Some(normal), Some(pad)) = (normal, unwind) {
             let t = self.target;
             self.phi_stores(normal)?;
-            let stub = called.area != 0;
+            let stub = done.area != 0;
             if stub || !self.falls_through(normal) {
                 t.jump(self, self.block_label(normal))?;
             }
@@ -212,9 +211,9 @@ impl<'a, T: Target> FnCx<'a, T> {
                 // §5.3: the unwinder enters the pad with the stack
                 // pointer as it was at the call.
                 let at = self.offset();
-                t.adjust_sp(self, i64::from(called.area));
+                t.adjust_sp(self, i64::from(done.area));
                 t.jump(self, self.block_label(pad))?;
-                if let Some(row) = called.row.and_then(|row| self.out.call_sites.get_mut(row)) {
+                if let Some(row) = done.row.and_then(|row| self.out.call_sites.get_mut(row)) {
                     row.landing = at;
                 }
             }
@@ -336,14 +335,13 @@ impl<'a, T: Target> FnCx<'a, T> {
             let Place::Reg(reg) = part.place else {
                 return self.bug("a part of the return value on the stack");
             };
-            match source {
-                Some(slot) => t.load(self, reg, slot.offset_by(part.offset), part.size),
-                None => {
-                    self.check_class(reg, class)?;
-                    self.put(value, reg)?;
-                    if class == Class::Gpr {
-                        t.extend_arg(self, reg, ret_ty, self.ret_attrs);
-                    }
+            if let Some(slot) = source {
+                t.load(self, reg, slot.offset_by(part.offset), part.size);
+            } else {
+                self.check_class(reg, class)?;
+                self.put(value, reg)?;
+                if class == Class::Gpr {
+                    t.extend_arg(self, reg, ret_ty, self.ret_attrs);
                 }
             }
         }
@@ -513,11 +511,8 @@ impl<'a, T: Target> FnCx<'a, T> {
         }
 
         let start = self.offset();
-        let emit = CallEmit {
-            target,
-            variadic: call.variadic,
-            vector_regs_used: asg.vector_regs_used,
-        };
+        let emit =
+            CallEmit { target, variadic: call.variadic, vector_regs_used: asg.vector_regs_used };
         t.emit_call(self, &emit)?;
         let len = self.offset() - start;
         let row = self.push_call_site(start, len, call.unwind);

@@ -15,9 +15,7 @@ use crate::frame::{Frame, FrameRef, SlotPlace};
 use crate::label::{FixupKind, Label, Labels};
 use crate::loc::{Key, ValState};
 use crate::options::Options;
-use crate::record::{
-    CfiOp, CfiRow, Chunk, ClauseRow, FrameDesc, IslandRow, Mark, PadRow, Reloc,
-};
+use crate::record::{CfiOp, CfiRow, Chunk, ClauseRow, FrameDesc, IslandRow, Mark, PadRow, Reloc};
 use crate::reg::{RegInfo, RegSet};
 use crate::sym::SymRef;
 use crate::target::{CallTarget, Target};
@@ -210,6 +208,7 @@ impl Scratch {
 /// [`free_temp`](FnCx::free_temp) and [`release`](FnCx::release)), or
 /// leave a result in a scratch register.
 #[derive(Debug)]
+#[allow(clippy::struct_excessive_bools, reason = "independent per-attempt flags of the driver")]
 pub struct FnCx<'a, T: Target> {
     /// The module: types, constants, symbols. Read-only while functions
     /// are compiled.
@@ -402,9 +401,11 @@ impl<'a, T: Target> FnCx<'a, T> {
             return internal(format!("label {} is not a label of this function", label.0));
         }
         let code = &mut self.out.code[self.mark.code as usize..];
-        match self.s.labels.refer(label, at, kind, |at, kind, disp| {
-            T::patch_branch(code, at, kind, disp)
-        }) {
+        match self
+            .s
+            .labels
+            .refer(label, at, kind, |at, kind, disp| T::patch_branch(code, at, kind, disp))
+        {
             Ok(()) => Ok(()),
             Err(_) => self.branch_out_of_range(),
         }
@@ -603,6 +604,10 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// A `CgError::Internal` that names the instruction being lowered.
     #[cold]
     pub fn bug<R>(&self, what: &str) -> CgResult<R> {
-        Err(CgError::Internal(format!("{what} (at {:?} = {})", self.cur, self.inst().opcode().name())))
+        Err(CgError::Internal(format!(
+            "{what} (at {:?} = {})",
+            self.cur,
+            self.inst().opcode().name()
+        )))
     }
 }

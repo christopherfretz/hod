@@ -625,60 +625,103 @@ and counted in the function's size.
 ## 8. The `Target` trait
 
 A target is a zero-sized or small `Sync` value. The driver owns the walk;
-the target owns everything that depends on the instruction set.
+the target owns everything that depends on the instruction set. The
+signatures below are `crates/hod_cg/src/target.rs` and `cx.rs` (WP-030);
+the rustdoc there is the detailed contract.
 
 ### 8.1 What `hod_cg` provides to a lowering (`FnCx<T>`)
 
-- read access to the module, the body, the options, and the instruction
-  being lowered;
-- **operands**: the location of a value; "give me this value in a
-  register" (pinning it, loading or materializing as needed); "put this
-  value in that register" (for arguments and return values); "give me this
-  value's address" for a `Mem` value or a home;
-- **results**: a register for the result (optionally taking over an
-  operand's); "the result is in this register"; the home of a `Mem`
-  result; `finish`, which applies §4.1 (store to the home, or keep);
-  `defer` (§4.6);
-- **registers**: a temporary of a class for the duration of the
-  instruction; displacing one register or all of them (§4.3, §4.4);
-- **calls**: the sequence of §7.1 for the instruction being lowered, and
-  for a `RuntimeFn` with given operands and result (§7.3); registering a
-  tail exit (§7.1). The target supplies only the call instruction itself;
-- **frame**: allocate a slot; the `FrameRef` of a body slot, a home, an
-  incoming slot;
-- **code**: append bytes or instruction words; the current offset; labels,
-  branches with fixups and binding (§6.2); patching already emitted bytes;
-- **records**: add a relocation at an offset (§9.2), a data island, the
-  type id for a type-info symbol (§9.4). Call sites, line rows and debug
-  labels are recorded by the driver, not by lowerings.
+`FnCx<'a, T: Target>` is one function being compiled. Its public fields
+are read access to the inputs (`module`, `body`, `options`, `target`,
+and `state: T::FnState`, the target's own per-function state); everything
+else is a method:
+
+| group | methods | responsibility |
+|---|---|---|
+| operands | `loc`, `use_reg`, `put`, `use_mem`, `deferred`, `class_of` | the location of a value; "this value in a register" (pinned; loaded or materialized as needed); "this value in that register" (arguments, return values); the address of a `Mem` value or a home |
+| results | `def_reg`, `finish`, `def_mem`, `may_defer`, `defer` | a register for the result (optionally an operand's); `finish` applies §4.1 (store to the home, or keep); the home of a `Mem` result; deferral (§4.6) |
+| registers | `temp`, `take_reg`, `free_temp`, `release`, `displace`, `displace_all`, `scratch_reg` | a temporary for the instruction; displacing one register or all (§4.3, §4.4) |
+| calls | `call`, `call_runtime`, `record_call_site`, `place_return`, `fn_assignment`, `tail_exit_count`, `tail_exit`, `phi_stores` | the sequence of §7.1 for the instruction being lowered, and for a `RuntimeFn` with `CallArg` operands (§7.3); the function's own assignment and its tail exits (§7.1) |
+| frame | `alloc_slot`, `slot_place`, `frame_size` | a slot; the `FrameRef` or `SlotPlace` of a body slot |
+| code | `offset`, `emit` and the `emit_*` family, `code_mut`, `block_label`, `epilogue`, `new_label`, `bind`, `fixup`, `falls_through`, `far`, `trap` | bytes; labels, fixups and binding (§6.2); patching emitted bytes |
+| records | `reloc`, `island`, `cfi`, `set_frame_desc`, `type_id`, `pad_clause`, `pad_filter` | a relocation (§9.2), a data island (§7.5), CFI rows and the frame description (§9.3), type ids and clauses (§9.4) |
+
+Call sites, line rows and block offsets are recorded by the driver, not by
+lowerings. `FrameRef` is `Local(u32)`, `Incoming(u32)` or `Outgoing(u32)`:
+the last addresses a stack argument from the lowered stack pointer between
+`adjust_sp` and the call (§5.3).
+
+**A lowering's obligations.** It does not keep a register across a call it
+makes; it pins at most the pool's minimum of a class (§2.1); it leaves no
+result in a scratch register; and it asks for an operand that may be
+`Deferred` (`FnCx::deferred`) **before** it pins any other operand, since
+emitting the deferred instruction needs registers of its own. A run of
+deferred instructions is at most `MAX_DEFERRED_RUN` (8) long.
 
 ### 8.2 What a target provides
+
+```rust
+pub trait Target: Sized + Sync {
+    type FnState: Default;            // per-function state, in FnCx::state
+    const TRAP: &'static [u8];        // the trap instruction (lengths differ)
+    const FN_ALIGN: u32;
+    const PAD_BYTE: u8;
+    const STACK_ALIGN: u32;
+
+    fn reg_info(&self) -> &RegInfo;                                    // §2.1
+    fn class_of(&self, types: &TypeTable, ty: TypeId) -> Class;        // §2.2
+    fn assign(&self, types: &TypeTable, sig: &Sig<'_>, out: &mut Assignment)
+        -> Result<(), AbiUnsupported>;                                 // §7.2
+    fn begin_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()>;
+    fn end_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()>;
+    fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()>;
+
+    // glue
+    fn load(&self, cx: &mut FnCx<'_, Self>, reg: PReg, src: FrameRef, bytes: u32);
+    fn store(&self, cx: &mut FnCx<'_, Self>, reg: PReg, dst: FrameRef, bytes: u32);
+    fn copy(&self, cx: &mut FnCx<'_, Self>, dst: FrameRef, src: FrameRef, bytes: u32);
+    fn copy_from_ptr(&self, cx: &mut FnCx<'_, Self>, dst: FrameRef, ptr: PReg,
+        offset: u32, bytes: u32);
+    fn mov(&self, cx: &mut FnCx<'_, Self>, dst: PReg, src: PReg);
+    fn materialize(&self, cx: &mut FnCx<'_, Self>, reg: PReg, value: Value) -> CgResult<()>;
+    fn materialize_mem(&self, cx: &mut FnCx<'_, Self>, dst: FrameRef, value: Value)
+        -> CgResult<()>;
+    fn frame_addr(&self, cx: &mut FnCx<'_, Self>, reg: PReg, of: FrameRef);
+    fn adjust_sp(&self, cx: &mut FnCx<'_, Self>, delta: i64);
+    fn extend_arg(&self, cx: &mut FnCx<'_, Self>, reg: PReg, ty: TypeId, attrs: ParamAttrs);
+    fn jump(&self, cx: &mut FnCx<'_, Self>, label: Label) -> CgResult<()>;
+    fn emit_call(&self, cx: &mut FnCx<'_, Self>, call: &CallEmit) -> CgResult<()>;
+    fn dynamic_slot(&self, cx: &mut FnCx<'_, Self>, ptr: FrameRef, size: u64, align: u64)
+        -> CgResult<()>;
+
+    fn patch_branch(code: &mut [u8], at: u32, kind: FixupKind, displacement: i64) -> bool;
+}
+```
 
 | member | responsibility |
 |---|---|
 | `reg_info()` | §2.1 |
 | `class_of(types, ty)` | §2.2; total over the types `classify` accepts |
-| `begin_function(cx)` | the fixed-size prologue; target reservations in the frame; entry code for arguments (§4.8) and for over-aligned slots (§5.1) |
-| `end_function(cx)` | patch the prologue; emit the epilogue and the tail exits, with their CFI rows; fill the frame description (§9.3) |
-| glue: `load(cx, reg, frame_ref, width)`, `store(..)`, `copy(cx, dst_ref, src_ref, bytes)`, `mov(cx, dst, src)`, `materialize(cx, reg, value)` | the primitive moves the generic policy is made of. They use only `scratch` registers besides their operands, and never fail for an offset or size: a far offset costs a scratch register, not an error |
+| `begin_function(cx)` | the fixed-size prologue and target reservations in the frame. The driver then emits the entry code for arguments (§4.8) and lays out the body's slots, calling `dynamic_slot` for an over-aligned one (§5.1) |
+| `end_function(cx)` | patch the prologue; emit the epilogue and the tail exits, with their CFI rows; fill the frame description (§9.3). The driver has added the epilogue's line row (§9.5) |
+| glue: `load`, `store`, `copy`, `copy_from_ptr`, `mov`, `materialize`, `materialize_mem`, `frame_addr`, `adjust_sp`, `extend_arg`, `jump` | the primitive moves the generic policy, the `phi` protocol and the call sequence are made of. They use only `scratch` registers besides their operands, and never fail for an offset or size: a far offset costs a scratch register, not an error. `extend_arg` widens a narrow integer argument or return value as the convention asks |
+| `emit_call(cx, call)` | the call instruction itself, to a `CallTarget` (a symbol, or a register the sequence loaded); the sequence records the row around what it emits (§9.4) |
+| `dynamic_slot(cx, ptr, size, align)` | the entry code for one over-aligned slot: allocate it (§5.2) and store its address to `ptr` |
 | `lower(cx, inst)` | every instruction that is not a `phi`, including terminators and calls. One `match` on the opcode that dispatches to the target's modules, one per instruction group, so that groups are separate work packages |
-| `assign(sig, out)` | §7.2 |
+| `assign(types, sig, out)` | §7.2 |
 | `patch_branch(code, at, kind, displacement) -> bool` | §6.2; `false` when the field cannot hold the displacement |
-| constants: `TRAP`, the function alignment, the padding byte between functions, the stack alignment | |
+| constants | `TRAP` (a byte slice), the function alignment, the padding byte between functions, the stack alignment |
 
 The call sequence of §7.1 and the `phi` protocol of §4.5 are implemented
 once, in `hod_cg`, on top of glue and `assign`; a target's `lower` for
-`Call` supplies only the call instruction itself and what is special to
-the target (variadic conventions, TLS call sequences).
+`Call` calls `FnCx::call` and supplies, through `emit_call`, only the call
+instruction itself and what is special to the target (variadic
+conventions, TLS call sequences).
 
 A data-dependent operand of an encoder call uses the encoder's checked
 (`try_`) form, with the scratch-register fallback when it does not fit
 (`spec/mc-a64.md` "Checked and unchecked forms"); the unchecked forms are
 for operands the lowering itself fixed.
-
-Signatures: the first T-CG work package (the `hod_cg` core with a test
-target, §12) writes the trait and `FnCx` out in Rust and replaces this
-section's tables with them.
 
 ## 9. Output
 

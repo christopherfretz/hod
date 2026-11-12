@@ -78,17 +78,14 @@ impl<'a, T: Target> FnCx<'a, T> {
     #[cold]
     #[inline(never)]
     fn classify(&mut self, key: Key) -> CgResult<ValState> {
-        let (ty, uses) = match key.as_arg() {
-            Some(index) => {
-                let Some(&ty) = self.body.arg_types(self.module).get(index as usize) else {
-                    return internal(format!("argument {index} is not an argument of this body"));
-                };
-                (ty, self.body.arg_uses(index))
-            }
-            None => {
-                let id = InstId::new(key.0);
-                (self.body.inst(id).ty(), self.body.uses(id))
-            }
+        let (ty, uses) = if let Some(index) = key.as_arg() {
+            let Some(&ty) = self.body.arg_types(self.module).get(index as usize) else {
+                return internal(format!("argument {index} is not an argument of this body"));
+            };
+            (ty, self.body.arg_uses(index))
+        } else {
+            let id = InstId::new(key.0);
+            (self.body.inst(id).ty(), self.body.uses(id))
         };
         if ty == TypeId::VOID {
             return internal(format!("value {:#x} has no type: it is not a value", key.0));
@@ -102,11 +99,8 @@ impl<'a, T: Target> FnCx<'a, T> {
             Kind::Reg
         };
         let width = self.reg_bytes(class) as u8;
-        let loc = if kind == Kind::Home {
-            Loc::Frame(self.value_slot(class, ty)?)
-        } else {
-            Loc::None
-        };
+        let loc =
+            if kind == Kind::Home { Loc::Frame(self.value_slot(class, ty)?) } else { Loc::None };
         let state = ValState { loc, kind, class, width, incoming: crate::loc::NO_SLOT };
         if let Some(entry) = self.state_mut(key) {
             *entry = state;
@@ -464,12 +458,11 @@ impl<'a, T: Target> FnCx<'a, T> {
         if state.class != Class::Mem {
             return self.bug("def_mem of a result that is not of class Mem");
         }
-        match state.loc {
-            Loc::Frame(home) => Ok(home),
-            _ => {
-                let size = self.types().alloc_size_of(inst.ty());
-                self.s.frame.alloc_temp(size)
-            }
+        if let Loc::Frame(home) = state.loc {
+            Ok(home)
+        } else {
+            let size = self.types().alloc_size_of(inst.ty());
+            self.s.frame.alloc_temp(size)
         }
     }
 

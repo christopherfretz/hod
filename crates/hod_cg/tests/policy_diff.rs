@@ -37,7 +37,8 @@ fn generated_programs_run_as_the_interpreter_runs_them() {
 #[test]
 #[ignore = "the long differential batch: minutes"]
 fn long_batch() {
-    let seeds = std::env::var("HOD_CG_SEEDS").ok().and_then(|text| text.parse().ok()).unwrap_or(250);
+    let seeds =
+        std::env::var("HOD_CG_SEEDS").ok().and_then(|text| text.parse().ok()).unwrap_or(250);
     let harness = batch(1_000, seeds);
     let tally = &harness.tally;
     println!("{}", tally.report(&harness.tm));

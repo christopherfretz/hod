@@ -153,14 +153,13 @@ impl Frame {
             return Err(CgError::unsupported(LIMIT_FRAME_SIZE));
         };
         let found = self.free_temps.iter().position(|&(_, have)| have >= size);
-        let slot = match found {
-            Some(index) => self.free_temps.swap_remove(index),
-            None => {
-                let FrameRef::Local(at) = self.alloc(u64::from(size), self.stack_align)? else {
-                    return internal("the allocator returned a slot outside the local area");
-                };
-                (at, size)
-            }
+        let slot = if let Some(index) = found {
+            self.free_temps.swap_remove(index)
+        } else {
+            let FrameRef::Local(at) = self.alloc(u64::from(size), self.stack_align)? else {
+                return internal("the allocator returned a slot outside the local area");
+            };
+            (at, size)
         };
         self.live_temps.push(slot);
         Ok(FrameRef::Local(slot.0))

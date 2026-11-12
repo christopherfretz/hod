@@ -88,7 +88,11 @@ fn sext(bits: u8, value: u128) -> i128 {
 fn int_binary(op: Opcode, bits: u8, a: u128, b: u128) -> Result<u128, String> {
     let (sa, sb) = (sext(bits, a), sext(bits, b));
     let shift = || {
-        if b >= u128::from(bits) { Err("a shift by the width or more".to_owned()) } else { Ok(b as u32) }
+        if b >= u128::from(bits) {
+            Err("a shift by the width or more".to_owned())
+        } else {
+            Ok(b as u32)
+        }
     };
     let value = match op {
         Opcode::Add => a.wrapping_add(b),
@@ -236,7 +240,8 @@ impl<'m> Machine<'m> {
                     addrs[symbol.id().index()] = FN_BASE + 16 * symbol.id().index() as u64;
                 }
                 SymbolKind::Variable { init: Some(init), .. } => {
-                    let align = symbol.align().unwrap_or_else(|| module.types.align_of(symbol.ty()));
+                    let align =
+                        symbol.align().unwrap_or_else(|| module.types.align_of(symbol.ty()));
                     let at = mem.len().next_multiple_of(align.max(1) as usize);
                     mem.resize(at, 0);
                     let (mut image, mut fixups) = (Vec::new(), Vec::new());
@@ -276,7 +281,11 @@ impl<'m> Machine<'m> {
                 let target = match reloc.sym {
                     SymRef::Module(sym) => match addrs.get(sym.index()) {
                         Some(&addr) if addr != 0 => addr,
-                        _ => return Err(format!("a relocation against {sym:?}, which has no address")),
+                        _ => {
+                            return Err(format!(
+                                "a relocation against {sym:?}, which has no address"
+                            ));
+                        }
                     },
                     SymRef::Runtime(func) => {
                         let index = RuntimeFn::ALL.iter().position(|&known| known == func);
@@ -407,7 +416,8 @@ impl<'m> Machine<'m> {
             return self.ret();
         }
         let sym = addr.checked_sub(FN_BASE).map(|at| (at / 16) as usize);
-        let Some(sym) = sym.filter(|&sym| sym < self.entry_of.len() && addr % 16 == 0) else {
+        let Some(sym) = sym.filter(|&sym| sym < self.entry_of.len() && addr.is_multiple_of(16))
+        else {
             return Err(format!("a call of {addr:#x}, which is no function"));
         };
         if let Some(start) = self.entry_of[sym] {
@@ -505,7 +515,10 @@ impl<'m> Machine<'m> {
     }
 
     fn func_at(&self, pc: usize) -> Option<&'m FuncRecord> {
-        self.chunk.funcs.iter().find(|func| (func.code.start as usize..func.code.end as usize).contains(&pc))
+        self.chunk
+            .funcs
+            .iter()
+            .find(|func| (func.code.start as usize..func.code.end as usize).contains(&pc))
     }
 
     /// Unwinds to the innermost call site that has a landing pad
@@ -517,7 +530,8 @@ impl<'m> Machine<'m> {
         while let Some(frame) = self.calls.pop() {
             let Some(func) = self.func_at(frame.ret.wrapping_sub(1)) else { continue };
             let at = (frame.ret - func.code.start as usize) as u32;
-            let sites = &chunk.call_sites[func.call_sites.start as usize..func.call_sites.end as usize];
+            let sites =
+                &chunk.call_sites[func.call_sites.start as usize..func.call_sites.end as usize];
             let Some(site) = sites
                 .iter()
                 .find(|site| site.start < at && at <= site.start + site.len && site.pad != NO_PAD)
@@ -525,10 +539,11 @@ impl<'m> Machine<'m> {
                 continue;
             };
             let pad = &chunk.pads[(func.pads.start + site.pad) as usize];
-            let selector = match chunk.clauses.get((func.clauses.start + pad.clauses.start) as usize) {
-                Some(ClauseRow::Catch(id)) if !pad.clauses.is_empty() => u64::from(*id),
-                _ => 0,
-            };
+            let selector =
+                match chunk.clauses.get((func.clauses.start + pad.clauses.start) as usize) {
+                    Some(ClauseRow::Catch(id)) if !pad.clauses.is_empty() => u64::from(*id),
+                    _ => 0,
+                };
             self.clobber(&[]);
             (self.regs[0], self.regs[1]) = (exception, selector);
             (self.sp, self.fp, self.ap) = (frame.sp, frame.fp, frame.ap);
@@ -574,7 +589,8 @@ impl<'m> Machine<'m> {
             }
             Ins::Copy { dst, src, bytes } => {
                 let len = bytes as usize;
-                let (to, from) = (self.range(self.addr(dst)?, len)?, self.range(self.addr(src)?, len)?);
+                let (to, from) =
+                    (self.range(self.addr(dst)?, len)?, self.range(self.addr(src)?, len)?);
                 self.mem.copy_within(from, to.start);
             }
             Ins::Bin { op, bits, dst, a, b } => {
@@ -583,12 +599,14 @@ impl<'m> Machine<'m> {
                 self.write(dst, bits, value)?;
             }
             Ins::ICmp { pred, bits, dst, a, b } => {
-                let pred = IntPredicate::ALL.get(usize::from(pred)).copied().ok_or("a predicate")?;
+                let pred =
+                    IntPredicate::ALL.get(usize::from(pred)).copied().ok_or("a predicate")?;
                 let value = icmp(pred, bits, self.read(a, bits)?, self.read(b, bits)?);
                 self.write(Opnd::Reg(dst), 1, u128::from(value))?;
             }
             Ins::JCmp { pred, bits, a, b, target } => {
-                let pred = IntPredicate::ALL.get(usize::from(pred)).copied().ok_or("a predicate")?;
+                let pred =
+                    IntPredicate::ALL.get(usize::from(pred)).copied().ok_or("a predicate")?;
                 if icmp(pred, bits, self.read(a, bits)?, self.read(b, bits)?) {
                     self.pc = target as usize;
                 }
@@ -632,7 +650,8 @@ impl<'m> Machine<'m> {
                 self.write(dst, bits, int_intrinsic(op, bits, a, b, c)?)?;
             }
             Ins::Checked { op, bits, dst, flag_at, a, b } => {
-                let (value, overflow) = checked(op, bits, self.read(a, bits)?, self.read(b, bits)?)?;
+                let (value, overflow) =
+                    checked(op, bits, self.read(a, bits)?, self.read(b, bits)?)?;
                 let at = self.addr(dst)?;
                 self.store(at, usize::from(bits.div_ceil(8)), value)?;
                 self.store(at + u64::from(flag_at), 1, u128::from(overflow))?;
@@ -658,7 +677,8 @@ impl<'m> Machine<'m> {
             }
             Ins::LeaPc { dst, target } => self.set_reg(dst, CODE_BASE + u64::from(target))?,
             Ins::JmpR { reg } => {
-                let to = self.reg(reg)?.checked_sub(CODE_BASE).filter(|&at| at < self.code.len() as u64);
+                let to =
+                    self.reg(reg)?.checked_sub(CODE_BASE).filter(|&at| at < self.code.len() as u64);
                 self.pc = to.ok_or("an indirect branch to no code")? as usize;
             }
             Ins::DynSlot { ptr, size, align } => {
@@ -684,7 +704,9 @@ impl<'m> Machine<'m> {
     // which is what `as` does and what the instructions are defined to do.
     #[allow(clippy::cast_precision_loss)]
     fn cast(&self, op: Opcode, from: u8, to: u8, value: u128) -> Result<u128, String> {
-        let float = |bits: f64| if to == 32 { u128::from((bits as f32).to_bits()) } else { u128::from(bits.to_bits()) };
+        let float = |bits: f64| {
+            if to == 32 { u128::from((bits as f32).to_bits()) } else { u128::from(bits.to_bits()) }
+        };
         Ok(match op {
             Opcode::Trunc
             | Opcode::ZExt
@@ -733,7 +755,8 @@ pub fn run(module: &Module, chunk: &Chunk, entry: SymId, args: &[u64]) -> Result
     while !machine.done {
         steps += 1;
         let pc = machine.pc;
-        let stepped = if steps > MAX_STEPS { Err("the step limit".to_owned()) } else { machine.step() };
+        let stepped =
+            if steps > MAX_STEPS { Err("the step limit".to_owned()) } else { machine.step() };
         if let Err(what) = stepped {
             let name = machine
                 .func_at(pc)

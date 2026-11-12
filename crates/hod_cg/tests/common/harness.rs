@@ -136,13 +136,11 @@ pub fn compile_all(
     tm: &Tm,
     module: &Module,
     bodies: &[Body],
-    options: &Options,
+    options: Options,
     scratch: &mut Scratch,
     chunk: &mut Chunk,
 ) -> Result<(), CgError> {
-    bodies
-        .iter()
-        .try_for_each(|body| compile_function(tm, module, body, options, scratch, chunk))
+    bodies.iter().try_for_each(|body| compile_function(tm, module, body, &options, scratch, chunk))
 }
 
 /// A worker's state and the counts of what it did.
@@ -190,7 +188,7 @@ impl Harness {
                 &self.tm,
                 &program.module,
                 &program.bodies,
-                &Options { stress },
+                Options { stress },
                 &mut self.scratch,
                 &mut self.chunk,
             );

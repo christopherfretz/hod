@@ -65,20 +65,7 @@ fn dwarf(reg: PReg) -> u16 {
 }
 
 static REG_INFO: RegInfo = RegInfo {
-    gpr: RegSet::of(&[
-        g(0),
-        g(1),
-        g(2),
-        g(3),
-        g(4),
-        g(5),
-        g(6),
-        g(7),
-        g(8),
-        g(9),
-        g(10),
-        g(11),
-    ]),
+    gpr: RegSet::of(&[g(0), g(1), g(2), g(3), g(4), g(5), g(6), g(7), g(8), g(9), g(10), g(11)]),
     fpr: RegSet::of(&[f(0), f(1), f(2), f(3), f(4), f(5), f(6), f(7)]),
     pool: RegSet::of(&[g(4), g(5), g(6), g(7), g(8), f(2), f(3), f(4), f(5)]),
     holdable: RegSet::of(&[
@@ -237,6 +224,29 @@ fn branch(cx: Cx<'_, '_>, near: u8, fields: impl FnOnce(Enc) -> Enc, to: Label) 
     cx.fixup(at, FixupKind(u8::from(far)), to)
 }
 
+/// The lowering's part of §4.6: a deferred operand is emitted before
+/// any other operand pins a register, since emitting it needs registers
+/// of its own (`FnCx::deferred`). Left alone: an instruction that is
+/// itself deferred, the operand an instruction fuses (the compare of a
+/// `condbr`, the address of a load or store), and the operands of a
+/// call, which the call sequence takes care of.
+fn deferred_first<'a>(cx: Cx<'_, 'a>, inst: Inst<'a>) -> CgResult<()> {
+    let fused = match inst.kind() {
+        InstKind::ICmp { .. } if cx.may_defer(inst) => return Ok(()),
+        InstKind::PtrAdd(add) if foldable(&add).is_some() && cx.may_defer(inst) => return Ok(()),
+        InstKind::Call(site) if site.intrinsic().is_none() => return Ok(()),
+        InstKind::CondBr { cond, .. } => Some(cond),
+        InstKind::Load { ptr, .. } | InstKind::Store { ptr, .. } => Some(ptr),
+        _ => None,
+    };
+    for &operand in inst.operands() {
+        if Some(operand) != fused && cx.deferred(operand).is_some() {
+            cx.use_reg(operand)?;
+        }
+    }
+    Ok(())
+}
+
 /// The address `ptr` as a memory operand. A deferred `ptradd` by a
 /// constant is fused into the operand (§4.6); a stack slot is addressed
 /// through the frame pointer.
@@ -279,8 +289,7 @@ impl Target for Tm {
 
     fn class_of(&self, types: &TypeTable, ty: TypeId) -> Class {
         match types.kind(ty) {
-            TypeKind::Int(bits) if bits <= 64 => Class::Gpr,
-            TypeKind::Ptr { .. } => Class::Gpr,
+            TypeKind::Int(..=64) | TypeKind::Ptr { .. } => Class::Gpr,
             TypeKind::Float | TypeKind::Double => Class::Fpr,
             _ => Class::Mem,
         }
@@ -414,9 +423,7 @@ impl Target for Tm {
                 && bits < 64
             {
                 let signed = symbol.param_attrs(part.arg as usize).has(ParamAttrs::SIGNEXT);
-                cx.put_ins(
-                    Enc::op(isa::CHK).u8(at.index()).u8(bits as u8).u8(u8::from(signed)),
-                );
+                cx.put_ins(Enc::op(isa::CHK).u8(at.index()).u8(bits as u8).u8(u8::from(signed)));
             }
         }
         if cx.fn_assignment().ret_memory.is_some() {
@@ -455,6 +462,7 @@ impl Target for Tm {
     }
 
     fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()> {
+        deferred_first(cx, inst)?;
         match inst.kind() {
             InstKind::Binary { lhs, rhs } => binary(cx, inst, lhs, rhs),
             InstKind::Unary { arg } => unary(cx, inst, arg),
@@ -502,8 +510,6 @@ impl Target for Tm {
                 store_to(cx, value, mem(d.offset_by(offset)))
             }
             InstKind::Select { cond, if_true, if_false } => {
-                // The condition first: asking for it may emit a
-                // deferred compare, which needs registers.
                 let c = cx.use_reg(cond)?;
                 if cx.class_of_type(inst.ty()) == Class::Mem {
                     let bits = bits_of(cx.types(), inst.ty())?;
@@ -663,22 +669,25 @@ impl Target for Tm {
                 SlotPlace::Indirect(pointer) => self.load(cx, reg, pointer, 8),
             },
             ValueKind::Const(id) => match cx.module.consts.get(id) {
-                Const::Int { value, .. } => movi(cx, value),
-                Const::Float { bits: 0, .. } => movi(cx, 0),
+                Const::Int { value, .. } | Const::AddrOfInt { value } => movi(cx, value),
+                Const::Float { bits: 0, .. }
+                | Const::Null(_)
+                | Const::Zero(_)
+                | Const::Undef(_)
+                | Const::Poison(_) => movi(cx, 0),
                 Const::Float { ty, bits } => {
                     // A float constant comes from a data island (§7.5).
                     let width = bits_of(cx.types(), ty)?;
                     let bytes = bits.to_le_bytes();
-                    let island = cx.island(&bytes[..usize::from(width / 8)], u32::from(width / 8))?;
+                    let island =
+                        cx.island(&bytes[..usize::from(width / 8)], u32::from(width / 8))?;
                     branch(cx, isa::LDPC, |ins| ins.u8(reg.index()).u8(width), island)?;
                 }
-                Const::Null(_) | Const::Zero(_) | Const::Undef(_) | Const::Poison(_) => movi(cx, 0),
                 Const::Addr { sym, addend } => {
                     let at = cx.offset() + 2;
                     movi(cx, 0);
                     cx.reloc(at, ABS64, SymRef::Module(sym), addend);
                 }
-                Const::AddrOfInt { value } => movi(cx, value),
                 Const::BlockAddr { func, block } if func == cx.body.symbol() => {
                     let ins = Enc::op(isa::LEAPC).u8(reg.index());
                     let at = cx.offset() + ins.len();
@@ -703,6 +712,11 @@ impl Target for Tm {
         };
         let (mut image, mut fixups) = (Vec::new(), Vec::new());
         if cx.module.consts.flatten(cx.types(), id, &mut image, &mut fixups).is_err() {
+            return unsup("tm:constant");
+        }
+        // A fixup is patched as a whole word; one inside a word would be
+        // lost.
+        if fixups.iter().any(|fixup| !fixup.offset.is_multiple_of(8)) {
             return unsup("tm:constant");
         }
         // Word by word, through the second scratch register: the
@@ -821,7 +835,9 @@ impl Tm {
         intrinsic: Intrinsic<'a>,
         args: &'a [Value],
     ) -> CgResult<()> {
-        let arg = |index: usize| args.get(index).copied().ok_or(CgError::unsupported("tm:intrinsic"));
+        let arg = |index: usize| {
+            args.get(index).copied().ok_or_else(|| CgError::unsupported("tm:intrinsic"))
+        };
         let int_op = |cx: &mut FnCx<'a, Self>, op: u8, operands: usize| -> CgResult<()> {
             let bits = bits_of(cx.types(), inst.ty())?;
             if bits > 64 {
@@ -1104,7 +1120,12 @@ fn ptr_add<'a>(cx: Cx<'_, 'a>, inst: Inst<'a>, add: &PtrAdd<'a>) -> CgResult<()>
     let add_op = Opcode::Add as u8;
     if add.offset != 0 {
         cx.put_ins(
-            Enc::op(isa::BIN).u8(add_op).u8(64).opnd(at).opnd(at).opnd(Opnd::Imm(add.offset as u64)),
+            Enc::op(isa::BIN)
+                .u8(add_op)
+                .u8(64)
+                .opnd(at)
+                .opnd(at)
+                .opnd(Opnd::Imm(add.offset as u64)),
         );
     }
     for (index, scale) in add.indices() {

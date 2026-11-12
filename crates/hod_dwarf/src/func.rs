@@ -121,7 +121,8 @@ struct Scope {
     parent: u32,
     open: bool,
     first: u32,
-    entities: bool,
+    /// Whether the scope has variables (a block without is not written).
+    vars: bool,
 }
 
 /// The scratch of [`UnitPlan::add_function`], reused across functions.
@@ -299,6 +300,7 @@ impl<'a> UnitPlan<'a> {
         if u32::try_from(f.code.size).is_err() {
             return Err(Error::TooLarge);
         }
+        let variadic = self.variadic(sp_id, &sp)?;
         let parent = self.subprogram_parent(sp_id, &sp)?;
         let die = self.push(sp_id, parent, Kind::Subprogram);
         let func = self.funcs.len() as u32;
@@ -312,6 +314,11 @@ impl<'a> UnitPlan<'a> {
 
         let mut s = std::mem::take(&mut self.fn_scratch);
         let result = self.function_body(f, func, die, &mut s);
+        // A variadic function's last child (`llc`'s
+        // `constructSubprogramScopeDIE`).
+        if result.is_ok() && variadic {
+            self.push_anon(sp_id, die, Kind::Unspecified);
+        }
         for sc in &s.scopes {
             s.scope_of[sc.node.index()] = NONE;
         }
@@ -365,6 +372,15 @@ impl<'a> UnitPlan<'a> {
             return Err(unsupported(sp_id, "debug:specification-type"));
         }
         Ok(0)
+    }
+
+    /// Whether a subprogram's type ends in a null parameter type.
+    fn variadic(&self, of: DiId, sp: &DiSubprogram<'_>) -> Result<bool, Error> {
+        let Some(ty) = sp.ty else { return Ok(false) };
+        let DiNode::SubroutineType(t) = self.node_of(of, "type", ty)? else {
+            return Err(bad(of, "type"));
+        };
+        Ok(t.types.len() > 1 && t.types.last() == Some(&DiId::NONE))
     }
 
     /// The return type of a subprogram, `None` for `void` or no type.
@@ -461,8 +477,12 @@ impl<'a> UnitPlan<'a> {
             s.ents.push((index, class, key, row as u32));
         }
         s.ents.sort_unstable();
-        for &(scope, ..) in &s.ents {
-            s.scopes[scope as usize].entities = true;
+        // `llc`'s `needToEmitLexicalScope`: a block is written when it
+        // has variables; its labels alone do not make it.
+        for &(scope, class, ..) in &s.ents {
+            if class != 2 {
+                s.scopes[scope as usize].vars = true;
+            }
         }
 
         Ok(())
@@ -478,8 +498,8 @@ impl<'a> UnitPlan<'a> {
     ) -> Result<(), Error> {
         let n = s.scopes.len();
         // The DIEs, depth first: a scope's variables and labels, then its
-        // blocks; a block without variables or labels is not written and
-        // its blocks go to its parent (§6.4).
+        // blocks; a block without variables is not written, and its
+        // labels and blocks go to its parent (§6.4).
         if n == 0 {
             return Ok(());
         }
@@ -495,7 +515,7 @@ impl<'a> UnitPlan<'a> {
             }
             let child = s.children[cursor as usize];
             let c = s.scopes[child as usize];
-            let parent = if c.entities {
+            let parent = if c.vars {
                 let block = self.push(c.node, die, Kind::Block);
                 let (first, end) =
                     (s.range_start[child as usize], s.range_start[child as usize + 1]);
@@ -513,6 +533,8 @@ impl<'a> UnitPlan<'a> {
                 self.entities(f, func, child, block, s)?;
                 block
             } else {
+                // Its labels go to the parent, where `llc` puts them.
+                self.entities(f, func, child, die, s)?;
                 die
             };
             s.walk.push((child, parent, s.child_start[child as usize]));
@@ -641,7 +663,7 @@ impl<'a> UnitPlan<'a> {
                 if index == NONE {
                     index = s.scopes.len() as u32;
                     s.scope_of[node.index()] = index;
-                    s.scopes.push(Scope { node, parent, open: false, first: 0, entities: false });
+                    s.scopes.push(Scope { node, parent, open: false, first: 0, vars: false });
                 }
                 let sc = &mut s.scopes[index as usize];
                 sc.open = true;
@@ -751,7 +773,9 @@ impl<'a> Writer<'a> {
             let decl_file = d.file.and_then(|f| plan.file_index(f));
             let new_file = file != decl_file;
             let new_line = sp.line != d.line;
-            let link = d.linkage_name.is_empty() && !sp.linkage_name.is_empty();
+            // `llc`: the definition's linkage name unless it is the
+            // declaration's.
+            let link = !sp.linkage_name.is_empty() && sp.linkage_name != d.linkage_name;
             let mask =
                 b(fd.object_pointer != NONE) | b(new_file) << 1 | b(new_line) << 2 | b(link) << 3;
             self.abbrev(code(fam::SUBPROGRAM_MEMBER, mask, children));
@@ -880,9 +904,19 @@ impl<'a> Writer<'a> {
             }
             (LocalWhat::Label { offset }, DiNode::Label(n)) => {
                 let decl = Writer::decl_of(plan, node, n.file, n.line)?;
-                self.abbrev(code(fam::LABEL, b(decl.is_some()) | 2, false));
-                self.strx(n.name)?;
-                self.decl(decl);
+                if let Some(d) = decl
+                    && n.column != 0
+                {
+                    // `llc` 21 and later write the column of a label.
+                    self.abbrev(code(fam::LABEL_COLUMN, 1, false));
+                    self.strx(n.name)?;
+                    self.decl(Some(d));
+                    write_uleb(&mut self.info, u64::from(n.column));
+                } else {
+                    self.abbrev(code(fam::LABEL, b(decl.is_some()) | 2, false));
+                    self.strx(n.name)?;
+                    self.decl(decl);
+                }
                 let index = self.push_addr(fd.code.symbol, fd.code.addend + i64::from(offset));
                 write_uleb(&mut self.info, u64::from(index));
             }

@@ -86,6 +86,7 @@ pub mod at {
     pub const DATA_MEMBER_LOCATION: u16 = 0x38;
     pub const DECL_FILE: u16 = 0x3a;
     pub const DECL_LINE: u16 = 0x3b;
+    pub const DECL_COLUMN: u16 = 0x39;
     pub const PROTOTYPED: u16 = 0x27;
     pub const DECLARATION: u16 = 0x3c;
     pub const ENCODING: u16 = 0x3e;
@@ -260,6 +261,7 @@ pub mod fam {
     // WP-057 appends the subprogram definitions no reserved family holds.
     pub const SUBPROGRAM_ANY: usize = 69;
     pub const SUBPROGRAM_MEMBER: usize = 70;
+    pub const LABEL_COLUMN: usize = 71;
     pub const LEXICAL_BLOCK: usize = 38;
     pub const LABEL: usize = 39;
 }
@@ -1019,6 +1021,21 @@ pub const FAMILIES: &[Family] = &[
             s(at::SPECIFICATION, REF4),
         ],
     ),
+    // 71: a label with a column (LLVM 21 and later).
+    fam(
+        "label (with column)",
+        tag::LABEL,
+        No,
+        2,
+        "WP-057",
+        &[
+            s(at::NAME, STRX),
+            s(at::DECL_FILE, UDATA),
+            s(at::DECL_LINE, UDATA),
+            s(at::DECL_COLUMN, UDATA),
+            o(0, at::LOW_PC, ADDRX),
+        ],
+    ),
 ];
 
 /// The slots of the general static-member families (54, 55), in `llc`'s
@@ -1173,9 +1190,9 @@ mod tests {
         assert_eq!(BASES[fam::COMPILE_UNIT], 738);
         // WP-058 appended families 49 to 67 after the end WP-053 left.
         assert_eq!(BASES[fam::BASE_TYPE_ANY], 754);
-        // WP-057 appended families 69 and 70.
+        // WP-057 appended families 69 to 71.
         assert_eq!(BASES[fam::SUBPROGRAM_ANY], 8733);
-        assert_eq!(CODE_END, 9277);
+        assert_eq!(CODE_END, 9279);
         for (index, name) in [
             (fam::CONST_TYPE, "const_type"),
             (fam::TYPEDEF, "typedef"),

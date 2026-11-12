@@ -104,6 +104,7 @@ dependencies = [
 name = "hod_ll"
 version = "0.0.0"
 dependencies = [
+ "hod_interp",
  "hod_ir",
  "hod_testutil",
 ]

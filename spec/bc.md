@@ -175,8 +175,9 @@ kept:
 Every other metadata record only takes the next metadata id, as
 `md::defines_id` says. This covers every debug-info node (DILocation,
 DISubprogram, DICompositeType and the rest). Debug information is not
-read in stage 1: `hod_ll` records `debug-info` the same way and builds
-none of it (`ll.md §7`).
+read by `hod_bc` yet (WP-055): a module with `llvm.dbg.cu` is recorded
+unsupported as `debug-info` and nothing of it is built. `hod_ll` reads
+it (`ll.md §7`).
 
 ### 3.4 Unsupported, by name
 

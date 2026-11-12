@@ -8,8 +8,8 @@
 //! operands, the records, and the retry in far mode.
 
 use hod_ir::{
-    Block, BlockId, Body, Inst, InstKind, LocId, Module, Opcode, ParamAttrs, SymbolKind, TypeId,
-    TypeKind,
+    Block, BlockId, Body, FnAttrs, Inst, InstKind, LocId, Module, Opcode, ParamAttrs, SymbolKind,
+    TypeId, TypeKind, UwTable,
 };
 
 use crate::abi::{AbiUnsupported, PartKind, Place, Sig};
@@ -21,7 +21,7 @@ use crate::frame::{FrameRef, SlotPlace};
 use crate::label::Label;
 use crate::loc::{Class, Key, Kind, Loc, ValState};
 use crate::options::Options;
-use crate::record::{BlockOffset, Chunk, FrameDesc, LineRow, VarPlace, VarRow};
+use crate::record::{BlockOffset, CfiOp, Chunk, FrameDesc, LineRow, VarPlace, VarRow};
 use crate::reg::{MIN_POOL_FPR, MIN_POOL_GPR, RegSet};
 use crate::target::Target;
 
@@ -171,6 +171,7 @@ impl<'a, T: Target> FnCx<'a, T> {
             no_defer: false,
             deferred_run: 0,
             epilogue,
+            body_cfi: u32::MAX,
             has_pads,
             block_addrs: false,
             frame_desc: FrameDesc::default(),
@@ -520,6 +521,43 @@ impl<'a, T: Target> FnCx<'a, T> {
         Ok(())
     }
 
+    /// States the body's call-frame rules again at the current offset
+    /// (§9.3), for code after the exit sequences that the body branches
+    /// to: the net effect of the rows emitted before the epilogue was
+    /// bound, as one CFA rule and one rule per register saved.
+    fn restate_body_cfi(&mut self) {
+        if self.body_cfi == u32::MAX {
+            return;
+        }
+        let (start, end) = (self.mark.cfi as usize, (self.mark.cfi + self.body_cfi) as usize);
+        let (mut reg, mut offset) = (None, None);
+        for row in &self.out.cfi[start..end] {
+            match row.op {
+                CfiOp::DefCfa { reg: r, offset: o } => (reg, offset) = (Some(r), Some(o)),
+                CfiOp::DefCfaOffset(o) => offset = Some(o),
+                CfiOp::DefCfaRegister(r) => reg = Some(r),
+                CfiOp::Offset { .. } | CfiOp::Restore { .. } => {}
+            }
+        }
+        match (reg, offset) {
+            (Some(reg), Some(offset)) => self.cfi(CfiOp::DefCfa { reg, offset }),
+            (None, Some(offset)) => self.cfi(CfiOp::DefCfaOffset(offset)),
+            (Some(reg), None) => self.cfi(CfiOp::DefCfaRegister(reg)),
+            (None, None) => {}
+        }
+        for index in start..end {
+            let CfiOp::Offset { reg, .. } = self.out.cfi[index].op else { continue };
+            // A register's rule is its last row's.
+            let later = self.out.cfi[index + 1..end].iter().any(|row| {
+                matches!(row.op, CfiOp::Offset { reg: r, .. } | CfiOp::Restore { reg: r } if r == reg)
+            });
+            if !later {
+                let op = self.out.cfi[index].op;
+                self.cfi(op);
+            }
+        }
+    }
+
     /// What follows the target's exit sequences: the trap that stands
     /// for unreachable blocks, the data islands, the last checks, the
     /// function's record.
@@ -537,6 +575,9 @@ impl<'a, T: Target> FnCx<'a, T> {
                 }
                 if trap.is_none() {
                     trap = Some(self.offset());
+                    // §9.3: the trap follows the exit sequences, and the
+                    // body branches to it.
+                    self.restate_body_cfi();
                     self.trap();
                 }
                 // Every unreachable block shares the one trap: binding
@@ -583,6 +624,15 @@ impl<'a, T: Target> FnCx<'a, T> {
         record.align = T::FN_ALIGN.max(self.island_align);
         record.frame = self.frame_desc;
         record.has_pads = self.has_pads;
+        // `spec/eh.md` §1.1: what decides the function's unwind tables.
+        if let SymbolKind::Function { attrs, personality, .. } =
+            self.module.symbol(self.body.symbol()).kind()
+        {
+            let attrs = self.module.fn_attrs(attrs);
+            record.personality = personality;
+            record.nounwind = attrs.has(FnAttrs::NOUNWIND);
+            record.uwtable = attrs.uwtable() != UwTable::None;
+        }
         self.out.funcs.push(record);
         Ok(())
     }

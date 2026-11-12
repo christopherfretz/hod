@@ -258,6 +258,9 @@ pub struct FnCx<'a, T: Target> {
     /// How many instructions in a row are deferred right now (§4.6).
     pub(crate) deferred_run: u32,
     pub(crate) epilogue: Label,
+    /// The number of the function's CFI rows when the epilogue was bound:
+    /// the rows that state the body's rules (§9.3); `u32::MAX` before.
+    pub(crate) body_cfi: u32,
     pub(crate) has_pads: bool,
     /// Whether the function's block offsets are recorded (§9.6).
     pub(crate) block_addrs: bool,
@@ -392,6 +395,9 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// for a label bound twice.
     pub fn bind(&mut self, label: Label) -> CgResult<()> {
         let at = self.offset();
+        if label == self.epilogue {
+            self.body_cfi = self.out.cfi.len() as u32 - self.mark.cfi;
+        }
         let code = &mut self.out.code[self.mark.code as usize..];
         match self.s.labels.bind(label, at, |at, kind, disp| T::patch_branch(code, at, kind, disp))
         {

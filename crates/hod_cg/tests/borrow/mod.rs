@@ -12,6 +12,22 @@ use hod_obj::{Arch, RelocKind};
 
 use crate::elfview::Elf;
 
+/// What the code generator records of a function's unwind attributes
+/// (`spec/eh.md` §1.1): its personality, `nounwind`, `uwtable`.
+pub fn unwind_attrs(module: &Module, sym: hod_ir::SymId) -> (Option<hod_ir::SymId>, bool, bool) {
+    match module.symbol(sym).kind() {
+        hod_ir::SymbolKind::Function { attrs, personality, .. } => {
+            let attrs = module.fn_attrs(attrs);
+            (
+                personality,
+                attrs.has(hod_ir::FnAttrs::NOUNWIND),
+                attrs.uwtable() != hod_ir::UwTable::None,
+            )
+        }
+        _ => (None, false, false),
+    }
+}
+
 /// The chunk of every function `functions` lists (in that order), from
 /// `llc`'s object `theirs` of the same module.
 pub fn chunk_from(
@@ -69,11 +85,15 @@ pub fn chunk_from(
             });
         }
         let empty = 0..0;
+        let (personality, nounwind, uwtable) = unwind_attrs(module, sym);
         chunk.funcs.push(FuncRecord {
             sym,
             align: align(&name),
             frame: FrameDesc::default(),
             has_pads: false,
+            personality,
+            nounwind,
+            uwtable,
             code: code_start..chunk.code.len() as u32,
             relocs: relocs_start..chunk.relocs.len() as u32,
             cfi: empty.clone(),

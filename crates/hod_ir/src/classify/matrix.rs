@@ -530,7 +530,7 @@ const FUNCTION: [SupportRow; 6] = [
         todo(X64),
         "a body without `nounwind`: it needs unwind tables (WP-049)",
     ),
-    a64("function:personality", EH, "a body with a personality function"),
+    row("function:personality", ON, todo(X64), "a body with a personality function"),
     row("function:slots", ON, todo(X64), "a body with fixed stack objects (`Body::slots`)"),
     row("function:over-aligned-slot", ON, todo(X64), "a stack object aligned above 16 bytes"),
 ];
@@ -776,7 +776,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         "",
     ),
     row("inst:call", ON, todo(X64), "a call of anything but an intrinsic"),
-    a64("inst:landingpad", EH, ""),
+    row("inst:landingpad", ON, todo(X64), ""),
     both("inst:catchpad", never(WINDOWS_EH), ""),
     both("inst:cleanuppad", never(WINDOWS_EH), ""),
     row("inst:br", ON, todo(X64), ""),
@@ -790,8 +790,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         never("its only use is inline assembly with labels (`spec/codegen.md` §1)"),
         "",
     ),
-    a64("inst:invoke", EH, ""),
-    a64("inst:resume", EH, ""),
+    row("inst:invoke", ON, todo(X64), ""),
+    row("inst:resume", ON, todo(X64), ""),
     both("inst:catchswitch", never(WINDOWS_EH), ""),
     both("inst:catchret", never(WINDOWS_EH), ""),
     both("inst:cleanupret", never(WINDOWS_EH), ""),
@@ -854,9 +854,9 @@ const BUNDLE: [SupportRow; 10] = [
 ];
 
 const LANDINGPAD: [SupportRow; 3] = [
-    a64("landingpad:cleanup", EH, ""),
-    a64("landingpad:catch", EH, ""),
-    a64("landingpad:filter", EH, ""),
+    row("landingpad:cleanup", ON, todo(X64), ""),
+    row("landingpad:catch", ON, todo(X64), ""),
+    row("landingpad:filter", ON, todo(X64), ""),
 ];
 
 const OPERAND: [SupportRow; 9] = [

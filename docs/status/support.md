@@ -29,21 +29,21 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `tls` | 4 | 0 | 4 | 0 | 0 | 4 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
 | `init` | 8 | 5 | 3 | 0 | 0 | 8 | 0 |
-| `function` | 6 | 5 | 1 | 0 | 0 | 6 | 0 |
+| `function` | 6 | 6 | 0 | 0 | 0 | 6 | 0 |
 | `cc` | 15 | 4 | 9 | 2 | 0 | 12 | 3 |
 | `attr` | 56 | 20 | 33 | 3 | 9 | 39 | 8 |
 | `type` | 15 | 4 | 8 | 3 | 0 | 13 | 2 |
-| `inst` | 67 | 48 | 11 | 8 | 0 | 59 | 8 |
+| `inst` | 67 | 51 | 8 | 8 | 0 | 59 | 8 |
 | `mem` | 3 | 1 | 2 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 0 | 21 | 0 | 0 | 21 | 0 |
 | `call` | 3 | 2 | 1 | 0 | 0 | 3 | 0 |
 | `tail` | 3 | 2 | 1 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
-| `landingpad` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
+| `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `operand` | 9 | 4 | 5 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 133 | 5 | 128 | 0 | 0 | 133 | 0 |
-| total | 434 | 135 | 253 | 46 | 16 | 363 | 55 |
+| total | 434 | 142 | 246 | 46 | 16 | 363 | 55 |
 
 ## `module`
 
@@ -188,7 +188,7 @@ Properties of a function that has a body.
 | `function:parameters` | supported | not-implemented | a body with parameters; per class of parameter |
 | `function:variadic` | supported | not-implemented | a variadic function with a body |
 | `function:may-unwind` | supported | not-implemented | a body without `nounwind`: it needs unwind tables (WP-049) |
-| `function:personality` | not-implemented | not-implemented | M2 (exceptions). a body with a personality function |
+| `function:personality` | supported | not-implemented | a body with a personality function |
 | `function:slots` | supported | not-implemented | a body with fixed stack objects (`Body::slots`) |
 | `function:over-aligned-slot` | supported | not-implemented | a stack object aligned above 16 bytes |
 
@@ -357,7 +357,7 @@ Instructions.
 | `inst:freeze` | supported (int, ptr) | not-implemented |  |
 | `inst:va_arg` | rejected | rejected | `llc` miscompiles it on AArch64, so there is no oracle; frontends do not emit it |
 | `inst:call` | supported | not-implemented | a call of anything but an intrinsic |
-| `inst:landingpad` | not-implemented | not-implemented | M2 (exceptions) |
+| `inst:landingpad` | supported | not-implemented |  |
 | `inst:catchpad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:cleanuppad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:br` | supported | not-implemented |  |
@@ -367,8 +367,8 @@ Instructions.
 | `inst:ret` | supported | not-implemented |  |
 | `inst:unreachable` | supported | not-implemented |  |
 | `inst:callbr` | rejected | rejected | its only use is inline assembly with labels (`spec/codegen.md` §1) |
-| `inst:invoke` | not-implemented | not-implemented | M2 (exceptions) |
-| `inst:resume` | not-implemented | not-implemented | M2 (exceptions) |
+| `inst:invoke` | supported | not-implemented |  |
+| `inst:resume` | supported | not-implemented |  |
 | `inst:catchswitch` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:catchret` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:cleanupret` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
@@ -454,9 +454,9 @@ Landing-pad clauses.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `landingpad:cleanup` | not-implemented | not-implemented | M2 (exceptions) |
-| `landingpad:catch` | not-implemented | not-implemented | M2 (exceptions) |
-| `landingpad:filter` | not-implemented | not-implemented | M2 (exceptions) |
+| `landingpad:cleanup` | supported | not-implemented |  |
+| `landingpad:catch` | supported | not-implemented |  |
+| `landingpad:filter` | supported | not-implemented |  |
 
 ## `operand`
 

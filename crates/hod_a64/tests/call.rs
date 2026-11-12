@@ -7,8 +7,6 @@
 #[path = "common/callgen.rs"]
 mod callgen;
 mod common;
-#[path = "common/unwind.rs"]
-mod unwind;
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -320,11 +318,14 @@ fn handwritten_calls_run() {
 
 /// Real exceptions through hod's frames (`tests/data/call/eh.ll`, driven
 /// by the C++ program `eh.cpp` built with g++): cleanups and `resume`, a
-/// catch by type, a rethrow from a handler, nested pads, two clauses, a
-/// satisfied filter, a `noreturn` thrower, an `invoke` with stack
-/// arguments (its pad stub), a frame without a personality. The tables
-/// are written by the glue of `common/unwind.rs` until WP-049; `llc`'s
-/// object of the same module is the control.
+/// catch by type, a rethrow from a handler, nested pads, nested try in
+/// one frame, two clauses, a satisfied filter, a `noreturn` thrower, an
+/// `invoke` with stack arguments (its pad stub), a dynamic alloca, a
+/// throw from hod, a frame without a personality, and a function in a
+/// COMDAT group defined in two objects (`eh_comdat.ll`). The tables are
+/// `emit_module`'s own. Static and stressed under every linker, then
+/// position-independent in a shared object under every linker; `llc`'s
+/// objects of the same modules are the control, both ways.
 #[test]
 fn exceptions_unwind_through_hod_frames() {
     let dir = Scratch::new("a64-call-eh");
@@ -333,41 +334,61 @@ fn exceptions_unwind_through_hod_frames() {
     let source = dir.write("eh.cpp", data("eh.cpp"));
     let driver = dir.join("eh-driver.o");
     let mut command = std::process::Command::new(&gxx);
-    command.args(["-c", "-O1"]).arg(&source).arg("-o").arg(&driver);
+    command.args(["-c", "-O1", "-fPIC"]).arg(&source).arg("-o").arg(&driver);
     let built = hod_testutil::run_with(&mut command, &[], std::time::Duration::from_mins(2));
     assert!(built.success(), "g++: {}", built.stderr_text());
     let libstdcxx = hod_testutil::run(&gxx, ["-print-file-name=libstdc++.so"]).stdout_text();
     let libstdcxx = PathBuf::from(libstdcxx.trim());
-    let ll = data("eh.ll");
-    let (module, bodies) = parse(&format!("{}{ll}", ll_header(22)));
-    for (tag, options) in [
-        ("hod", Options::default()),
-        ("stress", Options { stress: hod_cg::Stress::ALL, ..Options::default() }),
+    let (eh, eh_comdat) = (data("eh.ll"), data("eh_comdat.ll"));
+    let pic = Options { reloc_model: hod_cg::RelocModel::Pic, ..Options::default() };
+    let stress = Options { stress: hod_cg::Stress::ALL, ..Options::default() };
+    for (tag, with_llc, options, shared) in [
+        ("llc", true, Options::default(), false),
+        ("hod", false, Options::default(), false),
+        ("stress", false, stress, false),
+        ("pic", false, pic, true),
+        ("llc-pic", true, pic, true),
     ] {
-        let mut emitted = emit(&module, &bodies, &options);
-        unwind::add_eh_tables(&module, &mut emitted);
-        let obj = write_object(&dir, &format!("eh-{tag}.o"), &emitted);
-        let first_only = tag != "hod";
-        link_run_all(
-            &toolchain,
-            &dir,
-            &format!("eh-{tag}"),
-            &[],
-            &[&driver, &obj, &libstdcxx],
-            "eh done",
-            first_only,
-        );
-    }
-    if let Some(obj) = llc(&dir, "eh-llc", &format!("{}{ll}", ll_header(llc_major())), &[]) {
-        link_run_all(
-            &toolchain,
-            &dir,
-            "eh-llc",
-            &[],
-            &[&driver, &obj, &libstdcxx],
-            "eh done",
-            true,
-        );
+        let Some(obj) = object_with(&dir, &format!("eh-{tag}"), &eh, with_llc, options) else {
+            return;
+        };
+        let comdat = object_with(&dir, &format!("ehc-{tag}"), &eh_comdat, with_llc, options)
+            .expect("the second object");
+        // `h_comdat` and its exception table are in its COMDAT group.
+        if let Some(readelf) = hod_testutil::tool("llvm-readelf") {
+            let groups =
+                hod_testutil::run(readelf, [std::ffi::OsStr::new("-gW"), comdat.as_os_str()])
+                    .stdout_text();
+            assert!(groups.contains("[h_comdat]"), "eh-{tag}: no group\n{groups}");
+            if !with_llc {
+                assert!(groups.contains("gcc_except_table"), "eh-{tag}: LSDA outside\n{groups}");
+            }
+        }
+        if !shared {
+            let inputs: [&std::path::Path; 4] = [&driver, &obj, &comdat, &libstdcxx];
+            link_run_all(&toolchain, &dir, &format!("eh-{tag}"), &[], &inputs, "eh done", false);
+            continue;
+        }
+        for linker in &toolchain.linkers {
+            let lib = dir.join(format!("libeh-{tag}-{}.so", linker.name));
+            toolchain.link_ok(linker, &["-shared"], &[&obj, &comdat], &lib);
+            let rpath = format!("-Wl,-rpath,{}", dir.path().display());
+            let exe = dir.join(format!("eh-{tag}-{}", linker.name));
+            let ran = toolchain.link_and_run(
+                linker,
+                &["-rdynamic", &rpath],
+                &[&driver, &lib, &libstdcxx],
+                &exe,
+            );
+            let out = ran.stdout_text();
+            assert!(
+                exit_code(&ran) == Some(0) && out.contains("eh done"),
+                "eh-{tag} {}: exit {:?}\n{out}{}",
+                linker.name,
+                exit_code(&ran),
+                ran.stderr_text()
+            );
+        }
     }
 }
 

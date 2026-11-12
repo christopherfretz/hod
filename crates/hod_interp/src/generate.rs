@@ -1614,6 +1614,15 @@ impl<'g> FnGen<'g> {
         Ok(())
     }
 
+    /// A call of `sink(value)`, if the host functions are on.
+    fn sink(&mut self, value: Value) -> IrResult<()> {
+        let Some(std) = self.g.std else { return Ok(()) };
+        let args = [value];
+        self.b.call(TypeId::VOID, &CallDesc::new(Value::sym(std.sink)?, std.sink_ty, &args))?;
+        self.hit("call:sink");
+        Ok(())
+    }
+
     fn host_call(&mut self) -> IrResult<()> {
         let Some(std) = self.g.std else { return Ok(()) };
         if self.rng().chance(30) {
@@ -1859,6 +1868,7 @@ impl<'g> FnGen<'g> {
             self.phis(pad_types, froms)?;
             self.hit("eh:pad-phi");
         }
+        let live: Vec<Avail> = self.pool[self.pool.len() - pad_types.len()..].to_vec();
         // The clauses, and which of the incoming types one handles.
         let mut clauses = Vec::new();
         let mut handled = 0u8;
@@ -1908,6 +1918,18 @@ impl<'g> FnGen<'g> {
         }
         self.escapes |= unhandled;
         let pair = self.b.landing_pad(eh.pad_ty, cleanup, &clauses)?;
+        // Which pad was entered and the values live into it, observed.
+        let mark = 0x9AD0_0000 + ((self.index as u128) << 16) + pad.index() as u128;
+        let mark = self.cint(64, mark)?;
+        self.sink(mark)?;
+        for avail in live {
+            let value = match avail.ty {
+                Ty::Int(64) => avail.value,
+                Ty::Int(bits @ 1..64) if self.g.opt.casts => self.resize(avail.value, bits, 64)?,
+                _ => continue,
+            };
+            self.sink(value)?;
+        }
         let exn = self.b.extract_value(TypeId::PTR, pair, 0)?;
         let sel = self.b.extract_value(TypeId::I32, pair, 8)?;
         // The dispatch: one type, then a catch, a filter, a cleanup.
@@ -1947,6 +1969,7 @@ impl<'g> FnGen<'g> {
             .b
             .phi(TypeId::I64, &[(tags[0], first), (tags[1], positive), (tags[2], negative)])?;
         self.hit("phi");
+        self.sink(tag)?;
         self.push(tag, Ty::Int(64));
         let args = [exn];
         let payload =

@@ -2,9 +2,10 @@
 //! `llc` and run natively, print what the interpreter says they do.
 //!
 //! Each batch of programs is one file of LLVM assembly (see `llvm_text`)
-//! compiled twice, at `-O0` and through `opt -O2` and `llc -O2`, linked
-//! with `gcc` and run. The output of both must be the interpreter's trace
-//! of `sink` calls and result, program by program.
+//! compiled twice, at `-O0` (by the selector of §10.1) and through
+//! `opt -O2` and `llc -O2`, linked with `gcc` and run. The output of both
+//! must be the interpreter's trace of `sink` calls and result, program by
+//! program.
 //!
 //! `HOD_ORACLE_KEEP=<directory>` keeps every file compiled there.
 //!
@@ -68,13 +69,15 @@ fn compile_and_run(tools: &Tools, scratch: &Scratch, text: &str) -> [String; 2] 
             optimized
         };
         let object = scratch.join(format!("batch{level}.o"));
-        must(
-            Command::new(&tools.llc)
-                .args([level, "-filetype=obj", "-relocation-model=pic", "-o"])
-                .arg(&object)
-                .arg(&input),
-            "llc",
-        );
+        let mut llc = Command::new(&tools.llc);
+        llc.args([level, "-filetype=obj", "-relocation-model=pic"]);
+        if level == "-O0" {
+            // The selector `-O2` uses. For AArch64 `llc -O0` has two of
+            // its own, and each miscompiles a correct program
+            // (`spec/interp.md` §10.1).
+            llc.args(["-global-isel=0", "-fast-isel=0"]);
+        }
+        must(llc.arg("-o").arg(&object).arg(&input), "llc");
         let binary = scratch.join(format!("batch{level}"));
         // `frem` is a call of `fmod`.
         must(Command::new(&tools.gcc).arg(&object).arg("-o").arg(&binary).arg("-lm"), "gcc");

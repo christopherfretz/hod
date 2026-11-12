@@ -49,6 +49,26 @@ fn scalars_are_little_endian_bytes() {
     assert_eq!(value(pointer), Val::i1(true));
 }
 
+/// §10.1: the function that `llc -O0` miscompiles for AArch64. A loaded
+/// `i16` with its top bit set, zero-extended to `i32`, is not negative
+/// when that is sign-extended.
+#[test]
+fn zero_extended_load_then_sign_extended() {
+    let result = eval(I64, &[], &[], |m, b| {
+        let p = slot(b, 2, 2)?;
+        let stored = int(m, I16, 0xeae0);
+        b.store(stored, p, al(2))?;
+        let i33 = m.types.int(33)?;
+        let loaded = b.load(I16, p, al(2))?;
+        let word = b.cast(Opcode::ZExt, I32, loaded)?;
+        let odd = b.cast(Opcode::ZExt, i33, word)?;
+        let signed = b.cast(Opcode::SExt, I64, word)?;
+        let unsigned = b.cast(Opcode::ZExt, I64, odd)?;
+        b.binary(Opcode::Or, I64, signed, unsigned)
+    });
+    assert_eq!(value(result), Val::i64(0xeae0));
+}
+
 /// §4: an integer whose width is not a whole number of bytes is stored
 /// zero-extended to its store size, and a load of one from bytes with
 /// other bits set has no one result (`spec/codegen.md` §2.2).

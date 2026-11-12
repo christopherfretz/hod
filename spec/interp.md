@@ -724,8 +724,9 @@ LLVM. For a batch of seeds it
    program, resets `source`, prints `p <seed>`, calls the entry function on
    its arguments and prints `r <result>`; `sink` is defined to print
    `s <argument>` and `source` to compute `source_value` (§6.1);
-3. compiles the file with `llc -O0`, and again through `opt -O2` and
-   `llc -O2`; links each with `gcc -lm` (`frem` is `fmod`); runs both;
+3. compiles the file with `llc -O0 -global-isel=0 -fast-isel=0` (§10.1),
+   and again through `opt -O2` and `llc -O2`; links each with `gcc -lm`
+   (`frem` is `fmod`); runs both;
 4. requires the output of each to be, program by program, the interpreter's
    `sink` events and result.
 
@@ -735,7 +736,10 @@ optimizer may inline, specialize and fold them.
 
 A disagreement fails the test and keeps the one program as
 `<build>/tmp/llvm-oracle-seed-<seed>.ll`. It is a bug in the interpreter,
-the printer or the generator until LLVM is proven wrong.
+the printer or the generator until LLVM is proven wrong: the program
+reduced (`llvm-reduce`, with "this way of compiling differs from the others"
+as the test) to a function whose answer can be worked out by hand and whose
+wrong answer can be read off the assembly. §10.1 has the two times it was.
 
 The printer covers exactly what the generator emits. It is to be replaced
 by `hod_ir`'s printer (WP-006).
@@ -752,13 +756,74 @@ x86-64, the tests skip with a note; with `HOD_REQUIRE_TOOLS=1` they fail.
   many of 6 × 400 and a fiftieth of 3 × 3000.
 - `HOD_ORACLE_KEEP=<dir>` keeps every file compiled.
 
+### 10.1 The unoptimized leg is SelectionDAG
+
+`llc -O0` has three instruction selectors. For AArch64 the default is
+GlobalISel; `-global-isel=0` gives FastISel; `-global-isel=0 -fast-isel=0`
+gives SelectionDAG, which is also what `-O2` uses. The first two each
+miscompile a correct program (LLVM 19.1 and 22.1), found by the slow batch
+and reduced to these. In both, every other way of compiling the function
+(the other two selectors at `-O0`, `llc -O2`, `opt -O2` with `llc -O2`)
+agrees with the interpreter.
+
+GlobalISel (seed 30149 of the 6 × 400 batch):
+
+```llvm
+@g = global i16 -5408                ; 0xEAE0
+define i64 @f() {
+  %a = load i16, ptr @g
+  %b = zext i16 %a to i32
+  %c = zext i32 %b to i33
+  %d = sext i32 %b to i64
+  %e = zext i33 %c to i64
+  %r = or i64 %d, %e
+  ret i64 %r
+}
+```
+
+`%b` is 60128, so `%d`, `%e` and `%r` are 60128. `llc -O0` returns -5408:
+its combiner turns the load into a sign-extending one (`ldrsh x8, [x8]`)
+and uses that for `%d`. The interpreter's test of it is
+`zero_extended_load_then_sign_extended` in `tests/memory.rs`.
+
+FastISel (seed 10507 of the default batch):
+
+```llvm
+define i32 @f(i7 %a) {               ; called with 26
+entry:
+  %t = trunc i7 %a to i1
+  %s = shl i1 %t, 0
+  %c = icmp ult i1 0, %s
+  br i1 %c, label %yes, label %no
+yes:
+  ret i32 1
+no:
+  ret i32 0
+}
+```
+
+`%t` is the low bit of 26, which is 0; so is `%s`; 0 is not below 0 and the
+function returns 0. `llc -O0 -global-isel=0` returns 1: it compares 0 with
+the whole register that holds `%a` (`cmp w8, w0`), the `trunc` and the
+shift having left the bits above the first in place. The interpreter's
+test of it is `shifted_bit_compares_as_one_bit` in `tests/instructions.rs`.
+
+So the unoptimized leg of the oracle is SelectionDAG at `-O0`: the
+instructions as written, with no optimization of the IR, through the
+selector that got both right. It shares its legalizer with the `-O2` leg;
+what it adds is that nothing was folded, inlined or simplified first.
+
+Anything that takes plain `llc -O0` for AArch64 as the truth about what a
+program does meets these miscompilations when the program computes in
+widths that are not a power of two or in `i1`.
+
 ## 11. Tests
 
 | file | checks |
 |---|---|
 | `src/*.rs` unit tests | §3 values, §4 memory, §5.1/§5.6 arithmetic kernels, §6.1 `source_value`, trap names |
-| `tests/instructions.rs` | §5.1, §5.2, §5.3, §5.5, §5.7: every instruction with hand-computed results, every trap |
-| `tests/memory.rs` | §3, §4, §5.4, the memory intrinsics of §5.6, `limit-memory` |
+| `tests/instructions.rs` | §5.1, §5.2, §5.3, §5.5, §5.7: every instruction with hand-computed results, every trap; the second function of §10.1 |
+| `tests/memory.rs` | §3, §4, §5.4, the memory intrinsics of §5.6, `limit-memory`, the first function of §10.1 |
 | `tests/calls.rs` | §5.8, §5.6, §6, §7, §2 |
 | `tests/unsupported.rs` | §8: every reason that can be provoked |
 | `tests/robustness.rs` | §1, §2: a thousand random unguarded programs (zero divisors, wild pointers, uses before definitions, endless recursion, calls through any pointer); every body verifies, no run panics or is `Invalid`, and at least twelve kinds of end occur |

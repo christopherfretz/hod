@@ -461,3 +461,22 @@ fn narrow_values_stay_narrow() {
     });
     assert_eq!(value(d), Val::f64(1.0));
 }
+
+/// §10.1: the function that `llc -O0 -global-isel=0` miscompiles for
+/// AArch64. The low bit of 26 is 0, a shift by nothing leaves it 0, and
+/// 0 is not below 0.
+#[test]
+fn shifted_bit_compares_as_one_bit() {
+    let mut fx = Fx::new();
+    let i7 = fx.m.types.int(7).unwrap();
+    let f = fx.func("f", I1, &[i7], |m, b| {
+        let bit = b.cast(Opcode::Trunc, I1, b.arg(0)?)?;
+        let zero = int(m, I1, 0);
+        let shifted = b.binary(Opcode::Shl, I1, bit, zero)?;
+        let below = b.icmp(IntPredicate::Ult, I1, zero, shifted)?;
+        b.ret(Some(below))?;
+        Ok(())
+    });
+    assert_eq!(value(fx.run(f, &[Val::int(7, 26)])), Val::i1(false));
+    assert_eq!(value(fx.run(f, &[Val::int(7, 27)])), Val::i1(true));
+}

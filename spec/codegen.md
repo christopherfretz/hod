@@ -930,7 +930,10 @@ rest global), visibility, type (`OBJECT`, `FUNC`, `TLS`, `GNU_IFUNC`) and
 size (the initializer's alloc size, the code's length). A private symbol
 is named `.L<name>` and is written only when a relocation or a group names
 it; an undefined symbol nothing references is left out by the writer
-(`spec/object.md`), as `llc` leaves it out. Runtime functions (§7.3) map to the
+(`spec/object.md`), as `llc` leaves it out, except a declaration `llc`
+has a directive for (non-default visibility, `extern_weak`), which is
+kept, untyped. Only the names of symbols the object keeps reach the
+string table. Runtime functions (§7.3) map to the
 module's symbol of that name if there is one, else to one new undefined
 global symbol each.
 
@@ -996,6 +999,15 @@ table keyed by name, group and unique ID, and nothing is allocated per
 symbol beyond the object's tables (local aliases and COMDAT signatures are
 in maps sized by their count).
 
+**Refused by name** (`hod_cg::emit::unsupported`, §10): `module:asm`
+(module-level inline assembly), `comdat:selection-kind`,
+`linkage:appending` (outside the special arrays),
+`global:initializer-in-bss`, `global:alias-target`,
+`global:ifunc-resolver`, `init:sym-diff-unencodable`,
+`init:address-width` (an address in a 1-byte field),
+`init:dso-local-equivalent` (outside a difference),
+`init:blockaddress-unplaced`.
+
 **Known differences from `llc`**, none of which changes what a linker
 makes of the object (`tests/emit_link.rs` links both with GNU ld, lld and
 mold and runs them):
@@ -1003,6 +1015,12 @@ mold and runs them):
 - Order: `hod` creates the variables' sections and defines their symbols
   before the functions'; `llc` interleaves them in module order. The
   symbol table's order differs accordingly (locals first in both).
+- Variables are laid out in `SymId` order; `llc` lays them out in the
+  order of their definitions in the text. `hod_ll` numbers a named
+  symbol at its first mention, which can come before its definition, so
+  the two orders can differ (1 corpus module per LLVM major: RTTI of a
+  local class). A follow-up for `hod_ll` (number the definitions in file
+  order first) would close it.
 - `hod` writes no `STT_FILE` symbol, no `$d` mapping symbols in data
   sections, and sets `SHF_INFO_LINK` on `.rela` sections.
 - A COMDAT signature symbol `hod` makes is defined in the group's first
@@ -1076,7 +1094,13 @@ pub enum CgError {
 - **Unit:** the frame allocator; labels and fixups; `sym_access` against
   `llc` (§7.4); record contents for hand-built bodies; restart leaves no
   trace in the chunk; the same functions in one chunk and in many give
-  the same object.
+  the same object (`tests/emit_merge.rs`).
+- **Module emission** (§9.7): snippets against `llc` 19 and 22, with
+  `llc`'s own code for the functions (`tests/emit_llc.rs`); a data module
+  linked by GNU ld, lld and mold and run against `llc`'s
+  (`tests/emit_link.rs`); every corpus module with its bodies stripped
+  against `llc` (`tests/emit_corpus.rs`, `HOD_CG_CORPUS`); each refusal by
+  name; time and peak memory against `llc` (`tests/emit_bench.rs`).
 - **L4** (`xtask irdiff`): each instruction-group work package adds
   `tests/ir/` programs for its group and flips their expected-unsupported
   directives; behavior must equal `llc`'s with every linker.

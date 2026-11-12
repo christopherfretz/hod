@@ -1155,7 +1155,7 @@ array lookup and none allocates.
 | blocks in layout order | `Body::blocks()` (`Block`s), `layout()` (ids), `entry()`, `block(id)`, `block_count()` |
 | a block | `Block::id`, `inst_range`, `insts()`, `has_phis()`, `phis()`, `non_phis()`, `terminator()`, `successors()` |
 | an instruction | `Body::inst(id)`, `insts()`; `Inst::id`, `opcode`, `ty`, `result`, `uses`, `loc`, `operands()` (the value operands as one slice, whatever the opcode), `is_terminator`, `successors()`, `call()`, and `kind()`, an `InstKind` with one variant per instruction shape and named fields |
-| lists | `PtrAdd::{base, offset, indices()}`, `Phi::{values(), blocks(), incoming(), value_for(pred)}` (the first value listed for `pred`, WP-064), `Switch::{cond, default, cases()}`, `InstKind::ShuffleVector { mask }`, `InstKind::IndirectBr { targets }` |
+| lists | `PtrAdd::{base, offset, indices()}`, `Phi::{values(), blocks(), incoming(), value_for(pred)}` (the first value listed for `pred`, WP-064), `Switch::{cond, default, cases()}` (its `Debug` writes the cases as typed `(constant, block)` pairs, WP-064), `InstKind::ShuffleVector { mask }`, `InstKind::IndirectBr { targets }` |
 | calls | `Body::calls()`, `call_count()`; `CallSite::{inst, opcode, ty, callee, callee_value, intrinsic, overloads, fn_type, args, cc, tail, is_noreturn, is_nounwind, returns_twice, is_convergent, has_param_attrs, ret_attrs, arg_attrs(i), bundles(), normal_dest, unwind_dest, indirect_dests}` |
 | exceptions | `Body::landing_pads()`, `has_landing_pads()`; `LandingPad::{inst, is_cleanup, clauses}` |
 | the frame | `Body::slots()`, `slot_vars()` |

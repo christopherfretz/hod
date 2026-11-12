@@ -1570,7 +1570,7 @@ impl<'a> Phi<'a> {
 }
 
 /// A `switch`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct Switch<'a> {
     /// The integer switched on.
     pub cond: Value,
@@ -1591,6 +1591,26 @@ impl<'a> Switch<'a> {
     pub fn cases(&self) -> impl ExactSizeIterator<Item = (ConstId, BlockId)> + 'a {
         let values = self.values.iter().map(|&raw| ConstId::new(raw));
         values.zip(Blocks::new(self.targets))
+    }
+}
+
+/// The condition, the default and the cases as `(constant, block)`
+/// pairs of typed ids, not the raw words they are stored in (WP-064).
+impl fmt::Debug for Switch<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Switch")
+            .field("cond", &self.cond)
+            .field("default", &self.default)
+            .field("cases", &DebugCases(*self))
+            .finish()
+    }
+}
+
+struct DebugCases<'a>(Switch<'a>);
+
+impl fmt::Debug for DebugCases<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.0.cases()).finish()
     }
 }
 

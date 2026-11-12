@@ -112,3 +112,4 @@ pub use debug::node::{
     DiTemplateValueParameter, DiTuple,
 };
 pub use debug::{DebugInfo, DebugStats, DiLocation};
+pub use body::{DbgDeclare, DbgRecord, DbgRecordKind};

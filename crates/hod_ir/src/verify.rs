@@ -1159,3 +1159,107 @@ impl Verifier<'_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::body::{DbgRecordKind, UseFacts};
+    use crate::debug::expr::ExprId;
+    use crate::{
+        Body, DiId, FunctionBuilder, IrErrorKind, LocId, Module, Opcode, SymId, TargetSpec, TypeId,
+        Value,
+    };
+
+    /// `i32 f(i32 %0, ptr %1)` whose two blocks hold a declaration of
+    /// `%1`, a value record, a label and an assign record; in a module
+    /// without debug tables, so that only the body's own rules apply.
+    fn body() -> (Module, Body) {
+        let mut m = Module::new(TargetSpec::aarch64_linux_gnu());
+        let fn_ty = m.types.function(TypeId::I32, &[TypeId::I32, TypeId::PTR], false).unwrap();
+        let mut b = FunctionBuilder::new(&m, SymId::new(0), fn_ty).unwrap();
+        let (entry, next) = (b.create_block().unwrap(), b.create_block().unwrap());
+        b.begin_block(entry).unwrap();
+        let (number, pointer) = (b.arg(0).unwrap(), b.arg(1).unwrap());
+        let (var, at) = (DiId::new(1), LocId::new(1));
+        b.dbg_declare(pointer, var, ExprId::EMPTY, at).unwrap();
+        let sum = b.binary(Opcode::Add, TypeId::I32, number, number).unwrap();
+        b.dbg_value(sum, var, ExprId::EMPTY, at).unwrap();
+        b.br(next).unwrap();
+        b.begin_block(next).unwrap();
+        let phi = b.phi(TypeId::I32, &[(sum, entry)]).unwrap();
+        b.dbg_label(DiId::new(2), at).unwrap();
+        b.dbg_assign(phi, var, ExprId::EMPTY, pointer, ExprId::EMPTY, at).unwrap();
+        b.ret(Some(phi)).unwrap();
+        let body = b.finish().unwrap();
+        body.verify(&m).unwrap();
+        (m, body)
+    }
+
+    /// `spec/ir.md` §6.8: the rules about a body's debug tables that the
+    /// builder cannot be made to break, each broken in the tables.
+    #[test]
+    fn damaged_debug_tables_do_not_verify() {
+        let verdict = |damage: &dyn Fn(&mut Body)| {
+            let (m, mut body) = body();
+            damage(&mut body);
+            body.verify(&m).err().map(|error| error.kind)
+        };
+        let invalid = Some(IrErrorKind::InvalidDebugInfo);
+        assert_eq!(verdict(&|_| {}), None);
+        // A record stands before an instruction of the body that is not
+        // a phi, at or after the record before it.
+        assert_eq!(verdict(&|body| body.dbg_records[2].before = 4), invalid);
+        assert_eq!(verdict(&|body| body.dbg_records[1].before = 2), invalid, "the phi");
+        assert_eq!(verdict(&|body| body.dbg_records[1].before = 0), invalid, "out of order");
+        assert_eq!(verdict(&|body| body.dbg_records[2].before = 1), invalid, "out of order");
+        // Its values are in the operand pool and exist.
+        assert_eq!(verdict(&|body| body.dbg_records[0].vals = body.vals.len() as u32), invalid);
+        assert_eq!(verdict(&|body| body.dbg_records[2].vals = body.vals.len() as u32 - 1), invalid);
+        assert_eq!(verdict(&|body| body.dbg_records[0].count = u16::MAX), invalid);
+        let missing = Value::inst(crate::InstId::new(40)).unwrap();
+        assert_eq!(
+            verdict(&|body| {
+                let at = body.dbg_records[0].vals as usize;
+                body.vals[at] = missing;
+            }),
+            invalid
+        );
+        assert_eq!(
+            verdict(&|body| {
+                let at = body.dbg_records[2].vals as usize + 1;
+                body.vals[at] = Value::arg(7).unwrap();
+            }),
+            invalid,
+            "the address of the assign"
+        );
+        // A label has no values; a value record without a list has one.
+        assert_eq!(verdict(&|body| body.dbg_records[1].count = 1), invalid);
+        assert_eq!(verdict(&|body| body.dbg_records[1].arg_list = true), invalid);
+        assert_eq!(verdict(&|body| body.dbg_records[0].count = 0), invalid);
+        assert_eq!(verdict(&|body| body.dbg_records[0].count = 2), invalid);
+        assert_eq!(
+            verdict(&|body| {
+                body.dbg_records[0].count = 0;
+                body.dbg_records[0].arg_list = true;
+            }),
+            None,
+            "an empty list is a list"
+        );
+        assert_eq!(verdict(&|body| body.dbg_records[1].kind = DbgRecordKind::Value), invalid);
+        // A declaration names a value of the body that is not a slot.
+        assert_eq!(verdict(&|body| body.declares[0].address = missing), invalid);
+        assert_eq!(
+            verdict(&|body| {
+                body.slots.push(crate::body::Slot::new(8, 3));
+                body.declares[0].address = Value::slot(crate::SlotId::new(0)).unwrap();
+            }),
+            invalid
+        );
+        // "Named by a declaration" is a use fact: it is recomputed.
+        let facts = Some(IrErrorKind::UseFactsMismatch);
+        assert_eq!(verdict(&|body| body.arg_uses[1] = UseFacts::NONE), facts);
+        assert_eq!(verdict(&|body| body.arg_uses[0].declare()), facts);
+        assert_eq!(verdict(&|body| body.uses[0].declare()), facts);
+        assert_eq!(verdict(&|body| body.declares.clear()), facts);
+        assert_eq!(verdict(&|body| body.declares[0].address = Value::NONE), facts);
+    }
+}

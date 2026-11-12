@@ -672,8 +672,7 @@ impl DebugInfo {
     ///
     /// - everything reserved was defined;
     /// - every reference names a node of a kind its field allows;
-    /// - a compile unit, and a subprogram that is a definition, is
-    ///   distinct; every listed compile unit is one;
+    /// - every listed compile unit is one;
     /// - a location's scope is a local scope whose chain of blocks ends
     ///   at a subprogram, and its inlined-at chain ends;
     /// - an expression's operations are placed as LLVM requires.
@@ -686,9 +685,6 @@ impl DebugInfo {
         for index in 0..self.heads.len() {
             let id = DiId::new(index as u32);
             let node = self.node(id);
-            if node.must_be_distinct() && !self.is_distinct(id) {
-                return invalid(format!("{id:?}: a {} must be distinct", describe(&node)));
-            }
             let mut wrong = None;
             node.refs(&mut |field, allowed, target| {
                 let kind = self.find_kind(target);

@@ -271,12 +271,6 @@ impl ExprTable {
         self.spans.len().max(1)
     }
 
-    /// Whether `id` names an expression.
-    #[inline]
-    pub(crate) fn contains(&self, id: ExprId) -> bool {
-        id.index() < self.len()
-    }
-
     /// The elements of `id`; empty for an id that names nothing.
     #[inline]
     pub(crate) fn elements(&self, id: ExprId) -> &[u64] {
@@ -427,7 +421,7 @@ mod tests {
         assert_eq!(table.elements(fragment), &[0x1000, 32, 16]);
         assert_eq!(table.len(), 3);
         assert_eq!(table.elements.len(), 6, "a duplicate leaves nothing behind");
-        assert!(table.contains(fragment) && !table.contains(ExprId::new(3)));
+        assert!(table.elements(ExprId::new(3)).is_empty(), "an id that names nothing");
         assert_eq!(format!("{fragment:?}"), "expr2");
     }
 

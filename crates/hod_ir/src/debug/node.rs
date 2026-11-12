@@ -566,7 +566,6 @@ pub(crate) mod class {
     pub(crate) const GLOBAL: u32 = of(DiKind::GlobalVariable);
     pub(crate) const GLOBAL_EXPR: u32 = of(DiKind::GlobalVariableExpression);
     pub(crate) const IMPORTED: u32 = of(DiKind::ImportedEntity);
-    pub(crate) const VARIABLE: u32 = of(DiKind::LocalVariable) | GLOBAL;
     pub(crate) const TEMPLATE_PARAM: u32 =
         of(DiKind::TemplateTypeParameter) | of(DiKind::TemplateValueParameter);
     /// LLVM's `DIType`.

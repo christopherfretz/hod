@@ -15,7 +15,7 @@ use crate::attrs::{FnAttrTable, FnAttrs, FnAttrsId, FnAttrsView};
 use crate::comdat::{Comdat, ComdatKind, ComdatTable};
 use crate::constant::ConstPool;
 use crate::debug::DebugInfo;
-use crate::debug::node::DiKind;
+use crate::debug::node::{DiKind, DiNode};
 use crate::error::{IrErrorKind, IrResult, err};
 use crate::ids::{AsmId, ComdatId, ConstId, DiId, SymId};
 use crate::intern::pool_start;
@@ -716,7 +716,8 @@ impl Module {
     }
 
     /// Checks the debug information of the module (§6.8):
-    /// [`DebugInfo::verify`] for the tables, and for the attachments
+    /// [`DebugInfo::verify`] for the tables, that a constant used as
+    /// metadata is in the constant pool, and for the attachments
     /// that a function's subprogram is a subprogram, that the one of a
     /// function with a body is distinct and attached to no other
     /// function with a body, and that a global-variable expression is
@@ -732,6 +733,13 @@ impl Module {
     pub fn verify_debug(&self) -> IrResult<()> {
         self.debug.verify()?;
         let invalid = |message: String| err(IrErrorKind::InvalidDebugInfo, message);
+        for raw in 0..self.debug.node_count() as u32 {
+            if let DiNode::Constant(node) = self.debug.node(DiId::new(raw))
+                && node.value.index() >= self.consts.len()
+            {
+                return invalid(format!("di{raw}: {:?} is not a constant of the module", node.value));
+            }
+        }
         let mut owners: Vec<(DiId, SymId)> = Vec::new();
         for (index, symbol) in self.symbols().enumerate() {
             let sym = SymId::new(index as u32);

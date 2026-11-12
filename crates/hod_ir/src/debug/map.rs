@@ -131,6 +131,8 @@ pub const DI_RECORDS: &[(&str, DiMapping)] = &[
     ("#dbg_declare", DiMapping::Mapped),
     ("#dbg_value", DiMapping::Mapped),
     ("#dbg_assign", DiMapping::Mapped),
+    // An assign record's value is one value in `hod_ir` (§6.6).
+    ("#dbg_assign.DIArgList", DiMapping::Unsupported("debug:#dbg_assign.DIArgList")),
     ("#dbg_label", DiMapping::Mapped),
     ("#dbg_declare_value", DiMapping::Unsupported("debug:#dbg_declare_value")),
     ("llvm.dbg.declare", DiMapping::Mapped),

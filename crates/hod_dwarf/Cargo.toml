@@ -16,4 +16,5 @@ hod_obj.workspace = true
 workspace = true
 
 [dev-dependencies]
+hod_ll.workspace = true
 hod_testutil.workspace = true

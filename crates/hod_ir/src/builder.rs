@@ -136,6 +136,9 @@ pub struct FunctionBuilder {
     /// The location given to instructions appended from now on.
     loc: LocId,
     with_locs: bool,
+    /// Where the debug records appended from now on stand: before this
+    /// instruction, or `UNSET` for the next one appended.
+    record_at: u32,
 }
 
 #[cold]
@@ -205,6 +208,7 @@ impl FunctionBuilder {
             entry: UNSET,
             loc: LocId::NONE,
             with_locs: false,
+            record_at: UNSET,
         })
     }
 
@@ -491,6 +495,29 @@ impl FunctionBuilder {
         self.dbg_record(DbgRecordKind::Label, &[], false, label, ExprId::EMPTY, None, loc)
     }
 
+    /// Places the debug records appended from now on before instruction
+    /// `before` ([`FunctionBuilder::inst_count`] when it was appended), not
+    /// before the next one: for a producer that reads an instruction's
+    /// records after the instruction (LLVM's bitcode writes them there).
+    /// The block of that instruction need not be open; `None` goes back
+    /// to placing them before the next instruction appended.
+    ///
+    /// # Errors
+    /// `InvalidOperand` if `before` is past the next instruction.
+    pub fn place_records_before(&mut self, before: Option<usize>) -> IrResult<()> {
+        self.record_at = match before {
+            None => UNSET,
+            Some(at) if at <= self.body.insts.len() && at < RESERVED_BASE as usize => at as u32,
+            Some(at) => {
+                return bad(
+                    IrErrorKind::InvalidOperand,
+                    format!("instruction {at} is past the next one"),
+                );
+            }
+        };
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments, reason = "the fields of one record")]
     fn dbg_record(
         &mut self,
@@ -502,7 +529,7 @@ impl FunctionBuilder {
         address: Option<(Value, ExprId)>,
         loc: LocId,
     ) -> IrResult<()> {
-        let before = self.open()?;
+        let before = if self.record_at == UNSET { self.open()? } else { self.record_at };
         let Ok(count) = u16::try_from(values.len()) else {
             return bad(IrErrorKind::InvalidOperand, "a debug record has too many values".into());
         };

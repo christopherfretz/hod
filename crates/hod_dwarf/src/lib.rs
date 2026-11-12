@@ -22,8 +22,8 @@
 //! let files = FileTable::new(b"/src", b"main.cpp", None);
 //! let at = |line, column| Some(SourceLoc { file: 0, line, column });
 //! let transitions = [
-//!     Transition { offset: 8, loc: at(4, 7) },
-//!     Transition { offset: 16, loc: at(5, 3) },
+//!     Transition::at(8, at(4, 7)),
+//!     Transition::at(16, at(5, 3)),
 //! ];
 //! let lines = FunctionLines {
 //!     scope: SourceLoc { file: 0, line: 3, column: 0 },
@@ -52,13 +52,15 @@ mod line;
 mod policy;
 mod strings;
 mod target;
+mod types;
 
 pub use die::{CodeSpan, DieSections, GlobalAddr, UnitInput, UnitPlan, write_debug_info};
 pub use strings::DebugStrings;
 
 pub use leb::{write_sleb, write_uleb};
 pub use line::{
-    FileEntry, FileTable, LineHeader, LineSections, Row, Sequence, flags, write_debug_line,
+    FileEntry, FileTable, LineHeader, LineProgram, LineSections, LineUnit, LineUnits, Row,
+    Sequence, flags, write_debug_line, write_debug_line_units,
 };
 pub use policy::{FunctionLines, SourceLoc, Transition, function_rows};
 pub use target::{
@@ -173,6 +175,28 @@ pub enum Error {
         /// The span's index in the unit's `code`.
         index: u32,
     },
+    /// A member, inheritance, friend, static member or member function
+    /// whose `scope` names a node that is not a type (§6.8).
+    MemberOutsideType {
+        /// The member.
+        node: u32,
+    },
+    /// A type that would be infinite: a cycle through the `baseType` of
+    /// typedefs, template aliases, qualifiers or arrays, or through the
+    /// `scope` of types (§6.8).
+    TypeCycle {
+        /// A type on the cycle.
+        node: u32,
+    },
+    /// A base type, enumeration, vector or bit field with no size
+    /// (§6.8).
+    MissingSize {
+        /// The node.
+        node: u32,
+    },
+    /// An encoded line program is for another architecture than the
+    /// object or the program it is appended to.
+    ArchMismatch,
     /// `hod_obj` refused a section.
     Object(hod_obj::Error),
 }
@@ -218,6 +242,14 @@ impl fmt::Display for Error {
             Self::BadSpan { index } => {
                 write!(f, "code span {index}: a negative or overflowing range")
             }
+            Self::MemberOutsideType { node } => {
+                write!(f, "debug node {node}: a member whose scope is not a type")
+            }
+            Self::TypeCycle { node } => {
+                write!(f, "debug node {node}: a type that contains itself")
+            }
+            Self::MissingSize { node } => write!(f, "debug node {node}: a type without a size"),
+            Self::ArchMismatch => write!(f, "a line program of another architecture"),
             Self::Object(e) => write!(f, "{e}"),
         }
     }

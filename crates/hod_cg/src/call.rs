@@ -7,8 +7,8 @@
 //! instruction itself (`Target::emit_call`).
 
 use hod_ir::{
-    BlockId, CallConv, Inst, Opcode, ParamAttrs, SymbolKind, TailKind, TypeId, TypeKind, Value,
-    ValueKind,
+    AttrConflict, BlockId, CallConv, Inst, Opcode, ParamAttrs, SymbolKind, TailKind, TypeId,
+    TypeKind, Value, ValueKind, call_arg_attrs, call_ret_attrs,
 };
 
 use crate::abi::{AbiUnsupported, Assignment, Part, PartKind, Place, Sig};
@@ -20,6 +20,11 @@ use crate::record::{CallSiteRow, NO_PAD};
 use crate::reg::{PReg, RegSet};
 use crate::sym::{RuntimeFn, SymRef};
 use crate::target::{CallEmit, CallTarget, Target};
+
+/// Whether `attrs` asks for an extension (`zeroext` or `signext`).
+fn extends(attrs: ParamAttrs) -> bool {
+    attrs.has(ParamAttrs::ZEROEXT) || attrs.has(ParamAttrs::SIGNEXT)
+}
 
 /// An operand of a runtime-function call (§7.3).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -140,20 +145,11 @@ impl<'a, T: Target> FnCx<'a, T> {
                 self.use_reg(value)?;
             }
         }
-        // The signature. A direct call also has the attributes of the
-        // function it names, as `CallBase::paramHasAttr` reads them.
-        let declared = match callee.kind() {
-            ValueKind::Sym(sym) => Some(self.module.symbol(sym)),
-            _ => None,
-        };
-        let declared = declared.filter(|sym| matches!(sym.kind(), SymbolKind::Function { .. }));
-        let mut ret_attrs = site.ret_attrs();
-        if ret_attrs.is_none()
-            && let Some(SymbolKind::Function { ret_attrs: of_callee, .. }) =
-                declared.map(|sym| sym.kind())
-        {
-            ret_attrs = of_callee;
-        }
+        // The signature, with the attributes the call passes with
+        // (§7.1): its own and, for a direct call through the callee's
+        // own function type, the declaration's.
+        let conflict = |_| CgError::unsupported(AttrConflict::NAME);
+        let ret_attrs = call_ret_attrs(self.module, &site).map_err(conflict)?;
         self.s.sig_params.clear();
         self.s.sig_attrs.clear();
         for (index, &value) in args.iter().enumerate() {
@@ -161,12 +157,7 @@ impl<'a, T: Target> FnCx<'a, T> {
                 Some(&ty) => ty,
                 None => self.body.value_type(self.module, value),
             };
-            let mut attrs = site.arg_attrs(index);
-            if attrs.is_none()
-                && let Some(sym) = declared
-            {
-                attrs = sym.param_attrs(index);
-            }
+            let attrs = call_arg_attrs(self.module, &site, index).map_err(conflict)?;
             self.s.sig_params.push(ty);
             self.s.sig_attrs.push(attrs);
         }
@@ -357,6 +348,7 @@ impl<'a, T: Target> FnCx<'a, T> {
             };
             if let Some(slot) = source {
                 t.load(self, reg, slot.offset_by(part.offset), part.size);
+                self.extend_last_piece(ret_ty, self.ret_attrs, &part, slot, None);
             } else {
                 self.check_class(reg, class)?;
                 self.put(value, reg)?;
@@ -635,6 +627,7 @@ impl<'a, T: Target> FnCx<'a, T> {
                 (Place::Reg(reg), None) => t.load(self, reg, from, part.size),
                 (Place::Stack(_), None) => {}
             }
+            self.extend_last_piece(ty, attrs, part, slot, to_stack);
             return Ok(());
         }
 
@@ -659,8 +652,109 @@ impl<'a, T: Target> FnCx<'a, T> {
             t.extend_arg(self, reg, ty, attrs);
         }
         if let Some(dst) = to_stack {
-            t.store(self, reg, dst, part.size);
+            // §7.1: an extended integer fills its stack slot, as far as
+            // the extension reaches (LLVM's callers store an `i7 zeroext`
+            // as 32 bits, an `i33 signext` as 64).
+            let size =
+                if class == Class::Gpr && extends(attrs) && self.types().int_bits(ty).is_some() {
+                    part.size.max(self.reg_bytes(Class::Gpr))
+                } else {
+                    part.size
+                };
+            t.store(self, reg, dst, size);
         }
         Ok(())
+    }
+
+    /// §2.2: clears the bits above every integer leaf of `ty` whose width
+    /// is not a multiple of 8 in the image at `at`, a `Mem`-class value's
+    /// home that an incoming argument's parts were written to. The ABI
+    /// promises nothing above a leaf (`abi-<target>.md`); hod's memory
+    /// holds zeros there. A leaf (its last piece, for a leaf wider than a
+    /// register) is loaded into a scratch register, extended by zero as
+    /// [`Target::extend_arg`] extends a `zeroext` argument, and stored
+    /// back with its own size. Elements of vectors are not leaves here.
+    pub(crate) fn clear_odd_leaves(&mut self, ty: TypeId, at: FrameRef) {
+        if !self.has_odd_leaf(ty) {
+            return;
+        }
+        match self.types().kind(ty) {
+            TypeKind::Struct { fields, .. } => {
+                let fields = fields.to_vec();
+                let offsets =
+                    self.types().field_offsets(ty).map(<[u64]>::to_vec).unwrap_or_default();
+                for (field, offset) in fields.into_iter().zip(offsets) {
+                    self.clear_odd_leaves(field, at.offset_by(offset as u32));
+                }
+            }
+            TypeKind::Array { elem, len } => {
+                let stride = self.types().alloc_size_of(elem) as u32;
+                for index in 0..len as u32 {
+                    self.clear_odd_leaves(elem, at.offset_by(index * stride));
+                }
+            }
+            TypeKind::Int(bits) => {
+                let t = self.target;
+                let reg_bytes = self.reg_bytes(Class::Gpr);
+                let last = (bits - 1) / (8 * reg_bytes) * reg_bytes;
+                let size = bits.div_ceil(8) - last;
+                let scratch = self.scratch_reg(Class::Gpr);
+                t.load(self, scratch, at.offset_by(last), size);
+                let zeroext =
+                    ParamAttrs::NONE.with(ParamAttrs::ZEROEXT).unwrap_or(ParamAttrs::NONE);
+                t.extend_arg(self, scratch, ty, zeroext);
+                t.store(self, scratch, at.offset_by(last), size);
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether `ty` has an integer leaf of a width that is not a multiple
+    /// of 8 (vectors' elements are not leaves).
+    fn has_odd_leaf(&self, ty: TypeId) -> bool {
+        match self.types().kind(ty) {
+            TypeKind::Struct { fields, .. } => fields.iter().any(|&field| self.has_odd_leaf(field)),
+            TypeKind::Array { elem, len } => len > 0 && self.has_odd_leaf(elem),
+            TypeKind::Int(bits) => bits % 8 != 0,
+            _ => false,
+        }
+    }
+
+    /// §7.1: the last piece of an integer wider than a register, a
+    /// `Mem`-class value whose image is in `slot`, brought to the form
+    /// the ABI requires of its producer once `part` has been placed: in
+    /// its register by [`Target::extend_arg`] (which decides what that
+    /// form is), or on the stack through a scratch register and stored a
+    /// whole register wide. Nothing for other parts and types, and on
+    /// the stack nothing without `zeroext` or `signext`.
+    fn extend_last_piece(
+        &mut self,
+        ty: TypeId,
+        attrs: ParamAttrs,
+        part: &Part,
+        slot: FrameRef,
+        to_stack: Option<FrameRef>,
+    ) {
+        let t = self.target;
+        let reg_bytes = self.reg_bytes(Class::Gpr);
+        let Some(bits) = self.types().int_bits(ty) else { return };
+        let piece_bits = 8 * reg_bytes;
+        if bits <= piece_bits || bits % piece_bits == 0 {
+            return;
+        }
+        let last = (bits - 1) / piece_bits * reg_bytes;
+        let size = bits.div_ceil(8) - last;
+        match (part.place, to_stack) {
+            (Place::Reg(reg), None) if part.offset == last => t.extend_arg(self, reg, ty, attrs),
+            (Place::Stack(_), Some(dst))
+                if extends(attrs) && part.offset <= last && last < part.offset + part.size =>
+            {
+                let scratch = self.scratch_reg(Class::Gpr);
+                t.load(self, scratch, slot.offset_by(last), size);
+                t.extend_arg(self, scratch, ty, attrs);
+                t.store(self, scratch, dst.offset_by(last - part.offset), reg_bytes);
+            }
+            _ => {}
+        }
     }
 }

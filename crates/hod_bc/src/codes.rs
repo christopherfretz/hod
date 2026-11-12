@@ -136,13 +136,45 @@ pub mod md {
     pub const NAME: u32 = 4;
     pub const DISTINCT_NODE: u32 = 5;
     pub const KIND: u32 = 6;
+    pub const LOCATION: u32 = 7;
     pub const NAMED_NODE: u32 = 10;
     pub const ATTACHMENT: u32 = 11;
+    pub const GENERIC_DEBUG: u32 = 12;
+    pub const SUBRANGE: u32 = 13;
+    pub const ENUMERATOR: u32 = 14;
+    pub const BASIC_TYPE: u32 = 15;
+    pub const FILE: u32 = 16;
+    pub const DERIVED_TYPE: u32 = 17;
+    pub const COMPOSITE_TYPE: u32 = 18;
+    pub const SUBROUTINE_TYPE: u32 = 19;
+    pub const COMPILE_UNIT: u32 = 20;
+    pub const SUBPROGRAM: u32 = 21;
+    pub const LEXICAL_BLOCK: u32 = 22;
+    pub const LEXICAL_BLOCK_FILE: u32 = 23;
+    pub const NAMESPACE: u32 = 24;
+    pub const TEMPLATE_TYPE: u32 = 25;
+    pub const TEMPLATE_VALUE: u32 = 26;
+    pub const GLOBAL_VAR: u32 = 27;
+    pub const LOCAL_VAR: u32 = 28;
+    pub const EXPRESSION: u32 = 29;
+    pub const OBJC_PROPERTY: u32 = 30;
+    pub const IMPORTED_ENTITY: u32 = 31;
+    pub const MODULE: u32 = 32;
+    pub const MACRO: u32 = 33;
+    pub const MACRO_FILE: u32 = 34;
     pub const STRINGS: u32 = 35;
     pub const GLOBAL_DECL_ATTACHMENT: u32 = 36;
+    pub const GLOBAL_VAR_EXPR: u32 = 37;
     pub const INDEX_OFFSET: u32 = 38;
     pub const INDEX: u32 = 39;
+    pub const LABEL: u32 = 40;
+    pub const STRING_TYPE: u32 = 41;
+    pub const COMMON_BLOCK: u32 = 44;
+    pub const GENERIC_SUBRANGE: u32 = 45;
     pub const ARG_LIST: u32 = 46;
+    pub const ASSIGN_ID: u32 = 47;
+    pub const SUBRANGE_TYPE: u32 = 48;
+    pub const FIXED_POINT_TYPE: u32 = 49;
 
     /// Whether a record of `code` in a module's METADATA block defines
     /// the next metadata id: every node and value record of LLVM 19 to
@@ -153,11 +185,12 @@ pub mod md {
             // OLD_FN_NODE, and the debug nodes GENERIC_DEBUG (12) to
             // MACRO_FILE (34), GLOBAL_VAR_EXPR (37), LABEL (40),
             // STRING_TYPE (41), COMMON_BLOCK (44), GENERIC_SUBRANGE (45),
-            // ASSIGN_ID (47), SUBRANGE_TYPE (48), FIXED_POINT_TYPE (49).
-            1..=3 | 5 | 7..=9 | 12..=34 | 37 | 40 | 41 | 44 | 45 | 47..=49 => Some(true),
+            // ARG_LIST (46: LLVM's reader numbers it too), ASSIGN_ID
+            // (47), SUBRANGE_TYPE (48), FIXED_POINT_TYPE (49).
+            1..=3 | 5 | 7..=9 | 12..=34 | 37 | 40 | 41 | 44..=49 => Some(true),
             // NAME, KIND, NAMED_NODE, ATTACHMENT, GLOBAL_DECL_ATTACHMENT,
-            // INDEX_OFFSET, INDEX, ARG_LIST.
-            4 | 6 | 10 | 11 | 36 | 38 | 39 | 46 => Some(false),
+            // INDEX_OFFSET, INDEX.
+            4 | 6 | 10 | 11 | 36 | 38 | 39 => Some(false),
             _ => None,
         }
     }
@@ -217,10 +250,14 @@ pub mod func {
     pub const FREEZE: u32 = 58;
     pub const ATOMICRMW: u32 = 59;
     pub const BLOCKADDR_USERS: u32 = 60;
-    /// `DEBUG_RECORD_VALUE` (61) to `DEBUG_RECORD_VALUE_SIMPLE` (65), and
-    /// 66, which LLVM 22 adds: debug records, stepped over.
-    pub const DEBUG_RECORD_FIRST: u32 = 61;
-    pub const DEBUG_RECORD_LAST: u32 = 66;
+    /// The debug records (`spec/bc.md` §11.9).
+    pub const DEBUG_RECORD_VALUE: u32 = 61;
+    pub const DEBUG_RECORD_DECLARE: u32 = 62;
+    pub const DEBUG_RECORD_ASSIGN: u32 = 63;
+    pub const DEBUG_RECORD_VALUE_SIMPLE: u32 = 64;
+    pub const DEBUG_RECORD_LABEL: u32 = 65;
+    /// LLVM 22's `#dbg_declare_value`.
+    pub const DEBUG_RECORD_DECLARE_VALUE: u32 = 66;
 }
 
 pub const SYNC_SCOPE_NAME: u32 = 1;

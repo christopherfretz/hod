@@ -870,17 +870,11 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
 - **Refused by name**: `a64:call` (`callbr`), `a64:call-inline-asm`,
   `a64:call-bundle`, `a64:invoke-odd-int-result` (an `invoke` whose
   `Mem` result needs leaf clearing on the normal edge),
-  `a64:call-wide-int-extension` (an extended argument wider than 64 bits
-  and no multiple of 64: `A64::extend_arg` stops at 64 bits, and the
-  sequence does not extend a `Mem`-class argument),
-  `a64:call-narrow-ext-stack-arg` (an extended argument of an odd width
-  on the stack: LLVM stores it as 32 bits, the sequence stores its store
-  size), `a64:call-mismatched-declaration` (a direct call through
-  another function type whose callee declares attributes the call site
-  lacks: `llc` does not take them, the sequence would),
   `a64:va-intrinsic`, `a64:va_arg`, `a64:landingpad`,
   `a64:landingpad-clause`, `a64:resume`. `a64:variadic-definition` is
-  no longer produced.
+  no longer produced; WP-069 removed `a64:call-wide-int-extension` and
+  `a64:call-narrow-ext-stack-arg` (`abi-a64.md` §7.1) and
+  `a64:call-mismatched-declaration` (§7.1 here).
 - **Tests** (`tests/call.rs`): random signatures (`tests/common/
   callgen.rs`) linking gcc-compiled C with modules compiled by hod and
   `llc` in every pairing, stressed, PIC with a shared object; the call
@@ -1027,16 +1021,69 @@ For `Call` and `Invoke`, in this order:
    from the return registers (§4.4), or copy it into the result's home for
    a `Mem` class.
 
-A direct call's argument or return attributes that the call site lacks
-are taken from the callee's declaration, as `CallBase::paramHasAttr` reads
-them (open question, §13). `FnCx::place_return` places a `ret`'s value in
-the return registers; a value returned in memory (`ret_memory`) is the
-target's to copy.
 6. (`Invoke`) write the normal destination's incoming slots and branch to
    it; then, if step 3 lowered the stack pointer, emit the pad stub
    (§5.3).
 
 A call marked `noreturn` is followed by the trap instruction.
+
+**Effective attributes.** A call passes its arguments and takes its
+result with its *effective* attributes, which `classify` reads too, both
+through `hod_ir::call_arg_attrs` and `call_ret_attrs` (one rule in one
+place; `hod_ir/src/classify/attrs.rs`). They are LLVM's as `llc` lowers a
+call (`CallBase::paramHasAttr` and `hasRetAttr`, which consult the callee
+through `getCalledFunction`, and that is null when the call's function
+type is not the callee's), measured with `llc` 19 and 22
+(`-O0 -global-isel=0 -fast-isel=0`) on AArch64:
+
+| call | effective attributes of an argument or the result |
+|---|---|
+| indirect, of an alias, or direct through a function type other than the callee's (another parameter list, variadic against fixed either way) | the call site's alone |
+| direct through the callee's own function type | per attribute: a flag (`zeroext`, `signext`, `inreg`, `nest`, `swiftself`, `swifterror`, `swiftasync`) if either side has it, `signext` winning over `zeroext`; the typed attribute (`sret`, `byval`, …) of the call site if it has one, else the declaration's, with its type; `align` and `alignstack` of the call site alone |
+
+So `declare void @g(ptr byval([5 x i64]) align 8)` called as `call void
+(ptr, i64) @g(ptr %p, i64 1)` passes a pointer and an `i64` in `x0` and
+`x1`; called as `call void @g(ptr align 8 %p)` it passes a copy (the
+declaration's `byval`, although the site has an attribute of its own),
+placed by the call site's alignment, not the declaration's `align 16`.
+A typed attribute that changes passing (`sret`, `byval`, `inalloca`,
+`preallocated`) on one side and a different one on the other is refused
+as `call:attribute-conflict` (`llc` passes `sret` on AArch64, whichever
+side has it; hod does not encode that precedence); `byref` and
+`elementtype` change nothing about passing and yield to the other side.
+Function attributes are not part of this rule (`returns_twice` and
+`nounwind` are read from a direct callee whatever its type, as LLVM does).
+
+`FnCx::place_return` places a `ret`'s value in the return registers; a
+value returned in memory (`ret_memory`) is the target's to copy.
+
+**Extended integers.** An integer argument or result with `zeroext` or
+`signext` is extended as `abi-<target>.md` asks; for AArch64, §7 there.
+The sequence calls `Target::extend_arg` for the part that holds the
+integer's last piece, in its register, on both sides of a call and in
+`place_return`: for an integer no wider than a general register the
+register holds the whole value; for a wider one whose width is no
+multiple of the register's, it holds the last piece, and `extend_arg`
+extends that piece's `N mod 64` bits to the register's width. A last
+piece on the stack is extended through a scratch register and stored as
+a whole register, and so is any extended integer that a general
+register would carry, so that its slot holds the extended value
+whatever its width. A result returned in memory (`ret_memory`) is its
+image alone. The incoming side extends nothing: it may assume what the
+target's table promises.
+
+**Odd leaves of incoming `Mem`-class arguments.** The ABI promises
+nothing above an integer leaf of an aggregate or above an integer wider
+than a register without an extension attribute (`abi-a64.md` §7), but a
+`Mem`-class value lives in memory, where §2.2 has the bits above every
+width zero. So once an incoming `Mem`-class argument's parts are in its
+home (gathered, or its incoming stack location), every integer leaf
+whose width is not a multiple of 8 is cleared there: its bytes, or for a
+leaf wider than a register the bytes of its last piece, are loaded into
+a scratch register, extended by zero through `Target::extend_arg`, and
+stored back with their own size. Elements of vectors are not leaves.
+The callee may write its incoming area (`abi-a64.md` §8.1). A call's
+`Mem`-class result is the target's to clear (AArch64: `call.rs`).
 
 **Every call instruction in a function's code is emitted by this
 sequence** and so has a call-site row, including the calls of runtime
@@ -1072,6 +1119,38 @@ The rest of the block (an optional cast of the result and the `ret`) is
 not emitted. In a variadic function the argument registers that carry no
 named argument are passed through unchanged; the target's ABI file states
 how.
+
+**The `musttail` hook.** `classify` refuses a `musttail` call whose
+stack-argument area is larger than its caller's (`musttail:stack-args-
+grow`), or whose areas it cannot learn (`musttail:stack-args-unknown`,
+`spec/ir.md` §8.6); only `assign` knows them. `hod_cg::abi::
+TargetStackArgs::new(&target)` is that `hod_ir::StackArgs` hook for any
+`Target`, handed to `Classifier::with_stack_args`:
+
+- `of_function`: `assign` of the function's own signature (its symbol's
+  convention, return and parameter attributes, its type; the named
+  parameters only, also for a variadic function), as the entry assigns
+  it (§4.8); its `stack_size`.
+- `of_call`: `assign` of the call with its effective attributes (above),
+  its convention and its function type; its `stack_size`. A call that
+  lists more arguments than its type names has no answer (the types of
+  the variable arguments are the body's, which the hook is not given):
+  a variadic thunk forwards `...`, which the call site does not list, so
+  its call is answered.
+- No answer when `assign` refuses the signature.
+
+The sizes are compared as `assign` gives them; the call sequence's own
+check (step 2) allows the caller's area rounded up to `STACK_ALIGN`, so
+`classify` is the stricter. A `musttail` call of a function returned in
+memory without `sret` stays `call:musttail-ret-memory`, which only the
+call sequence sees. The driver side (staging, the copy over the incoming
+area, the branch to a tail exit) is the target-independent sequence
+above; a target owes the tail exits after its epilogue
+(`FnCx::tail_exit`; AArch64 `frame.rs`) and, in a variadic function, the
+pass-through of the variable-argument registers (AArch64 `call.rs`,
+`abi-a64.md` §8.5). AArch64 has both (WP-038).
+The facade has to hand the hook to its classifier; until it does,
+every `musttail` call is `musttail:stack-args-unknown` there.
 
 ### 7.2 Argument assignment
 
@@ -1513,6 +1592,15 @@ defines a `GCC_except_table<n>` label at each LSDA that nothing refers
 to. `.debug_frame`, for a `nounwind` function without `uwtable` that has
 debug information, is not written (`spec/dwarf.md`'s, a follow-up).
 
+**Debug information** (`src/emit/lines.rs`, `spec/dwarf.md` §5.7, §9):
+for each `FullDebug` compile unit, the line table (one sequence per
+function with a subprogram, encoded as the function is placed, against
+the section symbol of its code plus its offset) and the unit's DIEs
+(`DW_AT_stmt_list`, the ranges of its functions' code, its globals),
+written after the unwind tables. Nothing is done for a module without
+`!llvm.dbg.cu` or whose units are all `NoDebug`: the bytes are those of
+the module without debug information.
+
 **`Emitted`**: the object; `funcs: Vec<PlacedFunc>` in module order, each
 the function's `FuncRecord` with `code` its byte range in `section`, the
 row ranges ranges of `Emitted::rows`, and `relocs` empty; `rows`, every
@@ -1537,7 +1625,9 @@ in maps sized by their count).
 `init:blockaddress-unplaced`, `module:linker-option-not-a-pair` (an
 `!llvm.linker.options` entry of other than two strings: `llc` writes
 `.linker-options` as pairs), `eh:unknown-personality-without-pads`
-(`spec/eh.md` §1.1).
+(`spec/eh.md` §1.1), `debug:emission-kind` (a `LineTablesOnly` or
+`DebugDirectivesOnly` unit), `debug:die-unsupported` (a unit with a node
+the DIE writer does not write yet, `spec/dwarf.md` §6.5).
 
 **Known differences from `llc`**, none of which changes what a linker
 makes of the object (`tests/emit_link.rs` links both with GNU ld, lld and
@@ -1662,10 +1752,8 @@ pub enum CgError {
   (refuse a feature set without FP/SIMD, accept the default ones). Until
   then everything kiln emits with features is refused there.
 
-- A direct call's attributes: `hod_cg` falls back to the callee
-  declaration's argument and return attributes when the call site has
-  none (§7.1), as LLVM's `CallBase::paramHasAttr` does. Confirm, or make
-  the frontend's call sites carry them.
+- (Closed by WP-069.) A direct call's attributes: §7.1, "Effective
+  attributes", measured against `llc` 19 and 22.
 - Address-taken blocks without an `indirectbr` in their function (§9.6):
   `hod_ir` has no marker, so `block_offsets` is not recorded for them.
   Either `hod_ir` marks address-taken blocks, or `hod_cg` scans the

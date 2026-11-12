@@ -258,6 +258,17 @@ impl<'t, 'a> BodyParser<'t, 'a> {
         module: &mut Module,
         function: &FunctionText,
     ) -> Result<Option<Body>, LlError> {
+        // The body is built in the parser's own storage, whose tables
+        // have grown to the largest function so far; the caller gets a
+        // copy of exactly the size of its tables: one allocation per
+        // table instead of one per doubling, and no spare capacity in the
+        // bodies a consumer keeps (WP-096).
+        Ok(self.read(module, function)?.then(|| self.built().clone()))
+    }
+
+    /// Parses the body of `function` into the parser's storage; whether
+    /// a body was built there ([`BodyParser::built`]).
+    fn read(&mut self, module: &mut Module, function: &FunctionText) -> Result<bool, LlError> {
         let source = self.text.source();
         self.unsupported.clear();
         if function.sym.index() >= module.symbol_count() {
@@ -270,7 +281,13 @@ impl<'t, 'a> BodyParser<'t, 'a> {
         }
         let scratch = std::mem::take(&mut self.scratch);
         let mut parser = Parser::new(source, module, Index::default(), Some(self.text), scratch);
-        let result = body(&mut parser, &mut self.state, function);
+        let result = body(&mut parser, &mut self.state, function).map(|built| match built {
+            Some(built) => {
+                self.state.storage = Some(built);
+                true
+            }
+            None => false,
+        });
         if result.is_ok() {
             self.unsupported.append(&mut parser.pending);
         }
@@ -281,16 +298,25 @@ impl<'t, 'a> BodyParser<'t, 'a> {
         result.map_err(|failure| failure.locate(source))
     }
 
+    /// The body the last [`BodyParser::read`] that returned true built.
+    fn built(&self) -> &Body {
+        self.state.storage.as_ref().expect("a body was built")
+    }
+
     /// The constructs that made the last body parsed unsupported, each
     /// once; empty for a body that was returned.
     pub fn unsupported(&self) -> impl ExactSizeIterator<Item = &str> + '_ {
         self.unsupported.iter().map(|construct| &**construct)
     }
 
-    /// Gives the parser a body its consumer is done with: the next body
-    /// is built in its storage (`spec/ir.md` §5.1).
+    /// Gives the parser a body its consumer is done with. A parser builds
+    /// every body in storage of its own, which grows to the largest
+    /// function, and returns copies of exactly their size; `body` becomes
+    /// that storage only while the parser has none (`spec/ll.md` §11.1).
     pub fn recycle(&mut self, body: Body) {
-        self.state.storage = Some(body);
+        if self.state.storage.is_none() {
+            self.state.storage = Some(body);
+        }
     }
 }
 
@@ -307,8 +333,8 @@ pub struct ParsedBody<'p> {
 
 /// Parses the body of every function of `text`, in file order, and hands
 /// each to `each` with the module as it then is. One body is alive at a
-/// time and its storage is reused for the next, so peak memory follows
-/// the largest function (`spec/ir.md` §5.1).
+/// time, built in the parser's storage, which is reused for the next, so
+/// peak memory follows the largest function (`spec/ir.md` §5.1).
 ///
 /// # Errors
 /// The first [`LlError`] of a body, converted to `E`, or the first error
@@ -320,12 +346,8 @@ pub fn parse_bodies<E: From<LlError>>(
 ) -> Result<(), E> {
     let mut parser = BodyParser::new(text);
     for function in text.functions() {
-        let body = parser.parse(module, function)?;
-        let parsed = ParsedBody { function, body: body.as_ref(), unsupported: &parser.unsupported };
-        each(module, parsed)?;
-        if let Some(body) = body {
-            parser.recycle(body);
-        }
+        let body = parser.read(module, function)?.then(|| parser.built());
+        each(module, ParsedBody { function, body, unsupported: &parser.unsupported })?;
     }
     Ok(())
 }

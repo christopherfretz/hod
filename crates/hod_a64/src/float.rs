@@ -188,7 +188,7 @@ pub struct FpCond {
 /// The `NZCV` conditions of each predicate after `FCMP` (unordered sets
 /// `C` and `V`; less than sets `N`; equal sets `Z` and `C`; greater than
 /// sets `C`): the table of LLVM's `changeFPCCToAArch64CC`.
-fn conditions(pred: FloatPredicate) -> FpCond {
+pub fn conditions(pred: FloatPredicate) -> FpCond {
     let one = |first| FpCond { first, second: None };
     match pred {
         FloatPredicate::Oeq | FloatPredicate::True => one(Cond::Eq),

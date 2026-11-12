@@ -68,6 +68,9 @@ pub const GROUPS: &[(&str, Enable)] = &[
     // `missing` names (`exceptions` and `block_addresses` are off in the
     // generator's defaults; `block_addresses` is WP-037's line).
     ("WP-066", |e| (e.options.ptr_int, e.options.hosts) = (true, true)),
+    // Vector masks: the generator's vectors (compares, selects on masks,
+    // mask bitcasts, shuffles, casts, lane intrinsics, reductions).
+    ("WP-081", |e| e.options.vectors = true),
 ];
 
 /// What every landed group enables together.

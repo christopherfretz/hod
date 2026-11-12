@@ -459,7 +459,7 @@ pub fn lane_cast(cx: &mut FnCx<'_, A64>, op: Opcode, from: u32, to: u32, r: Reg)
 // ---- compares ----
 
 /// The condition that holds after `cmp lhs, rhs` when `pred` does.
-fn cond_of(pred: IntPredicate) -> Cond {
+pub fn cond_of(pred: IntPredicate) -> Cond {
     match pred {
         IntPredicate::Eq => Cond::Eq,
         IntPredicate::Ne => Cond::Ne,

@@ -37,6 +37,7 @@
 //! | `constaddr` | WP-072 | constant operands that hold addresses: differences, relocated images | `tests/constaddr.rs` |
 //! | `tls` | WP-073 | thread-local addresses, `llvm.threadlocal.address`, `llvm.thread.pointer` | `tests/tls.rs` |
 //! | `lanes` | WP-080 | element-wise vector operations, one lane at a time over the scalar kernels | `tests/lanes.rs` |
+//! | `mask` | WP-081 | vectors of `i1` as bit-packed general registers: compares, vector-condition `select`, mask casts, element access and shuffles of masks, `llvm.vector.reduce.*` | `tests/mask.rs` |
 //! | `vector` | WP-079 | vector helpers (shape, lanes, images, indices); `extractelement`, `insertelement`, `shufflevector` | `tests/vector.rs` |
 //! | `atomic` | WP-074 | atomic `load`/`store`, `atomicrmw`, `cmpxchg`, `fence` | `tests/atomic.rs` |
 //! | `tail` | WP-084 | wide fp conversions, wide `mul.with.overflow`, wide `switch`, `readcyclecounter`, `is.constant`, `{s,u}shl.sat`, `crc32` | `tests/tail.rs` |
@@ -59,6 +60,7 @@ pub mod frame;
 pub mod int;
 pub mod intrinsic;
 pub mod lanes;
+pub mod mask;
 pub mod mem;
 pub mod reg;
 pub mod tail;

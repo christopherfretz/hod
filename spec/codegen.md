@@ -1206,6 +1206,76 @@ section.
   and mold, plain and stressed; refusals; 256-lane compiles; bytes per
   lane), `tests/ir/vector_lanes.ll`.
 
+#### Vectors, masks (WP-081)
+
+Design note `docs/design/0003-vectors.md` (V2, §4.1); the code is
+`crates/hod_a64/src/mask.rs`, whose module docs (the bit rules) are
+part of this section.
+
+- **Representation.** `<N x i1>` with `1 ≤ N ≤ 64` is of class `Gpr`:
+  lane `i` is bit `i` of the register, the bits from `N` up are
+  unspecified (as for `iN`, §2.2). That is LLVM's in-memory image
+  (lane 0 in bit 0 of byte 0, `⌈N/8⌉` bytes), so a `bitcast` between a
+  mask and `iN`, a byte vector or a float of `N` bits is the copy the
+  other groups make, and `phi`, `freeze`, a scalar `select`,
+  `extractvalue`/`insertvalue` and loads are unchanged.
+- **Memory layout, settled by experiment** (`llc -O0 -global-isel=0
+  -fast-isel=0`, LLVM 22 and 19, and `hod_interp`): a stored mask has
+  the bits from `N` to the end of its last byte **zero** (`llc`: `and
+  w8, w0, #0x7` then `strb` for `<3 x i1>`, `#0xfff` then `strh` for
+  `<12 x i1>`; `<40 x i1>` five bytes); hod clears them before every
+  store of a mask whose `N` is not a multiple of 8. A load assumes
+  nothing about them (`llc` assumes they are zero: a `<3 x i1>` loaded,
+  bitcast to `i3` and zero-extended is one `ldrb`): every reader of a
+  mask's lanes reads only its `N` bits. `N = 1` is one bit in one byte
+  (`cset`, `strb`); `N` not a multiple of 8 differs only in the padding.
+  A byte that holds a poison lane is poison as a whole (LLVM's memory is
+  poison byte by byte; `llc` lets the bits of an out-of-range `fptoui`
+  to `i1` spill into the neighbouring lanes), so tests do not compare it.
+- **Lowered.** Vector `icmp` (integer and pointer lanes, every
+  predicate; lanes extended by the predicate's signedness) and `fcmp`
+  (`half`, `float`, `double`, every predicate) as one `cmp`/`fcmp` +
+  `cset` per lane, the bit inserted; the logical and arithmetic
+  operations and `icmp` on masks as one bit instruction each; `select`
+  of masks (`(c & t) | (f & ~c)`) and of lanes on a mask (`tst` +
+  `csel` per lane); `zext`/`sext` of masks to integer lanes,
+  `uitofp`/`sitofp` to float lanes; `trunc` to a mask, `fptoui`/`fptosi`
+  to a mask (each lane through `float::lane_convert`);
+  `extractelement`, `insertelement` (constant or variable index),
+  `shufflevector` of masks (runs of lanes by `ubfx`/`bfi`); and
+  `llvm.vector.reduce.{add,mul,and,or,xor,smax,smin,umax,umin}` of masks
+  (one flag: any, all, parity) and of integer lanes,
+  `reduce.{fadd,fmul}` (in lane order from the start value, which is
+  right with or without `reassoc`) and `reduce.{fmax,fmin}` (as
+  `maxnum`/`minnum`) of float lanes, up to 256 lanes.
+- **Poison.** An undefined or poison lane of a constant or of a
+  shuffle mask is 0; an out-of-range constant index reads lane 0; a lane
+  that LLVM leaves poison takes what the bit rule gives.
+- **Refused, by name.** A lane operation on a mask of more than 64 lanes
+  (it stays of class `Mem`): `a64:mask-wide`. A mask crossing a call or a
+  return (argument, result, or leaf of an aggregate one):
+  `a64:vector-call` (WP-082: no ABI is invented here). An intrinsic of
+  `i1` lanes (`llvm.umax.v4i1`): the intrinsic group's
+  `a64:intrinsic-vector`. `fcmp` of `bfloat` lanes:
+  `a64:vector-bfloat`. A reduction whose operand list is not the
+  intrinsic's: `a64:vector-reduce`. `reduce.fmaximum`/`fminimum` stay
+  the intrinsic group's refusal.
+- **Known `llc` defects** (not hod's, not chased; the interpreter and
+  gcc/clang vector extensions decide): SelectionDAG stores a `trunc`
+  of `<3 x i64>` to `<3 x i8>` into the wrong bytes (WP-080); `llc` 19
+  crashes on `llvm.vector.insert` of non-power-of-two lengths; stores of
+  `<4 x i3>` are wrong. None of them is on a mask path tested here.
+- **Hooks.** `target::vector_class` (a vector of `i1` of at most 64
+  lanes is `Gpr`), the first line of `A64::lower` (`mask::lower`), the
+  constant arm of `A64::materialize` (`mask::materialize`), and
+  `vector::has_mem_vector` (any vector of `i1` in a signature is
+  `a64:vector-call`).
+- **Tests**: `crates/hod_a64/tests/mask.rs` (every construct × lane type
+  × lane count against a Rust model, `hod_interp` on value-form twins,
+  `llc` 22 and 19, under bfd, lld and mold, plain and stressed; masks
+  loaded with their padding bits set; refusals; the widest masks;
+  bytes per lane), `tests/ir/vector_masks.ll`.
+
 #### Atomics (WP-074)
 
 `crates/hod_a64/src/atomic.rs` lowers atomic `load` and `store`,

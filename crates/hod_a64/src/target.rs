@@ -119,6 +119,9 @@ fn vector_class(types: &TypeTable, ty: TypeId, elem: TypeId, len: u32) -> Class 
     let elem_ok = !matches!(types.kind(elem), TypeKind::Int(1));
     if len.is_power_of_two() && (bits == 64 || bits == 128) && elem_ok {
         Class::Fpr
+    } else if !elem_ok && len <= crate::mask::MAX_MASK {
+        // A mask: bit-packed in a general register (WP-081).
+        Class::Gpr
     } else {
         Class::Mem
     }
@@ -208,6 +211,9 @@ impl Target for A64 {
     fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()> {
         if cx.state.tail.drops && crate::tail::dropped(inst) {
             return Ok(());
+        }
+        if let Some(done) = crate::mask::lower(cx, inst) {
+            return done;
         }
         let class = result_class(cx, inst);
         match inst.kind() {
@@ -362,7 +368,7 @@ impl Target for A64 {
             ValueKind::Const(id) if reg::is_fpr(reg) => {
                 common::materialize_fpr_const(cx, vr(reg), id)
             }
-            ValueKind::Const(id) => common::materialize_gpr_const(cx, xr(reg), id),
+            ValueKind::Const(id) => crate::mask::materialize(cx, xr(reg), id),
             ValueKind::Sym(sym) => common::sym_address(cx, xr(reg), sym, 0),
             ValueKind::Slot(slot) => common::slot_address(cx, xr(reg), slot),
             _ => cx.bug("materialize of something that is no constant"),

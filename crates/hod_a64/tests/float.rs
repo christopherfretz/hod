@@ -36,18 +36,6 @@ use hod_interp::{Config, Interp, NanPolicy, Program, Val};
 fn what_the_group_does_not_lower_is_refused_by_name() {
     assert_refused(&[
         (
-            "define <4 x i32> @f(<4 x i32> %a) { %c = icmp eq <4 x i32> %a, %a\n %r = sext <4 x i1> %c to <4 x i32>\n ret <4 x i32> %r }",
-            float::VECTOR_ICMP,
-        ),
-        (
-            "define i1 @f(<2 x double> %a, <2 x double> %b) { %c = fcmp olt <2 x double> %a, %b\n %e = extractelement <2 x i1> %c, i64 0\n ret i1 %e }",
-            float::VECTOR_FCMP,
-        ),
-        (
-            "define <2 x double> @f(<2 x double> %a, <2 x double> %b) { %r = select <2 x i1> <i1 true, i1 false>, <2 x double> %a, <2 x double> %b\n ret <2 x double> %r }",
-            float::VECTOR_SELECT,
-        ),
-        (
             "define bfloat @f(bfloat %a, bfloat %b) { %r = fadd bfloat %a, %b\n ret bfloat %r }",
             float::BFLOAT,
         ),

@@ -1231,8 +1231,6 @@ fn what_is_refused_is_refused_by_name() {
         )
     };
     let cases = [
-        (extract("<4 x i1>", "i1"), vector::MASK),
-        (extract("<64 x i1>", "i1"), vector::MASK),
         (extract("<65 x i1>", "i1"), vector::MASK_WIDE),
         (extract("<4 x i4>", "i4"), vector::ODD_ELEMENT),
         (extract("<2 x i24>", "i24"), vector::ODD_ELEMENT),
@@ -1244,13 +1242,6 @@ fn what_is_refused_is_refused_by_name() {
              %e = extractelement <4 x i32> %v, i128 %i\n  store i32 %e, ptr %p\n  ret void\n}\n"
                 .into(),
             vector::INDEX,
-        ),
-        (
-            "define void @f(ptr %p) {\n  %v = load <4 x i1>, ptr %p\n  \
-             %r = shufflevector <4 x i1> %v, <4 x i1> poison, <4 x i32> <i32 3, i32 2, i32 1, i32 0>\n  \
-             store <4 x i1> %r, ptr %p\n  ret void\n}\n"
-                .into(),
-            vector::MASK,
         ),
         (
             "define void @f(ptr %p, i4 %x) {\n  %v = load <4 x i4>, ptr %p\n  \

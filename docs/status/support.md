@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `operand` | 9 | 7 | 2 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 143 | 105 | 38 | 0 | 0 | 135 | 8 |
-| total | 447 | 292 | 109 | 46 | 17 | 367 | 63 |
+| `intrinsic` | 143 | 118 | 25 | 0 | 0 | 135 | 8 |
+| total | 447 | 305 | 96 | 46 | 17 | 367 | 63 |
 
 ## `module`
 
@@ -326,8 +326,8 @@ Instructions.
 | `inst:fdiv` | supported (half, float, double, fp128, vector) | not-implemented |  |
 | `inst:frem` | supported (half, float, double, fp128, vector) | not-implemented | a call of `fmod` |
 | `inst:fneg` | supported (half, float, double, fp128, vector) | not-implemented |  |
-| `inst:icmp` | supported (int, i128, int-wide, ptr) | not-implemented |  |
-| `inst:fcmp` | supported (int, half, float, double, fp128) | not-implemented |  |
+| `inst:icmp` | supported (int, i128, int-wide, ptr, vector) | not-implemented | vectors: masks of up to 64 lanes (WP-081) |
+| `inst:fcmp` | supported (int, half, float, double, fp128, vector) | not-implemented | vectors: masks of up to 64 lanes (WP-081) |
 | `inst:trunc` | supported (int, i128, int-wide, vector) | not-implemented |  |
 | `inst:zext` | supported (int, i128, int-wide, vector) | not-implemented |  |
 | `inst:sext` | supported (int, i128, int-wide, vector) | not-implemented |  |
@@ -608,19 +608,19 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.load.relative` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.instrprof.increment` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.instrprof.increment.step` | not-implemented | not-implemented | unplanned |
-| `intrinsic:llvm.vector.reduce.add` | not-implemented | not-implemented | M2 (vectors) |
-| `intrinsic:llvm.vector.reduce.mul` | not-implemented | not-implemented | M2 (vectors) |
-| `intrinsic:llvm.vector.reduce.and` | not-implemented | not-implemented | M2 (vectors) |
-| `intrinsic:llvm.vector.reduce.or` | not-implemented | not-implemented | M2 (vectors) |
-| `intrinsic:llvm.vector.reduce.xor` | not-implemented | not-implemented | M2 (vectors) |
-| `intrinsic:llvm.vector.reduce.smax` | not-implemented | not-implemented | M2 (vectors) |
-| `intrinsic:llvm.vector.reduce.smin` | not-implemented | not-implemented | M2 (vectors) |
-| `intrinsic:llvm.vector.reduce.umax` | not-implemented | not-implemented | M2 (vectors) |
-| `intrinsic:llvm.vector.reduce.umin` | not-implemented | not-implemented | M2 (vectors) |
-| `intrinsic:llvm.vector.reduce.fmax` | not-implemented | not-implemented | M2 (vectors) |
-| `intrinsic:llvm.vector.reduce.fmin` | not-implemented | not-implemented | M2 (vectors) |
-| `intrinsic:llvm.vector.reduce.fadd` | not-implemented | not-implemented | M2 (vectors) |
-| `intrinsic:llvm.vector.reduce.fmul` | not-implemented | not-implemented | M2 (vectors) |
+| `intrinsic:llvm.vector.reduce.add` | supported (int, vector) | not-implemented | masks of up to 64 lanes, lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.mul` | supported (int, vector) | not-implemented | masks of up to 64 lanes, lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.and` | supported (int, vector) | not-implemented | masks of up to 64 lanes, lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.or` | supported (int, vector) | not-implemented | masks of up to 64 lanes, lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.xor` | supported (int, vector) | not-implemented | masks of up to 64 lanes, lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.smax` | supported (int, vector) | not-implemented | masks of up to 64 lanes, lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.smin` | supported (int, vector) | not-implemented | masks of up to 64 lanes, lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.umax` | supported (int, vector) | not-implemented | masks of up to 64 lanes, lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.umin` | supported (int, vector) | not-implemented | masks of up to 64 lanes, lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.fmax` | supported (half, float, double, vector) | not-implemented | lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.fmin` | supported (half, float, double, vector) | not-implemented | lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.fadd` | supported (half, float, double, vector) | not-implemented | lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.fmul` | supported (half, float, double, vector) | not-implemented | lanes up to 256 (WP-081) |
 | `intrinsic:llvm.vector.extract` | not-implemented | not-implemented | M2 (vectors) |
 | `intrinsic:llvm.vector.insert` | not-implemented | not-implemented | M2 (vectors) |
 | `intrinsic:llvm.coro.id` | not-implemented | not-implemented | T-XF (coroutine splitting) |

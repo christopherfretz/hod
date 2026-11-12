@@ -24,10 +24,8 @@ pub fn build(b: &mut Batch) {
                 reg(Size::B, n)
             );
         }
-        if m.seg.is_none() {
-            for n in [0, 5, 8, 15] {
-                emit!(b, lea(Size::Q, r(n), m.mem()), "lea {}, {}", reg(Size::Q, n), m.text());
-            }
+        for n in [0, 5, 8, 15] {
+            emit!(b, lea(Size::Q, r(n), m.mem()), "lea {}, {}", reg(Size::Q, n), m.text());
         }
     }
 }

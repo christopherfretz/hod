@@ -128,7 +128,7 @@ fn extensions(b: &mut Batch) {
 fn lea_sweep(b: &mut Batch) {
     for size in WIDE {
         for d in 0..16 {
-            for m in some_mems().into_iter().filter(|m| m.seg.is_none()) {
+            for m in some_mems() {
                 emit!(b, try_lea(size, r(d), m.mem()), "lea {}, {}", reg(size, d), m.text());
             }
         }

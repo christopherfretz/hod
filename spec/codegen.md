@@ -47,8 +47,10 @@ never a guess (§10). The IR is valid in LLVM's sense (definitions dominate
 uses in reachable code); code generation does not verify it. Besides whole
 instructions and types, this design relies on `classify` rejecting:
 
-- a thread-local symbol as an operand of anything but
-  `llvm.threadlocal.address` (§3);
+- a thread-local symbol as the callee of a call, and the address of a
+  thread-local symbol inside a constant other than a plain address
+  operand (an initializer, an aggregate or nested constant, a symbol
+  difference, a landing-pad clause) (§3);
 - a `blockaddress` in a body that names a block of another function
   (§9.2);
 - `naked` functions (§5.4) and `callbr`;
@@ -147,10 +149,12 @@ the frame directly.
 
 Producing an operand never calls anything and writes no register but its
 destination and `scratch`, so it is safe at any point of an instruction's
-lowering, argument placement included. A thread-local address, whose
-access sequence may call and clobber argument registers, is therefore
-never an operand: it is the result of `llvm.threadlocal.address` (§1),
-lowered as an instruction.
+lowering, argument placement included. A thread-local address is an
+operand too (WP-073): its access sequence may call the TLS descriptor
+resolver, but it saves and restores what that call clobbers, so it
+writes its destination and nothing else either (§5.5.1, "Thread-local
+storage and symbol offsets (WP-073)"). `llvm.threadlocal.address` is
+the operand's value.
 
 ## 4. Value-location policy v1
 
@@ -511,10 +515,11 @@ These are decisions the group packages (WP-035..041) build on.
   whose only accepted relocations are aligned 8-byte symbol addresses
   (else `a64:constant-relocation`; WP-072 writes every other relocation
   of a non-vector image, "Constant operands with addresses" below). Symbol addresses follow §7.4:
-  `adrp`+`add` with the addend folded, or `adrp`+`ldr` from the GOT then
-  the addend added; a code model other than small is `a64:code-model`.
+  `adrp`+`add` with the addend folded as `llc` folds it (WP-073), or
+  `adrp`+`ldr` from the GOT then the addend added; a code model other
+  than small is `a64:code-model`.
 - **Other reason names of the target**: `a64:atomic`,
-  `a64:vector-element` (no package yet), `a64:thread-local` (TLS, M2),
+  `a64:vector-element` (no package yet), `a64:thread-local` (no longer returned: WP-073 lowers TLS),
   `a64:funclet` (never on ELF), `a64:blockaddress` (WP-037),
   `a64:variadic-definition` (WP-038).
 - **The differential harness** is `crates/hod_a64/tests/diff.rs`: what it
@@ -785,9 +790,10 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
   widths are sign-extended with `sbfx`, other scales multiply (`lsl`,
   or `mov x16, #scale` and `mul`); further variable indices are added
   into the first. Unfused, the same sum is computed into the result.
-- **Symbol offsets** are folded into the relocation's addend when the
-  total is below 2^20 in magnitude, as `llc` does; beyond it the offset
-  is added after the address (§7.4).
+- **Symbol offsets** are passed to `common::sym_address` when the
+  total is below 2^20 in magnitude; it folds them into the relocation's
+  addend only as `llc` does (WP-073, §7.4); beyond 2^20 the offset is
+  added after the address.
 - **Widths.** An access reads or writes exactly the store size. Sizes 1,
   2, 4, 8 are one access; 3 is `h` + `b`, 5 `w` + `b`, 6 `w` + `h`, 7
   `w` + `h` + `b`, joined on a load by `orr … lsl` through `x16`, split
@@ -1051,6 +1057,54 @@ them there, and has the saturating arithmetic, `scmp`/`ucmp`, the
   `a64:constant-relocation` (vectors are WP-078 and after). A
   thread-local symbol in a constant is `classify`'s `tls:address-in-constant` rule.
   Every other expression `hod_ir` keeps (`Expr`) is `const-expr:<op>`.
+
+#### Thread-local storage and symbol offsets (WP-073)
+
+`src/tls.rs` writes the address of a thread-local symbol by the model
+`hod_cg::sym_access` names (§7.4), the sequences AArch64 Linux `llc`
+writes with the same relocations, so every linker recognizes and relaxes
+them; `common::sym_address` calls it for `Access::Tls`.
+
+- **General and local dynamic** are TLS descriptors (LLVM lowers local
+  dynamic so, on the symbol itself; in a shared library a `dso_local`
+  symbol goes through `.L<name>$local`, §7.4): `adrp x0, :tlsdesc:s`;
+  `ldr x1, [x0, :tlsdesc_lo12:s]`; `add x0, x0, :tlsdesc_lo12:s`;
+  `blr x1` (`R_AARCH64_TLSDESC_ADR_PAGE21`, `_LD64_LO12`, `_ADD_LO12`,
+  `_CALL`); then `mrs x1, tpidr_el0`; `add rd, x1, x0`. The call
+  clobbers `x0`, `x1`, `NZCV` and `x30` (`llc`'s `TLSDESC_CALLSEQ`; the
+  resolver keeps the rest, `CSR_AArch64_TLS_ELF`), so the sequence is
+  bracketed by `stp x0, x1, [sp, #-32]!`; `mrs x1, nzcv`;
+  `str x1, [sp, #16]` and, after it, `ldr t, [sp, #16]`; `msr nzcv, t`
+  (`t` is `x1`, `x0` when `rd` is `x1`), the reload of `x0`/`x1` but
+  `rd`, `add sp, sp, #32`. `x30` holds no value in a body (the prologue
+  saved it); the CFA is `x29`-based, so the stack-pointer moves need no
+  CFI row. The `blr` is a call site (§7.1, `record_call_site`).
+- **Initial exec**: `adrp rd, :gottprel:s`; `ldr rd, [rd,
+  :gottprel_lo12:s]` (`R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21`,
+  `_LD64_GOTTPREL_LO12_NC`); `t` (`x0`, `x1` when `rd` is `x0`) saved
+  with `str t, [sp, #-16]!`, `mrs t, tpidr_el0`, `add rd, t, rd`,
+  `ldr t, [sp], #16`.
+- **Local exec** (`llc`'s default TLS size, 24 bits): `mrs rd,
+  tpidr_el0`; `add rd, rd, #:tprel_hi12:s, lsl #12`; `add rd, rd,
+  #:tprel_lo12_nc:s` (`R_AARCH64_TLSLE_ADD_TPREL_HI12`, `_LO12_NC`).
+- **Offsets.** TLS relocations carry addend 0, as `llc`'s; an offset is
+  added after the sequence. `common::add_addend` adds up to 2^24 - 1 in
+  magnitude with `add`/`sub` immediates; beyond, it borrows `x0` (`x1`
+  when `rd` is `x0`) for a `mov`-built constant and restores it. The same
+  rule serves `Direct` offsets that do not fold and every `Got` offset
+  (§7.4, "Offsets from a symbol").
+- **Operands.** A thread-local symbol, alone or with a constant offset
+  (`getelementptr` of it), is an ordinary address operand (§3): it may be
+  a call argument, a phi or `select` arm, a stored value.
+  `llvm.threadlocal.address(p)` is the operand `p`; `llvm.thread.pointer`
+  is `mrs rd, tpidr_el0`. `classify` still refuses a thread-local callee
+  (`tls:direct-operand`) and a thread-local address in data or inside
+  another constant (`tls:address-in-constant`).
+- **Linker relaxations** seen (`tests/tls.rs`): bfd and lld relax
+  descriptors to local or initial exec and initial exec to local exec in
+  an executable; mold relaxes descriptors of preemptible symbols to
+  initial exec (its form puts the two `nop`s first), even in a static
+  link, and keeps initial exec as it is.
 
 #### 5.5.2 Target features (WP-043)
 
@@ -1395,6 +1449,17 @@ visibility × `dso_local` × thread-local model, on AArch64 and x86-64,
 static, PIC and PIC with `PIE Level` (2880 answers; the section-symbol
 rule is checked on the same relocations). Each target has one access
 sequence per answer.
+
+**Offsets from a symbol** (WP-073) fold into the relocation's addend as
+`llc`'s `performGlobalAddressCombine` folds them: for a `Direct` access,
+only when `0 <= offset < 2^20` and the offset is at most the allocation
+size of the symbol's value type (one past the end folds; a negative
+offset never does). Otherwise, and always for `Got` and `Tls`, the
+relocation carries the rest of the offset (0 for `Got` and `Tls`) and
+the offset is added in code after the address (`common::add_addend`).
+An addend so folded stays within the object the symbol names, which
+the linker can place anywhere: an offset outside it in the relocation
+can overflow `R_AARCH64_ADR_PREL_PG_HI21` (gcc-torture `pr79286.c`).
 
 ### 7.5 Constants in code
 

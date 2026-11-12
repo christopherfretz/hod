@@ -345,7 +345,6 @@ pub struct ConstructInfo {
 const X64: &str = "T-X64";
 /// No backlog row covers it yet.
 const LATER: &str = "unplanned";
-const TLS: &str = "M2 (TLS)";
 const ATOMICS: &str = "M2 (atomics)";
 const VECTORS: &str = "M2 (vectors)";
 const CORO: &str = "T-XF (coroutine splitting)";
@@ -495,10 +494,10 @@ const VISIBILITY: [SupportRow; 2] =
     [row("visibility:hidden", ON, todo(X64), ""), row("visibility:protected", ON, todo(X64), "")];
 
 const TLS_ROWS: [SupportRow; 4] = [
-    a64("tls:general-dynamic", TLS, "`thread_local`"),
-    a64("tls:local-dynamic", TLS, "`thread_local(localdynamic)`"),
-    a64("tls:initial-exec", TLS, "`thread_local(initialexec)`"),
-    a64("tls:local-exec", TLS, "`thread_local(localexec)`"),
+    row("tls:general-dynamic", ON, todo(X64), "`thread_local`"),
+    row("tls:local-dynamic", ON, todo(X64), "`thread_local(localdynamic)`"),
+    row("tls:initial-exec", ON, todo(X64), "`thread_local(initialexec)`"),
+    row("tls:local-exec", ON, todo(X64), "`thread_local(localexec)`"),
 ];
 
 const COMDAT: [SupportRow; ComdatKind::ALL.len()] = [
@@ -1547,8 +1546,8 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len()] = [
         "",
     ),
     row("intrinsic:llvm.eh.typeid.for", on(&[TypeClass::Int, TypeClass::Ptr]), todo(X64), ""),
-    a64("intrinsic:llvm.threadlocal.address", TLS, ""),
-    a64("intrinsic:llvm.thread.pointer", TLS, ""),
+    row("intrinsic:llvm.threadlocal.address", on(&[TypeClass::Ptr]), todo(X64), ""),
+    row("intrinsic:llvm.thread.pointer", on(&[TypeClass::Ptr]), todo(X64), ""),
     row("intrinsic:llvm.prefetch", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
     row("intrinsic:llvm.clear_cache", on(&[TypeClass::Ptr]), todo(X64), ""),
     a64("intrinsic:llvm.readcyclecounter", LATER, ""),
@@ -1876,13 +1875,10 @@ pub(crate) mod at {
 ///
 /// [`Support`]: crate::Support
 pub const STRUCTURAL_RULES: [ConstructInfo; 13] = [
-    rule(
-        rules::TLS_OPERAND,
-        "a thread-local symbol as an operand of anything but the first argument of `llvm.threadlocal.address`",
-    ),
+    rule(rules::TLS_OPERAND, "a thread-local symbol as the callee of a call"),
     rule(
         rules::TLS_CONSTANT,
-        "the address of a thread-local symbol inside a constant: an initializer, a constant operand, a landing-pad clause",
+        "the address of a thread-local symbol inside a constant other than a plain address operand (`@t`, `getelementptr (@t, ...)`): an initializer, an aggregate or expression operand, a landing-pad clause",
     ),
     rule(
         rules::BLOCKADDRESS_OTHER,

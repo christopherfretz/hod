@@ -488,16 +488,17 @@ pub fn zero_bytes(cx: &mut FnCx<'_, A64>, at: &mut Cursor, bytes: u32) {
 // ---- symbols and constants (§7.4, §7.5) ----
 
 /// Puts the address of `sym` plus `addend` in `rd`, by the access
-/// `sym_access` names (§7.4): `adrp` + `add :lo12:` for a direct one,
-/// with the addend in the relocations as `llc` writes it; `adrp` +
-/// `ldr :got_lo12:` for one through the GOT, then the addend added.
-/// Writes `rd` and, for a GOT addend beyond 24 bits, nothing else:
-/// [`add_const`] reaches any addend through `rd` alone.
+/// `sym_access` names (§7.4): `adrp` + `add :lo12:` for a direct one;
+/// `adrp` + `ldr :got_lo12:` for one through the GOT; the sequence of its
+/// model for a thread-local one (`crate::tls`). The addend goes into the
+/// direct relocations only when [`folds_into_relocation`] says so, as
+/// `llc` folds it; any other addend is added in code by [`add_addend`].
+/// Writes `rd` and nothing else (the stack pointer moves and comes back
+/// within the sequence for a thread-local symbol or an addend beyond 24
+/// bits).
 ///
 /// # Errors
-/// `Internal` for a thread-local symbol (`classify` routes those to
-/// `llvm.threadlocal.address`); `Unsupported("a64:code-model")` for a
-/// code model other than small.
+/// `Unsupported("a64:code-model")` for a code model other than small.
 pub fn sym_address(cx: &mut FnCx<'_, A64>, rd: Reg, sym: SymId, addend: i64) -> CgResult<()> {
     if cx.options.code_model(cx.module) != CodeModel::Small {
         return unsupported(CODE_MODEL);
@@ -505,11 +506,13 @@ pub fn sym_address(cx: &mut FnCx<'_, A64>, rd: Reg, sym: SymId, addend: i64) -> 
     let target = SymRef::Module(sym);
     match hod_cg::sym_access(cx.module, cx.options, sym) {
         Access::Direct => {
+            let folded = if folds_into_relocation(cx, sym, addend) { addend } else { 0 };
             let at = cx.offset();
             put(cx, mc::adrp(rd.zr(), 0));
-            cx.reloc(at, RelocKind::A64(A64Reloc::AdrPrelPgHi21), target, addend);
+            cx.reloc(at, RelocKind::A64(A64Reloc::AdrPrelPgHi21), target, folded);
             put(cx, mc::add_imm(Size::X, rd.sp(), rd.sp(), 0));
-            cx.reloc(at + 4, RelocKind::A64(A64Reloc::AddAbsLo12Nc), target, addend);
+            cx.reloc(at + 4, RelocKind::A64(A64Reloc::AddAbsLo12Nc), target, folded);
+            add_addend(cx, rd, addend - folded);
         }
         Access::Got => {
             let at = cx.offset();
@@ -517,13 +520,52 @@ pub fn sym_address(cx: &mut FnCx<'_, A64>, rd: Reg, sym: SymId, addend: i64) -> 
             cx.reloc(at, RelocKind::A64(A64Reloc::AdrGotPage), target, 0);
             put(cx, mc::ldr_off(Load::X, rd.zr(), rd.sp(), 0));
             cx.reloc(at + 4, RelocKind::A64(A64Reloc::Ld64GotLo12Nc), target, 0);
-            if addend != 0 {
-                add_const(cx, rd.sp(), rd.sp(), addend);
-            }
+            add_addend(cx, rd, addend);
         }
-        Access::Tls(_) => return cx.bug("the address of a thread-local symbol as an operand"),
+        Access::Tls(model) => crate::tls::address(cx, rd, sym, model, addend)?,
     }
     Ok(())
+}
+
+/// The largest offset folded into a direct symbol reference, exclusive:
+/// `llc`'s (`performGlobalAddressCombine`), the largest every object
+/// format expresses.
+pub const MAX_FOLDED_OFFSET: i64 = 1 << 20;
+
+/// Whether a direct reference to `sym` + `addend` carries the addend in
+/// its relocations (WP-073, `spec/codegen.md` §5.5.1): exactly when
+/// `llc` folds it, `0 <= addend < 2^20` and `addend` at most the size of
+/// the symbol's value type (0 for an unsized one, a function). The
+/// folded address is then inside the object or one past its end, so it
+/// is within `adrp`'s ±4 GiB whenever the object is; a larger or
+/// negative offset could leave that range (gcc-torture `pr79286.c`) and
+/// is added in code.
+pub fn folds_into_relocation(cx: &FnCx<'_, A64>, sym: SymId, addend: i64) -> bool {
+    if addend == 0 {
+        return true;
+    }
+    if !(0..MAX_FOLDED_OFFSET).contains(&addend) {
+        return false;
+    }
+    let ty = cx.module.symbol(sym).ty();
+    let types = cx.types();
+    types.is_sized(ty) && addend as u64 <= types.alloc_size_of(ty)
+}
+
+/// `rd += value` (64-bit, wrapping) with `rd` the only register written
+/// (WP-073): [`add_const`] up to 24 bits; beyond, the value is built in
+/// `x0` (`x1` when `rd` is `x0`), saved below the stack pointer and
+/// restored, so the cost is bounded for any value.
+pub fn add_addend(cx: &mut FnCx<'_, A64>, rd: Reg, value: i64) {
+    if value.unsigned_abs() <= 0xff_ffff {
+        add_const(cx, rd.sp(), rd.sp(), value);
+        return;
+    }
+    let t = if rd == Reg::X0 { Reg::X1 } else { Reg::X0 };
+    put(cx, mc::str_pre(MemSize::X, t.zr(), SP, -16));
+    mov_imm(cx, Size::X, t, value as u64);
+    put(cx, mc::add_shifted(Size::X, rd.zr(), rd.zr(), t.zr(), mc::Shift::Lsl, 0));
+    put(cx, mc::ldr_post(Load::X, t.zr(), SP, 16));
 }
 
 /// A code model other than small (`spec/codegen.md` §5.5).

@@ -27,6 +27,8 @@ Milestones and tracks are in `docs/ROADMAP.md`.
 | WP-017 | T-H | `xtask corpus`: capture IR from kiln's executing tests and from clang on the GCC torture suite into `.build/corpus`, pinned and reproducible | WP-015 | todo |
 | WP-018 | T-H | `xtask bench` and `bench/`: size classes, wall/RSS/size measurement for hod and `llc`, baselines, phase timings | WP-015 | todo |
 | WP-019 | T-H | L2 gate: parse, print, `llvm-as` acceptance and behavioral equivalence through `llc` over the captured corpus | WP-006, WP-008, WP-017 | todo |
+| WP-020 | T-H | Bitcode on the text path: `hod` converts bitcode input to text with a configured `llvm-dis` (`--bitcode-via=`, set by the shim) before parsing, instead of falling back; coverage log records the conversion time. Design 0001 point 6 | WP-015 | todo |
+| WP-021 | T-IR | `available_externally` + `alwaysinline` bodies: producers mark them, `hod` emits a local copy and redirects the module's calls (design 0001 point 6); test with libstdc++'s extern-template cases | WP-003, WP-004 | todo |
 
 ## M1 and later
 

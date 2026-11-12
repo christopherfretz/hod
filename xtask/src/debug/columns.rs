@@ -22,6 +22,7 @@ use std::sync::{Mutex, PoisonError};
 
 use super::build::{self, REFERENCE};
 use super::lines::{self, LineTools, LinesReport};
+use super::permitted::IrFacts;
 use super::verify;
 use crate::irdiff::process::{self, End};
 use crate::irdiff::tools::Search;
@@ -140,7 +141,8 @@ fn one(module: &Path, tools: &Tools, dir: &Path, dump: Option<&Path>) -> Outcome
         }
         shared.push(out);
     }
-    match lines::compare(&shared[0], &shared[1], &tools.lines) {
+    let facts = IrFacts::of_modules([fs::read_to_string(module).unwrap_or_default().as_str()]);
+    match lines::compare(&shared[0], &shared[1], &tools.lines, &facts) {
         Ok(report) => Outcome::Compared(report),
         Err(e) => Outcome::Failed(e),
     }

@@ -230,17 +230,6 @@ pub fn conditions(pred: FloatPredicate) -> FpCond {
 /// [`VECTOR_FCMP`], [`BFLOAT`] for the operand types it does not compare;
 /// `Internal` if `compare` is not an `fcmp`.
 pub fn flags<'a>(cx: &mut FnCx<'a, A64>, compare: Inst<'a>) -> CgResult<FpCond> {
-    // `spec/dwarf.md` §5.8: the compare's code is at the compare's
-    // location, inside its consumer's.
-    let outer = cx.line_loc();
-    cx.line_switch(cx.row_loc_of(compare));
-    let flags = compare_flags(cx, compare);
-    cx.line_switch(outer);
-    flags
-}
-
-/// [`flags`] without the line switch.
-fn compare_flags<'a>(cx: &mut FnCx<'a, A64>, compare: Inst<'a>) -> CgResult<FpCond> {
     let InstKind::FCmp { pred, lhs, rhs } = compare.kind() else {
         return cx.bug("flags of an instruction that is not an fcmp");
     };

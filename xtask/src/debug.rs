@@ -18,6 +18,7 @@ pub mod columns;
 pub mod directives;
 pub mod kiln;
 pub mod lines;
+pub mod permitted;
 pub mod sessions;
 pub mod transcript;
 pub mod verify;

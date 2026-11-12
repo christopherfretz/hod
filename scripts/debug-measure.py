@@ -19,8 +19,13 @@ For every `-g` module (an `.ll` with `!llvm.dbg.cu`) among the paths:
    range to the next row is not empty, the function being the defined
    `T`/`t`/`W`/`w` symbol with a size that holds the address. A pair only
    hod's has at its function's first row's line is P3, one only `llc`'s
-   has whose every range holds only `b` is P1 (spec/dwarf.md 5.7), else
-   unclassified.
+   has whose every range holds only `b` is P1 (spec/dwarf.md 5.7); the
+   others are classified by the module's IR, by the rule of
+   `xtask/src/debug/permitted.rs` (`IrFacts::pair_class`): when the
+   function's instructions at the pair's line (any column) are loads and
+   `getelementptr`s, at least one load, the pair is `load-placement`;
+   else a pair only hod's has, in a function that calls
+   `llvm.is.constant`, is `is-constant`; else unclassified.
 
 Usage:
 
@@ -32,8 +37,8 @@ component `llvm<N>` or `clang<N>`, else `--major` (default 22). Output: one
 line per module, tab-separated: module, major, hod outcome (`built`,
 `declined:<reason>`, `failed`), llc outcome (`built`, `failed`), hod's
 verify (`clean`, `-`, or the first message's class), llc's verify, then
-`same`, `hod_only`, `llc_only` counts and `P1`, `P3`, `unclassified`
-counts (or `-` when there was no comparison). Each module's differing
+`same`, `hod_only`, `llc_only` counts and `P1`, `P3`, `load-placement`,
+`is-constant`, `unclassified` counts (or `-` when there was no comparison). Each module's differing
 pairs are written to `<work>/<n>/pairs.tsv` (side, class, function,
 file, line, the instructions of the side's rows). Nothing is written outside `--work`. `-j` is at most 4.
 """
@@ -206,7 +211,51 @@ def mnemonics(code, ranges):
     return ",".join(out)
 
 
-def compare(hod_lib, llc_lib):
+DBG = re.compile(r"!dbg (![0-9]+)")
+LOC = re.compile(r"^(![0-9]+) = !DILocation\(line: ([0-9]+)")
+DEF = re.compile(r"^define [^@]*@(\"[^\"]+\"|[-\w.$]+)\(")
+OPC = re.compile(r"^\s*(?:%[-\w.$\"]+ = )?(?:tail |musttail |notail )?([a-z_]+)")
+
+
+def ir_facts(text):
+    """Per defined function: the (line, opcode) of each instruction with a
+    `!dbg`, and whether it calls `llvm.is.constant`."""
+    locs, funcs, name = {}, {}, None
+    for line in text.splitlines():
+        m = LOC.match(line)
+        if m:
+            locs[m.group(1)] = int(m.group(2))
+    for line in text.splitlines():
+        m = DEF.match(line)
+        if m:
+            name = m.group(1).strip('"')
+            funcs[name] = ([], False)
+            continue
+        if name is None:
+            continue
+        if line.startswith("}"):
+            name = None
+            continue
+        insts, is_constant = funcs[name]
+        d, o = DBG.search(line), OPC.match(line)
+        if d and o and d.group(1) in locs:
+            insts.append((locs[d.group(1)], o.group(1)))
+        funcs[name] = (insts, is_constant or "@llvm.is.constant." in line)
+    return funcs
+
+
+def ir_class(facts, fn, line, hod_side):
+    """`load-placement`, `is-constant` (spec/dwarf.md 5.7), or unclassified."""
+    insts, is_constant = facts.get(fn, ([], False))
+    ops = {op for l, op in insts if l == line}
+    if "load" in ops and ops <= {"load", "getelementptr"}:
+        return "load-placement"
+    if hod_side and is_constant:
+        return "is-constant"
+    return "unclassified"
+
+
+def compare(hod_lib, llc_lib, facts):
     """`same` and the differing pairs: (side, class, pair, instructions of its rows)."""
     (ours, first), (theirs, _) = read_pairs(hod_lib), read_pairs(llc_lib)
     hod_code, llc_code = disassembly(hod_lib), disassembly(llc_lib)
@@ -216,12 +265,12 @@ def compare(hod_lib, llc_lib):
             same += 1
         elif key in ours:
             p3 = first.get(key[0]) == (key[1], key[2])
-            diffs.append(("hod", "P3" if p3 else "unclassified", key, mnemonics(hod_code, ours[key])))
+            diffs.append(("hod", "P3" if p3 else ir_class(facts, key[0], key[2], True), key, mnemonics(hod_code, ours[key])))
         else:
             # P1: every range holds only unconditional branches.
             p1 = all(m and set(m.split(",")) <= {"b", "jmp"}
                      for m in (mnemonics(llc_code, [r]) for r in theirs[key]))
-            diffs.append(("llc", "P1" if p1 else "unclassified", key, mnemonics(llc_code, theirs[key])))
+            diffs.append(("llc", "P1" if p1 else ir_class(facts, key[0], key[2], False), key, mnemonics(llc_code, theirs[key])))
     return same, diffs
 
 
@@ -252,7 +301,7 @@ def measure(job):
         hv = ";".join(sorted({verify_class(tool("llvm-dwarfdump", m), hod_o) for m in (22, 19)}))
     if llc == "built":
         lv = ";".join(sorted({verify_class(tool("llvm-dwarfdump", m), llc_o) for m in (22, 19)}))
-    cmp = ["-"] * 6
+    cmp = ["-"] * 8
     if hod == "built" and llc == "built":
         libs = []
         for o in (hod_o, llc_o):
@@ -261,14 +310,15 @@ def measure(job):
                  "-Wl,--defsym=__dso_handle=0", "-o", lib, o])
             libs.append(lib)
         if all(os.path.exists(x) for x in libs):
-            same, diffs = compare(*libs)
+            same, diffs = compare(*libs, ir_facts(text))
             with open(os.path.join(work, "pairs.tsv"), "w") as f:
                 for side, cls, (fn, file, line), insns in diffs:
                     f.write(f"{side}\t{cls}\t{fn}\t{file}\t{line}\t{insns}\n")
             count = lambda s=None, c=None: sum(1 for x in diffs if (s is None or x[0] == s) and (c is None or x[1] == c))
-            cmp = [same, count("hod"), count("llc"), count(c="P1"), count(c="P3"), count(c="unclassified")]
+            cmp = [same, count("hod"), count("llc"), count(c="P1"), count(c="P3"),
+                   count(c="load-placement"), count(c="is-constant"), count(c="unclassified")]
         else:
-            cmp = ["nolink"] * 6
+            cmp = ["nolink"] * 8
     for f in (hod_o, llc_o):
         if os.path.exists(f) and not args.keep:
             os.remove(f)
@@ -297,7 +347,7 @@ def main():
     args = ap.parse_args()
     args.j = max(1, min(args.j, 4))
     mods = modules(args.paths)
-    print("module\tmajor\thod\tllc\thod_verify\tllc_verify\tsame\thod_only\tllc_only\tP1\tP3\tunclassified")
+    print("module\tmajor\thod\tllc\thod_verify\tllc_verify\tsame\thod_only\tllc_only\tP1\tP3\tload-placement\tis-constant\tunclassified")
     with concurrent.futures.ThreadPoolExecutor(args.j) as pool:
         for line in pool.map(measure, [(n, m, args) for n, m in enumerate(mods)]):
             print(line, flush=True)

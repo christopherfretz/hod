@@ -13,6 +13,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
+use super::permitted::{IrFacts, PairClass};
 use crate::irdiff::process::{self, End, Limits};
 
 /// A function and a source position.
@@ -27,6 +28,13 @@ pub enum Class {
     /// §5.7 P3: hod's prologue row at the function's first line, where
     /// `llc`'s function has no frame and no row there.
     P3,
+    /// §5.7 `load-placement`: the function's instructions at the line are
+    /// loads (and `getelementptr`s), which `llc` merges or places with
+    /// their user ([`permitted::IrFacts::pair_class`]).
+    LoadPlacement,
+    /// §5.7 `is-constant`: hod's pair in a function that calls
+    /// `llvm.is.constant`, whose guarded blocks `llc` deletes.
+    IsConstant,
     /// Not a permitted difference: a finding.
     Unclassified,
 }
@@ -36,9 +44,15 @@ impl Class {
         match self {
             Self::P1 => "P1",
             Self::P3 => "P3",
+            Self::LoadPlacement => "load-placement",
+            Self::IsConstant => "is-constant",
             Self::Unclassified => "unclassified",
         }
     }
+
+    /// The classes, in the summary's order.
+    pub const ALL: [Self; 5] =
+        [Self::P1, Self::P3, Self::LoadPlacement, Self::IsConstant, Self::Unclassified];
 }
 
 /// The comparison of one pair of programs.
@@ -72,17 +86,14 @@ impl LinesReport {
         self.columns.add(&other.columns);
     }
 
-    /// One line: `same N, hod only N (P3 N, unclassified N), llc only ...`.
+    /// One line: `same N, hod only N (P1 N, P3 N, load-placement N,
+    /// is-constant N, unclassified N), llc only ...`.
     pub fn summary(&self) -> String {
         let side = |list: &[(Pair, Class)]| {
             let count = |c| list.iter().filter(|(_, k)| *k == c).count();
-            format!(
-                "{} (P1 {}, P3 {}, unclassified {})",
-                list.len(),
-                count(Class::P1),
-                count(Class::P3),
-                count(Class::Unclassified)
-            )
+            let counts: Vec<String> =
+                Class::ALL.iter().map(|&c| format!("{} {}", c.name(), count(c))).collect();
+            format!("{} ({})", list.len(), counts.join(", "))
         };
         format!(
             "same {}, hod only {}, llc only {}",
@@ -260,13 +271,28 @@ fn pairs_of(rows: &[Row], symbols: &[(u64, u64, String)]) -> Pairs {
     pairs
 }
 
+/// The class [`IrFacts::pair_class`] gives a pair, else unclassified.
+fn ir_class(facts: &IrFacts, (function, _, line): &Pair, hod_side: bool) -> Class {
+    match facts.pair_class(function, *line, hod_side) {
+        Some(PairClass::LoadPlacement) => Class::LoadPlacement,
+        Some(PairClass::IsConstant) => Class::IsConstant,
+        None => Class::Unclassified,
+    }
+}
+
 fn is_unconditional_branch(mnemonic: &str) -> bool {
     matches!(mnemonic, "b" | "jmp")
 }
 
 /// Compares the pairs of two programs built from the same IR, and their
-/// rows with columns ([`compare_function_rows`]).
-pub fn compare(hod: &Path, llc: &Path, tools: &LineTools) -> Result<LinesReport, String> {
+/// rows with columns ([`compare_function_rows`]); `facts` is that IR's
+/// (for the classes it decides).
+pub fn compare(
+    hod: &Path,
+    llc: &Path,
+    tools: &LineTools,
+    facts: &IrFacts,
+) -> Result<LinesReport, String> {
     type Read = (Pairs, BTreeMap<String, FunctionRows>);
     let read = |program: &Path| -> Result<Read, String> {
         let lines = tool_output(&tools.dwarfdump, &["--debug-line"], program)?;
@@ -285,7 +311,7 @@ pub fn compare(hod: &Path, llc: &Path, tools: &LineTools) -> Result<LinesReport,
             (Some(_), None) => {
                 let first = ours.first_line.get(&key.0);
                 let p3 = first.is_some_and(|(file, line)| *file == key.1 && *line == key.2);
-                let class = if p3 { Class::P3 } else { Class::Unclassified };
+                let class = if p3 { Class::P3 } else { ir_class(facts, key, true) };
                 report.hod_only.push((key.clone(), class));
             }
             (None, Some(ranges)) => {
@@ -293,7 +319,7 @@ pub fn compare(hod: &Path, llc: &Path, tools: &LineTools) -> Result<LinesReport,
                     let mut inside = code.range(start..end).peekable();
                     inside.peek().is_some() && inside.all(|(_, m)| is_unconditional_branch(m))
                 });
-                let class = if only_branches { Class::P1 } else { Class::Unclassified };
+                let class = if only_branches { Class::P1 } else { ir_class(facts, key, false) };
                 report.llc_only.push((key.clone(), class));
             }
             (None, None) => unreachable!("the key came from one of the maps"),
@@ -538,7 +564,8 @@ Address            Line   Column File   ISA Discriminator OpIndex Flags
         assert_eq!(report.unclassified(), 1);
         assert_eq!(
             report.summary(),
-            "same 3, hod only 1 (P1 0, P3 1, unclassified 0), llc only 2 (P1 1, P3 0, unclassified 1)"
+            "same 3, hod only 1 (P1 0, P3 1, load-placement 0, is-constant 0, unclassified 0), \
+             llc only 2 (P1 1, P3 0, load-placement 0, is-constant 0, unclassified 1)"
         );
     }
 

@@ -13,20 +13,35 @@
 //! location of the IR instruction they were selected from). Nothing here
 //! changes a byte of code.
 
-use hod_ir::{Inst, LocId, Opcode};
+use hod_ir::{Inst, InstKind, LocId, Opcode};
 
 use crate::cx::FnCx;
 use crate::record::LineRow;
 use crate::target::Target;
 
 /// The location the code of `inst` is recorded at (`spec/dwarf.md`
-/// §5.8): its own, except that an `unreachable`'s trap has none, so it
-/// stays in the row before it (a line-0 row when it is the first code of
-/// its block, §5.3). `llc` writes no code for `unreachable`, so the line
-/// of the `unreachable` has no row in its table.
+/// §5.8): its own, except for two instructions whose code has none, so
+/// that it stays in the row before it (a line-0 row when it is the first
+/// code of its block, §5.3):
+///
+/// - `unreachable`: `llc` writes no code for it, so its line has no row
+///   in `llc`'s table; hod's trap is not a statement of its own.
+/// - a `ptradd` with offset 0 and no index (a zero-offset
+///   `getelementptr`): its value is its base's, so its code is a copy or
+///   reload of the base or the materialization of a frame or symbol
+///   address, which in `llc`'s program are folded into the user or are
+///   instructions without a location (register-allocator reloads, frame
+///   index materializations).
 #[inline]
 pub(crate) fn row_loc(inst: Inst<'_>) -> LocId {
-    if inst.opcode() == Opcode::Unreachable { LocId::NONE } else { inst.loc() }
+    match inst.opcode() {
+        Opcode::Unreachable => LocId::NONE,
+        Opcode::PtrAdd => match inst.kind() {
+            InstKind::PtrAdd(add) if add.offset == 0 && add.index_count() == 0 => LocId::NONE,
+            _ => inst.loc(),
+        },
+        _ => inst.loc(),
+    }
 }
 
 impl<'a, T: Target> FnCx<'a, T> {

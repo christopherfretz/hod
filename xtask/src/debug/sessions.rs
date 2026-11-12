@@ -12,6 +12,7 @@ use std::time::Duration;
 use super::build::{self, HodBuild, Tools};
 use super::directives::{self, DebugTest, Lang, Objects};
 use super::lines::{self, LineTools, LinesReport};
+use super::permitted::{self, IrFacts};
 use super::transcript::{self, Debugger, Ended};
 use crate::irdiff::process::Limits;
 use crate::irdiff::tools::Linker;
@@ -584,12 +585,14 @@ impl Run<'_> {
         };
         // 1. IR, and both objects of every module.
         let (mut ours, mut theirs) = (Vec::new(), Vec::new());
+        let mut facts = IrFacts::default();
         for (i, module) in test.modules.iter().enumerate() {
             let ir = dir.join(format!("m{i}.ll"));
             if let Err(e) = build::frontend_ir(self.tools, test, frontend, module, &ir, limits) {
                 done.records.push(record("llc", None, None, Outcome::Error, e));
                 return;
             }
+            facts.add_module(&fs::read_to_string(&ir).unwrap_or_default());
             let llc_o = dir.join(format!("m{i}.llc.o"));
             if let Err(e) = build::llc_object(llc, &ir, &llc_o, limits) {
                 done.records.push(record("llc", None, None, Outcome::Error, e));
@@ -669,7 +672,7 @@ impl Run<'_> {
                 && let Some(line_tools) = self.line_tools
                 && let Some((_, ours)) = programs.iter().find(|(v, _)| v == "hod")
             {
-                match lines::compare(ours, &reference, line_tools) {
+                match lines::compare(ours, &reference, line_tools, &facts) {
                     Ok(report) => done.lines.push(LinesResult {
                         test: test_name(&test.path),
                         frontend: frontend.to_owned(),
@@ -740,6 +743,17 @@ impl Run<'_> {
                             save(ours, &masked);
                             match transcript::first_difference(&masked, &theirs_text) {
                                 None => (Outcome::Pass, String::new()),
+                                // `spec/dwarf.md` §5.7 `return-column`.
+                                Some(_)
+                                    if !debugger.is_gdb()
+                                        && permitted::only_return_columns(
+                                            &masked,
+                                            &theirs_text,
+                                            &facts,
+                                        ) =>
+                                {
+                                    (Outcome::Pass, "permitted: return-column".to_owned())
+                                }
                                 Some((number, hod_line, llc_line)) => (
                                     Outcome::Fail,
                                     format!(

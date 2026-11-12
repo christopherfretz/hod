@@ -566,6 +566,96 @@ and lldb, `lines_debugger.rs`):
   `epilogue_begin` (§5.4); `llc` has an epilogue per `ret`, each on its
   `ret`'s line.
 
+Since WP-097 (the harness recognises each BY RULE from the IR both
+programs were built from, `xtask/src/debug/permitted.rs`; nothing is
+masked in general):
+
+- `load-placement`: a `(function, line)` pair one side lacks where the
+  function's instructions at that line (any column) are loads and
+  `getelementptr`s, at least one load. `llc`'s `SelectionDAG` merges a
+  load with an earlier or later load of the same address in its block
+  (the dead load of a trivial destructor's `n->~T()` keeps ITS line in
+  `llc`'s program, `xtask/tests/data/debug_lines/dead_load.cpp`; a
+  reload of an argument the call already loaded has no code), and folds
+  a load of a call's argument into the call's sequence
+  (`arg_load.c`); hod emits each load where the IR has it. Reproducing
+  it would be load CSE, an optimisation. Either side.
+- `is-constant`: hod's pair in a function that calls `llvm.is.constant`.
+  `llc` folds the call to false even at `-O0` and deletes the blocks it
+  guards (`LowerConstantIntrinsics`); hod does not emit the dead
+  instructions (WP-084) but keeps the blocks and the branch, so their
+  lines have rows (`is_constant.c`). Deleting them would need the
+  branch folded and `mark_reachable` (`crates/hod_cg/src/driver.rs`) to
+  know the target's folded calls, which it does not (the target decides
+  in `begin_function`, after reachability): not free. Also §6.12 for DIE
+  trees.
+- `return-column` (sessions only): after `finish`, the stop is at a
+  call's return address, which is in `llc`'s table the row of whatever
+  its register allocator put after the `bl`: a `COPY` of the result out
+  of `x0` carries the call's location when it is not coalesced, so
+  `llc`'s row there is often the call's (`finish_column.c`: `int got =
+  bump(&c, 1);` stops at column 13), and the next statement's when it is
+  (the second call of the same test stops at the assignment's column, as
+  hod's does for both). hod's return address has the location of the
+  instruction after the call. The harness permits, in an lldb session,
+  stops after `finish` (`stop reason = step out`) whose `frame #0:` line
+  differs only in the column, `llc`'s column being that of a `call` or
+  `invoke` at that line in the IR, with lldb's source caret moving with
+  it; nothing else in the transcript may differ. Matching `llc` would
+  mean modelling its register allocator.
+- Columns of a line `llc` and hod both have (`cargo xtask debug columns`,
+  `spec/harness.md` "debug", "Columns") are compared but do not fail the
+  run: `llc`'s instruction selection folds instructions into others (a
+  `zext` of a compare into the `cset`, the `and` of `x & m != 0` into
+  `tst`, address arithmetic into a post-indexed load, a compare into
+  its `b.cond`), and each fold moves code from one column to another
+  inside a line. The measured classes are WP-097's
+  (`spec/landed/dwarf/WP-097.md`).
+
+### 5.8 Code emitted out of order (implemented, WP-097)
+
+A lowering may emit the code of another instruction inside its own: a
+deferred instruction (`spec/codegen.md` §4.6) is emitted where its user
+asks for it. The driver records transitions per *segment*
+(`crates/hod_cg/src/line_rows.rs`): each instruction opens one at its
+first byte with its row location, and a deferred instruction asked for
+(`FnCx::force`) switches to its own row location for its code and back
+to the asker's after it (`FnCx::line_switch`). A segment that emitted
+code is a transition (§9.5's rule: when its location differs from the
+last one recorded, or it is the first code of a non-entry block without
+a location). So the code of each IR instruction carries that
+instruction's location wherever it was placed, as `llc`'s machine
+instructions keep the location of the IR instruction they were selected
+from. A compare FUSED into its user (the `cmp` of a `b.cond` or `csel`)
+stays at the user's location: `llc`'s `DAGCombiner` turns `brcond
+(setcc)` into `br_cc` and `select (setcc)` into `select_cc` at the
+user's location (measured: switching fused compares to their own
+location made 1 786 fewer functions of the `-g` set match `llc`'s
+columns).
+
+The **row location** of an instruction is its location, except for two
+whose code has none, so that it stays in the row before it (a line-0
+row when it is the first code of its block, §5.3):
+
+- `unreachable`: `llc` writes no code for it; hod's trap is no statement
+  of its own, so the `unreachable`'s line (`__builtin_unreachable()`)
+  has no row, as in `llc`'s table;
+- a `ptradd` with offset 0 and no index (a zero-offset `getelementptr`,
+  the first member of a struct): its value is its base's, so its code is
+  a copy or reload of the base or the materialization of a frame or
+  symbol address, which `llc` folds into the user or emits without a
+  location (frame-index materializations, register-allocator reloads).
+
+Nothing here changes code: the `.text` of the corpus's and the `-g`
+set's modules is byte-identical before and after (WP-097). Making a
+zero-offset `getelementptr` an alias of its base instead (no code at
+all) was considered and not done: a deferred value may today only be
+consumed by the NEXT instruction (§4.6), and every consumer of operands
+(`use_reg`, `put`, `use_mem`, `release`, the `phi` stores, the call
+arguments, the declaration rows) relies on that; an alias across
+instructions would change all of them, and the line table is the same
+either way.
+
 ## 6. DIEs (core implemented, WP-053; the type graph, WP-058; functions, WP-057)
 
 ### 6.1 Abbreviations: a fixed table (implemented)

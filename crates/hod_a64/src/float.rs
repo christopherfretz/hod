@@ -23,14 +23,16 @@
 //! - Out-of-range `fptoui`/`fptosi` are poison (LangRef): the saturating
 //!   `fcvtz*` result is as good as any.
 
-use hod_cg::{CallArg, CgResult, Class, FnCx, PReg, RuntimeFn};
+use hod_cg::{CallArg, CgResult, Class, FnCx, FrameRef, PReg, RuntimeFn};
 use hod_ir::{FloatPredicate, Inst, InstKind, IntPredicate, Opcode, TypeId, TypeKind, Value};
 use hod_mc_a64 as mc;
-use hod_mc_a64::{Arr, Cond, FpArr, FpFormat, FpSize, RegZr, Size, VMemSize, VReg, VecBits};
+use hod_mc_a64::{
+    Arr, Cond, FpArr, FpFormat, FpSize, Load, MemSize, RegZr, Size, VMemSize, VReg, VecBits,
+};
 
 use crate::common::{
-    Cursor, V31, X16, deferred_first, load_fpr_at, put, size_for_bits, store_fpr_at, unsupported,
-    value_ty, vr, xr,
+    Cursor, V31, X16, deferred_first, load_fpr_at, load_gpr_at, put, size_for_bits, store_fpr_at,
+    store_gpr_at, unsupported, value_ty, vr, xr,
 };
 use crate::target::A64;
 
@@ -54,13 +56,14 @@ pub const SELECT: &str = "a64:fp-select";
 /// the encoder does not provide). Moves (`select`, `freeze`, `bitcast`)
 /// of `bfloat` are lowered.
 pub const BFLOAT: &str = "a64:bfloat";
-/// An `fp128` operation whose runtime function `hod_cg::RuntimeFn` lacks:
-/// `fcmp` (`__eqtf2`, `__lttf2`, `__unordtf2`, ...), conversions
-/// (`__extenddftf2`, `__trunctfdf2`, `__fixtfdi`, `__floatditf`, ...) and
-/// `frem` (`fmodl`). `fadd` .. `fdiv` and `fneg` of `fp128` are lowered.
+/// An `fp128` operation without a runtime function. Since WP-067 every
+/// `fp128` operation the IR has is lowered (`fcmp` through `__eqtf2`,
+/// `__lttf2`, `__letf2`, `__unordtf2`; conversions through the
+/// `__extend*tf2`, `__trunctf*2`, `__fix*tf*`, `__float*tf` families;
+/// `frem` through `fmodl`); the name stays for a form that cannot occur.
 pub const FP128_LIBCALL: &str = "a64:fp128-libcall";
-/// `frem` of `half`: needs the operands widened into pool registers for
-/// the call to `fmodf`, more vector registers than a lowering may pin.
+/// `frem` of `half`: lowered since WP-067 (through `fmodf`); the name
+/// stays for the record.
 pub const HALF_FREM: &str = "a64:half-frem";
 /// `fcmp` of vectors: its `<N x i1>` result is of class `Mem`.
 pub const VECTOR_FCMP: &str = "a64:vector-fcmp";
@@ -219,19 +222,24 @@ fn conditions(pred: FloatPredicate) -> FpCond {
 /// may set the flags; materializing constants, loads and register moves
 /// do not.
 ///
+/// An `fcmp` of `fp128` is calls of runtime functions (WP-067): every
+/// register is displaced and every temporary ends, so the caller asks for
+/// nothing before this and for what it needs after it.
+///
 /// # Errors
-/// [`VECTOR_FCMP`], [`BFLOAT`], [`FP128_LIBCALL`] for the operand types it
-/// does not compare; `Internal` if `compare` is not an `fcmp`.
+/// [`VECTOR_FCMP`], [`BFLOAT`] for the operand types it does not compare;
+/// `Internal` if `compare` is not an `fcmp`.
 pub fn flags<'a>(cx: &mut FnCx<'a, A64>, compare: Inst<'a>) -> CgResult<FpCond> {
     let InstKind::FCmp { pred, lhs, rhs } = compare.kind() else {
         return cx.bug("flags of an instruction that is not an fcmp");
     };
-    let fp = compare_format(cx, lhs)?;
+    let format = compare_format(cx, lhs)?;
     deferred_first(cx, compare, None)?;
     if matches!(pred, FloatPredicate::True | FloatPredicate::False) {
         put(cx, mc::cmp(Size::X, RegZr::ZR, RegZr::ZR));
         return Ok(conditions(pred));
     }
+    let Some(fp) = format else { return quad_flags(cx, pred, lhs, rhs) };
     let a = cx.use_reg(lhs)?;
     let b = cx.use_reg(rhs)?;
     let (va, vb) = (vr(a), vr(b));
@@ -245,14 +253,207 @@ pub fn flags<'a>(cx: &mut FnCx<'a, A64>, compare: Inst<'a>) -> CgResult<FpCond> 
     Ok(conditions(pred))
 }
 
-/// The format of an `fcmp` operand, or the refusal.
-fn compare_format(cx: &FnCx<'_, A64>, operand: Value) -> CgResult<Fp> {
+/// The format of an `fcmp` operand (`None` for `fp128`), or the refusal.
+fn compare_format(cx: &FnCx<'_, A64>, operand: Value) -> CgResult<Option<Fp>> {
     match shape(cx, value_ty(cx, operand)) {
-        Shape::Scalar(fp) => Ok(fp),
+        Shape::Scalar(fp) => Ok(Some(fp)),
+        Shape::Quad => Ok(None),
         Shape::BFloat => unsupported(BFLOAT),
-        Shape::Quad => unsupported(FP128_LIBCALL),
         _ => unsupported(VECTOR_FCMP),
     }
+}
+
+// ---- `fp128` through runtime functions (WP-067) ----
+
+/// Calls `func`, whose result is an integer, and returns its register.
+fn runtime_int(cx: &mut FnCx<'_, A64>, func: RuntimeFn, args: &[CallArg]) -> CgResult<PReg> {
+    match cx.call_runtime(func, args, None)? {
+        Some(reg) => Ok(reg),
+        None => cx.bug("a runtime function returned nothing"),
+    }
+}
+
+/// The `NZCV` of `fcmp <pred> fp128 %lhs, %rhs` (`pred` neither `true`
+/// nor `false`), as LLVM's `softenSetCCOperands` computes it: one call
+/// whose `int` result is compared with 0 (signed), the operands swapped
+/// for `ogt`, `oge`, `ule` and `ult` so that only the `__eqtf2`,
+/// `__lttf2`, `__letf2` and `__unordtf2` results' signs are relied on:
+/// `__lttf2` and `__letf2` are positive for unordered operands in libgcc
+/// and compiler-rt alike, `__eqtf2` is 0 only for ordered equal ones.
+/// `ueq` and `one` need two calls ([`quad_two_calls`]).
+fn quad_flags(
+    cx: &mut FnCx<'_, A64>,
+    pred: FloatPredicate,
+    lhs: Value,
+    rhs: Value,
+) -> CgResult<FpCond> {
+    use FloatPredicate as P;
+    use RuntimeFn::{EqTf2, LeTf2, LtTf2, UnordTf2};
+    let (func, swap, first) = match pred {
+        P::Oeq => (EqTf2, false, Cond::Eq),
+        P::Une => (EqTf2, false, Cond::Ne),
+        P::Olt => (LtTf2, false, Cond::Lt),
+        P::Uge => (LtTf2, false, Cond::Ge),
+        P::Ogt => (LtTf2, true, Cond::Lt),
+        P::Ule => (LtTf2, true, Cond::Ge),
+        P::Ole => (LeTf2, false, Cond::Le),
+        P::Ugt => (LeTf2, false, Cond::Gt),
+        P::Oge => (LeTf2, true, Cond::Le),
+        P::Ult => (LeTf2, true, Cond::Gt),
+        P::Ord => (UnordTf2, false, Cond::Eq),
+        P::Uno => (UnordTf2, false, Cond::Ne),
+        P::Ueq | P::One => return quad_two_calls(cx, pred, lhs, rhs),
+        P::True | P::False => return cx.bug("a constant fcmp predicate at the call"),
+    };
+    let (x, y) = if swap { (rhs, lhs) } else { (lhs, rhs) };
+    let r = runtime_int(cx, func, &[CallArg::Value(x), CallArg::Value(y)])?;
+    put(cx, mc::cmp_imm(Size::W, xr(r).sp(), 0));
+    cx.free_temp(r);
+    Ok(FpCond { first, second: None })
+}
+
+/// `fcmp ueq` and `fcmp one` of `fp128`: `__eqtf2` and `__unordtf2` of
+/// copies of the operands kept in a frame slot (each call consumes its
+/// arguments), the first result kept there too; then `cmp unord, #0` ·
+/// `ccmp eq, #0, #Z, eq`: `Z` is set when unordered or equal, so `ueq`
+/// is `EQ` and `one` is `NE`.
+fn quad_two_calls(
+    cx: &mut FnCx<'_, A64>,
+    pred: FloatPredicate,
+    lhs: Value,
+    rhs: Value,
+) -> CgResult<FpCond> {
+    let slot = cx.alloc_slot(48, 16)?;
+    let a = cx.use_reg(lhs)?;
+    let b = cx.use_reg(rhs)?;
+    let mut at = Cursor::frame(cx, slot, X16);
+    store_fpr_at(cx, VMemSize::Q, vr(a), &mut at);
+    at.advance(16);
+    store_fpr_at(cx, VMemSize::Q, vr(b), &mut at);
+    give_back(cx, lhs, a);
+    give_back(cx, rhs, b);
+    let eq = quad_call_from(cx, slot, RuntimeFn::EqTf2)?;
+    let mut at = Cursor::frame(cx, slot, X16);
+    at.advance(32);
+    store_gpr_at(cx, MemSize::W, xr(eq).zr(), &mut at);
+    let unord = quad_call_from(cx, slot, RuntimeFn::UnordTf2)?;
+    let mut at = Cursor::frame(cx, slot, X16);
+    at.advance(32);
+    load_gpr_at(cx, Load::W, X16, &mut at);
+    put(cx, mc::cmp_imm(Size::W, xr(unord).sp(), 0));
+    put(cx, mc::ccmp(Size::W, X16.zr(), RegZr::ZR, 0b0100, Cond::Eq));
+    cx.free_temp(unord);
+    let first = if pred == FloatPredicate::Ueq { Cond::Eq } else { Cond::Ne };
+    Ok(FpCond { first, second: None })
+}
+
+/// Calls `func` on the two `fp128` values at `slot` and `slot + 16`,
+/// loaded into temporaries.
+fn quad_call_from(cx: &mut FnCx<'_, A64>, slot: FrameRef, func: RuntimeFn) -> CgResult<PReg> {
+    let t1 = cx.temp(Class::Fpr)?;
+    let t2 = cx.temp(Class::Fpr)?;
+    let mut at = Cursor::frame(cx, slot, X16);
+    load_fpr_at(cx, VMemSize::Q, vr(t1), &mut at);
+    at.advance(16);
+    load_fpr_at(cx, VMemSize::Q, vr(t2), &mut at);
+    runtime_int(cx, func, &[CallArg::Reg(t1), CallArg::Reg(t2)])
+}
+
+/// A conversion with an `fp128` side (WP-067): one runtime call, as `llc`
+/// makes it. `half` is widened to `float` first for `fpext` (exact);
+/// `fptrunc` to `half` calls `__trunctfhf2` (one rounding). An integer of
+/// a width other than 32 and 64 is extended to the register size first
+/// (§2.2); the `fptoui`/`fptosi` result above the width is unspecified.
+fn quad_cast<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    arg: Value,
+    from: Option<Shape>,
+    to: Option<Shape>,
+) -> CgResult<()> {
+    let op = inst.opcode();
+    deferred_first(cx, inst, None)?;
+    let (func, args) = match (op, from, to) {
+        (Opcode::FPExt, Some(Shape::Scalar(Fp::H)), Some(Shape::Quad)) => {
+            let a = cx.use_reg(arg)?;
+            let t = cx.temp(Class::Fpr)?;
+            put(cx, mc::fcvt(FpFormat::S, vr(t), FpFormat::H, vr(a)));
+            give_back(cx, arg, a);
+            (RuntimeFn::ExtendSfTf2, CallArg::Reg(t))
+        }
+        (Opcode::FPExt, Some(Shape::Scalar(Fp::S)), Some(Shape::Quad)) => {
+            (RuntimeFn::ExtendSfTf2, CallArg::Value(arg))
+        }
+        (Opcode::FPExt, Some(Shape::Scalar(Fp::D)), Some(Shape::Quad)) => {
+            (RuntimeFn::ExtendDfTf2, CallArg::Value(arg))
+        }
+        (Opcode::FPTrunc, Some(Shape::Quad), Some(Shape::Scalar(fp))) => {
+            let func = match fp {
+                Fp::H => RuntimeFn::TruncTfHf2,
+                Fp::S => RuntimeFn::TruncTfSf2,
+                Fp::D => RuntimeFn::TruncTfDf2,
+            };
+            (func, CallArg::Value(arg))
+        }
+        (Opcode::FPToSI | Opcode::FPToUI, Some(Shape::Quad), None) => {
+            let wide = int_width(cx, inst.ty())? > 32;
+            let func = match (op == Opcode::FPToSI, wide) {
+                (true, false) => RuntimeFn::FixTfSi,
+                (true, true) => RuntimeFn::FixTfDi,
+                (false, false) => RuntimeFn::FixunsTfSi,
+                (false, true) => RuntimeFn::FixunsTfDi,
+            };
+            (func, CallArg::Value(arg))
+        }
+        (Opcode::SIToFP | Opcode::UIToFP, None, Some(Shape::Quad)) => {
+            let bits = int_width(cx, value_ty(cx, arg))?;
+            let signed = op == Opcode::SIToFP;
+            let func = match (signed, bits > 32) {
+                (true, false) => RuntimeFn::FloatSiTf,
+                (true, true) => RuntimeFn::FloatDiTf,
+                (false, false) => RuntimeFn::FloatunSiTf,
+                (false, true) => RuntimeFn::FloatunDiTf,
+            };
+            if bits == 32 || bits == 64 {
+                (func, CallArg::Value(arg))
+            } else {
+                let a = cx.use_reg(arg)?;
+                let t = cx.temp(Class::Gpr)?;
+                let extend = if signed { mc::sbfx } else { mc::ubfx };
+                put(cx, extend(size_for_bits(bits), xr(t).zr(), xr(a).zr(), 0, bits));
+                give_back(cx, arg, a);
+                (func, CallArg::Reg(t))
+            }
+        }
+        _ => return unsupported(CAST),
+    };
+    let Some(reg) = cx.call_runtime(func, &[args], None)? else {
+        return cx.bug("a runtime function returned nothing");
+    };
+    cx.finish(inst, reg)
+}
+
+/// `frem half`: the operands widened to `float` into temporaries (one
+/// pinned at a time besides an operand, through `v31`), `fmodf`, the
+/// result narrowed. `fmod` is exact, so the one rounding is the
+/// narrowing's, as `llc`'s promotion does.
+fn half_frem<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, lhs: Value, rhs: Value) -> CgResult<()> {
+    deferred_first(cx, inst, None)?;
+    let a = cx.use_reg(lhs)?;
+    let t1 = cx.temp(Class::Fpr)?;
+    put(cx, mc::fcvt(FpFormat::S, vr(t1), FpFormat::H, vr(a)));
+    give_back(cx, lhs, a);
+    let b = cx.use_reg(rhs)?;
+    put(cx, mc::fcvt(FpFormat::S, V31, FpFormat::H, vr(b)));
+    give_back(cx, rhs, b);
+    let t2 = cx.temp(Class::Fpr)?;
+    put(cx, mc::fmov(FpSize::S, vr(t2), V31));
+    let Some(r) = cx.call_runtime(RuntimeFn::Fmodf, &[CallArg::Reg(t1), CallArg::Reg(t2)], None)?
+    else {
+        return cx.bug("a runtime function returned nothing");
+    };
+    put(cx, mc::fcvt(FpFormat::H, vr(r), FpFormat::S, vr(r)));
+    cx.finish(inst, r)
 }
 
 /// Releases a consumed operand's register before the instruction ends.
@@ -267,14 +468,14 @@ fn give_back(cx: &mut FnCx<'_, A64>, operand: Value, reg: PReg) {
 ///
 /// # Errors
 /// [`BINARY`] for an integer operation on a scalar (never valid IR),
-/// [`VECTOR_OP`], [`BFLOAT`], [`FP128_LIBCALL`], [`HALF_FREM`].
+/// [`VECTOR_OP`], [`BFLOAT`].
 pub fn binary<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, lhs: Value, rhs: Value) -> CgResult<()> {
     let op = inst.opcode();
     match shape(cx, inst.ty()) {
         Shape::Scalar(fp) if op == Opcode::FRem => match fp {
             Fp::S => libcall(cx, inst, RuntimeFn::Fmodf, lhs, rhs),
             Fp::D => libcall(cx, inst, RuntimeFn::Fmod, lhs, rhs),
-            Fp::H => unsupported(HALF_FREM),
+            Fp::H => half_frem(cx, inst, lhs, rhs),
         },
         Shape::Scalar(fp) => {
             let Some(word) = scalar_op(op) else { return unsupported(BINARY) };
@@ -298,7 +499,7 @@ pub fn binary<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, lhs: Value, rhs: Value
                 Opcode::FSub => RuntimeFn::SubTf3,
                 Opcode::FMul => RuntimeFn::MulTf3,
                 Opcode::FDiv => RuntimeFn::DivTf3,
-                Opcode::FRem => return unsupported(FP128_LIBCALL),
+                Opcode::FRem => RuntimeFn::Fmodl,
                 _ => return unsupported(BINARY),
             };
             libcall(cx, inst, func, lhs, rhs)
@@ -447,8 +648,8 @@ pub fn freeze<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResul
 /// `%r = <cast> %arg` with a side of class `Fpr` and none of class `Mem`.
 ///
 /// # Errors
-/// [`CAST`] for a vector cast without a one-instruction lowering,
-/// [`BFLOAT`], [`FP128_LIBCALL`].
+/// [`CAST`] for a vector cast without a one-instruction lowering, and for
+/// a cast between `fp128` and a vector; [`BFLOAT`].
 pub fn cast<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
     let op = inst.opcode();
     let (from_ty, to_ty) = (value_ty(cx, arg), inst.ty());
@@ -463,7 +664,7 @@ pub fn cast<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<
         return unsupported(BFLOAT);
     }
     if from == Some(Shape::Quad) || to == Some(Shape::Quad) {
-        return unsupported(FP128_LIBCALL);
+        return quad_cast(cx, inst, arg, from, to);
     }
     match (from, to) {
         (Some(Shape::Scalar(a)), Some(Shape::Scalar(b))) => {

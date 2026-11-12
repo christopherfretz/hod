@@ -64,30 +64,6 @@ fn what_the_group_does_not_lower_is_refused_by_name() {
             float::VECTOR_SELECT,
         ),
         (
-            "define half @f(half %a, half %b) { %r = frem half %a, %b\n ret half %r }",
-            float::HALF_FREM,
-        ),
-        (
-            "define fp128 @f(fp128 %a, fp128 %b) { %r = frem fp128 %a, %b\n ret fp128 %r }",
-            float::FP128_LIBCALL,
-        ),
-        (
-            "define i1 @f(fp128 %a, fp128 %b) { %r = fcmp olt fp128 %a, %b\n ret i1 %r }",
-            float::FP128_LIBCALL,
-        ),
-        (
-            "define double @f(fp128 %a) { %r = fptrunc fp128 %a to double\n ret double %r }",
-            float::FP128_LIBCALL,
-        ),
-        (
-            "define fp128 @f(i64 %a) { %r = sitofp i64 %a to fp128\n ret fp128 %r }",
-            float::FP128_LIBCALL,
-        ),
-        (
-            "define i32 @f(fp128 %a) { %r = fptosi fp128 %a to i32\n ret i32 %r }",
-            float::FP128_LIBCALL,
-        ),
-        (
             "define bfloat @f(bfloat %a, bfloat %b) { %r = fadd bfloat %a, %b\n ret bfloat %r }",
             float::BFLOAT,
         ),
@@ -330,6 +306,31 @@ fn same_but_nan(ty: Ty, a: u128, b: u128) -> bool {
     })
 }
 
+/// Whether `fptosi`/`fptoui` of the `fp128` pattern `bits` to `i<width>`
+/// is poison: exactly, from the bits (an `f64` would round).
+fn quad_to_int_poison(bits: u128, width: u32, signed: bool) -> bool {
+    let exp = ((bits >> 112) & 0x7fff) as i32;
+    let negative = bits >> 127 != 0;
+    if exp == 0x7fff {
+        return true;
+    }
+    let e = exp - 16383;
+    if e < 0 {
+        return false; // |x| < 1 truncates to 0.
+    }
+    if e > 80 {
+        return true;
+    }
+    let mant = (bits & ((1u128 << 112) - 1)) | (1u128 << 112);
+    let int = if e >= 112 { mant << (e - 112) } else { mant >> (112 - e) };
+    match (signed, negative) {
+        (false, true) => int != 0,
+        (false, false) => width < 128 && int >> width != 0,
+        (true, false) => int >> (width - 1) != 0,
+        (true, true) => int > 1u128 << (width - 1),
+    }
+}
+
 /// The value of a `half` pattern.
 fn half_value(bits: u128) -> f64 {
     let b = bits as u32;
@@ -450,6 +451,27 @@ fn specials(ty: Ty) -> Vec<u128> {
             (0x7fff_u128 << 112) | 1,
             (0x7fff_8000_u128 << 96) | 0x1234_5678,
             0x4000_921f_b544_42d1_8469_898c_c517_01b8,
+            // 15..: the largest subnormal, the negative smallest one, a
+            // negative NaN, the negative largest number (WP-067).
+            0x0000_ffff_ffff_ffff_ffff_ffff_ffff_ffff,
+            (1 << 127) | 1,
+            0xffff_8000_u128 << 96,
+            0xfffe_ffff_ffff_ffff_ffff_ffff_ffff_ffff,
+            // 19..: the integer boundaries, 3 and 100.
+            0x401e_u128 << 112,
+            0x401d_ffff_fffc_u128 << 80,
+            0x401f_u128 << 112,
+            0x401e_ffff_fffe_u128 << 80,
+            0x403e_u128 << 112,
+            0x403d_ffff_ffff_ffff_fffc_u128 << 48,
+            0x403f_u128 << 112,
+            0x403e_ffff_ffff_ffff_fffe_u128 << 48,
+            0xc01e_u128 << 112,
+            0xc01e_0000_0002_u128 << 80,
+            0xc03e_u128 << 112,
+            0xc03e_0000_0000_0000_0002_u128 << 48,
+            0x4000_8000_u128 << 96,
+            0x4005_9000_u128 << 96,
         ],
         _ => panic!("no specials for {ty:?}"),
     };
@@ -462,6 +484,7 @@ fn pair_specials(ty: Ty) -> Vec<u128> {
     let all = specials(ty);
     let pick: &[usize] = match ty {
         H | F | D => &[0, 1, 2, 3, 4, 7, 9, 10, 12, 13, 14, 15, 16, 18],
+        Q => &[0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 15, 16, 17, 18],
         _ => return all,
     };
     pick.iter().map(|&i| all[i]).collect()
@@ -559,6 +582,10 @@ struct Func {
     /// Whether `llc`'s result is comparable: not for `freeze undef`,
     /// which may be any value.
     llc: bool,
+    /// A C expression of the parameters `a0`, `a1`, ... that computes
+    /// the result: the oracle for `fp128` (AArch64's `long double`) and
+    /// `half`, which the interpreter does not have (WP-067).
+    c: Option<String>,
 }
 
 impl Func {
@@ -571,7 +598,13 @@ impl Func {
             make: Gen::Any,
             poison: Poison::Never,
             llc: true,
+            c: None,
         }
+    }
+
+    fn c(mut self, expr: impl Into<String>) -> Func {
+        self.c = Some(expr.into());
+        self
     }
 
     fn with(mut self, make: Gen) -> Func {
@@ -605,6 +638,7 @@ impl Func {
                     H => half_value(args[0]),
                     F => f64::from(f32::from_bits(args[0] as u32)),
                     D => f64::from_bits(args[0] as u64),
+                    Q => return quad_to_int_poison(args[0], bits, signed),
                     _ => unreachable!(),
                 };
                 hod_interp::ops::float_to_int(x, bits, signed).is_err()
@@ -675,6 +709,30 @@ fn n(name: &str) -> String {
     name.replace(['<', '>', ' '], "")
 }
 
+/// The C expression of `fcmp <p>` of `a0` and `a1`.
+fn c_predicate(p: &str) -> String {
+    match p {
+        "false" => "0",
+        "true" => "1",
+        "oeq" => "a0 == a1",
+        "une" => "!(a0 == a1)",
+        "olt" => "a0 < a1",
+        "ole" => "a0 <= a1",
+        "ogt" => "a0 > a1",
+        "oge" => "a0 >= a1",
+        "ult" => "!(a0 >= a1)",
+        "ule" => "!(a0 > a1)",
+        "ugt" => "!(a0 <= a1)",
+        "uge" => "!(a0 < a1)",
+        "ord" => "!__builtin_isunordered(a0, a1)",
+        "uno" => "__builtin_isunordered(a0, a1)",
+        "one" => "__builtin_islessgreater(a0, a1)",
+        "ueq" => "!__builtin_islessgreater(a0, a1)",
+        _ => unreachable!("{p}"),
+    }
+    .into()
+}
+
 /// Every hand-written function of the group.
 fn hand_written() -> Vec<Func> {
     let mut out = Vec::new();
@@ -683,18 +741,27 @@ fn hand_written() -> Vec<Func> {
     // Binary operations, with two arguments and with constants.
     for t in [H, F, D, Q] {
         for op in ["fadd", "fsub", "fmul", "fdiv", "frem"] {
-            if op == "frem" && matches!(t, H | Q) {
-                continue;
-            }
             let tl = t.ll();
             let make = if t == Q { Gen::Any } else { Gen::Pairs };
-            add(Func::new(
+            let f = Func::new(
                 format!("{op}_{tl}"),
                 t,
                 &[t, t],
                 format!("%r = {op} {tl} %a0, %a1\nret {tl} %r"),
             )
-            .with(make));
+            .with(make);
+            let sym = match op {
+                "fadd" => "+",
+                "fsub" => "-",
+                "fmul" => "*",
+                _ => "/",
+            };
+            add(match (t, op) {
+                (Q, "frem") => f.c("fmodl(a0, a1)"),
+                (H, "frem") => f.c("(_Float16)fmodf(a0, a1)"),
+                (Q, _) => f.c(format!("a0 {sym} a1")),
+                _ => f,
+            });
         }
     }
     let constants: &[(Ty, &[&str])] = &[
@@ -778,23 +845,27 @@ fn hand_written() -> Vec<Func> {
     // Compares: every predicate, every pair of specials; returned
     // (deferred, then asked for by `ret`), across a block (`cset` without
     // deferral) and fused into a `select` of each width.
-    for t in scalars {
+    for t in [H, F, D, Q] {
         let tl = t.ll();
         for p in PREDICATES {
-            add(Func::new(
-                format!("fcmp_{p}_{tl}"),
-                I(1),
-                &[t, t],
-                format!("%c = fcmp {p} {tl} %a0, %a1\nret i1 %c"),
-            )
-            .with(Gen::Pairs));
-            add(Func::new(
+            let c = c_predicate(p);
+            let with_c = |f: Func| if t == Q { f.c(c.clone()) } else { f };
+            add(with_c(
+                Func::new(
+                    format!("fcmp_{p}_{tl}"),
+                    I(1),
+                    &[t, t],
+                    format!("%c = fcmp {p} {tl} %a0, %a1\nret i1 %c"),
+                )
+                .with(Gen::Pairs),
+            ));
+            add(with_c(Func::new(
                 format!("fcmpb_{p}_{tl}"),
                 I(1),
                 &[t, t],
                 format!("%c = fcmp {p} {tl} %a0, %a1\nbr label %next\nnext:\nret i1 %c"),
-            ));
-            add(Func::new(
+            )));
+            let f = Func::new(
                 format!("fsel_{p}_{tl}"),
                 t,
                 &[t, t, t, t],
@@ -802,8 +873,31 @@ fn hand_written() -> Vec<Func> {
                     "%c = fcmp {p} {tl} %a0, %a1\n%r = select i1 %c, {tl} %a2, {tl} %a3\nret {tl} %r"
                 ),
             )
-            .with(Gen::Pairs));
+            .with(Gen::Pairs);
+            add(if t == Q { f.c(format!("({c}) ? a2 : a3")) } else { f });
         }
+    }
+    // `fp128` compares fused into selects of other types, and a compare
+    // whose operands are one value (WP-067).
+    for (p, sel) in [("ueq", D), ("one", F), ("olt", Ty::V(4, El::I(32))), ("uge", H)] {
+        let sl = sel.ll();
+        add(Func::new(
+            format!("qsel_{p}_{}", n(&sl)),
+            sel,
+            &[Q, Q, sel, sel],
+            format!(
+                "%c = fcmp {p} fp128 %a0, %a1\n%r = select i1 %c, {sl} %a2, {sl} %a3\nret {sl} %r"
+            ),
+        ));
+    }
+    for p in ["oeq", "uno", "one", "ueq"] {
+        add(Func::new(
+            format!("qself_{p}"),
+            I(1),
+            &[Q],
+            format!("%c = fcmp {p} fp128 %a0, %a0\nret i1 %c"),
+        )
+        .c(c_predicate(p).replace("a1", "a0")));
     }
     for (p, cmp, sel) in [
         ("one", D, Ty::V(4, El::I(32))),
@@ -850,6 +944,50 @@ fn hand_written() -> Vec<Func> {
             format!("%r = {op} {fl} %a0 to {tl}\nret {tl} %r"),
         ));
     }
+    for (op, from, to, c) in [
+        ("fpext", H, Q, "(long double)a0"),
+        ("fpext", F, Q, "(long double)a0"),
+        ("fpext", D, Q, "(long double)a0"),
+        ("fptrunc", Q, H, "(_Float16)a0"),
+        ("fptrunc", Q, F, "(float)a0"),
+        ("fptrunc", Q, D, "(double)a0"),
+    ] {
+        let (fl, tl) = (from.ll(), to.ll());
+        add(Func::new(
+            format!("{op}_{fl}_{tl}"),
+            to,
+            &[from],
+            format!("%r = {op} {fl} %a0 to {tl}\nret {tl} %r"),
+        )
+        .c(c));
+    }
+    for w in WIDTHS {
+        let mask = if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
+        for (op, signed) in [("fptosi", true), ("fptoui", false)] {
+            let mut f = Func::new(
+                format!("{op}_fp128_i{w}"),
+                I(w),
+                &[Q],
+                format!("%r = {op} fp128 %a0 to i{w}\nret i{w} %r"),
+            )
+            .c(if signed { "(int64_t)a0" } else { "(uint64_t)a0" });
+            f.poison = Poison::ToInt { from: Q, bits: w, signed };
+            add(f);
+        }
+        let shift = 64 - w;
+        for (op, c) in [
+            ("sitofp", format!("(long double)((int64_t)((uint64_t)a0 << {shift}) >> {shift})")),
+            ("uitofp", format!("(long double)((uint64_t)a0 & 0x{mask:x}ull)")),
+        ] {
+            add(Func::new(
+                format!("{op}_i{w}_fp128"),
+                Q,
+                &[I(w)],
+                format!("%r = {op} i{w} %a0 to fp128\nret fp128 %r"),
+            )
+            .c(c));
+        }
+    }
     for t in scalars {
         let tl = t.ll();
         for w in WIDTHS {
@@ -888,6 +1026,12 @@ fn hand_written() -> Vec<Func> {
         (Ty::V(2, El::I(64)), Q),
         (Q, Ty::V(2, El::I(64))),
         (Ty::V(4, El::H), D),
+        // Between `Fpr` values (WP-067: the matrix rows).
+        (Ty::V(2, El::F), D),
+        (D, Ty::V(4, El::H)),
+        (Q, Ty::V(4, El::F)),
+        (Ty::V(8, El::I(16)), Q),
+        (Ty::V(1, El::D), Ty::V(8, El::I(8))),
     ];
     for &(from, to) in bitcasts {
         let (fl, tl) = (from.ll(), to.ll());
@@ -1144,6 +1288,7 @@ const DRIVER_HEAD: &str = r#"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 typedef uint64_t q_t __attribute__((vector_size(16)));
 typedef uint64_t d_t __attribute__((vector_size(8)));
 static inline _Float16 H(uint16_t b) { _Float16 v; memcpy(&v, &b, 2); return v; }
@@ -1213,6 +1358,18 @@ fn run_native(label: &str, funcs: &[Func], per: usize, seed: u64) -> usize {
             let params = if params.is_empty() { "void".to_string() } else { params.join(", ") };
             let _ = writeln!(c, "{} {prefix}{}({params});", f.ret.c(), f.name);
         }
+        if let Some(expr) = &f.c {
+            let params: Vec<String> =
+                f.params.iter().enumerate().map(|(i, t)| format!("{} a{i}", t.c())).collect();
+            let _ = writeln!(
+                c,
+                "static {} c_{}({}) {{ return ({}) ({expr}); }}",
+                f.ret.c(),
+                f.name,
+                params.join(", "),
+                f.ret.c()
+            );
+        }
     }
     for (index, f) in funcs.iter().enumerate() {
         let _ = writeln!(c, "static void t{index}(void) {{");
@@ -1224,6 +1381,9 @@ fn run_native(label: &str, funcs: &[Func], per: usize, seed: u64) -> usize {
             let list = list.join(", ");
             for prefix in &prefixes {
                 let _ = write!(c, "{}({prefix}{}({list})); ", f.ret.c_print(), f.name);
+            }
+            if f.c.is_some() {
+                let _ = write!(c, "{}(c_{}({list})); ", f.ret.c_print(), f.name);
             }
             let _ = writeln!(c, "nl();");
             calls.push((index, args));
@@ -1282,7 +1442,17 @@ fn run_native(label: &str, funcs: &[Func], per: usize, seed: u64) -> usize {
             if hod != stressed {
                 why.push(format!("stressed {stressed:x}"));
             }
-            if let Some(&theirs) = got.get(2)
+            if f.c.is_some()
+                && !f.poisoned(args)
+                && let Some(&theirs) = got.last()
+                && theirs != hod
+                && !same_but_nan(f.ret, theirs, hod)
+            {
+                why.push(format!("C {theirs:x}"));
+            }
+            let llc_column = if f.c.is_some() { got.len() > 3 } else { got.len() > 2 };
+            if llc_column
+                && let Some(&theirs) = got.get(2)
                 && theirs != hod
                 && f.llc
                 && !f.poisoned(args)
@@ -1304,7 +1474,8 @@ fn run_native(label: &str, funcs: &[Func], per: usize, seed: u64) -> usize {
         }
     }
     let by_interp = expected.iter().filter(|e| e.is_some()).count();
-    eprintln!("{label}: {by_interp} calls also compared with hod_interp");
+    let by_c = calls.iter().filter(|(index, _)| funcs[*index].c.is_some()).count();
+    eprintln!("{label}: {by_interp} calls also compared with hod_interp, {by_c} with C");
     eprintln!(
         "{label}: {nan_only} results where llc's NaN differs from hod's (and the interpreter's)"
     );
@@ -1484,7 +1655,7 @@ impl Form {
             Form::CT(k) => gep(format!("{tl}, ptr %p, i64 {k}")),
             Form::Xi => gep(format!("{tl}, ptr %p, i64 %i")),
             Form::Xj => gep(format!("{tl}, ptr %p, i32 %j")),
-            Form::Xi8 => gep(format!("i8, ptr %p, i64 %i")),
+            Form::Xi8 => gep("i8, ptr %p, i64 %i".to_string()),
             Form::Xi3 => gep(format!("[3 x {tl}], ptr %p, i64 %i, i64 1")),
             Form::Two(k) => (
                 format!(
@@ -1571,14 +1742,11 @@ impl MemFunc {
             }
             MemKind::Slot { count, align, at } => {
                 let _ = writeln!(b, "%s = alloca [{count} x {tl}], align {align}");
-                match at {
-                    Some(k) => {
-                        let _ = writeln!(b, "%q = getelementptr {tl}, ptr %s, i64 {k}");
-                    }
-                    None => {
-                        let _ = writeln!(b, "%m = and i64 %i, {}", count - 1);
-                        let _ = writeln!(b, "%q = getelementptr {tl}, ptr %s, i64 %m");
-                    }
+                if let Some(k) = at {
+                    let _ = writeln!(b, "%q = getelementptr {tl}, ptr %s, i64 {k}");
+                } else {
+                    let _ = writeln!(b, "%m = and i64 %i, {}", count - 1);
+                    let _ = writeln!(b, "%q = getelementptr {tl}, ptr %s, i64 %m");
                 }
                 let _ = writeln!(b, "store {tl} {v}, ptr %q\n%r = load {tl}, ptr %q");
                 "%r"

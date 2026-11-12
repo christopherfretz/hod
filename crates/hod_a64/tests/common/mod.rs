@@ -4,8 +4,10 @@
 
 #![allow(dead_code, reason = "each test binary uses part of the support")]
 
+pub mod groups;
 #[path = "../../../hod_obj/tests/common/linking.rs"]
 pub mod linking;
+pub mod skeleton;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

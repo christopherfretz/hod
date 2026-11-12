@@ -15,6 +15,25 @@ for _cand in "$_WS/.toolchain" "$_MAIN/.toolchain" "${HOD_TOOLCHAIN:-}"; do
   fi
 done
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${HOD_BUILD_ROOT:-$_MAIN/.build}/target-$(basename "$_WS")}"
-# Shared machines: cap build parallelism unless told otherwise.
-export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
-unset _WS _MAIN _cand
+# Shared machines: one pool of parallelism tokens for every checkout
+# (`scripts/jobserver.sh start`). While it is live, cargo and rustc draw
+# from it instead of each build having its own -j, and a test binary runs
+# a few tests at a time. The pool is live when the process recorded beside
+# the fifo still holds it open: a fifo left behind by a restart has no
+# tokens, and a build pointed at it would wait forever. Without a pool,
+# cap the build's parallelism unless told otherwise.
+_JSF="${HOD_JOBSERVER_FIFO:-${HOD_BUILD_ROOT:-$_MAIN/.build}/jobserver.fifo}"
+if [ -z "${HOD_NO_JOBSERVER:-}" ] && [ -p "$_JSF" ] && [ -r "$_JSF.pid" ] \
+   && [ "/proc/$(cat "$_JSF.pid")/fd/3" -ef "$_JSF" ]; then
+  export MAKEFLAGS="--jobserver-auth=fifo:$_JSF"
+  unset CARGO_BUILD_JOBS
+  export RUST_TEST_THREADS="${RUST_TEST_THREADS:-6}"
+else
+  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
+fi
+unset _WS _MAIN _cand _JSF
+# A workspace on a host bind mount has dropped rmeta/rlib writes under
+# several concurrent pipelined builds (seen in kiln: "can't find crate" in
+# the middle of a clean build). Without pipelining a dependent rustc never
+# starts before the artifact is fully written.
+export CARGO_BUILD_PIPELINING="${CARGO_BUILD_PIPELINING:-false}"

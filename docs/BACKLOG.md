@@ -31,6 +31,7 @@ Milestones and tracks are in `docs/ROADMAP.md`.
 | WP-021 | T-IR | `available_externally` + `alwaysinline` bodies: producers mark them, `hod` emits a local copy and redirects the module's calls (design 0001 point 6); test with libstdc++'s extern-template cases | WP-003, WP-004 | todo |
 | WP-022 | T-H | Coverage log: a ninth field with the fallback's exit status; per-function records (which functions hod compiled, which construct stopped it) for function-level coverage; measure the shim's per-TU `sh` exec and remove it if it shows | WP-015 | todo |
 | WP-023 | T-H | `irdiff` follow-ups: emulated cross runs (x86-64 through a cross driver and `qemu-x86_64 -L <sysroot>`); the full gate also runs `--hybrid` and `--target x86_64`; `stdout` forms for output without a final newline; seed corpus gaps (bit and floating-point intrinsics, vectors, `indirectbr`, `byval`/`sret`, `half`/`fp128`); wild once provisioned | WP-016 | todo |
+| WP-024 | T-H | Jobserver client for the harness, ported from kiln (`xtask/src/jobs.rs` and its `spec/harness.md` "Jobserver"): every child process started by `xtask` (`irdiff`, `shim`, `ci` steps) and by `hod_testutil::run_with` holds a token of the pool named by `MAKEFLAGS` (`--jobserver-auth=fifo:`), with the implicit token, release on drop, kill-children-then-return-tokens on SIGINT/SIGTERM, `cargo xtask jobserver status|refill`, and the fallback to `-j` without a pool | WP-016 | todo |
 
 ## M1: C (aarch64)
 

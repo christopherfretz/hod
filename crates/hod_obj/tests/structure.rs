@@ -471,7 +471,7 @@ fn stack_note() {
     assert!(parse(&obj).named(".note.GNU-stack").is_empty());
 }
 
-/// "Tables": types, links and alignment of the three tables.
+/// "Symbol table" and "Section names": types, links and alignment of the three tables.
 #[test]
 fn tables() {
     let elf = parse(&common::hello("hi"));
@@ -518,7 +518,7 @@ impl std::io::Write for Trickle {
     }
 }
 
-/// "Writing": `write` produces the bytes of `to_vec` through any sink, in
+/// "ELF writer": `write` produces the bytes of `to_vec` through any sink, in
 /// few calls, and reports their number; `file_size` agrees.
 #[test]
 fn write_matches_to_vec() {
@@ -808,7 +808,7 @@ fn more_than_65k_sections() {
     assert_eq!(rela.info, main.shndx);
 }
 
-/// "Limits": the limits are far beyond what a test can build; what can be
+/// "Errors": the limits are far beyond what a test can build; what can be
 /// checked is that the error exists and says what overflowed.
 #[test]
 fn limit_errors_name_the_limit() {

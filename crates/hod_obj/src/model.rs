@@ -431,8 +431,8 @@ impl Object {
         Ok(StrId(id))
     }
 
-    /// The bytes of a stored name; empty for an id this object did not
-    /// issue.
+    /// The bytes of a stored name. Never panics: for an id this object did
+    /// not issue the result is unspecified (empty when past the end).
     pub fn string(&self, id: StrId) -> &[u8] {
         let tail = self.strings.get(id.0 as usize..).unwrap_or_default();
         let len = tail.iter().position(|&b| b == 0).unwrap_or(tail.len());
@@ -1010,7 +1010,7 @@ mod tests {
         assert!(matches!(obj.deferred, Some(Error::RelocationArchMismatch { .. })));
     }
 
-    /// "Groups": members in the order added; a section joins one group.
+    /// "Section groups": members in the order added; a section joins one group.
     #[test]
     fn groups() {
         let (mut obj, text) = object();

@@ -19,6 +19,7 @@ mod common;
 #[path = "dies_support/mod.rs"]
 mod support;
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -333,11 +334,13 @@ fn full_global(lto: &str) -> String {
     let file =
         text.split("file: ").nth(1).and_then(|r| r.split(',').next()).expect("a file").to_owned();
     text = text.replacen("\n!", "\n@g = global i32 7, align 4, !dbg !900\n!", 1);
-    text.push_str(&format!(
+    write!(
+        text,
         "!900 = !DIGlobalVariableExpression(var: !901, expr: !DIExpression())\n\
          !901 = distinct !DIGlobalVariable(name: \"g\", scope: {cu}, file: {file}, line: 1, \
          type: !902, isLocal: false, isDefinition: true)\n\
          !902 = !DIBasicType(name: \"int\", size: 32, encoding: DW_ATE_signed)\n"
-    ));
+    )
+    .unwrap();
     text
 }

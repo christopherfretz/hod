@@ -22,25 +22,39 @@
 //! for the scalar (`__addtf3`, `__eqtf2`, ...), one per lane, so a mask
 //! built by `fcmp` is kept in a frame slot across the calls.
 //!
+//! - Vectors of `bfloat` ([`lower`] too): arithmetic, `fneg`, `fcmp`,
+//!   and `fpext`/`fptrunc` with `float` and `double` lanes, lane by lane
+//!   as the scalar `bfloat` of WP-095 (`tail2::widen`, `tail2::narrow`):
+//!   hod chooses no `FEAT_BF16` instruction.
+//!
+//! - The `bfloat` NEON intrinsics `bfcvt`, `bfcvtn`, `bfcvtn2`, `bfdot`,
+//!   `bfmlalb`, `bfmlalt`, `bfmmla` ([`bf16_intrinsic`], from
+//!   `intrinsic.rs`): one instruction each, as `llc` selects them (the
+//!   call is the program's own request for `FEAT_BF16`).
+//!
 //! A lane index is `vector`'s rule: a constant out of range writes
 //! nothing, a variable one is masked (`N` a power of two) or clamped to
 //! lane 0. An undefined lane of a shuffle is zero.
 
 use hod_cg::{CallArg, CgResult, Class, FnCx, FrameRef, PReg, RuntimeFn, Target};
 use hod_ir::{
-    FloatPredicate, Inst, InstKind, IntPredicate, Opcode, TypeId, TypeKind, TypeTable, Value,
+    FloatPredicate, Inst, InstKind, IntPredicate, Intrinsic, Opcode, TypeId, TypeKind, TypeTable,
+    Value,
 };
 use hod_mc_a64 as mc;
-use hod_mc_a64::{Cond, Load, MemSize, Reg, RegZr, Shift, Size, VMemSize};
+use hod_mc_a64::{
+    Cond, Dot, FpFormat, FpSize, Load, MemSize, Reg, RegZr, Shift, Size, VMemSize, VReg, VecBits,
+};
 
 use crate::aggr::{ld, st};
 use crate::common::{
-    Cursor, X16, X17, copy_bytes, deferred_first, load_fpr_at, load_gpr_at, mov_imm, put,
+    Cursor, V30, V31, X16, X17, copy_bytes, deferred_first, load_fpr_at, load_gpr_at, mov_imm, put,
     store_fpr_at, store_gpr_at, unsupported, value_ty, vr, xr, zero_bytes,
 };
 use crate::mask::{MAX_MASK, low_bits, mask_lanes};
 use crate::target::A64;
 use crate::vector::{self, Elem, Index, Lanes, MAX_LANES, SCRATCH_IMAGES, Shape};
+use crate::{float, tail2};
 
 // ---- refusals ----
 
@@ -53,8 +67,13 @@ pub const I128_OP: &str = "a64:vector-i128-op";
 /// integer lanes and `i128` lanes).
 pub const WIDE_CAST: &str = "a64:vector-wide-cast";
 
+/// A conversion between `bfloat` lanes and integer, `half` or `fp128`
+/// lanes (hod lowers `fpext` and `fptrunc` with `float` and `double`
+/// lanes).
+pub const BFLOAT_CAST: &str = "a64:vector-bfloat-cast";
+
 /// Every refusal this module names.
-pub const REASONS: [&str; 2] = [I128_OP, WIDE_CAST];
+pub const REASONS: [&str; 3] = [I128_OP, WIDE_CAST, BFLOAT_CAST];
 
 // ---- the hook ----
 
@@ -104,6 +123,19 @@ pub fn lower<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>) -> Option<CgResult<()>>
         }
         InstKind::ShuffleVector { first, second, mask } if wide_result => {
             shuffle_vector(cx, inst, first, second, mask)
+        }
+        InstKind::Binary { lhs, rhs } if is_bf(types, inst.ty()) => bf_binary(cx, inst, lhs, rhs),
+        InstKind::Unary { arg } if inst.opcode() == Opcode::FNeg && is_bf(types, inst.ty()) => {
+            bf_fneg(cx, inst, arg)
+        }
+        InstKind::Cast { arg }
+            if inst.opcode() != Opcode::BitCast
+                && (is_bf(types, inst.ty()) || is_bf(types, value_ty(cx, arg))) =>
+        {
+            bf_cast(cx, inst, arg)
+        }
+        InstKind::FCmp { pred, lhs, rhs } if is_bf(types, value_ty(cx, lhs)) => {
+            bf_fcmp(cx, inst, pred, lhs, rhs)
         }
         _ => return None,
     })
@@ -264,7 +296,7 @@ pub fn extract_element<'a>(
 ) -> CgResult<()> {
     let lanes = lanes_of(cx, value_ty(cx, vector))?;
     if lanes.shape.elem != Elem::Fp128 {
-        return crate::tail2::extract_element(cx, inst, vector, at);
+        return tail2::extract_element(cx, inst, vector, at);
     }
     deferred_first(cx, inst, None)?;
     let idx = vector::index(cx, at, &lanes)?;
@@ -770,4 +802,263 @@ pub fn cast<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<
         }
     }
     finish(cx, inst, out)
+}
+
+// ---- bfloat lanes ----
+
+/// Whether `ty` is a fixed vector of `bfloat`.
+fn is_bf(types: &TypeTable, ty: TypeId) -> bool {
+    match types.kind(ty) {
+        TypeKind::Vector { elem, .. } => matches!(types.kind(elem), TypeKind::BFloat),
+        _ => false,
+    }
+}
+
+/// The shape of vector type `ty`, at most [`MAX_LANES`] lanes.
+fn shape_of(cx: &FnCx<'_, A64>, ty: TypeId) -> CgResult<Shape> {
+    match Shape::of(cx.types(), ty) {
+        Some(shape) if shape.lanes <= MAX_LANES => Ok(shape),
+        Some(_) => unsupported(vector::LENGTH),
+        None => cx.bug("a lane operation on something that is no vector"),
+    }
+}
+
+/// `ldr <view>` of `v` from `at` (through `x16`).
+fn load_v(cx: &mut FnCx<'_, A64>, view: VMemSize, v: VReg, at: FrameRef) {
+    let mut from = Cursor::frame(cx, at, X16);
+    load_fpr_at(cx, view, v, &mut from);
+}
+
+/// `str <view>` of `v` to `at` (through `x17`).
+fn store_v(cx: &mut FnCx<'_, A64>, view: VMemSize, v: VReg, at: FrameRef) {
+    let mut to = Cursor::frame(cx, at, X17);
+    store_fpr_at(cx, view, v, &mut to);
+}
+
+/// `%r = <op> <N x bfloat> %lhs, %rhs`: per lane both widened, the
+/// single-precision operation (`frem`: `fmodf`), the result narrowed
+/// without the NaN arm, as the scalar (`tail2::bfloat_binary`).
+///
+/// # Errors
+/// [`vector::LENGTH`]; what the operands report.
+pub fn bf_binary<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    lhs: Value,
+    rhs: Value,
+) -> CgResult<()> {
+    let word = match inst.opcode() {
+        Opcode::FAdd => Some(mc::fadd as fn(FpSize, VReg, VReg, VReg) -> u32),
+        Opcode::FSub => Some(mc::fsub as fn(FpSize, VReg, VReg, VReg) -> u32),
+        Opcode::FMul => Some(mc::fmul as fn(FpSize, VReg, VReg, VReg) -> u32),
+        Opcode::FDiv => Some(mc::fdiv as fn(FpSize, VReg, VReg, VReg) -> u32),
+        Opcode::FRem => None,
+        _ => return cx.bug("integer arithmetic on bfloat lanes"),
+    };
+    let n = shape_of(cx, inst.ty())?.lanes;
+    deferred_first(cx, inst, None)?;
+    let [a, b] = images(cx, [lhs, rhs])?;
+    let r = result_image(cx, inst)?;
+    for l in 0..n {
+        let (p, q, o) = (a.offset_by(2 * l), b.offset_by(2 * l), r.offset_by(2 * l));
+        let Some(word) = word else {
+            let t1 = cx.temp(Class::Fpr)?;
+            let t2 = cx.temp(Class::Fpr)?;
+            load_v(cx, VMemSize::H, vr(t1), p);
+            tail2::widen(cx, vr(t1));
+            load_v(cx, VMemSize::H, vr(t2), q);
+            tail2::widen(cx, vr(t2));
+            let args = [CallArg::Reg(t1), CallArg::Reg(t2)];
+            let Some(res) = cx.call_runtime(RuntimeFn::Fmodf, &args, None)? else {
+                return cx.bug("a runtime function returned nothing");
+            };
+            tail2::narrow(cx, vr(res), false);
+            store_v(cx, VMemSize::H, vr(res), o);
+            cx.free_temp(res);
+            continue;
+        };
+        load_v(cx, VMemSize::H, V30, p);
+        tail2::widen(cx, V30);
+        load_v(cx, VMemSize::H, V31, q);
+        tail2::widen(cx, V31);
+        put(cx, word(FpSize::S, V30, V30, V31));
+        tail2::narrow(cx, V30, false);
+        store_v(cx, VMemSize::H, V30, o);
+    }
+    finish(cx, inst, r)
+}
+
+/// `%r = fneg <N x bfloat> %arg`: bit 15 of each lane flipped.
+///
+/// # Errors
+/// [`vector::LENGTH`]; what the operand reports.
+pub fn bf_fneg<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
+    let n = shape_of(cx, inst.ty())?.lanes;
+    deferred_first(cx, inst, None)?;
+    let [a] = images(cx, [arg])?;
+    let r = result_image(cx, inst)?;
+    for l in 0..n {
+        let mut from = Cursor::frame(cx, a.offset_by(2 * l), X16);
+        load_gpr_at(cx, Load::H, X17, &mut from);
+        put(cx, mc::eor_imm(Size::W, X17.sp(), X17.zr(), 0x8000));
+        let mut to = Cursor::frame(cx, r.offset_by(2 * l), X16);
+        store_gpr_at(cx, MemSize::H, X17.zr(), &mut to);
+    }
+    finish(cx, inst, r)
+}
+
+/// `%r = fcmp <pred> <N x bfloat> %lhs, %rhs`: per lane both widened,
+/// `FCMP` in single precision, the lane's bit of the mask set from the
+/// predicate's conditions (`float::conditions`).
+///
+/// # Errors
+/// [`vector::MASK_WIDE`] beyond 64 lanes; what the operands report.
+pub fn bf_fcmp<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    pred: FloatPredicate,
+    lhs: Value,
+    rhs: Value,
+) -> CgResult<()> {
+    let n = mask_of(cx, inst.ty())?;
+    deferred_first(cx, inst, None)?;
+    if matches!(pred, FloatPredicate::True | FloatPredicate::False) {
+        let rd = cx.def_reg(inst)?;
+        let bits = if pred == FloatPredicate::True { low_bits(n) } else { 0 };
+        mov_imm(cx, Size::X, xr(rd), bits);
+        return cx.finish(inst, rd);
+    }
+    let cond = float::conditions(pred);
+    let [a, b] = images(cx, [lhs, rhs])?;
+    let rd = cx.def_reg(inst)?;
+    for l in 0..n {
+        load_v(cx, VMemSize::H, V30, a.offset_by(2 * l));
+        tail2::widen(cx, V30);
+        load_v(cx, VMemSize::H, V31, b.offset_by(2 * l));
+        tail2::widen(cx, V31);
+        put(cx, mc::fcmp(FpSize::S, V30, V31));
+        put(cx, mc::cset(Size::X, X17.zr(), cond.first));
+        if let Some(second) = cond.second {
+            put(cx, mc::csinc(Size::X, X17.zr(), X17.zr(), RegZr::ZR, second.invert()));
+        }
+        let acc = if l == 0 { RegZr::ZR } else { xr(rd).zr() };
+        put(cx, mc::orr_shifted(Size::X, xr(rd).zr(), acc, X17.zr(), Shift::Lsl, l));
+    }
+    cx.finish(inst, rd)
+}
+
+/// `fpext` of `bfloat` lanes to `float` or `double` lanes (exact), and
+/// `fptrunc` of those to `bfloat` lanes: from `float` rounded with the
+/// NaN arm, from `double` through `FCVTXN` without it, as the scalar.
+///
+/// # Errors
+/// [`BFLOAT_CAST`] for any other conversion; [`vector::LENGTH`].
+pub fn bf_cast<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
+    let from = shape_of(cx, value_ty(cx, arg))?;
+    let to = shape_of(cx, inst.ty())?;
+    let (other, widening) = match inst.opcode() {
+        Opcode::FPExt => (to.elem, true),
+        Opcode::FPTrunc => (from.elem, false),
+        _ => return unsupported(BFLOAT_CAST),
+    };
+    let (view, bytes) = match other {
+        Elem::Float => (VMemSize::S, 4),
+        Elem::Double => (VMemSize::D, 8),
+        _ => return unsupported(BFLOAT_CAST),
+    };
+    deferred_first(cx, inst, None)?;
+    let [a] = images(cx, [arg])?;
+    let r = result_image(cx, inst)?;
+    for l in 0..to.lanes {
+        if widening {
+            load_v(cx, VMemSize::H, V30, a.offset_by(2 * l));
+            tail2::widen(cx, V30);
+            if other == Elem::Double {
+                put(cx, mc::fcvt(FpFormat::D, V30, FpFormat::S, V30));
+            }
+            store_v(cx, view, V30, r.offset_by(bytes * l));
+        } else {
+            load_v(cx, view, V30, a.offset_by(bytes * l));
+            if other == Elem::Double {
+                put(cx, tail2::fcvtxn(V30, V30));
+            }
+            tail2::narrow(cx, V30, other == Elem::Float);
+            store_v(cx, VMemSize::H, V30, r.offset_by(2 * l));
+        }
+    }
+    finish(cx, inst, r)
+}
+
+// ---- the `bfloat` NEON intrinsics ----
+
+/// `%r = call @llvm.aarch64.neon.<bf16 op>(args)`: `bfcvt` (`float` to
+/// `bfloat`), `bfcvtn` (`<4 x float>` to the low half of an
+/// `<8 x bfloat>`, the high half zero), `bfcvtn2` (into the high half of
+/// operand 0), and the accumulating `bfdot` (`<2 x float>` or
+/// `<4 x float>`), `bfmlalb`, `bfmlalt`, `bfmmla` (`<4 x float>`) into
+/// operand 0's register. A signature other than LLVM's is
+/// [`crate::neon::TARGET`].
+///
+/// # Errors
+/// [`crate::neon::TARGET`]; what placing the operands reports.
+pub fn bf16_intrinsic<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    which: Intrinsic<'a>,
+    args: &'a [Value],
+) -> CgResult<()> {
+    use Intrinsic as I;
+    let types = cx.types();
+    let size = |v: Value| types.size_of(value_ty(cx, v));
+    let ret = types.size_of(inst.ty());
+    let (word, count) = match (which, args.len()) {
+        (I::Aarch64NeonBfcvt, 1) if ret == 2 && size(args[0]) == 4 => (mc::bfcvt(V30, V30), 1),
+        (I::Aarch64NeonBfcvtn, 1) if ret == 16 && size(args[0]) == 16 => {
+            (mc::bfcvtn(VecBits::V64, V30, V30), 1)
+        }
+        (I::Aarch64NeonBfcvtn2, 2) if ret == 16 => (mc::bfcvtn(VecBits::V128, V30, V30), 2),
+        (I::Aarch64NeonBfdot, 3) if ret == 8 || ret == 16 => {
+            let bits = if ret == 8 { VecBits::V64 } else { VecBits::V128 };
+            (mc::neon_dot(Dot::Bfdot, bits, V30, V30, V30), 3)
+        }
+        (I::Aarch64NeonBfmlalb, 3) if ret == 16 => {
+            (mc::neon_dot(Dot::Bfmlalb, VecBits::V128, V30, V30, V30), 3)
+        }
+        (I::Aarch64NeonBfmlalt, 3) if ret == 16 => {
+            (mc::neon_dot(Dot::Bfmlalt, VecBits::V128, V30, V30, V30), 3)
+        }
+        (I::Aarch64NeonBfmmla, 3) if ret == 16 => {
+            (mc::neon_dot(Dot::Bfmmla, VecBits::V128, V30, V30, V30), 3)
+        }
+        _ => return unsupported(crate::neon::TARGET),
+    };
+    deferred_first(cx, inst, None)?;
+    // Operand 0 (the accumulator, or the converted value) dies here and
+    // takes the result; operand 1 in its register; operand 2 in `v31`
+    // unless it repeats an earlier one.
+    let d = cx.use_reg(args[0])?;
+    let mut regs = [vr(d), vr(d), vr(d)];
+    if count > 1 {
+        regs[1] = if args[1] == args[0] { vr(d) } else { vr(cx.use_reg(args[1])?) };
+    }
+    if count > 2 {
+        regs[2] = match args[..2].iter().position(|&a| a == args[2]) {
+            Some(j) => regs[j],
+            None => {
+                cx.put(args[2], crate::reg::v(31))?;
+                V31
+            }
+        };
+    }
+    // The register fields of `word` (`rd` 4:0, `rn` 9:5, `rm` 20:16) hold
+    // `v30`: replaced by the operands.
+    let clear = word & !(0x1f | 0x1f << 5 | if count == 3 { 0x1f << 16 } else { 0 });
+    let (rn, rm) = match count {
+        1 => (regs[0], None),
+        2 => (regs[1], None),
+        _ => (regs[1], Some(regs[2])),
+    };
+    let rm = rm.map_or(0, |r| u32::from(r.index()) << 16);
+    put(cx, clear | rm | u32::from(rn.index()) << 5 | u32::from(regs[0].index()));
+    cx.finish(inst, d)
 }

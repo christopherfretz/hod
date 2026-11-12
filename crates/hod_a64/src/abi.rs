@@ -916,7 +916,11 @@ fn assign_value(
         match leaf.class {
             // LLVM does not treat these as a block.
             Class::W => {}
-            Class::Bf => return no(BFLOAT_ARRAY),
+            // llc 22 passes a block, llc 19 each member as a piece: the
+            // same registers when all fit (WP-101).
+            Class::Bf if u64::from(state.nsrn) + leaves > u64::from(ARG_REGS) => {
+                return no(BFLOAT_ARRAY);
+            }
             Class::X if leaf.split != 0 => match wide_int_array(state, &leaf, leaves) {
                 // WP-101: the placements every configuration agrees on.
                 Some(placed) => block = placed,

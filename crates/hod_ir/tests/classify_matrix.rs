@@ -233,6 +233,9 @@ fn support_flips_rows() {
     assert_eq!(shipped.supports("inst:extractelement/fp128"), Some(true));
     assert_eq!(shipped.supports("inst:insertelement/i128"), Some(true));
     assert_eq!(shipped.supports("inst:insertelement/fp128"), Some(true));
+    // WP-101: the `bfloat` NEON intrinsics.
+    assert_eq!(shipped.supports("intrinsic:llvm.aarch64.neon.bfdot"), Some(true));
+    assert_eq!(shipped.supports("intrinsic:llvm.aarch64.neon.bfcvtn2"), Some(true));
     // WP-035: integer arithmetic on integers, not on pointers.
     assert_eq!(shipped.supports("inst:add/int"), Some(true));
     assert_eq!(shipped.supports("inst:add/ptr"), Some(false));

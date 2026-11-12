@@ -154,12 +154,28 @@ fn driver(calls: &[Call]) -> String {
 /// (or the `llc` 22 build). Returns the number of builds checked (0
 /// without the tools).
 fn run(label: &str, bodies: &[&str], calls: &[Call], want: Option<&str>) -> usize {
+    build_and_run(label, bodies, calls, want, true)
+}
+
+/// [`run`] with hod's builds only, against `want`.
+fn run_hod(label: &str, body: &str, calls: &[Call], want: &str) -> usize {
+    build_and_run(label, &[body], calls, Some(want), false)
+}
+
+fn build_and_run(
+    label: &str,
+    bodies: &[&str],
+    calls: &[Call],
+    want: Option<&str>,
+    with_llc: bool,
+) -> usize {
     let dir = hod_testutil::Scratch::new(label);
     let Some(toolchain) = Toolchain::host(&dir) else { return 0 };
     let driver = toolchain.compile_c(&dir, "driver", &driver(calls), &[]);
     // builds[k] = (name, one object per module)
     let mut builds: Vec<(String, Vec<PathBuf>)> = Vec::new();
-    for major in [22, 19] {
+    for major in if with_llc { &[22, 19][..] } else { &[] } {
+        let major = *major;
         let mut objects = Vec::new();
         for (i, body) in bodies.iter().enumerate() {
             match llc_build(&dir, major, &format!("llc{major}-{i}"), body) {
@@ -171,7 +187,7 @@ fn run(label: &str, bodies: &[&str], calls: &[Call], want: Option<&str>) -> usiz
             builds.push((format!("llc{major}"), objects));
         }
     }
-    if builds.is_empty() {
+    if with_llc && builds.is_empty() {
         return 0;
     }
     let mut hod_plain = Vec::new();
@@ -863,4 +879,514 @@ fn wide_lane_refusals_are_named() {
             "abi:wide-int-array",
         ),
     ]);
+}
+
+// ---- arrays of `bfloat` ----
+
+/// `(floats before, members)` of the `[n x bfloat]` arguments every LLVM
+/// configuration passes alike: all members in registers.
+const BFLOAT_ARRAYS: [(u32, u32); 6] = [(0, 1), (0, 2), (0, 4), (5, 3), (6, 2), (7, 1)];
+
+/// The callee and caller modules of [`BFLOAT_ARRAYS`], and the caller's
+/// table functions.
+fn bfloat_arrays() -> (String, String, Vec<String>) {
+    let (mut callee, mut caller, mut names) = (String::new(), String::new(), Vec::new());
+    for (floats, n) in BFLOAT_ARRAYS {
+        let name = format!("bfa_{floats}_{n}");
+        let params: String = (0..floats).map(|i| format!("float %f{i}, ")).collect();
+        let types: String = (0..floats).map(|_| "float, ").collect();
+        // The callee folds each member's bits and each float's bits.
+        let mut body =
+            format!("define i64 @k_{name}({params}[{n} x bfloat] %a, i64 %s) noinline {{\n");
+        let mut acc = "%s".to_owned();
+        for i in 0..n {
+            writeln!(
+                body,
+                "  %e{i} = extractvalue [{n} x bfloat] %a, {i}
+  %b{i} = bitcast bfloat %e{i} to i16
+  %z{i} = zext i16 %b{i} to i64
+  %m{i} = mul i64 {acc}, 65599
+  %a{i} = add i64 %m{i}, %z{i}"
+            )
+            .unwrap();
+            acc = format!("%a{i}");
+        }
+        for i in 0..floats {
+            writeln!(
+                body,
+                "  %fb{i} = bitcast float %f{i} to i32
+  %fz{i} = zext i32 %fb{i} to i64
+  %fm{i} = mul i64 {acc}, 31
+  %fa{i} = add i64 %fm{i}, %fz{i}"
+            )
+            .unwrap();
+            acc = format!("%fa{i}");
+        }
+        writeln!(body, "  ret i64 {acc}\n}}\n").unwrap();
+        callee.push_str(&body);
+        writeln!(caller, "declare i64 @k_{name}({types}[{n} x bfloat], i64)").unwrap();
+        let mut t = format!("define i64 @{name}({PARAMS}) {{\n");
+        let words = ["%a", "%b", "%c", "%d"];
+        let mut prev = "poison".to_owned();
+        for i in 0..n {
+            let shift = 16 * (i % 4);
+            writeln!(
+                t,
+                "  %w{i} = lshr i64 {}, {shift}
+  %h{i} = trunc i64 %w{i} to i16
+  %v{i} = bitcast i16 %h{i} to bfloat
+  %r{i} = insertvalue [{n} x bfloat] {prev}, bfloat %v{i}, {i}",
+                words[i as usize / 4]
+            )
+            .unwrap();
+            prev = format!("%r{i}");
+        }
+        let mut args = String::new();
+        for i in 0..floats {
+            writeln!(t, "  %ft{i} = trunc i64 %e to i32\n  %fx{i} = xor i32 %ft{i}, {i}\n  %f{i} = bitcast i32 %fx{i} to float").unwrap();
+            write!(args, "float %f{i}, ").unwrap();
+        }
+        writeln!(
+            t,
+            "  %r = call i64 @k_{name}({args}[{n} x bfloat] {prev}, i64 %f)\n  ret i64 %r\n}}\n"
+        )
+        .unwrap();
+        caller.push_str(&t);
+        names.push(name);
+    }
+    (caller, callee, names)
+}
+
+#[test]
+fn bfloat_arrays_cross_calls_as_llc_passes_them() {
+    let (caller, callee, names) = bfloat_arrays();
+    let mut rng = Rng(0x0101_bf16);
+    let calls = calls_of(&names, &mut rng, 6);
+    run("a64-tail3-bfloat-array", &[&caller, &callee], &calls, None);
+}
+
+#[test]
+fn bfloat_arrays_that_llc_versions_place_apart_are_refused() {
+    // llc 22 puts the three on the stack, llc 19 one in `h7` (§3.3).
+    assert_refused(&[(
+        "define i64 @f(float %a, float %b, float %c, float %d, float %e, float %f, float %g, [3 x bfloat] %x) {
+  ret i64 0
+}",
+        "abi:bfloat-array",
+    )]);
+}
+
+// ---- vectors of `bfloat` ----
+
+/// `%name` = `<n x bfloat>` whose lane `i` is 16 bits of the arguments
+/// (`a`, `b`, `c`, `d`, four lanes each, then again).
+fn build_bf(out: &mut String, name: &str, n: u32, words: [&str; 4]) {
+    let mut prev = "poison".to_owned();
+    for i in 0..n {
+        let next = if i + 1 == n { format!("%{name}") } else { format!("%{name}.{i}") };
+        writeln!(
+            out,
+            "  %{name}.w{i} = lshr i64 %{}, {}
+  %{name}.t{i} = trunc i64 %{name}.w{i} to i16
+  %{name}.b{i} = bitcast i16 %{name}.t{i} to bfloat
+  {next} = insertelement <{n} x bfloat> {prev}, bfloat %{name}.b{i}, i32 {i}",
+            words[(i as usize / 4) % 4],
+            16 * (i % 4)
+        )
+        .unwrap();
+        prev = next;
+    }
+}
+
+/// Folds the floating-point `<n x elem>` `%name` (elements of `bits`
+/// bits) into `%h{name}` through its integer lanes, every NaN counted as
+/// one value (which NaN an operation of two NaNs gives depends on the
+/// order of its registers, which LLVM does not specify).
+fn fold_lanes(out: &mut String, name: &str, n: u32, elem: &str, bits: u32) {
+    writeln!(out, "  %{name}.iv = bitcast <{n} x {elem}> %{name} to <{n} x i{bits}>").unwrap();
+    let (abs, inf): (u64, u64) = match bits {
+        16 => (0x7fff, 0x7f80),
+        32 => (0x7fff_ffff, 0x7f80_0000),
+        _ => (0x7fff_ffff_ffff_ffff, 0x7ff0_0000_0000_0000),
+    };
+    let mut acc = "0".to_owned();
+    for i in 0..n {
+        let ext = if bits == 64 {
+            format!("add i64 %{name}.e{i}, 0")
+        } else {
+            format!("zext i{bits} %{name}.e{i} to i64")
+        };
+        writeln!(
+            out,
+            "  %{name}.e{i} = extractelement <{n} x i{bits}> %{name}.iv, i32 {i}
+  %{name}.x{i} = {ext}
+  %{name}.b{i} = and i64 %{name}.x{i}, {abs}
+  %{name}.n{i} = icmp ugt i64 %{name}.b{i}, {inf}
+  %{name}.z{i} = select i1 %{name}.n{i}, i64 -1, i64 %{name}.x{i}
+  %{name}.m{i} = mul i64 {acc}, 1000003
+  %{name}.a{i} = add i64 %{name}.m{i}, %{name}.z{i}"
+        )
+        .unwrap();
+        acc = format!("%{name}.a{i}");
+    }
+    writeln!(out, "  %h{name} = add i64 {acc}, 0").unwrap();
+}
+
+/// `%dst = <instr> <n x from> <args>` (to `<n x to>`), or, `scalar`, the
+/// same lane by lane on scalars (extract, operate, insert), which is the
+/// reference form for `llc`. `instr` is a binary operator or an `fcmp`
+/// (two arguments), `fneg` (one), or a cast (one, `to` its type).
+fn lanewise(
+    t: &mut String,
+    scalar: bool,
+    n: u32,
+    dst: &str,
+    instr: &str,
+    args: &[&str],
+    from: &str,
+    to: &str,
+) {
+    let cast = matches!(instr, "fpext" | "fptrunc");
+    let text = |ty: &str, a: &[String], to_ty: &str| match (a, cast) {
+        ([x], true) => format!("{instr} {ty} {x} to {to_ty}"),
+        ([x], false) => format!("{instr} {ty} {x}"),
+        ([x, y], _) => format!("{instr} {ty} {x}, {y}"),
+        _ => unreachable!(),
+    };
+    if !scalar {
+        let a: Vec<String> = args.iter().map(|x| format!("%{x}")).collect();
+        writeln!(
+            t,
+            "  %{dst} = {}",
+            text(&format!("<{n} x {from}>"), &a, &format!("<{n} x {to}>"))
+        )
+        .unwrap();
+        return;
+    }
+    let mut prev = "poison".to_owned();
+    for i in 0..n {
+        let mut a = Vec::new();
+        for x in args {
+            writeln!(t, "  %{dst}.{x}{i} = extractelement <{n} x {from}> %{x}, i32 {i}").unwrap();
+            a.push(format!("%{dst}.{x}{i}"));
+        }
+        writeln!(t, "  %{dst}.s{i} = {}", text(from, &a, to)).unwrap();
+        let next = if i + 1 == n { format!("%{dst}") } else { format!("%{dst}.v{i}") };
+        writeln!(t, "  {next} = insertelement <{n} x {to}> {prev}, {to} %{dst}.s{i}, i32 {i}")
+            .unwrap();
+        prev = next;
+    }
+}
+
+/// The table of `bfloat`-lane functions of `counts` lanes, and their
+/// names; with `scalar`, each lane operation is written on scalars.
+fn bfloat_table(counts: &[u32], scalar: bool) -> (String, Vec<String>) {
+    let mut body = String::new();
+    let mut names = Vec::new();
+    let mut def = |body: &mut String, name: String, text: &str, result: &str| {
+        writeln!(body, "define i64 @{name}({PARAMS}) {{\n{text}  ret i64 {result}\n}}\n").unwrap();
+        names.push(name);
+    };
+    for &n in counts {
+        for op in ["fadd", "fsub", "fmul", "fdiv", "frem"] {
+            let mut t = String::new();
+            build_bf(&mut t, "va", n, ["a", "b", "c", "d"]);
+            build_bf(&mut t, "vb", n, ["c", "d", "a", "b"]);
+            lanewise(&mut t, scalar, n, "r", op, &["va", "vb"], "bfloat", "bfloat");
+            lanewise(&mut t, scalar, n, "u", "fneg", &["r"], "bfloat", "bfloat");
+            fold_lanes(&mut t, "r", n, "bfloat", 16);
+            fold_lanes(&mut t, "u", n, "bfloat", 16);
+            writeln!(t, "  %res = xor i64 %hr, %hu").unwrap();
+            def(&mut body, format!("bf_{op}_{n}"), &t, "%res");
+        }
+        let mut t = String::new();
+        build_bf(&mut t, "va", n, ["a", "b", "c", "d"]);
+        build_bf(&mut t, "vb", n, ["a", "d", "c", "b"]);
+        let preds = [
+            "false", "oeq", "ogt", "oge", "olt", "ole", "one", "ord", "ueq", "ugt", "uge", "ult",
+            "ule", "une", "uno", "true",
+        ];
+        let mut acc = "0".to_owned();
+        for (k, pred) in preds.iter().enumerate() {
+            lanewise(
+                &mut t,
+                scalar,
+                n,
+                &format!("m{k}"),
+                &format!("fcmp {pred}"),
+                &["va", "vb"],
+                "bfloat",
+                "i1",
+            );
+            writeln!(
+                t,
+                "  %mb{k} = bitcast <{n} x i1> %m{k} to i{n}
+  %mz{k} = zext i{n} %mb{k} to i64
+  %mm{k} = mul i64 {acc}, 131
+  %acc{k} = add i64 %mm{k}, %mz{k}"
+            )
+            .unwrap();
+            acc = format!("%acc{k}");
+        }
+        def(&mut body, format!("bf_fcmp_{n}"), &t, &acc);
+        // fpext and fptrunc, with `float` and `double` lanes.
+        let mut t = String::new();
+        build_bf(&mut t, "va", n, ["a", "b", "c", "d"]);
+        lanewise(&mut t, scalar, n, "ef", "fpext", &["va"], "bfloat", "float");
+        lanewise(&mut t, scalar, n, "ed", "fpext", &["va"], "bfloat", "double");
+        // Floats and doubles made of the arguments' bits.
+        let mut fprev = "poison".to_owned();
+        let mut dprev = "poison".to_owned();
+        let words = ["a", "b", "c", "d", "e", "f"];
+        for i in 0..n {
+            let (fnext, dnext) = if i + 1 == n {
+                ("%fv".to_owned(), "%dv".to_owned())
+            } else {
+                (format!("%fv.{i}"), format!("%dv.{i}"))
+            };
+            writeln!(
+                t,
+                "  %fw{i} = lshr i64 %{w}, {s}
+  %ft{i} = trunc i64 %fw{i} to i32
+  %fb{i} = bitcast i32 %ft{i} to float
+  {fnext} = insertelement <{n} x float> {fprev}, float %fb{i}, i32 {i}
+  %dr{i} = call i64 @llvm.fshl.i64(i64 %{w}, i64 %{w}, i64 {r})
+  %db{i} = bitcast i64 %dr{i} to double
+  {dnext} = insertelement <{n} x double> {dprev}, double %db{i}, i32 {i}",
+                w = words[i as usize % 6],
+                s = 32 * ((i / 6) % 2),
+                r = 7 * (i / 6)
+            )
+            .unwrap();
+            fprev = fnext;
+            dprev = dnext;
+        }
+        lanewise(&mut t, scalar, n, "tf", "fptrunc", &["fv"], "float", "bfloat");
+        lanewise(&mut t, scalar, n, "td", "fptrunc", &["dv"], "double", "bfloat");
+        fold_lanes(&mut t, "ef", n, "float", 32);
+        fold_lanes(&mut t, "ed", n, "double", 64);
+        fold_lanes(&mut t, "tf", n, "bfloat", 16);
+        fold_lanes(&mut t, "td", n, "bfloat", 16);
+        writeln!(
+            t,
+            "  %r1 = xor i64 %hef, %hed\n  %r2 = add i64 %r1, %htf\n  %res = xor i64 %r2, %htd"
+        )
+        .unwrap();
+        def(&mut body, format!("bf_cast_{n}"), &t, "%res");
+        // Lanes moved: shuffle, select on a mask, insert and extract.
+        let mut t = String::new();
+        build_bf(&mut t, "va", n, ["a", "b", "c", "d"]);
+        build_bf(&mut t, "vb", n, ["d", "c", "b", "a"]);
+        let mask: Vec<String> = (0..n).map(|i| format!("i32 {}", (3 * i + 1) % (2 * n))).collect();
+        writeln!(
+            t,
+            "  %sh = shufflevector <{n} x bfloat> %va, <{n} x bfloat> %vb, <{n} x i32> <{}>
+  %ei = urem i64 %e, {n}
+  %ins = insertelement <{n} x bfloat> %sh, bfloat 0xR3F80, i64 %ei
+  %fb = trunc i64 %f to i{n}
+  %fm = bitcast i{n} %fb to <{n} x i1>
+  %sel = select <{n} x i1> %fm, <{n} x bfloat> %ins, <{n} x bfloat> %va
+  %ex = extractelement <{n} x bfloat> %sel, i64 %ei
+  %exi = bitcast bfloat %ex to i16
+  %exz = zext i16 %exi to i64",
+            mask.join(", ")
+        )
+        .unwrap();
+        fold_lanes(&mut t, "sel", n, "bfloat", 16);
+        writeln!(t, "  %res = add i64 %hsel, %exz").unwrap();
+        def(&mut body, format!("bf_move_{n}"), &t, "%res");
+    }
+    body.push_str("declare i64 @llvm.fshl.i64(i64, i64, i64)\n");
+    (body, names)
+}
+
+/// Random words with `bfloat` NaNs, infinities, zeros and denormals in
+/// their 16-bit pieces, and `float` ones in their halves.
+fn bf_word(rng: &mut Rng) -> u64 {
+    const PIECES: [u16; 10] =
+        [0x7fc0, 0x7f81, 0xffff, 0x7f80, 0xff80, 0x0000, 0x8000, 0x0001, 0x3f80, 0x7f7f];
+    let mut w = rng.word();
+    for k in 0..4 {
+        let r = rng.next();
+        if r % 3 == 0 {
+            let piece = u64::from(PIECES[(r >> 8) as usize % PIECES.len()]);
+            w = (w & !(0xffff << (16 * k))) | piece << (16 * k);
+        }
+    }
+    w
+}
+
+/// Twelve calls of each of `names` with [`bf_word`]s.
+fn bf_calls(names: &[String], seed: u64) -> Vec<Call> {
+    let mut rng = Rng(seed);
+    let mut calls = Vec::new();
+    for name in names {
+        for _ in 0..12 {
+            let args = [(); 6].map(|()| bf_word(&mut rng));
+            calls.push((name.clone(), args));
+        }
+    }
+    calls
+}
+
+/// What `llc` 22 and 19 (which must agree) compute for `calls` of
+/// `body`, or `None` without the tools.
+fn llc_reference(label: &str, body: &str, calls: &[Call]) -> Option<String> {
+    let dir = hod_testutil::Scratch::new(label);
+    let toolchain = Toolchain::host(&dir)?;
+    let driver = toolchain.compile_c(&dir, "driver", &driver(calls), &[]);
+    let mut reference: Option<String> = None;
+    for major in [22, 19] {
+        let Some(object) = llc_build(&dir, major, &format!("llc{major}"), body) else { continue };
+        let exe = dir.join(format!("llc{major}"));
+        let inputs = [driver.as_path(), object.as_path(), std::path::Path::new("-lm")];
+        let ran = toolchain.link_and_run(&toolchain.linkers[0], &[], &inputs, &exe);
+        assert!(ran.success(), "{}", ran.stderr_text());
+        let got = ran.stdout_text();
+        let reference = reference.get_or_insert_with(|| got.clone());
+        assert!(&got == reference, "{label}: llc {major} differs from llc 22");
+    }
+    reference
+}
+
+/// `llc -O0` 19 and 22 miscompile arithmetic on `bfloat` vectors without
+/// `+bf16`: the rounding reads bit 16 of an operand's image instead of
+/// the result's (`ushr v1.4s, v0.4s, #16` of the loaded operand), so a
+/// product or sum whose low half is a tie or `0x7fff` comes out one ulp
+/// off. hod rounds each lane as the scalar `bfloat` operation does; the
+/// reference is `llc`'s build of the same functions written lane by lane
+/// on scalars.
+#[test]
+fn bfloat_lanes_agree_with_llc_on_scalars() {
+    let counts = [2, 3, 4, 5, 8, 16];
+    let (body, names) = bfloat_table(&counts, false);
+    let (reference, _) = bfloat_table(&counts, true);
+    let calls = bf_calls(&names, 0x0101_bf16);
+    let Some(want) = llc_reference("a64-tail3-bfloat-ref", &reference, &calls) else { return };
+    run_hod("a64-tail3-bfloat", &body, &calls, &want);
+}
+
+#[test]
+fn bfloat_lane_refusals_are_named() {
+    assert_refused(&[
+        (
+            "define void @f(ptr %p) {
+  %a = load <4 x i32>, ptr %p
+  %r = sitofp <4 x i32> %a to <4 x bfloat>
+  store <4 x bfloat> %r, ptr %p
+  ret void
+}",
+            tail3::BFLOAT_CAST,
+        ),
+        (
+            "define void @f(ptr %p) {
+  %a = load <4 x bfloat>, ptr %p
+  %r = fptoui <4 x bfloat> %a to <4 x i16>
+  store <4 x i16> %r, ptr %p
+  ret void
+}",
+            tail3::BFLOAT_CAST,
+        ),
+    ]);
+}
+
+// ---- the `bfloat` NEON intrinsics ----
+
+/// `%name` = `<n x float>` whose lanes are halves of the arguments.
+fn build_f(out: &mut String, name: &str, n: u32, words: [&str; 2]) {
+    let mut prev = "poison".to_owned();
+    for i in 0..n {
+        let next = if i + 1 == n { format!("%{name}") } else { format!("%{name}.{i}") };
+        writeln!(
+            out,
+            "  %{name}.w{i} = lshr i64 %{}, {}
+  %{name}.t{i} = trunc i64 %{name}.w{i} to i32
+  %{name}.b{i} = bitcast i32 %{name}.t{i} to float
+  {next} = insertelement <{n} x float> {prev}, float %{name}.b{i}, i32 {i}",
+            words[(i as usize / 2) % 2],
+            32 * (i % 2)
+        )
+        .unwrap();
+        prev = next;
+    }
+}
+
+/// The table of the seven intrinsics, and its names.
+fn bf16_intrinsics() -> (String, Vec<String>) {
+    let mut body = String::from(
+        "declare bfloat @llvm.aarch64.neon.bfcvt(float)
+declare <8 x bfloat> @llvm.aarch64.neon.bfcvtn(<4 x float>)
+declare <8 x bfloat> @llvm.aarch64.neon.bfcvtn2(<8 x bfloat>, <4 x float>)
+declare <2 x float> @llvm.aarch64.neon.bfdot.v2f32.v4bf16(<2 x float>, <4 x bfloat>, <4 x bfloat>)
+declare <4 x float> @llvm.aarch64.neon.bfdot.v4f32.v8bf16(<4 x float>, <8 x bfloat>, <8 x bfloat>)
+declare <4 x float> @llvm.aarch64.neon.bfmlalb(<4 x float>, <8 x bfloat>, <8 x bfloat>)
+declare <4 x float> @llvm.aarch64.neon.bfmlalt(<4 x float>, <8 x bfloat>, <8 x bfloat>)
+declare <4 x float> @llvm.aarch64.neon.bfmmla(<4 x float>, <8 x bfloat>, <8 x bfloat>)
+",
+    );
+    let mut names = Vec::new();
+    let mut def = |body: &mut String, name: &str, text: &str, result: &str| {
+        writeln!(
+            body,
+            "define i64 @{name}({PARAMS}) \"target-features\"=\"+bf16\" {{\n{text}  ret i64 {result}\n}}\n"
+        )
+        .unwrap();
+        names.push(name.to_owned());
+    };
+    let mut t = String::new();
+    writeln!(
+        t,
+        "  %t = trunc i64 %a to i32
+  %x = bitcast i32 %t to float
+  %r = call bfloat @llvm.aarch64.neon.bfcvt(float %x)
+  %rv = insertelement <1 x bfloat> poison, bfloat %r, i32 0"
+    )
+    .unwrap();
+    fold_lanes(&mut t, "rv", 1, "bfloat", 16);
+    def(&mut body, "i_bfcvt", &t, "%hrv");
+    let mut t = String::new();
+    build_f(&mut t, "vf", 4, ["a", "b"]);
+    build_f(&mut t, "vg", 4, ["c", "d"]);
+    writeln!(
+        t,
+        "  %lo = call <8 x bfloat> @llvm.aarch64.neon.bfcvtn(<4 x float> %vf)
+  %hi = call <8 x bfloat> @llvm.aarch64.neon.bfcvtn2(<8 x bfloat> %lo, <4 x float> %vg)
+  %lo2 = call <8 x bfloat> @llvm.aarch64.neon.bfcvtn(<4 x float> %vg)"
+    )
+    .unwrap();
+    fold_lanes(&mut t, "hi", 8, "bfloat", 16);
+    fold_lanes(&mut t, "lo2", 8, "bfloat", 16);
+    writeln!(t, "  %res = xor i64 %hhi, %hlo2").unwrap();
+    def(&mut body, "i_bfcvtn", &t, "%res");
+    for (name, call, n) in [
+        ("i_bfdot2", "<2 x float> @llvm.aarch64.neon.bfdot.v2f32.v4bf16", 2),
+        ("i_bfdot4", "<4 x float> @llvm.aarch64.neon.bfdot.v4f32.v8bf16", 4),
+        ("i_bfmlalb", "<4 x float> @llvm.aarch64.neon.bfmlalb", 4),
+        ("i_bfmlalt", "<4 x float> @llvm.aarch64.neon.bfmlalt", 4),
+        ("i_bfmmla", "<4 x float> @llvm.aarch64.neon.bfmmla", 4),
+    ] {
+        let m = 2 * n;
+        let mut t = String::new();
+        build_f(&mut t, "acc", n, ["e", "f"]);
+        build_bf(&mut t, "x", m, ["a", "b", "c", "d"]);
+        build_bf(&mut t, "y", m, ["c", "d", "b", "a"]);
+        writeln!(
+            t,
+            "  %r = call {call}(<{n} x float> %acc, <{m} x bfloat> %x, <{m} x bfloat> %y)
+  %s = call {call}(<{n} x float> %r, <{m} x bfloat> %x, <{m} x bfloat> %x)"
+        )
+        .unwrap();
+        fold_lanes(&mut t, "r", n, "float", 32);
+        fold_lanes(&mut t, "s", n, "float", 32);
+        writeln!(t, "  %res = xor i64 %hr, %hs").unwrap();
+        def(&mut body, name, &t, "%res");
+    }
+    (body, names)
+}
+
+#[test]
+fn bf16_intrinsics_agree_with_llc() {
+    let (body, names) = bf16_intrinsics();
+    let calls = bf_calls(&names, 0x0101_bfd0);
+    run("a64-tail3-bf16-intrinsics", &[&body], &calls, None);
 }

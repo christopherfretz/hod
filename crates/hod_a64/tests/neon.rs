@@ -396,13 +396,13 @@ fn what_is_not_lowered_is_refused_by_name() {
     assert_refused(&cases);
 }
 
-/// The bfloat intrinsics stay refused by their names (their matrix rows
-/// are not supported).
+/// The bfloat intrinsics compile since WP-101 (`tests/tail3.rs` checks
+/// them against `llc`).
 #[test]
-fn bfloat_intrinsics_are_refused() {
+fn bfloat_intrinsics_compile() {
     let text = "declare <4 x float> @llvm.aarch64.neon.bfdot.v4f32.v8bf16(<4 x float>, <8 x bfloat>, <8 x bfloat>)\n\
                 define <4 x float> @f(<4 x float> %a, <8 x bfloat> %b, <8 x bfloat> %c) {\n  \
                 %r = call <4 x float> @llvm.aarch64.neon.bfdot.v4f32.v8bf16(<4 x float> %a, <8 x bfloat> %b, <8 x bfloat> %c)\n  \
                 ret <4 x float> %r\n}\n";
-    assert!(compile_ll(text).is_err());
+    assert!(compile_ll(text).is_ok());
 }

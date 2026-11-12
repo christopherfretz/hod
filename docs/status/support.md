@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `operand` | 10 | 7 | 3 | 0 | 0 | 10 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 351 | 319 | 32 | 0 | 0 | 135 | 216 |
-| total | 658 | 514 | 98 | 46 | 17 | 370 | 271 |
+| `intrinsic` | 351 | 326 | 25 | 0 | 0 | 135 | 216 |
+| total | 658 | 521 | 91 | 46 | 17 | 370 | 271 |
 
 ## `module`
 
@@ -687,13 +687,13 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.aarch64.isb` | supported (int) | rejected | x86_64: an AArch64 property. WP-083 |
 | `intrinsic:llvm.aarch64.neon.abs` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
 | `intrinsic:llvm.aarch64.neon.addp` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
-| `intrinsic:llvm.aarch64.neon.bfcvt` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
-| `intrinsic:llvm.aarch64.neon.bfcvtn` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
-| `intrinsic:llvm.aarch64.neon.bfcvtn2` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
-| `intrinsic:llvm.aarch64.neon.bfdot` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
-| `intrinsic:llvm.aarch64.neon.bfmlalb` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
-| `intrinsic:llvm.aarch64.neon.bfmlalt` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
-| `intrinsic:llvm.aarch64.neon.bfmmla` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
+| `intrinsic:llvm.aarch64.neon.bfcvt` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-101 |
+| `intrinsic:llvm.aarch64.neon.bfcvtn` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-101 |
+| `intrinsic:llvm.aarch64.neon.bfcvtn2` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-101 |
+| `intrinsic:llvm.aarch64.neon.bfdot` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-101 |
+| `intrinsic:llvm.aarch64.neon.bfmlalb` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-101 |
+| `intrinsic:llvm.aarch64.neon.bfmlalt` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-101 |
+| `intrinsic:llvm.aarch64.neon.bfmmla` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-101 |
 | `intrinsic:llvm.aarch64.neon.cls` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
 | `intrinsic:llvm.aarch64.neon.fabd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
 | `intrinsic:llvm.aarch64.neon.facge` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |

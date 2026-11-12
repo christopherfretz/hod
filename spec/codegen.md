@@ -1799,6 +1799,33 @@ that refused it before (WP-084's "stays refused" list is settled here).
   sequence moves no value between classes (§7.2). In a structure or an
   array it is memory and passes (`std::experimental::simd<__int128>`
   passes `[1 x <1 x i128>] alignstack(16)` and returns `{<1 x i128>}`).
+- **Arrays of `bfloat`** (HFAs and `[n x bfloat]`, `spec/abi-a64.md`
+  §3.3): passed as a block of `H` registers when `NSRN + n <= 8`, where
+  `llc` 22 (a block) and `llc` 19 (piece by piece) place them alike;
+  otherwise `abi:bfloat-array`, since the two versions put the stack
+  pieces in different places.
+- **Vectors of `bfloat` without `+bf16`.** Load, store, passing, lane
+  insertion, extraction and shuffles are the 16-bit-lane forms of
+  `vector.rs` (a 64- or 128-bit power-of-two count is `Fpr`, any other
+  `Mem`). Per lane, as `llc` scalarizes them: `fadd`, `fsub`, `fmul`,
+  `fdiv` widen both lanes to `float` (a 16-bit shift), operate in `S`,
+  and narrow with round-to-nearest-even as the scalar does
+  (`tail2::narrow`); `frem` calls `fmodf`; `fneg` flips bit 15; `fcmp`
+  compares in `S` and collects the mask in a `Gpr`; `fpext` to `float` or
+  `double`, `fptrunc` from `float`, or from `double` through `fcvtxn`
+  (round to odd) then the narrowing. Any other cast is
+  `a64:vector-bfloat-cast`.
+  `llc -O0` of LLVM 19 and 22 miscompiles the vector form: its rounding
+  takes the rounding bit from the operand's image rather than the
+  result's (`ushr v1.4s, v0.4s, #16` of the loaded operand), so its
+  vector results differ from its own scalar ones. hod follows the
+  scalar, and its tests compare with `llc`'s build of the scalarized
+  program.
+- **The `bfloat` NEON intrinsics** `bfcvt`, `bfcvtn`, `bfcvtn2`, `bfdot`,
+  `bfmlalb`, `bfmlalt` and `bfmmla` (`intrinsic.rs`, one arm): the
+  instruction itself (FEAT_BF16), as `llc` emits for a function with
+  `+bf16`; the accumulator operand is the result register. Another
+  signature is `a64:intrinsic-target`.
 
 #### 5.5.2 Target features (WP-043)
 

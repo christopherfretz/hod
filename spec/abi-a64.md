@@ -216,8 +216,9 @@ answer for them:
   `i128`: §3.2, the even-register rule, a 16-aligned stack slot); `n` ≥ 2
   leaves when NGRN + 2n ≤ 8 (a block of 2n `X` registers from NGRN, no
   even-register rule). The rest keeps the name.
-- `abi:bfloat-array`: the leaf's class is `Bf`. (llc 22 treats it as a
-  block, llc 19 does not.)
+- `abi:bfloat-array`: the leaf's class is `Bf` and NSRN + `n` > 8.
+  (llc 22 treats it as a block, llc 19 does not; they agree only while
+  every member gets the next register, which is supported (WP-101).)
 - `abi:vector-array`: the leaf is a vector that takes more than one
   piece (§4.3). (The selectors disagree on how many registers the block
   needs.)
@@ -855,7 +856,7 @@ coverage log (`spec/cli.md`) counts by them.
 | `abi:vector-element` | a vector whose element is not one of §4.3's; a lone `<1 x i128>` |
 | `abi:mask-wide` | a mask of more than 64 elements (§4.3) |
 | `abi:wide-int-array` | an array argument of integers wider than 64 bits, where LLVM's selectors disagree (§3.3) |
-| `abi:bfloat-array` | an array argument of `bfloat` (§3.3) |
+| `abi:bfloat-array` | an array argument of `bfloat` that does not fit the vector registers left (§3.3) |
 | `abi:vector-array` | an array argument of vectors of more than one piece (§3.3) |
 | `abi:one-leaf-array` | an array argument with one leaf and a different stack alignment than the leaf's (§3.3) |
 | `abi:attribute-after-empty-argument` | §6.5 |
@@ -965,7 +966,8 @@ why this document cannot simply cite AAPCS64.
 **llc 19 against llc 22.**
 
 - `nest` is passed in `x18` by llc 19 and in `x15` by llc 22 (§6.3).
-- `[N x bfloat]` is a block for llc 22 and not for llc 19 (§3.3).
+- `[N x bfloat]` is a block for llc 22 and not for llc 19 (§3.3); the
+  same registers while all members fit.
 - Nothing else in the grid distinguishes them.
 
 **GlobalISel (`-O0`) against SelectionDAG (`-O2`)**, the same in both

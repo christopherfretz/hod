@@ -15,6 +15,16 @@
 //! are libc++'s.
 //!
 //! `cargo test -p hod_a64 --test dies_e2e -- --ignored --nocapture`
+//!
+//! The tests that run: `data/dies_e2e/e2e.cpp` (the shapes WP-087 writes:
+//! an unnamed catch parameter, an `alignas` local, a function-local
+//! typedef the front end retains, an inlined function template whose
+//! abstract instance has template parameters, a static member of an
+//! unsigned enumeration, a function template) by clang 19 (`llc` 19),
+//! clang 22 and kiln++ (`llc` 22), with its template parameters: hod's
+//! DIE trees are `llc`'s and verify; the shapes are there; and gdb and
+//! lldb sessions on hod's program print what they print on `llc`'s,
+//! under GNU ld, lld and mold.
 
 mod common;
 #[path = "lines_support/mod.rs"]
@@ -31,7 +41,7 @@ use common::linking::{Linker, Toolchain};
 use hod_cg::Options;
 use hod_ir::{Body, Module};
 use hod_testutil::{Scratch, run_with, tool};
-use support::{first_difference, trees};
+use support::{Node, first_difference, hod_object, kiln, llc_object, trees, verify};
 
 /// A module and its bodies; `None` when `hod_ll` cannot read it.
 fn parse_lenient(text: &str) -> Option<(Module, Vec<Body>)> {
@@ -193,7 +203,7 @@ fn verify_ok(dwarfdump: &Path, object: &Path) -> bool {
     out.success() && out.stdout_text().contains("No errors.")
 }
 
-fn llc_object(llc: &Path, input: &Path, out: &Path) -> bool {
+fn llc_census(llc: &Path, input: &Path, out: &Path) -> bool {
     let mut command = Command::new(llc);
     command.args(["-O0", "-global-isel=0", "-fast-isel=0", "-filetype=obj"]).arg(input).arg("-o").arg(out);
     run_with(&mut command, &[], Duration::from_mins(5)).success()
@@ -254,7 +264,7 @@ fn census_one(
     };
     let Some(llc) = tool(&format!("llc-{major}")) else { return };
     let llc_o = scratch.join(format!("{name}.llc.o"));
-    if !llc_object(&llc, file, &llc_o) {
+    if !llc_census(&llc, file, &llc_o) {
         t.llc_failed += 1;
         return;
     }
@@ -378,3 +388,220 @@ fn debug_census() {
         t.sessions_equal
     );
 }
+
+// ------------------------------------------------- `e2e.cpp` oracle ----
+
+fn data_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/dies_e2e")
+}
+
+/// `-g -O0` IR of `e2e.cpp` by `compiler`, with template parameters.
+fn e2e_ir(compiler: &Path, scratch: &Scratch, name: &str) -> String {
+    let out = scratch.join(format!("{name}.ll"));
+    let mut command = Command::new(compiler);
+    command.args(["-g", "-O0", "-S", "-emit-llvm", "-w", "-std=c++20"]);
+    command.arg(data_dir().join("e2e.cpp")).arg("-o").arg(&out);
+    let outcome = run_with(&mut command, &[], Duration::from_mins(2));
+    assert!(outcome.success(), "{command:?}: {}", outcome.stderr_text());
+    std::fs::read_to_string(out).unwrap()
+}
+
+/// The (compiler, `llc`) pairs that are present: clang 19's IR by `llc`
+/// 19, clang 22's and kiln++'s by `llc` 22.
+fn pairs() -> Vec<(&'static str, PathBuf, PathBuf)> {
+    let mut out = Vec::new();
+    for (name, compiler, llc) in [("c19", "clang++-19", "llc-19"), ("c22", "clang++-22", "llc-22")] {
+        if let (Some(c), Some(l)) = (tool(compiler), tool(llc)) {
+            out.push((name, c, l));
+        }
+    }
+    if let (Some(k), Some(l)) = (kiln(), tool("llc-22")) {
+        out.push(("kiln", k, l));
+    }
+    out
+}
+
+/// The DIEs of `tree` with `tag` whose attributes include `attr`
+/// (any, when empty), with their parents' tags.
+fn find<'a>(tree: &'a Node, tag: &str, attr: &str, parent: &'a str, out: &mut Vec<(&'a str, &'a Node)>) {
+    if tree.tag == tag && (attr.is_empty() || tree.attrs.iter().any(|a| a.contains(attr))) {
+        out.push((parent, tree));
+    }
+    for c in &tree.children {
+        find(c, tag, attr, &tree.tag, out);
+    }
+}
+
+#[test]
+fn e2e_trees_match_llc() {
+    let Some(dwarfdump) = tool("llvm-dwarfdump") else { return };
+    let scratch = Scratch::new("dies-e2e-trees");
+    let mut compared = 0;
+    for (name, compiler, llc) in pairs() {
+        let text = e2e_ir(&compiler, &scratch, name);
+        let hod = hod_object(&scratch, &format!("{name}-hod"), &text);
+        let llc = llc_object(&scratch, &llc, &format!("{name}-llc"), &text);
+        verify(&dwarfdump, &hod);
+        verify(&dwarfdump, &llc);
+        let (th, tl) = (trees(&dwarfdump, &hod), trees(&dwarfdump, &llc));
+        assert_eq!(th.len(), 1, "{name}");
+        if let Some(d) = first_difference(&th[0], &tl[0]) {
+            panic!("{name}: hod's tree, then llc's: {d}");
+        }
+        let unit = &th[0];
+        // What WP-087 writes, so that a lost shape fails.
+        let mut v = Vec::new();
+        find(unit, "DW_TAG_typedef", "(\"narrow\")", "", &mut v);
+        assert!(v.iter().any(|(p, _)| *p == "DW_TAG_subprogram"), "{name}: the local typedef");
+        v.clear();
+        find(unit, "DW_TAG_variable", "", "", &mut v);
+        let unnamed = v.iter().filter(|(_, n)| !n.attrs.iter().any(|a| a.starts_with("DW_AT_name"))).count();
+        assert!(unnamed >= 1, "{name}: the unnamed catch parameter");
+        if name != "kiln" {
+            // kiln++ gives the array no `align:`.
+            v.clear();
+            find(unit, "DW_TAG_variable", "DW_AT_alignment (32)", "", &mut v);
+            assert_eq!(v.len(), 1, "{name}: the aligned local");
+        }
+        v.clear();
+        find(unit, "DW_TAG_subprogram", "DW_AT_inline", "", &mut v);
+        assert!(
+            v.iter().any(|(_, n)| n.children.first().is_some_and(|c| c.tag == "DW_TAG_template_type_parameter")),
+            "{name}: the abstract instance's template parameter, first"
+        );
+        compared += 1;
+    }
+    eprintln!("e2e.cpp: {compared} trees equal to llc's");
+}
+
+const E2E_GDB: &[&str] = &[
+    "break e2e.cpp:19",
+    "break clamp_to<int>",
+    "break e2e.cpp:33",
+    "break e2e.cpp:40",
+    "break e2e.cpp:46",
+    "run",
+    "bt",
+    "info locals",
+    "print Config::level",
+    "continue",
+    "info args",
+    "bt",
+    "continue",
+    "bt",
+    "continue",
+    "info locals",
+    "continue",
+    "info locals",
+    "ptype narrow",
+    "continue",
+];
+
+const E2E_GDB_WANTS: &[&str] = &[
+    "twice<int> (x=3) at e2e.cpp:19",
+    "run (n=3) at e2e.cpp:50",
+    "doubled = 6",
+    "= Level::high",
+    "clamp_to<int> (v=6, hi=50)",
+    "caught (n=3) at e2e.cpp:33",
+    "buf = {0, 0, 0, 3, 0, 0, 0, 0}",
+    "s = 4467",
+    "type = short",
+    "exited normally",
+];
+
+const E2E_LLDB: &[&str] = &[
+    "breakpoint set --file e2e.cpp --line 19",
+    "breakpoint set --name clamp_to<int>",
+    "breakpoint set --file e2e.cpp --line 40",
+    "breakpoint set --file e2e.cpp --line 46",
+    "run",
+    "bt",
+    "frame variable",
+    "expr Config::level",
+    "continue",
+    // Not `result`: not yet assigned at the function's breakpoint.
+    "frame variable v hi",
+    "continue",
+    "frame variable",
+    "continue",
+    "frame variable",
+    "continue",
+];
+
+const E2E_LLDB_WANTS: &[&str] = &[
+    "[inlined] int twice<int>(int)",
+    "(int) doubled = 6",
+    "(Level) $0 = high",
+    "(int) v = 6\n(int) hi = 50",
+    "(int[8]) buf = ([0] = 0, [1] = 0, [2] = 0, [3] = 3,",
+    "(narrow) s = 4467",
+    "exited with status = 0",
+];
+
+fn e2e_session(debugger: &Path, lldb: bool, program: &Path) -> String {
+    let mut command = Command::new(debugger);
+    if lldb {
+        command
+            .args(["--no-lldbinit", "--batch", "-o", "settings set use-color false"])
+            .args(["-o", "settings set target.disable-aslr false"]);
+        for c in E2E_LLDB {
+            command.arg("-o").arg(c);
+        }
+    } else {
+        command.args(["-nx", "-batch", "-ex", "set pagination off", "-ex", "set confirm off"]);
+        command.args(["-ex", "set debuginfod enabled off", "-ex", "set style enabled off"]);
+        for c in E2E_GDB {
+            command.arg("-ex").arg(c);
+        }
+    }
+    command.arg(program);
+    let out = run_with(&mut command, &[], Duration::from_mins(3));
+    assert!(!out.timed_out(), "{} on {}", debugger.display(), program.display());
+    // The source's directory, which gdb prints when it is absolute.
+    out.stdout_text().replace(&format!("{}/", data_dir().display()), "")
+}
+
+#[test]
+fn e2e_sessions_match_llc() {
+    if !cfg!(target_arch = "aarch64") {
+        eprintln!("note: the programs are built for AArch64; skipping on this host");
+        return;
+    }
+    let (Some(gdb), Some(lldb)) = (tool("gdb"), tool("lldb")) else { return };
+    let scratch = Scratch::new("dies-e2e-sessions");
+    let Some(toolchain) = Toolchain::host(&scratch) else { return };
+    let mut sessions = 0;
+    for (name, compiler, llc) in pairs() {
+        let text = e2e_ir(&compiler, &scratch, name);
+        let hod = hod_object(&scratch, &format!("{name}-hod"), &text);
+        let llc = llc_object(&scratch, &llc, &format!("{name}-llc"), &text);
+        for linker in &toolchain.linkers {
+            let tag = format!("{name}, {}", linker.name);
+            let mut programs = Vec::new();
+            for (who, object) in [("hod", &hod), ("llc", &llc)] {
+                let dir = scratch.join(format!("{who}-{name}-{}", linker.name));
+                std::fs::create_dir_all(&dir).unwrap();
+                let program = dir.join("prog");
+                let inputs = [object.as_path(), Path::new("-lstdc++")];
+                let ran = toolchain.link_and_run(linker, &["-no-pie"], &inputs, &program);
+                assert_eq!(common::linking::exit_code(&ran), Some(0), "{tag}: {who}'s program");
+                programs.push((dir, program));
+            }
+            for (debugger, is_lldb, wants) in
+                [(&gdb, false, E2E_GDB_WANTS), (&lldb, true, E2E_LLDB_WANTS)]
+            {
+                let which = if is_lldb { "lldb" } else { "gdb" };
+                let h = masked(&e2e_session(debugger, is_lldb, &programs[0].1), &programs[0].0);
+                let l = masked(&e2e_session(debugger, is_lldb, &programs[1].1), &programs[1].0);
+                assert_eq!(h, l, "{tag}: {which}: hod's session, then llc's");
+                for w in wants {
+                    assert!(h.contains(w), "{tag}: {which}: {w:?} in\n{h}");
+                }
+                sessions += 2;
+            }
+        }
+    }
+    eprintln!("e2e.cpp: {sessions} sessions, hod's equal to llc's");
+}
+

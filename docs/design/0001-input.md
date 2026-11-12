@@ -175,7 +175,8 @@ as a fraction of hod's total. If it exceeds 5%, evaluate having
   an existing SSA IR, one analysis walk and one walk that selects, allocates
   and encodes together. Reports 8x to 26x lower back-end compile time than
   LLVM `-O0` on SPECint 2017 at similar run time, with 10% to 30% larger
-  code. hod's two-walk design follows it; hod differs in owning its IR and in
+  code. hod's design follows it, with the analysis walk replaced by facts
+  the IR builder maintains; hod differs in owning its IR and in
   treating debug info, unwind tables and full C++ coverage as requirements.
 - Cranelift, LLVM FastISel + fast register allocator, QBE, tcc, and
   copy-and-patch were considered. All but tcc build a machine IR that hod

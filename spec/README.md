@@ -11,7 +11,7 @@ crate could be re-implemented from its spec and its tests alone.
 | `object.md` | `hod_obj`: object model, ELF64 writer | WP-010 landed; WP-011 planned |
 | `mc-a64.md` | `hod_mc_a64`: register model, instruction constructors, logical immediates, constant materialization, fixups | base integer set current (WP-012); floating point and SIMD planned (WP-013) |
 | `mc-x64.md` | `hod_mc_x64` | planned |
-| `codegen.md` | `hod_cg`: walks, value locations, frame, `Target` trait, per-function output record | planned (WP-014) |
+| `codegen.md` | `hod_cg`: the walk, value-location policy, frame, `Target` trait, per-function output record | design written (WP-014); implemented from WP-030 on |
 | `abi-a64.md` | how IR-level types are passed and returned on AArch64 | planned |
 | `abi-x64.md` | the same for x86-64 SysV | planned |
 | `eh.md` | `hod_eh`: CFI and LSDA | planned |

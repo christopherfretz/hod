@@ -436,6 +436,27 @@ impl ConstPool {
         }
     }
 
+    /// The type of constant `id` if it is plain data with nothing inside
+    /// it (a number, `null`, a zero, `undef`, `poison`, bytes); `None`
+    /// for any other constant and for an id that names none. `classify`
+    /// (§8) asks this of every constant operand: such a constant needs no
+    /// look beyond its type.
+    #[inline]
+    pub(crate) fn leaf_type(&self, id: ConstId) -> Option<TypeId> {
+        match *self.data.get(id.index())? {
+            Repr::Int { ty, .. }
+            | Repr::WideInt { ty, .. }
+            | Repr::Float { ty, .. }
+            | Repr::WideFloat { ty, .. }
+            | Repr::Null(ty)
+            | Repr::Zero(ty)
+            | Repr::Undef(ty)
+            | Repr::Poison(ty)
+            | Repr::Bytes { ty, .. } => Some(ty),
+            _ => None,
+        }
+    }
+
     /// Whether `id` is the zero of its type: integer zero, float `+0.0`,
     /// `null` or [`Const::Zero`]. Because all-zero aggregates are
     /// canonicalized, this is exact: no other constant is all zero bits

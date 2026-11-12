@@ -47,6 +47,16 @@ pub enum IrErrorKind {
     /// A module flag is malformed, is set twice, or is a flag hod knows
     /// with a value it cannot have (§2.1).
     InvalidModuleFlag,
+    /// A value reserved in a function builder was never defined (§5.3).
+    UndefinedValue,
+    /// The blocks of a function body are not well formed: an instruction
+    /// outside a block or after a terminator, a block without a
+    /// terminator, a `phi` or a landing pad out of place, a `phi` whose
+    /// incoming blocks are not the block's predecessors (§5.1, §5.4).
+    BadBlock,
+    /// The use facts a body records differ from the ones its instructions
+    /// imply (§5.6).
+    UseFactsMismatch,
 }
 
 /// An error from building IR. Never a panic.

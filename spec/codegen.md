@@ -945,6 +945,72 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
   arithmetic, `scmp`/`ucmp`, `clmul`, reductions, ...) is
   `a64:intrinsic`.
 
+#### Intrinsics, the second set (WP-070)
+
+`fpintr.rs` lowers the floating-point intrinsics; `intrinsic.rs` routes
+them there, and has the saturating arithmetic, `scmp`/`ucmp`, the
+`i128` forms, `eh.typeid.for` and `clear_cache`.
+
+- **`float`, `double`**: the instruction where ARMv8.0 has one: `fsqrt`;
+  `frintm`/`frintp`/`frintz`/`frinta` (round)/`frintn` (roundeven)/
+  `frintx` (rint)/`frinti` (nearbyint); `fmadd` for `fma` and for
+  `fmuladd` (fused, as `llc`); `fminnm`/`fmaxnm` for `minnum`/`maxnum`;
+  `fmin`/`fmax` for `minimum`/`maximum`; `minimumnum`/`maximumnum` quiet
+  each operand with `fminnm x, x` first, then `fminnm`/`fmaxnm`;
+  `canonicalize` is `fminnm x, x`; `lround` is `fcvtas`, `lrint`
+  `frintx` + `fcvtzs`; `fptosi.sat`/`fptoui.sat` are `fcvtzs`/`fcvtzu`
+  at 32 or 64 bits (which saturate) clamped with `cmp` + `csel` below
+  32 bits and between 33 and 63.
+- **Bit operations**: `fabs`, `copysign` and `is.fpclass` act on the
+  bits in `x16`/`x17`, NaNs untouched. `is.fpclass` needs a constant
+  mask (0 and all ten bits fold); it counts the class of the magnitude
+  (zero, subnormal, normal, infinity, signalling, quiet NaN) with
+  `cset` and four `cinc`s and indexes a 6-bit table chosen by the sign.
+- **`half`**: computed as `llc` does: widened to `float` (to `double` for
+  `fma`, where one rounding of the exact product sum to `half` is
+  correct), the operation, narrowed. `fmuladd` of `half` is a rounded
+  multiply then a rounded add. Widening quiets a signalling NaN, so the
+  `num` forms treat it as missing, as `llc`.
+- **`fp128`**: a call of the `long double` function: `sqrtl`, `floorl`,
+  ..., `fmal`, `fminl`/`fmaxl`, the C23 `fminimuml`, `fmaximuml`,
+  `fminimum_numl`, `fmaximum_numl` (glibc 2.35+; `llc` 22 cannot select
+  `minimum`/`maximum` of `fp128` at all), `lroundl`/`llroundl`/`lrintl`/
+  `llrintl`; `fmuladd` is `__multf3` + `__addtf3`; `canonicalize`
+  `__multf3(x, 1.0)`. `fabs`, `copysign`, `is.fpclass` are inline.
+  `fptosi.sat`/`fptoui.sat` of `fp128` are refused
+  (`a64:intrinsic-fp128`).
+- **Calls**: `sin` .. `log10`, `pow`, `atan2` call libm (`sinf`/`sin`/
+  `sinl`); `powi` `__powisf2`/`__powidf2`/`__powitf2`; `ldexp`
+  `ldexpf`/`ldexp`/`ldexpl`; `frexp` `frexpf`/`frexp`/`frexpl` with the
+  address of a 4-byte slot, its `{T, i32}` result a `Mem`-class value.
+  `half` goes through the `float` function. An exponent narrower than 32
+  bits is sign-extended; a wider `ldexp` exponent is clamped to the
+  `int` range (`llc` truncates it); a wider `powi` exponent is refused
+  (`a64:intrinsic`).
+- **Saturating arithmetic** at 32 and 64 bits uses the flags of
+  `adds`/`subs` (`csel vs` with `(r asr N-1) eor 1<<(N-1)`, `csinv lo`,
+  `csel hs`); narrower, the operands are extended to 64 bits, where the
+  exact result fits, and clamped. `scmp`/`ucmp`: extend, `cmp`, `cset
+  gt|hi`, `csinv ge|hs`, any result width from 2 to 128 bits.
+- **`i128`** (class `Mem`, through the slots, limbs in `x16`/`x17` and
+  at most four temporaries): `ctlz`/`cttz` select between the limbs'
+  counts; `ctpop` is `cnt` + `uaddlv` over both limbs in `v31`;
+  `bswap`/`bitreverse` reverse each limb and swap them; `abs` is
+  `(x ^ s) - s`; min/max and `scmp`/`ucmp` order by `cmp` + `sbcs`;
+  the saturating forms use `adds`/`adcs`, `subs`/`sbcs`; `fshl`/`fshr`
+  pick three consecutive limbs by `tst k, #64` + `csel` and funnel each
+  result limb by `k mod 64` (the other limb moved by one more, so no
+  branch for `k mod 64 = 0`).
+- **`eh.typeid.for`** of a symbol is `mov w, #FnCx::type_id(sym)`, the
+  index `emit_module` gives the type in the LSDA's type table; of
+  anything else it is refused (`a64:eh-typeid`).
+- **`clear_cache`** calls `__clear_cache`. **`readcyclecounter`** needs
+  `mrs CNTVCT_EL0`, which the encoder's `SysReg` lacks: refused
+  (`a64:readcyclecounter`).
+- `sshl.sat`/`ushl.sat` are not in `hod_ir`'s intrinsic list: classify
+  refuses them as `intrinsic:<name>`. Vector forms are `a64:intrinsic-vector`,
+  `bfloat` ones `a64:intrinsic-bfloat`.
+
 ### 5.6 x86-64 (planned)
 
 `push rbp` · `mov rbp, rsp` · pushes of the save set · `sub rsp, imm32`

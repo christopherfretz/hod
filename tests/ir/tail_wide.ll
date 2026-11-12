@@ -1,8 +1,12 @@
 ; WP-084: conversions between floating point and i100/i128 (the calls
 ; llc makes: __fixdfti, __floattidf and their kind), a complex long
-; double's fp128 parts through extractvalue/insertvalue, i128 and i65
-; multiplication with overflow, and a switch on i128.
-;@ covers: spec/ir.md §5.4 cast, aggregate (ExtractValue, InsertValue of fp128), terminator (Switch at i128), §5.5 intrinsics (smul, umul .with.overflow wide); spec/codegen.md §5.5.1 (WP-084)
+; double's fp128 parts through extractvalue/insertvalue, unsigned i128
+; multiplication with overflow, and a switch on i128. The signed
+; multiplication is not here: llc 19 calls compiler-rt's __muloti4 for
+; it, which libgcc does not have (LLVM 22 and hod expand it in line); it
+; is compared with llc 22 and the interpreter in
+; crates/hod_a64/tests/tail.rs.
+;@ covers: spec/ir.md §5.4 cast, aggregate (ExtractValue, InsertValue of fp128), terminator (Switch at i128), §5.5 intrinsics (umul.with.overflow wide); spec/codegen.md §5.5.1 (WP-084)
 ;@ tier: quick
 ;@ unsupported(x86_64): *
 ;@ stdout: conv 2426047410323587072 8 12345 12345
@@ -10,10 +14,10 @@
 ;@ stdout: conv 3 0 7.5557863725914323e+22 7.55578637e+22
 ;@ stdout: cplx -42
 ;@ stdout: cplx 3000000
-;@ stdout: mulo 0 35 0 0 0
-;@ stdout: mulo 18446744073709551615 0 1 0 1
-;@ stdout: mulo 18446744073709551615 18446744073709551614 0 1 0
-;@ stdout: mulo 0 0 1 1 0
+;@ stdout: mulo 0 35 0
+;@ stdout: mulo 18446744073709551615 0 1
+;@ stdout: mulo 18446744073709551615 18446744073709551614 0
+;@ stdout: mulo 0 0 1
 ;@ stdout: sw 10
 ;@ stdout: sw 20
 ;@ stdout: sw 30
@@ -21,14 +25,12 @@
 
 @.conv = private unnamed_addr constant [27 x i8] c"conv %lld %llu %.17g %.9g\0A\00"
 @.cplx = private unnamed_addr constant [11 x i8] c"cplx %lld\0A\00"
-@.mulo = private unnamed_addr constant [25 x i8] c"mulo %llu %llu %d %d %d\0A\00"
+@.mulo = private unnamed_addr constant [19 x i8] c"mulo %llu %llu %d\0A\00"
 @.sw = private unnamed_addr constant [9 x i8] c"sw %lld\0A\00"
 
 declare i32 @printf(ptr, ...)
 declare double @llvm.fabs.f64(double)
 declare { i128, i1 } @llvm.umul.with.overflow.i128(i128, i128)
-declare { i128, i1 } @llvm.smul.with.overflow.i128(i128, i128)
-declare { i65, i1 } @llvm.smul.with.overflow.i65(i65, i65)
 
 define void @conv(double %d, i64 %hi, i64 %lo) {
   %s = fptosi double %d to i128
@@ -76,19 +78,11 @@ define void @mulo(i64 %ah, i64 %al, i64 %b) {
   %u = call { i128, i1 } @llvm.umul.with.overflow.i128(i128 %a, i128 %bb)
   %uv = extractvalue { i128, i1 } %u, 0
   %uo = extractvalue { i128, i1 } %u, 1
-  %s = call { i128, i1 } @llvm.smul.with.overflow.i128(i128 %a, i128 %bb)
-  %so = extractvalue { i128, i1 } %s, 1
-  %a65 = trunc i128 %a to i65
-  %b65 = trunc i128 %bb to i65
-  %t = call { i65, i1 } @llvm.smul.with.overflow.i65(i65 %a65, i65 %b65)
-  %to = extractvalue { i65, i1 } %t, 1
   %uvh = lshr i128 %uv, 64
   %p1 = trunc i128 %uvh to i64
   %p0 = trunc i128 %uv to i64
   %f0 = zext i1 %uo to i32
-  %f1 = zext i1 %so to i32
-  %f2 = zext i1 %to to i32
-  call i32 (ptr, ...) @printf(ptr @.mulo, i64 %p1, i64 %p0, i32 %f0, i32 %f1, i32 %f2)
+  call i32 (ptr, ...) @printf(ptr @.mulo, i64 %p1, i64 %p0, i32 %f0)
   ret void
 }
 

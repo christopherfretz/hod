@@ -1,12 +1,13 @@
-; WP-084: llvm.aarch64.crc32*, llvm.sshl.sat/ushl.sat, readcyclecounter,
+; WP-084: llvm.sshl.sat/ushl.sat, readcyclecounter,
 ; is.constant of literal aggregates, and the operand of a folded
 ; is.constant that is never evaluated (GCC's bcp-1.c: a load through a
 ; null pointer that llc deletes with the call).
-;@ covers: spec/ir.md §5.5 intrinsics (crc32, sshl.sat, ushl.sat, readcyclecounter, is.constant); spec/codegen.md §5.5.1 (WP-084)
+; llvm.aarch64.crc32* is not here: every seed test is also built for the
+; other target, and llc for x86_64 aborts on an AArch64 intrinsic. It is
+; compared with llc in crates/hod_a64/tests/tail.rs.
+;@ covers: spec/ir.md §5.5 intrinsics (sshl.sat, ushl.sat, readcyclecounter, is.constant); spec/codegen.md §5.5.1 (WP-084)
 ;@ tier: quick
 ;@ unsupported(x86_64): *
-;@ stdout: crc 1591671054 1057767127 2385074382 1246391575 1455661164
-;@ stdout: crc 810156054 2660091468 3472624347 1577115281 3185339329
 ;@ stdout: sat 48 48 48 0
 ;@ stdout: sat 12800 127 12800 0
 ;@ stdout: sat -192 -128 65535 4294967295
@@ -14,17 +15,11 @@
 ;@ stdout: sat 0 0 0 0
 ;@ stdout: misc 1 0
 
-@.crc = private unnamed_addr constant [20 x i8] c"crc %u %u %u %u %u\0A\00"
 @.sat = private unnamed_addr constant [17 x i8] c"sat %d %d %u %u\0A\00"
 @.misc = private unnamed_addr constant [12 x i8] c"misc %d %d\0A\00"
 @null = global ptr null
 
 declare i32 @printf(ptr, ...)
-declare i32 @llvm.aarch64.crc32b(i32, i32)
-declare i32 @llvm.aarch64.crc32h(i32, i32)
-declare i32 @llvm.aarch64.crc32w(i32, i32)
-declare i32 @llvm.aarch64.crc32cx(i32, i64)
-declare i32 @llvm.aarch64.crc32cb(i32, i32)
 declare i32 @llvm.sshl.sat.i32(i32, i32)
 declare i8 @llvm.sshl.sat.i8(i8, i8)
 declare i16 @llvm.ushl.sat.i16(i16, i16)
@@ -32,17 +27,6 @@ declare i64 @llvm.ushl.sat.i64(i64, i64)
 declare i64 @llvm.readcyclecounter()
 declare i1 @llvm.is.constant.sl_i32i32s({ i32, i32 })
 declare i1 @llvm.is.constant.i8(i8)
-
-define void @crc(i32 %c, i64 %d) #0 {
-  %t = trunc i64 %d to i32
-  %a = call i32 @llvm.aarch64.crc32b(i32 %c, i32 %t)
-  %b = call i32 @llvm.aarch64.crc32h(i32 %a, i32 %t)
-  %w = call i32 @llvm.aarch64.crc32w(i32 %c, i32 %t)
-  %x = call i32 @llvm.aarch64.crc32cx(i32 %c, i64 %d)
-  %y = call i32 @llvm.aarch64.crc32cb(i32 -1, i32 %t)
-  call i32 (ptr, ...) @printf(ptr @.crc, i32 %a, i32 %b, i32 %w, i32 %x, i32 %y)
-  ret void
-}
 
 define void @sat(i32 %a, i32 %k) {
   %s = call i32 @llvm.sshl.sat.i32(i32 %a, i32 %k)
@@ -72,8 +56,6 @@ define i32 @probe(ptr %p) {
 }
 
 define i32 @main() {
-  call void @crc(i32 0, i64 305419896)
-  call void @crc(i32 -1, i64 -81985529216486896)
   call void @sat(i32 3, i32 4)
   call void @sat(i32 100, i32 7)
   call void @sat(i32 -3, i32 6)
@@ -90,5 +72,3 @@ define i32 @main() {
   call i32 (ptr, ...) @printf(ptr @.misc, i32 %b, i32 %r)
   ret i32 0
 }
-
-attributes #0 = { "target-features"="+crc" }

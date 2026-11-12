@@ -14,11 +14,11 @@ use classify_support::{
     align, body, define, defined, everything, fx, int, program_for, sym, variable, verdict,
 };
 use hod_ir::{
-    ATTRIBUTES, Arch, AttrClass, CONSTRUCT_FAMILIES, CONSTRUCT_NAMES, CallConv, CallDesc, Census,
-    Classifier, ComdatKind, FlagValue, FnAttrs, FnStr, INVALID_RULES, Intrinsic, Linkage, Opcode,
-    PicLevel, Rejection, RejectionKind, RmwOp, STRUCTURAL_RULES, SUPPORT_GROUPS, SUPPORT_ROWS,
-    Support, SupportStatus, TailKind, TypeClass, TypeClasses, UwTable, VariableDesc, Visibility,
-    census,
+    ATTRIBUTES, Arch, AtomicOrdering, AttrClass, CONSTRUCT_FAMILIES, CONSTRUCT_NAMES, CallConv,
+    CallDesc, Census, Classifier, ComdatKind, FlagValue, FnAttrs, FnStr, INVALID_RULES, Intrinsic,
+    Linkage, Opcode, PicLevel, Rejection, RejectionKind, RmwOp, STRUCTURAL_RULES, SUPPORT_GROUPS,
+    SUPPORT_ROWS, Support, SupportStatus, SyncScope, TailKind, TypeClass, TypeClasses, UwTable,
+    VariableDesc, Visibility, census,
 };
 
 const ARCHES: [Arch; 2] = [Arch::Aarch64, Arch::X86_64];
@@ -199,11 +199,13 @@ fn the_free_functions_use_the_shipped_matrix() {
 #[test]
 fn support_flips_rows() {
     let shipped = Support::shipped(Arch::Aarch64);
-    assert_eq!(shipped.supports("inst:add"), Some(false));
-    let flipped = shipped.clone().with("inst:add").unwrap();
-    assert_eq!(flipped.supports("inst:add"), Some(true));
-    assert_eq!(flipped.classes("inst:add"), Some(TypeClasses::ALL));
-    assert_eq!(flipped.clone().without("inst:add").as_ref(), Some(shipped));
+    // A row no package of the first AArch64 wave flips.
+    let row = "inst:extractelement";
+    assert_eq!(shipped.supports(row), Some(false));
+    let flipped = shipped.clone().with(row).unwrap();
+    assert_eq!(flipped.supports(row), Some(true));
+    assert_eq!(flipped.classes(row), Some(TypeClasses::ALL));
+    assert_eq!(flipped.clone().without(row).as_ref(), Some(shipped));
     assert_ne!(&flipped, shipped);
 
     assert!(shipped.clone().with("inst:callbr").is_none(), "rejected by design");
@@ -217,7 +219,11 @@ fn support_flips_rows() {
         assert!(shipped.clone().with(unknown).is_none(), "{unknown:?}");
         assert!(shipped.clone().without(unknown).is_none(), "{unknown:?}");
     }
-    assert_eq!(shipped.supports("inst:add/int"), Some(false));
+    assert_eq!(shipped.supports("inst:extractelement/int"), Some(false));
+    // WP-035: integer arithmetic on integers, not on pointers.
+    assert_eq!(shipped.supports("inst:add/int"), Some(true));
+    assert_eq!(shipped.supports("inst:add/ptr"), Some(false));
+    assert_eq!(shipped.supports("inst:icmp/ptr"), Some(true));
 }
 
 /// §8.3: a row can be supported for some classes of type only. A subject
@@ -474,8 +480,8 @@ const RICH_BODY: [&str; 16] = [
     "inst:ret",
 ];
 
-/// The rows of `RICH_BODY` AArch64 supports (WP-033, WP-039).
-const A64_SUPPORTED_BODY: [&str; 7] = [
+/// The rows of `RICH_BODY` AArch64 supports (WP-033, WP-035, WP-039).
+const A64_SUPPORTED_BODY: [&str; 8] = [
     "cc:ccc",
     "function:parameters",
     "type:int",
@@ -483,6 +489,7 @@ const A64_SUPPORTED_BODY: [&str; 7] = [
     "type:double",
     "operand:symbol",
     "inst:ret",
+    "inst:add",
 ];
 
 /// What the shipped matrix finds in the rich body on `arch`.
@@ -639,11 +646,14 @@ fn the_census_counts_occurrences_and_symbols() {
         let a = b.arg(0).unwrap();
         let sum = b.binary(Opcode::Add, I32, a, a).unwrap();
         b.binary(Opcode::Add, I32, sum, a).unwrap();
+        b.fence(AtomicOrdering::SeqCst, SyncScope::System).unwrap();
+        b.fence(AtomicOrdering::Acquire, SyncScope::System).unwrap();
         b.store(a, sym(g), align(4)).unwrap();
     });
     let second = body(&m, two, |b, _| {
         let a = b.arg(0).unwrap();
         b.binary(Opcode::Add, I32, a, a).unwrap();
+        b.fence(AtomicOrdering::SeqCst, SyncScope::System).unwrap();
     });
     let program = Program { m, bodies: vec![first, second] };
     let census = census_of(Support::shipped(arch), &program);
@@ -652,9 +662,9 @@ fn the_census_counts_occurrences_and_symbols() {
         assert_eq!((entry.construct.as_str(), entry.kind), (name, RejectionKind::Unsupported));
         (entry.occurrences, entry.symbols)
     };
-    assert_eq!(count("inst:add"), (3, 2));
+    assert_eq!(count("inst:fence"), (3, 2));
     assert_eq!(count("inst:store"), (1, 1));
-    // Supported since WP-032 and WP-033: not counted.
+    // Supported since WP-032, WP-033 and WP-035: not counted.
     for row in [
         "global:variable-definition",
         "module:pic",
@@ -663,15 +673,15 @@ fn the_census_counts_occurrences_and_symbols() {
         "type:int",
         "operand:symbol",
         "inst:ret",
+        "inst:add",
     ] {
         assert!(census.get(row).is_none(), "{row}");
     }
-    assert!(census.get("inst:sub").is_none());
     assert_eq!(census.len(), census.entries().len());
 
     // Counting twice counts twice; the symbols stay the same symbols.
     let classifier = Classifier::new(Support::shipped(arch));
     let mut again = census.clone();
     classifier.census_body(&program.m, &program.bodies[1], &mut again);
-    assert_eq!(again.get("inst:add").map(|e| (e.occurrences, e.symbols)), Some((4, 2)));
+    assert_eq!(again.get("inst:fence").map(|e| (e.occurrences, e.symbols)), Some((4, 2)));
 }

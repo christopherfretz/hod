@@ -11,6 +11,13 @@
 //! child runs through `hod_testutil::run_with`. Each batch is compiled
 //! plainly and with every stress option (`hod_cg::Stress::ALL`).
 //!
+//! A generated program that hod refuses by another group's stable name
+//! (a construct of a group that has not landed on this branch) is
+//! **skipped**, never counted as agreeing: the harness reports how many
+//! were skipped, by name, and the proportion that ran end to end. A
+//! refusal by the integer group's own names fails the harness: the
+//! generator's integer forms are all that group's.
+//!
 //! `HOD_DIFF_SEEDS=<n>` sets the seeds of `many_programs_agree` (default
 //! 1000); it prints the cost per 1000 programs.
 
@@ -20,6 +27,7 @@ mod common;
 #[allow(dead_code, clippy::all, reason = "the LLVM oracle's printer, used as it is")]
 mod llvm_text;
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -28,8 +36,8 @@ use common::groups::{enabled, missing};
 use common::linking::Toolchain;
 use common::skeleton::{self, Mutation};
 use common::{ll_header, parse, write_object};
-use hod_a64::compile_module;
-use hod_cg::{Options, Stress};
+use hod_a64::{ModuleError, compile_module, int};
+use hod_cg::{CgError, Options, Stress};
 use hod_interp::Val;
 use hod_interp::generate::{Generated, Options as GenOptions, generate};
 use hod_ir::TargetSpec;
@@ -146,7 +154,9 @@ fn compare(clean: &[(u64, Generated)], native: &[(u64, Generated)]) -> Option<Ve
             .unwrap_or_else(|e| panic!("{mode}: {e}\n{text}"));
         let object = write_object(&scratch, &format!("{mode}.o"), &emitted);
         let program = scratch.join(mode);
-        toolchain.link_ok(linker, &[], &[&driver, &object], &program);
+        // `frem` calls `fmod`/`fmodf` (WP-039); the flags precede the inputs.
+        let flags = ["-Wl,--no-as-needed", "-lm"];
+        toolchain.link_ok(linker, &flags, &[&driver, &object], &program);
         let ran = run_with(&mut Command::new(&program), &[], Duration::from_mins(2));
         assert!(ran.success(), "{mode}: {:?}\n{}", ran.status, ran.stderr_text());
         let got = split(&ran.stdout_text());
@@ -160,31 +170,123 @@ fn compare(clean: &[(u64, Generated)], native: &[(u64, Generated)]) -> Option<Ve
     Some(wrong)
 }
 
+/// The stable names of the integer group (WP-035): a generated program
+/// refused by one of them is a failure, not a skip.
+const INT_NAMES: [&str; 6] =
+    [int::BINARY, int::FREEZE, int::CAST, int::ADDRSPACECAST, int::ICMP, int::SELECT];
+
+/// The name hod refuses `program` by, if it does: a construct of a group
+/// that has not landed.
+///
+/// # Panics
+/// For a refusal by the integer group or any other failure to compile.
+fn refusal(seed: u64, program: &Generated) -> Option<&'static str> {
+    match compile_module(&program.module, &program.bodies, &Options::default()) {
+        Ok(_) => None,
+        Err(ModuleError::Function { error: CgError::Unsupported { construct }, .. }) => {
+            assert!(!INT_NAMES.contains(&construct), "seed {seed}: refused by {construct}");
+            Some(construct)
+        }
+        Err(error) => panic!("seed {seed}: {error}"),
+    }
+}
+
+/// What [`check_seeds`] did.
+#[derive(Debug, Default)]
+struct Checked {
+    /// Programs that ran end to end and agree.
+    agree: usize,
+    /// Programs skipped, by the name hod refused them by.
+    skipped: BTreeMap<&'static str, usize>,
+}
+
+impl Checked {
+    fn skipped(&self) -> usize {
+        self.skipped.values().sum()
+    }
+
+    /// `"<agree> programs agree, <n> skipped (<p>% ran end to end): <name> <count>, ..."`.
+    #[allow(clippy::cast_precision_loss, reason = "a proportion to print")]
+    fn summary(&self) -> String {
+        let total = self.agree + self.skipped();
+        let percent = 100.0 * self.agree as f64 / total.max(1) as f64;
+        let reasons: Vec<String> =
+            self.skipped.iter().map(|(name, count)| format!("{name} {count}")).collect();
+        format!(
+            "{} programs agree, {} skipped ({percent:.1}% ran end to end){}{}",
+            self.agree,
+            self.skipped(),
+            if reasons.is_empty() { "" } else { ": " },
+            reasons.join(", ")
+        )
+    }
+}
+
 /// Checks `seeds`, `per_batch` programs to a batch; panics on the first
-/// batch with a disagreement. Returns how many were checked.
-fn check_seeds(seeds: std::ops::Range<u64>, per_batch: usize) -> usize {
-    let seeds: Vec<u64> = seeds.collect();
-    let mut checked = 0;
-    for chunk in seeds.chunks(per_batch) {
-        let batch: Vec<(u64, Generated)> =
-            chunk.iter().map(|&seed| (seed, program(seed, None))).collect();
-        let Some(wrong) = compare(&batch, &batch) else { return checked };
+/// batch with a disagreement. Programs refused by another group's name
+/// are skipped.
+fn check_seeds(seeds: std::ops::Range<u64>, per_batch: usize) -> Checked {
+    check_programs(seeds, per_batch, |seed| program(seed, None))
+}
+
+/// [`check_seeds`] of the programs `make` gives.
+fn check_programs(
+    seeds: std::ops::Range<u64>,
+    per_batch: usize,
+    make: impl Fn(u64) -> Generated,
+) -> Checked {
+    let mut checked = Checked::default();
+    let mut batch: Vec<(u64, Generated)> = Vec::new();
+    let flush = |batch: &mut Vec<(u64, Generated)>, checked: &mut Checked| -> bool {
+        if batch.is_empty() {
+            return true;
+        }
+        let Some(wrong) = compare(batch, batch) else { return false };
         if let Some((seed, report)) = wrong.first() {
             panic!("seed {seed}: hod_a64 and the interpreter disagree\n{report}");
         }
-        checked += chunk.len();
+        checked.agree += batch.len();
+        batch.clear();
+        true
+    };
+    for seed in seeds {
+        let generated = make(seed);
+        if let Some(name) = refusal(seed, &generated) {
+            *checked.skipped.entry(name).or_default() += 1;
+            continue;
+        }
+        batch.push((seed, generated));
+        if batch.len() == per_batch && !flush(&mut batch, &mut checked) {
+            return checked;
+        }
     }
+    flush(&mut batch, &mut checked);
     checked
 }
 
 /// The generated programs of the enabled groups agree with the
-/// interpreter; prints the missing mask.
+/// interpreter; prints the missing mask and what was skipped.
 #[test]
 fn programs_agree_with_the_interpreter() {
     let e = enabled();
     eprintln!("a64 diff: missing {}", missing(&e).join(", "));
     let checked = check_seeds(0..200, 100);
-    eprintln!("a64 diff: {checked} programs agree");
+    eprintln!("a64 diff: {}", checked.summary());
+}
+
+/// The generator with its default options (every construct, those of
+/// the groups that have not landed here included): what compiles agrees,
+/// the rest is skipped by name; prints the proportion that ran.
+#[test]
+fn default_programs_agree_or_are_skipped_by_name() {
+    let options = GenOptions { target: TargetSpec::aarch64_linux_gnu(), ..GenOptions::default() };
+    let checked = check_programs(0..200, 100, |seed| generate(seed, &options));
+    eprintln!("a64 diff, default generator options: {}", checked.summary());
+    // Without memory (every program has stack slots), so that control
+    // flow, calls and floats each refuse only some programs.
+    let options = GenOptions { memory: false, ..options };
+    let checked = check_programs(0..200, 100, |seed| generate(seed, &options));
+    eprintln!("a64 diff, default options without memory: {}", checked.summary());
 }
 
 /// The harness notices a miscompilation: a wrong constant and a wrong
@@ -218,6 +320,6 @@ fn many_programs_agree() {
     let checked = check_seeds(1_000_000..1_000_000 + seeds, 500);
     let elapsed = start.elapsed();
     let per_1000 =
-        elapsed.as_secs_f64() * 1000.0 / f64::from(u32::try_from(checked.max(1)).unwrap());
-    eprintln!("a64 diff: {checked} programs agree in {elapsed:?}: {per_1000:.2} s per 1000");
+        elapsed.as_secs_f64() * 1000.0 / f64::from(u32::try_from(checked.agree.max(1)).unwrap());
+    eprintln!("a64 diff: {} in {elapsed:?}: {per_1000:.2} s per 1000 run", checked.summary());
 }

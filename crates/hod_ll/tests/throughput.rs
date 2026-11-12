@@ -61,3 +61,54 @@ fn parse_bodies_and_parse_agree() {
         });
     }
 }
+
+/// A module whose only debug node is `node`, numbered 0.
+fn debug_module(node: &str) -> String {
+    format!(
+        "target triple = \"x86_64-unknown-linux-gnu\"\n\
+         !llvm.module.flags = !{{!1}}\n\
+         !1 = !{{i32 2, !\"Debug Info Version\", i32 3}}\n\
+         !0 = {node}\n"
+    )
+}
+
+/// §7.4 and WP-096 cut 5: a field named twice is refused at its second
+/// spelling, and a required field missing at the closing parenthesis,
+/// whatever the length of the name, and a node written in place inside
+/// a field has fields of its own: the same name inside it is no repeat.
+#[test]
+fn field_rules_of_debug_nodes() {
+    let refused = |node: &str, at: &str, message: &str| {
+        let text = debug_module(node);
+        let Err(error) = parse(text.as_bytes(), Arch::X86_64) else { panic!("{node}: accepted") };
+        assert_eq!(error.message, message, "{node}");
+        let offset = text.find("!0 = ").expect("the node") + 5 + node.rfind(at).expect("the place");
+        assert_eq!(error.offset, offset, "{node}");
+    };
+    refused(
+        r#"!DIFile(filename: "a", directory: "b", filename: "c")"#,
+        "filename: \"c\"",
+        "field 'filename' cannot be specified more than once",
+    );
+    refused(r#"!DIFile(filename: "a")"#, ")", "missing required field 'directory'");
+    refused(
+        "distinct !DICompileUnit(language: DW_LANG_C99, file: !DIFile(filename: \"a\", directory: \"b\"), \
+         splitDebugInlining: false, emissionKind: FullDebug, splitDebugInlining: true)",
+        "splitDebugInlining: true",
+        "field 'splitDebugInlining' cannot be specified more than once",
+    );
+    // `name` inside the base type is not a repeat of the outer `name`;
+    // the outer `tag` written again is.
+    refused(
+        "!DIDerivedType(tag: DW_TAG_typedef, name: \"t\", baseType: !DIBasicType(name: \"int\", \
+         size: 32, encoding: DW_ATE_signed), tag: DW_TAG_typedef)",
+        "tag: DW_TAG_typedef)",
+        "field 'tag' cannot be specified more than once",
+    );
+    refused(
+        "!DIDerivedType(name: \"t\", baseType: !DIBasicType(name: \"int\", size: 32, \
+         encoding: DW_ATE_signed), tag: DW_TAG_typedef, name: \"u\")",
+        "name: \"u\"",
+        "field 'name' cannot be specified more than once",
+    );
+}

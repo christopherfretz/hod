@@ -25,6 +25,17 @@ pub(crate) struct AttrMemo {
     pub lookups: u64,
 }
 
+/// A word of 1 to 16 bytes without a zero byte, padded with zeros: a key
+/// that no other such word has, and never 0. `None` for any other word.
+pub(crate) fn packed(word: &[u8]) -> Option<u128> {
+    if word.is_empty() || word.len() > 16 || word.contains(&0) {
+        return None;
+    }
+    let mut bytes = [0u8; 16];
+    bytes[..word.len()].copy_from_slice(word);
+    Some(u128::from_le_bytes(bytes))
+}
+
 /// Slots of [`AttrMemo`]: a power of two.
 const MEMO_SLOTS: usize = 64;
 
@@ -33,13 +44,10 @@ impl AttrMemo {
     pub(crate) fn keyword(&mut self, word: &[u8]) -> Option<&'static AttrInfo> {
         // A word has no zero byte, so a word of at most 16 bytes padded
         // with zeros is a key that no other word has, and no key is 0.
-        if word.is_empty() || word.len() > 16 || word.contains(&0) {
+        let Some(key) = packed(word) else {
             self.lookups += 1;
             return attr_info(AttrSyntax::Keyword, word);
-        }
-        let mut bytes = [0u8; 16];
-        bytes[..word.len()].copy_from_slice(word);
-        let key = u128::from_le_bytes(bytes);
+        };
         if self.slots.is_empty() {
             self.slots.resize(MEMO_SLOTS, (0, None));
         }

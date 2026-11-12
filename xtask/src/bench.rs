@@ -450,11 +450,14 @@ fn llvm_version(llc: &Path) -> String {
 /// is what a user would run.
 fn build_release_hod(workspace: &Path, build_dir: &Path) -> Result<PathBuf, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| env!("CARGO").into());
-    let built = Command::new(&cargo)
+    // cargo is a jobserver client of its own; `run_step` stops it with
+    // xtask (spec/harness.md "Jobserver").
+    let mut build = Command::new(&cargo);
+    build
         .args(["build", "--quiet", "--release", "--package", "hod_cli", "--bin", "hod"])
         .current_dir(workspace)
-        .env("CARGO_TARGET_DIR", build_dir)
-        .status()
+        .env("CARGO_TARGET_DIR", build_dir);
+    let (built, _) = crate::jobs::children::run_step(&mut build, false)
         .map_err(|e| format!("cannot run '{}': {e}", Path::new(&cargo).display()))?;
     let hod = build_dir.join("release").join("hod");
     if built.success() && hod.is_file() {

@@ -33,12 +33,13 @@ impl Search {
         }
     }
 
-    fn on_path(&self, file: &str) -> Option<PathBuf> {
+    /// The first file named `file` in the directories of `path`.
+    pub fn on_path(&self, file: &str) -> Option<PathBuf> {
         std::env::split_paths(&self.path).map(|dir| dir.join(file)).find(|p| p.is_file())
     }
 
     /// `<tool>-<major>` on `PATH`, else `<llvm_root>/llvm-<major>/bin/<tool>`.
-    fn versioned(&self, tool: &str, major: u32) -> Option<PathBuf> {
+    pub fn versioned(&self, tool: &str, major: u32) -> Option<PathBuf> {
         self.on_path(&format!("{tool}-{major}")).or_else(|| {
             let installed = self.llvm_root.join(format!("llvm-{major}/bin/{tool}"));
             installed.is_file().then_some(installed)

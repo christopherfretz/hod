@@ -140,8 +140,10 @@ pub fn run_measured(
     command.process_group(0);
     let _ = std::fs::remove_file(usage_file);
 
-    // The jobserver client of WP-024 takes this child's token here, before
-    // the clock starts: `let _token = crate::jobs::global().acquire();`.
+    // This child's jobserver token (spec/harness.md "Jobserver"), taken
+    // before the clock starts and held until the child is reaped: waiting
+    // for the pool is not part of the measurement.
+    let _token = crate::jobs::global().acquire();
     let start = Instant::now();
     let mut child =
         command.spawn().map_err(|e| format!("cannot run '{}': {e}", program.display()))?;

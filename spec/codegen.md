@@ -1142,6 +1142,72 @@ section.
   `ext_vector_type`, under bfd, lld and mold; calls both ways with gcc;
   the refusals), `tests/ir/vectors.ll`.
 
+#### Vectors, the lane loop (WP-080)
+
+Design note `docs/design/0003-vectors.md` (V3); the code is
+`crates/hod_a64/src/lanes.rs`, whose module docs are part of this
+section.
+
+- **One loop, the scalar kernels.** Every element-wise operation on a
+  vector that has no one-instruction form (all of them on a `Mem`
+  vector; division, remainder, `mul` of 64-bit lanes, `frem`, `half`
+  arithmetic and the casts without a NEON instruction on an `Fpr` one)
+  is one loop unrolled at emit time over at most 256 lanes. Per lane:
+  pool temporaries of the element's class, each operand's lane loaded
+  (zero-extended), **the scalar lowering's own register kernel**, the
+  result lane stored. The kernels are factored out of the scalar
+  lowerings (`int::lane_binary`, `int::lane_cast`, `float::lane_binary`,
+  `float::lane_frem`, `float::lane_fneg`, `float::lane_convert`,
+  `intrinsic::lane_unary`/`lane_min_max`/`lane_saturating`/
+  `lane_three_way`/`lane_funnel`, `fpintr::lane_inline`/`lane_call`),
+  which call them too: a lane computes exactly what the scalar
+  instruction computes, poison and undefined behaviour included.
+- **Images.** Operands: a `Mem` vector's slot; an `Fpr` vector stored
+  into scratch image `k` (WP-079) and its register given back at once,
+  so the loop has the whole pool (stress `min_pool`: four general and
+  two vector registers; the third floating-point operand of `fma` and
+  `fmuladd` is loaded into `v31`). An operand named twice has one image;
+  a scalar operand (`powi`'s exponent) is put into a register in every
+  lane. Result: a `Mem` vector's slot (`def_mem`); an `Fpr` vector's
+  lanes go to the next free scratch image (the first operand's when
+  three are taken: three operands of the result's type, each lane read
+  before it is written) and the image is loaded into the result's
+  register at the end.
+- **Calls per lane.** `frem`, the libm intrinsics, `pow`, `atan2`,
+  `powi` and `ldexp` call per lane as the scalar does (`fmodf`/`fmod`,
+  `sinf`/`sin`, `__powisf2`, `ldexpf`, ...; `half` widened, the result
+  narrowed). A call ends every temporary, so each lane takes its own;
+  the images are frame memory and survive.
+- **Covered.** `add` .. `srem` and the shifts on `i8`..`i64` lanes;
+  `fadd` .. `frem` and `fneg` on `half`, `float`, `double`; `trunc`,
+  `zext`, `sext`, `ptrtoint`, `ptrtoaddr`, `inttoptr`, `fpext`,
+  `fptrunc`, `fptoui`, `fptosi`, `uitofp`, `sitofp` between any two
+  vectors of one length (the classes may differ); the vector forms of
+  `ctlz`, `cttz`, `ctpop`, `bswap`, `bitreverse`, `abs`, `smax`, `smin`,
+  `umax`, `umin`, the four `*.sat`, `scmp`, `ucmp` (any result width),
+  `fshl`, `fshr`, `ptrmask`, and of every floating-point intrinsic of
+  WP-070 but `frexp` and `is.fpclass`. A `select` on a scalar `i1` was
+  already lowered (WP-039/040).
+- **Refused, by name.** The shapes `vector::lanes` refuses keep its
+  names (`a64:vector-length`, `a64:vector-wide-element` for `i128` and
+  `fp128` lanes, `a64:vector-odd-element`); a vector of `bfloat` is
+  `a64:vector-bfloat`. Lanes of `i1` are WP-081's: a binary operation or
+  a cast of one stays `a64:mem-vector`, an intrinsic of one
+  `a64:intrinsic-vector`, as before. `frexp` and `is.fpclass` of a vector
+  stay `a64:intrinsic-vector`.
+- **Cost.** The code is a constant number of bytes per lane (no lane
+  shares work with another), emitted without allocating; see the landed
+  record for the numbers.
+- **Hooks.** `aggr::binary` and `aggr::cast` (a vector), `float::binary`
+  (the three `a64:vector-op` places) and `float::vector_cast` (its
+  fallback), the `fneg` arm of `A64::lower` for class `Mem`, and the
+  first line of `intrinsic::intrinsic`.
+- **Tests**: `crates/hod_a64/tests/lanes.rs` (every operation × element
+  × lane count 1, 2, 3, 4, 8, 16, 256 against a Rust model, `llc` 22 and
+  19, clang `ext_vector_type` and gcc `vector_size` C, under bfd, lld
+  and mold, plain and stressed; refusals; 256-lane compiles; bytes per
+  lane), `tests/ir/vector_lanes.ll`.
+
 #### Atomics (WP-074)
 
 `crates/hod_a64/src/atomic.rs` lowers atomic `load` and `store`,

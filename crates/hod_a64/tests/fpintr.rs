@@ -486,16 +486,6 @@ fn live_values_survive_called_intrinsics() {
 fn what_is_not_lowered_is_refused_by_name() {
     assert_refused(&[
         (
-            "declare <2 x double> @llvm.fabs.v2f64(<2 x double>)\n\
-             define <2 x double> @f(<2 x double> %a) {\n  %r = call <2 x double> @llvm.fabs.v2f64(<2 x double> %a)\n  ret <2 x double> %r\n}\n",
-            intr::VECTOR,
-        ),
-        (
-            "declare <4 x float> @llvm.fma.v4f32(<4 x float>, <4 x float>, <4 x float>)\n\
-             define <4 x float> @f(<4 x float> %a) {\n  %r = call <4 x float> @llvm.fma.v4f32(<4 x float> %a, <4 x float> %a, <4 x float> %a)\n  ret <4 x float> %r\n}\n",
-            intr::VECTOR,
-        ),
-        (
             "declare bfloat @llvm.fabs.bf16(bfloat)\n\
              define bfloat @f(bfloat %a) {\n  %r = call bfloat @llvm.fabs.bf16(bfloat %a)\n  ret bfloat %r\n}\n",
             fpintr::BFLOAT,

@@ -212,6 +212,7 @@ impl Target for A64 {
             },
             InstKind::Unary { arg } => match (inst.opcode(), class) {
                 (Opcode::FNeg, Class::Fpr) => float::fneg(cx, inst, arg),
+                (Opcode::FNeg, Class::Mem) => crate::lanes::fneg(cx, inst, arg),
                 (_, Class::Gpr) => int::freeze(cx, inst, arg),
                 (_, Class::Fpr) => float::freeze(cx, inst, arg),
                 (_, Class::Mem) => aggr::freeze(cx, inst, arg),

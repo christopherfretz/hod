@@ -309,10 +309,10 @@ Instructions.
 | `inst:add` | supported (int, i128, int-wide, vector) | not-implemented |  |
 | `inst:sub` | supported (int, i128, int-wide, vector) | not-implemented |  |
 | `inst:mul` | supported (int, i128, int-wide, vector) | not-implemented |  |
-| `inst:udiv` | supported (int, i128) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
-| `inst:sdiv` | supported (int, i128) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
-| `inst:urem` | supported (int, i128) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
-| `inst:srem` | supported (int, i128) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
+| `inst:udiv` | supported (int, i128, vector) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
+| `inst:sdiv` | supported (int, i128, vector) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
+| `inst:urem` | supported (int, i128, vector) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
+| `inst:srem` | supported (int, i128, vector) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
 | `inst:shl` | supported (int, i128, int-wide, vector) | not-implemented |  |
 | `inst:lshr` | supported (int, i128, int-wide, vector) | not-implemented |  |
 | `inst:ashr` | supported (int, i128, int-wide, vector) | not-implemented |  |
@@ -323,7 +323,7 @@ Instructions.
 | `inst:fsub` | supported (half, float, double, fp128, vector) | not-implemented |  |
 | `inst:fmul` | supported (half, float, double, fp128, vector) | not-implemented |  |
 | `inst:fdiv` | supported (half, float, double, fp128, vector) | not-implemented |  |
-| `inst:frem` | supported (half, float, double, fp128) | not-implemented | a call of `fmod` |
+| `inst:frem` | supported (half, float, double, fp128, vector) | not-implemented | a call of `fmod` |
 | `inst:fneg` | supported (half, float, double, fp128, vector) | not-implemented |  |
 | `inst:icmp` | supported (int, i128, int-wide, ptr) | not-implemented |  |
 | `inst:fcmp` | supported (int, half, float, double, fp128) | not-implemented |  |
@@ -336,9 +336,9 @@ Instructions.
 | `inst:fptosi` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
 | `inst:uitofp` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
 | `inst:sitofp` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
-| `inst:ptrtoint` | supported (int, i128, int-wide, ptr) | not-implemented |  |
-| `inst:ptrtoaddr` | supported (int, i128, int-wide, ptr) | not-implemented |  |
-| `inst:inttoptr` | supported (int, i128, int-wide, ptr) | not-implemented |  |
+| `inst:ptrtoint` | supported (int, i128, int-wide, ptr, vector) | not-implemented |  |
+| `inst:ptrtoaddr` | supported (int, i128, int-wide, ptr, vector) | not-implemented |  |
+| `inst:inttoptr` | supported (int, i128, int-wide, ptr, vector) | not-implemented |  |
 | `inst:bitcast` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | between integers and floats with WP-039 |
 | `inst:addrspacecast` | rejected | rejected | it has a pointer in a non-zero address space on one side |
 | `inst:load` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented | a plain load; see `mem:`; FP and vector values: WP-067 |
@@ -523,20 +523,20 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.trap` | supported | not-implemented |  |
 | `intrinsic:llvm.debugtrap` | supported | not-implemented |  |
 | `intrinsic:llvm.ubsantrap` | supported (int) | not-implemented |  |
-| `intrinsic:llvm.bswap` | supported (int, i128) | not-implemented |  |
-| `intrinsic:llvm.bitreverse` | supported (int, i128) | not-implemented |  |
-| `intrinsic:llvm.ctpop` | supported (int, i128) | not-implemented |  |
-| `intrinsic:llvm.ctlz` | supported (int, i128) | not-implemented |  |
-| `intrinsic:llvm.cttz` | supported (int, i128) | not-implemented |  |
-| `intrinsic:llvm.fshl` | supported (int, i128) | not-implemented |  |
-| `intrinsic:llvm.fshr` | supported (int, i128) | not-implemented |  |
-| `intrinsic:llvm.abs` | supported (int, i128) | not-implemented |  |
-| `intrinsic:llvm.smax` | supported (int, i128) | not-implemented |  |
-| `intrinsic:llvm.smin` | supported (int, i128) | not-implemented |  |
-| `intrinsic:llvm.umax` | supported (int, i128) | not-implemented |  |
-| `intrinsic:llvm.umin` | supported (int, i128) | not-implemented |  |
-| `intrinsic:llvm.scmp` | supported (int, i128) | not-implemented |  |
-| `intrinsic:llvm.ucmp` | supported (int, i128) | not-implemented |  |
+| `intrinsic:llvm.bswap` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.bitreverse` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.ctpop` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.ctlz` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.cttz` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.fshl` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.fshr` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.abs` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.smax` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.smin` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.umax` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.umin` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.scmp` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.ucmp` | supported (int, i128, vector) | not-implemented |  |
 | `intrinsic:llvm.clmul` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.sadd.with.overflow` | supported (int, i128, int-wide, aggregate) | not-implemented |  |
 | `intrinsic:llvm.uadd.with.overflow` | supported (int, i128, int-wide, aggregate) | not-implemented |  |
@@ -544,56 +544,56 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.usub.with.overflow` | supported (int, i128, int-wide, aggregate) | not-implemented |  |
 | `intrinsic:llvm.smul.with.overflow` | supported (int, aggregate) | not-implemented | up to 64 bits |
 | `intrinsic:llvm.umul.with.overflow` | supported (int, aggregate) | not-implemented | up to 64 bits |
-| `intrinsic:llvm.sadd.sat` | supported (int, i128) | not-implemented |  |
-| `intrinsic:llvm.uadd.sat` | supported (int, i128) | not-implemented |  |
-| `intrinsic:llvm.ssub.sat` | supported (int, i128) | not-implemented |  |
-| `intrinsic:llvm.usub.sat` | supported (int, i128) | not-implemented |  |
-| `intrinsic:llvm.fabs` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.sqrt` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.floor` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.ceil` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.trunc` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.round` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.roundeven` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.nearbyint` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.rint` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.copysign` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.fma` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.fmuladd` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.minnum` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.maxnum` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.minimum` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.maximum` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.minimumnum` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.maximumnum` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.canonicalize` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.arithmetic.fence` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.pow` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.powi` | supported (int, half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.ldexp` | supported (int, half, float, double, fp128) | not-implemented |  |
+| `intrinsic:llvm.sadd.sat` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.uadd.sat` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.ssub.sat` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.usub.sat` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.fabs` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.sqrt` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.floor` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.ceil` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.trunc` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.round` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.roundeven` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.nearbyint` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.rint` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.copysign` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.fma` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.fmuladd` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.minnum` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.maxnum` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.minimum` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.maximum` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.minimumnum` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.maximumnum` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.canonicalize` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.arithmetic.fence` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.pow` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.powi` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.ldexp` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
 | `intrinsic:llvm.frexp` | supported (int, half, float, double, fp128, aggregate) | not-implemented |  |
-| `intrinsic:llvm.sin` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.cos` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.tan` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.asin` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.acos` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.atan` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.atan2` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.sinh` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.cosh` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.tanh` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.exp` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.exp2` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.exp10` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.log` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.log2` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.log10` | supported (half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.lround` | supported (int, half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.llround` | supported (int, half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.lrint` | supported (int, half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.llrint` | supported (int, half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.fptosi.sat` | supported (int, half, float, double) | not-implemented |  |
-| `intrinsic:llvm.fptoui.sat` | supported (int, half, float, double) | not-implemented |  |
+| `intrinsic:llvm.sin` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.cos` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.tan` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.asin` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.acos` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.atan` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.atan2` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.sinh` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.cosh` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.tanh` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.exp` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.exp2` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.exp10` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.log` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.log2` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.log10` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.lround` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.llround` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.lrint` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.llrint` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
+| `intrinsic:llvm.fptosi.sat` | supported (int, half, float, double, vector) | not-implemented |  |
+| `intrinsic:llvm.fptoui.sat` | supported (int, half, float, double, vector) | not-implemented |  |
 | `intrinsic:llvm.is.fpclass` | supported (int, half, float, double, fp128) | not-implemented |  |
 | `intrinsic:llvm.eh.typeid.for` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.threadlocal.address` | supported (ptr) | not-implemented |  |
@@ -603,7 +603,7 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.readcyclecounter` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.is.constant` | supported | not-implemented |  |
 | `intrinsic:llvm.objectsize` | supported (int, ptr) | not-implemented |  |
-| `intrinsic:llvm.ptrmask` | supported (int, ptr) | not-implemented |  |
+| `intrinsic:llvm.ptrmask` | supported (int, ptr, vector) | not-implemented |  |
 | `intrinsic:llvm.load.relative` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.instrprof.increment` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.instrprof.increment.step` | not-implemented | not-implemented | unplanned |

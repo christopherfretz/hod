@@ -29,6 +29,14 @@ if [ -p "$_JSF" ] && [ -z "${HOD_NO_JOBSERVER:-}" ]; then
   export RUST_TEST_THREADS="${RUST_TEST_THREADS:-6}"
 else
   export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
+  # Said once per environment (the mark is exported), and not when asked
+  # for: a pool that died, or was never started, went unnoticed for as
+  # long as this was silent.
+  if [ -z "${HOD_NO_JOBSERVER:-}" ] && [ -z "${_HOD_NO_POOL_SAID:-}" ]; then
+    echo "env.sh: no jobserver pool at $_JSF: each cargo runs $CARGO_BUILD_JOBS jobs of its own" \
+      "(scripts/jobserver.sh start; HOD_NO_JOBSERVER=1 to run without one and say nothing)" >&2
+    export _HOD_NO_POOL_SAID=1
+  fi
 fi
 unset _WS _MAIN _cand _JSF
 # A workspace on a host bind mount has dropped rmeta/rlib writes under

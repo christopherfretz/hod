@@ -390,7 +390,10 @@ mod tests {
         let pool = jobs::PrivatePool::new("run-wait", 0);
         let client = jobs::Client::open(pool.path()).unwrap();
         let implicit = client.acquire();
-        let limit = Duration::from_millis(600);
+        // The limit is also the time `true` has to start and end once the
+        // token is free: 3 s, not less, because a spawn at load 30 has taken
+        // a large part of a second.
+        let limit = Duration::from_secs(3);
         std::thread::scope(|scope| {
             let child = scope.spawn(|| run_on(&client, Command::new("true").arg("x"), &[], limit));
             // Longer than the child's limit, with no slot for it.

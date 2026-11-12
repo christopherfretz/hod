@@ -43,7 +43,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 if grep -q '^; llc: crash' "$in"; then kill -SEGV $$; fi
-if grep -q '^; llc: hang' "$in"; then exec sleep 60; fi
+if grep -q '^; llc: hang' "$in"; then exec sleep 600; fi
 if grep -q '^; llc: fail' "$in"; then echo "llc: error: bad module" >&2; exit 1; fi
 if grep -q '^; llc: silent' "$in"; then exit 0; fi
 case "$args " in *" -O2 "*) builder=O2 ;; *) builder=llc ;; esac
@@ -85,7 +85,7 @@ if [ -n "$reason" ]; then
   exit 2
 fi
 if grep -q '^; hod: crash' "$in"; then kill -SEGV $$; fi
-if grep -q '^; hod: hang' "$in"; then exec sleep 60; fi
+if grep -q '^; hod: hang' "$in"; then exec sleep 600; fi
 if grep -q '^; hod: error' "$in"; then
   record error malformed-input
   echo "hod: error: the module is not valid" >&2
@@ -223,6 +223,15 @@ impl World {
         irdiff::run(&self.config()).unwrap()
     }
 }
+
+/// How long a run with hanging tools may take. A hang sleeps 600 s, and a
+/// run that waited for one instead of killing it at its limit would take
+/// that long; a run that kills them takes its 3 s limits plus whatever the
+/// machine adds: waits for the shared pool's tokens are in the elapsed
+/// time, and at load 25 to 32 runs of under 10 s have taken 32 to 48 s. So
+/// the bound is far from both, and says only that nothing waited for a
+/// hang (the details say that each hang was killed at its limit).
+const HANG_BOUND: Duration = Duration::from_mins(4);
 
 /// Short limits for tests that make something hang.
 fn short(mut config: Config) -> Config {
@@ -464,7 +473,7 @@ fn fail_when_hod_fails() {
     config.tool_limits.memory_kib = 64 << 10;
     let started = Instant::now();
     let report = irdiff::run(&config).unwrap();
-    assert!(started.elapsed() < Duration::from_secs(30), "{:?}", started.elapsed());
+    assert!(started.elapsed() < HANG_BOUND, "{:?}", started.elapsed());
     for (file, needle) in [
         ("crash.ll", "hod was terminated by signal 11; it wrote no coverage log"),
         (
@@ -635,12 +644,12 @@ fn oracle_trouble_is_an_error() {
     world.test("stdout.ll", ";@ stdout: expected\n; program: echo actual\n");
     world.test("exit.ll", ";@ exit: 2\n; program: exit 3\n");
     world.test("signal.ll", ";@ exit: signal 6\n; program: exit 134\n");
-    world.test("runs-long.ll", "; program(llc): exec sleep 60\n");
+    world.test("runs-long.ll", "; program(llc): exec sleep 600\n");
     world.test("directives.ll", ";@ stdout: fine\n;@ exitcode: 1\n;@ tier: slow\n");
     world.test("good.ll", ";@ stdout: fine\n; program: echo fine\n");
     let started = Instant::now();
     let report = irdiff::run(&short(world.config())).unwrap();
-    assert!(started.elapsed() < Duration::from_secs(30), "{:?}", started.elapsed());
+    assert!(started.elapsed() < HANG_BOUND, "{:?}", started.elapsed());
     let all = report.summary(true);
     for (file, records, detail) in [
         ("crash.ll", 1, "oracle: llc was terminated by signal 11"),
@@ -725,14 +734,14 @@ fn limits_are_in_force_for_programs() {
              ; program: ulimit -v; ulimit -t; ulimit -c\n; program: {big} || echo refused\n"
         ),
     );
-    world.test("hod-hangs.ll", "; program(hod): exec sleep 60\n");
+    world.test("hod-hangs.ll", "; program(hod): exec sleep 600\n");
     world.test("hod-spins.ll", "; program(hod): while :; do :; done\n");
     world.test("hod-hogs.ll", &format!("; program(hod): {big} || exit 9\n"));
     let mut config = world.config();
     config.run_limits = Limits { time: Duration::from_secs(3), memory_kib: 64 << 10 };
     let started = Instant::now();
     let report = irdiff::run(&config).unwrap();
-    assert!(started.elapsed() < Duration::from_secs(40), "{:?}", started.elapsed());
+    assert!(started.elapsed() < HANG_BOUND, "{:?}", started.elapsed());
     let all = report.summary(true);
     assert_eq!(outcomes(&report, "limits.ll"), [Outcome::Pass; 3], "{all}");
     for file in ["hod-hangs.ll", "hod-spins.ll"] {

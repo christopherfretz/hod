@@ -3,8 +3,10 @@
 //! See `docs/ARCHITECTURE.md` for this crate's role and `spec/eh.md` for its
 //! contract. This crate writes the call-frame information (`spec/eh.md`
 //! §1 to §8): one `.eh_frame` per object from one [`Fde`] per function,
-//! through [`write_eh_frame`]. The LSDA (`.gcc_except_table`) is a later
-//! work package; an FDE already carries the reference to it.
+//! through [`write_eh_frame`]; and the language-specific data areas
+//! (`spec/eh.md` §9): one LSDA per function with landing pads in
+//! `.gcc_except_table`, through [`write_lsdas`], whose result is each
+//! function's [`Fde::lsda`]. Write the LSDAs first, then the frames.
 //!
 //! ```
 //! use hod_eh::{Fde, Op, Row, write_eh_frame};
@@ -32,6 +34,7 @@
 #![forbid(unsafe_code)]
 
 mod leb;
+mod lsda;
 mod target;
 
 use std::fmt;
@@ -43,6 +46,7 @@ use hod_obj::{
 
 use leb::{Sink, sleb, uleb};
 pub use leb::{uleb_len, write_sleb, write_uleb};
+pub use lsda::{CallSite, Clause, FuncLsda, LsdaOptions, NO_PAD, Pad, write_lsdas};
 pub use target::{AARCH64, CfiTarget, X86_64, for_arch, pe};
 
 /// A DWARF call-frame instruction, as data (`spec/codegen.md` §9.3,
@@ -118,7 +122,8 @@ pub struct Fde<'a> {
     pub lsda: Option<Lsda>,
 }
 
-/// Why `.eh_frame` could not be written. `order` names the [`Fde`].
+/// Why `.eh_frame` or an LSDA could not be written. `order` names the
+/// [`Fde`] or the [`FuncLsda`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Error {
     /// A row's offset is below the previous row's.
@@ -157,6 +162,70 @@ pub enum Error {
     },
     /// The section would exceed what 32-bit CIE pointers reach.
     TooLarge,
+    /// A call site starts before the previous one ends.
+    CallSiteOutOfOrder {
+        /// The function.
+        order: u32,
+        /// The row's index in [`FuncLsda::call_sites`].
+        row: usize,
+    },
+    /// A call site ends beyond the function's size.
+    CallSiteBeyondEnd {
+        /// The function.
+        order: u32,
+        /// The row's index in [`FuncLsda::call_sites`].
+        row: usize,
+    },
+    /// A call site names a pad that [`FuncLsda::pads`] does not have.
+    BadPad {
+        /// The function.
+        order: u32,
+        /// The row's index in [`FuncLsda::call_sites`].
+        row: usize,
+    },
+    /// A call site's landing address is not inside the function.
+    LandingBeyondEnd {
+        /// The function.
+        order: u32,
+        /// The row's index in [`FuncLsda::call_sites`].
+        row: usize,
+    },
+    /// A pad's clause range is not inside [`FuncLsda::clauses`].
+    BadClauses {
+        /// The function.
+        order: u32,
+        /// The pad's index.
+        pad: usize,
+    },
+    /// A pad has neither a cleanup nor a clause.
+    EmptyPad {
+        /// The function.
+        order: u32,
+        /// The pad's index.
+        pad: usize,
+    },
+    /// A `catch` names a type id that [`FuncLsda::type_ids`] does not
+    /// have.
+    BadTypeId {
+        /// The function.
+        order: u32,
+        /// The clause's index in [`FuncLsda::clauses`].
+        clause: usize,
+    },
+    /// A `filter`'s range is not inside [`FuncLsda::filter_ids`], or names
+    /// a type id that [`FuncLsda::type_ids`] does not have.
+    BadFilter {
+        /// The function.
+        order: u32,
+        /// The clause's index in [`FuncLsda::clauses`].
+        clause: usize,
+    },
+    /// A function whose table needs a section of its own has a name with a
+    /// NUL byte.
+    BadName {
+        /// The function.
+        order: u32,
+    },
     /// The object model refused the section.
     Object(hod_obj::Error),
 }
@@ -178,6 +247,31 @@ impl fmt::Display for Error {
             }
             Self::DuplicateOrder { order } => write!(f, "two FDEs have order {order}"),
             Self::TooLarge => f.write_str(".eh_frame would exceed 4 GiB"),
+            Self::CallSiteOutOfOrder { order, row } => {
+                write!(f, "LSDA {order}: call site {row} starts before the previous one ends")
+            }
+            Self::CallSiteBeyondEnd { order, row } => {
+                write!(f, "LSDA {order}: call site {row} ends beyond the function")
+            }
+            Self::BadPad { order, row } => {
+                write!(f, "LSDA {order}: call site {row} names a pad that does not exist")
+            }
+            Self::LandingBeyondEnd { order, row } => {
+                write!(f, "LSDA {order}: call site {row} lands outside the function")
+            }
+            Self::BadClauses { order, pad } => {
+                write!(f, "LSDA {order}: pad {pad} has clauses that do not exist")
+            }
+            Self::EmptyPad { order, pad } => {
+                write!(f, "LSDA {order}: pad {pad} has neither a cleanup nor a clause")
+            }
+            Self::BadTypeId { order, clause } => {
+                write!(f, "LSDA {order}: clause {clause} names a type id that does not exist")
+            }
+            Self::BadFilter { order, clause } => {
+                write!(f, "LSDA {order}: filter clause {clause} is out of range")
+            }
+            Self::BadName { order } => write!(f, "LSDA {order}: the function's name has a NUL"),
             Self::Object(e) => write!(f, "{e}"),
         }
     }

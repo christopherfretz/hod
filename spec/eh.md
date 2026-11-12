@@ -2,8 +2,8 @@
 
 `hod_eh` writes an object's unwind tables from what the code generator
 records per function (`spec/codegen.md` §9.3, §9.4): the call-frame
-information in `.eh_frame` (§1 to §8 here) and, later, the language-specific
-data areas in `.gcc_except_table` (§9, planned). It depends on `hod_obj`
+information in `.eh_frame` (§1 to §8 here) and the language-specific
+data areas in `.gcc_except_table` (§9). It depends on `hod_obj`
 only: it writes sections and relocations into an `Object` and knows nothing
 of IR or of `hod_cg`'s types.
 
@@ -12,7 +12,8 @@ External formats are cited as: **DWARF 5** (§6.4 "Call Frame Information",
 Linux Standard Base Core Specification 5.0, "Exception Frames" (the
 `.eh_frame` format, its augmentations and the `DW_EH_PE_*` pointer
 encodings); **AArch64 ELF** and the **x86-64 psABI** for the relocations
-and DWARF register numbers.
+and DWARF register numbers; the **Itanium C++ ABI** exception-handling
+chapter and LLVM's `EHStreamer` for the LSDA, which no standard specifies.
 
 The reference is `llc` at `-O0 -relocation-model=pic` (LLVM 19 and 22, which
 agree on everything here). Where `hod_eh` writes the same rules with
@@ -40,6 +41,20 @@ pub fn write_eh_frame(obj: &mut Object, fdes: &[Fde<'_>])
 pub fn personality_ref(obj: &mut Object, personality: SymbolId)
     -> Result<SymbolId, Error>;
 pub struct CfiTarget { .. }    // §2.1; AARCH64, X86_64, for_arch(arch)
+
+pub const NO_PAD: u32;
+pub struct CallSite { pub start: u32, pub len: u32, pub pad: u32, pub landing: u32 }
+pub struct Pad { pub block: u32, pub offset: u32, pub cleanup: bool,
+                 pub clauses: Range<u32> }
+pub enum Clause { Catch(u32), Filter(Range<u32>) }
+pub struct FuncLsda<'a> {
+    pub order: u32, pub name: &'a str, pub section: SectionId, pub size: u32,
+    pub call_sites: &'a [CallSite], pub pads: &'a [Pad], pub clauses: &'a [Clause],
+    pub type_ids: &'a [Option<SymbolId>], pub filter_ids: &'a [u32],
+}
+pub struct LsdaOptions { pub function_sections: bool, pub stubs: Option<SectionId> }
+pub fn write_lsdas(obj: &mut Object, funcs: &[FuncLsda<'_>], options: LsdaOptions)
+    -> Result<Vec<Lsda>, Error>;                          // §9
 ```
 
 `Op` and `Row` are `hod_cg`'s `CfiOp` and `CfiRow` (`spec/codegen.md` §9.3)
@@ -64,7 +79,7 @@ it:
 | `size` | `func.code.len()` |
 | `rows` | `chunk.cfi[func.cfi]`, each `CfiOp` mapped to the `Op` of the same name |
 | `personality` | when `func.has_pads`: the slot `personality_ref` made for the function's IR personality (`hod_ir` `SymbolKind::Function { personality }`), one slot per personality per object; `None` otherwise |
-| `lsda` | when `func.has_pads`: where the LSDA package put the function's LSDA (§9); `None` otherwise |
+| `lsda` | when `func.has_pads`: the function's entry of `write_lsdas`' result (§9.1); `None` otherwise |
 
 Which functions get an entry is LLVM's rule (`needsUnwindTableEntry`): a
 function has an FDE unless it is `nounwind`, has no `uwtable` and no
@@ -298,8 +313,277 @@ assembled in a stack buffer and appended in one copy. Measured by
 `tests/throughput.rs` (`--release`, `--ignored`): see
 `spec/landed/eh/WP-042.md`.
 
-## 9. LSDA (planned)
+## 9. LSDA (`.gcc_except_table`)
 
-`.gcc_except_table` from `call_sites`, `pads`, `clauses`, `type_ids` and
-`filter_ids` (`spec/codegen.md` §9.4). Its result is the `Lsda` of each
-function with pads.
+One language-specific data area per function with landing pads, read by
+the C++ personality routine (`__gxx_personality_v0`) through the FDE's
+LSDA pointer (§3.3). `hod_eh` writes it as `llc` does for Linux PIC
+(LLVM `EHStreamer::emitExceptionTable`), byte for byte: LLVM 19 and 22
+agree on everything here.
+
+### 9.1 Interface
+
+`CallSite`, `Pad` and `Clause` are `hod_cg`'s `CallSiteRow`, `PadRow` and
+`ClauseRow` (`spec/codegen.md` §9.4) field for field, as `Op`/`Row` are
+its CFI rows (§1; `hod_eh` does not depend on `hod_cg`, and WP-049 unifies
+the types). `Pad::block` is the `BlockId`'s index, carried but not used.
+`FuncLsda` is one function's ranges of the chunk's tables, so every index
+in them is relative to the function:
+
+| field | from (`hod_cg::emit_module`) |
+|---|---|
+| `order` | the function's `SymId` index, as `Fde::order` |
+| `name` | the function's symbol name (it names its own section, §9.6) |
+| `section` | the section the merge put the function's code in |
+| `size` | `func.code.len()` |
+| `call_sites`, `pads`, `clauses` | `chunk.call_sites[func.call_sites]` etc., each row mapped to the type of the same name (`NO_PAD` is `hod_cg::NO_PAD`) |
+| `type_ids` | `chunk.type_ids[func.type_ids]`, each `SymId` mapped to its `hod_obj::SymbolId` (the arithmetic of `spec/codegen.md` §9.7) |
+| `filter_ids` | `chunk.filter_ids[func.filter_ids]` |
+
+`write_lsdas` takes every function of the object with `has_pads` at once
+and returns, in the order of `funcs`, each one's `Lsda` (the section
+symbol of its table's section and its offset there), which is the
+`Fde::lsda` of the same function: the caller writes the LSDAs first and
+`.eh_frame` second. `LsdaOptions::stubs` is the object's `.data`, to which
+the type-info stubs are appended (§9.5); `None` makes a `.data` of its own
+when there are stubs. An empty `funcs` adds nothing.
+
+### 9.2 Header
+
+All offsets are from the LSDA's first byte, which is at a multiple of 4.
+
+| field | bytes |
+|---|---|
+| `@LPStart` encoding | `DW_EH_PE_omit` (0xff): landing pads are relative to the function's start (the FDE's initial location) |
+| `@TType` encoding | `DW_EH_PE_omit` when the function has no type ids and no filter; otherwise the target's personality encoding (§2.1): AArch64 `indirect\|pcrel\|sdata8` (0x9c), x86-64 `indirect\|pcrel\|sdata4` (0x9b) |
+| `@TType` base offset | only with a type table: ULEB128, the distance from the end of this field to the end of the type table (the "TType base") |
+| call-site encoding | `DW_EH_PE_uleb128` (0x01) |
+| call-site table length | ULEB128, in bytes |
+
+The TType base offset's size depends on the padding before the type table
+(§9.5), which depends on that size. `hod_eh` settles it as the assembler
+does (its LEB fragments start empty and only grow): starting from size 0,
+compute the value with the current size, and while the value needs more
+bytes than the current size, take that many and compute again; the value
+is then written in exactly the final size, padded with `0x80`
+continuation bytes if it needs fewer (`ttype_base_offset_at_every_size`
+checks the field against the table at every size up to 24 types and 48
+call sites; `llc`'s 24-type case is byte-identical).
+
+### 9.3 Call-site table
+
+Each entry is four ULEB128 values: start, length, landing pad (0 for
+none) and action (§9.4; 0 for none), offsets from the function's start.
+Entries are in address order. From the rows (`EHStreamer::
+computeCallSiteTable`, with hod's rows in place of LLVM's `EH_LABEL`
+pairs and calls):
+
+1. Rows must be in code order and not overlap; a row covers
+   `[start, start + len)`. A row with a pad lands at its `landing`, or at
+   its pad's `offset` when `landing` is 0; its action is its pad's first
+   action.
+2. A row with a pad whose landing address and action equal those of the
+   entry just written, when that entry also came from a row with a pad,
+   extends that entry to the row's end (across any code between them that
+   has no call).
+3. A row without a pad (`NO_PAD`) writes nothing itself. When a row with
+   a pad follows one or more rows without, an entry with no landing pad
+   and no action covering from the end of the last entry with a pad (or
+   the function's start) to the start of the row with a pad is written
+   first, and rule 2 does not merge across it. When rows without a pad
+   follow the last row with a pad, a final such entry covers from there to
+   the function's end.
+
+So a call that can throw and has no pad is covered by an entry without a
+landing pad (the personality unwinds through it), and code with no call
+in it is covered only where it lies inside a merged range. A call covered
+by no entry makes the personality call `std::terminate`; with hod's rows
+that is only a call the code generator did not record.
+
+`llc` decides "a call without a pad" by whether the callee is `nounwind`
+(`callToNoUnwindFunction`): a call to a `nounwind` function leaves a gap.
+`CallSiteRow` does not say whether its callee can unwind (§9.9), so every
+plain call is a row without a pad, and `hod_eh` writes an entry where
+`llc` writes none (or splits an entry `llc` merges). The tables then
+differ in bytes, not in what any call that can unwind does; a `nounwind`
+callee that unwinds anyway (undefined behaviour) is unwound through
+rather than terminated. §9.8's oracle builds its rows with `llc`'s rule,
+which is what makes it byte-identical.
+
+### 9.4 Action table
+
+The action table follows the call-site table. A record is two SLEB128
+values: the type filter (a type id > 0 is a `catch` of that type; 0 is a
+cleanup; < 0 is an exception specification, the negated byte offset,
+biased by one, of its list in §9.5's filter table) and the displacement,
+from the start of this second field, of the next record of the chain (0:
+the chain ends). A call site's action is the offset of its chain's first
+record, plus one.
+
+The records and their sharing are LLVM's (`computeActionsTable`), which
+the oracle confirms byte for byte:
+
+1. Each pad's list, in LLVM's order: 0 if the pad is a cleanup with at
+   least one clause, then its clauses **last to first**, a `Catch(t)` as
+   `t`, a `Filter` as its filter id (§9.5). A cleanup with no clause has
+   the empty list: action 0, which the personality treats as a cleanup.
+   The chain written for a list runs from its last element to its first,
+   so it visits the clauses in source order and the cleanup last.
+2. Pads are taken in the lexicographic order of their lists (signed, so
+   filters before cleanups before catches; ties in pad order). Each pad
+   shares with the pad before it the longest common prefix of their lists:
+   those records (the tail of its chain) are the previous pad's, and only
+   the rest are appended, the first of them pointing at the last shared
+   record. A pad whose list equals the previous one's has the same action;
+   the empty list has action 0.
+3. Records are appended in that order, each displacement computed from
+   the records' actual positions (backwards, so negative).
+
+This shares only with the neighbour in sorted order, not every common
+tail; it is `llc`'s scheme, kept for byte identity, and the unwinder reads
+any sharing the same way.
+
+### 9.5 Type table and filters
+
+Only with type ids or filters. After the action table, zero bytes to a
+multiple of 4; then the type table, the entry of type id `k` at
+`TTBase - k * pointer_size` (so the table is written last type id first),
+`pointer_size` 8 on AArch64 and 4 on x86-64; the TType base; the filter
+table; zero bytes to a multiple of 4 ending the LSDA (also without a type
+table).
+
+- A catch-all (`None`) entry is zero, unrelocated.
+- Any other entry is indirect and PC-relative: the address of a stub
+  word holding the type-info's address. The field is zero with the
+  personality-and-LSDA relocation of §2.1 (`R_AARCH64_PREL64`,
+  `R_X86_64_PC32`) against the stub section's section symbol, addend the
+  stub's offset. A stub is 8 zero bytes in `LsdaOptions::stubs` (aligned
+  to 8 before the first, the section's alignment raised to 8) with an
+  absolute 64-bit relocation (`R_AARCH64_ABS64`, `R_X86_64_64`) against
+  the type-info's symbol: one per distinct type-info symbol in the object,
+  all functions' together, ordered by symbol name (then by symbol id),
+  as `llc`'s `.L<name>.DW.stub` words in `.data` are. The stub keeps the
+  read-only table free of dynamic relocations.
+- The filter table: for each distinct filter, its type ids as ULEB128
+  and a 0. Filters are numbered as LLVM numbers them
+  (`MachineFunction::getFilterIDFor`): processing pads in `pads` order and
+  each pad's clauses last to first, a filter whose list equals the end of
+  a filter already in the table (an empty one: any filter's terminator)
+  reuses that position; otherwise it is appended. Its filter id is
+  `-(1 + index of its first entry)` and its record value
+  `-(1 + byte offset of that entry)`. `llc` registers pads in reverse
+  post-order of the CFG, hod in `pads` order (block order); the two can
+  number a function's filters differently when it has several distinct
+  filters in different pads. The lists then differ in order only, which
+  the personality reads the same; no case of §9.8 differed.
+
+### 9.6 Sections
+
+The section is `SHT_PROGBITS`, `SHF_ALLOC`, alignment 4, entry size 0,
+with no `SHF_LINK_ORDER` (`llc` sets it only for binutils ≥ 2.36, which
+its default does not assume). A function's table is in
+
+- `.gcc_except_table.<name>` of its own when the function's section is
+  in a group (the table joins that group, so the linker keeps or drops it
+  with the function) or `LsdaOptions::function_sections` is set, as `llc`
+  does (`TargetLoweringObjectFileELF::getSectionForLSDA` with unique
+  section names);
+- otherwise `.gcc_except_table`, one for the object, the tables one after
+  another in `order`.
+
+Relocations are added in increasing offset order per section. `llc` also
+defines a local `GCC_except_table<n>` label at each LSDA; nothing refers
+to it (the FDE uses the section symbol), and `hod_eh` does not write it.
+
+### 9.7 Order, determinism and cost
+
+The output depends only on the set of `FuncLsda`s: tables are placed by
+`order` and stubs by name, so a caller may pass functions in any order
+(`DuplicateOrder` otherwise). Encoding is one pass over each function's
+rows into one buffer for the object, reusing a set of scratch buffers
+from function to function: no allocation per function. The sizes are
+computed first and the bytes written into a zeroed region, so padding and
+type-table fields cost nothing. Measured by `tests/throughput.rs`: see
+`spec/landed/eh/WP-047.md`.
+
+### 9.8 Errors
+
+`write_lsdas` checks every function before it touches the object and, on
+the first problem (functions in `order`), returns an error naming the
+function's `order` and the row, pad or clause, with `obj` unchanged. It
+never panics on input. (An `Object` error, which only `hod_obj`'s limits
+cause, may leave the sections added so far.)
+
+| error | when |
+|---|---|
+| `CallSiteOutOfOrder` | a row starts before the previous row ends |
+| `CallSiteBeyondEnd` | a row ends beyond `size` (or overflows) |
+| `BadPad` | a row's `pad` is neither `NO_PAD` nor an index of `pads` |
+| `LandingBeyondEnd` | a row's landing address (§9.3 rule 1) is not below `size` |
+| `BadClauses` | a pad's clause range is reversed or beyond `clauses` |
+| `EmptyPad` | a pad has no clause and is not a cleanup |
+| `BadTypeId` | a `Catch` names 0 or more than `type_ids.len()` |
+| `BadFilter` | a `Filter` range is beyond `filter_ids`, or one of its ids is not a type id |
+| `BadName` | a function that gets its own section has a NUL in its name |
+| `DuplicateOrder` | two functions have the same `order` |
+| `TooLarge` | the tables would reach 4 GiB |
+| `Object` | `hod_obj` refused a section |
+
+### 9.9 Tests
+
+- **`llc` round trip** (`tests/lsda_oracle.rs`, `tests/common/lsda.rs`):
+  C++-shaped modules (catches of several types with `llvm.eh.typeid.for`
+  dispatch, catch-all, nested `try` whose inner pad's chain shares the
+  outer's tail, cleanups only, `throw(int, long)` and `throw()`
+  specifications and a catch beside a filter, a rethrow from a handler
+  with a cleanup and a terminate pad, a COMDAT template next to a plain
+  function, `nounwind` and throwing plain calls between invokes, and 48
+  invokes over 6 pads and 24 types for two-byte ULEB128 fields and a TType
+  base beyond 127), compiled by `llc` 19 and 22 for AArch64 and x86-64,
+  with and without `-function-sections`, at `-O0 -global-isel=0
+  -fast-isel=0 -relocation-model=pic`. Each LSDA llc wrote (found through
+  `.eh_frame`'s relocations) is decoded with its relocations and the stub
+  words they reach; it becomes hod's rows: llc's type table, one pad per
+  landing address with the clauses of its chain, a row per call that can
+  throw (from `.text`'s call relocations, a callee being `nounwind` by its
+  IR declaration), each padded entry split at every such call so that hod
+  must merge it again, every other row with landing 0. `write_lsdas`
+  writes them (also with the input reversed) into an object with llc's
+  code sections and groups. Asserted: the same sections (name, type,
+  flags, alignment, group); the same stubs; each function's LSDA in the
+  section and at the offset llc put it; decoded equality (encodings, type
+  table, every call site's range, landing pad and action chain by
+  meaning); and **byte identity** of every section and its relocations,
+  which holds in every case. A wrong landing address or a wrong catch type
+  in the rows fails the comparison (`wrong_rows_fail_the_round_trip`).
+- **Real unwinding** (`tests/lsda_unwind.rs`): `tests/data/lsda.ll`
+  (clang 19 `-std=c++14 -O0` from `tests/data/lsda.cpp`) catches by type
+  after a non-matching handler, falls through non-matching inner handlers
+  past a cleanup to an outer `catch (Base &)`, rethrows out of a handler
+  with a cleanup to a catch-all, passes an exception through a satisfied
+  `throw(Error)`, has two pads in one function, and on request violates a
+  `throw(Error)` (`std::unexpected`, then `std::terminate`) or a
+  `noexcept`. `llc` 19 and 22 compile it; its LSDA sections are replaced by
+  `write_lsdas`' and its `.eh_frame` by `write_eh_frame`'s with every
+  FDE's LSDA from `write_lsdas`' result (§7.2's splice). Linked with `g++`
+  and GNU ld, lld and mold with `--eh-frame-hdr`, each of the three runs
+  prints, writes to stderr and exits exactly as the original (the
+  violations abort with SIGABRT in both). A wrong table (the first call
+  of `two_pads` pointed at the other pad, whose handler does not match)
+  makes the program abort instead of printing what the original prints.
+- **Units** (`tests/lsda_units.rs`): exact bytes of a cleanup-only table
+  and of a catch, catch-all and catch chain with its type table and stubs;
+  filters sharing a tail and `throw()` sharing a terminator; every merge
+  and gap rule of §9.3 and a function whose calls all lack pads; the TType
+  base offset at every size; sections and groups with and without function
+  sections; identical output under forty permutations of the input; each
+  error of §9.8 with the object unchanged.
+
+### 9.10 What the core's rows do not say
+
+- Whether a call can unwind (§9.3): `CallSiteRow` (`hod_cg` `record.rs`,
+  `CallSiteRow`) has no flag for a `nounwind` callee, so hod's tables cover
+  calls `llc` leaves uncovered. Harmless for correct programs; a flag
+  (or dropping such rows in the core) would make them `llc`'s.
+- The function's name, section and the object's `.data`: the caller
+  supplies them after the merge, as it does `Fde::start` (§1.1).

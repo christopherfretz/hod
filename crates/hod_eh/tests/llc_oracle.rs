@@ -228,7 +228,8 @@ fn oracle(major: u32) {
             let label = format!("{name}-{triple}-{major}");
             let object = compile(&llc, &scratch, &label, &ir, triple);
             for reverse in [false, true] {
-                let Some(rt) = round_trip(&scratch, &label, arch, &ir, &object, reverse) else {
+                let Some(rt) = round_trip(&scratch, &label, arch, &ir, &object, reverse, None)
+                else {
                     return;
                 };
                 let expect: &[&str] = match (name, arch) {

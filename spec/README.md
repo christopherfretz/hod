@@ -15,7 +15,7 @@ crate could be re-implemented from its spec and its tests alone.
 | `codegen.md` | `hod_cg`: the walk, value-location policy, frame, `Target` trait, per-function output record | design written (WP-014); core and test target landed (WP-030), `sym_access` and `emit_module` landed (WP-032, `spec/landed/codegen/`); targets to come |
 | `abi-a64.md` | `hod_a64::abi::assign`: how IR-level signatures are passed and returned on AArch64 Linux as LLVM does it, extension duties, variadic functions, what is unsupported | current (WP-034); the code generator's duties of §8 are implemented by WP-038 |
 | `abi-x64.md` | the same for x86-64 SysV | planned |
-| `eh.md` | `hod_eh`: CFI and LSDA | current for the CFI (`.eh_frame`, WP-042); the LSDA (§9) is planned |
+| `eh.md` | `hod_eh`: CFI and LSDA | current: `.eh_frame` (WP-042) and `.gcc_except_table` (§9, WP-047), both byte-identical to `llc` 19 and 22; evidence in `spec/landed/eh/` |
 | `dwarf.md` | `hod_dwarf` | planned |
 | `xform.md` | `hod_xform`: required lowerings | planned |
 | `cli.md` | the `hod` command line, the `hod` facade's `compile`, fallback, coverage log | current (WP-015); reasons grow with code generation |

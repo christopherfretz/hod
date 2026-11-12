@@ -1,6 +1,6 @@
 //! Immediate operand encodings (`spec/mc-a64.md` "Immediates").
 
-use crate::reg::Size;
+use crate::reg::{FpSize, Size};
 
 /// Whether `imm` is an ADD/SUB immediate: a 12-bit value, or a 12-bit value
 /// shifted left by 12.
@@ -105,4 +105,46 @@ pub const fn decode_bitmask(sz: Size, encoding: u16) -> Option<u64> {
         at += esize;
     }
     Some(value)
+}
+
+/// The bit pattern an FMOV immediate field denotes at the given precision
+/// (the Arm ARM's `VFPExpandImm`): `(-1)^s * (16 + m) / 16 * 2^e` with `m`
+/// in `0..=15` and `e` in `-3..=4`, where `imm8` is `s:e':m`.
+///
+/// Every `imm8` is valid; the 256 values are distinct. A single-precision
+/// pattern is returned in the low 32 bits.
+pub const fn decode_fp_imm8(sz: FpSize, imm8: u8) -> u64 {
+    let imm = imm8 as u64;
+    let (exp_bits, frac_bits) = match sz {
+        FpSize::S => (8, 23),
+        FpSize::D => (11, 52),
+    };
+    // The exponent is NOT(b6) : Replicate(b6, exp_bits - 3) : imm8<5:4>.
+    let b6 = (imm >> 6) & 1;
+    let replicated = if b6 == 1 { (1 << (exp_bits - 3)) - 1 } else { 0 };
+    let exp = (b6 ^ 1) << (exp_bits - 1) | replicated << 2 | (imm >> 4) & 3;
+    (imm >> 7) << (exp_bits + frac_bits) | exp << frac_bits | (imm & 0xf) << (frac_bits - 4)
+}
+
+/// Encodes the floating-point bit pattern `bits` as an FMOV immediate
+/// field, or `None` when it is not one of the 256 encodable values.
+///
+/// For [`FpSize::S`] the pattern is in the low 32 bits and the upper 32
+/// must be clear. Neither zero is encodable, nor any infinity, NaN or
+/// denormal.
+pub const fn encode_fp_imm8(sz: FpSize, bits: u64) -> Option<u8> {
+    let (sign_at, frac_bits) = match sz {
+        FpSize::S => (31, 23),
+        FpSize::D => (63, 52),
+    };
+    if bits >> sign_at > 1 {
+        return None;
+    }
+    // The only field that can denote `bits`: its sign, the inverse of its
+    // top exponent bit, its low two exponent bits and top four fraction
+    // bits. It does when the bits it leaves out are the ones implied.
+    let top_exp = (bits >> (sign_at - 1)) & 1;
+    let imm8 =
+        ((bits >> sign_at) << 7 | (top_exp ^ 1) << 6 | (bits >> (frac_bits - 4)) & 0x3f) as u8;
+    if decode_fp_imm8(sz, imm8) == bits { Some(imm8) } else { None }
 }

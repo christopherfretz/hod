@@ -6,6 +6,8 @@
 //! Each test file uses part of this module.
 #![allow(dead_code)]
 
+pub mod consts;
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 

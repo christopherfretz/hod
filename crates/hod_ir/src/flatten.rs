@@ -6,6 +6,11 @@
 //!
 //! - Padding (between struct fields, after an array element, after the
 //!   value up to its alloc size) is zero. `undef` and `poison` are zero.
+//!   One exception keeps the image identical to LLVM's: a vector of plain
+//!   `i8`/`i16`/`i32`/`i64`/`half`/`bfloat`/`float`/`double` values whose
+//!   bytes are all the same byte has its tail padding filled with that byte
+//!   (LLVM emits such a `ConstantDataVector` as one fill of its alloc
+//!   size), so `<3 x i8> <i8 1, i8 1, i8 1>` is `01 01 01 01`.
 //! - An integer is its store size in little-endian bytes; the bits above
 //!   its width are zero. `x86_fp80` is ten bytes.
 //! - A vector is packed: element `i` of a vector whose elements are whole
@@ -172,6 +177,9 @@ impl Writer<'_> {
                     for (index, &elem) in elems.iter().enumerate() {
                         self.write_vector_element(ty, elem, at, index)?;
                     }
+                    if elems.iter().all(|&elem| self.is_plain_data(elem)) {
+                        self.fill_repeated_vector(ty, at);
+                    }
                 }
             },
             Const::Splat { ty, elem } => {
@@ -180,6 +188,9 @@ impl Writer<'_> {
                 };
                 for index in 0..len as usize {
                     self.write_vector_element(ty, elem, at, index)?;
+                }
+                if self.is_plain_data(elem) {
+                    self.fill_repeated_vector(ty, at);
                 }
             }
             Const::Addr { .. }
@@ -240,6 +251,30 @@ impl Writer<'_> {
                 IrErrorKind::UnsupportedInitializer,
                 format!("{what} of a width no relocation has"),
             ),
+        }
+    }
+
+    /// Whether `elem` is an integer or floating-point number (not `undef`,
+    /// not an address) of a type LLVM stores as packed data: `i8`, `i16`,
+    /// `i32`, `i64`, `half`, `bfloat`, `float` or `double`.
+    fn is_plain_data(&self, elem: ConstId) -> bool {
+        match self.pool.get(elem) {
+            Const::Int { ty, .. } => matches!(self.types.int_bits(ty), Some(8 | 16 | 32 | 64)),
+            Const::Float { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// Fills the tail padding of the vector of plain data of type `ty`
+    /// written at `at` with the vector's byte, when all its bytes are the
+    /// same one. LLVM emits such a vector as a single fill of its alloc
+    /// size; the padding is not part of the value either way.
+    fn fill_repeated_vector(&mut self, ty: TypeId, at: usize) {
+        let store = self.types.size_of(ty) as usize;
+        let alloc = self.types.alloc_size_of(ty) as usize;
+        let byte = self.bytes[at];
+        if self.bytes[at..at + store].iter().all(|&other| other == byte) {
+            self.bytes[at + store..at + alloc].fill(byte);
         }
     }
 
@@ -432,6 +467,41 @@ mod tests {
         let fixup =
             Fixup { offset: 8, size: 8, target: FixupTarget::Sym(SymId::new(4)), addend: 1 };
         assert_eq!(image(&m, pointers), (vec![0; 16], vec![fixup]));
+    }
+
+    /// §4.3: the tail padding of a vector of plain data whose bytes are all
+    /// one byte repeats that byte, as LLVM's fill does; all other padding
+    /// is zero.
+    #[test]
+    fn repeated_byte_vector_padding() {
+        let mut m = module();
+        let v3 = m.types.vector(TypeId::I8, 3).unwrap();
+        let seven = m.consts.int(&m.types, TypeId::I8, 7).unwrap();
+        let eight = m.consts.int(&m.types, TypeId::I8, 8).unwrap();
+        let undef = m.consts.undef(&m.types, TypeId::I8).unwrap();
+        let c = m.consts.splat(&m.types, v3, seven).unwrap();
+        assert_eq!(image(&m, c).0, [7, 7, 7, 7]);
+        let c = m.consts.aggregate(&m.types, v3, &[seven, seven, eight]).unwrap();
+        assert_eq!(image(&m, c).0, [7, 7, 8, 0]);
+        let c = m.consts.aggregate(&m.types, v3, &[seven, undef, seven]).unwrap();
+        assert_eq!(image(&m, c).0, [7, 0, 7, 0]);
+
+        let halves = m.types.vector(TypeId::HALF, 3).unwrap();
+        let half = m.consts.float(&m.types, TypeId::HALF, 0x4040).unwrap();
+        let c = m.consts.splat(&m.types, halves, half).unwrap();
+        assert_eq!(image(&m, c).0, [0x40; 8]);
+        let half = m.consts.float(&m.types, TypeId::HALF, 0x4041).unwrap();
+        let c = m.consts.splat(&m.types, halves, half).unwrap();
+        assert_eq!(image(&m, c).0, [0x41, 0x40, 0x41, 0x40, 0x41, 0x40, 0, 0]);
+
+        // `i24` is not a type LLVM stores as packed data.
+        let i24 = m.types.int(24).unwrap();
+        let v3 = m.types.vector(i24, 3).unwrap();
+        let ones = m.consts.int(&m.types, i24, 0x01_0101).unwrap();
+        let c = m.consts.splat(&m.types, v3, ones).unwrap();
+        let mut expected = vec![1; 9];
+        expected.resize(16, 0);
+        assert_eq!(image(&m, c).0, expected);
     }
 
     /// §4.3: addresses become fixups at their offsets in the buffer.

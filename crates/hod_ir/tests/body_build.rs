@@ -816,6 +816,90 @@ fn use_facts_of_instruction_results() {
     assert_eq!(facts(first_use), (0, false, false));
 }
 
+/// §5.6: where a use is located when the definition and the user are in
+/// different blocks or the user is a phi, for operands given directly and
+/// through reserved values.
+#[test]
+fn use_facts_across_a_block_boundary() {
+    let facts = |body: &Body, value: Value| {
+        let uses = body.uses(id(value));
+        (uses.count(), uses.used_outside_block(), uses.only_use_is_next())
+    };
+    // An `invoke` result whose only user is the first instruction of the
+    // block laid out next. That instruction has the next id but is in
+    // another block: the use is outside, and not "by the next
+    // instruction". If the user is a phi, the use is at the end of the
+    // invoke's own block: not outside, and still not "next".
+    for (through_reserved, by_phi) in [(false, false), (false, true), (true, false), (true, true)] {
+        let mut f = fx();
+        let fn_ty = f.m.types.function(I32, &[], false).unwrap();
+        let exn = f.m.types.struct_type(&[PTR, I32], false).unwrap();
+        let b = &mut f.b;
+        let [normal, pad] = [(); 2].map(|()| b.create_block().unwrap());
+        let callee = Value::sym(SymId::new(2)).unwrap();
+        let hole = b.reserve(I32).unwrap();
+        let result = b.invoke(I32, &CallDesc::new(callee, fn_ty, &[]), normal, pad).unwrap();
+        let operand = if through_reserved { hole } else { result };
+        b.begin_block(normal).unwrap();
+        let user = if by_phi {
+            b.phi(I32, &[(operand, f.entry)]).unwrap()
+        } else {
+            b.freeze(I32, operand).unwrap()
+        };
+        b.resolve(hole, result).unwrap();
+        b.ret(None).unwrap();
+        b.begin_block(pad).unwrap();
+        let caught = b.landing_pad(exn, true, &[]).unwrap();
+        b.resume(caught).unwrap();
+        let body = f.done();
+        assert_eq!(id(user).raw(), id(result).raw() + 1);
+        let case = format!("reserved: {through_reserved}, phi: {by_phi}");
+        assert_eq!(facts(&body, result), (1, !by_phi, false), "{case}");
+    }
+
+    for through_reserved in [false, true] {
+        // A phi whose only user is the next phi of its own block, on the
+        // edge from that block to itself: located in the block, never
+        // "next".
+        let mut f = fx();
+        let b = &mut f.b;
+        let looping = b.create_block().unwrap();
+        b.br(looping).unwrap();
+        b.begin_block(looping).unwrap();
+        let hole = b.reserve(I32).unwrap();
+        let first = b.phi(I32, &[(f.a, f.entry), (f.a, looping)]).unwrap();
+        let operand = if through_reserved { hole } else { first };
+        let second = b.phi(I32, &[(f.a, f.entry), (operand, looping)]).unwrap();
+        b.resolve(hole, first).unwrap();
+        b.br(looping).unwrap();
+        let body = f.done();
+        assert_eq!(id(second).raw(), id(first).raw() + 1);
+        assert_eq!(facts(&body, first), (1, false, false), "reserved: {through_reserved}");
+
+        // A value whose only use is a phi input that arrives from a block
+        // other than its own: used outside its block.
+        let mut f = fx();
+        let b = &mut f.b;
+        let [other, join] = [(); 2].map(|()| b.create_block().unwrap());
+        let hole = b.reserve(I32).unwrap();
+        let def = b.binary(Opcode::Add, I32, f.a, f.a).unwrap();
+        b.resolve(hole, def).unwrap();
+        b.cond_br(f.c, other, join).unwrap();
+        b.begin_block(other).unwrap();
+        b.br(join).unwrap();
+        b.begin_block(join).unwrap();
+        let operand = if through_reserved { hole } else { def };
+        // Listed for the edge from `other`; the entry block's edge
+        // brings an argument.
+        b.phi(I32, &[(f.a, f.entry), (operand, other)]).unwrap();
+        let body = f.done();
+        assert_eq!(facts(&body, def), (1, true, false), "reserved: {through_reserved}");
+        // The argument: twice by `def` in the entry block, once by the
+        // phi on the entry block's edge.
+        assert_eq!((body.arg_uses(0).count(), body.arg_uses(0).used_outside_block()), (3, false));
+    }
+}
+
 /// §5.6 (arguments): the count, and whether any use is outside the entry
 /// block, with a phi use counted in its incoming block.
 #[test]

@@ -81,6 +81,17 @@ impl UseFacts {
         self.0 == NEXT | 1
     }
 
+    /// The bits, for tests that damage them.
+    #[cfg(test)]
+    pub(crate) const fn raw(self) -> u32 {
+        self.0
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn from_raw(raw: u32) -> UseFacts {
+        UseFacts(raw)
+    }
+
     /// Records one more use.
     #[inline]
     pub(crate) fn add(&mut self, outside: bool, next: bool) {
@@ -293,8 +304,10 @@ pub(crate) struct Reserved {
 }
 
 /// One function's IR (§5.1). Built by [`crate::FunctionBuilder`]; read
-/// through the methods below. `Send` and `Sync`: it is plain data.
-#[derive(Clone, Debug)]
+/// through the methods below. `Send` and `Sync`: it is plain data. Two
+/// bodies are equal when every table is: the same instructions in the
+/// same order, not merely equivalent functions.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Body {
     pub(crate) sym: SymId,
     pub(crate) fn_ty: TypeId,

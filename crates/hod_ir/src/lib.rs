@@ -34,6 +34,8 @@ mod inst;
 mod intern;
 mod intrinsic;
 mod module;
+#[cfg(test)]
+mod random;
 mod target;
 mod types;
 mod value;

@@ -1,4 +1,4 @@
-//! Units whose `emissionKind` is not `FullDebug` (`spec/dwarf.md` §6.9,
+//! Units whose `emissionKind` is not `FullDebug` (`spec/dwarf.md` §6.10,
 //! WP-061): `LineTablesOnly` (`-gline-tables-only`, `-g1`) and
 //! `DebugDirectivesOnly` (`-gline-directives-only`).
 //!
@@ -41,7 +41,7 @@ pub const REDUCED_UNIT_ENTITIES: &str = "debug:reduced-unit-entities";
 /// A function of a `LineTablesOnly` unit with variable or label records.
 pub const LINE_TABLES_VARIABLES: &str = "debug:line-tables-variables";
 /// A function of a `LineTablesOnly` unit with code inlined into it: its
-/// subprogram DIE needs inlined subroutines (`spec/dwarf.md` §6.9).
+/// subprogram DIE needs inlined subroutines (`spec/dwarf.md` §6.10).
 pub const LINE_TABLES_INLINED: &str = "debug:line-tables-inlined";
 
 /// Whether a unit of this kind gets DIEs: `FullDebug` and

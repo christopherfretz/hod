@@ -28,8 +28,10 @@ mod interp;
 mod memory;
 pub mod ops;
 mod value;
+mod vector;
 
 pub use error::{Stop, Trap};
 pub use interp::{Config, Event, HostCx, Interp, NanPolicy, Outcome, Program};
 pub use memory::Memory;
 pub use value::{Agg, MAX_INT_BITS, Val};
+pub use vector::{Lane, Vector};

@@ -317,6 +317,20 @@ fn larger_programs_agree_with_llvm() {
     println!("{checked} programs agree with llc at -O0 and -O2");
 }
 
+/// §5.10, §9.3: generated programs with `vectors` on agree with the
+/// `llc` of each LLVM major.
+#[test]
+fn vector_programs_agree_with_llvm() {
+    let counts = per_major(|tools, target| {
+        let options = Options { target: target.clone(), vectors: true, ..Options::default() };
+        check_with(tools, &options, 0..60, 60)
+            + check_with(tools, &options.sized(6, 300), 500..506, 6)
+    });
+    for (major, count) in counts {
+        println!("LLVM {major}: {count} programs with vectors agree with llc at -O0 and -O2");
+    }
+}
+
 /// §10: many seeds at several sizes. Minutes.
 ///
 /// `HOD_ORACLE_SEEDS` sets how many seeds each size gets (default 2000).

@@ -52,7 +52,7 @@ struct Unit<'m> {
     /// The unit's global-variable expressions, sorted.
     globals: Vec<DiId>,
     /// Whether the unit has DIEs: not a `DebugDirectivesOnly` unit, which
-    /// is only a line table (`spec/dwarf.md` §6.9).
+    /// is only a line table (`spec/dwarf.md` §6.10).
     dies: bool,
 }
 
@@ -116,7 +116,7 @@ impl<'m> DebugLines<'m> {
                 continue;
             }
             // `LineTablesOnly` and `DebugDirectivesOnly` (WP-061,
-            // `spec/dwarf.md` §6.9): the plan refuses what they cannot
+            // `spec/dwarf.md` §6.10): the plan refuses what they cannot
             // describe; the second gets no DIEs at all.
             let plan = UnitPlan::for_functions(module, unit).map_err(dwarf_err)?;
             let mut globals = cu.globals.to_vec();

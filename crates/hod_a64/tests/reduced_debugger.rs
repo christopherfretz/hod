@@ -1,5 +1,5 @@
 //! Line-tables-only and directives-only programs under the debuggers
-//! (`spec/dwarf.md` §6.9, WP-061). `data/reduced/lto.cpp` is compiled
+//! (`spec/dwarf.md` §6.10, WP-061). `data/reduced/lto.cpp` is compiled
 //! with `-gline-tables-only` (and the mixed program from units of every
 //! kind, `llvm-link`ed) by clang 19 and 22, once by hod and once by `llc`
 //! of the same major, linked with GNU ld, lld and mold, and driven by gdb

@@ -48,6 +48,7 @@ use std::fmt;
 pub mod abbrev;
 mod die;
 mod func;
+mod inline;
 mod leb;
 mod line;
 mod policy;
@@ -58,6 +59,10 @@ mod types;
 
 pub use die::{CodeSpan, DieSections, GlobalAddr, UnitInput, UnitPlan, write_debug_info};
 pub use func::{FunctionInput, LocalPlace, LocalRow, ScopeRow};
+pub use inline::{
+    DEBUG_INLINED_DISCRIMINATOR, DEBUG_INLINED_FOREIGN_UNIT, DEBUG_INLINED_LOCAL_TYPE,
+    DEBUG_INLINED_MEMBER, DEBUG_LOCAL_STATIC, DEBUG_RETAINED_NODES,
+};
 pub use reduced::{LINE_TABLES_INLINED, LINE_TABLES_VARIABLES, REDUCED_UNIT_ENTITIES, has_dies};
 pub use strings::DebugStrings;
 

@@ -75,6 +75,17 @@ pub(crate) enum Kind {
     Block,
     /// A label (`DILabel`, keyed).
     Label,
+    // WP-085 (none keyed: `Inline` maps the nodes of abstract DIEs).
+    /// An abstract instance of a subprogram (`DW_AT_inline`).
+    AbstractSubprogram,
+    /// A parameter, local variable, label or lexical block of an
+    /// abstract instance.
+    AbstractParam,
+    AbstractVar,
+    AbstractLabel,
+    AbstractBlock,
+    /// An inlined subroutine; its node is the inlined `DISubprogram`.
+    Inlined,
 }
 
 /// One DIE of the plan: the node it is written from and its parent's
@@ -138,6 +149,8 @@ pub struct UnitPlan<'a> {
     /// The `.debug_addr` entries the functions' DIEs take.
     pub(crate) code_addrs: u32,
     pub(crate) fn_scratch: crate::func::FnScratch,
+    /// Abstract instances and functions' statics (WP-085).
+    pub(crate) inline: crate::inline::Inline,
 }
 
 fn md5_of(f: &DiFile<'_>) -> Option<[u8; 16]> {
@@ -180,7 +193,7 @@ impl<'a> UnitPlan<'a> {
     /// or a node of the wrong kind, or a namespace cycle; `Unsupported`
     /// for what this writer does not write yet (`spec/dwarf.md` §6.5).
     pub fn new(debug: &'a DebugInfo, unit: DiId) -> Result<Self, Error> {
-        let mut plan = Self::build(debug, None, unit)?;
+        let mut plan = Self::build(debug, None, unit, None)?;
         plan.seal()?;
         Ok(plan)
     }
@@ -206,13 +219,15 @@ impl<'a> UnitPlan<'a> {
     /// # Errors
     /// As [`UnitPlan::new`].
     pub fn for_functions(module: &'a Module, unit: DiId) -> Result<Self, Error> {
-        Self::build(&module.debug, Some((&module.consts, &module.types)), unit)
+        let bodies = crate::inline::bodies(module);
+        Self::build(&module.debug, Some((&module.consts, &module.types)), unit, Some(bodies))
     }
 
     fn build(
         debug: &'a DebugInfo,
         consts: Option<(&'a ConstPool, &'a TypeTable)>,
         unit: DiId,
+        bodies: Option<Vec<u32>>,
     ) -> Result<Self, Error> {
         let Some(DiKind::CompileUnit) = debug.find_kind(unit) else {
             return Err(Error::NotACompileUnit { node: unit.raw() });
@@ -221,7 +236,7 @@ impl<'a> UnitPlan<'a> {
             return Err(Error::NotACompileUnit { node: unit.raw() });
         };
         if cu.emission_kind != EmissionKind::FullDebug {
-            crate::reduced::check_unit(unit, &cu)?; // WP-061: §6.9
+            crate::reduced::check_unit(unit, &cu)?; // WP-061: §6.10
         }
         let Some(file) = cu.file.filter(|&f| debug.find_kind(f) == Some(DiKind::File)) else {
             return Err(bad(unit, "file"));
@@ -271,6 +286,7 @@ impl<'a> UnitPlan<'a> {
             ranges: Vec::new(),
             code_addrs: 0,
             fn_scratch: crate::func::FnScratch::default(),
+            inline: crate::inline::Inline::new(bodies),
         };
         plan.push(unit, 0, Kind::Unit);
         let mut chain = Vec::new();
@@ -355,17 +371,18 @@ impl<'a> UnitPlan<'a> {
         if v.line != 0 && v.file.is_none() {
             return Err(unsupported(var, "a declaration line without a file"));
         }
-        if let Some(s) = v.scope
-            && matches!(
-                self.debug.find_kind(s),
-                Some(DiKind::Subprogram | DiKind::LexicalBlock | DiKind::LexicalBlockFile)
-            )
-        {
-            // A function's `static`: `llc` writes it under the function's
-            // scope DIE (§6.4); not yet.
-            return Err(unsupported(var, "debug:local-static"));
-        }
-        let parent = self.scope_parent(var, v.scope, chain)?;
+        let parent = match v.scope {
+            // A function's `static`: under the function's DIE (WP-085).
+            Some(s)
+                if matches!(
+                    self.debug.find_kind(s),
+                    Some(DiKind::Subprogram | DiKind::LexicalBlock | DiKind::LexicalBlockFile)
+                ) =>
+            {
+                self.static_parent(var, s)?
+            }
+            _ => self.scope_parent(var, v.scope, chain)?,
+        };
         let die = self.push(var, parent, Kind::Variable);
         self.by_expr.push((gve.raw(), die));
         self.reference_type(var, "type", v.ty.unwrap_or(DiId::NONE)).map(|_| ())
@@ -959,6 +976,15 @@ impl<'a> Writer<'a> {
             (Kind::LocalParam | Kind::LocalVar | Kind::Block | Kind::Label, _) => {
                 self.local_die(plan, die, d.kind, d.node)?;
             }
+            (
+                Kind::AbstractSubprogram
+                | Kind::AbstractParam
+                | Kind::AbstractVar
+                | Kind::AbstractLabel
+                | Kind::AbstractBlock
+                | Kind::Inlined,
+                _,
+            ) => self.inline_die(plan, die, d.kind, d.node, children)?,
             (Kind::Unit, _) => unreachable!("the unit DIE is written by `unit`"),
             (_, node) => self.type_die(plan, die, d, node, children)?,
         }

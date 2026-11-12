@@ -1,5 +1,5 @@
 //! Units whose `emissionKind` is `LineTablesOnly` or `DebugDirectivesOnly`
-//! (`spec/dwarf.md` §6.9, WP-061), compared with `llc`'s.
+//! (`spec/dwarf.md` §6.10, WP-061), compared with `llc`'s.
 //!
 //! - `data/reduced/lto.cpp` with `-gline-tables-only` by clang 19 (`llc`
 //!   19 and 22), clang 22 and kiln++ (`llc` 22): hod's DIE trees are
@@ -164,7 +164,7 @@ fn compilers() -> Vec<(String, PathBuf, &'static [u32])> {
     out
 }
 
-/// §6.9: `-gline-tables-only`: the unit alone, `llc`'s; the line table
+/// §6.10: `-gline-tables-only`: the unit alone, `llc`'s; the line table
 /// is the full unit's.
 #[test]
 fn line_tables_only_matches_llc() {
@@ -201,7 +201,7 @@ fn line_tables_only_matches_llc() {
     );
 }
 
-/// §6.9: `-gline-directives-only`: the line table alone, as `llc`
+/// §6.10: `-gline-directives-only`: the line table alone, as `llc`
 /// writes it, the same table as `-gline-tables-only`'s; inlined code is
 /// no refusal there.
 #[test]
@@ -242,7 +242,7 @@ fn directives_only_is_the_line_table_alone() {
     eprintln!("directives-only objects equal to llc's: {}", tally.objects);
 }
 
-/// §6.9: units of every kind in one module (`llvm-link`), in several
+/// §6.10: units of every kind in one module (`llvm-link`), in several
 /// orders: the trees of the units with DIEs and the sections are `llc`'s.
 #[test]
 fn mixed_units_match_llc() {
@@ -284,7 +284,7 @@ fn refused(text: &str) -> Option<CgError> {
     }
 }
 
-/// §6.9: each refusal by its name, in a module with that one construct.
+/// §6.10: each refusal by its name, in a module with that one construct.
 #[test]
 fn refusals_by_name() {
     let Some(clang) = tool("clang++-22") else { return };

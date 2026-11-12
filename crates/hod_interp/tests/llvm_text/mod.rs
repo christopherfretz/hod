@@ -19,8 +19,8 @@ use std::fmt::Write as _;
 use hod_interp::generate::Generated;
 use hod_interp::host;
 use hod_ir::{
-    BlockId, Body, Callee, Clause, Const, ConstId, Inst, InstKind, Module, Opcode, SymId,
-    SymbolKind, TypeId, TypeKind, Value, ValueKind,
+    BlockId, Body, Callee, Clause, Const, ConstId, Inst, InstKind, Module, Opcode, SHUFFLE_UNDEF,
+    SymId, SymbolKind, TypeId, TypeKind, Value, ValueKind,
 };
 
 /// A file of programs under construction.
@@ -207,6 +207,7 @@ impl Printer<'_> {
             TypeKind::Double => "double".into(),
             TypeKind::Ptr { addr_space: 0 } => "ptr".into(),
             TypeKind::Array { elem, len } => format!("[{len} x {}]", self.ty(elem)),
+            TypeKind::Vector { elem, len } => format!("<{len} x {}>", self.ty(elem)),
             TypeKind::Struct { fields, packed: false } => {
                 let fields: Vec<String> = fields.iter().map(|&field| self.ty(field)).collect();
                 format!("{{ {} }}", fields.join(", "))
@@ -239,8 +240,16 @@ impl Printer<'_> {
                 let elems: Vec<String> = elems.iter().map(|&e| self.typed_const(e)).collect();
                 match self.m.types.kind(ty) {
                     TypeKind::Array { .. } => format!("[{}]", elems.join(", ")),
+                    TypeKind::Vector { .. } => format!("<{}>", elems.join(", ")),
                     _ => format!("{{ {} }}", elems.join(", ")),
                 }
+            }
+            Const::Splat { ty, elem } => {
+                let TypeKind::Vector { len, .. } = self.m.types.kind(ty) else {
+                    panic!("splat of {ty:?}");
+                };
+                let elem = self.typed_const(elem);
+                format!("<{}>", vec![elem; len as usize].join(", "))
             }
             Const::Bytes { bytes, .. } => {
                 let mut text = String::from("c\"");
@@ -405,7 +414,7 @@ impl Printer<'_> {
                 format!("{name} = phi {ty} {}", incoming.join(", "))
             }
             InstKind::Select { cond, if_true, if_false } => {
-                format!("{name} = select i1 {}, {}, {}", v(cond), tv(if_true), tv(if_false))
+                format!("{name} = select {}, {}, {}", tv(cond), tv(if_true), tv(if_false))
             }
             InstKind::Call(call) => {
                 let args: Vec<String> = call.args().iter().map(|&arg| tv(arg)).collect();
@@ -436,6 +445,27 @@ impl Printer<'_> {
                     ),
                     _ => format!("{result}call {ty} {callee}({}){attrs}", args.join(", ")),
                 }
+            }
+            InstKind::ExtractElement { vector, index } => {
+                format!("{name} = extractelement {}, {}", tv(vector), tv(index))
+            }
+            InstKind::InsertElement { vector, value, index } => {
+                format!("{name} = insertelement {}, {}, {}", tv(vector), tv(value), tv(index))
+            }
+            InstKind::ShuffleVector { first, second, mask } => {
+                let mask: Vec<String> = mask
+                    .iter()
+                    .map(|&at| {
+                        if at == SHUFFLE_UNDEF { "i32 poison".into() } else { format!("i32 {at}") }
+                    })
+                    .collect();
+                format!(
+                    "{name} = shufflevector {}, {}, <{} x i32> <{}>",
+                    tv(first),
+                    tv(second),
+                    mask.len(),
+                    mask.join(", ")
+                )
             }
             InstKind::LandingPad(pad) => {
                 let mut line = format!("{name} = landingpad {ty}");

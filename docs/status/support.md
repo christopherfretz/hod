@@ -20,7 +20,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 
 | group | constructs | aarch64 supported | not-implemented | rejected | x86_64 supported | not-implemented | rejected |
 |---|---|---|---|---|---|---|---|
-| `module` | 23 | 9 | 12 | 2 | 2 | 15 | 6 |
+| `module` | 24 | 10 | 12 | 2 | 2 | 16 | 6 |
 | `structor` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `debug` | 4 | 0 | 4 | 0 | 0 | 4 | 0 |
 | `global` | 12 | 11 | 1 | 0 | 2 | 10 | 0 |
@@ -32,18 +32,18 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `function` | 6 | 6 | 0 | 0 | 0 | 6 | 0 |
 | `cc` | 15 | 4 | 9 | 2 | 0 | 12 | 3 |
 | `attr` | 56 | 22 | 31 | 3 | 9 | 39 | 8 |
-| `type` | 15 | 9 | 3 | 3 | 0 | 13 | 2 |
-| `inst` | 67 | 53 | 6 | 8 | 0 | 59 | 8 |
-| `mem` | 3 | 1 | 2 | 0 | 0 | 3 | 0 |
-| `atomicrmw` | 21 | 0 | 21 | 0 | 0 | 21 | 0 |
-| `call` | 3 | 2 | 1 | 0 | 0 | 3 | 0 |
+| `type` | 15 | 10 | 2 | 3 | 0 | 13 | 2 |
+| `inst` | 67 | 59 | 0 | 8 | 0 | 59 | 8 |
+| `mem` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
+| `atomicrmw` | 21 | 21 | 0 | 0 | 0 | 21 | 0 |
+| `call` | 4 | 3 | 1 | 0 | 0 | 4 | 0 |
 | `tail` | 3 | 3 | 0 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
-| `operand` | 9 | 4 | 5 | 0 | 0 | 9 | 0 |
+| `operand` | 9 | 7 | 2 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 133 | 94 | 39 | 0 | 0 | 133 | 0 |
-| total | 434 | 245 | 143 | 46 | 16 | 363 | 55 |
+| total | 436 | 280 | 110 | 46 | 16 | 365 | 55 |
 
 ## `module`
 
@@ -69,7 +69,8 @@ Module properties (`ModuleProps`, §2.1) and module-level tables.
 | `module:branch-protection-pauth-lr` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
 | `module:cf-protection-branch` | rejected | not-implemented | an x86 property |
 | `module:cf-protection-return` | rejected | not-implemented | an x86 property |
-| `module:asm` | not-implemented | not-implemented | hod_asm. module-level inline assembly |
+| `module:asm` | not-implemented | not-implemented | hod_asm. module-level inline assembly an assembler must read |
+| `module:asm-symbols` | supported | not-implemented | module-level assembly made only of symbol directives (`spec/ir.md` §2.3) |
 | `module:linker-options` | supported | not-implemented | `!llvm.linker.options` |
 | `module:dependent-libraries` | supported | not-implemented | `!llvm.dependent-libraries` |
 | `module:global-ctors` | supported | not-implemented | an entry of `llvm.global_ctors` |
@@ -293,7 +294,7 @@ Type classes of the values instructions produce and consume.
 | `type:double` | supported | not-implemented |  |
 | `type:fp128` | supported | not-implemented | arithmetic, compares and conversions are calls |
 | `type:x86_fp80` | rejected | not-implemented | not an AArch64 type |
-| `type:vector` | not-implemented | not-implemented | M2 (vectors). vectors of fixed length |
+| `type:vector` | supported | not-implemented | vectors of fixed length; what is lowered of them by element and shape: `spec/codegen.md` §5.5.1 (WP-079) |
 | `type:scalable-vector` | rejected | rejected | scalable vectors are refused by design |
 | `type:aggregate` | supported | not-implemented | structs and arrays as first-class values (WP-040) |
 | `type:token` | not-implemented | not-implemented | T-XF (coroutine splitting). the results of the coroutine intrinsics |
@@ -305,56 +306,56 @@ Instructions.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `inst:add` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:sub` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:mul` | supported (int, i128, int-wide) | not-implemented |  |
+| `inst:add` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:sub` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:mul` | supported (int, i128, int-wide, vector) | not-implemented |  |
 | `inst:udiv` | supported (int, i128) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
 | `inst:sdiv` | supported (int, i128) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
 | `inst:urem` | supported (int, i128) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
 | `inst:srem` | supported (int, i128) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
-| `inst:shl` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:lshr` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:ashr` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:and` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:or` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:xor` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:fadd` | supported (half, float, double, fp128) | not-implemented |  |
-| `inst:fsub` | supported (half, float, double, fp128) | not-implemented |  |
-| `inst:fmul` | supported (half, float, double, fp128) | not-implemented |  |
-| `inst:fdiv` | supported (half, float, double, fp128) | not-implemented |  |
+| `inst:shl` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:lshr` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:ashr` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:and` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:or` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:xor` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:fadd` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `inst:fsub` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `inst:fmul` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `inst:fdiv` | supported (half, float, double, fp128, vector) | not-implemented |  |
 | `inst:frem` | supported (half, float, double, fp128) | not-implemented | a call of `fmod` |
-| `inst:fneg` | supported (half, float, double, fp128) | not-implemented |  |
+| `inst:fneg` | supported (half, float, double, fp128, vector) | not-implemented |  |
 | `inst:icmp` | supported (int, i128, int-wide, ptr) | not-implemented |  |
 | `inst:fcmp` | supported (int, half, float, double, fp128) | not-implemented |  |
-| `inst:trunc` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:zext` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:sext` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:fptrunc` | supported (half, float, double, fp128) | not-implemented |  |
-| `inst:fpext` | supported (half, float, double, fp128) | not-implemented |  |
-| `inst:fptoui` | supported (int, half, float, double, fp128) | not-implemented |  |
-| `inst:fptosi` | supported (int, half, float, double, fp128) | not-implemented |  |
-| `inst:uitofp` | supported (int, half, float, double, fp128) | not-implemented |  |
-| `inst:sitofp` | supported (int, half, float, double, fp128) | not-implemented |  |
+| `inst:trunc` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:zext` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:sext` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:fptrunc` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `inst:fpext` | supported (half, float, double, fp128, vector) | not-implemented |  |
+| `inst:fptoui` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
+| `inst:fptosi` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
+| `inst:uitofp` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
+| `inst:sitofp` | supported (int, half, float, double, fp128, vector) | not-implemented |  |
 | `inst:ptrtoint` | supported (int, i128, int-wide, ptr) | not-implemented |  |
 | `inst:ptrtoaddr` | supported (int, i128, int-wide, ptr) | not-implemented |  |
 | `inst:inttoptr` | supported (int, i128, int-wide, ptr) | not-implemented |  |
-| `inst:bitcast` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128) | not-implemented | between integers and floats with WP-039 |
+| `inst:bitcast` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | between integers and floats with WP-039 |
 | `inst:addrspacecast` | rejected | rejected | it has a pointer in a non-zero address space on one side |
-| `inst:load` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | not-implemented | a plain load; see `mem:`; FP and vector values: WP-067 |
-| `inst:store` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | not-implemented | a plain store; see `mem:`; FP and vector values: WP-067 |
+| `inst:load` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented | a plain load; see `mem:`; FP and vector values: WP-067 |
+| `inst:store` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented | a plain store; see `mem:`; FP and vector values: WP-067 |
 | `inst:alloca` | supported | not-implemented | a dynamic allocation; fixed ones are `function:slots` |
-| `inst:fence` | not-implemented | not-implemented | M2 (atomics) |
-| `inst:cmpxchg` | not-implemented | not-implemented | M2 (atomics) |
-| `inst:atomicrmw` | not-implemented | not-implemented | M2 (atomics). and the operation's `atomicrmw:` row |
+| `inst:fence` | supported | not-implemented | WP-074 |
+| `inst:cmpxchg` | supported (int, i128, ptr, aggregate) | not-implemented | WP-074; the `{ T, i1 }` result is an aggregate |
+| `inst:atomicrmw` | supported (int, i128, ptr, half, bfloat, float, double) | not-implemented | and the operation's `atomicrmw:` row; WP-074 |
 | `inst:ptradd` | supported | not-implemented | LLVM's `getelementptr` (§5.4); not a vector of pointers |
-| `inst:extractvalue` | supported (int, i128, int-wide, ptr, float, double, aggregate) | not-implemented |  |
-| `inst:insertvalue` | supported (int, i128, int-wide, ptr, float, double, aggregate) | not-implemented |  |
-| `inst:extractelement` | not-implemented | not-implemented | M2 (vectors) |
-| `inst:insertelement` | not-implemented | not-implemented | M2 (vectors) |
-| `inst:shufflevector` | not-implemented | not-implemented | M2 (vectors) |
+| `inst:extractvalue` | supported (int, i128, int-wide, ptr, float, double, vector, aggregate) | not-implemented |  |
+| `inst:insertvalue` | supported (int, i128, int-wide, ptr, float, double, vector, aggregate) | not-implemented |  |
+| `inst:extractelement` | supported (int, ptr, half, bfloat, float, double, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
+| `inst:insertelement` | supported (int, ptr, half, bfloat, float, double, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
+| `inst:shufflevector` | supported (vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:phi` | supported | not-implemented | for every class whose `type:*` row is supported |
-| `inst:select` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | not-implemented |  |
-| `inst:freeze` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | not-implemented |  |
+| `inst:select` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented |  |
+| `inst:freeze` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented |  |
 | `inst:va_arg` | rejected | rejected | `llc` miscompiles it on AArch64, so there is no oracle; frontends do not emit it |
 | `inst:call` | supported | not-implemented | a call of anything but an intrinsic |
 | `inst:landingpad` | supported | not-implemented |  |
@@ -380,8 +381,8 @@ Kinds of memory access.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `mem:volatile` | supported | not-implemented | a volatile `load`, `store`, `cmpxchg` or `atomicrmw` |
-| `mem:atomic-load` | not-implemented | not-implemented | M2 (atomics) |
-| `mem:atomic-store` | not-implemented | not-implemented | M2 (atomics) |
+| `mem:atomic-load` | supported | not-implemented | WP-074; `fp128` and vectors: `a64:atomic-type` |
+| `mem:atomic-store` | supported | not-implemented | WP-074; `fp128` and vectors: `a64:atomic-type` |
 
 ## `atomicrmw`
 
@@ -389,27 +390,27 @@ Kinds of memory access.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `atomicrmw:xchg` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:add` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:sub` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:and` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:nand` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:or` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:xor` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:max` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:min` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:umax` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:umin` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:fadd` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:fsub` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:fmax` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:fmin` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:uinc_wrap` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:udec_wrap` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:usub_cond` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:usub_sat` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:fmaximum` | not-implemented | not-implemented | M2 (atomics) |
-| `atomicrmw:fminimum` | not-implemented | not-implemented | M2 (atomics) |
+| `atomicrmw:xchg` | supported | not-implemented | WP-074 |
+| `atomicrmw:add` | supported | not-implemented | WP-074 |
+| `atomicrmw:sub` | supported | not-implemented | WP-074 |
+| `atomicrmw:and` | supported | not-implemented | WP-074 |
+| `atomicrmw:nand` | supported | not-implemented | WP-074 |
+| `atomicrmw:or` | supported | not-implemented | WP-074 |
+| `atomicrmw:xor` | supported | not-implemented | WP-074 |
+| `atomicrmw:max` | supported | not-implemented | WP-074 |
+| `atomicrmw:min` | supported | not-implemented | WP-074 |
+| `atomicrmw:umax` | supported | not-implemented | WP-074 |
+| `atomicrmw:umin` | supported | not-implemented | WP-074 |
+| `atomicrmw:fadd` | supported | not-implemented | WP-074 |
+| `atomicrmw:fsub` | supported | not-implemented | WP-074 |
+| `atomicrmw:fmax` | supported | not-implemented | WP-074 |
+| `atomicrmw:fmin` | supported | not-implemented | WP-074 |
+| `atomicrmw:uinc_wrap` | supported | not-implemented | WP-074 |
+| `atomicrmw:udec_wrap` | supported | not-implemented | WP-074 |
+| `atomicrmw:usub_cond` | supported | not-implemented | WP-074 |
+| `atomicrmw:usub_sat` | supported | not-implemented | WP-074 |
+| `atomicrmw:fmaximum` | supported | not-implemented | WP-074 |
+| `atomicrmw:fminimum` | supported | not-implemented | WP-074 |
 
 ## `call`
 
@@ -418,7 +419,8 @@ Kinds of callee.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `call:indirect` | supported | not-implemented | the callee is a computed address |
-| `call:inline-asm` | not-implemented | not-implemented | hod_asm. the callee is inline assembly |
+| `call:inline-asm` | not-implemented | not-implemented | hod_asm. the callee is inline assembly an assembler must read |
+| `call:inline-asm-empty` | supported | not-implemented | the callee is inline assembly whose template assembles to nothing (`spec/ir.md` §2.3) |
 | `call:variadic` | supported | not-implemented | a call through a variadic function type |
 
 ## `tail`
@@ -468,11 +470,11 @@ Constant addresses as instruction operands.
 | `operand:slot` | supported | not-implemented | the address of a stack slot |
 | `operand:blockaddress` | supported | not-implemented | of a block of the same function |
 | `operand:addr-of-int` | supported | not-implemented | `inttoptr` of a constant number |
-| `operand:int-of-addr` | not-implemented | not-implemented | unplanned. `ptrtoint` of a constant address |
-| `operand:sym-diff` | not-implemented | not-implemented | unplanned |
+| `operand:int-of-addr` | supported | not-implemented | `ptrtoint` of a constant address (WP-072) |
+| `operand:sym-diff` | supported | not-implemented | a difference of two symbol addresses (WP-072) |
 | `operand:dso-local-equivalent` | not-implemented | not-implemented | unplanned |
 | `operand:no-cfi` | not-implemented | not-implemented | unplanned |
-| `operand:address-in-aggregate` | not-implemented | not-implemented | unplanned. an aggregate or vector constant with an address |
+| `operand:address-in-aggregate` | supported | not-implemented | an aggregate or vector constant with an address (WP-072) |
 
 ## `const-expr`
 

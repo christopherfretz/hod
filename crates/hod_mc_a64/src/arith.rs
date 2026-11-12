@@ -417,3 +417,50 @@ pub const fn udiv(sz: Size, rd: RegZr, rn: RegZr, rm: RegZr) -> u32 {
 pub const fn sdiv(sz: Size, rd: RegZr, rn: RegZr, rm: RegZr) -> u32 {
     dp2(sz, 0b00_0011, rd, rn, rm)
 }
+
+/// The eight CRC32 instructions (FEAT_CRC32): the polynomial (`C`: the
+/// Castagnoli one) and the width of the data operand.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Crc32 {
+    /// `CRC32B`: a byte.
+    B,
+    /// `CRC32H`: a halfword.
+    H,
+    /// `CRC32W`: a word.
+    W,
+    /// `CRC32X`: a doubleword (the data operand is an `X` register).
+    X,
+    /// `CRC32CB`.
+    Cb,
+    /// `CRC32CH`.
+    Ch,
+    /// `CRC32CW`.
+    Cw,
+    /// `CRC32CX`.
+    Cx,
+}
+
+impl Crc32 {
+    /// Every form.
+    pub const ALL: [Self; 8] =
+        [Self::B, Self::H, Self::W, Self::X, Self::Cb, Self::Ch, Self::Cw, Self::Cx];
+}
+
+/// `CRC32{B,H,W,X} <Wd>, <Wn>, <Wm>|<Xm>` and the `CRC32C` forms: CRC32,
+/// CRC32C (WP-084). `rd` and `rn` are `W` registers; `rm` is an `X`
+/// register for the `X` forms, else a `W` register.
+#[inline]
+pub const fn crc32(kind: Crc32, rd: RegZr, rn: RegZr, rm: RegZr) -> u32 {
+    let (c, sz) = match kind {
+        Crc32::B => (0, 0),
+        Crc32::H => (0, 1),
+        Crc32::W => (0, 2),
+        Crc32::X => (0, 3),
+        Crc32::Cb => (1, 0),
+        Crc32::Ch => (1, 1),
+        Crc32::Cw => (1, 2),
+        Crc32::Cx => (1, 3),
+    };
+    let size = if sz == 3 { Size::X } else { Size::W };
+    dp2(size, 0b01_0000 | c << 2 | sz, rd, rn, rm)
+}

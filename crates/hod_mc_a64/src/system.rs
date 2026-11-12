@@ -91,6 +91,10 @@ pub enum SysReg {
     Fpsr = sysreg(3, 3, 4, 4, 1),
     /// `TPIDR_EL0`: the thread pointer (`S3_3_C13_C0_2`).
     TpidrEl0 = sysreg(3, 3, 13, 0, 2),
+    /// `CNTVCT_EL0`: the virtual count of the generic timer
+    /// (`S3_3_C14_C0_2`), what `llvm.readcyclecounter` reads (WP-084).
+    /// Read only: `MSR` to it is not an instruction.
+    CntvctEl0 = sysreg(3, 3, 14, 0, 2),
 }
 
 /// The `o0:op1:CRn:CRm:op2` field of the register `S<op0>_<op1>_C<crn>_C<crm>_<op2>`.
@@ -100,7 +104,8 @@ const fn sysreg(op0: u16, op1: u16, crn: u16, crm: u16, op2: u16) -> u16 {
 
 impl SysReg {
     /// Every system register this crate names.
-    pub const ALL: [Self; 4] = [Self::Nzcv, Self::Fpcr, Self::Fpsr, Self::TpidrEl0];
+    pub const ALL: [Self; 5] =
+        [Self::Nzcv, Self::Fpcr, Self::Fpsr, Self::TpidrEl0, Self::CntvctEl0];
 }
 
 /// `MRS <Xt>, <sysreg>`: MRS.

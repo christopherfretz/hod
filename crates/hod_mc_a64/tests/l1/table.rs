@@ -59,6 +59,7 @@ pub const CONSTRUCTORS: &[(&str, &[&str])] = &[
     ("umulh", &["umulh"]),
     ("udiv", &["udiv"]),
     ("sdiv", &["sdiv"]),
+    ("crc32", &["crc32*"]),
     // logical
     ("and_imm", &["and"]),
     // `mov` when the source is ZR and no MOVZ or MOVN expresses the value.

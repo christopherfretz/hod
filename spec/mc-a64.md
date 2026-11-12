@@ -192,6 +192,7 @@ Data-processing (3 source), Data-processing (2 source).
 | `smull`, `umull` `(rd: Z, rn: Z, rm: Z)` | | SMADDL / UMADDL with `ra` = ZR |
 | `smulh`, `umulh` `(rd: Z, rn: Z, rm: Z)` | | SMULH, UMULH |
 | `udiv`, `sdiv` `(sz, rd: Z, rn: Z, rm: Z)` | | UDIV, SDIV |
+| `crc32(kind: Crc32, rd: Z, rn: Z, rm: Z)` | `rm` is an `X` register for `X`, `Cx`, else `W` | CRC32B/H/W/X, CRC32CB/CH/CW/CX (FEAT_CRC32, WP-084) |
 
 - The shifted-register forms cannot name SP. An add or subtract that reads
   or writes SP with a register operand is the extended-register form:
@@ -430,7 +431,8 @@ the permanently undefined UDF.
 | `dmb(option: Barrier)`, `dsb(option: Barrier)` | | DMB, DSB |
 | `isb()` | | ISB (`CRm` = 15) |
 
-`SysReg` is `Nzcv`, `Fpcr`, `Fpsr`, `TpidrEl0`. `Barrier` is the twelve
+`SysReg` is `Nzcv`, `Fpcr`, `Fpsr`, `TpidrEl0`, and `CntvctEl0` (read
+only: `msr` to it is not an instruction; WP-084). `Barrier` is the twelve
 named options (`Sy`, `St`, `Ld`, `Ish`, `Ishst`, `Ishld`, `Nsh`, `Nshst`,
 `Nshld`, `Osh`, `Oshst`, `Oshld`). The hint-space instructions execute as
 NOP on a core without the feature, which is why they are encoded as hints.

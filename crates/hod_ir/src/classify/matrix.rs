@@ -2128,6 +2128,16 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len()] = [
     a64("intrinsic:llvm.coro.await.suspend.void", CORO, ""),
     a64("intrinsic:llvm.coro.await.suspend.bool", CORO, ""),
     a64("intrinsic:llvm.coro.await.suspend.handle", CORO, ""),
+    row("intrinsic:llvm.sshl.sat", on(&[TypeClass::Int]), todo(X64), "up to 64 bits (WP-084)"),
+    row("intrinsic:llvm.ushl.sat", on(&[TypeClass::Int]), todo(X64), "up to 64 bits (WP-084)"),
+    row("intrinsic:llvm.aarch64.crc32b", on(&[TypeClass::Int]), never(A64_ONLY), ""),
+    row("intrinsic:llvm.aarch64.crc32h", on(&[TypeClass::Int]), never(A64_ONLY), ""),
+    row("intrinsic:llvm.aarch64.crc32w", on(&[TypeClass::Int]), never(A64_ONLY), ""),
+    row("intrinsic:llvm.aarch64.crc32x", on(&[TypeClass::Int]), never(A64_ONLY), ""),
+    row("intrinsic:llvm.aarch64.crc32cb", on(&[TypeClass::Int]), never(A64_ONLY), ""),
+    row("intrinsic:llvm.aarch64.crc32ch", on(&[TypeClass::Int]), never(A64_ONLY), ""),
+    row("intrinsic:llvm.aarch64.crc32cw", on(&[TypeClass::Int]), never(A64_ONLY), ""),
+    row("intrinsic:llvm.aarch64.crc32cx", on(&[TypeClass::Int]), never(A64_ONLY), ""),
 ];
 
 // ---- the table ----

@@ -221,6 +221,9 @@ pub const SYS_REGS: [(SysReg, &str); 4] = [
     (SysReg::TpidrEl0, "TPIDR_EL0"),
 ];
 
+/// The read-only system registers: `mrs` only (WP-084).
+pub const READ_ONLY_SYS_REGS: [(SysReg, &str); 1] = [(SysReg::CntvctEl0, "CNTVCT_EL0")];
+
 pub const BARRIERS: [(Barrier, &str); 12] = [
     (Barrier::Oshld, "oshld"),
     (Barrier::Oshst, "oshst"),

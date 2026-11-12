@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `operand` | 9 | 7 | 2 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 133 | 94 | 39 | 0 | 0 | 133 | 0 |
-| total | 436 | 280 | 110 | 46 | 16 | 365 | 55 |
+| `intrinsic` | 143 | 104 | 39 | 0 | 0 | 135 | 8 |
+| total | 446 | 290 | 110 | 46 | 16 | 367 | 63 |
 
 ## `module`
 
@@ -641,6 +641,16 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.coro.await.suspend.void` | not-implemented | not-implemented | T-XF (coroutine splitting) |
 | `intrinsic:llvm.coro.await.suspend.bool` | not-implemented | not-implemented | T-XF (coroutine splitting) |
 | `intrinsic:llvm.coro.await.suspend.handle` | not-implemented | not-implemented | T-XF (coroutine splitting) |
+| `intrinsic:llvm.sshl.sat` | supported (int) | not-implemented | up to 64 bits (WP-084) |
+| `intrinsic:llvm.ushl.sat` | supported (int) | not-implemented | up to 64 bits (WP-084) |
+| `intrinsic:llvm.aarch64.crc32b` | supported (int) | rejected | x86_64: an AArch64 property |
+| `intrinsic:llvm.aarch64.crc32h` | supported (int) | rejected | x86_64: an AArch64 property |
+| `intrinsic:llvm.aarch64.crc32w` | supported (int) | rejected | x86_64: an AArch64 property |
+| `intrinsic:llvm.aarch64.crc32x` | supported (int) | rejected | x86_64: an AArch64 property |
+| `intrinsic:llvm.aarch64.crc32cb` | supported (int) | rejected | x86_64: an AArch64 property |
+| `intrinsic:llvm.aarch64.crc32ch` | supported (int) | rejected | x86_64: an AArch64 property |
+| `intrinsic:llvm.aarch64.crc32cw` | supported (int) | rejected | x86_64: an AArch64 property |
+| `intrinsic:llvm.aarch64.crc32cx` | supported (int) | rejected | x86_64: an AArch64 property |
 
 ## Structural rules
 

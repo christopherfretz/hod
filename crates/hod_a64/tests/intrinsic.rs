@@ -633,7 +633,7 @@ fn eh_typeid_for_selects_the_clause() {
         let path = format!("{}/tests/data/intrinsic/{name}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
     };
-    let source = dir.write("typeid_driver.cpp", &data("typeid_driver.cpp"));
+    let source = dir.write("typeid_driver.cpp", data("typeid_driver.cpp"));
     let driver = dir.join("typeid-driver.o");
     let mut command = std::process::Command::new(&gxx);
     command.args(["-c", "-O1"]).arg(&source).arg("-o").arg(&driver);

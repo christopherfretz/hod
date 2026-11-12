@@ -11,6 +11,7 @@
 //! - the `i128` forms of WP-041's integer intrinsics.
 
 #![allow(dead_code, reason = "each test uses part of it")]
+#![allow(clippy::cloned_ref_to_slice_refs, reason = "`.ll` cores built by hand, as `aggr_gen`")]
 
 use crate::aggr_gen::{Rng, Suite, T, bytes_of, edges, lit, small, value};
 

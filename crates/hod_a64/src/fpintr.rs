@@ -24,6 +24,11 @@
 //!   `ldexpf`, `frexpf`, ...; `half` through the `float` function, the
 //!   result narrowed (as `llc`).
 
+#![allow(
+    clippy::many_single_char_names,
+    reason = "the operands are LangRef's x, a, b, c; f the format"
+)]
+
 use hod_cg::{CallArg, CgResult, Class, FnCx, PReg, RuntimeFn};
 use hod_ir::{Inst, Intrinsic, TypeId, TypeKind, Value};
 use hod_mc_a64 as mc;
@@ -42,6 +47,9 @@ pub const BFLOAT: &str = "a64:intrinsic-bfloat";
 /// `fptosi.sat` or `fptoui.sat` of `fp128`: `llc` compares with the
 /// bounds through `__getf2`/`__gttf2`/`__unordtf2`; not written.
 pub const FP128: &str = "a64:intrinsic-fp128";
+
+/// A three-register floating-point instruction's encoder.
+type Op3 = fn(FpSize, VReg, VReg, VReg) -> u32;
 
 /// The scalar formats.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -186,8 +194,18 @@ pub fn fp_intrinsic<'a>(
         return call_math(cx, inst, f, f.pick(funcs), args, None);
     }
     match (which, args) {
-        (I::Sqrt | I::Floor | I::Ceil | I::Trunc | I::Round | I::RoundEven, &[x])
-        | (I::NearbyInt | I::Rint | I::Canonicalize, &[x]) => rounding(cx, inst, which, f, x),
+        (
+            I::Sqrt
+            | I::Floor
+            | I::Ceil
+            | I::Trunc
+            | I::Round
+            | I::RoundEven
+            | I::NearbyInt
+            | I::Rint
+            | I::Canonicalize,
+            &[x],
+        ) => rounding(cx, inst, which, f, x),
         (I::ArithmeticFence, &[x]) => {
             deferred_first(cx, inst, None)?;
             let r = cx.use_reg(x)?;
@@ -471,7 +489,7 @@ fn min_max<'a>(
         };
         return finish_call(cx, inst, func, &[CallArg::Value(a), CallArg::Value(b)], false);
     }
-    let (op, quiet): (fn(FpSize, VReg, VReg, VReg) -> u32, bool) = match which {
+    let (op, quiet): (Op3, bool) = match which {
         I::MinNum => (mc::fminnm, false),
         I::MaxNum => (mc::fmaxnm, false),
         I::Minimum => (mc::fmin, false),
@@ -501,7 +519,7 @@ fn min_max<'a>(
 /// `lround`/`llround` (`fcvtas`) and `lrint`/`llrint` (`frintx` +
 /// `fcvtzs`) to an integer of 1 to 64 bits; `fp128` calls `lroundl`,
 /// `llroundl`, `lrintl`, `llrintl`. An out-of-range result is
-/// unspecified (LangRef), an in-range one exact at any width.
+/// unspecified (`LangRef`), an in-range one exact at any width.
 fn to_int<'a>(
     cx: &mut FnCx<'a, A64>,
     inst: Inst<'a>,
@@ -585,7 +603,7 @@ fn saturate<'a>(
 /// The test of `is.fpclass` for the 6 kinds of magnitude (zero,
 /// subnormal, normal, infinity, signalling NaN, quiet NaN), positive
 /// and negative: bit `k` of each word says whether kind `k` is in
-/// `mask` (LangRef's 10 bits: 0 sNaN, 1 qNaN, 2 -inf, 3 -normal, 4
+/// `mask` (`LangRef`'s 10 bits: 0 sNaN, 1 qNaN, 2 -inf, 3 -normal, 4
 /// -subnormal, 5 -zero, 6 +zero, 7 +subnormal, 8 +normal, 9 +inf).
 fn class_tables(mask: u64) -> (u64, u64) {
     let bit = |k: u32| (mask >> k) & 1;

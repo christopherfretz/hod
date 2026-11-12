@@ -103,6 +103,7 @@ pub const TYPEID: &str = "a64:eh-typeid";
 /// [`INTRINSIC`], [`WIDE`], [`VECTOR`], [`INLINE_LENGTH`], [`FRAME_DEPTH`];
 /// what placing
 /// the operands and the runtime call report.
+#[allow(clippy::too_many_lines, reason = "one arm per intrinsic")]
 pub fn intrinsic<'a>(
     cx: &mut FnCx<'a, A64>,
     inst: Inst<'a>,
@@ -497,6 +498,7 @@ fn funnel<'a>(
 /// (`csinv cc`), an unsigned sub's borrow 0 (`csel hs`). Narrower, the
 /// operands are extended to 64 bits, where the exact result fits, and it
 /// is clamped to the width's range.
+#[allow(clippy::many_single_char_names, reason = "the operands a, b; x, y their registers")]
 fn saturating<'a>(
     cx: &mut FnCx<'a, A64>,
     inst: Inst<'a>,
@@ -555,6 +557,7 @@ fn saturating<'a>(
 /// `i128`). Operands of 1 to 64 bits are extended and compared; `i128`
 /// ones are ordered by two `cmp` + `sbcs` chains (which set `N`, `V`
 /// and `C` but not `Z` for the whole value).
+#[allow(clippy::many_single_char_names, reason = "the operands a, b; x, y their registers")]
 fn three_way<'a>(
     cx: &mut FnCx<'a, A64>,
     inst: Inst<'a>,

@@ -494,6 +494,7 @@ pub enum Gen {
 }
 
 /// A function and its oracles.
+#[allow(clippy::struct_excessive_bools, reason = "one switch per oracle")]
 pub struct Func {
     pub name: String,
     pub ret: Ty,
@@ -896,7 +897,7 @@ pub fn saturate(from: Ty, bits: u128, width: u32, signed: bool) -> u128 {
     } else if t >= 2f64.powi(width as i32) {
         m
     } else {
-        t as u64 as u128
+        u128::from(t as u64)
     }
 }
 
@@ -912,7 +913,7 @@ pub fn fp_class(ty: Ty, bits: u128) -> u32 {
     let kind = match (exp, frac) {
         (x, 0) if x == max => 3, // inf
         (x, _) if x == max => {
-            return if frac >> (f - 1) == 1 { 1 } else { 0 };
+            return u32::from(frac >> (f - 1) == 1);
         }
         (0, 0) => 0,
         (0, _) => 1,

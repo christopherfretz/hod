@@ -10,7 +10,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use hod_ir::Arch;
-use hod_ll::{LlError, LlErrorKind, ParseOptions, limits, parse_module};
+use hod_ll::{BodyParser, LlError, LlErrorKind, ParseOptions, ParsedModule, limits, parse_module};
 use hod_testutil::{DEFAULT_TIMEOUT, run_with};
 
 use common::{Llvm, parse};
@@ -30,10 +30,22 @@ fn check_position(text: &[u8], error: &LlError) {
     assert_eq!(shown, format!("{}:{}: {}", error.line, error.column, error.message));
 }
 
+/// `text` parsed, the module level and then every body (`spec/ll.md`
+/// §11): a body's error is the text's.
+fn parse_all(text: &[u8]) -> Result<ParsedModule<'_>, LlError> {
+    let mut parsed = parse(text, Arch::X86_64)?;
+    let mut bodies = BodyParser::new(&parsed.text);
+    for function in parsed.text.functions() {
+        bodies.parse(&mut parsed.module, function)?;
+    }
+    drop(bodies);
+    Ok(parsed)
+}
+
 /// What `hod_ll` makes of `text`: `ok`, or the kind of the error and its
 /// line and column.
 fn verdict(text: &str) -> String {
-    match parse(text.as_bytes(), Arch::X86_64) {
+    match parse_all(text.as_bytes()) {
         Ok(_) => "ok".to_owned(),
         Err(error) => {
             check_position(text.as_bytes(), &error);
@@ -180,7 +192,7 @@ fn unsupported_constructs_are_recorded_by_name() {
     });
     let mut wrong = 0;
     for (index, &(text, names, llvm)) in UNSUPPORTED.iter().enumerate() {
-        let mut actual: Vec<String> = match parse(text.as_bytes(), Arch::X86_64) {
+        let mut actual: Vec<String> = match parse_all(text.as_bytes()) {
             Ok(parsed) => parsed
                 .module
                 .unsupported()

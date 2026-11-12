@@ -5,8 +5,9 @@
 //! `cargo xtask shim ...` builds the LLVM directory that plugs hod into kiln.
 //! `cargo xtask irdiff ...` is the IR differential harness (layer L4).
 //! `cargo xtask corpus ...` captures, verifies and counts the IR corpus.
+//! `cargo xtask roundtrip ...` parses and prints the corpus (layer L2).
 
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 const USAGE: &str = "\
 usage: cargo xtask ci [--quick]
@@ -14,6 +15,8 @@ usage: cargo xtask ci [--quick]
        cargo xtask shim --llvm <dir> --hod <hod binary> --out <dir> [--kiln <kiln++>]
        cargo xtask irdiff [options] [<file.ll or directory>...]   (--help for the options)
        cargo xtask corpus capture|verify|census|fetch [options]   (--help for the options)
+       cargo xtask bench [options]                                (--help for the options)
+       cargo xtask roundtrip [options]                            (--help for the options)
 ";
 
 fn main() -> ExitCode {
@@ -24,6 +27,10 @@ fn main() -> ExitCode {
         Some("shim") => shim(&args[1..]),
         Some("irdiff") => irdiff(&args[1..]),
         Some("corpus") => corpus(&args[1..]),
+        #[cfg(unix)]
+        Some("roundtrip") => ExitCode::from(xtask::roundtrip::command(&args[1..])),
+        #[cfg(unix)]
+        Some("bench") => xtask::bench::main(&args[1..]),
         _ => {
             eprint!("{USAGE}");
             ExitCode::from(2)
@@ -41,10 +48,9 @@ fn ci(quick: bool) -> ExitCode {
     for (name, cargo_args) in steps {
         eprintln!("ci: {name}");
         // A cargo step is a jobserver client of its own (spec/harness.md
-        // "Jobserver").
-        let mut cargo = Command::new(env!("CARGO"));
-        let ok = xtask::jobs::children::run_step(cargo.args(*cargo_args), false)
-            .is_ok_and(|(status, _)| status.success());
+        // "Jobserver"), and is run once more if an artifact vanished under
+        // it ("ci").
+        let ok = xtask::ci::cargo_step(cargo_args);
         if !ok {
             eprintln!("ci: {name} FAILED");
             return ExitCode::FAILURE;

@@ -8,7 +8,7 @@ use crate::index::parse_u32;
 use crate::lexer::{Lexer, Tok, Token};
 use crate::parser::{Parser, TypeSlot, ir};
 
-impl Parser<'_> {
+impl Parser<'_, '_> {
     /// Registers every `%name = type …` and resolves each.
     pub(crate) fn define_types(&mut self) -> PResult<()> {
         self.type_slots = vec![TypeSlot::Pending; self.index.types.len()];
@@ -162,18 +162,34 @@ impl Parser<'_> {
         if token.kind == Tok::LocalId {
             self.type_number(token)?;
         }
+        if let Some(text) = self.text {
+            // A function body: every named type is resolved.
+            let found = match self.name(token) {
+                Some(name) => text.named_type(&name),
+                None => text.numbered_type(self.type_number(token)?),
+            };
+            return match found {
+                Some(_) if pointer => Ok(TypeId::PTR),
+                Some(ty) => Ok(ty),
+                None => self.undefined_type(token),
+            };
+        }
         match self.type_slot(token) {
             Some(_) if pointer => Ok(TypeId::PTR),
             Some(slot) => self.resolve_type(slot as usize, token.start),
-            None => fail(
-                LlErrorKind::Undefined,
-                token.start,
-                format!(
-                    "use of undefined type named '{}'",
-                    String::from_utf8_lossy(&self.tok_text(token)[1..])
-                ),
-            ),
+            None => self.undefined_type(token),
         }
+    }
+
+    fn undefined_type(&self, token: Token) -> PResult<TypeId> {
+        fail(
+            LlErrorKind::Undefined,
+            token.start,
+            format!(
+                "use of undefined type named '{}'",
+                String::from_utf8_lossy(&self.tok_text(token)[1..])
+            ),
+        )
     }
 
     /// Parses one type.

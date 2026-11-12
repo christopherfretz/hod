@@ -7,6 +7,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod bodies;
 mod canonical;
 mod flags;
 mod objects;

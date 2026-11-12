@@ -6,19 +6,22 @@
 //! WP-003 the symbols (§2.2), COMDATs, inline assembly, function
 //! attribute sets (§5.7), module properties and flags (§2.1),
 //! constructors and destructors, module-level assembly, linker options
-//! and the list of constructs a producer could not represent. The debug
-//! tables are added by the work package that owns them.
+//! and the list of constructs a producer could not represent. WP-005
+//! added the debug tables (§6): the field `debug`, the attachment of
+//! global-variable expressions to symbols, and the two checks.
 
 use crate::asm::{AsmTable, InlineAsm};
 use crate::attrs::{FnAttrTable, FnAttrs, FnAttrsId, FnAttrsView};
 use crate::comdat::{Comdat, ComdatKind, ComdatTable};
 use crate::constant::ConstPool;
-use crate::error::IrResult;
-use crate::ids::{AsmId, ComdatId, ConstId, SymId};
+use crate::debug::DebugInfo;
+use crate::debug::node::{DiKind, DiNode};
+use crate::error::{IrErrorKind, IrResult, err};
+use crate::ids::{AsmId, ComdatId, ConstId, DiId, SymId};
 use crate::intern::pool_start;
 use crate::props::{FlagTable, FlagValue, ModuleFlag, ModuleProps};
 use crate::symbol::{
-    AliasDesc, FunctionDesc, IFuncDesc, Retained, Symbol, SymbolTable, VariableDesc,
+    AliasDesc, FunctionDesc, IFuncDesc, Retained, Symbol, SymbolKind, SymbolTable, VariableDesc,
 };
 use crate::target::TargetSpec;
 use crate::types::TypeTable;
@@ -123,6 +126,12 @@ pub struct Module {
     linker_options: StringLists,
     dependent_libraries: StringLists,
     unsupported: Vec<(Box<str>, Option<SymId>)>,
+    /// The debug tables (§6): nodes, expressions, locations, compile
+    /// units. Empty, and without an allocation, for a module without
+    /// debug information.
+    pub debug: DebugInfo,
+    /// `!dbg` attachments of variables (§6.7), in the order attached.
+    global_exprs: Vec<(SymId, DiId)>,
 }
 
 impl Module {
@@ -145,6 +154,8 @@ impl Module {
             linker_options: StringLists::default(),
             dependent_libraries: StringLists::default(),
             unsupported: Vec::new(),
+            debug: DebugInfo::default(),
+            global_exprs: Vec::new(),
         }
     }
 
@@ -629,6 +640,149 @@ impl Module {
         self.unsupported
             .iter()
             .map(|(construct, symbol)| Unsupported { construct, symbol: *symbol })
+    }
+
+    // ---- §6 debug information ----
+
+    /// Attaches the global-variable expression `expr` to the variable
+    /// `sym`: one `!dbg` attachment of a global variable (§6.7). A
+    /// variable can have several, one for each fragment or each variable
+    /// that shares its storage.
+    ///
+    /// The symbol's kind is not looked at here, because a producer may
+    /// attach before it has described the symbol;
+    /// [`Module::verify_debug`] checks it.
+    ///
+    /// # Errors
+    /// `UndefinedSymbol` if `sym` is not a symbol of this module;
+    /// `UndefinedDebugNode` if `expr` is not a node of it;
+    /// `InvalidDebugInfo` if `expr` is defined as anything but a
+    /// global-variable expression.
+    pub fn attach_global_expr(&mut self, sym: SymId, expr: DiId) -> IrResult<()> {
+        if sym.index() >= self.symbols.len() {
+            return err(IrErrorKind::UndefinedSymbol, format!("{sym:?} is not a symbol"));
+        }
+        match self.debug.find_kind(expr) {
+            None => err(IrErrorKind::UndefinedDebugNode, format!("{expr:?} does not exist")),
+            Some(DiKind::GlobalVariableExpression | DiKind::Undefined) => {
+                self.global_exprs.push((sym, expr));
+                Ok(())
+            }
+            Some(kind) => err(
+                IrErrorKind::InvalidDebugInfo,
+                format!("{expr:?} is a {}, not a DIGlobalVariableExpression", kind.llvm_name()),
+            ),
+        }
+    }
+
+    /// Every attachment of [`Module::attach_global_expr`], in the order
+    /// made: the symbol that is the variable's storage and the
+    /// global-variable expression. The DWARF writer reads this list
+    /// once to find the address of each global it describes.
+    pub fn global_exprs(&self) -> &[(SymId, DiId)] {
+        &self.global_exprs
+    }
+
+    /// The global-variable expressions attached to `sym`, in the order
+    /// attached. A scan of [`Module::global_exprs`]: for one symbol, not
+    /// for a loop over all of them.
+    pub fn global_exprs_of(&self, sym: SymId) -> impl Iterator<Item = DiId> + '_ {
+        self.global_exprs.iter().filter(move |(owner, _)| *owner == sym).map(|&(_, expr)| expr)
+    }
+
+    /// Closes the debug tables (§6.3): a producer calls it once, after
+    /// the last node and before the first body is compiled.
+    ///
+    /// It checks that every reserved node and location was defined (two
+    /// compares when that holds), and records what the tables hold that
+    /// hod cannot use with [`Module::record_unsupported`]:
+    /// `debug:<kind>` for each kind of [`crate::DiOther`] node and
+    /// `debug:DW_OP_<name>` for each [`crate::DiOp::Other`] element.
+    /// Calling it again records nothing twice.
+    ///
+    /// # Errors
+    /// `UndefinedDebugNode`, naming the first id that is not defined.
+    pub fn finish_debug(&mut self) -> IrResult<()> {
+        self.debug.check_defined()?;
+        for construct in self.debug.unsupported_constructs() {
+            if !self.unsupported.iter().any(|(known, _)| **known == *construct) {
+                self.unsupported.push((construct.into(), None));
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks the debug information of the module (§6.8):
+    /// [`DebugInfo::verify`] for the tables, that a constant used as
+    /// metadata is in the constant pool, and for the attachments
+    /// that a function's subprogram is a subprogram, that the one of a
+    /// function with a body is distinct and attached to no other
+    /// function with a body, and that a global-variable expression is
+    /// attached to a variable.
+    ///
+    /// Like [`Module::verify_symbols`] it is one pass over the module,
+    /// for tests and for a producer that wants its output checked; code
+    /// generation does not need it to have run.
+    ///
+    /// # Errors
+    /// `UndefinedDebugNode` and `InvalidDebugInfo`: the first violation
+    /// found.
+    pub fn verify_debug(&self) -> IrResult<()> {
+        self.debug.verify()?;
+        let invalid = |message: String| err(IrErrorKind::InvalidDebugInfo, message);
+        for raw in 0..self.debug.node_count() as u32 {
+            if let DiNode::Constant(node) = self.debug.node(DiId::new(raw))
+                && node.value.index() >= self.consts.len()
+            {
+                return invalid(format!(
+                    "di{raw}: {:?} is not a constant of the module",
+                    node.value
+                ));
+            }
+        }
+        let mut owners: Vec<(DiId, SymId)> = Vec::new();
+        for (index, symbol) in self.symbols().enumerate() {
+            let sym = SymId::new(index as u32);
+            let SymbolKind::Function { subprogram: Some(subprogram), has_body, .. } = symbol.kind()
+            else {
+                continue;
+            };
+            match self.debug.find_kind(subprogram) {
+                Some(DiKind::Subprogram) => {}
+                found => {
+                    return invalid(format!(
+                        "{sym:?}: its subprogram {subprogram:?} is {}",
+                        found.map_or("no node", DiKind::llvm_name)
+                    ));
+                }
+            }
+            if has_body {
+                if !self.debug.is_distinct(subprogram) {
+                    return invalid(format!(
+                        "{sym:?}: the subprogram {subprogram:?} of a defined function is not distinct"
+                    ));
+                }
+                owners.push((subprogram, sym));
+            }
+        }
+        owners.sort_unstable();
+        if let Some(pair) = owners.windows(2).find(|pair| pair[0].0 == pair[1].0) {
+            return invalid(format!(
+                "{:?} is the subprogram of both {:?} and {:?}",
+                pair[0].0, pair[0].1, pair[1].1
+            ));
+        }
+        for &(sym, expr) in &self.global_exprs {
+            if !self.symbol(sym).is_variable() {
+                return invalid(format!(
+                    "{sym:?} has a global-variable expression and is no variable"
+                ));
+            }
+            if self.debug.kind(expr) != DiKind::GlobalVariableExpression {
+                return invalid(format!("{sym:?}: {expr:?} is not a DIGlobalVariableExpression"));
+            }
+        }
+        Ok(())
     }
 }
 

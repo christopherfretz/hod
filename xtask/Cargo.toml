@@ -12,6 +12,10 @@ publish.workspace = true
 # The jobserver client, shared with the test binaries (spec/harness.md
 # "Jobserver"); also the support of xtask's own tests.
 hod_testutil.workspace = true
+# The round trip of the IR corpus (spec/harness.md "roundtrip"): parse with
+# hod_ll, print with hod_ir.
+hod_ir.workspace = true
+hod_ll.workspace = true
 
 # Kills the children and returns the held jobserver tokens on SIGINT/SIGTERM
 # (spec/harness.md "Jobserver").

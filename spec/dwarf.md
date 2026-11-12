@@ -1593,6 +1593,15 @@ a unit's import scope; `debug:subprogram-scope` and
 `debug:declaration-scope` (by the plan's DIEs); and a function whose
 early DIE got no code (`debug:local-static`).
 
+**The census** (§6.12's, regenerated, with four of kiln's libstdc++
+units: 148 modules): 147 built (140 before), all `--verify` clean; 83
+trees equal to `llc`'s (75 before). Of the other 64, 26 show only the
+permitted differences above, 35 only a scope that is one address range
+in hod's code and several in `llc`'s, and 3 only the bare offset of one
+nameless reference. The one decline is `debug:label-attribute`
+(coroutine suspend labels). `spec/landed/dwarf/WP-094.md` has the
+numbers.
+
 ## 7. Speed and memory
 
 ### 7.1 Parallel emission and determinism

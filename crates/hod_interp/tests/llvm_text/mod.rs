@@ -8,7 +8,10 @@
 //! Several programs go into one file: the symbols of each get a prefix,
 //! and a `main` runs each entry function on its arguments. The file
 //! defines the standard host functions itself: `sink` prints its argument
-//! and `source` computes [`hod_interp::host::source_value`].
+//! and `source` computes [`hod_interp::host::source_value`]. The other
+//! declarations (the exception model's functions, its personality and
+//! type-information objects, `spec/interp.md` §5.9) are external and keep
+//! their names: the oracle links what defines them.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -16,8 +19,8 @@ use std::fmt::Write as _;
 use hod_interp::generate::Generated;
 use hod_interp::host;
 use hod_ir::{
-    BlockId, Body, Callee, Const, ConstId, Inst, InstKind, Module, Opcode, SymId, SymbolKind,
-    TypeId, TypeKind, Value, ValueKind,
+    BlockId, Body, Callee, Clause, Const, ConstId, Inst, InstKind, Module, Opcode, SymId,
+    SymbolKind, TypeId, TypeKind, Value, ValueKind,
 };
 
 /// A file of programs under construction.
@@ -48,6 +51,30 @@ impl File {
         let prefix = format!("p{n}_");
         let printer = Printer { m: &generated.module, prefix: &prefix };
         for symbol in generated.module.symbols() {
+            let name = String::from_utf8_lossy(symbol.name());
+            match symbol.kind() {
+                SymbolKind::Variable { constant, init: None, .. } => {
+                    let kind = if constant { "constant" } else { "global" };
+                    let ty = printer.ty(symbol.ty());
+                    self.declares.insert(format!("@{name} = external {kind} {ty}"));
+                }
+                SymbolKind::Function { has_body: false, .. }
+                    if name != host::SINK && name != host::SOURCE =>
+                {
+                    let TypeKind::Function { ret, params, variadic } =
+                        generated.module.types.kind(symbol.ty())
+                    else {
+                        panic!("function type");
+                    };
+                    let mut params: Vec<String> = params.iter().map(|&p| printer.ty(p)).collect();
+                    if variadic {
+                        params.push("...".into());
+                    }
+                    let ret = printer.ty(ret);
+                    self.declares.insert(format!("declare {ret} @{name}({})", params.join(", ")));
+                }
+                _ => {}
+            }
             if let SymbolKind::Variable { constant, init: Some(init), .. } = symbol.kind() {
                 let kind = if constant { "constant" } else { "global" };
                 let align = symbol.align().map_or(String::new(), |a| format!(", align {a}"));
@@ -166,7 +193,8 @@ impl Printer<'_> {
         let symbol = self.m.symbol(sym);
         let name = std::str::from_utf8(symbol.name()).expect("a generated name is ASCII");
         match symbol.kind() {
-            SymbolKind::Function { has_body: false, .. } => format!("@{name}"),
+            SymbolKind::Function { has_body: false, .. }
+            | SymbolKind::Variable { init: None, .. } => format!("@{name}"),
             _ => format!("@{}{name}", self.prefix),
         }
     }
@@ -204,6 +232,9 @@ impl Printer<'_> {
             // An aggregate of zeros is interned as this.
             Const::Zero(_) => "zeroinitializer".into(),
             Const::Addr { sym, addend: 0 } => self.sym(sym),
+            Const::BlockAddr { func, block } => {
+                format!("blockaddress({}, %b{})", self.sym(func), block.index())
+            }
             Const::Aggregate { ty, elems } => {
                 let elems: Vec<String> = elems.iter().map(|&e| self.typed_const(e)).collect();
                 match self.m.types.kind(ty) {
@@ -260,7 +291,13 @@ impl Printer<'_> {
             .collect();
         // The entry function is compiled as it stands; the others may be
         // inlined and specialized.
-        let (linkage, attrs) = if entry { ("", " noinline") } else { ("internal ", "") };
+        let (linkage, mut attrs) =
+            if entry { ("", " noinline".to_owned()) } else { ("internal ", String::new()) };
+        if let SymbolKind::Function { personality: Some(personality), .. } =
+            self.m.symbol(body.symbol()).kind()
+        {
+            write!(attrs, " personality ptr {}", self.sym(personality)).unwrap();
+        }
         writeln!(
             out,
             "define {linkage}{} {}({}){attrs} {{",
@@ -347,7 +384,8 @@ impl Printer<'_> {
                 return;
             }
             InstKind::ExtractValue { agg, offset } => {
-                // Only the pairs of the checked-arithmetic intrinsics.
+                // Only the pairs of the checked-arithmetic intrinsics and
+                // of landing pads.
                 let index = u32::from(offset != 0);
                 format!("{name} = extractvalue {}, {index}", tv(agg))
             }
@@ -380,7 +418,35 @@ impl Printer<'_> {
                 };
                 let result =
                     if inst.ty() == TypeId::VOID { String::new() } else { format!("{name} = ") };
-                format!("{result}call {ty} {callee}({})", args.join(", "))
+                let attrs = if call.is_nounwind() { " nounwind" } else { "" };
+                match (call.normal_dest(), call.unwind_dest()) {
+                    (Some(normal), Some(unwind)) => format!(
+                        "{result}invoke {ty} {callee}({}){attrs} to {} unwind {}",
+                        args.join(", "),
+                        Self::label(normal),
+                        Self::label(unwind)
+                    ),
+                    _ => format!("{result}call {ty} {callee}({}){attrs}", args.join(", ")),
+                }
+            }
+            InstKind::LandingPad(pad) => {
+                let mut line = format!("{name} = landingpad {ty}");
+                if pad.is_cleanup() {
+                    line.push_str(" cleanup");
+                }
+                for clause in pad.clauses() {
+                    match *clause {
+                        Clause::Catch(c) => write!(line, " catch {}", self.typed_const(c)),
+                        Clause::Filter(c) => write!(line, " filter {}", self.typed_const(c)),
+                    }
+                    .unwrap();
+                }
+                line
+            }
+            InstKind::Resume { value } => format!("resume {}", tv(value)),
+            InstKind::IndirectBr { addr, targets } => {
+                let targets: Vec<String> = targets.into_iter().map(Self::label).collect();
+                format!("indirectbr {}, [{}]", tv(addr), targets.join(", "))
             }
             InstKind::Br { target } => format!("br {}", Self::label(target)),
             InstKind::CondBr { cond, if_true, if_false } => {

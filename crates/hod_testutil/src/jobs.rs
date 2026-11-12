@@ -789,13 +789,25 @@ mod tests {
     fn a_stale_fifo_is_counted_without_blocking() {
         // The last holder goes, and the bytes with it; the fifo stays.
         let (path, _dir) = PrivatePool::new("stale", 4).abandon();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let p = path.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(refill(&p, None));
-        });
-        let counted = rx.recv_timeout(Duration::from_secs(10)).expect("refill blocked");
-        assert_eq!(counted.unwrap(), Refill { idle: 0, added: 0 });
+        // A child another test of this process is starting holds a copy of
+        // the pool's descriptors from its fork to its exec, and the bytes
+        // live that long: the count is taken again until that window has
+        // passed. Every count returns at once either way.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let p = path.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(refill(&p, None));
+            });
+            let counted = rx.recv_timeout(Duration::from_secs(10)).expect("refill blocked");
+            let counted = counted.unwrap();
+            if counted == (Refill { idle: 0, added: 0 }) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the abandoned fifo still holds {counted:?}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     // "Jobserver", "Release": a panic returns the token.

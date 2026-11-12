@@ -26,6 +26,7 @@
 //! | `body` | §5.1, §5.2, §5.6 | `Body` and the API code generation reads |
 //! | `builder` | §5.1, §5.3 | `FunctionBuilder` |
 //! | `verify` | §5.1 | `Body::verify` |
+//! | `print` | §9 | the printer: LLVM text from a module and its bodies |
 
 mod asm;
 mod attrs;
@@ -41,6 +42,7 @@ mod inst;
 mod intern;
 mod intrinsic;
 mod module;
+mod print;
 mod props;
 #[cfg(test)]
 mod random;
@@ -64,6 +66,7 @@ pub use error::{IrError, IrErrorKind, IrResult};
 pub use flatten::{Fixup, FixupTarget};
 pub use ids::{AsmId, BlockId, ComdatId, ConstId, DiId, LocId, SymId, TypeId};
 pub use module::{Module, StringLists, Structor, Unsupported};
+pub use print::{Dialect, IoSink, Part, PrintError};
 pub use props::{
     BranchProtection, CodeModel, FlagBehavior, FlagClass, FlagValue, FramePointer,
     IGNORABLE_MODULE_FLAGS, KNOWN_MODULE_FLAGS, ModuleFlag, ModuleProps, PicLevel,

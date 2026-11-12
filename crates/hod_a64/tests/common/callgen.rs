@@ -785,6 +785,9 @@ pub struct Case {
     pub m_call: Call,
     /// The return types of `h_k`, `m_k`, `c_k` (equal IR types).
     pub ret: [Ret; 3],
+    /// The calling convention of `m_k` (" fastcc", ...; "" for `ccc`),
+    /// which `abi-a64.md` §1.2 assigns as `ccc`.
+    pub cc: &'static str,
     /// The value `c_k` returns.
     pub ret_value: Option<V>,
 }
@@ -995,6 +998,11 @@ pub fn random_case(rng: &mut Rng, k: usize) -> Case {
     retype(&mut h_call, &m_params);
     retype(&mut m_call, &c_params);
 
+    let cc = if variadic == Variadic::M {
+        ""
+    } else {
+        *rng.pick(&["", "", "", " fastcc", " swiftcc", " cxx_fast_tlscc"])
+    };
     Case {
         k,
         variadic,
@@ -1006,6 +1014,7 @@ pub fn random_case(rng: &mut Rng, k: usize) -> Case {
         m_call,
         ret: rets,
         ret_value,
+        cc,
     }
 }
 
@@ -1066,6 +1075,7 @@ fn call_ir(
     named: &[T],
     variadic: bool,
     sret_from: Option<&str>,
+    cc: &str,
 ) {
     let (rty, rattrs) = ret_ir(ret);
     let mut types: Vec<String> = Vec::new();
@@ -1098,7 +1108,7 @@ fn call_ir(
         args.push(value);
     }
     let result = if matches!(ret, Ret::Value(_)) { "%r = " } else { "" };
-    let _ = writeln!(out, "  {result}call{rattrs} {fn_ty} {callee}({})", args.join(", "));
+    let _ = writeln!(out, "  {result}call{cc}{rattrs} {fn_ty} {callee}({})", args.join(", "));
 }
 
 /// The attributes of a variable argument: as clang writes them.
@@ -1118,7 +1128,8 @@ pub fn module_a(cases: &[Case], header: &str) -> String {
         let m_variadic = case.variadic == Variadic::M;
         let _ = writeln!(
             out,
-            "declare{rattrs} {rty} @m_{k}({})",
+            "declare{}{rattrs} {rty} @m_{k}({})",
+            case.cc,
             param_list(&case.m_params, case.ret[1] == Ret::Sret, m_variadic)
         );
         let (rty, rattrs) = ret_ir(case.ret[0]);
@@ -1139,6 +1150,7 @@ pub fn module_a(cases: &[Case], header: &str) -> String {
             &case.m_params,
             m_variadic,
             sret,
+            case.cc,
         );
         finish_ret(&mut out, case.ret[0]);
     }
@@ -1188,7 +1200,7 @@ pub fn module_b(cases: &[Case], header: &str) -> String {
         if m_variadic {
             params.push("...".into());
         }
-        let _ = writeln!(out, "define{rattrs} {rty} @m_{k}({}) {{", params.join(", "));
+        let _ = writeln!(out, "define{}{rattrs} {rty} @m_{k}({}) {{", case.cc, params.join(", "));
         let mut call = case.m_call.clone();
         if m_variadic {
             let _ = writeln!(out, "  call void @llvm.va_start.p0(ptr @ap_{k})");
@@ -1206,6 +1218,7 @@ pub fn module_b(cases: &[Case], header: &str) -> String {
             &c_named,
             case.variadic == Variadic::C,
             sret,
+            "",
         );
         if m_variadic {
             let _ = writeln!(out, "  call void @llvm.va_end.p0(ptr @aq_{k})");

@@ -174,12 +174,23 @@ fn run_cases(label: &str, seed: u64, count: usize, builds: &[Build]) {
     }
     // Calls and function addresses take the relocations `llc` gives them
     // (`hod_cg::call_access`, `sym_access`).
+    // `llc` shares one address of a symbol between the arguments of a
+    // block, so an address's relocations are compared as a set.
     let find = |tag: &str| objects_a.iter().find(|(t, _)| *t == tag).map(|(_, p)| p.clone());
-    if let (Some(hod), Some(llc)) = (find("HH-pic"), find("LH-pic")) {
-        assert_eq!(call_relocs(&hod), call_relocs(&llc), "{label}: PIC call relocations");
-    }
-    if let (Some(hod), Some(llc)) = (find("HH"), find("LL")) {
-        assert_eq!(call_relocs(&hod), call_relocs(&llc), "{label}: call relocations");
+    for (ours, theirs) in [("HH-pic", "LH-pic"), ("HH", "LL")] {
+        let (Some(hod), Some(llc)) = (find(ours), find(theirs)) else { continue };
+        let (hod, llc) = (call_relocs(&hod), call_relocs(&llc));
+        let differ: Vec<_> = hod
+            .keys()
+            .chain(llc.keys())
+            .filter(|key| {
+                let call = key.0.ends_with("CALL26") || key.0.ends_with("JUMP26");
+                let (a, b) = (hod.get(*key), llc.get(*key));
+                if call { a != b } else { a.is_some() != b.is_some() }
+            })
+            .map(|key| (key, hod.get(key), llc.get(key)))
+            .collect();
+        assert!(differ.is_empty(), "{label} {ours}: relocations differ from llc's: {differ:?}");
     }
 }
 

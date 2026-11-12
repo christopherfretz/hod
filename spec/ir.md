@@ -827,11 +827,14 @@ backend) reads them:
   `nosanitize_coverage`, `noprofile`, `skipprofile`;
 - the fast-math strings `approx-func-fp-math`, `less-precise-fpmad`,
   `no-infs-fp-math`, `no-nans-fp-math`, `no-signed-zeros-fp-math`,
-  `unsafe-fp-math`, and `no-trapping-math`.
+  `unsafe-fp-math`, and `no-trapping-math`;
+- `sample-profile-suffix-elision-policy`, a string LLVM defines where it
+  is read (sample-profile loading), not in its attribute list.
 
   Fifteen of these were added when the table was built against LLVM's
   attribute list and clang's output, each because clang emits it in an
-  ordinary build or because it is the twin of a name already here:
+  ordinary build or because it is the twin of a name already here, and
+  one later, because LLVM 22 bitcode modules carry it:
 
   | attribute | why only an optimizer reads it |
   |---|---|
@@ -846,6 +849,7 @@ backend) reads them:
   | `disable_sanitizer_instrumentation`, `nosanitize_bounds`, `nosanitize_coverage` | read by the sanitizer instrumentation passes, which run before a backend; clang emits the first without any sanitizer enabled |
   | `noprofile`, `skipprofile` | read by the profile instrumentation passes |
   | `"no-trapping-math"` | on every function clang emits; without `strictfp` (rejected) the default floating-point environment is assumed either way |
+  | `"sample-profile-suffix-elision-policy"` | steers how the sample-profile loader matches symbol names with suffixes (`"selected"`); no effect on code generation; on functions of LLVM 22 bitcode modules (WP-029) |
 
 **Rejected**: anything else. An attribute that is in neither list is a
 `classify` failure naming the attribute (`attr:<name>`, which the

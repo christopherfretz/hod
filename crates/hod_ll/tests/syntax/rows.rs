@@ -626,6 +626,7 @@ pub const UNSUPPORTED: &[Unsupported] = &[
     ("declare void @f(ptr swifterror %a)", &[], "++"),
     ("declare void @f(ptr swiftself %a, ptr swiftasync %b)", &[], "++"),
     ("declare void @f(ptr nest %a)", &[], "++"),
+    ("define void @f() #0 {\n  ret void\n}\nattributes #0 = { \"sample-profile-suffix-elision-policy\"=\"selected\" }", &[], "++"),
     ("declare void @f(i32 inreg %a)", &[], "++"),
     ("declare void @f(ptr byref(i32) %a)", &[], "++"),
     ("declare inreg i32 @f()", &[], "++"),

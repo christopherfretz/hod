@@ -834,8 +834,8 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
   case's block comes next). A case value is compared by `cmp #imm`,
   `cmn #-imm`, or through `x16`. Code is linear in the cases; a run does
   about `log2(n) + 4` compares; no jump table and no data island. A
-  constant condition is a `br`. A `switch` wider than 64 bits is
-  `a64:switch-wide` (`classify` supports `inst:switch` for `int` only).
+  constant condition is a `br`. A `switch` wider than 64 bits is a
+  compare chain (WP-084 below); `a64:switch-wide` is no longer produced.
 - **`indirectbr`** is `br` of the address in its register; a
   `blockaddress` constant operand is formed in `x16` first.
 - **`blockaddress` in code** (`common::block_address`): `adr rd, label`
@@ -876,11 +876,10 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
   such arrays. `resume` calls `_Unwind_Resume` with the exception
   pointer, then traps.
 - **Refused by name**: `a64:call` (`callbr`), `a64:call-inline-asm`,
-  `a64:call-bundle`, `a64:invoke-odd-int-result` (an `invoke` whose
-  `Mem` result needs leaf clearing on the normal edge),
-  `a64:va-intrinsic`, `a64:va_arg`, `a64:landingpad`,
+  `a64:call-bundle`, `a64:va-intrinsic`, `a64:va_arg`, `a64:landingpad`,
   `a64:landingpad-clause`, `a64:resume`. `a64:variadic-definition` is
-  no longer produced; WP-069 removed `a64:call-wide-int-extension` and
+  no longer produced, nor, since WP-084, `a64:invoke-odd-int-result`
+  (an `invoke`'s odd leaves are cleared by `FnCx::call`); WP-069 removed `a64:call-wide-int-extension` and
   `a64:call-narrow-ext-stack-arg` (`abi-a64.md` §7.1) and
   `a64:call-mismatched-declaration` (§7.1 here).
 - **Tests** (`tests/call.rs`): random signatures (`tests/common/
@@ -1012,11 +1011,10 @@ them there, and has the saturating arithmetic, `scmp`/`ucmp`, the
 - **`eh.typeid.for`** of a symbol is `mov w, #FnCx::type_id(sym)`, the
   index `emit_module` gives the type in the LSDA's type table; of
   anything else it is refused (`a64:eh-typeid`).
-- **`clear_cache`** calls `__clear_cache`. **`readcyclecounter`** needs
-  `mrs CNTVCT_EL0`, which the encoder's `SysReg` lacks: refused
-  (`a64:readcyclecounter`).
-- `sshl.sat`/`ushl.sat` are not in `hod_ir`'s intrinsic list: classify
-  refuses them as `intrinsic:<name>`. Vector forms are `a64:intrinsic-vector`,
+- **`clear_cache`** calls `__clear_cache`. **`readcyclecounter`** is
+  `mrs rd, CNTVCT_EL0` since WP-084 (`a64:readcyclecounter` is no longer
+  produced).
+- `sshl.sat`/`ushl.sat` are lowered by WP-084 (below). Vector forms are `a64:intrinsic-vector`,
   `bfloat` ones `a64:intrinsic-bfloat`.
 
 #### Assembly that needs no assembler (WP-075)
@@ -1346,11 +1344,8 @@ the helpers, the refusals, the threaded programs of
   `musttail` whose stack argument area fits the caller's is judged
   (`musttail:stack-args-grow` when it does not); x86-64 keeps no rule
   (`musttail:stack-args-unknown`).
-- **`invoke` with an odd-leaf `Mem` result** stays refused
-  (`a64:invoke-odd-int-result`): clearing the bits above the leaves must
-  happen after the call and before the normal edge's phi stores, which
-  `FnCx::call` (`hod_cg/src/call.rs`) emits with the branch; no target
-  hook sits between them. No corpus module needs it.
+- **`invoke` with an odd-leaf `Mem` result**: lowered since WP-084
+  (below).
 - Tests: `tests/fused.rs` (every predicate × width or float type ×
   operand form × block layout, the two-use and separated shapes, and an
   object check that a fused branch has no `cset`), `tests/phis.rs`
@@ -1407,6 +1402,91 @@ them; `common::sym_address` calls it for `Access::Tls`.
   an executable; mold relaxes descriptors of preemptible symbols to
   initial exec (its form puts the two `nop`s first), even in a static
   link, and keeps initial exec as it is.
+
+#### The short tail (WP-084)
+
+`src/tail.rs`; each construct is reached by one call from the module
+that refused it before.
+
+- **`fp128` and `half` fields** of aggregates (`extractvalue`,
+  `insertvalue`): `aggr` already moved an `Fpr` field through
+  `fpr_view`; the matrix rows now include `half` and `fp128`.
+- **Conversions between floating point and `i65`..`i128`**
+  (`aggr::cast` → `tail::fp_int_cast`) are the calls `llc` makes:
+  `fptosi`/`fptoui` call `__fix{,uns}{hf,sf,df,tf}ti` (a `half` operand
+  directly), the 128-bit result is the value's home (the bits above a
+  narrower width are unspecified, §2.2); `sitofp`/`uitofp` call
+  `__float{,un}ti{sf,df,tf}` with the operand extended (by its
+  signedness) into a 16-byte slot when it is narrower than 128 bits; to
+  `half` they call the `sf` function and `fcvt h, s`, two roundings, as
+  `llc`. Wider integers stay `a64:wide-fp-cast` (`llc` expands them
+  inline), and so does `bfloat` (`llc` cannot select it either).
+- **`{s,u}mul.with.overflow` wider than 64 bits** (`aggr` →
+  `tail::mul_overflow_wide`): both operands extended (by signedness) to
+  `2N` bits in slots of their own, `aggr::multiply` forms the exact
+  product, the unsigned flag is any product bit at or above `N`, the
+  signed one any such bit that differs from bit `N - 1`; the low `N`
+  bits (top limb masked) and the flag byte are written as for the other
+  overflow intrinsics. Beyond `N = MAX_QUADRATIC_BITS / 2` (2048) it is
+  `a64:wide-mul-overflow`. `llc` lowers these inline too; no libcall.
+- **`switch` on an integer of class `Mem`** (`control::switch` →
+  `tail::switch_wide`): for each case not to the default, in the IR's
+  order, each limb of the condition (the top one zero-extended) is
+  loaded into `x16`, the case's limb built in `x17`, compared by `cmp`
+  then `ccmp …, #0, eq`, and `b.eq` to the case; then the default. A
+  constant condition is a `br`.
+- **`readcyclecounter`** is `mrs rd, CNTVCT_EL0` (`SysReg::CntvctEl0`,
+  read only), as `llc`.
+- **`aarch64.crc32{,c}{b,h,w,x}`** are the `crc32*` instructions on the
+  operands' registers (`b` and `h` read only the data register's low
+  bits). `llc` cannot select them without `+crc` in the function's
+  features; hod chooses no instruction by a feature (§5.5.2) and lowers
+  them either way (ARMv8.1-A makes CRC32 mandatory).
+- **`sshl.sat`, `ushl.sat`** up to 64 bits: the operand shifted to the
+  top of the register, the amount zero-extended from the width, `lslv`,
+  shifted back by `asrv`/`lsrv` and compared; on a difference the
+  result is all ones (unsigned) or the extreme of the operand's sign
+  (`asr #63` · `eor #0x7fff…`), then shifted down. `i128` and wider are
+  `a64:intrinsic-wide`, vectors `a64:intrinsic-vector`.
+- **`is.constant`** is true for what `llc`'s `isManifestConstant` calls
+  manifest: data (a number, `null`, a zero, `undef`, `poison`, `none`, a
+  byte string) and literal aggregates, splats and constant expressions
+  all of whose operands are (`inttoptr` of an integer included). Anything
+  holding a symbol's or a block's address is false.
+- **The operands of folded `is.constant` and `objectsize`.** `llc`'s IR
+  pass (`LowerConstantIntrinsics`; in LLVM 22 inside
+  `pre-isel-intrinsic-lowering`) replaces those calls by constants and
+  folds branches on them; it deletes nothing else. SelectionDAG then
+  builds each block's nodes and deletes every node nothing uses that has
+  no effect, recursively (a non-volatile load included); a value used in
+  another block, or by a `phi`, is exported and stays. So in a function
+  that calls either intrinsic (`Target::begin_function` looks at the
+  call sites, nothing more for a function without them), hod does not
+  emit an instruction that has no effect (the driver's `has_no_effect`
+  set), is not used outside its block or by a `phi` by any instruction
+  but a folded call, and whose users in its block are all not emitted
+  (`tail::begin`, one backward pass per block; `target::lower` returns at
+  once for them). GCC's `bcp-1.c` (`__builtin_constant_p(p[123456])`
+  with `p` null) is the case: the load is not run. The same holds for
+  `objectsize`'s pointer operand. Not modelled: the blocks `llc` deletes
+  after folding a branch on the result (hod emits them; they never run).
+  In functions without these calls hod still skips only an instruction
+  nothing uses (§4.7), not its operands; `llc` deletes such dead chains
+  everywhere, a known difference for loads through invalid pointers in
+  dead code.
+- **`invoke` with an odd-leaf `Mem` result**: `FnCx::call`
+  (`hod_cg/src/call.rs`) clears the bits above the odd leaves of an
+  `invoke`'s result in its home after the call and before the normal
+  edge's phi stores and branch (`clear_odd_leaves`, as for incoming
+  arguments); `call::call` clears a plain call's itself as before.
+- **Stays refused**: `const-expr:trunc` (a truncated difference of two
+  `blockaddress`es in a global's initializer; needs a constant form for
+  label differences in `hod_ir`, the readers and module emission),
+  `special-global:llvm.global.annotations` (`llc` drops the array, a
+  global in section `llvm.metadata`; the readers would have to treat it
+  as one of their special arrays, `hod_ll/src/globals.rs` and
+  `hod_bc/src/module.rs`), `type:bfloat` (a type class of its own: ABI,
+  conversions, arithmetic through `float`).
 
 #### 5.5.2 Target features (WP-043)
 

@@ -326,10 +326,16 @@ impl Generated {
     }
 
     /// Runs the entry function on the arguments with the standard host
-    /// functions, the fuel bound as the fuel and other limits at their
-    /// defaults.
+    /// functions, the fuel bound as the fuel, room for a call chain
+    /// through every function, and the other limits at their defaults.
     pub fn run(&self) -> Outcome {
-        self.run_with(Config { fuel: self.fuel_bound, ..Config::default() })
+        let default = Config::default();
+        let functions = u32::try_from(self.bodies.len()).unwrap_or(u32::MAX);
+        self.run_with(Config {
+            fuel: self.fuel_bound,
+            max_call_depth: default.max_call_depth.max(functions),
+            ..default
+        })
     }
 
     /// As [`Generated::run`], with `config`.

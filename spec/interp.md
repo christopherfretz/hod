@@ -252,7 +252,7 @@ flips the sign bit and nothing else. There are no fast-math flags in
 **NaN.** LangRef "Behavior of Floating-Point NaN values" leaves the sign and
 payload of a NaN that an operation produces to the implementation. So, with
 `Config::nan == NanPolicy::Trap` (the default), an operation that *computes*
-a float (`fadd` .. `frem`, `fptrunc`, `fpext`, `uitofp`, `sitofp`, `sqrt`,
+a float (`fadd` .. `frem`, `fptrunc`, `fpext`, `sqrt`,
 `floor`, `ceil`, `trunc`, `round`, `roundeven`, `rint`, `nearbyint`, `fma`,
 the float `atomicrmw` operations) traps `nan-result` when its result is a
 NaN, whatever its operands. Operations that only move bits (`fneg`, `fabs`,
@@ -565,7 +565,8 @@ pub struct Generated {
 }
 impl Generated {
     pub fn program(&self) -> Program<'_>;
-    pub fn run(&self) -> Outcome;                  // standard hosts, fuel = fuel_bound
+    pub fn run(&self) -> Outcome;                  // standard hosts, fuel = fuel_bound,
+                                                   // call depth >= the number of functions
     pub fn run_with(&self, config: Config) -> Outcome;
 }
 ```

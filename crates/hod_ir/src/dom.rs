@@ -228,3 +228,73 @@ fn eval(
     }
     label[v as usize]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Dominators;
+    use crate::{BlockId, FunctionBuilder, Module, SymId, TargetSpec, TypeId};
+
+    /// `spec/ir.md` §5.8: on random graphs, `dominates` is the
+    /// definition: `a` dominates a reachable `b` when every path from the
+    /// entry to `b` passes `a`, so `b` is not reached with `a` removed.
+    #[test]
+    fn dominance_is_the_definition_on_random_graphs() {
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = |n: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % n as u64) as usize
+        };
+        let mut m = Module::new(TargetSpec::x86_64_linux_gnu());
+        let fn_ty = m.types.function(TypeId::VOID, &[TypeId::I1], false).unwrap();
+        for _ in 0..300 {
+            let count = 1 + next(12);
+            let mut b = FunctionBuilder::new(&m, SymId::new(0), fn_ty).unwrap();
+            let blocks: Vec<BlockId> = (0..count).map(|_| b.create_block().unwrap()).collect();
+            let cond = b.arg(0).unwrap();
+            let mut succs = vec![Vec::new(); count];
+            for (index, &block) in blocks.iter().enumerate() {
+                b.begin_block(block).unwrap();
+                let (x, y) = (next(count), next(count));
+                match next(4) {
+                    0 => {
+                        b.ret(None).unwrap();
+                    }
+                    1 => {
+                        b.br(blocks[x]).unwrap();
+                        succs[index] = vec![x];
+                    }
+                    _ => {
+                        b.cond_br(cond, blocks[x], blocks[y]).unwrap();
+                        succs[index] = vec![x, y];
+                    }
+                }
+            }
+            let body = b.finish().unwrap();
+            let dom = Dominators::new(&body);
+            // The blocks reached from the entry without passing `without`.
+            let reached = |without: usize| {
+                let mut seen = vec![false; count];
+                let mut stack = if without == 0 { vec![] } else { vec![0] };
+                while let Some(block) = stack.pop() {
+                    if seen[block] || block == without {
+                        continue;
+                    }
+                    seen[block] = true;
+                    stack.extend(&succs[block]);
+                }
+                seen
+            };
+            let all = reached(usize::MAX);
+            for a in 0..count {
+                let without = reached(a);
+                assert_eq!(dom.reachable(blocks[a]), all[a]);
+                for bb in 0..count {
+                    let want = a == bb || !all[bb] || (all[a] && !without[bb]);
+                    assert_eq!(dom.dominates(blocks[a], blocks[bb]), want, "{succs:?} {a} {bb}");
+                }
+            }
+        }
+    }
+}

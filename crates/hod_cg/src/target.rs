@@ -227,6 +227,51 @@ pub trait Target: Sized + Sync {
     /// placed, and by [`FnCx::place_return`].
     fn extend_arg(&self, cx: &mut FnCx<'_, Self>, reg: PReg, ty: TypeId, attrs: ParamAttrs);
 
+    /// Glue (§7.2): the producer's side of a part of kind
+    /// [`PartKind::Lanes`](crate::abi::PartKind::Lanes). `from` is the
+    /// value: a general register holding a mask's bits (left unchanged),
+    /// or the frame place of the vector's image (the part's `offset`
+    /// already added). `to` is the part's place: its register, or its
+    /// stack slot. Writes scratch registers and `to` only: the other
+    /// argument and return registers may already hold their parts.
+    ///
+    /// # Errors
+    /// `Unsupported("call:part-lanes")` by default: a target whose
+    /// `assign` never makes such a part needs no more.
+    fn lanes_out(
+        &self,
+        cx: &mut FnCx<'_, Self>,
+        part: &crate::abi::Part,
+        from: crate::abi::LaneLoc,
+        to: crate::abi::LaneLoc,
+    ) -> CgResult<()> {
+        let _ = (cx, part, from, to);
+        Err(crate::error::CgError::unsupported(crate::error::CALL_PART_LANES))
+    }
+
+    /// Glue (§7.2): the consumer's side of a part of kind
+    /// [`PartKind::Lanes`](crate::abi::PartKind::Lanes). `from` is the
+    /// part's place (a register, or an incoming stack slot); `to` is the
+    /// value: a general register into whose bits `first..first + lanes`
+    /// the elements' bits are inserted (the other bits unchanged), or the
+    /// frame place of the vector's image (the part's `offset` already
+    /// added), whose elements the part carries are written; for a mask
+    /// the part carrying element 0 also clears the image's bits above the
+    /// last element. Writes scratch registers and `to` only.
+    ///
+    /// # Errors
+    /// As [`Target::lanes_out`].
+    fn lanes_in(
+        &self,
+        cx: &mut FnCx<'_, Self>,
+        part: &crate::abi::Part,
+        from: crate::abi::LaneLoc,
+        to: crate::abi::LaneLoc,
+    ) -> CgResult<()> {
+        let _ = (cx, part, from, to);
+        Err(crate::error::CgError::unsupported(crate::error::CALL_PART_LANES))
+    }
+
     /// Glue: an unconditional branch to `label`, in the form
     /// [`FnCx::far`] asks for, recorded with [`FnCx::fixup`].
     ///

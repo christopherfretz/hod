@@ -1276,6 +1276,59 @@ part of this section.
   loaded with their padding bits set; refusals; the widest masks;
   bytes per lane), `tests/ir/vector_masks.ll`.
 
+#### Vectors across calls (WP-082)
+
+Every vector `abi::assign` places crosses a call and a return, in both
+directions, exactly as `llc -O0` passes it (`spec/abi-a64.md` §4.3);
+what `llc` passes differently from any `Part` hod can say is refused by
+name, never approximated. This supersedes the `a64:vector-call` lines
+of WP-079 and WP-081 above: `vector::check_signature` is no longer
+called, and `a64:vector-call` is no longer reported.
+
+- **Bytes.** A `Mem` vector whose pieces are bytes of its image
+  (`<3 x float>`, `<8 x i32>`, `<3 x i64>`, `<5 x i32>`, `<3 x half>`,
+  `<16 x float>`, results of more than eight pieces in memory) takes the
+  generic `Mem` path of §7.1 as any aggregate does.
+- **Lanes.** A widened vector (`<2 x i8>`, `<4 x i8>`, `<2 x i16>`) and
+  every mask of up to 64 elements has `PartKind::Lanes` parts (§7.2),
+  which the call sequence hands to `Target::lanes_out` (to a place) and
+  `Target::lanes_in` (from one). `hod_a64::vcall` implements them:
+  - a widened vector's image is loaded as `h`/`s` and widened with
+    `uxtl` (B to H, H to S), and narrowed back with `xtn` and stored as
+    its image; the consumer reads only the low bits of each lane;
+  - a mask (a `Gpr` value: bit `i` is element `i`, §5.5.1 "Vectors,
+    masks") goes to a `W` piece as `ubfx` of its bit, to a `D`/`Q`
+    piece as `movi #0` plus `ubfx`/`ins` per lane; it comes back as `bfi`
+    of bit 0 of each `W` piece or `umov`+`bfi` per lane. A `W` piece on
+    the stack is 4 bytes in an 8-byte slot; a `D`/`Q` piece is built in
+    `v31` and stored. A mask inside a `Mem` aggregate moves between its
+    bit image (padding bits zero) and the place the same way.
+  - A mask result with more than eight `W` pieces is returned in memory:
+    the callee (`vcall::ret_image`) stores its 8-byte image with the
+    bits from `N` up cleared; the caller allocates a temporary buffer,
+    passes it in `x8` and loads the mask from it.
+  - Registers: only the scratch registers (`x16`, `x17`, `v30`, `v31`)
+    and the destination are written.
+- **Refused, by name.** A mask of more than 64 elements:
+  `abi:mask-wide` (`abi:vector-promoted` is no longer reported). An
+  array of vectors of more than one piece stays `abi:vector-array`, a
+  `musttail` of a result in memory without `sret`
+  `call:musttail-ret-memory`, and `va_arg` `a64:va_arg`. x86-64 passes
+  no `Lanes` part: its `Target` keeps the default hooks
+  (`call:part-lanes`), and its `assign` is unchanged.
+- **Hooks.** `A64::assign` (no `check_signature` before
+  `abi::assign`), `A64::lanes_out` and `A64::lanes_in` (to `vcall`), and
+  the memory-return arm of `term::ret` (`vcall::ret_image`).
+- **Tests**: `crates/hod_a64/tests/vcall.rs`: hod (plain and stressed)
+  callers against `llc` 22 and 19 callees and the reverse, under bfd,
+  lld and mold; every mask length to 64 and every widened and byte shape
+  alone, after full argument registers and as results; structures and
+  arrays of them; calls through a pointer, `invoke`, `musttail`
+  forwarders; variadic callees with named vectors of every shape and
+  variable vectors and vector aggregates read by gcc's `va_arg`; gcc
+  callers and callees of every `vector_size` vector and vector
+  aggregate; refusals.
+
 #### Atomics (WP-074)
 
 `crates/hod_a64/src/atomic.rs` lowers atomic `load` and `store`,
@@ -1558,6 +1611,91 @@ that refused it before.
   `hod_bc/src/module.rs`), `type:bfloat` (a type class of its own: ABI,
   conversions, arithmetic through `float`).
 
+#### The short tail, second part (WP-095)
+
+`src/tail2.rs`; each construct is reached by one call from the module
+that refused it before (WP-084's "stays refused" list is settled here).
+
+- **Scalar `bfloat`** (`float::{cast,binary,flags}` → `tail2`), as `llc`
+  lowers it without `FEAT_BF16` (hod chooses no instruction by a
+  feature): a `bfloat` lives in the low 16 bits of an `H` view like
+  `half`. Widening to `float` is exact: `fmov w16, s` · `lsl #16` ·
+  `fmov s, w16` (LLVM 22 writes `shll`, the same bits); to `double` it
+  is that and `fcvt d, s`. Narrowing from `float` is `llc`'s integer
+  rounding to nearest, ties to even, on the single-precision bits:
+  `x + 0x7fff + bit16(x)`, upper half; for `fptrunc float` only, a NaN
+  keeps its upper bits with the quiet bit set (`orr #0x400000`, `fcmp s,
+  s`, `csel vs`). From `double`, `FCVTXN` (round to odd, encoded in
+  `tail2`, not in `hod_mc_a64`) first and no NaN arm. `fadd`..`fdiv`
+  widen both operands, compute in single precision and narrow without
+  the NaN arm; `frem` calls `fmodf`; `fcmp` widens both and compares in
+  single precision; `fptosi`/`fptoui` widen then `fcvtz*`; `sitofp`/
+  `uitofp` from up to 16 bits are `scvtf`/`ucvtf s` (exact), from 32
+  bits `?cvtf d` then `FCVTXN`, from 64 bits a round-to-odd by hand (the
+  bits that do not fit 53 folded into a sticky bit, then `?cvtf d`, then
+  the sticky bit ORed into the double's last bit) then `FCVTXN`; every
+  path ends with the narrowing above. A conversion with an `fp128` side
+  is `a64:bfloat-fp128` (`llc` 19 cannot select it); with an integer
+  wider than 64 bits, `a64:wide-fp-cast`. `bfloat` arguments in arrays
+  stay `abi:bfloat-array` (`hod_a64::abi`).
+- **`extractelement` from `<N x i128>`** (`target.rs` → `tail2`): a
+  `<1 x i128>` is class `Fpr` (stored as a `Q` register into the result's
+  slot); a wider one is `Mem`, its lane's 16 bytes copied by the lane
+  cursor into the result's slot. A variable index wraps as
+  `vector::index` does.
+- **Label differences** in initializers: an integer constant built only
+  of `ptrtoint blockaddress`, numbers, `add`, `sub` and `trunc`, adding
+  one block and subtracting another of the same function
+  (`ConstPool::block_diff`, `spec/ir.md` §4.3), flattens to a
+  `FixupTarget::BlockDiff` of 1, 2, 4 or 8 bytes. Module emission writes
+  `offset(a) - offset(b) + addend` into the data, the number the
+  assembler folds `llc`'s `.word .Ltmp1-.Ltmp0` to; no relocation. The
+  function needs `block_offsets`, so an `indirectbr`; a block without
+  one is `init:blockaddress-unplaced`. As an operand, in an aggregate or
+  not, it is `operand:block-diff` (classify). Two blocks of different
+  functions, or any other shape, keep the expression's name
+  (`const-expr:sub`, `const-expr:trunc`).
+- **Block addresses of an unreachable `indirectbr`**: `mark_reachable`
+  (`hod_cg/src/driver.rs`) also gives a function `block_offsets` when
+  its only `indirectbr` is in an unreachable block, so a `blockaddress`
+  in data of it is placed (`llc` keeps those labels).
+- **`bitcast` of a constant vector to a scalar** is folded by
+  `ConstPool::fold_cast` when every element is a number and the vector
+  is at most 128 bits: its image, as `llc` folds it (`<8 x i1>` packs
+  element 0 in bit 0).
+- **`preserve_mostcc`**, as caller and callee: `Target::assign` assigns
+  it as `ccc` (`tail2::assign_preserve_most`); a callee also saves
+  `x9`..`x15` (LLVM's `CSR_AArch64_RT_MostRegs`: AAPCS64's set plus
+  those; `x8`, `x16`..`x18` and the vector registers are not preserved)
+  in 64 bytes after the frame record, right after `mov x29, sp`, with
+  one `DW_CFA_offset` per register after the stores, and reloads them
+  with `DW_CFA_restore` in every exit sequence before the frame record.
+  All seven are saved (`llc` saves the ones its allocator touched; hod's
+  lowerings may write any of them and every call clobbers them). A
+  caller needs nothing: hod keeps no value in a register across a call.
+- **`llvm.global.annotations`** in section `llvm.metadata` is dropped by
+  both readers (`spec/ll.md`, `spec/bc.md`), and `"fmv-features"` is a
+  dropped attribute (`spec/ir.md`): `llc` 22's object is the same
+  without it.
+- **Stays refused**:
+  - `const-expr:sub` of a number minus an address (`0 - ptrtoint @g`, as
+    an operand): `spec/ir.md` §4.2 keeps it an `Expr`; no ELF data
+    relocation is `-S`, and as an operand it needs a normal form of its
+    own and a lowering (`neg` of the address). One corpus module.
+  - `metadata-arg:llvm.read_volatile_register.i64`: the register name is
+    a metadata operand, which the IR does not carry for intrinsics
+    (BACKLOG WP-064) and `hod_ll`'s body reader would have to read.
+  - `debug:dbg-value`: hod writes one location per variable for the
+    whole function (§9.5). A `#dbg_value` maps to that exactly only for
+    a single record of the variable, with an empty expression, of a
+    value whose home is a frame slot from its definition on; the corpus
+    has none such (its one module, at `-O2`, has several records per
+    variable, constants (`DW_AT_const_value`) and `DW_OP_stack_value`
+    expressions, which need location lists). All stay
+    `debug:dbg-value`.
+  - `cc:preserve_allcc`, `cc:79` (`win64cc`) and `cc:aarch64_vector_pcs`
+    (WP-082), which the one `preserve_mostcc` corpus module also uses.
+
 #### 5.5.2 Target features (WP-043)
 
 `hod_a64::features::check` judges a `target-features` string (a
@@ -1835,7 +1973,16 @@ params, param_attrs, fixed, variadic }`; `Part { arg, kind, offset, size,
 place }` with `place` a `Place::Reg(PReg)` or a `Place::Stack(offset)`
 measured from the stack pointer at the call, and `kind` either `Value`
 (bytes of the argument's value) or `Pointee` (bytes of the memory a
-`byval` argument points to, copied into the stack-argument area);
+`byval` argument points to, copied into the stack-argument area) or
+`Lanes { bits, lane, first, len }` (elements of a vector of `len`
+elements of `bits` bits each, element `first + i` zero-extended in lane
+`i` of the place, `lane` bytes each; the consumer reads only the
+element's bits; WP-082). The call sequence never copies a `Lanes` part
+as bytes: it hands it to the target's `lanes_out(part, from, to)` and
+`lanes_in(part, from, to)`, each side a `LaneLoc` (a register, or a
+frame place: the stack slot, or the vector's image in a `Mem` value);
+a `Gpr` mask value is gathered in the general scratch register. The
+default hooks refuse with `call:part-lanes`;
 `Assignment { args, ret, ret_memory, sret_returned_in, stack_size, va,
 vector_regs_used }`. `ret_memory` is set when a return value does not fit
 the return registers and the signature has no `sret` parameter: the
@@ -2347,6 +2494,31 @@ section. The oracle is `crates/hod_cg/tests/emit_asm.rs`: the sections,
 symbols and relocations of hod's object equal `llc`'s (19 and 22), which
 must compile each case without a diagnostic; what `llc` warns about or
 refuses is refused.
+
+#### 9.7.2 Copies of `available_externally` functions (WP-021)
+
+`emit_module` writes nothing for an `available_externally` function or
+alias: each stays an undefined symbol, as in `llc`'s object. When it is
+given a chunk for an `available_externally` function whose attributes
+are `alwaysinline` (the session gives one only for a function a body of
+the object calls directly, `spec/cli.md` "Always-inline"), it places the
+code as a copy:
+
+- a new symbol `<name>.alwaysinline` (`hod_cg::COPY_SUFFIX`; GNU
+  demanglers print it as `[clone .alwaysinline]`), `STB_LOCAL`,
+  `STT_FUNC`, sized to the code, in `.symtab` like any local function;
+- in the text section the function's own name selects (`.text` or
+  `.text.<name>` under `function_sections`), in no group: a copy is
+  private to the object, so nothing may discard or merge it;
+- its unwind entry and its DWARF subprogram are written as any
+  function's (both refer to section symbols and offsets, not to the
+  function's symbol);
+- `R_AARCH64_CALL26`/`JUMP26` (x86-64: `R_X86_64_PLT32`) relocations of
+  the object's code to the function go to the copy, resolved when every
+  chunk is placed; every other relocation (an address, data, an alias)
+  stays on the external symbol, which stays undefined.
+
+A function whose chunk is not given keeps `llc`'s layout exactly.
 
 ## 10. Errors and limits
 

@@ -49,7 +49,7 @@ on a schedule.
 | L4 | **IR differential** (`xtask irdiff`) | each program in the IR corpus built by `llc` and by hod behaves identically | `llc` | every change (small set), merge gate (all) |
 | L5 | **ABI cross-linking** | generated caller/callee pairs over a grid of argument types, one side hod and one side clang, both directions | clang | merge gate |
 | L6 | **kiln's corpus through hod** | kiln's executing tests (about 1500 `run` tests plus the GCC torture suite) with hod as the code generator | clang (kiln's harness) | merge gate |
-| L7 | **debug info** | scripted gdb and lldb sessions; line-table and variable-location comparison against `llc`'s DWARF | gdb, lldb, `llvm-dwarfdump` | merge gate |
+| L7 | **debug info** (`xtask debug`) | scripted gdb and lldb sessions on hod's and `llc`'s programs under every linker; kiln's debugger tests through hod; `--verify` of the corpus's `-g` modules; `(function, line)` comparison with `llc` | gdb, lldb, `llc`, `llvm-dwarfdump` | every change (quick tier, in `cargo test`), merge gate (all) |
 | L8 | **libc++ test suite** with kiln + hod | the long-term acceptance gate | the suite | nightly / release |
 | L9 | **open-source projects** built with kiln + hod, running their own tests | - | release |
 | L10 | **fuzzing** | random C programs (csmith, YARPGen) through clang `-O0 -emit-llvm`, then L4; random IR functions against an interpreter | `llc`, an IR interpreter | continuous, budgeted |
@@ -77,6 +77,22 @@ is provisioned (until then it is optional and its absence a note). The same
 object must link with all of them and the programs must behave identically.
 Linker versions are pinned in the provisioning script and recorded in
 status reports.
+
+### Debug information (L7)
+
+`cargo xtask debug` (`spec/harness.md` "debug", `spec/dwarf.md` §8.4)
+builds each test of `tests/debug/` from clang 19, clang 22 and kiln++
+IR by hod and by `llc -O0` (SelectionDAG), links both programs with every
+linker, and runs the same gdb and lldb script on each: the transcripts,
+masked of addresses, offsets, ids and the program's directory only, must
+be equal. Two-object tests also link each module from hod with the
+others from `llc`, in both orders (COMDAT groups with `-g`). A difference
+hod is not to fix now is a seed with an `xfail` and its reason; a stale
+`xfail` fails. `debug kiln` runs kiln's own debugger tests with hod as
+the backend; `debug verify` runs `llvm-dwarfdump --verify` on every `-g`
+corpus module hod builds; the `(function, line)` sets of the two
+programs must be equal up to `spec/dwarf.md` §5.7's classes. The quick
+tier (about 20 s) runs in `cargo test`; the full gate runs everything.
 
 ### Hybrid, strict, bisect
 

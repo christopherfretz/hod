@@ -74,7 +74,7 @@ pub use attrs::{CallConv, ParamAttrs, ParamMem};
 pub use comdat::{Comdat, ComdatKind};
 pub use constant::{Const, ConstOp, ConstPool};
 pub use error::{IrError, IrErrorKind, IrResult};
-pub use flatten::{Fixup, FixupTarget};
+pub use flatten::{BlockDiff, Fixup, FixupTarget};
 pub use ids::{AsmId, BlockId, ComdatId, ConstId, DiId, LocId, SymId, TypeId};
 pub use module::{Module, StringLists, Structor, Unsupported};
 pub use print::{Dialect, IoSink, Part, PrintError};

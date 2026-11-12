@@ -1234,7 +1234,6 @@ fn what_is_refused_is_refused_by_name() {
         (extract("<65 x i1>", "i1"), vector::MASK_WIDE),
         (extract("<4 x i4>", "i4"), vector::ODD_ELEMENT),
         (extract("<2 x i24>", "i24"), vector::ODD_ELEMENT),
-        (extract("<2 x i128>", "i128"), vector::WIDE_ELEMENT),
         (extract("<2 x fp128>", "fp128"), vector::WIDE_ELEMENT),
         (extract("<257 x i8>", "i8"), vector::LENGTH),
         (
@@ -1250,29 +1249,7 @@ fn what_is_refused_is_refused_by_name() {
                 .into(),
             vector::ODD_ELEMENT,
         ),
-        (
-            "declare void @g(<3 x i32>)\ndefine void @f(ptr %p) {\n  %v = load <3 x i32>, ptr %p\n  \
-             call void @g(<3 x i32> %v)\n  ret void\n}\n"
-                .into(),
-            vector::CALL,
-        ),
-        (
-            "define <8 x i32> @f(ptr %p) {\n  %v = load <8 x i32>, ptr %p\n  ret <8 x i32> %v\n}\n"
-                .into(),
-            vector::CALL,
-        ),
-        (
-            "define void @f(<4 x i8> %v, ptr %p) {\n  store <4 x i8> %v, ptr %p\n  ret void\n}\n"
-                .into(),
-            vector::CALL,
-        ),
-        (
-            "declare void @g({ i32, <3 x float> })\ndefine void @f(ptr %p) {\n  \
-             %v = load { i32, <3 x float> }, ptr %p\n  \
-             call void @g({ i32, <3 x float> } %v)\n  ret void\n}\n"
-                .into(),
-            vector::CALL,
-        ),
+        // Vectors across calls pass since WP-082 (`tests/vcall.rs`).
         (
             "define void @f(<2 x ptr> %p, ptr %o) {\n  \
              %q = getelementptr i8, <2 x ptr> %p, <2 x i64> <i64 1, i64 2>\n  \

@@ -11,6 +11,8 @@ pub mod ci;
 #[cfg(unix)]
 pub mod corpus;
 #[cfg(unix)]
+pub mod debug;
+#[cfg(unix)]
 pub mod irdiff;
 #[cfg(unix)]
 pub mod roundtrip;

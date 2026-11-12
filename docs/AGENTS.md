@@ -45,10 +45,12 @@ section, under about 2000 lines.
    parallel branches appending to one file conflict.
 9. This repository is public. Never name private downstream codebases, in
    code, comments, tests, docs, commit messages or branch names.
-10. Hand back when `cargo xtask ci --quick` is clean and `origin/main` is
-    merged in, with: the branch head, a summary, the test evidence
-    (commands and results), open questions, and follow-ups as `file:line`.
-    Implementers do not push or merge; the supervisor does.
+10. Hand back when `cargo xtask ci --quick` is clean with
+    `HOD_REQUIRE_TOOLS=1`, with: the branch head, a summary, the test
+    evidence (commands and results), open questions, and follow-ups as
+    `file:line`. Implementers do not push, and do not merge `main` into
+    their branch: the supervisor merges `main` in, re-runs the gate on the
+    result, and merges the branch.
 
 ## Shared machine
 

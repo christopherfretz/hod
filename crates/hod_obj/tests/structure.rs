@@ -4,10 +4,10 @@
 mod common;
 
 use common::{
-    Elf, Rela, SHF_ALLOC, SHF_EXECINSTR, SHF_GROUP, SHF_INFO_LINK, SHF_MERGE, SHF_STRINGS, SHF_TLS,
-    SHF_WRITE, SHN_ABS, SHN_COMMON, SHN_UNDEF, SHT_FINI_ARRAY, SHT_GROUP, SHT_INIT_ARRAY,
-    SHT_NOBITS, SHT_NOTE, SHT_PROGBITS, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL, STB_LOCAL,
-    STB_WEAK, function, undefined,
+    Elf, Rela, SHF_ALLOC, SHF_EXECINSTR, SHF_GROUP, SHF_INFO_LINK, SHF_LINK_ORDER, SHF_MERGE,
+    SHF_STRINGS, SHF_TLS, SHF_WRITE, SHN_ABS, SHN_COMMON, SHN_UNDEF, SHT_FINI_ARRAY, SHT_GROUP,
+    SHT_INIT_ARRAY, SHT_NOBITS, SHT_NOTE, SHT_PROGBITS, SHT_RELA, SHT_STRTAB, SHT_SYMTAB,
+    STB_GLOBAL, STB_LOCAL, STB_WEAK, function, undefined,
 };
 use hod_obj::{
     A64Reloc, Arch, Binding, Error, GroupKind, Limit, Object, SectionId, SectionKind, StackNote,
@@ -454,6 +454,158 @@ fn group_contents() {
     assert_eq!((signature.kind, signature.bind), (3, STB_LOCAL));
 }
 
+/// "Section groups": a group may hold sections that are not loaded, alone
+/// or beside loaded ones; they get `SHF_GROUP` and nothing else.
+#[test]
+fn groups_with_debug_members() {
+    let mut obj = Object::new(Arch::X86_64);
+    let text = obj.add_section(b".text.f", SectionKind::Text, 16).unwrap();
+    let info = obj.add_section(b".debug_info", SectionKind::Debug, 1).unwrap();
+    let types = obj.add_section(b".debug_types", SectionKind::Debug, 1).unwrap();
+    obj.append_zeros(types, 4);
+    let function =
+        named(&mut obj, "f", Symbol::defined(StrId::EMPTY, SymbolKind::Func, text, 0, 0));
+    let unit = named(&mut obj, "unit", local(SymbolKind::NoType, types, 0));
+    obj.add_relocation(types, 0, X64Reloc::Abs32, function, 0);
+    let code = obj.add_group(function, GroupKind::Comdat);
+    obj.add_group_member(code, text).unwrap();
+    obj.add_group_member(code, info).unwrap();
+    let debug_only = obj.add_group(unit, GroupKind::Plain);
+    obj.add_group_member(debug_only, types).unwrap();
+
+    let elf = parse(&obj);
+    let (text, info, types) =
+        (elf.only(".text.f"), elf.only(".debug_info"), elf.only(".debug_types"));
+    assert_eq!(elf.group(1), (1, vec![text as u32, info as u32]));
+    assert_eq!(elf.group(2), (0, vec![types as u32, elf.only(".rela.debug_types") as u32]));
+    assert_eq!(elf.sections[info].flags, SHF_GROUP);
+    assert_eq!(elf.sections[types].flags, SHF_GROUP);
+    assert_eq!(elf.sections[elf.only(".rela.debug_types")].flags, SHF_INFO_LINK | SHF_GROUP);
+    let signature = &elf.symbols[elf.sections[2].info as usize];
+    assert_eq!((signature.name.as_str(), signature.bind), ("unit", STB_LOCAL));
+}
+
+/// "Sections", linked sections: `SHF_LINK_ORDER` and the target's index in
+/// `sh_link`, for any kind of section and target, added in any order, in
+/// a group or not; `sh_info` stays zero (the reader checks it, and that
+/// no other section has a link).
+#[test]
+fn linked_sections() {
+    let mut obj = Object::new(Arch::AArch64);
+    let table = obj.add_section(b".gcc_except_table.f", SectionKind::ReadOnlyData, 4).unwrap();
+    let text = obj.add_section(b".text.f", SectionKind::Text, 4).unwrap();
+    let entries = SectionKind::Elf {
+        sh_type: elf::SHT_PROGBITS,
+        sh_flags: elf::SHF_ALLOC | elf::SHF_WRITE,
+        sh_entsize: 0,
+    };
+    let entries = obj.add_section(b"__patchable_function_entries", entries, 8).unwrap();
+    let bss = obj.add_section(b".bss.counter", SectionKind::Bss, 8).unwrap();
+    let other = obj.add_section(b".text.g", SectionKind::Text, 4).unwrap();
+    let f = function(&mut obj, text, "f", &[common::RET]);
+    obj.append_zeros(entries, 8);
+    obj.append_zeros(bss, 8);
+    obj.add_relocation(entries, 0, A64Reloc::Abs64, f, 0);
+    let group = obj.add_group(f, GroupKind::Comdat);
+    for member in [text, table, entries] {
+        obj.add_group_member(group, member).unwrap();
+    }
+    assert_eq!(obj.linked_section(table), None);
+    obj.set_linked_section(table, text); // a target added later
+    obj.set_linked_section(entries, other);
+    obj.set_linked_section(entries, text); // replaces the target
+    obj.set_linked_section(bss, text);
+    assert_eq!(obj.linked_section(table), Some(text));
+    assert_eq!(obj.linked_section(entries), Some(text));
+    assert_eq!(obj.linked_section(text), None);
+
+    let elf = parse(&obj);
+    let target = elf.only(".text.f") as u32;
+    assert_eq!(target, 1 + 1 + text.index(), "after the group section");
+    let header = |name: &str| {
+        let section = &elf.sections[elf.only(name)];
+        (section.flags, section.link, section.info)
+    };
+    let link_order = SHF_LINK_ORDER | SHF_GROUP;
+    assert_eq!(header(".gcc_except_table.f"), (SHF_ALLOC | link_order, target, 0));
+    let flags = SHF_ALLOC | SHF_WRITE | link_order;
+    assert_eq!(header("__patchable_function_entries"), (flags, target, 0));
+    assert_eq!(header(".bss.counter"), (SHF_ALLOC | SHF_WRITE | SHF_LINK_ORDER, target, 0));
+    assert_eq!(header(".text.f"), (SHF_ALLOC | SHF_EXECINSTR | SHF_GROUP, 0, 0));
+    assert_eq!(header(".text.g"), (SHF_ALLOC | SHF_EXECINSTR, 0, 0));
+    // The relocation section of a linked section is an ordinary one.
+    let rela = &elf.sections[elf.only(".rela__patchable_function_entries")];
+    assert_eq!((rela.flags, rela.link as usize), (SHF_INFO_LINK | SHF_GROUP, elf.symtab));
+}
+
+/// "ELF conventions": the sections `add_init_array` and `add_fini_array`
+/// add.
+#[test]
+fn init_and_fini_array_sections() {
+    let mut obj = Object::new(Arch::X86_64);
+    let default = elf::add_init_array(&mut obj, elf::DEFAULT_INIT_PRIORITY).unwrap();
+    assert_eq!(obj.section_name(default), b".init_array");
+    assert_eq!(obj.section_kind(default), SectionKind::InitArray);
+    for (priority, name) in
+        [(0, ".init_array.0"), (101, ".init_array.101"), (65534, ".init_array.65534")]
+    {
+        let section = elf::add_init_array(&mut obj, priority).unwrap();
+        assert_eq!(obj.section_name(section), name.as_bytes());
+    }
+    let fini = elf::add_fini_array(&mut obj, 101).unwrap();
+    let again = elf::add_fini_array(&mut obj, 101).unwrap();
+    assert_ne!(fini, again, "each call adds a section");
+    elf::add_fini_array(&mut obj, elf::DEFAULT_INIT_PRIORITY).unwrap();
+    for section in 0..obj.section_count() {
+        obj.append_zeros(SectionId::from_index(section), 8);
+    }
+
+    let elf = parse(&obj);
+    let rows: Vec<_> = elf.sections[1..=7]
+        .iter()
+        .map(|s| (s.name.as_str(), s.kind, s.flags, s.align, s.entsize, s.size))
+        .collect();
+    let flags = SHF_ALLOC | SHF_WRITE;
+    let row = |name, kind| (name, kind, flags, 8, 0, 8);
+    assert_eq!(
+        rows,
+        [
+            row(".init_array", SHT_INIT_ARRAY),
+            row(".init_array.0", SHT_INIT_ARRAY),
+            row(".init_array.101", SHT_INIT_ARRAY),
+            row(".init_array.65534", SHT_INIT_ARRAY),
+            row(".fini_array.101", SHT_FINI_ARRAY),
+            row(".fini_array.101", SHT_FINI_ARRAY),
+            row(".fini_array", SHT_FINI_ARRAY),
+        ]
+    );
+}
+
+/// "ELF conventions": the section `add_gnu_property_note` adds, per
+/// architecture.
+#[test]
+fn gnu_property_note_section() {
+    let bti_pac = elf::GNU_PROPERTY_AARCH64_FEATURE_1_BTI | elf::GNU_PROPERTY_AARCH64_FEATURE_1_PAC;
+    let ibt_shstk = elf::GNU_PROPERTY_X86_FEATURE_1_IBT | elf::GNU_PROPERTY_X86_FEATURE_1_SHSTK;
+    assert_eq!((elf::GNU_PROPERTY_AARCH64_FEATURE_1_GCS, bti_pac, ibt_shstk), (4, 3, 3));
+    for (arch, features, property) in
+        [(Arch::AArch64, bti_pac, 0xc000_0000u32), (Arch::X86_64, ibt_shstk, 0xc000_0002)]
+    {
+        let mut obj = Object::new(arch);
+        let note = elf::add_gnu_property_note(&mut obj, features).unwrap();
+        assert_eq!(obj.data(note), elf::gnu_property_note(arch, features));
+        let elf = parse(&obj);
+        let index = elf.only(".note.gnu.property");
+        let section = &elf.sections[index];
+        assert_eq!((section.kind, section.flags, section.align), (SHT_NOTE, SHF_ALLOC, 8));
+        let mut expected = Vec::new();
+        for word in [4, 16, 5, u32::from_le_bytes(*b"GNU\0"), property, 4, features, 0] {
+            expected.extend_from_slice(&word.to_le_bytes());
+        }
+        assert_eq!(elf.data(index), expected);
+    }
+}
+
 /// "Stack marker".
 #[test]
 fn stack_note() {
@@ -687,6 +839,14 @@ fn write_time_errors() {
     );
     assert_eq!(obj.group_members(first).collect::<Vec<_>>(), [text, other]);
     assert!(elf::to_vec(&obj).is_ok());
+
+    // "Sections", linked sections: a section linked to itself.
+    let (mut obj, text, _) = base();
+    let other = obj.add_section(b".text.b", SectionKind::Text, 4).unwrap();
+    obj.set_linked_section(other, text);
+    obj.set_linked_section(other, other);
+    assert_eq!(obj.linked_section(other), Some(text), "a rejected link changes nothing");
+    assert_eq!(error(&obj), Error::LinkedToItself { section: other });
 }
 
 /// "Errors": symbols the writer rejects.

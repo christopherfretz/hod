@@ -8,12 +8,13 @@
 mod common;
 
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use common::{function, undefined};
 use hod_obj::{
-    A64Reloc, Arch, Binding, Object, SectionKind, StrId, Symbol, SymbolKind, SymbolPlace,
-    Visibility, X64Reloc, elf,
+    A64Reloc, Arch, Binding, GroupKind, Object, SectionKind, StrId, Symbol, SymbolKind,
+    SymbolPlace, Visibility, X64Reloc, elf,
 };
 use hod_testutil::{Scratch, run, tool, tools_required};
 
@@ -474,6 +475,177 @@ fn readelf_reads_comdat_groups() {
     }
 }
 
+/// "Sections", linked sections, and "Section groups" with
+/// `GroupKind::Plain` and a member that is not loaded, as both `readelf`s
+/// see them.
+#[test]
+fn readelf_reads_linked_sections_and_plain_groups() {
+    let mut obj = Object::new(Arch::AArch64);
+    let text = obj.add_section(b".text.f", SectionKind::Text, 4).unwrap();
+    let table = obj.add_section(b".gcc_except_table.f", SectionKind::ReadOnlyData, 4).unwrap();
+    let debug = obj.add_section(b".debug_hod", SectionKind::Debug, 1).unwrap();
+    let meta = obj.add_section(b".hod.meta", SectionKind::Data, 8).unwrap();
+    let f = function(&mut obj, text, "f", &[common::RET]);
+    obj.set_linked_section(table, text);
+    obj.set_linked_section(meta, text);
+    let group = obj.add_group(f, GroupKind::Plain);
+    for member in [text, table, debug] {
+        obj.add_group_member(group, member).unwrap();
+    }
+    let scratch = Scratch::new("obj-readelf-linked");
+    let file = write(&scratch, "linked.o", &obj);
+    for (label, tool) in readelfs() {
+        let text = read(&tool, &["--all", "-g", "-W"], &file);
+        let lines: Vec<String> =
+            text.lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).collect();
+        let header = "group section [ 1] `.group' [f] contains 3 sections:";
+        let start = lines
+            .iter()
+            .position(|l| l.ends_with(header) && !l.contains("COMDAT"))
+            .unwrap_or_else(|| panic!("{label}: no group header in:\n{text}"));
+        assert_eq!(
+            lines[start + 2..start + 5],
+            ["[ 2] .text.f", "[ 3] .gcc_except_table.f", "[ 4] .debug_hod"],
+            "{label}"
+        );
+        let report = Report::parse(&text);
+        let row = |name: &str| {
+            let row = report.section(name);
+            let mut flags: Vec<char> = row.flags.chars().collect();
+            flags.sort_unstable();
+            (flags.into_iter().collect::<String>(), row.link, row.info)
+        };
+        assert_eq!(row(".text.f"), ("AGX".to_owned(), 0, 0), "{label}");
+        assert_eq!(row(".gcc_except_table.f"), ("AGL".to_owned(), 2, 0), "{label}");
+        assert_eq!(row(".debug_hod"), ("G".to_owned(), 0, 0), "{label}");
+        assert_eq!(row(".hod.meta"), ("ALW".to_owned(), 2, 0), "{label}");
+    }
+}
+
+/// A one-function C file compiled by clang for `triple`.
+fn clang_object(
+    scratch: &Scratch,
+    clang: &Path,
+    triple: &str,
+    option: &str,
+    source: &str,
+) -> PathBuf {
+    let input = scratch.write("input.c", source);
+    let output = scratch.join(format!("clang-{triple}{option}.o"));
+    let target = format!("--target={triple}");
+    let arguments = [target.as_ref(), option.as_ref(), "-c".as_ref(), input.as_os_str()];
+    let outcome = run(clang, arguments.into_iter().chain(["-o".as_ref(), output.as_os_str()]));
+    assert!(outcome.success(), "clang {option} failed: {}", outcome.stderr_text());
+    output
+}
+
+/// "ELF conventions": the property note is, byte for byte and in its
+/// section header, the one clang emits for the same features, and both
+/// `readelf`s name the features in it.
+#[test]
+fn gnu_property_note_matches_clang() {
+    const BTI: u32 = elf::GNU_PROPERTY_AARCH64_FEATURE_1_BTI;
+    const PAC: u32 = elf::GNU_PROPERTY_AARCH64_FEATURE_1_PAC;
+    const IBT: u32 = elf::GNU_PROPERTY_X86_FEATURE_1_IBT;
+    const SHSTK: u32 = elf::GNU_PROPERTY_X86_FEATURE_1_SHSTK;
+    let scratch = Scratch::new("obj-note");
+    let a64 = (Arch::AArch64, "aarch64-linux-gnu");
+    let x64 = (Arch::X86_64, "x86_64-linux-gnu");
+    // What `standard` covers grows with clang's version; it is at least
+    // these two.
+    let cases = [
+        (a64, "-mbranch-protection=bti", BTI, "BTI"),
+        (a64, "-mbranch-protection=pac-ret", PAC, "PAC"),
+        (a64, "-mbranch-protection=bti+pac-ret", BTI | PAC, "BTI, PAC"),
+        (a64, "-mbranch-protection=standard", BTI | PAC, "BTI, PAC"),
+        (x64, "-fcf-protection=branch", IBT, "IBT"),
+        (x64, "-fcf-protection=return", SHSTK, "SHSTK"),
+        (x64, "-fcf-protection=full", IBT | SHSTK, "IBT, SHSTK"),
+    ];
+    let header = |file: &Path| {
+        let tool = tool("llvm-readelf")?;
+        let report = Report::parse(&read(&tool, &["-S", "-W"], file));
+        let row = report.section(".note.gnu.property");
+        Some((row.kind.clone(), row.flags.clone(), row.size, row.entsize, row.align))
+    };
+    for ((arch, triple), option, mut features, names) in cases {
+        if let (Some(clang), Some(objcopy)) = (tool("clang"), tool("llvm-objcopy")) {
+            let theirs = clang_object(&scratch, &clang, triple, option, "void f(void) {}\n");
+            let mut dump = std::ffi::OsString::from("--dump-section=.note.gnu.property=");
+            dump.push(scratch.join("note.bin"));
+            let outcome = run(&objcopy, [dump.as_os_str(), theirs.as_os_str()]);
+            assert!(outcome.success(), "{}", outcome.stderr_text());
+            let note = std::fs::read(scratch.join("note.bin")).unwrap();
+            if option.ends_with("standard") {
+                let word = u32::from_le_bytes(note[24..28].try_into().unwrap());
+                assert_eq!(word & features, features, "{option}");
+                features = word;
+            }
+            assert_eq!(elf::gnu_property_note(arch, features), note[..], "{triple} {option}");
+            let mut obj = Object::new(arch);
+            elf::add_gnu_property_note(&mut obj, features).unwrap();
+            let ours = write(&scratch, "note.o", &obj);
+            assert_eq!(header(&ours), header(&theirs), "{triple} {option}");
+        }
+        let mut obj = Object::new(arch);
+        elf::add_gnu_property_note(&mut obj, features).unwrap();
+        let file = write(&scratch, "note.o", &obj);
+        assert_eq!(
+            common::Elf::parse(&std::fs::read(&file).unwrap()).machine,
+            if arch == Arch::AArch64 { 183 } else { 62 }
+        );
+        for (label, tool) in readelfs() {
+            let text = read(&tool, &["-n", "-W"], &file);
+            assert!(text.contains("NT_GNU_PROPERTY_TYPE_0"), "{label}: {text}");
+            assert!(text.contains(&format!("feature: {names}")), "{label} {option}: {text}");
+        }
+    }
+}
+
+/// "ELF conventions": `add_init_array` and `add_fini_array` name and type
+/// their sections as clang does for the same priorities.
+#[test]
+fn init_array_sections_match_clang() {
+    let (Some(clang), Some(readelf)) = (tool("clang"), tool("llvm-readelf")) else { return };
+    let priorities = [101u16, 200, 9, 65534, elf::DEFAULT_INIT_PRIORITY];
+    let mut source = String::from("__attribute__((constructor)) void c(void) {}\n");
+    source.push_str("__attribute__((destructor)) void d(void) {}\n");
+    for priority in priorities {
+        for (kind, name) in [("constructor", 'c'), ("destructor", 'd')] {
+            let function = format!("void {name}{priority}(void) {{}}");
+            writeln!(source, "__attribute__(({kind}({priority}))) {function}").unwrap();
+        }
+    }
+    let scratch = Scratch::new("obj-arrays");
+    let arrays = |file: &Path| {
+        let report = Report::parse(&read(&readelf, &["-S", "-W"], file));
+        let mut rows: Vec<_> = report
+            .sections
+            .into_iter()
+            .filter(|row| row.kind.ends_with("_ARRAY"))
+            .map(|row| (row.name, row.kind, row.flags, row.entsize, row.align))
+            .collect();
+        rows.sort();
+        rows.dedup();
+        rows
+    };
+    for (arch, triple) in [(Arch::AArch64, "aarch64-linux-gnu"), (Arch::X86_64, "x86_64-linux-gnu")]
+    {
+        let theirs = clang_object(&scratch, &clang, triple, "-O0", &source);
+        let mut obj = Object::new(arch);
+        for priority in priorities {
+            let init = elf::add_init_array(&mut obj, priority).unwrap();
+            let fini = elf::add_fini_array(&mut obj, priority).unwrap();
+            obj.append_zeros(init, 8);
+            obj.append_zeros(fini, 8);
+        }
+        let ours = write(&scratch, "arrays.o", &obj);
+        let rows = arrays(&ours);
+        assert_eq!(rows.len(), 10, "{triple}: {rows:?}");
+        assert_eq!(rows, arrays(&theirs), "{triple}");
+    }
+}
+
 /// "Large section counts", as both `readelf`s see them.
 #[test]
 fn readelf_reads_70000_sections() {
@@ -498,39 +670,6 @@ fn readelf_reads_70000_sections() {
     }
 }
 
-/// `int main(void) { puts("x86"); return 42; }` for x86-64, and a pointer
-/// to `main` in `.data`.
-fn x86_64_program() -> Object {
-    let mut obj = Object::new(Arch::X86_64);
-    let text = obj.add_section(b".text", SectionKind::Text, 16).unwrap();
-    let rodata = obj.add_section(b".rodata", SectionKind::ReadOnlyData, 1).unwrap();
-    let data = obj.add_section(b".data", SectionKind::Data, 8).unwrap();
-    obj.append(rodata, b"x86\0");
-    let name = obj.add_string(b".L.str").unwrap();
-    let string = obj.add_symbol(
-        Symbol::defined(name, SymbolKind::Object, rodata, 0, 4).with_binding(Binding::Local),
-    );
-    let puts = undefined(&mut obj, "puts");
-    #[rustfmt::skip]
-    let code = [
-        0x55,                                     // push %rbp
-        0x48, 0x89, 0xe5,                         // mov %rsp, %rbp
-        0x48, 0x8d, 0x3d, 0, 0, 0, 0,             // lea .L.str(%rip), %rdi
-        0xe8, 0, 0, 0, 0,                         // call puts
-        0xb8, 42, 0, 0, 0,                        // mov $42, %eax
-        0x5d,                                     // pop %rbp
-        0xc3,                                     // ret
-    ];
-    obj.append(text, &code);
-    let name = obj.add_string(b"main").unwrap();
-    let main = obj.add_symbol(Symbol::defined(name, SymbolKind::Func, text, 0, code.len() as u64));
-    obj.add_relocation(text, 7, X64Reloc::Pc32, string, -4);
-    obj.add_relocation(text, 12, X64Reloc::Plt32, puts, -4);
-    obj.append_zeros(data, 8);
-    obj.add_relocation(data, 0, X64Reloc::Abs64, main, 0);
-    obj
-}
-
 fn squeeze(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -540,7 +679,7 @@ fn squeeze(text: &str) -> String {
 #[test]
 fn x86_64_object_is_read_by_llvm_tools() {
     let scratch = Scratch::new("obj-x86");
-    let file = write(&scratch, "x86.o", &x86_64_program());
+    let file = write(&scratch, "x86.o", &common::x86_64_program());
     for (label, tool) in readelfs() {
         let text = read(&tool, &["--all", "-g", "-W"], &file);
         assert!(text.contains("Advanced Micro Devices X86-64"), "{label}");

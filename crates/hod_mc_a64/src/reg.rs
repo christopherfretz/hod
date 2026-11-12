@@ -311,3 +311,277 @@ impl Extend {
         Self::Sxtx,
     ];
 }
+
+/// An FP/SIMD register `V0`..`V31`. Which of its views an instruction uses
+/// (`B`, `H`, `S`, `D`, `Q`, or a vector arrangement) is a separate operand,
+/// as [`Size`] is for [`Reg`]. Encoding 31 is `V31`: there is no zero
+/// register and no stack pointer among them.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct VReg(u8);
+
+impl VReg {
+    named_regs! {
+        V0 = 0, V1 = 1, V2 = 2, V3 = 3, V4 = 4, V5 = 5, V6 = 6, V7 = 7,
+        V8 = 8, V9 = 9, V10 = 10, V11 = 11, V12 = 12, V13 = 13, V14 = 14, V15 = 15,
+        V16 = 16, V17 = 17, V18 = 18, V19 = 19, V20 = 20, V21 = 21, V22 = 22, V23 = 23,
+        V24 = 24, V25 = 25, V26 = 26, V27 = 27, V28 = 28, V29 = 29, V30 = 30, V31 = 31,
+    }
+
+    /// Register `index`, or `None` when `index > 31`.
+    #[inline]
+    pub const fn new(index: u8) -> Option<Self> {
+        if index <= 31 { Some(Self(index)) } else { None }
+    }
+
+    /// The register number, `0..=31`.
+    #[inline]
+    pub const fn index(self) -> u8 {
+        self.0
+    }
+
+    /// The 5-bit register field value.
+    #[inline]
+    pub(crate) const fn code(self) -> u32 {
+        self.0 as u32
+    }
+}
+
+/// The precision of a scalar floating-point operation: the `S` or `D` view
+/// of a [`VReg`]. Half precision arithmetic needs `FEAT_FP16` and is not
+/// encoded; see [`FpFormat`] for the conversions.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum FpSize {
+    /// Single precision: `S` registers.
+    S = 0,
+    /// Double precision: `D` registers.
+    D = 1,
+}
+
+impl FpSize {
+    /// Both precisions.
+    pub const ALL: [Self; 2] = [Self::S, Self::D];
+
+    /// 32 or 64.
+    #[inline]
+    pub const fn bits(self) -> u32 {
+        match self {
+            Self::S => 32,
+            Self::D => 64,
+        }
+    }
+
+    /// The `ftype` field in place (bits 23:22).
+    #[inline]
+    pub(crate) const fn ftype(self) -> u32 {
+        (self as u32) << 22
+    }
+
+    /// The `sz` bit of a vector instruction, as 0 or 1.
+    #[inline]
+    pub(crate) const fn bit(self) -> u32 {
+        self as u32
+    }
+}
+
+/// A floating-point format a conversion or a constant can name: the `H`, `S`
+/// or `D` view of a [`VReg`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum FpFormat {
+    /// IEEE half precision, 16 bits.
+    H,
+    /// IEEE single precision, 32 bits.
+    S,
+    /// IEEE double precision, 64 bits.
+    D,
+}
+
+impl FpFormat {
+    /// Every format.
+    pub const ALL: [Self; 3] = [Self::H, Self::S, Self::D];
+
+    /// 16, 32 or 64.
+    #[inline]
+    pub const fn bits(self) -> u32 {
+        match self {
+            Self::H => 16,
+            Self::S => 32,
+            Self::D => 64,
+        }
+    }
+
+    /// The `ftype` field in place (bits 23:22).
+    #[inline]
+    pub(crate) const fn ftype(self) -> u32 {
+        (match self {
+            Self::S => 0,
+            Self::D => 1,
+            Self::H => 3,
+        }) << 22
+    }
+}
+
+/// The width of a vector operand: the low 64 bits of a [`VReg`] or all 128.
+/// It is the whole operand of the instructions that work on bytes
+/// (`<Vn>.8B` or `<Vn>.16B`): the logical operations, the selects, the
+/// table lookups.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum VecBits {
+    /// 64 bits: `8B`.
+    V64 = 0,
+    /// 128 bits: `16B`.
+    V128 = 1,
+}
+
+impl VecBits {
+    /// Both widths.
+    pub const ALL: [Self; 2] = [Self::V64, Self::V128];
+
+    /// 64 or 128.
+    #[inline]
+    pub const fn bits(self) -> u32 {
+        64 << self as u32
+    }
+
+    /// The `Q` bit in place (bit 30).
+    #[inline]
+    pub(crate) const fn q(self) -> u32 {
+        (self as u32) << 30
+    }
+}
+
+/// The width of a vector element or of a scalar view of a [`VReg`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Elem {
+    /// 8 bits.
+    B = 0,
+    /// 16 bits.
+    H = 1,
+    /// 32 bits.
+    S = 2,
+    /// 64 bits.
+    D = 3,
+}
+
+impl Elem {
+    /// Every element width.
+    pub const ALL: [Self; 4] = [Self::B, Self::H, Self::S, Self::D];
+
+    /// 8, 16, 32 or 64.
+    #[inline]
+    pub const fn bits(self) -> u32 {
+        8 << self as u32
+    }
+
+    /// The number of elements of this width in a 128-bit register: 16, 8,
+    /// 4 or 2. Element indices are below it.
+    #[inline]
+    pub const fn lanes(self) -> u32 {
+        16 >> self as u32
+    }
+
+    /// log2 of the width in bytes, which is the `size` field value.
+    #[inline]
+    pub(crate) const fn log2(self) -> u32 {
+        self as u32
+    }
+}
+
+/// A vector arrangement: the element width and the number of elements, as
+/// in `<Vn>.4S`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Arr {
+    /// `8B`: 8 bytes in 64 bits.
+    B8,
+    /// `16B`: 16 bytes.
+    B16,
+    /// `4H`: 4 halfwords in 64 bits.
+    H4,
+    /// `8H`: 8 halfwords.
+    H8,
+    /// `2S`: 2 words in 64 bits.
+    S2,
+    /// `4S`: 4 words.
+    S4,
+    /// `2D`: 2 doublewords.
+    D2,
+}
+
+impl Arr {
+    /// Every arrangement.
+    pub const ALL: [Self; 7] =
+        [Self::B8, Self::B16, Self::H4, Self::H8, Self::S2, Self::S4, Self::D2];
+
+    /// The element width.
+    #[inline]
+    pub const fn elem(self) -> Elem {
+        match self {
+            Self::B8 | Self::B16 => Elem::B,
+            Self::H4 | Self::H8 => Elem::H,
+            Self::S2 | Self::S4 => Elem::S,
+            Self::D2 => Elem::D,
+        }
+    }
+
+    /// The width of the whole vector.
+    #[inline]
+    pub const fn vec_bits(self) -> VecBits {
+        match self {
+            Self::B8 | Self::H4 | Self::S2 => VecBits::V64,
+            Self::B16 | Self::H8 | Self::S4 | Self::D2 => VecBits::V128,
+        }
+    }
+
+    /// The number of elements.
+    #[inline]
+    pub const fn lanes(self) -> u32 {
+        self.vec_bits().bits() / self.elem().bits()
+    }
+
+    /// The `Q` bit and the `size` field (bits 23:22) in place.
+    #[inline]
+    pub(crate) const fn q_size(self) -> u32 {
+        self.vec_bits().q() | self.elem().log2() << 22
+    }
+}
+
+/// The arrangement of a vector floating-point operation. Half precision
+/// elements need `FEAT_FP16` and are not encoded.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum FpArr {
+    /// `2S`: 2 single-precision elements in 64 bits.
+    S2,
+    /// `4S`: 4 single-precision elements.
+    S4,
+    /// `2D`: 2 double-precision elements.
+    D2,
+}
+
+impl FpArr {
+    /// Every floating-point arrangement.
+    pub const ALL: [Self; 3] = [Self::S2, Self::S4, Self::D2];
+
+    /// The same arrangement as an [`Arr`].
+    #[inline]
+    pub const fn arr(self) -> Arr {
+        match self {
+            Self::S2 => Arr::S2,
+            Self::S4 => Arr::S4,
+            Self::D2 => Arr::D2,
+        }
+    }
+
+    /// The element precision.
+    #[inline]
+    pub const fn fp_size(self) -> FpSize {
+        match self {
+            Self::S2 | Self::S4 => FpSize::S,
+            Self::D2 => FpSize::D,
+        }
+    }
+
+    /// The `Q` bit and the `sz` bit (bit 22) in place.
+    #[inline]
+    pub(crate) const fn q_sz(self) -> u32 {
+        self.arr().vec_bits().q() | self.fp_size().bit() << 22
+    }
+}

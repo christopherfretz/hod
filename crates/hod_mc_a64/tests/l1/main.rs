@@ -5,7 +5,7 @@
 //! section of the spec; the tests here check each batch against LLVM's
 //! assembler and disassembler; `selftest` shows the harness reporting
 //! batches that disagree. `bitmask`, `movimm`, `coverage` and the pure tests
-//! of `fixups` need no tools.
+//! of `fixups` and `fpimm` need no tools.
 
 #![allow(
     clippy::similar_names,
@@ -25,10 +25,14 @@ mod branch;
 mod condsel;
 mod coverage;
 mod fixups;
+mod fp;
+mod fpimm;
+mod fpmem;
 mod logical;
 mod mem;
 mod movimm;
 mod selftest;
+mod simd;
 mod system;
 mod wide;
 
@@ -51,6 +55,10 @@ pub const GROUPS: &[Group] = &[
     ("loads-and-stores", mem::build),
     ("atomics", atomic::build),
     ("system", system::build),
+    ("scalar-floating-point", fp::build),
+    ("fp-constant-materialization", fpimm::build),
+    ("fp-simd-loads-and-stores", fpmem::build),
+    ("simd", simd::build),
 ];
 
 fn check(group: &str) {
@@ -82,4 +90,8 @@ differential! {
     loads_and_stores_match_llvm => "loads-and-stores";
     atomics_match_llvm => "atomics";
     system_matches_llvm => "system";
+    scalar_floating_point_matches_llvm => "scalar-floating-point";
+    fp_constant_materialization_matches_llvm => "fp-constant-materialization";
+    fp_simd_loads_and_stores_match_llvm => "fp-simd-loads-and-stores";
+    simd_matches_llvm => "simd";
 }

@@ -77,7 +77,7 @@ between the IR and the bytes.
 | `hod_obj` | Object-file model and the ELF64 relocatable writer: sections, COMDAT groups, symbols, relocations, string tables. Knows nothing about code generation. | - |
 | `hod_mc_a64` | AArch64 instruction encoder: typed constructors → 32-bit words, plus fixup kinds. No IR knowledge. | - |
 | `hod_mc_x64` | x86-64 instruction encoder. | - |
-| `hod_cg` | Target-independent code generation: the two walks, frame layout, value locations, the call-lowering driver, the per-function output record, and the scheduler that runs functions on worker threads and merges results in order. Defines the `Target` trait. | `hod_ir`, `hod_obj` |
+| `hod_cg` | Target-independent code generation: the walk over a function, frame layout, value locations, the call-lowering driver, the per-function output record, and the scheduler that runs functions on worker threads and merges results in order. Defines the `Target` trait. | `hod_ir`, `hod_obj` |
 | `hod_a64` | AArch64 `Target`: instruction lowering, AAPCS64 for IR-level types, intrinsics, TLS and GOT access sequences. | `hod_cg`, `hod_mc_a64` |
 | `hod_x64` | x86-64 SysV `Target`. | `hod_cg`, `hod_mc_x64` |
 | `hod_eh` | `.eh_frame` (CFI) and `.gcc_except_table` (LSDA) from the per-function output records. | `hod_obj` |
@@ -86,6 +86,7 @@ between the IR and the bytes.
 | `hod_asm` | Assembler-syntax parser for `module asm` and inline `asm` bodies. (Later.) | `hod_mc_*` |
 | `hod` | The library facade: `compile(module, options) -> Result<Object, Unsupported>`. | all of the above |
 | `hod_cli` | The `hod` binary: an `llc`-compatible command line, so it drops into any driver that runs `llc`. | `hod`, `hod_ll` |
+| `hod_interp` | A reference interpreter for `hod_ir`, for tests: the oracle for the code generator's policy tests and for fuzzing. Not shipped. | `hod_ir` |
 | `xtask` | The harness: differential runs, linker matrix, benchmarks, bisection, CI entry point. Not shipped. | - |
 
 Dependency direction is top-down in the pipeline. The encoders and the
@@ -120,33 +121,34 @@ The decision and its measurements are in
 
 ## Code generation
 
-One function at a time, two walks over its IR:
+One function at a time, in **one walk** over its IR; the contract is
+`spec/codegen.md`. What an analysis walk would compute is already in the
+IR: `hod_ir`'s builder maintains each value's use count and whether it
+leaves its block, and a function's fixed stack objects are a list in its
+header (`spec/ir.md` §5). For each block in layout order, for each
+instruction, the target selects, allocates and encodes in one step,
+appending bytes to the function's code. Branches within the function are
+fixed up when their target is emitted; references to other symbols become
+relocations.
 
-1. **Analysis.** Number the values. Classify each `alloca` (fixed-size in
-   the entry block → a frame slot at a constant offset; anything else →
-   dynamic stack allocation). For each value, record its use count and
-   whether its only use is in the same block. Record the largest outgoing
-   argument area and whether the function has landing pads.
-2. **Emission.** For each block in layout order, for each instruction:
-   select, allocate and encode in one step, appending bytes to the
-   function's code buffer. Branches within the function are fixed up at the
-   end of the function; references to other symbols become relocations.
+**Value locations.** A value used once, in the block that defines it,
+lives in a register from its definition to its use. Every other value has
+a home slot in the frame: it is stored when defined and loaded at each
+use. No register holds a value across a block boundary, so there is no
+register state to reconcile on control-flow edges; a `phi` is a slot that
+predecessors store to and the block loads from. A call displaces whatever
+registers still hold values to the frame. This is allocation policy v1,
+chosen because it is simple to get right and matches the input (most
+values at `-O0` are single-use). The policy sits behind an interface in
+`hod_cg`; a policy that keeps values in registers across blocks can
+replace it without touching the targets.
 
-**Value locations.** Every SSA value that outlives its block, or is used more
-than once, has a home slot in the frame. A value used once, in the same
-block, lives only in a register. Registers hold values only within a block:
-at every block boundary all live values are in their home slots, so there is
-no register state to reconcile on control-flow edges, and `phi` moves are
-slot-to-slot. This is allocation policy v1, chosen because it is simple to
-get right and matches the input (most values at `-O0` are single-use). The
-policy sits behind an interface in `hod_cg`; a policy that keeps values in
-registers across blocks can replace it without touching the targets.
-
-**Frame.** Always a frame pointer. Fixed-size allocas, home slots and the
-outgoing argument area are addressed from the frame pointer at constant
-offsets. The frame size is known only after emission, so the prologue is
-emitted in a fixed-size form and patched. One prologue shape per target
-keeps the unwind information a constant pattern plus the frame size.
+**Frame.** Always a frame pointer. Stack objects, home slots and spill
+slots are addressed from the frame pointer at constant offsets. The frame
+size is known only after emission, so the prologue is emitted in a
+fixed-size form and patched, and each function has one epilogue, at its
+end. One prologue shape per target keeps the unwind information a
+constant pattern plus the frame size.
 
 **Calls.** The frontend has already applied the C++ ABI (`sret`, `byval`,
 coerced aggregates). The target assigns IR-level argument types to registers

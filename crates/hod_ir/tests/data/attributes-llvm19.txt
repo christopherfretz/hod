@@ -1,0 +1,122 @@
+# The attributes of LLVM 19: every definition in
+#   llvm/include/llvm/IR/Attributes.td at tag llvmorg-19.1.7
+#   (https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-19.1.7/llvm/include/llvm/IR/Attributes.td,
+#   sha256 900bed3dcd26ac5d8a9b03b68c781c4bfc4e28b067094bcedbf525a55b580aaa).
+# One line per attribute: <form> <name> <positions>.
+#   form: the TableGen class without its "Attr" suffix, in lower case
+#         (enum, int, type, constantrange, constantrangelist: keywords;
+#          strbool, complexstr: string attributes).
+#   positions: fn, param, ret as the definition lists them; "-" for none.
+# Regenerate with (POSIX sh, from the directory holding Attributes.td):
+#   tr '\n' ' ' < Attributes.td \
+#   | grep -oE 'def +[A-Za-z0-9_]+ *: *(EnumAttr|IntAttr|TypeAttr|ConstantRangeAttr|ConstantRangeListAttr|StrBoolAttr|ComplexStrAttr) *< *"[^"]+"[^>]*>' \
+#   | sed -E 's/def +[A-Za-z0-9_]+ *: *([A-Za-z]+)Attr *< *"([^"]+)"(.*)/\1 \2 \3/' \
+#   | awk '{ form = tolower($1); name = $2; pos = "";
+#            if ($0 ~ /FnAttr/) pos = pos "fn,"; if ($0 ~ /ParamAttr/) pos = pos "param,"; if ($0 ~ /RetAttr/) pos = pos "ret,";
+#            if (pos == "") pos = "-,"; print form, name, substr(pos, 1, length(pos) - 1) }' \
+#   | LC_ALL=C sort -k2,2
+# crates/hod_ir/tests/attr_table.rs checks the list against llvm-as 19.
+int align param,ret
+int alignstack fn,param
+enum allocalign param
+int allockind fn
+enum allocptr param
+int allocsize fn
+enum alwaysinline fn
+strbool approx-func-fp-math -
+enum builtin fn
+type byref param
+type byval param
+enum cold fn
+enum convergent fn
+enum coro_only_destroy_when_complete fn
+enum dead_on_unwind param
+complexstr denormal-fp-math fn
+complexstr denormal-fp-math-f32 fn
+int dereferenceable param,ret
+int dereferenceable_or_null param,ret
+enum disable_sanitizer_instrumentation fn
+type elementtype param
+enum fn_ret_thunk_extern fn
+enum hot fn
+enum hybrid_patchable fn
+enum immarg param
+type inalloca param
+constantrangelist initializes param
+enum inlinehint fn
+enum inreg param,ret
+enum jumptable fn
+strbool less-precise-fpmad -
+int memory fn
+enum minsize fn
+enum mustprogress fn
+enum naked fn
+enum nest param
+strbool no-infs-fp-math -
+strbool no-inline-line-tables -
+strbool no-jump-tables -
+strbool no-nans-fp-math -
+strbool no-signed-zeros-fp-math -
+enum noalias param,ret
+enum nobuiltin fn
+enum nocallback fn
+enum nocapture param
+enum nocf_check fn
+enum noduplicate fn
+int nofpclass param,ret
+enum nofree fn,param
+enum noimplicitfloat fn
+enum noinline fn
+enum nomerge fn
+enum nonlazybind fn
+enum nonnull param,ret
+enum noprofile fn
+enum norecurse fn
+enum noredzone fn
+enum noreturn fn
+enum nosanitize_bounds fn
+enum nosanitize_coverage fn
+enum nosync fn
+enum noundef param,ret
+enum nounwind fn
+enum null_pointer_is_valid fn
+enum optdebug fn
+enum optforfuzzing fn
+enum optnone fn
+enum optsize fn
+type preallocated fn,param
+enum presplitcoroutine fn
+strbool profile-sample-accurate -
+constantrange range param,ret
+enum readnone param
+enum readonly param
+enum returned param
+enum returns_twice fn
+enum safestack fn
+enum sanitize_address fn
+enum sanitize_hwaddress fn
+enum sanitize_memory fn
+enum sanitize_memtag fn
+enum sanitize_numerical_stability fn
+enum sanitize_thread fn
+enum shadowcallstack fn
+enum signext param,ret
+enum skipprofile fn
+enum speculatable fn
+enum speculative_load_hardening fn
+type sret param
+enum ssp fn
+enum sspreq fn
+enum sspstrong fn
+enum strictfp fn
+enum swiftasync param
+enum swifterror param
+enum swiftself param
+strbool unsafe-fp-math -
+strbool use-sample-profile -
+int uwtable fn
+int vscale_range fn
+enum willreturn fn
+enum writable param
+enum writeonly param
+enum zeroext param,ret

@@ -3,8 +3,8 @@
 //! register numbers, operation names from tables written out below.
 
 use hod_mc_a64::{
-    Barrier, Cond, Extend, Index, LitLoad, Load, MemSize, Order, Reg, RegSp, RegZr, Shift, Size,
-    SysReg,
+    Arr, Barrier, Cond, Elem, Extend, FpArr, FpFormat, FpSize, Index, LitLoad, Load, MemSize,
+    Order, Reg, RegSp, RegZr, Shift, Size, SysReg, VMemSize, VPairSize, VReg, VecBits,
 };
 
 /// Operand values from register numbers.
@@ -18,6 +18,11 @@ pub fn s(n: u32) -> RegSp {
 
 pub fn g(n: u32) -> Reg {
     Reg::new(n as u8).expect("register number 0..=30")
+}
+
+/// An FP/SIMD register from its number.
+pub fn v(n: u32) -> VReg {
+    VReg::new(n as u8).expect("register number 0..=31")
 }
 
 fn reg(prefix: char, n: u32, r31: &str) -> String {
@@ -145,6 +150,69 @@ pub const MEM_SIZES: [(MemSize, &str, char); 4] =
 /// (ordering, mnemonic infix).
 pub const ORDERS: [(Order, &str); 4] =
     [(Order::Plain, ""), (Order::A, "a"), (Order::L, "l"), (Order::Al, "al")];
+
+/// (precision, scalar register prefix).
+pub const FP_SIZES: [(FpSize, char); 2] = [(FpSize::S, 's'), (FpSize::D, 'd')];
+
+/// (format, scalar register prefix).
+pub const FP_FORMATS: [(FpFormat, char); 3] =
+    [(FpFormat::H, 'h'), (FpFormat::S, 's'), (FpFormat::D, 'd')];
+
+/// (arrangement, its name after the dot, element prefix, elements).
+pub const ARRS: [(Arr, &str, char, u32); 7] = [
+    (Arr::B8, "8b", 'b', 8),
+    (Arr::B16, "16b", 'b', 16),
+    (Arr::H4, "4h", 'h', 4),
+    (Arr::H8, "8h", 'h', 8),
+    (Arr::S2, "2s", 's', 2),
+    (Arr::S4, "4s", 's', 4),
+    (Arr::D2, "2d", 'd', 2),
+];
+
+/// (arrangement, its name after the dot).
+pub const FP_ARRS: [(FpArr, &str); 3] = [(FpArr::S2, "2s"), (FpArr::S4, "4s"), (FpArr::D2, "2d")];
+
+/// (vector width, the byte arrangement of that width).
+pub const VEC_BITS: [(VecBits, &str); 2] = [(VecBits::V64, "8b"), (VecBits::V128, "16b")];
+
+/// (element width, its prefix, elements in a 128-bit register).
+pub const ELEMS: [(Elem, char, u32); 4] =
+    [(Elem::B, 'b', 16), (Elem::H, 'h', 8), (Elem::S, 's', 4), (Elem::D, 'd', 2)];
+
+/// (width, scalar register prefix, access bytes).
+pub const VMEM_SIZES: [(VMemSize, char, i64); 5] = [
+    (VMemSize::B, 'b', 1),
+    (VMemSize::H, 'h', 2),
+    (VMemSize::S, 's', 4),
+    (VMemSize::D, 'd', 8),
+    (VMemSize::Q, 'q', 16),
+];
+
+/// (width, scalar register prefix, bytes per register).
+pub const VPAIR_SIZES: [(VPairSize, char, i64); 3] =
+    [(VPairSize::S, 's', 4), (VPairSize::D, 'd', 8), (VPairSize::Q, 'q', 16)];
+
+/// The value an FMOV immediate field denotes, from the Arm ARM's prose
+/// definition and without the crate's expansion: `(-1)^s * (16 + m) / 16 *
+/// 2^e`, where the field is `s:b:cd:m`, and `e` is `cd + 1` when `b` is
+/// clear and `cd - 3` when it is set. Every value is exact in single
+/// precision.
+pub fn fp_imm8_value(imm8: u8) -> f64 {
+    let sign = if imm8 & 0x80 == 0 { 1.0 } else { -1.0 };
+    let mantissa = f64::from(16 + (imm8 & 0xf)) / 16.0;
+    let cd = i32::from((imm8 >> 4) & 3);
+    let exponent = if imm8 & 0x40 == 0 { cd + 1 } else { cd - 3 };
+    sign * mantissa * 2f64.powi(exponent)
+}
+
+/// The bit pattern of `value` at a precision. The conversion to single
+/// precision is exact for the values the tests pass.
+pub fn fp_bits(sz: FpSize, value: f64) -> u64 {
+    match sz {
+        FpSize::S => u64::from((value as f32).to_bits()),
+        FpSize::D => value.to_bits(),
+    }
+}
 
 pub const SYS_REGS: [(SysReg, &str); 4] = [
     (SysReg::Nzcv, "NZCV"),

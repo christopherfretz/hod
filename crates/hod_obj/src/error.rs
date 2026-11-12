@@ -105,6 +105,11 @@ pub enum Error {
         /// The section.
         section: SectionId,
     },
+    /// A section was linked to itself.
+    LinkedToItself {
+        /// The section.
+        section: SectionId,
+    },
 }
 
 impl fmt::Display for Error {
@@ -167,6 +172,9 @@ impl fmt::Display for Error {
             }
             Self::SectionAlreadyInGroup { section } => {
                 write!(f, "section #{} is already in a group", section.index())
+            }
+            Self::LinkedToItself { section } => {
+                write!(f, "section #{} is linked to itself", section.index())
             }
         }
     }

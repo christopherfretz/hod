@@ -373,7 +373,10 @@ impl<'a, S: Sink> Walker<'a, S> {
             }
             Const::Splat { elem, .. } => self.constant(cx, elem, place, true, depth + 1, at),
             Const::Addr { sym, .. } => {
-                self.symbol_use(sym, Some(rules::TLS_CONSTANT), at)?;
+                // A thread-local address is code (WP-073): an operand, or
+                // an offset from one, but never data.
+                let code = place == Place::Operand && !nested && depth == 0;
+                self.symbol_use(sym, (!code).then_some(rules::TLS_CONSTANT), at)?;
                 self.address(place, nested, at::INIT_SYMBOL, at::OPERAND_SYMBOL, at)
             }
             Const::BlockAddr { func, block } => {
@@ -1015,7 +1018,9 @@ impl<'a, S: Sink> Walker<'a, S> {
             },
             ValueKind::Const(id) => self.const_operand(cx, row, classes, id, at),
             ValueKind::Sym(sym) => {
-                self.symbol_use(sym, Some(rules::TLS_OPERAND), at)?;
+                // A thread-local symbol's address is an operand like any
+                // other (WP-073); only a callee may not be one.
+                self.symbol_use(sym, None, at)?;
                 self.row(at::OPERAND_SYMBOL, at)?;
                 self.subject(row, classes, TypeId::PTR, at)
             }

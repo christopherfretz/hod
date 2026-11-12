@@ -637,15 +637,9 @@ impl<'m> ModuleEmitter<'m> {
         };
         if let Some(debug) = &mut self.debug {
             let lines = &chunk.lines[func.lines.start as usize..func.lines.end as usize];
-            debug.add_function(
-                self.module,
-                &mut self.obj,
-                func.sym,
-                lines,
-                section,
-                offset,
-                len as u32,
-            )?;
+            let vars = &chunk.vars[func.vars.start as usize..func.vars.end as usize];
+            let placed = lines::Placed { section, offset, size: len as u32, frame: func.frame };
+            debug.add_function(self.module, &mut self.obj, func.sym, lines, vars, placed)?;
         }
         let record = self.merge_rows(chunk, func, offset);
         self.funcs.push(PlacedFunc { record, section });
@@ -877,7 +871,7 @@ impl<'m> ModuleEmitter<'m> {
     /// The line tables and DIEs (`spec/dwarf.md` §9), after the
     /// functions are placed.
     fn debug_tables(&mut self) -> CgResult<()> {
-        let Some(debug) = self.debug.take() else { return Ok(()) };
+        let Some(mut debug) = self.debug.take() else { return Ok(()) };
         let module = self.module;
         let places = &self.places;
         debug.finish(module, &mut self.obj, |obj, sym| {

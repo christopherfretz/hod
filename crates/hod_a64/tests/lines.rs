@@ -5,8 +5,10 @@
 //! - what is written for which compile units (nothing without one, or
 //!   for `NoDebug` units; `LineTablesOnly` refused by name);
 //! - the rows of the hand-written cases (`data/lines/hand.ll`): a block
-//!   that starts without a location, an inlined location, an explicit
-//!   line 0, two returns, a function without a subprogram;
+//!   that starts without a location, an explicit line 0, two returns, a
+//!   function without a subprogram; an inlined location
+//!   (`data/lines/hand_inlined.ll`) is refused until its DIEs are
+//!   written (`debug:inlined-subroutine`, `spec/dwarf.md` §6.4);
 //! - the relocations of the sequences and of the unit's ranges, with and
 //!   without `-function-sections`;
 //! - the oracle: per function, hod's rows against `llc`'s (LLVM 19 and
@@ -128,14 +130,6 @@ fn hand_written_rows() {
         "{}",
         show("block_start")
     );
-    // The inlined location keeps its own scope's file and line.
-    let inl = &by["inlined"];
-    assert!(
-        inl.iter().any(|r| r.file == "inc/inl.h" && r.line == 3 && r.column == 12),
-        "{}",
-        show("inlined")
-    );
-    assert!(inl.iter().any(|r| r.line == 11 || r.line == 10), "{}", show("inlined"));
     // An explicit line 0 is a line-0 row.
     let zero = &by["line_zero"];
     assert!(zero.iter().any(|r| r.line == 0), "{}", show("line_zero"));
@@ -150,10 +144,26 @@ fn hand_written_rows() {
     assert!(!by.contains_key("no_subprogram"), "{}", show("no_subprogram"));
     // Every function with a subprogram starts with a row at its scope
     // line, and has its prologue's end.
-    for (name, line) in [("block_start", 3), ("inlined", 9), ("line_zero", 15), ("two_rets", 20)] {
+    for (name, line) in [("block_start", 3), ("line_zero", 15), ("two_rets", 20)] {
         let r = &by[name];
         assert_eq!((r[0].line, r[0].column, r[0].stmt), (line, 0, true), "{}", show(name));
         assert_eq!(r.iter().filter(|r| r.prologue_end).count(), 1, "{}", show(name));
+    }
+}
+
+/// An inlined location: its row would keep its own scope's file and
+/// line, but the function's DIEs need a `DW_TAG_inlined_subroutine`,
+/// which is not written yet; the module is refused by that name
+/// (`spec/dwarf.md` §6.4).
+#[test]
+fn inlined_locations_are_refused() {
+    let text = format!("{}{}", ll_header(22), data("hand_inlined.ll"));
+    let (module, bodies) = parse(&text);
+    match compile_to_object(&module, &bodies, &Options::default()) {
+        Err(ModuleError::Emit(e)) => {
+            assert_eq!(e, CgError::unsupported("debug:inlined-subroutine"));
+        }
+        other => panic!("{:?}", other.map(|b| b.len())),
     }
 }
 
@@ -291,7 +301,7 @@ fn oracle(major: u32) {
             assert!(hf.contains(f), "{name}: {f:?} not in hod's {hf:?}");
         }
     }
-    assert!(functions >= 7, "{functions}");
+    assert!(functions >= 6, "{functions}");
     eprintln!(
         "lines oracle (llc {major}): {functions} functions, {hod_rows} rows (llc {llc_rows}), equal modulo §5.7's differences"
     );

@@ -3,7 +3,7 @@
 ; thread-local array, and two threads that each see fresh copies at
 ; addresses different from the main thread's.
 ;@ covers: spec/ir.md §2.2 symbols (thread-local model), §5.5 intrinsics (threadlocal.address)
-;@ unsupported: *
+;@ unsupported(x86_64): *
 ;@ stdout: main: counter=7 zero=0 ie=30 le=40 ld=50 array=10
 ;@ stdout: thread 1: sum=237, own copy 1
 ;@ stdout: thread 2: sum=337, own copy 1

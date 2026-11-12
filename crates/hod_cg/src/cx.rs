@@ -81,6 +81,10 @@ pub struct Scratch {
     pub(crate) tail_exits: Vec<TailExit>,
     pub(crate) islands: Vec<Island>,
     pub(crate) island_data: Vec<u8>,
+    /// The function's `#dbg_label`s (§9.5): the raw id of the
+    /// instruction each stands before, the label and its location, in
+    /// position order.
+    pub(crate) dbg_labels: Vec<(u32, hod_ir::DiId, LocId)>,
 }
 
 impl Default for Scratch {
@@ -107,6 +111,7 @@ impl Default for Scratch {
             tail_exits: Vec::new(),
             islands: Vec::new(),
             island_data: Vec::new(),
+            dbg_labels: Vec::new(),
         }
     }
 }
@@ -135,6 +140,7 @@ impl Scratch {
             + bytes(&self.tail_exits)
             + bytes(&self.islands)
             + bytes(&self.island_data)
+            + bytes(&self.dbg_labels)
     }
 }
 

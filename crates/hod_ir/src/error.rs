@@ -36,6 +36,17 @@ pub enum IrErrorKind {
     UnsupportedInitializer,
     /// A table has no id left for another entry (§1: ids are `u32`).
     TableFull,
+    /// A symbol's name or description breaks a rule of §2.2: a linkage its
+    /// kind cannot have, a non-default visibility on a local symbol, a
+    /// declaration in a COMDAT, an alias of a declaration.
+    InvalidSymbol,
+    /// A symbol that is a definition is described or defined again (§2.2).
+    SymbolRedefined,
+    /// A symbol is referred to and was never declared (§2.2).
+    UndefinedSymbol,
+    /// A module flag is malformed, is set twice, or is a flag hod knows
+    /// with a value it cannot have (§2.1).
+    InvalidModuleFlag,
 }
 
 /// An error from building IR. Never a panic.

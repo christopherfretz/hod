@@ -58,7 +58,7 @@ impl Reg {
         self as u8
     }
 
-    /// The low three bits, the ModRM/SIB/opcode field.
+    /// The low three bits, the `ModRM`/`SIB`/opcode field.
     #[inline]
     pub(crate) const fn low(self) -> u8 {
         self as u8 & 7
@@ -77,7 +77,7 @@ impl Reg {
         matches!(self, Self::Rsp | Self::Rbp | Self::Rsi | Self::Rdi)
     }
 
-    /// The register as a SIB index: `None` for `rsp`, which has no index
+    /// The register as a `SIB` index: `None` for `rsp`, which has no index
     /// encoding.
     #[inline]
     pub const fn index(self) -> Option<Index> {
@@ -85,7 +85,7 @@ impl Reg {
     }
 }
 
-/// A register that can be a SIB index: any [`Reg`] except `rsp`.
+/// A register that can be a `SIB` index: any [`Reg`] except `rsp`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Index(Reg);
 
@@ -234,12 +234,13 @@ impl Cond {
 
     /// The condition that holds exactly when `self` does not.
     #[inline]
+    #[must_use]
     pub const fn invert(self) -> Self {
         Self::ALL[(self as u8 ^ 1) as usize]
     }
 }
 
-/// A SIB scale factor.
+/// A `SIB` scale factor.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[repr(u8)]
 pub enum Scale {
@@ -322,7 +323,7 @@ impl Mem {
         Self { base: Base::None, index: Some((index, scale)), disp, seg: None }
     }
 
-    /// `[disp]`: the sign-extended 32-bit absolute address (SIB with no
+    /// `[disp]`: the sign-extended 32-bit absolute address (`SIB` with no
     /// base and no index; not RIP-relative).
     #[inline]
     pub const fn abs(disp: i32) -> Self {
@@ -337,6 +338,7 @@ impl Mem {
 
     /// The same operand with a segment override.
     #[inline]
+    #[must_use]
     pub const fn with_seg(self, seg: Seg) -> Self {
         Self { seg: Some(seg), ..self }
     }

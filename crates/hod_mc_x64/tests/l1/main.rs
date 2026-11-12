@@ -15,7 +15,17 @@ mod table;
 mod text;
 
 mod alu;
+mod atomic;
+mod bits;
+mod branch;
+mod cond;
+mod coverage;
+mod fixups;
 mod mem;
+mod mov;
+mod selftest;
+mod shift;
+mod system;
 
 use harness::Batch;
 
@@ -23,8 +33,17 @@ use harness::Batch;
 type Group = (&'static str, fn(&mut Batch));
 
 /// Every sweep, by spec section.
-pub const GROUPS: &[Group] =
-    &[("memory-operands", mem::build), ("arithmetic-and-logic", alu::build)];
+pub const GROUPS: &[Group] = &[
+    ("memory-operands", mem::build),
+    ("arithmetic-and-logic", alu::build),
+    ("moves-and-extensions", mov::build),
+    ("shifts", shift::build),
+    ("conditional", cond::build),
+    ("branches-and-stack", branch::build),
+    ("bit-counting", bits::build),
+    ("atomics", atomic::build),
+    ("system-and-padding", system::build),
+];
 
 fn check(group: &str) {
     let (label, build) = GROUPS.iter().find(|(label, _)| *label == group).expect("a group name");
@@ -45,4 +64,11 @@ macro_rules! differential {
 differential! {
     memory_operands_match_llvm => "memory-operands";
     arithmetic_and_logic_matches_llvm => "arithmetic-and-logic";
+    moves_and_extensions_match_llvm => "moves-and-extensions";
+    shifts_match_llvm => "shifts";
+    conditional_matches_llvm => "conditional";
+    branches_and_stack_match_llvm => "branches-and-stack";
+    bit_counting_matches_llvm => "bit-counting";
+    atomics_match_llvm => "atomics";
+    system_and_padding_matches_llvm => "system-and-padding";
 }

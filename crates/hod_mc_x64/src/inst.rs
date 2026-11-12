@@ -1,5 +1,5 @@
 //! The encoded instruction, and the one routine that lays out prefixes,
-//! REX, opcode, ModRM, SIB, displacement and immediate (`spec/mc-x64.md`
+//! REX, opcode, `ModRM`, `SIB`, displacement and immediate (`spec/mc-x64.md`
 //! "Shape of the API", "Instruction layout").
 
 use crate::fixup::Fixup;
@@ -154,7 +154,7 @@ impl Inst {
     }
 }
 
-/// The register-or-memory operand of a ModRM instruction.
+/// The register-or-memory operand of a `ModRM` instruction.
 #[derive(Clone, Copy)]
 pub(crate) enum Rm {
     Reg(Reg),
@@ -204,6 +204,7 @@ impl Op {
 }
 
 /// The REX bits and whether a REX prefix is needed regardless.
+#[derive(Clone, Copy)]
 struct Rex {
     bits: u8,
     force: bool,
@@ -233,7 +234,7 @@ const fn head(out: &mut Inst, op: Op, seg: Option<crate::Seg>, rex: Rex) {
     out.push(op.opcode);
 }
 
-/// An instruction with a ModRM byte. `reg` is the reg field (a register
+/// An instruction with a `ModRM` byte. `reg` is the reg field (a register
 /// number, or the `/digit` opcode extension); `reg_byte` says it holds an
 /// 8-bit register and `rm_byte` that a register `rm` is one. Immediate
 /// bytes are pushed by the caller.
@@ -261,8 +262,8 @@ pub(crate) const fn modrm(op: Op, reg: u8, reg_byte: bool, rm: Rm, rm_byte: bool
     out
 }
 
-/// ModRM, SIB and displacement for a memory operand: the shortest
-/// displacement, a SIB byte only when the base is `rsp`/`r12`, there is an
+/// `ModRM`, `SIB` and displacement for a memory operand: the shortest
+/// displacement, a `SIB` byte only when the base is `rsp`/`r12`, there is an
 /// index, or there is neither base nor RIP (`spec/mc-x64.md` "Memory
 /// operands").
 const fn mem_operand(out: &mut Inst, reg: u8, m: Mem) {

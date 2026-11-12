@@ -158,7 +158,7 @@ impl M {
         } else if self.disp > 0 {
             text = format!("{text} + {}", self.disp);
         } else if self.disp < 0 {
-            text = format!("{text} - {}", (self.disp as i64).unsigned_abs());
+            text = format!("{text} - {}", self.disp.unsigned_abs());
         }
         let seg = match self.seg {
             Some(Seg::Fs) => "fs:",
@@ -191,7 +191,7 @@ pub fn all_mems() -> Vec<M> {
             }
         }
         for d in [0, 1, -128, 128, i32::MIN] {
-            out.push(M::bi(b, (b + 5) % 16 | 1, 4, d));
+            out.push(M::bi(b, ((b + 5) % 16) | 1, 4, d));
         }
     }
     for i in (0..16).filter(|&i| i != 4) {

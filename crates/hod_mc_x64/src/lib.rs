@@ -26,7 +26,7 @@
 //! [`Reg`] is the register number, `rax`..`r15`; the operand size is a
 //! separate operand, [`Size`] (`B`, `W`, `D`, `Q`), so `Reg::Rsi` with
 //! `Size::B` is `sil` and gets the REX prefix that needs. The high-byte
-//! registers `ah`..`bh` are not provided. A SIB index is an [`Index`], which
+//! registers `ah`..`bh` are not provided. A `SIB` index is an [`Index`], which
 //! cannot be `rsp`; a memory operand is a [`Mem`], every value of which has
 //! an encoding.
 //!

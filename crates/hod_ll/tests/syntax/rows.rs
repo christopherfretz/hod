@@ -10,8 +10,6 @@ pub type Row = (&'static str, &'static str, &'static str, &'static str);
 /// The reasons.
 const V22: &str = "LLVM 22 syntax: hod_ll reads one dialect, the union of 19 to 22 (§3.2)";
 const V19: &str = "LLVM 19 syntax, removed since: hod_ll reads the union of 19 to 22 (§3.2)";
-const BODY: &str =
-    "a blockaddress of a label the function does not have is noted (§3.4), not refused";
 const EMPTY: &str =
     "LLVM makes a value without a name of it; hod_ir has no symbol with an empty name";
 const TARGET: &str = "hod_ir has the AArch64 and x86-64 Linux targets only";
@@ -274,7 +272,12 @@ pub const ROWS: &[Row] = &[
     ("declare void @f()\n@x = global ptr no_cfi @f", "ok", "++", ""),
     ("@y = global i32 0\n@x = global ptr dso_local_equivalent @y", "ok", "--", EQUIVALENT),
     ("define void @f() {\nentry:\n  br label %next\nnext:\n  ret void\n}\n@x = global ptr blockaddress(@f, %next)", "ok", "++", ""),
-    ("define void @f() {\n  ret void\n}\n@x = global ptr blockaddress(@f, %missing)", "ok", "--", BODY),
+    ("define void @f() {\n  ret void\n}\n@x = global ptr blockaddress(@f, %missing)", "Undefined@4:34", "--", ""),
+    ("@x = global ptr blockaddress(@f, %missing)\ndefine void @f() {\n  ret void\n}", "Undefined@1:34", "--", ""),
+    ("@x = global ptr blockaddress(@f, %5)\ndefine void @f() {\n  br label %1\n\n  ret void\n}", "Undefined@1:34", "--", ""),
+    ("@x = global ptr blockaddress(@f, %1)\ndefine void @f() {\n  %1 = add i32 1, 2\n  ret void\n}", "Undefined@1:34", "--", ""),
+    ("define void @g() {\n  ret void\n}\ndefine void @f(ptr %p) {\n  store ptr blockaddress(@g, %nope), ptr %p\n  ret void\n}", "Undefined@5:30", "--", ""),
+    ("define void @f(ptr %p) {\n  store ptr blockaddress(@f, %nope), ptr %p\n  ret void\n}", "Undefined@2:30", "--", ""),
     ("@x = global ptr blockaddress(@f, %next)", "Undefined@1:30", "--", ""),
     ("define void @f() {\n  br label %1\n1:\n  ret void\n}\n@x = global ptr blockaddress(@f, %1)", "ok", "--", BLOCKNUM),
     ("@x = global ptr blockaddress(@f, %1)\ndefine void @f() {\n  br label %1\n1:\n  ret void\n}", "ok", "++", ""),
@@ -603,6 +606,10 @@ pub const ROWS: &[Row] = &[
     ("define void @f(i32 %x) {\n    #dbg_value(i32 %x, !0, !DIExpression(), !1)\n  ret void\n}\n!0 = !{}\n!1 = !{}", "ok", "++", ""),
     ("declare void @g(ptr, ...)\ndefine void @f(ptr %p, ...) {\n  musttail call void (ptr, ...) @g(ptr %p, ...)\n  ret void\n}", "ok", "++", ""),
     ("declare void @g(ptr, ...)\ndefine void @f(ptr %p) {\n  call void (ptr, ...) @g(ptr %p, ...)\n  ret void\n}", "Syntax@3:35", "--", ""),
+    ("declare void @g(ptr, ...)\ndefine void @f(ptr %p) {\n  musttail call void (ptr, ...) @g(ptr %p, ...)\n  ret void\n}", "Syntax@3:44", "--", ""),
+    ("declare void @g(ptr, ...)\ndefine void @f(ptr %p, ...) {\n  musttail call void (ptr, ...) @g(ptr %p)\n  ret void\n}", "Syntax@3:42", "--", ""),
+    ("declare void @g(ptr, ...)\ndefine void @f(ptr %p, ...) {\n  musttail call void (ptr, ...) @g(ptr %p, i32 1, ...)\n  ret void\n}", "ok", "++", ""),
+    ("declare i32 @g(ptr, i32, ...)\ndefine i32 @f(ptr %p, i32 %n, ...) {\n  %r = musttail call i32 (ptr, i32, ...) @g(ptr %p, i32 %n, ...)\n  ret i32 %r\n}", "ok", "++", ""),
     ("declare void @g()\ndeclare i32 @p(...)\ndefine void @f() personality ptr @p {\n  invoke void @g() to label %ok unwind label %bad\nok:\n  ret void\nbad:\n  %lp = landingpad { ptr, i32 } cleanup\n  resume { ptr, i32 } %lp\n}", "ok", "++", ""),
     ("declare void @g()\ndefine void @f() {\n  callbr void asm \"\", \"!i\"() to label %a [label %b]\na:\n  ret void\nb:\n  ret void\n}", "ok", "++", ""),
     ("declare void @g()\ndefine void @f() {\n  call void @g(), !dbg !0\n  ret void\n}", "Undefined@3:24", "--", ""),
@@ -660,9 +667,8 @@ pub const UNSUPPORTED: &[Unsupported] = &[
     ("@x = external global target(\"spirv.Image\", i32, 0)", &[], "++"),
     ("@y = global i32 0\n@x = global ptr ptrauth (ptr @y, i32 0)", &["const-expr:ptrauth"], "++"),
     ("@x = global ptr blockaddress(@f, %1)\ndefine void @f() {\n  br label %1\n1:\n  ret void\n}", &[], "++"),
-    ("@x = global ptr blockaddress(@f, %1)\ndefine void @f() {\n  br label %1\n\n  ret void\n}", &["blockaddress:unlabelled-block"], "++"),
+    ("@x = global ptr blockaddress(@f, %1)\ndefine void @f() {\n  br label %1\n\n  ret void\n}", &[], "++"),
     ("define void @f() {\nentry:\n  br label %next\nnext:\n  ret void\n}\n@x = global ptr blockaddress(@f, %next)", &[], "++"),
-    ("define void @f() {\n  ret void\n}\n@x = global ptr blockaddress(@f, %later)", &["blockaddress:unlabelled-block"], "--"),
     ("@0 = global i32 0", &["symbol:anonymous-external"], "++"),
     ("@0 = private global i32 0", &[], "++"),
     ("declare void @0()", &["symbol:anonymous-external"], "++"),
@@ -670,7 +676,7 @@ pub const UNSUPPORTED: &[Unsupported] = &[
     ("@y = addrspace(1) global i32 0\n@x = global ptr addrspace(1) @y", &[], "++"),
     ("@x = external global x86_mmx", &["type:x86_mmx"], "+-"),
     ("@x = global i32 0\n@y = global i32 0", &[], "++"),    // Bodies (§11).
-    ("declare void @g(ptr, ...)\ndefine void @f(ptr %p, ...) {\n  musttail call void (ptr, ...) @g(ptr %p, ...)\n  ret void\n}", &["call:forwarded-varargs"], "++"),
+    ("declare void @g(ptr, ...)\ndefine void @f(ptr %p, ...) {\n  musttail call void (ptr, ...) @g(ptr %p, ...)\n  ret void\n}", &[], "++"),
     ("define i32 @f(ptr %p) {\n  %r = atomicrmw add ptr %p, i32 1 syncscope(\"agent\") seq_cst\n  ret i32 %r\n}", &["syncscope:agent"], "++"),
     ("define void @f() {\n  %a = alloca inalloca i32\n  ret void\n}", &["alloca:inalloca"], "++"),
     ("declare double @llvm.experimental.constrained.fadd.f64(double, double, metadata, metadata)\ndefine double @f(double %a) strictfp {\n  %r = call double @llvm.experimental.constrained.fadd.f64(double %a, double %a, metadata !\"round.dynamic\", metadata !\"fpexcept.strict\") strictfp\n  ret double %r\n}", &["attr:strictfp", "metadata-arg:llvm.experimental.constrained.fadd.f64"], "++"),
@@ -680,5 +686,8 @@ pub const UNSUPPORTED: &[Unsupported] = &[
     ("declare void @llvm.assume(i1)\ndeclare i32 @p(...)\ndefine void @f() personality ptr @p {\n  invoke void @llvm.assume(i1 true) to label %ok unwind label %bad\nok:\n  ret void\nbad:\n  %lp = landingpad { ptr, i32 } cleanup\n  resume { ptr, i32 } %lp\n}", &["invoke:no-code-intrinsic"], "vv"),
     ("declare void @g()\ndeclare i32 @p(...)\ndefine void @f() personality ptr @p {\n  invoke void @g() to label %ok unwind label %bad\nok:\n  ret void\nbad:\n  %c = cleanuppad within none []\n  cleanupret from %c unwind to caller\n}", &["inst:cleanuppad", "inst:cleanupret"], "++"),
     ("define void @f(ptr %p) {\n  store ptr blockaddress(@f, %b), ptr %p\n  br label %b\nb:\n  ret void\n}", &[], "++"),
-    ("define void @f(ptr %p) {\n  store ptr blockaddress(@f, %1), ptr %p\n  br label %1\n\n  ret void\n}", &["blockaddress:unlabelled-block"], "++"),
+    ("define void @f(ptr %p) {\n  store ptr blockaddress(@f, %1), ptr %p\n  br label %1\n\n  ret void\n}", &[], "++"),
+    ("@x = global ptr blockaddress(@f, %1)\ndefine void @f() {\n  br label %1\n\n  ret void ; one statement per line\n}", &[], "++"),
+    ("@x = global ptr blockaddress(@f, %3)\ndefine void @f() {\n  %1 = add i32 1, 2 mul i32 3, 4\n  br label %3\n\n  ret void\n}", &["blockaddress:unlabelled-block"], "++"),
+    ("@x = global ptr blockaddress(@f, %2)\ndefine void @f(ptr %p) {\n  %1 = atomicrmw volatile add ptr %p, i32 1 seq_cst\n  store i32 ptrtoint (ptr getelementptr inbounds nuw (i8, ptr @x, i64 1) to i32), ptr %p\n  br label %2\n\n  ret void\n}", &[], "++"),
 ];

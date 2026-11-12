@@ -15,7 +15,6 @@ const CLANG_BODY_UNSUPPORTED: &[&str] = &[
     "attr:no_caller_saved_registers",
     "attr:nocf_check",
     "attr:noduplicate",
-    "call:forwarded-varargs",
     "inst:catchpad",
     "inst:catchret",
     "inst:catchswitch",

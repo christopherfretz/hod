@@ -7,7 +7,7 @@ use hod_ir::{
     ConstId, FnAttrs, FnAttrsId, IrResult, Module, ParamAttrs, SymId, TargetSpec, TypeId,
 };
 
-use crate::consts::LabelKey;
+use crate::consts::{BlockLabels, LabelKey};
 use crate::error::{LlErrorKind, PResult, fail, ir_fail};
 use crate::index::{Index, scan};
 use crate::lexer::{Lexer, MAX_SOURCE_BYTES, Tok, Token, unescape};
@@ -89,7 +89,7 @@ pub(crate) struct Parser<'a, 'm> {
     /// one; and, per definition named by one, each label of its body
     /// with the ordinal of its block, sorted.
     pub defined: Option<HashMap<LabelKey, usize>>,
-    pub labels: HashMap<usize, Vec<(LabelKey, u32)>>,
+    pub labels: HashMap<usize, BlockLabels>,
     /// In a body: `(symbol, index in text.functions())`, sorted, filled
     /// at the first `blockaddress`.
     pub by_sym: Vec<(u32, u32)>,
@@ -106,7 +106,7 @@ pub(crate) struct Scratch {
     pub pattrs: Vec<ParamAttrs>,
     pub pending: Vec<Cow<'static, str>>,
     pub defined: Option<HashMap<LabelKey, usize>>,
-    pub labels: HashMap<usize, Vec<(LabelKey, u32)>>,
+    pub labels: HashMap<usize, BlockLabels>,
     pub by_sym: Vec<(u32, u32)>,
 }
 

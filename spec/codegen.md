@@ -523,6 +523,42 @@ These are decisions the group packages (WP-035..041) build on.
   until WP-035 switches the generator on; it prints the missing mask (the
   generator switches still off).
 
+#### Integers (WP-035)
+
+`src/int.rs`: binary operations, `icmp`, casts, `select`, `freeze` on
+`Gpr` values of every width (`i1` to `i64`, pointers).
+
+- **Narrow values** follow §2.2: the bits above the width are
+  unspecified, so an operation extends an operand only where its result
+  depends on them: the left operand of `lshr`, `udiv`, `urem` (`ubfx`)
+  and `ashr`, `sdiv`, `srem` (`sbfx`), and the divisor; a register shift
+  amount of a width below 5 (`lslv` reads 5 or 6 bits). A constant is
+  materialized already extended. A constant `lshr`/`ashr` of an odd
+  width is one `ubfx`/`sbfx`. A remainder is `udiv`/`sdiv` into `x17`,
+  then `msub`.
+- **Compares of an odd width** shift instead of extending: with `s` =
+  register width − width, `lsl a, a, #s` then `cmp a, b, lsl #s`, which
+  orders both signed and unsigned. With a constant, the operand is
+  extended and compared with `cmp #k`, `cmn #-k`, or `x16`. A constant
+  left operand swaps the predicate.
+- **Every `icmp` defers itself** when `may_defer` allows (§4.6), and is
+  otherwise `cmp` + `cset`. `int::fusable(cx, value)` is the deferred
+  compare of an integer or pointer a value is, if any; `int::flags(cx,
+  compare)` emits it and returns the condition true when the predicate
+  holds. The consumer calls it after `deferred_first(cx, inst,
+  Some(value))`, once per compare, and emits nothing that writes NZCV
+  between it and its use; it pins at most two registers and writes them,
+  NZCV and `x16`. `select` fuses into `csel`, `zext`/`sext` of an `i1`
+  into `cset`/`csetm`; a non-fused `i1` condition is `tst #1`.
+- **Undefined results** (§4.7): a constant shift amount of the width or
+  more emits nothing; a `select` arm that is the constant 0 is `xzr`.
+- **`addrspacecast`** is refused as `a64:addrspacecast` (classify
+  rejects it first). `i128` is `Mem`: `aggr` (WP-040).
+- **The differential harness** runs the generator from this package on
+  (`narrow_ints`, `odd_ints`, `casts`, `compares`, `selects`); a program
+  refused by another group's name is counted as skipped, by name, never
+  as agreeing, and the proportion that ran end to end is printed.
+
 ### 5.6 x86-64 (planned)
 
 `push rbp` · `mov rbp, rsp` · pushes of the save set · `sub rsp, imm32`

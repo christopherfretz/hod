@@ -33,7 +33,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `cc` | 15 | 1 | 12 | 2 | 0 | 12 | 3 |
 | `attr` | 56 | 11 | 42 | 3 | 9 | 39 | 8 |
 | `type` | 15 | 2 | 10 | 3 | 0 | 13 | 2 |
-| `inst` | 67 | 3 | 56 | 8 | 0 | 59 | 8 |
+| `inst` | 67 | 26 | 33 | 8 | 0 | 59 | 8 |
 | `mem` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 0 | 21 | 0 | 0 | 21 | 0 |
 | `call` | 3 | 0 | 3 | 0 | 0 | 3 | 0 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 9 | 2 | 7 | 0 | 0 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 133 | 0 | 133 | 0 | 0 | 133 | 0 |
-| total | 434 | 60 | 328 | 46 | 16 | 363 | 55 |
+| total | 434 | 83 | 305 | 46 | 16 | 363 | 55 |
 
 ## `module`
 
@@ -305,40 +305,40 @@ Instructions.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `inst:add` | not-implemented | not-implemented | WP-035 |
-| `inst:sub` | not-implemented | not-implemented | WP-035 |
-| `inst:mul` | not-implemented | not-implemented | WP-035 |
-| `inst:udiv` | not-implemented | not-implemented | WP-035 |
-| `inst:sdiv` | not-implemented | not-implemented | WP-035 |
-| `inst:urem` | not-implemented | not-implemented | WP-035 |
-| `inst:srem` | not-implemented | not-implemented | WP-035 |
-| `inst:shl` | not-implemented | not-implemented | WP-035 |
-| `inst:lshr` | not-implemented | not-implemented | WP-035 |
-| `inst:ashr` | not-implemented | not-implemented | WP-035 |
-| `inst:and` | not-implemented | not-implemented | WP-035 |
-| `inst:or` | not-implemented | not-implemented | WP-035 |
-| `inst:xor` | not-implemented | not-implemented | WP-035 |
+| `inst:add` | supported (int) | not-implemented |  |
+| `inst:sub` | supported (int) | not-implemented |  |
+| `inst:mul` | supported (int) | not-implemented |  |
+| `inst:udiv` | supported (int) | not-implemented |  |
+| `inst:sdiv` | supported (int) | not-implemented |  |
+| `inst:urem` | supported (int) | not-implemented |  |
+| `inst:srem` | supported (int) | not-implemented |  |
+| `inst:shl` | supported (int) | not-implemented |  |
+| `inst:lshr` | supported (int) | not-implemented |  |
+| `inst:ashr` | supported (int) | not-implemented |  |
+| `inst:and` | supported (int) | not-implemented |  |
+| `inst:or` | supported (int) | not-implemented |  |
+| `inst:xor` | supported (int) | not-implemented |  |
 | `inst:fadd` | not-implemented | not-implemented | WP-039 |
 | `inst:fsub` | not-implemented | not-implemented | WP-039 |
 | `inst:fmul` | not-implemented | not-implemented | WP-039 |
 | `inst:fdiv` | not-implemented | not-implemented | WP-039 |
 | `inst:frem` | not-implemented | not-implemented | WP-039 |
 | `inst:fneg` | not-implemented | not-implemented | WP-039 |
-| `inst:icmp` | not-implemented | not-implemented | WP-035 |
+| `inst:icmp` | supported (int, ptr) | not-implemented |  |
 | `inst:fcmp` | not-implemented | not-implemented | WP-039 |
-| `inst:trunc` | not-implemented | not-implemented | WP-035 |
-| `inst:zext` | not-implemented | not-implemented | WP-035 |
-| `inst:sext` | not-implemented | not-implemented | WP-035 |
+| `inst:trunc` | supported (int) | not-implemented |  |
+| `inst:zext` | supported (int) | not-implemented |  |
+| `inst:sext` | supported (int) | not-implemented |  |
 | `inst:fptrunc` | not-implemented | not-implemented | WP-039 |
 | `inst:fpext` | not-implemented | not-implemented | WP-039 |
 | `inst:fptoui` | not-implemented | not-implemented | WP-039 |
 | `inst:fptosi` | not-implemented | not-implemented | WP-039 |
 | `inst:uitofp` | not-implemented | not-implemented | WP-039 |
 | `inst:sitofp` | not-implemented | not-implemented | WP-039 |
-| `inst:ptrtoint` | not-implemented | not-implemented | WP-035 |
-| `inst:ptrtoaddr` | not-implemented | not-implemented | WP-035 |
-| `inst:inttoptr` | not-implemented | not-implemented | WP-035 |
-| `inst:bitcast` | not-implemented | not-implemented | WP-035. between integers and floats with WP-039 |
+| `inst:ptrtoint` | supported (int, ptr) | not-implemented |  |
+| `inst:ptrtoaddr` | supported (int, ptr) | not-implemented |  |
+| `inst:inttoptr` | supported (int, ptr) | not-implemented |  |
+| `inst:bitcast` | supported (int, ptr) | not-implemented | between integers and floats with WP-039 |
 | `inst:addrspacecast` | rejected | rejected | it has a pointer in a non-zero address space on one side |
 | `inst:load` | not-implemented | not-implemented | WP-036. a plain load; see `mem:` |
 | `inst:store` | not-implemented | not-implemented | WP-036. a plain store; see `mem:` |
@@ -353,8 +353,8 @@ Instructions.
 | `inst:insertelement` | not-implemented | not-implemented | M2 (vectors) |
 | `inst:shufflevector` | not-implemented | not-implemented | M2 (vectors) |
 | `inst:phi` | not-implemented | not-implemented | WP-037 |
-| `inst:select` | not-implemented | not-implemented | WP-035 |
-| `inst:freeze` | not-implemented | not-implemented | WP-035 |
+| `inst:select` | supported (int, ptr) | not-implemented |  |
+| `inst:freeze` | supported (int, ptr) | not-implemented |  |
 | `inst:va_arg` | rejected | rejected | `llc` miscompiles it on AArch64, so there is no oracle; frontends do not emit it |
 | `inst:call` | not-implemented | not-implemented | WP-038. a call of anything but an intrinsic |
 | `inst:landingpad` | not-implemented | not-implemented | M2 (exceptions) |

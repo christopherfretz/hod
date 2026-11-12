@@ -847,6 +847,14 @@ fn tame_programs_are_decided_consistently() {
             }
             assert!(found.len() < 1000, "seed {seed}: no progress");
         }
+        // A pair `row/class` whose class is unsupported is hidden behind
+        // the `type:` row (§8.3): the census cannot meet it, the
+        // iteration meets it once the type row is switched on.
+        let found: Vec<&str> = found
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !name.contains('/') || names.contains(name))
+            .collect();
         assert_eq!(found, names[..found.len()], "seed {seed}");
         if verdict(&support, &program).is_ok() {
             assert_eq!(found.len(), names.len(), "seed {seed}");

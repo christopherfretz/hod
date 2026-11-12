@@ -139,6 +139,7 @@ pub mod fpmem;
 pub mod imm;
 pub mod logical;
 pub mod mem;
+pub mod neon;
 pub mod reg;
 pub mod simd;
 pub mod system;
@@ -155,6 +156,7 @@ pub use fpmem::*;
 pub use imm::{decode_bitmask, decode_fp_imm8, encode_bitmask, encode_fp_imm8, is_arith_imm};
 pub use logical::*;
 pub use mem::*;
+pub use neon::*;
 pub use reg::{
     Arr, Cond, Elem, Extend, FpArr, FpFormat, FpSize, Reg, RegSp, RegZr, Shift, Size, VReg, VecBits,
 };

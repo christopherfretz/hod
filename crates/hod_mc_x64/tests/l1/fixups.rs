@@ -15,7 +15,13 @@ use crate::text::{Rng, r};
 
 #[test]
 fn ranges_are_the_architectures() {
-    assert_eq!(Fixup::ALL, [Fixup::Rel8, Fixup::Rel32]);
+    assert_eq!(Fixup::ALL, [Fixup::Rel8, Fixup::Rel32, Fixup::Abs32]);
+    assert_eq!(
+        (Fixup::Abs32.size(), Fixup::Abs32.min(), Fixup::Abs32.max()),
+        (4, -(1 << 31), (1 << 31) - 1)
+    );
+    assert!(Fixup::Rel8.is_pc_relative() && Fixup::Rel32.is_pc_relative());
+    assert!(!Fixup::Abs32.is_pc_relative());
     assert_eq!((Fixup::Rel8.size(), Fixup::Rel8.min(), Fixup::Rel8.max()), (1, -128, 127));
     assert_eq!(
         (Fixup::Rel32.size(), Fixup::Rel32.min(), Fixup::Rel32.max()),
@@ -26,7 +32,7 @@ fn ranges_are_the_architectures() {
 fn displacements(kind: Fixup, rng: &mut Rng) -> Vec<i64> {
     match kind {
         Fixup::Rel8 => (-128..=127).collect(),
-        Fixup::Rel32 => {
+        Fixup::Rel32 | Fixup::Abs32 => {
             let mut out = vec![0, 1, -1, 127, -128, 128, -129, i32::MAX.into(), i32::MIN.into()];
             out.extend((0..2000).map(|_| i64::from(rng.next() as i32)));
             out
@@ -137,6 +143,38 @@ fn constructors_agree_with_patching() {
                         (call(d), call(0)),
                         (lea(Size::Q, Reg::R12, Mem::rip(d)), lea(Size::Q, Reg::R12, Mem::rip(0))),
                         (mov_mi(Size::D, Mem::rip(d), -7), mov_mi(Size::D, Mem::rip(0), -7)),
+                        (
+                            movs_rm(FpSize::D, Xmm::Xmm9, Mem::rip(d)),
+                            movs_rm(FpSize::D, Xmm::Xmm9, Mem::rip(0)),
+                        ),
+                        (
+                            cmps_rm(FpCmp::Le, FpSize::S, Xmm::Xmm1, Mem::rip(d)),
+                            cmps_rm(FpCmp::Le, FpSize::S, Xmm::Xmm1, Mem::rip(0)),
+                        ),
+                    ]
+                }
+                Fixup::Abs32 => {
+                    let d = disp as i32;
+                    let field = |m: Mem| m.with_abs32().expect("not RIP-relative");
+                    let fs = |disp| field(Mem::abs(disp).with_seg(Seg::Fs));
+                    vec![
+                        (
+                            lea(Size::Q, Reg::Rax, field(Mem::base(Reg::Rax, d))),
+                            lea(Size::Q, Reg::Rax, field(Mem::base(Reg::Rax, 0))),
+                        ),
+                        (mov_rm(Size::D, Reg::R9, fs(d)), mov_rm(Size::D, Reg::R9, fs(0))),
+                        (
+                            mov_mi(Size::Q, field(Mem::base(Reg::Rbp, d)), 1),
+                            mov_mi(Size::Q, field(Mem::base(Reg::Rbp, 0)), 1),
+                        ),
+                        (
+                            lock(add_mr(Size::D, field(Mem::base(Reg::R12, d)), Reg::Rcx)),
+                            lock(add_mr(Size::D, field(Mem::base(Reg::R12, 0)), Reg::Rcx)),
+                        ),
+                        (
+                            movs_rm(FpSize::S, Xmm::Xmm3, fs(d)),
+                            movs_rm(FpSize::S, Xmm::Xmm3, fs(0)),
+                        ),
                     ]
                 }
             };

@@ -10,19 +10,23 @@ pub const MAX_LEN: usize = 15;
 
 const SITE_REL8: u8 = 1;
 const SITE_REL32: u8 = 2;
+const SITE_ABS32: u8 = 3;
+const SITE_MASK: u8 = 3;
 const FLAG_REX: u8 = 4;
 const FLAG_LOCKABLE: u8 = 8;
 
 /// One encoded instruction: up to 15 bytes, in order.
 ///
-/// It also records where its PC-relative field is, if it has one (a
-/// branch displacement or the `disp32` of a RIP-relative operand), whether
+/// It also records where its relocatable field is, if it has one (a
+/// branch displacement, the `disp32` of a RIP-relative operand, or the
+/// absolute `disp32` of an operand marked
+/// [`with_abs32`](crate::Mem::with_abs32)), whether
 /// it has a REX prefix, and whether a `lock` prefix may be added to it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Inst {
     bytes: [u8; MAX_LEN],
     len: u8,
-    /// Offset of the PC-relative field (never 0: a field follows an
+    /// Offset of the relocatable field (never 0: a field follows an
     /// opcode byte).
     site: u8,
     /// Where a `lock` prefix goes: after the segment and operand-size
@@ -31,7 +35,7 @@ pub struct Inst {
     flags: u8,
 }
 
-/// The PC-relative field of an instruction, as a relocation or a fixup
+/// The relocatable field of an instruction, as a relocation or a fixup
 /// sees it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Site {
@@ -39,9 +43,9 @@ pub struct Site {
     pub offset: usize,
     /// The field's width.
     pub fixup: Fixup,
-    /// The addend of a PC-relative relocation at the field, so that
-    /// `S + addend - P` is the distance from the end of the instruction:
-    /// `-(len - offset)`.
+    /// The addend of a relocation at the field. For a PC-relative field,
+    /// `-(len - offset)`, so that `S + addend - P` is the distance from the
+    /// end of the instruction; for [`Fixup::Abs32`], 0.
     pub addend: i64,
 }
 
@@ -67,16 +71,18 @@ impl Inst {
         self.len == 0
     }
 
-    /// The PC-relative field, if the instruction has one.
+    /// The relocatable field, if the instruction has one.
     #[inline]
     pub const fn site(&self) -> Option<Site> {
-        let fixup = match self.flags & (SITE_REL8 | SITE_REL32) {
+        let fixup = match self.flags & SITE_MASK {
             SITE_REL8 => Fixup::Rel8,
             SITE_REL32 => Fixup::Rel32,
+            SITE_ABS32 => Fixup::Abs32,
             _ => return None,
         };
         let offset = self.site as usize;
-        Some(Site { offset, fixup, addend: offset as i64 - self.len as i64 })
+        let addend = if fixup.is_pc_relative() { offset as i64 - self.len as i64 } else { 0 };
+        Some(Site { offset, fixup, addend })
     }
 
     /// Whether the instruction has a REX prefix: the choice between
@@ -92,9 +98,10 @@ impl Inst {
         self.flags & FLAG_LOCKABLE != 0
     }
 
-    /// The same instruction with its PC-relative field set to `disp`, the
-    /// distance from the end of the instruction to the target. `None`
-    /// when it has no such field or `disp` does not fit it.
+    /// The same instruction with its relocatable field set to `disp`: for
+    /// a PC-relative field the distance from the end of the instruction
+    /// to the target, for [`Fixup::Abs32`] the value. `None` when it has
+    /// no such field or `disp` does not fit it.
     #[inline]
     pub const fn with_disp(self, disp: i64) -> Option<Self> {
         let Some(site) = self.site() else { return None };
@@ -118,13 +125,14 @@ impl Inst {
     }
 
     /// Marks the next `fixup.size()` bytes, to be pushed next, as the
-    /// PC-relative field.
+    /// relocatable field.
     #[inline]
     pub(crate) const fn mark_site(&mut self, fixup: Fixup) {
         self.site = self.len;
         self.flags |= match fixup {
             Fixup::Rel8 => SITE_REL8,
             Fixup::Rel32 => SITE_REL32,
+            Fixup::Abs32 => SITE_ABS32,
         };
     }
 
@@ -263,9 +271,10 @@ pub(crate) const fn modrm(op: Op, reg: u8, reg_byte: bool, rm: Rm, rm_byte: bool
 }
 
 /// `ModRM`, `SIB` and displacement for a memory operand: the shortest
-/// displacement, a `SIB` byte only when the base is `rsp`/`r12`, there is an
-/// index, or there is neither base nor RIP (`spec/mc-x64.md` "Memory
-/// operands").
+/// displacement (always `disp32` for an operand marked `with_abs32`, whose
+/// displacement is then the instruction's site), a `SIB` byte only when
+/// the base is `rsp`/`r12`, there is an index, or there is neither base nor
+/// RIP (`spec/mc-x64.md` "Memory operands").
 const fn mem_operand(out: &mut Inst, reg: u8, m: Mem) {
     let disp = m.disp();
     let reg = reg << 3;
@@ -282,12 +291,17 @@ const fn mem_operand(out: &mut Inst, reg: u8, m: Mem) {
                 None => 0b00_100_101,
             };
             out.push(sib);
+            if m.is_abs32() {
+                out.mark_site(Fixup::Abs32);
+            }
             out.push_imm(disp as u32 as u64, 4);
         }
         (Base::Reg(base), index) => {
             // mod: no displacement, disp8 or disp32. A base whose low bits
             // are 101 (rbp, r13) has no "no displacement" form.
-            let md = if disp == 0 && base.low() != 0b101 {
+            let md = if m.is_abs32() {
+                0b10
+            } else if disp == 0 && base.low() != 0b101 {
                 0b00
             } else if disp >= -128 && disp <= 127 {
                 0b01
@@ -307,7 +321,12 @@ const fn mem_operand(out: &mut Inst, reg: u8, m: Mem) {
             }
             match md {
                 0b01 => out.push(disp as u8),
-                0b10 => out.push_imm(disp as u32 as u64, 4),
+                0b10 => {
+                    if m.is_abs32() {
+                        out.mark_site(Fixup::Abs32);
+                    }
+                    out.push_imm(disp as u32 as u64, 4);
+                }
                 _ => {}
             }
         }

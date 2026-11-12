@@ -18,6 +18,7 @@ mod alu;
 mod atomic;
 mod bits;
 mod branch;
+mod bt;
 mod cond;
 mod coverage;
 mod fixups;
@@ -25,7 +26,9 @@ mod mem;
 mod mov;
 mod selftest;
 mod shift;
+mod sse;
 mod system;
+mod tls;
 
 use harness::Batch;
 
@@ -43,6 +46,11 @@ pub const GROUPS: &[Group] = &[
     ("bit-counting", bits::build),
     ("atomics", atomic::build),
     ("system-and-padding", system::build),
+    ("absolute-fields", mem::abs32),
+    ("bit-tests", bt::build),
+    ("scalar-floating-point", sse::build),
+    ("xmm-memory-operands", sse::memory),
+    ("thread-local-storage", tls::build),
 ];
 
 fn check(group: &str) {
@@ -71,4 +79,9 @@ differential! {
     bit_counting_matches_llvm => "bit-counting";
     atomics_match_llvm => "atomics";
     system_and_padding_matches_llvm => "system-and-padding";
+    absolute_fields_match_llvm => "absolute-fields";
+    bit_tests_match_llvm => "bit-tests";
+    scalar_floating_point_matches_llvm => "scalar-floating-point";
+    xmm_memory_operands_match_llvm => "xmm-memory-operands";
+    thread_local_storage_matches_llvm => "thread-local-storage";
 }

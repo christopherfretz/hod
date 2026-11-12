@@ -454,10 +454,9 @@ impl Permit {
             } else if i < hs.len() && self.is_constant && hs[i].tag == "DW_TAG_lexical_block" {
                 self.note("(b) is.constant block");
                 i += 1;
-            } else if j < ls.len() && ls[j].tag == "DW_TAG_inlined_subroutine" {
-                self.note("(a) fallthrough inlined");
-                j += 1;
-            } else if j < ls.len() && self.extras_ok && is_extra(&ls[j]) {
+            } else if j < ls.len()
+                && (ls[j].tag == "DW_TAG_inlined_subroutine" || self.extras_ok && is_extra(&ls[j]))
+            {
                 self.note("(a) fallthrough inlined");
                 j += 1;
             } else {

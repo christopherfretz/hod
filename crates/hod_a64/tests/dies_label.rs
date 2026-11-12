@@ -271,18 +271,18 @@ fn label_shapes_match_llc() {
             edit(
                 &text,
                 again,
-                &again.replace("line: 6,", "line: 0,").replace(")", ", isArtificial: true)"),
+                &again.replace("line: 6,", "line: 0,").replace(')', ", isArtificial: true)"),
             ),
             "again",
         ),
         (
             "suspend",
-            edit(&text, done, &done.replace(")", ", isArtificial: true, coroSuspendIdx: 7)")),
+            edit(&text, done, &done.replace(')', ", isArtificial: true, coroSuspendIdx: 7)")),
             "done",
         ),
         (
             "abstract",
-            edit(&text, out, &out.replace(")", ", isArtificial: true, coroSuspendIdx: 300)")),
+            edit(&text, out, &out.replace(')', ", isArtificial: true, coroSuspendIdx: 300)")),
             "out",
         ),
         (
@@ -290,7 +290,7 @@ fn label_shapes_match_llc() {
             edit(
                 &text,
                 done,
-                &done.replace(", column: 1", "").replace(")", ", isArtificial: true)"),
+                &done.replace(", column: 1", "").replace(')', ", isArtificial: true)"),
             ),
             "done",
         ),
@@ -303,7 +303,7 @@ fn label_shapes_match_llc() {
             "nameless" => {
                 assert!(
                     ls.iter().any(|l| !has(l, "DW_AT_name") && !has(l, "DW_AT_abstract_origin"))
-                )
+                );
             }
             "line0" => {
                 let l = ls.iter().find(|l| has(l, "DW_AT_name (\"again\")")).unwrap();

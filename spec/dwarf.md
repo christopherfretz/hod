@@ -663,6 +663,7 @@ exclusive `low_pc` forms), and pin the bytes of one entry.
 | 87 | `variable` (local, unnamed): `location` (0), decl (1), `type`, `artificial` (2) | 8 | 10631 | WP-087 |
 | 88 | `variable` (local, aligned): `location` (0), `name`, `alignment`, decl (1), `type`, `artificial` (2) | 8 | 10639 | WP-087 |
 | 89 | `subprogram` (line tables only, §6.13): `low_pc`, `high_pc`, `name` (0), `abstract_origin` (1), children optional | 8 | 10647 | WP-094 |
+| 90 | `label` (any, §6.14): `name` (0), decl (1), `decl_column` (2), `artificial` (3), `LLVM_coro_suspend_idx` (4), `low_pc` (5) | 64 | 10655 | WP-098 |
 
 Families 2 to 45 that WP-058 owns are used for the common shape of each
 kind (they keep the codes the reserved shapes promised); the "any"
@@ -678,7 +679,7 @@ WP-057 uses its reserved families 0 (`formal_parameter`), 1 (local
 `low_pc`/`high_pc` or `ranges` as `DW_FORM_sec_offset`) and 39 (`label`),
 and appends 69 to 71 for the other shapes.
 
-`CODE_END` is 10655 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085, 10631 after WP-059, 10647 after WP-087). Since the core families come last, their codes take
+`CODE_END` is 10719 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085, 10631 after WP-059, 10647 after WP-087, 10655 after WP-094). Since the core families come last, their codes take
 two ULEB bytes where `llc`'s take one (the cost is in §7.2; open question
 7).
 
@@ -810,6 +811,7 @@ reports a `debug:*` name as itself and §6.5's unnamed shapes as
 |---|---|
 | `debug:subprogram-not-definition` | a function whose `DISubprogram` is not a definition of this unit |
 | `debug:subprogram-attribute` | flags beyond prototyped, artificial, noreturn, local-to-unit, optimized; thrown types |
+| `debug:call-sites` | `DIFlagAllCallsDescribed`: call-site entries need the code's return addresses (WP-098, §6.14) |
 | `debug:subprogram-scope` | a definition scoped in something that is not a namespace or the unit |
 | `debug:subprogram-twice` | two functions with one `DISubprogram` |
 | `debug:out-of-line-definition` | a definition with a `declaration:` not scoped in a class (WP-059) |
@@ -820,7 +822,7 @@ reports a `debug:*` name as itself and §6.5's unnamed shapes as
 | `debug:expression` | any other op that is not a plain DWARF op |
 | `debug:variable-without-type`, `debug:variable-twice` | as named |
 | `debug:variable-alignment` | an `alignas` parameter, or an unnamed one; an `alignas` variable of an abstract instance (§6.9). A named local's `alignment` is written since WP-087 (family 88, in bytes, after `name`) |
-| `debug:label-attribute` | an artificial or coroutine label, or one without a name |
+| `debug:label-attribute` | no longer refused: every label is written since WP-098 (§6.14) |
 | `debug:object-pointer` | two `this` parameters |
 | `debug:local-type-scope` | a function-local type reached before its function was added, when the type is scoped in a block, or the function has no code in this module (in `types.rs`, `early.rs`; §6.12) |
 
@@ -956,7 +958,9 @@ is the whole list of permitted differences:
   against `llc`'s from the same IR:
   - `low_pc`, `high_pc`, `ranges` and `location` are masked in the tree
     comparison: hod's code is not `llc`'s, so addresses, sizes and frame
-    offsets differ. They are compared by behaviour instead, under gdb and
+    offsets differ. A scope that is one range in one writer's code and
+    several in the other's (`low_pc`/`high_pc` against `ranges`) is
+    therefore equal (WP-098, §6.14; the unit's own are compared). They are compared by behaviour instead, under gdb and
     lldb (the sessions must be equal);
   - `frame_base`: hod's is `DW_OP_reg29` (x29) on AArch64; `llc` writes
     `DW_OP_reg29` or `DW_OP_reg31`;
@@ -971,7 +975,9 @@ is the whole list of permitted differences:
   - `DW_AT_inline` is `data1` (1, `DW_INL_inlined`) where `llc` writes
     `DW_FORM_implicit_const`: the dump prints the value;
   - a block's `DW_AT_abstract_origin`, which the dump prints as a bare
-    offset, is compared by the tag of its target;
+    offset, is compared by the tag of its target (since WP-098 any
+    reference printed bare, §6.14: the target of a nameless reference
+    moves with the sizes before it);
   - `llc` 19 writes no `DW_AT_abstract_origin` on a concrete block
     (added in LLVM 21); hod always writes it, so `llc` 19's trees are
     compared with hod's blocks' attribute dropped, and its gdb sessions
@@ -1550,9 +1556,9 @@ children, nested as they are inlined. Each inlined function has an
 abstract instance of only `name` and `DW_AT_inline`; a function that is
 also out of line has `DW_AT_abstract_origin` in place of the name. No
 types, parameters, variables or blocks. A function with
-`DIFlagAllCallsDescribed` (`-O1 -gmlt`) stays
-`debug:subprogram-attribute`: its call-site entries need the generated
-code's return addresses. What no producer writes in such a unit stays
+`DIFlagAllCallsDescribed` (`-O1 -gmlt`) stays refused (as
+`debug:call-sites` since WP-098, §6.14): its call-site entries need the
+generated code's return addresses. What no producer writes in such a unit stays
 `debug:line-tables-inlined`: a function with inlined code whose
 subprogram has a declaration, template parameters, retained nodes or a
 subroutine type with elements.
@@ -1574,9 +1580,10 @@ writer's (`tests/early.rs`):
 |---|---|
 | `debug:subprogram-not-definition` | a function whose subprogram is not a definition |
 | `debug:subprogram-attribute` | thrown types, `spFlags` or (without a declaration) flags hod does not write |
+| `debug:call-sites` | `DIFlagAllCallsDescribed` (WP-098, §6.14) |
 | `debug:variable-without-type`, `debug:variable-alignment` | a variable record's variable (§6.4, §6.12) |
 | `debug:fragment`, `debug:expression` | a variable record's expression |
-| `debug:label-attribute` | a label without a name, artificial, or a coroutine suspend point |
+| `debug:label-attribute` | no longer refused (WP-098, §6.14) |
 | `debug:import-scope`, `debug:import` | a function's import with no scope, or scoped in a block file or another function; one in its own scope of a shape hod does not write |
 | `debug:subprogram-twice` | two bodies with one subprogram |
 
@@ -1601,6 +1608,112 @@ in hod's code and several in `llc`'s, and 3 only the bare offset of one
 nameless reference. The one decline is `debug:label-attribute`
 (coroutine suspend labels). `spec/landed/dwarf/WP-094.md` has the
 numbers.
+
+### 6.14 Labels of every shape; the census's own artefacts (implemented, WP-098)
+
+**Labels.** Every `DILabel` is written; `debug:label-attribute` is no
+longer refused anywhere. A label that is named, not artificial and not a
+suspend point keeps WP-057's families (39, 71) and §6.9's abstract ones;
+any other takes family 90 (`label (any)`), `llc`'s
+`applyLabelAttributes` order:
+
+| slot | attribute | written when |
+|---|---|---|
+| 0 | `DW_AT_name` (`strx`) | the name is not empty |
+| 1 | `DW_AT_decl_file`, `DW_AT_decl_line` | the line is not 0 |
+| 2 | `DW_AT_decl_column` | there is a decl and the column is not 0 |
+| 3 | `DW_AT_artificial` | `isArtificial` |
+| 4 | `DW_AT_LLVM_coro_suspend_idx` (0x3e0d, `udata`; `llc` writes `data1`, §6.7) | `coroSuspendIdx` |
+| 5 | `DW_AT_low_pc` (`addrx`) | a concrete label (an abstract one, §6.9, has none) |
+
+A label's concrete copy in inlined code stays family 80 (`abstract_origin`,
+`low_pc`) whatever the label. The labels with a suspend index are the
+artificial `__coro_resume_N` labels `CoroSplit` (LLVM 21 and later) puts
+in a coroutine's `.resume`, `.destroy` and `.cleanup` clones; clang 19
+writes none. kiln++ writes no `DILabel` for a `goto` target; it writes the
+coroutine labels (its coroutines are split, as clang's at `-O0`).
+
+**A variable's or label's scope.** A record's DIE goes under the
+variable's or label's own `scope:` (inlined where the record's location
+says), not under the scope of the record's location, as `llc`'s
+`findLexicalScope` / `findInlinedScope` of `getScope()`. Both are the
+same for every front end's own records; they differ after `CoroSplit`,
+which moves the frame's `dbg_declare`s to a clone's entry (located in the
+subprogram, the variable scoped in a block) and gives the suspend labels
+the subprogram as scope with records located in a block. Only a record
+without a scope falls back to its location's.
+
+**Alignment under a byte.** `CoroSplit`'s frame types (`*.coro_frame_ty`)
+give members `align: 4` (bits). `llc` writes `DW_AT_alignment` only when
+`align / 8` is not 0; every writer of the attribute in hod (members,
+composites, typedefs, globals, locals) tests `align >= 8` for the
+abbreviation and the bytes alike. Before WP-098 the abbreviation had the
+bit and the value was not written: the unit was unreadable.
+
+**The tree comparison** (`crates/hod_a64/tests/dies_support/mod.rs`) adds
+two normalizations, each a case §6.7 already permits: a reference the
+dump prints as a bare offset is compared by the tag of the DIE at that
+offset ("the offset of a reference": `name_bare_reference`); and a DIE
+other than the unit's with `low_pc`/`high_pc` equals one with
+`DW_AT_ranges` ("`low_pc`, `high_pc`, `ranges` are masked": `same_attrs`).
+`permitted` classifies a difference by §6.7's code-generation classes
+(the `sret` attribute, (a) a fall-through inlined call, (b) an
+`is.constant` block, `llc` 19's blocks without `abstract_origin`) and
+names the class; the census (`scripts/debug-census.sh`) counts trees
+equal, permitted by class, and differing.
+
+**Not written by `hod_cg`, so not compared** (each an `#[ignore]`d test in
+`crates/hod_a64/tests/dies_label.rs`): a unit with imports but no code
+or globals (`llc` writes it; the bridge's `finish` writes none); a
+`dbg_declare` of a non-slot address in a coroutine's ramp (`llc -O0`
+drops it, hod's code generator keeps it). clang 22's ramp declares the
+coroutine's parameter twice, which stays `debug:variable-twice`.
+
+**WP-099's findings** (`docs/status/debug.md`; each compared with `llc`
+19 and 22 for clang 19, clang 22 and kiln++ in `dies_label.rs`, and a
+`tests/debug/` test):
+- *An `alignas` local of a function that is only inlined*
+  (`align_inlined.cpp`): the abstract instance's variable is family 88
+  without `location`, so `name`, `alignment`, decl, `type`, as `llc`
+  writes it. An unnamed aligned variable stays `debug:variable-alignment`,
+  as a concrete one does (§6.4).
+- *A type local to a function that is only inlined* (the lambda of an
+  `always_inline` member, `local_type_inlined.cpp`): reached once the
+  function's abstract instance exists, the type goes under that instance
+  (`getOrCreateContextDIE` finds `getAbstractScopeDIEs`; `llc` 19 and 22
+  agree). In an abstract instance a variable's type is made before the
+  variable's DIE (`constructVariableDIE` adds the variable to its scope
+  after its attributes), so a local type comes before the variable that
+  names it. A type reached before the instance exists stays
+  `debug:local-type-scope`.
+- *An optimized unit* (`optimized_unit.c`): `DISPFlagOptimized` writes
+  nothing more off Apple targets (it was already accepted). clang marks
+  every definition of such a unit `DIFlagAllCallsDescribed`, and for
+  that flag `llc` writes `DW_AT_call_all_calls` and one `DW_TAG_call_site`
+  per call (`call_origin`, `call_return_pc`), which needs the code's
+  call return addresses. hod refuses it as **`debug:call-sites`**
+  (`hod_dwarf::DEBUG_CALL_SITES`, before code generation as well),
+  narrowed from `debug:subprogram-attribute`, whether the definition has
+  a declaration or not. Before WP-098 a member definition (one with a
+  declaration) with the flag was written without its call sites. The
+  corpus's optimized modules also have `#dbg_value`
+  (`debug:dbg-value`).
+
+**DWARF 4** stays `debug:dwarf-version` (§6.12); the measured plan is in
+`spec/landed/dwarf/WP-098.md`.
+
+**The census** (`scripts/debug-census.sh`, regenerated: 123 modules, 44
+libc++ tests, `stl.cpp` and four bench sources by clang 19, clang 22 and
+kiln++, and five of kiln's libstdc++ units, two of them coroutines). All
+123 build, where 121 did before WP-098, and both writers' objects are
+all `--verify` clean. 105 trees equal `llc`'s; 14 show only permitted
+differences (§6.7: (a) 6, `sret` and (a) 7, `llc` 19's blocks 1). The 4
+left are not the DIE writer's: the two kiln++ generators' ramps keep a
+frame variable `llc -O0` drops, and `range.range` has a unit with only
+imports, which hod does not write (by clang 19 and by clang 22). The
+measurement of `docs/status/debug.md` went from 12 declines among 212
+modules to 4: `debug:call-sites` 2 and `debug:dwarf-version` 2
+(`spec/landed/dwarf/WP-098.md`).
 
 ## 7. Speed and memory
 

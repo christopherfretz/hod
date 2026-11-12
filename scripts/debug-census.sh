@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # The `-g -O0` census of `crates/hod_a64/tests/dies_e2e.rs` `debug_census`
 # (`spec/dwarf.md` §6.12 to §6.14): makes its input modules, then runs it.
 #

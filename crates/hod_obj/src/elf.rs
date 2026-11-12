@@ -5,8 +5,17 @@
 //! file layout ([`Layout`]), then emit the file front to back. Nothing is
 //! emitted for an object that fails the checks.
 
+mod conventions;
+
 use std::convert::Infallible;
 use std::io::Write;
+
+pub use conventions::{
+    DEFAULT_INIT_PRIORITY, GNU_PROPERTY_AARCH64_FEATURE_1_BTI, GNU_PROPERTY_AARCH64_FEATURE_1_GCS,
+    GNU_PROPERTY_AARCH64_FEATURE_1_PAC, GNU_PROPERTY_X86_FEATURE_1_IBT,
+    GNU_PROPERTY_X86_FEATURE_1_SHSTK, add_fini_array, add_gnu_property_note, add_init_array,
+    gnu_property_note,
+};
 
 use crate::error::{Error, Limit, SymbolProblem, WriteError};
 use crate::model::{
@@ -278,7 +287,7 @@ fn plan_sections(obj: &Object, first_rela: u64) -> Result<SectionPlan, Error> {
         // A section without file space is not aligned in the file: its
         // offset only says where it would be.
         if !sec.kind.is_nobits() {
-            plan.end = align_up(plan.end, sec.align)?;
+            plan.end = align_up(plan.end, sec.align())?;
         }
         plan.offsets.push(plan.end);
         plan.end =
@@ -872,13 +881,20 @@ fn emit_section_headers<S: Sink>(
     let group_flag = |sec: &SectionData| if sec.group == NONE { 0 } else { SHF_GROUP };
     for (sec, &offset) in obj.sections.iter().zip(&layout.sections.offsets) {
         let (kind, flags, entsize) = header_fields(sec.kind);
+        // ELF gABI "Sections": `SHF_LINK_ORDER`, with the section this one
+        // is ordered by in `sh_link`.
+        let (link_flag, link) = match sec.linked {
+            NONE => (0, 0),
+            linked => (SHF_LINK_ORDER, layout.section_index(linked)),
+        };
         let header = Shdr {
             name: layout.names.offsets[sec.name as usize],
             kind,
-            flags: flags | group_flag(sec),
+            flags: flags | group_flag(sec) | link_flag,
             offset,
             size: sec.size(),
-            align: sec.align,
+            link,
+            align: sec.align(),
             entsize,
             ..Shdr::default()
         };

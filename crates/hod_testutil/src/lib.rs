@@ -57,11 +57,26 @@ pub fn tool(name: &str) -> Option<PathBuf> {
     found
 }
 
+/// `<build directory>/tmp`, when this executable is in
+/// `<build directory>/<profile>/deps` or `<build directory>/<profile>`.
+fn build_tmp_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let mut dir = exe.parent()?;
+    if dir.file_name()? == "deps" {
+        dir = dir.parent()?;
+    }
+    // `dir` is the profile directory if its parent holds cargo's marker.
+    let build = dir.parent()?;
+    build.join("CACHEDIR.TAG").is_file().then(|| build.join("tmp"))
+}
+
 /// A scratch directory removed on drop.
 ///
-/// Created under `CARGO_TARGET_TMPDIR` when cargo provides it (integration
-/// tests), otherwise under the system temporary directory, with a name
-/// unique to this process and call.
+/// Created in the build directory's `tmp` (the directory cargo calls
+/// `CARGO_TARGET_TMPDIR`), found from the running test executable, which
+/// cargo puts in `<build directory>/<profile>/deps`. Only a process that
+/// cargo did not build falls back to the system temporary directory. The
+/// name is unique to this process and call.
 #[derive(Debug)]
 pub struct Scratch {
     path: PathBuf,
@@ -74,8 +89,10 @@ impl Scratch {
     /// Panics if the directory cannot be created.
     pub fn new(label: &str) -> Self {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
-        let base =
-            std::env::var_os("CARGO_TARGET_TMPDIR").map_or_else(std::env::temp_dir, PathBuf::from);
+        let base = std::env::var_os("CARGO_TARGET_TMPDIR")
+            .map(PathBuf::from)
+            .or_else(build_tmp_dir)
+            .unwrap_or_else(std::env::temp_dir);
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = base.join(format!("hod-{label}-{}-{unique}", std::process::id()));
         std::fs::create_dir_all(&path)
@@ -263,6 +280,10 @@ mod tests {
             let scratch = Scratch::new("selftest");
             let file = scratch.write("a.txt", "x");
             assert!(file.is_file());
+            // A test built by cargo keeps its scratch in the build
+            // directory, not in the system's temporary directory.
+            let build_tmp = build_tmp_dir().expect("tests run from a cargo build directory");
+            assert!(scratch.path().starts_with(&build_tmp), "{:?}", scratch.path());
             scratch.path().to_path_buf()
         };
         assert!(!path.exists());

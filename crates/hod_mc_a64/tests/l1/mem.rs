@@ -7,15 +7,15 @@ use crate::harness::Batch;
 use crate::text::{INDEXES, LIT_LOADS, LOADS, STORES, pz, rz, s, tuples, xs, xz, z};
 
 /// Unsigned scaled offsets, in units of the access width.
-const SCALED: [i64; 10] = [0, 1, 2, 3, 255, 256, 2047, 2048, 4094, 4095];
+pub const SCALED: [i64; 10] = [0, 1, 2, 3, 255, 256, 2047, 2048, 4094, 4095];
 /// Signed 9-bit offsets.
-const IMM9: [i64; 12] = [-256, -255, -128, -8, -1, 0, 1, 7, 8, 127, 254, 255];
-const BAD_IMM9: [i64; 6] = [-257, 256, -4096, 4096, i64::MIN, i64::MAX];
+pub const IMM9: [i64; 12] = [-256, -255, -128, -8, -1, 0, 1, 7, 8, 127, 254, 255];
+pub const BAD_IMM9: [i64; 6] = [-257, 256, -4096, 4096, i64::MIN, i64::MAX];
 
 /// The text after the index register: the extension and, when the index is
 /// scaled, the shift amount. An unscaled `lsl` has no text at all (LLVM
 /// refuses a bare `lsl`).
-fn index_suffix(name: &str, amount: Option<u32>) -> String {
+pub fn index_suffix(name: &str, amount: Option<u32>) -> String {
     match amount {
         Some(amount) => format!(", {name} #{amount}"),
         None if name == "lsl" => String::new(),

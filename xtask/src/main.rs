@@ -2,12 +2,14 @@
 //!
 //! `cargo xtask ci [--quick]` is the gate described in `docs/VALIDATION.md`.
 //! `cargo xtask shim ...` builds the LLVM directory that plugs hod into kiln.
+//! `cargo xtask irdiff ...` is the IR differential harness (layer L4).
 
 use std::process::{Command, ExitCode};
 
 const USAGE: &str = "\
 usage: cargo xtask ci [--quick]
        cargo xtask shim --llvm <dir> --hod <hod binary> --out <dir> [--kiln <kiln++>]
+       cargo xtask irdiff [options] [<file.ll or directory>...]   (--help for the options)
 ";
 
 fn main() -> ExitCode {
@@ -15,6 +17,7 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("ci") => ci(args.iter().any(|a| a == "--quick")),
         Some("shim") => shim(&args[1..]),
+        Some("irdiff") => irdiff(&args[1..]),
         _ => {
             eprint!("{USAGE}");
             ExitCode::from(2)
@@ -40,11 +43,84 @@ fn ci(quick: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
-    // The full gate adds the differential and cross-linking layers as they
-    // land (docs/VALIDATION.md "Gates"); today it equals the quick gate.
-    let _ = quick;
+    eprintln!("ci: irdiff");
+    if !irdiff_gate(quick) {
+        eprintln!("ci: irdiff FAILED");
+        return ExitCode::FAILURE;
+    }
+    // The full gate adds the cross-linking layer and the later ones as they
+    // land (docs/VALIDATION.md "Gates").
     eprintln!("ci: ok");
     ExitCode::SUCCESS
+}
+
+/// The L4 step of the gate (spec/harness.md "irdiff", "In the gate"): the
+/// quick tier against the preferred oracle, or every test against each
+/// oracle LLVM.
+#[cfg(unix)]
+fn irdiff_gate(quick: bool) -> bool {
+    use xtask::irdiff::{Config, TierFilter, run, tools::LLVM_MAJORS};
+    let runs: Vec<(Option<String>, TierFilter)> = if quick {
+        vec![(None, TierFilter::Quick)]
+    } else {
+        LLVM_MAJORS.iter().map(|major| (Some(major.to_string()), TierFilter::All)).collect()
+    };
+    let mut ok = true;
+    for (llvm, tier) in runs {
+        let mut config = Config::for_workspace();
+        (config.llvm, config.tier) = (llvm, tier);
+        match run(&config) {
+            Ok(report) => {
+                eprint!("{}", report.summary(false));
+                ok &= report.exit_status() == 0;
+            }
+            Err(message) => {
+                eprintln!("xtask irdiff: {message}");
+                ok = false;
+            }
+        }
+    }
+    ok
+}
+
+#[cfg(not(unix))]
+fn irdiff_gate(_: bool) -> bool {
+    eprintln!("ci: irdiff is only available on Unix hosts; skipped");
+    true
+}
+
+/// `cargo xtask irdiff` (spec/harness.md "irdiff").
+#[cfg(unix)]
+fn irdiff(args: &[String]) -> ExitCode {
+    use xtask::irdiff::{Config, USAGE, parse_args, run};
+    let mut config = Config::for_workspace();
+    match parse_args(args, &mut config) {
+        Ok(true) => {}
+        Ok(false) => {
+            print!("{USAGE}");
+            return ExitCode::SUCCESS;
+        }
+        Err(message) => {
+            eprint!("xtask irdiff: {message}\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    }
+    match run(&config) {
+        Ok(report) => {
+            print!("{}", report.summary(config.verbose));
+            ExitCode::from(report.exit_status())
+        }
+        Err(message) => {
+            eprintln!("xtask irdiff: {message}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn irdiff(_: &[String]) -> ExitCode {
+    eprintln!("xtask irdiff: only available on Unix hosts");
+    ExitCode::FAILURE
 }
 
 /// `cargo xtask shim` (spec/harness.md "shim").

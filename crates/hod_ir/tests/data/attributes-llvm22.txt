@@ -1,0 +1,132 @@
+# The attributes of LLVM 22: every definition in
+#   llvm/include/llvm/IR/Attributes.td at tag llvmorg-22.1.8
+#   (https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-22.1.8/llvm/include/llvm/IR/Attributes.td,
+#   sha256 98b4899c1bd5ce85acef9192a8228a8baff42e29d833a6450ba11c8ab07d9d09).
+# One line per attribute: <form> <name> <positions>.
+#   form: the TableGen class without its "Attr" suffix, in lower case
+#         (enum, int, type, constantrange, constantrangelist: keywords;
+#          strbool, complexstr: string attributes).
+#   positions: fn, param, ret as the definition lists them; "-" for none.
+# Regenerate with (POSIX sh, from the directory holding Attributes.td):
+#   tr '\n' ' ' < Attributes.td \
+#   | grep -oE 'def +[A-Za-z0-9_]+ *: *(EnumAttr|IntAttr|TypeAttr|ConstantRangeAttr|ConstantRangeListAttr|StrBoolAttr|ComplexStrAttr) *< *"[^"]+"[^>]*>' \
+#   | sed -E 's/def +[A-Za-z0-9_]+ *: *([A-Za-z]+)Attr *< *"([^"]+)"(.*)/\1 \2 \3/' \
+#   | awk '{ form = tolower($1); name = $2; pos = "";
+#            if ($0 ~ /FnAttr/) pos = pos "fn,"; if ($0 ~ /ParamAttr/) pos = pos "param,"; if ($0 ~ /RetAttr/) pos = pos "ret,";
+#            if (pos == "") pos = "-,"; print form, name, substr(pos, 1, length(pos) - 1) }' \
+#   | LC_ALL=C sort -k2,2
+# crates/hod_ir/tests/attr_table.rs checks the list against llvm-as 22.
+int align param,ret
+int alignstack fn,param,ret
+enum allocalign param
+int allockind fn
+enum allocptr param
+int allocsize fn
+strbool allow_direct_access_in_hot_patch_function -
+enum alwaysinline fn
+enum builtin fn
+type byref param
+type byval param
+int captures param
+enum cold fn
+enum convergent fn
+enum coro_elide_safe fn
+enum coro_only_destroy_when_complete fn
+enum dead_on_return param
+enum dead_on_unwind param
+complexstr denormal-fp-math fn
+complexstr denormal-fp-math-f32 fn
+int dereferenceable param,ret
+int dereferenceable_or_null param,ret
+enum disable_sanitizer_instrumentation fn
+type elementtype param
+enum fn_ret_thunk_extern fn
+enum hot fn
+enum hybrid_patchable fn
+enum immarg param
+type inalloca param
+constantrangelist initializes param
+enum inlinehint fn
+enum inreg param,ret
+enum jumptable fn
+strbool less-precise-fpmad -
+strbool loader-replaceable -
+strbool marked_for_windows_hot_patching -
+int memory fn
+enum minsize fn
+enum mustprogress fn
+enum naked fn
+enum nest param
+strbool no-infs-fp-math -
+strbool no-inline-line-tables -
+strbool no-jump-tables -
+strbool no-nans-fp-math -
+strbool no-signed-zeros-fp-math -
+enum noalias param,ret
+enum nobuiltin fn
+enum nocallback fn
+enum nocf_check fn
+enum nocreateundeforpoison fn
+enum nodivergencesource fn
+enum noduplicate fn
+enum noext param,ret
+int nofpclass param,ret
+enum nofree fn,param
+enum noimplicitfloat fn
+enum noinline fn
+enum nomerge fn
+enum nonlazybind fn
+enum nonnull param,ret
+enum noprofile fn
+enum norecurse fn
+enum noredzone fn
+enum noreturn fn
+enum nosanitize_bounds fn
+enum nosanitize_coverage fn
+enum nosync fn
+enum noundef param,ret
+enum nounwind fn
+enum null_pointer_is_valid fn
+enum optdebug fn
+enum optforfuzzing fn
+enum optnone fn
+enum optsize fn
+type preallocated fn,param
+enum presplitcoroutine fn
+strbool profile-sample-accurate -
+constantrange range param,ret
+enum readnone param
+enum readonly param
+enum returned param
+enum returns_twice fn
+enum safestack fn
+enum sanitize_address fn
+enum sanitize_alloc_token fn
+enum sanitize_hwaddress fn
+enum sanitize_memory fn
+enum sanitize_memtag fn
+enum sanitize_numerical_stability fn
+enum sanitize_realtime fn
+enum sanitize_realtime_blocking fn
+enum sanitize_thread fn
+enum sanitize_type fn
+enum shadowcallstack fn
+enum signext param,ret
+enum skipprofile fn
+enum speculatable fn
+enum speculative_load_hardening fn
+type sret param
+enum ssp fn
+enum sspreq fn
+enum sspstrong fn
+enum strictfp fn
+enum swiftasync param
+enum swifterror param
+enum swiftself param
+strbool use-sample-profile -
+int uwtable fn
+int vscale_range fn
+enum willreturn fn
+enum writable param
+enum writeonly param
+enum zeroext param,ret

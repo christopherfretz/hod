@@ -103,7 +103,8 @@ pub enum SectionKind {
     Elf {
         /// `sh_type`.
         sh_type: u32,
-        /// `sh_flags`, without `SHF_GROUP` and `SHF_INFO_LINK`.
+        /// `sh_flags`, without `SHF_GROUP`, `SHF_INFO_LINK` and
+        /// `SHF_LINK_ORDER`, which the writer sets.
         sh_flags: u64,
         /// `sh_entsize`.
         sh_entsize: u64,
@@ -276,7 +277,8 @@ pub(crate) struct SectionData {
     /// Index in the section name table.
     pub(crate) name: u32,
     pub(crate) kind: SectionKind,
-    pub(crate) align: u64,
+    /// The alignment's exponent: a byte keeps the record at 104 bytes.
+    pub(crate) align_log2: u8,
     pub(crate) data: Vec<u8>,
     /// The size of a section that occupies no file space.
     pub(crate) nobits_size: u64,
@@ -293,9 +295,20 @@ pub(crate) struct SectionData {
     pub(crate) next_in_group: u32,
     /// The section's symbol, once asked for.
     pub(crate) symbol: u32,
+    /// The section this one is linked to (`set_linked_section`).
+    pub(crate) linked: u32,
 }
 
 impl SectionData {
+    pub(crate) fn align(&self) -> u64 {
+        1 << self.align_log2
+    }
+
+    /// Raises the alignment to at least `align`, a power of two.
+    fn raise_align(&mut self, align: u64) {
+        self.align_log2 = self.align_log2.max(align.trailing_zeros() as u8);
+    }
+
     pub(crate) fn size(&self) -> u64 {
         if self.kind.is_nobits() { self.nobits_size } else { self.data.len() as u64 }
     }
@@ -473,7 +486,7 @@ impl Object {
         self.sections.push(SectionData {
             name,
             kind,
-            align,
+            align_log2: align.trailing_zeros() as u8,
             data: Vec::new(),
             nobits_size: 0,
             reloc_head: NONE,
@@ -484,6 +497,7 @@ impl Object {
             group: NONE,
             next_in_group: NONE,
             symbol: NONE,
+            linked: NONE,
         });
         Ok(SectionId(id))
     }
@@ -505,7 +519,7 @@ impl Object {
 
     /// A section's alignment in bytes.
     pub fn section_align(&self, section: SectionId) -> u64 {
-        self.sections[section.0 as usize].align
+        self.sections[section.0 as usize].align()
     }
 
     /// Raises a section's alignment to at least `align`, a power of two.
@@ -513,8 +527,7 @@ impl Object {
     /// [`Error::BadAlignment`].
     pub fn raise_section_align(&mut self, section: SectionId, align: u64) {
         if align.is_power_of_two() {
-            let sec = &mut self.sections[section.0 as usize];
-            sec.align = sec.align.max(align);
+            self.sections[section.0 as usize].raise_align(align);
         } else {
             self.defer(Error::BadAlignment { align });
         }
@@ -523,6 +536,29 @@ impl Object {
     /// A section's size in bytes.
     pub fn section_size(&self, section: SectionId) -> u64 {
         self.sections[section.0 as usize].size()
+    }
+
+    /// Says that `section` holds data about `target` and belongs with it:
+    /// a linker that honors the link (`spec/object.md` "Linked sections"
+    /// says which do) places such sections in the order of their targets
+    /// and, when it discards unused sections, keeps one exactly when it
+    /// keeps its target. A second call replaces the target.
+    ///
+    /// A section linked to itself is reported by the writer as
+    /// [`Error::LinkedToItself`].
+    pub fn set_linked_section(&mut self, section: SectionId, target: SectionId) {
+        assert!(target.0 < self.section_count(), "section id not issued by this object");
+        if section == target {
+            self.defer(Error::LinkedToItself { section });
+        } else {
+            self.sections[section.0 as usize].linked = target.0;
+        }
+    }
+
+    /// The section a section is linked to, if any.
+    pub fn linked_section(&self, section: SectionId) -> Option<SectionId> {
+        let linked = self.sections[section.0 as usize].linked;
+        (linked != NONE).then_some(SectionId(linked))
     }
 
     /// Appends bytes to a section and returns the offset they start at.
@@ -570,7 +606,7 @@ impl Object {
             self.defer(Error::BadAlignment { align });
             return size;
         }
-        sec.align = sec.align.max(align);
+        sec.raise_align(align);
         let size = sec.size();
         let padded = size.saturating_add(align - 1) & !(align - 1);
         if sec.kind.is_nobits() {
@@ -831,6 +867,7 @@ mod tests {
         assert_eq!(size_of::<Symbol>(), 32);
         assert_eq!(size_of::<RelocEntry>(), 32);
         assert_eq!(size_of::<SectionId>(), 4);
+        assert_eq!(size_of::<SectionData>(), 104);
     }
 
     /// "Ids": ids count up from zero in creation order, per table.
@@ -1032,6 +1069,29 @@ mod tests {
             Err(Error::SectionAlreadyInGroup { section: text })
         );
         assert_eq!(obj.group_members(second).count(), 0);
+    }
+
+    /// "Sections", linked sections: the model's side.
+    #[test]
+    fn linked_sections() {
+        let (mut obj, text) = object();
+        let data = obj.add_section(b".data", SectionKind::Data, 8).unwrap();
+        assert_eq!(obj.linked_section(data), None);
+        obj.set_linked_section(data, text);
+        assert_eq!((obj.linked_section(data), obj.linked_section(text)), (Some(text), None));
+        let bss = obj.add_section(b".bss", SectionKind::Bss, 8).unwrap();
+        obj.set_linked_section(data, bss);
+        assert_eq!(obj.linked_section(data), Some(bss), "a second call replaces the target");
+        obj.set_linked_section(text, text);
+        assert_eq!(obj.linked_section(text), None);
+        assert_eq!(obj.deferred, Some(Error::LinkedToItself { section: text }));
+    }
+
+    #[test]
+    #[should_panic(expected = "section id not issued by this object")]
+    fn a_foreign_link_target_panics() {
+        let (mut obj, text) = object();
+        obj.set_linked_section(text, SectionId::from_index(1));
     }
 
     #[test]

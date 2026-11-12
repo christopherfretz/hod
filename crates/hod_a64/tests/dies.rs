@@ -215,7 +215,7 @@ fn refusals_are_named() {
     let (module, bodies) = parse(&base);
     compile_to_object(&module, &bodies, &Options::default()).expect("the base case");
 
-    let cases: [(&str, String, &str); 6] = [
+    let cases: [(&str, String, &str); 7] = [
         (
             "debug:dbg-value",
             one_function("    #dbg_value(i32 %v, !14, !DIExpression(), !15)", PLAIN_SP),
@@ -265,6 +265,22 @@ fn refusals_are_named() {
                 ),
             ),
             "an inlined location",
+        ),
+        (
+            "debug:local-static",
+            format!(
+                "@s = internal global i32 0, align 4, !dbg !40\n{}",
+                one_function(
+                    declare,
+                    &format!(
+                        "{PLAIN_SP}!40 = !DIGlobalVariableExpression(var: !41, expr: !DIExpression())\n\
+                         !41 = distinct !DIGlobalVariable(name: \"s\", scope: !10, file: !1, line: 3, type: !6, isLocal: true, isDefinition: true)\n\
+                         !42 = !{{!40}}\n"
+                    ),
+                )
+                .replace("nameTableKind: None)", "globals: !42, nameTableKind: None)")
+            ),
+            "a function's static",
         ),
     ];
     for (name, text, what) in &cases {

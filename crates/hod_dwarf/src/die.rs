@@ -355,6 +355,16 @@ impl<'a> UnitPlan<'a> {
         if v.line != 0 && v.file.is_none() {
             return Err(unsupported(var, "a declaration line without a file"));
         }
+        if let Some(s) = v.scope
+            && matches!(
+                self.debug.find_kind(s),
+                Some(DiKind::Subprogram | DiKind::LexicalBlock | DiKind::LexicalBlockFile)
+            )
+        {
+            // A function's `static`: `llc` writes it under the function's
+            // scope DIE (§6.4); not yet.
+            return Err(unsupported(var, "debug:local-static"));
+        }
         let parent = self.scope_parent(var, v.scope, chain)?;
         let die = self.push(var, parent, Kind::Variable);
         self.by_expr.push((gve.raw(), die));

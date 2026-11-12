@@ -191,5 +191,6 @@ fn implied_dso_local_is_what_llc_implies() {
             let always_got = config.arch == Arch::Aarch64 && desc.linkage == Linkage::ExternWeak;
             assert_eq!(through_got, !local || always_got, "{}: {name} is {desc:?}", config.name());
         }
+        eprintln!("module_llc {}: {} dso_local combinations", config.name(), expected.len());
     }
 }

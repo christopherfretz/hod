@@ -670,6 +670,12 @@ fn symbol_rules_match_llvm_as() {
             }
         }
         assert!(wrong.is_empty(), "{wrong}");
+        let listed = DIFFERENCES.iter().filter(|(name, ..)| *name != "opaque-definition").count()
+            + usize::from(major == 19);
+        eprintln!(
+            "symbols_as llvm{major}: {} cases, hod and llvm-as differ on the {listed} listed",
+            cases.len()
+        );
     }
     // A difference names a case.
     for (name, ..) in DIFFERENCES {
@@ -799,5 +805,10 @@ fn module_flag_rules_match_llvm_as() {
             }
         }
         assert!(wrong.is_empty(), "{wrong}");
+        let differ = cases.iter().filter(|(_, llvm, hod, _)| llvm != hod).count();
+        eprintln!(
+            "symbols_as llvm{major}: {} module-flag cases, hod and llvm-as differ on {differ}",
+            cases.len()
+        );
     }
 }

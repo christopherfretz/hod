@@ -409,5 +409,9 @@ fn the_lists_are_what_llvm_as_parses() {
             assert_eq!(count, 10);
             assert_eq!(accepted, [""; 0], "LLVM 19 parses keywords its list does not have");
         }
+        eprintln!(
+            "attr_table llvm{major}: {} keywords parse, {count} keywords of the other list tried",
+            keywords.len()
+        );
     }
 }

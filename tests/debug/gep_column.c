@@ -1,10 +1,11 @@
-// The column of a line's first row (WP-060, settled by WP-097). In
+// The column of a line's first row (WP-060; settled by WP-097). In
 // `Pair p = {n * 10, 3};` clang gives the field's `getelementptr` the
 // location of the `{` (column 12) and the load of `n` column 13. `llc`
 // folds the address into the store, so its first instruction of the line
 // is the load (column 13). hod computes the zero-offset address with an
 // instruction of its own, which since WP-097 has no row of its own
-// (spec/dwarf.md §5.8), so a breakpoint by line stops at column 13 too.
+// (spec/dwarf.md §5.8): a breakpoint by line stops at column 13 in both.
+// Do not move the lines below: the gdb directives name line 14.
 typedef struct {
   int a, b;
 } Pair;

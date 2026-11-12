@@ -30,13 +30,17 @@ struct Placement<'a> {
     align: Option<u64>,
 }
 
-/// The four LLVM arrays that are not symbols.
+/// The LLVM arrays that are not symbols.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Special {
     Ctors,
     Dtors,
     Used,
     CompilerUsed,
+    /// `llvm.global.annotations` (WP-095): in section `llvm.metadata`,
+    /// which `llc` never emits, it is dropped; anywhere else it is noted
+    /// `special-global:llvm.global.annotations` (§5.9).
+    Annotations,
 }
 
 impl Parser<'_, '_> {
@@ -288,7 +292,11 @@ pub(crate) enum GlobalKind {
 fn is_special(name: &[u8]) -> bool {
     matches!(
         name,
-        b"@llvm.global_ctors" | b"@llvm.global_dtors" | b"@llvm.used" | b"@llvm.compiler.used"
+        b"@llvm.global_ctors"
+            | b"@llvm.global_dtors"
+            | b"@llvm.used"
+            | b"@llvm.compiler.used"
+            | b"@llvm.global.annotations"
     )
 }
 
@@ -550,6 +558,7 @@ impl<'a> Parser<'a, '_> {
             b"@llvm.global_dtors" => Some(Special::Dtors),
             b"@llvm.used" => Some(Special::Used),
             b"@llvm.compiler.used" => Some(Special::CompilerUsed),
+            b"@llvm.global.annotations" => Some(Special::Annotations),
             _ => None,
         };
         if let Some(special) = special {
@@ -559,7 +568,12 @@ impl<'a> Parser<'a, '_> {
                 return fail(LlErrorKind::Redefined, item.name.start, "redefinition of global");
             }
             self.specials_seen |= bit;
-            if let Some(init) = init {
+            if special == Special::Annotations {
+                // `llc` emits nothing of a variable in `llvm.metadata`.
+                if place.section.as_deref() != Some(&b"llvm.metadata"[..]) {
+                    self.note("special-global:llvm.global.annotations");
+                }
+            } else if let Some(init) = init {
                 self.special(special, init, item.name.start)?;
             }
             self.flush(None);
@@ -688,6 +702,7 @@ impl<'a> Parser<'a, '_> {
                     };
                     ir(at, self.module.retain(sym, how))?;
                 }
+                Special::Annotations => {}
                 Special::Ctors | Special::Dtors => {
                     let fields = match self.module.consts.get(elem) {
                         Const::Aggregate { elems, .. } if matches!(elems.len(), 2 | 3) => {

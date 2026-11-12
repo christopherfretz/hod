@@ -2,7 +2,8 @@
 //! table and is kept, dropped, or noted as `attr:<name>`.
 
 use hod_ir::{
-    AttrClass, AttrSyntax, FnAttrs, FnAttrsId, FnStr, ParamAttrs, ParamMem, UwTable, attr_info,
+    AttrClass, AttrInfo, AttrSyntax, FnAttrs, FnAttrsId, FnStr, ParamAttrs, ParamMem, UwTable,
+    attr_info,
 };
 
 use crate::AttrGroup;
@@ -11,6 +12,55 @@ use crate::index::parse_u32;
 use crate::lexer::Tok;
 use crate::meta::Upgrade;
 use crate::parser::{Parser, ir};
+
+/// What `hod_ir::attr_info` answered for the keywords met so far
+/// (WP-096): a call site asks it for every word after a type, most of
+/// them the same few (`noundef`, `nonnull`, `align`, `ptr`), and each
+/// answer is a binary search of byte strings. Direct-mapped, keyed by
+/// the keyword itself, so an answer from here is the table's answer.
+#[derive(Debug, Default)]
+pub(crate) struct AttrMemo {
+    slots: Vec<(u128, Option<&'static AttrInfo>)>,
+    /// How many times the table itself was searched.
+    pub lookups: u64,
+}
+
+/// A word of 1 to 16 bytes without a zero byte, padded with zeros: a key
+/// that no other such word has, and never 0. `None` for any other word.
+pub(crate) fn packed(word: &[u8]) -> Option<u128> {
+    if word.is_empty() || word.len() > 16 || word.contains(&0) {
+        return None;
+    }
+    let mut bytes = [0u8; 16];
+    bytes[..word.len()].copy_from_slice(word);
+    Some(u128::from_le_bytes(bytes))
+}
+
+/// Slots of [`AttrMemo`]: a power of two.
+const MEMO_SLOTS: usize = 64;
+
+impl AttrMemo {
+    /// `attr_info(AttrSyntax::Keyword, word)` for a word token.
+    pub(crate) fn keyword(&mut self, word: &[u8]) -> Option<&'static AttrInfo> {
+        // A word has no zero byte, so a word of at most 16 bytes padded
+        // with zeros is a key that no other word has, and no key is 0.
+        let Some(key) = packed(word) else {
+            self.lookups += 1;
+            return attr_info(AttrSyntax::Keyword, word);
+        };
+        if self.slots.is_empty() {
+            self.slots.resize(MEMO_SLOTS, (0, None));
+        }
+        let mixed = (key as u64) ^ ((key >> 64) as u64).rotate_left(23);
+        let at = (mixed.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 58) as usize % MEMO_SLOTS;
+        let slot = &mut self.slots[at];
+        if slot.0 != key {
+            self.lookups += 1;
+            *slot = (key, attr_info(AttrSyntax::Keyword, word));
+        }
+        slot.1
+    }
+}
 
 /// LLVM's number for the calling convention written `keyword`
 /// (`b"fastcc"`), for the ones that have a keyword; `cc N` is written
@@ -178,7 +228,7 @@ impl Parser<'_, '_> {
         }
         let name = self.text();
         let at = self.tok.start;
-        let Some(row) = attr_info(AttrSyntax::Keyword, name) else {
+        let Some(row) = self.attr_memo.keyword(name) else {
             // Not an attribute of LLVM 19 to 22: the list ends here.
             return Ok(false);
         };
@@ -244,7 +294,7 @@ impl Parser<'_, '_> {
                 return Ok(attrs);
             }
             let name = self.text();
-            let Some(row) = attr_info(AttrSyntax::Keyword, name) else {
+            let Some(row) = self.attr_memo.keyword(name) else {
                 return Ok(attrs);
             };
             self.bump();

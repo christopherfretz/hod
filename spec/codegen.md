@@ -1611,6 +1611,151 @@ that refused it before.
   `hod_bc/src/module.rs`), `type:bfloat` (a type class of its own: ABI,
   conversions, arithmetic through `float`).
 
+#### NEON intrinsics (WP-083)
+
+`src/neon.rs`, reached by one call: the last arm of
+`intrinsic::intrinsic` hands it every intrinsic nothing before it took.
+It lowers the AArch64 target intrinsics on `hod_ir`'s list (§5.5,
+`spec/ir.md`): `llvm.aarch64.neon.*`, `crypto.*`, `sisd.*`, `cls`,
+`cls64`, `dmb`, `dsb`, `isb`, `hint`. The bfloat ones (`bfcvt`,
+`bfcvtn`, `bfcvtn2`, `bfdot`, `bfmlalb`, `bfmlalt`, `bfmmla`) are on the
+list with a matrix row that is not supported, so they stay
+`intrinsic:<name>` (vectors of `bfloat` are not lowered; the scalar is,
+WP-095 below).
+
+- **Target features.** Like `crc32` (WP-084), an intrinsic is lowered
+  whatever the function's `target-features` say: a feature is
+  availability (§5.5.2), and hod never chooses or refuses an instruction
+  by one. `llc` refuses some of them without the feature (`+aes`,
+  `+sha3`, `+dotprod`, ...); hod emits them, and the program is as
+  correct as the CPU it runs on supports the instruction.
+- **Table-driven.** Each intrinsic maps to a lowering family; the family
+  reads the call's types (vector width and element, or a scalar) and
+  takes the encoder family of `hod_mc_a64::neon` that has that shape: the
+  vector form, the scalar (`<1 x i64>`, `i32`, `i64`, `float`, `double`,
+  `<1 x double>`) form, or the general-register form (`fcvt*` to `i32`/
+  `i64`, `cls`). The checked encoder refusing the shape is the refusal.
+- **Operands.** The first two vector-register operands are `use_reg`'d
+  (an accumulating instruction writes operand 0's register); the others
+  are put into `v30`, `v31`, then temporaries; an `i32`/`i64` operand is
+  moved in with `fmov`. A general result is moved out with `fmov`,
+  zero-extending: also the signed reductions of bytes and halfwords
+  (`saddv`, `smaxv`, `sminv`, `saddlv`), as `llc` 22 (`llc` 19
+  sign-extends `saddlv`'s; `<arm_neon.h>` truncates either).
+- **Consecutive registers.** `tbl`/`tbx` tables and the structure loads
+  and stores use `v24`..`v27`, taken (`take_reg`) before the deferred
+  operands. A structure result (`ld2`.. `ld4`, `ld2lane`.., `ld2r`..) is
+  a `Mem` value: the registers are stored to its slot. `ld<n>`/`st<n>`
+  of `<1 x i64>`/`<1 x double>` are `ld1`/`st1` of `n` registers, as
+  `llc`.
+- **Composite forms.** `sq{,r}dmulh.lane{,q}`: `dup` of the lane into
+  the second operand's register, then the instruction. Two-element
+  reductions are the scalar pairwise forms (`addp d`, `faddp`/`fmaxp`..
+  `s|d`); `faddv` of four floats is `faddp` then `faddp s`; `saddlv`/
+  `uaddlv` of `<2 x i32>` is `saddlp`/`uaddlp` to `1D`. `fmax`/`fmin`/
+  `fmaxnm`/`fminnm` of `<1 x double>` are the scalar instructions,
+  `frint{32,64}{x,z}` of `<1 x double>` the scalar `frint`.
+  `vcvtfp2hf`/`vcvthf2fp` are `fcvtn`/`fcvtl` of `4S`/`4H`. `sqshlu`'s
+  shift is a constant splat (or constant). `pmull64`'s operands are
+  moved from general registers.
+- **Barriers and hints.** `dmb`/`dsb` take a constant option that is a
+  barrier (`Barrier::ALL`), `isb` only 15 (`SY`), `hint` any constant
+  below 128.
+- **Refused by name.** `a64:intrinsic-target`: a known intrinsic with a
+  signature no instruction takes (`smax` of `<2 x i64>`, `frint32x` of
+  half, a type that is not a 64- or 128-bit vector). `a64:intrinsic-
+  immediate`: a shift amount, lane or barrier option that is not a
+  constant in range.
+
+Tests: `crates/hod_a64/tests/neon.rs` (`cases_match_llc` over
+`tests/data/neon/cases.txt`, `every_case_compiles`, the refusals); the
+encodings `crates/hod_mc_a64/tests/l1/neon.rs`.
+
+#### The short tail, second part (WP-095)
+
+`src/tail2.rs`; each construct is reached by one call from the module
+that refused it before (WP-084's "stays refused" list is settled here).
+
+- **Scalar `bfloat`** (`float::{cast,binary,flags}` → `tail2`), as `llc`
+  lowers it without `FEAT_BF16` (hod chooses no instruction by a
+  feature): a `bfloat` lives in the low 16 bits of an `H` view like
+  `half`. Widening to `float` is exact: `fmov w16, s` · `lsl #16` ·
+  `fmov s, w16` (LLVM 22 writes `shll`, the same bits); to `double` it
+  is that and `fcvt d, s`. Narrowing from `float` is `llc`'s integer
+  rounding to nearest, ties to even, on the single-precision bits:
+  `x + 0x7fff + bit16(x)`, upper half; for `fptrunc float` only, a NaN
+  keeps its upper bits with the quiet bit set (`orr #0x400000`, `fcmp s,
+  s`, `csel vs`). From `double`, `FCVTXN` (round to odd, encoded in
+  `tail2`, not in `hod_mc_a64`) first and no NaN arm. `fadd`..`fdiv`
+  widen both operands, compute in single precision and narrow without
+  the NaN arm; `frem` calls `fmodf`; `fcmp` widens both and compares in
+  single precision; `fptosi`/`fptoui` widen then `fcvtz*`; `sitofp`/
+  `uitofp` from up to 16 bits are `scvtf`/`ucvtf s` (exact), from 32
+  bits `?cvtf d` then `FCVTXN`, from 64 bits a round-to-odd by hand (the
+  bits that do not fit 53 folded into a sticky bit, then `?cvtf d`, then
+  the sticky bit ORed into the double's last bit) then `FCVTXN`; every
+  path ends with the narrowing above. A conversion with an `fp128` side
+  is `a64:bfloat-fp128` (`llc` 19 cannot select it); with an integer
+  wider than 64 bits, `a64:wide-fp-cast`. `bfloat` arguments in arrays
+  stay `abi:bfloat-array` (`hod_a64::abi`).
+- **`extractelement` from `<N x i128>`** (`target.rs` → `tail2`): a
+  `<1 x i128>` is class `Fpr` (stored as a `Q` register into the result's
+  slot); a wider one is `Mem`, its lane's 16 bytes copied by the lane
+  cursor into the result's slot. A variable index wraps as
+  `vector::index` does.
+- **Label differences** in initializers: an integer constant built only
+  of `ptrtoint blockaddress`, numbers, `add`, `sub` and `trunc`, adding
+  one block and subtracting another of the same function
+  (`ConstPool::block_diff`, `spec/ir.md` §4.3), flattens to a
+  `FixupTarget::BlockDiff` of 1, 2, 4 or 8 bytes. Module emission writes
+  `offset(a) - offset(b) + addend` into the data, the number the
+  assembler folds `llc`'s `.word .Ltmp1-.Ltmp0` to; no relocation. The
+  function needs `block_offsets`, so an `indirectbr`; a block without
+  one is `init:blockaddress-unplaced`. As an operand, in an aggregate or
+  not, it is `operand:block-diff` (classify). Two blocks of different
+  functions, or any other shape, keep the expression's name
+  (`const-expr:sub`, `const-expr:trunc`).
+- **Block addresses of an unreachable `indirectbr`**: `mark_reachable`
+  (`hod_cg/src/driver.rs`) also gives a function `block_offsets` when
+  its only `indirectbr` is in an unreachable block, so a `blockaddress`
+  in data of it is placed (`llc` keeps those labels).
+- **`bitcast` of a constant vector to a scalar** is folded by
+  `ConstPool::fold_cast` when every element is a number and the vector
+  is at most 128 bits: its image, as `llc` folds it (`<8 x i1>` packs
+  element 0 in bit 0).
+- **`preserve_mostcc`**, as caller and callee: `Target::assign` assigns
+  it as `ccc` (`tail2::assign_preserve_most`); a callee also saves
+  `x9`..`x15` (LLVM's `CSR_AArch64_RT_MostRegs`: AAPCS64's set plus
+  those; `x8`, `x16`..`x18` and the vector registers are not preserved)
+  in 64 bytes after the frame record, right after `mov x29, sp`, with
+  one `DW_CFA_offset` per register after the stores, and reloads them
+  with `DW_CFA_restore` in every exit sequence before the frame record.
+  All seven are saved (`llc` saves the ones its allocator touched; hod's
+  lowerings may write any of them and every call clobbers them). A
+  caller needs nothing: hod keeps no value in a register across a call.
+- **`llvm.global.annotations`** in section `llvm.metadata` is dropped by
+  both readers (`spec/ll.md`, `spec/bc.md`), and `"fmv-features"` is a
+  dropped attribute (`spec/ir.md`): `llc` 22's object is the same
+  without it.
+- **Stays refused**:
+  - `const-expr:sub` of a number minus an address (`0 - ptrtoint @g`, as
+    an operand): `spec/ir.md` §4.2 keeps it an `Expr`; no ELF data
+    relocation is `-S`, and as an operand it needs a normal form of its
+    own and a lowering (`neg` of the address). One corpus module.
+  - `metadata-arg:llvm.read_volatile_register.i64`: the register name is
+    a metadata operand, which the IR does not carry for intrinsics
+    (BACKLOG WP-064) and `hod_ll`'s body reader would have to read.
+  - `debug:dbg-value`: hod writes one location per variable for the
+    whole function (§9.5). A `#dbg_value` maps to that exactly only for
+    a single record of the variable, with an empty expression, of a
+    value whose home is a frame slot from its definition on; the corpus
+    has none such (its one module, at `-O2`, has several records per
+    variable, constants (`DW_AT_const_value`) and `DW_OP_stack_value`
+    expressions, which need location lists). All stay
+    `debug:dbg-value`.
+  - `cc:preserve_allcc`, `cc:79` (`win64cc`) and `cc:aarch64_vector_pcs`
+    (WP-082), which the one `preserve_mostcc` corpus module also uses.
+
 #### 5.5.2 Target features (WP-043)
 
 `hod_a64::features::check` judges a `target-features` string (a

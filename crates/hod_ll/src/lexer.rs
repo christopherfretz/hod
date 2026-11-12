@@ -126,9 +126,14 @@ const DIGIT: u8 = 2;
 const HEX: u8 = 4;
 const WORD: u8 = 8;
 const ALPHA: u8 = 16;
+const BLANK: u8 = 32;
+const META: u8 = 64;
+const SKIP: u8 = 128;
 
 /// Character classes: `LABEL` is `[-a-zA-Z$._0-9]`, `WORD` is
-/// `[a-zA-Z0-9_]`.
+/// `[a-zA-Z0-9_]`, `BLANK` is white space and the zero byte, `META` is
+/// what a metadata name is made of (`LABEL` and `\\`), `SKIP` is what
+/// may start white space or a comment (`BLANK`, `;` and `/`).
 const CLASS: [u8; 256] = {
     let mut table = [0u8; 256];
     let mut c = 0usize;
@@ -149,6 +154,15 @@ const CLASS: [u8; 256] = {
         }
         if b.is_ascii_alphabetic() {
             class |= ALPHA;
+        }
+        if matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0) {
+            class |= BLANK;
+        }
+        if class & LABEL != 0 || b == b'\\' {
+            class |= META;
+        }
+        if class & BLANK != 0 || b == b';' || b == b'/' {
+            class |= SKIP;
         }
         table[c] = class;
         c += 1;
@@ -219,10 +233,7 @@ impl<'a> Lexer<'a> {
         if from >= self.run_start && from <= self.run_end {
             return self.run_end;
         }
-        let mut end = from;
-        while is(self.at(end), LABEL) {
-            end += 1;
-        }
+        let end = self.skip_while(from, LABEL);
         self.run_start = from;
         self.run_end = end;
         end
@@ -231,15 +242,22 @@ impl<'a> Lexer<'a> {
     /// Whether the label characters from `from` on end in a colon; the
     /// offset after it.
     fn label_tail(&mut self, from: usize) -> Option<usize> {
+        // Most words and numbers end at a byte that neither goes on a
+        // label nor ends one: no run to look at (and none to remember).
+        let next = self.at(from);
+        if !is(next, LABEL) && next != b':' {
+            return None;
+        }
         let end = self.label_run_end(from);
         (self.at(end) == b':').then_some(end + 1)
     }
 
-    fn skip_while(&self, mut at: usize, class: u8) -> usize {
-        while is(self.at(at), class) {
-            at += 1;
-        }
-        at
+    /// The first offset at or after `at` whose byte is not of `class`
+    /// (the end of the source has none).
+    #[inline]
+    fn skip_while(&self, at: usize, class: u8) -> usize {
+        let rest = self.src.get(at..).unwrap_or_default();
+        at + rest.iter().position(|&b| !is(b, class)).unwrap_or(rest.len())
     }
 
     fn token(&mut self, kind: Tok, start: usize, end: usize) -> Token {
@@ -256,9 +274,18 @@ impl<'a> Lexer<'a> {
     fn skip_blank(&mut self) -> Result<usize, Token> {
         let src = self.src;
         let mut pos = self.pos;
-        loop {
+        // Tokens most often follow one another directly or after one
+        // space.
+        for _ in 0..2 {
             match src.get(pos) {
-                Some(b' ' | b'\t' | b'\n' | b'\r' | 0) => pos += 1,
+                Some(&b) if !is(b, SKIP) => return Ok(pos),
+                Some(b' ') => pos += 1,
+                _ => break,
+            }
+        }
+        loop {
+            pos = self.skip_while(pos, BLANK);
+            match src.get(pos) {
                 Some(b';') => pos = find_byte(src, pos, b'\n').unwrap_or(src.len()),
                 Some(b'/') if src.get(pos + 1) == Some(&b'*') => {
                     let Some(end) = comment_end(src, pos + 2) else {
@@ -322,10 +349,7 @@ impl<'a> Lexer<'a> {
             b'!' => {
                 let first = self.at(start + 1);
                 if (is(first, LABEL) && !is(first, DIGIT)) || first == b'\\' {
-                    let mut end = start + 2;
-                    while is(self.at(end), LABEL) || self.at(end) == b'\\' {
-                        end += 1;
-                    }
+                    let end = self.skip_while(start + 2, META);
                     self.token(Tok::Meta, start, end)
                 } else {
                     self.token(Tok::Exclaim, start, start + 1)
@@ -741,6 +765,25 @@ mod tests {
         let mut lexer = Lexer::new(b"  ");
         assert_eq!(lexer.next_token(), Token { kind: Tok::Eof, start: 2, end: 2 });
         assert_eq!(lexer.next_token().kind, Tok::Eof);
+    }
+
+    /// WP-096: white space and metadata names are skipped by class, a
+    /// table lookup per byte, and a token is looked for after one byte's
+    /// test when no blank or comment can start; the classes are exactly
+    /// the sets §2 names, for every byte value.
+    #[test]
+    fn classes_are_the_sets_of_section_2() {
+        for b in 0..=255u8 {
+            let label = b.is_ascii_alphanumeric() || b"-$._".contains(&b);
+            assert_eq!(is(b, BLANK), b" \t\n\r\0".contains(&b), "BLANK {b:#04x}");
+            assert_eq!(is(b, META), label || b == b'\\', "META {b:#04x}");
+            assert_eq!(is(b, LABEL), label, "LABEL {b:#04x}");
+            assert_eq!(is(b, SKIP), b" \t\n\r\0;/".contains(&b), "SKIP {b:#04x}");
+        }
+        assert_eq!(
+            lex("!a\\b-c.d$e_9 \0\r\t\n!x"),
+            [(Tok::Meta, "!a\\b-c.d$e_9"), (Tok::Meta, "!x")]
+        );
     }
 
     /// §2.7: escapes.

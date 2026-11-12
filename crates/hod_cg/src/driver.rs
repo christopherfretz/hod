@@ -264,6 +264,16 @@ impl<'a, T: Target> FnCx<'a, T> {
                 }
             }
         }
+        // WP-095: an `indirectbr` only in unreachable blocks still takes
+        // the function's block addresses (`llc` keeps their labels).
+        if !self.block_addrs {
+            self.block_addrs = self.s.reachable.iter().enumerate().any(|(index, &seen)| {
+                let block = body.block(BlockId::new(index as u32));
+                !seen
+                    && !block.inst_range().is_empty()
+                    && block.terminator().opcode() == Opcode::IndirectBr
+            });
+        }
         Ok(())
     }
 

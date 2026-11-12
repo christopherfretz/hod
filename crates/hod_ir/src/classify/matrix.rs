@@ -354,6 +354,17 @@ const WINDOWS_EH: &str = "Windows funclet exception handling; not an ELF constru
 const WINDOWS: &str = "a Windows construct";
 const SCALABLE: &str = "scalable vectors are refused by design";
 const A64_ONLY: &str = "an AArch64 property";
+/// The value classes of the NEON intrinsics' signatures (WP-083): the
+/// lowering refuses a signature it does not take as `a64:intrinsic-target`.
+const NEON: &[TypeClass] = &[
+    TypeClass::Int,
+    TypeClass::Ptr,
+    TypeClass::Half,
+    TypeClass::Float,
+    TypeClass::Double,
+    TypeClass::Vector,
+    TypeClass::Aggregate,
+];
 const X64_ONLY: &str = "an x86 property";
 const NO_FORM: &str = "a constant expression with no normal form (§4.2)";
 const ELF_COMDAT: &str = "ELF has `any` and `nodeduplicate` only; `llc` refuses it too";
@@ -537,13 +548,19 @@ const COMDAT: [SupportRow; ComdatKind::ALL.len()] = [
     both("comdat:samesize", never(ELF_COMDAT), ""),
 ];
 
-const INIT: [SupportRow; 8] = [
+const INIT: [SupportRow; 9] = [
     row("init:data", ON, todo(X64), "any initializer: numbers, zero, `undef`, aggregates, bytes"),
     row("init:symbol", ON, todo(X64), "a symbol's address, with or without an offset"),
     row("init:blockaddress", ON, todo(X64), "of a block of a function with an `indirectbr` (§9.6)"),
     row("init:sym-diff", ON, todo(X64), "the difference of two symbol addresses"),
     a64("init:sym-diff-plt", LATER, "the same through `dso_local_equivalent` (relative vtables)"),
     row("init:int-of-addr", ON, todo(X64), "an address in an integer field"),
+    row(
+        "init:block-diff",
+        ON,
+        todo(X64),
+        "a label difference `&&a - &&b` of two blocks of one function, a number (WP-095)",
+    ),
     a64("init:dso-local-equivalent", LATER, ""),
     a64("init:no-cfi", LATER, ""),
 ];
@@ -569,7 +586,12 @@ const CC: [SupportRow; 15] = [
     a64("cc:coldcc", LATER, ""),
     a64("cc:ghccc", LATER, ""),
     a64("cc:anyregcc", LATER, ""),
-    a64("cc:preserve_mostcc", LATER, ""),
+    row(
+        "cc:preserve_mostcc",
+        ON,
+        todo(X64),
+        "assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095)",
+    ),
     a64("cc:preserve_allcc", LATER, ""),
     row("cc:swiftcc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     row("cc:cxx_fast_tlscc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
@@ -709,7 +731,12 @@ const TYPE: [SupportRow; TypeClass::ALL.len()] = [
     row("type:int-wide", ON, todo(X64), "integers wider than 64 bits other than `i128` (WP-040)"),
     row("type:ptr", ON, todo(X64), "pointers in address space 0"),
     row("type:half", ON, todo(X64), "arithmetic in single precision"),
-    a64("type:bfloat", LATER, ""),
+    row(
+        "type:bfloat",
+        ON,
+        todo(X64),
+        "computed in single precision, rounded as `llc` without `+bf16` (WP-095)",
+    ),
     row("type:float", ON, todo(X64), ""),
     row("type:double", ON, todo(X64), ""),
     row("type:fp128", ON, todo(X64), "arithmetic, compares and conversions are calls"),
@@ -814,6 +841,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -826,6 +854,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -838,6 +867,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -850,6 +880,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -862,6 +893,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "a call of `fmod`",
@@ -874,6 +906,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -899,6 +932,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "vectors: masks of up to 64 lanes (WP-081)",
@@ -929,6 +963,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -941,6 +976,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -956,6 +992,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -971,6 +1008,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -986,6 +1024,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -1001,6 +1040,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -1135,6 +1175,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Fp128,
             TypeClass::Aggregate,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -1152,6 +1193,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Fp128,
             TypeClass::Aggregate,
             TypeClass::Vector,
+            TypeClass::BFloat,
         ]),
         todo(X64),
         "",
@@ -1166,6 +1208,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Float,
             TypeClass::Double,
             TypeClass::Vector,
+            TypeClass::I128,
         ]),
         todo(X64),
         "byte-sized elements, up to 256 lanes (WP-079)",
@@ -1327,7 +1370,7 @@ const LANDINGPAD: [SupportRow; 3] = [
     row("landingpad:filter", ON, todo(X64), ""),
 ];
 
-const OPERAND: [SupportRow; 9] = [
+const OPERAND: [SupportRow; 10] = [
     row(
         "operand:symbol",
         ON,
@@ -1339,6 +1382,7 @@ const OPERAND: [SupportRow; 9] = [
     row("operand:addr-of-int", ON, todo(X64), "`inttoptr` of a constant number"),
     row("operand:int-of-addr", ON, todo(X64), "`ptrtoint` of a constant address (WP-072)"),
     row("operand:sym-diff", ON, todo(X64), "a difference of two symbol addresses (WP-072)"),
+    a64("operand:block-diff", LATER, "a label difference as an operand (WP-095)"),
     a64("operand:dso-local-equivalent", LATER, ""),
     a64("operand:no-cfi", LATER, ""),
     row(
@@ -1398,7 +1442,7 @@ const fn const_op_index(op: ConstOp) -> usize {
 }
 
 /// In `Intrinsic::ALL` order.
-const INTRINSIC: [SupportRow; Intrinsic::ALL.len()] = [
+const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
     row("intrinsic:llvm.memcpy", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
     row("intrinsic:llvm.memcpy.inline", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
     row("intrinsic:llvm.memmove", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
@@ -2258,6 +2302,219 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len()] = [
     row("intrinsic:llvm.aarch64.crc32cx", on(&[TypeClass::Int]), never(A64_ONLY), ""),
 ];
 
+/// The AArch64 target intrinsics of WP-083, which follow [`INTRINSIC`] on
+/// the list (a slice: one array of both is too large a constant).
+const INTRINSIC_A64: &[SupportRow] = &[
+    row("intrinsic:llvm.aarch64.cls", on(&[TypeClass::Int]), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.cls64", on(&[TypeClass::Int]), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.aesd", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.aese", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.aesimc", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.aesmc", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.bcaxs", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.bcaxu", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.eor3s", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.eor3u", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.rax1", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.sha1c", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.sha1h", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.sha1m", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.sha1p", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.sha1su0", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.sha1su1", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.sha256h", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.sha256h2", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.sha256su0", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.sha256su1", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.sha512h", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.sha512h2", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.sha512su0", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.sha512su1", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.crypto.xar", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.dmb", on(&[TypeClass::Int]), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.dsb", on(&[TypeClass::Int]), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.hint", on(&[TypeClass::Int]), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.isb", on(&[TypeClass::Int]), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.abs", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.addp", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.bfcvt", todo(LATER), never(A64_ONLY), "bfloat"),
+    row("intrinsic:llvm.aarch64.neon.bfcvtn", todo(LATER), never(A64_ONLY), "bfloat"),
+    row("intrinsic:llvm.aarch64.neon.bfcvtn2", todo(LATER), never(A64_ONLY), "bfloat"),
+    row("intrinsic:llvm.aarch64.neon.bfdot", todo(LATER), never(A64_ONLY), "bfloat"),
+    row("intrinsic:llvm.aarch64.neon.bfmlalb", todo(LATER), never(A64_ONLY), "bfloat"),
+    row("intrinsic:llvm.aarch64.neon.bfmlalt", todo(LATER), never(A64_ONLY), "bfloat"),
+    row("intrinsic:llvm.aarch64.neon.bfmmla", todo(LATER), never(A64_ONLY), "bfloat"),
+    row("intrinsic:llvm.aarch64.neon.cls", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fabd", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.facge", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.facgt", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.faddp", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.faddv", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fcvtas", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fcvtau", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fcvtms", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fcvtmu", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fcvtns", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fcvtnu", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fcvtps", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fcvtpu", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fcvtxn", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fcvtzs", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fcvtzu", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fmax", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fmaxnm", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fmaxnmp", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fmaxnmv", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fmaxp", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fmaxv", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fmin", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fminnm", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fminnmp", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fminnmv", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fminp", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fminv", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fmlal", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fmlal2", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fmlsl", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fmlsl2", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.fmulx", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.frecpe", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.frecps", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.frecpx", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.frint32x", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.frint32z", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.frint64x", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.frint64z", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.frsqrte", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.frsqrts", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.ld1x2", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.ld1x3", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.ld1x4", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.ld2", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.ld2lane", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.ld2r", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.ld3", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.ld3lane", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.ld3r", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.ld4", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.ld4lane", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.ld4r", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.pmul", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.pmull", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.pmull64", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.raddhn", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.rshrn", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.rsubhn", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sabd", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.saddlp", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.saddlv", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.saddv", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.scalar.sqxtn", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.scalar.sqxtun", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.scalar.uqxtn", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sdot", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.shadd", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.shsub", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.smax", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.smaxp", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.smaxv", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.smin", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sminp", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sminv", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.smmla", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.smull", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqabs", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqadd", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqdmulh", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqdmulh.lane", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqdmulh.laneq", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqdmull", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqdmulls.scalar", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqneg", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqrdmlah", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqrdmlsh", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqrdmulh", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqrdmulh.lane", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqrdmulh.laneq", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqrshl", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqrshrn", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqrshrun", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqshl", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqshlu", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqshrn", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqshrun", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqsub", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqxtn", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sqxtun", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.srhadd", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.srshl", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.sshl", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.st1x2", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.st1x3", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.st1x4", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.st2", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.st2lane", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.st3", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.st3lane", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.st4", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.st4lane", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.suqadd", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.tbl1", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.tbl2", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.tbl3", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.tbl4", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.tbx1", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.tbx2", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.tbx3", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.tbx4", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.uabd", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.uaddlp", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.uaddlv", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.uaddv", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.udot", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.uhadd", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.uhsub", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.umax", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.umaxp", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.umaxv", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.umin", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.uminp", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.uminv", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.ummla", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.umull", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.uqadd", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.uqrshl", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.uqrshrn", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.uqshl", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.uqshrn", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.uqsub", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.uqxtn", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.urecpe", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.urhadd", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.urshl", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.ursqrte", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.usdot", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.ushl", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.usmmla", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.usqadd", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.vcadd.rot270", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.vcadd.rot90", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.vcmla.rot0", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.vcmla.rot180", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.vcmla.rot270", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.vcmla.rot90", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.vcvtfp2fxs", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.vcvtfp2fxu", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.vcvtfp2hf", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.vcvtfxs2fp", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.vcvtfxu2fp", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.vcvthf2fp", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.vsli", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.neon.vsri", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.sisd.fabd", on(NEON), never(A64_ONLY), "WP-083"),
+    row("intrinsic:llvm.aarch64.sisd.fcvtxn", on(NEON), never(A64_ONLY), "WP-083"),
+];
+
 // ---- the table ----
 
 const EMPTY: SupportRow = both("", ON, "");
@@ -2289,7 +2546,8 @@ pub(crate) const ROW_COUNT: usize = MODULE.len()
     + LANDINGPAD.len()
     + OPERAND.len()
     + CONST_EXPR.len()
-    + INTRINSIC.len();
+    + INTRINSIC.len()
+    + INTRINSIC_A64.len();
 
 /// The support matrix (§8.2): every construct that has a row, grouped as
 /// [`SUPPORT_GROUPS`] lists the groups.
@@ -2333,7 +2591,8 @@ pub static SUPPORT_ROWS: [SupportRow; ROW_COUNT] = {
         LANDINGPAD,
         OPERAND,
         CONST_EXPR,
-        INTRINSIC
+        INTRINSIC,
+        INTRINSIC_A64
     );
     assert!(at == ROW_COUNT);
     out
@@ -2455,6 +2714,7 @@ pub(crate) mod at {
     pub(crate) const INIT_BLOCKADDRESS: usize = find("init:blockaddress");
     pub(crate) const INIT_SYM_DIFF: usize = find("init:sym-diff");
     pub(crate) const INIT_SYM_DIFF_PLT: usize = find("init:sym-diff-plt");
+    pub(crate) const INIT_BLOCK_DIFF: usize = find("init:block-diff");
     pub(crate) const INIT_INT_OF_ADDR: usize = find("init:int-of-addr");
     pub(crate) const INIT_DSO_LOCAL_EQUIVALENT: usize = find("init:dso-local-equivalent");
     pub(crate) const INIT_NO_CFI: usize = find("init:no-cfi");
@@ -2517,6 +2777,7 @@ pub(crate) mod at {
     pub(crate) const OPERAND_ADDR_OF_INT: usize = find("operand:addr-of-int");
     pub(crate) const OPERAND_INT_OF_ADDR: usize = find("operand:int-of-addr");
     pub(crate) const OPERAND_SYM_DIFF: usize = find("operand:sym-diff");
+    pub(crate) const OPERAND_BLOCK_DIFF: usize = find("operand:block-diff");
     pub(crate) const OPERAND_DSO_LOCAL_EQUIVALENT: usize = find("operand:dso-local-equivalent");
     pub(crate) const OPERAND_NO_CFI: usize = find("operand:no-cfi");
     pub(crate) const OPERAND_ADDRESS_IN_AGGREGATE: usize = find("operand:address-in-aggregate");

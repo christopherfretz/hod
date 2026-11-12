@@ -1044,7 +1044,7 @@ use AttrClass::{Dropped, Kept, Rejected};
 /// Keyword rows first, each group ordered by name. A name with no row is
 /// [`AttrClass::Rejected`]; the `Rejected` rows are the names LLVM defines
 /// that were looked at and deliberately left there.
-pub const ATTRIBUTES: [AttrInfo; 139] = [
+pub const ATTRIBUTES: [AttrInfo; 140] = [
     kw("align", Kept),
     kw("alignstack", Kept),
     kw("allocalign", Dropped),
@@ -1153,6 +1153,7 @@ pub const ATTRIBUTES: [AttrInfo; 139] = [
     st("branch-target-enforcement", Kept),
     st("denormal-fp-math", Rejected),
     st("denormal-fp-math-f32", Rejected),
+    st("fmv-features", Dropped),
     st("frame-pointer", Kept),
     st("function-instrument", Kept),
     st("guarded-control-stack", Kept),
@@ -1214,7 +1215,7 @@ pub fn attr_info(syntax: AttrSyntax, name: &[u8]) -> Option<&'static AttrInfo> {
 
 /// The positions in [`ATTRIBUTES`] of the string rows that match by
 /// prefix; a test checks that they are all of them.
-const PREFIXED_STRING_ROWS: [usize; 1] = [KEYWORD_ROWS + 13];
+const PREFIXED_STRING_ROWS: [usize; 1] = [KEYWORD_ROWS + 14];
 
 /// The class of the attribute `name` written as `syntax` (§5.7). A name
 /// the table does not have is [`AttrClass::Rejected`].

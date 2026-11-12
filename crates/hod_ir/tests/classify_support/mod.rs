@@ -586,6 +586,14 @@ fn global_row(name: &str, arch: Arch) -> Program {
     }
 }
 
+/// A label difference (WP-095): block 0 of `f` less block 0 of `f`, as
+/// a reader folds `sub (ptrtoint blockaddress, ptrtoint blockaddress)`.
+fn block_diff(m: &mut Module, f: SymId) -> hod_ir::IrResult<ConstId> {
+    let block = m.consts.block_addr(f, BlockId::new(0))?;
+    let int = m.consts.int_of_addr(&m.types, I64, block)?;
+    m.consts.fold_binary(&m.types, ConstOp::Sub, int, int)
+}
+
 fn init_row(name: &str, arch: Arch) -> Program {
     let mut m = module(arch);
     let g = variable(&mut m, "g", I32);
@@ -600,6 +608,11 @@ fn init_row(name: &str, arch: Arch) -> Program {
             m.consts.block_addr(f.0, BlockId::new(0))
         }
         "sym-diff" => m.consts.sym_diff(&m.types, I64, g, h, 0, false),
+        "block-diff" => {
+            let f = define(&mut m, "f", VOID, &[]);
+            bodies.push(body(&m, f, |_, _| {}));
+            block_diff(&mut m, f.0)
+        }
         "sym-diff-plt" => m.consts.sym_diff(&m.types, I32, g, h, 0, true),
         "int-of-addr" => {
             let addr = m.consts.addr(g, 0).unwrap();
@@ -717,6 +730,7 @@ fn operand_row(name: &str, arch: Arch) -> Program {
             constant(m.consts.int_of_addr(&m.types, I64, addr).unwrap())
         }
         "sym-diff" => constant(m.consts.sym_diff(&m.types, I64, g, h, 0, false).unwrap()),
+        "block-diff" => constant(block_diff(m, fx.f.0).unwrap()),
         "dso-local-equivalent" => constant(m.consts.dso_local_equivalent(fx.callee.0).unwrap()),
         "no-cfi" => constant(m.consts.no_cfi(fx.callee.0).unwrap()),
         "address-in-aggregate" => {

@@ -191,6 +191,9 @@ impl Target for A64 {
         sig: &Sig<'_>,
         out: &mut Assignment,
     ) -> Result<(), AbiUnsupported> {
+        if let Some(assigned) = crate::tail2::assign_preserve_most(types, sig, out) {
+            return assigned;
+        }
         abi::assign(types, sig, out)
     }
 
@@ -286,7 +289,7 @@ impl Target for A64 {
                 atomic::rmw(cx, inst, op, ptr, value, mem)
             }
             InstKind::ExtractElement { vector, index } => {
-                vector::extract_element(cx, inst, vector, index)
+                crate::tail2::extract_element(cx, inst, vector, index)
             }
             InstKind::InsertElement { vector, value, index } => {
                 vector::insert_element(cx, inst, vector, value, index)

@@ -642,6 +642,9 @@ impl<'a> Machine<'_, 'a> {
             FixupTarget::Sym(sym) | FixupTarget::Plt(sym) => self.sym_addr(sym),
             FixupTarget::Diff { .. } | FixupTarget::PltDiff { .. } => unsupported("const:symdiff"),
             FixupTarget::Block { func, block } => self.block_addr(func, block),
+            FixupTarget::BlockDiff { func, a, b } => {
+                Ok(self.block_addr(func, a)?.wrapping_sub(self.block_addr(func, b)?))
+            }
         }
     }
 

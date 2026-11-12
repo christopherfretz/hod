@@ -126,7 +126,12 @@ impl Batch {
     /// disagreement. Skips (after a note) when LLVM's tools are missing and
     /// not required.
     pub fn check(self, label: &str) {
-        let Some(tools) = Tools::find() else { return };
+        self.check_with(label, Tools::find());
+    }
+
+    /// [`Batch::check`] with the given tools (`None` skips).
+    pub fn check_with(self, label: &str, tools: Option<Tools>) {
+        let Some(tools) = tools else { return };
         let (mismatches, report) = self.examine(&tools);
         assert!(mismatches == 0, "{label}: {mismatches} disagreement(s) with LLVM\n{report}");
         let with_asm = self.rejections.iter().filter(|r| r.asm.is_some()).count();
@@ -147,6 +152,7 @@ pub struct Tools {
     mc: PathBuf,
     objcopy: PathBuf,
     objdump: PathBuf,
+    features: String,
     scratch: Scratch,
 }
 
@@ -159,10 +165,22 @@ const TRIPLE: &str = "--triple=aarch64-unknown-linux-gnu";
 
 impl Tools {
     pub fn find() -> Option<Self> {
+        Self::find_with(None, "")
+    }
+
+    /// The tools of LLVM `major` (the newest found when `None`), with
+    /// `extra` features (a comma-separated list starting with a comma, or
+    /// empty) added to [`FEATURES`].
+    pub fn find_with(major: Option<u32>, extra: &str) -> Option<Self> {
+        let find = |name: &str| match major {
+            Some(major) => tool(&format!("{name}-{major}")),
+            None => tool(name),
+        };
         Some(Self {
-            mc: tool("llvm-mc")?,
-            objcopy: tool("llvm-objcopy")?,
-            objdump: tool("llvm-objdump")?,
+            mc: find("llvm-mc")?,
+            objcopy: find("llvm-objcopy")?,
+            objdump: find("llvm-objdump")?,
+            features: format!("{FEATURES}{extra}"),
             scratch: Scratch::new("mc-a64"),
         })
     }
@@ -176,7 +194,7 @@ impl Tools {
             &self.mc,
             [
                 TRIPLE.as_ref(),
-                format!("-mattr={FEATURES}").as_ref(),
+                format!("-mattr={}", self.features).as_ref(),
                 "-filetype=obj".as_ref(),
                 "-o".as_ref(),
                 obj.as_os_str(),
@@ -224,7 +242,7 @@ impl Tools {
                 "--no-show-raw-insn".as_ref(),
                 "-M".as_ref(),
                 "no-aliases".as_ref(),
-                format!("--mattr={FEATURES}").as_ref(),
+                format!("--mattr={}", self.features).as_ref(),
                 obj.as_os_str(),
             ],
         );

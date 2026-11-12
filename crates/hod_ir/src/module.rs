@@ -519,7 +519,10 @@ impl Module {
     /// # Errors
     /// `InvalidModuleFlag` for a behavior outside 1 to 8; a name set
     /// twice (not counting `Require` flags); a `Max` or `Min` flag whose
-    /// value is not an integer; and a known flag whose value is not an
+    /// value is not an integer; a `Require`, `Append` or `AppendUnique`
+    /// flag whose value is not a metadata node (`FlagValue::Other`); a
+    /// `wchar_size` or `SemanticInterposition` flag whose value is not an
+    /// integer; and a known flag whose value is not an
     /// integer or is not one of the flag's values. The last is stricter
     /// than LLVM, which takes any integer and fails or misbehaves later.
     pub fn set_module_flag(

@@ -1017,3 +1017,52 @@ fn realtime_function_attributes() {
         assert!(llvm.objection(&both).is_some(), "{both}");
     }
 }
+
+/// A module flag whose value does not fit its behavior (§2.1):
+/// `Module::set_module_flag` refuses a `require`, `append` or
+/// `append-unique` flag without a node, and `wchar_size` that is not an
+/// integer. LLVM refuses the text of each, and takes the node.
+#[test]
+fn module_flag_shapes() {
+    use hod_ir::FlagValue;
+    for (behavior, value) in [
+        (3, FlagValue::Int(1)),
+        (5, FlagValue::Int(1)),
+        (6, FlagValue::Str(b"a")),
+        (5, FlagValue::Str(b"a")),
+    ] {
+        let error = module().set_module_flag(behavior, b"hod.x", value).unwrap_err();
+        assert_eq!(error.kind, IrErrorKind::InvalidModuleFlag, "{behavior} {value:?}");
+    }
+    let error = module().set_module_flag(1, b"wchar_size", FlagValue::Str(b"4")).unwrap_err();
+    assert_eq!(error.kind, IrErrorKind::InvalidModuleFlag);
+    for kept in [3, 5, 6] {
+        module().set_module_flag(kept, b"hod.x", FlagValue::Other).unwrap();
+    }
+    let mut m = module();
+    m.set_module_flag(1, b"hod.x", FlagValue::Int(1)).unwrap();
+    m.set_module_flag(1, b"hod.y", FlagValue::Int(1)).unwrap();
+    for llvm in [22, 19].into_iter().filter_map(Llvm::new) {
+        let text = printed(&m, llvm.dialect(), &[]);
+        llvm.accept(&text, "an error flag with an integer");
+        let line = "!{i32 1, !\"hod.x\", i32 1}";
+        assert!(text.contains(line), "{text}");
+        let edit = |with: &str| text.replace(line, with);
+        for accepted in [
+            "!{i32 5, !\"hod.x\", !{!\"a\"}}",
+            "!{i32 6, !\"hod.x\", !{!\"a\"}}",
+            "!{i32 3, !\"hod.x\", !{!\"hod.y\", i32 1}}",
+        ] {
+            llvm.accept(&edit(accepted), accepted);
+        }
+        for refused in [
+            "!{i32 5, !\"hod.x\", i32 1}",
+            "!{i32 6, !\"hod.x\", !\"a\"}",
+            "!{i32 3, !\"hod.x\", i32 1}",
+            "!{i32 1, !\"wchar_size\", !\"4\"}",
+            "!{i32 1, !\"SemanticInterposition\", !\"1\"}",
+        ] {
+            assert!(llvm.objection(&edit(refused)).is_some(), "LLVM {}: {refused}", llvm.major);
+        }
+    }
+}

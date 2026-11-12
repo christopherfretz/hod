@@ -85,6 +85,9 @@ pub(crate) struct Inline {
     objptr: Vec<(u32, u32)>,
     /// `(subprogram DIE, function index)`, sorted when sealed.
     fn_by_die: Vec<(u32, u32)>,
+    /// The functions' variable DIEs in `llc`'s `ConcreteEntities` order
+    /// (WP-094): by function, then by record, not by DIE.
+    entities: Vec<u32>,
 }
 
 impl Inline {
@@ -458,6 +461,52 @@ impl UnitPlan<'_> {
             self.check_inlined(scope)?;
             self.create_abstract(scope)
         }
+    }
+
+    /// Records the variable DIEs the function just added made, in the
+    /// order of its records (WP-094, §6.13): `llc`'s `collectEntityInfo`
+    /// makes its concrete entities in the order of the frame table,
+    /// which is the order of the declarations, and
+    /// `finishEntityDefinitions` makes their types in that order.
+    pub(crate) fn record_entities(&mut self, f: &crate::func::FunctionInput<'_>, added: bool) {
+        let Some(func) = self.funcs.len().checked_sub(1).filter(|_| added) else { return };
+        let start = self.locals.iter().rposition(|l| l.func as usize != func).map_or(0, |i| i + 1);
+        // By node: the instances of one variable inlined twice have one
+        // type, so which record is which instance does not matter.
+        let mut tail: Vec<(u32, u32)> = self.locals[start..]
+            .iter()
+            .filter(|l| matches!(l.what, LocalWhat::Var { .. }))
+            .map(|l| (self.dies[l.die as usize].node.raw(), l.die))
+            .collect();
+        tail.sort_unstable();
+        let mut done = vec![false; tail.len()];
+        for v in f.vars {
+            let node = v.node.raw();
+            let mut i = tail.partition_point(|&(n, _)| n < node);
+            while i < tail.len() && tail[i].0 == node && done[i] {
+                i += 1;
+            }
+            if i < tail.len() && tail[i].0 == node {
+                done[i] = true;
+                self.inline.entities.push(tail[i].1);
+            }
+        }
+    }
+
+    /// `finishEntityDefinitions`: the variables' types, in the order of
+    /// [`Self::record_entities`]. One with an abstract instance names
+    /// it instead (WP-085).
+    pub(crate) fn finish_entities(&mut self) -> Result<(), Error> {
+        for i in 0..self.inline.entities.len() {
+            let d = self.dies[self.inline.entities[i] as usize];
+            if let (Kind::LocalParam | Kind::LocalVar, DiNode::LocalVariable(v)) =
+                (d.kind, self.debug.node(d.node))
+                && self.inline.die(d.node).is_none()
+            {
+                self.reference_type(d.node, "type", v.ty.unwrap_or(DiId::NONE))?;
+            }
+        }
+        Ok(())
     }
 
     /// What sealing checks and sorts (WP-085).

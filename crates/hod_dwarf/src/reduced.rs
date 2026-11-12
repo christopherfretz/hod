@@ -143,7 +143,11 @@ const MINIMAL_SP_FLAGS: u32 =
 /// The parent of a subprogram DIE in a `LineTablesOnly` unit: the unit
 /// (`getOrCreateSubprogramDIE(SP, Minimal)`,
 /// `constructAbstractSubprogramScopeDIE`), whatever its scope.
-pub(crate) fn minimal_parent(plan: &UnitPlan<'_>, sp_id: DiId, sp: &DiSubprogram<'_>) -> Result<u32, Error> {
+pub(crate) fn minimal_parent(
+    plan: &UnitPlan<'_>,
+    sp_id: DiId,
+    sp: &DiSubprogram<'_>,
+) -> Result<u32, Error> {
     if !sp.sp_flags.contains(SpFlags::DEFINITION) || sp.unit != Some(plan.unit) {
         return Err(unsupported(sp_id, "debug:subprogram-not-definition"));
     }

@@ -217,9 +217,10 @@ const fn has(flags: DiFlags, f: DiFlags) -> bool {
 /// in a way hod does not yet write, and is refused.
 /// `DIFlagThunk` (kiln's virtual thunks) changes nothing in `llc`'s DIE
 /// (WP-087, checked with `llc` 19 and 22).
-const DEF_FLAGS: u32 =
+pub(crate) const DEF_FLAGS: u32 =
     DiFlags::PROTOTYPED.0 | DiFlags::ARTIFICIAL.0 | DiFlags::NO_RETURN.0 | DiFlags::THUNK.0;
-const DEF_SP_FLAGS: u32 = SpFlags::DEFINITION.0 | SpFlags::LOCAL_TO_UNIT.0 | SpFlags::OPTIMIZED.0;
+pub(crate) const DEF_SP_FLAGS: u32 =
+    SpFlags::DEFINITION.0 | SpFlags::LOCAL_TO_UNIT.0 | SpFlags::OPTIMIZED.0;
 
 /// `dwarf::isC`, as the type graph has it.
 const fn is_c(language: u16) -> bool {
@@ -229,8 +230,8 @@ const fn is_c(language: u16) -> bool {
 /// The expression ops of a declared location after `DW_OP_fbreg`, or
 /// the stable name of why there are none (§6.4). Each op is a standard
 /// DWARF operation written as itself; LLVM's own operations are refused.
-fn check_expr(plan: &UnitPlan<'_>, expr: ExprId) -> Result<(), &'static str> {
-    for op in plan.debug.ops(expr) {
+pub(crate) fn check_expr(debug: &hod_ir::DebugInfo, expr: ExprId) -> Result<(), &'static str> {
+    for op in debug.ops(expr) {
         match op {
             DiOp::Fragment(..) => return Err("debug:fragment"),
             DiOp::StackValue
@@ -345,6 +346,7 @@ impl<'a> UnitPlan<'a> {
             s.scope_of[sc.node.index()] = NONE;
         }
         self.fn_scratch = s;
+        self.record_entities(f, result.is_ok()); // WP-094: §6.13
         result.map(|_| ())
     }
 
@@ -441,7 +443,12 @@ impl<'a> UnitPlan<'a> {
                 let parent = self.subprogram_parent(sp_id, sp)?;
                 self.push(sp_id, parent, Kind::Subprogram)
             }
-            early => early,
+            // Made for a local type its own inlined code reached
+            // (WP-094, §6.13): the function's from now on.
+            early => {
+                self.inline.take_early(early);
+                early
+            }
         };
         let func = self.funcs.len() as u32;
         self.funcs.push(FnData {
@@ -480,7 +487,7 @@ impl<'a> UnitPlan<'a> {
                         return Err(unsupported(v.node, "debug:variable-alignment"));
                     }
                     if let LocalPlace::Frame(_) | LocalPlace::FrameIndirect(_) = v.place
-                        && let Err(name) = check_expr(self, v.expr)
+                        && let Err(name) = check_expr(self.debug, v.expr)
                     {
                         return Err(unsupported(v.node, name));
                     }
@@ -780,17 +787,7 @@ impl<'a> UnitPlan<'a> {
             }
             self.seal_definition(i)?;
         }
-        // `finishEntityDefinitions`: the variables' types, in DIE order.
-        for i in 0..self.locals.len() {
-            let die = self.locals[i].die;
-            let d = self.dies[die as usize];
-            if let (Kind::LocalParam | Kind::LocalVar, DiNode::LocalVariable(v)) =
-                (d.kind, self.debug.node(d.node))
-                && self.inline.die(d.node).is_none()
-            {
-                self.reference_type(d.node, "type", v.ty.unwrap_or(DiId::NONE))?;
-            }
-        }
+        self.finish_entities()?; // `finishEntityDefinitions` (WP-094: §6.13)
         self.finish_types()?;
         self.seal_inline()?;
         self.seal_tables();

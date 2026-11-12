@@ -501,11 +501,8 @@ impl Fx<'_, '_, '_> {
         let count_ty = self.ty(o.next()?)?;
         let count_id = o.next()?;
         let packed = o.next()?;
-        let space = if o.left() > 0 {
-            o.u32()?
-        } else {
-            self.module.types.data_layout().alloca_addr_space
-        };
+        let space =
+            if o.left() > 0 { o.u32()? } else { self.module.types.data_layout().alloca_addr_space };
         let count = self.get(count_id, Some(count_ty))?;
         if packed & (1 << 6) == 0 {
             return fail(
@@ -523,7 +520,8 @@ impl Fx<'_, '_, '_> {
         if !types.is_sized(ty) || ty == TypeId::TOKEN {
             return self.mistyped("invalid type for alloca");
         }
-        let result = if space == 0 { TypeId::PTR } else { ir(self.at, self.module.types.ptr(space))? };
+        let result =
+            if space == 0 { TypeId::PTR } else { ir(self.at, self.module.types.ptr(space))? };
         if in_alloca {
             self.note("alloca:inalloca");
             return Ok((result, self.stand_in(result)?));
@@ -904,8 +902,7 @@ impl Fx<'_, '_, '_> {
             return self.mistyped(invalid);
         }
         let result = self.shaped(elem, Some((mask_len, scalable)))?;
-        let value =
-            self.b.shuffle_vector(result, first.value, second.value, &self.s.mask);
+        let value = self.b.shuffle_vector(result, first.value, second.value, &self.s.mask);
         Ok((result, ir(self.at, value)?))
     }
 
@@ -1165,7 +1162,8 @@ impl Fx<'_, '_, '_> {
             if index == 0 {
                 ret_attrs = built;
             } else {
-                let slot = usize::try_from(index - 1).ok().and_then(|i| self.s.arg_attrs.get_mut(i));
+                let slot =
+                    usize::try_from(index - 1).ok().and_then(|i| self.s.arg_attrs.get_mut(i));
                 let Some(slot) = slot else {
                     return self.invalid("attributes of an argument the call does not have");
                 };
@@ -1182,7 +1180,11 @@ impl Fx<'_, '_, '_> {
                 self.note(name);
             }
         }
-        Ok((flags & (FnAttrs::NORETURN | FnAttrs::NOUNWIND | FnAttrs::RETURNS_TWICE), ret_attrs, any))
+        Ok((
+            flags & (FnAttrs::NORETURN | FnAttrs::NOUNWIND | FnAttrs::RETURNS_TWICE),
+            ret_attrs,
+            any,
+        ))
     }
 
     /// The end of a call that is not emitted: an `invoke` or `callbr`
@@ -1460,7 +1462,8 @@ impl Fx<'_, '_, '_> {
                 kept |= flag;
             }
         }
-        let asm = InlineAsm { template: &template, constraints: &constraints, flags: kept, ty: fn_ty };
+        let asm =
+            InlineAsm { template: &template, constraints: &constraints, flags: kept, ty: fn_ty };
         let id = ir(self.at, self.module.inline_asm(&asm))?;
         ir(self.at, Value::asm(id))
     }

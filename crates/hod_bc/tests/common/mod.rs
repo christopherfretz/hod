@@ -286,9 +286,8 @@ fn ids_written_out(module: &Module, text: &str, name: &dyn Fn(SymId) -> String) 
                     let digits =
                         rest[prefix.len()..].iter().take_while(|b| b.is_ascii_digit()).count();
                     let end = prefix.len() + digits;
-                    let ends_word = rest
-                        .get(end)
-                        .is_none_or(|b| !(b.is_ascii_alphanumeric() || *b == b'_'));
+                    let ends_word =
+                        rest.get(end).is_none_or(|b| !(b.is_ascii_alphanumeric() || *b == b'_'));
                     (digits > 0 && ends_word).then(|| {
                         let n: u32 = text[i + prefix.len()..i + end].parse().unwrap_or(u32::MAX);
                         (*prefix, n, end)
@@ -353,8 +352,12 @@ pub fn body_dump(module: &Module, numbered: &[SymId], body: &hod_ir::Body) -> St
                         .cases()
                         .map(|(c, block)| format!("c{} -> {block:?}", c.raw()))
                         .collect();
-                    format!("Switch {{ cond: {:?}, default: {:?}, cases: [{}] }}",
-                        switch.cond, switch.default, cases.join(", "))
+                    format!(
+                        "Switch {{ cond: {:?}, default: {:?}, cases: [{}] }}",
+                        switch.cond,
+                        switch.default,
+                        cases.join(", ")
+                    )
                 }
                 kind => format!("{kind:?}"),
             };

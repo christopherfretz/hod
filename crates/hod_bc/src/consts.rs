@@ -245,11 +245,7 @@ impl Values {
             Some(Place::Global(index)) => return Ok((self.address(module, index, at)?, 0)),
             Some(Place::Const(c)) => c,
             None => {
-                return fail(
-                    BcErrorKind::Invalid,
-                    at,
-                    format!("value id {id} names no constant"),
-                );
+                return fail(BcErrorKind::Invalid, at, format!("value id {id} names no constant"));
             }
         };
         if let Memo::Done(built, notes) = self.memo(root) {

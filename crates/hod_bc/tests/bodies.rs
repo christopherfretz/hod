@@ -22,7 +22,8 @@ const WORKERS: usize = 8;
 const MAJORS: [u32; 2] = [19, 22];
 
 enum Outcome {
-    Agree,
+    /// Agree, with the bodies delivered and the functions unsupported.
+    Agree(usize, usize),
     BothRefuse(String),
     Tool(String),
     Differ(String, String, String),
@@ -47,7 +48,14 @@ fn compare(text: &[u8], major: u32) -> Outcome {
         }
     };
     match (common::read_text_bodies(&canonical), common::read_bitcode_bodies(&bitcode)) {
-        (Ok(a), Ok(b)) if a == b => Outcome::Agree,
+        (Ok(a), Ok(b)) if a == b => {
+            let defines = a.lines().filter(|line| line.starts_with("define ")).count();
+            let unsupported = a
+                .lines()
+                .filter(|line| line.starts_with("define ") && line.contains(" unsupported "))
+                .count();
+            Outcome::Agree(defines - unsupported, unsupported)
+        }
         (Ok(a), Ok(b)) => Outcome::Differ(first_difference(&a, &b), a, b),
         (Err(a), Err(b)) => Outcome::BothRefuse(format!("{} / {}", kind(&a), kind(&b))),
         (Err(a), Ok(b)) => Outcome::Differ(format!("only hod_ll refuses: {}", head(&a)), a, b),
@@ -93,7 +101,7 @@ fn handwritten_bodies_agree_on_every_major() {
             continue;
         }
         match compare(&text, major) {
-            Outcome::Agree => {}
+            Outcome::Agree(..) => {}
             Outcome::Differ(class, a, b) => {
                 panic!("LLVM {major}: {class}\n--- hod_ll\n{a}\n--- hod_bc\n{b}")
             }
@@ -111,8 +119,10 @@ fn handwritten_bodies_are_delivered() {
     for major in MAJORS {
         let Ok(bitcode) = common::assemble(major, &text) else { continue };
         let dump = common::read_bitcode_bodies(&bitcode).expect("hod_bc reads the bodies");
-        let unsupported: Vec<&str> =
-            dump.lines().filter(|line| line.starts_with("define ") && line.contains(" unsupported ")).collect();
+        let unsupported: Vec<&str> = dump
+            .lines()
+            .filter(|line| line.starts_with("define ") && line.contains(" unsupported "))
+            .collect();
         assert_eq!(
             unsupported,
             [
@@ -123,7 +133,10 @@ fn handwritten_bodies_are_delivered() {
             ],
             "LLVM {major}"
         );
-        assert!(dump.contains("unsupported global-metadata:custom Some(\"with_md\")"), "LLVM {major}");
+        assert!(
+            dump.contains("unsupported global-metadata:custom Some(\"with_md\")"),
+            "LLVM {major}"
+        );
         assert!(!dump.contains("global-metadata:prof"), "LLVM {major}");
     }
 }
@@ -133,22 +146,25 @@ fn handwritten_bodies_are_delivered() {
 #[test]
 fn bodies_read_in_parallel_are_the_same() {
     let text = handwritten();
-    let Ok(bitcode) = common::assemble(MAJORS[1], &text).or_else(|_| common::assemble(MAJORS[0], &text))
+    let Ok(bitcode) =
+        common::assemble(MAJORS[1], &text).or_else(|_| common::assemble(MAJORS[0], &text))
     else {
         eprintln!("skipped: no llvm-as");
         return;
     };
     let read = hod_bc::read_module(&bitcode, &hod_bc::ReadOptions::default()).expect("module");
     let numbered = read.bits.numbered_globals().to_vec();
-    let one = |module: &mut hod_ir::Module, reader: &mut hod_bc::BodyReader<'_, '_>, index: usize| {
-        let function = &read.bits.functions()[index];
-        let body = reader.read(module, function).expect("body");
-        body.map(|body| common::body_dump(module, &numbered, &body))
-    };
+    let one =
+        |module: &mut hod_ir::Module, reader: &mut hod_bc::BodyReader<'_, '_>, index: usize| {
+            let function = &read.bits.functions()[index];
+            let body = reader.read(module, function).expect("body");
+            body.map(|body| common::body_dump(module, &numbered, &body))
+        };
     let mut module = read.module.clone();
     let mut reader = hod_bc::BodyReader::new(&read.bits);
     let count = read.bits.functions().len();
-    let sequential: Vec<Option<String>> = (0..count).map(|i| one(&mut module, &mut reader, i)).collect();
+    let sequential: Vec<Option<String>> =
+        (0..count).map(|i| one(&mut module, &mut reader, i)).collect();
     let parallel: Mutex<Vec<(usize, Option<String>)>> = Mutex::new(Vec::new());
     std::thread::scope(|scope| {
         for worker in 0..3 {
@@ -210,14 +226,18 @@ fn corpus_bodies_agree() {
     let mut results = results.into_inner().expect("results");
     results.sort_by_key(|&(index, ..)| index);
     // Per major: modules, agree, both refuse, differ, tool failures.
-    let mut tallies: BTreeMap<u32, [usize; 5]> = BTreeMap::new();
+    let mut tallies: BTreeMap<u32, [usize; 7]> = BTreeMap::new();
     let mut classes: BTreeMap<(u32, String), (usize, String)> = BTreeMap::new();
     for (index, major, outcome) in results {
         let tally = tallies.entry(major).or_default();
         tally[0] += 1;
         let path = paths[index].display().to_string();
         let (slot, class) = match outcome {
-            Outcome::Agree => (1, None),
+            Outcome::Agree(delivered, unsupported) => {
+                tally[5] += delivered;
+                tally[6] += unsupported;
+                (1, None)
+            }
             Outcome::BothRefuse(kinds) => (2, Some(format!("both refuse {kinds}"))),
             Outcome::Tool(error) => (4, Some(format!("tool {error}"))),
             Outcome::Differ(class, a, b) => {
@@ -235,14 +255,70 @@ fn corpus_bodies_agree() {
             classes.entry((major, class)).or_insert((0, path)).0 += 1;
         }
     }
-    eprintln!("| LLVM | modules | agree | both refuse | differ | tool failures |");
-    eprintln!("|---|---|---|---|---|---|");
+    eprintln!(
+        "| LLVM | modules | agree | both refuse | differ | tool failures | bodies | unsupported |"
+    );
+    eprintln!("|---|---|---|---|---|---|---|---|");
     for (major, t) in &tallies {
-        eprintln!("| {major} | {} | {} | {} | {} | {} |", t[0], t[1], t[2], t[3], t[4]);
+        eprintln!(
+            "| {major} | {} | {} | {} | {} | {} | {} | {} |",
+            t[0], t[1], t[2], t[3], t[4], t[5], t[6]
+        );
     }
     for ((major, class), (count, example)) in &classes {
         eprintln!("  llvm{major} {count:5} {class}  (e.g. {example})");
     }
     let differ: usize = tallies.values().map(|t| t[3]).sum();
     assert_eq!(differ, 0, "{differ} modules differ");
+}
+
+/// The module metadata slot table. Metadata only one function uses is
+/// written in that function's block, so this module's metadata hangs off a
+/// global and a named node.
+#[test]
+fn module_metadata_slots() {
+    let text = b"target triple = \"x86_64-unknown-linux-gnu\"\n\
+        @g = global i32 0, !custom !0\n\
+        !llvm.ident = !{!1}\n\
+        !0 = distinct !{!\"x\", i32 7, !1, null}\n\
+        !1 = !{!\"clang\"}\n";
+    for major in MAJORS {
+        let Ok(bitcode) = common::assemble(major, text) else { continue };
+        let read = hod_bc::read_module(&bitcode, &hod_bc::ReadOptions::default()).expect("module");
+        let bits = &read.bits;
+        let count = bits.metadata_count();
+        let all: Vec<hod_bc::Metadata<'_, '_>> =
+            (0..count as u64).map(|id| bits.metadata(id).expect("defined")).collect();
+        assert!(bits.metadata(count as u64).is_none(), "LLVM {major}");
+        let strings: Vec<&[u8]> = all
+            .iter()
+            .filter_map(|m| match m {
+                hod_bc::Metadata::String(s) => Some(*s),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            strings.contains(&&b"x"[..]) && strings.contains(&&b"clang"[..]),
+            "LLVM {major}: {all:?}"
+        );
+        let nodes: Vec<(bool, &[u64])> = all
+            .iter()
+            .filter_map(|m| match m {
+                hod_bc::Metadata::Node { distinct, operands } => Some((*distinct, *operands)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(nodes.len(), 2, "LLVM {major}: {all:?}");
+        let (_, outer) = nodes.iter().find(|(distinct, _)| *distinct).expect("the distinct node");
+        assert_eq!(outer.len(), 4, "LLVM {major}: {all:?}");
+        assert_eq!(outer[3], 0, "null is operand 0");
+        // Every other operand names a slot (id + 1) of the table.
+        for &op in &outer[..3] {
+            assert!(op >= 1 && bits.metadata(op - 1).is_some(), "LLVM {major}: {all:?}");
+        }
+        assert!(
+            matches!(bits.metadata(outer[1] - 1), Some(hod_bc::Metadata::Value { .. })),
+            "LLVM {major}: {all:?}"
+        );
+    }
 }

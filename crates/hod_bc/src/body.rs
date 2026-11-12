@@ -9,9 +9,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use hod_ir::{
-    Body, FunctionBuilder, IrErrorKind, Module, ParamAttrs, TypeId, TypeKind, Value,
-};
+use hod_ir::{Body, FunctionBuilder, IrErrorKind, Module, ParamAttrs, TypeId, TypeKind, Value};
 
 use crate::attrs::FnGroup;
 use crate::bitstream::{Cursor, Entry};

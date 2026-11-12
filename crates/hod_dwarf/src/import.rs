@@ -4,8 +4,10 @@
 //! `getOrCreateImportedEntityDIE` writes them at the end of the module: a
 //! unit's (`imports:`) in its namespace or the unit, then each function's
 //! (its `retainedNodes`) as the function's last children, before the
-//! template parameters `finishSubprogramDefinitions` adds. The context is
-//! made first, then the entity's DIE if it has none, then the import's.
+//! template parameters `finishSubprogramDefinitions` adds, and those
+//! scoped in its lexical blocks as the blocks' last children (WP-094,
+//! §6.13). The context is made first, then the entity's DIE if it has
+//! none, then the import's.
 
 use hod_ir::{DiId, DiKind, DiNode, DiSubprogram, ExprId, SpFlags};
 

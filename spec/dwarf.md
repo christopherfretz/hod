@@ -1455,6 +1455,104 @@ under §5.7; the rest differ in rows `llc` gives instructions hod does
 not emit (an empty `asm`, a branch), which the debuggers do not see
 when they stop at lines.
 
+### 6.13 The declines left after WP-087 (implemented, WP-094)
+
+**Imports in lexical blocks.** An imported entity a function retains
+whose `scope:` is one of that function's lexical blocks goes under the
+block's DIE, as `llc` writes a scope's deferred local declarations
+(`DeferredLocalDecls`, `createAndAddScopeChildren`). A block with an
+import is written even if it has no variable (`skipLexicalScope`); an
+import whose block has no code is not written (`llc` never visits the
+scope). The imports are made at the end of the module (§6.11): each
+function's own first, in `retainedNodes` order, then those of its blocks
+in the order of the blocks' DIEs (depth first), each block's in
+`retainedNodes` order. Still `debug:import-scope`: an import scoped in a
+block file or in another function's block, and an import in a block of
+a function that has an abstract instance (where `llc` puts it then
+depends on what is inlined, §6.9). kiln++ writes no imported entities.
+
+**The order of the unit's types.** Two rules of `llc`'s, seen in five
+census modules:
+- `finishEntityDefinitions` makes the types of the functions' variables
+  (those of a function without an abstract instance) after the whole
+  module, function by function, and within a function in the order of
+  its variables' records (the frame table of `dbg_declare`s, then the
+  `dbg_value`s: `ConcreteEntities`), not in the order of their DIEs. A
+  catch parameter whose record comes before a block's variable gets its
+  type first. hod records each function's variable DIEs in the order of
+  `FunctionInput::vars` (`Inline::record_entities`) and makes their types
+  in that order (`finish_entities`).
+- `applySubprogramAttributes`: a definition's template parameters (and
+  their types) are made before its return type, so `seal` adds them
+  first.
+
+**A function's own early DIE.** §6.12 makes a function's concrete DIE
+early for a function-local type reached before its function. Such a type
+may be reached by the function's *own* inlined code (a typedef local to
+the function kept as a template argument of an inlined callee, as
+libstdc++'s `_DistanceType` under kiln++): the early DIE is then the
+function's DIE when its body is added. It was left over and refused as
+`debug:local-static` (kiln's `regex-match-libstdcxx.cpp` at `-g`).
+
+**A function's thread-local `static`** (a function's, a block's, a member
+function's, an inlined function's; with or without a dynamic
+initializer) goes where §6.9 puts a function's statics, with no
+`DW_AT_location` on AArch64, as `llc` writes every thread-local variable
+there (§6.11). hod wrote `DW_OP_addrx` of the variable's symbol, an
+address that is not the thread's variable. gdb prints `<optimized out>`,
+lldb `<no location, value may have been optimized out>`, for hod's
+program as for `llc`'s. x86-64 stays `debug:tls-location`.
+
+**Line-tables-only units with inlined code** (`debug:line-tables-inlined`
+is gone). In a `LineTablesOnly` unit (`-gline-tables-only`, `-gmlt`)
+`llc`'s `includeMinimalInlineScopes` writes a function only if it has
+inlined code: a `DW_TAG_subprogram` under the unit whatever its scope,
+with `low_pc`, `high_pc` and `name` (family 89), and its inlined
+subroutines (`abstract_origin`, code, call file, line, column) as
+children, nested as they are inlined. Each inlined function has an
+abstract instance of only `name` and `DW_AT_inline`; a function that is
+also out of line has `DW_AT_abstract_origin` in place of the name. No
+types, parameters, variables or blocks. A function with
+`DIFlagAllCallsDescribed` (`-O1 -gmlt`) stays
+`debug:subprogram-attribute`: its call-site entries need the generated
+code's return addresses.
+
+**`debug:inlined-member` stays** (§6.9: an abstract instance of a member
+function whose declaration is not among its class's elements, or an
+out-of-line definition outside a class): no source reaches it through
+clang 19, clang 22 or kiln++, which list every member function's
+declaration among its class's elements and scope its definitions in
+the class.
+
+**Refusals before code generation.** `hod_dwarf::check_functions`, called
+by the bridge after the `ModuleEmitter` is made (`crates/hod/src/back.rs`),
+declines a module for each function-DIE refusal that depends only on
+metadata, before any function is compiled, with the same names as the
+writer's (`tests/early.rs`):
+
+| name | what |
+|---|---|
+| `debug:subprogram-not-definition` | a function whose subprogram is not a definition |
+| `debug:subprogram-attribute` | thrown types, `spFlags` or (without a declaration) flags hod does not write |
+| `debug:variable-without-type`, `debug:variable-alignment` | a variable record's variable (§6.4, §6.12) |
+| `debug:fragment`, `debug:expression` | a variable record's expression |
+| `debug:label-attribute` | a label without a name, artificial, or a coroutine suspend point |
+| `debug:import-scope`, `debug:import` | a function's import with no scope, or scoped in a block file or another function; one in its own scope of a shape hod does not write |
+| `debug:subprogram-twice` | two bodies with one subprogram |
+
+What still needs the generated code or the plan's state, and is found as
+the function's DIEs are written: a variable whose location the code
+generator refused (its names, as `dbg-value`); the inlined-code refusals
+that depend on which locations survive (`debug:retained-nodes`,
+`debug:inlined-foreign-unit`, `debug:inlined-discriminator`,
+`debug:inlined-local-type`, `debug:inlined-member`);
+`debug:variable-twice` and `debug:object-pointer` (by the DIEs made);
+the type graph's refusals (made at seal); `debug:local-type-scope`; an
+import in a function with an abstract instance, `debug:import-entity`,
+a unit's import scope; `debug:subprogram-scope` and
+`debug:declaration-scope` (by the plan's DIEs); and a function whose
+early DIE got no code (`debug:local-static`).
+
 ## 7. Speed and memory
 
 ### 7.1 Parallel emission and determinism

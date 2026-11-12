@@ -31,4 +31,4 @@ int f2(int a) {
   }
   return a + k;
 }
-int main() { return f1(5) + f2(1) - 50; }
+int main() { return f1(5) + f2(1) - 23; }

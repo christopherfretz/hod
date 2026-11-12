@@ -39,6 +39,8 @@ The interpreter is a library with no global state. Nothing derivable from
 its input makes it panic: a body `Body::verify` accepts leads to a result,
 a trap, or unsupported; anything else leads to `Stop::Invalid`.
 
+Test: `tests/robustness.rs` (`any_verified_body_gets_an_answer`).
+
 ## 2. Programs and runs
 
 ```rust
@@ -77,7 +79,8 @@ pub enum Stop { Trap(Trap), Unsupported(String), Invalid(String) }
 ```
 
 - `add_body` refuses (`Stop::Invalid`) a body whose symbol is not a function
-  of the module, and a second body for one function.
+  of the module with the body's function type, and a second body for one
+  function.
 - A function is defined for a run if the program has a body for it, or else
   if a host function of its name is registered (§6). A body wins over a host
   function of the same name.
@@ -93,7 +96,8 @@ pub enum Stop { Trap(Trap), Unsupported(String), Invalid(String) }
 - The interpreter never recurses on the host stack: calls push a frame onto
   an explicit stack, so 100,000 nested calls need only the configured depth.
 
-Tests: `tests/calls.rs` (`invalid_runs`, `runs_are_independent`).
+Tests: `tests/calls.rs` (`invalid_runs`, `call_depth`,
+`standard_hosts_and_the_trace`), `tests/memory.rs` (`module_variables`).
 
 ## 3. Values
 
@@ -122,7 +126,7 @@ The types a value may have: `iN` for N ≤ 128, `ptr` (any address space is
 accepted as a type; `addrspacecast` is unsupported), `float`, `double`,
 arrays and structs of these. Every other type is unsupported (§8).
 
-Test: `tests/memory.rs` (`aggregates_are_images`), unit tests of `value.rs`.
+Tests: `tests/memory.rs` (`aggregates`), unit tests of `value.rs`.
 
 ## 4. Memory
 
@@ -145,11 +149,11 @@ alignment, a kind and, for every byte, a **written** flag.
 - **An access** (a load, a store, each end of a `memcpy`, a host function's
   read or write) of `len` bytes at `addr` with alignment `align` is checked
   in this order:
-  1. `addr` must be inside (or one past the end of) a live data allocation,
-     and the whole range inside it: else `out-of-bounds`, or
-     `use-after-free` when `addr` is in a dead stack range. Function
-     addresses are not data. An access of zero bytes is checked like any
-     other.
+  1. The whole range must be inside one live data allocation: else
+     `out-of-bounds`, or `use-after-free` when `addr` is in a dead stack
+     range. Function addresses are not data. An access of zero bytes is
+     not checked at all (LangRef "'llvm.memcpy' Intrinsic": with a length
+     of 0 the pointers may be anything).
   2. `align` must be at most the allocation's alignment and divide `addr`:
      else `misaligned`. The alignment of an access is a promise the
      compiler may use (LangRef "'load' Instruction": "the behavior is
@@ -191,7 +195,10 @@ depends on `addr_base` and `addr_gap`, and the interpreter does **not**
 detect it (§12). Callers that need address-independence run twice with two
 layouts and compare, as `tests/generate.rs` does.
 
-Tests: `tests/memory.rs`, unit tests of `memory.rs`.
+Tests: `tests/memory.rs` (`scalars_are_little_endian_bytes`,
+`odd_width_integers_in_memory`, `out_of_bounds`, `uninitialized_loads`,
+`alignment`, `use_after_return`, `module_variables`), unit tests of
+`memory.rs`.
 
 ## 5. Semantics
 
@@ -253,8 +260,9 @@ NaN, whatever its operands. Operations that only move bits (`fneg`, `fabs`,
 trap for a NaN. `NanPolicy::Host` returns what the host's arithmetic
 produces instead; such a result is not covered by the determinism rule.
 
-Tests: `tests/instructions.rs` (`integer_arithmetic`, `division_traps`,
-`shift_traps`, `float_arithmetic`, `nan_policy`), unit tests of `ops.rs`.
+Tests: `tests/instructions.rs` (`integer_arithmetic_wraps_at_the_width`,
+`integer_traps`, `float_arithmetic_is_ieee`,
+`computed_nan_traps_by_default`), unit tests of `ops.rs`.
 
 ### 5.2 Compares and `select`
 
@@ -283,8 +291,8 @@ LangRef "Conversion Operations".
 | `bitcast` | between `float` and `i32`, `double` and `i64`, a type and itself: the same bits |
 | `addrspacecast` | unsupported |
 
-Test: `tests/instructions.rs` (`integer_casts`, `float_casts`,
-`pointer_casts`).
+Tests: `tests/instructions.rs` (`integer_casts`, `float_casts`,
+`pointer_casts`, `narrow_values_stay_narrow`).
 
 ### 5.4 Memory instructions
 
@@ -298,7 +306,8 @@ LangRef "Memory Access and Addressing Operations", "Aggregate Operations".
   of a function has its own.
 - `alloca` (dynamic): a stack allocation of `count * elem_size` bytes, live
   until the function returns; `limit-memory` if the product overflows.
-- `ptradd`: `base + offset + Σ sext64(index_i) * scale_i`, modulo 2^64
+- `ptradd`: `base + offset + Σ sext64(index_i) * scale_i`, modulo 2^64; an
+  index wider than 64 bits is truncated
   (LangRef "'getelementptr' Instruction", with the offsets already computed
   as `ir.md` §5.4 says). No bounds are checked here: `hod_ir` carries no
   `inbounds`, so only an access through the result is checked.
@@ -318,7 +327,8 @@ LangRef "Memory Access and Addressing Operations", "Aggregate Operations".
 - `extractelement`, `insertelement`, `shufflevector`: vectors are
   unsupported.
 
-Test: `tests/memory.rs`.
+Tests: `tests/memory.rs` (`ptr_add_indices`, `dynamic_allocation`,
+`aggregates`, `atomics_are_sequential`).
 
 ### 5.5 Control flow and `phi`
 
@@ -349,9 +359,8 @@ LangRef "Terminator Instructions", "'phi' Instruction".
 - `indirectbr`, `invoke`, `callbr`, `resume`, `landingpad` and the funclet
   instructions are unsupported.
 
-Tests: `tests/instructions.rs` (`phi_swap_is_parallel`, `self_loop`,
-`switch_cases`, `block_listed_twice`, `use_before_definition`,
-`unreachable_traps`).
+Tests: `tests/instructions.rs` (`phis_are_a_parallel_copy`,
+`switch_and_repeated_successors`, `unreachable_and_undefined_values`).
 
 ### 5.6 Intrinsics
 
@@ -380,9 +389,8 @@ LangRef "Intrinsic Functions". Each is defined at every integer width
 
 Every other intrinsic is unsupported, `intrinsic:<name>` (§8).
 
-Tests: `tests/calls.rs` (`integer_intrinsics`, `checked_and_saturating`,
-`float_intrinsics`, `no_code_intrinsics`), `tests/memory.rs`
-(`memory_intrinsics`).
+Tests: `tests/calls.rs` (`integer_intrinsics`, `checked_arithmetic`,
+`float_and_other_intrinsics`), `tests/memory.rs` (`memory_intrinsics`).
 
 ### 5.7 `undef`, `poison`, `freeze`
 
@@ -394,7 +402,7 @@ same, so this is not a place where compilations differ. Consequently
 Poison that an operation would *produce* is a trap (§5.1, §5.3, §5.6).
 Unwritten memory is never read (§4).
 
-Test: `tests/instructions.rs` (`undef_poison_freeze`).
+Test: `tests/instructions.rs` (`undef_is_zero_and_freeze_copies`).
 
 ### 5.8 Calls
 
@@ -417,8 +425,8 @@ LangRef "'call' Instruction".
   Variadic callees, inline assembly callees and operand bundles are
   unsupported.
 
-Tests: `tests/calls.rs` (`direct_and_indirect_calls`, `call_traps`,
-`deep_recursion`).
+Tests: `tests/calls.rs` (`direct_calls_and_recursion`, `indirect_calls`,
+`void_calls_and_unused_results`, `call_depth`).
 
 ## 6. Host functions and the trace
 
@@ -468,8 +476,8 @@ pub mod host {
   all modulo 2^64. The first three are `0xe220a8397b1dcdaf`,
   `0x6e789e6aa1b965f4`, `0x06c45d188009454f`.
 
-Tests: `tests/calls.rs` (`host_functions_and_trace`, `host_errors`), unit
-test of `host.rs`.
+Tests: `tests/calls.rs` (`standard_hosts_and_the_trace`, `host_functions`),
+unit test of `host.rs`.
 
 ## 7. Limits
 
@@ -496,8 +504,8 @@ pub struct Config {
 The three limit traps (`Trap::is_limit`) say nothing about the program:
 a test that meets one must raise the limit or call the run inconclusive.
 
-Tests: `tests/calls.rs` (`fuel_is_exact`, `call_depth_limit`),
-`tests/memory.rs` (`memory_limit`).
+Tests: `tests/calls.rs` (`fuel`, `call_depth`), `tests/memory.rs`
+(`memory_limit`).
 
 ## 8. Unsupported
 
@@ -680,7 +688,8 @@ Tests: `tests/generate.rs` (`minimal_options_leave_only_integer_arithmetic`,
 Six more are counted from the finished bodies with `Body::uses`: `use:dead`,
 `use:next`, `use:once-later`, `use:many` (each instruction with a result is
 one of the four), `use:other-block`, and `use:across-call` (an instruction
-that uses a result defined before an earlier call of a function).
+that uses a result with a call of a function, not of an intrinsic, between
+the definition and the use in instruction order).
 
 With the default options every counter is positive over a few hundred
 seeds; with a switch off its counters are zero and all others stay
@@ -751,6 +760,7 @@ x86-64, the tests skip with a note; with `HOD_REQUIRE_TOOLS=1` they fail.
 | `tests/memory.rs` | §3, §4, §5.4, the memory intrinsics of §5.6, `limit-memory` |
 | `tests/calls.rs` | §5.8, §5.6, §6, §7, §2 |
 | `tests/unsupported.rs` | §8: every reason that can be provoked |
+| `tests/robustness.rs` | §1, §2: a thousand random unguarded programs (zero divisors, wild pointers, uses before definitions, endless recursion, calls through any pointer); every body verifies, no run panics or is `Invalid`, and at least twelve kinds of end occur |
 | `tests/generate.rs` | §9 |
 | `tests/llvm_oracle.rs` | §10 |
 

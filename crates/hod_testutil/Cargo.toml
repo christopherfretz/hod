@@ -1,0 +1,13 @@
+[package]
+name = "hod_testutil"
+description = "Test support shared by hod's crates: external tool lookup, scratch directories, bounded child processes. Not shipped."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

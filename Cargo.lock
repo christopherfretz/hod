@@ -95,6 +95,10 @@ name = "hod_obj"
 version = "0.0.0"
 
 [[package]]
+name = "hod_testutil"
+version = "0.0.0"
+
+[[package]]
 name = "hod_x64"
 version = "0.0.0"
 dependencies = [

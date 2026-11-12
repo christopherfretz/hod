@@ -25,29 +25,23 @@ mod common;
 use std::fmt::Write as _;
 
 use common::linking::{Toolchain, exit_code};
-use common::{assert_refused, compile_ll, emit, ll_header, llc, parse, write_object};
-use hod_a64::float;
+use common::{compile_ll, emit, ll_header, llc, parse, write_object};
 use hod_cg::{CgError, Options, Stress};
 use hod_interp::{Config, Interp, NanPolicy, Program, Val};
 
 // ---- refusals ----
 
+/// `bfloat` was refused here (`float::BFLOAT`) until WP-095 lowered it
+/// (`tests/tail2.rs`): the three cases compile now.
 #[test]
 fn what_the_group_does_not_lower_is_refused_by_name() {
-    assert_refused(&[
-        (
-            "define bfloat @f(bfloat %a, bfloat %b) { %r = fadd bfloat %a, %b\n ret bfloat %r }",
-            float::BFLOAT,
-        ),
-        (
-            "define float @f(bfloat %a) { %r = fpext bfloat %a to float\n ret float %r }",
-            float::BFLOAT,
-        ),
-        (
-            "define i1 @f(bfloat %a, bfloat %b) { %r = fcmp oeq bfloat %a, %b\n ret i1 %r }",
-            float::BFLOAT,
-        ),
-    ]);
+    for text in [
+        "define bfloat @f(bfloat %a, bfloat %b) { %r = fadd bfloat %a, %b\n ret bfloat %r }",
+        "define float @f(bfloat %a) { %r = fpext bfloat %a to float\n ret float %r }",
+        "define i1 @f(bfloat %a, bfloat %b) { %r = fcmp oeq bfloat %a, %b\n ret i1 %r }",
+    ] {
+        assert_eq!(compile_ll(text), Ok(()), "{text}");
+    }
 }
 
 /// Fast-math flags license nothing hod uses: `hod_ir` keeps none, and the

@@ -227,7 +227,8 @@ fn support_flips_rows() {
     }
     // WP-079: lanes of byte-sized elements, not of the wide integers.
     assert_eq!(shipped.supports("inst:extractelement/int"), Some(true));
-    assert_eq!(shipped.supports("inst:extractelement/i128"), Some(false));
+    // WP-095: and of `i128` lanes.
+    assert_eq!(shipped.supports("inst:extractelement/i128"), Some(true));
     // WP-035: integer arithmetic on integers, not on pointers.
     assert_eq!(shipped.supports("inst:add/int"), Some(true));
     assert_eq!(shipped.supports("inst:add/ptr"), Some(false));

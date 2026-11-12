@@ -31,6 +31,7 @@ mod fpmem;
 mod logical;
 mod mem;
 mod movimm;
+mod neon;
 mod selftest;
 mod simd;
 mod system;
@@ -59,6 +60,7 @@ pub const GROUPS: &[Group] = &[
     ("fp-constant-materialization", fpimm::build),
     ("fp-simd-loads-and-stores", fpmem::build),
     ("simd", simd::build),
+    ("neon", neon::build),
 ];
 
 fn check(group: &str) {

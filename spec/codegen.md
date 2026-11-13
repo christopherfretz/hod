@@ -869,9 +869,12 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
   the callee receives them as this function did; the stack area beyond
   the named arguments is never written. Variable arguments of the call
   before the `...`, which `hod_ir`'s verifier accepts since WP-064, are
-  `musttail:stack-args-unknown`: `TargetStackArgs::of_call` does not
-  type a call's variable arguments (`hod_cg/src/abi.rs`). `llc` places
-  them as any argument, over the forwarded registers they take.
+  placed as any argument, over the forwarded registers they take, as
+  `llc` places them (WP-115): `classify` learns their area from
+  `TargetStackArgs::of_call`, which types them from the body; in
+  registers they compile, on the stack they are
+  `musttail:stack-args-grow` (the caller's area holds only its named
+  arguments).
 - **Landing pads** are `{ ptr, i32 }` only: `x0`/`x1` stored to the
   pad's home; clauses are `catch` of a symbol or `null` and `filter` of
   such arrays. `resume` calls `_Unwind_Resume` with the exception
@@ -1746,6 +1749,16 @@ that refused it before (WP-084's "stays refused" list is settled here).
   (`hod_cg/src/driver.rs`) also gives a function `block_offsets` when
   its only `indirectbr` is in an unreachable block, so a `blockaddress`
   in data of it is placed (`llc` keeps those labels).
+- **Address-taken blocks without an `indirectbr`** (WP-115):
+  `mark_reachable` also gives `block_offsets` to a function with a
+  block whose address is taken (`ConstPool::has_address_taken_block`)
+  and no `indirectbr`. Of its unreachable blocks only the address-taken
+  ones (`ConstPool::is_address_taken`) are bound to the trap and get a
+  row, so a function without one emits no trap for them. `llc` deletes
+  such an unreachable block and writes `1` for its address in data;
+  hod writes the trap's address: neither can be branched to (no
+  `indirectbr`), both are non-null and differ from every reachable
+  block's.
 - **`bitcast` of a constant vector to a scalar** is folded by
   `ConstPool::fold_cast` when every element is a number and the vector
   is at most 128 bits: its image, as `llc` folds it (`<8 x i1>` packs
@@ -2285,7 +2298,9 @@ decisions that are not instruction selection are §5.5.1 "Integers
   object, where `llc` uses absolute `udata4` pointers.
 - **Refused by name**: `x64:call` (a `callbr` that is not inline
   assembly), `x64:call-bundle`, `x64:va-intrinsic`, `x64:va_arg`,
-  `x64:landingpad`, `x64:landingpad-clause`, `x64:resume`; an
+  `x64:landingpad`, `x64:landingpad-clause`, `x64:resume`,
+  `x64:musttail-variable-arguments` (a `musttail` call with variable
+  arguments before a forwarded `...`, `abi-x64.md` §8.5); an
   `x86_fp80` part in a signature stays `x64:todo:abi` (WP-131), a
   `float`/`double` return part in `st0`/`st1` is `x64:ret-x87-part`
   (§5.6.9), a value returned in memory at `ret` is WP-126's.
@@ -3351,11 +3366,12 @@ TargetStackArgs::new(&target)` is that `hod_ir::StackArgs` hook for any
   parameters only, also for a variadic function), as the entry assigns
   it (§4.8); its `stack_size`.
 - `of_call`: `assign` of the call with its effective attributes (above),
-  its convention and its function type; its `stack_size`. A call that
-  lists more arguments than its type names has no answer (the types of
-  the variable arguments are the body's, which the hook is not given):
-  a variadic thunk forwards `...`, which the call site does not list, so
-  its call is answered.
+  its convention and its function type; its `stack_size`. The variable
+  arguments a variadic call lists (before a forwarded `...`, which the
+  call site does not list) are typed by their values in the call's body
+  (`CallSite::body`, `Body::value_type`), as the call sequence types
+  them (WP-115). A call listing more arguments than a non-variadic type
+  names, or fewer than it names, has no answer.
 - No answer when `assign` refuses the signature.
 
 The sizes are compared as `assign` gives them; the call sequence's own
@@ -4366,10 +4382,10 @@ function's own symbol: that symbol may be preemptible, and the table
 would then point into whatever definition the dynamic linker chose. A
 `blockaddress` in code is formed PC-relative by the function itself
 (§6.3). (`hod_ir` marks address-taken blocks since WP-064,
-`ConstPool::is_address_taken`; `hod_cg` does not use the mark yet, so
-a function without an `IndirectBr` has no `block_offsets` and a
-`blockaddress` in data of one of its blocks is
-`init:blockaddress-unplaced`, §13.)
+`ConstPool::is_address_taken`; since WP-115 a function with an
+address-taken block has `block_offsets` with or without an
+`IndirectBr`, and an unreachable address-taken block has the trap's
+offset.)
 
 ### 9.7 Merge and module emission
 
@@ -4707,12 +4723,8 @@ pub enum CgError {
 
 - (Closed by WP-069.) A direct call's attributes: §7.1, "Effective
   attributes", measured against `llc` 19 and 22.
-- Address-taken blocks without an `indirectbr` in their function (§9.6):
-  `block_offsets` is not recorded for them. `hod_ir` marks them since
-  WP-064 (`ConstPool::has_address_taken_block`, `is_address_taken`);
-  what remains is `hod_cg`'s `mark_reachable` recording offsets for such
-  a function, and binding only its unreachable address-taken blocks to
-  the trap, measured against `llc`.
+- (Closed by WP-115.) Address-taken blocks without an `indirectbr` in
+  their function (§9.6).
 
 - Stack protector attributes (`ssp`, `sspstrong`, `sspreq`): accept and
   ignore (hod is a debug backend; the IR's meaning is unchanged) or

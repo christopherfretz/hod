@@ -3122,11 +3122,15 @@ only hod's has whose line is that of its function's first row (the scope
 line of a prologue `llc` does not have); **P1** a pair only `llc`'s has
 whose every range holds only unconditional branches (`b`, by
 `llvm-objdump -d`); else, by the IR of the unit's modules
-(`permitted::IrFacts`: per defined function, the opcode, line and column
-of each instruction with a `!dbg`, scopes not followed),
-**load-placement** when the function's instructions at that line are
-loads and `getelementptr`s with at least one load (either side), and
-**is-constant** a pair only hod's has in a function that calls
+(`permitted::IrFacts`: per defined function, the opcode, line, column,
+scope's file, whether its block has a predecessor, and a load's or
+`getelementptr`'s pointer operand of each instruction with a `!dbg`;
+only the instructions of the pair's file and of blocks with a
+predecessor count), **load-placement** when the function's instructions
+at that line are loads and `getelementptr`s with at least one load
+(either side), **post-indexed-load** a pair only hod's has whose
+instructions at that line are `getelementptr`s of pointers a load of the
+function reads, and **is-constant** a pair only hod's has in a function that calls
 `llvm.is.constant` (`spec/dwarf.md` §5.7); else **unclassified**. An
 unclassified pair fails the run.
 

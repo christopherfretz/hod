@@ -575,8 +575,16 @@ Since WP-097 (the harness recognises each BY RULE from the IR both
 programs were built from, `xtask/src/debug/permitted.rs`; nothing is
 masked in general):
 
-- `load-placement`: a `(function, line)` pair one side lacks where the
-  function's instructions at that line (any column) are loads and
+The instructions "at a pair's line" are, since WP-111, the function's
+instructions with that line (any column) whose location's scope has the
+pair's file (the scope's `DIFile`, joined as the line table joins it),
+in the entry block or a block some `label %N` names: `llc` deletes
+blocks without a predecessor even at `-O0` (`UnreachableBlockElim`), and
+hod emits none (a terminate landing pad left behind by a folded
+`invoke` has the line of the call it guarded).
+
+- `load-placement`: a `(function, file, line)` pair one side lacks where the
+  function's instructions at that line are loads and
   `getelementptr`s, at least one load. `llc`'s `SelectionDAG` merges a
   load with an earlier or later load of the same address in its block
   (the dead load of a trivial destructor's `n->~T()` keeps ITS line in
@@ -585,6 +593,17 @@ masked in general):
   a load of a call's argument into the call's sequence
   (`arg_load.c`); hod emits each load where the IR has it. Reproducing
   it would be load CSE, an optimisation. Either side.
+- `post-indexed-load` (WP-111): hod's pair whose instructions at the
+  line are all `getelementptr`s whose pointer operand a load of the
+  function (with a location) also reads. `llc`'s AArch64 load/store
+  optimizer merges the add of a constant offset into an earlier load of
+  the same base as its post-increment (`ldr x8, [x9], #12`), which runs
+  at that load's line, so the `getelementptr`'s line has no row of its
+  own (libstdc++'s `_Sp_counted_base::_M_release_last_use`,
+  `shared_ptr_base.h:187`, `&_M_weak_count` as the argument of an
+  `always_inline` call; `xtask/tests/data/debug_post_index/post_index.cpp`,
+  `llc` 19 and 22). Reproducing it would be an optimisation. hod's side
+  only: the fold removes `llc`'s row.
 - `is-constant`: hod's pair in a function that calls `llvm.is.constant`.
   `llc` folds the call to false even at `-O0` and deletes the blocks it
   guards (`LowerConstantIntrinsics`); hod does not emit the dead

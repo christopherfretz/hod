@@ -1123,15 +1123,14 @@ section.
 - **Calls.** `Fpr` vectors are passed and returned as `abi::assign`
   places them (`v0`..`v7`, then the stack; the AAPCS64 short-vector
   rules, checked against `llc` by the ABI grid and here against gcc's
-  `vector_size`). A `Mem` vector anywhere in a signature (parameter,
-  result, or a leaf of an aggregate one) is `a64:vector-call` until
-  WP-082 (the hook is the first line of `A64::assign`).
+  `vector_size`). A `Mem` vector in a signature (parameter, result, or
+  a leaf of an aggregate one) is WP-082's (below).
 - **Refused, by name** (`hod_a64::vector`): `a64:vector-mask` (a lane
   operation on `<N x i1>`, `N ≤ 64`: WP-081), `a64:mask-wide` (more
   than 64 `i1`), `a64:vector-odd-element` (integer lanes of a width other
   than 8, 16, 32, 64 and at most 64), `a64:vector-wide-element`
   (`i128` or `fp128` lanes), `a64:vector-length` (more than 256 lanes),
-  `a64:vector-index`, `a64:vector-call`; `getelementptr` over a vector
+  `a64:vector-index`; `getelementptr` over a vector
   of pointers stays `a64:ptradd-vector`, element-wise arithmetic
   `a64:vector-op` / `a64:mem-vector` (WP-080). `a64:vector-bfloat` and
   `a64:intrinsic-target` are defined for WP-080 and WP-083.
@@ -1189,9 +1188,9 @@ section.
 - **Refused, by name.** The shapes `vector::lanes` refuses keep its
   names (`a64:vector-length`, `a64:vector-wide-element` for `i128` and
   `fp128` lanes, `a64:vector-odd-element`); a vector of `bfloat` is
-  `a64:vector-bfloat`. Lanes of `i1` are WP-081's: a binary operation or
-  a cast of one stays `a64:mem-vector`, an intrinsic of one
-  `a64:intrinsic-vector`, as before. `frexp` and `is.fpclass` of a vector
+  `a64:vector-bfloat`. Lanes of `i1` are WP-081's (below), which lowers
+  their binary operations and casts; an intrinsic of one stays
+  `a64:intrinsic-vector`. `frexp` and `is.fpclass` of a vector
   stay `a64:intrinsic-vector`.
 - **Cost.** The code is a constant number of bytes per lane (no lane
   shares work with another), emitted without allocating; see the landed
@@ -1253,8 +1252,7 @@ part of this section.
   that LLVM leaves poison takes what the bit rule gives.
 - **Refused, by name.** A lane operation on a mask of more than 64 lanes
   (it stays of class `Mem`): `a64:mask-wide`. A mask crossing a call or a
-  return (argument, result, or leaf of an aggregate one):
-  `a64:vector-call` (WP-082: no ABI is invented here). An intrinsic of
+  return is WP-082's (below). An intrinsic of
   `i1` lanes (`llvm.umax.v4i1`): the intrinsic group's
   `a64:intrinsic-vector`. `fcmp` of `bfloat` lanes:
   `a64:vector-bfloat`. A reduction whose operand list is not the
@@ -1266,10 +1264,8 @@ part of this section.
   crashes on `llvm.vector.insert` of non-power-of-two lengths; stores of
   `<4 x i3>` are wrong. None of them is on a mask path tested here.
 - **Hooks.** `target::vector_class` (a vector of `i1` of at most 64
-  lanes is `Gpr`), the first line of `A64::lower` (`mask::lower`), the
-  constant arm of `A64::materialize` (`mask::materialize`), and
-  `vector::has_mem_vector` (any vector of `i1` in a signature is
-  `a64:vector-call`).
+  lanes is `Gpr`), the first line of `A64::lower` (`mask::lower`) and
+  the constant arm of `A64::materialize` (`mask::materialize`).
 - **Tests**: `crates/hod_a64/tests/mask.rs` (every construct × lane type
   × lane count against a Rust model, `hod_interp` on value-form twins,
   `llc` 22 and 19, under bfd, lld and mold, plain and stressed; masks
@@ -1281,9 +1277,9 @@ part of this section.
 Every vector `abi::assign` places crosses a call and a return, in both
 directions, exactly as `llc -O0` passes it (`spec/abi-a64.md` §4.3);
 what `llc` passes differently from any `Part` hod can say is refused by
-name, never approximated. This supersedes the `a64:vector-call` lines
-of WP-079 and WP-081 above: `vector::check_signature` is no longer
-called, and `a64:vector-call` is no longer reported.
+name, never approximated. (WP-079 and WP-081 refused these as
+`a64:vector-call`; the name, and the check that reported it, are gone,
+WP-101.)
 
 - **Bytes.** A `Mem` vector whose pieces are bytes of its image
   (`<3 x float>`, `<8 x i32>`, `<3 x i64>`, `<5 x i32>`, `<3 x half>`,
@@ -1316,8 +1312,7 @@ called, and `a64:vector-call` is no longer reported.
   `call:musttail-ret-memory`, and `va_arg` `a64:va_arg`. x86-64 passes
   no `Lanes` part: its `Target` keeps the default hooks
   (`call:part-lanes`), and its `assign` is unchanged.
-- **Hooks.** `A64::assign` (no `check_signature` before
-  `abi::assign`), `A64::lanes_out` and `A64::lanes_in` (to `vcall`), and
+- **Hooks.** `A64::assign` (`abi::assign` directly), `A64::lanes_out` and `A64::lanes_in` (to `vcall`), and
   the memory-return arm of `term::ret` (`vcall::ret_image`).
 - **Tests**: `crates/hod_a64/tests/vcall.rs`: hod (plain and stressed)
   callers against `llc` 22 and 19 callees and the reverse, under bfd,

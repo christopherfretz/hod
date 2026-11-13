@@ -38,7 +38,7 @@
 //! slot): loads, stores, copies and bitcasts of it are `aggr`'s, and every
 //! operation on its lanes is refused as [`MASK_WIDE`]. An intrinsic of `i1`
 //! lanes stays the intrinsic group's `a64:intrinsic-vector`; a mask
-//! crossing a call or a return is `vector::CALL` (WP-082).
+//! crossing a call or a return is `vcall`'s (WP-082).
 //!
 //! Poison: an undefined lane of a constant or of a shuffle is 0; a lane of
 //! an operation that LLVM leaves poison (a shift of an `i1` by 1, a

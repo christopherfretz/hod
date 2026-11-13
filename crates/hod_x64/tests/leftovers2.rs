@@ -644,3 +644,143 @@ fn constant_masks_agree() {
     }
     check("const-masks", &suite, &MAJORS);
 }
+
+// ---- 5. `fptrunc x86_fp80` to `bfloat` ----
+
+/// The body that builds `%x`, an `x86_fp80`, from the words `%a0` (the
+/// significand) and `%a1` (the sign and exponent).
+const X87_OPERAND: &str = "  %xe = zext i64 %a1 to i80\n  %xh = shl i80 %xe, 64\n  \
+     %xm = zext i64 %a0 to i80\n  %xb = or i80 %xh, %xm\n  %x = bitcast i80 %xb to x86_fp80\n";
+
+/// `x86_fp80` operands as (significand, sign and exponent): zeros, the
+/// smallest and largest denormals, a pseudo-denormal, normals around
+/// `bfloat`'s range and its rounding boundaries (ties to even), the
+/// infinities, quiet and signalling NaNs, the invalid encodings, and
+/// random values near `bfloat`'s exponents.
+fn x87_operands() -> Vec<[u64; 2]> {
+    const J: u64 = 1 << 63;
+    let mut v = vec![
+        [0, 0],
+        [0, 0x8000],
+        [1, 0],
+        [J - 1, 0x8000],
+        [J | 5, 0],
+        [J, 0x3fff],
+        [J, 0xbfff],
+        [J | 0x0080_0000_0000_0000, 0x3fff],
+        [J | 0x0080_0000_0000_0001, 0x3fff],
+        [J | 0x0180_0000_0000_0000, 0x3fff],
+        [J | 0x00ff_ffff_ffff_ffff, 0x3fff],
+        [u64::MAX, 0x407e],
+        [J, 0x407f],
+        [J, 0x3f81],
+        [J, 0x3f80],
+        [J, 0x3f78],
+        [J, 0x3f77],
+        [J, 0x3f76],
+        [J | 0x00c0_0000_0000_0000, 0x3f77],
+        [J, 0x0001],
+        [J, 0x7ffe],
+        [J, 0x7fff],
+        [J, 0xffff],
+        [0xc000_0000_0000_0000, 0x7fff],
+        [0xc123_4567_89ab_cdef, 0xffff],
+        [J | 1, 0x7fff],
+        [J | 0x1234_0000_0000_0000, 0xffff],
+        [0x4000_0000_0000_0000, 0x3fff],
+        [0, 0x7fff],
+        [0, 0x3fff],
+    ];
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    for _ in 0..400 {
+        state =
+            state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        let m = state | J;
+        let e = (0x3f70 + (state >> 40) % 0x120) | (state >> 20 & 1) << 15;
+        v.push([m, e]);
+    }
+    v
+}
+
+/// §5.6.16 (5): `fptrunc x86_fp80` to `bfloat` calls `__truncxfbf2`, as
+/// `llc` 22 does (libgcc 13 and later have it; `llc` 19 cannot select the
+/// conversion, so it is compared from 22 on). The `bfloat`'s bits come
+/// back in `xmm0`; the result is checked through a `bitcast` to `i16`
+/// and also through `fpext` to `float` (the value used by hod again).
+#[test]
+fn x87_to_bfloat_agrees_with_llc_22() {
+    let mut suite = Suite::default();
+    let bits = suite.add(
+        "xf_to_bf",
+        &[I64, I64],
+        T::I(16),
+        &format!(
+            "{X87_OPERAND}  %t = fptrunc x86_fp80 %x to bfloat\n  %r = bitcast bfloat %t to i16\n"
+        ),
+        Check::Llc,
+    );
+    let wide = suite.add(
+        "xf_to_bf_to_f",
+        &[I64, I64],
+        T::F,
+        &format!(
+            "{X87_OPERAND}  %t = fptrunc x86_fp80 %x to bfloat\n  %r = fpext bfloat %t to float\n"
+        ),
+        Check::Llc,
+    );
+    for f in [bits, wide] {
+        suite.funcs[f].since = 22;
+        for v in x87_operands() {
+            suite.case(f, &v);
+        }
+    }
+    check("xf-to-bf", &suite, &MAJORS);
+}
+
+// ---- 9. `llvm.is.fpclass` of a pseudo-denormal ----
+
+/// §5.6.12: a pseudo-denormal (exponent 0, integer bit set) is a
+/// subnormal for `llvm.is.fpclass`, as `fxam` reports it, with every
+/// one of the 1024 masks. `llc` 19 and 22 put it in no class (false for
+/// every single class) but answer true for some unions by their
+/// expansion (19: `0x7`, `0xf3`, `0x203`; 22: `0x30c`), which no class
+/// gives; hod is checked against the rule, not against them.
+#[test]
+fn is_fpclass_of_a_pseudo_denormal_is_subnormal() {
+    let mut text = String::from("declare i1 @llvm.is.fpclass.f80(x86_fp80, i32)\n");
+    let mut c = String::from("#include <stdio.h>\n#include <stdint.h>\n");
+    let mut table = String::new();
+    for mask in 0..1024 {
+        write!(
+            text,
+            "define i32 @c{mask}(i64 %a0, i64 %a1) {{\n{X87_OPERAND}  \
+             %t = call i1 @llvm.is.fpclass.f80(x86_fp80 %x, i32 {mask})\n  \
+             %r = zext i1 %t to i32\n  ret i32 %r\n}}\n"
+        )
+        .unwrap();
+        writeln!(c, "int c{mask}(uint64_t, uint64_t);").unwrap();
+        write!(table, "c{mask},").unwrap();
+    }
+    write!(
+        c,
+        "static int (*const fs[])(uint64_t, uint64_t) = {{{table}}};\n\
+         static const uint64_t vs[4][2] = {{{{1ull << 63, 0}}, {{(1ull << 63) | 1, 0}}, \
+         {{0xc000000000000000ull, 0x8000}}, {{~0ull, 0x8000}}}};\n\
+         int main(void) {{\n  int wrong = 0;\n  for (int k = 0; k < 1024; k++)\n    \
+         for (int i = 0; i < 4; i++) {{\n      int want = (k >> (vs[i][1] ? 4 : 7)) & 1;\n      \
+         if (fs[k](vs[i][0], vs[i][1]) != want) {{ printf(\"mask %#x value %d\\n\", k, i); \
+         wrong++; }}\n    }}\n  printf(\"%d wrong\\n\", wrong);\n  return wrong != 0;\n}}\n"
+    )
+    .unwrap();
+    let scratch = hod_testutil::Scratch::new("x64-fpclass-pd");
+    let Some(toolchain) = linking::Toolchain::x86_64(&scratch) else { return };
+    let driver = toolchain.compile_c(&scratch, "fpclass-driver", &c, &[]);
+    for (name, stress) in [("plain", Stress::default()), ("stress", Stress::ALL)] {
+        let object = hod_object(&scratch, &format!("fpclass-{name}"), &text, stress);
+        let linker = &toolchain.linkers[0];
+        let program = scratch.join(format!("fpclass-{name}"));
+        let ran = toolchain.link_and_run(linker, &[], &[&driver, &object], &program);
+        assert!(ran.success(), "{name}: {}{}", ran.stdout_text(), ran.stderr_text());
+        assert_eq!(ran.stdout_text(), "0 wrong\n", "{name}");
+    }
+}

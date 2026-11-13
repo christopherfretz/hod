@@ -2973,8 +2973,9 @@ only around a truncating store (below).
   to the 16 bytes below `rsp` (no red zone is assumed: `lea rsp, [rsp -
   16]` first and `lea rsp, [rsp + 16]` after) and a load into the `xmm`
   register. `half` and `fp128` call `__extendhfxf2`, `__truncxfhf2`,
-  `__extendxftf2`, `__trunctfxf2`. `fptrunc` to `bfloat` is refused
-  (`x64:x87-bfloat`; `llc` 19 cannot select it). `fptosi`/`fptoui` to
+  `__extendxftf2`, `__trunctfxf2`. `fptrunc` to `bfloat` calls
+  `__truncxfbf2` (libgcc 13 and later, compiler-rt; as `llc` 22 does,
+  `llc` 19 cannot select it; WP-147). `fptosi`/`fptoui` to
   at most 64 bits are `fistp qword` under a control word with the
   rounding set to truncation (`fnstcw`, `or` of `0x0c00`, `fldcw`, the
   store, `fldcw` of the saved word), all in the 16 bytes below `rsp`;
@@ -3020,9 +3021,12 @@ only around a truncating store (below).
   `i32`, an integer result wider than 64 bits, an intrinsic with no
   routine).
 - **`is.fpclass` of the encodings only the x87 has.** A pseudo-denormal
-  (exponent 0, integer bit set) is a subnormal, as the x87 loads it;
-  `llc` 19 and 22 answer differently from each other for four masks and
-  depend on the mask's expansion elsewhere, so it is not compared. An
+  (exponent 0, integer bit set) is a subnormal of its sign for every
+  mask, as `fxam` classifies it (denormal: C3 C2 C0 = 1 1 0) and as the
+  x87 loads it. `llc` is not followed: 19 and 22 put it in no class
+  (false for each single class) yet answer true for some unions by
+  their expansion, differing on four (19: `0x7`, `0xf3`, `0x203`; 22:
+  `0x30c`), which no class gives (WP-147). An
   unnormal, a pseudo-zero, a pseudo-infinity or a pseudo-NaN is in the
   test when the test has both NaN classes, or is all classes but one NaN
   class (`x87::invalid_in`): `llc` 19 and 22 agree on all 1024 masks.

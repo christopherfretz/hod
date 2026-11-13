@@ -532,6 +532,9 @@ runtime_fns! {
     ExtendHfXf2 = "__extendhfxf2": (HALF) -> X86_FP80;
     /// `fptrunc x86_fp80` to `half` (x86-64; WP-117).
     TruncXfHf2 = "__truncxfhf2": (X86_FP80) -> HALF;
+    /// `fptrunc x86_fp80` to `bfloat` (x86-64; WP-147): libgcc since
+    /// GCC 13 and compiler-rt have it.
+    TruncXfBf2 = "__truncxfbf2": (X86_FP80) -> BFLOAT;
     /// `fpext x86_fp80` to `fp128` (x86-64; WP-117).
     ExtendXfTf2 = "__extendxftf2": (X86_FP80) -> FP128;
     /// `fptrunc fp128` to `x86_fp80` (x86-64; WP-117).

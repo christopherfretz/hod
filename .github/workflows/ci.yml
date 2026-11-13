@@ -9,7 +9,7 @@ name: ci
 # a matrix axis would rename them.
 on:
   push:
-    branches: [main, wp/145-hosted-ci] # TEMP(WP-145): remove before handback
+    branches: [main]
   pull_request:
   merge_group:
 permissions:

@@ -645,6 +645,25 @@ fn constant_masks_agree() {
     check("const-masks", &suite, &MAJORS);
 }
 
+// ---- 4. `fp128` lanes ----
+
+/// §5.6.16 (4): a lane operation on a vector of `fp128` stays refused as
+/// `x64:vector-wide-element` (no corpus module has one; every lane
+/// operation would be a libcall per lane, and the vector's call ABI is
+/// another package).
+#[test]
+fn fp128_lanes_are_refused_by_name() {
+    let wide = hod_x64::vector::WIDE_ELEMENT;
+    for body in [
+        "  %v = load <2 x fp128>, ptr %p, align 16\n  %r = fadd <2 x fp128> %v, %v\n  \
+         store <2 x fp128> %r, ptr %p, align 16\n",
+        "  %v = load <2 x fp128>, ptr %p, align 16\n  %e = extractelement <2 x fp128> %v, i64 1\n  \
+         store fp128 %e, ptr %p, align 16\n",
+    ] {
+        refused(&format!("define void @f(ptr %p) {{\n{body}  ret void\n}}\n"), wide);
+    }
+}
+
 // ---- 5. `fptrunc x86_fp80` to `bfloat` ----
 
 /// The body that builds `%x`, an `x86_fp80`, from the words `%a0` (the

@@ -334,6 +334,9 @@ pub struct ConstPool<L: Layering = NoLayer> {
     elems: Seg<ConstId, L>,
     bytes: Seg<u8, L>,
     interner: InternTable<L>,
+    /// The `BlockAddr` constants, in id order: the address-taken mark
+    /// (§4.2, WP-064).
+    block_addrs: Seg<ConstId, L>,
 }
 
 impl ConstPool {
@@ -350,6 +353,7 @@ impl ConstPool {
             elems: self.elems.seed(),
             bytes: self.bytes.seed(),
             interner: self.interner.seed(),
+            block_addrs: self.block_addrs.seed(),
         }
     }
 
@@ -437,6 +441,8 @@ impl ConstPool {
                     scratch.extend(args.iter().map(|&arg| id_of(map, arg)));
                     self.expr(op, ty_of(ty), source_ty.map(ty_of), &scratch)?
                 }
+                // Through `block_addr`, which keeps the address-taken mark.
+                Const::BlockAddr { func, block } => self.block_addr(func, block)?,
                 // The entries without a pooled part: the stored form with
                 // its ids translated.
                 _ => self.intern(match repr {
@@ -452,7 +458,6 @@ impl ConstPool {
                     }
                     Repr::NoneToken
                     | Repr::Addr { .. }
-                    | Repr::BlockAddr { .. }
                     | Repr::AddrOfInt { .. }
                     | Repr::DsoLocalEquivalent(_)
                     | Repr::NoCfi(_) => repr,
@@ -474,6 +479,7 @@ impl ConstPool<Layered> {
             elems: self.elems.fork(),
             bytes: self.bytes.fork(),
             interner: self.interner.fork(),
+            block_addrs: self.block_addrs.fork(),
         }
     }
 
@@ -506,6 +512,7 @@ impl ConstPool<Layered> {
             elems: self.elems.tail(elems),
             bytes: self.bytes.tail(bytes),
             interner: InternTable::new(),
+            block_addrs: Seg::default(),
         }
     }
 }
@@ -1043,7 +1050,32 @@ impl<L: Layering> ConstPool<L> {
 
     /// `blockaddress(func, block)`.
     pub fn block_addr(&mut self, func: SymId, block: BlockId) -> IrResult<ConstId> {
-        self.intern(Repr::BlockAddr { func, block })
+        let before = self.data.len();
+        let id = self.intern(Repr::BlockAddr { func, block })?;
+        if self.data.len() != before {
+            self.block_addrs.push(id);
+        }
+        Ok(id)
+    }
+
+    /// Every `blockaddress` constant of the pool, in id order (WP-064):
+    /// the blocks whose address is taken, anywhere in the module.
+    pub fn block_addresses(&self) -> impl Iterator<Item = (ConstId, SymId, BlockId)> + '_ {
+        self.block_addrs.iter().filter_map(|&id| match self.data[id.index()] {
+            Repr::BlockAddr { func, block } => Some((id, func, block)),
+            _ => None,
+        })
+    }
+
+    /// Whether `blockaddress(func, block)` is a constant of the pool:
+    /// the block's address is taken (§4.2, WP-064).
+    pub fn is_address_taken(&self, func: SymId, block: BlockId) -> bool {
+        self.block_addresses().any(|(_, f, b)| f == func && b == block)
+    }
+
+    /// Whether a block of `func` has its address taken.
+    pub fn has_address_taken_block(&self, func: SymId) -> bool {
+        self.block_addresses().any(|(_, f, _)| f == func)
     }
 
     /// `dso_local_equivalent @sym`.

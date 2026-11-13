@@ -692,8 +692,10 @@ fn the_remaining_forms_are_refused_by_name() {
             call::VA_INTRINSIC,
         ),
         (
-            "define void @f() { call void asm sideeffect \"nop\", \"\"()\n ret void }",
-            call::CALL_INLINE_ASM,
+            // WP-103: a template is assembled; one hod_asm does not read
+            // is refused by its name.
+            "define void @f() { call void asm sideeffect \"frob\", \"\"()\n ret void }",
+            "asm:mnemonic/frob",
         ),
         (
             "declare void @g()\ndefine void @f() { call void @g() [ \"deopt\"() ]\n ret void }",

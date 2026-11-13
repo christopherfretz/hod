@@ -16,6 +16,7 @@ mod asm;
 mod copy;
 mod data;
 mod lines;
+mod noop;
 mod section;
 mod unwind;
 
@@ -181,6 +182,8 @@ pub struct ModuleEmitter<'m> {
     rows: Chunk,
     /// The line tables and DIEs, when the module has a unit to write.
     debug: Option<Box<DebugLines<'m>>>,
+    /// The noop coroutine frame (WP-105, `noop.rs`).
+    noop: noop::NoopFrame,
 }
 
 fn obj_err(error: hod_obj::Error) -> CgError {
@@ -340,6 +343,7 @@ impl<'m> ModuleEmitter<'m> {
             funcs: Vec::new(),
             rows: Chunk::new(),
             debug: None,
+            noop: noop::NoopFrame::default(),
         };
         asm::check(module)?;
         // `TargetLoweringObjectFileELF::emitModuleMetadata`.
@@ -603,6 +607,7 @@ impl<'m> ModuleEmitter<'m> {
     /// An internal error for a record of a symbol that is not a function
     /// with a body, or one placed twice.
     pub fn add_chunk(&mut self, chunk: &Chunk) -> CgResult<()> {
+        self.note_noop(chunk);
         for func in &chunk.funcs {
             self.add_func(chunk, func)?;
         }
@@ -747,6 +752,8 @@ impl<'m> ModuleEmitter<'m> {
     fn code_target(&mut self, sym: SymRef, addend: i64) -> Option<(SymbolId, i64)> {
         let sym = match sym {
             SymRef::Runtime(func) => return Some((self.runtime_symbol(func), addend)),
+            // Placed in `finish`, after every function (WP-105).
+            SymRef::NoopCoroFrame => return None,
             SymRef::Module(sym) => sym,
         };
         let local_alias = prefers_local_alias(self.module, self.options, sym);
@@ -878,6 +885,11 @@ impl<'m> ModuleEmitter<'m> {
                 self.obj.add_relocation(section, at, kind, copy, addend);
                 continue;
             }
+            if target == SymRef::NoopCoroFrame {
+                let (target, addend) = self.noop_target(addend)?;
+                self.obj.add_relocation(section, at, kind, target, addend);
+                continue;
+            }
             let SymRef::Module(sym) = target else { continue };
             let local_alias = prefers_local_alias(module, self.options, sym);
             let (target, addend) = self.local_target(sym, addend, local_alias);
@@ -908,6 +920,7 @@ impl<'m> ModuleEmitter<'m> {
     /// functions are placed.
     fn debug_tables(&mut self) -> CgResult<()> {
         let Some(mut debug) = self.debug.take() else { return Ok(()) };
+        debug.split = self.options.split_dwarf; // WP-062: §6.15
         let module = self.module;
         let places = &self.places;
         debug.finish(module, &mut self.obj, |obj, sym| {

@@ -226,6 +226,91 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
         Ok(())
     }
 
+    /// A `metadata` argument of a call (WP-064, `spec/ll.md` §11.6): a
+    /// metadata operand of the body (`spec/ir.md` §5.3) when it is a
+    /// string `!"…"` or a node of strings (`!{…}` in place, or `!N`
+    /// naming one), `None` for any other metadata, which is only read.
+    fn metadata_arg(&mut self) -> PResult<Option<Value>> {
+        let start = self.p.tok.start;
+        let mut strings = Vec::new();
+        let Some(node) = self.metadata_strings(&mut strings)? else {
+            self.p.goto(start);
+            self.metadata_operand()?;
+            return Ok(None);
+        };
+        let strings: Vec<&str> = strings.iter().map(String::as_str).collect();
+        Ok(Some(ir(start, self.b.metadata(node, &strings))?))
+    }
+
+    /// The strings of a metadata operand that is a string or a node of
+    /// strings, and whether it is a node; `None` for any other operand,
+    /// or a string that is not UTF-8. Leaves the parser after the operand
+    /// only when it answers `Some`.
+    fn metadata_strings(&mut self, out: &mut Vec<String>) -> PResult<Option<bool>> {
+        if self.p.tok.kind != Tok::Exclaim {
+            return Ok(None);
+        }
+        self.p.bump();
+        let span = match self.p.tok.kind {
+            Tok::Str => {
+                let token = self.p.tok;
+                self.p.bump();
+                return Ok(self.utf8(token, out).then_some(false));
+            }
+            Tok::LBrace => {
+                let span = self.p.skip_brackets()?;
+                if span.end >= self.end {
+                    return Ok(None);
+                }
+                span
+            }
+            Tok::Int => {
+                let Some(id) = parse_u32(self.p.text()) else { return Ok(None) };
+                let node = match self.p.text {
+                    Some(text) => text.metadata().node(id).copied(),
+                    None => self.p.md.node(id).copied(),
+                };
+                match node {
+                    Some(node) if node.kind == crate::MdKind::Tuple && !node.distinct => {
+                        self.p.bump();
+                        node.span
+                    }
+                    _ => return Ok(None),
+                }
+            }
+            _ => return Ok(None),
+        };
+        let resume = self.p.tok.start;
+        self.p.goto(span.start);
+        while self.p.tok.start < span.end {
+            if !out.is_empty() && !self.p.eat(Tok::Comma) {
+                return Ok(None);
+            }
+            if !self.p.eat(Tok::Exclaim) || self.p.tok.kind != Tok::Str {
+                return Ok(None);
+            }
+            let token = self.p.tok;
+            if !self.utf8(token, out) {
+                return Ok(None);
+            }
+            self.p.bump();
+        }
+        self.p.goto(resume);
+        Ok(Some(true))
+    }
+
+    /// Appends the contents of the string token `token` to `out` if they
+    /// are UTF-8.
+    fn utf8(&self, token: Token, out: &mut Vec<String>) -> bool {
+        match String::from_utf8(self.p.string(token).into_owned()) {
+            Ok(text) => {
+                out.push(text);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     /// The function attributes after the arguments: `#N` and attributes
     /// in place. Only what `spec/ir.md` §5.7 keeps on a call is returned.
     fn call_fn_attrs(&mut self) -> PResult<u32> {
@@ -391,9 +476,11 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
             let attrs = self.value_attrs()?;
             any_attrs |= attrs != ParamAttrs::NONE;
             let value = if ty == TypeId::METADATA {
-                self.metadata_operand()?;
-                metadata = true;
-                Value::NONE
+                // A string or a node of strings is a metadata operand
+                // (WP-064); anything else cannot be represented.
+                let meta = self.metadata_arg()?;
+                metadata |= meta.is_none();
+                meta.unwrap_or(Value::NONE)
             } else {
                 self.value(ty)?
             };
@@ -568,9 +655,22 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
                 }
                 return Ok((ret, self.s.vals[0], false));
             }
+            if let Target::Sym(sym) = target
+                && let Ok(name) = std::str::from_utf8(self.p.module.symbol(sym).name())
+                && let Some(start) = hod_ir::lifetime_intrinsic(name)
+                && let Some(&ptr) = self.s.vals.last()
+            {
+                ir(callee_at, self.b.lifetime_marker(start, ptr))?;
+            }
             return self.stand_in_call(at, op, ret);
         }
 
+        // Metadata operands are arguments of the intrinsics on hod's list
+        // that take them (`spec/ir.md` §5.5); for any other callee the
+        // call is not emitted.
+        let metadata = metadata
+            || (!matches!(info, CalleeInfo::Known(..))
+                && self.s.arg_tys.contains(&TypeId::METADATA));
         if metadata {
             let construct = match target {
                 Target::Sym(sym) => format!(

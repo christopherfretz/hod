@@ -1485,7 +1485,11 @@ impl<'r, 'a> Build<'r, 'a> {
             };
             for (slot, &handle) in local.slots.iter().zip(&local.handles) {
                 let md = match *slot {
-                    LSlot::String(_) => LocalMd::Other,
+                    LSlot::String(bytes) => {
+                        let start = self.debug.strs.len() as u32;
+                        self.debug.strs.extend_from_slice(bytes);
+                        LocalMd::String { start, len: bytes.len() as u32 }
+                    }
                     LSlot::Rec { code, start, len, .. } => {
                         let ops = &local.pool[start as usize..][..len as usize];
                         match (code, ops) {
@@ -1497,6 +1501,11 @@ impl<'r, 'a> Build<'r, 'a> {
                                 LocalMd::ArgList { start, len: ops.len() as u32 }
                             }
                             _ if handle != Handle::None => LocalMd::Debug(handle),
+                            (md::NODE, ops) => {
+                                let start = self.debug.args.len() as u32;
+                                self.debug.args.extend_from_slice(ops);
+                                LocalMd::Node { start, len: ops.len() as u32 }
+                            }
                             _ => LocalMd::Other,
                         }
                     }

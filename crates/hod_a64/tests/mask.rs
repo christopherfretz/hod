@@ -1451,10 +1451,7 @@ fn what_is_refused_is_refused_by_name() {
             one("<128 x i1>", "%m = and <128 x i1> %x, %x\n  store <128 x i1> %m, ptr %p"),
             vector::MASK_WIDE,
         ),
-        (
-            one("<4 x bfloat>", "%m = fcmp olt <4 x bfloat> %x, %x\n  store <4 x i1> %m, ptr %p"),
-            vector::BFLOAT,
-        ),
+        // `fcmp` of `bfloat` lanes computes since WP-101 (`tests/tail3.rs`).
         (
             "declare <4 x i1> @llvm.umax.v4i1(<4 x i1>, <4 x i1>)\ndefine void @f(ptr %p) {\n  \
              %x = load <4 x i1>, ptr %p\n  %m = call <4 x i1> @llvm.umax.v4i1(<4 x i1> %x, <4 x i1> %x)\n  \

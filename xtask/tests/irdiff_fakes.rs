@@ -103,6 +103,24 @@ if grep -q '^; hod: noobject' "$in"; then record hod -; exit 0; fi
 if grep -q '^; hod: nolog' "$in"; then exit 0; fi
 record hod -"#;
 
+/// `opt`: requires the passes of IR before optimisation, and makes each
+/// `; opt-program...` line of the module a `; program...` line, so that a
+/// program line reaches the oracle's object only through `opt`.
+/// `; opt: fail` makes it fail.
+const FAKE_OPT: &str = r#"PATH=/usr/bin:/bin
+out= in= args=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out=$2; shift ;;
+    -*) args="$args $1" ;;
+    *) in=$1 ;;
+  esac
+  shift
+done
+case "$args" in *" -passes=default<O0> "*) ;; *) echo "opt: wrong passes:$args" >&2; exit 1 ;; esac
+if grep -q '^; opt: fail' "$in"; then echo "opt: error: bad module" >&2; exit 1; fi
+{ echo "; opt$args"; sed 's/^; opt-program/; program/' "$in"; } > "$out""#;
+
 const FAKE_DRIVER: &str = r#"dir=
 for arg in "$@"; do case "$arg" in -B*) dir=${arg#-B} ;; esac; done
 exec "$dir/ld" "$@""#;
@@ -1795,4 +1813,141 @@ fn the_fakes_work() {
     assert_eq!(ran.stdout_text(), "ran\nhod\n");
     let neither = run(&world.hod(), &[coverage.as_str(), "-o", &object, &module]);
     assert_eq!(status_of(&neither), Some(1));
+}
+
+// "Test directives", `input: pre-opt` (WP-105): the oracle and the
+// witness build `opt -passes='default<O0>'`'s output of the test, hod and
+// its fallback the test itself; hybrid mode's fallback runs `opt` first.
+#[test]
+fn a_pre_opt_test_goes_through_opt() {
+    let world = World::new("irdiff-pre-opt");
+    world.tool("opt-22", FAKE_OPT);
+    let body = ";@ stdout: opted\n; opt-program(llc): echo opted\n; opt-program(O2): echo opted\n\
+                ; program(hod): echo opted\n";
+    world.test("pre-opt.ll", &format!(";@ input: pre-opt\n{body}"));
+    // Without the directive the oracle builds the test as it is.
+    world.test("plain.ll", body);
+    world.test("broken.ll", ";@ input: pre-opt\n; opt: fail\n");
+    world.test(
+        "falls-back.ll",
+        &format!(";@ input: pre-opt\n;@ unsupported: coro\n; hod: decline coro\n{body}"),
+    );
+    let mut config = world.config();
+    config.witness = true;
+    let report = irdiff::run(&config).unwrap();
+    let all = report.summary(true);
+    assert_eq!(outcomes(&report, "pre-opt.ll"), [Outcome::Pass; 3], "{all}");
+    assert_eq!(outcomes(&report, "plain.ll"), [Outcome::Error; 3], "{all}");
+    assert!(details(&report, "plain.ll")[0].starts_with("oracle: the program of llc's object"));
+    assert_eq!(outcomes(&report, "broken.ll"), [Outcome::Error], "{all}");
+    assert_eq!(
+        details(&report, "broken.ll"),
+        ["oracle: opt failed (exit status 1): opt: error: bad module"]
+    );
+    // Strict: the decline is expected.
+    assert_eq!(outcomes(&report, "falls-back.ll"), [Outcome::Unsupported; 3], "{all}");
+
+    config.witness = false;
+    config.mode = Mode::Hybrid;
+    let report = irdiff::run(&config).unwrap();
+    let all = report.summary(true);
+    assert_eq!(outcomes(&report, "falls-back.ll"), [Outcome::Pass; 3], "{all}");
+    let record = report.records.iter().find(|r| file_name(&r.test) == "falls-back.ll").unwrap();
+    assert_eq!((record.built_by, record.reason.as_deref()), (BuiltBy::Fallback, Some("coro")));
+
+    // An oracle without its opt is the harness's trouble.
+    world.without("opt-22");
+    let report = world.run();
+    assert_eq!(outcomes(&report, "pre-opt.ll"), [Outcome::Error]);
+    let detail = details(&report, "pre-opt.ll")[0];
+    assert!(
+        detail.starts_with("oracle: no opt beside '") && detail.ends_with("llc-22'"),
+        "{detail}"
+    );
+    assert_eq!(failures(&report, "pre-opt.ll"), [Some(Failure::Harness)]);
+}
+
+// "Test directives", `dialect` (WP-105): a test in one LLVM's dialect runs
+// only with that LLVM's oracle, and is SKIP with the other.
+#[test]
+fn a_dialect_test_runs_only_with_its_llvm() {
+    let world = World::new("irdiff-dialect");
+    world.tool("llc-19", FAKE_LLC);
+    world.test("d19.ll", ";@ dialect: 19\n;@ stdout: x\n; program: echo x\n");
+    world.test("d22.ll", ";@ dialect: 22\n;@ stdout: x\n; program: echo x\n");
+    world.test("both.ll", ";@ stdout: x\n; program: echo x\n");
+    let mut config = world.config();
+    config.linkers = vec!["bfd".to_owned()];
+    let report = irdiff::run(&config).unwrap();
+    assert_eq!(rows(&report), ["PASS both.ll bfd", "SKIP d19.ll -", "PASS d22.ll bfd"]);
+    assert_eq!(details(&report, "d19.ll"), ["in the LLVM 19 dialect (this run: 22)"]);
+    config.llvm = Some("19".to_owned());
+    let report = irdiff::run(&config).unwrap();
+    assert_eq!(rows(&report), ["PASS both.ll bfd", "PASS d19.ll bfd", "SKIP d22.ll -"]);
+    assert_eq!(details(&report, "d22.ll"), ["in the LLVM 22 dialect (this run: 19)"]);
+}
+
+// "Test directives", `oracle-skip` (WP-105): with an LLVM the directive
+// names, the oracle is neither built nor run, nor the witness: the
+// program of hod's object is compared with the directives only.
+#[test]
+fn an_oracle_skip_compares_with_the_directives_only() {
+    let world = World::new("irdiff-oracle-skip");
+    // The oracle's and the witness's builds would fail: they must not run.
+    let wrong = "; llc: fail\n";
+    world.test(
+        "right.ll",
+        &format!(
+            ";@ oracle-skip(llvm=19,22): the oracle is wrong\n;@ stdout: right\n{wrong}\
+                 ; program(hod): echo right\n"
+        ),
+    );
+    world.test(
+        "differs.ll",
+        &format!(
+            ";@ oracle-skip(llvm=22): the oracle is wrong\n;@ stdout: right\n{wrong}\
+                 ; program(hod): echo wrong\n"
+        ),
+    );
+    world.test(
+        "exit.ll",
+        ";@ oracle-skip(llvm=22): the oracle is wrong\n; program(hod): exit 3\n; program(llc): exit 3\n",
+    );
+    world.test(
+        "xfail.ll",
+        ";@ oracle-skip(llvm=22): the oracle is wrong\n;@ xfail(mold): mold\n\
+         ;@ stdout: right\n; program(hod): echo right\n; program(mold): echo more\n",
+    );
+    // Another LLVM's mark: the oracle is used, and fails.
+    world.test("other.ll", &format!(";@ oracle-skip(llvm=19): the oracle is wrong\n{wrong}"));
+    let mut config = world.config();
+    config.witness = true;
+    let report = irdiff::run(&config).unwrap();
+    let all = report.summary(true);
+    assert_eq!(outcomes(&report, "right.ll"), [Outcome::Pass; 3], "{all}");
+    assert_eq!(details(&report, "right.ll"), ["oracle skipped: the oracle is wrong"; 3]);
+    assert_eq!(outcomes(&report, "differs.ll"), [Outcome::Fail; 3], "{all}");
+    assert!(
+        details(&report, "differs.ll")
+            .iter()
+            .all(|d| d.starts_with(
+                "the program of hod's object wrote stdout that differs from the directives"
+            ) && d.ends_with("; oracle skipped: the oracle is wrong")),
+        "{all}"
+    );
+    assert_eq!(failures(&report, "differs.ll"), [Some(Failure::Comparison); 3]);
+    assert_eq!(outcomes(&report, "exit.ll"), [Outcome::Fail; 3], "{all}");
+    assert!(
+        details(&report, "exit.ll")[0].starts_with(
+            "the program of hod's object ended with exit status 3, the directives say exit status 0"
+        ),
+        "{all}"
+    );
+    assert_eq!(
+        outcomes(&report, "xfail.ll"),
+        [Outcome::Pass, Outcome::Pass, Outcome::Xfail],
+        "{all}"
+    );
+    assert_eq!(outcomes(&report, "other.ll"), [Outcome::Error], "{all}");
+    assert!(details(&report, "other.ll")[0].starts_with("oracle: llc failed"), "{all}");
 }

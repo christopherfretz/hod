@@ -24,6 +24,7 @@
 
 mod compress;
 pub mod deflate;
+mod dwo;
 pub mod elf;
 mod error;
 mod model;

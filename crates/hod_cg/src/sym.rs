@@ -12,6 +12,10 @@ pub enum SymRef {
     /// it to the module's own symbol of that name if it declares one, and
     /// to a new undefined global symbol otherwise.
     Runtime(RuntimeFn),
+    /// The object's noop coroutine frame (`llvm.coro.noop`, WP-105,
+    /// `spec/codegen.md` "Coroutines"): a private constant that module
+    /// emission places, with the function it points to, on first use.
+    NoopCoroFrame,
 }
 
 macro_rules! runtime_fns {

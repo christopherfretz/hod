@@ -483,7 +483,7 @@ impl Tools {
 }
 
 /// Prefixes `llvm-objdump` prints on a line of their own.
-const PREFIXES: [&str; 1] = ["lock"];
+const PREFIXES: [&str; 2] = ["lock", "rep"];
 
 /// The mnemonic of a disassembled instruction: its first word, or its
 /// first two when the first is a prefix.

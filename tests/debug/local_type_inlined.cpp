@@ -21,7 +21,6 @@ int main() {
   s.acquire();
   return s.c;
 }
-//@ xfail: hod declines a type local to a function that is only inlined (debug:local-type-scope)
 //@ gdb: break local_type_inlined.cpp:15
 //@ gdb: run
 //@ gdb: print c

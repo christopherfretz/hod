@@ -136,3 +136,49 @@ fn lea_sweep(b: &mut Batch) {
     reject!(b, try_lea(Size::B, r(0), Mem::base(Reg::Rax, 0)), "lea al, [rax]");
     reject!(b, try_lea(Size::B, r(9), Mem::rip(0)), "lea r9b, [rip]");
 }
+
+/// The relocatable-immediate forms (`spec/mc-x64.md` "Relocatable
+/// immediates"): every register, the boundary values of the field, the
+/// sampled memory forms; each instruction's site is its immediate, the
+/// last bytes, with addend 0. `push_i32` is swept with values outside a
+/// sign-extended byte, where LLVM's text has the same 4-byte form; its
+/// small values are the zero form patched (`fixups`).
+pub fn relocatable(b: &mut Batch) {
+    let site = |inst: Inst, fixup: Fixup| {
+        let s = inst.site().expect("a relocatable immediate is a site");
+        assert_eq!((s.offset, s.fixup, s.addend), (inst.len() - fixup.size(), fixup, 0));
+    };
+    for n in 0..16 {
+        let (q, d) = (reg(Size::Q, n), reg(Size::D, n));
+        for v in [0, 1, -1, 5, i64::MIN, i64::MAX, 0x1234_5678_9abc_def0] {
+            site(movabs_ri(r(n), v), Fixup::Abs64);
+            emit!(b, movabs_ri(r(n), v), "movabs {q}, {v}");
+        }
+        for v in [0, 1, -1, 127, -128, i32::MIN, i32::MAX, 0x1234_5678] {
+            site(mov_ri32s(r(n), v), Fixup::Abs32);
+            emit!(b, mov_ri32s(r(n), v), "mov {q}, {v}");
+        }
+        for v in [0, 1, 0x7fff_ffff, 0x8000_0000, u32::MAX] {
+            site(mov_ri32(r(n), v), Fixup::Abs32U);
+            emit!(b, mov_ri32(r(n), v), "mov {d}, {v}");
+        }
+    }
+    for m in some_mems().into_iter().filter(|m| !m.is_rip()) {
+        for v in [0, -1, i32::MIN, i32::MAX] {
+            site(mov_mi32s(m.mem(), v), Fixup::Abs32);
+            emit!(b, try_mov_mi32s(m.mem(), v), "mov {}, {v}", m.sized(Size::Q));
+        }
+    }
+    // One site per instruction: no field in the memory operand. LLVM
+    // accepts the text (with two relocations), so these are hod's alone.
+    for m in [Mem::rip(0), Mem::rip(8).with_seg(Seg::Fs)] {
+        reject!(b, try_mov_mi32s(m, 1));
+    }
+    for m in [Mem::base(Reg::Rax, 0), Mem::abs(0x40)] {
+        reject!(b, try_mov_mi32s(m.with_abs32().expect("not RIP-relative"), 1));
+    }
+    for v in [128, -129, 0x1234_5678, i32::MIN, i32::MAX] {
+        site(push_i32(v), Fixup::Abs32);
+        emit!(b, push_i32(v), "push {v}");
+    }
+}

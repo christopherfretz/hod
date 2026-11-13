@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use hod_ir::{
     BlockId, Body, DiId, ExprId, FunctionBuilder, Intrinsic, IrErrorKind, Layering, LocId, Module,
-    NoCode, NoLayer, ParamAttrs, TypeId, TypeKind, Value,
+    NoCode, NoLayer, ParamAttrs, TypeId, TypeKind, Value, ValueKind,
 };
 
 use crate::debug::{Handle, INVALID};
@@ -1030,9 +1030,14 @@ impl<'a, L: Layering> Fx<'_, 'a, '_, L> {
         let (ty, value, terminator) = self.instruction()?;
         let mut loc = LocId::NONE;
         if std::mem::take(&mut self.extra_comma) || self.p.eat(Tok::Comma) {
-            loc = self.attachments()?;
+            let outside_frame;
+            (loc, outside_frame) = self.attachments()?;
             if loc != LocId::NONE {
                 self.b.set_loc_since(before, loc);
+            }
+            // `!coro.outside.frame` on a static `alloca` (`spec/ir.md` §5.2).
+            if outside_frame && let ValueKind::Slot(slot) = value.kind() {
+                ir(self.p.tok.start, self.b.set_slot_outside_frame(slot))?;
             }
         }
         if let Some(record) = self.s.old_record.take() {
@@ -1043,15 +1048,17 @@ impl<'a, L: Layering> Fx<'_, 'a, '_, L> {
     }
 
     /// `!kind !node {, !kind !node}` after an instruction: the location
-    /// `!dbg` names, the only one kept (`spec/ir.md` §6); every node
-    /// must exist.
-    fn attachments(&mut self) -> PResult<LocId> {
+    /// `!dbg` names (`spec/ir.md` §6), and whether `!coro.outside.frame`
+    /// is present (§5.2), the only ones kept; every node must exist.
+    fn attachments(&mut self) -> PResult<(LocId, bool)> {
         let mut loc = LocId::NONE;
+        let mut outside_frame = false;
         loop {
             if self.p.tok.kind != Tok::Meta {
                 return self.p.syntax("expected metadata after comma");
             }
             let dbg = self.p.text() == b"!dbg";
+            outside_frame |= self.p.text() == b"!coro.outside.frame";
             self.p.bump();
             let at = self.p.tok.start;
             let node = self.p.md_ref()?;
@@ -1066,7 +1073,7 @@ impl<'a, L: Layering> Fx<'_, 'a, '_, L> {
                 self.p.goto(resume);
             }
             if !self.p.eat(Tok::Comma) {
-                return Ok(loc);
+                return Ok((loc, outside_frame));
             }
         }
     }

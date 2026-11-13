@@ -103,6 +103,16 @@ pub struct BlockDiff {
     pub addend: i64,
 }
 
+/// A number minus an address: `addend - sym` (see
+/// [`ConstPool::neg_addr`], WP-101).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct NegAddr {
+    /// The symbol subtracted.
+    pub sym: SymId,
+    /// The number the address is subtracted from.
+    pub addend: i64,
+}
+
 impl<L: Layering> ConstPool<L> {
     /// Constant `c` as a label difference (WP-095): an integer expression
     /// built only of `ptrtoint` of a `blockaddress`, numbers, `add`, `sub`
@@ -155,6 +165,60 @@ impl<L: Layering> ConstPool<L> {
                 let [lhs, rhs] = args[..] else { return None };
                 self.block_terms(lhs, negate, depth + 1, term)?;
                 self.block_terms(rhs, negate != (op == ConstOp::Sub), depth + 1, term)?;
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+
+    // WP-101: a number minus an address.
+
+    /// Constant `c` as a number minus an address (WP-101): an `i64`
+    /// expression built only of numbers, `add`, `sub` and one `ptrtoint`
+    /// to `i64` of a symbol address, in which the address is subtracted
+    /// (`sub (i64 4, i64 ptrtoint (ptr @a to i64))`). Its value is
+    /// `addend - sym` modulo 2^64. `None` for any other constant, among
+    /// them an `IntOfAddr` alone and an expression that adds the address.
+    pub fn neg_addr(&self, types: &TypeTable, c: ConstId) -> Option<NegAddr> {
+        if !matches!(self.get(c), Const::Expr { .. }) || types.int_bits(self.ty(c)) != Some(64) {
+            return None;
+        }
+        let mut sym = None;
+        let mut addend = 0;
+        self.neg_terms(types, c, false, 0, &mut sym, &mut addend)?;
+        Some(NegAddr { sym: sym?, addend })
+    }
+
+    /// Adds `c` (negated when `negate`) to `addend`, recording the one
+    /// subtracted symbol in `sym`; `None` for another form.
+    fn neg_terms(
+        &self,
+        types: &TypeTable,
+        c: ConstId,
+        negate: bool,
+        depth: u32,
+        sym: &mut Option<SymId>,
+        addend: &mut i64,
+    ) -> Option<()> {
+        if depth > 8 || types.int_bits(self.ty(c)) != Some(64) {
+            return None;
+        }
+        let add = |addend: &mut i64, value: i64| {
+            *addend = addend.wrapping_add(if negate { value.wrapping_neg() } else { value });
+        };
+        match self.get(c) {
+            Const::Int { value, .. } => add(addend, value as i64),
+            Const::IntOfAddr { addr, .. } => {
+                let Const::Addr { sym: s, addend: offset } = self.get(addr) else { return None };
+                if !negate || sym.replace(s).is_some() {
+                    return None;
+                }
+                add(addend, offset);
+            }
+            Const::Expr { op: op @ (ConstOp::Add | ConstOp::Sub), args, .. } => {
+                let [lhs, rhs] = args[..] else { return None };
+                self.neg_terms(types, lhs, negate, depth + 1, sym, addend)?;
+                self.neg_terms(types, rhs, negate != (op == ConstOp::Sub), depth + 1, sym, addend)?;
             }
             _ => return None,
         }

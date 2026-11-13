@@ -664,7 +664,8 @@ stack. And every slot, including ones that must not outlive a free
 `hod_xform::coro::plan(&Module, &Body) -> Result<Option<CoroPlan>,
 Refusal>` runs before code generation. It gives `None` for a body
 without `presplitcoroutine`. The interface is fixed here so that packages C1 and
-C3 can be written against it:
+C3 can be written against it (as C1 landed it; `spec/xform.md` §3.1 is
+normative):
 
 ```rust
 pub struct CoroPlan {
@@ -673,8 +674,9 @@ pub struct CoroPlan {
     pub promise_offset: u32,            // alignTo(16, align)
     pub frame_align: u32,               // ≥ 16
     pub heap_slots: BitSet<SlotId>,     // Body::slots that live in the frame
-    pub heap_values: BitSet<ValueId>,   // results/arguments whose home is in the frame
+    pub heap_values: BitSet<InstId>,    // results whose home is in the frame
     pub begin_copies: Vec<SlotId>,      // heap slots with a stack shadow before coro.begin
+    pub begin_value_copies: Vec<InstId>, // heap values defined before coro.begin
     pub suspends: Vec<Suspend>,         // in index order
     pub suspended_region: BitSet<BlockId>, // with Suspend::wrapper..suspend (3.3)
     pub has_unwind_end: bool,
@@ -720,8 +722,14 @@ pub struct Suspend {
   alloca itself, not an alias at a nonzero offset.
 
 **An SSA value is in `heap_values`** iff it is live-in on a resumption
-edge. This is backward liveness over the blocks; at `-O0` most values
-are block-local and are skipped by their use facts.
+edge. C1 computes it with the same forward dataflow as rule 3 (a
+definition kills; a use after an edge since the definition is a hit;
+`coro.end(false)` and the ramp-only side of `is_in_ramp` reset), which
+is equivalent on SSA form; at `-O0` most values are block-local and are
+skipped by their use facts. `heap_values` holds instructions only: an
+argument used after a resumption edge is refused (below), so no
+argument needs a home in the frame. (C1 changed the field from
+`BitSet<ValueId>`, a type `hod_ir` does not have.)
 
 **An alloca slot is in `heap_slots`** by the first rule that applies:
 
@@ -774,6 +782,32 @@ libstdc++'s `generator`). libc++: 0. So the copy is specified, not
 refused. One shape is still refused: an *alias* (an SSA pointer)
 computed before `coro.begin` and used after it, because it would still
 point at the shadow (`coro:frame-before-begin`; corpus count 0).
+
+**Values before `coro.begin`** (C1, from kiln's maintainers). `this`, a
+lambda's closure pointer and VLA bounds are SSA values loaded before
+`coro.id` and used after suspends. They are heap values like any other,
+listed in `begin_value_copies`: stored to a machine-stack home where
+they are defined and copied to their heap home just after `coro.begin`.
+This is not `coro:frame-before-begin`. kiln's order before `coro.begin`
+is: static allocas; argument stores into parameter allocas (with a GEP
+for a coerced argument); the debug spill; the `this` alloca and its
+load; VLA bounds; `pre` contract checks; `coro.id`, then `coro.alloc`,
+`coro.size`, the allocation (and the GRO-on-allocation-failure branch),
+a `phi`, `coro.begin`.
+
+**Parameters** (C1, from kiln's maintainers). Every parameter gets a
+frame copy right after `coro.begin`. The original parameter alloca is
+read only (a) by the allocation call's arguments, (b) once for the copy,
+and (c) by a callee-destroyed (`trivial_abi`) parameter's destructor in
+the ramp after `coro.end`. (a) makes it rule 5 with a `begin_copies`
+entry; (b) alone keeps it on the stack (rule 3). kiln does not yet mark
+parameter allocas `!coro.outside.frame` (its WP-1374 will); until then
+(c) is a rule-5 heap slot used in the suspended region, refused as
+`coro:frame-access-after-suspend` (count: 0 in the corpus and in
+libc++). Arguments themselves are used after a suspend only in the ramp
+after `coro.end`: the `sret` pointer and an indirect callee-destroyed
+parameter's destructor. Those uses are not after a resumption and are
+not refused.
 
 A pointer to the shadow that escaped into memory before `coro.begin` and
 is dereferenced after it sees stale data. LLVM has the same hazard. In
@@ -828,7 +862,16 @@ name. Only the 6 slots above are expected to be refused.
 **The plan also refuses:**
 
 - an argument or `Incoming` area used after a resumption edge
-  (`coro:argument-across-suspend`).
+  (`coro:argument-across-suspend`);
+- a dynamic `alloca`, `llvm.stacksave` or `llvm.stackrestore`
+  (`coro:dynamic-alloca`), which can reach the plan from kiln;
+- the shapes `spec/xform.md` §3.8 lists (`coro:begin-shape`,
+  `coro:suspend-shape`, `coro:frame-intrinsic`, `coro:variadic`,
+  `coro:unwind-end-without-final`, `coro:overaligned-frame`).
+
+kiln always calls `await_suspend` through
+`llvm.coro.await.suspend.{void,bool,handle}` (call or invoke), so every
+suspended region starts at a wrapper.
 
 A `phi` on a resumption successor needs no rule. Its incoming value is
 read after the re-entry (3.3), so a value defined before the suspend is

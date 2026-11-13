@@ -52,6 +52,9 @@ pub(crate) struct State {
     pub const_recs: Vec<Rec>,
     /// The instruction values defined, by number from the first.
     pub insts: Vec<Local>,
+    /// The static `alloca`s, by LLVM instruction number (every
+    /// instruction counts): what `!coro.outside.frame` attaches to.
+    pub slot_insts: Vec<(u32, hod_ir::SlotId)>,
     /// Forward references: instruction number, placeholder and type.
     pub forwards: HashMap<u32, (Value, TypeId)>,
     pub pending: Vec<Cow<'static, str>>,
@@ -82,6 +85,9 @@ pub(crate) struct State {
     pub old_record: Option<crate::body_debug::OldRecord>,
     /// The values of the debug record being read.
     pub dbg_vals: Vec<Value>,
+    /// In a module without debug information, the function's local
+    /// metadata (strings and nodes for metadata operands, WP-064).
+    pub plain_md: crate::debug::DebugBits,
 }
 
 /// Reads the bodies of one module's functions (`spec/bc.md` §11).
@@ -111,6 +117,7 @@ pub struct BodyReader<'b, 'a> {
     pub(crate) values: Values,
     pub(crate) state: State,
     unsupported: Vec<Cow<'static, str>>,
+    attachments: Vec<Cow<'static, str>>,
 }
 
 impl<'b, 'a> BodyReader<'b, 'a> {
@@ -121,6 +128,7 @@ impl<'b, 'a> BodyReader<'b, 'a> {
             values: bits.values.clone(),
             state: State::default(),
             unsupported: Vec::new(),
+            attachments: Vec::new(),
         }
     }
 
@@ -132,7 +140,10 @@ impl<'b, 'a> BodyReader<'b, 'a> {
     /// represent: each is named in [`BodyReader::unsupported`] and
     /// recorded in `module` against the function's symbol. The notes of
     /// the definition's own metadata attachments (`global-metadata:`)
-    /// are recorded in `module` as well, and do not stop the body.
+    /// are recorded in `module` as well, and do not stop the body; they
+    /// are [`BodyReader::attachment_notes`] until the next read, for the
+    /// consumer to judge: `hod_ll` notes the same attachments at module
+    /// level, before any body (WP-064).
     ///
     /// # Errors
     /// [`BcError`] at the first record that is not what LLVM writes, or
@@ -143,6 +154,7 @@ impl<'b, 'a> BodyReader<'b, 'a> {
         function: &FunctionBits,
     ) -> BcResult<Option<Body>> {
         self.unsupported.clear();
+        self.attachments.clear();
         let at = function.span.start;
         if function.sym.index() >= module.symbol_count() {
             return fail(BcErrorKind::Invalid, at, "this function is not a symbol of the module");
@@ -158,6 +170,7 @@ impl<'b, 'a> BodyReader<'b, 'a> {
         }
         for construct in st.definition_notes.drain(..) {
             module.record_unsupported(&construct, Some(function.sym));
+            self.attachments.push(construct);
         }
         result
     }
@@ -166,6 +179,13 @@ impl<'b, 'a> BodyReader<'b, 'a> {
     /// once; empty for a body that was returned.
     pub fn unsupported(&self) -> impl ExactSizeIterator<Item = &str> + '_ {
         self.unsupported.iter().map(|construct| &**construct)
+    }
+
+    /// The notes of the last function's own metadata attachments that
+    /// `hod_ir` has no field for (`global-metadata:<kind>`), each once:
+    /// a body that was returned carries them too (WP-064).
+    pub fn attachment_notes(&self) -> impl ExactSizeIterator<Item = &str> + '_ {
+        self.attachments.iter().map(|construct| &**construct)
     }
 
     /// Gives the reader a body its consumer is done with: the next body
@@ -191,6 +211,7 @@ impl<'b, 'a> BodyReader<'b, 'a> {
         let builder = ir(at, builder)?;
         let st = &mut self.state;
         st.insts.clear();
+        st.slot_insts.clear();
         st.forwards.clear();
         st.pending.clear();
         st.definition_notes.clear();
@@ -199,6 +220,9 @@ impl<'b, 'a> BodyReader<'b, 'a> {
         st.params.clear();
         st.params.extend_from_slice(params);
         st.old_record = None;
+        st.plain_md.local.clear();
+        st.plain_md.args.clear();
+        st.plain_md.strs.clear();
         if let Some(notes) = self.bits.types.param_notes(function.type_id) {
             st.param_notes.extend_from_slice(notes);
         }
@@ -222,6 +246,7 @@ impl<'b, 'a> BodyReader<'b, 'a> {
             room: (function.span.end - function.span.start) / 2,
             fdbg: self.bits.debug.function(function.span.start),
             inst_first: 0,
+            llvm_insts: 0,
             last_loc: None,
         };
         let walked = fx.walk(function);
@@ -298,8 +323,9 @@ pub fn read_bodies<E: From<BcError>>(
 /// made it unsupported. `each` returns whether to go on.
 ///
 /// With one thread this is [`BodyReader::read`] of every function in
-/// order. With more, the module's tables, every id and every body are
-/// the same as with one (`spec/ir.md` §5.1).
+/// order, except that a body with [`BodyReader::attachment_notes`] is
+/// unsupported, those notes first. With more, the module's tables, every
+/// id and every body are the same as with one (`spec/ir.md` §5.1).
 ///
 /// # Errors
 /// The [`BcError`] of the first body in file order that has one: the
@@ -332,11 +358,18 @@ impl hod_ir::BodySource for BodyReader<'_, '_> {
         index: usize,
     ) -> BcResult<Option<Body>> {
         let bits = self.bits;
-        self.read(module, &bits.functions()[index])
+        let body = self.read(module, &bits.functions()[index])?;
+        // A definition's own attachments refuse it by name (WP-064): the
+        // text's are judged with the module, these only now.
+        if body.is_some() && !self.attachments.is_empty() {
+            return Ok(None);
+        }
+        Ok(body)
     }
 
+    /// The attachment notes, then the constructs `hod_ir` cannot represent.
     fn unsupported(&self) -> Vec<Box<str>> {
-        self.unsupported.iter().map(|construct| (**construct).into()).collect()
+        self.attachment_notes().chain(self.unsupported()).map(Into::into).collect()
     }
 
     /// The body block's bytes, four times: bitcode takes about a quarter
@@ -377,6 +410,8 @@ pub(crate) struct Fx<'s, 'b, 'a, L: Layering = NoLayer> {
     /// its first instruction, where its location starts and its debug
     /// records stand.
     pub inst_first: usize,
+    /// The instructions read: the LLVM number of the next one.
+    pub llvm_insts: u32,
     /// The location of the last `DEBUG_LOC`.
     pub last_loc: Option<hod_ir::LocId>,
 }
@@ -490,6 +525,10 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
                             cursor.enter()?;
                             self.attachments(cursor, ops)?;
                         }
+                        block::METADATA if !self.bits.debug.on => {
+                            cursor.enter()?;
+                            self.plain_local_metadata(cursor, ops)?;
+                        }
                         _ => cursor.skip(),
                     }
                 }
@@ -564,6 +603,9 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
                         );
                     }
                     if !ops.len().is_multiple_of(2) {
+                        // An instruction's: only `!coro.outside.frame` on a
+                        // static `alloca` is kept (`spec/ir.md` §5.2).
+                        self.instruction_attachments(ops)?;
                         continue;
                     }
                     for pair in ops.chunks(2) {
@@ -592,6 +634,23 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
                 }
             }
         }
+    }
+
+    /// `[instruction, kind, node, ...]`: marks the slot of a static
+    /// `alloca` that carries `!coro.outside.frame`.
+    fn instruction_attachments(&mut self, ops: &[u64]) -> BcResult<()> {
+        let kinds = self.bits.metadata_kinds();
+        let Some(&(kind, _)) = kinds.iter().find(|(_, name)| name == b"coro.outside.frame") else {
+            return Ok(());
+        };
+        if !ops[1..].chunks(2).any(|pair| pair[0] == kind) {
+            return Ok(());
+        }
+        let Ok(number) = u32::try_from(ops[0]) else { return Ok(()) };
+        if let Some(&(_, slot)) = self.s.slot_insts.iter().find(|(at, _)| *at == number) {
+            ir(self.at, self.b.set_slot_outside_frame(slot))?;
+        }
+        Ok(())
     }
 
     /// One record of the function block.
@@ -649,6 +708,10 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
                 self.flush_old_record();
                 self.inst_first = self.b.inst_count();
                 let (ty, value, terminator) = self.instruction(code, o)?;
+                if let hod_ir::ValueKind::Slot(slot) = value.kind() {
+                    self.s.slot_insts.push((self.llvm_insts, slot));
+                }
+                self.llvm_insts = self.llvm_insts.wrapping_add(1);
                 // The debug records after it stand before it.
                 ir(self.at, self.b.place_records_before(Some(self.inst_first)))?;
                 if terminator {

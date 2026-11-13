@@ -65,6 +65,18 @@ pub(crate) enum LocalMd {
         start: u32,
         len: u32,
     },
+    /// A string: its bytes in [`DebugBits::strs`] (WP-064: a metadata
+    /// operand of an intrinsic call).
+    String {
+        start: u32,
+        len: u32,
+    },
+    /// A node that is not debug information: its operands (metadata id
+    /// + 1, 0 for `null`) in [`DebugBits::args`] (WP-064).
+    Node {
+        start: u32,
+        len: u32,
+    },
     Other,
 }
 
@@ -87,6 +99,8 @@ pub(crate) struct DebugBits {
     pub functions: Vec<(u64, FnDebug)>,
     pub local: Vec<LocalMd>,
     pub args: Vec<u64>,
+    /// The bytes of the [`LocalMd::String`]s.
+    pub strs: Vec<u8>,
 }
 
 impl DebugBits {
@@ -318,7 +332,7 @@ fn layout(code: u32) -> Option<Layout> {
                 ("isOptimized", Bool),
                 ("flags", Str),
                 ("runtimeVersion", UInt),
-                ("splitDebugFilename", UnsupMd),
+                ("splitDebugFilename", Str),
                 ("emissionKind", UInt),
                 ("enums", List),
                 ("retainedTypes", List),
@@ -327,9 +341,9 @@ fn layout(code: u32) -> Option<Layout> {
                 ("", Skip),
                 ("globals", List),
                 ("imports", List),
-                ("dwoId", UnsupInt(0)),
+                ("dwoId", UInt),
                 ("macros", UnsupMd),
-                ("splitDebugInlining", Drop),
+                ("splitDebugInlining", Bool),
                 ("debugInfoForProfiling", Drop),
                 ("nameTableKind", UInt),
                 ("rangesBaseAddress", Drop),

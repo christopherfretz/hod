@@ -565,7 +565,7 @@ impl UnitPlan<'_> {
                 if has(c.flags, DiFlags::EXPORT_SYMBOLS)
                     || c.vtable_holder.is_some()
                     || cc
-                    || c.align != 0
+                    || c.align >= 8
                 {
                     return Err(unsupported(
                         t,
@@ -855,7 +855,7 @@ impl UnitPlan<'_> {
                     && (!d.name.is_empty()
                         || d.line != 0
                         || bitfield
-                        || d.align != 0
+                        || d.align >= 8
                         || has(d.flags, DiFlags::ARTIFICIAL))
                 {
                     return Err(unsupported(
@@ -1072,7 +1072,7 @@ impl<'a> Writer<'a> {
                         self.opt_name(t.name)?;
                     }
                     tag::TYPEDEF if acc == 0 => {
-                        let mask = b(ty.is_some()) | b(decl.is_some()) << 1 | b(t.align != 0) << 2;
+                        let mask = b(ty.is_some()) | b(decl.is_some()) << 1 | b(t.align >= 8) << 2;
                         self.abbrev(code(fam::TYPEDEF, mask, false));
                         self.opt_ref(plan, n, ty)?;
                         self.strx(t.name)?;
@@ -1082,7 +1082,7 @@ impl<'a> Writer<'a> {
                     tag::TYPEDEF => {
                         let mask = b(ty.is_some())
                             | b(decl.is_some()) << 1
-                            | b(t.align != 0) << 2
+                            | b(t.align >= 8) << 2
                             | 1 << 3;
                         self.abbrev(code(fam::TYPEDEF_ANY, mask, false));
                         self.opt_ref(plan, n, ty)?;
@@ -1143,7 +1143,7 @@ impl<'a> Writer<'a> {
                         | b(acc != 0) << 2
                         | b(value.is_some_and(|v| !v.1)) << 3
                         | b(value.is_some_and(|v| v.1)) << 4
-                        | b(m.align != 0) << 5;
+                        | b(m.align >= 8) << 5;
                     self.abbrev(code(family, mask, false));
                 }
                 self.strx(m.name)?;
@@ -1206,7 +1206,7 @@ impl<'a> Writer<'a> {
                         | b(name) << 3
                         | b(acc != 0) << 4
                         | b(decl.is_some()) << 5
-                        | b(c.align != 0) << 6;
+                        | b(c.align >= 8) << 6;
                     self.abbrev(code(fam::STRUCTURE_ANY + t, mask, children));
                 }
                 if let Some(h) = holder {
@@ -1245,7 +1245,7 @@ impl<'a> Writer<'a> {
                         | b(fwd) << 4
                         | b(acc != 0) << 5
                         | b(decl.is_some()) << 6
-                        | b(c.align != 0) << 7;
+                        | b(c.align >= 8) << 7;
                     self.abbrev(code(fam::ENUMERATION_ANY, mask, children));
                 }
                 self.opt_ref(plan, n, ty)?;
@@ -1464,7 +1464,7 @@ impl<'a> Writer<'a> {
         let mask = b(name)
             | b(decl.is_some()) << 1
             | b(bitfield) << 2
-            | b(!bitfield && m.align != 0) << 3
+            | b(!bitfield && m.align >= 8) << 3
             | b(!bitfield) << 4
             | b(acc != 0) << 5
             | b(virt) << 6

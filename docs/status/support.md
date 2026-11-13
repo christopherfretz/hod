@@ -28,22 +28,22 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `visibility` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `tls` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
-| `init` | 9 | 6 | 3 | 0 | 0 | 9 | 0 |
+| `init` | 10 | 6 | 3 | 1 | 0 | 10 | 0 |
 | `function` | 6 | 6 | 0 | 0 | 0 | 6 | 0 |
-| `cc` | 15 | 5 | 8 | 2 | 0 | 12 | 3 |
+| `cc` | 15 | 6 | 7 | 2 | 0 | 12 | 3 |
 | `attr` | 57 | 23 | 31 | 3 | 10 | 39 | 8 |
 | `type` | 15 | 11 | 1 | 3 | 0 | 13 | 2 |
-| `inst` | 67 | 59 | 0 | 8 | 0 | 59 | 8 |
+| `inst` | 67 | 60 | 0 | 7 | 0 | 60 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 21 | 0 | 0 | 0 | 21 | 0 |
-| `call` | 4 | 3 | 1 | 0 | 0 | 4 | 0 |
+| `call` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
 | `tail` | 3 | 3 | 0 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
-| `operand` | 10 | 7 | 3 | 0 | 0 | 10 | 0 |
+| `operand` | 11 | 8 | 3 | 0 | 0 | 11 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 351 | 319 | 32 | 0 | 0 | 135 | 216 |
-| total | 658 | 514 | 98 | 46 | 17 | 370 | 271 |
+| `intrinsic` | 354 | 334 | 20 | 0 | 0 | 138 | 216 |
+| total | 663 | 533 | 84 | 46 | 17 | 376 | 270 |
 
 ## `module`
 
@@ -181,6 +181,7 @@ What a variable's initializer contains.
 | `init:block-diff` | supported | not-implemented | a label difference `&&a - &&b` of two blocks of one function, a number (WP-095) |
 | `init:dso-local-equivalent` | not-implemented | not-implemented | unplanned |
 | `init:no-cfi` | not-implemented | not-implemented | unplanned |
+| `init:neg-addr` | rejected | not-implemented | no ELF relocation subtracts a symbol's address; `llc` refuses it too. a number minus an address, `sub (i64 4, i64 ptrtoint (ptr @a to i64))`, in data or in an aggregate operand's image |
 
 ## `function`
 
@@ -207,7 +208,7 @@ Calling conventions, of a body's function and of a call.
 | `cc:ghccc` | not-implemented | not-implemented | unplanned |
 | `cc:anyregcc` | not-implemented | not-implemented | unplanned |
 | `cc:preserve_mostcc` | supported | not-implemented | assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095) |
-| `cc:preserve_allcc` | not-implemented | not-implemented | unplanned |
+| `cc:preserve_allcc` | supported | not-implemented | assigned as `ccc`; the callee also saves `x9`..`x15` and `q8`..`q31` whole |
 | `cc:swiftcc` | supported | not-implemented | assigned as `ccc` (`spec/abi-a64.md` §1.2) |
 | `cc:cxx_fast_tlscc` | supported | not-implemented | assigned as `ccc` (`spec/abi-a64.md` §1.2) |
 | `cc:tailcc` | not-implemented | not-implemented | unplanned |
@@ -353,8 +354,8 @@ Instructions.
 | `inst:ptradd` | supported | not-implemented | LLVM's `getelementptr` (§5.4); not a vector of pointers |
 | `inst:extractvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented |  |
 | `inst:insertvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented |  |
-| `inst:extractelement` | supported (int, i128, ptr, half, bfloat, float, double, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
-| `inst:insertelement` | supported (int, ptr, half, bfloat, float, double, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
+| `inst:extractelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
+| `inst:insertelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:shufflevector` | supported (vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:phi` | supported | not-implemented | for every class whose `type:*` row is supported |
 | `inst:select` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented |  |
@@ -370,7 +371,7 @@ Instructions.
 | `inst:indirectbr` | supported | not-implemented |  |
 | `inst:ret` | supported | not-implemented |  |
 | `inst:unreachable` | supported | not-implemented |  |
-| `inst:callbr` | rejected | rejected | its only use is inline assembly with labels (`spec/codegen.md` §1) |
+| `inst:callbr` | supported | not-implemented | inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3) |
 | `inst:invoke` | supported | not-implemented |  |
 | `inst:resume` | supported | not-implemented |  |
 | `inst:catchswitch` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
@@ -422,7 +423,7 @@ Kinds of callee.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `call:indirect` | supported | not-implemented | the callee is a computed address |
-| `call:inline-asm` | not-implemented | not-implemented | hod_asm. the callee is inline assembly an assembler must read |
+| `call:inline-asm` | supported | not-implemented | the callee is inline assembly of instructions: `hod_asm` (WP-103, `spec/asm.md`) |
 | `call:inline-asm-empty` | supported | not-implemented | the callee is inline assembly whose template assembles to nothing (`spec/ir.md` §2.3) |
 | `call:variadic` | supported | not-implemented | a call through a variadic function type |
 
@@ -478,6 +479,7 @@ Constant addresses as instruction operands.
 | `operand:block-diff` | not-implemented | not-implemented | unplanned. a label difference as an operand (WP-095) |
 | `operand:dso-local-equivalent` | not-implemented | not-implemented | unplanned |
 | `operand:no-cfi` | not-implemented | not-implemented | unplanned |
+| `operand:neg-addr` | supported | not-implemented | a number minus an address, alone (`init:neg-addr`) |
 | `operand:address-in-aggregate` | supported | not-implemented | an aggregate or vector constant with an address (WP-072) |
 
 ## `const-expr`
@@ -605,6 +607,9 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.prefetch` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.clear_cache` | supported (ptr) | not-implemented |  |
 | `intrinsic:llvm.readcyclecounter` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.read_register` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.read_volatile_register` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.write_register` | supported (int) | not-implemented |  |
 | `intrinsic:llvm.is.constant` | supported | not-implemented |  |
 | `intrinsic:llvm.objectsize` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.ptrmask` | supported (int, ptr, vector) | not-implemented |  |
@@ -635,12 +640,12 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.coro.align` | not-implemented | not-implemented | T-XF (coroutine splitting) |
 | `intrinsic:llvm.coro.save` | not-implemented | not-implemented | T-XF (coroutine splitting) |
 | `intrinsic:llvm.coro.suspend` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.resume` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.destroy` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.done` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.promise` | not-implemented | not-implemented | T-XF (coroutine splitting) |
+| `intrinsic:llvm.coro.resume` | supported (ptr) | not-implemented | in any function (WP-105) |
+| `intrinsic:llvm.coro.destroy` | supported (ptr) | not-implemented | in any function (WP-105) |
+| `intrinsic:llvm.coro.done` | supported (int, ptr) | not-implemented | in any function (WP-105) |
+| `intrinsic:llvm.coro.promise` | supported (int, ptr) | not-implemented | in any function; a constant power-of-two alignment (WP-105) |
 | `intrinsic:llvm.coro.frame` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.noop` | not-implemented | not-implemented | T-XF (coroutine splitting) |
+| `intrinsic:llvm.coro.noop` | supported (ptr) | not-implemented | the noop frame (WP-105) |
 | `intrinsic:llvm.coro.is_in_ramp` | not-implemented | not-implemented | T-XF (coroutine splitting) |
 | `intrinsic:llvm.coro.await.suspend.void` | not-implemented | not-implemented | T-XF (coroutine splitting) |
 | `intrinsic:llvm.coro.await.suspend.bool` | not-implemented | not-implemented | T-XF (coroutine splitting) |
@@ -687,13 +692,13 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.aarch64.isb` | supported (int) | rejected | x86_64: an AArch64 property. WP-083 |
 | `intrinsic:llvm.aarch64.neon.abs` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
 | `intrinsic:llvm.aarch64.neon.addp` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
-| `intrinsic:llvm.aarch64.neon.bfcvt` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
-| `intrinsic:llvm.aarch64.neon.bfcvtn` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
-| `intrinsic:llvm.aarch64.neon.bfcvtn2` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
-| `intrinsic:llvm.aarch64.neon.bfdot` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
-| `intrinsic:llvm.aarch64.neon.bfmlalb` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
-| `intrinsic:llvm.aarch64.neon.bfmlalt` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
-| `intrinsic:llvm.aarch64.neon.bfmmla` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property. bfloat |
+| `intrinsic:llvm.aarch64.neon.bfcvt` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-101 |
+| `intrinsic:llvm.aarch64.neon.bfcvtn` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-101 |
+| `intrinsic:llvm.aarch64.neon.bfcvtn2` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-101 |
+| `intrinsic:llvm.aarch64.neon.bfdot` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-101 |
+| `intrinsic:llvm.aarch64.neon.bfmlalb` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-101 |
+| `intrinsic:llvm.aarch64.neon.bfmlalt` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-101 |
+| `intrinsic:llvm.aarch64.neon.bfmmla` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-101 |
 | `intrinsic:llvm.aarch64.neon.cls` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
 | `intrinsic:llvm.aarch64.neon.fabd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
 | `intrinsic:llvm.aarch64.neon.facge` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |

@@ -459,6 +459,8 @@ impl<'m> Machine<'m> {
                         let index = RuntimeFn::ALL.iter().position(|&known| known == func);
                         RT_BASE + 16 * index.unwrap_or(0) as u64
                     }
+                    // The test target never refers to it (WP-105).
+                    SymRef::NoopCoroFrame => return Err("the noop coroutine frame".to_owned()),
                 };
                 let at = start + reloc.offset as usize;
                 let field = code.get_mut(at..at + 8).ok_or("a relocation outside the code")?;

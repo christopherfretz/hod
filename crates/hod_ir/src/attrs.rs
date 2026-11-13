@@ -1266,9 +1266,35 @@ pub fn attr_info(syntax: AttrSyntax, name: &[u8]) -> Option<&'static AttrInfo> {
         .find(|row| name.len() > row.name.len() && name.starts_with(row.name.as_bytes()))
 }
 
-/// The positions in [`ATTRIBUTES`] of the string rows that match by
-/// prefix; a test checks that they are all of them.
-const PREFIXED_STRING_ROWS: [usize; 1] = [KEYWORD_ROWS + 14];
+/// The positions in [`ATTRIBUTES`] of the rows that match by prefix (all
+/// string rows), computed from the table (WP-101).
+const PREFIXED_STRING_ROWS: [usize; prefixed_count()] = prefixed_rows();
+
+/// The positions of the prefixed rows of [`ATTRIBUTES`], in order.
+const fn prefixed_rows() -> [usize; prefixed_count()] {
+    let mut rows = [0; prefixed_count()];
+    let (mut at, mut n) = (0, 0);
+    while at < ATTRIBUTES.len() {
+        if ATTRIBUTES[at].prefix {
+            rows[n] = at;
+            n += 1;
+        }
+        at += 1;
+    }
+    rows
+}
+
+/// How many rows of [`ATTRIBUTES`] match by prefix.
+const fn prefixed_count() -> usize {
+    let (mut at, mut n) = (0, 0);
+    while at < ATTRIBUTES.len() {
+        if ATTRIBUTES[at].prefix {
+            n += 1;
+        }
+        at += 1;
+    }
+    n
+}
 
 /// The class of the attribute `name` written as `syntax` (§5.7). A name
 /// the table does not have is [`AttrClass::Rejected`].

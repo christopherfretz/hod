@@ -327,7 +327,11 @@ impl<'a, T: Target> FnCx<'a, T> {
         self.cur = id;
         self.no_defer = true;
         let t = self.target;
+        // `spec/dwarf.md` §5.8: its code is at its own location.
+        let outer = self.line_loc();
+        self.line_switch(crate::line_rows::row_loc(inst));
         let lowered = t.lower(self, inst);
+        self.line_switch(outer);
         self.cur = cur;
         self.no_defer = no_defer;
         lowered?;

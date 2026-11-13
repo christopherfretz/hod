@@ -9,7 +9,7 @@ name: ci
 # a matrix axis would rename them.
 on:
   push:
-    branches: [main]
+    branches: [main, wp/158-sweep] # TEMP: WP-158 proof run; revert before handback
   pull_request:
   merge_group:
 permissions:

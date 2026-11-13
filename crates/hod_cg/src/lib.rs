@@ -15,6 +15,7 @@
 //! | `phi` | §4.5 | the `phi` protocol: incoming slots |
 //! | `frame` | §5.1 to §5.3 | `Frame`, `FrameRef`, `SlotPlace` |
 //! | `label` | §6.2, §6.3 | `Label`, `Labels`, fixups |
+//! | `shrink` | §6.4 | cuts and branch relaxation once the code is complete |
 //! | `call` | §4.4, §7.1 to §7.3 | the call sequence, `musttail`, `invoke`, runtime calls |
 //! | `abi` | §7.2 | `Sig`, `Part`, `Assignment`: the argument-assignment interface; the leaf walk (`Classify`, `place_leaves`) |
 //! | `features` | §7.3 | `FeatureTable`: the reading of a `target-features` string |
@@ -61,6 +62,7 @@ mod phi;
 mod policy;
 mod record;
 mod reg;
+mod shrink;
 pub mod switch;
 pub mod sym;
 mod target;

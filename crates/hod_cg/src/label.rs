@@ -41,6 +41,17 @@ pub struct Labels {
     fixups: Vec<Fixup>,
     /// Fixups not yet patched.
     pending: u32,
+    /// Every reference, patched or not, in the order made: what
+    /// shrinking the code (`shrink`, §6.4) patches again.
+    refs: Vec<Ref>,
+}
+
+/// One reference to a label: the field at `at` of `kind`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Ref {
+    pub(crate) at: u32,
+    pub(crate) kind: FixupKind,
+    pub(crate) label: Label,
 }
 
 impl Labels {
@@ -53,6 +64,7 @@ impl Labels {
         self.head.resize(count as usize, END);
         self.fixups.clear();
         self.pending = 0;
+        self.refs.clear();
     }
 
     /// A new unbound label.
@@ -104,6 +116,7 @@ impl Labels {
     ) -> Result<(), OutOfRange> {
         let index = label.0 as usize;
         debug_assert!(index < self.offset.len(), "a label of another function");
+        self.refs.push(Ref { at, kind, label });
         let target = self.offset[index];
         if target != UNBOUND {
             return patch(at, kind, i64::from(target) - i64::from(at))
@@ -144,6 +157,42 @@ impl Labels {
             next = fixup.next;
         }
         Ok(true)
+    }
+
+    /// The number of references made so far: the index the next one
+    /// gets in [`Labels::refs`].
+    pub(crate) fn ref_count(&self) -> u32 {
+        self.refs.len() as u32
+    }
+
+    /// Every reference made, in order.
+    pub(crate) fn refs(&self) -> &[Ref] {
+        &self.refs
+    }
+
+    /// Reference `index` is now the field at `at` of `kind` (a branch
+    /// relaxed to its short form).
+    pub(crate) fn retarget_ref(&mut self, index: usize, at: u32, kind: FixupKind) {
+        if let Some(r) = self.refs.get_mut(index) {
+            r.at = at;
+            r.kind = kind;
+        }
+    }
+
+    /// Moves every code offset the table holds through `map`: the bound
+    /// labels, the pending fixups and the references (§6.4).
+    pub(crate) fn map_offsets(&mut self, map: impl Fn(u32) -> u32) {
+        for offset in &mut self.offset {
+            if *offset != UNBOUND {
+                *offset = map(*offset);
+            }
+        }
+        for fixup in &mut self.fixups {
+            fixup.at = map(fixup.at);
+        }
+        for r in &mut self.refs {
+            r.at = map(r.at);
+        }
     }
 }
 

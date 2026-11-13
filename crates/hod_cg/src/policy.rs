@@ -149,6 +149,7 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// Makes `reg` the location of `key`.
     #[inline]
     pub(crate) fn own(&mut self, reg: PReg, key: Key) {
+        self.s.used = self.s.used.with(reg);
         self.s.occupied = self.s.occupied.with(reg);
         self.s.owner[usize::from(reg.index())] = key;
         self.set_loc(key, Loc::Reg(reg));
@@ -521,6 +522,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         let of_class = self.pool.intersection(self.class_regs(class));
         let busy = self.s.occupied.union(self.s.temps);
         if let Some(reg) = of_class.difference(busy).lowest() {
+            self.s.used = self.s.used.with(reg);
             return Ok(reg);
         }
         let Some(victim) =
@@ -569,9 +571,19 @@ impl<'a, T: Target> FnCx<'a, T> {
             return self.bug("take_reg of a pinned register");
         }
         self.displace(reg)?;
+        self.s.used = self.s.used.with(reg);
         self.s.temps = self.s.temps.with(reg);
         self.s.pinned = self.s.pinned.with(reg);
         Ok(())
+    }
+
+    /// Every register the policy has handed out ([`FnCx::temp`],
+    /// [`FnCx::take_reg`], a result's or operand's register) or made a
+    /// value's location since the function began: with what the target
+    /// writes on its own, the registers its prologue must save (§5.6.15).
+    #[inline]
+    pub fn regs_used(&self) -> RegSet {
+        self.s.used
     }
 
     /// Stores the value `reg` holds, if any, to a spill slot (§4.3).

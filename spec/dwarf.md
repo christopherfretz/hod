@@ -2067,8 +2067,8 @@ psABI's order of the first eight is not the encoding's). hod_x64 reports
 is `DW_OP_reg6`, as `llc`'s.
 
 **Places**: a variable in a slot is `DW_OP_fbreg o`
-(`frame::base_offset`: a local at `slot - 40 - FRAME`, below the five
-saved registers and the frame; an incoming memory argument at `16 + n`);
+(`frame::base_offset`: a local at `slot - 8n - FRAME`, below the `n`
+saved registers and the frame, `codegen.md` §5.6.15; an incoming memory argument at `16 + n`);
 one whose address is in a slot is `DW_OP_fbreg o, DW_OP_deref` (the sret
 pointer, a dynamic alloca's address, a byval argument's, an over-aligned
 slot's, which hod_x64 aligns dynamically instead of realigning `rsp`).

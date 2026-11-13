@@ -64,9 +64,6 @@ pub const REL32: FixupKind = FixupKind(0);
 /// ([`branch`]), so its fixup is always patched at once.
 pub const REL8: FixupKind = FixupKind(1);
 
-/// The bytes the prologue pushes below the frame pointer: the save set
-/// `rbx`, `r12`..`r15` (§5.6).
-pub const SAVE_BYTES: i32 = 40;
 /// The offset of the first incoming stack argument from `rbp`: the
 /// saved `rbp` and the return address.
 pub const INCOMING_BASE: i32 = 16;
@@ -171,7 +168,7 @@ pub fn bias_local_sites(cx: &mut FnCx<'_, X64>, bias: i64) -> CgResult<()> {
 /// `sp_shift` bytes below where the place was defined (an `Outgoing`
 /// place moves with it), and whether it is a local (its `disp32` must be
 /// recorded). A local is `[rbp + o]` with an absolute `disp32` that
-/// `end_function` biases to `o - 40 - FRAME`; an incoming argument is
+/// `end_function` biases to `o - 8n - FRAME`; an incoming argument is
 /// `[rbp + 16 + n]`; an outgoing one `[rsp + n]`.
 fn frame_mem(place: FrameRef, sp_shift: i32) -> (Mem, bool) {
     match place {

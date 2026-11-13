@@ -18,8 +18,8 @@
 //!                  mov [rbp + frame], rbx
 //!             ...  coro.suspend k: mov eax, -1
 //!   .Lk:           mov r<n>d, eax        (a resumed activation enters here)
-//!             ...  epilogue: lea rsp, [rbp - 40] · pop r15 .. rbx · pop rbp
-//! F.resume:   push rbp · mov rbp, rsp · push rbx .. r15 · sub rsp, FRAME ·
+//!             ...  epilogue: lea rsp, [rbp - 8n] · pops of the save set · pop rbp
+//! F.resume:   push rbp · mov rbp, rsp · the save set's pushes · sub rsp, FRAME ·
 //!             mov rbx, rdi · mov qword [rbp + mode], 1 ·
 //!             mov [rbp + frame], rdi · mov eax, 0 ·
 //!             cmp dword [rbx + index], k · je .Lk ... · ud2
@@ -35,8 +35,7 @@
 //! and the return address of whoever called the stub.
 
 use hod_cg::{
-    CallArg, CfiOp, CgResult, Class, FnCx, FrameDesc, FrameRef, Label, PReg, RegInfo, RegSet,
-    Target,
+    CallArg, CfiOp, CgResult, Class, FnCx, FrameRef, Label, PReg, RegInfo, RegSet, Target,
 };
 use hod_ir::{CallConv, Inst, InstKind, Intrinsic, TypeId, TypeKind, Value};
 use hod_mc_x64 as mc;
@@ -130,8 +129,9 @@ pub fn reg_info(coro: bool) -> &'static RegInfo {
 /// # Errors
 /// What the fixups report; `Internal` for a function without the words.
 pub fn stubs(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
-    let frame = crate::frame::final_size(cx.frame_size())?;
-    let desc = FrameDesc { frame_size: frame, frame_base: DWARF_RBP };
+    // WP-146: the body's frame, built the same way (`frame::end`).
+    let desc = cx.state.frame.desc;
+    let frame = desc.frame_size - 8 * crate::frame::saved(cx).count() as u32;
     let words = cx.coro_slots()?;
     let layout = cx.coro_layout()?;
     let local = |place: FrameRef| -> CgResult<Mem> {
@@ -159,7 +159,7 @@ pub fn stubs(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
         cx.cfi(CfiOp::Offset { reg: DWARF_RBP, cfa_offset: -16 });
         put(cx, mc::mov_rr(Size::Q, RBP, RSP));
         cx.cfi(CfiOp::DefCfaRegister(DWARF_RBP));
-        for (index, &saved) in SAVED.iter().enumerate() {
+        for (index, saved) in crate::frame::saved(cx).enumerate() {
             put(cx, mc::push_r(saved));
             let cfa_offset = -24 - 8 * index as i32;
             cx.cfi(CfiOp::Offset { reg: dwarf(gpr(saved)), cfa_offset });

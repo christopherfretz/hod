@@ -36,9 +36,11 @@ runs:
         apt-get install -y -qq --no-install-recommends \
           ca-certificates curl git build-essential procps time xz-utils file python3 \
           binutils clang-19 llvm-19 lld-19 libc++-19-dev libc++abi-19-dev \
-          clang-22 llvm-22 lld-22 mold gdb gdb-multiarch lldb-19 qemu-user \
+          clang-22 llvm-22 lld-22 mold gdb gdb-multiarch lldb-19 qemu-user csmith \
           "gcc-$cross" "g++-$cross" "binutils-$cross" \
           "libc6-dev-$arch-cross" "libstdc++-14-dev-$arch-cross" >/dev/null
+        # csmith: the random programs of `cargo xtask fuzz` (WP-154).
+        csmith --version | head -1
         for t in clang++-19 clang++-22 llc-19 llc-22 ld.lld-22 ld.bfd mold gdb lldb-19 \
                  "$prefix-gcc" "$prefix-ld.bfd" "$emu"; do
           printf '%-24s %s\n' "$t" "$("$t" --version 2>&1 | head -1)"

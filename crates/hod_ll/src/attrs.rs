@@ -49,7 +49,7 @@ pub(crate) fn packed(word: &[u8]) -> Option<u128> {
 
 /// The 0 to 8 bytes of `bytes` as a word whose lowest byte is the first,
 /// padded with zeros, from at most three loads.
-fn padded_word(bytes: &[u8]) -> u64 {
+pub(crate) fn padded_word(bytes: &[u8]) -> u64 {
     let len = bytes.len();
     if let Some(&first) = bytes.first_chunk::<8>() {
         return u64::from_le_bytes(first);

@@ -8,6 +8,7 @@
 //! word, a word ends at the first character that is not alphanumeric or
 //! `_`, and a string ends at the first `"`.
 
+use crate::kw::{Kw, keyword_at};
 use crate::skip::{comment_end, find_byte};
 
 /// The kind of a [`Token`].
@@ -107,11 +108,15 @@ pub enum Tok {
     DotDotDot,
 }
 
-/// One token: its kind and the bytes `start..end` of the source.
+/// One token: its kind, its keyword code and the bytes `start..end` of
+/// the source.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Token {
     /// What it is.
     pub kind: Tok,
+    /// For a [`Tok::Word`] or a [`Tok::IntType`], the keyword it is, if
+    /// it is one (`spec/ll.md` §2.2); [`Kw::Other`] for every other token.
+    pub kw: Kw,
     /// Offset of its first byte.
     pub start: u32,
     /// Offset one past its last byte.
@@ -269,7 +274,15 @@ impl<'a> Lexer<'a> {
 
     fn token(&mut self, kind: Tok, start: usize, end: usize) -> Token {
         self.pos = end;
-        Token { kind, start: start as u32, end: end as u32 }
+        Token { kind, kw: Kw::Other, start: start as u32, end: end as u32 }
+    }
+
+    /// A word or an integer type, with its keyword code.
+    #[inline]
+    fn keyword_token(&mut self, kind: Tok, start: usize, end: usize) -> Token {
+        self.pos = end;
+        let kw = keyword_at(self.src, start, end);
+        Token { kind, kw, start: start as u32, end: end as u32 }
     }
 
     fn fail(&mut self, why: &'static str, start: usize, end: usize) -> Token {
@@ -319,7 +332,7 @@ impl<'a> Lexer<'a> {
             }
             return self.token(Tok::Eof, start, start);
         };
-        let one = |kind| Token { kind, start: start as u32, end: start as u32 + 1 };
+        let one = |kind| Token { kind, kw: Kw::Other, start: start as u32, end: start as u32 + 1 };
         let simple = match c {
             b'=' => Tok::Equal,
             b',' => Tok::Comma,
@@ -509,7 +522,7 @@ impl<'a> Lexer<'a> {
             let digits = self.skip_while(start + 1, DIGIT);
             return match self.label_tail(digits) {
                 Some(end) => self.token(Tok::Label, start, end),
-                None => self.token(Tok::IntType, start, digits),
+                None => self.keyword_token(Tok::IntType, start, digits),
             };
         }
         let end = self.skip_while(start + 1, WORD);
@@ -527,9 +540,9 @@ impl<'a> Lexer<'a> {
         }
         // `cc42` is `cc` and `42`.
         if text.len() > 2 && text.starts_with(b"cc") && text[2].is_ascii_digit() {
-            return self.token(Tok::Word, start, start + 2);
+            return self.keyword_token(Tok::Word, start, start + 2);
         }
-        self.token(Tok::Word, start, end)
+        self.keyword_token(Tok::Word, start, end)
     }
 }
 
@@ -777,7 +790,7 @@ mod tests {
         assert_eq!(kinds("a /* open"), [Tok::Word, Tok::Error, Tok::Word]);
         assert_eq!(kinds("a / b"), [Tok::Word, Tok::Error, Tok::Word]);
         let mut lexer = Lexer::new(b"  ");
-        assert_eq!(lexer.next_token(), Token { kind: Tok::Eof, start: 2, end: 2 });
+        assert_eq!(lexer.next_token(), Token { kind: Tok::Eof, kw: Kw::Other, start: 2, end: 2 });
         assert_eq!(lexer.next_token().kind, Tok::Eof);
     }
 

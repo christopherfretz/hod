@@ -13,6 +13,7 @@ use crate::consts::{BlockLabels, LabelKey};
 use crate::debug::{DebugMap, DebugScratch};
 use crate::error::{LlErrorKind, PResult, fail, ir_fail};
 use crate::index::{Index, scan};
+use crate::kw::Kw;
 use crate::lexer::{Lexer, MAX_SOURCE_BYTES, Tok, Token, unescape};
 use crate::meta::{MdRef, MetadataIndex, Upgrade};
 use crate::names::NameMap;
@@ -191,7 +192,7 @@ impl<'a, 'm, L: Layering> Parser<'a, 'm, L> {
         Parser {
             src,
             lx: Lexer::new(src),
-            tok: Token { kind: Tok::Eof, start: 0, end: 0 },
+            tok: Token { kind: Tok::Eof, kw: Kw::Other, start: 0, end: 0 },
             module,
             index,
             text,

@@ -739,7 +739,9 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
         ON,
         todo(X64),
         "one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name \
-         (WP-106); with `-g`, its variables on the frame word (WP-108)",
+         (WP-106); with `-g`, its variables on the frame word (WP-108); a pre-opt module with \
+         one is accepted in place of `opt` + `llc`, and declined by its module level on a \
+         target without coroutine bodies (WP-109, `spec/cli.md` \"Pre-opt modules\")",
     ),
     a64("attr:sanitize_address", LATER, ""),
     a64("attr:sanitize_alloc_token", LATER, ""),

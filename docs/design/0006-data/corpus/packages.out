@@ -1,0 +1,43 @@
+### random sample (46 kiln + 24 gcc-torture)
+70 modules
+package	needed by	frees	cumulative
+X-int	55	0	0
+X-mem	69	5	5
+X-control	36	0	5
+X-call	64	21	26
+X-float	7	4	30
+X-aggr	11	5	35
+X-intrinsic	34	34	69
+X-x87	0	0	69
+X-atomic	0	0	69
+X-tls	0	0	69
+X-vector	1	1	70
+X-asm	0	0	70
+C7-coro	0	0	70
+core (int, mem, control, call) alone: 26
+core + float: 30
+core + aggr: 31
+core + intrinsic: 52
+core + float + aggr + intrinsic: 69
+
+### targeted sample (28 kiln + 11 gcc-torture)
+39 modules
+package	needed by	frees	cumulative
+X-int	32	0	0
+X-mem	39	0	0
+X-control	27	0	0
+X-call	39	6	6
+X-float	14	3	9
+X-aggr	4	0	9
+X-intrinsic	16	2	11
+X-x87	10	8	19
+X-atomic	6	6	25
+X-tls	4	4	29
+X-vector	10	10	39
+X-asm	0	0	39
+C7-coro	0	0	39
+core (int, mem, control, call) alone: 6
+core + float: 9
+core + aggr: 6
+core + intrinsic: 7
+core + float + aggr + intrinsic: 11

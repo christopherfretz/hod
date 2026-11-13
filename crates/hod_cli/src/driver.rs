@@ -13,12 +13,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+use hod::args::{self, Action, CommandLine, Input};
+use hod::coverage::{FallbackStatus, Log, Outcome, Record};
+use hod::env::{BITCODE_NATIVE, ENV_IN_FALLBACK, Environment};
 use hod::{BitcodeReading, CompileError, Construct, InputKind, Options, OutputKind, Report};
 
-use crate::args::{self, Action, CommandLine, Input};
 use crate::convert;
-use crate::coverage::{FallbackStatus, Log, Outcome, Record};
-use crate::jobs;
 use crate::phases::Phases;
 
 /// Exit status: success.
@@ -28,112 +28,6 @@ pub const EXIT_OK: u8 = 0;
 pub const EXIT_ERROR: u8 = 1;
 /// Exit status: the module is unsupported and no fallback ran.
 pub const EXIT_UNSUPPORTED: u8 = 2;
-
-/// Environment variable: the real `llc` (`--fallback=`).
-pub const ENV_FALLBACK: &str = "HOD_FALLBACK_LLC";
-/// Environment variable: `1` is `--strict`.
-pub const ENV_STRICT: &str = "HOD_STRICT";
-/// Environment variable: the coverage log (`--coverage-log=`).
-pub const ENV_COVERAGE_LOG: &str = "HOD_COVERAGE_LOG";
-/// Environment variable: the `llvm-dis` for bitcode (`--bitcode-via=`).
-pub const ENV_BITCODE_VIA: &str = "HOD_BITCODE_VIA";
-/// Environment variable: `--compress-debug-sections=` (WP-061).
-pub const ENV_COMPRESS_DEBUG_SECTIONS: &str = "HOD_COMPRESS_DEBUG_SECTIONS";
-/// Environment variable hod sets for the processes it starts, the fallback
-/// and the bitcode converter. A hod that starts with it set stands where
-/// one of them should be, and stops instead of recursing.
-pub const ENV_IN_FALLBACK: &str = "HOD_IN_FALLBACK";
-/// The variables that are settings. The bitcode converter is started
-/// without them.
-pub const SETTINGS: [&str; 4] = [ENV_FALLBACK, ENV_STRICT, ENV_COVERAGE_LOG, ENV_BITCODE_VIA];
-/// Environment variable: the file the phase report is appended to.
-pub const ENV_TIME_PHASES: &str = "HOD_TIME_PHASES";
-/// Environment variable: `1` asks for every reason of a declined module
-/// (coverage field 11), not only the first.
-pub const ENV_CENSUS: &str = "HOD_CENSUS";
-/// Environment variable: the most threads code generation uses
-/// (`spec/cli.md` "Threads"), a positive integer; `--threads=` wins over
-/// it; without either, extra threads come only from a jobserver.
-pub const ENV_THREADS: &str = "HOD_THREADS";
-/// The value of `--bitcode-via` that names hod's own bitcode reader.
-pub const BITCODE_NATIVE: &str = "native";
-
-/// hod's settings from the environment.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Environment {
-    /// `HOD_FALLBACK_LLC`, if set and not empty.
-    pub fallback: Option<PathBuf>,
-    /// `HOD_STRICT=1`.
-    pub strict: bool,
-    /// `HOD_COVERAGE_LOG`, if set and not empty.
-    pub coverage_log: Option<PathBuf>,
-    /// `HOD_BITCODE_VIA`, if set and not empty.
-    pub bitcode_via: Option<PathBuf>,
-    /// `HOD_COMPRESS_DEBUG_SECTIONS`, if set and not empty.
-    pub compress_debug_sections: Option<hod::Compression>,
-    /// `HOD_IN_FALLBACK` is set: this process was started by another hod,
-    /// as its fallback or its bitcode converter.
-    pub in_fallback: bool,
-    /// `HOD_TIME_PHASES`, if set and not empty.
-    pub time_phases: Option<PathBuf>,
-    /// `HOD_CENSUS=1`.
-    pub census: bool,
-    /// `HOD_THREADS`, if set and not empty.
-    pub threads: Option<usize>,
-    /// `MAKEFLAGS`, for a jobserver (`spec/cli.md` "Threads").
-    pub makeflags: Option<String>,
-    /// A variable with a value hod does not accept.
-    pub error: Option<String>,
-}
-
-impl Environment {
-    /// Reads the settings through `var` (`std::env::var_os` in the binary).
-    pub fn from_vars(var: impl Fn(&str) -> Option<OsString>) -> Self {
-        let non_empty = |name: &str| var(name).filter(|value| !value.is_empty());
-        let mut env = Environment {
-            fallback: non_empty(ENV_FALLBACK).map(PathBuf::from),
-            coverage_log: non_empty(ENV_COVERAGE_LOG).map(PathBuf::from),
-            bitcode_via: non_empty(ENV_BITCODE_VIA).map(PathBuf::from),
-            in_fallback: non_empty(ENV_IN_FALLBACK).is_some(),
-            time_phases: non_empty(ENV_TIME_PHASES).map(PathBuf::from),
-            makeflags: non_empty("MAKEFLAGS").and_then(|flags| flags.into_string().ok()),
-            ..Environment::default()
-        };
-        if let Some(value) = non_empty(ENV_COMPRESS_DEBUG_SECTIONS) {
-            match args::compression(&value) {
-                Ok(c) => env.compress_debug_sections = Some(c),
-                Err(message) => {
-                    env.error = Some(format!("{ENV_COMPRESS_DEBUG_SECTIONS}: {message}"));
-                }
-            }
-        }
-        if let Some(value) = non_empty(ENV_THREADS) {
-            match value.to_str().and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0) {
-                Some(threads) => env.threads = Some(threads),
-                None => {
-                    env.error = Some(format!(
-                        "invalid value '{}' for {ENV_THREADS}: expected a positive integer",
-                        value.to_string_lossy()
-                    ));
-                }
-            }
-        }
-        for (name, flag) in [(ENV_STRICT, &mut env.strict), (ENV_CENSUS, &mut env.census)] {
-            match non_empty(name) {
-                None => {}
-                Some(value) if value == "1" => *flag = true,
-                Some(value) if value == "0" => {}
-                Some(value) => {
-                    env.error.get_or_insert(format!(
-                        "invalid value '{}' for {name}: expected 1 or 0",
-                        value.to_string_lossy()
-                    ));
-                }
-            }
-        }
-        env
-    }
-}
 
 /// The code generator: `hod::compile_with` in the binary.
 pub type Compile<'a> =
@@ -401,7 +295,7 @@ pub fn run(args: &[OsString], env: &Environment, compile: Compile<'_>, io: &mut 
             let fallback = fallback.filter(|_| !env.in_fallback);
             return print(io, &version_text(fallback.as_deref()));
         }
-        Action::Help => return print(io, args::HELP),
+        Action::Help => return print(io, HELP),
     }
     let log_path = line.coverage_log.clone().or_else(|| env.coverage_log.clone());
     let mut log = match log_path.as_deref().map(Log::open).transpose() {
@@ -424,7 +318,7 @@ pub fn run(args: &[OsString], env: &Environment, compile: Compile<'_>, io: &mut 
             strict: line.strict.unwrap_or(env.strict),
             bitcode_via: line.bitcode_via.clone().or_else(|| env.bitcode_via.clone()),
             census: env.census,
-            threads: jobs::threads(line.threads.or(env.threads), env.makeflags.as_deref()),
+            threads: env.threads(line.threads),
         },
         io,
         start,
@@ -461,6 +355,55 @@ pub fn run(args: &[OsString], env: &Environment, compile: Compile<'_>, io: &mut 
     }
     exit
 }
+
+/// `--help`.
+pub const HELP: &str = "\
+OVERVIEW: hod, a debug-build code generator with llc's command line
+
+USAGE: hod [options] <input LLVM IR file, or - for standard input (the default)>
+
+OPTIONS (one or two dashes; a value is joined with '=' or is the next argument):
+  -o <file>                       Output file ('-' is standard output)
+  -O<0|1|2|3>                     Optimization level (accepted; hod does not optimize)
+  --filetype=<asm|obj>            Output kind (hod writes objects only)
+  --mtriple=<triple>              Override the module's target triple
+  --march=<arch>                  Architecture override
+  --mcpu=<cpu>                    Target CPU
+  --mattr=<+a,-b,...>             Target features
+  --relocation-model=<static|pic|dynamic-no-pic|ropi|rwpi|ropi-rwpi>
+  --code-model=<tiny|small|kernel|medium|large>
+  --function-sections             One section per function
+  --data-sections                 One section per global
+  --fp-contract=<fast|on|off>     Floating-point contraction
+  --debugger-tune=<gdb|lldb|dbx|sce>
+  --split-dwarf-file=<name>       The .dwo name recorded in the object
+  --split-dwarf-output=<file>     Where the .dwo file is written
+  --x86-branches-within-32B-boundaries
+  --time-trace, --time-trace-granularity=<n>, --time-trace-file=<file>
+                                  Accepted; hod itself writes no trace
+  --version                       Print the version
+  --help                          Print this help
+
+hod's own options (each also settable in the environment):
+  --fallback=<llc>                HOD_FALLBACK_LLC   The real llc, run on the same input with the
+                                                     same arguments when hod does not support
+                                                     something in the module or on the command line
+  --strict                        HOD_STRICT=1       No fallback: unsupported is an error
+  --coverage-log=<file>           HOD_COVERAGE_LOG   Append one line per invocation to <file>
+  --bitcode-via=<llvm-dis>        HOD_BITCODE_VIA    Convert a bitcode input to text with this
+                                                     llvm-dis (of the LLVM that wrote the bitcode)
+                                                     and compile the text
+  --compress-debug-sections=<none|zlib>
+                                  HOD_COMPRESS_DEBUG_SECTIONS
+                                                     Write the .debug_* sections compressed
+                                                     (SHF_COMPRESSED, zlib); zstd is not supported
+  --threads=<n>                   HOD_THREADS        Use at most <n> threads for code generation
+                                                     (without either: a make jobserver's idle
+                                                     tokens, else one thread)
+
+EXIT STATUS: 0 on success; 1 on an error; 2 when the module is unsupported and no fallback
+ran; otherwise the fallback's own status. The contract is spec/cli.md.
+";
 
 fn print(io: &mut Io<'_>, text: &str) -> u8 {
     match io.stdout.write_all(text.as_bytes()).and_then(|()| io.stdout.flush()) {
@@ -631,66 +574,6 @@ mod tests {
         text.lines().map(|l| l.split('\t').map(str::to_owned).collect()).collect()
     }
 
-    // spec/cli.md "Environment".
-    #[test]
-    fn environment() {
-        let vars = |pairs: &'static [(&'static str, &'static str)]| {
-            Environment::from_vars(move |name| {
-                pairs.iter().find(|(k, _)| *k == name).map(|(_, v)| OsString::from(v))
-            })
-        };
-        assert_eq!(vars(&[]), Environment::default());
-        let all = vars(&[
-            ("HOD_FALLBACK_LLC", "/usr/lib/llvm-22/bin/llc"),
-            ("HOD_STRICT", "1"),
-            ("HOD_COVERAGE_LOG", "cov.tsv"),
-            ("HOD_BITCODE_VIA", "/usr/lib/llvm-22/bin/llvm-dis"),
-            ("HOD_IN_FALLBACK", "1"),
-        ]);
-        assert_eq!(all.fallback, Some("/usr/lib/llvm-22/bin/llc".into()));
-        assert_eq!(all.coverage_log, Some("cov.tsv".into()));
-        assert_eq!(all.bitcode_via, Some("/usr/lib/llvm-22/bin/llvm-dis".into()));
-        assert!(all.strict && all.in_fallback && all.error.is_none());
-        // Empty is unset; HOD_STRICT=0 is off.
-        let empty = vars(&[
-            ("HOD_FALLBACK_LLC", ""),
-            ("HOD_STRICT", ""),
-            ("HOD_COVERAGE_LOG", ""),
-            ("HOD_BITCODE_VIA", ""),
-            ("HOD_IN_FALLBACK", ""),
-        ]);
-        assert_eq!(empty, Environment::default());
-        assert_eq!(vars(&[("HOD_STRICT", "0")]), Environment::default());
-        let bad = vars(&[("HOD_STRICT", "yes")]);
-        assert!(!bad.strict);
-        assert!(bad.error.unwrap().contains("invalid value 'yes' for HOD_STRICT"));
-        // WP-061: HOD_COMPRESS_DEBUG_SECTIONS takes the option's values.
-        let zlib = vars(&[("HOD_COMPRESS_DEBUG_SECTIONS", "zlib")]);
-        assert_eq!(zlib.compress_debug_sections, Some(hod::Compression::Zlib));
-        let zstd = vars(&[("HOD_COMPRESS_DEBUG_SECTIONS", "zstd")]);
-        assert!(zstd.error.unwrap().contains("compression 'zstd' is not supported"));
-        // HOD_CENSUS is read like HOD_STRICT.
-        assert!(vars(&[("HOD_CENSUS", "1")]).census);
-        assert_eq!(vars(&[("HOD_CENSUS", "0")]), Environment::default());
-        assert_eq!(vars(&[("HOD_CENSUS", "")]), Environment::default());
-        let bad = vars(&[("HOD_CENSUS", "all")]);
-        assert!(!bad.census);
-        assert!(bad.error.unwrap().contains("invalid value 'all' for HOD_CENSUS: expected 1 or 0"));
-        // HOD_THREADS is a positive integer; MAKEFLAGS is kept for a
-        // jobserver ("Threads").
-        assert_eq!(vars(&[("HOD_THREADS", "8")]).threads, Some(8));
-        assert_eq!(vars(&[("HOD_THREADS", "")]), Environment::default());
-        for value in ["0", "-1", "many", "1.5"] {
-            let pairs: &'static [(&str, &str)] = Box::leak(Box::new([("HOD_THREADS", value)]));
-            let bad = vars(pairs);
-            assert_eq!(bad.threads, None);
-            let expected = format!("invalid value '{value}' for HOD_THREADS: expected a positive");
-            assert!(bad.error.unwrap().contains(&expected), "{value}");
-        }
-        let make = vars(&[("MAKEFLAGS", "-j4 --jobserver-auth=fifo:/tmp/fifo")]);
-        assert_eq!(make.makeflags.as_deref(), Some("-j4 --jobserver-auth=fifo:/tmp/fifo"));
-    }
-
     // spec/cli.md "Threads": `--threads=<n>` wins over `HOD_THREADS`,
     // and either wins over a jobserver (no token is taken then).
     #[test]
@@ -718,7 +601,7 @@ mod tests {
         assert_eq!(threads(&obj, Some(5), &None), (5, false));
         assert_eq!(threads(&["-filetype=obj", "--threads=3"], Some(5), &None), (3, false));
         assert_eq!(threads(&["--threads", "2", "-filetype=obj"], None, &None), (2, false));
-        assert_eq!(threads(&obj, None, &make), (jobs::JOBSERVER_MAX_THREADS, true));
+        assert_eq!(threads(&obj, None, &make), (hod::jobserver::JOBSERVER_MAX_THREADS, true));
         assert_eq!(threads(&obj, Some(5), &make), (5, false));
         assert_eq!(threads(&["-filetype=obj", "--threads=1"], None, &make), (1, false));
 
@@ -863,7 +746,7 @@ mod tests {
         let lines = fields(&log);
         assert_eq!(lines.len(), 1);
         let line = &lines[0];
-        assert_eq!(line.len(), crate::coverage::FIELDS);
+        assert_eq!(line.len(), hod::coverage::FIELDS);
         assert_eq!(
             line[..6],
             [
@@ -948,7 +831,7 @@ mod tests {
             seen.borrow_mut().push(input.to_vec());
             match InputKind::detect(input) {
                 InputKind::Bitcode => Err(Unsupported::module(Construct::BitcodeInput).into()),
-                InputKind::Text => Ok(OBJECT.to_vec()),
+                InputKind::Text | InputKind::Module => Ok(OBJECT.to_vec()),
             }
         }
     }
@@ -1016,7 +899,7 @@ mod tests {
         let lines = fields(&log);
         assert_eq!(lines.len(), 1);
         let line = &lines[0];
-        assert_eq!(line.len(), crate::coverage::FIELDS);
+        assert_eq!(line.len(), hod::coverage::FIELDS);
         assert_eq!(
             line[..6],
             [
@@ -1057,7 +940,7 @@ mod tests {
                 input,
             ) {
                 InputKind::Bitcode => Err(Unsupported::module(Construct::BitcodeInput).into()),
-                InputKind::Text => {
+                InputKind::Text | InputKind::Module => {
                     Err(CompileError::MalformedInput("line 2: expected type".into()))
                 }
             };
@@ -1359,5 +1242,9 @@ mod tests {
         assert_eq!(ran.exit, EXIT_OK);
         assert!(String::from_utf8(ran.stdout).unwrap().starts_with("OVERVIEW: hod"));
         assert!(!log.exists());
+        assert!(HELP.contains("--fallback=<llc>") && HELP.contains("HOD_COVERAGE_LOG"));
+        assert!(HELP.contains("--bitcode-via=<llvm-dis>") && HELP.contains("HOD_BITCODE_VIA"));
+        assert!(HELP.contains("--compress-debug-sections=<none|zlib>"));
+        assert!(HELP.contains("--threads=<n>") && HELP.contains("HOD_THREADS"));
     }
 }

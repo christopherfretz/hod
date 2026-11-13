@@ -1,4 +1,11 @@
-//! Command-line parsing. Contract: `spec/cli.md` "Options".
+//! `llc`'s command line. Contract: `spec/cli.md` "Options" and "The
+//! command line in the facade".
+//!
+//! [`parse`] reads the `hod` binary's whole command line: `llc`'s options
+//! and hod's own. [`Options::from_llc_args`] reads `llc`'s alone, for a
+//! program that planned an `llc` command and compiles in process instead
+//! (`docs/design/0004-in-process-seam.md` §2.5): one parser for both, so
+//! that both routes read a command line alike.
 //!
 //! The grammar is `llc`'s (LLVM's `cl` library), for the options hod knows:
 //! one or two leading dashes mean the same; a value is joined with `=` or,
@@ -6,7 +13,7 @@
 //! value; a later occurrence of an option replaces an earlier one; `--` ends
 //! the options; at most one positional argument names the input.
 //!
-//! Parsing never fails outright. What hod cannot accept is recorded
+//! [`parse`] never fails outright. What hod cannot accept is recorded
 //! ([`CommandLine::rejected`], [`CommandLine::fatal`]) and the caller decides
 //! between an error and the fallback, which needs the rest of the command
 //! line either way.
@@ -15,7 +22,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::PathBuf;
 
-use hod::{
+use crate::{
     CodeModel, Compression, DebuggerTuning, FpContract, OptLevel, Options, OutputKind, RelocModel,
 };
 
@@ -43,7 +50,8 @@ pub enum Input {
 /// fallback configured the whole invocation goes to it; without one this is
 /// the error.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Rejected {
+#[non_exhaustive]
+pub enum ArgError {
     /// An option hod does not know, as written.
     UnknownOption(String),
     /// A known option with a value hod does not know.
@@ -52,32 +60,39 @@ pub enum Rejected {
     MissingValue(String),
     /// A second positional argument.
     ExtraInput(String),
+    /// `-version` or `-help` given to [`Options::from_llc_args`]: a command
+    /// line that compiles nothing. [`parse`] says it in
+    /// [`CommandLine::action`] instead.
+    NoCompile(String),
 }
 
-impl Rejected {
+impl ArgError {
     /// The reason in the coverage log (`spec/cli.md` "Reasons").
     pub fn reason(&self) -> &'static str {
         match self {
-            Rejected::UnknownOption(_) | Rejected::UnknownValue { .. } => "unknown-option",
-            Rejected::MissingValue(_) | Rejected::ExtraInput(_) => "usage",
+            ArgError::UnknownOption(_) | ArgError::UnknownValue { .. } => "unknown-option",
+            ArgError::MissingValue(_) | ArgError::ExtraInput(_) | ArgError::NoCompile(_) => "usage",
         }
     }
 }
 
-impl fmt::Display for Rejected {
+impl fmt::Display for ArgError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Rejected::UnknownOption(option) => write!(f, "unknown option '{option}'"),
-            Rejected::UnknownValue { option, value } => {
+            ArgError::UnknownOption(option) => write!(f, "unknown option '{option}'"),
+            ArgError::UnknownValue { option, value } => {
                 write!(f, "unknown value '{value}' for option '{option}'")
             }
-            Rejected::MissingValue(option) => write!(f, "option '{option}' requires a value"),
-            Rejected::ExtraInput(input) => {
+            ArgError::MissingValue(option) => write!(f, "option '{option}' requires a value"),
+            ArgError::ExtraInput(input) => {
                 write!(f, "more than one input file ('{input}'); at most one is accepted")
             }
+            ArgError::NoCompile(option) => write!(f, "option '{option}' compiles nothing"),
         }
     }
 }
+
+impl std::error::Error for ArgError {}
 
 /// A parsed command line.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,7 +122,7 @@ pub struct CommandLine {
     /// spelled, without hod's own options.
     pub forwarded: Vec<OsString>,
     /// The first thing on the command line hod cannot honor, if any.
-    pub rejected: Option<Rejected>,
+    pub rejected: Option<ArgError>,
     /// A mistake in one of hod's own options: always an error, never handed
     /// to the fallback.
     pub fatal: Option<String>,
@@ -309,10 +324,20 @@ fn is_option(arg: &OsStr) -> bool {
 struct Parser {
     line: CommandLine,
     inputs: usize,
+    /// [`Options::from_llc_args`]: `llc`'s options only (hod's own are
+    /// unknown, as to `llc`), nothing forwarded.
+    llc_only: bool,
 }
 
 impl Parser {
-    fn reject(&mut self, rejected: Rejected) {
+    /// Keeps `arg` for the fallback.
+    fn forward(&mut self, arg: &OsStr) {
+        if !self.llc_only {
+            self.line.forwarded.push(arg.to_owned());
+        }
+    }
+
+    fn reject(&mut self, rejected: ArgError) {
         self.line.rejected.get_or_insert(rejected);
     }
 
@@ -323,7 +348,7 @@ impl Parser {
     fn positional(&mut self, arg: &OsStr) {
         self.inputs += 1;
         if self.inputs > 1 {
-            self.reject(Rejected::ExtraInput(arg.to_string_lossy().into_owned()));
+            self.reject(ArgError::ExtraInput(arg.to_string_lossy().into_owned()));
         } else if arg == "-" {
             self.line.input = Input::Stdin;
         } else {
@@ -332,7 +357,7 @@ impl Parser {
     }
 
     fn unknown_value(&mut self, written: &str, value: &OsStr) {
-        self.reject(Rejected::UnknownValue {
+        self.reject(ArgError::UnknownValue {
             option: written.to_owned(),
             value: value.to_string_lossy().into_owned(),
         });
@@ -458,6 +483,43 @@ impl Parser {
 
 /// Parses the arguments after the program name.
 pub fn parse(args: &[OsString]) -> CommandLine {
+    parse_from(args.iter().map(OsString::as_os_str), args.len(), false)
+}
+
+impl Options {
+    /// The options of an `llc` command line (the arguments after the
+    /// program name), by the grammar and the table of `spec/cli.md`
+    /// "Options": what [`parse`] makes of it for the `hod` binary. `-o`
+    /// and the input are accepted and are not options (the caller knows
+    /// where its module comes from and its object goes); hod's own
+    /// options are not `llc`'s and are unknown here.
+    ///
+    /// [`Options::debug_compression`] is left at its default: it is not
+    /// `llc`'s ([`crate::Environment::compress_debug_sections`]).
+    ///
+    /// # Errors
+    /// The first thing on the command line hod cannot honor, with its
+    /// reason ([`ArgError::reason`]): `-version` and `-help` are
+    /// [`ArgError::NoCompile`].
+    pub fn from_llc_args(args: &[impl AsRef<str>]) -> Result<Options, ArgError> {
+        let line = parse_from(args.iter().map(|arg| OsStr::new(arg.as_ref())), 0, true);
+        debug_assert!(line.fatal.is_none(), "no option of hod's own is known");
+        if let Some(rejected) = line.rejected {
+            return Err(rejected);
+        }
+        match line.action {
+            Action::Compile => Ok(line.options),
+            Action::Version => Err(ArgError::NoCompile("-version".into())),
+            Action::Help => Err(ArgError::NoCompile("-help".into())),
+        }
+    }
+}
+
+fn parse_from<'a>(
+    args: impl Iterator<Item = &'a OsStr>,
+    count: usize,
+    llc_only: bool,
+) -> CommandLine {
     let mut parser = Parser {
         line: CommandLine {
             action: Action::Compile,
@@ -470,28 +532,29 @@ pub fn parse(args: &[OsString]) -> CommandLine {
             bitcode_via: None,
             compress_debug_sections: None,
             threads: None,
-            forwarded: Vec::with_capacity(args.len()),
+            forwarded: Vec::with_capacity(count),
             rejected: None,
             fatal: None,
         },
         inputs: 0,
+        llc_only,
     };
     let mut options_ended = false;
-    let mut rest = args.iter();
+    let mut rest = args;
     while let Some(arg) = rest.next() {
         if options_ended || !is_option(arg) {
             parser.positional(arg);
-            parser.line.forwarded.push(arg.clone());
+            parser.forward(arg);
             continue;
         }
         if arg == "--" {
             options_ended = true;
-            parser.line.forwarded.push(arg.clone());
+            parser.forward(arg);
             continue;
         }
         let Some(text) = arg.to_str() else {
-            parser.reject(Rejected::UnknownOption(arg.to_string_lossy().into_owned()));
-            parser.line.forwarded.push(arg.clone());
+            parser.reject(ArgError::UnknownOption(arg.to_string_lossy().into_owned()));
+            parser.forward(arg);
             continue;
         };
         let body = text.strip_prefix("--").or_else(|| text.strip_prefix('-')).unwrap_or(text);
@@ -500,17 +563,18 @@ pub fn parse(args: &[OsString]) -> CommandLine {
             None => (body, None),
         };
         let written = &text[..text.len() - joined.map_or(0, |v| v.len() + 1)];
-        let Some(opt) = Opt::lookup(name) else {
+        let known = Opt::lookup(name).filter(|opt| !(llc_only && opt.is_hod_specific()));
+        let Some(opt) = known else {
             // `-O<level>`: the one prefix option. `-O2`, `-O=2` and `-O 2`.
-            parser.line.forwarded.push(arg.clone());
+            parser.forward(arg);
             if let Some(level) = body.strip_prefix('O') {
                 let level = level.strip_prefix('=').unwrap_or(level);
                 let level = if level.is_empty() {
                     let Some(next) = rest.next() else {
-                        parser.reject(Rejected::MissingValue(text.to_owned()));
+                        parser.reject(ArgError::MissingValue(text.to_owned()));
                         continue;
                     };
-                    parser.line.forwarded.push(next.clone());
+                    parser.forward(next);
                     next.to_string_lossy().into_owned()
                 } else {
                     level.to_owned()
@@ -520,12 +584,12 @@ pub fn parse(args: &[OsString]) -> CommandLine {
                     None => parser.unknown_value("-O", OsStr::new(&level)),
                 }
             } else {
-                parser.reject(Rejected::UnknownOption(text.to_owned()));
+                parser.reject(ArgError::UnknownOption(text.to_owned()));
             }
             continue;
         };
         if !opt.is_hod_specific() {
-            parser.line.forwarded.push(arg.clone());
+            parser.forward(arg);
         }
         if opt.is_flag() {
             parser.flag(opt, written, joined.unwrap_or(""));
@@ -533,66 +597,17 @@ pub fn parse(args: &[OsString]) -> CommandLine {
             parser.value(opt, written, OsStr::new(value));
         } else if let Some(next) = rest.next() {
             if !opt.is_hod_specific() {
-                parser.line.forwarded.push(next.clone());
+                parser.forward(next);
             }
             parser.value(opt, written, next);
         } else if opt.is_hod_specific() {
             parser.fatal(format!("option '{written}' requires a value"));
         } else {
-            parser.reject(Rejected::MissingValue(written.to_owned()));
+            parser.reject(ArgError::MissingValue(written.to_owned()));
         }
     }
     parser.line
 }
-
-/// `--help`.
-pub const HELP: &str = "\
-OVERVIEW: hod, a debug-build code generator with llc's command line
-
-USAGE: hod [options] <input LLVM IR file, or - for standard input (the default)>
-
-OPTIONS (one or two dashes; a value is joined with '=' or is the next argument):
-  -o <file>                       Output file ('-' is standard output)
-  -O<0|1|2|3>                     Optimization level (accepted; hod does not optimize)
-  --filetype=<asm|obj>            Output kind (hod writes objects only)
-  --mtriple=<triple>              Override the module's target triple
-  --march=<arch>                  Architecture override
-  --mcpu=<cpu>                    Target CPU
-  --mattr=<+a,-b,...>             Target features
-  --relocation-model=<static|pic|dynamic-no-pic|ropi|rwpi|ropi-rwpi>
-  --code-model=<tiny|small|kernel|medium|large>
-  --function-sections             One section per function
-  --data-sections                 One section per global
-  --fp-contract=<fast|on|off>     Floating-point contraction
-  --debugger-tune=<gdb|lldb|dbx|sce>
-  --split-dwarf-file=<name>       The .dwo name recorded in the object
-  --split-dwarf-output=<file>     Where the .dwo file is written
-  --x86-branches-within-32B-boundaries
-  --time-trace, --time-trace-granularity=<n>, --time-trace-file=<file>
-                                  Accepted; hod itself writes no trace
-  --version                       Print the version
-  --help                          Print this help
-
-hod's own options (each also settable in the environment):
-  --fallback=<llc>                HOD_FALLBACK_LLC   The real llc, run on the same input with the
-                                                     same arguments when hod does not support
-                                                     something in the module or on the command line
-  --strict                        HOD_STRICT=1       No fallback: unsupported is an error
-  --coverage-log=<file>           HOD_COVERAGE_LOG   Append one line per invocation to <file>
-  --bitcode-via=<llvm-dis>        HOD_BITCODE_VIA    Convert a bitcode input to text with this
-                                                     llvm-dis (of the LLVM that wrote the bitcode)
-                                                     and compile the text
-  --compress-debug-sections=<none|zlib>
-                                  HOD_COMPRESS_DEBUG_SECTIONS
-                                                     Write the .debug_* sections compressed
-                                                     (SHF_COMPRESSED, zlib); zstd is not supported
-  --threads=<n>                   HOD_THREADS        Use at most <n> threads for code generation
-                                                     (without either: a make jobserver's idle
-                                                     tokens, else one thread)
-
-EXIT STATUS: 0 on success; 1 on an error; 2 when the module is unsupported and no fallback
-ran; otherwise the fallback's own status. The contract is spec/cli.md.
-";
 
 #[cfg(test)]
 mod tests {
@@ -810,11 +825,11 @@ mod tests {
     // one wins, and the fallback still gets every argument.
     #[test]
     fn rejected_command_lines() {
-        let unknown = |o: &str| Rejected::UnknownOption(o.to_owned());
+        let unknown = |o: &str| ArgError::UnknownOption(o.to_owned());
         let value =
-            |o: &str, v: &str| Rejected::UnknownValue { option: o.to_owned(), value: v.to_owned() };
-        let missing = |o: &str| Rejected::MissingValue(o.to_owned());
-        let table: &[(&[&str], Rejected)] = &[
+            |o: &str, v: &str| ArgError::UnknownValue { option: o.to_owned(), value: v.to_owned() };
+        let missing = |o: &str| ArgError::MissingValue(o.to_owned());
+        let table: &[(&[&str], ArgError)] = &[
             (&["-bogus"], unknown("-bogus")),
             (&["--bogus=1", "-o", "a.o"], unknown("--bogus=1")),
             (&["-O0", "-stats", "-also-bogus"], unknown("-stats")),
@@ -838,10 +853,10 @@ mod tests {
             (&["-o"], missing("-o")),
             (&["-filetype=obj", "--mcpu"], missing("--mcpu")),
             (&["-O"], missing("-O")),
-            (&["a.ll", "b.ll"], Rejected::ExtraInput("b.ll".into())),
-            (&["-", "-"], Rejected::ExtraInput("-".into())),
+            (&["a.ll", "b.ll"], ArgError::ExtraInput("b.ll".into())),
+            (&["-", "-"], ArgError::ExtraInput("-".into())),
             // A flag takes no separate value: `false` is a second input.
-            (&["a.ll", "-function-sections", "false"], Rejected::ExtraInput("false".into())),
+            (&["a.ll", "-function-sections", "false"], ArgError::ExtraInput("false".into())),
         ];
         for (args, expected) in table {
             let line = parsed(args);
@@ -853,16 +868,16 @@ mod tests {
 
     #[test]
     fn rejection_reasons_and_messages() {
-        let unknown = Rejected::UnknownOption("-bogus".into());
+        let unknown = ArgError::UnknownOption("-bogus".into());
         assert_eq!(unknown.reason(), "unknown-option");
         assert_eq!(unknown.to_string(), "unknown option '-bogus'");
-        let value = Rejected::UnknownValue { option: "-filetype".into(), value: "null".into() };
+        let value = ArgError::UnknownValue { option: "-filetype".into(), value: "null".into() };
         assert_eq!(value.reason(), "unknown-option");
         assert_eq!(value.to_string(), "unknown value 'null' for option '-filetype'");
-        let missing = Rejected::MissingValue("-o".into());
+        let missing = ArgError::MissingValue("-o".into());
         assert_eq!(missing.reason(), "usage");
         assert_eq!(missing.to_string(), "option '-o' requires a value");
-        let extra = Rejected::ExtraInput("b.ll".into());
+        let extra = ArgError::ExtraInput("b.ll".into());
         assert_eq!(extra.reason(), "usage");
         assert!(extra.to_string().contains("'b.ll'"));
     }
@@ -938,7 +953,7 @@ mod tests {
 
         // An unknown option does not hide them: the fallback is still found.
         let line = parsed(&["-bogus", "--fallback=llc", "-o", "a.o"]);
-        assert_eq!(line.rejected, Some(Rejected::UnknownOption("-bogus".into())));
+        assert_eq!(line.rejected, Some(ArgError::UnknownOption("-bogus".into())));
         assert_eq!(line.fallback, Some("llc".into()));
         assert_eq!(line.forwarded, os(&["-bogus", "-o", "a.o"]));
     }
@@ -982,10 +997,77 @@ mod tests {
         assert_eq!(accepted(&["--version", "--help"]).action, Action::Version);
         assert_eq!(accepted(&["--help", "--version"]).action, Action::Help);
         assert_eq!(accepted(&["--version=false"]).action, Action::Compile);
-        assert!(HELP.contains("--fallback=<llc>") && HELP.contains("HOD_COVERAGE_LOG"));
-        assert!(HELP.contains("--bitcode-via=<llvm-dis>") && HELP.contains("HOD_BITCODE_VIA"));
-        assert!(HELP.contains("--compress-debug-sections=<none|zlib>"));
-        assert!(HELP.contains("--threads=<n>") && HELP.contains("HOD_THREADS"));
+    }
+
+    /// The command lines of the tests above that [`parse`] accepts whole.
+    const ACCEPTED: &[&[&str]] = &[
+        &[],
+        &["-O0", "-relocation-model=pic", "-filetype=obj", "-function-sections"],
+        &["-data-sections", "-mcpu=neoverse-n1", "-fp-contract=fast", "-code-model=large"],
+        &["-x86-branches-within-32B-boundaries", "-debugger-tune=gdb", "-mattr", "+a,+b"],
+        &["-split-dwarf-file=a.dwo", "-split-dwarf-output", "a.dwo", "-o", "/tmp/x/a.o", "-"],
+        &["--time-trace", "--time-trace-granularity=500", "--time-trace-file=t.json"],
+        &["-O", "3", "--mtriple", "x86_64-unknown-linux-gnu", "-march=x86-64", "m.ll"],
+        &["-function-sections", "-function-sections=false", "--", "-O0"],
+    ];
+
+    // spec/cli.md "The command line in the facade": `from_llc_args` is
+    // `parse`'s reading of llc's options, and refuses as `parse` does.
+    #[test]
+    fn from_llc_args_is_the_parse() {
+        for args in ACCEPTED {
+            assert_eq!(Options::from_llc_args(args), Ok(accepted(args).options), "{args:?}");
+        }
+        let owned: Vec<String> = ["-O0", "-filetype=obj"].map(String::from).to_vec();
+        let options = Options::from_llc_args(&owned).unwrap();
+        assert_eq!((options.opt_level, options.output_kind), (OptLevel::O0, OutputKind::Object));
+        for args in [
+            &["-bogus"][..],
+            &["-filetype=null"],
+            &["-O4"],
+            &["-mcpu=help"],
+            &["-o"],
+            &["a.ll", "b.ll"],
+            &["-O0", "-stats", "-also-bogus"],
+        ] {
+            assert_eq!(Options::from_llc_args(args).err(), parsed(args).rejected, "{args:?}");
+        }
+    }
+
+    // spec/cli.md "The command line in the facade": hod's own options are
+    // not llc's, and a command line that compiles nothing is refused.
+    #[test]
+    fn from_llc_args_knows_llc_options_only() {
+        let unknown = |o: &str| Err(ArgError::UnknownOption(o.to_owned()));
+        for (args, first) in [
+            (&["--fallback=/usr/bin/llc"][..], "--fallback=/usr/bin/llc"),
+            (&["-O0", "--strict"], "--strict"),
+            (&["--coverage-log", "c.tsv"], "--coverage-log"),
+            (&["--bitcode-via=native"], "--bitcode-via=native"),
+            (&["--compress-debug-sections=zlib"], "--compress-debug-sections=zlib"),
+            (&["--threads=4"], "--threads=4"),
+            // Not a mistake in an option of hod's own: an unknown option.
+            (&["--threads=0"], "--threads=0"),
+        ] {
+            assert_eq!(Options::from_llc_args(args), unknown(first), "{args:?}");
+        }
+        // An unknown option takes no value: the next argument is the input.
+        let err = Options::from_llc_args(&["--coverage-log", "a.ll", "b.ll"]).unwrap_err();
+        assert_eq!(err, ArgError::UnknownOption("--coverage-log".into()));
+        for (args, option) in
+            [(&["--version"][..], "-version"), (&["-O0", "-h"], "-help"), (&["--help"], "-help")]
+        {
+            let err = Options::from_llc_args(args).unwrap_err();
+            assert_eq!(err, ArgError::NoCompile(option.into()), "{args:?}");
+            assert_eq!(err.reason(), "usage");
+        }
+        assert_eq!(
+            ArgError::NoCompile("-version".into()).to_string(),
+            "option '-version' compiles nothing"
+        );
+        assert!(Options::from_llc_args(&["--version=false", "-O1"]).is_ok());
+        let none: [&str; 0] = [];
+        assert_eq!(Options::from_llc_args(&none), Ok(Options::default()));
     }
 
     // Arguments are bytes: a path that is not UTF-8 is a path all the same,
@@ -1005,10 +1087,10 @@ mod tests {
 
         let option = OsString::from_vec(b"-mcpu=\xFF".to_vec());
         let line = parse(std::slice::from_ref(&option));
-        assert!(matches!(line.rejected, Some(Rejected::UnknownOption(_))));
+        assert!(matches!(line.rejected, Some(ArgError::UnknownOption(_))));
         assert_eq!(line.forwarded, [option]);
 
         let line = parse(&["-mcpu".into(), OsString::from_vec(b"\xFF".to_vec())]);
-        assert!(matches!(line.rejected, Some(Rejected::UnknownValue { .. })));
+        assert!(matches!(line.rejected, Some(ArgError::UnknownValue { .. })));
     }
 }

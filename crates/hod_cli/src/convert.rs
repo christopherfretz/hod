@@ -12,7 +12,7 @@ use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 
-use crate::driver::{ENV_IN_FALLBACK, SETTINGS};
+use hod::env::{ENV_IN_FALLBACK, SETTINGS};
 
 /// The converter's arguments: text to standard output, bitcode from
 /// standard input.

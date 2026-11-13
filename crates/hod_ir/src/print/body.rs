@@ -851,6 +851,7 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
         self.s(if call.is_nounwind() { " nounwind" } else { "" })?;
         self.s(if call.returns_twice() { " returns_twice" } else { "" })?;
         self.s(if call.is_convergent() { " convergent" } else { "" })?;
+        self.s(if call.is_nocf_check() { " nocf_check" } else { "" })?;
         if call.bundle_count() > 0 {
             self.s(" [ ")?;
             for (index, bundle) in call.bundles().enumerate() {

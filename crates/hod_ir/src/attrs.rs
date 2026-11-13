@@ -727,9 +727,14 @@ impl FnAttrs {
     /// `noredzone`: no data below the stack pointer; hod never puts any
     /// there (`spec/codegen.md` §5), so it changes no code.
     pub const NO_RED_ZONE: u32 = 1 << 20;
+    /// `nocf_check` (WP-184): on a function, no indirect-branch landing
+    /// instruction at its entry; on an indirect call, the call is not
+    /// tracked (x86-64 `notrack`). Only `cf-protection-branch` modules on
+    /// x86-64 change code for it, as in `llc`.
+    pub const NO_CF_CHECK: u32 = 1 << 21;
 
     /// Every flag with LLVM's keyword for it, in bit order.
-    pub const FLAG_NAMES: [(&'static str, u32); 21] = [
+    pub const FLAG_NAMES: [(&'static str, u32); 22] = [
         ("noreturn", Self::NORETURN),
         ("naked", Self::NAKED),
         ("nounwind", Self::NOUNWIND),
@@ -751,9 +756,10 @@ impl FnAttrs {
         ("sanitize_type", Self::SANITIZE_TYPE),
         ("convergent", Self::CONVERGENT),
         ("noredzone", Self::NO_RED_ZONE),
+        ("nocf_check", Self::NO_CF_CHECK),
     ];
 
-    const ALL_FLAGS: u32 = (1 << 21) - 1;
+    const ALL_FLAGS: u32 = (1 << 22) - 1;
 
     /// No attributes.
     pub fn new() -> FnAttrs {
@@ -1254,7 +1260,7 @@ pub const ATTRIBUTES: [AttrInfo; 141] = [
     kw("nobuiltin", Dropped),
     kw("nocallback", Dropped),
     kw("nocapture", Dropped),
-    kw("nocf_check", Rejected),
+    kw("nocf_check", Kept),
     kw("nocreateundeforpoison", Dropped),
     kw("nodivergencesource", Rejected),
     kw("noduplicate", Rejected),
@@ -1617,7 +1623,7 @@ mod tests {
         assert_eq!(a.strings().count(), 0);
 
         let kind = |r: IrResult<()>| r.unwrap_err().kind;
-        assert_eq!(kind(a.set(1 << 21)), IrErrorKind::InvalidOperand);
+        assert_eq!(kind(a.set(1 << 22)), IrErrorKind::InvalidOperand);
         assert_eq!(kind(a.set_stack_align(24)), IrErrorKind::InvalidOperand);
         assert_eq!(kind(a.set_string(FnStr::NoBuiltin, b"")), IrErrorKind::InvalidOperand);
         assert!(a.is_empty());

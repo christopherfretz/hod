@@ -5,12 +5,15 @@
 //! target's (`hod_a64::coro`), and the call through a frame's resume or
 //! destroy pointer is [`FnCx::call_through`].
 
+use hod_ir::BranchProtection;
+
 use crate::cx::FnCx;
 use crate::error::{CgError, CgResult};
 use crate::sym::SymRef;
 use crate::target::Target;
 
-/// `llvm.coro.noop` on a target whose `Target::NOOP_CORO_FN` is empty.
+/// `llvm.coro.noop` on a target whose `Target::NOOP_CORO_FN` (or, in a
+/// module that marks branch targets, `NOOP_CORO_FN_MARKED`) is empty.
 pub const NOOP_CORO_TARGET: &str = "coro:noop-target";
 
 impl<T: Target> FnCx<'_, T> {
@@ -22,10 +25,19 @@ impl<T: Target> FnCx<'_, T> {
     /// # Errors
     /// [`NOOP_CORO_TARGET`] when the target has no such function.
     pub fn noop_coro_frame(&mut self) -> CgResult<SymRef> {
-        if T::NOOP_CORO_FN.is_empty() {
+        // WP-184: the function is reached through the frame's pointers,
+        // so a module that marks indirect-branch targets gets the marked
+        // code (`Target::NOOP_CORO_FN_MARKED`).
+        let marks = BranchProtection::BTI | BranchProtection::CET_IBT;
+        let code = if self.module.props.branch_protection.bits() & marks != 0 {
+            T::NOOP_CORO_FN_MARKED
+        } else {
+            T::NOOP_CORO_FN
+        };
+        if code.is_empty() {
             return Err(CgError::unsupported(NOOP_CORO_TARGET));
         }
-        self.out.noop_coro_fn = T::NOOP_CORO_FN;
+        self.out.noop_coro_fn = code;
         Ok(SymRef::NoopCoroFrame)
     }
 }

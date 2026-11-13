@@ -41,6 +41,17 @@ pub struct CallEmit {
     pub vector_regs_used: u8,
 }
 
+/// A place in a function that an indirect branch may reach, other than
+/// the function's entry (which the target marks in
+/// [`Target::begin_function`]): see [`Target::branch_target`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BranchTarget {
+    /// The start of a block whose address is taken (`blockaddress`).
+    Block,
+    /// The start of a landing pad, where the unwinder jumps.
+    LandingPad,
+}
+
 /// A code generator for one instruction set (§8.2).
 ///
 /// A target is a zero-sized or small `Sync` value. Everything generic in
@@ -93,6 +104,13 @@ pub trait Target: Sized + Sync {
     /// (`spec/codegen.md` "Coroutines", WP-105). Empty: the target does
     /// not lower `llvm.coro.noop`.
     const NOOP_CORO_FN: &'static [u8] = &[];
+
+    /// [`Target::NOOP_CORO_FN`] with the target's indirect-branch landing
+    /// instruction first, for a module with `cf-protection-branch` or
+    /// `branch-target-enforcement` (WP-184, `spec/codegen.md` §5.6.25):
+    /// `endbr64; ret` on x86-64. Empty: `llvm.coro.noop` is refused in
+    /// such a module.
+    const NOOP_CORO_FN_MARKED: &'static [u8] = &[];
 
     /// Whether the target compiles coroutine bodies (WP-106, §7.6): it
     /// implements [`Target::coro_stubs`] and [`Target::coro_dispatch`],
@@ -162,6 +180,24 @@ pub trait Target: Sized + Sync {
     /// `Unsupported("limit:frame-size")` for a frame the prologue cannot
     /// express.
     fn end_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()>;
+
+    /// Called at the start of a block an indirect branch may reach
+    /// (§5.6.25), after its label, its [`BlockOffset`](crate::BlockOffset)
+    /// and its landing-pad row are recorded and before anything else of
+    /// the block (its `phi` loads): the target emits the landing
+    /// instruction its branch-protection scheme asks for (x86-64
+    /// `endbr64` under `cf-protection-branch`), so the recorded offset is
+    /// that instruction's. For a block that is both, `Block` is passed.
+    /// Also called, with `LandingPad`, at the start of an `invoke`'s pad
+    /// stub (§5.3), where the unwinder lands instead of the pad. The
+    /// default emits nothing.
+    ///
+    /// # Errors
+    /// None by default.
+    fn branch_target(&self, cx: &mut FnCx<'_, Self>, at: BranchTarget) -> CgResult<()> {
+        let _ = (cx, at);
+        Ok(())
+    }
 
     /// The offset of `place` from the function's DWARF frame base
     /// ([`FrameDesc::frame_base`]) once `end_function` has filled `desc`,

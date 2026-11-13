@@ -55,7 +55,7 @@ fn parse(list: &'static str) -> Vec<Listed> {
 }
 
 /// §5.7 "kept": the keyword attributes that have a representation.
-const KEPT_KEYWORDS: [&str; 37] = [
+const KEPT_KEYWORDS: [&str; 38] = [
     "align",
     "alignstack",
     "alwaysinline",
@@ -67,6 +67,7 @@ const KEPT_KEYWORDS: [&str; 37] = [
     "inreg",
     "naked",
     "nest",
+    "nocf_check",
     "noredzone",
     "noreturn",
     "nounwind",
@@ -97,13 +98,12 @@ const KEPT_KEYWORDS: [&str; 37] = [
 
 /// §5.7 "rejected": the keyword attributes LLVM defines that hod neither
 /// represents nor may ignore.
-const REJECTED_KEYWORDS: [&str; 16] = [
+const REJECTED_KEYWORDS: [&str; 15] = [
     "coro_elide_safe",
     "coro_only_destroy_when_complete",
     "fn_ret_thunk_extern",
     "hybrid_patchable",
     "jumptable",
-    "nocf_check",
     "nodivergencesource",
     "noduplicate",
     "noimplicitfloat",

@@ -272,8 +272,41 @@ W=$PWD/hod   # or a worktree
    --results $PWD/../.build/libcxx-x64/baseline/baseline.tsv)
 ```
 
-hod in place of `llc` (WP-135): `HOD_X64_KILN` names the shim's
-`kiln++-hod`.
+### hod in place of `llc`
+
+`scripts/libcxx-hod-x64.sh` runs the same suite with hod as kiln's back
+end (WP-135; results: `docs/status/libcxx-hod-x64.md`). It chains the
+wrappers that exist: `HOD_X64_KILN` is `scripts/libcxx-hod-kiln.sh`
+(the per-test coverage log of `docs/status/libcxx-hod.md`), whose
+`HOD_LIBCXX_KILN` is the shim's `kiln++-hod` (default
+`<workspace>/.build/target-<checkout>/llvm-22-shim`, or `$HOD_SHIM`).
+
+```
+scripts/libcxx-hod-x64.sh <hybrid|strict> <run dir> [cargo xtask libcxx arguments...]
+scripts/libcxx-hod-x64.sh merge <run dir> <hybrid|strict>
+```
+
+- `hybrid` sets `HOD_CENSUS=1` and unsets `HOD_STRICT`; `strict` sets
+  `HOD_STRICT=1` and unsets `HOD_CENSUS`. Anything else is a usage error
+  (exit 2), as is a missing shim.
+- The fixed arguments are the baseline's: `--tag llvmorg-22.1.8`,
+  `--timeout 160 --run-timeout-long 1920 -j $HOD_JOBS` (default 3)
+  `--mem-limit 3072 --no-fail`. The selection is `std libcxx` unless a
+  path is among the extra arguments. When `/run/hod/jobserver.fifo` (or
+  `$HOD_JOBSERVER_FIFO`) is a FIFO, the runner gets it in `MAKEFLAGS`, as
+  the baseline did (kiln's `env.sh` names kiln's own pool).
+- A run writes `<run dir>/<name>/` (the log directory: `args.tsv`,
+  `cov/`, `phases/`), `<name>.tsv` (kiln's `--results`) and `<name>.log`
+  (the runner's output between `oom_kill` and the date before and after,
+  and `exit <status>`). `<name>` is the mode, or `<mode>-K-of-N` with
+  `--shard K/N`. The exit status is the runner's.
+- Resuming: kiln's runner cannot resume inside a run, so a whole run is
+  made of shards run one after another; one that died is rerun whole
+  after its three entries are deleted, and finished shards are kept.
+- `merge` joins `<mode>-*-of-*` into `<mode>.tsv` (one header) and
+  `<mode>/` (`args.tsv` concatenated, `cov/` and `phases/` copied; the
+  keys are the runner's scratch directories, unique per run), the input of
+  `scripts/libcxx-hod-report.py`.
 
 ## irdiff
 

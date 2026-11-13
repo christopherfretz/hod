@@ -310,7 +310,8 @@ impl World {
         verify::Options { dir: self.out(), config, manifest_only: false }
     }
 
-    /// The corpus's deterministic files, by path, with their contents.
+    /// The corpus's deterministic files (not `CAPTURE.tsv` and
+    /// `TIMES.tsv`, which hold times), by path, with their contents.
     fn snapshot(&self) -> BTreeMap<String, Vec<u8>> {
         fn walk(dir: &Path, prefix: &str, into: &mut BTreeMap<String, Vec<u8>>) {
             for entry in std::fs::read_dir(dir).unwrap() {
@@ -318,7 +319,7 @@ impl World {
                 let name = format!("{prefix}{}", entry.file_name().to_string_lossy());
                 if entry.file_type().unwrap().is_dir() {
                     walk(&entry.path(), &format!("{name}/"), into);
-                } else if name != capture::RUNS {
+                } else if name != capture::RUNS && name != capture::TIMES {
                     into.insert(name, std::fs::read(entry.path()).unwrap());
                 }
             }
@@ -995,4 +996,109 @@ fn one_group_per_llvm_major() {
     options.force = true;
     capture::capture(&options).unwrap();
     assert_eq!(world.snapshot(), snapshot);
+}
+
+/// The other architecture of this machine, its cross tools' prefix.
+fn other_arch() -> (Arch, &'static str) {
+    if host() == Arch::Aarch64 {
+        (Arch::X86_64, "x86_64-linux-gnu")
+    } else {
+        (Arch::Aarch64, "aarch64-linux-gnu")
+    }
+}
+
+/// A fake `qemu-<arch>`, as in `irdiff_fakes.rs`: requires `-cpu <model>
+/// -L <existing directory>`, says what it was given in `$EMULATED`.
+const FAKE_QEMU: &str = r#"[ "$1" = -cpu ] && [ "$3" = -L ] && [ -d "$4" ] || { echo "qemu: usage: $*" >&2; exit 1; }
+EMULATED="$(basename "$0") $2"
+export EMULATED
+shift 4
+exec "$@""#;
+
+// spec/harness.md "corpus", "Other targets" and "compare" (WP-139): a
+// capture for the other architecture gives both producers its triple,
+// links with its cross driver, runs each program under its emulator (in
+// admission too) and records the run's time; without the emulator nothing
+// is captured. `verify` and `compare` then read that corpus.
+#[test]
+fn other_target_runs_under_the_emulator() {
+    let world = World::new("corpus-target");
+    let (other, prefix) = other_arch();
+    world.kiln_test(
+        "conformance/a/where.cpp",
+        "//@ expect: run\n//; program: echo \"${EMULATED:-native}\"\n",
+    );
+    world.kiln_test("conformance/a/same.cpp", "//@ expect: run\n//; program: echo same\n");
+    world.torture_test("a.c", "//; program: exit 0\n");
+    let sysroot = world.scratch.join("sysroot");
+    std::fs::create_dir_all(&sysroot).unwrap();
+    let mut options = world.options();
+    options.target = Some(other);
+    options.sysroot = Some(sysroot.clone());
+    options.out = world.scratch.join("corpus-other");
+
+    // No emulator yet: a missing tool, and nothing is captured.
+    world.tool(&format!("{prefix}-gcc"), FAKE_DRIVER);
+    world.tool(&format!("{prefix}-ld.bfd"), &fake_linker("bfd"));
+    let report = capture::capture(&options).unwrap();
+    assert_eq!(report.entries, 0, "{}", report.summary(&options.out));
+    let notes = report.notes.join("\n");
+    assert!(notes.contains(&format!("no emulator 'qemu-{}'", other.name())), "{notes}");
+
+    world.tool(&format!("qemu-{}", other.name()), FAKE_QEMU);
+    let report = capture::capture(&options).unwrap();
+    assert_eq!(report.exit_status(), 0, "{}", report.summary(&options.out));
+    let entries: Vec<String> = Manifest::read(&options.out).unwrap().rows.keys().cloned().collect();
+    assert_eq!(
+        entries,
+        [
+            "gcc-torture/llvm22/a.c.ll",
+            "kiln/llvm22/conformance/a/same.cpp.ll",
+            "kiln/llvm22/conformance/a/where.cpp.ll",
+        ]
+    );
+    let triple = format!("--target={}", other.triple());
+    let model = xtask::irdiff::tools::target_of(other).emulated_cpu();
+    let entry = std::fs::read_to_string(options.out.join("kiln/llvm22/conformance/a/where.cpp.ll"))
+        .unwrap();
+    assert!(entry.contains(&format!(";@ target: {}\n", other.name())), "{entry}");
+    assert!(entry.contains(&format!(";@ stdout: qemu-{} {model}\n", other.name())), "{entry}");
+    let producer = entry.lines().find(|l| l.starts_with("; producer-args:")).unwrap();
+    assert!(producer.contains(&triple), "{entry}");
+    let torture = std::fs::read_to_string(options.out.join("gcc-torture/llvm22/a.c.ll")).unwrap();
+    let flags = torture.lines().find(|l| l.starts_with("; flags:")).unwrap();
+    assert!(flags.ends_with(&format!(" {triple}")), "{torture}");
+    // Every program run has its time.
+    let times = capture::read_times(&options.out);
+    let mut run_tests: Vec<String> =
+        times.iter().map(|t| format!("{} {}", t.source, t.test)).collect();
+    run_tests.sort();
+    assert_eq!(
+        run_tests,
+        [
+            "gcc-torture a.c",
+            "kiln tests/conformance/a/same.cpp",
+            "kiln tests/conformance/a/where.cpp"
+        ]
+    );
+    assert!(times.iter().all(|t| t.ended == "exit" && t.llvm == 22), "{times:?}");
+    // The host's corpus was not touched.
+    assert!(!world.out().exists());
+
+    // `verify` runs the entries under the emulator.
+    let mut verifying = world.verify_options();
+    verifying.dir = options.out.clone();
+    verifying.config.target = Some(other);
+    verifying.config.sysroot = Some(sysroot);
+    let verified = verify::verify(&verifying).unwrap();
+    assert_eq!(verified.exit_status(), 0, "{}", verified.summary(true));
+
+    // `compare`: the host's corpus of the same tests differs in one.
+    world.capture();
+    let comparison = xtask::corpus::compare::compare(&options.out, &world.out()).unwrap();
+    let differing: Vec<&str> = comparison.differences.iter().map(|d| d.test.as_str()).collect();
+    assert_eq!(differing, ["kiln tests/conformance/a/where.cpp"], "{comparison:?}");
+    assert_eq!(comparison.groups["kiln/llvm22"], [2, 2, 2, 1]);
+    assert_eq!(comparison.groups["gcc-torture/llvm22"], [1, 1, 1, 1]);
+    assert!(comparison.only_here.is_empty() && comparison.only_there.is_empty());
 }

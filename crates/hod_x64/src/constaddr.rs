@@ -14,7 +14,7 @@
 //!   in `common::materialize_gpr_const`.
 //! - [`write_image`]: the flattened image of a `Mem`-class constant
 //!   (`aggr::materialize_mem`), each relocated field of 1, 2, 4 or 8 bytes
-//!   at any offset (`Sym`, `Plt`, `Diff`, `PltDiff`) computed in `rax`
+//!   at any offset (`Sym`, `Plt`, `Diff`, `PltDiff`, `Block`) computed in `rax`
 //!   and stored with its width, the bytes between them as immediates.
 //!
 //! Everything here keeps the flags (`lea`, `not`, `mov`): glue may run
@@ -105,8 +105,8 @@ pub fn is_plain(fixups: &[Fixup]) -> bool {
 /// # Errors
 /// [`CONSTANT_RELOC`] for a block-address difference and for a vector
 /// image whose relocations are not plain ([`is_plain`]);
-/// `x64:todo:control` for a block address (WP-124); what forming an
-/// address reports.
+/// what forming an address reports (a block address:
+/// `control::block_address`, WP-124).
 pub fn write_image(
     cx: &mut FnCx<'_, X64>,
     dst: FrameRef,
@@ -129,7 +129,15 @@ pub fn write_image(
             FixupTarget::Diff { a, b } | FixupTarget::PltDiff { a, b } => {
                 difference(cx, rax, a, b, f.addend)?;
             }
-            FixupTarget::Block { .. } => return unsupported(crate::control::CONTROL),
+            FixupTarget::Block { func, block } => {
+                crate::control::block_address(cx, rax, func, block)?;
+                if f.addend != 0 {
+                    let Ok(by) = i32::try_from(f.addend) else {
+                        return unsupported(CONSTANT_RELOC);
+                    };
+                    put(cx, mc::lea(Size::Q, rax, Mem::base(rax, by)));
+                }
+            }
             FixupTarget::BlockDiff { .. } => return unsupported(CONSTANT_RELOC),
         }
         let size = match f.size {

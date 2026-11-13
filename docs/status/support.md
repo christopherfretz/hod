@@ -28,22 +28,22 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `visibility` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `tls` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
-| `init` | 10 | 6 | 3 | 1 | 0 | 10 | 0 |
-| `function` | 6 | 6 | 0 | 0 | 2 | 4 | 0 |
+| `init` | 10 | 6 | 3 | 1 | 1 | 9 | 0 |
+| `function` | 6 | 6 | 0 | 0 | 6 | 0 | 0 |
 | `cc` | 15 | 6 | 7 | 2 | 1 | 11 | 3 |
-| `attr` | 57 | 23 | 31 | 3 | 14 | 35 | 8 |
+| `attr` | 57 | 23 | 31 | 3 | 15 | 34 | 8 |
 | `type` | 15 | 11 | 1 | 3 | 5 | 8 | 2 |
-| `inst` | 67 | 60 | 0 | 7 | 35 | 25 | 7 |
-| `mem` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
+| `inst` | 67 | 60 | 0 | 7 | 44 | 16 | 7 |
+| `mem` | 3 | 3 | 0 | 0 | 1 | 2 | 0 |
 | `atomicrmw` | 21 | 21 | 0 | 0 | 0 | 21 | 0 |
-| `call` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
-| `tail` | 3 | 3 | 0 | 0 | 2 | 1 | 0 |
+| `call` | 4 | 4 | 0 | 0 | 2 | 2 | 0 |
+| `tail` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
-| `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
-| `operand` | 11 | 8 | 3 | 0 | 5 | 6 | 0 |
+| `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
+| `operand` | 11 | 8 | 3 | 0 | 7 | 4 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 354 | 334 | 20 | 0 | 6 | 132 | 216 |
-| total | 663 | 533 | 84 | 46 | 80 | 313 | 270 |
+| `intrinsic` | 354 | 334 | 20 | 0 | 11 | 127 | 216 |
+| total | 663 | 533 | 84 | 46 | 109 | 284 | 270 |
 
 ## `module`
 
@@ -174,7 +174,7 @@ What a variable's initializer contains.
 |---|---|---|---|
 | `init:data` | supported | not-implemented | any initializer: numbers, zero, `undef`, aggregates, bytes |
 | `init:symbol` | supported | not-implemented | a symbol's address, with or without an offset |
-| `init:blockaddress` | supported | not-implemented | of a block of a function with an `indirectbr` (§9.6) |
+| `init:blockaddress` | supported | supported | of a block of a function with an `indirectbr` (§9.6) |
 | `init:sym-diff` | supported | not-implemented | the difference of two symbol addresses |
 | `init:sym-diff-plt` | not-implemented | not-implemented | unplanned. the same through `dso_local_equivalent` (relative vtables) |
 | `init:int-of-addr` | supported | not-implemented | an address in an integer field |
@@ -190,11 +190,11 @@ Properties of a function that has a body.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `function:parameters` | supported | supported | a body with parameters; per class of parameter |
-| `function:variadic` | supported | not-implemented | a variadic function with a body |
+| `function:variadic` | supported | supported | a variadic function with a body |
 | `function:may-unwind` | supported | supported | a body without `nounwind`: it needs unwind tables (WP-049) |
-| `function:personality` | supported | not-implemented | a body with a personality function |
-| `function:slots` | supported | not-implemented | a body with fixed stack objects (`Body::slots`) |
-| `function:over-aligned-slot` | supported | not-implemented | a stack object aligned above 16 bytes |
+| `function:personality` | supported | supported | a body with a personality function |
+| `function:slots` | supported | supported | a body with fixed stack objects (`Body::slots`) |
+| `function:over-aligned-slot` | supported | supported | a stack object aligned above 16 bytes |
 
 ## `cc`
 
@@ -243,7 +243,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:noreturn` | supported | supported | a promise: nothing to do in the function itself |
 | `attr:naked` | rejected | rejected | a naked function is its inline assembly, with no frame (`spec/codegen.md` §1) |
 | `attr:nounwind` | supported | supported | its absence is `function:may-unwind` |
-| `attr:returns_twice` | supported | not-implemented | on a body, a call, or a function called directly |
+| `attr:returns_twice` | supported | supported | on a body, a call, or a function called directly |
 | `attr:alwaysinline` | supported | supported | an ordinary call; a body whose meaning depends on being inlined is declined (`spec/cli.md` "Always-inline", WP-021) |
 | `attr:ssp` | not-implemented | not-implemented | spec/codegen.md §13. open question: accept and ignore, or implement |
 | `attr:sspreq` | not-implemented | not-implemented | spec/codegen.md §13 |
@@ -310,70 +310,70 @@ Instructions.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `inst:add` | supported (int, i128, int-wide, vector) | supported (i128, int-wide) |  |
-| `inst:sub` | supported (int, i128, int-wide, vector) | supported (i128, int-wide) |  |
-| `inst:mul` | supported (int, i128, int-wide, vector) | supported (i128, int-wide) |  |
-| `inst:udiv` | supported (int, i128, vector) | supported (i128) | wider than 64 bits: up to 128 (WP-040) |
-| `inst:sdiv` | supported (int, i128, vector) | supported (i128) | wider than 64 bits: up to 128 (WP-040) |
-| `inst:urem` | supported (int, i128, vector) | supported (i128) | wider than 64 bits: up to 128 (WP-040) |
-| `inst:srem` | supported (int, i128, vector) | supported (i128) | wider than 64 bits: up to 128 (WP-040) |
-| `inst:shl` | supported (int, i128, int-wide, vector) | supported (i128, int-wide) |  |
-| `inst:lshr` | supported (int, i128, int-wide, vector) | supported (i128, int-wide) |  |
-| `inst:ashr` | supported (int, i128, int-wide, vector) | supported (i128, int-wide) |  |
-| `inst:and` | supported (int, i128, int-wide, vector) | supported (i128, int-wide) |  |
-| `inst:or` | supported (int, i128, int-wide, vector) | supported (i128, int-wide) |  |
-| `inst:xor` | supported (int, i128, int-wide, vector) | supported (i128, int-wide) |  |
+| `inst:add` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
+| `inst:sub` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
+| `inst:mul` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
+| `inst:udiv` | supported (int, i128, vector) | supported (int, i128) | wider than 64 bits: up to 128 (WP-040) |
+| `inst:sdiv` | supported (int, i128, vector) | supported (int, i128) | wider than 64 bits: up to 128 (WP-040) |
+| `inst:urem` | supported (int, i128, vector) | supported (int, i128) | wider than 64 bits: up to 128 (WP-040) |
+| `inst:srem` | supported (int, i128, vector) | supported (int, i128) | wider than 64 bits: up to 128 (WP-040) |
+| `inst:shl` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
+| `inst:lshr` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
+| `inst:ashr` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
+| `inst:and` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
+| `inst:or` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
+| `inst:xor` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
 | `inst:fadd` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
 | `inst:fsub` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
 | `inst:fmul` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
 | `inst:fdiv` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
 | `inst:frem` | supported (half, bfloat, float, double, fp128, vector) | not-implemented | a call of `fmod` |
 | `inst:fneg` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
-| `inst:icmp` | supported (int, i128, int-wide, ptr, vector) | supported (i128, int-wide) | vectors: masks of up to 64 lanes (WP-081) |
+| `inst:icmp` | supported (int, i128, int-wide, ptr, vector) | supported (int, i128, int-wide, ptr) | vectors: masks of up to 64 lanes (WP-081) |
 | `inst:fcmp` | supported (int, half, bfloat, float, double, fp128, vector) | not-implemented | vectors: masks of up to 64 lanes (WP-081) |
-| `inst:trunc` | supported (int, i128, int-wide, vector) | supported (i128, int-wide) |  |
-| `inst:zext` | supported (int, i128, int-wide, vector) | supported (i128, int-wide) |  |
-| `inst:sext` | supported (int, i128, int-wide, vector) | supported (i128, int-wide) |  |
+| `inst:trunc` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
+| `inst:zext` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
+| `inst:sext` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
 | `inst:fptrunc` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
 | `inst:fpext` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
 | `inst:fptoui` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (i128) |  |
 | `inst:fptosi` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (i128) |  |
 | `inst:uitofp` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (i128) |  |
 | `inst:sitofp` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (i128) |  |
-| `inst:ptrtoint` | supported (int, i128, int-wide, ptr, vector) | supported (i128, int-wide) |  |
-| `inst:ptrtoaddr` | supported (int, i128, int-wide, ptr, vector) | supported (i128, int-wide) |  |
-| `inst:inttoptr` | supported (int, i128, int-wide, ptr, vector) | supported (i128, int-wide) |  |
-| `inst:bitcast` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector) | supported (i128, int-wide) | between integers and floats with WP-039 |
+| `inst:ptrtoint` | supported (int, i128, int-wide, ptr, vector) | supported (int, i128, int-wide, ptr) |  |
+| `inst:ptrtoaddr` | supported (int, i128, int-wide, ptr, vector) | supported (int, i128, int-wide, ptr) |  |
+| `inst:inttoptr` | supported (int, i128, int-wide, ptr, vector) | supported (int, i128, int-wide, ptr) |  |
+| `inst:bitcast` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector) | supported (int, i128, int-wide, ptr) | between integers and floats with WP-039 |
 | `inst:addrspacecast` | rejected | rejected | it has a pointer in a non-zero address space on one side |
-| `inst:load` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (i128, int-wide, aggregate) | a plain load; see `mem:`; FP and vector values: WP-067 |
-| `inst:store` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (i128, int-wide, aggregate) | a plain store; see `mem:`; FP and vector values: WP-067 |
-| `inst:alloca` | supported | not-implemented | a dynamic allocation; fixed ones are `function:slots` |
+| `inst:load` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | a plain load; see `mem:`; FP and vector values: WP-067 |
+| `inst:store` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | a plain store; see `mem:`; FP and vector values: WP-067 |
+| `inst:alloca` | supported | supported | a dynamic allocation; fixed ones are `function:slots` |
 | `inst:fence` | supported | not-implemented | WP-074 |
 | `inst:cmpxchg` | supported (int, i128, ptr, aggregate) | not-implemented | WP-074; the `{ T, i1 }` result is an aggregate |
 | `inst:atomicrmw` | supported (int, i128, ptr, half, bfloat, float, double) | not-implemented | and the operation's `atomicrmw:` row; WP-074 |
-| `inst:ptradd` | supported | not-implemented | LLVM's `getelementptr` (§5.4); not a vector of pointers |
+| `inst:ptradd` | supported | supported | LLVM's `getelementptr` (§5.4); not a vector of pointers |
 | `inst:extractvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (i128, int-wide, aggregate) |  |
 | `inst:insertvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (i128, int-wide, aggregate) |  |
 | `inst:extractelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:insertelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:shufflevector` | supported (vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:phi` | supported | supported | for every class whose `type:*` row is supported |
-| `inst:select` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (i128, int-wide, aggregate) |  |
-| `inst:freeze` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (i128, int-wide, aggregate) |  |
+| `inst:select` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, aggregate) |  |
+| `inst:freeze` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, aggregate) |  |
 | `inst:va_arg` | rejected | rejected | `llc` miscompiles it on AArch64, so there is no oracle; frontends do not emit it |
-| `inst:call` | supported | not-implemented | a call of anything but an intrinsic |
-| `inst:landingpad` | supported | not-implemented |  |
+| `inst:call` | supported | supported | a call of anything but an intrinsic |
+| `inst:landingpad` | supported | supported |  |
 | `inst:catchpad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:cleanuppad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:br` | supported | supported |  |
-| `inst:condbr` | supported | not-implemented | LLVM's two-way `br` |
-| `inst:switch` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:indirectbr` | supported | not-implemented |  |
+| `inst:condbr` | supported | supported | LLVM's two-way `br` |
+| `inst:switch` | supported (int, i128, int-wide) | supported (int, i128, int-wide) |  |
+| `inst:indirectbr` | supported | supported |  |
 | `inst:ret` | supported | supported |  |
 | `inst:unreachable` | supported | supported |  |
 | `inst:callbr` | supported | not-implemented | inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3) |
-| `inst:invoke` | supported | not-implemented |  |
-| `inst:resume` | supported | not-implemented |  |
+| `inst:invoke` | supported | supported |  |
+| `inst:resume` | supported | supported |  |
 | `inst:catchswitch` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:catchret` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:cleanupret` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
@@ -384,7 +384,7 @@ Kinds of memory access.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `mem:volatile` | supported | not-implemented | a volatile `load`, `store`, `cmpxchg` or `atomicrmw` |
+| `mem:volatile` | supported | supported | a volatile `load`, `store`, `cmpxchg` or `atomicrmw` |
 | `mem:atomic-load` | supported | not-implemented | WP-074; `fp128` and vectors: `a64:atomic-type` |
 | `mem:atomic-store` | supported | not-implemented | WP-074; `fp128` and vectors: `a64:atomic-type` |
 
@@ -422,10 +422,10 @@ Kinds of callee.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `call:indirect` | supported | not-implemented | the callee is a computed address |
+| `call:indirect` | supported | supported | the callee is a computed address |
 | `call:inline-asm` | supported | not-implemented | the callee is inline assembly of instructions: `hod_asm` (WP-103, `spec/asm.md`) |
 | `call:inline-asm-empty` | supported | not-implemented | the callee is inline assembly whose template assembles to nothing (`spec/ir.md` §2.3) |
-| `call:variadic` | supported | not-implemented | a call through a variadic function type |
+| `call:variadic` | supported | supported | a call through a variadic function type |
 
 ## `tail`
 
@@ -435,7 +435,7 @@ Tail-call markers.
 |---|---|---|---|
 | `tail:tail` | supported | supported | a permission: ignored (`spec/codegen.md` §7.1) |
 | `tail:notail` | supported | supported | hod makes no tail call of its own |
-| `tail:musttail` | supported | not-implemented | and the `musttail:` rules of §8.6, which need the `StackArgs` hook (`hod_cg::abi::TargetStackArgs`) |
+| `tail:musttail` | supported | supported | and the `musttail:` rules of §8.6, which need the `StackArgs` hook (`hod_cg::abi::TargetStackArgs`) |
 
 ## `bundle`
 
@@ -460,9 +460,9 @@ Landing-pad clauses.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `landingpad:cleanup` | supported | not-implemented |  |
-| `landingpad:catch` | supported | not-implemented |  |
-| `landingpad:filter` | supported | not-implemented |  |
+| `landingpad:cleanup` | supported | supported |  |
+| `landingpad:catch` | supported | supported |  |
+| `landingpad:filter` | supported | supported |  |
 
 ## `operand`
 
@@ -471,8 +471,8 @@ Constant addresses as instruction operands.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `operand:symbol` | supported | supported | a symbol's address as a value, with or without an offset |
-| `operand:slot` | supported | not-implemented | the address of a stack slot |
-| `operand:blockaddress` | supported | not-implemented | of a block of the same function |
+| `operand:slot` | supported | supported | the address of a stack slot |
+| `operand:blockaddress` | supported | supported | of a block of the same function |
 | `operand:addr-of-int` | supported | supported | `inttoptr` of a constant number |
 | `operand:int-of-addr` | supported | not-implemented | `ptrtoint` of a constant address (WP-072) |
 | `operand:sym-diff` | supported | supported | a difference of two symbol addresses (WP-072) |
@@ -519,11 +519,11 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.memmove` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.memset` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.memset.inline` | supported (int, ptr) | not-implemented |  |
-| `intrinsic:llvm.va_start` | supported | not-implemented |  |
-| `intrinsic:llvm.va_end` | supported | not-implemented |  |
-| `intrinsic:llvm.va_copy` | supported | not-implemented |  |
-| `intrinsic:llvm.stacksave` | supported | not-implemented |  |
-| `intrinsic:llvm.stackrestore` | supported | not-implemented |  |
+| `intrinsic:llvm.va_start` | supported | supported |  |
+| `intrinsic:llvm.va_end` | supported | supported |  |
+| `intrinsic:llvm.va_copy` | supported | supported |  |
+| `intrinsic:llvm.stacksave` | supported | supported |  |
+| `intrinsic:llvm.stackrestore` | supported | supported |  |
 | `intrinsic:llvm.frameaddress` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.returnaddress` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.trap` | supported | not-implemented |  |

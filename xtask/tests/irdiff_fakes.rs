@@ -1034,6 +1034,21 @@ fn cross_target_runs_under_the_emulator() {
         ";@ stdout: same\n; program(llc): echo same\n; program(hod): echo other\n",
     );
     world.test("declines.ll", ";@ unsupported: vector-type\n; hod: decline vector-type\n");
+    // "Test directives", `cpu`: the features reach the emulator's model,
+    // for both sides' programs (WP-139).
+    let with_cx16 = hod_testutil::target::cpu_with_features(
+        irdiff::tools::target_of(other_arch()).emulated_cpu(),
+        &["cx16"],
+    );
+    assert!(with_cx16.ends_with(",+cx16"), "{with_cx16}");
+    world.test(
+        "with_cpu.ll",
+        &format!(
+            ";@ target: {}\n;@ cpu: +cx16\n;@ stdout: {with_cx16}\n\
+             ; program: set -- $EMULATED; echo \"$2\"\n",
+            other_arch().name()
+        ),
+    );
     let report = irdiff::run(&config).unwrap();
     let all = report.summary(true);
     assert_eq!(
@@ -1048,6 +1063,9 @@ fn cross_target_runs_under_the_emulator() {
             "PASS seen.ll bfd",
             "PASS seen.ll lld",
             "PASS seen.ll mold",
+            "PASS with_cpu.ll bfd",
+            "PASS with_cpu.ll lld",
+            "PASS with_cpu.ll mold",
         ],
         "{all}"
     );

@@ -523,30 +523,32 @@ const A64_SUPPORTED_BODY: [&str; 16] = [
     "tail:musttail",
 ];
 
-/// What x86-64 finds in the rich body: the rows of `RICH_BODY` it does
-/// not support (it supports `cc:ccc`, `function:parameters`, `type:int`,
-/// `type:ptr`, `function:may-unwind`, `operand:symbol`, `inst:ret`: WP-116), and those it supports for some classes only (WP-126:
-/// `i128`, wider integers and aggregates) named with the classes it does
-/// not, each after its instruction's other rows (§8.8).
-const X64_RICH_BODY: [&str; 10] = [
-    "type:double",
+/// The rows of `RICH_BODY` x86-64 supports (WP-116, WP-122, WP-123, WP-125).
+const X64_SUPPORTED_BODY: [&str; 15] = [
+    "cc:ccc",
+    "function:parameters",
+    "type:int",
+    "type:ptr",
+    "function:may-unwind",
+    "operand:symbol",
+    "inst:ret",
+    "inst:add",
+    // WP-123.
     "function:slots",
-    "inst:add/int",
+    "inst:store",
     "operand:slot",
-    "inst:store/ptr",
+    "inst:load",
     "mem:volatile",
-    "inst:load/int",
-    "inst:load/ptr",
+    // WP-125.
     "inst:call",
     "tail:musttail",
 ];
 
 /// What the shipped matrix finds in the rich body on `arch`.
 fn rich_body(arch: Arch) -> Vec<&'static str> {
-    if arch == Arch::X86_64 {
-        return X64_RICH_BODY.to_vec();
-    }
-    RICH_BODY.iter().copied().filter(|row| !A64_SUPPORTED_BODY.contains(row)).collect()
+    let supported: &[&str] =
+        if arch == Arch::Aarch64 { &A64_SUPPORTED_BODY } else { &X64_SUPPORTED_BODY };
+    RICH_BODY.iter().copied().filter(|row| !supported.contains(row)).collect()
 }
 
 fn census_of(support: &Support, program: &Program) -> Census {

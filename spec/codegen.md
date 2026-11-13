@@ -2155,6 +2155,132 @@ words compared with `llvm-mc`'s; the refusals; features from
   `unreachable`, `phi` (the driver's copies over the glue), direct calls
   through the driver, constants, symbol and slot addresses.
 
+#### Integers (WP-122)
+
+`hod_x64/src/int.rs`: binary operations, `icmp`, casts, `select`,
+`freeze` on `Gpr` values of every width (`i1` to `i64`, pointers). The
+decisions that are not instruction selection are §5.5.1 "Integers
+(WP-035)"'s.
+
+- **Two operands.** `FnCx::use_reg` gives every operand in a register
+  the lowering may overwrite, never the same register for two operands,
+  so `dst = a op b` is `op a, b` in `a`'s register and the result stays
+  there: the destination is never the right operand. A constant left
+  operand of a commutative operation is swapped to the right. No `lea`
+  is used for `add` (no flags are live at an `add`).
+- **Widths.** A value of at most 32 bits is computed with 32-bit
+  instructions, above with 64-bit ones; 8- and 16-bit instructions are
+  never used (no `0x66`, no partial-register writes) except `setcc` and
+  `test r8, 1`. Extensions as WP-035 decides which (left operand of
+  `lshr`, `udiv`, `urem` and unsigned compares by zero; of `ashr`,
+  `sdiv`, `srem` and signed compares by sign; the divisor too):
+  `movzx`/`movsx` from 8 and 16 bits, `mov r32, r32` / `movsxd` from 32
+  to 64, `and r32, 2^N-1` by zero below 32 bits, a `shl`/`shr` or
+  `shl`/`sar` pair otherwise. A constant `lshr`/`ashr` of an odd width
+  is `shl s` then `shr`/`sar s+k` (`s` the unused bits); of 8 or 16
+  bits `movzx`/`movsx` then the shift.
+- **Immediates.** A constant right operand of `add`, `sub`, `and`,
+  `or`, `xor`, `imul` (three-operand), `cmp` is the instruction's
+  immediate when the value, sign-extended from its width to the
+  register, is one (`imm8` or `imm32`; any 32-bit value at 32 bits);
+  else it goes to `r11`. `xor` with all ones is `not`; `add`/`sub`/
+  `or`/`xor` of 0, `and` of all ones and `mul` by 1 emit nothing.
+- **Fixed registers.** A register shift amount goes to `rcx` (`and
+  ecx, 2^N-1` first for a width below 5, since `shl r32, cl` reads five
+  bits), then `shl`/`shr`/`sar r, cl`. A division puts the extended
+  dividend in `rax`, zeroes `edx` with `mov edx, 0` or sign-fills it
+  with `cdq`/`cqo`, divides by the extended divisor in its own register
+  (`r11` for a constant) with `div`/`idiv` at the register width, and
+  moves `eax`/`rax` (quotient) or `edx`/`rdx` (remainder) to the
+  divisor's register, or to a temporary. Undefined divisions (by zero,
+  the smallest value by -1 at 32 or 64 bits) trap (`#DE`), which §4.7
+  allows.
+- **Compares.** `cmp a, imm32` (or `cmp a, r11`) with a constant, after
+  extending `a` by sign or zero as the predicate orders; a constant
+  left operand swaps the predicate. Two registers of 8 or 16 bits are
+  both extended; of another width below their register both are shifted
+  left by the unused bits (`shl a, s` · `shl b, s` · `cmp a, b`), which
+  orders signed and unsigned alike. The conditions are `e ne a ae b be
+  g ge l le`.
+- **Fusion.** Every `icmp` defers itself when `may_defer` allows (§4.6);
+  otherwise it is `cmp` + `setcc r8` + `movzx r32, r8`. `int::fusable(cx,
+  value)` and `int::flags(cx, compare)` are WP-035's contract with an
+  x86 condition (`hod_mc_x64::Cond`): the consumer calls `flags` after
+  `deferred_first(cx, inst, Some(value))`, once, and emits nothing that
+  writes the flags until its reader; `flags` pins at most two registers
+  and writes them, the flags and `r11` (never `rax`, `rcx`, `rdx`).
+  `select` fuses into `cmovcc`, `zext` of an `i1` into `setcc` +
+  `movzx`, `sext` into `setcc` + `movzx` + `neg`. A non-fused `i1`
+  condition is `test r8, 1` (bit 0: a plain `i1` may carry anything
+  above it, `abi-x64.md` §7).
+- **`select`** is `cmovcc` from the true arm's register into the false
+  arm's, never a branch: there is no 8-bit `cmov`, and the 32-bit one
+  gives the same low bits to any value of at most 32 bits (it zeroes
+  bits 32..64 even when it does not move, which the width invariant
+  allows). A constant arm is materialized with `mov` (flags kept).
+- **Undefined results** (§4.7): a constant shift amount of the width or
+  more, or 0, emits nothing.
+- **`addrspacecast`** is refused as `x64:addrspacecast` (classify
+  rejects it first); `x64:int-binary` and `x64:int-cast` name forms the
+  dispatch never sends. `i128` is `Mem`: `aggr` (WP-126).
+
+##### X-call: calls (WP-125)
+
+- **Division of labour** as §5.5.1's WP-038: `hod_cg`'s call sequence
+  places arguments, copies `byval`, receives results in memory, stages
+  `musttail` and records call sites; `frame::emit_call` emits `mov al,
+  n` (a variadic callee: the vector registers used), then `call rel32`
+  (`R_X86_64_PLT32`) or `call r11`; tail exits are `jmp rel32` or `jmp
+  r11`. `crate::call` adds the rest below.
+- **The address handed back in `rax`** (`abi-x64.md` §5.2, §6.1): a
+  function with an `sret` parameter, or whose result travels in memory,
+  saves the address in a frame slot in the prologue (`call::enter`,
+  before any argument register is read) and reloads it into `rax` at the
+  start of the shared epilogue (`call::before_return`), which every
+  `ret` reaches. A `musttail` exit does not reload it: the callee
+  returns it.
+- **Extension** (`abi-x64.md` §7): `Target::extend_arg` brings a
+  `zeroext`/`signext` integer below 32 bits to 32 (`movzx`/`movsx` for 8
+  and 16, else `and` or `shl`·`sar` on 32 bits), one of 33..63 bits to 64
+  (`shl`·`shr`/`sar`), and the last piece of a wider one to 64. 32 and 64
+  bits need nothing. Results take the same rule (the core calls it at
+  `ret`), which over-delivers §7's 8 and 16 for narrow results.
+- **Odd leaves.** After a call whose `Mem`-class result has at most 16
+  leaves (it may come back in registers) and an integer leaf whose width
+  is not a multiple of 8, the byte holding that leaf's top bit is masked
+  in the result's home (through `r11`): a producer owes nothing above a
+  leaf, memory holds zeros there (§2.2). An `invoke`'s are cleared by
+  the call sequence.
+- **Variadic definitions** (`abi-x64.md` §9.3) always save `rdi`..`r9`
+  and `xmm0`..`xmm7` (`movups`) into a 176-byte, 16-aligned register save
+  area in the prologue, and `al` into a slot of its own. `va_start`
+  writes the 24-byte `va_list`: `gp_offset` = 8 x the named general
+  registers, `fp_offset` = 48 + 16 x the named vector registers,
+  `overflow_arg_area` = `rbp + 16 +` the named stack area,
+  `reg_save_area`. `va_copy` copies 24 bytes (`xmm15`, `r11`), `va_end`
+  is nothing, `va_arg` is refused (`x64:va_arg`; front ends expand it).
+  `va_start` outside a variadic function is `x64:va-intrinsic`.
+- **`musttail`** in a variadic function first reloads the argument
+  registers no named argument uses from the save area (every live value
+  displaced before), and its tail exit reloads `al` (`movzx eax, byte`):
+  the callee receives the variable arguments as this function did. `r10`
+  and `r11` are not forwarded (a `nest` is refused anyway); the stack
+  area beyond the named arguments is never written. `tail` and `notail`
+  are hints: no tail call is made for them. Indirect calls and tail
+  exits go through `r11`.
+- **Landing pads** are `{ ptr, i32 }`: `rax` and `edx` (`RegInfo::
+  eh_data`) are stored to the pad's home; clauses are `catch` of a symbol
+  or `null` and `filter` of arrays of them. `resume` calls
+  `_Unwind_Resume` with the exception pointer, then `ud2`. The tables are
+  `hod_eh`'s for x86-64: the personality and LSDA pointers are always
+  `pcrel | sdata4` (indirect for the personality), also in a static
+  object, where `llc` uses absolute `udata4` pointers.
+- **Refused by name**: `x64:call` (a `callbr` that is not inline
+  assembly), `x64:call-bundle`, `x64:va-intrinsic`, `x64:va_arg`,
+  `x64:landingpad`, `x64:landingpad-clause`, `x64:resume`; an x87 part in
+  a signature stays `x64:todo:abi` (WP-131), a value returned in memory
+  at `ret` is WP-126's.
+
 #### 5.6.2 Target features (WP-116)
 
 As §5.5.2, with `hod_x64::features`'s table (design 0006 §10.1). hod
@@ -2183,7 +2309,116 @@ travels in `ymm` under `+avx` is the argument assignment's
 (`x64:wide-vector-abi`, WP-118). `-mattr` items are checked the same
 way, by the module's target.
 
-#### Mem-class values (WP-126)
+#### 5.6.3 Control flow (WP-124)
+
+`hod_x64::control`. Observable behaviour is `hod_a64`'s (§6, §7.3); what
+x86-64 settles:
+
+- **`condbr` on an `i1`**: `test r8, 1` (only bit 0 is defined), then
+  `jne` to the true block, or `je` to the false one when the true block
+  is next; the branch to the block emitted next is omitted. A constant
+  condition (`undef`, `poison` false) or two equal targets is a `br`.
+- **`condbr` on a deferred integer `icmp`** (§4.6, operands of class
+  `Gpr`, pointers included): the compare's operands are placed first
+  (a constant on the left is swapped to the right with the predicate),
+  then `cmp`/`test`, then the `jcc` at once: nothing at all runs between
+  the flags' writer and their reader. The successors' `phi` stores are
+  written by the driver before the terminator (§4.5), so before the
+  compare. Widths 8, 16, 32, 64 compare at their own operand size; an
+  odd width is shifted left in place to the top of 32 bits (below 32) or
+  64 bits (above), both operands and a constant alike, which keeps
+  equality and both orders whatever the bits above the width. A constant
+  0 is `test r, r`; another constant is `cmp r, imm` when the immediate
+  form takes it (sign-extended 32 bits at 64), else it goes through
+  `r11`. Unsigned predicates are `a`/`ae`/`b`/`be`, signed `g`/`ge`/
+  `l`/`le`. A deferred `fcmp` is refused as `x64:todo:condbr-fcmp`
+  until X-float (WP-127). The fused compare is `control`'s own
+  (`fused_icmp`), a candidate to share with `int` (WP-130).
+- **`switch`** of class `Gpr`: `hod_cg::switch`'s plan; the condition is
+  zero-extended in its register (`movzx` for 8 and 16 bits, `and r32,
+  mask` for an odd width below 32, `shl`/`shr` above 32); up to 32 bits
+  it is compared with 32-bit `cmp r32, imm32`, above with 64-bit `cmp`,
+  the value through `r11` when no sign-extended 32-bit immediate takes
+  it; a node is `cmp` · `je` · `ja`. **Class `Mem`** (`i65` and wider):
+  for each case not to the default, in the IR's order, each 64-bit limb
+  loaded into `r10` (the top limb shifted left past the bits above the
+  width, the case's limb with it), compared, `jne` to the next case,
+  `je` to the block after the top limb; then the default (as
+  `hod_a64`'s `tail::switch_wide`).
+- **`indirectbr`**: `jmp r`; on a `blockaddress` constant of the same
+  function, a direct `jmp` to the block (omitted when it is next).
+- **`blockaddress` in code**: `lea r, [rip + label]`, the `disp32` a
+  `rel32` fixup to the block's label (the field ends the instruction).
+  `common::materialize_gpr_const` routes every `blockaddress` constant
+  there (glue: `phi` stores, returns, arguments). A block of another
+  function is `x64:blockaddress`. An unreachable block's label is the
+  shared `ud2` trap at the end of the function (§6.1), in code and in
+  data.
+
+#### 5.6.4 Memory (WP-123)
+
+`hod_x64::mem`: non-atomic `load`/`store` of `Gpr` and `Fpr` values,
+`alloca`, `ptradd`, `llvm.stacksave`/`stackrestore`. `Mem`-class values
+are X-aggr's, atomic accesses X-atomic's (`x64:todo:atomic`).
+
+- **Addresses** (`mem::compute`, `mem::At`). A `ptradd` whose only use
+  is the address of a load or store is deferred when the driver allows it
+  (§4.6) and fused into that access; otherwise it is computed into its
+  result with `lea` (or `mov`, a plain base; the frame address, a slot
+  plus a constant). Order inside a lowering: every operand is asked for
+  first (`use_reg`, `def_reg`); the first variable index is put in `rcx`,
+  sign-extended from its width (`movsxd`/`movsx`, or `shl`/`sar` for an
+  odd width), scaled by the addressing mode when the scale is 1, 2, 4 or
+  8, else by `shl` or `imul`; a second goes through `rdx` and is added
+  into `rcx` with `lea`. Constant indices fold into the offset. The base
+  is formed last, in `r11`: a symbol's address with the whole constant
+  offset as its addend (§7.4); a slot's address; a constant pointer. A
+  slot with no variable index and an offset below `2^24` is a frame
+  access, no address formed. An offset outside the 32-bit displacement
+  (minus 16, the room of a 16-byte access in pieces) is moved into
+  `rcx` before `r11` is written. `rax` is left to the access.
+- **Flags.** `shl`, `imul` and `and` of a `ptradd`, an odd-width store or
+  an `alloca` write the flags; none of them is glue and none runs
+  between a compare and its fused reader (a deferred compare is emitted
+  by its reader).
+- **Integer loads** read exactly the store size: 1, 2, 4 bytes with
+  `movzx`/`mov r32` (zero above), 8 with `mov`; 3 is a word, then the
+  byte at 2 shifted by 16 and `or`ed; 5, 6, 7 are a dword, then the rest
+  (byte, word, or word and byte) shifted by 32 and `or`ed, through `rax`
+  and `rdx`. The bits loaded above an odd width are those memory holds,
+  zero for a defined program.
+- **Integer stores** write exactly the store size and zero the bits above
+  the width (§2.2, as `llc`): a width that is a multiple of 8 and a store
+  size of 1, 2, 4 or 8 is one `mov`; otherwise the value is copied to
+  `rax`, masked (`and`, `mov r32` for 32, `shl`/`shr` for widths above
+  32) when the width is odd, and stored in pieces: 3 is a word, `shr eax,
+  16`, a byte; 5..7 a dword, `shr rax, 32`, then a byte, a word, or a word
+  and a byte. A constant is stored as an immediate (`mov m, imm32`, or
+  through `rax` when it does not fit a sign-extended 32 bits).
+- **`Fpr` values**: by store size, `half`/`bfloat` with `pinsrw x, m, 0`
+  (load) and `pextrw eax, x, 0` + `mov m16` (store), 4 bytes `movss`, 8
+  `movsd`, 16 (`fp128`, 128-bit vectors) `movups`; alignment is never
+  assumed. A constant `Fpr` value is stored as integer immediates (two
+  8-byte stores for 16 bytes), not loaded into a register.
+- **`volatile`** is an ordinary access; a volatile load whose result is
+  unused is still emitted (once).
+- **`alloca`** (dynamic; fixed ones are slots, §5.6): the size is
+  `count × element size`, the count zero-extended from its width
+  (`count` is unsigned, as `llc`), the product wrapping at 64 bits,
+  rounded up to 16; `rsp` moves down by it through `r11` (`lea r11, [rsp
+  - size]` for a constant that fits, else `mov`/`sub`), then, for an
+  alignment above 16, `and r11, -align`; `mov rsp, r11`; the result is
+  the new `rsp`. **An alignment above 16 is supported** (design 0006 §2.9
+  planned `x64:stackrealign`; the frame is never realigned, the
+  allocation is aligned by itself, as on AArch64). Outgoing arguments
+  are allocated per call below it (§5.6), and the epilogue restores `rsp`
+  from `rbp`. An alignment that is not a power of two or is above `2^32`,
+  or a constant size at or above `2^63`, is `limit:frame-size`.
+- **`stacksave`** is `mov r, rsp`; **`stackrestore`** `mov rsp, r`.
+- **Refused**: `x64:ptradd-vector`, a `ptradd` whose result is a vector
+  of pointers (a `<2 x ptr>` is `Fpr`; X-lanes may take it).
+
+#### 5.6.5 Mem-class values (WP-126)
 
 `src/aggr.rs` and `src/constaddr.rs`: integers wider than 64 bits,
 structs and arrays, copies of `Mem` vectors and `x86_fp80` images, the
@@ -2239,10 +2474,10 @@ below.
   `x64:overflow-intrinsic`, and `mul` wider than 2048 bits is
   `x64:wide-mul-overflow`.
 - **Returned in memory** (`spec/abi-x64.md` §5.2, §8.2.3). The
-  prologue (`frame::begin` → `aggr::save_ret_address`) stores the
-  buffer's address from `rdi` in a slot of its own. `ret`
-  (`term::ret` → `aggr::ret_memory`) writes the value through that
-  address as a `store` would and returns the address in `rax`.
+  prologue saves the buffer's address (`call::enter`,
+  `CallState::ret_addr`, WP-125). `ret` (`term::ret` →
+  `aggr::ret_memory`) writes the value through it as a `store` would;
+  the epilogue (`call::before_return`) reloads it into `rax`.
 - **Constants** (`materialize_mem`, glue: `rax`, `r11`, `xmm15` only,
   never `r10`, flags kept). A zero-like constant is immediate stores
   of zero. A wide integer is written word by word, with an 8-byte word
@@ -2258,7 +2493,7 @@ below.
   `a + addend` plus the complement of `b` plus 1 (`not`, `lea`), and a
   number minus an address (`ConstPool::neg_addr`) is `not` and `lea +1`
   of the address. Both keep the flags. A block address is
-  `x64:todo:control` (X-control). A block difference is
+  `control::block_address` (§5.6.3). A block difference is
   `x64:constant-relocation`, and so is a vector image with any
   relocation other than an aligned 8-byte symbol address.
 

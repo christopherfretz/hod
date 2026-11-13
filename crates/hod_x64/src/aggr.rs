@@ -1,6 +1,6 @@
 //! `Mem`-class values that are neither vectors nor `x86_fp80`: integers
 //! wider than 64 bits, first-class aggregates, `Mem` constants and the
-//! `*.with.overflow` intrinsics (`spec/codegen.md` §5.6 "Mem-class values (WP-126)"; design
+//! `*.with.overflow` intrinsics (`spec/codegen.md` §5.6.5; design
 //! 0006 §2.6). **Owner: WP-126.** Tests: `tests/aggr.rs`.
 //!
 //! The dispatch in `target.rs` routes here every binary operation,
@@ -43,18 +43,16 @@
 //! # A value returned in memory
 //!
 //! The caller passes the buffer's address in `rdi` (`spec/abi-x64.md`
-//! §5.2, §8.2). [`save_ret_address`], called once by the prologue
-//! (`frame::begin`), stores it in a slot of its own; [`ret_memory`]
-//! (`term::ret`) writes the value through it as a `store` would and
-//! returns the address in `rax`.
+//! §5.2, §8.2). The prologue saves it (`call::enter`,
+//! `CallState::ret_addr`, WP-125); [`ret_memory`] (`term::ret`) writes
+//! the value through it as a `store` would, and the epilogue
+//! (`call::before_return`) reloads it into `rax`.
 
 #![allow(
     clippy::many_single_char_names,
     reason = "limb arithmetic: r = a op b over limbs, x and y the scratch registers"
 )]
 #![allow(clippy::too_many_lines, reason = "one match per operation, read top to bottom")]
-
-use std::cell::Cell;
 
 use hod_cg::sym::{FpType, fp_to_int_routine, int_divide_routine, int_to_fp_routine};
 use hod_cg::{CallArg, CgError, CgResult, Class, FnCx, FrameRef, SlotPlace, Target};
@@ -1467,35 +1465,12 @@ pub fn store_word(cx: &mut FnCx<'_, X64>, dst: FrameRef, word: u64, take: u32) {
 
 // ---- a value returned in memory ----
 
-thread_local! {
-    /// The slot holding the address of the buffer of the function being
-    /// compiled, if it returns in memory ([`save_ret_address`]).
-    static RET_ADDRESS: Cell<Option<FrameRef>> = const { Cell::new(None) };
-}
-
-/// Called by the prologue (`frame::begin`) of every function: for one
-/// that returns in memory (`Assignment::ret_memory`), stores the buffer's
-/// address, which arrives in `rdi` (`spec/abi-x64.md` §5.2, §8.2), in a
-/// slot of its own, read back by [`ret_memory`]. Nothing otherwise.
-///
-/// # Errors
-/// What allocating the slot reports.
-pub fn save_ret_address(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
-    RET_ADDRESS.with(|cell| cell.set(None));
-    let Some(memory) = cx.fn_assignment().ret_memory else { return Ok(()) };
-    let hod_cg::abi::Place::Reg(reg) = memory.address else {
-        return cx.bug("a result buffer whose address is not in a register");
-    };
-    let slot = cx.alloc_slot(8, 8)?;
-    frame_inst(cx, slot, |m| mc::mov_mr(Size::Q, m, gp(reg)));
-    RET_ADDRESS.with(|cell| cell.set(Some(slot)));
-    Ok(())
-}
-
 /// `ret` of a function that returns in memory (`term::ret`): the value
 /// written to the buffer as a `store` of it would write it (an integer
-/// with the bits above its width zero), and the buffer's address in
-/// `rax` (`spec/abi-x64.md` §5.2).
+/// with the bits above its width zero), through the address
+/// `call::enter` saved (`CallState::ret_addr`, loaded into `rax` here);
+/// the epilogue (`call::before_return`) puts it back in `rax` for the
+/// caller (`spec/abi-x64.md` §5.2).
 ///
 /// # Errors
 /// `x64:todo:abi` for a value of class `Gpr` or `Fpr` (no assignment
@@ -1506,7 +1481,7 @@ pub fn ret_memory(cx: &mut FnCx<'_, X64>, value: Value) -> CgResult<()> {
     }
     let ty = value_ty(cx, value);
     let src = cx.use_mem(value)?;
-    let Some(slot) = RET_ADDRESS.with(Cell::get) else {
+    let Some(slot) = cx.state.frame.call.ret_addr else {
         return cx.bug("a return in memory without the buffer's address");
     };
     frame_inst(cx, slot, |m| mc::mov_rm(Size::Q, Reg::Rax, m));

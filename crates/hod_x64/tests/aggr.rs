@@ -222,10 +222,6 @@ fn what_is_refused_is_refused_by_name() {
             "define void @f(ptr %p, ptr %q) { %v = load atomic i128, ptr %q seq_cst, align 16\n store i128 %v, ptr %p\n ret void }",
             hod_x64::atomic::ATOMIC,
         ),
-        (
-            "define void @f(ptr %p) { b:\n store { ptr } { ptr blockaddress(@f, %b) }, ptr %p\n ret void }",
-            hod_x64::control::CONTROL,
-        ),
     ]);
     // Linear forms have no limit.
     let text = "define void @f(ptr %p, i8000 %a) { %s = lshr i8000 %a, 4001\n %r = add i8000 %s, %a\n store i8000 %r, ptr %p\n ret void }";
@@ -312,6 +308,20 @@ define void @c4(ptr %out) {
   store { i64, i64 } %r, ptr %out
   ret void
 }
+
+define i32 @c5(i1 %which) {
+entry:
+  %s = alloca { i32, [2 x ptr] }
+  store { i32, [2 x ptr] } { i32 9, [2 x ptr] [ptr blockaddress(@c5, %no), ptr blockaddress(@c5, %yes)] }, ptr %s
+  %i = zext i1 %which to i64
+  %a = getelementptr { i32, [2 x ptr] }, ptr %s, i64 0, i32 1, i64 %i
+  %t = load ptr, ptr %a
+  indirectbr ptr %t, [label %no, label %yes]
+no:
+  ret i32 0
+yes:
+  ret i32 42
+}
 ";
     let c_main = r"
 #include <stdint.h>
@@ -319,7 +329,7 @@ define void @c4(ptr %out) {
 extern int g[4];
 extern long h;
 char x;
-void c1(void *); void c2(void *); void c3(void *); void c4(void *);
+void c1(void *); void c2(void *); void c3(void *); void c4(void *); int c5(_Bool);
 int main(void) {
   struct { void *a; int b; void *c; } s1;
   c1(&s1);
@@ -339,7 +349,8 @@ int main(void) {
   int64_t s4[2];
   c4(s4);
   if (s4[0] != (char *)&x - (char *)&h || s4[1] != 100 - (intptr_t)&h) return 6;
-  return 42;
+  if (c5(0) != 0) return 7;
+  return c5(1);
 }
 ";
     every_leg_exits_42("constaddr", ll, c_main);

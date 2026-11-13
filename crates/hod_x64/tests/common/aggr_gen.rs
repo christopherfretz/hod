@@ -609,6 +609,10 @@ pub struct Suite {
     pub twins: String,
     /// The twins called natively.
     pub native_twins: String,
+    /// The wrappers of the mixed objects: one that calls the twin for a
+    /// function called natively, the wrapper itself otherwise; and the
+    /// twins' declarations.
+    pub mixed: String,
     /// Declarations (intrinsics).
     pub decls: BTreeSet<String>,
     /// The functions.
@@ -657,6 +661,11 @@ impl Suite {
         }
         w.push_str("  ret void\n}\n\n");
         self.text.push_str(&w);
+        if native {
+            self.mixed.push_str(&mixed_wrapper(&w, core, &name, lead, params, &ret));
+        } else {
+            self.mixed.push_str(&w);
+        }
         if interp || native {
             let mut list: Vec<String> = (0..lead).map(|k| format!("i64 %lead{k}")).collect();
             list.extend(params.iter().enumerate().map(|(i, p)| format!("{} {}", p.ll(), NAMES[i])));
@@ -723,6 +732,35 @@ impl Suite {
         text.push_str(PIE_FLAGS);
         text
     }
+
+    /// The two halves of the mixed objects: the wrappers, calling the
+    /// natively called twins, and those twins.
+    pub fn mixed_modules(&self) -> (String, String) {
+        let mut decls = header();
+        for d in &self.decls {
+            decls.push_str(d);
+            decls.push('\n');
+        }
+        (
+            format!("{decls}{}{PIE_FLAGS}", self.mixed),
+            format!("{decls}{}{PIE_FLAGS}", self.native_twins),
+        )
+    }
+}
+
+/// The wrapper `w` of `core` with `core` replaced by a call of the twin
+/// (after `lead` constant `i64` arguments), and the twin's declaration:
+/// the convention between objects of two compilers.
+fn mixed_wrapper(w: &str, core: &str, name: &str, lead: usize, params: &[T], ret: &T) -> String {
+    let rl = ret.ll();
+    let mut args: Vec<String> = (0..lead)
+        .map(|k| format!("i64 {}", 0x0123_4567_89ab_cdefu64.rotate_left(8 * k as u32) as i64))
+        .collect();
+    args.extend(params.iter().enumerate().map(|(i, p)| format!("{} {}", p.ll(), NAMES[i])));
+    let types: Vec<String> =
+        (0..lead).map(|_| "i64".to_string()).chain(params.iter().map(T::ll)).collect();
+    let call = format!("  %r = call {rl} @{name}_v({})\n", args.join(", "));
+    format!("declare {rl} @{name}_v({})\n\n{}", types.join(", "), w.replacen(core, &call, 1))
 }
 
 /// The wide widths every operation is checked at.
@@ -1761,7 +1799,7 @@ pub fn run(name: &str, suite: &Suite) -> Report {
     let expected = interpret(suite);
     let start = Instant::now();
     let scratch = Scratch::new(&format!("x64-aggr-{name}"));
-    let mut legs: Vec<(String, PathBuf)> = Vec::new();
+    let mut legs: Vec<(String, Vec<PathBuf>)> = Vec::new();
     for (mode, stress) in [("plain", Stress::default()), ("stress", Stress::ALL)] {
         let t = Instant::now();
         let bytes = hod_x64::compile_to_object(&module, &bodies, &pic(stress))
@@ -1769,16 +1807,34 @@ pub fn run(name: &str, suite: &Suite) -> Report {
         if mode == "plain" {
             report.compile = t.elapsed();
         }
-        legs.push((format!("hod-{mode}"), scratch.write(&format!("hod-{mode}.o"), bytes)));
+        legs.push((format!("hod-{mode}"), vec![scratch.write(&format!("hod-{mode}.o"), bytes)]));
     }
     for major in [22, 19] {
         if let Some(object) = llc(&scratch, major, &format!("llc{major}"), &text) {
-            legs.push((format!("llc{major}"), object));
+            legs.push((format!("llc{major}"), vec![object]));
         }
     }
+    // The mixed objects: hod's wrappers calling `llc`'s twins and the
+    // reverse, each call crossing between the two compilers.
+    let (callers, callees) = suite.mixed_modules();
+    if let (Some(llc_callers), Some(llc_callees)) = (
+        llc(&scratch, 22, "mix-callers-llc", &callers),
+        llc(&scratch, 22, "mix-callees-llc", &callees),
+    ) {
+        let hod_object = |file: &str, text: &str| {
+            let (module, bodies) = parse(text);
+            let bytes = hod_x64::compile_to_object(&module, &bodies, &pic(Stress::default()))
+                .unwrap_or_else(|e| panic!("{file}: {e}"));
+            scratch.write(file, bytes)
+        };
+        let hod_callers = hod_object("mix-callers-hod.o", &callers);
+        let hod_callees = hod_object("mix-callees-hod.o", &callees);
+        legs.push(("mix-hod>llc".to_string(), vec![hod_callers, llc_callees]));
+        legs.push(("mix-llc>hod".to_string(), vec![llc_callers, hod_callees]));
+    }
     if let (Some(hod), Some(llc)) = (
-        text_bytes(&legs[0].1),
-        legs.iter().find(|(leg, _)| leg == "llc22").and_then(|(_, o)| text_bytes(o)),
+        text_bytes(&legs[0].1[0]),
+        legs.iter().find(|(leg, _)| leg == "llc22").and_then(|(_, o)| text_bytes(&o[0])),
     ) {
         report.text = (hod, llc);
     }
@@ -1787,9 +1843,11 @@ pub fn run(name: &str, suite: &Suite) -> Report {
     let driver =
         toolchain.compile_c(&scratch, "driver", &driver(suite, &mut Rng(0x0126)), &["-fPIE"]);
     let mut outputs: Vec<(String, Lines)> = Vec::new();
-    for (leg, object) in &legs {
+    for (leg, objects) in &legs {
         let program = scratch.join(leg);
-        toolchain.link_ok(linker, &["-pie"], &[&driver, object], &program);
+        let mut inputs: Vec<&Path> = vec![driver.as_path()];
+        inputs.extend(objects.iter().map(PathBuf::as_path));
+        toolchain.link_ok(linker, &["-pie"], &inputs, &program);
         let ran = run_with(&mut toolchain.runner_command(&program), &[], Duration::from_mins(10));
         assert!(ran.success(), "{leg}: {:?}\n{}", ran.status, ran.stderr_text());
         outputs.push((leg.clone(), ran.stdout_text().lines().map(str::to_string).collect()));
@@ -1800,11 +1858,15 @@ pub fn run(name: &str, suite: &Suite) -> Report {
         (0..suite.cases.len()).filter(|&i| suite.funcs[suite.cases[i].func].native).collect();
     for (leg, lines) in &outputs {
         assert_eq!(lines.len(), suite.cases.len() + native.len(), "{leg}: one line per case");
-        let hod = leg.starts_with("hod");
+        // Whether hod wrote the wrapper's output (its integer padding
+        // zero). A function whose result `llc` may choose (`!f.llc`) is
+        // checked on hod's own legs only.
+        let hod = leg.starts_with("hod") || leg == "mix-hod>llc";
+        let hod_only = leg.starts_with("hod");
         let mut check = |i: usize, line: &str, reg: Option<usize>| {
             let case = &suite.cases[i];
             let f = &suite.funcs[case.func];
-            if !hod && !f.llc || leg == "llc19" && reg.is_some() && !f.in_registers {
+            if !hod_only && !f.llc || leg == "llc19" && reg.is_some() && !f.in_registers {
                 return;
             }
             let ty = if reg.is_some() { f.ret.clone() } else { f.ret.out() };

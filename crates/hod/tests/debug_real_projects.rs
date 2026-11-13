@@ -334,3 +334,101 @@ fn a_die_refusal_names_the_node_kind_and_tag() {
         other => panic!("expected a decline, got {:?}", other.map(|o| o.len())),
     }
 }
+
+/// Thread-local variables on x86-64: a global, an internal one and a
+/// function's static.
+const TLS: &str = r#"target triple = "x86_64-unknown-linux-gnu"
+
+@t = dso_local thread_local global i32 4, align 4, !dbg !20
+@_ZL1u = internal thread_local global i32 0, align 4, !dbg !23
+
+define dso_local i32 @main() #0 !dbg !10 {
+entry:
+  %a = load i32, ptr @t, align 4, !dbg !16
+  %b = load i32, ptr @_ZL1u, align 4, !dbg !16
+  %c = add i32 %a, %b, !dbg !16
+  ret i32 %c, !dbg !16
+}
+
+attributes #0 = { noinline nounwind optnone "frame-pointer"="all" }
+
+!llvm.dbg.cu = !{!0}
+!llvm.module.flags = !{!2, !3}
+
+!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus_14, file: !1, producer: "kiln", isOptimized: false, runtimeVersion: 0, splitDebugFilename: "tls.dwo", emissionKind: FullDebug, globals: !19, splitDebugInlining: false, nameTableKind: None)
+!1 = !DIFile(filename: "tls.cpp", directory: "/hod/tests")
+!2 = !{i32 7, !"Dwarf Version", i32 5}
+!3 = !{i32 2, !"Debug Info Version", i32 3}
+!4 = !{}
+!10 = distinct !DISubprogram(name: "main", scope: !1, file: !1, line: 2, type: !11, scopeLine: 2, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !0)
+!11 = !DISubroutineType(types: !12)
+!12 = !{!13}
+!13 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
+!16 = !DILocation(line: 2, column: 14, scope: !10)
+!19 = !{!20, !23}
+!20 = !DIGlobalVariableExpression(var: !21, expr: !DIExpression())
+!21 = distinct !DIGlobalVariable(name: "t", scope: !0, file: !1, line: 1, type: !13, isLocal: false, isDefinition: true)
+!23 = !DIGlobalVariableExpression(var: !24, expr: !DIExpression())
+!24 = distinct !DIGlobalVariable(name: "u", linkageName: "_ZL1u", scope: !0, file: !1, line: 1, type: !13, isLocal: true, isDefinition: true)
+"#;
+
+/// A split unit's thread-local variables (WP-189): `DW_OP_GNU_const_index`
+/// of a `.debug_addr` entry relocated by `R_X86_64_DTPOFF64`, as `llc`
+/// writes them; the object and its `.dwo` verify.
+#[test]
+fn split_thread_local_variables_are_written_as_llc_writes_them() {
+    let scratch = Scratch::new("wp189-tls");
+    let dwo = scratch.join("tls.out.dwo");
+    let options = hod::Options {
+        output_kind: OutputKind::Object,
+        split_dwarf_file: Some("tls.dwo".into()),
+        split_dwarf_output: Some(dwo.clone()),
+        ..hod::Options::default()
+    };
+    let object =
+        compile_with(TLS.as_bytes(), &options, &Settings::default(), &mut Report::default())
+            .unwrap_or_else(|e| panic!("{e}"));
+    let hod = scratch.write("tls.hod.o", &object);
+    let (Some(dwarfdump), Some(readelf)) = (tool("llvm-dwarfdump"), tool("llvm-readelf")) else {
+        return;
+    };
+    for file in [&hod, &dwo] {
+        let verified = run_tool(&dwarfdump, &["--verify".as_ref(), file.as_os_str()]);
+        assert!(verified.contains("No errors."), "{}: {verified}", file.display());
+    }
+    let locations = |dwo: &Path| -> Vec<String> {
+        let text = run_tool(&dwarfdump, &["--debug-info".as_ref(), dwo.as_os_str()]);
+        text.lines().filter(|l| l.contains("DW_AT_location")).map(|l| l.trim().to_owned()).collect()
+    };
+    let tls_relocations = |object: &Path| -> Vec<String> {
+        let text = run_tool(&readelf, &["-rW".as_ref(), object.as_os_str()]);
+        let mut out: Vec<String> = text
+            .lines()
+            .filter(|l| l.contains("R_X86_64_DTPOFF64"))
+            .map(|l| l.split_whitespace().nth(4).unwrap_or_default().to_owned())
+            .collect();
+        out.sort();
+        out
+    };
+    let ours = locations(&dwo);
+    assert_eq!(ours.len(), 2, "{ours:?}");
+    for l in &ours {
+        assert!(l.contains("DW_OP_GNU_const_index") && l.ends_with("DW_OP_GNU_push_tls_address)"));
+    }
+    assert_eq!(tls_relocations(&hod), ["_ZL1u", "t"]);
+    let Some(llc) = tool("llc-22") else { return };
+    let ll = scratch.write("tls.ll", TLS);
+    let reference = scratch.join("tls.llc.o");
+    let llc_dwo = scratch.join("tls.llc.dwo");
+    let mut command = std::process::Command::new(&llc);
+    command
+        .args(["-O0", "-filetype=obj", "-split-dwarf-file=tls.dwo"])
+        .arg(format!("-split-dwarf-output={}", llc_dwo.display()))
+        .arg("-o")
+        .arg(&reference)
+        .arg(&ll);
+    let out = run_with(&mut command, &[], Duration::from_mins(2));
+    assert!(out.success(), "llc: {}", out.stderr_text());
+    assert_eq!(locations(&llc_dwo), ours);
+    assert_eq!(tls_relocations(&reference), tls_relocations(&hod));
+}

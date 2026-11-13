@@ -1711,7 +1711,7 @@ It appends 81 to 86 for the other shapes.
 | `debug:global-shape` | a static member's definition that is not a definition; a global without a name or type that is not a static member's definition; a line without a file |
 | `debug:global-scope` | a global scoped outside the unit, a file or a namespace (a module) |
 | `debug:static-member-declaration` | a `declaration:` that is not a static member of a class |
-| `debug:tls-location` | a thread-local variable on x86-64 in a split unit, whose `llc` writes `DW_OP_GNU_const_index` of a `.debug_addr` entry (since WP-136; a full unit's is written, §6.17) |
+| `debug:tls-location` | no longer returned: a thread-local variable on x86-64 is written in a full unit since WP-136 (§6.17) and in a split unit since WP-189 (§6.24); the name is kept |
 | `debug:template-parameter` | a parameter of another tag; a pack with a type or a default; a template template parameter whose value is not a string; a value of the wrong kind |
 | `debug:template-value` | an integer value wider than 64 bits |
 | `debug:template-address` | the address of a symbol the bridge gives no place (since WP-189 the bridge places an undefined symbol as itself, §6.24; the name is kept for other callers of `UnitPlan::place_symbols`) |
@@ -2247,8 +2247,8 @@ which hod does not follow, §1.1), the offset relocated by
 symbol). hod writes exactly that (`Writer::tls_location`, the
 relocation `Target::Tls`), for a global and for a function's
 thread-local static. In a split unit `llc` puts the offset in
-`.debug_addr` (`DW_OP_GNU_const_index`), which hod does not write:
-refused as `debug:tls-location`. AArch64 is unchanged (no location).
+`.debug_addr` (`DW_OP_GNU_const_index`), written since WP-189 (§6.24;
+refused as `debug:tls-location` before). AArch64 is unchanged (no location).
 
 **The unit's code** (both targets): `llc` gives a unit `DW_AT_low_pc` /
 `DW_AT_high_pc` when its code is one range, and extends a range over the
@@ -2855,6 +2855,16 @@ values, and what `llc` writes for them (unchanged, already hod's):
 `llc`'s address pool has one entry per symbol; hod's has one per
 attribute (the comparison masks indices, §6.7), which costs 8 bytes per
 repeated symbol.
+
+**A thread-local variable in a split unit on x86-64** (`-gsplit-dwarf`,
+kiln and clang): `llc` writes `DW_AT_location (DW_OP_GNU_const_index N,
+DW_OP_GNU_push_tls_address)` in the `.dwo` unit, the skeleton's
+`.debug_addr` entry N relocated by `R_X86_64_DTPOFF64` against the
+variable's symbol. hod does the same (`x86_64.rs` `tls_location` with
+`Writer::split`; the entry is marked in `Writer::tls_addrs`, so the
+skeleton's relocation takes `reloc_kind`'s thread-local kind); the
+unit counts these entries among the globals' (`split_tls_entry`) so that
+its own range entry follows them. This was `debug:tls-location`.
 
 **Sweep.** Every `debug:*` name, and whether ordinary C++ at `-O0 -g`
 produces it, is in `spec/landed/dwarf/WP-189.md`: 35 probes of the

@@ -223,6 +223,8 @@ impl<'a> Writer<'a> {
             block_starts: Vec::new(),
             loclists: Vec::new(),
             loclists_unit: crate::loclists::NO_LISTS,
+            split: true,
+            tls_addrs: Vec::new(),
         }
     }
 
@@ -238,7 +240,6 @@ impl<'a> Writer<'a> {
         dwo_name: &'a [u8],
     ) -> Result<Layout, Error> {
         let plan = u.plan;
-        crate::x86_64::refuse_split_tls(plan)?; // WP-136
         let n = plan.dies.len();
         self.addr_of.clear();
         self.addr_of.resize(n, NONE);
@@ -259,10 +260,15 @@ impl<'a> Writer<'a> {
         let globals = u
             .globals
             .iter()
-            .filter(|g| plan.die_of_expr(g.expr).is_some_and(|d| plan.global_takes_address(d)))
+            .filter(|g| {
+                plan.die_of_expr(g.expr).is_some_and(|d| {
+                    plan.global_takes_address(d) || crate::x86_64::split_tls_entry(plan, d) // WP-189
+                })
+            })
             .count()
             + plan.template_addrs();
         self.addrs.clear();
+        self.tls_addrs.clear();
         self.offsets.clear();
         self.offsets.resize(n, NONE);
         self.patches.clear();
@@ -434,7 +440,7 @@ pub fn write_split_debug_info(
                 let offset = u32::try_from(r.addend).map_err(|_| Error::TooLarge)?;
                 w.str_offsets[r.offset..r.offset + 4].copy_from_slice(&offset.to_le_bytes());
             }
-            (Sec::Addr, Target::Symbol(_)) => {}
+            (Sec::Addr, Target::Symbol(_) | Target::Tls(_)) => {} // WP-189: §6.24
             _ => return Err(unsupported(plan.unit, "a split unit attribute with a relocation")),
         }
     }
@@ -515,7 +521,7 @@ pub fn write_split_debug_info(
             Target::Line => (sym_line, false),
             Target::Addr => (sym_addr.unwrap_or(sym_abbrev), false),
             Target::Rnglists => (sym_lists.unwrap_or(sym_abbrev), false),
-            // `Tls`: never made here (`crate::x86_64::refuse_split_tls`).
+            // `Tls`: a thread-local offset in `.debug_addr` (WP-189).
             Target::Symbol(s) | Target::Tls(s) => (s, true),
         };
         let section = match r.sec {
@@ -523,7 +529,7 @@ pub fn write_split_debug_info(
             Sec::StrOffsets => str_offsets,
             Sec::Addr => addr.unwrap_or(info),
         };
-        let kind = if wide { target.address_reloc } else { target.offset_reloc };
+        let kind = crate::x86_64::reloc_kind(r.target, wide, target); // WP-189
         obj.add_relocation(section, r.offset as u64, kind, symbol, r.addend);
     }
 

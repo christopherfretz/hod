@@ -746,6 +746,8 @@ fn scratch_writer<'a>(dies: usize) -> Writer<'a> {
         block_starts: Vec::new(),
         loclists: Vec::new(),
         loclists_unit: crate::loclists::NO_LISTS,
+        split: false,
+        tls_addrs: Vec::new(),
     }
 }
 

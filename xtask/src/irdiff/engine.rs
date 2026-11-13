@@ -35,6 +35,12 @@ pub struct Test {
 /// §10.1); `SelectionDAG` is the selector every optimized build uses.
 pub const REFERENCE_SELECTOR: [&str; 2] = ["-global-isel=0", "-fast-isel=0"];
 
+/// How many times longer than on the host a program may run under the
+/// emulator ("Cross runs"): `qemu-user` translates every block it runs,
+/// and an emulated C++ program has taken twenty times its native time at
+/// load 30. The limit guards against hangs; it is never a measure of speed.
+pub const EMULATION_SLOWDOWN: u32 = 6;
+
 /// How the detail of an ERROR starts when the witness raised it: the
 /// `llc -O2` build of the test did not confirm the reference's.
 pub const WITNESS: &str = "witness: ";
@@ -207,7 +213,7 @@ impl Session {
         let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
         let llc = quote(&self.toolchain.llc);
         let opt = quote(&tools::opt_beside(&self.toolchain.llc));
-        let selector = REFERENCE_SELECTOR.join(" ");
+        let selector = tools::reference_selector(self.arch).join(" ");
         let plain = format!("#!/bin/sh\nexec '{llc}' \"$@\" {selector}\n");
         // The word list of `for` is expanded once: `set --` in the loop
         // rebuilds the arguments without the last, the input. `opt`'s
@@ -230,13 +236,25 @@ impl Session {
         Ok(())
     }
 
+    /// The limits of a program under the emulator: [`EMULATION_SLOWDOWN`]
+    /// times the wall-clock time of [`Session::run_limits`], the same
+    /// address space.
+    pub fn emulated_run_limits(&self) -> Limits {
+        Limits { time: self.run_limits.time * EMULATION_SLOWDOWN, ..self.run_limits }
+    }
+
+    /// The limits the programs of this session run under.
+    fn program_limits(&self) -> Limits {
+        if self.toolchain.emulator.is_some() { self.emulated_run_limits() } else { self.run_limits }
+    }
+
     fn linker_dir(&self, linker: &Linker) -> PathBuf {
         self.work.join("linkers").join(&linker.name)
     }
 
     /// Why programs cannot be linked and run in this session, if so.
     pub fn cannot_run(&self) -> Option<String> {
-        if self.host != Some(self.arch) {
+        if self.host != Some(self.arch) && self.toolchain.emulator.is_none() {
             let host = self.host.map_or("this", Arch::name);
             Some(format!(
                 "cross target: {} programs cannot be linked or run on {host} host",
@@ -451,9 +469,10 @@ impl Session {
     fn codegen_args(&self, test: &Test, build: Build, part: &Part) -> Vec<OsString> {
         let model = if test.expect.pie { "pic" } else { "static" };
         let mut args: Vec<OsString> = match build {
-            Build::Reference => {
-                std::iter::once("-O0").chain(REFERENCE_SELECTOR).map(OsString::from).collect()
-            }
+            Build::Reference => std::iter::once("-O0")
+                .chain(tools::reference_selector(self.arch).iter().copied())
+                .map(OsString::from)
+                .collect(),
             Build::Witness => vec!["-O2".into()],
             Build::Hod => vec!["-O0".into()],
         };
@@ -659,10 +678,19 @@ impl Session {
             .map_err(|e| Trouble::Broken(format!("cannot read '{}': {e}", program.display())))?;
         tools::check_signature(&linker.name, &bytes).map_err(Trouble::Broken)?;
 
+        // A cross target's program runs under its emulator ("Cross runs"),
+        // with more time.
+        let (runner, limits) = match &self.toolchain.emulator {
+            Some(emulator) => (&emulator.program, self.emulated_run_limits()),
+            None => (&program, self.run_limits),
+        };
         let configure = |command: &mut std::process::Command| {
+            if let Some(emulator) = &self.toolchain.emulator {
+                command.args(&emulator.args).arg(&program);
+            }
             command.args(&expect.args).current_dir(dir);
         };
-        process::run(&program, configure, &expect.stdin, self.run_limits).map_err(Trouble::Broken)
+        process::run(runner, configure, &expect.stdin, limits).map_err(Trouble::Broken)
     }
 
     /// Compares a program's behaviour with the test's directives. The
@@ -676,7 +704,7 @@ impl Session {
             (End::TimedOut, _) => {
                 return Err((
                     Failure::Run,
-                    format!("timed out after {}", seconds(self.run_limits)),
+                    format!("timed out after {}", seconds(self.program_limits())),
                 ));
             }
             (End::Exit(code), Exit::Code(wanted)) => code == i32::from(wanted),
@@ -710,7 +738,10 @@ impl Session {
     /// completes "the program of hod's object ...".
     fn compare(&self, hod: &Output, oracle: &Output, whose: &str) -> Result<(), (Failure, String)> {
         if hod.end == End::TimedOut {
-            return Err((Failure::Run, format!("timed out after {}", seconds(self.run_limits))));
+            return Err((
+                Failure::Run,
+                format!("timed out after {}", seconds(self.program_limits())),
+            ));
         }
         if hod.end != oracle.end {
             return Err((

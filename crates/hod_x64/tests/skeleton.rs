@@ -273,11 +273,8 @@ fn data_layout_is_honoured() {
 /// Each group that has not landed refuses by its own name.
 #[test]
 fn groups_that_have_not_landed_refuse_by_name() {
-    for (body, name) in [
-        // WP-125 lowers `sret`; an `x86_fp80` result stays WP-131's
-        // (WP-140 places it in `st0`; `call::guard` refuses it).
-        ("define x86_fp80 @f() {\n  ret x86_fp80 0xK00000000000000000000\n}\n", "x64:todo:abi"),
-    ] {
-        assert_eq!(refusal(body), name, "{body}");
-    }
+    // WP-125 lowers `sret`; an `x86_fp80` result stays WP-131's
+    // (WP-140 places it in `st0`; `call::guard` refuses it).
+    let body = "define x86_fp80 @f() {\n  ret x86_fp80 0xK00000000000000000000\n}\n";
+    assert_eq!(refusal(body), "x64:todo:abi", "{body}");
 }

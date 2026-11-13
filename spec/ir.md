@@ -1623,8 +1623,9 @@ Reasons no `Support` takes away (`STRUCTURAL_RULES`):
 | `target:support-mismatch` | the `Support` given is for another architecture than the module's |
 
 Also refused on both targets, as matrix rows whose status is `rejected`:
-`attr:naked`, `inst:callbr`, `inst:va_arg`, and the 19 `const-expr:*`
-rows (constant expressions without a normal form, §4.2).
+`attr:naked`, `inst:va_arg`, and the 19 `const-expr:*` rows (constant
+expressions without a normal form, §4.2). `inst:callbr` was one until
+WP-103; it is supported on AArch64 (`spec/codegen.md` §5.5.3).
 
 - Producer records (`Module::unsupported()`) are reported unchanged.
 - A module flag that is neither known nor ignorable (§2.1), or any

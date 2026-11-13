@@ -43,17 +43,16 @@
 //! flags, so the operand form of a dynamic model ([`save_and_call`])
 //! keeps all of them in an area below the stack pointer (the CFA is
 //! `rbp`-based in a body, so no CFI row changes, and the area is a
-//! multiple of 16 so `rsp` stays aligned at the call): the nine
-//! caller-saved general registers but `rd`, the sixteen vector
-//! registers, and the flags as five `setcc` bytes that are rebuilt
-//! afterwards with `test` (ZF, SF, PF) and `rol 1` (CF, OF). The encoder
-//! has no `pushfq`/`popfq` (`9C`/`9D`); AF, which no condition code
-//! reads, is not kept. The x87 stack must be empty there, as at any call.
+//! multiple of 16 so `rsp` stays aligned at the call): the flags first,
+//! with `pushfq`, then the nine caller-saved general registers but `rd`
+//! and the sixteen vector registers; `popfq` last restores the flags,
+//! all of them (WP-144). The x87 stack must be empty there, as at any
+//! call.
 
 use hod_cg::{Access, CgResult, FnCx, SymRef, TlsAccess};
 use hod_ir::{CodeModel, Const, Inst, Intrinsic, SymId, Value, ValueKind};
 use hod_mc_x64 as mc;
-use hod_mc_x64::{Cond, Mem, Reg, Seg, Size, Xmm};
+use hod_mc_x64::{Mem, Reg, Seg, Size, Xmm};
 use hod_obj::X64Reloc;
 
 use crate::common::{CODE_MODEL, RSP, add_addend, deferred_first, gp, put, put_reloc, unsupported};
@@ -70,14 +69,10 @@ const CALLER_SAVED: [Reg; 9] =
 
 /// The save area of the operand form, from `rsp`: the 16 vector
 /// registers at `16 * i`, the general registers at [`GPR_AT`] `+ 8 * i`,
-/// the flag bytes at [`FLAGS_AT`]. A multiple of 16.
+/// `rflags` in the last 8 bytes (pushed by `pushfq`). A multiple of 16.
 const AREA: i32 = 16 * 16 + 8 * 9 + 8;
 /// Where the general registers are saved.
 const GPR_AT: i32 = 16 * 16;
-/// Where the flags are saved: `seto`, `setb`, `sete`, `sets`, `setp`.
-const FLAGS_AT: i32 = GPR_AT + 8 * 9;
-/// The conditions saved at [`FLAGS_AT`], in order.
-const FLAG_CONDS: [Cond; 5] = [Cond::O, Cond::B, Cond::E, Cond::S, Cond::P];
 
 /// `[rsp + disp]`.
 fn sp(disp: i32) -> Mem {
@@ -158,10 +153,8 @@ fn static_model(cx: &mut FnCx<'_, X64>, rd: Reg, sym: SymId, model: TlsAccess) -
 /// `rd`, the vector registers and the flags below `rsp`, calls, puts the
 /// address in `rd`, restores the rest (module docs).
 fn save_and_call(cx: &mut FnCx<'_, X64>, rd: Reg, sym: SymId, model: TlsAccess) -> CgResult<()> {
-    put(cx, mc::lea(Size::Q, RSP, sp(-AREA)));
-    for (i, cond) in FLAG_CONDS.into_iter().enumerate() {
-        put(cx, mc::setcc_m(cond, sp(FLAGS_AT + i as i32)));
-    }
+    put(cx, mc::pushfq());
+    put(cx, mc::lea(Size::Q, RSP, sp(8 - AREA)));
     let saved = |r: &Reg| *r != rd;
     for (i, r) in CALLER_SAVED.iter().enumerate().filter(|(_, r)| saved(r)) {
         put(cx, mc::mov_mr(Size::Q, sp(GPR_AT + 8 * i as i32), *r));
@@ -178,49 +171,12 @@ fn save_and_call(cx: &mut FnCx<'_, X64>, rd: Reg, sym: SymId, model: TlsAccess) 
     for (i, x) in Xmm::ALL.into_iter().enumerate() {
         put(cx, mc::movdqu_rm(x, sp(16 * i as i32)));
     }
-    restore_flags(cx, rd);
     for (i, r) in CALLER_SAVED.iter().enumerate().filter(|(_, r)| saved(r)) {
         put(cx, mc::mov_rm(Size::Q, *r, sp(GPR_AT + 8 * i as i32)));
     }
-    put(cx, mc::lea(Size::Q, RSP, sp(AREA)));
+    put(cx, mc::lea(Size::Q, RSP, sp(AREA - 8)));
+    put(cx, mc::popfq());
     Ok(())
-}
-
-/// Rebuilds the flags saved at [`FLAGS_AT`] in three caller-saved
-/// registers other than `rd` (restored afterwards by the caller):
-/// `test u, u` with `u = 0` when ZF was set, else `SF << 63 | PF << 1 |
-/// 1` (the low byte 1 or 3: odd or even parity), sets ZF, SF and PF and
-/// clears CF and OF; then `rol v, 1` with `v = CF << 63 | (OF ^ CF) <<
-/// 62` sets CF to bit 63 and OF to bit 63 xor bit 62 of `v`, leaving
-/// ZF, SF and PF alone. A state with ZF and SF both set, which no
-/// arithmetic instruction produces, is not rebuilt.
-fn restore_flags(cx: &mut FnCx<'_, X64>, rd: Reg) {
-    let mut temps = [Reg::Rcx, Reg::Rdx, Reg::Rsi, Reg::Rdi].into_iter().filter(|r| *r != rd);
-    let (Some(u), Some(v), Some(w)) = (temps.next(), temps.next(), temps.next()) else {
-        unreachable!("three of four registers differ from rd")
-    };
-    let byte = |cx: &mut FnCx<'_, X64>, r: Reg, k: i32| {
-        put(cx, mc::movzx_rm(Size::D, r, Size::B, sp(FLAGS_AT + k)));
-    };
-    // u = (SF << 63 | PF << 1 | 1) & (ZF - 1)
-    byte(cx, u, 3);
-    put(cx, mc::shl_ri(Size::Q, u, 63));
-    byte(cx, w, 4);
-    put(cx, mc::shl_ri(Size::D, w, 1));
-    put(cx, mc::or_rr(Size::Q, u, w));
-    put(cx, mc::or_ri(Size::Q, u, 1));
-    byte(cx, w, 2);
-    put(cx, mc::sub_ri(Size::Q, w, 1));
-    put(cx, mc::and_rr(Size::Q, u, w));
-    // v = CF << 63 | (OF ^ CF) << 62
-    byte(cx, v, 1);
-    byte(cx, w, 0);
-    put(cx, mc::xor_rr(Size::D, w, v));
-    put(cx, mc::shl_ri(Size::Q, v, 63));
-    put(cx, mc::shl_ri(Size::Q, w, 62));
-    put(cx, mc::or_rr(Size::Q, v, w));
-    put(cx, mc::test_rr(Size::Q, u, u));
-    put(cx, mc::rol_ri(Size::Q, v, 1));
 }
 
 /// Puts the address of thread-local `sym` plus `addend` in `rd` by the

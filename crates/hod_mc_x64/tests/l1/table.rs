@@ -151,6 +151,8 @@ pub const CONSTRUCTORS: &[(&str, &[&str])] = &[
     ("ret_imm", &["ret"]),
     ("push_r", &["push"]),
     ("pop_r", &["pop"]),
+    ("pushfq", &["pushfq"]),
+    ("popfq", &["popfq"]),
     ("push_m", &["push"]),
     ("pop_m", &["pop"]),
     ("push_i", &["push"]),

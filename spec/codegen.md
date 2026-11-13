@@ -2907,17 +2907,13 @@ external linkage in a shared object is reached through its local alias
   writes `rd` and nothing else, the flags kept. For the dynamic models
   that means saving what `__tls_get_addr` clobbers below `rsp`, in a
   336-byte area (so `rsp` stays 16-aligned at the call; the CFA is
-  `rbp`-based, so no CFI row changes): the nine caller-saved general
-  registers but `rd`, `xmm0`..`xmm15` (`movdqu`), and the flags as the
-  five bytes `seto`, `setb`, `sete`, `sets`, `setp`. After the call the
-  flags are rebuilt in three caller-saved registers other than `rd`:
-  `test u, u` with `u = (SF << 63 | PF << 1 | 1) & (ZF - 1)` sets ZF,
-  SF, PF; `rol v, 1` with `v = CF << 63 | (OF ^ CF) << 62` sets CF and
-  OF and leaves the others. AF, which no condition reads, is not kept; a
-  state with ZF and SF both set, which no arithmetic produces, is not
-  rebuilt. The encoder has no `pushfq`/`popfq` (`9C`/`9D`), which would
-  replace the rebuild. The x87 stack must be empty there, as at any
-  call (WP-131).
+  `rbp`-based, so no CFI row changes): the flags first by `pushfq`
+  (`rflags` in the area's last 8 bytes, then `lea rsp, [rsp - 328]`),
+  the nine caller-saved general registers but `rd`, and `xmm0`..`xmm15`
+  (`movdqu`). After the call the registers are reloaded, `lea rsp,
+  [rsp + 328]`, and `popfq` restores every flag (WP-144, §5.6.14; the
+  five `setcc` bytes and their rebuild by `test` and `rol` before it).
+  The x87 stack must be empty there, as at any call (WP-131).
 - **Refused**: as on AArch64, `tls:direct-operand` (a thread-local
   callee) and `tls:address-in-constant` by `hod_ir`'s classification;
   a code model other than small is `x64:code-model`. `x64:todo:tls` is

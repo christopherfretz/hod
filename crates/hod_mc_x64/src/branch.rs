@@ -86,6 +86,19 @@ pub const fn pop_r(r: Reg) -> Inst {
     plus_r(Op::one(0x58), r, false)
 }
 
+/// `PUSHFQ` (`9C`): pushes `rflags` as 8 bytes.
+#[inline]
+pub const fn pushfq() -> Inst {
+    plain(Op::one(0x9c))
+}
+
+/// `POPFQ` (`9D`): pops 8 bytes into `rflags` (the bits user code may
+/// write).
+#[inline]
+pub const fn popfq() -> Inst {
+    plain(Op::one(0x9d))
+}
+
 /// `PUSH m64` (`FF /6`).
 #[inline]
 pub const fn push_m(m: Mem) -> Inst {

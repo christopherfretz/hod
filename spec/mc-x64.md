@@ -312,6 +312,7 @@ distance is known to fit.
 |---|---|
 | `push_r(r: Reg)`, `pop_r(r: Reg)` | PUSH `50+r`, POP `58+r` |
 | `push_m(m: Mem)`, `pop_m(m: Mem)` | PUSH `FF /6`, POP `8F /0` |
+| `pushfq()`, `popfq()` | PUSHFQ `9C`, POPFQ `9D`: `rflags` as 8 bytes (WP-144) |
 | `push_i(imm: i32)` | PUSH `6A ib` for a sign-extended byte, else `68 id`; pushes 8 bytes |
 | `push_i32(imm: i32)` | PUSH `68 id` always; the `id` is the site ("Relocatable immediates") |
 | `leave()` | LEAVE `C9` |

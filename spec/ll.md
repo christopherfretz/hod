@@ -153,6 +153,7 @@ it. Where the versions differ:
 | a wrong signature on an intrinsic declaration | verifier refuses | accepted | accepted |
 | AArch64 branch-protection attributes implied by module flags | as written | upgraded on reading | upgraded, §7.3 |
 | `i1` global alignment on AArch64 | 1 | 4, that of `i8` | `hod_ir`'s data layout: LLVM 22's |
+| `llvm.aarch64.neon.bfcvt`, `bfcvtn`, `bfcvtn2` | intrinsics | upgraded on reading to `fptrunc` (and `shufflevector`) | read as written: the intrinsics of `ir.md` §5.5; not upgraded (`bc.md` §9.2) |
 
 Both versions still read the pointer types of LLVM 14 and before, `T*`
 and `T addrspace(N)*`, as `ptr`; so does `hod_ll`, with LLVM's check that

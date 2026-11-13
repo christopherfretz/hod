@@ -673,6 +673,18 @@ which the two readers need not share. So the comparison is of
 Every byte of `hod_ir` that the module level writes appears in the dump.
 Both refusing counts as agreement. Any other difference fails.
 
+**Same module, same version.** The readers' equality holds between the
+text and the bitcode of ONE module. B is made by the `llvm-as` of the
+text's own LLVM version, never a newer one: LLVM's reader upgrades IR of
+an older version as it reads it, so a newer `llvm-as` can write another
+module. LLVM 22 rewrites LLVM 19's `llvm.aarch64.neon.bfcvt`, `bfcvtn`
+and `bfcvtn2` into `fptrunc` and `shufflevector` (`ll.md` §3.2); both
+readers read what is written and apply no such upgrade, except the
+branch-protection one of `ll.md` §7.3. An object table that compares
+text with bitcode follows the same rule (WP-172).
+`tests/upgrade.rs` holds an LLVM 19 module with both intrinsics equal
+through `llvm-as-19` and shows that `llvm-as-22` changes it.
+
 ### 9.3 The handwritten module
 
 `tests/oracle.rs` uses `tests/data/module.ll`. It runs the same

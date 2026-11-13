@@ -9,7 +9,6 @@ use hod_ir::{
     ParamAttrs, SymId, TailKind, TypeId, TypeKind, Value, no_code_intrinsic, resolve_intrinsic,
 };
 
-use crate::attrs::call_conv_keyword;
 use crate::body::{CalleeInfo, Fx};
 use crate::error::{LlErrorKind, PResult, fail};
 use crate::index::parse_u32;
@@ -127,17 +126,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
 
     /// `[cc | cc N]`.
     fn call_conv(&mut self) -> PResult<CallConv> {
-        let at = self.p.tok.start;
-        let mut cc = 0;
-        if self.p.eat_word(b"cc") {
-            cc = self.p.expect_u32("expected a calling convention number")?;
-        } else if self.p.tok.kind == Tok::Word
-            && let Some(number) = call_conv_keyword(self.p.text())
-        {
-            cc = number;
-            self.p.bump();
-        }
-        ir(at, CallConv::from_llvm(cc))
+        self.p.call_conv()
     }
 
     /// `asm [sideeffect] [alignstack] [inteldialect] [unwind] "t", "c"`,

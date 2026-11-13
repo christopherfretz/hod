@@ -348,12 +348,15 @@ const LATER: &str = "unplanned";
 const VECTORS: &str = "M2 (vectors)";
 const CORO: &str = "T-XF (coroutine splitting)";
 const DEBUG: &str = "T-DW";
-const ASM: &str = "hod_asm";
 
 const WINDOWS_EH: &str = "Windows funclet exception handling; not an ELF construct";
 const WINDOWS: &str = "a Windows construct";
 const SCALABLE: &str = "scalable vectors are refused by design";
 const A64_ONLY: &str = "an AArch64 property";
+/// WP-141: `llc` for AArch64 aborts on it.
+const X86_CC: &str = "an x86 convention";
+/// WP-141: `llc` treats it as `ccc` on x86-64; no x86-64 front end emits it.
+const X86_32: &str = "a 32-bit x86 convention";
 /// The value classes of the NEON intrinsics' signatures (WP-083): the
 /// lowering refuses a signature it does not take as `a64:intrinsic-target`.
 const NEON: &[TypeClass] = &[
@@ -435,7 +438,12 @@ const MODULE: [SupportRow; 24] = [
     row("module:branch-protection-pauth-lr", todo(LATER), never(A64_ONLY), ""),
     row("module:cf-protection-branch", never(X64_ONLY), todo(X64), ""),
     row("module:cf-protection-return", never(X64_ONLY), todo(X64), ""),
-    a64("module:asm", ASM, "module-level inline assembly an assembler must read"),
+    row(
+        "module:asm",
+        ON,
+        todo(X64),
+        "module-level assembly of code and data: `hod_asm` (WP-112, `spec/asm.md` §9); what it does not read is refused by an `asm:*` name",
+    ),
     row(
         "module:asm-symbols",
         ON,
@@ -579,13 +587,17 @@ const FUNCTION: [SupportRow; 6] = [
     row("function:over-aligned-slot", ON, todo(X64), "a stack object aligned above 16 bytes"),
 ];
 
-/// In the order of [`cc_index`].
-const CC: [SupportRow; 15] = [
+/// In the order of [`cc_index`]: every convention with a row, by LLVM's
+/// number. A convention without one is refused as `cc:<keyword>`, or
+/// `cc:<number>` if LLVM has no keyword for it (§8.5). A convention is
+/// `on`, `LATER` or refused by design on each target; one of the other
+/// target's is refused by design (`llc` aborts on it).
+const CC: [SupportRow; 26] = [
     both("cc:ccc", ON, ""),
     row("cc:fastcc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
-    a64("cc:coldcc", LATER, ""),
-    a64("cc:ghccc", LATER, ""),
-    a64("cc:anyregcc", LATER, ""),
+    both("cc:coldcc", todo(LATER), ""),
+    both("cc:ghccc", todo(LATER), ""),
+    both("cc:anyregcc", todo(LATER), ""),
     row(
         "cc:preserve_mostcc",
         ON,
@@ -601,10 +613,32 @@ const CC: [SupportRow; 15] = [
     ),
     row("cc:swiftcc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     row("cc:cxx_fast_tlscc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
-    a64("cc:tailcc", LATER, ""),
+    both("cc:tailcc", todo(LATER), ""),
     both("cc:cfguard_checkcc", never(WINDOWS), ""),
-    a64("cc:swifttailcc", LATER, ""),
-    a64("cc:preserve_nonecc", LATER, ""),
+    both("cc:swifttailcc", todo(LATER), ""),
+    both("cc:preserve_nonecc", todo(LATER), ""),
+    // WP-141: the x86 conventions LLVM has keywords for.
+    row("cc:x86_stdcallcc", never(X86_CC), never(X86_32), ""),
+    row("cc:x86_fastcallcc", never(X86_CC), never(X86_32), ""),
+    row("cc:x86_thiscallcc", never(X86_CC), never(X86_32), ""),
+    row("cc:intel_ocl_bicc", never(X86_CC), todo(LATER), "OpenCL built-ins"),
+    row(
+        "cc:x86_64_sysvcc",
+        never(X86_CC),
+        ON,
+        "assigned as `ccc`: the System V convention is x86-64 Linux's C convention (`llc` 19 and 22 emit the same code)",
+    ),
+    both("cc:win64cc", never(WINDOWS), ""),
+    row("cc:x86_vectorcallcc", never(X86_CC), never(WINDOWS), "`__vectorcall`"),
+    row("cc:hhvmcc", never(X86_CC), todo(LATER), ""),
+    row("cc:hhvm_ccc", never(X86_CC), todo(LATER), ""),
+    row(
+        "cc:x86_intrcc",
+        never(X86_CC),
+        never("interrupt and exception handlers are refused by design"),
+        "",
+    ),
+    row("cc:x86_regcallcc", never(X86_CC), never("Intel's `__regcall` is refused by design"), ""),
     row("cc:aarch64_vector_pcs", todo(LATER), never("an AArch64 convention"), ""),
     row("cc:aarch64_sve_vector_pcs", never(SCALABLE), never("an AArch64 convention"), ""),
 ];
@@ -625,8 +659,19 @@ const fn cc_index(id: u16) -> Option<usize> {
         19 => 10,
         20 => 11,
         21 => 12,
-        97 => 13,
-        98 => 14,
+        64 => 13,
+        65 => 14,
+        70 => 15,
+        77 => 16,
+        78 => 17,
+        79 => 18,
+        80 => 19,
+        81 => 20,
+        82 => 21,
+        83 => 22,
+        92 => 23,
+        97 => 24,
+        98 => 25,
         _ => return None,
     })
 }
@@ -2396,7 +2441,12 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
         todo(X64),
         "in a coroutine body (WP-106)",
     ),
-    a64("intrinsic:llvm.coro.await.suspend.handle", CORO, ""),
+    row(
+        "intrinsic:llvm.coro.await.suspend.handle",
+        on(&[TypeClass::Ptr]),
+        todo(X64),
+        "in a coroutine body; symmetric transfer in constant stack (WP-107)",
+    ),
     row("intrinsic:llvm.sshl.sat", on(&[TypeClass::Int]), todo(X64), "up to 64 bits (WP-084)"),
     row("intrinsic:llvm.ushl.sat", on(&[TypeClass::Int]), todo(X64), "up to 64 bits (WP-084)"),
     row("intrinsic:llvm.aarch64.crc32b", on(&[TypeClass::Int]), never(A64_ONLY), ""),
@@ -2992,7 +3042,10 @@ pub const CONSTRUCT_FAMILIES: [ConstructInfo; 6] = [
         "module-flag:<name>",
         "a module flag that is neither known nor ignorable (§2.1), or any `Require` flag",
     ),
-    rule("cc:<number>", "a calling convention LLVM has no keyword for"),
+    rule(
+        "cc:<keyword>",
+        "a calling convention without a row, by LLVM's keyword (`cc:riscv_vector_cc`), or by its number if LLVM has none (`cc:42`)",
+    ),
     rule("bundle:<tag>", "an operand bundle whose tag has no row"),
     rule(
         "<row>/<class>",

@@ -16,6 +16,7 @@ mod asm;
 mod copy;
 mod data;
 mod lines;
+mod module_asm;
 mod noop;
 mod section;
 mod unwind;
@@ -68,8 +69,10 @@ pub mod unsupported {
     /// A variable of `appending` linkage that is not one of the special
     /// arrays `hod_ir` reads.
     pub const APPENDING: &str = "linkage:appending";
-    /// Module-level assembly an assembler must read (`hod_asm`'s, not
-    /// yet): anything but the symbol directives of `spec/ir.md` §2.3.
+    /// Module-level assembly of an x86-64 module that is not only the
+    /// symbol directives of `spec/ir.md` §2.3: `hod_asm` has no x86-64
+    /// assembler (on AArch64, `hod_asm` refuses what it does not read by
+    /// an `asm:*` name).
     pub const MODULE_ASM: &str = "module:asm";
     /// An `!llvm.linker.options` entry that is not a pair of strings,
     /// which ELF `llc` refuses ("invalid llvm.linker.options").
@@ -184,6 +187,9 @@ pub struct ModuleEmitter<'m> {
     debug: Option<Box<DebugLines<'m>>>,
     /// The noop coroutine frame (WP-105, `noop.rs`).
     noop: noop::NoopFrame,
+    /// What `finish` writes for module-level assembly (WP-112,
+    /// `module_asm.rs`).
+    asm_deferred: Option<Box<module_asm::Deferred>>,
 }
 
 fn obj_err(error: hod_obj::Error) -> CgError {
@@ -344,6 +350,7 @@ impl<'m> ModuleEmitter<'m> {
             rows: Chunk::new(),
             debug: None,
             noop: noop::NoopFrame::default(),
+            asm_deferred: None,
         };
         asm::check(module)?;
         // `TargetLoweringObjectFileELF::emitModuleMetadata`.
@@ -363,6 +370,8 @@ impl<'m> ModuleEmitter<'m> {
             Found::Old(_) => {}
         }
         emitter.name = name;
+        // WP-112: `llc` emits the module's assembly before anything else.
+        emitter.place_module_asm()?;
         for sym in module.symbols() {
             if let IrKind::Variable { constant, tls, init: Some(init) } = sym.kind() {
                 emitter.place_variable(sym.id(), constant, tls, init)?;

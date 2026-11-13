@@ -476,6 +476,10 @@ impl Target for A64 {
         crate::coro_body::dispatch(cx, cond, resume, destroy)
     }
 
+    fn coro_transfer(&self, cx: &mut FnCx<'_, Self>, exit: Label) -> CgResult<()> {
+        crate::coro_body::transfer(cx, exit)
+    }
+
     fn patch_branch(code: &mut [u8], at: u32, kind: FixupKind, displacement: i64) -> bool {
         let Some(field) = fixup_field(kind) else { return false };
         let at = at as usize;

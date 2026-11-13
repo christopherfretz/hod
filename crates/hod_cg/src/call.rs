@@ -267,7 +267,7 @@ impl<'a, T: Target> FnCx<'a, T> {
             ret_mem: None,
         };
         let done = self.run_call(&desc, Args::Custom(args))?;
-        self.coro_called(inst);
+        self.coro_called(inst)?;
         if let Some(reg) = done.reg {
             self.finish(inst, reg)?;
         }

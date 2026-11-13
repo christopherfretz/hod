@@ -53,6 +53,28 @@ impl CallConv {
     pub const SWIFT_TAIL: CallConv = CallConv(20);
     /// `preserve_nonecc`.
     pub const PRESERVE_NONE: CallConv = CallConv(21);
+    /// `x86_stdcallcc`.
+    pub const X86_STDCALL: CallConv = CallConv(64);
+    /// `x86_fastcallcc`.
+    pub const X86_FASTCALL: CallConv = CallConv(65);
+    /// `x86_thiscallcc`.
+    pub const X86_THISCALL: CallConv = CallConv(70);
+    /// `intel_ocl_bicc`.
+    pub const INTEL_OCL_BI: CallConv = CallConv(77);
+    /// `x86_64_sysvcc`: the System V convention, `ccc` on x86-64 Linux.
+    pub const X86_64_SYSV: CallConv = CallConv(78);
+    /// `win64cc`.
+    pub const WIN64: CallConv = CallConv(79);
+    /// `x86_vectorcallcc`.
+    pub const X86_VECTORCALL: CallConv = CallConv(80);
+    /// `hhvmcc`.
+    pub const HHVM: CallConv = CallConv(81);
+    /// `hhvm_ccc`.
+    pub const HHVM_C: CallConv = CallConv(82);
+    /// `x86_intrcc`.
+    pub const X86_INTR: CallConv = CallConv(83);
+    /// `x86_regcallcc`.
+    pub const X86_REGCALL: CallConv = CallConv(92);
     /// `aarch64_vector_pcs`.
     pub const AARCH64_VECTOR_PCS: CallConv = CallConv(97);
     /// `aarch64_sve_vector_pcs`.
@@ -78,29 +100,116 @@ impl CallConv {
         self.0
     }
 
-    /// The keyword LLVM's text uses, or `None` for a convention this table
-    /// does not name (LLVM prints those as `cc N`).
+    /// The keyword LLVM 22's text uses (`spec/ir.md` §5.7), or `None` for
+    /// a convention LLVM has no keyword for (it prints those `ccN` and
+    /// reads `cc N`). Dialects before LLVM 22 lack some of them:
+    /// [`CallConv::keyword_since`].
     pub const fn keyword(self) -> Option<&'static str> {
-        Some(match self.0 {
-            0 => "ccc",
-            8 => "fastcc",
-            9 => "coldcc",
-            10 => "ghccc",
-            13 => "anyregcc",
-            14 => "preserve_mostcc",
-            15 => "preserve_allcc",
-            16 => "swiftcc",
-            17 => "cxx_fast_tlscc",
-            18 => "tailcc",
-            19 => "cfguard_checkcc",
-            20 => "swifttailcc",
-            21 => "preserve_nonecc",
-            97 => "aarch64_vector_pcs",
-            98 => "aarch64_sve_vector_pcs",
-            _ => return None,
-        })
+        let index = self.0 as usize;
+        if index < KEYWORDS.len() && !KEYWORDS[index].is_empty() {
+            Some(KEYWORDS[index])
+        } else {
+            None
+        }
+    }
+
+    /// The first LLVM major version whose text has [`CallConv::keyword`];
+    /// a printer for an older dialect writes the number instead.
+    /// Meaningless for a convention without a keyword.
+    pub const fn keyword_since(self) -> u32 {
+        // `riscv_vls_cc(N)`, `amdgpu_gfx_whole_wave` and the CHERIoT
+        // conventions: not in LLVM 19, in LLVM 22 (20 and 21 are not
+        // checked, and the number reads alike everywhere).
+        if self.0 >= 112 { 22 } else { 19 }
+    }
+
+    /// The convention whose keyword is `keyword` (`b"fastcc"`), in any
+    /// dialect from LLVM 19 to 22. `riscv_vls_cc(N)` is one keyword here,
+    /// parentheses included, as [`CallConv::keyword`] spells it.
+    pub fn from_keyword(keyword: &[u8]) -> Option<CallConv> {
+        if keyword.is_empty() {
+            return None;
+        }
+        KEYWORDS.iter().position(|k| k.as_bytes() == keyword).map(|id| CallConv(id as u16))
     }
 }
+
+/// LLVM 22's keyword for each convention number, empty for none. Checked
+/// against `llvm-dis-19` and `llvm-dis-22` over every number from 0 to
+/// 1023 (`tests/` of `hod_ll`).
+const KEYWORDS: [&str; 128] = {
+    let mut k = [""; 128];
+    k[0] = "ccc";
+    k[8] = "fastcc";
+    k[9] = "coldcc";
+    k[10] = "ghccc";
+    k[13] = "anyregcc";
+    k[14] = "preserve_mostcc";
+    k[15] = "preserve_allcc";
+    k[16] = "swiftcc";
+    k[17] = "cxx_fast_tlscc";
+    k[18] = "tailcc";
+    k[19] = "cfguard_checkcc";
+    k[20] = "swifttailcc";
+    k[21] = "preserve_nonecc";
+    k[64] = "x86_stdcallcc";
+    k[65] = "x86_fastcallcc";
+    k[66] = "arm_apcscc";
+    k[67] = "arm_aapcscc";
+    k[68] = "arm_aapcs_vfpcc";
+    k[69] = "msp430_intrcc";
+    k[70] = "x86_thiscallcc";
+    k[71] = "ptx_kernel";
+    k[72] = "ptx_device";
+    k[75] = "spir_func";
+    k[76] = "spir_kernel";
+    k[77] = "intel_ocl_bicc";
+    k[78] = "x86_64_sysvcc";
+    k[79] = "win64cc";
+    k[80] = "x86_vectorcallcc";
+    k[81] = "hhvmcc";
+    k[82] = "hhvm_ccc";
+    k[83] = "x86_intrcc";
+    k[84] = "avr_intrcc";
+    k[85] = "avr_signalcc";
+    k[87] = "amdgpu_vs";
+    k[88] = "amdgpu_gs";
+    k[89] = "amdgpu_ps";
+    k[90] = "amdgpu_cs";
+    k[91] = "amdgpu_kernel";
+    k[92] = "x86_regcallcc";
+    k[93] = "amdgpu_hs";
+    k[95] = "amdgpu_ls";
+    k[96] = "amdgpu_es";
+    k[97] = "aarch64_vector_pcs";
+    k[98] = "aarch64_sve_vector_pcs";
+    k[100] = "amdgpu_gfx";
+    k[102] = "aarch64_sme_preservemost_from_x0";
+    k[103] = "aarch64_sme_preservemost_from_x2";
+    k[104] = "amdgpu_cs_chain";
+    k[105] = "amdgpu_cs_chain_preserve";
+    k[106] = "m68k_rtdcc";
+    k[107] = "graalcc";
+    k[110] = "riscv_vector_cc";
+    k[111] = "aarch64_sme_preservemost_from_x1";
+    k[112] = "riscv_vls_cc(32)";
+    k[113] = "riscv_vls_cc(64)";
+    k[114] = "riscv_vls_cc(128)";
+    k[115] = "riscv_vls_cc(256)";
+    k[116] = "riscv_vls_cc(512)";
+    k[117] = "riscv_vls_cc(1024)";
+    k[118] = "riscv_vls_cc(2048)";
+    k[119] = "riscv_vls_cc(4096)";
+    k[120] = "riscv_vls_cc(8192)";
+    k[121] = "riscv_vls_cc(16384)";
+    k[122] = "riscv_vls_cc(32768)";
+    k[123] = "riscv_vls_cc(65536)";
+    k[124] = "amdgpu_gfx_whole_wave";
+    k[125] = "cheriot_compartmentcallcc";
+    k[126] = "cheriot_compartmentcalleecc";
+    k[127] = "cheriot_librarycallcc";
+    k
+};
 
 impl Default for CallConv {
     fn default() -> Self {

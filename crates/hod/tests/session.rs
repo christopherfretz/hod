@@ -203,7 +203,7 @@ fn what_new_declines_and_an_empty_module() {
 #[test]
 fn census_through_the_session() {
     let text = format!(
-        "{TRIPLE}module asm \"nop\"\n\
+        "{TRIPLE}!llvm.module.flags = !{{!900}}\n!900 = !{{i32 1, !\"Code Model\", i32 0}}\n\
          define ghccc void @h() nounwind {{\n  ret void\n}}\n\
          define void @g() nounwind {{\n  ret void\n}}\n"
     );
@@ -217,14 +217,20 @@ fn census_through_the_session() {
     let (g, g_body) = bodies.next().unwrap();
     assert_eq!(session.body(g, g_body.unwrap()), Ok(()));
     let (error, report) = session.finish(&mut Vec::new()).expect_err("declined");
-    assert_eq!(error, Unsupported::module(Construct::Named("module:asm".into())).into());
-    for name in ["module:asm", "call:reader-name", "call:second"] {
+    assert_eq!(
+        error,
+        Unsupported::module(Construct::Named("module:code-model-tiny".into())).into()
+    );
+    for name in ["module:code-model-tiny", "call:reader-name", "call:second"] {
         assert!(report.reasons.iter().any(|r| r == name), "{name}: {:?}", report.reasons);
     }
-    assert_eq!(report.reasons[0], "module:asm");
+    assert_eq!(report.reasons[0], "module:code-model-tiny");
 
     // Without the census, the producer's refusal names its function.
-    let read = self::read(text.replace("module asm \"nop\"\n", "").as_bytes());
+    let read = self::read(
+        text.replace("!llvm.module.flags = !{!900}\n!900 = !{i32 1, !\"Code Model\", i32 0}\n", "")
+            .as_bytes(),
+    );
     let mut session = Session::with_module(read.module, &options(), Settings::default()).unwrap();
     session.end_module().unwrap();
     let (h, _) = &read.bodies[0];

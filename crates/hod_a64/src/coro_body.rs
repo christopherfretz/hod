@@ -32,8 +32,8 @@ use hod_mc_a64 as mc;
 use hod_mc_a64::{Cond, Load, MemSize, Reg, Size};
 
 use crate::common::{
-    ADR21, Cursor, FP, SP, X16, X17, branch, branch_cond, deferred_first, load_gpr_at, mov_imm,
-    put, store_gpr_at, unsupported, xr,
+    ADR21, Cursor, FP, SP, X16, X17, branch, branch_cond, branch_zero, deferred_first, load_gpr_at,
+    mov_imm, put, store_gpr_at, unsupported, xr,
 };
 use crate::frame::{DWARF_FP, DWARF_LR, DWARF_SP};
 use crate::intrinsic::const_int;
@@ -43,9 +43,6 @@ use crate::target::A64;
 /// convention saves registers of its own (`preserve_most`,
 /// `preserve_all`): its save areas are not laid out with `x19`'s.
 pub const PRESERVE_CC: &str = "a64:coro-preserve-cc";
-
-/// `llvm.coro.await.suspend.handle` (symmetric transfer, WP-107).
-pub const AWAIT_HANDLE: &str = "intrinsic:llvm.coro.await.suspend.handle";
 
 /// The frame base register.
 pub const X19: Reg = Reg::X19;
@@ -224,9 +221,8 @@ pub fn dispatch(
 /// A body intrinsic of a coroutine.
 ///
 /// # Errors
-/// [`AWAIT_HANDLE`]; what the call sequence reports; `Internal` for an
-/// argument list the verifier rejects or an intrinsic outside a
-/// coroutine.
+/// What the call sequence reports; `Internal` for an argument list the
+/// verifier rejects or an intrinsic outside a coroutine.
 pub fn intrinsic<'a>(
     cx: &mut FnCx<'a, A64>,
     inst: Inst<'a>,
@@ -264,14 +260,18 @@ pub fn intrinsic<'a>(
             put(cx, mc::eor_imm(Size::W, xr(rd).sp(), xr(rd).zr(), 1));
             cx.finish(inst, rd)
         }
-        (I::CoroAwaitSuspendVoid | I::CoroAwaitSuspendBool, &[awaiter, frame, wrapper]) => {
+        // The handle form's transfer follows the wrapper's call, from the
+        // call sequence (`transfer`).
+        (
+            I::CoroAwaitSuspendVoid | I::CoroAwaitSuspendBool | I::CoroAwaitSuspendHandle,
+            &[awaiter, frame, wrapper],
+        ) => {
             let callee = cx.temp(Class::Gpr)?;
             let t = cx.target;
             t.materialize(cx, callee, wrapper)?;
             let args = [CallArg::Value(awaiter), CallArg::Value(frame)];
             cx.call_through(inst, callee, &args, &[TypeId::PTR, TypeId::PTR], CallConv::C)
         }
-        (I::CoroAwaitSuspendHandle, _) => unsupported(AWAIT_HANDLE),
         _ => cx.bug("a coroutine body intrinsic with unexpected arguments"),
     }
 }
@@ -281,6 +281,36 @@ fn constant<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, value: u64) -> CgResult<
     let rd = cx.def_reg(inst)?;
     mov_imm(cx, Size::X, xr(rd), value);
     cx.finish(inst, rd)
+}
+
+/// `Target::coro_transfer` (WP-107, design 0005 §3.3), right after the
+/// wrapper of `llvm.coro.await.suspend.handle` returned the handle in
+/// `x0`:
+///
+/// ```text
+///     ldr x16, [x0]            the handle's resume function
+///     ldr w17, [x29, #mode]
+///     cbnz w17, exit           a resumed activation: the tail exit,
+///                              which restores x19, x29, x30, releases
+///                              the frame and ends in `br x16`
+///     blr x16                  the ramp: a call (its own call-site row,
+///                              no landing pad), then the suspend's −1
+///                              path
+/// ```
+///
+/// Neither path addresses the coroutine's frame: `[x0]` is the other
+/// coroutine's.
+///
+/// # Errors
+/// What the fixups report.
+pub fn transfer(cx: &mut FnCx<'_, A64>, exit: Label) -> CgResult<()> {
+    put(cx, mc::ldr_off(Load::X, X16.zr(), Reg::X0.sp(), 0));
+    load_mode(cx, X17)?;
+    branch_zero(cx, Size::W, X17, true, exit)?;
+    let start = cx.offset();
+    put(cx, mc::blr(X16.zr()));
+    cx.record_call_site(start, 4);
+    Ok(())
 }
 
 /// The mode word into `rd`: 0 in the ramp, 1 in a resumed activation.

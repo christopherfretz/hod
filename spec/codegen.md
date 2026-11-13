@@ -1781,7 +1781,7 @@ that refused it before (WP-084's "stays refused" list is settled here).
     variable, constants (`DW_AT_const_value`) and `DW_OP_stack_value`
     expressions, which need location lists). All stay
     `debug:dbg-value`.
-  - `cc:preserve_allcc`, `cc:79` (`win64cc`) and `cc:aarch64_vector_pcs`
+  - `cc:preserve_allcc`, `cc:win64cc` (`cc:79` before WP-141) and `cc:aarch64_vector_pcs`
     (WP-082), which the one `preserve_mostcc` corpus module also uses.
     (`preserve_allcc` since WP-101, below.)
 
@@ -2002,9 +2002,17 @@ normal destination.
 the normal destination; then, for each indirect destination, a
 trampoline the template's branches to `${N:l}` are fixed up to: it
 reloads the callee-saved registers, stores that edge's phis and branches
-to the destination. A `callbr` with an output (which would be defined
-on every path) is `a64:inline-asm-form`, as is an operand bundle on any
-inline-assembly call.
+to the destination. Outputs (WP-112) are written on every path: the
+normal path writes them as a `call` does, and each trampoline writes
+them again, after reloading the callee-saved registers and before that
+edge's phis, from the registers the template left them in (the result
+is a home or dead, never a register value, so writing it twice is one
+store each time). `llc` 22 stores the outputs in the indirect
+destination's block; `llc` 19 does too, but there it can reload a
+spilled output before storing it (a two-output `callbr`, seed
+`goto_out2`, returns a stale value on the indirect edge). hod follows
+22; the seed test expects that one failure of `llc` 19's object. An operand
+bundle on any inline-assembly call is `a64:inline-asm-form`.
 
 **Refused by name**, besides `spec/asm.md` §8:
 `a64:inline-asm-frame-register`, `a64:inline-asm-scratch-register`,
@@ -2012,7 +2020,7 @@ inline-assembly call.
 bits, a vector wider than 16 bytes, more than 8 bytes in a general
 register), `a64:inline-asm-operands` (more than 16 operands, 4
 alternatives, or the registers of a class), `a64:inline-asm-unwind`,
-`a64:inline-asm-form`; `asm:constraint/count` when the constraints do
+`a64:inline-asm-form` (an operand bundle); `asm:constraint/count` when the constraints do
 not match the call's arguments, result or labels; `asm:symbol` for a
 template reference to a name the module does not have.
 
@@ -2929,7 +2937,7 @@ activation a stub entered) and the frame word. `preserve_most` and
 | `coro.end` (LLVM 19 `i1`, 22 `void`) | not unwinding: when mode ≠ 0, branch to the epilogue; unwinding: when mode ≠ 0, `[x19, #0]` := 0 and the index := the final suspend's (the coroutine is done). LLVM 19's result is mode |
 | `coro.is_in_ramp` | mode xor 1 |
 | `coro.free`, `coro.frame` | x19 (`coro.frame` itself is the plan's `coro:frame-intrinsic`) |
-| `await.suspend.handle` | refused, `intrinsic:llvm.coro.await.suspend.handle` (symmetric transfer, WP-107) |
+| `await.suspend.handle` | the call of the wrapper as for `.void`, then the transfer below (WP-107) |
 
 A body intrinsic in a function without a plan is
 `coro:outside-coroutine`; a target with `Target::CORO_BODIES` false
@@ -2960,11 +2968,81 @@ region; every heap address the target forms passes `FnCx::coro_access`,
 and one formed in the region (or before `coro.begin`) makes the function
 an internal error.
 
+*Symmetric transfer (WP-107).* `coro.await.suspend.handle(awaiter,
+frame, wrapper)` (a `call` or an `invoke`) calls the wrapper, which
+returns the handle `h` to resume; the coroutine must then resume `h`
+without growing the stack, however long a chain of transfers runs
+(LLVM: the clones end in `musttail call fastcc %resume(h)`, the ramp
+makes a plain call and goes on to its suspend). Right after the
+wrapper's call returns, before the `invoke`'s normal edge:
+
+```text
+    ldr x16, [x0]               h's resume function (offset 0 of its frame)
+    ldr w17, [x29, #mode]
+    cbnz w17, exit              a resumed activation: a tail exit
+    blr x16                     the ramp: a call with x0 = h, its own
+                                call-site row without a landing pad
+    ...                         the invoke's normal edge, the suspend (−1)
+exit:                           after the epilogue, with the other tail exits:
+    the epilogue's teardown (x19, x29, x30 restored, the frame released)
+    br x16                      x0 = h
+```
+
+- The resumed activation leaves its machine frame entirely before it
+  jumps: the resume function runs at the stack depth at which the stub
+  that entered the activation was called, so an unbounded chain of
+  transfers runs in constant stack, with a coroutine compiled by hod or
+  by `llc` on either side (`fastcc` is the C convention for one pointer
+  argument).
+- The ramp calls: its caller is still waiting for the return object.
+  The call is outside the `invoke`'s range (an exception from the
+  resumed coroutine leaves the ramp, as from LLVM's plain call); the
+  ramp then continues to the suspend's −1 edge, which returns.
+- Both paths are emitted; the mode decides. The suspended region starts
+  at the wrapper's return (design 0005 §3.3): neither path addresses the
+  frame. The memory read are `h`'s first word (the other coroutine's
+  frame) and the mode word; the tail exit's restore of x19 reads the
+  machine stack.
+- The suspend index is stored by `coro.save`, before the wrapper runs:
+  the wrapper may resume or destroy the coroutine (on this thread,
+  inside the wrapper, or on another), and the stub that enters it
+  dispatches on that index.
+- `FnCx::coro_tail_exit()` makes the tail exit (a `TailExit` whose
+  target is the callee register); `Target::coro_transfer(cx, exit)` is
+  the code above, called by `coro_called` from `call_through`.
+
+*Exceptions in the ramp and in an await* (LLVM 19 and 22 agree; WP-107):
+
+- **A throwing `await_suspend`** ([expr.await]/5.1: the coroutine is
+  resumed and the exception rethrown in it). The wrapper is an `invoke`
+  whose landing pad lies in the body: it runs in the activation that
+  called the wrapper, with the frame alive and the activation's mode
+  unchanged, so heap slots are addressed as anywhere outside the
+  suspended region (the pad is not in it). The transfer never runs: it
+  follows only the wrapper's normal return. The index stored by
+  `coro.save` stays until the next `coro.save`; nothing reads it unless
+  the coroutine suspends again.
+- **A throwing `get_return_object`** (or any exception in the ramp
+  before the initial suspend). The ramp's unwind path runs the
+  cleanups, frees the frame (`coro.free`, the front end's `operator
+  delete`), and resumes the exception. The frame is dead from the free
+  on: nothing after it may address the frame. The exception pointer and
+  selector slots are unescaped, so the plan keeps them on the machine
+  stack (design 0005 §3.4 rule 3); a heap slot or value used after the
+  free is refused (`coro:frame-access-after-suspend`). LLVM's split
+  pairs every use with every use, so in the seed `gro-throws-uaf`
+  (whose final `await_suspend` returns a handle) it puts those slots in
+  the frame and reads them after the free (design 0005 §1.4): its
+  program crashes once the freed frame is poisoned (the seed's promise
+  does that itself; an `oracle-skip` of `spec/harness.md`). hod's
+  program prints the expected output.
+
 *Hooks.* `Target::CORO_BODIES`, `Target::coro_stubs`,
-`Target::coro_dispatch`; `FnCx::coro_*` for the target; one call each in
-the driver (`coro_plan`, `coro_setup`, `coro_slot_place`,
-`coro_block_start`, `coro_switch`, `coro_finish`, `coro_entries`), in
-`call_through` (`coro_called`) and in module emission (the stub symbols).
+`Target::coro_dispatch`, `Target::coro_transfer`; `FnCx::coro_*` for the
+target; one call each in the driver (`coro_plan`, `coro_setup`,
+`coro_slot_place`, `coro_block_start`, `coro_switch`, `coro_finish`,
+`coro_entries`), in `call_through` (`coro_called`, which also starts the
+transfer) and in module emission (the stub symbols).
 `Stress::coro_frame` (§12, not in `Stress::ALL`) gives every function
 the coroutine machine frame and clobbers x19 after saving it.
 
@@ -3386,8 +3464,9 @@ mold and runs them):
 
 #### 9.7.1 Module assembly of symbol directives (WP-075)
 
-`emit_module` refuses module assembly that `module_asm_effects`
-(`spec/ir.md` §2.3) refuses, with `module:asm`, before it emits anything.
+On x86-64, `emit_module` refuses module assembly that
+`module_asm_effects` (`spec/ir.md` §2.3) refuses, with `module:asm`,
+before it emits anything; on AArch64 such text is §9.7.3's.
 Once every module symbol is defined, it writes each effect into the
 object: an undefined symbol for a name the module does not have, the
 binding, visibility and type a directive gives, and `retain` for a
@@ -3422,6 +3501,48 @@ code as a copy:
   stays on the external symbol, which stays undefined.
 
 A function whose chunk is not given keeps `llc`'s layout exactly.
+
+#### 9.7.3 Module assembly of code and data (WP-112, `emit/module_asm.rs`)
+
+On AArch64, module text that `module_asm_effects` refuses is assembled
+by `hod_asm::module::assemble_module` (`spec/asm.md` §9) with the base
+features, in `ModuleEmitter::new` before any function, variable or
+section of the module is placed, so its bytes come first in each
+section as in `llc`'s object. A refusal is `emit_module`'s error, by
+the `asm:*` name. Then:
+
+- **Sections.** A standard name (`.text`, `.rodata`, `.data`, `.bss`)
+  is the section module emission would choose for that kind; another
+  name is found or created as an explicit section of that kind, no
+  group. The section is empty at that point (else an internal error);
+  its alignment is raised to the text's, its bytes (or `.bss` size)
+  appended, and a code section's mapping symbols written; the
+  emitter's mapping state is the text's last, so the next function in
+  `.text` writes `$x` only if the text ended in data.
+- **Symbols.** A label or `.set` of a name the module does not have is
+  a new object symbol (local unless `.globl`/`.weak`; visibility and
+  type from the directives; `.set` absolute; `.size` as written; kept in
+  the symbol table). If its name is a runtime function's
+  (`RuntimeFn`), the code's references to that function use it. A label
+  named as a module symbol must be an external declaration (a function
+  or a non-thread-local variable) and becomes its definition: placed at
+  the label, binding global or weak as the text gives it (a label
+  of local binding for a module name is `asm:symbol`: `llc` would
+  reach it through its section), visibility the IR's if not default (it is emitted after the
+  text), else the text's; type and size the text's. Any other meeting
+  (a definition, a local, a thread-local, a `.set` of a module name, a
+  name prefixed `__unnamed_`) is `asm:symbol`. Directives on module
+  names the text does not define follow §9.7.1's rules. Definitions
+  are applied after `define` (`finish_module_asm`).
+- **Relocations** of the text are the object's relocations, against
+  the module symbol, the new symbol, or the section with an addend
+  (`spec/asm.md` §9).
+
+The oracle is `crates/hod_cg/tests/emit_module_asm.rs` (sections with
+bytes, symbols, relocations, code-section mapping symbols equal to
+`llc` 19's and 22's, LLVM 19's alignment of a created code section
+normalised from 1 to 4); the three corpus modules with code and data in
+their text link (bfd, lld, mold) and behave as `llc`'s.
 
 ## 10. Errors and limits
 

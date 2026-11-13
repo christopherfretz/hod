@@ -585,11 +585,11 @@ mod tests {
     use hod::{Construct, Unsupported};
     use hod_testutil::Scratch;
 
-    /// A module declined in the module pass (`module:asm`) with a body
+    /// A module declined in the module pass (`module:code-model-tiny`) with a body
     /// the body pass refuses (`cc:ghccc`): constructs no code-generation
     /// package turns on, so the reasons do not move with the matrix.
     const MODULE: &[u8] = b"target triple = \"aarch64-unknown-linux-gnu\"\n\
-        module asm \"nop\"\ndefine ghccc void @f() nounwind {\n  ret void\n}\n";
+        !llvm.module.flags = !{!900}\n!900 = !{i32 1, !\"Code Model\", i32 0}\ndefine ghccc void @f() nounwind {\n  ret void\n}\n";
     /// A module hod compiles: declarations only.
     const DECLARATIONS: &[u8] = b"target triple = \"aarch64-unknown-linux-gnu\"\n\
         declare i32 @g()\n";
@@ -759,10 +759,10 @@ mod tests {
         assert_eq!(
             summary,
             [
-                ("module:asm", "-"),
+                ("module:code-model-tiny", "-"),
                 ("-", "-"),
                 ("assembly-output", "-"),
-                ("module:asm", "module:asm,cc:ghccc"),
+                ("module:code-model-tiny", "module:code-model-tiny,cc:ghccc"),
                 ("-", "-"),
                 ("assembly-output", "assembly-output"),
             ]
@@ -1099,7 +1099,7 @@ mod tests {
         assert_eq!(
             summary,
             [
-                ("error", "module:asm", "text", "-"),
+                ("error", "module:code-model-tiny", "text", "-"),
                 ("error", "assembly-output", "bitcode", "-"),
                 ("error", "unknown-option", "-", "-"),
                 ("hod", "-", "bitcode", "-"),

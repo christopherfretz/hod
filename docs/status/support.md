@@ -20,7 +20,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 
 | group | constructs | aarch64 supported | not-implemented | rejected | x86_64 supported | not-implemented | rejected |
 |---|---|---|---|---|---|---|---|
-| `module` | 24 | 10 | 12 | 2 | 5 | 13 | 6 |
+| `module` | 24 | 11 | 11 | 2 | 5 | 13 | 6 |
 | `structor` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `debug` | 5 | 4 | 1 | 0 | 0 | 5 | 0 |
 | `global` | 12 | 11 | 1 | 0 | 3 | 9 | 0 |
@@ -30,7 +30,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
 | `init` | 10 | 6 | 3 | 1 | 0 | 10 | 0 |
 | `function` | 6 | 6 | 0 | 0 | 2 | 4 | 0 |
-| `cc` | 15 | 6 | 7 | 2 | 1 | 11 | 3 |
+| `cc` | 26 | 6 | 7 | 13 | 2 | 14 | 10 |
 | `attr` | 57 | 24 | 30 | 3 | 14 | 35 | 8 |
 | `type` | 15 | 12 | 0 | 3 | 2 | 11 | 2 |
 | `inst` | 67 | 60 | 0 | 7 | 4 | 56 | 7 |
@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 2 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 354 | 346 | 8 | 0 | 0 | 138 | 216 |
-| total | 663 | 547 | 70 | 46 | 37 | 356 | 270 |
+| `intrinsic` | 354 | 347 | 7 | 0 | 0 | 138 | 216 |
+| total | 674 | 549 | 68 | 57 | 38 | 359 | 277 |
 
 ## `module`
 
@@ -69,7 +69,7 @@ Module properties (`ModuleProps`, §2.1) and module-level tables.
 | `module:branch-protection-pauth-lr` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
 | `module:cf-protection-branch` | rejected | not-implemented | an x86 property |
 | `module:cf-protection-return` | rejected | not-implemented | an x86 property |
-| `module:asm` | not-implemented | not-implemented | hod_asm. module-level inline assembly an assembler must read |
+| `module:asm` | supported | not-implemented | module-level assembly of code and data: `hod_asm` (WP-112, `spec/asm.md` §9); what it does not read is refused by an `asm:*` name |
 | `module:asm-symbols` | supported | not-implemented | module-level assembly made only of symbol directives (`spec/ir.md` §2.3) |
 | `module:linker-options` | supported | not-implemented | `!llvm.linker.options` |
 | `module:dependent-libraries` | supported | not-implemented | `!llvm.dependent-libraries` |
@@ -215,6 +215,17 @@ Calling conventions, of a body's function and of a call.
 | `cc:cfguard_checkcc` | rejected | rejected | a Windows construct |
 | `cc:swifttailcc` | not-implemented | not-implemented | unplanned |
 | `cc:preserve_nonecc` | not-implemented | not-implemented | unplanned |
+| `cc:x86_stdcallcc` | rejected | rejected | aarch64: an x86 convention; x86_64: a 32-bit x86 convention |
+| `cc:x86_fastcallcc` | rejected | rejected | aarch64: an x86 convention; x86_64: a 32-bit x86 convention |
+| `cc:x86_thiscallcc` | rejected | rejected | aarch64: an x86 convention; x86_64: a 32-bit x86 convention |
+| `cc:intel_ocl_bicc` | rejected | not-implemented | aarch64: an x86 convention; x86_64: unplanned. OpenCL built-ins |
+| `cc:x86_64_sysvcc` | rejected | supported | an x86 convention. assigned as `ccc`: the System V convention is x86-64 Linux's C convention (`llc` 19 and 22 emit the same code) |
+| `cc:win64cc` | rejected | rejected | a Windows construct |
+| `cc:x86_vectorcallcc` | rejected | rejected | aarch64: an x86 convention; x86_64: a Windows construct. `__vectorcall` |
+| `cc:hhvmcc` | rejected | not-implemented | aarch64: an x86 convention; x86_64: unplanned |
+| `cc:hhvm_ccc` | rejected | not-implemented | aarch64: an x86 convention; x86_64: unplanned |
+| `cc:x86_intrcc` | rejected | rejected | aarch64: an x86 convention; x86_64: interrupt and exception handlers are refused by design |
+| `cc:x86_regcallcc` | rejected | rejected | aarch64: an x86 convention; x86_64: Intel's `__regcall` is refused by design |
 | `cc:aarch64_vector_pcs` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 convention |
 | `cc:aarch64_sve_vector_pcs` | rejected | rejected | aarch64: scalable vectors are refused by design; x86_64: an AArch64 convention |
 
@@ -649,7 +660,7 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.coro.is_in_ramp` | supported (int) | not-implemented | in a coroutine body (WP-106) |
 | `intrinsic:llvm.coro.await.suspend.void` | supported (ptr) | not-implemented | in a coroutine body (WP-106) |
 | `intrinsic:llvm.coro.await.suspend.bool` | supported (int, ptr) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.await.suspend.handle` | not-implemented | not-implemented | T-XF (coroutine splitting) |
+| `intrinsic:llvm.coro.await.suspend.handle` | supported (ptr) | not-implemented | in a coroutine body; symmetric transfer in constant stack (WP-107) |
 | `intrinsic:llvm.sshl.sat` | supported (int) | not-implemented | up to 64 bits (WP-084) |
 | `intrinsic:llvm.ushl.sat` | supported (int) | not-implemented | up to 64 bits (WP-084) |
 | `intrinsic:llvm.aarch64.crc32b` | supported (int) | rejected | x86_64: an AArch64 property |
@@ -918,7 +929,7 @@ removes by widening its row.
 |---|---|
 | `intrinsic:<name>` | a call of `Intrinsic::Other(name)`: an `llvm.*` name hod does not know, the no-code names (§5.5) included |
 | `module-flag:<name>` | a module flag that is neither known nor ignorable (§2.1), or any `Require` flag |
-| `cc:<number>` | a calling convention LLVM has no keyword for |
+| `cc:<keyword>` | a calling convention without a row, by LLVM's keyword (`cc:riscv_vector_cc`), or by its number if LLVM has none (`cc:42`) |
 | `bundle:<tag>` | an operand bundle whose tag has no row |
 | `<row>/<class>` | a supported row met with a value of a class it is not implemented for (§8.3), e.g. `inst:select/double` |
 | `<producer record>` | a name a producer gave to `Module::record_unsupported` (§2.2), passed through unchanged |

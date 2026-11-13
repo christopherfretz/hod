@@ -34,12 +34,12 @@
 use hod_ir::{BlockId, Const, Inst, InstId, InstKind, Intrinsic, SlotId, TypeId, ValueKind};
 use hod_xform::coro::CoroPlan;
 
-use crate::cx::FnCx;
+use crate::cx::{FnCx, TailExit};
 use crate::error::{CgError, CgResult, LIMIT_FRAME_SIZE, internal};
 use crate::frame::{FrameRef, SlotPlace};
 use crate::label::Label;
 use crate::loc::{Class, Key, Kind, Loc, NO_SLOT, ValState};
-use crate::target::Target;
+use crate::target::{CallTarget, Target};
 
 /// A coroutine body intrinsic (`llvm.coro.begin`, `suspend`, ...) in a
 /// function without `presplitcoroutine`.
@@ -460,14 +460,37 @@ impl<'a, T: Target> FnCx<'a, T> {
     }
 
     /// From the call sequence, right after the call of `inst` returned:
-    /// an `await_suspend` wrapper's return starts the suspended region.
-    pub(crate) fn coro_called(&mut self, inst: Inst<'a>) {
+    /// an `await_suspend` wrapper's return starts the suspended region;
+    /// after the wrapper of `llvm.coro.await.suspend.handle`, the
+    /// symmetric transfer (WP-107, [`Target::coro_transfer`]).
+    ///
+    /// # Errors
+    /// What the target's transfer reports.
+    pub(crate) fn coro_called(&mut self, inst: Inst<'a>) -> CgResult<()> {
         let id = inst.id();
-        if let Some(coro) = self.coro.as_deref_mut()
-            && coro.points.iter().any(|point| point.wrapper == Some(id))
-        {
+        let Some(coro) = self.coro.as_deref_mut() else { return Ok(()) };
+        if coro.points.iter().any(|point| point.wrapper == Some(id)) {
             coro.region = true;
         }
+        let handle = inst.call().and_then(|site| site.intrinsic());
+        if matches!(handle, Some(Intrinsic::CoroAwaitSuspendHandle)) {
+            let exit = self.coro_tail_exit();
+            let t = self.target;
+            t.coro_transfer(self, exit)?;
+        }
+        Ok(())
+    }
+
+    /// A tail exit for symmetric transfer (WP-107): `end_function` binds
+    /// the returned label at an exit sequence that tears the machine
+    /// frame down (restoring the frame base register) and jumps to the
+    /// callee register, where [`Target::coro_transfer`] has loaded the
+    /// resume function; the argument registers are left as they are.
+    pub fn coro_tail_exit(&mut self) -> Label {
+        let label = self.new_label();
+        let target = CallTarget::Reg(self.ri.callee);
+        self.s.tail_exits.push(TailExit { label, target });
+        label
     }
 
     /// After `end_function`: the stubs, and the structural check.

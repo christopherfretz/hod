@@ -531,13 +531,17 @@ reason exactly as the directive spells them (`irdiff_real`'s
 
 | test | LLVM | reason |
 |---|---|---|
+| `tests/ir/coro/gro-throws-uaf-19.ll` | 19 | LLVM reads exception slots from the frame after the ramp freed it (design 0005 1.4), and this program poisons the freed frame |
+| `tests/ir/coro/gro-throws-uaf-22.ll` | 22 | LLVM reads exception slots from the frame after the ramp freed it (design 0005 1.4), and this program poisons the freed frame |
 
-None yet. The first is expected with the `gro-throws-uaf` seed, whose
-oracle crashes under poisoning (design 0005 §5.3): its use after free
-comes from a final `await_suspend` that returns a handle, symmetric
-transfer, which hod compiles from WP-107. WP-106's `gro-throws` seed is
-the same program with direct resumption; there LLVM's split keeps the
-exception slots off the frame and its oracle is right.
+`gro-throws-uaf` (WP-107): `get_return_object` throws, and the final
+`await_suspend` returns a handle (symmetric transfer). The promise's
+`operator delete` fills the frame with `0x5a` before freeing it, so
+LLVM's build, which reads the exception slots it put in the frame after
+the ramp's free, crashes without any environment poisoning. WP-106's
+`gro-throws` seed is the same program with direct resumption; there
+LLVM's split keeps the exception slots off the frame and its oracle is
+right.
 
 ### Cross runs
 

@@ -79,14 +79,12 @@ fn member_address_after_a_load_of_its_base_is_permitted() {
 
 // The same program for x86-64 (natively there, remotely elsewhere): with
 // clang 19's IR, `llc` gives the `cmp` of the `icmp` that the branch of
-// line 18 tests its own line (19:17, then the `jne` at 18:9); hod emits
-// the fused compare at the branch's line, so its table has no row at line
-// 19 (`llc` for AArch64 folds the compare into the branch's line as hod
-// does). The fused compare-and-branch of crates/hod_x64/src/control.rs
-// (`fused_icmp`) would keep the `icmp`'s location for the compare.
+// line 18 tests its own line (19:17, then the `jne` at 18:9), and so does
+// hod since WP-149 (`crates/hod_x64/src/control.rs` `at_compare`; the
+// other fused forms since WP-157, `crates/hod_x64/tests/fused_lines.rs`).
+// `llc` for AArch64 folds the compare into the branch's line, as hod does
+// there.
 #[test]
-#[ignore = "hod_x64: a fused icmp's cmp has the branch's line, llc's has the icmp's \
-            (post_index.cpp:19 in _ZN7Counted7releaseEv, clang 19); WP-145 finding, WP-155"]
 fn fused_compare_keeps_its_line_on_x86_64() {
     let target = (Arch::host() != Some(Arch::X86_64)).then_some(Arch::X86_64);
     let Some(report) = run(target) else { return };

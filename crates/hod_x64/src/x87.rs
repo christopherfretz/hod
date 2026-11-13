@@ -289,7 +289,7 @@ pub fn cond_br<'a>(
     if_false: BlockId,
 ) -> CgResult<()> {
     deferred_first(cx, inst, Some(cond))?;
-    let c = flags(cx, compare)?;
+    let c = crate::control::at_compare(cx, compare, |cx| flags(cx, compare))?;
     let last = match c {
         FpCond::One(c) => c,
         FpCond::All(c1, c2) => {
@@ -336,7 +336,7 @@ pub fn select<'a>(
     let r = cx.def_mem(inst)?;
     let a = cx.use_mem(if_true)?;
     let b = cx.use_mem(if_false)?;
-    let c = flags(cx, compare)?;
+    let c = crate::control::at_compare(cx, compare, |cx| flags(cx, compare))?;
     // `rax` = the address kept unless a `cmov` replaces it by `rcx`'s.
     let (keep, other) = if matches!(c, FpCond::Any(..)) { (b, a) } else { (a, b) };
     crate::common::frame_address(cx, RAX, keep);

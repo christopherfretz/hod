@@ -1086,7 +1086,7 @@ pub fn cond_br<'a>(
         return branch_fp(cx, FpCond::One(Cond::Ne), if_true, if_false);
     }
     deferred_first(cx, inst, Some(cond))?;
-    let c = flags(cx, compare)?;
+    let c = crate::control::at_compare(cx, compare, |cx| flags(cx, compare))?;
     branch_fp(cx, c, if_true, if_false)
 }
 

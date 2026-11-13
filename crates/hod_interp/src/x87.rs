@@ -489,6 +489,308 @@ pub fn is_nan(format: Format, bits: u128) -> bool {
     unpack(format, bits) == Unpacked::Nan
 }
 
+/// Whether `bits` is a signaling NaN of `format`: a NaN whose top
+/// fraction bit (below the x87's integer bit) is clear. An invalid x87
+/// encoding counts as signaling: it is an invalid operand like one.
+pub fn is_signaling(format: Format, bits: u128) -> bool {
+    if !is_nan(format, bits) {
+        return false;
+    }
+    let quiet_bit = if format.explicit { 62 } else { format.precision - 2 };
+    let integer_missing = format.explicit && (bits >> 63) & 1 == 0;
+    integer_missing || (bits >> quiet_bit) & 1 == 0
+}
+
+/// `llvm.minnum` (`max` false) or `llvm.maxnum` (`max` true) on bit
+/// patterns of `format` (`spec/interp.md` §5.6): a quiet NaN operand
+/// gives the other operand.
+///
+/// # Errors
+/// Where LLVM leaves the result open: [`Trap::NanResult`] for a signaling
+/// NaN operand (unless `host_nan`, which treats it as quiet) or for two
+/// NaNs (unless `host_nan`, which gives the default NaN), and
+/// [`Trap::ZeroSign`] for two zeros of opposite signs.
+pub fn min_max(format: Format, a: u128, b: u128, max: bool, host_nan: bool) -> Result<u128, Trap> {
+    if !host_nan && (is_signaling(format, a) || is_signaling(format, b)) {
+        return Err(Trap::NanResult);
+    }
+    match (is_nan(format, a), is_nan(format, b)) {
+        (true, true) if host_nan => return Ok(format.nan()),
+        (true, true) => return Err(Trap::NanResult),
+        (true, false) => return Ok(b),
+        (false, true) => return Ok(a),
+        (false, false) => {}
+    }
+    match compare(format, a, b) {
+        Some(Ordering::Equal) if a != b => Err(Trap::ZeroSign),
+        Some(Ordering::Less) => Ok(if max { b } else { a }),
+        Some(Ordering::Greater) => Ok(if max { a } else { b }),
+        _ => Ok(a),
+    }
+}
+
+/// The class `llvm.is.fpclass` tests (`LangRef` "'llvm.is.fpclass'
+/// Intrinsic"): the index of its bit in the test mask, 0 (signaling NaN)
+/// to 9 (positive infinity). `None` for the encodings only the x87 has,
+/// on whose class LLVM's lowerings do not agree (unnormals, pseudo-NaNs,
+/// pseudo-infinities, pseudo-denormals).
+pub fn fp_class(format: Format, bits: u128) -> Option<u32> {
+    let negative = (bits >> format.sign_shift()) & 1 == 1;
+    let field = (bits >> format.fraction_bits()) & format.max_exponent_field();
+    let fraction = bits & ((1 << format.fraction_bits()) - 1);
+    let side = |negative_index: u32, positive_index: u32| {
+        Some(if negative { negative_index } else { positive_index })
+    };
+    if format.explicit {
+        let integer = fraction >> 63 == 1;
+        let normal = field != 0 && field != format.max_exponent_field();
+        if (field == 0 && integer) || (field != 0 && !integer) {
+            return None;
+        }
+        if normal {
+            return side(3, 8);
+        }
+    }
+    let rest = if format.explicit { fraction & ((1 << 63) - 1) } else { fraction };
+    if field == format.max_exponent_field() {
+        if rest == 0 {
+            return side(2, 9);
+        }
+        return Some(u32::from(!is_signaling(format, bits)));
+    }
+    match (field, rest) {
+        (0, 0) => side(5, 6),
+        (0, _) => side(4, 7),
+        _ => side(3, 8),
+    }
+}
+
+/// A NaN `x87` operand of a unary operation, made quiet.
+fn propagate1(a: u128, x: Unpacked) -> Option<u128> {
+    propagate(a, x, a, x)
+}
+
+/// `llvm.sqrt` on `x86_fp80`: correctly rounded, as `fsqrt`.
+pub fn sqrt(a: u128) -> u128 {
+    // The radicand is `mant * 4^K`: its root has at least 66 bits, two
+    // more than the result keeps, and the remainder is sticky.
+    const K: u32 = 35;
+    let a = a & MASK80;
+    let f = Format::X87;
+    let x = unpack(f, a);
+    if let Some(quiet) = propagate1(a, x) {
+        return quiet;
+    }
+    match x {
+        Unpacked::Zero(n) => f.zero(n),
+        Unpacked::Inf(false) => f.infinity(false),
+        Unpacked::Finite { negative: false, mant, exp } => {
+            let (mut mant, mut exp) = normalize64(mant, exp);
+            if exp.rem_euclid(2) == 1 {
+                mant <<= 1;
+                exp -= 1;
+            }
+            let (root, inexact) = isqrt_scaled(mant, K);
+            round(f, false, root, exp / 2 - K as i32, inexact)
+        }
+        _ => nan(),
+    }
+}
+
+/// The integer square root of `mant * 4^k` (`mant < 2^66`, `k < 40`), and
+/// whether a remainder is left: digit by digit, two radicand bits a step.
+fn isqrt_scaled(mant: u128, k: u32) -> (u128, bool) {
+    let bits = 128 - mant.leading_zeros() + 2 * k;
+    let (mut rest, mut root) = (0u128, 0u128);
+    for i in (0..bits.div_ceil(2)).rev() {
+        let at = 2 * i;
+        let pair = if at >= 2 * k { (mant >> (at - 2 * k)) & 3 } else { 0 };
+        rest = (rest << 2) | pair;
+        let trial = (root << 2) | 1;
+        if rest >= trial {
+            rest -= trial;
+            root = (root << 1) | 1;
+        } else {
+            root <<= 1;
+        }
+    }
+    (root, rest != 0)
+}
+
+/// How [`round_integral`] rounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rounding {
+    /// Toward negative infinity: `floor`.
+    Floor,
+    /// Toward positive infinity: `ceil`.
+    Ceil,
+    /// Toward zero: `trunc`.
+    Trunc,
+    /// To nearest, ties to even: `roundeven`, and `rint`/`nearbyint` in
+    /// the default rounding mode.
+    NearestEven,
+    /// To nearest, ties away from zero: `round`.
+    NearestAway,
+}
+
+/// `x86_fp80` rounded to an integral value; zeros and infinities are
+/// unchanged, a result of zero keeps the operand's sign.
+pub fn round_integral(a: u128, mode: Rounding) -> u128 {
+    let a = a & MASK80;
+    let f = Format::X87;
+    let x = unpack(f, a);
+    if let Some(quiet) = propagate1(a, x) {
+        return quiet;
+    }
+    let Unpacked::Finite { negative, mant, exp } = x else {
+        return a;
+    };
+    if exp >= 0 {
+        return round(f, negative, mant, exp, false);
+    }
+    let shift = exp.unsigned_abs();
+    // `mant < 2^64`: past 66 bits everything is dropped and below a half.
+    let (int, dropped, half) = if shift > 66 {
+        (0, mant, u128::MAX)
+    } else {
+        (mant >> shift, mant & ((1 << shift) - 1), 1u128 << (shift - 1))
+    };
+    let up = match mode {
+        Rounding::Floor => negative && dropped != 0,
+        Rounding::Ceil => !negative && dropped != 0,
+        Rounding::Trunc => false,
+        Rounding::NearestEven => dropped > half || (dropped == half && int & 1 == 1),
+        Rounding::NearestAway => dropped >= half,
+    };
+    let int = int + u128::from(up);
+    if int == 0 { f.zero(negative) } else { round(f, negative, int, 0, false) }
+}
+
+/// A 256-bit unsigned integer, for the exact sum inside [`fma`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Wide {
+    hi: u128,
+    lo: u128,
+}
+
+impl Wide {
+    /// `m << s`, `s < 256` and the result fitting.
+    fn shifted(m: u128, s: u32) -> Wide {
+        match s {
+            0 => Wide { hi: 0, lo: m },
+            1..128 => Wide { hi: m >> (128 - s), lo: m << s },
+            _ => Wide { hi: m << (s - 128), lo: 0 },
+        }
+    }
+
+    fn add(self, other: Wide) -> Wide {
+        let (lo, carry) = self.lo.overflowing_add(other.lo);
+        Wide { hi: self.hi + other.hi + u128::from(carry), lo }
+    }
+
+    /// `self - other`, `self >= other`.
+    fn sub(self, other: Wide) -> Wide {
+        let (lo, borrow) = self.lo.overflowing_sub(other.lo);
+        Wide { hi: self.hi - other.hi - u128::from(borrow), lo }
+    }
+
+    fn bits(self) -> u32 {
+        if self.hi != 0 { 256 - self.hi.leading_zeros() } else { 128 - self.lo.leading_zeros() }
+    }
+}
+
+/// `llvm.fma` on `x86_fp80`: `a * b + c` with one rounding.
+pub fn fma(a: u128, b: u128, c: u128) -> u128 {
+    let (a, b, c) = (a & MASK80, b & MASK80, c & MASK80);
+    let f = Format::X87;
+    let (x, y, z) = (unpack(f, a), unpack(f, b), unpack(f, c));
+    if let Some(quiet) = propagate(a, x, b, y) {
+        return quiet;
+    }
+    if let Some(quiet) = propagate1(c, z) {
+        return quiet;
+    }
+    // The exact product: `None` for infinity times zero.
+    let product = match (x, y) {
+        (Unpacked::Inf(_), Unpacked::Zero(_)) | (Unpacked::Zero(_), Unpacked::Inf(_)) => None,
+        (Unpacked::Inf(n), other) | (other, Unpacked::Inf(n)) => {
+            Some(Unpacked::Inf(n ^ sign(other)))
+        }
+        (Unpacked::Zero(n), other) | (other, Unpacked::Zero(n)) => {
+            Some(Unpacked::Zero(n ^ sign(other)))
+        }
+        (
+            Unpacked::Finite { negative: na, mant: ma, exp: ea },
+            Unpacked::Finite { negative: nb, mant: mb, exp: eb },
+        ) => Some(Unpacked::Finite { negative: na ^ nb, mant: ma * mb, exp: ea + eb }),
+        _ => None,
+    };
+    let Some(product) = product else { return nan() };
+    match (product, z) {
+        (Unpacked::Inf(n), Unpacked::Inf(m)) if n != m => nan(),
+        (Unpacked::Inf(n), _) | (_, Unpacked::Inf(n)) => f.infinity(n),
+        (Unpacked::Zero(n), Unpacked::Zero(m)) => f.zero(n && m),
+        (Unpacked::Zero(_), Unpacked::Finite { negative, mant, exp })
+        | (Unpacked::Finite { negative, mant, exp }, Unpacked::Zero(_)) => {
+            round(f, negative, mant, exp, false)
+        }
+        (
+            Unpacked::Finite { negative: np, mant: mp, exp: ep },
+            Unpacked::Finite { negative: nz, mant: mz, exp: ez },
+        ) => exact_sum((np, mp, ep), (nz, mz, ez)),
+        _ => nan(),
+    }
+}
+
+/// `(-1)^n1 * m1 * 2^e1 + (-1)^n2 * m2 * 2^e2`, rounded once; both
+/// significands nonzero and below 2^128.
+fn exact_sum(p: (bool, u128, i32), q: (bool, u128, i32)) -> u128 {
+    let top = |(_, m, e): (bool, u128, i32)| e + (128 - m.leading_zeros()) as i32;
+    // A window of 250 bits below the higher top. The operand with that top
+    // fits in it; the other either fits or is so far below that its
+    // truncated bits only matter as a sticky bit.
+    let low = top(p).max(top(q)) - 250;
+    let place = |(_, m, e): (bool, u128, i32)| -> (Wide, bool) {
+        if e >= low {
+            (Wide::shifted(m, (e - low) as u32), false)
+        } else {
+            let s = (low - e) as u32;
+            if s >= 128 {
+                (Wide::shifted(0, 0), true)
+            } else {
+                (Wide::shifted(m >> s, 0), m & ((1 << s) - 1) != 0)
+            }
+        }
+    };
+    let ((wp, sp), (wq, sq)) = (place(p), place(q));
+    let (negative, sum, sticky) = if p.0 == q.0 {
+        (p.0, wp.add(wq), sp || sq)
+    } else {
+        // Larger minus smaller; at most the smaller one lost bits, and
+        // `big - (small + e)`, `0 < e < 1`, is `(big - small - 1) + (1 - e)`.
+        let ((nb, wb, _), (ws, ss)) = if (wp, sp) >= (wq, sq) {
+            ((p.0, wp, sp), (wq, sq))
+        } else {
+            ((q.0, wq, sq), (wp, sp))
+        };
+        let diff = wb.sub(ws);
+        if ss { (nb, diff.sub(Wide::shifted(1, 0)), true) } else { (nb, diff, false) }
+    };
+    if sum == Wide::shifted(0, 0) && !sticky {
+        return Format::X87.zero(false);
+    }
+    let bits = sum.bits();
+    let (mant, exp, sticky) = if bits > 128 {
+        let s = bits - 128;
+        let lost = sum.lo & ((1u128 << s) - 1) != 0;
+        let mant = (sum.lo >> s) | (sum.hi << (128 - s));
+        (mant, low + s as i32, sticky || lost)
+    } else {
+        (sum.lo, low, sticky)
+    };
+    round(Format::X87, negative, mant, exp, sticky)
+}
+
 #[cfg(test)]
 #[allow(
     clippy::float_cmp,

@@ -1183,12 +1183,13 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         "a plain store; see `mem:`; FP and vector values: WP-067",
     ),
     row("inst:alloca", ON, ON, "a dynamic allocation; fixed ones are `function:slots`"),
-    row("inst:fence", ON, todo(X64), "WP-074"),
+    row("inst:fence", ON, ON, "WP-074; x86-64: WP-133"),
     row(
         "inst:cmpxchg",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Ptr, TypeClass::Aggregate]),
-        todo(X64),
-        "WP-074; the `{ T, i1 }` result is an aggregate",
+        on(&[TypeClass::Int, TypeClass::Ptr, TypeClass::Aggregate]),
+        "WP-074; the `{ T, i1 }` result is an aggregate; x86-64 (WP-133): `i128` only with \
+         `+cx16` (`lock cmpxchg16b`), else `x64:atomic-libatomic`",
     ),
     row(
         "inst:atomicrmw",
@@ -1201,8 +1202,16 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Float,
             TypeClass::Double,
         ]),
-        todo(X64),
-        "and the operation's `atomicrmw:` row; WP-074",
+        on(&[
+            TypeClass::Int,
+            TypeClass::Ptr,
+            TypeClass::Half,
+            TypeClass::BFloat,
+            TypeClass::Float,
+            TypeClass::Double,
+        ]),
+        "and the operation's `atomicrmw:` row; WP-074; x86-64 (WP-133): `i128` only with \
+         `+cx16`, else `x64:atomic-libatomic`",
     ),
     row("inst:ptradd", ON, ON, "LLVM's `getelementptr` (§5.4); not a vector of pointers"),
     row(
@@ -1220,8 +1229,14 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        "",
+        on(&[
+            TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::IntWide,
+            TypeClass::Ptr,
+            TypeClass::Aggregate,
+        ]),
+        "x86-64 `Int` and `Ptr` fields: WP-133 (the fields of a `cmpxchg` result)",
     ),
     row(
         "inst:insertvalue",
@@ -1360,33 +1375,45 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
 
 const MEM: [SupportRow; 3] = [
     row("mem:volatile", ON, ON, "a volatile `load`, `store`, `cmpxchg` or `atomicrmw`"),
-    row("mem:atomic-load", ON, todo(X64), "WP-074; `fp128` and vectors: `a64:atomic-type`"),
-    row("mem:atomic-store", ON, todo(X64), "WP-074; `fp128` and vectors: `a64:atomic-type`"),
+    row(
+        "mem:atomic-load",
+        ON,
+        ON,
+        "WP-074, WP-133; `fp128` and vectors: `a64:atomic-type`, `x64:atomic-type`; x86-64 \
+         `i128` without `+cx16`: `x64:atomic-libatomic`",
+    ),
+    row(
+        "mem:atomic-store",
+        ON,
+        ON,
+        "WP-074, WP-133; `fp128` and vectors: `a64:atomic-type`, `x64:atomic-type`; x86-64 \
+         `i128` without `+cx16`: `x64:atomic-libatomic`",
+    ),
 ];
 
 /// In `RmwOp::ALL` order.
 const ATOMICRMW: [SupportRow; RmwOp::ALL.len()] = [
-    row("atomicrmw:xchg", ON, todo(X64), "WP-074"),
-    row("atomicrmw:add", ON, todo(X64), "WP-074"),
-    row("atomicrmw:sub", ON, todo(X64), "WP-074"),
-    row("atomicrmw:and", ON, todo(X64), "WP-074"),
-    row("atomicrmw:nand", ON, todo(X64), "WP-074"),
-    row("atomicrmw:or", ON, todo(X64), "WP-074"),
-    row("atomicrmw:xor", ON, todo(X64), "WP-074"),
-    row("atomicrmw:max", ON, todo(X64), "WP-074"),
-    row("atomicrmw:min", ON, todo(X64), "WP-074"),
-    row("atomicrmw:umax", ON, todo(X64), "WP-074"),
-    row("atomicrmw:umin", ON, todo(X64), "WP-074"),
-    row("atomicrmw:fadd", ON, todo(X64), "WP-074"),
-    row("atomicrmw:fsub", ON, todo(X64), "WP-074"),
-    row("atomicrmw:fmax", ON, todo(X64), "WP-074"),
-    row("atomicrmw:fmin", ON, todo(X64), "WP-074"),
-    row("atomicrmw:uinc_wrap", ON, todo(X64), "WP-074"),
-    row("atomicrmw:udec_wrap", ON, todo(X64), "WP-074"),
-    row("atomicrmw:usub_cond", ON, todo(X64), "WP-074"),
-    row("atomicrmw:usub_sat", ON, todo(X64), "WP-074"),
-    row("atomicrmw:fmaximum", ON, todo(X64), "WP-074"),
-    row("atomicrmw:fminimum", ON, todo(X64), "WP-074"),
+    row("atomicrmw:xchg", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:add", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:sub", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:and", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:nand", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:or", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:xor", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:max", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:min", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:umax", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:umin", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:fadd", ON, ON, "WP-074, WP-133; x86-64 `half`: `x64:atomic-float-op`"),
+    row("atomicrmw:fsub", ON, ON, "WP-074, WP-133; x86-64 `half`: `x64:atomic-float-op`"),
+    row("atomicrmw:fmax", ON, todo(X64), "WP-074; x86-64: `x64:atomic-float-op` until WP-127"),
+    row("atomicrmw:fmin", ON, todo(X64), "WP-074; x86-64: `x64:atomic-float-op` until WP-127"),
+    row("atomicrmw:uinc_wrap", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:udec_wrap", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:usub_cond", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:usub_sat", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:fmaximum", ON, todo(X64), "WP-074; x86-64: `x64:atomic-float-op` until WP-127"),
+    row("atomicrmw:fminimum", ON, todo(X64), "WP-074; x86-64: `x64:atomic-float-op` until WP-127"),
 ];
 
 const CALL: [SupportRow; 4] = [

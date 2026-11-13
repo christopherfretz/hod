@@ -13,7 +13,7 @@
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, FpSize, Inst, Reg, Size, Xmm};
 
-use crate::expr::Value;
+use crate::expr::{Name, Value};
 use crate::reason::{self, Refusal, operand};
 use crate::x64::operand::{Base, Gpr, MemOp, Op, Ops};
 
@@ -57,13 +57,21 @@ pub fn cond_name(name: &str) -> Option<Cond> {
 /// The memory operand of `m` for the encoder.
 ///
 /// # Errors
-/// `asm:operand/symbol` for a displacement that names a symbol or label,
-/// `asm:operand/range` for one that is not a signed 32-bit value.
+/// `asm:operand/symbol` for a displacement that names a label,
+/// `asm:operand/range` for one that is not a signed 32-bit value. A
+/// displacement that names a symbol is a relocatable field, zero here
+/// (`spec/asm.md` §10.2 "Symbols"): its relocation is the caller's.
 pub fn mem(m: &MemOp<'_>) -> Result<mc::Mem, Refusal> {
-    if m.disp.name.is_some() {
-        return err(operand::SYMBOL);
-    }
-    let Ok(disp) = i32::try_from(m.disp.constant) else { return err(operand::RANGE) };
+    let field = match m.disp.name {
+        None => false,
+        Some(Name::Sym(_)) => true,
+        Some(Name::Local(..)) => return err(operand::SYMBOL),
+    };
+    let disp = if field {
+        0
+    } else {
+        i32::try_from(m.disp.constant).map_err(|_| Refusal(operand::RANGE))?
+    };
     let index = match m.index {
         Some((r, s)) => Some((r.index().ok_or(Refusal(operand::REGISTER))?, s)),
         None => None,
@@ -76,10 +84,14 @@ pub fn mem(m: &MemOp<'_>) -> Result<mc::Mem, Refusal> {
         (Some(Base::Rip), None) => mc::Mem::rip(disp),
         (Some(Base::Rip), Some(_)) => return err(operand::FORM),
     };
-    Ok(match m.seg {
+    let out = match m.seg {
         Some(seg) => out.with_seg(seg),
         None => out,
-    })
+    };
+    if field && m.base != Some(Base::Rip) {
+        return out.with_abs32().ok_or(Refusal(operand::FORM));
+    }
+    Ok(out)
 }
 
 fn imm(v: &Value<'_>) -> Result<i64, Refusal> {
@@ -142,6 +154,7 @@ fn fixed(name: &str) -> Option<Inst> {
         "int3" => mc::int3(),
         "ud2" => mc::ud2(),
         "hlt" => mc::hlt(),
+        "fwait" | "wait" => mc::fwait(),
         "cld" => mc::cld(),
         "std" => mc::std(),
         "syscall" => mc::syscall(),

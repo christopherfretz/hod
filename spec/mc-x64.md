@@ -399,6 +399,7 @@ is LLVM's choice; `xchg ax, ax` is `66 90`.
 | `xgetbv()` | XGETBV `0F 01 D0`: extended control register `ecx` into `edx:eax`; needs OSXSAVE (WP-187) | |
 | `syscall()` | SYSCALL `0F 05` (WP-187) | |
 | `hlt()` | HLT `F4` (WP-187) | |
+| `fwait()` | FWAIT `9B` (`wait`) (WP-187) | |
 | `int_i(n: u8)` | INT `CD ib`; `int3()` for `n` = 3, as LLVM writes `int $3` (WP-187) | |
 
 `nop(len)` is, for 1 to 9 bytes, the SDM's recommended form (Vol. 2B,

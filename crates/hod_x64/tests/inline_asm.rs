@@ -164,6 +164,41 @@ fn forced_templates_are_llcs_bytes() {
     }
 }
 
+/// The relocations against the symbols only templates name, as
+/// `llvm-objdump -r` lists them: type and value, in order.
+fn symbol_relocs(objdump: &std::path::Path, object: &std::path::Path) -> Vec<String> {
+    let ran = run(objdump, ["-r".as_ref(), object.as_os_str()]);
+    assert!(ran.success(), "llvm-objdump: {}", ran.stderr_text());
+    ran.stdout_text()
+        .lines()
+        .filter_map(|l| {
+            let mut words = l.split_whitespace().skip(1);
+            let (kind, value) = (words.next()?, words.next()?);
+            let named = ["asm_tls", "asm_cell", "asm_fn"].iter().any(|s| {
+                value.strip_prefix(s).is_some_and(|r| r.is_empty() || r.starts_with(['+', '-']))
+            });
+            named.then(|| format!("{kind} {value}"))
+        })
+        .collect()
+}
+
+/// The relocations a template's symbol fields carry are `llc`'s
+/// (`spec/asm.md` §10.2 "Symbols").
+#[test]
+fn symbol_fields_are_llcs_relocations() {
+    let dir = Scratch::new("x64-inline-asm-relocs");
+    let text = format!("{}{FUNCTIONS}", ll_header());
+    let ours = dir.write("hod.o", hod_object(&text, Stress::default()));
+    for major in LLVM_MAJORS {
+        let Some(objdump) = tool(&format!("llvm-objdump-{major}")) else { continue };
+        let Some(theirs) = llc(&dir, major, &format!("llc-{major}"), &text) else { continue };
+        let (a, b) = (symbol_relocs(&objdump, &ours), symbol_relocs(&objdump, &theirs));
+        assert!(a.len() >= 9, "{a:?}");
+        assert_eq!(a, b, "llc {major}");
+        println!("llc {major}: {} template relocations, hod's", a.len());
+    }
+}
+
 /// What is not assembled, or not read, is refused by name.
 #[test]
 fn what_is_not_assembled_is_refused_by_name() {
@@ -200,6 +235,15 @@ fn what_is_not_assembled_is_refused_by_name() {
         (one("void", "call void asm \"vzeroupper\", \"\"()"), "asm:mnemonic/vzeroupper"),
         (one("void", "call void asm \"movb ${0:h}, %al\", \"r\"(i32 %x)"), "asm:modifier/h"),
         (one("void", "call void asm \"call foo\", \"\"()"), "asm:mnemonic/call"),
+        (one("void", "call void asm \"movq nowhere(%rip), %rax\", \"~{rax}\"()"), "asm:symbol"),
+        (
+            one("void", "call void asm \"leaq f@GOTPCREL(%rip), %rax\", \"~{rax}\"()"),
+            "asm:operand/specifier",
+        ),
+        (
+            one("void", "call void asm \"movq $$f@tpoff, %rax\", \"~{rax}\"()"),
+            "asm:operand/specifier",
+        ),
         (one("void", "call void asm \"x: jmp x\", \"\"()"), "asm:label"),
         (one("void", "call void asm \".p2align 4\", \"\"()"), "asm:directive/p2align"),
         (one("void", "call void asm \"jmp 1f\", \"\"()"), "asm:operand/label"),

@@ -142,6 +142,13 @@ pub const fn std() -> Inst {
     plain(Op::one(0xfd))
 }
 
+/// `FWAIT` (`9B`, also `WAIT`): waits for pending x87 exceptions.
+/// Inline assembly, WP-187.
+#[inline]
+pub const fn fwait() -> Inst {
+    plain(Op::one(0x9b))
+}
+
 /// `HLT` (`F4`): halts until an interrupt; privileged (a `#GP` in user
 /// mode). Inline assembly, WP-187.
 #[inline]

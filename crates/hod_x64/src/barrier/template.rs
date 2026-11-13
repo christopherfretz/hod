@@ -68,10 +68,11 @@ use hod_asm::{Refusal, reason, template};
 use hod_cg::asm_constraints::{
     self as constraints, Clobber, ConstraintError, ConstraintSyntax, Kind, MAX_OPS, TIED,
 };
-use hod_cg::{CgError, CgResult, Class, FnCx, FrameRef, PReg};
-use hod_ir::{Const, InlineAsm, Inst, Opcode, TypeId, TypeKind, Value, ValueKind};
+use hod_cg::{CgError, CgResult, Class, FnCx, FrameRef, PReg, SymRef};
+use hod_ir::{Const, InlineAsm, Inst, Opcode, SymId, TypeId, TypeKind, Value, ValueKind};
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, Size};
+use hod_obj::{RelocKind, X64Reloc};
 
 use crate::common::{
     R10, R11, XMM15, branch, copy_frame, deferred_first, frame_address, gp, gpr_load, load_fpr,
@@ -655,10 +656,34 @@ pub fn call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
     // The text first: nothing is emitted for a template that refuses.
     let mut body = String::new();
     substitute(cx, inst, asm, &ops, &plan, &mut body)?;
-    let mut code = Vec::new();
-    asm::assemble(&body, &mut code, &mut String::new()).map_err(refused)?;
-    emit(cx, inst, &ops, plan, &code)
+    let (mut code, mut refs) = (Vec::new(), Vec::new());
+    asm::assemble(&body, &mut code, &mut refs, &mut String::new()).map_err(refused)?;
+    let mut fields = Vec::with_capacity(refs.len());
+    for r in &refs {
+        // A symbol of the module, by its object name, as LLVM's
+        // assembler binds it; another is not written.
+        let Some(sym) = cx.module.find_symbol(r.name.as_bytes()) else {
+            return Err(refused(Refusal(reason::other::SYMBOL)));
+        };
+        let kind = match r.kind {
+            asm::RefKind::Pc32 => X64Reloc::Pc32,
+            asm::RefKind::Plt32 => X64Reloc::Plt32,
+            asm::RefKind::GotPcRel => X64Reloc::GotPcrel,
+            asm::RefKind::GotPcRelX => X64Reloc::GotPcrelX,
+            asm::RefKind::RexGotPcRelX => X64Reloc::RexGotPcrelX,
+            asm::RefKind::GotTpOff => X64Reloc::GotTpOff,
+            asm::RefKind::TpOff32 => X64Reloc::TpOff32,
+            asm::RefKind::DtpOff32 => X64Reloc::DtpOff32,
+            asm::RefKind::Abs32S => X64Reloc::Abs32S,
+        };
+        fields.push((r.offset, kind, sym, r.addend));
+    }
+    emit(cx, inst, &ops, plan, &code, &fields)
 }
+
+/// A symbol field of a template's code: its offset in the code, the
+/// relocation, the symbol and the addend.
+type Field = (u32, X64Reloc, SymId, i64);
 
 fn substitute(
     cx: &FnCx<'_, X64>,
@@ -718,6 +743,7 @@ fn emit<'a>(
     ops: &Ops,
     mut plan: Plan,
     code: &[u8],
+    fields: &[Field],
 ) -> CgResult<()> {
     let site = inst.call().expect("checked by the caller");
     let args = site.args();
@@ -827,7 +853,11 @@ fn emit<'a>(
     // A memory output that is not indirect has no memory to point at:
     // `decide` never makes one.
     // 4. The template.
+    let start = cx.offset();
     cx.emit(code);
+    for &(offset, kind, sym, addend) in fields {
+        cx.reloc(start + offset, RelocKind::X64(kind), SymRef::Module(sym), addend);
+    }
     // 5. Outputs: registers to slots, flags, indirect stores.
     for i in 0..ops.len {
         let op = ops.list[i];

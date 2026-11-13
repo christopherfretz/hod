@@ -24,6 +24,7 @@ pub fn build(b: &mut Batch) {
     emit!(b, cld(), "cld");
     emit!(b, std(), "std");
     emit!(b, hlt(), "hlt");
+    emit!(b, fwait(), "fwait");
     emit!(b, syscall(), "syscall");
     emit!(b, xgetbv(), "xgetbv");
     for n in [0, 1, 3, 4, 0x80, 0xff] {

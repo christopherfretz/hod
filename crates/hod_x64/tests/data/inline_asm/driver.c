@@ -45,6 +45,14 @@ uint64_t flags_word(void);
 int64_t clobber_live(int64_t, int64_t, int64_t, int64_t);
 double clobber_xmm(double, double);
 int32_t tied_order(int32_t, int32_t, int32_t);
+extern __thread int64_t asm_tls;
+extern int64_t asm_cell;
+int64_t asm_fn(void);
+int64_t forced_sym_tpoff(void), forced_sym_fs_load(void), forced_sym_gottpoff(void);
+int64_t sym_tpoff_r(void), forced_sym_pc32_load(void);
+void *tls_address(void), *forced_sym_pc32(void), *forced_sym_gotpcrel(void);
+void *forced_sym_plt(void);
+void forced_fwait(void);
 
 static int fails;
 #define CHECK(c)                                                               \
@@ -145,6 +153,17 @@ int main(void) {
   CHECK(clobber_live(10, 20, 30, 5) == 30 + 27 + 25 + 10);
   CHECK(clobber_xmm(3.0, 4.0) == 15.0);
   CHECK(tied_order(10, 3, 6) == 42);
+  asm_tls = 43;
+  CHECK((char *)tp + forced_sym_tpoff() == (char *)&asm_tls);
+  CHECK(forced_sym_fs_load() == 43);
+  CHECK(forced_sym_gottpoff() == forced_sym_tpoff());
+  CHECK(sym_tpoff_r() == forced_sym_tpoff());
+  CHECK(tls_address() == (void *)&asm_tls);
+  CHECK(forced_sym_pc32() == (void *)&asm_cell);
+  CHECK(forced_sym_pc32_load() == 1234);
+  CHECK(forced_sym_gotpcrel() == (void *)&asm_cell);
+  CHECK(forced_sym_plt() == (void *)asm_fn);
+  forced_fwait();
   printf("checked, %d failures\n", fails);
   return fails;
 }

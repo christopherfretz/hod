@@ -5,11 +5,14 @@
 //! instructions ([`encode`]) whose bytes come from `hod_mc_x64`'s
 //! constructors.
 //!
-//! As on AArch64, an inline body defines no symbol: a named label, a
-//! directive other than the data directives, or a reference to a symbol
-//! is refused (`asm:label`, `asm:directive/<name>`, `asm:operand/symbol`).
-//! x86-64 bodies have no symbol references at all: every byte is known
-//! here.
+//! As on AArch64, an inline body defines no symbol: a named label or a
+//! directive other than the data directives is refused (`asm:label`,
+//! `asm:directive/<name>`). A memory operand may name a symbol, with or
+//! without a relocation specifier (`sym@tpoff`, `sym@gotpcrel(%rip)`):
+//! its field is left zero and returned as a [`Ref`] for the caller to
+//! relocate, of the kind LLVM's assembler writes (`spec/asm.md` §10.2).
+//! A symbol anywhere else (an immediate, a branch target) is
+//! `asm:operand/symbol`.
 
 pub mod encode;
 pub mod operand;
@@ -169,6 +172,106 @@ pub fn print_operand(arg: Arg, modifier: Option<u8>, out: &mut String) -> Result
     Ok(())
 }
 
+/// The relocation of a symbol field, as LLVM's assembler chooses it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RefKind {
+    /// `sym(%rip)`: `R_X86_64_PC32`.
+    Pc32,
+    /// `sym@plt(%rip)`: `R_X86_64_PLT32`.
+    Plt32,
+    /// `sym@gotpcrel(%rip)` where the linker may not relax it:
+    /// `R_X86_64_GOTPCREL`.
+    GotPcRel,
+    /// `sym@gotpcrel(%rip)` as the source of a 32- or 64-bit `mov`,
+    /// `adc add and cmp or sbb sub xor`, or the memory of `test`, no
+    /// addend, without a REX prefix: `R_X86_64_GOTPCRELX`.
+    GotPcRelX,
+    /// The same with a REX prefix: `R_X86_64_REX_GOTPCRELX`.
+    RexGotPcRelX,
+    /// `sym@gottpoff(%rip)`: `R_X86_64_GOTTPOFF`.
+    GotTpOff,
+    /// `sym@tpoff` without `%rip`: `R_X86_64_TPOFF32`.
+    TpOff32,
+    /// `sym@dtpoff` without `%rip`: `R_X86_64_DTPOFF32`.
+    DtpOff32,
+    /// `sym` without `%rip` or specifier: `R_X86_64_32S`.
+    Abs32S,
+}
+
+/// A symbol field of assembled code, zero in the code.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Ref {
+    /// The byte offset of the field in the code.
+    pub offset: u32,
+    /// The relocation.
+    pub kind: RefKind,
+    /// The symbol's name.
+    pub name: String,
+    /// The addend: the expression's constant, and for a field relative
+    /// to `%rip` minus the bytes from the field to the instruction's end.
+    pub addend: i64,
+}
+
+/// The mnemonics whose `@gotpcrel` load LLVM marks relaxable.
+const RELAXABLE: [&str; 9] = ["mov", "adc", "add", "and", "cmp", "or", "sbb", "sub", "xor"];
+
+/// The relocation of the symbol field of `inst`, statement `name` with
+/// operands `ops`, memory operand `m`.
+fn ref_kind(
+    name: &str,
+    ops: &operand::Ops<'_>,
+    m: &operand::MemOp<'_>,
+    inst: &mc::Inst,
+) -> Result<RefKind, Refusal> {
+    use operand::{Base, Gpr, Op, Spec};
+    let rip = m.base == Some(Base::Rip);
+    Ok(match (rip, m.spec) {
+        (true, None) => RefKind::Pc32,
+        (true, Some(Spec::Plt)) => RefKind::Plt32,
+        (true, Some(Spec::GotTpOff)) => RefKind::GotTpOff,
+        (true, Some(Spec::GotPcRel)) => {
+            let base = if RELAXABLE.contains(&name) || name == "test" || name == "lea" {
+                name
+            } else {
+                name.strip_suffix(['l', 'q']).unwrap_or(name)
+            };
+            // LLVM 19 and 22 disagree on `lea`.
+            if base == "lea" {
+                return Err(Refusal(op_reason::SPECIFIER));
+            }
+            let wide =
+                |o: Option<Op<'_>>| matches!(o, Some(Op::Gpr(Gpr { size: Size::D | Size::Q, .. })));
+            let mem = |o: Option<Op<'_>>| matches!(o, Some(Op::Mem(_)));
+            let relaxable = m.disp.constant == 0
+                && ops.len() == 2
+                && ((RELAXABLE.contains(&base) && mem(ops.get(0)) && wide(ops.get(1)))
+                    || (base == "test" && wide(ops.get(0)) && mem(ops.get(1))));
+            let rex = inst
+                .bytes()
+                .iter()
+                .find(|&&b| b != 0x64 && b != 0x65)
+                .is_some_and(|b| b & 0xf0 == 0x40);
+            match (relaxable, rex) {
+                (false, _) => RefKind::GotPcRel,
+                (true, false) => RefKind::GotPcRelX,
+                (true, true) => RefKind::RexGotPcRelX,
+            }
+        }
+        (false, None) => RefKind::Abs32S,
+        (false, Some(Spec::TpOff)) => RefKind::TpOff32,
+        (false, Some(Spec::DtpOff)) => RefKind::DtpOff32,
+        _ => return Err(Refusal(op_reason::SPECIFIER)),
+    })
+}
+
+/// A symbol field before layout: its offset in the byte buffer.
+struct Pending {
+    at: usize,
+    kind: RefKind,
+    name: String,
+    addend: i64,
+}
+
 /// One item of a body: bytes, a branch to a local label, a label.
 #[derive(Clone, Copy, Debug)]
 enum Item {
@@ -262,13 +365,20 @@ fn data(size: usize, operands: &str, out: &mut Vec<u8>) -> Result<(), Refusal> {
 }
 
 /// Assembles an inline-assembly body (the template after operand
-/// substitution) into `code` (cleared first). `scratch` is reused text
-/// space.
+/// substitution) into `code`, its symbol fields into `refs` (both
+/// cleared first). `scratch` is reused text space.
 ///
 /// # Errors
 /// The `asm:*` refusals of the statement that is not accepted.
-pub fn assemble(body: &str, code: &mut Vec<u8>, scratch: &mut String) -> Result<(), Refusal> {
+pub fn assemble(
+    body: &str,
+    code: &mut Vec<u8>,
+    refs: &mut Vec<Ref>,
+    scratch: &mut String,
+) -> Result<(), Refusal> {
     code.clear();
+    refs.clear();
+    let mut pending_refs: Vec<Pending> = Vec::new();
     clean(body, scratch)?;
     let mut bytes: Vec<u8> = Vec::new();
     let mut items: Vec<Item> = Vec::new();
@@ -330,27 +440,23 @@ pub fn assemble(body: &str, code: &mut Vec<u8>, scratch: &mut String) -> Result<
             Some(Prefix::Lock) | None => {
                 let ops = operand::parse(rest)?;
                 match encode::encode(&name, &ops)? {
-                    Encoded::Inst(inst) => match prefix {
-                        Some(_) if !inst.is_lockable() => return Err(Refusal(op_reason::FORM)),
-                        Some(_) if separate.is_some() => {
-                            bytes.push(0xf0);
-                            inst
-                        }
-                        Some(_) => mc::lock(inst),
-                        None => inst,
-                    },
-                    Encoded::Branch(cond, target) => {
-                        if prefix.is_some() {
-                            return Err(Refusal(op_reason::FORM));
-                        }
-                        let (n, forward) = match target {
-                            Value { name: Some(Name::Local(n, f)), constant: 0 } => (n, f),
-                            Value { name: Some(Name::Local(..)), .. } => {
-                                return Err(Refusal(op_reason::EXPRESSION));
+                    Encoded::Inst(inst) => {
+                        let inst = match prefix {
+                            Some(_) if !inst.is_lockable() => return Err(Refusal(op_reason::FORM)),
+                            Some(_) if separate.is_some() => {
+                                bytes.push(0xf0);
+                                inst
                             }
-                            _ => return Err(Refusal(op_reason::SYMBOL)),
+                            Some(_) => mc::lock(inst),
+                            None => inst,
                         };
-                        items.push(Item::Branch { cond, n, forward, near: false });
+                        if let Some(p) = symbol_field(&name, &ops, &inst, bytes.len())? {
+                            pending_refs.push(p);
+                        }
+                        inst
+                    }
+                    Encoded::Branch(cond, target) => {
+                        items.push(branch(cond, target, prefix)?);
                         continue;
                     }
                 }
@@ -363,7 +469,73 @@ pub fn assemble(body: &str, code: &mut Vec<u8>, scratch: &mut String) -> Result<
     if pending.is_some() {
         return Err(Refusal(op_reason::FORM));
     }
-    lay_out(&mut items, &bytes, code)
+    let offsets = lay_out(&mut items, &bytes, code)?;
+    place_refs(&items, &offsets, pending_refs, refs)
+}
+
+/// Moves each symbol field from its byte-buffer offset to its offset in
+/// the laid-out code.
+fn place_refs(
+    items: &[Item],
+    offsets: &[usize],
+    pending_refs: Vec<Pending>,
+    refs: &mut Vec<Ref>,
+) -> Result<(), Refusal> {
+    for p in pending_refs {
+        let Some((i, start)) = items.iter().enumerate().find_map(|(i, item)| match *item {
+            Item::Bytes { at, len } if (at..at + len).contains(&p.at) => Some((i, at)),
+            _ => None,
+        }) else {
+            return Err(Refusal(op_reason::SYMBOL));
+        };
+        let offset =
+            u32::try_from(offsets[i] + (p.at - start)).map_err(|_| Refusal(op_reason::RANGE))?;
+        refs.push(Ref { offset, kind: p.kind, name: p.name, addend: p.addend });
+    }
+    Ok(())
+}
+
+/// A branch to a numeric local label, not prefixed.
+fn branch(cond: Option<Cond>, target: Value<'_>, prefix: Option<Prefix>) -> Result<Item, Refusal> {
+    if prefix.is_some() {
+        return Err(Refusal(op_reason::FORM));
+    }
+    let (n, forward) = match target {
+        Value { name: Some(Name::Local(n, f)), constant: 0 } => (n, f),
+        Value { name: Some(Name::Local(..)), .. } => return Err(Refusal(op_reason::EXPRESSION)),
+        _ => return Err(Refusal(op_reason::SYMBOL)),
+    };
+    Ok(Item::Branch { cond, n, forward, near: false })
+}
+
+/// The symbol field of `inst` (statement `name`, operands `ops`), placed
+/// at byte `at` of the buffer, if an operand names a symbol.
+fn symbol_field(
+    name: &str,
+    ops: &operand::Ops<'_>,
+    inst: &mc::Inst,
+    at: usize,
+) -> Result<Option<Pending>, Refusal> {
+    let Some((sym, m)) = symbol_operand(ops) else { return Ok(None) };
+    let site = inst.site().ok_or(Refusal(op_reason::SYMBOL))?;
+    Ok(Some(Pending {
+        at: at + site.offset,
+        kind: ref_kind(name, ops, &m, inst)?,
+        name: sym.to_owned(),
+        addend: m.disp.constant.checked_add(site.addend).ok_or(Refusal(op_reason::EXPRESSION))?,
+    }))
+}
+
+/// The memory operand of `ops` whose displacement names a symbol, and
+/// the symbol.
+fn symbol_operand<'a>(ops: &operand::Ops<'a>) -> Option<(&'a str, operand::MemOp<'a>)> {
+    (0..ops.len()).find_map(|i| match ops.get(i) {
+        Some(operand::Op::Mem(m)) => match m.disp.name {
+            Some(Name::Sym(s)) => Some((s, m)),
+            _ => None,
+        },
+        _ => None,
+    })
 }
 
 /// The bytes of a branch.
@@ -388,8 +560,8 @@ fn target(items: &[Item], offsets: &[usize], at: usize) -> Result<usize, Refusal
 
 /// Chooses each branch's form as LLVM's relaxation does (short unless
 /// the target is out of `rel8` reach, until nothing changes) and writes
-/// the code.
-fn lay_out(items: &mut [Item], bytes: &[u8], code: &mut Vec<u8>) -> Result<(), Refusal> {
+/// the code. Returns each item's offset in the code.
+fn lay_out(items: &mut [Item], bytes: &[u8], code: &mut Vec<u8>) -> Result<Vec<usize>, Refusal> {
     let mut offsets = vec![0usize; items.len() + 1];
     loop {
         let mut at = 0;
@@ -440,7 +612,7 @@ fn lay_out(items: &mut [Item], bytes: &[u8], code: &mut Vec<u8>) -> Result<(), R
             }
         }
     }
-    Ok(())
+    Ok(offsets)
 }
 
 #[cfg(test)]
@@ -448,9 +620,71 @@ mod tests {
     use super::*;
 
     fn asm(text: &str) -> Result<Vec<u8>, Refusal> {
-        let mut code = Vec::new();
-        assemble(text, &mut code, &mut String::new())?;
+        let (code, refs) = with_refs(text)?;
+        assert!(refs.is_empty(), "{text}");
         Ok(code)
+    }
+
+    fn with_refs(text: &str) -> Result<(Vec<u8>, Vec<Ref>), Refusal> {
+        let (mut code, mut refs) = (Vec::new(), Vec::new());
+        assemble(text, &mut code, &mut refs, &mut String::new())?;
+        Ok((code, refs))
+    }
+
+    /// `spec/asm.md` §10.2 "Symbols": the fields and relocations of
+    /// llvm-mc 19 and 22.
+    #[test]
+    fn symbols() {
+        let one = |text: &str| {
+            let (code, refs) = with_refs(text).unwrap();
+            assert_eq!(refs.len(), 1, "{text}");
+            let r = &refs[0];
+            assert_eq!(r.name, "s", "{text}");
+            (code, r.offset, r.kind, r.addend)
+        };
+        let lea = [0x48, 0x8d, 0x04, 0x25, 0, 0, 0, 0];
+        assert_eq!(one("leaq s@tpoff, %rax"), (lea.to_vec(), 4, RefKind::TpOff32, 0));
+        assert_eq!(one("leaq s@TPOFF+16, %rax").3, 16);
+        let fs = one("movq %fs:s@tpoff, %rax");
+        assert_eq!((fs.0[0], fs.1, fs.2), (0x64, 5, RefKind::TpOff32));
+        assert_eq!(
+            one("movl s@tpoff(%rax), %ecx"),
+            (vec![0x8b, 0x88, 0, 0, 0, 0], 2, RefKind::TpOff32, 0)
+        );
+        assert_eq!(one("leaq s@dtpoff(%rax), %rcx").2, RefKind::DtpOff32);
+        assert_eq!(
+            one("movq s@gottpoff(%rip), %rax"),
+            (vec![0x48, 0x8b, 0x05, 0, 0, 0, 0], 3, RefKind::GotTpOff, -4)
+        );
+        assert_eq!(
+            one("leaq s+4(%rip), %rax").2..=one("leaq s+4(%rip), %rax").2,
+            RefKind::Pc32..=RefKind::Pc32
+        );
+        assert_eq!(one("leaq s+4(%rip), %rax").3, 0);
+        assert_eq!(one("movl $1, s(%rip)").3, -8);
+        assert_eq!(one("leaq s@PLT(%rip), %rax").2, RefKind::Plt32);
+        assert_eq!(one("movq s@GOTPCREL(%rip), %rax").2, RefKind::RexGotPcRelX);
+        assert_eq!(one("movl s@GOTPCREL(%rip), %eax").2, RefKind::GotPcRelX);
+        assert_eq!(one("movl s@GOTPCREL(%rip), %r8d").2, RefKind::RexGotPcRelX);
+        assert_eq!(one("testl %eax, s@GOTPCREL(%rip)").2, RefKind::GotPcRelX);
+        assert_eq!(one("orl s@GOTPCREL(%rip), %eax").2, RefKind::GotPcRelX);
+        assert_eq!(one("movq %rax, s@GOTPCREL(%rip)").2, RefKind::GotPcRel);
+        assert_eq!(one("movw s@GOTPCREL(%rip), %ax").2, RefKind::GotPcRel);
+        assert_eq!(one("movq s+8@GOTPCREL(%rip), %rax").2, RefKind::GotPcRel);
+        assert_eq!(one("cmpq $1, s@GOTPCREL(%rip)").3, -5);
+        assert_eq!(one("movl s, %eax").2, RefKind::Abs32S);
+        // After a relaxed branch, the field moves with its instruction.
+        let far = format!("jmp 1f\n{}1: movq s@gottpoff(%rip), %rax", ".quad 0\n".repeat(16));
+        assert_eq!(one(&far).1, 5 + 128 + 3);
+        let sp = Some(Refusal(op_reason::SPECIFIER));
+        assert_eq!(with_refs("leaq s@GOTPCREL(%rip), %rax").err(), sp);
+        assert_eq!(with_refs("movq s@tpoff(%rip), %rax").err(), sp);
+        assert_eq!(with_refs("leaq s@gottpoff, %rax").err(), sp);
+        assert_eq!(with_refs("movq $s@tpoff, %rax").err(), sp);
+        assert_eq!(with_refs("movq s@got(%rip), %rax").err(), sp);
+        assert_eq!(with_refs("movl $s, %eax").err(), Some(Refusal(op_reason::SYMBOL)));
+        assert_eq!(with_refs("jmp s@plt").err(), Some(Refusal(op_reason::SYMBOL)));
+        assert_eq!(asm("fwait; wait").unwrap(), [0x9b, 0x9b]);
     }
 
     /// `spec/asm.md` §10.1, §10.4: statements, comments, prefixes, data,
@@ -472,7 +706,7 @@ mod tests {
         assert_eq!(asm("x: nop").err(), Some(Refusal(other::LABEL)));
         assert_eq!(asm(".p2align 4").err(), Some(reason::directive(".p2align")));
         assert_eq!(asm("jmp 2f").err(), Some(Refusal(op_reason::LABEL)));
-        assert_eq!(asm("jmp foo").err(), Some(Refusal(op_reason::SYMBOL)));
+        assert_eq!(with_refs("jmp foo").err(), Some(Refusal(op_reason::SYMBOL)));
         assert_eq!(asm("frob %eax").err(), Some(reason::mnemonic("frob")));
         assert_eq!(asm("lock").err(), Some(Refusal(op_reason::FORM)));
         assert_eq!(asm("lock movl %eax, (%rdi)").err(), Some(Refusal(op_reason::FORM)));

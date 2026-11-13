@@ -459,6 +459,7 @@ pub const CONSTRUCTORS: &[(&str, &[&str])] = &[
     // inline assembly (WP-187)
     ("std", &["std"]),
     ("hlt", &["hlt"]),
+    ("fwait", &["fwait", "wait"]),
     ("syscall", &["syscall"]),
     ("xgetbv", &["xgetbv"]),
     ("int_i", &["int", "int3"]),

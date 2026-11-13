@@ -349,3 +349,63 @@ define i32 @tied_order(i32 %a, i32 %b, i32 %c) {
   %r = call i32 asm "subl $2, $0\0A\09imull $3, $0", "=r,0,r,r,~{dirflag},~{fpsr},~{flags}"(i32 %a, i32 %b, i32 %c)
   ret i32 %r
 }
+
+; Symbol fields (the census: llvm-rtdyld's `leaq sym@tpoff, $0`, and
+; llvm-exegesis's `fwait`): relocations written from the template.
+@asm_tls = thread_local(initialexec) global i64 42, align 8
+@asm_cell = global i64 1234, align 8
+
+define i64 @asm_fn() {
+  ret i64 77
+}
+
+define i64 @forced_sym_tpoff() {
+  %r = call i64 asm "leaq asm_tls@tpoff, $0", "={rax},~{dirflag},~{fpsr},~{flags}"()
+  ret i64 %r
+}
+
+define i64 @forced_sym_fs_load() {
+  %r = call i64 asm "movq %fs:asm_tls@tpoff, $0", "={rcx},~{dirflag},~{fpsr},~{flags}"()
+  ret i64 %r
+}
+
+define i64 @forced_sym_gottpoff() {
+  %r = call i64 asm "movq asm_tls@gottpoff(%rip), $0", "={rdx},~{dirflag},~{fpsr},~{flags}"()
+  ret i64 %r
+}
+
+define i64 @sym_tpoff_r() {
+  %r = call i64 asm "leaq asm_tls@tpoff, $0", "=r,~{dirflag},~{fpsr},~{flags}"()
+  ret i64 %r
+}
+
+define ptr @tls_address() {
+  %r = call ptr asm "movq %fs:0, $0\0A\09leaq asm_tls@tpoff($0), $0", "=r,~{dirflag},~{fpsr},~{flags}"()
+  ret ptr %r
+}
+
+define ptr @forced_sym_pc32() {
+  %r = call ptr asm "leaq asm_cell(%rip), $0", "={rax},~{dirflag},~{fpsr},~{flags}"()
+  ret ptr %r
+}
+
+define i64 @forced_sym_pc32_load() {
+  %r = call i64 asm "movq asm_cell(%rip), $0", "={rdi},~{dirflag},~{fpsr},~{flags}"()
+  ret i64 %r
+}
+
+define ptr @forced_sym_gotpcrel() {
+  %r = call ptr asm "movq asm_cell@GOTPCREL(%rip), $0", "={rsi},~{dirflag},~{fpsr},~{flags}"()
+  ret ptr %r
+}
+
+define ptr @forced_sym_plt() {
+  %r = call ptr asm "leaq asm_fn@PLT(%rip), $0", "={r8},~{dirflag},~{fpsr},~{flags}"()
+  ret ptr %r
+}
+
+define void @forced_fwait() {
+  call void asm sideeffect "fwait", "~{dirflag},~{fpsr},~{flags}"()
+  call void asm sideeffect "wait", "~{dirflag},~{fpsr},~{flags}"()
+  ret void
+}

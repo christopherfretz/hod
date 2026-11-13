@@ -11,7 +11,7 @@
 
 use hod_mc_x64::{Reg, Scale, Seg, Size, Xmm};
 
-use crate::expr::{Cursor, Value};
+use crate::expr::{Cursor, Name, Value};
 use crate::reason::{Refusal, operand};
 
 /// A general register in one of its views.
@@ -32,6 +32,22 @@ pub enum Base {
     Rip,
 }
 
+/// A relocation specifier written after a symbol (`sym@tpoff`), read
+/// without regard to case.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Spec {
+    /// `@tpoff`: the offset from the thread pointer.
+    TpOff,
+    /// `@dtpoff`: the offset in the module's thread-local block.
+    DtpOff,
+    /// `@gottpoff`: the GOT entry holding the thread-pointer offset.
+    GotTpOff,
+    /// `@gotpcrel`: the symbol's GOT entry.
+    GotPcRel,
+    /// `@plt`: the symbol's PLT entry.
+    Plt,
+}
+
 /// A memory operand: `seg:disp(base, index, scale)`, any part but one
 /// optional.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -40,6 +56,8 @@ pub struct MemOp<'a> {
     pub seg: Option<Seg>,
     /// The displacement.
     pub disp: Value<'a>,
+    /// The relocation specifier of a symbol displacement.
+    pub spec: Option<Spec>,
     /// The base register.
     pub base: Option<Base>,
     /// The index register and its scale.
@@ -246,6 +264,9 @@ fn one(text: &str) -> Result<Op<'_>, Refusal> {
         return Err(Refusal(operand::FORM));
     }
     if let Some(imm) = text.strip_prefix('$') {
+        if imm.contains('@') {
+            return Err(Refusal(operand::SPECIFIER));
+        }
         return Ok(Op::Imm(whole_expr(crate::text::trim(imm))?));
     }
     let mut rest = text;
@@ -266,6 +287,40 @@ fn one(text: &str) -> Result<Op<'_>, Refusal> {
         }
     }
     memory(rest, seg)
+}
+
+/// A displacement: an expression, or `sym@spec` with a constant before
+/// the symbol or after the specifier (`sym@tpoff+8`, `8+sym@tpoff`).
+fn displacement(text: &str) -> Result<(Value<'_>, Option<Spec>), Refusal> {
+    let Some(at) = text.find('@') else { return Ok((whole_expr(text)?, None)) };
+    let after = &text[at + 1..];
+    let end = after.find(|c: char| !c.is_ascii_alphanumeric()).unwrap_or(after.len());
+    let spec = match after[..end].to_ascii_lowercase().as_str() {
+        "tpoff" => Spec::TpOff,
+        "dtpoff" => Spec::DtpOff,
+        "gottpoff" => Spec::GotTpOff,
+        "gotpcrel" => Spec::GotPcRel,
+        "plt" => Spec::Plt,
+        _ => return Err(Refusal(operand::SPECIFIER)),
+    };
+    let mut value = whole_expr(crate::text::trim(&text[..at]))?;
+    if !matches!(value.name, Some(Name::Sym(_))) {
+        return Err(Refusal(operand::SYMBOL));
+    }
+    let tail = crate::text::trim(&after[end..]);
+    if !tail.is_empty() {
+        if !tail.starts_with(['+', '-']) {
+            return Err(Refusal(operand::SYNTAX));
+        }
+        let signed = format!("0{tail}");
+        let mut c = Cursor::new(&signed);
+        let k = c.constant()?;
+        if !c.at_end() {
+            return Err(Refusal(operand::SYNTAX));
+        }
+        value.constant = value.constant.checked_add(k).ok_or(Refusal(operand::EXPRESSION))?;
+    }
+    Ok((value, Some(spec)))
 }
 
 /// `disp(base, index, scale)` or `disp` alone, after any segment.
@@ -298,16 +353,16 @@ fn memory(text: &str, seg: Option<Seg>) -> Result<Op<'_>, Refusal> {
         Some((open, inner)) => (crate::text::trim(&text[..open]), Some(inner)),
         None => (text, None),
     };
-    let disp = if disp_text.is_empty() {
+    let (disp, spec) = if disp_text.is_empty() {
         if inner.is_none() {
             return Err(Refusal(operand::SYNTAX));
         }
-        Value::constant(0)
+        (Value::constant(0), None)
     } else {
-        whole_expr(disp_text)?
+        displacement(disp_text)?
     };
-    let mut mem =
-        MemOp { seg, disp, base: None, index: None, bare: seg.is_none() && inner.is_none() };
+    let bare = seg.is_none() && inner.is_none();
+    let mut mem = MemOp { seg, disp, spec, base: None, index: None, bare };
     let Some(inner) = inner else { return Ok(Op::Mem(mem)) };
     let parts: Vec<&str> = inner.split(',').map(crate::text::trim).collect();
     if parts.len() > 3 {
@@ -362,7 +417,6 @@ fn memory(text: &str, seg: Option<Seg>) -> Result<Op<'_>, Refusal> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expr::Name;
 
     fn op(text: &str) -> Result<Op<'_>, Refusal> {
         let ops = parse(text)?;
@@ -402,6 +456,17 @@ mod tests {
         assert_eq!(op("*%rax").err(), Some(Refusal(operand::FORM)));
         assert_eq!(op("%st(1)").err(), Some(Refusal(operand::REGISTER)));
         assert!(op("(%rax").is_err());
+        let Op::Mem(m) = op("%fs:x@TPOFF+8-2").unwrap() else { panic!() };
+        assert_eq!(
+            (m.disp.name, m.disp.constant, m.spec),
+            (Some(Name::Sym("x")), 6, Some(Spec::TpOff))
+        );
+        let Op::Mem(m) = op("4+x@gotpcrel(%rip)").unwrap() else { panic!() };
+        assert_eq!((m.disp.constant, m.spec, m.base), (4, Some(Spec::GotPcRel), Some(Base::Rip)));
+        assert_eq!(op("x@gotoff(%rip)").err(), Some(Refusal(operand::SPECIFIER)));
+        assert_eq!(op("$x@tpoff").err(), Some(Refusal(operand::SPECIFIER)));
+        assert_eq!(op("1f@plt").err(), Some(Refusal(operand::SYMBOL)));
+        assert_eq!(op("x@tpoff*2").err(), Some(Refusal(operand::SYNTAX)));
         assert_eq!(gpr_name(Reg::R10, Size::D), "r10d");
         assert_eq!(gpr_name(Reg::Rdi, Size::B), "dil");
     }

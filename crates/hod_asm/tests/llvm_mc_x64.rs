@@ -7,7 +7,7 @@
 use std::fmt::Write as _;
 
 use hod_asm::Refusal;
-use hod_asm::x64::assemble;
+use hod_asm::x64::{Ref, RefKind, assemble};
 use hod_testutil::{Scratch, run, tool};
 
 /// Bodies the assembler accepts. Each is assembled alone by hod; LLVM
@@ -25,6 +25,8 @@ const ACCEPTED: &[&str] = &[
     "lfence",
     "sfence",
     "int3",
+    "fwait",
+    "wait",
     "int $3",
     "int $0x80",
     "ud2",
@@ -292,7 +294,6 @@ const REFUSED: &[(&str, &str)] = &[
     (".text", "asm:directive/text"),
     ("jmp foo", "asm:operand/symbol"),
     ("call foo", "asm:mnemonic/call"),
-    ("movq foo(%rip), %rax", "asm:operand/symbol"),
     ("jmp 3f", "asm:operand/label"),
     ("jmp *%rax", "asm:operand/form"),
     ("inc (%rax)", "asm:operand/form"),
@@ -309,14 +310,134 @@ const REFUSED: &[(&str, &str)] = &[
     ("int $256", "asm:operand/range"),
     ("rolq $256, %rax", "asm:operand/range"),
     ("movq (%rdi", "asm:operand/syntax"),
+    ("leaq s@GOTPCREL(%rip), %rax", "asm:operand/specifier"),
+    ("movq s@tpoff(%rip), %rax", "asm:operand/specifier"),
+    ("leaq s@gottpoff, %rax", "asm:operand/specifier"),
+    ("movq $s@tpoff, %rax", "asm:operand/specifier"),
+    ("leaq s@gotoff(%rip), %rax", "asm:operand/specifier"),
+    ("movl $s, %eax", "asm:operand/symbol"),
+    ("movq 1f@tpoff, %rax\n1:", "asm:operand/symbol"),
     ("\"unterminated", "asm:lexical"),
     ("/* unterminated", "asm:lexical"),
 ];
 
 fn hod(body: &str) -> Result<Vec<u8>, Refusal> {
-    let mut code = Vec::new();
-    assemble(body, &mut code, &mut String::new())?;
+    let (code, refs) = hod_refs(body)?;
+    assert!(refs.is_empty(), "{body:?}: {refs:?}");
     Ok(code)
+}
+
+fn hod_refs(body: &str) -> Result<(Vec<u8>, Vec<Ref>), Refusal> {
+    let (mut code, mut refs) = (Vec::new(), Vec::new());
+    assemble(body, &mut code, &mut refs, &mut String::new())?;
+    Ok((code, refs))
+}
+
+/// Bodies with a symbol field (`spec/asm.md` §10.2 "Symbols"); `S` is
+/// the symbol, renamed per body (llvm-mc does not take one symbol both
+/// thread-local and not).
+const SYMBOLIC: &[&str] = &[
+    "leaq S@tpoff, %rax",
+    "leaq S@TPOFF+16, %r9",
+    "movq %fs:S@tpoff, %rax",
+    "movq %fs:S@tpoff+8, %rax",
+    "movl %fs:S@tpoff, %r10d",
+    "movl S@tpoff(%rax), %ecx",
+    "leaq S@dtpoff(%rax), %rcx",
+    "movq S@gottpoff(%rip), %rax",
+    "addq S@gottpoff(%rip), %r11",
+    "leaq S(%rip), %rax",
+    "leaq S+4(%rip), %rdx",
+    "leaq 8+S(%rip), %rdx",
+    "movl $1, S(%rip)",
+    "movb $1, S-1(%rip)",
+    "cmpq $1, S@GOTPCREL(%rip)",
+    "leaq S@PLT(%rip), %rax",
+    "movq S@GOTPCREL(%rip), %rax",
+    "movq S@gotpcrel(%rip), %r8",
+    "movl S@GOTPCREL(%rip), %eax",
+    "movl S@GOTPCREL(%rip), %r8d",
+    "addq S@GOTPCREL(%rip), %rax",
+    "adcl S@GOTPCREL(%rip), %eax",
+    "andq S@GOTPCREL(%rip), %rax",
+    "cmpl S@GOTPCREL(%rip), %eax",
+    "orl S@GOTPCREL(%rip), %eax",
+    "sbbq S@GOTPCREL(%rip), %rax",
+    "subl S@GOTPCREL(%rip), %eax",
+    "xorq S@GOTPCREL(%rip), %rax",
+    "testq %rax, S@GOTPCREL(%rip)",
+    "testl %eax, S@GOTPCREL(%rip)",
+    "movq %rax, S@GOTPCREL(%rip)",
+    "movw S@GOTPCREL(%rip), %ax",
+    "addl %eax, S@GOTPCREL(%rip)",
+    "imulq S@GOTPCREL(%rip), %rax",
+    "movq S+8@GOTPCREL(%rip), %rax",
+    "movq S@GOTPCREL+8(%rip), %rax",
+    "movq %fs:S@GOTPCREL(%rip), %rax",
+    "movl S, %eax",
+    "movl %fs:S, %eax",
+    "leaq S(%rbx), %rax",
+    "movq S(,%rcx,8), %rax",
+    "lock xaddl %eax, S(%rip)",
+    "lock; incl S(%rip)",
+    "jmp 1f\nmovq S@gottpoff(%rip), %rax\n1:",
+];
+
+const fn elf_name(kind: RefKind) -> &'static str {
+    match kind {
+        RefKind::Pc32 => "R_X86_64_PC32",
+        RefKind::Plt32 => "R_X86_64_PLT32",
+        RefKind::GotPcRel => "R_X86_64_GOTPCREL",
+        RefKind::GotPcRelX => "R_X86_64_GOTPCRELX",
+        RefKind::RexGotPcRelX => "R_X86_64_REX_GOTPCRELX",
+        RefKind::GotTpOff => "R_X86_64_GOTTPOFF",
+        RefKind::TpOff32 => "R_X86_64_TPOFF32",
+        RefKind::DtpOff32 => "R_X86_64_DTPOFF32",
+        RefKind::Abs32S => "R_X86_64_32S",
+    }
+}
+
+/// The relocation lines of `llvm-objdump -r`: `offset type value`.
+fn reloc_line(offset: usize, kind: RefKind, name: &str, addend: i64) -> String {
+    let value = match addend {
+        0 => name.to_owned(),
+        a if a < 0 => format!("{name}-0x{:x}", a.unsigned_abs()),
+        a => format!("{name}+0x{a:x}"),
+    };
+    format!("{offset:016x} {} {value}", elf_name(kind))
+}
+
+#[test]
+fn symbol_fields_match_llvm_mc() {
+    let (mut ours, mut lines, mut source) = (Vec::new(), Vec::new(), String::new());
+    for (i, body) in SYMBOLIC.iter().enumerate() {
+        let body = body.replace('S', &format!("sym{i}"));
+        let (bytes, refs) = hod_refs(&body).unwrap_or_else(|e| panic!("{body:?} refused: {e}"));
+        assert_eq!(refs.len(), 1, "{body:?}");
+        for r in &refs {
+            lines.push(reloc_line(ours.len() + r.offset as usize, r.kind, &r.name, r.addend));
+        }
+        ours.extend(bytes);
+        source.push_str(&body);
+        source.push('\n');
+    }
+    let scratch = Scratch::new("hod-asm-mc-x64-sym");
+    for major in [22, 19] {
+        let Some(theirs) = llvm(major, &source, &scratch) else { continue };
+        assert!(ours == theirs, "LLVM {major}: the bytes differ");
+        let Some(objdump) = tool(&format!("llvm-objdump-{major}")) else { continue };
+        let obj = scratch.join(format!("all-{major}.o"));
+        let out = run(&objdump, ["-r".as_ref(), obj.as_os_str()]);
+        assert!(out.success(), "llvm-objdump: {}", out.stderr_text());
+        let text = out.stdout_text();
+        let theirs: Vec<String> = text
+            .lines()
+            .filter(|l| l.contains("R_X86_64"))
+            .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect();
+        assert_eq!(lines, theirs, "LLVM {major}: the relocations differ");
+        println!("hod_asm x64: {} symbol fields equal llvm-mc-{major}'s", lines.len());
+    }
 }
 
 /// The bytes of `.text` of `source` as `llvm-mc-<major>` assembles it.
@@ -397,6 +518,6 @@ fn pinned_bodies() {
 #[test]
 fn refused_bodies_are_named() {
     for &(body, name) in REFUSED {
-        assert_eq!(hod(body).err().map(|r| r.0), Some(name), "{body:?}");
+        assert_eq!(hod_refs(body).err().map(|r| r.0), Some(name), "{body:?}");
     }
 }

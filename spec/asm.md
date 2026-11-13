@@ -299,6 +299,31 @@ scale `asm:operand/range`, `*` (an indirect branch) `asm:operand/form`.
 `ah`..`dh`, x87, MMX, `xmm16` and up, `ymm`, `zmm`, control and segment
 registers as operands are refused.
 
+**Symbols.** A memory operand's displacement may name a symbol, with a
+constant before it or after its specifier, and a relocation specifier
+read without regard to case (`sym@tpoff+8`, `8+sym@gotpcrel(%rip)`).
+The field is written zero and returned as a `Ref` (offset in the code,
+kind, name, addend: the constant, and for a `%rip` field minus the bytes
+from the field to the instruction's end), of the relocation LLVM's
+assembler (llvm-mc 19 and 22) writes:
+
+| operand | relocation |
+|---|---|
+| `sym(%rip)` | `R_X86_64_PC32` |
+| `sym@plt(%rip)` | `R_X86_64_PLT32` |
+| `sym@gottpoff(%rip)` | `R_X86_64_GOTTPOFF` |
+| `sym@gotpcrel(%rip)`, the source of a 32- or 64-bit `mov adc add and cmp or sbb sub xor`, or the memory of `test`, no constant | `R_X86_64_GOTPCRELX`, `R_X86_64_REX_GOTPCRELX` with a REX prefix |
+| `sym@gotpcrel(%rip)` otherwise, not `lea` | `R_X86_64_GOTPCREL` |
+| `sym@tpoff` without `%rip` | `R_X86_64_TPOFF32` |
+| `sym@dtpoff` without `%rip` | `R_X86_64_DTPOFF32` |
+| `sym` without `%rip` | `R_X86_64_32S` |
+
+`lea` of `@gotpcrel` (LLVM 19 writes `R_X86_64_GOTPCREL`, 22
+`R_X86_64_REX_GOTPCRELX`), another specifier (`@got`, `@gotoff`,
+`@ntpoff`, ...), and a specifier on an immediate are
+`asm:operand/specifier`; a symbol in an immediate or a branch target,
+or a specifier on a numeric label, `asm:operand/symbol`.
+
 ### 10.3 Mnemonics (`encode.rs`)
 
 The operation size is the suffix's (`b`, `w`, `l`, `q`) or the general
@@ -307,7 +332,8 @@ and a form with neither (`inc (%rax)`) is `asm:operand/form`, as LLVM
 refuses it as ambiguous. Families:
 
 - without operands: `nop`, `pause`, `cpuid`, `rdtsc`, `rdtscp`,
-  `xgetbv`, `mfence`, `lfence`, `sfence`, `int3`, `ud2`, `hlt`, `cld`,
+  `xgetbv`, `mfence`, `lfence`, `sfence`, `int3`, `ud2`, `hlt`,
+  `fwait`/`wait`, `cld`,
   `std`, `syscall`, `pushf[q]`, `popf[q]`, `cbtw`/`cbw`, `cwtl`/`cwde`,
   `cltq`/`cdqe`, `cwtd`/`cwd`, `cltd`/`cdq`, `cqto`/`cqo`;
 - `add or adc sbb and sub xor cmp`, `test`; `inc dec not neg mul div
@@ -342,9 +368,8 @@ constructor makes the same choice. Another mnemonic is
 - **Labels**: numeric local labels, branches to them chosen short or near
   as LLVM's relaxation does (short until the distance needs `rel32`,
   repeated to a fixed point). A named label is `asm:label`, any other
-  directive `asm:directive/<name>`, a symbol anywhere
-  `asm:operand/symbol`: an x86-64 body references nothing outside
-  itself.
+  directive `asm:directive/<name>`. A body defines no symbol; it
+  references one only through a memory operand (§10.2 "Symbols").
 - **Operands printed** (`print_operand`, as `X86AsmPrinter`): a general
   register in the view of its value's size (an `i32` in `eax`); `b`,
   `w`, `k`, `q` select the 8-, 16-, 32-, 64-bit view; `c` plain; `a`

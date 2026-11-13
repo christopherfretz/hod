@@ -3635,7 +3635,9 @@ sequence:
    the 32-bit `mov` for 4, so an integer is zero-extended to 32 bits at
    least; `movss`/`movsd`/`movups` for SSE); a memory operand's address
    is put in its register (`lea` of the slot, or the pointer loaded).
-4. The template's bytes.
+4. The template's bytes, with a relocation at each symbol field
+   (`spec/asm.md` §10.2 "Symbols") against the module's symbol of that
+   name (another name is `asm:symbol`).
 5. Register outputs are stored to their slots (`mov`, flags kept); flag
    outputs are `setcc r11b`, `movzx`, stored; indirect register outputs
    are copied from their slots through their pointers (`r11`, the value
@@ -3679,11 +3681,13 @@ or the registers of a class: `x64:inline-asm-operands`.
 **Refused.** `inteldialect` (`x64:inline-asm-intel`), `unwind` on an
 `invoke` (`x64:inline-asm-unwind`), a bundle (`x64:inline-asm-bundle`),
 a `callbr` with a template (`x64:inline-asm`), `asm goto` labels in a
-call, symbols (`asm:operand/symbol`), and `hod_asm`'s `asm:*` names.
+call, a symbol outside a memory operand (`asm:operand/symbol`), and
+`hod_asm`'s `asm:*` names.
 
 Evidence: `crates/hod_asm/tests/llvm_mc_x64.rs`,
 `crates/hod_x64/tests/inline_asm.rs` (execution against `llc` 19 and
-22 under the emulator; the `forced_*` templates' bytes equal to `llc`'s),
+22 under the emulator; the `forced_*` templates' bytes, and the
+templates' relocations, equal to `llc`'s),
 summarized in `spec/landed/codegen/WP-187.md`.
 
 ## 6. Control flow

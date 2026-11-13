@@ -194,6 +194,11 @@ The lowering is `spec/codegen.md` §5.5.3 "WP-103". In short:
 - `crates/hod_a64/tests/inline_asm.rs`: the lowering (§6), run against
   `llc`; the template's words appear in the code as `llvm-mc` writes
   them.
+- `crates/hod_cg/tests/emit_module_asm.rs`: module text (§9: every
+  directive, section shape, reference kind, and module-symbol meeting)
+  emitted by hod and by `llc` 19 and 22: sections with their bytes,
+  symbols, relocations and code-section mapping symbols equal; the
+  refusal table; x86-64 stays `module:asm`.
 
 ## 8. Refusals
 
@@ -204,17 +209,62 @@ distinct names) is `other`. The fixed names: `asm:operand/{syntax, form,
 range, register, sysreg, option, vector, fp-immediate, specifier,
 expression, symbol, label, reach, literal-pool}`, `asm:label`,
 `asm:lexical`, `asm:feature`, `asm:template`, `asm:dialect`,
-`asm:section`, `asm:symbol`.
+`asm:section`, `asm:symbol`, `asm:unaligned` (an instruction of module
+text at an offset that is not a multiple of 4, §9).
 
-## 9. Module-level assembly (planned)
+## 9. Module-level assembly (`module.rs`, WP-112)
 
-Not yet assembled: module text that is not only symbol directives stays
-`module:asm` (WP-075's `asm_text.rs` reads the directives-only form).
-The plan is `PARKED.md` of WP-103 and the backlog row that follows it:
-`hod_asm::module` reads statements into section fragments (labels,
-`.globl`/`.weak`/`.hidden`/`.type`/`.size`, `.text`/`.data`/`.section`/
-`.pushsection`/`.popsection`/`.previous`, `.byte`..`.quad`, `.ascii`/
-`.asciz`/`.string`, `.zero`/`.space`, `.balign`/`.p2align`, and
-instructions through §5), and module emission writes them through
-`hod_obj` before the module's own symbols are defined, so that a
-declaration the text defines becomes a definition.
+`assemble_module(text, features, &mut ModuleCode)` reads the module's
+text (AArch64 ELF only; on x86-64 such text stays `module:asm`, it never
+reaches this assembler) into sections, symbols and relocations, as
+`llc` (which emits module assembly before anything else) writes them.
+Text that is only symbol directives stays WP-075's (`spec/ir.md` §2.3).
+The emitter's side is `spec/codegen.md` §9.7.3.
+
+- **Sections.** `.text`, `.data`, `.bss`, `.section name{,"flags"{,@type}}`,
+  `.pushsection`/`.popsection`, `.previous`. A name is `.text`, `.rodata`,
+  `.data` or `.bss`, alone or followed by `.` and more; its kind (type and
+  flags) is LLVM's default for the name, and the flags written may only
+  be ones the kind has (`a`, `w` for data and bss, `x` for text) and are
+  OR'd with the defaults; `@progbits`/`@nobits` must agree with the kind.
+  Anything else (a mergeable `.rodata.str*`/`.rodata.cst*`, a group,
+  `.tbss`, a custom name, `.popsection` of an empty stack) is
+  `asm:section`. Text before any section directive is in `.text`.
+  Alignment starts at 4 for code (LLVM 22; LLVM 19 gives a code section
+  the text creates alignment 1, `.text` 4: the one difference, and hod
+  follows 22) and at 1 otherwise, raised by each alignment directive.
+- **Data.** `.byte`; `.hword`/`.short`/`.2byte`; `.word`/`.long`/`.int`/
+  `.4byte`; `.quad`/`.xword`/`.8byte`: comma lists of §3 expressions. A
+  constant must fit the field (signed or unsigned), else
+  `asm:operand/range`. `name+c` in a 2-, 4- or 8-byte field is a
+  relocation (`R_AARCH64_ABS16/32/64`); in a byte, or in `.bss`, it is
+  refused. `.ascii`, `.asciz`/`.string` (comma lists, the escapes of
+  LLVM's lexer), `.zero n`, `.space`/`.skip n{, fill}`.
+- **Alignment.** `.p2align n{, fill}` and AArch64's `.align n` (a power
+  of two), `.balign n{, fill}`; no maximum-skip operand. Code is padded
+  as LLVM pads it: zeros up to a multiple of 4, then `nop`s; with a fill,
+  the fill byte; data with zeros. No mapping symbol marks padding.
+- **Instructions** are §5's, only in a code section, each at a multiple
+  of 4 (else `asm:section`, `asm:unaligned`). Mapping symbols: `$x` where
+  instructions start, `$d` where data starts, in code sections (hod
+  writes none in data sections, `spec/codegen.md` §9.4).
+- **Labels and symbols.** Named labels, numeric labels (`1:`, `1b`, `2f`,
+  resolved within one section). `.globl`/`.global`, `.weak`, `.hidden`,
+  `.protected`, `.type name, @function|@object|@notype` (and the `%`,
+  `STT_` spellings), `.size name, .-name` or a constant, `.set`/`.equ`/
+  `name =` of a constant. `.L` names are temporaries (no symbol). A name
+  given contradictory directives (`.globl` and `.weak`, `.set` after use
+  or a label, a directive on a temporary, `@gnu_indirect_function`, a
+  `.size` of a name not defined here) is `asm:symbol` or `asm:label`.
+- **References** resolve as LLVM's ELF writer resolves them: a
+  PC-relative field to a local label in the same section is filled in;
+  one to a local label elsewhere, and any absolute field to a local
+  label, is a relocation against the label's section with the label's
+  offset in the addend; a field to a global or weak label, or to an
+  undefined name, is a relocation against the symbol; a name `.set`
+  gave a constant is that constant.
+
+What the emitter adds (`spec/codegen.md` §9.7.3): a label named as a
+module symbol must be the definition of a module declaration (external
+linkage, not thread-local), else `asm:symbol`; directives on module
+symbols follow WP-075's rules.

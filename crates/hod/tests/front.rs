@@ -7,7 +7,7 @@
 //! other cases is made by `llvm-as` when it is installed.
 //!
 //! Every reason a test names is one no code-generation package turns on
-//! (`module:asm`, `alloca:scalable`, `cc:ghccc`, or a row taken away from
+//! (`module:code-model-tiny`, `alloca:scalable`, `cc:ghccc`, or a row taken away from
 //! `Support`), so the tests do not move with the support matrix.
 
 use std::path::{Path, PathBuf};
@@ -90,15 +90,15 @@ fn assemble(llvm_as: &Path, text: &[u8]) -> Vec<u8> {
 fn fixture_first_refusal_and_census() {
     for input in [FRONT_LL, FRONT_BC] {
         let (result, report) = run(input, &Settings::default());
-        assert_eq!(result, unsupported("module:asm", None));
+        assert_eq!(result, unsupported("module:code-model-tiny", None));
         assert_eq!(phases(&report), ["parse", "classify"], "no body is read");
         assert_eq!(report.target.as_deref(), Some("aarch64-unknown-linux-gnu"));
         assert!(report.reasons.is_empty());
 
         let (result, report) = run(input, &census());
-        assert_eq!(result, unsupported("module:asm", None));
+        assert_eq!(result, unsupported("module:code-model-tiny", None));
         assert_eq!(phases(&report), ["parse", "classify", "bodies"]);
-        assert_eq!(report.reasons[0], "module:asm");
+        assert_eq!(report.reasons[0], "module:code-model-tiny");
         for name in ["alloca:scalable", "cc:ghccc"] {
             assert!(report.reasons.iter().any(|r| r == name), "{name}: {:?}", report.reasons);
         }
@@ -151,10 +151,15 @@ fn verify_is_on_the_path_to_code_generation() {
         }
         other => panic!("expected malformed input, got {other:?}"),
     }
-    let refused_first = format!("module asm \"nop\"\n{text}");
-    let without = Support::everything_implemented(Arch::Aarch64).without("module:asm");
+    let refused_first = format!(
+        "!llvm.module.flags = !{{!900}}\n!900 = !{{i32 1, !\"Code Model\", i32 0}}\n{text}"
+    );
+    let without = Support::everything_implemented(Arch::Aarch64).without("module:code-model-tiny");
     let settings = Settings { support: without, ..Settings::default() };
-    assert_eq!(run(refused_first.as_bytes(), &settings).0, unsupported("module:asm", None));
+    assert_eq!(
+        run(refused_first.as_bytes(), &settings).0,
+        unsupported("module:code-model-tiny", None)
+    );
     let (_, report) = run(text.as_bytes(), &Settings { census: true, ..everything() });
     assert_eq!(report.reasons, ["malformed-input"]);
 }
@@ -170,12 +175,14 @@ fn a_refusal_ends_the_reading() {
     let ghc = "define ghccc void @ghc() nounwind {\n  ret void\n}\n";
     let support = Support::everything_implemented(Arch::Aarch64)
         .without("cc:ghccc")
-        .and_then(|support| support.without("module:asm"));
+        .and_then(|support| support.without("module:code-model-tiny"));
     let settings = Settings { support: support.clone(), ..Settings::default() };
 
-    let module_level = format!("{TRIPLE}module asm \"nop\"\n{broken}");
+    let module_level = format!(
+        "{TRIPLE}!llvm.module.flags = !{{!900}}\n!900 = !{{i32 1, !\"Code Model\", i32 0}}\n{broken}"
+    );
     let (result, report) = run(module_level.as_bytes(), &settings);
-    assert_eq!(result, unsupported("module:asm", None));
+    assert_eq!(result, unsupported("module:code-model-tiny", None));
     assert_eq!(phases(&report), ["parse", "classify"], "no body was read");
 
     let body_level = format!("{TRIPLE}{ghc}{broken}");

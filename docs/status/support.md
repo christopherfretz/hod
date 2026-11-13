@@ -20,7 +20,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 
 | group | constructs | aarch64 supported | not-implemented | rejected | x86_64 supported | not-implemented | rejected |
 |---|---|---|---|---|---|---|---|
-| `module` | 24 | 10 | 12 | 2 | 5 | 13 | 6 |
+| `module` | 24 | 11 | 11 | 2 | 5 | 13 | 6 |
 | `structor` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `debug` | 5 | 4 | 1 | 0 | 0 | 5 | 0 |
 | `global` | 12 | 11 | 1 | 0 | 3 | 9 | 0 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 11 | 8 | 3 | 0 | 2 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 354 | 347 | 7 | 0 | 0 | 138 | 216 |
-| total | 674 | 548 | 69 | 57 | 38 | 359 | 277 |
+| total | 674 | 549 | 68 | 57 | 38 | 359 | 277 |
 
 ## `module`
 
@@ -69,7 +69,7 @@ Module properties (`ModuleProps`, §2.1) and module-level tables.
 | `module:branch-protection-pauth-lr` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
 | `module:cf-protection-branch` | rejected | not-implemented | an x86 property |
 | `module:cf-protection-return` | rejected | not-implemented | an x86 property |
-| `module:asm` | not-implemented | not-implemented | hod_asm. module-level inline assembly an assembler must read |
+| `module:asm` | supported | not-implemented | module-level assembly of code and data: `hod_asm` (WP-112, `spec/asm.md` §9); what it does not read is refused by an `asm:*` name |
 | `module:asm-symbols` | supported | not-implemented | module-level assembly made only of symbol directives (`spec/ir.md` §2.3) |
 | `module:linker-options` | supported | not-implemented | `!llvm.linker.options` |
 | `module:dependent-libraries` | supported | not-implemented | `!llvm.dependent-libraries` |

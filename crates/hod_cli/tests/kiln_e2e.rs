@@ -235,11 +235,12 @@ int main() {
 const CONTAINERS_PRINTS: &str =
     "1 3 5 7 9 \na=2 b=1 c=1 \ncat dog \n3.250 0.333333\n0.1428571429\n";
 
-/// File-scope `asm`: a module hod declines (`module:asm`) for as long as
-/// it has no assembler, so the fallback path stays tested.
+/// File-scope `asm` with a directive hod's assembler does not read
+/// (`.ident`, `asm:directive/ident`, `spec/asm.md` §9): a module hod
+/// declines, so the fallback path stays tested.
 const MODULE_ASM: &str = r#"
 #include <cstdio>
-asm(".globl hod_e2e_marker\n.set hod_e2e_marker, 0x2a");
+asm(".globl hod_e2e_marker\n.set hod_e2e_marker, 0x2a\n.ident \"hod e2e\"");
 [[gnu::always_inline]] inline int twice(int value) { return value + value; }
 int main() {
     std::printf("module asm %d\n", twice(21));
@@ -416,8 +417,9 @@ fn run_in(dir: &Path, command: &mut Command) -> Outcome {
 /// support matrix's business, and moves as code generation lands, so a
 /// test of real programs checks only the shape.
 fn is_construct(reason: &str) -> bool {
-    const FAMILIES: [&str; 12] = [
+    const FAMILIES: [&str; 13] = [
         "intrinsic:",
+        "asm:",
         "module-flag:",
         "cc:",
         "bundle:",
@@ -601,7 +603,7 @@ const PROGRAMS: &[Program] = &[
         args: &[],
         form: "bitcode",
         prints: "module asm 42\n",
-        path: Route::Fallback("module:asm"),
+        path: Route::Fallback("asm:directive/ident"),
     },
 ];
 
@@ -846,6 +848,6 @@ fn through_the_shim(kiln: &Path, llvm: &Path) {
     // Strict mode on bitcode: hod's own reader declines it with the
     // construct's name, and nothing was converted.
     let line = shimmed.strict_fails("module-asm.cpp", "strict-asm.o");
-    assert_eq!((&*line[1], &*line[2]), ("module:asm", "bitcode"), "{line:?}");
+    assert_eq!((&*line[1], &*line[2]), ("asm:directive/ident", "bitcode"), "{line:?}");
     assert_eq!(&*line[8], "-", "no conversion ran: {line:?}");
 }

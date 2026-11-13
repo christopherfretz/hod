@@ -157,6 +157,49 @@ targets, with every linker; L8 strict at the pass rate kiln achieves with
 `llc`; L9; the benchmark gate; a fuzzing budget with no open findings; and
 the support matrix in `docs/status/` regenerated.
 
+## Hosted CI
+
+GitHub Actions runs the gate on real hardware of both architectures
+(`spec/harness.md` "CI" has the rules; `.github/workflows/`):
+
+| | `ubuntu-24.04-arm` (AArch64) | `ubuntu-24.04` (x86-64) |
+|---|---|---|
+| container | Debian 13 (`buildpack-deps:trixie`) | the same |
+| tools | LLVM 19 and 22, binutils, mold, gdb, lldb-19, the x86-64 cross toolchain, `qemu-user` | the same, with the AArch64 cross toolchain |
+| AArch64 programs under test | native | `qemu-aarch64 -cpu cortex-a53` |
+| x86-64 programs under test | `qemu-x86_64 -cpu qemu64,-sse3,-cx16,-lahf-lm` | native (the runner's CPU, more than the baseline) |
+| jobs | `kiln`, `lints`, `test`, `irdiff`, fan-in `check` | the same, fan-in `check-x86_64` |
+| not run | `roundtrip` (no corpus) | the same |
+
+Every job sets `HOD_REQUIRE_TOOLS=1`. On the x86-64 runner an x86-64
+program is not held to the baseline CPU: the emulated AArch64 lane is
+where a use of an instruction beyond the baseline faults.
+
+The libc++ suite with kiln and hod runs natively on x86-64 in the `sweep`
+workflow (a `sweep/**` branch or by hand; never a required check).
+
+**Tests that need a particular host.** A test of AArch64 programs runs
+on both hosts when it takes its toolchain from `hod_testutil::target`
+(natively, or under `qemu-aarch64`); so do `hod_obj`'s `link`,
+`link_tls` and `link_conventions`, `hod_cg`'s `emit_link` and `emit_eh`,
+and `hod_ir`'s `print_run`. These still run on an AArch64 host only, and
+why:
+
+- the debugger tests of AArch64 programs (`hod_dwarf`'s `debugger`,
+  `die_debugger`, `type_debugger`; `hod_a64`'s `*_debugger`, `dies_e2e`,
+  `dies_label`, `dies_decline`, `compressed`, `coro_debug`, and
+  `unwind`'s gdb backtrace): gdb and lldb trace a native process; under
+  `qemu-aarch64` they would need its gdb stub and a remote session, which
+  the debugger scripts do not have;
+- the tests that compile C++ or C with the host's clang or g++ and link
+  it with hod's AArch64 objects (`hod_a64`'s `coro`, `coro_body`,
+  `coro_transfer`, `dies_scope`, `unwind`; `hod_eh`'s `unwind` and
+  `lsda_unwind`): they need the cross target and system root passed to
+  each compiler, which they do not do yet;
+- `hod_interp`'s `x87_oracle` and `x64_varargs_oracle` run x86-64
+  programs, natively on x86-64 and under `qemu-x86_64` elsewhere, so they
+  already run on both.
+
 ## Rules for tests
 
 - Every behavior ships with a test, and every miscompile gets a reduced

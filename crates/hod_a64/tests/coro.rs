@@ -456,8 +456,8 @@ fn the_noop_frame_is_written_once_per_object() {
 
 /// A presplit coroutine's attribute and body intrinsics are classified
 /// supported (WP-106; what the plan refuses is refused later, by its
-/// `coro:*` name), the handle operations wherever they are; `coro.frame`
-/// and symmetric transfer (`await.suspend.handle`, WP-107) stay refused.
+/// `coro:*` name), the handle operations wherever they are, and symmetric
+/// transfer (`await.suspend.handle`, WP-107); `coro.frame` stays refused.
 #[test]
 fn coroutine_bodies_are_classified() {
     let text = module_text(
@@ -484,9 +484,8 @@ define ptr @co(ptr %mem) presplitcoroutine {
     );
     let (module, bodies) = parse(&text);
     let census = hod_ir::census(&module, &bodies);
-    for refused in ["intrinsic:llvm.coro.frame", "intrinsic:llvm.coro.await.suspend.handle"] {
-        assert!(census.get(refused).is_some(), "{refused}: {:?}", census.entries());
-    }
+    let refused = "intrinsic:llvm.coro.frame";
+    assert!(census.get(refused).is_some(), "{refused}: {:?}", census.entries());
     for accepted in [
         "attr:presplitcoroutine",
         "type:token",
@@ -495,6 +494,7 @@ define ptr @co(ptr %mem) presplitcoroutine {
         "intrinsic:llvm.coro.suspend",
         "intrinsic:llvm.coro.done",
         "intrinsic:llvm.coro.resume",
+        "intrinsic:llvm.coro.await.suspend.handle",
     ] {
         assert!(census.get(accepted).is_none(), "{accepted}: {:?}", census.entries());
     }

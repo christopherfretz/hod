@@ -483,14 +483,17 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
         self.s("}\n")
     }
 
-    /// `cc `, unless it is the C convention.
+    /// `cc `, unless it is the C convention: the keyword if the
+    /// dialect has one, else `cc N`.
     pub(super) fn call_conv(&mut self, cc: crate::attrs::CallConv) -> R {
         if cc == crate::attrs::CallConv::C {
             return Ok(());
         }
         match cc.keyword() {
-            Some(keyword) => write!(self.out, "{keyword} ")?,
-            None => write!(self.out, "cc {} ", cc.llvm_id())?,
+            Some(keyword) if cc.keyword_since() <= self.dialect.major() => {
+                write!(self.out, "{keyword} ")?;
+            }
+            _ => write!(self.out, "cc {} ", cc.llvm_id())?,
         }
         Ok(())
     }

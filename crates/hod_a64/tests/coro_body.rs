@@ -14,9 +14,9 @@
 //! - The suspended region: no `[x19…]` operand between an
 //!   `await_suspend` wrapper's call and its suspend.
 //! - Refusals by name: `coro:outside-coroutine`, `a64:coro-preserve-cc`,
-//!   `coro:overaligned-stack-slot`, symmetric transfer
-//!   (`intrinsic:llvm.coro.await.suspend.handle`, WP-107), and the plan's
-//!   `coro:frame-access-after-suspend` on design 0005's `post-sync` seed.
+//!   `coro:overaligned-stack-slot`, and the plan's
+//!   `coro:frame-access-after-suspend` on design 0005's `post-sync` seed
+//!   (symmetric transfer, refused until WP-107, compiles).
 
 mod common;
 
@@ -512,19 +512,14 @@ fn refused_as(text: &str) -> Option<&'static str> {
 #[test]
 fn what_is_not_compiled_is_refused_by_name() {
     assert_eq!(compiled(&coroutine("", 4, "")), Ok(()));
+    // Symmetric transfer is compiled since WP-107.
+    let transfer = "  call void @llvm.coro.await.suspend.handle(ptr null, ptr %h, ptr @wrapper)";
+    assert_eq!(compiled(&coroutine("", 4, transfer)), Ok(()));
     let header = ll_header(22);
     for (text, name) in [
         (coroutine("preserve_mostcc", 4, ""), "a64:coro-preserve-cc"),
         (coroutine("preserve_allcc", 4, ""), "a64:coro-preserve-cc"),
         (coroutine("", 32, ""), "coro:overaligned-stack-slot"),
-        (
-            coroutine(
-                "",
-                4,
-                "  call void @llvm.coro.await.suspend.handle(ptr null, ptr %h, ptr @wrapper)",
-            ),
-            "intrinsic:llvm.coro.await.suspend.handle",
-        ),
         (
             "declare token @llvm.coro.id(i32, ptr, ptr, ptr)\n\
              define void @f() {\n  %t = call token @llvm.coro.id(i32 0, ptr null, ptr null, ptr null)\n  ret void\n}\n"

@@ -3,8 +3,8 @@
 
 use hod_ir::Layering;
 use hod_ir::{
-    AttrClass, AttrInfo, AttrSyntax, FnAttrs, FnAttrsId, FnStr, ParamAttrs, ParamMem, UwTable,
-    attr_info,
+    AttrClass, AttrInfo, AttrSyntax, CallConv, FnAttrs, FnAttrsId, FnStr, ParamAttrs, ParamMem,
+    UwTable, attr_info,
 };
 
 use crate::AttrGroup;
@@ -64,66 +64,11 @@ impl AttrMemo {
 }
 
 /// LLVM's number for the calling convention written `keyword`
-/// (`b"fastcc"`), for the ones that have a keyword; `cc N` is written
-/// with its number.
+/// (`b"fastcc"`), for the ones that have a keyword in LLVM 19 to 22
+/// ([`CallConv::from_keyword`]); `cc N` is written with its number, and
+/// `riscv_vls_cc(N)` is read by the parser as one keyword.
 pub fn call_conv_keyword(keyword: &[u8]) -> Option<u32> {
-    Some(match keyword {
-        b"ccc" => 0,
-        b"fastcc" => 8,
-        b"coldcc" => 9,
-        b"ghccc" => 10,
-        b"anyregcc" => 13,
-        b"preserve_mostcc" => 14,
-        b"preserve_allcc" => 15,
-        b"swiftcc" => 16,
-        b"cxx_fast_tlscc" => 17,
-        b"tailcc" => 18,
-        b"cfguard_checkcc" => 19,
-        b"swifttailcc" => 20,
-        b"preserve_nonecc" => 21,
-        b"x86_stdcallcc" => 64,
-        b"x86_fastcallcc" => 65,
-        b"arm_apcscc" => 66,
-        b"arm_aapcscc" => 67,
-        b"arm_aapcs_vfpcc" => 68,
-        b"msp430_intrcc" => 69,
-        b"x86_thiscallcc" => 70,
-        b"ptx_kernel" => 71,
-        b"ptx_device" => 72,
-        b"spir_func" => 75,
-        b"spir_kernel" => 76,
-        b"intel_ocl_bicc" => 77,
-        b"x86_64_sysvcc" => 78,
-        b"win64cc" => 79,
-        b"x86_vectorcallcc" => 80,
-        b"hhvmcc" => 81,
-        b"hhvm_ccc" => 82,
-        b"x86_intrcc" => 83,
-        b"avr_intrcc" => 84,
-        b"avr_signalcc" => 85,
-        b"amdgpu_vs" => 87,
-        b"amdgpu_gs" => 88,
-        b"amdgpu_ps" => 89,
-        b"amdgpu_cs" => 90,
-        b"amdgpu_kernel" => 91,
-        b"x86_regcallcc" => 92,
-        b"amdgpu_hs" => 93,
-        b"amdgpu_ls" => 95,
-        b"amdgpu_es" => 96,
-        b"aarch64_vector_pcs" => 97,
-        b"aarch64_sve_vector_pcs" => 98,
-        b"amdgpu_gfx" => 100,
-        b"m68k_intrcc" => 101,
-        b"aarch64_sme_preservemost_from_x0" => 102,
-        b"aarch64_sme_preservemost_from_x2" => 103,
-        b"amdgpu_cs_chain" => 104,
-        b"amdgpu_cs_chain_preserve" => 105,
-        b"m68k_rtdcc" => 106,
-        b"graalcc" => 107,
-        b"riscv_vector_cc" => 108,
-        b"aarch64_sme_preservemost_from_x1" => 109,
-        _ => return None,
-    })
+    CallConv::from_keyword(keyword).map(|cc| u32::from(cc.llvm_id()))
 }
 
 fn lossy(name: &[u8]) -> String {
@@ -131,6 +76,32 @@ fn lossy(name: &[u8]) -> String {
 }
 
 impl<L: Layering> Parser<'_, '_, L> {
+    /// `[ccc | fastcc | ... | cc N | riscv_vls_cc(N)]`: a calling
+    /// convention, `ccc` if there is none.
+    pub(crate) fn call_conv(&mut self) -> PResult<CallConv> {
+        let at = self.tok.start;
+        let mut cc = 0;
+        if self.eat_word(b"cc") {
+            cc = self.expect_u32("expected a calling convention number")?;
+        } else if self.at_word(b"riscv_vls_cc") {
+            self.bump();
+            self.expect(Tok::LParen, "expected '(' after riscv_vls_cc")?;
+            let width = self.expect_u32("expected a vector length")?;
+            self.expect(Tok::RParen, "expected ')'")?;
+            let keyword = format!("riscv_vls_cc({width})");
+            match call_conv_keyword(keyword.as_bytes()) {
+                Some(number) => cc = number,
+                None => return self.syntax("expected a power of two from 32 to 65536"),
+            }
+        } else if self.tok.kind == Tok::Word
+            && let Some(number) = call_conv_keyword(self.text())
+        {
+            cc = number;
+            self.bump();
+        }
+        ir(at, CallConv::from_llvm(cc))
+    }
+
     /// Parses every attribute group. Of two definitions of one number
     /// the later one is the group, as in LLVM; the earlier one is still
     /// read, and an error in it is an error.

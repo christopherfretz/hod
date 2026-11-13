@@ -14,7 +14,9 @@
 //!   template (`$0`, `${0:w}`, `$$`, `${:uid}`, `$(..$|..$)`), as LLVM's
 //!   `AsmPrinter` does it before its assembler reads the text.
 //! - [`a64`]: AArch64 instruction statements to instruction words, and
-//!   the statement loop shared by inline and module-level assembly.
+//!   the assembler of an inline-assembly body.
+//! - [`module`]: module-level assembly into sections, symbols and
+//!   relocations.
 //!
 //! Nothing here allocates per instruction beyond the output it returns.
 
@@ -22,6 +24,7 @@
 
 pub mod a64;
 pub mod expr;
+pub mod module;
 pub mod reason;
 pub mod template;
 pub mod text;

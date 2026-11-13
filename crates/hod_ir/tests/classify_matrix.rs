@@ -308,11 +308,10 @@ fn every_enumerated_construct_has_a_row() {
     assert_eq!(rows_of("type"), names(&mut TypeClass::ALL.iter().map(|class| class.name())));
     assert_eq!(rows_of("const-expr"), names(&mut CONST_OPS.iter().map(|op| op.name())));
 
+    // A convention with a row has a keyword; one without is named by its
+    // keyword, or by its number if LLVM has none (WP-141).
     let keyword = |number: u32| CallConv::from_llvm(number).ok().and_then(CallConv::keyword);
     assert_eq!(rows_of("cc"), names(&mut CC_NUMBERS.iter().map(|&n| keyword(n).unwrap())));
-    for number in 0..1024 {
-        assert_eq!(keyword(number).is_some(), CC_NUMBERS.contains(&number), "cc {number}");
-    }
     for class in TypeClass::ALL {
         assert_eq!(TypeClass::named(class.name()), Some(class));
     }
@@ -764,18 +763,17 @@ fn the_census_counts_occurrences_and_symbols() {
 }
 
 // WP-103: inline assembly of instructions and `asm goto` are supported on
-// AArch64 (`spec/asm.md`, `spec/codegen.md` §5.5.3); module-level
-// assembly an assembler must read is not yet. `RICH_BODY` has no
-// inline assembly, so `A64_SUPPORTED_BODY` is unchanged; the rows are
-// checked here.
+// AArch64 (`spec/asm.md`, `spec/codegen.md` §5.5.3); WP-112: module-level
+// assembly too (`spec/asm.md` §9), what `hod_asm` does not read refused
+// by code generation. `RICH_BODY` has no inline assembly, so
+// `A64_SUPPORTED_BODY` is unchanged; the rows are checked here.
 #[test]
 fn inline_assembly_rows_of_wp_103() {
     let a64 = Support::shipped(Arch::Aarch64);
     let x64 = Support::shipped(Arch::X86_64);
-    for row in ["call:inline-asm", "inst:callbr"] {
+    for row in ["call:inline-asm", "inst:callbr", "module:asm"] {
         assert_eq!(a64.supports(row), Some(true), "{row}");
         assert_eq!(x64.supports(row), Some(false), "{row}");
         assert!(x64.clone().with(row).is_some(), "{row}: x86-64 may switch it on");
     }
-    assert_eq!(a64.supports("module:asm"), Some(false));
 }

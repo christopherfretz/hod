@@ -40,7 +40,7 @@
 //! | `vector` | WP-132 | `extractelement`, `insertelement`, `shufflevector` | |
 //! | `lanes` | WP-132 | element-wise operations on `Mem`-class vectors | |
 //! | `mask` | WP-132 | vectors of `i1` | |
-//! | `atomic` | WP-133 | atomic `load`/`store`, `atomicrmw`, `cmpxchg`, `fence` | |
+//! | `atomic` | WP-133 | atomic `load`/`store`, `atomicrmw`, `cmpxchg`, `fence` | `tests/atomic.rs` |
 //! | `tls` | WP-134 | thread-local addresses, `llvm.threadlocal.address`, `llvm.thread.pointer` | |
 //! | `constaddr` | WP-126 | constant operands that hold addresses: differences, relocated images | `tests/aggr.rs` |
 //! | `tail` | (later) | what no group package takes | |

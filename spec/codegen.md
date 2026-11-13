@@ -3548,6 +3548,71 @@ Evidence: `spec/landed/codegen/WP-171.md`.
    `preserve_allcc` the `xmm` registers, in the prologue with their CFI,
    `frame.rs`). Sizes and reasons: `spec/landed/codegen/WP-174.md`.
 
+#### 5.6.22 x86 target intrinsics, SSE to SSSE3 (WP-173)
+
+The `llvm.x86.*` calls clang 19 and 22 write at `-O0` for the functions
+of `<xmmintrin.h>`, `<emmintrin.h>`, `<pmmintrin.h>` and
+`<tmmintrin.h>` (`crates/hod_x64/src/x86.rs`, `hod_ir`'s `Intrinsic`
+members `X86Sse*`, `X86Sse2*`, `X86Sse3*`, `X86Ssse3*`, matrix rows
+`never(X64_ONLY)` / `on(X86_SSE)`). Each against `llc -O0
+-fast-isel=0` 22 and 19 under the emulator, hod plain and stressed
+(`crates/hod_x64/tests/x86_intrinsics.rs`). A call whose operand or
+result types are not LLVM's declaration is `x64:x86-intrinsic-signature`.
+
+1. **SSE and SSE2** (the baseline; no feature check), one instruction as
+   `llc` writes it, the result in the first operand's register:
+   `max.ps`/`min.ps`/`max.ss`/`min.ss` and the `pd`/`sd` forms are
+   `maxps`/`minps`/`maxss`/... (the second operand when either is NaN or
+   both are zeros); `cmp.ss`/`cmp.sd` are `cmpss`/`cmpsd` with the
+   `immarg` predicate's low three bits (the legacy encoding's, as `llc`
+   encodes 8 to 31); `comi{eq,ge,gt,le,lt,neq}.ss` and `.sd` are
+   `comiss`/`comisd`, the `ucomi` ones `ucomiss`/`ucomisd`, then the
+   predicate from the flags: `gt` `seta`, `ge` `setae`, `lt` and `le` the
+   same with the operands swapped, `eq` `sete` and `setnp`, `neq`
+   `setne` or `setp`, zero-extended to `i32`; `cvtss2si`, `cvttss2si`,
+   `cvtsd2si`, `cvttsd2si` (and the `64` forms) are those instructions
+   to a general register (`0x80000000...` for NaN and out of range);
+   `cvtpd2dq`, `cvttpd2dq`, `cvtps2dq`, `cvttps2dq`, `cvtpd2ps`,
+   `cvtsd2ss`; `movmsk.ps`/`movmsk.pd`/`pmovmskb.128` to an `i32`;
+   `packssdw`, `packsswb`, `packuswb`, `pavg.b`/`.w`, `pmadd.wd`,
+   `pmulh.w`, `pmulhu.w`, `psad.bw`; `psll`/`psrl`/`psra` `.w`/`.d`/`.q`
+   by a vector (its low 64 bits are the count) and the `i` forms by an
+   `i32`: a constant count is the immediate, every count of 255 or more
+   written as 255 (each count at or above the lane width shifts out
+   every bit, or fills with the sign for `psra`), a variable count is
+   moved to `xmm15` by `movd` and the vector form used; `sfence`,
+   `lfence`, `mfence`. `pause` stays §5.6.19 (5).
+2. **SSE3**, only in a function whose `target-features` enable `sse3`
+   (the last item that implies it, `+sse3`, `+ssse3`, `+sse4.1`,
+   `+sse4.2`, `+avx` or an AVX feature, or disables it, `-sse`, `-sse2`,
+   `-sse3`, decides; none is off). hod writes SSE2 instructions only:
+   `hadd.ps`/`hsub.ps` gather the even lanes of `a` then `b` by `shufps
+   0b10001000` and the odd ones by `shufps 0b11011101` into `xmm14`, and
+   `addps`/`subps` them (even minus odd); `hadd.pd`/`hsub.pd` the same
+   with `unpcklpd`/`unpckhpd`; `addsub.ps`/`.pd` compute `a - b` and
+   `a + b` and merge the even lanes of the difference with the odd ones
+   of the sum through a mask in `xmm15` (`pcmpeqd`, then `psrlq 32` or
+   `psrldq 8`); `ldu.dq` is `movdqu`.
+3. **SSSE3** `.128` forms, only where the features enable `ssse3` (as
+   (2), `-ssse3` too): lane by lane in general registers on 16-byte
+   frame images of the operands, the result's image loaded back:
+   `phadd`/`phsub` `.w`/`.d` (wrapping) and `.sw` (saturated to `i16`
+   by `cmovg`/`cmovl`), the pairs of `a` then of `b`; `pmadd.ub.sw`
+   (unsigned bytes of `a` times signed bytes of `b`, pairs summed and
+   saturated); `pmul.hr.sw` (`(a·b + 0x4000) >> 15` per `i16`); `pshuf.b`
+   (byte `b[i] & 15` of `a`, 0 where bit 7 of `b[i]` is set); `psign.b`/
+   `.w`/`.d` (`a`, `-a` or 0 as `b` is positive, negative or 0).
+4. **Refused by name.** An SSE3 or SSSE3 intrinsic in a function without
+   its feature is `intrinsic:` and its LLVM name, as `llc` cannot select
+   it. Every `llvm.x86.*` name hod does not list is `intrinsic:` and its
+   name from `classify` (`spec/ir.md`): `sse.ldmxcsr`/`stmxcsr`, `sse.rcp.*`,
+   `sse.rsqrt.*`, `sse2.clflush`, `sse2.maskmov.dqu`, `sse3.monitor`/
+   `mwait` (no encoding in `hod_mc_x64`), the `x86_mmx` forms clang 19
+   writes (`mmx.*`, `sse.cvtpi2ps`, ..., the 64-bit `ssse3.*`), and all of
+   `sse41.*` and `sse42.*`. AArch64 refuses every `llvm.x86.*` name.
+
+Evidence: `spec/landed/codegen/WP-173.md`.
+
 ## 6. Control flow
 
 ### 6.1 Reachability

@@ -369,6 +369,8 @@ const NEON: &[TypeClass] = &[
     TypeClass::Aggregate,
 ];
 const X64_ONLY: &str = "an x86 property";
+/// The value classes of the x86 target intrinsics' signatures (WP-173).
+const X86_SSE: &[TypeClass] = &[TypeClass::Int, TypeClass::Ptr, TypeClass::Vector];
 /// WP-147.
 const SJLJ_A64: &str = "`llc` for AArch64 compiles `setjmp` to 0 and `longjmp` to nothing; clang refuses the builtins there";
 /// WP-101.
@@ -1799,7 +1801,7 @@ const fn const_op_index(op: ConstOp) -> usize {
 }
 
 /// In `Intrinsic::ALL` order.
-const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
+const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len() - INTRINSIC_X86.len()] = [
     row(
         "intrinsic:llvm.memcpy",
         on(&[TypeClass::Ptr, TypeClass::Int]),
@@ -3363,6 +3365,110 @@ const INTRINSIC_A64: &[SupportRow] = &[
     row("intrinsic:llvm.aarch64.sisd.fcvtxn", on(NEON), never(A64_ONLY), "WP-083"),
 ];
 
+/// The x86 target intrinsics of WP-173, which follow [`INTRINSIC_A64`] on
+/// the list. Above SSE2 the lowering refuses a function whose
+/// `target-features` do not enable the set, by the intrinsic's name.
+const INTRINSIC_X86: &[SupportRow] = &[
+    row("intrinsic:llvm.x86.sse.cmp.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.comieq.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.comige.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.comigt.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.comile.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.comilt.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.comineq.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.ucomieq.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.ucomige.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.ucomigt.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.ucomile.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.ucomilt.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.ucomineq.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.cvtss2si", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.cvtss2si64", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.cvttss2si", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.cvttss2si64", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.max.ps", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.max.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.min.ps", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.min.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.movmsk.ps", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse.sfence", never(X64_ONLY), on(X86_SSE), "SSE"),
+    row("intrinsic:llvm.x86.sse2.cmp.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.comieq.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.comige.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.comigt.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.comile.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.comilt.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.comineq.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.ucomieq.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.ucomige.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.ucomigt.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.ucomile.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.ucomilt.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.ucomineq.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.cvtpd2dq", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.cvtpd2ps", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.cvtps2dq", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.cvtsd2si", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.cvtsd2si64", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.cvtsd2ss", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.cvttpd2dq", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.cvttps2dq", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.cvttsd2si", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.cvttsd2si64", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.lfence", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.mfence", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.max.pd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.max.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.min.pd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.min.sd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.movmsk.pd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.packssdw.128", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.packsswb.128", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.packuswb.128", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.pavg.b", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.pavg.w", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.pmadd.wd", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.pmovmskb.128", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.pmulh.w", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.pmulhu.w", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.psad.bw", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.psll.d", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.psll.q", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.psll.w", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.pslli.d", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.pslli.q", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.pslli.w", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.psra.d", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.psra.w", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.psrai.d", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.psrai.w", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.psrl.d", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.psrl.q", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.psrl.w", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.psrli.d", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.psrli.q", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse2.psrli.w", never(X64_ONLY), on(X86_SSE), "SSE2"),
+    row("intrinsic:llvm.x86.sse3.addsub.pd", never(X64_ONLY), on(X86_SSE), "SSE3 (WP-173)"),
+    row("intrinsic:llvm.x86.sse3.addsub.ps", never(X64_ONLY), on(X86_SSE), "SSE3 (WP-173)"),
+    row("intrinsic:llvm.x86.sse3.hadd.pd", never(X64_ONLY), on(X86_SSE), "SSE3 (WP-173)"),
+    row("intrinsic:llvm.x86.sse3.hadd.ps", never(X64_ONLY), on(X86_SSE), "SSE3 (WP-173)"),
+    row("intrinsic:llvm.x86.sse3.hsub.pd", never(X64_ONLY), on(X86_SSE), "SSE3 (WP-173)"),
+    row("intrinsic:llvm.x86.sse3.hsub.ps", never(X64_ONLY), on(X86_SSE), "SSE3 (WP-173)"),
+    row("intrinsic:llvm.x86.sse3.ldu.dq", never(X64_ONLY), on(X86_SSE), "SSE3 (WP-173)"),
+    row("intrinsic:llvm.x86.ssse3.phadd.d.128", never(X64_ONLY), on(X86_SSE), "SSSE3 (WP-173)"),
+    row("intrinsic:llvm.x86.ssse3.phadd.sw.128", never(X64_ONLY), on(X86_SSE), "SSSE3 (WP-173)"),
+    row("intrinsic:llvm.x86.ssse3.phadd.w.128", never(X64_ONLY), on(X86_SSE), "SSSE3 (WP-173)"),
+    row("intrinsic:llvm.x86.ssse3.phsub.d.128", never(X64_ONLY), on(X86_SSE), "SSSE3 (WP-173)"),
+    row("intrinsic:llvm.x86.ssse3.phsub.sw.128", never(X64_ONLY), on(X86_SSE), "SSSE3 (WP-173)"),
+    row("intrinsic:llvm.x86.ssse3.phsub.w.128", never(X64_ONLY), on(X86_SSE), "SSSE3 (WP-173)"),
+    row("intrinsic:llvm.x86.ssse3.pmadd.ub.sw.128", never(X64_ONLY), on(X86_SSE), "SSSE3 (WP-173)"),
+    row("intrinsic:llvm.x86.ssse3.pmul.hr.sw.128", never(X64_ONLY), on(X86_SSE), "SSSE3 (WP-173)"),
+    row("intrinsic:llvm.x86.ssse3.pshuf.b.128", never(X64_ONLY), on(X86_SSE), "SSSE3 (WP-173)"),
+    row("intrinsic:llvm.x86.ssse3.psign.b.128", never(X64_ONLY), on(X86_SSE), "SSSE3 (WP-173)"),
+    row("intrinsic:llvm.x86.ssse3.psign.d.128", never(X64_ONLY), on(X86_SSE), "SSSE3 (WP-173)"),
+    row("intrinsic:llvm.x86.ssse3.psign.w.128", never(X64_ONLY), on(X86_SSE), "SSSE3 (WP-173)"),
+];
+
 // ---- the table ----
 
 const EMPTY: SupportRow = both("", ON, "");
@@ -3395,7 +3501,8 @@ pub(crate) const ROW_COUNT: usize = MODULE.len()
     + OPERAND.len()
     + CONST_EXPR.len()
     + INTRINSIC.len()
-    + INTRINSIC_A64.len();
+    + INTRINSIC_A64.len()
+    + INTRINSIC_X86.len();
 
 /// The support matrix (§8.2): every construct that has a row, grouped as
 /// [`SUPPORT_GROUPS`] lists the groups.
@@ -3440,7 +3547,8 @@ pub static SUPPORT_ROWS: [SupportRow; ROW_COUNT] = {
         OPERAND,
         CONST_EXPR,
         INTRINSIC,
-        INTRINSIC_A64
+        INTRINSIC_A64,
+        INTRINSIC_X86
     );
     assert!(at == ROW_COUNT);
     out

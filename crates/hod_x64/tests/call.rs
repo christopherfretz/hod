@@ -185,7 +185,20 @@ fn handwritten_calls_run() {
         let driver = if with_llc { &llc_driver } else { &hod_driver };
         let name = format!("hand-{tag}");
         link_run_all(&toolchain, &dir, &name, &[link], &[driver, &obj], "done:", tag == "llc");
+        if let Some(bytes) = text_bytes(&obj) {
+            eprintln!("hand-{tag}: {bytes} bytes of .text");
+        }
     }
+}
+
+/// The size of an object's `.text`, by `llvm-readelf`, if it is installed.
+fn text_bytes(object: &Path) -> Option<u64> {
+    let readelf = tool("llvm-readelf")?;
+    let out = hod_testutil::run(readelf, [std::ffi::OsStr::new("-SW"), object.as_os_str()]);
+    let line = out.stdout_text().lines().find(|line| line.contains(" .text "))?.to_owned();
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    let at = fields.iter().position(|field| *field == ".text")?;
+    u64::from_str_radix(fields.get(at + 4)?, 16).ok()
 }
 
 /// Real C++ exceptions through hod's frames (`tests/data/call/eh.ll`,

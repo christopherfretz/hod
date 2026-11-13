@@ -12,7 +12,7 @@ use hod_ir::{
     BlockId, Body, CallDesc, ConstId, Dialect, FloatPredicate, FunctionBuilder, FunctionDesc,
     IntPredicate, Intrinsic, MemFlags, Module, Opcode, SymId, TypeId, TypeKind, Value,
 };
-use hod_testutil::{DEFAULT_TIMEOUT, Outcome, Scratch, run, run_with, tool};
+use hod_testutil::{DEFAULT_TIMEOUT, Outcome, Scratch, Target, run, run_with, tool};
 
 /// The module as text of `dialect`.
 ///
@@ -438,8 +438,10 @@ pub fn parse_symbols(text: &str) -> (Vec<String>, Vec<ElfSymbol>) {
     (sections, symbols)
 }
 
-/// Links `objects` with `gcc` (and `libs`, such as `-lstdc++`) and runs the
-/// program; `None`, after a note, without `gcc`.
+/// Links AArch64 `objects` with `gcc` (and `libs`, such as `-lstdc++`) and
+/// runs the program: natively on an AArch64 host, else with the cross
+/// `aarch64-linux-gnu-gcc` and under `qemu-aarch64` (`hod_testutil::target`).
+/// `None`, after a note, without the tools.
 ///
 /// # Panics
 /// Panics when the link fails.
@@ -449,12 +451,19 @@ pub fn link_and_run(
     objects: &[PathBuf],
     libs: &[&str],
 ) -> Option<Outcome> {
-    let gcc = tool("gcc")?;
+    let target = Target::Aarch64;
+    let gcc = target.tool("gcc")?;
     let program = scratch.join(name);
     let mut args: Vec<&std::ffi::OsStr> = objects.iter().map(|object| object.as_os_str()).collect();
     args.extend(libs.iter().map(std::ffi::OsStr::new));
     args.extend(["-o".as_ref(), program.as_os_str()]);
     let linked = run(&gcc, args);
     assert!(linked.success(), "gcc failed to link {name}:\n{}", linked.stderr_text());
-    Some(run(&program, [] as [&str; 0]))
+    if target.is_host() {
+        return Some(run(&program, [] as [&str; 0]));
+    }
+    let (emulator, sysroot) = (target.tool("emulator")?, target.tool("sysroot")?);
+    let mut emulated = target.emulator_args(&sysroot);
+    emulated.push(program.into_os_string());
+    Some(run(&emulator, emulated))
 }

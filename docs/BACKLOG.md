@@ -153,6 +153,7 @@ instruction group and can run in parallel once WP-033 has landed.
 | WP-135 | T-X64 | libc++ on x86-64 with hod (X-libcxx; design 0006 6, 7.2): hybrid, then strict, against WP-121's baseline; `docs/status/libcxx-hod-x64.md` | WP-130, WP-131, WP-132, WP-133, WP-134, WP-121 | todo |
 | WP-136 | T-DW | debug info on x86-64 (X-debug; design 0006 6.3, 10.5): `--verify` and the (function, line) comparison, then scripted sessions through `gdb-multiarch` and the qemu gdbstub | WP-130 | todo |
 | WP-137 | T-X64 | coroutines on x86-64 (design 0005 6, package C7): entry stubs and `rbx` as the frame base | WP-109, WP-130 | todo |
+| WP-138 | T-IR | x86-64 readiness of the target-neutral half (design 0006 1.1, 6.5): every sampled x86-64 module (the design's 109 captured modules, kiln and clang, LLVM 19 and 22 text and bitcode) goes through both readers, verify, the printer round trip, classify and, where it applies, the interpreter against `llc` under qemu; gaps fixed in `hod_ir`, `hod_ll`, `hod_bc`, `hod_interp` (expected: `x86_fp80` constants and arithmetic, the x86-64 data layout, `x86_64_sysvcc` and friends, the 24-byte `va_list`, attributes and module flags only x86-64 modules carry); each remaining gap a named refusal and a row here | WP-110 | in-progress |
 
 ## M1 and later
 

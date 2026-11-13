@@ -1110,6 +1110,10 @@ fn check_batch(
 
 /// §5.10: generated vector code means what `llc` makes of it.
 #[test]
+#[cfg_attr(
+    target_arch = "x86_64",
+    ignore = "x86-64 runner: llc-19 aborts on the batch (\"Don't know how to widen the operands for INSERT_SUBVECTOR\", X86 DAG ISel, @t296); WP-145 finding"
+)]
 fn vectors_match_llc() {
     let Some(triple) = triple() else { return };
     let compilers: Vec<(u32, PathBuf)> =

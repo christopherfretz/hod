@@ -37,7 +37,9 @@ fn data_dir() -> PathBuf {
 fn full_ir(compiler: &Path, scratch: &Scratch, name: &str, source: &str, extra: &[&str]) -> String {
     let out = scratch.join(format!("{name}.ll"));
     let mut command = Command::new(compiler);
-    command.args(["-g", "-O0", "-S", "-emit-llvm", "-w", "-std=c++20"]).args(extra);
+    command
+        .args(["-g", "-O0", "--target=aarch64-linux-gnu", "-S", "-emit-llvm", "-w", "-std=c++20"])
+        .args(extra);
     command.arg(data_dir().join(source)).arg("-o").arg(&out);
     let outcome = run_with(&mut command, &[], Duration::from_mins(2));
     assert!(outcome.success(), "{command:?}: {}", outcome.stderr_text());

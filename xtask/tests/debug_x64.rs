@@ -42,7 +42,9 @@ fn skip(why: &str) {
 #[test]
 fn x86_64_sessions_match_llc() {
     if Arch::host() == Some(Arch::X86_64) {
-        return skip("this test is of the remote sessions; the host is x86-64");
+        // Not a missing tool: the native sessions are the other tests'.
+        eprintln!("note: this test is of the remote sessions; the host is x86-64");
+        return;
     }
     let scratch = Scratch::new("debug-x64");
     let mut options = Options::new(build_dir());

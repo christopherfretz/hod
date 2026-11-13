@@ -13,7 +13,7 @@ use std::path::Path;
 use common::linking::{Toolchain, exit_code, write};
 use common::{BTI_C, Say, function_bytes, say, words};
 use hod_obj::{A64Reloc, Arch, Object, RelocKind, SectionKind, X64Reloc, elf};
-use hod_testutil::{Scratch, run, tool};
+use hod_testutil::{Scratch, Target, run, tool};
 
 fn abs64(arch: Arch) -> RelocKind {
     match arch {
@@ -59,11 +59,10 @@ fn init_and_fini_arrays(tools: &Toolchain, scratch: &Scratch, arch: Arch) {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 #[test]
 fn aarch64_init_and_fini_arrays_run_in_priority_order() {
     let scratch = Scratch::new("obj-arrays-a64");
-    let Some(tools) = Toolchain::host(&scratch) else { return };
+    let Some(tools) = Toolchain::for_target(&scratch, Target::Aarch64) else { return };
     init_and_fini_arrays(&tools, &scratch, Arch::AArch64);
 }
 
@@ -131,11 +130,10 @@ fn property_note(
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 #[test]
 fn aarch64_property_note_reaches_the_program() {
     let scratch = Scratch::new("obj-note-a64");
-    let Some(tools) = Toolchain::host(&scratch) else { return };
+    let Some(tools) = Toolchain::for_target(&scratch, Target::Aarch64) else { return };
     let features =
         elf::GNU_PROPERTY_AARCH64_FEATURE_1_BTI | elf::GNU_PROPERTY_AARCH64_FEATURE_1_PAC;
     property_note(&tools, &scratch, Arch::AArch64, features, ["BTI", "PAC"]);

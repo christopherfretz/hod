@@ -234,7 +234,15 @@ fn pre_opt(dir: &Scratch, major: u32, source: &str, name: &str) -> Option<PathBu
     let ir = dir.join(format!("{name}.ll"));
     run_ok(
         Command::new(clang)
-            .args(["-std=c++20", "-O0", "-S", "-emit-llvm", "-w", "-fPIC"])
+            .args([
+                "-std=c++20",
+                "-O0",
+                "--target=aarch64-linux-gnu",
+                "-S",
+                "-emit-llvm",
+                "-w",
+                "-fPIC",
+            ])
             .args(["-Xclang", "-disable-llvm-passes", "--target=aarch64-unknown-linux-gnu"])
             .arg(&cpp)
             .arg("-o")
@@ -302,7 +310,7 @@ fn link_and_run_all(
         all.push(Path::new("-lstdc++"));
         toolchain.link_ok(linker, &[], &all, &exe);
         for (index, env) in POISONS.iter().enumerate() {
-            let mut command = Command::new(&exe);
+            let mut command = toolchain.runner_command(&exe);
             command.envs(env.iter().copied());
             let ran = run_with(&mut command, &[], Duration::from_mins(1));
             let what = format!("{name} under {} (environment {index})", linker.name);
@@ -319,7 +327,7 @@ fn the_coroutine_frame_keeps_x19_for_callers_and_unwinders() {
         return;
     }
     let dir = Scratch::new("coro-x19-stress");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let Some(major) = [22, 19].into_iter().find(|&m| versioned("llc", m).is_some()) else {
         return;
     };
@@ -359,7 +367,7 @@ fn coroutines_mixed_with_llc_objects_keep_x19() {
         return;
     }
     let dir = Scratch::new("coro-body-mixed");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let mut runs = 0;
     for major in [19, 22] {
         let Some(coro) = pre_opt(&dir, major, COROUTINE, &format!("coro{major}")) else { continue };

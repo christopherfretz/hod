@@ -41,7 +41,15 @@ fn full_ir(scratch: &Scratch, major: u32, source: &str) -> Option<String> {
     let stem = source.split('.').next().unwrap();
     let out = scratch.join(format!("{stem}-{major}.ll"));
     let mut command = Command::new(compiler);
-    command.args(["-g", "-O0", "-S", "-emit-llvm", "-w", "-std=c++20"]);
+    command.args([
+        "-g",
+        "-O0",
+        "--target=aarch64-linux-gnu",
+        "-S",
+        "-emit-llvm",
+        "-w",
+        "-std=c++20",
+    ]);
     command.arg(data_dir().join(source)).arg("-o").arg(&out);
     let outcome = run_with(&mut command, &[], Duration::from_mins(2));
     assert!(outcome.success(), "{source}: {}", outcome.stderr_text());
@@ -275,7 +283,7 @@ fn run_case(case: &Case) {
     let (Some(gdb), Some(lldb)) = (tool("gdb"), tool("lldb")) else { return };
     let stem = case.source.split('.').next().unwrap();
     let scratch = Scratch::new(&format!("dies-scope-debug-{stem}"));
-    let Some(toolchain) = Toolchain::host(&scratch) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return };
     let mut sessions = 0;
     for major in [19, 22] {
         let Some(llc) = tool(&format!("llc-{major}")) else { continue };

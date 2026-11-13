@@ -22,7 +22,7 @@ use common::{define, function_bytes, undefined, words};
 use hod_obj::{
     A64Reloc, Arch, Binding, Object, SectionId, SectionKind, SymbolId, SymbolKind, X64Reloc,
 };
-use hod_testutil::{Scratch, run, tool};
+use hod_testutil::{Scratch, Target, run, tool};
 
 /// How a function finds a thread-local variable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -280,11 +280,10 @@ fn tls_in_a_shared_object(tools: &Toolchain, arch: Arch, models: &[Model], dynam
 /// initial exec (`TLSIE_ADR_GOTTPREL_PAGE21`,
 /// `TLSIE_LD64_GOTTPREL_LO12_NC`) and descriptors (`TLSDESC_ADR_PAGE21`,
 /// `TLSDESC_LD64_LO12`, `TLSDESC_ADD_LO12`, `TLSDESC_CALL`) in a program.
-#[cfg(target_arch = "aarch64")]
 #[test]
 fn aarch64_tls_in_a_program() {
     let scratch = Scratch::new("obj-tls-a64");
-    let Some(tools) = Toolchain::host(&scratch) else { return };
+    let Some(tools) = Toolchain::for_target(&scratch, Target::Aarch64) else { return };
     let models = [Model::LocalExec, Model::InitialExec, Model::Descriptor];
     tls_in_a_program(&tools, &scratch, Arch::AArch64, &models);
 }
@@ -292,11 +291,10 @@ fn aarch64_tls_in_a_program() {
 /// AArch64: descriptors, and initial exec, in a shared object. They are
 /// linked separately because GNU ld turns a descriptor access into initial
 /// exec when the same variable is also accessed that way.
-#[cfg(target_arch = "aarch64")]
 #[test]
 fn aarch64_tls_in_a_shared_object() {
     let scratch = Scratch::new("obj-tls-a64-so");
-    let Some(tools) = Toolchain::host(&scratch) else { return };
+    let Some(tools) = Toolchain::for_target(&scratch, Target::Aarch64) else { return };
     tls_in_a_shared_object(&tools, Arch::AArch64, &[Model::Descriptor], &["R_AARCH64_TLSDESC"]);
     let initial_exec = ["R_AARCH64_TLS_TPREL64"];
     tls_in_a_shared_object(&tools, Arch::AArch64, &[Model::InitialExec], &initial_exec);

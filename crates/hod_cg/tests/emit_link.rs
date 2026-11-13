@@ -25,7 +25,7 @@ use hod_ir::{
     AARCH64_LINUX_DATA_LAYOUT, AARCH64_LINUX_DATA_LAYOUT_LLVM19, X86_64_LINUX_DATA_LAYOUT,
 };
 use hod_obj::Arch;
-use hod_testutil::{LLVM_MAJORS, Scratch, run_with, tools_required};
+use hod_testutil::{LLVM_MAJORS, Scratch, Target, run_with, tools_required};
 use linking::{Toolchain, exit_code};
 
 const FLAGS: &str = r#"
@@ -239,12 +239,9 @@ fn link_run(toolchain: &Toolchain, scratch: &Scratch, name: &str, inputs: &[&Pat
 
 #[test]
 fn data_links_and_runs_like_llc() {
-    if !cfg!(target_arch = "aarch64") {
-        eprintln!("note: not an AArch64 host; skipping");
-        return;
-    }
     let scratch = Scratch::new("emit-link");
-    let Some(toolchain) = Toolchain::host(&scratch) else { return };
+    // Natively on AArch64, under qemu-aarch64 elsewhere.
+    let Some(toolchain) = Toolchain::for_target(&scratch, Target::Aarch64) else { return };
     links_and_runs(&scratch, &toolchain, Arch::AArch64);
 }
 
@@ -415,11 +412,11 @@ fn data_with_a_c_driver_runs_like_llc() {
     }
     // Each toolchain chooses its linkers in a scratch directory of its own.
     let x64 = Scratch::new("emit-link-c-x64");
-    let mut targets = vec![(Arch::X86_64, Toolchain::x86_64(&x64))];
-    let host = Scratch::new("emit-link-c-host");
-    if cfg!(target_arch = "aarch64") {
-        targets.push((Arch::AArch64, Toolchain::host(&host)));
-    }
+    let a64 = Scratch::new("emit-link-c-a64");
+    let targets = [
+        (Arch::X86_64, Toolchain::x86_64(&x64)),
+        (Arch::AArch64, Toolchain::for_target(&a64, Target::Aarch64)),
+    ];
     for (arch, toolchain) in targets {
         let Some(toolchain) = toolchain else {
             assert!(!tools_required(), "no toolchain for {arch:?} (HOD_REQUIRE_TOOLS=1)");

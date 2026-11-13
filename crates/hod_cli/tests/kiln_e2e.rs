@@ -15,7 +15,7 @@ use std::time::Duration;
 #[allow(dead_code)]
 mod linking;
 
-use hod_testutil::{LLVM_MAJORS, Outcome, Scratch, run_with, tool, tools_required};
+use hod_testutil::{LLVM_MAJORS, Outcome, Scratch, Target, run_with, tool, tools_required};
 use xtask::shim;
 
 /// A C++ program with a virtual call, an exception and iostream.
@@ -235,6 +235,11 @@ int main() {
 const CONTAINERS_PRINTS: &str =
     "1 3 5 7 9 \na=2 b=1 c=1 \ncat dog \n3.250 0.333333\n0.1428571429\n";
 
+/// Why hod declines `MODULE_ASM` for the host: AArch64's assembler names
+/// the directive; x86-64 declines file-scope `asm` as a whole.
+const MODULE_ASM_REASON: &str =
+    if cfg!(target_arch = "aarch64") { "asm:directive/ident" } else { "module:asm" };
+
 /// File-scope `asm` with a directive hod's assembler does not read
 /// (`.ident`, `asm:directive/ident`, `spec/asm.md` §9): a module hod
 /// declines, so the fallback path stays tested.
@@ -323,12 +328,21 @@ int main(void) {
     int xs[] = {1, -2, 3, 40, 5, 6, 7};
     struct Pair p = {1, 2};
     swap_pair(&p);
-    printf("%ld %d %u %u %ld %ld %ld\n", accumulate(1000), prime_sum(xs, 7), collatz(27),
-           collatz(97), p.a, p.b, g_counter);
+    /* Called before the printf: the order in which a call's arguments are
+       evaluated is unspecified, and gcc for x86-64 reads g_counter before
+       it calls accumulate. */
+    long sum = accumulate(1000);
+    printf("%ld %d %u %u %ld %ld %ld\n", sum, prime_sum(xs, 7), collatz(27), collatz(97), p.a,
+           p.b, g_counter);
     return 0;
 }
 "#;
 const DRIVER_PRINTS: &str = "-96401 438 111 118 2 1 253\n";
+
+/// The target kiln compiles for without `--target`.
+fn host() -> Target {
+    Target::host().unwrap_or(Target::Aarch64)
+}
 
 /// The `kiln++` to test with, or `None` to skip.
 fn kiln() -> Option<PathBuf> {
@@ -603,7 +617,7 @@ const PROGRAMS: &[Program] = &[
         args: &[],
         form: "bitcode",
         prints: "module asm 42\n",
-        path: Route::Fallback("asm:directive/ident"),
+        path: Route::Fallback(MODULE_ASM_REASON),
     },
 ];
 
@@ -694,11 +708,17 @@ impl Shimmed {
         output
     }
 
-    /// LLVM's tools read an object hod wrote without complaint.
-    fn inspect(&self, object: &Path, shows: &str) {
+    /// LLVM's tools read an object hod wrote for `target` without
+    /// complaint.
+    fn inspect(&self, object: &Path, shows: &str, target: Target) {
         let bin = self.llvm.join("bin");
+        // `Machine:` names the object's architecture.
+        let machine = match target {
+            Target::Aarch64 => "AArch64",
+            Target::X86_64 => "X86-64",
+        };
         for (tool, args, expect) in [
-            ("llvm-readelf", &["-h", "-S", "-r", "-s"][..], "AArch64"),
+            ("llvm-readelf", &["-h", "-S", "-r", "-s"][..], machine),
             ("llvm-objdump", &["-d", "-r"][..], shows),
             ("llvm-dwarfdump", &["--eh-frame"][..], "FDE"),
             ("llvm-dwarfdump", &["--verify"][..], "No errors."),
@@ -730,10 +750,23 @@ impl Shimmed {
         prints: &str,
     ) {
         let Some(toolchain) = &self.toolchain else { return };
+        Self::links_on(toolchain, &self.scratch, what, flags, objects, libraries, prints);
+    }
+
+    /// [`Shimmed::links_with`] with `toolchain`.
+    fn links_on(
+        toolchain: &linking::Toolchain,
+        scratch: &Scratch,
+        what: &str,
+        flags: &[&str],
+        objects: &[&Path],
+        libraries: &[&str],
+        prints: &str,
+    ) {
         let mut inputs = objects.to_vec();
         inputs.extend(libraries.iter().map(Path::new));
         for linker in &toolchain.linkers {
-            let program = self.scratch.join(format!("{what}-{}", linker.name));
+            let program = scratch.join(format!("{what}-{}", linker.name));
             let ran = toolchain.link_and_run(linker, flags, &inputs, &program);
             assert!(ran.success(), "{what} {}: {ran:?}", linker.name);
             assert_eq!(ran.stdout_text(), prints, "{what} {}", linker.name);
@@ -754,7 +787,7 @@ impl Shimmed {
         match (&*line[0], program.path) {
             ("hod", Route::Hod | Route::Either) => {
                 assert_eq!((&*line[1], &*line[7], &*line[9]), ("-", "-", "-"), "{name}: {line:?}");
-                self.inspect(&self.work.join(&object), "<main>:");
+                self.inspect(&self.work.join(&object), "<main>:", host());
             }
             ("fallback", Route::Fallback(_) | Route::Either) => {
                 assert_construct(&line);
@@ -777,23 +810,42 @@ impl Shimmed {
         }
     }
 
-    /// [`INTEGERS`] in strict mode at -O0 (text) and -O1 (bitcode): hod
-    /// builds it, LLVM's tools read it, and with [`DRIVER`] it prints what
-    /// the LLVM route's object prints.
-    fn hod_builds_integers(&self) {
-        let Some(toolchain) = &self.toolchain else { return };
-        let driver = toolchain.compile_c(&self.scratch, "driver", DRIVER, &[]);
-        std::fs::write(self.work.join("integers.cpp"), INTEGERS).unwrap();
+    /// [`INTEGERS`] for `target` (`kiln --target`) in strict mode at -O0
+    /// (text) and -O1 (bitcode): hod builds it, LLVM's tools read it, and
+    /// with [`DRIVER`] it prints what the LLVM route's object prints. A
+    /// target that is not the host links with the cross toolchain and runs
+    /// under its emulator, so every host builds this program for both
+    /// targets.
+    fn hod_builds_integers(&self, target: Target) {
+        let name = target.name();
+        // A toolchain makes its linker directories in its scratch: the
+        // cross one gets its own.
+        let cross;
+        let (toolchain, scratch) = if target.is_host() {
+            (&self.toolchain, &self.scratch)
+        } else {
+            let scratch = Scratch::new(&format!("kiln-e2e-{name}"));
+            cross = (linking::Toolchain::for_target(&scratch, target), scratch);
+            (&cross.0, &cross.1)
+        };
+        let Some(toolchain) = toolchain else { return };
+        let driver = toolchain.compile_c(scratch, &format!("driver-{name}"), DRIVER, &[]);
+        let source = format!("integers-{name}.cpp");
+        std::fs::write(self.work.join(&source), INTEGERS).unwrap();
+        let triple = format!("--target={name}-unknown-linux-gnu");
         for (opt, form) in [("-O0", "text"), ("-O1", "bitcode")] {
-            let object = format!("integers{opt}.o");
-            let line = self.compile("integers.cpp", &[opt], &object, true);
+            let args = [&*triple, opt];
+            let object = format!("integers-{name}{opt}.o");
+            let line = self.compile(&source, &args, &object, true);
             assert_eq!((&*line[0], &*line[1], &*line[2]), ("hod", "-", form), "{line:?}");
+            assert!(line[5].starts_with(name), "the module's triple: {line:?}");
             let ours = self.work.join(&object);
-            self.inspect(&ours, "<accumulate>:");
-            let theirs = self.reference("integers.cpp", &[opt], &format!("integers-llvm{opt}.o"));
+            self.inspect(&ours, "<accumulate>:", target);
+            let theirs = self.reference(&source, &args, &format!("integers-{name}-llvm{opt}.o"));
             for (route, input) in [("hod", &ours), ("llvm", &theirs)] {
-                let what = format!("integers-{route}{opt}");
-                self.links_and_prints(&what, &[&driver, input], &[], DRIVER_PRINTS);
+                let what = format!("integers-{name}-{route}{opt}");
+                let objects = [driver.as_path(), input];
+                Self::links_on(toolchain, scratch, &what, &[], &objects, &[], DRIVER_PRINTS);
             }
         }
     }
@@ -843,11 +895,13 @@ fn through_the_shim(kiln: &Path, llvm: &Path) {
     }
 
     // Code hod generates: strict mode succeeds.
-    shimmed.hod_builds_integers();
+    for target in Target::ALL {
+        shimmed.hod_builds_integers(target);
+    }
 
     // Strict mode on bitcode: hod's own reader declines it with the
     // construct's name, and nothing was converted.
     let line = shimmed.strict_fails("module-asm.cpp", "strict-asm.o");
-    assert_eq!((&*line[1], &*line[2]), ("asm:directive/ident", "bitcode"), "{line:?}");
+    assert_eq!((&*line[1], &*line[2]), (MODULE_ASM_REASON, "bitcode"), "{line:?}");
     assert_eq!(&*line[8], "-", "no conversion ran: {line:?}");
 }

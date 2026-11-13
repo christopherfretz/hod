@@ -270,7 +270,10 @@ fn cases_match_llc() {
          }\n  return 0;\n}\n",
     );
     let dir = hod_testutil::Scratch::new("a64-neon-cases");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    // The cases include FEAT_SHA3 and the other extensions' intrinsics,
+    // which the emulator's baseline model lacks (SIGILL): its `max` model.
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
+    let toolchain = toolchain.with_emulated_cpu("max");
     let driver = toolchain.compile_c(&dir, "driver", &c, &[]);
     let mut objects = Vec::new();
     // 19 first: the reference is the first build (`LLVM22_DIFFERS`).

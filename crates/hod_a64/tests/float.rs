@@ -1369,7 +1369,7 @@ fn module_text(funcs: &[Func], prefix: &str) -> String {
 /// compared.
 fn run_native(label: &str, funcs: &[Func], per: usize, seed: u64) -> usize {
     let dir = hod_testutil::Scratch::new(label);
-    let Some(toolchain) = Toolchain::host(&dir) else { return 0 };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return 0 };
     let variants: [(&str, Stress); 2] = [("h_", Stress::default()), ("s_", Stress::ALL)];
     let mut objects = Vec::new();
     let mut hod_text = String::new();
@@ -1507,8 +1507,12 @@ fn run_native(label: &str, funcs: &[Func], per: usize, seed: u64) -> usize {
                     why.push(format!("llc {theirs:x}"));
                 }
             }
+            // `NanPolicy::Host`: the interpreter's NaNs are the host's,
+            // whose sign and payload are AArch64's only on an AArch64 host
+            // (x86-64's default NaN is negative); elsewhere any NaN agrees.
             if let Some(want) = want
                 && *want != hod
+                && (cfg!(target_arch = "aarch64") || !same_but_nan(f.ret, *want, hod))
             {
                 why.push(format!("interp {want:x}"));
             }
@@ -2121,7 +2125,7 @@ static void diff(unsigned char *g, unsigned char *d) {
 /// Runs the memory functions natively; returns the calls compared.
 fn run_mem(label: &str, funcs: &[MemFunc], per: usize) -> usize {
     let dir = hod_testutil::Scratch::new(label);
-    let Some(toolchain) = Toolchain::host(&dir) else { return 0 };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return 0 };
     let globals = |prefix: &str| {
         format!(
             "@{prefix}g = global [{GSIZE} x i8] zeroinitializer, align 16\n@{prefix}d = dso_local global [{GSIZE} x i8] zeroinitializer, align 16\n"

@@ -572,7 +572,7 @@ fn objects(dir: &Scratch, text: &str, pic: bool) -> Vec<(&'static str, PathBuf)>
 #[test]
 fn the_cases_run_under_every_linker() {
     let dir = Scratch::new("hod-a64-constaddr");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let (text, names) = module_text(llc_major(), false);
     let main_c = driver(&names);
     let mut runs = 0;

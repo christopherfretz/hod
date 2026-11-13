@@ -59,7 +59,7 @@ fn barriers_run_as_llc_builds_them() {
             objects.push((format!("llc-{major}"), theirs));
         }
     }
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let driver = toolchain.compile_c(&dir, "driver", DRIVER, &[]);
     for (who, object) in &objects {
         for linker in &toolchain.linkers {

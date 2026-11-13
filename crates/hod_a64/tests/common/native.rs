@@ -53,7 +53,7 @@ pub fn run_table(
          }\n  return 0;\n}\n",
     );
     let dir = hod_testutil::Scratch::new(label);
-    let Some(toolchain) = Toolchain::host(&dir) else { return 0 };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return 0 };
     let driver = toolchain.compile_c(&dir, "driver", &c, &[]);
     let (module, bodies) = parse(&format!("{}{body}", ll_header(22)));
     let mut objects = Vec::new();

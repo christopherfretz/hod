@@ -279,7 +279,7 @@ fn driver_object(dir: &Scratch, compiler: &Path, major: u32, name: &str) -> Opti
     let ir = dir.join(format!("{name}.ll"));
     run_ok(
         Command::new(compiler)
-            .args(["-std=c++20", "-O0", "-S", "-emit-llvm", "-w"])
+            .args(["-std=c++20", "-O0", "--target=aarch64-linux-gnu", "-S", "-emit-llvm", "-w"])
             .args(["-Xclang", "-disable-llvm-passes", "--target=aarch64-unknown-linux-gnu"])
             .arg(&source)
             .arg("-o")
@@ -297,7 +297,7 @@ fn coroutines_of_other_compilers_are_driven_from_hod() {
         return;
     }
     let dir = Scratch::new("coro-mixed");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let mut drivers = Vec::new();
     for major in [19, 22] {
         if let Some(clang) = versioned("clang++", major) {

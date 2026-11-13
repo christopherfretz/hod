@@ -31,7 +31,6 @@
 )]
 
 use std::fmt::Write as _;
-use std::process::Command;
 use std::time::Duration;
 
 use hod_a64::compile_module;
@@ -165,7 +164,7 @@ pub fn check(
     let expected: Vec<String> =
         calls.iter().map(|c| interpret(&program, &module, funcs, c)).collect();
     let scratch = Scratch::new(label);
-    let toolchain = Toolchain::host(&scratch)?;
+    let toolchain = Toolchain::aarch64(&scratch)?;
     let linker = toolchain.linkers.first()?;
     let mut rng = Rng(seed ^ 0xd51e_57a6);
     let driver = toolchain.compile_c(&scratch, "driver", &driver(funcs, calls, &mut rng), &[]);
@@ -186,7 +185,7 @@ pub fn check(
     for (name, object) in objects {
         let exe = scratch.join(name);
         toolchain.link_ok(linker, &[], &[&driver, &object], &exe);
-        let ran = run_with(&mut Command::new(&exe), &[], Duration::from_mins(2));
+        let ran = run_with(&mut toolchain.runner_command(&exe), &[], Duration::from_mins(2));
         assert!(ran.success(), "{name}: {:?}\n{}", ran.status, ran.stderr_text());
         let out = ran.stdout_text();
         let got: Vec<&str> = out.lines().collect();

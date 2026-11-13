@@ -120,7 +120,7 @@ fn thunks_with_variable_arguments_run_like_llc() {
         }
     }
     let dir = Scratch::new("hod-musttail-forward");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let Some(llc) = tool("llc") else { return };
     let input = dir.write("p.ll", &text);
     let llc_o = dir.join("llc.o");

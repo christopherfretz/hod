@@ -72,6 +72,62 @@ pub fn cargo_step(args: &[&str]) -> bool {
     }
 }
 
+/// The steps of `cargo xtask ci`, in the order they run (`spec/harness.md`
+/// "ci"). `debug` is the full gate's only.
+pub const STEPS: [&str; 6] = ["fmt", "clippy", "test", "irdiff", "roundtrip", "debug"];
+
+/// The steps of the quick gate the hosted CI lane runs
+/// (`.github/workflows/ci-lane.yml`, `spec/harness.md` "CI").
+pub const HOSTED_STEPS: [&str; 4] = ["fmt", "clippy", "test", "irdiff"];
+
+/// The quick gate's steps the hosted lane does not run: `roundtrip` needs
+/// the corpus, which is build output made on the development machine
+/// (`spec/harness.md` "corpus") and not on a hosted runner.
+pub const NOT_HOSTED: [&str; 1] = ["roundtrip"];
+
+/// What `cargo xtask ci [--quick] [--step <name>]...` asks for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Args {
+    pub quick: bool,
+    /// The steps to run, in [`STEPS`] order; every step when none is named.
+    pub steps: Vec<&'static str>,
+}
+
+impl Args {
+    /// Parses the arguments after `ci`.
+    ///
+    /// # Errors
+    /// An unknown argument or step, or `--step` without a name.
+    pub fn parse(args: &[String]) -> Result<Self, String> {
+        let mut quick = false;
+        let mut named: Vec<String> = Vec::new();
+        let mut rest = args.iter();
+        while let Some(arg) = rest.next() {
+            match arg.as_str() {
+                "--quick" => quick = true,
+                "--step" => named.push(rest.next().ok_or("--step needs a step name")?.clone()),
+                other => match other.strip_prefix("--step=") {
+                    Some(step) => named.push(step.to_owned()),
+                    None => return Err(format!("unknown argument '{other}'")),
+                },
+            }
+        }
+        if let Some(unknown) = named.iter().find(|step| !STEPS.contains(&step.as_str())) {
+            return Err(format!("unknown step '{unknown}' (steps: {})", STEPS.join(", ")));
+        }
+        let steps = STEPS
+            .into_iter()
+            .filter(|step| named.is_empty() || named.iter().any(|n| n == step))
+            .collect();
+        Ok(Self { quick, steps })
+    }
+
+    /// Whether `step` runs.
+    pub fn runs(&self, step: &str) -> bool {
+        self.steps.contains(&step)
+    }
+}
+
 /// One `irdiff` run of the gate (`spec/harness.md` "irdiff", "In the
 /// gate").
 #[cfg(unix)]
@@ -166,6 +222,55 @@ pub fn irdiff_command(run: &IrdiffRun) -> String {
 #[cfg(test)]
 mod tests {
     use super::should_retry;
+
+    // spec/harness.md "ci": `--step` selects steps, which run in the
+    // gate's order whatever the order they are named in.
+    #[test]
+    fn steps_are_selected_by_name() {
+        use super::{Args, STEPS};
+        let parse =
+            |args: &[&str]| Args::parse(&args.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>());
+        let all = parse(&["--quick"]).unwrap();
+        assert!(all.quick);
+        assert_eq!(all.steps, STEPS);
+        let two = parse(&["--step", "test", "--step=fmt"]).unwrap();
+        assert!(!two.quick);
+        assert_eq!(two.steps, ["fmt", "test"]);
+        assert!(two.runs("fmt") && !two.runs("clippy"));
+        assert!(parse(&["--step", "lint"]).unwrap_err().contains("unknown step 'lint'"));
+        assert!(parse(&["--step"]).is_err());
+        assert!(parse(&["--fast"]).is_err());
+    }
+
+    // spec/harness.md "CI": the hosted lane runs every step of the quick
+    // gate but `roundtrip` (no corpus on a hosted runner) once, each with
+    // `--quick --step <name>`, and every job of the lane requires tools.
+    #[test]
+    fn the_hosted_lane_runs_the_quick_gates_steps() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let lane = std::fs::read_to_string(root.join(".github/workflows/ci-lane.yml")).unwrap();
+        for step in super::HOSTED_STEPS {
+            let command = format!("cargo xtask ci --quick --step {step}");
+            assert_eq!(lane.matches(&command).count(), 1, "{command} once in ci-lane.yml");
+        }
+        let mut steps: Vec<&str> = super::HOSTED_STEPS.to_vec();
+        steps.extend(super::NOT_HOSTED);
+        steps.sort_unstable();
+        let mut quick: Vec<&str> = super::STEPS.into_iter().filter(|s| *s != "debug").collect();
+        quick.sort_unstable();
+        assert_eq!(steps, quick, "every quick step is hosted or said not to be");
+        assert_eq!(lane.matches("run: cargo xtask ci").count(), super::HOSTED_STEPS.len());
+        assert!(lane.contains("HOD_REQUIRE_TOOLS: \"1\""), "the lane requires tools");
+        let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+        for runner in ["runner: ubuntu-24.04-arm,", "runner: ubuntu-24.04,"] {
+            assert_eq!(ci.matches(runner).count(), 1, "{runner} once in ci.yml");
+        }
+        let sweep = std::fs::read_to_string(root.join(".github/workflows/sweep.yml")).unwrap();
+        // The sweep never gates: no pull_request or merge_group trigger.
+        let trigger = |line: &str| line == "  pull_request:" || line == "  merge_group:";
+        assert!(!sweep.lines().any(trigger), "sweep.yml gates a merge");
+        assert!(ci.lines().any(trigger), "the gate's triggers are recognized");
+    }
 
     // spec/harness.md "irdiff", "In the gate": the runs of each tier. The
     // full gate runs the other architecture with BOTH oracles: one run

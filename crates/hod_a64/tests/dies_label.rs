@@ -63,7 +63,7 @@ fn ir(compiler: &Path, scratch: &Scratch, name: &str, source: &str) -> String {
     }
     let out = scratch.join(format!("{name}.ll"));
     let mut command = Command::new(compiler);
-    command.args(["-g", "-O0", "-S", "-emit-llvm", "-w"]);
+    command.args(["-g", "-O0", "--target=aarch64-linux-gnu", "-S", "-emit-llvm", "-w"]);
     if !support::has_ext(source, "c") || is_kiln {
         command.arg("-std=c++20");
     }
@@ -344,7 +344,11 @@ fn sub_byte_alignment_matches_llc() {
     let path = scratch.write("align.c", source);
     let out = scratch.join("align.ll");
     let mut command = Command::new(&cc);
-    command.args(["-g", "-O0", "-S", "-emit-llvm", "-w"]).arg(&path).arg("-o").arg(&out);
+    command
+        .args(["-g", "-O0", "--target=aarch64-linux-gnu", "-S", "-emit-llvm", "-w"])
+        .arg(&path)
+        .arg("-o")
+        .arg(&out);
     assert!(run_with(&mut command, &[], Duration::from_mins(1)).success());
     let text = std::fs::read_to_string(out).unwrap();
     let member =
@@ -374,7 +378,11 @@ fn unit_with_only_imports_matches_llc() {
     let path = scratch.write("imports.cpp", source);
     let out = scratch.join("imports.ll");
     let mut command = Command::new(&cc);
-    command.args(["-g", "-O0", "-S", "-emit-llvm", "-w"]).arg(&path).arg("-o").arg(&out);
+    command
+        .args(["-g", "-O0", "--target=aarch64-linux-gnu", "-S", "-emit-llvm", "-w"])
+        .arg(&path)
+        .arg("-o")
+        .arg(&out);
     assert!(run_with(&mut command, &[], Duration::from_mins(1)).success());
     let text = std::fs::read_to_string(out).unwrap();
     assert!(text.contains("imports: "), "the unit lists an import");
@@ -563,7 +571,7 @@ fn sessions_match_llc() {
         return;
     };
     let scratch = Scratch::new("dies-label-sessions");
-    let Some(toolchain) = Toolchain::host(&scratch) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return };
     let mut sessions = 0;
     for s in SESSIONS {
         for (fe, cc, llc) in pairs(s.source, true) {
@@ -664,7 +672,16 @@ fn local_type_of_inlined_function_matches_llc() {
 fn optimized_ir(compiler: &Path, scratch: &Scratch, name: &str, source: &str) -> String {
     let out = scratch.join(format!("{name}.ll"));
     let mut command = Command::new(compiler);
-    command.args(["-g", "-O1", "-Xclang", "-disable-llvm-passes", "-S", "-emit-llvm", "-w"]);
+    command.args([
+        "-g",
+        "-O1",
+        "-Xclang",
+        "-disable-llvm-passes",
+        "--target=aarch64-linux-gnu",
+        "-S",
+        "-emit-llvm",
+        "-w",
+    ]);
     command.arg(data_dir().join(source)).arg("-o").arg(&out);
     let outcome = run_with(&mut command, &[], Duration::from_mins(2));
     assert!(outcome.success(), "{command:?}: {}", outcome.stderr_text());

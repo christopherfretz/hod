@@ -9,8 +9,8 @@ use hod_ir::kit::{
     lower_alloca, module_flag, string_attr, value_keyword,
 };
 use hod_ir::{
-    AttrClass, FnAttrs, FunctionBuilder, InstKind, Module, ParamAttrs, ParamMem, SymId,
-    TargetSpec, TypeId, Value,
+    AttrClass, FnAttrs, FunctionBuilder, InstKind, Module, ParamAttrs, ParamMem, SymId, TargetSpec,
+    TypeId, Value,
 };
 
 const I8: TypeId = TypeId::I8;
@@ -39,11 +39,13 @@ fn last_ptr_add(m: &Module, b: FunctionBuilder) -> (i64, Vec<u64>) {
     b.ret(None).unwrap();
     let body = b.finish().unwrap();
     body.verify(m).unwrap();
-    let found = body.insts().filter_map(|inst| match inst.kind() {
-        InstKind::PtrAdd(add) => Some((add.offset, add.indices().map(|(_, scale)| scale).collect::<Vec<_>>())),
+    let mut found = body.insts().filter_map(|inst| match inst.kind() {
+        InstKind::PtrAdd(add) => {
+            Some((add.offset, add.indices().map(|(_, scale)| scale).collect::<Vec<_>>()))
+        }
         _ => None,
     });
-    found.last().expect("a PtrAdd")
+    found.next_back().expect("a PtrAdd")
 }
 
 #[test]
@@ -56,9 +58,12 @@ fn gep_folds_constant_indices_and_scales_variable_ones() {
     let (n, p) = (b.arg(0).unwrap(), b.arg(1).unwrap());
     let mut gep = Gep::new(&m.types, outer, PTR).unwrap();
     let mut indices = Vec::new();
-    for (ty, value, constant) in
-        [(I64, Value::NONE, Some(1)), (I32, Value::NONE, Some(1)), (I64, n, None), (I32, Value::NONE, Some(1))]
-    {
+    for (ty, value, constant) in [
+        (I64, Value::NONE, Some(1)),
+        (I32, Value::NONE, Some(1)),
+        (I64, n, None),
+        (I32, Value::NONE, Some(1)),
+    ] {
         assert_eq!(gep.index_type(&m.types, ty).unwrap(), m.types.int_bits(ty).unwrap());
         gep.index(&m.types, value, constant, &mut indices).unwrap();
     }
@@ -147,7 +152,9 @@ fn a_static_alloca_is_a_slot_and_any_other_an_alloca() {
     let desc = AllocaDesc { count: Some(count), align: Some(16), ..alloca(arr) };
     let (ty, slot) = lower_alloca(&mut m, &mut b, &desc).unwrap();
     assert_eq!(ty, PTR);
-    assert!(matches!(slot, Lowered::Built(value) if b.slot(hod_ir::SlotId::new(0)).unwrap() == value));
+    assert!(
+        matches!(slot, Lowered::Built(value) if b.slot(hod_ir::SlotId::new(0)).unwrap() == value)
+    );
     // Outside the entry block, or with a variable count: the instruction.
     let n = b.arg(0).unwrap();
     let (_, dynamic) =
@@ -160,7 +167,8 @@ fn a_static_alloca_is_a_slot_and_any_other_an_alloca() {
     body.verify(&m).unwrap();
     assert_eq!(body.slots().len(), 1);
     assert_eq!(body.slots()[0].size(), 2 * 12);
-    let allocas = body.insts().filter(|inst| matches!(inst.kind(), InstKind::Alloca { .. })).count();
+    let allocas =
+        body.insts().filter(|inst| matches!(inst.kind(), InstKind::Alloca { .. })).count();
     assert_eq!(allocas, 2);
 }
 
@@ -225,9 +233,10 @@ fn special_arrays_are_delivered_into_the_module() {
     deliver_special(&mut m, SpecialGlobal::Ctors, ctors).unwrap();
     assert_eq!(m.ctors().len(), 1);
     assert_eq!((m.ctors()[0].priority, m.ctors()[0].func), (101, f));
-    let used_ty = m.types.array(PTR, 1).unwrap();
-    let nulls = m.consts.aggregate(&m.types, used_ty, &[null]).unwrap();
-    let error = deliver_special(&mut m, SpecialGlobal::Used, nulls).unwrap_err();
+    // An array of nulls only is a zero array, which has no members.
+    let used_ty = m.types.array(PTR, 2).unwrap();
+    let with_null = m.consts.aggregate(&m.types, used_ty, &[addr, null]).unwrap();
+    let error = deliver_special(&mut m, SpecialGlobal::Used, with_null).unwrap_err();
     assert_eq!(error, SpecialError::NullUsed.into());
     assert_eq!(SpecialGlobal::from_name(b"llvm.compiler.used"), Some(SpecialGlobal::CompilerUsed));
     assert_eq!(SpecialGlobal::from_name(b"llvm.usedx"), None);

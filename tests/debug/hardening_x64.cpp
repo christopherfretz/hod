@@ -65,8 +65,8 @@ int main() {
 //@ gdb-check: Breakpoint 1, deep (...)
 //@ gdb-check: wrong backtraces: 0 [] stepped: True
 //@ gdb-check: #0  0x? in guarded (...) at hardening_x64.cpp:36
-//@ gdb-check: Breakpoint 2, guarded (...)
 //@ gdb-check: $1 = 15
+//@ gdb-check: #0  guarded (...) at hardening_x64.cpp:39
 //@ gdb-check: 3 16
 //@ gdb-check: exited normally
 //@ lldb: settings set frame-format "frame #${frame.index}: ${function.name-without-args}{ at ${line.file.basename}:${line.number}}\n"

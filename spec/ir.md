@@ -2430,9 +2430,45 @@ definition's set (`sign-return-address=none` dropped unless signing,
 strings, the flags' defaults added where the set has none), once per set.
 It applies to AArch64 only, to definitions only.
 
-Not in the kit yet (WP-092's `PARKED.md`): the debug fields (§6.9's
-mapping of `DI*` fields, `DILocation`, `DIExpression`), which both
-readers still do separately.
+**Debug fields** (§6, `spec/dwarf.md` §5.9). `di_node(kind, name,
+fields)` is `DiNode::llvm_default(kind)` with each read field set in order
+(`DiNode::set`'s errors); a kind `hod_ir` does not represent (`None`) is
+`Other` named `name`. `define_di_node(debug, id, node, distinct)` defines
+a reserved node distinct or uniqued; `define_di_tuple(debug, id,
+elements)` a reserved tuple (`DiId::NONE` for `null`).
+`invalid_di_ref(debug)` is what stands for a reference LLVM's verifier
+refuses (a location, an expression, an assign id or a function's value
+where a node is named): the empty tuple, and the producer records
+`DEBUG_INVALID` (`debug:invalid`), against the function in a body, the
+module otherwise. `unsupported_field(module, kind, field, default)`
+records a field `hod_ir` cannot represent unless its value is the
+default (what LLVM writes as no field), by `di_field`'s construct, else
+`debug:<kind>.<field>`; an enumerator wider than 64 bits is
+`WIDE_ENUMERATOR`, read as 0. `di_atom(group, rank)` is a location's
+key-instruction atom (WP-149), `None` for a rank over 8 bits (malformed;
+a group or rank over what LLVM stores is refused when the location is
+defined); `add_location(debug, loc, atom, distinct)` adds a location
+written in place. `compile_unit(module, unit)` lists an operand of
+`!llvm.dbg.cu` that is a compile unit; `function_subprogram(module,
+node)` is a function's `!dbg` when it is a subprogram (of several, the
+last); `variable_expression(module, sym, node)` attaches a variable's
+`!dbg` when it is a global-variable expression; anything else is
+`DEBUG_INVALID`. `finish_debug(module, listed_units)` runs after the
+items: nothing without debug information; else the tables are completed
+and, when used (`!llvm.dbg.cu`, or a function or variable that names its
+debug information), a failed `verify_debug` or a `Debug Info Version`
+other than 3 is `DEBUG_INVALID`. The debug records: `DebugRecordKind`
+(`of_record` for `#dbg_declare`, `#dbg_value`, `#dbg_assign`,
+`#dbg_label`; `of_intrinsic` for `llvm.dbg.*`; any other intrinsic is
+`debug_intrinsic_construct`, `debug:<name>`; a record LLVM knows that hod
+does not keep is `unsupported_record_construct`), `variable_kind` (the
+kind its variable must be), `DebugRecord` (`new(kind)`: no variable, the
+empty expressions, no address), and `emit_debug_record(b, record, values,
+loc)`, which hands it to the builder, except a `declare` of a `DIArgList`
+(false: `DEBUG_INVALID`); an assignment's `DIArgList` is
+`ASSIGN_ARG_LIST`. What stays in each producer: reading the fields
+(names and `DW_*` keywords in text, operand layouts and versions in
+bitcode), its error kinds and messages, and where it records.
 
 Tests: `tests/kit.rs` (each promise above); byte equality of both
 readers' objects over the corpus and the seed tests, both targets, text

@@ -173,6 +173,48 @@ fn vbr_numbers() {
 }
 
 #[test]
+fn vbr_in_one_word_and_across_words_agree() {
+    // The decode from one word and the chunk-by-chunk one: every bit
+    // offset, chunk width and number of bits after the number, so that
+    // each value is read both ways and across each word boundary.
+    let values = [0u64, 1, 31, 32, 1000, 1 << 20, 1 << 27, 1 << 40, (1 << 56) - 1, u64::MAX];
+    for offset in 0..64u32 {
+        for width in 2..=32u32 {
+            for &value in &values {
+                for after in [0u32, 7, 64, 100] {
+                    let mut writer = BitWriter::new();
+                    writer.emit(0, offset);
+                    writer.vbr(value, width);
+                    let end = writer.bit;
+                    for _ in 0..after {
+                        writer.emit(0, 1);
+                    }
+                    let mut reader = BitReader::new(&writer.bytes);
+                    reader.read(offset).unwrap();
+                    assert_eq!(reader.vbr(width).unwrap(), value, "{value}/{width} at {offset}");
+                    assert_eq!(reader.pos(), end, "{value}/{width} at {offset}");
+                }
+            }
+        }
+    }
+    // An unfinished number with plenty of bits after it in the word is
+    // still the error of its own position.
+    let mut writer = BitWriter::new();
+    writer.emit(0, 3);
+    for _ in 0..13 {
+        writer.emit(0b11_1111, 6);
+    }
+    writer.emit(0b00_0001, 6);
+    writer.emit(0, 64);
+    writer.emit(0, 64);
+    let mut reader = BitReader::new(&writer.bytes);
+    reader.read(3).unwrap();
+    let error = reader.vbr(6).unwrap_err();
+    assert_eq!(error.kind, BcErrorKind::Malformed);
+    assert_eq!(error.bit, 3);
+}
+
+#[test]
 fn vbr_over_64_bits_is_an_error() {
     // 65 significant bits in chunks of 6.
     let mut writer = BitWriter::new();

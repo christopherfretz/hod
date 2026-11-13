@@ -16,8 +16,8 @@ use std::borrow::Cow;
 
 use hod_ir::{
     ChecksumKind, ConstId, DiAtom, DiConstant, DiFieldValue, DiFlags, DiId, DiKind, DiLocation,
-    DiMapping, DiNode, DiOther, DiShape, DiString, DiTuple, EmissionKind, ExprId, LocId,
-    NameTableKind, SpFlags, di_field, di_kind, dw_ate, dw_cc, dw_lang, dw_op, dw_tag,
+    DiMapping, DiNode, DiShape, DiString, EmissionKind, ExprId, LocId, NameTableKind, SpFlags,
+    di_field, di_kind, dw_ate, dw_cc, dw_lang, dw_op, dw_tag, kit,
 };
 
 use crate::Span;
@@ -80,9 +80,8 @@ pub(crate) struct DebugMap {
 }
 
 /// The construct recorded when debug metadata breaks a rule LLVM's
-/// verifier checks: LLVM strips the module's debug information then, with
-/// a warning, and hod refuses the module by this name instead.
-pub(crate) const INVALID: &str = "debug:invalid";
+/// verifier checks (the kit's).
+pub(crate) use hod_ir::kit::DEBUG_INVALID as INVALID;
 
 /// A field's value as read, before the node is built: strings and lists
 /// are ranges of scratch storage until then.
@@ -142,11 +141,10 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
         let mut subprogram = None;
         for at in 0..self.dbg.len() {
             let node = self.dbg[at];
-            match self.global_dbg(node)? {
-                Some(id) if self.module.debug.kind(id) == DiKind::Subprogram => {
-                    subprogram = Some(id);
-                }
-                _ => self.note(INVALID),
+            let node = self.global_dbg(node)?;
+            match kit::function_subprogram(self.module, node) {
+                Some(id) => subprogram = Some(id),
+                None => self.note(INVALID),
             }
         }
         Ok(subprogram)
@@ -158,11 +156,9 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
         for at in 0..self.dbg.len() {
             let node = self.dbg[at];
             let start = self.tok.start;
-            match self.global_dbg(node)? {
-                Some(id) if self.module.debug.kind(id) == DiKind::GlobalVariableExpression => {
-                    ir(start, self.module.attach_global_expr(sym, id))?;
-                }
-                _ => self.note(INVALID),
+            let node = self.global_dbg(node)?;
+            if !ir(start, kit::variable_expression(self.module, sym, node))? {
+                self.note(INVALID);
             }
         }
         Ok(())
@@ -200,23 +196,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
     /// `debug:invalid`, as is debug information LLVM would drop for want
     /// of a `Debug Info Version` of 3.
     pub(crate) fn finish_debug(&mut self) -> PResult<()> {
-        if self.module.debug.is_empty() && self.dbg_cu.is_none() {
-            return Ok(());
-        }
-        ir(self.src.len() as u32, self.module.finish_debug())?;
-        // LLVM drops the debug information of a module that uses it
-        // without `Debug Info Version` 3.
-        let used = self.dbg_cu.is_some()
-            || !self.module.global_exprs().is_empty()
-            || self.module.symbols().any(|symbol| {
-                matches!(symbol.kind(), hod_ir::SymbolKind::Function { subprogram: Some(_), .. })
-            });
-        let version = self.module.props.debug_info_version;
-        // LLVM's verifier checks only what is used, and so does this.
-        if used && (version != Some(3) || self.module.verify_debug().is_err()) {
-            self.module.record_unsupported(INVALID, None);
-        }
-        Ok(())
+        ir(self.src.len() as u32, kit::finish_debug(self.module, self.dbg_cu.is_some()))
     }
 
     /// The handle of the node numbered `id`: at the module level from the
@@ -288,11 +268,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                     let name = kind_name(self.src, node.span);
                     let made = self.node_body(name, node.span, &mut scratch)?;
                     let debug = &mut self.module.debug;
-                    let result = if node.distinct {
-                        made.define_distinct(debug, id, &scratch, self.src)
-                    } else {
-                        made.define(debug, id, &scratch, self.src)
-                    };
+                    let result = made.define(debug, id, &scratch, self.src, node.distinct);
                     ir(node.span.start, result)?;
                     scratch.fields.clear();
                     scratch.lists.clear();
@@ -313,11 +289,9 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
             self.goto(span.start);
             while self.tok.start < span.end {
                 let at = self.tok.start;
-                match self.list_element(&mut scratch)? {
-                    Some(unit) if self.module.debug.kind(unit) == DiKind::CompileUnit => {
-                        ir(at, self.module.debug.add_compile_unit(unit))?;
-                    }
-                    _ => self.module.record_unsupported(INVALID, None),
+                let unit = self.list_element(&mut scratch)?;
+                if !ir(at, kit::compile_unit(self.module, unit))? {
+                    self.module.record_unsupported(INVALID, None);
                 }
                 if self.tok.start < span.end {
                     self.expect(Tok::Comma, "expected ',' between operands")?;
@@ -343,8 +317,8 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                     self.expect(Tok::Comma, "expected ',' between operands")?;
                 }
             }
-            let tuple = DiNode::Tuple(DiTuple { elements: &scratch.lists[mark..] });
-            ir(span.start, self.module.debug.define(id, &tuple))?;
+            let elements = &scratch.lists[mark..];
+            ir(span.start, kit::define_di_tuple(&mut self.module.debug, id, elements))?;
             scratch.lists.truncate(mark);
         }
         Ok(())
@@ -418,8 +392,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
             Handle::None | Handle::Loc(_) | Handle::Expr(_) | Handle::AssignId => {
                 // Not a node a field may name; LLVM's verifier refuses it.
                 self.invalid();
-                let node = DiNode::Tuple(DiTuple { elements: &[] });
-                ir(at, self.module.debug.add(&node))
+                ir(at, kit::invalid_di_ref(&mut self.module.debug))
             }
         }
     }
@@ -602,8 +575,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
         ) {
             // Not a node a field may name.
             self.module.record_unsupported(INVALID, None);
-            let node = DiNode::Tuple(DiTuple { elements: &[] });
-            return ir(at, self.module.debug.add(&node));
+            return ir(at, kit::invalid_di_ref(&mut self.module.debug));
         }
         self.enter()?;
         let fields = scratch.fields.len();
@@ -663,10 +635,9 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                 Some(DiMapping::Dropped(_)) => {
                     self.skip_value()?;
                 }
-                Some(DiMapping::Unsupported(construct)) => {
-                    if !self.skip_value()? {
-                        self.module.record_unsupported(construct, None);
-                    }
+                Some(DiMapping::Unsupported(_)) => {
+                    let default = self.skip_value()?;
+                    kit::unsupported_field(self.module, name, field, default);
                 }
                 None => {
                     let field = String::from_utf8_lossy(field);
@@ -860,7 +831,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
     /// An integer that does not fit 64 bits: a wide enumerator.
     fn wide(&mut self, kind: DiKind, at: u32) -> PResult<Val> {
         if kind == DiKind::Enumerator {
-            self.module.record_unsupported("debug:DIEnumerator.wide", None);
+            self.module.record_unsupported(kit::WIDE_ENUMERATOR, None);
             return Ok(Val::UInt(0));
         }
         fail(LlErrorKind::Syntax, at, "a number of a debug node does not fit 64 bits")
@@ -912,14 +883,14 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                 b"atomGroup" => atom.group = self.expect_u64("expected an atom group")?,
                 b"atomRank" => {
                     let rank = self.expect_u64("expected an atom rank")?;
-                    let Ok(rank) = u8::try_from(rank) else {
+                    let Some(read) = kit::di_atom(atom.group, rank) else {
                         return fail(
                             LlErrorKind::Syntax,
                             at,
                             "value for 'atomRank' too large, limit is 255",
                         );
                     };
-                    atom.rank = rank;
+                    atom = read;
                 }
                 _ => {
                     if let Some(DiMapping::Dropped(_)) = di_field(b"DILocation", field) {
@@ -953,13 +924,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                 self.enter()?;
                 let (loc, atom, distinct) = self.location_body(span, false, scratch)?;
                 self.leave();
-                let debug = &mut self.module.debug;
-                let made = if distinct {
-                    debug.distinct_loc_in_atom(loc, atom)
-                } else {
-                    debug.loc_in_atom(loc, atom)
-                };
-                Some(ir(at, made)?)
+                Some(ir(at, kit::add_location(&mut self.module.debug, loc, atom, distinct))?)
             }
             node => self.loc_of(at, node)?,
         };
@@ -982,13 +947,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                 scratch.lists.clear();
                 self.dscratch = scratch;
                 let (loc, atom, distinct) = read?;
-                let debug = &mut self.module.debug;
-                let made = if distinct {
-                    debug.distinct_loc_in_atom(loc, atom)
-                } else {
-                    debug.loc_in_atom(loc, atom)
-                };
-                Ok(Some(ir(at, made)?))
+                Ok(Some(ir(at, kit::add_location(&mut self.module.debug, loc, atom, distinct))?))
             }
             MdRef::Inline(..) => Ok(self.invalid_loc()),
         }
@@ -1061,15 +1020,11 @@ impl Made<'_> {
     /// The node, its fields set from `fields`.
     fn node<'s>(
         &'s self,
-        fields: &[(&'static str, Val)],
+        fields: &'s [(&'static str, Val)],
         scratch: &'s DebugScratch,
         src: &'s [u8],
     ) -> hod_ir::IrResult<DiNode<'s>> {
-        let Some(kind) = self.kind else {
-            return Ok(DiNode::Other(DiOther { kind: self.name }));
-        };
-        let mut node = DiNode::llvm_default(kind);
-        for &(field, value) in fields {
+        let values = fields.iter().map(|&(field, value)| {
             let value = match value {
                 Val::UInt(value) => DiFieldValue::UInt(value),
                 Val::Int(value) => DiFieldValue::Int(value),
@@ -1084,9 +1039,9 @@ impl Made<'_> {
                 }
                 Val::Expr(id) => DiFieldValue::Expr(id),
             };
-            node.set(field.as_bytes(), value)?;
-        }
-        Ok(node)
+            (field, value)
+        });
+        kit::di_node(self.kind, self.name, values)
     }
 
     fn define<L: Layering>(
@@ -1095,20 +1050,10 @@ impl Made<'_> {
         id: DiId,
         scratch: &DebugScratch,
         src: &[u8],
+        distinct: bool,
     ) -> hod_ir::IrResult<()> {
         let node = self.node(&scratch.fields[self.first..], scratch, src)?;
-        debug.define(id, &node)
-    }
-
-    fn define_distinct<L: Layering>(
-        &self,
-        debug: &mut hod_ir::DebugInfo<L>,
-        id: DiId,
-        scratch: &DebugScratch,
-        src: &[u8],
-    ) -> hod_ir::IrResult<()> {
-        let node = self.node(&scratch.fields[self.first..], scratch, src)?;
-        debug.define_distinct(id, &node)
+        kit::define_di_node(debug, id, &node, distinct)
     }
 
     fn add<L: Layering>(

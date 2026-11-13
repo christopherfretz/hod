@@ -6,7 +6,7 @@
 
 use std::borrow::Cow;
 
-use hod_ir::{DiAtom, DiId, DiKind, DiLocation, ExprId, Layering, LocId, Value};
+use hod_ir::{DiAtom, DiId, DiKind, DiLocation, ExprId, Layering, LocId, Value, kit};
 
 use crate::body::{Fx, Ops};
 use crate::codes::func;
@@ -14,27 +14,12 @@ use crate::debug::{Handle, INVALID, LocalMd, column};
 use crate::error::{BcResult, fail, ir};
 use crate::module::Metadata;
 
-/// The four debug records (as `hod_ll`'s `RecordKind`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum RecordKind {
-    Declare,
-    Value,
-    Assign,
-    Label,
-}
-
-/// A call of an `llvm.dbg.*` intrinsic, read and waiting for the call's
-/// `DEBUG_LOC`, which is the record's location.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct OldRecord {
-    pub kind: RecordKind,
-    pub var: DiId,
-    pub expr: ExprId,
-    /// Whether the value is a `DIArgList` (in `State::dbg_vals`).
-    pub list: bool,
-    pub address: Value,
-    pub address_expr: ExprId,
-}
+/// A debug record, or a call of an `llvm.dbg.*` intrinsic read and
+/// waiting for the call's `DEBUG_LOC`, which is the record's location;
+/// its values are in `State::dbg_vals`.
+pub(crate) use hod_ir::kit::DebugRecord as OldRecord;
+/// The four debug records.
+pub(crate) use hod_ir::kit::DebugRecordKind as RecordKind;
 
 /// What a metadata id a body names is.
 #[derive(Clone, Copy, Debug)]
@@ -183,11 +168,8 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     /// before.
     pub(crate) fn debug_record(&mut self, code: u32, o: &mut Ops<'_>) -> BcResult<()> {
         if code == func::DEBUG_RECORD_DECLARE_VALUE {
-            let construct = match hod_ir::di_record(b"#dbg_declare_value") {
-                Some(hod_ir::DiMapping::Unsupported(construct)) => Cow::Borrowed(construct),
-                _ => Cow::Borrowed("debug:#dbg_declare_value"),
-            };
-            self.note(construct);
+            let construct = kit::unsupported_record_construct(b"#dbg_declare_value");
+            self.note(Cow::Borrowed(construct.unwrap_or("debug:#dbg_declare_value")));
             return Ok(());
         }
         let (kind, len) = match code {
@@ -235,16 +217,9 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     /// A call of `llvm.dbg.*`: its metadata arguments (metadata ids),
     /// kept until the call's location is read.
     pub(crate) fn debug_call(&mut self, name: &[u8], args: &[u64]) -> BcResult<()> {
-        let kind = match name {
-            b"llvm.dbg.declare" => RecordKind::Declare,
-            b"llvm.dbg.value" => RecordKind::Value,
-            b"llvm.dbg.assign" => RecordKind::Assign,
-            b"llvm.dbg.label" => RecordKind::Label,
-            _ => {
-                let name = String::from_utf8_lossy(name);
-                self.note(format!("debug:{name}"));
-                return Ok(());
-            }
+        let Some(kind) = RecordKind::of_intrinsic(name) else {
+            self.note(kit::debug_intrinsic_construct(name));
+            return Ok(());
         };
         let want = match kind {
             RecordKind::Label => 1,
@@ -271,23 +246,16 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
         value: Option<u64>,
         mds: &[u64],
     ) -> BcResult<OldRecord> {
-        let mut record = OldRecord {
-            kind,
-            var: DiId::NONE,
-            expr: ExprId::EMPTY,
-            list: false,
-            address: Value::NONE,
-            address_expr: ExprId::EMPTY,
-        };
+        let mut record = OldRecord::new(kind);
         self.s.dbg_vals.clear();
         if kind == RecordKind::Label {
-            record.var = self.record_node(mds[0], DiKind::Label)?;
+            record.var = self.record_node(mds[0], kind.variable_kind())?;
             return Ok(record);
         }
         if let Some(value) = value {
             record.list = self.record_value(value)?;
         }
-        record.var = self.record_node(mds[0], DiKind::LocalVariable)?;
+        record.var = self.record_node(mds[0], kind.variable_kind())?;
         record.expr = self.record_expr(mds[1])?;
         if kind == RecordKind::Assign {
             match self.md_use(mds[2])? {
@@ -296,13 +264,13 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
             }
             let mark = self.s.dbg_vals.len();
             if self.record_value(mds[3])? {
-                self.note("debug:#dbg_assign.DIArgList");
+                self.note(kit::ASSIGN_ARG_LIST);
             }
             record.address = self.s.dbg_vals.get(mark).copied().unwrap_or(Value::NONE);
             self.s.dbg_vals.truncate(mark);
             record.address_expr = self.record_expr(mds[4])?;
             if record.list {
-                self.note("debug:#dbg_assign.DIArgList");
+                self.note(kit::ASSIGN_ARG_LIST);
             }
         }
         Ok(record)
@@ -360,28 +328,9 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
 
     /// Hands a record to the builder.
     fn emit_record(&mut self, record: OldRecord, loc: LocId) -> BcResult<()> {
-        let value = self.s.dbg_vals.first().copied().unwrap_or(Value::NONE);
-        let b = &mut self.b;
-        let made = match record.kind {
-            RecordKind::Declare if record.list => {
-                self.note(INVALID);
-                return Ok(());
-            }
-            RecordKind::Declare => b.dbg_declare(value, record.var, record.expr, loc),
-            RecordKind::Value if record.list => {
-                b.dbg_value_list(&self.s.dbg_vals, record.var, record.expr, loc)
-            }
-            RecordKind::Value => b.dbg_value(value, record.var, record.expr, loc),
-            RecordKind::Assign => b.dbg_assign(
-                value,
-                record.var,
-                record.expr,
-                record.address,
-                record.address_expr,
-                loc,
-            ),
-            RecordKind::Label => b.dbg_label(record.var, loc),
-        };
-        ir(self.at, made)
+        if !ir(self.at, kit::emit_debug_record(&mut self.b, &record, &self.s.dbg_vals, loc))? {
+            self.note(INVALID);
+        }
+        Ok(())
     }
 }

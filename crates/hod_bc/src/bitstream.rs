@@ -120,6 +120,43 @@ impl<'a> BitReader<'a> {
     #[inline]
     pub fn vbr(&mut self, width: u32) -> BcResult<u64> {
         debug_assert!((2..=32).contains(&width), "a VBR chunk is 2 to 32 bits");
+        // The common case, inline: at least 64 bits are left, so the
+        // word at the current byte is all in the data and holds at least
+        // 57 of them; a number whose chunks all lie there is decoded from
+        // it. Its payload is under 57 bits, so none of the errors of
+        // `vbr_long` can arise; anything else starts over there.
+        if self.end - self.pos >= 64 {
+            let shift = (self.pos & 7) as u32;
+            let word = self.word_at((self.pos >> 3) as usize) >> shift;
+            let mask = (1u64 << width) - 1;
+            let high = 1u64 << (width - 1);
+            let mut chunk = word & mask;
+            if chunk & high == 0 {
+                self.pos += u64::from(width);
+                return Ok(chunk);
+            }
+            let avail = 64 - shift;
+            let mut value = chunk & (high - 1);
+            let mut used = width;
+            let mut out = width - 1;
+            while used + width <= avail {
+                chunk = (word >> used) & mask;
+                value |= (chunk & (high - 1)) << out;
+                used += width;
+                out += width - 1;
+                if chunk & high == 0 {
+                    self.pos += u64::from(used);
+                    return Ok(value);
+                }
+            }
+        }
+        self.vbr_long(width)
+    }
+
+    /// [`Self::vbr`] chunk by chunk: near the end of the bits, or for a
+    /// number longer than a word.
+    #[inline(never)]
+    fn vbr_long(&mut self, width: u32) -> BcResult<u64> {
         let high = 1u64 << (width - 1);
         let mut chunk = self.read(width)?;
         if chunk & high == 0 {
@@ -713,23 +750,30 @@ impl<'a, 'b> Cursor<'a, 'b> {
         Ok((start, parsed.len() as u32))
     }
 
-    /// The operands of abbreviation `id` of the innermost block.
-    fn abbrev(&self, id: u32) -> BcResult<&[AbbrevOp]> {
-        let block = self.block_id().unwrap_or(u32::MAX);
+    /// The operands of abbreviation `id` of the innermost block. A
+    /// function of the fields it reads, so that the bit reader can be
+    /// borrowed mutably while they are walked.
+    fn abbrev<'s>(
+        info: &'s InfoRef<'_>,
+        stack: &[Open],
+        local: &[(u32, u32)],
+        ops: &'s [AbbrevOp],
+        id: u32,
+        at: u64,
+    ) -> BcResult<&'s [AbbrevOp]> {
+        let block = stack.last().map_or(u32::MAX, |open| open.id);
         let index = (id - FIRST_ABBREV) as usize;
-        let info = self.info.get();
+        let info = info.get();
         let inherited = info.of(block);
         if let Some(&(start, len)) = inherited.get(index) {
             return Ok(&info.ops[start as usize..][..len as usize]);
         }
-        let base = self.stack.last().map_or(0, |open| open.local);
-        match self.local.get(base + index - inherited.len()) {
-            Some(&(start, len)) => Ok(&self.ops[start as usize..][..len as usize]),
-            None => fail(
-                BcErrorKind::Malformed,
-                self.at,
-                format!("abbreviation id {id} is not defined"),
-            ),
+        let base = stack.last().map_or(0, |open| open.local);
+        match local.get(base + index - inherited.len()) {
+            Some(&(start, len)) => Ok(&ops[start as usize..][..len as usize]),
+            None => {
+                fail(BcErrorKind::Malformed, at, format!("abbreviation id {id} is not defined"))
+            }
         }
     }
 
@@ -759,19 +803,8 @@ impl<'a, 'b> Cursor<'a, 'b> {
             }
             return Ok((code_u32(code, at)?, None));
         }
-        // The abbreviation's operands are copied out, so that the reader
-        // can be borrowed mutably while they are walked; an abbreviation
-        // is a handful of operands.
-        let shape = self.abbrev(id)?;
-        let mut small = [AbbrevOp::Literal(0); 16];
-        let heap: Vec<AbbrevOp>;
-        let shape: &[AbbrevOp] = if shape.len() <= small.len() {
-            small[..shape.len()].copy_from_slice(shape);
-            &small[..shape.len()]
-        } else {
-            heap = shape.to_vec();
-            &heap
-        };
+        let shape = Self::abbrev(&self.info, &self.stack, &self.local, &self.ops, id, at)?;
+        let bits = &mut self.bits;
         let mut code = None;
         let mut blob = None;
         let mut index = 0;
@@ -780,12 +813,12 @@ impl<'a, 'b> Cursor<'a, 'b> {
             let value = match op {
                 AbbrevOp::Array => {
                     let element = shape[index + 1];
-                    let count = self.bits.vbr(6)?;
+                    let count = bits.vbr(6)?;
                     let min = match element {
                         AbbrevOp::Fixed(width) | AbbrevOp::Vbr(width) => u64::from(width),
                         _ => 6,
                     };
-                    if count > self.bits.left() / min {
+                    if count > bits.left() / min {
                         return fail(
                             BcErrorKind::Malformed,
                             at,
@@ -794,22 +827,22 @@ impl<'a, 'b> Cursor<'a, 'b> {
                     }
                     ops.reserve(count as usize);
                     for _ in 0..count {
-                        let value = self.scalar(element)?;
+                        let value = scalar(bits, element)?;
                         ops.push(value);
                     }
                     index += 2;
                     continue;
                 }
                 AbbrevOp::Blob => {
-                    let len = self.bits.vbr(6)?;
-                    self.bits.align32()?;
-                    let bytes = self.bits.bytes(len)?;
-                    self.bits.align32()?;
+                    let len = bits.vbr(6)?;
+                    bits.align32()?;
+                    let bytes = bits.bytes(len)?;
+                    bits.align32()?;
                     blob = Some(bytes);
                     index += 1;
                     continue;
                 }
-                _ => self.scalar(op)?,
+                _ => scalar(bits, op)?,
             };
             if code.is_none() {
                 code = Some(value);
@@ -823,17 +856,18 @@ impl<'a, 'b> Cursor<'a, 'b> {
         };
         Ok((code_u32(code, at)?, blob))
     }
+}
 
-    #[inline]
-    fn scalar(&mut self, op: AbbrevOp) -> BcResult<u64> {
-        match op {
-            AbbrevOp::Literal(value) => Ok(value),
-            AbbrevOp::Fixed(width) => self.bits.read(u32::from(width)),
-            AbbrevOp::Vbr(width) => self.bits.vbr(u32::from(width)),
-            AbbrevOp::Char6 => Ok(u64::from(char6(self.bits.read(6)? as u8))),
-            AbbrevOp::Array | AbbrevOp::Blob => {
-                unreachable!("define_abbrev only lets scalars stand here")
-            }
+/// One scalar operand of an abbreviated record.
+#[inline]
+fn scalar(bits: &mut BitReader<'_>, op: AbbrevOp) -> BcResult<u64> {
+    match op {
+        AbbrevOp::Literal(value) => Ok(value),
+        AbbrevOp::Fixed(width) => bits.read(u32::from(width)),
+        AbbrevOp::Vbr(width) => bits.vbr(u32::from(width)),
+        AbbrevOp::Char6 => Ok(u64::from(char6(bits.read(6)? as u8))),
+        AbbrevOp::Array | AbbrevOp::Blob => {
+            unreachable!("define_abbrev only lets scalars stand here")
         }
     }
 }

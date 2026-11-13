@@ -50,7 +50,7 @@ pub mod unsupported {
     /// in the section of the added symbol.
     pub const SYM_DIFF: &str = "init:sym-diff-unencodable";
     /// An address field of a width without an absolute relocation (1
-    /// byte).
+    /// byte on AArch64; x86-64 has `R_X86_64_8`).
     pub const FIELD_WIDTH: &str = "init:address-width";
     /// `dso_local_equivalent` outside a difference.
     pub const DSO_LOCAL_EQUIVALENT: &str = "init:dso-local-equivalent";
@@ -240,6 +240,7 @@ impl ArchInfo {
             (Arch::X86_64, 8) => X64Reloc::Abs64.into(),
             (Arch::X86_64, 4) => X64Reloc::Abs32.into(),
             (Arch::X86_64, 2) => X64Reloc::Abs16.into(),
+            (Arch::X86_64, 1) => X64Reloc::Abs8.into(),
             _ => return None,
         })
     }
@@ -253,6 +254,7 @@ impl ArchInfo {
             (Arch::X86_64, 8) => X64Reloc::Pc64.into(),
             (Arch::X86_64, 4) => X64Reloc::Pc32.into(),
             (Arch::X86_64, 2) => X64Reloc::Pc16.into(),
+            (Arch::X86_64, 1) => X64Reloc::Pc8.into(),
             _ => return None,
         })
     }
@@ -265,12 +267,20 @@ impl ArchInfo {
         }
     }
 
-    /// The alignment of `.text` before any code is in it.
+    /// The alignment of `.text` before any code is in it: 4 on both
+    /// targets, as `llc`'s assembler writes it (WP-143).
     fn text_align(self) -> u64 {
         match self.arch {
-            Arch::AArch64 => 4,
-            Arch::X86_64 => 1,
+            Arch::AArch64 | Arch::X86_64 => 4,
         }
+    }
+
+    /// Whether an address in data names a `dso_local` definition through
+    /// its local alias, as code does. `AArch64AsmPrinter::lowerConstant`
+    /// does (`getSymbolPreferLocal`); x86-64 uses `AsmPrinter`'s own,
+    /// which names the symbol itself (WP-143).
+    fn data_prefers_local(self) -> bool {
+        self.arch == Arch::AArch64
     }
 
     /// Whether the target marks code and data in code with mapping
@@ -299,8 +309,29 @@ impl ArchInfo {
                 obj.append(section, &A64_NOPS[..n]);
                 pad -= n;
             }
+        } else if self.arch == Arch::X86_64 {
+            // `X86AsmBackend::writeNopData` for the default CPU: the
+            // longest `nop` is 10 bytes, and the padding is the longest
+            // ones first (WP-143).
+            const NOPS: [&[u8]; 10] = [
+                &[0x90],
+                &[0x66, 0x90],
+                &[0x0f, 0x1f, 0x00],
+                &[0x0f, 0x1f, 0x40, 0x00],
+                &[0x0f, 0x1f, 0x44, 0x00, 0x00],
+                &[0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00],
+                &[0x0f, 0x1f, 0x80, 0x00, 0x00, 0x00, 0x00],
+                &[0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00],
+                &[0x66, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00],
+                &[0x66, 0x2e, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00],
+            ];
+            while pad > 0 {
+                let n = pad.min(NOPS.len());
+                obj.append(section, NOPS[n - 1]);
+                pad -= n;
+            }
         } else {
-            obj.align_to(section, align, if self.arch == Arch::X86_64 { 0x90 } else { 0 });
+            obj.align_to(section, align, 0);
         }
     }
 }
@@ -1011,7 +1042,8 @@ impl<'m> ModuleEmitter<'m> {
             match fixup.target {
                 FixupTarget::Sym(sym) => {
                     let kind = abs()?;
-                    let (target, addend) = self.data_target(sym, fixup.addend, true);
+                    let local = arch.data_prefers_local();
+                    let (target, addend) = self.data_target(sym, fixup.addend, local);
                     self.obj.add_relocation(section, place, kind, target, addend);
                 }
                 FixupTarget::Plt(_) => {
@@ -1129,7 +1161,7 @@ impl<'m> ModuleEmitter<'m> {
                 section
             };
             let offset = self.obj.append_zeros(section, 8);
-            let (target, addend) = self.data_target(structor.func, 0, true);
+            let (target, addend) = self.data_target(structor.func, 0, arch.data_prefers_local());
             self.obj.add_relocation(section, offset, abs, target, addend);
         }
         Ok(())

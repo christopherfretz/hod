@@ -442,13 +442,14 @@ const MODULE: [SupportRow; 24] = [
         todo(X64),
         "changes code: `endbr64` at every function entry an indirect branch may reach, at \
          landing pads and after `returns_twice` calls, then the IBT property note; `llc` \
-         turns it on for any value, 0 included (WP-143)",
+         19 and 22 turn it on for any value, 0 included (WP-143), as `hod_ir` reads it (WP-144)",
     ),
     row(
         "module:cf-protection-return",
         never(X64_ONLY),
         ON,
-        "the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143)",
+        "the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143); on \
+         for any value, 0 included, as `llc` (WP-144)",
     ),
     row(
         "module:asm",

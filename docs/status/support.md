@@ -67,8 +67,8 @@ Module properties (`ModuleProps`, §2.1) and module-level tables.
 | `module:sign-return-address-all` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
 | `module:sign-return-address-with-bkey` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
 | `module:branch-protection-pauth-lr` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `module:cf-protection-branch` | rejected | not-implemented | an x86 property. changes code: `endbr64` at every function entry an indirect branch may reach, at landing pads and after `returns_twice` calls, then the IBT property note; `llc` turns it on for any value, 0 included (WP-143) |
-| `module:cf-protection-return` | rejected | supported | an x86 property. the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143) |
+| `module:cf-protection-branch` | rejected | not-implemented | an x86 property. changes code: `endbr64` at every function entry an indirect branch may reach, at landing pads and after `returns_twice` calls, then the IBT property note; `llc` 19 and 22 turn it on for any value, 0 included (WP-143), as `hod_ir` reads it (WP-144) |
+| `module:cf-protection-return` | rejected | supported | an x86 property. the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143); on for any value, 0 included, as `llc` (WP-144) |
 | `module:asm` | supported | not-implemented | module-level assembly of code and data: `hod_asm` (WP-112, `spec/asm.md` §9); what it does not read is refused by an `asm:*` name |
 | `module:asm-symbols` | supported | supported | module-level assembly made only of symbol directives (`spec/ir.md` §2.3) |
 | `module:linker-options` | supported | supported | `!llvm.linker.options` |

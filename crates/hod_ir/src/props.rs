@@ -484,8 +484,11 @@ fn apply(props: &mut ModuleProps, flag: Known, name: &[u8], int: u64) -> IrResul
         Known::PacRetAll => protection(props, BranchProtection::PAC_RET_ALL),
         Known::PacBKey => protection(props, BranchProtection::PAC_B_KEY),
         Known::PacPauthLr => protection(props, BranchProtection::PAC_PAUTH_LR),
-        Known::CetIbt => protection(props, BranchProtection::CET_IBT),
-        Known::CetShstk => protection(props, BranchProtection::CET_SHSTK),
+        // `llc` 19 and 22 turn the x86 CET flags on by their presence,
+        // whatever the value, 0 included (`endbr64` and the IBT bit, the
+        // shadow-stack bit); absent, they are off (WP-144).
+        Known::CetIbt => props.branch_protection.set(BranchProtection::CET_IBT, true),
+        Known::CetShstk => props.branch_protection.set(BranchProtection::CET_SHSTK, true),
     }
     Ok(())
 }
@@ -615,12 +618,21 @@ mod tests {
         ] {
             assert_eq!(fresh(name, value).unwrap_err().kind, IrErrorKind::InvalidModuleFlag);
         }
-        // A protection flag is on for any value but zero.
+        // An AArch64 protection flag is on for any value but zero.
         for value in [1, 2, 7] {
-            let on = fresh("cf-protection-branch", value).unwrap().branch_protection;
-            assert_eq!(on.bits(), BranchProtection::CET_IBT);
+            let on = fresh("branch-target-enforcement", value).unwrap().branch_protection;
+            assert_eq!(on.bits(), BranchProtection::BTI);
         }
-        assert_eq!(fresh("cf-protection-branch", 0).unwrap().branch_protection.bits(), 0);
+        assert_eq!(fresh("branch-target-enforcement", 0).unwrap().branch_protection.bits(), 0);
+        // The x86 CET flags are on by their presence, 0 included, as
+        // `llc` 19 and 22 read them (WP-144); absent, off.
+        for value in [0, 1, 2, 7] {
+            let on = fresh("cf-protection-branch", value).unwrap().branch_protection;
+            assert_eq!(on.bits(), BranchProtection::CET_IBT, "{value}");
+            let on = fresh("cf-protection-return", value).unwrap().branch_protection;
+            assert_eq!(on.bits(), BranchProtection::CET_SHSTK, "{value}");
+        }
+        assert_eq!(ModuleProps::default().branch_protection.bits(), 0);
     }
 
     /// §2.1: a flag hod does not know is kept by name, with its behavior

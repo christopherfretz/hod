@@ -1510,7 +1510,7 @@ It appends 81 to 86 for the other shapes.
 | `debug:global-shape` | a static member's definition that is not a definition; a global without a name or type that is not a static member's definition; a line without a file |
 | `debug:global-scope` | a global scoped outside the unit, a file or a namespace (a module) |
 | `debug:static-member-declaration` | a `declaration:` that is not a static member of a class |
-| `debug:tls-location` | a thread-local variable on x86-64, whose `llc` writes `DW_OP_const8u` + `DW_OP_GNU_push_tls_address` |
+| `debug:tls-location` | a thread-local variable on x86-64 in a split unit, whose `llc` writes `DW_OP_GNU_const_index` of a `.debug_addr` entry (since WP-136; a full unit's is written, §6.17) |
 | `debug:template-parameter` | a parameter of another tag; a pack with a type or a default; a template template parameter whose value is not a string; a value of the wrong kind |
 | `debug:template-value` | an integer value wider than 64 bits |
 | `debug:template-address` | the address of a symbol this object does not place (an undefined function or variable) |
@@ -1639,7 +1639,8 @@ initializer) goes where §6.9 puts a function's statics, with no
 there (§6.11). hod wrote `DW_OP_addrx` of the variable's symbol, an
 address that is not the thread's variable. gdb prints `<optimized out>`,
 lldb `<no location, value may have been optimized out>`, for hod's
-program as for `llc`'s. x86-64 stays `debug:tls-location`.
+program as for `llc`'s. x86-64 stays `debug:tls-location` (written since
+WP-136, §6.17).
 
 **Line-tables-only units with inlined code** (`debug:line-tables-inlined`
 narrowed). In a `LineTablesOnly` unit (`-gline-tables-only`, `-gmlt`)
@@ -1997,6 +1998,111 @@ in the prologue and calls `coro_stub_ready` in each stub
 
 Evidence: `crates/hod_a64/tests/coro_debug.rs`, `tests/debug/coroutine.cpp`
 (L7), `spec/landed/dwarf/WP-108.md`.
+
+### 6.17 x86-64 (implemented, WP-136)
+
+The same writer and the same bridge for x86-64; what the target changes
+is in `crates/hod_dwarf/src/x86_64.rs`, and `classify` lets `-g` modules
+through for x86-64 (the rows `debug:module-flags`, `debug:subprogram`,
+`debug:slot-variables`, `debug:locations` are `ON` for both targets;
+`debug:dwarf-version` stays AArch64's: DWARF 4 is refused by name on
+x86-64 too).
+
+**Register numbers** (System V psABI, "DWARF Register Number Mapping"):
+`rax` 0, `rdx` 1, `rcx` 2, `rbx` 3, `rsi` 4, `rdi` 5, `rbp` 6, `rsp` 7,
+`r8`..`r15` 8..15, the return address 16, `xmm0`..`xmm15` 17..32,
+`st0`..`st7` 33..40, `mm0`..`mm7` 41..48 (`x86_64::{gpr, xmm, st}`: the
+psABI's order of the first eight is not the encoding's). hod_x64 reports
+`rbp` as every function's frame base (`FrameDesc::frame_base`,
+`crates/hod_x64/src/frame.rs`), so the subprogram's `DW_AT_frame_base`
+is `DW_OP_reg6`, as `llc`'s.
+
+**Places**: a variable in a slot is `DW_OP_fbreg o`
+(`frame::base_offset`: a local at `slot - 40 - FRAME`, below the five
+saved registers and the frame; an incoming memory argument at `16 + n`);
+one whose address is in a slot is `DW_OP_fbreg o, DW_OP_deref` (the sret
+pointer, a dynamic alloca's address, a byval argument's, an over-aligned
+slot's, which hod_x64 aligns dynamically instead of realigning `rsp`).
+Memory arguments (the seventh integer and ninth floating argument on)
+are copied into slots by hod and described there; `llc` describes them
+in place (`DW_OP_fbreg +16`): the same operation, another offset.
+
+**Relocations**: an offset into another debug section is
+`R_X86_64_32`, an address `R_X86_64_64`, a thread-local's offset
+`R_X86_64_DTPOFF64`. `R_X86_64_PC32` is `.eh_frame`'s (`spec/eh.md`);
+no debug section of hod's or `llc`'s has one.
+
+**Thread-local variables**: `llc` for x86-64 writes `DW_AT_location`
+`DW_OP_const8u <x@DTPOFF>, DW_OP_GNU_push_tls_address` (gdb tuning, the
+default of every ELF target; `DW_OP_form_tls_address` under lldb tuning,
+which hod does not follow, §1.1), the offset relocated by
+`R_X86_64_DTPOFF64` against the variable's own symbol (not a section
+symbol). hod writes exactly that (`Writer::tls_location`, the
+relocation `Target::Tls`), for a global and for a function's
+thread-local static. In a split unit `llc` puts the offset in
+`.debug_addr` (`DW_OP_GNU_const_index`), which hod does not write:
+refused as `debug:tls-location`. AArch64 is unchanged (no location).
+
+**The unit's code** (both targets): `llc` gives a unit `DW_AT_low_pc` /
+`DW_AT_high_pc` when its code is one range, and extends a range over the
+padding between consecutive functions of the same unit in the same
+section (`DwarfCompileUnit::addRange`: a function that starts where the
+previous one's section symbol is the same extends the last range to its
+end). The bridge does the same (`emit/lines.rs`, `unit_span`): x86-64
+pads functions to 16 bytes, so without it every unit had `DW_AT_ranges`
+where `llc`'s has one range. AArch64 functions have no padding between
+them; its objects are byte-identical before and after.
+
+**Line table**: unchanged (§4, §5); `prologue_end` at the first row
+after the prologue, as `llc`'s. The `(function, line)` comparison of
+every debugger test on x86-64 has no difference but two P1 pairs.
+
+**`.debug_frame`**: `llc` writes it only for functions that are
+`nounwind` without `uwtable` (`-fno-asynchronous-unwind-tables`), on
+either target; hod writes `.eh_frame` for every function and no
+`.debug_frame` on either (`spec/eh.md`). Not seen in any compared
+module; a follow-up of both targets, not of x86-64.
+
+**Permitted differences on x86-64** (in addition to §6.7, all
+recognised by `cargo xtask debug trees`, `spec/harness.md` "debug",
+"Trees", each shown equal under the debuggers by
+`tests/debug/x64_places.c`):
+
+- `sret` also covers a dynamic alloca (a variable-length array): `llc`
+  writes a location list of the saved address, hod `DW_OP_fbreg o,
+  DW_OP_deref`; the array's `DW_AT_count` names the artificial
+  `__vla_expr` variable in both;
+- `byval`: a byval parameter `llc` places at its argument area
+  (`DW_OP_fbreg +16`) and hod by the pointer to it hod saved
+  (`DW_OP_fbreg o, DW_OP_deref`). The same bytes from `prologue_end`;
+- `realigned frame`: in a function with an over-aligned local `llc`
+  realigns `rsp` and places every variable by `DW_OP_breg7`; hod keeps
+  `rbp`'s frame and places the over-aligned variable by its saved
+  address. The same values from `prologue_end`;
+- `return-column` mirrored (§5.7): after `finish` hod's return address
+  can be the row of the call (hod copies the result out of `rax` with the
+  call's location), where `llc`, which coalesced the copy, is at the
+  assignment's column. The harness permits either side's column being
+  the call's.
+
+**What qemu's gdb stub cannot show** (the debugger sessions on x86-64
+run under `qemu-x86_64 -g` on an AArch64 host, `spec/harness.md` "debug",
+"Other targets"): thread-local variables (no `qGetTLSAddr` in either
+debugger; the location and its relocation are held by `debug trees`),
+hardware watchpoints, lldb's shared-library list. The tests mark these
+sessions `skip(remote, gdb)`; nothing is worked around.
+
+**Hooks** (one call each): `crates/hod_dwarf/src/die.rs`
+(`x86_64::reloc_kind` in `write_debug_info`), `global.rs`
+(`tls_has_location`, `tls_location` in `scope_variable_die`), `split.rs`
+(`refuse_split_tls` at the start of `split_unit`),
+`crates/hod_cg/src/emit/mod.rs` (`lines::tls_by_symbol` in the place of
+a global), `emit/lines.rs` (`unit_span`). hod_x64 is not changed: its
+frame base and slot offsets were already reported (`frame.rs`
+`FrameDesc`, `base_offset`).
+
+Evidence: `xtask/tests/debug_x64.rs`, `tests/debug/x64_places.c`,
+`spec/landed/dwarf/WP-136.md`, `docs/status/debug-x64.md`.
 
 ## 7. Speed and memory
 

@@ -33,6 +33,8 @@ pub struct Tools {
     pub linkers: Vec<Linker>,
     /// The LLVM 22 installation kiln is pointed at (`--llvm-dir=`).
     pub kiln_llvm: Option<PathBuf>,
+    /// WP-136: the target when it is not this machine's, and its emulator.
+    pub cross: Option<super::cross::Cross>,
 }
 
 impl Tools {
@@ -107,6 +109,9 @@ pub fn frontend_ir(
                 c.arg(tools::prefixed("--llvm-dir=", llvm));
             }
             c.arg("-fno-crash-diagnostics");
+        }
+        if let Some(cross) = &tools.cross {
+            c.arg(format!("--target={}", cross.arch.triple()));
         }
         c.args(FRONTEND_FLAGS).args(&test.cflags);
         if test.pre_opt {

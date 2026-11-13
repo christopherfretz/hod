@@ -1141,14 +1141,7 @@ pub fn write_debug_info(
             Sec::StrOffsets => str_offsets,
             Sec::Addr => addr.unwrap_or(info),
         };
-        let kind = match r.target {
-            // Made only where the target has the relocation.
-            Target::Tls(_) => {
-                crate::x86_64::tls_offset_reloc(obj.arch()).unwrap_or(target.address_reloc)
-            }
-            _ if wide => target.address_reloc,
-            _ => target.offset_reloc,
-        };
+        let kind = crate::x86_64::reloc_kind(r.target, wide, target); // WP-136
         obj.add_relocation(section, r.offset as u64, kind, symbol, r.addend);
     }
     Ok(DieSections { abbrev: abbrev_sec, info, str_offsets, str: str_sec, addr, rnglists })

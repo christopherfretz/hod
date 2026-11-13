@@ -159,3 +159,4 @@ int main(void) {
 //@ lldb-check: (int) count = 3
 //@ lldb-check: (int) total = 6
 //@ lldb-check: exited with status = 0
+//@ xfail(x86_64): hod for x86-64 refuses attr:signext and attr:zeroext (classify matrix todo(X64))

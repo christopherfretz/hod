@@ -59,3 +59,4 @@ int main() {
 //@ lldb: continue
 //@ lldb-check: (int) n = 3
 //@ lldb-check: exited with status = 0
+//@ xfail(x86_64, kiln): hod for x86-64 refuses attr:zeroext (classify matrix todo(X64))

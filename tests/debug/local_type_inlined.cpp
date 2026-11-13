@@ -35,3 +35,4 @@ int main() {
 //@ lldb-check: stop reason = breakpoint 1.1
 //@ lldb-check: (int) c = 1
 //@ lldb-check: exited with status = 0
+//@ xfail(x86_64): hod for x86-64 refuses attr:zeroext (classify matrix todo(X64))

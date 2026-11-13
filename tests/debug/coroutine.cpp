@@ -144,3 +144,4 @@ int main() {
 //@ lldb-check: (int) n = 4
 //@ lldb-check: __promise = (cur = 9)
 //@ lldb-check: exited with status = 0
+//@ xfail(x86_64): hod for x86-64 refuses attr:presplitcoroutine (coroutines on x86-64 are not lowered yet)

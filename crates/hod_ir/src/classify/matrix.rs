@@ -475,12 +475,7 @@ const STRUCTOR: [SupportRow; 2] = [
 // WP-087: debug modules reach `hod_dwarf`, which declines what it cannot
 // write exactly by a `debug:*` name of its own (`spec/dwarf.md` §6.12).
 const DEBUG_ROWS: [SupportRow; 5] = [
-    row(
-        "debug:module-flags",
-        ON,
-        ON,
-        "`Dwarf Version` or `Debug Info Version` is set (WP-087)",
-    ),
+    row("debug:module-flags", ON, ON, "`Dwarf Version` or `Debug Info Version` is set (WP-087)"),
     a64(
         "debug:dwarf-version",
         DEBUG,
@@ -495,12 +490,7 @@ const DEBUG_ROWS: [SupportRow; 5] = [
         "a stack slot that is a source variable (WP-087); in a coroutine body, on the frame word \
          (WP-108, `spec/dwarf.md` §6.16)",
     ),
-    row(
-        "debug:locations",
-        ON,
-        ON,
-        "a body whose instructions carry source locations (WP-087)",
-    ),
+    row("debug:locations", ON, ON, "a body whose instructions carry source locations (WP-087)"),
 ];
 
 const GLOBAL: [SupportRow; 12] = [

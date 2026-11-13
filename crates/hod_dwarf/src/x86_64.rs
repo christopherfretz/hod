@@ -79,10 +79,22 @@ pub const fn tls_offset_reloc(arch: hod_obj::Arch) -> Option<RelocKind> {
     }
 }
 
+/// The kind of a relocation of the DIE sections: `target`'s address
+/// (`wide`) or offset relocation, and a thread-local offset's
+/// ([`Target::Tls`], made only where the target has one:
+/// [`tls_offset_reloc`]).
+pub(crate) fn reloc_kind(to: Target, wide: bool, target: &crate::target::LineTarget) -> RelocKind {
+    match to {
+        Target::Tls(_) => tls_offset_reloc(target.arch).unwrap_or(target.address_reloc),
+        _ if wide => target.address_reloc,
+        _ => target.offset_reloc,
+    }
+}
+
 /// `DW_OP_const8u`.
 const DW_OP_CONST8U: u8 = 0x0e;
 /// `DW_OP_GNU_push_tls_address`: `llc`'s choice when it tunes for gdb,
-/// the default for every ELF target but the PlayStation's.
+/// the default for every ELF target but the `PlayStation`'s.
 const DW_OP_GNU_PUSH_TLS_ADDRESS: u8 = 0xe0;
 /// The location's length: the two ops and the 8-byte offset.
 const TLS_EXPR_LEN: u8 = 10;

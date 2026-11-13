@@ -619,8 +619,7 @@ fn findings_come_in_the_specified_order() {
         // The first reason of each pass is the first finding of it.
         let classifier = Classifier::new(shipped).with_stack_args(&NO_STACK);
         let module_reason = classifier.module(&program.m).unwrap_err();
-        let first =
-            "module-flag:mystery";
+        let first = "module-flag:mystery";
         assert_eq!((module_reason.construct.as_ref(), module_reason.symbol), (first, None));
         // AArch64 supports the whole body (WP-069: `tail:musttail`).
         let Some(&first_body) = body.first() else {

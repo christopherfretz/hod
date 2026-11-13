@@ -15,12 +15,14 @@
 
 pub mod build;
 pub mod columns;
+pub mod cross;
 pub mod directives;
 pub mod kiln;
 pub mod lines;
 pub mod permitted;
 pub mod sessions;
 pub mod transcript;
+pub mod trees;
 pub mod verify;
 
 use std::path::PathBuf;
@@ -29,8 +31,9 @@ use std::path::PathBuf;
 pub const USAGE: &str = "\
 usage: cargo xtask debug [run] [options] [<test or directory>...]
        cargo xtask debug kiln [--kiln <kiln++>] [--kiln-repo <dir>] [--hod <binary>]
-       cargo xtask debug verify [-j <N>] [--hod <binary>] [-v] [<corpus dir or .ll>...]
+       cargo xtask debug verify [-j <N>] [--hod <binary>] [--target <arch>] [-v] [<corpus dir or .ll>...]
        cargo xtask debug columns [-j <N>] [--hod <binary>] [--dump <dir>] [-v] [<dir or .ll>...]
+       cargo xtask debug trees [-j <N>] [--hod <binary>] [--llc <19|22>] [-v] [<dir or .ll>...]
 
 run: builds each debugger test (default: tests/debug/) with clang 19, clang 22
 and kiln++ as front ends, compiles the IR with hod and with llc -O0
@@ -44,6 +47,9 @@ the (function, line) pairs of the two programs.
   --debugger <name>      gdb, lldb, lldb-19 or lldb-22; repeatable (default: all)
   --frontend <name>      clang-19, clang-22, kiln, ir-19, ir-22; repeatable
   --tier <quick|all>     the tests to run (default: all)
+  --target <arch>        aarch64 or x86_64: build for it and run under its
+                         emulator's gdb stub when it is not this machine's
+                         (default: this machine's)
   --no-lines             no (function, line) comparison
   --kiln <kiln++>        the kiln front end (default: the build root's)
   --keep                 keep the work directories of failing tests
@@ -52,9 +58,12 @@ the (function, line) pairs of the two programs.
 
 kiln: kiln's tests/debuginfo, compiled by kiln++ with llc and with hod (strict).
 verify: llvm-dwarfdump --verify on every -g module hod builds (default: the
-corpus).
+corpus); --target verifies the modules of that target (default: this machine's).
 columns: hod's and llc's line rows (function, line, column) of every -g module
 (default: the corpus); --dump writes hod's disassembly per module.
+trees: hod's DIE trees and .debug_info relocations against llc's, both objects
+verified, per -g module (default: the corpus); --llc picks llc's major
+(default: the module's).
 
 exit status: 0 no failure; 1 a FAIL, XPASS or debugger crash on hod's program
 (verify: a module that does not verify; kiln: a test that passes with llc and
@@ -126,6 +135,12 @@ pub fn parse_run(args: &[String], options: &mut sessions::Options) -> Result<boo
                         other => return Err(format!("unknown tier '{other}'")),
                     };
                 }
+                "--target" => {
+                    let t = take(&mut i)?;
+                    let arch = crate::irdiff::directives::Arch::from_name(&t)
+                        .ok_or_else(|| format!("unknown target '{t}'"))?;
+                    options.target = Some(arch);
+                }
                 "--no-lines" => options.lines = false,
                 "--keep" => options.keep = true,
                 "-v" | "--verbose" => options.verbose = true,
@@ -170,6 +185,7 @@ pub fn gate() -> bool {
         build_dir,
         require_tools: require_tools(),
         limits: verify::LIMITS,
+        target: None,
     };
     let verify_ok = match verify::run(&options) {
         Ok(report) => {
@@ -232,6 +248,7 @@ pub fn command(args: &[String]) -> u8 {
             }
         }
         Some("columns") => columns::command(&args[1..], build_dir),
+        Some("trees") => trees::command(&args[1..], build_dir),
         Some("verify") => {
             let mut options = verify::Options {
                 paths: Vec::new(),
@@ -240,6 +257,7 @@ pub fn command(args: &[String]) -> u8 {
                 build_dir,
                 require_tools: require_tools(),
                 limits: verify::LIMITS,
+                target: None,
             };
             let mut verbose = false;
             let mut i = 1;
@@ -257,6 +275,13 @@ pub fn command(args: &[String]) -> u8 {
                     },
                     "--hod" => match take(&mut i) {
                         Ok(v) => options.hod = Some(PathBuf::from(v)),
+                        Err(e) => return usage(e),
+                    },
+                    "--target" => match take(&mut i) {
+                        Ok(t) => match crate::irdiff::directives::Arch::from_name(&t) {
+                            Some(arch) => options.target = Some(arch),
+                            None => return usage(format!("unknown target '{t}'")),
+                        },
                         Err(e) => return usage(e),
                     },
                     _ if !name.starts_with('-') => options.paths.push(PathBuf::from(&args[i])),

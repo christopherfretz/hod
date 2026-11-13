@@ -38,3 +38,4 @@ int main(void) {
 //@ lldb: continue
 //@ lldb-check: (int) by = 1
 //@ lldb-check: exited with status = 0
+//@ skip(remote, gdb): qemu-user's gdb stub has no qGetTLSAddr (spec/harness.md "debug", "Other targets")

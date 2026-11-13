@@ -232,6 +232,7 @@ impl<'a> Writer<'a> {
         dwo_name: &'a [u8],
     ) -> Result<Layout, Error> {
         let plan = u.plan;
+        crate::x86_64::refuse_split_tls(plan)?; // WP-136
         let n = plan.dies.len();
         self.addr_of.clear();
         self.addr_of.resize(n, NONE);
@@ -512,7 +513,8 @@ pub fn write_split_debug_info(
             Target::Line => (sym_line, false),
             Target::Addr => (sym_addr.unwrap_or(sym_abbrev), false),
             Target::Rnglists => (sym_lists.unwrap_or(sym_abbrev), false),
-            Target::Symbol(s) => (s, true),
+            // `Tls`: never made here (`crate::x86_64::refuse_split_tls`).
+            Target::Symbol(s) | Target::Tls(s) => (s, true),
         };
         let section = match r.sec {
             Sec::Info => info,

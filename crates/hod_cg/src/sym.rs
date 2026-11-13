@@ -672,6 +672,28 @@ runtime_fns! {
     Ldexpf128 = "ldexpf128": (FP128, I32) -> FP128;
     /// `frexpf128`: `fp128` on x86-64, where `long double` is `x86_fp80` (WP-117).
     Frexpf128 = "frexpf128": (FP128, PTR) -> FP128;
+    /// `__atomic_load_16(ptr, order)`: libatomic, a 16-byte atomic on
+    /// x86-64 without `cx16` (WP-144).
+    AtomicLoad16 = "__atomic_load_16": (PTR, I32) -> I128;
+    /// `__atomic_store_16(ptr, value, order)` (WP-144).
+    AtomicStore16 = "__atomic_store_16": (PTR, I128, I32) -> VOID;
+    /// `__atomic_exchange_16(ptr, value, order)` (WP-144).
+    AtomicExchange16 = "__atomic_exchange_16": (PTR, I128, I32) -> I128;
+    /// `__atomic_compare_exchange_16(ptr, expected *, desired, success,
+    /// failure)`: C `bool` (WP-144).
+    AtomicCompareExchange16 = "__atomic_compare_exchange_16": (PTR, PTR, I128, I32, I32) -> I8;
+    /// `__atomic_fetch_add_16(ptr, value, order)` (WP-144).
+    AtomicFetchAdd16 = "__atomic_fetch_add_16": (PTR, I128, I32) -> I128;
+    /// `__atomic_fetch_sub_16(ptr, value, order)` (WP-144).
+    AtomicFetchSub16 = "__atomic_fetch_sub_16": (PTR, I128, I32) -> I128;
+    /// `__atomic_fetch_and_16(ptr, value, order)` (WP-144).
+    AtomicFetchAnd16 = "__atomic_fetch_and_16": (PTR, I128, I32) -> I128;
+    /// `__atomic_fetch_nand_16(ptr, value, order)` (WP-144).
+    AtomicFetchNand16 = "__atomic_fetch_nand_16": (PTR, I128, I32) -> I128;
+    /// `__atomic_fetch_or_16(ptr, value, order)` (WP-144).
+    AtomicFetchOr16 = "__atomic_fetch_or_16": (PTR, I128, I32) -> I128;
+    /// `__atomic_fetch_xor_16(ptr, value, order)` (WP-144).
+    AtomicFetchXor16 = "__atomic_fetch_xor_16": (PTR, I128, I32) -> I128;
 }
 
 // ---- Runtime routines keyed by (type, target): §7.3 (WP-117) ----

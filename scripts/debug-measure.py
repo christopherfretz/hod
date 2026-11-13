@@ -24,8 +24,12 @@ For every `-g` module (an `.ll` with `!llvm.dbg.cu`) among the paths:
    `xtask/src/debug/permitted.rs` (`IrFacts::pair_class`): when the
    function's instructions at the pair's line (any column) are loads and
    `getelementptr`s, at least one load, the pair is `load-placement`;
-   else a pair only hod's has, in a function that calls
-   `llvm.is.constant`, is `is-constant`; else unclassified.
+   else a pair only hod's has whose instructions there are
+   `getelementptr`s of pointers some load of the function reads is
+   `post-indexed-load`; else a pair only hod's has, in a function that
+   calls `llvm.is.constant`, is `is-constant`; else unclassified. Only
+   the instructions of the pair's file (the `DIFile` of the location's
+   scope) and of blocks with a predecessor count.
 
 Usage:
 
@@ -38,7 +42,7 @@ line per module, tab-separated: module, major, hod outcome (`built`,
 `declined:<reason>`, `failed`), llc outcome (`built`, `failed`), hod's
 verify (`clean`, `-`, or the first message's class), llc's verify, then
 `same`, `hod_only`, `llc_only` counts and `P1`, `P3`, `load-placement`,
-`is-constant`, `unclassified` counts (or `-` when there was no comparison). Each module's differing
+`post-indexed-load`, `is-constant`, `unclassified` counts (or `-` when there was no comparison). Each module's differing
 pairs are written to `<work>/<n>/pairs.tsv` (side, class, function,
 file, line, the instructions of the side's rows). Nothing is written outside `--work`. `-j` is at most 4.
 """
@@ -215,41 +219,91 @@ DBG = re.compile(r"!dbg (![0-9]+)")
 LOC = re.compile(r"^(![0-9]+) = !DILocation\(line: ([0-9]+)")
 DEF = re.compile(r"^define [^@]*@(\"[^\"]+\"|[-\w.$]+)\(")
 OPC = re.compile(r"^\s*(?:%[-\w.$\"]+ = )?(?:tail |musttail |notail )?([a-z_]+)")
+NODE = re.compile(r"^(![0-9]+) = (?:distinct )?!(DI\w+)\((.*)")
+REF = lambda name: re.compile(r"\b" + name + r": (![0-9]+)")
+STR = lambda name: re.compile(r"\b" + name + r": \"([^\"]*)\"")
+PTR = re.compile(r"ptr (%\"[^\"]*\"|%[-\w.$]+)")
+LABEL_REF = re.compile(r"label (%\"[^\"]*\"|%[-\w.$]+)")
+
+
+def ir_files(text):
+    """`DILocation` id: the joined path of its scope's `DIFile` (as the
+    line table joins it: the name when absolute, else directory/name)."""
+    names, scopes, locs = {}, {}, {}
+    for line in text.splitlines():
+        m = NODE.match(line)
+        if not m:
+            continue
+        node, kind, rest = m.groups()
+        if kind == "DIFile":
+            n, d = STR("filename").search(rest), STR("directory").search(rest)
+            n, d = n.group(1) if n else "", d.group(1) if d else ""
+            names[node] = n if n.startswith("/") or not d else d + "/" + n
+        elif kind == "DILocation":
+            r = REF("scope").search(rest)
+            if r:
+                locs[node] = r.group(1)
+        else:
+            r = REF("file").search(rest)
+            if r:
+                scopes[node] = r.group(1)
+    return {loc: names.get(scopes.get(scope)) for loc, scope in locs.items()}
 
 
 def ir_facts(text):
-    """Per defined function: the (line, opcode) of each instruction with a
-    `!dbg`, and whether it calls `llvm.is.constant`."""
+    """Per defined function: the (line, opcode, file, reachable, pointer)
+    of each instruction with a `!dbg`, and whether it calls
+    `llvm.is.constant` (xtask/src/debug/permitted.rs: the file of the
+    location's scope, whether its block is the entry block or named by a
+    `label %N`, and a load's or `getelementptr`'s pointer operand)."""
     locs, funcs, name = {}, {}, None
+    files = ir_files(text)
     for line in text.splitlines():
         m = LOC.match(line)
         if m:
             locs[m.group(1)] = int(m.group(2))
+    block, blocks, named = None, [], set()
     for line in text.splitlines():
         m = DEF.match(line)
         if m:
             name = m.group(1).strip('"')
             funcs[name] = ([], False)
+            block, blocks, named = None, [], set()
             continue
         if name is None:
             continue
         if line.startswith("}"):
+            insts, is_constant = funcs[name]
+            funcs[name] = ([(l, o, f, b is None or b in named, p) for (l, o, f, p), b in zip(insts, blocks)], is_constant)
             name = None
             continue
+        if line and line[0] not in " \t;":
+            if ":" in line:
+                block = "%" + line.split(":")[0]
+            continue
+        named.update(r if not r.startswith('%"') else '%' + r[2:-1] for r in LABEL_REF.findall(line))
         insts, is_constant = funcs[name]
         d, o = DBG.search(line), OPC.match(line)
         if d and o and d.group(1) in locs:
-            insts.append((locs[d.group(1)], o.group(1)))
+            p = PTR.search(line) if o.group(1) in ("load", "getelementptr") else None
+            insts.append((locs[d.group(1)], o.group(1), files.get(d.group(1)), p.group(1) if p else None))
+            blocks.append(block.replace('%"', "%").rstrip('"') if block else None)
         funcs[name] = (insts, is_constant or "@llvm.is.constant." in line)
     return funcs
 
 
-def ir_class(facts, fn, line, hod_side):
-    """`load-placement`, `is-constant` (spec/dwarf.md 5.7), or unclassified."""
+def ir_class(facts, fn, file, line, hod_side):
+    """`load-placement`, `post-indexed-load`, `is-constant` (spec/dwarf.md
+    5.7), or unclassified: by the function's instructions at the pair's
+    line of the pair's file, in blocks with a predecessor."""
     insts, is_constant = facts.get(fn, ([], False))
-    ops = {op for l, op in insts if l == line}
+    at = [i for i in insts if i[0] == line and i[3] and (i[2] is None or i[2] == file)]
+    ops = {i[1] for i in at}
     if "load" in ops and ops <= {"load", "getelementptr"}:
         return "load-placement"
+    loaded = {i[4] for i in insts if i[1] == "load" and i[4]}
+    if hod_side and at and all(i[1] == "getelementptr" and i[4] in loaded for i in at):
+        return "post-indexed-load"
     if hod_side and is_constant:
         return "is-constant"
     return "unclassified"
@@ -265,12 +319,12 @@ def compare(hod_lib, llc_lib, facts):
             same += 1
         elif key in ours:
             p3 = first.get(key[0]) == (key[1], key[2])
-            diffs.append(("hod", "P3" if p3 else ir_class(facts, key[0], key[2], True), key, mnemonics(hod_code, ours[key])))
+            diffs.append(("hod", "P3" if p3 else ir_class(facts, key[0], key[1], key[2], True), key, mnemonics(hod_code, ours[key])))
         else:
             # P1: every range holds only unconditional branches.
             p1 = all(m and set(m.split(",")) <= {"b", "jmp"}
                      for m in (mnemonics(llc_code, [r]) for r in theirs[key]))
-            diffs.append(("llc", "P1" if p1 else ir_class(facts, key[0], key[2], False), key, mnemonics(llc_code, theirs[key])))
+            diffs.append(("llc", "P1" if p1 else ir_class(facts, key[0], key[1], key[2], False), key, mnemonics(llc_code, theirs[key])))
     return same, diffs
 
 
@@ -301,7 +355,7 @@ def measure(job):
         hv = ";".join(sorted({verify_class(tool("llvm-dwarfdump", m), hod_o) for m in (22, 19)}))
     if llc == "built":
         lv = ";".join(sorted({verify_class(tool("llvm-dwarfdump", m), llc_o) for m in (22, 19)}))
-    cmp = ["-"] * 8
+    cmp = ["-"] * 9
     if hod == "built" and llc == "built":
         libs = []
         for o in (hod_o, llc_o):
@@ -316,9 +370,10 @@ def measure(job):
                     f.write(f"{side}\t{cls}\t{fn}\t{file}\t{line}\t{insns}\n")
             count = lambda s=None, c=None: sum(1 for x in diffs if (s is None or x[0] == s) and (c is None or x[1] == c))
             cmp = [same, count("hod"), count("llc"), count(c="P1"), count(c="P3"),
-                   count(c="load-placement"), count(c="is-constant"), count(c="unclassified")]
+                   count(c="load-placement"), count(c="post-indexed-load"),
+                   count(c="is-constant"), count(c="unclassified")]
         else:
-            cmp = ["nolink"] * 8
+            cmp = ["nolink"] * 9
     for f in (hod_o, llc_o):
         if os.path.exists(f) and not args.keep:
             os.remove(f)
@@ -347,7 +402,7 @@ def main():
     args = ap.parse_args()
     args.j = max(1, min(args.j, 4))
     mods = modules(args.paths)
-    print("module\tmajor\thod\tllc\thod_verify\tllc_verify\tsame\thod_only\tllc_only\tP1\tP3\tload-placement\tis-constant\tunclassified")
+    print("module\tmajor\thod\tllc\thod_verify\tllc_verify\tsame\thod_only\tllc_only\tP1\tP3\tload-placement\tpost-indexed-load\tis-constant\tunclassified")
     with concurrent.futures.ThreadPoolExecutor(args.j) as pool:
         for line in pool.map(measure, [(n, m, args) for n, m in enumerate(mods)]):
             print(line, flush=True)

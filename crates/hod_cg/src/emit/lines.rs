@@ -72,6 +72,9 @@ pub(super) struct DebugLines<'m> {
     locals: Vec<LocalRow>,
     /// How the DIEs are written (`Options::split_dwarf`).
     pub(super) split: hod_dwarf::SplitDwarf,
+    /// The unit and the section symbol of the last function given a code
+    /// span (WP-136, `spec/dwarf.md` §6.17): `llc`'s "previous unit".
+    prev_span: Option<(usize, SymbolId)>,
 }
 
 /// Where a function was placed, and its frame.
@@ -159,6 +162,7 @@ impl<'m> DebugLines<'m> {
             scopes: Vec::new(),
             locals: Vec::new(),
             split: hod_dwarf::SplitDwarf::Off,
+            prev_span: None,
         })))
     }
 
@@ -246,7 +250,7 @@ impl<'m> DebugLines<'m> {
         let symbol = obj.section_symbol(section);
         let addend = offset as i64;
         let code = CodeSpan { symbol, addend, size: u64::from(size) };
-        self.units[unit].code.push(code);
+        self.unit_span(unit, code);
 
         // The DIEs (§6.4).
         self.scopes.clear();
@@ -305,6 +309,26 @@ impl<'m> DebugLines<'m> {
         u.program.push(u.plan.files().files().len(), &seq).map_err(dwarf_err)
     }
 
+    /// Adds `code` to the code of `unit` as `DwarfCompileUnit::addRange`
+    /// does (WP-136, `spec/dwarf.md` §6.17): a function of the same unit
+    /// as the last function with a span, in the same section, extends
+    /// that span to its end, over the padding (and any function without
+    /// a subprogram) between them; otherwise it starts a span.
+    fn unit_span(&mut self, unit: usize, code: CodeSpan) {
+        let prev = self.prev_span.replace((unit, code.symbol));
+        let spans = &mut self.units[unit].code;
+        if prev == Some((unit, code.symbol))
+            && let Some(last) = spans.last_mut()
+            && last.symbol == code.symbol
+            && last.addend <= code.addend
+        {
+            let end = (code.addend - last.addend) as u64 + code.size;
+            last.size = last.size.max(end);
+            return;
+        }
+        spans.push(code);
+    }
+
     /// Writes `.debug_line` and the DIEs of every unit that has code or
     /// globals. `place` gives a variable's symbol and addend for its
     /// address, if it was placed.
@@ -333,10 +357,14 @@ impl<'m> DebugLines<'m> {
             u.plan.seal().map_err(dwarf_err)?;
             u.plan.place_symbols(|s| place(obj, s));
         }
-        // `llc` writes nothing for a unit with neither code nor globals
-        // (`spec/dwarf.md` §1.2).
+        // `llc` writes nothing for a unit with neither code nor anything
+        // it lists (`spec/dwarf.md` §1.2, WP-111).
         let written: Vec<usize> = (0..self.units.len())
-            .filter(|&i| !self.units[i].code.is_empty() || !globals[i].is_empty())
+            .filter(|&i| {
+                !self.units[i].code.is_empty()
+                    || !globals[i].is_empty()
+                    || lists_entities(self.debug, self.units[i].plan.unit())
+            })
             .collect();
         if written.is_empty() {
             return Ok(());
@@ -369,6 +397,24 @@ impl<'m> DebugLines<'m> {
     }
 }
 
+/// Whether `llc` writes compile unit `unit` without code
+/// (`DwarfDebug::beginModule`, WP-111, `spec/dwarf.md` §1.2): it lists
+/// a global, an enumeration, a retained type, or an import whose scope
+/// is not a function's (a function's imports are its own children).
+fn lists_entities(debug: &DebugInfo, unit: DiId) -> bool {
+    let DiNode::CompileUnit(cu) = debug.node(unit) else { return false };
+    let local = |id: DiId| {
+        let DiNode::ImportedEntity(import) = debug.node(id) else { return false };
+        import.scope.and_then(|s| debug.find_kind(s)).is_some_and(|kind| {
+            matches!(kind, DiKind::Subprogram | DiKind::LexicalBlock | DiKind::LexicalBlockFile)
+        })
+    };
+    !cu.globals.is_empty()
+        || !cu.enums.is_empty()
+        || !cu.retained_types.is_empty()
+        || cu.imports.iter().any(|&i| !local(i))
+}
+
 /// The rows of a coroutine's entry stubs (WP-108, `spec/dwarf.md`
 /// §6.16), in place of what the body's last row said of them: each stub
 /// is at the subprogram's scope line, with a second row where its frame,
@@ -384,6 +430,16 @@ fn stub_rows(rows: &mut Vec<Row>, scope: SourceLoc, entries: [u32; 3], ready: [u
         rows.push(at(entry, stmt));
         rows.push(at(ready, stmt | hod_dwarf::flags::PROLOGUE_END));
     }
+}
+
+/// Whether the location of global `sym` names its own symbol whatever
+/// its binding: a thread-local variable on x86-64, whose location is its
+/// offset in the TLS block (WP-136, `spec/dwarf.md` §6.17), relocated by
+/// `R_X86_64_DTPOFF64` against the symbol as `llc` writes it. AArch64's
+/// `llc` writes no location for one.
+pub(super) fn tls_by_symbol(module: &Module, sym: SymId) -> bool {
+    module.target().arch() == hod_ir::Arch::X86_64
+        && module.symbol(sym).tls() != hod_ir::TlsModel::None
 }
 
 /// The symbol and addend a variable's address is relocated against, as

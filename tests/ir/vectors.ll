@@ -3,7 +3,6 @@
 ; operands, widening, narrowing), select and phi of vectors, constants
 ; with poison lanes, and vectors of register size crossing calls.
 ;@ covers: spec/ir.md §5.4 aggregate (ExtractElement, InsertElement, ShuffleVector)
-;@ unsupported(x86_64): *
 ;@ stdout: lanes: 10 20 30 40 | 40 30 20 10
 ;@ stdout: set: 10 99 30 40 | 7 -1 -1 -1 0 13
 ;@ stdout: mixed: 1.5 -2 1.5 8.25

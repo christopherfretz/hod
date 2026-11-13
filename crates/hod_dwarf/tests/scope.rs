@@ -164,16 +164,6 @@ fn refusals_are_named() {
                 "!32 = !DINamespace(name: \"n\", scope: null)\n!34 = !DISubprogram(name: \"f\", scope: !32, file: !1, line: 1, type: !35, spFlags: DISPFlagVirtual)\n!35 = !DISubroutineType(types: !36)\n!36 = !{null}\n",
             ),
         ),
-        (
-            scope::TLS_LOCATION,
-            module(
-                "x86_64-unknown-linux-gnu",
-                "@g = thread_local global i32 0, align 4, !dbg !20",
-                &format!(
-                    "!2 = !{{!20}}\n!3 = !{{}}\n!20 = !DIGlobalVariableExpression(var: !21, expr: !DIExpression())\n!21 = distinct !DIGlobalVariable({PLAIN})\n"
-                ),
-            ),
-        ),
     ];
     for (name, text) in &cases {
         assert_eq!(refused(text), *name, "{text}");
@@ -181,15 +171,19 @@ fn refusals_are_named() {
 }
 
 /// AArch64's `llc` writes a thread-local variable without a location;
-/// so does the plan, which takes no `.debug_addr` entry for it.
+/// so does the plan, which takes no `.debug_addr` entry for it. x86-64's
+/// writes one (WP-136, §6.17), which the plan no longer refuses; its
+/// bytes and relocation are `xtask debug`'s to compare with `llc`'s.
 #[test]
-fn aarch64_thread_locals_are_written() {
-    let text = module(
-        A64,
-        "@g = thread_local global i32 0, align 4, !dbg !20",
-        &format!(
-            "!2 = !{{!20}}\n!3 = !{{}}\n!20 = !DIGlobalVariableExpression(var: !21, expr: !DIExpression())\n!21 = distinct !DIGlobalVariable({PLAIN})\n"
-        ),
-    );
-    assert_eq!(plan(&text), Ok(3));
+fn thread_locals_are_written() {
+    for triple in [A64, "x86_64-unknown-linux-gnu"] {
+        let text = module(
+            triple,
+            "@g = thread_local global i32 0, align 4, !dbg !20",
+            &format!(
+                "!2 = !{{!20}}\n!3 = !{{}}\n!20 = !DIGlobalVariableExpression(var: !21, expr: !DIExpression())\n!21 = distinct !DIGlobalVariable({PLAIN})\n"
+            ),
+        );
+        assert_eq!(plan(&text), Ok(3), "{triple}");
+    }
 }

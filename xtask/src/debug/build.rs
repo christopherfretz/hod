@@ -33,6 +33,8 @@ pub struct Tools {
     pub linkers: Vec<Linker>,
     /// The LLVM 22 installation kiln is pointed at (`--llvm-dir=`).
     pub kiln_llvm: Option<PathBuf>,
+    /// WP-136: the target when it is not this machine's, and its emulator.
+    pub cross: Option<super::cross::Cross>,
 }
 
 impl Tools {
@@ -108,6 +110,9 @@ pub fn frontend_ir(
             }
             c.arg("-fno-crash-diagnostics");
         }
+        if let Some(cross) = &tools.cross {
+            c.arg(format!("--target={}", cross.arch.triple()));
+        }
         c.args(FRONTEND_FLAGS).args(&test.cflags);
         if test.pre_opt {
             c.args(PRE_OPT_FLAGS);
@@ -133,7 +138,7 @@ pub fn split_dwarf_name(ir: &Path) -> Option<String> {
 
 /// What `llc` and hod are given for such a module: the name, and the
 /// `.dwo` file beside the object.
-fn split_dwarf_args(ir: &Path, object: &Path) -> Vec<OsString> {
+pub fn split_dwarf_args(ir: &Path, object: &Path) -> Vec<OsString> {
     split_dwarf_name(ir).map_or_else(Vec::new, |name| {
         vec![
             OsString::from(format!("-split-dwarf-file={name}")),

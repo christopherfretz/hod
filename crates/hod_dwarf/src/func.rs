@@ -103,6 +103,9 @@ pub(crate) enum LocalWhat {
     Var { offset: i64, indirect: bool, expr: ExprId },
     /// A variable of a coroutine body (WP-108): its place, expression.
     CoroVar { place: crate::coro::CoroPlace, expr: ExprId },
+    /// A variable the subprogram retains (`retainedNodes`) and no record
+    /// declares: no location (WP-111).
+    Retained,
     /// A block: its ranges in `UnitPlan::ranges`.
     Block { first: u32, count: u32 },
     /// A label at a code offset.
@@ -157,6 +160,9 @@ pub(crate) struct FnScratch {
     ents: Vec<(u32, u8, u32, u32)>,
     walk: Vec<(u32, u32, u32)>,
     fill: Vec<u32>,
+    /// The retained variables without a record (WP-111): an entity's row
+    /// `vars.len() + i` is the `i`-th.
+    retained: Vec<DiId>,
     /// The inlined scopes' keys and the abstract scopes (WP-085).
     inl: crate::inline::FnInline,
 }
@@ -436,6 +442,7 @@ impl<'a> UnitPlan<'a> {
         s.stack.clear();
         s.ranges.clear();
         s.ents.clear();
+        s.retained.clear();
         s.inl.clear();
         self.scope_ranges(f, s)?;
 
@@ -534,6 +541,7 @@ impl<'a> UnitPlan<'a> {
             s.ents.push((index, class, key, row as u32));
             self.abstract_entity(&mut s.inl, v.node, scope, class, key);
         }
+        self.retained_vars(f, s)?;
         s.ents.sort_unstable();
         // `llc`'s `needToEmitLexicalScope`: a block is written when it
         // has variables; its labels alone do not make it.
@@ -646,7 +654,10 @@ impl<'a> UnitPlan<'a> {
                 break;
             }
             e += 1;
-            let v = f.vars[row as usize];
+            let v = match f.vars.get(row as usize) {
+                Some(&v) => v,
+                None => retained_row(s, f.vars.len(), row),
+            };
             // An inlined instance's entities are not keyed (WP-085).
             let inlined = s.scopes[sc as usize].ia != LocId::NONE;
             if !inlined && self.slot[v.node.index()] != NONE {
@@ -674,6 +685,7 @@ impl<'a> UnitPlan<'a> {
                     LocalWhat::Label { offset }
                 }
                 LocalPlace::Coro(place) => LocalWhat::CoroVar { place, expr: v.expr },
+                LocalPlace::Refused(RETAINED) => LocalWhat::Retained,
                 LocalPlace::Refused(name) => return Err(unsupported(v.node, name)),
             };
             if class == 0
@@ -953,14 +965,10 @@ impl<'a> Writer<'a> {
         let fd = plan.funcs[l.func as usize];
         match (l.what, plan.debug.node(node)) {
             (
-                what @ (LocalWhat::Var { expr, .. } | LocalWhat::CoroVar { expr, .. }),
+                what @ (LocalWhat::Var { .. } | LocalWhat::CoroVar { .. } | LocalWhat::Retained),
                 DiNode::LocalVariable(v),
             ) => {
-                self.expr.clear();
-                place_ops(&mut self.expr, what);
-                let mut ops = std::mem::take(&mut self.expr);
-                write_ops(plan, expr, &mut ops);
-                self.expr = ops;
+                let at = self.var_location(plan, what);
                 if let Some(origin) = plan.inline.die(node) {
                     self.var_of_abstract(kind, origin);
                     return Ok(());
@@ -969,12 +977,12 @@ impl<'a> Writer<'a> {
                 let art = has(v.flags, DiFlags::ARTIFICIAL);
                 if kind == Kind::LocalParam {
                     let mask =
-                        1 | b(!v.name.is_empty()) << 1 | b(decl.is_some()) << 2 | b(art) << 3;
+                        at | b(!v.name.is_empty()) << 1 | b(decl.is_some()) << 2 | b(art) << 3;
                     self.abbrev(code(fam::FORMAL_PARAMETER, mask, false));
-                    self.exprloc();
+                    self.exprloc_if(at);
                     self.opt_name(v.name)?;
                 } else {
-                    let mask = 1 | b(decl.is_some()) << 1 | b(art) << 2;
+                    let mask = at | b(decl.is_some()) << 1 | b(art) << 2;
                     // WP-087: an unnamed variable has no `DW_AT_name`; an
                     // aligned one has `DW_AT_alignment` after it.
                     let family = match (v.name.is_empty(), v.align >= 8) {
@@ -983,7 +991,7 @@ impl<'a> Writer<'a> {
                         (false, false) => fam::VARIABLE,
                     };
                     self.abbrev(code(family, mask, false));
-                    self.exprloc();
+                    self.exprloc_if(at);
                     if !v.name.is_empty() {
                         self.strx(v.name)?;
                     }
@@ -1077,5 +1085,78 @@ fn place_ops(out: &mut Vec<u8>, what: LocalWhat) {
         }
         LocalWhat::CoroVar { place, .. } => crate::coro::location(out, place),
         _ => {}
+    }
+}
+
+/// The place of a retained variable's entity (WP-111): the marker
+/// [`UnitPlan::retained_vars`] gives it.
+const RETAINED: &str = "debug:retained-variable";
+
+/// The row of entity row `row` past the function's `vars` (`n` of them):
+/// a retained variable without a record (WP-111).
+fn retained_row(s: &FnScratch, n: usize, row: u32) -> LocalRow {
+    let node = s.retained.get(row as usize - n).copied().unwrap_or(DiId::NONE);
+    LocalRow { node, loc: LocId::NONE, expr: ExprId::EMPTY, place: LocalPlace::Refused(RETAINED) }
+}
+
+impl UnitPlan<'_> {
+    /// `llc`'s `collectEntityInfo`, "retained nodes" (WP-111,
+    /// `spec/dwarf.md` §6.4): a variable the subprogram retains and no
+    /// record of the function declares gets a DIE without a location in
+    /// its scope, after the declared ones (a parameter in its number's
+    /// place), when that scope has code; a `CoroSplit` ramp retains
+    /// `__coro_frame` and declares it only on the frame pointer's `phi`,
+    /// which `llc -O0` drops (`spec/codegen.md` §9.5). Labels and imports
+    /// are left where they are.
+    fn retained_vars(&self, f: &FunctionInput<'_>, s: &mut FnScratch) -> Result<(), Error> {
+        let DiNode::Subprogram(sp) = self.debug.node(f.subprogram) else { return Ok(()) };
+        for &n in sp.retained_nodes {
+            if self.debug.find_kind(n) != Some(DiKind::LocalVariable)
+                || f.vars.iter().any(|v| v.node == n)
+            {
+                continue;
+            }
+            let DiNode::LocalVariable(v) = self.debug.node(n) else { continue };
+            if v.ty.is_none() {
+                return Err(unsupported(n, "debug:variable-without-type"));
+            }
+            if v.align != 0 && (v.arg != 0 || v.name.is_empty()) {
+                return Err(unsupported(n, "debug:variable-alignment"));
+            }
+            let scope = self.non_file(v.scope.ok_or(bad(n, "scope"))?)?;
+            let index = find(s, scope, LocId::NONE);
+            if index == NONE {
+                continue;
+            }
+            let row = (f.vars.len() + s.retained.len()) as u32;
+            let (class, key) = if v.arg != 0 { (0, u32::from(v.arg)) } else { (1, row) };
+            s.ents.push((index, class, key, row));
+            s.retained.push(n);
+        }
+        Ok(())
+    }
+}
+
+impl Writer<'_> {
+    /// A variable's location into `self.expr` (WP-111: a retained
+    /// variable has none); 1 when it has one, the mask's location bit.
+    fn var_location(&mut self, plan: &UnitPlan<'_>, what: LocalWhat) -> u32 {
+        let expr = match what {
+            LocalWhat::Var { expr, .. } | LocalWhat::CoroVar { expr, .. } => expr,
+            _ => ExprId::EMPTY,
+        };
+        self.expr.clear();
+        place_ops(&mut self.expr, what);
+        let mut ops = std::mem::take(&mut self.expr);
+        write_ops(plan, expr, &mut ops);
+        self.expr = ops;
+        u32::from(!matches!(what, LocalWhat::Retained))
+    }
+
+    /// `DW_AT_location` when the mask's location bit `at` is set.
+    fn exprloc_if(&mut self, at: u32) {
+        if at != 0 {
+            self.exprloc();
+        }
     }
 }

@@ -40,6 +40,9 @@ pub struct Options {
     pub build_dir: PathBuf,
     pub require_tools: bool,
     pub limits: Limits,
+    /// WP-136: the target whose modules are verified (`--target`); `None`
+    /// is this machine's.
+    pub target: Option<crate::irdiff::directives::Arch>,
 }
 
 /// What a run found, by module in name order.
@@ -163,10 +166,10 @@ fn verify_one(
     hod: &Path,
     verifiers: &[PathBuf],
     dir: &Path,
-    limits: Limits,
+    (limits, target): (Limits, Option<crate::irdiff::directives::Arch>),
 ) -> Verdict {
     let text = fs::read_to_string(module).unwrap_or_default();
-    let host = std::env::consts::ARCH;
+    let host = target.map_or(std::env::consts::ARCH, |t| t.name());
     if let Some(target) = directive(&text, "target")
         && !target.split_whitespace().any(|t| t == host)
     {
@@ -251,7 +254,13 @@ pub fn run(options: &Options) -> Result<Report, String> {
                     let Some(module) = modules.get(index) else { break };
                     let dir = work.join(format!("{index:05}"));
                     let verdict = match fs::create_dir_all(&dir) {
-                        Ok(()) => verify_one(module, &hod, &verifiers, &dir, options.limits),
+                        Ok(()) => verify_one(
+                            module,
+                            &hod,
+                            &verifiers,
+                            &dir,
+                            (options.limits, options.target),
+                        ),
                         Err(e) => {
                             Verdict::Failed(format!("cannot create '{}': {e}", dir.display()))
                         }

@@ -117,15 +117,28 @@ kiln's lanes). Its rules:
 6. **The sweep never gates.** `sweep.yml` runs on a push to a `sweep/**`
    branch or by `workflow_dispatch` (inputs: kiln's commit, strict or
    hybrid), never on `pull_request` or `merge_group`, and is not a
-   required check. On `ubuntu-24.04` it builds `hod_cli` (release) and
-   kiln++, puts hod in front of kiln with `cargo xtask shim` and
-   `scripts/libcxx-hod-kiln.sh` ("shim"), runs kiln's `cargo xtask
-   libcxx std libcxx --tag llvmorg-22.1.8 --shard K/6 --no-fail -j 4
-   --timeout 20 --mem-limit 3072` natively (strict by default), and
-   merges the six shards' results with kiln's `scripts/libcxx-results.py`
-   into the artifact `libcxx-summary`. Each shard also uploads its wall
-   time and `scripts/libcxx-hod-kiln.sh`'s per-test logs
-   (`HOD_LIBCXX_LOGDIR`, the input of `scripts/libcxx-hod-report.py`).
+   required check. On each runner, `ubuntu-24.04` (x86-64) and
+   `ubuntu-24.04-arm` (AArch64), it builds `hod_cli` (release) and
+   kiln++, and runs kiln's `cargo xtask libcxx std libcxx --tag
+   llvmorg-22.1.8 --shard K/6 --no-fail -j 4 --timeout 60 --mem-limit
+   3072` natively twice: with hod in front of kiln (`cargo xtask shim`
+   and `scripts/libcxx-hod-kiln.sh`, "shim"; strict by default) and with
+   kiln++ alone, whose back end is LLVM 22's `llc` (the baseline). Each
+   hod shard uploads `scripts/libcxx-hod-kiln.sh`'s per-test logs
+   (`HOD_LIBCXX_LOGDIR`); every shard uploads its wall time. The `summary`
+   job (`scripts/libcxx-sweep.py`) uploads `sweep-summary`: one table of
+   the counts per runner and back end, the shards' wall times and hod's
+   share of the modules, then per runner the tests whose outcome differs
+   between hod and the baseline, and the modules hod did not build. It
+   fails when a test passes with `llc` and not with hod on the same
+   runner; a test that fails or times out with both is not hod's, and
+   XFAIL, XPASS and UNSUPPORTED differences are listed without failing.
+   **Cost** (run 43465227200, kiln++ restored from the cache): 26 jobs,
+   about 210 runner minutes, 14 minutes of wall time: the 24 shard jobs
+   take 4 to 11 minutes each (the suite 5 to 10 of them, the set-up about
+   1.5), x86-64 about 120 runner minutes and AArch64 about 90; the two
+   builds 2 minutes each, the summary under 1. A kiln revision not yet in
+   the cache adds about 5 minutes to each build job.
 7. **Random programs (reserved).** When `cargo xtask fuzz` (WP-154,
    csmith) is on `main`, a lane job (marked in `ci-lane.yml`) runs a
    fixed range of seeds natively: every program built by hod and by

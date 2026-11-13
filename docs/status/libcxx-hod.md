@@ -28,6 +28,31 @@ libc++ 22.1.8 tree. kiln is 1.0.1 at `bd60e1829` (the baseline's), LLVM is
 The hybrid run sets `HOD_CENSUS=1`, the strict run `HOD_STRICT=1`. The
 baseline took 3176 s.
 
+## Native AArch64 runner
+
+Run [43465227200](https://github.com/christopherfretz/hod/actions/runs/43465227200)
+of `.github/workflows/sweep.yml` (WP-164; `spec/harness.md` "CI", rule
+6), 2026-11-13: `wp/158-sweep` at `a67370e`, kiln 1.0.1 at `bd60e1829`,
+LLVM 22.1.8 (Debian 13), libc++ 22.1.8 from Debian's `libc++-22-dev`,
+the locales generated; kiln's `cargo xtask libcxx std libcxx --tag
+llvmorg-22.1.8 -j 4 --timeout 60 --mem-limit 3072 --no-fail` in six
+shards, once with hod strict (`HOD_STRICT=1`, no fallback) and once with
+kiln++ and `llc` alone, natively on the runner. Every test binary runs on
+the runner's own CPU, no emulator.
+
+| `ubuntu-24.04-arm` | total | pass | fail | xfail | xpass | unsupported | timeout | shards (s) | modules by hod |
+|---|---:|---:|---:|---:|---:|---:|---:|---|---|
+| hod, strict | 9,247 | 8,748 | 5 | 47 | 1 | 446 | 0 | 287 to 368 | 7,364 of 7,365 |
+| `llc` | 9,247 | 8,749 | 4 | 47 | 1 | 446 | 0 | 321 to 415 | - |
+
+The one difference: `std/algorithms/alg.nonmodifying/alg.find/find.pass.cpp`
+FAILs to compile with hod (`unsupported construct 'abi:vector-element'`, a
+vector in a signature; **open, no owner yet**) and passes with `llc`.
+The four filesystem failures (`directory_iterator` and
+`recursive_directory_iterator` `ctor.pass.cpp`, `remove.pass.cpp`,
+`remove_all.pass.cpp`) fail with `llc` as well: the runner's
+environment, not hod.
+
 ## Third measurement (WP-102, strict only)
 
 `main` at `6e6bf9c` (after WP-081, 082, 083, 084, 095 and 021), release

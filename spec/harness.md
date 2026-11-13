@@ -257,15 +257,16 @@ The x86-64 libc++ is Debian's `libc++-22-dev`, `libc++abi-22-dev` and
 `libunwind-22-dev` for amd64, version `1:22.1.8-1~deb13u4` (the AArch64
 tree's version), checked against the signed trixie package index and
 extracted under `.build/libcxx-x64/root`; `.build/libcxx-x64/lib` holds
-the links. The command, from the workspace root (timeouts times 8,
-design 0006 section 6.2):
+the links. The command, from the workspace root (both run limits times 8,
+design 0006 section 6.2; four long tests need more than AArch64's 240 s
+under qemu):
 
 ```sh
 W=$PWD/hod   # or a worktree
 (cd kiln && source scripts/env.sh &&
  MAKEFLAGS=--jobserver-auth=fifo:/run/hod/jobserver.fifo \
  cargo xtask libcxx --tag llvmorg-22.1.8 --compiler $W/scripts/libcxx-x64-kiln.sh \
-   std libcxx --timeout 160 -j 3 --mem-limit 3072 --no-fail \
+   std libcxx --timeout 160 --run-timeout-long 1920 -j 3 --mem-limit 3072 --no-fail \
    --results $PWD/../.build/libcxx-x64/baseline/baseline.tsv)
 ```
 

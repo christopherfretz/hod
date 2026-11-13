@@ -3372,8 +3372,9 @@ const INTRINSIC_A64: &[SupportRow] = &[
 ];
 
 /// The x86 target intrinsics of WP-173, which follow [`INTRINSIC_A64`] on
-/// the list. Above SSE2 the lowering refuses a function whose
-/// `target-features` do not enable the set, by the intrinsic's name.
+/// the list, then WP-190's system and state ones. Above SSE2 (and for
+/// WP-190's above the baseline) the lowering refuses a function whose
+/// `target-features` do not enable the feature, by the intrinsic's name.
 const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.sse.cmp.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
     row("intrinsic:llvm.x86.sse.comieq.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
@@ -3473,7 +3474,79 @@ const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.ssse3.psign.b.128", never(X64_ONLY), on(X86_SSE), "SSSE3 (WP-173)"),
     row("intrinsic:llvm.x86.ssse3.psign.d.128", never(X64_ONLY), on(X86_SSE), "SSSE3 (WP-173)"),
     row("intrinsic:llvm.x86.ssse3.psign.w.128", never(X64_ONLY), on(X86_SSE), "SSSE3 (WP-173)"),
+    // WP-190: the system and state intrinsics.
+    row("intrinsic:llvm.x86.flags.read.u64", never(X64_ONLY), on(X86_SYS), "baseline (WP-190)"),
+    row("intrinsic:llvm.x86.flags.write.u64", never(X64_ONLY), on(X86_SYS), "baseline (WP-190)"),
+    row("intrinsic:llvm.x86.fxsave", never(X64_ONLY), on(X86_SYS), "FXSR (WP-190)"),
+    row("intrinsic:llvm.x86.fxsave64", never(X64_ONLY), on(X86_SYS), "FXSR (WP-190)"),
+    row("intrinsic:llvm.x86.fxrstor", never(X64_ONLY), on(X86_SYS), "FXSR (WP-190)"),
+    row("intrinsic:llvm.x86.fxrstor64", never(X64_ONLY), on(X86_SYS), "FXSR (WP-190)"),
+    row("intrinsic:llvm.x86.rdtsc", never(X64_ONLY), on(X86_SYS), "baseline (WP-190)"),
+    row("intrinsic:llvm.x86.rdtscp", never(X64_ONLY), on(X86_SYS), "baseline (WP-190)"),
+    row("intrinsic:llvm.x86.rdpmc", never(X64_ONLY), on(X86_SYS), "baseline (WP-190)"),
+    row("intrinsic:llvm.x86.addcarry.32", never(X64_ONLY), on(X86_SYS), "baseline (WP-190)"),
+    row("intrinsic:llvm.x86.addcarry.64", never(X64_ONLY), on(X86_SYS), "baseline (WP-190)"),
+    row("intrinsic:llvm.x86.subborrow.32", never(X64_ONLY), on(X86_SYS), "baseline (WP-190)"),
+    row("intrinsic:llvm.x86.subborrow.64", never(X64_ONLY), on(X86_SYS), "baseline (WP-190)"),
+    row("intrinsic:llvm.x86.xgetbv", never(X64_ONLY), on(X86_SYS), "XSAVE (WP-190)"),
+    row("intrinsic:llvm.x86.xsetbv", never(X64_ONLY), on(X86_SYS), "XSAVE (WP-190)"),
+    row("intrinsic:llvm.x86.rdrand.16", never(X64_ONLY), on(X86_SYS), "RDRND (WP-190)"),
+    row("intrinsic:llvm.x86.rdrand.32", never(X64_ONLY), on(X86_SYS), "RDRND (WP-190)"),
+    row("intrinsic:llvm.x86.rdrand.64", never(X64_ONLY), on(X86_SYS), "RDRND (WP-190)"),
+    row("intrinsic:llvm.x86.rdseed.16", never(X64_ONLY), on(X86_SYS), "RDSEED (WP-190)"),
+    row("intrinsic:llvm.x86.rdseed.32", never(X64_ONLY), on(X86_SYS), "RDSEED (WP-190)"),
+    row("intrinsic:llvm.x86.rdseed.64", never(X64_ONLY), on(X86_SYS), "RDSEED (WP-190)"),
+    row("intrinsic:llvm.x86.xsave", never(X64_ONLY), on(X86_SYS), "XSAVE (WP-190)"),
+    row("intrinsic:llvm.x86.xsave64", never(X64_ONLY), on(X86_SYS), "XSAVE (WP-190)"),
+    row("intrinsic:llvm.x86.xrstor", never(X64_ONLY), on(X86_SYS), "XSAVE (WP-190)"),
+    row("intrinsic:llvm.x86.xrstor64", never(X64_ONLY), on(X86_SYS), "XSAVE (WP-190)"),
+    row("intrinsic:llvm.x86.xsaveopt", never(X64_ONLY), on(X86_SYS), "XSAVEOPT (WP-190)"),
+    row("intrinsic:llvm.x86.xsaveopt64", never(X64_ONLY), on(X86_SYS), "XSAVEOPT (WP-190)"),
+    row("intrinsic:llvm.x86.xsavec", never(X64_ONLY), on(X86_SYS), "XSAVEC (WP-190)"),
+    row("intrinsic:llvm.x86.xsavec64", never(X64_ONLY), on(X86_SYS), "XSAVEC (WP-190)"),
+    row("intrinsic:llvm.x86.xsaves", never(X64_ONLY), on(X86_SYS), "XSAVES (WP-190)"),
+    row("intrinsic:llvm.x86.xsaves64", never(X64_ONLY), on(X86_SYS), "XSAVES (WP-190)"),
+    row("intrinsic:llvm.x86.xrstors", never(X64_ONLY), on(X86_SYS), "XSAVES (WP-190)"),
+    row("intrinsic:llvm.x86.xrstors64", never(X64_ONLY), on(X86_SYS), "XSAVES (WP-190)"),
+    row("intrinsic:llvm.x86.clflushopt", never(X64_ONLY), on(X86_SYS), "CLFLUSHOPT (WP-190)"),
+    row("intrinsic:llvm.x86.clwb", never(X64_ONLY), on(X86_SYS), "CLWB (WP-190)"),
+    row("intrinsic:llvm.x86.bmi.bextr.32", never(X64_ONLY), on(X86_SYS), "BMI (WP-190)"),
+    row("intrinsic:llvm.x86.bmi.bextr.64", never(X64_ONLY), on(X86_SYS), "BMI (WP-190)"),
+    row("intrinsic:llvm.x86.bmi.bzhi.32", never(X64_ONLY), on(X86_SYS), "BMI2 (WP-190)"),
+    row("intrinsic:llvm.x86.bmi.bzhi.64", never(X64_ONLY), on(X86_SYS), "BMI2 (WP-190)"),
+    row("intrinsic:llvm.x86.bmi.pdep.32", never(X64_ONLY), on(X86_SYS), "BMI2 (WP-190)"),
+    row("intrinsic:llvm.x86.bmi.pdep.64", never(X64_ONLY), on(X86_SYS), "BMI2 (WP-190)"),
+    row("intrinsic:llvm.x86.bmi.pext.32", never(X64_ONLY), on(X86_SYS), "BMI2 (WP-190)"),
+    row("intrinsic:llvm.x86.bmi.pext.64", never(X64_ONLY), on(X86_SYS), "BMI2 (WP-190)"),
+    row("intrinsic:llvm.x86.sse42.crc32.32.8", never(X64_ONLY), on(X86_SYS), "CRC32 (WP-190)"),
+    row("intrinsic:llvm.x86.sse42.crc32.32.16", never(X64_ONLY), on(X86_SYS), "CRC32 (WP-190)"),
+    row("intrinsic:llvm.x86.sse42.crc32.32.32", never(X64_ONLY), on(X86_SYS), "CRC32 (WP-190)"),
+    row("intrinsic:llvm.x86.sse42.crc32.64.64", never(X64_ONLY), on(X86_SYS), "CRC32 (WP-190)"),
+    row("intrinsic:llvm.x86.rdfsbase.32", never(X64_ONLY), on(X86_SYS), "FSGSBASE (WP-190)"),
+    row("intrinsic:llvm.x86.rdfsbase.64", never(X64_ONLY), on(X86_SYS), "FSGSBASE (WP-190)"),
+    row("intrinsic:llvm.x86.rdgsbase.32", never(X64_ONLY), on(X86_SYS), "FSGSBASE (WP-190)"),
+    row("intrinsic:llvm.x86.rdgsbase.64", never(X64_ONLY), on(X86_SYS), "FSGSBASE (WP-190)"),
+    row("intrinsic:llvm.x86.wrfsbase.32", never(X64_ONLY), on(X86_SYS), "FSGSBASE (WP-190)"),
+    row("intrinsic:llvm.x86.wrfsbase.64", never(X64_ONLY), on(X86_SYS), "FSGSBASE (WP-190)"),
+    row("intrinsic:llvm.x86.wrgsbase.32", never(X64_ONLY), on(X86_SYS), "FSGSBASE (WP-190)"),
+    row("intrinsic:llvm.x86.wrgsbase.64", never(X64_ONLY), on(X86_SYS), "FSGSBASE (WP-190)"),
+    row("intrinsic:llvm.x86.xbegin", never(X64_ONLY), on(X86_SYS), "RTM (WP-190)"),
+    row("intrinsic:llvm.x86.xend", never(X64_ONLY), on(X86_SYS), "RTM (WP-190)"),
+    row("intrinsic:llvm.x86.xabort", never(X64_ONLY), on(X86_SYS), "RTM (WP-190)"),
+    row("intrinsic:llvm.x86.xtest", never(X64_ONLY), on(X86_SYS), "RTM (WP-190)"),
+    row("intrinsic:llvm.x86.rdpid", never(X64_ONLY), on(X86_SYS), "RDPID (WP-190)"),
+    row("intrinsic:llvm.x86.rdpkru", never(X64_ONLY), on(X86_SYS), "PKU (WP-190)"),
+    row("intrinsic:llvm.x86.wrpkru", never(X64_ONLY), on(X86_SYS), "PKU (WP-190)"),
+    row("intrinsic:llvm.x86.serialize", never(X64_ONLY), on(X86_SYS), "SERIALIZE (WP-190)"),
+    row("intrinsic:llvm.x86.incsspd", never(X64_ONLY), on(X86_SYS), "SHSTK (WP-190)"),
+    row("intrinsic:llvm.x86.incsspq", never(X64_ONLY), on(X86_SYS), "SHSTK (WP-190)"),
+    row("intrinsic:llvm.x86.rdsspd", never(X64_ONLY), on(X86_SYS), "SHSTK (WP-190)"),
+    row("intrinsic:llvm.x86.rdsspq", never(X64_ONLY), on(X86_SYS), "SHSTK (WP-190)"),
 ];
+
+/// The value classes of the x86 system and state intrinsics' signatures
+/// (WP-190): integers, pointers and the `{iN, iM}` results.
+const X86_SYS: &[TypeClass] = &[TypeClass::Int, TypeClass::Ptr, TypeClass::Aggregate];
 
 // ---- the table ----
 

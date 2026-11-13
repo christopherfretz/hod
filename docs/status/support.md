@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 455 | 347 | 7 | 101 | 229 | 10 | 216 |
-| total | 777 | 551 | 68 | 158 | 427 | 72 | 278 |
+| `intrinsic` | 522 | 347 | 7 | 168 | 296 | 10 | 216 |
+| total | 844 | 551 | 68 | 225 | 494 | 72 | 278 |
 
 ## `module`
 
@@ -982,6 +982,73 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.x86.ssse3.psign.b.128` | rejected | supported (int, ptr, vector) | an x86 property. SSSE3 (WP-173) |
 | `intrinsic:llvm.x86.ssse3.psign.d.128` | rejected | supported (int, ptr, vector) | an x86 property. SSSE3 (WP-173) |
 | `intrinsic:llvm.x86.ssse3.psign.w.128` | rejected | supported (int, ptr, vector) | an x86 property. SSSE3 (WP-173) |
+| `intrinsic:llvm.x86.flags.read.u64` | rejected | supported (int, ptr, aggregate) | an x86 property. baseline (WP-190) |
+| `intrinsic:llvm.x86.flags.write.u64` | rejected | supported (int, ptr, aggregate) | an x86 property. baseline (WP-190) |
+| `intrinsic:llvm.x86.fxsave` | rejected | supported (int, ptr, aggregate) | an x86 property. FXSR (WP-190) |
+| `intrinsic:llvm.x86.fxsave64` | rejected | supported (int, ptr, aggregate) | an x86 property. FXSR (WP-190) |
+| `intrinsic:llvm.x86.fxrstor` | rejected | supported (int, ptr, aggregate) | an x86 property. FXSR (WP-190) |
+| `intrinsic:llvm.x86.fxrstor64` | rejected | supported (int, ptr, aggregate) | an x86 property. FXSR (WP-190) |
+| `intrinsic:llvm.x86.rdtsc` | rejected | supported (int, ptr, aggregate) | an x86 property. baseline (WP-190) |
+| `intrinsic:llvm.x86.rdtscp` | rejected | supported (int, ptr, aggregate) | an x86 property. baseline (WP-190) |
+| `intrinsic:llvm.x86.rdpmc` | rejected | supported (int, ptr, aggregate) | an x86 property. baseline (WP-190) |
+| `intrinsic:llvm.x86.addcarry.32` | rejected | supported (int, ptr, aggregate) | an x86 property. baseline (WP-190) |
+| `intrinsic:llvm.x86.addcarry.64` | rejected | supported (int, ptr, aggregate) | an x86 property. baseline (WP-190) |
+| `intrinsic:llvm.x86.subborrow.32` | rejected | supported (int, ptr, aggregate) | an x86 property. baseline (WP-190) |
+| `intrinsic:llvm.x86.subborrow.64` | rejected | supported (int, ptr, aggregate) | an x86 property. baseline (WP-190) |
+| `intrinsic:llvm.x86.xgetbv` | rejected | supported (int, ptr, aggregate) | an x86 property. XSAVE (WP-190) |
+| `intrinsic:llvm.x86.xsetbv` | rejected | supported (int, ptr, aggregate) | an x86 property. XSAVE (WP-190) |
+| `intrinsic:llvm.x86.rdrand.16` | rejected | supported (int, ptr, aggregate) | an x86 property. RDRND (WP-190) |
+| `intrinsic:llvm.x86.rdrand.32` | rejected | supported (int, ptr, aggregate) | an x86 property. RDRND (WP-190) |
+| `intrinsic:llvm.x86.rdrand.64` | rejected | supported (int, ptr, aggregate) | an x86 property. RDRND (WP-190) |
+| `intrinsic:llvm.x86.rdseed.16` | rejected | supported (int, ptr, aggregate) | an x86 property. RDSEED (WP-190) |
+| `intrinsic:llvm.x86.rdseed.32` | rejected | supported (int, ptr, aggregate) | an x86 property. RDSEED (WP-190) |
+| `intrinsic:llvm.x86.rdseed.64` | rejected | supported (int, ptr, aggregate) | an x86 property. RDSEED (WP-190) |
+| `intrinsic:llvm.x86.xsave` | rejected | supported (int, ptr, aggregate) | an x86 property. XSAVE (WP-190) |
+| `intrinsic:llvm.x86.xsave64` | rejected | supported (int, ptr, aggregate) | an x86 property. XSAVE (WP-190) |
+| `intrinsic:llvm.x86.xrstor` | rejected | supported (int, ptr, aggregate) | an x86 property. XSAVE (WP-190) |
+| `intrinsic:llvm.x86.xrstor64` | rejected | supported (int, ptr, aggregate) | an x86 property. XSAVE (WP-190) |
+| `intrinsic:llvm.x86.xsaveopt` | rejected | supported (int, ptr, aggregate) | an x86 property. XSAVEOPT (WP-190) |
+| `intrinsic:llvm.x86.xsaveopt64` | rejected | supported (int, ptr, aggregate) | an x86 property. XSAVEOPT (WP-190) |
+| `intrinsic:llvm.x86.xsavec` | rejected | supported (int, ptr, aggregate) | an x86 property. XSAVEC (WP-190) |
+| `intrinsic:llvm.x86.xsavec64` | rejected | supported (int, ptr, aggregate) | an x86 property. XSAVEC (WP-190) |
+| `intrinsic:llvm.x86.xsaves` | rejected | supported (int, ptr, aggregate) | an x86 property. XSAVES (WP-190) |
+| `intrinsic:llvm.x86.xsaves64` | rejected | supported (int, ptr, aggregate) | an x86 property. XSAVES (WP-190) |
+| `intrinsic:llvm.x86.xrstors` | rejected | supported (int, ptr, aggregate) | an x86 property. XSAVES (WP-190) |
+| `intrinsic:llvm.x86.xrstors64` | rejected | supported (int, ptr, aggregate) | an x86 property. XSAVES (WP-190) |
+| `intrinsic:llvm.x86.clflushopt` | rejected | supported (int, ptr, aggregate) | an x86 property. CLFLUSHOPT (WP-190) |
+| `intrinsic:llvm.x86.clwb` | rejected | supported (int, ptr, aggregate) | an x86 property. CLWB (WP-190) |
+| `intrinsic:llvm.x86.bmi.bextr.32` | rejected | supported (int, ptr, aggregate) | an x86 property. BMI (WP-190) |
+| `intrinsic:llvm.x86.bmi.bextr.64` | rejected | supported (int, ptr, aggregate) | an x86 property. BMI (WP-190) |
+| `intrinsic:llvm.x86.bmi.bzhi.32` | rejected | supported (int, ptr, aggregate) | an x86 property. BMI2 (WP-190) |
+| `intrinsic:llvm.x86.bmi.bzhi.64` | rejected | supported (int, ptr, aggregate) | an x86 property. BMI2 (WP-190) |
+| `intrinsic:llvm.x86.bmi.pdep.32` | rejected | supported (int, ptr, aggregate) | an x86 property. BMI2 (WP-190) |
+| `intrinsic:llvm.x86.bmi.pdep.64` | rejected | supported (int, ptr, aggregate) | an x86 property. BMI2 (WP-190) |
+| `intrinsic:llvm.x86.bmi.pext.32` | rejected | supported (int, ptr, aggregate) | an x86 property. BMI2 (WP-190) |
+| `intrinsic:llvm.x86.bmi.pext.64` | rejected | supported (int, ptr, aggregate) | an x86 property. BMI2 (WP-190) |
+| `intrinsic:llvm.x86.sse42.crc32.32.8` | rejected | supported (int, ptr, aggregate) | an x86 property. CRC32 (WP-190) |
+| `intrinsic:llvm.x86.sse42.crc32.32.16` | rejected | supported (int, ptr, aggregate) | an x86 property. CRC32 (WP-190) |
+| `intrinsic:llvm.x86.sse42.crc32.32.32` | rejected | supported (int, ptr, aggregate) | an x86 property. CRC32 (WP-190) |
+| `intrinsic:llvm.x86.sse42.crc32.64.64` | rejected | supported (int, ptr, aggregate) | an x86 property. CRC32 (WP-190) |
+| `intrinsic:llvm.x86.rdfsbase.32` | rejected | supported (int, ptr, aggregate) | an x86 property. FSGSBASE (WP-190) |
+| `intrinsic:llvm.x86.rdfsbase.64` | rejected | supported (int, ptr, aggregate) | an x86 property. FSGSBASE (WP-190) |
+| `intrinsic:llvm.x86.rdgsbase.32` | rejected | supported (int, ptr, aggregate) | an x86 property. FSGSBASE (WP-190) |
+| `intrinsic:llvm.x86.rdgsbase.64` | rejected | supported (int, ptr, aggregate) | an x86 property. FSGSBASE (WP-190) |
+| `intrinsic:llvm.x86.wrfsbase.32` | rejected | supported (int, ptr, aggregate) | an x86 property. FSGSBASE (WP-190) |
+| `intrinsic:llvm.x86.wrfsbase.64` | rejected | supported (int, ptr, aggregate) | an x86 property. FSGSBASE (WP-190) |
+| `intrinsic:llvm.x86.wrgsbase.32` | rejected | supported (int, ptr, aggregate) | an x86 property. FSGSBASE (WP-190) |
+| `intrinsic:llvm.x86.wrgsbase.64` | rejected | supported (int, ptr, aggregate) | an x86 property. FSGSBASE (WP-190) |
+| `intrinsic:llvm.x86.xbegin` | rejected | supported (int, ptr, aggregate) | an x86 property. RTM (WP-190) |
+| `intrinsic:llvm.x86.xend` | rejected | supported (int, ptr, aggregate) | an x86 property. RTM (WP-190) |
+| `intrinsic:llvm.x86.xabort` | rejected | supported (int, ptr, aggregate) | an x86 property. RTM (WP-190) |
+| `intrinsic:llvm.x86.xtest` | rejected | supported (int, ptr, aggregate) | an x86 property. RTM (WP-190) |
+| `intrinsic:llvm.x86.rdpid` | rejected | supported (int, ptr, aggregate) | an x86 property. RDPID (WP-190) |
+| `intrinsic:llvm.x86.rdpkru` | rejected | supported (int, ptr, aggregate) | an x86 property. PKU (WP-190) |
+| `intrinsic:llvm.x86.wrpkru` | rejected | supported (int, ptr, aggregate) | an x86 property. PKU (WP-190) |
+| `intrinsic:llvm.x86.serialize` | rejected | supported (int, ptr, aggregate) | an x86 property. SERIALIZE (WP-190) |
+| `intrinsic:llvm.x86.incsspd` | rejected | supported (int, ptr, aggregate) | an x86 property. SHSTK (WP-190) |
+| `intrinsic:llvm.x86.incsspq` | rejected | supported (int, ptr, aggregate) | an x86 property. SHSTK (WP-190) |
+| `intrinsic:llvm.x86.rdsspd` | rejected | supported (int, ptr, aggregate) | an x86 property. SHSTK (WP-190) |
+| `intrinsic:llvm.x86.rdsspq` | rejected | supported (int, ptr, aggregate) | an x86 property. SHSTK (WP-190) |
 
 ## Structural rules
 

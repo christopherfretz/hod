@@ -583,6 +583,152 @@ fn sjlj_refusals_by_name() {
     );
 }
 
+/// `F`: a `setjmp` function that holds nothing in a callee-saved
+/// register. It keeps the jumper `g` in a global (an argument used after
+/// the `setjmp` is refused), calls `g(buf)`, and returns after the
+/// second return, counting it in `@resumed`.
+const SAVE_ALL_SETTER: &str = "\
+@gsel = global ptr null, align 8
+@resumed = global i32 0, align 4
+declare ptr @llvm.frameaddress.p0(i32)
+declare ptr @llvm.stacksave.p0()
+declare i32 @llvm.eh.sjlj.setjmp(ptr)
+
+define void @f_sj(ptr %g) {
+entry:
+  %buf = alloca [5 x ptr], align 16
+  store ptr %g, ptr @gsel, align 8
+  %fa = call ptr @llvm.frameaddress.p0(i32 0)
+  store ptr %fa, ptr %buf, align 16
+  %ss = call ptr @llvm.stacksave.p0()
+  %p2 = getelementptr ptr, ptr %buf, i64 2
+  store ptr %ss, ptr %p2, align 16
+  %r = call i32 @llvm.eh.sjlj.setjmp(ptr %buf)
+  %z = icmp eq i32 %r, 0
+  br i1 %z, label %first, label %second
+first:
+  %gg = load ptr, ptr @gsel, align 8
+  call void %gg(ptr %buf)
+  ret void
+second:
+  %n = load i32, ptr @resumed, align 4
+  %n1 = add i32 %n, 1
+  store i32 %n1, ptr @resumed, align 4
+  ret void
+}
+";
+
+/// `G` by hod: five values held in callee-saved registers across a call
+/// of `touch`, then `longjmp` to `buf`.
+const SAVE_ALL_HOD_JUMPER: &str = "\
+declare void @touch(i64)
+declare void @llvm.eh.sjlj.longjmp(ptr)
+
+define void @g_hod(ptr %buf) {
+  %a = ptrtoint ptr %buf to i64
+  %b = xor i64 %a, -1
+  %c = add i64 %a, 2
+  %d = add i64 %a, 3
+  %e = add i64 %a, 4
+  %f = add i64 %a, 5
+  call void @touch(i64 %b)
+  %s1 = add i64 %b, %c
+  %s2 = add i64 %s1, %d
+  %s3 = add i64 %s2, %e
+  %s4 = add i64 %s3, %f
+  call void @touch(i64 %s4)
+  call void @llvm.eh.sjlj.longjmp(ptr %buf)
+  unreachable
+}
+";
+
+/// `llc`'s side: `keep_all(f, g, out)` puts a value in each of `rbx`,
+/// `r12`..`r15` (WP-146's `tests/text_size.rs`), calls `f(g)` and
+/// stores the five registers to `out` after the return; `g_llc(buf)`
+/// overwrites all five and jumps.
+const SAVE_ALL_LLC_SIDE: &str = r#"
+declare void @llvm.eh.sjlj.longjmp(ptr)
+
+define void @keep_all(ptr %f, ptr %g, ptr %out) {
+  call void asm sideeffect "movq $$0x1111, %rbx\0Amovq $$0x2222, %r12\0Amovq $$0x3333, %r13\0Amovq $$0x4444, %r14\0Amovq $$0x5555, %r15", "~{rbx},~{r12},~{r13},~{r14},~{r15}"()
+  call void %f(ptr %g)
+  call void asm sideeffect "movq %rbx, 0($0)\0Amovq %r12, 8($0)\0Amovq %r13, 16($0)\0Amovq %r14, 24($0)\0Amovq %r15, 32($0)", "r,~{rbx},~{r12},~{r13},~{r14},~{r15},~{memory}"(ptr %out)
+  ret void
+}
+
+define void @g_llc(ptr %buf) {
+  call void asm sideeffect "movq $$-1, %rbx\0Amovq $$-2, %r12\0Amovq $$-3, %r13\0Amovq $$-4, %r14\0Amovq $$-5, %r15", "~{rbx},~{r12},~{r13},~{r14},~{r15}"()
+  call void @llvm.eh.sjlj.longjmp(ptr %buf)
+  unreachable
+}
+"#;
+
+const SAVE_ALL_DRIVER: &str = r#"
+#include <stdio.h>
+#include <stdint.h>
+typedef uint64_t u;
+extern int resumed;
+void f_sj(void *);
+void g_hod(void *);
+void g_llc(void *);
+void keep_all(void (*)(void *), void *, u *);
+__attribute__((noinline)) void touch(u v) { __asm__ volatile("" : : "r"(v)); }
+int main(void) {
+  void *gs[2] = {(void *)g_hod, (void *)g_llc};
+  for (int i = 0; i < 2; i++) {
+    u out[5] = {0};
+    keep_all(f_sj, gs[i], out);
+    printf("%s: resumed %d regs %llx %llx %llx %llx %llx\n", i ? "llc" : "hod", resumed,
+           (unsigned long long)out[0], (unsigned long long)out[1], (unsigned long long)out[2],
+           (unsigned long long)out[3], (unsigned long long)out[4]);
+  }
+  return 0;
+}
+"#;
+
+/// §5.6.15 item 1, §5.6.16 (2) with WP-146's save set: a `setjmp`
+/// function saves every callee-saved register (`FrameState::save_all`)
+/// even when its body holds none, because the resume point is entered
+/// with the jumper's registers. `llc` code holding values in `rbx`,
+/// `r12`..`r15` calls hod's `F`; `F` sets its buffer and calls `G` (hod's,
+/// holding five values in callee-saved registers, or `llc`'s, writing
+/// all five), which jumps back; `F` returns, and the caller's five values
+/// are intact. `F` plain and stressed, every linker.
+#[test]
+fn a_setjmp_function_restores_every_callee_saved_register() {
+    let scratch = hod_testutil::Scratch::new("x64-sjlj-save-all");
+    let jumper = hod_object(&scratch, "g-hod", SAVE_ALL_HOD_JUMPER, Stress::default());
+    let text = format!("{}{SAVE_ALL_LLC_SIDE}", ll_header());
+    let Some(llc_side) = float_gen::llc(&scratch, 22, "save-all-llc", &text) else { return };
+    let Some(toolchain) = linking::Toolchain::x86_64(&scratch) else { return };
+    let driver = toolchain.compile_c(&scratch, "save-all-driver", SAVE_ALL_DRIVER, &[]);
+    let want = "hod: resumed 1 regs 1111 2222 3333 4444 5555\n\
+                llc: resumed 2 regs 1111 2222 3333 4444 5555\n";
+    let mut runs = 0;
+    for (mode, stress) in [("plain", Stress::default()), ("stress", Stress::ALL)] {
+        let setter = hod_object(&scratch, &format!("f-{mode}"), SAVE_ALL_SETTER, stress);
+        for linker in &toolchain.linkers {
+            let program = scratch.join(format!("save-all-{mode}-{}", linker.name));
+            let ran = toolchain.link_and_run(
+                linker,
+                &[],
+                &[&driver, &setter, &jumper, &llc_side],
+                &program,
+            );
+            assert!(
+                ran.success(),
+                "{mode} [{}]: {:?}\n{}",
+                linker.name,
+                ran.status,
+                ran.stderr_text()
+            );
+            assert_eq!(ran.stdout_text(), want, "{mode} [{}]", linker.name);
+            runs += 1;
+        }
+    }
+    eprintln!("sjlj save set: {runs} programs");
+}
+
 // ---- 3. constant masks across `phi`, calls and returns ----
 
 /// The mask constant of `n` lanes whose lane `i` is bit `i` of `bits`

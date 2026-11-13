@@ -1,6 +1,6 @@
 //! Developer tasks. Contract: `spec/harness.md`.
 //!
-//! `cargo xtask ci [--quick]` is the gate described in `docs/VALIDATION.md`.
+//! `cargo xtask ci [--quick] [--step <name>]...` is the gate described in `docs/VALIDATION.md`.
 //! `cargo xtask jobserver ...` counts and refills the machine's token pool.
 //! `cargo xtask shim ...` builds the LLVM directory that plugs hod into kiln.
 //! `cargo xtask irdiff ...` is the IR differential harness (layer L4).
@@ -12,7 +12,7 @@
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-usage: cargo xtask ci [--quick]
+usage: cargo xtask ci [--quick] [--step fmt|clippy|test|irdiff|roundtrip|debug]...
        cargo xtask jobserver <status|refill> [--fifo <path>] [--jobs <n>]
        cargo xtask shim --llvm <dir> --hod <hod binary> --out <dir> [--kiln <kiln++>]
        cargo xtask irdiff [options] [<file.ll or directory>...]   (--help for the options)
@@ -27,7 +27,13 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("jobserver") => xtask::jobs::main(args[1..].iter().cloned()),
-        Some("ci") => ci(args.iter().any(|a| a == "--quick")),
+        Some("ci") => match xtask::ci::Args::parse(&args[1..]) {
+            Ok(ci_args) => ci(&ci_args),
+            Err(message) => {
+                eprint!("xtask ci: {message}\n{USAGE}");
+                ExitCode::from(2)
+            }
+        },
         Some("shim") => shim(&args[1..]),
         Some("irdiff") => irdiff(&args[1..]),
         Some("corpus") => corpus(&args[1..]),
@@ -46,14 +52,19 @@ fn main() -> ExitCode {
     }
 }
 
-/// Runs each step in order and stops at the first failure.
-fn ci(quick: bool) -> ExitCode {
+/// Runs each selected step in order and stops at the first failure
+/// (`spec/harness.md` "ci").
+fn ci(args: &xtask::ci::Args) -> ExitCode {
+    let quick = args.quick;
     let steps: &[(&str, &[&str])] = &[
         ("fmt", &["fmt", "--all", "--check"]),
         ("clippy", &["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]),
         ("test", &["test", "--workspace", "--quiet"]),
     ];
     for (name, cargo_args) in steps {
+        if !args.runs(name) {
+            continue;
+        }
         eprintln!("ci: {name}");
         // A cargo step is a jobserver client of its own (spec/harness.md
         // "Jobserver"), and is run once more if an artifact vanished under
@@ -64,20 +75,24 @@ fn ci(quick: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
-    eprintln!("ci: irdiff");
-    if !irdiff_gate(quick) {
-        eprintln!("ci: irdiff FAILED");
-        return ExitCode::FAILURE;
+    if args.runs("irdiff") {
+        eprintln!("ci: irdiff");
+        if !irdiff_gate(quick) {
+            eprintln!("ci: irdiff FAILED");
+            return ExitCode::FAILURE;
+        }
     }
-    eprintln!("ci: roundtrip");
-    if !roundtrip_gate(quick) {
-        eprintln!("ci: roundtrip FAILED");
-        return ExitCode::FAILURE;
+    if args.runs("roundtrip") {
+        eprintln!("ci: roundtrip");
+        if !roundtrip_gate(quick) {
+            eprintln!("ci: roundtrip FAILED");
+            return ExitCode::FAILURE;
+        }
     }
     // L7: the full gate runs every debugger test (the quick tests ran in
     // `cargo test`).
     #[cfg(unix)]
-    if !quick && !xtask::debug::gate() {
+    if !quick && args.runs("debug") && !xtask::debug::gate() {
         eprintln!("ci: debug FAILED");
         return ExitCode::FAILURE;
     }

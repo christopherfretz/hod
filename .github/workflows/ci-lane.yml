@@ -36,11 +36,28 @@ jobs:
         with: { cache-key: "${{ inputs.cache-key }}" }
       - uses: ./.github/actions/kiln
         with: { build: "true" }
-  # The quick gate. The debugger tests trace their programs with gdb and
-  # lldb: CAP_SYS_PTRACE (Docker's default seccomp profile allows ptrace;
-  # `personality` is blocked, so the debuggers leave ASLR on).
-  quick:
-    name: quick
+  # The quick gate (`cargo xtask ci --quick`), one job per step group so
+  # they run in parallel: every step but `roundtrip`, which needs the
+  # corpus, build output of the development machine that a hosted runner
+  # does not have (spec/harness.md "CI"; xtask::ci::HOSTED_STEPS, checked
+  # against this file by `the_hosted_lane_runs_the_quick_gates_steps`).
+  lints:
+    name: lints
+    runs-on: ${{ inputs.runner }}
+    container: buildpack-deps:trixie
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/hod-ci
+        with: { cache-key: "${{ inputs.cache-key }}" }
+      - run: cargo xtask ci --quick --step fmt
+      - run: cargo xtask ci --quick --step clippy
+  # The debugger tests trace their programs with gdb and lldb:
+  # CAP_SYS_PTRACE (Docker's default seccomp profile allows ptrace;
+  # `personality` is blocked, so the debuggers leave ASLR on). This job
+  # builds the most and saves the cargo cache.
+  test:
+    name: test
     needs: [kiln]
     runs-on: ${{ inputs.runner }}
     container:
@@ -52,4 +69,14 @@ jobs:
       - uses: ./.github/actions/hod-ci
         with: { cache-key: "${{ inputs.cache-key }}", save-cache: "true" }
       - uses: ./.github/actions/kiln
-      - run: cargo xtask ci --quick
+      - run: cargo xtask ci --quick --step test
+  irdiff:
+    name: irdiff
+    runs-on: ${{ inputs.runner }}
+    container: buildpack-deps:trixie
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/hod-ci
+        with: { cache-key: "${{ inputs.cache-key }}" }
+      - run: cargo xtask ci --quick --step irdiff

@@ -65,6 +65,7 @@ pub struct Scratch {
     pub(crate) cuts: Vec<(u32, u32)>,
     pub(crate) relax: Vec<crate::shrink::Relax>,
     pub(crate) chosen: Vec<bool>,
+    pub(crate) edits: crate::shrink::Edits,
     pub(crate) frame: Frame,
     pub(crate) labels: Labels,
     /// Where each body slot is, by `SlotId`.
@@ -107,6 +108,7 @@ impl Default for Scratch {
             cuts: Vec::new(),
             relax: Vec::new(),
             chosen: Vec::new(),
+            edits: crate::shrink::Edits::default(),
             frame: Frame::default(),
             labels: Labels::default(),
             slots: Vec::new(),
@@ -155,6 +157,7 @@ impl Scratch {
             + bytes(&self.cuts)
             + bytes(&self.relax)
             + bytes(&self.chosen)
+            + self.edits.allocated_bytes()
     }
 }
 

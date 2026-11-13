@@ -24,7 +24,7 @@ pub const GNU_PROPERTY_X86_FEATURE_1_SHSTK: u32 = 1 << 1;
 
 const NT_GNU_PROPERTY_TYPE_0: u32 = 5;
 /// The `pr_type` of the AArch64 feature property (the `..._FEATURE_1_*`
-/// bits, ANDed by the linker over the program's objects).
+/// bits, combined with AND by the linker over the program's objects).
 pub const GNU_PROPERTY_AARCH64_FEATURE_1_AND: u32 = 0xc000_0000;
 /// The `pr_type` of the x86 feature property.
 pub const GNU_PROPERTY_X86_FEATURE_1_AND: u32 = 0xc000_0002;

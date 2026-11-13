@@ -535,7 +535,7 @@ fn shape_cfi_and_note_agree_with_llc() {
                 let what = format!("{} {name} llc {major}", form.name);
                 match form.sign {
                     Some("all") | None => {
-                        assert_eq!(class(ours.entry()), class(their.entry()), "{what}")
+                        assert_eq!(class(ours.entry()), class(their.entry()), "{what}");
                     }
                     Some(_) => {
                         if their.signs() {
@@ -719,6 +719,9 @@ fn drop_negate_rows(emitted: &mut Emitted) -> usize {
     changed
 }
 
+/// A change to hod's object; how many places it changed.
+type Mutation = fn(&hod_ir::Module, &mut Emitted) -> usize;
+
 // Each mutation kills the program where BTI and PAC are enforced.
 #[test]
 fn mutations_are_caught_by_the_processor() {
@@ -733,7 +736,7 @@ fn mutations_are_caught_by_the_processor() {
     let Some(bfd) = toolchain.linkers.iter().find(|l| l.name == "bfd") else { return };
     let standard = &FORMS[4];
     let module = standard.module(22);
-    let cases: [(&str, fn(&hod_ir::Module, &mut Emitted) -> usize); 3] = [
+    let cases: [(&str, Mutation); 3] = [
         ("a bti j dropped", |m, e| mutate_code(m, e, "computed", BTI_J, NOP)),
         ("an autiasp skipped", |m, e| mutate_code(m, e, "nonleaf", AUTIASP, NOP)),
         ("the negate rows dropped", |_, e| drop_negate_rows(e)),

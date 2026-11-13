@@ -6,7 +6,21 @@ use super::matrix::{
     ROW_COUNT, SUPPORT_ROWS, SupportStatus, TypeClass, TypeClasses, at, row_index,
 };
 use crate::attrs::FnAttrs;
+use crate::inst::Opcode;
 use crate::target::Arch;
+
+/// [`Support::short`]: the short way decides the opcode (its row is
+/// supported, and it has no row or rule of its own beyond its subjects).
+pub(crate) const SHORT_ON: u32 = 1 << 16;
+/// The opcode is a `load` or a `store`: a volatile or atomic one goes the
+/// long way.
+pub(crate) const SHORT_MEM: u32 = 1 << 17;
+/// The opcode is `call`.
+pub(crate) const SHORT_CALL: u32 = 1 << 18;
+/// The operands are a list ([`Opcode::inline_values`] is `None`).
+pub(crate) const SHORT_LIST: u32 = 1 << 19;
+/// Where the number of inline operands is.
+pub(crate) const SHORT_COUNT_SHIFT: u32 = 20;
 
 /// What a code generator implements, for one target: the support matrix
 /// with some rows switched on (§8.2).
@@ -27,6 +41,10 @@ pub struct Support {
     pub(crate) types: u16,
     /// The `FnAttrs` flags whose row is not supported.
     pub(crate) fn_flags_off: u32,
+    /// Per opcode, what the short way of the body pass needs (§8.11): the
+    /// classes its row can be given (`mask & types`) in the low 16 bits,
+    /// and the `SHORT_*` bits.
+    pub(crate) short: [u32; Opcode::ALL.len()],
 }
 
 static SHIPPED_AARCH64: Support = Support::build(Arch::Aarch64, false);
@@ -47,7 +65,7 @@ impl Support {
             index += 1;
         }
         mask[at::ANY] = TypeClasses::ALL.bits();
-        Support { arch, mask, types: 0, fn_flags_off: 0 }.derived()
+        Support { arch, mask, types: 0, fn_flags_off: 0, short: [0; Opcode::ALL.len()] }.derived()
     }
 
     /// Fills the fields computed from `mask`.
@@ -67,6 +85,31 @@ impl Support {
                 self.fn_flags_off |= 1 << flag;
             }
             flag += 1;
+        }
+        let mut index = 0;
+        while index < Opcode::ALL.len() {
+            let op = Opcode::ALL[index];
+            let have = self.mask[at::INST + op as usize];
+            let short = match op {
+                _ if have == 0 => 0,
+                // These have rows and rules of their own.
+                Opcode::CmpXchg
+                | Opcode::AtomicRmw
+                | Opcode::LandingPad
+                | Opcode::Switch
+                | Opcode::Invoke
+                | Opcode::CallBr => 0,
+                Opcode::Call => SHORT_ON | SHORT_CALL,
+                Opcode::Load | Opcode::Store => SHORT_ON | SHORT_MEM,
+                _ => SHORT_ON,
+            };
+            let operands = match op.inline_values() {
+                Some(count) => (count as u32) << SHORT_COUNT_SHIFT,
+                None => SHORT_LIST,
+            };
+            self.short[op as usize] =
+                if short == 0 { 0 } else { short | operands | (have & self.types) as u32 };
+            index += 1;
         }
         self
     }

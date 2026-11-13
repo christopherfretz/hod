@@ -82,6 +82,18 @@ fn seeds_run_as_llc_builds_them() {
             for (how, flags) in [("dynamic", &[][..]), ("static", &["-static"][..])] {
                 let program = dir.join(format!("{who}-{}-{how}", linker.name));
                 let ran = toolchain.link_and_run(linker, flags, &[&driver, object], &program);
+                // LLVM 19 reloads a `callbr` output on the indirect edge
+                // before it stores it (`spec/codegen.md` §5.5.3); 22 and
+                // hod store it first.
+                if who == "llc-19" {
+                    assert_eq!(
+                        ran.stdout_text(),
+                        "FAIL goto_out2(0) == 501\nchecked, 1 failures\n",
+                        "{who} {}",
+                        linker.name
+                    );
+                    continue;
+                }
                 assert_eq!(
                     exit_code(&ran),
                     Some(0),

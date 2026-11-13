@@ -2002,9 +2002,17 @@ normal destination.
 the normal destination; then, for each indirect destination, a
 trampoline the template's branches to `${N:l}` are fixed up to: it
 reloads the callee-saved registers, stores that edge's phis and branches
-to the destination. A `callbr` with an output (which would be defined
-on every path) is `a64:inline-asm-form`, as is an operand bundle on any
-inline-assembly call.
+to the destination. Outputs (WP-112) are written on every path: the
+normal path writes them as a `call` does, and each trampoline writes
+them again, after reloading the callee-saved registers and before that
+edge's phis, from the registers the template left them in (the result
+is a home or dead, never a register value, so writing it twice is one
+store each time). `llc` 22 stores the outputs in the indirect
+destination's block; `llc` 19 does too, but there it can reload a
+spilled output before storing it (a two-output `callbr`, seed
+`goto_out2`, returns a stale value on the indirect edge). hod follows
+22; the seed test expects that one failure of `llc` 19's object. An operand
+bundle on any inline-assembly call is `a64:inline-asm-form`.
 
 **Refused by name**, besides `spec/asm.md` §8:
 `a64:inline-asm-frame-register`, `a64:inline-asm-scratch-register`,
@@ -2012,7 +2020,7 @@ inline-assembly call.
 bits, a vector wider than 16 bytes, more than 8 bytes in a general
 register), `a64:inline-asm-operands` (more than 16 operands, 4
 alternatives, or the registers of a class), `a64:inline-asm-unwind`,
-`a64:inline-asm-form`; `asm:constraint/count` when the constraints do
+`a64:inline-asm-form` (an operand bundle); `asm:constraint/count` when the constraints do
 not match the call's arguments, result or labels; `asm:symbol` for a
 template reference to a name the module does not have.
 
@@ -3133,8 +3141,9 @@ mold and runs them):
 
 #### 9.7.1 Module assembly of symbol directives (WP-075)
 
-`emit_module` refuses module assembly that `module_asm_effects`
-(`spec/ir.md` §2.3) refuses, with `module:asm`, before it emits anything.
+On x86-64, `emit_module` refuses module assembly that
+`module_asm_effects` (`spec/ir.md` §2.3) refuses, with `module:asm`,
+before it emits anything; on AArch64 such text is §9.7.3's.
 Once every module symbol is defined, it writes each effect into the
 object: an undefined symbol for a name the module does not have, the
 binding, visibility and type a directive gives, and `retain` for a
@@ -3169,6 +3178,48 @@ code as a copy:
   stays on the external symbol, which stays undefined.
 
 A function whose chunk is not given keeps `llc`'s layout exactly.
+
+#### 9.7.3 Module assembly of code and data (WP-112, `emit/module_asm.rs`)
+
+On AArch64, module text that `module_asm_effects` refuses is assembled
+by `hod_asm::module::assemble_module` (`spec/asm.md` §9) with the base
+features, in `ModuleEmitter::new` before any function, variable or
+section of the module is placed, so its bytes come first in each
+section as in `llc`'s object. A refusal is `emit_module`'s error, by
+the `asm:*` name. Then:
+
+- **Sections.** A standard name (`.text`, `.rodata`, `.data`, `.bss`)
+  is the section module emission would choose for that kind; another
+  name is found or created as an explicit section of that kind, no
+  group. The section is empty at that point (else an internal error);
+  its alignment is raised to the text's, its bytes (or `.bss` size)
+  appended, and a code section's mapping symbols written; the
+  emitter's mapping state is the text's last, so the next function in
+  `.text` writes `$x` only if the text ended in data.
+- **Symbols.** A label or `.set` of a name the module does not have is
+  a new object symbol (local unless `.globl`/`.weak`; visibility and
+  type from the directives; `.set` absolute; `.size` as written; kept in
+  the symbol table). If its name is a runtime function's
+  (`RuntimeFn`), the code's references to that function use it. A label
+  named as a module symbol must be an external declaration (a function
+  or a non-thread-local variable) and becomes its definition: placed at
+  the label, binding global or weak as the text gives it (a label
+  of local binding for a module name is `asm:symbol`: `llc` would
+  reach it through its section), visibility the IR's if not default (it is emitted after the
+  text), else the text's; type and size the text's. Any other meeting
+  (a definition, a local, a thread-local, a `.set` of a module name, a
+  name prefixed `__unnamed_`) is `asm:symbol`. Directives on module
+  names the text does not define follow §9.7.1's rules. Definitions
+  are applied after `define` (`finish_module_asm`).
+- **Relocations** of the text are the object's relocations, against
+  the module symbol, the new symbol, or the section with an addend
+  (`spec/asm.md` §9).
+
+The oracle is `crates/hod_cg/tests/emit_module_asm.rs` (sections with
+bytes, symbols, relocations, code-section mapping symbols equal to
+`llc` 19's and 22's, LLVM 19's alignment of a created code section
+normalised from 1 to 4); the three corpus modules with code and data in
+their text link (bfd, lld, mold) and behave as `llc`'s.
 
 ## 10. Errors and limits
 

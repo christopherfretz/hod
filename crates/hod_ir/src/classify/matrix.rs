@@ -348,7 +348,6 @@ const LATER: &str = "unplanned";
 const VECTORS: &str = "M2 (vectors)";
 const CORO: &str = "T-XF (coroutine splitting)";
 const DEBUG: &str = "T-DW";
-const ASM: &str = "hod_asm";
 
 const WINDOWS_EH: &str = "Windows funclet exception handling; not an ELF construct";
 const WINDOWS: &str = "a Windows construct";
@@ -435,7 +434,12 @@ const MODULE: [SupportRow; 24] = [
     row("module:branch-protection-pauth-lr", todo(LATER), never(A64_ONLY), ""),
     row("module:cf-protection-branch", never(X64_ONLY), todo(X64), ""),
     row("module:cf-protection-return", never(X64_ONLY), todo(X64), ""),
-    a64("module:asm", ASM, "module-level inline assembly an assembler must read"),
+    row(
+        "module:asm",
+        ON,
+        todo(X64),
+        "module-level assembly of code and data: `hod_asm` (WP-112, `spec/asm.md` §9); what it does not read is refused by an `asm:*` name",
+    ),
     row(
         "module:asm-symbols",
         ON,

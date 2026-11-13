@@ -77,13 +77,13 @@ between the IR and the bytes.
 | `hod_obj` | Object-file model and the ELF64 relocatable writer: sections, COMDAT groups, symbols, relocations, string tables. Knows nothing about code generation. | - |
 | `hod_mc_a64` | AArch64 instruction encoder: typed constructors → 32-bit words, plus fixup kinds. No IR knowledge. | - |
 | `hod_mc_x64` | x86-64 instruction encoder: typed constructors → instruction bytes with their PC-relative site, plus fixup kinds. No IR knowledge. | - |
-| `hod_cg` | Target-independent code generation: the walk over a function, frame layout, value locations, the call-lowering driver, the per-function output record, and the scheduler that runs functions on worker threads and merges results in order. Defines the `Target` trait. `emit_module` writes the unwind tables through `hod_eh` and the line tables and unit DIEs through `hod_dwarf`. | `hod_ir`, `hod_obj`, `hod_eh`, `hod_dwarf` |
+| `hod_cg` | Target-independent code generation: the walk over a function, frame layout, value locations, the call-lowering driver, the per-function output record, and the scheduler that runs functions on worker threads and merges results in order. Defines the `Target` trait. `emit_module` writes the unwind tables through `hod_eh`, the line tables and unit DIEs through `hod_dwarf`, and AArch64 module-level assembly through `hod_asm`. | `hod_ir`, `hod_obj`, `hod_eh`, `hod_dwarf`, `hod_asm` |
 | `hod_a64` | AArch64 `Target`: instruction lowering, AAPCS64 for IR-level types, intrinsics, TLS and GOT access sequences. | `hod_cg`, `hod_mc_a64` |
 | `hod_x64` | x86-64 SysV `Target`. | `hod_cg`, `hod_mc_x64` |
 | `hod_eh` | `.eh_frame` (CFI) and `.gcc_except_table` (LSDA) from the per-function output records. | `hod_obj` |
 | `hod_dwarf` | DWARF 5: `.debug_info`, `.debug_abbrev`, `.debug_line`, `.debug_str`, `.debug_line_str`, `.debug_addr`, `.debug_rnglists`, from the IR's debug metadata plus the per-function line rows and variable locations. | `hod_ir`, `hod_obj` |
 | `hod_xform` | IR → IR lowerings that are required for correctness, not speed: coroutine splitting, and whatever else the IR contract requires before codegen. | `hod_ir` |
-| `hod_asm` | Assembler-syntax parser for `module asm` and inline `asm` bodies. (Later.) | `hod_mc_*` |
+| `hod_asm` | Assembler for `module asm` text and inline `asm` bodies (AArch64): statements, expressions, template substitution, instruction encoding, module sections and symbols. | `hod_mc_*` |
 | `hod` | The library facade: `compile(module, options) -> Result<Object, Unsupported>`. | all of the above |
 | `hod_cli` | The `hod` binary: an `llc`-compatible command line, so it drops into any driver that runs `llc`. | `hod`, `hod_ll` |
 | `hod_interp` | A reference interpreter for `hod_ir`, for tests: the oracle for the code generator's policy tests and for fuzzing; and a generator of random programs that it runs to a result. Not shipped. | `hod_ir` |

@@ -472,7 +472,9 @@ fn unsupported_constructs_are_refused_by_name() {
     use hod_cg::CgError;
     use hod_cg::emit::unsupported as u;
     let cases: &[(&str, &str)] = &[
-        (u::MODULE_ASM, "module asm \"  nop\"\n@v = global i32 1\n"),
+        // On AArch64 `hod_asm` reads module assembly (WP-112); what it
+        // does not read is refused by its name.
+        ("asm:directive/cfi_startproc", "module asm \".cfi_startproc\"\n@v = global i32 1\n"),
         (u::COMDAT_KIND, "$c = comdat largest\n@c = global i32 1, comdat\n"),
         (u::FIELD_WIDTH, "@y = global i32 0\n@x = global i8 ptrtoint (ptr @y to i8)\n"),
         (

@@ -25,7 +25,8 @@
 //!    through its pointer), the flag outputs (`={@cc<cond>}`) are
 //!    `cset` and stored, the callee-saved registers restored.
 //! 6. The result is loaded from the output slots: one scalar, or the
-//!    fields of the struct of several.
+//!    fields of the struct of several. A `callbr` does 5 and 6 again at
+//!    each indirect destination's trampoline (WP-112).
 //!
 //! # Registers
 //!
@@ -85,8 +86,7 @@ pub const TOO_MANY: &str = "a64:inline-asm-operands";
 /// `unwind` inline assembly called by `invoke`: hod records no call
 /// site for the template.
 pub const UNWIND: &str = "a64:inline-asm-unwind";
-/// An `invoke` or `callbr` result defined on more than one path, or an
-/// operand bundle.
+/// An operand bundle on a call of inline assembly.
 pub const FORM: &str = "a64:inline-asm-form";
 
 /// Every name this module refuses with, besides `hod_asm`'s `asm:*`.
@@ -712,10 +712,6 @@ pub fn call<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>) -> CgResult<()> {
     {
         return Err(refused(hod_asm::reason::constraint("count")));
     }
-    if inst.opcode() == Opcode::CallBr && ops.direct_outputs != 0 {
-        // The result would be defined on every path out.
-        return unsupported(FORM);
-    }
     let plan = decide(cx, inst, &ops)?;
     // The text first: nothing is emitted for a template that refuses.
     let mut body = String::new();
@@ -986,6 +982,10 @@ fn emit<'a>(
                 let here = cx.new_label();
                 cx.bind(here)?;
                 outputs(cx, ops, &plan, &callee_slots);
+                // WP-112: the result is defined on every edge out, as
+                // `llc` 19 and 22 write it (an output is valid at an
+                // indirect destination).
+                result(cx, inst, ops, &plan)?;
                 cx.phi_stores(*dest)?;
                 branch(cx, cx.block_label(*dest))?;
                 for &(at, kind, _) in labels.iter().filter(|l| usize::from(l.2) == n) {
@@ -1085,7 +1085,11 @@ fn result<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, ops: &Ops, plan: &Plan) ->
         let r = cx.def_reg(inst)?;
         let mut at = Cursor::frame(cx, slot, X16);
         load_into(cx, r, bytes, &mut at);
-        return cx.finish(inst, r);
+        cx.finish(inst, r)?;
+        // A `callbr` defines its result again on each indirect edge: the
+        // temporary is not kept (nothing happens to a value's register).
+        cx.free_temp(r);
+        return Ok(());
     }
     let dst = cx.def_mem(inst)?;
     for (field, &(i, ty)) in fields.iter().enumerate() {

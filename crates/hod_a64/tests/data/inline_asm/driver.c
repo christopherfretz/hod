@@ -12,7 +12,7 @@ int64_t imm_i(int64_t); int64_t imm_n_neg(int64_t); int64_t imm_zero_x(int64_t);
 struct two { int64_t a, b; }; struct two two_outputs(int64_t, int64_t); int64_t two_outputs_sum(int64_t, int64_t);
 void indirect_r(int32_t*); int64_t call_helper(int64_t); int64_t uid_variant(int64_t); int64_t local_forward(int64_t);
 int64_t live_across(int64_t, int64_t, int64_t); int32_t goto_zero(int64_t); int32_t goto_phi(int64_t);
-int32_t invoke_asm(int32_t);
+int32_t invoke_asm(int32_t); int32_t goto_out(int32_t); int64_t goto_out2(int64_t);
 int hod_test_personality(void) { return 0; }
 int64_t asm_helper(int64_t x) { return x * 2 + 1; }
 static int fails;
@@ -52,6 +52,8 @@ int main(void) {
   CHECK(goto_zero(0) == 2); CHECK(goto_zero(9) == 1);
   CHECK(goto_phi(-20) == -1); CHECK(goto_phi(0) == 0); CHECK(goto_phi(100) == 1);
   CHECK(invoke_asm(40) == 42);
+  CHECK(goto_out(1) == 2004); CHECK(goto_out(10) == 1013); CHECK(goto_out(30) == 3033);
+  CHECK(goto_out2(0) == 501); CHECK(goto_out2(5) == 65);
   printf("checked, %d failures\n", fails);
   return fails;
 }

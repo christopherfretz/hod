@@ -2,7 +2,6 @@
 ; mul at 8, 32 and 64 bits, with operands on both sides of every overflow
 ; boundary, and a branch on the overflow bit.
 ;@ covers: spec/ir.md §5.5 intrinsics (sadd, uadd, ssub, usub, smul, umul .with.overflow)
-;@ unsupported(x86_64): *
 ;@ stdout: i8 100,27: sadd 127/0 uadd 127/0 ssub 73/0 usub 73/0 smul -116/1 umul 140/1
 ;@ stdout: i8 100,28: sadd -128/1 uadd 128/0 ssub 72/0 usub 72/0 smul -16/1 umul 240/1
 ;@ stdout: i8 -128,-1: sadd 127/1 uadd 127/1 ssub -127/0 usub 129/1 smul -128/1 umul 128/1

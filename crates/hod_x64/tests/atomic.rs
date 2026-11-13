@@ -632,8 +632,8 @@ fn compile_ll(functions: &str) -> Result<(), CgError> {
 
 /// What hod refuses: an under-aligned access, a type with no atomic
 /// sequence, a `bfloat` arithmetic operation, the floating operations
-/// that wait for WP-127's arithmetic, 16 bytes without `+cx16` (no
-/// `libatomic` call yet).
+/// that wait for WP-127's arithmetic. (16 bytes without `+cx16` call
+/// libatomic since WP-144.)
 #[test]
 fn refused_atomics_by_name() {
     let f = |body: &str| format!("define void @f(ptr %p) {{\nentry:\n  {body}\n  ret void\n}}\n");
@@ -644,20 +644,17 @@ fn refused_atomics_by_name() {
         (f("%v = cmpxchg ptr %p, i64 0, i64 1 seq_cst seq_cst, align 4"), atomic::UNALIGNED),
         (f("%v = load atomic fp128, ptr %p seq_cst, align 16"), atomic::TYPE),
         (f("%v = atomicrmw fadd ptr %p, bfloat 1.0 seq_cst"), atomic::BFLOAT_OP),
-        (f("%v = atomicrmw fmax ptr %p, float 1.0 seq_cst"), atomic::FLOAT_OP),
-        (f("%v = atomicrmw fminimum ptr %p, double 1.0 seq_cst"), atomic::FLOAT_OP),
-        (f("%v = atomicrmw fadd ptr %p, half 1.0 seq_cst"), atomic::FLOAT_OP),
-        (f("%v = load atomic i128, ptr %p seq_cst, align 16"), atomic::LIBATOMIC),
-        (f("store atomic i128 0, ptr %p release, align 16"), atomic::LIBATOMIC),
-        (f("%v = atomicrmw add ptr %p, i128 1 seq_cst, align 16"), atomic::LIBATOMIC),
-        (f("%v = cmpxchg ptr %p, i128 0, i128 1 seq_cst seq_cst, align 16"), atomic::LIBATOMIC),
+        // `fmax` .. `fminimum`, `half` arithmetic: WP-144 (`tests/leftovers.rs`).
+        (f("%v = atomicrmw fmax ptr %p, bfloat 1.0 seq_cst"), atomic::BFLOAT_OP),
+        // 16 bytes without `+cx16`: libatomic, WP-144 (`tests/leftovers.rs`).
     ];
     for (text, reason) in &cases {
         assert_eq!(compile_ll(text), Err(CgError::unsupported(reason)), "{text}");
     }
-    // `-cx16` after `+cx16` turns it off again; the last one wins.
+    // `-cx16` after `+cx16` turns it off again; the last one wins (WP-144:
+    // a call of `__atomic_load_16` then, rather than `cmpxchg16b`).
     let off = "define void @f(ptr %p) #0 {\nentry:\n  %v = load atomic i128, ptr %p seq_cst, align 16\n  ret void\n}\nattributes #0 = { \"target-features\"=\"+cx16,-cx16\" }\n";
-    assert_eq!(compile_ll(off), Err(CgError::unsupported(atomic::LIBATOMIC)));
+    assert_eq!(compile_ll(off), Ok(()));
     let on = off.replace("+cx16,-cx16", "-cx16,+sse2,+cx16");
     assert_eq!(compile_ll(&on), Ok(()));
 }

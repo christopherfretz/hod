@@ -35,7 +35,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `type` | 15 | 12 | 0 | 3 | 12 | 1 | 2 |
 | `inst` | 67 | 60 | 0 | 7 | 56 | 4 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
-| `atomicrmw` | 21 | 21 | 0 | 0 | 17 | 4 | 0 |
+| `atomicrmw` | 21 | 21 | 0 | 0 | 21 | 0 | 0 |
 | `call` | 4 | 4 | 0 | 0 | 3 | 1 | 0 |
 | `tail` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 11 | 8 | 3 | 0 | 7 | 4 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 354 | 347 | 7 | 0 | 115 | 23 | 216 |
-| total | 674 | 549 | 68 | 57 | 301 | 95 | 278 |
+| total | 674 | 549 | 68 | 57 | 305 | 91 | 278 |
 
 ## `module`
 
@@ -67,8 +67,8 @@ Module properties (`ModuleProps`, §2.1) and module-level tables.
 | `module:sign-return-address-all` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
 | `module:sign-return-address-with-bkey` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
 | `module:branch-protection-pauth-lr` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `module:cf-protection-branch` | rejected | not-implemented | an x86 property. changes code: `endbr64` at every function entry an indirect branch may reach, at landing pads and after `returns_twice` calls, then the IBT property note; `llc` turns it on for any value, 0 included (WP-143) |
-| `module:cf-protection-return` | rejected | supported | an x86 property. the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143) |
+| `module:cf-protection-branch` | rejected | not-implemented | an x86 property. changes code: `endbr64` at every function entry an indirect branch may reach, at landing pads and after `returns_twice` calls, then the IBT property note; `llc` 19 and 22 turn it on for any value, 0 included (WP-143), as `hod_ir` reads it (WP-144) |
+| `module:cf-protection-return` | rejected | supported | an x86 property. the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143); on for any value, 0 included, as `llc` (WP-144) |
 | `module:asm` | supported | not-implemented | module-level assembly of code and data: `hod_asm` (WP-112, `spec/asm.md` §9); what it does not read is refused by an `asm:*` name |
 | `module:asm-symbols` | supported | supported | module-level assembly made only of symbol directives (`spec/ir.md` §2.3) |
 | `module:linker-options` | supported | supported | `!llvm.linker.options` |
@@ -259,7 +259,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:ssp` | not-implemented | not-implemented | spec/codegen.md §13. open question: accept and ignore, or implement |
 | `attr:sspreq` | not-implemented | not-implemented | spec/codegen.md §13 |
 | `attr:sspstrong` | not-implemented | not-implemented | spec/codegen.md §13 |
-| `attr:presplitcoroutine` | supported | supported | one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name (WP-106); with `-g`, its variables on the frame word (WP-108); a pre-opt module with one is accepted in place of `opt` + `llc`, and declined by its module level on a target without coroutine bodies (WP-109, `spec/cli.md` "Pre-opt modules") |
+| `attr:presplitcoroutine` | supported | supported | one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name (WP-106); with `-g`, its variables on the frame word (WP-108); a pre-opt module with one is accepted in place of `opt` + `llc`; with this row off, it is declined by its module level (WP-109, `spec/cli.md` "Pre-opt modules") |
 | `attr:sanitize_address` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_alloc_token` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_hwaddress` | not-implemented | not-implemented | unplanned |
@@ -347,10 +347,10 @@ Instructions.
 | `inst:sext` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
 | `inst:fptrunc` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128, x86_fp80) |  |
 | `inst:fpext` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128, x86_fp80) |  |
-| `inst:fptoui` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, half, bfloat, float, double, fp128, x86_fp80) |  |
-| `inst:fptosi` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, half, bfloat, float, double, fp128, x86_fp80) |  |
-| `inst:uitofp` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, half, bfloat, float, double, fp128, x86_fp80) |  |
-| `inst:sitofp` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, half, bfloat, float, double, fp128, x86_fp80) |  |
+| `inst:fptoui` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, int-wide, half, bfloat, float, double, fp128, x86_fp80) | an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the target (`a64:wide-fp-cast`, `x64:wide-fp-cast`) |
+| `inst:fptosi` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, int-wide, half, bfloat, float, double, fp128, x86_fp80) | an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the target (`a64:wide-fp-cast`, `x64:wide-fp-cast`) |
+| `inst:uitofp` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, int-wide, half, bfloat, float, double, fp128, x86_fp80) | an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the target (`a64:wide-fp-cast`, `x64:wide-fp-cast`) |
+| `inst:sitofp` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, int-wide, half, bfloat, float, double, fp128, x86_fp80) | an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the target (`a64:wide-fp-cast`, `x64:wide-fp-cast`) |
 | `inst:ptrtoint` | supported (int, i128, int-wide, ptr, vector) | supported (int, i128, int-wide, ptr) |  |
 | `inst:ptrtoaddr` | supported (int, i128, int-wide, ptr, vector) | supported (int, i128, int-wide, ptr) |  |
 | `inst:inttoptr` | supported (int, i128, int-wide, ptr, vector) | supported (int, i128, int-wide, ptr) |  |
@@ -360,11 +360,11 @@ Instructions.
 | `inst:store` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, x86_fp80, aggregate) | a plain store; see `mem:`; FP and vector values: WP-067 |
 | `inst:alloca` | supported | supported | a dynamic allocation; fixed ones are `function:slots` |
 | `inst:fence` | supported | supported | WP-074; x86-64: WP-133 |
-| `inst:cmpxchg` | supported (int, i128, ptr, aggregate) | supported (int, ptr, aggregate) | WP-074; the `{ T, i1 }` result is an aggregate; x86-64 (WP-133): `i128` only with `+cx16` (`lock cmpxchg16b`), else `x64:atomic-libatomic` |
-| `inst:atomicrmw` | supported (int, i128, ptr, half, bfloat, float, double) | supported (int, ptr, half, bfloat, float, double) | and the operation's `atomicrmw:` row; WP-074; x86-64 (WP-133): `i128` only with `+cx16`, else `x64:atomic-libatomic` |
+| `inst:cmpxchg` | supported (int, i128, ptr, aggregate) | supported (int, i128, ptr, aggregate) | WP-074; the `{ T, i1 }` result is an aggregate; x86-64 `i128`: `lock cmpxchg16b` with `+cx16` (WP-133), else libatomic's `__atomic_compare_exchange_16` (WP-144) |
+| `inst:atomicrmw` | supported (int, i128, ptr, half, bfloat, float, double) | supported (int, i128, ptr, half, bfloat, float, double) | and the operation's `atomicrmw:` row; WP-074; x86-64 `i128`: a `cmpxchg16b` loop with `+cx16` (WP-133), else libatomic's `__atomic_*_16` (WP-144) |
 | `inst:ptradd` | supported | supported | LLVM's `getelementptr` (§5.4); not a vector of pointers |
-| `inst:extractvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, x86_fp80, aggregate) |  |
-| `inst:insertvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, x86_fp80, aggregate) |  |
+| `inst:extractvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, x86_fp80, aggregate) | x86-64: floating-point members with WP-144; `x86_fp80` with WP-131 |
+| `inst:insertvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, x86_fp80, aggregate) | x86-64: floating-point members with WP-144; `x86_fp80` with WP-131 |
 | `inst:extractelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:insertelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:shufflevector` | supported (vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
@@ -396,8 +396,8 @@ Kinds of memory access.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `mem:volatile` | supported | supported | a volatile `load`, `store`, `cmpxchg` or `atomicrmw` |
-| `mem:atomic-load` | supported | supported | WP-074, WP-133; `fp128` and vectors: `a64:atomic-type`, `x64:atomic-type`; x86-64 `i128` without `+cx16`: `x64:atomic-libatomic` |
-| `mem:atomic-store` | supported | supported | WP-074, WP-133; `fp128` and vectors: `a64:atomic-type`, `x64:atomic-type`; x86-64 `i128` without `+cx16`: `x64:atomic-libatomic` |
+| `mem:atomic-load` | supported | supported | WP-074, WP-133; `fp128` and vectors: `a64:atomic-type`, `x64:atomic-type`; x86-64 `i128` without `+cx16`: libatomic (WP-144) |
+| `mem:atomic-store` | supported | supported | WP-074, WP-133; `fp128` and vectors: `a64:atomic-type`, `x64:atomic-type`; x86-64 `i128` without `+cx16`: libatomic (WP-144) |
 
 ## `atomicrmw`
 
@@ -416,16 +416,16 @@ Kinds of memory access.
 | `atomicrmw:min` | supported | supported | WP-074, WP-133 |
 | `atomicrmw:umax` | supported | supported | WP-074, WP-133 |
 | `atomicrmw:umin` | supported | supported | WP-074, WP-133 |
-| `atomicrmw:fadd` | supported | supported | WP-074, WP-133; x86-64 `half`: `x64:atomic-float-op` |
-| `atomicrmw:fsub` | supported | supported | WP-074, WP-133; x86-64 `half`: `x64:atomic-float-op` |
-| `atomicrmw:fmax` | supported | not-implemented | WP-074; x86-64: `x64:atomic-float-op` until WP-127 |
-| `atomicrmw:fmin` | supported | not-implemented | WP-074; x86-64: `x64:atomic-float-op` until WP-127 |
+| `atomicrmw:fadd` | supported | supported | WP-074, WP-133; x86-64 `half`: WP-144 |
+| `atomicrmw:fsub` | supported | supported | WP-074, WP-133; x86-64 `half`: WP-144 |
+| `atomicrmw:fmax` | supported | supported | WP-074; x86-64: WP-144 |
+| `atomicrmw:fmin` | supported | supported | WP-074; x86-64: WP-144 |
 | `atomicrmw:uinc_wrap` | supported | supported | WP-074, WP-133 |
 | `atomicrmw:udec_wrap` | supported | supported | WP-074, WP-133 |
 | `atomicrmw:usub_cond` | supported | supported | WP-074, WP-133 |
 | `atomicrmw:usub_sat` | supported | supported | WP-074, WP-133 |
-| `atomicrmw:fmaximum` | supported | not-implemented | WP-074; x86-64: `x64:atomic-float-op` until WP-127 |
-| `atomicrmw:fminimum` | supported | not-implemented | WP-074; x86-64: `x64:atomic-float-op` until WP-127 |
+| `atomicrmw:fmaximum` | supported | supported | WP-074; x86-64: WP-144 |
+| `atomicrmw:fminimum` | supported | supported | WP-074; x86-64: WP-144 |
 
 ## `call`
 

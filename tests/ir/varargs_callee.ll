@@ -8,7 +8,6 @@
 ; (an array that decays on x86-64, a struct passed by reference on AArch64).
 ;@ covers: spec/ir.md §5.4 call (variadic callee), §5.5 intrinsics (va_start, va_copy, va_end)
 ;@ tier: quick
-;@ unsupported: *
 ;@ stdout: tag 0 scale 0.5: no arguments
 ;@ stdout: tag 1 scale 1.5: 1 2 3 4 5 6 7 8 9 10
 ;@ stdout: tag 2 scale 2.5: alpha 3.25 -7 0.5 123456789012 2.125 omega
@@ -28,7 +27,7 @@ declare i32 @printf(ptr, ...)
 declare i32 @vprintf(ptr, ptr)
 declare i32 @vsnprintf(ptr, i64, ptr, ptr)
 declare void @llvm.va_start.p0(ptr)
-declare void @llvm.va_copy.p0.p0(ptr, ptr)
+declare void @llvm.va_copy.p0(ptr, ptr)
 declare void @llvm.va_end.p0(ptr)
 
 ; Prints the tag and the scale, then the format with the variable
@@ -39,7 +38,7 @@ define i32 @report(i32 %tag, double %scale, ptr %fmt, ...) {
   %copy = alloca [32 x i8], align 16
   %buf = alloca [128 x i8]
   call void @llvm.va_start.p0(ptr %ap)
-  call void @llvm.va_copy.p0.p0(ptr %copy, ptr %ap)
+  call void @llvm.va_copy.p0(ptr %copy, ptr %ap)
   %measured = call i32 @vsnprintf(ptr %buf, i64 128, ptr %fmt, ptr %copy)
   call void @llvm.va_end.p0(ptr %copy)
   call i32 (ptr, ...) @printf(ptr @.tagged, i32 %tag, double %scale)

@@ -974,3 +974,38 @@ fn x87_rows_of_wp_131() {
         assert_eq!(a64.supports(&pair), Some(false), "{pair}");
     }
 }
+
+// WP-144: the x86-64 leftovers between the groups. Floating-point
+// members of aggregates (`x86_fp80` is WP-131's), conversions with
+// integers wider than 64 bits (the target refuses those wider than 128 by
+// name, as AArch64 does).
+#[test]
+fn leftover_rows_of_wp_144() {
+    let x64 = Support::shipped(Arch::X86_64);
+    let a64 = Support::shipped(Arch::Aarch64);
+    for row in ["inst:extractvalue", "inst:insertvalue"] {
+        let classes = x64.classes(row).unwrap();
+        for class in [
+            TypeClass::Half,
+            TypeClass::BFloat,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+        ] {
+            assert!(classes.has(class), "{row}: {class:?}");
+        }
+    }
+    for row in ["inst:fptoui", "inst:fptosi", "inst:uitofp", "inst:sitofp"] {
+        // Every class AArch64 has (WP-131 adds `x86_fp80`, which AArch64
+        // has not); vectors are WP-132's.
+        let x64_classes = x64.classes(row).unwrap();
+        for class in a64.classes(row).unwrap().iter().filter(|&k| k != TypeClass::Vector) {
+            assert!(x64_classes.has(class), "{row}: {class:?}");
+        }
+        assert!(x64_classes.has(TypeClass::IntWide), "{row}");
+    }
+    // `i128` atomics: `cmpxchg16b` with `+cx16`, libatomic without.
+    for row in ["inst:cmpxchg", "inst:atomicrmw"] {
+        assert!(x64.classes(row).unwrap().has(TypeClass::I128), "{row}");
+    }
+}

@@ -8,7 +8,6 @@
 ; crates/hod_a64/tests/tail.rs.
 ;@ covers: spec/ir.md §5.4 cast, aggregate (ExtractValue, InsertValue of fp128), terminator (Switch at i128), §5.5 intrinsics (umul.with.overflow wide); spec/codegen.md §5.5.1 (WP-084)
 ;@ tier: quick
-;@ unsupported(x86_64): *
 ;@ stdout: conv 2426047410323587072 8 12345 12345
 ;@ stdout: conv -7250000000000000000 0 -2 1.2676506e+30
 ;@ stdout: conv 3 0 7.5557863725914323e+22 7.55578637e+22

@@ -11,6 +11,32 @@ pub const fn ud2() -> Inst {
     plain(Op::two(0x0b))
 }
 
+/// `UD1 eax, [eax + disp]` with 32-bit addressing: `67 0F B9 00` for
+/// 0, `67 0F B9 40 ib` up to 127, else `67 0F B9 80 id`. Raises `#UD`
+/// like `ud2`; what `llc` 19 and 22 emit for `llvm.ubsantrap(kind)`
+/// (`ud1l kind(%eax), %eax`), the kind in the displacement for a
+/// handler to read.
+#[inline]
+pub const fn ud1_eax(disp: u8) -> Inst {
+    let mut inst = Inst::EMPTY;
+    inst.push(0x67);
+    inst.push(0x0f);
+    inst.push(0xb9);
+    if disp == 0 {
+        inst.push(0x00);
+    } else if disp <= 127 {
+        inst.push(0x40);
+        inst.push(disp);
+    } else {
+        inst.push(0x80);
+        inst.push(disp);
+        inst.push(0);
+        inst.push(0);
+        inst.push(0);
+    }
+    inst
+}
+
 /// `INT3` (`CC`): a breakpoint.
 #[inline]
 pub const fn int3() -> Inst {

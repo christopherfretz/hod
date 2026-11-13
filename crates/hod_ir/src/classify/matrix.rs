@@ -442,13 +442,14 @@ const MODULE: [SupportRow; 24] = [
         todo(X64),
         "changes code: `endbr64` at every function entry an indirect branch may reach, at \
          landing pads and after `returns_twice` calls, then the IBT property note; `llc` \
-         turns it on for any value, 0 included (WP-143)",
+         19 and 22 turn it on for any value, 0 included (WP-143), as `hod_ir` reads it (WP-144)",
     ),
     row(
         "module:cf-protection-return",
         never(X64_ONLY),
         ON,
-        "the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143)",
+        "the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143); on \
+         for any value, 0 included, as `llc` (WP-144)",
     ),
     row(
         "module:asm",
@@ -1125,6 +1126,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         on(&[
             TypeClass::Int,
             TypeClass::I128,
+            TypeClass::IntWide,
             TypeClass::Half,
             TypeClass::Float,
             TypeClass::Double,
@@ -1132,7 +1134,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::BFloat,
             TypeClass::X86Fp80,
         ]),
-        "",
+        "an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the \
+         target (`a64:wide-fp-cast`, `x64:wide-fp-cast`)",
     ),
     row(
         "inst:fptosi",
@@ -1150,6 +1153,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         on(&[
             TypeClass::Int,
             TypeClass::I128,
+            TypeClass::IntWide,
             TypeClass::Half,
             TypeClass::Float,
             TypeClass::Double,
@@ -1157,7 +1161,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::BFloat,
             TypeClass::X86Fp80,
         ]),
-        "",
+        "an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the \
+         target (`a64:wide-fp-cast`, `x64:wide-fp-cast`)",
     ),
     row(
         "inst:uitofp",
@@ -1175,6 +1180,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         on(&[
             TypeClass::Int,
             TypeClass::I128,
+            TypeClass::IntWide,
             TypeClass::Half,
             TypeClass::Float,
             TypeClass::Double,
@@ -1182,7 +1188,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::BFloat,
             TypeClass::X86Fp80,
         ]),
-        "",
+        "an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the \
+         target (`a64:wide-fp-cast`, `x64:wide-fp-cast`)",
     ),
     row(
         "inst:sitofp",
@@ -1200,6 +1207,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         on(&[
             TypeClass::Int,
             TypeClass::I128,
+            TypeClass::IntWide,
             TypeClass::Half,
             TypeClass::Float,
             TypeClass::Double,
@@ -1207,7 +1215,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::BFloat,
             TypeClass::X86Fp80,
         ]),
-        "",
+        "an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the \
+         target (`a64:wide-fp-cast`, `x64:wide-fp-cast`)",
     ),
     row(
         "inst:ptrtoint",
@@ -1343,9 +1352,9 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
     row(
         "inst:cmpxchg",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Ptr, TypeClass::Aggregate]),
-        on(&[TypeClass::Int, TypeClass::Ptr, TypeClass::Aggregate]),
-        "WP-074; the `{ T, i1 }` result is an aggregate; x86-64 (WP-133): `i128` only with \
-         `+cx16` (`lock cmpxchg16b`), else `x64:atomic-libatomic`",
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::Ptr, TypeClass::Aggregate]),
+        "WP-074; the `{ T, i1 }` result is an aggregate; x86-64 `i128`: `lock cmpxchg16b` \
+         with `+cx16` (WP-133), else libatomic's `__atomic_compare_exchange_16` (WP-144)",
     ),
     row(
         "inst:atomicrmw",
@@ -1360,14 +1369,15 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         ]),
         on(&[
             TypeClass::Int,
+            TypeClass::I128,
             TypeClass::Ptr,
             TypeClass::Half,
             TypeClass::BFloat,
             TypeClass::Float,
             TypeClass::Double,
         ]),
-        "and the operation's `atomicrmw:` row; WP-074; x86-64 (WP-133): `i128` only with \
-         `+cx16`, else `x64:atomic-libatomic`",
+        "and the operation's `atomicrmw:` row; WP-074; x86-64 `i128`: a `cmpxchg16b` loop with \
+         `+cx16` (WP-133), else libatomic's `__atomic_*_16` (WP-144)",
     ),
     row("inst:ptradd", ON, ON, "LLVM's `getelementptr` (§5.4); not a vector of pointers"),
     row(
@@ -1390,10 +1400,15 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::I128,
             TypeClass::IntWide,
             TypeClass::Ptr,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Half,
+            TypeClass::Fp128,
             TypeClass::Aggregate,
             TypeClass::X86Fp80,
+            TypeClass::BFloat,
         ]),
-        "",
+        "x86-64: floating-point members with WP-144; `x86_fp80` with WP-131",
     ),
     row(
         "inst:insertvalue",
@@ -1415,10 +1430,15 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::I128,
             TypeClass::IntWide,
             TypeClass::Ptr,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Half,
+            TypeClass::Fp128,
             TypeClass::Aggregate,
             TypeClass::X86Fp80,
+            TypeClass::BFloat,
         ]),
-        "",
+        "x86-64: floating-point members with WP-144; `x86_fp80` with WP-131",
     ),
     row(
         "inst:extractelement",
@@ -1556,14 +1576,14 @@ const MEM: [SupportRow; 3] = [
         ON,
         ON,
         "WP-074, WP-133; `fp128` and vectors: `a64:atomic-type`, `x64:atomic-type`; x86-64 \
-         `i128` without `+cx16`: `x64:atomic-libatomic`",
+         `i128` without `+cx16`: libatomic (WP-144)",
     ),
     row(
         "mem:atomic-store",
         ON,
         ON,
         "WP-074, WP-133; `fp128` and vectors: `a64:atomic-type`, `x64:atomic-type`; x86-64 \
-         `i128` without `+cx16`: `x64:atomic-libatomic`",
+         `i128` without `+cx16`: libatomic (WP-144)",
     ),
 ];
 
@@ -1580,16 +1600,16 @@ const ATOMICRMW: [SupportRow; RmwOp::ALL.len()] = [
     row("atomicrmw:min", ON, ON, "WP-074, WP-133"),
     row("atomicrmw:umax", ON, ON, "WP-074, WP-133"),
     row("atomicrmw:umin", ON, ON, "WP-074, WP-133"),
-    row("atomicrmw:fadd", ON, ON, "WP-074, WP-133; x86-64 `half`: `x64:atomic-float-op`"),
-    row("atomicrmw:fsub", ON, ON, "WP-074, WP-133; x86-64 `half`: `x64:atomic-float-op`"),
-    row("atomicrmw:fmax", ON, todo(X64), "WP-074; x86-64: `x64:atomic-float-op` until WP-127"),
-    row("atomicrmw:fmin", ON, todo(X64), "WP-074; x86-64: `x64:atomic-float-op` until WP-127"),
+    row("atomicrmw:fadd", ON, ON, "WP-074, WP-133; x86-64 `half`: WP-144"),
+    row("atomicrmw:fsub", ON, ON, "WP-074, WP-133; x86-64 `half`: WP-144"),
+    row("atomicrmw:fmax", ON, ON, "WP-074; x86-64: WP-144"),
+    row("atomicrmw:fmin", ON, ON, "WP-074; x86-64: WP-144"),
     row("atomicrmw:uinc_wrap", ON, ON, "WP-074, WP-133"),
     row("atomicrmw:udec_wrap", ON, ON, "WP-074, WP-133"),
     row("atomicrmw:usub_cond", ON, ON, "WP-074, WP-133"),
     row("atomicrmw:usub_sat", ON, ON, "WP-074, WP-133"),
-    row("atomicrmw:fmaximum", ON, todo(X64), "WP-074; x86-64: `x64:atomic-float-op` until WP-127"),
-    row("atomicrmw:fminimum", ON, todo(X64), "WP-074; x86-64: `x64:atomic-float-op` until WP-127"),
+    row("atomicrmw:fmaximum", ON, ON, "WP-074; x86-64: WP-144"),
+    row("atomicrmw:fminimum", ON, ON, "WP-074; x86-64: WP-144"),
 ];
 
 const CALL: [SupportRow; 4] = [

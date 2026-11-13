@@ -312,6 +312,7 @@ distance is known to fit.
 |---|---|
 | `push_r(r: Reg)`, `pop_r(r: Reg)` | PUSH `50+r`, POP `58+r` |
 | `push_m(m: Mem)`, `pop_m(m: Mem)` | PUSH `FF /6`, POP `8F /0` |
+| `pushfq()`, `popfq()` | PUSHFQ `9C`, POPFQ `9D`: `rflags` as 8 bytes (WP-144) |
 | `push_i(imm: i32)` | PUSH `6A ib` for a sign-extended byte, else `68 id`; pushes 8 bytes |
 | `push_i32(imm: i32)` | PUSH `68 id` always; the `id` is the site ("Relocatable immediates") |
 | `leave()` | LEAVE `C9` |
@@ -388,6 +389,7 @@ is LLVM's choice; `xchg ax, ax` is `66 90`.
 | constructor | encodes | precondition |
 |---|---|---|
 | `ud2()` | UD2 `0F 0B` | |
+| `ud1_eax(disp: u8)` | UD1 `67 0F B9 /r`: `ud1 eax, [eax + disp]` with 32-bit addressing, `00` for 0, `40 ib` up to 127, else `80 id` (`llc`'s `llvm.ubsantrap`, WP-144) | |
 | `int3()` | INT3 `CC` | |
 | `endbr64()` | ENDBR64 `F3 0F 1E FA` | |
 | `nop(len: usize)` | one NOP of exactly `len` bytes | `nop_len_ok(len)`: `1..=15` |

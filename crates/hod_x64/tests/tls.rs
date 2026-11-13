@@ -574,11 +574,13 @@ fn each_model_is_the_psabi_sequence() {
         "48 8d 9b 00 00 00 00 leaq (%rbx), %rbx",
         "R_X86_64_TPOFF32 .Lle$local",
     ]);
-    // The operand form keeps the flags in five bytes and rebuilds them.
-    for set in ["seto", "setb", "sete", "sets", "setp"] {
-        assert!(text.contains(set), "{set} in\n{text}");
+    // The operand form keeps the flags with `pushfq` and `popfq` (WP-144):
+    // `rflags` pushed first, then the rest of the 336-byte area below it.
+    expect(&["9c pushfq", "48 8d a4 24 b8 fe ff ff leaq -0x148(%rsp), %rsp"]);
+    expect(&["48 8d a4 24 48 01 00 00 leaq 0x148(%rsp), %rsp", "9d popfq"]);
+    for set in ["seto", "sets", "setp", "rolq %r"] {
+        assert!(!text.contains(set), "{set} in\n{text}");
     }
-    assert!(text.contains("rolq %r"), "{text}");
 }
 
 /// `spec/codegen.md` §5.6.11: `llvm.threadlocal.address` and
@@ -596,8 +598,8 @@ fn the_intrinsics_compile_in_every_mode() {
 }
 
 /// `spec/codegen.md` §5.6.11: the flags a fused compare left for its
-/// `cmovcc` survive a dynamic-model address formed in between (saved as
-/// five `setcc` bytes, rebuilt by `test` and `rol`): a `select` of two
+/// `cmovcc` survive a dynamic-model address formed in between (saved by
+/// `pushfq`, restored by `popfq`, WP-144): a `select` of two
 /// general-dynamic addresses under every predicate, on 64- and 8-bit
 /// operands at the edges, in a shared object (the real `__tls_get_addr`),
 /// against C.

@@ -186,11 +186,9 @@ fn directives_agree_with_llc() {
         [Arch::AArch64, Arch::X86_64].into_iter().flat_map(|a| majors.iter().map(move |m| (a, *m)));
     for (arch, major) in runs {
         let extra = if arch == Arch::X86_64 { X64_CASES } else { &[] };
-        // `hod_ir` reads `//` as a comment on AArch64 only; on x86-64 it
-        // refuses the text as `module:asm` (`llc` reads it as a comment
-        // there too: a missed acceptance, not a difference).
-        let cases = CASES.iter().filter(|c| arch == Arch::AArch64 || c.0 != "comments");
-        for &(name, ir) in cases.chain(extra) {
+        // `hod_ir` reads `//` as a comment on both targets, as `llc` does
+        // (WP-144; on x86-64 it refused the text as `module:asm` before).
+        for &(name, ir) in CASES.iter().chain(extra) {
             let text = format!("{}{ir}", header(arch, major));
             let tag = format!("{name}-{arch:?}");
             let theirs = Elf::parse(llc(&scratch, major, &tag, &text));

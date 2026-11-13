@@ -462,6 +462,19 @@ define i32 @f() {
 "#,
     },
     Snippet {
+        // The flag with value 0: `llc` 19 and 22 still write the note
+        // (the flag is on by its presence, WP-144).
+        name: "cf-protection-return-0",
+        flags: &[],
+        ir: r#"
+define i32 @f() {
+  ret i32 7
+}
+!llvm.module.flags = !{!0}
+!0 = !{i32 8, !"cf-protection-return", i32 0}
+"#,
+    },
+    Snippet {
         // x86-64's own value types in data, and mergeable constants of
         // every entry size.
         name: "x86-types",

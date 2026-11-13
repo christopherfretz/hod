@@ -1000,7 +1000,9 @@ does not have is `Rejected`. The lists below are the table, in full.
   `branch-protection-pauth-lr` and `guarded-control-stack` are the two
   missing members of the `sign-return-address` family;
   `stack-protector-buffer-size` decides which functions `ssp` protects
-  and is on every function clang emits; `min-legal-vector-width` bounds
+  in LLVM and is on every function clang emits (hod reads it with the
+  attribute and protects a superset, `spec/codegen.md` §5.6.24: `ssp`,
+  `sspstrong` and `sspreq` are rows `ON` on both targets, WP-183); `min-legal-vector-width` bounds
   the vector registers an x86 function may use and is on every x86
   function clang emits; `no-jump-tables` forbids a code shape.
 

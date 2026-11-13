@@ -725,9 +725,13 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
         "an ordinary call; a body whose meaning depends on being inlined is declined \
          (`spec/cli.md` \"Always-inline\", WP-021)",
     ),
-    a64("attr:ssp", "spec/codegen.md §13", "open question: accept and ignore, or implement"),
-    a64("attr:sspreq", "spec/codegen.md §13", ""),
-    a64("attr:sspstrong", "spec/codegen.md §13", ""),
+    both(
+        "attr:ssp",
+        ON,
+        "a guard above the escaping slots, checked at every exit (`spec/codegen.md` §5.6.24, WP-183)",
+    ),
+    both("attr:sspreq", ON, "as `attr:ssp`, every function protected"),
+    both("attr:sspstrong", ON, "as `attr:ssp`"),
     row(
         "attr:presplitcoroutine",
         ON,

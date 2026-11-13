@@ -66,6 +66,8 @@ pub struct FnState {
     pub vector: vector::VectorState,
     /// Whether instructions are not emitted (`tail`, WP-084).
     pub tail: crate::tail::TailState,
+    /// The stack guard (`guard`, WP-183).
+    pub guard: crate::guard::GuardState,
 }
 
 /// DWARF numbers: `x<n>` is `n`, `sp` is 31, `v<n>` is `64 + n`.
@@ -462,6 +464,10 @@ impl Target for A64 {
         align: u64,
     ) -> CgResult<()> {
         frame::dynamic_slot(cx, ptr, size, align)
+    }
+
+    fn enter_guard(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
+        crate::guard::enter(cx)
     }
 
     fn coro_stubs(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {

@@ -3613,6 +3613,107 @@ result types are not LLVM's declaration is `x64:x86-intrinsic-signature`.
 
 Evidence: `spec/landed/codegen/WP-173.md`.
 
+#### 5.6.24 Stack protectors (WP-183, both targets)
+
+`ssp`, `sspstrong` and `sspreq` (clang's `-fstack-protector`, `-strong`,
+`-all`; kiln passes them through) are built on both targets. The rules
+are target-neutral (`hod_cg::guard`); each target emits the code
+(`hod_x64::guard`, `hod_a64::guard`).
+
+1. **Which functions.** A function with one of the three attributes is
+   protected when it has `sspreq`, at least one body slot, or an
+   `alloca` instruction. LLVM (`StackProtector::requiresStackProtector`)
+   protects under `ssp` a function with a char array of at least
+   `"stack-protector-buffer-size"` bytes (in a struct too) or an
+   `alloca` of a non-constant or large count, and under `sspstrong` also
+   any array, any aggregate holding one and any local whose address is
+   taken; under `sspreq` every function. hod keeps no slot types
+   (`spec/ir.md` §5.2), so it cannot tell an array from a scalar; the
+   rule above is a superset of LLVM's for each attribute, which is what
+   matters (never weaker than `llc`), and costs one guard more in
+   functions `llc` leaves alone. `"stack-protector-buffer-size"` is read
+   with the attribute and changes nothing. A protected presplit
+   coroutine is refused, `ssp:coroutine` (its resume stubs enter the
+   body past the entry code); a target without the hook,
+   `ssp:target`.
+2. **Which slots move.** A slot **escapes** when its address is used
+   other than as the pointer operand of a `load` or `store` whose access
+   lies inside the slot (a `getelementptr`, a call argument, a stored
+   value, a `phi`, a cast, ...). Only an escaping slot can be written out
+   of bounds. The escaping slots of a protected function whose alignment
+   is at most the stack alignment form the **guarded block**, in body
+   order, each at its alignment from the block's start; the **guard
+   word** (8 bytes) follows the last slot at once, unaligned if need be,
+   so that a one-byte overflow of the last slot reaches it (`llc` may
+   leave padding there; hod never detects later than `llc`). The block is
+   rounded up to 16. Each slot of the block is addressed through a
+   pointer slot (`SlotPlace::Indirect`, as an over-aligned slot, §5.1);
+   the pointer slots are the first slots after `begin_function`'s. Its
+   variable's location is the pointer slot, dereferenced (§9.5). Slots
+   that do not escape stay where §5.1 puts them, below the block.
+3. **Where the block is.** The block is the local area's last
+   allocation, made in `end_function` before the frame size is read, so
+   it is at the top of the local area: on x86-64 right below the save
+   set (at most 8 bytes of padding between them, §5.6), on AArch64
+   right below the CFA (§5.5). A linear overflow of any slot of the block
+   reaches the guard word before the saved registers and the return
+   address (x86-64) or the caller's frame and frame record (AArch64).
+   Everything that is not in the block is below it.
+4. **The low guard.** A protected function with a dynamic area (an
+   `alloca` instruction or an over-aligned slot) has a second guard word
+   between that area and the rest of the frame: on x86-64 at `Local(0)`,
+   the first 16 bytes `begin_function` reserves; on AArch64 at
+   `[x29 - 16]`, 16 bytes the entry code takes below the frame record
+   (`sub sp, sp, #16`; the epilogue then restores `sp` from `x29`).
+   AArch64 needs it because hod's frame record is at the bottom of the
+   frame: without it, the overflow of a dynamic allocation would reach the
+   saved `lr` first. On x86-64 `llc` has no such word (a dynamic
+   allocation's overflow runs through the fixed objects before it reaches
+   the guard); hod's makes it stronger there.
+5. **The guard value.** x86-64 Linux: `fs:[0x28]` (the TCB's
+   `stack_guard`), read with `mov r10, fs:[0x28]`. AArch64 Linux: the
+   variable `__stack_chk_guard` through the GOT (`adrp`
+   `R_AARCH64_ADR_GOT_PAGE`, `ldr` `R_AARCH64_LD64_GOT_LO12_NC`, `ldr`),
+   under every relocation model and whatever the module's `PIC Level`,
+   as `llc` reads it in a PIC module. (`llc` reads it directly, `adrp`
+   `R_AARCH64_ADR_PREL_PG_HI21`, in a module without `PIC Level` even
+   under `-relocation-model=pic`, an object no PIE link accepts; the GOT
+   form links everywhere, and the linker relaxes it.) Both symbols are
+   `RuntimeFn` members (`StackChkGuard` is a variable, only addressed).
+   The module flags `stack-protector-guard`, `-guard-reg`,
+   `-guard-offset`, `-guard-symbol` (`-mstack-protector-guard*`) are
+   refused by their names, `module-flag:<name>` (§2.1 of `spec/ir.md`).
+6. **Entry code** (`Target::enter_guard`, after the arguments' entry
+   code and before the over-aligned slots', scratch registers only): the
+   value stored in the guard word and in the low guard, then each slot's
+   address in its pointer slot. The block's offset is not known yet: on
+   x86-64 the `lea r11, [rbp + disp32]` of its base is a local access
+   (§5.6) whose displacement `end_function` writes before biasing; on
+   AArch64 the guard word's address is made by `add x16, x29, #lo12` ·
+   `add x16, x16, #hi12, lsl #12`, patched in `end_function`, and each
+   slot's address is `x16` less its distance from the guard.
+7. **The check** starts every exit sequence (the epilogue and every tail
+   exit, so a `musttail` call is checked before its jump; a `noreturn`
+   call and `unreachable` have none; unwinding through a protected frame
+   checks nothing, as with `llc`). x86-64: `mov r10, [guard]` · `cmp r10,
+   fs:[0x28]` · `jne fail`, the same for the low guard; `r10` is free at
+   every exit (`r11` may hold an indirect tail callee), the flags are
+   dead. AArch64: `str x16, [sp, #-16]!` (an indirect tail callee is in
+   `x16`) · the value into `x16` · `ldr x17, [guard]` · `cmp x16, x17` ·
+   `b.ne fail` (and the low guard) · `ldr x16, [sp], #16`. The check
+   runs before the result is moved or anything is restored, so it
+   writes no register that holds a result or a tail call's argument.
+8. **The failure call** follows the last exit sequence: the body's CFA
+   rules restated (x86-64 `def_cfa rbp, 16`; AArch64 the body rows, as a
+   tail exit), then `call __stack_chk_fail` (`R_X86_64_PLT32`) or `bl
+   __stack_chk_fail` (`R_AARCH64_CALL26`), which does not return. No row
+   changes for it otherwise, and no call-site row covers it.
+9. **Intrinsics.** `llvm.stackprotector` and `llvm.stackguard` are not
+   written by clang or kiln; `classify` refuses them by name
+   (`intrinsic:llvm.stackprotector`, `intrinsic:llvm.stackguard`).
+
+Evidence: `spec/landed/codegen/WP-183.md`.
+
 ## 6. Control flow
 
 ### 6.1 Reachability
@@ -5193,9 +5294,8 @@ pub enum CgError {
 - (Closed by WP-115.) Address-taken blocks without an `indirectbr` in
   their function (§9.6).
 
-- Stack protector attributes (`ssp`, `sspstrong`, `sspreq`): accept and
-  ignore (hod is a debug backend; the IR's meaning is unchanged) or
-  implement the canary. Until decided `classify` rejects them.
+- (Closed by WP-183.) Stack protector attributes (`ssp`, `sspstrong`,
+  `sspreq`): implemented, §5.6.24.
 - A register cache for home values within a block (keep the register
   after the store, forget it at the next call or label). Cuts reloads;
   adopt only on a `xtask bench` measurement.

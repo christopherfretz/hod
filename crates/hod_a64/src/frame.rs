@@ -134,6 +134,7 @@ pub fn final_size(cx: &FnCx<'_, A64>) -> CgResult<u32> {
 
 /// `Target::end_function`.
 pub fn end(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
+    crate::guard::place(cx)?; // WP-183: the guarded block, last in the local area
     let frame = final_size(cx)?;
     let (lo, hi) = (frame & 0xfff, frame & 0xff_f000);
     let at = cx.state.frame.prologue;
@@ -150,7 +151,7 @@ pub fn end(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
     crate::coro_body::rows(cx, Some(saved_at), frame)?;
 
     cx.bind(cx.epilogue())?;
-    teardown(cx, frame);
+    teardown(cx, frame)?;
     put(cx, mc::ret(Reg::LR.zr()));
 
     for index in 0..cx.tail_exit_count() {
@@ -159,7 +160,7 @@ pub fn end(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
         // §9.3: a tail exit comes after another exit sequence, so it
         // states the body's rules again.
         body_rows(cx, frame);
-        teardown(cx, frame);
+        teardown(cx, frame)?;
         cx.tail_branch_here(index, crate::target::dwarf); // WP-113: `spec/dwarf.md` §6.19
         match exit.target {
             CallTarget::Sym(sym) => {
@@ -170,6 +171,12 @@ pub fn end(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
             CallTarget::Reg(callee) => put(cx, mc::br(xr(callee).zr())),
         }
         cx.tail_branch_ends_here(index); // WP-163: `spec/dwarf.md` §6.21
+    }
+    if let Some(fail) = crate::guard::fail_label(cx) {
+        // WP-183: the failure call after the exits, under the body's rows.
+        cx.bind(fail)?;
+        body_rows(cx, frame);
+        crate::guard::fail(cx);
     }
     cx.set_frame_desc(FrameDesc { frame_size: frame, frame_base: DWARF_FP });
     Ok(())
@@ -218,7 +225,8 @@ fn body_rows(cx: &mut FnCx<'_, A64>, frame: u32) {
 /// The teardown every exit sequence starts with, with its rows: the
 /// stack pointer back at the frame record, the record reloaded, the frame
 /// released.
-fn teardown(cx: &mut FnCx<'_, A64>, frame: u32) {
+fn teardown(cx: &mut FnCx<'_, A64>, frame: u32) -> CgResult<()> {
+    crate::guard::check(cx)?; // WP-183: the stack guard, before anything is restored
     if cx.state.frame.dynamic {
         put(cx, mc::mov_sp(Size::X, SP, FP));
     }
@@ -238,6 +246,7 @@ fn teardown(cx: &mut FnCx<'_, A64>, frame: u32) {
         put(cx, mc::add_imm(Size::X, SP, SP, u64::from(lo)));
     }
     cx.cfi(CfiOp::DefCfaOffset(0));
+    Ok(())
 }
 
 /// `Target::adjust_sp`: `delta` added to the stack pointer, writing no

@@ -594,3 +594,74 @@ fn the_intrinsics_compile_in_every_mode() {
         assert!(compile(ir, mode).is_ok(), "{mode:?}");
     }
 }
+
+/// `spec/codegen.md` §5.6.11: the flags a fused compare left for its
+/// `cmovcc` survive a dynamic-model address formed in between (saved as
+/// five `setcc` bytes, rebuilt by `test` and `rol`): a `select` of two
+/// general-dynamic addresses under every predicate, on 64- and 8-bit
+/// operands at the edges, in a shared object (the real `__tls_get_addr`),
+/// against C.
+#[test]
+fn flags_survive_a_dynamic_access_under_every_predicate() {
+    let dir = Scratch::new("x64-tls-flags");
+    let Some(toolchain) = Toolchain::x86_64(&dir) else { return };
+    let preds = [
+        ("eq", "=="),
+        ("ne", "!="),
+        ("ugt", ">"),
+        ("uge", ">="),
+        ("ult", "<"),
+        ("ule", "<="),
+        ("sgt", ">"),
+        ("sge", ">="),
+        ("slt", "<"),
+        ("sle", "<="),
+    ];
+    let mut ir = String::from("@ta = thread_local global i32 1\n@tb = thread_local global i32 2\n");
+    let mut c = String::from(
+        "#include <stdio.h>\n#include <stdint.h>\nextern __thread int ta, tb;\nint bad;\n",
+    );
+    let mut body = String::new();
+    for (ty, cty, uty) in [("i64", "int64_t", "uint64_t"), ("i8", "int8_t", "uint8_t")] {
+        for (pred, op) in preds {
+            let f = format!("sel_{pred}_{ty}");
+            let _ = writeln!(
+                ir,
+                "define ptr @{f}({ty} %a, {ty} %b) {{\n  %c = icmp {pred} {ty} %a, %b\n  \
+                 %p = select i1 %c, ptr @ta, ptr @tb\n  ret ptr %p\n}}"
+            );
+            let t = if pred.starts_with('s') || pred == "eq" || pred == "ne" { cty } else { uty };
+            let _ = writeln!(c, "void *{f}({cty}, {cty});");
+            let _ = writeln!(
+                body,
+                "    for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) {{\n\
+                 \x20       {cty} a = ({cty})v[i], b = ({cty})v[j];\n\
+                 \x20       void *want = (({t})a {op} ({t})b) ? (void *)&ta : (void *)&tb;\n\
+                 \x20       if ({f}(a, b) != want) {{ printf(\"FAIL {f} %lld %lld\\n\", (long long)a, (long long)b); bad = 1; }}\n\
+                 \x20   }}"
+            );
+        }
+    }
+    let _ = write!(
+        c,
+        "int main(void) {{\n\
+         \x20   int64_t v[] = {{0, 1, -1, 2, -2, 127, -128, 128, 255, INT64_MAX, INT64_MIN, INT64_MAX - 1, INT64_MIN + 1, 0x80000000LL, -0x80000000LL}};\n\
+         \x20   int n = sizeof v / sizeof v[0];\n{body}\
+         \x20   if (!bad) printf(\"checked\\n\");\n\
+         \x20   return bad;\n}}\n"
+    );
+    let obj = object(&dir, "flags", &ir, Mode::Shared, Who::Hod).unwrap();
+    let driver = toolchain.compile_c(&dir, "flags-driver", &c, &["-fPIE"]);
+    let linker = &toolchain.linkers[0];
+    let so = dir.join("libflags.so");
+    toolchain.link_ok(linker, &["-shared"], &[&obj], &so);
+    let rpath = format!("-Wl,-rpath,{}", dir.path().display());
+    let exe = dir.join("flags");
+    let ran = toolchain.link_and_run(linker, &["-pie", rpath.as_str()], &[&driver, &so], &exe);
+    assert!(
+        exit_code(&ran) == Some(0) && ran.stdout_text().contains("checked"),
+        "{}{}",
+        ran.stdout_text(),
+        ran.stderr_text()
+    );
+}

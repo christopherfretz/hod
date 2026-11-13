@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 7 | 4 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 354 | 346 | 8 | 0 | 11 | 127 | 216 |
-| total | 663 | 547 | 70 | 46 | 145 | 247 | 271 |
+| `intrinsic` | 354 | 346 | 8 | 0 | 13 | 125 | 216 |
+| total | 663 | 547 | 70 | 46 | 147 | 245 | 271 |
 
 ## `module`
 
@@ -602,8 +602,8 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.fptoui.sat` | supported (int, half, float, double, vector) | not-implemented |  |
 | `intrinsic:llvm.is.fpclass` | supported (int, half, float, double, fp128) | not-implemented |  |
 | `intrinsic:llvm.eh.typeid.for` | supported (int, ptr) | not-implemented |  |
-| `intrinsic:llvm.threadlocal.address` | supported (ptr) | not-implemented |  |
-| `intrinsic:llvm.thread.pointer` | supported (ptr) | not-implemented |  |
+| `intrinsic:llvm.threadlocal.address` | supported (ptr) | supported (ptr) |  |
+| `intrinsic:llvm.thread.pointer` | supported (ptr) | supported (ptr) |  |
 | `intrinsic:llvm.prefetch` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.clear_cache` | supported (ptr) | not-implemented |  |
 | `intrinsic:llvm.readcyclecounter` | supported (int) | not-implemented |  |

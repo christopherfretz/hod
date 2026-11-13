@@ -120,25 +120,71 @@ enum Failure {
     Cg(CgError),
 }
 
+/// What the `target-cpu` and `target-features` of one function attribute
+/// set decide, worked out once per set for the module (WP-166): the
+/// first item refused, and on x86-64 the target its functions are
+/// compiled with.
+struct Group {
+    refused: Option<(&'static str, String)>,
+    x64: hod_x64::X64,
+}
+
+/// The [`Group`] of each attribute set a body's function has, by
+/// `FnAttrsId` index; `None` for a set no body uses.
+fn groups(module: &Module, bodies: &[Body]) -> Vec<Option<Group>> {
+    let arch = module.target().arch();
+    let mut groups: Vec<Option<Group>> = Vec::new();
+    for body in bodies {
+        let SymbolKind::Function { attrs: id, .. } = module.symbol(body.symbol()).kind() else {
+            continue;
+        };
+        let index = id.index();
+        if groups.len() <= index {
+            groups.resize_with(index + 1, || None);
+        }
+        if groups[index].is_some() {
+            continue;
+        }
+        #[cfg(test)]
+        tests::GROUPS_PARSED.with(|parsed| parsed.set(parsed.get() + 1));
+        let attrs = module.fn_attrs(id);
+        let refused = attrs.string(FnStr::TargetFeatures).and_then(|string| {
+            let string = String::from_utf8_lossy(string);
+            check_function_features(arch, &string)
+                .err()
+                .map(|(reason, feature)| (reason, feature.to_owned()))
+        });
+        let x64 = match arch {
+            Arch::X86_64 => hod_x64::X64::of_attrs(attrs),
+            Arch::Aarch64 => hod_x64::X64,
+        };
+        groups[index] = Some(Group { refused, x64 });
+    }
+    groups
+}
+
 /// One function: its target features, then its code.
 fn compile_one(
     module: &Module,
+    groups: &[Option<Group>],
     body: &Body,
     options: hod_cg::Options,
     scratch: &mut Scratch,
     chunk: &mut Chunk,
 ) -> Result<(), Failure> {
-    if let SymbolKind::Function { attrs, .. } = module.symbol(body.symbol()).kind()
-        && let Some(string) = module.fn_attrs(attrs).string(FnStr::TargetFeatures)
-    {
-        let string = String::from_utf8_lossy(string);
-        if let Err((reason, feature)) = check_function_features(module.target().arch(), &string) {
-            return Err(Failure::Feature { reason, feature: feature.to_owned() });
-        }
+    let group = match module.symbol(body.symbol()).kind() {
+        SymbolKind::Function { attrs, .. } => groups.get(attrs.index()).and_then(Option::as_ref),
+        _ => None,
+    };
+    if let Some((reason, feature)) = group.and_then(|group| group.refused.as_ref()) {
+        return Err(Failure::Feature { reason, feature: feature.clone() });
     }
     match module.target().arch() {
         Arch::Aarch64 => compile_function(&hod_a64::A64, module, body, &options, scratch, chunk),
-        Arch::X86_64 => compile_function(&hod_x64::X64, module, body, &options, scratch, chunk),
+        Arch::X86_64 => {
+            let target = group.map_or(&hod_x64::X64, |group| &group.x64);
+            compile_function(target, module, body, &options, scratch, chunk)
+        }
     }
     .map_err(Failure::Cg)
 }
@@ -172,12 +218,20 @@ type Made = Vec<(usize, Result<Chunk, (usize, Failure)>)>;
 /// it failed.
 fn work(
     module: &Module,
+    groups: &[Option<Group>],
     bodies: &[Body],
     options: hod_cg::Options,
     chunks: &[Range<usize>],
     next: &AtomicUsize,
     first_failure: &AtomicUsize,
 ) -> Made {
+    // The forced panics of the containment tests: on a worker, or on the
+    // calling thread once the workers are started (both before any chunk
+    // is taken, so that the site is met whatever the threads' timing).
+    #[cfg(test)]
+    crate::contain::fault::hit(crate::contain::fault::Site::Worker);
+    #[cfg(test)]
+    crate::contain::fault::hit(crate::contain::fault::Site::Codegen);
     let mut scratch = Scratch::new();
     let mut made = Vec::new();
     loop {
@@ -196,7 +250,7 @@ fn work(
                 break;
             }
             if let Err(failure) =
-                compile_one(module, &bodies[at], options, &mut scratch, &mut chunk)
+                compile_one(module, groups, &bodies[at], options, &mut scratch, &mut chunk)
             {
                 first_failure.fetch_min(at, Ordering::Relaxed);
                 result = Err((at, failure));
@@ -208,46 +262,103 @@ fn work(
     made
 }
 
-/// Compiles every body into chunks in module order, on `workers` threads.
+/// The work, in IR instructions, of each chunk the calling thread compiles
+/// alone: each is handed to the module emitter as soon as it is made, so
+/// that the module's code is not held twice (once in its chunk, once in
+/// the object) whatever its size (WP-166).
+const SERIAL_CHUNK_INSTS: usize = PARALLEL_MIN_INSTS;
+
+/// The functions of `bodies` compiled one chunk after another on the
+/// calling thread, each chunk added to `emitter` once made, its buffers
+/// then reused for the next.
 ///
 /// # Errors
-/// The first function in module order that failed, with its index.
+/// The first function that failed, with its index. The emitter's own
+/// error comes after: once the emitter has refused, the rest of the
+/// functions are still compiled (not added), so that a function's
+/// refusal is the answer as when every chunk was compiled first.
+fn compile_serial(
+    module: &Module,
+    groups: &[Option<Group>],
+    bodies: &[Body],
+    options: hod_cg::Options,
+    emitter: &mut ModuleEmitter<'_>,
+) -> Result<Result<(), CgError>, (usize, Failure)> {
+    #[cfg(test)]
+    crate::contain::fault::hit(crate::contain::fault::Site::Worker);
+    #[cfg(test)]
+    crate::contain::fault::hit(crate::contain::fault::Site::Codegen);
+    let mut scratch = Scratch::new();
+    let mut chunk = Chunk::new();
+    let mut laid_out = Ok(());
+    for range in plan(bodies, SERIAL_CHUNK_INSTS) {
+        for at in range {
+            compile_one(module, groups, &bodies[at], options, &mut scratch, &mut chunk)
+                .map_err(|failure| (at, failure))?;
+        }
+        if laid_out.is_ok() {
+            laid_out = emitter.add_chunk(&mut chunk);
+        } else {
+            chunk.clear();
+        }
+    }
+    Ok(laid_out)
+}
+
+/// Compiles every body into chunks in module order, on `workers` threads,
+/// and adds them to `emitter` in that order.
+///
+/// # Errors
+/// The first function in module order that failed, with its index; then
+/// the emitter's error.
 fn compile_bodies(
     module: &Module,
+    groups: &[Option<Group>],
     bodies: &[Body],
     options: hod_cg::Options,
     workers: usize,
     work_size: usize,
-) -> Result<Vec<Chunk>, (usize, Failure)> {
-    let chunks = if workers <= 1 {
-        std::iter::once(0..bodies.len()).collect()
-    } else {
-        plan(bodies, (work_size / (workers * CHUNKS_PER_WORKER)).max(1))
-    };
+    emitter: &mut ModuleEmitter<'_>,
+) -> Result<Result<(), CgError>, (usize, Failure)> {
+    if workers <= 1 {
+        return compile_serial(module, groups, bodies, options, emitter);
+    }
+    let chunks = plan(bodies, (work_size / (workers * CHUNKS_PER_WORKER)).max(1));
     let next = AtomicUsize::new(0);
     let first_failure = AtomicUsize::new(usize::MAX);
-    let run = || work(module, bodies, options, &chunks, &next, &first_failure);
-    let mut made = if workers <= 1 {
-        run()
-    } else {
-        std::thread::scope(|scope| {
-            let helpers: Vec<_> = (1..workers).map(|_| scope.spawn(run)).collect();
-            let mut made = run();
-            for helper in helpers {
-                match helper.join() {
-                    Ok(more) => made.extend(more),
-                    Err(panic) => std::panic::resume_unwind(panic),
-                }
+    let run = || work(module, groups, bodies, options, &chunks, &next, &first_failure);
+    // A panic on any of these threads reaches the caller of
+    // `generate_with` only after `scope` has joined every one of them
+    // (`spec/cli.md` "Embedding").
+    #[cfg(test)]
+    let plan = crate::contain::fault::current();
+    let mut made = std::thread::scope(|scope| {
+        let helpers: Vec<_> = (1..workers)
+            .map(|_| {
+                #[cfg(test)]
+                let plan = plan.clone();
+                scope.spawn(move || {
+                    #[cfg(test)]
+                    let _worker = crate::contain::fault::enter_worker(plan);
+                    run()
+                })
+            })
+            .collect();
+        let mut made = run();
+        for helper in helpers {
+            match helper.join() {
+                Ok(more) => made.extend(more),
+                Err(panic) => std::panic::resume_unwind(panic),
             }
-            made
-        })
-    };
+        }
+        made
+    });
     made.sort_unstable_by_key(|&(index, _)| index);
-    let mut out = Vec::with_capacity(made.len());
+    let mut chunks = Vec::with_capacity(made.len());
     let mut failed: Option<(usize, Failure)> = None;
     for (_, result) in made {
         match result {
-            Ok(chunk) => out.push(chunk),
+            Ok(chunk) => chunks.push(chunk),
             Err((at, failure)) => {
                 if failed.as_ref().is_none_or(|&(first, _)| at < first) {
                     failed = Some((at, failure));
@@ -255,10 +366,17 @@ fn compile_bodies(
             }
         }
     }
-    match failed {
-        Some(failure) => Err(failure),
-        None => Ok(out),
+    if let Some(failure) = failed {
+        return Err(failure);
     }
+    // Each chunk's tables are freed once it is added, as the object grows.
+    let mut laid_out = Ok(());
+    for mut chunk in chunks {
+        if laid_out.is_ok() {
+            laid_out = emitter.add_chunk(&mut chunk);
+        }
+    }
+    Ok(laid_out)
 }
 
 /// A code-generation error as a decline (`spec/cli.md` "The back half"):
@@ -424,9 +542,11 @@ pub fn generate_with(
         _ => None,
     };
     let workers = lease.as_ref().map_or(wanted, |lease| 1 + lease.count);
-    let compiled = compile_bodies(module, bodies, cg, workers, work_size);
+    let groups = groups(module, bodies);
+    let compiled =
+        compile_bodies(module, &groups, bodies, cg, workers, work_size, &mut module_emitter);
     drop(lease);
-    let chunks = compiled.map_err(|(at, failure)| {
+    let emitted = compiled.map_err(|(at, failure)| {
         let function = symbol_name(module, bodies[at].symbol());
         match failure {
             Failure::Feature { reason, feature } => Unsupported {
@@ -439,12 +559,10 @@ pub fn generate_with(
         }
     })?;
     report.phase("emission");
-    let mut emitted = chunks
-        .iter()
-        .try_for_each(|chunk| module_emitter.add_chunk(chunk))
-        .and_then(|()| module_emitter.finish())
-        .map_err(|error| from_cg(error, None))?;
-    drop(chunks);
+    #[cfg(test)]
+    crate::contain::fault::hit(crate::contain::fault::Site::Finish);
+    let mut emitted =
+        emitted.and_then(|()| module_emitter.finish()).map_err(|error| from_cg(error, None))?;
     let object = hod_obj::elf::to_vec(&emitted.object).map_err(from_obj)?;
     if let Some(path) = &options.split_dwarf_output
         && cg.split_dwarf == hod_dwarf::SplitDwarf::Separate
@@ -457,7 +575,61 @@ pub fn generate_with(
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
+
+    thread_local! {
+        /// How many attribute sets [`groups`] has parsed on this thread.
+        pub(super) static GROUPS_PARSED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    // spec/cli.md "The back half", step 3 (WP-166): the `target-features`
+    // of an attribute set are parsed once for the module, however many
+    // functions have the set; both targets.
+    #[test]
+    fn features_are_parsed_once_per_attribute_set() {
+        for (triple, shared, other) in [
+            ("aarch64-unknown-linux-gnu", "+neon,+v8a", "+lse,+neon"),
+            ("x86_64-unknown-linux-gnu", "+avx2,+cx8", "+sse4.2"),
+        ] {
+            let mut text = format!("target triple = \"{triple}\"\n");
+            for (index, group) in [0, 0, 0, 1].into_iter().enumerate() {
+                writeln!(text, "define i32 @f{index}() #{group} {{\n  ret i32 {index}\n}}")
+                    .unwrap();
+            }
+            write!(
+                text,
+                "attributes #0 = {{ nounwind \"target-features\"=\"{shared}\" }}\n\
+                 attributes #1 = {{ nounwind \"target-features\"=\"{other}\" }}\n"
+            )
+            .unwrap();
+            let before = GROUPS_PARSED.with(std::cell::Cell::get);
+            let object = crate::compile(text.as_bytes(), &obj());
+            assert!(object.is_ok_and(|o| o.starts_with(b"\x7FELF")), "{triple}");
+            assert_eq!(GROUPS_PARSED.with(std::cell::Cell::get) - before, 2, "{triple}");
+        }
+        // The functions of a set are compiled with its target, made once:
+        // `for_function` keeps it.
+        let text = "target triple = \"x86_64-unknown-linux-gnu\"\n\
+                    define void @f() #0 {\n  ret void\n}\n\
+                    attributes #0 = { \"target-features\"=\"+avx2\" }\n";
+        let module =
+            hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default()).unwrap().module;
+        let groups = groups(&module, &[]);
+        assert!(groups.is_empty(), "no body, no set parsed");
+        let SymbolKind::Function { attrs, .. } =
+            module.symbol(module.find_symbol(b"f").unwrap()).kind()
+        else {
+            panic!("f is a function")
+        };
+        let own = hod_x64::X64::of_attrs(module.fn_attrs(attrs));
+        assert!(own.own && own.features.abi.avx && !hod_x64::X64.own);
+    }
+
+    fn obj() -> Options {
+        Options { output_kind: crate::OutputKind::Object, ..Options::default() }
+    }
 
     // spec/cli.md "Threads": a module below the break-even is not worth a
     // thread; above it, one per `PARALLEL_MIN_INSTS`, at most `max` and

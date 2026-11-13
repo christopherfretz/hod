@@ -200,6 +200,11 @@ pub fn intrinsic<'a>(
             put(cx, mc::int3());
             Ok(())
         }
+        // The spin-wait hint, as `llc` (§5.6.19).
+        (I::X86Sse2Pause, []) => {
+            put(cx, mc::pause());
+            Ok(())
+        }
         // `ud1 eax, [eax + kind]`, as `llc` (`immarg i8`, zero-extended).
         (I::UbsanTrap, &[kind]) => {
             let Some(kind) = const_int(cx, kind) else {

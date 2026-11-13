@@ -91,10 +91,7 @@ pub fn cond_br<'a>(
                 // compare's code, at its location, as in `llc`'s x86-64
                 // program (which keeps the compare's atom apart from the
                 // branch's).
-                let outer = cx.line_loc();
-                cx.line_switch(cx.row_loc_of(compare));
-                let c = fused_icmp(cx, pred, lhs, rhs)?;
-                cx.line_switch(outer);
+                let c = at_compare(cx, compare, |cx| fused_icmp(cx, pred, lhs, rhs))?;
                 return branch_on(cx, c, if_true, if_false);
             }
             InstKind::FCmp { .. } => {
@@ -113,6 +110,37 @@ pub fn cond_br<'a>(
     let r = gp(cx.use_reg(cond)?);
     put(cx, mc::test_ri(Size::B, r, 1));
     branch_on(cx, Cond::Ne, if_true, if_false)
+}
+
+/// Runs `emit`, the code of the fused compare `compare` inside its
+/// consumer's lowering, at the compare's row location, and switches back
+/// to the consumer's after it (`spec/dwarf.md` §5.8, §6.17): `llc`'s
+/// x86-64 program keeps the compare's instruction (`cmp`, `sub`,
+/// `ucomisd`, `fucomip`) and the moves that place its operands at the
+/// `icmp`'s or `fcmp`'s location, and only the `jcc`, `cmovcc` or the
+/// `movzx` (`neg`) of the consumer at the consumer's: a `zext`'s or
+/// `sext`'s `setcc` is at the compare's (WP-163). The consumers
+/// that call it: `condbr` on an `icmp` (here), on an `fcmp`
+/// (`float::cond_br`), on an `x86_fp80` `fcmp` (`x87::cond_br`); a
+/// `select` of class `Gpr` and a `zext`/`sext` on an `icmp` (`int`);
+/// a `select` of `x86_fp80` (`x87::select`). Not a `select` of class
+/// `Fpr` (`float::select`): `llc` turns it into a mask or `minsd`/
+/// `maxsd` at the `select`'s location, with no row at the compare's.
+/// The rows are ordinary transitions (`FnCx::line_switch`), which the
+/// shrink pass moves; no byte of code changes.
+///
+/// # Errors
+/// What `emit` reports.
+pub fn at_compare<'a, R>(
+    cx: &mut FnCx<'a, X64>,
+    compare: Inst<'a>,
+    emit: impl FnOnce(&mut FnCx<'a, X64>) -> CgResult<R>,
+) -> CgResult<R> {
+    let outer = cx.line_loc();
+    cx.line_switch(cx.row_loc_of(compare));
+    let emitted = emit(cx);
+    cx.line_switch(outer);
+    emitted
 }
 
 /// The branches of a `condbr` once the flags are set: `jcc` to

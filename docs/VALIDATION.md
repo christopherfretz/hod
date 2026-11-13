@@ -70,6 +70,81 @@ status, required target, required LLVM version). Sources:
 Because the corpus is IR, it does not depend on kiln's state, and tests the
 backend from the first milestone, before any C++ feature is complete.
 
+### Moving kiln's pin
+
+kiln is pinned in three places that move together: the `kiln` submodule
+of the development workspace (its `target-kiln` build is what tests and
+the harness run as kiln++), the kiln groups of both corpora (each
+entry's key holds kiln's revision), and `.github/kiln-revision` (the
+hosted lane's kiln++). The GCC groups do not depend on kiln and are
+kept. A move is prepared on a branch beside the pinned state, then
+switched by the supervisor when no gate is in flight
+(`spec/landed/harness/WP-165.md` rehearsed it). `<B>` is the build
+root (`.build`), `<P>` the branch's build directory (`<B>/target-wp-NNN`)
+and `<R>` kiln's new commit.
+
+Preparing (on the branch; nothing shared is written):
+
+1. Build hod (`cargo build --release -p hod_cli`), then clone the
+   submodule into `<P>/kiln-src` (`git clone -q <B>/../kiln
+   <P>/kiln-src`, `git -C <P>/kiln-src checkout -q <R>`) and build it
+   there: `CARGO_TARGET_DIR=<P>/kiln-target cargo build --release -j 6`
+   in `<P>/kiln-src`.
+2. Copy both corpora (`cp -a <B>/corpus <P>/new/corpus`, the same for
+   `corpus-x64`) and capture kiln's groups again into the copies:
+   `cargo xtask corpus capture [--target x86_64] --source kiln -j 4
+   --kiln <P>/kiln-target/release/kiln++ --kiln-repo <P>/kiln-src
+   --out <P>/new/corpus[-x64]` (about 25 minutes each at `-j 4`). Keep
+   the copies out of `<P>/corpus`: `corpus verify` writes its results
+   to `<build dir>/corpus`.
+3. Regenerate, against the new corpora, what the gate or the status
+   pages read from them, and commit it on the branch:
+   - `cargo xtask roundtrip --corpus <P>/new/corpus --update-expected`
+     (about 55 minutes at `-j 3`) writes `tests/roundtrip/expected-aarch64.tsv` (its `# corpus:`
+     line names the new manifest; the gate's `roundtrip` step compares
+     with it);
+   - `cargo xtask corpus census <P>/new/corpus` writes
+     `docs/status/corpus.md`; with `--target x86_64` and
+     `<P>/new/corpus-x64`, `docs/status/corpus-x64-census.md`;
+   - `cargo xtask corpus reasons [--target x86_64] --llc -j 4 --report
+     docs/status/reasons[-x64].md <P>/new/corpus[-x64]` (about 45
+     minutes each at `-j 3`);
+   - `cargo xtask corpus compare --target x86_64 --against
+     <P>/new/corpus <P>/new/corpus-x64`: a difference it reports is
+     classified in `docs/status/corpus-x64-differences.tsv`;
+   - `.github/kiln-revision` holds `<R>` in full.
+4. Rehearse what changes with kiln++ itself, with
+   `HOD_KILN=<P>/kiln-target/release/kiln++`: `cargo test` of the crates
+   whose tests run kiln++ (`hod`, `hod_cli`, `hod_a64`, `hod_dwarf`,
+   `hod_ir`, `xtask`), `cargo xtask debug --frontend kiln --kiln
+   <P>/kiln-target/release/kiln++`, and `cargo xtask debug verify
+   <P>/new/corpus`.
+
+Switching (the supervisor, no gate in flight, in this order):
+
+1. `git -C kiln checkout <R>` in the workspace; commit the submodule's
+   new revision in the workspace repository.
+2. Rebuild kiln++ where tests find it: in `kiln/`,
+   `CARGO_TARGET_DIR=<B>/target-kiln cargo build --release -j 6`.
+3. Swap the corpora: `mv <B>/corpus <B>/corpus.old`, `mv
+   <P>/new/corpus <B>/corpus`, the same for `corpus-x64`; remove the
+   old `<B>/corpus.work` and `<B>/corpus-x64.work` (`<corpus>.work` is
+   only a capture's scratch). `cargo xtask corpus verify --manifest-only`
+   and `cargo xtask corpus verify --target x86_64 --manifest-only` must
+   pass.
+4. Merge the branch (its expectation file, status pages and
+   `.github/kiln-revision` are only valid after steps 1 to 3); the
+   first hosted lane builds kiln at the new revision once per
+   architecture and caches it (`.github/actions/kiln`).
+5. Run the gate; when it is green, delete `<B>/corpus.old`,
+   `<B>/corpus-x64.old` and `<P>`.
+
+Status pages that record a measurement (`docs/status/debug.md`,
+`libcxx-*.md`, `corpus-x64.md`, `perf.md`) name the kiln they were
+measured with and stay as they are until they are measured again. The
+benchmark inputs (`bench/manifest`) are produced by clang, not kiln, and
+do not move with the pin.
+
 ### Random programs (L10)
 
 `cargo xtask fuzz --seed N --count M --target T [--llvm 19] [-j J]`
@@ -204,15 +279,19 @@ GitHub Actions runs the gate on real hardware of both architectures
 | tools | LLVM 19 and 22, binutils, mold, gdb, lldb-19, the x86-64 cross toolchain, `qemu-user` | the same, with the AArch64 cross toolchain |
 | AArch64 programs under test | native | `qemu-aarch64 -cpu cortex-a53` |
 | x86-64 programs under test | `qemu-x86_64 -cpu qemu64,-sse3,-cx16,-lahf-lm` | native (the runner's CPU, more than the baseline) |
-| jobs | `kiln`, `lints`, `test`, `irdiff`, fan-in `check` | the same, fan-in `check-x86_64` |
+| jobs | `kiln`, `lints`, `test <part>` (five parts, `xtask::ci::TEST_PARTS`), `irdiff`, fan-in `check` | the same, fan-in `check-x86_64` |
 | not run | `roundtrip` (no corpus) | the same |
 
 Every job sets `HOD_REQUIRE_TOOLS=1`. On the x86-64 runner an x86-64
 program is not held to the baseline CPU: the emulated AArch64 lane is
 where a use of an instruction beyond the baseline faults.
 
-The libc++ suite with kiln and hod runs natively on x86-64 in the `sweep`
-workflow (a `sweep/**` branch or by hand; never a required check).
+The libc++ suite with kiln runs natively on both runners in the `sweep`
+workflow (a `sweep/**` branch or by hand; never a required check), once
+with hod and once with `llc`; a test that passes with `llc` and not with
+hod fails it (`scripts/libcxx-sweep.py`; numbers in
+`docs/status/libcxx-hod-x64.md` and `docs/status/libcxx-hod.md`, "Native
+... runner").
 
 **Tests that need a particular host.** A test of AArch64 programs runs
 on both hosts when it takes its toolchain from `hod_testutil::target`

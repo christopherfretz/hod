@@ -13,7 +13,7 @@
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-usage: cargo xtask ci [--quick] [--step fmt|clippy|test|irdiff|roundtrip|debug]...
+usage: cargo xtask ci [--quick] [--step fmt|clippy|test|irdiff|roundtrip|debug]... [--part a64|x64|harness|front|rest]
        cargo xtask jobserver <status|refill> [--fifo <path>] [--jobs <n>]
        cargo xtask shim --llvm <dir> --hod <hod binary> --out <dir> [--kiln <kiln++>]
        cargo xtask irdiff [options] [<file.ll or directory>...]   (--help for the options)
@@ -63,13 +63,21 @@ fn ci(args: &xtask::ci::Args) -> ExitCode {
     let steps: &[(&str, &[&str])] = &[
         ("fmt", &["fmt", "--all", "--check"]),
         ("clippy", &["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]),
-        ("test", &["test", "--workspace", "--quiet", "--no-fail-fast"]),
+        // spec/cli.md "Embedding": the facade without its readers, as a
+        // program that builds `hod_ir` itself takes it. Part of the
+        // `clippy` step, so every lane that lints runs it.
+        ("clippy", &["clippy", "-p", "hod", "--no-default-features", "--", "-D", "warnings"]),
     ];
-    for (name, cargo_args) in steps {
+    let test: Vec<String> = xtask::ci::test_args(args.part);
+    let test: Vec<&str> = test.iter().map(String::as_str).collect();
+    for (name, cargo_args) in steps.iter().copied().chain([("test", test.as_slice())]) {
         if !args.runs(name) {
             continue;
         }
-        eprintln!("ci: {name}");
+        match args.part {
+            Some(part) if name == "test" => eprintln!("ci: {name} (part {part})"),
+            _ => eprintln!("ci: {name}"),
+        }
         // A cargo step is a jobserver client of its own (spec/harness.md
         // "Jobserver"), and is run once more if an artifact vanished under
         // it ("ci").

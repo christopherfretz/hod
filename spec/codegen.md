@@ -1840,11 +1840,15 @@ call each from the places named with the other items.
   each `i128` element travels as an `i128` (two general registers under
   the even-register rule, or a 16-aligned stack slot), as both LLVM
   selectors in 19 and 22 pass it; an `fp128` element in a `Q` register.
-  A lone `<1 x i128>` argument or result stays `abi:vector-element`: it
-  is a `Q`-register value in two general registers, and the call
-  sequence moves no value between classes (§7.2). In a structure or an
-  array it is memory and passes (`std::experimental::simd<__int128>`
-  passes `[1 x <1 x i128>] alignstack(16)` and returns `{<1 x i128>}`).
+  A lone `<1 x i128>` argument or result (WP-167; libc++'s
+  `__load_vector` returns one for `std::find` over `__int128`) travels
+  as an `i128` too: it is a `Q`-register value, so its two pieces are
+  `Lanes` parts of one 64-bit limb each (§7.2), which `vcall.rs` moves
+  with `umov xN, vM.d[i]` and `ins vM.d[i], xN` (through `x16` for a
+  stack slot) between the scratch `v30` and the place. In a structure or
+  an array it is memory and its pieces are plain bytes
+  (`std::experimental::simd<__int128>` passes `[1 x <1 x i128>]
+  alignstack(16)` and returns `{<1 x i128>}`).
 - **Arrays of `bfloat`** (HFAs and `[n x bfloat]`, `spec/abi-a64.md`
   §3.3): passed as a block of `H` registers when `NSRN + n <= 8`, where
   `llc` 22 (a block) and `llc` 19 (piece by piece) place them alike;
@@ -3451,6 +3455,81 @@ Each against `llc -O0 -fast-isel=0` 22 and 19 under the emulator, and
 
 Evidence: `spec/landed/codegen/WP-152.md`.
 
+#### 5.6.19 Arithmetic on `i128` and `x86_fp80` lanes; `pause` (WP-161)
+
+Each against `llc -O0 -fast-isel=0` 22 and 19 under the emulator (hod
+plain and stressed), and `hod_interp` for `i128` lanes
+(`crates/hod_x64/tests/wide_arith.rs`). All work lane by lane on the
+images of §5.6.18 (1): the operands are `Mem` places, the result a slot
+written lane by lane at `16·i` or `10·i`.
+
+1. **Integer binary operators on `i128` lanes** (`vector::wide_binary`):
+   each lane is the scalar `i128` sequence of §5.6.5 on 16-byte places
+   (`aggr::limbwise` for `add`/`sub`/`and`/`or`/`xor`, `aggr::multiply`,
+   and `__udivti3`/`__divti3`/`__umodti3`/`__modti3` per lane through
+   `call_runtime`, as `llc`'s scalarized division calls them). Shifts: a
+   lane's constant amount uses `aggr::shift_const`; 128 or more is
+   poison and that lane is not written; a variable amount uses
+   `aggr::shift_var` (an amount of 128 or more gives some value, never a
+   fault, and other lanes are unaffected).
+2. **Casts with `i128` lanes** (`vector::wide_cast`): `zext`/`sext`/
+   `ptrtoint`/`ptrtoaddr` from integer or pointer lanes of at most 64
+   bits (low half the lane extended, high half 0 or its sign), `trunc`/
+   `inttoptr` to them (the low half's low bits), `sitofp`/`uitofp` to
+   and `fptosi`/`fptoui` from `float` and `double` lanes through the
+   runtime routines of the scalar conversion (§5.6.7: `__floattisf`,
+   `__floatuntidf`, `__fixsfti`, `__fixunsdfti`, ...) per lane. The
+   casts of masks stay §5.6.18 (5)'s; casts with odd-width lanes keep
+   their names.
+3. **`x86_fp80` lanes** (`vector::wide_binary`, `wide_fneg`,
+   `mask::wide_fcmp`): `fadd`/`fsub`/`fmul`/`fdiv` per lane as the scalar
+   x87 sequence of §5.6.12 (`fld tbyte` both, `faddp`/..., `fstp tbyte`); `fneg`
+   copies the image and flips bit 7 of each lane's byte 9; `fcmp` per
+   lane `fld` right, `fld` left, `fucomip st1`, `fstp st0`, then the
+   predicate's code from the flags as the scalar `fcmp` (§5.6.12), its
+   bit set in the mask. `false`/`true` are constant masks.
+4. **`select` of `i128` and `x86_fp80` lanes on a mask**
+   (`mask::wide_select`): per lane, the addresses of both lanes,
+   `bt` of the mask bit, `cmovae`, and a copy of the lane through the
+   chosen address.
+5. **`llvm.x86.sse2.pause`** (`intrinsic.rs`) is `pause` (`F3 90`), as
+   `llc`'s. AArch64 refuses it by its name (`never(X64_ONLY)`).
+
+Still `x64:vector-wide-element`: `frem` of `x86_fp80` lanes; any cast
+to, from or between `x86_fp80` lanes and conversions between `i128`
+lanes and `half`, `bfloat` or `fp128` lanes; intrinsics and reductions
+on `i128` or `x86_fp80` lanes; `fp128` lanes.
+
+Evidence: `spec/landed/codegen/WP-161.md`.
+
+#### 5.6.20 Vectors of `i128` and `<1 x i64>` across calls (WP-171)
+
+Against `llc -O0 -fast-isel=0` 22 and 19 under the emulator, both
+directions (`crates/hod_x64/tests/vcall_i128.rs`):
+
+1. **`<N x i128>` arguments** (`abi::check_i128_vector`,
+   `spec/abi-x64.md` §4.3): accepted when the first element is in two
+   registers or on the stack from an offset that is a multiple of 16,
+   whatever the later elements straddle; LLVM 19 pairs only the first
+   element. `x64:vector-i128-split` stays for a first element whose low
+   half would be in `r9`, and for a vector on the stack from an offset of
+   8 mod 16: there LLVM 19 and 22 place it differently (each such case
+   of the test loses a leaf between an `llc` 19 caller and an `llc` 22
+   callee).
+2. **`musttail` with such a signature** stays
+   `musttail:stack-args-unknown` (`spec/abi-x64.md` §8.5, item 6): the
+   rule has no stack-argument area for a signature `assign` refuses, and
+   `llc` 19 and 22 disagree on where its arguments are.
+3. **`<1 x i64>` and `<1 x ptr>`** stay `call:part-register-class`: the
+   value is `Fpr` (an `xmm`, `target::vector_class`) and both versions
+   pass it in a general register. Moving it needs `hod_cg`'s call
+   sequence to accept a part of another class for an `Fpr` value (a
+   `Lanes` part through a scratch register of the value's class, as
+   WP-167 does for AArch64's `<1 x i128>`), which `hod_x64` cannot do
+   alone.
+
+Evidence: `spec/landed/codegen/WP-171.md`.
+
 ## 6. Control flow
 
 ### 6.1 Reachability
@@ -3685,7 +3764,15 @@ element's bits; WP-082). The call sequence never copies a `Lanes` part
 as bytes: it hands it to the target's `lanes_out(part, from, to)` and
 `lanes_in(part, from, to)`, each side a `LaneLoc` (a register, or a
 frame place: the stack slot, or the vector's image in a `Mem` value);
-a `Gpr` mask value is gathered in the general scratch register. The
+a register value is gathered in (or produced from) the scratch register
+of its own class: a `Gpr` mask in the general one, an `Fpr` value in
+the vector one (WP-167: AArch64's lone `<1 x i128>`, a `Q` register
+whose two 64-bit limbs travel as `Lanes { bits: 64, lane: 8, len: 2 }`
+parts, `first` the limb). A target's hook refuses with
+`call:part-lanes` a register side of a class it does not move (x86-64:
+a value side that is not a general register, a place that is not an
+`xmm`; AArch64: a mask's or promoted vector's value side in a vector
+register), so no register is read as another class. The
 default hooks refuse with `call:part-lanes`;
 `Assignment { args, ret, ret_memory, sret_returned_in, stack_size, va,
 vector_regs_used }`. `ret_memory` is set when a return value does not fit
@@ -4481,7 +4568,7 @@ pub trait Target: Sized + Sync {
 | `dynamic_slot(cx, ptr, size, align)` | the entry code for one over-aligned slot: allocate it (§5.2) and store its address to `ptr` |
 | `lower(cx, inst)` | every instruction that is not a `phi`, including terminators and calls. One `match` on the opcode that dispatches to the target's modules, one per instruction group, so that groups are separate work packages |
 | `assign(types, sig, out)` | §7.2 |
-| `for_function(module, body)` | the target to compile `body` with, when it is not `self`: `compile_function` calls it once, before anything else, and every other member is called on the value it returns for the whole function. x86-64 returns `self` with the function's `target-cpu`/`target-features` (§5.6.9); the default, `None`, keeps `self` (AArch64: its convention does not depend on a function's features) |
+| `for_function(module, body)` | the target to compile `body` with, when it is not `self`: `compile_function` calls it once, before anything else, and every other member is called on the value it returns for the whole function. x86-64 returns `self` with the function's `target-cpu`/`target-features` (§5.6.9), and `None` for a target that is already a function's own (`X64::of_attrs`, field `own`: the driver makes one per attribute set, WP-166); the default, `None`, keeps `self` (AArch64: its convention does not depend on a function's features) |
 | `patch_branch(code, at, kind, displacement) -> bool` | §6.2; `false` when the field cannot hold the displacement |
 | constants | `TRAP` (a byte slice), the function alignment, the padding byte between functions, the stack alignment |
 
@@ -4675,7 +4762,11 @@ offset.)
 
 `hod_cg::emit_module(module, &Options, chunks) -> CgResult<Emitted>`
 (`src/emit/`), or step by step `ModuleEmitter::new`, `add_chunk` per
-chunk in module order, `finish`. The object is laid out as `llc -O0`
+chunk in module order, `finish`. `add_chunk` takes the chunk by `&mut`
+and empties it (`Chunk::clear`, allocations kept), so that a caller can
+add each chunk as soon as it is made and compile the next into the same
+buffers (WP-166); the object does not depend on how the functions were
+divided into chunks. The object is laid out as `llc -O0`
 lays it out for the same options (`reloc_model`, `code_model`,
 `function_sections`, `data_sections`); the oracle is `llc` of LLVM 19 and
 22, and every difference that remains is listed below.

@@ -3148,6 +3148,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
     row("intrinsic:llvm.aarch64.crc32ch", on(&[TypeClass::Int]), never(A64_ONLY), ""),
     row("intrinsic:llvm.aarch64.crc32cw", on(&[TypeClass::Int]), never(A64_ONLY), ""),
     row("intrinsic:llvm.aarch64.crc32cx", on(&[TypeClass::Int]), never(A64_ONLY), ""),
+    row("intrinsic:llvm.x86.sse2.pause", never(X64_ONLY), ON, "`pause` (WP-161)"),
 ];
 
 /// The AArch64 target intrinsics of WP-083, which follow [`INTRINSIC`] on

@@ -610,7 +610,7 @@ fn fp128_lanes_agree_with_llc() {
 
 /// The callee module: functions taking and returning vectors of `i128`
 /// and arrays and structures of them, at even and odd register numbers
-/// and on the stack (a lone `<1 x i128>` is `abi:vector-element`).
+/// and on the stack (a lone `<1 x i128>`: `tests/vcall.rs`, WP-167).
 const ABI_CALLEE: &str = "
 define <2 x i128> @k_v2(i64 %a, <2 x i128> %x, i64 %b, <2 x i128> %y) noinline {
   %s = sub <2 x i128> %x, %y
@@ -882,12 +882,6 @@ fn wide_lane_refusals_are_named() {
   ret void
 }",
             "a64:mask-wide",
-        ),
-        (
-            "define i64 @f(<1 x i128> %x) {
-  ret i64 0
-}",
-            "abi:vector-element",
         ),
         (
             "define i64 @f(i64 %a, [1 x <1 x i128>] %x) {

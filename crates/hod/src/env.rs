@@ -47,7 +47,14 @@ pub const ENV_MAKEFLAGS: &str = "MAKEFLAGS";
 pub const BITCODE_NATIVE: &str = "native";
 
 /// hod's settings from the environment. A variable set but empty is unset.
+///
+/// `#[non_exhaustive]`: a variable hod comes to read is a field more, and
+/// no caller's code breaks for it (`spec/cli.md` "Embedding"). A caller
+/// reads the fields and may set them; it makes one with
+/// [`Environment::from_process`], [`Environment::from_vars`] or
+/// [`Environment::default`] (no variable set), not with a literal.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Environment {
     /// `HOD_FALLBACK_LLC`.
     pub fallback: Option<PathBuf>,

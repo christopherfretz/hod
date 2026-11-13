@@ -674,18 +674,23 @@ impl<'m> ModuleEmitter<'m> {
         Ok(())
     }
 
-    /// Appends the functions of `chunk`, in its order. Chunks are added in
-    /// module order (§9.7).
+    /// Appends the functions of `chunk`, in its order, and empties it
+    /// (its allocations kept, for the next chunk to be compiled into).
+    /// Chunks are added in module order (§9.7), each as soon as it is
+    /// made or once all are: the object is the same.
     ///
     /// # Errors
     /// An internal error for a record of a symbol that is not a function
     /// with a body, or one placed twice.
-    pub fn add_chunk(&mut self, chunk: &Chunk) -> CgResult<()> {
+    pub fn add_chunk(&mut self, chunk: &mut Chunk) -> CgResult<()> {
+        let added = self.add_functions(chunk);
+        chunk.clear();
+        added
+    }
+
+    fn add_functions(&mut self, chunk: &Chunk) -> CgResult<()> {
         self.note_noop(chunk);
-        for func in &chunk.funcs {
-            self.add_func(chunk, func)?;
-        }
-        Ok(())
+        chunk.funcs.iter().try_for_each(|func| self.add_func(chunk, func))
     }
 
     fn add_func(&mut self, chunk: &Chunk, func: &FuncRecord) -> CgResult<()> {
@@ -1372,7 +1377,7 @@ impl<'m> ModuleEmitter<'m> {
 pub fn emit_module(module: &Module, options: &Options, chunks: &[Chunk]) -> CgResult<Emitted> {
     let mut emitter = ModuleEmitter::new(module, options)?;
     for chunk in chunks {
-        emitter.add_chunk(chunk)?;
+        emitter.add_functions(chunk)?;
     }
     emitter.finish()
 }

@@ -659,7 +659,8 @@ columns). On x86-64 (WP-149) the `cmp` of a branch fused with an integer
 compare IS at the compare's location: `llc`'s x86-64 program keeps the
 compare's instruction (`subl`/`cmpl`) at the `icmp`'s location and only
 the `jcc` at the branch's (`crates/hod_x64/src/control.rs` `cond_br`
-switches around `fused_icmp`). Measured on the `tests/debug` sources and
+switches around `fused_icmp`). WP-157 extends it to every x86-64 fused
+form whose compare `llc` keeps as an instruction of its own (§6.17). Measured on the `tests/debug` sources and
 250 gcc torture sources at clang 22 `-O0`, x86-64: functions with `llc`'s
 set of (line, column) positions 666 before, 732 after of 981; positions
 only `llc` has 777 before, 320 after. With key instructions it decides
@@ -1025,8 +1026,24 @@ located code. Code without a location belongs to whatever range is open
 around it; a `DILexicalBlockFile` stands for its enclosing block. A
 scope's ranges are the intervals it was open, so a block whose code is
 interrupted by its parent's has several. A block with one range gets
-`low_pc`/`high_pc`, one with several `DW_AT_ranges`, a list of
-`DW_RLE_startx_length` in `.debug_rnglists` (`DW_FORM_sec_offset`, §6.7).
+`low_pc`/`high_pc`, one with several `DW_AT_ranges`, a list in
+`.debug_rnglists` (`DW_RLE_base_addressx` of the function, then one
+`DW_RLE_offset_pair` per range). Since WP-163 the attribute is a
+`DW_FORM_rnglistx` index, as `llc` writes it in every DWARF 5 unit: the
+unit's table has one offset per list, the blocks' and inlined
+subroutines' lists numbered in DIE order and the unit's own (when its
+code is several spans) last, and the unit DIE has
+`DW_AT_rnglists_base` (with one span, family 106 "compile_unit (scope
+lists)": `low_pc`, `high_pc`, `addr_base`, `rnglists_base`). The index
+is a ULEB128 and needs no relocation: before WP-163 each list was a
+four-byte `DW_FORM_sec_offset` with an `ABS32` against
+`.debug_rnglists`. The unit's own index is the number of scope lists,
+which the plan counts before the unit DIE is written
+(`UnitPlan::scope_lists`; a writer that wrote another number is an
+internal error). Families 38, 75 and 76 name `DW_FORM_rnglistx` for
+`DW_AT_ranges` since WP-163 (the only change of an existing family's
+form: no code moves, and DWARF 4, §6.20, writes `sec_offset` for it as
+before).
 Linear in the transitions plus the scopes opened; no recursion, so a
 scope chain 20,000 deep costs what 20,000 siblings do (§8.8).
 
@@ -1080,7 +1097,10 @@ refusals. `LineTablesOnly` and `DebugDirectivesOnly` units are §6.10 (WP-061).
   - for code in one section, `low_pc` (`addrx`) and `high_pc` (the
     length, `data4`);
   - for code in several sections, `low_pc` 0 (`DW_FORM_addr`, no
-    relocation) and `ranges` (`rnglistx` 0) with `rnglists_base`;
+    relocation) and `ranges` (`rnglistx`, the last list of the unit's
+    table, §6.4) with `rnglists_base`; for code in one section and
+    scopes with range lists, `low_pc`, `high_pc`, `addr_base` and
+    `rnglists_base` (family 106, WP-163);
   - `addr_base` when the unit has an address.
   The unit's range list has one `DW_RLE_startx_length` per merged span,
   where `llc` uses `base_addressx` and `offset_pair` for `.text` (§6.7).
@@ -1206,9 +1226,10 @@ is the whole list of permitted differences:
   - `frame_base`: hod's is `DW_OP_reg29` (x29) on AArch64; `llc` writes
     `DW_OP_reg29` or `DW_OP_reg31`;
   - `object_pointer` is compared as present, not by offset;
-  - a block's range list is `DW_FORM_sec_offset` into `.debug_rnglists`
-    where `llc` writes `DW_FORM_rnglistx` and a unit `rnglists_base`; the
-    unit's `rnglists_base` is therefore not compared;
+  - a block's range list was `DW_FORM_sec_offset` into
+    `.debug_rnglists` where `llc` writes `DW_FORM_rnglistx` and a unit
+    `rnglists_base` (until WP-163, which writes `llc`'s forms, §6.4); the
+    unit's `rnglists_base` is still not compared;
   - the line table under function DIEs keeps §5.7's differences (P1),
     which the debugger sessions avoid by breaking at lines, not at
     `llc`'s branch rows.
@@ -2012,11 +2033,12 @@ holds every other DIE, written by the full writer's code
 list, `.debug_rnglists.dwo`, in that order, all `SHF_EXCLUDE`, with **no
 relocation**: string offsets are resolved in place, `DW_AT_decl_file`
 numbers are the skeleton's line table's, addresses are `.debug_addr`
-indices. A block's list is written as in a full unit (a four-byte
-`DW_FORM_sec_offset`) and then made a `DW_FORM_rnglistx` index of the
-same four bytes, a ULEB128 padded with continuation bytes, and the
-`.dwo` abbreviation table names `DW_FORM_rnglistx` for that pair: no
-DIE moves. Any other attribute that would need a relocation is
+indices. A block's list is written as in a full unit, a
+`DW_FORM_rnglistx` index (§6.4), into the table of
+`.debug_rnglists.dwo`, which holds the blocks' lists only (the unit's
+own is the skeleton's). Before WP-163 the full unit wrote a four-byte
+`DW_FORM_sec_offset` that the split writer turned into a padded
+ULEB128 index; now both write the one-byte index `llc` writes. Any other attribute that would need a relocation is
 refused (`Unsupported`, no `debug:` name: an internal error).
 
 **A unit without a split unit**: a unit whose only DIE is its own (a
@@ -2223,6 +2245,40 @@ them; its objects are byte-identical before and after.
 after the prologue, as `llc`'s. The `(function, line)` comparison of
 every debugger test on x86-64 has no difference but two P1 pairs.
 
+**Fused compares** (WP-157; §5.8): the compare's instruction and the
+moves that place its operands are at the compare's row location, the
+consumer's instruction at the consumer's, for a `condbr` on an `icmp`,
+on an `fcmp` of `float`/`double` and on an `x86_fp80` `fcmp`; a
+`select` of class `Gpr` and a `zext`/`sext` on an `icmp`; a `select` of
+`x86_fp80` on an `x86_fp80` `fcmp` (`control::at_compare`, called by
+`control::cond_br`, `float::cond_br`, `x87::cond_br`, `x87::select`,
+`int::select`, `int`'s casts). The consumer's instructions are the `jcc`,
+the `cmovcc`, or a cast's `movzx` (and `neg` for a `sext`): the cast's
+`setcc` is the compare's, as in `llc`, whatever uses the cast, a store
+included (WP-163; WP-157 had put it at the cast's, a row difference
+after a fused `zext` feeding a store). Classified, not fixed: a `zext
+i1` to `i8` is no instruction for `llc` (`setcc` writes the byte), and a
+store of it folds the `setcc` into the store (`setl (%rdx)`, at the
+store's location), so `llc` has no row at the cast's line; hod widens
+the byte with a `movzx` at the cast's line and stores the register. The
+row is of an instruction hod emits for that line; matching it would mean
+folding the `setcc` into the store, an instruction selection hod does
+not do. Each switch is an ordinary transition
+(`FnCx::line_switch`), a row the shrink pass moves; `is_stmt` and the
+column follow §5.1, §5.2 (and §5.9 with key instructions: the compare
+and its consumer are separate atoms). Not a `select` of class `Fpr` on
+an `fcmp`: `llc` turns it into `minsd`/`maxsd` or a `cmpsd` mask at the
+`select`'s location and has no row at the compare's line, nor does hod.
+`llc` 19 and 22 agree on every form; a `switch` has no compare
+instruction in the IR, and a compare with users other than its consumer
+is not fused (its own lowering, its own location). AArch64 is unchanged
+(§5.8). Evidence: `crates/hod_x64/tests/fused_lines.rs` (each row at
+an instruction of its line after the `jcc`s were relaxed to `rel8`, on
+hod's object and on `llc`'s), `xtask/tests/debug_post_index.rs`
+`fused_compare_keeps_its_line_on_x86_64`,
+`crates/hod_x64/tests/zext_lines.rs` (the `setcc` of a cast against
+`llc` 19 and 22, the `i8` store fold).
+
 **`.debug_frame`**: `llc` writes it only for functions that are
 `nounwind` without `uwtable` (`-fno-asynchronous-unwind-tables`), on
 either target; hod writes `.eh_frame` for every function and no
@@ -2250,6 +2306,16 @@ recognised by `cargo xtask debug trees`, `spec/harness.md` "debug",
   call's location), where `llc`, which coalesced the copy, is at the
   assignment's column. The harness permits either side's column being
   the call's.
+- `line 0 after a call` (WP-163, `tests/debug/key_multiline.c`, lldb
+  `finish` out of `add`): `llc`'s instruction at the return address is
+  its register allocator's spill of the result (`movl %eax, 0xc(%rsp)`),
+  which has a line 0 row, so lldb reports the next row with a line, the
+  following statement's (19:15); hod copies the result out of `rax`
+  under the call's location and stops at the call (17:11). Both are
+  correct stops for a return into the caller; the lines differ, so the
+  `return-column` class (§5.7, columns only) does not cover it, and the
+  test does not `finish` there on x86-64. Matching `llc` would mean
+  modelling its spills.
 
 **What qemu's gdb stub cannot show** (the debugger sessions on x86-64
 run under `qemu-x86_64 -g` on an AArch64 host, `spec/harness.md` "debug",
@@ -2449,7 +2515,7 @@ and the census, both targets):
 | unit header | 12 bytes: version 5, `DW_UT_compile`, address size, abbreviation offset | 11 bytes: version 4, abbreviation offset (`ABS32` against `.debug_abbrev`), address size 8 |
 | strings | `DW_FORM_strx1..4` into `.debug_str_offsets` | `DW_FORM_strp` (`ABS32` against `.debug_str`, addend the string's offset); no `.debug_str_offsets` |
 | addresses | `DW_FORM_addrx`, `DW_OP_addrx` into `.debug_addr` | `DW_FORM_addr`, `DW_OP_addr`, 8 bytes with the entry's relocation (`ABS64`; x86-64 TLS keeps `DW_OP_const8u` + `R_X86_64_DTPOFF64` + `DW_OP_GNU_push_tls_address`); no `.debug_addr` |
-| ranges | `DW_FORM_rnglistx` / `sec_offset` into `.debug_rnglists` | `DW_FORM_sec_offset` into `.debug_ranges` (`ABS32`) |
+| ranges | `DW_FORM_rnglistx` into `.debug_rnglists` (WP-163; `sec_offset` before) | `DW_FORM_sec_offset` into `.debug_ranges` (`ABS32`); the transcoder reads each list by its index in the version 5 unit's table |
 | unit attributes | `str_offsets_base`, `addr_base`, `rnglists_base` | none of the three |
 | static data members | `DW_TAG_variable` (families 40, 54) | `DW_TAG_member`, same attributes |
 | deleted member functions | `DW_AT_deleted` | not written |
@@ -2527,9 +2593,14 @@ What WP-113 to WP-115 left refused or unexplained, each against `llc`
   - `DW_AT_call_return_pc` and `DW_AT_call_pc` both become `DW_AT_low_pc`
     (`DW_FORM_addr`). For a returning call it is the return address. For
     a tail call it is the address right **after** the branch, not the
-    branch: `jmp rel32` is 5 bytes, `jmp *%reg` 2 (3 for `r8` to `r15`),
-    and AArch64's `b`/`br` 4 (`debug_calls::tail_branch_len`,
-    `CallSiteInput::end`).
+    branch. Since WP-163 the target reports it: it calls
+    `FnCx::tail_branch_ends_here` right after the branch it wrote
+    (`frame.rs` of `hod_a64` and `hod_x64`), and the end is mapped
+    through the shrink pass's offsets like the branch's start
+    (`spec/codegen.md` §5.6.15), into `DebugCallRow::end` and
+    `CallSiteInput::end`. Before, `debug_calls::tail_branch_len` assumed
+    the lengths (`jmp rel32` 5, `jmp *%reg` 2 or 3, `b`/`br` 4); a row
+    whose end the target did not report is an internal error.
 - **Call sites in a `LineTablesOnly` unit** (formerly
   `debug:call-sites-line-tables`), as `llc` 22 writes them:
   - the minimal subprogram (§6.10) of a function that describes its
@@ -2760,8 +2831,8 @@ larger, so the totals include more `.text`): `.debug_info` 999 bytes
 against 955 (`vars.c`, clang 22; 991 against 956 by kiln++), 633 against
 633 (`members.cpp`), 183 against 177 (`hand.ll`); all sections 5,176
 against 4,634, 3,929 against 3,463, 1,205 against 951. The extra
-`.debug_info` bytes are the block range lists' `sec_offset` (4 bytes
-where `rnglistx` takes 1) and the two-byte codes. `stl.cpp` cannot be
+`.debug_info` bytes were the block range lists' `sec_offset` (4 bytes
+where `rnglistx` takes 1; `rnglistx` since WP-163) and the two-byte codes. `stl.cpp` cannot be
 measured end to end yet: its functions are refused (§6.4:
 `debug:inlined-subroutine` in 52 of 383, `debug:specification` in 43,
 then `debug:local-type-scope`), as are 2 by the code generator

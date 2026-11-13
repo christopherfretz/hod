@@ -20,7 +20,8 @@ use hod_ir::{
 };
 
 use crate::back::generate_with;
-use crate::front::{Report, Settings, reason_name, symbol_name};
+use crate::contain::contained;
+use crate::front::{INTERNAL_PANIC, Report, Settings, reason_name, symbol_name};
 use crate::{CompileError, Construct, Options, OutputKind, Unsupported};
 
 mod coro;
@@ -51,6 +52,12 @@ enum Stage {
 /// After a refusal, every later call returns it again (unless
 /// [`Settings::census`] asks for every reason, when the calls go on and
 /// `finish` answers the first): the producer stops at the first `Err`.
+///
+/// A panic in a call is contained (`spec/cli.md` "Embedding"): the call
+/// returns [`CompileError::Panic`], the session's state is dropped and
+/// replaced by an empty one that answers the panic from every later call
+/// (with [`Settings::census`] too), and the next session in the process
+/// is not affected.
 #[derive(Debug)]
 pub struct Session {
     module: Module,
@@ -163,7 +170,9 @@ impl Session {
     ) -> Result<Session, CompileError> {
         let target = options.triple.clone().or_else(|| Some(module.target().triple().into()));
         let report = Report { target, ..Report::default() };
-        Session::open(module, options, settings, report).map_err(|(error, _)| error)
+        // Unwind safe: `module`, `settings` and `report` move in and are
+        // dropped with a panic; `options` is only read.
+        contained(|| Session::open(module, options, settings, report).map_err(|(error, _)| error))?
     }
 
     /// [`Session::with_module`] that starts from `report` and gives it
@@ -186,9 +195,14 @@ impl Session {
         if options.arch.is_some() || retargeted {
             return decline(Construct::UnsupportedTarget);
         }
-        Ok(Session {
+        Ok(Session::fresh(module, options.clone(), settings, report))
+    }
+
+    /// A session at its start: nothing judged, nothing delivered.
+    fn fresh(module: Module, options: Options, settings: Settings, report: Report) -> Session {
+        Session {
             module,
-            options: options.clone(),
+            options,
             census: settings.census.then(Census::new),
             settings,
             report,
@@ -201,7 +215,7 @@ impl Session {
             idle_since: Instant::now(),
             inlining: inlining::Inlining::default(),
             coro: coro::CoroModule::default(),
-        })
+        }
     }
 
     /// The module the producer builds: its module level before
@@ -218,10 +232,7 @@ impl Session {
     /// The module pass's refusal, or the debug tables' error; a call
     /// other than the first after [`Session::new`] is a misuse.
     pub fn end_module(&mut self) -> Result<(), CompileError> {
-        let entered = self.enter();
-        let result = self.judge_module();
-        self.leave(entered);
-        result
+        self.guarded(Session::judge_module)
     }
 
     /// Hands over the body of `sym`, a function the module defines,
@@ -235,10 +246,19 @@ impl Session {
     /// [`Session::end_module`], `sym` not a function with a body, `body`
     /// another symbol's, `sym` delivered before.
     pub fn body(&mut self, sym: SymId, body: Body) -> Result<(), CompileError> {
-        let entered = self.enter();
-        let result = self.judge_body(sym, Ok(body));
-        self.leave(entered);
-        result
+        // WP-166: the body is moved once, to where an accepted body stays
+        // (the end of `bodies`), and judged there; the guarded call takes
+        // it out again unless it is accepted. Moving it into the guarded
+        // closure instead would copy it once more. The push is outside the
+        // guard only where it cannot panic: with room reserved.
+        if self.bodies.try_reserve(1).is_err() {
+            return self.guarded(|session| {
+                session.bodies.push(body);
+                session.judge_body(sym, Ok(()))
+            });
+        }
+        self.bodies.push(body);
+        self.guarded(|session| session.judge_body(sym, Ok(())))
     }
 
     /// Says that the producer could not build the body of `sym`, a
@@ -257,10 +277,7 @@ impl Session {
         sym: SymId,
         constructs: impl IntoIterator<Item = &'c str>,
     ) -> Result<(), CompileError> {
-        let entered = self.enter();
-        let result = self.judge_body(sym, Err(&mut constructs.into_iter()));
-        self.leave(entered);
-        result
+        self.guarded(|session| session.judge_body(sym, Err(&mut constructs.into_iter())))
     }
 
     /// Generates the object from the accepted bodies, in module order,
@@ -284,10 +301,7 @@ impl Session {
     /// ```
     #[allow(clippy::result_large_err, reason = "design 0004 §4: the report comes with the answer")]
     pub fn finish(mut self, out: &mut Vec<u8>) -> Result<Report, (CompileError, Report)> {
-        let entered = self.enter();
-        let result = self.conclude();
-        self.leave(entered);
-        match result {
+        match self.guarded(Session::conclude) {
             Ok(object) if out.is_empty() => *out = object,
             Ok(object) => out.extend_from_slice(&object),
             Err(error) => return Err((error, self.report)),
@@ -297,12 +311,47 @@ impl Session {
 
     /// Stops the walk with a producer's error (a reader's), and answers:
     /// the first reason found, else `error`.
+    #[cfg(feature = "readers")]
     pub(crate) fn abort(mut self, error: CompileError) -> (CompileError, Report) {
         self.stop(error);
-        match self.conclude() {
+        match self.guarded(Session::conclude) {
             Err(error) => (error, self.report),
             Ok(_) => unreachable!("a stopped session concludes with its error"),
         }
+    }
+
+    // ---- containment (`spec/cli.md` "Embedding") ----
+
+    /// One call of the producer's: timed (the clock below), and a panic
+    /// in it contained, the session then poisoned.
+    fn guarded<T>(
+        &mut self,
+        call: impl FnOnce(&mut Session) -> Result<T, CompileError>,
+    ) -> Result<T, CompileError> {
+        let entered = self.enter();
+        // Unwind safe: after a panic nothing of the state `call` may have
+        // left half changed is used again; `poison` replaces the whole
+        // session before it returns to the producer.
+        let result = contained(|| call(self)).unwrap_or_else(|panic| Err(self.poison(panic)));
+        self.leave(entered);
+        result
+    }
+
+    /// Replaces the session by an empty one of the same target that
+    /// answers `error` from every call: what a panic left in the module,
+    /// the bodies, the judge or the settings (their tokens) is dropped
+    /// here, by construction rather than by checks. The report is kept
+    /// (plain data), with the reason under [`Settings::census`].
+    fn poison(&mut self, error: CompileError) -> CompileError {
+        let target = self.module.target().clone();
+        let mut report = std::mem::take(&mut self.report);
+        if self.census.is_some() {
+            report.reason(INTERNAL_PANIC);
+        }
+        *self =
+            Session::fresh(Module::new(target), Options::default(), Settings::default(), report);
+        self.stopped = Some(error.clone());
+        error
     }
 
     // ---- the clock (`Report::bridge`, `Report::session`) ----
@@ -372,6 +421,8 @@ impl Session {
         if let Some(error) = &self.stopped {
             return Err(error.clone());
         }
+        #[cfg(test)]
+        crate::contain::fault::hit(crate::contain::fault::Site::EndModule);
         if self.stage != Stage::Module {
             return Err(self.misuse("end_module after end_module"));
         }
@@ -419,7 +470,7 @@ impl Session {
     }
 
     /// The misuse a delivery for `sym` would be, if any.
-    fn check_delivery(&mut self, sym: SymId, body: Option<&Body>) -> Result<(), CompileError> {
+    fn check_delivery(&mut self, sym: SymId, body: Option<SymId>) -> Result<(), CompileError> {
         if self.stage != Stage::Bodies {
             return Err(self.misuse("a body before end_module"));
         }
@@ -432,10 +483,9 @@ impl Session {
             return Err(self.misuse(&what));
         }
         if let Some(body) = body
-            && body.symbol() != sym
+            && body != sym
         {
-            let what =
-                format!("the body of {:?} handed over for '{}'", body.symbol(), name(&self.module));
+            let what = format!("the body of {body:?} handed over for '{}'", name(&self.module));
             return Err(self.misuse(&what));
         }
         if !self.deliver(sym) {
@@ -445,17 +495,31 @@ impl Session {
         Ok(())
     }
 
-    /// One body as the producer delivered it: the body, or the names of
+    /// One body as the producer delivered it: the body (`Ok`: the last of
+    /// `bodies`, taken out again unless it is accepted), or the names of
     /// what kept the producer from building it.
     fn judge_body(
         &mut self,
         sym: SymId,
-        body: Result<Body, &mut dyn Iterator<Item = &str>>,
+        body: Result<(), &mut dyn Iterator<Item = &str>>,
     ) -> Result<(), CompileError> {
+        let delivered = match body {
+            Ok(()) => Some(self.bodies.last().map(Body::symbol).expect("the body was pushed")),
+            Err(_) => None,
+        };
         if let Some(error) = &self.stopped {
-            return Err(error.clone());
+            let error = error.clone();
+            if delivered.is_some() {
+                self.bodies.pop();
+            }
+            return Err(error);
         }
-        self.check_delivery(sym, body.as_ref().ok())?;
+        if let Err(error) = self.check_delivery(sym, delivered) {
+            if delivered.is_some() {
+                self.bodies.pop();
+            }
+            return Err(error);
+        }
         match body {
             Err(refused) => {
                 let mut first = None;
@@ -484,27 +548,57 @@ impl Session {
                 self.note(error);
             }
             // WP-021: an `available_externally` body waits for `finish`.
-            Ok(body) => match self.inlining.divert(&self.module, body) {
-                Ok(Some(body)) => self.judge_built(body),
-                Ok(None) => {}
-                Err(error) => self.note(error),
-            },
+            Ok(()) if inlining::is_available_externally(&self.module, sym) => {
+                let body = self.bodies.pop().expect("the body was pushed");
+                match self.inlining.divert(&self.module, body) {
+                    Ok(Some(body)) => self.judge_built(body),
+                    Ok(None) => {}
+                    Err(error) => self.note(error),
+                }
+            }
+            Ok(()) => self.judge_last(),
         }
         self.verdict()
     }
 
-    /// A body the producer built: census, `classify`, `verify`, accepted.
+    /// A body built at `finish` (an `available_externally` copy): judged
+    /// as the producer's are.
     fn judge_built(&mut self, body: Body) {
+        self.bodies.push(body);
+        self.judge_last();
+    }
+
+    /// The last of `bodies`, just delivered: kept if [`Session::judge`]
+    /// accepts it, else taken out.
+    fn judge_last(&mut self) {
+        // Out of `self` while it is judged by reference (a panic drops
+        // it with the rest of the session, which `poison` replaces).
+        let bodies = std::mem::take(&mut self.bodies);
+        let body = bodies.last().expect("the body was pushed");
+        let accepted = self.judge(body);
+        self.bodies = bodies;
+        if accepted {
+            self.accept_last();
+        } else {
+            self.bodies.pop();
+        }
+    }
+
+    /// A body the producer built: census, `classify`, `verify`; whether
+    /// it is accepted.
+    fn judge(&mut self, body: &Body) -> bool {
+        #[cfg(test)]
+        crate::contain::fault::hit(crate::contain::fault::Site::Feed);
         let arch = self.module.target().arch();
         let sym = body.symbol();
         if let Some(census) = &mut self.census {
             let classifier = classifier_for(arch, support_of(&self.settings, arch));
-            classifier.census_body(&self.module, &body, census);
+            classifier.census_body(&self.module, body, census);
             self.drain_census();
         }
         if self.first.is_none() {
             let classifier = classifier_for(arch, support_of(&self.settings, arch));
-            match classifier.body(&self.module, &body) {
+            match classifier.body(&self.module, body) {
                 Err(rejection) => {
                     let error = from_rejection(&self.module, rejection, true);
                     self.note(error);
@@ -521,25 +615,30 @@ impl Session {
                     }
                     // WP-106, WP-109: a coroutine the plan or code
                     // generation would refuse, by its name, now.
-                    Ok(()) => match coro::refusal(&self.module, &body, self.coro) {
+                    Ok(()) => match coro::refusal(&self.module, body, self.coro) {
                         Some(name) => {
                             let function = symbol_name(&self.module, sym);
                             let construct = Construct::Named(name.into());
                             self.note(Unsupported::in_function(construct, function).into());
                         }
-                        None => self.accept(body),
+                        None => return true,
                     },
                 },
             }
         }
+        false
     }
 
-    fn accept(&mut self, body: Body) {
-        self.inlining.note(&self.module, &body);
-        if self.bodies.last().is_some_and(|last| last.symbol().index() > body.symbol().index()) {
+    /// The last of `bodies` is accepted.
+    fn accept_last(&mut self) {
+        if let [.., before, last] = self.bodies.as_slice()
+            && before.symbol().index() > last.symbol().index()
+        {
             self.in_order = false;
         }
-        self.bodies.push(body);
+        if let Some(last) = self.bodies.last() {
+            self.inlining.note(&self.module, last);
+        }
     }
 
     /// The end of the walk: the answer, or the object.

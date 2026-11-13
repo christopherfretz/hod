@@ -29,7 +29,8 @@
 //! source), the flags and its destination only.
 
 use hod_cg::abi::{LaneLoc, Part, PartKind};
-use hod_cg::{CgResult, FnCx, FrameRef};
+use hod_cg::error::CALL_PART_LANES;
+use hod_cg::{CgError, CgResult, FnCx, FrameRef};
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Reg, Size};
 
@@ -91,11 +92,35 @@ fn lanes_slot(cx: &mut FnCx<'_, X64>, at: LaneLoc) -> CgResult<FrameRef> {
     }
 }
 
+/// WP-167: whether the two sides of a lane move are registers of the
+/// classes this module moves: the value (a mask's bits) a general
+/// register, the place an `xmm`; a frame place on either side. `hod_cg`
+/// hands the value in a scratch register of the value's class, and only
+/// masks (class `Gpr`, `abi.rs` `mask_leaf`) have `Lanes` parts here, so
+/// anything else (an `xmm` or x87 value) is refused, never treated as a
+/// general register.
+fn classes_ok(value: LaneLoc, place: LaneLoc) -> bool {
+    let value_ok = match value {
+        LaneLoc::Reg(r) => reg::is_gpr(r),
+        LaneLoc::Frame(_) => true,
+    };
+    let place_ok = match place {
+        LaneLoc::Reg(r) => reg::is_fpr(r),
+        LaneLoc::Frame(_) => true,
+    };
+    value_ok && place_ok
+}
+
 /// `Target::lanes_out`: the producer's side of a `Lanes` part.
 ///
 /// # Errors
-/// `Internal` for a part `abi::assign` does not make; `limit:frame-size`.
+/// `call:part-lanes` when a side is a register of a class this module
+/// does not move ([`classes_ok`]); `Internal` for a part `abi::assign`
+/// does not make; `limit:frame-size`.
 pub fn lanes_out(cx: &mut FnCx<'_, X64>, part: &Part, from: LaneLoc, to: LaneLoc) -> CgResult<()> {
+    if !classes_ok(from, to) {
+        return Err(CgError::unsupported(CALL_PART_LANES));
+    }
     let l = Lanes::of(cx, part)?;
     if matches!(to, LaneLoc::Reg(r) if !reg::is_fpr(r)) {
         return cx.bug("a mask's lanes bound for a general register");
@@ -129,8 +154,11 @@ pub fn lanes_out(cx: &mut FnCx<'_, X64>, part: &Part, from: LaneLoc, to: LaneLoc
 /// `Target::lanes_in`: the consumer's side of a `Lanes` part.
 ///
 /// # Errors
-/// `Internal` for a part `abi::assign` does not make; `limit:frame-size`.
+/// As [`lanes_out`].
 pub fn lanes_in(cx: &mut FnCx<'_, X64>, part: &Part, from: LaneLoc, to: LaneLoc) -> CgResult<()> {
+    if !classes_ok(to, from) {
+        return Err(CgError::unsupported(CALL_PART_LANES));
+    }
     let l = Lanes::of(cx, part)?;
     let src = match from {
         LaneLoc::Frame(slot) => slot,
@@ -176,5 +204,29 @@ fn gather(cx: &mut FnCx<'_, X64>, l: Lanes, src: FrameRef, g: Reg) {
             put(cx, mc::btr_ri(Size::Q, g, bit as u8));
         }
         put(cx, mc::or_rr(Size::Q, g, t));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WP-167: a lane move refuses a value side that is not a general
+    /// register and a place side that is not an `xmm`.
+    #[test]
+    fn lane_moves_accept_only_their_register_classes() {
+        let (g, x, st) = (reg::gpr(Reg::Rax), reg::xmm(mc::Xmm::Xmm0), reg::st(0));
+        let frame = LaneLoc::Frame(FrameRef::Local(0));
+        let r = LaneLoc::Reg;
+        assert!(classes_ok(r(g), r(x)));
+        assert!(classes_ok(frame, r(x)));
+        assert!(classes_ok(r(g), frame));
+        assert!(classes_ok(frame, frame));
+        for (value, place) in [(x, x), (st, x), (g, g), (g, st), (x, g)] {
+            assert!(!classes_ok(r(value), r(place)), "{value:?} {place:?}");
+        }
+        assert!(!classes_ok(r(x), frame));
+        assert!(!classes_ok(r(st), frame));
+        assert!(!classes_ok(frame, r(g)));
     }
 }

@@ -477,10 +477,15 @@ pub fn cast<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> CgResult<
     let to = width(cx, inst.result());
     let sz = size_for_bits(to);
     if let Some(compare) = fused {
-        let cond = flags(cx, compare)?;
-        let rd = cx.def_reg(inst)?;
+        // WP-163: `llc` gives the `setcc` the compare's location too; only
+        // the `movzx` (and `neg`) are the `zext`'s or `sext`'s.
+        let rd = crate::control::at_compare(cx, compare, |cx| {
+            let cond = flags(cx, compare)?;
+            let rd = cx.def_reg(inst)?;
+            put(cx, mc::setcc_r(cond, gp(rd)));
+            Ok(rd)
+        })?;
         let r = gp(rd);
-        put(cx, mc::setcc_r(cond, r));
         put(cx, mc::movzx_rr(Size::D, r, Size::B, r));
         if op == Opcode::SExt {
             put(cx, mc::neg_r(sz, r));
@@ -679,7 +684,7 @@ pub fn select<'a>(
     let fused = fusable(cx, cond);
     deferred_first(cx, inst, fused.map(|_| cond))?;
     let cc = if let Some(compare) = fused {
-        flags(cx, compare)?
+        crate::control::at_compare(cx, compare, |cx| flags(cx, compare))?
     } else {
         let rc = gp(cx.use_reg(cond)?);
         put(cx, mc::test_ri(Size::B, rc, 1));

@@ -99,7 +99,7 @@ fn has_flag(module: &Module, sym: SymId, flag: u32) -> bool {
 }
 
 /// Whether `sym` is a function `llc` would not emit: `available_externally`.
-fn is_available_externally(module: &Module, sym: SymId) -> bool {
+pub(crate) fn is_available_externally(module: &Module, sym: SymId) -> bool {
     module.symbol(sym).linkage() == Linkage::AvailableExternally && fn_attrs(module, sym).is_some()
 }
 

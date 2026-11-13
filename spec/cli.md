@@ -19,6 +19,8 @@ the command-line tool:
 pub fn compile(input: &[u8], options: &Options) -> Result<Vec<u8>, CompileError>;
 pub fn compile_with(input: &[u8], options: &Options, settings: &Settings, report: &mut Report)
     -> Result<Vec<u8>, CompileError>;
+pub fn compile_releasing(input: &mut Cow<'_, [u8]>, options: &Options, settings: &Settings,
+    report: &mut Report) -> Result<Vec<u8>, CompileError>;
 pub fn generate(module: &hod_ir::Module, bodies: &[hod_ir::Body], options: &Options)
     -> Result<Vec<u8>, CompileError>;
 pub fn generate_with(module: &hod_ir::Module, bodies: &[hod_ir::Body], options: &Options,
@@ -51,6 +53,19 @@ pub trait ThreadTokens: Send + Sync + Debug {
 - `input` is one whole module, LLVM text or bitcode (see "Input"), read
   by `hod_ll` or `hod_bc` ("The front half"). `compile` is `compile_with`
   with `Settings::default()`: bitcode read natively, the first reason.
+- `compile_releasing` is `compile_with` that frees an owned input once it
+  is read (WP-166): when the walk of the bodies has ended, before code
+  generation, `Cow::Owned` bytes are dropped (shrunk first, so that
+  glibc's `free` of a mapped block does not raise its mapping threshold
+  for the tables of code generation) and `input` is left empty;
+  `Cow::Borrowed` bytes are left as they are, and so is an owned input on
+  an answer given before the bodies are walked (a decline of the bitcode
+  or of the target, a reader's error). The module and its bodies borrow
+  nothing from the input. The `hod` binary compiles with it, passing the
+  input owned unless it reads standard input with a fallback configured
+  (the fallback is then fed the same bytes); the input is then not part
+  of the peak of code generation (on a 36 MB libc++ module, a third of
+  the peak resident set).
 - `Settings` is how the front half works, not an `llc` option:
   `bitcode` (`BitcodeReading::Native`, or `Decline` for a caller that
   converts bitcode itself, which then gets `bitcode-input`), `census`
@@ -264,11 +279,155 @@ producer's (in kiln, the bridge's copy of its module; on the command
 line, reading the bodies). `bridge / (bridge + session)` is the copy's
 share of design 0004 §3 and §7.4. Neither is a line of the phase report.
 
-What the session does not do yet (design 0004 §8): options from `llc`'s
-command line and settings from the environment (WP-091), containing a
-panic and `hod::EMBED_API` (WP-093). Nothing in it treats a delivered body
-as final before `finish`, and it reads no symbol property for code
-generation before `finish` (§6).
+Options come from `llc`'s command line and settings from the
+environment as "The command line in the facade" says; a panic is
+contained and the surface is versioned as "Embedding" says. Nothing in
+the session treats a delivered body as final before `finish`, and it
+reads no symbol property for code generation before `finish` (design
+0004 §6).
+
+## Embedding
+
+What a program that compiles in process (kiln's bridge, design 0004)
+may rely on: the build, the versioned surface, the thread rules, what
+`Settings` and `Environment` mean for a caller that is not the shim, the
+fallback contract and panic containment (WP-093, design 0004 §4-§5, H4
+and H5).
+
+```rust
+pub const EMBED_API: u32;            // 1
+pub enum CompileError { /* ... */ Panic(String) }   // reason `internal-panic`
+pub const INTERNAL_PANIC: &str = "internal-panic";
+```
+
+**The build.** The `hod` crate has one feature, `readers`, on by
+default: `hod_ll`, `hod_bc` and what reads with them, `compile` and
+`compile_with`. A caller that builds `hod_ir` itself takes
+`default-features = false` and gets everything else of the facade:
+`Session`, `generate`, `generate_with`, `Options` and `args`, `env`,
+`jobserver`, `coverage`, `Report`, `Settings` (whose `bitcode` field
+means nothing to a session: it reads no bytes), the reason constants.
+`cargo clippy -p hod --no-default-features -- -D warnings` is part of
+the `clippy` step of `cargo xtask ci`, so that build stays warning-free
+locally and on the hosted lane; the `hod` binary takes the default.
+
+**The producer surface**, which `EMBED_API` versions:
+
+1. The facade items a producer uses: `Session` and its calls
+   ("Session"), `Report`, `CompileError`, `Unsupported`, `Construct` and
+   the reason names of "Reasons" (`INTERNAL_ERROR`, `INTERNAL_PANIC`,
+   `LIMIT_READER`, ...), `Options` and `Options::from_llc_args`,
+   `ArgError` and its reasons, `Settings` and `Settings::from_env`,
+   `BitcodeReading`, `Threads`, `ThreadTokens`, `Environment`,
+   `EnvError`, `jobserver`, `coverage::{Record, Outcome, FallbackStatus,
+   Log, FIELDS}`, `InputKind::Module` ("The command line in the facade").
+2. `hod_ir`'s module-building and builder API (`spec/ir.md` §2-§6) and
+   its producer kit (`spec/ir.md` §12).
+3. What this section and "Session" promise of their behaviour.
+
+A change to the surface that can make a caller written against the
+current value fail to build or behave differently bumps `EMBED_API` by
+one and adds a row to the table below, in the same commit: an item
+removed or renamed, a signature changed, a variant added to an enum
+callers match exhaustively (`CompileError`), a field added to a struct
+callers build with a literal (`Options`, `Settings`, `Threads`), a
+promise changed. An addition that cannot break such a caller does not: a
+new function or constant, a reason name, a variant of a
+`#[non_exhaustive]` enum (`Construct`, `ArgError`), a field of a
+`#[non_exhaustive]` struct (`Environment`). The bridge asserts the value
+at compile time (design 0004 §10, answer 8).
+
+| `EMBED_API` | since | the change |
+|---|---|---|
+| 1 | WP-093 | the surface above, `CompileError::Panic` included |
+
+**Threads and re-entrancy.**
+
+- A `Session` is `Send` and is used through `&mut self` and `self`: one
+  thread at a time, any thread. Any number of sessions may live at once,
+  on any threads; they share nothing but the per-thread scratch buffers
+  of code generation (taken or cleared at each use) and `hod_asm`'s set of
+  interned reason names (append-only, independent of any one compile).
+- hod calls back into the producer only through the iterator handed to
+  `unsupported_body`, during that call; a session's calls are never
+  re-entered by hod, and a producer may run several sessions nested.
+- A session starts threads only in `finish` (code generation), only as
+  many as `Settings::threads` allows, never waiting for a token, and joins
+  every one before `finish` returns, also on a refusal or a panic.
+  `compile_with` also reads bodies on such threads ("Threads").
+- A session reads no environment variable. Its only I/O is the
+  jobserver fifo of its `Threads` (opened at its first use) and the
+  `.dwo` file of `-split-dwarf-output`. The environment is read only by
+  `Environment::from_process` and `Settings::from_env`, which a caller
+  calls once per process.
+
+**`Settings` and `Environment` for a caller that is not the shim.**
+`Settings` is how hod compiles (`census`, `threads`, `support`); a
+caller makes it by hand or with `Settings::from_env()` for the shim's
+behaviour. `Environment` holds the rest of what the shim reads, which a
+session never acts on: `strict` (fail with the reason instead of falling
+back), `coverage_log` (append a `coverage::Record` with input kind
+`module`), `fallback`, `bitcode_via`, `in_fallback` and `time_phases`
+(the binary's own). Each is the caller's to honour or to ignore.
+`HOD_COMPRESS_DEBUG_SECTIONS` is applied by the caller too:
+`Options::from_llc_args` never sets `debug_compression` and a session
+reads no variable, so a caller that wants the shim's bytes under it
+writes `options.debug_compression =
+env.compress_debug_sections.unwrap_or_default()` (kiln keeps
+`llvm-objcopy` for `-gz`, design 0004 §10 answer 11).
+`Environment` is `#[non_exhaustive]`: a caller makes one with
+`from_process`, `from_vars` or `default` and sets the fields it wants
+(the driver's tests do so), never with a literal.
+
+**The fallback contract.** Every `Err` of a session's call is an answer
+the caller may fall back on (design 0004 §5: print the module, then
+today's route); nothing was appended to `out`, no token is held, no
+thread runs, and every later call returns the same answer, so the caller
+drops the session. `Unsupported` is a gap (status 2 in strict mode);
+`MalformedInput` and `InvalidOptions` fall back as in hybrid mode;
+`Internal` (`internal-error`) and `Panic` (`internal-panic`) fall back
+too and a harness counts them as hod's bugs. The coverage line's reason
+is the answer's reason name.
+
+**Panics.** Every call of a session (`new`, `with_module`, `end_module`,
+`body`, `unsupported_body`, `finish`) and `compile_with` contains a panic
+of hod's met under it, on the calling thread or on a thread hod started:
+
+- it returns `CompileError::Panic` with the panic's message (displayed
+  `internal error: hod panicked: <message>`); the panic does not unwind
+  into the caller;
+- the session is poisoned by construction: its state (module, accepted
+  bodies, the judge, its settings) is dropped and replaced by an empty
+  session of the same target, which answers the panic from every later
+  call; `module()` then hands out an empty module; with `census` the
+  report's reasons gain `internal-panic`; `finish` returns the panic with
+  the report and leaves `out` as it was;
+- every jobserver token is back in the pool (the guards that hold them
+  give them back as the panic unwinds), every thread hod started has been
+  joined (`std::thread::scope`), and the next session or compile in the
+  process writes the bytes a fresh process writes: no state of a compile
+  outlives it but the scratch buffers and names above.
+
+Not contained: a panic in code the producer calls itself, `hod_ir`'s
+builder through `Session::module()`, a `FunctionBuilder`, the kit. It
+unwinds into the producer, which contains it (design 0004 §4: the
+bridge's `catch_unwind`) and drops the session; dropping is always safe,
+and a session holds no token between its calls. With `panic = "abort"`
+(hod's release profile, the shim) nothing is caught and the process
+ends; a second panic while unwinding aborts, as anywhere in Rust.
+
+**Hooks.** hod installs no panic hook, replaces none and silences none:
+the process's hook runs for a contained panic as for any other (the
+default prints the message to standard error). Recording or silencing it
+is the caller's: kiln's driver keeps a process-wide contained scope its
+hook consults (design 0004 §10, answer 5), and the threads hod starts for
+a call are started and joined inside that call, so inside the scope.
+
+**Cost.** One `catch_unwind` per call of the producer's: nothing per
+instruction; per function, the `body` call's own (with `panic = "abort"`
+a direct call, the body moved once more into the contained closure,
+about 0.2% of a small function's instructions; measured in
+`spec/landed/cli/WP-093.md`).
 
 ## The back half
 
@@ -291,7 +450,12 @@ is produced, partial or otherwise:
    `-x87` to the code generator: refused only in a function with an
    `x86_fp80` value, §5.6.9): a refusal is `attr:target-feature-<class>`,
    with the item as the detail, in the function for an attribute and of
-   the module for `-mattr`.
+   the module for `-mattr`. A function's attributes are judged once per
+   attribute set (`FnAttrsId`) of the module, not once per function, and
+   on x86-64 the set's target (`hod_x64::X64::of_attrs`) is made then
+   too: every function of the set is compiled with it, and
+   `X64::for_function` keeps a target made this way (`own`). The verdict
+   and the code are those of judging each function (WP-166).
 4. Every body is compiled (`hod_cg::compile_function` with `hod_a64`),
    on the threads of "Threads", each with its own scratch state, into
    chunks of whole functions in module order. A `CgError::Unsupported`
@@ -299,8 +463,16 @@ is produced, partial or otherwise:
    `call:...`, ...); a `CgError::Internal` is `CompileError::Internal`.
    When several functions fail, the answer is the one first in module
    order, whatever thread met it first.
-5. `hod_cg::emit_module` lays out the module from the chunks in module
-   order, and `hod_obj::elf::to_vec` writes the object in memory: their
+5. The module emitter (`hod_cg::ModuleEmitter`, as `hod_cg::emit_module`)
+   lays out the module from the chunks in module order, and
+   `hod_obj::elf::to_vec` writes the object in memory. Each chunk is
+   emptied as it is added, so a module's code and relocations are not held
+   twice (WP-166): on the calling thread alone, the functions are compiled
+   in chunks of about `PARALLEL_MIN_INSTS` instructions, each added as soon
+   as it is made and its buffers reused; on several threads, the chunks are
+   added once all are made, each freed as it is added. A refusal of a
+   function (step 4) is the answer before one of the emitter's, as when
+   every chunk was made first. Their
    `Unsupported` is a module refusal; `hod_obj`'s `NulInName` is
    `object:nul-in-name`, `TooLarge` is `limit:object`, anything else
    `Internal`.
@@ -944,6 +1116,7 @@ From the tool:
 | `malformed-input` | `CompileError::MalformedInput` | yes |
 | `invalid-options` | `CompileError::InvalidOptions` | yes |
 | `internal-error` | `CompileError::Internal`: a bug of hod's, not a decline | yes |
+| `internal-panic` | `CompileError::Panic`: hod panicked and contained it ("Embedding"); a bug of hod's, not a decline | yes |
 | `unknown-option` | an unknown option or option value | yes |
 | `usage` | a missing value or a second input; a mistake in hod's own options or environment | the first two; never the last |
 | `input-unreadable` | the input could not be read | no |
@@ -966,7 +1139,7 @@ the text got.
 | status | meaning |
 |---|---|
 | 0 | hod wrote the output (or printed the version or the help) |
-| 1 | an error in hod: usage, I/O, `malformed-input`, `invalid-options`, `internal-error`, the coverage log, the fallback could not be started, the bitcode conversion failed (`bitcode-converter-*`) and no fallback ran |
+| 1 | an error in hod: usage, I/O, `malformed-input`, `invalid-options`, `internal-error`, `internal-panic`, the coverage log, the fallback could not be started, the bitcode conversion failed (`bitcode-converter-*`) and no fallback ran |
 | 2 | the module is unsupported (`CompileError::Unsupported`) and no fallback ran; in strict mode, also a command line rejected as `unknown-option` (WP-021) |
 | other | when the fallback ran: its exit status, whatever it is (including 0, 1 and 2) |
 
@@ -1070,7 +1243,7 @@ no phase covers (the coverage line).
 | `parse` | the module level has been read (`hod_ll::parse_module`, `hod_bc::read_module`) |
 | `classify` | `classify`'s module pass has judged the module |
 | `bodies` | every body has been read and judged (only when the walk did not stop at a reason) |
-| `emission` | every body has been compiled to machine code ("The back half", step 4) |
+| `emission` | every body has been compiled to machine code ("The back half", step 4); compiled on the calling thread alone, each chunk is also laid out as it is made (step 5) |
 | `object` | the module has been laid out and its object written in memory |
 | `convert` | the bitcode converter ended ("Bitcode conversion"), with text or a failure; the attempt that declined the bitcode is in it. Only an invocation that started a conversion has it |
 | `compile` | `hod::compile` returned, with an object or an error: what follows the last of `parse`, `classify`, `bodies` (code generation, today the seam's decline), or the whole call when it declined before reading |
@@ -1112,6 +1285,7 @@ inherits the variable with the rest of the environment; `llc` ignores it.
 |---|---|
 | The facade, Input, Reasons | `crates/hod/src/lib.rs`: `input_kind_detection`, `reasons_in_order`, `construct_names_are_stable_and_distinct`, `module_triple_scan`, `supported_targets`, `error_text`; `crates/hod/src/front.rs`: `reader_errors_and_their_reasons`; `crates/hod/tests/front.rs` (text, the checked-in `data/front.bc`, and bitcode from each installed `llvm-as`): `fixture_first_refusal_and_census`, `body_reasons_name_the_function`, `verify_is_on_the_path_to_code_generation`, `target_reasons`, `reader_refusals`, `installed_llvm_bitcode_agrees_with_text`; `driver.rs`: `census_of_every_reason`; the whole corpus: `cargo xtask corpus reasons` (`docs/status/reasons.md`) |
 | Session | `crates/hod/tests/session.rs`: `seed_corpus_through_the_session_is_compile` (every `tests/ir` module through the public session equals `compile`; bodies last to first give the same object), `the_object_is_appended_and_an_error_leaves_the_buffer`, `what_new_declines_and_an_empty_module`, `census_through_the_session`, `misuse_is_an_error` (every row of the misuse table), `the_unit_plan_comes_before_code_generation`; `crates/hod/src/session.rs`: `rejections_and_their_reasons`, `errors_from_hod_ir`, the `compile_fail` doctest of `finish`; the whole corpus: `crates/hod/tests/session_corpus.rs` (ignored; two builds compared by their dumps) |
+| Embedding | `crates/hod/src/contain/tests.rs`: `a_panic_in_a_session_call_is_contained_and_poisons_the_session` (a forced panic at `end_module`, while a body is judged, on the calling thread and on a worker in code generation, in `finish`; every later call of the poisoned session), `a_panic_under_compile_with_is_contained` (also in the reader's hand-over, and with census), `a_contained_panic_gives_back_every_token` (a private jobserver fifo, both routes: every token taken, all back, no worker running), `the_next_compile_after_a_panic_writes_the_same_bytes` (every seed module, both targets, after a panic at each site); `crates/hod/tests/embed.rs`: `embed_api_is_the_last_row_of_the_table`, `a_session_is_send`; `driver.rs`: `internal_errors_are_not_declines` (`internal-panic`); the `embed` step of `cargo xtask ci` (the build without `readers`) |
 | Bitcode conversion | `crates/hod_cli/src/convert.rs`: `usable_output`, `quoted_line`, `standard_error_is_bounded`, `reasons_and_messages`; `driver.rs`: `converted_bitcode_is_compiled`, `conversion_only_when_bitcode_is_the_reason`; `cli.rs`: `bitcode_is_converted_and_goes_on_as_text`, `conversion_failures` (every row of the result table, with a fallback, in strict mode and with neither; a megabyte of input the converter may not read; a megabyte on its standard error), `converter_that_cannot_be_started`, `bitcode_file_input`, `converter_settings`, `hod_is_not_its_own_converter`, `real_llvm_dis_converts_bitcode` (each installed LLVM; plain and wrapped bitcode; the native census equals the converted one), `real_llvm_dis_of_another_major`; `kiln_e2e.rs` |
 | Options | `crates/hod/src/args.rs`: `defaults`, `everything_kiln_passes`, `spellings`, `spellings_of_the_rest`, `rejected_command_lines`, `rejection_reasons_and_messages`, `non_utf8_arguments`, `version_and_help`; `crates/hod_cli/src/driver.rs`: `unknown_option_without_fallback`, `version_and_help` (also the help text); `crates/hod_cli/tests/cli.rs`: `unknown_options`, `version_and_help` |
 | The command line in the facade | `crates/hod/src/args.rs`: `from_llc_args_is_the_parse`, `from_llc_args_knows_llc_options_only`; `crates/hod/src/env.rs`: `settings_of_the_environment`, `from_env_reads_the_process`; `crates/hod/src/coverage.rs`: `line_format` (field 3 `module`) |

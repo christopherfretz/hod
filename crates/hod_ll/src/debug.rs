@@ -23,6 +23,7 @@ use hod_ir::{
 use crate::Span;
 use crate::error::{LlErrorKind, PResult, fail};
 use crate::index::parse_u64;
+use crate::kw::Kw;
 use crate::lexer::Tok;
 use crate::meta::{MdKind, MdRef};
 use crate::parser::{Parser, ir};
@@ -914,7 +915,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
     /// A location by number, or `null`: `None` for `null`.
     fn loc_ref(&mut self, scratch: &mut DebugScratch) -> PResult<Option<LocId>> {
         let at = self.tok.start;
-        if self.eat_word(b"null") {
+        if self.eat_word(Kw::Null) {
             return Ok(None);
         }
         let node = self.md_ref()?;

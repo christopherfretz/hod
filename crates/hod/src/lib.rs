@@ -19,6 +19,11 @@
 //! ([`args`], [`Options::from_llc_args`]), the environment ([`env`],
 //! [`Settings::from_env`]) with the jobserver client ([`jobserver`]), and
 //! the coverage line ([`coverage`]).
+//!
+//! Feature `readers` (default) brings the readers and [`compile`]; a
+//! program that builds `hod_ir` itself turns it off. What such a program
+//! may rely on, versioned by [`EMBED_API`], and how a panic of hod's is
+//! contained ([`CompileError::Panic`]) is `spec/cli.md` "Embedding".
 
 use std::borrow::Cow;
 use std::fmt;
@@ -26,6 +31,7 @@ use std::path::PathBuf;
 
 pub mod args;
 mod back;
+mod contain;
 pub mod coverage;
 pub mod env;
 mod front;
@@ -42,13 +48,26 @@ pub use back::{
     PARALLEL_MIN_INSTS, ThreadTokens, Threads, generate_with,
 };
 pub use front::{
-    BitcodeReading, INTERNAL_ERROR, LIMIT_READER, READ_BYTES_PER_THREAD, READ_MAX_THREADS,
-    READ_MIN_BODY_BYTES, Report, Settings, compile_with, generate, read_threads,
+    BitcodeReading, INTERNAL_ERROR, INTERNAL_PANIC, LIMIT_READER, READ_BYTES_PER_THREAD,
+    READ_MAX_THREADS, READ_MIN_BODY_BYTES, Report, Settings, generate, read_threads,
 };
+#[cfg(feature = "readers")]
+pub use front::{compile_releasing, compile_with};
 pub use session::Session;
 /// The names of the bodies declined because their meaning depends on being
 /// inlined (`spec/cli.md` "Always-inline").
 pub use session::inlining::reason as inline_reason;
+
+/// The version of the producer surface (`spec/cli.md` "Embedding"): the
+/// items a program that compiles in process uses (the [`Session`] and its
+/// calls, [`Options`], [`Settings`], [`Environment`], [`Report`],
+/// [`CompileError`] and the reason names, [`Threads`], [`coverage`],
+/// [`jobserver`]), `hod_ir`'s module-building and builder API with its
+/// producer kit, and what "Embedding" promises of them. It goes up by one
+/// with every change that can break such a program, recorded in the
+/// spec's table; additions that cannot leave it as it is. kiln's bridge
+/// asserts it at compile time.
+pub const EMBED_API: u32 = 1;
 
 /// What [`compile`] writes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -251,6 +270,13 @@ pub enum CompileError {
     /// construct: `CgError::Internal` (`spec/codegen.md` §10). Nothing was
     /// written; the caller may still hand the module to LLVM.
     Internal(String),
+    /// hod panicked, and the [`Session`] (or [`compile_with`]) contained
+    /// the panic (`spec/cli.md` "Embedding"): a bug of hod's, as
+    /// [`CompileError::Internal`], reason [`INTERNAL_PANIC`]. The message
+    /// is the panic's. Nothing was written, nothing is left running, and
+    /// the session that met it answers this from every later call; the
+    /// caller may hand the module to LLVM.
+    Panic(String),
 }
 
 impl fmt::Display for CompileError {
@@ -260,6 +286,7 @@ impl fmt::Display for CompileError {
             CompileError::MalformedInput(message) => write!(f, "malformed input: {message}"),
             CompileError::InvalidOptions(message) => write!(f, "invalid options: {message}"),
             CompileError::Internal(message) => write!(f, "internal error: {message}"),
+            CompileError::Panic(message) => write!(f, "internal error: hod panicked: {message}"),
         }
     }
 }
@@ -386,11 +413,12 @@ pub fn effective_triple<'a>(input: &'a [u8], options: &'a Options) -> Option<&'a
 ///
 /// # Errors
 /// Why no object was produced.
+#[cfg(feature = "readers")]
 pub fn compile(input: &[u8], options: &Options) -> Result<Vec<u8>, CompileError> {
     compile_with(input, options, &Settings::default(), &mut Report::default())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "readers"))]
 mod tests {
     use super::*;
 
@@ -462,6 +490,20 @@ mod tests {
         assert!(generated.is_ok_and(|o| o.starts_with(b"\x7FELF")));
         let phases: Vec<&str> = report.phases.iter().map(|&(name, _)| name).collect();
         assert_eq!(phases, ["parse", "classify", "bodies", "emission", "object"]);
+        // WP-166: an owned input is freed once read, with the same object;
+        // a borrowed one, or one declined before reading, is left.
+        let object = compile(accepted.as_bytes(), &obj).unwrap();
+        let mut owned = Cow::Owned(accepted.clone().into_bytes());
+        let released = compile_releasing(&mut owned, &obj, &Settings::default(), &mut report);
+        assert_eq!((released.as_ref(), owned.as_ref()), (Ok(&object), &b""[..]));
+        let mut borrowed = Cow::Borrowed(accepted.as_bytes());
+        let kept = compile_releasing(&mut borrowed, &obj, &Settings::default(), &mut report);
+        assert_eq!((kept.as_ref(), borrowed.as_ref()), (Ok(&object), accepted.as_bytes()));
+        let decline = Settings { bitcode: BitcodeReading::Decline, ..Settings::default() };
+        let mut bitcode = Cow::Owned(b"BC\xC0\xDE....".to_vec());
+        let declined = compile_releasing(&mut bitcode, &obj, &decline, &mut report);
+        assert!(declined.is_err());
+        assert_eq!(bitcode.as_ref(), b"BC\xC0\xDE....");
         // MODULE's data layout is not the target's.
         assert_eq!(reason(MODULE, &obj), Construct::UnsupportedTarget);
         // No stated target: hod does not guess the host's.
@@ -584,5 +626,9 @@ mod tests {
             "malformed input: line 3: expected type"
         );
         assert_eq!(CompileError::InvalidOptions("x".into()).to_string(), "invalid options: x");
+        assert_eq!(
+            CompileError::Panic("index out of bounds".into()).to_string(),
+            "internal error: hod panicked: index out of bounds"
+        );
     }
 }

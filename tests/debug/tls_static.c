@@ -29,7 +29,12 @@ int main(void) {
 //@ gdb: continue
 //@ gdb-check: Breakpoint 1, tick (by=1)
 //@ gdb-check: $1 = 6
-//@ gdb-check: $2 = <optimized out>
+// `ticks` is `<optimized out>` on AArch64 (`llc` writes no location for
+// a thread-local variable there) and its value, 1, natively on x86-64
+// (`DW_OP_GNU_push_tls_address`, spec/dwarf.md 6.17); the checks have no
+// per-target form, so only the print is checked here: hod's transcript
+// is compared with llc's for its value on each target (WP-157).
+//@ gdb-check: $2 =
 //@ gdb-check: exited normally
 //@ lldb: breakpoint set --file tls_static.c --line 16
 //@ lldb: run

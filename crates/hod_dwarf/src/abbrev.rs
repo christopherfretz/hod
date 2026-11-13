@@ -347,6 +347,9 @@ pub mod fam {
     // empty DIE of a callee that has no function DIE.
     pub const SUBPROGRAM_MINIMAL_CALLS: usize = 104;
     pub const SUBPROGRAM_EMPTY: usize = 105;
+    // WP-163: the unit of one span whose scopes have range lists
+    // (`spec/dwarf.md` §6.4): `DW_AT_rnglists_base` without `DW_AT_ranges`.
+    pub const COMPILE_UNIT_LISTS: usize = 106;
 }
 
 /// Every family, in code order (`spec/dwarf.md` §6.1 has the same table).
@@ -728,7 +731,8 @@ pub const FAMILIES: &[Family] = &[
         Yes,
         4,
         "WP-057",
-        &[o(0, at::LOW_PC, ADDRX), o(0, at::HIGH_PC, DATA4), o(1, at::RANGES, SEC_OFFSET)],
+        // WP-163: `DW_AT_ranges` is `DW_FORM_rnglistx` (was `sec_offset`).
+        &[o(0, at::LOW_PC, ADDRX), o(0, at::HIGH_PC, DATA4), o(1, at::RANGES, RNGLISTX)],
     ),
     fam(
         "label",
@@ -1181,7 +1185,7 @@ pub const FAMILIES: &[Family] = &[
             s(at::ABSTRACT_ORIGIN, REF4),
             o(0, at::LOW_PC, ADDRX),
             o(0, at::HIGH_PC, DATA4),
-            o(1, at::RANGES, SEC_OFFSET),
+            o(1, at::RANGES, RNGLISTX), // WP-163: was `sec_offset`
             s(at::CALL_FILE, UDATA),
             s(at::CALL_LINE, UDATA),
             o(2, at::CALL_COLUMN, UDATA),
@@ -1196,7 +1200,7 @@ pub const FAMILIES: &[Family] = &[
         &[
             o(0, at::LOW_PC, ADDRX),
             o(0, at::HIGH_PC, DATA4),
-            o(1, at::RANGES, SEC_OFFSET),
+            o(1, at::RANGES, RNGLISTX), // WP-163: was `sec_offset`
             s(at::ABSTRACT_ORIGIN, REF4),
         ],
     ),
@@ -1661,6 +1665,28 @@ pub const FAMILIES: &[Family] = &[
     // call site in a `LineTablesOnly` unit when the callee's function has
     // no DIE of its own (no inlined code): no attributes, no children.
     fam("subprogram (empty)", tag::SUBPROGRAM, No, 1, "WP-150", &[]),
+    // WP-163. 106: family 16 with one code span (`low_pc`/`high_pc`) and
+    // `DW_AT_rnglists_base`, which its scopes' `DW_FORM_rnglistx` lists
+    // need, as `llc` writes it; DWARF 5 only.
+    fam(
+        "compile_unit (scope lists)",
+        tag::COMPILE_UNIT,
+        Optional,
+        2,
+        "WP-163",
+        &[
+            s(at::PRODUCER, STRX),
+            s(at::LANGUAGE, DATA2),
+            s(at::NAME, STRX),
+            s(at::STR_OFFSETS_BASE, SEC_OFFSET),
+            s(at::STMT_LIST, SEC_OFFSET),
+            s(at::COMP_DIR, STRX),
+            s(at::LOW_PC, ADDRX),
+            s(at::HIGH_PC, DATA4),
+            s(at::ADDR_BASE, SEC_OFFSET),
+            s(at::RNGLISTS_BASE, SEC_OFFSET),
+        ],
+    ),
 ];
 
 /// The slots of the general static-member families (54, 55), in `llc`'s
@@ -1835,7 +1861,9 @@ mod tests {
         // WP-150 appended families 104 and 105.
         assert_eq!(BASES[fam::SUBPROGRAM_MINIMAL_CALLS], 11471);
         assert_eq!(BASES[fam::SUBPROGRAM_EMPTY], 11479);
-        assert_eq!(CODE_END, 11480);
+        // WP-163 appended family 106.
+        assert_eq!(BASES[fam::COMPILE_UNIT_LISTS], 11480);
+        assert_eq!(CODE_END, 11482);
         for (index, name) in [
             (fam::CONST_TYPE, "const_type"),
             (fam::TYPEDEF, "typedef"),

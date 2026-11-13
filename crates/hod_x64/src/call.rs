@@ -73,10 +73,23 @@ pub const LANDING_PAD: &str = "x64:landingpad";
 pub const LANDING_PAD_CLAUSE: &str = "x64:landingpad-clause";
 /// `resume` of a value that is not `{ ptr, i32 }`.
 pub const RESUME: &str = "x64:resume";
+/// A `musttail` call with variable arguments of its own before a
+/// forwarded `...` (WP-115, `spec/abi-x64.md` §8.5): `llc` overwrites
+/// those in registers with the forwarded registers and passes `al` as
+/// it arrived, so it gives no meaning to follow.
+pub const MUSTTAIL_VARIABLE_ARGUMENTS: &str = "x64:musttail-variable-arguments";
 
 /// Every name this module refuses with.
-pub const UNSUPPORTED: &[&str] =
-    &[CALL, CALL_BUNDLE, VA_INTRINSIC, VA_ARG, LANDING_PAD, LANDING_PAD_CLAUSE, RESUME];
+pub const UNSUPPORTED: &[&str] = &[
+    CALL,
+    CALL_BUNDLE,
+    VA_INTRINSIC,
+    VA_ARG,
+    LANDING_PAD,
+    LANDING_PAD_CLAUSE,
+    RESUME,
+    MUSTTAIL_VARIABLE_ARGUMENTS,
+];
 
 /// The size of the SysV `va_list`: `{ i32, i32, ptr, ptr }`.
 pub const VA_LIST_BYTES: u32 = 24;
@@ -284,6 +297,12 @@ pub fn call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
         && result != TypeId::VOID
         && cx.target.class_of(cx.types(), result) == Class::Mem
         && has_odd_leaf(cx, result);
+    if musttail
+        && matches!(cx.types().kind(site.fn_type()),
+            TypeKind::Function { params, .. } if site.args().len() > params.len())
+    {
+        return unsupported(MUSTTAIL_VARIABLE_ARGUMENTS);
+    }
     if musttail && is_variadic(cx) {
         forward_variadic_registers(cx, inst)?;
     }

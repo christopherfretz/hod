@@ -84,6 +84,9 @@ pub struct FunctionInput<'p> {
     pub scopes: &'p [ScopeRow],
     /// Its variables and labels.
     pub vars: &'p [LocalRow],
+    /// Its calls, in code order, when its subprogram describes them
+    /// (WP-113, §6.19); empty otherwise.
+    pub calls: &'p [crate::call_sites::CallSiteInput],
 }
 
 /// A function's facts for the writer, by its subprogram DIE.
@@ -94,6 +97,8 @@ pub(crate) struct FnData {
     pub(crate) frame_base: u16,
     /// The `this` parameter's DIE, or `NONE`.
     pub(crate) object_pointer: u32,
+    /// Whether it describes its calls (WP-113, §6.19).
+    pub(crate) calls: bool,
 }
 
 /// What a local DIE is located by.
@@ -227,13 +232,17 @@ const fn has(flags: DiFlags, f: DiFlags) -> bool {
 /// in a way hod does not yet write, and is refused.
 /// `DIFlagThunk` (kiln's virtual thunks) changes nothing in `llc`'s DIE
 /// (WP-087, checked with `llc` 19 and 22).
-pub(crate) const DEF_FLAGS: u32 =
-    DiFlags::PROTOTYPED.0 | DiFlags::ARTIFICIAL.0 | DiFlags::NO_RETURN.0 | DiFlags::THUNK.0;
+/// `DIFlagAllCallsDescribed` is written since WP-113 (§6.19).
+pub(crate) const DEF_FLAGS: u32 = DiFlags::PROTOTYPED.0
+    | DiFlags::ARTIFICIAL.0
+    | DiFlags::NO_RETURN.0
+    | DiFlags::THUNK.0
+    | DiFlags::ALL_CALLS_DESCRIBED.0;
 pub(crate) const DEF_SP_FLAGS: u32 =
     SpFlags::DEFINITION.0 | SpFlags::LOCAL_TO_UNIT.0 | SpFlags::OPTIMIZED.0;
 
 /// `dwarf::isC`, as the type graph has it.
-const fn is_c(language: u16) -> bool {
+pub(crate) const fn is_c(language: u16) -> bool {
     matches!(language, 0x01 | 0x02 | 0x0c | 0x10 | 0x1d | 0x2c)
 }
 
@@ -356,6 +365,7 @@ impl<'a> UnitPlan<'a> {
             s.scope_of[sc.node.index()] = NONE;
         }
         self.fn_scratch = s;
+        let result = result.and_then(|d| self.add_call_sites(sp_id, &sp, d, f.calls, f.code.size)); // WP-113: §6.19
         self.record_entities(f, result.is_ok()); // WP-094: §6.13
         result.map(|_| ())
     }
@@ -374,7 +384,6 @@ impl<'a> UnitPlan<'a> {
         if !sp.sp_flags.contains(SpFlags::DEFINITION) || sp.unit != Some(self.unit) {
             return Err(unsupported(sp_id, "debug:subprogram-not-definition"));
         }
-        crate::call_sites::check(sp).map_err(|name| unsupported(sp_id, name))?; // WP-098: §6.14
         if !sp.thrown_types.is_empty() || sp.sp_flags.0 & !DEF_SP_FLAGS != 0 {
             return Err(unsupported(sp_id, "debug:subprogram-attribute"));
         }
@@ -468,6 +477,7 @@ impl<'a> UnitPlan<'a> {
             code: f.code,
             frame_base: f.frame_base,
             object_pointer: NONE,
+            calls: false,
         });
         self.code_addrs += 1;
         self.scope_dies(f, func, die, s)?;
@@ -813,6 +823,7 @@ impl<'a> UnitPlan<'a> {
         }
         self.finish_entities()?; // `finishEntityDefinitions` (WP-094: §6.13)
         self.finish_types()?;
+        self.seal_call_sites()?; // WP-113: §6.19
         self.seal_inline()?;
         self.seal_tables();
         Ok(())
@@ -879,7 +890,9 @@ impl<'a> Writer<'a> {
             };
             if let Some(t) = plan.definition_type(sp_id, sp)? {
                 let (size, op) = (fd.code.size, fd.object_pointer);
-                return self.typed_definition_die(plan, sp_id, sp, t, index, size, op, children);
+                let calls = fd.calls;
+                return self
+                    .typed_definition_die(plan, sp_id, sp, t, index, size, op, calls, children);
             }
             let spec = plan.die_of(decl).ok_or(bad(sp_id, "declaration"))?;
             let file = sp.file.and_then(|f| plan.file_index(f));
@@ -891,7 +904,8 @@ impl<'a> Writer<'a> {
             let link = !sp.linkage_name.is_empty() && sp.linkage_name != d.linkage_name;
             let mask =
                 b(fd.object_pointer != NONE) | b(new_file) << 1 | b(new_line) << 2 | b(link) << 3;
-            self.abbrev(code(fam::SUBPROGRAM_MEMBER, mask, children));
+            let family = crate::call_sites::family(fam::SUBPROGRAM_MEMBER, fd.calls);
+            self.abbrev(code(family, mask, children));
             self.addr_attrs(index, fd.code.size);
             self.exprloc();
             if fd.object_pointer != NONE {
@@ -919,7 +933,8 @@ impl<'a> Writer<'a> {
         let name = !sp.name.is_empty();
         if !proto && !art && !nr && name {
             let mask = b(link) | b(decl.is_some()) << 1 | b(ty.is_some()) << 2 | b(ext) << 3;
-            self.abbrev(code(fam::SUBPROGRAM, mask, children));
+            let family = crate::call_sites::family(fam::SUBPROGRAM, fd.calls);
+            self.abbrev(code(family, mask, children));
         } else {
             let mask = b(link)
                 | b(name) << 1
@@ -929,7 +944,8 @@ impl<'a> Writer<'a> {
                 | b(art) << 5
                 | b(ext) << 6
                 | b(nr) << 7;
-            self.abbrev(code(fam::SUBPROGRAM_ANY, mask, children));
+            let family = crate::call_sites::family(fam::SUBPROGRAM_ANY, fd.calls);
+            self.abbrev(code(family, mask, children));
         }
         self.addr_attrs(index, fd.code.size);
         self.exprloc();

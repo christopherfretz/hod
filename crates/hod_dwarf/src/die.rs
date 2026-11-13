@@ -90,6 +90,9 @@ pub(crate) enum Kind {
     AbstractBlock,
     /// An inlined subroutine; its node is the inlined `DISubprogram`.
     Inlined,
+    /// A call site (WP-113, §6.19; not keyed); its node is its
+    /// function's `DISubprogram`.
+    CallSite,
 }
 
 /// One DIE of the plan: the node it is written from and its parent's
@@ -157,6 +160,10 @@ pub struct UnitPlan<'a> {
     pub(crate) scope_dies: crate::scope::ScopeDies,
     /// Abstract instances and functions' statics (WP-085).
     pub(crate) inline: crate::inline::Inline,
+    /// The DWARF version: 4 or 5 (WP-114, §6.20).
+    pub(crate) version: u16,
+    /// Call sites (WP-113, §6.19).
+    pub(crate) calls: crate::call_sites::Calls,
 }
 
 fn md5_of(f: &DiFile<'_>) -> Option<[u8; 16]> {
@@ -297,6 +304,8 @@ impl<'a> UnitPlan<'a> {
             fn_scratch: crate::func::FnScratch::default(),
             scope_dies: crate::scope::ScopeDies::new(module),
             inline: crate::inline::Inline::new(bodies),
+            version: module.map_or(5, crate::dwarf4::version_of), // WP-114: §6.20
+            calls: crate::call_sites::Calls::default(),
         };
         plan.push(unit, 0, Kind::Unit);
         let mut chain = Vec::new();
@@ -753,7 +762,7 @@ impl<'a> Writer<'a> {
         span_base
     }
 
-    fn unit(&mut self, u: &UnitInput<'_, 'a>, symbols: u32) -> Result<(), Error> {
+    pub(crate) fn unit(&mut self, u: &UnitInput<'_, 'a>, symbols: u32) -> Result<(), Error> {
         let plan = u.plan;
         let n = plan.dies.len();
         self.addr_of.clear();
@@ -1017,6 +1026,7 @@ impl<'a> Writer<'a> {
                 | Kind::Inlined,
                 _,
             ) => self.inline_die(plan, die, d.kind, d.node, children)?,
+            (Kind::CallSite, _) => self.call_site_die(plan, die)?, // WP-113: §6.19
             (Kind::Unit, _) => unreachable!("the unit DIE is written by `unit`"),
             (_, node) => self.type_die(plan, die, d, node, children)?,
         }
@@ -1043,9 +1053,7 @@ pub fn write_debug_info(
     line: SectionId,
     units: &[UnitInput<'_, '_>],
 ) -> Result<DieSections, Error> {
-    if units.is_empty() {
-        return Err(Error::NoUnit);
-    }
+    crate::dwarf4::check_dwarf5(units)?; // `NoUnit`, and WP-114: §6.20
     if line.index() >= obj.section_count() {
         return Err(Error::Object(hod_obj::Error::TooLarge(hod_obj::Limit::Sections)));
     }

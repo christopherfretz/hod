@@ -480,8 +480,8 @@ const DEBUG_ROWS: [SupportRow; 5] = [
     a64(
         "debug:dwarf-version",
         DEBUG,
-        "a compile unit with debug information and a `Dwarf Version` other than 5 (absent is \
-         LLVM's 4): `hod_dwarf` writes DWARF 5 only",
+        "a compile unit with debug information and a `Dwarf Version` other than 4 and 5 (absent \
+         is LLVM's 4): `hod_dwarf` writes DWARF 5 and, since WP-114, 4 when the flag says so",
     ),
     row("debug:subprogram", ON, ON, "a function with a body and a `DISubprogram` (WP-087)"),
     row(

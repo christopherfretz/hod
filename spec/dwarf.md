@@ -783,6 +783,14 @@ exclusive `low_pc` forms), and pin the bytes of one entry.
 | 93 | `skeleton_unit` (no split unit): `stmt_list`, `str_offsets_base`, `comp_dir`, `producer`, `language`, `name`, `low_pc`, `high_pc` (0), `addr_base` (1) | 4 | 10724 | WP-062 |
 | 94 | `skeleton_unit` (no split unit, ranges): 93's fixed attributes, `low_pc`, `ranges`, `addr_base`, `rnglists_base` | 1 | 10728 | WP-062 |
 | 95 | `compile_unit` (split, `.debug_info.dwo`): `producer`, `language`, `name`, `dwo_name`, children optional | 2 | 10729 | WP-062 |
+| 96 | `subprogram` (definition, calls, §6.19): family 4 with `call_all_calls` after `frame_base` | 32 | 10731 | WP-113 |
+| 97 | `subprogram` (any, calls): family 69 with `call_all_calls` | 512 | 10763 | WP-113 |
+| 98 | `subprogram` (member definition, calls): family 70 with `call_all_calls` | 32 | 11275 | WP-113 |
+| 99 | `subprogram` (specification, typed, calls): family 35 with `call_all_calls` after `object_pointer` | 16 | 11307 | WP-113 |
+| 100 | `subprogram` (specification, any, calls): family 86 with `call_all_calls` after `object_pointer` | 64 | 11323 | WP-113 |
+| 101 | `subprogram` (of an abstract instance, calls): family 74 with `call_all_calls` | 4 | 11387 | WP-113 |
+| 102 | `call_site`: `call_origin` (0), `call_target_clobbered` (1), `call_tail_call` and `call_pc` (2), `call_return_pc` (3) | 16 | 11391 | WP-113 |
+| 103 | `subprogram` (declaration, C): `linkage_name` (0), `name`, decl (1), `prototyped`, `type` (2), `declaration`, `external` (3), `noreturn` (4), children optional | 64 | 11407 | WP-113 |
 
 Families 2 to 45 that WP-058 owns are used for the common shape of each
 kind (they keep the codes the reserved shapes promised); the "any"
@@ -798,7 +806,7 @@ WP-057 uses its reserved families 0 (`formal_parameter`), 1 (local
 `low_pc`/`high_pc` or `ranges` as `DW_FORM_sec_offset`) and 39 (`label`),
 and appends 69 to 71 for the other shapes.
 
-`CODE_END` is 10731 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085, 10631 after WP-059, 10647 after WP-087, 10655 after WP-094, 10719 after WP-098). Since the core families come last, their codes take
+`CODE_END` is 11471 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085, 10631 after WP-059, 10647 after WP-087, 10655 after WP-094, 10719 after WP-098, 10731 after WP-062). Since the core families come last, their codes take
 two ULEB bytes where `llc`'s take one (the cost is in §7.2; open question
 7).
 
@@ -944,7 +952,7 @@ reports a `debug:*` name as itself and §6.5's unnamed shapes as
 |---|---|
 | `debug:subprogram-not-definition` | a function whose `DISubprogram` is not a definition of this unit |
 | `debug:subprogram-attribute` | flags beyond prototyped, artificial, noreturn, local-to-unit, optimized; thrown types |
-| `debug:call-sites` | `DIFlagAllCallsDescribed`: call-site entries need the code's return addresses (WP-098, §6.14) |
+| `debug:call-sites`, `debug:call-sites-line-tables`, `debug:call-site-*` | what of `DIFlagAllCallsDescribed` hod does not write: a unit that is not DWARF 5, a line-tables-only unit with inlined code, and the callees and calls §6.19 lists (call-site entries are written since WP-113) |
 | `debug:subprogram-scope` | a definition scoped in something that is not a namespace or the unit |
 | `debug:subprogram-twice` | two functions with one `DISubprogram` |
 | `debug:out-of-line-definition` | a definition with a `declaration:` not scoped in a class (WP-059) |
@@ -1120,6 +1128,11 @@ is the whole list of permitted differences:
     under an empty `DW_TAG_subprogram` of its own, after the abstract
     instance (`llc` 22, and hod, under the abstract instance). `llc`
     19's tree of `statics.cpp` is not compared.
+- **call-site entries** (WP-113, §6.19): `DW_AT_call_return_pc`,
+  `DW_AT_call_pc` and `DW_AT_call_target_clobbered`'s register are
+  masked (each address is checked against the disassembly instead);
+  `llc` 19's `DW_AT_call_target` is compared as `llc` 22's
+  `DW_AT_call_target_clobbered`;
 - **what code generation changes in the tree** (WP-094, §6.13;
   `crates/hod_a64/tests/dies_decline.rs` holds each to exactly this
   shape, for clang 19, clang 22 and kiln++):
@@ -1580,7 +1593,8 @@ unit's `LineTablesOnly` and compressed sections are WP-061's.
 keeps them, its code generator being absent). One row is new and refused
 on both: `debug:dwarf-version`, a compile unit that is not `NoDebug` in a
 module whose `Dwarf Version` is not 5. No flag is LLVM's DWARF 4 (`llc`
-22 writes version 4 then); `hod_dwarf` writes 5 only.
+22 writes version 4 then). Since WP-114 the flag 4 is written too
+(§6.20); 2, 3 and no flag stay refused.
 
 **Declines, not errors** (`crates/hod/src/back.rs`, the bridge): the
 module's `ModuleEmitter` is made before any function is compiled, so
@@ -1701,9 +1715,11 @@ children, nested as they are inlined. Each inlined function has an
 abstract instance of only `name` and `DW_AT_inline`; a function that is
 also out of line has `DW_AT_abstract_origin` in place of the name. No
 types, parameters, variables or blocks. A function with
-`DIFlagAllCallsDescribed` (`-O1 -gmlt`) stays refused (as
-`debug:call-sites` since WP-098, §6.14): its call-site entries need the
-generated code's return addresses. What no producer writes in such a unit stays
+`DIFlagAllCallsDescribed` (`-O1 -gmlt`) was refused (as
+`debug:call-sites` from WP-098, §6.14); since WP-113 a unit without
+inlined code is written (`llc` writes no function DIE there either), and
+one with inlined code is refused as `debug:call-sites-line-tables`
+(§6.19). What no producer writes in such a unit stays
 `debug:line-tables-inlined`: a function with inlined code whose
 subprogram has a declaration, template parameters, retained nodes or a
 subroutine type with elements.
@@ -1725,7 +1741,7 @@ writer's (`tests/early.rs`):
 |---|---|
 | `debug:subprogram-not-definition` | a function whose subprogram is not a definition |
 | `debug:subprogram-attribute` | thrown types, `spFlags` or (without a declaration) flags hod does not write |
-| `debug:call-sites` | `DIFlagAllCallsDescribed` (WP-098, §6.14) |
+| `debug:call-sites-line-tables` | `DIFlagAllCallsDescribed` with inlined code (WP-113, §6.19) |
 | `debug:variable-without-type`, `debug:variable-alignment` | a variable record's variable (§6.4, §6.12) |
 | `debug:fragment`, `debug:expression` | a variable record's expression |
 | `debug:label-attribute` | no longer refused (WP-098, §6.14) |
@@ -1836,16 +1852,17 @@ parameter twice: the second declaration was the `phi`'s.
   every definition of such a unit `DIFlagAllCallsDescribed`, and for
   that flag `llc` writes `DW_AT_call_all_calls` and one `DW_TAG_call_site`
   per call (`call_origin`, `call_return_pc`), which needs the code's
-  call return addresses. hod refuses it as **`debug:call-sites`**
+  call return addresses. hod refused it as **`debug:call-sites`**
   (`hod_dwarf::DEBUG_CALL_SITES`, before code generation as well),
   narrowed from `debug:subprogram-attribute`, whether the definition has
-  a declaration or not. Before WP-098 a member definition (one with a
+  a declaration or not; WP-113 writes the entries (§6.19), and the name
+  is left for a unit that is not DWARF 5. Before WP-098 a member definition (one with a
   declaration) with the flag was written without its call sites. The
   corpus's optimized modules also have `#dbg_value`
   (`debug:dbg-value`).
 
-**DWARF 4** stays `debug:dwarf-version` (§6.12); the measured plan is in
-`spec/landed/dwarf/WP-098.md`.
+**DWARF 4** stayed `debug:dwarf-version` (§6.12) until WP-114 wrote it
+(§6.20); the measured plan was `spec/landed/dwarf/WP-098.md`.
 
 **The census** (`scripts/debug-census.sh`, regenerated: 123 modules, 44
 libc++ tests, `stl.cpp` and four bench sources by clang 19, clang 22 and
@@ -1943,7 +1960,7 @@ two module-level ones are checked by the facade before code generation,
 | `debug:split-dwarf-inlining` | `splitDebugInlining: true` (LLVM's default when the field is omitted) and inlined code: `llc` then repeats the inlined subroutines in the skeleton |
 | `debug:split-reduced-unit` | a `LineTablesOnly` unit with function DIEs in split mode (today refused earlier as `debug:line-tables-inlined`; kept for when that is lifted) |
 | `debug:split-dwarf-name` | a unit with a split unit and no `splitDebugFilename`, or (facade) a name that is not `-split-dwarf-file`'s: hod writes the unit's name, `llc` the option's |
-| `debug:split-dwarf-4` | (facade) split DWARF with `Dwarf Version` below 5 (GNU fission: `DW_AT_GNU_dwo_name`, `DW_FORM_GNU_addr_index`); today `debug:dwarf-version` refuses such a module first |
+| `debug:split-dwarf-4` | (facade) split DWARF with `Dwarf Version` below 5 (GNU fission: `DW_AT_GNU_dwo_name`, `DW_FORM_GNU_addr_index`); since WP-114 version 4 is written (§6.20) and this name refuses it with split DWARF |
 
 **Hooks** (one call each): `UnitPlan::build` calls `split::check_unit`
 (`die.rs`); `DebugLines::finish` calls `write_unit_dies` with the
@@ -2054,8 +2071,8 @@ The same writer and the same bridge for x86-64; what the target changes
 is in `crates/hod_dwarf/src/x86_64.rs`, and `classify` lets `-g` modules
 through for x86-64 (the rows `debug:module-flags`, `debug:subprogram`,
 `debug:slot-variables`, `debug:locations` are `ON` for both targets;
-`debug:dwarf-version` stays AArch64's: DWARF 4 is refused by name on
-x86-64 too).
+`debug:dwarf-version` stays AArch64's: versions other than 4 and 5 are
+refused by name on x86-64 too; version 4 is written on both, §6.20).
 
 **Register numbers** (System V psABI, "DWARF Register Number Mapping"):
 `rax` 0, `rdx` 1, `rcx` 2, `rbx` 3, `rsi` 4, `rdi` 5, `rbp` 6, `rsp` 7,
@@ -2200,6 +2217,194 @@ Evidence: `xtask/tests/debug_x64.rs`, `tests/debug/x64_places.c`,
 Evidence: `crates/hod_a64/tests/dies_followups.rs`,
 `crates/hod_a64/tests/dies_label.rs`, `xtask/tests/debug_post_index.rs`,
 `spec/landed/dwarf/WP-111.md`.
+
+### 6.19 Call-site entries (implemented, WP-113)
+
+A definition whose subprogram has `DIFlagAllCallsDescribed` (clang sets
+it on every definition when optimizing: `-O1` and above, with
+`-Xclang -disable-llvm-passes` too; kiln does not set it) describes its
+calls, as `llc` 19 and 22 write them at `-O0`
+(`DwarfDebug::constructCallSiteEntryDIEs`, DWARF 5 forms):
+
+- **The flag.** `DW_AT_call_all_calls` (`flag_present`) on the
+  subprogram, right after `DW_AT_frame_base` (and `DW_AT_object_pointer`
+  when it has one), before the name: families 96 to 101 are families 4,
+  69, 70, 35, 86 and 74 with that slot, same option bits
+  (`call_sites::family`). An abstract instance has no flag; the
+  concrete DIE of an inlined function that is also out of line has it.
+- **One `DW_TAG_call_site` per call instruction** an IR `call` or
+  `invoke` became (family 102), the subprogram's last children: after
+  its parameters, variables, blocks, inlined subroutines and
+  `unspecified_parameters`, before its template parameters. A call
+  inside a block or an inlined subroutine is still a child of the
+  subprogram. They are in the order the code generator lowered the
+  calls (the IR's), which is not address order: a `musttail` call's
+  branch is at its tail exit after the body (`spec/codegen.md` §5.4),
+  and its entry keeps the call's place.
+  - a direct call: `DW_AT_call_origin` (`ref4`), then
+    `DW_AT_call_return_pc` (`addrx`): the address right after the call
+    instruction (`bl`, `call`);
+  - an indirect call: `DW_AT_call_target_clobbered`, `DW_OP_reg<n>` of
+    the register the call goes through (`llc` 19 writes the attribute
+    as `DW_AT_call_target`), then `DW_AT_call_return_pc`;
+  - a `musttail` call: the origin or the target, `DW_AT_call_tail_call`,
+    and `DW_AT_call_pc` (`addrx`), the address of the branch (`b`, `br`,
+    `jmp`); no return address.
+  No call site has parameters (`DW_TAG_call_site_parameter`): `llc` writes
+  them only from `-O1` code (`-emit-call-site-info`), never at `-O0`.
+- **Which calls have one** (`llc`'s rule: a call whose callee is a
+  `GlobalAddress` with a `DISubprogram`, or a register): a call of a
+  function of the module, defined or declared, that has a subprogram;
+  every indirect call. None: a function without a subprogram, an alias,
+  what the code generator calls on its own (the runtime, `memcpy`,
+  `__tls_get_addr`, a libcall an intrinsic becomes: external symbols to
+  `llc`), and an intrinsic with no call.
+- **The origin** is `getOrCreateSubprogramDIE` of the callee:
+  - a definition of this unit: its concrete DIE (never its abstract
+    instance, which only an inlined scope finds). A callee defined later
+    in the module gets its DIE at the call, in its scope (after a member
+    function's declaration DIE), and its attributes when its own
+    function is added (`call_sites::call_origin`, `Inline::mark_early`).
+    A callee whose subprogram is a definition with no code in this unit,
+    or in another unit, is refused (`debug:call-site-origin`);
+  - a declaration: its declaration DIE, made in its scope at the first
+    call (a namespace is made then, a class member is the class's
+    declaration DIE). A C declaration has `DW_AT_prototyped` (family
+    103: family 3's slots, the flag, and `DW_AT_noreturn`).
+
+The code generator reports each call (`hod_cg::debug_calls`): the
+engine arms a row before it asks the target for the call, and each
+target says where the call returns (its `emit_call`, right after the
+call instruction) and where a tail exit branches (right before the
+branch). A row a target did not complete is an internal error: an
+address is never guessed. `hod_dwarf` checks every address is inside the
+function and that the returning calls are in code order
+(`debug:call-site-pc` otherwise).
+
+A tail exit of a function that describes its calls also gets a line
+row at its start with the `musttail` call's location, as `llc` gives the
+exit sequence the call's location: lldb shows a tail call's artificial
+frame at the line of the row at its `DW_AT_call_pc` (line 0 before).
+
+**Refused**, by name:
+
+| name | what |
+|---|---|
+| `debug:call-sites` | the flag in a unit that is not DWARF 5 (`llc` writes DWARF 4's `DW_TAG_GNU_call_site` and `DW_AT_GNU_*` forms there) |
+| `debug:call-sites-line-tables` | the flag in a `LineTablesOnly` unit with inlined code: `llc` writes the flag and call sites under the minimal subprogram, and full declaration DIEs at the unit's level (without inlined code it writes no function DIE, and neither does hod, §6.10) |
+| `debug:call-site-origin` | a callee whose DIE `llc` would make in another unit, or a definition without code here |
+| `debug:call-site-intrinsic` | a call of an address the lowering computed (a coroutine's resume or destroy, WP-105), and a coroutine body (`llc` describes `CoroSplit`'s clones) |
+| `debug:call-site-pc` | an address outside the function, or returning calls out of order (a bug of the code generator, declined) |
+
+**Permitted differences** (§6.7): the addresses and the target register
+are masked in the tree comparison (hod's code is not `llc`'s; hod calls
+through `x16` on AArch64 and `r11` on x86-64, `llc` through any
+register); a `tail` call `llc` turns into a sibling call (only when
+optimizing) is an ordinary call in hod's code, so its entry is an
+ordinary one. hod writes no sibling call at `-O0`, and neither does
+`llc`.
+
+Evidence: `crates/hod/tests/dwarf_call_sites.rs` (the trees of
+`tests/data/call_sites/` by clang 19, clang 22 and kiln++ against `llc`
+19 and 22 on both targets, every address of both writers checked
+against the disassembly), `crates/hod_dwarf/src/call_sites.rs`'s unit
+tests, `tests/debug/call_sites.c` (tail calls, AArch64) and
+`call_sites_direct.c` (both targets), `spec/landed/dwarf/WP-113.md`.
+
+### 6.20 DWARF version 4 (implemented, WP-114)
+
+A module whose flag `"Dwarf Version"` is `i32 4` (clang's and kiln++'s
+`-gdwarf-4`) is written as `llc` 19 and 22 write it. Every other version
+is refused by `classify` as `debug:dwarf-version`: 2, 3, and **no flag**
+(for which `llc` also writes 4, the same tree as flag 4; hod's own tests
+write IR without the flag, so it stays a refusal rather than a silent
+version change). Split DWARF with version 4 (`-gsplit-dwarf -gdwarf-4`,
+GNU fission) is refused as `debug:split-dwarf-4` (§6.15, the facade's
+check and `hod_dwarf::split`).
+
+**Design: a transcoder.** `UnitPlan::version` is 4 or 5
+(`dwarf4::version_of`). The DIE writer is unchanged: a version 4 unit is
+written by `Writer::unit` as DWARF 5 into scratch buffers, then
+rewritten attribute by attribute (`crates/hod_dwarf/src/dwarf4.rs`,
+`Out::unit`), driven by the abbreviation table of §6.1: the family of
+each code (`BASES`) and its mask give the slots and their forms, so the
+walk needs no knowledge of what the DIE means. Abbreviation **codes are
+the same** as DWARF 5's; the version 4 table (written for the codes the
+units use) gives each the version 4 tag and forms and omits the
+attributes version 4 does not have. A family appended after
+`fam::SPLIT_COMPILE_UNIT` is refused as `debug:dwarf-4-shape` until its
+version 4 shape is checked against `llc` (WP-113's call sites, whose
+version 4 form is `DW_TAG_GNU_call_site`, are such). DWARF 5 never
+enters the module: the hooks are `die.rs` (`UnitPlan::version`, and
+`check_dwarf5`, which refuses a version 4 plan in the version 5 writer),
+`split.rs` (`write_unit_dies` hands version 4 units to
+`write_debug_info4`), `types.rs` (the subrange's default lower bound)
+and the bridge's `UnitPlan::line_program`.
+
+**What changes against §6.2–§6.19** (each found by comparing `llc`'s
+version 4 and version 5 trees of the same IR: `tests/debug`, the corpus
+and the census, both targets):
+
+| | DWARF 5 | DWARF 4 |
+|---|---|---|
+| unit header | 12 bytes: version 5, `DW_UT_compile`, address size, abbreviation offset | 11 bytes: version 4, abbreviation offset (`ABS32` against `.debug_abbrev`), address size 8 |
+| strings | `DW_FORM_strx1..4` into `.debug_str_offsets` | `DW_FORM_strp` (`ABS32` against `.debug_str`, addend the string's offset); no `.debug_str_offsets` |
+| addresses | `DW_FORM_addrx`, `DW_OP_addrx` into `.debug_addr` | `DW_FORM_addr`, `DW_OP_addr`, 8 bytes with the entry's relocation (`ABS64`; x86-64 TLS keeps `DW_OP_const8u` + `R_X86_64_DTPOFF64` + `DW_OP_GNU_push_tls_address`); no `.debug_addr` |
+| ranges | `DW_FORM_rnglistx` / `sec_offset` into `.debug_rnglists` | `DW_FORM_sec_offset` into `.debug_ranges` (`ABS32`) |
+| unit attributes | `str_offsets_base`, `addr_base`, `rnglists_base` | none of the three |
+| static data members | `DW_TAG_variable` (families 40, 54) | `DW_TAG_member`, same attributes |
+| deleted member functions | `DW_AT_deleted` | not written |
+| file numbers | `decl_file`, `call_file` and the line program's files from 0 | the same files from 1 (index + 1) |
+| default lower bound | §6.8 (`default_lower_bound`) | -1 for languages `DW_LANG_OpenCL` (0x15) and above, so `llc` writes `DW_AT_lower_bound` wherever the IR has `lowerBound` (`dwarf4::default_lower_bound`) |
+
+**`.debug_ranges`** (`Out::ranges_list`): a list is pairs of 8-byte
+start and end, then 16 zero bytes. A block's list, in a unit with one
+code span (the unit has `low_pc`), is offsets from that span's start
+with no relocation; in a unit with several spans, every entry is an
+absolute address with an `ABS64` relocation (the symbol of the span
+plus the offset), as is the unit's own list (one pair per merged span,
+§6.4). DIE expressions with `DW_OP_addrx` are rewritten to `DW_OP_addr`
+and their relocations moved; an expression whose length changes and
+that holds a branch (`DW_OP_skip`, `DW_OP_bra`) is refused as
+`debug:dwarf-4-shape` (no producer writes one).
+
+**The version 4 line table** (`line.rs`, `LineProgram::for_version`,
+`dwarf4::write_line_header`): version 4, `header_length`,
+`minimum_instruction_length` 1, `maximum_operations_per_instruction` 1,
+`default_is_stmt` 1, `line_base` -5, `line_range` 14, `opcode_base` 13
+and its 12 lengths; `include_directories` as NUL-terminated strings
+(directories 1 and up of §4.4's table; directory 0 is the unit's
+`comp_dir` and is not written), ended by an empty string; `file_names`
+as name, ULEB directory, mtime 0, length 0, ended by a 0 byte; files are
+numbered from 1 (`DW_LNS_set_file` is the file + 1). No MD5, no source,
+no `.debug_line_str`: when every unit of the object is version 4,
+`LineSections::line_str` is `.debug_line` itself, which no relocation
+names.
+
+**Permitted differences**: §6.7's, unchanged. Two show up differently in
+version 4: the `sret` location list is in `.debug_loc` (`llc`'s unit has
+no `loclists_base` and its `.debug_info` a relocation against
+`.debug_loc`; the harness's `trees` recognises both,
+`xtask/src/debug/trees.rs`); hod's file table holds every `DiFile`, so
+its `file_names` can name files `llc`'s does not.
+
+**Errors**: `debug:dwarf-4-shape` (`hod_dwarf::DWARF_4_SHAPE`), a family
+or an expression whose version 4 shape is not checked;
+`debug:split-dwarf-4` (`hod_dwarf::split::SPLIT_DWARF_4` and the
+facade), split DWARF with version 4; `debug:dwarf-version` (`classify`),
+any version other than 4 and 5.
+
+**Speed**: DWARF 5 does not pass through the module (its objects are
+byte-identical to before WP-114 on every `-g` module of the corpus, the
+census and the test sources). Version 4 costs the version 5 writer plus
+one linear pass over the unit's bytes, about 1.3 times version 5's cost
+per DIE; see `spec/landed/dwarf/WP-114.md`.
+
+Evidence: `xtask/tests/debug_dwarf4.rs` (trees, forms, line headers,
+ranges, lower bounds, sessions on both targets), `tests/debug/dwarf4_*`
+(the twins of nine debugger tests and `dwarf4_shapes.cpp`),
+`crates/hod/tests/dwarf4.rs` (the facade's refusals and objects),
+`spec/landed/dwarf/WP-114.md`.
 
 ## 7. Speed and memory
 
@@ -2740,7 +2945,7 @@ the command line.
 
 **`classify`'s `debug:*` refusals** dropped on AArch64 with WP-087
 (§6.12); `debug:dwarf-version` replaces them for units other than DWARF
-5 (open question 6).
+5 and (since WP-114, §6.20) 4.
 
 ## 10. Follow-on work packages
 
@@ -2780,6 +2985,7 @@ Rows for `docs/BACKLOG.md` (ids to be assigned; "this" is WP-052):
    lldb read. Write version 4 only if a consumer that needs it shows up
    (`hod_ir` maps the flag as `ModuleProps::dwarf_version`,
    `crates/hod_ir/src/props.rs:140`, so the bridge can refuse or warn).
+   Answered (WP-114): version 4 is written as `llc` writes it (§6.20).
 7. Every code from 128 up takes two ULEB bytes, where `llc`'s codes take
    one. That covers the core families (698 to 753) and most type families
    (`base_type` at 129, and the cv-qualified, reference and composite

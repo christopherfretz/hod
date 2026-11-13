@@ -530,9 +530,8 @@ const LINKAGE: [SupportRow; Linkage::ALL.len()] = [
 const VISIBILITY: [SupportRow; 2] =
     [both("visibility:hidden", ON, ""), both("visibility:protected", ON, "")];
 
-// On x86-64 these rows are the symbol and its definition (WP-143); an
-// access is `intrinsic:llvm.threadlocal.address`, or `x64:todo:tls` in
-// `hod_x64`, until WP-134.
+// The symbol, its definition (WP-143 on x86-64) and every access to it
+// (WP-073 on AArch64, WP-134 on x86-64).
 const TLS_ROWS: [SupportRow; 4] = [
     both("tls:general-dynamic", ON, "`thread_local`"),
     both("tls:local-dynamic", ON, "`thread_local(localdynamic)`"),
@@ -2446,8 +2445,8 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
         on(&[TypeClass::Int, TypeClass::Ptr]),
         "",
     ),
-    row("intrinsic:llvm.threadlocal.address", on(&[TypeClass::Ptr]), todo(X64), ""),
-    row("intrinsic:llvm.thread.pointer", on(&[TypeClass::Ptr]), todo(X64), ""),
+    both("intrinsic:llvm.threadlocal.address", on(&[TypeClass::Ptr]), ""),
+    both("intrinsic:llvm.thread.pointer", on(&[TypeClass::Ptr]), ""),
     row(
         "intrinsic:llvm.prefetch",
         on(&[TypeClass::Ptr, TypeClass::Int]),

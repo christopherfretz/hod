@@ -1,14 +1,20 @@
-//! Reducing a finding by cutting the module's text ("fuzz", "Reduction"):
-//! function bodies are replaced by a `ret` of zero, functions nothing
-//! refers to are deleted, and stores to globals and calls that return
-//! nothing are dropped, in chunks that halve, for as long as the program
-//! still shows the finding and a probe budget lasts.
+//! Reducing a finding by cutting the module's text
+//! (`spec/landed/harness/WP-154.md` "Reduction"). Each pass offers edits
+//! that keep the module valid IR, tried in chunks that halve, kept while
+//! the program still shows the finding and a probe budget lasts:
 //!
-//! Every edit keeps the module valid IR and the program defined: a stub
-//! returns a value of its type, a deleted function is not referred to, a
-//! global keeps its initial value, and nothing that defines a value is
-//! dropped. The last check, the witness, says whether `llc -O2` agrees
-//! with the oracle on the result.
+//! - a function body becomes a `ret` of zero (`stubs`);
+//! - a function, global or declaration nothing names is deleted;
+//! - a store to a global, and a call that returns nothing, is dropped;
+//! - a conditional branch goes to its second target only, and the blocks
+//!   no path reaches any more are deleted;
+//! - a store to a local nothing reads, and an instruction whose value
+//!   nothing uses, is dropped.
+//!
+//! Only edits that keep the program defined are offered (a stub returns a
+//! value of its type; a global keeps its initial value; no local that is
+//! read loses its store), and the witness, `llc -O2`, is asked about the
+//! whole program: whether it agrees with the oracle.
 
 use std::fs;
 use std::path::Path;
@@ -530,7 +536,7 @@ entry:
   ret i32 0
 }";
 
-    // spec/harness.md "fuzz", "Reduction": the functions of a module.
+    // spec/landed/harness/WP-154.md "Reduction": the functions of a module.
     #[test]
     fn functions_and_their_return_types() {
         let found = functions(&lines(MODULE));

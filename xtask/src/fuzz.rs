@@ -1,5 +1,5 @@
 //! `cargo xtask fuzz`: random differential testing, layer L10 of
-//! `docs/VALIDATION.md`. Contract: `spec/harness.md` "fuzz".
+//! `docs/VALIDATION.md`. Contract: `spec/landed/harness/WP-154.md`.
 //!
 //! Each seed is a csmith program, compiled by clang at `-O0` to LLVM
 //! text for the target, built by the oracle (`llc -O0` with the reference
@@ -702,7 +702,7 @@ mod tests {
         })
     }
 
-    // spec/harness.md "fuzz", "Options".
+    // spec/landed/harness/WP-154.md "Options".
     #[test]
     fn options() {
         let options = parsed(&[]).unwrap();

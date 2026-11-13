@@ -1,5 +1,5 @@
 //! One seed: generate a program, build it with the oracle and with hod,
-//! link and run both, and decide. Contract: `spec/harness.md` "fuzz",
+//! link and run both, and decide. Contract: `spec/landed/harness/WP-154.md`,
 //! "What a seed does" and "Verdicts".
 
 use std::ffi::OsString;
@@ -535,7 +535,7 @@ mod tests {
         Output { end, stdout: stdout.to_vec(), stderr: Vec::new(), truncated: false }
     }
 
-    // spec/harness.md "fuzz", "Verdicts": the comparison.
+    // spec/landed/harness/WP-154.md "Verdicts": the comparison.
     #[test]
     fn comparing_programs() {
         let a = output(End::Exit(0), b"checksum = 1\n");

@@ -1895,12 +1895,22 @@ operands; everything else goes the long way (`Walker::inst`), which is
 the definition, and debug builds check on every instruction that the
 short way never accepts what the long way refuses.
 
-Measured by `examples/classify_throughput.rs` (release, aarch64, on a
-shared host under heavy load, so only ratios to building in the same run
-mean anything): classifying an accepted body costs about half of
-building it (about 8 ns per instruction against 16 ns to build). That
-misses the goal of a small fraction; `spec/landed/ir/WP-009.md` has the
-numbers.
+The short way reads one word per opcode (`Support::short`, built with
+the support masks): whether the short way may decide the op, whether it
+is a call or memory op, its inline operand count, and its row's accepted
+classes. A direct callee accepted with no declared attributes is
+remembered for the body (8 slots, keyed by symbol and function type).
+The constant walk does not descend into leaf elements of an aggregate
+below the nesting limit.
+
+Measured with callgrind (release, strict, one thread, both targets; see
+`spec/landed/ir/WP-027.md`). On the bench inputs, classify is a small
+fraction of a whole run: 0.6 to 2.3% of the instructions (0.9 to 3.3%
+before WP-027). In isolation (`examples/classify_throughput.rs` with `build` and `classify`),
+classifying an accepted body costs 92 instructions per IR instruction,
+against 183 to build it. That is half of building, down from 89% before
+WP-027. The rest is operand iteration and the per-operand value and
+class match.
 
 ## 9. Printer
 

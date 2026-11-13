@@ -26,10 +26,10 @@
 #![cfg(target_os = "linux")]
 
 #[path = "../../hod_obj/tests/common/mod.rs"]
-#[allow(dead_code, reason = "a shared helper: not every function is used here")]
 mod objcommon;
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -509,7 +509,8 @@ fn cmain(checks: &[(&str, i32)]) -> String {
     );
     for (index, (call, want)) in checks.iter().enumerate() {
         let n = index + 1;
-        text += &format!(
+        let _ = write!(
+            text,
             "k{index}:\n  %r{n} = call i32 {call}\n  %c{n} = icmp eq i32 %r{n}, {want}\n  \
              br i1 %c{n}, label %k{n}, label %bad{n}\nbad{n}:\n  ret i32 {n}\n"
         );

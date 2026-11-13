@@ -961,13 +961,13 @@ fn wild_programs_never_panic() {
 /// repeated classification follow that one rule.
 #[test]
 fn a_pair_is_found_only_behind_its_type_row() {
+    const PAIR: &str = "function:parameters/token";
     let seed = 360;
     let arch = ARCHES[(seed % 2) as usize];
     let program = program(seed, arch, false);
     let then = Support::shipped(arch).clone().without("type:token").unwrap();
     let then = then.without("function:parameters/token").unwrap();
     assert_eq!(then.supports("function:parameters"), Some(true));
-    const PAIR: &str = "function:parameters/token";
 
     let census = census_of(&then, &program);
     let names: Vec<&str> = census.entries().iter().map(|e| e.construct.as_str()).collect();

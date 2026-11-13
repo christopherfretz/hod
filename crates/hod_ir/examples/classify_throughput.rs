@@ -158,6 +158,10 @@ fn main() -> IrResult<()> {
     let everything = Support::everything_implemented(arch);
     let accepting = Classifier::new(&everything);
     let shipped = Classifier::new(Support::shipped(arch));
+    // Every body is refused at its convention, the first thing the body
+    // pass checks (`spec/ir.md` §8.8).
+    let without_ccc = Support::shipped(arch).clone().without("cc:ccc").expect("a row");
+    let refusing = Classifier::new(&without_ccc);
 
     let mut m = Module::new(TargetSpec::aarch64_linux_gnu());
     let shape = shape(&mut m)?;
@@ -192,9 +196,10 @@ fn main() -> IrResult<()> {
         bodies.iter().filter(|body| accepting.body(black_box(&m), body).is_err()).count()
     });
     assert_eq!(refused, 0, "everything implemented accepts the bodies");
-    let (reject, refused) =
-        fastest(|| bodies.iter().filter(|body| shipped.body(black_box(&m), body).is_err()).count());
-    assert_eq!(refused, functions, "the shipped matrix refuses the bodies");
+    let (reject, refused) = fastest(|| {
+        bodies.iter().filter(|body| refusing.body(black_box(&m), body).is_err()).count()
+    });
+    assert_eq!(refused, functions, "a matrix without `cc:ccc` refuses the bodies");
     println!("{functions} bodies of {} instructions", total / functions);
     println!("  classify, accepted           {:7.2} ns/instruction", per(accept, total));
     println!("  classify, accepted           {:7.1} ns/body", per(accept, functions));

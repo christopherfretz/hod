@@ -1071,6 +1071,9 @@ pub fn cond_br<'a>(
     if_true: BlockId,
     if_false: BlockId,
 ) -> CgResult<()> {
+    if crate::x87::compares(cx, compare) {
+        return crate::x87::cond_br(cx, inst, compare, cond, if_true, if_false);
+    }
     let fused =
         matches!(compare.kind(), InstKind::FCmp { lhs, .. } if cx.class_of(lhs) == Class::Fpr);
     if !fused {

@@ -420,6 +420,9 @@ impl Target for X64 {
     }
 
     fn load(&self, cx: &mut FnCx<'_, Self>, reg: PReg, src: FrameRef, bytes: u32) {
+        if reg::is_x87(reg) {
+            return x87::load_part(cx, reg, src);
+        }
         if reg::is_fpr(reg) {
             common::load_fpr(cx, xm(reg), src, bytes);
         } else {
@@ -428,6 +431,9 @@ impl Target for X64 {
     }
 
     fn store(&self, cx: &mut FnCx<'_, Self>, reg: PReg, dst: FrameRef, bytes: u32) {
+        if reg::is_x87(reg) {
+            return x87::store_part(cx, reg, dst);
+        }
         if reg::is_fpr(reg) {
             common::store_fpr(cx, xm(reg), dst, bytes);
         } else {

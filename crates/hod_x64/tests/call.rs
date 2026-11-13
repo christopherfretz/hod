@@ -281,11 +281,6 @@ fn the_remaining_forms_are_refused_by_name() {
              define void @f() {\n  call void @g() [ \"deopt\"() ]\n  ret void\n}\n",
             call::CALL_BUNDLE,
         ),
-        // An x87 part stays WP-131's.
-        (
-            "declare x86_fp80 @g()\ndefine void @f() {\n  %r = call x86_fp80 @g()\n  ret void\n}\n",
-            "x64:todo:abi",
-        ),
     ] {
         assert_eq!(compile(text), Err(CgError::unsupported(name)), "{text}");
     }

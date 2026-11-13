@@ -210,6 +210,9 @@ pub fn intrinsic<'a>(
 ) -> CgResult<()> {
     use Intrinsic as I;
     let Some(&first) = args.first() else { return unsupported(INTRINSIC) };
+    if crate::x87::is_x86_fp80(cx, value_ty(cx, first)) {
+        return crate::x87::intrinsic(cx, inst, which, args);
+    }
     let f = scalar(cx, value_ty(cx, first))?;
     deferred_first(cx, inst, None)?;
     if let Some(op) = libm(which) {

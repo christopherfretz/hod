@@ -2928,6 +2928,101 @@ external linkage in a shared object is reached through its local alias
 
 Evidence: `hod_x64/tests/tls.rs` (WP-134 record).
 
+#### 5.6.12 x87 (WP-131)
+
+`hod_x64::x87` lowers `x86_fp80` (`long double`). A value is class
+`Mem`: a 16-byte slot of which the low 10 bytes are the value (the
+significand with its explicit integer bit, then the sign and the 15-bit
+exponent); the bytes above are never read. The x87 register stack is
+the computing device only: **it is empty between IR instructions**, and
+so at every call, branch and return glue. An instruction pushes its
+operands from their slots (`fld tbyte`), computes, and pops its result
+to its slot (`fstp tbyte`). The x87 control word is the platform's
+(round to nearest, 64-bit precision, exceptions masked) and is changed
+only around a truncating store (below).
+
+- **Arithmetic.** `fadd` .. `fdiv` push both operands and use the
+  popping form (`faddp`, `fsubp`, `fmulp`, `fdivp` with `st(1)`); `frem`
+  calls `fmodl`; `fneg` copies the 10 bytes and flips bit 7 of byte 9.
+  The NaN an operation returns is the x87's: of two NaNs the one of the
+  larger significand, quieted; an invalid operation (an unnormal, a
+  pseudo-infinity or a pseudo-NaN as an operand, `inf - inf`, ...) the
+  negative default NaN (`0xffff_c000_0000_0000_0000`).
+- **`fcmp`** pushes `y` then `x`, `fucomip st(1)` (`ZF`, `PF`, `CF` as
+  `ucomisd` sets them), then `fstp st(0)`, which keeps `EFLAGS`; the
+  predicates map to conditions as in §5.6.7. Between the flag setter and
+  its readers the flags rule (§5.6 "Flags") is kept: only `fstp st(0)`,
+  `fld`, `fxch` and the moves of §5.6 run. A compare whose only use is
+  the next `select` or `br` is fused: the branches read the flags (two
+  `jcc` for `oeq`/`une`); `select` of `x86_fp80` picks the address of
+  one arm with `cmov` (two for `oeq`/`une`) and copies 10 bytes.
+  Otherwise `setcc` (and `and`/`or` of two) and `movzx`.
+- **Conversions.** `fpext` from `float`/`double` is `fld dword`/`qword`
+  of the operand stored to the result's slot; from `bfloat` the bits
+  shifted into a `float` first; `fptrunc` to `float`/`double` is `fstp`
+  to the 16 bytes below `rsp` (no red zone is assumed: `lea rsp, [rsp -
+  16]` first and `lea rsp, [rsp + 16]` after) and a load into the `xmm`
+  register. `half` and `fp128` call `__extendhfxf2`, `__truncxfhf2`,
+  `__extendxftf2`, `__trunctfxf2`. `fptrunc` to `bfloat` is refused
+  (`x64:x87-bfloat`; `llc` 19 cannot select it). `fptosi`/`fptoui` to
+  at most 64 bits are `fistp qword` under a control word with the
+  rounding set to truncation (`fnstcw`, `or` of `0x0c00`, `fldcw`, the
+  store, `fldcw` of the saved word), all in the 16 bytes below `rsp`;
+  `fptoui` to 64 bits compares with `2^63` (`fucomi`), subtracts it
+  where the value is not below, and flips bit 63 of the result there.
+  Wider results call `__fixxfti`/`__fixunsxfti`. `sitofp`/`uitofp`
+  extend the source to 64 bits in the result's slot and `fild qword`
+  it; `uitofp` of 64 bits adds `2^64` (a `float` constant) where the
+  sign bit is set (exact: the significand has 64 bits). Wider sources
+  call `__floattixf`/`__floatuntixf`; integers wider than 128 bits are
+  `x64:wide-fp-cast`. `bitcast` to and from `i80` is a copy of 10
+  bytes. An opcode that is no conversion of `x86_fp80` (invalid IR) is
+  `x64:x87-cast`.
+- **`load`, `store`, `select`, `phi`, `freeze`, constants** move the 10
+  bytes, as any `Mem` value (§5.6.5): bits are kept, signalling NaNs and
+  invalid encodings included. A constant is materialized from its 10
+  bytes.
+- **Calls.** An `x86_fp80` argument is passed in memory (16 bytes,
+  16-aligned, in order with the other memory arguments); a result
+  comes back in `st(0)`, and the second `x86_fp80` of a `{x86_fp80,
+  x86_fp80}` in `st(1)`; in `{x86_fp80, double}` the `double` is in
+  `xmm0`. The glue that places such a result pushes the parts
+  (`fld`, `fxch` for `st(1)`) and the glue that takes one pops them in
+  order. `call::guard` no longer refuses the x87.
+- **Intrinsics.** Inline, as `llc`: `fabs`, `copysign` (byte 9),
+  `arithmetic.fence` (a copy), `sqrt` (`fsqrt`), `canonicalize` (`fld1`,
+  `fmulp`), `fmuladd` (`fmulp`, `faddp`: unfused, as `llc -O0`),
+  `lrint`/`llrint` (`fistp` of the result's width under the current
+  rounding), `fptosi.sat`/`fptoui.sat` (0 for a NaN, the bounds by
+  `fucomip` against `float` constants, else the truncating store), and
+  `is.fpclass` of a constant mask (the class's index from the image,
+  then `bt` of the mask). The rest call the C library's `l` functions
+  through `x87::libcall`, which displaces every register value, copies
+  each operand to a 16-byte slot of an outgoing area made by `lea rsp`
+  and pops the result from `st(0)`: the rounding family (`floorl`, ...,
+  `rintl`), `fmal`, `fminl`/`fmaxl`, `fminimuml`/`fmaximuml` (`llc`
+  cannot select `minimum`/`maximum` of `x86_fp80`),
+  `fminimum_numl`/`fmaximum_numl`, `powl`, the transcendental
+  functions, `lroundl`/`llroundl` (the result in `rax`), `ldexpl` (the
+  `i32` in `edi`), `frexpl` (the exponent's address, in the area, in
+  `rdi`); `powi` calls `__powixf2`. Refused: `x64:x87-intrinsic` (a
+  non-constant `is.fpclass` mask, a `powi`/`ldexp` exponent other than
+  `i32`, an integer result wider than 64 bits, an intrinsic with no
+  routine).
+- **`is.fpclass` of the encodings only the x87 has.** A pseudo-denormal
+  (exponent 0, integer bit set) is a subnormal, as the x87 loads it;
+  `llc` 19 and 22 answer differently from each other for four masks and
+  depend on the mask's expansion elsewhere, so it is not compared. An
+  unnormal, a pseudo-zero, a pseudo-infinity or a pseudo-NaN is in the
+  test when the test has both NaN classes, or is all classes but one NaN
+  class (`x87::invalid_in`): `llc` 19 and 22 agree on all 1024 masks.
+
+A lowering here writes, besides its operands' slots, `rax`, `rcx`,
+`rdx`, `r10`, `r11` and the flags (the libcalls: every caller-saved
+register), and the 16 bytes below `rsp` only between its own `lea`s.
+
+Evidence: `hod_x64/tests/x87.rs` (WP-131 record).
+
 ## 6. Control flow
 
 ### 6.1 Reachability

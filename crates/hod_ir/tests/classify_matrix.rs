@@ -884,3 +884,92 @@ fn coroutine_rows_of_wp_137() {
     // `coro.frame` is the plan's refusal on both targets.
     assert_eq!(x64.supports("intrinsic:llvm.coro.frame"), Some(false));
 }
+
+// WP-131: `x86_fp80` on x86-64 (the x87), never on AArch64.
+#[test]
+fn x87_rows_of_wp_131() {
+    let a64 = Support::shipped(Arch::Aarch64);
+    let x64 = Support::shipped(Arch::X86_64);
+    assert_eq!(x64.supports("type:x86_fp80"), Some(true));
+    assert_eq!(a64.supports("type:x86_fp80"), Some(false));
+    let insts = [
+        "fadd",
+        "fsub",
+        "fmul",
+        "fdiv",
+        "frem",
+        "fneg",
+        "fcmp",
+        "fptrunc",
+        "fpext",
+        "fptoui",
+        "fptosi",
+        "uitofp",
+        "sitofp",
+        "bitcast",
+        "load",
+        "store",
+        "extractvalue",
+        "insertvalue",
+        "select",
+        "freeze",
+    ];
+    let intrinsics = [
+        "fabs",
+        "sqrt",
+        "floor",
+        "ceil",
+        "trunc",
+        "round",
+        "roundeven",
+        "nearbyint",
+        "rint",
+        "copysign",
+        "fma",
+        "fmuladd",
+        "minnum",
+        "maxnum",
+        "minimum",
+        "maximum",
+        "minimumnum",
+        "maximumnum",
+        "canonicalize",
+        "arithmetic.fence",
+        "pow",
+        "powi",
+        "ldexp",
+        "frexp",
+        "sin",
+        "cos",
+        "tan",
+        "asin",
+        "acos",
+        "atan",
+        "atan2",
+        "sinh",
+        "cosh",
+        "tanh",
+        "exp",
+        "exp2",
+        "exp10",
+        "log",
+        "log2",
+        "log10",
+        "lround",
+        "llround",
+        "lrint",
+        "llrint",
+        "fptosi.sat",
+        "fptoui.sat",
+        "is.fpclass",
+    ];
+    let rows = insts
+        .iter()
+        .map(|n| format!("inst:{n}"))
+        .chain(intrinsics.iter().map(|n| format!("intrinsic:llvm.{n}")));
+    for row in rows {
+        let pair = format!("{row}/x86_fp80");
+        assert_eq!(x64.supports(&pair), Some(true), "{pair}");
+        assert_eq!(a64.supports(&pair), Some(false), "{pair}");
+    }
+}

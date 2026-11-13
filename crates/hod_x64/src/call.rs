@@ -251,18 +251,13 @@ pub fn extend_bits(cx: &mut FnCx<'_, X64>, rd: Reg, bits: u32, signed: bool) {
 
 /// What of a right assignment (`abi::assign`) the lowerings that have
 /// landed do not honour yet; `Target::assign` asks for every signature,
-/// a definition's and a call's. WP-131 removes the condition.
+/// a definition's and a call's. Nothing since WP-131, whose glue moves
+/// the `x86_fp80` parts in `st0`/`st1` (`x87::load_part`, `store_part`).
 ///
 /// # Errors
-/// [`crate::abi::ABI`] for a part in an x87 register (`Target::load` and
-/// `store` know the general and the vector registers only).
+/// None.
 pub fn guard(sig: &Sig<'_>, assignment: &Assignment) -> Result<(), AbiUnsupported> {
-    let _ = sig;
-    let x87 = |place: Place| matches!(place, Place::Reg(reg) if crate::abi::is_x87(reg));
-    let parts = assignment.args.iter().chain(&assignment.ret);
-    if parts.into_iter().any(|p| x87(p.place)) {
-        return Err(AbiUnsupported(crate::abi::ABI));
-    }
+    let _ = (sig, assignment);
     Ok(())
 }
 

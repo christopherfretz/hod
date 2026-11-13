@@ -3520,15 +3520,37 @@ directions (`crates/hod_x64/tests/vcall_i128.rs`):
    `musttail:stack-args-unknown` (`spec/abi-x64.md` §8.5, item 6): the
    rule has no stack-argument area for a signature `assign` refuses, and
    `llc` 19 and 22 disagree on where its arguments are.
-3. **`<1 x i64>` and `<1 x ptr>`** stay `call:part-register-class`: the
-   value is `Fpr` (an `xmm`, `target::vector_class`) and both versions
-   pass it in a general register. Moving it needs `hod_cg`'s call
-   sequence to accept a part of another class for an `Fpr` value (a
-   `Lanes` part through a scratch register of the value's class, as
-   WP-167 does for AArch64's `<1 x i128>`), which `hod_x64` cannot do
-   alone.
+3. **`<1 x i64>` and `<1 x ptr>`** were `call:part-register-class`
+   here; WP-174 (§5.6.21) passes them.
 
 Evidence: `spec/landed/codegen/WP-171.md`.
+
+#### 5.6.21 `<1 x i64>` across calls, label differences (WP-174)
+
+1. **A lone `<1 x i64>` or `<1 x ptr>`** argument or result (the value
+   an `xmm`, `target::vector_class`; LLVM 19 and 22 scalarize it to an
+   `i64`: a general register, an 8-byte stack slot, `rax`) has one part
+   of kind `Lanes { bits: 64, lane: 8, first: 0, len: 1 }`
+   (`abi::LONE_LANE`, `spec/abi-x64.md` §4.3). `hod_cg` hands the value
+   in the `Fpr` scratch register (WP-167's paths: argument, result,
+   `place_return`, entry); `vcall::lone_out`/`lone_in` move it with
+   `movq r64, xmm` / `movq xmm, r64`, or an 8-byte store or load for a
+   stack slot. A side of another class is `call:part-lanes`. As a member
+   of an aggregate the value is memory and its bytes travel as `Value`
+   parts, unchanged. No `hod_cg` change was needed.
+2. **`init:block-diff`** on x86-64: the shared rule (§5.5.1 "WP-095",
+   module emission writes `offset(a) - offset(b) + addend`, no
+   relocation) holds unchanged; the block rows it reads are moved by
+   `shrink.rs` (§5.6.15), so the number is the one of the final code.
+   Only the classification row was `x64:todo`.
+3. **Kept refused**: `inst:callbr` (an empty-template `callbr` needs
+   `barrier.rs` to take `!i` label constraints and branch to the normal
+   destination, the indirect ones being unreachable from an empty
+   template; any other template is `call:inline-asm`, x86-64 has no
+   assembler), `cc:preserve_mostcc` / `cc:preserve_allcc` (`abi:cc`: a
+   callee must save `rcx`, `rdx`, `rsi`, `rdi`, `r8`..`r10`, and for
+   `preserve_allcc` the `xmm` registers, in the prologue with their CFI,
+   `frame.rs`). Sizes and reasons: `spec/landed/codegen/WP-174.md`.
 
 ## 6. Control flow
 

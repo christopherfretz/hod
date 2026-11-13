@@ -69,6 +69,8 @@ enum E {
     Half,
     Float,
     Double,
+    /// A pointer (WP-174: `<1 x ptr>`).
+    Ptr,
 }
 
 impl E {
@@ -82,6 +84,7 @@ impl E {
             E::Half => "half",
             E::Float => "float",
             E::Double => "double",
+            E::Ptr => "ptr",
         }
     }
 
@@ -90,7 +93,7 @@ impl E {
             E::I8 => 8,
             E::I16 | E::Half => 16,
             E::I32 | E::Float => 32,
-            E::I64 | E::Double => 64,
+            E::I64 | E::Double | E::Ptr => 64,
             E::I128 => 128,
         }
     }
@@ -104,6 +107,7 @@ impl E {
             E::I64 => "long",
             E::Float => "float",
             E::Double => "double",
+            E::Ptr => "void *",
             E::I128 | E::Half => return None,
         })
     }
@@ -361,6 +365,59 @@ fn placement_cases() -> Vec<Case> {
         params.extend([v.clone(), V(E::I32, 4), v.clone()]);
         cases.push(Case::new(params, Some(V(E::I128, 1))));
     }
+    cases
+}
+
+/// WP-174: a lone `<1 x i64>` or `<1 x ptr>` (a general piece whose
+/// value is an `xmm`) by itself, after 0 to 8 general arguments (in
+/// registers and on the stack), around `double`, `<1 x double>` and full
+/// vector registers, beside an `i128` pair and the byte vectors, in a
+/// structure; through a pointer, `invoke` and `musttail`; as a named
+/// argument of a variadic callee; and random signatures over them.
+fn lone_i64_cases() -> Vec<Case> {
+    let lones = [V(E::I64, 1), V(E::Ptr, 1)];
+    let mut cases = each(&lones);
+    for v in &lones {
+        for before in 0..=8 {
+            let mut params: Vec<Ty> = (0..before).map(|_| S(E::I64)).collect();
+            params.extend([v.clone(), S(E::Double), V(E::Double, 1), v.clone(), S(E::I32)]);
+            cases.push(Case::new(params, Some(v.clone())));
+        }
+        let mut params: Vec<Ty> = (0..5).map(|_| S(E::I64)).collect();
+        params.extend([v.clone(), S(E::I128), v.clone()]);
+        cases.push(Case::new(params, Some(V(E::I64, 1))));
+        cases.push(Case::new(
+            vec![St(vec![S(E::I64), v.clone()]), v.clone(), St(vec![v.clone(), S(E::Double)])],
+            Some(St(vec![v.clone()])),
+        ));
+        for before in [0, 5, 6, 8] {
+            let mut params: Vec<Ty> = (0..before).map(|_| S(E::I64)).collect();
+            params.push(v.clone());
+            let var = vec![S(E::I64), V(E::I32, 4), S(E::Ptr), S(E::I32)];
+            cases.push(Case { params, ret: None, style: Style::Direct, var: Some(var) });
+        }
+    }
+    let mut rng = Rng(0x0174_0001);
+    let mut pool = lones.to_vec();
+    pool.extend(lones.iter().cloned());
+    // Not the vectors passed element by element in general pieces
+    // (`<5 x i32>`, `<3 x i64>`, `<12 x i16>`): where their pieces do not
+    // all fit in registers `llc` 19 and 22 place them differently
+    // (`spec/abi-x64.md` §4.2, "LLVM 19").
+    let split = [V(E::I32, 5), V(E::I64, 3), V(E::I16, 12)];
+    pool.extend(bytes().into_iter().filter(|t| !split.contains(t)));
+    pool.extend(scalars());
+    pool.push(S(E::Ptr));
+    cases.extend(random(&mut rng, &pool, 40));
+    let mut styled = random(&mut rng, &pool, 18);
+    for (k, case) in styled.iter_mut().enumerate() {
+        case.params.push(lones[k % 2].clone());
+        case.style = [Style::Indirect, Style::Invoke, Style::Musttail][k % 3];
+        if case.style == Style::Musttail || k % 2 == 0 {
+            case.ret = Some(lones[(k / 2) % 2].clone());
+        }
+    }
+    cases.extend(styled);
     cases
 }
 
@@ -893,11 +950,26 @@ fn i128_vector_placements_cross_calls() {
     check("placements", &placement_cases());
 }
 
+/// WP-174: lone `<1 x i64>` and `<1 x ptr>` across calls; hod builds
+/// every case (no `call:part-register-class`).
+#[test]
+fn lone_i64_vectors_cross_calls() {
+    let cases = lone_i64_cases();
+    for case in &cases {
+        let one = std::slice::from_ref(case);
+        for text in [caller_ll(one), callee_ll(one)] {
+            assert_eq!(refusal(&text), None, "{} {:?}", case.fn_type(), case.style);
+        }
+    }
+    check("lone-i64", &cases);
+}
+
 /// The generator itself (no tools needed): every module parses.
 #[test]
 fn the_generator_parses() {
     let mut cases = wp167_cases();
     cases.extend(placement_cases());
+    cases.extend(lone_i64_cases());
     for text in [caller_ll(&cases), callee_ll(&cases)] {
         parse(&format!("{}{text}", ll_header()));
     }

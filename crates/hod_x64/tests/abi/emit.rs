@@ -281,7 +281,9 @@ impl Asm<'_> {
     /// a stack place is `stack` plus the part's offset. An x87 part is
     /// left for [`Asm::produce_x87`].
     fn produce(&mut self, item: &Item, part: &Part, stack: &str) {
-        if let PartKind::Lanes { lane, len, .. } = part.kind {
+        // WP-174: a lone `<1 x i64>`'s part (`Lanes` of one 64-bit
+        // element) has the bytes of a plain part: only masks are lanes here.
+        if let PartKind::Lanes { bits: 1, lane, len, .. } = part.kind {
             // §4.3: element `i` in the low bit of lane `i`; the other bits
             // of the lane are junk.
             self.junk_scratch();
@@ -364,7 +366,9 @@ impl Asm<'_> {
     /// x87 stack: those go in order from `st0`.
     fn consume(&mut self, item: &Item, part: &Part, stack: (&str, i64)) {
         let dst = ("r12", (item.dst + u64::from(part.offset)) as i64);
-        if let PartKind::Lanes { lane, len, .. } = part.kind {
+        // WP-174: a lone `<1 x i64>`'s part (`Lanes` of one 64-bit
+        // element) has the bytes of a plain part: only masks are lanes here.
+        if let PartKind::Lanes { bits: 1, lane, len, .. } = part.kind {
             match part.place {
                 Place::Reg(reg) => match classify(reg) {
                     Reg::Vector(number) => ins!(self, "movdqu %xmm{number}, {SCRATCH}(%rbp)"),

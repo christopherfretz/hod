@@ -30,11 +30,18 @@ pub(crate) struct AttrMemo {
 /// A word of 1 to 16 bytes without a zero byte, padded with zeros: a key
 /// that no other such word has, and never 0. `None` for any other word.
 pub(crate) fn packed(word: &[u8]) -> Option<u128> {
-    if word.is_empty() || word.len() > 16 || word.contains(&0) {
+    if word.is_empty() || word.len() > 16 {
         return None;
     }
+    // Byte by byte: a copy of a length only known at run time is a call
+    // of `memcpy`.
     let mut bytes = [0u8; 16];
-    bytes[..word.len()].copy_from_slice(word);
+    for (slot, &b) in bytes.iter_mut().zip(word) {
+        if b == 0 {
+            return None;
+        }
+        *slot = b;
+    }
     Some(u128::from_le_bytes(bytes))
 }
 
@@ -358,5 +365,24 @@ impl<L: Layering> Parser<'_, '_, L> {
     /// in the current form (§7.3).
     fn upgrade_attrs(&mut self, id: FnAttrsId, upgrade: Upgrade, at: u32) -> PResult<FnAttrsId> {
         ir(at, upgrade.apply(&mut *self.module, id, &mut self.upgraded))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::packed;
+
+    /// The memo's key is the word padded with zeros to 16 bytes, and
+    /// there is none for an empty word, a longer one or one with a zero.
+    #[test]
+    fn packed_is_the_zero_padded_word() {
+        assert_eq!(packed(b""), None);
+        assert_eq!(packed(&[b'a'; 17]), None);
+        assert_eq!(packed(b"no\0undef"), None);
+        for word in [&b"x"[..], b"align", b"dereferenceable", b"noundef_nonnull_"] {
+            let mut bytes = [0u8; 16];
+            bytes[..word.len()].copy_from_slice(word);
+            assert_eq!(packed(word), Some(u128::from_le_bytes(bytes)));
+        }
     }
 }

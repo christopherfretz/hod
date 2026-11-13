@@ -73,6 +73,10 @@ pub struct FrameState {
     pub saves_at: u32,
     /// The save set, as a mask over [`SAVED`]; final in [`end`].
     pub saved: u8,
+    /// The function saves every member of [`SAVED`] whatever its body
+    /// used (§5.6.15): a `llvm.eh.sjlj.setjmp` resumes with the
+    /// registers of the code that jumped (WP-147, §5.6.16).
+    pub save_all: bool,
     /// The frame description, final in [`end`] (the coroutine stubs
     /// build the same frame).
     pub desc: FrameDesc,
@@ -165,12 +169,16 @@ pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
 
 /// The save set (§5.6.15) as a mask over [`SAVED`]: the members the body
 /// used (`FnCx::regs_used`: every register the policy handed out,
-/// `take_reg` included), and `rbx` in a function with the coroutine
-/// frame, which writes it outside the policy (WP-137).
+/// `take_reg` included), `rbx` in a function with the coroutine
+/// frame, which writes it outside the policy (WP-137), and all of them
+/// in a function with a `llvm.eh.sjlj.setjmp` ([`FrameState::save_all`]).
 pub fn saved_set(cx: &FnCx<'_, X64>) -> u8 {
     let mut used = cx.regs_used();
     if cx.has_coro_frame() {
         used = used.union(RegSet::of(&[gpr(Reg::Rbx)]));
+    }
+    if cx.state.frame.save_all {
+        used = used.union(RegSet::of(&SAVED.map(gpr)));
     }
     let mut mask = 0;
     for (index, &reg) in SAVED.iter().enumerate() {

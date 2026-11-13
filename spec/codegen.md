@@ -2988,8 +2988,9 @@ only around a truncating store (below).
   to the 16 bytes below `rsp` (no red zone is assumed: `lea rsp, [rsp -
   16]` first and `lea rsp, [rsp + 16]` after) and a load into the `xmm`
   register. `half` and `fp128` call `__extendhfxf2`, `__truncxfhf2`,
-  `__extendxftf2`, `__trunctfxf2`. `fptrunc` to `bfloat` is refused
-  (`x64:x87-bfloat`; `llc` 19 cannot select it). `fptosi`/`fptoui` to
+  `__extendxftf2`, `__trunctfxf2`. `fptrunc` to `bfloat` calls
+  `__truncxfbf2` (libgcc 13 and later, compiler-rt; as `llc` 22 does,
+  `llc` 19 cannot select it; WP-147). `fptosi`/`fptoui` to
   at most 64 bits are `fistp qword` under a control word with the
   rounding set to truncation (`fnstcw`, `or` of `0x0c00`, `fldcw`, the
   store, `fldcw` of the saved word), all in the 16 bytes below `rsp`;
@@ -3035,9 +3036,12 @@ only around a truncating store (below).
   `i32`, an integer result wider than 64 bits, an intrinsic with no
   routine).
 - **`is.fpclass` of the encodings only the x87 has.** A pseudo-denormal
-  (exponent 0, integer bit set) is a subnormal, as the x87 loads it;
-  `llc` 19 and 22 answer differently from each other for four masks and
-  depend on the mask's expansion elsewhere, so it is not compared. An
+  (exponent 0, integer bit set) is a subnormal of its sign for every
+  mask, as `fxam` classifies it (denormal: C3 C2 C0 = 1 1 0) and as the
+  x87 loads it. `llc` is not followed: 19 and 22 put it in no class
+  (false for each single class) yet answer true for some unions by
+  their expansion, differing on four (19: `0x7`, `0xf3`, `0x203`; 22:
+  `0x30c`), which no class gives (WP-147). An
   unnormal, a pseudo-zero, a pseudo-infinity or a pseudo-NaN is in the
   test when the test has both NaN classes, or is all classes but one NaN
   class (`x87::invalid_in`): `llc` 19 and 22 agree on all 1024 masks.
@@ -3229,7 +3233,9 @@ neither costs nothing.
 **1. The save set.** The prologue pushes only the members of `rbx`,
 `r12`..`r15` the body used (`hod_cg` records every register `alloc`,
 `take_reg` and `own` hand out: `FnCx::regs_used`), plus `rbx` in a
-function with the coroutine frame (`coro_body` writes it directly).
+function with the coroutine frame (`coro_body` writes it directly),
+and all five in a function with a `llvm.eh.sjlj.setjmp` (its resume
+point is entered with the registers of the code that jumped, §5.6.16).
 Nothing else writes a callee-saved register: inline assembly templates
 assemble to nothing, the ABI refuses `swift*` (no argument arrives in
 one), and `cmpxchg16b` takes `rbx` with `take_reg`. The body is
@@ -3278,6 +3284,62 @@ In `copy_from_ptr`, `rsi` is computed first when the pointer is in
 (psABI): the source and destination of these copies never overlap, and
 no volatile access goes through them (`memcpy` and `memmove`, volatile
 or not, are `intrinsic.rs`'s).
+
+#### 5.6.16 Leftovers, second set (WP-147)
+
+Each against `llc -O0 -fast-isel=0` 22 and 19 under the emulator, and
+`hod_interp` where it has the type (`crates/hod_x64/tests/leftovers2.rs`,
+`crates/hod_x64/tests/coro_wide_atomic.rs`):
+
+1. **`ptrtoint` of a constant address as an operand**
+   (`operand:int-of-addr`): `common::materialize_gpr_const` already
+   formed it (`lea` of the symbol, plus the offset); the matrix now says
+   so. A vector constant whose lanes are addresses (`<1 x i64>`,
+   `<2 x i64>`, `<2 x ptr>`) is written to the 16 bytes below `rsp` by
+   `constaddr::write_image` and loaded into the `xmm` register
+   (`vector::materialize`). An address in a lane narrower than 8 bytes
+   stays `x64:constant-relocation`.
+2. **`llvm.eh.sjlj.setjmp` / `llvm.eh.sjlj.longjmp`** with `llc`'s
+   x86-64 buffer: word 0 the frame pointer and word 2 the stack pointer
+   (both stored by the front end), word 1 the resume address. `setjmp`
+   displaces every value, stores `lea r11, [rip + resume]` to word 1 and
+   is 0; at the resume label it is 1. A function with a `setjmp` saves
+   all of `rbx`, `r12`–`r15` whatever its body used (§5.6.15): they
+   arrive at the resume label as the jumping code left them, and the
+   epilogue restores the caller's from `rbp`.
+   `longjmp` reads all three words before it writes `rbp`, then `rsp`,
+   then `jmp`s. hod's and `llc`'s objects jump into each other's
+   buffers. Refused: `x64:sjlj-live-value` (a register value of the
+   block defined before the `setjmp` and used after it, or an entry
+   argument used after it: the second return would read a reused spill
+   slot), `x64:sjlj-coroutine` (`rbx`, the frame base, is not restored
+   at the resume address), `x64:sjlj-shadow-stack` (the
+   `cf-protection-return` module flag: the jump would unbalance the
+   shadow stack). On AArch64, `llc` compiles `setjmp` to 0 and `longjmp`
+   to nothing, and clang refuses the builtins; hod refuses both there.
+3. **A constant mask other than zero** as a `phi` incoming, a call
+   argument or a return value: `vector::materialize`, from the target's
+   materialize hook, puts its bits in a general register (`mask::
+   const_bits`, `mov` of the 64-bit immediate), for every width of
+   §5.6.13's masks.
+4. **`fp128` lanes** stay `x64:vector-wide-element`: no corpus module
+   has a vector of `fp128`; each lane operation would be a libcall.
+5. **`fptrunc x86_fp80` to `bfloat`** calls `__truncxfbf2` (libgcc 13
+   and later, compiler-rt), as `llc` 22 does; `llc` 19 cannot select it
+   (§5.6.12).
+6. **16-byte atomics in a coroutine** (§7.6 "x86-64"): with `+cx16`,
+   in a function with the coroutine frame, `push rbx` before the
+   sequence writes `rbx` and `pop rbx` after the last `cmpxchg16b`; the
+   new value is loaded high half (`rcx`) first, so its low half's load
+   is the last use of `rbx` as the frame base; the results are stored
+   after the `pop`. The libatomic calls without `+cx16` need nothing.
+7. **`hod_ir`** reads `llvm.va_start` and `llvm.va_end` without a
+   suffix and `llvm.va_copy.p0.p0` as the `.p0` intrinsics (LLVM 19 and
+   22 rename them on reading).
+8. **`tests/ir/const_operands.ll`** names no target and runs on both.
+9. **`is.fpclass` of a pseudo-denormal**: §5.6.12.
+
+Evidence: `spec/landed/codegen/WP-147.md`.
 
 ## 6. Control flow
 
@@ -4173,8 +4235,12 @@ and the holdable set: `X64::for_function` sets `X64::coro` from
 and frame words are `[rbp − d]` slots; the prologue stores 0 to both
 right after `sub rsp, FRAME`. `Stress::coro_frame` gives every function
 those words and clobbers `rbx` (`mov rbx, rbp`) after the prologue.
-`cmpxchg16b` needs `rbx`, so a coroutine with an atomic access wider
-than 64 bits is refused as `x64:coro-wide-atomic`.
+`cmpxchg16b` needs `rbx`: in a function with the coroutine frame a
+16-byte atomic pushes `rbx` before the sequence writes it and pops it
+after the last `cmpxchg16b`; between the two nothing addresses the heap
+frame, and the new value's high half is loaded before its low half
+(into `rbx`). Without `+cx16` the libatomic calls need nothing (WP-147,
+§5.6.16).
 
 *Intrinsics.* As on AArch64, with `rbx` for x19: `coro.begin` is
 `mov rbx, mem`, `lea r11, [rip + F.resume]` / `[rip + F.destroy]`

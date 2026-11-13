@@ -369,6 +369,8 @@ const NEON: &[TypeClass] = &[
     TypeClass::Aggregate,
 ];
 const X64_ONLY: &str = "an x86 property";
+/// WP-147.
+const SJLJ_A64: &str = "`llc` for AArch64 compiles `setjmp` to 0 and `longjmp` to nothing; clang refuses the builtins there";
 /// WP-101.
 const NO_RELOCATION: &str = "no ELF relocation subtracts a symbol's address; `llc` refuses it too";
 const NO_FORM: &str = "a constant expression with no normal form (§4.2)";
@@ -1730,7 +1732,7 @@ const OPERAND: [SupportRow; 11] = [
     row("operand:slot", ON, ON, "the address of a stack slot"),
     both("operand:blockaddress", ON, "of a block of the same function"),
     both("operand:addr-of-int", ON, "`inttoptr` of a constant number"),
-    row("operand:int-of-addr", ON, todo(X64), "`ptrtoint` of a constant address (WP-072)"),
+    both("operand:int-of-addr", ON, "`ptrtoint` of a constant address (WP-072, WP-147)"),
     row("operand:sym-diff", ON, ON, "a difference of two symbol addresses (WP-072)"),
     a64("operand:block-diff", LATER, "a label difference as an operand (WP-095)"),
     a64("operand:dso-local-equivalent", LATER, ""),
@@ -2903,6 +2905,10 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
         on(&[TypeClass::Int, TypeClass::Ptr]),
         "",
     ),
+    // WP-147: `llc` for AArch64 compiles `setjmp` to 0 and `longjmp` to
+    // nothing; no AArch64 front end emits them (clang refuses the builtins).
+    row("intrinsic:llvm.eh.sjlj.setjmp", never(SJLJ_A64), ON, ""),
+    row("intrinsic:llvm.eh.sjlj.longjmp", never(SJLJ_A64), ON, ""),
     both("intrinsic:llvm.threadlocal.address", on(&[TypeClass::Ptr]), ""),
     both("intrinsic:llvm.thread.pointer", on(&[TypeClass::Ptr]), ""),
     row(

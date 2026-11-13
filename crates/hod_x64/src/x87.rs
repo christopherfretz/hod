@@ -33,7 +33,7 @@
 //!   through `call_runtime`, whose glue moves the `st0`/`st1` parts with
 //!   [`load_part`] and [`store_part`].
 //!
-//! Refused, by name: [`BFLOAT`], [`CAST`], [`INTRINSIC`]; integers wider
+//! Refused, by name: [`CAST`], [`INTRINSIC`]; integers wider
 //! than 128 bits as `aggr::WIDE_FP_CAST`.
 
 use hod_cg::sym::{
@@ -57,9 +57,6 @@ use crate::float::{FpCond, ucomis_conditions};
 use crate::reg::{ST0, is_x87};
 use crate::target::X64;
 
-/// `fptrunc x86_fp80 to bfloat`: `llc` 22 calls `__truncxfbf2`, which
-/// the routine table does not have, and `llc` 19 cannot select it.
-pub const BFLOAT: &str = "x64:x87-bfloat";
 /// A cast with an `x86_fp80` side that is no conversion between it and a
 /// scalar (invalid IR, or an `fpext` the wrong way).
 pub const CAST: &str = "x64:x87-cast";
@@ -393,13 +390,14 @@ fn side(cx: &FnCx<'_, X64>, ty: TypeId) -> Side {
 ///   through its `float` (shifted left 16); `half` by `__extendhfxf2`.
 /// - `fptrunc` to `float`/`double`: `fld tbyte`, `fstp dword`/`qword`
 ///   below `rsp` (rounded by the control word: to nearest), loaded into
-///   a vector register; `half` by `__truncxfhf2`; `bfloat` is [`BFLOAT`].
+///   a vector register; `half` by `__truncxfhf2`, `bfloat` by `__truncxfbf2`
+///   (as `llc` 22; `llc` 19 cannot select it).
 /// - with `fp128`: `__extendxftf2`, `__trunctfxf2`.
 /// - to and from integers of up to 64 bits: [`to_int`], [`from_int`];
 ///   65 to 128 bits: `__fix[uns]xfti`, `__float[un]tixf`.
 ///
 /// # Errors
-/// [`BFLOAT`]; [`CAST`] for what is no conversion;
+/// [`CAST`] for what is no conversion;
 /// `aggr::WIDE_FP_CAST` for an integer wider than 128 bits; what the
 /// operands and the calls report.
 pub fn cast<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
@@ -454,8 +452,10 @@ pub fn cast<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> CgResult<
             above(cx);
             cx.finish(inst, rd)
         }
-        (Opcode::FPTrunc, K::X87, K::Half) | (Opcode::FPExt, K::X87, K::Quad) => {
-            let func = if tk == K::Half {
+        (Opcode::FPTrunc, K::X87, K::Half | K::BFloat) | (Opcode::FPExt, K::X87, K::Quad) => {
+            let func = if tk == K::BFloat {
+                Some(RuntimeFn::TruncXfBf2)
+            } else if tk == K::Half {
                 fp_trunc_routine(FpType::X86Fp80, FpType::Half, Arch::X86_64)
             } else {
                 fp_ext_routine(FpType::X86Fp80, FpType::Fp128, Arch::X86_64)
@@ -467,7 +467,6 @@ pub fn cast<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> CgResult<
             };
             cx.finish(inst, r)
         }
-        (Opcode::FPTrunc, K::X87, K::BFloat) => unsupported(BFLOAT),
         (Opcode::FPToSI | Opcode::FPToUI, K::X87, K::Int(bits)) => {
             to_int(cx, inst, arg, bits, op == Opcode::FPToSI)
         }

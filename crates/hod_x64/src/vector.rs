@@ -685,6 +685,53 @@ pub fn is_lane_vector(types: &TypeTable, ty: TypeId) -> bool {
     Shape::of(types, ty).is_some_and(|s| s.lanes().is_ok())
 }
 
+// ---- constants the generic glue puts in registers (WP-147) ----
+
+/// Glue (`Target::materialize`, WP-147, §5.6.16): the vector constants
+/// the scalar groups' materializers have no form for. `None` when
+/// `value` is none of them (the caller goes on as before).
+///
+/// - A mask (`<N x i1>`, `N ≤ 64`, class `Gpr`) other than a zero-like
+///   one: its bits (`mask::const_bits`, undefined lanes 0) by `mov`.
+/// - A vector of class `Fpr` whose image has relocations (`<1 x i64>
+///   <i64 ptrtoint (ptr @f to i64)>`, `<2 x ptr> <ptr @a, ptr @b>`):
+///   the image is written below the stack pointer by
+///   `constaddr::write_image` (`lea rsp, [rsp - 16]`, the image at
+///   `Outgoing(0)`), loaded, and the 16 bytes given back. Writes `rax`
+///   and `r11`; flags kept (`lea`, `mov`, `movups`).
+///
+/// # Errors
+/// What `constaddr::write_image` reports (a relocation that is not an
+/// aligned 8-byte symbol address in a vector: `x64:constant-relocation`).
+pub fn materialize(cx: &mut FnCx<'_, X64>, reg: PReg, value: Value) -> Option<CgResult<()>> {
+    let ValueKind::Const(id) = value.kind() else { return None };
+    let ty = value_ty(cx, value);
+    if !cx.types().is_vector(ty) {
+        return None;
+    }
+    if reg::is_fpr(reg) {
+        let mut image = Vec::new();
+        let mut fixups = Vec::new();
+        let flattened = cx.module.consts.flatten(cx.types(), id, &mut image, &mut fixups);
+        if flattened.is_err() || fixups.is_empty() || image.len() > 16 {
+            return None;
+        }
+        let bytes = if image.len() > 8 { 16 } else { 8 };
+        let area = Mem::base(Reg::Rsp, -16);
+        put(cx, mc::lea(Size::Q, Reg::Rsp, area));
+        let written = crate::constaddr::write_image(cx, FrameRef::Outgoing(0), ty, &image, &fixups);
+        if written.is_ok() {
+            load_fpr(cx, xm(reg), FrameRef::Outgoing(0), bytes);
+        }
+        put(cx, mc::lea(Size::Q, Reg::Rsp, Mem::base(Reg::Rsp, 16)));
+        return Some(written);
+    }
+    let n = crate::mask::mask_lanes(cx.types(), ty).filter(|&n| n <= crate::mask::MAX_MASK)?;
+    let bits = crate::mask::const_bits(cx, id, n)?;
+    crate::common::mov_imm(cx, gp(reg), bits, 64);
+    Some(Ok(()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

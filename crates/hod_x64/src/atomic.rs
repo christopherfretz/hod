@@ -42,7 +42,9 @@
 //! `cmpxchg16b` of zero by zero (as `llc`: it writes, so a read-only cell
 //! faults); a store, an `atomicrmw` and a `cmpxchg` are `cmpxchg16b`
 //! loops. `rbx` is taken for the lowering (`FnCx::take_reg`), `rcx:rbx`
-//! is the new value, `rdx:rax` the old one. Without `+cx16`, hod calls
+//! is the new value, `rdx:rax` the old one. Where `rbx` is the
+//! coroutine frame base it is pushed before the sequence writes it and
+//! popped after the last `cmpxchg16b` (WP-147). Without `+cx16`, hod calls
 //! libatomic as `llc` 19 and 22 do (WP-144, §5.6.14), with the C
 //! `memory_order` numbers: `__atomic_load_16`, `__atomic_store_16`,
 //! `__atomic_exchange_16`, `__atomic_compare_exchange_16` (the expected
@@ -256,6 +258,34 @@ fn take_rbx(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     cx.take_reg(crate::reg::gpr(RBX))
 }
 
+/// In a function with the coroutine frame (a coroutine, or
+/// `Stress::coro_frame`), `push rbx` before `rbx` is written for
+/// `cmpxchg16b`: `rbx` is the frame base there, outside the pool, and a
+/// heap-frame place is `[rbx + d]`. [`restore_base`] pops it; between
+/// the two only registers and the cell are addressed (an `rbp` place is
+/// unaffected; no `rsp` place is formed), and the pair `rcx:rbx` is
+/// loaded high half first ([`load_new`]).
+fn save_base(cx: &mut FnCx<'_, X64>) {
+    if cx.has_coro_frame() {
+        put(cx, mc::push_r(RBX));
+    }
+}
+
+/// `pop rbx` after [`save_base`] (flags kept).
+fn restore_base(cx: &mut FnCx<'_, X64>) {
+    if cx.has_coro_frame() {
+        put(cx, mc::pop_r(RBX));
+    }
+}
+
+/// The 16 bytes at frame place `slot` into `rcx:rbx`, the high half
+/// first: the low half's load may be the last use of `rbx` as the frame
+/// base ([`save_base`]).
+fn load_new(cx: &mut FnCx<'_, X64>, slot: FrameRef) {
+    frame_inst(cx, slot.offset_by(8), |m| mc::mov_rm(Size::Q, RCX, m));
+    frame_inst(cx, slot, |m| mc::mov_rm(Size::Q, RBX, m));
+}
+
 /// The two halves of the 16 bytes at frame place `slot` into `lo`, `hi`.
 fn load_pair(cx: &mut FnCx<'_, X64>, slot: FrameRef, lo: Reg, hi: Reg) {
     frame_inst(cx, slot, |m| mc::mov_rm(Size::Q, lo, m));
@@ -319,10 +349,12 @@ pub fn load<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, ptr: Value, mem: MemFlag
             // `lock cmpxchg16b` of zero by zero: `rdx:rax` is the value.
             let a = gp(cx.use_reg(ptr)?);
             let r = cx.def_mem(inst)?;
+            save_base(cx);
             for reg in [RAX, RDX, RBX, RCX] {
                 put(cx, mc::mov_ri(Size::D, reg, 0));
             }
             put(cx, locked(mc::cmpxchg16b_m(at(a))));
+            restore_base(cx);
             store_old(cx, r);
             Ok(())
         }
@@ -371,10 +403,12 @@ pub fn store<'a>(
             // guess is correct; a good one saves a pass).
             let src = cx.use_mem(value)?;
             let a = gp(cx.use_reg(ptr)?);
-            load_pair(cx, src, RBX, RCX);
+            save_base(cx);
+            load_new(cx, src);
             put(cx, mc::mov_rm(Size::Q, RAX, at(a)));
             put(cx, mc::mov_rm(Size::Q, RDX, Mem::base(a, 8)));
             wide_loop(cx, a, |_| Ok(()))?;
+            restore_base(cx);
         }
     }
     Ok(())
@@ -774,6 +808,7 @@ fn rmw_wide<'a>(
     put(cx, mc::mov_rm(Size::Q, RAX, at(a)));
     put(cx, mc::mov_rm(Size::Q, RDX, Mem::base(a, 8)));
     let q = Size::Q;
+    save_base(cx);
     wide_loop(cx, a, |cx| {
         let pair = |cx: &mut FnCx<'_, X64>,
                     lo: fn(Size, Reg, Reg) -> McInst,
@@ -859,6 +894,7 @@ fn rmw_wide<'a>(
         }
         Ok(())
     })?;
+    restore_base(cx);
     if let Some(r) = r {
         store_old(cx, r);
     }
@@ -1082,9 +1118,11 @@ pub fn cmpxchg<'a>(
             let a = gp(cx.use_reg(ptr)?);
             let r = cx.def_mem(inst)?;
             load_pair(cx, e, RAX, RDX);
-            load_pair(cx, n, RBX, RCX);
+            save_base(cx);
+            load_new(cx, n);
             put(cx, locked(mc::cmpxchg16b_m(at(a))));
             put(cx, mc::setcc_r(Cond::E, R10));
+            restore_base(cx);
             store_old(cx, r);
             frame_inst(cx, r.offset_by(flag_at), |m| mc::mov_mr(Size::B, m, R10));
             return Ok(());

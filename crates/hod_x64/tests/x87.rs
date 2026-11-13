@@ -896,11 +896,6 @@ fn compares_are_quiet() {
 fn what_is_not_lowered_is_refused_by_name() {
     for (text, name) in [
         (
-            "define bfloat @f(x86_fp80 %a) {\n  %r = fptrunc x86_fp80 %a to bfloat\n  \
-             ret bfloat %r\n}\n",
-            hod_x64::x87::BFLOAT,
-        ),
-        (
             "declare x86_fp80 @llvm.powi.f80.i64(x86_fp80, i64)\n\
              define x86_fp80 @f(x86_fp80 %a, i64 %n) {\n  \
              %r = call x86_fp80 @llvm.powi.f80.i64(x86_fp80 %a, i64 %n)\n  ret x86_fp80 %r\n}\n",

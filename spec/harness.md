@@ -218,6 +218,60 @@ needs `kiln++`: `$HOD_KILN`, else
 directory. Without one it skips with a note; under `HOD_REQUIRE_TOOLS=1`
 it fails.
 
+## libc++ on x86-64 under qemu
+
+`scripts/libcxx-x64-kiln.sh` is a `--compiler` for kiln's
+`cargo xtask libcxx` (`kiln:xtask/src/libcxx/`) that runs libc++'s test
+suite for `x86_64-unknown-linux-gnu` on an AArch64 host, without changing
+kiln (design 0006 section 6.3, L8; WP-121). The AArch64 recipe is the
+same command without the wrapper (`docs/status/libcxx-baseline.md`).
+kiln's runner has no target and no executor option, so the wrapper:
+
+- adds `--target=$HOD_X64_TARGET` (default `x86_64-unknown-linux-gnu`) to
+  every kiln++ invocation; kiln++ finds the cross GCC installation
+  (`/usr/lib/gcc-cross/x86_64-linux-gnu/14`, sysroot
+  `/usr/x86_64-linux-gnu`) by itself;
+- replaces the runner's `-L<tree>/usr/lib/aarch64-linux-gnu` by
+  `-L$HOD_X64_LIBDIR`, a directory holding only symbolic links to the
+  x86-64 `libc++.a`, `libc++abi.a` and `libc++experimental.a`. Only
+  archives: the driver's own trailing `-lc++` lies outside the runner's
+  `-Bstatic` and would otherwise open Debian's `libc++.so` linker script,
+  whose `libc++.so.1` exists for the host only. The headers stay the
+  runner's (Debian's libc++-22-dev headers are the same files for both
+  architectures);
+- for an invocation that writes an executable (`-o <out>`, none of `-c`,
+  `-S`, `-E`, `-fsyntax-only`, `--precompile`, `-shared`, `-r`, `-M`,
+  `-MM`), links `<out>.x86_64` and writes `<out>` as an `sh` script that
+  `exec`s `$HOD_X64_QEMU -L $HOD_X64_SYSROOT -0 "$0" <out>.x86_64 "$@"`.
+  The runner's run step and `%{exec} %t.exe` run it unchanged; `exec`
+  keeps qemu in the runner's process group, so a timeout kills it.
+
+What it cannot change: the runner's `target=` lit feature stays the
+host's. In libc++ 22.1.8 that changes one verdict,
+`std/input.output/iostream.format/std.manip/setfill_wchar_max.pass.cpp`
+(`XFAIL: target=aarch64{{.*}}-linux-gnu`): XPASS through the wrapper,
+PASS with a runner that knows the target. The request to the kiln agents
+for `KILN_LIBCXX_TARGET`/`KILN_LIBCXX_EXEC` would remove the wrapper.
+
+The x86-64 libc++ is Debian's `libc++-22-dev`, `libc++abi-22-dev` and
+`libunwind-22-dev` for amd64, version `1:22.1.8-1~deb13u4` (the AArch64
+tree's version), checked against the signed trixie package index and
+extracted under `.build/libcxx-x64/root`; `.build/libcxx-x64/lib` holds
+the links. The command, from the workspace root (timeouts times 8,
+design 0006 section 6.2):
+
+```sh
+W=$PWD/hod   # or a worktree
+(cd kiln && source scripts/env.sh &&
+ MAKEFLAGS=--jobserver-auth=fifo:/run/hod/jobserver.fifo \
+ cargo xtask libcxx --tag llvmorg-22.1.8 --compiler $W/scripts/libcxx-x64-kiln.sh \
+   std libcxx --timeout 160 -j 3 --mem-limit 3072 --no-fail \
+   --results $PWD/../.build/libcxx-x64/baseline/baseline.tsv)
+```
+
+hod in place of `llc` (WP-135): `HOD_X64_KILN` names the shim's
+`kiln++-hod`.
+
 ## irdiff
 
 ```

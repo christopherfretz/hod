@@ -509,7 +509,8 @@ impl<L: Layering> DebugInfo<L> {
         }
         let at = head.at as usize;
         let mask = self.cells[at].raw();
-        let mut dec = Dec { cells: self.cells.from(at), at: 1, strings: self.strings.as_deref() };
+        let cells = self.cells.from(at).get(1..).unwrap_or(&[]);
+        let mut dec = Dec { cells, strings: self.strings.as_deref() };
         DiNode::decode(kind, head.tag, mask, &mut dec)
     }
 

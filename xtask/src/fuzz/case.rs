@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::irdiff::process::{self, End, Limits, Output};
 use crate::irdiff::tools::{self, Emulator};
@@ -214,22 +214,7 @@ impl Bench {
         cwd: Option<&Path>,
         limits: Limits,
     ) -> Result<Output, String> {
-        log.push(shell_line(program, args, cwd));
-        process::run(
-            program,
-            |command| {
-                command.args(args).env("LC_ALL", "C");
-                if let Some(cwd) = cwd {
-                    command.current_dir(cwd);
-                }
-                // hod is configured by its options only.
-                for variable in ["HOD_FALLBACK_LLC", "HOD_STRICT", "HOD_COVERAGE_LOG"] {
-                    command.env_remove(variable);
-                }
-            },
-            b"",
-            limits,
-        )
+        timed_step(log, program, args, cwd, limits).map(|(output, _)| output)
     }
 
     /// csmith's arguments for `seed`, writing `out`.
@@ -327,16 +312,14 @@ impl Bench {
         limits: Limits,
     ) -> Result<(Output, Duration), String> {
         let dir = program.parent().unwrap_or(Path::new("."));
-        let started = Instant::now();
-        let output = match &self.tools.emulator {
+        match &self.tools.emulator {
             Some(emulator) => {
                 let mut args = emulator.args.clone();
                 args.push(program.into());
-                self.step(log, &emulator.program, &args, Some(dir), limits)?
+                timed_step(log, &emulator.program, &args, Some(dir), limits)
             }
-            None => self.step(log, program, &[], Some(dir), limits)?,
-        };
-        Ok((output, started.elapsed()))
+            None => timed_step(log, program, &[], Some(dir), limits),
+        }
     }
 
     /// Builds `ir` with hod into `object`: `Ok(None)` built, `Ok(Some)`
@@ -481,6 +464,33 @@ impl Bench {
         }
         Ok(verdict)
     }
+}
+
+/// [`Bench::step`], and how long the child ran once it held its
+/// jobserver token.
+fn timed_step(
+    log: &mut Vec<String>,
+    program: &Path,
+    args: &[OsString],
+    cwd: Option<&Path>,
+    limits: Limits,
+) -> Result<(Output, Duration), String> {
+    log.push(shell_line(program, args, cwd));
+    process::run_timed(
+        program,
+        |command| {
+            command.args(args).env("LC_ALL", "C");
+            if let Some(cwd) = cwd {
+                command.current_dir(cwd);
+            }
+            // hod is configured by its options only.
+            for variable in ["HOD_FALLBACK_LLC", "HOD_STRICT", "HOD_COVERAGE_LOG"] {
+                command.env_remove(variable);
+            }
+        },
+        b"",
+        limits,
+    )
 }
 
 fn finding(kind: Kind, detail: String) -> Verdict {

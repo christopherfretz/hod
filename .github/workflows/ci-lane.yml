@@ -1,0 +1,55 @@
+name: ci-lane
+# One architecture's half of the merge gate (docs/VALIDATION.md "Hosted
+# CI", spec/harness.md "CI"), called by ci.yml once per runner, after
+# kiln's ci-lane.yml. Every job runs in the same Debian 13 container as the
+# development container (buildpack-deps:trixie: Debian's GCC 14, git and
+# curl; the hod-ci action adds LLVM 19 and 22 and the rest), so the clang,
+# llc and binutils versions are the same packages there and here.
+on:
+  workflow_call:
+    inputs:
+      runner: { type: string, required: true }
+      # rust-cache's shared-key: one cache per architecture.
+      cache-key: { type: string, required: true }
+permissions:
+  contents: read
+# A missing tool (an LLVM tool, a linker, a debugger, the other
+# architecture's cross toolchain or emulator, kiln++) is a test failure,
+# never a skip (docs/VALIDATION.md "Oracles").
+env:
+  HOD_REQUIRE_TOOLS: "1"
+  CARGO_TERM_COLOR: never
+defaults:
+  run: { shell: bash }
+jobs:
+  # kiln++ at the pinned revision, built once per revision and
+  # architecture and kept in the Actions cache (the kiln action); the
+  # other jobs restore it.
+  kiln:
+    name: kiln
+    runs-on: ${{ inputs.runner }}
+    container: buildpack-deps:trixie
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/hod-ci
+        with: { cache-key: "${{ inputs.cache-key }}" }
+      - uses: ./.github/actions/kiln
+        with: { build: "true" }
+  # The quick gate. The debugger tests trace their programs with gdb and
+  # lldb: CAP_SYS_PTRACE (Docker's default seccomp profile allows ptrace;
+  # `personality` is blocked, so the debuggers leave ASLR on).
+  quick:
+    name: quick
+    needs: [kiln]
+    runs-on: ${{ inputs.runner }}
+    container:
+      image: buildpack-deps:trixie
+      options: --cap-add=SYS_PTRACE
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/hod-ci
+        with: { cache-key: "${{ inputs.cache-key }}", save-cache: "true" }
+      - uses: ./.github/actions/kiln
+      - run: cargo xtask ci --quick

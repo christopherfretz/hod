@@ -38,7 +38,11 @@ pub fn tools_required() -> bool {
 ///
 /// For an LLVM tool (`llvm-mc`, `llc`, `ld.lld`, ...) the versioned names
 /// `<name>-22` and `<name>-19` on `PATH` and the `/usr/lib/llvm-N/bin`
-/// directories are tried before the plain name, newest first.
+/// directories are tried, newest first. The plain name on `PATH` is not:
+/// its LLVM major is unknown, and a stock `clang++` of another major (a
+/// hosted runner's LLVM 18) writes IR hod does not read
+/// (`spec/harness.md` "Toolchain for tests"). Any other name, and a
+/// versioned one (`llc-22`), is also looked up as given.
 pub fn find_tool(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     let on_path =
@@ -52,7 +56,25 @@ pub fn find_tool(name: &str) -> Option<PathBuf> {
             return Some(installed);
         }
     }
+    if is_unversioned_llvm_tool(name) {
+        return None;
+    }
     on_path(name)
+}
+
+/// Whether `name` is an LLVM tool named without its major
+/// ([`find_tool`]): `clang++`, `llc`, `ld.lld`, `llvm-dwarfdump`, but not
+/// `llc-22`, `gcc` or `ld.bfd`.
+pub fn is_unversioned_llvm_tool(name: &str) -> bool {
+    let versioned = name
+        .rsplit_once('-')
+        .is_some_and(|(_, major)| !major.is_empty() && major.bytes().all(|b| b.is_ascii_digit()));
+    let llvm = name.starts_with("llvm-")
+        || matches!(
+            name,
+            "clang" | "clang++" | "clang-cpp" | "llc" | "opt" | "lli" | "lld" | "ld.lld" | "lldb"
+        );
+    llvm && !versioned
 }
 
 /// Finds a tool for a test, or says the test must skip.
@@ -305,6 +327,27 @@ fn wait_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // spec/harness.md "Toolchain for tests": an LLVM tool is found only
+    // with a supported major, never as the plain name of whatever LLVM is
+    // on PATH.
+    #[test]
+    fn llvm_tools_are_found_only_by_supported_major() {
+        for name in ["clang++", "clang", "llc", "ld.lld", "lldb", "llvm-dwarfdump", "llvm-mc"] {
+            assert!(is_unversioned_llvm_tool(name), "{name}");
+        }
+        for name in ["llc-22", "clang++-19", "llvm-as-19", "gcc", "g++", "ld.bfd", "mold", "gdb"] {
+            assert!(!is_unversioned_llvm_tool(name), "{name}");
+        }
+        if let Some(found) = find_tool("clang++") {
+            let file = found.file_name().unwrap().to_string_lossy().into_owned();
+            let dir = found.parent().unwrap().to_string_lossy().into_owned();
+            let supported = LLVM_MAJORS.iter().any(|major| {
+                file == format!("clang++-{major}") || dir == format!("/usr/lib/llvm-{major}/bin")
+            });
+            assert!(supported, "{}", found.display());
+        }
+    }
 
     #[test]
     fn scratch_is_created_and_removed() {

@@ -1,4 +1,12 @@
 name: ci
+# The merge gate on both architectures (docs/VALIDATION.md "Hosted CI",
+# spec/harness.md "CI"), after kiln's ci.yml: each architecture is one call
+# of the reusable workflow ci-lane.yml, whose jobs show up as `arm / quick`
+# and so on. On `ubuntu-24.04` the x86-64 programs under test run natively
+# and the AArch64 ones under qemu-aarch64; on `ubuntu-24.04-arm` the
+# reverse. The two fan-in jobs keep stable check names, `check` and
+# `check-x86_64`, whatever the lanes' jobs are: they are plain jobs, since
+# a matrix axis would rename them.
 on:
   push:
     branches: [main]
@@ -10,15 +18,30 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  quick:
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-24.04-arm, ubuntu-24.04]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+  arm:
+    uses: ./.github/workflows/ci-lane.yml
+    with: { runner: ubuntu-24.04-arm, cache-key: ci-arm }
+  x86_64:
+    uses: ./.github/workflows/ci-lane.yml
+    with: { runner: ubuntu-24.04, cache-key: ci-x86_64 }
+  # Fan-in: passes only if every job of the lane succeeded. `always()` so a
+  # failed, cancelled or skipped lane makes this job FAIL (a skipped
+  # required check would otherwise count as passing).
+  check:
+    needs: [arm]
+    if: always()
+    runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
-      # rust-toolchain.toml pins the toolchain; rustup installs it on first use.
-      - run: rustup show active-toolchain || rustup toolchain install
-      - run: cargo xtask ci --quick
+      - name: every arm job succeeded
+        run: |
+          echo "arm lane: ${{ needs.arm.result }}"
+          test "${{ needs.arm.result }}" = success
+  check-x86_64:
+    needs: [x86_64]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: every x86_64 job succeeded
+        run: |
+          echo "x86_64 lane: ${{ needs.x86_64.result }}"
+          test "${{ needs.x86_64.result }}" = success

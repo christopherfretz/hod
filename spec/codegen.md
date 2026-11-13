@@ -2741,16 +2741,17 @@ sequence puts an instruction other than `mov`, `lea`, `movzx`/`movsx`,
   which front ends leave untranslated (`rdtsc` with `"=A"`), `llc` 19
   and 22 do read on x86-64: `rax` for a value of up to 64 bits (an
   `i64` `=A` after `rdtsc` is `rax` alone, without `edx`), `rdx:rax`
-  for `i128`, as an input, an output or a tied pair; hod lowers only
-  empty templates, so it keeps refusing `A` as
-  `x64:inline-asm-constraint` and a non-empty template as
-  `x64:inline-asm` (WP-144, `tests/leftovers.rs`).
+  for `i128`, as an input, an output or a tied pair; hod keeps refusing
+  `A`, as `x64:inline-asm-constraint` in an empty template and as
+  `asm:constraint/a` (names are lower-cased) in one of instructions (WP-144, WP-187,
+  `tests/leftovers.rs`).
 
 Refused names: `x64:intrinsic` (an intrinsic not listed), and also
 `x64:intrinsic-wide` (a width above 128, or i128 where only `Int` is
 on), `x64:intrinsic-vector`, `x64:mem-inline-length` (an `.inline` form
 with a variable length), `x64:frame-depth`, `x64:eh-typeid`,
-`x64:inline-asm` (a template that is not empty), and
+`x64:inline-asm` (a `callbr` whose template is not empty; other
+templates are §5.6.28's since WP-187), and
 `x64:inline-asm-{output,outputs,constraint,clobber,operand,bundle}`.
 
 Evidence: `crates/hod_x64/tests/intrinsic.rs` and `tests/barrier.rs`,
@@ -3621,186 +3622,6 @@ result types are not LLVM's declaration is `x64:x86-intrinsic-signature`.
 
 Evidence: `spec/landed/codegen/WP-173.md`.
 
-#### 5.6.25 Indirect-branch tracking: `cf-protection-branch` (WP-184)
-
-A module with the flag `cf-protection-branch` (any value, §5.6 "Module
-flags"; `BranchProtection::CET_IBT`) gets an `endbr64` (`f3 0f 1e fa`)
-at each place an indirect branch, a `longjmp` or the unwinder may
-reach (`crates/hod_x64/src/cet.rs`). The rules are those of `llc` 19
-and 22 (`X86IndirectBranchTracking`, identical in both), with one
-deliberate superset:
-
-1. **Function entry**, the prologue's first instruction (`cet::entry`,
-   one call from `frame::begin`), unless the function has `nocf_check`.
-   `llc` also leaves out a function with local linkage whose address is
-   never taken (no data reference, no `llvm.used`, no cast or indirect
-   use); hod marks those too. That is harmless: `endbr64` is in the
-   reserved-`nop` space and executes as a `nop` on every x86-64
-   processor, with or without CET, and an extra mark only permits a
-   branch the program never makes. It saves a module-wide scan.
-2. **Address-taken blocks** (`blockaddress`, the targets of
-   `indirectbr`) and **landing pads**: right after the block's label and
-   the offset recorded for it (the `BlockOffset` and the call-site
-   table's landing both point at the `endbr64`), before the block's
-   `phi` loads (`hod_cg`'s `Target::branch_target` hook, called from
-   `emit_block`). An `invoke` whose stack arguments must be released
-   lands in a stub that restores the stack pointer first; the stub is the
-   landing address, so it is marked as well (one more `endbr64` than
-   `llc`, which has no stub).
-3. **The resume point of `llvm.eh.sjlj.setjmp`** (`llc` takes its
-   address as a block's; `longjmp` reaches it with `jmp *`), and each
-   coroutine entry stub `F.resume`/`F.destroy` (functions entered
-   through the frame's pointers).
-4. **After a direct call of a function declared `returns_twice`**: the
-   callee's declaration decides, as in `llc`; `returns_twice` on the
-   call site only, or on an indirect call, marks nothing. The return
-   address the call-site table records is the call's, before the mark.
-5. **Not** at `callbr` indirect targets (`llc` marks none) or switch
-   cases (hod makes no jump table, so it has no `notrack jmp`).
-
-All marks are emitted in the instruction stream, so every offset table
-(labels, line rows, CFI, call sites, block offsets, the shrink tables)
-sees them as ordinary instructions.
-
-**`nocf_check`** (`FnAttrs::NO_CF_CHECK`, a call-site flag too): on a
-function it drops the entry mark; on a direct call it changes nothing.
-An indirect call with `nocf_check` under `cf-protection-branch` needs the
-`notrack` prefix (`3e`), which `hod_mc_x64` does not encode: it is
-refused, `x64:nocf-check-indirect-call`, `musttail` or not (`llc` 19 and
-22 abort on the `musttail` form). Without the flag it is an ordinary
-call, as in `llc`.
-
-**The note** carries IBT (1) with this flag and SHSTK (2) with
-`cf-protection-return`, written once by the module emitter through
-`hod_obj::elf::add_gnu_properties` (`spec/object.md`), byte for byte
-`llc`'s. AArch64 refuses both flags (`never(X64_ONLY)`); `llc` ignores
-them there.
-
-Evidence: `spec/landed/codegen/WP-184.md`.
-
-#### 5.6.27 Stack probing (WP-186)
-
-A function with `"probe-stack"="inline-asm"` (`hod_ir::StackProbe::
-Inline(P)`, `spec/ir.md` §5.7; `P` is 4096 unless `"stack-probe-size"`
-says otherwise) touches the stack it allocates so that a guard region of
-`P` bytes below the stack cannot be jumped over: after each allocation
-step the new lowest page is touched before the stack pointer goes lower
-again, from high to low addresses, and the CFI is valid at every
-instruction, the probe loops included. Both targets keep the probe code
-in one module (`hod_x64::probe`, `hod_a64::probe`) called where the
-frame is allocated (the prologue, and the coroutine stubs' copy of it),
-where a dynamic allocation sets the stack pointer (`alloca`, an
-over-aligned slot: `dynamic_slot`) and where an outgoing argument area
-is allocated (`adjust_sp`). A function without the attribute is
-byte-identical to what it was.
-
-1. **x86-64**, `llc -O0`'s shapes (19 and 22). `FRAME` (the `sub` after
-   the pushes, §5.6.15) of at most `P` is one `sub`; up to `8P`, `sub rsp,
-   P` · `mov qword [rsp], 0` while more than `P` remain, then `sub rsp,
-   rest`; above, `mov r11, rsp` · `sub r11, FRAME & -P` · `1: sub rsp, P`
-   · `mov qword [rsp], 0` · `cmp rsp, r11` · `jne 1b` · `[sub rsp, FRAME %
-   P]`. The rest below the last touch (at most `P`) is left as `llc`
-   leaves it: the next push or call touches it. The CFA is `rbp + 16`
-   from the second instruction on, so no row changes in the loop. The
-   prologue of a probed function reserves 105 bytes more, cut with the
-   rest (§5.6.15). A dynamic allocation ends in `llc`'s loop before `mov
-   rsp, r11`: `1: cmp rsp, r11` · `jbe 2f` · `xor qword [rsp], 0` · `sub
-   rsp, P` · `jmp 1b` (`r11` already aligned: hod aligns before the loop,
-   `llc` after). An outgoing argument area is `mov qword [rsp - 8], 0`
-   (a dead word below the stack pointer: the touch of what the frame
-   left) then `lea rsp, [rsp - c]` · `mov qword [rsp], 0` per page of at
-   most `P`, flags kept.
-2. **AArch64.** LLVM's protocol: a caller leaves at most 1024 bytes
-   below its lowest touch unprobed at a call. hod's frame record is at
-   the bottom of the frame (§5.5), so its `stp` is the touch of the
-   bottom page and the top is touched first. A `FRAME` with `FRAME + 1024
-   <= P` is the unprobed prologue. Otherwise, with `k = (FRAME - 16) / P`
-   and `r = (FRAME - 16) % P`: `str xzr, [sp, #-16]!` (CFA `sp + 16`),
-   then for `k <= 4` (`llc`'s unroll limit) `k` times `sub sp, sp, #P` ·
-   `str xzr, [sp]` (CFA `sp + 16 + iP` after each `sub`), for `k > 4`
-   `sub x17, sp, #kP` (CFA `x17 + 16 + kP`) · `1: sub sp, sp, #P` · `str
-   xzr, [sp]` · `cmp sp, x17` · `b.ne 1b` (CFA register `sp`), then `r`
-   in one or two `sub`s (CFA `sp + FRAME`), then `stp x29, x30, [sp]` as
-   always. `x17` because `x16` may hold the incoming base and `x9`..`x15`
-   are `preserve_most`'s. The prologue reserves 36 bytes more. A dynamic
-   allocation: `1: sub sp, sp, #P` · `cmp sp, x16` · `b.ls 2f` · `str
-   xzr, [sp]` · `b 1b` · `2: mov sp, x16` · `ldr xzr, [sp]`, `llc`'s loop.
-   An outgoing argument area of more than 1024 bytes: `sub sp, sp, #c` ·
-   `str xzr, [sp]` per page of at most `P`. `llc` lays the frame out the
-   other way round (frame record on top, locals below, the rest probed
-   above 1024 bytes); the loop decision is the same.
-3. **Refused by name:** `attr:probe-stack-function`,
-   `attr:stack-probe-size-value` (`spec/ir.md` §5.7).
-
-Evidence: `spec/landed/codegen/WP-186.md`.
-
-#### 5.6.29 x86 system and state intrinsics (WP-190)
-
-The `llvm.x86.*` calls clang 19 and 22 write at `-O0` for the functions
-of the non-vector headers: `<ia32intrin.h>`, `<fxsrintrin.h>`,
-`<xsave*intrin.h>`, `<immintrin.h>`'s `_rdrand*`/`_rdseed*`/`_readfsbase*`
-/..., `<adcintrin.h>`/`<adxintrin.h>`, `<bmiintrin.h>`, `<bmi2intrin.h>`,
-`<crc32intrin.h>`, `<clflushoptintrin.h>`, `<clwbintrin.h>`,
-`<rtmintrin.h>`, `<xtestintrin.h>`, `<pkuintrin.h>`,
-`<serializeintrin.h>`, `<cetintrin.h>`'s shadow-stack reads
-(`crates/hod_x64/src/x86/sys.rs`; 67 `hod_ir` `Intrinsic` members, matrix
-rows `never(X64_ONLY)` / `on(X86_SYS)`). A new section after §5.6.22,
-not a part of it: the lowerings share §5.6.22's signature rule
-(`x64:x86-intrinsic-signature`) and its feature rule, nothing else. A
-`{ iA, iB }` result is a `Mem`-class value (§4.1): its fields are stored
-to the result's slot.
-
-1. **Baseline** (no feature check, as `llc` builds them on any x86-64):
-   `flags.read.u64` is `pushfq; pop r`, `flags.write.u64` `push r;
-   popfq` (no red zone, and the CFA is `rbp + 16` throughout, so the
-   eight bytes below `rsp` are free and the unwind rows do not change);
-   `rdtsc` and `rdpmc` (`ecx` = the operand) leave `edx:eax`, combined by
-   `shl rdx, 32; or rax, rdx`; `rdtscp` stores that and `ecx` (the
-   `TSC_AUX`) as the pair's fields; `addcarry.32`/`.64` and
-   `subborrow.32`/`.64` make CF from the carry byte (`add cl, -1`: set
-   when it is not 0), then `adc`/`sbb`, the carry out by `setb`.
-2. **Feature-gated**, each only where the function's `target-features`
-   enable the feature clang requires for its header function (§5.6.22's
-   rule: the last item that turns it on or off decides, none is off, a
-   `target-cpu` alone does not count). Otherwise refused by `intrinsic:`
-   and its LLVM name, also where `llc` 22 would select the instruction
-   anyway (`crc32`, `xgetbv`, `xsetbv`, the BMI ones, `rdssp*`,
-   `incssp*`, `rdpkru`): hod does not write an instruction the function
-   does not declare.
-
-   | intrinsics | feature | instruction |
-   |---|---|---|
-   | `fxsave`, `fxsave64`, `fxrstor`, `fxrstor64` | `fxsr` | at the pointer |
-   | `xsave`, `xsave64`, `xrstor`, `xrstor64`, `xgetbv`, `xsetbv` | `xsave` (or `xsaveopt`/`xsavec`/`xsaves`, which imply it) | mask high in `edx`, low in `eax`; `xgetbv`/`xsetbv` index in `ecx` |
-   | `xsaveopt`, `xsaveopt64` | `xsaveopt` (off with `-xsave` too) | as `xsave` |
-   | `xsavec`, `xsavec64` | `xsavec` (as above) | as `xsave` |
-   | `xsaves`, `xsaves64`, `xrstors`, `xrstors64` | `xsaves` (as above) | as `xsave` |
-   | `rdrand.16`/`.32`/`.64` | `rdrnd` | into `rax`, then `setb`: the flag field 1 when a number was delivered (the hardware zeroes the value otherwise, which `llc`'s `cmovb` relies on) |
-   | `rdseed.16`/`.32`/`.64` | `rdseed` | as `rdrand` |
-   | `clflushopt`, `clwb` | `clflushopt`, `clwb` | at the pointer |
-   | `bmi.bextr.32`/`.64` | `bmi` | VEX, the control in `vvvv` |
-   | `bmi.bzhi.*`, `bmi.pdep.*`, `bmi.pext.*` | `bmi2` | VEX; `pdep`/`pext` the mask in `r/m` |
-   | `sse42.crc32.32.8`/`.32.16`/`.32.32`/`.64.64` | `crc32` (or `sse4.2` and every later SSE or AVX level) | `crc32` into the first operand's register |
-   | `rdfsbase.*`, `rdgsbase.*`, `wrfsbase.*`, `wrgsbase.*` | `fsgsbase` | the 32- or 64-bit form |
-   | `xbegin`, `xend`, `xabort`, `xtest` | `rtm` | `xbegin` is `mov eax, -1; xbegin` to the next instruction (an abort resumes there with the status in `eax`); `xabort` of its `immarg`; `xtest` then `setne`, zero-extended |
-   | `rdpid` | `rdpid` | the 64-bit register form, its low half |
-   | `rdpkru`, `wrpkru` | `pku` | `ecx` (and `edx`) zeroed |
-   | `serialize` | `serialize` | |
-   | `incsspd`/`q`, `rdsspd`/`q` | `shstk` | `rdssp` on the operand's register: without shadow stacks a `nop`, the result is the operand |
-3. **Refused by name** (`classify`, `spec/ir.md`): every other name the
-   headers write, among them `cmpccxadd*`, `enqcmd*`, `invpcid`,
-   `directstore*` (`_directstoreu_*`)/`movdir64b`, `monitorx`/`mwaitx`, `ptwrite*`, `aadd*`/
-   `aand*`/`aor*`/`axor*`, `rdpru`, the `uintr` ones (`senduipi`,
-   `testui`, `clui`, `stui`), `urdmsr`/`uwrmsr`, `umonitor`/`umwait`/
-   `tpause`, `wbinvd`, `wbnoinvd`, `xresldtrk`/`xsusldtrk`,
-   `clrssbsy`, `rstorssp`, `saveprevssp`, `setssbsy`, `wrss*`/`wruss*`,
-   `cldemote`, `clzero`, the `lwp` ones (`llwpcb`, `slwpcb`, `lwpins*`,
-   `lwpval*`) and `tbm.bextri.*` (clang 19 only). AArch64
-   refuses every `llvm.x86.*` name.
-
-Evidence: `spec/landed/codegen/WP-173.md` for the rules this reuses,
-`spec/landed/codegen/WP-190.md` for these.
-
 #### 5.6.23 `callbr` of an empty template, `preserve_mostcc` and `preserve_allcc` (WP-181)
 
 1. **`callbr` of an empty template** (`barrier.rs`, `inst:callbr` `ON`
@@ -3953,6 +3774,262 @@ are target-neutral (`hod_cg::guard`); each target emits the code
    (`intrinsic:llvm.stackprotector`, `intrinsic:llvm.stackguard`).
 
 Evidence: `spec/landed/codegen/WP-183.md`.
+
+#### 5.6.25 Indirect-branch tracking: `cf-protection-branch` (WP-184)
+
+A module with the flag `cf-protection-branch` (any value, §5.6 "Module
+flags"; `BranchProtection::CET_IBT`) gets an `endbr64` (`f3 0f 1e fa`)
+at each place an indirect branch, a `longjmp` or the unwinder may
+reach (`crates/hod_x64/src/cet.rs`). The rules are those of `llc` 19
+and 22 (`X86IndirectBranchTracking`, identical in both), with one
+deliberate superset:
+
+1. **Function entry**, the prologue's first instruction (`cet::entry`,
+   one call from `frame::begin`), unless the function has `nocf_check`.
+   `llc` also leaves out a function with local linkage whose address is
+   never taken (no data reference, no `llvm.used`, no cast or indirect
+   use); hod marks those too. That is harmless: `endbr64` is in the
+   reserved-`nop` space and executes as a `nop` on every x86-64
+   processor, with or without CET, and an extra mark only permits a
+   branch the program never makes. It saves a module-wide scan.
+2. **Address-taken blocks** (`blockaddress`, the targets of
+   `indirectbr`) and **landing pads**: right after the block's label and
+   the offset recorded for it (the `BlockOffset` and the call-site
+   table's landing both point at the `endbr64`), before the block's
+   `phi` loads (`hod_cg`'s `Target::branch_target` hook, called from
+   `emit_block`). An `invoke` whose stack arguments must be released
+   lands in a stub that restores the stack pointer first; the stub is the
+   landing address, so it is marked as well (one more `endbr64` than
+   `llc`, which has no stub).
+3. **The resume point of `llvm.eh.sjlj.setjmp`** (`llc` takes its
+   address as a block's; `longjmp` reaches it with `jmp *`), and each
+   coroutine entry stub `F.resume`/`F.destroy` (functions entered
+   through the frame's pointers).
+4. **After a direct call of a function declared `returns_twice`**: the
+   callee's declaration decides, as in `llc`; `returns_twice` on the
+   call site only, or on an indirect call, marks nothing. The return
+   address the call-site table records is the call's, before the mark.
+5. **Not** at `callbr` indirect targets (`llc` marks none) or switch
+   cases (hod makes no jump table, so it has no `notrack jmp`).
+
+All marks are emitted in the instruction stream, so every offset table
+(labels, line rows, CFI, call sites, block offsets, the shrink tables)
+sees them as ordinary instructions.
+
+**`nocf_check`** (`FnAttrs::NO_CF_CHECK`, a call-site flag too): on a
+function it drops the entry mark; on a direct call it changes nothing.
+An indirect call with `nocf_check` under `cf-protection-branch` needs the
+`notrack` prefix (`3e`), which `hod_mc_x64` does not encode: it is
+refused, `x64:nocf-check-indirect-call`, `musttail` or not (`llc` 19 and
+22 abort on the `musttail` form). Without the flag it is an ordinary
+call, as in `llc`.
+
+**The note** carries IBT (1) with this flag and SHSTK (2) with
+`cf-protection-return`, written once by the module emitter through
+`hod_obj::elf::add_gnu_properties` (`spec/object.md`), byte for byte
+`llc`'s. AArch64 refuses both flags (`never(X64_ONLY)`); `llc` ignores
+them there.
+
+Evidence: `spec/landed/codegen/WP-184.md`.
+
+#### 5.6.27 Stack probing (WP-186)
+
+A function with `"probe-stack"="inline-asm"` (`hod_ir::StackProbe::
+Inline(P)`, `spec/ir.md` §5.7; `P` is 4096 unless `"stack-probe-size"`
+says otherwise) touches the stack it allocates so that a guard region of
+`P` bytes below the stack cannot be jumped over: after each allocation
+step the new lowest page is touched before the stack pointer goes lower
+again, from high to low addresses, and the CFI is valid at every
+instruction, the probe loops included. Both targets keep the probe code
+in one module (`hod_x64::probe`, `hod_a64::probe`) called where the
+frame is allocated (the prologue, and the coroutine stubs' copy of it),
+where a dynamic allocation sets the stack pointer (`alloca`, an
+over-aligned slot: `dynamic_slot`) and where an outgoing argument area
+is allocated (`adjust_sp`). A function without the attribute is
+byte-identical to what it was.
+
+1. **x86-64**, `llc -O0`'s shapes (19 and 22). `FRAME` (the `sub` after
+   the pushes, §5.6.15) of at most `P` is one `sub`; up to `8P`, `sub rsp,
+   P` · `mov qword [rsp], 0` while more than `P` remain, then `sub rsp,
+   rest`; above, `mov r11, rsp` · `sub r11, FRAME & -P` · `1: sub rsp, P`
+   · `mov qword [rsp], 0` · `cmp rsp, r11` · `jne 1b` · `[sub rsp, FRAME %
+   P]`. The rest below the last touch (at most `P`) is left as `llc`
+   leaves it: the next push or call touches it. The CFA is `rbp + 16`
+   from the second instruction on, so no row changes in the loop. The
+   prologue of a probed function reserves 105 bytes more, cut with the
+   rest (§5.6.15). A dynamic allocation ends in `llc`'s loop before `mov
+   rsp, r11`: `1: cmp rsp, r11` · `jbe 2f` · `xor qword [rsp], 0` · `sub
+   rsp, P` · `jmp 1b` (`r11` already aligned: hod aligns before the loop,
+   `llc` after). An outgoing argument area is `mov qword [rsp - 8], 0`
+   (a dead word below the stack pointer: the touch of what the frame
+   left) then `lea rsp, [rsp - c]` · `mov qword [rsp], 0` per page of at
+   most `P`, flags kept.
+2. **AArch64.** LLVM's protocol: a caller leaves at most 1024 bytes
+   below its lowest touch unprobed at a call. hod's frame record is at
+   the bottom of the frame (§5.5), so its `stp` is the touch of the
+   bottom page and the top is touched first. A `FRAME` with `FRAME + 1024
+   <= P` is the unprobed prologue. Otherwise, with `k = (FRAME - 16) / P`
+   and `r = (FRAME - 16) % P`: `str xzr, [sp, #-16]!` (CFA `sp + 16`),
+   then for `k <= 4` (`llc`'s unroll limit) `k` times `sub sp, sp, #P` ·
+   `str xzr, [sp]` (CFA `sp + 16 + iP` after each `sub`), for `k > 4`
+   `sub x17, sp, #kP` (CFA `x17 + 16 + kP`) · `1: sub sp, sp, #P` · `str
+   xzr, [sp]` · `cmp sp, x17` · `b.ne 1b` (CFA register `sp`), then `r`
+   in one or two `sub`s (CFA `sp + FRAME`), then `stp x29, x30, [sp]` as
+   always. `x17` because `x16` may hold the incoming base and `x9`..`x15`
+   are `preserve_most`'s. The prologue reserves 36 bytes more. A dynamic
+   allocation: `1: sub sp, sp, #P` · `cmp sp, x16` · `b.ls 2f` · `str
+   xzr, [sp]` · `b 1b` · `2: mov sp, x16` · `ldr xzr, [sp]`, `llc`'s loop.
+   An outgoing argument area of more than 1024 bytes: `sub sp, sp, #c` ·
+   `str xzr, [sp]` per page of at most `P`. `llc` lays the frame out the
+   other way round (frame record on top, locals below, the rest probed
+   above 1024 bytes); the loop decision is the same.
+3. **Refused by name:** `attr:probe-stack-function`,
+   `attr:stack-probe-size-value` (`spec/ir.md` §5.7).
+
+Evidence: `spec/landed/codegen/WP-186.md`.
+
+#### 5.6.28 Inline assembly with a template (WP-187)
+
+A call or `invoke` of inline assembly whose template is not empty is
+`crates/hod_x64/src/barrier/template.rs` (hook: `barrier::asm`); the
+template is substituted (`hod_asm::template`, `hod_asm::x64::print_operand`)
+and assembled (`hod_asm::x64::assemble`, `spec/asm.md` §10) before
+anything is emitted, so a template that refuses leaves no code. The
+sequence:
+
+1. Every input placed in a register or memory, and every pointer of an
+   indirect operand, is evaluated and stored to a 16-byte slot of its
+   own (one per distinct value).
+2. Every register value is displaced; every holdable register the
+   template may write (operand registers, clobbers) is taken. A taken
+   register is a used one, so the prologue saves `rbx` and `r12`..`r15`
+   among them (§5.6.15); `rax`, `rcx`, `rdx`, `r10`, `r11` and the SSE
+   registers hold no value across an instruction.
+3. Inputs are loaded into their registers (`movzx` for 1 and 2 bytes,
+   the 32-bit `mov` for 4, so an integer is zero-extended to 32 bits at
+   least; `movss`/`movsd`/`movups` for SSE); a memory operand's address
+   is put in its register (`lea` of the slot, or the pointer loaded).
+4. The template's bytes, with a relocation at each symbol field
+   (`spec/asm.md` §10.2 "Symbols") against the module's symbol of that
+   name (another name is `asm:symbol`).
+5. Register outputs are stored to their slots (`mov`, flags kept); flag
+   outputs are `setcc r11b`, `movzx`, stored; indirect register outputs
+   are copied from their slots through their pointers (`r11`, the value
+   in `r10` or `xmm15`).
+6. The result is loaded from its slot, or the struct of several results
+   copied field by field; an `invoke` continues at its normal
+   destination.
+
+Only frame accesses (`rbp`-relative, `rbx`-relative in a coroutine body)
+and the operand registers are touched between 3 and 5 besides the
+template, so `push`/`pop` inside a template keep the frame valid (the
+CFA is `rbp`-based throughout, §5.6.15).
+
+**Registers.** Every operand gets a register of its own, distinct from
+every other operand's and every clobber, except a tied input, which is
+its output's register; this satisfies `&` always. General registers in
+the order `rax`, `rcx`, `rdx`, `rsi`, `rdi`, `r8`..`r11`, `rbx`,
+`r12`..`r15` within the code's class (`Q`: `rax`..`rbx`; `R`: the
+legacy eight); SSE registers from `xmm0`. `{reg}` is that register;
+`rsp`, `rbp` operands or clobbers are `x64:inline-asm-frame-register`;
+a template that may write `rbx` in a coroutine body (its frame base,
+WP-137) is `x64:inline-asm-frame-base`.
+
+**Choice.** Of several alternatives, `llc`'s by weights (as §5.6.8, with
+the ranged immediates weighing 3 when the constant fits). Within one, as
+`llc`'s `ComputeConstraintToUse`: a flag output; an explicit register; a
+tied input's output register; an immediate code (or `X`) for a constant
+integer in range (a constant out of every range of an immediate-only
+alternative is `asm:constraint/range`); memory (`m`, `o`) unless the
+operand is a direct output or an output an input is tied to (`rm` on an
+input is memory, as `llc` takes it); otherwise a register (`X` of a
+floating-point or vector value: SSE).
+
+**Types.** A general register holds `i8`, `i16`, `i32`, `i64`, `ptr`,
+`float`, `double`; an SSE register `float`, `double`, `i32`, `i64`,
+`i128`, `fp128` and vectors of 4, 8 or 16 bytes; a tied pair must have
+the same size; a flag output is an integer. Otherwise
+`x64:inline-asm-operand-type`. More than 16 operands, 4 alternatives,
+or the registers of a class: `x64:inline-asm-operands`.
+
+**Refused.** `inteldialect` (`x64:inline-asm-intel`), `unwind` on an
+`invoke` (`x64:inline-asm-unwind`), a bundle (`x64:inline-asm-bundle`),
+a `callbr` with a template (`x64:inline-asm`), `asm goto` labels in a
+call, a symbol outside a memory operand (`asm:operand/symbol`), and
+`hod_asm`'s `asm:*` names.
+
+Evidence: `crates/hod_asm/tests/llvm_mc_x64.rs`,
+`crates/hod_x64/tests/inline_asm.rs` (execution against `llc` 19 and
+22 under the emulator; the `forced_*` templates' bytes, and the
+templates' relocations, equal to `llc`'s),
+summarized in `spec/landed/codegen/WP-187.md`.
+
+#### 5.6.29 x86 system and state intrinsics (WP-190)
+
+The `llvm.x86.*` calls clang 19 and 22 write at `-O0` for the functions
+of the non-vector headers: `<ia32intrin.h>`, `<fxsrintrin.h>`,
+`<xsave*intrin.h>`, `<immintrin.h>`'s `_rdrand*`/`_rdseed*`/`_readfsbase*`
+/..., `<adcintrin.h>`/`<adxintrin.h>`, `<bmiintrin.h>`, `<bmi2intrin.h>`,
+`<crc32intrin.h>`, `<clflushoptintrin.h>`, `<clwbintrin.h>`,
+`<rtmintrin.h>`, `<xtestintrin.h>`, `<pkuintrin.h>`,
+`<serializeintrin.h>`, `<cetintrin.h>`'s shadow-stack reads
+(`crates/hod_x64/src/x86/sys.rs`; 67 `hod_ir` `Intrinsic` members, matrix
+rows `never(X64_ONLY)` / `on(X86_SYS)`). A new section after §5.6.22,
+not a part of it: the lowerings share §5.6.22's signature rule
+(`x64:x86-intrinsic-signature`) and its feature rule, nothing else. A
+`{ iA, iB }` result is a `Mem`-class value (§4.1): its fields are stored
+to the result's slot.
+
+1. **Baseline** (no feature check, as `llc` builds them on any x86-64):
+   `flags.read.u64` is `pushfq; pop r`, `flags.write.u64` `push r;
+   popfq` (no red zone, and the CFA is `rbp + 16` throughout, so the
+   eight bytes below `rsp` are free and the unwind rows do not change);
+   `rdtsc` and `rdpmc` (`ecx` = the operand) leave `edx:eax`, combined by
+   `shl rdx, 32; or rax, rdx`; `rdtscp` stores that and `ecx` (the
+   `TSC_AUX`) as the pair's fields; `addcarry.32`/`.64` and
+   `subborrow.32`/`.64` make CF from the carry byte (`add cl, -1`: set
+   when it is not 0), then `adc`/`sbb`, the carry out by `setb`.
+2. **Feature-gated**, each only where the function's `target-features`
+   enable the feature clang requires for its header function (§5.6.22's
+   rule: the last item that turns it on or off decides, none is off, a
+   `target-cpu` alone does not count). Otherwise refused by `intrinsic:`
+   and its LLVM name, also where `llc` 22 would select the instruction
+   anyway (`crc32`, `xgetbv`, `xsetbv`, the BMI ones, `rdssp*`,
+   `incssp*`, `rdpkru`): hod does not write an instruction the function
+   does not declare.
+
+   | intrinsics | feature | instruction |
+   |---|---|---|
+   | `fxsave`, `fxsave64`, `fxrstor`, `fxrstor64` | `fxsr` | at the pointer |
+   | `xsave`, `xsave64`, `xrstor`, `xrstor64`, `xgetbv`, `xsetbv` | `xsave` (or `xsaveopt`/`xsavec`/`xsaves`, which imply it) | mask high in `edx`, low in `eax`; `xgetbv`/`xsetbv` index in `ecx` |
+   | `xsaveopt`, `xsaveopt64` | `xsaveopt` (off with `-xsave` too) | as `xsave` |
+   | `xsavec`, `xsavec64` | `xsavec` (as above) | as `xsave` |
+   | `xsaves`, `xsaves64`, `xrstors`, `xrstors64` | `xsaves` (as above) | as `xsave` |
+   | `rdrand.16`/`.32`/`.64` | `rdrnd` | into `rax`, then `setb`: the flag field 1 when a number was delivered (the hardware zeroes the value otherwise, which `llc`'s `cmovb` relies on) |
+   | `rdseed.16`/`.32`/`.64` | `rdseed` | as `rdrand` |
+   | `clflushopt`, `clwb` | `clflushopt`, `clwb` | at the pointer |
+   | `bmi.bextr.32`/`.64` | `bmi` | VEX, the control in `vvvv` |
+   | `bmi.bzhi.*`, `bmi.pdep.*`, `bmi.pext.*` | `bmi2` | VEX; `pdep`/`pext` the mask in `r/m` |
+   | `sse42.crc32.32.8`/`.32.16`/`.32.32`/`.64.64` | `crc32` (or `sse4.2` and every later SSE or AVX level) | `crc32` into the first operand's register |
+   | `rdfsbase.*`, `rdgsbase.*`, `wrfsbase.*`, `wrgsbase.*` | `fsgsbase` | the 32- or 64-bit form |
+   | `xbegin`, `xend`, `xabort`, `xtest` | `rtm` | `xbegin` is `mov eax, -1; xbegin` to the next instruction (an abort resumes there with the status in `eax`); `xabort` of its `immarg`; `xtest` then `setne`, zero-extended |
+   | `rdpid` | `rdpid` | the 64-bit register form, its low half |
+   | `rdpkru`, `wrpkru` | `pku` | `ecx` (and `edx`) zeroed |
+   | `serialize` | `serialize` | |
+   | `incsspd`/`q`, `rdsspd`/`q` | `shstk` | `rdssp` on the operand's register: without shadow stacks a `nop`, the result is the operand |
+3. **Refused by name** (`classify`, `spec/ir.md`): every other name the
+   headers write, among them `cmpccxadd*`, `enqcmd*`, `invpcid`,
+   `directstore*` (`_directstoreu_*`)/`movdir64b`, `monitorx`/`mwaitx`, `ptwrite*`, `aadd*`/
+   `aand*`/`aor*`/`axor*`, `rdpru`, the `uintr` ones (`senduipi`,
+   `testui`, `clui`, `stui`), `urdmsr`/`uwrmsr`, `umonitor`/`umwait`/
+   `tpause`, `wbinvd`, `wbnoinvd`, `xresldtrk`/`xsusldtrk`,
+   `clrssbsy`, `rstorssp`, `saveprevssp`, `setssbsy`, `wrss*`/`wruss*`,
+   `cldemote`, `clzero`, the `lwp` ones (`llwpcb`, `slwpcb`, `lwpins*`,
+   `lwpval*`) and `tbm.bextri.*` (clang 19 only). AArch64
+   refuses every `llvm.x86.*` name.
+
+Evidence: `spec/landed/codegen/WP-173.md` for the rules this reuses,
+`spec/landed/codegen/WP-190.md` for these.
 
 ## 6. Control flow
 

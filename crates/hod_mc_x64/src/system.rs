@@ -135,6 +135,47 @@ pub const fn cld() -> Inst {
     plain(Op::one(0xfc))
 }
 
+/// `STD` (`FD`): sets the direction flag, so the string instructions
+/// count downward (inline assembly, WP-187).
+#[inline]
+pub const fn std() -> Inst {
+    plain(Op::one(0xfd))
+}
+
+/// `FWAIT` (`9B`, also `WAIT`): waits for pending x87 exceptions.
+/// Inline assembly, WP-187.
+#[inline]
+pub const fn fwait() -> Inst {
+    plain(Op::one(0x9b))
+}
+
+/// `HLT` (`F4`): halts until an interrupt; privileged (a `#GP` in user
+/// mode). Inline assembly, WP-187.
+#[inline]
+pub const fn hlt() -> Inst {
+    plain(Op::one(0xf4))
+}
+
+/// `SYSCALL` (`0F 05`): the system call; it writes `rcx` and `r11`.
+/// Inline assembly, WP-187.
+#[inline]
+pub const fn syscall() -> Inst {
+    plain(Op::two(0x05))
+}
+
+/// `INT imm8` (`CD ib`): the software interrupt `n`. LLVM's assembler
+/// writes `int $3` as `INT3` (`CC`), so `n == 3` is [`int3`]. Inline
+/// assembly, WP-187.
+#[inline]
+pub const fn int_i(n: u8) -> Inst {
+    if n == 3 {
+        return int3();
+    }
+    let mut inst = plain(Op::one(0xcd));
+    inst.push(n);
+    inst
+}
+
 /// `F3` in front of `inst`: LLVM emits `REP` as an instruction of its
 /// own, so it precedes even the `66` of a 16-bit operation.
 #[inline]

@@ -5,7 +5,7 @@ inline-assembly callee (`call`, `invoke`, `callbr` of `asm "..."`) and
 module-level `module asm "..."`. `llc` hands both to its integrated
 assembler. hod writes no assembly text and runs no assembler: `hod_asm`
 parses the text and encodes each instruction itself, through
-`hod_mc_a64`'s checked encoders, and refuses what it does not understand
+`hod_mc_a64`'s and `hod_mc_x64`'s checked encoders, and refuses what it does not understand
 by a stable name. A wrong guess is the one real failure, so every form
 accepted is one whose bytes are held to LLVM's assembler (§7).
 
@@ -20,6 +20,8 @@ Rules, for every caller:
 
 Owners: `crates/hod_asm` (the text), `crates/hod_a64/src/inline_asm.rs`
 (the lowering, §6; `spec/codegen.md` §5.5.3 "WP-103"),
+`crates/hod_x64/src/barrier/template.rs` (x86-64's, §10, §11;
+`spec/codegen.md` §5.6.28 "WP-187"),
 `crates/hod_a64/src/barrier.rs` (empty templates, `spec/codegen.md`
 "Assembly that needs no assembler (WP-075)"), `crates/hod_ir/src/asm_text.rs`
 (module-level symbol directives, `spec/ir.md` §2.3).
@@ -305,3 +307,133 @@ What the emitter adds (`spec/codegen.md` §9.7.3): a label named as a
 module symbol must be the definition of a module declaration (external
 linkage, not thread-local), else `asm:symbol`; directives on module
 symbols follow WP-075's rules.
+
+## 10. x86-64 instructions (`x64/`, WP-187)
+
+The x86-64 assembler reads AT&T syntax, the dialect `llc` prints for
+`x86_64-*-linux-*` (variant 0 of `$(..$|..$)`), and encodes every
+instruction through `hod_mc_x64`'s constructors; there is no second
+encoder. `crates/hod_asm/tests/llvm_mc_x64.rs` holds every accepted form
+to the bytes `llvm-mc` 22 and 19 write (`--triple=x86_64-unknown-linux-gnu`,
+object `.text`), keeps a pinned core whose bytes are written in the test,
+and checks the refused table by name.
+
+### 10.1 Statements (`x64::clean`)
+
+As LLVM's x86 lexer reads them: `#` and `//` start a comment to the end
+of the line anywhere outside a literal, `/* */` is a comment, `;` and
+newlines end a statement. Mnemonics are case-insensitive.
+
+### 10.2 Operands (`operand.rs`)
+
+`%reg` (the 8-, 16-, 32-, 64-bit names of the sixteen general
+registers, `xmm0`..`xmm15`); `$expr` (an immediate, a constant
+expression of §3); memory `seg:disp(base, index, scale)` with `%fs`/`%gs`
+segments, a 64-bit base or `%rip`, a 64-bit index other than `%rsp`,
+scale 1, 2, 4, 8; a bare expression (an absolute address, or a branch
+target). A 32-bit address register is `asm:operand/register`, another
+scale `asm:operand/range`, `*` (an indirect branch) `asm:operand/form`.
+`ah`..`dh`, x87, MMX, `xmm16` and up, `ymm`, `zmm`, control and segment
+registers as operands are refused.
+
+**Symbols.** A memory operand's displacement may name a symbol, with a
+constant before it or after its specifier, and a relocation specifier
+read without regard to case (`sym@tpoff+8`, `8+sym@gotpcrel(%rip)`).
+The field is written zero and returned as a `Ref` (offset in the code,
+kind, name, addend: the constant, and for a `%rip` field minus the bytes
+from the field to the instruction's end), of the relocation LLVM's
+assembler (llvm-mc 19 and 22) writes:
+
+| operand | relocation |
+|---|---|
+| `sym(%rip)` | `R_X86_64_PC32` |
+| `sym@plt(%rip)` | `R_X86_64_PLT32` |
+| `sym@gottpoff(%rip)` | `R_X86_64_GOTTPOFF` |
+| `sym@gotpcrel(%rip)`, the source of a 32- or 64-bit `mov adc add and cmp or sbb sub xor`, or the memory of `test`, no constant | `R_X86_64_GOTPCRELX`, `R_X86_64_REX_GOTPCRELX` with a REX prefix |
+| `sym@gotpcrel(%rip)` otherwise, not `lea` | `R_X86_64_GOTPCREL` |
+| `sym@tpoff` without `%rip` | `R_X86_64_TPOFF32` |
+| `sym@dtpoff` without `%rip` | `R_X86_64_DTPOFF32` |
+| `sym` without `%rip` | `R_X86_64_32S` |
+
+`lea` of `@gotpcrel` (LLVM 19 writes `R_X86_64_GOTPCREL`, 22
+`R_X86_64_REX_GOTPCRELX`), another specifier (`@got`, `@gotoff`,
+`@ntpoff`, ...), and a specifier on an immediate are
+`asm:operand/specifier`; a symbol in an immediate or a branch target,
+or a specifier on a numeric label, `asm:operand/symbol`.
+
+### 10.3 Mnemonics (`encode.rs`)
+
+The operation size is the suffix's (`b`, `w`, `l`, `q`) or the general
+registers' when there is none; they must agree (`asm:operand/register`),
+and a form with neither (`inc (%rax)`) is `asm:operand/form`, as LLVM
+refuses it as ambiguous. Families:
+
+- without operands: `nop`, `pause`, `cpuid`, `rdtsc`, `rdtscp`,
+  `xgetbv`, `mfence`, `lfence`, `sfence`, `int3`, `ud2`, `hlt`,
+  `fwait`/`wait`, `cld`,
+  `std`, `syscall`, `pushf[q]`, `popf[q]`, `cbtw`/`cbw`, `cwtl`/`cwde`,
+  `cltq`/`cdqe`, `cwtd`/`cwd`, `cltd`/`cdq`, `cqto`/`cqo`;
+- `add or adc sbb and sub xor cmp`, `test`; `inc dec not neg mul div
+  idiv`; `imul` of one, two and three operands;
+- shifts `rol ror rcl rcr shl sal shr sar` (immediate, `%cl`, implicit
+  1), `shld`, `shrd`; `bsf bsr tzcnt lzcnt popcnt`; `bt bts btr btc`;
+  `bswap`;
+- `mov` (and `movabs`), `movz*`/`movs*` with their sizes (`movzbl`,
+  `movslq`, ..., `movzx`, `movsx`), `lea`, `xchg`, `xadd`, `cmpxchg`,
+  `cmpxchg8b`, `cmpxchg16b`, `push`, `pop` (64-bit), `push $imm`, `int
+  $n`, `fnstcw`, `fldcw`;
+- `set<cc>`, `cmov<cc>`, `jmp` and `j<cc>` to a numeric local label;
+- SSE: `adds/subs/muls/divs/sqrts/mins/maxs` `s`/`d`, `andp andnp orp
+  xorp ucomis comis` `s`/`d`, `movss movsd movaps movapd movups movupd
+  movdqa movdqu movd movq cvtss2sd cvtsd2ss`.
+
+Where LLVM chooses among encodings of one written form (`xchg` with
+`%rax`, the short immediate forms, `movq $imm` as `movabs`), hod's
+constructor makes the same choice. Another mnemonic is
+`asm:mnemonic/<name>`; `call` among them (a body calls nothing).
+
+### 10.4 An inline body (`x64::assemble`)
+
+- **Prefixes**: `lock` before an instruction `hod_mc_x64` marks
+  lockable (a read-modify-write of memory), in the same statement (`F0` after an
+  operand-size `66`, as LLVM writes it) or alone (`F0` first). `rep`
+  (`repe`, `repz`) before `movs[bwlq]`, `stos[bwlq]` or `nop`
+  (`pause`). Any other pairing, or a prefix last, is `asm:operand/form`.
+- **Data**: `.byte`, `.short`/`.value`/`.word`/`.2byte`,
+  `.long`/`.int`/`.4byte`, `.quad`/`.8byte` of constants that fit the
+  field, signed or unsigned (`asm:operand/range`).
+- **Labels**: numeric local labels, branches to them chosen short or near
+  as LLVM's relaxation does (short until the distance needs `rel32`,
+  repeated to a fixed point). A named label is `asm:label`, any other
+  directive `asm:directive/<name>`. A body defines no symbol; it
+  references one only through a memory operand (§10.2 "Symbols").
+- **Operands printed** (`print_operand`, as `X86AsmPrinter`): a general
+  register in the view of its value's size (an `i32` in `eax`); `b`,
+  `w`, `k`, `q` select the 8-, 16-, 32-, 64-bit view; `c` plain; `a`
+  `(%reg)`; a constant `$v`, bare with `c`, `P`, `a`, negated with `n`;
+  memory `(%reg)`, `8(%reg)` with `H`; an SSE register `%xmmN`. `h`
+  (high byte) and every other modifier is `asm:modifier/<m>`.
+
+## 11. Inline assembly in code on x86-64 (`hod_x64::barrier::template`)
+
+The lowering is `spec/codegen.md` §5.6.28. In short:
+
+- **Constraints** read by the shared parser (`hod_cg::asm_constraints`)
+  with x86's codes: `r`, `l`, `q` (any general register), `Q` (`rax`,
+  `rcx`, `rdx`, `rbx`), `R` (the legacy eight), `x`, `v` (SSE), `m`,
+  `o`, `X`, `i`, `n`, `e`, `Z`, `I`..`O` (ranged immediates), `{reg}`,
+  `{@cc<cond>}`, digits, `|` alternatives, `=`, `+`, `&`, `*`, `%`.
+  `llc` refuses `a`, `b`, `c`, `d`, `S`, `D` and `g` in IR (front ends
+  write `{ax}` and `imr`), so hod refuses them as
+  `asm:constraint/<letter>`; so is `A`, `t`, `u`, `f`, `y`, `p`.
+- **Clobbers**: `memory`, `cc`, `flags`, `eflags`, `dirflag`, `fpsr`,
+  `fpcr`, `mxcsr`, x87 and MMX registers and `xmm16` and up (none holds
+  a value of hod's across the template), general registers by any name
+  (`ah`..`dh` as their register), `xmm`/`ymm`/`zmm` 0..15 as the SSE
+  register. Another is `asm:clobber/<name>`; `rsp`, `rbp` are
+  `x64:inline-asm-frame-register`.
+- **`inteldialect`** is `x64:inline-asm-intel`; `unwind` on an `invoke`
+  is `x64:inline-asm-unwind`; a `callbr` with a template stays
+  `x64:inline-asm`; a bundle `x64:inline-asm-bundle`.
+
+Tests: `crates/hod_x64/tests/inline_asm.rs` (§5.6.28).

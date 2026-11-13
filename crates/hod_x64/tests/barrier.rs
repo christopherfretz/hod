@@ -90,7 +90,6 @@ fn what_is_not_a_barrier_is_refused_by_name() {
         )
     };
     let cases = [
-        (one("void", "call void asm \"nop\", \"\"()"), barrier::INLINE_ASM),
         (one("i32", "%r = call i32 asm \"\", \"=r\"()"), barrier::OUTPUT),
         (one("void", "call void asm \"\", \"=*r\"(ptr elementtype(i32) %p)"), barrier::OUTPUT),
         (

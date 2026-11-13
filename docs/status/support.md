@@ -36,14 +36,14 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `inst` | 67 | 60 | 0 | 7 | 60 | 0 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `atomicrmw` | 21 | 21 | 0 | 0 | 21 | 0 | 0 |
-| `call` | 4 | 4 | 0 | 0 | 3 | 1 | 0 |
+| `call` | 4 | 4 | 0 | 0 | 4 | 0 | 0 |
 | `tail` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 530 | 347 | 7 | 176 | 304 | 10 | 216 |
-| total | 855 | 557 | 65 | 233 | 512 | 65 | 278 |
+| total | 855 | 557 | 65 | 233 | 513 | 64 | 278 |
 
 ## `module`
 
@@ -439,7 +439,7 @@ Kinds of callee.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `call:indirect` | supported | supported | the callee is a computed address |
-| `call:inline-asm` | supported | not-implemented | the callee is inline assembly of instructions: `hod_asm` (WP-103, `spec/asm.md`) |
+| `call:inline-asm` | supported | supported | the callee is inline assembly of instructions: `hod_asm` (WP-103, `spec/asm.md`; x86-64: WP-187) |
 | `call:inline-asm-empty` | supported | supported | the callee is inline assembly whose template assembles to nothing (`spec/ir.md` §2.3) |
 | `call:variadic` | supported | supported | a call through a variadic function type |
 

@@ -1721,8 +1721,8 @@ const CALL: [SupportRow; 4] = [
     row(
         "call:inline-asm",
         ON,
-        todo(X64),
-        "the callee is inline assembly of instructions: `hod_asm` (WP-103, `spec/asm.md`)",
+        ON,
+        "the callee is inline assembly of instructions: `hod_asm` (WP-103, `spec/asm.md`; x86-64: WP-187)",
     ),
     row(
         "call:inline-asm-empty",

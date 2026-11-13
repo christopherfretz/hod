@@ -19,7 +19,6 @@ concurrency:
   cancel-in-progress: true
 jobs:
   arm:
-    if: false # TEMP(WP-145)
     uses: ./.github/workflows/ci-lane.yml
     with: { runner: ubuntu-24.04-arm, cache-key: ci-arm }
   x86_64:

@@ -59,7 +59,7 @@ fn ci(args: &xtask::ci::Args) -> ExitCode {
     let steps: &[(&str, &[&str])] = &[
         ("fmt", &["fmt", "--all", "--check"]),
         ("clippy", &["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]),
-        ("test", &["test", "--workspace", "--quiet"]),
+        ("test", &["test", "--workspace", "--quiet", "--no-fail-fast"]),
     ];
     for (name, cargo_args) in steps {
         if !args.runs(name) {

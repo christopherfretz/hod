@@ -9,7 +9,8 @@ its tests, "Test directives"), `corpus`, `roundtrip`, `bench`, `debug` and the g
 
 `cargo xtask ci [--quick]` is the gate (`docs/VALIDATION.md` "Gates"): in
 order `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --
--D warnings`, `cargo test --workspace --quiet`, then the `irdiff` runs of
+-D warnings`, `cargo test --workspace --quiet --no-fail-fast` (every failing test
+binary in one log), then the `irdiff` runs of
 "irdiff", "In the gate" (the quick gate's include a few seeds for the
 other architecture under its emulator, the full gate's every seed with
 both oracles and hybrid mode), then the `roundtrip` run of "roundtrip", "In the

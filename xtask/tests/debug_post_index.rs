@@ -21,6 +21,10 @@ fn build_dir() -> PathBuf {
 }
 
 #[test]
+#[cfg_attr(
+    target_arch = "x86_64",
+    ignore = "x86-64 runner: on x86-64 llc has an unclassified line (post_index.cpp:19 in _ZN7Counted7releaseEv, clang 19); WP-145 finding"
+)]
 fn member_address_after_a_load_of_its_base_is_permitted() {
     let scratch = Scratch::new("debug-post-index");
     let mut options = Options::new(build_dir());

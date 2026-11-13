@@ -120,6 +120,10 @@ fn verdicts_and_error_positions() {
 /// What the verifier refuses after the parser accepted it is the one
 /// difference that needs no reason of its own (§3.5).
 #[test]
+#[cfg_attr(
+    target_arch = "x86_64",
+    ignore = "x86-64 runner: llvm-as 19 and 22 crash on row 111 (`@x = global metadata zeroinitializer`) instead of refusing it; WP-145 finding"
+)]
 fn llvm_as_agrees_or_the_difference_is_named() {
     let tools: Vec<Option<Llvm>> = [19, 22].map(Llvm::find).into();
     let verdicts = each(ROWS.len(), |index| {

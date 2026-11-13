@@ -235,6 +235,11 @@ int main() {
 const CONTAINERS_PRINTS: &str =
     "1 3 5 7 9 \na=2 b=1 c=1 \ncat dog \n3.250 0.333333\n0.1428571429\n";
 
+/// Why hod declines `MODULE_ASM` for the host: AArch64's assembler names
+/// the directive; x86-64 declines file-scope `asm` as a whole.
+const MODULE_ASM_REASON: &str =
+    if cfg!(target_arch = "aarch64") { "asm:directive/ident" } else { "module:asm" };
+
 /// File-scope `asm` with a directive hod's assembler does not read
 /// (`.ident`, `asm:directive/ident`, `spec/asm.md` §9): a module hod
 /// declines, so the fallback path stays tested.
@@ -603,7 +608,7 @@ const PROGRAMS: &[Program] = &[
         args: &[],
         form: "bitcode",
         prints: "module asm 42\n",
-        path: Route::Fallback("asm:directive/ident"),
+        path: Route::Fallback(MODULE_ASM_REASON),
     },
 ];
 
@@ -850,6 +855,6 @@ fn through_the_shim(kiln: &Path, llvm: &Path) {
     // Strict mode on bitcode: hod's own reader declines it with the
     // construct's name, and nothing was converted.
     let line = shimmed.strict_fails("module-asm.cpp", "strict-asm.o");
-    assert_eq!((&*line[1], &*line[2]), ("asm:directive/ident", "bitcode"), "{line:?}");
+    assert_eq!((&*line[1], &*line[2]), (MODULE_ASM_REASON, "bitcode"), "{line:?}");
     assert_eq!(&*line[8], "-", "no conversion ran: {line:?}");
 }

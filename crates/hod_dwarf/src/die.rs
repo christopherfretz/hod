@@ -786,6 +786,12 @@ impl<'a> Writer<'a> {
         unit_start
     }
 
+    /// Empties the unit's address pool and its thread-local entries.
+    pub(crate) fn clear_addrs(&mut self) {
+        self.addrs.clear();
+        self.tls_addrs.clear();
+    }
+
     pub(crate) fn unit(&mut self, u: &UnitInput<'_, 'a>, symbols: u32) -> Result<(), Error> {
         let plan = u.plan;
         let n = plan.dies.len();
@@ -813,8 +819,7 @@ impl<'a> Writer<'a> {
             .filter(|g| plan.die_of_expr(g.expr).is_some_and(|d| plan.global_takes_address(d)))
             .count()
             + plan.template_addrs();
-        self.addrs.clear();
-        self.tls_addrs.clear();
+        self.clear_addrs();
         self.offsets.clear();
         self.offsets.resize(n, NONE);
         self.patches.clear();

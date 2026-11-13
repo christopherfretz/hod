@@ -267,8 +267,7 @@ impl<'a> Writer<'a> {
             })
             .count()
             + plan.template_addrs();
-        self.addrs.clear();
-        self.tls_addrs.clear();
+        self.clear_addrs();
         self.offsets.clear();
         self.offsets.resize(n, NONE);
         self.patches.clear();

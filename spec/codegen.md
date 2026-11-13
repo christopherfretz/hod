@@ -1640,8 +1640,11 @@ WP-095 below).
   are put into `v30`, `v31`, then temporaries; an `i32`/`i64` operand is
   moved in with `fmov`. A general result is moved out with `fmov`,
   zero-extending: also the signed reductions of bytes and halfwords
-  (`saddv`, `smaxv`, `sminv`, `saddlv`), as `llc` 22 (`llc` 19
-  sign-extends `saddlv`'s; `<arm_neon.h>` truncates either).
+  (`saddv`, `smaxv`, `sminv`), as `llc` does. `saddlv` of bytes is the
+  exception (WP-101, `tail3::saddlv`): its 16-bit signed sum is
+  sign-extended to `i32` (`smov w, v.h[0]`), as `llc` 19 does; `llc` 22
+  zero-extends it, which is a different `i32` for a negative sum
+  (`<arm_neon.h>` truncates either to 16 bits).
 - **Consecutive registers.** `tbl`/`tbx` tables and the structure loads
   and stores use `v24`..`v27`, taken (`take_reg`) before the deferred
   operands. A structure result (`ld2`.. `ld4`, `ld2lane`.., `ld2r`..) is
@@ -1844,6 +1847,11 @@ that refused it before (WP-084's "stays refused" list is settled here).
   DWARF number is 64 plus its index, as `llc`'s `.cfi_offset b8`), and
   reloads them with `DW_CFA_restore` in every exit sequence. All are
   saved, as `llc -O0` saves them in a function with a call.
+- **`saddlv` of bytes** (`llvm.aarch64.neon.saddlv.i32.v8i8`/`.v16i8`,
+  `tail3::saddlv` from `intrinsic.rs`): `saddlv h30`, then `smov w,
+  v30.h[0]`, the sum sign-extended, as `llc` 19 (see "Operands" in the
+  NEON section; `llc` 22 zero-extends). Every other `saddlv` signature
+  is `neon`'s.
 
 #### 5.5.2 Target features (WP-043)
 

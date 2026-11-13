@@ -1063,6 +1063,42 @@ pub fn bf16_intrinsic<'a>(
     cx.finish(inst, d)
 }
 
+// ---- saddlv of bytes ----
+
+/// `llvm.aarch64.neon.saddlv.i32` of `<8 x i8>` or `<16 x i8>`: the
+/// 16-bit signed sum (`saddlv h`), sign-extended to `i32` by `smov`, as
+/// `llc` 19 does (`llc` 22 zero-extends it, losing the sign of a negative
+/// sum). Any other signature goes to `neon`'s lowering.
+///
+/// # Errors
+/// What placing the operand reports, or `neon`'s errors.
+pub fn saddlv<'a>(
+    cx: &mut FnCx<'a, A64>,
+    inst: Inst<'a>,
+    which: Intrinsic<'a>,
+    args: &'a [Value],
+) -> CgResult<()> {
+    let types = cx.types();
+    let bits = match args {
+        [a] if types.kind(inst.ty()) == TypeKind::Int(32) => match types.kind(value_ty(cx, *a)) {
+            TypeKind::Vector { elem, len } if types.kind(elem) == TypeKind::Int(8) => match len {
+                8 => Some(VecBits::V64),
+                16 => Some(VecBits::V128),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    };
+    let Some(bits) = bits else { return crate::neon::intrinsic(cx, inst, which, args) };
+    deferred_first(cx, inst, None)?;
+    let v = cx.use_reg(args[0])?;
+    put(cx, mc::saddlv(bits, mc::Elem::B, V30, vr(v)));
+    let g = cx.def_reg(inst)?;
+    put(cx, mc::smov(Size::W, mc::Elem::H, xr(g).zr(), V30, 0));
+    cx.finish(inst, g)
+}
+
 // ---- a number minus an address ----
 
 /// Puts the constant `id`, a number minus an address

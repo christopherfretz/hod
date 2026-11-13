@@ -598,7 +598,7 @@ fn load(cx: &mut FnCx<'_, A64>, args: &[Value]) -> CgResult<Regs> {
 ///
 /// A general result is the low bits of `rv`, zero-extended, also those of
 /// the signed reductions of bytes and halfwords (`saddv`, `smaxv`,
-/// `sminv`, `saddlv`) as `llc` 22 (19 sign-extends `saddlv`).
+/// `sminv`) as `llc` does; `saddlv` of bytes is `tail3::saddlv` (WP-101).
 fn done<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, regs: &Regs, rv: VReg) -> CgResult<()> {
     let t = kind_of(cx, inst.ty());
     if t.is_gpr() {

@@ -26,10 +26,11 @@ use hod_cg::{Options, RelocModel, Stress};
 
 const CALLS: &str = include_str!("data/neon/cases.txt");
 
-/// The calls whose results `llc` 19 computes differently from `llc` 22:
+/// The calls whose results `llc` 22 computes differently from `llc` 19:
 /// the 16-bit sum of `saddlv` of bytes, which 19 sign-extends to `i32`
-/// and 22 zero-extends (hod follows 22; `<arm_neon.h>` truncates it).
-const LLVM19_DIFFERS: &[&str] =
+/// and 22 zero-extends (hod sign-extends since WP-101, the signed sum;
+/// `<arm_neon.h>` truncates it).
+const LLVM22_DIFFERS: &[&str] =
     &["@llvm.aarch64.neon.saddlv.i32.v8i8(", "@llvm.aarch64.neon.saddlv.i32.v16i8("];
 
 /// What every case uses: `@fill` writes 32 words derived from the six
@@ -265,7 +266,8 @@ fn cases_match_llc() {
     let Some(toolchain) = Toolchain::host(&dir) else { return };
     let driver = toolchain.compile_c(&dir, "driver", &c, &[]);
     let mut objects = Vec::new();
-    for major in [22, 19] {
+    // 19 first: the reference is the first build (`LLVM22_DIFFERS`).
+    for major in [19, 22] {
         let Some(llc) = hod_testutil::tool(&format!("llc-{major}")) else { continue };
         let input = dir.write(&format!("llc{major}.ll"), format!("{}{all}", ll_header(major)));
         let output = dir.join(format!("llc{major}.o"));
@@ -308,7 +310,7 @@ fn cases_match_llc() {
                 .zip(reference.lines())
                 .zip(&calls)
                 .filter(|((g, w), (_, what, _))| {
-                    g != w && !(name == "llc-19" && LLVM19_DIFFERS.iter().any(|d| what.contains(d)))
+                    g != w && !(name == "llc-22" && LLVM22_DIFFERS.iter().any(|d| what.contains(d)))
                 })
                 .map(|((g, w), (f, what, args))| format!("@{f} ({what}) {args:x?}: {g}, want {w}"))
                 .collect();

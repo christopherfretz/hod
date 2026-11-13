@@ -63,6 +63,23 @@ pub struct X64 {
     /// Whether the function is a coroutine body: `rbx` is its frame base
     /// and not in its register pool (WP-137, `crate::coro_body`).
     pub coro: bool,
+    /// Whether this value is a function's own target already
+    /// ([`X64::of_attrs`]): [`Target::for_function`] then keeps it rather
+    /// than read the function's attributes again (WP-166: a caller makes
+    /// one per attribute set and compiles every function of the set with
+    /// it).
+    pub own: bool,
+}
+
+impl X64 {
+    /// The target of a function whose attribute set is `attrs`: what its
+    /// `target-cpu` and `target-features` decide, and its coroutine mark.
+    pub fn of_attrs(attrs: hod_ir::FnAttrsView<'_>) -> X64 {
+        let text = |what| attrs.string(what).and_then(|s| std::str::from_utf8(s).ok());
+        let features = features::of_function(text(FnStr::TargetCpu), text(FnStr::TargetFeatures));
+        let coro = attrs.has(hod_ir::FnAttrs::PRESPLIT_COROUTINE);
+        X64 { features, coro, own: true }
+    }
 }
 
 /// The target for a function without `target-cpu` and
@@ -70,6 +87,7 @@ pub struct X64 {
 pub const X64: X64 = X64 {
     features: FnFeatures { abi: abi::Features { avx: false, avx512: false }, no_x87: false },
     coro: false,
+    own: false,
 };
 
 /// What the target remembers about the function being compiled
@@ -297,14 +315,13 @@ impl Target for X64 {
     }
 
     fn for_function(&self, module: &Module, body: &Body) -> Option<Self> {
+        if self.own {
+            return None;
+        }
         let SymbolKind::Function { attrs, .. } = module.symbol(body.symbol()).kind() else {
             return None;
         };
-        let attrs = module.fn_attrs(attrs);
-        let text = |what| attrs.string(what).and_then(|s| std::str::from_utf8(s).ok());
-        let features = features::of_function(text(FnStr::TargetCpu), text(FnStr::TargetFeatures));
-        let coro = attrs.has(hod_ir::FnAttrs::PRESPLIT_COROUTINE);
-        Some(X64 { features, coro })
+        Some(X64::of_attrs(module.fn_attrs(attrs)))
     }
 
     fn begin_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
@@ -598,5 +615,29 @@ mod tests {
             assert!(REG_INFO.gpr.contains(arg));
         }
         assert_eq!(X64::TRAP, mc::ud2().bytes());
+    }
+
+    // WP-166: a function's own target (`X64::of_attrs`) is kept by
+    // `for_function`, which reads the attributes only for the baseline.
+    #[test]
+    fn an_own_target_is_kept() {
+        let text = b"target triple = \"x86_64-unknown-linux-gnu\"\n\
+                     define void @f() #0 {\n  ret void\n}\n\
+                     attributes #0 = { \"target-features\"=\"+avx2\" }\n";
+        let parsed = hod_ll::parse_module(text, &hod_ll::ParseOptions::default()).unwrap();
+        let (mut module, side) = (parsed.module, parsed.text);
+        let mut bodies = Vec::new();
+        hod_ll::parse_bodies(&mut module, &side, |_, parsed| {
+            bodies.push(parsed.body.expect("the body is read").clone());
+            Ok::<(), hod_ll::LlError>(())
+        })
+        .unwrap();
+        let own = X64.for_function(&module, &bodies[0]).expect("the baseline reads the features");
+        assert!(own.own && own.features.abi.avx && !own.coro);
+        assert!(own.for_function(&module, &bodies[0]).is_none());
+        let SymbolKind::Function { attrs, .. } = module.symbol(bodies[0].symbol()).kind() else {
+            panic!("f is a function")
+        };
+        assert_eq!(X64::of_attrs(module.fn_attrs(attrs)).features, own.features);
     }
 }

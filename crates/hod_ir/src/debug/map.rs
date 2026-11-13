@@ -32,9 +32,6 @@ pub enum DiMapping {
     Unsupported(&'static str),
 }
 
-const KEY: &str = "a stepping hint (which instructions of a line are statements): hod marks \
-                   every line row a statement, as LLVM does without the hint";
-
 macro_rules! notes {
     ($($kind:literal . $field:literal: $what:tt,)*) => {
         &[$(($kind, $field, notes!(@what $kind, $field, $what)),)*]
@@ -56,15 +53,16 @@ pub const DI_FIELD_NOTES: &[(&str, &str, DiMapping)] = notes! {
     "DILocation"."inlinedAt": mapped,
     "DILocation"."isImplicitCode": (dropped "marks compiler-generated code for coverage tools; \
         LLVM's DWARF emitter does not read it"),
-    "DILocation"."atomGroup": (dropped KEY),
-    "DILocation"."atomRank": (dropped KEY),
+    // WP-149: key instructions (`spec/dwarf.md` §5.9), a side table of
+    // the locations (`DebugInfo::atom`).
+    "DILocation"."atomGroup": mapped,
+    "DILocation"."atomRank": mapped,
     // The older spelling of `spFlags`: `DiNode::set` folds them in.
     "DISubprogram"."isLocal": mapped,
     "DISubprogram"."isDefinition": mapped,
     "DISubprogram"."isOptimized": mapped,
     "DISubprogram"."virtuality": mapped,
     "DISubprogram"."thisAdjustment": (dropped "read only by LLVM's CodeView emitter"),
-    "DISubprogram"."keyInstructions": (dropped KEY),
     "DISubprogram"."annotations": unsupported,
     "DISubprogram"."targetFuncName": unsupported,
     "DICompileUnit"."debugInfoForProfiling": (dropped "asks for attributes sample profilers \
@@ -214,7 +212,8 @@ mod tests {
             di_field(b"DICompileUnit", b"macros"),
             Some(DiMapping::Unsupported("debug:DICompileUnit.macros"))
         );
-        assert!(matches!(di_field(b"DILocation", b"atomRank"), Some(DiMapping::Dropped(_))));
+        assert_eq!(di_field(b"DILocation", b"atomRank"), Some(DiMapping::Mapped));
+        assert_eq!(di_field(b"DISubprogram", b"keyInstructions"), Some(DiMapping::Mapped));
     }
 
     /// §6.9: kinds and records.

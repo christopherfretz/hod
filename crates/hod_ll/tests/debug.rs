@@ -102,9 +102,9 @@ fn round_trip(llvm: &Llvm, scratch: &Scratch, name: &str, text: &[u8]) {
     assert!(!module.debug.is_empty(), "{name}: debug information");
     let printed = print(&module, &bodies, llvm.major).unwrap_or_else(|e| panic!("{name}: {e}"));
     llvm.accepts(printed.as_bytes()).unwrap_or_else(|e| panic!("{name}: llvm-as: {e}"));
-    // Key instructions (`atomGroup`) are dropped (`spec/ir.md` §6): they
-    // decide only which rows of the line table are statements.
-    let is_stmt = !text.windows(9).any(|w| w == b"atomGroup");
+    // Key instructions (`atomGroup`, `keyInstructions`) are kept since
+    // WP-149, so the statements of the line table are the same too.
+    let is_stmt = true;
     let want = dwarf(llvm, scratch, &format!("{name}.in"), text, is_stmt);
     let got = dwarf(llvm, scratch, &format!("{name}.out"), printed.as_bytes(), is_stmt);
     if want != got {

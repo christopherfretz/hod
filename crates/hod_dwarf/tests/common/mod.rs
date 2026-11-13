@@ -14,7 +14,7 @@ pub mod types;
 use std::path::{Path, PathBuf};
 
 use hod_dwarf::{
-    FileEntry, FunctionLines, LineHeader, Row, Sequence, SourceLoc, Transition, flags,
+    FileEntry, FunctionLines, LineHeader, Row, Sequence, SourceLoc, Stmt, Transition, flags,
     function_rows, write_debug_line,
 };
 use hod_obj::{Arch, Object, StrId, Symbol, SymbolId};
@@ -530,6 +530,7 @@ pub fn transitions_of(f: &LlcFunction) -> (FunctionLines<'static>, Vec<Transitio
             offset: r.offset,
             loc: Some(SourceLoc { file: r.file, line: r.line, column: r.column }),
             block_start: false,
+            stmt: Stmt::Line,
         })
         .collect();
     (FunctionLines { scope, size: f.size, transitions: &[], epilogue }, ts)

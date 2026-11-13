@@ -25,7 +25,7 @@ use hod_ir::{DiFlags, DiId, DiNode, LocId, Module, SymId, SymbolKind};
 use crate::call::Callee;
 use crate::cx::FnCx;
 use crate::error::{CgError, CgResult};
-use crate::record::LineRow;
+use crate::record::{LineRow, ROW_CONT};
 use crate::reg::PReg;
 use crate::sym::SymRef;
 use crate::target::{CallTarget, Target};
@@ -87,6 +87,9 @@ impl<T: Target> FnCx<'_, T> {
         target: CallTarget,
         tail: bool,
     ) -> bool {
+        if tail {
+            self.key_tail_call();
+        }
         let callee = match (callee, target) {
             (Callee::Temp(_), _) => DebugCallee::Refused(hod_dwarf::DEBUG_CALL_SITE_INTRINSIC),
             (Callee::Value(_), CallTarget::Sym(SymRef::Module(sym))) => DebugCallee::Sym(sym),
@@ -108,6 +111,7 @@ impl<T: Target> FnCx<'_, T> {
     /// `target` returns here (`Target::emit_call`, right after the
     /// instruction); `dwarf` numbers an indirect callee's register.
     pub fn call_returns_here(&mut self, target: CallTarget, dwarf: fn(PReg) -> u16) {
+        self.key_call_returns();
         let offset = self.offset();
         let first = self.mark.debug_calls as usize;
         if let Some(row) = self.out.debug_calls[first..].last_mut()
@@ -148,7 +152,13 @@ impl<T: Target> FnCx<'_, T> {
             && self.lines
             && self.out.lines.last().is_none_or(|r| r.offset < start)
         {
-            self.out.lines.push(LineRow { offset: start, loc, block_start: false });
+            // §5.9 K6: the exit continues the call's row.
+            let stmt = self.row_stmt();
+            self.out.lines.push(LineRow {
+                stmt,
+                marks: ROW_CONT,
+                ..LineRow::new(start, loc, false)
+            });
             self.last_loc = Some(loc);
         }
     }

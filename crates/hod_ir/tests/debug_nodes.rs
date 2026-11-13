@@ -143,10 +143,11 @@ fn every_field_of_every_kind_round_trips() {
     }
     // Every mapped row of the field table was a field above: the rows
     // are these fields, less the three kinds that are not `!DI...` nodes
-    // (one field each), plus the eight mapped rows that are not fields
-    // of a record (`DILocation`'s four, a subprogram's four older ones).
+    // (one field each), plus the ten mapped rows that are not fields
+    // of a record (`DILocation`'s six, with WP-149's `atomGroup` and
+    // `atomRank`; a subprogram's four older ones).
     let mapped = hod_ir::di_field_table().filter(|row| row.2 == DiMapping::Mapped).count();
-    assert_eq!(fields - 3, mapped - 8);
+    assert_eq!(fields - 3, mapped - 10);
     assert!(fields > 130, "{fields}");
 }
 

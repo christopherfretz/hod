@@ -22,7 +22,7 @@ use crate::frame::{FrameRef, SlotPlace};
 use crate::label::Label;
 use crate::loc::{Class, Key, Kind, Loc, ValState};
 use crate::options::Options;
-use crate::record::{BlockOffset, CfiOp, Chunk, FrameDesc, LineRow, VarPlace, VarRow};
+use crate::record::{BlockOffset, CfiOp, Chunk, FrameDesc, LineRow, ROW_CONT, VarPlace, VarRow};
 use crate::reg::{MIN_POOL_FPR, MIN_POOL_GPR, RegSet};
 use crate::target::Target;
 
@@ -200,7 +200,10 @@ impl<'a, T: Target> FnCx<'a, T> {
             last_loc: None,
             line_seg: (0, LocId::NONE),
             line_block_start: false,
+            key_lines: false,
+            line_call: false,
             rets: 0,
+            ret_last: false,
             ret_loc: LocId::NONE,
             coro: None,
         }
@@ -216,6 +219,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         if body.block_count() == 0 || body.block_count() >= 1 << 30 {
             return internal("a body without a block, or with more blocks than labels");
         }
+        self.key_lines = self.key_function();
         self.mark_reachable()?;
         self.assign_own()?;
         self.coro_plan()?;
@@ -246,10 +250,16 @@ impl<'a, T: Target> FnCx<'a, T> {
             // whichever block was emitted last.
             let loc = if self.rets == 1 { self.ret_loc } else { LocId::NONE };
             let offset = self.offset();
-            self.out.lines.push(LineRow { offset, loc, block_start: false });
+            let mut row = LineRow { stmt: self.row_stmt(), ..LineRow::new(offset, loc, false) };
+            if !self.ret_last {
+                // §5.9 K6: reached by a branch from the `ret`'s block.
+                row.marks = ROW_CONT;
+            }
+            self.out.lines.push(row);
         }
         t.end_function(self)?;
         self.coro_finish()?;
+        self.key_rows()?;
         self.finish_function()
     }
 
@@ -597,6 +607,7 @@ impl<'a, T: Target> FnCx<'a, T> {
                 if inst.opcode() == Opcode::Ret {
                     self.rets += 1;
                     self.ret_loc = inst.loc();
+                    self.ret_last = self.next_block.is_none();
                 }
             }
             // §4.2: the operands are released here, not by lowerings;

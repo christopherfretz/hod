@@ -270,7 +270,7 @@ fn policy(transitions: &[Transition], size: u32, epilogue: bool) -> Vec<Row> {
 }
 
 fn t(offset: u32, loc: Option<SourceLoc>) -> Transition {
-    Transition { offset, loc, block_start: false }
+    Transition::at(offset, loc)
 }
 
 /// §5.1 rules 1 and 2, §5.2: the start row, inherited entry code, the

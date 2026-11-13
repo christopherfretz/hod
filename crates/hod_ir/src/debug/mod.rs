@@ -54,7 +54,47 @@ pub struct DiLocation {
     pub inlined_at: LocId,
 }
 
-/// A stored location. Sixteen bytes.
+/// A location's key-instruction atom (LLVM 21 and later, WP-149,
+/// `spec/ir.md` §6.5, `spec/dwarf.md` §5.9): the source atom
+/// (`atomGroup`, unique within the function and its inlined-at chain) the
+/// instruction belongs to, and its precedence in it (`atomRank`, 1 the
+/// highest). [`DiAtom::NONE`] (both 0) for none, which is every location
+/// of LLVM 19 and of a function without `keyInstructions`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct DiAtom {
+    /// `atomGroup`; below 2^61 (LLVM stores 61 bits).
+    pub group: u64,
+    /// `atomRank`; at most 7 (LLVM stores 3 bits).
+    pub rank: u8,
+}
+
+impl DiAtom {
+    /// No atom.
+    pub const NONE: DiAtom = DiAtom { group: 0, rank: 0 };
+    /// The largest `atomGroup` LLVM stores (61 bits).
+    pub const MAX_GROUP: u64 = (1 << 61) - 1;
+    /// The largest `atomRank` LLVM stores (3 bits).
+    pub const MAX_RANK: u8 = 7;
+
+    /// Whether the location takes part in key instructions: LLVM's
+    /// `getAtomGroup() && getAtomRank()`.
+    #[inline]
+    pub fn is_some(self) -> bool {
+        self.group != 0 && self.rank != 0
+    }
+}
+
+/// A location's atom in the side table, behind [`LOC_ATOM`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct AtomRec {
+    loc: u32,
+    rank: u8,
+    group: u64,
+}
+
+/// A stored location. Sixteen bytes. An atom (WP-149) is not in it: the
+/// state's [`LOC_ATOM`] bit says the side table has one, so a module
+/// without atoms pays nothing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct LocRec {
     line: u32,
@@ -72,6 +112,43 @@ const LOC_DISTINCT: u16 = 1;
 const LOC_INTERNED: u16 = 2;
 /// Defined after a reservation, not interned and not distinct.
 const LOC_UNIQUED: u16 = 3;
+/// The bits of the state above: the rest are flags.
+const LOC_KIND: u16 = 3;
+/// Flag: the location has an atom in the side table (WP-149).
+const LOC_ATOM: u16 = 4;
+
+impl LocRec {
+    #[inline]
+    fn kind(&self) -> u16 {
+        self.state & LOC_KIND
+    }
+}
+
+fn atom_hash(loc: u32) -> u32 {
+    let mut hasher = Hasher64::new(0xa70);
+    hasher.pair(loc, 0);
+    hasher.finish()
+}
+
+/// The atom of location `id` in `locs`, `atoms` and `index`: the side
+/// table, looked up only when the record says it has one.
+#[inline]
+fn atom_of<L: Layering>(
+    locs: &Seg<LocRec, L>,
+    atoms: &Seg<AtomRec, L>,
+    index: Option<&InternTable<L>>,
+    id: u32,
+) -> DiAtom {
+    match (locs.get(id as usize), index) {
+        (Some(record), Some(index)) if record.state & LOC_ATOM != 0 => index
+            .find(atom_hash(id), |at| atoms[at as usize].loc == id)
+            .map_or(DiAtom::NONE, |at| {
+                let a = atoms[at as usize];
+                DiAtom { group: a.group, rank: a.rank }
+            }),
+        _ => DiAtom::NONE,
+    }
+}
 
 /// What the debug tables hold, for the size reports of §6.10.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -88,7 +165,8 @@ pub struct DebugStats {
     pub expr_bytes: usize,
     /// Locations.
     pub locs: usize,
-    /// Bytes of location storage: sixteen per location.
+    /// Bytes of location storage: sixteen per location, and the side
+    /// table of atoms (WP-149).
     pub loc_bytes: usize,
 }
 
@@ -124,6 +202,10 @@ pub struct DebugInfo<L: Layering = NoLayer> {
     locs: Seg<LocRec, L>,
     loc_interner: Option<InternTable<L>>,
     undefined_locs: u32,
+    /// The atoms of the locations with [`LOC_ATOM`] (WP-149), and their
+    /// index by location id; none at all in a module without atoms.
+    atoms: Seg<AtomRec, L>,
+    atom_index: Option<InternTable<L>>,
     units: Vec<DiId>,
     /// Entries changed in place (a reserved node defined, a declaration
     /// completed, a reserved location defined): with the counts, what
@@ -146,6 +228,8 @@ impl Default for DebugInfo {
             locs: Seg::default(),
             loc_interner: None,
             undefined_locs: 0,
+            atoms: Seg::default(),
+            atom_index: None,
             units: Vec::new(),
             edits: 0,
         }
@@ -155,6 +239,18 @@ impl Default for DebugInfo {
 #[cold]
 fn invalid<T>(message: String) -> IrResult<T> {
     err(IrErrorKind::InvalidDebugInfo, message)
+}
+
+/// An atom LLVM stores: a group below 2^61, a rank of at most 7.
+#[inline]
+fn check_atom(atom: DiAtom) -> IrResult<()> {
+    if atom.group > DiAtom::MAX_GROUP || atom.rank > DiAtom::MAX_RANK {
+        return invalid(format!(
+            "a location's atom (group {}, rank {}) does not fit LLVM's 61 and 3 bits",
+            atom.group, atom.rank
+        ));
+    }
+    Ok(())
 }
 
 impl<L: Layering> DebugInfo<L> {
@@ -499,26 +595,71 @@ impl<L: Layering> DebugInfo<L> {
     /// `UndefinedDebugNode` if the scope or the inlined-at location does
     /// not exist; `TableFull`.
     pub fn loc(&mut self, loc: DiLocation) -> IrResult<LocId> {
+        self.loc_in_atom(loc, DiAtom::NONE)
+    }
+
+    /// [`DebugInfo::loc`] of a location with an atom (WP-149): LLVM's
+    /// `atomGroup` and `atomRank`, part of the location's identity (two
+    /// locations that differ only in their atoms are two locations).
+    /// [`DiAtom::NONE`] makes exactly what [`DebugInfo::loc`] makes.
+    ///
+    /// # Errors
+    /// As [`DebugInfo::loc`]; `InvalidDebugInfo` for an atom LLVM does
+    /// not store (a group of 2^61 or more, a rank above 7).
+    pub fn loc_in_atom(&mut self, loc: DiLocation, atom: DiAtom) -> IrResult<LocId> {
         self.check_loc(loc)?;
+        check_atom(atom)?;
         let mut hasher = Hasher64::new(0x10c);
         hasher.pair(loc.line, u32::from(loc.column));
         hasher.pair(loc.scope.raw(), loc.inlined_at.raw());
+        let with = atom != DiAtom::NONE;
+        if with {
+            hasher.word(atom.group);
+            hasher.pair(u32::from(atom.rank), 0);
+        }
         let hash = hasher.finish();
         let record = LocRec {
             line: loc.line,
             scope: loc.scope,
             inlined_at: loc.inlined_at,
             column: loc.column,
-            state: LOC_INTERNED,
+            state: LOC_INTERNED | if with { LOC_ATOM } else { 0 },
         };
         let interner = self.loc_interner.get_or_insert_with(InternTable::new);
-        if let Some(found) = interner.find(hash, |id| self.locs[id as usize] == record) {
+        let (locs, atoms, index) = (&self.locs, &self.atoms, self.atom_index.as_ref());
+        if let Some(found) = interner.find(hash, |id| {
+            locs[id as usize] == record && (!with || atom_of(locs, atoms, index, id) == atom)
+        }) {
             return Ok(LocId::new(found));
         }
         let id = next_id(self.locs.len(), "location")?;
         interner.insert(hash, id);
         self.locs.push(record);
+        if with {
+            self.push_atom(id, atom);
+        }
         Ok(LocId::new(id))
+    }
+
+    fn push_atom(&mut self, id: u32, atom: DiAtom) {
+        let at = self.atoms.len() as u32;
+        self.atoms.push(AtomRec { loc: id, rank: atom.rank, group: atom.group });
+        self.atom_index.get_or_insert_with(InternTable::new).insert(atom_hash(id), at);
+    }
+
+    /// The atom of location `id` (WP-149); [`DiAtom::NONE`] for a
+    /// location without one, [`LocId::NONE`] and an id that is no
+    /// location. One flag test for a location without an atom.
+    #[inline]
+    pub fn atom(&self, id: LocId) -> DiAtom {
+        atom_of(&self.locs, &self.atoms, self.atom_index.as_ref(), id.raw())
+    }
+
+    /// Whether any location has an atom (WP-149): `false` for every
+    /// module LLVM 19 wrote, and for one without key instructions.
+    #[inline]
+    pub fn has_atoms(&self) -> bool {
+        !self.atoms.is_empty()
     }
 
     /// A new location that is never equal to another: LLVM's `distinct
@@ -530,15 +671,28 @@ impl<L: Layering> DebugInfo<L> {
     /// # Errors
     /// As [`DebugInfo::loc`].
     pub fn distinct_loc(&mut self, loc: DiLocation) -> IrResult<LocId> {
+        self.distinct_loc_in_atom(loc, DiAtom::NONE)
+    }
+
+    /// [`DebugInfo::distinct_loc`] with an atom (WP-149).
+    ///
+    /// # Errors
+    /// As [`DebugInfo::loc_in_atom`].
+    pub fn distinct_loc_in_atom(&mut self, loc: DiLocation, atom: DiAtom) -> IrResult<LocId> {
         self.check_loc(loc)?;
+        check_atom(atom)?;
         let id = next_id(self.locs.len(), "location")?;
+        let with = atom != DiAtom::NONE;
         self.locs.push(LocRec {
             line: loc.line,
             scope: loc.scope,
             inlined_at: loc.inlined_at,
             column: loc.column,
-            state: LOC_DISTINCT,
+            state: LOC_DISTINCT | if with { LOC_ATOM } else { 0 },
         });
+        if with {
+            self.push_atom(id, atom);
+        }
         Ok(LocId::new(id))
     }
 
@@ -570,7 +724,7 @@ impl<L: Layering> DebugInfo<L> {
     /// the inlined-at location does not exist; `DebugRedefined` if `id`
     /// is defined already.
     pub fn define_loc(&mut self, id: LocId, loc: DiLocation) -> IrResult<()> {
-        self.define_loc_as(id, loc, LOC_UNIQUED)
+        self.define_loc_as(id, loc, LOC_UNIQUED, DiAtom::NONE)
     }
 
     /// [`DebugInfo::define_loc`] of LLVM's `distinct !DILocation`.
@@ -578,22 +732,46 @@ impl<L: Layering> DebugInfo<L> {
     /// # Errors
     /// As [`DebugInfo::define_loc`].
     pub fn define_distinct_loc(&mut self, id: LocId, loc: DiLocation) -> IrResult<()> {
-        self.define_loc_as(id, loc, LOC_DISTINCT)
+        self.define_loc_as(id, loc, LOC_DISTINCT, DiAtom::NONE)
+    }
+
+    /// [`DebugInfo::define_loc`] (or, with `distinct`,
+    /// [`DebugInfo::define_distinct_loc`]) of a location with an atom
+    /// (WP-149).
+    ///
+    /// # Errors
+    /// As [`DebugInfo::define_loc`]; `InvalidDebugInfo` for an atom LLVM
+    /// does not store.
+    pub fn define_loc_in_atom(
+        &mut self,
+        id: LocId,
+        loc: DiLocation,
+        atom: DiAtom,
+        distinct: bool,
+    ) -> IrResult<()> {
+        check_atom(atom)?;
+        self.define_loc_as(id, loc, if distinct { LOC_DISTINCT } else { LOC_UNIQUED }, atom)
     }
 
     /// Whether location `id` is LLVM's `distinct !DILocation`: made by
     /// [`DebugInfo::distinct_loc`] or [`DebugInfo::define_distinct_loc`].
     #[inline]
     pub fn is_distinct_loc(&self, id: LocId) -> bool {
-        self.locs.get(id.index()).is_some_and(|record| record.state == LOC_DISTINCT)
+        self.locs.get(id.index()).is_some_and(|record| record.kind() == LOC_DISTINCT)
     }
 
-    fn define_loc_as(&mut self, id: LocId, loc: DiLocation, state: u16) -> IrResult<()> {
+    fn define_loc_as(
+        &mut self,
+        id: LocId,
+        loc: DiLocation,
+        state: u16,
+        atom: DiAtom,
+    ) -> IrResult<()> {
         match self.locs.get(id.index()) {
             None => {
                 return err(IrErrorKind::UndefinedDebugNode, format!("{id:?} was never reserved"));
             }
-            Some(record) if record.state != LOC_RESERVED => {
+            Some(record) if record.kind() != LOC_RESERVED => {
                 return err(IrErrorKind::DebugRedefined, format!("{id:?} is defined already"));
             }
             Some(_) => {}
@@ -605,8 +783,11 @@ impl<L: Layering> DebugInfo<L> {
             scope: loc.scope,
             inlined_at: loc.inlined_at,
             column: loc.column,
-            state,
+            state: state | if atom == DiAtom::NONE { 0 } else { LOC_ATOM },
         };
+        if atom != DiAtom::NONE {
+            self.push_atom(id.raw(), atom);
+        }
         self.undefined_locs -= 1;
         Ok(())
     }
@@ -639,7 +820,7 @@ impl<L: Layering> DebugInfo<L> {
     #[inline]
     pub fn location(&self, id: LocId) -> Option<DiLocation> {
         let record = self.locs.get(id.index())?;
-        (record.state != LOC_RESERVED).then_some(DiLocation {
+        (record.kind() != LOC_RESERVED).then_some(DiLocation {
             line: record.line,
             column: record.column,
             scope: record.scope,
@@ -710,7 +891,7 @@ impl<L: Layering> DebugInfo<L> {
             );
         }
         if self.undefined_locs != 0
-            && let Some(index) = self.locs.iter().position(|loc| loc.state == LOC_RESERVED)
+            && let Some(index) = self.locs.iter().position(|loc| loc.kind() == LOC_RESERVED)
         {
             return err(
                 IrErrorKind::UndefinedDebugNode,
@@ -813,7 +994,7 @@ impl<L: Layering> DebugInfo<L> {
             exprs: self.exprs.len(),
             expr_bytes: self.exprs.bytes(),
             locs: self.locs.len(),
-            loc_bytes: self.locs.bytes(),
+            loc_bytes: self.locs.bytes() + self.atoms.bytes(),
         }
     }
 }
@@ -845,6 +1026,8 @@ pub(crate) struct DebugCounts {
 pub(crate) struct DebugDelta {
     exprs: Vec<Box<[u64]>>,
     locs: Vec<LocRec>,
+    /// The atoms of the `locs` with [`LOC_ATOM`], in their order.
+    atoms: Vec<DiAtom>,
 }
 
 /// Fork-local expression and location ids to a module's.
@@ -903,6 +1086,8 @@ impl DebugInfo {
             locs: self.locs.seed(),
             loc_interner: self.loc_interner.as_ref().map(InternTable::seed),
             undefined_locs: self.undefined_locs,
+            atoms: self.atoms.seed(),
+            atom_index: self.atom_index.as_ref().map(InternTable::seed),
             units: self.units.clone(),
             edits: 0,
         }
@@ -916,6 +1101,7 @@ impl DebugInfo {
             let id = self.exprs.add_elements(elements)?;
             map.exprs.push(id);
         }
+        let mut atoms = delta.atoms.iter();
         for record in &delta.locs {
             let loc = DiLocation {
                 line: record.line,
@@ -923,8 +1109,16 @@ impl DebugInfo {
                 scope: record.scope,
                 inlined_at: map.loc(record.inlined_at),
             };
-            let id =
-                if record.state == LOC_DISTINCT { self.distinct_loc(loc)? } else { self.loc(loc)? };
+            let atom = if record.state & LOC_ATOM != 0 {
+                atoms.next().copied().unwrap_or(DiAtom::NONE)
+            } else {
+                DiAtom::NONE
+            };
+            let id = if record.kind() == LOC_DISTINCT {
+                self.distinct_loc_in_atom(loc, atom)?
+            } else {
+                self.loc_in_atom(loc, atom)?
+            };
             map.locs.push(id);
         }
         Ok(())
@@ -951,6 +1145,8 @@ impl DebugInfo<Layered> {
             locs: self.locs.fork(),
             loc_interner: self.loc_interner.as_ref().map(InternTable::fork),
             undefined_locs: self.undefined_locs,
+            atoms: self.atoms.fork(),
+            atom_index: self.atom_index.as_ref().map(InternTable::fork),
             units: self.units.clone(),
             edits: 0,
         }
@@ -970,11 +1166,16 @@ impl DebugInfo<Layered> {
     /// location was reserved or defined rather than interned or made
     /// distinct, which only the module itself can do in order.
     pub(crate) fn delta(&self, (exprs, locs): (usize, usize)) -> Option<DebugDelta> {
+        let first = locs;
         let locs: Vec<LocRec> = (locs..self.locs.len()).map(|id| self.locs[id]).collect();
-        if locs.iter().any(|loc| loc.state != LOC_INTERNED && loc.state != LOC_DISTINCT) {
+        if locs.iter().any(|loc| loc.kind() != LOC_INTERNED && loc.kind() != LOC_DISTINCT) {
             return None;
         }
-        Some(DebugDelta { exprs: self.exprs.owned_since(exprs), locs })
+        let atoms = (first..self.locs.len())
+            .filter(|&id| self.locs[id].state & LOC_ATOM != 0)
+            .map(|id| self.atom(LocId::new(id as u32)))
+            .collect();
+        Some(DebugDelta { exprs: self.exprs.owned_since(exprs), locs, atoms })
     }
 }
 

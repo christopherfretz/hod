@@ -28,12 +28,29 @@ pub struct Transition {
     /// than the entry block (§5.3): without a location it is then a
     /// line-0 row, not an inherited one.
     pub block_start: bool,
+    /// How the row's `is_stmt` is decided (§5.9).
+    pub stmt: Stmt,
+}
+
+/// How a transition's row gets `is_stmt` (`spec/dwarf.md` §5.2, §5.9).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Stmt {
+    /// §5.2: when its line differs from the last line written.
+    #[default]
+    Line,
+    /// §5.9: the row's code is a key instruction of a function with key
+    /// instructions: `is_stmt` (on a line other than 0), and a row of its
+    /// own even at the current row's location.
+    Key,
+    /// §5.9: another row of such a function: no `is_stmt`, except as the
+    /// prologue end.
+    NotKey,
 }
 
 impl Transition {
     /// A transition that is not at a block start.
     pub const fn at(offset: u32, loc: Option<SourceLoc>) -> Self {
-        Self { offset, loc, block_start: false }
+        Self { offset, loc, block_start: false, stmt: Stmt::Line }
     }
 }
 
@@ -102,7 +119,8 @@ pub fn function_rows(f: &FunctionLines<'_>, out: &mut Vec<Row>) -> Result<(), Er
                 row_flags |= flags::PROLOGUE_END | flags::IS_STMT;
                 prologue_done = true;
             }
-            if last_line != Some((file, line)) {
+            let changed = last_line != Some((file, line));
+            if t.stmt == Stmt::Key || (t.stmt == Stmt::Line && changed) {
                 row_flags |= flags::IS_STMT;
             }
             last_line = Some((file, line));
@@ -118,7 +136,8 @@ pub fn function_rows(f: &FunctionLines<'_>, out: &mut Vec<Row>) -> Result<(), Er
             if line == 0 && c.line == 0 && !new_flags {
                 continue;
             }
-            if (c.file, c.line, c.column) == (file, line, column) && !new_flags {
+            let key = t.stmt == Stmt::Key && line != 0;
+            if (c.file, c.line, c.column) == (file, line, column) && !new_flags && !key {
                 continue;
             }
         }

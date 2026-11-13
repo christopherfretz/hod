@@ -532,3 +532,233 @@ fn deep_nesting_is_a_limit_not_a_stack_overflow() {
     };
     assert_eq!(error.kind, BcErrorKind::Limit);
 }
+
+/// The record decoding of `spec/bc.md` §2.3 written out field by field
+/// with [`BitReader::read`] and [`BitReader::vbr`]: what
+/// [`Cursor::record`] must agree with, value for value and error for
+/// error.
+fn reference_record(
+    bits: &mut BitReader<'_>,
+    id: u32,
+    shape: &[AbbrevOp],
+    at: u64,
+) -> crate::error::BcResult<(u32, Vec<u64>, Option<Vec<u8>>)> {
+    use crate::error::fail;
+    let scalar = |bits: &mut BitReader<'_>, op: AbbrevOp| match op {
+        AbbrevOp::Literal(value) => Ok(value),
+        AbbrevOp::Fixed(width) => bits.read(u32::from(width)),
+        AbbrevOp::Vbr(width) => bits.vbr(u32::from(width)),
+        AbbrevOp::Char6 => Ok(u64::from(char6(bits.read(6)? as u8))),
+        AbbrevOp::Array | AbbrevOp::Blob => unreachable!("a scalar"),
+    };
+    let code_u32 = |code: u64| {
+        u32::try_from(code)
+            .or_else(|_| fail(BcErrorKind::Malformed, at, "a record code over 32 bits"))
+    };
+    let mut ops = Vec::new();
+    if id == super::UNABBREV_RECORD {
+        let code = bits.vbr(6)?;
+        let count = bits.vbr(6)?;
+        if count > bits.left() / 6 {
+            return fail(
+                BcErrorKind::Malformed,
+                at,
+                "a record with more operands than the bits left",
+            );
+        }
+        for _ in 0..count {
+            ops.push(bits.vbr(6)?);
+        }
+        return Ok((code_u32(code)?, ops, None));
+    }
+    let mut code = None;
+    let mut blob = None;
+    let mut index = 0;
+    while index < shape.len() {
+        let op = shape[index];
+        let value = match op {
+            AbbrevOp::Array => {
+                let element = shape[index + 1];
+                let count = bits.vbr(6)?;
+                let min = match element {
+                    AbbrevOp::Fixed(width) | AbbrevOp::Vbr(width) => u64::from(width),
+                    _ => 6,
+                };
+                if count > bits.left() / min {
+                    return fail(
+                        BcErrorKind::Malformed,
+                        at,
+                        "an array with more elements than the bits left",
+                    );
+                }
+                for _ in 0..count {
+                    ops.push(scalar(bits, element)?);
+                }
+                index += 2;
+                continue;
+            }
+            AbbrevOp::Blob => {
+                let len = bits.vbr(6)?;
+                bits.align32()?;
+                blob = Some(bits.bytes(len)?.to_vec());
+                bits.align32()?;
+                index += 1;
+                continue;
+            }
+            _ => scalar(bits, op)?,
+        };
+        if code.is_none() {
+            code = Some(value);
+        } else {
+            ops.push(value);
+        }
+        index += 1;
+    }
+    Ok((code_u32(code.expect("a code"))?, ops, blob))
+}
+
+/// Reads the record written by `body` both ways and checks that they
+/// agree. It is in a block of abbreviation width 5, after `shape` is
+/// defined (if it is), and after a record of `lead` bits of operands.
+fn records_agree(shape: &[AbbrevOp], lead: u8, body: impl Fn(&mut BitWriter), what: &str) {
+    let mut writer = BitWriter::new();
+    writer.enter(8, 5);
+    let lead_id = if shape.is_empty() { 4 } else { 5 };
+    if !shape.is_empty() {
+        writer.define(shape);
+    }
+    writer.define(&[AbbrevOp::Literal(1), AbbrevOp::Fixed(lead.max(1))]);
+    writer.abbrev_id(lead_id);
+    writer.emit(0, u32::from(lead.max(1)));
+    body(&mut writer);
+    writer.end();
+    let mut cursor = Cursor::new(&writer.bytes);
+    assert_eq!(cursor.next().unwrap(), Entry::Block(8));
+    cursor.enter().unwrap();
+    assert_eq!(cursor.next().unwrap(), Entry::Record(lead_id));
+    cursor.record(lead_id, &mut Vec::new()).unwrap();
+    let Entry::Record(id) = cursor.next().unwrap() else { panic!("a record: {what}") };
+    let mut reference_bits = cursor.bits().clone();
+    let expected = reference_record(&mut reference_bits, id, shape, cursor.entry_pos());
+    let mut ops = vec![7, 7, 7];
+    let got = cursor
+        .record(id, &mut ops)
+        .map(|(code, blob)| (code, ops.clone(), blob.map(<[u8]>::to_vec)));
+    assert_eq!(got, expected, "{what}");
+    if got.is_ok() {
+        assert_eq!(cursor.bits().pos(), reference_bits.pos(), "{what}");
+    }
+}
+
+/// A few pseudo-random words (a fixed LCG): input for the comparisons.
+fn noise(seed: u64, words: usize) -> Vec<u64> {
+    let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    (0..words)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            state ^ (state >> 29)
+        })
+        .collect()
+}
+
+#[test]
+fn compiled_abbreviations_read_as_the_definition_says() {
+    // §2.3: every scalar and array encoding, at every bit offset, with
+    // fewer and more than a word of bits after it, over arbitrary bits:
+    // the same values, positions and errors as field-by-field reading.
+    let tails = [0u32, 3, 40, 63, 64, 65, 130];
+    let elements = [AbbrevOp::Char6, AbbrevOp::Vbr(2), AbbrevOp::Vbr(6), AbbrevOp::Vbr(32)];
+    for offset in 0..64u8 {
+        let lead = if offset == 0 { AbbrevOp::Literal(0) } else { AbbrevOp::Fixed(offset) };
+        let mut shapes = Vec::new();
+        for width in [1u8, 2, 5, 6, 7, 8, 31, 32, 33, 56, 57, 58, 63, 64] {
+            shapes.push(vec![
+                AbbrevOp::Literal(9),
+                lead,
+                AbbrevOp::Fixed(width),
+                AbbrevOp::Fixed(3),
+            ]);
+            shapes.push(vec![AbbrevOp::Literal(9), lead, AbbrevOp::Array, AbbrevOp::Fixed(width)]);
+        }
+        for element in elements {
+            shapes.push(vec![AbbrevOp::Literal(9), lead, AbbrevOp::Char6, element]);
+            shapes.push(vec![AbbrevOp::Fixed(4), lead, AbbrevOp::Array, element]);
+        }
+        shapes.push(vec![AbbrevOp::Vbr(6), lead, AbbrevOp::Blob]);
+        for (index, shape) in shapes.iter().enumerate() {
+            for (seed, &tail) in tails.iter().enumerate() {
+                let words =
+                    noise((u64::from(offset) << 16) | ((index as u64) << 4) | seed as u64, 4);
+                records_agree(
+                    shape,
+                    1,
+                    |writer| {
+                        writer.abbrev_id(4);
+                        writer.emit(u64::from(offset), u32::from(offset).min(64));
+                        // An array count small enough to be read at times.
+                        writer.vbr(words[0] % 12, 6);
+                        for &word in &words[1..] {
+                            writer.emit(word, 64);
+                        }
+                        writer.emit(words[0], tail.min(64));
+                        writer.emit(words[1], tail.saturating_sub(64).min(64));
+                        writer.emit(words[2], tail.saturating_sub(128));
+                    },
+                    &format!("{shape:?} at {offset}, {tail} bits after"),
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn unabbreviated_records_read_as_one_number_at_a_time() {
+    // §2.3: UNABBREV_RECORD's VBR6 operands, one-chunk and longer ones
+    // mixed, at every offset, cut short by the block's end, and with a
+    // number over 64 bits: the same values, positions and errors.
+    let numbers = [0u64, 1, 31, 32, 1000, 1 << 30, u64::MAX];
+    for offset in 0..64u32 {
+        for (index, &long) in numbers.iter().enumerate() {
+            for count in [0usize, 1, 8, 9, 10, 17, 30] {
+                for cut in [usize::MAX, 0, count / 2, count.saturating_sub(1)] {
+                    for over in [false, true] {
+                        let what = format!(
+                            "{count} numbers with {long} at {offset}, cut at {cut}, over {over}"
+                        );
+                        records_agree(
+                            &[],
+                            offset as u8 + 1,
+                            |writer| {
+                                writer.abbrev_id(3);
+                                writer.vbr(5, 6);
+                                writer.vbr(count as u64, 6);
+                                for k in 0..count {
+                                    if k == cut {
+                                        return;
+                                    }
+                                    if over && k == count / 2 {
+                                        // 65 significant bits.
+                                        for _ in 0..13 {
+                                            writer.emit(0b11_1111, 6);
+                                        }
+                                        writer.emit(0b00_0001, 6);
+                                    } else if k % 4 == index % 4 {
+                                        writer.vbr(long, 6);
+                                    } else {
+                                        writer.vbr(k as u64 % 32, 6);
+                                    }
+                                }
+                                // Fill, so that the cursor's operand
+                                // checks see bits after the record.
+                                writer.emit(0, offset);
+                            },
+                            &what,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

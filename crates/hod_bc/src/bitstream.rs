@@ -111,6 +111,24 @@ impl<'a> BitReader<'a> {
         Ok(if width == 64 { value } else { value & ((1u64 << width) - 1) })
     }
 
+    /// [`Self::read`] of a `width`-bit field, `1 <= width <= 64`, whose
+    /// mask `(1 << width) - 1` is given: from the word at the current
+    /// byte when at least 64 bits are left and the field lies in it
+    /// (`width <= 57`), so no check can fail there; anything else is
+    /// [`Self::read`].
+    ///
+    /// # Errors
+    /// As [`Self::read`].
+    #[inline]
+    fn fixed(&mut self, width: u32, mask: u64) -> BcResult<u64> {
+        if width <= 57 && self.end - self.pos >= 64 {
+            let value = (self.word_at((self.pos >> 3) as usize) >> (self.pos & 7)) & mask;
+            self.pos += u64::from(width);
+            return Ok(value);
+        }
+        self.read(width)
+    }
+
     /// A variable-width number in chunks of `width` bits, `2 <= width <=
     /// 32`: each chunk's top bit says whether another follows.
     ///
@@ -247,11 +265,62 @@ pub enum AbbrevOp {
     Blob,
 }
 
+/// How a compiled abbreviation operand is read.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Kind {
+    Literal,
+    Fixed,
+    Vbr,
+    Char6,
+    /// An array of Fixed, VBR or Char6 elements: the element is in the
+    /// op, and the slot after it (the element's own) is not read.
+    ArrayFixed,
+    ArrayVbr,
+    ArrayChar6,
+    Blob,
+}
+
+/// One abbreviation operand compiled once, when it is defined: its kind
+/// resolved (an array's element folded into the array) and a fixed
+/// width's mask computed. One op per operand of the definition, so the
+/// arenas grow exactly as the definitions are long.
+#[derive(Clone, Copy, Debug)]
+struct Op {
+    kind: Kind,
+    width: u8,
+    /// The literal's value, or a Fixed field's (or element's) mask.
+    value: u64,
+}
+
+impl Op {
+    fn compile(shape: &[AbbrevOp]) -> impl Iterator<Item = Op> + '_ {
+        shape.iter().enumerate().map(|(at, op)| match *op {
+            AbbrevOp::Literal(value) => Op { kind: Kind::Literal, width: 0, value },
+            AbbrevOp::Fixed(width) => Op { kind: Kind::Fixed, width, value: mask(width) },
+            AbbrevOp::Vbr(width) => Op { kind: Kind::Vbr, width, value: 0 },
+            AbbrevOp::Char6 => Op { kind: Kind::Char6, width: 6, value: 63 },
+            AbbrevOp::Blob => Op { kind: Kind::Blob, width: 0, value: 0 },
+            // `define_abbrev` checked that the element follows and is
+            // a scalar encoding.
+            AbbrevOp::Array => match shape[at + 1] {
+                AbbrevOp::Fixed(width) => Op { kind: Kind::ArrayFixed, width, value: mask(width) },
+                AbbrevOp::Vbr(width) => Op { kind: Kind::ArrayVbr, width, value: 0 },
+                _ => Op { kind: Kind::ArrayChar6, width: 6, value: 63 },
+            },
+        })
+    }
+}
+
+/// The mask of a field of `width` bits, 1 to 64.
+fn mask(width: u8) -> u64 {
+    if width >= 64 { u64::MAX } else { (1u64 << width) - 1 }
+}
+
 /// The abbreviations a block id gets from BLOCKINFO, and the operands of
 /// every abbreviation of a stream, in one arena.
 #[derive(Clone, Debug, Default)]
 pub struct BlockInfo {
-    ops: Vec<AbbrevOp>,
+    ops: Vec<Op>,
     /// Per block id with entries: its abbreviations, as ranges of `ops`.
     blocks: Vec<(u32, Vec<(u32, u32)>)>,
 }
@@ -260,6 +329,12 @@ impl BlockInfo {
     /// The abbreviations BLOCKINFO gives block `id`.
     fn of(&self, id: u32) -> &[(u32, u32)] {
         self.blocks.iter().find(|(block, _)| *block == id).map_or(&[], |(_, list)| list)
+    }
+
+    /// Where block `id`'s entry is in `blocks`, if it has one. An entry
+    /// stays where it is once made.
+    fn slot(&self, id: u32) -> Option<u32> {
+        self.blocks.iter().position(|(block, _)| *block == id).map(|at| at as u32)
     }
 
     fn add(&mut self, id: u32, abbrev: (u32, u32)) {
@@ -294,6 +369,10 @@ pub enum Entry {
 struct Open {
     id: u32,
     width: u32,
+    /// Its entry in `BlockInfo::blocks`, found when it was entered; when
+    /// it had none then, looked for at each record (a BLOCKINFO read
+    /// inside it may add one).
+    info: Option<u32>,
     /// Where its local abbreviations start in `Cursor::local`.
     local: usize,
     /// Its end, and the end of the block around it.
@@ -333,7 +412,7 @@ pub struct Cursor<'a, 'b> {
     /// The local abbreviations of the open blocks, as ranges of `ops`.
     local: Vec<(u32, u32)>,
     /// Operands of local abbreviations.
-    ops: Vec<AbbrevOp>,
+    ops: Vec<Op>,
     pending: Option<Pending>,
     /// The position of the current entry's abbreviation id.
     at: u64,
@@ -395,8 +474,14 @@ impl<'a, 'b> Cursor<'a, 'b> {
     ) -> BcResult<Cursor<'a, 'b>> {
         let mut bits = BitReader::new(data);
         bits.seek(span.start, span.end)?;
-        let open =
-            Open { id: span.id, width: span.width, local: 0, end: span.end, outer_end: span.end };
+        let open = Open {
+            id: span.id,
+            width: span.width,
+            info: info.slot(span.id),
+            local: 0,
+            end: span.end,
+            outer_end: span.end,
+        };
         Ok(Cursor {
             bits,
             info: InfoRef::Shared(info),
@@ -543,6 +628,7 @@ impl<'a, 'b> Cursor<'a, 'b> {
         self.stack.push(Open {
             id: pending.id,
             width: pending.width,
+            info: self.info.get().slot(pending.id),
             local: self.local.len(),
             end: pending.end,
             outer_end,
@@ -746,7 +832,7 @@ impl<'a, 'b> Cursor<'a, 'b> {
             _ => &mut self.ops,
         };
         let start = arena.len() as u32;
-        arena.extend_from_slice(&parsed);
+        arena.extend(Op::compile(&parsed));
         Ok((start, parsed.len() as u32))
     }
 
@@ -757,14 +843,17 @@ impl<'a, 'b> Cursor<'a, 'b> {
         info: &'s InfoRef<'_>,
         stack: &[Open],
         local: &[(u32, u32)],
-        ops: &'s [AbbrevOp],
+        ops: &'s [Op],
         id: u32,
         at: u64,
-    ) -> BcResult<&'s [AbbrevOp]> {
-        let block = stack.last().map_or(u32::MAX, |open| open.id);
+    ) -> BcResult<&'s [Op]> {
         let index = (id - FIRST_ABBREV) as usize;
         let info = info.get();
-        let inherited = info.of(block);
+        let inherited = match stack.last() {
+            Some(Open { info: Some(slot), .. }) => &info.blocks[*slot as usize].1[..],
+            Some(open) => info.of(open.id),
+            None => info.of(u32::MAX),
+        };
         if let Some(&(start, len)) = inherited.get(index) {
             return Ok(&info.ops[start as usize..][..len as usize]);
         }
@@ -805,20 +894,18 @@ impl<'a, 'b> Cursor<'a, 'b> {
         }
         let shape = Self::abbrev(&self.info, &self.stack, &self.local, &self.ops, id, at)?;
         let bits = &mut self.bits;
-        let mut code = None;
+        // `define_abbrev` let only a scalar be first: the code.
+        let code = scalar(bits, shape[0])?;
         let mut blob = None;
-        let mut index = 0;
-        while index < shape.len() {
-            let op = shape[index];
-            let value = match op {
-                AbbrevOp::Array => {
-                    let element = shape[index + 1];
+        for &op in &shape[1..] {
+            let value = match op.kind {
+                Kind::Literal => op.value,
+                Kind::Fixed => bits.fixed(u32::from(op.width), op.value)?,
+                Kind::Vbr => bits.vbr(u32::from(op.width))?,
+                Kind::Char6 => u64::from(CHAR6[bits.fixed(6, 63)? as usize]),
+                Kind::ArrayFixed | Kind::ArrayVbr | Kind::ArrayChar6 => {
                     let count = bits.vbr(6)?;
-                    let min = match element {
-                        AbbrevOp::Fixed(width) | AbbrevOp::Vbr(width) => u64::from(width),
-                        _ => 6,
-                    };
-                    if count > bits.left() / min {
+                    if count > bits.left() / u64::from(op.width) {
                         return fail(
                             BcErrorKind::Malformed,
                             at,
@@ -827,48 +914,37 @@ impl<'a, 'b> Cursor<'a, 'b> {
                     }
                     ops.reserve(count as usize);
                     for _ in 0..count {
-                        let value = scalar(bits, element)?;
+                        let value = scalar(bits, op)?;
                         ops.push(value);
                     }
-                    index += 2;
-                    continue;
+                    // The element's slot is last.
+                    break;
                 }
-                AbbrevOp::Blob => {
+                Kind::Blob => {
                     let len = bits.vbr(6)?;
                     bits.align32()?;
                     let bytes = bits.bytes(len)?;
                     bits.align32()?;
                     blob = Some(bytes);
-                    index += 1;
-                    continue;
+                    break;
                 }
-                _ => scalar(bits, op)?,
             };
-            if code.is_none() {
-                code = Some(value);
-            } else {
-                ops.push(value);
-            }
-            index += 1;
+            ops.push(value);
         }
-        let Some(code) = code else {
-            return fail(BcErrorKind::Malformed, at, "a record without a code");
-        };
         Ok((code_u32(code, at)?, blob))
     }
 }
 
-/// One scalar operand of an abbreviated record.
+/// One scalar of an abbreviated record: a scalar operand, or an
+/// element of an array op.
 #[inline]
-fn scalar(bits: &mut BitReader<'_>, op: AbbrevOp) -> BcResult<u64> {
-    match op {
-        AbbrevOp::Literal(value) => Ok(value),
-        AbbrevOp::Fixed(width) => bits.read(u32::from(width)),
-        AbbrevOp::Vbr(width) => bits.vbr(u32::from(width)),
-        AbbrevOp::Char6 => Ok(u64::from(char6(bits.read(6)? as u8))),
-        AbbrevOp::Array | AbbrevOp::Blob => {
-            unreachable!("define_abbrev only lets scalars stand here")
-        }
+fn scalar(bits: &mut BitReader<'_>, op: Op) -> BcResult<u64> {
+    match op.kind {
+        Kind::Literal => Ok(op.value),
+        Kind::Fixed | Kind::ArrayFixed => bits.fixed(u32::from(op.width), op.value),
+        Kind::Vbr | Kind::ArrayVbr => bits.vbr(u32::from(op.width)),
+        Kind::Char6 | Kind::ArrayChar6 => Ok(u64::from(CHAR6[bits.fixed(6, 63)? as usize])),
+        Kind::Blob => unreachable!("define_abbrev lets a blob stand only last"),
     }
 }
 
@@ -880,7 +956,7 @@ fn code_u32(code: u64, at: u64) -> BcResult<u32> {
 }
 
 /// The character a six-bit value stands for.
-pub fn char6(value: u8) -> u8 {
+pub const fn char6(value: u8) -> u8 {
     match value {
         0..=25 => b'a' + value,
         26..=51 => b'A' + (value - 26),
@@ -889,6 +965,17 @@ pub fn char6(value: u8) -> u8 {
         _ => b'_',
     }
 }
+
+/// [`char6`] of every six-bit value.
+const CHAR6: [u8; 64] = {
+    let mut table = [0u8; 64];
+    let mut value = 0;
+    while value < 64 {
+        table[value] = char6(value as u8);
+        value += 1;
+    }
+    table
+};
 
 #[cfg(test)]
 mod tests;

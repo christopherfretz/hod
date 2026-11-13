@@ -449,9 +449,8 @@ fn wide_masks_agree() {
 }
 
 /// §5.6.18 (1): what stays refused: a wide lane of a vector of more than
-/// `MAX_LANES` lanes, arithmetic on `i128` lanes, a cast of a mask to
-/// `x86_fp80` lanes, and a cast between `i128` lanes and lanes other
-/// than a mask's.
+/// `MAX_LANES` lanes, a cast of a mask to `x86_fp80` lanes, and a
+/// conversion between `i128` and `half` lanes.
 #[test]
 fn wide_lane_refusals_by_name() {
     let many = hod_x64::vector::MAX_LANES + 1;
@@ -467,14 +466,12 @@ fn wide_lane_refusals_by_name() {
          store <2 x x86_fp80> %v, ptr %p\n  ret void\n}\n",
         hod_x64::vector::WIDE_ELEMENT,
     );
+    // Arithmetic on `i128` lanes and their casts compile since WP-161
+    // (§5.6.19, `tests/wide_arith.rs`); a conversion to `half` lanes stays
+    // refused.
     refused(
-        "define void @f(<2 x i64> %v, ptr %p) {\n  %w = zext <2 x i64> %v to <2 x i128>\n  \
-         store <2 x i128> %w, ptr %p\n  ret void\n}\n",
-        hod_x64::vector::WIDE_ELEMENT,
-    );
-    refused(
-        "define <2 x i128> @f(<2 x i128> %v, ptr %p) {\n  %w = load <2 x i128>, ptr %p\n  \
-         %r = add <2 x i128> %v, %w\n  ret <2 x i128> %r\n}\n",
+        "define void @f(<2 x i128> %v, ptr %p) {\n  %w = sitofp <2 x i128> %v to <2 x half>\n  \
+         store <2 x half> %w, ptr %p\n  ret void\n}\n",
         hod_x64::vector::WIDE_ELEMENT,
     );
 }

@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 356 | 347 | 7 | 2 | 130 | 10 | 216 |
-| total | 676 | 549 | 68 | 59 | 325 | 73 | 278 |
+| `intrinsic` | 357 | 347 | 7 | 3 | 131 | 10 | 216 |
+| total | 677 | 549 | 68 | 60 | 326 | 73 | 278 |
 
 ## `module`
 
@@ -673,6 +673,7 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.aarch64.crc32ch` | supported (int) | rejected | x86_64: an AArch64 property |
 | `intrinsic:llvm.aarch64.crc32cw` | supported (int) | rejected | x86_64: an AArch64 property |
 | `intrinsic:llvm.aarch64.crc32cx` | supported (int) | rejected | x86_64: an AArch64 property |
+| `intrinsic:llvm.x86.sse2.pause` | rejected | supported | an x86 property. `pause` (WP-161) |
 | `intrinsic:llvm.aarch64.cls` | supported (int) | rejected | x86_64: an AArch64 property. WP-083 |
 | `intrinsic:llvm.aarch64.cls64` | supported (int) | rejected | x86_64: an AArch64 property. WP-083 |
 | `intrinsic:llvm.aarch64.crypto.aesd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |

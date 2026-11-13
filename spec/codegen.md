@@ -3451,6 +3451,53 @@ Each against `llc -O0 -fast-isel=0` 22 and 19 under the emulator, and
 
 Evidence: `spec/landed/codegen/WP-152.md`.
 
+#### 5.6.19 Arithmetic on `i128` and `x86_fp80` lanes; `pause` (WP-161)
+
+Each against `llc -O0 -fast-isel=0` 22 and 19 under the emulator (hod
+plain and stressed), and `hod_interp` for `i128` lanes
+(`crates/hod_x64/tests/wide_arith.rs`). All work lane by lane on the
+images of §5.6.18 (1): the operands are `Mem` places, the result a slot
+written lane by lane at `16·i` or `10·i`.
+
+1. **Integer binary operators on `i128` lanes** (`vector::wide_binary`):
+   each lane is the scalar `i128` sequence of §5.6.5 on 16-byte places
+   (`aggr::limbwise` for `add`/`sub`/`and`/`or`/`xor`, `aggr::multiply`,
+   and `__udivti3`/`__divti3`/`__umodti3`/`__modti3` per lane through
+   `call_runtime`, as `llc`'s scalarized division calls them). Shifts: a
+   lane's constant amount uses `aggr::shift_const`; 128 or more is
+   poison and that lane is not written; a variable amount uses
+   `aggr::shift_var` (an amount of 128 or more gives some value, never a
+   fault, and other lanes are unaffected).
+2. **Casts with `i128` lanes** (`vector::wide_cast`): `zext`/`sext`/
+   `ptrtoint`/`ptrtoaddr` from integer or pointer lanes of at most 64
+   bits (low half the lane extended, high half 0 or its sign), `trunc`/
+   `inttoptr` to them (the low half's low bits), `sitofp`/`uitofp` to
+   and `fptosi`/`fptoui` from `float` and `double` lanes through the
+   runtime routines of the scalar conversion (§5.6.7: `__floattisf`,
+   `__floatuntidf`, `__fixsfti`, `__fixunsdfti`, ...) per lane. The
+   casts of masks stay §5.6.18 (5)'s; casts with odd-width lanes keep
+   their names.
+3. **`x86_fp80` lanes** (`vector::wide_binary`, `wide_fneg`,
+   `mask::wide_fcmp`): `fadd`/`fsub`/`fmul`/`fdiv` per lane as the scalar
+   x87 sequence of §5.6.12 (`fld tbyte` both, `faddp`/..., `fstp tbyte`); `fneg`
+   copies the image and flips bit 7 of each lane's byte 9; `fcmp` per
+   lane `fld` right, `fld` left, `fucomip st1`, `fstp st0`, then the
+   predicate's code from the flags as the scalar `fcmp` (§5.6.12), its
+   bit set in the mask. `false`/`true` are constant masks.
+4. **`select` of `i128` and `x86_fp80` lanes on a mask**
+   (`mask::wide_select`): per lane, the addresses of both lanes,
+   `bt` of the mask bit, `cmovae`, and a copy of the lane through the
+   chosen address.
+5. **`llvm.x86.sse2.pause`** (`intrinsic.rs`) is `pause` (`F3 90`), as
+   `llc`'s. AArch64 refuses it by its name (`never(X64_ONLY)`).
+
+Still `x64:vector-wide-element`: `frem` of `x86_fp80` lanes; any cast
+to, from or between `x86_fp80` lanes and conversions between `i128`
+lanes and `half`, `bfloat` or `fp128` lanes; intrinsics and reductions
+on `i128` or `x86_fp80` lanes; `fp128` lanes.
+
+Evidence: `spec/landed/codegen/WP-161.md`.
+
 ## 6. Control flow
 
 ### 6.1 Reachability

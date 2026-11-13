@@ -227,6 +227,8 @@ intrinsics! {
     Aarch64Crc32ch = "llvm.aarch64.crc32ch" [],
     Aarch64Crc32cw = "llvm.aarch64.crc32cw" [],
     Aarch64Crc32cx = "llvm.aarch64.crc32cx" [],
+    // x86 spin-wait hint (WP-161): libstdc++'s `std::stop_token` yield.
+    X86Sse2Pause = "llvm.x86.sse2.pause" [],
     // AArch64 target intrinsics (WP-083): the NEON and crypto names
     // `<arm_neon.h>` of clang 19 and 22 and kiln emit, the scalar `cls`,
     // and the barriers and hints of `<arm_acle.h>`.
@@ -836,7 +838,7 @@ mod tests {
         let memcpy = t.function(TypeId::VOID, &[ptr, ptr, i64, i1], false).unwrap();
         let cases = [
             // Unknown.
-            ("llvm.x86.sse2.pause", memcpy),
+            ("llvm.x86.sse2.lfence", memcpy),
             // A typed-pointer spelling LLVM would rename.
             ("llvm.memcpy.p0i8.p0i8.i64", memcpy),
             // The wrong suffix for the signature.

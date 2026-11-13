@@ -15,11 +15,18 @@
 //! value of its type; a global keeps its initial value; no local that is
 //! read loses its store), and the witness, `llc -O2`, is asked about the
 //! whole program: whether it agrees with the oracle.
+//!
+//! A `--mix` finding is reduced as a whole module that is split again by
+//! every probe: the halves are a function of the names
+//! ([`super::split::in_a`]), so what is left of each half stays in it, and
+//! the probe builds the half hod built with hod and the other with `llc`.
+//! A `--debug` finding is reduced while hod's object still fails the
+//! verifier, or the line comparison still has an unclassified pair.
 
 use std::fs;
 use std::path::Path;
 
-use super::case::{Bench, Kind, Verdict, compare, ended};
+use super::case::{Bench, Kind, Side, Verdict, compare, ended};
 use crate::irdiff::process::{End, Limits, Output};
 
 /// What became of a reduction.
@@ -37,12 +44,14 @@ pub struct Reduced {
     pub oracle: Option<Output>,
 }
 
-/// What a probe must show: the finding's kind, and how the original
-/// oracle's program ended.
+/// What a probe must show: the finding's kind, how the original oracle's
+/// program ended, which object hod built, and the seed (for the split).
 #[derive(Clone, Copy, Debug)]
 pub struct Target {
     pub kind: Kind,
     pub oracle_end: Option<End>,
+    pub side: Side,
+    pub seed: u64,
 }
 
 /// A defined function's lines: the `define` line, the closing `}`, its
@@ -111,11 +120,22 @@ fn stub_body(ret: &str) -> String {
 /// An edit of the current lines: each index gets a new line, or none.
 type Edit = Vec<(usize, Option<String>)>;
 
+/// Whether a call or a definition writes memory its caller reads without
+/// having written it: an `sret` result, or an intrinsic that fills memory
+/// (`memcpy` of a struct into a local, `va_start`). Dropping or stubbing
+/// it would make the program read uninitialized memory.
+fn initializes(line: &str) -> bool {
+    line.contains("sret(")
+        || ["@llvm.memcpy", "@llvm.memmove", "@llvm.memset", "@llvm.va_start", "@llvm.va_copy"]
+            .iter()
+            .any(|name| line.contains(name))
+}
+
 /// The edits a pass tries.
 fn stubs(lines: &[String]) -> Vec<Edit> {
     functions(lines)
         .into_iter()
-        .filter(|f| f.name != "@main" && f.end > f.start + 3)
+        .filter(|f| f.name != "@main" && f.end > f.start + 3 && !initializes(&lines[f.start]))
         .map(|f| {
             let mut edit: Edit = vec![(f.start + 1, Some("entry:".to_owned()))];
             edit.push((f.start + 2, Some(stub_body(&f.ret))));
@@ -145,7 +165,8 @@ fn droppable(lines: &[String]) -> Vec<Edit> {
         for (i, line) in lines.iter().enumerate().take(f.end).skip(f.start + 1) {
             let line = line.trim_start();
             let store_to_global = line.starts_with("store ") && line.contains(", ptr @");
-            let call = line.starts_with("call void ") || line.starts_with("tail call void ");
+            let call = (line.starts_with("call void ") || line.starts_with("tail call void "))
+                && !initializes(line);
             if store_to_global || call {
                 edits.push(vec![(i, None)]);
             }
@@ -368,6 +389,82 @@ impl Reducer<'_> {
 
     /// `Some` when the module at `ir` shows the finding.
     fn shows(&self, ir: &Path) -> Option<Shown> {
+        match (self.target.side, self.target.kind) {
+            (Side::HodA | Side::HodB, _) => self.shows_mixed(ir),
+            (Side::Whole, Kind::DebugVerify | Kind::DebugLines) => self.shows_debug(ir),
+            (Side::Whole, _) => self.shows_whole(ir),
+        }
+    }
+
+    /// For a `--debug` finding: hod's object still fails the verifier
+    /// (and `llc`'s does not), or an unclassified pair remains.
+    fn shows_debug(&self, ir: &Path) -> Option<Shown> {
+        let bench = self.bench;
+        let mut log = Vec::new();
+        let at = |name: &str| self.dir.join(name);
+        let (oracle_o, hod_o) = (at("probe-oracle.o"), at("probe-hod.o"));
+        bench.build_with_llc(&mut log, ir, &oracle_o, false).ok()?;
+        bench.build_with_hod(&mut log, ir, &hod_o, &at("probe.tsv")).ok()?.ok()?;
+        if self.target.kind == Kind::DebugVerify {
+            let verdict = bench.verify(&mut log, &hod_o, &oracle_o);
+            let shows = matches!(verdict, Err(Verdict::Finding(f)) if f.kind == Kind::DebugVerify);
+            return shows.then_some(Shown { oracle: None });
+        }
+        let (oracle_x, hod_x) = (at("probe-oracle"), at("probe-hod"));
+        bench.link(&mut log, &oracle_o, &oracle_x).ok()?;
+        bench.link(&mut log, &hod_o, &hod_x).ok()?;
+        let report = bench.compare_lines(ir, &hod_x, &oracle_x).ok()?;
+        (report.unclassified() > 0).then_some(Shown { oracle: None })
+    }
+
+    /// For a `--mix` finding: the module split again, the half of the
+    /// finding built by hod and the other by `llc`.
+    fn shows_mixed(&self, ir: &Path) -> Option<Shown> {
+        let bench = self.bench;
+        let mut log = Vec::new();
+        let at = |name: &str| self.dir.join(name);
+        let (oracle_o, oracle_x) = (at("probe-oracle.o"), at("probe-oracle"));
+        bench.build_with_llc(&mut log, ir, &oracle_o, false).ok()?;
+        bench.link(&mut log, &oracle_o, &oracle_x).ok()?;
+        let limits: Limits = bench.run_limits;
+        let (oracle, _) = bench.execute(&mut log, &oracle_x, limits).ok()?;
+        if oracle.end == End::TimedOut || Some(oracle.end) != self.target.oracle_end {
+            return None;
+        }
+        let halves = bench.split(&mut log, self.target.seed, ir, self.dir, "probe-").ok()??;
+        let (hod_half, llc_half) = match self.target.side {
+            Side::HodB => (&halves.b, &halves.a),
+            _ => (&halves.a, &halves.b),
+        };
+        let (hod_o, llc_o) = (at("probe-hod.o"), at("probe-half-llc.o"));
+        let built = bench.build_with_hod(&mut log, hod_half, &hod_o, &at("probe.tsv"));
+        match (self.target.kind, built) {
+            (Kind::HodFailed, Err(_)) => return Some(Shown { oracle: None }),
+            (kind, Ok(Ok(()))) if kind != Kind::HodFailed => {}
+            _ => return None,
+        }
+        bench.build_with_llc(&mut log, llc_half, &llc_o, false).ok()?;
+        let objects: [&Path; 2] =
+            if self.target.side == Side::HodB { [&llc_o, &hod_o] } else { [&hod_o, &llc_o] };
+        let program = at("probe-hod");
+        let linked = bench.link_all(&mut log, &objects, &program);
+        if self.target.kind == Kind::HodLink {
+            return linked.is_err().then_some(Shown { oracle: None });
+        }
+        linked.ok()?;
+        let (mixed, _) = bench.execute(&mut log, &program, limits).ok()?;
+        let shows = match self.target.kind {
+            Kind::HodHang => mixed.end == End::TimedOut,
+            _ => {
+                mixed.end != End::TimedOut
+                    && matches!(compare(&oracle, &mixed), Verdict::Finding(_))
+            }
+        };
+        shows.then_some(Shown { oracle: Some(oracle) })
+    }
+
+    /// For a finding on the whole module.
+    fn shows_whole(&self, ir: &Path) -> Option<Shown> {
         let bench = self.bench;
         let mut log = Vec::new();
         let at = |name: &str| self.dir.join(name);
@@ -460,9 +557,17 @@ pub fn reduce(bench: &Bench, dir: &Path, text: &str, target: Target, budget: usi
         }
     }
     let oracle = if lines == original { None } else { reducer.last_oracle.take() };
-    for name in
-        ["probe.ll", "probe-oracle.o", "probe-hod.o", "probe.tsv", "probe-oracle", "probe-hod"]
-    {
+    for name in [
+        "probe.ll",
+        "probe-oracle.o",
+        "probe-hod.o",
+        "probe.tsv",
+        "probe-oracle",
+        "probe-hod",
+        "probe-a.ll",
+        "probe-b.ll",
+        "probe-half-llc.o",
+    ] {
         let _ = fs::remove_file(dir.join(name));
     }
     Reduced {
@@ -573,7 +678,14 @@ entry:
         let text = apply(&module, &[&unused[0]]);
         assert!(!text.iter().any(|line| line.contains("@small")));
         // Stores to globals and calls of void functions; not the store to
-        // a local, not a call that defines a value.
+        // a local, not a call that defines a value, not one that fills
+        // memory (an sret result, a memcpy).
+        let mut filled = module.clone();
+        filled[9] =
+            "  call void @llvm.memcpy.p0.p0.i64(ptr %d, ptr @g, i64 4, i1 false)".to_owned();
+        assert!(!droppable(&filled).iter().any(|edit| edit[0].0 == 9));
+        filled[1] = "define internal void @pair(ptr sret({ i32, i8 }) %r, i32 %a) #0 {".to_owned();
+        assert_eq!(stubs(&filled).len(), 2);
         let dropped: Vec<usize> = droppable(&module).iter().map(|edit| edit[0].0).collect();
         assert_eq!(dropped, [4, 9, 20]);
         // `%p` is used by nobody; `%x` by the store; `%local` is not

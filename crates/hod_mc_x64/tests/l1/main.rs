@@ -31,6 +31,10 @@ mod sse;
 mod system;
 mod tls;
 
+// x87 (WP-119).
+mod byte_regs;
+mod x87;
+
 use harness::Batch;
 
 /// A sweep: its spec section and the function adding its cases.
@@ -52,6 +56,10 @@ pub const GROUPS: &[Group] = &[
     ("scalar-floating-point", sse::build),
     ("xmm-memory-operands", sse::memory),
     ("thread-local-storage", tls::build),
+    // x87 (WP-119).
+    ("x87", x87::build),
+    ("x87-memory-operands", x87::memory),
+    ("x87-llc-text", x87::llc_text),
 ];
 
 fn check(group: &str) {
@@ -85,4 +93,8 @@ differential! {
     scalar_floating_point_matches_llvm => "scalar-floating-point";
     xmm_memory_operands_match_llvm => "xmm-memory-operands";
     thread_local_storage_matches_llvm => "thread-local-storage";
+    // x87 (WP-119).
+    x87_matches_llvm => "x87";
+    x87_memory_operands_match_llvm => "x87-memory-operands";
+    x87_llc_text_matches_llvm => "x87-llc-text";
 }

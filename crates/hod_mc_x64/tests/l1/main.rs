@@ -32,6 +32,10 @@ mod sse;
 mod system;
 mod tls;
 
+// x87 (WP-119).
+mod byte_regs;
+mod x87;
+
 use harness::Batch;
 
 /// A sweep: its spec section and the function adding its cases.
@@ -58,6 +62,10 @@ pub const GROUPS: &[Group] = &[
     ("packed-integer", packed::integer),
     ("packed-floating-point", packed::floating_point),
     ("packed-memory-operands", packed::memory),
+    // x87 (WP-119).
+    ("x87", x87::build),
+    ("x87-memory-operands", x87::memory),
+    ("x87-llc-text", x87::llc_text),
 ];
 
 fn check(group: &str) {
@@ -96,4 +104,8 @@ differential! {
     packed_integer_matches_llvm => "packed-integer";
     packed_floating_point_matches_llvm => "packed-floating-point";
     packed_memory_operands_match_llvm => "packed-memory-operands";
+    // x87 (WP-119).
+    x87_matches_llvm => "x87";
+    x87_memory_operands_match_llvm => "x87-memory-operands";
+    x87_llc_text_matches_llvm => "x87-llc-text";
 }

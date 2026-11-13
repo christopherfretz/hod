@@ -682,6 +682,119 @@ given, and nothing between the two instructions. The initial-exec load
 may use any register (the linkers relax `mov r64, [rip + x@gottpoff]` to
 `mov r64, imm32` and the `add` to `lea` or `add` with an immediate).
 
+## x87
+
+The x87 unit, for `x86_fp80` (`long double`), which the code generator
+keeps in memory and loads, operates on and stores within one lowering
+(`docs/design/0006-x86-64.md` 2.6). Module `src/x87.rs`, re-exported
+from the root like the rest.
+
+**Operands.** `St` is a stack register, `St0`..`St7` (`St::new(n)` is
+`None` for `n > 7`; `.code()` the number), counted from the top at the
+moment the instruction executes. `X87Size` is the format of a real memory
+operand: `S` (32 bits, `dword ptr`), `D` (64, `qword ptr`), `T` (80,
+`tbyte ptr`, 10 bytes; `.bits()` 80). An integer memory operand's width is
+a `Size` (`W`, `D`, `Q`); the real operand of an arithmetic instruction,
+which has no 80-bit form, an `FpSize`. Every x87 instruction is an escape
+opcode `D8`..`DF` with either a `ModRM` memory operand (`/digit`) or a
+second opcode byte naming `st(i)`. There is no operand-size prefix and
+never REX.W; a memory operand takes every form of "Memory operands"
+(REX.B and REX.X for `r8`..`r15`, segments, RIP-relative with its site,
+absolute fields), and nothing else gets a REX.
+
+**Operand order and names.** Intel's: destination first, as the SDM and
+LLVM's Intel syntax write them. A suffix names the register form: `_0i`
+is `op st(0), st(i)` (the result in `st(0)`), `_i0` is `op st(i), st(0)`
+(the result in `st(i)`), and the `p` forms are `op st(i), st(0)` followed
+by a pop, so the result ends up in `st(i-1)`. `_m` is a memory operand,
+`_st` a stack-register operand where the mnemonic has both. **The table
+states what each form computes; that, not the mnemonic, is the contract.**
+AT&T syntax (what `llc` writes, and GNU `as`) swaps `fsub`/`fsubr` and
+`fdiv`/`fdivr` in the forms whose destination is `st(i)`, `i != 0` (the
+`_i0` and `p` forms): AT&T `fsubrp %st, %st(1)` is `fsubp(St1)`,
+`st(1) = st(1) - st(0)`. LLVM's Intel-syntax assembler and its
+disassembler use the SDM's meaning, as hod does.
+
+| constructor | encodes | computes | precondition |
+|---|---|---|---|
+| `fld_m(w: X87Size, src: Mem)` | FLD `D9 /0`, `DD /0`, `DB /5` | push `[src]`, exactly extended | |
+| `fld_st(src: St)` | FLD `D9 C0+i` | push a copy of `st(i)` (`St0` duplicates the top) | |
+| `fst_m(w, dst: Mem)` | FST `D9 /2`, `DD /2` | `[dst] = st(0)` rounded by the control word | `w` is `S` or `D` |
+| `fstp_m(w, dst: Mem)` | FSTP `D9 /3`, `DD /3`, `DB /7` | the same (exact for `T`), then pop | |
+| `fst_st(dst: St)` | FST `DD D0+i` | `st(i) = st(0)` | |
+| `fstp_st(dst: St)` | FSTP `DD D8+i` | `st(i) = st(0)`, then pop (`St0`: discard the top) | |
+| `fild_m(size, src: Mem)` | FILD `DF /0`, `DB /0`, `DF /5` | push the signed 16-, 32- or 64-bit integer, exactly | `size` is not `B` |
+| `fist_m(size, dst: Mem)` | FIST `DF /2`, `DB /2` | `[dst] = st(0)` as a signed integer rounded by the control word; out of range or NaN: the "integer indefinite", `1 << (bits - 1)` | `size` is `W` or `D` |
+| `fistp_m(size, dst: Mem)` | FISTP `DF /3`, `DB /3`, `DF /7` | the same, then pop | `size` is not `B` |
+| `fldz()`, `fld1()` | FLDZ `D9 EE`, FLD1 `D9 E8` | push `+0.0`, `+1.0` | |
+| `fadd_m`, `fmul_m`, `fsub_m`, `fsubr_m`, `fdiv_m`, `fdivr_m` `(fp: FpSize, src: Mem)` | `D8` (m32) / `DC` (m64) `/0`, `/1`, `/4`, `/5`, `/6`, `/7` | `st(0) = st(0) + m`, `st(0) * m`, `st(0) - m`, `m - st(0)`, `st(0) / m`, `m / st(0)` | |
+| `fadd_0i`, `fmul_0i`, `fsub_0i`, `fsubr_0i`, `fdiv_0i`, `fdivr_0i` `(src: St)` | `D8 C0+i`, `C8+i`, `E0+i`, `E8+i`, `F0+i`, `F8+i` | `st(0) = st(0) + st(i)`, `st(0) * st(i)`, `st(0) - st(i)`, `st(i) - st(0)`, `st(0) / st(i)`, `st(i) / st(0)` | |
+| `fadd_i0`, `fmul_i0`, `fsub_i0`, `fsubr_i0`, `fdiv_i0`, `fdivr_i0` `(dst: St)` | `DC C0+i`, `C8+i`, `E8+i`, `E0+i`, `F8+i`, `F0+i` | `st(i) = st(i) + st(0)`, `st(i) * st(0)`, `st(i) - st(0)`, `st(0) - st(i)`, `st(i) / st(0)`, `st(0) / st(i)` | |
+| `faddp`, `fmulp`, `fsubp`, `fsubrp`, `fdivp`, `fdivrp` `(dst: St)` | `DE C0+i`, `C8+i`, `E8+i`, `E0+i`, `F8+i`, `F0+i` | as the `_i0` form of the same name, then pop | |
+| `fchs()`, `fabs()` | `D9 E0`, `D9 E1` | `st(0) = -st(0)`, `abs(st(0))` (the sign bit) | |
+| `fsqrt()`, `frndint()` | `D9 FA`, `D9 FC` | `sqrt(st(0))`; `st(0)` rounded to an integer by the control word | |
+| `fprem()`, `fprem1()` | `D9 F8`, `D9 F5` | `st(0) = st(0) - q * st(1)`, `q` truncated (`fmodl`) or rounded to nearest even (`remainderl`); partial: repeat while the status word's C2 is set | |
+| `fxch(other: St)` | FXCH `D9 C8+i` | exchange `st(0)` and `st(i)` | |
+| `fucomi(other: St)`, `fucomip(other)` | FUCOMI `DB E8+i`, FUCOMIP `DF E8+i` | compare `st(0)` with `st(i)` into ZF, PF, CF as `ucomisd` (unordered: all three; `st(0) < st(i)`: CF), OF, SF, AF cleared; an exception only for a signaling NaN; `p`: then pop | |
+| `fcomi(other: St)`, `fcomip(other)` | FCOMI `DB F0+i`, FCOMIP `DF F0+i` | the same, signaling on any NaN | |
+| `fucom(other: St)`, `fucomp(other)`, `fucompp()` | `DD E0+i`, `DD E8+i`, `DA E9` | compare `st(0)` with `st(i)` (`fucompp`: `st(1)`) into the status word's C0, C2, C3; pop none, one, two | |
+| `fnstsw_ax()` | FNSTSW AX `DF E0` | `ax` = the status word (C0 bit 8, C2 bit 10, C3 bit 14) | |
+| `fcmov(cond: Cond, src: St)` | FCMOVcc `DA C0+i` (`B`), `DA C8+i` (`E`), `DA D0+i` (`Be`), `DA D8+i` (`P`, `fcmovu`), `DB C0+i` (`Ae`, `fcmovnb`), `DB C8+i` (`Ne`), `DB D0+i` (`A`, `fcmovnbe`), `DB D8+i` (`Np`, `fcmovnu`) | `st(0) = st(i)` if `cond` holds in EFLAGS | `cond` is one of those eight |
+| `fnstcw_m(dst: Mem)`, `fldcw_m(src: Mem)` | FNSTCW `D9 /7`, FLDCW `D9 /5` | store, load the 16-bit control word | |
+| `fnclex()`, `fninit()` | `DB E2`, `DB E3` | clear the exception flags; reset the unit (control word `037F`, stack empty) | |
+
+The `_i0` forms with `St0` compute `st(0) = st(0) op st(0)`, which the
+`D8` form of the same mnemonic computes too; hod writes that form
+(`fsub_i0(St0)` is `D8 E0`), because it is what LLVM's assembler writes
+for the text `fsub st(0), st`. Nothing else in this section has two
+encodings.
+
+**How `llc` uses them** (`docs/design/0006-data/abi/03-x87.llc*.s`, the
+same at LLVM 19 and 22; and `llc -O0` on the other `x86_fp80`
+operations): arithmetic is `fldt` of each operand, then `fsub %st(1),
+%st` (`fsub_0i`), `faddp %st, %st(1)` (`faddp(St1)`) and the like;
+`fptosi` stores the control word (`fnstcw_m`), ORs `0C00` (round toward
+zero) into a copy, loads it (`fldcw_m`), converts with `fistp_m` (`fist_m`
+for 16 and 32 bits), and reloads the saved word; `fptoui` to 64 bits
+compares with `2^63` (`flds` from the constant pool, `fucomi`), selects
+`0` or `2^63` with `fldz` and `fcmov(Be, St1)`, `fstp_st(St1)`,
+subtracts (`fsubp(St1)`, AT&T `fsubrp`), converts as `fptosi`, and XORs
+the sign bit back; `fcmp` is `fucomip(St1)` then `fstp_st(St0)` and a
+`setcc`; `select` is `fcmov` (`B`, `Ne`, `P` among those seen); `fneg`,
+`fabs`, `sqrt` are `fchs`, `fabs`, `fsqrt`; constants are `fldz`,
+`fld1`, `fchs` after them, or `flds` of a narrower constant; `frem` is a
+call to `fmodl`; `sitofp` is `fild_m`; `uitofp` from 64 bits adds `2^64`
+through a two-entry table indexed by the sign (`flds 0(,%rax,4)`, an
+absolute field). A `long double` result is returned in `st(0)` (the second
+of a pair in `st(1)`). `FISTTP` (SSE3) is not in the baseline and `llc`
+does not use it.
+
+**Not provided** here: the integer-operand arithmetic (`fiadd` and the
+others), `fcom`/`fcomp` with a memory operand, `fist`/`fistp` to 8 bits
+(they do not exist), `fisttp` (SSE3), `fnstsw m16`, `fnstenv`/`fldenv`/
+`fnsave`/`frstor`, `fxsave`, the transcendental instructions (`fsin`,
+`fptan`, `fyl2x` and the others), `fscale`, `fxtract`, the waiting forms
+(`fstcw`, `fstsw`, `fclex`, `finit`, `fwait`) and `ffree`.
+
+**Tests.** Three groups of `tests/l1`, by the method of "Test method"
+below: `x87` (every stack register in every register form, every
+`fcmov` condition and each of the eight `Cond`s it lacks, which LLVM
+refuses as a mnemonic, the fixed forms, the sampled memory forms and the
+rejected widths); `x87-memory-operands` (every form of "Memory operands"
+through each of the 30 memory constructor-width pairs, and every form but
+RIP-relative marked `with_abs32` through `fld`, `fstp`, `fild` and `fadd`
+against `{disp32}` text, each `fld`'s site checked); and `x87-llc-text`
+(each x87 instruction `llc` writes for `x86_fp80`, as above, in `llc`'s
+own AT&T text, which pins the AT&T swap). `byte_regs` checks the rule of
+"Registers and operand kinds" for every byte-register form of the crate
+(the eight ALU instructions in four forms, `test`, the `F6`/`FE` group,
+`mov` in four forms, `movzx`/`movsx` from a byte, the shifts and rotates
+by an immediate and by `cl`, every `setcc`, `xchg`, `xadd`, `cmpxchg`):
+an 8-bit operand numbered 4 to 7, in each position, gets the REX prefix
+`40` (and an operand-size prefix, if any, before it), operands numbered 0
+to 3 get none, and LLVM's disassembler, at every major, reads `spl`,
+`bpl`, `sil`, `dil` where intended and never `ah`, `ch`, `dh`, `bh`.
+
 ## Not provided
 
 By decision of the scope so far: the high-byte registers `ah`..`bh`; the

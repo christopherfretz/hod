@@ -147,3 +147,7 @@ pub use shift::*;
 pub use sse::*;
 pub use system::*;
 pub use tls::*;
+
+// x87 (WP-119).
+pub mod x87;
+pub use x87::*;

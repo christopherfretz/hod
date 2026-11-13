@@ -1506,8 +1506,14 @@ fn what_is_refused_is_refused_by_name() {
         (binary("<3 x i24>", "mul"), vector::ODD_ELEMENT),
         (binary("<257 x i8>", "add"), vector::LENGTH),
         (binary("<2 x i128>", "udiv"), hod_a64::tail3::I128_OP),
-        (binary("<4 x bfloat>", "fadd"), vector::BFLOAT),
-        (binary("<3 x bfloat>", "fmul"), vector::BFLOAT),
+        // WP-101: `bfloat` lanes compute (`tests/tail3.rs`); a cast from
+        // integer lanes stays refused.
+        (
+            "define void @f(ptr %p) {\n  %v = load <4 x i16>, ptr %p\n  \
+             %r = sitofp <4 x i16> %v to <4 x bfloat>\n  store <4 x bfloat> %r, ptr %p\n  ret void\n}\n"
+                .into(),
+            hod_a64::tail3::BFLOAT_CAST,
+        ),
         (
             "define void @f(ptr %p) {\n  %v = load <4 x i16>, ptr %p\n  \
              %r = sitofp <4 x i16> %v to <4 x fp128>\n  store <4 x fp128> %r, ptr %p\n  ret void\n}\n"

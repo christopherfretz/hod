@@ -1187,8 +1187,9 @@ section.
   already lowered (WP-039/040).
 - **Refused, by name.** The shapes `vector::lanes` refuses keep its
   names (`a64:vector-length`, `a64:vector-wide-element` for `i128` and
-  `fp128` lanes, `a64:vector-odd-element`); a vector of `bfloat` is
-  `a64:vector-bfloat`. Lanes of `i1` are WP-081's (below), which lowers
+  `fp128` lanes, `a64:vector-odd-element`; the arithmetic, `fcmp` and
+  casts of `i128`, `fp128` and `bfloat` lanes are WP-101's, §5.5.1); any
+  other lane operation on `bfloat` is `a64:vector-bfloat`. Lanes of `i1` are WP-081's (below), which lowers
   their binary operations and casts; an intrinsic of one stays
   `a64:intrinsic-vector`. `frexp` and `is.fpclass` of a vector
   stay `a64:intrinsic-vector`.
@@ -1254,8 +1255,8 @@ part of this section.
   (it stays of class `Mem`): `a64:mask-wide`. A mask crossing a call or a
   return is WP-082's (below). An intrinsic of
   `i1` lanes (`llvm.umax.v4i1`): the intrinsic group's
-  `a64:intrinsic-vector`. `fcmp` of `bfloat` lanes:
-  `a64:vector-bfloat`. A reduction whose operand list is not the
+  `a64:intrinsic-vector`. (`fcmp` of `bfloat` lanes was
+  `a64:vector-bfloat` until WP-101.) A reduction whose operand list is not the
   intrinsic's: `a64:vector-reduce`. `reduce.fmaximum`/`fminimum` stay
   the intrinsic group's refusal.
 - **Known `llc` defects** (not hod's, not chased; the interpreter and
@@ -1759,7 +1760,8 @@ that refused it before (WP-084's "stays refused" list is settled here).
 #### The short tail, third part (WP-101)
 
 `src/tail3.rs`, reached by one call at the top of `A64Target::lower`
-(`target.rs`) that answers only for the forms below.
+(`target.rs`) that answers only for the vector forms below, and by one
+call each from the places named with the other items.
 
 - **Vectors of `i128` and `fp128` lanes** ("wide lanes"). `<1 x i128>`
   and `<1 x fp128>` are class `Fpr` (one `Q` register); every longer one

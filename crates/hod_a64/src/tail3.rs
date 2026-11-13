@@ -32,6 +32,16 @@
 //!   `intrinsic.rs`): one instruction each, as `llc` selects them (the
 //!   call is the program's own request for `FEAT_BF16`).
 //!
+//! - `saddlv` of bytes ([`saddlv`], from `intrinsic.rs`): the sum
+//!   sign-extended, as `llc` 19.
+//!
+//! - A number minus an address as an operand ([`neg_addr`], from
+//!   `common::materialize_gpr_const`): the address, then `neg`.
+//!
+//! - `preserve_allcc` ([`assign_preserve_all`] from `Target::assign`;
+//!   [`save_all`], [`all_rows`], [`restore_all`] from `frame.rs`): saves
+//!   `x9`..`x15` and `q8`..`q31` with their unwind rules.
+//!
 //! A lane index is `vector`'s rule: a constant out of range writes
 //! nothing, a variable one is masked (`N` a power of two) or clamped to
 //! lane 0. An undefined lane of a shuffle is zero.

@@ -4,9 +4,11 @@ libc++'s test suite with hod in the build: kiln is the front end, and hod's
 shim stands where kiln runs `llc`. In **hybrid** mode hod builds every module
 its support matrix accepts and hands the rest to the real `llc`. In
 **strict** mode there is no fallback. The reference is the kiln + `llc` run
-of `docs/status/libcxx-baseline.md`, not 100%. There have been two
-measurements: WP-077 (the first) and WP-088 (the current one, after WP-072,
-074, 075, 079, 080, 086 and 068).
+of `docs/status/libcxx-baseline.md`, not 100%. There have been three
+measurements: WP-077 (the first), WP-088 (the second, after WP-072,
+074, 075, 079, 080, 086 and 068) and WP-102 (the third, strict only,
+after WP-081, 082, 083, 084, 095 and 021). In the sections after the third
+measurement's, "current" means the second.
 
 | | first (WP-077) | **current (WP-088)** |
 |---|---|---|
@@ -25,6 +27,97 @@ libc++ 22.1.8 tree. kiln is 1.0.1 at `bd60e1829` (the baseline's), LLVM is
 `cargo xtask libcxx --tag llvmorg-22.1.8 --compiler scripts/libcxx-hod-kiln.sh std libcxx --timeout 20 -j 3 --mem-limit 3072 --no-fail`.
 The hybrid run sets `HOD_CENSUS=1`, the strict run `HOD_STRICT=1`. The
 baseline took 3176 s.
+
+## Third measurement (WP-102, strict only)
+
+`main` at `6e6bf9c` (after WP-081, 082, 083, 084, 095 and 021), release
+`hod`, the same setup and command as above with `HOD_STRICT=1`. kiln and
+LLVM are unchanged. There was no hybrid run and no time sample. The run took
+5826 s at `-j 3`, with a load average of 18-24 and `oom_kill` 0 before and
+after.
+
+| strict | first (WP-077) | second (WP-088) | **third (WP-102)** |
+|---|---:|---:|---:|
+| pass (baseline 8609) | 6853 | 8446 | **8586** |
+| fail | 1761 | 166 | 25 |
+| timeout | 0 | 2 | 3 |
+| pass rate | 79.1% | 97.5% | **99.1%** |
+| modules built by hod (of 7226) | 5438 (75.3%) | 7063 (97.7%) | **7205 (99.7%)** |
+| refused modules | 1788 | 163 | **21** |
+| tests with all objects by hod (of 7218) | 5432 | 7055 | **7197 (99.7%)** |
+| **hod-only** (passed strictly with an object) | 5430 | 7023 | **7163** (83.2% of 8609) |
+| passing without an object | 1423 | 1423 | 1423 |
+| hod back end, modules it built | 90.3 s | 138.2 s (hybrid) | 160.6 s (strict) |
+
+Outcome by outcome: 9247 tests, 8586 PASS, 25 FAIL, 47 XFAIL, 1 XPASS,
+585 UNSUPPORTED, 3 TIMEOUT. The 25 FAIL are 21 refused compile steps and the
+baseline's own 4 failures. The 23 tests that the baseline passes and this run
+does not are:
+
+- the 21 refused tests below;
+- 2 load timeouts that are not hod's (below).
+
+**Every test whose objects hod built has the baseline's outcome**, except
+for the 2 load timeouts. Of the 7197 such tests, 7163 pass. Of the other
+34, 27 are XFAIL, 4 FAIL and 1 TIMEOUT (`offset_range.pass.cpp`), the
+baseline's own outcomes. No coverage line has an outcome other than `hod` or
+`error`, and there was no hod crash.
+
+**The quick check came first.** It ran only the 163 tests whose modules the
+second strict run refused (162 FAIL and 1 XFAIL). Those are the tests with an
+`error` line in `.build/libcxx-hod-2/strict/cov/`, keyed through
+`strict/args.tsv`. kiln's runner takes each path as a positional "directory"
+(a file path selects that one test). 141 now pass and 1 is XFAIL as in the
+baseline (`std/atomics/atomics.ref/notify_all.pass.cpp`). The other 21 are
+refused, all for `inst:insertelement/i128`. The whole run confirms this.
+
+### First refusals (third measurement)
+
+There is one reason left, so this is the whole table:
+
+| # | reason | modules (first) | modules (any) | tests | where | what | package |
+|---:|---|---:|---:|---:|---|---|---|
+| 1 | `inst:insertelement/i128` | 21 | 21 | 21 | `crates/hod_ir/src/classify/matrix.rs:1217` (the row has no `I128` class) | `std/experimental/simd` with 128-bit lanes (`simd.class` 8, `simd.mask.class` 6, `simd.reference` 6) and `std/algorithms/alg.nonmodifying/alg.find/find.pass.cpp` | WP-101 |
+
+From the second measurement's seven reasons to now:
+
+| reason (second run) | modules (second) | now | package |
+|---|---:|---:|---|
+| `inst:extractvalue/fp128` | 96 | 0 | WP-084 |
+| `inst:icmp/vector` | 35 | 0 | WP-081 |
+| `inst:insertelement/i128` | 17 | 21 (4 were behind other reasons) | WP-101 |
+| `inst:sitofp/i128` | 6 | 0 | WP-084 |
+| `intrinsic:llvm.umul.with.overflow/i128` | 3 | 0 | WP-084 |
+| `linkage:available_externally` | 3 | 0 | WP-021 |
+| `inst:fptosi/i128` | 3 | 0 | WP-084 |
+
+### The two load timeouts
+
+Both pass in the baseline and have a TIMEOUT here (the runner's 20 s limit
+on the test binary). I reran each one alone (`--filter`, `-j 1`) twice
+strictly through hod and twice with plain kiln + `llc` (`--compiler kiln++`)
+at the same load (load average 18-34):
+
+| test | strict run | hod alone | `llc` alone | 120 s limit, hod | 120 s limit, `llc` |
+|---|---|---|---|---|---|
+| `atomics.types.operations.wait/lost_wakeup.pass.cpp` | TIMEOUT 22.3 s | TIMEOUT 22.1, 22.7 s | TIMEOUT 21.9, 21.6 s | | |
+| `ifstream.members/buffered_reads.pass.cpp` | TIMEOUT 22.1 s | TIMEOUT 24.9, 22.7 s | TIMEOUT 23.0 s, PASS 20.5 s | PASS 26.1, 30.9 s | PASS 33.3, 20.8 s |
+
+`lost_wakeup` is the second measurement's load timeout again. `buffered_reads`
+passed in the second strict run (14.6 s, its object built by hod). It times
+out with `llc` too at this load. Given time, it passes both ways, and the
+hod build is not slower. Neither is hod's, so nothing needed reducing and
+`tests/libcxx-repro/` was still not created.
+
+Raw results are in `.build/libcxx-hod-3/`:
+- `refused-2.txt`: the quick check's list
+- `quick.{log,tsv}` and `quick/`: the quick check
+- `strict.{log,tsv}`, `strict/`, `strict.{start,end,oom-*,load-*}`: the whole run
+- `report-strict.md` and `hod-only-strict-objs.txt`: the report and the
+  tests with all objects by hod
+- `buffered_reads-*`, `lost_wakeup-*` and `br-nolimit-*`: the reruns
+
+The sections below are the second measurement's, as they were.
 
 ## Result
 

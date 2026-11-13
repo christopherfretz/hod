@@ -17,7 +17,6 @@ int main() {
   return load(&x) == 3 ? 0 : 1;
 }
 //@ frontend: clang-19 clang-22
-//@ xfail: hod declines an alignas local of an inlined function (debug:variable-alignment)
 //@ gdb: break align_inlined.cpp:12
 //@ gdb: run
 //@ gdb: print r

@@ -241,6 +241,18 @@ pub fn intrinsic<'a>(
             | I::Aarch64Crc32cx,
             _,
         ) => crate::tail::intrinsic(cx, inst, which, args),
+        // WP-101.
+        (
+            I::Aarch64NeonBfcvt
+            | I::Aarch64NeonBfcvtn
+            | I::Aarch64NeonBfcvtn2
+            | I::Aarch64NeonBfdot
+            | I::Aarch64NeonBfmlalb
+            | I::Aarch64NeonBfmlalt
+            | I::Aarch64NeonBfmmla,
+            _,
+        ) => crate::tail3::bf16_intrinsic(cx, inst, which, args),
+        (I::Aarch64NeonSaddlv, _) => crate::tail3::saddlv(cx, inst, which, args),
         _ => crate::neon::intrinsic(cx, inst, which, args),
     }
 }

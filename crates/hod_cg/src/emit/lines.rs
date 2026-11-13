@@ -26,7 +26,7 @@
 use hod_dwarf::{
     CodeSpan, FunctionInput, FunctionLines, GlobalAddr, LineProgram, LineUnit, LocalPlace,
     LocalRow, Row, ScopeRow, Sequence, SourceLoc, Transition, UnitInput, UnitPlan, function_rows,
-    has_dies, write_debug_info, write_debug_line_units,
+    has_dies, write_debug_line_units,
 };
 use hod_ir::{DebugInfo, DiId, DiKind, DiNode, EmissionKind, Module, SymId, SymbolKind};
 use hod_obj::{Arch, Binding, Object, SectionId, SymbolId};
@@ -70,6 +70,8 @@ pub(super) struct DebugLines<'m> {
     rows: Vec<Row>,
     scopes: Vec<ScopeRow>,
     locals: Vec<LocalRow>,
+    /// How the DIEs are written (`Options::split_dwarf`).
+    pub(super) split: hod_dwarf::SplitDwarf,
 }
 
 /// Where a function was placed, and its frame.
@@ -153,6 +155,7 @@ impl<'m> DebugLines<'m> {
             rows: Vec::new(),
             scopes: Vec::new(),
             locals: Vec::new(),
+            split: hod_dwarf::SplitDwarf::Off,
         })))
     }
 
@@ -350,7 +353,8 @@ impl<'m> DebugLines<'m> {
         if inputs.is_empty() {
             return Ok(()); // only `DebugDirectivesOnly` units
         }
-        write_debug_info(obj, lines.sections.line, &inputs).map_err(dwarf_err)?;
+        hod_dwarf::write_unit_dies(obj, lines.sections.line, &inputs, self.split)
+            .map_err(dwarf_err)?;
         Ok(())
     }
 }

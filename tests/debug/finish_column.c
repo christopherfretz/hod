@@ -1,11 +1,11 @@
-// FINDING (WP-060): the column at a call's return address. In
-// `int got = bump(&c, 1);` the instruction after `llc`'s call (the
-// return address) still has the call's location (column 13); hod's has
-// the assignment's (column 7). After `finish` the program stops at the return address, the same
-// line with another column, which lldb prints and gdb does not. Reduced
-// from kiln's tests/debuginfo/step_finish.cpp, whose lldb transcripts
-// differ only here. Code generation (crates/hod_cg), not debug
-// information.
+// The column at a call's return address (WP-060; permitted since WP-097:
+// `return-column`, spec/dwarf.md §5.7). In `int got = bump(&c, 1);` the
+// instruction after `llc`'s call (the return address) is the copy of the
+// result register, which keeps the call's location (column 13); hod's
+// has the assignment's (column 7). After `finish` lldb prints that column
+// (gdb does not). The harness permits it by rule: llc's column is a call's
+// at that line. Reduced from kiln's tests/debuginfo/step_finish.cpp.
+// Do not move the lines below: the gdb directives name line 20.
 struct Counter {
   int n;
 };
@@ -21,7 +21,6 @@ int main(void) {
   got += bump(&c, 1);
   return got == 11 ? 0 : 1;
 }
-//@ xfail(lldb): the instruction after the call has the call's column in llc's program and the assignment's in hod's
 //@ gdb: break finish_column.c:20
 //@ gdb: run
 //@ gdb: step

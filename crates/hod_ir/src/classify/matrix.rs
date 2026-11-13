@@ -366,6 +366,8 @@ const NEON: &[TypeClass] = &[
     TypeClass::Aggregate,
 ];
 const X64_ONLY: &str = "an x86 property";
+/// WP-101.
+const NO_RELOCATION: &str = "no ELF relocation subtracts a symbol's address; `llc` refuses it too";
 const NO_FORM: &str = "a constant expression with no normal form (§4.2)";
 const ELF_COMDAT: &str = "ELF has `any` and `nodeduplicate` only; `llc` refuses it too";
 const GC: &str = "garbage-collection statepoints are refused by design";
@@ -548,7 +550,7 @@ const COMDAT: [SupportRow; ComdatKind::ALL.len()] = [
     both("comdat:samesize", never(ELF_COMDAT), ""),
 ];
 
-const INIT: [SupportRow; 9] = [
+const INIT: [SupportRow; 10] = [
     row("init:data", ON, todo(X64), "any initializer: numbers, zero, `undef`, aggregates, bytes"),
     row("init:symbol", ON, todo(X64), "a symbol's address, with or without an offset"),
     row("init:blockaddress", ON, todo(X64), "of a block of a function with an `indirectbr` (§9.6)"),
@@ -563,6 +565,14 @@ const INIT: [SupportRow; 9] = [
     ),
     a64("init:dso-local-equivalent", LATER, ""),
     a64("init:no-cfi", LATER, ""),
+    // WP-101.
+    row(
+        "init:neg-addr",
+        never(NO_RELOCATION),
+        todo(X64),
+        "a number minus an address, `sub (i64 4, i64 ptrtoint (ptr @a to i64))`, \
+         in data or in an aggregate operand's image",
+    ),
 ];
 
 const FUNCTION: [SupportRow; 6] = [
@@ -592,7 +602,13 @@ const CC: [SupportRow; 15] = [
         todo(X64),
         "assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095)",
     ),
-    a64("cc:preserve_allcc", LATER, ""),
+    // WP-101.
+    row(
+        "cc:preserve_allcc",
+        ON,
+        todo(X64),
+        "assigned as `ccc`; the callee also saves `x9`..`x15` and `q8`..`q31` whole",
+    ),
     row("cc:swiftcc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     row("cc:cxx_fast_tlscc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     a64("cc:tailcc", LATER, ""),
@@ -1209,6 +1225,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Double,
             TypeClass::Vector,
             TypeClass::I128,
+            // WP-101: `fp128` lanes.
+            TypeClass::Fp128,
         ]),
         todo(X64),
         "byte-sized elements, up to 256 lanes (WP-079)",
@@ -1223,6 +1241,9 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Float,
             TypeClass::Double,
             TypeClass::Vector,
+            // WP-101: `i128` and `fp128` lanes.
+            TypeClass::I128,
+            TypeClass::Fp128,
         ]),
         todo(X64),
         "byte-sized elements, up to 256 lanes (WP-079)",
@@ -1370,7 +1391,7 @@ const LANDINGPAD: [SupportRow; 3] = [
     row("landingpad:filter", ON, todo(X64), ""),
 ];
 
-const OPERAND: [SupportRow; 10] = [
+const OPERAND: [SupportRow; 11] = [
     row(
         "operand:symbol",
         ON,
@@ -1385,6 +1406,8 @@ const OPERAND: [SupportRow; 10] = [
     a64("operand:block-diff", LATER, "a label difference as an operand (WP-095)"),
     a64("operand:dso-local-equivalent", LATER, ""),
     a64("operand:no-cfi", LATER, ""),
+    // WP-101.
+    row("operand:neg-addr", ON, todo(X64), "a number minus an address, alone (`init:neg-addr`)"),
     row(
         "operand:address-in-aggregate",
         ON,
@@ -2342,13 +2365,13 @@ const INTRINSIC_A64: &[SupportRow] = &[
     row("intrinsic:llvm.aarch64.isb", on(&[TypeClass::Int]), never(A64_ONLY), "WP-083"),
     row("intrinsic:llvm.aarch64.neon.abs", on(NEON), never(A64_ONLY), "WP-083"),
     row("intrinsic:llvm.aarch64.neon.addp", on(NEON), never(A64_ONLY), "WP-083"),
-    row("intrinsic:llvm.aarch64.neon.bfcvt", todo(LATER), never(A64_ONLY), "bfloat"),
-    row("intrinsic:llvm.aarch64.neon.bfcvtn", todo(LATER), never(A64_ONLY), "bfloat"),
-    row("intrinsic:llvm.aarch64.neon.bfcvtn2", todo(LATER), never(A64_ONLY), "bfloat"),
-    row("intrinsic:llvm.aarch64.neon.bfdot", todo(LATER), never(A64_ONLY), "bfloat"),
-    row("intrinsic:llvm.aarch64.neon.bfmlalb", todo(LATER), never(A64_ONLY), "bfloat"),
-    row("intrinsic:llvm.aarch64.neon.bfmlalt", todo(LATER), never(A64_ONLY), "bfloat"),
-    row("intrinsic:llvm.aarch64.neon.bfmmla", todo(LATER), never(A64_ONLY), "bfloat"),
+    row("intrinsic:llvm.aarch64.neon.bfcvt", on(NEON), never(A64_ONLY), "WP-101"),
+    row("intrinsic:llvm.aarch64.neon.bfcvtn", on(NEON), never(A64_ONLY), "WP-101"),
+    row("intrinsic:llvm.aarch64.neon.bfcvtn2", on(NEON), never(A64_ONLY), "WP-101"),
+    row("intrinsic:llvm.aarch64.neon.bfdot", on(NEON), never(A64_ONLY), "WP-101"),
+    row("intrinsic:llvm.aarch64.neon.bfmlalb", on(NEON), never(A64_ONLY), "WP-101"),
+    row("intrinsic:llvm.aarch64.neon.bfmlalt", on(NEON), never(A64_ONLY), "WP-101"),
+    row("intrinsic:llvm.aarch64.neon.bfmmla", on(NEON), never(A64_ONLY), "WP-101"),
     row("intrinsic:llvm.aarch64.neon.cls", on(NEON), never(A64_ONLY), "WP-083"),
     row("intrinsic:llvm.aarch64.neon.fabd", on(NEON), never(A64_ONLY), "WP-083"),
     row("intrinsic:llvm.aarch64.neon.facge", on(NEON), never(A64_ONLY), "WP-083"),
@@ -2723,6 +2746,7 @@ pub(crate) mod at {
     pub(crate) const INIT_INT_OF_ADDR: usize = find("init:int-of-addr");
     pub(crate) const INIT_DSO_LOCAL_EQUIVALENT: usize = find("init:dso-local-equivalent");
     pub(crate) const INIT_NO_CFI: usize = find("init:no-cfi");
+    pub(crate) const INIT_NEG_ADDR: usize = find("init:neg-addr");
 
     pub(crate) const FUNCTION_PARAMETERS: usize = find("function:parameters");
     pub(crate) const FUNCTION_VARIADIC: usize = find("function:variadic");
@@ -2785,6 +2809,7 @@ pub(crate) mod at {
     pub(crate) const OPERAND_BLOCK_DIFF: usize = find("operand:block-diff");
     pub(crate) const OPERAND_DSO_LOCAL_EQUIVALENT: usize = find("operand:dso-local-equivalent");
     pub(crate) const OPERAND_NO_CFI: usize = find("operand:no-cfi");
+    pub(crate) const OPERAND_NEG_ADDR: usize = find("operand:neg-addr");
     pub(crate) const OPERAND_ADDRESS_IN_AGGREGATE: usize = find("operand:address-in-aggregate");
 
     const CONST_EXPR: usize = find("const-expr:trunc");

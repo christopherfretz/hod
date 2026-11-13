@@ -594,6 +594,14 @@ fn block_diff(m: &mut Module, f: SymId) -> hod_ir::IrResult<ConstId> {
     m.consts.fold_binary(&m.types, ConstOp::Sub, int, int)
 }
 
+/// `sub (i64 4, i64 ptrtoint @g)`: a number minus an address (WP-101).
+fn neg_addr(m: &mut Module, g: SymId) -> hod_ir::IrResult<ConstId> {
+    let addr = m.consts.addr(g, 0)?;
+    let int = m.consts.int_of_addr(&m.types, I64, addr)?;
+    let four = m.consts.int(&m.types, I64, 4)?;
+    m.consts.fold_binary(&m.types, ConstOp::Sub, four, int)
+}
+
 fn init_row(name: &str, arch: Arch) -> Program {
     let mut m = module(arch);
     let g = variable(&mut m, "g", I32);
@@ -620,6 +628,7 @@ fn init_row(name: &str, arch: Arch) -> Program {
         }
         "dso-local-equivalent" => m.consts.dso_local_equivalent(g),
         "no-cfi" => m.consts.no_cfi(g),
+        "neg-addr" => neg_addr(&mut m, g),
         _ => panic!("no case for init:{name}"),
     }
     .unwrap();
@@ -733,6 +742,7 @@ fn operand_row(name: &str, arch: Arch) -> Program {
         "block-diff" => constant(block_diff(m, fx.f.0).unwrap()),
         "dso-local-equivalent" => constant(m.consts.dso_local_equivalent(fx.callee.0).unwrap()),
         "no-cfi" => constant(m.consts.no_cfi(fx.callee.0).unwrap()),
+        "neg-addr" => constant(neg_addr(m, g).unwrap()),
         "address-in-aggregate" => {
             let addr = m.consts.addr(g, 0).unwrap();
             let zero = m.consts.int(&m.types, I64, 0).unwrap();

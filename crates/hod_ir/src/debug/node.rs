@@ -977,6 +977,11 @@ nodes! {
         flags "flags": &'a [u8],
         /// The Objective-C runtime version.
         runtime_version "runtimeVersion": u32,
+        /// The `.dwo` name the frontend chose for split DWARF
+        /// (`-gsplit-dwarf`, `spec/dwarf.md` §6.15). With `dwo_id` 0 it
+        /// only names the file `-split-dwarf-file` writes; with a DWO id
+        /// it names an external unit (a clang module).
+        split_debug_filename "splitDebugFilename": &'a [u8],
         /// How much to emit for the unit.
         emission_kind "emissionKind": EmissionKind,
         /// The enumeration types of the unit.
@@ -988,6 +993,13 @@ nodes! {
         globals "globals": &'a [DiId] => class::GLOBAL_EXPR,
         /// The unit's imported entities (`using` at namespace scope).
         imports "imports": &'a [DiId] => class::IMPORTED,
+        /// The DWO id of an external unit this unit stands for (a clang
+        /// module's skeleton); 0 for an ordinary unit.
+        dwo_id "dwoId": u64,
+        /// Whether split DWARF repeats inlining in the skeleton unit
+        /// (`-fsplit-dwarf-inlining`). LLVM's default is `true`
+        /// ([`DiNode::llvm_default`]); clang and kiln write `false`.
+        split_debug_inlining "splitDebugInlining": bool,
         /// Which name index to emit.
         name_table_kind "nameTableKind": NameTableKind,
         /// `DW_AT_LLVM_sysroot`.
@@ -1350,9 +1362,10 @@ nodes! {
 impl<'a> DiNode<'a> {
     /// A node of `kind` as LLVM's parser starts one: every field at
     /// LLVM's default for an omitted field. That differs from
-    /// [`DiNode::new`] in two places: a global variable is a definition,
+    /// [`DiNode::new`] in three places: a global variable is a definition,
     /// and so is a subprogram (LLVM's `isDefinition` defaults to `true`
-    /// when neither it nor `spFlags` is written).
+    /// when neither it nor `spFlags` is written), and a compile unit's
+    /// `splitDebugInlining` is `true`.
     pub fn llvm_default(kind: DiKind) -> DiNode<'a> {
         match kind {
             DiKind::GlobalVariable => DiNode::GlobalVariable(DiGlobalVariable {
@@ -1361,6 +1374,11 @@ impl<'a> DiNode<'a> {
             }),
             DiKind::Subprogram => DiNode::Subprogram(DiSubprogram {
                 sp_flags: SpFlags::DEFINITION,
+                ..Default::default()
+            }),
+            // WP-062: LLVM's `splitDebugInlining` defaults to `true`.
+            DiKind::CompileUnit => DiNode::CompileUnit(DiCompileUnit {
+                split_debug_inlining: true,
                 ..Default::default()
             }),
             other => DiNode::new(other),

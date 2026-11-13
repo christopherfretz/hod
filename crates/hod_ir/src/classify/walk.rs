@@ -460,6 +460,18 @@ impl<'a, S: Sink> Walker<'a, S> {
                         Place::Clause => GO,
                     };
                 }
+                // WP-101: a number minus an address, an operand only; an
+                // image (data, an aggregate operand) has no relocation
+                // for it.
+                if let Some(neg) = module.consts.neg_addr(&module.types, id) {
+                    self.symbol_use(neg.sym, Some(rules::TLS_CONSTANT), at)?;
+                    return match place {
+                        Place::Init => self.row(at::INIT_NEG_ADDR, at),
+                        Place::Operand if nested => self.row(at::INIT_NEG_ADDR, at),
+                        Place::Operand => self.row(at::OPERAND_NEG_ADDR, at),
+                        Place::Clause => GO,
+                    };
+                }
                 self.row(at::const_expr(op), at)?;
                 for &arg in args {
                     self.constant(cx, arg, place, nested, depth + 1, at)?;

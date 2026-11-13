@@ -8,10 +8,12 @@
 //!
 //! `tests/debug/` cannot hold them: an unclassified pair fails `cargo xtask
 //! debug` whatever its `xfail` says (`spec/harness.md` "debug", "Lines").
-//! So each is an ignored test here that states what must become true: the
+//! So each is a test here that states what is true since WP-097: the
 //! harness run on the source has no unclassified pair and no failing
-//! session. Every one fails today; run them with
-//! `cargo test -p xtask --test debug_m3 -- --ignored`.
+//! session (hod's line table has what `llc`'s has: `spec/dwarf.md` §5.8),
+//! or its pairs are of a class `spec/dwarf.md` §5.7 permits, recognised
+//! from the IR (the sessions then differ where the class says, and are
+//! not judged).
 #![cfg(target_os = "linux")]
 
 mod common;
@@ -19,16 +21,17 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::Scratch;
-use xtask::debug::sessions::{self, Options, Outcome};
+use xtask::debug::lines::Class;
+use xtask::debug::sessions::{self, Options, Outcome, Report};
 use xtask::irdiff;
 
 fn build_dir() -> PathBuf {
     Path::new(env!("CARGO_TARGET_TMPDIR")).parent().expect("it is <target>/tmp").to_path_buf()
 }
 
-/// Runs the harness on one source of `data/debug_lines` and requires the
-/// two programs' `(function, line)` sets and sessions to agree.
-fn agrees_with_llc(name: &str) {
+/// Runs the harness on one source of `data/debug_lines`; `None` when the
+/// tools are missing (and not required).
+fn run(name: &str) -> Option<(Report, String)> {
     let scratch = Scratch::new("debug-m3");
     let mut options = Options::new(build_dir());
     options.hod = Some(irdiff::build_workspace_hod(&build_dir()).expect("hod builds"));
@@ -41,17 +44,47 @@ fn agrees_with_llc(name: &str) {
     if report.records.iter().all(|r| r.outcome == Outcome::Skip) {
         assert!(!options.require_tools, "required tools are missing:\n{summary}");
         eprintln!("note: skipping this tool-backed test:\n{summary}");
-        return;
+        return None;
     }
-    assert_eq!(report.lines_total().unclassified(), 0, "{summary}");
+    Some((report, summary))
+}
+
+/// The two programs' `(function, line)` sets and sessions agree.
+fn agrees_with_llc(name: &str) {
+    let Some((report, summary)) = run(name) else { return };
+    let lines = report.lines_total();
+    assert_eq!(lines.unclassified(), 0, "{summary}");
+    assert!(
+        lines
+            .hod_only
+            .iter()
+            .chain(&lines.llc_only)
+            .all(|(_, c)| matches!(c, Class::P1 | Class::P3)),
+        "{summary}"
+    );
     assert_eq!(report.count(Outcome::Fail), 0, "{summary}");
+    assert!(report.count(Outcome::Pass) > 0, "{summary}");
+}
+
+/// The pairs one side lacks are all of `class` (and there are some).
+fn classified_as(name: &str, class: Class) {
+    let Some((report, summary)) = run(name) else { return };
+    let lines = report.lines_total();
+    assert_eq!(lines.unclassified(), 0, "{summary}");
+    let differing: Vec<Class> = lines
+        .hod_only
+        .iter()
+        .chain(&lines.llc_only)
+        .map(|(_, c)| *c)
+        .filter(|c| !matches!(c, Class::P1 | Class::P3))
+        .collect();
+    assert!(!differing.is_empty() && differing.iter().all(|c| *c == class), "{summary}");
 }
 
 // Class `unreachable`: hod's trap for `unreachable` has a row (223 pairs,
 // 37 modules). crates/hod_cg (the `unreachable` terminator's code keeps
 // the instruction's location).
 #[test]
-#[ignore = "finding (WP-099): hod's trap for `unreachable` has a line row llc's program lacks"]
 fn unreachable_has_no_row() {
     agrees_with_llc("unreachable_line.c");
 }
@@ -59,7 +92,6 @@ fn unreachable_has_no_row() {
 // Class `gep-placement`, hod only: a zero-offset `getelementptr` on a line
 // of its own has code in hod's program (213 pairs, 23 modules).
 #[test]
-#[ignore = "finding (WP-099): hod has code for a getelementptr llc folds into its user"]
 fn folded_gep_has_no_row() {
     agrees_with_llc("gep_member.cpp");
 }
@@ -67,7 +99,6 @@ fn folded_gep_has_no_row() {
 // Class `gep-placement`, llc only: hod folds a `getelementptr` llc
 // computes at its own line (33 pairs, 7 modules).
 #[test]
-#[ignore = "finding (WP-099): hod folds a getelementptr llc computes at its own line"]
 fn gep_with_offset_has_a_row() {
     agrees_with_llc("gep_offset.c");
 }
@@ -75,15 +106,13 @@ fn gep_with_offset_has_a_row() {
 // Class `is-constant`: `llc` deletes the blocks under a folded
 // `llvm.is.constant`, hod keeps them (40 pairs, 13 modules).
 #[test]
-#[ignore = "finding (WP-099): hod keeps the blocks llc deletes under llvm.is.constant"]
-fn is_constant_blocks_have_no_rows() {
-    agrees_with_llc("is_constant.c");
+fn is_constant_blocks_are_permitted() {
+    classified_as("is_constant.c", Class::IsConstant);
 }
 
 // Class `compare-at-user`: hod's compare is at its user's location
 // (10 pairs, 10 modules).
 #[test]
-#[ignore = "finding (WP-099): hod places a compare at its user's line"]
 fn compare_has_its_own_row() {
     agrees_with_llc("compare_user.cpp");
 }
@@ -91,15 +120,13 @@ fn compare_has_its_own_row() {
 // Class `load-placement`, llc only: a dead load `llc` merges with a later
 // load keeps its line in `llc`'s program (40 pairs, 13 modules).
 #[test]
-#[ignore = "finding (WP-099): llc's merged dead load has a row hod's program lacks"]
-fn dead_load_line() {
-    agrees_with_llc("dead_load.cpp");
+fn dead_load_line_is_permitted() {
+    classified_as("dead_load.cpp", Class::LoadPlacement);
 }
 
 // Class `load-placement`, hod only: hod's load of a call argument on a
 // line of its own has a row (20 pairs, 10 modules).
 #[test]
-#[ignore = "finding (WP-099): hod's argument load has a row at its own line"]
-fn argument_load_line() {
-    agrees_with_llc("arg_load.c");
+fn argument_load_line_is_permitted() {
+    classified_as("arg_load.c", Class::LoadPlacement);
 }

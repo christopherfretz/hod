@@ -1234,7 +1234,8 @@ fn what_is_refused_is_refused_by_name() {
         (extract("<65 x i1>", "i1"), vector::MASK_WIDE),
         (extract("<4 x i4>", "i4"), vector::ODD_ELEMENT),
         (extract("<2 x i24>", "i24"), vector::ODD_ELEMENT),
-        (extract("<2 x fp128>", "fp128"), vector::WIDE_ELEMENT),
+        // WP-101: `fp128` lanes are extracted; `i96` lanes are not.
+        (extract("<2 x i96>", "i96"), vector::WIDE_ELEMENT),
         (extract("<257 x i8>", "i8"), vector::LENGTH),
         (
             "define void @f(ptr %p, i128 %i) {\n  %v = load <4 x i32>, ptr %p\n  \

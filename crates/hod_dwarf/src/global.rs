@@ -198,7 +198,7 @@ impl<'a> Writer<'a> {
         };
         let loc = addr.is_some();
         let link = !v.linkage_name.is_empty();
-        let align = v.align != 0;
+        let align = v.align >= 8;
         if shape.spec == NONE {
             let file = match v.file {
                 Some(f) if v.line != 0 => Some(plan.file_index(f).ok_or(bad(node, "file"))?),

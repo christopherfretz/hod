@@ -1161,15 +1161,14 @@ section.
 - **Calls.** `Fpr` vectors are passed and returned as `abi::assign`
   places them (`v0`..`v7`, then the stack; the AAPCS64 short-vector
   rules, checked against `llc` by the ABI grid and here against gcc's
-  `vector_size`). A `Mem` vector anywhere in a signature (parameter,
-  result, or a leaf of an aggregate one) is `a64:vector-call` until
-  WP-082 (the hook is the first line of `A64::assign`).
+  `vector_size`). A `Mem` vector in a signature (parameter, result, or
+  a leaf of an aggregate one) is WP-082's (below).
 - **Refused, by name** (`hod_a64::vector`): `a64:vector-mask` (a lane
   operation on `<N x i1>`, `N ≤ 64`: WP-081), `a64:mask-wide` (more
   than 64 `i1`), `a64:vector-odd-element` (integer lanes of a width other
   than 8, 16, 32, 64 and at most 64), `a64:vector-wide-element`
   (`i128` or `fp128` lanes), `a64:vector-length` (more than 256 lanes),
-  `a64:vector-index`, `a64:vector-call`; `getelementptr` over a vector
+  `a64:vector-index`; `getelementptr` over a vector
   of pointers stays `a64:ptradd-vector`, element-wise arithmetic
   `a64:vector-op` / `a64:mem-vector` (WP-080). `a64:vector-bfloat` and
   `a64:intrinsic-target` are defined for WP-080 and WP-083.
@@ -1226,10 +1225,11 @@ section.
   already lowered (WP-039/040).
 - **Refused, by name.** The shapes `vector::lanes` refuses keep its
   names (`a64:vector-length`, `a64:vector-wide-element` for `i128` and
-  `fp128` lanes, `a64:vector-odd-element`); a vector of `bfloat` is
-  `a64:vector-bfloat`. Lanes of `i1` are WP-081's: a binary operation or
-  a cast of one stays `a64:mem-vector`, an intrinsic of one
-  `a64:intrinsic-vector`, as before. `frexp` and `is.fpclass` of a vector
+  `fp128` lanes, `a64:vector-odd-element`; the arithmetic, `fcmp` and
+  casts of `i128`, `fp128` and `bfloat` lanes are WP-101's, §5.5.1); any
+  other lane operation on `bfloat` is `a64:vector-bfloat`. Lanes of `i1` are WP-081's (below), which lowers
+  their binary operations and casts; an intrinsic of one stays
+  `a64:intrinsic-vector`. `frexp` and `is.fpclass` of a vector
   stay `a64:intrinsic-vector`.
 - **Cost.** The code is a constant number of bytes per lane (no lane
   shares work with another), emitted without allocating; see the landed
@@ -1291,11 +1291,10 @@ part of this section.
   that LLVM leaves poison takes what the bit rule gives.
 - **Refused, by name.** A lane operation on a mask of more than 64 lanes
   (it stays of class `Mem`): `a64:mask-wide`. A mask crossing a call or a
-  return (argument, result, or leaf of an aggregate one):
-  `a64:vector-call` (WP-082: no ABI is invented here). An intrinsic of
+  return is WP-082's (below). An intrinsic of
   `i1` lanes (`llvm.umax.v4i1`): the intrinsic group's
-  `a64:intrinsic-vector`. `fcmp` of `bfloat` lanes:
-  `a64:vector-bfloat`. A reduction whose operand list is not the
+  `a64:intrinsic-vector`. (`fcmp` of `bfloat` lanes was
+  `a64:vector-bfloat` until WP-101.) A reduction whose operand list is not the
   intrinsic's: `a64:vector-reduce`. `reduce.fmaximum`/`fminimum` stay
   the intrinsic group's refusal.
 - **Known `llc` defects** (not hod's, not chased; the interpreter and
@@ -1304,10 +1303,8 @@ part of this section.
   crashes on `llvm.vector.insert` of non-power-of-two lengths; stores of
   `<4 x i3>` are wrong. None of them is on a mask path tested here.
 - **Hooks.** `target::vector_class` (a vector of `i1` of at most 64
-  lanes is `Gpr`), the first line of `A64::lower` (`mask::lower`), the
-  constant arm of `A64::materialize` (`mask::materialize`), and
-  `vector::has_mem_vector` (any vector of `i1` in a signature is
-  `a64:vector-call`).
+  lanes is `Gpr`), the first line of `A64::lower` (`mask::lower`) and
+  the constant arm of `A64::materialize` (`mask::materialize`).
 - **Tests**: `crates/hod_a64/tests/mask.rs` (every construct × lane type
   × lane count against a Rust model, `hod_interp` on value-form twins,
   `llc` 22 and 19, under bfd, lld and mold, plain and stressed; masks
@@ -1319,9 +1316,9 @@ part of this section.
 Every vector `abi::assign` places crosses a call and a return, in both
 directions, exactly as `llc -O0` passes it (`spec/abi-a64.md` §4.3);
 what `llc` passes differently from any `Part` hod can say is refused by
-name, never approximated. This supersedes the `a64:vector-call` lines
-of WP-079 and WP-081 above: `vector::check_signature` is no longer
-called, and `a64:vector-call` is no longer reported.
+name, never approximated. (WP-079 and WP-081 refused these as
+`a64:vector-call`; the name, and the check that reported it, are gone,
+WP-101.)
 
 - **Bytes.** A `Mem` vector whose pieces are bytes of its image
   (`<3 x float>`, `<8 x i32>`, `<3 x i64>`, `<5 x i32>`, `<3 x half>`,
@@ -1354,8 +1351,7 @@ called, and `a64:vector-call` is no longer reported.
   `call:musttail-ret-memory`, and `va_arg` `a64:va_arg`. x86-64 passes
   no `Lanes` part: its `Target` keeps the default hooks
   (`call:part-lanes`), and its `assign` is unchanged.
-- **Hooks.** `A64::assign` (no `check_signature` before
-  `abi::assign`), `A64::lanes_out` and `A64::lanes_in` (to `vcall`), and
+- **Hooks.** `A64::assign` (`abi::assign` directly), `A64::lanes_out` and `A64::lanes_in` (to `vcall`), and
   the memory-return arm of `term::ret` (`vcall::ret_image`).
 - **Tests**: `crates/hod_a64/tests/vcall.rs`: hod (plain and stressed)
   callers against `llc` 22 and 19 callees and the reverse, under bfd,
@@ -1678,8 +1674,11 @@ WP-095 below).
   are put into `v30`, `v31`, then temporaries; an `i32`/`i64` operand is
   moved in with `fmov`. A general result is moved out with `fmov`,
   zero-extending: also the signed reductions of bytes and halfwords
-  (`saddv`, `smaxv`, `sminv`, `saddlv`), as `llc` 22 (`llc` 19
-  sign-extends `saddlv`'s; `<arm_neon.h>` truncates either).
+  (`saddv`, `smaxv`, `sminv`), as `llc` does. `saddlv` of bytes is the
+  exception (WP-101, `tail3::saddlv`): its 16-bit signed sum is
+  sign-extended to `i32` (`smov w, v.h[0]`), as `llc` 19 does; `llc` 22
+  zero-extends it, which is a different `i32` for a negative sum
+  (`<arm_neon.h>` truncates either to 16 bits).
 - **Consecutive registers.** `tbl`/`tbx` tables and the structure loads
   and stores use `v24`..`v27`, taken (`take_reg`) before the deferred
   operands. A structure result (`ld2`.. `ld4`, `ld2lane`.., `ld2r`..) is
@@ -1780,6 +1779,7 @@ that refused it before (WP-084's "stays refused" list is settled here).
     an operand): `spec/ir.md` §4.2 keeps it an `Expr`; no ELF data
     relocation is `-S`, and as an operand it needs a normal form of its
     own and a lowering (`neg` of the address). One corpus module.
+    (WP-101 gives it both, below.)
   - `metadata-arg:llvm.read_volatile_register.i64`: the register name is
     a metadata operand, which the IR does not carry for intrinsics
     (BACKLOG WP-064) and `hod_ll`'s body reader would have to read.
@@ -1793,6 +1793,100 @@ that refused it before (WP-084's "stays refused" list is settled here).
     `debug:dbg-value`.
   - `cc:preserve_allcc`, `cc:79` (`win64cc`) and `cc:aarch64_vector_pcs`
     (WP-082), which the one `preserve_mostcc` corpus module also uses.
+    (`preserve_allcc` since WP-101, below.)
+
+#### The short tail, third part (WP-101)
+
+`src/tail3.rs`, reached by one call at the top of `A64Target::lower`
+(`target.rs`) that answers only for the vector forms below, and by one
+call each from the places named with the other items.
+
+- **Vectors of `i128` and `fp128` lanes** ("wide lanes"). `<1 x i128>`
+  and `<1 x fp128>` are class `Fpr` (one `Q` register); every longer one
+  is `Mem`, lane `i` at byte `16·i`. A lowering spills an `Fpr` operand
+  to a scratch image (`vector::scratch`) and works on memory images;
+  an `Fpr` result is built in the last scratch image and loaded. Per
+  lane, as `llc` scalarizes them:
+  - `add`, `sub` (`adds`/`adc`, `subs`/`sbc`), `and`, `or`, `xor` limb
+    by limb; `mul` as the scalar `i128` multiply (`umulh`, `madd`);
+  - `icmp`: the low limbs compared, then `ccmp` of the high limbs for
+    `eq`/`ne` or `sbcs xzr` for an ordering; the result is a mask
+    (`<N x i1>`, at most 64 lanes, bit-packed in a `Gpr`; more is
+    `a64:mask-wide`);
+  - `fadd`, `fsub`, `fmul`, `fdiv`, `frem`, `fcmp` of `fp128` lanes are
+    the runtime calls of the scalar (`__addtf3` .. `__divtf3`, `fmodl`,
+    `__eqtf2`, `__lttf2`, `__letf2`, `__unordtf2`, with
+    `float::quad_flags`' table); the mask of `fcmp` is collected in a
+    frame slot across the calls; `fneg` flips bit 127;
+  - `select` with a mask condition, `tst` and `csel` per limb;
+  - `sext`/`zext` of a mask, of `i8`..`i64` lanes to `i128` lanes,
+    `trunc` of `i128` lanes to a mask or to `i8`..`i64` lanes;
+  - `insertelement`, `extractelement` (constant or variable index,
+    wrapped as `vector::index` does) and `shufflevector` (an undefined
+    lane is zero).
+  Refused, by name: shifts, `udiv`, `sdiv`, `urem`, `srem` of `i128`
+  lanes (`a64:vector-i128-op`: `llc` calls `__ashlti3`.. per lane; no
+  corpus module); any other cast with a wide side
+  (`a64:vector-wide-cast`: `sitofp`, `fpext`, `fptrunc`, bitcasts
+  between floating-point and integer lanes); intrinsics on wide lanes
+  stay `a64:vector-wide-element`.
+- **Wide lanes across calls** (`abi.rs`, `spec/abi-a64.md` §3.3, §4.3):
+  each `i128` element travels as an `i128` (two general registers under
+  the even-register rule, or a 16-aligned stack slot), as both LLVM
+  selectors in 19 and 22 pass it; an `fp128` element in a `Q` register.
+  A lone `<1 x i128>` argument or result stays `abi:vector-element`: it
+  is a `Q`-register value in two general registers, and the call
+  sequence moves no value between classes (§7.2). In a structure or an
+  array it is memory and passes (`std::experimental::simd<__int128>`
+  passes `[1 x <1 x i128>] alignstack(16)` and returns `{<1 x i128>}`).
+- **Arrays of `bfloat`** (HFAs and `[n x bfloat]`, `spec/abi-a64.md`
+  §3.3): passed as a block of `H` registers when `NSRN + n <= 8`, where
+  `llc` 22 (a block) and `llc` 19 (piece by piece) place them alike;
+  otherwise `abi:bfloat-array`, since the two versions put the stack
+  pieces in different places.
+- **Vectors of `bfloat` without `+bf16`.** Load, store, passing, lane
+  insertion, extraction and shuffles are the 16-bit-lane forms of
+  `vector.rs` (a 64- or 128-bit power-of-two count is `Fpr`, any other
+  `Mem`). Per lane, as `llc` scalarizes them: `fadd`, `fsub`, `fmul`,
+  `fdiv` widen both lanes to `float` (a 16-bit shift), operate in `S`,
+  and narrow with round-to-nearest-even as the scalar does
+  (`tail2::narrow`); `frem` calls `fmodf`; `fneg` flips bit 15; `fcmp`
+  compares in `S` and collects the mask in a `Gpr`; `fpext` to `float` or
+  `double`, `fptrunc` from `float`, or from `double` through `fcvtxn`
+  (round to odd) then the narrowing. Any other cast is
+  `a64:vector-bfloat-cast`.
+  `llc -O0` of LLVM 19 and 22 miscompiles the vector form: its rounding
+  takes the rounding bit from the operand's image rather than the
+  result's (`ushr v1.4s, v0.4s, #16` of the loaded operand), so its
+  vector results differ from its own scalar ones. hod follows the
+  scalar, and its tests compare with `llc`'s build of the scalarized
+  program.
+- **The `bfloat` NEON intrinsics** `bfcvt`, `bfcvtn`, `bfcvtn2`, `bfdot`,
+  `bfmlalb`, `bfmlalt` and `bfmmla` (`intrinsic.rs`, one arm): the
+  instruction itself (FEAT_BF16), as `llc` emits for a function with
+  `+bf16`; the accumulator operand is the result register. Another
+  signature is `a64:intrinsic-target`.
+- **A number minus an address** as an operand (`operand:neg-addr`,
+  `spec/ir.md` §4.2; `common::materialize_gpr_const` hands an `Expr` to
+  `tail3::neg_addr`): the symbol's address with `offset - addend` added,
+  by the symbol access of §7.4, then `neg`. Data and aggregate operands
+  are `init:neg-addr`.
+- **`preserve_allcc`**, as caller and callee, done as `preserve_mostcc`
+  above (`tail3::assign_preserve_all`, `save_all`, `all_rows`,
+  `restore_all`, one hook each in `target.rs` and `frame.rs`): assigned
+  as `ccc`; a callee also saves `x9`..`x15` and the whole of `q8`..`q31`
+  (LLVM's `CSR_AArch64_RT_AllRegs`, the same in 19 and 22; `x8`,
+  `x16`..`x18` and `q0`..`q7` are not preserved) in 448 bytes after the
+  frame record (`x9` lowest, then `q8` lowest, `stp` pairs), with one
+  `DW_CFA_offset` per register after the stores (a vector register's
+  DWARF number is 64 plus its index, as `llc`'s `.cfi_offset b8`), and
+  reloads them with `DW_CFA_restore` in every exit sequence. All are
+  saved, as `llc -O0` saves them in a function with a call.
+- **`saddlv` of bytes** (`llvm.aarch64.neon.saddlv.i32.v8i8`/`.v16i8`,
+  `tail3::saddlv` from `intrinsic.rs`): `saddlv h30`, then `smov w,
+  v30.h[0]`, the sum sign-extended, as `llc` 19 (see "Operands" in the
+  NEON section; `llc` 22 zero-extends). Every other `saddlv` signature
+  is `neon`'s.
 
 #### 5.5.2 Target features (WP-043)
 

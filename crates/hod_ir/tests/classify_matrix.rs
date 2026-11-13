@@ -229,6 +229,16 @@ fn support_flips_rows() {
     assert_eq!(shipped.supports("inst:extractelement/int"), Some(true));
     // WP-095: and of `i128` lanes.
     assert_eq!(shipped.supports("inst:extractelement/i128"), Some(true));
+    // WP-101: `fp128` lanes, and `insertelement` of both.
+    assert_eq!(shipped.supports("inst:extractelement/fp128"), Some(true));
+    assert_eq!(shipped.supports("inst:insertelement/i128"), Some(true));
+    assert_eq!(shipped.supports("inst:insertelement/fp128"), Some(true));
+    // WP-101: the `bfloat` NEON intrinsics.
+    assert_eq!(shipped.supports("intrinsic:llvm.aarch64.neon.bfdot"), Some(true));
+    assert_eq!(shipped.supports("intrinsic:llvm.aarch64.neon.bfcvtn2"), Some(true));
+    // WP-101: a number minus an address, as an operand only.
+    assert_eq!(shipped.supports("operand:neg-addr"), Some(true));
+    assert_eq!(shipped.supports("init:neg-addr"), Some(false));
     // WP-035: integer arithmetic on integers, not on pointers.
     assert_eq!(shipped.supports("inst:add/int"), Some(true));
     assert_eq!(shipped.supports("inst:add/ptr"), Some(false));

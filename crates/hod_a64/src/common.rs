@@ -598,6 +598,8 @@ pub fn materialize_gpr_const(cx: &mut FnCx<'_, A64>, rd: Reg, id: ConstId) -> Cg
         Const::DsoLocalEquivalent(sym) | Const::NoCfi(sym) => sym_address(cx, rd, sym, 0)?,
         Const::BlockAddr { func, block } => block_address(cx, rd, func, block)?,
         Const::SymDiff { .. } => crate::constaddr::sym_diff(cx, rd, id)?,
+        // WP-101: a number minus an address.
+        Const::Expr { .. } => crate::tail3::neg_addr(cx, rd, id)?,
         _ => return unsupported(CONSTANT),
     }
     Ok(())

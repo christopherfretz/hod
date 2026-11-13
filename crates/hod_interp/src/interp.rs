@@ -12,8 +12,7 @@ use std::sync::Arc;
 
 use hod_ir::{
     BlockId, Body, CallSite, Callee, Clause, Const, ConstId, FixupTarget, FnAttrs, Inst, InstId,
-    InstKind, Intrinsic, IrErrorKind, IrResult, Linkage, Module, NoCode, Opcode, ParamAttrs, ParamMem,
-    RmwOp,
+    InstKind, Intrinsic, IrErrorKind, IrResult, Linkage, Module, NoCode, Opcode, ParamMem, RmwOp,
     SymId, SymbolKind, TlsModel, TypeId, TypeKind, Value, ValueKind, no_code_intrinsic,
 };
 
@@ -1746,33 +1745,7 @@ impl<'a> Machine<'_, 'a> {
                 self.push_frame_with(target, body, args, &copies, None, call.is_noreturn())?;
                 return Ok(Flow::Called);
             }
-            // §5.12: the variable arguments go to the save and stack areas.
-            if !self.models_varargs() {
-                return unsupported(varargs::VARIADIC);
-            }
-            if args.len() < named {
-                return invalid("a variadic call with fewer arguments than parameters");
-            }
-            let fixed: Vec<(TypeId, ParamAttrs)> = (0..named)
-                .map(|index| {
-                    let ty = f.body.value_type(module, call.args()[index]);
-                    let mut attrs = call.arg_attrs(index);
-                    if attrs.mem() != ParamMem::ByVal && symbol.param_attrs(index).mem() == ParamMem::ByVal {
-                        attrs = symbol.param_attrs(index);
-                    }
-                    (ty, attrs)
-                })
-                .collect();
-            let rest: Vec<(TypeId, ParamAttrs, Val)> = (named..args.len())
-                .map(|index| {
-                    let ty = f.body.value_type(module, call.args()[index]);
-                    (ty, call.arg_attrs(index), args[index].clone())
-                })
-                .collect();
-            let va = self.va_call(call.fn_type(), &fixed, &rest)?;
-            args.truncate(named);
-            copies.retain(|&(index, ..)| index < named);
-            self.push_frame_with(target, body, args, &copies, Some(&va), call.is_noreturn())?;
+            self.call_variadic_body(f, call, target, body, args, copies, named)?;
             return Ok(Flow::Called);
         }
         if !copies.is_empty() {

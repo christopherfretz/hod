@@ -318,12 +318,11 @@ fn sink_of(ty: Ty, v: &str) -> String {
         Ty::LongDouble => format!("sx({v});"),
         Ty::Ptr => format!("sp({v});"),
         Ty::S8 => format!("sink({v}.a); sink({v}.b);"),
-        Ty::S12 => format!("sink({v}.a); sink({v}.b); sink({v}.c);"),
         Ty::Sdd => format!("sd({v}.a); sd({v}.b);"),
         Ty::Sld => format!("sink({v}.a); sd({v}.b);"),
         Ty::Sdl => format!("sd({v}.a); sink({v}.b);"),
         Ty::Sff => format!("sf({v}.a); sf({v}.b);"),
-        Ty::S24 => format!("sink({v}.a); sink({v}.b); sink({v}.c);"),
+        Ty::S12 | Ty::S24 => format!("sink({v}.a); sink({v}.b); sink({v}.c);"),
         Ty::Sx => format!("sx({v}.x);"),
         Ty::I128 => format!("sink((long){v}); sink((long)({v} >> 64));"),
     }
@@ -370,7 +369,7 @@ fn x87_value(rng: &mut Rng) -> String {
         1 => (1 << 63, 0x7fff),
         2 => (0xc000_0000_0000_0001, 0xffff),
         3 => (rng.next() >> 1, rng.below(2) as u32 * 0x8000),
-        _ => (rng.next() | 1 << 63, 1 + rng.below(0x7ffe) as u32 | (rng.below(2) as u32) << 15),
+        _ => (rng.next() | 1 << 63, (1 + rng.below(0x7ffe) as u32) | ((rng.below(2) as u32) << 15)),
     };
     format!("X(0x{lo:x}UL, 0x{hi:x}U)")
 }
@@ -393,11 +392,9 @@ fn value(rng: &mut Rng, ty: Ty) -> String {
             format!("(S24){{{}, {}, {}}}", long_value(rng), long_value(rng), long_value(rng))
         }
         Ty::Sx => format!("(Sx){{{}}}", x87_value(rng)),
-        Ty::I128 => format!(
-            "(((__int128){}) << 64 | (unsigned long){})",
-            long_value(rng),
-            long_value(rng)
-        ),
+        Ty::I128 => {
+            format!("(((__int128){}) << 64 | (unsigned long){})", long_value(rng), long_value(rng))
+        }
     }
 }
 
@@ -419,13 +416,14 @@ fn variadic_program(rng: &mut Rng, count: usize, with_i128: bool) -> String {
     let named_tys = [Ty::Int, Ty::Long, Ty::Double, Ty::LongDouble, Ty::S24, Ty::Sdd, Ty::Ptr];
     let callees: Vec<Callee> = (0..count)
         .map(|_| {
-            let named = (0..1 + rng.below(4))
+            let named = (0..=rng.below(4))
                 .map(|_| named_tys[rng.below(named_tys.len() as u64) as usize])
                 .collect();
             let n = rng.below(20) as usize;
             let varargs: Vec<Ty> =
                 (0..n).map(|_| tys[rng.below(tys.len() as u64) as usize]).collect();
-            let pick = |rng: &mut Rng| (n > 0 && rng.below(3) == 0).then(|| rng.below(n as u64) as usize);
+            let pick =
+                |rng: &mut Rng| (n > 0 && rng.below(3) == 0).then(|| rng.below(n as u64) as usize);
             Callee {
                 named,
                 copy_at: pick(rng),
@@ -448,13 +446,20 @@ fn variadic_program(rng: &mut Rng, count: usize, with_i128: bool) -> String {
         let walk = |from: usize, l: &str, tag: usize| -> String {
             let mut s = format!("  sink({tag});\n");
             for &ty in callee.varargs.iter().skip(from) {
-                let _ = writeln!(s, "  {{ {} x = va_arg({l}, {}); {} }}", ty.c(), ty.c(), sink_of(ty, "x"));
+                let _ = writeln!(
+                    s,
+                    "  {{ {} x = va_arg({l}, {}); {} }}",
+                    ty.c(),
+                    ty.c(),
+                    sink_of(ty, "x")
+                );
             }
             s
         };
         // `rest_k` walks a list handed to it.
         if let Some(at) = callee.hand_off_at {
-            let _ = writeln!(out, "static void rest{k}(va_list l) {{\n{}}}", walk(at, "l", 2000 + k));
+            let _ =
+                writeln!(out, "static void rest{k}(va_list l) {{\n{}}}", walk(at, "l", 2000 + k));
         }
         let _ = writeln!(out, "static void v{k}({}, ...) {{", params.join(", "));
         for (i, &ty) in callee.named.iter().enumerate() {
@@ -463,7 +468,11 @@ fn variadic_program(rng: &mut Rng, count: usize, with_i128: bool) -> String {
         let _ = writeln!(out, "  va_list ap;\n  va_start(ap, n{});", callee.named.len() - 1);
         for (i, &ty) in callee.varargs.iter().enumerate() {
             if callee.copy_at == Some(i) {
-                let _ = writeln!(out, "  {{ va_list aq; va_copy(aq, ap);\n{}  va_end(aq); }}", walk(i, "aq", 1000 + k));
+                let _ = writeln!(
+                    out,
+                    "  {{ va_list aq; va_copy(aq, ap);\n{}  va_end(aq); }}",
+                    walk(i, "aq", 1000 + k)
+                );
             }
             if callee.nested_at == Some(i) && k + 1 < callees.len() {
                 let _ = writeln!(out, "  {}", call_of(rng, k + 1, &callees[k + 1]));
@@ -472,7 +481,13 @@ fn variadic_program(rng: &mut Rng, count: usize, with_i128: bool) -> String {
                 let _ = writeln!(out, "  rest{k}(ap);\n  va_end(ap);\n  return;");
                 break;
             }
-            let _ = writeln!(out, "  {{ {} x = va_arg(ap, {}); {} }}", ty.c(), ty.c(), sink_of(ty, "x"));
+            let _ = writeln!(
+                out,
+                "  {{ {} x = va_arg(ap, {}); {} }}",
+                ty.c(),
+                ty.c(),
+                sink_of(ty, "x")
+            );
         }
         out.push_str("  va_end(ap);\n}\n");
     }
@@ -518,24 +533,24 @@ fn x87_operands(rng: &mut Rng) -> Vec<(u64, u32)> {
         (1 << 63, 0x7fff),
         (1 << 63, 0xffff),
         (0xc000_0000_0000_0000, 0x7fff),
-        (1 << 63, 0x3ffe),            // 0.5
+        (1 << 63, 0x3ffe),               // 0.5
         (0xc000_0000_0000_0000, 0x3fff), // 1.5
         (0xa000_0000_0000_0000, 0x4000), // 2.5
         (0xa000_0000_0000_0000, 0xc000), // -2.5
-        (u64::MAX, 0x403d),           // 2^63 - 0.5
-        (u64::MAX, 0x403e),           // 2^64 - 1
-        (u64::MAX, 0x3ffe),           // just below 1
-        (1, 0),                       // the smallest denormal
+        (u64::MAX, 0x403d),              // 2^63 - 0.5
+        (u64::MAX, 0x403e),              // 2^64 - 1
+        (u64::MAX, 0x3ffe),              // just below 1
+        (1, 0),                          // the smallest denormal
         (0x4000_0000_0000_0000, 0x8000),
-        (1 << 63, 0x0001),            // the smallest normal
-        (u64::MAX, 0x7ffe),           // the largest finite
+        (1 << 63, 0x0001),  // the smallest normal
+        (u64::MAX, 0x7ffe), // the largest finite
     ];
     for _ in 0..40 {
         let hi = match rng.below(4) {
             0 => rng.below(0x7fff) as u32,
             _ => 0x3fff - 70 + rng.below(140) as u32,
         } | (rng.below(2) as u32) << 15;
-        let lo = if hi & 0x7fff == 0 { rng.next() >> 1 } else { rng.next() | 1 << 63 };
+        let lo = if hi.trailing_zeros() >= 15 { rng.next() >> 1 } else { rng.next() | 1 << 63 };
         out.push((lo, hi));
     }
     out
@@ -568,7 +583,7 @@ fn x87_intrinsics_agree_with_llc() {
             let _ = writeln!(lines, "    sr(__builtin_{f}(a));");
         }
         lines.push_str("    sr(__builtin_roundevenl(a));\n    sr(__builtin_fmal(a, b, c));\n");
-        let zero = |lo: u64, hi: u32| lo == 0 && hi & 0x7fff == 0;
+        let zero = |lo: u64, hi: u32| lo == 0 && hi.trailing_zeros() >= 15;
         if !(zero(lo, hi) && zero(blo, bhi) && hi != bhi) {
             lines.push_str("    sr(__builtin_fmaxl(a, b));\n    sr(__builtin_fminl(a, b));\n");
         }

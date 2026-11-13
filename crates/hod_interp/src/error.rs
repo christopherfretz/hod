@@ -39,7 +39,7 @@ traps! {
     /// are not specified, and the run asked for [`crate::NanPolicy::Trap`].
     NanResult = "nan-result",
     /// `llvm.minnum` or `llvm.maxnum` of two zeros of opposite signs:
-    /// LangRef leaves which one is returned open.
+    /// `LangRef` leaves which one is returned open.
     ZeroSign = "zero-sign",
     /// An intrinsic whose result is poison for these operands
     /// (`ctlz(0, true)`, `abs(MIN, true)`).

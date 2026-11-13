@@ -127,6 +127,67 @@ fn hex80(x: u128) -> String {
     format!("{x:020x}")
 }
 
+/// Appends the cases of the intrinsics of §5.11 on operands `a` and `b`
+/// to `input`, with what hod's x87 says to `want`.
+fn intrinsic_cases(
+    rng: &mut Rng,
+    a: u128,
+    b: u128,
+    input: &mut String,
+    want: &mut Vec<(String, String)>,
+) {
+    let nan = |bits: u128| x87::is_nan(Format::X87, bits);
+    // The intrinsics of §5.11 through glibc's `long double` functions
+    // (`llc` calls them, or emits the instruction they use). Invalid
+    // encodings only for those the 387 itself computes: glibc's
+    // `roundl` and `roundevenl` look at the bits as a number.
+    let invalid = rng.invalid();
+    for (name, mode) in [
+        ("sqrt", None),
+        ("floor", Some(Rounding::Floor)),
+        ("ceil", Some(Rounding::Ceil)),
+        ("trunc", Some(Rounding::Trunc)),
+        ("round", Some(Rounding::NearestAway)),
+        ("roundeven", Some(Rounding::NearestEven)),
+        ("rint", Some(Rounding::NearestEven)),
+        ("nearbyint", Some(Rounding::NearestEven)),
+    ] {
+        let bitwise = matches!(name, "round" | "roundeven");
+        for x in [a, invalid] {
+            if x == invalid && bitwise {
+                continue;
+            }
+            let r = match mode {
+                None => x87::sqrt(x),
+                Some(mode) => x87::round_integral(x, mode),
+            };
+            let line = format!("{name} {} 0", hex80(x));
+            let _ = writeln!(input, "{line}");
+            want.push((line, if nan(r) { "nan".into() } else { hex80(r) }));
+        }
+    }
+    let c = rng.operand();
+    let r = x87::fma(a, b, c);
+    let line = format!("fma {} {} {}", hex80(a), hex80(b), hex80(c));
+    let _ = writeln!(input, "{line}");
+    want.push((line, if nan(r) { "nan".into() } else { hex80(r) }));
+    // A product near `c`, so that the sum cancels.
+    let near = x87::binary(Op::Mul, a, b) ^ (1 << 79);
+    let near = near ^ u128::from(rng.next() % 4);
+    let r = x87::fma(a, b, near);
+    let line = format!("fma {} {} {}", hex80(a), hex80(b), hex80(near));
+    let _ = writeln!(input, "{line}");
+    want.push((line, if nan(r) { "nan".into() } else { hex80(r) }));
+    for (name, max) in [("fmax", true), ("fmin", false)] {
+        // Without `host_nan`: what traps is not compared.
+        if let Ok(r) = x87::min_max(Format::X87, a, b, max, false) {
+            let line = format!("{name} {} {}", hex80(a), hex80(b));
+            let _ = writeln!(input, "{line}");
+            want.push((line, hex80(r)));
+        }
+    }
+}
+
 #[test]
 #[allow(
     clippy::many_single_char_names,
@@ -188,55 +249,7 @@ fn x87_arithmetic_agrees_with_the_hardware() {
             let _ = writeln!(input, "{line}");
             want.push((line, format!("{i:016x}")));
         }
-        // The intrinsics of §5.11 through glibc's `long double` functions
-        // (`llc` calls them, or emits the instruction they use). Invalid
-        // encodings only for those the 387 itself computes: glibc's
-        // `roundl` and `roundevenl` look at the bits as a number.
-        let invalid = rng.invalid();
-        for (name, mode) in [
-            ("sqrt", None),
-            ("floor", Some(Rounding::Floor)),
-            ("ceil", Some(Rounding::Ceil)),
-            ("trunc", Some(Rounding::Trunc)),
-            ("round", Some(Rounding::NearestAway)),
-            ("roundeven", Some(Rounding::NearestEven)),
-            ("rint", Some(Rounding::NearestEven)),
-            ("nearbyint", Some(Rounding::NearestEven)),
-        ] {
-            let bitwise = matches!(name, "round" | "roundeven");
-            for x in [a, invalid] {
-                if x == invalid && bitwise {
-                    continue;
-                }
-                let r = match mode {
-                    None => x87::sqrt(x),
-                    Some(mode) => x87::round_integral(x, mode),
-                };
-                let line = format!("{name} {} 0", hex80(x));
-                let _ = writeln!(input, "{line}");
-                want.push((line, if nan(r) { "nan".into() } else { hex80(r) }));
-            }
-        }
-        let c = rng.operand();
-        let r = x87::fma(a, b, c);
-        let line = format!("fma {} {} {}", hex80(a), hex80(b), hex80(c));
-        let _ = writeln!(input, "{line}");
-        want.push((line, if nan(r) { "nan".into() } else { hex80(r) }));
-        // A product near `c`, so that the sum cancels.
-        let near = x87::binary(Op::Mul, a, b) ^ (1 << 79);
-        let near = near ^ u128::from(rng.next() % 4);
-        let r = x87::fma(a, b, near);
-        let line = format!("fma {} {} {}", hex80(a), hex80(b), hex80(near));
-        let _ = writeln!(input, "{line}");
-        want.push((line, if nan(r) { "nan".into() } else { hex80(r) }));
-        for (name, max) in [("fmax", true), ("fmin", false)] {
-            // Without `host_nan`: what traps is not compared.
-            if let Ok(r) = x87::min_max(Format::X87, a, b, max, false) {
-                let line = format!("{name} {} {}", hex80(a), hex80(b));
-                let _ = writeln!(input, "{line}");
-                want.push((line, hex80(r)));
-            }
-        }
+        intrinsic_cases(&mut rng, a, b, &mut input, &mut want);
         let i = rng.next() >> (rng.next() % 64);
         let i = if rng.next().is_multiple_of(2) { i.wrapping_neg() } else { i };
         let line = format!("fromi 0 {i:x}");

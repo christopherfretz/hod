@@ -14,7 +14,7 @@
 //! written down again here rather than taken from `hod_x64::abi`: the
 //! oracle does not share code with what it checks.
 
-use hod_ir::{Arch, Body, CallSite, ParamAttrs, ParamMem, TypeId, TypeKind};
+use hod_ir::{Arch, Body, CallSite, ParamAttrs, ParamMem, SymId, TypeId, TypeKind};
 
 use super::{Class, Frame, Machine};
 use crate::error::{Stop, Trap, invalid, unsupported};
@@ -118,6 +118,53 @@ impl<'a> Machine<'_, 'a> {
     /// module's target.
     pub(super) fn models_varargs(&self) -> bool {
         self.module.target().arch() == Arch::X86_64
+    }
+
+    /// Pushes the frame of variadic body `body` of `target` for `call`,
+    /// whose arguments are `args` and the first `named` of them named
+    /// (§5.8, §5.12): the variable arguments go to the save and stack
+    /// areas, not to parameters.
+    #[expect(clippy::too_many_arguments, reason = "the parts of one call")]
+    pub(super) fn call_variadic_body(
+        &mut self,
+        f: &Frame<'a>,
+        call: CallSite<'a>,
+        target: SymId,
+        body: &'a Body,
+        mut args: Vec<Val>,
+        mut copies: Vec<(usize, u64, u64)>,
+        named: usize,
+    ) -> Result<(), Stop> {
+        if !self.models_varargs() {
+            return unsupported(VARIADIC);
+        }
+        if args.len() < named {
+            return invalid("a variadic call with fewer arguments than parameters");
+        }
+        let module = self.module;
+        let symbol = module.symbol(target);
+        let fixed: Vec<(TypeId, ParamAttrs)> = (0..named)
+            .map(|index| {
+                let ty = f.body.value_type(module, call.args()[index]);
+                let mut attrs = call.arg_attrs(index);
+                if attrs.mem() != ParamMem::ByVal
+                    && symbol.param_attrs(index).mem() == ParamMem::ByVal
+                {
+                    attrs = symbol.param_attrs(index);
+                }
+                (ty, attrs)
+            })
+            .collect();
+        let varargs: Vec<(TypeId, ParamAttrs, Val)> = (named..args.len())
+            .map(|index| {
+                let ty = f.body.value_type(module, call.args()[index]);
+                (ty, call.arg_attrs(index), args[index].clone())
+            })
+            .collect();
+        let va = self.va_call(call.fn_type(), &fixed, &varargs)?;
+        args.truncate(named);
+        copies.retain(|&(index, ..)| index < named);
+        self.push_frame_with(target, body, args, &copies, Some(&va), call.is_noreturn())
     }
 
     /// The layout of a call of variadic `fn_ty` whose first arguments are
@@ -225,7 +272,7 @@ impl<'a> Machine<'_, 'a> {
                 };
                 (at, val.cloned())
             }
-            Class::Int(_) => return unsupported(VARIADIC_TYPE),
+            Class::Int(_) | Class::Agg | Class::Void => return unsupported(VARIADIC_TYPE),
             Class::Float | Class::Double => (state.vector(false), val.cloned()),
             Class::X86Fp80 => (At::Stack(state.stack(16, 16)), val.cloned()),
             Class::Vector(..) => {
@@ -244,7 +291,6 @@ impl<'a> Machine<'_, 'a> {
                 }
                 (state.vector(true), val.cloned())
             }
-            Class::Agg | Class::Void => return unsupported(VARIADIC_TYPE),
         };
         if let Some(written) = written {
             call.pieces.push((at, What::Value(written)));

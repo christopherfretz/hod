@@ -529,7 +529,7 @@ pub fn min_max(format: Format, a: u128, b: u128, max: bool, host_nan: bool) -> R
     }
 }
 
-/// The class `llvm.is.fpclass` tests (LangRef "'llvm.is.fpclass'
+/// The class `llvm.is.fpclass` tests (`LangRef` "'llvm.is.fpclass'
 /// Intrinsic"): the index of its bit in the test mask, 0 (signaling NaN)
 /// to 9 (positive infinity). `None` for the encodings only the x87 has,
 /// on whose class LLVM's lowerings do not agree (unnormals, pseudo-NaNs,
@@ -572,6 +572,9 @@ fn propagate1(a: u128, x: Unpacked) -> Option<u128> {
 
 /// `llvm.sqrt` on `x86_fp80`: correctly rounded, as `fsqrt`.
 pub fn sqrt(a: u128) -> u128 {
+    // The radicand is `mant * 4^K`: its root has at least 66 bits, two
+    // more than the result keeps, and the remainder is sticky.
+    const K: u32 = 35;
     let a = a & MASK80;
     let f = Format::X87;
     let x = unpack(f, a);
@@ -587,9 +590,6 @@ pub fn sqrt(a: u128) -> u128 {
                 mant <<= 1;
                 exp -= 1;
             }
-            // The radicand is `mant * 4^K`: its root has at least 66 bits,
-            // two more than the result keeps, and the remainder is sticky.
-            const K: u32 = 35;
             let (root, inexact) = isqrt_scaled(mant, K);
             round(f, false, root, exp / 2 - K as i32, inexact)
         }
@@ -713,7 +713,9 @@ pub fn fma(a: u128, b: u128, c: u128) -> u128 {
     // The exact product: `None` for infinity times zero.
     let product = match (x, y) {
         (Unpacked::Inf(_), Unpacked::Zero(_)) | (Unpacked::Zero(_), Unpacked::Inf(_)) => None,
-        (Unpacked::Inf(n), other) | (other, Unpacked::Inf(n)) => Some(Unpacked::Inf(n ^ sign(other))),
+        (Unpacked::Inf(n), other) | (other, Unpacked::Inf(n)) => {
+            Some(Unpacked::Inf(n ^ sign(other)))
+        }
         (Unpacked::Zero(n), other) | (other, Unpacked::Zero(n)) => {
             Some(Unpacked::Zero(n ^ sign(other)))
         }
@@ -753,7 +755,11 @@ fn exact_sum(p: (bool, u128, i32), q: (bool, u128, i32)) -> u128 {
             (Wide::shifted(m, (e - low) as u32), false)
         } else {
             let s = (low - e) as u32;
-            if s >= 128 { (Wide::shifted(0, 0), true) } else { (Wide::shifted(m >> s, 0), m & ((1 << s) - 1) != 0) }
+            if s >= 128 {
+                (Wide::shifted(0, 0), true)
+            } else {
+                (Wide::shifted(m >> s, 0), m & ((1 << s) - 1) != 0)
+            }
         }
     };
     let ((wp, sp), (wq, sq)) = (place(p), place(q));
@@ -762,8 +768,11 @@ fn exact_sum(p: (bool, u128, i32), q: (bool, u128, i32)) -> u128 {
     } else {
         // Larger minus smaller; at most the smaller one lost bits, and
         // `big - (small + e)`, `0 < e < 1`, is `(big - small - 1) + (1 - e)`.
-        let ((nb, wb, _), (ws, ss)) =
-            if (wp, sp) >= (wq, sq) { ((p.0, wp, sp), (wq, sq)) } else { ((q.0, wq, sq), (wp, sp)) };
+        let ((nb, wb, _), (ws, ss)) = if (wp, sp) >= (wq, sq) {
+            ((p.0, wp, sp), (wq, sq))
+        } else {
+            ((q.0, wq, sq), (wp, sp))
+        };
         let diff = wb.sub(ws);
         if ss { (nb, diff.sub(Wide::shifted(1, 0)), true) } else { (nb, diff, false) }
     };

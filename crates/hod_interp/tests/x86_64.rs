@@ -184,11 +184,8 @@ fn run_sinking(header: &str, text: &str) -> (Result<Option<Val>, Stop>, Vec<u64>
     let mut interp = Interp::new(&program);
     hod_interp::host::register(&mut interp);
     let outcome = interp.run(main, &[]);
-    let sunk = outcome
-        .trace
-        .iter()
-        .filter_map(|event| event.args.first().and_then(Val::as_u64))
-        .collect();
+    let sunk =
+        outcome.trace.iter().filter_map(|event| event.args.first().and_then(Val::as_u64)).collect();
     (outcome.result, sunk)
 }
 
@@ -280,7 +277,9 @@ fn va_end_and_va_copy() {
         )
     };
     let main = |args: &str| {
-        format!("define i64 @main() {{\n  %r = call i64 (i32, ...) @f(i32 0, {args})\n  ret i64 %r\n}}\n")
+        format!(
+            "define i64 @main() {{\n  %r = call i64 (i32, ...) @f(i32 0, {args})\n  ret i64 %r\n}}\n"
+        )
     };
     let run = |body: &str, args: &str| run_sinking(HEADER, &(callee(body) + &main(args))).0;
     // An `i32` passed, an `i64` read: the upper half was never written.
@@ -294,7 +293,8 @@ fn va_end_and_va_copy() {
     let double = "%slot = getelementptr i8, ptr %rs, i64 48\n  %v = load double, ptr %slot\n  %w = bitcast double %v to i64\n  ret i64 %w";
     assert_eq!(run(double, "float 1.0"), Err(Stop::Trap(Trap::UninitializedLoad)));
     // Past the variable arguments: nothing was written.
-    let past = "%slot = getelementptr i8, ptr %rs, i64 16\n  %v = load i64, ptr %slot\n  ret i64 %v";
+    let past =
+        "%slot = getelementptr i8, ptr %rs, i64 16\n  %v = load i64, ptr %slot\n  ret i64 %v";
     assert_eq!(run(past, "i64 5"), Err(Stop::Trap(Trap::UninitializedLoad)));
     // `va_copy` copies; `va_end` makes the list unwritten.
     let copy = "call void @llvm.va_copy.p0(ptr %aq, ptr %ap)\n  call void @llvm.va_end.p0(ptr %ap)\n  %v = load i32, ptr %aq\n  %w = zext i32 %v to i64\n  ret i64 %w";
@@ -325,7 +325,9 @@ fn variadic_refusals() {
     let def = "declare void @llvm.va_start.p0(ptr)\n\
                define void @f(i32 %n, ...) {\n  ret void\n}\n";
     let call = |args: &str| {
-        format!("{def}define void @main() {{\n  call void (i32, ...) @f(i32 0, {args})\n  ret void\n}}\n")
+        format!(
+            "{def}define void @main() {{\n  call void (i32, ...) @f(i32 0, {args})\n  ret void\n}}\n"
+        )
     };
     let reason = |header: &str, text: &str| match run_sinking(header, text).0 {
         Err(Stop::Unsupported(reason)) => reason,
@@ -363,22 +365,43 @@ fn x87_intrinsics() {
     };
     // sqrt(2) rounded to 64 bits; floor(-2.5) = -3; round(2.5) = 3;
     // roundeven(2.5) = 2.
-    assert_eq!(f80("call x86_fp80 @llvm.sqrt.f80(x86_fp80 0xK40008000000000000000)"), Ok(0x3FFF_B504_F333_F9DE_6484));
-    assert_eq!(f80("call x86_fp80 @llvm.floor.f80(x86_fp80 0xKC000A000000000000000)"), Ok(0xC000_C000_0000_0000_0000));
-    assert_eq!(f80("call x86_fp80 @llvm.round.f80(x86_fp80 0xK4000A000000000000000)"), Ok(0x4000_C000_0000_0000_0000));
-    assert_eq!(f80("call x86_fp80 @llvm.roundeven.f80(x86_fp80 0xK4000A000000000000000)"), Ok(0x4000_8000_0000_0000_0000));
+    assert_eq!(
+        f80("call x86_fp80 @llvm.sqrt.f80(x86_fp80 0xK40008000000000000000)"),
+        Ok(0x3FFF_B504_F333_F9DE_6484)
+    );
+    assert_eq!(
+        f80("call x86_fp80 @llvm.floor.f80(x86_fp80 0xKC000A000000000000000)"),
+        Ok(0xC000_C000_0000_0000_0000)
+    );
+    assert_eq!(
+        f80("call x86_fp80 @llvm.round.f80(x86_fp80 0xK4000A000000000000000)"),
+        Ok(0x4000_C000_0000_0000_0000)
+    );
+    assert_eq!(
+        f80("call x86_fp80 @llvm.roundeven.f80(x86_fp80 0xK4000A000000000000000)"),
+        Ok(0x4000_8000_0000_0000_0000)
+    );
     // (1 + 2^-63)(1 - 2^-63) - 1 = -2^-126 exactly: fused, not zero.
     assert_eq!(
-        f80("call x86_fp80 @llvm.fma.f80(x86_fp80 0xK3FFF8000000000000001, x86_fp80 0xK3FFEFFFFFFFFFFFFFFFE, x86_fp80 0xKBFFF8000000000000000)"),
+        f80(
+            "call x86_fp80 @llvm.fma.f80(x86_fp80 0xK3FFF8000000000000001, x86_fp80 0xK3FFEFFFFFFFFFFFFFFFE, x86_fp80 0xKBFFF8000000000000000)"
+        ),
         Ok(0xBF81_8000_0000_0000_0000)
     );
-    assert_eq!(f80("call x86_fp80 @llvm.sqrt.f80(x86_fp80 0xKBFFF8000000000000000)"), Err(Stop::Trap(Trap::NanResult)));
     assert_eq!(
-        f80("call x86_fp80 @llvm.maxnum.f80(x86_fp80 0xK00000000000000000000, x86_fp80 0xK80000000000000000000)"),
+        f80("call x86_fp80 @llvm.sqrt.f80(x86_fp80 0xKBFFF8000000000000000)"),
+        Err(Stop::Trap(Trap::NanResult))
+    );
+    assert_eq!(
+        f80(
+            "call x86_fp80 @llvm.maxnum.f80(x86_fp80 0xK00000000000000000000, x86_fp80 0xK80000000000000000000)"
+        ),
         Err(Stop::Trap(Trap::ZeroSign))
     );
     assert_eq!(
-        f80("call x86_fp80 @llvm.maxnum.f80(x86_fp80 0xK7FFFC000000000000000, x86_fp80 0xK3FFF8000000000000000)"),
+        f80(
+            "call x86_fp80 @llvm.maxnum.f80(x86_fp80 0xK7FFFC000000000000000, x86_fp80 0xK3FFF8000000000000000)"
+        ),
         Ok(0x3FFF_8000_0000_0000_0000)
     );
     // An unnormal has no class LLVM agrees on.

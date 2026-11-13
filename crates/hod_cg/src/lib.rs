@@ -18,6 +18,7 @@
 //! | `call` | §4.4, §7.1 to §7.3 | the call sequence, `musttail`, `invoke`, runtime calls |
 //! | `abi` | §7.2 | `Sig`, `Part`, `Assignment`: the argument-assignment interface; the leaf walk (`Classify`, `place_leaves`) |
 //! | `memplan` | §7.3 | `mem_plan`: what a `memcpy`, `memmove` or `memset` becomes |
+//! | `switch` | §7.3 | `canonical_cases`, `search_step`: the `switch` plan |
 //! | `sym` | §7.3, §9.2 | `SymRef`, `RuntimeFn`; the routines by type and target (`fp_routine`, ...) |
 //! | `target` | §8.2 | the `Target` trait |
 //! | `cx` | §8.1, §11 | `FnCx`: what a lowering is given; `Scratch` |
@@ -50,6 +51,7 @@ mod phi;
 mod policy;
 mod record;
 mod reg;
+pub mod switch;
 pub mod sym;
 mod target;
 

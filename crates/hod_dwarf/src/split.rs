@@ -13,7 +13,8 @@
 //! - the **split unit** (`DW_UT_split_compile`) holds every other DIE,
 //!   in `.debug_info.dwo`, with `.debug_abbrev.dwo`, `.debug_str.dwo`,
 //!   `.debug_str_offsets.dwo` and `.debug_rnglists.dwo` (the blocks'
-//!   range lists, as `DW_FORM_rnglistx`). Nothing in them is relocated:
+//!   range lists, as `DW_FORM_rnglistx`, which the full unit writes
+//!   too since WP-163). Nothing in them is relocated:
 //!   addresses are `.debug_addr` indices of the skeleton's table, file
 //!   numbers are the skeleton's line table's;
 //! - both headers carry the **DWO id**, which ties them together;
@@ -30,10 +31,10 @@
 //! The DIEs are those of [`crate::write_debug_info`], written by the same
 //! code ([`Writer::die`]); what differs is laid out here: the two unit
 //! DIEs, the headers, and where each section's bytes and relocations go.
-//! A block's range list is written as for a full unit, a 4-byte
-//! `DW_FORM_sec_offset`, and turned into a `DW_FORM_rnglistx` index of
-//! the same four bytes (a ULEB128 padded with continuation bytes), so no
-//! DIE moves.
+//! A block's range list is written as for a full unit, a
+//! `DW_FORM_rnglistx` index into the offsets of `.debug_rnglists.dwo`
+//! (the table the full unit's writer makes, without the unit's own list,
+//! which is the skeleton's).
 //!
 //! The DWO id is not `llc`'s (`DIEHash::computeCUSignature`, an MD5 of
 //! the unit's DIEs after LLVM's type-signature rules, which includes the
@@ -109,10 +110,6 @@ const DW_UT_SKELETON: u8 = 0x04;
 const DW_UT_SPLIT_COMPILE: u8 = 0x05;
 const DW_RLE_END_OF_LIST: u8 = 0x00;
 const DW_RLE_STARTX_LENGTH: u8 = 0x03;
-const DW_FORM_SEC_OFFSET: u64 = 0x17;
-const DW_FORM_RNGLISTX: u64 = 0x23;
-const DW_FORM_IMPLICIT_CONST: u64 = 0x21;
-const DW_AT_RANGES: u64 = 0x55;
 /// A DWARF 5 split or skeleton unit header: 12 bytes and the DWO id.
 const HEADER: usize = 20;
 /// Where the DWO id is in that header.
@@ -219,7 +216,7 @@ impl<'a> Writer<'a> {
             expr: Vec::new(),
             fn_addr: Vec::new(),
             block_lists: Vec::new(),
-            block_lists_base: 0,
+            block_starts: Vec::new(),
         }
     }
 
@@ -267,9 +264,9 @@ impl<'a> Writer<'a> {
         self.unit_start = 0;
 
         let ranges = self.spans.len() > 1;
-        // The blocks' lists follow the `.dwo` range-list header; the
-        // unit's own list is the skeleton's.
-        let span_base = self.begin_functions(plan, globals, false, LISTS_HEADER);
+        // The blocks' lists are the `.dwo` table's; the unit's own list
+        // is the skeleton's.
+        let span_base = self.begin_functions(plan, globals);
         let layout = Layout {
             pc: self.spans.len() == 1,
             ranges,
@@ -328,72 +325,6 @@ impl<'a> Writer<'a> {
     }
 }
 
-/// `n` as a ULEB128 of exactly four bytes (continuation bits on the
-/// first three): `DW_FORM_rnglistx` in a `DW_FORM_sec_offset`'s place.
-fn padded_uleb4(n: u32) -> Result<[u8; 4], Error> {
-    if n >= 1 << 28 {
-        return Err(Error::TooLarge);
-    }
-    Ok([
-        (n & 0x7f) as u8 | 0x80,
-        ((n >> 7) & 0x7f) as u8 | 0x80,
-        ((n >> 14) & 0x7f) as u8 | 0x80,
-        (n >> 21) as u8,
-    ])
-}
-
-fn read_uleb(bytes: &[u8], at: &mut usize) -> u64 {
-    let mut value = 0u64;
-    let mut shift = 0;
-    while let Some(&b) = bytes.get(*at) {
-        *at += 1;
-        if shift < 64 {
-            value |= u64::from(b & 0x7f) << shift;
-        }
-        shift += 7;
-        if b & 0x80 == 0 {
-            break;
-        }
-    }
-    value
-}
-
-/// `.debug_abbrev.dwo`: the table of `used`, with every
-/// `DW_AT_ranges`/`DW_FORM_sec_offset` pair turned into
-/// `DW_FORM_rnglistx` (both forms are one ULEB byte, so nothing moves).
-fn dwo_abbrev(used: &Used) -> Vec<u8> {
-    let mut table = write_abbrev(used);
-    let mut at = 0;
-    loop {
-        if read_uleb(&table, &mut at) == 0 {
-            break; // the terminating 0
-        }
-        read_uleb(&table, &mut at); // the tag
-        at += 1; // DW_CHILDREN_*
-        loop {
-            let name = read_uleb(&table, &mut at);
-            let form_at = at;
-            let form = read_uleb(&table, &mut at);
-            if name == 0 && form == 0 {
-                break;
-            }
-            if form == DW_FORM_IMPLICIT_CONST {
-                while table.get(at).is_some_and(|&b| b & 0x80 != 0) {
-                    at += 1;
-                }
-                at += 1;
-            }
-            if name == DW_AT_RANGES && form == DW_FORM_SEC_OFFSET {
-                table[form_at] = DW_FORM_RNGLISTX as u8;
-            }
-        }
-        if at >= table.len() {
-            break;
-        }
-    }
-    table
-}
-
 /// Writes the DIEs of `units` as split DWARF (`spec/dwarf.md` §6.15):
 /// the skeleton unit and its sections into `obj`, the split unit's
 /// sections into `obj` ([`SplitDwarf::Single`]) or into an object
@@ -436,10 +367,8 @@ pub fn write_split_debug_info(
     let layout = w.split_unit(u, symbols, dwo_name)?;
 
     // The `.dwo` sections: no relocation survives.
-    let mut lists: Vec<(usize, i64)> = Vec::new();
     for r in &w.relocs {
         match (r.sec, r.target) {
-            (Sec::Info, Target::Rnglists) => lists.push((r.offset, r.addend)),
             (Sec::StrOffsets, Target::Str) => {
                 let offset = u32::try_from(r.addend).map_err(|_| Error::TooLarge)?;
                 w.str_offsets[r.offset..r.offset + 4].copy_from_slice(&offset.to_le_bytes());
@@ -448,8 +377,10 @@ pub fn write_split_debug_info(
             _ => return Err(unsupported(plan.unit, "a split unit attribute with a relocation")),
         }
     }
-    let rnglists = dwo_lists(&mut w, &lists)?;
-    let abbrev = dwo_abbrev(&w.used);
+    // `.debug_rnglists.dwo`: the blocks' lists through their offsets
+    // (`Writer::contributions`), empty without one.
+    let rnglists = std::mem::take(&mut w.rnglists);
+    let abbrev = write_abbrev(&w.used);
     let strings = std::mem::take(&mut w.strings).into_data();
     let id = if has_split {
         let id = dwo_id(&[dwo_name, &w.info, &abbrev, &w.str_offsets, &strings, &rnglists]);
@@ -579,38 +510,6 @@ fn check(plan: &UnitPlan<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// `.debug_rnglists.dwo`: the blocks' lists the writer put after a
-/// header in `w.rnglists`, reached through an offset table (one entry
-/// per list, in DIE order), and each `DW_AT_ranges` of `lists` (its
-/// offset in `.debug_info.dwo`, the list's offset in `w.rnglists`) made
-/// the list's index.
-fn dwo_lists(w: &mut Writer<'_>, lists: &[(usize, i64)]) -> Result<Vec<u8>, Error> {
-    if lists.is_empty() {
-        return Ok(Vec::new());
-    }
-    let body = w.rnglists.get(LISTS_HEADER..).unwrap_or(&[]);
-    let count = u32::try_from(lists.len()).map_err(|_| Error::TooLarge)?;
-    let mut out = Vec::with_capacity(LISTS_HEADER + 4 * lists.len() + body.len());
-    out.extend_from_slice(&[0; 4]);
-    out.extend_from_slice(&5u16.to_le_bytes());
-    out.extend_from_slice(&[8, 0]);
-    out.extend_from_slice(&count.to_le_bytes());
-    for (k, &(at, list)) in lists.iter().enumerate() {
-        let within = usize::try_from(list)
-            .ok()
-            .and_then(|l| l.checked_sub(LISTS_HEADER))
-            .filter(|&l| l < body.len())
-            .ok_or(Error::TooLarge)?;
-        let offset = u32::try_from(4 * lists.len() + within).map_err(|_| Error::TooLarge)?;
-        out.extend_from_slice(&offset.to_le_bytes());
-        w.info[at..at + 4].copy_from_slice(&padded_uleb4(k as u32)?);
-    }
-    out.extend_from_slice(body);
-    let length = u32::try_from(out.len() - 4).map_err(|_| Error::TooLarge)?;
-    out[..4].copy_from_slice(&length.to_le_bytes());
-    Ok(out)
-}
-
 /// The skeleton's sections before the object is touched.
 struct Skeleton {
     info: Vec<u8>,
@@ -734,17 +633,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn padded_indices_read_back() {
-        for n in [0u32, 1, 127, 128, 300, (1 << 28) - 1] {
-            let b = padded_uleb4(n).unwrap();
-            let mut at = 0;
-            assert_eq!(read_uleb(&b, &mut at), u64::from(n));
-            assert_eq!(at, 4);
-        }
-        assert_eq!(padded_uleb4(1 << 28), Err(Error::TooLarge));
-    }
-
-    #[test]
     fn dwo_ids_differ_and_are_never_zero() {
         let a = dwo_id(&[b"a.dwo", b"\x01\x02"]);
         assert_ne!(a, dwo_id(&[b"b.dwo", b"\x01\x02"]));
@@ -756,17 +644,20 @@ mod tests {
         assert_ne!(dwo_id(&[]), 0);
     }
 
+    /// WP-163: every `DW_AT_ranges` of the table is `DW_FORM_rnglistx`,
+    /// so neither a `.dwo` nor a full unit has a relocation per range
+    /// list (§6.4, §6.15).
     #[test]
-    fn only_ranges_with_sec_offset_become_rnglistx() {
-        let mut used = Used::new();
-        used.mark(code(fam::LEXICAL_BLOCK, 2, true));
-        used.mark(code(fam::SPLIT_COMPILE_UNIT, 0, true));
-        let plain = write_abbrev(&used);
-        let table = dwo_abbrev(&used);
-        assert_eq!(plain.len(), table.len());
-        let changed: Vec<usize> = (0..plain.len()).filter(|&i| plain[i] != table[i]).collect();
-        assert_eq!(changed.len(), 1);
-        assert_eq!((plain[changed[0]], table[changed[0]]), (0x17, 0x23));
-        assert_eq!(table[changed[0] - 1], 0x55);
+    fn every_range_list_is_rnglistx() {
+        let mut ranges = 0;
+        for f in crate::abbrev::FAMILIES {
+            for slot in f.slots {
+                if slot.at == crate::abbrev::at::RANGES {
+                    assert_eq!(slot.form, crate::abbrev::form::RNGLISTX, "{}", f.name);
+                    ranges += 1;
+                }
+            }
+        }
+        assert!(ranges >= 4, "the unit, blocks and inlined subroutines have ranges");
     }
 }

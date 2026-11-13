@@ -129,6 +129,7 @@ pub mod packed;
 pub mod reg;
 pub mod shift;
 pub mod sse;
+pub mod state;
 pub mod system;
 pub mod tls;
 
@@ -145,6 +146,7 @@ pub use packed::*;
 pub use reg::{Base, Cond, FpCmp, FpSize, Index, Mem, Reg, Scale, Seg, Size, Xmm};
 pub use shift::*;
 pub use sse::*;
+pub use state::*;
 pub use system::*;
 pub use tls::*;
 

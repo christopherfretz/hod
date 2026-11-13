@@ -797,6 +797,29 @@ an 8-bit operand numbered 4 to 7, in each position, gets the REX prefix
 to 3 get none, and LLVM's disassembler, at every major, reads `spl`,
 `bpl`, `sil`, `dil` where intended and never `ah`, `ch`, `dh`, `bh`.
 
+## Processor state and extensions
+
+The instructions of the x86 system and state intrinsics (WP-190,
+`src/state.rs`; `spec/codegen.md` §5.6.23 says which function may use
+which). Each is checked against `llvm-mc` 19 and 22 like the rest
+(`tests/l1/state.rs`).
+
+| constructor | encodes | precondition |
+|---|---|---|
+| `xstate_m(op: XState, m)` | `FXSAVE`/`FXRSTOR` `0F AE /0`, `/1`; `XSAVE`/`XRSTOR`/`XSAVEOPT` `0F AE /4`, `/5`, `/6`; `XSAVEC`/`XSAVES`/`XRSTORS` `0F C7 /4`, `/5`, `/3`; each `..64` form with `REX.W` | |
+| `clflushopt_m(m)`, `clwb_m(m)` | `66 0F AE /7`, `66 0F AE /6` | |
+| `rdrand_r(size, r)`, `rdseed_r(size, r)` | `[66] [REX.W] 0F C7 /6`, `/7`, register operand | `size` not `B` |
+| `segbase_r(op: SegBase, size, r)` | `RDFSBASE`/`RDGSBASE`/`WRFSBASE`/`WRGSBASE` `F3 [REX.W] 0F AE /0` to `/3`, register operand | `size` `D` or `Q` |
+| `rdssp_r(size, r)` | `RDSSPD`/`RDSSPQ` `F3 [REX.W] 0F 1E /1`, register operand (a `nop` without shadow stacks) | `size` `D` or `Q` |
+| `incssp_r(size, r)` | `INCSSPD`/`INCSSPQ` `F3 [REX.W] 0F AE /5`, register operand | `size` `D` or `Q` |
+| `rdpid_r(r)` | `RDPID r64` `F3 0F C7 /7` | |
+| `rdpmc()`, `xgetbv()`, `xsetbv()` | `0F 33`, `0F 01 D0`, `0F 01 D1` (`ecx` selects; `edx:eax`) | |
+| `xend()`, `xtest()`, `rdpkru()`, `wrpkru()`, `serialize()` | `0F 01 D5`, `D6`, `EE`, `EF`, `E8` | |
+| `xabort(imm: u8)` | `C6 F8 ib` | |
+| `xbegin(disp: i32)` | `C7 F8 cd`: the abort target `disp` bytes past the instruction, written as plain bytes (no site: hod writes 0, the next instruction) | |
+| `crc32_rr(size, dst, src)` | `F2 [66] [REX] 0F 38 F0 /r` (`src` a byte register; `REX` for `spl`..`dil`), `F1 /r` otherwise; `dst` 32 bits, 64 with `REX.W` for `Q` | |
+| `bmi_rrr(op: Bmi, size, dst, x, y)` | three-byte VEX (`C4`, map `0F38`, `L` 0, `W` for `Q`): `BEXTR` `F7`, `BZHI` `F5` (`x` in `ModRM.rm`, `y` in `vvvv`); `PDEP` `F2.F5`, `PEXT` `F3.F5` (`x` in `vvvv`, `y` in `ModRM.rm`); operands in Intel's order | `size` `D` or `Q` |
+
 ## Not provided
 
 By decision of the scope so far: the high-byte registers `ah`..`bh`; the
@@ -804,14 +827,15 @@ string instructions other than `rep_movs`/`rep_stos` (`cmps`, `scas`,
 `lods`, `repne`, the forms without `rep`, `std`); `xadd` and `cmpxchg`
 with a register destination; `movabs` to and from the accumulator with a
 64-bit address; `enter`; 16-bit `push`/`pop`; far branches; `jrcxz` and
-`loop`; `hlt` and the system instructions other than `rdtsc`, `rdtscp`
-and `cpuid`; a relocatable immediate other than those of "Relocatable
+`loop`; `hlt` and the system instructions other than `rdtsc`, `rdtscp`,
+`cpuid` and those of "Processor state and extensions"; a relocatable immediate other than those of "Relocatable
 immediates" (an `imm32` of an ALU instruction, for one); the `-fno-plt` general-dynamic call through
 the GOT (`data16 rex64 call [rip + __tls_get_addr@GOTPCREL]`) and the
 descriptor call `call [rax]`, whose `R_X86_64_TLSDESC_CALL` marks an
 instruction rather than a field; the SSE instructions not listed in
 "Scalar floating point" or "Packed SSE2" (SSE3 and later: `rounds`,
-`pshufb`, ...); MMX; and everything VEX- or EVEX-encoded (AVX, APX). Adding an instruction is a constructor, a
+`pshufb`, ...); MMX; and everything VEX- or EVEX-encoded (AVX, APX) but the four BMI
+operations. Adding an instruction is a constructor, a
 row here, a row in `tests/l1/table.rs` and a sweep.
 
 ## Test method

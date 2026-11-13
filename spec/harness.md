@@ -1965,7 +1965,9 @@ two sources' rules, `kiln::{discover, parse_header, plan, plan_for}` and
   verdicts, bitcode with and without `llvm-dis`, several modules,
   incremental and forced captures, `--limit`,
   `--retry-skipped`, two LLVM majors, missing sources and tools, `verify`
-  on a sound and on a damaged corpus, and the report, with a kiln++, a
+  on a sound and on a damaged corpus, the report, and a corpus for the
+  other architecture ("Other targets": the triple, the emulator, a missing
+  emulator, `TIMES.tsv`, `verify`, `compare`), with a kiln++, a
   clang, an `llc`, a driver and linkers that are shell scripts.
 - `xtask/tests/corpus_real.rs`: a few C programs laid out as the torture
   suite (among them a `builtins/` test of three files, an output without

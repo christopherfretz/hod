@@ -44,7 +44,7 @@
 //! | `tls` | WP-134 | thread-local addresses, `llvm.threadlocal.address`, `llvm.thread.pointer` | `tests/tls.rs` |
 //! | `constaddr` | WP-126 | constant operands that hold addresses: differences, relocated images | `tests/aggr.rs` |
 //! | `tail` | (later) | what no group package takes | |
-//! | `coro` | WP-137 | coroutine handle operations: `llvm.coro.resume`, `destroy`, `done`, `promise`, `noop` | `tests/coro.rs` |
+//! | `coro` | WP-137 | coroutine handle operations: `llvm.coro.resume`, `destroy`, `done`, `promise`, `noop` | `tests/coro_body.rs` |
 //! | `coro_body` | WP-137 | coroutine bodies: `rbx` as the frame base, the entry stubs, the body intrinsics, symmetric transfer | `tests/coro_body.rs` |
 
 pub mod abi;

@@ -3798,6 +3798,67 @@ written, which places the stub's `prologue_end` row; the stubs stay inside
 the body's subprogram range. `hod_cg` (`FnCx::coro_vars`, from
 `finish_vars`) rewrites the body's variable rows onto the frame word.
 
+#### x86-64 (WP-137)
+
+`hod_x64/src/coro.rs` (handle operations) and `hod_x64/src/coro_body.rs`
+(bodies); the generic parts above are unchanged. `Target::CORO_BODIES`
+is true; the obligations are AArch64's, with these registers and shapes.
+
+*Handle operations.* `coro.resume`/`coro.destroy`: `mov r, [p + 0 | 8]`,
+then `call_through` with `p`, `fastcc` (the C convention for one
+pointer). `coro.done`: `cmp qword [p], 0` + `sete`. `coro.promise`:
+`lea r, [p ± max(16, align)]`; an alignment that is not a constant power
+of two of at most 2^30, or a direction that is not a constant, is
+`x64:coro-promise`. `coro.noop`: `lea r, [rip + frame]`
+(`R_X86_64_PC32`), small code model only (`x64:code-model` otherwise);
+the noop frame's function is one `ret` (`NOOP_CORO_FN`).
+
+*The machine frame.* `rbx` is the frame base. Every x86-64 function
+already pushes `rbx` with `rbp`, `r12`–`r15` (one save set, one CFI
+row each), so a coroutine only takes `rbx` out of the allocation pool
+and the holdable set: `X64::for_function` sets `X64::coro` from
+`presplitcoroutine` and `reg_info` is then `REG_INFO_CORO`. The mode
+and frame words are `[rbp − d]` slots; the prologue stores 0 to both
+right after `sub rsp, FRAME`. `Stress::coro_frame` gives every function
+those words and clobbers `rbx` (`mov rbx, rbp`) after the prologue.
+`cmpxchg16b` needs `rbx`, so a coroutine with an atomic access wider
+than 64 bits is refused as `x64:coro-wide-atomic`.
+
+*Intrinsics.* As on AArch64, with `rbx` for x19: `coro.begin` is
+`mov rbx, mem`, `lea r11, [rip + F.resume]` / `[rip + F.destroy]`
+stored to `[rbx]` / `[rbx + 8]`, the frame word := `rbx`; `coro.save`
+stores the index (`mov dword [rbx + index], k`, and at the final
+suspend `mov qword [rbx], 0`); `coro.suspend` is `mov eax, −1`, the
+re-entry label, the result from `eax`; `coro.end` compares the mode word
+with 0. The `await_suspend` wrappers are called through a temporary
+with (awaiter, frame), C convention.
+
+*The stubs.* Local `STT_FUNC` symbols `F.resume` and `F.destroy`
+after F's code. Each states the entry CFI (CFA = `rsp + 8`, `rbp` and
+the save set restored), then builds F's machine frame with F's rows
+(`push rbp`, `mov rbp, rsp`, `push rbx, r12–r15`, `sub rsp, FRAME`),
+then `mov rbx, rdi`, mode := 1, the frame word := `rdi`
+(`coro_stub_ready` here), `mov eax, 0 | 1`, one `cmp dword [rbx +
+index], k` / `je` per suspend, and `ud2`. Their displacements are the
+final ones (`frame::base_offset`): they are emitted after the frame's
+locals are biased.
+
+*The suspend switch* dispatches on `eax`'s low byte: `cmp r8b, 0` /
+`je`, `cmp r8b, 1` / `je`.
+
+*Symmetric transfer.* After the wrapper's call (`rax` = h):
+
+```text
+    mov r11, [rax]              h's resume function
+    mov rdi, rax
+    cmp qword [rbp - mode], 0
+    jne exit                    a resumed activation: a tail exit
+    call r11                    the ramp: its own call-site row
+    ...
+exit:                           lea rsp, [rbp - 40]; pop r15 … rbx; pop rbp
+    jmp r11
+```
+
 ## 8. The `Target` trait
 
 A target is a zero-sized or small `Sync` value. The driver owns the walk;

@@ -210,10 +210,11 @@ pub struct Func {
     /// The oldest LLVM whose `llc` knows it.
     pub since: u32,
     /// Whether a NaN for a NaN matches `llc`'s result: the IR leaves the
-    /// NaN open (LangRef "Behavior of Floating-Point NaN values": a
-    /// quieted operand NaN or the preferred NaN) and `llc`'s comes from
-    /// code the two do not share (a C library routine where hod computes
-    /// inline), so the hardware may pick another operand's.
+    /// NaN open (the LLVM language reference, "Behavior of Floating-Point
+    /// NaN values": a quieted operand NaN or the preferred NaN) and
+    /// `llc`'s comes from code the two do not share (a C library routine
+    /// where hod computes inline), so the hardware may pick another
+    /// operand's.
     pub nan_open: bool,
     /// An exact model of the result from the arguments, compared with
     /// hod plain where `llc` is no oracle.

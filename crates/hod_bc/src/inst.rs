@@ -9,6 +9,8 @@ use hod_ir::{
     no_code_intrinsic, resolve_intrinsic,
 };
 
+use hod_ir::kit::{Gep, gep_index_value};
+
 use crate::attrs::{self, FUNCTION_INDEX};
 use crate::body::{CalleeInfo, Fx, Local, Ops};
 use crate::codes::func;
@@ -25,16 +27,6 @@ pub(crate) type Done = (TypeId, Value, bool);
 
 /// The length of a vector type and whether it is scalable.
 type Shape = Option<(u32, bool)>;
-
-/// `value` sign-extended from `bits` bits.
-fn sext64(value: u64, bits: u32) -> i64 {
-    if bits >= 64 {
-        value as i64
-    } else {
-        let shift = 64 - bits;
-        ((value << shift) as i64) >> shift
-    }
-}
 
 /// What is called.
 #[derive(Clone, Copy)]
@@ -746,49 +738,26 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
 
     // ---- addresses and aggregates ----
 
-    fn index_value(&self, id: ConstId) -> Option<i64> {
-        let module = &*self.module;
-        match module.consts.get(id) {
-            Const::Int { ty, value } => {
-                Some(sext64(value, module.types.int_bits(ty).unwrap_or(64)))
-            }
-            Const::WideInt { words, .. } => Some(words[0] as i64),
-            Const::Zero(_) => Some(0),
-            Const::Splat { elem, .. } => self.index_value(elem),
-            Const::Aggregate { elems, .. } => {
-                let first = self.index_value(*elems.first()?)?;
-                elems[1..]
-                    .iter()
-                    .all(|&elem| self.index_value(elem) == Some(first))
-                    .then_some(first)
-            }
-            _ => None,
-        }
-    }
-
     /// `getelementptr`: a `PtrAdd` with every constant index folded into
-    /// the offset, as `hod_ll` builds it.
+    /// the offset ([`Gep`]), as `hod_ll` builds it.
     fn get_element_ptr(&mut self, o: &mut Ops<'_>) -> BcResult<(TypeId, Value)> {
         let _flags = o.next()?;
         let source = self.ty(o.next()?)?;
         let base = self.vt(o)?;
-        let (pointer, mut shape) = self.shape(base.ty);
-        if !self.module.types.is_ptr(pointer) {
-            return self.mistyped("base of getelementptr must be a pointer");
-        }
-        if !self.module.types.is_sized(source) {
-            return self.mistyped("base element of getelementptr must be sized");
-        }
+        let gep = match Gep::new(&self.module.types, source, base.ty) {
+            Ok(gep) => gep,
+            Err(error) => return self.mistyped(error.message()),
+        };
         let mut indices = std::mem::take(&mut self.s.indices);
         indices.clear();
-        let result = self.gep_indices(o, source, &mut shape, &mut indices);
-        let built = result.and_then(|(offset, unsupported)| {
-            let result = self.shaped(pointer, shape)?;
-            if let Some(reason) = unsupported {
-                self.note(reason);
-                return Ok((result, self.stand_in(result)?));
+        let result = self.gep_indices(o, gep, &mut indices);
+        let built = result.and_then(|gep| {
+            let (result, lowered) =
+                ir(self.at, gep.build(&mut *self.module, &mut self.b, base.value, &indices))?;
+            if let Some(construct) = lowered.refused() {
+                self.note(construct);
             }
-            Ok((result, ir(self.at, self.b.ptr_add(result, base.value, offset, &indices))?))
+            Ok((result, lowered.value()))
         });
         self.s.indices = indices;
         built
@@ -797,80 +766,24 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     fn gep_indices(
         &mut self,
         o: &mut Ops<'_>,
-        source: TypeId,
-        shape: &mut Shape,
+        mut gep: Gep,
         indices: &mut Vec<(Value, u64)>,
-    ) -> BcResult<(i64, Option<&'static str>)> {
-        let mut offset = 0i64;
-        let mut current = source;
-        let mut first = true;
-        let mut unsupported = None;
+    ) -> BcResult<Gep> {
         while o.left() > 0 {
             let index = self.vt(o)?;
-            let (index_scalar, index_shape) = self.shape(index.ty);
-            if self.module.types.int_bits(index_scalar).is_none() {
-                return self.mistyped("getelementptr index must be an integer");
+            if let Err(error) = gep.index_type(&self.module.types, index.ty) {
+                return self.mistyped(error.message());
             }
-            if index_shape.is_some() {
-                if shape.is_some() && *shape != index_shape {
-                    return self
-                        .mistyped("getelementptr vector index has a wrong number of elements");
-                }
-                *shape = index_shape;
-            }
-            let constant = index.value.as_const().and_then(|id| self.index_value(id));
-            let types = &self.module.types;
-            let stride = if first {
-                first = false;
-                (!types.is_scalable(current)).then(|| types.alloc_size_of(current))
-            } else {
-                match types.kind(current) {
-                    TypeKind::Struct { fields, .. } => {
-                        let field = constant.and_then(|index| {
-                            usize::try_from(index).ok().filter(|&index| index < fields.len())
-                        });
-                        let Some(field) = field else {
-                            return self.mistyped("invalid getelementptr indices");
-                        };
-                        let field_ty = fields[field];
-                        if types.is_scalable(current) {
-                            unsupported = Some("getelementptr:scalable");
-                        } else {
-                            let at_field = types.field_offset(current, field as u32) as i64;
-                            offset = offset.wrapping_add(at_field);
-                        }
-                        current = field_ty;
-                        continue;
-                    }
-                    TypeKind::Array { elem, .. } => {
-                        current = elem;
-                        (!types.is_scalable(elem)).then(|| types.alloc_size_of(elem))
-                    }
-                    TypeKind::Vector { elem, .. } => {
-                        let stride = types.element_stride(current);
-                        if stride.is_none() {
-                            unsupported = Some("getelementptr:vector-element-not-bytes");
-                        }
-                        current = elem;
-                        stride.or(Some(0))
-                    }
-                    TypeKind::ScalableVector { elem, .. } => {
-                        current = elem;
-                        None
-                    }
-                    _ => return self.mistyped("invalid getelementptr indices"),
-                }
-            };
-            let Some(stride) = stride else {
-                unsupported = Some("getelementptr:scalable");
-                continue;
-            };
-            match constant {
-                Some(index) => offset = offset.wrapping_add(index.wrapping_mul(stride as i64)),
-                None => indices.push((index.value, stride)),
+            let module = &*self.module;
+            let constant = index
+                .value
+                .as_const()
+                .and_then(|id| gep_index_value(&module.types, &module.consts, id));
+            if let Err(error) = gep.index(&module.types, index.value, constant, indices) {
+                return self.mistyped(error.message());
             }
         }
-        Ok((offset, unsupported))
+        Ok(gep)
     }
 
     /// The rest of the record as an index path into `s.path`.

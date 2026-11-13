@@ -3,6 +3,7 @@
 //! in `call.rs`.
 
 use hod_ir::Layering;
+use hod_ir::kit::{Gep, GepError, gep_index_value};
 use hod_ir::{
     AtomicOrdering, Clause, Const, ConstId, FloatPredicate, IntPredicate, MemFlags, Opcode, RmwOp,
     SHUFFLE_UNDEF, SyncScope, TailKind, TypeId, TypeKind, Value, aggregate_field, cast_is_valid,
@@ -734,32 +735,8 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
 
     // ---- addresses and aggregates ----
 
-    /// The value of a constant used as a `getelementptr` index:
-    /// sign-extended or truncated to 64 bits. `None` if it is not one
-    /// integer (the same in every element, for a vector).
-    fn index_value(&self, id: ConstId) -> Option<i64> {
-        let module = &*self.p.module;
-        match module.consts.get(id) {
-            Const::Int { ty, value } => {
-                Some(sext64(value, module.types.int_bits(ty).unwrap_or(64)))
-            }
-            Const::WideInt { words, .. } => Some(words[0] as i64),
-            Const::Zero(_) => Some(0),
-            Const::Splat { elem, .. } => self.index_value(elem),
-            Const::Aggregate { elems, .. } => {
-                let first = self.index_value(*elems.first()?)?;
-                elems[1..]
-                    .iter()
-                    .all(|&elem| self.index_value(elem) == Some(first))
-                    .then_some(first)
-            }
-            _ => None,
-        }
-    }
-
     /// `getelementptr`: a `PtrAdd` (`spec/ir.md` §5.4) with every
-    /// constant index folded into the offset.
-    #[allow(clippy::too_many_lines)] // One grammar, read in one place.
+    /// constant index folded into the offset ([`Gep`]).
     fn get_element_ptr(&mut self, at: u32) -> PResult<(TypeId, Value)> {
         self.flags(&[b"inbounds", b"nuw", b"nusw"]);
         let source_at = self.p.tok.start;
@@ -767,19 +744,12 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
         self.p.expect(Tok::Comma, "expected comma after getelementptr's type")?;
         let base_at = self.p.tok.start;
         let (base_ty, base) = self.typed()?;
-        let (pointer, mut shape) = self.shape(base_ty);
-        if !self.p.module.types.is_ptr(pointer) {
-            return mistyped(base_at, "base of getelementptr must be a pointer");
-        }
-        if !self.p.module.types.is_sized(source) {
-            return mistyped(source_at, "base element of getelementptr must be sized");
-        }
+        let mut gep = match Gep::new(&self.p.module.types, source, base_ty) {
+            Ok(gep) => gep,
+            Err(error @ GepError::BaseNotPointer) => return mistyped(base_at, error.message()),
+            Err(error) => return mistyped(source_at, error.message()),
+        };
         self.s.indices.clear();
-        let mut offset = 0i64;
-        let mut current = source;
-        let mut first = true;
-        // The reason the address cannot be a `PtrAdd`, if there is one.
-        let mut unsupported = None;
         while self.p.eat(Tok::Comma) {
             if self.p.tok.kind == Tok::Meta {
                 self.extra_comma = true;
@@ -787,17 +757,11 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
             }
             let index_at = self.p.tok.start;
             let index_ty = self.p.parse_type()?;
-            let (index_scalar, index_shape) = self.shape(index_ty);
-            let Some(bits) = self.p.module.types.int_bits(index_scalar) else {
-                return mistyped(index_at, "getelementptr index must be an integer");
+            let (_, index_shape) = self.shape(index_ty);
+            let bits = match gep.index_type(&self.p.module.types, index_ty) {
+                Ok(bits) => bits,
+                Err(error) => return mistyped(index_at, error.message()),
             };
-            if index_shape.is_some() {
-                if shape.is_some() && shape != index_shape {
-                    let message = "getelementptr vector index has a wrong number of elements";
-                    return mistyped(index_at, message);
-                }
-                shape = index_shape;
-            }
             // The index: its value if it is a constant.
             let token = self.p.tok;
             let (value, constant) =
@@ -814,65 +778,24 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
                     (Value::NONE, Some(sext64(literal as u64, bits)))
                 } else {
                     let value = self.value(index_ty)?;
-                    (value, value.as_const().and_then(|id| self.index_value(id)))
+                    let module = &*self.p.module;
+                    let constant = value
+                        .as_const()
+                        .and_then(|id| gep_index_value(&module.types, &module.consts, id));
+                    (value, constant)
                 };
-            let types = &self.p.module.types;
-            let stride = if first {
-                first = false;
-                (!types.is_scalable(current)).then(|| types.alloc_size_of(current))
-            } else {
-                match types.kind(current) {
-                    TypeKind::Struct { fields, .. } => {
-                        let field = constant.and_then(|index| {
-                            usize::try_from(index).ok().filter(|&index| index < fields.len())
-                        });
-                        let Some(field) = field else {
-                            return mistyped(index_at, "invalid getelementptr indices");
-                        };
-                        let field_ty = fields[field];
-                        if types.is_scalable(current) {
-                            unsupported = Some("getelementptr:scalable");
-                        } else {
-                            let at_field = types.field_offset(current, field as u32) as i64;
-                            offset = offset.wrapping_add(at_field);
-                        }
-                        current = field_ty;
-                        continue;
-                    }
-                    TypeKind::Array { elem, .. } => {
-                        current = elem;
-                        (!types.is_scalable(elem)).then(|| types.alloc_size_of(elem))
-                    }
-                    TypeKind::Vector { elem, .. } => {
-                        let stride = types.element_stride(current);
-                        if stride.is_none() {
-                            unsupported = Some("getelementptr:vector-element-not-bytes");
-                        }
-                        current = elem;
-                        stride.or(Some(0))
-                    }
-                    TypeKind::ScalableVector { elem, .. } => {
-                        current = elem;
-                        None
-                    }
-                    _ => return mistyped(index_at, "invalid getelementptr indices"),
-                }
-            };
-            let Some(stride) = stride else {
-                unsupported = Some("getelementptr:scalable");
-                continue;
-            };
-            match constant {
-                Some(index) => offset = offset.wrapping_add(index.wrapping_mul(stride as i64)),
-                None => self.s.indices.push((value, stride)),
+            if let Err(error) =
+                gep.index(&self.p.module.types, value, constant, &mut self.s.indices)
+            {
+                return mistyped(index_at, error.message());
             }
         }
-        let result = self.shaped(at, pointer, shape)?;
-        if let Some(reason) = unsupported {
-            self.p.note(reason);
-            return Ok((result, self.stand_in(at, result)?));
+        let (result, lowered) =
+            ir(at, gep.build(&mut *self.p.module, &mut self.b, base, &self.s.indices))?;
+        if let Some(construct) = lowered.refused() {
+            self.p.note(construct);
         }
-        Ok((result, ir(at, self.b.ptr_add(result, base, offset, &self.s.indices))?))
+        Ok((result, lowered.value()))
     }
 
     /// `, index {, index}` into `s.path`, and the comma of the metadata

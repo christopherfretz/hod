@@ -259,7 +259,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:ssp` | not-implemented | not-implemented | spec/codegen.md §13. open question: accept and ignore, or implement |
 | `attr:sspreq` | not-implemented | not-implemented | spec/codegen.md §13 |
 | `attr:sspstrong` | not-implemented | not-implemented | spec/codegen.md §13 |
-| `attr:presplitcoroutine` | supported | supported | one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name (WP-106); with `-g`, its variables on the frame word (WP-108) |
+| `attr:presplitcoroutine` | supported | supported | one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name (WP-106); with `-g`, its variables on the frame word (WP-108); a pre-opt module with one is accepted in place of `opt` + `llc`, and declined by its module level on a target without coroutine bodies (WP-109, `spec/cli.md` "Pre-opt modules") |
 | `attr:sanitize_address` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_alloc_token` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_hwaddress` | not-implemented | not-implemented | unplanned |

@@ -621,27 +621,75 @@ hod: error: unsupported construct 'type:double' in function 'f' (strict mode: no
 Without strict mode and without a fallback the same failures end with
 `; no fallback is configured (--fallback=<llc> or HOD_FALLBACK_LLC)`.
 
-## Always-inline (WP-021)
+## Pre-opt modules (WP-021, WP-109)
 
 hod accepts a front end's module before LLVM's `-O0` pipeline (kiln's or
-clang's `-S -emit-llvm -O0 -Xclang -disable-llvm-passes`) when the only
-thing that pipeline would have done is `always-inline`. hod does not
-inline; `crates/hod/src/session/inlining.rs` settles what a module that
-never met the inliner means.
+clang's `-S -emit-llvm -O0 -Xclang -disable-llvm-passes`: a *pre-opt
+module*) in place of `opt` + `llc`, when everything that pipeline would
+have done to it is something hod does itself: the always-inliner, which
+hod replaces by compiling the call out of line ("Always-inline"), and the
+coroutine passes, which hod replaces by compiling each coroutine body once
+with its frame in the heap ("Coroutines", `spec/codegen.md` §7.6).
 
 **The pipeline it replaces.** `default<O0>` is, printed by LLVM 19,
 `function(ee-instrument<>),always-inline,coro-cond(coro-early,cgscc(coro-split),coro-cleanup,globaldce),function(annotation-remarks),verify`;
 LLVM 22 adds `alloc-token`. kiln runs it when a module has an
-`alwaysinline` attribute set, an `"instrument-function-entry*"` string
-attribute or a coroutine intrinsic declaration (plus sanitizers and
-coverage, which stay on LLVM's path). hod refuses the others by name
-today: `attr:instrument-function-entry`,
+`alwaysinline` attribute set or an `"instrument-function-entry*"` string
+attribute, and only its coroutine part
+(`coro-early,cgscc(coro-split),coro-cleanup,globaldce`) when the module
+declares a `llvm.coro.*` function and nothing else asks for more
+(sanitizers and coverage stay on LLVM's path). Of these triggers hod
+refuses by name `attr:instrument-function-entry`,
 `attr:instrument-function-entry-inlined`, `attr:instrument-function-exit`
-(module level), `attr:presplitcoroutine`, `intrinsic:llvm.coro.*`,
-`attr:sanitize_alloc_token`. `annotation-remarks` writes remarks only;
+(module level) and `attr:sanitize_alloc_token`. `annotation-remarks`
+writes remarks only; `globaldce` deletes only what nothing references;
 `verify` is hod's own verifier, which runs on every body, discarded ones
-included. So the modules hod may accept in place of `opt` + `llc` are
-those whose trigger set is empty or exactly {`alwaysinline`}.
+included.
+
+**The trigger set.** A module's trigger set is the subset of
+{`alwaysinline`, coroutines} it has: `alwaysinline` when an attribute set
+holds `alwaysinline`; coroutines when it declares a `llvm.coro.*`
+function (a `presplitcoroutine` body calls `llvm.coro.id`; a module may
+also have only the handle operations, `coro.resume`, `destroy`, `done`,
+`promise`, `noop`). The modules a front end may hand hod in place of
+`opt` + `llc` are those whose `-O0` pipeline would be triggered by
+nothing outside that set: the trigger set is {}, {`alwaysinline`},
+{coroutines} or {`alwaysinline`, coroutines}. Coroutines are accepted in
+LLVM 19's and LLVM 22's dialect (`coro.end` returning `i1` or `void`
+with `coro.is_in_ramp`), switch-resumed only (`llvm.coro.id`; the retcon
+and async ABIs are unknown intrinsics).
+
+**What hod answers.** The same as for any module ("Strict mode", "Exit
+status"): status 0 and the object, or, for a module it does not build,
+a decline by a stable name, with nothing written (status 2 in strict
+mode; the fallback in hybrid mode). The pre-opt names are:
+
+- the always-inline declines (`alwaysinline:*`, below);
+- for a coroutine body, the coroutine plan's refusals (`coro:*`,
+  `spec/xform.md`) and code generation's (`coro:begin-shared-block`,
+  `coro:overaligned-stack-slot`, `coro:outside-coroutine`,
+  `a64:coro-preserve-cc`; `spec/codegen.md` §7.6);
+- on a target whose matrix does not accept `presplitcoroutine` (x86-64
+  until WP-137), `attr:presplitcoroutine`; on one whose code generator
+  compiles no coroutine body, `coro:target`; the handle operations
+  outside a coroutine are refused there by their intrinsic rows;
+- anything any module may be declined by ("Reasons").
+
+**Declined early.** A front end runs `opt` + `llc` after hod declines,
+so a decline must cost next to nothing. hod decides every coroutine
+refusal before code generation starts: a module with a
+`presplitcoroutine` attribute set on a target that compiles no coroutine
+body is declined by its module level, before any body is read; every
+other coroutine refusal is decided as its body arrives (the plan, then
+code generation's own conditions, checked by the same rules: code
+generation keeps them as a backstop). A declined module costs reading
+it up to the refused body and judging the bodies before it, never code
+generation (measured: `spec/landed/codegen/WP-109.md`).
+
+### Always-inline
+
+hod does not inline; `crates/hod/src/session/inlining.rs` settles what a
+module that never met the inliner means.
 
 **`available_externally`.** A function of that linkage is a definition
 for an optimizer's eyes only. One that is not `alwaysinline` is
@@ -704,12 +752,37 @@ everywhere; hod keeps them, so a hod object of a pre-opt module carries
 more `linkonce_odr` code (measured in `spec/landed/ir/WP-021.md`); the
 linker folds the duplicates.
 
-**kiln's contract.** At `-O0`, with a trigger set that is empty or
-exactly {`alwaysinline`}, kiln writes the pre-opt module as text to
-hod's standard input: `hod --strict <the llc arguments it planned> -o
-<object>`. Status 2 means declined and nothing was written: kiln then
-runs `opt` and `llc` as today. Any other non-zero status is hod's error
-and is reported as such.
+### Coroutines
+
+A coroutine body (`presplitcoroutine`) is compiled once, with the values
+that cross a suspend in a heap frame and `F.resume` and `F.destroy` as
+entry stubs (`spec/codegen.md` §7.6; design 0005 approach B), never
+split as `coro-split` would. What LLVM's lowering makes observable is
+kept: the frame's first two words are the resume and destroy entries,
+the promise is where `coro.promise` and `from_promise` find it, `done()`
+is a null resume entry, symmetric transfer runs in constant stack. What
+it keeps private differs and is not part of the contract: the frame's
+size and layout, the clones (hod has none: `F.resume` and `F.destroy`
+are stubs into the one body), allocation elision (never done at `-O0`).
+With `-g` the coroutine's variables are described on the frame word
+(`spec/dwarf.md` §6.16). A hod coroutine and an `llc` coroutine resume,
+destroy and transfer to each other across objects.
+
+**Size.** A coroutine module's object is smaller than `llc`'s of the
+split module, which compiles each body up to three times (the ramp, the
+resume and the destroy clone); measured in
+`spec/landed/codegen/WP-109.md`.
+
+**kiln's contract.** At `-O0`, with a trigger set that is {},
+{`alwaysinline`}, {coroutines} or {`alwaysinline`, coroutines} (WP-021
+for the first two, WP-109 for the others), kiln writes the pre-opt module
+as text to hod's standard input: `hod --strict <the llc arguments it
+planned> -o <object>`. Status 2 means declined and nothing was written:
+kiln then runs `opt` and `llc` as today (for a pre-opt module, `opt`
+before `llc`: an `llc` alone cannot lower `llvm.coro.*`). Any other
+non-zero status is hod's error and is reported as such. In hybrid mode
+the fallback must likewise be an `opt` + `llc` wrapper for a pre-opt
+module: hod hands its fallback the bytes it was given.
 
 ## Reasons
 
@@ -726,7 +799,8 @@ that applies is the reason:
 | a reader's reason | reading the module level failed: the table below |
 | `unsupported-target` | `-mtriple` names another target than the module's (retargeting is not implemented) |
 | a `classify` name | `hod_ir::classify`'s module pass refused the module (`module:pic`, `global:function-definition`, `debug:module-flags`, ...; `docs/status/support.md`) |
-| a body's reason | for each body in the module's order: the reader's error (the table below), the body reader's own refusal (`call:forwarded-varargs`, ...), `classify`'s body pass, then `Body::verify` (`malformed-input`) |
+| `attr:presplitcoroutine`, `coro:target` | the module has a `presplitcoroutine` attribute set and its target does not compile coroutine bodies (the matrix, then the code generator: "Pre-opt modules"), before any body is read |
+| a body's reason | for each body in the module's order: the reader's error (the table below), the body reader's own refusal (`call:forwarded-varargs`, ...), `classify`'s body pass, `Body::verify` (`malformed-input`), then, in a module with coroutines, the coroutine refusals ("Pre-opt modules") |
 | `option:relocation-model`, `option:split-dwarf-output` | an option code generation cannot honour ("The back half") |
 | `attr:target-feature-<class>` | an `-mattr` item or a function's `target-features` item hod's code is not correct under (`spec/codegen.md` §5.5.2); the item is the detail |
 | a code generator's name | `hod_cg`/`hod_a64` refused a function (`a64:`, `abi:`, `limit:`, `call:`, ...), in the function; or `emit_module` refused the module |
@@ -959,6 +1033,7 @@ inherits the variable with the rest of the environment; `llc` ignores it.
 | Behaviour | `driver.rs`: `success_writes_the_object`, `options_reach_the_code_generator`, `output_names_follow_llc`, `io_errors` |
 | Fallback protocol | `cli.rs`: `fallback_receives_original_arguments_and_identical_input`, `file_input`, `hod_is_not_its_own_fallback`, `real_llc_fallback_text`, `real_llc_fallback_bitcode`, and the "Bitcode conversion" tests for the original bytes after a conversion; `driver.rs`: `fallback_loop_is_refused` |
 | Strict mode | `cli.rs`: `strict_mode_fails_with_the_construct_named`; `crates/hod_cli/tests/kiln_e2e.rs` |
+| Pre-opt modules | `crates/hod/tests/inlining.rs` (always-inline, WP-021); `crates/hod/tests/coro_preopt.rs`: `a_pre_opt_coroutine_is_compiled`, `every_coroutine_refusal_is_decided_before_code_generation` (each name, no `bodies` phase, the same name from code generation alone), `a_target_without_coroutines_declines_at_the_module_level`, `modules_without_coroutines_are_not_affected`; `crates/hod_cli/tests/preopt_coro.rs`: `strict_mode_builds_or_declines_by_name`, `hybrid_mode_falls_back_for_the_declined_module_only`, `a_declined_module_becomes_an_object_through_opt_and_llc`; the corpus and libc++ census of `spec/landed/codegen/WP-109.md` |
 | Reasons | `cli.rs`: `reasons_reach_the_log`; `driver.rs`: `malformed_input_and_invalid_options`, `internal_errors_are_not_declines` |
 | The back half, Threads | `crates/hod/tests/back.rs`: `object_is_the_same_for_every_thread_count` (1, 2, 3, 8 threads), `tokens_are_asked_for_large_modules_and_given_back`, `the_first_refusal_in_module_order_wins`, `target_features`, `x86_64_is_a_stable_refusal`, `break_even` (ignored: the measurement); `crates/hod/tests/read_threads.rs`: `the_reading_policy`, `reading_and_code_generation_share_one_request`; `crates/hod/src/back.rs`: `threads_wanted`, `options_for_code_generation`, `errors_of_the_back_half`; `crates/hod_cli/src/jobs.rs`: `makeflags_forms`, `where_threads_come_from`, `tokens_are_taken_without_waiting_and_given_back`; `crates/hod_a64/src/features.rs` (§5.5.2); `kiln_e2e.rs`: kiln programs (calls, exceptions, containers, coroutines) through hod or its fallback, each linked under every linker and run against the LLVM build, one pinned to hod (integer code, strict) and one to the fallback (`module:asm`); `cargo xtask corpus verify --strict` (executing the corpus); `tests/ir/exit_*.ll` |
 | Exit status | `cli.rs`: `fallback_exit_status_propagates`; `driver.rs`: `unsupported_without_fallback`, `malformed_input_and_invalid_options`, `io_errors` |

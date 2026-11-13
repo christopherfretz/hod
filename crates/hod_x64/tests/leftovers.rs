@@ -785,7 +785,7 @@ fn the_constraint_letter_a_stays_refused() {
             &format!(
                 "define i64 @f() {{\n  %r = call i64 asm sideeffect \"rdtsc\", \"=A,{clobbers}\"()\n  ret i64 %r\n}}\n"
             ),
-            "asm:constraint/A",
+            "asm:constraint/a",
         ),
         (
             &format!(

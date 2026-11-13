@@ -396,6 +396,10 @@ is LLVM's choice; `xchg ax, ax` is `66 90`.
 | `rdtsc()` | RDTSC `0F 31`: the time-stamp counter into `edx:eax` (`llvm.readcyclecounter`) | |
 | `rdtscp()` | RDTSCP `0F 01 F9`: the same and `IA32_TSC_AUX` into `ecx`; needs the RDTSCP feature | |
 | `cpuid()` | CPUID `0F A2`: leaf `eax`, subleaf `ecx`, into `eax`, `ebx`, `ecx`, `edx` | |
+| `xgetbv()` | XGETBV `0F 01 D0`: extended control register `ecx` into `edx:eax`; needs OSXSAVE (WP-187) | |
+| `syscall()` | SYSCALL `0F 05` (WP-187) | |
+| `hlt()` | HLT `F4` (WP-187) | |
+| `int_i(n: u8)` | INT `CD ib`; `int3()` for `n` = 3, as LLVM writes `int $3` (WP-187) | |
 
 `nop(len)` is, for 1 to 9 bytes, the SDM's recommended form (Vol. 2B,
 "NOP", table 4-12): `90`; `66 90`; `0F 1F 00`; `0F 1F 40 00`;
@@ -409,6 +413,7 @@ per byte in front. This is LLVM's padding (`.nops len, len`).
 | constructor | encodes |
 |---|---|
 | `cld()` | CLD `FC`: clears the direction flag (the psABI guarantees it clear at calls and returns) |
+| `std()` | STD `FD`: sets the direction flag (inline assembly only, WP-187) |
 | `rep_movs(size)` | `F3` then MOVSB/MOVSW/MOVSD/MOVSQ `[66] [REX.W] A4`/`A5`: copies `rcx` elements of `size` from `[rsi]` to `[rdi]`, advancing both; `rcx` ends at 0 |
 | `rep_stos(size)` | `F3` then STOSB/W/D/Q `[66] [REX.W] AA`/`AB`: stores `al`/`ax`/`eax`/`rax` to `rcx` elements at `[rdi]`; `rcx` ends at 0 |
 

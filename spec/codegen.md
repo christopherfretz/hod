@@ -2738,7 +2738,7 @@ sequence puts an instruction other than `mov`, `lea`, `movzx`/`movsx`,
   `i64` `=A` after `rdtsc` is `rax` alone, without `edx`), `rdx:rax`
   for `i128`, as an input, an output or a tied pair; hod keeps refusing
   `A`, as `x64:inline-asm-constraint` in an empty template and as
-  `asm:constraint/A` in one of instructions (WP-144, WP-187,
+  `asm:constraint/a` (names are lower-cased) in one of instructions (WP-144, WP-187,
   `tests/leftovers.rs`).
 
 Refused names: `x64:intrinsic` (an intrinsic not listed), and also

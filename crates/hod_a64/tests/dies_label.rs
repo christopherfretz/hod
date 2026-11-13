@@ -210,11 +210,11 @@ fn ramp_frame_variables_match_llc() {
     compare(&scratch, &dwarfdump, &llc, "ramp", &text);
 }
 
-/// `-g -O0` IR of `coro.cpp`, each variable declared once per function:
-/// clang's ramp function declares the coroutine's parameter twice (its
-/// slot and its copy in the frame), which hod refuses
-/// (`debug:variable-twice`, not this package's); the labels are the
-/// clones' and are kept.
+/// `-g -O0` IR of `coro.cpp`, each variable declared once per function
+/// (clang 22's ramp declares the coroutine's parameter a second time on
+/// the frame pointer's `phi`, which hod refused as `debug:variable-twice`
+/// before WP-111; `dies_followups::coroutine_ramps_match_llc` compares
+/// the IR as it is); the labels are the clones' and are kept.
 fn coro_ir(compiler: &Path, scratch: &Scratch, name: &str) -> String {
     let text = ir(compiler, scratch, name, "coro.cpp");
     let mut out = String::with_capacity(text.len());

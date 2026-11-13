@@ -39,7 +39,6 @@ int main() {
 }
 //@ frontend: clang-22 kiln
 //@ cflags: -std=c++20
-//@ xfail(clang-22): clang 22's coroutine ramp declares the parameter twice (its slot and its frame copy), refused as debug:variable-twice
 //@ gdb: info line evens:__coro_resume_1
 //@ gdb: break evens:__coro_resume_1
 //@ gdb: run

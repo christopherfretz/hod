@@ -421,7 +421,12 @@ impl<'a> Lexer<'a> {
             return self.token(id, start, end);
         }
         if is(first, LABEL) {
-            let end = self.skip_while(start + 1, LABEL);
+            // For `$` the label test has just scanned this run.
+            let end = if name == Tok::Comdat {
+                self.label_run_end(start + 1)
+            } else {
+                self.skip_while(start + 1, LABEL)
+            };
             return self.token(name, start, end);
         }
         self.fail("expected a name", start, start + 1)

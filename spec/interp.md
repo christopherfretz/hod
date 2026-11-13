@@ -32,10 +32,11 @@ The interpreter is itself checked against LLVM (§10).
 
 It is single-threaded, little-endian, and has 64-bit pointers. It models
 C++ exceptions of the Itanium ABI (§5.9), computed gotos (§5.5) and
-fixed-width vectors (§3.1, §5.10). It does
-not model variadic calls, thread-local storage, `callbr` or inline
-assembly: those are **unsupported** (§8), which is a third kind of answer,
-neither a result nor a trap.
+fixed-width vectors (§3.1, §5.10), and variadic functions on x86-64
+(§5.12). It does not model variadic functions with a body on other
+targets, thread-local storage, `callbr` or inline assembly: those are
+**unsupported** (§8), which is a third kind of answer, neither a result
+nor a trap.
 
 The interpreter is a library with no global state. Nothing derivable from
 its input makes it panic: a body `Body::verify` accepts leads to a result,
@@ -280,6 +281,7 @@ impl Trap { pub const ALL: &[Trap]; pub const fn name(self) -> &'static str;
 | `shift-too-large` | §5.1 |
 | `float-to-int-overflow` | §5.3 |
 | `nan-result` | §5.1 |
+| `zero-sign` | §5.6 (`llvm.minnum`, `llvm.maxnum`) |
 | `intrinsic-poison` | §5.6 |
 | `poison-lane` | §5.10 |
 | `out-of-bounds`, `use-after-free`, `misaligned`, `uninitialized-load`, `non-zero-padding-bits`, `write-to-constant` | §4 |
@@ -469,6 +471,10 @@ LangRef "Intrinsic Functions". Each is defined at every integer width
 | `llvm.fabs`, `llvm.copysign` | bit operations |
 | `llvm.sqrt`, `floor`, `ceil`, `trunc`, `round`, `roundeven`, `rint`, `nearbyint` | the correctly rounded IEEE operations; `round` rounds halves away from zero, the last three to even (the default rounding mode is the only one). NaN policy of §5.1, so `sqrt` of a negative number traps |
 | `llvm.fma` | fused: one rounding |
+| `llvm.minnum`, `llvm.maxnum` (WP-142) | on `float`, `double`, `x86_fp80`: the smaller, larger operand; a quiet NaN operand gives the other operand. Where LLVM 19 and 22 (and the libm `fminl`/`fmaxl` that `llc` calls for `x86_fp80`) leave the result open, it traps: a signaling NaN operand (an invalid x87 encoding counts as one) `nan-result` (the result may be a NaN or the other operand); zeros of opposite signs `zero-sign`; two NaNs `nan-result` by §5.1. Under `NanPolicy::Host` a signaling NaN is ignored like a quiet one and two NaNs give the default NaN |
+| `llvm.is.fpclass` (WP-142) | on `float`, `double`, `x86_fp80`: whether the operand's class has its bit in the test mask (bit 0 signaling NaN, 1 quiet NaN, 2 −∞, 3 −normal, 4 −subnormal, 5 −0, 6 +0, 7 +subnormal, 8 +normal, 9 +∞). The encodings only the x87 has (unnormal, pseudo-NaN, pseudo-infinity, pseudo-denormal) are unsupported `intrinsic-x86_fp80` |
+| `llvm.ptrmask` (WP-142) | a pointer and a 64-bit mask: the address ANDed with the mask (a vector form is unsupported `intrinsic:llvm.ptrmask`). clang aligns the `va_list` overflow pointer with it |
+| `llvm.va_start`, `llvm.va_end`, `llvm.va_copy` (WP-142) | §5.12, on x86-64; elsewhere unsupported `intrinsic:<name>` |
 | `llvm.trap` | traps `llvm.trap` |
 | the no-code intrinsics of `ir.md` §5.5 | those that are dropped (`llvm.lifetime.*`, `llvm.assume`, `llvm.donothing`, `llvm.dbg.*`, ...) do nothing, and a result is zero; those that pass their first argument through (`llvm.expect`, `llvm.launder.invariant.group`, ...) return it |
 
@@ -519,8 +525,13 @@ LangRef "'call' Instruction".
   unsupported `attr:byval`: the interpreter cannot give the host a copy
   with C's layout guarantees. `inalloca` and `preallocated` are
   unsupported.
-  Variadic callees, inline assembly callees and operand bundles are
-  unsupported.
+- **Variadic callees** (WP-142). A host function gets every argument of
+  the call, named and variable, in order, on every target: it is given
+  the call's values as for any call. A variadic function with a body on
+  x86-64 gets its named arguments as values and its variable arguments
+  laid out in memory (§5.12); on any other target such a call is
+  unsupported `call:variadic`.
+  Inline assembly callees and operand bundles are unsupported.
 
 Tests: `tests/calls.rs` (`direct_calls_and_recursion`, `indirect_calls`,
 `void_calls_and_unused_results`, `call_depth`).
@@ -699,18 +710,124 @@ leave in effect), with no dependency:
   integers wider than 64 bits; `fptosi`/`fptoui` truncate and trap
   `float-to-int-overflow` when the result does not fit (LangRef: poison);
   `bitcast` to and from `i80` is the bit pattern.
-- Unsupported: the other float intrinsics on `x86_fp80` (`llvm.sqrt`,
-  `floor` .. `nearbyint`, `fma`): `intrinsic-x86_fp80`; vectors of
-  `x86_fp80` lanes: `type:x86_fp80`; `atomicrmw` float operations on it:
-  `inst:atomicrmw-fadd` and so on.
+- Intrinsics (WP-142): `llvm.sqrt` is correctly rounded (as `fsqrt`; a
+  negative operand gives the default NaN); `llvm.floor`, `ceil`, `trunc`,
+  `round` (halves away from zero), `roundeven`, `rint` and `nearbyint`
+  (halves to even: the default rounding mode is the only one) give the
+  integral value, keep the sign of a zero result and leave zeros and
+  infinities as they are; `llvm.fma` rounds the exact `a * b + c` once
+  (`fmal`). The NaN policy of §5.1 applies to each; an invalid encoding is
+  an invalid operand, so a NaN (on the hardware `fsqrt` and `frndint` say
+  the same; glibc's `roundl` and `roundevenl`, which `llc` calls, treat
+  such bits as a number, which is why the trap is the only answer).
+  `llvm.minnum`, `llvm.maxnum` and `llvm.is.fpclass` are those of §5.6.
+- Unsupported: `llvm.is.fpclass` of an encoding only the x87 has:
+  `intrinsic-x86_fp80`; the other float intrinsics on `x86_fp80`
+  (`llvm.fmuladd`, `llvm.pow`, ...): `intrinsic:<name>` as for every type;
+  vectors of `x86_fp80` lanes: `type:x86_fp80`; `atomicrmw` float
+  operations on it: `inst:atomicrmw-fadd` and so on.
 
 Tests: `x87.rs` unit tests (exact values, `1/3`, ties, specials,
 conversions against the host's `f32`/`f64`), `tests/x86_64.rs`
-(`extended_precision`, `in_memory`), `tests/x87_oracle.rs` (thousands of
-random operand pairs, including denormals, near-overflow values and
-specials, against a C program on `long double` run on x86-64, or under
-`qemu-x86_64` elsewhere: every result has the same bits, a NaN only has to
-be a NaN).
+(`extended_precision`, `in_memory`, `x87_intrinsics`), `tests/x87_oracle.rs`
+(thousands of random operand pairs, including denormals, near-overflow
+values and specials, against a C program on `long double` run on x86-64,
+or under `qemu-x86_64` elsewhere: every result has the same bits, a NaN
+only has to be a NaN; the intrinsics through glibc's `sqrtl`, `floorl`,
+..., `fmal`, `fminl`, `fmaxl`), `tests/x64_varargs_oracle.rs`
+(`x87_intrinsics_agree_with_llc`: the intrinsics as clang emits them for
+`long double`, against `llc` 19 and 22).
+
+### 5.12 Variadic functions on x86-64
+
+WP-142. psABI §3.5.7 "Variable Argument Lists"; `spec/abi-x64.md` §3, §7,
+§9, whose rules this section restates for the subset the interpreter
+models (it does not use `hod_x64::abi`: the oracle shares no code with
+what it checks). Where LLVM 19 and 22 differ, it follows LLVM 22, as
+`abi-x64.md` does.
+
+When a call of a variadic function reaches a body (on a module whose
+target is x86-64), the callee's frame gets, after its stack slots and
+`byval` copies (§5.8), two stack allocations that die with it:
+
+- the **register save area**, 176 bytes aligned to 16: the general
+  argument registers `rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9` at 0, 8, ...,
+  40, and `xmm0`..`xmm7` at 48, 64, ..., 160;
+- the **stack-argument area** of the call, `stack_size` bytes (at least
+  one) aligned to 16.
+
+The arguments of the call, named and variable, are assigned in order
+with the state G (general registers used, 0..6), V (vector registers
+used, 0..8) and O (the stack offset), all 0 at the start:
+
+| argument | goes to |
+|---|---|
+| `iN` with N ≤ 64, `ptr` (address space 0) | slot G if G < 6 (G += 1), else an 8-byte stack slot aligned to 8 |
+| `i128` | slots G and G + 1 if G ≤ 4 (G += 2), else a 16-byte stack slot aligned to 16, G unchanged (LLVM 22; LLVM 19 sets G to 6) |
+| `float`, `double` | `xmm` V if V < 8 (V += 1), else an 8-byte stack slot aligned to 8 |
+| a vector of 2, 4, 8 or 16 lanes of `i8`..`i64`, `ptr`, `float` or `double`, at most 16 bytes | `xmm` V if V < 8, else a 16-byte stack slot aligned to 16 |
+| `x86_fp80` | a 16-byte stack slot aligned to 16 |
+| `ptr byval(T)` | `max(size, 8)` bytes of the stack at O rounded up to `a`, where `a` is its `alignstack`, else its `align`, else `T`'s ABI alignment, and at least 8 |
+
+The return value is not passed in memory for any return type the model
+accepts (`void`, integers, `ptr`, `float`, `double`, `x86_fp80`), so it
+takes no register. After the named arguments, the call records
+`gp_offset = 8 × G`, `fp_offset = 48 + 16 × V` and the start of the
+variable arguments on the stack, O rounded up to 8. The variable
+arguments are then written: each into its slot of the save area or its
+place in the stack-argument area, as a `store` of its value would write it
+(an `x86_fp80` its 10 bytes, a vector its image); a `byval` argument's
+pointee is copied there with its written flags. **Only the bytes the
+caller owes are written** (`abi-x64.md` §3.2, §7): the rest of a register
+slot or stack slot stays unwritten, so a `va_arg` that reads more than
+was passed (a `double` read where a `float` was passed, a `long` where an
+`int` was) traps `uninitialized-load`. An integer with `zeroext` or
+`signext` is written extended to 32 bits (N < 32) or to 64 bits
+(32 < N < 64); without either, an integer whose width is not whole bytes
+(`i1`, `i17`) would leave bits of a byte unspecified, which memory cannot
+represent, and is unsupported.
+
+The named arguments are passed as values (§5.8); they only advance G, V
+and O, and their slots in the two areas stay unwritten.
+
+- `llvm.va_start(ptr %list)` writes the 24-byte `va_list`
+  `{ i32 gp_offset, i32 fp_offset, ptr overflow_arg_area, ptr
+  reg_save_area }` at `%list`: the recorded offsets, the address of the
+  first variable argument on the stack, and the save area's address. It is
+  an access of 24 bytes with alignment 1. In a function that is not
+  variadic it is `Stop::Invalid` (LLVM's verifier refuses it).
+- `llvm.va_end(ptr %list)` makes the 24 bytes at `%list` unwritten: a
+  later read of the list traps until `va_start` or `va_copy` writes it
+  again (C: the list is indeterminate after `va_end`).
+- `llvm.va_copy(ptr %dst, ptr %src)` copies 24 bytes and their written
+  flags (`llc` emits a copy); overlapping distinct ranges trap
+  `overlapping-copy`.
+- The `va_arg` instruction stays unsupported (`inst:va_arg`): clang and
+  kiln open-code it for x86-64 as loads and stores of the list's fields,
+  which the interpreter runs as such.
+- A list used after its function returned reads dead memory and traps
+  `use-after-free`.
+- An entry function (`Interp::run`) that is variadic has no variable
+  arguments: its `va_start` gives a list whose next read traps.
+
+Unsupported, by name (§8): `call:variadic-type` for an argument of a
+variadic call (named or variable) that is a structure or an array passed
+by value, a vector outside the table, an integer wider than 64 bits other
+than `i128`, a variable integer of a width that is not whole bytes and
+has no extension attribute, a pointer outside address space 0, and for a
+return type that is a structure, an array or a vector (it could be
+returned in memory, which takes `rdi`); `call:variadic-attr` for `nest`
+and for a `byval` alignment above 16. clang never passes the first
+(it coerces a C structure to scalars or passes it `byval`).
+
+Tests: `tests/x86_64.rs` (`variadic_layout`, `va_end_and_va_copy`,
+`variadic_refusals`), `tests/x64_varargs_oracle.rs`
+(`variadic_calls_agree_with_llc`: generated C programs whose variadic
+functions take every psABI class beyond the register counts, take a
+`va_copy` in the middle of a walk, hand the list to another function and
+call variadic functions themselves, compiled by clang 19 and 22; the
+interpreter's run of clang's IR sinks what `llc`'s program sinks under
+`qemu-x86_64`).
 
 ## 6. Host functions and the trace
 
@@ -806,7 +923,7 @@ starts.
 | `target:big-endian` | the target is big-endian |
 | `type:half`, `type:bfloat`, `type:fp128` | a value of that type, or a vector of lanes of it |
 | `type:x86_fp80` | a vector of `x86_fp80` lanes (a scalar is §5.11) |
-| `intrinsic-x86_fp80` | a float intrinsic of §5.6 other than `fabs` and `copysign` on `x86_fp80` (§5.11) |
+| `intrinsic-x86_fp80` | `llvm.is.fpclass` of an encoding only the x87 has (§5.11) |
 | `type:vector-odd-element` | a vector whose lanes are `iN` with N neither 1 nor a multiple of 8 (§3.1) |
 | `type:scalable-vector` | a `<vscale x N x T>` value |
 | `type:vector` | a vector of lanes that are not of §3.1 and have no reason of their own. Defensive: `hod_ir` makes no such type |
@@ -828,7 +945,9 @@ starts.
 | `global:thread-local`, `global:alias`, `global:ifunc` | the address of such a symbol |
 | `global:extern-weak` | the address of an undefined `extern_weak` function (it would be null or not, by the link) |
 | `extern:<name>` | a call of a function with neither body nor host function; an access of a variable without an initializer |
-| `call:inline-asm`, `call:operand-bundle`, `call:variadic` | such a call |
+| `call:inline-asm`, `call:operand-bundle` | such a call |
+| `call:variadic` | a call of a variadic function with a body, on a target other than x86-64 (§5.8) |
+| `call:variadic-type`, `call:variadic-attr` | a variadic call on x86-64 with an argument or return type, or an attribute, outside the model (§5.12) |
 | `attr:byval` | a `byval` argument of a call to a function without a body (§5.8) |
 | `attr:inalloca`, `attr:preallocated` | a call with such an argument |
 
@@ -1265,6 +1384,7 @@ Where LLVM is wrong, the oracle steers around it, each with a comment:
 | `tests/vector_oracle.rs` | §10.3 |
 | `tests/x86_64.rs` | §4 (function alignment), §5.8 (`byval`), §5.11, from LLVM text read by `hod_ll` |
 | `tests/x87_oracle.rs` | §5.11 against the x87 |
+| `tests/x64_varargs_oracle.rs` | §5.11, §5.12 against clang and `llc` 19 and 22 under `qemu-x86_64` |
 
 Each test names its section. `tests/common` builds one-function modules;
 `tests/llvm_text` is the printer of §10; `tests/vector_text` reads LLVM
@@ -1322,8 +1442,10 @@ Follow-ups, none of which the code generator's first milestones need:
 - exceptions of class types (base-class matching, `catch` by pointer with
   qualification conversions): the C++ runtime's `__do_catch`, beyond the
   four fundamental types; foreign exceptions; the funclet instructions;
-- variadic functions: `va_arg`, `llvm.va_start`, `llvm.va_end`,
-  `llvm.va_copy`;
+- variadic functions with a body on AArch64 (its `va_list` of
+  `__stack`, `__gr_top`, `__vr_top` and the two offsets); the `va_arg`
+  instruction (no front end of interest emits it for either target);
+  aggregates passed by value to a variadic function;
 - thread-local variables (one thread: a plain variable), aliases;
 - vectors beyond §5.10: `half`/`bfloat` lanes; scalable vectors; vector
   `getelementptr`; vector `with.overflow`; the masked, gather and scatter
@@ -1331,7 +1453,8 @@ Follow-ups, none of which the code generator's first milestones need:
   lanes of odd widths (once `llc` stores them as LangRef packs them); in
   the generator, float and pointer lanes and signed division;
 - `llvm.fmuladd` (unspecified whether fused: needs a "both agree" rule),
-  the `min`/`max` float intrinsics, `llvm.stacksave`/`stackrestore`;
+  `llvm.minimum`/`maximum`/`minimumnum`/`maximumnum`,
+  `llvm.stacksave`/`stackrestore`;
 - in the generator: dynamic `alloca`, atomics, aggregates as values
   (`insertvalue`, struct returns), `byval`, x86-64 as the oracle's host;
 - replace `tests/llvm_text` with `hod_ir`'s printer when WP-006 lands.

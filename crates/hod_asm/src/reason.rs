@@ -82,8 +82,12 @@ pub mod other {
     /// A statement in a section that is not the one the text started in
     /// (inline assembly), or a section directive's operands not covered.
     pub const SECTION: &str = "asm:section";
-    /// A symbol directive whose effect is not reproduced.
+    /// A symbol directive whose effect is not reproduced, or a symbol
+    /// use of module-level assembly that is not (`spec/asm.md` §9).
     pub const SYMBOL: &str = "asm:symbol";
+    /// An instruction of module-level assembly at an offset that is not a
+    /// multiple of 4.
+    pub const UNALIGNED: &str = "asm:unaligned";
 }
 
 fn names() -> &'static Mutex<HashSet<&'static str>> {

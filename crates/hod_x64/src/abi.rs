@@ -128,7 +128,7 @@ fn no<T>(name: &'static str) -> Abi<T> {
 /// Whether `cc` passes arguments, returns values and preserves registers
 /// exactly as `ccc` does on this target (§1.2).
 pub fn cc_is_c(cc: CallConv) -> bool {
-    cc == CallConv::C || cc == CallConv::FAST
+    cc == CallConv::C || cc == CallConv::FAST || cc == CallConv::X86_64_SYSV
 }
 
 /// Bits above an integer extended by sign (`signed`) or by zero, up to

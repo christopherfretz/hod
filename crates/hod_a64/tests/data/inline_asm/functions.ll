@@ -192,6 +192,39 @@ done:
   ret i32 %r
 }
 
+; WP-112: `callbr` with outputs, the result used on every edge out.
+define i32 @goto_out(i32 %x) {
+entry:
+  %r = callbr i32 asm "add ${0:w}, ${0:w}, #3\0A cmp ${0:w}, #10\0A b.lt ${2:l}\0A cmp ${0:w}, #20\0A b.gt ${3:l}", "=r,0,!i,!i"(i32 %x) to label %ft [label %lo, label %hi]
+ft:
+  %f = add i32 %r, 1000
+  ret i32 %f
+lo:
+  %l = add i32 %r, 2000
+  ret i32 %l
+hi:
+  br label %done
+done:
+  %p = phi i32 [ %r, %hi ]
+  %h = add i32 %p, 3000
+  ret i32 %h
+}
+
+define i64 @goto_out2(i64 %x) {
+entry:
+  %s = callbr { i64, i64 } asm "mov $0, $2\0A add $1, $2, #1\0A cbz $2, ${3:l}", "=&r,=&r,r,!i"(i64 %x) to label %ft [label %z]
+ft:
+  %a = extractvalue { i64, i64 } %s, 0
+  %b = extractvalue { i64, i64 } %s, 1
+  %m = mul i64 %b, 10
+  %r1 = add i64 %a, %m
+  ret i64 %r1
+z:
+  %c = extractvalue { i64, i64 } %s, 1
+  %r2 = add i64 %c, 500
+  ret i64 %r2
+}
+
 define i32 @invoke_asm(i32 %x) personality ptr @hod_test_personality {
 entry:
   %r = invoke i32 asm "add ${0:w}, ${1:w}, #2", "=r,r"(i32 %x) to label %ok unwind label %lp

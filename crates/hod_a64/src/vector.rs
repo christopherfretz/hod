@@ -100,62 +100,9 @@ pub use crate::float::VECTOR_OP;
 /// `getelementptr` over a vector of pointers.
 pub use crate::mem::PTRADD_VECTOR;
 
-/// The most lanes a lane operation handles: its code is unrolled at emit
-/// time, one access per lane.
-pub const MAX_LANES: u32 = 256;
+pub use hod_cg::lanes::{Elem, MAX_LANES};
 
 // ---- shapes ----
-
-/// The element of a vector type.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Elem {
-    /// An integer of this many bits (`i1` included).
-    Int(u32),
-    /// A pointer in address space 0 (64 bits).
-    Ptr,
-    /// `half`.
-    Half,
-    /// `bfloat`.
-    BFloat,
-    /// `float`.
-    Float,
-    /// `double`.
-    Double,
-    /// `fp128`.
-    Fp128,
-}
-
-impl Elem {
-    /// The element of type `ty`, if a vector may have it on this target.
-    pub fn of(types: &TypeTable, ty: TypeId) -> Option<Elem> {
-        Some(match types.kind(ty) {
-            TypeKind::Int(bits) => Elem::Int(bits),
-            TypeKind::Ptr { addr_space: 0 } => Elem::Ptr,
-            TypeKind::Half => Elem::Half,
-            TypeKind::BFloat => Elem::BFloat,
-            TypeKind::Float => Elem::Float,
-            TypeKind::Double => Elem::Double,
-            TypeKind::Fp128 => Elem::Fp128,
-            _ => return None,
-        })
-    }
-
-    /// The width in bits.
-    pub fn bits(self) -> u32 {
-        match self {
-            Elem::Int(bits) => bits,
-            Elem::Ptr | Elem::Double => 64,
-            Elem::Half | Elem::BFloat => 16,
-            Elem::Float => 32,
-            Elem::Fp128 => 128,
-        }
-    }
-
-    /// Whether it is a floating-point type.
-    pub fn is_float(self) -> bool {
-        !matches!(self, Elem::Int(_) | Elem::Ptr)
-    }
-}
 
 /// What a fixed vector type is (`spec/ir.md` §4.3). The sizes are
 /// `hod_ir`'s: `size` is the store size (`⌈lanes · bits / 8⌉`), `alloc`
@@ -210,19 +157,14 @@ impl Shape {
     /// not a whole number of bytes; [`WIDE_ELEMENT`] for elements wider
     /// than 64 bits.
     pub fn lanes(self) -> CgResult<Lanes> {
-        if self.elem == Elem::Int(1) {
-            return unsupported(if self.lanes > 64 { MASK_WIDE } else { MASK });
-        }
-        if self.lanes > MAX_LANES {
-            return unsupported(LENGTH);
-        }
-        let log2 = match self.elem.bits() {
-            8 => 0,
-            16 => 1,
-            32 => 2,
-            64 => 3,
-            bits if bits > 64 => return unsupported(WIDE_ELEMENT),
-            _ => return unsupported(ODD_ELEMENT),
+        use hod_cg::lanes::ShapeRefusal as R;
+        let log2 = match hod_cg::lanes::lane_log2(self.elem, self.lanes) {
+            Ok(log2) => log2,
+            Err(R::Mask) => return unsupported(MASK),
+            Err(R::MaskWide) => return unsupported(MASK_WIDE),
+            Err(R::Length) => return unsupported(LENGTH),
+            Err(R::WideElement) => return unsupported(WIDE_ELEMENT),
+            Err(R::OddElement) => return unsupported(ODD_ELEMENT),
         };
         Ok(Lanes { shape: self, log2 })
     }
@@ -258,7 +200,17 @@ impl Lanes {
     /// The class of one lane as a scalar value: `Gpr` for integers and
     /// pointers, `Fpr` for floating-point elements.
     pub fn elem_class(&self) -> Class {
-        if self.shape.elem.is_float() { Class::Fpr } else { Class::Gpr }
+        self.shape.elem.class()
+    }
+
+    /// The lane loop's view of these lanes (`hod_cg::lanes`).
+    pub fn geometry(&self) -> hod_cg::lanes::Geometry {
+        hod_cg::lanes::Geometry {
+            count: self.count(),
+            log2: self.log2,
+            class: self.shape.class,
+            elem_class: self.elem_class(),
+        }
     }
 
     /// The lane width as an encoder element.
@@ -328,12 +280,7 @@ pub const SCRATCH_IMAGES: u32 = 3;
 
 /// `slot` moved `off` bytes on.
 pub fn offset(slot: FrameRef, off: u32) -> FrameRef {
-    match slot {
-        FrameRef::Local(o) => FrameRef::Local(o + off),
-        FrameRef::Incoming(o) => FrameRef::Incoming(o + off),
-        FrameRef::Outgoing(o) => FrameRef::Outgoing(o + off),
-        FrameRef::Coro(o) => FrameRef::Coro(o + off),
-    }
+    slot.offset_by(off)
 }
 
 /// Scratch image `k` (below [`SCRATCH_IMAGES`]): 16 bytes, 16-aligned,

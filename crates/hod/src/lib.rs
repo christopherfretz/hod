@@ -421,18 +421,20 @@ mod tests {
         // object (`DECLARATIONS` has nothing to compile).
         assert!(compile(DECLARATIONS, &obj).is_ok_and(|o| o.starts_with(b"\x7FELF")));
         // The stages, with constructs no package is about to support:
-        // `module asm` (`module:asm`, the module pass) and `ghccc`
+        // the tiny code model (`module:code-model-tiny`, the module pass) and `ghccc`
         // (`cc:ghccc`, unplanned, the body pass).
         let triple = "target triple = \"aarch64-unknown-linux-gnu\"\n";
-        let module_asm = format!("{triple}module asm \"nop\"\ndeclare i32 @g()\n");
-        assert_eq!(reason(module_asm.as_bytes(), &obj), named("module:asm"));
+        let module_asm = format!(
+            "{triple}!llvm.module.flags = !{{!900}}\n!900 = !{{i32 1, !\"Code Model\", i32 0}}\ndeclare i32 @g()\n"
+        );
+        assert_eq!(reason(module_asm.as_bytes(), &obj), named("module:code-model-tiny"));
         let ghc = "define ghccc void @h() nounwind {\n  ret void\n}\n";
         let body = format!("{triple}{ghc}");
         let refused = Unsupported::in_function(named("cc:ghccc"), Some("h".into()));
         assert_eq!(compile(body.as_bytes(), &obj), Err(refused.into()));
         // The module pass comes before any body.
         let both = format!("{module_asm}{ghc}");
-        assert_eq!(reason(both.as_bytes(), &obj), named("module:asm"));
+        assert_eq!(reason(both.as_bytes(), &obj), named("module:code-model-tiny"));
         // A definition `classify` accepts whole reaches `generate`, its
         // body read, classified and verified, and becomes an object.
         let accepted = format!("{triple}define i32 @f() nounwind {{\n  ret i32 7\n}}\n");

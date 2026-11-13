@@ -1,5 +1,6 @@
 //! Module-level assembly made only of symbol directives (`spec/ir.md`
-//! §2.3, `spec/codegen.md` §9.7.1): WP-075. `hod_ir` reads the text and
+//! §2.3, `spec/codegen.md` §9.7.1): WP-075. Text with code or data is
+//! `module_asm.rs`'s (WP-112). `hod_ir` reads the text and
 //! checks it against the module; this writes the effects into the
 //! object, after every module symbol is defined: an undefined symbol
 //! for a name the module does not have, and the binding, visibility and
@@ -12,13 +13,14 @@ use hod_obj::{Binding, Symbol, SymbolKind};
 use super::{ModuleEmitter, obj_err, unsupported, visibility};
 use crate::error::{CgError, CgResult};
 
-/// Refuses module-level assembly an assembler must read
-/// ([`unsupported::MODULE_ASM`]).
+/// Refuses module-level assembly an assembler must read on x86-64
+/// ([`unsupported::MODULE_ASM`]); on AArch64 `hod_asm` reads it
+/// (`module_asm.rs`, WP-112).
 ///
 /// # Errors
 /// [`unsupported::MODULE_ASM`].
 pub(super) fn check(module: &Module) -> CgResult<()> {
-    if module.module_asm().is_empty() {
+    if module.module_asm().is_empty() || module.target().arch() == hod_ir::Arch::Aarch64 {
         return Ok(());
     }
     let mut effects = Vec::new();
@@ -28,13 +30,17 @@ pub(super) fn check(module: &Module) -> CgResult<()> {
 
 impl ModuleEmitter<'_> {
     /// Writes the symbol effects of the module's assembly (`spec/ir.md`
-    /// §2.3) into the object. Called once, after `define`.
+    /// §2.3) into the object, or what `place_module_asm` left. Called
+    /// once, after `define`.
     ///
     /// # Errors
     /// [`unsupported::MODULE_ASM`] for text [`check`] refuses; an
     /// internal error if the object refuses a name.
     pub(super) fn module_asm_symbols(&mut self) -> CgResult<()> {
         let module = self.module;
+        if let Some(deferred) = self.asm_deferred.take() {
+            return self.finish_module_asm(&deferred);
+        }
         if module.module_asm().is_empty() {
             return Ok(());
         }

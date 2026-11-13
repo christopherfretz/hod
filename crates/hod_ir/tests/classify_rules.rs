@@ -600,8 +600,9 @@ fn a_matrix_is_of_one_target() {
 // ---- §8.5: names built from the input ----
 
 /// §8.5: what has no row of its own is named after itself: a calling
-/// convention by its number, an operand bundle by its tag, an intrinsic
-/// by its name. None of them can be switched on.
+/// convention by LLVM's keyword, or by its number if it has none
+/// (WP-141), an operand bundle by its tag, an intrinsic by its name.
+/// None of them can be switched on.
 #[test]
 fn what_has_no_row_is_named_after_itself() {
     let convention = |number: u32| {
@@ -612,7 +613,9 @@ fn what_has_no_row_is_named_after_itself() {
         let body = body(&m, f, |_, _| {});
         Program { m, bodies: vec![body] }
     };
-    refused(&convention(77), "cc:77");
+    refused(&convention(66), "cc:arm_apcscc");
+    refused(&convention(112), "cc:riscv_vls_cc(32)");
+    refused(&convention(42), "cc:42");
     accepted(&convention(8));
     // On a call as well.
     let fx77 = fx(ARCH);
@@ -646,9 +649,56 @@ fn what_has_no_row_is_named_after_itself() {
     };
     refused(&intrinsic(Intrinsic::Other("llvm.foo.bar")), "intrinsic:llvm.foo.bar");
     accepted(&intrinsic(Intrinsic::Trap));
-    for name in ["cc:77", "bundle:mystery", "intrinsic:llvm.foo.bar", "module-flag:mystery"] {
+    for name in [
+        "cc:arm_apcscc",
+        "cc:42",
+        "bundle:mystery",
+        "intrinsic:llvm.foo.bar",
+        "module-flag:mystery",
+    ] {
         assert_eq!(everything(ARCH).supports(name), None, "{name}");
         assert!(everything(ARCH).with(name).is_none(), "{name}");
+    }
+}
+
+/// §8.4, WP-141: `x86_64_sysvcc` is `ccc` on x86-64 and an x86
+/// convention on AArch64; the Windows and 32-bit x86 conventions are
+/// refused by design on both, by keyword. A call names the callee's
+/// convention as well.
+#[test]
+fn x86_conventions_are_named_by_keyword() {
+    let convention = |arch: Arch, cc: CallConv| {
+        let mut m = module(arch);
+        let ty = m.types.function(VOID, &[], false).unwrap();
+        let f = define_as(&mut m, "f", &FunctionDesc { cc, ..FunctionDesc::new(ty) });
+        let body = body(&m, f, |_, _| {});
+        Program { m, bodies: vec![body] }
+    };
+    accepted(&convention(Arch::X86_64, CallConv::X86_64_SYSV));
+    refused(&convention(Arch::Aarch64, CallConv::X86_64_SYSV), "cc:x86_64_sysvcc");
+    assert_eq!(Support::shipped(Arch::X86_64).supports("cc:x86_64_sysvcc"), Some(true));
+    let call = |arch: Arch, cc: CallConv| {
+        let fx = fx(arch);
+        let call = CallDesc { cc, ..fx.call() };
+        fx.with(|b, _| {
+            b.call(VOID, &call).unwrap();
+        })
+    };
+    accepted(&call(Arch::X86_64, CallConv::X86_64_SYSV));
+    for (cc, name) in [
+        (CallConv::WIN64, "cc:win64cc"),
+        (CallConv::X86_VECTORCALL, "cc:x86_vectorcallcc"),
+        (CallConv::X86_REGCALL, "cc:x86_regcallcc"),
+        (CallConv::X86_INTR, "cc:x86_intrcc"),
+        (CallConv::X86_STDCALL, "cc:x86_stdcallcc"),
+        (CallConv::X86_FASTCALL, "cc:x86_fastcallcc"),
+        (CallConv::X86_THISCALL, "cc:x86_thiscallcc"),
+    ] {
+        for arch in [Arch::Aarch64, Arch::X86_64] {
+            refused(&convention(arch, cc), name);
+            refused(&call(arch, cc), name);
+            assert!(everything(arch).with(name).is_none(), "{name} is refused by design");
+        }
     }
 }
 

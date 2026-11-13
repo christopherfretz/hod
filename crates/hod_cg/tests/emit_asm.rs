@@ -4,8 +4,8 @@
 //! major present, and the two objects must have the same sections,
 //! symbols (name, binding, type, visibility, section) and relocations,
 //! up to `elfview`'s normalizations. What `llc` warns about, fails on, or
-//! resolves by a precedence rule of its assembler is refused by
-//! `module:asm`.
+//! resolves by a precedence rule of its assembler is refused: by
+//! `hod_asm`'s name on AArch64 (WP-112), by `module:asm` on x86-64.
 
 mod borrow;
 mod elfview;
@@ -86,33 +86,45 @@ const CASES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Module text `llc` warns about or refuses, or whose effect depends on
-/// its assembler's precedence rules: `hod` refuses each as `module:asm`.
-const REFUSED: &[&str] = &[
+/// Text `hod_asm` reads on AArch64 (`emit_module_asm.rs` compares it
+/// with `llc`'s), which is `module:asm` on x86-64.
+const READ_ON_AARCH64: &[&str] = &[
     "module asm \"  nop\"\n",
     "module asm \"f:\"\n",
     "module asm \".text\"\n",
     "module asm \".set x, 42\"\n",
     "module asm \"x = 42\"\n",
-    "module asm \".symver a, a@V1\"\n",
-    "module asm \".size U, 4\"\n",
-    "module asm \".internal U\"\n",
-    "module asm \".globl \\22a b\\22\"\n",
-    "module asm \".globl U\"\nmodule asm \".weak U\"\n",
-    "module asm \".type U, @gnu_indirect_function\"\n",
     "module asm \".pushsection .rodata\"\nmodule asm \".popsection\"\n",
+];
+
+/// Module text `llc` warns about or refuses, or whose effect depends on
+/// its assembler's precedence rules, with the name `hod` refuses it by
+/// on AArch64 (`hod_asm`'s, WP-112); on x86-64 each is `module:asm`.
+const REFUSED: &[(&str, &str)] = &[
+    ("module asm \".symver a, a@V1\"\n", "asm:directive/symver"),
+    ("module asm \".size U, 4\"\n", "asm:symbol"),
+    ("module asm \".internal U\"\n", "asm:directive/internal"),
+    ("module asm \".globl \\22a b\\22\"\n", "asm:operand/syntax"),
+    ("module asm \".globl U\"\nmodule asm \".weak U\"\n", "asm:symbol"),
+    ("module asm \".type U, @gnu_indirect_function\"\n", "asm:symbol"),
     // `llc`: "changed binding to STB_GLOBAL" (an error).
-    "module asm \".weak D\"\ndefine void @D() {\n  ret void\n}\n",
+    ("module asm \".weak D\"\ndefine void @D() {\n  ret void\n}\n", "asm:symbol"),
     // `llc`: "changed binding to STB_WEAK" (a warning).
-    "module asm \".globl D\"\ndefine weak void @D() {\n  ret void\n}\n",
-    "module asm \".globl U\"\ndeclare extern_weak void @U()\n@keep = global ptr @U\n",
+    ("module asm \".globl D\"\ndefine weak void @D() {\n  ret void\n}\n", "asm:symbol"),
+    (
+        "module asm \".globl U\"\ndeclare extern_weak void @U()\n@keep = global ptr @U\n",
+        "asm:symbol",
+    ),
     // A local symbol: `llc` makes it global.
-    "module asm \".globl D\"\ndefine internal void @D() {\n  ret void\n}\n@keep = global ptr @D\n",
-    "module asm \".hidden P\"\n@P = private global i32 1\n@keep = global ptr @P\n",
+    (
+        "module asm \".globl D\"\ndefine internal void @D() {\n  ret void\n}\n@keep = global ptr @D\n",
+        "asm:symbol",
+    ),
+    ("module asm \".hidden P\"\n@P = private global i32 1\n@keep = global ptr @P\n", "asm:symbol"),
     // Types `llc` merges by precedence.
-    "module asm \".type V, @function\"\n@V = global i32 1\n",
-    "module asm \".type T, @object\"\n@T = external thread_local global i32\n",
-    "module asm \".weak C\"\n@C = common global i32 0\n",
+    ("module asm \".type V, @function\"\n@V = global i32 1\n", "asm:symbol"),
+    ("module asm \".type T, @object\"\n@T = external thread_local global i32\n", "asm:symbol"),
+    ("module asm \".weak C\"\n@C = common global i32 0\n", "asm:symbol"),
 ];
 
 /// The module header of `arch` for `llc` of LLVM `major`.
@@ -210,20 +222,36 @@ fn directives_agree_with_llc() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-// spec/ir.md §2.3: everything else stays `module:asm`, in `classify` and
-// in emission.
+// spec/ir.md §2.3, spec/asm.md §9: everything else passes classify on
+// AArch64 and is refused in emission by `hod_asm`'s name; on x86-64 it
+// stays `module:asm`, in `classify` and in emission.
 #[test]
 fn other_assembly_is_refused_by_name() {
-    let support = hod_ir::Support::shipped(hod_ir::Arch::Aarch64);
-    for ir in REFUSED {
+    let aarch64 = hod_ir::Support::shipped(hod_ir::Arch::Aarch64);
+    let mut failures = Vec::new();
+    for &(ir, name) in REFUSED {
         let text = format!("{}{ir}", header(Arch::AArch64, 22));
+        let parsed = hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default())
+            .unwrap_or_else(|e| panic!("{ir}: hod_ll: {e}"));
+        match emit_module(&parsed.module, &options(), &[]) {
+            Err(CgError::Unsupported { construct }) if construct == name => {}
+            other => failures.push(format!("{ir:?}: expected {name}, got {other:?}")),
+        }
+        assert!(hod_ir::Classifier::new(aarch64).module(&parsed.module).is_ok(), "{ir}");
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    let x86_64 = hod_ir::Support::shipped(hod_ir::Arch::X86_64);
+    for ir in READ_ON_AARCH64.iter().chain(REFUSED.iter().map(|(ir, _)| ir)) {
+        let text = format!(
+            "target datalayout = \"{X86_64_LINUX_DATA_LAYOUT}\"\ntarget triple = \"x86_64-unknown-linux-gnu\"\n{ir}"
+        );
         let parsed = hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default())
             .unwrap_or_else(|e| panic!("{ir}: hod_ll: {e}"));
         match emit_module(&parsed.module, &options(), &[]) {
             Err(CgError::Unsupported { construct }) => assert_eq!(construct, "module:asm", "{ir}"),
             other => panic!("{ir}: {other:?}"),
         }
-        let rejection = hod_ir::Classifier::new(support).module(&parsed.module).expect_err(ir);
+        let rejection = hod_ir::Classifier::new(x86_64).module(&parsed.module).expect_err(ir);
         assert_eq!(rejection.construct, "module:asm", "{ir}");
     }
     for &(name, ir) in CASES {

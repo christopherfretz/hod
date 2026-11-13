@@ -12,16 +12,17 @@ use std::time::Duration;
 
 use hod_testutil::{LLVM_MAJORS, Outcome, Scratch, run_with, tool, tools_required};
 
-/// A module hod declines, as `module:asm`: module-level assembly is
-/// not a construct a code-generation package turns on, so the reason does
-/// not move with the support matrix.
+/// A module hod declines, as `module:code-model-tiny`: the tiny code
+/// model is unplanned, so the reason does not move with the support
+/// matrix.
 const MODULE: &str = "\
 ; ModuleID = 'm.cpp'
 source_filename = \"m.cpp\"
 target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32\"
 target triple = \"aarch64-unknown-linux-gnu\"
 
-module asm \"nop\"
+!llvm.module.flags = !{!900}
+!900 = !{i32 1, !\"Code Model\", i32 0}
 
 define i32 @seven() {
   ret i32 7
@@ -208,7 +209,7 @@ fn fallback_receives_original_arguments_and_identical_input() {
     let line = &lines[0];
     assert_eq!(
         (line.outcome.as_str(), line.reason.as_str(), line.input_kind.as_str()),
-        ("fallback", "module:asm", "text")
+        ("fallback", "module:code-model-tiny", "text")
     );
     assert_eq!(line.input_bytes, input.len().to_string());
     assert_eq!(line.output, out.to_str().unwrap());
@@ -354,7 +355,7 @@ fn fallback_exit_status_propagates() {
     // the status is the line's last field.
     let lines = coverage(&log);
     assert_eq!(lines.len(), 4);
-    assert!(lines.iter().all(|l| l.outcome == "fallback" && l.reason == "module:asm"));
+    assert!(lines.iter().all(|l| l.outcome == "fallback" && l.reason == "module:code-model-tiny"));
     let statuses: Vec<&str> = lines.iter().map(|l| l.fallback_status.as_str()).collect();
     assert_eq!(statuses, ["1", "2", "7", "255"]);
 
@@ -408,7 +409,7 @@ fn strict_mode_fails_with_the_construct_named() {
     let scratch = Scratch::new("cli-strict");
     let llc = FakeLlc::new(&scratch, "llc");
     let log = scratch.join("cov.tsv");
-    let expected = "hod: error: unsupported construct 'module:asm' \
+    let expected = "hod: error: unsupported construct 'module:code-model-tiny' \
                     (strict mode: no fallback)\n";
     let by_flag = run_hod(
         hod().env("HOD_FALLBACK_LLC", &llc.path).env("HOD_COVERAGE_LOG", &log).args([
@@ -439,7 +440,7 @@ fn strict_mode_fails_with_the_construct_named() {
     for line in &lines {
         assert_eq!(
             (line.outcome.as_str(), line.reason.as_str(), line.output.as_str()),
-            ("error", "module:asm", "x.o")
+            ("error", "module:code-model-tiny", "x.o")
         );
     }
 
@@ -448,7 +449,7 @@ fn strict_mode_fails_with_the_construct_named() {
     assert_eq!(exit_code(&outcome), 2);
     assert_eq!(
         outcome.stderr_text(),
-        "hod: error: unsupported construct 'module:asm'; no fallback is configured \
+        "hod: error: unsupported construct 'module:code-model-tiny'; no fallback is configured \
          (--fallback=<llc> or HOD_FALLBACK_LLC)\n"
     );
 }
@@ -465,7 +466,13 @@ fn reasons_reach_the_log() {
     let bitcode = b"BC\xC0\xDE\x35\x14\x00\x00\x05\x00\x00\x00";
     let wrapped = b"\xDE\xC0\x17\x0B\x00\x00\x00\x00\x14\x00\x00\x00";
     let cases: &[Case] = &[
-        (&["-filetype=obj"], MODULE.as_bytes(), "module:asm", "text", "aarch64-unknown-linux-gnu"),
+        (
+            &["-filetype=obj"],
+            MODULE.as_bytes(),
+            "module:code-model-tiny",
+            "text",
+            "aarch64-unknown-linux-gnu",
+        ),
         (
             &["-filetype=obj"],
             b"target triple = \"x86_64-unknown-linux-gnu\"\n\
@@ -678,7 +685,7 @@ fn coverage_log_survives_concurrent_writers() {
     for line in &lines {
         assert_eq!(
             (line.outcome.as_str(), line.reason.as_str(), line.input_kind.as_str()),
-            ("fallback", "module:asm", "text")
+            ("fallback", "module:code-model-tiny", "text")
         );
         assert_eq!(line.input_bytes, MODULE.len().to_string());
     }
@@ -738,7 +745,7 @@ fn hod_is_not_its_own_fallback() {
     let lines = coverage(&log);
     let summary: Vec<(&str, &str)> =
         lines.iter().map(|l| (l.outcome.as_str(), l.reason.as_str())).collect();
-    assert_eq!(summary, [("error", "fallback-loop"), ("fallback", "module:asm")]);
+    assert_eq!(summary, [("error", "fallback-loop"), ("fallback", "module:code-model-tiny")]);
     assert_eq!(lines[1].fallback_status, "1");
 }
 
@@ -749,7 +756,8 @@ const CONVERTED: &str = "\
 source_filename = \"m.cpp\"
 target triple = \"x86_64-unknown-linux-gnu\"
 
-module asm \"nop\"
+!llvm.module.flags = !{!900}
+!900 = !{i32 1, !\"Code Model\", i32 0}
 
 define i32 @seven() {
   ret i32 7
@@ -867,7 +875,7 @@ fn bitcode_is_converted_and_goes_on_as_text() {
     let line = &lines[0];
     assert_eq!(
         (line.outcome.as_str(), line.reason.as_str(), line.input_kind.as_str()),
-        ("fallback", "module:asm", "bitcode"),
+        ("fallback", "module:code-model-tiny", "bitcode"),
         "the text reached the same decline as a text input"
     );
     assert_eq!(line.input_bytes, input.len().to_string(), "the bitcode's size");
@@ -1108,7 +1116,7 @@ fn bitcode_file_input() {
     let line = &lines[0];
     assert_eq!(
         (line.reason.as_str(), line.input_kind.as_str(), line.target.as_str()),
-        ("module:asm", "bitcode", "x86_64-unknown-linux-gnu")
+        ("module:code-model-tiny", "bitcode", "x86_64-unknown-linux-gnu")
     );
     assert_eq!(line.input_bytes, bitcode.len().to_string());
     assert_eq!(line.output, scratch.join("m.o").to_str().unwrap());
@@ -1203,12 +1211,12 @@ fn converter_settings() {
     assert_eq!(
         summary,
         [
-            ("fallback", "module:asm", "bitcode", true),
-            ("fallback", "module:asm", "bitcode", true),
+            ("fallback", "module:code-model-tiny", "bitcode", true),
+            ("fallback", "module:code-model-tiny", "bitcode", true),
             ("fallback", "malformed-input", "bitcode", false),
             ("fallback", "malformed-input", "bitcode", false),
             ("fallback", "malformed-input", "bitcode", false),
-            ("fallback", "module:asm", "text", false),
+            ("fallback", "module:code-model-tiny", "text", false),
             ("fallback", "assembly-output", "bitcode", false),
             ("fallback", "unknown-option", "-", false),
             ("error", "usage", "-", false),
@@ -1305,7 +1313,7 @@ fn real_llc_fallback_text() {
     assert_eq!(lines.len(), 1);
     assert_eq!(
         (lines[0].outcome.as_str(), lines[0].reason.as_str(), lines[0].input_kind.as_str()),
-        ("fallback", "module:asm", "text")
+        ("fallback", "module:code-model-tiny", "text")
     );
 
     // `-o -`: the object arrives on hod's standard output.
@@ -1375,7 +1383,7 @@ fn real_llc_fallback_bitcode() {
     assert_eq!(lines.len(), 1);
     assert_eq!(
         (lines[0].outcome.as_str(), lines[0].reason.as_str(), lines[0].input_kind.as_str()),
-        ("fallback", "module:asm", "bitcode"),
+        ("fallback", "module:code-model-tiny", "bitcode"),
         "read natively, declined for what it contains"
     );
     assert_eq!(lines[0].input_bytes, bitcode.len().to_string());
@@ -1450,7 +1458,7 @@ fn real_llvm_dis_converts_bitcode() {
         assert_eq!(exit_code(&strict), 2, "LLVM {major}");
         assert_eq!(
             strict.stderr_text(),
-            "hod: error: unsupported construct 'module:asm' \
+            "hod: error: unsupported construct 'module:code-model-tiny' \
              (strict mode: no fallback)\n"
         );
         // The wrapper form of bitcode is bitcode too; llvm-dis reads it.
@@ -1474,7 +1482,7 @@ fn real_llvm_dis_converts_bitcode() {
         ]) {
             assert_eq!(
                 (line.outcome.as_str(), line.reason.as_str(), line.input_kind.as_str()),
-                (outcome, "module:asm", "bitcode"),
+                (outcome, "module:code-model-tiny", "bitcode"),
                 "LLVM {major}"
             );
             assert_eq!(line.input_bytes, bytes.to_string(), "LLVM {major}");
@@ -1502,13 +1510,13 @@ fn real_llvm_dis_converts_bitcode() {
         let lines = coverage(&census);
         assert_eq!(lines.len(), 4);
         for line in &lines {
-            assert_eq!(line.reason, "module:asm", "LLVM {major}: {line:?}");
+            assert_eq!(line.reason, "module:code-model-tiny", "LLVM {major}: {line:?}");
             assert_eq!(line.reasons, lines[0].reasons, "LLVM {major}: {line:?}");
             assert_eq!(line.target, "aarch64-unknown-linux-gnu", "LLVM {major}: {line:?}");
         }
         // The census begins with the refusal; what follows it moves with
         // the support matrix.
-        assert_eq!(lines[0].reasons.split(',').next(), Some("module:asm"), "{lines:?}");
+        assert_eq!(lines[0].reasons.split(',').next(), Some("module:code-model-tiny"), "{lines:?}");
         assert_eq!(
             lines.iter().map(|l| l.conversion_micros != "-").collect::<Vec<_>>(),
             [true, false, true, false]

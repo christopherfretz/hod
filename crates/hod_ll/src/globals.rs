@@ -3,11 +3,10 @@
 
 use hod_ir::Layering;
 use hod_ir::{
-    AliasDesc, CallConv, ComdatId, ComdatKind, Const, ConstId, FunctionDesc, IFuncDesc, Linkage,
-    Retained, SymId, TlsModel, UnnamedAddr, VariableDesc, Visibility,
+    AliasDesc, ComdatId, ComdatKind, Const, ConstId, FunctionDesc, IFuncDesc, Linkage, Retained,
+    SymId, TlsModel, UnnamedAddr, VariableDesc, Visibility,
 };
 
-use crate::attrs::call_conv_keyword;
 use crate::error::{LlErrorKind, PResult, fail};
 use crate::index::{Item, ItemKind, parse_u32};
 use crate::lexer::{Tok, Token};
@@ -811,17 +810,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
             }
         }
         let prefix = self.prefix();
-        let cc_at = self.tok.start;
-        let mut cc = 0;
-        if self.eat_word(b"cc") {
-            cc = self.expect_u32("expected a calling convention number")?;
-        } else if self.tok.kind == Tok::Word
-            && let Some(number) = call_conv_keyword(self.text())
-        {
-            cc = number;
-            self.bump();
-        }
-        let cc = ir(cc_at, CallConv::from_llvm(cc))?;
+        let cc = self.call_conv()?;
         let ret_attrs = self.param_attrs()?;
         let attrs_base = self.pattrs.len();
         let (ty, name) = self.signature()?;

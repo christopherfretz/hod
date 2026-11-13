@@ -648,6 +648,16 @@ define { i8, ptr, i64 } @swap_mix({ i64, ptr, i8 } %v) {
   %z = insertvalue { i8, ptr, i64 } %y, i64 %a, 2
   ret { i8, ptr, i64 } %z
 }
+
+define x86_64_sysvcc i64 @sysv(i64 %a, { i64, i64 } %agg, i32 signext %b, ptr %p) {
+  %x = extractvalue { i64, i64 } %agg, 1
+  %wb = sext i32 %b to i64
+  %v = load i64, ptr %p
+  %s = sub i64 %a, %x
+  %t = mul i64 %s, %wb
+  %r = xor i64 %t, %v
+  ret i64 %r
+}
 ";
 
 /// The callers (module A): `@test` returns a checksum of everything the
@@ -733,6 +743,9 @@ define i64 @test() {
   %l = call fastcc i64 @local_fast(%Wide %w, i32 4000000000)
   %c15 = call i64 @mix(i64 %c14, i64 %l)
 
+  %sv = call x86_64_sysvcc i64 @sysv(i64 9000000001, { i64, i64 } %agg1, i32 signext -77, ptr %cell)
+  %c15s = call i64 @mix(i64 %c15, i64 %sv)
+
   %pr = call { i32, ptr } @pair(i32 -123, ptr %cell)
   %pa = extractvalue { i32, ptr } %pr, 0
   %paw = sext i32 %pa to i64
@@ -740,7 +753,7 @@ define i64 @test() {
   %pv = load i64, ptr %pp
   %same = icmp eq ptr %pp, %cell
   %samew = zext i1 %same to i64
-  %c16 = call i64 @mix(i64 %c15, i64 %paw)
+  %c16 = call i64 @mix(i64 %c15s, i64 %paw)
   %c17 = call i64 @mix(i64 %c16, i64 %pv)
   %c18 = call i64 @mix(i64 %c17, i64 %samew)
 
@@ -769,6 +782,7 @@ declare i64 @small(ptr byval(%Small) align 1)
 declare void @twice(ptr sret(%Big) align 8, ptr byval(%Big) align 8)
 declare fastcc i64 @fast(i64, i32, ptr, { i64, i64 }, i8 signext)
 declare fastcc %Wide @fast_wide(i64, i64)
+declare x86_64_sysvcc i64 @sysv(i64, { i64, i64 }, i32 signext, ptr)
 declare { i32, ptr } @pair(i32, ptr)
 declare { i8, ptr, i64 } @swap_mix({ i64, ptr, i8 })
 ";

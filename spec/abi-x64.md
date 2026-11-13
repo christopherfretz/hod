@@ -56,9 +56,10 @@ this document follows `spec/abi-a64.md`, section for section.
 |---|---|
 | `ccc` (0) | specified by this document |
 | `fastcc` (8) | as `ccc`, except one more return register for `float` and `double` (§5.1) |
+| `x86_64_sysvcc` (78) | as `ccc`: it is the System V convention, which is this target's `ccc` (WP-141) |
 | every other number, including `swiftcc` (16) and `cxx_fast_tlscc` (17) | `abi:cc` |
 
-`hod_x64::abi::cc_is_c` is the predicate for the first two rows. "As
+`hod_x64::abi::cc_is_c` is the predicate for the first three rows. "As
 `ccc`": LLVM compiles a module that defines and calls `fastcc`
 functions (arguments of every class and on the stack, values live across
 calls, returns in registers, in memory and on the x87 stack, `sret`,
@@ -755,7 +756,7 @@ functions); `08-varargs.ll`.
 
 | name | what |
 |---|---|
-| `abi:cc` | a convention other than `ccc` and `fastcc` (§1.2) |
+| `abi:cc` | a convention other than `ccc`, `fastcc` and `x86_64_sysvcc` (§1.2) |
 | `abi:invalid-signature` | what LLVM's verifier refuses (§1.2, §5.1, §6) |
 | `abi:scalable-vector` | a scalable vector anywhere in a type |
 | `abi:target-ext-type` | a target extension type |

@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use hod_cg::{CgError, Options, RelocModel};
+use hod_cg::{Options, RelocModel};
 use hod_ir::{Body, Module, TypeId};
 use hod_testutil::{Scratch, run_with, tool};
 use linking::{Toolchain, exit_code};
@@ -63,16 +63,6 @@ fn pic() -> Options {
 fn object(body: &str) -> Result<Vec<u8>, hod_x64::ModuleError> {
     let (module, bodies) = parse(body);
     hod_x64::compile_to_object(&module, &bodies, &pic())
-}
-
-/// The refusal of a module of one construct.
-fn refusal(body: &str) -> &'static str {
-    match object(body) {
-        Err(hod_x64::ModuleError::Function {
-            error: CgError::Unsupported { construct }, ..
-        }) => construct,
-        other => panic!("not a refusal: {:?}", other.map(|bytes| bytes.len())),
-    }
 }
 
 /// `main` returns 42.
@@ -269,4 +259,3 @@ fn data_layout_is_honoured() {
         assert_eq!(types.align_of(ty), align, "{ty:?}");
     }
 }
-

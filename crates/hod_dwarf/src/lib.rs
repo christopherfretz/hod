@@ -67,6 +67,7 @@ mod strings;
 mod target;
 mod template;
 mod types;
+pub mod x86_64;
 
 pub use call_sites::DEBUG_CALL_SITES;
 pub use coro::{CoroAt, CoroPlace};

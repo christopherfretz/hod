@@ -176,7 +176,8 @@ fn frame_position(line: &str) -> Option<(&str, u32, u32)> {
 /// transcripts that differ only in stops after `finish` (`stop reason =
 /// step out`), where in each differing pair of lines the `frame #0:`
 /// line has the same text and line and another column, `llc`'s column
-/// being that of a `call` or `invoke` at that line, and the source
+/// (or, WP-136, hod's) being that of a `call` or `invoke` at that line,
+/// and the source
 /// caret line (`^`) under it moves with the column. Any other
 /// difference, or a different number of lines, is not permitted.
 pub fn only_return_columns(hod: &str, llc: &str, facts: &IrFacts) -> bool {
@@ -202,10 +203,13 @@ pub fn only_return_columns(hod: &str, llc: &str, facts: &IrFacts) -> bool {
             continue;
         }
         match (frame_position(a), frame_position(b)) {
-            (Some((pa, la, _)), Some((pb, lb, cb)))
+            (Some((pa, la, ca)), Some((pb, lb, cb)))
                 if pa == pb && la == lb && b.trim_start().starts_with("frame #0:") =>
             {
-                if !facts.has_call_at(lb, cb) {
+                // On x86-64 the roles swap (`spec/dwarf.md` §6.17): hod's
+                // copy of the result out of `rax` keeps the call's
+                // location where `llc` coalesced it.
+                if !facts.has_call_at(lb, cb) && !facts.has_call_at(la, ca) {
                     return false;
                 }
                 moved = true;
@@ -271,8 +275,10 @@ define linkonce_odr void @\"quoted name\"() {
         assert!(only_return_columns(&hod, &llc, &facts));
         // Equal transcripts are no permitted difference (nothing to permit).
         assert!(!only_return_columns(&llc, &llc, &facts));
-        // llc's column is not a call's.
-        assert!(!only_return_columns(&llc, &hod, &facts));
+        // hod's column is the call's, llc's not (x86-64, WP-136).
+        assert!(only_return_columns(&llc, &hod, &facts));
+        // Neither column is a call's.
+        assert!(!only_return_columns(&session(9, "      "), &hod, &facts));
         // Not after `finish`.
         let stepped = |s: &str| s.replace("step out", "step over");
         assert!(!only_return_columns(&stepped(&hod), &stepped(&llc), &facts));

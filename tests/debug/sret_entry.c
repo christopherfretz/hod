@@ -37,3 +37,5 @@ int main(void) {
 //@ lldb: continue
 //@ lldb-check: (Big) out = <variable not available>
 //@ lldb-check: exited with status = 0
+//@ target: aarch64
+// x86-64: llc's location list covers the first row there, so both show the uninitialized result; x64_places.c holds sret on x86-64.

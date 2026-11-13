@@ -22,7 +22,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 |---|---|---|---|---|---|---|---|
 | `module` | 24 | 11 | 11 | 2 | 11 | 7 | 6 |
 | `structor` | 2 | 2 | 0 | 0 | 2 | 0 | 0 |
-| `debug` | 5 | 4 | 1 | 0 | 0 | 5 | 0 |
+| `debug` | 5 | 4 | 1 | 0 | 4 | 1 | 0 |
 | `global` | 12 | 11 | 1 | 0 | 11 | 1 | 0 |
 | `linkage` | 11 | 10 | 0 | 1 | 10 | 0 | 1 |
 | `visibility` | 2 | 2 | 0 | 0 | 2 | 0 | 0 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 11 | 8 | 3 | 0 | 7 | 4 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 354 | 347 | 7 | 0 | 115 | 23 | 216 |
-| total | 674 | 549 | 68 | 57 | 297 | 99 | 278 |
+| total | 674 | 549 | 68 | 57 | 301 | 95 | 278 |
 
 ## `module`
 
@@ -91,11 +91,11 @@ Debug information.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `debug:module-flags` | supported | not-implemented | `Dwarf Version` or `Debug Info Version` is set (WP-087) |
+| `debug:module-flags` | supported | supported | `Dwarf Version` or `Debug Info Version` is set (WP-087) |
 | `debug:dwarf-version` | not-implemented | not-implemented | T-DW. a compile unit with debug information and a `Dwarf Version` other than 5 (absent is LLVM's 4): `hod_dwarf` writes DWARF 5 only |
-| `debug:subprogram` | supported | not-implemented | a function with a body and a `DISubprogram` (WP-087) |
-| `debug:slot-variables` | supported | not-implemented | a stack slot that is a source variable (WP-087); in a coroutine body, on the frame word (WP-108, `spec/dwarf.md` §6.16) |
-| `debug:locations` | supported | not-implemented | a body whose instructions carry source locations (WP-087) |
+| `debug:subprogram` | supported | supported | a function with a body and a `DISubprogram` (WP-087) |
+| `debug:slot-variables` | supported | supported | a stack slot that is a source variable (WP-087); in a coroutine body, on the frame word (WP-108, `spec/dwarf.md` §6.16) |
+| `debug:locations` | supported | supported | a body whose instructions carry source locations (WP-087) |
 
 ## `global`
 

@@ -121,11 +121,12 @@ const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 27] = [
     ("module:pic", "", "", "", ""),
     ("module:frame-pointer", "", "", "", ""),
     ("structor:priority", "", "", "", ""),
-    // WP-087: debug modules reach the DWARF writer on AArch64.
-    ("debug:module-flags", "", "debug:module-flags", "", ""),
-    ("debug:dwarf-version", "debug:dwarf-version", "debug:module-flags", "", ""),
+    // WP-087: debug modules reach the DWARF writer on AArch64; WP-136 on
+    // x86-64.
+    ("debug:module-flags", "", "", "", ""),
+    ("debug:dwarf-version", "debug:dwarf-version", "debug:dwarf-version", "", ""),
     // WP-127: `type:double` no longer refuses an x86-64 body first.
-    ("debug:locations", "", "", "", "debug:locations"),
+    ("debug:locations", "", "", "", ""),
     ("global:function-declaration", "", "", "", ""),
     // WP-143: x86-64 module-level constructs.
     ("global:variable-definition", "", "", "", ""),
@@ -481,10 +482,11 @@ const A64_SUPPORTED: [&str; 13] = [
     "module:asm-symbols",
 ];
 
-/// The rows of `RICH_MODULE` x86-64 supports (WP-116, WP-143).
-const X64_SUPPORTED: [&str; 12] = [
+/// The rows of `RICH_MODULE` x86-64 supports (WP-116, WP-143, WP-136).
+const X64_SUPPORTED: [&str; 13] = [
     "module:pic",
     "module:uwtable",
+    "debug:module-flags",
     "global:function-definition",
     "module:global-ctors",
     "structor:priority",
@@ -617,8 +619,7 @@ fn findings_come_in_the_specified_order() {
         // The first reason of each pass is the first finding of it.
         let classifier = Classifier::new(shipped).with_stack_args(&NO_STACK);
         let module_reason = classifier.module(&program.m).unwrap_err();
-        let first =
-            if arch == Arch::Aarch64 { "module-flag:mystery" } else { "debug:module-flags" };
+        let first = "module-flag:mystery";
         assert_eq!((module_reason.construct.as_ref(), module_reason.symbol), (first, None));
         // AArch64 supports the whole body (WP-069: `tail:musttail`).
         let Some(&first_body) = body.first() else {

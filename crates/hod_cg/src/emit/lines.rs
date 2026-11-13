@@ -72,6 +72,9 @@ pub(super) struct DebugLines<'m> {
     locals: Vec<LocalRow>,
     /// How the DIEs are written (`Options::split_dwarf`).
     pub(super) split: hod_dwarf::SplitDwarf,
+    /// The unit and the section symbol of the last function given a code
+    /// span (WP-136, `spec/dwarf.md` §6.17): `llc`'s "previous unit".
+    prev_span: Option<(usize, SymbolId)>,
 }
 
 /// Where a function was placed, and its frame.
@@ -159,6 +162,7 @@ impl<'m> DebugLines<'m> {
             scopes: Vec::new(),
             locals: Vec::new(),
             split: hod_dwarf::SplitDwarf::Off,
+            prev_span: None,
         })))
     }
 
@@ -246,7 +250,7 @@ impl<'m> DebugLines<'m> {
         let symbol = obj.section_symbol(section);
         let addend = offset as i64;
         let code = CodeSpan { symbol, addend, size: u64::from(size) };
-        self.units[unit].code.push(code);
+        self.unit_span(unit, code);
 
         // The DIEs (§6.4).
         self.scopes.clear();
@@ -303,6 +307,26 @@ impl<'m> DebugLines<'m> {
         let u = &mut self.units[unit];
         let seq = Sequence { order: 0, symbol, addend, size, rows: &self.rows };
         u.program.push(u.plan.files().files().len(), &seq).map_err(dwarf_err)
+    }
+
+    /// Adds `code` to the code of `unit` as `DwarfCompileUnit::addRange`
+    /// does (WP-136, `spec/dwarf.md` §6.17): a function of the same unit
+    /// as the last function with a span, in the same section, extends
+    /// that span to its end, over the padding (and any function without
+    /// a subprogram) between them; otherwise it starts a span.
+    fn unit_span(&mut self, unit: usize, code: CodeSpan) {
+        let prev = self.prev_span.replace((unit, code.symbol));
+        let spans = &mut self.units[unit].code;
+        if prev == Some((unit, code.symbol))
+            && let Some(last) = spans.last_mut()
+            && last.symbol == code.symbol
+            && last.addend <= code.addend
+        {
+            let end = (code.addend - last.addend) as u64 + code.size;
+            last.size = last.size.max(end);
+            return;
+        }
+        spans.push(code);
     }
 
     /// Writes `.debug_line` and the DIEs of every unit that has code or
@@ -384,6 +408,16 @@ fn stub_rows(rows: &mut Vec<Row>, scope: SourceLoc, entries: [u32; 3], ready: [u
         rows.push(at(entry, stmt));
         rows.push(at(ready, stmt | hod_dwarf::flags::PROLOGUE_END));
     }
+}
+
+/// Whether the location of global `sym` names its own symbol whatever
+/// its binding: a thread-local variable on x86-64, whose location is its
+/// offset in the TLS block (WP-136, `spec/dwarf.md` §6.17), relocated by
+/// `R_X86_64_DTPOFF64` against the symbol as `llc` writes it. AArch64's
+/// `llc` writes no location for one.
+pub(super) fn tls_by_symbol(module: &Module, sym: SymId) -> bool {
+    module.target().arch() == hod_ir::Arch::X86_64
+        && module.symbol(sym).tls() != hod_ir::TlsModel::None
 }
 
 /// The symbol and addend a variable's address is relocated against, as

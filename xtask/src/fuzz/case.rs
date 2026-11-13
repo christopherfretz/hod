@@ -1,23 +1,55 @@
 //! One seed: generate a program, build it with the oracle and with hod,
-//! link and run both, and decide. Contract: `spec/landed/harness/WP-154.md`,
-//! "What a seed does" and "Verdicts".
+//! link and run both, and decide. Contract: `spec/harness.md` "Random
+//! programs", "What a seed does" and "Verdicts"; the modes' steps are in
+//! [`super::split`] (`--mix`) and [`Bench::debug_steps`] (`--debug`).
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use super::profile::{Generator, Profile};
+use crate::debug::lines::{self, LineTools, LinesReport};
+use crate::debug::permitted::IrFacts;
 use crate::irdiff::process::{self, End, Limits, Output};
 use crate::irdiff::tools::{self, Emulator};
 use crate::irdiff::{Arch, engine::REFERENCE_SELECTOR};
 
+/// What a run does with each program ("Modes").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// The whole module built by hod against the oracle (WP-154).
+    Whole,
+    /// The module split in two halves, each built by hod with the other
+    /// built by `llc` (`--mix`).
+    Mix,
+    /// The module with `-g`: verified, run, and its line table compared
+    /// with `llc`'s (`--debug`).
+    Debug,
+    /// The IR's features counted; nothing is built (`--census`).
+    Census,
+}
+
+impl Mode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Whole => "whole",
+            Self::Mix => "mix",
+            Self::Debug => "debug",
+            Self::Census => "census",
+        }
+    }
+}
+
 /// The tools of a run.
 #[derive(Clone, Debug)]
 pub struct Tools {
-    pub csmith: PathBuf,
-    /// The directory of `csmith.h`.
-    pub csmith_include: PathBuf,
+    /// csmith and the directory of `csmith.h`; `None` for a profile that
+    /// does not use it.
+    pub csmith: Option<PathBuf>,
+    pub csmith_include: Option<PathBuf>,
     /// `clang-<N>`.
     pub clang: PathBuf,
     pub llc: PathBuf,
@@ -31,6 +63,12 @@ pub struct Tools {
     pub linker_name: String,
     /// The emulator of a cross target's programs.
     pub emulator: Option<Emulator>,
+    /// `llvm-extract` of the run's LLVM (`--mix`).
+    pub extract: Option<PathBuf>,
+    /// `llvm-dwarfdump` of the run's LLVM, and the tools of the line
+    /// comparison (`--debug`).
+    pub dwarfdump: Option<PathBuf>,
+    pub lines: Option<LineTools>,
 }
 
 /// Everything that is the same for every seed of a run.
@@ -43,10 +81,12 @@ pub struct Bench {
     /// For the programs: the same on both targets, emulated or not (a
     /// fuzzed program is useful when it is quick under the emulator).
     pub run_limits: Limits,
+    pub mode: Mode,
+    pub profile: &'static Profile,
 }
 
-/// The kinds of csmith program a seed can give ("Generator"). The seed
-/// picks one: `seed % FLAVOURS.len()`.
+/// The kinds of csmith program a seed of the default profile can give
+/// ("Generator"). The seed picks one: `seed % FLAVOURS.len()`.
 pub const FLAVOURS: [Flavour; 3] = [
     Flavour { name: "c", extra: &[] },
     Flavour { name: "c", extra: &[] },
@@ -66,7 +106,7 @@ pub struct Flavour {
     pub extra: &'static [&'static str],
 }
 
-/// The flavour of `seed`.
+/// The flavour of `seed` in the default profile.
 pub fn flavour(seed: u64) -> Flavour {
     let at = usize::try_from(seed % FLAVOURS.len() as u64).unwrap_or(0);
     FLAVOURS[at]
@@ -127,6 +167,12 @@ pub enum Kind {
     /// hod's program did not finish in four times the limit while the
     /// oracle's finished within it.
     HodHang,
+    /// `--debug`: `llvm-dwarfdump --verify` rejects hod's object and
+    /// accepts `llc`'s.
+    DebugVerify,
+    /// `--debug`: the `(function, line)` comparison with `llc`'s program
+    /// has a difference no class of `spec/dwarf.md` §5.7 permits.
+    DebugLines,
 }
 
 impl Kind {
@@ -136,6 +182,29 @@ impl Kind {
             Self::HodFailed => "hod-failed",
             Self::HodLink => "hod-link",
             Self::HodHang => "hod-hang",
+            Self::DebugVerify => "debug-verify",
+            Self::DebugLines => "debug-lines",
+        }
+    }
+}
+
+/// Which object of the program hod built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    /// The whole module.
+    Whole,
+    /// `--mix`: half A (with `llc`'s half B), or half B (with `llc`'s A).
+    HodA,
+    HodB,
+}
+
+impl Side {
+    /// "hod A + llc B" and so on, for details.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Whole => "hod",
+            Self::HodA => "hod A + llc B",
+            Self::HodB => "llc A + hod B",
         }
     }
 }
@@ -145,6 +214,7 @@ impl Kind {
 pub struct Finding {
     pub kind: Kind,
     pub detail: String,
+    pub side: Side,
 }
 
 /// A seed's result.
@@ -160,6 +230,27 @@ pub struct Outcome {
     pub hod: Option<Output>,
     /// The commands that were run, as shell lines, in order.
     pub commands: Vec<String>,
+    /// `--census`: the module's features ([`super::profile::scan`]).
+    pub census: Option<BTreeMap<String, usize>>,
+    /// `--debug`: the line comparison, when it ran.
+    pub lines: Option<LinesReport>,
+}
+
+impl Outcome {
+    /// An outcome with nothing yet.
+    pub fn new(seed: u64, flavour: Flavour) -> Self {
+        Self {
+            seed,
+            flavour,
+            verdict: Verdict::Agree,
+            oracle_time: None,
+            oracle: None,
+            hod: None,
+            commands: Vec::new(),
+            census: None,
+            lines: None,
+        }
+    }
 }
 
 /// The files of a seed, all in one directory.
@@ -227,6 +318,48 @@ impl Bench {
         args
     }
 
+    /// The generator's step: csmith's program, or the ABI generator's,
+    /// written to `files.source()`. `Err` is the verdict.
+    pub fn generate(
+        &self,
+        seed: u64,
+        flavour: Flavour,
+        files: &Files,
+        log: &mut Vec<String>,
+    ) -> Result<(), Verdict> {
+        let source = files.source();
+        let harness = |e: String| Verdict::Error(format!("harness: {e}"));
+        let Generator::Csmith { base, probabilities, .. } = self.profile.generator else {
+            log.push(format!(
+                "# cargo xtask fuzz --profile abi --seed {seed} wrote {}",
+                source.display()
+            ));
+            return fs::write(&source, super::abi::program(seed))
+                .map_err(|e| harness(format!("cannot write '{}': {e}", source.display())));
+        };
+        let Some(csmith) = &self.tools.csmith else {
+            return Err(harness("csmith not found".to_owned()));
+        };
+        let mut args: Vec<OsString> = vec!["--seed".into(), seed.to_string().into()];
+        args.extend(base.iter().map(OsString::from));
+        args.extend(flavour.extra.iter().map(OsString::from));
+        if !probabilities.is_empty() {
+            let file = files.at("probabilities.txt");
+            fs::write(&file, probabilities)
+                .map_err(|e| harness(format!("cannot write '{}': {e}", file.display())))?;
+            args.push("--probability-configuration".into());
+            args.push(file.into());
+        }
+        args.push("-o".into());
+        args.push(source.clone().into());
+        let generated =
+            self.step(log, csmith, &args, Some(&files.dir), self.tool_limits).map_err(harness)?;
+        if generated.end != End::Exit(0) || !source.is_file() {
+            return Err(Verdict::Skipped("csmith-failed"));
+        }
+        Ok(())
+    }
+
     /// clang's arguments: the source to LLVM text at `-O0` for the target,
     /// position-independent as a compiler driver builds by default.
     ///
@@ -241,8 +374,13 @@ impl Bench {
                 .into_iter()
                 .map(OsString::from),
         );
+        if self.mode == Mode::Debug {
+            args.push("-g".into());
+        }
         args.push(format!("--target={}", self.arch.triple()).into());
-        args.push(tools::prefixed("-I", &self.tools.csmith_include));
+        if let Some(include) = &self.tools.csmith_include {
+            args.push(tools::prefixed("-I", include));
+        }
         args.push("-o".into());
         args.push(out.into());
         args.push(source.into());
@@ -288,6 +426,16 @@ impl Bench {
 
     /// Links `object` into `program`. `Err` is the link's failure.
     pub fn link(&self, log: &mut Vec<String>, object: &Path, program: &Path) -> Result<(), String> {
+        self.link_all(log, &[object], program)
+    }
+
+    /// Links `objects`, in order, into `program`.
+    pub fn link_all(
+        &self,
+        log: &mut Vec<String>,
+        objects: &[&Path],
+        program: &Path,
+    ) -> Result<(), String> {
         let mut args = Vec::new();
         if let Some(dir) = &self.tools.linker_dir {
             args.push(tools::prefixed("-B", dir));
@@ -296,7 +444,7 @@ impl Bench {
         args.extend(tools::linker_flags(&self.tools.linker_name).iter().map(OsString::from));
         args.push("-o".into());
         args.push(program.into());
-        args.push(object.into());
+        args.extend(objects.iter().map(OsString::from));
         let output = self.step(log, &self.tools.driver, &args, None, self.tool_limits)?;
         match output.end {
             End::Exit(0) if program.is_file() => Ok(()),
@@ -370,16 +518,8 @@ impl Bench {
 
     /// Runs one seed in `files.dir` (which exists).
     pub fn run_seed(&self, seed: u64, files: &Files) -> Outcome {
-        let flavour = flavour(seed);
-        let mut outcome = Outcome {
-            seed,
-            flavour,
-            verdict: Verdict::Agree,
-            oracle_time: None,
-            oracle: None,
-            hod: None,
-            commands: Vec::new(),
-        };
+        let flavour = self.profile.flavour(seed);
+        let mut outcome = Outcome::new(seed, flavour);
         outcome.verdict = match self.seed_steps(seed, flavour, files, &mut outcome) {
             Ok(verdict) | Err(verdict) => verdict,
         };
@@ -394,34 +534,40 @@ impl Bench {
         files: &Files,
         outcome: &mut Outcome,
     ) -> Result<Verdict, Verdict> {
-        let log = &mut outcome.commands;
         let harness = |e: String| Verdict::Error(format!("harness: {e}"));
-        let source = files.source();
-        let generated = self
+        self.generate(seed, flavour, files, &mut outcome.commands)?;
+        let (source, ir) = (files.source(), files.ir());
+        let compiled = self
             .step(
-                log,
-                &self.tools.csmith,
-                &Self::csmith_args(seed, flavour, &source),
-                Some(&files.dir),
+                &mut outcome.commands,
+                &self.tools.clang,
+                &self.clang_args(&source, &ir),
+                None,
                 self.tool_limits,
             )
-            .map_err(harness)?;
-        if generated.end != End::Exit(0) || !source.is_file() {
-            return Err(Verdict::Skipped("csmith-failed"));
-        }
-        let ir = files.ir();
-        let compiled = self
-            .step(log, &self.tools.clang, &self.clang_args(&source, &ir), None, self.tool_limits)
             .map_err(harness)?;
         if compiled.end != End::Exit(0) || !ir.is_file() {
             return Err(Verdict::Skipped("clang-failed"));
         }
+        match self.mode {
+            Mode::Census => {
+                let text = fs::read_to_string(&ir).map_err(|e| harness(e.to_string()))?;
+                outcome.census = Some(super::profile::scan(&text));
+                return Ok(Verdict::Agree);
+            }
+            Mode::Mix => return self.mix_steps(seed, files, outcome),
+            Mode::Whole | Mode::Debug => {}
+        }
+        let log = &mut outcome.commands;
         let (oracle_o, hod_o) = (files.at("oracle.o"), files.at("hod.o"));
         self.build_with_llc(log, &ir, &oracle_o, false).map_err(Verdict::Error)?;
         match self.build_with_hod(log, &ir, &hod_o, &files.at("coverage.tsv")) {
             Ok(Ok(())) => {}
             Ok(Err(reason)) => return Err(Verdict::Refused(reason)),
             Err(detail) => return Err(finding(Kind::HodFailed, detail)),
+        }
+        if self.mode == Mode::Debug {
+            self.verify(log, &hod_o, &oracle_o)?;
         }
         let (oracle_x, hod_x) = (files.at("oracle"), files.at("hod"));
         self.link(log, &oracle_o, &oracle_x)
@@ -431,39 +577,135 @@ impl Bench {
         }
         let (oracle, oracle_time) =
             self.execute(log, &oracle_x, self.run_limits).map_err(harness)?;
-        let (mut hod, _) = self.execute(log, &hod_x, self.run_limits).map_err(harness)?;
-        let longer = Limits { time: self.run_limits.time * 4, ..self.run_limits };
-        let verdict = match (oracle.end, hod.end) {
-            (End::TimedOut, End::TimedOut) => Verdict::Skipped("both-timed-out"),
-            (End::TimedOut, _) => Verdict::Skipped("oracle-timed-out"),
-            (_, End::TimedOut) => {
-                // hod's code may be slower than llc's: four times as long
-                // before it is a hang.
-                hod = self.execute(log, &hod_x, longer).map_err(harness)?.0;
-                if hod.end == End::TimedOut {
-                    finding(
-                        Kind::HodHang,
-                        format!(
-                            "hod's program did not end in {} s; the oracle's took {} ms",
-                            longer.time.as_secs(),
-                            oracle_time.as_millis()
-                        ),
-                    )
-                } else {
-                    compare(&oracle, &hod)
-                }
-            }
-            _ => compare(&oracle, &hod),
-        };
         if oracle.end != End::TimedOut {
             outcome.oracle_time = Some(oracle_time);
         }
+        let (verdict, hod) = self.judge(log, &oracle, oracle_time, &hod_x, "hod's program")?;
         if matches!(verdict, Verdict::Finding(_)) {
             outcome.oracle = Some(oracle);
             outcome.hod = Some(hod);
+            return Ok(verdict);
+        }
+        if self.mode == Mode::Debug && verdict == Verdict::Agree {
+            let report = self.compare_lines(&ir, &hod_x, &oracle_x).map_err(harness)?;
+            // As `cargo xtask debug`: an unclassified pair fails, the
+            // columns are counted.
+            let unclassified = report.unclassified();
+            let first = first_unclassified(&report);
+            outcome.lines = Some(report);
+            if unclassified > 0 {
+                return Ok(finding(
+                    Kind::DebugLines,
+                    format!("{unclassified} unclassified (function, line) pairs; {first}"),
+                ));
+            }
         }
         Ok(verdict)
     }
+
+    /// Runs `program` and compares it with the oracle's, which ended as
+    /// `oracle` after `oracle_time`. A program that times out where the
+    /// oracle's did not gets four times the limit (hod's code may be
+    /// slower than `llc`'s) before it is a hang. `what` names the program
+    /// in a hang's detail.
+    pub fn judge(
+        &self,
+        log: &mut Vec<String>,
+        oracle: &Output,
+        oracle_time: Duration,
+        program: &Path,
+        what: &str,
+    ) -> Result<(Verdict, Output), Verdict> {
+        let harness = |e: String| Verdict::Error(format!("harness: {e}"));
+        if oracle.end == End::TimedOut {
+            // Both, or the oracle's only: the program is not run longer.
+            let (other, _) = self.execute(log, program, self.run_limits).map_err(harness)?;
+            let why =
+                if other.end == End::TimedOut { "both-timed-out" } else { "oracle-timed-out" };
+            return Ok((Verdict::Skipped(why), other));
+        }
+        let (mut other, _) = self.execute(log, program, self.run_limits).map_err(harness)?;
+        if other.end != End::TimedOut {
+            return Ok((compare(oracle, &other), other));
+        }
+        let longer = Limits { time: self.run_limits.time * 4, ..self.run_limits };
+        other = self.execute(log, program, longer).map_err(harness)?.0;
+        if other.end == End::TimedOut {
+            let detail = format!(
+                "{what} did not end in {} s; the oracle's took {} ms",
+                longer.time.as_secs(),
+                oracle_time.as_millis()
+            );
+            return Ok((finding(Kind::HodHang, detail), other));
+        }
+        Ok((compare(oracle, &other), other))
+    }
+
+    /// `--debug`: `llvm-dwarfdump --verify` on hod's object; when it
+    /// complains, on `llc`'s too (a verifier that rejects both is no
+    /// finding of hod's).
+    pub fn verify(
+        &self,
+        log: &mut Vec<String>,
+        hod_o: &Path,
+        oracle_o: &Path,
+    ) -> Result<(), Verdict> {
+        let Some(dwarfdump) = &self.tools.dwarfdump else { return Ok(()) };
+        let harness = |e: String| Verdict::Error(format!("harness: {e}"));
+        let check = |log: &mut Vec<String>, object: &Path| -> Result<Option<String>, Verdict> {
+            let args: Vec<OsString> = vec!["--verify".into(), object.into()];
+            let output =
+                self.step(log, dwarfdump, &args, None, self.tool_limits).map_err(harness)?;
+            if output.end == End::Exit(0) {
+                return Ok(None);
+            }
+            let said = String::from_utf8_lossy(&output.stdout);
+            let first = said.lines().find(|l| l.contains("error:")).unwrap_or("").trim().to_owned();
+            Ok(Some(first))
+        };
+        let Some(complaint) = check(log, hod_o)? else { return Ok(()) };
+        match check(log, oracle_o)? {
+            None => Err(finding(
+                Kind::DebugVerify,
+                format!(
+                    "llvm-dwarfdump --verify rejects hod's object (llc's verifies): {complaint}"
+                ),
+            )),
+            Some(theirs) => Err(Verdict::Error(format!(
+                "llvm-dwarfdump --verify rejects llc's object too: {theirs}"
+            ))),
+        }
+    }
+
+    /// `--debug`: the `(function, line)` comparison of `cargo xtask debug`
+    /// ([`lines::compare`]) of the two programs built from `ir`.
+    pub fn compare_lines(
+        &self,
+        ir: &Path,
+        hod_x: &Path,
+        oracle_x: &Path,
+    ) -> Result<LinesReport, String> {
+        let tools = self
+            .tools
+            .lines
+            .as_ref()
+            .ok_or("no line tools (llvm-dwarfdump, llvm-nm, llvm-objdump)")?;
+        let text =
+            fs::read_to_string(ir).map_err(|e| format!("cannot read '{}': {e}", ir.display()))?;
+        let facts = IrFacts::of_modules([text.as_str()]);
+        lines::compare(hod_x, oracle_x, tools, &facts)
+    }
+}
+
+/// The first difference of a line comparison no class permits, for a
+/// finding's detail.
+pub fn first_unclassified(report: &LinesReport) -> String {
+    let pair = |side: &str, list: &[(lines::Pair, lines::Class)]| {
+        list.iter().find(|(_, c)| *c == lines::Class::Unclassified).map(|((f, file, line), _)| {
+            format!("{side} only: {f} at {}:{line}", file.rsplit('/').next().unwrap_or(file))
+        })
+    };
+    pair("hod", &report.hod_only).or_else(|| pair("llc", &report.llc_only)).unwrap_or_default()
 }
 
 /// [`Bench::step`], and how long the child ran once it held its
@@ -494,7 +736,7 @@ fn timed_step(
 }
 
 fn finding(kind: Kind, detail: String) -> Verdict {
-    Verdict::Finding(Finding { kind, detail })
+    Verdict::Finding(Finding { kind, detail, side: Side::Whole })
 }
 
 /// Agree, or a disagreement with where.

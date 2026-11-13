@@ -1,17 +1,26 @@
 //! `cargo xtask fuzz`: random differential testing, layer L10 of
-//! `docs/VALIDATION.md`. Contract: `spec/landed/harness/WP-154.md`.
+//! `docs/VALIDATION.md`. Contract: `spec/harness.md` "Random programs".
 //!
-//! Each seed is a csmith program, compiled by clang at `-O0` to LLVM
-//! text for the target, built by the oracle (`llc -O0` with the reference
-//! selector) and by `hod --strict`, linked, run (a cross target's under
-//! its emulator) and compared: exit status and standard output, which
-//! ends in csmith's checksum of the program's globals.
+//! Each seed is a random program (csmith's, or the ABI generator's),
+//! compiled by clang at `-O0` to LLVM text for the target, built by the
+//! oracle (`llc -O0` with the reference selector) and by `hod --strict`,
+//! linked, run (a cross target's under its emulator) and compared: exit
+//! status and standard output, which ends in csmith's checksum of the
+//! program's globals. `--mix` builds half of the module with each
+//! compiler, `--debug` adds `-g` and compares the line tables, `--census`
+//! counts what the IR contains.
 //!
 //! - [`case`]: one seed, from the generator to the verdict;
+//! - [`split`]: `--mix`, the module in two halves;
+//! - [`profile`]: the option sets of the generator, and the census;
+//! - [`abi`]: the ABI generator (`--profile abi`);
 //! - [`reduce`]: a finding cut down to a small module, and the witness.
 
+pub mod abi;
 pub mod case;
+pub mod profile;
 pub mod reduce;
+pub mod split;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -21,21 +30,31 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use crate::debug::lines::LinesReport;
 use crate::irdiff::process::{End, Limits};
 use crate::irdiff::tools::{self, Emulator, Search};
 use crate::irdiff::{Arch, LINKER_NAMES, build_workspace_hod, default_build_dir};
-use case::{Bench, Files, Kind, Outcome, Tools, Verdict};
+use case::{Bench, Files, Kind, Mode, Outcome, Side, Tools, Verdict};
+use profile::{Census, Generator, PROFILES, Profile};
 
 /// The command's help.
 pub const USAGE: &str = "\
 usage: cargo xtask fuzz [options]
 
-Generates random C programs with csmith, compiles each with clang
--O0 -emit-llvm, builds the module with the oracle (llc -O0, SelectionDAG)
-and with hod --strict, links and runs both and compares their exit status
-and output. A disagreement or a failure of hod is a finding: it is saved
-with its commands, reduced, and makes the exit status 1.
+Generates random C programs (csmith, or hod's ABI generator), compiles
+each with clang -O0 -emit-llvm, builds the module with the oracle (llc -O0,
+SelectionDAG) and with hod --strict, links and runs both and compares their
+exit status and output. A disagreement or a failure of hod is a finding:
+it is saved with its commands, reduced, and makes the exit status 1.
 
+  --mix               split each module in two with llvm-extract; hod builds
+                      one half and llc the other, both ways round
+  --debug             compile with -g: llvm-dwarfdump --verify on hod's
+                      object, and its (function, line) pairs against llc's
+  --census            count the IR's opcodes, types and attributes; build
+                      nothing
+  --profile <name>    the generator's option set (default: default):
+PROFILES
   --seed <N>          the first seed (default 1)
   --count <M>         seeds N to N+M-1 (default 100)
   --target <arch>     aarch64 or x86_64 (default: this host)
@@ -51,6 +70,15 @@ with its commands, reduced, and makes the exit status 1.
 exit status: 0 no finding; 1 a finding; 3 no finding but an error of the
 oracle's side or a missing tool; 2 usage
 ";
+
+/// The help, with the profiles.
+pub fn usage() -> String {
+    let profiles: String = PROFILES
+        .iter()
+        .map(|p| format!("                        {:<11} {}\n", p.name, p.about))
+        .collect();
+    USAGE.replace("PROFILES\n", &profiles)
+}
 
 /// The most `-j` gives.
 pub const MAX_JOBS: usize = 16;
@@ -73,6 +101,8 @@ pub struct Options {
     pub build_dir: PathBuf,
     pub verbose: bool,
     pub search: Search,
+    pub mode: Mode,
+    pub profile: &'static Profile,
 }
 
 impl Options {
@@ -92,6 +122,8 @@ impl Options {
             build_dir,
             verbose: false,
             search: Search::from_env(),
+            mode: Mode::Whole,
+            profile: Profile::default_profile(),
         }
     }
 }
@@ -157,6 +189,27 @@ pub fn parse_args(args: &[String], options: &mut Options) -> Result<bool, String
             "--reduce-budget" => {
                 options.reduce_budget = usize::try_from(number(value()?)?).unwrap_or(usize::MAX);
             }
+            "--mix" | "--debug" | "--census" if joined.is_none() => {
+                let mode = match name {
+                    "--mix" => Mode::Mix,
+                    "--debug" => Mode::Debug,
+                    _ => Mode::Census,
+                };
+                if options.mode != Mode::Whole && options.mode != mode {
+                    return Err(format!(
+                        "'--{}' and '{name}' cannot be combined",
+                        options.mode.name()
+                    ));
+                }
+                options.mode = mode;
+            }
+            "--profile" => {
+                let text = value()?;
+                options.profile = Profile::by_name(&text).ok_or_else(|| {
+                    let names: Vec<&str> = PROFILES.iter().map(|p| p.name).collect();
+                    format!("unknown profile '{text}': expected one of {}", names.join(", "))
+                })?;
+            }
             "--hod" => options.hod = Some(PathBuf::from(value()?)),
             "--out" => options.out = PathBuf::from(value()?),
             _ => return Err(format!("unknown option '{arg}'")),
@@ -169,15 +222,41 @@ pub fn parse_args(args: &[String], options: &mut Options) -> Result<bool, String
 fn find_tools(options: &Options, arch: Arch, work: &Path) -> Result<Tools, String> {
     let search = &options.search;
     let major = options.llvm;
-    let csmith = search.on_path("csmith").ok_or("csmith not found (Debian package csmith)")?;
-    // csmith.h: /usr/include/csmith for the Debian package, else
-    // <prefix>/include/csmith-<version> or <prefix>/include beside it.
-    let prefix = csmith.parent().and_then(Path::parent).unwrap_or(Path::new("/usr"));
-    let csmith_include = ["include/csmith", "include"]
-        .iter()
-        .map(|dir| prefix.join(dir))
-        .find(|dir| dir.join("csmith.h").is_file())
-        .ok_or_else(|| format!("csmith.h not found under '{}'", prefix.display()))?;
+    let (csmith, csmith_include) = if matches!(options.profile.generator, Generator::Abi) {
+        (None, None)
+    } else {
+        let csmith = search.on_path("csmith").ok_or("csmith not found (Debian package csmith)")?;
+        // csmith.h: /usr/include/csmith for the Debian package, else
+        // <prefix>/include/csmith-<version> or <prefix>/include beside it.
+        let prefix = csmith.parent().and_then(Path::parent).unwrap_or(Path::new("/usr"));
+        let include = ["include/csmith", "include"]
+            .iter()
+            .map(|dir| prefix.join(dir))
+            .find(|dir| dir.join("csmith.h").is_file())
+            .ok_or_else(|| format!("csmith.h not found under '{}'", prefix.display()))?;
+        (Some(csmith), Some(include))
+    };
+    let extract = match options.mode {
+        Mode::Mix => Some(
+            search
+                .versioned("llvm-extract", major)
+                .ok_or(format!("llvm-extract-{major} not found"))?,
+        ),
+        _ => None,
+    };
+    let (dwarfdump, lines) = match options.mode {
+        Mode::Debug => (
+            Some(
+                search
+                    .versioned("llvm-dwarfdump", major)
+                    .ok_or(format!("llvm-dwarfdump-{major} not found"))?,
+            ),
+            Some(crate::debug::sessions::find_line_tools().ok_or(
+                "the line comparison's tools (llvm-dwarfdump, llvm-nm, llvm-objdump) not found",
+            )?),
+        ),
+        _ => (None, None),
+    };
     let clang = search.versioned("clang", major).ok_or(format!("clang-{major} not found"))?;
     let llc = search.versioned("llc", major).ok_or(format!("llc-{major} not found"))?;
     let llvm_major = tools::llc_major(&llc)?;
@@ -214,6 +293,8 @@ fn find_tools(options: &Options, arch: Arch, work: &Path) -> Result<Tools, Strin
     let hod = match &options.hod {
         Some(hod) if hod.is_file() => std::path::absolute(hod).unwrap_or_else(|_| hod.clone()),
         Some(hod) => return Err(format!("'{}' is not a file", hod.display())),
+        // The census builds nothing.
+        None if options.mode == Mode::Census => PathBuf::from("hod"),
         None => build_workspace_hod(&options.build_dir)?,
     };
     Ok(Tools {
@@ -227,6 +308,9 @@ fn find_tools(options: &Options, arch: Arch, work: &Path) -> Result<Tools, Strin
         linker_dir,
         linker_name,
         emulator,
+        extract,
+        dwarfdump,
+        lines,
     })
 }
 
@@ -258,6 +342,11 @@ pub struct Summary {
     pub oracle_times: Vec<Duration>,
     pub elapsed: Duration,
     pub results_file: Option<PathBuf>,
+    pub mode: Option<Mode>,
+    /// `--census`: the features of every module.
+    pub census: Option<Census>,
+    /// `--debug`: the line comparisons of every seed, added.
+    pub lines: Option<LinesReport>,
 }
 
 impl Summary {
@@ -282,6 +371,12 @@ impl Summary {
             Verdict::Finding(_) => {}
         }
         self.oracle_times.extend(outcome.oracle_time);
+        if let Some(features) = &outcome.census {
+            self.census.get_or_insert_default().add(features);
+        }
+        if let Some(report) = &outcome.lines {
+            self.lines.get_or_insert_default().add(report);
+        }
     }
 
     /// The table a run prints.
@@ -300,12 +395,21 @@ impl Summary {
         let row = |text: &mut String, name: &str, count: usize| {
             let _ = writeln!(text, "  {name:<44} {count:>6}");
         };
-        row(&mut text, "agree", self.agree);
+        row(
+            &mut text,
+            if self.mode == Some(Mode::Census) { "scanned" } else { "agree" },
+            self.agree,
+        );
         row(&mut text, "refused", self.refused.values().sum());
         let mut reasons: Vec<(&String, &usize)> = self.refused.iter().collect();
         reasons.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
         for (reason, count) in reasons {
             row(&mut text, &format!("  {reason}"), *count);
+        }
+        if self.mode == Some(Mode::Debug) {
+            let debug: usize =
+                self.refused.iter().filter(|(r, _)| r.starts_with("debug:")).map(|(_, n)| n).sum();
+            row(&mut text, "  of which debug:", debug);
         }
         row(&mut text, "skipped", self.skipped.values().sum());
         for (why, count) in &self.skipped {
@@ -343,8 +447,15 @@ impl Summary {
                 at(100)
             );
         }
+        if let Some(report) = &self.lines {
+            let _ = writeln!(text, "  lines: {}", report.summary());
+            let _ = writeln!(text, "  columns: {}", report.columns.summary());
+        }
         if let Some(file) = &self.results_file {
             let _ = writeln!(text, "  results: {}", file.display());
+        }
+        if let Some(census) = &self.census {
+            text.push_str(&census.text());
         }
         text
     }
@@ -377,10 +488,15 @@ pub fn run(options: &Options) -> Result<Summary, String> {
         tool_limits: Limits { time: Duration::from_mins(1), memory_kib: 4 << 20 },
         run_limits: Limits { time: options.timeout, memory_kib: 1 << 20 },
         tools,
+        mode: options.mode,
+        profile: options.profile,
     };
     let jobs = options.jobs.clamp(1, MAX_JOBS);
-    let mut summary =
-        Summary { configuration: describe(options, &bench, jobs), ..Summary::default() };
+    let mut summary = Summary {
+        configuration: describe(options, &bench, jobs),
+        mode: Some(options.mode),
+        ..Summary::default()
+    };
     let seeds: Vec<u64> = (0..options.count).map(|i| options.seed.saturating_add(i)).collect();
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
@@ -396,15 +512,10 @@ pub fn run(options: &Options) -> Result<Summary, String> {
                     let outcome = match fs::create_dir_all(&files.dir) {
                         Ok(()) => bench.run_seed(seed, &files),
                         Err(e) => Outcome {
-                            seed,
-                            flavour: case::flavour(seed),
                             verdict: Verdict::Error(format!(
                                 "harness: cannot create the work directory: {e}"
                             )),
-                            oracle_time: None,
-                            oracle: None,
-                            hod: None,
-                            commands: Vec::new(),
+                            ..Outcome::new(seed, options.profile.flavour(seed))
                         },
                     };
                     let saved = matches!(outcome.verdict, Verdict::Finding(_))
@@ -445,11 +556,25 @@ pub fn run(options: &Options) -> Result<Summary, String> {
         );
         summary.findings.extend(saved);
     }
-    let file = options.out.join(format!("results-{}-llvm{}.tsv", arch.name(), options.llvm));
+    let file = options.out.join(format!("results-{}.tsv", run_name(arch, options.llvm, options)));
     fs::write(&file, results).map_err(|e| format!("cannot write '{}': {e}", file.display()))?;
     summary.results_file = Some(file);
     summary.elapsed = started.elapsed();
     Ok(summary)
+}
+
+/// `<arch>-llvm<N>`, then the profile and the mode when they are not the
+/// defaults: the name of a run's results file and the start of its
+/// findings' directories.
+fn run_name(arch: Arch, llvm: u32, options: &Options) -> String {
+    let mut name = format!("{}-llvm{llvm}", arch.name());
+    if options.profile.name != "default" {
+        let _ = write!(name, "-{}", options.profile.name);
+    }
+    if options.mode != Mode::Whole {
+        let _ = write!(name, "-{}", options.mode.name());
+    }
+    name
 }
 
 /// The line that says what ran.
@@ -459,8 +584,10 @@ fn describe(options: &Options, bench: &Bench, jobs: usize) -> String {
         .describe()
         .map_or_else(String::new, |pool| format!(" (jobserver {pool})"));
     format!(
-        "target {}{}; LLVM {} ({}, {}); hod {}; linker {}; csmith {}; seeds {}..{}; \
-         timeout {} s; -j {jobs}{pool}",
+        "mode {}; profile {}; target {}{}; LLVM {} ({}, {}); hod {}; linker {}; csmith {}; \
+         seeds {}..{}; timeout {} s; -j {jobs}{pool}",
+        options.mode.name(),
+        options.profile.name,
         bench.arch.triple(),
         tools.emulator.as_ref().map_or_else(String::new, |emulator| {
             format!(" (emulated by {})", emulator.program.display())
@@ -470,7 +597,7 @@ fn describe(options: &Options, bench: &Bench, jobs: usize) -> String {
         tools.llc.display(),
         tools.hod.display(),
         tools.linker_name,
-        tools.csmith.display(),
+        tools.csmith.as_ref().map_or_else(|| "not used".to_owned(), |c| c.display().to_string()),
         options.seed,
         options.seed.saturating_add(options.count).saturating_sub(1),
         options.timeout.as_secs(),
@@ -491,9 +618,8 @@ fn save(
         unreachable!("save() is called for findings only");
     };
     let dir = findings.join(format!(
-        "{}-llvm{}-seed{}",
-        bench.arch.name(),
-        bench.tools.llvm_major,
+        "{}-seed{}",
+        run_name(bench.arch, bench.tools.llvm_major, options),
         outcome.seed
     ));
     let _ = fs::remove_dir_all(&dir);
@@ -520,33 +646,84 @@ fn save(
         commands.replace(&*files.dir.to_string_lossy(), &dir.to_string_lossy()),
     );
     let ir = dir.join("prog.ll");
-    if let (Some(oracle), Some(hod)) = (&outcome.oracle, &outcome.hod) {
+    if let Some(oracle) = &outcome.oracle {
         let _ = fs::write(dir.join("oracle.stdout"), &oracle.stdout);
+    }
+    if let Some(hod) = &outcome.hod {
         let _ = fs::write(dir.join("hod.stdout"), &hod.stdout);
         let _ = fs::write(dir.join("hod.stderr"), &hod.stderr);
-        saved.witness = reduce::witness(bench, &dir, &ir, oracle, hod);
+    }
+    match (&outcome.oracle, &outcome.hod) {
+        (Some(oracle), Some(hod)) => {
+            saved.witness = reduce::witness(bench, &dir, &ir, oracle, hod);
+            if finding.side != Side::Whole {
+                let whole = split::whole_witness(bench, &dir, &ir, oracle);
+                saved.witness = format!("{}; {whole}", saved.witness);
+            }
+        }
+        (Some(oracle), None) if finding.side != Side::Whole => {
+            saved.witness = split::whole_witness(bench, &dir, &ir, oracle);
+        }
+        _ if matches!(finding.kind, Kind::DebugVerify | Kind::DebugLines) => {
+            saved.witness = "the same module built by llc is the reference".to_owned();
+        }
+        _ => {}
     }
     let target = reduce::Target {
         kind: finding.kind,
         oracle_end: outcome.oracle.as_ref().map(|oracle| oracle.end),
+        side: finding.side,
+        seed: outcome.seed,
     };
     if options.reduce_budget > 0
         && let Ok(text) = fs::read_to_string(&ir)
     {
         let reduced = reduce::reduce(bench, &dir, &text, target, options.reduce_budget);
         saved.reduced = Some((reduced.before, reduced.after, reduced.probes));
-        let _ = fs::write(dir.join("reduced.ll"), &reduced.text);
+        let reduced_ll = dir.join("reduced.ll");
+        let _ = fs::write(&reduced_ll, &reduced.text);
         let stdout = reduced.oracle.as_ref().or(outcome.oracle.as_ref()).map(|o| o.stdout.clone());
-        let seed =
-            seed_test(&reduced.text, bench, outcome, finding, stdout.as_deref(), target.oracle_end);
-        let _ = fs::write(dir.join("seed.ll"), seed);
+        let stdout = stdout.as_deref();
+        let seed = match finding.side {
+            // Behaviour on the whole module: a `tests/ir` seed.
+            Side::Whole if !matches!(finding.kind, Kind::DebugVerify | Kind::DebugLines) => {
+                Some(seed_test(&reduced.text, bench, outcome, finding, stdout, target.oracle_end))
+            }
+            // A seed of two modules, each the half of the reduced module.
+            Side::HodA | Side::HodB => {
+                let mut log = Vec::new();
+                match bench.split(&mut log, outcome.seed, &reduced_ll, &dir, "reduced-") {
+                    Ok(Some(halves)) => {
+                        let a = fs::read_to_string(&halves.a).unwrap_or_default();
+                        let b = fs::read_to_string(&halves.b).unwrap_or_default();
+                        Some(mix_seed_test(
+                            &[&a, &b],
+                            bench,
+                            outcome,
+                            finding,
+                            stdout,
+                            target.oracle_end,
+                        ))
+                    }
+                    _ => None,
+                }
+            }
+            // A `-g` module: `cargo xtask debug verify` or `debug columns`
+            // takes `reduced.ll` as it is.
+            Side::Whole => None,
+        };
+        if let Some(seed) = seed {
+            let _ = fs::write(dir.join("seed.ll"), seed);
+        }
     }
     let _ = fs::write(
         dir.join("verdict.txt"),
         format!(
-            "seed {}\nflavour {}\n{}: {}\nwitness: {}\n",
+            "seed {}\nflavour {}\nmode {}\nprofile {}\n{}: {}\nwitness: {}\n",
             outcome.seed,
             outcome.flavour.name,
+            bench.mode.name(),
+            bench.profile.name,
             finding.kind.name(),
             finding.detail,
             saved.witness
@@ -555,23 +732,36 @@ fn save(
     saved
 }
 
-/// The reduced module as a `tests/ir` seed: the directives of its
-/// oracle's behaviour, an `xfail` for the target, and the module without
-/// its target triple, data layout and CPU attributes ("Seed tests").
-pub fn seed_test(
-    text: &str,
+/// The command that finds a seed again, for a seed test's first line.
+fn command_line(bench: &Bench, outcome: &Outcome) -> String {
+    let mut line = format!(
+        "cargo xtask fuzz --seed {} --count 1 --target {} --llvm {}",
+        outcome.seed,
+        bench.arch.name(),
+        bench.tools.llvm_major
+    );
+    if bench.profile.name != "default" {
+        let _ = write!(line, " --profile {}", bench.profile.name);
+    }
+    if bench.mode != Mode::Whole {
+        let _ = write!(line, " --{}", bench.mode.name());
+    }
+    line
+}
+
+/// The directives of a seed test: what it covers, its LLVM, the `xfail`,
+/// the oracle's end and output.
+fn seed_directives(
     bench: &Bench,
     outcome: &Outcome,
     finding: &case::Finding,
     stdout: Option<&[u8]>,
     end: Option<End>,
 ) -> String {
+    let what = if bench.profile.name == "abi" { "an ABI program" } else { "a csmith program" };
     let mut seed = format!(
-        "; A reduced csmith program (cargo xtask fuzz --seed {} --count 1 --target {} \
-         --llvm {}; flavour {}).\n",
-        outcome.seed,
-        bench.arch.name(),
-        bench.tools.llvm_major,
+        "; A reduced random program, {what} ({}; flavour {}).\n",
+        command_line(bench, outcome),
         outcome.flavour.name
     );
     seed.push_str(";@ covers: docs/VALIDATION.md L10 (a random program)\n");
@@ -607,9 +797,13 @@ pub fn seed_test(
             }
         }
     }
-    seed.push('\n');
+    seed
+}
+
+/// A module's text without the target's lines and the paths of the run.
+fn portable(text: &str) -> String {
+    let mut out = String::new();
     for line in text.lines() {
-        // The target's, and the paths of the run.
         let dropped = [
             "target triple",
             "target datalayout",
@@ -621,12 +815,51 @@ pub fn seed_test(
             continue;
         }
         if line.starts_with("attributes #") {
-            seed.push_str(&without_cpu_attributes(line));
-            seed.push('\n');
-            continue;
+            out.push_str(&without_cpu_attributes(line));
+        } else {
+            out.push_str(line);
         }
-        seed.push_str(line);
-        seed.push('\n');
+        out.push('\n');
+    }
+    out
+}
+
+/// The reduced module as a `tests/ir` seed: the directives of its
+/// oracle's behaviour, an `xfail` for the target, and the module without
+/// its target triple, data layout and CPU attributes ("Seed tests").
+pub fn seed_test(
+    text: &str,
+    bench: &Bench,
+    outcome: &Outcome,
+    finding: &case::Finding,
+    stdout: Option<&[u8]>,
+    end: Option<End>,
+) -> String {
+    let mut seed = seed_directives(bench, outcome, finding, stdout, end);
+    seed.push('\n');
+    seed.push_str(&portable(text));
+    seed
+}
+
+/// A `--mix` finding's seed: the reduced module's two halves as the
+/// modules `a` and `b` of one test ("Mix"), with the half hod built named
+/// in the `xfail`. irdiff builds every module with one compiler, which
+/// cannot show such a finding: the seed is a test of
+/// `xtask/tests/fuzz_seeds.rs`, which builds one module with each.
+pub fn mix_seed_test(
+    halves: &[&str; 2],
+    bench: &Bench,
+    outcome: &Outcome,
+    finding: &case::Finding,
+    stdout: Option<&[u8]>,
+    end: Option<End>,
+) -> String {
+    let mut seed = seed_directives(bench, outcome, finding, stdout, end);
+    let hod = if finding.side == Side::HodB { "b" } else { "a" };
+    let _ = writeln!(seed, "; hod builds module {hod}, llc the other.");
+    for (name, text) in ["a", "b"].iter().zip(halves) {
+        let _ = writeln!(seed, "\n;@ module: {name}");
+        seed.push_str(&portable(text));
     }
     seed
 }
@@ -669,11 +902,11 @@ pub fn command(args: &[String]) -> u8 {
     match parse_args(args, &mut options) {
         Ok(true) => {}
         Ok(false) => {
-            print!("{USAGE}");
+            print!("{}", usage());
             return 0;
         }
         Err(message) => {
-            eprint!("xtask fuzz: {message}\n{USAGE}");
+            eprint!("xtask fuzz: {message}\n{}", usage());
             return 2;
         }
     }

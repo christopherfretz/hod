@@ -144,22 +144,19 @@ impl Target {
     /// its Debian package, or a panic under `HOD_REQUIRE_TOOLS=1`. For
     /// `sysroot`, the directory.
     pub fn tool(self, what: &str) -> Option<PathBuf> {
-        let (name, found) = match what {
-            "sysroot" => {
-                let root = self.sysroot();
-                (root.display().to_string(), root.is_dir().then_some(root))
-            }
-            _ => {
-                let name = match what {
-                    "gcc" => self.c_driver(),
-                    "g++" => self.cxx_driver(),
-                    "ld.bfd" => self.bfd(),
-                    "emulator" => self.emulator(),
-                    other => other.to_owned(),
-                };
-                let found = crate::find_tool(&name);
-                (name, found)
-            }
+        let name = match what {
+            "sysroot" => self.sysroot().display().to_string(),
+            "gcc" => self.c_driver(),
+            "g++" => self.cxx_driver(),
+            "ld.bfd" => self.bfd(),
+            "emulator" => self.emulator(),
+            other => other.to_owned(),
+        };
+        let found = if what == "sysroot" {
+            let root = self.sysroot();
+            root.is_dir().then_some(root)
+        } else {
+            crate::find_tool(&name)
         };
         if found.is_none() {
             let hint = if self.is_host() {

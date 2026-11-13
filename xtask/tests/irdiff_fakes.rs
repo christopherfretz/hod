@@ -996,7 +996,8 @@ impl World {
 // cross driver, its GNU ld, its emulator and its system root, both sides of
 // a test are linked by every linker and run under the emulator, which gets
 // the baseline CPU model and the system root; the program gets its
-// arguments and input as on the host, and six times the run limit.
+// arguments and input as on the host, and six times the run limit. Both
+// compilers are given the target's triple.
 #[test]
 fn cross_target_runs_under_the_emulator() {
     let world = World::new("irdiff-emulated");
@@ -1015,6 +1016,15 @@ fn cross_target_runs_under_the_emulator() {
                 world.scratch.join("sysroot").display()
             ),
             ";@ exit: 3",
+            // Both sides are built for the target, not for the host.
+            &format!(
+                "; program(llc): case \"$CODEGEN\" in *-mtriple={0}*) ;; *) echo \"$CODEGEN\" ;; esac",
+                other_arch().triple()
+            ),
+            &format!(
+                "; program(hod): case \"$CODEGEN\" in *-mtriple={0}*) ;; *) echo \"$CODEGEN\" ;; esac",
+                other_arch().triple()
+            ),
             "; program: echo \"$@\"; cat; echo \"$EMULATED\"; exit 3",
         ]
         .join("\n"),
@@ -1106,8 +1116,7 @@ fn cross_runs_need_the_emulator_and_the_system_root() {
     let report = irdiff::run(&config).unwrap();
     assert_eq!(rows(&report), ["PASS a.ll lld", "PASS a.ll mold"]);
     assert!(
-        report.missing_tools[0]
-            .starts_with(&format!("linker 'bfd' not found (Debian package binutils-")),
+        report.missing_tools[0].starts_with("linker 'bfd' not found (Debian package binutils-"),
         "{:?}",
         report.missing_tools
     );

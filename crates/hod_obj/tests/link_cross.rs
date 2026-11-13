@@ -37,7 +37,7 @@ fn machine(file: &Path) -> u16 {
 fn linkers(tools: &Toolchain, scratch: &Scratch) -> Vec<(String, Linker)> {
     let versioned: Vec<(String, Linker)> = [19, 22]
         .into_iter()
-        .filter_map(|major| tools.lld(scratch, major).map(|lld| (format!("lld-{major}"), lld)))
+        .filter_map(|major| Toolchain::lld(scratch, major).map(|lld| (format!("lld-{major}"), lld)))
         .collect();
     let mut all = Vec::new();
     for linker in &tools.linkers {

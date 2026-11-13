@@ -108,6 +108,13 @@ pub fn target_of(arch: Arch) -> Target {
 /// instruction selector (`spec/harness.md` "The oracle"). The one place
 /// the reference is configured per target; the hybrid fallback and every
 /// harness command that builds a reference use it.
+///
+/// Both targets use `SelectionDAG` alone. On AArch64 `llc -O0` is not
+/// trusted (`GlobalISel`). On x86-64, plain `-O0` (`FastISel` with
+/// `SelectionDAG` behind it) and `-fast-isel=0` built different code for
+/// every seed but the same behaviour with LLVM 19 and 22
+/// (`spec/landed/harness/WP-025.md`). The reference keeps the one
+/// selector that is LLVM's most exercised.
 pub fn reference_selector(arch: Arch) -> &'static [&'static str] {
     match arch {
         Arch::Aarch64 | Arch::X86_64 => &REFERENCE_SELECTOR,
@@ -483,7 +490,8 @@ mod tests {
         assert_eq!(find_emulator(other, &found), Some(fallback));
         let preferred = touch(&qemu);
         assert_eq!(find_emulator(other, &found), Some(preferred));
-        // The reference is configured per target in one place.
+        // The reference is configured per target in one place, and on
+        // x86-64 too it is SelectionDAG alone, not FastISel.
         for arch in Arch::ALL {
             assert_eq!(reference_selector(arch), ["-global-isel=0", "-fast-isel=0"]);
         }

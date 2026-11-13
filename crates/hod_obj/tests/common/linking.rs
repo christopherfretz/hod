@@ -111,7 +111,7 @@ impl Toolchain {
 
     /// lld of one LLVM major (`ld.lld-<major>`), besides the matrix's
     /// (the newest found), if it is installed.
-    pub fn lld(&self, scratch: &Scratch, major: u32) -> Option<Linker> {
+    pub fn lld(scratch: &Scratch, major: u32) -> Option<Linker> {
         let found = find_tool(&format!("ld.lld-{major}"))?;
         let dir = scratch.join(format!("lld-{major}"));
         std::fs::create_dir_all(&dir).unwrap();
@@ -145,7 +145,7 @@ impl Toolchain {
         flags: &[&str],
     ) -> PathBuf {
         let input = scratch.write(&format!("{name}.c"), source);
-        self.compile_with(&self.driver, &input, name, flags)
+        Self::compile_with(&self.driver, &input, name, flags)
     }
 
     /// Compiles C++ source to an object with the target's C++ compiler;
@@ -164,10 +164,10 @@ impl Toolchain {
             return None;
         };
         let input = scratch.write(&format!("{name}.cpp"), source);
-        Some(self.compile_with(cxx, &input, name, flags))
+        Some(Self::compile_with(cxx, &input, name, flags))
     }
 
-    fn compile_with(&self, driver: &Path, input: &Path, name: &str, flags: &[&str]) -> PathBuf {
+    fn compile_with(driver: &Path, input: &Path, name: &str, flags: &[&str]) -> PathBuf {
         let output = input.with_file_name(format!("{name}.o"));
         let mut command = Command::new(driver);
         command.args(["-c", "-O1"]).args(flags).arg(input).arg("-o").arg(&output);

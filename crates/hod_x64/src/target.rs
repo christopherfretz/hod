@@ -127,11 +127,13 @@ pub const REG_INFO: RegInfo = RegInfo {
 
 /// The class of a vector type (§2.2): `Fpr` when it fills an `xmm`
 /// register's low 8 or all 16 bytes (a power-of-two count), a mask
-/// `Gpr`, `Mem` otherwise.
+/// `Gpr`, `Mem` otherwise. `<1 x i128>` is `Mem` (WP-152, §5.6.18): it
+/// travels in two general registers, as an `i128` does.
 fn vector_class(types: &TypeTable, ty: TypeId, elem: TypeId, len: u32) -> Class {
     let bits = types.size_in_bits_of(ty);
     let elem_ok = !matches!(types.kind(elem), TypeKind::Int(1));
-    if len.is_power_of_two() && (bits == 64 || bits == 128) && elem_ok {
+    let wide_int = matches!(types.kind(elem), TypeKind::Int(128));
+    if len.is_power_of_two() && (bits == 64 || bits == 128) && elem_ok && !wide_int {
         Class::Fpr
     } else if !elem_ok && len <= mask::MAX_MASK {
         Class::Gpr

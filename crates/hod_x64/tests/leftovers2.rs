@@ -547,23 +547,24 @@ fn sjlj_interoperates_with_llc() {
 /// §5.6.16 (2): the refusals, by this target's names.
 #[test]
 fn sjlj_refusals_by_name() {
-    use hod_x64::intrinsic::{SJLJ_LIVE_VALUE, SJLJ_SHADOW_STACK};
+    use hod_x64::intrinsic::SJLJ_SHADOW_STACK;
     let decls = "declare i32 @llvm.eh.sjlj.setjmp(ptr)\ndeclare void @llvm.eh.sjlj.longjmp(ptr)\n";
     // A register value of the block used after the `setjmp`: an
-    // instruction's result, and an argument of the entry block.
-    refused(
-        &format!(
+    // instruction's result, and an argument of the entry block, kept in
+    // memory since WP-152 (`leftovers3.rs` runs them).
+    assert_eq!(
+        compile(&format!(
             "{decls}define i32 @f(ptr %b, i32 %a) {{\n  %x = add i32 %a, 1\n  \
              %r = call i32 @llvm.eh.sjlj.setjmp(ptr %b)\n  %s = add i32 %x, %r\n  ret i32 %s\n}}\n"
-        ),
-        SJLJ_LIVE_VALUE,
+        )),
+        Ok(())
     );
-    refused(
-        &format!(
+    assert_eq!(
+        compile(&format!(
             "{decls}define i32 @f(ptr %b, i32 %a) {{\n  %r = call i32 @llvm.eh.sjlj.setjmp(ptr %b)\n  \
              %s = add i32 %a, %r\n  ret i32 %s\n}}\n"
-        ),
-        SJLJ_LIVE_VALUE,
+        )),
+        Ok(())
     );
     // Used before it, or in another block (a home value): compiled.
     assert_eq!(

@@ -1053,7 +1053,11 @@ fn vector_rows_of_wp_132() {
         assert_eq!(a64.supports(&vector), Some(true), "{vector}");
         assert_eq!(x64.supports(&vector), Some(true), "{vector}");
     }
-    for row in ["inst:extractelement", "inst:shufflevector", "intrinsic:llvm.vector.reduce.fmax"] {
+    for row in ["inst:shufflevector", "intrinsic:llvm.vector.reduce.fmax"] {
         assert_eq!(x64.classes(row), a64.classes(row), "{row}: the same cell");
+    }
+    // WP-152: x86-64 moves `x86_fp80` lanes too.
+    for row in ["inst:extractelement", "inst:insertelement"] {
+        assert_eq!(x64.supports(&format!("{row}/x86_fp80")), Some(true), "{row}");
     }
 }

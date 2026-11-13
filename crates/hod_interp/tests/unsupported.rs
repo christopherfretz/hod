@@ -215,7 +215,7 @@ fn intrinsics() {
     assert_eq!(one("llvm.fmuladd.f64", DOUBLE, &[DOUBLE; 3]), "intrinsic:llvm.fmuladd");
     assert_eq!(one("llvm.sin.f64", DOUBLE, &[DOUBLE]), "intrinsic:llvm.sin");
     assert_eq!(one("llvm.pow.f64", DOUBLE, &[DOUBLE; 2]), "intrinsic:llvm.pow");
-    assert_eq!(one("llvm.minnum.f64", DOUBLE, &[DOUBLE; 2]), "intrinsic:llvm.minnum");
+    assert_eq!(one("llvm.minimum.f64", DOUBLE, &[DOUBLE; 2]), "intrinsic:llvm.minimum");
     assert_eq!(one("llvm.debugtrap", VOID, &[]), "intrinsic:llvm.debugtrap");
     assert_eq!(one("llvm.aarch64.hint", VOID, &[I32]), "intrinsic:llvm.aarch64.hint");
     assert_eq!(one("llvm.returnaddress", PTR, &[I32]), "intrinsic:llvm.returnaddress");
@@ -321,7 +321,9 @@ fn calls() {
         b.call(I32, &CallDesc::new(Value::sym(printf)?, ty, &[p, one]))?;
         Ok(())
     });
-    assert_eq!(variadic, "call:variadic");
+    // §5.8: a variadic call of a declaration is a call of a host
+    // function, or of nothing (a variadic body: `tests/x86_64.rs`).
+    assert_eq!(variadic, "extern:printf");
     for (mem, name) in [
         (ParamMem::ByVal, "attr:byval"),
         (ParamMem::InAlloca, "attr:inalloca"),

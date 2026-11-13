@@ -67,7 +67,7 @@
 //! write (each says); the operands' and the result's registers, and at
 //! most two pool temporaries.
 
-use hod_cg::{CgResult, Class, FnCx, FrameRef};
+use hod_cg::{CgResult, Class, FnCx, FrameRef, lanes};
 use hod_ir::{
     Const, ConstId, FloatPredicate, Inst, InstKind, IntPredicate, Intrinsic, Opcode, TypeId,
     TypeKind, TypeTable, Value, ValueKind,
@@ -275,32 +275,22 @@ fn images<const K: usize>(
         }
         *slot = Some(l);
     }
-    let mut out: [Option<Image>; K] = [None; K];
-    let mut k = 0;
-    for i in 0..K {
-        if let Some(j) = values[..i].iter().position(|&w| w == values[i]) {
-            out[i] = out[j];
-            continue;
-        }
-        let Some(l) = shapes[i] else { return cx.bug("a lane operand without lanes") };
-        let at = if l.shape.class == Class::Fpr {
-            // Spilled to scratch image `k`, its register given back (the
-            // minimal pool has two vector registers).
-            let r = cx.use_reg(values[i])?;
-            let at = vector::spill(cx, vr(r), &l.shape, k)?;
-            k += 1;
-            cx.release(values[i]);
-            cx.free_temp(r);
-            at
-        } else {
-            cx.use_mem(values[i])?
-        };
-        out[i] = Some(Image { at, lanes: l });
-    }
-    let Some(&first) = out.iter().flatten().next() else {
+    if K == 0 {
         return cx.bug("a lane loop without operands");
-    };
-    Ok(out.map(|o| o.unwrap_or(first)))
+    }
+    // An `Fpr` operand is spilled to the next scratch image, its register
+    // given back (the minimal pool has two vector registers):
+    // `hod_cg::lanes::images`.
+    let mut out = [lanes::Arg::Scalar(Value::NONE); K];
+    lanes::images(cx, &values, &shapes, &mut out)?;
+    let mut images = [None; K];
+    for (image, arg) in images.iter_mut().zip(out) {
+        let lanes::Arg::Vector(at, lanes) = arg else {
+            return cx.bug("a lane operand without lanes");
+        };
+        *image = Some(Image { at, lanes });
+    }
+    Ok(images.map(|i| i.expect("every operand has an image")))
 }
 
 /// The lanes of the vector type `ty`: [`vector::lanes`], with `bfloat`
@@ -515,12 +505,7 @@ pub fn select<'a>(
 /// The end of a loop that wrote the image `out` of the result: an `Fpr`
 /// result is loaded into its register.
 fn finish_image<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, out: &Image) -> CgResult<()> {
-    if out.lanes.shape.class != Class::Fpr {
-        return Ok(());
-    }
-    let rd = cx.def_reg(inst)?;
-    vector::reload(cx, vr(rd), &out.lanes.shape, out.at);
-    cx.finish(inst, rd)
+    lanes::finish(cx, inst, &out.lanes, out.at)
 }
 
 /// Where the image of a vector result of lanes `result` is written: its

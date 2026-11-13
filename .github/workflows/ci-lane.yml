@@ -52,12 +52,15 @@ jobs:
         with: { cache-key: "${{ inputs.cache-key }}" }
       - run: cargo xtask ci --quick --step fmt
       - run: cargo xtask ci --quick --step clippy
-  # The debugger tests trace their programs with gdb and lldb:
-  # CAP_SYS_PTRACE (Docker's default seccomp profile allows ptrace;
-  # `personality` is blocked, so the debuggers leave ASLR on). This job
-  # builds the most and saves the cargo cache.
+  # The test step in parts (xtask::ci::TEST_PARTS, checked against this
+  # file by `the_hosted_lane_runs_the_quick_gates_steps`), one job each,
+  # so that no job runs much over 15 minutes; `rest` is every package the
+  # other parts do not name. The debugger tests trace their programs with
+  # gdb and lldb: CAP_SYS_PTRACE (Docker's default seccomp profile allows
+  # ptrace; `personality` is blocked, so the debuggers leave ASLR on). The
+  # `harness` part (xtask, which builds the most) saves the cargo cache.
   test:
-    name: test
+    name: test ${{ matrix.part }}
     needs: [kiln]
     runs-on: ${{ inputs.runner }}
     container:
@@ -65,13 +68,23 @@ jobs:
       # No core files: a test's crashing program ends with its signal's
       # own status, as in the development container.
       options: --cap-add=SYS_PTRACE --ulimit core=0
-    timeout-minutes: 60
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [a64, x64, harness, front, rest]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/hod-ci
-        with: { cache-key: "${{ inputs.cache-key }}", save-cache: "true" }
+        with:
+          cache-key: "${{ inputs.cache-key }}"
+          save-cache: "${{ matrix.part == 'harness' }}"
       - uses: ./.github/actions/kiln
-      - run: cargo xtask ci --quick --step test
+      - run: cargo xtask ci --quick --step test --part ${{ matrix.part }}
+  # A random-program job goes here when `cargo xtask fuzz` (WP-154,
+  # csmith; the hod-ci action installs the package) is on main: a fixed
+  # seed range per run, every program compiled by hod and by llc and run
+  # natively, a difference a failure (spec/harness.md "CI").
   irdiff:
     name: irdiff
     runs-on: ${{ inputs.runner }}

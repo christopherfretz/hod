@@ -477,7 +477,7 @@ pub fn cast<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> CgResult<
     let to = width(cx, inst.result());
     let sz = size_for_bits(to);
     if let Some(compare) = fused {
-        let cond = flags(cx, compare)?;
+        let cond = crate::control::at_compare(cx, compare, |cx| flags(cx, compare))?;
         let rd = cx.def_reg(inst)?;
         let r = gp(rd);
         put(cx, mc::setcc_r(cond, r));
@@ -679,7 +679,7 @@ pub fn select<'a>(
     let fused = fusable(cx, cond);
     deferred_first(cx, inst, fused.map(|_| cond))?;
     let cc = if let Some(compare) = fused {
-        flags(cx, compare)?
+        crate::control::at_compare(cx, compare, |cx| flags(cx, compare))?
     } else {
         let rc = gp(cx.use_reg(cond)?);
         put(cx, mc::test_ri(Size::B, rc, 1));

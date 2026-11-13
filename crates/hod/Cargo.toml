@@ -10,8 +10,8 @@ publish.workspace = true
 
 [dependencies]
 hod_ir.workspace = true
-hod_ll.workspace = true
-hod_bc.workspace = true
+hod_ll = { workspace = true, optional = true }
+hod_bc = { workspace = true, optional = true }
 hod_obj.workspace = true
 hod_cg.workspace = true
 hod_a64.workspace = true
@@ -20,8 +20,17 @@ hod_eh.workspace = true
 hod_dwarf.workspace = true
 hod_xform.workspace = true
 
+[features]
+default = ["readers"]
+# The readers of LLVM text and bitcode (`hod_ll`, `hod_bc`) and what reads
+# with them: `compile`, `compile_with`. A program that builds `hod_ir`
+# itself and feeds a `Session` turns it off (`spec/cli.md` "Embedding").
+readers = ["dep:hod_ll", "dep:hod_bc"]
+
 [dev-dependencies]
 hod_testutil.workspace = true
+# The unit tests read their modules from text, with or without `readers`.
+hod_ll.workspace = true
 
 [lints]
 workspace = true

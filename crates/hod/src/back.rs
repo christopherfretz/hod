@@ -178,6 +178,13 @@ fn work(
     next: &AtomicUsize,
     first_failure: &AtomicUsize,
 ) -> Made {
+    // The forced panics of the containment tests: on a worker, or on the
+    // calling thread once the workers are started (both before any chunk
+    // is taken, so that the site is met whatever the threads' timing).
+    #[cfg(test)]
+    crate::contain::fault::hit(crate::contain::fault::Site::Worker);
+    #[cfg(test)]
+    crate::contain::fault::hit(crate::contain::fault::Site::Codegen);
     let mut scratch = Scratch::new();
     let mut made = Vec::new();
     loop {
@@ -230,8 +237,23 @@ fn compile_bodies(
     let mut made = if workers <= 1 {
         run()
     } else {
+        // A panic on any of these threads reaches the caller of
+        // `generate_with` only after `scope` has joined every one of them
+        // (`spec/cli.md` "Embedding").
+        #[cfg(test)]
+        let plan = crate::contain::fault::current();
         std::thread::scope(|scope| {
-            let helpers: Vec<_> = (1..workers).map(|_| scope.spawn(run)).collect();
+            let helpers: Vec<_> = (1..workers)
+                .map(|_| {
+                    #[cfg(test)]
+                    let plan = plan.clone();
+                    scope.spawn(move || {
+                        #[cfg(test)]
+                        let _worker = crate::contain::fault::enter_worker(plan);
+                        run()
+                    })
+                })
+                .collect();
             let mut made = run();
             for helper in helpers {
                 match helper.join() {
@@ -439,6 +461,8 @@ pub fn generate_with(
         }
     })?;
     report.phase("emission");
+    #[cfg(test)]
+    crate::contain::fault::hit(crate::contain::fault::Site::Finish);
     let mut emitted = chunks
         .iter()
         .try_for_each(|chunk| module_emitter.add_chunk(chunk))

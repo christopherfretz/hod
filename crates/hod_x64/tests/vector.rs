@@ -392,3 +392,82 @@ fn shifts_by_constants_agree() {
     assert!(tally.refused.is_empty(), "{:?}", tally.refused);
     assert_eq!(tally.run, tally.generated, "{tally:?}");
 }
+
+/// `half` lanes through the reductions and the minimum/maximum family
+/// (zeros of both signs, infinities, NaN, rounding of each step),
+/// against `llc` 22 (the interpreter has no `half`).
+#[test]
+fn half_reductions_and_min_max_agree() {
+    const VALUES: [u16; 12] = [
+        0x3c00, 0x8000, 0x0000, 0x7c00, 0xfc00, 0x3555, 0x7e00, 0xc500, 0x0001, 0x7bff, 0x3e00,
+        0xbc00,
+    ];
+    let mut functions = Vec::new();
+    let mut k = 0;
+    for n in [8u32, 3, 4, 12] {
+        for start in 0..4 {
+            let lanes = |off: usize| -> String {
+                (0..n as usize)
+                    .map(|i| format!("i16 {}", VALUES[(i * 5 + off) % 12] as i16))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let (a, b) = (lanes(start), lanes(start + 7));
+            let t = format!("<{n} x half>");
+            let it = format!("<{n} x i16>");
+            let load = |k: u64| {
+                format!(
+                    "@t{k}.a = global {it} <{a}>, align 32\n@t{k}.b = global {it} <{b}>, align 32\n\
+                     @t{k}.o = global [32 x i8] zeroinitializer, align 32\n\
+                     define void @t{k}() {{\nentry:\n  %ai = load {it}, ptr @t{k}.a\n  \
+                     %a = bitcast {it} %ai to {t}\n  %bi = load {it}, ptr @t{k}.b\n  \
+                     %b = bitcast {it} %bi to {t}\n"
+                )
+            };
+            for red in ["fmax", "fmin"] {
+                k += 1;
+                functions.push((
+                    k,
+                    Some(format!(
+                        "{}  %r = call half @llvm.vector.reduce.{red}.v{n}f16({t} %a)\n  \
+                     store half %r, ptr @t{k}.o\n  call void @emit(ptr @t{k}.o, i64 2)\n  \
+                     ret void\n}}\n\ndeclare half @llvm.vector.reduce.{red}.v{n}f16({t})\n",
+                        load(k)
+                    )),
+                ));
+            }
+            for red in ["fadd", "fmul"] {
+                k += 1;
+                functions.push((
+                    k,
+                    Some(format!(
+                        "{}  %x = extractelement {t} %b, i32 0\n  \
+                     %r = call half @llvm.vector.reduce.{red}.v{n}f16(half %x, {t} %a)\n  \
+                     store half %r, ptr @t{k}.o\n  call void @emit(ptr @t{k}.o, i64 2)\n  \
+                     ret void\n}}\n\ndeclare half @llvm.vector.reduce.{red}.v{n}f16(half, {t})\n",
+                        load(k)
+                    )),
+                ));
+            }
+            // `minimumnum`/`maximumnum` take the same path; LLVM 19 has none.
+            for f in ["minimum", "maximum", "minnum", "maxnum"] {
+                k += 1;
+                functions.push((
+                    k,
+                    Some(format!(
+                        "{}  %r = call {t} @llvm.{f}.v{n}f16({t} %a, {t} %b)\n  \
+                     store {t} %r, ptr @t{k}.o\n  call void @emit(ptr @t{k}.o, i64 {})\n  \
+                     ret void\n}}\n\ndeclare {t} @llvm.{f}.v{n}f16({t}, {t})\n",
+                        load(k),
+                        2 * n
+                    )),
+                ));
+            }
+        }
+    }
+    let mut tally = vector_gen::Tally::default();
+    vector_gen::check_functions("half", functions, &mut tally);
+    vector_gen::assert_agrees(&tally);
+    assert!(tally.refused.is_empty(), "{:?}", tally.refused);
+    assert_eq!(tally.run, tally.generated, "{tally:?}");
+}

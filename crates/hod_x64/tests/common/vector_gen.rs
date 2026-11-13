@@ -1017,8 +1017,15 @@ fn module_text(functions: &[(u64, String)], decls: &BTreeMap<String, String>) ->
         let _ = writeln!(source, "{decl}");
     }
     source.push('\n');
+    // A declaration several functions carry is written once.
+    let mut declared = std::collections::BTreeSet::new();
     for (_, text) in functions {
-        source.push_str(text);
+        for line in text.lines() {
+            if !line.starts_with("declare ") || declared.insert(line) {
+                source.push_str(line);
+                source.push('\n');
+            }
+        }
     }
     source
 }

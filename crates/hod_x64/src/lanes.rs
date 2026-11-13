@@ -912,12 +912,15 @@ fn fp_lanes<'a>(
     let half = elem == Elem::Half;
     let slots = if half { Some(half_slots(cx)?) } else { None };
     let n_slot = if half && exponent { Some(cx.alloc_slot(8, 8)?) } else { None };
-    // Three operands do not fit the two vector registers of the minimal
-    // pool: `half` lanes are taken in general registers (they go to
-    // slots anyway), the third `float`/`double` operand is not taken but
-    // read from its image (into `xmm14`, or by the call).
+    // The minimal pool has two vector registers: `half` lanes are taken
+    // in general registers (they go to slots anyway, and the widened
+    // operands and the kernel need the vector registers) but for
+    // `fabs`/`copysign`, which work on the lane's bits in place; the
+    // third `float`/`double` operand is not taken but read from its
+    // image (into `xmm14`, or by the call).
     let three = fps == 3;
-    let lane_class = if three && half { Class::Gpr } else { Class::Fpr };
+    let in_place = matches!(which, I::Fabs | I::CopySign);
+    let lane_class = if half && !in_place { Class::Gpr } else { Class::Fpr };
     let mut takes = [(0, Class::Fpr); 4];
     for (i, take) in takes.iter_mut().enumerate().take(fps) {
         *take = (i, lane_class);
@@ -953,6 +956,11 @@ fn fp_lanes<'a>(
             let w = widen_halves(cx, &t[..fps], slots)?;
             let k = fps.min(2);
             x[..k].copy_from_slice(&w[..k]);
+            // Unused operands name a vector register too (the kernel
+            // reads only its own; a third `half` one from `slots`).
+            for unused in x.iter_mut().take(3).skip(fps.max(1)) {
+                *unused = w[0];
+            }
             if let Some(slot) = n_slot {
                 let r = cx.temp(Class::Gpr)?;
                 frame_inst(cx, slot, |m| mc::mov_rm(Size::Q, gp(r), m));
@@ -1057,6 +1065,11 @@ fn fp_kernel(
         }
         I::MinNum | I::MaxNum | I::Minimum | I::Maximum | I::MinimumNum | I::MaximumNum => {
             min_max_reg(cx, which, size, xa, xb)?;
+            if half {
+                // Given back for the narrowing's register (the minimal
+                // pool has two).
+                cx.free_temp(b);
+            }
         }
         I::Lrint | I::Llrint => {
             let rd = cx.temp(Class::Gpr)?;
@@ -1165,10 +1178,13 @@ fn reduce<'a>(
     if elem.is_float() == fold.is_some() {
         return unsupported(REDUCE);
     }
-    if elem == Elem::BFloat || elem == Elem::Half {
+    if elem == Elem::BFloat {
         return unsupported(REDUCE);
     }
     deferred_first(cx, inst, None)?;
+    if elem == Elem::Half {
+        return half_reduce(cx, inst, which, ordered.then(|| args[0]), vec, &l);
+    }
     let image = vector::image(cx, vec, &l, 0)?;
     let lane = |k: u32| At::Frame(image.offset_by(l.offset(k)));
     if let Some(fold) = fold {
@@ -1208,6 +1224,68 @@ fn reduce<'a>(
     }
     cx.free_temp(t);
     cx.finish(inst, acc)
+}
+
+/// A floating-point reduction of `half` lanes, as `llc` promotes it: each
+/// step widens the accumulator and the lane to `float`, computes there
+/// (`fminf`/`fmaxf` for `fmin`/`fmax`, as the scalar lowering) and
+/// rounds back to `half`. The accumulator lives in a frame slot across
+/// the calls; `start` is the ordered reductions' first operand.
+///
+/// # Errors
+/// What asking for the operands and the calls report.
+fn half_reduce<'a>(
+    cx: &mut FnCx<'a, X64>,
+    inst: Inst<'a>,
+    which: Intrinsic<'a>,
+    start: Option<Value>,
+    vec: Value,
+    l: &Lanes,
+) -> CgResult<()> {
+    use Intrinsic as I;
+    let image = vector::image(cx, vec, l, 0)?;
+    let lane = |k: u32| At::Frame(image.offset_by(l.offset(k)));
+    let acc = At::Frame(cx.alloc_slot(2, 2)?);
+    let slots = half_slots(cx)?;
+    let first = if let Some(start) = start {
+        let t = cx.temp(Class::Fpr)?;
+        cx.put(start, t)?;
+        vector::store_lane(cx, l, acc, t);
+        cx.free_temp(t);
+        0
+    } else {
+        let t = cx.temp(Class::Gpr)?;
+        vector::load_lane(cx, l, lane(0), t);
+        vector::store_lane(cx, l, acc, t);
+        cx.free_temp(t);
+        1
+    };
+    for k in first..l.count() {
+        let a = cx.temp(Class::Gpr)?;
+        let b = cx.temp(Class::Gpr)?;
+        vector::load_lane(cx, l, acc, a);
+        vector::load_lane(cx, l, lane(k), b);
+        let [x, y] = widen_halves(cx, &[a, b], &slots)?;
+        let r = match which {
+            I::VectorReduceFadd | I::VectorReduceFmul => {
+                let op = if which == I::VectorReduceFadd { Opcode::FAdd } else { Opcode::FMul };
+                arith(cx, op, FpSize::S, xm(x), xm(y))?;
+                cx.free_temp(y);
+                x
+            }
+            _ => {
+                let func =
+                    if which == I::VectorReduceFmax { RuntimeFn::Fmaxf } else { RuntimeFn::Fminf };
+                runtime(cx, func, &[CallArg::Reg(x), CallArg::Reg(y)])?
+            }
+        };
+        let h = half_out(cx, r)?;
+        vector::store_lane(cx, l, acc, h);
+        cx.free_temp(h);
+    }
+    let rd = cx.def_reg(inst)?;
+    vector::load_lane(cx, l, acc, rd);
+    cx.finish(inst, rd)
 }
 
 /// `llvm.vector.extract(%v, idx)` and `llvm.vector.insert(%v, %sub, idx)`

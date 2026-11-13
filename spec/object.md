@@ -708,6 +708,8 @@ padded with zeros to 8 bytes; `add_gnu_properties` adds it as above
 architecture's `FEATURE_1_AND` type. The code generators write their note
 through `add_gnu_properties`, so a further property (an ISA level, a
 second feature word) is one more list entry.
+The AArch64 note (`GNU_PROPERTY_AARCH64_FEATURE_1_AND`, WP-185,
+`spec/codegen.md` §5.6.26) goes through the same call.
 
 The note is a promise about all code in the object: every indirect branch
 target starts with the landing pad instruction (BTI, IBT), and so on. A

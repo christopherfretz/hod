@@ -167,6 +167,12 @@ impl Target for A64 {
     const TRAP: &'static [u8] = &mc::brk(1).to_le_bytes();
     /// `ret`: `__NoopCoro_ResumeDestroy` (WP-105, `crate::coro`).
     const NOOP_CORO_FN: &'static [u8] = &mc::ret(mc::Reg::LR.zr()).to_le_bytes();
+    /// `bti c; ret` (WP-185): under BTI the function is reached by an
+    /// indirect call through the frame's pointers.
+    const NOOP_CORO_FN_MARKED: &'static [u8] = &{
+        let (bti, ret) = (mc::bti_c().to_le_bytes(), mc::ret(mc::Reg::LR.zr()).to_le_bytes());
+        [bti[0], bti[1], bti[2], bti[3], ret[0], ret[1], ret[2], ret[3]]
+    };
     const FN_ALIGN: u32 = 4;
     const PAD_BYTE: u8 = 0;
     const STACK_ALIGN: u32 = 16;
@@ -453,7 +459,12 @@ impl Target for A64 {
     fn emit_call(&self, cx: &mut FnCx<'_, Self>, call: &CallEmit) -> CgResult<()> {
         frame::emit_call(cx, call.target);
         cx.call_returns_here(call.target, dwarf); // WP-113: `spec/dwarf.md` §6.19
+        crate::protect::after_call(cx, call.target); // WP-185
         Ok(())
+    }
+
+    fn branch_target(&self, cx: &mut FnCx<'_, Self>, at: hod_cg::BranchTarget) -> CgResult<()> {
+        crate::protect::branch_target(cx, at) // WP-185
     }
 
     fn dynamic_slot(

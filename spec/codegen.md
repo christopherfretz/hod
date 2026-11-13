@@ -3832,6 +3832,56 @@ them there.
 
 Evidence: `spec/landed/codegen/WP-184.md`.
 
+#### 5.6.26 AArch64 branch protection (WP-185)
+
+`-mbranch-protection` as clang 19 and 22 and kiln write it. The module
+flags `branch-target-enforcement`, `sign-return-address`,
+`sign-return-address-all`, `sign-return-address-with-bkey` and
+`guarded-control-stack` (value 1, clang 19; value 2, clang 22: the
+functions carry the policy) become per-function attributes in `hod_ll`
+(`spec/ll.md` §7.3); from there the function attributes
+`"branch-target-enforcement"`, `"sign-return-address"` (`none`,
+`non-leaf`, `all`), `"sign-return-address-key"` (`a_key`, `b_key`) and
+`"guarded-control-stack"` decide (`hod_a64/src/protect.rs`). Any other
+value of the two strings is `a64:branch-protection-value`.
+`branch-protection-pauth-lr` (FEAT_PAuth_LR) stays refused on AArch64.
+x86-64 ignores every one of these names, as `llc` does.
+
+1. **Entry.** A signed function begins with `paciasp` (`hint #25`) or,
+   with the B key, `pacibsp` (`hint #27`); both are BTI landing pads for
+   calls, so no `bti c` follows. An unsigned function under BTI begins
+   with `bti c` (`hint #34`). Every function gets it, address taken or
+   not, as `llc` 19 does (`llc` 22 omits it for a local function whose
+   address is not taken): a linker veneer reaches a far callee by `br
+   x16`. hod's frame always saves `x30`, so `non-leaf` signs every
+   function, as `all` does (`llc` signs only functions that spill `x30`).
+2. **Exit.** Every return and every `musttail` exit authenticates before
+   leaving: `ldp x29, x30`, the stack restored, then `autiasp`
+   (`hint #29`) or `autibsp` (`hint #31`), then `ret`, `b` or `br x16`.
+   A coroutine's resume and destroy stubs (`coro_body.rs`) sign at
+   their own entry.
+3. **Landing pads in a function.** Under BTI, `bti j` (`hint #36`) begins
+   every block whose address is taken (`blockaddress`), every landing pad
+   (the unwinder branches to it; `llc` 22 does this, `llc` 19 does not),
+   and follows every call that returns twice (the call site's or the
+   callee's `returns_twice`: `longjmp` returns there by `br`). hod makes
+   no jump tables, so a `switch` needs none.
+4. **CFI.** A signed function has `DW_CFA_AARCH64_negate_ra_state` after
+   the sign instruction (offset 4) and after each `auti*sp`; a body
+   restated after an exit (§9.3) restores the signed state with another,
+   so the parity at every offset is the signing state. A B-key function's
+   FDE begins with `BKeyFrame`, which selects a CIE with augmentation `B`
+   (`spec/eh.md` §2.2, §4.5).
+5. **`llvm.returnaddress`.** The loaded address is stripped with
+   `xpaclri` (`hint #7`) through `x30`, always, as `llc` does.
+6. **The note.** Each object carries `.note.gnu.property` with
+   `GNU_PROPERTY_AARCH64_FEATURE_1_AND` (BTI 1, PAC 2, GCS 4, each from a
+   non-zero module flag), byte-equal to `llc` 19 and 22's
+   (`spec/object.md` "GNU property note"); no flag, no note. GCS changes
+   no code.
+
+Evidence: `spec/landed/codegen/WP-185.md`.
+
 #### 5.6.27 Stack probing (WP-186)
 
 A function with `"probe-stack"="inline-asm"` (`hod_ir::StackProbe::

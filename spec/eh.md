@@ -136,6 +136,10 @@ padding to a multiple of 4 (§3.4).
 - With one: `"zPLR"`, data `P`, the personality pointer (`pointer_size`
   bytes of zeros with the personality-and-LSDA relocation against the
   personality's slot, addend 0), `L`, `R`.
+- For FDEs whose return addresses are signed with the B key (§4.5):
+  `"zRB"` or `"zPLRB"`, the same data. `B` has no augmentation data; it
+  tells the unwinder to authenticate with the B key (AArch64 only, as
+  `llc`'s `.cfi_b_key_frame`).
 
 The personality pointer is indirect: it addresses a slot holding the
 routine's address. `personality_ref` makes the slot as `llc` does: an
@@ -217,6 +221,8 @@ for 0; `DW_CFA_advance_loc` (delta in the low 6 bits) below 0x40;
 | `DefCfaRegister(reg)` | `DW_CFA_def_cfa_register` ULEB `reg` |
 | `Offset { reg, cfa_offset }`, `f = cfa_offset / daf` | `f >= 0`, `reg < 64`: `DW_CFA_offset \| reg`, ULEB `f`; `f >= 0`, `reg >= 64`: `DW_CFA_offset_extended` ULEB `reg`, ULEB `f`; `f < 0`: `DW_CFA_offset_extended_sf` ULEB `reg`, SLEB `f` |
 | `Restore { reg }` | `DW_CFA_restore \| reg` below 64; `DW_CFA_restore_extended` ULEB `reg` |
+| `NegateRaState` | `DW_CFA_AARCH64_negate_ra_state` (0x2d), §4.5 |
+| `BKeyFrame` | nothing; as the FDE's first row it selects the `B` CIE, §4.5 |
 
 (`daf` is the data alignment factor.)
 
@@ -235,12 +241,26 @@ DWARF 5 §7.6: unsigned, 7 bits per byte, low first, high bit set on all
 but the last; signed likewise, ending when the remaining value is all sign
 bits and the last byte's bit 6 agrees.
 
+### 4.5 Signed return addresses (WP-185)
+
+`NegateRaState` toggles the AArch64 "return address signed" state of the
+row (DWARF for the Arm 64-bit Architecture, `RA_SIGN_STATE`): the target
+emits one after `paciasp`/`pacibsp` and one after each `autiasp`/
+`autibsp` (`spec/codegen.md` §5.6.26), so the parity of the rows before an
+offset is the state there. The opcode is the vendor value 0x2d (the same
+number as `DW_CFA_GNU_window_save`, read by the unwinder per
+architecture). `BKeyFrame` writes no byte; when it is the FDE's first row
+(at offset 0) the FDE belongs to a CIE with `B` (§2.2); elsewhere it is
+ignored. x86-64 targets emit neither.
+
 ## 5. Order, sharing and determinism
 
 FDEs are grouped by CIE, one CIE per distinct personality and one for none,
 each CIE written once, immediately before its FDEs. The CIE without a
 personality comes first, then one per personality in the order of the
-lowest `order` that uses it; within a CIE, FDEs are in `order`. For an
+lowest `order` that uses it; within a CIE, FDEs are in `order`. The B key
+(§4.5) splits each of those CIEs in two, the one without `B` first, as
+`llc` (its CIE key compares the personality before the B-key flag). For an
 object with at most one personality this is `llc`'s order (it sorts its
 frames by CIE, the one without a personality first, stably in function
 order); with several, `llc` orders them by an internal pointer, which the
@@ -632,7 +652,9 @@ DWARF 5 §6.4.1, as `llc` writes it:
   augmentation `""`, address size 8, segment selector size 0, then §2.1's
   code alignment (ULEB), data alignment (SLEB), return-address column
   (ULEB) and initial instructions; zero-padded (`DW_CFA_nop`) to 8.
-- **FDE**, one per function, in `order` (§5): length (4); the CIE pointer,
+- **FDE**, one per function, in `order` (§5; the FDEs of B-key
+  functions after the others, as `llc`'s stable sort by CIE key, although
+  `.debug_frame` has the one CIE without augmentation): length (4); the CIE pointer,
   the CIE's offset in the section (0), 4 bytes with an absolute 32-bit
   relocation (`R_AARCH64_ABS32`, `R_X86_64_32`) against the section's own
   section symbol; the initial location, 8 bytes with an absolute 64-bit

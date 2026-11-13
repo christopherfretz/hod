@@ -417,7 +417,8 @@ impl<'m> ModuleEmitter<'m> {
         Ok(emitter)
     }
 
-    /// `.note.gnu.property` on x86-64 (`X86AsmPrinter::emitStartOfAsmFile`,
+    /// `.note.gnu.property` on AArch64 (BTI, PAC, GCS: WP-185) and on
+    /// x86-64 (`X86AsmPrinter::emitStartOfAsmFile`,
     /// WP-143, WP-184): a `GNU_PROPERTY_X86_FEATURE_1_AND` property with
     /// the IBT bit for `cf-protection-branch` (the target marks every
     /// indirect-branch target with `endbr64`) and the shadow-stack bit for
@@ -428,19 +429,23 @@ impl<'m> ModuleEmitter<'m> {
         use hod_ir::BranchProtection as Bp;
         use hod_obj::elf;
         let bits = self.module.props.branch_protection.bits();
-        if self.obj.arch() != Arch::X86_64 {
-            return Ok(());
-        }
-        let mut features = 0;
-        if bits & Bp::CET_IBT != 0 {
-            features |= elf::GNU_PROPERTY_X86_FEATURE_1_IBT;
-        }
-        if bits & Bp::CET_SHSTK != 0 {
-            features |= elf::GNU_PROPERTY_X86_FEATURE_1_SHSTK;
-        }
+        let on = |bit: u8, feature: u32| if bits & bit != 0 { feature } else { 0 };
+        let features = match self.obj.arch() {
+            Arch::X86_64 => {
+                on(Bp::CET_IBT, elf::GNU_PROPERTY_X86_FEATURE_1_IBT)
+                    | on(Bp::CET_SHSTK, elf::GNU_PROPERTY_X86_FEATURE_1_SHSTK)
+            }
+            // WP-185 (§5.6.26): the bit of each feature whose module flag
+            // is set, as `AArch64AsmPrinter::emitStartOfAsmFile`.
+            Arch::AArch64 => {
+                on(Bp::BTI, elf::GNU_PROPERTY_AARCH64_FEATURE_1_BTI)
+                    | on(Bp::PAC_RET, elf::GNU_PROPERTY_AARCH64_FEATURE_1_PAC)
+                    | on(Bp::GCS, elf::GNU_PROPERTY_AARCH64_FEATURE_1_GCS)
+            }
+        };
         if features != 0 {
             let word = features.to_le_bytes();
-            let properties = [(elf::GNU_PROPERTY_X86_FEATURE_1_AND, &word[..])];
+            let properties = [(elf::feature_1_and(self.obj.arch()), &word[..])];
             elf::add_gnu_properties(&mut self.obj, &properties).map_err(obj_err)?;
         }
         Ok(())

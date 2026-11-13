@@ -13,7 +13,12 @@ use crate::{
     FunctionBuilder, IrResult, Layering, Module, ParamAttrs, ParamMem, TypeId, TypeKind, TypeTable,
     UwTable, Value, attr_info, sext64,
 };
-use crate::{FlagValue, FnAttrsId, Retained};
+use crate::{DebugInfo, DiAtom, DiLocation, FlagValue, FnAttrsId, Retained};
+use crate::{
+    DiFieldValue, DiId, DiKind, DiMapping, DiNode, DiOther, DiTuple, ExprId, LocId, SymId,
+    SymbolKind, di_field, di_record,
+};
+use std::borrow::Cow;
 
 /// What a lowering made of a construct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -994,3 +999,329 @@ pub fn module_flag<L: Layering>(
     }
     Ok(())
 }
+
+// ---- debug fields (`spec/ir.md` §6) ----
+
+/// The construct recorded when debug metadata breaks a rule LLVM's
+/// verifier checks: LLVM strips the module's debug information then (with
+/// a warning), and hod refuses the module by this name instead.
+pub const DEBUG_INVALID: &str = "debug:invalid";
+
+/// The node `kind` with the fields `fields` set over LLVM's defaults
+/// (`DiNode::llvm_default`); a kind `hod_ir` does not represent (`None`)
+/// is `DiNode::Other` named `name`.
+///
+/// # Errors
+/// As `DiNode::set`.
+#[inline]
+pub fn di_node<'s>(
+    kind: Option<DiKind>,
+    name: &'s [u8],
+    fields: impl IntoIterator<Item = (&'static str, DiFieldValue<'s>)>,
+) -> IrResult<DiNode<'s>> {
+    let Some(kind) = kind else {
+        return Ok(DiNode::Other(DiOther { kind: name }));
+    };
+    let mut node = DiNode::llvm_default(kind);
+    for (field, value) in fields {
+        node.set(field.as_bytes(), value)?;
+    }
+    Ok(node)
+}
+
+/// Defines the reserved node `id` as `node`, distinct or uniqued.
+///
+/// # Errors
+/// As `DebugInfo::define` and `define_distinct`.
+#[inline]
+pub fn define_di_node<L: Layering>(
+    debug: &mut DebugInfo<L>,
+    id: DiId,
+    node: &DiNode<'_>,
+    distinct: bool,
+) -> IrResult<()> {
+    if distinct { debug.define_distinct(id, node) } else { debug.define(id, node) }
+}
+
+/// Defines the reserved node `id` as the tuple of `elements`
+/// (`DiId::NONE` for `null`).
+///
+/// # Errors
+/// As `DebugInfo::define`.
+#[inline]
+pub fn define_di_tuple<L: Layering>(
+    debug: &mut DebugInfo<L>,
+    id: DiId,
+    elements: &[DiId],
+) -> IrResult<()> {
+    debug.define(id, &DiNode::Tuple(DiTuple { elements }))
+}
+
+/// What stands for a reference LLVM's verifier refuses (a location, an
+/// expression or an assign id where a node is named, or a value of a
+/// function): the empty tuple. The producer records [`DEBUG_INVALID`].
+///
+/// # Errors
+/// As `DebugInfo::add`.
+#[inline]
+pub fn invalid_di_ref<L: Layering>(debug: &mut DebugInfo<L>) -> IrResult<DiId> {
+    debug.add(&DiNode::Tuple(DiTuple { elements: &[] }))
+}
+
+/// The construct a field of `kind` that `hod_ir` cannot represent is
+/// recorded by: the mapping's (`di_field`), else `debug:<kind>.<field>`.
+pub fn unsupported_field_construct(kind: &[u8], field: &[u8]) -> Cow<'static, str> {
+    match di_field(kind, field) {
+        Some(DiMapping::Unsupported(construct)) => Cow::Borrowed(construct),
+        _ => Cow::Owned(format!(
+            "debug:{}.{}",
+            String::from_utf8_lossy(kind),
+            String::from_utf8_lossy(field)
+        )),
+    }
+}
+
+/// A field of `kind` that `hod_ir` cannot represent: recorded (against no
+/// symbol) unless its value is the default (`0`, `false`, `null`, `""`,
+/// `!{}`, or the field's own default), which LLVM writes as "no field".
+pub fn unsupported_field<L: Layering>(
+    module: &mut Module<L>,
+    kind: &[u8],
+    field: &[u8],
+    default: bool,
+) {
+    if !default {
+        module.record_unsupported(&unsupported_field_construct(kind, field), None);
+    }
+}
+
+/// The key-instruction atom of a location (WP-149, `spec/dwarf.md` §5.9)
+/// from its `atomGroup` and `atomRank`: `None` for a rank over 8 bits,
+/// which LLVM's reader refuses (a group or rank over what LLVM stores is
+/// `hod_ir`'s refusal, when the location is defined).
+#[inline]
+pub fn di_atom(group: u64, rank: u64) -> Option<DiAtom> {
+    u8::try_from(rank).ok().map(|rank| DiAtom { group, rank })
+}
+
+/// A location written in place: added, distinct or uniqued.
+///
+/// # Errors
+/// As `DebugInfo::loc_in_atom` and `distinct_loc_in_atom`.
+#[inline]
+pub fn add_location<L: Layering>(
+    debug: &mut DebugInfo<L>,
+    loc: DiLocation,
+    atom: DiAtom,
+    distinct: bool,
+) -> IrResult<LocId> {
+    if distinct { debug.distinct_loc_in_atom(loc, atom) } else { debug.loc_in_atom(loc, atom) }
+}
+
+/// One operand of `!llvm.dbg.cu`: listed when it is a compile unit
+/// (true); anything else is not (false), and the producer records
+/// [`DEBUG_INVALID`].
+///
+/// # Errors
+/// As `DebugInfo::add_compile_unit`.
+#[inline]
+pub fn compile_unit<L: Layering>(module: &mut Module<L>, unit: Option<DiId>) -> IrResult<bool> {
+    match unit {
+        Some(unit) if module.debug.find_kind(unit) == Some(DiKind::CompileUnit) => {
+            module.debug.add_compile_unit(unit)?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// One node a function's `!dbg` names: the function's subprogram when it
+/// is one; anything else is `None`, and the producer records
+/// [`DEBUG_INVALID`]. Of several, the last subprogram is the function's.
+#[inline]
+pub fn function_subprogram<L: Layering>(module: &Module<L>, node: Option<DiId>) -> Option<DiId> {
+    node.filter(|&node| module.debug.find_kind(node) == Some(DiKind::Subprogram))
+}
+
+/// One node a variable's `!dbg` names: attached to `sym` when it is a
+/// global-variable expression (true); anything else is not (false), and
+/// the producer records [`DEBUG_INVALID`].
+///
+/// # Errors
+/// As `Module::attach_global_expr`.
+#[inline]
+pub fn variable_expression<L: Layering>(
+    module: &mut Module<L>,
+    sym: SymId,
+    node: Option<DiId>,
+) -> IrResult<bool> {
+    match node {
+        Some(node) if module.debug.find_kind(node) == Some(DiKind::GlobalVariableExpression) => {
+            module.attach_global_expr(sym, node)?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// After the module's items: the debug tables completed
+/// (`Module::finish_debug`) and, when the module uses them (`listed_units`:
+/// it has `!llvm.dbg.cu`; or a variable or a function names its debug
+/// information), checked as LLVM's verifier checks them. A failure, or
+/// debug information without a `Debug Info Version` of 3 (which LLVM
+/// drops), is recorded as [`DEBUG_INVALID`]. Nothing for a module without
+/// debug information.
+///
+/// # Errors
+/// As `Module::finish_debug`.
+pub fn finish_debug<L: Layering>(module: &mut Module<L>, listed_units: bool) -> IrResult<()> {
+    if module.debug.is_empty() && !listed_units {
+        return Ok(());
+    }
+    module.finish_debug()?;
+    let used = listed_units
+        || !module.global_exprs().is_empty()
+        || module.symbols().any(|symbol| {
+            matches!(symbol.kind(), SymbolKind::Function { subprogram: Some(_), .. })
+        });
+    // LLVM's verifier checks only what is used, and so does this.
+    if used && (module.props.debug_info_version != Some(3) || module.verify_debug().is_err()) {
+        module.record_unsupported(DEBUG_INVALID, None);
+    }
+    Ok(())
+}
+
+/// The four debug records (`#dbg_*`, `llvm.dbg.*`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DebugRecordKind {
+    /// `#dbg_declare`, `llvm.dbg.declare`.
+    Declare,
+    /// `#dbg_value`, `llvm.dbg.value`.
+    Value,
+    /// `#dbg_assign`, `llvm.dbg.assign`.
+    Assign,
+    /// `#dbg_label`, `llvm.dbg.label`.
+    Label,
+}
+
+impl DebugRecordKind {
+    /// The record a call of the intrinsic `name` stands for. Any other
+    /// `llvm.dbg.*` is recorded as `debug:<name>`
+    /// ([`debug_intrinsic_construct`]).
+    #[inline]
+    pub fn of_intrinsic(name: &[u8]) -> Option<DebugRecordKind> {
+        match name {
+            b"llvm.dbg.declare" => Some(DebugRecordKind::Declare),
+            b"llvm.dbg.value" => Some(DebugRecordKind::Value),
+            b"llvm.dbg.assign" => Some(DebugRecordKind::Assign),
+            b"llvm.dbg.label" => Some(DebugRecordKind::Label),
+            _ => None,
+        }
+    }
+
+    /// The record named `name` (`#dbg_declare`, …). Any other is
+    /// [`unsupported_record_construct`] or malformed.
+    #[inline]
+    pub fn of_record(name: &[u8]) -> Option<DebugRecordKind> {
+        match name {
+            b"#dbg_declare" => Some(DebugRecordKind::Declare),
+            b"#dbg_value" => Some(DebugRecordKind::Value),
+            b"#dbg_assign" => Some(DebugRecordKind::Assign),
+            b"#dbg_label" => Some(DebugRecordKind::Label),
+            _ => None,
+        }
+    }
+
+    /// The kind of node the record's variable (or label) is.
+    #[inline]
+    pub fn variable_kind(self) -> DiKind {
+        if self == DebugRecordKind::Label { DiKind::Label } else { DiKind::LocalVariable }
+    }
+}
+
+/// The construct a call of an `llvm.dbg.*` intrinsic that is no record is
+/// recorded by: `debug:<name>`.
+pub fn debug_intrinsic_construct(name: &[u8]) -> String {
+    format!("debug:{}", String::from_utf8_lossy(name))
+}
+
+/// The construct a debug record `hod_ir` does not keep is recorded by
+/// (`di_record`), if it is one LLVM knows.
+#[inline]
+pub fn unsupported_record_construct(name: &[u8]) -> Option<&'static str> {
+    match di_record(name) {
+        Some(DiMapping::Unsupported(construct)) => Some(construct),
+        _ => None,
+    }
+}
+
+/// A debug record, read: everything but its value(s) and its location.
+#[derive(Clone, Copy, Debug)]
+pub struct DebugRecord {
+    /// The kind.
+    pub kind: DebugRecordKind,
+    /// The variable (the label of a label record); `DiId::NONE` when it
+    /// is not one (the producer has recorded [`DEBUG_INVALID`]).
+    pub var: DiId,
+    /// The expression.
+    pub expr: ExprId,
+    /// Whether the value is a `DIArgList` (several values).
+    pub list: bool,
+    /// An assignment's address.
+    pub address: Value,
+    /// An assignment's address expression.
+    pub address_expr: ExprId,
+}
+
+impl DebugRecord {
+    /// A record of `kind` with nothing read yet.
+    #[inline]
+    pub fn new(kind: DebugRecordKind) -> DebugRecord {
+        DebugRecord {
+            kind,
+            var: DiId::NONE,
+            expr: ExprId::EMPTY,
+            list: false,
+            address: Value::NONE,
+            address_expr: ExprId::EMPTY,
+        }
+    }
+}
+
+/// Hands `record` with its value(s) `values` (the first is the value; a
+/// `DIArgList`'s are all of them; none is `Value::NONE`) at `loc` to the
+/// builder. A `declare` of a `DIArgList` is not made (false): the
+/// producer records [`DEBUG_INVALID`].
+///
+/// # Errors
+/// As `FunctionBuilder::dbg_declare` and the other record builders.
+#[inline]
+pub fn emit_debug_record(
+    b: &mut FunctionBuilder,
+    record: &DebugRecord,
+    values: &[Value],
+    loc: LocId,
+) -> IrResult<bool> {
+    let value = values.first().copied().unwrap_or(Value::NONE);
+    match record.kind {
+        DebugRecordKind::Declare if record.list => return Ok(false),
+        DebugRecordKind::Declare => b.dbg_declare(value, record.var, record.expr, loc)?,
+        DebugRecordKind::Value if record.list => {
+            b.dbg_value_list(values, record.var, record.expr, loc)?;
+        }
+        DebugRecordKind::Value => b.dbg_value(value, record.var, record.expr, loc)?,
+        DebugRecordKind::Assign => {
+            b.dbg_assign(value, record.var, record.expr, record.address, record.address_expr, loc)?;
+        }
+        DebugRecordKind::Label => b.dbg_label(record.var, loc)?,
+    }
+    Ok(true)
+}
+
+/// The construct an enumerator whose value does not fit 64 bits is
+/// recorded by (its value is read as 0).
+pub const WIDE_ENUMERATOR: &str = "debug:DIEnumerator.wide";
+
+/// The construct an assignment whose value or address is a `DIArgList`
+/// is recorded by.
+pub const ASSIGN_ARG_LIST: &str = "debug:#dbg_assign.DIArgList";

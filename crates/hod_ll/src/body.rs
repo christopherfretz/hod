@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use hod_ir::{
     BlockId, Body, DiId, ExprId, FunctionBuilder, Intrinsic, IrErrorKind, Layering, LocId, Module,
-    NoCode, NoLayer, ParamAttrs, TypeId, TypeKind, Value, ValueKind,
+    NoCode, NoLayer, ParamAttrs, TypeId, TypeKind, Value, ValueKind, kit,
 };
 
 use crate::debug::{Handle, INVALID};
@@ -131,27 +131,12 @@ pub(crate) enum CalleeInfo {
     Other,
 }
 
-/// A call of an `llvm.dbg.*` intrinsic, read and waiting for the
-/// call's `!dbg`, which is the record's location (`spec/ll.md` §11.9).
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct OldRecord {
-    pub kind: RecordKind,
-    pub var: DiId,
-    pub expr: ExprId,
-    /// Whether the value is a `DIArgList` (in `FnState::dbg_vals`).
-    pub list: bool,
-    pub address: Value,
-    pub address_expr: ExprId,
-}
-
+/// A debug record, or a call of an `llvm.dbg.*` intrinsic read and
+/// waiting for the call's `!dbg`, which is the record's location
+/// (`spec/ll.md` §11.9); its values are in `FnState::dbg_vals`.
+pub(crate) use hod_ir::kit::DebugRecord as OldRecord;
 /// The four debug records.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum RecordKind {
-    Declare,
-    Value,
-    Assign,
-    Label,
-}
+pub(crate) use hod_ir::kit::DebugRecordKind as RecordKind;
 
 /// How far a number may lie beyond the numbers met so far and still get
 /// a place in the dense table.
@@ -1092,19 +1077,12 @@ impl<'a, L: Layering> Fx<'_, 'a, '_, L> {
         if self.numbering {
             return Ok(());
         }
-        let kind = match name {
-            b"#dbg_declare" => RecordKind::Declare,
-            b"#dbg_value" => RecordKind::Value,
-            b"#dbg_assign" => RecordKind::Assign,
-            b"#dbg_label" => RecordKind::Label,
-            _ => {
-                let construct = match hod_ir::di_record(name) {
-                    Some(hod_ir::DiMapping::Unsupported(construct)) => Cow::Borrowed(construct),
-                    _ => return fail(LlErrorKind::Syntax, at, "expected a debug record"),
-                };
-                self.p.note(construct);
-                return Ok(());
-            }
+        let Some(kind) = RecordKind::of_record(name) else {
+            let Some(construct) = kit::unsupported_record_construct(name) else {
+                return fail(LlErrorKind::Syntax, at, "expected a debug record");
+            };
+            self.p.note(construct);
+            return Ok(());
         };
         let resume = self.p.tok.start;
         self.p.goto(args.start);
@@ -1126,14 +1104,7 @@ impl<'a, L: Layering> Fx<'_, 'a, '_, L> {
     /// The operands of a debug record before its location; with
     /// `old`, of a call of the intrinsic, each after `metadata`.
     fn record_args(&mut self, kind: RecordKind, old: bool) -> PResult<OldRecord> {
-        let mut record = OldRecord {
-            kind,
-            var: DiId::NONE,
-            expr: ExprId::EMPTY,
-            list: false,
-            address: Value::NONE,
-            address_expr: ExprId::EMPTY,
-        };
+        let mut record = OldRecord::new(kind);
         self.s.dbg_vals.clear();
         if kind == RecordKind::Label {
             record.var = self.record_node(old, MdKind::Label)?;
@@ -1157,14 +1128,14 @@ impl<'a, L: Layering> Fx<'_, 'a, '_, L> {
             self.p.expect(Tok::Comma, "expected ',' between operands")?;
             let mark = self.s.dbg_vals.len();
             if self.record_value(old)? {
-                self.p.note("debug:#dbg_assign.DIArgList");
+                self.p.note(kit::ASSIGN_ARG_LIST);
             }
             record.address = self.s.dbg_vals.get(mark).copied().unwrap_or(Value::NONE);
             self.s.dbg_vals.truncate(mark);
             self.p.expect(Tok::Comma, "expected ',' between operands")?;
             record.address_expr = self.record_expr(old)?;
             if record.list {
-                self.p.note("debug:#dbg_assign.DIArgList");
+                self.p.note(kit::ASSIGN_ARG_LIST);
             }
         }
         Ok(record)
@@ -1262,29 +1233,10 @@ impl<'a, L: Layering> Fx<'_, 'a, '_, L> {
 
     /// Hands a record to the builder.
     fn emit_record(&mut self, record: OldRecord, loc: LocId, at: u32) -> PResult<()> {
-        let b = &mut self.b;
-        let value = self.s.dbg_vals.first().copied().unwrap_or(Value::NONE);
-        let made = match record.kind {
-            RecordKind::Declare if record.list => {
-                self.p.note(INVALID);
-                return Ok(());
-            }
-            RecordKind::Declare => b.dbg_declare(value, record.var, record.expr, loc),
-            RecordKind::Value if record.list => {
-                b.dbg_value_list(&self.s.dbg_vals, record.var, record.expr, loc)
-            }
-            RecordKind::Value => b.dbg_value(value, record.var, record.expr, loc),
-            RecordKind::Assign => b.dbg_assign(
-                value,
-                record.var,
-                record.expr,
-                record.address,
-                record.address_expr,
-                loc,
-            ),
-            RecordKind::Label => b.dbg_label(record.var, loc),
-        };
-        ir(at, made)
+        if !ir(at, kit::emit_debug_record(&mut self.b, &record, &self.s.dbg_vals, loc))? {
+            self.p.note(INVALID);
+        }
+        Ok(())
     }
 
     /// A call of an `llvm.dbg.*` intrinsic, at the `(` of its
@@ -1295,16 +1247,9 @@ impl<'a, L: Layering> Fx<'_, 'a, '_, L> {
         if self.numbering {
             return Ok(());
         }
-        let kind = match name {
-            b"llvm.dbg.declare" => RecordKind::Declare,
-            b"llvm.dbg.value" => RecordKind::Value,
-            b"llvm.dbg.assign" => RecordKind::Assign,
-            b"llvm.dbg.label" => RecordKind::Label,
-            _ => {
-                let name = String::from_utf8_lossy(name);
-                self.p.note(format!("debug:{name}"));
-                return Ok(());
-            }
+        let Some(kind) = RecordKind::of_intrinsic(name) else {
+            self.p.note(kit::debug_intrinsic_construct(name));
+            return Ok(());
         };
         let resume = self.p.tok.start;
         self.p.goto(args.start);

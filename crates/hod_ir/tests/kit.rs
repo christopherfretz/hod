@@ -8,10 +8,17 @@ use hod_ir::kit::{
     annotations_construct, attr_construct, deliver_special, fn_keyword, gep_index_value,
     lower_alloca, module_flag, string_attr, value_keyword,
 };
+use hod_ir::kit::{
+    DEBUG_INVALID, DebugRecord, DebugRecordKind, add_location, compile_unit,
+    debug_intrinsic_construct, define_di_node, define_di_tuple, di_atom, di_node,
+    emit_debug_record, finish_debug, function_subprogram, invalid_di_ref, unsupported_field,
+    unsupported_field_construct, unsupported_record_construct, variable_expression,
+};
 use hod_ir::{
     AttrClass, FnAttrs, FunctionBuilder, InstKind, Module, ParamAttrs, ParamMem, SymId, TargetSpec,
     TypeId, Value,
 };
+use hod_ir::{DiAtom, DiFieldValue, DiId, DiKind, DiLocation, DiNode, LocId};
 
 const I8: TypeId = TypeId::I8;
 const I32: TypeId = TypeId::I32;
@@ -259,4 +266,94 @@ fn metadata_names_and_branch_protection_flags() {
     // The value 2 is the current form: no upgrade.
     module_flag(&mut m, 8, b"sign-return-address", Some(2), None, &mut upgrade).unwrap();
     assert_eq!(upgrade, None);
+}
+
+fn noted(m: &Module, construct: &str) -> bool {
+    m.unsupported().any(|u| u.construct == construct)
+}
+
+/// §12 debug fields: a node is LLVM's defaults with the fields read set;
+/// a kind `hod_ir` does not represent is `Other`; a tuple and the
+/// stand-in for an invalid reference are tuples.
+#[test]
+fn debug_nodes_are_built_over_llvm_defaults() {
+    let mut m = Module::new(TargetSpec::aarch64_linux_gnu());
+    let fields = [("name", DiFieldValue::Str(b"int")), ("size", DiFieldValue::UInt(32))];
+    let node = di_node(Some(DiKind::BasicType), b"", fields).unwrap();
+    let id = m.debug.reserve().unwrap();
+    define_di_node(&mut m.debug, id, &node, false).unwrap();
+    assert_eq!(m.debug.find_kind(id), Some(DiKind::BasicType));
+    assert!(matches!(di_node(None, b"DIModule", []).unwrap(), DiNode::Other(_)));
+    let tuple = m.debug.reserve().unwrap();
+    define_di_tuple(&mut m.debug, tuple, &[id, DiId::NONE]).unwrap();
+    assert_eq!(m.debug.find_kind(tuple), Some(DiKind::Tuple));
+    let stand_in = invalid_di_ref(&mut m.debug).unwrap();
+    assert_eq!(m.debug.find_kind(stand_in), Some(DiKind::Tuple));
+    assert_eq!(invalid_di_ref(&mut m.debug).unwrap(), stand_in, "uniqued");
+}
+
+/// An unsupported field is recorded only when it is not the default, by
+/// the mapping's construct, else `debug:<kind>.<field>`.
+#[test]
+fn unsupported_fields_are_recorded_unless_default() {
+    let mut m = Module::new(TargetSpec::aarch64_linux_gnu());
+    let construct = unsupported_field_construct(b"DICompositeType", b"dataLocation");
+    unsupported_field(&mut m, b"DICompositeType", b"dataLocation", true);
+    assert!(!noted(&m, &construct));
+    unsupported_field(&mut m, b"DICompositeType", b"dataLocation", false);
+    assert!(noted(&m, &construct));
+    assert_eq!(unsupported_field_construct(b"DIBogus", b"field"), "debug:DIBogus.field");
+}
+
+/// WP-149: a rank over 8 bits is no atom; a location in place is uniqued
+/// unless distinct.
+#[test]
+fn locations_and_their_atoms() {
+    assert_eq!(di_atom(5, 3), Some(DiAtom { group: 5, rank: 3 }));
+    assert_eq!(di_atom(5, 255).map(|a| a.rank), Some(255));
+    assert_eq!(di_atom(5, 256), None);
+    let mut m = Module::new(TargetSpec::aarch64_linux_gnu());
+    let scope = m.debug.reserve().unwrap();
+    let loc = DiLocation { line: 3, column: 4, scope, inlined_at: LocId::NONE };
+    let atom = DiAtom { group: 1, rank: 1 };
+    let a = add_location(&mut m.debug, loc, atom, false).unwrap();
+    assert_eq!(add_location(&mut m.debug, loc, atom, false).unwrap(), a);
+    assert_ne!(add_location(&mut m.debug, loc, atom, true).unwrap(), a);
+}
+
+/// What a `!dbg` or `!llvm.dbg.cu` names must be of the right kind;
+/// the module's debug information is checked only when used.
+#[test]
+fn global_debug_references_and_the_final_check() {
+    let mut m = Module::new(TargetSpec::aarch64_linux_gnu());
+    finish_debug(&mut m, false).unwrap();
+    assert!(!noted(&m, DEBUG_INVALID), "no debug information, nothing checked");
+    let node = di_node(Some(DiKind::BasicType), b"", []).unwrap();
+    let basic = m.debug.add(&node).unwrap();
+    assert!(!compile_unit(&mut m, Some(basic)).unwrap());
+    assert!(!compile_unit(&mut m, None).unwrap());
+    assert_eq!(function_subprogram(&m, Some(basic)), None);
+    assert!(!variable_expression(&mut m, SymId::new(0), Some(basic)).unwrap());
+    // Listed units but no `Debug Info Version` 3: LLVM drops it all.
+    finish_debug(&mut m, true).unwrap();
+    assert!(noted(&m, DEBUG_INVALID));
+}
+
+/// The four records by name; others are recorded; a `declare` of a
+/// `DIArgList` is not made.
+#[test]
+fn debug_records_by_name_and_their_emission() {
+    assert_eq!(DebugRecordKind::of_intrinsic(b"llvm.dbg.assign"), Some(DebugRecordKind::Assign));
+    assert_eq!(DebugRecordKind::of_intrinsic(b"llvm.dbg.foo"), None);
+    assert_eq!(debug_intrinsic_construct(b"llvm.dbg.foo"), "debug:llvm.dbg.foo");
+    assert_eq!(DebugRecordKind::of_record(b"#dbg_label"), Some(DebugRecordKind::Label));
+    assert_eq!(DebugRecordKind::of_record(b"#dbg_value"), Some(DebugRecordKind::Value));
+    assert_eq!(DebugRecordKind::of_record(b"#dbg_declare_value"), None);
+    assert!(unsupported_record_construct(b"#dbg_declare_value").is_some());
+    assert_eq!(DebugRecordKind::Label.variable_kind(), DiKind::Label);
+    assert_eq!(DebugRecordKind::Declare.variable_kind(), DiKind::LocalVariable);
+    let (_, mut b) = fixture();
+    let mut record = DebugRecord::new(DebugRecordKind::Declare);
+    record.list = true;
+    assert!(!emit_debug_record(&mut b, &record, &[Value::NONE], LocId::NONE).unwrap());
 }

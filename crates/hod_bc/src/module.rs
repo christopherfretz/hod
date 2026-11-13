@@ -11,9 +11,9 @@ use hod_ir::kit::{
     merge_fn_attrs, module_flag, named_metadata_construct,
 };
 use hod_ir::{
-    AliasDesc, Arch, CallConv, ComdatId, ComdatKind, Const, ConstId, DiId, DiKind, FnAttrs,
-    FnAttrsId, FunctionDesc, IFuncDesc, Linkage, Module, ParamAttrs, SymId, TargetSpec, TlsModel,
-    TypeId, TypeKind, UnnamedAddr, VariableDesc, Visibility,
+    AliasDesc, Arch, CallConv, ComdatId, ComdatKind, Const, ConstId, DiId, FnAttrs, FnAttrsId,
+    FunctionDesc, IFuncDesc, Linkage, Module, ParamAttrs, SymId, TargetSpec, TlsModel, TypeId,
+    TypeKind, UnnamedAddr, VariableDesc, Visibility,
 };
 
 use crate::attrs::{self, Attr, FUNCTION_INDEX, FnGroup, chars};
@@ -745,11 +745,8 @@ impl<'r, 'a> Build<'r, 'a> {
     fn variable_dbg(&mut self, index: usize, dbg: &[Option<DiId>], at: u64) -> BcResult<()> {
         let Some(sym) = self.sym(index) else { return Ok(()) };
         for &node in dbg {
-            match node {
-                Some(node) if self.module.debug.kind(node) == DiKind::GlobalVariableExpression => {
-                    ir(at, self.module.attach_global_expr(sym, node))?;
-                }
-                _ => self.notes.add(INVALID),
+            if !ir(at, hod_ir::kit::variable_expression(&mut self.module, sym, node))? {
+                self.notes.add(INVALID);
             }
         }
         Ok(())
@@ -759,11 +756,9 @@ impl<'r, 'a> Build<'r, 'a> {
     fn function_dbg(&mut self, dbg: &[Option<DiId>]) {
         self.fn_subprogram = None;
         for &node in dbg {
-            match node {
-                Some(node) if self.module.debug.kind(node) == DiKind::Subprogram => {
-                    self.fn_subprogram = Some(node);
-                }
-                _ => self.notes.add(INVALID),
+            match hod_ir::kit::function_subprogram(&self.module, node) {
+                Some(node) => self.fn_subprogram = Some(node),
+                None => self.notes.add(INVALID),
             }
         }
     }
@@ -1422,20 +1417,7 @@ impl<'r, 'a> Build<'r, 'a> {
     /// After the items, as `hod_ll` does: the tables completed and, when
     /// the module uses them, checked as LLVM's verifier checks them.
     fn finish_debug(&mut self) -> BcResult<()> {
-        if self.module.debug.is_empty() && self.dbg_cu.is_none() {
-            return Ok(());
-        }
-        ir(self.raw.module_pos, self.module.finish_debug())?;
-        let used = self.dbg_cu.is_some()
-            || !self.module.global_exprs().is_empty()
-            || self.module.symbols().any(|symbol| {
-                matches!(symbol.kind(), hod_ir::SymbolKind::Function { subprogram: Some(_), .. })
-            });
-        let version = self.module.props.debug_info_version;
-        if used && (version != Some(3) || self.module.verify_debug().is_err()) {
-            self.module.record_unsupported(INVALID, None);
-        }
-        Ok(())
+        ir(self.raw.module_pos, hod_ir::kit::finish_debug(&mut self.module, self.dbg_cu.is_some()))
     }
 
     fn module_flag(&mut self, id: u64, at: u64, upgrade: &mut Option<Upgrade>) -> BcResult<()> {

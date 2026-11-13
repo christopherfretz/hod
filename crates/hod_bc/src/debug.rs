@@ -17,8 +17,8 @@
 //! `debug-layout` rather than guessed at.
 
 use hod_ir::{
-    DiConstant, DiFieldValue, DiId, DiKind, DiLocation, DiMapping, DiNode, DiOther, DiString,
-    DiTuple, ExprId, Layering, LocId, Module, NoLayer, di_field,
+    DiConstant, DiFieldValue, DiId, DiKind, DiLocation, DiNode, DiString, ExprId, Layering, LocId,
+    Module, NoLayer, kit,
 };
 
 use crate::bitstream::{BitReader, BlockInfo, BlockSpan, Cursor, Entry};
@@ -28,8 +28,8 @@ use crate::error::{BcErrorKind, BcResult, fail, ir};
 use crate::raw::{MdSlot, Raw};
 
 /// The construct recorded when debug metadata breaks a rule LLVM's
-/// verifier checks (`hod_ll`'s `debug:invalid`).
-pub(crate) const INVALID: &str = "debug:invalid";
+/// verifier checks (the kit's).
+pub(crate) use hod_ir::kit::DEBUG_INVALID as INVALID;
 
 /// The refusal of a record layout this reader does not know: one LLVM 19
 /// to 22 does not write (older, or newer than LLVM 22).
@@ -621,7 +621,7 @@ impl<'x, 'a, L: Layering> Dx<'x, 'a, L> {
     /// An empty tuple: what stands for a reference LLVM's verifier
     /// refuses, as in `hod_ll`.
     fn empty_tuple(&mut self, at: u64) -> BcResult<DiId> {
-        ir(at, self.module.debug.add(&DiNode::Tuple(DiTuple { elements: &[] })))
+        ir(at, kit::invalid_di_ref(&mut self.module.debug))
     }
 
     /// Value `value` of the module as a constant.
@@ -684,8 +684,8 @@ impl<'x, 'a, L: Layering> Dx<'x, 'a, L> {
                 };
                 self.scratch.lists.push(element);
             }
-            let tuple = DiNode::Tuple(DiTuple { elements: &self.scratch.lists[mark..] });
-            ir(pos, self.module.debug.define(node, &tuple))?;
+            let elements = &self.scratch.lists[mark..];
+            ir(pos, kit::define_di_tuple(&mut self.module.debug, node, elements))?;
             self.scratch.lists.truncate(mark);
         }
         Ok(())
@@ -695,9 +695,7 @@ impl<'x, 'a, L: Layering> Dx<'x, 'a, L> {
     pub fn compile_units(&mut self, units: &[u64], at: u64) -> BcResult<()> {
         for &id in units {
             let unit = self.node_of(id, at)?;
-            if self.module.debug.find_kind(unit) == Some(DiKind::CompileUnit) {
-                ir(at, self.module.debug.add_compile_unit(unit))?;
-            } else {
+            if !ir(at, kit::compile_unit(self.module, Some(unit)))? {
                 self.invalid();
             }
         }
@@ -871,10 +869,9 @@ impl<'x, 'a, L: Layering> Dx<'x, 'a, L> {
             DiLocation { line: ops[1] as u32, column: column(ops[2]), scope, inlined_at };
         // WP-149: LLVM 21 and later write `atomGroup, atomRank` last.
         let (group, rank) = if ops.len() == 8 { (ops[6], ops[7]) } else { (0, 0) };
-        let Ok(rank) = u8::try_from(rank) else {
+        let Some(atom) = kit::di_atom(group, rank) else {
             return fail(BcErrorKind::Invalid, at, "a LOCATION atom rank over 8 bits");
         };
-        let atom = hod_ir::DiAtom { group, rank };
         ir(at, self.module.debug.define_loc_in_atom(loc, location, atom, ops[0] != 0))
     }
 
@@ -895,14 +892,8 @@ impl<'x, 'a, L: Layering> Dx<'x, 'a, L> {
         }
         let distinct = ops[0] & 1 != 0;
         let Some(kind) = layout.kind else {
-            let other = DiNode::Other(DiOther { kind: name.as_bytes() });
-            let debug = &mut self.module.debug;
-            let made = if distinct {
-                debug.define_distinct(node, &other)
-            } else {
-                debug.define(node, &other)
-            };
-            return ir(at, made);
+            let other = ir(at, kit::di_node(None, name.as_bytes(), []))?;
+            return ir(at, kit::define_di_node(&mut self.module.debug, node, &other, distinct));
         };
         let flags = ops[0];
         let mut fields = layout.fields;
@@ -936,7 +927,7 @@ impl<'x, 'a, L: Layering> Dx<'x, 'a, L> {
             md::COMPILE_UNIT => {
                 if ops[1] >> 63 != 0 {
                     // DWARF 6's language name and version.
-                    self.unsupported(name, "sourceLanguageName");
+                    self.unsupported(name, "sourceLanguageName", false);
                 } else {
                     self.scratch.fields.push(("language", F::UInt(ops[1])));
                 }
@@ -987,15 +978,11 @@ impl<'x, 'a, L: Layering> Dx<'x, 'a, L> {
                 Opt if op == u64::MAX => continue,
                 Opt => F::UInt(op),
                 UnsupInt(default) => {
-                    if op != default {
-                        self.unsupported(name, field);
-                    }
+                    self.unsupported(name, field, op == default);
                     continue;
                 }
                 UnsupMd => {
-                    if !self.md_default(op) {
-                        self.unsupported(name, field);
-                    }
+                    self.unsupported(name, field, self.md_default(op));
                     continue;
                 }
                 PtrAuth => {
@@ -1006,9 +993,7 @@ impl<'x, 'a, L: Layering> Dx<'x, 'a, L> {
                         ("ptrAuthIsaPointer", op >> 21 & 1),
                         ("ptrAuthAuthenticatesNullValues", op >> 22 & 1),
                     ] {
-                        if bits != 0 {
-                            self.unsupported(name, field);
-                        }
+                        self.unsupported(name, field, bits == 0);
                     }
                     continue;
                 }
@@ -1016,8 +1001,7 @@ impl<'x, 'a, L: Layering> Dx<'x, 'a, L> {
             self.scratch.fields.push((field, value));
         }
         let scratch = &*self.scratch;
-        let mut built = DiNode::llvm_default(kind);
-        for &(field, value) in &scratch.fields {
+        let values = scratch.fields.iter().map(|&(field, value)| {
             let value = match value {
                 F::UInt(value) => DiFieldValue::UInt(value),
                 F::Int(value) => DiFieldValue::Int(value),
@@ -1029,12 +1013,10 @@ impl<'x, 'a, L: Layering> Dx<'x, 'a, L> {
                 }
                 F::Expr(expr) => DiFieldValue::Expr(expr),
             };
-            ir(at, built.set(field.as_bytes(), value))?;
-        }
-        let debug = &mut self.module.debug;
-        let made =
-            if distinct { debug.define_distinct(node, &built) } else { debug.define(node, &built) };
-        ir(at, made)?;
+            (field, value)
+        });
+        let built = ir(at, kit::di_node(Some(kind), name.as_bytes(), values))?;
+        ir(at, kit::define_di_node(&mut self.module.debug, node, &built, distinct))?;
         self.scratch.fields.clear();
         self.scratch.lists.clear();
         Ok(())
@@ -1064,7 +1046,7 @@ impl<'x, 'a, L: Layering> Dx<'x, 'a, L> {
             self.scratch.fields.push(("name", F::Str(text)));
         }
         let value = wide_value(width, unsigned, words).unwrap_or_else(|| {
-            self.module.record_unsupported("debug:DIEnumerator.wide", None);
+            self.module.record_unsupported(kit::WIDE_ENUMERATOR, None);
             F::UInt(0)
         });
         self.scratch.fields.push(("value", value));
@@ -1072,14 +1054,9 @@ impl<'x, 'a, L: Layering> Dx<'x, 'a, L> {
         Ok(())
     }
 
-    /// Records that a field of `kind` hod cannot represent is set.
-    fn unsupported(&mut self, kind: &str, field: &str) {
-        match di_field(kind.as_bytes(), field.as_bytes()) {
-            Some(DiMapping::Unsupported(construct)) => {
-                self.module.record_unsupported(construct, None);
-            }
-            _ => self.module.record_unsupported(&format!("debug:{kind}.{field}"), None),
-        }
+    /// A field of `kind` hod cannot represent: recorded unless `default`.
+    fn unsupported(&mut self, kind: &str, field: &str, default: bool) {
+        kit::unsupported_field(self.module, kind.as_bytes(), field.as_bytes(), default);
     }
 }
 
@@ -1265,6 +1242,7 @@ mod tests {
 
     use super::*;
     use crate::module::with_dx;
+    use hod_ir::{DiMapping, di_field};
 
     const MODULE: &[u8] = include_bytes!("../tests/data/debug-llvm22.bc");
 

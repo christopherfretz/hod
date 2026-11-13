@@ -33,7 +33,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `cc` | 15 | 6 | 7 | 2 | 1 | 11 | 3 |
 | `attr` | 57 | 23 | 31 | 3 | 14 | 35 | 8 |
 | `type` | 15 | 11 | 1 | 3 | 2 | 11 | 2 |
-| `inst` | 67 | 60 | 0 | 7 | 4 | 56 | 7 |
+| `inst` | 67 | 60 | 0 | 7 | 27 | 33 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 21 | 0 | 0 | 0 | 21 | 0 |
 | `call` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 11 | 8 | 3 | 0 | 2 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 354 | 334 | 20 | 0 | 0 | 138 | 216 |
-| total | 663 | 533 | 84 | 46 | 37 | 356 | 270 |
+| total | 663 | 533 | 84 | 46 | 60 | 333 | 270 |
 
 ## `module`
 
@@ -310,40 +310,40 @@ Instructions.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `inst:add` | supported (int, i128, int-wide, vector) | not-implemented |  |
-| `inst:sub` | supported (int, i128, int-wide, vector) | not-implemented |  |
-| `inst:mul` | supported (int, i128, int-wide, vector) | not-implemented |  |
-| `inst:udiv` | supported (int, i128, vector) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
-| `inst:sdiv` | supported (int, i128, vector) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
-| `inst:urem` | supported (int, i128, vector) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
-| `inst:srem` | supported (int, i128, vector) | not-implemented | wider than 64 bits: up to 128 (WP-040) |
-| `inst:shl` | supported (int, i128, int-wide, vector) | not-implemented |  |
-| `inst:lshr` | supported (int, i128, int-wide, vector) | not-implemented |  |
-| `inst:ashr` | supported (int, i128, int-wide, vector) | not-implemented |  |
-| `inst:and` | supported (int, i128, int-wide, vector) | not-implemented |  |
-| `inst:or` | supported (int, i128, int-wide, vector) | not-implemented |  |
-| `inst:xor` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:add` | supported (int, i128, int-wide, vector) | supported (int) |  |
+| `inst:sub` | supported (int, i128, int-wide, vector) | supported (int) |  |
+| `inst:mul` | supported (int, i128, int-wide, vector) | supported (int) |  |
+| `inst:udiv` | supported (int, i128, vector) | supported (int) | wider than 64 bits: up to 128 (WP-040) |
+| `inst:sdiv` | supported (int, i128, vector) | supported (int) | wider than 64 bits: up to 128 (WP-040) |
+| `inst:urem` | supported (int, i128, vector) | supported (int) | wider than 64 bits: up to 128 (WP-040) |
+| `inst:srem` | supported (int, i128, vector) | supported (int) | wider than 64 bits: up to 128 (WP-040) |
+| `inst:shl` | supported (int, i128, int-wide, vector) | supported (int) |  |
+| `inst:lshr` | supported (int, i128, int-wide, vector) | supported (int) |  |
+| `inst:ashr` | supported (int, i128, int-wide, vector) | supported (int) |  |
+| `inst:and` | supported (int, i128, int-wide, vector) | supported (int) |  |
+| `inst:or` | supported (int, i128, int-wide, vector) | supported (int) |  |
+| `inst:xor` | supported (int, i128, int-wide, vector) | supported (int) |  |
 | `inst:fadd` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
 | `inst:fsub` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
 | `inst:fmul` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
 | `inst:fdiv` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
 | `inst:frem` | supported (half, bfloat, float, double, fp128, vector) | not-implemented | a call of `fmod` |
 | `inst:fneg` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
-| `inst:icmp` | supported (int, i128, int-wide, ptr, vector) | not-implemented | vectors: masks of up to 64 lanes (WP-081) |
+| `inst:icmp` | supported (int, i128, int-wide, ptr, vector) | supported (int, ptr) | vectors: masks of up to 64 lanes (WP-081) |
 | `inst:fcmp` | supported (int, half, bfloat, float, double, fp128, vector) | not-implemented | vectors: masks of up to 64 lanes (WP-081) |
-| `inst:trunc` | supported (int, i128, int-wide, vector) | not-implemented |  |
-| `inst:zext` | supported (int, i128, int-wide, vector) | not-implemented |  |
-| `inst:sext` | supported (int, i128, int-wide, vector) | not-implemented |  |
+| `inst:trunc` | supported (int, i128, int-wide, vector) | supported (int) |  |
+| `inst:zext` | supported (int, i128, int-wide, vector) | supported (int) |  |
+| `inst:sext` | supported (int, i128, int-wide, vector) | supported (int) |  |
 | `inst:fptrunc` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
 | `inst:fpext` | supported (half, bfloat, float, double, fp128, vector) | not-implemented |  |
 | `inst:fptoui` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | not-implemented |  |
 | `inst:fptosi` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | not-implemented |  |
 | `inst:uitofp` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | not-implemented |  |
 | `inst:sitofp` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | not-implemented |  |
-| `inst:ptrtoint` | supported (int, i128, int-wide, ptr, vector) | not-implemented |  |
-| `inst:ptrtoaddr` | supported (int, i128, int-wide, ptr, vector) | not-implemented |  |
-| `inst:inttoptr` | supported (int, i128, int-wide, ptr, vector) | not-implemented |  |
-| `inst:bitcast` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | between integers and floats with WP-039 |
+| `inst:ptrtoint` | supported (int, i128, int-wide, ptr, vector) | supported (int, ptr) |  |
+| `inst:ptrtoaddr` | supported (int, i128, int-wide, ptr, vector) | supported (int, ptr) |  |
+| `inst:inttoptr` | supported (int, i128, int-wide, ptr, vector) | supported (int, ptr) |  |
+| `inst:bitcast` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector) | supported (int, ptr) | between integers and floats with WP-039 |
 | `inst:addrspacecast` | rejected | rejected | it has a pointer in a non-zero address space on one side |
 | `inst:load` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented | a plain load; see `mem:`; FP and vector values: WP-067 |
 | `inst:store` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented | a plain store; see `mem:`; FP and vector values: WP-067 |
@@ -358,8 +358,8 @@ Instructions.
 | `inst:insertelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:shufflevector` | supported (vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:phi` | supported | supported | for every class whose `type:*` row is supported |
-| `inst:select` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented |  |
-| `inst:freeze` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented |  |
+| `inst:select` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, ptr) |  |
+| `inst:freeze` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, ptr) |  |
 | `inst:va_arg` | rejected | rejected | `llc` miscompiles it on AArch64, so there is no oracle; frontends do not emit it |
 | `inst:call` | supported | not-implemented | a call of anything but an intrinsic |
 | `inst:landingpad` | supported | not-implemented |  |

@@ -26,7 +26,7 @@
 //! | `common` | WP-116 (shared) | moves, frame places, constants, symbol addresses, branches | `tests/skeleton.rs` |
 //! | `term` | WP-116 | `br`, `ret`, `unreachable` | `tests/skeleton.rs` |
 //! | `features` | WP-116, WP-117 | the judged target features (§5.6.2) | unit |
-//! | `int` | WP-122 | integer binary operations, casts, `icmp`, `select`, `freeze` | |
+//! | `int` | WP-122 | integer binary operations, casts, `icmp`, `select`, `freeze` | `tests/int.rs` |
 //! | `mem` | WP-123 | `load`, `store`, `alloca`, `ptradd`, `llvm.stacksave`/`stackrestore` | |
 //! | `control` | WP-124 | `condbr`, `switch`, `indirectbr` | |
 //! | `call` | WP-125 | calls, `invoke`, `musttail`, landing pads, `resume`, variadics | |

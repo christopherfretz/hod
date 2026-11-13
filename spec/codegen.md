@@ -2155,6 +2155,75 @@ words compared with `llvm-mc`'s; the refusals; features from
   `unreachable`, `phi` (the driver's copies over the glue), direct calls
   through the driver, constants, symbol and slot addresses.
 
+#### Integers (WP-122)
+
+`hod_x64/src/int.rs`: binary operations, `icmp`, casts, `select`,
+`freeze` on `Gpr` values of every width (`i1` to `i64`, pointers). The
+decisions that are not instruction selection are §5.5.1 "Integers
+(WP-035)"'s.
+
+- **Two operands.** `FnCx::use_reg` gives every operand in a register
+  the lowering may overwrite, never the same register for two operands,
+  so `dst = a op b` is `op a, b` in `a`'s register and the result stays
+  there: the destination is never the right operand. A constant left
+  operand of a commutative operation is swapped to the right. No `lea`
+  is used for `add` (no flags are live at an `add`).
+- **Widths.** A value of at most 32 bits is computed with 32-bit
+  instructions, above with 64-bit ones; 8- and 16-bit instructions are
+  never used (no `0x66`, no partial-register writes) except `setcc` and
+  `test r8, 1`. Extensions as WP-035 decides which (left operand of
+  `lshr`, `udiv`, `urem` and unsigned compares by zero; of `ashr`,
+  `sdiv`, `srem` and signed compares by sign; the divisor too):
+  `movzx`/`movsx` from 8 and 16 bits, `mov r32, r32` / `movsxd` from 32
+  to 64, `and r32, 2^N-1` by zero below 32 bits, a `shl`/`shr` or
+  `shl`/`sar` pair otherwise. A constant `lshr`/`ashr` of an odd width
+  is `shl s` then `shr`/`sar s+k` (`s` the unused bits); of 8 or 16
+  bits `movzx`/`movsx` then the shift.
+- **Immediates.** A constant right operand of `add`, `sub`, `and`,
+  `or`, `xor`, `imul` (three-operand), `cmp` is the instruction's
+  immediate when the value, sign-extended from its width to the
+  register, is one (`imm8` or `imm32`; any 32-bit value at 32 bits);
+  else it goes to `r11`. `xor` with all ones is `not`; `add`/`sub`/
+  `or`/`xor` of 0, `and` of all ones and `mul` by 1 emit nothing.
+- **Fixed registers.** A register shift amount goes to `rcx` (`and
+  ecx, 2^N-1` first for a width below 5, since `shl r32, cl` reads five
+  bits), then `shl`/`shr`/`sar r, cl`. A division puts the extended
+  dividend in `rax`, zeroes `edx` with `mov edx, 0` or sign-fills it
+  with `cdq`/`cqo`, divides by the extended divisor in its own register
+  (`r11` for a constant) with `div`/`idiv` at the register width, and
+  moves `eax`/`rax` (quotient) or `edx`/`rdx` (remainder) to the
+  divisor's register, or to a temporary. Undefined divisions (by zero,
+  the smallest value by -1 at 32 or 64 bits) trap (`#DE`), which §4.7
+  allows.
+- **Compares.** `cmp a, imm32` (or `cmp a, r11`) with a constant, after
+  extending `a` by sign or zero as the predicate orders; a constant
+  left operand swaps the predicate. Two registers of 8 or 16 bits are
+  both extended; of another width below their register both are shifted
+  left by the unused bits (`shl a, s` · `shl b, s` · `cmp a, b`), which
+  orders signed and unsigned alike. The conditions are `e ne a ae b be
+  g ge l le`.
+- **Fusion.** Every `icmp` defers itself when `may_defer` allows (§4.6);
+  otherwise it is `cmp` + `setcc r8` + `movzx r32, r8`. `int::fusable(cx,
+  value)` and `int::flags(cx, compare)` are WP-035's contract with an
+  x86 condition (`hod_mc_x64::Cond`): the consumer calls `flags` after
+  `deferred_first(cx, inst, Some(value))`, once, and emits nothing that
+  writes the flags until its reader; `flags` pins at most two registers
+  and writes them, the flags and `r11` (never `rax`, `rcx`, `rdx`).
+  `select` fuses into `cmovcc`, `zext` of an `i1` into `setcc` +
+  `movzx`, `sext` into `setcc` + `movzx` + `neg`. A non-fused `i1`
+  condition is `test r8, 1` (bit 0: a plain `i1` may carry anything
+  above it, `abi-x64.md` §7).
+- **`select`** is `cmovcc` from the true arm's register into the false
+  arm's, never a branch: there is no 8-bit `cmov`, and the 32-bit one
+  gives the same low bits to any value of at most 32 bits (it zeroes
+  bits 32..64 even when it does not move, which the width invariant
+  allows). A constant arm is materialized with `mov` (flags kept).
+- **Undefined results** (§4.7): a constant shift amount of the width or
+  more, or 0, emits nothing.
+- **`addrspacecast`** is refused as `x64:addrspacecast` (classify
+  rejects it first); `x64:int-binary` and `x64:int-cast` name forms the
+  dispatch never sends. `i128` is `Mem`: `aggr` (WP-126).
+
 #### 5.6.2 Target features (WP-116)
 
 As §5.5.2, with `hod_x64::features`'s table (design 0006 §10.1). hod

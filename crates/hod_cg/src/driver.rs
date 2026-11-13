@@ -8,7 +8,7 @@
 //! operands, the records, and the retry in far mode.
 
 use hod_ir::{
-    Block, BlockId, Body, DbgRecordKind, FnAttrs, Inst, InstKind, LocId, Module, Opcode,
+    Block, BlockId, Body, Const, DbgRecordKind, FnAttrs, Inst, InstKind, LocId, Module, Opcode,
     ParamAttrs, SymbolKind, TypeId, TypeKind, UwTable, Value,
 };
 
@@ -35,6 +35,20 @@ use crate::target::Target;
 /// the frame's variables right after the frame pointer's `phi`).
 fn declares_a_phi(body: &Body, address: Value) -> bool {
     address.as_inst().is_some_and(|id| body.inst(id).opcode() == Opcode::Phi)
+}
+
+/// Whether a `#dbg_declare` names `undef` or `poison` as the address
+/// (§6.22, WP-156). `llc -O0` drops such a declaration
+/// (`SelectionDAGBuilder::visitDbgDeclare` returns on an `UndefValue`
+/// address) and writes no DIE for the variable. Clang writes one on
+/// x86-64 for an empty-class parameter of an `always_inline` callee:
+/// the SysV ABI passes no argument for an empty record, so the inlined
+/// copy of the parameter has no storage (AArch64 passes it as an `i8`,
+/// and the declaration names a slot there).
+fn declares_undef(module: &Module, address: Value) -> bool {
+    address
+        .as_const()
+        .is_some_and(|id| matches!(module.consts.get(id), Const::Undef(_) | Const::Poison(_)))
 }
 
 /// The most code one function may have, in bytes. No target's far
@@ -705,9 +719,13 @@ impl<'a, T: Target> FnCx<'a, T> {
     fn finish_vars(&mut self) {
         let body = self.body;
         for declare in body.declares() {
-            if declare.address == Value::NONE || declares_a_phi(body, declare.address) {
-                // The address was dropped, or is a `phi`: no row, as `llc`
-                // writes none (§9.5, WP-111).
+            if declare.address == Value::NONE
+                || declares_a_phi(body, declare.address)
+                || declares_undef(self.module, declare.address)
+            {
+                // The address was dropped, is a `phi`, or is `undef` or
+                // `poison`: no row, as `llc` writes none (§9.5, WP-111,
+                // WP-156).
                 continue;
             }
             // §4.1: a declared value has a home for the whole function.

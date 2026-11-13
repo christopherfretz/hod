@@ -1251,9 +1251,9 @@ mod tests {
         assert_eq!(first.stdin, b"one line of input\n");
         assert_eq!(first.exit, Exit::Code(3));
         assert_eq!(first.stdout, b"argc=3\nalpha beta\n\none line of input\n");
-        let x86_64 = Conditional { when: vec![Cond::Arch(Arch::X86_64)], reason: "*".into() };
-        assert_eq!(first.unsupported, [x86_64]);
+        assert_eq!(first.unsupported, []);
         assert_eq!(first.unsupported_reason(Arch::Aarch64, 22), None);
+        assert_eq!(first.unsupported_reason(Arch::X86_64, 22), None);
 
         let second = ok(&examples[1]);
         assert_eq!(second.targets, [Arch::Aarch64]);

@@ -31,8 +31,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `init` | 10 | 6 | 3 | 1 | 5 | 4 | 1 |
 | `function` | 6 | 6 | 0 | 0 | 6 | 0 | 0 |
 | `cc` | 26 | 6 | 7 | 13 | 3 | 13 | 10 |
-| `attr` | 57 | 24 | 30 | 3 | 18 | 31 | 8 |
-| `type` | 15 | 12 | 0 | 3 | 10 | 3 | 2 |
+| `attr` | 57 | 24 | 30 | 3 | 22 | 27 | 8 |
+| `type` | 15 | 12 | 0 | 3 | 11 | 2 | 2 |
 | `inst` | 67 | 60 | 0 | 7 | 56 | 4 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `atomicrmw` | 21 | 21 | 0 | 0 | 17 | 4 | 0 |
@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 7 | 4 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 354 | 347 | 7 | 0 | 97 | 41 | 216 |
-| total | 674 | 549 | 68 | 57 | 273 | 123 | 278 |
+| `intrinsic` | 354 | 347 | 7 | 0 | 115 | 23 | 216 |
+| total | 674 | 549 | 68 | 57 | 296 | 100 | 278 |
 
 ## `module`
 
@@ -235,8 +235,8 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `attr:zeroext` | supported | not-implemented |  |
-| `attr:signext` | supported | not-implemented |  |
+| `attr:zeroext` | supported | supported |  |
+| `attr:signext` | supported | supported |  |
 | `attr:inreg` | not-implemented | not-implemented | unplanned |
 | `attr:nest` | supported | not-implemented |  |
 | `attr:swiftself` | not-implemented | not-implemented | unplanned |
@@ -244,7 +244,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:swiftasync` | not-implemented | not-implemented | unplanned |
 | `attr:sret` | supported | supported |  |
 | `attr:byval` | supported | supported |  |
-| `attr:byref` | supported | not-implemented |  |
+| `attr:byref` | supported | supported |  |
 | `attr:inalloca` | rejected | rejected | a Windows construct |
 | `attr:preallocated` | rejected | rejected | a Windows construct |
 | `attr:elementtype` | not-implemented | not-implemented | unplanned. on an inline-assembly or intrinsic argument |
@@ -259,7 +259,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:ssp` | not-implemented | not-implemented | spec/codegen.md §13. open question: accept and ignore, or implement |
 | `attr:sspreq` | not-implemented | not-implemented | spec/codegen.md §13 |
 | `attr:sspstrong` | not-implemented | not-implemented | spec/codegen.md §13 |
-| `attr:presplitcoroutine` | supported | not-implemented | one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name (WP-106); with `-g`, its variables on the frame word (WP-108); a pre-opt module with one is accepted in place of `opt` + `llc`, and declined by its module level on a target without coroutine bodies (WP-109, `spec/cli.md` "Pre-opt modules") |
+| `attr:presplitcoroutine` | supported | supported | one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name (WP-106); with `-g`, its variables on the frame word (WP-108); a pre-opt module with one is accepted in place of `opt` + `llc`, and declined by its module level on a target without coroutine bodies (WP-109, `spec/cli.md` "Pre-opt modules") |
 | `attr:sanitize_address` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_alloc_token` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_hwaddress` | not-implemented | not-implemented | unplanned |
@@ -312,7 +312,7 @@ Type classes of the values instructions produce and consume.
 | `type:vector` | supported | not-implemented | vectors of fixed length; what is lowered of them by element and shape: `spec/codegen.md` §5.5.1 (WP-079) |
 | `type:scalable-vector` | rejected | rejected | scalable vectors are refused by design |
 | `type:aggregate` | supported | supported | structs and arrays as first-class values (WP-040) |
-| `type:token` | supported | not-implemented | the results and operands of the coroutine intrinsics (WP-106) |
+| `type:token` | supported | supported | the results and operands of the coroutine intrinsics (WP-106) |
 | `type:target-ext` | rejected | rejected | no target extension type has a lowering |
 
 ## `inst`
@@ -642,25 +642,25 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.vector.reduce.fmul` | supported (half, float, double, vector) | not-implemented | lanes up to 256 (WP-081) |
 | `intrinsic:llvm.vector.extract` | not-implemented | not-implemented | M2 (vectors) |
 | `intrinsic:llvm.vector.insert` | not-implemented | not-implemented | M2 (vectors) |
-| `intrinsic:llvm.coro.id` | supported (int, ptr, token) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.alloc` | supported (int, token) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.begin` | supported (ptr, token) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.end` | supported (int, ptr, token) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.free` | supported (ptr, token) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.size` | supported (int) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.align` | supported (int) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.save` | supported (ptr, token) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.suspend` | supported (int, token) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.resume` | supported (ptr) | not-implemented | in any function (WP-105) |
-| `intrinsic:llvm.coro.destroy` | supported (ptr) | not-implemented | in any function (WP-105) |
-| `intrinsic:llvm.coro.done` | supported (int, ptr) | not-implemented | in any function (WP-105) |
-| `intrinsic:llvm.coro.promise` | supported (int, ptr) | not-implemented | in any function; a constant power-of-two alignment (WP-105) |
+| `intrinsic:llvm.coro.id` | supported (int, ptr, token) | supported (int, ptr, token) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.alloc` | supported (int, token) | supported (int, token) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.begin` | supported (ptr, token) | supported (ptr, token) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.end` | supported (int, ptr, token) | supported (int, ptr, token) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.free` | supported (ptr, token) | supported (ptr, token) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.size` | supported (int) | supported (int) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.align` | supported (int) | supported (int) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.save` | supported (ptr, token) | supported (ptr, token) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.suspend` | supported (int, token) | supported (int, token) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.resume` | supported (ptr) | supported (ptr) | in any function (WP-105) |
+| `intrinsic:llvm.coro.destroy` | supported (ptr) | supported (ptr) | in any function (WP-105) |
+| `intrinsic:llvm.coro.done` | supported (int, ptr) | supported (int, ptr) | in any function (WP-105) |
+| `intrinsic:llvm.coro.promise` | supported (int, ptr) | supported (int, ptr) | in any function; a constant power-of-two alignment (WP-105) |
 | `intrinsic:llvm.coro.frame` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.noop` | supported (ptr) | not-implemented | the noop frame (WP-105) |
-| `intrinsic:llvm.coro.is_in_ramp` | supported (int) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.await.suspend.void` | supported (ptr) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.await.suspend.bool` | supported (int, ptr) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.await.suspend.handle` | supported (ptr) | not-implemented | in a coroutine body; symmetric transfer in constant stack (WP-107) |
+| `intrinsic:llvm.coro.noop` | supported (ptr) | supported (ptr) | the noop frame (WP-105) |
+| `intrinsic:llvm.coro.is_in_ramp` | supported (int) | supported (int) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.await.suspend.void` | supported (ptr) | supported (ptr) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.await.suspend.bool` | supported (int, ptr) | supported (int, ptr) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.await.suspend.handle` | supported (ptr) | supported (ptr) | in a coroutine body; symmetric transfer in constant stack (WP-107) |
 | `intrinsic:llvm.sshl.sat` | supported (int) | supported (int) | up to 64 bits (WP-084) |
 | `intrinsic:llvm.ushl.sat` | supported (int) | supported (int) | up to 64 bits (WP-084) |
 | `intrinsic:llvm.aarch64.crc32b` | supported (int) | rejected | x86_64: an AArch64 property |

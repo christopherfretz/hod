@@ -60,6 +60,8 @@ pub struct FrameState {
     /// The slots of the address returned in `rax` and of a variadic
     /// function's register save area (`crate::call::enter`, WP-125).
     pub call: crate::call::CallState,
+    /// The coroutine stubs' labels (WP-137, `crate::coro_body`).
+    pub coro: crate::coro_body::CoroState,
 }
 
 /// `Target::begin_function`: the prologue and its CFI rows.
@@ -81,6 +83,8 @@ pub fn begin(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     let sub = mc::sub_ri(Size::Q, RSP, FRAME_PLACEHOLDER);
     cx.state.frame.frame_imm = cx.offset() + sub.len() as u32 - 4;
     put(cx, sub);
+    // WP-137: a coroutine's mode and frame words.
+    crate::coro_body::enter(cx)?;
     // WP-125: the address returned in `rax`, the register save area.
     crate::call::enter(cx)
 }

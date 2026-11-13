@@ -5,7 +5,6 @@
 ;@ covers: spec/ir.md §5.5 intrinsics (coro.noop, coro.resume, coro.destroy, coro.done)
 ;@ input: pre-opt
 ;@ link: c++
-;@ unsupported(x86_64): *
 ;@ stdout: same frame 1, done 0
 ;@ stdout: resume and destroy: one function 1, not null 1
 ;@ stdout: resumed, destroyed and invoked: still not done 0

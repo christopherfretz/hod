@@ -685,8 +685,8 @@ const fn cc_index(id: u16) -> Option<usize> {
 
 /// In the bit order of the `ParamAttrs` flags, from `ZEROEXT`.
 const ATTR_PARAM: [SupportRow; 7] = [
-    row("attr:zeroext", ON, todo(X64), ""),
-    row("attr:signext", ON, todo(X64), ""),
+    row("attr:zeroext", ON, ON, ""),
+    row("attr:signext", ON, ON, ""),
     a64("attr:inreg", LATER, ""),
     row("attr:nest", ON, todo(X64), ""),
     a64("attr:swiftself", LATER, ""),
@@ -698,7 +698,7 @@ const ATTR_PARAM: [SupportRow; 7] = [
 const ATTR_MEM: [SupportRow; 6] = [
     row("attr:sret", ON, ON, ""),
     row("attr:byval", ON, ON, ""),
-    row("attr:byref", ON, todo(X64), ""),
+    row("attr:byref", ON, ON, ""),
     both("attr:inalloca", never(WINDOWS), ""),
     both("attr:preallocated", never(WINDOWS), ""),
     a64("attr:elementtype", LATER, "on an inline-assembly or intrinsic argument"),
@@ -737,7 +737,7 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
     row(
         "attr:presplitcoroutine",
         ON,
-        todo(X64),
+        ON,
         "one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name \
          (WP-106); with `-g`, its variables on the frame word (WP-108); a pre-opt module with \
          one is accepted in place of `opt` + `llc`, and declined by its module level on a \
@@ -818,12 +818,7 @@ const TYPE: [SupportRow; TypeClass::ALL.len()] = [
     ),
     both("type:scalable-vector", never(SCALABLE), ""),
     row("type:aggregate", ON, ON, "structs and arrays as first-class values (WP-040)"),
-    row(
-        "type:token",
-        ON,
-        todo(X64),
-        "the results and operands of the coroutine intrinsics (WP-106)",
-    ),
+    row("type:token", ON, ON, "the results and operands of the coroutine intrinsics (WP-106)"),
     both("type:target-ext", never("no target extension type has a lowering"), ""),
 ];
 
@@ -2629,100 +2624,110 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
     row(
         "intrinsic:llvm.coro.id",
         on(&[TypeClass::Token, TypeClass::Int, TypeClass::Ptr]),
-        todo(X64),
+        on(&[TypeClass::Token, TypeClass::Int, TypeClass::Ptr]),
         "in a coroutine body (WP-106)",
     ),
     row(
         "intrinsic:llvm.coro.alloc",
         on(&[TypeClass::Token, TypeClass::Int]),
-        todo(X64),
+        on(&[TypeClass::Token, TypeClass::Int]),
         "in a coroutine body (WP-106)",
     ),
     row(
         "intrinsic:llvm.coro.begin",
         on(&[TypeClass::Token, TypeClass::Ptr]),
-        todo(X64),
+        on(&[TypeClass::Token, TypeClass::Ptr]),
         "in a coroutine body (WP-106)",
     ),
     row(
         "intrinsic:llvm.coro.end",
         on(&[TypeClass::Token, TypeClass::Int, TypeClass::Ptr]),
-        todo(X64),
+        on(&[TypeClass::Token, TypeClass::Int, TypeClass::Ptr]),
         "in a coroutine body (WP-106)",
     ),
     row(
         "intrinsic:llvm.coro.free",
         on(&[TypeClass::Token, TypeClass::Ptr]),
-        todo(X64),
+        on(&[TypeClass::Token, TypeClass::Ptr]),
         "in a coroutine body (WP-106)",
     ),
     row(
         "intrinsic:llvm.coro.size",
         on(&[TypeClass::Int]),
-        todo(X64),
+        on(&[TypeClass::Int]),
         "in a coroutine body (WP-106)",
     ),
     row(
         "intrinsic:llvm.coro.align",
         on(&[TypeClass::Int]),
-        todo(X64),
+        on(&[TypeClass::Int]),
         "in a coroutine body (WP-106)",
     ),
     row(
         "intrinsic:llvm.coro.save",
         on(&[TypeClass::Token, TypeClass::Ptr]),
-        todo(X64),
+        on(&[TypeClass::Token, TypeClass::Ptr]),
         "in a coroutine body (WP-106)",
     ),
     row(
         "intrinsic:llvm.coro.suspend",
         on(&[TypeClass::Token, TypeClass::Int]),
-        todo(X64),
+        on(&[TypeClass::Token, TypeClass::Int]),
         "in a coroutine body (WP-106)",
     ),
-    row("intrinsic:llvm.coro.resume", on(&[TypeClass::Ptr]), todo(X64), "in any function (WP-105)"),
+    row(
+        "intrinsic:llvm.coro.resume",
+        on(&[TypeClass::Ptr]),
+        on(&[TypeClass::Ptr]),
+        "in any function (WP-105)",
+    ),
     row(
         "intrinsic:llvm.coro.destroy",
         on(&[TypeClass::Ptr]),
-        todo(X64),
+        on(&[TypeClass::Ptr]),
         "in any function (WP-105)",
     ),
     row(
         "intrinsic:llvm.coro.done",
         on(&[TypeClass::Int, TypeClass::Ptr]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::Ptr]),
         "in any function (WP-105)",
     ),
     row(
         "intrinsic:llvm.coro.promise",
         on(&[TypeClass::Int, TypeClass::Ptr]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::Ptr]),
         "in any function; a constant power-of-two alignment (WP-105)",
     ),
     a64("intrinsic:llvm.coro.frame", CORO, ""),
-    row("intrinsic:llvm.coro.noop", on(&[TypeClass::Ptr]), todo(X64), "the noop frame (WP-105)"),
+    row(
+        "intrinsic:llvm.coro.noop",
+        on(&[TypeClass::Ptr]),
+        on(&[TypeClass::Ptr]),
+        "the noop frame (WP-105)",
+    ),
     row(
         "intrinsic:llvm.coro.is_in_ramp",
         on(&[TypeClass::Int]),
-        todo(X64),
+        on(&[TypeClass::Int]),
         "in a coroutine body (WP-106)",
     ),
     row(
         "intrinsic:llvm.coro.await.suspend.void",
         on(&[TypeClass::Ptr]),
-        todo(X64),
+        on(&[TypeClass::Ptr]),
         "in a coroutine body (WP-106)",
     ),
     row(
         "intrinsic:llvm.coro.await.suspend.bool",
         on(&[TypeClass::Int, TypeClass::Ptr]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::Ptr]),
         "in a coroutine body (WP-106)",
     ),
     row(
         "intrinsic:llvm.coro.await.suspend.handle",
         on(&[TypeClass::Ptr]),
-        todo(X64),
+        on(&[TypeClass::Ptr]),
         "in a coroutine body; symmetric transfer in constant stack (WP-107)",
     ),
     row(

@@ -10,7 +10,6 @@
 ;@ covers: spec/ir.md §5.5 intrinsics (coroutine bodies: heap values; spec/codegen.md §7.6)
 ;@ input: pre-opt
 ;@ dialect: 22
-;@ unsupported(x86_64): *
 ;@ stdout: 4 160
 ;@ stdout: 5 200
 ;@ stdout: 6 240

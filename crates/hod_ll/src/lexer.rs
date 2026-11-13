@@ -404,6 +404,7 @@ impl<'a> Lexer<'a> {
     }
 
     /// `@`, `%` or `$` and what follows.
+    #[allow(clippy::inline_always)] // Measured: a call per name token otherwise (WP-159).
     #[inline(always)]
     fn sigil(&mut self, start: usize, name: Tok, quoted: Tok, id: Option<Tok>) -> Token {
         let first = self.at(start + 1);

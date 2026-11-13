@@ -15,6 +15,7 @@ pub(crate) struct NameMap {
 /// The hash of a name: its bytes eight at a time as little-endian words
 /// (the last one padded with zeros), each mixed in.
 pub(crate) fn hash(key: &[u8]) -> u64 {
+    #[allow(clippy::inline_always)] // Once per word of every name hashed.
     #[inline(always)]
     fn mix(h: u64, word: u64) -> u64 {
         let h = (h ^ word).wrapping_mul(0x2545_F491_4F6C_DD1D);

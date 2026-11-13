@@ -49,6 +49,7 @@ mod inst;
 #[doc(hidden)]
 pub mod intern;
 mod intrinsic;
+pub mod kit;
 mod module;
 mod parallel;
 mod print;

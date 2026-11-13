@@ -1,8 +1,14 @@
 //! What `classify` costs, not a gate (`spec/ir.md` §8.11).
 //!
 //! ```text
-//! cargo run --release -p hod_ir --example classify_throughput [instructions] [symbols]
+//! cargo run --release -p hod_ir --example classify_throughput [instructions] [symbols] [build|classify]
 //! ```
+//!
+//! With `build` it only builds the one large body; with `classify` it
+//! builds it and classifies it once, with everything implemented. Under
+//! callgrind the difference of the two counts is what classifying the
+//! body costs in instructions, and the first what building it costs: a
+//! measure the load of the host does not change (WP-027).
 //!
 //! Builds the bodies of `body_throughput` (the instruction mix of
 //! unoptimized C++) in a module with real symbols, and a module of
@@ -154,6 +160,7 @@ fn main() -> IrResult<()> {
         None => default,
     };
     let (insts, symbol_count) = (number(1_000_000), number(100_000));
+    let once = args.next();
     let arch = Arch::Aarch64;
     let everything = Support::everything_implemented(arch);
     let accepting = Classifier::new(&everything);
@@ -165,6 +172,15 @@ fn main() -> IrResult<()> {
 
     let mut m = Module::new(TargetSpec::aarch64_linux_gnu());
     let shape = shape(&mut m)?;
+
+    if let Some(mode) = once {
+        let body = build(&m, &shape, insts, None)?;
+        if mode == "classify" {
+            accepting.body(black_box(&m), black_box(&body)).expect("accepted");
+        }
+        println!("{mode}: one body of {} instructions", body.inst_count());
+        return Ok(());
+    }
 
     // One large body.
     let (building, body) = fastest(|| build(&m, &shape, insts, None));

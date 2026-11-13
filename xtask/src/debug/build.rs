@@ -138,7 +138,7 @@ pub fn split_dwarf_name(ir: &Path) -> Option<String> {
 
 /// What `llc` and hod are given for such a module: the name, and the
 /// `.dwo` file beside the object.
-fn split_dwarf_args(ir: &Path, object: &Path) -> Vec<OsString> {
+pub fn split_dwarf_args(ir: &Path, object: &Path) -> Vec<OsString> {
     split_dwarf_name(ir).map_or_else(Vec::new, |name| {
         vec![
             OsString::from(format!("-split-dwarf-file={name}")),

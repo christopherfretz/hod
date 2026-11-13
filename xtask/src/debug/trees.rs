@@ -60,7 +60,10 @@ const MASKED: [&str; 9] = [
 
 /// The references the dump prints as a bare offset when their target
 /// has no name.
-const REFERENCES: [&str; 7] = [
+const REFERENCES: [&str; 10] = [
+    "DW_AT_count",
+    "DW_AT_upper_bound",
+    "DW_AT_lower_bound",
     "DW_AT_abstract_origin",
     "DW_AT_type",
     "DW_AT_specification",
@@ -268,31 +271,69 @@ pub fn first_difference(a: &Node, b: &Node) -> Option<String> {
 
 // ------------------------------------------------ permitted classes ----
 
-/// hod's location of an sret variable (`spec/dwarf.md` §6.7, "sret").
+/// hod's location of a variable whose address is in a slot: the sret
+/// pointer (`spec/dwarf.md` §6.7, "sret"), a dynamic alloca's address, a
+/// byval argument's, an over-aligned slot's.
 const SRET_HOD: &str = "DW_AT_location DW_OP_fbreg, DW_OP_deref";
-/// `llc`'s: a location list.
+/// `llc`'s for the sret pointer and a dynamic alloca: a location list.
 const SRET_LLC: &str = "DW_AT_location list";
+/// hod's location of a variable in its slot.
+const IN_SLOT: &str = "DW_AT_location DW_OP_fbreg";
+/// `llc`'s in a function whose stack it realigned (x86-64): relative to
+/// `rsp`.
+const RSP_RELATIVE: &str = "DW_AT_location DW_OP_breg7";
+
+/// The class that permits hod's location `h` where `llc` writes `l` in
+/// a DIE tagged `tag` (`spec/dwarf.md` §6.7 and §6.17), if any. `lists`:
+/// `llc`'s unit has location lists.
+fn location_class(tag: &str, h: &str, l: &str, lists: bool) -> Option<&'static str> {
+    let variable = tag == "DW_TAG_variable" || tag == "DW_TAG_formal_parameter";
+    match (h, l) {
+        _ if !variable => None,
+        (SRET_HOD, SRET_LLC) if lists => Some("sret"),
+        // x86-64 byval: `llc` names the argument area (`DW_OP_fbreg
+        // +16`), hod the pointer to it it saved.
+        (SRET_HOD, IN_SLOT) if tag == "DW_TAG_formal_parameter" => Some("byval"),
+        (SRET_HOD | IN_SLOT, RSP_RELATIVE) => Some("realigned frame"),
+        _ => None,
+    }
+}
 
 /// The classes of `spec/dwarf.md` §6.7 that make hod's unit `h` differ
 /// from `llc`'s `l` beyond equality, or `None` when something else
 /// differs too:
 /// - `sret`: `llc`'s unit has `DW_AT_loclists_base` and a location list
-///   where hod's variable is `DW_OP_fbreg N, DW_OP_deref`;
+///   where hod's variable is `DW_OP_fbreg N, DW_OP_deref` (the sret
+///   pointer; on x86-64 also a dynamic alloca);
+/// - `byval` (x86-64): a byval parameter `llc` places at `DW_OP_fbreg
+///   +16` and hod at `DW_OP_fbreg N, DW_OP_deref`;
+/// - `realigned frame` (x86-64): `llc` realigned the stack and places
+///   variables by `DW_OP_breg7` (`rsp`), hod by `DW_OP_fbreg`;
 /// - `(b) is.constant block`: hod has a lexical block `llc` does not
 ///   (only where the module calls `llvm.is.constant`);
 /// - `(a) fallthrough inlined`: `llc` has an inlined subroutine hod does
 ///   not, and then abstract instances and types hod does not;
+/// - `split pubnames`: `llc`'s skeleton unit has `DW_AT_GNU_pubnames`,
+///   hod writes no name index (§8);
 /// - `llc 19 blocks`: `llc` 19 writes no `DW_AT_abstract_origin` on a
 ///   concrete block.
 pub fn permitted(h: &Node, l: &Node, is_constant: bool, llc19: bool) -> Option<Vec<&'static str>> {
     let mut l = l.clone();
     let mut classes = Vec::new();
+    // §8 (split units): hod writes no name index.
+    let pubnames = "DW_AT_GNU_pubnames (true)";
+    if l.tag == "DW_TAG_skeleton_unit" && !h.attrs.iter().any(|a| a == pubnames) {
+        let before = l.attrs.len();
+        l.attrs.retain(|a| a != pubnames);
+        if l.attrs.len() < before {
+            classes.push("split pubnames");
+        }
+    }
     let mut sret = false;
     if !h.attrs.iter().any(|a| a == "DW_AT_loclists_base")
         && l.attrs.iter().any(|a| a == "DW_AT_loclists_base")
     {
         l.attrs.retain(|a| a != "DW_AT_loclists_base");
-        classes.push("sret");
         sret = true;
     }
     let extras_ok =
@@ -331,15 +372,21 @@ impl Permit {
             let origin = |a: &String| !a.starts_with("DW_AT_abstract_origin");
             let mut bare = h.clone();
             bare.attrs.retain(origin);
-            let mut sret = h.clone();
-            for (a, b) in sret.attrs.iter_mut().zip(&l.attrs) {
-                if a == SRET_HOD && b == SRET_LLC {
-                    SRET_LLC.clone_into(a);
+            let mut placed = h.clone();
+            let mut found = Vec::new();
+            for (a, b) in placed.attrs.iter_mut().zip(&l.attrs) {
+                if let Some(class) = location_class(&h.tag, a, b, self.sret) {
+                    found.push(class);
+                    a.clone_from(b);
                 }
             }
             if self.llc19 && h.tag == "DW_TAG_lexical_block" && same_attrs(&bare, l) {
                 self.note("llc 19 blocks");
-            } else if !(self.sret && h.tag == "DW_TAG_variable" && same_attrs(&sret, l)) {
+            } else if !found.is_empty() && same_attrs(&placed, l) {
+                for class in found {
+                    self.note(class);
+                }
+            } else {
                 return false;
             }
         }
@@ -504,6 +551,7 @@ fn one(module: &Path, tools: &Tools, major: u32, dir: &Path) -> Outcome {
         llc,
         |c| {
             c.args(REFERENCE).args(["-filetype=obj", "-relocation-model=pic"]).args(&extra);
+            c.args(build::split_dwarf_args(module, &llc_o));
             c.arg("-o").arg(&llc_o).arg(module);
         },
         "llc",
@@ -576,8 +624,14 @@ pub fn compare(
             }
         }
     }
-    // An sret location list adds `llc`'s relocations of `.debug_loclists`
-    // only; `.debug_info`'s must be equal.
+    // `llc`'s location lists (the `sret` class) add its relocation of
+    // `DW_AT_loclists_base` against `.debug_loclists`; every other must
+    // be equal.
+    let mut theirs_r = theirs_r.to_vec();
+    if classes.contains(&"sret") {
+        theirs_r.retain(|(_, symbol)| symbol != ".debug_loclists");
+    }
+    let theirs_r = theirs_r.as_slice();
     if ours_r != theirs_r {
         let only = |a: &[(String, String)], b: &[(String, String)]| {
             a.iter().find(|x| !b.contains(x)).map(|(k, s)| format!("{k} {s}"))

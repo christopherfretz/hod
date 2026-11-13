@@ -12,7 +12,10 @@
 //! # The loop
 //!
 //! Every operation here is one loop, unrolled at emit time over the
-//! lanes (at most [`vector::MAX_LANES`]):
+//! lanes (at most [`vector::MAX_LANES`]). The loop itself is `hod_cg`'s
+//! (`hod_cg::lanes`, `spec/codegen.md` §7.3 "The lane loop", WP-129):
+//! `A64` implements its `LaneKernels` below, and each operation passes
+//! its scalar kernel to `each_lane`. The steps:
 //!
 //! 1. the shapes are checked ([`vector::lanes`] and its refusals) before
 //!    anything is emitted;
@@ -53,6 +56,7 @@
 //! three general and two vector pool temporaries at once, the third
 //! floating-point operand of `fma`/`fmuladd` in `v31`.
 
+use hod_cg::lanes::{self as shared, Geometry, LaneKernels};
 use hod_cg::{CgResult, Class, FnCx, FrameRef, PReg};
 use hod_ir::{Inst, Intrinsic, Opcode, TypeId, Value};
 
@@ -62,24 +66,50 @@ use crate::target::A64;
 use crate::vector::{self, Elem, Lanes, MEM_VECTOR, SCRATCH_IMAGES, Shape};
 use crate::{float, int, intrinsic};
 
-/// An operand of a lane loop.
-#[derive(Clone, Copy)]
-enum Arg {
-    /// A vector: where its image is, and its lanes.
-    Vector(FrameRef, Lanes),
-    /// A scalar, the same in every lane.
-    Scalar(Value),
+/// The lane loop's moves on AArch64 (`hod_cg::lanes`): a lane is reached
+/// through a frame cursor that rebases into `x16`; a register vector's
+/// image is its `D`/`Q` register stored to a scratch image of 16 bytes.
+impl LaneKernels for A64 {
+    type Lanes = Lanes;
+
+    const SCRATCH_IMAGES: u32 = SCRATCH_IMAGES;
+
+    fn geometry(lanes: &Lanes) -> Geometry {
+        lanes.geometry()
+    }
+
+    fn deferred_first<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>) -> CgResult<()> {
+        deferred_first(cx, inst, None)
+    }
+
+    fn scratch(cx: &mut FnCx<'_, A64>, k: u32) -> CgResult<FrameRef> {
+        vector::scratch(cx, k)
+    }
+
+    fn spill(cx: &mut FnCx<'_, A64>, reg: PReg, lanes: &Lanes, k: u32) -> CgResult<FrameRef> {
+        vector::spill(cx, vr(reg), &lanes.shape, k)
+    }
+
+    fn reload(cx: &mut FnCx<'_, A64>, reg: PReg, lanes: &Lanes, image: FrameRef) {
+        vector::reload(cx, vr(reg), &lanes.shape, image);
+    }
+
+    fn load_lane(cx: &mut FnCx<'_, A64>, lanes: &Lanes, at: FrameRef, rt: PReg) {
+        let mut at = Cursor::frame(cx, at, X16);
+        vector::load_lane(cx, lanes, rt, &mut at);
+    }
+
+    fn store_lane(cx: &mut FnCx<'_, A64>, lanes: &Lanes, at: FrameRef, rt: PReg) {
+        let mut at = Cursor::frame(cx, at, X16);
+        vector::store_lane(cx, lanes, rt, &mut at);
+    }
 }
 
+/// An operand of a lane loop.
+type Arg = shared::Arg<Lanes>;
+
 /// The operands and the result of a lane loop.
-struct Loop {
-    /// The operands, in order.
-    args: [Arg; 3],
-    /// The result's lanes.
-    result: Lanes,
-    /// Where the result's image is written.
-    dst: FrameRef,
-}
+type Loop = shared::LaneLoop<Lanes>;
 
 /// The lanes of vector type `ty`, or the refusal.
 fn lanes_of(cx: &FnCx<'_, A64>, ty: TypeId) -> CgResult<Lanes> {
@@ -98,71 +128,9 @@ fn is_mask(cx: &FnCx<'_, A64>, ty: TypeId) -> bool {
 }
 
 /// Checks the shapes of `inst` and its `operands` (at most three), then
-/// finds the operands' images and the result's.
+/// finds the operands' images and the result's (`hod_cg::lanes::setup`).
 fn setup<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, operands: &[Value]) -> CgResult<Loop> {
-    if operands.len() > 3 {
-        return cx.bug("a lane operation of more than three operands");
-    }
-    let result = lanes_of(cx, inst.ty())?;
-    let mut shapes: [Option<Lanes>; 3] = [None; 3];
-    for (shape, &v) in shapes.iter_mut().zip(operands) {
-        let ty = value_ty(cx, v);
-        if cx.types().is_vector(ty) {
-            let lanes = lanes_of(cx, ty)?;
-            if lanes.count() != result.count() {
-                return cx.bug("a lane operation on vectors of different lengths");
-            }
-            *shape = Some(lanes);
-        }
-    }
-    deferred_first(cx, inst, None)?;
-    let mut args = [Arg::Scalar(Value::NONE); 3];
-    let mut images = 0;
-    for (i, &v) in operands.iter().enumerate() {
-        let Some(lanes) = shapes[i] else {
-            args[i] = Arg::Scalar(v);
-            continue;
-        };
-        if let Some(j) = operands[..i].iter().position(|&w| w == v) {
-            args[i] = args[j];
-            continue;
-        }
-        let image = if lanes.shape.class == Class::Fpr {
-            let r = cx.use_reg(v)?;
-            let image = vector::spill(cx, vr(r), &lanes.shape, images)?;
-            images += 1;
-            cx.release(v);
-            cx.free_temp(r);
-            image
-        } else {
-            cx.use_mem(v)?
-        };
-        args[i] = Arg::Vector(image, lanes);
-    }
-    let dst = if result.shape.class != Class::Fpr {
-        cx.def_mem(inst)?
-    } else if images < SCRATCH_IMAGES {
-        vector::scratch(cx, images)?
-    } else if let Arg::Vector(image, lanes) = args[0]
-        && lanes.bytes() == result.bytes()
-    {
-        image
-    } else {
-        return cx.bug("no scratch image for the result of a lane operation");
-    };
-    Ok(Loop { args, result, dst })
-}
-
-/// Loads lane `lane` of `arg` into `rt` (a scalar operand: its value).
-fn load(cx: &mut FnCx<'_, A64>, arg: Arg, lane: u32, rt: PReg) -> CgResult<()> {
-    match arg {
-        Arg::Vector(image, lanes) => {
-            let mut at = Cursor::frame(cx, vector::offset(image, lanes.offset(lane)), X16);
-            vector::load_lane(cx, &lanes, rt, &mut at);
-            Ok(())
-        }
-        Arg::Scalar(v) => cx.put(v, rt),
-    }
+    shared::setup(cx, inst, operands, |cx, ty| lanes_of(cx, ty))
 }
 
 /// Loads lane `lane` of the floating-point vector `arg` into `v31`.
@@ -175,42 +143,15 @@ fn load_v31(cx: &mut FnCx<'_, A64>, arg: Arg, lane: u32) -> CgResult<()> {
     Ok(())
 }
 
-/// A pool temporary with lane `lane` of `arg` in it; `class` is the
-/// element's (a scalar operand's own).
-fn take(cx: &mut FnCx<'_, A64>, arg: Arg, lane: u32, class: Class) -> CgResult<PReg> {
-    let t = cx.temp(class)?;
-    load(cx, arg, lane, t)?;
-    Ok(t)
-}
-
 /// The class of a lane of `arg` (of a scalar operand: its own).
 fn class_of(cx: &FnCx<'_, A64>, arg: Arg) -> Class {
-    match arg {
-        Arg::Vector(_, lanes) => lanes.elem_class(),
-        Arg::Scalar(v) => cx.class_of(v),
-    }
-}
-
-/// Stores `rt` as lane `lane` of the result and gives the temporaries
-/// `free` back.
-fn store(cx: &mut FnCx<'_, A64>, lp: &Loop, lane: u32, rt: PReg, free: &[PReg]) {
-    let mut at = Cursor::frame(cx, vector::offset(lp.dst, lp.result.offset(lane)), X16);
-    vector::store_lane(cx, &lp.result, rt, &mut at);
-    cx.free_temp(rt);
-    for &t in free {
-        cx.free_temp(t);
-    }
+    shared::class_of(cx, arg)
 }
 
 /// The end of a lane loop: an `Fpr` result's image loaded into its
 /// register.
 fn done<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, lp: &Loop) -> CgResult<()> {
-    if lp.result.shape.class != Class::Fpr {
-        return Ok(());
-    }
-    let rd = cx.def_reg(inst)?;
-    vector::reload(cx, vr(rd), &lp.result.shape, lp.dst);
-    cx.finish(inst, rd)
+    shared::finish(cx, inst, &lp.result, lp.dst)
 }
 
 // ---- instructions ----
@@ -229,23 +170,18 @@ pub fn binary<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, lhs: Value, rhs: Value
     let lp = setup(cx, inst, &[lhs, rhs])?;
     let elem = lp.result.shape.elem;
     let elem_ty = lp.result.shape.elem_ty;
-    let [a, b, _] = lp.args;
+    let both = |class| [(0, class), (1, class)];
     match op {
         O::FAdd | O::FSub | O::FMul | O::FDiv if elem.is_float() => {
-            for lane in 0..lp.result.count() {
-                let ta = take(cx, a, lane, Class::Fpr)?;
-                let tb = take(cx, b, lane, Class::Fpr)?;
-                float::lane_binary(cx, op, elem_ty, vr(ta), vr(tb))?;
-                store(cx, &lp, lane, ta, &[tb]);
-            }
+            shared::each_lane(cx, &lp, &both(Class::Fpr), |cx, _, t| {
+                float::lane_binary(cx, op, elem_ty, vr(t[0]), vr(t[1]))?;
+                Ok(t[0])
+            })?;
         }
         O::FRem if elem.is_float() => {
-            for lane in 0..lp.result.count() {
-                let ta = take(cx, a, lane, Class::Fpr)?;
-                let tb = take(cx, b, lane, Class::Fpr)?;
-                let r = float::lane_frem(cx, elem_ty, ta, tb)?;
-                store(cx, &lp, lane, r, &[]);
-            }
+            shared::each_lane(cx, &lp, &both(Class::Fpr), |cx, _, t| {
+                float::lane_frem(cx, elem_ty, t[0], t[1])
+            })?;
         }
         O::Add
         | O::Sub
@@ -263,12 +199,10 @@ pub fn binary<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, lhs: Value, rhs: Value
             if !elem.is_float() =>
         {
             let bits = elem.bits();
-            for lane in 0..lp.result.count() {
-                let ta = take(cx, a, lane, Class::Gpr)?;
-                let tb = take(cx, b, lane, Class::Gpr)?;
-                int::lane_binary(cx, op, bits, xr(ta), xr(tb));
-                store(cx, &lp, lane, ta, &[tb]);
-            }
+            shared::each_lane(cx, &lp, &both(Class::Gpr), |cx, _, t| {
+                int::lane_binary(cx, op, bits, xr(t[0]), xr(t[1]));
+                Ok(t[0])
+            })?;
         }
         _ => return cx.bug("a binary opcode that does not fit the vector's elements"),
     }
@@ -286,11 +220,10 @@ pub fn fneg<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<
         return unsupported(float::FNEG);
     }
     let elem_ty = lp.result.shape.elem_ty;
-    for lane in 0..lp.result.count() {
-        let t = take(cx, lp.args[0], lane, Class::Fpr)?;
-        float::lane_fneg(cx, elem_ty, vr(t))?;
-        store(cx, &lp, lane, t, &[]);
-    }
+    shared::each_lane(cx, &lp, &[(0, Class::Fpr)], |cx, _, t| {
+        float::lane_fneg(cx, elem_ty, vr(t[0]))?;
+        Ok(t[0])
+    })?;
     done(cx, inst, &lp)
 }
 
@@ -326,18 +259,19 @@ pub fn cast<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, arg: Value) -> CgResult<
         return cx.bug("an element-wise cast of a scalar");
     };
     let to = lp.result;
-    for lane in 0..to.count() {
-        if matches!(op, O::Trunc | O::ZExt | O::SExt | O::PtrToInt | O::PtrToAddr | O::IntToPtr) {
-            let t = take(cx, lp.args[0], lane, Class::Gpr)?;
-            int::lane_cast(cx, op, from.shape.elem.bits(), to.shape.elem.bits(), xr(t));
-            store(cx, &lp, lane, t, &[]);
-        } else {
-            let src = take(cx, lp.args[0], lane, from.elem_class())?;
+    if matches!(op, O::Trunc | O::ZExt | O::SExt | O::PtrToInt | O::PtrToAddr | O::IntToPtr) {
+        shared::each_lane(cx, &lp, &[(0, Class::Gpr)], |cx, _, t| {
+            int::lane_cast(cx, op, from.shape.elem.bits(), to.shape.elem.bits(), xr(t[0]));
+            Ok(t[0])
+        })?;
+    } else {
+        shared::each_lane(cx, &lp, &[(0, from.elem_class())], |cx, _, t| {
+            let src = t[0];
             let dst =
                 if from.elem_class() == to.elem_class() { src } else { cx.temp(to.elem_class())? };
             float::lane_convert(cx, op, from.shape.elem_ty, to.shape.elem_ty, src, dst)?;
-            store(cx, &lp, lane, dst, &[src]);
-        }
+            Ok(dst)
+        })?;
     }
     done(cx, inst, &lp)
 }
@@ -426,48 +360,42 @@ fn lane_intrinsic<'a>(
     }
     let lp = setup(cx, inst, &args[..arity])?;
     let bits = lp.result.shape.elem.bits();
-    let [a, b, c] = lp.args;
-    for lane in 0..lp.result.count() {
-        let x = take(cx, a, lane, Class::Gpr)?;
-        match family {
-            Family::Unary => {
-                intrinsic::lane_unary(cx, which, xr(x), bits)?;
-                store(cx, &lp, lane, x, &[]);
-            }
-            Family::Funnel => {
-                let y = take(cx, b, lane, Class::Gpr)?;
-                let z = take(cx, c, lane, Class::Gpr)?;
-                let left = which == Intrinsic::Fshl;
-                if intrinsic::lane_funnel(cx, left, [xr(x), xr(y), xr(z)], bits) {
-                    store(cx, &lp, lane, x, &[y, z]);
-                } else {
-                    store(cx, &lp, lane, y, &[x, z]);
+    let [a, b, _] = lp.args;
+    match family {
+        Family::Unary => shared::each_lane(cx, &lp, &[(0, Class::Gpr)], |cx, _, t| {
+            intrinsic::lane_unary(cx, which, xr(t[0]), bits)?;
+            Ok(t[0])
+        })?,
+        Family::Funnel => {
+            let takes = [(0, Class::Gpr), (1, Class::Gpr), (2, Class::Gpr)];
+            let left = which == Intrinsic::Fshl;
+            shared::each_lane(cx, &lp, &takes, |cx, _, t| {
+                let first = intrinsic::lane_funnel(cx, left, [xr(t[0]), xr(t[1]), xr(t[2])], bits);
+                Ok(if first { t[0] } else { t[1] })
+            })?;
+        }
+        _ => {
+            let operand_bits = match (family, a) {
+                (Family::ThreeWay, Arg::Vector(_, operand)) => operand.shape.elem.bits(),
+                (Family::ThreeWay, Arg::Scalar(_)) => {
+                    return cx.bug("scmp/ucmp of a scalar into a vector");
                 }
-            }
-            _ => {
-                let y = take(cx, b, lane, class_of(cx, b))?;
+                _ => 0,
+            };
+            let takes = [(0, Class::Gpr), (1, class_of(cx, b))];
+            shared::each_lane(cx, &lp, &takes, |cx, _, t| {
+                let (x, y) = (xr(t[0]), xr(t[1]));
                 match family {
-                    Family::MinMax => intrinsic::lane_min_max(cx, which, xr(x), xr(y), bits),
-                    Family::Saturating => {
-                        intrinsic::lane_saturating(cx, which, xr(x), xr(y), bits);
-                    }
+                    Family::MinMax => intrinsic::lane_min_max(cx, which, x, y, bits),
+                    Family::Saturating => intrinsic::lane_saturating(cx, which, x, y, bits),
                     Family::ThreeWay => {
-                        let Arg::Vector(_, operand) = a else {
-                            return cx.bug("scmp/ucmp of a scalar into a vector");
-                        };
                         let signed = which == Intrinsic::Scmp;
-                        intrinsic::lane_three_way(
-                            cx,
-                            signed,
-                            xr(x),
-                            xr(y),
-                            operand.shape.elem.bits(),
-                        );
+                        intrinsic::lane_three_way(cx, signed, x, y, operand_bits);
                     }
-                    _ => int::lane_binary(cx, Opcode::And, 64, xr(x), xr(y)),
+                    _ => int::lane_binary(cx, Opcode::And, 64, x, y),
                 }
-                store(cx, &lp, lane, x, &[y]);
-            }
+                Ok(t[0])
+            })?;
         }
     }
     done(cx, inst, &lp)
@@ -499,7 +427,6 @@ fn fp_lanes<'a>(
     }
     let plan = fpintr::lane_plan(cx, which, elem, n_elem)?;
     let lp = setup(cx, inst, args)?;
-    let count = lp.result.count();
     match plan {
         LaneFp::Inline
             if matches!(
@@ -508,44 +435,41 @@ fn fp_lanes<'a>(
             ) =>
         {
             let bits = lp.result.shape.elem.bits();
-            for lane in 0..count {
-                let v = take(cx, lp.args[0], lane, Class::Fpr)?;
+            shared::each_lane(cx, &lp, &[(0, Class::Fpr)], |cx, _, t| {
                 let rd = cx.temp(Class::Gpr)?;
-                fpintr::lane_inline(cx, which, elem, [vr(v), V31, V31], xr(rd), bits)?;
-                store(cx, &lp, lane, rd, &[v]);
-            }
+                fpintr::lane_inline(cx, which, elem, [vr(t[0]), V31, V31], xr(rd), bits)?;
+                Ok(rd)
+            })?;
         }
         LaneFp::Inline => {
-            for lane in 0..count {
-                let x = take(cx, lp.args[0], lane, Class::Fpr)?;
-                let y = if args.len() > 1 {
-                    Some(take(cx, lp.args[1], lane, Class::Fpr)?)
-                } else {
-                    None
-                };
+            let takes = [(0, Class::Fpr), (1, Class::Fpr)];
+            let takes = &takes[..args.len().min(2)];
+            shared::each_lane(cx, &lp, takes, |cx, lane, t| {
                 if args.len() > 2 {
                     load_v31(cx, lp.args[2], lane)?;
                 }
-                let regs = [vr(x), y.map_or(V31, vr), V31];
+                let regs = [vr(t[0]), t.get(1).map_or(V31, |&y| vr(y)), V31];
                 fpintr::lane_inline(cx, which, elem, regs, X16, 0)?;
-                let free = y.as_slice();
-                store(cx, &lp, lane, x, free);
-            }
+                Ok(t[0])
+            })?;
         }
         LaneFp::Call { func, n } => {
             let fps = if n == 0 { args.len() } else { 1 };
-            for lane in 0..count {
-                let x = take(cx, lp.args[0], lane, Class::Fpr)?;
-                let regs =
-                    if fps > 1 { [x, take(cx, lp.args[1], lane, Class::Fpr)?] } else { [x, x] };
-                let exponent = if n == 0 {
-                    None
-                } else {
-                    Some((take(cx, lp.args[1], lane, class_of(cx, lp.args[1]))?, n))
-                };
-                let r = fpintr::lane_call(cx, func, elem, &regs[..fps.min(2)], exponent)?;
-                store(cx, &lp, lane, r, &[]);
+            let mut takes = [(0, Class::Fpr); 3];
+            let mut count = 1;
+            if fps > 1 {
+                takes[count] = (1, Class::Fpr);
+                count += 1;
             }
+            if n != 0 {
+                takes[count] = (1, class_of(cx, lp.args[1]));
+                count += 1;
+            }
+            shared::each_lane(cx, &lp, &takes[..count], |cx, _, t| {
+                let regs = if fps > 1 { [t[0], t[1]] } else { [t[0], t[0]] };
+                let exponent = if n == 0 { None } else { Some((t[count - 1], n)) };
+                fpintr::lane_call(cx, func, elem, &regs[..fps.min(2)], exponent)
+            })?;
         }
     }
     done(cx, inst, &lp)

@@ -164,3 +164,248 @@ fn function_addresses_are_aligned() {
            %s = or i64 %a, %b\n  ret i64 %s\n}\n");
     assert_eq!(low, 0);
 }
+
+/// Runs `@main` of `header` + `text` with the standard host functions;
+/// the result and the values passed to `sink`.
+fn run_sinking(header: &str, text: &str) -> (Result<Option<Val>, Stop>, Vec<u64>) {
+    let source = format!("{header}{text}");
+    let mut parsed = parse_module(source.as_bytes(), &ParseOptions::default()).expect("module");
+    let mut parser = BodyParser::new(&parsed.text);
+    let mut bodies = Vec::new();
+    for function in parsed.text.functions() {
+        if let Some(body) = parser.parse(&mut parsed.module, function).expect("body") {
+            bodies.push(body);
+        }
+    }
+    let module = &parsed.module;
+    let program = Program::with_bodies(module, &bodies).expect("program");
+    program.verify().expect("verifies");
+    let main = module.find_symbol(b"main").expect("main");
+    let mut interp = Interp::new(&program);
+    hod_interp::host::register(&mut interp);
+    let outcome = interp.run(main, &[]);
+    let sunk =
+        outcome.trace.iter().filter_map(|event| event.args.first().and_then(Val::as_u64)).collect();
+    (outcome.result, sunk)
+}
+
+/// A variadic callee that sinks the four fields of its `va_list` (the
+/// pointers as offsets from the save area and from each other) and the
+/// first variable argument in a register, then `@main` calling it.
+const LAYOUT: &str = "%S = type { i64, i64, i64 }\n\
+    declare void @sink(i64)\n\
+    declare void @llvm.va_start.p0(ptr)\n\
+    declare void @llvm.va_end.p0(ptr)\n\
+    define void @f(i32 %a, double %b, x86_fp80 %c, ptr byval(%S) align 8 %d, ...) {\n\
+      %ap = alloca [24 x i8], align 16\n\
+      call void @llvm.va_start.p0(ptr %ap)\n\
+      %gp = load i32, ptr %ap\n\
+      %gp64 = zext i32 %gp to i64\n\
+      call void @sink(i64 %gp64)\n\
+      %fpp = getelementptr i8, ptr %ap, i64 4\n\
+      %fp = load i32, ptr %fpp\n\
+      %fp64 = zext i32 %fp to i64\n\
+      call void @sink(i64 %fp64)\n\
+      %ovp = getelementptr i8, ptr %ap, i64 8\n\
+      %ov = load ptr, ptr %ovp\n\
+      %rsp = getelementptr i8, ptr %ap, i64 16\n\
+      %rs = load ptr, ptr %rsp\n\
+      %gpslot = getelementptr i8, ptr %rs, i64 %gp64\n\
+      %first = load i64, ptr %gpslot\n\
+      call void @sink(i64 %first)\n\
+      %fpslot = getelementptr i8, ptr %rs, i64 %fp64\n\
+      %second = load double, ptr %fpslot\n\
+      %second.i = bitcast double %second to i64\n\
+      call void @sink(i64 %second.i)\n\
+      %ovx = getelementptr i8, ptr %ov, i64 8\n\
+      %third = load x86_fp80, ptr %ovx, align 16\n\
+      %third.i = fptosi x86_fp80 %third to i64\n\
+      call void @sink(i64 %third.i)\n\
+      %next = getelementptr i8, ptr %rs, i64 16\n\
+      %fourth = load i32, ptr %next\n\
+      %fourth.i = sext i32 %fourth to i64\n\
+      call void @sink(i64 %fourth.i)\n\
+      %ovi = ptrtoint ptr %ov to i64\n\
+      %low = and i64 %ovi, 15\n\
+      call void @sink(i64 %low)\n\
+      call void @llvm.va_end.p0(ptr %ap)\n\
+      ret void\n\
+    }\n";
+
+/// §5.12: after the named `(i32, double, x86_fp80, byval %S)`, `va_start`
+/// gives `gp_offset` 8, `fp_offset` 64, and an overflow area after the 16
+/// bytes of the `x86_fp80` and the 24 of the copy (40, rounded to 8);
+/// the variable arguments are where the psABI puts them.
+#[test]
+fn variadic_layout() {
+    let (result, sunk) = run_sinking(
+        HEADER,
+        &format!(
+            "{LAYOUT}define void @main() {{\n\
+               %s = alloca %S, align 8\n\
+               store %S zeroinitializer, ptr %s\n\
+               call void (i32, double, x86_fp80, ptr, ...) @f(i32 1, double 2.0, x86_fp80 0xK3FFF8000000000000000, ptr byval(%S) align 8 %s, i64 77, double 1.5, x86_fp80 0xK4001A000000000000000, i32 -9)\n\
+               ret void\n}}\n"
+        ),
+    );
+    assert_eq!(result, Ok(None));
+    // The overflow area starts at 40 of the 16-aligned stack-argument
+    // area; the `x86_fp80` is in the next 16-aligned slot, at 48; the
+    // `i32` is in the second general register, `rsi`, at 16.
+    assert_eq!(sunk, [8, 64, 77, 1.5f64.to_bits(), 5, (-9i64) as u64, 8]);
+}
+
+/// §5.12: only what the caller owes is written; `va_end` and the end of
+/// the frame make the list unusable; `va_copy` copies it.
+#[test]
+fn va_end_and_va_copy() {
+    let callee = |body: &str| {
+        format!(
+            "declare void @sink(i64)\n\
+             declare void @llvm.va_start.p0(ptr)\n\
+             declare void @llvm.va_end.p0(ptr)\n\
+             declare void @llvm.va_copy.p0(ptr, ptr)\n\
+             @keep = global ptr null\n\
+             define i64 @f(i32 %n, ...) {{\n\
+               %ap = alloca [24 x i8], align 16\n\
+               %aq = alloca [24 x i8], align 16\n\
+               call void @llvm.va_start.p0(ptr %ap)\n\
+               %rsp = getelementptr i8, ptr %ap, i64 16\n\
+               %rs = load ptr, ptr %rsp\n\
+               {body}\n\
+             }}\n"
+        )
+    };
+    let main = |args: &str| {
+        format!(
+            "define i64 @main() {{\n  %r = call i64 (i32, ...) @f(i32 0, {args})\n  ret i64 %r\n}}\n"
+        )
+    };
+    let run = |body: &str, args: &str| run_sinking(HEADER, &(callee(body) + &main(args))).0;
+    // An `i32` passed, an `i64` read: the upper half was never written.
+    let wide = "%slot = getelementptr i8, ptr %rs, i64 8\n  %v = load i64, ptr %slot\n  ret i64 %v";
+    assert_eq!(run(wide, "i32 5"), Err(Stop::Trap(Trap::UninitializedLoad)));
+    assert_eq!(run(wide, "i64 5"), Ok(Some(Val::i64(5))));
+    // `signext` owes 32 bits.
+    let ext = "%slot = getelementptr i8, ptr %rs, i64 8\n  %v = load i32, ptr %slot\n  %w = zext i32 %v to i64\n  ret i64 %w";
+    assert_eq!(run(ext, "i8 signext -1"), Ok(Some(Val::i64(0xffff_ffff))));
+    // A `float` passed, a `double` read.
+    let double = "%slot = getelementptr i8, ptr %rs, i64 48\n  %v = load double, ptr %slot\n  %w = bitcast double %v to i64\n  ret i64 %w";
+    assert_eq!(run(double, "float 1.0"), Err(Stop::Trap(Trap::UninitializedLoad)));
+    // Past the variable arguments: nothing was written.
+    let past =
+        "%slot = getelementptr i8, ptr %rs, i64 16\n  %v = load i64, ptr %slot\n  ret i64 %v";
+    assert_eq!(run(past, "i64 5"), Err(Stop::Trap(Trap::UninitializedLoad)));
+    // `va_copy` copies; `va_end` makes the list unwritten.
+    let copy = "call void @llvm.va_copy.p0(ptr %aq, ptr %ap)\n  call void @llvm.va_end.p0(ptr %ap)\n  %v = load i32, ptr %aq\n  %w = zext i32 %v to i64\n  ret i64 %w";
+    assert_eq!(run(copy, "i64 5"), Ok(Some(Val::i64(8))));
+    let ended = "call void @llvm.va_end.p0(ptr %ap)\n  %v = load i32, ptr %ap\n  %w = zext i32 %v to i64\n  ret i64 %w";
+    assert_eq!(run(ended, "i64 5"), Err(Stop::Trap(Trap::UninitializedLoad)));
+    // The save area dies with the frame.
+    let escape = "store ptr %rs, ptr @keep\n  ret i64 0";
+    let after = callee(escape)
+        + "define i64 @main() {\n  %r = call i64 (i32, ...) @f(i32 0, i64 5)\n  \
+           %p = load ptr, ptr @keep\n  %q = getelementptr i8, ptr %p, i64 8\n  \
+           %v = load i64, ptr %q\n  ret i64 %v\n}\n";
+    assert_eq!(run_sinking(HEADER, &after).0, Err(Stop::Trap(Trap::UseAfterFree)));
+}
+
+/// §5.8, §5.12, §8: a variadic host function gets every argument; what
+/// the model does not cover is refused by name; AArch64 has no model.
+#[test]
+fn variadic_refusals() {
+    // A variadic declaration registered as a host: `sink` declared `...`.
+    let (result, sunk) = run_sinking(
+        HEADER,
+        "declare void @sink(i64, ...)\n\
+         define void @main() {\n  call void (i64, ...) @sink(i64 3, i64 4)\n  ret void\n}\n",
+    );
+    // The standard `sink` takes one `i64`: two arguments are its refusal.
+    assert_eq!((result, sunk), (Err(Stop::Trap(Trap::Host)), vec![]));
+    let def = "declare void @llvm.va_start.p0(ptr)\n\
+               define void @f(i32 %n, ...) {\n  ret void\n}\n";
+    let call = |args: &str| {
+        format!(
+            "{def}define void @main() {{\n  call void (i32, ...) @f(i32 0, {args})\n  ret void\n}}\n"
+        )
+    };
+    let reason = |header: &str, text: &str| match run_sinking(header, text).0 {
+        Err(Stop::Unsupported(reason)) => reason,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(reason(HEADER, &call("{ i64, i64 } zeroinitializer")), "call:variadic-type");
+    assert_eq!(reason(HEADER, &call("i1 true")), "call:variadic-type");
+    assert_eq!(reason(HEADER, &call("i96 1")), "call:variadic-type");
+    assert_eq!(reason(HEADER, &call("<3 x i32> zeroinitializer")), "call:variadic-type");
+    assert_eq!(reason(HEADER, &call("ptr nest null")), "call:variadic-attr");
+    let aarch64 = "target datalayout = \"e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32\"\n\
+                   target triple = \"aarch64-unknown-linux-gnu\"\n";
+    assert_eq!(reason(aarch64, &call("i64 1")), "call:variadic");
+}
+
+/// §5.11: the `x86_fp80` intrinsics, by hand.
+#[test]
+fn x87_intrinsics() {
+    let f80 = |expr: &str| {
+        let text = format!(
+            "declare x86_fp80 @llvm.sqrt.f80(x86_fp80)\n\
+             declare x86_fp80 @llvm.floor.f80(x86_fp80)\n\
+             declare x86_fp80 @llvm.round.f80(x86_fp80)\n\
+             declare x86_fp80 @llvm.roundeven.f80(x86_fp80)\n\
+             declare x86_fp80 @llvm.fma.f80(x86_fp80, x86_fp80, x86_fp80)\n\
+             declare x86_fp80 @llvm.maxnum.f80(x86_fp80, x86_fp80)\n\
+             declare i1 @llvm.is.fpclass.f80(x86_fp80, i32)\n\
+             define i80 @main() {{\n  %x = {expr}\n  %r = bitcast x86_fp80 %x to i80\n  ret i80 %r\n}}\n"
+        );
+        match run(&text) {
+            Ok(Some(Val::Int { value, .. })) => Ok(value),
+            Ok(other) => panic!("{other:?}"),
+            Err(stop) => Err(stop),
+        }
+    };
+    // sqrt(2) rounded to 64 bits; floor(-2.5) = -3; round(2.5) = 3;
+    // roundeven(2.5) = 2.
+    assert_eq!(
+        f80("call x86_fp80 @llvm.sqrt.f80(x86_fp80 0xK40008000000000000000)"),
+        Ok(0x3FFF_B504_F333_F9DE_6484)
+    );
+    assert_eq!(
+        f80("call x86_fp80 @llvm.floor.f80(x86_fp80 0xKC000A000000000000000)"),
+        Ok(0xC000_C000_0000_0000_0000)
+    );
+    assert_eq!(
+        f80("call x86_fp80 @llvm.round.f80(x86_fp80 0xK4000A000000000000000)"),
+        Ok(0x4000_C000_0000_0000_0000)
+    );
+    assert_eq!(
+        f80("call x86_fp80 @llvm.roundeven.f80(x86_fp80 0xK4000A000000000000000)"),
+        Ok(0x4000_8000_0000_0000_0000)
+    );
+    // (1 + 2^-63)(1 - 2^-63) - 1 = -2^-126 exactly: fused, not zero.
+    assert_eq!(
+        f80(
+            "call x86_fp80 @llvm.fma.f80(x86_fp80 0xK3FFF8000000000000001, x86_fp80 0xK3FFEFFFFFFFFFFFFFFFE, x86_fp80 0xKBFFF8000000000000000)"
+        ),
+        Ok(0xBF81_8000_0000_0000_0000)
+    );
+    assert_eq!(
+        f80("call x86_fp80 @llvm.sqrt.f80(x86_fp80 0xKBFFF8000000000000000)"),
+        Err(Stop::Trap(Trap::NanResult))
+    );
+    assert_eq!(
+        f80(
+            "call x86_fp80 @llvm.maxnum.f80(x86_fp80 0xK00000000000000000000, x86_fp80 0xK80000000000000000000)"
+        ),
+        Err(Stop::Trap(Trap::ZeroSign))
+    );
+    assert_eq!(
+        f80(
+            "call x86_fp80 @llvm.maxnum.f80(x86_fp80 0xK7FFFC000000000000000, x86_fp80 0xK3FFF8000000000000000)"
+        ),
+        Ok(0x3FFF_8000_0000_0000_0000)
+    );
+    // An unnormal has no class LLVM agrees on.
+    let class = run("declare i1 @llvm.is.fpclass.f80(x86_fp80, i32)\n\
+         define i1 @main() {\n  %c = call i1 @llvm.is.fpclass.f80(x86_fp80 0xK3FFF0000000000000001, i32 3)\n  ret i1 %c\n}\n");
+    assert_eq!(class, Err(Stop::Unsupported("intrinsic-x86_fp80".into())));
+}

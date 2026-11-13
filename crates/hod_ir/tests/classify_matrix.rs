@@ -138,7 +138,7 @@ const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 27] = [
     ("function:slots", "", "", "", ""),
     // WP-140: `fastcc` is `ccc` on x86-64 too.
     ("cc:fastcc", "", "", "", "+"),
-    ("attr:zeroext", "", "", "", "attr:zeroext"),
+    ("attr:zeroext", "", "", "", ""),
     ("type:double", "", "", "", ""),
     ("inst:add", "", "", "", ""),
     ("mem:volatile", "", "", "", ""),

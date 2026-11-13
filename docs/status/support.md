@@ -31,7 +31,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `init` | 10 | 6 | 3 | 1 | 5 | 4 | 1 |
 | `function` | 6 | 6 | 0 | 0 | 6 | 0 | 0 |
 | `cc` | 26 | 6 | 7 | 13 | 3 | 13 | 10 |
-| `attr` | 57 | 24 | 30 | 3 | 19 | 30 | 8 |
+| `attr` | 57 | 24 | 30 | 3 | 22 | 27 | 8 |
 | `type` | 15 | 12 | 0 | 3 | 11 | 2 | 2 |
 | `inst` | 67 | 60 | 0 | 7 | 56 | 4 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 11 | 8 | 3 | 0 | 7 | 4 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 354 | 347 | 7 | 0 | 115 | 23 | 216 |
-| total | 674 | 549 | 68 | 57 | 293 | 103 | 278 |
+| total | 674 | 549 | 68 | 57 | 296 | 100 | 278 |
 
 ## `module`
 
@@ -235,8 +235,8 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `attr:zeroext` | supported | not-implemented |  |
-| `attr:signext` | supported | not-implemented |  |
+| `attr:zeroext` | supported | supported |  |
+| `attr:signext` | supported | supported |  |
 | `attr:inreg` | not-implemented | not-implemented | unplanned |
 | `attr:nest` | supported | not-implemented |  |
 | `attr:swiftself` | not-implemented | not-implemented | unplanned |
@@ -244,7 +244,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:swiftasync` | not-implemented | not-implemented | unplanned |
 | `attr:sret` | supported | supported |  |
 | `attr:byval` | supported | supported |  |
-| `attr:byref` | supported | not-implemented |  |
+| `attr:byref` | supported | supported |  |
 | `attr:inalloca` | rejected | rejected | a Windows construct |
 | `attr:preallocated` | rejected | rejected | a Windows construct |
 | `attr:elementtype` | not-implemented | not-implemented | unplanned. on an inline-assembly or intrinsic argument |

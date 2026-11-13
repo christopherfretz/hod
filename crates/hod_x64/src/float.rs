@@ -27,7 +27,7 @@
 //! - The default floating-point environment: no instruction reads or
 //!   writes `MXCSR`. A NaN an operation computes is what the hardware
 //!   produces (the first operand's, quieted, or the default NaN), which
-//!   LangRef allows (`spec/interp.md` §5.1).
+//!   `LangRef` allows (`spec/interp.md` §5.1).
 //! - Out-of-range `fptoui`/`fptosi` are poison (LangRef): the integer
 //!   indefinite `cvtts2si` gives is as good as any value.
 //! - Vectors of class `Fpr` are moves here (`freeze`, `select`,
@@ -135,14 +135,14 @@ fn class_of_ty(cx: &FnCx<'_, X64>, ty: TypeId) -> Class {
 // ---- small helpers ----
 
 /// Releases a consumed operand's register before the instruction ends.
-fn give_back(cx: &mut FnCx<'_, X64>, operand: Value, reg: PReg) {
+pub(crate) fn give_back(cx: &mut FnCx<'_, X64>, operand: Value, reg: PReg) {
     cx.release(operand);
     cx.free_temp(reg);
 }
 
 /// Calls `func` and returns the register of its result (class `Gpr` or
 /// `Fpr`).
-fn runtime(cx: &mut FnCx<'_, X64>, func: RuntimeFn, args: &[CallArg]) -> CgResult<PReg> {
+pub(crate) fn runtime(cx: &mut FnCx<'_, X64>, func: RuntimeFn, args: &[CallArg]) -> CgResult<PReg> {
     match cx.call_runtime(func, args, None)? {
         Some(reg) => Ok(reg),
         None => cx.bug("a runtime function returned nothing"),
@@ -185,22 +185,26 @@ fn arith(cx: &mut FnCx<'_, X64>, op: Opcode, size: FpSize, x: Xmm, y: Xmm) -> Cg
 
 /// `half` operand `value` widened to `float` by `__extendhfsf2`: the
 /// result's register (`xmm0`, a pinned temporary until the next call).
-fn half_in(cx: &mut FnCx<'_, X64>, value: Value) -> CgResult<PReg> {
+pub(crate) fn half_in(cx: &mut FnCx<'_, X64>, value: Value) -> CgResult<PReg> {
     let Some(func) = fp_ext_routine(FpType::Half, FpType::Float, Arch::X86_64) else {
         return cx.bug("no half extension routine on x86-64");
     };
     runtime(cx, func, &[CallArg::Value(value)])
 }
 
-/// The `float` in `reg` narrowed to `half` by `__truncsfhf2`: the
-/// result's register.
-fn half_out(cx: &mut FnCx<'_, X64>, reg: PReg) -> CgResult<PReg> {
-    narrow_call(cx, Shape::Float, CallArg::Reg(reg))
+/// The `float` in `reg` (a temporary, or the result register of a call)
+/// narrowed to `half` by `__truncsfhf2`: the result's register. The value
+/// goes through a pool temporary first: a call argument must be in one.
+pub(crate) fn half_out(cx: &mut FnCx<'_, X64>, reg: PReg) -> CgResult<PReg> {
+    let t = cx.temp(Class::Fpr)?;
+    put(cx, mc::movap_rr(FpSize::S, xm(t), xm(reg)));
+    cx.free_temp(reg);
+    narrow_call(cx, Shape::Float, CallArg::Reg(t))
 }
 
 /// `arg` of `from` (`float` or `double`) narrowed to `half` by
 /// `__truncsfhf2`/`__truncdfhf2`: the result's register.
-fn narrow_call(cx: &mut FnCx<'_, X64>, from: Shape, arg: CallArg) -> CgResult<PReg> {
+pub(crate) fn narrow_call(cx: &mut FnCx<'_, X64>, from: Shape, arg: CallArg) -> CgResult<PReg> {
     let Some(func) = fp_trunc_routine(from.fp_type(), FpType::Half, Arch::X86_64) else {
         return cx.bug("no half truncation routine on x86-64");
     };
@@ -299,7 +303,7 @@ pub enum FpCond {
 /// swapped, and the condition(s) under which it holds. `ogt`, `oge` are
 /// `A`, `AE` (unordered sets `CF`); `olt`, `ole` are those swapped; the
 /// unordered-or predicates are the complements. `true` and `false` are
-/// not here.
+/// `E` and `NE` after a `cmp eax, eax` in place of the `ucomis`.
 pub fn ucomis_conditions(pred: FloatPredicate) -> (bool, FpCond) {
     use FloatPredicate as P;
     match pred {
@@ -313,13 +317,11 @@ pub fn ucomis_conditions(pred: FloatPredicate) -> (bool, FpCond) {
         P::Uge => (true, FpCond::One(Cond::Be)),
         P::Ult => (false, FpCond::One(Cond::B)),
         P::Ule => (false, FpCond::One(Cond::Be)),
-        P::Ueq => (false, FpCond::One(Cond::E)),
-        P::One => (false, FpCond::One(Cond::Ne)),
+        // `true` and `false` after `cmp eax, eax`, which sets `ZF`.
+        P::Ueq | P::True => (false, FpCond::One(Cond::E)),
+        P::One | P::False => (false, FpCond::One(Cond::Ne)),
         P::Ord => (false, FpCond::One(Cond::Np)),
         P::Uno => (false, FpCond::One(Cond::P)),
-        // `cmp eax, eax` sets `ZF`.
-        P::True => (false, FpCond::One(Cond::E)),
-        P::False => (false, FpCond::One(Cond::Ne)),
     }
 }
 

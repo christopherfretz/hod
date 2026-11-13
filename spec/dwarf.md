@@ -2589,6 +2589,37 @@ Evidence: `crates/hod/tests/dwarf_call_sites4.rs` (trees against `llc`
 `crates/hod/tests/debug_e2e.rs`, `tests/debug/utf8_source.c`,
 `spec/landed/dwarf/WP-150.md`. `.debug_frame` is `spec/eh.md` §10.
 
+### 6.22 A declaration of `undef` or `poison` (implemented, WP-156)
+
+A `#dbg_declare` whose address is `undef` (clang 19) or `poison` (clang
+22) has no row (`hod_cg` `driver.rs` `finish_vars`,
+`declares_undef`), so its variable has no DIE, unless it is a retained
+node, which gets a DIE without a location (§6.4 "Retained variables").
+That is what `llc` 19 and 22 write at `-O0` on both targets:
+`SelectionDAGBuilder::visitDbgDeclare` drops the declaration of an
+`UndefValue` address, and no other record names the variable. It is
+the same decision as for a dropped address (`!{}`) and a `phi` (§6.18).
+
+Where it comes from: the SysV x86-64 ABI passes no argument for an
+empty record, so an empty-class parameter of an `always_inline` callee
+(libstdc++'s `std::__distance(first, last, random_access_iterator_tag)`,
+`std::__advance`) has no storage once clang's always-inliner has
+inlined it, and clang declares the parameter at `undef`/`poison`. On
+AArch64 the same parameter is an `i8` argument with a slot, so the
+declaration names that slot and nothing changes there. Before WP-156
+hod refused such a module as `debug:declare-address` on x86-64 only
+(`containers`, `exceptions` and `stl_heavy` of `bench/src` at `-g`).
+
+`debug:declare-address` keeps its meaning for every other address that
+has no home: another constant (a null pointer, a symbol), or a value
+the policy keeps in a register. No producer of the corpus, the `-g` set
+or the benchmark inputs writes one at `-O0` on either target.
+
+Evidence: `crates/hod/tests/declare_undef.rs` (both spellings, both
+targets, trees equal to `llc` 22's), `tests/debug/empty_tag_inlined.cpp`
+(gdb and lldb stop in the inlined callee and read its other parameters
+and the caller's variables), `spec/landed/dwarf/WP-156.md`.
+
 ## 7. Speed and memory
 
 ### 7.1 Parallel emission and determinism

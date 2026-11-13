@@ -9,7 +9,7 @@ use hod_ir::{
     no_code_intrinsic, resolve_intrinsic,
 };
 
-use hod_ir::kit::{Gep, gep_index_value};
+use hod_ir::kit::{AllocaDesc, AllocaError, Gep, gep_index_value, lower_alloca};
 
 use crate::attrs::{self, FUNCTION_INDEX};
 use crate::body::{CalleeInfo, Fx, Local, Ops};
@@ -623,38 +623,26 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
         if !self.module.types.is_int(count_ty) {
             return self.mistyped("element count must have integer type");
         }
-        let types = &self.module.types;
-        if !types.is_sized(ty) || ty == TypeId::TOKEN {
-            return self.mistyped("invalid type for alloca");
-        }
-        let result =
-            if space == 0 { TypeId::PTR } else { ir(self.at, self.module.types.ptr(space))? };
-        if in_alloca {
-            self.note("alloca:inalloca");
-            return Ok((result, self.stand_in(result)?));
-        }
-        if swift_error {
-            self.note("alloca:swifterror");
-            return Ok((result, self.stand_in(result)?));
-        }
-        let types = &self.module.types;
-        if types.is_scalable(ty) {
-            self.note("alloca:scalable");
-            return Ok((result, self.stand_in(result)?));
-        }
-        let elem_size = types.alloc_size_of(ty);
-        let align = align.unwrap_or_else(|| types.pref_align_of(ty));
-        let literal = count.value.as_const().and_then(|id| self.module.consts.int_value(id));
         // A static alloca is a slot: in the entry block, with a count
         // that is a literal.
-        if self.begun == 1
-            && space == 0
-            && let Some(size) = literal.and_then(|count| elem_size.checked_mul(count))
-        {
-            let slot = ir(self.at, self.b.add_slot(size, align))?;
-            return Ok((result, ir(self.at, self.b.slot(slot))?));
+        let desc = AllocaDesc {
+            ty,
+            count: Some(count.value),
+            align,
+            addr_space: space,
+            in_entry_block: self.begun == 1,
+            in_alloca,
+            swift_error,
+        };
+        let (result, lowered) = match lower_alloca(&mut *self.module, &mut self.b, &desc) {
+            Ok(done) => done,
+            Err(AllocaError::InvalidType) => return self.mistyped("invalid type for alloca"),
+            Err(AllocaError::Ir(error)) => return ir(self.at, Err(error)),
+        };
+        if let Some(construct) = lowered.refused() {
+            self.note(construct);
         }
-        Ok((result, ir(self.at, self.b.alloca(result, count.value, elem_size, align))?))
+        Ok((result, lowered.value()))
     }
 
     fn cmpxchg(&mut self, o: &mut Ops<'_>) -> BcResult<(TypeId, Value)> {

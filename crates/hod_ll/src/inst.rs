@@ -3,7 +3,7 @@
 //! in `call.rs`.
 
 use hod_ir::Layering;
-use hod_ir::kit::{Gep, GepError, gep_index_value};
+use hod_ir::kit::{AllocaDesc, AllocaError, Gep, GepError, gep_index_value, lower_alloca};
 use hod_ir::{
     AtomicOrdering, Clause, Const, ConstId, FloatPredicate, IntPredicate, MemFlags, Opcode, RmwOp,
     SHUFFLE_UNDEF, SyncScope, TailKind, TypeId, TypeKind, Value, aggregate_field, cast_is_valid,
@@ -599,47 +599,26 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
                 return self.p.syntax("expected metadata or 'addrspace'");
             }
         }
-        let types = &self.p.module.types;
-        if !types.is_sized(ty) || ty == TypeId::TOKEN {
-            return mistyped(ty_at, "invalid type for alloca");
-        }
-        let result = if space == 0 { TypeId::PTR } else { ir(at, self.p.module.types.ptr(space))? };
-        let types = &self.p.module.types;
-        if in_alloca {
-            self.p.note("alloca:inalloca");
-            return Ok((result, self.stand_in(at, result)?));
-        }
-        if swift_error {
-            self.p.note("alloca:swifterror");
-            return Ok((result, self.stand_in(at, result)?));
-        }
-        if types.is_scalable(ty) {
-            self.p.note("alloca:scalable");
-            return Ok((result, self.stand_in(at, result)?));
-        }
-        let elem_size = types.alloc_size_of(ty);
-        let align = align.unwrap_or_else(|| types.pref_align_of(ty));
         // A static alloca is a slot (`spec/ir.md` §5.2): in the entry
         // block, with a count that is a literal.
-        let literal = match count {
-            None => Some(1),
-            Some(value) => value.as_const().and_then(|id| self.p.module.consts.int_value(id)),
+        let desc = AllocaDesc {
+            ty,
+            count,
+            align,
+            addr_space: space,
+            in_entry_block: self.blocks == 1,
+            in_alloca,
+            swift_error,
         };
-        if self.blocks == 1
-            && space == 0
-            && let Some(size) = literal.and_then(|count| elem_size.checked_mul(count))
-        {
-            let slot = ir(at, self.b.add_slot(size, align))?;
-            return Ok((result, ir(at, self.b.slot(slot))?));
+        let (result, lowered) = match lower_alloca(&mut *self.p.module, &mut self.b, &desc) {
+            Ok(done) => done,
+            Err(AllocaError::InvalidType) => return mistyped(ty_at, "invalid type for alloca"),
+            Err(AllocaError::Ir(error)) => return ir(at, Err(error)),
+        };
+        if let Some(construct) = lowered.refused() {
+            self.p.note(construct);
         }
-        let count = if let Some(count) = count {
-            count
-        } else {
-            let module = &mut *self.p.module;
-            let one = ir(at, module.consts.int(&module.types, TypeId::I32, 1))?;
-            ir(at, Value::constant(one))?
-        };
-        Ok((result, ir(at, self.b.alloca(result, count, elem_size, align))?))
+        Ok((result, lowered.value()))
     }
 
     fn cmpxchg(&mut self, at: u32) -> PResult<(TypeId, Value)> {

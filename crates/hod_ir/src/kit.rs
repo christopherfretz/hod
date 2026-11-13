@@ -252,7 +252,7 @@ impl Gep {
         };
         match constant {
             Some(index) => {
-                self.offset = self.offset.wrapping_add(index.wrapping_mul(stride as i64))
+                self.offset = self.offset.wrapping_add(index.wrapping_mul(stride as i64));
             }
             None => indices.push((value, stride)),
         }
@@ -301,4 +301,95 @@ impl Gep {
         }
         Ok((ty, Lowered::Built(b.ptr_add(ty, base, self.offset, indices)?)))
     }
+}
+
+// ---- alloca ----
+
+/// An `alloca` as the producer read it (`spec/ir.md` §5.2).
+#[derive(Clone, Copy, Debug)]
+pub struct AllocaDesc {
+    /// The allocated type.
+    pub ty: TypeId,
+    /// The element count (of an integer type); `None` is one element.
+    pub count: Option<Value>,
+    /// The alignment written; `None` is the type's preferred alignment.
+    pub align: Option<u64>,
+    /// The address space of the result.
+    pub addr_space: u32,
+    /// Whether the `alloca` is in the function's entry block.
+    pub in_entry_block: bool,
+    /// `inalloca`.
+    pub in_alloca: bool,
+    /// `swifterror`.
+    pub swift_error: bool,
+}
+
+/// Why an `alloca` could not be lowered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AllocaError {
+    /// The type is not sized, or is `token` (LLVM's "invalid type for
+    /// alloca").
+    InvalidType,
+    /// The builder or a table refused.
+    Ir(crate::IrError),
+}
+
+impl From<crate::IrError> for AllocaError {
+    fn from(error: crate::IrError) -> AllocaError {
+        AllocaError::Ir(error)
+    }
+}
+
+/// An `alloca`: a slot when it is static (in the entry block, in address
+/// space 0, with a constant count whose product with the element size
+/// does not overflow), else the `Alloca` instruction (a count of `i32 1`
+/// when none is given). Refused, in this order: `alloca:inalloca`,
+/// `alloca:swifterror`, `alloca:scalable`. Returns the result's pointer
+/// type with the value.
+///
+/// # Errors
+/// `InvalidType` before anything else; then the builder's errors.
+#[inline]
+pub fn lower_alloca<L: Layering>(
+    module: &mut Module<L>,
+    b: &mut FunctionBuilder,
+    desc: &AllocaDesc,
+) -> Result<(TypeId, Lowered), AllocaError> {
+    let ty = desc.ty;
+    if !module.types.is_sized(ty) || ty == TypeId::TOKEN {
+        return Err(AllocaError::InvalidType);
+    }
+    let space = desc.addr_space;
+    let result = if space == 0 { TypeId::PTR } else { module.types.ptr(space)? };
+    let refused = if desc.in_alloca {
+        Some("alloca:inalloca")
+    } else if desc.swift_error {
+        Some("alloca:swifterror")
+    } else if module.types.is_scalable(ty) {
+        Some("alloca:scalable")
+    } else {
+        None
+    };
+    if let Some(construct) = refused {
+        return Ok((result, Lowered::Refused { construct, stand_in: stand_in(module, result)? }));
+    }
+    let types = &module.types;
+    let elem_size = types.alloc_size_of(ty);
+    let align = desc.align.unwrap_or_else(|| types.pref_align_of(ty));
+    let literal = match desc.count {
+        None => Some(1),
+        Some(value) => value.as_const().and_then(|id| module.consts.int_value(id)),
+    };
+    if desc.in_entry_block
+        && space == 0
+        && let Some(size) = literal.and_then(|count| elem_size.checked_mul(count))
+    {
+        let slot = b.add_slot(size, align)?;
+        return Ok((result, Lowered::Built(b.slot(slot)?)));
+    }
+    let count = match desc.count {
+        Some(count) => count,
+        None => Value::constant(module.consts.int(&module.types, TypeId::I32, 1)?)?,
+    };
+    Ok((result, Lowered::Built(b.alloca(result, count, elem_size, align)?)))
 }

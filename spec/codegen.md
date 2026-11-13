@@ -2286,6 +2286,39 @@ caller then passes the address of a buffer, as LLVM does. A target's
 cannot pass (`abi:<what>`); the facade runs it over a module's signatures
 as part of deciding support, so code generation never meets a failure.
 
+#### The leaf walk (WP-117)
+
+The part of assignment every target shares is in `hod_cg::abi`; the
+rules that place each piece stay the target's.
+
+- A **leaf** is a value that is not an array or a structure. `walk`
+  visits the leaves of a type with their byte offsets in offset order,
+  to any depth: a structure's fields at `TypeTable::field_offsets`, an
+  array's element `i` at `i` times the element's alloc size. An array
+  whose element has no leaf (`shape` is `Empty`) is skipped without
+  iterating it. `shape` tells whether all leaves of an aggregate have one
+  LLVM value type (`leaf_key`: a pointer is an `i64`), in time
+  proportional to the type's description.
+- The **classification hook** is the trait `Classify`: `leaf(types, ty)`
+  returns a `Leaf<Class>` (the target's class, `count` pieces of `size`
+  bytes `stride` apart, `last_size` for the last, `split` marking the
+  pieces that start an integer wider than a register, `lanes` for a
+  vector widened to lanes) or the target's `abi:<what>` name.
+  `check_type` refuses an aggregate with a refused leaf.
+- `place_leaf(leaf, arg, offset, parts, place)` asks the target's
+  `place(leaf, piece)` for each piece's `PieceLoc` (a register or a
+  stack offset) and appends the part with `push`; `place` sees the whole
+  leaf, so a pair kept whole (x86-64's `i128`) is decided at its first
+  piece, and the target keeps its own state (next registers, stack
+  offset, the vector-register count for `al`). `place_leaves` is
+  `walk` + the hook + `charge` (the piece budget,
+  `abi:too-many-pieces`) + `place_leaf` for one argument of any type.
+- `push` merges a stack part into the previous one when both are of one
+  argument and kind (never `Lanes`) and continue each other in the value
+  and on the stack; an offset or end beyond `u32` is `abi:size-limit`.
+- Where a return value goes, and whether it is demoted to memory, is the
+  target's: its return `place` fails, and it clears the parts.
+
 ### 7.3 Runtime functions
 
 Some instructions lower to calls of functions that are not in the module:

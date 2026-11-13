@@ -251,3 +251,498 @@ impl<T: Target> StackArgs for TargetStackArgs<'_, T> {
         self.stack_size(&module.types, &sig)
     }
 }
+
+// ---- The leaf walk (§7.2, "The leaf walk"; WP-117) ----
+
+/// An argument broken into more pieces than its signature's budget
+/// allows: the target charges each leaf's pieces against a budget it
+/// chooses ([`charge`]).
+pub const TOO_MANY_PIECES: &str = "abi:too-many-pieces";
+
+/// An offset or a size of a part beyond `u32`.
+pub const SIZE_LIMIT: &str = "abi:size-limit";
+
+/// Where a target puts one piece, before [`push`] checks its stack offset
+/// against `u32`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PieceLoc {
+    /// In a register.
+    Reg(PReg),
+    /// In the stack-argument area, at this byte offset.
+    Stack(u64),
+}
+
+/// The elements of a vector leaf as lanes ([`PartKind::Lanes`]): `len`
+/// elements of `bits` bits, `lane` bytes per lane; with `each`, piece `i`
+/// carries element `i` alone, else the one piece carries them all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LaneLeaf {
+    /// The bits of an element.
+    pub bits: u8,
+    /// The bytes of a lane at the place.
+    pub lane: u8,
+    /// The number of elements.
+    pub len: u8,
+    /// One element per piece.
+    pub each: bool,
+}
+
+/// How a target breaks one leaf (a value that is not an array or a
+/// structure) into pieces: `count` pieces of the target's class `class`;
+/// piece `i` holds the leaf's bytes from `i * stride`, `size` of them
+/// (`last_size` for the last piece). A leaf whose elements travel widened
+/// to lanes has `lanes`, and then `size` is the bytes of the place each
+/// piece fills.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Leaf<C> {
+    /// The target's class of every piece.
+    pub class: C,
+    /// The number of pieces.
+    pub count: u32,
+    /// The distance in the leaf between the starts of two pieces.
+    pub stride: u32,
+    /// The bytes of each piece but the last.
+    pub size: u32,
+    /// The bytes of the last piece.
+    pub last_size: u32,
+    /// The pieces that start an integer wider than a register: piece `i`
+    /// with `i % split == 0`; none for 0. A target with a rule for such
+    /// integers (AArch64's even register, x86-64's pair that is never
+    /// split) applies it at those pieces.
+    pub split: u32,
+    /// The lanes, for a vector whose elements are widened.
+    pub lanes: Option<LaneLeaf>,
+}
+
+impl<C: Copy> Leaf<C> {
+    /// One piece of `size` bytes.
+    pub fn one(class: C, size: u32) -> Leaf<C> {
+        Leaf { class, count: 1, stride: 0, size, last_size: size, split: 0, lanes: None }
+    }
+
+    /// `count` pieces of `size` bytes each, one after the other.
+    pub fn each(class: C, count: u32, size: u32) -> Leaf<C> {
+        Leaf { class, count, stride: size, size, last_size: size, split: 0, lanes: None }
+    }
+
+    /// Whether piece `piece` starts an integer wider than a register.
+    pub fn split_at(&self, piece: u32) -> bool {
+        self.split != 0 && piece.is_multiple_of(self.split)
+    }
+
+    /// The kind of piece `piece`'s part.
+    pub fn kind(&self, piece: u32) -> PartKind {
+        match self.lanes {
+            None => PartKind::Value,
+            Some(l) => PartKind::Lanes {
+                bits: l.bits,
+                lane: l.lane,
+                first: if l.each { piece as u8 } else { 0 },
+                len: l.len,
+            },
+        }
+    }
+
+    /// The bytes piece `piece` carries.
+    pub fn piece_size(&self, piece: u32) -> u32 {
+        if piece + 1 == self.count { self.last_size } else { self.size }
+    }
+
+    /// The offset of piece `piece` in a value whose leaf is at `offset`.
+    pub fn piece_offset(&self, offset: u64, piece: u32) -> u64 {
+        offset.saturating_add(u64::from(piece) * u64::from(self.stride))
+    }
+}
+
+/// The per-target classification hook of the leaf walk: the pieces of
+/// one leaf type, or the name under which the target refuses it. The
+/// walk itself ([`walk`], [`place_leaf`], [`place_leaves`]) is the same
+/// for every target; where each piece goes is the target's
+/// `place` function, which sees the whole [`Leaf`] at each piece (so a
+/// pair kept whole is decided at its first piece), and keeps the target's
+/// own state (next registers, stack offset, the vector-register count).
+/// A target decides on its own when a return value is demoted to memory
+/// (its return `place` fails, and it clears the parts).
+pub trait Classify {
+    /// The target's register class of a piece.
+    type Class: Copy;
+
+    /// The pieces of the leaf type `ty` (never an array or a structure).
+    ///
+    /// # Errors
+    /// The target's name for a leaf it does not pass.
+    fn leaf(&self, types: &TypeTable, ty: TypeId) -> Result<Leaf<Self::Class>, AbiUnsupported>;
+}
+
+/// A number that is equal for two leaf types exactly when LLVM gives them
+/// one value type: a pointer is an `i64`.
+pub fn leaf_key(types: &TypeTable, ty: TypeId) -> u64 {
+    let scalar = |ty: TypeId| -> u64 {
+        match types.kind(ty) {
+            TypeKind::Int(bits) => u64::from(bits),
+            TypeKind::Ptr { .. } => 64,
+            TypeKind::Half => 1 << 24,
+            TypeKind::BFloat => 2 << 24,
+            TypeKind::Float => 3 << 24,
+            TypeKind::Double => 4 << 24,
+            _ => 5 << 24,
+        }
+    };
+    match types.kind(ty) {
+        TypeKind::Vector { elem, len } => 1 << 63 | scalar(elem) << 32 | u64::from(len),
+        _ => scalar(ty),
+    }
+}
+
+/// The leaves of a type, as far as a rule about uniform aggregates (an
+/// AArch64 block) needs them.
+#[derive(Clone, Copy, Debug)]
+pub enum Shape {
+    /// No leaf.
+    Empty,
+    /// `leaves` leaves of one value type ([`leaf_key`] `key`), `ty`
+    /// being one of them.
+    Uniform {
+        /// The leaves' [`leaf_key`].
+        key: u64,
+        /// One of the leaves.
+        ty: TypeId,
+        /// How many.
+        leaves: u64,
+    },
+    /// Leaves of more than one value type.
+    Mixed,
+}
+
+/// The shape of `ty`, in time proportional to the type's description,
+/// not to its number of leaves.
+pub fn shape(types: &TypeTable, ty: TypeId) -> Shape {
+    match types.kind(ty) {
+        TypeKind::Struct { fields, .. } => {
+            let mut all = Shape::Empty;
+            for &field in fields {
+                all = match (all, shape(types, field)) {
+                    (Shape::Empty, other) | (other, Shape::Empty) => other,
+                    (
+                        Shape::Uniform { key, ty, leaves },
+                        Shape::Uniform { key: other, leaves: more, .. },
+                    ) if key == other => {
+                        Shape::Uniform { key, ty, leaves: leaves.saturating_add(more) }
+                    }
+                    _ => return Shape::Mixed,
+                };
+            }
+            all
+        }
+        TypeKind::Array { elem, len } => match shape(types, elem) {
+            Shape::Uniform { key, ty, leaves } if len > 0 => {
+                Shape::Uniform { key, ty, leaves: leaves.saturating_mul(len) }
+            }
+            Shape::Mixed if len > 0 => Shape::Mixed,
+            _ => Shape::Empty,
+        },
+        _ => Shape::Uniform { key: leaf_key(types, ty), ty, leaves: 1 },
+    }
+}
+
+/// Refuses a type that has a leaf `classify` does not pass, in time
+/// proportional to the type's description.
+///
+/// # Errors
+/// What `classify` reports for the first such leaf.
+pub fn check_type<K: Classify>(
+    types: &TypeTable,
+    ty: TypeId,
+    classify: &K,
+) -> Result<(), AbiUnsupported> {
+    match types.kind(ty) {
+        TypeKind::Struct { fields, .. } => {
+            fields.iter().try_for_each(|&f| check_type(types, f, classify))
+        }
+        TypeKind::Array { elem, .. } => check_type(types, elem, classify),
+        _ => classify.leaf(types, ty).map(|_| ()),
+    }
+}
+
+/// Calls `visit` with each leaf of `ty` and its byte offset in the value
+/// plus `base`, in offset order, to any depth: a structure's fields at
+/// their offsets (`TypeTable::field_offsets`), an array's elements at
+/// multiples of the element's alloc size. An array of elements without a
+/// leaf is skipped without iterating it.
+///
+/// # Errors
+/// The first error of `visit`, which ends the walk.
+pub fn walk<E>(
+    types: &TypeTable,
+    ty: TypeId,
+    base: u64,
+    visit: &mut impl FnMut(TypeId, u64) -> Result<(), E>,
+) -> Result<(), E> {
+    match types.kind(ty) {
+        TypeKind::Struct { fields, .. } => {
+            let offsets = types.field_offsets(ty).unwrap_or(&[]);
+            for (&field, &offset) in fields.iter().zip(offsets) {
+                walk(types, field, base.saturating_add(offset), visit)?;
+            }
+            Ok(())
+        }
+        TypeKind::Array { elem, len } => {
+            if matches!(shape(types, elem), Shape::Empty) {
+                return Ok(());
+            }
+            // Every element has a leaf, and a caller that charges every
+            // leaf against a piece budget bounds this loop by it.
+            let stride = types.alloc_size_of(elem);
+            for index in 0..len {
+                walk(types, elem, base.saturating_add(index.saturating_mul(stride)), visit)?;
+            }
+            Ok(())
+        }
+        _ => visit(ty, base),
+    }
+}
+
+/// Takes `pieces` from `budget`.
+///
+/// # Errors
+/// [`TOO_MANY_PIECES`] when the budget does not have them.
+pub fn charge(budget: &mut u32, pieces: u32) -> Result<(), AbiUnsupported> {
+    match budget.checked_sub(pieces) {
+        Some(left) => {
+            *budget = left;
+            Ok(())
+        }
+        None => Err(AbiUnsupported(TOO_MANY_PIECES)),
+    }
+}
+
+/// Appends a part of argument `arg` (0 for the return value); a stack
+/// part that continues the previous one of the same argument and kind,
+/// in the value and on the stack, extends it instead (never a `Lanes`
+/// part).
+///
+/// # Errors
+/// [`SIZE_LIMIT`] when an offset or an end is beyond `u32`.
+pub fn push(
+    parts: &mut Vec<Part>,
+    arg: u32,
+    kind: PartKind,
+    offset: u64,
+    size: u32,
+    loc: PieceLoc,
+) -> Result<(), AbiUnsupported> {
+    let narrow = |n: u64| u32::try_from(n).or(Err(AbiUnsupported(SIZE_LIMIT)));
+    let offset = narrow(offset)?;
+    let place = match loc {
+        PieceLoc::Reg(reg) => Place::Reg(reg),
+        PieceLoc::Stack(at) => {
+            // The end of the part must be expressible too.
+            narrow(at.saturating_add(u64::from(size)))?;
+            Place::Stack(narrow(at)?)
+        }
+    };
+    if offset.checked_add(size).is_none() {
+        return Err(AbiUnsupported(SIZE_LIMIT));
+    }
+    if let (Some(last), Place::Stack(at)) = (parts.last_mut(), place)
+        && let Place::Stack(last_at) = last.place
+        && last.arg == arg
+        && last.kind == kind
+        && !matches!(kind, PartKind::Lanes { .. })
+        && last_at + last.size == at
+        && last.offset + last.size == offset
+    {
+        last.size += size;
+        return Ok(());
+    }
+    parts.push(Part { arg, kind, offset, size, place });
+    Ok(())
+}
+
+/// The parts of one leaf at `offset` in argument `arg`: piece by piece,
+/// `place(leaf, piece)` says where it goes, then [`push`].
+///
+/// # Errors
+/// The first error of `place`, or of [`push`] converted.
+pub fn place_leaf<C: Copy, E: From<AbiUnsupported>>(
+    leaf: &Leaf<C>,
+    arg: u32,
+    offset: u64,
+    parts: &mut Vec<Part>,
+    place: &mut impl FnMut(&Leaf<C>, u32) -> Result<PieceLoc, E>,
+) -> Result<(), E> {
+    for piece in 0..leaf.count {
+        let loc = place(leaf, piece)?;
+        let at = leaf.piece_offset(offset, piece);
+        push(parts, arg, leaf.kind(piece), at, leaf.piece_size(piece), loc)?;
+    }
+    Ok(())
+}
+
+/// The parts of argument `arg` of type `ty`, any type: its leaves in
+/// offset order ([`walk`]), each classified, charged against `budget`
+/// and placed ([`place_leaf`]).
+///
+/// # Errors
+/// What `classify`, [`charge`], `place` or [`push`] report.
+pub fn place_leaves<K: Classify>(
+    types: &TypeTable,
+    ty: TypeId,
+    classify: &K,
+    arg: u32,
+    budget: &mut u32,
+    parts: &mut Vec<Part>,
+    place: &mut impl FnMut(&Leaf<K::Class>, u32) -> Result<PieceLoc, AbiUnsupported>,
+) -> Result<(), AbiUnsupported> {
+    walk(types, ty, 0, &mut |leaf_ty, offset| {
+        let leaf = classify.leaf(types, leaf_ty)?;
+        charge(budget, leaf.count)?;
+        place_leaf(&leaf, arg, offset, parts, place)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use hod_ir::{DataLayout, X86_64_LINUX_DATA_LAYOUT};
+
+    use super::*;
+
+    /// A toy x86-64-like classification (§7.2, "The leaf walk"): integers
+    /// and pointers in general registers, `i128` a pair, `double` in a
+    /// vector register.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Toy {
+        Gpr,
+        Xmm,
+    }
+
+    struct ToyLeaves;
+
+    impl Classify for ToyLeaves {
+        type Class = Toy;
+
+        fn leaf(&self, types: &TypeTable, ty: TypeId) -> Result<Leaf<Toy>, AbiUnsupported> {
+            Ok(match types.kind(ty) {
+                TypeKind::Int(128) => Leaf { split: 2, ..Leaf::each(Toy::Gpr, 2, 8) },
+                TypeKind::Int(bits) if bits <= 64 => Leaf::one(Toy::Gpr, bits.div_ceil(8)),
+                TypeKind::Ptr { addr_space: 0 } => Leaf::one(Toy::Gpr, 8),
+                TypeKind::Double => Leaf::one(Toy::Xmm, 8),
+                _ => return Err(AbiUnsupported("abi:toy")),
+            })
+        }
+    }
+
+    /// Six general registers; a pair is never split between the last one
+    /// and the stack; other leaves go to the stack one by one.
+    #[derive(Default)]
+    struct ToyState {
+        gpr: u8,
+        xmm: u8,
+        stack: u64,
+    }
+
+    impl ToyState {
+        fn place(&mut self, leaf: &Leaf<Toy>, piece: u32) -> PieceLoc {
+            let (next, regs, base) = match leaf.class {
+                Toy::Gpr => (&mut self.gpr, 6, 0),
+                Toy::Xmm => (&mut self.xmm, 8, 16),
+            };
+            if leaf.split_at(piece) && *next + 2 > regs {
+                *next = regs;
+            }
+            if *next < regs {
+                *next += 1;
+                return PieceLoc::Reg(PReg::new(base + *next - 1));
+            }
+            let at = self.stack;
+            self.stack += 8;
+            PieceLoc::Stack(at)
+        }
+    }
+
+    fn assign_toy(types: &TypeTable, params: &[TypeId]) -> Vec<Part> {
+        let mut state = ToyState::default();
+        let mut parts = Vec::new();
+        let mut budget = 100;
+        for (arg, &ty) in params.iter().enumerate() {
+            place_leaves(
+                types,
+                ty,
+                &ToyLeaves,
+                arg as u32,
+                &mut budget,
+                &mut parts,
+                &mut |l, p| Ok(state.place(l, p)),
+            )
+            .expect("the toy passes these");
+        }
+        parts
+    }
+
+    fn types() -> TypeTable {
+        TypeTable::new(&DataLayout::parse(X86_64_LINUX_DATA_LAYOUT).expect("the layout"))
+    }
+
+    fn part(arg: u32, offset: u32, size: u32, place: Place) -> Part {
+        Part { arg, kind: PartKind::Value, offset, size, place }
+    }
+
+    /// §7.2: an aggregate's leaves may be split between the last register
+    /// and the stack, a pair at a `split` piece is not; adjacent stack
+    /// parts of one argument merge.
+    #[test]
+    fn walk_with_a_pair_rule_and_a_split_aggregate() {
+        let mut types = types();
+        let pair = types.struct_type(&[TypeId::I64, TypeId::I64], false).unwrap();
+        let five = [TypeId::I64; 5];
+        let parts = assign_toy(&types, &[&five[..], &[pair]].concat());
+        assert_eq!(parts[5], part(5, 0, 8, Place::Reg(PReg::new(5))));
+        assert_eq!(parts[6], part(5, 8, 8, Place::Stack(0)));
+
+        let parts = assign_toy(&types, &[&five[..], &[TypeId::I128, TypeId::I64]].concat());
+        // The pair goes to the stack whole (one merged part), and the
+        // sixth register stays unused by this toy's rule.
+        assert_eq!(parts[5], part(5, 0, 16, Place::Stack(0)));
+        assert_eq!(parts[6], part(6, 0, 8, Place::Stack(16)));
+    }
+
+    /// §7.2: leaves in offset order at any depth, padding skipped, empty
+    /// arrays skipped, the budget charged per piece, the hook's refusal
+    /// reported.
+    #[test]
+    fn walk_offsets_budget_and_refusal() {
+        let mut types = types();
+        let empty = types.array(TypeId::I64, 0).unwrap();
+        let inner = types.struct_type(&[TypeId::I8, TypeId::DOUBLE], false).unwrap();
+        let arr = types.array(inner, 2).unwrap();
+        let outer = types.struct_type(&[empty, arr, TypeId::I128], false).unwrap();
+        let mut seen = Vec::new();
+        walk(&types, outer, 0, &mut |ty, at| {
+            seen.push((ty, at));
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+        let expect = [
+            (TypeId::I8, 0),
+            (TypeId::DOUBLE, 8),
+            (TypeId::I8, 16),
+            (TypeId::DOUBLE, 24),
+            (TypeId::I128, 32),
+        ];
+        assert_eq!(seen, expect);
+        assert!(matches!(shape(&types, empty), Shape::Empty));
+        assert!(matches!(shape(&types, outer), Shape::Mixed));
+
+        let mut budget = 3;
+        let mut parts = Vec::new();
+        let err =
+            place_leaves(&types, outer, &ToyLeaves, 0, &mut budget, &mut parts, &mut |_, _| {
+                Ok(PieceLoc::Stack(0))
+            });
+        assert_eq!(err, Err(AbiUnsupported(TOO_MANY_PIECES)));
+        let half = types.struct_type(&[TypeId::HALF], false).unwrap();
+        assert_eq!(check_type(&types, half, &ToyLeaves), Err(AbiUnsupported("abi:toy")));
+        let far = push(&mut parts, 0, PartKind::Value, 1 << 32, 1, PieceLoc::Stack(0));
+        assert_eq!(far, Err(AbiUnsupported(SIZE_LIMIT)));
+    }
+}

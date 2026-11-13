@@ -45,3 +45,6 @@ int main(void) {
 //@ lldb-check: stop reason = breakpoint 1.1
 //@ lldb-check: = 31
 //@ lldb-check: exited with status = 0
+// No `finish` out of `add`: on x86-64 llc's return address is a spill
+// with line 0 and lldb stops at the next statement, hod's at the call
+// (WP-163, spec/dwarf.md section 6.17, `line 0 after a call`).

@@ -2306,6 +2306,16 @@ recognised by `cargo xtask debug trees`, `spec/harness.md` "debug",
   call's location), where `llc`, which coalesced the copy, is at the
   assignment's column. The harness permits either side's column being
   the call's.
+- `line 0 after a call` (WP-163, `tests/debug/key_multiline.c`, lldb
+  `finish` out of `add`): `llc`'s instruction at the return address is
+  its register allocator's spill of the result (`movl %eax, 0xc(%rsp)`),
+  which has a line 0 row, so lldb reports the next row with a line, the
+  following statement's (19:15); hod copies the result out of `rax`
+  under the call's location and stops at the call (17:11). Both are
+  correct stops for a return into the caller; the lines differ, so the
+  `return-column` class (§5.7, columns only) does not cover it, and the
+  test does not `finish` there on x86-64. Matching `llc` would mean
+  modelling its spills.
 
 **What qemu's gdb stub cannot show** (the debugger sessions on x86-64
 run under `qemu-x86_64 -g` on an AArch64 host, `spec/harness.md` "debug",

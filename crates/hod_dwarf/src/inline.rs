@@ -497,6 +497,22 @@ impl UnitPlan<'_> {
                 self.inline.entities.push(tail[i].1);
             }
         }
+        self.record_retained(f.subprogram, start);
+    }
+
+    /// After the declared variables, the retained ones without a record
+    /// (WP-111), in `retainedNodes` order: `llc`'s `collectEntityInfo`
+    /// makes their entities last.
+    fn record_retained(&mut self, sp: DiId, start: usize) {
+        let DiNode::Subprogram(sp) = self.debug.node(sp) else { return };
+        for &n in sp.retained_nodes {
+            let found = self.locals[start..].iter().find(|l| {
+                matches!(l.what, LocalWhat::Retained) && self.dies[l.die as usize].node == n
+            });
+            if let Some(l) = found {
+                self.inline.entities.push(l.die);
+            }
+        }
     }
 
     /// `finishEntityDefinitions`: the variables' types, in the order of

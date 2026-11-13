@@ -199,7 +199,6 @@ fn clones(unit: &Node) -> Vec<&Node> {
 /// of `dbg_declare`), so hod's ramp has a `__promise` with a location
 /// `llc`'s has not. Outside WP-098's ownership.
 #[test]
-#[ignore = "hod_cg keeps a dbg_declare of a non-slot address that llc -O0 drops (WP-098)"]
 fn ramp_frame_variables_match_llc() {
     let (Some(dwarfdump), Some(cc), Some(llc)) =
         (tool("llvm-dwarfdump"), tool("clang++-22"), tool("llc-22"))

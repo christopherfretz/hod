@@ -171,8 +171,12 @@ fn units_without_code_match_llc() {
     if let Some(cc) = tool("clang++-22").filter(|_| cfg!(target_arch = "aarch64")) {
         let scratch = Scratch::new("dies-followups-global");
         let text = ir(&cc, &scratch, "global", "global.cpp", &[]);
-        let text: String =
-            text.lines().filter(|l| !l.starts_with("@g ")).map(|l| format!("{l}\n")).collect();
+        let text =
+            text.lines().filter(|l| !l.starts_with("@g ")).fold(String::new(), |mut t, l| {
+                t.push_str(l);
+                t.push('\n');
+                t
+            });
         if let Some(unit) = compare(&scratch, "llc-22", "global", &text) {
             assert_eq!(count_tag(&unit, "DW_TAG_variable"), 1);
             dies += count(&unit);
@@ -209,4 +213,157 @@ fn imports_of_every_shape_match_llc() {
         imports += modules.len() + decls.len();
     });
     eprintln!("imports_of_every_shape_match_llc: {n} trees, {imports} imports equal to llc's");
+}
+
+// ------------------------------------------ declarations and ramps ----
+
+/// The DIEs with `tag` under `n`, depth first.
+fn all<'a>(n: &'a Node, tag: &str, out: &mut Vec<&'a Node>) {
+    if n.tag == tag {
+        out.push(n);
+    }
+    for c in &n.children {
+        all(c, tag, out);
+    }
+}
+
+/// The subprogram whose linkage name or name is `name`.
+fn subprogram<'a>(unit: &'a Node, name: &str) -> &'a Node {
+    let mut sps = Vec::new();
+    all(unit, "DW_TAG_subprogram", &mut sps);
+    let q = format!("(\"{name}\")");
+    sps.into_iter()
+        .find(|s| {
+            s.attrs
+                .iter()
+                .any(|a| a.starts_with("DW_AT_") && a.ends_with(&q) && has(s, "DW_AT_low_pc"))
+        })
+        .unwrap_or_else(|| panic!("no subprogram {name}"))
+}
+
+/// The variables (and parameters) named `name` directly under `n`.
+fn vars<'a>(n: &'a Node, name: &str) -> Vec<&'a Node> {
+    let q = format!("DW_AT_name (\"{name}\")");
+    n.children.iter().filter(|c| c.attrs.contains(&q)).collect()
+}
+
+/// `text` with function `func`'s first `#dbg_declare(ptr %1, ...)` moved:
+/// its address becomes `address`, and it goes after the line starting
+/// with `after` in that function, preceded by `before` (an instruction
+/// that defines the address, or nothing).
+fn move_declare(text: &str, func: &str, address: &str, after: &str, before: &str) -> String {
+    let head = format!("define dso_local void @{func}(");
+    let start = text.find(&head).unwrap_or_else(|| panic!("{func}"));
+    let end = start + text[start..].find("\n}\n").unwrap();
+    let body = &text[start..end];
+    let line = body.lines().find(|l| l.trim_start().starts_with("#dbg_declare(ptr %1,")).unwrap();
+    let moved = line.replacen("ptr %1,", &format!("ptr {address},"), 1);
+    let mut out = String::new();
+    for l in body.lines() {
+        if l == line {
+            continue;
+        }
+        out.push_str(l);
+        out.push('\n');
+        if l.starts_with(after) {
+            out.push_str(before);
+            out.push_str(&moved);
+            out.push('\n');
+        }
+    }
+    assert!(out.contains(&moved), "{func}: no line {after:?}");
+    format!("{}{}{}", &text[..start], out.trim_end_matches('\n'), &text[end..])
+}
+
+/// `spec/codegen.md` §9.5: a `#dbg_declare` of a `phi` is dropped, as
+/// `llc -O0` drops it (`SelectionDAGBuilder` has no node for the `phi` in
+/// the declaration's block): no DIE for the variable.
+#[test]
+fn declaration_of_a_phi_matches_llc() {
+    if !cfg!(target_arch = "aarch64") {
+        return;
+    }
+    let scratch = Scratch::new("dies-followups-phi");
+    let mut compared = 0;
+    for (cc, llc) in PAIRS {
+        let Some(compiler) = tool(cc) else { continue };
+        let name = format!("phi-{cc}-{llc}");
+        let text = ir(&compiler, &scratch, &name, "declare.cpp", &[]);
+        let text =
+            move_declare(&text, "phi", "%p9", "7:", "  %p9 = phi ptr [ %2, %5 ], [ %2, %0 ]\n");
+        let Some(unit) = compare(&scratch, llc, &name, &text) else { continue };
+        assert!(vars(subprogram(&unit, "phi"), "p").is_empty(), "{name}");
+        compared += 1;
+    }
+    eprintln!("declaration_of_a_phi_matches_llc: {compared} trees equal to llc's");
+}
+
+/// A `#dbg_declare` of a value defined in another block: `llc -O0` drops
+/// it as it drops a `phi`'s, hod writes the value's home for the whole
+/// function. `hod_ir`'s declarations have no position (`spec/ir.md`), so
+/// the code generator cannot tell this from a declaration in the value's
+/// own block, where `llc` writes a location list from the definition on.
+/// No front end emits either at `-O0`.
+#[test]
+#[ignore = "hod_ir's #dbg_declare has no position: a value from another block is described (WP-111)"]
+fn declaration_of_a_value_from_another_block_matches_llc() {
+    let Some(compiler) = tool("clang++-22") else { return };
+    let scratch = Scratch::new("dies-followups-cross");
+    let text = ir(&compiler, &scratch, "cross", "declare.cpp", &[]);
+    let text = move_declare(&text, "cross", "%2", "5:", "");
+    let unit = compare(&scratch, "llc-22", "cross", &text).unwrap();
+    assert!(vars(subprogram(&unit, "cross"), "p").is_empty());
+}
+
+/// A `#dbg_declare` of a constant offset from a stack slot
+/// (`getelementptr inbounds` of an `alloca`): `llc` describes it as the
+/// slot plus the offset (`processDbgDeclare` strips constant offsets).
+/// hod's code generator stops with an internal error ("a home value
+/// without a home", `crates/hod_cg/src/policy.rs` `finish`): the
+/// address is folded into its user and never stored to the home the
+/// declaration gave it. No front end emits it at `-O0`.
+#[test]
+#[ignore = "hod_cg: internal error on a #dbg_declare of a slot plus a constant (policy.rs finish)"]
+fn declaration_of_a_slot_offset_matches_llc() {
+    let Some(compiler) = tool("clang++-22") else { return };
+    let scratch = Scratch::new("dies-followups-offset");
+    let text = ir(&compiler, &scratch, "offset", "declare.cpp", &[]);
+    let text = move_declare(&text, "offset", "%2", "  %2 = getelementptr", "");
+    compare(&scratch, "llc-22", "offset", &text).unwrap();
+}
+
+/// A `CoroSplit` ramp (`-O0` IR, which clang has already split): the
+/// frame's variables are declared on the frame pointer's `phi`, and
+/// clang 22 declares the coroutine's parameter twice, on its slot and on
+/// its frame copy. `llc -O0` drops the `phi`'s declarations, so the
+/// parameter has its slot and `__promise` no DIE, and writes the retained
+/// `__coro_frame` without a location (`collectEntityInfo`); so does hod.
+#[test]
+fn coroutine_ramps_match_llc() {
+    let mut ramps = 0;
+    each_tree("ramp", "../dies_label/coro.cpp", &[], |name, unit| {
+        let ramp = subprogram(unit, "_Z5evensi");
+        assert_eq!(vars(ramp, "n").len(), 1, "{name}: one parameter");
+        assert!(vars(ramp, "__promise").is_empty(), "{name}");
+        let frame = vars(ramp, "__coro_frame");
+        assert_eq!(frame.len(), 1, "{name}");
+        assert!(!has(frame[0], "DW_AT_location"), "{name}: {:?}", frame[0]);
+        ramps += 1;
+    });
+    eprintln!("coroutine_ramps_match_llc: {ramps} trees equal to llc's");
+}
+
+/// kiln++'s ramp: the same, but kiln++ writes the frame type's `void *`
+/// as a second node equal to the first (`!142 = !DIDerivedType(tag:
+/// DW_TAG_pointer_type, baseType: null, size: 64)` beside `!17`). LLVM's
+/// parser makes equal uniqued nodes one; `hod_ll` keeps two, so hod's
+/// unit has one more `void *` DIE than `llc`'s. Outside WP-111
+/// (`crates/hod_ll`, metadata uniquing).
+#[test]
+#[ignore = "hod_ll keeps two equal uniqued metadata nodes apart (an extra void * DIE)"]
+fn kiln_coroutine_ramp_matches_llc() {
+    let (Some(k), Some(_)) = (support::kiln(), tool("llc-22")) else { return };
+    let scratch = Scratch::new("dies-followups-kiln-ramp");
+    let text = ir(&k, &scratch, "kiln-ramp", "../dies_label/coro.cpp", &[]);
+    compare(&scratch, "llc-22", "kiln-ramp", &text).unwrap();
 }

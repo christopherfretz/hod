@@ -26,6 +26,17 @@ use crate::record::{BlockOffset, CfiOp, Chunk, FrameDesc, LineRow, VarPlace, Var
 use crate::reg::{MIN_POOL_FPR, MIN_POOL_GPR, RegSet};
 use crate::target::Target;
 
+/// Whether `address`, named by a `#dbg_declare`, is the result of a `phi`
+/// (§9.5, WP-111). `llc -O0` drops such a declaration: its
+/// `SelectionDAGBuilder` describes a declared address that is not a
+/// static `alloca` or an argument in memory only through the node the
+/// address already has in the declaration's block, and a `phi` has none
+/// until an instruction of the block uses it (a `CoroSplit` ramp declares
+/// the frame's variables right after the frame pointer's `phi`).
+fn declares_a_phi(body: &Body, address: Value) -> bool {
+    address.as_inst().is_some_and(|id| body.inst(id).opcode() == Opcode::Phi)
+}
+
 /// The most code one function may have, in bytes. No target's far
 /// branch reaches further, and code offsets stay well inside 32 bits.
 pub const MAX_FUNCTION_SIZE: u32 = 1 << 30;
@@ -683,8 +694,9 @@ impl<'a, T: Target> FnCx<'a, T> {
     fn finish_vars(&mut self) {
         let body = self.body;
         for declare in body.declares() {
-            if declare.address == Value::NONE {
-                // The address was dropped: no row, as `llc` writes none.
+            if declare.address == Value::NONE || declares_a_phi(body, declare.address) {
+                // The address was dropped, or is a `phi`: no row, as `llc`
+                // writes none (§9.5, WP-111).
                 continue;
             }
             // §4.1: a declared value has a home for the whole function.

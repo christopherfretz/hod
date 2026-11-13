@@ -876,6 +876,20 @@ fragment are refused (§ below). `llc -O0` writes the same location for
 a slot as `DW_OP_fbreg` from its own frame base, so locations are
 compared by behaviour, under the debuggers (§6.7, §8.8).
 
+**Retained variables** (WP-111, `retained_vars`): a `DILocalVariable`
+in the subprogram's `retainedNodes` that no row of the function names
+gets a DIE without `location` (the families' location bit clear), in
+its own scope when that scope has code (else none), after the scope's
+declared variables (a parameter in its number's place), its type made
+after the function's other variables' (`llc`'s `collectEntityInfo`
+makes the retained nodes' entities last). A `CoroSplit` ramp retains
+`__coro_frame` and declares it only on a `phi`, which neither `llc` nor
+hod describes (`spec/codegen.md` §9.5): gdb prints `<optimized out>`,
+lldb `<no location, value may have been optimized out>`, under both. A
+retained label without a record is not written (no producer emits one
+at `-O0`); a function with an abstract instance and retained nodes is
+refused (`debug:retained-nodes`, §6.9).
+
 **Lexical blocks** (`scope_ranges`). `llc`'s `LexicalScopes` over the
 function's transitions: for each transition with a location, the scopes
 from its scope out to the first open one are opened (outermost first);
@@ -1762,12 +1776,12 @@ other than the unit's with `low_pc`/`high_pc` equals one with
 names the class; the census (`scripts/debug-census.sh`) counts trees
 equal, permitted by class, and differing.
 
-**Not written by `hod_cg`, so not compared** (each an `#[ignore]`d test in
-`crates/hod_a64/tests/dies_label.rs`): a unit with imports but no code
-or globals (`llc` writes it; the bridge's `finish` writes none); a
-`dbg_declare` of a non-slot address in a coroutine's ramp (`llc -O0`
-drops it, hod's code generator keeps it). clang 22's ramp declares the
-coroutine's parameter twice, which stays `debug:variable-twice`.
+**Not written by `hod_cg` at WP-098, written since WP-111**
+(`crates/hod_a64/tests/dies_label.rs`, no longer ignored): a unit with
+imports but no code or globals (§1.2); a `dbg_declare` of the frame
+pointer's `phi` in a coroutine's ramp (`spec/codegen.md` §9.5, §6.4
+"Retained variables"). With it, clang 22's ramp no longer declares its
+parameter twice: the second declaration was the `phi`'s.
 
 **WP-099's findings** (`docs/status/debug.md`; each compared with `llc`
 19 and 22 for clang 19, clang 22 and kiln++ in `dies_label.rs`, and a

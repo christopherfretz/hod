@@ -4021,7 +4021,19 @@ Recorded only when the module has debug information.
   the target cannot reach by a fixed offset is `Refused("debug:frame-place")`.
   `hod_dwarf` composes the location with the expression. Several rows
   may name one slot (structured bindings do), each with its own
-  expression. At `-O0` a row's location holds for the whole function. The
+  expression. A `#dbg_declare` of a `phi` has no row (WP-111): `llc
+  -O0`'s `SelectionDAGBuilder` describes a declared address that is not
+  a static `alloca` or an argument in memory only through the node the
+  address has in the declaration's block, and a `phi` has none until an
+  instruction of the block uses it, so `llc` drops the declaration (a
+  `CoroSplit` ramp declares the frame's variables right after the frame
+  pointer's `phi`). `hod_ir`'s declarations have no position, so the two
+  other cases `llc` tells apart by position stay as they are: a value
+  from another block (`llc` drops it) and a value declared after its
+  definition in its own block (`llc` writes a location list from there);
+  hod writes the value's home for the whole function. No front end emits
+  either at `-O0` (`crates/hod_a64/tests/dies_followups.rs`, two
+  ignored tests). At `-O0` a row's location holds for the whole function. The
   body is dropped after its function is compiled, so everything
   `hod_dwarf` needs from it is copied here.
 - labels are rows of `vars` too: one `VarPlace::Label(offset)` row per

@@ -8,29 +8,22 @@ Every module of the captured corpus (`docs/status/corpus-x64-census.md`, capture
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `(compiled)` | 3351 | 3311 |
-| `musttail:stack-args-unknown` | 6 | 6 |
-| `abi:byval-align` | 3 | 3 |
+| `(compiled)` | 3363 | 3323 |
 | `call:inline-asm` | 3 | 3 |
 | `inst:callbr` | 3 | 3 |
 | `init:block-diff` | 2 | 3 |
 | `cc:preserve_mostcc` | 1 | 1 |
-| `debug:call-sites` | 1 | 1 |
-| `debug:dwarf-version` | 1 | 1 |
-| `intrinsic:llvm.x86.sse2.pause` | 1 | 1 |
+| `debug:dbg-value` | 1 | 1 |
 | `intrinsic:llvm.x86.sse2.pmovmskb.128` | 1 | 1 |
 | `module:asm` | 1 | 1 |
 | `x64:inline-asm-operand` | 1 | 1 |
-| `x64:vector-wide-element` | 1 | 1 |
 | all | 3376 | 3337 |
 
 ## Every reason (census)
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `musttail:stack-args-unknown` | 6 | 6 |
 | `call:inline-asm` | 4 | 4 |
-| `abi:byval-align` | 3 | 3 |
 | `inst:callbr` | 3 | 3 |
 | `init:block-diff` | 2 | 3 |
 | `cc:preserve_allcc` | 1 | 1 |
@@ -38,13 +31,10 @@ Every module of the captured corpus (`docs/status/corpus-x64-census.md`, capture
 | `cc:win64cc` | 1 | 1 |
 | `cc:x86_regcallcc` | 1 | 1 |
 | `cc:x86_vectorcallcc` | 1 | 1 |
-| `debug:call-sites` | 1 | 1 |
-| `debug:dwarf-version` | 1 | 1 |
-| `intrinsic:llvm.x86.sse2.pause` | 1 | 1 |
+| `debug:dbg-value` | 1 | 1 |
 | `intrinsic:llvm.x86.sse2.pmovmskb.128` | 1 | 1 |
 | `module:asm` | 1 | 1 |
 | `x64:inline-asm-operand` | 1 | 1 |
-| `x64:vector-wide-element` | 1 | 1 |
 
 ## The ten most frequent refusals
 
@@ -52,9 +42,7 @@ By the census (modules with the reason anywhere, all LLVM majors), with the modu
 
 | reason | census | first refusal | owner |
 |---|---:|---:|---|
-| `musttail:stack-args-unknown` | 12 | 12 | - |
 | `call:inline-asm` | 8 | 6 | - |
-| `abi:byval-align` | 6 | 6 | - |
 | `inst:callbr` | 6 | 6 | - |
 | `init:block-diff` | 5 | 5 | - |
 | `cc:preserve_allcc` | 2 | 0 | - |
@@ -62,6 +50,8 @@ By the census (modules with the reason anywhere, all LLVM majors), with the modu
 | `cc:win64cc` | 2 | 0 | - |
 | `cc:x86_regcallcc` | 2 | 0 | - |
 | `cc:x86_vectorcallcc` | 2 | 0 | - |
+| `debug:dbg-value` | 2 | 2 | WP-136 |
+| `intrinsic:llvm.x86.sse2.pmovmskb.128` | 2 | 2 | - |
 
 ## What the built modules do
 
@@ -92,11 +82,11 @@ Coverage-log field 7 (from the process's start to the decline) of the first-refu
 
 | LLVM | route | median | p99 | worst | share of `llc`: median | p99 | worst |
 |---|---|---:|---:|---:|---:|---:|---:|
-| 22 | text | 11353 | 39839 | 247385 | | | |
-| 22 | bitcode, native | 11073 | 31048 | 178805 | | | |
-| 22 | bitcode, `llvm-dis` | 54356 | 118333 | 615994 | | | |
-| 22 | the `convert` of the `llvm-dis` route | 44267 | 99925 | 382979 | | | |
-| 19 | text | 11431 | 34612 | 240910 | | | |
-| 19 | bitcode, native | 10591 | 28905 | 210126 | | | |
-| 19 | bitcode, `llvm-dis` | 52790 | 120357 | 782567 | | | |
-| 19 | the `convert` of the `llvm-dis` route | 42355 | 102073 | 552866 | | | |
+| 22 | text | 16819 | 45834 | 288491 | | | |
+| 22 | bitcode, native | 16367 | 42318 | 255669 | | | |
+| 22 | bitcode, `llvm-dis` | 79320 | 179300 | 598025 | | | |
+| 22 | the `convert` of the `llvm-dis` route | 64460 | 149130 | 378526 | | | |
+| 19 | text | 15428 | 42453 | 293533 | | | |
+| 19 | bitcode, native | 14823 | 45452 | 241208 | | | |
+| 19 | bitcode, `llvm-dis` | 68192 | 169242 | 770381 | | | |
+| 19 | the `convert` of the `llvm-dis` route | 54467 | 136467 | 495433 | | | |

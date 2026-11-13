@@ -2,9 +2,12 @@
 //! table and is kept, dropped, or noted as `attr:<name>`.
 
 use hod_ir::Layering;
+use hod_ir::kit::{
+    AttrUse, TypedAttrError, ValueKeyword, add_typed, attr_construct, fn_keyword, merge_fn_attrs,
+    string_attr, value_keyword,
+};
 use hod_ir::{
-    AttrClass, AttrInfo, AttrSyntax, CallConv, FnAttrs, FnAttrsId, FnStr, ParamAttrs, ParamMem,
-    UwTable, attr_info,
+    AttrInfo, AttrSyntax, CallConv, FnAttrs, FnAttrsId, FnStr, ParamAttrs, UwTable, attr_info,
 };
 
 use crate::AttrGroup;
@@ -69,10 +72,6 @@ impl AttrMemo {
 /// `riscv_vls_cc(N)` is read by the parser as one keyword.
 pub fn call_conv_keyword(keyword: &[u8]) -> Option<u32> {
     CallConv::from_keyword(keyword).map(|cc| u32::from(cc.llvm_id()))
-}
-
-fn lossy(name: &[u8]) -> String {
-    format!("attr:{}", String::from_utf8_lossy(name))
 }
 
 impl<L: Layering> Parser<'_, '_, L> {
@@ -173,15 +172,9 @@ impl<L: Layering> Parser<'_, '_, L> {
         } else {
             (&[][..]).into()
         };
-        match attr_info(AttrSyntax::String, &name).map(|row| row.class) {
-            Some(AttrClass::Dropped) => {}
-            Some(AttrClass::Kept) if function => {
-                if let Some((key, rest)) = FnStr::from_name(&name) {
-                    let value = if key == FnStr::NoBuiltin { rest } else { &value };
-                    ir(at, self.fa.set_string(key, value))?;
-                }
-            }
-            _ => self.note(lossy(&name)),
+        let fa = if function { Some(&mut self.fa) } else { None };
+        if ir(at, string_attr(fa, &name, &value))? == AttrUse::Rejected {
+            self.note(attr_construct(&name));
         }
         Ok(())
     }
@@ -234,17 +227,14 @@ impl<L: Layering> Parser<'_, '_, L> {
                 self.fa_align = Some(self.expect_u64("expected an alignment")?);
             }
             _ => {
-                if let Some(flag) = FnAttrs::flag_named(name) {
-                    ir(at, self.fa.set(flag))?;
-                    return Ok(true);
-                }
-                match row.class {
-                    AttrClass::Dropped => {}
-                    AttrClass::Kept => {
+                match ir(at, fn_keyword(&mut self.fa, name, row.class))? {
+                    AttrUse::Kept => return Ok(true),
+                    AttrUse::Dropped => {}
+                    AttrUse::Misplaced => {
                         let message = "this attribute does not apply to functions";
                         return fail(LlErrorKind::Syntax, at, message);
                     }
-                    AttrClass::Rejected => self.note(lossy(name)),
+                    AttrUse::Rejected => self.note(attr_construct(name)),
                 }
                 self.skip_attr_args()?;
             }
@@ -270,64 +260,54 @@ impl<L: Layering> Parser<'_, '_, L> {
                 return Ok(attrs);
             };
             self.bump();
-            let flag = match name {
-                b"zeroext" => Some(ParamAttrs::ZEROEXT),
-                b"signext" => Some(ParamAttrs::SIGNEXT),
-                b"inreg" => Some(ParamAttrs::INREG),
-                b"nest" => Some(ParamAttrs::NEST),
-                b"swiftself" => Some(ParamAttrs::SWIFT_SELF),
-                b"swifterror" => Some(ParamAttrs::SWIFT_ERROR),
-                b"swiftasync" => Some(ParamAttrs::SWIFT_ASYNC),
-                _ => None,
-            };
-            let mem = match name {
-                b"sret" => Some(ParamMem::Sret),
-                b"byval" => Some(ParamMem::ByVal),
-                b"byref" => Some(ParamMem::ByRef),
-                b"inalloca" => Some(ParamMem::InAlloca),
-                b"preallocated" => Some(ParamMem::Preallocated),
-                b"elementtype" => Some(ParamMem::ElementType),
-                _ => None,
-            };
-            if let Some(flag) = flag {
-                attrs = ir(at, attrs.with(flag))?;
-            } else if let Some(mem) = mem {
-                self.expect(Tok::LParen, "expected '(' and a type after the attribute")?;
-                let ty = self.parse_type()?;
-                self.expect(Tok::RParen, "expected ')' after the attribute's type")?;
-                if attrs.mem() == ParamMem::None {
-                    attrs = ir(at, attrs.with_mem(mem, ty))?;
-                } else if mem == ParamMem::ElementType || attrs.mem() == ParamMem::ElementType {
+            match value_keyword(name) {
+                ValueKeyword::Flag(flag) => attrs = ir(at, attrs.with(flag))?,
+                ValueKeyword::Typed(mem) => {
+                    self.expect(Tok::LParen, "expected '(' and a type after the attribute")?;
+                    let ty = self.parse_type()?;
+                    self.expect(Tok::RParen, "expected ')' after the attribute's type")?;
                     // `elementtype` beside another typed attribute has
                     // no representation (`spec/ir.md` §5.7).
-                    let other = if mem == ParamMem::ElementType { attrs.mem() } else { mem };
-                    self.note(format!("attr:elementtype-with-{}", mem_keyword(other)));
-                    if attrs.mem() == ParamMem::ElementType {
-                        attrs = ir(at, clear_mem(attrs).with_mem(mem, ty))?;
+                    match add_typed(attrs, mem, ty) {
+                        Ok((added, construct)) => {
+                            if let Some(construct) = construct {
+                                self.note(construct);
+                            }
+                            attrs = added;
+                        }
+                        Err(TypedAttrError::TwoTyped) => {
+                            return fail(
+                                LlErrorKind::Syntax,
+                                at,
+                                "two typed attributes on one value",
+                            );
+                        }
+                        Err(TypedAttrError::Ir(error)) => return ir(at, Err(error)),
                     }
-                } else {
-                    return fail(LlErrorKind::Syntax, at, "two typed attributes on one value");
                 }
-            } else if name == b"align" {
-                let bytes = if self.tok.kind == Tok::LParen {
-                    self.paren_u64()?
-                } else {
-                    self.expect_u64("expected an alignment")?
-                };
-                attrs = ir(at, attrs.with_align(bytes))?;
-            } else if name == b"alignstack" {
-                let bytes = self.paren_u64()?;
-                attrs = ir(at, attrs.with_stack_align(bytes))?;
-            } else {
-                match row.class {
-                    AttrClass::Dropped => {}
-                    AttrClass::Kept => {
-                        let message = "this attribute does not apply to values";
-                        return fail(LlErrorKind::Syntax, at, message);
+                ValueKeyword::Align => {
+                    let bytes = if self.tok.kind == Tok::LParen {
+                        self.paren_u64()?
+                    } else {
+                        self.expect_u64("expected an alignment")?
+                    };
+                    attrs = ir(at, attrs.with_align(bytes))?;
+                }
+                ValueKeyword::StackAlign => {
+                    let bytes = self.paren_u64()?;
+                    attrs = ir(at, attrs.with_stack_align(bytes))?;
+                }
+                ValueKeyword::Other => {
+                    match AttrUse::of_class(row.class) {
+                        AttrUse::Misplaced => {
+                            let message = "this attribute does not apply to values";
+                            return fail(LlErrorKind::Syntax, at, message);
+                        }
+                        AttrUse::Rejected => self.note(attr_construct(name)),
+                        AttrUse::Dropped | AttrUse::Kept => {}
                     }
-                    AttrClass::Rejected => self.note(lossy(name)),
+                    self.skip_attr_args()?;
                 }
-                self.skip_attr_args()?;
             }
         }
     }
@@ -361,16 +341,7 @@ impl<L: Layering> Parser<'_, '_, L> {
                 single = Some(group.attrs);
             } else {
                 let view = self.module.fn_attrs(group.attrs);
-                ir(at, self.fa.set(view.flags()))?;
-                if view.uwtable() != UwTable::None {
-                    self.fa.set_uwtable(view.uwtable());
-                }
-                if let Some(bytes) = view.stack_align() {
-                    ir(at, self.fa.set_stack_align(bytes))?;
-                }
-                for (key, value) in view.strings() {
-                    ir(at, self.fa.set_string(key, value))?;
-                }
+                ir(at, merge_fn_attrs(&mut self.fa, &view))?;
             }
         }
         let at = groups.first().map_or(self.tok.start, |&(_, at)| at);
@@ -431,40 +402,4 @@ impl<L: Layering> Parser<'_, '_, L> {
         self.upgraded.push((id, done));
         Ok(done)
     }
-}
-
-fn mem_keyword(mem: ParamMem) -> &'static str {
-    match mem {
-        ParamMem::Sret => "sret",
-        ParamMem::ByVal => "byval",
-        ParamMem::ByRef => "byref",
-        ParamMem::InAlloca => "inalloca",
-        ParamMem::Preallocated => "preallocated",
-        _ => "elementtype",
-    }
-}
-
-/// `attrs` without its typed attribute.
-fn clear_mem(attrs: ParamAttrs) -> ParamAttrs {
-    let mut out = ParamAttrs::NONE;
-    for flag in [
-        ParamAttrs::ZEROEXT,
-        ParamAttrs::SIGNEXT,
-        ParamAttrs::INREG,
-        ParamAttrs::NEST,
-        ParamAttrs::SWIFT_SELF,
-        ParamAttrs::SWIFT_ERROR,
-        ParamAttrs::SWIFT_ASYNC,
-    ] {
-        if attrs.has(flag) {
-            out = out.with(flag).unwrap_or(out);
-        }
-    }
-    if let Some(bytes) = attrs.align() {
-        out = out.with_align(bytes).unwrap_or(out);
-    }
-    if let Some(bytes) = attrs.stack_align() {
-        out = out.with_stack_align(bytes).unwrap_or(out);
-    }
-    out
 }

@@ -4,22 +4,20 @@
 
 use hod_ir::{
     AtomicOrdering, BlockId, Bundle, CallConv, CallDesc, Clause, Const, ConstId, FloatPredicate,
-    FnAttrs, InlineAsm, IntPredicate, Intrinsic, Layering, MemFlags, NoCode, Opcode, ParamAttrs,
-    RmwOp, SHUFFLE_UNDEF, SymId, SyncScope, TailKind, TypeId, TypeKind, Value, aggregate_field,
+    InlineAsm, IntPredicate, Intrinsic, Layering, MemFlags, NoCode, Opcode, ParamAttrs, RmwOp,
+    SHUFFLE_UNDEF, SymId, SyncScope, TailKind, TypeId, TypeKind, Value, aggregate_field,
     no_code_intrinsic, resolve_intrinsic,
 };
 
-use hod_ir::kit::{AllocaDesc, AllocaError, Gep, gep_index_value, lower_alloca};
+use hod_ir::kit::{
+    AllocaDesc, AllocaError, CALL_SITE_FLAGS, Gep, gep_index_value, lower_alloca,
+    set_call_site_flags,
+};
 
 use crate::attrs::{self, FUNCTION_INDEX};
 use crate::body::{CalleeInfo, Fx, Local, Ops};
 use crate::codes::func;
 use crate::error::{BcErrorKind, BcResult, fail, ir};
-
-/// The call-site function attributes `hod_ir` keeps (`spec/ir.md` §5.7):
-/// `CallDesc`'s flags.
-const CALL_SITE_FLAGS: u32 =
-    FnAttrs::NORETURN | FnAttrs::NOUNWIND | FnAttrs::RETURNS_TWICE | FnAttrs::CONVERGENT;
 
 /// What an instruction leaves: its result type and value (`void` and no
 /// value for most), and whether it ended the block.
@@ -1444,10 +1442,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
         };
         desc.cc = cc;
         desc.tail = tail;
-        desc.noreturn = flags & FnAttrs::NORETURN != 0;
-        desc.nounwind = flags & FnAttrs::NOUNWIND != 0;
-        desc.returns_twice = flags & FnAttrs::RETURNS_TWICE != 0;
-        desc.convergent = flags & FnAttrs::CONVERGENT != 0;
+        set_call_site_flags(&mut desc, flags);
         desc.ret_attrs = ret_attrs;
         desc.arg_attrs = if any_attrs { &self.s.arg_attrs } else { &[] };
         desc.bundles = &bundle_list;

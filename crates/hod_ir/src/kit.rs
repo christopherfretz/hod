@@ -9,8 +9,9 @@
 //! inlined into the caller.
 
 use crate::{
-    Const, ConstId, ConstPool, FunctionBuilder, IrResult, Layering, Module, TypeId, TypeKind,
-    TypeTable, Value, sext64,
+    AttrClass, AttrSyntax, CallDesc, Const, ConstId, ConstPool, FnAttrs, FnAttrsView, FnStr,
+    FunctionBuilder, IrResult, Layering, Module, ParamAttrs, ParamMem, TypeId, TypeKind, TypeTable,
+    UwTable, Value, attr_info, sext64,
 };
 
 /// What a lowering made of a construct.
@@ -392,4 +393,225 @@ pub fn lower_alloca<L: Layering>(
         None => Value::constant(module.consts.int(&module.types, TypeId::I32, 1)?)?,
     };
     Ok((result, Lowered::Built(b.alloca(result, count, elem_size, align)?)))
+}
+
+// ---- attributes (`spec/ir.md` §5.7) ----
+
+/// The call-site function attributes `hod_ir` keeps: `CallDesc`'s flags.
+pub const CALL_SITE_FLAGS: u32 =
+    FnAttrs::NORETURN | FnAttrs::NOUNWIND | FnAttrs::RETURNS_TWICE | FnAttrs::CONVERGENT;
+
+/// Sets `desc`'s flags from the call site's function attributes `flags`
+/// (any [`FnAttrs`] flags; those outside [`CALL_SITE_FLAGS`] are
+/// ignored).
+#[inline]
+pub fn set_call_site_flags(desc: &mut CallDesc<'_>, flags: u32) {
+    desc.noreturn = flags & FnAttrs::NORETURN != 0;
+    desc.nounwind = flags & FnAttrs::NOUNWIND != 0;
+    desc.returns_twice = flags & FnAttrs::RETURNS_TWICE != 0;
+    desc.convergent = flags & FnAttrs::CONVERGENT != 0;
+}
+
+/// What an attribute does in the place it was written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttrUse {
+    /// Kept in `hod_ir`.
+    Kept,
+    /// Dropped: no object byte depends on it.
+    Dropped,
+    /// Unsupported: the producer records [`attr_construct`] of its name.
+    Rejected,
+    /// A kept attribute in a place it does not apply to: malformed.
+    Misplaced,
+}
+
+impl AttrUse {
+    /// What an attribute of `class` that this place does not keep does:
+    /// a kept one does not apply here.
+    #[inline]
+    pub fn of_class(class: AttrClass) -> AttrUse {
+        match class {
+            AttrClass::Dropped => AttrUse::Dropped,
+            AttrClass::Kept => AttrUse::Misplaced,
+            AttrClass::Rejected => AttrUse::Rejected,
+        }
+    }
+}
+
+/// The construct an unsupported attribute is recorded by: `attr:<name>`.
+pub fn attr_construct(name: &[u8]) -> String {
+    format!("attr:{}", String::from_utf8_lossy(name))
+}
+
+/// A string attribute `"name"="value"`: on a function (`fa` is its set),
+/// a kept string goes into `fa` (for `no-builtin-<f>`, the name's rest);
+/// on a value, or unknown, it is rejected; a dropped one is dropped.
+///
+/// # Errors
+/// As [`FnAttrs::set_string`].
+#[inline]
+pub fn string_attr(fa: Option<&mut FnAttrs>, name: &[u8], value: &[u8]) -> IrResult<AttrUse> {
+    match (attr_info(AttrSyntax::String, name).map(|row| row.class), fa) {
+        (Some(AttrClass::Dropped), _) => Ok(AttrUse::Dropped),
+        (Some(AttrClass::Kept), Some(fa)) => {
+            if let Some((key, rest)) = FnStr::from_name(name) {
+                let value = if key == FnStr::NoBuiltin { rest } else { value };
+                fa.set_string(key, value)?;
+            }
+            Ok(AttrUse::Kept)
+        }
+        _ => Ok(AttrUse::Rejected),
+    }
+}
+
+/// A function keyword attribute other than `uwtable`, `alignstack` and
+/// `align` (whose arguments the producer reads): a flag of [`FnAttrs`] is
+/// set in `fa`; any other is used as its class says ([`AttrUse::of_class`]).
+///
+/// # Errors
+/// As [`FnAttrs::set`].
+#[inline]
+pub fn fn_keyword(fa: &mut FnAttrs, name: &[u8], class: AttrClass) -> IrResult<AttrUse> {
+    if let Some(flag) = FnAttrs::flag_named(name) {
+        fa.set(flag)?;
+        return Ok(AttrUse::Kept);
+    }
+    Ok(AttrUse::of_class(class))
+}
+
+/// What a keyword attribute of a parameter or return value is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValueKeyword {
+    /// A [`ParamAttrs`] flag (`zeroext`, `signext`, `inreg`, `nest`,
+    /// `swiftself`, `swifterror`, `swiftasync`).
+    Flag(u16),
+    /// A typed attribute (`sret`, `byval`, `byref`, `inalloca`,
+    /// `preallocated`, `elementtype`): [`add_typed`].
+    Typed(ParamMem),
+    /// `align N`.
+    Align,
+    /// `alignstack(N)`.
+    StackAlign,
+    /// Any other: used as its class says ([`AttrUse::of_class`]).
+    Other,
+}
+
+/// The keyword attribute `name` of a parameter or return value.
+#[inline]
+pub fn value_keyword(name: &[u8]) -> ValueKeyword {
+    match name {
+        b"zeroext" => ValueKeyword::Flag(ParamAttrs::ZEROEXT),
+        b"signext" => ValueKeyword::Flag(ParamAttrs::SIGNEXT),
+        b"inreg" => ValueKeyword::Flag(ParamAttrs::INREG),
+        b"nest" => ValueKeyword::Flag(ParamAttrs::NEST),
+        b"swiftself" => ValueKeyword::Flag(ParamAttrs::SWIFT_SELF),
+        b"swifterror" => ValueKeyword::Flag(ParamAttrs::SWIFT_ERROR),
+        b"swiftasync" => ValueKeyword::Flag(ParamAttrs::SWIFT_ASYNC),
+        b"sret" => ValueKeyword::Typed(ParamMem::Sret),
+        b"byval" => ValueKeyword::Typed(ParamMem::ByVal),
+        b"byref" => ValueKeyword::Typed(ParamMem::ByRef),
+        b"inalloca" => ValueKeyword::Typed(ParamMem::InAlloca),
+        b"preallocated" => ValueKeyword::Typed(ParamMem::Preallocated),
+        b"elementtype" => ValueKeyword::Typed(ParamMem::ElementType),
+        b"align" => ValueKeyword::Align,
+        b"alignstack" => ValueKeyword::StackAlign,
+        _ => ValueKeyword::Other,
+    }
+}
+
+/// Why a typed attribute could not be added.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TypedAttrError {
+    /// Two typed attributes on one value, neither `elementtype`.
+    TwoTyped,
+    /// As [`ParamAttrs::with_mem`].
+    Ir(crate::IrError),
+}
+
+impl From<crate::IrError> for TypedAttrError {
+    fn from(error: crate::IrError) -> TypedAttrError {
+        TypedAttrError::Ir(error)
+    }
+}
+
+/// `attrs` with the typed attribute `mem` of type `ty`. `elementtype`
+/// beside another typed attribute has no representation: the other one
+/// is kept, and the construct to record is returned
+/// (`attr:elementtype-with-<other>`).
+///
+/// # Errors
+/// `TwoTyped` for two typed attributes neither of which is
+/// `elementtype`.
+#[inline]
+pub fn add_typed(
+    attrs: ParamAttrs,
+    mem: ParamMem,
+    ty: TypeId,
+) -> Result<(ParamAttrs, Option<&'static str>), TypedAttrError> {
+    if attrs.mem() == ParamMem::None {
+        return Ok((attrs.with_mem(mem, ty)?, None));
+    }
+    if mem != ParamMem::ElementType && attrs.mem() != ParamMem::ElementType {
+        return Err(TypedAttrError::TwoTyped);
+    }
+    let other = if mem == ParamMem::ElementType { attrs.mem() } else { mem };
+    let construct = match other {
+        ParamMem::Sret => "attr:elementtype-with-sret",
+        ParamMem::ByVal => "attr:elementtype-with-byval",
+        ParamMem::ByRef => "attr:elementtype-with-byref",
+        ParamMem::InAlloca => "attr:elementtype-with-inalloca",
+        ParamMem::Preallocated => "attr:elementtype-with-preallocated",
+        _ => "attr:elementtype-with-elementtype",
+    };
+    let attrs = if attrs.mem() == ParamMem::ElementType {
+        clear_mem(attrs).with_mem(mem, ty)?
+    } else {
+        attrs
+    };
+    Ok((attrs, Some(construct)))
+}
+
+/// `attrs` without its typed attribute.
+fn clear_mem(attrs: ParamAttrs) -> ParamAttrs {
+    let mut out = ParamAttrs::NONE;
+    for flag in [
+        ParamAttrs::ZEROEXT,
+        ParamAttrs::SIGNEXT,
+        ParamAttrs::INREG,
+        ParamAttrs::NEST,
+        ParamAttrs::SWIFT_SELF,
+        ParamAttrs::SWIFT_ERROR,
+        ParamAttrs::SWIFT_ASYNC,
+    ] {
+        if attrs.has(flag) {
+            out = out.with(flag).unwrap_or(out);
+        }
+    }
+    if let Some(bytes) = attrs.align() {
+        out = out.with_align(bytes).unwrap_or(out);
+    }
+    if let Some(bytes) = attrs.stack_align() {
+        out = out.with_stack_align(bytes).unwrap_or(out);
+    }
+    out
+}
+
+/// Adds the attributes of `view` (an interned set) to `out`: its flags,
+/// its unwind table kind unless none, its stack alignment and its
+/// strings. Two attribute groups on one function merge this way.
+///
+/// # Errors
+/// As the setters of [`FnAttrs`].
+pub fn merge_fn_attrs<L: Layering>(out: &mut FnAttrs, view: &FnAttrsView<'_, L>) -> IrResult<()> {
+    out.set(view.flags())?;
+    if view.uwtable() != UwTable::None {
+        out.set_uwtable(view.uwtable());
+    }
+    if let Some(bytes) = view.stack_align() {
+        out.set_stack_align(bytes)?;
+    }
+    for (key, value) in view.strings() {
+        out.set_string(key, value)?;
+    }
+    Ok(())
 }

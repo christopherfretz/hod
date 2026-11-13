@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 
+use hod_ir::kit::merge_fn_attrs;
 use hod_ir::{
     AliasDesc, Arch, CallConv, ComdatId, ComdatKind, Const, ConstId, DiId, DiKind, FlagValue,
     FnAttrs, FnAttrsId, FnStr, FunctionDesc, IFuncDesc, Linkage, Module, ParamAttrs, Retained,
@@ -1617,18 +1618,7 @@ impl<'r, 'a> Build<'r, 'a> {
 
 /// Adds the attributes `id` of `module` to `out`.
 fn merge(out: &mut FnAttrs, module: &Module, id: FnAttrsId, at: u64) -> BcResult<()> {
-    let view = module.fn_attrs(id);
-    ir(at, out.set(view.flags()))?;
-    if view.uwtable() != hod_ir::UwTable::None {
-        out.set_uwtable(view.uwtable());
-    }
-    if let Some(bytes) = view.stack_align() {
-        ir(at, out.set_stack_align(bytes))?;
-    }
-    for (key, value) in view.strings() {
-        ir(at, out.set_string(key, value))?;
-    }
-    Ok(())
+    ir(at, merge_fn_attrs(out, &module.fn_attrs(id)))
 }
 
 fn special_of(name: &[u8]) -> Option<Special> {

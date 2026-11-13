@@ -111,6 +111,7 @@ pub struct BodyReader<'b, 'a> {
     pub(crate) values: Values,
     pub(crate) state: State,
     unsupported: Vec<Cow<'static, str>>,
+    attachments: Vec<Cow<'static, str>>,
 }
 
 impl<'b, 'a> BodyReader<'b, 'a> {
@@ -121,6 +122,7 @@ impl<'b, 'a> BodyReader<'b, 'a> {
             values: bits.values.clone(),
             state: State::default(),
             unsupported: Vec::new(),
+            attachments: Vec::new(),
         }
     }
 
@@ -132,42 +134,33 @@ impl<'b, 'a> BodyReader<'b, 'a> {
     /// represent: each is named in [`BodyReader::unsupported`] and
     /// recorded in `module` against the function's symbol. The notes of
     /// the definition's own metadata attachments (`global-metadata:`)
-    /// come first among them and stop the body too, as `hod_ll`'s notes
-    /// of the same attachments stop the module (WP-064).
+    /// are recorded in `module` as well, and do not stop the body; they
+    /// are [`BodyReader::attachment_notes`] until the next read, for the
+    /// consumer to judge: `hod_ll` notes the same attachments at module
+    /// level, before any body (WP-064).
     ///
     /// # Errors
     /// [`BcError`] at the first record that is not what LLVM writes, or
     /// that `hod_ir` refuses. Never a panic, for any input.
     pub fn read(&mut self, module: &mut Module, function: &FunctionBits) -> BcResult<Option<Body>> {
         self.unsupported.clear();
+        self.attachments.clear();
         let at = function.span.start;
         if function.sym.index() >= module.symbol_count() {
             return fail(BcErrorKind::Invalid, at, "this function is not a symbol of the module");
         }
-        let mut result = self.body(module, function);
+        let result = self.body(module, function);
         let st = &mut self.state;
         if result.is_ok() {
             self.unsupported.append(&mut st.pending);
-            if !st.definition_notes.is_empty() {
-                // WP-064: an attachment `hod_ir` has no field for is a
-                // refusal, not a note nothing judges.
-                if let Ok(Some(body)) = result {
-                    st.storage = Some(body);
-                    result = Ok(None);
-                }
-                let own = std::mem::take(&mut self.unsupported);
-                self.unsupported.append(&mut st.definition_notes);
-                for construct in own {
-                    if !self.unsupported.contains(&construct) {
-                        self.unsupported.push(construct);
-                    }
-                }
-            }
         }
         st.pending.clear();
-        st.definition_notes.clear();
         for construct in &self.unsupported {
             module.record_unsupported(construct, Some(function.sym));
+        }
+        for construct in st.definition_notes.drain(..) {
+            module.record_unsupported(&construct, Some(function.sym));
+            self.attachments.push(construct);
         }
         result
     }
@@ -176,6 +169,13 @@ impl<'b, 'a> BodyReader<'b, 'a> {
     /// once; empty for a body that was returned.
     pub fn unsupported(&self) -> impl ExactSizeIterator<Item = &str> + '_ {
         self.unsupported.iter().map(|construct| &**construct)
+    }
+
+    /// The notes of the last function's own metadata attachments that
+    /// `hod_ir` has no field for (`global-metadata:<kind>`), each once:
+    /// a body that was returned carries them too (WP-064).
+    pub fn attachment_notes(&self) -> impl ExactSizeIterator<Item = &str> + '_ {
+        self.attachments.iter().map(|construct| &**construct)
     }
 
     /// Gives the reader a body its consumer is done with: the next body

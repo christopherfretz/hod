@@ -16,11 +16,11 @@ fn a_switch_debugs_as_typed_cases() {
     let seven = m.consts.int(&m.types, TypeId::I32, 7).unwrap();
     let nine = m.consts.int(&m.types, TypeId::I32, 9).unwrap();
     let mut b = FunctionBuilder::new(&m, f, fn_ty).unwrap();
-    let [entry, a, other] = [(); 3].map(|()| b.create_block().unwrap());
+    let [entry, taken, other] = [(); 3].map(|()| b.create_block().unwrap());
     b.begin_block(entry).unwrap();
-    let x = b.arg(0).unwrap();
-    b.switch(x, other, &[(seven, a), (nine, other)]).unwrap();
-    for block in [a, other] {
+    let cond = b.arg(0).unwrap();
+    b.switch(cond, other, &[(seven, taken), (nine, other)]).unwrap();
+    for block in [taken, other] {
         b.begin_block(block).unwrap();
         b.ret(None).unwrap();
     }
@@ -30,7 +30,7 @@ fn a_switch_debugs_as_typed_cases() {
     let InstKind::Switch(switch) = term.kind() else { panic!("no switch") };
     let text = format!("{switch:?}");
     let want = format!(
-        "Switch {{ cond: {x:?}, default: {other:?}, cases: [({seven:?}, {a:?}), ({nine:?}, {other:?})] }}"
+        "Switch {{ cond: {cond:?}, default: {other:?}, cases: [({seven:?}, {taken:?}), ({nine:?}, {other:?})] }}"
     );
     assert_eq!(text, want);
     assert_eq!(text, "Switch { cond: arg0, default: bb2, cases: [(c3, bb1), (c4, bb2)] }");

@@ -1,9 +1,9 @@
 //! A definition's own metadata attachments (WP-064, `spec/bc.md` §5.8,
 //! `spec/ll.md` §5.7, `spec/ir.md` §2.2): text and bitcode refuse the
 //! same kinds by the same name. In bitcode they live in the function's
-//! block, which the module pass does not read; the body reader names them,
-//! where before it recorded them after the module had been judged and the
-//! module compiled.
+//! block, which the module pass does not read; the body reader keeps
+//! their notes for the facade to judge, where before they were recorded
+//! after the module had been judged and the module compiled.
 
 use hod::{CompileError, Options, OutputKind, Report, Settings};
 use hod_testutil::{LLVM_MAJORS, run_with};
@@ -75,10 +75,10 @@ fn the_dropped_kinds_compile_alike() {
     }
 }
 
-// The body reader names the attachment among the body's refusals, the
-// attachment first.
+// The body reader still delivers the body, as `hod_ll` does, and keeps
+// the attachment's note for its consumer.
 #[test]
-fn the_body_reader_names_the_attachment() {
+fn the_body_reader_keeps_the_attachment_note() {
     let text = definition("!kcfi_type !0");
     for major in LLVM_MAJORS {
         let tool = std::path::PathBuf::from(format!("/usr/lib/llvm-{major}/bin/llvm-as"));
@@ -90,13 +90,11 @@ fn the_body_reader_names_the_attachment() {
         let ran = run_with(&mut command, text.as_bytes(), std::time::Duration::from_mins(1));
         let read = hod_bc::read_module(&ran.stdout, &hod_bc::ReadOptions::default()).unwrap();
         let mut module = read.module;
-        let mut seen = Vec::new();
-        hod_bc::read_bodies(&mut module, &read.bits, |_, body| {
-            assert!(body.body.is_none(), "{major}: the body is refused");
-            seen.extend(body.unsupported.iter().map(ToString::to_string));
-            Ok::<(), hod_bc::BcError>(())
-        })
-        .unwrap();
-        assert_eq!(seen, ["global-metadata:kcfi_type"], "{major}");
+        let mut reader = hod_bc::BodyReader::new(&read.bits);
+        let function = &read.bits.functions()[0];
+        let body = reader.read(&mut module, function).unwrap();
+        assert!(body.is_some(), "{major}: the body is delivered");
+        assert_eq!(reader.unsupported().len(), 0, "{major}");
+        assert_eq!(reader.attachment_notes().collect::<Vec<_>>(), ["global-metadata:kcfi_type"]);
     }
 }

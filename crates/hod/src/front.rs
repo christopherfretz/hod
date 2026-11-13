@@ -266,9 +266,17 @@ fn front(
             if session.end_module().is_ok() {
                 let mut reader = hod_bc::BodyReader::new(&bits);
                 for function in bits.functions() {
+                    // WP-064: a definition's own attachments live in its
+                    // function block, read only now; the text's are
+                    // judged with the module. Either refuses by name.
                     let fed = match reader.read(session.module(), function) {
-                        Ok(Some(body)) => session.body(function.sym, body),
-                        Ok(None) => session.unsupported_body(function.sym, reader.unsupported()),
+                        Ok(Some(body)) if reader.attachment_notes().len() == 0 => {
+                            session.body(function.sym, body)
+                        }
+                        Ok(_) => session.unsupported_body(
+                            function.sym,
+                            reader.attachment_notes().chain(reader.unsupported()),
+                        ),
                         Err(error) => return answer(Err(session.abort(from_bc(&error))), report),
                     };
                     if fed.is_err() {

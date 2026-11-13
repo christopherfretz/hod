@@ -37,6 +37,8 @@ pub fn chunk_from(
     align: &dyn Fn(&str) -> u32,
 ) -> Chunk {
     let mut chunk = Chunk::new();
+    // `e_machine`: 62 is `EM_X86_64`.
+    let arch = if theirs.bytes[0x12] == 62 { Arch::X86_64 } else { Arch::AArch64 };
     for &sym in functions {
         let name = String::from_utf8_lossy(module.symbol(sym).name()).into_owned();
         let found = theirs
@@ -57,8 +59,11 @@ pub fn chunk_from(
             }
             let (target, addend) = match symbol {
                 Ok(name) => (name, addend),
-                // A section symbol: the module symbol there.
+                // A section symbol: the module symbol there. An x86-64
+                // PC-relative field's addend counts from the field's end.
                 Err(target_section) => {
+                    let pcrel = arch == Arch::X86_64 && matches!(kind, 2 | 4 | 9 | 41 | 42);
+                    let addend = addend + if pcrel { 4 } else { 0 };
                     let at = theirs
                         .symbols
                         .iter()
@@ -70,7 +75,7 @@ pub fn chunk_from(
                         })
                         .max_by_key(|s| s.value)
                         .unwrap_or_else(|| panic!("{name}: no symbol at {addend} in a section"));
-                    (at.name.clone(), addend - at.value as i64)
+                    (at.name.clone(), addend - at.value as i64 - if pcrel { 4 } else { 0 })
                 }
             };
             let target = target.strip_prefix(".L").unwrap_or(&target);
@@ -87,7 +92,7 @@ pub fn chunk_from(
             );
             chunk.relocs.push(Reloc {
                 offset: (offset - start) as u32,
-                kind: RelocKind::from_elf_type(Arch::AArch64, kind),
+                kind: RelocKind::from_elf_type(arch, kind),
                 sym,
                 addend,
             });

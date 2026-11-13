@@ -26,12 +26,12 @@
 //! | `common` | WP-116 (shared) | moves, frame places, constants, symbol addresses, branches | `tests/skeleton.rs` |
 //! | `term` | WP-116 | `br`, `ret`, `unreachable` | `tests/skeleton.rs` |
 //! | `features` | WP-116, WP-117 | the judged target features (§5.6.2) | unit |
-//! | `int` | WP-122 | integer binary operations, casts, `icmp`, `select`, `freeze` | |
-//! | `mem` | WP-123 | `load`, `store`, `alloca`, `ptradd`, `llvm.stacksave`/`stackrestore` | |
-//! | `control` | WP-124 | `condbr`, `switch`, `indirectbr` | |
-//! | `call` | WP-125 | calls, `invoke`, `musttail`, landing pads, `resume`, variadics | |
+//! | `int` | WP-122 | integer binary operations, casts, `icmp`, `select`, `freeze` | `tests/int.rs` |
+//! | `mem` | WP-123 | `load`, `store`, `alloca`, `ptradd`, `llvm.stacksave`/`stackrestore` | `tests/mem.rs` |
+//! | `control` | WP-124 | `condbr`, `switch`, `indirectbr` | `tests/control.rs` |
+//! | `call` | WP-125 | calls, `invoke`, `musttail`, landing pads, `resume`, variadics | `tests/call.rs` |
 //! | `vcall` | WP-125, WP-132 | vectors across calls (`PartKind::Lanes`) | |
-//! | `aggr` | WP-126 | `Mem`-class values: wide integers, aggregates, overflow intrinsics | |
+//! | `aggr` | WP-126 | `Mem`-class values: wide integers, aggregates, overflow intrinsics | `tests/aggr.rs` |
 //! | `float` | WP-127 | scalar and vector-register floating point (SSE2) | |
 //! | `fpintr` | WP-127, WP-128 | the floating-point intrinsics | |
 //! | `intrinsic` | WP-128 | the other intrinsics | |
@@ -42,7 +42,7 @@
 //! | `mask` | WP-132 | vectors of `i1` | |
 //! | `atomic` | WP-133 | atomic `load`/`store`, `atomicrmw`, `cmpxchg`, `fence` | |
 //! | `tls` | WP-134 | thread-local addresses, `llvm.threadlocal.address`, `llvm.thread.pointer` | |
-//! | `constaddr` | WP-126 | constant operands that hold addresses: differences, relocated images | |
+//! | `constaddr` | WP-126 | constant operands that hold addresses: differences, relocated images | `tests/aggr.rs` |
 //! | `tail` | (later) | what no group package takes | |
 //! | `coro` | WP-137 | coroutine handle operations: `llvm.coro.resume`, `destroy`, `done`, `promise`, `noop` | |
 

@@ -436,39 +436,40 @@ const MODULE: [SupportRow; 24] = [
     row("module:sign-return-address-all", todo(LATER), never(A64_ONLY), ""),
     row("module:sign-return-address-with-bkey", todo(LATER), never(A64_ONLY), ""),
     row("module:branch-protection-pauth-lr", todo(LATER), never(A64_ONLY), ""),
-    row("module:cf-protection-branch", never(X64_ONLY), todo(X64), ""),
-    row("module:cf-protection-return", never(X64_ONLY), todo(X64), ""),
+    row(
+        "module:cf-protection-branch",
+        never(X64_ONLY),
+        todo(X64),
+        "changes code: `endbr64` at every function entry an indirect branch may reach, at \
+         landing pads and after `returns_twice` calls, then the IBT property note; `llc` \
+         turns it on for any value, 0 included (WP-143)",
+    ),
+    row(
+        "module:cf-protection-return",
+        never(X64_ONLY),
+        ON,
+        "the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143)",
+    ),
     row(
         "module:asm",
         ON,
         todo(X64),
         "module-level assembly of code and data: `hod_asm` (WP-112, `spec/asm.md` §9); what it does not read is refused by an `asm:*` name",
     ),
-    row(
+    both(
         "module:asm-symbols",
         ON,
-        todo(X64),
         "module-level assembly made only of symbol directives (`spec/ir.md` §2.3)",
     ),
-    row("module:linker-options", ON, todo(X64), "`!llvm.linker.options`"),
-    row("module:dependent-libraries", ON, todo(X64), "`!llvm.dependent-libraries`"),
-    row("module:global-ctors", ON, todo(X64), "an entry of `llvm.global_ctors`"),
-    row("module:global-dtors", ON, todo(X64), "an entry of `llvm.global_dtors`"),
+    both("module:linker-options", ON, "`!llvm.linker.options`"),
+    both("module:dependent-libraries", ON, "`!llvm.dependent-libraries`"),
+    both("module:global-ctors", ON, "an entry of `llvm.global_ctors`"),
+    both("module:global-dtors", ON, "an entry of `llvm.global_dtors`"),
 ];
 
 const STRUCTOR: [SupportRow; 2] = [
-    row(
-        "structor:priority",
-        ON,
-        todo(X64),
-        "a constructor or destructor priority other than 65535",
-    ),
-    row(
-        "structor:associated",
-        ON,
-        todo(X64),
-        "a constructor or destructor with an associated symbol",
-    ),
+    both("structor:priority", ON, "a constructor or destructor priority other than 65535"),
+    both("structor:associated", ON, "a constructor or destructor with an associated symbol"),
 ];
 
 // WP-087: debug modules reach `hod_dwarf`, which declines what it cannot
@@ -500,66 +501,68 @@ const GLOBAL: [SupportRow; 12] = [
     both("global:function-declaration", ON, "nothing is emitted for a declaration"),
     both("global:variable-declaration", ON, "nothing is emitted for a declaration"),
     both("global:function-definition", ON, "a function that gets a body"),
-    row("global:variable-definition", ON, todo(X64), "a variable with an initializer"),
-    row("global:alias", ON, todo(X64), ""),
-    row("global:alias-offset", ON, todo(X64), "an alias of a symbol plus a non-zero offset"),
+    both("global:variable-definition", ON, "a variable with an initializer"),
+    both("global:alias", ON, ""),
+    both("global:alias-offset", ON, "an alias of a symbol plus a non-zero offset"),
     a64("global:alias-absolute", LATER, "an alias of a number"),
-    row("global:ifunc", ON, todo(X64), ""),
-    row("global:section", ON, todo(X64), "a definition with an explicit section"),
-    row("global:align", ON, todo(X64), "a definition with a stated alignment"),
-    row("global:unnamed-addr", ON, todo(X64), "`unnamed_addr` on a definition: mergeable sections"),
-    row("global:used", ON, todo(X64), "a definition in `llvm.used` (`SHF_GNU_RETAIN`)"),
+    both("global:ifunc", ON, ""),
+    both("global:section", ON, "a definition with an explicit section"),
+    both("global:align", ON, "a definition with a stated alignment"),
+    both("global:unnamed-addr", ON, "`unnamed_addr` on a definition: mergeable sections"),
+    both("global:used", ON, "a definition in `llvm.used` (`SHF_GNU_RETAIN`)"),
 ];
 
 const LINKAGE: [SupportRow; Linkage::ALL.len()] = [
     both("linkage:external", ON, "by itself; a definition also meets its `global:` row"),
-    row(
+    both(
         "linkage:available_externally",
         ON,
-        todo(X64),
         "a function's body is discarded, or copied when `alwaysinline` and called directly \
          (design 0001 point 6, WP-021)",
     ),
-    row("linkage:linkonce", ON, todo(X64), ""),
-    row("linkage:linkonce_odr", ON, todo(X64), ""),
-    row("linkage:weak", ON, todo(X64), ""),
-    row("linkage:weak_odr", ON, todo(X64), ""),
+    both("linkage:linkonce", ON, ""),
+    both("linkage:linkonce_odr", ON, ""),
+    both("linkage:weak", ON, ""),
+    both("linkage:weak_odr", ON, ""),
     both(
         "linkage:appending",
         never("only LLVM's special arrays have it, and those are not symbols (§2.2)"),
         "",
     ),
     both("linkage:internal", ON, ""),
-    row("linkage:private", ON, todo(X64), ""),
-    row("linkage:extern_weak", ON, todo(X64), ""),
-    row("linkage:common", ON, todo(X64), ""),
+    both("linkage:private", ON, ""),
+    both("linkage:extern_weak", ON, ""),
+    both("linkage:common", ON, ""),
 ];
 
 const VISIBILITY: [SupportRow; 2] =
-    [row("visibility:hidden", ON, todo(X64), ""), row("visibility:protected", ON, todo(X64), "")];
+    [both("visibility:hidden", ON, ""), both("visibility:protected", ON, "")];
 
+// On x86-64 these rows are the symbol and its definition (WP-143); an
+// access is `intrinsic:llvm.threadlocal.address`, or `x64:todo:tls` in
+// `hod_x64`, until WP-134.
 const TLS_ROWS: [SupportRow; 4] = [
-    row("tls:general-dynamic", ON, todo(X64), "`thread_local`"),
-    row("tls:local-dynamic", ON, todo(X64), "`thread_local(localdynamic)`"),
-    row("tls:initial-exec", ON, todo(X64), "`thread_local(initialexec)`"),
-    row("tls:local-exec", ON, todo(X64), "`thread_local(localexec)`"),
+    both("tls:general-dynamic", ON, "`thread_local`"),
+    both("tls:local-dynamic", ON, "`thread_local(localdynamic)`"),
+    both("tls:initial-exec", ON, "`thread_local(initialexec)`"),
+    both("tls:local-exec", ON, "`thread_local(localexec)`"),
 ];
 
 const COMDAT: [SupportRow; ComdatKind::ALL.len()] = [
-    row("comdat:any", ON, todo(X64), ""),
+    both("comdat:any", ON, ""),
     both("comdat:exactmatch", never(ELF_COMDAT), ""),
     both("comdat:largest", never(ELF_COMDAT), ""),
-    row("comdat:nodeduplicate", ON, todo(X64), ""),
+    both("comdat:nodeduplicate", ON, ""),
     both("comdat:samesize", never(ELF_COMDAT), ""),
 ];
 
 const INIT: [SupportRow; 10] = [
-    row("init:data", ON, todo(X64), "any initializer: numbers, zero, `undef`, aggregates, bytes"),
-    row("init:symbol", ON, todo(X64), "a symbol's address, with or without an offset"),
-    row("init:blockaddress", ON, todo(X64), "of a block of a function with an `indirectbr` (§9.6)"),
-    row("init:sym-diff", ON, todo(X64), "the difference of two symbol addresses"),
+    both("init:data", ON, "any initializer: numbers, zero, `undef`, aggregates, bytes"),
+    both("init:symbol", ON, "a symbol's address, with or without an offset"),
+    both("init:blockaddress", ON, "of a block of a function with an `indirectbr` (§9.6)"),
+    both("init:sym-diff", ON, "the difference of two symbol addresses"),
     a64("init:sym-diff-plt", LATER, "the same through `dso_local_equivalent` (relative vtables)"),
-    row("init:int-of-addr", ON, todo(X64), "an address in an integer field"),
+    both("init:int-of-addr", ON, "an address in an integer field"),
     row(
         "init:block-diff",
         ON,
@@ -569,10 +572,9 @@ const INIT: [SupportRow; 10] = [
     a64("init:dso-local-equivalent", LATER, ""),
     a64("init:no-cfi", LATER, ""),
     // WP-101.
-    row(
+    both(
         "init:neg-addr",
         never(NO_RELOCATION),
-        todo(X64),
         "a number minus an address, `sub (i64 4, i64 ptrtoint (ptr @a to i64))`, \
          in data or in an aggregate operand's image",
     ),
@@ -580,11 +582,11 @@ const INIT: [SupportRow; 10] = [
 
 const FUNCTION: [SupportRow; 6] = [
     both("function:parameters", ON, "a body with parameters; per class of parameter"),
-    row("function:variadic", ON, todo(X64), "a variadic function with a body"),
+    row("function:variadic", ON, ON, "a variadic function with a body"),
     both("function:may-unwind", ON, "a body without `nounwind`: it needs unwind tables (WP-049)"),
-    row("function:personality", ON, todo(X64), "a body with a personality function"),
-    row("function:slots", ON, todo(X64), "a body with fixed stack objects (`Body::slots`)"),
-    row("function:over-aligned-slot", ON, todo(X64), "a stack object aligned above 16 bytes"),
+    row("function:personality", ON, ON, "a body with a personality function"),
+    row("function:slots", ON, ON, "a body with fixed stack objects (`Body::slots`)"),
+    row("function:over-aligned-slot", ON, ON, "a stack object aligned above 16 bytes"),
 ];
 
 /// In the order of [`cc_index`]: every convention with a row, by LLVM's
@@ -717,7 +719,7 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
         "",
     ),
     both("attr:nounwind", ON, "its absence is `function:may-unwind`"),
-    row("attr:returns_twice", ON, todo(X64), "on a body, a call, or a function called directly"),
+    row("attr:returns_twice", ON, ON, "on a body, a call, or a function called directly"),
     both(
         "attr:alwaysinline",
         ON,
@@ -786,8 +788,8 @@ const ATTR_STRING: [SupportRow; FnStr::ALL.len()] = [
 /// In `TypeClass::ALL` order.
 const TYPE: [SupportRow; TypeClass::ALL.len()] = [
     both("type:int", ON, "integers of at most 64 bits"),
-    row("type:i128", ON, todo(X64), "WP-040"),
-    row("type:int-wide", ON, todo(X64), "integers wider than 64 bits other than `i128` (WP-040)"),
+    row("type:i128", ON, ON, "WP-040"),
+    row("type:int-wide", ON, ON, "integers wider than 64 bits other than `i128` (WP-040)"),
     both("type:ptr", ON, "pointers in address space 0"),
     row("type:half", ON, todo(X64), "arithmetic in single precision"),
     row(
@@ -807,7 +809,7 @@ const TYPE: [SupportRow; TypeClass::ALL.len()] = [
         "vectors of fixed length; what is lowered of them by element and shape: `spec/codegen.md` §5.5.1 (WP-079)",
     ),
     both("type:scalable-vector", never(SCALABLE), ""),
-    row("type:aggregate", ON, todo(X64), "structs and arrays as first-class values (WP-040)"),
+    row("type:aggregate", ON, ON, "structs and arrays as first-class values (WP-040)"),
     row(
         "type:token",
         ON,
@@ -822,79 +824,79 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
     row(
         "inst:add",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:sub",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:mul",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:udiv",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "wider than 64 bits: up to 128 (WP-040)",
     ),
     row(
         "inst:sdiv",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "wider than 64 bits: up to 128 (WP-040)",
     ),
     row(
         "inst:urem",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "wider than 64 bits: up to 128 (WP-040)",
     ),
     row(
         "inst:srem",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "wider than 64 bits: up to 128 (WP-040)",
     ),
     row(
         "inst:shl",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:lshr",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:ashr",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:and",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:or",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:xor",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
@@ -984,7 +986,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Ptr,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Ptr]),
         "vectors: masks of up to 64 lanes (WP-081)",
     ),
     row(
@@ -1004,19 +1006,19 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
     row(
         "inst:trunc",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:zext",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:sext",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
@@ -1058,7 +1060,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128]),
         "",
     ),
     row(
@@ -1074,7 +1076,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128]),
         "",
     ),
     row(
@@ -1090,7 +1092,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128]),
         "",
     ),
     row(
@@ -1106,7 +1108,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128]),
         "",
     ),
     row(
@@ -1118,7 +1120,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Ptr,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Ptr]),
         "",
     ),
     row(
@@ -1130,7 +1132,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Ptr,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Ptr]),
         "",
     ),
     row(
@@ -1142,7 +1144,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Ptr,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Ptr]),
         "",
     ),
     row(
@@ -1159,7 +1161,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Ptr]),
         "between integers and floats with WP-039",
     ),
     both(
@@ -1182,7 +1184,18 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Aggregate,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::IntWide,
+            TypeClass::Ptr,
+            TypeClass::Half,
+            TypeClass::BFloat,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::Aggregate,
+        ]),
         "a plain load; see `mem:`; FP and vector values: WP-067",
     ),
     row(
@@ -1200,10 +1213,21 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Aggregate,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::IntWide,
+            TypeClass::Ptr,
+            TypeClass::Half,
+            TypeClass::BFloat,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::Aggregate,
+        ]),
         "a plain store; see `mem:`; FP and vector values: WP-067",
     ),
-    row("inst:alloca", ON, todo(X64), "a dynamic allocation; fixed ones are `function:slots`"),
+    row("inst:alloca", ON, ON, "a dynamic allocation; fixed ones are `function:slots`"),
     row("inst:fence", ON, todo(X64), "WP-074"),
     row(
         "inst:cmpxchg",
@@ -1225,7 +1249,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         todo(X64),
         "and the operation's `atomicrmw:` row; WP-074",
     ),
-    row("inst:ptradd", ON, todo(X64), "LLVM's `getelementptr` (§5.4); not a vector of pointers"),
+    row("inst:ptradd", ON, ON, "LLVM's `getelementptr` (§5.4); not a vector of pointers"),
     row(
         "inst:extractvalue",
         on(&[
@@ -1241,7 +1265,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "",
     ),
     row(
@@ -1259,7 +1283,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "",
     ),
     row(
@@ -1318,7 +1342,13 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Aggregate,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::IntWide,
+            TypeClass::Ptr,
+            TypeClass::Aggregate,
+        ]),
         "",
     ),
     row(
@@ -1336,7 +1366,13 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Aggregate,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::IntWide,
+            TypeClass::Ptr,
+            TypeClass::Aggregate,
+        ]),
         "",
     ),
     both(
@@ -1344,14 +1380,14 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         never("`llc` miscompiles it on AArch64, so there is no oracle; frontends do not emit it"),
         "",
     ),
-    row("inst:call", ON, todo(X64), "a call of anything but an intrinsic"),
-    row("inst:landingpad", ON, todo(X64), ""),
+    row("inst:call", ON, ON, "a call of anything but an intrinsic"),
+    row("inst:landingpad", ON, ON, ""),
     both("inst:catchpad", never(WINDOWS_EH), ""),
     both("inst:cleanuppad", never(WINDOWS_EH), ""),
     both("inst:br", ON, ""),
-    row("inst:condbr", ON, todo(X64), "LLVM's two-way `br`"),
-    row("inst:switch", on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide]), todo(X64), ""),
-    row("inst:indirectbr", ON, todo(X64), ""),
+    both("inst:condbr", ON, "LLVM's two-way `br`"),
+    both("inst:switch", on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide]), ""),
+    both("inst:indirectbr", ON, ""),
     both("inst:ret", ON, ""),
     both("inst:unreachable", ON, ""),
     row(
@@ -1360,15 +1396,15 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         todo(X64),
         "inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3)",
     ),
-    row("inst:invoke", ON, todo(X64), ""),
-    row("inst:resume", ON, todo(X64), ""),
+    row("inst:invoke", ON, ON, ""),
+    row("inst:resume", ON, ON, ""),
     both("inst:catchswitch", never(WINDOWS_EH), ""),
     both("inst:catchret", never(WINDOWS_EH), ""),
     both("inst:cleanupret", never(WINDOWS_EH), ""),
 ];
 
 const MEM: [SupportRow; 3] = [
-    row("mem:volatile", ON, todo(X64), "a volatile `load`, `store`, `cmpxchg` or `atomicrmw`"),
+    row("mem:volatile", ON, ON, "a volatile `load`, `store`, `cmpxchg` or `atomicrmw`"),
     row("mem:atomic-load", ON, todo(X64), "WP-074; `fp128` and vectors: `a64:atomic-type`"),
     row("mem:atomic-store", ON, todo(X64), "WP-074; `fp128` and vectors: `a64:atomic-type`"),
 ];
@@ -1399,7 +1435,7 @@ const ATOMICRMW: [SupportRow; RmwOp::ALL.len()] = [
 ];
 
 const CALL: [SupportRow; 4] = [
-    row("call:indirect", ON, todo(X64), "the callee is a computed address"),
+    row("call:indirect", ON, ON, "the callee is a computed address"),
     row(
         "call:inline-asm",
         ON,
@@ -1412,7 +1448,7 @@ const CALL: [SupportRow; 4] = [
         todo(X64),
         "the callee is inline assembly whose template assembles to nothing (`spec/ir.md` §2.3)",
     ),
-    row("call:variadic", ON, todo(X64), "a call through a variadic function type"),
+    row("call:variadic", ON, ON, "a call through a variadic function type"),
 ];
 
 const TAIL: [SupportRow; 3] = [
@@ -1421,7 +1457,7 @@ const TAIL: [SupportRow; 3] = [
     row(
         "tail:musttail",
         ON,
-        todo(X64),
+        ON,
         "and the `musttail:` rules of §8.6, which need the `StackArgs` hook (`hod_cg::abi::TargetStackArgs`)",
     ),
 ];
@@ -1440,27 +1476,27 @@ const BUNDLE: [SupportRow; 10] = [
 ];
 
 const LANDINGPAD: [SupportRow; 3] = [
-    row("landingpad:cleanup", ON, todo(X64), ""),
-    row("landingpad:catch", ON, todo(X64), ""),
-    row("landingpad:filter", ON, todo(X64), ""),
+    row("landingpad:cleanup", ON, ON, ""),
+    row("landingpad:catch", ON, ON, ""),
+    row("landingpad:filter", ON, ON, ""),
 ];
 
 const OPERAND: [SupportRow; 11] = [
     both("operand:symbol", ON, "a symbol's address as a value, with or without an offset"),
-    row("operand:slot", ON, todo(X64), "the address of a stack slot"),
-    row("operand:blockaddress", ON, todo(X64), "of a block of the same function"),
+    row("operand:slot", ON, ON, "the address of a stack slot"),
+    both("operand:blockaddress", ON, "of a block of the same function"),
     both("operand:addr-of-int", ON, "`inttoptr` of a constant number"),
     row("operand:int-of-addr", ON, todo(X64), "`ptrtoint` of a constant address (WP-072)"),
-    row("operand:sym-diff", ON, todo(X64), "a difference of two symbol addresses (WP-072)"),
+    row("operand:sym-diff", ON, ON, "a difference of two symbol addresses (WP-072)"),
     a64("operand:block-diff", LATER, "a label difference as an operand (WP-095)"),
     a64("operand:dso-local-equivalent", LATER, ""),
     a64("operand:no-cfi", LATER, ""),
     // WP-101.
-    row("operand:neg-addr", ON, todo(X64), "a number minus an address, alone (`init:neg-addr`)"),
+    row("operand:neg-addr", ON, ON, "a number minus an address, alone (`init:neg-addr`)"),
     row(
         "operand:address-in-aggregate",
         ON,
-        todo(X64),
+        ON,
         "an aggregate or vector constant with an address (WP-072)",
     ),
 ];
@@ -1520,11 +1556,11 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
     row("intrinsic:llvm.memmove", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
     row("intrinsic:llvm.memset", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
     row("intrinsic:llvm.memset.inline", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
-    row("intrinsic:llvm.va_start", ON, todo(X64), ""),
-    row("intrinsic:llvm.va_end", ON, todo(X64), ""),
-    row("intrinsic:llvm.va_copy", ON, todo(X64), ""),
-    row("intrinsic:llvm.stacksave", ON, todo(X64), ""),
-    row("intrinsic:llvm.stackrestore", ON, todo(X64), ""),
+    row("intrinsic:llvm.va_start", ON, ON, ""),
+    row("intrinsic:llvm.va_end", ON, ON, ""),
+    row("intrinsic:llvm.va_copy", ON, ON, ""),
+    row("intrinsic:llvm.stacksave", ON, ON, ""),
+    row("intrinsic:llvm.stackrestore", ON, ON, ""),
     row("intrinsic:llvm.frameaddress", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
     row("intrinsic:llvm.returnaddress", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
     row("intrinsic:llvm.trap", ON, todo(X64), ""),
@@ -1618,37 +1654,37 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
     row(
         "intrinsic:llvm.sadd.with.overflow",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "",
     ),
     row(
         "intrinsic:llvm.uadd.with.overflow",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "",
     ),
     row(
         "intrinsic:llvm.ssub.with.overflow",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "",
     ),
     row(
         "intrinsic:llvm.usub.with.overflow",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "",
     ),
     row(
         "intrinsic:llvm.smul.with.overflow",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "wider than 2048 bits refused (`a64:wide-mul-overflow`)",
     ),
     row(
         "intrinsic:llvm.umul.with.overflow",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "wider than 2048 bits refused (`a64:wide-mul-overflow`)",
     ),
     row(

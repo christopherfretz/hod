@@ -1,0 +1,12 @@
+# The table of explained differences between the x86-64 corpus
+# (.build/corpus-x64) and the AArch64 one (.build/corpus), read by
+# `cargo xtask corpus compare --target x86_64` (spec/harness.md "compare").
+# One line per test whose entries in both corpora behave differently:
+#   <source> <test><TAB><class><TAB><cause>
+# class: target | emulation | kiln | clang | llc | unknown.
+#
+# WP-139's capture (LLVM 22 and 19, kiln 1.0.1 at bd60e1829, GCC tests at
+# 6afcc4f6d) has no such test: every test with an entry in both corpora
+# has the same exit status and standard output. The tests captured for one
+# architecture only are classified in docs/status/corpus-x64.md
+# "Cross-check".

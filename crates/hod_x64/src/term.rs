@@ -4,7 +4,7 @@
 use hod_cg::{CgResult, FnCx};
 use hod_ir::{BlockId, Inst, Value};
 
-use crate::common::{branch, deferred_first, unsupported};
+use crate::common::{branch, deferred_first};
 use crate::target::X64;
 
 /// `br label %target`: nothing when the target is emitted next.
@@ -23,15 +23,16 @@ pub fn br(cx: &mut FnCx<'_, X64>, target: BlockId) -> CgResult<()> {
 /// (§5.4).
 ///
 /// # Errors
-/// `x64:todo:abi` for a value returned in memory (WP-118, WP-126); what
-/// placing the value or the branch reports.
+/// What placing the value (a value returned in memory: WP-126's
+/// `aggr::ret_memory`) or the branch reports.
 pub fn ret<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, value: Option<Value>) -> CgResult<()> {
     deferred_first(cx, inst, None)?;
     if let Some(value) = value {
         if cx.fn_assignment().ret_memory.is_some() {
-            return unsupported(crate::abi::ABI);
+            crate::aggr::ret_memory(cx, value)?;
+        } else {
+            cx.place_return(value)?;
         }
-        cx.place_return(value)?;
     }
     if cx.ret_falls_through() {
         return Ok(());

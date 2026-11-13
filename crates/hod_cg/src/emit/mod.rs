@@ -51,7 +51,7 @@ pub mod unsupported {
     /// in the section of the added symbol.
     pub const SYM_DIFF: &str = "init:sym-diff-unencodable";
     /// An address field of a width without an absolute relocation (1
-    /// byte).
+    /// byte on AArch64; x86-64 has `R_X86_64_8`).
     pub const FIELD_WIDTH: &str = "init:address-width";
     /// `dso_local_equivalent` outside a difference.
     pub const DSO_LOCAL_EQUIVALENT: &str = "init:dso-local-equivalent";
@@ -246,6 +246,7 @@ impl ArchInfo {
             (Arch::X86_64, 8) => X64Reloc::Abs64.into(),
             (Arch::X86_64, 4) => X64Reloc::Abs32.into(),
             (Arch::X86_64, 2) => X64Reloc::Abs16.into(),
+            (Arch::X86_64, 1) => X64Reloc::Abs8.into(),
             _ => return None,
         })
     }
@@ -259,6 +260,7 @@ impl ArchInfo {
             (Arch::X86_64, 8) => X64Reloc::Pc64.into(),
             (Arch::X86_64, 4) => X64Reloc::Pc32.into(),
             (Arch::X86_64, 2) => X64Reloc::Pc16.into(),
+            (Arch::X86_64, 1) => X64Reloc::Pc8.into(),
             _ => return None,
         })
     }
@@ -271,12 +273,20 @@ impl ArchInfo {
         }
     }
 
-    /// The alignment of `.text` before any code is in it.
+    /// The alignment of `.text` before any code is in it: 4 on both
+    /// targets, as `llc`'s assembler writes it (WP-143).
     fn text_align(self) -> u64 {
         match self.arch {
-            Arch::AArch64 => 4,
-            Arch::X86_64 => 1,
+            Arch::AArch64 | Arch::X86_64 => 4,
         }
+    }
+
+    /// Whether an address in data names a `dso_local` definition through
+    /// its local alias, as code does. `AArch64AsmPrinter::lowerConstant`
+    /// does (`getSymbolPreferLocal`); x86-64 uses `AsmPrinter`'s own,
+    /// which names the symbol itself (WP-143).
+    fn data_prefers_local(self) -> bool {
+        self.arch == Arch::AArch64
     }
 
     /// Whether the target marks code and data in code with mapping
@@ -305,8 +315,29 @@ impl ArchInfo {
                 obj.append(section, &A64_NOPS[..n]);
                 pad -= n;
             }
+        } else if self.arch == Arch::X86_64 {
+            // `X86AsmBackend::writeNopData` for the default CPU: the
+            // longest `nop` is 10 bytes, and the padding is the longest
+            // ones first (WP-143).
+            const NOPS: [&[u8]; 10] = [
+                &[0x90],
+                &[0x66, 0x90],
+                &[0x0f, 0x1f, 0x00],
+                &[0x0f, 0x1f, 0x40, 0x00],
+                &[0x0f, 0x1f, 0x44, 0x00, 0x00],
+                &[0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00],
+                &[0x0f, 0x1f, 0x80, 0x00, 0x00, 0x00, 0x00],
+                &[0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00],
+                &[0x66, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00],
+                &[0x66, 0x2e, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00],
+            ];
+            while pad > 0 {
+                let n = pad.min(NOPS.len());
+                obj.append(section, NOPS[n - 1]);
+                pad -= n;
+            }
         } else {
-            obj.align_to(section, align, if self.arch == Arch::X86_64 { 0x90 } else { 0 });
+            obj.align_to(section, align, 0);
         }
     }
 }
@@ -370,6 +401,7 @@ impl<'m> ModuleEmitter<'m> {
             Found::Old(_) => {}
         }
         emitter.name = name;
+        emitter.gnu_property()?;
         // WP-112: `llc` emits the module's assembly before anything else.
         emitter.place_module_asm()?;
         for sym in module.symbols() {
@@ -378,6 +410,34 @@ impl<'m> ModuleEmitter<'m> {
             }
         }
         Ok(emitter)
+    }
+
+    /// `.note.gnu.property` for `cf-protection-return` on x86-64
+    /// (`X86AsmPrinter::emitStartOfAsmFile`, WP-143): a
+    /// `GNU_PROPERTY_X86_FEATURE_1_AND` note with the shadow-stack bit.
+    /// The code is unchanged: hod's x86-64 code returns only to the
+    /// address its call pushed. `cf-protection-branch` (`endbr64`) is
+    /// refused by `hod_ir::classify`; without the code it asks for, its
+    /// bit is never written.
+    fn gnu_property(&mut self) -> CgResult<()> {
+        use hod_ir::BranchProtection as Bp;
+        const GNU_PROPERTY_X86_FEATURE_1_AND: u32 = 0xc000_0002;
+        const GNU_PROPERTY_X86_FEATURE_1_SHSTK: u32 = 2;
+        let bits = self.module.props.branch_protection.bits();
+        if self.obj.arch() != Arch::X86_64 || bits & Bp::CET_SHSTK == 0 || bits & Bp::CET_IBT != 0 {
+            return Ok(());
+        }
+        let note =
+            self.obj.add_section(b".note.gnu.property", SectionKind::Note, 8).map_err(obj_err)?;
+        // namesz, descsz, type (NT_GNU_PROPERTY_TYPE_0), "GNU"; one
+        // property: type, datasz, the features, padding to 8 bytes.
+        for word in [4, 16, 5, u32::from_le_bytes(*b"GNU\0")] {
+            self.obj.append(note, &word.to_le_bytes());
+        }
+        for word in [GNU_PROPERTY_X86_FEATURE_1_AND, 4, GNU_PROPERTY_X86_FEATURE_1_SHSTK, 0] {
+            self.obj.append(note, &word.to_le_bytes());
+        }
+        Ok(())
     }
 
     fn arch(&self) -> ArchInfo {
@@ -1058,7 +1118,8 @@ impl<'m> ModuleEmitter<'m> {
             match fixup.target {
                 FixupTarget::Sym(sym) => {
                     let kind = abs()?;
-                    let (target, addend) = self.data_target(sym, fixup.addend, true);
+                    let local = arch.data_prefers_local();
+                    let (target, addend) = self.data_target(sym, fixup.addend, local);
                     self.obj.add_relocation(section, place, kind, target, addend);
                 }
                 FixupTarget::Plt(_) => {
@@ -1176,7 +1237,7 @@ impl<'m> ModuleEmitter<'m> {
                 section
             };
             let offset = self.obj.append_zeros(section, 8);
-            let (target, addend) = self.data_target(structor.func, 0, true);
+            let (target, addend) = self.data_target(structor.func, 0, arch.data_prefers_local());
             self.obj.add_relocation(section, offset, abs, target, addend);
         }
         Ok(())

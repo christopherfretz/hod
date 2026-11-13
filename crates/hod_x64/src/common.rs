@@ -516,7 +516,7 @@ pub fn sym_address(cx: &mut FnCx<'_, X64>, rd: Reg, sym: SymId, addend: i64) -> 
 /// r32, 0`, addresses by [`sym_address`].
 ///
 /// # Errors
-/// What [`sym_address`] reports; `x64:todo:control` for `blockaddress`,
+/// What [`sym_address`] and `control::block_address` (WP-124) report,
 /// `x64:todo:constaddr` for a difference or expression of addresses,
 /// [`CONSTANT`] for anything else.
 pub fn materialize_gpr_const(cx: &mut FnCx<'_, X64>, rd: Reg, id: ConstId) -> CgResult<()> {
@@ -532,10 +532,8 @@ pub fn materialize_gpr_const(cx: &mut FnCx<'_, X64>, rd: Reg, id: ConstId) -> Cg
         Const::Addr { sym, addend } => sym_address(cx, rd, sym, addend)?,
         Const::IntOfAddr { addr, .. } => return materialize_gpr_const(cx, rd, addr),
         Const::DsoLocalEquivalent(sym) | Const::NoCfi(sym) => sym_address(cx, rd, sym, 0)?,
-        Const::BlockAddr { .. } => return unsupported(crate::control::CONTROL),
-        Const::SymDiff { .. } | Const::Expr { .. } => {
-            return unsupported(crate::constaddr::CONSTADDR);
-        }
+        Const::BlockAddr { func, block } => crate::control::block_address(cx, rd, func, block)?,
+        Const::SymDiff { .. } | Const::Expr { .. } => crate::constaddr::gpr(cx, rd, id)?,
         _ => return unsupported(CONSTANT),
     }
     Ok(())

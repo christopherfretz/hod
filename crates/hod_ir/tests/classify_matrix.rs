@@ -118,19 +118,20 @@ fn the_matrices_are_the_table() {
 const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 27] = [
     ("module:pic", "", "", "", ""),
     ("module:frame-pointer", "", "", "", ""),
-    ("structor:priority", "", "module:global-ctors", "", ""),
+    ("structor:priority", "", "", "", ""),
     // WP-087: debug modules reach the DWARF writer on AArch64.
     ("debug:module-flags", "", "debug:module-flags", "", ""),
     ("debug:dwarf-version", "debug:dwarf-version", "debug:module-flags", "", ""),
     ("debug:locations", "", "", "", "type:double"),
     ("global:function-declaration", "", "", "", ""),
-    ("global:variable-definition", "", "global:variable-definition", "", ""),
-    ("global:ifunc", "", "global:ifunc", "", ""),
-    ("linkage:extern_weak", "", "linkage:extern_weak", "", ""),
-    ("visibility:hidden", "", "global:variable-definition", "", ""),
-    ("tls:initial-exec", "", "global:variable-definition", "", ""),
-    ("comdat:any", "", "global:variable-definition", "", ""),
-    ("init:symbol", "", "global:variable-definition", "", ""),
+    // WP-143: x86-64 module-level constructs.
+    ("global:variable-definition", "", "", "", ""),
+    ("global:ifunc", "", "", "", ""),
+    ("linkage:extern_weak", "", "", "", ""),
+    ("visibility:hidden", "", "", "", ""),
+    ("tls:initial-exec", "", "", "", ""),
+    ("comdat:any", "", "", "", ""),
+    ("init:symbol", "", "", "", ""),
     ("function:slots", "", "", "", "type:double"),
     ("cc:fastcc", "", "", "", "cc:fastcc"),
     ("attr:zeroext", "", "", "", "attr:zeroext"),
@@ -474,8 +475,21 @@ const A64_SUPPORTED: [&str; 13] = [
     "module:asm-symbols",
 ];
 
-/// The rows of `RICH_MODULE` x86-64 supports (WP-116).
-const X64_SUPPORTED: [&str; 3] = ["module:pic", "module:uwtable", "global:function-definition"];
+/// The rows of `RICH_MODULE` x86-64 supports (WP-116, WP-143).
+const X64_SUPPORTED: [&str; 12] = [
+    "module:pic",
+    "module:uwtable",
+    "global:function-definition",
+    "module:global-ctors",
+    "structor:priority",
+    "global:variable-definition",
+    "linkage:weak",
+    "visibility:hidden",
+    "global:section",
+    "init:data",
+    "init:symbol",
+    "module:asm-symbols",
+];
 
 /// What the shipped matrix finds in the rich module on `arch`.
 fn rich_module(arch: Arch) -> Vec<&'static str> {
@@ -522,8 +536,8 @@ const A64_SUPPORTED_BODY: [&str; 16] = [
     "tail:musttail",
 ];
 
-/// The rows of `RICH_BODY` x86-64 supports (WP-116).
-const X64_SUPPORTED_BODY: [&str; 7] = [
+/// The rows of `RICH_BODY` x86-64 supports (WP-116, WP-122, WP-123, WP-125).
+const X64_SUPPORTED_BODY: [&str; 15] = [
     "cc:ccc",
     "function:parameters",
     "type:int",
@@ -531,6 +545,16 @@ const X64_SUPPORTED_BODY: [&str; 7] = [
     "function:may-unwind",
     "operand:symbol",
     "inst:ret",
+    "inst:add",
+    // WP-123.
+    "function:slots",
+    "inst:store",
+    "operand:slot",
+    "inst:load",
+    "mem:volatile",
+    // WP-125.
+    "inst:call",
+    "tail:musttail",
 ];
 
 /// What the shipped matrix finds in the rich body on `arch`.

@@ -734,7 +734,7 @@ conversions against the host's `f32`/`f64`), `tests/x86_64.rs`
 values and specials, against a C program on `long double` run on x86-64,
 or under `qemu-x86_64` elsewhere: every result has the same bits, a NaN
 only has to be a NaN; the intrinsics through glibc's `sqrtl`, `floorl`,
-..., `fmal`, `fminl`, `fmaxl`), `tests/x64_oracle.rs`
+..., `fmal`, `fminl`, `fmaxl`), `tests/x64_varargs_oracle.rs`
 (`x87_intrinsics_agree_with_llc`: the intrinsics as clang emits them for
 `long double`, against `llc` 19 and 22).
 
@@ -821,7 +821,7 @@ and for a `byval` alignment above 16. clang never passes the first
 (it coerces a C structure to scalars or passes it `byval`).
 
 Tests: `tests/x86_64.rs` (`variadic_layout`, `va_end_and_va_copy`,
-`variadic_refusals`), `tests/x64_oracle.rs`
+`variadic_refusals`), `tests/x64_varargs_oracle.rs`
 (`variadic_calls_agree_with_llc`: generated C programs whose variadic
 functions take every psABI class beyond the register counts, take a
 `va_copy` in the middle of a walk, hand the list to another function and
@@ -1384,7 +1384,7 @@ Where LLVM is wrong, the oracle steers around it, each with a comment:
 | `tests/vector_oracle.rs` | §10.3 |
 | `tests/x86_64.rs` | §4 (function alignment), §5.8 (`byval`), §5.11, from LLVM text read by `hod_ll` |
 | `tests/x87_oracle.rs` | §5.11 against the x87 |
-| `tests/x64_oracle.rs` | §5.11, §5.12 against clang and `llc` 19 and 22 under `qemu-x86_64` |
+| `tests/x64_varargs_oracle.rs` | §5.11, §5.12 against clang and `llc` 19 and 22 under `qemu-x86_64` |
 
 Each test names its section. `tests/common` builds one-function modules;
 `tests/llvm_text` is the printer of §10; `tests/vector_text` reads LLVM

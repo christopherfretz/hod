@@ -1,0 +1,1026 @@
+//! The x86-64 integer group's programs (WP-122): a systematic table of
+//! one-instruction functions (every operation at every width, with
+//! register and constant operands) and a generator of random
+//! straight-line integer functions of their arguments and constants
+//! (with unconditional `br`s between blocks). Both are `.ll` text, so the
+//! same functions go to `hod_interp`, to `hod_x64` and to `llc`.
+//!
+//! The tables and the generator are `hod_a64`'s
+//! (`crates/hod_a64/tests/common/int_gen.rs`, WP-035), copied: that file
+//! compiles with `hod_a64` and runs natively. What differs: the edge
+//! values add the boundaries of x86's immediates (`imm8`, `imm32`), a
+//! plain `i1` argument has random bits above bit 0 and an `i1` result is
+//! compared at bit 0 (`spec/abi-x64.md` §7: a plain `i1` may have
+//! anything in bits 1..8), and [`run`] links for x86-64 and runs under
+//! the emulator.
+//!
+//! [`run`] checks a [`Suite`]: every case (a function and its arguments)
+//! is run by the interpreter, and from ONE C driver per object (one
+//! emulated process per object) compiled with hod (plainly and with every
+//! stress option) and with `llc -O0 -fast-isel=0 -relocation-model=pic`
+//! of LLVM 22 and 19. A case the interpreter traps on (division by zero,
+//! the smallest value divided by -1, a shift of the width or more:
+//! undefined in LLVM) is not run (`div` traps on x86).
+
+#![allow(clippy::many_single_char_names, clippy::too_many_lines, clippy::cast_precision_loss)]
+#![allow(dead_code, reason = "each test uses part of it")]
+
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{Duration, Instant};
+
+use hod_cg::{Options, RelocModel, Stress};
+use hod_interp::{Interp, Program, Val};
+use hod_testutil::{Scratch, run_with};
+use hod_x64::compile_to_object;
+
+use crate::linking::Toolchain;
+
+/// The header of a `.ll` module for x86-64 Linux.
+pub fn ll_header() -> String {
+    format!(
+        "target datalayout = \"{}\"\ntarget triple = \"x86_64-unknown-linux-gnu\"\n",
+        hod_ir::X86_64_LINUX_DATA_LAYOUT
+    )
+}
+
+/// A module and its bodies from `.ll` text (target lines included).
+pub fn parse(text: &str) -> (hod_ir::Module, Vec<hod_ir::Body>) {
+    let parsed = hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default())
+        .unwrap_or_else(|e| panic!("hod_ll: {e}"));
+    let text_side = parsed.text;
+    let mut module = parsed.module;
+    let mut bodies = Vec::new();
+    hod_ll::parse_bodies(&mut module, &text_side, |_, parsed| {
+        let body =
+            parsed.body.unwrap_or_else(|| panic!("hod_ll: unsupported {:?}", parsed.unsupported));
+        bodies.push(body.clone());
+        Ok::<(), hod_ll::LlError>(())
+    })
+    .unwrap_or_else(|e| panic!("hod_ll: {e}"));
+    (module, bodies)
+}
+
+/// Position-independent code, as every x86-64 test links it (PIE).
+pub fn pic(stress: Stress) -> Options {
+    Options { reloc_model: RelocModel::Pic, stress, ..Options::default() }
+}
+
+/// `llc` of LLVM `major`, if installed.
+pub fn llc_of(major: u32) -> Option<PathBuf> {
+    let installed = PathBuf::from(format!("/usr/lib/llvm-{major}/bin/llc"));
+    if installed.is_file() {
+        return Some(installed);
+    }
+    hod_testutil::find_tool(&format!("llc-{major}"))
+}
+
+/// `llc -O0 -fast-isel=0 -relocation-model=pic` for x86-64 of `text` to
+/// an object in `dir`; `None` without that `llc`.
+pub fn llc(dir: &Scratch, major: u32, name: &str, text: &str) -> Option<PathBuf> {
+    let llc = llc_of(major)?;
+    let input = dir.write(&format!("{name}.ll"), text);
+    let output = dir.join(format!("{name}.o"));
+    let mut command = Command::new(llc);
+    command
+        .args([
+            "-O0",
+            "-fast-isel=0",
+            "-mtriple=x86_64-unknown-linux-gnu",
+            "-relocation-model=pic",
+            "-filetype=obj",
+        ])
+        .arg(&input)
+        .arg("-o")
+        .arg(&output);
+    let outcome = run_with(&mut command, &[], Duration::from_mins(5));
+    assert!(outcome.success(), "llc {major} failed:\n{}", outcome.stderr_text());
+    Some(output)
+}
+
+/// The widths every operation is checked at.
+pub const WIDTHS: [u32; 17] = [1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 48, 63, 64];
+
+/// The thirteen integer binary operations.
+pub const BINARY: [&str; 13] = [
+    "add", "sub", "mul", "udiv", "sdiv", "urem", "srem", "shl", "lshr", "ashr", "and", "or", "xor",
+];
+
+/// The ten predicates.
+pub const PREDICATES: [&str; 10] =
+    ["eq", "ne", "ugt", "uge", "ult", "ule", "sgt", "sge", "slt", "sle"];
+
+/// A `Gpr`-class type.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Ty {
+    /// `iN`.
+    I(u32),
+    /// `ptr`.
+    Ptr,
+}
+
+impl Ty {
+    /// The type in `.ll` text.
+    pub fn ll(self) -> String {
+        match self {
+            Ty::I(bits) => format!("i{bits}"),
+            Ty::Ptr => "ptr".to_string(),
+        }
+    }
+
+    /// Its width.
+    pub fn bits(self) -> u32 {
+        match self {
+            Ty::I(bits) => bits,
+            Ty::Ptr => 64,
+        }
+    }
+
+    /// The bits of a result the driver compares: its width (an `i1` at
+    /// bit 0, `spec/abi-x64.md` §7).
+    fn result_mask(self) -> u64 {
+        mask(self.bits())
+    }
+}
+
+/// The low `bits` bits.
+pub fn mask(bits: u32) -> u64 {
+    if bits >= 64 { u64::MAX } else { (1 << bits) - 1 }
+}
+
+/// `value` (of `ty`) as an `.ll` literal: signed decimal, `true`/`false`
+/// for `i1`, `null` for a pointer.
+pub fn lit(ty: Ty, value: u64) -> String {
+    match ty {
+        Ty::I(1) => if value & 1 == 1 { "true" } else { "false" }.to_string(),
+        Ty::I(bits) => {
+            let v = value & mask(bits);
+            if bits < 64 && v >> (bits - 1) == 1 {
+                format!("-{}", (1u64 << bits) - v)
+            } else if bits == 64 {
+                format!("{}", v as i64)
+            } else {
+                format!("{v}")
+            }
+        }
+        Ty::Ptr => "null".to_string(),
+    }
+}
+
+/// A function of a suite.
+#[derive(Clone, Debug)]
+pub struct Func {
+    /// Its name.
+    pub name: String,
+    /// Its parameters (at most three).
+    pub params: Vec<Ty>,
+    /// Its result.
+    pub ret: Ty,
+    /// Whether `llc`'s result must equal the interpreter's: not for a
+    /// function whose result depends on what `freeze` makes of `poison`,
+    /// which LLVM leaves arbitrary (hod and the interpreter make it 0).
+    pub llc: bool,
+    /// Where its text is in [`Suite::text`].
+    pub text: std::ops::Range<usize>,
+}
+
+/// A function called with arguments: the values of the parameters, at
+/// their width.
+#[derive(Clone, Debug)]
+pub struct Case {
+    /// Index into [`Suite::funcs`].
+    pub func: usize,
+    /// The arguments, at their width.
+    pub args: [u64; 3],
+}
+
+/// Functions as `.ll` text and the cases to run them with.
+#[derive(Default, Debug)]
+pub struct Suite {
+    /// The functions' text (without the module header).
+    pub text: String,
+    /// The functions, in text order.
+    pub funcs: Vec<Func>,
+    /// The cases.
+    pub cases: Vec<Case>,
+}
+
+impl Suite {
+    /// Adds a function whose body is `body` (instructions, one per line)
+    /// and returns its index.
+    pub fn add(&mut self, name: String, params: &[Ty], ret: Ty, body: &str) -> usize {
+        let list: Vec<String> =
+            params.iter().enumerate().map(|(i, ty)| format!("{} %p{i}", ty.ll())).collect();
+        let start = self.text.len();
+        writeln!(self.text, "define {} @{name}({}) {{\n{body}}}\n", ret.ll(), list.join(", "))
+            .unwrap();
+        let text = start..self.text.len();
+        self.funcs.push(Func { name, params: params.to_vec(), ret, llc: true, text });
+        self.funcs.len() - 1
+    }
+
+    /// Adds a case of function `func`.
+    pub fn case(&mut self, func: usize, args: [u64; 3]) {
+        self.cases.push(Case { func, args });
+    }
+}
+
+/// `SplitMix64`.
+#[derive(Clone, Debug)]
+pub struct Rng(pub u64);
+
+impl Rng {
+    /// The next 64 random bits.
+    pub fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform below `n` (`n > 0`).
+    pub fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+
+    /// True with probability `percent` / 100.
+    pub fn chance(&mut self, percent: u64) -> bool {
+        self.below(100) < percent
+    }
+
+    /// One element of `items`.
+    pub fn pick<'t, T>(&mut self, items: &'t [T]) -> &'t T {
+        &items[self.below(items.len() as u64) as usize]
+    }
+}
+
+/// The values at the edges of `bits`: 0, 1, 2, -1, -2, the smallest and
+/// largest signed values and their neighbours, the shift amounts around
+/// the width, AArch64's immediate boundaries (4095, 4096, 0xfff000, 2^24)
+/// and their negations, bitmask patterns, x86's `imm8` and `imm32`
+/// boundaries and their negations; deduplicated, in a fixed order.
+pub fn edges(bits: u32) -> Vec<u64> {
+    let m = mask(bits);
+    let min = 1u64 << (bits - 1);
+    let mut out = Vec::new();
+    for v in [
+        0,
+        1,
+        2,
+        m,
+        m.wrapping_sub(1),
+        min,
+        min.wrapping_sub(1),
+        min.wrapping_add(1),
+        u64::from(bits) - 1,
+        u64::from(bits),
+        u64::from(bits) + 1,
+        4095,
+        4096,
+        0x00ff_f000,
+        0x0100_0000,
+        4095u64.wrapping_neg(),
+        4096u64.wrapping_neg(),
+        0x00ff_00ff_00ff_00ff,
+        0x5555_5555_5555_5555,
+        // x86's immediates: `imm8` and `imm32`, sign-extended.
+        127,
+        128,
+        128u64.wrapping_neg(),
+        129u64.wrapping_neg(),
+        0x7fff_ffff,
+        0x8000_0000,
+        0xffff_ffff,
+        0x1_0000_0000,
+        0x8000_0000u64.wrapping_neg(),
+        0x8000_0001u64.wrapping_neg(),
+    ] {
+        let v = v & m;
+        if !out.contains(&v) {
+            out.push(v);
+        }
+    }
+    out
+}
+
+/// A value of `ty`: an edge (60%) or random bits.
+pub fn value(rng: &mut Rng, ty: Ty) -> u64 {
+    let bits = ty.bits();
+    if rng.chance(60) { *rng.pick(&edges(bits)) } else { rng.next() & mask(bits) }
+}
+
+// ---- the systematic table ----
+
+/// Every binary operation at every width: with two register operands
+/// (edge pairs and random ones), with each of a set of constants on the
+/// right, and with a constant on the left.
+pub fn binary_table(rng: &mut Rng) -> Suite {
+    let mut s = Suite::default();
+    for &bits in &WIDTHS {
+        let ty = Ty::I(bits);
+        let t = ty.ll();
+        let e = edges(bits);
+        for op in BINARY {
+            let f = s.add(
+                format!("b_{op}_{bits}"),
+                &[ty, ty],
+                ty,
+                &format!("  %r = {op} {t} %p0, %p1\n  ret {t} %r\n"),
+            );
+            for &a in &e {
+                for &b in &e {
+                    if rng.chance(25) {
+                        s.case(f, [a, b, 0]);
+                    }
+                }
+            }
+            for _ in 0..12 {
+                s.case(f, [value(rng, ty), value(rng, ty), 0]);
+            }
+            for (k, &c) in e.iter().enumerate() {
+                let f = s.add(
+                    format!("bc_{op}_{bits}_{k}"),
+                    &[ty],
+                    ty,
+                    &format!("  %r = {op} {t} %p0, {}\n  ret {t} %r\n", lit(ty, c)),
+                );
+                for &a in &e {
+                    if rng.chance(50) {
+                        s.case(f, [a, 0, 0]);
+                    }
+                }
+                s.case(f, [value(rng, ty), 0, 0]);
+            }
+            for (k, &c) in e.iter().enumerate().take(6) {
+                let f = s.add(
+                    format!("bl_{op}_{bits}_{k}"),
+                    &[ty],
+                    ty,
+                    &format!("  %r = {op} {t} {}, %p0\n  ret {t} %r\n", lit(ty, c)),
+                );
+                for &a in &e {
+                    if rng.chance(50) {
+                        s.case(f, [a, 0, 0]);
+                    }
+                }
+            }
+        }
+    }
+    s
+}
+
+/// Every predicate at every width and on pointers: as a value, against
+/// constants, and fused into `select`, `zext` and `sext`; `select` on a
+/// plain `i1`; `freeze`.
+pub fn compare_table(rng: &mut Rng) -> Suite {
+    let mut s = Suite::default();
+    let mut types: Vec<Ty> = WIDTHS.iter().map(|&b| Ty::I(b)).collect();
+    types.push(Ty::Ptr);
+    for &ty in &types {
+        let bits = ty.bits();
+        let t = ty.ll();
+        let e = edges(bits);
+        let pairs = |rng: &mut Rng, s: &mut Suite, f: usize| {
+            for &a in &e {
+                for &b in &e {
+                    if rng.chance(20) {
+                        s.case(f, [a, b, 0]);
+                    }
+                }
+            }
+            for &a in &e {
+                s.case(f, [a, a, 0]);
+            }
+        };
+        for p in PREDICATES {
+            let f = s.add(
+                format!("c_{p}_{bits}_{t}"),
+                &[ty, ty],
+                Ty::I(1),
+                &format!("  %r = icmp {p} {t} %p0, %p1\n  ret i1 %r\n"),
+            );
+            pairs(rng, &mut s, f);
+            let f = s.add(
+                format!("cs_{p}_{bits}_{t}"),
+                &[ty, ty],
+                ty,
+                &format!(
+                    "  %c = icmp {p} {t} %p0, %p1\n  %r = select i1 %c, {t} %p0, {t} %p1\n  ret {t} %r\n"
+                ),
+            );
+            pairs(rng, &mut s, f);
+            for (ext, to) in [("zext", 32), ("sext", 64), ("zext", 7), ("sext", 33)] {
+                let f = s.add(
+                    format!("cx_{p}_{bits}_{t}_{ext}{to}"),
+                    &[ty, ty],
+                    Ty::I(to),
+                    &format!(
+                        "  %c = icmp {p} {t} %p0, %p1\n  %r = {ext} i1 %c to i{to}\n  ret i{to} %r\n"
+                    ),
+                );
+                pairs(rng, &mut s, f);
+            }
+            if ty == Ty::Ptr {
+                continue;
+            }
+            for (k, &c) in e.iter().enumerate() {
+                let f = s.add(
+                    format!("cc_{p}_{bits}_{k}"),
+                    &[ty, ty],
+                    ty,
+                    &format!(
+                        "  %c = icmp {p} {t} %p0, {}\n  %r = select i1 %c, {t} %p1, {t} 0\n  ret {t} %r\n",
+                        lit(ty, c)
+                    ),
+                );
+                for &a in &e {
+                    s.case(f, [a, 1, 0]);
+                }
+                let f = s.add(
+                    format!("cl_{p}_{bits}_{k}"),
+                    &[ty],
+                    Ty::I(1),
+                    &format!("  %r = icmp {p} {t} {}, %p0\n  ret i1 %r\n", lit(ty, c)),
+                );
+                for &a in &e {
+                    s.case(f, [a, 0, 0]);
+                }
+            }
+        }
+        let f = s.add(
+            format!("s_{bits}_{t}"),
+            &[Ty::I(1), ty, ty],
+            ty,
+            &format!("  %r = select i1 %p0, {t} %p1, {t} %p2\n  ret {t} %r\n"),
+        );
+        for _ in 0..8 {
+            let (a, b) = (value(rng, ty), value(rng, ty));
+            s.case(f, [0, a, b]);
+            s.case(f, [1, a, b]);
+        }
+        let other = if ty == Ty::Ptr { "null".to_string() } else { lit(ty, 5) };
+        let f = s.add(
+            format!("sk_{bits}_{t}"),
+            &[Ty::I(1), ty],
+            ty,
+            &format!(
+                "  %a = select i1 %p0, {t} %p1, {t} {other}\n  %b = select i1 %p0, {t} {other}, {t} %p1\n  %c = select i1 %p0, {t} %a, {t} %b\n  ret {t} %c\n"
+            ),
+        );
+        for _ in 0..4 {
+            let a = value(rng, ty);
+            s.case(f, [0, a, 0]);
+            s.case(f, [1, a, 0]);
+        }
+        let f = s.add(
+            format!("z_{bits}_{t}"),
+            &[Ty::I(1)],
+            ty,
+            &format!("  %r = select i1 %p0, {t} {other}, {t} {}\n  ret {t} %r\n", lit(ty, 0)),
+        );
+        s.case(f, [0, 0, 0]);
+        s.case(f, [1, 0, 0]);
+        let f = s.add(
+            format!("f_{bits}_{t}"),
+            &[ty],
+            ty,
+            &format!("  %r = freeze {t} %p0\n  ret {t} %r\n"),
+        );
+        s.case(f, [value(rng, ty), 0, 0]);
+        if ty != Ty::Ptr {
+            let f = s.add(
+                format!("fu_{bits}"),
+                &[ty],
+                ty,
+                &format!("  %u = freeze {t} poison\n  %r = add {t} %u, %p0\n  ret {t} %r\n"),
+            );
+            s.funcs[f].llc = false;
+            s.case(f, [value(rng, ty), 0, 0]);
+        }
+    }
+    s
+}
+
+/// Every cast between the widths (`trunc`, `zext`, `sext`; a `bitcast`
+/// of a type to itself), and between integers and pointers
+/// (`ptrtoint`, `inttoptr`; `ptrtoaddr` when `llc` knows it).
+pub fn cast_table(rng: &mut Rng, ptrtoaddr: bool) -> Suite {
+    let mut s = Suite::default();
+    let mut one = |s: &mut Suite, name: String, from: Ty, to: Ty, op: &str| {
+        let f = s.add(
+            name,
+            &[from],
+            to,
+            &format!("  %r = {op} {} %p0 to {}\n  ret {} %r\n", from.ll(), to.ll(), to.ll()),
+        );
+        for &a in &edges(from.bits()) {
+            s.case(f, [a, 0, 0]);
+        }
+        for _ in 0..4 {
+            s.case(f, [value(rng, from), 0, 0]);
+        }
+    };
+    for &a in &WIDTHS {
+        for &b in &WIDTHS {
+            let (from, to) = (Ty::I(a), Ty::I(b));
+            match a.cmp(&b) {
+                std::cmp::Ordering::Greater => {
+                    one(&mut s, format!("t_{a}_{b}"), from, to, "trunc");
+                }
+                std::cmp::Ordering::Less => {
+                    one(&mut s, format!("zx_{a}_{b}"), from, to, "zext");
+                    one(&mut s, format!("sx_{a}_{b}"), from, to, "sext");
+                }
+                std::cmp::Ordering::Equal => {
+                    one(&mut s, format!("bc_{a}"), from, to, "bitcast");
+                }
+            }
+        }
+        one(&mut s, format!("pi_{a}"), Ty::Ptr, Ty::I(a), "ptrtoint");
+        one(&mut s, format!("ip_{a}"), Ty::I(a), Ty::Ptr, "inttoptr");
+        if ptrtoaddr && a == 64 {
+            one(&mut s, format!("pa_{a}"), Ty::Ptr, Ty::I(a), "ptrtoaddr");
+        }
+    }
+    one(&mut s, "pp".to_string(), Ty::Ptr, Ty::Ptr, "bitcast");
+    s
+}
+// ---- random straight-line functions ----
+
+/// A function being generated.
+struct Gen<'r> {
+    rng: &'r mut Rng,
+    body: String,
+    /// The values defined so far, in order, and their types.
+    pool: Vec<(String, Ty)>,
+    next: u32,
+    blocks: u32,
+    /// The function's two widths.
+    widths: [u32; 2],
+    insts: usize,
+}
+
+impl Gen<'_> {
+    fn fresh(&mut self) -> String {
+        self.next += 1;
+        format!("%v{}", self.next)
+    }
+
+    /// Emits `%v = <text>` of `ty` and adds it to the pool.
+    fn def(&mut self, ty: Ty, text: &str) -> String {
+        let name = self.fresh();
+        writeln!(self.body, "  {name} = {text}").unwrap();
+        self.pool.push((name.clone(), ty));
+        self.insts += 1;
+        name
+    }
+
+    /// A value of `ty` from the pool, preferring recent ones.
+    fn existing(&mut self, ty: Ty) -> Option<String> {
+        let all: Vec<&String> =
+            self.pool.iter().filter(|(_, t)| *t == ty).map(|(name, _)| name).collect();
+        if all.is_empty() {
+            return None;
+        }
+        let from = if self.rng.chance(70) { all.len().saturating_sub(4) } else { 0 };
+        let span = (all.len() - from) as u64;
+        Some(all[from + self.rng.below(span) as usize].clone())
+    }
+
+    /// A value of `ty`: from the pool, or cast from an integer of
+    /// another width, or a constant.
+    fn get(&mut self, ty: Ty) -> String {
+        if let Some(name) = self.existing(ty) {
+            return name;
+        }
+        let ints: Vec<(String, Ty)> =
+            self.pool.iter().filter(|(_, t)| matches!(t, Ty::I(_))).cloned().collect();
+        if let Some((name, from)) = ints.last().cloned() {
+            return self.convert(&name, from, ty);
+        }
+        lit(ty, value(self.rng, ty))
+    }
+
+    /// `name` of type `from` as a value of `to`.
+    fn convert(&mut self, name: &str, from: Ty, to: Ty) -> String {
+        if from == to {
+            return name.to_string();
+        }
+        let (f, t) = (from.ll(), to.ll());
+        let text = match (from, to) {
+            (Ty::Ptr, _) => format!("ptrtoint ptr {name} to {t}"),
+            (_, Ty::Ptr) => format!("inttoptr {f} {name} to ptr"),
+            (Ty::I(a), Ty::I(b)) if a > b => format!("trunc {f} {name} to {t}"),
+            _ => {
+                let op = if self.rng.chance(50) { "zext" } else { "sext" };
+                format!("{op} {f} {name} to {t}")
+            }
+        };
+        self.def(to, &text)
+    }
+
+    /// An integer type of the function: one of its widths, or `i1`.
+    fn int_ty(&mut self) -> Ty {
+        match self.rng.below(10) {
+            0..=5 => Ty::I(self.widths[0]),
+            6..=8 => Ty::I(self.widths[1]),
+            _ => Ty::I(1),
+        }
+    }
+
+    /// A value of `ty` or (with `percent` chance) a constant.
+    fn operand(&mut self, ty: Ty, percent: u64) -> String {
+        if self.rng.chance(percent) { lit(ty, value(self.rng, ty)) } else { self.get(ty) }
+    }
+
+    fn binary(&mut self) {
+        let ty = self.int_ty();
+        let bits = ty.bits();
+        let t = ty.ll();
+        let mut op = *self.rng.pick(&BINARY);
+        if bits == 1 && matches!(op, "sdiv" | "srem") {
+            op = "udiv";
+        }
+        let lhs = self.operand(ty, 8);
+        let rhs = match op {
+            "udiv" | "urem" | "sdiv" | "srem" => {
+                if self.rng.chance(25) {
+                    let mut c = value(self.rng, ty) | 1;
+                    if op.starts_with('s') && bits > 1 {
+                        c &= mask(bits - 1);
+                        c |= 1;
+                    }
+                    lit(ty, c)
+                } else {
+                    let mut x = self.get(ty);
+                    if op.starts_with('s') && self.rng.chance(60) {
+                        x = self.def(ty, &format!("and {t} {x}, {}", lit(ty, mask(bits - 1))));
+                    }
+                    self.def(ty, &format!("or {t} {x}, 1"))
+                }
+            }
+            "shl" | "lshr" | "ashr" => match self.rng.below(10) {
+                0..=3 => {
+                    let b = u64::from(bits);
+                    let c = *self.rng.pick(&[0, 1, b - 1, b / 2, self.rng.clone().below(b)]);
+                    lit(ty, c)
+                }
+                4..=8 => {
+                    let k = bits.ilog2();
+                    let x = self.get(ty);
+                    self.def(ty, &format!("and {t} {x}, {}", lit(ty, mask(k))))
+                }
+                _ => self.get(ty),
+            },
+            _ => self.operand(ty, 45),
+        };
+        self.def(ty, &format!("{op} {t} {lhs}, {rhs}"));
+    }
+
+    fn compare(&mut self) -> String {
+        let ptrs = self.pool.iter().any(|(_, t)| *t == Ty::Ptr);
+        let ty = if ptrs && self.rng.chance(20) { Ty::Ptr } else { self.int_ty() };
+        let p = *self.rng.pick(&PREDICATES);
+        let lhs = self.operand(ty, 5);
+        let rhs = self.operand(ty, 40);
+        self.def(Ty::I(1), &format!("icmp {p} {} {lhs}, {rhs}", ty.ll()))
+    }
+
+    fn select(&mut self, cond: Option<String>) {
+        let cond = cond.unwrap_or_else(|| self.get(Ty::I(1)));
+        let ptrs = self.pool.iter().any(|(_, t)| *t == Ty::Ptr);
+        let ty = if ptrs && self.rng.chance(20) { Ty::Ptr } else { self.int_ty() };
+        let a = self.operand(ty, 20);
+        let b = self.operand(ty, 20);
+        let t = ty.ll();
+        self.def(ty, &format!("select i1 {cond}, {t} {a}, {t} {b}"));
+    }
+
+    fn cast(&mut self) {
+        let ptrs: Vec<String> =
+            self.pool.iter().filter(|(_, t)| *t == Ty::Ptr).map(|(n, _)| n.clone()).collect();
+        let to = match self.rng.below(10) {
+            0 => Ty::Ptr,
+            1 => Ty::I(*self.rng.pick(&[8, 32, 64])),
+            _ => self.int_ty(),
+        };
+        if !ptrs.is_empty() && to != Ty::Ptr && self.rng.chance(15) {
+            let p = self.rng.pick(&ptrs).clone();
+            self.convert(&p, Ty::Ptr, to);
+            return;
+        }
+        let from = self.int_ty();
+        let x = self.get(from);
+        if from == to {
+            let t = to.ll();
+            self.def(to, &format!("bitcast {t} {x} to {t}"));
+        } else {
+            self.convert(&x, from, to);
+        }
+    }
+
+    fn step(&mut self) {
+        match self.rng.below(100) {
+            0..=39 => self.binary(),
+            40..=51 => {
+                let c = self.compare();
+                match self.rng.below(4) {
+                    0 => self.select(Some(c)),
+                    1 => {
+                        let to = self.int_ty();
+                        let op = if self.rng.chance(50) { "zext" } else { "sext" };
+                        if to.bits() > 1 {
+                            self.def(to, &format!("{op} i1 {c} to {}", to.ll()));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            52..=63 => self.select(None),
+            64..=85 => self.cast(),
+            86..=91 => {
+                let ty = if self.rng.chance(80) { self.int_ty() } else { Ty::Ptr };
+                let x = self.operand(ty, 10);
+                self.def(ty, &format!("freeze {} {x}", ty.ll()));
+            }
+            _ => {
+                self.blocks += 1;
+                let b = self.blocks;
+                writeln!(self.body, "  br label %b{b}\nb{b}:").unwrap();
+                self.insts += 1;
+            }
+        }
+    }
+}
+
+/// `count` random functions `r<n>`, each with four arguments-dependent
+/// cases (edge and random values).
+pub fn random_functions(rng: &mut Rng, count: usize) -> Suite {
+    let mut s = Suite::default();
+    for n in 0..count {
+        let widths = [*rng.pick(&WIDTHS), *rng.pick(&WIDTHS)];
+        let mut params = Vec::new();
+        for _ in 0..=rng.below(3) {
+            params.push(match rng.below(10) {
+                0 => Ty::Ptr,
+                1 | 2 => Ty::I(widths[1]),
+                3 => Ty::I(1),
+                _ => Ty::I(widths[0]),
+            });
+        }
+        let pool = params.iter().enumerate().map(|(i, &t)| (format!("%p{i}"), t)).collect();
+        let mut g = Gen { rng, body: String::new(), pool, next: 0, blocks: 0, widths, insts: 0 };
+        let len = 3 + g.rng.below(18);
+        while (g.insts as u64) < len {
+            g.step();
+        }
+        // The result: the last few values, at the first width, xor'ed.
+        let ret = Ty::I(widths[0]);
+        let t = ret.ll();
+        let tail: Vec<(String, Ty)> = g.pool.iter().rev().take(4).cloned().collect();
+        let mut acc: Option<String> = None;
+        for (name, ty) in tail {
+            let v = g.convert(&name, ty, ret);
+            acc = Some(match acc {
+                None => v,
+                Some(a) => g.def(ret, &format!("xor {t} {a}, {v}")),
+            });
+        }
+        let acc = acc.unwrap_or_else(|| lit(ret, 0));
+        writeln!(g.body, "  ret {t} {acc}").unwrap();
+        let body = std::mem::take(&mut g.body);
+        let f = s.add(format!("r{n}"), &params, ret, &body);
+        for _ in 0..4 {
+            let mut args = [0; 3];
+            for (i, &ty) in params.iter().enumerate() {
+                args[i] = value(rng, ty);
+            }
+            s.case(f, args);
+        }
+    }
+    s
+}
+
+// ---- running a suite ----
+
+/// The C driver: every case that is defined in a table, run in order,
+/// each result printed in hex at its width.
+fn driver(suite: &Suite, defined: &[bool], rng: &mut Rng) -> String {
+    let mut c = String::from(
+        "#include <stdio.h>\n#include <stdint.h>\n\
+         typedef uint64_t (*fn_t)(uint64_t, uint64_t, uint64_t);\n",
+    );
+    for f in &suite.funcs {
+        writeln!(c, "uint64_t {}(uint64_t, uint64_t, uint64_t);", f.name).unwrap();
+    }
+    c.push_str("static const struct { fn_t f; uint64_t mask, a, b, c; } cases[] = {\n");
+    for (case, _) in suite.cases.iter().zip(defined).filter(|(_, d)| **d) {
+        let f = &suite.funcs[case.func];
+        let mut regs = [0u64; 3];
+        for (i, &ty) in f.params.iter().enumerate() {
+            let garbage = rng.next();
+            regs[i] = match ty {
+                Ty::Ptr => case.args[i],
+                // A plain `i1`: bit 0, anything above (`spec/abi-x64.md` §7).
+                Ty::I(1) => garbage & !1 | case.args[i] & 1,
+                Ty::I(bits) => garbage & !mask(bits) | case.args[i],
+            };
+        }
+        writeln!(
+            c,
+            "  {{ {}, {:#x}ULL, {:#x}ULL, {:#x}ULL, {:#x}ULL }},",
+            f.name,
+            f.ret.result_mask(),
+            regs[0],
+            regs[1],
+            regs[2]
+        )
+        .unwrap();
+    }
+    c.push_str(
+        "  { 0, 0, 0, 0, 0 }\n};\nint main(void) {\n  for (unsigned long i = 0; cases[i].f; i++) {\n    \
+         uint64_t r = cases[i].f(cases[i].a, cases[i].b, cases[i].c) & cases[i].mask;\n    \
+         printf(\"%llx\\n\", (unsigned long long)r);\n  }\n  return 0;\n}\n",
+    );
+    c
+}
+
+/// What [`run`] found.
+#[derive(Debug, Default)]
+pub struct Report {
+    /// Cases compared.
+    pub compared: usize,
+    /// Cases the interpreter trapped on (undefined; not run).
+    pub undefined: usize,
+    /// Disagreements: leg, function, arguments, interpreter, native.
+    pub wrong: Vec<String>,
+    /// Bytes of code hod and `llc` 22 emitted.
+    pub hod_bytes: usize,
+    /// `llc`'s `.text` bytes (0 without `llc`).
+    pub llc_bytes: usize,
+    /// IR instructions of the suite.
+    pub insts: usize,
+    /// Time hod took to compile the suite, plain.
+    pub compile: Duration,
+    /// Time the interpreter took.
+    pub interp: Duration,
+    /// Time the tools took (`llc`, the C compiler, the linker, the runs).
+    pub tools: Duration,
+    /// The legs that ran.
+    pub legs: Vec<String>,
+}
+
+/// The size of `.text` in `object`, by `llvm-objdump -h`.
+pub fn text_size(object: &Path) -> usize {
+    let Some(objdump) = hod_testutil::tool("llvm-objdump") else { return 0 };
+    let mut command = Command::new(objdump);
+    command.arg("-h").arg(object);
+    let out = run_with(&mut command, &[], Duration::from_mins(1));
+    out.stdout_text()
+        .lines()
+        .find_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            (fields.get(1) == Some(&".text"))
+                .then(|| usize::from_str_radix(fields[2], 16).unwrap_or(0))
+        })
+        .unwrap_or(0)
+}
+
+/// The interpreter's result of each case of `suite`; `None` where it
+/// traps. Functions are interpreted 64 to a module: a run's cost grows
+/// with the module's symbols.
+fn interpret(suite: &Suite) -> Vec<Option<u64>> {
+    let mut expected = vec![None; suite.cases.len()];
+    let mut by_func: Vec<Vec<usize>> = vec![Vec::new(); suite.funcs.len()];
+    for (index, case) in suite.cases.iter().enumerate() {
+        by_func[case.func].push(index);
+    }
+    for (chunk, funcs) in suite.funcs.chunks(64).enumerate() {
+        let mut text = ll_header();
+        for f in funcs {
+            text.push_str(&suite.text[f.text.clone()]);
+        }
+        let (module, bodies) = parse(&text);
+        let program = Program::with_bodies(&module, &bodies).expect("a valid program");
+        let mut interp = Interp::new(&program);
+        for (offset, f) in funcs.iter().enumerate() {
+            let sym = module.find_symbol(f.name.as_bytes()).expect("a defined function");
+            for &index in &by_func[chunk * 64 + offset] {
+                let args: Vec<Val> = f
+                    .params
+                    .iter()
+                    .zip(suite.cases[index].args)
+                    .map(|(&ty, v)| match ty {
+                        Ty::Ptr => Val::Ptr(v),
+                        Ty::I(bits) => Val::int(bits, u128::from(v)),
+                    })
+                    .collect();
+                expected[index] = match interp.run(sym, &args).result {
+                    Ok(Some(Val::Int { value, .. })) => Some(value as u64 & f.ret.result_mask()),
+                    Ok(Some(Val::Ptr(addr))) => Some(addr),
+                    Ok(other) => panic!("{}: {other:?}", f.name),
+                    Err(_) => None,
+                };
+            }
+        }
+    }
+    expected
+}
+
+/// Checks `suite` (see the module documentation). `name` labels the
+/// scratch directory. Without the cross toolchain only the compile (and
+/// the interpreter) runs.
+pub fn run(name: &str, suite: &Suite) -> Report {
+    let text = format!("{}{}", ll_header(), suite.text);
+    let (module, bodies) = parse(&text);
+    let mut report =
+        Report { insts: bodies.iter().map(hod_ir::Body::inst_count).sum(), ..Report::default() };
+    let start = Instant::now();
+    let expected = interpret(suite);
+    report.interp = start.elapsed();
+    let defined: Vec<bool> = expected.iter().map(Option::is_some).collect();
+    report.undefined = defined.iter().filter(|d| !**d).count();
+    report.compared = expected.len() - report.undefined;
+
+    let scratch = Scratch::new(&format!("x64-int-{name}"));
+    let mut legs: Vec<(String, PathBuf)> = Vec::new();
+    for (mode, stress) in [("plain", Stress::default()), ("stress", Stress::ALL)] {
+        let start = Instant::now();
+        let object = compile_to_object(&module, &bodies, &pic(stress))
+            .unwrap_or_else(|e| panic!("{mode}: {e}"));
+        if mode == "plain" {
+            report.compile = start.elapsed();
+        }
+        let path = scratch.write(&format!("hod-{mode}.o"), object);
+        if mode == "plain" {
+            report.hod_bytes = text_size(&path);
+        }
+        legs.push((format!("hod {mode}"), path));
+    }
+    let start = Instant::now();
+    for major in hod_testutil::LLVM_MAJORS {
+        // `ptrtoaddr` is new in LLVM 21.
+        if major < 21 && text.contains("ptrtoaddr") {
+            continue;
+        }
+        if let Some(object) = llc(&scratch, major, &format!("llc{major}"), &text) {
+            if major == 22 {
+                report.llc_bytes = text_size(&object);
+            }
+            legs.push((format!("llc {major}"), object));
+        }
+    }
+    let Some(toolchain) = Toolchain::x86_64(&scratch) else { return report };
+    let Some(linker) = toolchain.linkers.first() else { return report };
+    let mut rng = Rng(0x1234_5678);
+    let driver = toolchain.compile_c(&scratch, "driver", &driver(suite, &defined, &mut rng), &[]);
+    let want: Vec<(usize, u64)> =
+        expected.iter().enumerate().filter_map(|(i, e)| e.map(|v| (i, v))).collect();
+    for (leg, object) in &legs {
+        let program = scratch.join(leg.replace(' ', "-"));
+        let ran = toolchain.link_and_run(linker, &[], &[&driver, object], &program);
+        assert!(ran.success(), "{leg}: {:?}\n{}", ran.status, ran.stderr_text());
+        let got: Vec<u64> = ran
+            .stdout_text()
+            .lines()
+            .map(|line| u64::from_str_radix(line, 16).unwrap_or_else(|_| panic!("{leg}: {line}")))
+            .collect();
+        assert_eq!(got.len(), want.len(), "{leg}: one line per defined case");
+        for (&(index, want), got) in want.iter().zip(&got) {
+            let case = &suite.cases[index];
+            let f = &suite.funcs[case.func];
+            if want != *got && (f.llc || !leg.starts_with("llc")) {
+                report.wrong.push(format!(
+                    "{leg}: {}({:#x}, {:#x}, {:#x}): interpreter {want:#x}, native {got:#x}",
+                    f.name, case.args[0], case.args[1], case.args[2]
+                ));
+            }
+        }
+        report.legs.push(leg.clone());
+    }
+    report.tools = start.elapsed();
+    report
+}
+
+/// The body of function `name` in `suite`'s text, for a failure message.
+pub fn body_of<'s>(suite: &'s Suite, name: &str) -> &'s str {
+    let start = suite.text.find(&format!("@{name}(")).unwrap_or(0);
+    let end = suite.text[start..].find("\n}\n").map_or(suite.text.len(), |e| start + e + 3);
+    &suite.text[start..end]
+}
+
+/// Panics with the first disagreements of `report`, with their
+/// functions' text.
+pub fn assert_agrees(suite: &Suite, report: &Report) {
+    if report.wrong.is_empty() {
+        return;
+    }
+    let mut message = format!("{} disagreements; the first:\n", report.wrong.len());
+    for line in report.wrong.iter().take(12) {
+        let name = line.split(": ").nth(1).and_then(|s| s.split('(').next()).unwrap_or("");
+        writeln!(message, "{line}\n{}", body_of(suite, name)).unwrap();
+    }
+    panic!("{message}");
+}

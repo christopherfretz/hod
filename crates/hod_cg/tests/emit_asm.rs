@@ -20,6 +20,7 @@ use hod_cg::{CgError, Options, RelocModel, emit_module};
 use hod_ir::{
     AARCH64_LINUX_DATA_LAYOUT, AARCH64_LINUX_DATA_LAYOUT_LLVM19, X86_64_LINUX_DATA_LAYOUT,
 };
+use hod_obj::Arch;
 use hod_testutil::{LLVM_MAJORS, Scratch, run_with, tools_required};
 
 /// `(name, module text after the header)`: every directive and every
@@ -126,11 +127,19 @@ const REFUSED: &[(&str, &str)] = &[
     ("module asm \".weak C\"\n@C = common global i32 0\n", "asm:symbol"),
 ];
 
-fn header(major: u32) -> String {
-    let layout =
-        if major >= 20 { AARCH64_LINUX_DATA_LAYOUT } else { AARCH64_LINUX_DATA_LAYOUT_LLVM19 };
-    format!("target datalayout = \"{layout}\"\ntarget triple = \"aarch64-unknown-linux-gnu\"\n")
+/// The module header of `arch` for `llc` of LLVM `major`.
+fn header(arch: Arch, major: u32) -> String {
+    let (layout, triple) = match arch {
+        Arch::AArch64 if major >= 20 => (AARCH64_LINUX_DATA_LAYOUT, "aarch64-unknown-linux-gnu"),
+        Arch::AArch64 => (AARCH64_LINUX_DATA_LAYOUT_LLVM19, "aarch64-unknown-linux-gnu"),
+        Arch::X86_64 => (X86_64_LINUX_DATA_LAYOUT, "x86_64-unknown-linux-gnu"),
+    };
+    format!("target datalayout = \"{layout}\"\ntarget triple = \"{triple}\"\n")
 }
+
+/// Cases for x86-64 only (WP-143): its comment character.
+const X64_CASES: &[(&str, &str)] =
+    &[("hash-comment", "module asm \"# a comment\"\nmodule asm \".globl U # and another\"\n")];
 
 fn llc_path(major: u32) -> Option<PathBuf> {
     let installed = PathBuf::from(format!("/usr/lib/llvm-{major}/bin/llc"));
@@ -173,14 +182,23 @@ fn directives_agree_with_llc() {
     }
     let scratch = Scratch::new("emit-asm");
     let mut failures = Vec::new();
-    for major in &majors {
-        for &(name, ir) in CASES {
-            let text = format!("{}{ir}", header(*major));
-            let theirs = Elf::parse(llc(&scratch, *major, name, &text));
+    let runs =
+        [Arch::AArch64, Arch::X86_64].into_iter().flat_map(|a| majors.iter().map(move |m| (a, *m)));
+    for (arch, major) in runs {
+        let extra = if arch == Arch::X86_64 { X64_CASES } else { &[] };
+        // `hod_ir` reads `//` as a comment on AArch64 only; on x86-64 it
+        // refuses the text as `module:asm` (`llc` reads it as a comment
+        // there too: a missed acceptance, not a difference).
+        let cases = CASES.iter().filter(|c| arch == Arch::AArch64 || c.0 != "comments");
+        for &(name, ir) in cases.chain(extra) {
+            let text = format!("{}{ir}", header(arch, major));
+            let tag = format!("{name}-{arch:?}");
+            let theirs = Elf::parse(llc(&scratch, major, &tag, &text));
             let parsed = hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default())
                 .unwrap_or_else(|e| panic!("{name}: hod_ll: {e}"));
             let functions: Vec<_> = parsed.functions().iter().map(|f| f.sym).collect();
-            let chunk = borrow::chunk_from(&parsed.module, &functions, &theirs, &|_| 4);
+            let align = if arch == Arch::X86_64 { 16 } else { 4 };
+            let chunk = borrow::chunk_from(&parsed.module, &functions, &theirs, &|_| align);
             let emitted = emit_module(&parsed.module, &options(), &[chunk])
                 .unwrap_or_else(|e| panic!("{name}: emit_module: {e}"));
             let ours = Elf::parse(hod_obj::elf::to_vec(&emitted.object).unwrap());
@@ -190,7 +208,7 @@ fn directives_agree_with_llc() {
             );
             let (only_ours, only_theirs) = diff(&a, &b);
             if !only_ours.is_empty() || !only_theirs.is_empty() {
-                let mut report = format!("{name} (LLVM {major}):\n");
+                let mut report = format!("{tag} (LLVM {major}):\n");
                 for line in &only_ours {
                     let _ = writeln!(report, "  hod: {line}");
                 }
@@ -212,7 +230,7 @@ fn other_assembly_is_refused_by_name() {
     let aarch64 = hod_ir::Support::shipped(hod_ir::Arch::Aarch64);
     let mut failures = Vec::new();
     for &(ir, name) in REFUSED {
-        let text = format!("{}{ir}", header(22));
+        let text = format!("{}{ir}", header(Arch::AArch64, 22));
         let parsed = hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default())
             .unwrap_or_else(|e| panic!("{ir}: hod_ll: {e}"));
         match emit_module(&parsed.module, &options(), &[]) {
@@ -237,7 +255,7 @@ fn other_assembly_is_refused_by_name() {
         assert_eq!(rejection.construct, "module:asm", "{ir}");
     }
     for &(name, ir) in CASES {
-        let text = format!("{}{ir}", header(22));
+        let text = format!("{}{ir}", header(Arch::AArch64, 22));
         let parsed =
             hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default()).unwrap();
         let mut effects = Vec::new();

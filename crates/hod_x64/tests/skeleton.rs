@@ -273,14 +273,9 @@ fn data_layout_is_honoured() {
 #[test]
 fn groups_that_have_not_landed_refuse_by_name() {
     for (body, name) in [
-        ("define i32 @f(i32 %a) {\n  %b = add i32 %a, 1\n  ret i32 %b\n}\n", "x64:todo:int"),
-        ("define void @f(ptr %p) {\n  store i32 1, ptr %p\n  ret void\n}\n", "x64:todo:mem"),
-        (
-            "define void @f(i1 %c) {\n  br i1 %c, label %a, label %a\na:\n  ret void\n}\n",
-            "x64:todo:control",
-        ),
         ("define void @f() {\n  fence seq_cst\n  ret void\n}\n", "x64:todo:atomic"),
-        ("define void @f(ptr sret(i64) %r) {\n  ret void\n}\n", "x64:todo:abi"),
+        // WP-125 lowers `sret`; an x87 result stays WP-131's.
+        ("define x86_fp80 @f() {\n  ret x86_fp80 0xK00000000000000000000\n}\n", "x64:todo:abi"),
     ] {
         assert_eq!(refusal(body), name, "{body}");
     }

@@ -6,7 +6,6 @@
 ; nothing is folded.
 ;@ covers: spec/ir.md §5.4 integer (call-free; WP-043)
 ;@ tier: quick
-;@ unsupported(x86_64): *
 ;@ exit: 7
 
 @a8 = global i8 -77

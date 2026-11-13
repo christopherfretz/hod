@@ -703,6 +703,12 @@ impl<L: Layering> TypeTable<L> {
     // ---- structure ----
 
     /// The structure of `ty`.
+    ///
+    /// Inlined: a caller's match on the kind becomes a match on the
+    /// type's tag. The kinds that borrow from the table's pools take
+    /// [`TypeTable::kind_with_parts`], out of line.
+    #[allow(clippy::inline_always)] // Per type query; LLVM declined `#[inline]`.
+    #[inline(always)]
     pub fn kind(&self, ty: TypeId) -> TypeKind<'_> {
         let d = &self.data[ty.index()];
         match d.tag {
@@ -726,17 +732,27 @@ impl<L: Layering> TypeTable<L> {
                 elem: TypeId::new(d.a),
                 len: u64::from(d.b) | (u64::from(d.c) << 32),
             },
+            Tag::Opaque => TypeKind::Opaque(d.a),
+            Tag::Struct | Tag::Function | Tag::TargetExt => self.kind_with_parts(d),
+        }
+    }
+
+    /// [`TypeTable::kind`] of a struct, function or target extension
+    /// type: the kinds that borrow from the pools.
+    #[inline(never)]
+    fn kind_with_parts(&self, d: &TypeData) -> TypeKind<'_> {
+        match d.tag {
             Tag::Struct => TypeKind::Struct {
                 fields: self.fields.slice(d.a as usize, d.b as usize),
                 packed: d.flags & PACKED != 0,
             },
-            Tag::Opaque => TypeKind::Opaque(d.a),
             Tag::Function => TypeKind::Function {
                 ret: TypeId::new(d.a),
                 params: self.params.slice(d.b as usize, d.c as usize),
                 variadic: d.flags & VARIADIC != 0,
             },
             Tag::TargetExt => TypeKind::TargetExt { name: &self.names[d.a as usize] },
+            _ => unreachable!("kind_with_parts: a type without parts"),
         }
     }
 

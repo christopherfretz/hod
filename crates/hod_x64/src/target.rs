@@ -253,6 +253,7 @@ impl Target for X64 {
         coro_body::reg_info(self.coro)
     }
 
+    #[inline]
     fn class_of(&self, types: &TypeTable, ty: TypeId) -> Class {
         match types.kind(ty) {
             TypeKind::Int(bits) if bits <= 64 => Class::Gpr,

@@ -30,7 +30,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
 | `init` | 10 | 6 | 3 | 1 | 0 | 10 | 0 |
 | `function` | 6 | 6 | 0 | 0 | 2 | 4 | 0 |
-| `cc` | 15 | 6 | 7 | 2 | 1 | 11 | 3 |
+| `cc` | 26 | 6 | 7 | 13 | 2 | 14 | 10 |
 | `attr` | 57 | 24 | 30 | 3 | 14 | 35 | 8 |
 | `type` | 15 | 12 | 0 | 3 | 2 | 11 | 2 |
 | `inst` | 67 | 60 | 0 | 7 | 4 | 56 | 7 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 11 | 8 | 3 | 0 | 2 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 354 | 346 | 8 | 0 | 0 | 138 | 216 |
-| total | 663 | 547 | 70 | 46 | 37 | 356 | 270 |
+| total | 674 | 547 | 70 | 57 | 38 | 359 | 277 |
 
 ## `module`
 
@@ -215,6 +215,17 @@ Calling conventions, of a body's function and of a call.
 | `cc:cfguard_checkcc` | rejected | rejected | a Windows construct |
 | `cc:swifttailcc` | not-implemented | not-implemented | unplanned |
 | `cc:preserve_nonecc` | not-implemented | not-implemented | unplanned |
+| `cc:x86_stdcallcc` | rejected | rejected | aarch64: an x86 convention; x86_64: a 32-bit x86 convention |
+| `cc:x86_fastcallcc` | rejected | rejected | aarch64: an x86 convention; x86_64: a 32-bit x86 convention |
+| `cc:x86_thiscallcc` | rejected | rejected | aarch64: an x86 convention; x86_64: a 32-bit x86 convention |
+| `cc:intel_ocl_bicc` | rejected | not-implemented | aarch64: an x86 convention; x86_64: unplanned. OpenCL built-ins |
+| `cc:x86_64_sysvcc` | rejected | supported | an x86 convention. assigned as `ccc`: the System V convention is x86-64 Linux's C convention (`llc` 19 and 22 emit the same code) |
+| `cc:win64cc` | rejected | rejected | a Windows construct |
+| `cc:x86_vectorcallcc` | rejected | rejected | aarch64: an x86 convention; x86_64: a Windows construct. `__vectorcall` |
+| `cc:hhvmcc` | rejected | not-implemented | aarch64: an x86 convention; x86_64: unplanned |
+| `cc:hhvm_ccc` | rejected | not-implemented | aarch64: an x86 convention; x86_64: unplanned |
+| `cc:x86_intrcc` | rejected | rejected | aarch64: an x86 convention; x86_64: interrupt and exception handlers are refused by design |
+| `cc:x86_regcallcc` | rejected | rejected | aarch64: an x86 convention; x86_64: Intel's `__regcall` is refused by design |
 | `cc:aarch64_vector_pcs` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 convention |
 | `cc:aarch64_sve_vector_pcs` | rejected | rejected | aarch64: scalable vectors are refused by design; x86_64: an AArch64 convention |
 
@@ -918,7 +929,7 @@ removes by widening its row.
 |---|---|
 | `intrinsic:<name>` | a call of `Intrinsic::Other(name)`: an `llvm.*` name hod does not know, the no-code names (§5.5) included |
 | `module-flag:<name>` | a module flag that is neither known nor ignorable (§2.1), or any `Require` flag |
-| `cc:<number>` | a calling convention LLVM has no keyword for |
+| `cc:<keyword>` | a calling convention without a row, by LLVM's keyword (`cc:riscv_vector_cc`), or by its number if LLVM has none (`cc:42`) |
 | `bundle:<tag>` | an operand bundle whose tag has no row |
 | `<row>/<class>` | a supported row met with a value of a class it is not implemented for (§8.3), e.g. `inst:select/double` |
 | `<producer record>` | a name a producer gave to `Module::record_unsupported` (§2.2), passed through unchanged |

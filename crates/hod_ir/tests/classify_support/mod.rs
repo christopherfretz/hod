@@ -271,7 +271,11 @@ pub const CONST_OPS: [ConstOp; 19] = [
 ];
 
 /// LLVM's numbers of the calling conventions that have a keyword.
-pub const CC_NUMBERS: [u32; 15] = [0, 8, 9, 10, 13, 14, 15, 16, 17, 18, 19, 20, 21, 97, 98];
+/// The conventions with a row, in the order of the rows.
+pub const CC_NUMBERS: [u32; 26] = [
+    0, 8, 9, 10, 13, 14, 15, 16, 17, 18, 19, 20, 21, 64, 65, 70, 77, 78, 79, 80, 81, 82, 83, 92,
+    97, 98,
+];
 
 pub const PARAM_FLAGS: [(&str, u16); 7] = [
     ("zeroext", ParamAttrs::ZEROEXT),

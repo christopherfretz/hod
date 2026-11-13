@@ -11,6 +11,8 @@
 
 mod common;
 
+use std::fmt::Write as _;
+
 use hod_ir::{Body, Dialect, Module};
 
 const MAJORS: [u32; 2] = [19, 22];
@@ -161,17 +163,17 @@ fn both_readers_and_the_printer() {
             panic!("LLVM {major}: llvm-as refuses the printed text: {error}\n{printed}");
         }
         for keyword in [
-            // `CallConv::keyword` has no x86 names (a keyword needs a
-            // classify row): LLVM's `cc <number>`, which it reads alike.
-            "cc 78 i32 @sysv",
-            "call cc 78 i32 @sysv",
-            "cc 79 void @w64",
-            "cc 64 void @std",
-            "cc 65 void @fast",
-            "cc 70 void @this",
-            "cc 80 void @vec",
-            "cc 92 void @reg",
-            "cc 83 void @intr",
+            // WP-141: every convention LLVM has a keyword for is
+            // printed by its keyword.
+            "x86_64_sysvcc i32 @sysv",
+            "call x86_64_sysvcc i32 @sysv",
+            "win64cc void @w64",
+            "x86_stdcallcc void @std",
+            "x86_fastcallcc void @fast",
+            "x86_thiscallcc void @this",
+            "x86_vectorcallcc void @vec",
+            "x86_regcallcc void @reg",
+            "x86_intrcc void @intr",
             "byval({ i64, x86_fp80 }) align 16",
             "inreg",
             "nest",
@@ -227,5 +229,81 @@ fn named_refusals() {
             };
             assert!(refused, "LLVM {major} {route}: `{name}` is not refused by name: {result:?}");
         }
+    }
+}
+
+/// WP-141: `CallConv::keyword` is LLVM's spelling of every convention,
+/// in each dialect. For LLVM 19 and 22, a module declaring a function of
+/// each number from 0 to 130, and 1023, goes through `llvm-as` and
+/// `llvm-dis`: LLVM's spelling of each (a keyword or `ccN`) is
+/// `keyword()`'s where the dialect has it (`keyword_since`); `hod_ll`
+/// reads `llvm-dis`'s text and `hod_bc` the bitcode to the same numbers;
+/// the printer's text of either dialect is taken by `llvm-as` and comes
+/// back from `llvm-dis` as LLVM's own text.
+#[test]
+fn calling_convention_keywords_are_llvms() {
+    let numbers: Vec<u32> = (0..=130).chain([1023]).collect();
+    let mut text = String::from(HEADER);
+    for &n in &numbers {
+        // The verifier wants an `i1` first parameter of
+        // `amdgpu_gfx_whole_wave` and a `byval` one of `x86_intrcc`.
+        let param = if n == 83 { "ptr byval(i64)" } else { "i1" };
+        writeln!(text, "declare cc {n} void @f{n}({param})").unwrap();
+    }
+    for major in MAJORS {
+        let Ok(bitcode) = common::assemble(major, text.as_bytes()) else {
+            eprintln!("note: no llvm-as {major}; skipping");
+            continue;
+        };
+        let llvm = String::from_utf8(common::disassemble(major, &bitcode).unwrap()).unwrap();
+        let spelled = |llvm: &str, n: u32| -> String {
+            let line = llvm
+                .lines()
+                .find(|l| l.starts_with("declare ") && l.contains(&format!(" @f{n}(")))
+                .unwrap_or_else(|| panic!("LLVM {major}: no @f{n} in\n{llvm}"));
+            let head = &line["declare ".len()..line.find(&format!(" void @f{n}(")).unwrap_or(8)];
+            // LLVM writes `avr_intrcc` and `avr_signalcc` with a space
+            // of their own.
+            head.trim_end().to_owned()
+        };
+        for &n in &numbers {
+            let cc = hod_ir::CallConv::from_llvm(n).unwrap();
+            let expected = match cc.keyword() {
+                Some(_) if n == 0 => String::new(),
+                Some(keyword) if cc.keyword_since() <= major => keyword.to_owned(),
+                _ => format!("cc{n}"),
+            };
+            let head = if n == 0 { String::new() } else { spelled(&llvm, n) };
+            assert_eq!(head, expected, "LLVM {major}: convention {n}");
+            if !expected.is_empty() && !expected.starts_with("cc") {
+                assert_eq!(hod_ir::CallConv::from_keyword(expected.as_bytes()), Some(cc));
+            }
+        }
+
+        let ccs = |module: &Module| -> Vec<u32> {
+            numbers
+                .iter()
+                .map(|n| {
+                    let sym = module.find_symbol(format!("f{n}").as_bytes()).expect("declared");
+                    match module.symbol(sym).kind() {
+                        hod_ir::SymbolKind::Function { cc, .. } => u32::from(cc.llvm_id()),
+                        _ => panic!("@f{n} is a function"),
+                    }
+                })
+                .collect()
+        };
+        let (by_text, _) = read(llvm.as_bytes());
+        assert_eq!(ccs(&by_text), numbers, "LLVM {major}: hod_ll on llvm-dis's text");
+        let (by_bitcode, _) = common::read_bitcode(&bitcode).expect("hod_bc reads the bitcode");
+        assert_eq!(ccs(&by_bitcode), numbers, "LLVM {major}: hod_bc");
+
+        let printed = print(&by_text, &[], major);
+        let again = common::assemble(major, printed.as_bytes())
+            .unwrap_or_else(|error| panic!("LLVM {major}: llvm-as refuses\n{error}\n{printed}"));
+        let again = String::from_utf8(common::disassemble(major, &again).unwrap()).unwrap();
+        for &n in &numbers[1..] {
+            assert_eq!(spelled(&again, n), spelled(&llvm, n), "LLVM {major}: printed {n}");
+        }
+        assert_eq!(ccs(&read(printed.as_bytes()).0), numbers, "LLVM {major}: printed, read back");
     }
 }

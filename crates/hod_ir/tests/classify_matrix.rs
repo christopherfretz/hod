@@ -307,11 +307,10 @@ fn every_enumerated_construct_has_a_row() {
     assert_eq!(rows_of("type"), names(&mut TypeClass::ALL.iter().map(|class| class.name())));
     assert_eq!(rows_of("const-expr"), names(&mut CONST_OPS.iter().map(|op| op.name())));
 
+    // A convention with a row has a keyword; one without is named by its
+    // keyword, or by its number if LLVM has none (WP-141).
     let keyword = |number: u32| CallConv::from_llvm(number).ok().and_then(CallConv::keyword);
     assert_eq!(rows_of("cc"), names(&mut CC_NUMBERS.iter().map(|&n| keyword(n).unwrap())));
-    for number in 0..1024 {
-        assert_eq!(keyword(number).is_some(), CC_NUMBERS.contains(&number), "cc {number}");
-    }
     for class in TypeClass::ALL {
         assert_eq!(TypeClass::named(class.name()), Some(class));
     }

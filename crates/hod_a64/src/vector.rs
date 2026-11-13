@@ -60,7 +60,6 @@
 //! The helpers write `x16` and `x17` only (and the register they are
 //! given); none writes `v30`/`v31` except where it says so.
 
-use hod_cg::abi::{AbiUnsupported, Sig};
 use hod_cg::{CgResult, Class, FnCx, FrameRef, PReg, Target};
 use hod_ir::{Const, Inst, SHUFFLE_UNDEF, TypeId, TypeKind, TypeTable, Value, ValueKind};
 use hod_mc_a64 as mc;
@@ -91,10 +90,6 @@ pub const BFLOAT: &str = "a64:vector-bfloat";
 pub const LENGTH: &str = "a64:vector-length";
 /// An `llvm.aarch64.neon.*` or `llvm.aarch64.crypto.*` intrinsic.
 pub const INTRINSIC_TARGET: &str = "a64:intrinsic-target";
-/// A vector of class `Mem` crossing a call or a return, as an argument,
-/// a result, or a leaf of an aggregate one: WP-082 (the vector ABI).
-/// 64- and 128-bit vectors (class `Fpr`) travel in `v0`..`v7`.
-pub const CALL: &str = "a64:vector-call";
 /// A lane index wider than 64 bits.
 pub const INDEX: &str = "a64:vector-index";
 /// An element-wise operation on a `Mem` vector: the lane loop, WP-080.
@@ -756,38 +751,6 @@ pub fn shuffle_vector<'a>(
         };
         let mut cursor = Cursor::frame(cx, offset(r, dst.offset(k)), X17);
         store_gpr_at(cx, dst.gpr_store(), rt, &mut cursor);
-    }
-    Ok(())
-}
-
-// ---- calls ----
-
-/// Whether `ty` is, or has as a leaf, a vector of class `Mem`.
-fn has_mem_vector(types: &TypeTable, ty: TypeId, depth: u32) -> bool {
-    match types.kind(ty) {
-        // A mask (class `Gpr`, WP-081) is passed lane by lane: WP-082.
-        TypeKind::Vector { elem, .. } => {
-            elem == TypeId::I1 || A64.class_of(types, ty) == Class::Mem
-        }
-        TypeKind::Array { elem, .. } => depth < 64 && has_mem_vector(types, elem, depth + 1),
-        TypeKind::Struct { .. } => types.struct_fields(ty).is_some_and(|fields| {
-            fields.iter().any(|&f| depth < 64 && has_mem_vector(types, f, depth + 1))
-        }),
-        _ => false,
-    }
-}
-
-/// The vectors a signature may pass (the hook in `A64::assign`): those
-/// of class `Fpr`, which `abi::assign` places in `v0`..`v7` (or on the
-/// stack) as `llc` does; a vector of class `Mem` anywhere in the
-/// signature is [`CALL`] until WP-082.
-///
-/// # Errors
-/// [`CALL`].
-pub fn check_signature(types: &TypeTable, sig: &Sig<'_>) -> Result<(), AbiUnsupported> {
-    let refused = |ty: TypeId| ty != TypeId::VOID && has_mem_vector(types, ty, 0);
-    if refused(sig.ret) || sig.params.iter().any(|&ty| refused(ty)) {
-        return Err(AbiUnsupported(CALL));
     }
     Ok(())
 }

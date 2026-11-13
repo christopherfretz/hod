@@ -30,7 +30,7 @@ use crate::intrinsic::{CODE_OTHER, Intrinsic};
 use crate::module::Module;
 use crate::symbol::SymbolKind;
 use crate::types::{TypeKind, TypeTable};
-use crate::value::{InstId, TAG_ASM, Value, ValueKind};
+use crate::value::{InstId, MetaId, TAG_ASM, Value, ValueKind};
 
 use IrErrorKind::{
     BadBlock, BadIndex, InvalidDebugInfo, InvalidOperand, InvalidType, NotDominated, TypeMismatch,
@@ -328,8 +328,36 @@ impl Verifier<'_> {
             ValueKind::Asm(_) => {
                 self.fail(InvalidOperand, id, "inline assembly can only be called")
             }
+            ValueKind::Meta(_) => self.fail(
+                InvalidOperand,
+                id,
+                "metadata is only an argument of an intrinsic in a metadata parameter",
+            ),
             ValueKind::None => self.fail(InvalidOperand, id, "an operand is missing"),
         }
+    }
+
+    /// The metadata operand `meta` exists and its strings are in the
+    /// body's name bytes (§5.3).
+    fn meta(&self, id: u32, meta: MetaId) -> IrResult<()> {
+        let body = self.body;
+        let Some(data) = body.metas.get(meta.index()) else {
+            return self.fail(InvalidOperand, id, format!("{meta:?} does not exist"));
+        };
+        self.range(id, data.first, 2 * u64::from(data.count), body.words.len(), "metadata")?;
+        if !data.node && data.count != 1 {
+            return self.fail(InvalidOperand, id, "a metadata string is one string");
+        }
+        for pair in body.word_list(data.first, 2 * data.count).chunks_exact(2) {
+            let (start, end) = (pair[0] as usize, pair[0] as usize + pair[1] as usize);
+            if end > body.names.len()
+                || !body.names.is_char_boundary(start)
+                || !body.names.is_char_boundary(end)
+            {
+                return self.fail(InvalidOperand, id, format!("a string of {meta:?} is misplaced"));
+            }
+        }
+        Ok(())
     }
 
     /// `value` must be a (scalar) pointer.
@@ -799,6 +827,17 @@ impl Verifier<'_> {
             return self.fail(InvalidOperand, id, what);
         }
         for (index, &arg) in args.iter().enumerate() {
+            if let Some(meta) = arg.as_meta() {
+                // §5.3: metadata is an argument of an intrinsic call, in
+                // a parameter of type `metadata`, and nowhere else.
+                if call.intrinsic == 0 || params.get(index) != Some(&TypeId::METADATA) {
+                    let what =
+                        "metadata is only an argument of an intrinsic in a metadata parameter";
+                    return self.fail(InvalidOperand, id, what);
+                }
+                self.meta(id, meta)?;
+                continue;
+            }
             let arg_ty = self.value(id, arg)?;
             if let Some(&param) = params.get(index) {
                 self.same(id, "an argument", arg_ty, param)?;
@@ -984,7 +1023,7 @@ impl Verifier<'_> {
             ValueKind::Arg(index) => index < body.arg_count,
             ValueKind::Const(constant) => constant.index() < self.module.consts.len(),
             ValueKind::Slot(slot) => slot.index() < body.slots.len(),
-            ValueKind::Asm(_) => false,
+            ValueKind::Asm(_) | ValueKind::Meta(_) => false,
         }
     }
 

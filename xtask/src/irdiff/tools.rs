@@ -147,6 +147,17 @@ pub fn find_llvm(selector: Option<&str>, search: &Search) -> Result<Option<Llvm>
     Ok(None)
 }
 
+/// The `opt` of the oracle `llc`: `opt-<N>` beside `llc-<N>`, else
+/// `opt` beside it. It may not exist; whoever runs it says so.
+pub fn opt_beside(llc: &Path) -> PathBuf {
+    let name = llc.file_name().map(OsStr::to_string_lossy).unwrap_or_default();
+    let opt = match name.strip_prefix("llc") {
+        Some(suffix) if suffix.starts_with('-') => format!("opt{suffix}"),
+        _ => "opt".to_owned(),
+    };
+    llc.with_file_name(opt)
+}
+
 /// Finds a linker of the matrix by its name.
 ///
 /// - `bfd`: `ld.bfd`.
@@ -373,6 +384,15 @@ mod tests {
     }
 
     // "Linking": each linker runs on one thread.
+    #[test]
+    fn opt_beside_the_oracle() {
+        let opt = |llc: &str| opt_beside(Path::new(llc));
+        assert_eq!(opt("/usr/bin/llc-22"), Path::new("/usr/bin/opt-22"));
+        assert_eq!(opt("/usr/lib/llvm-19/bin/llc"), Path::new("/usr/lib/llvm-19/bin/opt"));
+        assert_eq!(opt("/x/bin/llc-19.1"), Path::new("/x/bin/opt-19.1"));
+        assert_eq!(opt("/x/bin/my-llc"), Path::new("/x/bin/opt"));
+    }
+
     #[test]
     fn single_threaded_linkers() {
         assert_eq!(linker_flags("bfd"), &[] as &[&str]);

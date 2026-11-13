@@ -200,7 +200,8 @@ is produced, partial or otherwise:
    generator is planned, `spec/codegen.md` §5.6).
 2. The options code generation cannot honour: `-relocation-model=ropi`,
    `rwpi` or `ropi-rwpi` is `option:relocation-model`, `-split-dwarf-output`
-   is `option:split-dwarf-output`. A relocation model left unset is
+   without `-split-dwarf-file` is `option:split-dwarf-output` (`llc` then
+   writes an ordinary object and an empty `.dwo`). A relocation model left unset is
    `static`, `llc`'s default for these targets. The optimization level is
    accepted and ignored: hod generates the same code at every `-O`.
 3. Each `-mattr` item, then each function's `target-features` attribute,
@@ -220,6 +221,21 @@ is produced, partial or otherwise:
    `Unsupported` is a module refusal; `hod_obj`'s `NulInName` is
    `object:nul-in-name`, `TooLarge` is `limit:object`, anything else
    `Internal`.
+6. With `-split-dwarf-file` and `-split-dwarf-output` (WP-062), the `.dwo`
+   file: the companion object `emit_module` attached (an empty object
+   when the module has no split unit, as `llc` writes the file either
+   way), its debug sections compressed as the object's are, written to
+   the `-split-dwarf-output` path. A file that cannot be written is
+   `InvalidOptions` (`cannot write '<file>': <error>`).
+
+**Split DWARF** (`spec/dwarf.md` §6.15). `-split-dwarf-file` alone is
+`SplitDwarf::Single` (the `.dwo` sections in the object), with
+`-split-dwarf-output` `SplitDwarf::Separate`. Before any code is
+generated (after step 2), a module with debug information is refused
+as `debug:split-dwarf-4` when its `Dwarf Version` is below 5, and as
+`debug:split-dwarf-name` when a unit's `splitDebugFilename` is set and
+is not the `-split-dwarf-file` value: hod writes the unit's name, `llc`
+the option's, and clang and kiln write the same name in both.
 
 The object is the same bytes for every thread count and every run: the
 chunks are merged in module order, and `emit_module`'s output does not

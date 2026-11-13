@@ -279,7 +279,7 @@ fn rows_from_llc(module: &Module, chunk: &Chunk, theirs: &Elf) -> Chunk {
                         }
                         _ => false,
                     },
-                    hod_cg::SymRef::Runtime(_) => false,
+                    hod_cg::SymRef::Runtime(_) | hod_cg::SymRef::NoopCoroFrame => false,
                 })
                 .map(|r| r.offset)
                 .collect();

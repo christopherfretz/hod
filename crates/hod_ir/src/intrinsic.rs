@@ -165,6 +165,10 @@ intrinsics! {
     Prefetch = "llvm.prefetch" [P(0)],
     ClearCache = "llvm.clear_cache" [],
     ReadCycleCounter = "llvm.readcyclecounter" [],
+    // Named registers: the first argument is a metadata operand (WP-064).
+    ReadRegister = "llvm.read_register" [Ret],
+    ReadVolatileRegister = "llvm.read_volatile_register" [Ret],
+    WriteRegister = "llvm.write_register" [P(1)],
     IsConstant = "llvm.is.constant" [P(0)],
     ObjectSize = "llvm.objectsize" [Ret, P(0)],
     Ptrmask = "llvm.ptrmask" [Ret, P(1)],

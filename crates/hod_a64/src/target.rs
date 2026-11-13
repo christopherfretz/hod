@@ -163,6 +163,8 @@ impl Target for A64 {
 
     /// `brk #1`, as `llc` emits for `unreachable` and `llvm.trap`.
     const TRAP: &'static [u8] = &mc::brk(1).to_le_bytes();
+    /// `ret`: `__NoopCoro_ResumeDestroy` (WP-105, `crate::coro`).
+    const NOOP_CORO_FN: &'static [u8] = &mc::ret(mc::Reg::LR.zr()).to_le_bytes();
     const FN_ALIGN: u32 = 4;
     const PAD_BYTE: u8 = 0;
     const STACK_ALIGN: u32 = 16;
@@ -194,6 +196,9 @@ impl Target for A64 {
         if let Some(assigned) = crate::tail2::assign_preserve_most(types, sig, out) {
             return assigned;
         }
+        if let Some(assigned) = crate::tail3::assign_preserve_all(types, sig, out) {
+            return assigned;
+        }
         abi::assign(types, sig, out)
     }
 
@@ -213,6 +218,9 @@ impl Target for A64 {
     fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()> {
         if cx.state.tail.drops && crate::tail::dropped(inst) {
             return Ok(());
+        }
+        if let Some(done) = crate::tail3::lower(cx, inst) {
+            return done;
         }
         if let Some(done) = crate::mask::lower(cx, inst) {
             return done;

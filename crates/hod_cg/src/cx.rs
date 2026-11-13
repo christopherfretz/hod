@@ -279,6 +279,11 @@ pub struct FnCx<'a, T: Target> {
     /// instruction that emitted code (§9.5).
     pub(crate) lines: bool,
     pub(crate) last_loc: Option<LocId>,
+    /// The open line segment: its start offset and location
+    /// (`line_rows`); and whether no code of the current block (other
+    /// than the entry block) has been recorded yet.
+    pub(crate) line_seg: (u32, LocId),
+    pub(crate) line_block_start: bool,
     /// `ret`s emitted, and the location of the last one (§9.5).
     pub(crate) rets: u32,
     pub(crate) ret_loc: LocId,

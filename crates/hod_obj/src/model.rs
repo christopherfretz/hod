@@ -363,6 +363,8 @@ pub struct Object {
     pub(crate) groups: Vec<GroupData>,
     /// The first error of a call that does not return one.
     pub(crate) deferred: Option<Error>,
+    /// The split-DWARF companion (`crate::dwo`, WP-062).
+    pub(crate) dwo: Option<Box<Object>>,
 }
 
 impl Object {
@@ -380,6 +382,7 @@ impl Object {
             relocs: Vec::new(),
             groups: Vec::new(),
             deferred: None,
+            dwo: None,
         }
     }
 

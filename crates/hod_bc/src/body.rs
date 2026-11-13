@@ -82,6 +82,9 @@ pub(crate) struct State {
     pub old_record: Option<crate::body_debug::OldRecord>,
     /// The values of the debug record being read.
     pub dbg_vals: Vec<Value>,
+    /// In a module without debug information, the function's local
+    /// metadata (strings and nodes for metadata operands, WP-064).
+    pub plain_md: crate::debug::DebugBits,
 }
 
 /// Reads the bodies of one module's functions (`spec/bc.md` §11).
@@ -111,6 +114,7 @@ pub struct BodyReader<'b, 'a> {
     pub(crate) values: Values,
     pub(crate) state: State,
     unsupported: Vec<Cow<'static, str>>,
+    attachments: Vec<Cow<'static, str>>,
 }
 
 impl<'b, 'a> BodyReader<'b, 'a> {
@@ -121,6 +125,7 @@ impl<'b, 'a> BodyReader<'b, 'a> {
             values: bits.values.clone(),
             state: State::default(),
             unsupported: Vec::new(),
+            attachments: Vec::new(),
         }
     }
 
@@ -132,13 +137,17 @@ impl<'b, 'a> BodyReader<'b, 'a> {
     /// represent: each is named in [`BodyReader::unsupported`] and
     /// recorded in `module` against the function's symbol. The notes of
     /// the definition's own metadata attachments (`global-metadata:`)
-    /// are recorded in `module` as well, and do not stop the body.
+    /// are recorded in `module` as well, and do not stop the body; they
+    /// are [`BodyReader::attachment_notes`] until the next read, for the
+    /// consumer to judge: `hod_ll` notes the same attachments at module
+    /// level, before any body (WP-064).
     ///
     /// # Errors
     /// [`BcError`] at the first record that is not what LLVM writes, or
     /// that `hod_ir` refuses. Never a panic, for any input.
     pub fn read(&mut self, module: &mut Module, function: &FunctionBits) -> BcResult<Option<Body>> {
         self.unsupported.clear();
+        self.attachments.clear();
         let at = function.span.start;
         if function.sym.index() >= module.symbol_count() {
             return fail(BcErrorKind::Invalid, at, "this function is not a symbol of the module");
@@ -154,6 +163,7 @@ impl<'b, 'a> BodyReader<'b, 'a> {
         }
         for construct in st.definition_notes.drain(..) {
             module.record_unsupported(&construct, Some(function.sym));
+            self.attachments.push(construct);
         }
         result
     }
@@ -162,6 +172,13 @@ impl<'b, 'a> BodyReader<'b, 'a> {
     /// once; empty for a body that was returned.
     pub fn unsupported(&self) -> impl ExactSizeIterator<Item = &str> + '_ {
         self.unsupported.iter().map(|construct| &**construct)
+    }
+
+    /// The notes of the last function's own metadata attachments that
+    /// `hod_ir` has no field for (`global-metadata:<kind>`), each once:
+    /// a body that was returned carries them too (WP-064).
+    pub fn attachment_notes(&self) -> impl ExactSizeIterator<Item = &str> + '_ {
+        self.attachments.iter().map(|construct| &**construct)
     }
 
     /// Gives the reader a body its consumer is done with: the next body
@@ -192,6 +209,9 @@ impl<'b, 'a> BodyReader<'b, 'a> {
         st.params.clear();
         st.params.extend_from_slice(params);
         st.old_record = None;
+        st.plain_md.local.clear();
+        st.plain_md.args.clear();
+        st.plain_md.strs.clear();
         if let Some(notes) = self.bits.types.param_notes(function.type_id) {
             st.param_notes.extend_from_slice(notes);
         }
@@ -428,6 +448,10 @@ impl Fx<'_, '_, '_> {
                         block::METADATA_ATTACHMENT => {
                             cursor.enter()?;
                             self.attachments(cursor, ops)?;
+                        }
+                        block::METADATA if !self.bits.debug.on => {
+                            cursor.enter()?;
+                            self.plain_local_metadata(cursor, ops)?;
                         }
                         _ => cursor.skip(),
                     }

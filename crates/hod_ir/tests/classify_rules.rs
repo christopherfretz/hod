@@ -207,13 +207,14 @@ fn a_body_takes_the_address_of_its_own_blocks_only() {
 
 // ---- §8.6: what is refused by design and has a row ----
 
-/// §8.6: `naked` functions, `callbr` and `va_arg` are refused by
-/// design. They are rows of the matrix whose status is `rejected` for
-/// both targets, so no `Support` accepts them.
+/// §8.6: `naked` functions and `va_arg` are refused by design. They are
+/// rows of the matrix whose status is `rejected` for both targets, so no
+/// `Support` accepts them. `callbr` was one until WP-103: it is an
+/// ordinary row now.
 #[test]
-fn naked_callbr_and_va_arg_are_refused_by_design() {
+fn naked_and_va_arg_are_refused_by_design() {
     for arch in [Arch::Aarch64, Arch::X86_64] {
-        for name in ["attr:naked", "inst:callbr", "inst:va_arg"] {
+        for name in ["attr:naked", "inst:va_arg"] {
             assert!(everything(arch).with(name).is_none(), "{name}");
             assert_eq!(everything(arch).supports(name), Some(false), "{name}");
         }
@@ -264,7 +265,8 @@ fn naked_callbr_and_va_arg_are_refused_by_design() {
             b.ret(None).unwrap();
         })
     };
-    refused(&branch(true), "inst:callbr");
+    // WP-103: `callbr` is supported where its row is.
+    accepted(&branch(true));
     accepted(&branch(false));
 
     let variadic = |va_arg: bool| {

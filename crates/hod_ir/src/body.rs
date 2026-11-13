@@ -31,7 +31,7 @@ use crate::inst::{
 use crate::intrinsic::{CODE_OTHER, Intrinsic};
 use crate::module::Module;
 use crate::types::TypeKind;
-use crate::value::{InstId, SlotId, Value, ValueKind};
+use crate::value::{InstId, MetaId, SlotId, Value, ValueKind};
 
 /// "Not set" in a `u32` field of a body table.
 pub(crate) const UNSET: u32 = u32::MAX;
@@ -391,6 +391,15 @@ pub(crate) struct CallData {
     pub(crate) flags: u8,
 }
 
+/// A metadata operand (§5.3): `count` strings whose start and length in
+/// `names` are the pairs of `words` from `first` on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct MetaData {
+    pub(crate) node: bool,
+    pub(crate) first: u32,
+    pub(crate) count: u32,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct BundleData {
     pub(crate) tag_start: u32,
@@ -481,8 +490,11 @@ pub struct Body {
     pub(crate) calls: Vec<CallData>,
     pub(crate) param_attrs: Vec<ParamAttrs>,
     pub(crate) bundles: Vec<BundleData>,
-    /// Bundle tags and the names of `Intrinsic::Other`.
+    /// Bundle tags, the names of `Intrinsic::Other` and the strings of
+    /// metadata operands.
     pub(crate) names: String,
+    /// Metadata operands, indexed by `MetaId`.
+    pub(crate) metas: Vec<MetaData>,
     pub(crate) pads: Vec<PadData>,
     pub(crate) clauses: Vec<Clause>,
     // Builder state, empty in a finished body; kept here so that recycling
@@ -519,6 +531,7 @@ impl Body {
             param_attrs: Vec::new(),
             bundles: Vec::new(),
             names: String::new(),
+            metas: Vec::new(),
             pads: Vec::new(),
             clauses: Vec::new(),
             pending: Vec::new(),
@@ -550,6 +563,7 @@ impl Body {
         self.param_attrs.clear();
         self.bundles.clear();
         self.names.clear();
+        self.metas.clear();
         self.pads.clear();
         self.clauses.clear();
         self.pending.clear();
@@ -611,6 +625,7 @@ impl Body {
             }
             ValueKind::Const(id) => module.consts.ty(id),
             ValueKind::Sym(_) | ValueKind::Slot(_) | ValueKind::Asm(_) => TypeId::PTR,
+            ValueKind::Meta(_) => TypeId::METADATA,
             ValueKind::None => TypeId::VOID,
         }
     }
@@ -702,6 +717,21 @@ impl Body {
     #[inline]
     pub fn slots(&self) -> &[Slot] {
         &self.slots
+    }
+
+    /// The number of metadata operands; their ids are `0..meta_count()`.
+    #[inline]
+    pub fn meta_count(&self) -> usize {
+        self.metas.len()
+    }
+
+    /// The metadata operand `id` (§5.3), `None` if the body has no such
+    /// operand.
+    pub fn metadata(&self, id: MetaId) -> Option<Metadata<'_>> {
+        let data = self.metas.get(id.index())?;
+        let start = data.first as usize;
+        let spans = self.words.get(start..start + 2 * data.count as usize)?;
+        Some(Metadata { node: data.node, spans, names: &self.names })
     }
 
     /// The variables declared to live in stack slots, in the order the
@@ -810,6 +840,7 @@ impl Body {
             + bytes(&self.param_attrs)
             + bytes(&self.bundles)
             + self.names.len()
+            + bytes(&self.metas)
             + bytes(&self.pads)
             + bytes(&self.clauses)
     }
@@ -837,6 +868,7 @@ impl Body {
             + bytes(&self.param_attrs)
             + bytes(&self.bundles)
             + self.names.capacity()
+            + bytes(&self.metas)
             + bytes(&self.pads)
             + bytes(&self.clauses)
             + bytes(&self.pending)
@@ -1485,6 +1517,58 @@ impl<'a> PtrAdd<'a> {
     }
 }
 
+/// A metadata operand (§5.3): a string, `!"…"`, or a node of strings,
+/// `!{!"…", …}`. Obtained from [`Body::metadata`].
+#[derive(Clone, Copy)]
+pub struct Metadata<'a> {
+    node: bool,
+    spans: &'a [u32],
+    names: &'a str,
+}
+
+impl<'a> Metadata<'a> {
+    /// Whether this is a node (`!{…}`) rather than a string.
+    pub fn is_node(&self) -> bool {
+        self.node
+    }
+
+    /// The number of strings: one for a string, the node's operands for a
+    /// node.
+    pub fn len(&self) -> usize {
+        self.spans.len() / 2
+    }
+
+    /// Whether this is a node without operands.
+    pub fn is_empty(&self) -> bool {
+        self.spans.is_empty()
+    }
+
+    /// The strings, in order.
+    pub fn strings(&self) -> impl ExactSizeIterator<Item = &'a str> + 'a {
+        let names = self.names;
+        self.spans.chunks_exact(2).map(move |pair| {
+            let (start, len) = (pair[0] as usize, pair[1] as usize);
+            names.get(start..start + len).unwrap_or("")
+        })
+    }
+
+    /// The one string of a node of one string, LLVM's form of a register
+    /// name (`!{!"sp"}`); `None` for anything else.
+    pub fn single_node_string(&self) -> Option<&'a str> {
+        if self.node && self.len() == 1 { self.strings().next() } else { None }
+    }
+}
+
+impl fmt::Debug for Metadata<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.node {
+            f.debug_list().entries(self.strings()).finish()
+        } else {
+            f.debug_tuple("String").field(&self.strings().next().unwrap_or("")).finish()
+        }
+    }
+}
+
 /// The incoming values of a `phi`.
 #[derive(Clone, Copy, Debug)]
 pub struct Phi<'a> {
@@ -1518,10 +1602,18 @@ impl<'a> Phi<'a> {
     pub fn incoming(&self) -> impl ExactSizeIterator<Item = (Value, BlockId)> + 'a {
         self.values.iter().copied().zip(Blocks::new(self.blocks))
     }
+
+    /// The value for the edge from `pred`, the first listed (LLVM requires
+    /// the entries of one predecessor to agree); `None` if `pred` is not
+    /// listed (WP-064).
+    pub fn value_for(&self, pred: BlockId) -> Option<Value> {
+        let at = self.blocks.iter().position(|&raw| raw == pred.raw())?;
+        Some(self.values[at])
+    }
 }
 
 /// A `switch`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct Switch<'a> {
     /// The integer switched on.
     pub cond: Value,
@@ -1542,6 +1634,26 @@ impl<'a> Switch<'a> {
     pub fn cases(&self) -> impl ExactSizeIterator<Item = (ConstId, BlockId)> + 'a {
         let values = self.values.iter().map(|&raw| ConstId::new(raw));
         values.zip(Blocks::new(self.targets))
+    }
+}
+
+/// The condition, the default and the cases as `(constant, block)`
+/// pairs of typed ids, not the raw words they are stored in (WP-064).
+impl fmt::Debug for Switch<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Switch")
+            .field("cond", &self.cond)
+            .field("default", &self.default)
+            .field("cases", &DebugCases(*self))
+            .finish()
+    }
+}
+
+struct DebugCases<'a>(Switch<'a>);
+
+impl fmt::Debug for DebugCases<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.0.cases()).finish()
     }
 }
 

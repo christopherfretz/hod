@@ -55,6 +55,12 @@ body_id!(
     SlotId,
     "slot"
 );
+body_id!(
+    /// A metadata operand of a function body (§5.3): a string or a node
+    /// of strings, an argument of an intrinsic call only.
+    MetaId,
+    "!"
+);
 
 /// What a [`Value`] names. Obtained from [`Value::kind`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -71,6 +77,9 @@ pub enum ValueKind {
     Slot(SlotId),
     /// An inline-assembly callee. Valid only as the callee of a call.
     Asm(AsmId),
+    /// A metadata operand of the same body (`Body::metadata`). Valid only
+    /// as an argument of an intrinsic call whose parameter is `metadata`.
+    Meta(MetaId),
     /// No value: the callee of an intrinsic call, a `ret void`.
     None,
 }
@@ -91,6 +100,7 @@ pub(crate) const TAG_CONST: u32 = 2;
 pub(crate) const TAG_SYM: u32 = 3;
 pub(crate) const TAG_SLOT: u32 = 4;
 pub(crate) const TAG_ASM: u32 = 5;
+pub(crate) const TAG_META: u32 = 6;
 
 /// Instruction indices from here up name reserved values
 /// ([`crate::FunctionBuilder::reserve`]); a finished body has none.
@@ -168,6 +178,15 @@ impl Value {
         Self::make(TAG_ASM, id.raw(), "inline assembly")
     }
 
+    /// The metadata operand `id` of the body.
+    ///
+    /// # Errors
+    /// `TableFull` if the index does not fit 29 bits.
+    #[inline]
+    pub fn meta(id: MetaId) -> IrResult<Value> {
+        Self::make(TAG_META, id.0, "metadata operand")
+    }
+
     /// A value from a tag and an index already known to fit.
     #[inline]
     pub(crate) const fn from_parts(tag: u32, index: u32) -> Value {
@@ -212,6 +231,7 @@ impl Value {
             TAG_SYM => ValueKind::Sym(SymId::new(index)),
             TAG_SLOT => ValueKind::Slot(SlotId(index)),
             TAG_ASM => ValueKind::Asm(AsmId::new(index)),
+            TAG_META => ValueKind::Meta(MetaId(index)),
             _ => ValueKind::None,
         }
     }
@@ -219,7 +239,16 @@ impl Value {
     /// Whether this is [`Value::NONE`].
     #[inline]
     pub const fn is_none(self) -> bool {
-        self.0 >> TAG_SHIFT > TAG_ASM
+        self.0 >> TAG_SHIFT > TAG_META
+    }
+
+    /// The metadata operand this is.
+    #[inline]
+    pub const fn as_meta(self) -> Option<MetaId> {
+        match self.kind() {
+            ValueKind::Meta(id) => Some(id),
+            _ => None,
+        }
     }
 
     /// The instruction whose result this is.
@@ -265,6 +294,7 @@ impl fmt::Debug for Value {
             ValueKind::Sym(id) => write!(f, "{id:?}"),
             ValueKind::Slot(id) => write!(f, "{id:?}"),
             ValueKind::Asm(id) => write!(f, "{id:?}"),
+            ValueKind::Meta(id) => write!(f, "{id:?}"),
             ValueKind::None => f.write_str("none"),
         }
     }
@@ -287,6 +317,7 @@ mod tests {
             (Value::sym(SymId::new(1)).unwrap(), ValueKind::Sym(SymId::new(1)), "sym1"),
             (Value::slot(SlotId::new(0)).unwrap(), ValueKind::Slot(SlotId::new(0)), "slot0"),
             (Value::asm(AsmId::new(2)).unwrap(), ValueKind::Asm(AsmId::new(2)), "asm2"),
+            (Value::meta(MetaId::new(4)).unwrap(), ValueKind::Meta(MetaId::new(4)), "!4"),
             (Value::NONE, ValueKind::None, "none"),
         ];
         for (index, (value, kind, text)) in cases.iter().enumerate() {
@@ -305,6 +336,8 @@ mod tests {
         assert_eq!(cases[4].0.as_const(), None);
         assert_eq!(Value::NONE.as_sym(), None);
         assert_eq!(Value::NONE.as_slot(), None);
+        assert_eq!(cases[6].0.as_meta(), Some(MetaId::new(4)));
+        assert_eq!(Value::NONE.as_meta(), None);
     }
 
     /// §5.3: the index is 29 bits; a larger one is `TableFull`, not a

@@ -43,6 +43,16 @@ pub const WITNESS: &str = "witness: ";
 /// mode: a script that runs the oracle's `llc` as the reference is run.
 const REFERENCE_LLC: &str = "reference-llc";
 
+/// The fallback of hybrid mode for a test whose input is IR before
+/// optimisation: `opt` as the reference runs it, then [`REFERENCE_LLC`]'s
+/// `llc`.
+const REFERENCE_OPT_LLC: &str = "reference-opt-llc";
+
+/// What the oracle runs before `llc` on IR before optimisation: the
+/// passes a compiler driver runs at `-O0`, among them the coroutine
+/// passes (`spec/harness.md` "Test directives", `input`).
+pub const PRE_OPT_PASSES: &str = "-passes=default<O0>";
+
 /// What hod may do with a module it does not support.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -93,6 +103,8 @@ struct Part {
     /// The module's name, for a test of several.
     name: Option<String>,
     ir: PathBuf,
+    /// `opt`'s output, for a test whose input is IR before optimisation.
+    post: PathBuf,
     oracle: PathBuf,
     witness: PathBuf,
     hod: PathBuf,
@@ -183,14 +195,39 @@ impl Session {
         self.work.join(REFERENCE_LLC)
     }
 
+    /// The fallback of hybrid mode for IR before optimisation: it runs
+    /// `opt` on the input (hod's last argument) and gives the result to
+    /// `llc` on its standard input, with hod's other arguments.
+    fn reference_opt_llc(&self) -> PathBuf {
+        self.work.join(REFERENCE_OPT_LLC)
+    }
+
     fn write_reference_llc(&self) -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt;
-        let path = self.reference_llc();
-        let llc = self.toolchain.llc.to_string_lossy().replace('\'', "'\\''");
-        let script = format!("#!/bin/sh\nexec '{llc}' \"$@\" {}\n", REFERENCE_SELECTOR.join(" "));
-        fs::write(&path, script)
-            .and_then(|()| fs::set_permissions(&path, fs::Permissions::from_mode(0o755)))
-            .map_err(|e| format!("cannot write '{}': {e}", path.display()))
+        let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
+        let llc = quote(&self.toolchain.llc);
+        let opt = quote(&tools::opt_beside(&self.toolchain.llc));
+        let selector = REFERENCE_SELECTOR.join(" ");
+        let plain = format!("#!/bin/sh\nexec '{llc}' \"$@\" {selector}\n");
+        // The word list of `for` is expanded once: `set --` in the loop
+        // rebuilds the arguments without the last, the input. `opt`'s
+        // output goes beside hod's output (`-o`), in the test's directory.
+        let pre_opt = format!(
+            "#!/bin/sh\nn=$# i=0 input= out= prev=\n\
+             for a do\n  i=$((i + 1))\n  [ \"$i\" -eq 1 ] && set --\n  \
+             if [ \"$i\" -lt \"$n\" ]; then set -- \"$@\" \"$a\"; else input=$a; fi\n  \
+             [ \"$prev\" = -o ] && out=$a\n  prev=$a\n\
+             done\n\
+             post=\"$out.pre-opt.ll\"\n\
+             '{opt}' '{PRE_OPT_PASSES}' -S -o \"$post\" \"$input\" || exit 1\n\
+             '{llc}' \"$@\" {selector} \"$post\"\nstatus=$?\nrm -f \"$post\"\nexit $status\n"
+        );
+        for (path, script) in [(self.reference_llc(), plain), (self.reference_opt_llc(), pre_opt)] {
+            fs::write(&path, script)
+                .and_then(|()| fs::set_permissions(&path, fs::Permissions::from_mode(0o755)))
+                .map_err(|e| format!("cannot write '{}': {e}", path.display()))?;
+        }
+        Ok(())
     }
 
     fn linker_dir(&self, linker: &Linker) -> PathBuf {
@@ -296,6 +333,11 @@ impl Session {
             let detail = format!("requires another LLVM (this run: {llvm})");
             return vec![self.record(test, None, (Outcome::Skip, None), detail)];
         }
+        if let Some(dialect) = expect.dialect.filter(|_| !expect.in_dialect(llvm)) {
+            let detail = format!("in the LLVM {dialect} dialect (this run: {llvm})");
+            return vec![self.record(test, None, (Outcome::Skip, None), detail)];
+        }
+        let oracle_skip = expect.oracle_skip_reason(llvm).map(str::to_owned);
 
         let error = |failure: Failure, detail: String| {
             vec![self.record(test, None, (Outcome::Error, Some(failure)), detail)]
@@ -304,13 +346,17 @@ impl Session {
             Ok(parts) => parts,
             Err(detail) => return error(Failure::Harness, detail),
         };
-        for part in &parts {
-            if let Err(trouble) = self.compile_with_llc(test, Build::Reference, part) {
+        let oracle_used = oracle_skip.is_none();
+        for part in parts.iter().filter(|_| oracle_used) {
+            let built = self
+                .run_opt(test, part)
+                .and_then(|()| self.compile_with_llc(test, Build::Reference, part));
+            if let Err(trouble) = built {
                 let (failure, detail) = trouble.split();
                 return error(failure, format!("oracle: {}{detail}", part.label()));
             }
         }
-        if self.witness {
+        if self.witness && oracle_used {
             for part in &parts {
                 if let Err(trouble) = self.compile_with_llc(test, Build::Witness, part) {
                     let detail = trouble.split().1;
@@ -321,7 +367,7 @@ impl Session {
 
         let (build, built_by, reason) = self.compile_all_with_hod(test, &parts);
         let plan = plan(&build, built_by, reason.as_deref(), expect.unsupported_reason(arch, llvm));
-        let case = Case { session: self, test, built_by, reason, plan };
+        let case = Case { session: self, test, built_by, reason, plan, oracle_skip };
 
         if let Some(why) = self.cannot_run() {
             let note = format!("the oracle's program was not run: {why}");
@@ -332,7 +378,7 @@ impl Session {
             parts.iter().map(|part| object(part).clone()).collect()
         };
         let (oracle, hod) = (objects(|part| &part.oracle), objects(|part| &part.hod));
-        let witness = self.witness.then(|| objects(|part| &part.witness));
+        let witness = (self.witness && oracle_used).then(|| objects(|part| &part.witness));
         // The witness is asked once, with the first linker whose program
         // of the oracle's objects is what the directives say: what it
         // checks is the compiler. An oracle it does not confirm is an
@@ -371,6 +417,7 @@ impl Session {
             return Ok(vec![Part {
                 name: None,
                 ir: test.ir.clone(),
+                post: dir.join("pre-opt.ll"),
                 oracle: dir.join("oracle.o"),
                 witness: dir.join("witness.o"),
                 hod: dir.join("hod.o"),
@@ -387,6 +434,7 @@ impl Session {
                 .map_err(|e| format!("cannot write '{}': {e}", ir.display()))?;
             parts.push(Part {
                 ir,
+                post: file("post.ll"),
                 oracle: file("oracle.o"),
                 witness: file("witness.o"),
                 hod: file("hod.o"),
@@ -422,8 +470,44 @@ impl Session {
             }
             .into(),
         );
-        args.push(part.ir.clone().into());
+        // The oracle and the witness build `opt`'s output of IR before
+        // optimisation; hod builds the input.
+        let input = if test.expect.pre_opt && build != Build::Hod { &part.post } else { &part.ir };
+        args.push(input.clone().into());
         args
+    }
+
+    /// For a test whose input is IR before optimisation, runs `opt` with
+    /// [`PRE_OPT_PASSES`] on one module: what the oracle and the witness
+    /// build.
+    fn run_opt(&self, test: &Test, part: &Part) -> Result<(), Trouble> {
+        if !test.expect.pre_opt {
+            return Ok(());
+        }
+        let opt = tools::opt_beside(&self.toolchain.llc);
+        if !opt.is_file() {
+            return Err(Trouble::Broken(format!(
+                "no opt beside '{}'",
+                self.toolchain.llc.display()
+            )));
+        }
+        let triple = format!("-mtriple={}", self.arch.triple());
+        let output = process::run(
+            &opt,
+            |c| {
+                c.args([PRE_OPT_PASSES, triple.as_str(), "-S", "-o"]).arg(&part.post).arg(&part.ir);
+            },
+            b"",
+            self.tool_limits,
+        )
+        .map_err(Trouble::Broken)?;
+        let failed =
+            |detail| Trouble::Failed(Failure::of_tool(Failure::ReferenceBuild, output.end), detail);
+        match output.end {
+            End::Exit(0) if part.post.is_file() => Ok(()),
+            End::Exit(0) => Err(failed("opt wrote no module".to_owned())),
+            end => Err(failed(tool_failure("opt", end, &output, self.tool_limits))),
+        }
     }
 
     /// Builds one module with the oracle's `llc`, as the reference or as
@@ -488,6 +572,9 @@ impl Session {
         let mut args = vec![tools::prefixed("--coverage-log=", log)];
         args.push(match self.mode {
             Mode::Strict => "--strict".into(),
+            Mode::Hybrid if test.expect.pre_opt => {
+                tools::prefixed("--fallback=", &self.reference_opt_llc())
+            }
             Mode::Hybrid => tools::prefixed("--fallback=", &self.reference_llc()),
         });
         args.extend(self.codegen_args(test, Build::Hod, part));
@@ -655,6 +742,9 @@ struct Case<'a> {
     built_by: BuiltBy,
     reason: Option<String>,
     plan: Plan,
+    /// Why the oracle is not used, if an `oracle-skip` directive applies:
+    /// hod's program is then compared with the directives only.
+    oracle_skip: Option<String>,
 }
 
 impl Case<'_> {
@@ -732,6 +822,9 @@ impl Case<'_> {
                 format!("cannot create '{}': {e}", linker_dir.display()),
             );
         }
+        if let Some(why) = &self.oracle_skip {
+            return Ok(self.against_directives(linker, &linker_dir, hod_objects, why));
+        }
         // The oracle's side validates the test itself: any trouble there
         // is an ERROR, whatever hod did.
         let oracle =
@@ -779,6 +872,46 @@ impl Case<'_> {
         let (outcome, detail) = self.expected_failure(Some(linker), outcome, detail);
         let failure = failure.filter(|_| matches!(outcome, Outcome::Fail | Outcome::Xfail));
         Ok(self.finish(Some(linker), (outcome, failure), detail))
+    }
+}
+
+impl Case<'_> {
+    /// One linker's record of a test whose oracle is skipped (`why`): the
+    /// program of hod's object against the directives, never against an
+    /// oracle.
+    fn against_directives(
+        &self,
+        linker: &Linker,
+        dir: &Path,
+        hod_objects: &[PathBuf],
+        why: &str,
+    ) -> Record {
+        let session = self.session;
+        let note = format!("oracle skipped: {why}");
+        if let Some(record) = self.settled(Some(linker), &note) {
+            return record;
+        }
+        let (outcome, failure, detail) =
+            match session.link_and_run(linker, hod_objects, dir, "hod", &self.test.expect) {
+                Err(Trouble::Broken(detail)) => {
+                    let error = (Outcome::Error, Some(Failure::Harness));
+                    return self.finish(Some(linker), error, detail);
+                }
+                Err(Trouble::Failed(failure, detail)) => {
+                    (Outcome::Fail, Some(failure), format!("hod's object: {detail}; {note}"))
+                }
+                Ok(hod) => match session.check_directives(&hod, &self.test.expect) {
+                    Ok(()) => (Outcome::Pass, None, note),
+                    Err((failure, detail)) => (
+                        Outcome::Fail,
+                        Some(failure),
+                        format!("the program of hod's object {detail}; {note}"),
+                    ),
+                },
+            };
+        let (outcome, detail) = self.expected_failure(Some(linker), outcome, detail);
+        let failure = failure.filter(|_| matches!(outcome, Outcome::Fail | Outcome::Xfail));
+        self.finish(Some(linker), (outcome, failure), detail)
     }
 }
 

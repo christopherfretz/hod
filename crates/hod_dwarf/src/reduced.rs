@@ -133,8 +133,9 @@ pub(crate) fn add_function(plan: &UnitPlan<'_>, f: &FunctionInput<'_>) -> Result
 
 /// The flags a minimal subprogram may have; anything else (above all
 /// `DIFlagAllCallsDescribed`, whose `DW_AT_call_all_calls` and call-site
-/// entries need the generated code's return addresses) is refused as
-/// `debug:subprogram-attribute`, as for a full unit.
+/// entries need the generated code's return addresses: `debug:call-sites`
+/// since WP-098) is refused as `debug:subprogram-attribute`, as for a full
+/// unit.
 const MINIMAL_FLAGS: u32 =
     DiFlags::PROTOTYPED.0 | DiFlags::ARTIFICIAL.0 | DiFlags::NO_RETURN.0 | DiFlags::THUNK.0;
 const MINIMAL_SP_FLAGS: u32 =
@@ -151,6 +152,7 @@ pub(crate) fn minimal_parent(
     if !sp.sp_flags.contains(SpFlags::DEFINITION) || sp.unit != Some(plan.unit) {
         return Err(unsupported(sp_id, "debug:subprogram-not-definition"));
     }
+    crate::call_sites::check(sp).map_err(|name| unsupported(sp_id, name))?; // WP-098: §6.14
     if !sp.thrown_types.is_empty()
         || sp.sp_flags.0 & !MINIMAL_SP_FLAGS != 0
         || sp.flags.0 & !MINIMAL_FLAGS != 0

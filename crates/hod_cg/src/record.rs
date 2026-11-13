@@ -261,6 +261,10 @@ pub struct Chunk {
     pub block_offsets: Vec<BlockOffset>,
     /// One record per function, in the order they were compiled.
     pub funcs: Vec<FuncRecord>,
+    /// The target's `Target::NOOP_CORO_FN`, once a function of the chunk
+    /// referred to [`SymRef::NoopCoroFrame`](crate::SymRef::NoopCoroFrame)
+    /// (WP-105): module emission writes the noop frame's function with it.
+    pub noop_coro_fn: &'static [u8],
 }
 
 /// The lengths of a chunk's tables at one moment: where a function
@@ -305,6 +309,7 @@ impl Chunk {
             block_offsets: 0,
             funcs: 0,
         });
+        self.noop_coro_fn = &[];
     }
 
     /// The code of function record `func`.

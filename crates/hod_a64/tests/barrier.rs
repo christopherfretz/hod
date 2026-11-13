@@ -103,32 +103,31 @@ fn what_is_not_a_barrier_is_refused_by_name() {
             if ret == "void" { "" } else { "%r" }
         )
     };
+    // WP-103: what the barrier module does not model goes to the
+    // general inline-assembly sequence (`crate::inline_asm`), which
+    // compiles these (an output nothing ties is the register's contents,
+    // as with `llc`) ...
+    let compiled = [
+        one("i32", "%r = call i32 asm \"\", \"=r\"()"),
+        one("void", "call void asm \"\", \"=*r\"(ptr elementtype(i32) %p)"),
+        one("void", "call void asm \"\", \"=*rm,r\"(ptr elementtype(i32) %p, i32 %x)"),
+        one("void", "%r = call { i32, i32 } asm \"\", \"=r,=r,0,1\"(i32 %x, i32 %x)"),
+        one("void", "call void asm \"\", \"Q\"(ptr %p)"),
+        one("i32", "%r = call i32 asm \"\", \"=r,0\"(i64 0)"),
+        one("void", "call void asm \"\", \"=*r,0\"(ptr elementtype(i64) %p, i32 %x)"),
+        one("void", "call void asm \"nop\", \"\"()"),
+    ];
+    for functions in &compiled {
+        assert_eq!(common::compile_ll(functions), Ok(()), "{functions}");
+    }
+    // ... and refuses these by its names.
     let cases = [
-        // An output nothing ties: undefined after the template.
-        (one("i32", "%r = call i32 asm \"\", \"=r\"()"), barrier::OUTPUT),
-        (one("void", "call void asm \"\", \"=*r\"(ptr elementtype(i32) %p)"), barrier::OUTPUT),
-        (
-            one("void", "call void asm \"\", \"=*rm,r\"(ptr elementtype(i32) %p, i32 %x)"),
-            barrier::OUTPUT,
-        ),
-        (one("void", "call void asm \"\", \"!i\"()"), barrier::CONSTRAINT),
-        // Two effects.
-        (
-            one("void", "%r = call { i32, i32 } asm \"\", \"=r,=r,0,1\"(i32 %x, i32 %x)"),
-            barrier::OUTPUTS,
-        ),
+        (one("void", "call void asm \"\", \"!i\"()"), "asm:constraint/count"),
         (one("void", "call void asm \"\", \"~{sp}\"()"), barrier::CLOBBER),
         (one("void", "call void asm \"\", \"~{x31}\"()"), barrier::CLOBBER),
         (one("void", "call void asm \"\", \"~{dirflag}\"()"), barrier::CLOBBER),
-        (one("void", "call void asm \"\", \"Q\"(ptr %p)"), barrier::CONSTRAINT),
-        (one("void", "call void asm \"\", \"i\"(i32 %x)"), barrier::OPERAND),
-        (one("i32", "%r = call i32 asm \"\", \"=r,0\"(i64 0)"), barrier::OPERAND),
-        (
-            one("void", "call void asm \"\", \"=*r,0\"(ptr elementtype(i64) %p, i32 %x)"),
-            barrier::OPERAND,
-        ),
-        (one("void", "call void asm \"nop\", \"\"()"), hod_a64::call::CALL_INLINE_ASM),
-        (one("void", "call void asm \"$$\", \"\"()"), hod_a64::call::CALL_INLINE_ASM),
+        (one("void", "call void asm \"\", \"i\"(i32 %x)"), "asm:constraint/i"),
+        (one("void", "call void asm \"$$\", \"\"()"), "asm:mnemonic/other"),
     ];
     let cases: Vec<(&str, &'static str)> = cases.iter().map(|(t, r)| (t.as_str(), *r)).collect();
     assert_refused(&cases);

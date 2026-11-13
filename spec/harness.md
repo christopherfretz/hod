@@ -294,8 +294,13 @@ with what there is.
 
 ### What a test does
 
-For a test whose `target` and `llvm` directives admit this run (else it is
-SKIP), in its own directory under the work directory:
+For a test whose `target`, `llvm` and `dialect` directives admit this
+run (else it is SKIP), in its own directory under the work directory:
+
+0. **opt**, for a test with `input: pre-opt` ("Pre-opt input, dialects
+   and oracle skips"): `opt -passes=default<O0> -mtriple=<triple> -S -o
+   pre-opt.ll <test>`, whose output is what the oracle (and the witness)
+   build in step 1. hod builds the test itself.
 
 1. **Oracle.** `llc -O0 -global-isel=0 -fast-isel=0 -filetype=obj
    -mtriple=<triple> -relocation-model=<model> <llc-args> -o oracle.o
@@ -372,13 +377,13 @@ runs has one result with no linker.
 
 | outcome | meaning |
 |---|---|
-| PASS | hod built the object and its program behaved as the oracle's |
+| PASS | hod built the object and its program behaved as the oracle's (as the directives say, where an `oracle-skip` applies) |
 | FAIL | hod is wrong: it failed (step 2), its object did not link, its program ended or printed differently or ran into a limit; or the test's `unsupported` directives do not describe what hod did |
 | UNSUPPORTED | hod declined, with the reason an `unsupported` directive of the test names |
 | XFAIL | a FAIL where an `xfail` directive applies; the detail is the directive's reason, then the failure |
 | XPASS | a PASS where an `xfail` directive applies: the directive is stale |
 | ERROR | the test or a tool is wrong, which says nothing about hod: the oracle crashed, failed, timed out or wrote no object; the oracle's object did not link; the witness did not confirm the oracle ("The witness"); the oracle's program did not behave as the directives say or ran into a limit; the program was linked by the wrong linker; the directives do not parse; the harness could not do its work |
-| SKIP | the test is not valid for this target or this LLVM; or no oracle was found; or programs cannot be run here and hod built the object ("Cross targets") |
+| SKIP | the test is not valid for this target or this LLVM, or is in another LLVM's dialect; or no oracle was found; or programs cannot be run here and hod built the object ("Cross targets") |
 
 The `unsupported` directives are checked exactly, and `xfail` does not
 excuse them. Each of these is a FAIL that stays a FAIL:
@@ -405,6 +410,49 @@ and the result records that the fallback built it and why. An
 `unsupported` directive that applies is satisfied by a fallback with its
 reason; a fallback with another reason, or hod building the test itself,
 is the FAIL above. The summary's coverage line counts both.
+
+### Pre-opt input, dialects and oracle skips
+
+Three directives (WP-105, design 0005 §5.3) serve tests of IR *before*
+optimisation, as a front end writes it for its driver's pipeline:
+coroutines first, whose intrinsics only `opt`'s coroutine passes lower.
+
+- **`input: pre-opt`.** The oracle is `opt -passes=default<O0>` (the
+  passes a compiler driver runs at `-O0`, the coroutine passes among
+  them; WP-021's method) and then `llc` as above; so is the witness.
+  `opt` is the one beside the oracle's `llc`: `opt-<N>` beside
+  `llc-<N>`, else `opt` beside `llc`; an oracle without it is an ERROR
+  of the harness. A failing `opt` is an ERROR (`oracle: opt failed
+  ...`). In hybrid mode such a test's fallback is
+  `<work>/reference-opt-llc`, which runs that `opt` on hod's input
+  (into `<output>.pre-opt.ll`, removed afterwards) and then the
+  oracle's `llc` on the result, with hod's other arguments and the
+  selector.
+- **`dialect: N`.** The test is written in LLVM `N`'s dialect of the IR
+  (LLVM 22's coroutine intrinsics are not LLVM 19's), so it runs only
+  with the oracle of that major, and is SKIP with another ("in the LLVM
+  19 dialect (this run: 22)"). It excludes `llvm`. In the seed corpus a
+  test in one dialect has its twin in the other, `<stem>-19.ll` and
+  `<stem>-22.ll`: the "both LLVMs" rule holds per dialect.
+- **`oracle-skip(llvm=N[,M...]): <reason>`.** With an oracle of a major
+  it names, the oracle is not trusted for this test: neither it nor the
+  witness is built or run, and the program of hod's object is compared
+  with the directives alone, which the test must therefore spell out
+  completely. Never "either output". The record's detail says
+  `oracle skipped: <reason>`. A test may have several, with different
+  majors; the first that names the run's major applies.
+
+### Oracle skips
+
+Every `oracle-skip` of `tests/ir/`, one row each, by path, majors and
+reason exactly as the directive spells them (`irdiff_real`'s
+`dialects_come_in_pairs_and_oracle_skips_are_listed` checks this):
+
+| test | LLVM | reason |
+|---|---|---|
+
+None yet: the first is expected with WP-106's `gro-throws-uaf` seed,
+whose oracle crashes under poisoning (design 0005 §5.3).
 
 ### Cross targets
 
@@ -632,6 +680,8 @@ business, not the program's; "Test directives").
 | `exit_int.ll` | call-free: integer operations, shifts, compares, casts, select at i8 to i64 | quick |
 | `exit_float.ll` | call-free: floating-point arithmetic, conversions, the fcmp predicates with NaN | quick |
 | `exit_control.ll` | call-free: loops, phi, switch, indirectbr, local arrays, narrow loads and stores, a pointer table | quick |
+| `coro/handles.ll` | `input: pre-opt`: `coro.resume`, `destroy` (call and invoke, one unwinding), `done`, `promise` both ways at alignments 8 and 32, on frames built by hand outside any coroutine | |
+| `coro/noop.ll` | `input: pre-opt`: `coro.noop` from two functions, resumed and destroyed (also through invokes), never done | |
 
 The three `exit_*.ll` programs make no call, so hod compiled them before
 it had calls (WP-043): each checks its results against values derived
@@ -662,14 +712,14 @@ covered through `va_start`, `va_copy`, `va_end` and the C library's
 `xtask/src/irdiff/tools.rs` ("Tools", "What a test does" step 3):
 `llvm_default_search`, `plain_llc_must_be_a_wanted_major`,
 `llvm_directory_and_errors`, `linkers_and_driver`, `linker_signatures`,
-`single_threaded_linkers`. `xtask/src/irdiff/report.rs`:
+`single_threaded_linkers`, `opt_beside_the_oracle`. `xtask/src/irdiff/report.rs`:
 `exit_status_mapping`, `results_lines`, `results_file_is_replaced`,
 `summary_text`. `xtask/src/irdiff/engine.rs`: `differences_are_located`,
 `coverage_log_reading`. `xtask/src/irdiff.rs`: `defaults`, `options`,
 `usage_errors`, `collecting_tests`.
 
 `xtask/src/irdiff/directives.rs` also: `output_without_a_final_newline`,
-`llc_arguments`, `several_modules`.
+`llc_arguments`, `several_modules`, `pre_opt_dialects_and_oracle_skips`.
 
 `xtask/tests/irdiff_fakes.rs` runs the whole command against fake tools
 (shell scripts standing in for `llc`, `hod`, `gcc` and the linkers), so
@@ -682,7 +732,15 @@ every outcome is provoked on any Linux machine: `the_witness`,
 `the_linker_matrix`, `the_wrong_linker_is_detected`, `hybrid_mode`,
 `parallel_runs_are_deterministic`, `tiers_and_paths`,
 `work_directory_and_keep`, `results_file`, `command_exit_status`,
-`command_environment`, `the_fakes_work`.
+`command_environment`, `the_fakes_work`, `a_pre_opt_test_goes_through_opt`
+(the oracle's and the witness's program lines reach them only through a
+fake `opt`, which must get the passes; a failing `opt` and a missing one
+are ERRORs; hybrid mode's fallback goes through `opt` too),
+`a_dialect_test_runs_only_with_its_llvm`,
+`an_oracle_skip_compares_with_the_directives_only` (an oracle and a
+witness that would fail are not run; hod's program is compared with the
+directives, `xfail` still applies, and another major's mark leaves the
+oracle in use).
 
 `xtask/tests/irdiff_real.rs` uses the real tools and skips without them
 (fails under `HOD_REQUIRE_TOOLS=1`, which also requires both LLVM 22 and
@@ -704,7 +762,9 @@ written from what it prints: an ERROR `witness: ...`),
 objects have a section per function and variable), 
 `a_link_that_warns_and_an_output_without_a_newline` (glibc's `tmpnam`
 link warning fails `ld.bfd` only under `--fatal-warnings`),
-`a_real_program_of_two_modules`.
+`a_real_program_of_two_modules`, `a_pre_opt_seed_goes_through_opt`
+(`coro/noop.ll` passes, and without `input: pre-opt` the real `llc`
+cannot build it), `dialects_come_in_pairs_and_oracle_skips_are_listed`.
 
 ## Jobserver
 
@@ -1005,7 +1065,7 @@ else is: not a `;@` after white space or after code. A directive is
 
 exactly: `;@`, one space, the key (lower-case letters and `-`), for
 `xfail` and `unsupported` optionally a parenthesised condition list
-without spaces, a colon, and the value. One space after the colon, if
+without spaces (for `oracle-skip` a required `(llvm=<majors>)`), a colon, and the value. One space after the colon, if
 there is one, is not part of the value. A file with no directive is a test
 of a program that prints nothing and exits with status 0, valid
 everywhere.
@@ -1019,6 +1079,9 @@ everywhere.
 | `args` | the program's arguments, separated by spaces or tabs | once | none |
 | `target` | the architectures the test is valid for: `aarch64`, `x86_64` | once | both |
 | `llvm` | the LLVM majors the test is valid for: `N` (exactly) or `N+` (that or later); any one must hold | once | all |
+| `dialect` | `N`: the test is in LLVM `N`'s dialect and runs only with that oracle; excludes `llvm` ("Pre-opt input, dialects and oracle skips") | once | every LLVM |
+| `input` | `pre-opt`: IR before optimisation; the oracle and the witness run `opt -passes=default<O0>` first | once | IR `llc` builds as it is |
+| `oracle-skip` | `oracle-skip(llvm=N[,M...]): <reason>`: with those oracles, hod's program is compared with the directives only; the reason is free text, never empty, and the test is listed in "Oracle skips" | any | the oracle is used |
 | `link` | what the link needs: `m` (the math library), `c++` (the C++ runtime), `no-pie` (a position-dependent program, compiled with the static relocation model), `pie` (the default, spelled out), `allow-warnings` (link without `-Wl,--fatal-warnings`) | once | the C library, PIE, warnings fatal |
 | `llc-args` | code-generation arguments the oracle, the witness and hod all get, from the allow-list below | once | none |
 | `module` | starts the next module of a test of several, and names it ("Several modules") | any | one module |
@@ -1117,7 +1180,8 @@ a file is reported, with its line:
   key), has no `:` directly after the key or the condition list, or has an
   unclosed condition list;
 - an unknown key;
-- a condition list on a key other than `unsupported` and `xfail`;
+- a condition list on a key other than `unsupported`, `xfail` and
+  `oracle-skip`;
 - a second directive of a key that may appear once;
 - an empty value, for every key but `stdout` and `stdin`;
 - `exit` that is not `N` in 0 to 255 or `signal N` in 1 to 64;
@@ -1133,14 +1197,18 @@ a file is reported, with its line:
 - an `unsupported` reason with other characters than lower-case letters,
   digits, `-`, `:`, `.` and `_` (other than `*` alone);
 - an unknown condition, an empty one, a second condition of the same
-  kind, or a linker condition on `unsupported`.
+  kind, or a linker condition on `unsupported`;
+- `input` other than `pre-opt`; `dialect` that is not a major; both
+  `dialect` and `llvm`;
+- `oracle-skip` without `(llvm=N[,M...])`, with an item that is not a
+  major or a major twice, or without a reason.
 
 ### Canonical form
 
 `Expectations::to_directives` writes directives in this order, leaving
 out everything that is the default: `covers`, `tier`, `target`, `llvm`,
-`link` (libraries, then `no-pie`, then `allow-warnings`), `llc-args`, each
-`unsupported`, each `xfail`, `args`, each `stdin`, `exit`, each `stdout`,
+`dialect`, `input`, `link` (libraries, then `no-pie`, then
+`allow-warnings`), `llc-args`, each `oracle-skip`, each `unsupported`, each `xfail`, `args`, each `stdin`, `exit`, each `stdout`,
 `stdout-no-newline`. `module` directives belong to the modules and are
 not written. Reading what it writes gives
 the same `Expectations` back. Files need not be in this order.
@@ -2618,6 +2686,14 @@ Per unit (a test and a front end), in its own directory under
 3. per linker: `llc`'s program and each variant's, by `gcc -B<dir> -pie`
    with the linker as `ld`, the `link` flags, `-lstdc++` for C++, `-lm`;
    the program's signature checked as `irdiff` does;
+   A module whose IR records a `.dwo` name (`splitDebugFilename`, a test
+   with `cflags: -gsplit-dwarf`; WP-062) gets `-split-dwarf-file=<that
+   name> -split-dwarf-output=<its object>.dwo` on both sides, and each
+   program gets each of its objects' `.dwo` beside it under the name's
+   last component, where gdb and lldb look after the unit's directory
+   (the test's own directory, which has none). Such a test names only
+   clang front ends: kiln++ records the absolute path of its output,
+   which gdb does not look for beside the program;
 4. on the first linker, the lines comparison of `hod` against `llc`;
 5. per debugger with a script: the session on `llc`'s program, then on
    each variant's. Each masked transcript is written beside its program
@@ -2684,8 +2760,54 @@ one program has are classified: **P3** (`spec/dwarf.md` §5.7) a pair
 only hod's has whose line is that of its function's first row (the scope
 line of a prologue `llc` does not have); **P1** a pair only `llc`'s has
 whose every range holds only unconditional branches (`b`, by
-`llvm-objdump -d`); else **unclassified**. An unclassified pair fails the
-run.
+`llvm-objdump -d`); else, by the IR of the unit's modules
+(`permitted::IrFacts`: per defined function, the opcode, line and column
+of each instruction with a `!dbg`, scopes not followed),
+**load-placement** when the function's instructions at that line are
+loads and `getelementptr`s with at least one load (either side), and
+**is-constant** a pair only hod's has in a function that calls
+`llvm.is.constant` (`spec/dwarf.md` §5.7); else **unclassified**. An
+unclassified pair fails the run.
+
+### Columns
+
+The same rows with their columns, per function both programs have
+(`lines::function_rows`, `compare_function_rows`): the *positions*
+`(file, line, column)` of every row with a line other than 0 whose range
+is not empty, and the *sequence* of `(file, line, column, is_stmt)` of
+every such row, line 0 included, a row equal to the one before in all
+four not repeated (hod's `epilogue_begin` row). Counted: functions, with
+the same set of positions, with the same set but for P1 and P3
+positions, with the same sequence; and the positions one side lacks (P1,
+P3 or unclassified, as for pairs). Columns are reported (`debug:
+columns:`), never a failure: `llc` folds instructions into others within
+a line (`spec/dwarf.md` §5.7).
+
+`debug columns [-j N] [--hod <binary>] [--dump <dir>] [-v] [<dir or
+.ll>...]` runs both comparisons over every `-g` module of the paths
+(default: the corpus): hod `--strict -O0 -filetype=obj
+-relocation-model=pic` and `llc` of the module's LLVM major (a path
+component `llvm19` or `llvm22`, else 22) with the reference options,
+both with the module's `;@ llc-args:`; each object linked by `ld.lld`
+into a position-independent executable with undefined symbols allowed
+and no entry (`-pie --unresolved-symbols=ignore-all -z notext -e 0`),
+so that every function has an address and a symbol. `--dump` writes
+`llvm-objdump -d -r` of hod's object (its path replaced by `hod.o`) to
+`<dir>/<index>.dis`: two dumps compared with `diff -r` show that a
+change of rows left the code and relocations alone. `-j` at most 4.
+Exit status 1 when a module fails, else 0.
+
+### Permitted differences of sessions
+
+A hod session whose masked transcript differs from `llc`'s PASSes with
+the detail `permitted: return-column` when the session is lldb's and
+`permitted::only_return_columns` holds: the transcripts have the same
+number of lines, and every differing pair of lines is in a stop whose
+`stop reason` is `step out` (after `finish`), and is either the
+`frame #0:` line, equal but for the column of its ` at file:line:col`,
+`llc`'s column being that of a `call` or `invoke` at that line in the
+IR, or the source caret line (`^`) after such a line
+(`spec/dwarf.md` §5.7 `return-column`). Nothing else is permitted.
 
 ### Results file
 
@@ -2738,8 +2860,8 @@ non-zero exit status of either.
 
 ### Library
 
-`xtask::debug::{sessions, directives, transcript, build, lines, kiln,
-verify}`; `sessions::run(&Options) -> Report`, `verify::run`,
+`xtask::debug::{sessions, directives, transcript, build, lines,
+permitted, columns, kiln, verify}`; `sessions::run(&Options) -> Report`, `verify::run`,
 `kiln::run`, `debug::gate`.
 
 ### Tests
@@ -2748,7 +2870,9 @@ Unit tests: `debug::tests::run_options`; `directives::tests::
 {reads_every_directive, refuses_broken_tests, scopes, checks_in_order,
 discovery}`; `transcript::tests::{masks_what_may_differ,
 first_differing_line, crash_reports}`; `lines::tests::{reads_line_tables,
-reads_instructions, summary_counts_classes}`; `verify::tests::
+reads_instructions, summary_counts_classes, compares_columns}`;
+`permitted::tests::{reads_ir_and_classifies_pairs, return_columns}`;
+`columns::tests::major_of_a_module`; `verify::tests::
 {reads_module_directives, summary_and_status}`;
 `kiln::tests::reads_kiln_directives`.
 

@@ -67,6 +67,7 @@ fn pick(rng: &mut Rng) -> u128 {
 /// The table: every operation of [`INT_OPS`] under every ordering, the
 /// result used and (the arithmetic ones) unused, a constant operand;
 /// loads and stores under every ordering; `cmpxchg` strong and weak.
+#[allow(clippy::too_many_lines, reason = "a test table: `.ll` text built by hand")]
 fn table(rng: &mut Rng) -> Vec<Func> {
     let mut out = Vec::new();
     let e: Vec<u128> = edges(128).iter().map(|w| word(w)).collect();
@@ -264,7 +265,11 @@ fn expected(funcs: &[Func]) -> Vec<Vec<u8>> {
 }
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    let mut out = String::new();
+    for b in bytes {
+        write!(out, "{b:02x}").unwrap();
+    }
+    out
 }
 
 /// The C driver: every case's operands, each wrapper called, the result

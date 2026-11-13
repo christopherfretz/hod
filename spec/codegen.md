@@ -2582,7 +2582,7 @@ differences are listed below. x86-64 is TSO, so no ordering but
   `xchg` (implicitly locked); `add` is `lock xadd`, `sub` `neg` then
   `lock xadd`; when the result is unused (`FnCx::is_dead`), `add`, `sub`,
   `and`, `or`, `xor` are `lock add`/`sub`/`and`/`or`/`xor` with memory
-  (with an immediate when the operand is a constant that fits). Every
+  from a register (a constant operand is materialised first). Every
   other operation is a `lock cmpxchg` loop: the old value in `rax`
   (loaded once before the loop, then refreshed by the failing
   `cmpxchg`), the new one computed into `r10` with `rcx` as a second
@@ -2633,24 +2633,28 @@ differences are listed below. x86-64 is TSO, so no ordering but
   `x64:atomic-float-op`, `fmax`, `fmin`, `fmaximum`, `fminimum` and
   `half` `fadd`/`fsub` (they need WP-127's compares and conversions);
   `x64:atomic-libatomic`, 16 bytes without `+cx16`.
-- **Differences from `llc -O0`.** `llc` makes a `seq_cst` store of
-  `half`/`float`/`double` a `mov` plus `mfence` in places and an `xchg`
-  in others; hod always uses `xchg`. `llc` keeps the result of a `lock
-  cmpxchg` loop in a stack slot between iterations; hod keeps it in
-  `rax`. Neither changes what another thread can observe.
+- **Differences from `llc -O0`.** hod never uses an immediate form
+  (`lock add [m], imm`): the operand is in a register first. `llc`
+  keeps the values of a `lock cmpxchg` loop in stack slots between
+  iterations; hod keeps them in `rax` and `r10`. A 16-byte load or
+  store without `+cx16` is a libatomic call in `llc` and refused here.
+  None changes what another thread can observe.
 
 **What the emulator proves.** The threaded programs run under
 `qemu-x86_64` user mode, which runs each guest thread on a host thread:
 on a multi-core host the counters, spinlocks and the stack are really
-contended, and a `lock`-less read-modify-write loses updates (the
-mutation check below). qemu translates a guest `lock`ed instruction to a
-host atomic operation and, for an x86 guest on a weakly ordered host,
-puts a full host barrier where TSO needs one around guest loads and
-stores, so the message-passing tests pass whatever ordering the guest
-code asks for: under qemu, a `seq_cst` store written as a plain `mov`
-(no `xchg`) is not caught, and TSO itself is not proven. That is
-checked by construction: the instruction forms test asserts `xchg` for
-the `seq_cst` store and `mfence` for the `seq_cst` fence.
+contended, and a read-modify-write without `lock` loses updates (WP-133's
+mutation check: the threaded counters catch it, the single-threaded
+table does not). qemu translates a `lock`ed instruction to a host atomic
+operation and, for an x86 guest on a weakly ordered host, adds host
+barriers for the orderings TSO guarantees (all but store-then-load), so
+the message-passing programs pass whatever ordering the guest code asks
+for: they show that the sequences are atomic, not that hod's choice of
+instructions gives TSO's guarantees. A `seq_cst` store written as a
+plain `mov` is not caught by any emulated run here (only a
+store-buffering litmus could see it, and only on a host that reorders);
+the instruction forms test pins `xchg` for that store and `mfence` for
+the `seq_cst` fence.
 
 Tests: `crates/hod_x64/tests/atomic.rs` (the table, against the
 interpreter and `llc` 22 and 19; 16 bytes with `+cx16` in

@@ -979,7 +979,8 @@ void emit(const unsigned char *p, long n) {
 pub struct Tally {
     /// Functions generated.
     pub generated: usize,
-    /// Functions hod compiled and the interpreter ran (compared).
+    /// Functions hod compiled and compared (with the interpreter, or
+    /// `llc` 22: see `by_llc`).
     pub run: usize,
     /// Functions the interpreter trapped on (undefined; not compared).
     pub trapped: usize,
@@ -1102,6 +1103,12 @@ pub fn check_functions(
                 tally.trapped += 1;
                 *tally.traps.entry(format!("{trap:?}")).or_default() += 1;
             }
+            // A type the interpreter has no values for (`half`): `llc`
+            // 22 is the reference.
+            Err(Stop::Unsupported(what)) => {
+                *tally.by_llc.entry(what.clone()).or_default() += 1;
+                expected.push((*seed, text, String::new()));
+            }
             Err(other) => panic!("t{seed}: {other:?}\n{text}"),
         }
     }
@@ -1148,6 +1155,13 @@ pub fn check_functions(
         tally.text.0 += hod;
         tally.text.1 += llc;
     }
+    // `llc` 22 first: the reference where the interpreter has none.
+    if let Some(at) = legs.iter().position(|(leg, _)| leg == "llc22") {
+        let first = legs.remove(at);
+        legs.insert(0, first);
+    } else {
+        expected.retain(|(.., lines)| !lines.is_empty());
+    }
     let Some(toolchain) = Toolchain::x86_64(&scratch) else { return };
     let Some(linker) = toolchain.linkers.first() else { return };
     let c = toolchain.compile_c(&scratch, "driver", &driver, &["-fPIE"]);
@@ -1174,6 +1188,13 @@ pub fn check_functions(
         let hod = leg.starts_with("hod");
         if hod && !ran.success() {
             tally.wrong.push(format!("{leg}: exit {:?}\n{}", ran.status, ran.stderr_text()));
+        }
+        if leg == "llc22" {
+            for (seed, _, lines) in &mut expected {
+                if lines.is_empty() {
+                    *lines = got.get(seed).cloned().unwrap_or_default();
+                }
+            }
         }
         for (seed, text, lines) in &expected {
             let actual = got.get(seed).map_or("(not run)\n", String::as_str);

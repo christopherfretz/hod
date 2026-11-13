@@ -3223,9 +3223,9 @@ at `[rbp + o - 8n - FRAME]`, and `FrameDesc::frame_size` is `8n +
 FRAME`, the bytes below `rbp`. The save rows are written once, at the
 offset after the last push: x86-64 has no CFI row inside the body
 before the epilogue, and the CFA is `rbp + 16` from the second
-instruction on, so the registers' rows are exact from there; between
-the pushes only the callee-saved values themselves are there, which no
-unwinder reads. Each exit is `lea rsp, [rbp - 8n]` · the pops in
+instruction on. Until then each register still holds the caller's value
+(a push does not change it), which is what a register without a row
+means, so the rows are exact at every instruction. Each exit is `lea rsp, [rbp - 8n]` · the pops in
 reverse · `pop rbp` (`leave` when `n` is 0), and the coroutine stubs
 push the same set. `invoke`, landing pads, `musttail`, variadic
 functions and stack probes are unchanged: none depends on the set.

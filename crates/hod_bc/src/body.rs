@@ -9,7 +9,10 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use hod_ir::{Body, FunctionBuilder, IrErrorKind, Module, ParamAttrs, TypeId, TypeKind, Value};
+use hod_ir::{
+    Body, FunctionBuilder, IrErrorKind, Layering, Module, NoLayer, ParamAttrs, TypeId, TypeKind,
+    Value,
+};
 
 use crate::attrs::FnGroup;
 use crate::bitstream::{Cursor, Entry};
@@ -145,7 +148,11 @@ impl<'b, 'a> BodyReader<'b, 'a> {
     /// # Errors
     /// [`BcError`] at the first record that is not what LLVM writes, or
     /// that `hod_ir` refuses. Never a panic, for any input.
-    pub fn read(&mut self, module: &mut Module, function: &FunctionBits) -> BcResult<Option<Body>> {
+    pub fn read<L: Layering>(
+        &mut self,
+        module: &mut Module<L>,
+        function: &FunctionBits,
+    ) -> BcResult<Option<Body>> {
         self.unsupported.clear();
         self.attachments.clear();
         let at = function.span.start;
@@ -187,7 +194,11 @@ impl<'b, 'a> BodyReader<'b, 'a> {
         self.state.storage = Some(body);
     }
 
-    fn body(&mut self, module: &mut Module, function: &FunctionBits) -> BcResult<Option<Body>> {
+    fn body<L: Layering>(
+        &mut self,
+        module: &mut Module<L>,
+        function: &FunctionBits,
+    ) -> BcResult<Option<Body>> {
         let at = function.span.start;
         let TypeKind::Function { ret, params, .. } = module.types.kind(function.ty) else {
             return fail(BcErrorKind::Type, at, "this function's type is not a function type");
@@ -304,11 +315,76 @@ pub fn read_bodies<E: From<BcError>>(
     Ok(())
 }
 
+/// [`read_bodies`] on up to `threads` threads, the calling one included
+/// (`spec/bc.md` §7): the module is `module(host)`, and each body goes to
+/// `each` in the order of the FUNCTION records, translated to the
+/// module's ids, with the module as reading the bodies before it and
+/// that one sequentially leaves it. A body is `Ok` or the constructs that
+/// made it unsupported. `each` returns whether to go on.
+///
+/// With one thread this is [`BodyReader::read`] of every function in
+/// order, except that a body with [`BodyReader::attachment_notes`] is
+/// unsupported, those notes first. With more, the module's tables, every
+/// id and every body are the same as with one (`spec/ir.md` §5.1).
+///
+/// # Errors
+/// The [`BcError`] of the first body in file order that has one: the
+/// error a sequential reading returns. `Ok`: how the reading went.
+pub fn read_bodies_on<H>(
+    host: &mut H,
+    module: fn(&mut H) -> &mut Module,
+    bits: &ModuleBits<'_>,
+    threads: usize,
+    mut each: impl FnMut(&mut H, &FunctionBits, Result<Body, &[Box<str>]>) -> bool,
+) -> Result<hod_ir::ReadStats, BcError> {
+    let functions = bits.functions();
+    let new_reader = || BodyReader::new(bits);
+    let mut deliver = |host: &mut H, index: usize, read: hod_ir::BodyRead<'_>| {
+        let read = match read {
+            hod_ir::BodyRead::Body(body) => Ok(body),
+            hod_ir::BodyRead::Unsupported(constructs) => Err(constructs),
+        };
+        each(host, &functions[index], read)
+    };
+    hod_ir::read_bodies(host, module, functions.len(), threads, &new_reader, &mut deliver)
+}
+
+impl hod_ir::BodySource for BodyReader<'_, '_> {
+    type Error = BcError;
+
+    fn read_body<L: Layering>(
+        &mut self,
+        module: &mut Module<L>,
+        index: usize,
+    ) -> BcResult<Option<Body>> {
+        let bits = self.bits;
+        let body = self.read(module, &bits.functions()[index])?;
+        // A definition's own attachments refuse it by name (WP-064): the
+        // text's are judged with the module, these only now.
+        if body.is_some() && !self.attachments.is_empty() {
+            return Ok(None);
+        }
+        Ok(body)
+    }
+
+    /// The attachment notes, then the constructs `hod_ir` cannot represent.
+    fn unsupported(&self) -> Vec<Box<str>> {
+        self.attachment_notes().chain(self.unsupported()).map(Into::into).collect()
+    }
+
+    /// The body block's bytes, four times: bitcode takes about a quarter
+    /// of the bytes of the same body as text.
+    fn weight(&self, index: usize) -> usize {
+        let span = &self.bits.functions()[index].span;
+        ((span.end - span.start) / 2) as usize
+    }
+}
+
 /// The reader of one function block.
-pub(crate) struct Fx<'s, 'b, 'a> {
+pub(crate) struct Fx<'s, 'b, 'a, L: Layering = NoLayer> {
     pub bits: &'b ModuleBits<'a>,
     pub values: &'s mut Values,
-    pub module: &'s mut Module,
+    pub module: &'s mut Module<L>,
     pub b: FunctionBuilder,
     pub s: &'s mut State,
     pub ret_ty: TypeId,
@@ -370,7 +446,7 @@ impl Ops<'_> {
     }
 }
 
-impl Fx<'_, '_, '_> {
+impl<L: Layering> Fx<'_, '_, '_, L> {
     /// Notes `construct` for the body (`spec/bc.md` §11.6), once.
     pub fn note(&mut self, construct: impl Into<Cow<'static, str>>) {
         let construct = construct.into();

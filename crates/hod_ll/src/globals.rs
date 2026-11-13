@@ -1,6 +1,7 @@
 //! Global values (`spec/ll.md` §5.7 to §5.9): variables, aliases,
 //! IFUNCs, function headers, COMDATs and the special LLVM arrays.
 
+use hod_ir::Layering;
 use hod_ir::{
     AliasDesc, CallConv, ComdatId, ComdatKind, Const, ConstId, FunctionDesc, IFuncDesc, Linkage,
     Retained, SymId, TlsModel, UnnamedAddr, VariableDesc, Visibility,
@@ -43,7 +44,7 @@ enum Special {
     Annotations,
 }
 
-impl Parser<'_, '_> {
+impl<L: Layering> Parser<'_, '_, L> {
     /// Creates every COMDAT.
     pub(crate) fn define_comdats(&mut self) -> PResult<()> {
         for at in 0..self.index.comdats.len() {
@@ -300,7 +301,7 @@ fn is_special(name: &[u8]) -> bool {
     )
 }
 
-impl<'a> Parser<'a, '_> {
+impl<'a, L: Layering> Parser<'a, '_, L> {
     /// The symbol the entity named by `token` describes; an error if an
     /// earlier entity described it.
     fn describe(&mut self, token: Token) -> PResult<SymId> {

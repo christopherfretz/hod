@@ -275,3 +275,310 @@ fn address_constants_without_a_form_are_refused_by_name() {
                 define <2 x i32> @f() {\n  ret <2 x i32> <i32 ptrtoint (ptr @g to i32), i32 1>\n}\n";
     refused(text, "x64:constant-relocation");
 }
+
+// ---- 2. `llvm.eh.sjlj.setjmp` and `llvm.eh.sjlj.longjmp` ----
+
+/// The functions that set the buffer, as clang writes `__builtin_setjmp`
+/// (the frame address to word 0, the stack pointer to word 2, then the
+/// intrinsic). Values cross the `setjmp` in memory, as at `-O0`.
+const SETTERS: &str = "\
+@gbuf = external global [5 x ptr], align 16
+declare ptr @llvm.frameaddress.p0(i32)
+declare ptr @llvm.stacksave.p0()
+declare i32 @llvm.eh.sjlj.setjmp(ptr)
+declare void @llvm.eh.sjlj.longjmp(ptr)
+
+; Sets `buf`, calls `cb(buf, v + 1)`, which jumps back: (v + 1) * 3 + 1.
+define i64 @catch_once(ptr %buf, ptr %cb, i64 %v) {
+entry:
+  %x = alloca i64, align 8
+  store i64 %v, ptr %x, align 8
+  %fa = call ptr @llvm.frameaddress.p0(i32 0)
+  store ptr %fa, ptr %buf, align 8
+  %ss = call ptr @llvm.stacksave.p0()
+  %p2 = getelementptr ptr, ptr %buf, i64 2
+  store ptr %ss, ptr %p2, align 8
+  %r = call i32 @llvm.eh.sjlj.setjmp(ptr %buf)
+  %z = icmp eq i32 %r, 0
+  br i1 %z, label %first, label %second
+first:
+  %l = load i64, ptr %x, align 8
+  %n = add i64 %l, 1
+  store i64 %n, ptr %x, align 8
+  call void %cb(ptr %buf, i64 %n)
+  ret i64 -1
+second:
+  %w = load i64, ptr %x, align 8
+  %m = mul i64 %w, 3
+  %rz = zext i32 %r to i64
+  %s = add i64 %m, %rz
+  ret i64 %s
+}
+
+; The same through the global buffer and `cb(v)`.
+define i64 @catch_global(ptr %cb, i64 %v) {
+entry:
+  %x = alloca i64, align 8
+  store i64 %v, ptr %x, align 8
+  %fa = call ptr @llvm.frameaddress.p0(i32 0)
+  store ptr %fa, ptr @gbuf, align 16
+  %ss = call ptr @llvm.stacksave.p0()
+  store ptr %ss, ptr getelementptr inbounds (ptr, ptr @gbuf, i64 2), align 16
+  %r = call i32 @llvm.eh.sjlj.setjmp(ptr @gbuf)
+  %z = icmp ne i32 %r, 0
+  br i1 %z, label %second, label %first
+first:
+  %l = load i64, ptr %x, align 8
+  %n = add i64 %l, 1
+  store i64 %n, ptr %x, align 8
+  call void %cb(i64 %n)
+  ret i64 -1
+second:
+  %w = load i64, ptr %x, align 8
+  %m = mul i64 %w, 3
+  %rz = zext i32 %r to i64
+  %s = add i64 %m, %rz
+  ret i64 %s
+}
+
+; A dynamic `alloca` before the `setjmp`, which is jumped to `times - 1`
+; times: c * 100 + r * 10 + the byte, c = times.
+define i64 @catch_loop(ptr %buf, ptr %cb, i64 %times) {
+entry:
+  %k = alloca i64, align 8
+  store i64 0, ptr %k, align 8
+  %dyn = alloca i8, i64 %times, align 16
+  store volatile i8 7, ptr %dyn, align 1
+  %fa = call ptr @llvm.frameaddress.p0(i32 0)
+  store ptr %fa, ptr %buf, align 8
+  %ss = call ptr @llvm.stacksave.p0()
+  %p2 = getelementptr ptr, ptr %buf, i64 2
+  store ptr %ss, ptr %p2, align 8
+  %r = call i32 @llvm.eh.sjlj.setjmp(ptr %buf)
+  %c = load i64, ptr %k, align 8
+  %c1 = add i64 %c, 1
+  store i64 %c1, ptr %k, align 8
+  %more = icmp ult i64 %c1, %times
+  br i1 %more, label %again, label %out
+again:
+  %big = alloca i8, i64 %c1, align 16
+  store volatile i8 1, ptr %big, align 1
+  call void %cb(ptr %buf, i64 %c1)
+  ret i64 -1
+out:
+  %d = load volatile i8, ptr %dyn, align 1
+  %dz = zext i8 %d to i64
+  %rz = zext i32 %r to i64
+  %h = mul i64 %c1, 100
+  %t = mul i64 %rz, 10
+  %ht = add i64 %h, %t
+  %s = add i64 %ht, %dz
+  ret i64 %s
+}
+
+; The jump from the function that set the buffer: v * 3 + 1.
+define i64 @self_jump(ptr %buf, i64 %v) {
+entry:
+  %fa = call ptr @llvm.frameaddress.p0(i32 0)
+  store ptr %fa, ptr %buf, align 8
+  %ss = call ptr @llvm.stacksave.p0()
+  %p2 = getelementptr ptr, ptr %buf, i64 2
+  store ptr %ss, ptr %p2, align 8
+  %r = call i32 @llvm.eh.sjlj.setjmp(ptr %buf)
+  %z = icmp eq i32 %r, 0
+  br i1 %z, label %first, label %second
+first:
+  call void @llvm.eh.sjlj.longjmp(ptr %buf)
+  unreachable
+second:
+  %m = mul i64 %v, 3
+  %rz = zext i32 %r to i64
+  %s = add i64 %m, %rz
+  ret i64 %s
+}
+";
+
+/// The functions that jump.
+const JUMPERS: &str = "\
+@gbuf = external global [5 x ptr], align 16
+declare void @llvm.eh.sjlj.longjmp(ptr)
+
+define void @jump(ptr %buf, i64 %v) {
+  call void @llvm.eh.sjlj.longjmp(ptr %buf)
+  unreachable
+}
+
+define void @jump_global(i64 %v) {
+  call void @llvm.eh.sjlj.longjmp(ptr @gbuf)
+  unreachable
+}
+";
+
+/// The C driver: each call made by `call_checked`, which puts known
+/// values in `rbx`, `rbp`, `r12` to `r15`, makes the call, and sets bit
+/// 32 of the result when one of them differs afterwards;
+/// `clobber_and_jump` writes other values into the same registers before
+/// it calls `jump` (nothing restores them but the setter's epilogue).
+const SJLJ_DRIVER: &str = r#"
+#include <stdio.h>
+#include <stdint.h>
+typedef uint64_t u;
+u catch_once(void **, void (*)(void **, u), u);
+u catch_global(void (*)(u), u);
+u catch_loop(void **, void (*)(void **, u), u);
+u self_jump(void **, u);
+void jump(void **, u);
+void jump_global(u);
+void clobber_and_jump(void **, u);
+u call_checked(void *, u, u, u);
+void *gbuf[5];
+__asm__(
+  ".text\n"
+  ".globl call_checked\n"
+  "call_checked:\n"
+  "  pushq %rbx\n  pushq %rbp\n  pushq %r12\n  pushq %r13\n  pushq %r14\n  pushq %r15\n"
+  "  subq $8, %rsp\n"
+  "  movq %rdi, %rax\n  movq %rsi, %rdi\n  movq %rdx, %rsi\n  movq %rcx, %rdx\n"
+  "  movabsq $0x1111111111111111, %rbx\n  movabsq $0x2222222222222222, %rbp\n"
+  "  movabsq $0x3333333333333333, %r12\n  movabsq $0x4444444444444444, %r13\n"
+  "  movabsq $0x5555555555555555, %r14\n  movabsq $0x6666666666666666, %r15\n"
+  "  callq *%rax\n"
+  "  xorl %ecx, %ecx\n"
+  "  movabsq $0x1111111111111111, %rdx\n  xorq %rdx, %rbx\n  orq %rbx, %rcx\n"
+  "  movabsq $0x2222222222222222, %rdx\n  xorq %rdx, %rbp\n  orq %rbp, %rcx\n"
+  "  movabsq $0x3333333333333333, %rdx\n  xorq %rdx, %r12\n  orq %r12, %rcx\n"
+  "  movabsq $0x4444444444444444, %rdx\n  xorq %rdx, %r13\n  orq %r13, %rcx\n"
+  "  movabsq $0x5555555555555555, %rdx\n  xorq %rdx, %r14\n  orq %r14, %rcx\n"
+  "  movabsq $0x6666666666666666, %rdx\n  xorq %rdx, %r15\n  orq %r15, %rcx\n"
+  "  movl %eax, %eax\n"
+  "  testq %rcx, %rcx\n  je 1f\n  btsq $32, %rax\n"
+  "1:\n  addq $8, %rsp\n"
+  "  popq %r15\n  popq %r14\n  popq %r13\n  popq %r12\n  popq %rbp\n  popq %rbx\n  ret\n"
+  ".globl clobber_and_jump\n"
+  "clobber_and_jump:\n"
+  "  pushq %rbx\n  pushq %r12\n  pushq %r13\n  pushq %r14\n  pushq %r15\n"
+  "  movq $-1, %rbx\n  movq $-2, %r12\n  movq $-3, %r13\n  movq $-4, %r14\n  movq $-5, %r15\n"
+  "  movq $-6, %rbp\n"
+  "  callq jump\n"
+  "  ud2\n"
+);
+static void global_cb(u v) { (void)v; jump_global(v); }
+int main(void) {
+  void *buf[5];
+  printf("%llx\n", (unsigned long long)call_checked((void *)catch_once, (u)buf, (u)jump, 41));
+  printf("%llx\n", (unsigned long long)call_checked((void *)catch_once, (u)buf, (u)clobber_and_jump, 41));
+  printf("%llx\n", (unsigned long long)call_checked((void *)catch_global, (u)global_cb, 9, 0));
+  printf("%llx\n", (unsigned long long)call_checked((void *)catch_loop, (u)buf, (u)clobber_and_jump, 5));
+  printf("%llx\n", (unsigned long long)call_checked((void *)catch_loop, (u)buf, (u)jump, 1));
+  printf("%llx\n", (unsigned long long)call_checked((void *)self_jump, (u)buf, 9, 0));
+  return 0;
+}
+"#;
+
+/// What [`SJLJ_DRIVER`] prints.
+const SJLJ_OUTPUT: &str = "7f\n7f\n1f\n205\n6b\n1c\n";
+
+/// hod's object of `text` (header added) with `stress`.
+fn hod_object(
+    scratch: &hod_testutil::Scratch,
+    name: &str,
+    text: &str,
+    stress: Stress,
+) -> std::path::PathBuf {
+    let (module, bodies) = parse(&format!("{}{text}", ll_header()));
+    let object = hod_x64::compile_to_object(&module, &bodies, &pic(stress))
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+    scratch.write(&format!("{name}.o"), object)
+}
+
+/// §5.6.16 (2): `__builtin_setjmp` and `__builtin_longjmp` with `llc`'s
+/// x86-64 buffer layout, so that the objects interoperate: every
+/// pairing of the setters (hod plain and stressed, `llc` 22 and 19) with
+/// the jumpers (hod, `llc` 22 and 19), linked by every linker, prints the
+/// same; the save set the caller had is intact after a jump that
+/// clobbered it.
+#[test]
+fn sjlj_interoperates_with_llc() {
+    let scratch = hod_testutil::Scratch::new("x64-sjlj");
+    let mut setters = vec![
+        ("hod".to_string(), hod_object(&scratch, "set-hod", SETTERS, Stress::default())),
+        ("hod-stress".to_string(), hod_object(&scratch, "set-stress", SETTERS, Stress::ALL)),
+    ];
+    let mut jumpers =
+        vec![("hod".to_string(), hod_object(&scratch, "jump-hod", JUMPERS, Stress::default()))];
+    for major in MAJORS {
+        let text = format!("{}{SETTERS}", ll_header());
+        if let Some(o) = float_gen::llc(&scratch, major, &format!("set-llc{major}"), &text) {
+            setters.push((format!("llc{major}"), o));
+        }
+        let text = format!("{}{JUMPERS}", ll_header());
+        if let Some(o) = float_gen::llc(&scratch, major, &format!("jump-llc{major}"), &text) {
+            jumpers.push((format!("llc{major}"), o));
+        }
+    }
+    let Some(toolchain) = linking::Toolchain::x86_64(&scratch) else { return };
+    let driver = toolchain.compile_c(&scratch, "sjlj-driver", SJLJ_DRIVER, &[]);
+    let mut runs = 0;
+    for (s, set) in &setters {
+        for (j, jump) in &jumpers {
+            for linker in &toolchain.linkers {
+                let program = scratch.join(format!("sjlj-{s}-{j}-{}", linker.name));
+                let ran = toolchain.link_and_run(linker, &[], &[&driver, set, jump], &program);
+                assert!(
+                    ran.success(),
+                    "{s} + {j} [{}]: {:?}\n{}",
+                    linker.name,
+                    ran.status,
+                    ran.stderr_text()
+                );
+                assert_eq!(
+                    ran.stdout_text(),
+                    SJLJ_OUTPUT,
+                    "setters {s}, jumpers {j} [{}]",
+                    linker.name
+                );
+                runs += 1;
+            }
+        }
+    }
+    eprintln!("sjlj: {} setters x {} jumpers, {runs} programs", setters.len(), jumpers.len());
+}
+
+/// §5.6.16 (2): the refusals, by this target's names.
+#[test]
+fn sjlj_refusals_by_name() {
+    use hod_x64::intrinsic::{SJLJ_LIVE_VALUE, SJLJ_SHADOW_STACK};
+    let decls = "declare i32 @llvm.eh.sjlj.setjmp(ptr)\ndeclare void @llvm.eh.sjlj.longjmp(ptr)\n";
+    // A register value of the block used after the `setjmp`: an
+    // instruction's result, and an argument of the entry block.
+    refused(
+        &format!(
+            "{decls}define i32 @f(ptr %b, i32 %a) {{\n  %x = add i32 %a, 1\n  \
+             %r = call i32 @llvm.eh.sjlj.setjmp(ptr %b)\n  %s = add i32 %x, %r\n  ret i32 %s\n}}\n"
+        ),
+        SJLJ_LIVE_VALUE,
+    );
+    refused(
+        &format!(
+            "{decls}define i32 @f(ptr %b, i32 %a) {{\n  %r = call i32 @llvm.eh.sjlj.setjmp(ptr %b)\n  \
+             %s = add i32 %a, %r\n  ret i32 %s\n}}\n"
+        ),
+        SJLJ_LIVE_VALUE,
+    );
+    // Used before it, or in another block (a home value): compiled.
+    assert_eq!(
+        compile(&format!(
+            "{decls}define i32 @f(ptr %b, i32 %a) {{\n  %x = add i32 %a, 1\n  store i32 %x, ptr %b\n  \
+             %r = call i32 @llvm.eh.sjlj.setjmp(ptr %b)\n  br label %n\nn:\n  %s = add i32 %a, %r\n  ret i32 %s\n}}\n"
+        )),
+        Ok(())
+    );
+    // A shadow stack.
+    let shstk = "!llvm.module.flags = !{!0}\n!0 = !{i32 8, !\"cf-protection-return\", i32 1}\n";
+    refused(
+        &format!(
+            "{decls}define void @g(ptr %b) {{\n  call void @llvm.eh.sjlj.longjmp(ptr %b)\n  unreachable\n}}\n{shstk}"
+        ),
+        SJLJ_SHADOW_STACK,
+    );
+}

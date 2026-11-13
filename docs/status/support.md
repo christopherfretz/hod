@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 354 | 347 | 7 | 0 | 128 | 10 | 216 |
-| total | 674 | 549 | 68 | 57 | 323 | 73 | 278 |
+| `intrinsic` | 356 | 347 | 7 | 2 | 130 | 10 | 216 |
+| total | 676 | 549 | 68 | 59 | 325 | 73 | 278 |
 
 ## `module`
 
@@ -613,6 +613,8 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.fptoui.sat` | supported (int, half, float, double, vector) | supported (int, half, float, double, x86_fp80, vector) |  |
 | `intrinsic:llvm.is.fpclass` | supported (int, half, float, double, fp128) | supported (int, half, float, double, fp128, x86_fp80) |  |
 | `intrinsic:llvm.eh.typeid.for` | supported (int, ptr) | supported (int, ptr) |  |
+| `intrinsic:llvm.eh.sjlj.setjmp` | rejected | supported | `llc` for AArch64 compiles `setjmp` to 0 and `longjmp` to nothing; clang refuses the builtins there |
+| `intrinsic:llvm.eh.sjlj.longjmp` | rejected | supported | `llc` for AArch64 compiles `setjmp` to 0 and `longjmp` to nothing; clang refuses the builtins there |
 | `intrinsic:llvm.threadlocal.address` | supported (ptr) | supported (ptr) |  |
 | `intrinsic:llvm.thread.pointer` | supported (ptr) | supported (ptr) |  |
 | `intrinsic:llvm.prefetch` | supported (int, ptr) | supported (int, ptr) |  |

@@ -685,6 +685,8 @@ const INTRINSICS: &[(&str, &str)] = &[
     ("llvm.fptoui.sat.i32.f64", "i32 (double)"),
     ("llvm.is.fpclass.f64", "i1 (double, i32)"),
     ("llvm.eh.typeid.for.p0", "i32 (ptr)"),
+    ("llvm.eh.sjlj.setjmp", "i32 (ptr)"),
+    ("llvm.eh.sjlj.longjmp", "void (ptr)"),
     ("llvm.threadlocal.address.p0", "ptr (ptr)"),
     ("llvm.thread.pointer.p0", "ptr ()"),
     ("llvm.prefetch.p0", "void (ptr, i32, i32, i32)"),

@@ -369,6 +369,8 @@ const NEON: &[TypeClass] = &[
     TypeClass::Aggregate,
 ];
 const X64_ONLY: &str = "an x86 property";
+/// WP-147.
+const SJLJ_A64: &str = "`llc` for AArch64 compiles `setjmp` to 0 and `longjmp` to nothing; clang refuses the builtins there";
 /// WP-101.
 const NO_RELOCATION: &str = "no ELF relocation subtracts a symbol's address; `llc` refuses it too";
 const NO_FORM: &str = "a constant expression with no normal form (§4.2)";
@@ -2903,6 +2905,10 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
         on(&[TypeClass::Int, TypeClass::Ptr]),
         "",
     ),
+    // WP-147: `llc` for AArch64 compiles `setjmp` to 0 and `longjmp` to
+    // nothing; no AArch64 front end emits them (clang refuses the builtins).
+    row("intrinsic:llvm.eh.sjlj.setjmp", never(SJLJ_A64), ON, ""),
+    row("intrinsic:llvm.eh.sjlj.longjmp", never(SJLJ_A64), ON, ""),
     both("intrinsic:llvm.threadlocal.address", on(&[TypeClass::Ptr]), ""),
     both("intrinsic:llvm.thread.pointer", on(&[TypeClass::Ptr]), ""),
     row(

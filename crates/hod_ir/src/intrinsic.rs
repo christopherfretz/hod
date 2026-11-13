@@ -160,6 +160,9 @@ intrinsics! {
     IsFpClass = "llvm.is.fpclass" [P(0)],
     // Exceptions and thread-local storage.
     EhTypeidFor = "llvm.eh.typeid.for" [P(0)],
+    // `__builtin_setjmp`/`__builtin_longjmp` (WP-147).
+    EhSjljSetjmp = "llvm.eh.sjlj.setjmp" [],
+    EhSjljLongjmp = "llvm.eh.sjlj.longjmp" [],
     ThreadLocalAddress = "llvm.threadlocal.address" [Ret],
     ThreadPointer = "llvm.thread.pointer" [Ret],
     // Pointers, caches, counters.

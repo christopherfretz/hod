@@ -67,6 +67,13 @@ impl Toolchain {
         Self::new(scratch, target, "gcc", "g++", "ld.bfd", Vec::new())
     }
 
+    /// A toolchain for AArch64 Linux: [`Toolchain::for_target`] (the
+    /// host's on an AArch64 host, the cross one and `qemu-aarch64` on any
+    /// other).
+    pub fn aarch64(scratch: &Scratch) -> Option<Self> {
+        Self::for_target(scratch, Target::Aarch64)
+    }
+
     /// A toolchain for x86-64 Linux: [`Toolchain::for_target`].
     pub fn x86_64(scratch: &Scratch) -> Option<Self> {
         Self::for_target(scratch, Target::X86_64)

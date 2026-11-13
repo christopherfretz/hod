@@ -29,7 +29,6 @@ mod llvm_text;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use common::groups::{enabled, missing};
@@ -130,7 +129,7 @@ fn split(output: &str) -> Vec<String> {
 /// `None` without the tools.
 fn compare(clean: &[(u64, Generated)], native: &[(u64, Generated)]) -> Option<Vec<(u64, String)>> {
     let scratch = Scratch::new("a64-diff");
-    let toolchain = Toolchain::host(&scratch)?;
+    let toolchain = Toolchain::aarch64(&scratch)?;
     let linker = toolchain.linkers.first()?;
     let expected: Vec<String> = clean
         .iter()
@@ -157,7 +156,7 @@ fn compare(clean: &[(u64, Generated)], native: &[(u64, Generated)]) -> Option<Ve
         // `frem` calls `fmod`/`fmodf` (WP-039); the flags precede the inputs.
         let flags = ["-Wl,--no-as-needed", "-lm"];
         toolchain.link_ok(linker, &flags, &[&driver, &object], &program);
-        let ran = run_with(&mut Command::new(&program), &[], Duration::from_mins(2));
+        let ran = run_with(&mut toolchain.runner_command(&program), &[], Duration::from_mins(2));
         assert!(ran.success(), "{mode}: {:?}\n{}", ran.status, ran.stderr_text());
         let got = split(&ran.stdout_text());
         assert_eq!(got.len(), expected.len(), "{mode}: {}", ran.stdout_text());

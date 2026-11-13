@@ -410,7 +410,7 @@ fn run_case(case: &Case) {
     let Some(cc) = tool(if has_ext(case.driver, "c") { "gcc" } else { "g++" }) else { return };
     let stem = case.source.split('.').next().unwrap();
     let scratch = Scratch::new(&format!("dies-debug-{stem}"));
-    let Some(toolchain) = Toolchain::host(&scratch) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return };
     let driver = host_object(&scratch, &cc, case.driver);
     let mut sessions = 0;
     for major in [19, 22] {

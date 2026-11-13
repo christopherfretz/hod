@@ -64,7 +64,17 @@ fn split_ir(compiler: &Path, dir: &Path, data: &str, source: &str, extra: &[&str
     let copy = if c { source.to_owned() } else { format!("{stem}.cpp") };
     std::fs::copy(data_dir(data).join(source), dir.join(&copy)).unwrap();
     let mut command = Command::new(compiler);
-    command.args(["-g", "-O0", "-gsplit-dwarf", "-S", "-emit-llvm", "-w"]).args(extra);
+    command
+        .args([
+            "-g",
+            "-O0",
+            "-gsplit-dwarf",
+            "--target=aarch64-linux-gnu",
+            "-S",
+            "-emit-llvm",
+            "-w",
+        ])
+        .args(extra);
     if !c {
         command.arg("-std=c++20");
     }

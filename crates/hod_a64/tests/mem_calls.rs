@@ -767,7 +767,7 @@ fn run(label: &str, seed: u64, count: usize, c_only: bool, builders: &[By]) -> u
         })
         .collect();
     let dir = Scratch::new(label);
-    let Some(toolchain) = Toolchain::host(&dir) else { return 0 };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return 0 };
     let drv = toolchain.compile_c(&dir, "driver", &driver(count, &seeds), &[]);
     let build = |by: By, name: &str, text: &str, c: &str| -> Option<PathBuf> {
         match by {

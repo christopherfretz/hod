@@ -200,7 +200,6 @@ mod mem_intrinsics {
     use std::cell::RefCell;
     use std::collections::BTreeSet;
     use std::fmt::Write as _;
-    use std::process::Command;
     use std::rc::Rc;
     use std::time::Duration;
 
@@ -364,7 +363,7 @@ mod mem_intrinsics {
         let (funcs, header) = batch(seeds);
         let want = expected(&funcs, &header);
         let scratch = Scratch::new("a64-intrinsic-mem");
-        let Some(toolchain) = Toolchain::host(&scratch) else { return 0 };
+        let Some(toolchain) = Toolchain::aarch64(&scratch) else { return 0 };
         let Some(linker) = toolchain.linkers.first() else { return 0 };
         let text = native_text(&funcs, &header);
         let (module, bodies) = parse(&text);
@@ -385,7 +384,8 @@ mod mem_intrinsics {
             };
             let program = scratch.join(mode);
             toolchain.link_ok(linker, &[], &[&driver, &object], &program);
-            let ran = run_with(&mut Command::new(&program), &[], Duration::from_mins(2));
+            let ran =
+                run_with(&mut toolchain.runner_command(&program), &[], Duration::from_mins(2));
             let got = split(&ran.stdout_text());
             for (k, f) in funcs.iter().enumerate() {
                 let got = got.get(k).map_or("(nothing: the run stopped)", String::as_str);
@@ -416,7 +416,6 @@ mod mem_intrinsics {
 
 mod native_forms {
     use std::os::unix::process::ExitStatusExt as _;
-    use std::process::Command;
     use std::time::Duration;
 
     use hod_a64::compile_module;
@@ -571,7 +570,7 @@ int main(int argc, char **argv) {
     #[test]
     fn the_native_forms_hold() {
         let scratch = Scratch::new("a64-intrinsic-native");
-        let Some(toolchain) = Toolchain::host(&scratch) else { return };
+        let Some(toolchain) = Toolchain::aarch64(&scratch) else { return };
         let text = format!("{}{FUNCTIONS}", ll_header(22));
         let (module, bodies) = parse(&text);
         let driver = toolchain.compile_c(&scratch, "driver", DRIVER, &["-fno-omit-frame-pointer"]);
@@ -588,12 +587,16 @@ int main(int argc, char **argv) {
             for (mode, object) in &objects {
                 let program = scratch.join(format!("{mode}-{}", linker.name));
                 toolchain.link_ok(linker, &[], &[&driver, object], &program);
-                let ran = run_with(&mut Command::new(&program), &[], Duration::from_mins(1));
+                let ran =
+                    run_with(&mut toolchain.runner_command(&program), &[], Duration::from_mins(1));
                 assert!(ran.success(), "{mode}: {:?}\n{}", ran.status, ran.stderr_text());
                 assert_eq!(ran.stdout_text(), WANT, "{mode} with {}", linker.name);
                 for arg in ["trap", "debugtrap", "ubsantrap"] {
-                    let ran =
-                        run_with(Command::new(&program).arg(arg), &[], Duration::from_mins(1));
+                    let ran = run_with(
+                        toolchain.runner_command(&program).arg(arg),
+                        &[],
+                        Duration::from_mins(1),
+                    );
                     assert_eq!(
                         ran.status.and_then(|s| s.signal()),
                         Some(5),
@@ -617,7 +620,7 @@ fn eh_typeid_for_selects_the_clause() {
     use common::linking::{Toolchain, exit_code};
     use common::{emit, llc, llc_major, write_object};
     let dir = hod_testutil::Scratch::new("a64-intrinsic-typeid");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let Some(gxx) = hod_testutil::tool("g++") else { return };
     let data = |name: &str| {
         let path = format!("{}/tests/data/intrinsic/{name}", env!("CARGO_MANIFEST_DIR"));

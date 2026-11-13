@@ -108,7 +108,16 @@ fn build(compiler: &Path, dir: &Path, llc: Option<&Path>) -> PathBuf {
     std::fs::create_dir_all(dir).unwrap();
     std::fs::copy(source(), dir.join("split.cpp")).unwrap();
     let mut command = Command::new(compiler);
-    command.args(["-g", "-O0", "-gsplit-dwarf", "-S", "-emit-llvm", "-w", "-std=c++20"]);
+    command.args([
+        "-g",
+        "-O0",
+        "-gsplit-dwarf",
+        "--target=aarch64-linux-gnu",
+        "-S",
+        "-emit-llvm",
+        "-w",
+        "-std=c++20",
+    ]);
     command.args(["split.cpp", "-o", "split.ll"]).current_dir(dir);
     ok(&mut command);
     let text = std::fs::read_to_string(dir.join("split.ll")).unwrap();
@@ -177,7 +186,7 @@ fn split_sessions_match_llc() {
         ],
     };
     let scratch = Scratch::new("dies-split-debug");
-    let Some(toolchain) = Toolchain::host(&scratch) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return };
     let dwp = tool("llvm-dwp-22").or_else(|| tool("llvm-dwp"));
     let mut frontends = vec![];
     for (name, major) in [("clang++-19", 19), ("clang++-22", 22)] {

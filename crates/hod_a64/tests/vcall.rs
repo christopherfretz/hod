@@ -881,7 +881,7 @@ fn check(name: &str, cases: &[Case]) {
             objects.insert(format!("llc{major}"), (caller, callee));
         }
     }
-    let Some(toolchain) = Toolchain::host(&scratch) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return };
     let gcc = cases.iter().all(Case::c_ok);
     if gcc {
         let caller = toolchain.compile_c(&scratch, "gcc-caller", &c_side(cases, false), &[]);
@@ -923,7 +923,8 @@ fn check(name: &str, cases: &[Case]) {
             let program = scratch.join(label.replace(['/', '>'], "-"));
             let inputs: [&Path; 3] = [&driver, caller_o, callee_o];
             toolchain.link_ok(linker, &[], &inputs, &program);
-            let ran = run_with(&mut Command::new(&program), &[], Duration::from_mins(3));
+            let ran =
+                run_with(&mut toolchain.runner_command(&program), &[], Duration::from_mins(3));
             if !ran.success() {
                 wrong.push(format!("{label}: {:?}\n{}", ran.status, ran.stderr_text()));
                 continue;

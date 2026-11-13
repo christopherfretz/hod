@@ -188,7 +188,7 @@ fn every_class_returns_and_arrives_natively() {
     let dir = hod_testutil::Scratch::new("a64-native");
     let emitted = emit(&m, &bodies, &Options::default());
     let object = write_object(&dir, "functions.o", &emitted);
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let driver = toolchain.compile_c(&dir, "driver", DRIVER, &[]);
     for linker in &toolchain.linkers {
         let program = dir.join(format!("native-{}", linker.name));

@@ -1031,7 +1031,7 @@ fn run(name: &str, suite: &Suite) -> Report {
         legs.push(("clang".into(), object, Some(compared)));
     }
     let mut report = Report::default();
-    let Some(toolchain) = Toolchain::host(&scratch) else { return report };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return report };
     let driver = toolchain.compile_c(&scratch, "driver", &driver(suite), &[]);
     for (leg, object, compared) in &legs {
         // hod's plain object under every linker; the others under one.
@@ -1041,7 +1041,8 @@ fn run(name: &str, suite: &Suite) -> Report {
             let label = format!("{leg}/{}", linker.name);
             let program = scratch.join(label.replace('/', "-"));
             toolchain.link_ok(linker, &[], &[&driver, object], &program);
-            let ran = run_with(&mut Command::new(&program), &[], Duration::from_mins(2));
+            let ran =
+                run_with(&mut toolchain.runner_command(&program), &[], Duration::from_mins(2));
             assert!(ran.success(), "{label}: {:?}\n{}", ran.status, ran.stderr_text());
             check_leg(suite, &label, &ran.stdout_text(), compared.as_deref(), &mut report);
             report.legs.push(label);
@@ -1189,7 +1190,7 @@ int main(void) {
     {
         objects.push(object);
     }
-    let Some(toolchain) = Toolchain::host(&scratch) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return };
     let driver = toolchain.compile_c(&scratch, "driver", driver, &[]);
     for (k, object) in objects.iter().enumerate() {
         for linker in &toolchain.linkers {

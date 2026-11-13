@@ -93,8 +93,8 @@ int main(int argc, char **argv) {
 }
 "#;
 
-fn run(program: &Path, args: &[&str]) -> hod_testutil::Outcome {
-    let mut command = Command::new(program);
+fn run(toolchain: &Toolchain, program: &Path, args: &[&str]) -> hod_testutil::Outcome {
+    let mut command = toolchain.runner_command(program);
     command.args(args);
     run_with(&mut command, &[], Duration::from_mins(1))
 }
@@ -131,12 +131,9 @@ fn programs(scratch: &Scratch, toolchain: &Toolchain) -> Vec<(String, PathBuf)> 
     out
 }
 
+/// The AArch64 toolchain: natively, or the cross one under `qemu-aarch64`.
 fn host_toolchain(scratch: &Scratch) -> Option<Toolchain> {
-    if !cfg!(target_arch = "aarch64") {
-        eprintln!("note: not an AArch64 host; skipping");
-        return None;
-    }
-    Toolchain::host(scratch)
+    Toolchain::aarch64(scratch)
 }
 
 /// `_Unwind_Backtrace` from the `SIGTRAP` handler, through the signal
@@ -148,7 +145,7 @@ fn unwind_backtrace_walks_out_of_hod_leaves() {
     let mut walked = 0;
     for (what, program) in programs(&scratch, &toolchain) {
         for i in 0..SLOTS.len() {
-            let ran = run(&program, &[&i.to_string()]);
+            let ran = run(&toolchain, &program, &[&i.to_string()]);
             let line = ran.stdout_text();
             assert_eq!(exit_code(&ran), Some(0), "{what} leaf_{i}: {line}{}", ran.stderr_text());
             let leaf = format!("leaf_{i}");
@@ -163,6 +160,11 @@ fn unwind_backtrace_walks_out_of_hod_leaves() {
 /// have no debug information).
 #[test]
 fn gdb_backtraces_through_hod_leaves() {
+    // gdb traces a native process: an AArch64 host only.
+    if !cfg!(target_arch = "aarch64") {
+        eprintln!("note: gdb traces AArch64 programs on an AArch64 host only; skipping");
+        return;
+    }
     let scratch = Scratch::new("a64-unwind-gdb");
     let Some(toolchain) = host_toolchain(&scratch) else { return };
     let Some(gdb) = tool("gdb") else { return };

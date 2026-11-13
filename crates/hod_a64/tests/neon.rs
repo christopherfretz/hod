@@ -270,7 +270,7 @@ fn cases_match_llc() {
          }\n  return 0;\n}\n",
     );
     let dir = hod_testutil::Scratch::new("a64-neon-cases");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let driver = toolchain.compile_c(&dir, "driver", &c, &[]);
     let mut objects = Vec::new();
     // 19 first: the reference is the first build (`LLVM22_DIFFERS`).

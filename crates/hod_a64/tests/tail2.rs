@@ -332,7 +332,7 @@ fn bfloat_frem_agrees_with_llc() {
     }
     c.push_str("  return 0;\n}\n");
     let dir = hod_testutil::Scratch::new("a64-tail2-bfloat-frem");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let driver = toolchain.compile_c(&dir, "driver", &c, &[]);
     let Some(reference) = llc(&dir, "llc", &format!("{}{body}", ll_header(llc_major())), &[])
     else {
@@ -715,7 +715,7 @@ int main(void) {
 #[test]
 fn preserve_most_saves_and_describes_x9_to_x15() {
     let dir = hod_testutil::Scratch::new("a64-tail2-pm-unwind");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let driver = toolchain.compile_c(&dir, "driver", PM_UNWIND_C, &[]);
     let (module, bodies) = parse(&format!("{}{PM_UNWIND_IR}", ll_header(22)));
     let mut objects = Vec::new();

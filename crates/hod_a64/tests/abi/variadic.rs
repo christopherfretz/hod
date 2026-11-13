@@ -215,6 +215,7 @@ fn variadic_against_c() {
         let emitted = hod_testutil::run(
             &clang,
             [
+                "--target=aarch64-linux-gnu".as_ref(),
                 "-O0".as_ref(),
                 "-S".as_ref(),
                 "-emit-llvm".as_ref(),

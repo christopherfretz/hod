@@ -125,7 +125,7 @@ struct Build {
 /// `builds`.
 fn run_cases(label: &str, seed: u64, count: usize, builds: &[Build]) {
     let dir = Scratch::new(label);
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let mut rng = Rng(seed);
     let cases: Vec<Case> = (0..count).map(|k| callgen::random_case(&mut rng, k)).collect();
     let a = callgen::module_a(&cases, "");
@@ -289,7 +289,7 @@ fn random_signatures_agree_with_gcc_and_llc() {
 #[test]
 fn handwritten_calls_run() {
     let dir = Scratch::new("a64-call-hand");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let ll = data("hand.ll");
     let c = data("hand.c");
     let hod_driver = toolchain.compile_c(&dir, "driver-hod", &c, &["-DHOD"]);
@@ -329,7 +329,7 @@ fn handwritten_calls_run() {
 #[test]
 fn exceptions_unwind_through_hod_frames() {
     let dir = Scratch::new("a64-call-eh");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let Some(gxx) = hod_testutil::tool("g++") else { return };
     let source = dir.write("eh.cpp", data("eh.cpp"));
     let driver = dir.join("eh-driver.o");
@@ -486,7 +486,7 @@ fn oracle_line(k: usize, v: &hod_interp::Val) -> String {
 #[test]
 fn nest_and_byref_agree_with_llc() {
     let dir = Scratch::new("a64-call-nest");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let half = |me: &str, other: &str| {
         format!(
             "declare ptr @{other}_nest(ptr nest, i64)\n\
@@ -521,7 +521,7 @@ fn nest_and_byref_agree_with_llc() {
 fn chains_agree_with_the_interpreter() {
     use hod_interp::Val;
     let dir = Scratch::new("a64-call-oracle");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let mut rng = Rng(0x38_0e1e);
     let mut ir = String::new();
     let mut c = String::from("#include <stdio.h>\n#include <stdint.h>\n#include <string.h>\n");
@@ -733,7 +733,7 @@ fn the_remaining_forms_are_refused_by_name() {
 #[test]
 fn a_wide_signext_return_is_extended() {
     let dir = Scratch::new("a64-call-wide-ret");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let text = "define signext i65 @f(i65 %x) {\n  ret i65 %x\n}\n";
     let obj = object_with(&dir, "wide", text, false, Options::default()).expect("hod");
     let c = "#include <stdio.h>\n__int128 f(__int128);\nint main(void) {\n\
@@ -765,7 +765,7 @@ fn a_mismatched_direct_call_takes_no_declared_attributes() {
 #[test]
 fn declared_attributes_follow_the_function_type() {
     let dir = Scratch::new("a64-call-attrs");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let caller = data("attrs.ll");
     let callee = data("attrs_callee.ll");
     let driver = toolchain.compile_c(&dir, "attrs-driver", &data("attrs.c"), &[]);
@@ -802,7 +802,7 @@ fn declared_attributes_follow_the_function_type() {
 #[test]
 fn extended_integers_of_every_width_run() {
     let dir = Scratch::new("a64-call-ext");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let caller = data("ext.ll");
     let callee = data("ext_callee.ll");
     let driver = toolchain.compile_c(&dir, "ext-driver", &data("ext.c"), &[]);
@@ -843,7 +843,7 @@ fn extended_integers_of_every_width_run() {
 #[test]
 fn odd_leaves_of_incoming_arguments_are_cleared() {
     let dir = Scratch::new("a64-call-odd");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let caller = data("odd.ll");
     let callee = data("odd_callee.ll");
     let c = data("odd.c");
@@ -882,7 +882,7 @@ fn odd_leaves_of_incoming_arguments_are_cleared() {
 #[test]
 fn alignstack_arguments_and_functions_run() {
     let dir = Scratch::new("a64-call-alignstack");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let caller = data("alignstack.ll");
     let callee = data("alignstack_callee.ll");
     let driver = toolchain.compile_c(&dir, "alignstack-driver", &data("alignstack.c"), &[]);

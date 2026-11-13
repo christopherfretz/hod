@@ -710,7 +710,7 @@ pub struct Report {
 pub fn run_native(label: &str, funcs: &[Func], per: usize, seed: u64) -> Report {
     let dir = hod_testutil::Scratch::new(label);
     let mut report = Report::default();
-    let Some(toolchain) = Toolchain::host(&dir) else { return report };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return report };
     let mut objects = Vec::new();
     let mut hod_text = String::new();
     for (prefix, stress) in [("h_", Stress::default()), ("s_", Stress::ALL)] {

@@ -868,7 +868,7 @@ fn expected_tail() -> String {
 /// same.
 pub fn check() {
     let scratch = Scratch::new("a64-atomic-threads");
-    let Some(toolchain) = Toolchain::host(&scratch) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return };
     let specs = specs();
     let driver = toolchain.compile_c(&scratch, "driver", &driver(&specs), &["-pthread"]);
     let mut objects: Vec<(String, PathBuf)> = Vec::new();

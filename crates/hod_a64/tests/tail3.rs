@@ -186,7 +186,7 @@ fn build_and_run(
     with_llc: bool,
 ) -> usize {
     let dir = hod_testutil::Scratch::new(label);
-    let Some(toolchain) = Toolchain::host(&dir) else { return 0 };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return 0 };
     let driver = toolchain.compile_c(&dir, "driver", &driver(calls), &[]);
     // builds[k] = (name, one object per module)
     let mut builds: Vec<(String, Vec<PathBuf>)> = Vec::new();
@@ -1252,7 +1252,7 @@ fn bf_calls(names: &[String], seed: u64) -> Vec<Call> {
 /// `body`, or `None` without the tools.
 fn llc_reference(label: &str, body: &str, calls: &[Call]) -> Option<String> {
     let dir = hod_testutil::Scratch::new(label);
-    let toolchain = Toolchain::host(&dir)?;
+    let toolchain = Toolchain::aarch64(&dir)?;
     let driver = toolchain.compile_c(&dir, "driver", &driver(calls), &[]);
     let mut reference: Option<String> = None;
     for major in [22, 19] {
@@ -1662,7 +1662,7 @@ int main(void) {
 #[test]
 fn preserve_all_functions_keep_every_register_llc_keeps() {
     let dir = hod_testutil::Scratch::new("a64-tail3-preserve-all");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let c = toolchain.compile_c(&dir, "check", PRESERVE_ALL_C, &[]);
     let mut builds: Vec<(String, PathBuf)> = Vec::new();
     for major in [22, 19] {

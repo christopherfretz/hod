@@ -1326,7 +1326,7 @@ fn run(name: &str, funcs: &[Func], seed: u64, junk: bool) -> Report {
     if !junk {
         interp_leg(funcs, &cases, &mut report);
     }
-    let Some(toolchain) = Toolchain::host(&scratch) else { return report };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return report };
     let driver = toolchain.compile_c(&scratch, "driver", &driver(funcs), &[]);
     for (leg, object) in &legs {
         let linkers =
@@ -1336,7 +1336,8 @@ fn run(name: &str, funcs: &[Func], seed: u64, junk: bool) -> Report {
             let program = scratch.join(label.replace('/', "-"));
             let inputs: [&Path; 2] = [&driver, object];
             toolchain.link_ok(linker, &["-Wl,--no-as-needed", "-lm"], &inputs, &program);
-            let ran = run_with(&mut Command::new(&program), &input, Duration::from_mins(3));
+            let ran =
+                run_with(&mut toolchain.runner_command(&program), &input, Duration::from_mins(3));
             assert!(ran.success(), "{label}: {:?}\n{}", ran.status, ran.stderr_text());
             let lines: Vec<Vec<u8>> = ran.stdout_text().lines().map(parse_line).collect();
             check_leg(funcs, &cases, &label, &lines, &mut report);

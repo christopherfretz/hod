@@ -53,7 +53,7 @@ fn pairs(source: &str) -> Vec<(&'static str, PathBuf, PathBuf)> {
 fn ir(compiler: &Path, scratch: &Scratch, name: &str, source: &str, flags: &[&str]) -> String {
     let out = scratch.join(format!("{name}.ll"));
     let mut command = Command::new(compiler);
-    command.args(["-g", "-O0", "-S", "-emit-llvm", "-w"]).args(flags);
+    command.args(["-g", "-O0", "--target=aarch64-linux-gnu", "-S", "-emit-llvm", "-w"]).args(flags);
     command.arg(data_dir().join(source)).arg("-o").arg(&out);
     let outcome = run_with(&mut command, &[], Duration::from_mins(2));
     assert!(outcome.success(), "{command:?}: {}", outcome.stderr_text());
@@ -553,7 +553,7 @@ fn sessions_match_llc() {
         return;
     };
     let scratch = Scratch::new("dies-decline-sessions");
-    let Some(toolchain) = Toolchain::host(&scratch) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return };
     let mut sessions = 0;
     for s in SESSIONS {
         // clang 22's IR, by `llc` 22.

@@ -75,6 +75,8 @@ const DW_OP_ADDR: u8 = 0x03;
 const DW_OP_ADDRX: u8 = 0xa1;
 const DW_OP_SKIP: u8 = 0x2f;
 const DW_OP_BRA: u8 = 0x28;
+/// A DWARF 5 range-list table's header before its offsets (§7.28).
+const LISTS_HEADER: usize = 12;
 const DW_RLE_END_OF_LIST: u8 = 0x00;
 const DW_RLE_BASE_ADDRESSX: u8 = 0x01;
 const DW_RLE_STARTX_LENGTH: u8 = 0x03;
@@ -510,13 +512,18 @@ impl Out {
                 self.info.extend_from_slice(&[0; 8]);
             }
             form::RNGLISTX => {
-                // The unit's own list (§6.15's families never reach here:
-                // split DWARF 4 is refused).
-                read_uleb(src, pos).ok_or_else(bad)?;
-                self.list.clear();
-                self.list
-                    .extend(w.spans.iter().map(|s| (s.symbol, s.addend, s.addend + s.size as i64)));
-                self.ranges_list(cx.unit, None)?;
+                // WP-163: the unit's own list or a scope's, by its offset
+                // in the unit's table (§6.15's families never reach here:
+                // split DWARF 4 is refused). The unit's own is only there
+                // when its code is several spans, which is no base.
+                let index = read_uleb(src, pos).ok_or_else(bad)?;
+                let offset = usize::try_from(index)
+                    .ok()
+                    .and_then(|k| w.rnglists.get(LISTS_HEADER + 4 * k..LISTS_HEADER + 4 * k + 4))
+                    .ok_or_else(bad)?;
+                let offset = u32::from_le_bytes([offset[0], offset[1], offset[2], offset[3]]);
+                self.v5_list(w, cx.unit, i64::from(offset) + LISTS_HEADER as i64)?;
+                self.ranges_list(cx.unit, cx.base)?;
             }
             form::SEC_OFFSET => {
                 *pos += 4;
@@ -526,10 +533,6 @@ impl Out {
                     Target::Line => {
                         self.reloc(Target::Line, old.addend);
                         self.info.extend_from_slice(&[0; 4]);
-                    }
-                    Target::Rnglists => {
-                        self.v5_list(w, cx.unit, old.addend)?;
-                        self.ranges_list(cx.unit, cx.base)?;
                     }
                     _ => return Err(bad()),
                 }
@@ -734,7 +737,7 @@ fn scratch_writer<'a>(dies: usize) -> Writer<'a> {
         expr: Vec::new(),
         fn_addr: Vec::new(),
         block_lists: Vec::new(),
-        block_lists_base: 0,
+        block_starts: Vec::new(),
         loclists: Vec::new(),
         loclists_unit: crate::loclists::NO_LISTS,
     }

@@ -19,7 +19,7 @@ use hod_ir::{
 
 use crate::Error;
 use crate::abbrev::{code, fam};
-use crate::die::{CodeSpan, Kind, NONE, UnitPlan, Writer, bad, uleb_len, unsupported};
+use crate::die::{CodeSpan, Kind, NONE, UnitPlan, Writer, bad, unsupported};
 use crate::leb::{write_sleb, write_uleb};
 
 /// `DW_OP_fbreg`.
@@ -874,6 +874,19 @@ impl<'a> UnitPlan<'a> {
         self.locals.get(i)
     }
 
+    /// WP-163: the number of range lists the blocks and inlined
+    /// subroutines of the unit take (a scope of other than one range),
+    /// which the unit's own list is numbered after (§6.4).
+    pub(crate) fn scope_lists(&self) -> usize {
+        self.locals
+            .iter()
+            .filter(|l| {
+                matches!(l.what, LocalWhat::Block { count, .. } | LocalWhat::Inlined { count, .. }
+                    if count != 1)
+            })
+            .count()
+    }
+
     /// The number of `.debug_addr` entries the functions' DIEs take.
     pub(crate) fn code_addrs(&self) -> u32 {
         self.code_addrs
@@ -1106,8 +1119,7 @@ impl<'a> Writer<'a> {
                         write_uleb(&mut self.block_lists, u64::from(end));
                     }
                     self.block_lists.push(0);
-                    let offset = self.block_lists_base + at;
-                    self.rnglists_offset(offset as i64);
+                    self.block_list(at);
                 }
             }
             (LocalWhat::Label { offset }, DiNode::Label(n)) => {
@@ -1144,16 +1156,6 @@ impl<'a> Writer<'a> {
 
 const DW_RLE_BASE_ADDRESSX: u8 = 0x01;
 const DW_RLE_OFFSET_PAIR: u8 = 0x04;
-
-/// The bytes of the CU's own range list for `spans` entries starting at
-/// address index `base`: what precedes the blocks' lists.
-pub(crate) fn cu_list_len(base: u32, sizes: impl Iterator<Item = u64>) -> usize {
-    let mut n = 1;
-    for (k, size) in sizes.enumerate() {
-        n += 1 + uleb_len(u64::from(base) + k as u64) + uleb_len(size);
-    }
-    n
-}
 
 /// The location ops of a variable's place, before its `DIExpression`'s.
 fn place_ops(out: &mut Vec<u8>, what: LocalWhat) {

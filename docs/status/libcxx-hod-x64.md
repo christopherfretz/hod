@@ -26,6 +26,35 @@ section 6.4). WP-135.
 8,609 pass, 0 differences caused by hod, 7,088 of 7,226 modules by hod
 (138 fallbacks, 103 of them `operand:int-of-addr`), 7,889 s.
 
+## Native x86-64 runner
+
+Run [43465227200](https://github.com/christopherfretz/hod/actions/runs/43465227200)
+of `.github/workflows/sweep.yml` (WP-164; `spec/harness.md` "CI", rule
+6), 2026-11-13: `wp/158-sweep` at `a67370e`, kiln 1.0.1 at `bd60e1829`,
+LLVM 22.1.8 (Debian 13), libc++ 22.1.8 from Debian's `libc++-22-dev`,
+the locales generated; kiln's `cargo xtask libcxx std libcxx --tag
+llvmorg-22.1.8 -j 4 --timeout 60 --mem-limit 3072 --no-fail` in six
+shards, once with hod strict (`HOD_STRICT=1`, no fallback) and once with
+kiln++ and `llc` alone, natively on the runner. Every test binary runs on
+the runner's own CPU, no emulator.
+
+| `ubuntu-24.04` | total | pass | fail | xfail | xpass | unsupported | timeout | shards (s) | modules by hod |
+|---|---:|---:|---:|---:|---:|---:|---:|---|---|
+| hod, strict | 9,247 | 8,749 | 5 | 46 | 1 | 446 | 0 | 371 to 596 | 7,364 of 7,365 |
+| `llc` | 9,247 | 8,750 | 4 | 46 | 1 | 446 | 0 | 323 to 632 | - |
+
+The one difference: `std/experimental/simd/simd.class/simd_unary.pass.cpp`
+FAILs to compile with hod (`unsupported construct 'x64:vector-wide-element'`,
+`i128` lanes; **open, WP-161**) and passes with `llc`. The four other
+failures (`directory_iterator` and `recursive_directory_iterator`
+`ctor.pass.cpp`, `remove.pass.cpp`, `remove_all.pass.cpp`, in
+`std/input.output/filesystems/`) fail with `llc` as well: the runner's
+environment, not hod. Against the qemu run above, the 139 tests that need
+locales run here (pass), `several_threads` and `copy_file_procfs` pass,
+`setfill_wchar_max` passes rather than XPASS, and with the 60 s limit
+nothing times out (`lost_wakeup` and `offset_range` timed out at 20 s in
+the first native run, 43459455103).
+
 ## Numbers
 
 | | baseline (`llc`) | hybrid (hod) |

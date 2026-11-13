@@ -386,8 +386,16 @@ pub fn binary<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, lhs: Value, rhs: Value
 }
 
 /// `add`, `sub` (a carry chain, nothing but `mov` between its links) and
-/// the bitwise operations, limb by limb.
-fn limbwise(cx: &mut FnCx<'_, X64>, op: Opcode, bits: u32, r: FrameRef, a: FrameRef, b: FrameRef) {
+/// the bitwise operations, limb by limb. Also each `i128` lane of a
+/// vector (`vector.rs`, §5.6.19). Writes `r10`, `r11`.
+pub fn limbwise(
+    cx: &mut FnCx<'_, X64>,
+    op: Opcode,
+    bits: u32,
+    r: FrameRef,
+    a: FrameRef,
+    b: FrameRef,
+) {
     for limb in 0..limbs(bits) {
         ld(cx, R10, a, limb);
         ld(cx, R11, b, limb);
@@ -475,7 +483,15 @@ fn const_amount(cx: &FnCx<'_, X64>, value: Value) -> Option<u64> {
 
 /// A shift by a constant `k` below the width: limb `i` of the result is
 /// made of source limbs `i ∓ k/64` and their neighbour, by `shld`/`shrd`.
-fn shift_const(cx: &mut FnCx<'_, X64>, op: Opcode, bits: u32, r: FrameRef, a: FrameRef, k: u32) {
+/// `r` distinct from `a`. Also each `i128` lane of a vector (§5.6.19).
+pub fn shift_const(
+    cx: &mut FnCx<'_, X64>,
+    op: Opcode,
+    bits: u32,
+    r: FrameRef,
+    a: FrameRef,
+    k: u32,
+) {
     let n = limbs(bits);
     let (q, s) = (k / 64, (k % 64) as u8);
     if op == Opcode::Shl {
@@ -522,8 +538,11 @@ fn shift_const(cx: &mut FnCx<'_, X64>, op: Opcode, bits: u32, r: FrameRef, a: Fr
 /// n - 1)` limbs, combined by `shld`/`shrd` by `cl` (which takes the
 /// amount mod 64, and leaves the first operand alone for 0). An amount
 /// of the width or more is poison; the clamp keeps every access inside
-/// the area.
-fn shift_var(
+/// the area. Also each `i128` lane of a vector (§5.6.19).
+///
+/// # Errors
+/// `limit:frame-size` for the area.
+pub fn shift_var(
     cx: &mut FnCx<'_, X64>,
     op: Opcode,
     bits: u32,

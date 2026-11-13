@@ -169,6 +169,7 @@ pub fn end(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
             }
             CallTarget::Reg(callee) => put(cx, mc::br(xr(callee).zr())),
         }
+        cx.tail_branch_ends_here(index); // WP-163: `spec/dwarf.md` §6.21
     }
     cx.set_frame_desc(FrameDesc { frame_size: frame, frame_base: DWARF_FP });
     Ok(())

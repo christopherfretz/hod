@@ -203,6 +203,57 @@ fn split_lists_are_indexed() {
     }
 }
 
+/// The chain with the odd blocks' calls in a lexical block, so that the
+/// block has several ranges (a `DW_FORM_rnglistx` list, WP-163), and a
+/// variable of that block described by a value record (a location list).
+fn module_with_block(triple: &str, split: bool) -> String {
+    let mut text = module(triple, split);
+    for k in (1..=BLOCKS).step_by(2) {
+        let call = 100 + 2 * k;
+        let from = format!("!{call} = !DILocation(line: {}, scope: !10)", call_line(k));
+        let to = format!("!{call} = !DILocation(line: {}, scope: !50)", call_line(k));
+        text = text.replace(&from, &to);
+    }
+    text = text.replace("b1:\n", "b1:\n    #dbg_value(i32 %a, !51, !DIExpression(), !52)\n");
+    text.push_str(
+        "!50 = distinct !DILexicalBlock(scope: !10, file: !1, line: 5)\n\
+         !51 = !DILocalVariable(name: \"inner\", scope: !50, file: !1, line: 6, type: !14)\n\
+         !52 = !DILocation(line: 6, scope: !50)\n",
+    );
+    text
+}
+
+/// WP-163's range lists and these location lists in one unit, split and
+/// not: both index their own section, the objects verify, and the
+/// block's variable has its list.
+#[test]
+fn lists_beside_block_ranges() {
+    let Some(dwarfdump) = tool("llvm-dwarfdump") else { return };
+    let dwarfdump = &dwarfdump;
+    let dir = Scratch::new("dbg-value-block");
+    for triple in TRIPLES {
+        let arch = triple.split('-').next().unwrap_or(triple);
+        let plain =
+            dir.write(&format!("{arch}.o"), compile(&module_with_block(triple, false), None));
+        let dwo = dir.join(format!("{arch}-split.dwo"));
+        let split = dir.write(
+            &format!("{arch}-split.o"),
+            compile(&module_with_block(triple, true), Some(&dwo)),
+        );
+        for file in [&plain, &split, &dwo] {
+            let verify = output(Command::new(dwarfdump).arg("--verify").arg(file));
+            assert!(verify.contains("No errors."), "{arch}: {verify}");
+        }
+        for info in [&plain, &dwo] {
+            let text = output(Command::new(dwarfdump).arg("--debug-info").arg(info));
+            assert!(text.contains("DW_AT_ranges\t(indexed (0x0) rangelist"), "{arch}: {text}");
+            let inner = entries(dwarfdump, info, "inner");
+            assert!(!inner.is_empty(), "{arch}: inner's entries {text}");
+            assert_eq!(entries(dwarfdump, info, "k").len(), BLOCKS as usize, "{arch}: {text}");
+        }
+    }
+}
+
 /// One block of records with the expressions of §6.23, then the uses.
 fn expressions(triple: &str, version: u32, record: &str) -> String {
     format!(

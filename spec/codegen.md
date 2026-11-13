@@ -1789,14 +1789,10 @@ that refused it before (WP-084's "stays refused" list is settled here).
   - `metadata-arg:llvm.read_volatile_register.i64`: the register name is
     a metadata operand, which the IR does not carry for intrinsics
     (BACKLOG WP-064) and `hod_ll`'s body reader would have to read.
-  - `debug:dbg-value`: hod writes one location per variable for the
-    whole function (§9.5). A `#dbg_value` maps to that exactly only for
-    a single record of the variable, with an empty expression, of a
-    value whose home is a frame slot from its definition on; the corpus
-    has none such (its one module, at `-O2`, has several records per
-    variable, constants (`DW_AT_const_value`) and `DW_OP_stack_value`
-    expressions, which need location lists). All stay
-    `debug:dbg-value`.
+  - `debug:dbg-value`: was refused here, since hod wrote one location
+    per variable for the whole function (§9.5). WP-162 writes value
+    records as location lists (`spec/dwarf.md` §6.23); the one corpus
+    module (`-O2`) now stops at `debug:dbg-value-arglist`.
   - `cc:preserve_allcc`, `cc:win64cc` (`cc:79` before WP-141) and `cc:aarch64_vector_pcs`
     (WP-082), which the one `preserve_mostcc` corpus module also uses.
     (`preserve_allcc` since WP-101, below.)
@@ -1840,11 +1836,15 @@ call each from the places named with the other items.
   each `i128` element travels as an `i128` (two general registers under
   the even-register rule, or a 16-aligned stack slot), as both LLVM
   selectors in 19 and 22 pass it; an `fp128` element in a `Q` register.
-  A lone `<1 x i128>` argument or result stays `abi:vector-element`: it
-  is a `Q`-register value in two general registers, and the call
-  sequence moves no value between classes (§7.2). In a structure or an
-  array it is memory and passes (`std::experimental::simd<__int128>`
-  passes `[1 x <1 x i128>] alignstack(16)` and returns `{<1 x i128>}`).
+  A lone `<1 x i128>` argument or result (WP-167; libc++'s
+  `__load_vector` returns one for `std::find` over `__int128`) travels
+  as an `i128` too: it is a `Q`-register value, so its two pieces are
+  `Lanes` parts of one 64-bit limb each (§7.2), which `vcall.rs` moves
+  with `umov xN, vM.d[i]` and `ins vM.d[i], xN` (through `x16` for a
+  stack slot) between the scratch `v30` and the place. In a structure or
+  an array it is memory and its pieces are plain bytes
+  (`std::experimental::simd<__int128>` passes `[1 x <1 x i128>]
+  alignstack(16)` and returns `{<1 x i128>}`).
 - **Arrays of `bfloat`** (HFAs and `[n x bfloat]`, `spec/abi-a64.md`
   §3.3): passed as a block of `H` registers when `NSRN + n <= 8`, where
   `llc` 22 (a block) and `llc` 19 (piece by piece) place them alike;
@@ -3451,6 +3451,53 @@ Each against `llc -O0 -fast-isel=0` 22 and 19 under the emulator, and
 
 Evidence: `spec/landed/codegen/WP-152.md`.
 
+#### 5.6.19 Arithmetic on `i128` and `x86_fp80` lanes; `pause` (WP-161)
+
+Each against `llc -O0 -fast-isel=0` 22 and 19 under the emulator (hod
+plain and stressed), and `hod_interp` for `i128` lanes
+(`crates/hod_x64/tests/wide_arith.rs`). All work lane by lane on the
+images of §5.6.18 (1): the operands are `Mem` places, the result a slot
+written lane by lane at `16·i` or `10·i`.
+
+1. **Integer binary operators on `i128` lanes** (`vector::wide_binary`):
+   each lane is the scalar `i128` sequence of §5.6.5 on 16-byte places
+   (`aggr::limbwise` for `add`/`sub`/`and`/`or`/`xor`, `aggr::multiply`,
+   and `__udivti3`/`__divti3`/`__umodti3`/`__modti3` per lane through
+   `call_runtime`, as `llc`'s scalarized division calls them). Shifts: a
+   lane's constant amount uses `aggr::shift_const`; 128 or more is
+   poison and that lane is not written; a variable amount uses
+   `aggr::shift_var` (an amount of 128 or more gives some value, never a
+   fault, and other lanes are unaffected).
+2. **Casts with `i128` lanes** (`vector::wide_cast`): `zext`/`sext`/
+   `ptrtoint`/`ptrtoaddr` from integer or pointer lanes of at most 64
+   bits (low half the lane extended, high half 0 or its sign), `trunc`/
+   `inttoptr` to them (the low half's low bits), `sitofp`/`uitofp` to
+   and `fptosi`/`fptoui` from `float` and `double` lanes through the
+   runtime routines of the scalar conversion (§5.6.7: `__floattisf`,
+   `__floatuntidf`, `__fixsfti`, `__fixunsdfti`, ...) per lane. The
+   casts of masks stay §5.6.18 (5)'s; casts with odd-width lanes keep
+   their names.
+3. **`x86_fp80` lanes** (`vector::wide_binary`, `wide_fneg`,
+   `mask::wide_fcmp`): `fadd`/`fsub`/`fmul`/`fdiv` per lane as the scalar
+   x87 sequence of §5.6.12 (`fld tbyte` both, `faddp`/..., `fstp tbyte`); `fneg`
+   copies the image and flips bit 7 of each lane's byte 9; `fcmp` per
+   lane `fld` right, `fld` left, `fucomip st1`, `fstp st0`, then the
+   predicate's code from the flags as the scalar `fcmp` (§5.6.12), its
+   bit set in the mask. `false`/`true` are constant masks.
+4. **`select` of `i128` and `x86_fp80` lanes on a mask**
+   (`mask::wide_select`): per lane, the addresses of both lanes,
+   `bt` of the mask bit, `cmovae`, and a copy of the lane through the
+   chosen address.
+5. **`llvm.x86.sse2.pause`** (`intrinsic.rs`) is `pause` (`F3 90`), as
+   `llc`'s. AArch64 refuses it by its name (`never(X64_ONLY)`).
+
+Still `x64:vector-wide-element`: `frem` of `x86_fp80` lanes; any cast
+to, from or between `x86_fp80` lanes and conversions between `i128`
+lanes and `half`, `bfloat` or `fp128` lanes; intrinsics and reductions
+on `i128` or `x86_fp80` lanes; `fp128` lanes.
+
+Evidence: `spec/landed/codegen/WP-161.md`.
+
 ## 6. Control flow
 
 ### 6.1 Reachability
@@ -3685,7 +3732,15 @@ element's bits; WP-082). The call sequence never copies a `Lanes` part
 as bytes: it hands it to the target's `lanes_out(part, from, to)` and
 `lanes_in(part, from, to)`, each side a `LaneLoc` (a register, or a
 frame place: the stack slot, or the vector's image in a `Mem` value);
-a `Gpr` mask value is gathered in the general scratch register. The
+a register value is gathered in (or produced from) the scratch register
+of its own class: a `Gpr` mask in the general one, an `Fpr` value in
+the vector one (WP-167: AArch64's lone `<1 x i128>`, a `Q` register
+whose two 64-bit limbs travel as `Lanes { bits: 64, lane: 8, len: 2 }`
+parts, `first` the limb). A target's hook refuses with
+`call:part-lanes` a register side of a class it does not move (x86-64:
+a value side that is not a general register, a place that is not an
+`xmm`; AArch64: a mask's or promoted vector's value side in a vector
+register), so no register is read as another class. The
 default hooks refuse with `call:part-lanes`;
 `Assignment { args, ret, ret_memory, sret_returned_in, stack_size, va,
 vector_regs_used }`. `ret_memory` is set when a return value does not fit
@@ -4631,14 +4686,18 @@ Recorded only when the module has debug information.
   ignored tests). At `-O0` a row's location holds for the whole function. The
   body is dropped after its function is compiled, so everything
   `hod_dwarf` needs from it is copied here.
+- `#dbg_value` records are rows of `vars` too (WP-162, `spec/dwarf.md`
+  §6.23): one `VarPlace::Value(ValueRange)` row per record in a
+  reachable block, the code range it holds over and what holds the value
+  there (a frame home, a constant, or nothing); `move_rows` moves the
+  ranges.
 - labels are rows of `vars` too: one `VarPlace::Label(offset)` row per
   `#dbg_label` in a reachable block, the label and the code offset of
   the instruction that follows it.
 - a record hod cannot describe exactly is a `VarPlace::Refused(name)`
   row; a `FullDebug` unit then refuses the function under that name:
-  `debug:dbg-value` (any `#dbg_value`: clang and kiln do not emit them at
-  `-O0`, and none is described yet, `spec/dwarf.md` open question 9),
-  `debug:dbg-assign`, `debug:declare-address` (a `#dbg_declare` of a
+  `debug:dbg-value-arglist` (a `#dbg_value` of a `DIArgList`) and
+  `debug:dbg-value-coroutine` (one in a coroutine body), `debug:dbg-assign`, `debug:declare-address` (a `#dbg_declare` of a
   constant, a symbol, or a value that never got a home; a declaration of
   `undef` or `poison` gets no row at all, as `llc` drops it, WP-156,
   `spec/dwarf.md` §6.22).

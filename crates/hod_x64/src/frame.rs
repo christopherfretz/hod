@@ -161,6 +161,7 @@ pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
             CallTarget::Sym(sym) => put_reloc(cx, mc::jmp_near(0), X64Reloc::Plt32, sym, 0)?,
             CallTarget::Reg(callee) => put(cx, mc::jmp_r(gp(callee))),
         }
+        cx.tail_branch_ends_here(index); // WP-163: `spec/dwarf.md` §6.21
     }
     // Last: the exit sequences above may address locals too (WP-125).
     bias_local_sites(cx, -i64::from(below))?;

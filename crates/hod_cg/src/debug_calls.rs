@@ -8,9 +8,10 @@
 //! ([`Target::emit_call`](crate::Target::emit_call)); the target reports
 //! where the call returns with [`FnCx::call_returns_here`], right after
 //! the call instruction, and where a tail exit branches with
-//! [`FnCx::tail_branch_here`], right before the branch. A row the target
-//! did not complete is an internal error: a return address is never
-//! guessed. Calls the code generator makes on its own (the runtime,
+//! [`FnCx::tail_branch_here`], right before the branch, and where that
+//! branch ends with [`FnCx::tail_branch_ends_here`], right after it
+//! (WP-163: DWARF 4's GNU call site names the end). A row the target did
+//! not complete is an internal error: a return address is never guessed. Calls the code generator makes on its own (the runtime,
 //! `memcpy`) get no row, as `llc` writes no call site for an external
 //! symbol.
 //!
@@ -59,6 +60,9 @@ pub struct DebugCallRow {
     pub callee: DebugCallee,
     /// Whether the call is a `musttail` call (a branch).
     pub tail: bool,
+    /// The offset after the call instruction or the branch (WP-163: a
+    /// tail call's as the target reports it, `spec/dwarf.md` §6.21).
+    pub end: u32,
     /// The call's location (a tail exit's line row).
     pub loc: LocId,
 }
@@ -103,7 +107,13 @@ impl<T: Target> FnCx<'_, T> {
             return false;
         }
         let loc = self.line_loc();
-        self.out.debug_calls.push(DebugCallRow { offset: PENDING, callee, tail, loc });
+        self.out.debug_calls.push(DebugCallRow {
+            offset: PENDING,
+            callee,
+            tail,
+            loc,
+            end: PENDING,
+        });
         true
     }
 
@@ -119,6 +129,7 @@ impl<T: Target> FnCx<'_, T> {
             && !row.tail
         {
             row.offset = offset;
+            row.end = offset;
             if let (DebugCallee::Reg(_), CallTarget::Reg(reg)) = (row.callee, target) {
                 row.callee = DebugCallee::Reg(dwarf(reg));
             }
@@ -163,6 +174,20 @@ impl<T: Target> FnCx<'_, T> {
         }
     }
 
+    /// Reports that the branch of tail exit `index` the target just wrote
+    /// (after [`FnCx::tail_branch_here`]) ends here: its length is the
+    /// target's, whatever instruction it chose (WP-163).
+    pub fn tail_branch_ends_here(&mut self, index: usize) {
+        let end = self.offset();
+        let first = self.mark.debug_calls as usize;
+        if let Some(row) = self.out.debug_calls[first..].iter_mut().filter(|r| r.tail).nth(index)
+            && row.offset != PENDING
+            && row.end == PENDING
+        {
+            row.end = end;
+        }
+    }
+
     /// The rows' offsets after the function's code shrank
     /// (`spec/codegen.md` §5.6.15): a call returns, and a tail exit
     /// branches, where its bytes moved to. A row not completed stays so
@@ -170,9 +195,7 @@ impl<T: Target> FnCx<'_, T> {
     pub(crate) fn map_debug_calls(&mut self, map: impl Fn(u32) -> u32) {
         let first = self.mark.debug_calls as usize;
         for row in &mut self.out.debug_calls[first..] {
-            if row.offset != PENDING {
-                row.offset = map(row.offset);
-            }
+            map_row(row, &map);
         }
     }
 
@@ -189,7 +212,9 @@ impl<T: Target> FnCx<'_, T> {
     pub(crate) fn finish_debug_calls(&self) -> CgResult<()> {
         let first = self.mark.debug_calls as usize;
         let rows = &self.out.debug_calls[first..];
-        if rows.iter().any(|r| r.offset == PENDING || r.callee == DebugCallee::Reg(u16::MAX)) {
+        if rows.iter().any(|r| {
+            r.offset == PENDING || r.end == PENDING || r.callee == DebugCallee::Reg(u16::MAX)
+        }) {
             return self.bug("a described call without its offset or register");
         }
         Ok(())
@@ -224,7 +249,6 @@ pub(crate) fn call_inputs(
     if !matches!(module.props.dwarf_version, None | Some(4 | 5)) {
         return Err(CgError::unsupported(hod_dwarf::DEBUG_CALL_SITES));
     }
-    let x86_64 = module.target().arch() == hod_ir::Arch::X86_64;
     if coroutine {
         return Err(CgError::unsupported(hod_dwarf::DEBUG_CALL_SITE_INTRINSIC));
     }
@@ -240,28 +264,54 @@ pub(crate) fn call_inputs(
                 _ => continue,
             },
         };
-        let end = if row.tail { row.offset + tail_branch_len(x86_64, origin) } else { row.offset };
-        out.push(CallSiteInput { offset: row.offset, origin, tail: row.tail, end });
+        out.push(CallSiteInput { offset: row.offset, origin, tail: row.tail, end: row.end });
     }
     Ok(())
 }
 
-/// The length of a tail exit's branch, which DWARF 4's GNU call site
-/// names the end of (`spec/dwarf.md` §6.21): AArch64's `b`/`br` are 4
-/// bytes; x86-64's are `jmp rel32` (5, to a symbol: never shrunk, its
-/// target is relocated) and `jmp *%r` (2, 3 with a REX prefix for
-/// `r8`..`r15`, DWARF registers 8 to 15), as `hod_x64`'s `frame.rs`
-/// writes them. The tests check every such end against the disassembly.
-const fn tail_branch_len(x86_64: bool, origin: CallOrigin) -> u32 {
-    match (x86_64, origin) {
-        (false, _) => 4,
-        (true, CallOrigin::Subprogram(_)) => 5,
-        (true, CallOrigin::Register(reg)) => {
-            if reg >= 8 {
-                3
-            } else {
-                2
-            }
+/// A row's offsets moved by the shrink pass (`spec/codegen.md` §5.6.15):
+/// the call's or branch's, and its end; a pending one stays pending.
+fn map_row(row: &mut DebugCallRow, map: &impl Fn(u32) -> u32) {
+    for at in [&mut row.offset, &mut row.end] {
+        if *at != PENDING {
+            *at = map(*at);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WP-163: a tail call's end is the target's, mapped as its start is:
+    /// a branch that keeps its length keeps it when bytes before it go,
+    /// and one the pass shortened (bytes removed inside it) ends where
+    /// its last byte now is.
+    #[test]
+    fn a_tail_branch_end_moves_with_the_code() {
+        let row = |offset, end| DebugCallRow {
+            offset,
+            callee: DebugCallee::NoSite,
+            tail: true,
+            loc: LocId::NONE,
+            end,
+        };
+        // Three bytes removed at 10..13 (a `jmp rel32` relaxed to `rel8`
+        // before the exit).
+        let map = |at: u32| if at >= 13 { at - 3 } else { at.min(10) };
+        let mut r = row(40, 43);
+        map_row(&mut r, &map);
+        assert_eq!((r.offset, r.end), (37, 40), "a 3-byte `jmp *%r11` stays 3 bytes");
+        let mut r = row(40, 45);
+        map_row(&mut r, &map);
+        assert_eq!(r.end - r.offset, 5, "a `jmp rel32` stays 5 bytes");
+        // The branch itself shortened: 3 of its bytes removed.
+        let map = |at: u32| if at >= 45 { at - 3 } else { at.min(42) };
+        let mut r = row(40, 45);
+        map_row(&mut r, &map);
+        assert_eq!(r.end - r.offset, 2, "the end follows the bytes written");
+        let mut r = row(PENDING, PENDING);
+        map_row(&mut r, &map);
+        assert_eq!((r.offset, r.end), (PENDING, PENDING));
     }
 }

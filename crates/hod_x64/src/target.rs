@@ -227,7 +227,9 @@ fn lower_cast<'a>(
         || (class == Class::Mem && mem_kind(types, inst.ty()) == MemKind::Lanes);
     match (from_class, class) {
         _ if x87 => x87::cast(cx, inst, arg),
-        _ if vector && inst.opcode() != Opcode::BitCast => lanes::cast(cx, inst, arg),
+        _ if vector && inst.opcode() != Opcode::BitCast => {
+            vector::wide_cast(cx, inst, arg).unwrap_or_else(|| lanes::cast(cx, inst, arg))
+        }
         (Class::Mem, _) | (_, Class::Mem) => aggr::cast(cx, inst, arg),
         (Class::Fpr, _) | (_, Class::Fpr) => float::cast(cx, inst, arg),
         (Class::Gpr, Class::Gpr) => int::cast(cx, inst, arg),
@@ -337,13 +339,16 @@ impl Target for X64 {
                 (Class::Gpr, _) => int::binary(cx, inst, lhs, rhs),
                 (Class::Fpr, _) => float::binary(cx, inst, lhs, rhs),
                 (Class::Mem, MemKind::X87) => x87::binary(cx, inst, lhs, rhs),
-                (Class::Mem, MemKind::Lanes) => lanes::binary(cx, inst, lhs, rhs),
+                (Class::Mem, MemKind::Lanes) => vector::wide_binary(cx, inst, lhs, rhs)
+                    .unwrap_or_else(|| lanes::binary(cx, inst, lhs, rhs)),
                 (Class::Mem, MemKind::Aggr) => aggr::binary(cx, inst, lhs, rhs),
             },
             InstKind::Unary { arg } => match (inst.opcode(), class, mem_kind(types, inst.ty())) {
                 (Opcode::FNeg, Class::Fpr, _) => float::fneg(cx, inst, arg),
                 (Opcode::FNeg, Class::Mem, MemKind::X87) => x87::fneg(cx, inst, arg),
-                (Opcode::FNeg, Class::Mem, _) => lanes::fneg(cx, inst, arg),
+                (Opcode::FNeg, Class::Mem, _) => {
+                    vector::wide_fneg(cx, inst, arg).unwrap_or_else(|| lanes::fneg(cx, inst, arg))
+                }
                 (_, Class::Gpr, _) => int::freeze(cx, inst, arg),
                 (_, Class::Fpr, _) => float::freeze(cx, inst, arg),
                 (_, Class::Mem, _) => aggr::freeze(cx, inst, arg),

@@ -817,8 +817,7 @@ impl<'a> Writer<'a> {
             write_uleb(&mut self.block_lists, u64::from(end));
         }
         self.block_lists.push(0);
-        let offset = self.block_lists_base + at;
-        self.rnglists_offset(offset as i64);
+        self.block_list(at);
     }
 
     /// A concrete subprogram with an abstract instance: its code, frame

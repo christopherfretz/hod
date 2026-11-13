@@ -908,6 +908,7 @@ impl<'m> ModuleEmitter<'m> {
     /// functions are placed.
     fn debug_tables(&mut self) -> CgResult<()> {
         let Some(mut debug) = self.debug.take() else { return Ok(()) };
+        debug.split = self.options.split_dwarf; // WP-062: §6.15
         let module = self.module;
         let places = &self.places;
         debug.finish(module, &mut self.obj, |obj, sym| {

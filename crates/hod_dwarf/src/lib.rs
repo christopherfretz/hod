@@ -46,23 +46,28 @@
 use std::fmt;
 
 pub mod abbrev;
+mod call_sites;
 mod die;
 mod early;
 mod func;
 mod global;
 mod import;
 mod inline;
+mod label;
 mod leb;
 mod line;
+mod local_type;
 mod policy;
 mod reduced;
 pub mod scope;
 mod spec;
+mod split;
 mod strings;
 mod target;
 mod template;
 mod types;
 
+pub use call_sites::DEBUG_CALL_SITES;
 pub use die::{CodeSpan, DieSections, GlobalAddr, UnitInput, UnitPlan, write_debug_info};
 pub use early::{LOCAL_TYPE_SCOPE, check_functions};
 pub use func::{FunctionInput, LocalPlace, LocalRow, ScopeRow};
@@ -71,6 +76,10 @@ pub use inline::{
     DEBUG_INLINED_MEMBER, DEBUG_LOCAL_STATIC, DEBUG_RETAINED_NODES,
 };
 pub use reduced::{LINE_TABLES_INLINED, LINE_TABLES_VARIABLES, REDUCED_UNIT_ENTITIES, has_dies};
+pub use split::{
+    DWO_ID, SPLIT_DWARF_4, SPLIT_INLINING, SPLIT_NAME, SPLIT_REDUCED, SPLIT_SEVERAL_UNITS,
+    SplitDwarf, SplitSections, dwo_id, write_split_debug_info, write_unit_dies,
+};
 pub use strings::DebugStrings;
 
 pub use leb::{write_sleb, write_uleb};

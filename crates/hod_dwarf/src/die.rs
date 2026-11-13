@@ -115,8 +115,8 @@ pub struct UnitPlan<'a> {
     pub(crate) debug: &'a DebugInfo,
     pub(crate) unit: DiId,
     pub(crate) cu: DiCompileUnit<'a>,
-    name: &'a [u8],
-    comp_dir: &'a [u8],
+    pub(crate) name: &'a [u8],
+    pub(crate) comp_dir: &'a [u8],
     files: FileTable<'a>,
     /// `(DiFile id, file index)`, sorted by id.
     file_index: Vec<(u32, u32)>,
@@ -246,6 +246,7 @@ impl<'a> UnitPlan<'a> {
         if cu.emission_kind != EmissionKind::FullDebug {
             crate::reduced::check_unit(unit, &cu)?; // WP-061: §6.10
         }
+        crate::split::check_unit(unit, &cu)?; // WP-062: §6.15
         let Some(file) = cu.file.filter(|&f| debug.find_kind(f) == Some(DiKind::File)) else {
             return Err(bad(unit, "file"));
         };
@@ -499,7 +500,7 @@ impl<'a> UnitPlan<'a> {
         self.slot.get(node.index()).copied().filter(|&d| d != NONE)
     }
 
-    fn die_of_expr(&self, expr: DiId) -> Option<u32> {
+    pub(crate) fn die_of_expr(&self, expr: DiId) -> Option<u32> {
         let at = self.by_expr.binary_search_by_key(&expr.raw(), |&(e, _)| e).ok()?;
         Some(self.by_expr[at].1)
     }
@@ -574,14 +575,14 @@ pub struct DieSections {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Sec {
+pub(crate) enum Sec {
     Info,
     StrOffsets,
     Addr,
 }
 
 #[derive(Clone, Copy)]
-enum Target {
+pub(crate) enum Target {
     Abbrev,
     Str,
     StrOffsets,
@@ -592,29 +593,29 @@ enum Target {
 }
 
 #[derive(Clone, Copy)]
-struct Reloc {
-    sec: Sec,
-    offset: usize,
-    target: Target,
-    addend: i64,
+pub(crate) struct Reloc {
+    pub(crate) sec: Sec,
+    pub(crate) offset: usize,
+    pub(crate) target: Target,
+    pub(crate) addend: i64,
 }
 
 /// The output of the writer before the object is touched.
 pub(crate) struct Writer<'a> {
     pub(crate) info: Vec<u8>,
     pub(crate) str_offsets: Vec<u8>,
-    addr: Vec<u8>,
-    rnglists: Vec<u8>,
+    pub(crate) addr: Vec<u8>,
+    pub(crate) rnglists: Vec<u8>,
     pub(crate) strings: DebugStrings<'a>,
     pub(crate) used: Used,
-    relocs: Vec<Reloc>,
+    pub(crate) relocs: Vec<Reloc>,
     // Per unit, reused.
     pub(crate) offsets: Vec<u32>,
     pub(crate) patches: Vec<(usize, u32)>,
-    stack: Vec<(u32, usize)>,
+    pub(crate) stack: Vec<(u32, usize)>,
     pub(crate) addr_of: Vec<u32>,
-    addrs: Vec<(SymbolId, i64)>,
-    spans: Vec<CodeSpan>,
+    pub(crate) addrs: Vec<(SymbolId, i64)>,
+    pub(crate) spans: Vec<CodeSpan>,
     /// The current unit's start in `info`, and its globals' addresses.
     pub(crate) unit_start: usize,
     pub(crate) cur: Vec<(SymbolId, i64)>,
@@ -694,7 +695,7 @@ impl<'a> Writer<'a> {
     }
 
     /// Sorts and merges the unit's code spans into `self.spans`.
-    fn spans(&mut self, code: &[CodeSpan], symbols: u32) -> Result<(), Error> {
+    pub(crate) fn spans(&mut self, code: &[CodeSpan], symbols: u32) -> Result<(), Error> {
         self.spans.clear();
         for (i, s) in code.iter().enumerate() {
             if s.symbol.index() >= symbols {
@@ -729,7 +730,7 @@ impl<'a> Writer<'a> {
     /// entries follow the globals', in DIE order, then the spans'; the
     /// blocks' lists follow the unit's own list in `.debug_rnglists`.
     /// The first span's address index.
-    fn begin_functions(
+    pub(crate) fn begin_functions(
         &mut self,
         plan: &UnitPlan<'a>,
         globals: usize,
@@ -865,7 +866,7 @@ impl<'a> Writer<'a> {
 
     /// The unit's contributions to `.debug_str_offsets`, `.debug_addr`
     /// and `.debug_rnglists`, after its DIEs.
-    fn contributions(
+    pub(crate) fn contributions(
         &mut self,
         has_addr: bool,
         ranges: bool,
@@ -938,7 +939,12 @@ impl<'a> Writer<'a> {
     }
 
     /// Writes DIE `die` of `plan` (without its children).
-    fn die(&mut self, plan: &UnitPlan<'a>, die: u32, children: bool) -> Result<(), Error> {
+    pub(crate) fn die(
+        &mut self,
+        plan: &UnitPlan<'a>,
+        die: u32,
+        children: bool,
+    ) -> Result<(), Error> {
         let d = plan.dies[die as usize];
         self.offsets[die as usize] =
             u32::try_from(self.info.len() - self.unit_start).map_err(|_| Error::TooLarge)?;
@@ -956,7 +962,7 @@ impl<'a> Writer<'a> {
                 let addr = self.addr_of[die as usize];
                 let mask = u32::from(!v.is_local)
                     | u32::from(file.is_some()) << 1
-                    | u32::from(v.align != 0) << 2
+                    | u32::from(v.align >= 8) << 2
                     | u32::from(addr != NONE) << 3
                     | u32::from(!v.linkage_name.is_empty()) << 4;
                 if v.name.is_empty() {
@@ -971,7 +977,7 @@ impl<'a> Writer<'a> {
                     write_uleb(&mut self.info, u64::from(file));
                     write_uleb(&mut self.info, u64::from(v.line));
                 }
-                if v.align != 0 {
+                if v.align >= 8 {
                     write_uleb(&mut self.info, u64::from(v.align / 8));
                 }
                 if addr != NONE {

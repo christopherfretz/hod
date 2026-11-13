@@ -16,8 +16,8 @@
 //! [`LOCAL_TYPE_SCOPE`].
 
 use hod_ir::{
-    Body, DbgRecordKind, DebugInfo, DiId, DiKind, DiNode, DiSubprogram, EmissionKind, ExprId,
-    Module, SpFlags, SymbolKind, Value,
+    Body, DebugInfo, DiId, DiKind, DiNode, DiSubprogram, EmissionKind, ExprId, Module, SpFlags,
+    SymbolKind, Value,
 };
 
 use crate::Error;
@@ -35,6 +35,11 @@ impl UnitPlan<'_> {
     /// The parent DIE of type `of`, local to subprogram `scope`, which has
     /// no DIE yet: the function's early DIE.
     pub(crate) fn local_type_parent(&mut self, of: DiId, scope: DiId) -> Result<u32, Error> {
+        // WP-098: a type local to a function that is only inlined, reached
+        // once its abstract instance exists, goes under it (§6.14).
+        if let Some(d) = crate::local_type::abstract_parent(self, scope) {
+            return Ok(d);
+        }
         if !self.inline.has_body(scope) {
             return Err(unsupported(of, LOCAL_TYPE_SCOPE));
         }
@@ -120,6 +125,7 @@ fn check_subprogram(sp: &DiSubprogram<'_>) -> Result<(), &'static str> {
     if !sp.sp_flags.contains(SpFlags::DEFINITION) {
         return Err("debug:subprogram-not-definition");
     }
+    crate::call_sites::check(sp)?; // WP-098: §6.14
     if !sp.thrown_types.is_empty()
         || sp.sp_flags.0 & !DEF_SP_FLAGS != 0
         || (sp.declaration.is_none() && sp.flags.0 & !DEF_FLAGS != 0)
@@ -137,15 +143,7 @@ fn check_records(debug: &DebugInfo, body: &Body) -> Result<(), &'static str> {
     for (var, expr) in vars.chain(declares.map(|d| (d.var, d.expr))) {
         check_variable(debug, var, expr)?;
     }
-    for record in body.dbg_records() {
-        if record.kind == DbgRecordKind::Label
-            && debug.find_kind(record.var) == Some(DiKind::Label)
-            && let DiNode::Label(n) = debug.node(record.var)
-            && (n.name.is_empty() || n.is_artificial || n.coro_suspend_idx.is_some())
-        {
-            return Err("debug:label-attribute");
-        }
-    }
+    // WP-098: every label is written (§6.14); none is refused here.
     Ok(())
 }
 

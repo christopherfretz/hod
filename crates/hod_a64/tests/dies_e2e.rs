@@ -186,6 +186,11 @@ struct Tally {
     verify_hod: usize,
     verify_llc: usize,
     trees_equal: usize,
+    /// Trees that differ only by §6.7's code-generation classes, by the
+    /// classes (WP-098).
+    trees_permitted: BTreeMap<String, usize>,
+    /// Trees that differ otherwise.
+    trees_differ: usize,
     functions: usize,
     lines_equal: usize,
     /// Line-table differences by kind.
@@ -295,8 +300,21 @@ fn census_one(
     match diff {
         None => t.trees_equal += 1,
         Some(d) => {
-            let d: String = d.lines().take(40).collect::<Vec<_>>().join("\n");
-            t.notes.push(format!("{name}: tree: {d}"));
+            let classes = (th.len() == 1 && tl.len() == 1)
+                .then(|| {
+                    let is_constant = text.contains("@llvm.is.constant");
+                    support::permitted(&th[0], &tl[0], is_constant, major == 19)
+                })
+                .flatten();
+            if let Some(classes) = classes {
+                let classes = classes.join(", ");
+                t.notes.push(format!("{name}: tree: permitted: {classes}"));
+                *t.trees_permitted.entry(classes).or_default() += 1;
+            } else {
+                t.trees_differ += 1;
+                let d: String = d.lines().take(40).collect::<Vec<_>>().join("\n");
+                t.notes.push(format!("{name}: tree: {d}"));
+            }
         }
     }
     let Some(toolchain) = toolchain else { return };
@@ -388,7 +406,8 @@ fn debug_census() {
     }
     eprintln!(
         "modules {}, unread {}, refused by codegen {:?}, llc failed {}, built {}\n\
-         verify clean: hod {} llc {}; trees equal {}; linked {}; runs alike {}\n\
+         verify clean: hod {} llc {}; trees equal {}, permitted {:?}, differ {}; \
+         linked {}; runs alike {}\n\
          functions {}, lines equal {} (differences {:?}); sessions {}, equal {}",
         t.modules,
         t.unread,
@@ -398,6 +417,8 @@ fn debug_census() {
         t.verify_hod,
         t.verify_llc,
         t.trees_equal,
+        t.trees_permitted,
+        t.trees_differ,
         t.linked,
         t.ran_alike,
         t.functions,

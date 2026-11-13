@@ -871,6 +871,12 @@ business, not the program's; "Test directives").
 | `half_fp128.ll` | scalar `half` (arithmetic, rounding, conversions) and `fp128` (libgcc's soft float, a subnormal, from `i128`) | |
 | `vector_arith.ll` | whole-vector integer and floating-point arithmetic at 128 bits, the min/max and saturating intrinsics, `icmp` of vectors | |
 | `x86_fp80.ll` | `target: x86_64`: `x86_fp80` arithmetic, conversions, `%Lg` through varargs | |
+| `drift_fp128_libm.ll` | drift (WP-130): the libm routine of an fp128 intrinsic and `frem` by type and target (`sinl` on AArch64, `sinf128` on x86-64) | |
+| `drift_call_widths.ll` | drift (WP-130): narrow and odd-width integers across calls with `zeroext`, `signext` and plainly, in registers and on the stack, and an `{ i7, i33 }` by value | |
+| `drift_saturation.ll` | drift (WP-130): `sadd.sat` and kin at i7 to i64, `fptosi.sat`/`fptoui.sat` with NaN, infinities and out-of-range values | |
+| `drift_dead.ll` | drift (WP-130): dead divisions by zero and dead loads through bad pointers are not executed; a frozen poison is one value | |
+| `drift_bfloat.ll` | drift (WP-130): `bfloat` through `float`, one rounding from `double` | |
+| `drift_lanes.ll` | drift (WP-130): an out-of-range variable lane index touches nothing outside the vector; a 3-lane division divides 3 lanes | |
 
 The three `exit_*.ll` programs make no call, so hod compiled them before
 it had calls (WP-043): each checks its results against values derived
@@ -886,6 +892,18 @@ and each was confirmed with `llc` 19 and 22 for AArch64 natively and for
 x86-64 under the emulator, linked by the GNU drivers with libgcc, not
 compiler-rt. `x86_fp80.ll` is the one seed for a single target: LLVM has
 no `x86_fp80` for AArch64. `indirectbr` is in `exit_control.ll`.
+
+The `drift_*.ll` seeds (WP-130) are the rules both code generators
+implement separately with the same observable result (design 0006 §8,
+risk 7) that no other seed covered; each must print the same on both
+targets. The other rules of that list are covered by `half_fp128.ll`
+(fp128 compares and conversions, `half` through `float`), `i128.ll`
+(division routines), `bit_intrinsics.ll` (`ctlz`/`cttz` of zero, funnel
+shifts), `fp_intrinsics.ll` (NaN and ±0 in min/max), `mem_intrinsics.ll`
+(memcpy lengths), `convergent.ll` and `tail_intrinsics.ll`
+(`is.constant`), `atomics.ll` (orderings) and `vector_lanes.ll` (lane
+division). "The first of duplicate switch cases wins" has no seed: LLVM
+rejects a `switch` with two equal case values.
 
 The `va_arg` instruction is not in the corpus, because it has no oracle:
 for AArch64 Linux, `llc` (19 and 22) accepts it and reads the `va_list` as
@@ -1690,6 +1708,20 @@ the host's corpus is not read or written:
   `<build>/corpus/verify-<arch>-llvm<N>-<mode>.tsv`.
 - **census** writes `docs/status/corpus-x64-census.md` by default.
 - **reasons** reads that corpus (hod takes the target from each module).
+  Its report is titled for the architecture and adds two sections (WP-130):
+  for x86-64, the ten most frequent refusals of the census with the
+  modules each is the first refusal of and the package that owns it
+  (`reasons::owner_x64`, a prefix table kept with `docs/BACKLOG.md`;
+  `-` when none does); for any `--target`, "What the built modules do",
+  read from `verify`'s hybrid results
+  (`<build>/corpus/verify-<arch>-llvm<N>-hybrid.tsv`, a missing file a
+  row saying so): per major the tests, the tests hod built every module
+  of, PASS, FAIL, ERROR and other results, the PASSes of hod-built
+  results, and up to 40 results that are neither PASS nor UNSUPPORTED. A
+  FAIL of a test hod built is a wrong result unless the entry's program
+  is undefined (the report lists it either way). The x86-64 report is
+  `docs/status/reasons-x64.md`. Tests:
+  `corpus::reasons::tests::{owners_and_verify_results, arguments}`.
 - **compare** sets that corpus against this machine's ("compare").
 
 Entries are the same format, with `target: <arch>` naming the corpus's

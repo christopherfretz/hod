@@ -1861,6 +1861,13 @@ impl<'a> CallSite<'a> {
         vals.get(1..).and_then(|rest| rest.get(..self.data().nargs as usize)).unwrap_or(&[])
     }
 
+    /// The body the call is in: the types of its variable arguments are
+    /// the body's (`Body::value_type`).
+    #[inline]
+    pub fn body(&self) -> &'a Body {
+        self.body
+    }
+
     /// The calling convention.
     #[inline]
     pub fn cc(&self) -> CallConv {

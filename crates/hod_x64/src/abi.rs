@@ -117,10 +117,10 @@ const INALLOCA: &str = "abi:inalloca";
 const PREALLOCATED: &str = "abi:preallocated";
 const ELEMENTTYPE: &str = "abi:elementtype";
 const BYVAL_ALIGN: &str = "abi:byval-align";
-/// A vector of `i128` argument whose pieces would lie partly in
+/// A vector of `i128` argument whose first element would lie partly in
 /// registers and partly on the stack, or start on the stack at an offset
-/// that is not a multiple of 16 (§4.3): `llc` 19 keeps each element a
-/// pair, `llc` 22 splits it (WP-152).
+/// that is not a multiple of 16 (§4.3): `llc` 19 keeps the first element
+/// a pair, `llc` 22 splits it (WP-152, WP-171).
 pub const I128_VECTOR_SPLIT: &str = "x64:vector-i128-split";
 /// The largest `byval` alignment (§6.2): the caller aligns `rsp` with an
 /// `and` of a 32-bit immediate.
@@ -301,8 +301,9 @@ fn vector_leaf(types: &TypeTable, elem: TypeId, len: u32, features: Features) ->
         // bytes apart in the vector.
         TypeKind::X86Fp80 => return Ok(Leaf::each(Class::X87, len, 10)),
         // WP-152: element by element as LLVM 22 scalarizes it: each
-        // `i128` two ordinary general pieces (no pair rule, §4.3), which
-        // [`assign_argument`] refuses to split (`I128_VECTOR_SPLIT`).
+        // `i128` two ordinary general pieces (no pair rule, §4.3); where
+        // `llc` 19 places the first element otherwise, [`assign_argument`]
+        // refuses (`I128_VECTOR_SPLIT`).
         TypeKind::Int(128) => {
             let Some(count) = len.checked_mul(2) else { return no(SIZE_LIMIT) };
             return Ok(Leaf::each(Class::Gpr, count, 8));
@@ -634,16 +635,16 @@ fn is_i128_vector(types: &TypeTable, ty: TypeId) -> bool {
         if matches!(types.kind(elem), TypeKind::Int(128)))
 }
 
-/// §4.3 (WP-152): the pieces of a vector of `i128` argument are all in
-/// registers, or all on the stack from an offset that is a multiple of
-/// 16; anything else is placed differently by `llc` 19 and 22.
+/// §4.3 (WP-152, WP-171): the first element of a vector of `i128`
+/// argument is in two registers, or on the stack from an offset that is a
+/// multiple of 16; the pieces after it are ordinary. `llc` 19 places the
+/// first element as a lone `i128` (both halves in registers, else both on
+/// the stack aligned to 16) and the rest as `llc` 22 does, so anything
+/// else is placed differently by the two.
 fn check_i128_vector(parts: &[Part]) -> Abi<()> {
-    let in_regs = parts.iter().filter(|p| matches!(p.place, Place::Reg(_))).count();
-    if in_regs == parts.len() {
-        return Ok(());
-    }
-    match parts.first().map(|p| p.place) {
-        Some(Place::Stack(at)) if in_regs == 0 && at % 16 == 0 => Ok(()),
+    match (parts.first().map(|p| p.place), parts.get(1).map(|p| p.place)) {
+        (Some(Place::Reg(_)), Some(Place::Reg(_))) => Ok(()),
+        (Some(Place::Stack(at)), _) if at % 16 == 0 => Ok(()),
         _ => no(I128_VECTOR_SPLIT),
     }
 }

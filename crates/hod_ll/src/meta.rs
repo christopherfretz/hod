@@ -12,6 +12,7 @@ use hod_ir::kit::{
 use crate::Span;
 use crate::error::{LlErrorKind, PResult, fail, ir_fail};
 use crate::index::parse_u32;
+use crate::kw::Kw;
 use crate::lexer::Tok;
 use crate::parser::{Parser, unquote};
 
@@ -387,7 +388,7 @@ impl<L: Layering> Parser<'_, '_, L> {
                 // A node, in place or by number: kept as "other".
                 self.goto(span.end);
             }
-        } else if self.at_word(b"null") {
+        } else if self.at_word(Kw::Null) {
             self.bump();
         } else {
             let value = self.parse_typed_const()?;

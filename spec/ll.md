@@ -33,9 +33,9 @@ the body parser reads it into a `hod_ir::Body`.
 
 ## 2. Lexer
 
-`Lexer::new(source: &[u8])`, `next_token() -> Token { kind: Tok, start:
-u32, end: u32 }`. A token is a kind and a byte span of the source; nothing
-is copied and nothing is allocated. Names and strings are unescaped only
+`Lexer::new(source: &[u8])`, `next_token() -> Token { kind: Tok, kw: Kw,
+start: u32, end: u32 }`. A token is a kind, a keyword code (§2.2) and a
+byte span of the source; nothing is copied and nothing is allocated. Names and strings are unescaped only
 by whoever needs their bytes (`unescape`, §2.7). The rules are those of
 LLVM's `LLLexer`, including the ones that surprise.
 
@@ -70,6 +70,25 @@ the first other character, so `a.b` is a word and a stray `.`. Two
 exceptions, both LLVM's: `i` followed by digits is `IntType` even when
 letters follow (`i1x` is `i1` and `x`), and `cc` followed by a digit is
 the word `cc` (`cc10` is `cc` and `10`).
+
+Keyword codes. A `Word` or `IntType` token carries `kw`, the code of the
+keyword it is (`Kw`, one byte: every word the parser compares against,
+and `i1` to `i128`), or `Kw::Other`; every other token carries
+`Kw::Other`. The code is assigned once, in the lexer, by a perfect hash:
+the word's bytes zero-padded to 16, as two little-endian words, mixed
+and multiplied into one of 4096 slots that holds a keyword's code, then
+one compare of the whole key with that keyword's key. A word longer than
+16 bytes is compared with the few keywords that long. The table is
+built at compile time and the build fails if two keywords share a slot
+(`kw.rs`; the multiplier was found by search, an ignored test). So a
+test for a keyword in the parser, the word types, the instruction
+dispatch, flags and predicates are one byte compared; the text of a
+word that is not a keyword (a metadata word, an attribute) is still the
+token's span. The lexer finds most words, integer types and integers
+from one dispatch on the first byte and, for a word or a type of at most
+15 bytes, from the sixteen bytes at its start; a token that could be
+anything but the plain word, type or integer (a label, `u0x…`, `cc10`,
+fewer than sixteen bytes left) takes the rules as written above.
 
 ### 2.3 Labels
 
@@ -110,6 +129,21 @@ does not end is an error.
 `unescape(raw, out)` appends what the contents of a string or quoted name
 stand for: `\\` is a backslash, `\xx` with two hexadecimal digits is that
 byte, any other backslash is itself.
+
+### 2.8 Replay
+
+A token is a function of the source and of the offset the lexer looks
+for it at, nothing else. So tokens one lexer has lexed can be handed to
+another over the same source (`record`, `replay`, crate-internal): each
+is kept with the offset it was looked for at, in increasing order, and
+the replaying lexer, asked for a token at an offset that has one, takes
+it instead of lexing; at any other offset it lexes, and it skips the
+entries it has moved past, so moving it anywhere (`set_pos`) still
+gives the lexed tokens. No `Eof` or `Error` token is kept, so the error
+text of §2 is always the lexer's own. The label scan of §11.3 is the one
+user: the tokens it lexes outside parentheses are the ones the parse of
+the body then asks for. At most 65,536 tokens (1 MiB) are kept per scan;
+past that the scan goes on and those tokens are lexed again.
 
 ## 3. Accepted input
 
@@ -823,6 +857,8 @@ body be handed to another thread unread.
 | section | test | oracle |
 |---|---|---|
 | §2.1 to §2.7 | `src/lexer.rs` unit tests: every token form and the edge cases (`\22` in names, `-0.0`, `0xH`, `i8388607`, `%1x`, `cc10`, labels) | the rules of `LLLexer` |
+| §2.2 | `src/kw.rs` unit tests: every keyword in its own slot and found as itself, a word of the same length in a keyword's slot rejected by the compare, the code tests against the text tests; `src/lexer.rs` `the_word_fast_path_is_the_rules` (some 11,500 generated words around the 16-byte bound, before every kind of byte, and every keyword) | the rules as written (`word_rule`) |
+| §2.8 | `src/lexer.rs` `replayed_tokens_are_the_lexed_ones`: recordings that skip tokens, a lexer moved back and forth over them | a lexer that replays nothing |
 | §4.2 | `src/skip.rs` unit tests: nesting, strings, quoted names, both comment forms, every alignment of the special bytes against a byte-at-a-time scan | |
 | §5.2 | `src/names.rs` unit test | |
 | §5.4 | `src/float.rs` unit tests | LLVM's `APFloat` results, as values |
@@ -963,7 +999,8 @@ number of terminators before the block. That is the rule of §5.5, so a
 `blockaddress` built at the module level names the same block. A use of
 a block name not yet met triggers one scan of the labels from the
 current statement to the end of the body (terminators and labels outside
-parentheses, as §5.5). A use of a *number* not found by that scan is a
+parentheses, as §5.5); the parse replays the tokens the scan lexed
+instead of lexing them again (§2.8). A use of a *number* not found by that scan is a
 block without a label further on: the body is then read twice more, a
 numbering pass that records the number and ordinal of each unlabelled
 block (whether an unnamed instruction takes a number depends on its

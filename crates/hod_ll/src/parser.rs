@@ -13,7 +13,8 @@ use crate::consts::{BlockLabels, LabelKey};
 use crate::debug::{DebugMap, DebugScratch};
 use crate::error::{LlErrorKind, PResult, fail, ir_fail};
 use crate::index::{Index, scan};
-use crate::lexer::{Lexer, MAX_SOURCE_BYTES, Tok, Token, unescape};
+use crate::kw::Kw;
+use crate::lexer::{Lexer, MAX_SOURCE_BYTES, Recording, Tok, Token, unescape};
 use crate::meta::{MdRef, MetadataIndex, Upgrade};
 use crate::names::NameMap;
 use crate::skip::skip_group;
@@ -118,6 +119,7 @@ pub(crate) struct Scratch {
     pub defined: Option<HashMap<LabelKey, usize>>,
     pub labels: HashMap<usize, BlockLabels>,
     pub by_sym: Vec<(u32, u32)>,
+    pub recording: Recording,
 }
 
 /// Maps a refusal of `hod_ir` to a failure at `at`.
@@ -188,10 +190,12 @@ impl<'a, 'm, L: Layering> Parser<'a, 'm, L> {
         text: Option<&'m ModuleText<'a>>,
         scratch: Scratch,
     ) -> Parser<'a, 'm, L> {
+        let mut lx = Lexer::new(src);
+        lx.reuse(scratch.recording);
         Parser {
             src,
-            lx: Lexer::new(src),
-            tok: Token { kind: Tok::Eof, start: 0, end: 0 },
+            lx,
+            tok: Token { kind: Tok::Eof, kw: Kw::Other, start: 0, end: 0 },
             module,
             index,
             text,
@@ -245,6 +249,7 @@ impl<'a, 'm, L: Layering> Parser<'a, 'm, L> {
             defined: self.defined,
             labels: self.labels,
             by_sym: self.by_sym,
+            recording: self.lx.record(),
         }
     }
 
@@ -278,11 +283,16 @@ impl<'a, 'm, L: Layering> Parser<'a, 'm, L> {
         self.tok_text(self.tok)
     }
 
-    pub(crate) fn at_word(&self, word: &[u8]) -> bool {
-        self.tok.kind == Tok::Word && self.text() == word
+    /// Whether the current token is the word `word`: one compare, as
+    /// only a word token carries the code of a word that is not an
+    /// integer type.
+    #[inline]
+    pub(crate) fn at_word(&self, word: Kw) -> bool {
+        debug_assert!(word != Kw::Other && !word.is_int_type());
+        self.tok.kw == word
     }
 
-    pub(crate) fn eat_word(&mut self, word: &[u8]) -> bool {
+    pub(crate) fn eat_word(&mut self, word: Kw) -> bool {
         let found = self.at_word(word);
         if found {
             self.bump();
@@ -315,7 +325,7 @@ impl<'a, 'm, L: Layering> Parser<'a, 'm, L> {
         Ok(token)
     }
 
-    pub(crate) fn expect_word(&mut self, word: &[u8], what: &str) -> PResult<()> {
+    pub(crate) fn expect_word(&mut self, word: Kw, what: &str) -> PResult<()> {
         if !self.eat_word(word) {
             return self.syntax(what);
         }

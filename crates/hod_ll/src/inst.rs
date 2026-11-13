@@ -12,6 +12,7 @@ use hod_ir::{
 
 use crate::body::Fx;
 use crate::error::{LlErrorKind, PResult, fail};
+use crate::kw::Kw;
 use crate::lexer::Tok;
 use crate::parser::ir;
 
@@ -23,8 +24,8 @@ pub(crate) type Done = (TypeId, Value, bool);
 /// any other type.
 type Shape = Option<(u32, bool)>;
 
-const FAST_MATH: &[&[u8]] =
-    &[b"nnan", b"ninf", b"nsz", b"arcp", b"contract", b"afn", b"reassoc", b"fast"];
+const FAST_MATH: &[Kw] =
+    &[Kw::Nnan, Kw::Ninf, Kw::Nsz, Kw::Arcp, Kw::Contract, Kw::Afn, Kw::Reassoc, Kw::Fast];
 
 fn mistyped<T>(at: u32, message: &str) -> PResult<T> {
     fail(LlErrorKind::Type, at, message)
@@ -107,8 +108,8 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     /// Steps over any of the flag words `allowed`.
-    fn flags(&mut self, allowed: &[&[u8]]) {
-        while self.p.tok.kind == Tok::Word && allowed.contains(&self.p.text()) {
+    fn flags(&mut self, allowed: &[Kw]) {
+        while self.p.tok.kw != Kw::Other && allowed.contains(&self.p.tok.kw) {
             self.p.bump();
         }
     }
@@ -148,92 +149,92 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
         if self.p.tok.kind != Tok::Word {
             return self.p.syntax("expected instruction opcode");
         }
-        let word = self.p.text();
+        let word = self.p.tok.kw;
         self.p.bump();
         let (ty, value) = match word {
-            b"call" => return self.call(at, Opcode::Call, TailKind::None),
-            b"load" => self.load(at)?,
-            b"store" => self.store(at)?,
-            b"getelementptr" => self.get_element_ptr(at)?,
-            b"br" => return self.br(at),
-            b"ret" => return self.ret(at),
-            b"icmp" => self.icmp(at)?,
-            b"alloca" => self.alloca(at)?,
-            b"phi" => self.phi(at)?,
-            b"add" => self.binary(at, Opcode::Add)?,
-            b"sub" => self.binary(at, Opcode::Sub)?,
-            b"mul" => self.binary(at, Opcode::Mul)?,
-            b"udiv" => self.binary(at, Opcode::UDiv)?,
-            b"sdiv" => self.binary(at, Opcode::SDiv)?,
-            b"urem" => self.binary(at, Opcode::URem)?,
-            b"srem" => self.binary(at, Opcode::SRem)?,
-            b"shl" => self.binary(at, Opcode::Shl)?,
-            b"lshr" => self.binary(at, Opcode::LShr)?,
-            b"ashr" => self.binary(at, Opcode::AShr)?,
-            b"and" => self.binary(at, Opcode::And)?,
-            b"or" => self.binary(at, Opcode::Or)?,
-            b"xor" => self.binary(at, Opcode::Xor)?,
-            b"fadd" => self.binary(at, Opcode::FAdd)?,
-            b"fsub" => self.binary(at, Opcode::FSub)?,
-            b"fmul" => self.binary(at, Opcode::FMul)?,
-            b"fdiv" => self.binary(at, Opcode::FDiv)?,
-            b"frem" => self.binary(at, Opcode::FRem)?,
-            b"fneg" => self.unary(at, true)?,
-            b"freeze" => self.unary(at, false)?,
-            b"fcmp" => self.fcmp(at)?,
-            b"trunc" => self.cast(at, Opcode::Trunc)?,
-            b"zext" => self.cast(at, Opcode::ZExt)?,
-            b"sext" => self.cast(at, Opcode::SExt)?,
-            b"fptrunc" => self.cast(at, Opcode::FPTrunc)?,
-            b"fpext" => self.cast(at, Opcode::FPExt)?,
-            b"fptoui" => self.cast(at, Opcode::FPToUI)?,
-            b"fptosi" => self.cast(at, Opcode::FPToSI)?,
-            b"uitofp" => self.cast(at, Opcode::UIToFP)?,
-            b"sitofp" => self.cast(at, Opcode::SIToFP)?,
-            b"ptrtoint" => self.cast(at, Opcode::PtrToInt)?,
-            b"ptrtoaddr" => self.cast(at, Opcode::PtrToAddr)?,
-            b"inttoptr" => self.cast(at, Opcode::IntToPtr)?,
-            b"bitcast" => self.cast(at, Opcode::BitCast)?,
-            b"addrspacecast" => self.cast(at, Opcode::AddrSpaceCast)?,
-            b"select" => self.select(at)?,
-            b"switch" => return self.switch(at),
-            b"unreachable" => {
+            Kw::Call => return self.call(at, Opcode::Call, TailKind::None),
+            Kw::Load => self.load(at)?,
+            Kw::Store => self.store(at)?,
+            Kw::Getelementptr => self.get_element_ptr(at)?,
+            Kw::Br => return self.br(at),
+            Kw::Ret => return self.ret(at),
+            Kw::Icmp => self.icmp(at)?,
+            Kw::Alloca => self.alloca(at)?,
+            Kw::Phi => self.phi(at)?,
+            Kw::Add => self.binary(at, Opcode::Add)?,
+            Kw::Sub => self.binary(at, Opcode::Sub)?,
+            Kw::Mul => self.binary(at, Opcode::Mul)?,
+            Kw::Udiv => self.binary(at, Opcode::UDiv)?,
+            Kw::Sdiv => self.binary(at, Opcode::SDiv)?,
+            Kw::Urem => self.binary(at, Opcode::URem)?,
+            Kw::Srem => self.binary(at, Opcode::SRem)?,
+            Kw::Shl => self.binary(at, Opcode::Shl)?,
+            Kw::Lshr => self.binary(at, Opcode::LShr)?,
+            Kw::Ashr => self.binary(at, Opcode::AShr)?,
+            Kw::And => self.binary(at, Opcode::And)?,
+            Kw::Or => self.binary(at, Opcode::Or)?,
+            Kw::Xor => self.binary(at, Opcode::Xor)?,
+            Kw::Fadd => self.binary(at, Opcode::FAdd)?,
+            Kw::Fsub => self.binary(at, Opcode::FSub)?,
+            Kw::Fmul => self.binary(at, Opcode::FMul)?,
+            Kw::Fdiv => self.binary(at, Opcode::FDiv)?,
+            Kw::Frem => self.binary(at, Opcode::FRem)?,
+            Kw::Fneg => self.unary(at, true)?,
+            Kw::Freeze => self.unary(at, false)?,
+            Kw::Fcmp => self.fcmp(at)?,
+            Kw::Trunc => self.cast(at, Opcode::Trunc)?,
+            Kw::Zext => self.cast(at, Opcode::ZExt)?,
+            Kw::Sext => self.cast(at, Opcode::SExt)?,
+            Kw::Fptrunc => self.cast(at, Opcode::FPTrunc)?,
+            Kw::Fpext => self.cast(at, Opcode::FPExt)?,
+            Kw::Fptoui => self.cast(at, Opcode::FPToUI)?,
+            Kw::Fptosi => self.cast(at, Opcode::FPToSI)?,
+            Kw::Uitofp => self.cast(at, Opcode::UIToFP)?,
+            Kw::Sitofp => self.cast(at, Opcode::SIToFP)?,
+            Kw::Ptrtoint => self.cast(at, Opcode::PtrToInt)?,
+            Kw::Ptrtoaddr => self.cast(at, Opcode::PtrToAddr)?,
+            Kw::Inttoptr => self.cast(at, Opcode::IntToPtr)?,
+            Kw::Bitcast => self.cast(at, Opcode::BitCast)?,
+            Kw::Addrspacecast => self.cast(at, Opcode::AddrSpaceCast)?,
+            Kw::Select => self.select(at)?,
+            Kw::Switch => return self.switch(at),
+            Kw::Unreachable => {
                 ir(at, self.b.unreachable())?;
                 return Ok((TypeId::VOID, Value::NONE, true));
             }
-            b"invoke" => return self.call(at, Opcode::Invoke, TailKind::None),
-            b"callbr" => return self.call(at, Opcode::CallBr, TailKind::None),
-            b"tail" => return self.tail_call(at, TailKind::Tail),
-            b"musttail" => return self.tail_call(at, TailKind::MustTail),
-            b"notail" => return self.tail_call(at, TailKind::NoTail),
-            b"extractvalue" => self.extract_value(at)?,
-            b"insertvalue" => self.insert_value(at)?,
-            b"extractelement" => self.extract_element(at)?,
-            b"insertelement" => self.insert_element(at)?,
-            b"shufflevector" => self.shuffle_vector(at)?,
-            b"landingpad" => self.landing_pad(at)?,
-            b"resume" => {
+            Kw::Invoke => return self.call(at, Opcode::Invoke, TailKind::None),
+            Kw::Callbr => return self.call(at, Opcode::CallBr, TailKind::None),
+            Kw::Tail => return self.tail_call(at, TailKind::Tail),
+            Kw::Musttail => return self.tail_call(at, TailKind::MustTail),
+            Kw::Notail => return self.tail_call(at, TailKind::NoTail),
+            Kw::Extractvalue => self.extract_value(at)?,
+            Kw::Insertvalue => self.insert_value(at)?,
+            Kw::Extractelement => self.extract_element(at)?,
+            Kw::Insertelement => self.insert_element(at)?,
+            Kw::Shufflevector => self.shuffle_vector(at)?,
+            Kw::Landingpad => self.landing_pad(at)?,
+            Kw::Resume => {
                 let (_, value) = self.typed()?;
                 ir(at, self.b.resume(value))?;
                 return Ok((TypeId::VOID, Value::NONE, true));
             }
-            b"indirectbr" => return self.indirect_br(at),
-            b"atomicrmw" => self.atomic_rmw(at)?,
-            b"cmpxchg" => self.cmpxchg(at)?,
-            b"fence" => self.fence(at)?,
-            b"va_arg" => self.va_arg(at)?,
-            b"catchswitch" => return self.catch_switch(at),
-            b"catchpad" => self.pad(at, Opcode::CatchPad)?,
-            b"cleanuppad" => self.pad(at, Opcode::CleanupPad)?,
-            b"catchret" => return self.catch_ret(at),
-            b"cleanupret" => return self.cleanup_ret(at),
+            Kw::Indirectbr => return self.indirect_br(at),
+            Kw::Atomicrmw => self.atomic_rmw(at)?,
+            Kw::Cmpxchg => self.cmpxchg(at)?,
+            Kw::Fence => self.fence(at)?,
+            Kw::VaArg => self.va_arg(at)?,
+            Kw::Catchswitch => return self.catch_switch(at),
+            Kw::Catchpad => self.pad(at, Opcode::CatchPad)?,
+            Kw::Cleanuppad => self.pad(at, Opcode::CleanupPad)?,
+            Kw::Catchret => return self.catch_ret(at),
+            Kw::Cleanupret => return self.cleanup_ret(at),
             _ => return fail(LlErrorKind::Syntax, at, "expected instruction opcode"),
         };
         Ok((ty, value, false))
     }
 
     fn tail_call(&mut self, at: u32, tail: TailKind) -> PResult<Done> {
-        self.p.expect_word(b"call", "expected 'call' after a tail-call marker")?;
+        self.p.expect_word(Kw::Call, "expected 'call' after a tail-call marker")?;
         self.call(at, Opcode::Call, tail)
     }
 
@@ -241,9 +242,11 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
 
     fn binary(&mut self, at: u32, op: Opcode) -> PResult<(TypeId, Value)> {
         match op {
-            Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Shl => self.flags(&[b"nuw", b"nsw"]),
-            Opcode::UDiv | Opcode::SDiv | Opcode::LShr | Opcode::AShr => self.flags(&[b"exact"]),
-            Opcode::Or => self.flags(&[b"disjoint"]),
+            Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Shl => {
+                self.flags(&[Kw::Nuw, Kw::Nsw]);
+            }
+            Opcode::UDiv | Opcode::SDiv | Opcode::LShr | Opcode::AShr => self.flags(&[Kw::Exact]),
+            Opcode::Or => self.flags(&[Kw::Disjoint]),
             _ if op.is_float_binary() => self.fast_math(),
             _ => {}
         }
@@ -278,19 +281,18 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     fn icmp(&mut self, at: u32) -> PResult<(TypeId, Value)> {
-        self.flags(&[b"samesign"]);
-        let pred = match self.p.text() {
-            _ if self.p.tok.kind != Tok::Word => None,
-            b"eq" => Some(IntPredicate::Eq),
-            b"ne" => Some(IntPredicate::Ne),
-            b"ugt" => Some(IntPredicate::Ugt),
-            b"uge" => Some(IntPredicate::Uge),
-            b"ult" => Some(IntPredicate::Ult),
-            b"ule" => Some(IntPredicate::Ule),
-            b"sgt" => Some(IntPredicate::Sgt),
-            b"sge" => Some(IntPredicate::Sge),
-            b"slt" => Some(IntPredicate::Slt),
-            b"sle" => Some(IntPredicate::Sle),
+        self.flags(&[Kw::Samesign]);
+        let pred = match self.p.tok.kw {
+            Kw::Eq => Some(IntPredicate::Eq),
+            Kw::Ne => Some(IntPredicate::Ne),
+            Kw::Ugt => Some(IntPredicate::Ugt),
+            Kw::Uge => Some(IntPredicate::Uge),
+            Kw::Ult => Some(IntPredicate::Ult),
+            Kw::Ule => Some(IntPredicate::Ule),
+            Kw::Sgt => Some(IntPredicate::Sgt),
+            Kw::Sge => Some(IntPredicate::Sge),
+            Kw::Slt => Some(IntPredicate::Slt),
+            Kw::Sle => Some(IntPredicate::Sle),
             _ => None,
         };
         let Some(pred) = pred else {
@@ -339,8 +341,8 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
 
     fn cast(&mut self, at: u32, op: Opcode) -> PResult<(TypeId, Value)> {
         match op {
-            Opcode::Trunc => self.flags(&[b"nuw", b"nsw"]),
-            Opcode::ZExt | Opcode::UIToFP => self.flags(&[b"nneg"]),
+            Opcode::Trunc => self.flags(&[Kw::Nuw, Kw::Nsw]),
+            Opcode::ZExt | Opcode::UIToFP => self.flags(&[Kw::Nneg]),
             _ => {}
         }
         if matches!(op, Opcode::FPTrunc | Opcode::FPExt | Opcode::UIToFP | Opcode::SIToFP) {
@@ -348,7 +350,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
         }
         let from_at = self.p.tok.start;
         let (from, arg) = self.typed()?;
-        self.p.expect_word(b"to", "expected 'to' after cast value")?;
+        self.p.expect_word(Kw::To, "expected 'to' after cast value")?;
         let to = self.p.parse_type()?;
         if !cast_is_valid(&self.p.module.types, op, from, to) {
             return mistyped(from_at, "invalid cast opcode for cast between these types");
@@ -439,7 +441,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
                 self.extra_comma = true;
                 break;
             }
-            if !self.p.at_word(b"align") {
+            if !self.p.at_word(Kw::Align) {
                 return self.p.syntax("expected metadata or 'align'");
             }
             align = Some(self.alignment()?);
@@ -449,7 +451,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
 
     /// `[syncscope("name")]`.
     fn scope(&mut self) -> PResult<SyncScope> {
-        if !self.p.eat_word(b"syncscope") {
+        if !self.p.eat_word(Kw::Syncscope) {
             return Ok(SyncScope::System);
         }
         self.p.expect(Tok::LParen, "expected '(' in synchronization scope")?;
@@ -500,8 +502,8 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     fn load(&mut self, at: u32) -> PResult<(TypeId, Value)> {
-        let atomic = self.p.eat_word(b"atomic");
-        let volatile = self.p.eat_word(b"volatile");
+        let atomic = self.p.eat_word(Kw::Atomic);
+        let volatile = self.p.eat_word(Kw::Volatile);
         let ty_at = self.p.tok.start;
         let ty = self.p.parse_type()?;
         self.p.expect(Tok::Comma, "expected comma after load's type")?;
@@ -531,8 +533,8 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     fn store(&mut self, at: u32) -> PResult<(TypeId, Value)> {
-        let atomic = self.p.eat_word(b"atomic");
-        let volatile = self.p.eat_word(b"volatile");
+        let atomic = self.p.eat_word(Kw::Atomic);
+        let volatile = self.p.eat_word(Kw::Volatile);
         let ty_at = self.p.tok.start;
         let (ty, value) = self.typed()?;
         self.p.expect(Tok::Comma, "expected ',' after store operand")?;
@@ -563,8 +565,8 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     fn alloca(&mut self, at: u32) -> PResult<(TypeId, Value)> {
-        let in_alloca = self.p.eat_word(b"inalloca");
-        let swift_error = self.p.eat_word(b"swifterror");
+        let in_alloca = self.p.eat_word(Kw::Inalloca);
+        let swift_error = self.p.eat_word(Kw::Swifterror);
         let ty_at = self.p.tok.start;
         let ty = self.p.parse_type()?;
         let mut count = None;
@@ -578,10 +580,10 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
                 self.extra_comma = true;
                 break;
             }
-            if self.p.at_word(b"align") && stage < 2 {
+            if self.p.at_word(Kw::Align) && stage < 2 {
                 align = Some(self.alignment()?);
                 stage = 2;
-            } else if self.p.at_word(b"addrspace") && stage < 3 {
+            } else if self.p.at_word(Kw::Addrspace) && stage < 3 {
                 self.p.bump();
                 self.p.expect(Tok::LParen, "expected '(' in address space")?;
                 space = self.p.expect_u32("expected an address space number")?;
@@ -622,8 +624,8 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     fn cmpxchg(&mut self, at: u32) -> PResult<(TypeId, Value)> {
-        let weak = self.p.eat_word(b"weak");
-        let volatile = self.p.eat_word(b"volatile");
+        let weak = self.p.eat_word(Kw::Weak);
+        let volatile = self.p.eat_word(Kw::Volatile);
         let ptr = self.pointer("cmpxchg")?;
         self.p.expect(Tok::Comma, "expected ',' after cmpxchg address")?;
         let ty_at = self.p.tok.start;
@@ -660,7 +662,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     fn atomic_rmw(&mut self, at: u32) -> PResult<(TypeId, Value)> {
-        let volatile = self.p.eat_word(b"volatile");
+        let volatile = self.p.eat_word(Kw::Volatile);
         let found = match self.p.tok.kind {
             Tok::Word => {
                 let word = self.p.text();
@@ -717,7 +719,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     /// `getelementptr`: a `PtrAdd` (`spec/ir.md` §5.4) with every
     /// constant index folded into the offset ([`Gep`]).
     fn get_element_ptr(&mut self, at: u32) -> PResult<(TypeId, Value)> {
-        self.flags(&[b"inbounds", b"nuw", b"nusw"]);
+        self.flags(&[Kw::Inbounds, Kw::Nuw, Kw::Nusw]);
         let source_at = self.p.tok.start;
         let source = self.p.parse_type()?;
         self.p.expect(Tok::Comma, "expected comma after getelementptr's type")?;
@@ -943,11 +945,11 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
 
     fn landing_pad(&mut self, at: u32) -> PResult<(TypeId, Value)> {
         let ty = self.p.parse_type()?;
-        let cleanup = self.p.eat_word(b"cleanup");
+        let cleanup = self.p.eat_word(Kw::Cleanup);
         self.s.clauses.clear();
         loop {
-            let catch = self.p.at_word(b"catch");
-            if !catch && !self.p.at_word(b"filter") {
+            let catch = self.p.at_word(Kw::Catch);
+            if !catch && !self.p.at_word(Kw::Filter) {
                 break;
             }
             self.p.bump();
@@ -972,13 +974,13 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
 
     /// `within none` or `within %pad`.
     fn within(&mut self) -> PResult<()> {
-        self.p.expect_word(b"within", "expected 'within' after the funclet instruction")?;
+        self.p.expect_word(Kw::Within, "expected 'within' after the funclet instruction")?;
         self.pad_ref()
     }
 
     /// `none` or a token value.
     fn pad_ref(&mut self) -> PResult<()> {
-        if self.p.eat_word(b"none") {
+        if self.p.eat_word(Kw::None) {
             return Ok(());
         }
         let token = self.p.tok;
@@ -1021,9 +1023,9 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
 
     /// `unwind to caller` or `unwind label %block`.
     fn unwind(&mut self) -> PResult<()> {
-        self.p.expect_word(b"unwind", "expected 'unwind'")?;
-        if self.p.eat_word(b"to") {
-            return self.p.expect_word(b"caller", "expected 'caller' in the unwind destination");
+        self.p.expect_word(Kw::Unwind, "expected 'unwind'")?;
+        if self.p.eat_word(Kw::To) {
+            return self.p.expect_word(Kw::Caller, "expected 'caller' in the unwind destination");
         }
         self.label().map(drop)
     }
@@ -1045,9 +1047,9 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     fn catch_ret(&mut self, at: u32) -> PResult<Done> {
-        self.p.expect_word(b"from", "expected 'from' after catchret")?;
+        self.p.expect_word(Kw::From, "expected 'from' after catchret")?;
         self.pad_ref()?;
-        self.p.expect_word(b"to", "expected 'to' in catchret")?;
+        self.p.expect_word(Kw::To, "expected 'to' in catchret")?;
         self.label()?;
         self.p.note("inst:catchret");
         ir(at, self.b.funclet(Opcode::CatchRet, TypeId::VOID))?;
@@ -1055,7 +1057,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     fn cleanup_ret(&mut self, at: u32) -> PResult<Done> {
-        self.p.expect_word(b"from", "expected 'from' after cleanupret")?;
+        self.p.expect_word(Kw::From, "expected 'from' after cleanupret")?;
         self.pad_ref()?;
         self.unwind()?;
         self.p.note("inst:cleanupret");
@@ -1077,7 +1079,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     fn br(&mut self, at: u32) -> PResult<Done> {
-        if self.p.at_word(b"label") {
+        if self.p.at_word(Kw::Label) {
             let target = self.label()?;
             ir(at, self.b.br(target))?;
             return Ok((TypeId::VOID, Value::NONE, true));

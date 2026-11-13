@@ -10,6 +10,7 @@ use hod_ir::{
 
 use crate::error::{LlErrorKind, PResult, fail};
 use crate::index::{Item, ItemKind, parse_u32};
+use crate::kw::Kw;
 use crate::lexer::{Tok, Token};
 use crate::parser::{Parser, ir};
 use crate::{FunctionText, Span};
@@ -231,7 +232,7 @@ impl<L: Layering> Parser<'_, '_, L> {
                         self.bump();
                         self.bump();
                     }
-                    if self.at_word(b"internal") || self.at_word(b"private") {
+                    if self.at_word(Kw::Internal) || self.at_word(Kw::Private) {
                         ir(name.start, self.module.anonymous_symbol())?
                     } else {
                         let text = format!("__unnamed_{unnamed}");
@@ -343,19 +344,19 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                 self.bump();
             }
         }
-        if self.eat_word(b"dso_local") {
+        if self.eat_word(Kw::DsoLocal) {
             prefix.dso_local = true;
         } else {
-            self.eat_word(b"dso_preemptable");
+            self.eat_word(Kw::DsoPreemptable);
         }
-        if self.eat_word(b"hidden") {
+        if self.eat_word(Kw::Hidden) {
             prefix.visibility = Visibility::Hidden;
-        } else if self.eat_word(b"protected") {
+        } else if self.eat_word(Kw::Protected) {
             prefix.visibility = Visibility::Protected;
         } else {
-            self.eat_word(b"default");
+            self.eat_word(Kw::Default);
         }
-        if self.eat_word(b"dllimport") || self.eat_word(b"dllexport") {
+        if self.eat_word(Kw::Dllimport) || self.eat_word(Kw::Dllexport) {
             self.note("dll-storage");
         }
         prefix
@@ -363,7 +364,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
 
     /// `[thread_local[(model)]]`.
     fn tls(&mut self) -> PResult<TlsModel> {
-        if !self.eat_word(b"thread_local") {
+        if !self.eat_word(Kw::ThreadLocal) {
             return Ok(TlsModel::None);
         }
         if !self.eat(Tok::LParen) {
@@ -381,9 +382,9 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
     }
 
     fn unnamed_addr(&mut self) -> UnnamedAddr {
-        if self.eat_word(b"unnamed_addr") {
+        if self.eat_word(Kw::UnnamedAddr) {
             UnnamedAddr::Global
-        } else if self.eat_word(b"local_unnamed_addr") {
+        } else if self.eat_word(Kw::LocalUnnamedAddr) {
             UnnamedAddr::Local
         } else {
             UnnamedAddr::None
@@ -392,7 +393,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
 
     /// `[addrspace(N)]`.
     fn addr_space(&mut self) -> PResult<u32> {
-        if !self.eat_word(b"addrspace") {
+        if !self.eat_word(Kw::Addrspace) {
             return Ok(0);
         }
         self.expect(Tok::LParen, "expected '(' in an address space")?;
@@ -513,15 +514,15 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
         let prefix = self.prefix();
         let tls = self.tls()?;
         let unnamed_addr = self.unnamed_addr();
-        if self.at_word(b"alias") || self.at_word(b"ifunc") {
+        if self.at_word(Kw::Alias) || self.at_word(Kw::Ifunc) {
             return self.indirect(item, &prefix, tls, unnamed_addr);
         }
         let addr_space = self.addr_space()?;
         // Dropped: it does not change where the variable goes.
-        self.eat_word(b"externally_initialized");
-        let constant = if self.eat_word(b"constant") {
+        self.eat_word(Kw::ExternallyInitialized);
+        let constant = if self.eat_word(Kw::Constant) {
             true
-        } else if self.eat_word(b"global") {
+        } else if self.eat_word(Kw::Global) {
             false
         } else {
             return self.syntax("expected 'global' or 'constant'");
@@ -598,7 +599,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
         tls: TlsModel,
         unnamed_addr: UnnamedAddr,
     ) -> PResult<()> {
-        let is_alias = self.at_word(b"alias");
+        let is_alias = self.at_word(Kw::Alias);
         self.bump();
         let ty_at = self.tok.start;
         let ty = self.parse_type()?;
@@ -613,7 +614,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
             self.parse_typed_const()?
         };
         while self.eat(Tok::Comma) {
-            if self.at_word(b"partition") {
+            if self.at_word(Kw::Partition) {
                 self.bump();
                 self.expect(Tok::Str, "expected a partition name")?;
                 self.note("partition");
@@ -697,14 +698,14 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
     fn function_data(&mut self) -> PResult<Option<SymId>> {
         let mut personality = None;
         loop {
-            if self.eat_word(b"gc") {
+            if self.eat_word(Kw::Gc) {
                 self.expect(Tok::Str, "expected a collector name")?;
                 self.note("gc");
-            } else if self.at_word(b"prefix") || self.at_word(b"prologue") {
-                self.note(if self.at_word(b"prefix") { "prefix-data" } else { "prologue-data" });
+            } else if self.at_word(Kw::Prefix) || self.at_word(Kw::Prologue) {
+                self.note(if self.at_word(Kw::Prefix) { "prefix-data" } else { "prologue-data" });
                 self.bump();
                 self.parse_typed_const()?;
-            } else if self.eat_word(b"personality") {
+            } else if self.eat_word(Kw::Personality) {
                 let value = self.parse_typed_const()?;
                 match self.module.consts.get(value) {
                     Const::Addr { sym, addend: 0 } => personality = Some(sym),

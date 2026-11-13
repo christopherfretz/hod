@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 2 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 354 | 346 | 8 | 0 | 0 | 138 | 216 |
-| total | 663 | 547 | 70 | 46 | 37 | 356 | 270 |
+| `intrinsic` | 354 | 347 | 7 | 0 | 0 | 138 | 216 |
+| total | 663 | 548 | 69 | 46 | 37 | 356 | 270 |
 
 ## `module`
 
@@ -649,7 +649,7 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.coro.is_in_ramp` | supported (int) | not-implemented | in a coroutine body (WP-106) |
 | `intrinsic:llvm.coro.await.suspend.void` | supported (ptr) | not-implemented | in a coroutine body (WP-106) |
 | `intrinsic:llvm.coro.await.suspend.bool` | supported (int, ptr) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.await.suspend.handle` | not-implemented | not-implemented | T-XF (coroutine splitting) |
+| `intrinsic:llvm.coro.await.suspend.handle` | supported (ptr) | not-implemented | in a coroutine body; symmetric transfer in constant stack (WP-107) |
 | `intrinsic:llvm.sshl.sat` | supported (int) | not-implemented | up to 64 bits (WP-084) |
 | `intrinsic:llvm.ushl.sat` | supported (int) | not-implemented | up to 64 bits (WP-084) |
 | `intrinsic:llvm.aarch64.crc32b` | supported (int) | rejected | x86_64: an AArch64 property |

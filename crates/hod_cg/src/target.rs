@@ -354,4 +354,24 @@ pub trait Target: Sized + Sync {
         let _ = (cx, cond, resume, destroy);
         Err(crate::error::CgError::unsupported(crate::coro_body::CORO_TARGET))
     }
+
+    /// WP-107, §7.6: symmetric transfer, emitted right after the call of
+    /// an `llvm.coro.await.suspend.handle` wrapper returned, while its
+    /// result (the handle to resume, a pointer) is still in the C
+    /// convention's first return register. Loads the handle's resume
+    /// function from its offset 0; in a resumed activation (mode 1)
+    /// branches to `exit`, a tail exit ([`FnCx::coro_tail_exit`]) that
+    /// tears the machine frame down and jumps to the callee register
+    /// with the handle as the argument; in the ramp (mode 0) calls it
+    /// (recorded with [`FnCx::record_call_site`]) and falls through. No
+    /// access to the coroutine's own frame: the only memory read are the
+    /// handle's first word and the mode word.
+    ///
+    /// # Errors
+    /// What [`FnCx::fixup`] reports; `Unsupported("coro:target")` by
+    /// default.
+    fn coro_transfer(&self, cx: &mut FnCx<'_, Self>, exit: Label) -> CgResult<()> {
+        let _ = (cx, exit);
+        Err(crate::error::CgError::unsupported(crate::coro_body::CORO_TARGET))
+    }
 }

@@ -2767,7 +2767,7 @@ activation a stub entered) and the frame word. `preserve_most` and
 | `coro.end` (LLVM 19 `i1`, 22 `void`) | not unwinding: when mode ≠ 0, branch to the epilogue; unwinding: when mode ≠ 0, `[x19, #0]` := 0 and the index := the final suspend's (the coroutine is done). LLVM 19's result is mode |
 | `coro.is_in_ramp` | mode xor 1 |
 | `coro.free`, `coro.frame` | x19 (`coro.frame` itself is the plan's `coro:frame-intrinsic`) |
-| `await.suspend.handle` | refused, `intrinsic:llvm.coro.await.suspend.handle` (symmetric transfer, WP-107) |
+| `await.suspend.handle` | the call of the wrapper as for `.void`, then the transfer below (WP-107) |
 
 A body intrinsic in a function without a plan is
 `coro:outside-coroutine`; a target with `Target::CORO_BODIES` false
@@ -2798,11 +2798,81 @@ region; every heap address the target forms passes `FnCx::coro_access`,
 and one formed in the region (or before `coro.begin`) makes the function
 an internal error.
 
+*Symmetric transfer (WP-107).* `coro.await.suspend.handle(awaiter,
+frame, wrapper)` (a `call` or an `invoke`) calls the wrapper, which
+returns the handle `h` to resume; the coroutine must then resume `h`
+without growing the stack, however long a chain of transfers runs
+(LLVM: the clones end in `musttail call fastcc %resume(h)`, the ramp
+makes a plain call and goes on to its suspend). Right after the
+wrapper's call returns, before the `invoke`'s normal edge:
+
+```text
+    ldr x16, [x0]               h's resume function (offset 0 of its frame)
+    ldr w17, [x29, #mode]
+    cbnz w17, exit              a resumed activation: a tail exit
+    blr x16                     the ramp: a call with x0 = h, its own
+                                call-site row without a landing pad
+    ...                         the invoke's normal edge, the suspend (−1)
+exit:                           after the epilogue, with the other tail exits:
+    the epilogue's teardown (x19, x29, x30 restored, the frame released)
+    br x16                      x0 = h
+```
+
+- The resumed activation leaves its machine frame entirely before it
+  jumps: the resume function runs at the stack depth at which the stub
+  that entered the activation was called, so an unbounded chain of
+  transfers runs in constant stack, with a coroutine compiled by hod or
+  by `llc` on either side (`fastcc` is the C convention for one pointer
+  argument).
+- The ramp calls: its caller is still waiting for the return object.
+  The call is outside the `invoke`'s range (an exception from the
+  resumed coroutine leaves the ramp, as from LLVM's plain call); the
+  ramp then continues to the suspend's −1 edge, which returns.
+- Both paths are emitted; the mode decides. The suspended region starts
+  at the wrapper's return (design 0005 §3.3): neither path addresses the
+  frame. The memory read are `h`'s first word (the other coroutine's
+  frame) and the mode word; the tail exit's restore of x19 reads the
+  machine stack.
+- The suspend index is stored by `coro.save`, before the wrapper runs:
+  the wrapper may resume or destroy the coroutine (on this thread,
+  inside the wrapper, or on another), and the stub that enters it
+  dispatches on that index.
+- `FnCx::coro_tail_exit()` makes the tail exit (a `TailExit` whose
+  target is the callee register); `Target::coro_transfer(cx, exit)` is
+  the code above, called by `coro_called` from `call_through`.
+
+*Exceptions in the ramp and in an await* (LLVM 19 and 22 agree; WP-107):
+
+- **A throwing `await_suspend`** ([expr.await]/5.1: the coroutine is
+  resumed and the exception rethrown in it). The wrapper is an `invoke`
+  whose landing pad lies in the body: it runs in the activation that
+  called the wrapper, with the frame alive and the activation's mode
+  unchanged, so heap slots are addressed as anywhere outside the
+  suspended region (the pad is not in it). The transfer never runs: it
+  follows only the wrapper's normal return. The index stored by
+  `coro.save` stays until the next `coro.save`; nothing reads it unless
+  the coroutine suspends again.
+- **A throwing `get_return_object`** (or any exception in the ramp
+  before the initial suspend). The ramp's unwind path runs the
+  cleanups, frees the frame (`coro.free`, the front end's `operator
+  delete`), and resumes the exception. The frame is dead from the free
+  on: nothing after it may address the frame. The exception pointer and
+  selector slots are unescaped, so the plan keeps them on the machine
+  stack (design 0005 §3.4 rule 3); a heap slot or value used after the
+  free is refused (`coro:frame-access-after-suspend`). LLVM's split
+  pairs every use with every use, so in the seed `gro-throws-uaf`
+  (whose final `await_suspend` returns a handle) it puts those slots in
+  the frame and reads them after the free (design 0005 §1.4): its
+  program crashes once the freed frame is poisoned (the seed's promise
+  does that itself; an `oracle-skip` of `spec/harness.md`). hod's
+  program prints the expected output.
+
 *Hooks.* `Target::CORO_BODIES`, `Target::coro_stubs`,
-`Target::coro_dispatch`; `FnCx::coro_*` for the target; one call each in
-the driver (`coro_plan`, `coro_setup`, `coro_slot_place`,
-`coro_block_start`, `coro_switch`, `coro_finish`, `coro_entries`), in
-`call_through` (`coro_called`) and in module emission (the stub symbols).
+`Target::coro_dispatch`, `Target::coro_transfer`; `FnCx::coro_*` for the
+target; one call each in the driver (`coro_plan`, `coro_setup`,
+`coro_slot_place`, `coro_block_start`, `coro_switch`, `coro_finish`,
+`coro_entries`), in `call_through` (`coro_called`, which also starts the
+transfer) and in module emission (the stub symbols).
 `Stress::coro_frame` (§12, not in `Stress::ALL`) gives every function
 the coroutine machine frame and clobbers x19 after saving it.
 

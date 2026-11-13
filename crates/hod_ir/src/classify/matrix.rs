@@ -2396,7 +2396,12 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
         todo(X64),
         "in a coroutine body (WP-106)",
     ),
-    a64("intrinsic:llvm.coro.await.suspend.handle", CORO, ""),
+    row(
+        "intrinsic:llvm.coro.await.suspend.handle",
+        on(&[TypeClass::Ptr]),
+        todo(X64),
+        "in a coroutine body; symmetric transfer in constant stack (WP-107)",
+    ),
     row("intrinsic:llvm.sshl.sat", on(&[TypeClass::Int]), todo(X64), "up to 64 bits (WP-084)"),
     row("intrinsic:llvm.ushl.sat", on(&[TypeClass::Int]), todo(X64), "up to 64 bits (WP-084)"),
     row("intrinsic:llvm.aarch64.crc32b", on(&[TypeClass::Int]), never(A64_ONLY), ""),

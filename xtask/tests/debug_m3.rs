@@ -24,6 +24,7 @@ use common::Scratch;
 use xtask::debug::lines::Class;
 use xtask::debug::sessions::{self, Options, Outcome, Report};
 use xtask::irdiff;
+use xtask::irdiff::directives::Arch;
 
 fn build_dir() -> PathBuf {
     Path::new(env!("CARGO_TARGET_TMPDIR")).parent().expect("it is <target>/tmp").to_path_buf()
@@ -32,14 +33,29 @@ fn build_dir() -> PathBuf {
 /// Runs the harness on one source of `data/debug_lines`; `None` when the
 /// tools are missing (and not required).
 fn run(name: &str) -> Option<(Report, String)> {
+    run_for(name, None)
+}
+
+/// [`run`] for `target` (`None`: this machine's; another one's sessions
+/// are remote, through its emulator's gdb stub).
+fn run_for(name: &str, target: Option<Arch>) -> Option<(Report, String)> {
     let scratch = Scratch::new("debug-m3");
     let mut options = Options::new(build_dir());
     options.hod = Some(irdiff::build_workspace_hod(&build_dir()).expect("hod builds"));
     options.results = Some(scratch.join("results.tsv"));
     options.require_tools = hod_testutil::tools_required();
+    options.target = target;
     options.paths =
         vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/debug_lines").join(name)];
-    let report = sessions::run(&options).expect("the run can be made");
+    let report = match sessions::run(&options) {
+        Ok(report) => report,
+        Err(e) if target.is_some() && e.contains("--target") => {
+            assert!(!options.require_tools, "required tools are missing: {e}");
+            eprintln!("note: skipping this tool-backed test: {e}");
+            return None;
+        }
+        Err(e) => panic!("the run cannot be made: {e}"),
+    };
     let summary = report.summary(true);
     if report.records.iter().all(|r| r.outcome == Outcome::Skip) {
         assert!(!options.require_tools, "required tools are missing:\n{summary}");
@@ -51,7 +67,12 @@ fn run(name: &str) -> Option<(Report, String)> {
 
 /// The two programs' `(function, line)` sets and sessions agree.
 fn agrees_with_llc(name: &str) {
-    let Some((report, summary)) = run(name) else { return };
+    agrees_with_llc_for(name, None);
+}
+
+/// [`agrees_with_llc`] for `target` ([`run_for`]).
+fn agrees_with_llc_for(name: &str, target: Option<Arch>) {
+    let Some((report, summary)) = run_for(name, target) else { return };
     let lines = report.lines_total();
     assert_eq!(lines.unclassified(), 0, "{summary}");
     assert!(
@@ -125,12 +146,15 @@ fn dead_load_line_is_permitted() {
 }
 
 // Class `load-placement`, hod only: hod's load of a call argument on a
-// line of its own has a row (20 pairs, 10 modules).
+// line of its own has a row (20 pairs, 10 modules). On AArch64: on x86-64
+// `llc` has the row too and the lines agree (WP-145's x86-64 runner), on
+// every host (remotely on another).
 #[test]
-#[cfg_attr(
-    target_arch = "x86_64",
-    ignore = "x86-64 runner: the difference it classifies is AArch64's; on x86-64 hod's and llc's lines are the same; WP-145 finding"
-)]
 fn argument_load_line_is_permitted() {
-    classified_as("arg_load.c", Class::LoadPlacement);
+    if Arch::host() == Some(Arch::X86_64) {
+        agrees_with_llc("arg_load.c");
+    } else {
+        classified_as("arg_load.c", Class::LoadPlacement);
+        agrees_with_llc_for("arg_load.c", Some(Arch::X86_64));
+    }
 }

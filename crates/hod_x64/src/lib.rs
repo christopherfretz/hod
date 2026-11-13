@@ -64,6 +64,7 @@ pub mod features;
 pub mod float;
 pub mod fpintr;
 pub mod frame;
+pub mod guard;
 pub mod int;
 pub mod intrinsic;
 pub mod lanes;

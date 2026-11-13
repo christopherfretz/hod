@@ -91,6 +91,14 @@ runtime_fns! {
     UnwindResume = "_Unwind_Resume": (PTR) -> VOID;
     /// `void *__tls_get_addr(tls_index *)`: the general-dynamic TLS helper.
     TlsGetAddr = "__tls_get_addr": (PTR) -> PTR;
+    /// `void __stack_chk_fail(void)`: a stack guard that changed
+    /// (WP-183, §5.6.24); it does not return.
+    StackChkFail = "__stack_chk_fail": () -> VOID;
+    /// `uintptr_t __stack_chk_guard`: not a function but the guard
+    /// value's variable where the target reads it from memory (AArch64
+    /// Linux; WP-183, §5.6.24); only its address is referenced, through
+    /// the GOT, never called.
+    StackChkGuard = "__stack_chk_guard": () -> VOID;
     /// `fp128` equality: 0 when equal and ordered (WP-067).
     EqTf2 = "__eqtf2": (FP128, FP128) -> I32;
     /// `fp128` less than: negative when less and ordered, positive when

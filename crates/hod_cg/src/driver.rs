@@ -193,6 +193,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         s.islands.clear();
         s.island_data.clear();
         s.dbg_labels.clear();
+        s.guard.reset();
         let epilogue = s.labels.create();
         let ri = *target.reg_info();
         let pool = if options.stress.min_pool {
@@ -256,6 +257,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         self.mark_reachable()?;
         self.assign_own()?;
         self.coro_plan()?;
+        self.plan_guard()?; // WP-183: §5.6.24
         t.begin_function(self)?;
         self.coro_setup()?;
         self.layout_slots()?;
@@ -379,9 +381,25 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// [`FnCx::enter_slots`].
     fn layout_slots(&mut self) -> CgResult<()> {
         let pointer = self.reg_bytes(Class::Gpr);
+        // WP-183, §5.6.24: the pointer slots of the guarded block first,
+        // so that they are near the frame base.
+        let guarded = self.s.guard.is_on();
+        for index in (0..self.body.slots().len()).filter(|_| guarded) {
+            if let Some(offset) = self.s.guard.slot_offset(index) {
+                let at = self.s.frame.alloc(u64::from(pointer), pointer.min(T::STACK_ALIGN))?;
+                self.s.guard.push_pointer(at, offset);
+            }
+        }
+        let mut next_guarded = 0;
         for (index, slot) in self.body.slots().iter().enumerate() {
             let place = if let Some(place) = self.coro_slot_place(index)? {
                 place
+            } else if self.s.guard.slot_offset(index).is_some() {
+                let Some(&(at, _)) = self.s.guard.pointers().get(next_guarded) else {
+                    return internal("a guarded slot without its pointer slot");
+                };
+                next_guarded += 1;
+                SlotPlace::Indirect(at)
             } else if slot.align() <= u64::from(T::STACK_ALIGN) {
                 SlotPlace::Direct(self.s.frame.alloc(slot.size(), slot.align() as u32)?)
             } else {
@@ -425,10 +443,30 @@ impl<'a, T: Target> FnCx<'a, T> {
         Ok(())
     }
 
+    /// §5.6.24: whether the function has a stack guard, and its guarded
+    /// block.
+    fn plan_guard(&mut self) -> CgResult<()> {
+        let SymbolKind::Function { attrs, .. } = self.module.symbol(self.body.symbol()).kind()
+        else {
+            return internal("a body whose symbol is no function");
+        };
+        let flags = self.module.fn_attrs(attrs).flags();
+        let body = self.body;
+        self.s.guard.plan(self.module, body, flags, T::STACK_ALIGN).map_err(CgError::unsupported)
+    }
+
     /// §5.1: the entry code that allocates the over-aligned slots.
     fn enter_slots(&mut self) -> CgResult<()> {
         let t = self.target;
+        if self.s.guard.is_on() {
+            // WP-183, §5.6.24: the guard, then the guarded block's
+            // pointers, before any dynamic allocation.
+            t.enter_guard(self)?;
+        }
         for (index, slot) in self.body.slots().iter().enumerate() {
+            if self.s.guard.slot_offset(index).is_some() {
+                continue;
+            }
             if let Some(&SlotPlace::Indirect(pointer)) = self.s.slots.get(index) {
                 t.dynamic_slot(self, pointer, slot.size(), slot.align())?;
             }

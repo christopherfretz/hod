@@ -97,6 +97,8 @@ pub const X64: X64 = X64 {
 pub struct FnState {
     /// The frame: the prologue's patched immediate (`frame`, WP-116).
     pub frame: frame::FrameState,
+    /// The stack guard (`guard`, WP-183).
+    pub guard: crate::guard::GuardState,
 }
 
 /// The general registers `from..=to` by hardware number, `rsp` excluded.
@@ -579,6 +581,10 @@ impl Target for X64 {
         align: u64,
     ) -> CgResult<()> {
         frame::dynamic_slot(cx, ptr, size, align)
+    }
+
+    fn enter_guard(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
+        crate::guard::enter(cx)
     }
 
     fn patch_branch(code: &mut [u8], at: u32, kind: FixupKind, displacement: i64) -> bool {

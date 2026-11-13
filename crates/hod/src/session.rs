@@ -439,7 +439,11 @@ impl Session {
         }
         let classifier = classifier_for(arch, support_of(&self.settings, arch));
         if let Err(rejection) = classifier.module(&self.module) {
-            let error = from_rejection(&self.module, rejection, false);
+            // A function attribute the readers refused is judged here, in
+            // the module pass, and names its function as a body's
+            // refusal does (WP-183); any other module refusal names none.
+            let attribute = rejection.construct.starts_with("attr:");
+            let error = from_rejection(&self.module, rejection, attribute);
             self.note(error);
         }
         // WP-109: a coroutine module the target cannot build is declined

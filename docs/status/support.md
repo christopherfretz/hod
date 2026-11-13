@@ -31,7 +31,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `init` | 10 | 6 | 3 | 1 | 6 | 3 | 1 |
 | `function` | 6 | 6 | 0 | 0 | 6 | 0 | 0 |
 | `cc` | 26 | 6 | 7 | 13 | 5 | 11 | 10 |
-| `attr` | 62 | 29 | 30 | 3 | 27 | 27 | 8 |
+| `attr` | 62 | 32 | 27 | 3 | 30 | 24 | 8 |
 | `type` | 15 | 12 | 0 | 3 | 13 | 0 | 2 |
 | `inst` | 67 | 60 | 0 | 7 | 60 | 0 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 530 | 347 | 7 | 176 | 304 | 10 | 216 |
-| total | 855 | 554 | 68 | 233 | 509 | 68 | 278 |
+| total | 855 | 557 | 65 | 233 | 512 | 65 | 278 |
 
 ## `module`
 
@@ -258,9 +258,9 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:nounwind` | supported | supported | its absence is `function:may-unwind` |
 | `attr:returns_twice` | supported | supported | on a body, a call, or a function called directly |
 | `attr:alwaysinline` | supported | supported | an ordinary call; a body whose meaning depends on being inlined is declined (`spec/cli.md` "Always-inline", WP-021) |
-| `attr:ssp` | not-implemented | not-implemented | spec/codegen.md §13. open question: accept and ignore, or implement |
-| `attr:sspreq` | not-implemented | not-implemented | spec/codegen.md §13 |
-| `attr:sspstrong` | not-implemented | not-implemented | spec/codegen.md §13 |
+| `attr:ssp` | supported | supported | a guard above the escaping slots, checked at every exit (`spec/codegen.md` §5.6.24, WP-183) |
+| `attr:sspreq` | supported | supported | as `attr:ssp`, every function protected |
+| `attr:sspstrong` | supported | supported | as `attr:ssp` |
 | `attr:presplitcoroutine` | supported | supported | one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name (WP-106); with `-g`, its variables on the frame word (WP-108); a pre-opt module with one is accepted in place of `opt` + `llc`; with this row off, it is declined by its module level (WP-109, `spec/cli.md` "Pre-opt modules") |
 | `attr:sanitize_address` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_alloc_token` | not-implemented | not-implemented | unplanned |

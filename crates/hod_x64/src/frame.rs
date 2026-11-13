@@ -229,6 +229,7 @@ pub fn begin(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     if cx.state.frame.probe != 0 {
         cx.emit(&[0xcc; crate::probe::RESERVE as usize]);
     }
+    crate::guard::reserve(cx)?; // WP-183: the low guard, first in the local area
     let xmms = cx.state.frame.preserve.xmms.count_ones();
     if xmms != 0 {
         let area = cx.alloc_slot(16 * u64::from(xmms), 16)?;
@@ -268,6 +269,7 @@ pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     if cx.tail_exit_count() != 0 && is_preserving(cx) {
         return unsupported(PRESERVE_TAIL_CALL);
     }
+    crate::guard::place(cx)?; // WP-183: the guarded block, last in the local area
     let mask = saved_set(cx);
     cx.state.frame.saved = mask;
     let extra = preserved(cx).count() as u32;
@@ -291,7 +293,7 @@ pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     cx.bind(cx.epilogue())?;
     // WP-125: the `sret` or return-in-memory address back in `rax`.
     crate::call::before_return(cx);
-    teardown(cx);
+    teardown(cx)?;
     put(cx, mc::ret());
 
     for index in 0..cx.tail_exit_count() {
@@ -303,7 +305,7 @@ pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
         cx.cfi(CfiOp::DefCfa { reg: DWARF_RBP, offset: INCOMING_BASE });
         // WP-125: `al` of a variadic function, as it arrived.
         crate::call::before_tail_exit(cx);
-        teardown(cx);
+        teardown(cx)?;
         cx.tail_branch_here(index, dwarf); // WP-113: `spec/dwarf.md` §6.19
         match exit.target {
             CallTarget::Sym(sym) => put_reloc(cx, mc::jmp_near(0), X64Reloc::Plt32, sym, 0)?,
@@ -311,6 +313,7 @@ pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
         }
         cx.tail_branch_ends_here(index); // WP-163: `spec/dwarf.md` §6.21
     }
+    crate::guard::fail(cx)?; // WP-183: the failure call after the exits
     // Last: the exit sequences above may address locals too (WP-125).
     bias_local_sites(cx, -i64::from(below))?;
     cx.set_frame_desc(desc);
@@ -390,11 +393,13 @@ pub fn base_offset(desc: &FrameDesc, place: FrameRef) -> Option<i64> {
     }
 }
 
-/// The teardown every exit sequence starts with: (WP-181) the `xmm`
+/// The teardown every exit sequence starts with: (WP-183) the stack
+/// guard checked before anything is popped, (WP-181) the `xmm`
 /// registers a `preserve_allcc` function stored loaded back, the stack
 /// pointer back at the save area, the save set, the extra registers and
 /// `rbp` popped; `leave` when nothing is saved.
-fn teardown(cx: &mut FnCx<'_, X64>) {
+fn teardown(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
+    crate::guard::check(cx)?; // WP-183: the stack guard, before anything is popped
     if let Some(area) = cx.state.frame.preserve.area {
         for (at, x) in preserved_xmms(cx) {
             frame_inst(cx, area.offset_by(at), |m| mc::movup_rm(FpSize::S, x, m));
@@ -414,6 +419,7 @@ fn teardown(cx: &mut FnCx<'_, X64>) {
         put(cx, mc::pop_r(RBP));
     }
     cx.cfi(CfiOp::DefCfa { reg: DWARF_RSP, offset: 8 });
+    Ok(())
 }
 
 /// `Target::adjust_sp`: `lea rsp, [rsp + delta]`, flags kept, in steps

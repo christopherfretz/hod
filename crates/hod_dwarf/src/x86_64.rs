@@ -9,16 +9,16 @@
 //!   `DW_OP_const8u <x@DTPOFF>, DW_OP_GNU_push_tls_address` (the offset
 //!   relocated by `R_X86_64_DTPOFF64` against the variable's own symbol);
 //!   AArch64's `llc` writes no location, nor does hod there. Under split
-//!   DWARF `llc` puts the offset in `.debug_addr` instead
-//!   (`DW_OP_GNU_const_index`), which hod does not write: refused as
-//!   [`crate::scope::TLS_LOCATION`].
+//!   DWARF `llc` puts the offset in `.debug_addr` instead,
+//!   `DW_OP_GNU_const_index <index>, DW_OP_GNU_push_tls_address`, the
+//!   entry relocated by `R_X86_64_DTPOFF64`; so does hod since WP-189
+//!   (`spec/dwarf.md` §6.24; [`crate::scope::TLS_LOCATION`] is kept).
 
 use hod_ir::Arch;
 use hod_obj::{RelocKind, X64Reloc};
 
-use crate::Error;
-use crate::die::{Reloc, Sec, Target, UnitPlan, Writer, unsupported};
-use crate::scope::TLS_LOCATION;
+use crate::die::{Reloc, Sec, Target, UnitPlan, Writer, uleb_len};
+use crate::leb::write_uleb;
 
 /// `rax`.
 pub const RAX: u16 = 0;
@@ -96,6 +96,8 @@ const DW_OP_CONST8U: u8 = 0x0e;
 /// `DW_OP_GNU_push_tls_address`: `llc`'s choice when it tunes for gdb,
 /// the default for every ELF target but the `PlayStation`'s.
 const DW_OP_GNU_PUSH_TLS_ADDRESS: u8 = 0xe0;
+/// `DW_OP_GNU_const_index`: a `.debug_addr` entry, a constant (WP-189).
+const DW_OP_GNU_CONST_INDEX: u8 = 0xfc;
 /// The location's length: the two ops and the 8-byte offset.
 const TLS_EXPR_LEN: u8 = 10;
 
@@ -110,6 +112,16 @@ impl Writer<'_> {
     /// at `symbol` + `addend`: `DW_OP_const8u`, the offset relocated by
     /// [`Target::Tls`], `DW_OP_GNU_push_tls_address`.
     pub(crate) fn tls_location(&mut self, symbol: hod_obj::SymbolId, addend: i64) {
+        if self.split {
+            // WP-189: the offset is a `.debug_addr` entry (§6.24).
+            let index = self.push_addr(symbol, addend);
+            self.tls_addrs.push(index);
+            write_uleb(&mut self.info, 2 + uleb_len(u64::from(index)) as u64);
+            self.info.push(DW_OP_GNU_CONST_INDEX);
+            write_uleb(&mut self.info, u64::from(index));
+            self.info.push(DW_OP_GNU_PUSH_TLS_ADDRESS);
+            return;
+        }
         self.info.push(TLS_EXPR_LEN);
         self.info.push(DW_OP_CONST8U);
         let offset = self.info.len();
@@ -119,19 +131,10 @@ impl Writer<'_> {
     }
 }
 
-/// The hook of the split writer: a thread-local variable with a location
-/// is refused there (its offset would be a `.debug_addr` entry).
-///
-/// # Errors
-/// [`TLS_LOCATION`] for the first such variable.
-pub(crate) fn refuse_split_tls(plan: &UnitPlan<'_>) -> Result<(), Error> {
-    if !tls_has_location(plan.scope_dies.arch) {
-        return Ok(());
-    }
-    match plan.scope_dies.vars.iter().find(|(_, shape)| shape.tls) {
-        Some(&(die, _)) => Err(unsupported(plan.dies[die as usize].node, TLS_LOCATION)),
-        None => Ok(()),
-    }
+/// Whether the global with DIE `die` takes a `.debug_addr` entry in a
+/// split unit as a thread-local offset (WP-189, §6.24).
+pub(crate) fn split_tls_entry(plan: &UnitPlan<'_>, die: u32) -> bool {
+    tls_has_location(plan.scope_dies.arch) && plan.scope_dies.var(die).is_some_and(|s| s.tls)
 }
 
 #[cfg(test)]

@@ -12,6 +12,15 @@ pub enum CgError {
         /// The stable name the coverage log reports.
         construct: &'static str,
     },
+    /// An [`CgError::Unsupported`] with words saying what was met (WP-189:
+    /// the debug node, its kind and tag, of `debug:die-unsupported`). The
+    /// coverage log reports `construct`; `detail` is the refusal's detail.
+    UnsupportedDetail {
+        /// The stable name.
+        construct: &'static str,
+        /// What was met.
+        detail: String,
+    },
     /// A lowering met a case `classify` should have rejected, or an
     /// invariant of the value-location policy failed: a bug in hod, or
     /// invalid IR. Never a panic and never silently wrong code.
@@ -79,6 +88,9 @@ impl fmt::Display for CgError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CgError::Unsupported { construct } => write!(f, "unsupported: {construct}"),
+            CgError::UnsupportedDetail { construct, detail } => {
+                write!(f, "unsupported: {construct}: {detail}")
+            }
             CgError::Internal(text) => write!(f, "internal error in code generation: {text}"),
         }
     }

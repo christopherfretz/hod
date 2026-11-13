@@ -9,9 +9,10 @@
 //!   (its `DW_OP_addrx` index masked); the debuggers check the addresses
 //!   (`dies_scope_debugger.rs`);
 //! - what the sources exercise, counted, so a lost DIE kind fails;
-//! - the refusals that need code: a template parameter that is the
-//!   address of a symbol the object does not define, and an out-of-line
-//!   definition whose declaration is virtual outside a class;
+//! - the refusals that need code: an out-of-line definition whose
+//!   declaration is virtual outside a class (a template parameter that is
+//!   the address of a symbol the object does not define is written since
+//!   WP-189, `crates/hod/tests/debug_real_projects.rs`);
 //! - a bug outside WP-059 (`types.rs`), ignored.
 
 mod common;
@@ -239,18 +240,15 @@ fn refusals_are_named() {
     let (module, bodies) = parse(&base);
     compile_to_object(&module, &bodies, &Options::default()).expect("the base case");
 
-    let cases = [
-        ("debug:template-address", one_function("declare void @ext()", &class("ptr @ext"))),
-        (
-            "debug:declaration-scope",
-            one_function(
-                "",
-                "!5 = !{}\n!10 = distinct !DISubprogram(name: \"f\", linkageName: \"_ZN1n1fEv\", scope: !30, file: !1, line: 1, type: !11, scopeLine: 1, spFlags: DISPFlagDefinition, unit: !0, declaration: !31, retainedNodes: !4)\n\
+    let cases = [(
+        "debug:declaration-scope",
+        one_function(
+            "",
+            "!5 = !{}\n!10 = distinct !DISubprogram(name: \"f\", linkageName: \"_ZN1n1fEv\", scope: !30, file: !1, line: 1, type: !11, scopeLine: 1, spFlags: DISPFlagDefinition, unit: !0, declaration: !31, retainedNodes: !4)\n\
                  !30 = !DINamespace(name: \"n\", scope: null)\n\
                  !31 = !DISubprogram(name: \"f\", linkageName: \"_ZN1n1fEv\", scope: !30, file: !1, line: 1, type: !11, scopeLine: 1, spFlags: DISPFlagVirtual)\n",
-            ),
         ),
-    ];
+    )];
     for (name, text) in &cases {
         let e = refusal(text);
         assert!(e.contains(name), "{name}: {e}\n{text}");

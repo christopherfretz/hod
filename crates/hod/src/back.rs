@@ -387,6 +387,12 @@ fn from_cg(error: CgError, function: Option<String>) -> CompileError {
             Unsupported { construct: Construct::Named(construct.into()), function, detail: None }
                 .into()
         }
+        CgError::UnsupportedDetail { construct, detail } => Unsupported {
+            construct: Construct::Named(construct.into()),
+            function,
+            detail: Some(detail),
+        }
+        .into(),
         CgError::Internal(text) => CompileError::Internal(match function {
             Some(function) => format!("function '{function}': {text}"),
             None => format!("module emission: {text}"),

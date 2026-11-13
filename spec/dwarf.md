@@ -899,6 +899,7 @@ exclusive `low_pc` forms), and pin the bytes of one entry.
 | 110 | `variable` (local, aligned, location list): family 88 likewise | 8 | 11514 | WP-162 |
 | 111 | `formal_parameter` (of abstract, location list): `location` (0, a `sec_offset`), `abstract_origin` | 2 | 11522 | WP-162 |
 | 112 | `variable` (of abstract, location list): likewise | 2 | 11524 | WP-162 |
+| 113 | `subprogram` (member declaration, explicit, qualified, §6.24): `linkage_name` (0), `name`, decl (1), `type` (2), `virtuality` and `vtable_elem_location` (3), `declaration`, `external` (4), `reference` (5), `rvalue_reference` (6), `accessibility` (7), `explicit`, `deleted` (8), `containing_type` (3), children optional | 1024 | 11526 | WP-189 |
 
 Families 2 to 45 that WP-058 owns are used for the common shape of each
 kind (they keep the codes the reserved shapes promised); the "any"
@@ -914,7 +915,7 @@ WP-057 uses its reserved families 0 (`formal_parameter`), 1 (local
 `low_pc`/`high_pc` or `ranges` as `DW_FORM_sec_offset`) and 39 (`label`),
 and appends 69 to 71 for the other shapes.
 
-`CODE_END` is 11471 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085, 10631 after WP-059, 10647 after WP-087, 10655 after WP-094, 10719 after WP-098, 10731 after WP-062; 11526 after WP-162, whose families 107 to 112 follow WP-163's 106). Since the core families come last, their codes take
+`CODE_END` is 12550 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085, 10631 after WP-059, 10647 after WP-087, 10655 after WP-094, 10719 after WP-098, 10731 after WP-062; 11526 after WP-162, whose families 107 to 112 follow WP-163's 106; 12550 after WP-189's 113). Since the core families come last, their codes take
 two ULEB bytes where `llc`'s take one (the cost is in §7.2; open question
 7).
 
@@ -1638,7 +1639,8 @@ template parameters' (below), then the functions'.
   - the address of a symbol is `DW_AT_location (DW_OP_addrx N,
     DW_OP_stack_value)`. It takes a `.debug_addr` entry, against the
     place the code generator gave the symbol (`UnitPlan::place_symbols`,
-    called by the bridge after `seal`);
+    called by the bridge after `seal`), or against the undefined symbol
+    itself for one this object does not define (WP-189, §6.24);
   - a float, a null pointer or an address with an offset has no value,
     as in `llc`;
 - `DW_TAG_GNU_template_parameter_pack`: `name`; its parameters are
@@ -1709,10 +1711,10 @@ It appends 81 to 86 for the other shapes.
 | `debug:global-shape` | a static member's definition that is not a definition; a global without a name or type that is not a static member's definition; a line without a file |
 | `debug:global-scope` | a global scoped outside the unit, a file or a namespace (a module) |
 | `debug:static-member-declaration` | a `declaration:` that is not a static member of a class |
-| `debug:tls-location` | a thread-local variable on x86-64 in a split unit, whose `llc` writes `DW_OP_GNU_const_index` of a `.debug_addr` entry (since WP-136; a full unit's is written, §6.17) |
+| `debug:tls-location` | no longer returned: a thread-local variable on x86-64 is written in a full unit since WP-136 (§6.17) and in a split unit since WP-189 (§6.24); the name is kept |
 | `debug:template-parameter` | a parameter of another tag; a pack with a type or a default; a template template parameter whose value is not a string; a value of the wrong kind |
 | `debug:template-value` | an integer value wider than 64 bits |
-| `debug:template-address` | the address of a symbol this object does not place (an undefined function or variable) |
+| `debug:template-address` | the address of a symbol the bridge gives no place (since WP-189 the bridge places an undefined symbol as itself, §6.24; the name is kept for other callers of `UnitPlan::place_symbols`) |
 | `debug:import` | an import of another tag, with `elements:`, an `imported_module` with a name, a line without a file |
 | `debug:import-scope` | a unit's import scoped outside the unit, a file or a namespace; a function's import scoped elsewhere than its function |
 | `debug:import-entity` | an import of a module, of another import, of a function's definition or of a function-local variable |
@@ -2245,8 +2247,8 @@ which hod does not follow, §1.1), the offset relocated by
 symbol). hod writes exactly that (`Writer::tls_location`, the
 relocation `Target::Tls`), for a global and for a function's
 thread-local static. In a split unit `llc` puts the offset in
-`.debug_addr` (`DW_OP_GNU_const_index`), which hod does not write:
-refused as `debug:tls-location`. AArch64 is unchanged (no location).
+`.debug_addr` (`DW_OP_GNU_const_index`), written since WP-189 (§6.24;
+refused as `debug:tls-location` before). AArch64 is unchanged (no location).
 
 **The unit's code** (both targets): `llc` gives a unit `DW_AT_low_pc` /
 `DW_AT_high_pc` when its code is one range, and extends a range over the
@@ -2801,6 +2803,73 @@ loop header's records start ranges only in the header); a home for
 register values a record names (most of `-O1` code's records); slot
 addresses and floating constants; `.debug_loc`. Evidence:
 `spec/landed/dwarf/WP-162.md`.
+
+### 6.24 Refusals real projects meet at `-O0 -g` (implemented, WP-189)
+
+Two refusals of kiln-built `-O0 -g` translation units of abseil, and a
+sweep of every `debug:*` name.
+
+**The detail of `debug:die-unsupported`.** The DIE writer's
+`Error::Unsupported` without a `debug:*` name is declined as
+`debug:die-unsupported` (§6.5); its detail (`hod_dwarf::Error::detail`,
+carried by `CgError::UnsupportedDetail` to the facade's
+`Unsupported::detail`) names the node: its kind and DWARF tag as LLVM
+writes them (no tag for a kind without one), its number in the module's
+table, and what is not written, e.g. `DIDerivedType DW_TAG_pointer_type
+(node 15): a pointer with an address space`. The stable name is
+unchanged.
+
+**An explicit member function with a ref-qualifier**
+(`explicit operator T() const &`, `explicit operator U() &&`; abseil's
+`statusor_test.cc`): a `DISubprogram` declaration with `DIFlagExplicit`
+and `DIFlagLValueReference` or `DIFlagRValueReference`. `llc`'s
+`applySubprogramAttributes` writes `linkage_name`, `name`, decl,
+`type`, `virtuality` and `vtable_elem_location`, `declaration`,
+`external`, `reference`, `rvalue_reference`, `accessibility`,
+`explicit`, `deleted`, `containing_type`, which is family 113 (§6.1).
+Version 4 is the same without `deleted` (§6.20: the family is checked
+against `llc`'s version 4 output, `dwarf4.rs` `checked_later`). Still
+refused (the detail says which): explicit with `noreturn`, artificial
+with a ref-qualifier, a member without a name.
+
+**A template parameter's address of a symbol this object does not
+define** (`template<auto (*F)(...)>` of an extern function, abseil's
+`numbers_test.cc`; `template<int &R>` of an extern variable). `llc` 19
+and 22 write the same `DW_AT_location (DW_OP_addrx N,
+DW_OP_stack_value)` as for a defined symbol (`DW_OP_addr` in version 4),
+the `.debug_addr` entry relocated against the undefined symbol with
+addend 0. The bridge (`hod_cg` `DebugLines::finish`) gives such a symbol
+its own object symbol: the declaration is then referenced and named, as
+`llc`'s is. A symbol in a COMDAT group or of internal linkage is placed
+as before (§6.11). What kiln and clang write for the other address-like
+values, and what `llc` writes for them (unchanged, already hod's):
+
+| value | IR | `llc` |
+|---|---|---|
+| `&global`, `&function`, `int &R = global` | `ptr @sym` | `DW_AT_location (DW_OP_addrx N, DW_OP_stack_value)` |
+| `nullptr` | `i8 0` | `DW_AT_const_value (0)` |
+| a data member pointer `&X::n` | `i64 <offset>` | `DW_AT_const_value (offset)` |
+| a member function pointer `&X::f` | `{ i64, i64 }` | no value |
+| `&array[1]` (kiln only; clang refuses the subobject) | `getelementptr` | no value |
+
+`llc`'s address pool has one entry per symbol; hod's has one per
+attribute (the comparison masks indices, §6.7), which costs 8 bytes per
+repeated symbol.
+
+**A thread-local variable in a split unit on x86-64** (`-gsplit-dwarf`,
+kiln and clang): `llc` writes `DW_AT_location (DW_OP_GNU_const_index N,
+DW_OP_GNU_push_tls_address)` in the `.dwo` unit, the skeleton's
+`.debug_addr` entry N relocated by `R_X86_64_DTPOFF64` against the
+variable's symbol. hod does the same (`x86_64.rs` `tls_location` with
+`Writer::split`; the entry is marked in `Writer::tls_addrs`, so the
+skeleton's relocation takes `reloc_kind`'s thread-local kind); the
+unit counts these entries among the globals' (`split_tls_entry`) so that
+its own range entry follows them. This was `debug:tls-location`.
+
+**Sweep.** Every `debug:*` name, and whether ordinary C++ at `-O0 -g`
+produces it, is in `spec/landed/dwarf/WP-189.md`: 35 probes of the
+constructs of WP-189's row, each through kiln++ and clang 19 and 22 for
+both targets, all compile under `--strict` and verify.
 
 ## 7. Speed and memory
 

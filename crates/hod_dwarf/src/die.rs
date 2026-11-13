@@ -653,6 +653,11 @@ pub(crate) struct Writer<'a> {
     /// start (`loclists::NO_LISTS` before its first list).
     pub(crate) loclists: Vec<u8>,
     pub(crate) loclists_unit: usize,
+    /// WP-189: whether this writer writes a split unit, and the indices
+    /// of the unit's `.debug_addr` entries that are thread-local offsets
+    /// (`R_X86_64_DTPOFF64`), ascending (§6.24).
+    pub(crate) split: bool,
+    pub(crate) tls_addrs: Vec<u32>,
 }
 
 #[inline]
@@ -781,6 +786,12 @@ impl<'a> Writer<'a> {
         unit_start
     }
 
+    /// Empties the unit's address pool and its thread-local entries.
+    pub(crate) fn clear_addrs(&mut self) {
+        self.addrs.clear();
+        self.tls_addrs.clear();
+    }
+
     pub(crate) fn unit(&mut self, u: &UnitInput<'_, 'a>, symbols: u32) -> Result<(), Error> {
         let plan = u.plan;
         let n = plan.dies.len();
@@ -808,7 +819,7 @@ impl<'a> Writer<'a> {
             .filter(|g| plan.die_of_expr(g.expr).is_some_and(|d| plan.global_takes_address(d)))
             .count()
             + plan.template_addrs();
-        self.addrs.clear();
+        self.clear_addrs();
         self.offsets.clear();
         self.offsets.resize(n, NONE);
         self.patches.clear();
@@ -933,14 +944,12 @@ impl<'a> Writer<'a> {
             self.addr.extend_from_slice(&length.to_le_bytes());
             self.addr.extend_from_slice(&5u16.to_le_bytes());
             self.addr.extend_from_slice(&[8, 0]);
-            for &(symbol, addend) in &self.addrs {
+            for (i, &(symbol, addend)) in self.addrs.iter().enumerate() {
                 let offset = self.addr.len();
-                self.relocs.push(Reloc {
-                    sec: Sec::Addr,
-                    offset,
-                    target: Target::Symbol(symbol),
-                    addend,
-                });
+                // WP-189: a split unit's thread-local offset (§6.24).
+                let tls = self.tls_addrs.binary_search(&(i as u32)).is_ok();
+                let target = if tls { Target::Tls(symbol) } else { Target::Symbol(symbol) };
+                self.relocs.push(Reloc { sec: Sec::Addr, offset, target, addend });
                 self.addr.extend_from_slice(&[0; 8]);
             }
         }
@@ -1110,6 +1119,8 @@ pub fn write_debug_info(
         block_starts: Vec::new(),
         loclists: Vec::new(),
         loclists_unit: crate::loclists::NO_LISTS,
+        split: false,
+        tls_addrs: Vec::new(),
     };
     if let Some(u) = units.iter().find(|u| !u.plan.sealed) {
         return Err(unsupported(u.plan.unit, "a unit plan that is not sealed"));

@@ -2589,6 +2589,168 @@ skipped; each is `+name` or `-name`. In order:
 The first refused item of a string is the answer (`Refused { reason,
 feature }`).
 
+#### The lane loop (WP-129)
+
+`hod_cg::lanes` is the loop of an element-wise operation on a vector, one
+lane at a time, unrolled at emit time (AArch64's use: §5.5.1 "Vectors,
+the lane loop"). A target implements `LaneKernels` and passes the scalar
+operation of one lane as a closure; every decision below is the driver's.
+
+**Shapes.** `lane_log2(elem, count)` decides which vectors have
+addressable lanes, checking in this order: `i1` elements are a mask
+(`Mask`, or `MaskWide` beyond 64 of them); more than `MAX_LANES` = 256
+lanes is `Length`; an element wider than 64 bits is `WideElement`; an
+integer of a width other than 8, 16, 32, 64 is `OddElement`; otherwise
+the lane is 1, 2, 4 or 8 bytes (`Elem`: `i8`..`i64`, `ptr`, `half`,
+`bfloat`, `float`, `double`). Lane `i` is at byte `i << log2` of the
+vector's in-memory image (elements are packed). A target names each
+`ShapeRefusal` itself and may refuse more (AArch64: `bfloat`
+arithmetic, masks under the groups' names).
+
+**The target's part (`LaneKernels`).**
+
+- `type Lanes`: the target's view of a vector with lanes (what its
+  moves need); `geometry(&Lanes) -> Geometry { count, log2, class,
+  elem_class }` is all the driver reads of it. `class` is the vector's
+  (`Fpr`: a register vector; `Mem`: a slot); `elem_class` a lane's as a
+  scalar (`Gpr` for integers and pointers, `Fpr` for floating point).
+- `SCRATCH_IMAGES`, `scratch(k)`: `k` frame areas of the function, each
+  as large and aligned as the widest register vector, valid until the
+  lowering ends (plain frame memory: they survive calls).
+- `spill(reg, lanes, k)` / `reload(reg, lanes, image)`: a register
+  vector to and from an image.
+- `load_lane(lanes, at, rt)`: the lane at frame place `at` into `rt`,
+  zero-extended into a general register, or the scalar view of a
+  floating-point one. `store_lane(lanes, at, rt)`: the reverse, the low
+  bytes only.
+- `deferred_first(inst)`: the operands deferred into `inst` (§4.6)
+  emitted before anything else.
+
+None of these may leave a value in a pool register or expect anything of
+the flags.
+
+**`setup(inst, operands, lanes_of)`** (at most three operands): the
+result's lanes, then each vector operand's (a scalar operand is not
+asked: it is the same in every lane), every length equal to the
+result's; nothing is emitted before these checks. Then
+`deferred_first`, then the images (`images`, also used alone by a
+lowering with its own per-lane code, as AArch64's masks): an operand
+repeated shares its first image; a `Mem` vector's image is its slot; a
+register vector is asked for, spilled to the next scratch image and
+given back at once, so that the loop has the whole pool. The result's
+image is its slot (`Mem`), else the next free scratch image, else the
+first operand's image when its lanes are as wide as the result's (each
+lane of it is read before the same lane is written).
+
+**`each_lane(loop, takes, kernel)`**: for lane 0, 1, ... in order: for
+each `(operand, class)` of `takes` in order, a new pool temporary of
+`class` with that operand's lane loaded into it (a scalar operand put
+whole); `kernel(lane, temporaries)` emits the operation and returns the
+register that holds the result lane (one of the temporaries, or a
+temporary of its own: a conversion to another class, a runtime call's
+result); that register is stored as the result's lane; the result's
+register and every taken temporary are given back. A kernel that makes
+a call loses its temporaries there (§7.1) and returns the call's
+result. The value of a lane is the scalar instruction's for it, poison
+and undefined behaviour included: the driver adds no rule of its own.
+
+**`finish(inst, lanes, dst)`**: a register-vector result is loaded from
+its image into the result's register; a `Mem` result is already in its
+slot.
+
+**x86-64 (WP-132), the reasoning the trait is designed for.**
+
+- *Two-operand instructions* (design 0006 §2.2): the kernel returns the
+  register that holds the result, so `add t0, t1` returns `t0` and a
+  non-commuting form that ends in the second operand returns `t1`;
+  nothing in the driver assumes a three-operand `dst = a op b`.
+- *Fixed registers*: `rax`, `rcx`, `rdx` are not in the pool and are
+  never held (§5.6), so a kernel uses them freely (a variable shift's
+  `cl`, a division's `rdx:rax`) without asking; the driver's
+  temporaries are pool registers and never one of them.
+- *Flags* (design §2.3): the driver emits nothing between kernel calls
+  but lane moves, and keeps no flags live from one call to the next; a
+  kernel sets and reads its flags within itself. `load_lane` and
+  `store_lane` on x86-64 are `movzx`/`mov`/`movss`/`movsd`/`movd` with a
+  frame operand, which leave the flags alone, but the driver does not
+  rely on that.
+- *Scalar floating point*: a lane of class `Fpr` is the low lane of an
+  `xmm` temporary (`movss`/`movsd`; a `half` lane is 16 bits moved
+  through a general register, `movzx` then `movd`), so the kernels are the SSE2 scalar
+  lowerings of X-float; there is no third floating-point scratch like
+  AArch64's `v31`, so a three-operand floating-point kernel (`fma`) takes
+  three operands through `takes`.
+- *Images*: a frame operand on x86-64 needs no scratch register for a
+  far offset (a 32-bit displacement), so `load_lane`/`store_lane` write
+  only `rt`; packed SSE2 operations are used instead of the loop where
+  one instruction exists (design §2.6), and the loop for the rest.
+
+#### Inline-assembly constraints (WP-129)
+
+`hod_cg::asm_constraints::parse(syntax, constraints)` reads the
+constraint string of an inline-assembly call into `Constraints`, with
+the target's part behind `ConstraintSyntax`. AArch64's use is §5.5.3
+"WP-103". The flags of the call (`sideeffect`, `alignstack`,
+`inteldialect`, `unwind`) are `AsmFlags::of`.
+
+**The string.** An empty string has no operands. Otherwise it is split
+at `,`; each part, in order:
+
+1. `~{name}` is a clobber: `memory` sets `Constraints::memory`;
+   anything else goes to `syntax.clobber(name)`: `Ignored` (the flags
+   register: AArch64 `cc`, `nzcv`; x86-64 `flags`, `dirflag`, `fpsr`),
+   `Reg(r)` (into the `clobbers` bit set by `PReg::index`), `Unknown`
+   (refused `Clobber(name)`), or the target's refusal. A clobber without
+   braces is `Clobber(text)`.
+2. Past `MAX_OPS` = 16 operands: `TooMany`.
+3. `=` makes an output; `!` a label, which must be `!i` (else
+   `Constraint(part)`) and has one alternative, the target's `i` code.
+4. Then any of `*` (indirect: the operand is a pointer to the memory),
+   `&` (early clobber), `%` (commutative), in any order.
+5. Then the alternatives, separated by `|`; past `MAX_ALTS` = 4:
+   `TooMany`. Each alternative is read code by code:
+   - `{@cc<cond>}` in an output is a flag output: `FLAG`, with
+     `syntax.flag(cond)`; an empty or unknown condition is
+     `Constraint(name)`. In an input it is a register name (and so
+     refused as one);
+   - `{name}`: `syntax.operand_reg(name)`: a register (`SPEC`), no
+     register (`Constraint(name)`), or the target's refusal (AArch64:
+     a frame register, a scratch register); no `}` is
+     `Constraint(rest)`;
+   - digits in an input: the output it is tied to (`TIED`); a second
+     tie in one alternative, or a number of `MAX_OPS` or more, is
+     `TooMany`;
+   - anything else: `syntax.letters(code, output)` gives the code bits
+     (below bit 29: `SPEC`, `TIED`, `FLAG` are the parser's) and the
+     length (x86-64 has two-letter codes such as `Yz`); none is
+     `Letter(byte)`;
+   - an alternative with no code is `Constraint("empty")`.
+6. A direct output (`=` without `*`) is a field of the call's result,
+   numbered in order (`field`); every other operand but a label is a
+   call argument, numbered in order (`arg`).
+
+Finally the order: the outputs, then the inputs, then the labels, and
+every tie names an output; otherwise `Constraint("order")`. The first
+refusal of the string, in reading order, is the answer.
+
+**Choosing an alternative.** `Constraints::choose(args, weight)` is
+`llc`'s choice: with fewer than two alternatives anywhere, 0; otherwise,
+for each index below the greatest count, the sum over the operands of
+`weight(operand, codes)` of the operand's alternative at that index (the
+first when it has fewer), where an operand weighing `None` excludes the
+index; the first index of the greatest sum wins, 0 if none is possible.
+The weights are the target's (AArch64: immediate 3, memory 2, a
+register class 1 for a value it holds, the best code of an alternative).
+
+**What stays the target's.** The register a place gets, the template's
+substitution and assembly, the sequence around it, and the meaning of
+each letter. On x86-64 the letters `a b c d S D` name one register each
+(through `letters` they are codes the target places as it places
+`{name}`), `A` is `rdx:rax`, `q`, `Q`, `R`, `l` restrict the general
+registers, `x`/`v` are `xmm`, `f`/`t`/`u` the x87 stack (refused while
+x87 is memory-only, design §2.6); the clobbers `~{dirflag}`, `~{fpsr}`,
+`~{flags}` that clang adds to every statement are `Ignored`.
+
 ### 7.4 Symbol addresses
 
 How code reaches a symbol depends only on the module (PIE level, code

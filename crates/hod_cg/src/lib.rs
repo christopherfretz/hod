@@ -21,6 +21,8 @@
 //! | `memplan` | §7.3 | `mem_plan`: what a `memcpy`, `memmove` or `memset` becomes |
 //! | `switch` | §7.3 | `canonical_cases`, `search_step`: the `switch` plan |
 //! | `sym` | §7.3, §9.2 | `SymRef`, `RuntimeFn`; the routines by type and target (`fp_routine`, ...) |
+//! | `lanes` | §7.3 | the lane loop: `LaneKernels`, `setup`, `each_lane`, `finish`; `Elem`, `lane_log2` |
+//! | `asm_constraints` | §7.3 | `parse`: an inline-assembly constraint string, `ConstraintSyntax` the target's part |
 //! | `target` | §8.2 | the `Target` trait |
 //! | `cx` | §8.1, §11 | `FnCx`: what a lowering is given; `Scratch` |
 //! | `record` | §9.1 to §9.6 | `Chunk`, `FuncRecord` and the rows |
@@ -36,6 +38,7 @@
 
 pub mod abi;
 mod access;
+pub mod asm_constraints;
 mod call;
 mod coro;
 mod cx;
@@ -45,6 +48,7 @@ pub mod error;
 pub mod features;
 mod frame;
 mod label;
+pub mod lanes;
 mod line_rows;
 mod loc;
 pub mod memplan;

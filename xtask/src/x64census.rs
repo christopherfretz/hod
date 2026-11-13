@@ -36,6 +36,7 @@ use std::rc::Rc;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use crate::irdiff::directives;
 use crate::irdiff::process::{self, End, Limits};
 use crate::irdiff::tools::Search;
 use crate::roundtrip::ingest::ingest;
@@ -121,6 +122,7 @@ pub fn command(args: &[String]) -> u8 {
         collect(input, &mut files);
     }
     files.sort();
+    let files = units(files);
     let scratch = match &config.keep {
         Some(dir) => dir.clone(),
         None => std::env::temp_dir().join(format!("hod-x64census-{}", std::process::id())),
@@ -144,11 +146,15 @@ pub fn command(args: &[String]) -> u8 {
                         *next += 1;
                         index
                     };
-                    let Some(path) = files.get(index) else { break };
-                    let result = check(path, &config, &scratch, index);
+                    let Some((path, part)) = files.get(index) else { break };
+                    let result = check(path, *part, &config, &scratch, index);
+                    let label = match part {
+                        Some(part) => format!("{}#{}", path.display(), part + 1),
+                        None => path.display().to_string(),
+                    };
                     let mut census =
                         census.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    merge(&mut census, path, &result);
+                    merge(&mut census, &label, &result);
                 }
             });
         }
@@ -171,6 +177,23 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) {
     } else if path.extension().is_some_and(|e| e == "ll") {
         out.push(path.to_path_buf());
     }
+}
+
+/// The modules to check: each file, and each module of a file of several
+/// (`;@ module:` directives, a corpus entry of several translation units)
+/// by its index.
+fn units(files: Vec<PathBuf>) -> Vec<(PathBuf, Option<usize>)> {
+    let mut units = Vec::new();
+    for path in files {
+        let count =
+            std::fs::read_to_string(&path).map_or(0, |text| directives::modules(&text).len());
+        if count == 0 {
+            units.push((path, None));
+        } else {
+            units.extend((0..count).map(|part| (path.clone(), Some(part))));
+        }
+    }
+    units
 }
 
 /// The LLVM major a path is under (`…/llvm19/…`); 22 without one.
@@ -197,11 +220,24 @@ struct Result1 {
 const TOOL_LIMITS: Limits = Limits { time: Duration::from_mins(2), memory_kib: 8 << 20 };
 
 #[allow(clippy::too_many_lines, reason = "the stages in order, one after another")]
-fn check(path: &Path, config: &Config, scratch: &Path, index: usize) -> Result1 {
+fn check(
+    path: &Path,
+    part: Option<usize>,
+    config: &Config,
+    scratch: &Path,
+    index: usize,
+) -> Result1 {
     let major = major_of(path);
     let mut r = Result1 { major, ..Result1::default() };
     let source = match std::fs::read(path) {
-        Ok(source) => source,
+        Ok(source) => match part {
+            Some(part) => directives::modules(&String::from_utf8_lossy(&source))
+                .into_iter()
+                .nth(part)
+                .map(|module| module.text.into_bytes())
+                .unwrap_or_default(),
+            None => source,
+        },
         Err(e) => {
             r.stage = "harness:read".into();
             r.detail = e.to_string();
@@ -302,8 +338,9 @@ fn check(path: &Path, config: &Config, scratch: &Path, index: usize) -> Result1 
         r.detail = front.join(", ");
         r.front_reasons = front;
     }
-    // 5: the interpreter against llc + qemu.
-    if config.interp {
+    // 5: the interpreter against llc + qemu; a module of several is a
+    // part of a program.
+    if config.interp && part.is_none() {
         r.interp =
             Some(interp_vs_oracle(&source, major, &search, &scratch.join(index.to_string())));
     }
@@ -533,7 +570,7 @@ fn interp_vs_oracle(source: &[u8], major: u32, search: &Search, dir: &Path) -> S
     if got == want { "agree".into() } else { format!("DIFFERS: interp {want:?} llc {got:?}") }
 }
 
-fn merge(census: &mut Census, path: &Path, r: &Result1) {
+fn merge(census: &mut Census, label: &str, r: &Result1) {
     census.modules += 1;
     Census::count(&mut census.by_route, format!("llvm{}", r.major));
     let stage_key = r.stage.clone();
@@ -549,7 +586,7 @@ fn merge(census: &mut Census, path: &Path, r: &Result1) {
     }
     if let Some(interp) = &r.interp {
         if interp.starts_with("trap:") || interp.starts_with("oracle:") {
-            census.lines.push(format!("{}: interp {interp}", path.display()));
+            census.lines.push(format!("{label}: interp {interp}"));
         }
         let key = if interp.starts_with("trap:") {
             interp.split(' ').next().unwrap_or(interp).to_owned()
@@ -557,7 +594,7 @@ fn merge(census: &mut Census, path: &Path, r: &Result1) {
             || interp.starts_with("INTERP")
             || interp.starts_with("INVALID")
         {
-            census.lines.push(format!("{}: interp {interp}", path.display()));
+            census.lines.push(format!("{label}: interp {interp}"));
             interp.split(':').next().unwrap_or(interp).to_owned()
         } else {
             interp.clone()
@@ -565,7 +602,7 @@ fn merge(census: &mut Census, path: &Path, r: &Result1) {
         Census::count(&mut census.interp, key);
     }
     if r.stage != "ready" {
-        census.lines.push(format!("{}: {}: {}", path.display(), r.stage, r.detail));
+        census.lines.push(format!("{label}: {}: {}", r.stage, r.detail));
     }
 }
 
@@ -618,6 +655,31 @@ mod tests {
         assert!(is_codegen_reason("x64:todo:inst:add"));
         assert!(!is_codegen_reason("type:x86_mmx"));
         assert_eq!(renamed("%a = add i32 %b, %a ; %\"x y\" 5%"), "%#0 = add i32 %#1, %#0 ; %#2 5%");
+    }
+
+    // spec/harness.md "x64census": a corpus entry of several modules is
+    // checked module by module, not read as one module.
+    #[test]
+    fn several_modules_are_units() {
+        let scratch = hod_testutil::Scratch::new("x64census-units");
+        let one = scratch.path().join("one.ll");
+        let two = scratch.path().join("two.ll");
+        std::fs::write(&one, "define void @f() {\n  ret void\n}\n").unwrap();
+        std::fs::write(
+            &two,
+            concat!(
+                ";@ module: a.ll\ntarget triple = \"x86_64-unknown-linux-gnu\"\n@x = global i32 0\n",
+                ";@ module: b.ll\ntarget triple = \"x86_64-unknown-linux-gnu\"\n@x = global i32 1\n",
+            ),
+        )
+        .unwrap();
+        let units = units(vec![one.clone(), two.clone()]);
+        assert_eq!(units, [(one, None), (two.clone(), Some(0)), (two.clone(), Some(1))]);
+        let config = parse_args(&["d".to_owned()]).unwrap().unwrap();
+        for part in [0, 1] {
+            let r = check(&two, Some(part), &config, scratch.path(), part);
+            assert!(!r.stage.starts_with("ll:"), "module {part}: {} {}", r.stage, r.detail);
+        }
     }
 
     // spec/harness.md "x64census": an x86-64 module the front half takes

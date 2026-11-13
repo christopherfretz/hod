@@ -3575,3 +3575,297 @@ for gcc-torture).
 Tests: `x64census::tests::{arguments, majors_and_reasons,
 a_ready_module}` (a module the front half takes whole is refused by the
 code generator alone and runs to its exit status).
+
+## Random programs
+
+`cargo xtask fuzz` (`xtask/src/fuzz.rs`, `xtask/src/fuzz/`), layer L10
+of `docs/VALIDATION.md`: random programs built by hod and by the oracle,
+run and compared. WP-154 made it (`spec/landed/harness/WP-154.md`);
+WP-160 added the modes, the profiles and the census
+(`spec/landed/harness/WP-160.md`).
+
+### Options
+
+`cargo xtask fuzz [--mix | --debug | --census] [--profile P] [--seed N]
+[--count M] [--target aarch64|x86_64] [--llvm 22|19] [-j J]
+[--linker bfd|lld|mold|wild] [--timeout S] [--reduce-budget P]
+[--hod <binary>] [--out <dir>] [-v]`
+
+- Seeds `N` to `N+M-1` (defaults 1 and 100). The run is a function of
+  the seeds, the mode, the profile, the target, the LLVM major and the
+  tools' versions: the same arguments give the same programs and the
+  same verdicts, whatever `-j` is (except for a timeout under load).
+- `--mix`, `--debug`, `--census`: the mode ("Modes"); at most one.
+- `--profile` the generator's option set ("Profiles"; default `default`).
+- `--llvm` picks `clang-<N>`, `llc-<N>`, `llvm-extract-<N>` and
+  `llvm-dwarfdump-<N>` together (default 22).
+- `-j` seeds at once (default 4, at most 16); each child also holds a
+  jobserver token ("Jobserver").
+- `--linker` links with that linker through the driver's `-B`; the
+  default is the driver's own `ld`.
+- `--timeout` the time limit of each program (default 5 s), the same on
+  both targets, emulated or not.
+- `--reduce-budget` probes a reduction may run (default 300; 0: none).
+- `--hod` the hod to test; the default builds the workspace's (the
+  census builds nothing).
+- `--out` where findings, the results file and the work directory go
+  (default `<build>/fuzz`).
+
+A run that cannot start (a tool its mode or profile needs is missing, a
+bad option) exits 3 or 2. csmith is needed by every profile but `abi`.
+
+### Profiles
+
+A profile is a generator and its options (`xtask/src/fuzz/profile.rs`,
+`PROFILES`). A csmith profile has base options, flavours (`seed %
+flavours` picks one; a flavour adds options) and an optional probability
+configuration (written to the seed's directory as `probabilities.txt`
+and given with `--probability-configuration`):
+
+| profile | csmith options beyond `--seed` | flavours |
+|---|---|---|
+| `default` | `--max-funcs 6 --max-block-depth 4 --max-array-len-per-dim 6` | `c`, `c`, `c-float` (`--float`) |
+| `aggregates` | 8 functions, struct and union fields up to 10 and 5 (fixed), nesting 3, packed structs, bit-fields, structs and unions as arguments and returns, volatile fields; struct and union types and bit-fields made likelier | `c` |
+| `float` | the default sizes; floating-point left-hand sides likelier | `c-float` |
+| `wide` | 10 functions, blocks of depth 5 and size 5, arrays of 3 dimensions of 10, pointers of depth 3; new arrays likelier | `c`, `c-float` |
+| `volatile` | the default sizes, volatile objects, fields and pointers, `--strict-volatile-rule`; volatile likelier | `c` |
+| `narrow` | the default sizes, no `long long`, no 64-bit math; 8- and 16-bit types only | `c` |
+| `abi` | hod's own generator (below) | `abi` |
+
+clang gets `-O0 -S -emit-llvm -w -Wno-error=incompatible-pointer-types
+-Wno-error=int-conversion --target=<triple>` and, for csmith's programs,
+`-I<csmith include>`; `-g` in `--debug`. csmith's C++ mode is not used
+(clang rejects most of its programs); YARPGen is not supported (not
+installed, and its programs are several files).
+
+**The ABI generator** (`xtask/src/fuzz/abi.rs`, flavour `abi`) writes,
+from a splitmix64 stream seeded by the seed, a C program of 3 to 8
+aggregate types, up to 3 globals of those types with static
+initializers, and 4 to 8 pairs of functions. An aggregate is one of nine
+shapes: a homogeneous aggregate of 1 to 4 `float`, `double` or `long
+double` (or an array of them), a small integer struct, integer and
+floating-point members alternating, bit-fields (of `int`, `unsigned`,
+`long long`, `unsigned long long`, `unsigned char`, `short`, widths 1 to
+the type's), arrays, a union, `long double` or `__int128` alone or with
+one other member, or 3 to 8 members of any scalar; a third of them also
+nest an earlier aggregate; 15% of the structs are packed. The scalars
+are every integer type of C, `_Bool`, `__int128` and its unsigned type,
+`float`, `double`, `long double` and `int *` (pointing into a global
+array). `callee_<k>` takes 0 to 5 parameters, or 8 to 17 in three cases
+in ten (past the argument registers of both targets), each a scalar, an
+aggregate by value or a pointer to an aggregate; in three cases in ten
+it is variadic, with a last fixed `int` and 1 to 6 variadic arguments of
+promoted scalar or aggregate types read with `va_arg`. It prints every
+scalar it received, writes the first member of each aggregate it got a
+pointer to, and returns nothing, a scalar or an aggregate (a parameter
+of its type, or a constant). `caller_<k>` builds the arguments
+(constants, locals, or a global of the type), calls, and prints the
+result and what was written; `main` calls the callers in order, prints
+the globals and returns 0. Every program is defined: unions are written
+and read through member 0, bit-field values fit their width,
+floating-point constants are exact hexadecimal literals, scalar
+arguments are cast to their parameter's type, and no address is
+printed (a pointer is printed as its index in the array).
+
+### Modes
+
+**Whole** (the default; WP-154). In the seed's own directory under the
+run's work directory:
+
+1. the generator writes `prog.c` (csmith with a 60 s limit, as for
+   every tool);
+2. clang writes `prog.ll`;
+3. the oracle: `llc -O0 -global-isel=0 -fast-isel=0 -filetype=obj
+   -mtriple=<triple> -relocation-model=pic` writes `oracle.o`;
+4. hod: `hod --coverage-log=<file> --strict` with the same code-generation
+   arguments (no selector) writes `hod.o`;
+5. both are linked with `-pie` by the target's driver (`gcc`,
+   `x86_64-linux-gnu-gcc`);
+6. both run, a cross target's under its emulator with the target's
+   system root and baseline CPU, with the time limit and 1 GiB of
+   address space. A program of hod's that times out where the oracle's
+   did not is run again with four times the limit.
+
+The directory is deleted afterwards unless the seed is a finding.
+
+**Mix** (`--mix`, `xtask/src/fuzz/split.rs`): the ABI between hod's
+objects and `llc`'s. After step 3 the oracle's program is linked and
+run (a timeout skips the seed). The module is split in two by
+`llvm-extract -S`: half A gets the definitions a seeded hash of their
+names picks (`split::in_a`: FNV-1a of the name mixed with the seed, low
+bit), with `--func=<name>` for a function and `--glob=<name>` for a
+global variable; half B is `--delete` of the same list. The `llvm.`
+globals, aliases and names in quotes are not listed (they go to B).
+`llvm-extract` gives each definition of local linkage (csmith's `static`
+functions and globals, clang's `private` strings) external linkage and
+hidden visibility, in both halves, and declares what a half uses of the
+other as an external hidden declaration: names are unique in a module,
+so each local becomes one symbol of the program, visible to its two
+objects only, and the halves together mean what the module meant. The
+run checks this on every seed: `llc`'s two halves (`a.llc.o`, `b.llc.o`)
+linked together must agree with the oracle, else the seed is an `error`
+of the harness. A half without a definition skips the seed
+(`nothing-to-split`). hod builds both halves (a refusal of either is
+`refused`; a failure a `hod-failed` finding of that half), then
+`hod A + llc B` (`a.hod.o b.llc.o`) and `llc A + hod B` (`a.llc.o
+b.hod.o`) are linked (in that order), run and compared with the oracle's
+program as in step 6. The first assignment that disagrees, fails to link
+or hangs is the finding, its detail named by the assignment and saying
+whether the other agreed.
+
+**Debug** (`--debug`): clang gets `-g`. After step 4, `llvm-dwarfdump
+--verify` of the run's LLVM checks `hod.o`; when it complains it checks
+`oracle.o` too: hod's object rejected and `llc`'s accepted is a
+`debug-verify` finding, both rejected an `error`. Steps 5 and 6 follow (a
+disagreement is a finding as in the whole mode). When the programs
+agree, the `(function, line)` comparison of `cargo xtask debug`
+([`debug::lines::compare`], "debug", "Lines", with the IR's facts for its
+classes) compares hod's program with the oracle's: an unclassified pair
+is a `debug-lines` finding (as in `cargo xtask debug`, the columns are
+counted, not judged). One kind of pair is taken out of the comparison
+first and counted apart: a hod-only line whose instructions in the
+function are non-volatile loads, `getelementptr`s and at least one store,
+each store storing a value loaded from the same address (`case::
+self_assignment`; the address compared as the chain of loads and
+`getelementptr`s it is computed by). That is csmith's `x = x;` and `(*p)
+= (*p);`, whose store `llc -O0` deletes, so its object has no row at the
+line; `debug::permitted` has no class for it yet. The summary adds the
+comparisons of every seed,
+and counts the refusals whose reason starts with `debug:`. No debugger
+runs.
+
+**Census** (`--census`): steps 1 and 2 only; the module's features are
+counted ("Census") and the seed is `scanned`.
+
+### Census
+
+`profile::scan` counts, in the module's text outside metadata, comments
+and quoted strings: each instruction's opcode (`op:<opcode>`, after
+`tail`/`musttail`/`notail`); each type word (`type:i<N>` of every width,
+`type:half|bfloat|float|double|x86_fp80|fp128`, `type:vector` for `<N x
+`, `type:packed-struct` for a type definition with `<{`); the parameter
+attributes `byval`, `sret`, `inreg`, `byref`, `signext`, `zeroext`,
+`inalloca` (`attr:<name>`); `define:varargs` (a definition with `...`);
+`call:varargs` (a call whose function type has `...`);
+`intrinsic:<llvm.name>` (the first two words of an intrinsic's name);
+`param:aggregate` (a defined function's parameter of a struct, array or
+vector type); `ret:aggregate`; `volatile:load` and `volatile:store`. The
+summary lists each feature with the number of programs that have it and
+its occurrences.
+
+### Verdicts
+
+| verdict | when | exit status |
+|---|---|---|
+| agree | same end (exit status or signal), same stdout | 0 |
+| scanned | `--census`: the module was counted | 0 |
+| refused | hod exited 2 with a coverage-log line whose outcome is `error`; counted by the reason | 0 |
+| skipped | `csmith-failed`, `clang-failed`, `both-timed-out`, `oracle-timed-out`, and in `--mix` `split-timed-out`, `nothing-to-split` | 0 |
+| error | `llc` failed, the oracle's link failed, `llc`'s halves disagree with the whole module, both objects fail the verifier: about the oracle's or the harness's side | 3 |
+| finding | `disagree` (end or stdout differs), `hod-failed` (any other end of hod, a panic, no object or coverage log), `hod-link` (hod's object does not link), `hod-hang` (hod's program did not end in four times the limit), `debug-verify`, `debug-lines` | 1 |
+
+### Findings
+
+A finding's directory is moved to `<out>/findings/<run>-seed<S>/`, where
+`<run>` is `<arch>-llvm<N>`, then `-<profile>` unless it is `default`,
+then `-<mode>` unless it is the whole mode. It holds `prog.c`, `prog.ll`,
+the objects and programs (in `--mix` also `a.ll`, `b.ll` and the
+halves' objects), `commands.sh` (every command run, in order, as shell
+lines with the final paths), `oracle.stdout`, `hod.stdout`, `hod.stderr`,
+`verdict.txt` (seed, flavour, mode, profile, kind, detail, witness) and,
+from the reduction, `reduced.ll` and `seed.ll`.
+
+The witness: the module is built with `llc -O2`, linked and run with four
+times the limit; the verdict says whether its program agrees with the
+oracle's (hod is suspect), with hod's (the oracle or undefined behaviour
+of the program is suspect), with both (not reproducible) or with neither.
+A `--mix` finding has a second witness: hod's whole module, linked and
+run; when it agrees with the oracle, hod and `llc` disagree between
+objects (a calling convention, a layout, a symbol, a relocation). A
+`debug-*` finding's reference is `llc`'s object of the same module.
+
+### Reduction
+
+The module's text is cut in passes, each a list of edits that keep it
+valid IR; a pass tries them in chunks of all, a half, a quarter, ..., one,
+and keeps a chunk when the probe still shows the finding. The passes:
+function bodies replaced by `ret <type> zeroinitializer` (or `ret void`);
+functions nothing names deleted; stores to globals and `call void`
+dropped; `br i1` made `br` to its second target; blocks no path reaches
+deleted; stores to a local nothing reads dropped; instructions whose
+value nothing uses dropped; globals and declarations nothing names
+deleted. A function with an `sret` parameter is not stubbed, and a call
+with an `sret` argument or of `llvm.memcpy`, `llvm.memmove`,
+`llvm.memset`, `llvm.va_start` or `llvm.va_copy` is not dropped: each
+writes memory that is read later without another write, and the program
+would read uninitialized memory. Rounds repeat while they remove lines,
+at most six, within the probe budget.
+
+A probe shows the finding when: `llc` builds it; for `hod-failed`, hod
+still fails; otherwise hod builds it, both link (for `hod-link`, hod's
+does not), the oracle's program ends as the original oracle's did, and
+hod's disagrees with it (for `hod-hang`, times out). For a `--mix`
+finding the candidate is split again with the seed (the halves are a
+function of the names, so what is left of each stays in its half), the
+finding's half is built by hod and the other by `llc`, and the mixed
+program must still show it. For `debug-verify` hod's object must still
+fail the verifier and `llc`'s pass; for `debug-lines` an unclassified
+pair must remain.
+
+### Seed tests
+
+`seed.ll` is the reduced module as a `tests/ir` seed: a comment with the
+command that finds it, `covers`, `llvm: <N>+` (clang's text is read by
+its own LLVM and later ones), `xfail(<arch>): <kind>: <detail> (triage
+pending)`, an `exit` when the oracle's program did not exit 0, and the
+oracle's stdout as `stdout` lines. The target triple, the data layout,
+the module id, the source file name, `; Function Attrs` comments and the
+`target-cpu`, `target-features` and `tune-cpu` attributes are removed.
+A `--mix` finding's seed has two modules, `a` and `b` (the halves of the
+reduced module), and a comment naming the one hod built: irdiff builds
+every module of a test with one compiler and cannot show it, so such a
+seed is checked in under `xtask/tests/fuzz/mix/` with an `#[ignore]`d
+test, not under `tests/ir`. A `debug-*` finding writes no `seed.ll`:
+`reduced.ll` is an input of `cargo xtask debug verify` or `cargo xtask
+debug columns` as it is. Checking a seed in is a person's (or an
+implementer's) step, after triage: the `xfail` reason is rewritten to say
+what is wrong and where.
+
+### Summary
+
+The configuration line (mode, profile, tools, seeds), the rate
+(programs per minute), then one row per verdict, refusals by reason
+(most first; in `--debug` also those starting with `debug:`), skips by
+why, each error, and each finding with its witness, its directory and
+the reduction (`lines before -> after (probes)`); the 50th and 90th
+percentile and the longest run time of the oracle's programs; in
+`--debug` the line and column comparisons added over the seeds and the
+count of hod's pairs at a self-assignment ("Modes"); the
+results file, `<out>/results-<run>.tsv`, one line per seed: seed,
+flavour, verdict, detail, the oracle's run time in ms; in `--census` the
+census table.
+
+### In the gate
+
+`cargo xtask ci` does not run the command: csmith is not a required tool.
+The gate runs `xtask/tests/fuzz_real.rs`, whose tests skip with a note
+when their tools are missing, whatever `HOD_REQUIRE_TOOLS` says:
+
+- `seeds_on_the_host`, `mixed_and_debug_seeds_on_the_host` (csmith,
+  clang, `llc`, `llvm-extract`, `llvm-dwarfdump` 22, gcc): three seeds in
+  each mode, no finding, no error;
+- `a_wrong_hod_is_a_finding` (csmith): a hod wrapper that builds every
+  `xor` as an `or` is a finding, saved, blamed on hod and reduced;
+- `a_wrong_calling_convention_is_a_mix_finding` (clang, `llc`,
+  `llvm-extract` 22, gcc, awk; no csmith): a hod wrapper
+  (`xtask/tests/fuzz/swap-params.awk`) that swaps the first two
+  parameters of every `callee_*` of an ABI program in its definitions,
+  declarations and calls alike agrees with the oracle on the whole
+  module, and is a `--mix` finding blamed on hod by both witnesses,
+  reduced with the split kept, with a seed of two modules;
+- `the_census_of_the_abi_profile` (clang 22): the ABI generator's
+  programs have variadic definitions, `i128`, `va_start` and `sret`.
+
+A sweep runs fixed ranges, for example per target `cargo xtask fuzz
+--seed 1 --count 200 -j 4`, `--mix --count 200`, `--debug --count 100`
+and `--profile abi --mix --count 200`.

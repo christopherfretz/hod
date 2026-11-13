@@ -234,6 +234,9 @@ pub struct Outcome {
     pub census: Option<BTreeMap<String, usize>>,
     /// `--debug`: the line comparison, when it ran.
     pub lines: Option<LinesReport>,
+    /// `--debug`: hod's pairs at a self-assignment ([`self_assignment`]),
+    /// taken out of the comparison's report and counted apart.
+    pub self_assigned: Vec<lines::Pair>,
 }
 
 impl Outcome {
@@ -249,6 +252,7 @@ impl Outcome {
             commands: Vec::new(),
             census: None,
             lines: None,
+            self_assigned: Vec::new(),
         }
     }
 }
@@ -589,7 +593,18 @@ impl Bench {
         if self.mode == Mode::Debug && verdict == Verdict::Agree {
             let report = self.compare_lines(&ir, &hod_x, &oracle_x).map_err(harness)?;
             // As `cargo xtask debug`: an unclassified pair fails, the
-            // columns are counted.
+            // columns are counted. hod's pairs at a statement `x = x`,
+            // which llc deletes, are counted apart ([`self_assignment`]).
+            let text = fs::read_to_string(&ir).unwrap_or_default();
+            let mut report = report;
+            report.hod_only.retain(|(pair, class)| {
+                let apart =
+                    *class == lines::Class::Unclassified && self_assignment(&text, &pair.0, pair.2);
+                if apart {
+                    outcome.self_assigned.push(pair.clone());
+                }
+                !apart
+            });
             let unclassified = report.unclassified();
             let first = first_unclassified(&report);
             outcome.lines = Some(report);
@@ -695,6 +710,86 @@ impl Bench {
         let facts = IrFacts::of_modules([text.as_str()]);
         lines::compare(hod_x, oracle_x, tools, &facts)
     }
+}
+
+/// The address `value` is computed by, as the chain of loads and
+/// `getelementptr`s ([`self_assignment`]).
+fn canonical(value: &str, defs: &BTreeMap<&str, &str>, depth: usize) -> String {
+    let Some(def) = defs.get(value).filter(|_| depth < 16) else { return value.to_owned() };
+    let items = super::profile::top_level(def);
+    let last = |i: usize| items.get(i).and_then(|x| x.split_whitespace().last()).unwrap_or("");
+    if def.starts_with("load ") && !def.starts_with("load volatile") {
+        format!("*({})", canonical(last(1), defs, depth + 1))
+    } else if def.starts_with("getelementptr") {
+        let rest: Vec<&str> = items.iter().skip(2).map(|x| x.trim()).collect();
+        format!("gep({}, {})", canonical(last(1), defs, depth + 1), rest.join(", "))
+    } else {
+        value.to_owned()
+    }
+}
+
+/// Whether `function`'s instructions at `line` of `text` are a
+/// self-assignment, `x = x` (csmith writes many): loads and
+/// `getelementptr`s, and stores, none volatile, each of a value loaded
+/// from the address it stores to. `llc -O0` deletes such a store (its
+/// DAG combiner folds a store of a load of the same address), and with it
+/// the line's only row; hod keeps it. `spec/dwarf.md` §5.7 has no class
+/// for this yet (`xtask/src/debug/permitted.rs` `pair_class`): until it
+/// has, `--debug` counts these pairs apart instead of calling them
+/// findings.
+pub fn self_assignment(text: &str, function: &str, line: u32) -> bool {
+    let ids: std::collections::BTreeSet<&str> = text
+        .lines()
+        .filter(|l| l.contains(&format!("!DILocation(line: {line},")))
+        .filter_map(|l| l.split_once(" = ").map(|(id, _)| id))
+        .collect();
+    let header = format!(" @{function}(");
+    let Some(body) =
+        text.split("\ndefine ").find(|f| f.lines().next().is_some_and(|h| h.contains(&header)))
+    else {
+        return false;
+    };
+    let body: Vec<&str> = body.lines().skip(1).take_while(|l| *l != "}").collect();
+    let defs: BTreeMap<&str, &str> = body
+        .iter()
+        .filter_map(|l| l.trim_start().split_once(" = "))
+        .filter(|(n, _)| n.starts_with('%'))
+        .collect();
+    let operand = |item: &str| item.split_whitespace().last().unwrap_or("").to_owned();
+    let at: Vec<&str> = body
+        .iter()
+        .map(|l| l.trim_start())
+        .filter(|l| {
+            l.rsplit_once("!dbg ")
+                .is_some_and(|(_, id)| ids.contains(id.split([',', ' ']).next().unwrap_or("")))
+        })
+        .collect();
+    let mut store_count = 0;
+    for inst in &at {
+        let rest =
+            inst.split_once(" = ").filter(|(n, _)| n.starts_with('%')).map_or(*inst, |(_, r)| r);
+        if rest.starts_with("load ") && !rest.starts_with("load volatile")
+            || rest.starts_with("getelementptr")
+        {
+            continue;
+        }
+        let Some(stored) = rest.strip_prefix("store ").filter(|r| !r.starts_with("volatile"))
+        else {
+            return false;
+        };
+        let items = super::profile::top_level(stored);
+        let (value, pointer) =
+            (operand(items.first().unwrap_or(&"")), operand(items.get(1).unwrap_or(&"")));
+        let loaded = defs.get(value.as_str()).filter(|d| d.starts_with("load ")).map(|d| {
+            let items = super::profile::top_level(d);
+            canonical(&operand(items.get(1).unwrap_or(&"")), &defs, 0)
+        });
+        if loaded != Some(canonical(&pointer, &defs, 0)) {
+            return false;
+        }
+        store_count += 1;
+    }
+    store_count > 0
 }
 
 /// The first difference of a line comparison no class permits, for a
@@ -817,6 +912,35 @@ mod tests {
         assert_eq!(&words[..2], ["--seed", "8"]);
         assert!(words.contains(&"--float".to_owned()));
         assert_eq!(&words[words.len() - 2..], ["-o", "/w/prog.c"]);
+    }
+
+    // spec/harness.md "Random programs", "Modes" (Debug): hod's pairs at
+    // `x = x`, and only those, are taken apart.
+    #[test]
+    fn self_assignments() {
+        let text = "\
+define internal i32 @func_22(ptr %0) #0 !dbg !5 {
+  %5 = alloca ptr, align 8
+  %433 = load ptr, ptr %5, align 8, !dbg !10
+  %434 = load i32, ptr %433, align 4, !dbg !11
+  %435 = load ptr, ptr %5, align 8, !dbg !12
+  store i32 %434, ptr %435, align 4, !dbg !13
+  %436 = load i32, ptr @g, align 4, !dbg !14
+  store i32 %436, ptr @h, align 4, !dbg !15
+  ret i32 0
+}
+!10 = !DILocation(line: 231, column: 3, scope: !5)
+!11 = !DILocation(line: 231, column: 4, scope: !5)
+!12 = !DILocation(line: 231, column: 5, scope: !5)
+!13 = !DILocation(line: 231, column: 6, scope: !5)
+!14 = !DILocation(line: 232, column: 3, scope: !5)
+!15 = !DILocation(line: 232, column: 4, scope: !5)
+";
+        let text = format!("source\n{text}");
+        assert!(self_assignment(&text, "func_22", 231));
+        assert!(!self_assignment(&text, "func_22", 232));
+        assert!(!self_assignment(&text, "func_22", 233));
+        assert!(!self_assignment(&text, "func_9", 231));
     }
 
     #[test]

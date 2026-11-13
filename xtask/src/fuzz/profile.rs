@@ -247,7 +247,7 @@ pub fn scan(text: &str) -> BTreeMap<String, usize> {
             let ret = before_name.rsplit_once(" @").map_or("", |(r, _)| r);
             if ret.ends_with('}')
                 || ret.ends_with(']')
-                || ret.ends_with(">")
+                || ret.ends_with('>')
                 || ret.contains("%struct")
             {
                 add("ret:aggregate".to_owned());

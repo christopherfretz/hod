@@ -73,10 +73,10 @@ oracle's side or a missing tool; 2 usage
 
 /// The help, with the profiles.
 pub fn usage() -> String {
-    let profiles: String = PROFILES
-        .iter()
-        .map(|p| format!("                        {:<11} {}\n", p.name, p.about))
-        .collect();
+    let profiles = PROFILES.iter().fold(String::new(), |mut text, p| {
+        let _ = writeln!(text, "                        {:<11} {}", p.name, p.about);
+        text
+    });
     USAGE.replace("PROFILES\n", &profiles)
 }
 
@@ -345,8 +345,10 @@ pub struct Summary {
     pub mode: Option<Mode>,
     /// `--census`: the features of every module.
     pub census: Option<Census>,
-    /// `--debug`: the line comparisons of every seed, added.
+    /// `--debug`: the line comparisons of every seed, added, and hod's
+    /// pairs at self-assignments taken out of them.
     pub lines: Option<LinesReport>,
+    pub self_assigned: usize,
 }
 
 impl Summary {
@@ -377,6 +379,7 @@ impl Summary {
         if let Some(report) = &outcome.lines {
             self.lines.get_or_insert_default().add(report);
         }
+        self.self_assigned += outcome.self_assigned.len();
     }
 
     /// The table a run prints.
@@ -449,6 +452,11 @@ impl Summary {
         }
         if let Some(report) = &self.lines {
             let _ = writeln!(text, "  lines: {}", report.summary());
+            let _ = writeln!(
+                text,
+                "  hod's pairs at a self-assignment (x = x, which llc deletes), not counted above: {}",
+                self.self_assigned
+            );
             let _ = writeln!(text, "  columns: {}", report.columns.summary());
         }
         if let Some(file) = &self.results_file {
@@ -607,6 +615,7 @@ fn describe(options: &Options, bench: &Bench, jobs: usize) -> String {
 /// Saves a finding under `findings`: the source, the module, the commands,
 /// both programs' output, the witness's verdict and the reduced module
 /// with its seed test.
+#[expect(clippy::too_many_lines, reason = "the files of a finding, in order")]
 fn save(
     bench: &Bench,
     options: &Options,
@@ -665,7 +674,7 @@ fn save(
             saved.witness = split::whole_witness(bench, &dir, &ir, oracle);
         }
         _ if matches!(finding.kind, Kind::DebugVerify | Kind::DebugLines) => {
-            saved.witness = "the same module built by llc is the reference".to_owned();
+            "the same module built by llc is the reference".clone_into(&mut saved.witness);
         }
         _ => {}
     }
@@ -844,8 +853,9 @@ pub fn seed_test(
 /// A `--mix` finding's seed: the reduced module's two halves as the
 /// modules `a` and `b` of one test ("Mix"), with the half hod built named
 /// in the `xfail`. irdiff builds every module with one compiler, which
-/// cannot show such a finding: the seed is a test of
-/// `xtask/tests/fuzz_seeds.rs`, which builds one module with each.
+/// cannot show such a finding: such a seed is checked in under
+/// `xtask/tests/fuzz/mix/` with an `#[ignore]`d test of
+/// `xtask/tests/fuzz_real.rs` ("Seed tests").
 pub fn mix_seed_test(
     halves: &[&str; 2],
     bench: &Bench,

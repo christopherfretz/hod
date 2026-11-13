@@ -33,7 +33,7 @@ impl Rng {
         Self(seed ^ 0x6a09_e667_f3bc_c909)
     }
 
-    pub fn next(&mut self) -> u64 {
+    pub fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -43,7 +43,7 @@ impl Rng {
 
     /// A number in `0..n` (`n` > 0).
     pub fn below(&mut self, n: usize) -> usize {
-        usize::try_from(self.next() % n.max(1) as u64).unwrap_or(0)
+        usize::try_from(self.next_u64() % n.max(1) as u64).unwrap_or(0)
     }
 
     /// True with `percent` per cent.
@@ -159,7 +159,7 @@ impl Scalar {
         match self {
             Self::Float | Self::Double | Self::LongDouble => {
                 // m * 2^-e: exact in every floating-point type here.
-                let m = rng.next() % (1 << 20);
+                let m = rng.next_u64() % (1 << 20);
                 let e = rng.below(16);
                 let sign = if rng.chance(30) { "-" } else { "" };
                 let suffix = match self {
@@ -171,7 +171,7 @@ impl Scalar {
             }
             Self::Ptr => format!("&g_targets[{}]", rng.below(4)),
             Self::Int128 | Self::UInt128 => {
-                let (hi, lo) = (rng.next(), rng.next());
+                let (hi, lo) = (rng.next_u64(), rng.next_u64());
                 format!("({})(((unsigned __int128)0x{hi:x}ULL << 64) | 0x{lo:x}ULL)", self.c())
             }
             _ => {
@@ -202,7 +202,7 @@ impl Scalar {
 /// A decimal constant of an integer of `bits` (at most 64), with a suffix
 /// that keeps its type wide enough.
 fn integer_literal(rng: &mut Rng, bits: u32, signed: bool) -> String {
-    let raw = rng.next();
+    let raw = rng.next_u64();
     // Small values are common in real code, and in ABI corner cases
     // (extension of narrow values) the sign matters: both kinds.
     let small = rng.chance(30);
@@ -284,6 +284,7 @@ impl Program {
 
     /// A new aggregate of one of the shapes that matter to the calling
     /// conventions; its index.
+    #[expect(clippy::too_many_lines, reason = "one arm per shape")]
     fn new_aggregate(&mut self) -> usize {
         let rng = &mut self.rng;
         let shape = rng.below(9);
@@ -294,7 +295,7 @@ impl Program {
             // vector registers; x86-64 in SSE registers when small).
             0 => {
                 let s = *rng.pick(&[Scalar::Float, Scalar::Double, Scalar::LongDouble]);
-                for _ in 0..1 + rng.below(4) {
+                for _ in 0..=rng.below(4) {
                     members.push(Member::Scalar(s));
                 }
                 if rng.chance(25) {
@@ -303,7 +304,7 @@ impl Program {
             }
             // Small integer aggregates: one register or two.
             1 => {
-                for _ in 0..1 + rng.below(3) {
+                for _ in 0..=rng.below(3) {
                     let s = *rng.pick(&[
                         Scalar::SChar,
                         Scalar::UChar,
@@ -321,8 +322,11 @@ impl Program {
                 let ints = [Scalar::Int, Scalar::Long, Scalar::Short, Scalar::Ptr, Scalar::UChar];
                 let floats = [Scalar::Float, Scalar::Double];
                 for i in 0..2 + rng.below(3) {
-                    let s =
-                        if (i + shape) % 2 == 0 { *rng.pick(&ints) } else { *rng.pick(&floats) };
+                    let s = if (i + shape).is_multiple_of(2) {
+                        *rng.pick(&ints)
+                    } else {
+                        *rng.pick(&floats)
+                    };
                     members.push(Member::Scalar(s));
                 }
             }
@@ -347,7 +351,7 @@ impl Program {
             }
             // Arrays.
             4 => {
-                for _ in 0..1 + rng.below(2) {
+                for _ in 0..=rng.below(2) {
                     let s = *rng.pick(&[
                         Scalar::UChar,
                         Scalar::Short,
@@ -447,16 +451,13 @@ impl Program {
         for (m, member) in members.iter().enumerate() {
             let path = format!("{expr}.m{m}");
             match member {
-                Member::Scalar(s) => {
+                Member::Scalar(s) | Member::Bits(s, _) => {
                     let _ = writeln!(out, "  {}", s.print(&path));
                 }
                 Member::Array(s, n) => {
                     for i in 0..*n {
                         let _ = writeln!(out, "  {}", s.print(&format!("{path}[{i}]")));
                     }
-                }
-                Member::Bits(s, _) => {
-                    let _ = writeln!(out, "  {}", s.print(&path));
                 }
                 Member::Nested(i) => self.print_aggregate(&path, *i, out),
             }
@@ -492,7 +493,6 @@ impl Program {
     fn param(&mut self) -> Ty {
         let aggregates = self.aggregates.len();
         match self.rng.below(10) {
-            0..=4 => Ty::Scalar(self.scalar()),
             5..=8 if aggregates > 0 => Ty::Agg(self.rng.below(aggregates)),
             9 if aggregates > 0 => Ty::PtrAgg(self.rng.below(aggregates)),
             _ => Ty::Scalar(self.scalar()),
@@ -500,13 +500,14 @@ impl Program {
     }
 
     /// `callee_<k>` and `caller_<k>`.
+    #[expect(clippy::too_many_lines, reason = "a callee and its caller, written in order")]
     fn pair(&mut self, k: usize, globals: &[(usize, String)]) {
         // Many parameters sometimes: past the argument registers of both
         // targets (6 + 8 on x86-64, 8 + 8 on AArch64).
         let count = if self.rng.chance(30) { 8 + self.rng.below(10) } else { self.rng.below(6) };
         let mut params: Vec<Ty> = (0..count).map(|_| self.param()).collect();
         let variadic: Vec<Ty> = if self.rng.chance(30) {
-            (0..1 + self.rng.below(6))
+            (0..=self.rng.below(6))
                 .map(|_| {
                     if !self.aggregates.is_empty() && self.rng.chance(30) {
                         Ty::Agg(self.rng.below(self.aggregates.len()))

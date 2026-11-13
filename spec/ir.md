@@ -978,9 +978,10 @@ does not have is `Rejected`. The lists below are the table, in full.
   `sanitize_address`, `sanitize_alloc_token`, `sanitize_hwaddress`,
   `sanitize_memory`, `sanitize_memtag`, `sanitize_numerical_stability`,
   `sanitize_realtime`, `sanitize_realtime_blocking`, `sanitize_thread`,
-  `sanitize_type`, `convergent` (below); with a value: `uwtable`
+  `sanitize_type`, `convergent` (below), `noredzone` (below); with a
+  value: `uwtable`
   (`UwTable`: `sync` or `async`) and `alignstack(N)`.
-- On functions, as strings (`FnStr`, 21 keys): `target-cpu`,
+- On functions, as strings (`FnStr`, 22 keys): `target-cpu`,
   `target-features`, `tune-cpu`, `frame-pointer`,
   `patchable-function-entry`, `patchable-function-prefix`,
   `function-instrument`, `branch-target-enforcement`,
@@ -988,9 +989,9 @@ does not have is `Rejected`. The lists below are the table, in full.
   `branch-protection-pauth-lr`, `guarded-control-stack`,
   `stack-probe-size`, `probe-stack`, `split-stack`,
   `zero-call-used-regs`, `stack-protector-buffer-size`,
-  `min-legal-vector-width`, `no-jump-tables`, `no-builtins`, and every
+  `min-legal-vector-width`, `no-jump-tables`, `no-builtins`, every
   name that starts with `no-builtin-` (the one prefix entry of the
-  table).
+  table), and `disable-tail-calls` (below).
 - On calls: `noreturn`, `nounwind`, `returns_twice`, `convergent`, the
   tail kind and the calling convention (the call instruction's own
   fields, §5.4).
@@ -1033,6 +1034,24 @@ does not have is `Rejected`. The lists below are the table, in full.
   `declare i1 @llvm.is.constant.*` (`__builtin_constant_p`, all over
   libc++), and on calls in CUDA, OpenCL and HIP code; no CPU front end
   emits the bundle.
+
+  `"disable-tail-calls"` (WP-179; `"true"` or `"false"`, the value kept
+  as written) is LLVM's `TargetLowering` rule that in such a function no
+  call is a tail call except a `musttail` one; `"false"` is the
+  default. It is not in `Attributes.td` (LLVM reads it by name), so the
+  lists of `crates/hod_ir/tests/data` do not have it. clang and kiln put
+  it on a function with `__attribute__((disable_tail_calls))`
+  (googletest's `GTEST_NO_TAIL_CALL_`). hod makes no tail call but a
+  `musttail` one in any function (`spec/codegen.md` §7.1 "Tail kinds"),
+  so the code is the code without it; `classify` accepts it on every
+  target (`attr:disable-tail-calls`, row `ON`).
+
+  `noredzone` (WP-179) forbids keeping data below the stack pointer;
+  clang puts it on every function with `-mno-red-zone`. hod keeps none
+  there on either target (`spec/codegen.md` §5.6 "The red zone is not
+  used"; on AArch64 nothing is addressed below `sp` either), so it
+  changes no code; `classify` accepts it on every target
+  (`attr:noredzone`, row `ON`).
 
 **Dropped**, because only an optimizer (or a pass that runs before any
 backend) reads them:
@@ -1084,13 +1103,13 @@ dropped. Of LLVM 19's and 22's attribute names these are:
 `coro_elide_safe`, `coro_only_destroy_when_complete`,
 `fn_ret_thunk_extern`, `hybrid_patchable`, `jumptable`, `nocf_check`,
 `nodivergencesource`, `noduplicate`, `noimplicitfloat`, `nonlazybind`,
-`noredzone`, `optdebug`, `optforfuzzing`, `safestack`, `shadowcallstack`,
+`optdebug`, `optforfuzzing`, `safestack`, `shadowcallstack`,
 `speculative_load_hardening`, `strictfp`, and the strings
 `allow_direct_access_in_hot_patch_function`, `denormal-fp-math`,
 `denormal-fp-math-f32`, `loader-replaceable`,
 `marked_for_windows_hot_patching`, `no-inline-line-tables`,
 `profile-sample-accurate`, `use-sample-profile`. Some of them change
-code (`noredzone`, `noimplicitfloat`, `nonlazybind`, `nocf_check`,
+code (`noimplicitfloat`, `nonlazybind`, `nocf_check`,
 `shadowcallstack`, ...) and move to "kept" with the work package that
 implements them; some look optimizer-only (`nodivergencesource`,
 `noduplicate`, `optdebug`, `optforfuzzing`, the profile strings) and

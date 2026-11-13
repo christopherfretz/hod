@@ -752,6 +752,7 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
         ON,
         "constrains transformations only, and hod makes none (§5.7); `bundle:convergencectrl` and the `llvm.experimental.convergence.*` intrinsics stay refused",
     ),
+    both("attr:noredzone", ON, "hod keeps no data below the stack pointer (`spec/codegen.md` §5)"),
 ];
 
 /// In `FnStr::ALL` order.
@@ -785,6 +786,11 @@ const ATTR_STRING: [SupportRow; FnStr::ALL.len()] = [
     both("attr:no-jump-tables", ON, "hod emits no jump table (`spec/codegen.md` §6.2)"),
     both("attr:no-builtins", ON, "hod recognises no library call"),
     both("attr:no-builtin", ON, "every `no-builtin-<function>`; hod recognises no library call"),
+    both(
+        "attr:disable-tail-calls",
+        ON,
+        "either value: hod makes no tail call but a `musttail` one (`spec/codegen.md` §7.1)",
+    ),
 ];
 
 /// In `TypeClass::ALL` order.

@@ -31,7 +31,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `init` | 10 | 6 | 3 | 1 | 6 | 3 | 1 |
 | `function` | 6 | 6 | 0 | 0 | 6 | 0 | 0 |
 | `cc` | 26 | 6 | 7 | 13 | 3 | 13 | 10 |
-| `attr` | 57 | 24 | 30 | 3 | 22 | 27 | 8 |
+| `attr` | 59 | 26 | 30 | 3 | 24 | 27 | 8 |
 | `type` | 15 | 12 | 0 | 3 | 13 | 0 | 2 |
 | `inst` | 67 | 60 | 0 | 7 | 59 | 1 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 455 | 347 | 7 | 101 | 229 | 10 | 216 |
-| total | 775 | 549 | 68 | 158 | 425 | 72 | 278 |
+| total | 777 | 551 | 68 | 158 | 427 | 72 | 278 |
 
 ## `module`
 
@@ -271,6 +271,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:sanitize_thread` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_type` | not-implemented | not-implemented | unplanned |
 | `attr:convergent` | supported | supported | constrains transformations only, and hod makes none (§5.7); `bundle:convergencectrl` and the `llvm.experimental.convergence.*` intrinsics stay refused |
+| `attr:noredzone` | supported | supported | hod keeps no data below the stack pointer (`spec/codegen.md` §5) |
 | `attr:target-cpu` | supported | supported | the code is ARMv8.0 on AArch64 and the x86-64 base set on x86-64, which every CPU runs |
 | `attr:target-features` | supported | supported | each feature judged by code generation (`spec/codegen.md` §5.5.2, §5.6.2) |
 | `attr:tune-cpu` | supported | supported | tuning only: hod does not tune |
@@ -292,6 +293,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:no-jump-tables` | supported | supported | hod emits no jump table (`spec/codegen.md` §6.2) |
 | `attr:no-builtins` | supported | supported | hod recognises no library call |
 | `attr:no-builtin` | supported | supported | every `no-builtin-<function>`; hod recognises no library call |
+| `attr:disable-tail-calls` | supported | supported | either value: hod makes no tail call but a `musttail` one (`spec/codegen.md` §7.1) |
 
 ## `type`
 

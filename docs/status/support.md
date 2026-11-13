@@ -28,10 +28,10 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `visibility` | 2 | 2 | 0 | 0 | 2 | 0 | 0 |
 | `tls` | 4 | 4 | 0 | 0 | 4 | 0 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 2 | 0 | 3 |
-| `init` | 10 | 6 | 3 | 1 | 5 | 4 | 1 |
+| `init` | 10 | 6 | 3 | 1 | 6 | 3 | 1 |
 | `function` | 6 | 6 | 0 | 0 | 6 | 0 | 0 |
 | `cc` | 26 | 6 | 7 | 13 | 3 | 13 | 10 |
-| `attr` | 57 | 24 | 30 | 3 | 22 | 27 | 8 |
+| `attr` | 59 | 26 | 30 | 3 | 24 | 27 | 8 |
 | `type` | 15 | 12 | 0 | 3 | 13 | 0 | 2 |
 | `inst` | 67 | 60 | 0 | 7 | 59 | 1 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 357 | 347 | 7 | 3 | 131 | 10 | 216 |
-| total | 677 | 549 | 68 | 60 | 326 | 73 | 278 |
+| `intrinsic` | 455 | 347 | 7 | 101 | 229 | 10 | 216 |
+| total | 777 | 551 | 68 | 158 | 427 | 72 | 278 |
 
 ## `module`
 
@@ -178,7 +178,7 @@ What a variable's initializer contains.
 | `init:sym-diff` | supported | supported | the difference of two symbol addresses |
 | `init:sym-diff-plt` | not-implemented | not-implemented | unplanned. the same through `dso_local_equivalent` (relative vtables) |
 | `init:int-of-addr` | supported | supported | an address in an integer field |
-| `init:block-diff` | supported | not-implemented | a label difference `&&a - &&b` of two blocks of one function, a number (WP-095) |
+| `init:block-diff` | supported | supported | a label difference `&&a - &&b` of two blocks of one function, a number (WP-095, WP-174) |
 | `init:dso-local-equivalent` | not-implemented | not-implemented | unplanned |
 | `init:no-cfi` | not-implemented | not-implemented | unplanned |
 | `init:neg-addr` | rejected | rejected | no ELF relocation subtracts a symbol's address; `llc` refuses it too. a number minus an address, `sub (i64 4, i64 ptrtoint (ptr @a to i64))`, in data or in an aggregate operand's image |
@@ -271,6 +271,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:sanitize_thread` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_type` | not-implemented | not-implemented | unplanned |
 | `attr:convergent` | supported | supported | constrains transformations only, and hod makes none (§5.7); `bundle:convergencectrl` and the `llvm.experimental.convergence.*` intrinsics stay refused |
+| `attr:noredzone` | supported | supported | hod keeps no data below the stack pointer (`spec/codegen.md` §5) |
 | `attr:target-cpu` | supported | supported | the code is ARMv8.0 on AArch64 and the x86-64 base set on x86-64, which every CPU runs |
 | `attr:target-features` | supported | supported | each feature judged by code generation (`spec/codegen.md` §5.5.2, §5.6.2) |
 | `attr:tune-cpu` | supported | supported | tuning only: hod does not tune |
@@ -292,6 +293,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:no-jump-tables` | supported | supported | hod emits no jump table (`spec/codegen.md` §6.2) |
 | `attr:no-builtins` | supported | supported | hod recognises no library call |
 | `attr:no-builtin` | supported | supported | every `no-builtin-<function>`; hod recognises no library call |
+| `attr:disable-tail-calls` | supported | supported | either value: hod makes no tail call but a `musttail` one (`spec/codegen.md` §7.1) |
 
 ## `type`
 
@@ -882,6 +884,104 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.aarch64.neon.vsri` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
 | `intrinsic:llvm.aarch64.sisd.fabd` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
 | `intrinsic:llvm.aarch64.sisd.fcvtxn` | supported (int, ptr, half, float, double, vector, aggregate) | rejected | x86_64: an AArch64 property. WP-083 |
+| `intrinsic:llvm.x86.sse.cmp.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.comieq.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.comige.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.comigt.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.comile.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.comilt.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.comineq.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.ucomieq.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.ucomige.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.ucomigt.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.ucomile.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.ucomilt.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.ucomineq.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.cvtss2si` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.cvtss2si64` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.cvttss2si` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.cvttss2si64` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.max.ps` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.max.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.min.ps` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.min.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.movmsk.ps` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.sfence` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse2.cmp.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.comieq.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.comige.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.comigt.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.comile.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.comilt.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.comineq.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.ucomieq.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.ucomige.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.ucomigt.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.ucomile.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.ucomilt.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.ucomineq.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.cvtpd2dq` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.cvtpd2ps` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.cvtps2dq` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.cvtsd2si` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.cvtsd2si64` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.cvtsd2ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.cvttpd2dq` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.cvttps2dq` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.cvttsd2si` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.cvttsd2si64` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.lfence` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.mfence` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.max.pd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.max.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.min.pd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.min.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.movmsk.pd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.packssdw.128` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.packsswb.128` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.packuswb.128` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.pavg.b` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.pavg.w` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.pmadd.wd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.pmovmskb.128` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.pmulh.w` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.pmulhu.w` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.psad.bw` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.psll.d` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.psll.q` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.psll.w` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.pslli.d` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.pslli.q` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.pslli.w` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.psra.d` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.psra.w` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.psrai.d` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.psrai.w` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.psrl.d` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.psrl.q` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.psrl.w` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.psrli.d` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.psrli.q` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.psrli.w` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse3.addsub.pd` | rejected | supported (int, ptr, vector) | an x86 property. SSE3 (WP-173) |
+| `intrinsic:llvm.x86.sse3.addsub.ps` | rejected | supported (int, ptr, vector) | an x86 property. SSE3 (WP-173) |
+| `intrinsic:llvm.x86.sse3.hadd.pd` | rejected | supported (int, ptr, vector) | an x86 property. SSE3 (WP-173) |
+| `intrinsic:llvm.x86.sse3.hadd.ps` | rejected | supported (int, ptr, vector) | an x86 property. SSE3 (WP-173) |
+| `intrinsic:llvm.x86.sse3.hsub.pd` | rejected | supported (int, ptr, vector) | an x86 property. SSE3 (WP-173) |
+| `intrinsic:llvm.x86.sse3.hsub.ps` | rejected | supported (int, ptr, vector) | an x86 property. SSE3 (WP-173) |
+| `intrinsic:llvm.x86.sse3.ldu.dq` | rejected | supported (int, ptr, vector) | an x86 property. SSE3 (WP-173) |
+| `intrinsic:llvm.x86.ssse3.phadd.d.128` | rejected | supported (int, ptr, vector) | an x86 property. SSSE3 (WP-173) |
+| `intrinsic:llvm.x86.ssse3.phadd.sw.128` | rejected | supported (int, ptr, vector) | an x86 property. SSSE3 (WP-173) |
+| `intrinsic:llvm.x86.ssse3.phadd.w.128` | rejected | supported (int, ptr, vector) | an x86 property. SSSE3 (WP-173) |
+| `intrinsic:llvm.x86.ssse3.phsub.d.128` | rejected | supported (int, ptr, vector) | an x86 property. SSSE3 (WP-173) |
+| `intrinsic:llvm.x86.ssse3.phsub.sw.128` | rejected | supported (int, ptr, vector) | an x86 property. SSSE3 (WP-173) |
+| `intrinsic:llvm.x86.ssse3.phsub.w.128` | rejected | supported (int, ptr, vector) | an x86 property. SSSE3 (WP-173) |
+| `intrinsic:llvm.x86.ssse3.pmadd.ub.sw.128` | rejected | supported (int, ptr, vector) | an x86 property. SSSE3 (WP-173) |
+| `intrinsic:llvm.x86.ssse3.pmul.hr.sw.128` | rejected | supported (int, ptr, vector) | an x86 property. SSSE3 (WP-173) |
+| `intrinsic:llvm.x86.ssse3.pshuf.b.128` | rejected | supported (int, ptr, vector) | an x86 property. SSSE3 (WP-173) |
+| `intrinsic:llvm.x86.ssse3.psign.b.128` | rejected | supported (int, ptr, vector) | an x86 property. SSSE3 (WP-173) |
+| `intrinsic:llvm.x86.ssse3.psign.d.128` | rejected | supported (int, ptr, vector) | an x86 property. SSSE3 (WP-173) |
+| `intrinsic:llvm.x86.ssse3.psign.w.128` | rejected | supported (int, ptr, vector) | an x86 property. SSSE3 (WP-173) |
 
 ## Structural rules
 

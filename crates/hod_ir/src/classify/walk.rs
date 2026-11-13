@@ -12,7 +12,7 @@ use std::ops::ControlFlow;
 
 use super::attrs::{call_declaration, merge_call_attrs};
 use super::matrix::{FAR_PTR, NO_VALUE, SUPPORT_ROWS, TypeClass, at, class_code, rules};
-use super::support::Support;
+use super::support::{SHORT_CALL, SHORT_COUNT_SHIFT, SHORT_LIST, SHORT_MEM, SHORT_ON, Support};
 use super::{Rejection, RejectionKind, StackArgs};
 use crate::attrs::{CallConv, FnAttrs, FnAttrsView, ParamAttrs, ParamMem, UwTable};
 use crate::body::{Body, CallSite, Clause};
@@ -218,11 +218,30 @@ fn writes_debug_info(module: &Module) -> bool {
     })
 }
 
+/// How many direct callees the short way remembers ([`Walker::callees`]).
+const CALLEES: usize = 8;
+
 pub(crate) struct Walker<'a, S> {
-    pub(crate) module: &'a Module,
-    pub(crate) support: &'a Support,
-    pub(crate) stack_args: Option<&'a dyn StackArgs>,
-    pub(crate) sink: &'a mut S,
+    module: &'a Module,
+    support: &'a Support,
+    stack_args: Option<&'a dyn StackArgs>,
+    sink: &'a mut S,
+    /// The direct calls the short way has accepted the callee of, by the
+    /// callee's index plus one (0: none) and the call's function type, in
+    /// a slot chosen by the index: a call of the same function through
+    /// the same type is decided by its own fields alone (§8.11).
+    callees: [(u32, TypeId); CALLEES],
+}
+
+impl<'a, S> Walker<'a, S> {
+    pub(crate) fn new(
+        module: &'a Module,
+        support: &'a Support,
+        stack_args: Option<&'a dyn StackArgs>,
+        sink: &'a mut S,
+    ) -> Walker<'a, S> {
+        Walker { module, support, stack_args, sink, callees: [(0, TypeId::VOID); CALLEES] }
+    }
 }
 
 impl<'a, S: Sink> Walker<'a, S> {
@@ -404,7 +423,13 @@ impl<'a, S: Sink> Walker<'a, S> {
                 }
             }
             Const::Aggregate { elems, .. } => {
+                // A leaf element (a number, a zero, bytes) passes at any
+                // depth within the limit: skip the walk into it (WP-027).
+                let leaves = depth < MAX_CONSTANT_NESTING;
                 for &elem in elems {
+                    if leaves && module.consts.leaf_type(elem).is_some() {
+                        continue;
+                    }
                     self.constant(cx, elem, place, true, depth + 1, at)?;
                 }
                 GO
@@ -751,8 +776,10 @@ impl<'a, S: Sink> Walker<'a, S> {
                 self.invalid(rules::BODY, at)?;
                 continue;
             };
-            for raw in range {
-                let (id, data) = (InstId::new(raw), &body.insts[raw as usize]);
+            let first = range.start;
+            let insts = body.insts.get(range.start as usize..range.end as usize).unwrap_or(&[]);
+            for (raw, data) in (first..).zip(insts) {
+                let id = InstId::new(raw);
                 if self.accepts(&cx, id, data) {
                     debug_assert!(!self.refuses(&cx, id, data), "the short way accepted {id:?}");
                     continue;
@@ -799,46 +826,43 @@ impl<'a, S: Sink> Walker<'a, S> {
 
     /// Whether instruction `id` is accepted, decided the short way.
     /// `false` decides nothing.
-    #[inline]
-    fn accepts(&self, cx: &Cx<'_>, id: InstId, data: &InstData) -> bool {
-        let op = data.op;
-        let have = self.support.mask[at::INST + op as usize];
-        if have == 0 {
+    #[allow(clippy::inline_always, reason = "once per instruction; measured (WP-027)")]
+    #[inline(always)]
+    fn accepts(&mut self, cx: &Cx<'_>, id: InstId, data: &InstData) -> bool {
+        let short = self.support.short[data.op as usize];
+        if short & SHORT_ON == 0 {
             return false;
         }
-        let classes = have & self.support.types;
-        match op {
-            Opcode::Call => return self.accepts_call(cx, id, data, classes),
-            Opcode::Load | Opcode::Store => {
-                let mem = MemFlags::from_raw(data.flags);
-                if mem.is_volatile() || mem.ordering().is_some() {
-                    return false;
-                }
+        // The classes of the row: `mask & types`.
+        let classes = short as u16;
+        if short & SHORT_CALL != 0 {
+            return self.accepts_call(cx, id, data, classes);
+        }
+        if short & SHORT_MEM != 0 {
+            let mem = MemFlags::from_raw(data.flags);
+            if mem.is_volatile() || mem.ordering().is_some() {
+                return false;
             }
-            // These have rows and rules of their own.
-            Opcode::CmpXchg
-            | Opcode::AtomicRmw
-            | Opcode::LandingPad
-            | Opcode::Switch
-            | Opcode::Invoke
-            | Opcode::CallBr => return false,
-            _ => {}
         }
         let types = &self.module.types;
-        (data.ty == TypeId::VOID || has_class(classes, class_code(types, data.ty)))
-            && cx
-                .body
-                .inst(id)
-                .operands()
-                .iter()
-                .all(|&value| self.accepts_operand(cx, classes, value))
+        if data.ty != TypeId::VOID && !has_class(classes, class_code(types, data.ty)) {
+            return false;
+        }
+        // `Inst::operands`, read from the table.
+        let operands = if short & SHORT_LIST == 0 {
+            &data.ops[..(short >> SHORT_COUNT_SHIFT & 3) as usize]
+        } else {
+            cx.body.inst(id).operands()
+        };
+        operands.iter().all(|&value| self.accepts_operand(cx, classes, value))
     }
 
     /// Whether `value` is accepted as an operand of an instruction whose
     /// row has `classes`, decided the short way: an instruction's
     /// result, a parameter, a stack slot, a constant that is plain data,
     /// or a symbol that is not thread-local.
-    #[inline]
+    #[allow(clippy::inline_always, reason = "once per operand; measured (WP-027)")]
+    #[inline(always)]
     fn accepts_operand(&self, cx: &Cx<'_>, classes: u16, value: Value) -> bool {
         let module = self.module;
         let ptr = has_class(classes, TypeClass::Ptr as u8);
@@ -864,7 +888,7 @@ impl<'a, S: Sink> Walker<'a, S> {
 
     /// The same for a plain direct call: of a function that exists, with
     /// the C convention and no marker, bundle or `returns_twice`.
-    fn accepts_call(&self, cx: &Cx<'_>, id: InstId, data: &InstData, classes: u16) -> bool {
+    fn accepts_call(&mut self, cx: &Cx<'_>, id: InstId, data: &InstData, classes: u16) -> bool {
         let (module, support) = (self.module, self.support);
         let Some(site) = cx.body.inst(id).call() else { return false };
         let ValueKind::Sym(sym) = site.callee_value().kind() else { return false };
@@ -878,25 +902,26 @@ impl<'a, S: Sink> Walker<'a, S> {
         {
             return false;
         }
-        let callee = module.symbol(sym);
-        if callee.tls() != TlsModel::None || self.returns_twice(callee) {
+        if !(data.ty == TypeId::VOID || has_class(classes, class_code(&module.types, data.ty))) {
             return false;
         }
         let fn_ty = site.fn_type();
-        let fixed = fn_ty.index() < module.types.len()
-            && match module.types.kind(fn_ty) {
-                TypeKind::Function { variadic, .. } => {
-                    !variadic || support.mask[at::CALL_VARIADIC] != 0
+        let key = (sym.index() as u32 + 1, fn_ty);
+        let slot = sym.index() % CALLEES;
+        let declared = if self.callees[slot] == key {
+            // Accepted before, with no declared attributes.
+            None
+        } else {
+            match self.accepts_callee(sym, fn_ty) {
+                Some(None) => {
+                    self.callees[slot] = key;
+                    None
                 }
-                _ => false,
-            };
-        if !fixed
-            || !(data.ty == TypeId::VOID || has_class(classes, class_code(&module.types, data.ty)))
-        {
-            return false;
-        }
+                Some(declared) => declared,
+                None => return false,
+            }
+        };
         // The attributes the call passes with (`spec/codegen.md` §7.1).
-        let declared = declared_attrs(module, &site);
         let has_attrs = site.has_param_attrs() || declared.is_some();
         let accepts = |own: ParamAttrs, theirs: ParamAttrs| {
             merge_call_attrs(own, theirs).is_ok_and(|attrs| self.accepts_attrs(attrs))
@@ -915,6 +940,46 @@ impl<'a, S: Sink> Walker<'a, S> {
         })
     }
 
+    /// What the short way decides of the function `sym` (which exists)
+    /// called directly through `fn_ty`: `None` if it goes the long way
+    /// (thread-local, `returns_twice`, a function type that is none, or
+    /// variadic without `call:variadic`); otherwise the declared
+    /// attributes the call takes ([`call_declaration`]), if any. One read
+    /// of the callee for what `returns_twice` and `declared_attrs` read,
+    /// decided the same way.
+    #[allow(clippy::option_option, reason = "the long way, or the callee's attributes if any")]
+    fn accepts_callee(
+        &self,
+        sym: SymId,
+        fn_ty: TypeId,
+    ) -> Option<Option<(ParamAttrs, &'a [ParamAttrs])>> {
+        let (module, support) = (self.module, self.support);
+        let callee = module.symbol(sym);
+        if callee.tls() != TlsModel::None {
+            return None;
+        }
+        let declared = match callee.kind() {
+            SymbolKind::Function { attrs, ret_attrs, param_attrs, .. } => {
+                if attrs.index() < module.fn_attrs_count()
+                    && module.fn_attrs(attrs).has(FnAttrs::RETURNS_TWICE)
+                {
+                    return None;
+                }
+                let has = !ret_attrs.is_none() || !param_attrs.is_empty();
+                (has && callee.ty() == fn_ty).then_some((ret_attrs, param_attrs))
+            }
+            _ => None,
+        };
+        let fixed = fn_ty.index() < module.types.len()
+            && match module.types.kind(fn_ty) {
+                TypeKind::Function { variadic, .. } => {
+                    !variadic || support.mask[at::CALL_VARIADIC] != 0
+                }
+                _ => false,
+            };
+        fixed.then_some(declared)
+    }
+
     /// Whether the parameter attributes `attrs` are all supported.
     fn accepts_attrs(&self, attrs: ParamAttrs) -> bool {
         attrs.is_none() || !self.finds(|walker| walker.param_attrs_slow(attrs, false, At::MODULE))
@@ -924,7 +989,7 @@ impl<'a, S: Sink> Walker<'a, S> {
     fn finds(&self, walk: impl FnOnce(&mut Walker<'_, Probe>) -> Flow) -> bool {
         let mut probe = Probe::default();
         let (module, support, stack_args) = (self.module, self.support, self.stack_args);
-        let _ = walk(&mut Walker { module, support, stack_args, sink: &mut probe });
+        let _ = walk(&mut Walker::new(module, support, stack_args, &mut probe));
         probe.0
     }
 

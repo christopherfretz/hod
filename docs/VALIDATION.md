@@ -52,7 +52,7 @@ on a schedule.
 | L7 | **debug info** (`xtask debug`) | scripted gdb and lldb sessions on hod's and `llc`'s programs under every linker; kiln's debugger tests through hod; `--verify` of the corpus's `-g` modules; `(function, line)` comparison with `llc` | gdb, lldb, `llc`, `llvm-dwarfdump` | every change (quick tier, in `cargo test`), merge gate (all) |
 | L8 | **libc++ test suite** with kiln + hod | the long-term acceptance gate | the suite | nightly / release |
 | L9 | **open-source projects** built with kiln + hod, running their own tests | - | release |
-| L10 | **fuzzing** (`xtask fuzz`) | random C programs (csmith; YARPGen once installed) through clang `-O0 -emit-llvm` for each target, built by hod `--strict` and by the reference `llc`, linked and run, exit status and output compared; random IR functions against an interpreter (not yet) | `llc` (`-O2` as the witness of a finding) | the reduced seeds of findings in every change (as L4 seeds); long runs in the sweep, budgeted |
+| L10 | **fuzzing** (`xtask fuzz`) | random C programs (csmith in option sets, and hod's own ABI generator; YARPGen once installed) through clang `-O0 -emit-llvm` for each target, built by hod `--strict` and by the reference `llc`, linked and run, exit status and output compared; the module split so each compiler builds half (`--mix`); with `-g`, DWARF verified and lines compared (`--debug`); random IR functions against an interpreter (not yet) | `llc` (`-O2` as the witness of a finding) | the reduced seeds of findings in every change (as L4 seeds); long runs in the sweep, budgeted |
 
 ### The IR corpus
 
@@ -147,39 +147,65 @@ do not move with the pin.
 
 ### Random programs (L10)
 
-`cargo xtask fuzz --seed N --count M --target T [--llvm 19] [-j J]`
-(`spec/landed/harness/WP-154.md`) makes seed `S` a csmith program
-(`--max-funcs 6 --max-block-depth 4 --max-array-len-per-dim 6`; one seed
-in three with `--float`), compiles it with clang at `-O0` to LLVM text
-for the target (position-independent, as a driver builds by default),
-builds that module with the reference `llc` and with `hod --strict`,
-links both with the target's driver and runs them (x86-64 under
-`qemu-x86_64` with the baseline CPU, as the L4 cross runs do), with the
-same time limit on both targets (5 s; a program of hod's that times out
-gets four times as long before it is called a hang). Every child goes
-through the harness's limits and jobserver. Per seed the verdict is:
+`cargo xtask fuzz --seed N --count M --target T [--llvm 19] [-j J]
+[--profile P] [--mix | --debug | --census]` (contract: `spec/harness.md`
+"Random programs"; WP-154, WP-160) makes seed `S` a random C program,
+compiles it with clang at `-O0` to LLVM text for the target
+(position-independent, as a driver builds by default), builds that
+module with the reference `llc` and with `hod --strict`, links both with
+the target's driver and runs them (x86-64 under `qemu-x86_64` with the
+baseline CPU, as the L4 cross runs do), with the same time limit on both
+targets (5 s; a program of hod's that times out gets four times as long
+before it is called a hang). Every child goes through the harness's
+limits and jobserver.
 
-- **agree**: same exit status, same output (csmith prints a checksum of
-  every global);
+The generator is a profile: csmith with an option set (`default`,
+`aggregates`, `float`, `wide`, `volatile`, `narrow`), or `abi`, hod's
+own generator of calls across the calling conventions (aggregates of
+every shape the conventions classify, by value and returned, `long
+double`, `__int128`, many arguments, variadic calls read with
+`va_arg`), which csmith does not reach. `--census` counts what a
+profile's modules contain (opcodes, types, `byval`/`sret`, variadic
+definitions and calls) without building them.
+
+The modes:
+- **whole** (the default): one program of hod's object, one of
+  `llc`'s;
+- **mix** (`--mix`): `llvm-extract` splits the module in two by a
+  seeded choice per function and global (internal symbols become hidden
+  externals, so the halves link); hod builds one half and `llc` the
+  other, both ways round, against the all-`llc` program. This is what
+  sees a calling convention that agrees with itself but not with
+  another compiler's;
+- **debug** (`--debug`): with `-g`; `llvm-dwarfdump --verify` on hod's
+  object, then the `(function, line)` comparison of `cargo xtask debug`
+  against `llc`'s; an unclassified pair is a finding.
+
+Per seed the verdict is:
+
+- **agree**: same exit status, same output (the programs print a
+  checksum or every global);
 - **refused**: hod declined, counted by its coverage-log reason (that is
   coverage, not a bug);
-- **skipped**: csmith or clang failed, or a program timed out (both, or
-  the oracle's);
-- **error**: the oracle's side failed (`llc`, its link);
-- **finding**: the programs disagree, hod failed (a status other than 0
-  or 2, a signal, no object), hod's object does not link, or hod's
-  program hangs.
+- **skipped**: the generator or clang failed, a program timed out (both,
+  or the oracle's), or there was nothing to split;
+- **error**: the oracle's side failed (`llc`, its link, `llc`'s two
+  halves disagreeing with its whole module);
+- **finding**: the programs disagree, hod failed, hod's object does not
+  link, hod's program hangs, hod's DWARF does not verify, or its lines
+  differ without a permitted class.
 
-A finding is saved under `<build>/fuzz/findings/<arch>-llvm<N>-seed<S>/`
-with the source, the module, every command as a shell line, both
-outputs and the verdict of the witness (`llc -O2` of the same module:
-does it agree with the oracle or with hod?), then reduced by cutting the
-module's text and written as a `tests/ir` seed (`seed.ll`, with an
-`xfail` for the target) that the gate then runs like every other. The
-run prints a table (agree, refused by reason, skipped by why, errors,
-findings) and exits 1 on a finding. The gate does not run csmith: the
-checked-in reduced seeds are its share of L10. The numbers of the long
-runs are in `docs/status/fuzz.md`.
+A finding is saved under `<build>/fuzz/findings/<run>-seed<S>/` with the
+source, the module, every command as a shell line, both outputs and the
+verdict of the witness (`llc -O2` of the same module, and in `--mix` hod
+on the whole module), then reduced by cutting the module's text (in
+`--mix` re-splitting each candidate, so the split is kept) and written
+as a seed test. The run prints a table and the rate and exits 1 on a
+finding. The gate does not run csmith: the checked-in reduced seeds are
+its share of L10, and its tests of the command (`xtask/tests/fuzz_real.rs`)
+skip without the tools; a planted calling-convention bug that only
+`--mix` can see shows the mode works. The numbers of the long runs are
+in `docs/status/fuzz.md`.
 
 ### Linker matrix
 

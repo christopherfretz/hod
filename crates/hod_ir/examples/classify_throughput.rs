@@ -1,8 +1,14 @@
 //! What `classify` costs, not a gate (`spec/ir.md` §8.11).
 //!
 //! ```text
-//! cargo run --release -p hod_ir --example classify_throughput [instructions] [symbols]
+//! cargo run --release -p hod_ir --example classify_throughput [instructions] [symbols] [build|classify]
 //! ```
+//!
+//! With `build` it only builds the one large body; with `classify` it
+//! builds it and classifies it once, with everything implemented. Under
+//! callgrind the difference of the two counts is what classifying the
+//! body costs in instructions, and the first what building it costs: a
+//! measure the load of the host does not change (WP-027).
 //!
 //! Builds the bodies of `body_throughput` (the instruction mix of
 //! unoptimized C++) in a module with real symbols, and a module of
@@ -154,13 +160,27 @@ fn main() -> IrResult<()> {
         None => default,
     };
     let (insts, symbol_count) = (number(1_000_000), number(100_000));
+    let once = args.next();
     let arch = Arch::Aarch64;
     let everything = Support::everything_implemented(arch);
     let accepting = Classifier::new(&everything);
     let shipped = Classifier::new(Support::shipped(arch));
+    // Every body is refused at its convention, the first thing the body
+    // pass checks (`spec/ir.md` §8.8).
+    let without_ccc = Support::shipped(arch).clone().without("cc:ccc").expect("a row");
+    let refusing = Classifier::new(&without_ccc);
 
     let mut m = Module::new(TargetSpec::aarch64_linux_gnu());
     let shape = shape(&mut m)?;
+
+    if let Some(mode) = once {
+        let body = build(&m, &shape, insts, None)?;
+        if mode == "classify" {
+            accepting.body(black_box(&m), black_box(&body)).expect("accepted");
+        }
+        println!("{mode}: one body of {} instructions", body.inst_count());
+        return Ok(());
+    }
 
     // One large body.
     let (building, body) = fastest(|| build(&m, &shape, insts, None));
@@ -192,9 +212,10 @@ fn main() -> IrResult<()> {
         bodies.iter().filter(|body| accepting.body(black_box(&m), body).is_err()).count()
     });
     assert_eq!(refused, 0, "everything implemented accepts the bodies");
-    let (reject, refused) =
-        fastest(|| bodies.iter().filter(|body| shipped.body(black_box(&m), body).is_err()).count());
-    assert_eq!(refused, functions, "the shipped matrix refuses the bodies");
+    let (reject, refused) = fastest(|| {
+        bodies.iter().filter(|body| refusing.body(black_box(&m), body).is_err()).count()
+    });
+    assert_eq!(refused, functions, "a matrix without `cc:ccc` refuses the bodies");
     println!("{functions} bodies of {} instructions", total / functions);
     println!("  classify, accepted           {:7.2} ns/instruction", per(accept, total));
     println!("  classify, accepted           {:7.1} ns/body", per(accept, functions));

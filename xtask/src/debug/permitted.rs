@@ -411,6 +411,61 @@ pub fn only_return_columns(hod: &str, llc: &str, facts: &IrFacts) -> bool {
     true
 }
 
+/// What a debugger prints for a variable without a location where it
+/// stopped: gdb's, lldb's (`frame variable`, and in a frame line).
+const NOT_AVAILABLE: [&str; 3] = ["<optimized out>", "<variable not available>", "<unavailable>"];
+
+/// The `value-range` rule (`spec/dwarf.md` §6.7, WP-162): two masked
+/// transcripts of as many lines that differ only where hod's printed that
+/// a variable has no value (`<optimized out>`, `<variable not available>`,
+/// `<unavailable>`) and `llc`'s printed one. Each differing line of hod's is read as a
+/// pattern: its text, with each marker matching a non-empty run of
+/// `llc`'s line that is no marker. hod printing a value where `llc` has
+/// none, or another value, is not permitted.
+pub fn only_value_ranges(hod: &str, llc: &str) -> bool {
+    let (ours, theirs): (Vec<&str>, Vec<&str>) = (hod.lines().collect(), llc.lines().collect());
+    if ours.len() != theirs.len() || ours == theirs {
+        return false;
+    }
+    ours.iter().zip(&theirs).all(|(a, b)| a == b || value_hidden(a, b))
+}
+
+/// Whether `ours` is `theirs` with some values printed as markers.
+fn value_hidden(ours: &str, theirs: &str) -> bool {
+    let mut pieces: Vec<&str> = Vec::new();
+    let mut rest = ours;
+    loop {
+        let next = NOT_AVAILABLE.iter().filter_map(|m| rest.find(m).map(|at| (at, m.len()))).min();
+        let Some((at, len)) = next else { break };
+        pieces.push(&rest[..at]);
+        rest = &rest[at + len..];
+    }
+    if pieces.is_empty() {
+        return false;
+    }
+    pieces.push(rest);
+    let Some(mut tail) = theirs.strip_prefix(pieces[0]) else { return false };
+    for (k, piece) in pieces.iter().enumerate().skip(1) {
+        // The value: the shortest non-empty run before `piece` (the
+        // last piece must end the line).
+        let last = k + 1 == pieces.len();
+        let found = if last {
+            tail.strip_suffix(piece).map(|value| (value, ""))
+        } else {
+            tail.char_indices()
+                .skip(1)
+                .find(|&(at, _)| tail[at..].starts_with(piece))
+                .map(|(at, _)| (&tail[..at], &tail[at + piece.len()..]))
+        };
+        let Some((value, after)) = found else { return false };
+        if value.is_empty() || NOT_AVAILABLE.iter().any(|m| value.contains(m)) {
+            return false;
+        }
+        tail = after;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -523,6 +578,32 @@ define void @release(ptr %0) personality ptr @p !dbg !10 {
         let reached = POST_INDEXED.replace("br label %7", "br label %9");
         let facts = IrFacts::of_modules([reached.as_str()]);
         assert_eq!(facts.pair_class("release", "/w/c.cpp", 3, true), None);
+    }
+
+    // spec/dwarf.md §6.7 `value-range` (WP-162).
+    #[test]
+    fn value_ranges() {
+        let gdb = |k: &str, n: &str| {
+            format!("Breakpoint 1, sum (n={n}) at v.c:3\n(gdb) print k\n$1 = {k}\n(gdb) continue\n")
+        };
+        let llc = gdb("7", "4");
+        assert!(only_value_ranges(&gdb("<optimized out>", "4"), &llc));
+        assert!(only_value_ranges(&gdb("<optimized out>", "<optimized out>"), &llc));
+        // Never the reverse, never another value, never equal.
+        assert!(!only_value_ranges(&llc, &gdb("<optimized out>", "4")));
+        assert!(!only_value_ranges(&gdb("8", "4"), &llc));
+        assert!(!only_value_ranges(&llc, &llc));
+        // Both without a value there: no difference to permit on that line.
+        let none = gdb("<optimized out>", "4");
+        assert!(!only_value_ranges(&none, &none));
+        let lldb = |k: &str| format!("(lldb) frame variable k\n(int) k = {k}\n");
+        assert!(only_value_ranges(&lldb("<variable not available>"), &lldb("7")));
+        assert!(!only_value_ranges(&lldb("<variable not available>"), &lldb("")));
+        let frame = |n: &str| format!("    frame #0: 0x? prog`sum(n={n}) at v.c:3:5\n");
+        assert!(only_value_ranges(&frame("<unavailable>"), &frame("4")));
+        // Another line differs too.
+        let other = gdb("<optimized out>", "4").replace("v.c:3", "v.c:4");
+        assert!(!only_value_ranges(&other, &llc));
     }
 
     // spec/harness.md "debug", "Permitted differences of sessions".

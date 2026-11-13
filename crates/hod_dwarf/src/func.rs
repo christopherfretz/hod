@@ -52,6 +52,18 @@ pub enum LocalPlace {
     Label(u32),
     /// A variable of a coroutine body (WP-108, §6.16).
     Coro(crate::coro::CoroPlace),
+    /// One range of a variable described by value records (WP-162,
+    /// §6.23): code offsets `start..end` of the function, where the
+    /// variable is there. The rows of one variable (and `inlinedAt`) make
+    /// one DIE with a location list.
+    Value {
+        /// The range's first byte.
+        start: u32,
+        /// One past its last byte.
+        end: u32,
+        /// Where the variable is in it.
+        at: crate::loclists::ValueLoc,
+    },
     /// The code generator could not describe the row: the function is
     /// refused under this stable name.
     Refused(&'static str),
@@ -111,6 +123,9 @@ pub(crate) enum LocalWhat {
     /// A variable the subprogram retains (`retainedNodes`) and no record
     /// declares: no location (WP-111).
     Retained,
+    /// A variable described by value records (WP-162): its located
+    /// ranges in `UnitPlan::value_ranges` (none: no location).
+    List { first: u32, count: u32 },
     /// A block: its ranges in `UnitPlan::ranges`.
     Block { first: u32, count: u32 },
     /// A label at a code offset.
@@ -170,6 +185,9 @@ pub(crate) struct FnScratch {
     retained: Vec<DiId>,
     /// The inlined scopes' keys and the abstract scopes (WP-085).
     inl: crate::inline::FnInline,
+    /// The instances of the variables described by value records
+    /// (WP-162).
+    pub(crate) groups: crate::loclists::Groups,
 }
 
 /// The index of the scope keyed `(node, ia)`, or `NONE`.
@@ -453,6 +471,7 @@ impl<'a> UnitPlan<'a> {
         s.ents.clear();
         s.retained.clear();
         s.inl.clear();
+        s.groups.clear();
         self.scope_ranges(f, s)?;
 
         self.collect_entities(f, s)?;
@@ -514,6 +533,11 @@ impl<'a> UnitPlan<'a> {
                     {
                         return Err(unsupported(v.node, name));
                     }
+                    if let LocalPlace::Value { .. } = v.place
+                        && let Err(name) = crate::loclists::check_value_expr(self.debug, v.expr)
+                    {
+                        return Err(unsupported(v.node, name));
+                    }
                     let (class, key) =
                         if n.arg != 0 { (0, u32::from(n.arg)) } else { (1, row as u32) };
                     (n.scope, class, key)
@@ -545,6 +569,13 @@ impl<'a> UnitPlan<'a> {
                 }
                 continue;
             }
+            // WP-162: a variable's value rows make one DIE, placed by
+            // its first.
+            if let LocalPlace::Value { .. } = v.place
+                && !s.groups.join(v.node, ia, row as u32)
+            {
+                continue;
+            }
             if ia != LocId::NONE && !s.inl.first_of(v.node, ia) {
                 return Err(unsupported(v.node, "debug:variable-twice"));
             }
@@ -552,6 +583,7 @@ impl<'a> UnitPlan<'a> {
             self.abstract_entity(&mut s.inl, v.node, scope, class, key);
         }
         self.retained_vars(f, s)?;
+        s.groups.seal();
         s.ents.sort_unstable();
         // `llc`'s `needToEmitLexicalScope`: a block is written when it
         // has variables; its labels alone do not make it.
@@ -695,6 +727,7 @@ impl<'a> UnitPlan<'a> {
                     LocalWhat::Label { offset }
                 }
                 LocalPlace::Coro(place) => LocalWhat::CoroVar { place, expr: v.expr },
+                LocalPlace::Value { .. } => self.value_list(f.vars, &s.groups, row),
                 LocalPlace::Refused(RETAINED) => LocalWhat::Retained,
                 LocalPlace::Refused(name) => return Err(unsupported(v.node, name)),
             };
@@ -987,6 +1020,64 @@ impl<'a> Writer<'a> {
         self.info.extend_from_slice(&(size as u32).to_le_bytes());
     }
 
+    /// A parameter or local variable (§6.4), or one of value records
+    /// (§6.23).
+    fn variable_die(
+        &mut self,
+        plan: &UnitPlan<'a>,
+        l: &LocalData,
+        kind: Kind,
+        node: DiId,
+        what: LocalWhat,
+        v: &hod_ir::DiLocalVariable<'a>,
+    ) -> Result<(), Error> {
+        let b = u32::from;
+        // WP-162: a location list (§6.23), or none.
+        let list = crate::loclists::list_of(what);
+        let at = if let LocalWhat::List { .. } = what {
+            u32::from(list.is_some())
+        } else {
+            self.var_location(plan, what)
+        };
+        if let Some(origin) = plan.inline.die(node) {
+            if let LocalWhat::List { .. } = what {
+                self.list_of_abstract(plan, l, node, kind, origin);
+            } else {
+                self.var_of_abstract(kind, origin);
+            }
+            return Ok(());
+        }
+        let list_family = |base| list.map_or(base, |_| crate::loclists::list_family(base));
+        let decl = Writer::decl_of(plan, node, v.file, v.line)?;
+        let art = has(v.flags, DiFlags::ARTIFICIAL);
+        if kind == Kind::LocalParam {
+            let mask = at | b(!v.name.is_empty()) << 1 | b(decl.is_some()) << 2 | b(art) << 3;
+            self.abbrev(code(list_family(fam::FORMAL_PARAMETER), mask, false));
+            self.location_if(plan, l, node, list, at);
+            self.opt_name(v.name)?;
+        } else {
+            let mask = at | b(decl.is_some()) << 1 | b(art) << 2;
+            // WP-087: an unnamed variable has no `DW_AT_name`; an
+            // aligned one has `DW_AT_alignment` after it.
+            let family = match (v.name.is_empty(), v.align >= 8) {
+                (true, _) => fam::VARIABLE_UNNAMED,
+                (false, true) => fam::VARIABLE_ALIGNED,
+                (false, false) => fam::VARIABLE,
+            };
+            self.abbrev(code(list_family(family), mask, false));
+            self.location_if(plan, l, node, list, at);
+            if !v.name.is_empty() {
+                self.strx(v.name)?;
+            }
+            if v.align >= 8 {
+                write_uleb(&mut self.info, u64::from(v.align / 8));
+            }
+        }
+        self.decl(decl);
+        self.ref_to(plan, node, v.ty.unwrap_or(DiId::NONE))?;
+        Ok(())
+    }
+
     /// Writes a parameter, a local variable, a block or a label (§6.4).
     pub(crate) fn local_die(
         &mut self,
@@ -1000,43 +1091,12 @@ impl<'a> Writer<'a> {
         let fd = plan.funcs[l.func as usize];
         match (l.what, plan.debug.node(node)) {
             (
-                what @ (LocalWhat::Var { .. } | LocalWhat::CoroVar { .. } | LocalWhat::Retained),
+                what @ (LocalWhat::Var { .. }
+                | LocalWhat::CoroVar { .. }
+                | LocalWhat::Retained
+                | LocalWhat::List { .. }),
                 DiNode::LocalVariable(v),
-            ) => {
-                let at = self.var_location(plan, what);
-                if let Some(origin) = plan.inline.die(node) {
-                    self.var_of_abstract(kind, origin);
-                    return Ok(());
-                }
-                let decl = Writer::decl_of(plan, node, v.file, v.line)?;
-                let art = has(v.flags, DiFlags::ARTIFICIAL);
-                if kind == Kind::LocalParam {
-                    let mask =
-                        at | b(!v.name.is_empty()) << 1 | b(decl.is_some()) << 2 | b(art) << 3;
-                    self.abbrev(code(fam::FORMAL_PARAMETER, mask, false));
-                    self.exprloc_if(at);
-                    self.opt_name(v.name)?;
-                } else {
-                    let mask = at | b(decl.is_some()) << 1 | b(art) << 2;
-                    // WP-087: an unnamed variable has no `DW_AT_name`; an
-                    // aligned one has `DW_AT_alignment` after it.
-                    let family = match (v.name.is_empty(), v.align >= 8) {
-                        (true, _) => fam::VARIABLE_UNNAMED,
-                        (false, true) => fam::VARIABLE_ALIGNED,
-                        (false, false) => fam::VARIABLE,
-                    };
-                    self.abbrev(code(family, mask, false));
-                    self.exprloc_if(at);
-                    if !v.name.is_empty() {
-                        self.strx(v.name)?;
-                    }
-                    if v.align >= 8 {
-                        write_uleb(&mut self.info, u64::from(v.align / 8));
-                    }
-                }
-                self.decl(decl);
-                self.ref_to(plan, node, v.ty.unwrap_or(DiId::NONE))?;
-            }
+            ) => self.variable_die(plan, &l, kind, node, what, &v)?,
             (LocalWhat::Block { first, count }, DiNode::LexicalBlock(_)) => {
                 if let Some(origin) = plan.inline.die(node) {
                     self.block_of_abstract(plan, &l, first, count, origin);
@@ -1181,6 +1241,22 @@ impl Writer<'_> {
     fn exprloc_if(&mut self, at: u32) {
         if at != 0 {
             self.exprloc();
+        }
+    }
+
+    /// `DW_AT_location`: the list `list` (WP-162), or the expression
+    /// when the mask's location bit `at` is set.
+    fn location_if(
+        &mut self,
+        plan: &UnitPlan<'_>,
+        l: &LocalData,
+        node: DiId,
+        list: Option<(u32, u32)>,
+        at: u32,
+    ) {
+        match list {
+            Some(list) => self.value_location(plan, l, node, list),
+            None => self.exprloc_if(at),
         }
     }
 }

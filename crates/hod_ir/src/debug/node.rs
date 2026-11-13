@@ -184,19 +184,23 @@ fn dangling(id: DiId) -> IrResult<()> {
     err(IrErrorKind::UndefinedDebugNode, format!("{id:?} was never reserved or added"))
 }
 
-/// Where a node's fields are read from.
+/// Where a node's fields are read from: the words after the record's
+/// mask, consumed from the front. Past the end every word reads as 0.
 pub(crate) struct Dec<'m, L: Layering = crate::intern::NoLayer> {
     pub(crate) cells: &'m [DiId],
-    pub(crate) at: usize,
     pub(crate) strings: Option<&'m StrPool<L>>,
 }
 
 impl<L: Layering> Dec<'_, L> {
     #[inline]
     fn word(&mut self) -> u32 {
-        let word = self.cells.get(self.at).map_or(0, |cell| cell.raw());
-        self.at += 1;
-        word
+        match self.cells.split_first() {
+            Some((cell, rest)) => {
+                self.cells = rest;
+                cell.raw()
+            }
+            None => 0,
+        }
     }
 
     #[inline]
@@ -495,9 +499,13 @@ impl<'a> Field<'a> for &'a [DiId] {
     #[inline]
     fn get<L: Layering>(dec: &mut Dec<'a, L>) -> Self {
         let len = dec.word() as usize;
-        let list = dec.cells.get(dec.at..).and_then(|rest| rest.get(..len)).unwrap_or(&[]);
-        dec.at += len;
-        list
+        if let Some((list, rest)) = dec.cells.split_at_checked(len) {
+            dec.cells = rest;
+            list
+        } else {
+            dec.cells = &[];
+            &[]
+        }
     }
     fn assign(value: DiFieldValue<'a>) -> Option<Self> {
         match value {

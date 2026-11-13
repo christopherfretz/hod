@@ -47,12 +47,14 @@ mod coro;
 mod coro_body;
 mod coro_debug;
 mod cx;
+mod dbg_value;
 mod debug_calls;
 mod driver;
 pub mod emit;
 pub mod error;
 pub mod features;
 mod frame;
+mod idhash;
 mod key_rows;
 mod label;
 pub mod lanes;
@@ -76,6 +78,7 @@ pub use coro_body::{
     BEGIN_SHARED_BLOCK, CORO_TARGET, CoroLayout, CoroSlots, OUTSIDE_COROUTINE, OVERALIGNED_STACK,
 };
 pub use cx::{FnCx, Scratch, TailExit};
+pub use dbg_value::{DEBUG_DBG_VALUE_ARGLIST, DEBUG_DBG_VALUE_COROUTINE, ValueAt, ValueRange};
 pub use debug_calls::{DebugCallRow, DebugCallee};
 pub use driver::{MAX_FUNCTION_SIZE, compile_function};
 pub use emit::{COPY_SUFFIX, Emitted, ModuleEmitter, PlacedFunc, emit_module};

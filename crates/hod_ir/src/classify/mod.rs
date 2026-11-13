@@ -171,7 +171,7 @@ impl<'a> Classifier<'a> {
     where
         'a: 'w,
     {
-        Walker { module, support: self.support, stack_args: self.stack_args, sink }
+        Walker::new(module, self.support, self.stack_args, sink)
     }
 }
 

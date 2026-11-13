@@ -265,6 +265,7 @@ impl<'m> DebugLines<'m> {
                 VarPlace::Label(o) => LocalPlace::Label(o),
                 VarPlace::Coro(place) => LocalPlace::Coro(place),
                 VarPlace::Refused(name) => LocalPlace::Refused(name),
+                VarPlace::Value(r) => crate::dbg_value::local_place(r), // WP-162
                 VarPlace::Slot(_) | VarPlace::Indirect(_) => LocalPlace::Refused(DEBUG_FRAME_PLACE),
             },
         }));

@@ -1789,14 +1789,10 @@ that refused it before (WP-084's "stays refused" list is settled here).
   - `metadata-arg:llvm.read_volatile_register.i64`: the register name is
     a metadata operand, which the IR does not carry for intrinsics
     (BACKLOG WP-064) and `hod_ll`'s body reader would have to read.
-  - `debug:dbg-value`: hod writes one location per variable for the
-    whole function (§9.5). A `#dbg_value` maps to that exactly only for
-    a single record of the variable, with an empty expression, of a
-    value whose home is a frame slot from its definition on; the corpus
-    has none such (its one module, at `-O2`, has several records per
-    variable, constants (`DW_AT_const_value`) and `DW_OP_stack_value`
-    expressions, which need location lists). All stay
-    `debug:dbg-value`.
+  - `debug:dbg-value`: was refused here, since hod wrote one location
+    per variable for the whole function (§9.5). WP-162 writes value
+    records as location lists (`spec/dwarf.md` §6.23); the one corpus
+    module (`-O2`) now stops at `debug:dbg-value-arglist`.
   - `cc:preserve_allcc`, `cc:win64cc` (`cc:79` before WP-141) and `cc:aarch64_vector_pcs`
     (WP-082), which the one `preserve_mostcc` corpus module also uses.
     (`preserve_allcc` since WP-101, below.)
@@ -3520,15 +3516,102 @@ directions (`crates/hod_x64/tests/vcall_i128.rs`):
    `musttail:stack-args-unknown` (`spec/abi-x64.md` §8.5, item 6): the
    rule has no stack-argument area for a signature `assign` refuses, and
    `llc` 19 and 22 disagree on where its arguments are.
-3. **`<1 x i64>` and `<1 x ptr>`** stay `call:part-register-class`: the
-   value is `Fpr` (an `xmm`, `target::vector_class`) and both versions
-   pass it in a general register. Moving it needs `hod_cg`'s call
-   sequence to accept a part of another class for an `Fpr` value (a
-   `Lanes` part through a scratch register of the value's class, as
-   WP-167 does for AArch64's `<1 x i128>`), which `hod_x64` cannot do
-   alone.
+3. **`<1 x i64>` and `<1 x ptr>`** were `call:part-register-class`
+   here; WP-174 (§5.6.21) passes them.
 
 Evidence: `spec/landed/codegen/WP-171.md`.
+
+#### 5.6.21 `<1 x i64>` across calls, label differences (WP-174)
+
+1. **A lone `<1 x i64>` or `<1 x ptr>`** argument or result (the value
+   an `xmm`, `target::vector_class`; LLVM 19 and 22 scalarize it to an
+   `i64`: a general register, an 8-byte stack slot, `rax`) has one part
+   of kind `Lanes { bits: 64, lane: 8, first: 0, len: 1 }`
+   (`abi::LONE_LANE`, `spec/abi-x64.md` §4.3). `hod_cg` hands the value
+   in the `Fpr` scratch register (WP-167's paths: argument, result,
+   `place_return`, entry); `vcall::lone_out`/`lone_in` move it with
+   `movq r64, xmm` / `movq xmm, r64`, or an 8-byte store or load for a
+   stack slot. A side of another class is `call:part-lanes`. As a member
+   of an aggregate the value is memory and its bytes travel as `Value`
+   parts, unchanged. No `hod_cg` change was needed.
+2. **`init:block-diff`** on x86-64: the shared rule (§5.5.1 "WP-095",
+   module emission writes `offset(a) - offset(b) + addend`, no
+   relocation) holds unchanged; the block rows it reads are moved by
+   `shrink.rs` (§5.6.15), so the number is the one of the final code.
+   Only the classification row was `x64:todo`.
+3. **Kept refused**: `inst:callbr` (an empty-template `callbr` needs
+   `barrier.rs` to take `!i` label constraints and branch to the normal
+   destination, the indirect ones being unreachable from an empty
+   template; any other template is `call:inline-asm`, x86-64 has no
+   assembler), `cc:preserve_mostcc` / `cc:preserve_allcc` (`abi:cc`: a
+   callee must save `rcx`, `rdx`, `rsi`, `rdi`, `r8`..`r10`, and for
+   `preserve_allcc` the `xmm` registers, in the prologue with their CFI,
+   `frame.rs`). Sizes and reasons: `spec/landed/codegen/WP-174.md`.
+
+#### 5.6.22 x86 target intrinsics, SSE to SSSE3 (WP-173)
+
+The `llvm.x86.*` calls clang 19 and 22 write at `-O0` for the functions
+of `<xmmintrin.h>`, `<emmintrin.h>`, `<pmmintrin.h>` and
+`<tmmintrin.h>` (`crates/hod_x64/src/x86.rs`, `hod_ir`'s `Intrinsic`
+members `X86Sse*`, `X86Sse2*`, `X86Sse3*`, `X86Ssse3*`, matrix rows
+`never(X64_ONLY)` / `on(X86_SSE)`). Each against `llc -O0
+-fast-isel=0` 22 and 19 under the emulator, hod plain and stressed
+(`crates/hod_x64/tests/x86_intrinsics.rs`). A call whose operand or
+result types are not LLVM's declaration is `x64:x86-intrinsic-signature`.
+
+1. **SSE and SSE2** (the baseline; no feature check), one instruction as
+   `llc` writes it, the result in the first operand's register:
+   `max.ps`/`min.ps`/`max.ss`/`min.ss` and the `pd`/`sd` forms are
+   `maxps`/`minps`/`maxss`/... (the second operand when either is NaN or
+   both are zeros); `cmp.ss`/`cmp.sd` are `cmpss`/`cmpsd` with the
+   `immarg` predicate's low three bits (the legacy encoding's, as `llc`
+   encodes 8 to 31); `comi{eq,ge,gt,le,lt,neq}.ss` and `.sd` are
+   `comiss`/`comisd`, the `ucomi` ones `ucomiss`/`ucomisd`, then the
+   predicate from the flags: `gt` `seta`, `ge` `setae`, `lt` and `le` the
+   same with the operands swapped, `eq` `sete` and `setnp`, `neq`
+   `setne` or `setp`, zero-extended to `i32`; `cvtss2si`, `cvttss2si`,
+   `cvtsd2si`, `cvttsd2si` (and the `64` forms) are those instructions
+   to a general register (`0x80000000...` for NaN and out of range);
+   `cvtpd2dq`, `cvttpd2dq`, `cvtps2dq`, `cvttps2dq`, `cvtpd2ps`,
+   `cvtsd2ss`; `movmsk.ps`/`movmsk.pd`/`pmovmskb.128` to an `i32`;
+   `packssdw`, `packsswb`, `packuswb`, `pavg.b`/`.w`, `pmadd.wd`,
+   `pmulh.w`, `pmulhu.w`, `psad.bw`; `psll`/`psrl`/`psra` `.w`/`.d`/`.q`
+   by a vector (its low 64 bits are the count) and the `i` forms by an
+   `i32`: a constant count is the immediate, every count of 255 or more
+   written as 255 (each count at or above the lane width shifts out
+   every bit, or fills with the sign for `psra`), a variable count is
+   moved to `xmm15` by `movd` and the vector form used; `sfence`,
+   `lfence`, `mfence`. `pause` stays §5.6.19 (5).
+2. **SSE3**, only in a function whose `target-features` enable `sse3`
+   (the last item that implies it, `+sse3`, `+ssse3`, `+sse4.1`,
+   `+sse4.2`, `+avx` or an AVX feature, or disables it, `-sse`, `-sse2`,
+   `-sse3`, decides; none is off). hod writes SSE2 instructions only:
+   `hadd.ps`/`hsub.ps` gather the even lanes of `a` then `b` by `shufps
+   0b10001000` and the odd ones by `shufps 0b11011101` into `xmm14`, and
+   `addps`/`subps` them (even minus odd); `hadd.pd`/`hsub.pd` the same
+   with `unpcklpd`/`unpckhpd`; `addsub.ps`/`.pd` compute `a - b` and
+   `a + b` and merge the even lanes of the difference with the odd ones
+   of the sum through a mask in `xmm15` (`pcmpeqd`, then `psrlq 32` or
+   `psrldq 8`); `ldu.dq` is `movdqu`.
+3. **SSSE3** `.128` forms, only where the features enable `ssse3` (as
+   (2), `-ssse3` too): lane by lane in general registers on 16-byte
+   frame images of the operands, the result's image loaded back:
+   `phadd`/`phsub` `.w`/`.d` (wrapping) and `.sw` (saturated to `i16`
+   by `cmovg`/`cmovl`), the pairs of `a` then of `b`; `pmadd.ub.sw`
+   (unsigned bytes of `a` times signed bytes of `b`, pairs summed and
+   saturated); `pmul.hr.sw` (`(a·b + 0x4000) >> 15` per `i16`); `pshuf.b`
+   (byte `b[i] & 15` of `a`, 0 where bit 7 of `b[i]` is set); `psign.b`/
+   `.w`/`.d` (`a`, `-a` or 0 as `b` is positive, negative or 0).
+4. **Refused by name.** An SSE3 or SSSE3 intrinsic in a function without
+   its feature is `intrinsic:` and its LLVM name, as `llc` cannot select
+   it. Every `llvm.x86.*` name hod does not list is `intrinsic:` and its
+   name from `classify` (`spec/ir.md`): `sse.ldmxcsr`/`stmxcsr`, `sse.rcp.*`,
+   `sse.rsqrt.*`, `sse2.clflush`, `sse2.maskmov.dqu`, `sse3.monitor`/
+   `mwait` (no encoding in `hod_mc_x64`), the `x86_mmx` forms clang 19
+   writes (`mmx.*`, `sse.cvtpi2ps`, ..., the 64-bit `ssse3.*`), and all of
+   `sse41.*` and `sse42.*`. AArch64 refuses every `llvm.x86.*` name.
+
+Evidence: `spec/landed/codegen/WP-173.md`.
 
 ## 6. Control flow
 
@@ -3670,7 +3753,12 @@ psABI fixes byte for byte (the linker has to recognize it to relax it):
 the lowering displaces what the sequence clobbers and records the row
 through the same service.
 
-**Tail kinds.** `tail` and `notail` are permissions and are ignored.
+**Tail kinds.** `tail` and `notail` are permissions and are ignored:
+hod makes no tail call but a `musttail` one, in any function (where `llc
+-O0` turns a `tail` call into a jump, hod calls). A function's
+`"disable-tail-calls"="true"` (WP-179) therefore changes nothing: LLVM's
+rule for it, no tail call except a `musttail` one, is hod's rule
+everywhere; `"false"` is the default.
 `musttail` is an obligation (variadic thunks depend on it,
 `docs/design/0001-input.md`). Control transfers by a branch, with the
 frame gone and the arguments where the *caller's own* incoming arguments
@@ -4718,14 +4806,18 @@ Recorded only when the module has debug information.
   ignored tests). At `-O0` a row's location holds for the whole function. The
   body is dropped after its function is compiled, so everything
   `hod_dwarf` needs from it is copied here.
+- `#dbg_value` records are rows of `vars` too (WP-162, `spec/dwarf.md`
+  §6.23): one `VarPlace::Value(ValueRange)` row per record in a
+  reachable block, the code range it holds over and what holds the value
+  there (a frame home, a constant, or nothing); `move_rows` moves the
+  ranges.
 - labels are rows of `vars` too: one `VarPlace::Label(offset)` row per
   `#dbg_label` in a reachable block, the label and the code offset of
   the instruction that follows it.
 - a record hod cannot describe exactly is a `VarPlace::Refused(name)`
   row; a `FullDebug` unit then refuses the function under that name:
-  `debug:dbg-value` (any `#dbg_value`: clang and kiln do not emit them at
-  `-O0`, and none is described yet, `spec/dwarf.md` open question 9),
-  `debug:dbg-assign`, `debug:declare-address` (a `#dbg_declare` of a
+  `debug:dbg-value-arglist` (a `#dbg_value` of a `DIArgList`) and
+  `debug:dbg-value-coroutine` (one in a coroutine body), `debug:dbg-assign`, `debug:declare-address` (a `#dbg_declare` of a
   constant, a symbol, or a value that never got a home; a declaration of
   `undef` or `poison` gets no row at all, as `llc` drops it, WP-156,
   `spec/dwarf.md` §6.22).

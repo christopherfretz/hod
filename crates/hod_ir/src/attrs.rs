@@ -576,11 +576,13 @@ pub enum FnStr {
     /// `"no-builtin-<function>"`. The value of this key is the function's
     /// name, and a set may hold the key once per function.
     NoBuiltin,
+    /// `"disable-tail-calls"` (`"true"` or `"false"`).
+    DisableTailCalls,
 }
 
 impl FnStr {
     /// Every key, in order.
-    pub const ALL: [FnStr; 21] = [
+    pub const ALL: [FnStr; 22] = [
         FnStr::TargetCpu,
         FnStr::TargetFeatures,
         FnStr::TuneCpu,
@@ -602,6 +604,7 @@ impl FnStr {
         FnStr::NoJumpTables,
         FnStr::NoBuiltins,
         FnStr::NoBuiltin,
+        FnStr::DisableTailCalls,
     ];
 
     /// LLVM's attribute name; for [`FnStr::NoBuiltin`] the prefix
@@ -629,6 +632,7 @@ impl FnStr {
             FnStr::NoJumpTables => "no-jump-tables",
             FnStr::NoBuiltins => "no-builtins",
             FnStr::NoBuiltin => "no-builtin-",
+            FnStr::DisableTailCalls => "disable-tail-calls",
         }
     }
 
@@ -720,9 +724,12 @@ impl FnAttrs {
     /// `convergent`: a constraint on transformations only (§5.7); hod
     /// keeps it so that the module it prints forbids what its input did.
     pub const CONVERGENT: u32 = 1 << 19;
+    /// `noredzone`: no data below the stack pointer; hod never puts any
+    /// there (`spec/codegen.md` §5), so it changes no code.
+    pub const NO_RED_ZONE: u32 = 1 << 20;
 
     /// Every flag with LLVM's keyword for it, in bit order.
-    pub const FLAG_NAMES: [(&'static str, u32); 20] = [
+    pub const FLAG_NAMES: [(&'static str, u32); 21] = [
         ("noreturn", Self::NORETURN),
         ("naked", Self::NAKED),
         ("nounwind", Self::NOUNWIND),
@@ -743,9 +750,10 @@ impl FnAttrs {
         ("sanitize_thread", Self::SANITIZE_THREAD),
         ("sanitize_type", Self::SANITIZE_TYPE),
         ("convergent", Self::CONVERGENT),
+        ("noredzone", Self::NO_RED_ZONE),
     ];
 
-    const ALL_FLAGS: u32 = (1 << 20) - 1;
+    const ALL_FLAGS: u32 = (1 << 21) - 1;
 
     /// No attributes.
     pub fn new() -> FnAttrs {
@@ -1206,7 +1214,7 @@ use AttrClass::{Dropped, Kept, Rejected};
 /// Keyword rows first, each group ordered by name. A name with no row is
 /// [`AttrClass::Rejected`]; the `Rejected` rows are the names LLVM defines
 /// that were looked at and deliberately left there.
-pub const ATTRIBUTES: [AttrInfo; 140] = [
+pub const ATTRIBUTES: [AttrInfo; 141] = [
     kw("align", Kept),
     kw("alignstack", Kept),
     kw("allocalign", Dropped),
@@ -1260,7 +1268,7 @@ pub const ATTRIBUTES: [AttrInfo; 140] = [
     kw("nonnull", Dropped),
     kw("noprofile", Dropped),
     kw("norecurse", Dropped),
-    kw("noredzone", Rejected),
+    kw("noredzone", Kept),
     kw("noreturn", Kept),
     kw("nosanitize_bounds", Dropped),
     kw("nosanitize_coverage", Dropped),
@@ -1315,6 +1323,7 @@ pub const ATTRIBUTES: [AttrInfo; 140] = [
     st("branch-target-enforcement", Kept),
     st("denormal-fp-math", Rejected),
     st("denormal-fp-math-f32", Rejected),
+    st("disable-tail-calls", Kept),
     st("fmv-features", Dropped),
     st("frame-pointer", Kept),
     st("function-instrument", Kept),
@@ -1608,7 +1617,7 @@ mod tests {
         assert_eq!(a.strings().count(), 0);
 
         let kind = |r: IrResult<()>| r.unwrap_err().kind;
-        assert_eq!(kind(a.set(1 << 20)), IrErrorKind::InvalidOperand);
+        assert_eq!(kind(a.set(1 << 21)), IrErrorKind::InvalidOperand);
         assert_eq!(kind(a.set_stack_align(24)), IrErrorKind::InvalidOperand);
         assert_eq!(kind(a.set_string(FnStr::NoBuiltin, b"")), IrErrorKind::InvalidOperand);
         assert!(a.is_empty());

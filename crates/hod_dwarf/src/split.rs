@@ -110,6 +110,9 @@ const DW_UT_SKELETON: u8 = 0x04;
 const DW_UT_SPLIT_COMPILE: u8 = 0x05;
 const DW_RLE_END_OF_LIST: u8 = 0x00;
 const DW_RLE_STARTX_LENGTH: u8 = 0x03;
+const DW_FORM_SEC_OFFSET: u64 = 0x17;
+const DW_FORM_IMPLICIT_CONST: u64 = 0x21;
+const DW_AT_LOCATION: u64 = 0x02;
 /// A DWARF 5 split or skeleton unit header: 12 bytes and the DWO id.
 const HEADER: usize = 20;
 /// Where the DWO id is in that header.
@@ -149,7 +152,8 @@ pub fn write_unit_dies(
 /// The DWO id hod writes: a 64-bit hash of `parts` (the `.dwo` name,
 /// then the split unit's `.debug_info.dwo` with a zero id,
 /// `.debug_abbrev.dwo`, `.debug_str_offsets.dwo`, `.debug_str.dwo` and
-/// `.debug_rnglists.dwo`), never 0 (`spec/dwarf.md` §6.15).
+/// `.debug_rnglists.dwo`, then `.debug_loclists.dwo` when there is one,
+/// WP-162), never 0 (`spec/dwarf.md` §6.15).
 ///
 /// Each part is hashed as its length, then its bytes in 8-byte
 /// little-endian words (the last one zero-padded); each word goes
@@ -217,6 +221,8 @@ impl<'a> Writer<'a> {
             fn_addr: Vec::new(),
             block_lists: Vec::new(),
             block_starts: Vec::new(),
+            loclists: Vec::new(),
+            loclists_unit: crate::loclists::NO_LISTS,
         }
     }
 
@@ -325,6 +331,59 @@ impl<'a> Writer<'a> {
     }
 }
 
+fn read_uleb(bytes: &[u8], at: &mut usize) -> u64 {
+    let mut value = 0u64;
+    let mut shift = 0;
+    while let Some(&b) = bytes.get(*at) {
+        *at += 1;
+        if shift < 64 {
+            value |= u64::from(b & 0x7f) << shift;
+        }
+        shift += 7;
+        if b & 0x80 == 0 {
+            break;
+        }
+    }
+    value
+}
+
+/// `.debug_abbrev.dwo`: the table of `used`, with every
+/// `DW_AT_location`/`DW_FORM_sec_offset` pair (a location list, WP-162)
+/// turned into `DW_FORM_loclistx` (both forms are one ULEB byte, so
+/// nothing moves).
+fn dwo_abbrev(used: &Used) -> Vec<u8> {
+    let mut table = write_abbrev(used);
+    let mut at = 0;
+    loop {
+        if read_uleb(&table, &mut at) == 0 {
+            break; // the terminating 0
+        }
+        read_uleb(&table, &mut at); // the tag
+        at += 1; // DW_CHILDREN_*
+        loop {
+            let name = read_uleb(&table, &mut at);
+            let form_at = at;
+            let form = read_uleb(&table, &mut at);
+            if name == 0 && form == 0 {
+                break;
+            }
+            if form == DW_FORM_IMPLICIT_CONST {
+                while table.get(at).is_some_and(|&b| b & 0x80 != 0) {
+                    at += 1;
+                }
+                at += 1;
+            }
+            if name == DW_AT_LOCATION && form == DW_FORM_SEC_OFFSET {
+                table[form_at] = crate::abbrev::form::LOCLISTX; // WP-162
+            }
+        }
+        if at >= table.len() {
+            break;
+        }
+    }
+    table
+}
+
 /// Writes the DIEs of `units` as split DWARF (`spec/dwarf.md` §6.15):
 /// the skeleton unit and its sections into `obj`, the split unit's
 /// sections into `obj` ([`SplitDwarf::Single`]) or into an object
@@ -367,8 +426,10 @@ pub fn write_split_debug_info(
     let layout = w.split_unit(u, symbols, dwo_name)?;
 
     // The `.dwo` sections: no relocation survives.
+    let mut locs: Vec<(usize, i64)> = Vec::new();
     for r in &w.relocs {
         match (r.sec, r.target) {
+            (Sec::Info, Target::Loclists) => locs.push((r.offset, r.addend)), // WP-162
             (Sec::StrOffsets, Target::Str) => {
                 let offset = u32::try_from(r.addend).map_err(|_| Error::TooLarge)?;
                 w.str_offsets[r.offset..r.offset + 4].copy_from_slice(&offset.to_le_bytes());
@@ -380,10 +441,16 @@ pub fn write_split_debug_info(
     // `.debug_rnglists.dwo`: the blocks' lists through their offsets
     // (`Writer::contributions`), empty without one.
     let rnglists = std::mem::take(&mut w.rnglists);
-    let abbrev = write_abbrev(&w.used);
+    let loclists = crate::loclists::dwo_loclists(&mut w, &locs)?; // WP-162
+    let abbrev = dwo_abbrev(&w.used);
     let strings = std::mem::take(&mut w.strings).into_data();
     let id = if has_split {
-        let id = dwo_id(&[dwo_name, &w.info, &abbrev, &w.str_offsets, &strings, &rnglists]);
+        let mut parts: Vec<&[u8]> =
+            vec![dwo_name, &w.info, &abbrev, &w.str_offsets, &strings, &rnglists];
+        if !loclists.is_empty() {
+            parts.push(&loclists); // WP-162
+        }
+        let id = dwo_id(&parts);
         w.info[ID_AT..ID_AT + 8].copy_from_slice(&id.to_le_bytes());
         id
     } else {
@@ -397,7 +464,7 @@ pub fn write_split_debug_info(
             return Err(Error::TooLarge);
         }
     }
-    if obj.section_count() >= u32::MAX - 12 {
+    if obj.section_count() >= u32::MAX - 13 {
         return Err(Error::Object(hod_obj::Error::TooLarge(hod_obj::Limit::Sections)));
     }
 
@@ -441,7 +508,8 @@ pub fn write_split_debug_info(
     obj.reserve(0, 0, skeleton.relocs.len() + w.addrs.len(), 0);
     for r in skeleton.relocs.iter().chain(w.relocs.iter().filter(|r| r.sec == Sec::Addr)) {
         let (symbol, wide) = match r.target {
-            Target::Abbrev => (sym_abbrev, false),
+            // `Loclists`: only in the split unit (WP-162).
+            Target::Abbrev | Target::Loclists => (sym_abbrev, false),
             Target::Str => (sym_str, false),
             Target::StrOffsets => (sym_str_offsets, false),
             Target::Line => (sym_line, false),
@@ -482,6 +550,10 @@ pub fn write_split_debug_info(
         if !rnglists.is_empty() {
             let s = dwo.add_section(b".debug_rnglists.dwo", kind, 1)?;
             dwo.append_owned(s, rnglists);
+        }
+        if !loclists.is_empty() {
+            let s = dwo.add_section(b".debug_loclists.dwo", kind, 1)?; // WP-162
+            dwo.append_owned(s, loclists);
         }
     }
     if split == SplitDwarf::Separate {

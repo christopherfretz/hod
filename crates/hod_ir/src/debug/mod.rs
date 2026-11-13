@@ -117,6 +117,10 @@ const LOC_KIND: u16 = 3;
 /// Flag: the location has an atom in the side table (WP-149).
 const LOC_ATOM: u16 = 4;
 
+/// The mask bit of a subprogram's `keyInstructions`, its 17th field
+/// (`DiKind::Subprogram.fields()[16]`).
+const SUBPROGRAM_KEY_INSTRUCTIONS: u32 = 1 << 16;
+
 impl LocRec {
     #[inline]
     fn kind(&self) -> u16 {
@@ -505,7 +509,8 @@ impl<L: Layering> DebugInfo<L> {
         }
         let at = head.at as usize;
         let mask = self.cells[at].raw();
-        let mut dec = Dec { cells: self.cells.from(at), at: 1, strings: self.strings.as_deref() };
+        let cells = self.cells.from(at).get(1..).unwrap_or(&[]);
+        let mut dec = Dec { cells, strings: self.strings.as_deref() };
         DiNode::decode(kind, head.tag, mask, &mut dec)
     }
 
@@ -525,6 +530,21 @@ impl<L: Layering> DebugInfo<L> {
         // `scope` is the first field of both records.
         let at = head.at as usize;
         (self.cells[at].raw() & 1 != 0).then(|| self.cells[at + 1])
+    }
+
+    /// Whether node `id` is a subprogram with `keyInstructions`
+    /// (WP-149): what `matches!(self.node(id), DiNode::Subprogram(s) if
+    /// s.key_instructions)` says, from two array reads instead of a
+    /// decode. A `bool` field is its bit in the record's mask and no
+    /// word.
+    ///
+    /// # Panics
+    /// If `id` is not a node of this table.
+    #[inline]
+    pub fn has_key_instructions(&self, id: DiId) -> bool {
+        let head = self.heads[id.index()];
+        DiKind::from_code(head.kind) == DiKind::Subprogram
+            && self.cells[head.at as usize].raw() & SUBPROGRAM_KEY_INSTRUCTIONS != 0
     }
 
     /// The subprogram the local scope `scope` belongs to: `scope` itself
@@ -595,7 +615,7 @@ impl<L: Layering> DebugInfo<L> {
     /// `UndefinedDebugNode` if the scope or the inlined-at location does
     /// not exist; `TableFull`.
     pub fn loc(&mut self, loc: DiLocation) -> IrResult<LocId> {
-        self.loc_in_atom(loc, DiAtom::NONE)
+        self.loc_without_atom(loc)
     }
 
     /// [`DebugInfo::loc`] of a location with an atom (WP-149): LLVM's
@@ -607,6 +627,9 @@ impl<L: Layering> DebugInfo<L> {
     /// As [`DebugInfo::loc`]; `InvalidDebugInfo` for an atom LLVM does
     /// not store (a group of 2^61 or more, a rank above 7).
     pub fn loc_in_atom(&mut self, loc: DiLocation, atom: DiAtom) -> IrResult<LocId> {
+        if atom == DiAtom::NONE {
+            return self.loc_without_atom(loc);
+        }
         self.check_loc(loc)?;
         check_atom(atom)?;
         let mut hasher = Hasher64::new(0x10c);
@@ -638,6 +661,36 @@ impl<L: Layering> DebugInfo<L> {
         if with {
             self.push_atom(id, atom);
         }
+        Ok(LocId::new(id))
+    }
+
+    /// [`DebugInfo::loc_in_atom`] of [`DiAtom::NONE`]: what `loc` was
+    /// before atoms (WP-149). The record's state is [`LOC_INTERNED`]
+    /// without [`LOC_ATOM`], so a location with an atom never compares
+    /// equal to it and needs no atom compare; the hash is the one
+    /// `loc_in_atom` makes for no atom.
+    #[inline]
+    fn loc_without_atom(&mut self, loc: DiLocation) -> IrResult<LocId> {
+        self.check_loc(loc)?;
+        let mut hasher = Hasher64::new(0x10c);
+        hasher.pair(loc.line, u32::from(loc.column));
+        hasher.pair(loc.scope.raw(), loc.inlined_at.raw());
+        let hash = hasher.finish();
+        let record = LocRec {
+            line: loc.line,
+            scope: loc.scope,
+            inlined_at: loc.inlined_at,
+            column: loc.column,
+            state: LOC_INTERNED,
+        };
+        let interner = self.loc_interner.get_or_insert_with(InternTable::new);
+        let locs = &self.locs;
+        if let Some(found) = interner.find(hash, |id| locs[id as usize] == record) {
+            return Ok(LocId::new(found));
+        }
+        let id = next_id(self.locs.len(), "location")?;
+        interner.insert(hash, id);
+        self.locs.push(record);
         Ok(LocId::new(id))
     }
 
@@ -1207,6 +1260,7 @@ impl<L: Layering> DebugInfo<L> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DiFieldValue;
 
     /// §6.10: the record sizes, and an empty table has allocated
     /// nothing.
@@ -1224,5 +1278,62 @@ mod tests {
             empty.strings.is_none() && empty.interner.is_none() && empty.loc_interner.is_none()
         );
         empty.verify().unwrap();
+    }
+
+    /// WP-170: `has_key_instructions` says what the decoded node says,
+    /// for subprograms with and without the field, with every other
+    /// field set or not, and for a node of another kind.
+    #[test]
+    fn key_instructions_from_the_mask() {
+        let mut debug = <DebugInfo>::default();
+        let mut ids = Vec::new();
+        for key in [false, true] {
+            for full in [false, true] {
+                let mut sp = DiNode::llvm_default(DiKind::Subprogram);
+                if full {
+                    sp.set(b"name", DiFieldValue::Str(b"f")).unwrap();
+                    sp.set(b"line", DiFieldValue::UInt(3)).unwrap();
+                    sp.set(b"virtualIndex", DiFieldValue::UInt(2)).unwrap();
+                }
+                sp.set(b"keyInstructions", DiFieldValue::Bool(key)).unwrap();
+                ids.push(debug.add_distinct(&sp).unwrap());
+            }
+        }
+        let mut ty = DiNode::llvm_default(DiKind::CompositeType);
+        for field in [&b"name"[..], b"identifier"] {
+            ty.set(field, DiFieldValue::Str(b"S")).unwrap();
+        }
+        for field in [&b"line"[..], b"size", b"align", b"offset", b"runtimeLang"] {
+            ty.set(field, DiFieldValue::UInt(8)).unwrap();
+        }
+        ids.push(debug.add(&ty).unwrap());
+        for id in ids {
+            let decoded = matches!(debug.node(id), DiNode::Subprogram(s) if s.key_instructions);
+            assert_eq!(debug.has_key_instructions(id), decoded, "{id:?}");
+        }
+        assert_eq!(DiKind::Subprogram.fields()[16], "keyInstructions");
+    }
+
+    /// WP-170: `loc` (the path without an atom) and `loc_in_atom` share
+    /// one interner: equal locations are one id, a location with an atom
+    /// is another, and `loc` after it still finds the one without.
+    #[test]
+    fn locations_with_and_without_atoms() {
+        let mut debug = <DebugInfo>::default();
+        let sp = debug.add_distinct(&DiNode::llvm_default(DiKind::Subprogram)).unwrap();
+        let at = DiLocation { line: 4, column: 2, scope: sp, inlined_at: LocId::NONE };
+        let plain = debug.loc(at).unwrap();
+        assert_eq!(debug.loc_in_atom(at, DiAtom::NONE).unwrap(), plain);
+        let atom = DiAtom { group: 1, rank: 1 };
+        let with = debug.loc_in_atom(at, atom).unwrap();
+        assert_ne!(with, plain);
+        assert_eq!(debug.loc_in_atom(at, atom).unwrap(), with);
+        assert_eq!(debug.loc(at).unwrap(), plain);
+        assert_eq!(debug.atom(plain), DiAtom::NONE);
+        assert_eq!(debug.atom(with), atom);
+        let other = debug.loc(DiLocation { line: 5, ..at }).unwrap();
+        assert_ne!(other, plain);
+        assert!(debug.loc(DiLocation { scope: DiId::new(99), ..at }).is_err());
+        debug.verify().unwrap();
     }
 }

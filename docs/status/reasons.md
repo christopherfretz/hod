@@ -8,42 +8,33 @@ Every module of the captured corpus (`docs/status/corpus.md`), given to hod in s
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `(compiled)` | 3330 | 3291 |
-| `inst:callbr` | 3 | 3 |
+| `(compiled)` | 3339 | 3300 |
 | `module:asm` | 3 | 3 |
-| `call:inline-asm` | 2 | 2 |
-| `a64:inline-asm-operand` | 1 | 1 |
-| `a64:vector-wide-element` | 1 | 1 |
-| `abi:bfloat-array` | 1 | 1 |
-| `cc:preserve_allcc` | 1 | 1 |
-| `const-expr:sub` | 1 | 1 |
+| `a64:inline-asm-form` | 1 | 1 |
+| `cc:79` | 1 | 1 |
+| `debug:call-sites` | 1 | 1 |
 | `debug:dwarf-version` | 1 | 1 |
-| `debug:subprogram-attribute` | 1 | 1 |
-| `metadata-arg:llvm.read_volatile_register.i64` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.bfcvtn` | 0 | 1 |
-| `intrinsic:llvm.aarch64.neon.bfdot` | 1 | 0 |
+| `intrinsic:llvm.aarch64.ldxr.p0` | 1 | 1 |
 | all | 3347 | 3308 |
 
 ## Every reason (census)
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `call:inline-asm` | 3 | 3 |
-| `inst:callbr` | 3 | 3 |
 | `module:asm` | 3 | 3 |
-| `a64:inline-asm-operand` | 1 | 1 |
-| `a64:vector-wide-element` | 1 | 1 |
-| `abi:bfloat-array` | 1 | 1 |
+| `a64:inline-asm-form` | 1 | 1 |
+| `attr:elementtype` | 1 | 1 |
 | `cc:79` | 1 | 1 |
 | `cc:aarch64_vector_pcs` | 1 | 1 |
-| `cc:preserve_allcc` | 1 | 1 |
-| `const-expr:sub` | 1 | 1 |
+| `debug:call-sites` | 1 | 1 |
 | `debug:dwarf-version` | 1 | 1 |
-| `debug:subprogram-attribute` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.bfdot` | 1 | 1 |
-| `metadata-arg:llvm.read_volatile_register.i64` | 1 | 1 |
-| `intrinsic:llvm.aarch64.neon.bfcvtn` | 0 | 1 |
-| `intrinsic:llvm.aarch64.neon.bfcvtn2` | 0 | 1 |
+| `intrinsic:llvm.aarch64.clrex` | 1 | 1 |
+| `intrinsic:llvm.aarch64.ldaxp` | 1 | 1 |
+| `intrinsic:llvm.aarch64.ldaxr.p0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.ldxr.p0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.stlxp` | 1 | 1 |
+| `intrinsic:llvm.aarch64.stlxr.p0` | 1 | 1 |
+| `intrinsic:llvm.aarch64.stxr.p0` | 1 | 1 |
 
 ## The routes agree
 
@@ -65,13 +56,13 @@ Coverage-log field 7 (from the process's start to the decline) of the first-refu
 
 | LLVM | route | median | p99 | worst | share of `llc`: median | p99 | worst |
 |---|---|---:|---:|---:|---:|---:|---:|
-| 22 | text | 8887 | 39869 | 267552 | 17.9% | 62.8% | 424.8% |
-| 22 | bitcode, native | 7938 | 32497 | 196549 | 16.1% | 58.0% | 140.4% |
-| 22 | bitcode, `llvm-dis` | 46020 | 125070 | 684591 | 93.4% | 210.2% | 800.5% |
-| 22 | `llc -O0` | 49324 | 127052 | 4332221 | | | |
-| 22 | the `convert` of the `llvm-dis` route | 38256 | 102372 | 443075 | | | |
-| 19 | text | 7467 | 27678 | 244183 | 17.3% | 49.9% | 312.0% |
-| 19 | bitcode, native | 6622 | 26486 | 160450 | 15.5% | 45.0% | 139.9% |
-| 19 | bitcode, `llvm-dis` | 40262 | 95811 | 729293 | 92.2% | 187.5% | 943.5% |
-| 19 | `llc -O0` | 40045 | 93855 | 3617986 | | | |
-| 19 | the `convert` of the `llvm-dis` route | 33648 | 78494 | 518741 | | | |
+| 22 | text | 6251 | 24635 | 213224 | 16.3% | 56.3% | 187.2% |
+| 22 | bitcode, native | 5571 | 24048 | 161979 | 14.7% | 44.2% | 233.6% |
+| 22 | bitcode, `llvm-dis` | 32753 | 107599 | 576909 | 87.4% | 187.1% | 334.4% |
+| 22 | `llc -O0` | 38172 | 105960 | 3146971 | | | |
+| 22 | the `convert` of the `llvm-dis` route | 27394 | 83742 | 383215 | | | |
+| 19 | text | 5244 | 18279 | 256130 | 15.4% | 46.0% | 412.1% |
+| 19 | bitcode, native | 4752 | 17156 | 222719 | 14.0% | 44.7% | 348.4% |
+| 19 | bitcode, `llvm-dis` | 29210 | 71226 | 729147 | 85.3% | 168.4% | 431.2% |
+| 19 | `llc -O0` | 37159 | 81869 | 3452696 | | | |
+| 19 | the `convert` of the `llvm-dis` route | 24792 | 58996 | 511616 | | | |

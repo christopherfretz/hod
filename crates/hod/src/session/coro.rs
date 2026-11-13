@@ -8,17 +8,20 @@
 //! A front end hands hod a pre-opt module in place of `opt` + `llc` and
 //! runs those itself when hod declines (status 2 in strict mode), so a
 //! decline must cost next to nothing: every coroutine refusal is decided
-//! here, by the module level (a target that compiles no coroutine body:
-//! before any body is read) or by the body as it arrives (the plan's
+//! here, by the module level (a matrix without `presplitcoroutine`, or a
+//! target that compiles no coroutine body: before any body is read) or by the body as it arrives (the plan's
 //! `coro:*` names and the code generator's own, checked by the same
 //! rules), never by code generation half-way through the object. Code
 //! generation keeps its checks as the backstop; `tests/coro_preopt.rs`
-//! holds the two to the same names.
+//! holds the two to the same names. The one exception is a handle
+//! operation's: `a64:coro-promise` / `x64:coro-promise` (a
+//! `llvm.coro.promise` alignment the target does not lower, in any
+//! function) are left to code generation.
 
 use hod_cg::Target;
 use hod_ir::{
-    Arch, BlockId, Body, CallConv, FnAttrs, FnAttrsId, Inst, Intrinsic, Module, SlotId, Support,
-    SymbolKind, ValueKind,
+    Arch, BlockId, Body, CallConv, FnAttrs, FnAttrsId, Inst, InstKind, Intrinsic, Module, SlotId,
+    Support, SymbolKind, TypeId, TypeKind, ValueKind,
 };
 use hod_xform::coro::CoroPlan;
 
@@ -63,7 +66,7 @@ fn has_presplit(module: &Module) -> bool {
 /// writes it before `coro-split`) is declined as `attr:presplitcoroutine`
 /// when `support` does not accept the attribute on its target, and as
 /// `coro:target` when the target's code generator compiles no coroutine
-/// body.
+/// body (no shipped target today: the backstop for a new one).
 pub(crate) fn module_refusal(
     module: &Module,
     support: &Support,
@@ -119,6 +122,11 @@ fn generator_refusal(module: &Module, body: &Body, plan: &CoroPlan) -> Option<&'
             return Some(hod_a64::coro_body::PRESERVE_CC);
         }
     }
+    // `hod_x64::coro_body::enter`: `lock cmpxchg16b` writes rbx, the
+    // frame base.
+    if arch == Arch::X86_64 && has_wide_atomic(module, body) {
+        return Some(hod_x64::coro_body::WIDE_ATOMIC);
+    }
     // `FnCx::coro_slot_place`: a slot left on the machine stack, aligned
     // above the stack alignment.
     let align = stack_align(arch);
@@ -130,6 +138,21 @@ fn generator_refusal(module: &Module, body: &Body, plan: &CoroPlan) -> Option<&'
         return Some(hod_cg::OVERALIGNED_STACK);
     }
     shares_begin_block(body, plan).then_some(hod_cg::BEGIN_SHARED_BLOCK)
+}
+
+/// `hod_x64::coro_body::has_wide_atomic`: an atomic access wider than 64
+/// bits.
+fn has_wide_atomic(module: &Module, body: &Body) -> bool {
+    let wide = |ty: TypeId| matches!(module.types.kind(ty), TypeKind::Int(bits) if bits > 64);
+    body.insts().any(|inst| match inst.kind() {
+        InstKind::Load { mem, .. } => mem.ordering().is_some() && wide(inst.ty()),
+        InstKind::Store { value, mem, .. } => {
+            mem.ordering().is_some() && wide(body.value_type(module, value))
+        }
+        InstKind::CmpXchg { expected, .. } => wide(body.value_type(module, expected)),
+        InstKind::AtomicRmw { value, .. } => wide(body.value_type(module, value)),
+        _ => false,
+    })
 }
 
 /// `hod_cg::coro_body::pre_begin`'s refusal: a block that runs both

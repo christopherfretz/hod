@@ -668,18 +668,25 @@ mode; the fallback in hybrid mode). The pre-opt names are:
 - for a coroutine body, the coroutine plan's refusals (`coro:*`,
   `spec/xform.md`) and code generation's (`coro:begin-shared-block`,
   `coro:overaligned-stack-slot`, `coro:outside-coroutine`,
-  `a64:coro-preserve-cc`; `spec/codegen.md` §7.6);
-- on a target whose matrix does not accept `presplitcoroutine` (x86-64
-  until WP-137), `attr:presplitcoroutine`; on one whose code generator
-  compiles no coroutine body, `coro:target`; the handle operations
-  outside a coroutine are refused there by their intrinsic rows;
+  `a64:coro-preserve-cc`, `x64:coro-wide-atomic`; `spec/codegen.md`
+  §7.6), all decided early (below);
+- for `llvm.coro.promise` whose alignment is not a constant power of
+  two the target lowers, in any function, `a64:coro-promise` /
+  `x64:coro-promise`: decided by code generation, not early (a handle
+  operation, in any function, not a coroutine body's condition);
+- with a matrix that does not accept `presplitcoroutine` (a `--support`
+  file that takes the row off), `attr:presplitcoroutine`; with a code
+  generator that compiles no coroutine body, `coro:target`: no shipped
+  target has none, so the name is not reachable today; it is the
+  backstop for a new target, which declines coroutine modules by it
+  until its bodies land;
 - anything any module may be declined by ("Reasons").
 
 **Declined early.** A front end runs `opt` + `llc` after hod declines,
 so a decline must cost next to nothing. hod decides every coroutine
 refusal before code generation starts: a module with a
-`presplitcoroutine` attribute set on a target that compiles no coroutine
-body is declined by its module level, before any body is read; every
+`presplitcoroutine` attribute set that its matrix or target does not
+accept is declined by its module level, before any body is read; every
 other coroutine refusal is decided as its body arrives (the plan, then
 code generation's own conditions, checked by the same rules: code
 generation keeps them as a backstop). A declined module costs reading
@@ -799,7 +806,7 @@ that applies is the reason:
 | a reader's reason | reading the module level failed: the table below |
 | `unsupported-target` | `-mtriple` names another target than the module's (retargeting is not implemented) |
 | a `classify` name | `hod_ir::classify`'s module pass refused the module (`module:pic`, `global:function-definition`, `debug:module-flags`, ...; `docs/status/support.md`) |
-| `attr:presplitcoroutine`, `coro:target` | the module has a `presplitcoroutine` attribute set and its target does not compile coroutine bodies (the matrix, then the code generator: "Pre-opt modules"), before any body is read |
+| `attr:presplitcoroutine`, `coro:target` | the module has a `presplitcoroutine` attribute set and the matrix does not accept it, or the target's code generator compiles no coroutine body (no shipped target today: the backstop for a new one); "Pre-opt modules"; decided before any body is read |
 | a body's reason | for each body in the module's order: the reader's error (the table below), the body reader's own refusal (`call:forwarded-varargs`, ...), `classify`'s body pass, `Body::verify` (`malformed-input`), then, in a module with coroutines, the coroutine refusals ("Pre-opt modules") |
 | `option:relocation-model`, `option:split-dwarf-output` | an option code generation cannot honour ("The back half") |
 | `attr:target-feature-<class>` | an `-mattr` item or a function's `target-features` item hod's code is not correct under (`spec/codegen.md` §5.5.2); the item is the detail |
@@ -1033,7 +1040,7 @@ inherits the variable with the rest of the environment; `llc` ignores it.
 | Behaviour | `driver.rs`: `success_writes_the_object`, `options_reach_the_code_generator`, `output_names_follow_llc`, `io_errors` |
 | Fallback protocol | `cli.rs`: `fallback_receives_original_arguments_and_identical_input`, `file_input`, `hod_is_not_its_own_fallback`, `real_llc_fallback_text`, `real_llc_fallback_bitcode`, and the "Bitcode conversion" tests for the original bytes after a conversion; `driver.rs`: `fallback_loop_is_refused` |
 | Strict mode | `cli.rs`: `strict_mode_fails_with_the_construct_named`; `crates/hod_cli/tests/kiln_e2e.rs` |
-| Pre-opt modules | `crates/hod/tests/inlining.rs` (always-inline, WP-021); `crates/hod/tests/coro_preopt.rs`: `a_pre_opt_coroutine_is_compiled`, `every_coroutine_refusal_is_decided_before_code_generation` (each name, no `bodies` phase, the same name from code generation alone), `a_target_without_coroutines_declines_at_the_module_level`, `modules_without_coroutines_are_not_affected`; `crates/hod_cli/tests/preopt_coro.rs`: `strict_mode_builds_or_declines_by_name`, `hybrid_mode_falls_back_for_the_declined_module_only`, `a_declined_module_becomes_an_object_through_opt_and_llc`; the corpus and libc++ census of `spec/landed/codegen/WP-109.md` |
+| Pre-opt modules | `crates/hod/tests/inlining.rs` (always-inline, WP-021); `crates/hod/tests/coro_preopt.rs`: `a_pre_opt_coroutine_is_compiled`, `every_coroutine_refusal_is_decided_before_code_generation` (each name, no `bodies` phase, the same name from code generation alone), `a_matrix_without_coroutines_declines_at_the_module_level` (the row taken off, both targets), `modules_without_coroutines_are_not_affected`; `crates/hod_cli/tests/preopt_coro.rs`: `strict_mode_builds_or_declines_by_name`, `hybrid_mode_falls_back_for_the_declined_module_only`, `a_declined_module_becomes_an_object_through_opt_and_llc`; the corpus and libc++ census of `spec/landed/codegen/WP-109.md` |
 | Reasons | `cli.rs`: `reasons_reach_the_log`; `driver.rs`: `malformed_input_and_invalid_options`, `internal_errors_are_not_declines` |
 | The back half, Threads | `crates/hod/tests/back.rs`: `object_is_the_same_for_every_thread_count` (1, 2, 3, 8 threads), `tokens_are_asked_for_large_modules_and_given_back`, `the_first_refusal_in_module_order_wins`, `target_features`, `x86_64_is_a_stable_refusal`, `break_even` (ignored: the measurement); `crates/hod/tests/read_threads.rs`: `the_reading_policy`, `reading_and_code_generation_share_one_request`; `crates/hod/src/back.rs`: `threads_wanted`, `options_for_code_generation`, `errors_of_the_back_half`; `crates/hod_cli/src/jobs.rs`: `makeflags_forms`, `where_threads_come_from`, `tokens_are_taken_without_waiting_and_given_back`; `crates/hod_a64/src/features.rs` (§5.5.2); `kiln_e2e.rs`: kiln programs (calls, exceptions, containers, coroutines) through hod or its fallback, each linked under every linker and run against the LLVM build, one pinned to hod (integer code, strict) and one to the fallback (`module:asm`); `cargo xtask corpus verify --strict` (executing the corpus); `tests/ir/exit_*.ll` |
 | Exit status | `cli.rs`: `fallback_exit_status_propagates`; `driver.rs`: `unsupported_without_fallback`, `malformed_input_and_invalid_options`, `io_errors` |

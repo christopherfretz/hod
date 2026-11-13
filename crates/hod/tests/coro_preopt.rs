@@ -9,9 +9,11 @@
 //!   judging and starts code generation), and the name is the one code
 //!   generation itself gives the same body (`hod::generate`, which skips
 //!   the session), so the early check and the backstop agree.
-//! - A target without coroutine bodies declines the module at its module
-//!   level, before any body is read: a body that does not even parse
-//!   after it is never seen.
+//! - Both targets compile pre-opt coroutines (AArch64: WP-106; x86-64:
+//!   WP-137).
+//! - A matrix without `presplitcoroutine` declines the module at its
+//!   module level, before any body is read: a body that does not even
+//!   parse after it is never seen.
 
 use hod::{CompileError, OptLevel, Options, OutputKind, RelocModel, Report, Settings};
 use hod_ir::{AARCH64_LINUX_DATA_LAYOUT, Arch, Support, X86_64_LINUX_DATA_LAYOUT};
@@ -50,6 +52,11 @@ declare void @use(ptr)
 /// stack slot aligned to `{align}` that no suspend crosses (the shape of
 /// `hod_a64/tests/coro_body.rs`).
 fn coroutine(cc: &str, align: u32) -> String {
+    coroutine_with(cc, align, "  call void @use(ptr null)")
+}
+
+/// [`coroutine`] with `extra` before its suspend.
+fn coroutine_with(cc: &str, align: u32, extra: &str) -> String {
     format!(
         r"{DECLS}
 define {cc} ptr @co(i32 %n) presplitcoroutine {{
@@ -61,7 +68,7 @@ entry:
   %h = call ptr @llvm.coro.begin(token %id, ptr %mem)
   store i32 %n, ptr %slot
   %v = load i32, ptr %slot
-  call void @use(ptr null)
+{extra}
   %save = call token @llvm.coro.save(ptr null)
   %s = call i8 @llvm.coro.suspend(token %save, i1 true)
   switch i8 %s, label %out [
@@ -154,10 +161,12 @@ fn generated(text: &str) -> Result<(), String> {
 // the module as the front end wrote it, through every phase.
 #[test]
 fn a_pre_opt_coroutine_is_compiled() {
-    let text = format!("{}{}", header(Arch::Aarch64), coroutine("", 4));
-    let (result, report) = judged(&text, &Settings::default());
-    assert!(result.is_ok(), "{result:?}");
-    assert!(ended(&report, "bodies") && ended(&report, "object"), "{:?}", report.phases);
+    for arch in [Arch::Aarch64, Arch::X86_64] {
+        let text = format!("{}{}", header(arch), coroutine("", 4));
+        let (result, report) = judged(&text, &Settings::default());
+        assert!(result.is_ok(), "{arch:?}: {result:?}");
+        assert!(ended(&report, "bodies") && ended(&report, "object"), "{:?}", report.phases);
+    }
 }
 
 // spec/cli.md "Pre-opt modules", "Declined early": each coroutine refusal
@@ -166,6 +175,8 @@ fn a_pre_opt_coroutine_is_compiled() {
 #[test]
 fn every_coroutine_refusal_is_decided_before_code_generation() {
     let a64 = header(Arch::Aarch64);
+    let x64 = header(Arch::X86_64);
+    let wide = "  %w = load atomic i128, ptr null seq_cst, align 16";
     let outside = "declare token @llvm.coro.id(i32, ptr, ptr, ptr)\n\
                    define void @f() {\n  %t = call token @llvm.coro.id(i32 0, ptr null, ptr null, ptr null)\n  ret void\n}\n";
     let cases = [
@@ -174,6 +185,10 @@ fn every_coroutine_refusal_is_decided_before_code_generation() {
         (format!("{a64}{}", coroutine("", 32)), "coro:overaligned-stack-slot"),
         (format!("{a64}{DECLS}{SHARED_BLOCK}"), "coro:begin-shared-block"),
         (format!("{a64}{outside}"), "coro:outside-coroutine"),
+        (format!("{x64}{}", coroutine_with("", 4, wide)), "x64:coro-wide-atomic"),
+        (format!("{x64}{}", coroutine("", 32)), "coro:overaligned-stack-slot"),
+        (format!("{x64}{DECLS}{SHARED_BLOCK}"), "coro:begin-shared-block"),
+        (format!("{x64}{outside}"), "coro:outside-coroutine"),
         // Design 0005's post-sync: the plan's refusal, in both dialects
         // (code generation runs the same plan).
         (
@@ -193,29 +208,22 @@ fn every_coroutine_refusal_is_decided_before_code_generation() {
     }
 }
 
-// spec/cli.md "Pre-opt modules", "Declined early": on a target whose
-// matrix does not accept `presplitcoroutine` (x86-64 today), or whose code
-// generator compiles no coroutine body, the module is declined by its
-// module level: the body after it, which does not parse, is never read.
+// spec/cli.md "Pre-opt modules", "Declined early": with a matrix that does
+// not accept `presplitcoroutine`, the module is declined by its module
+// level: the body after it, which does not parse, is never read. (The
+// `coro:target` branch, a code generator without coroutine bodies, has no
+// shipped target: it is the backstop for a new one.)
 #[test]
-fn a_target_without_coroutines_declines_at_the_module_level() {
+fn a_matrix_without_coroutines_declines_at_the_module_level() {
     let broken = "define void @g() {\n  this is not a body\n}\n";
-    let text = format!("{}{}{broken}", header(Arch::X86_64), coroutine("", 4));
-    let (result, report) = judged(&text, &Settings::default());
-    assert_eq!(construct(&result, &text), "attr:presplitcoroutine");
-    assert!(ended(&report, "classify") && !ended(&report, "bodies"), "{:?}", report.phases);
-
-    // The attribute accepted by the matrix, the code generator still has
-    // no coroutine bodies: `coro:target`, as code generation says it.
-    let support = Support::shipped(Arch::X86_64).clone().with("attr:presplitcoroutine");
-    let settings = Settings { support, ..Settings::default() };
-    let (result, report) = judged(&text, &settings);
-    assert_eq!(construct(&result, &text), "coro:target");
-    assert!(!ended(&report, "bodies"));
-
-    // Without the broken body the AArch64 module compiles.
-    let text = format!("{}{}", header(Arch::Aarch64), coroutine("", 4));
-    assert!(judged(&text, &Settings::default()).0.is_ok());
+    for arch in [Arch::Aarch64, Arch::X86_64] {
+        let text = format!("{}{}{broken}", header(arch), coroutine("", 4));
+        let support = Support::shipped(arch).clone().without("attr:presplitcoroutine");
+        let settings = Settings { support, ..Settings::default() };
+        let (result, report) = judged(&text, &settings);
+        assert_eq!(construct(&result, &text), "attr:presplitcoroutine", "{arch:?}");
+        assert!(ended(&report, "classify") && !ended(&report, "bodies"), "{:?}", report.phases);
+    }
 }
 
 // spec/cli.md "Pre-opt modules": the coroutine checks look only at

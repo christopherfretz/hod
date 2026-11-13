@@ -1013,7 +1013,8 @@ pub const DEBUG_INVALID: &str = "debug:invalid";
 ///
 /// # Errors
 /// As `DiNode::set`.
-#[inline]
+#[allow(clippy::inline_always)] // Per node; LLVM declined `#[inline]`.
+#[inline(always)]
 pub fn di_node<'s>(
     kind: Option<DiKind>,
     name: &'s [u8],
@@ -1033,7 +1034,8 @@ pub fn di_node<'s>(
 ///
 /// # Errors
 /// As `DebugInfo::define` and `define_distinct`.
-#[inline]
+#[allow(clippy::inline_always)] // Per node; LLVM declined `#[inline]`.
+#[inline(always)]
 pub fn define_di_node<L: Layering>(
     debug: &mut DebugInfo<L>,
     id: DiId,
@@ -1084,6 +1086,8 @@ pub fn unsupported_field_construct(kind: &[u8], field: &[u8]) -> Cow<'static, st
 /// A field of `kind` that `hod_ir` cannot represent: recorded (against no
 /// symbol) unless its value is the default (`0`, `false`, `null`, `""`,
 /// `!{}`, or the field's own default), which LLVM writes as "no field".
+#[allow(clippy::inline_always)] // Per node; LLVM declined `#[inline]`.
+#[inline(always)]
 pub fn unsupported_field<L: Layering>(
     module: &mut Module<L>,
     kind: &[u8],
@@ -1221,7 +1225,8 @@ impl DebugRecordKind {
 
     /// The record named `name` (`#dbg_declare`, …). Any other is
     /// [`unsupported_record_construct`] or malformed.
-    #[inline]
+    #[allow(clippy::inline_always)] // Per instruction; LLVM declined `#[inline]`.
+    #[inline(always)]
     pub fn of_record(name: &[u8]) -> Option<DebugRecordKind> {
         match name {
             b"#dbg_declare" => Some(DebugRecordKind::Declare),
@@ -1295,7 +1300,8 @@ impl DebugRecord {
 ///
 /// # Errors
 /// As `FunctionBuilder::dbg_declare` and the other record builders.
-#[inline]
+#[allow(clippy::inline_always)] // Per instruction; LLVM declined `#[inline]`.
+#[inline(always)]
 pub fn emit_debug_record(
     b: &mut FunctionBuilder,
     record: &DebugRecord,

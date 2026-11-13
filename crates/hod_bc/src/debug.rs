@@ -1055,6 +1055,8 @@ impl<'x, 'a, L: Layering> Dx<'x, 'a, L> {
     }
 
     /// A field of `kind` hod cannot represent: recorded unless `default`.
+    #[allow(clippy::inline_always)] // Per field; LLVM declined to inline it.
+    #[inline(always)]
     fn unsupported(&mut self, kind: &str, field: &str, default: bool) {
         kit::unsupported_field(self.module, kind.as_bytes(), field.as_bytes(), default);
     }

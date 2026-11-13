@@ -87,10 +87,12 @@ fn corpus_directives() -> Vec<(PathBuf, irdiff::directives::Expectations)> {
         .collect()
 }
 
-/// The number of tests of the seed corpus in LLVM `major`'s dialect: all
-/// but those of another dialect (`dialect`).
-fn dialect_size(major: u32) -> usize {
-    corpus_directives().iter().filter(|(_, expect)| expect.in_dialect(major)).count()
+/// The number of tests of the seed corpus a run for `arch` with LLVM
+/// `major` does not skip: all but those of another dialect (`dialect`)
+/// or for another target (`target`; `x86_fp80.ll` is for x86-64 only).
+fn runnable(major: u32, arch: Arch) -> usize {
+    let directives = corpus_directives();
+    directives.iter().filter(|(_, expect)| expect.in_dialect(major) && expect.runs_on(arch)).count()
 }
 
 // spec/harness.md "Seed corpus": a test in one LLVM's dialect has its twin
@@ -140,15 +142,16 @@ fn the_seed_corpus_is_green() {
         assert_eq!(report.exit_status(), 0, "LLVM {major}:\n{all}");
         assert!(report.records.iter().all(|record| record.llvm == Some(major)), "{all}");
         // Every test is valid on both targets and both LLVMs, or in one
-        // LLVM's dialect, so on a machine with the tools only the tests of
-        // the other dialect are skipped, and every other test has a record
-        // per linker.
+        // LLVM's dialect, or for one target, so on a machine with the
+        // tools only the tests of the other dialect or target are skipped,
+        // and every other test has a record per linker.
         let linkers = all.split("; linkers ").nth(1).unwrap().split(';').next().unwrap();
         let linkers = linkers.split(' ').count();
         assert!(corpus_size() >= 20 && report.tests() == corpus_size(), "{all}");
-        let skipped = corpus_size() - dialect_size(major);
+        let host = Arch::host().unwrap();
+        let skipped = corpus_size() - runnable(major, host);
         assert_eq!(report.count(Outcome::Skip), skipped, "{all}");
-        assert_eq!(report.records.len(), dialect_size(major) * linkers + skipped, "{all}");
+        assert_eq!(report.records.len(), runnable(major, host) * linkers + skipped, "{all}");
         for record in &report.records {
             assert!(
                 matches!(
@@ -181,33 +184,74 @@ fn the_seed_corpus_passes_in_hybrid_mode() {
     let report = irdiff::run(&config).unwrap();
     let all = report.summary(true);
     assert_eq!(report.exit_status(), 0, "{all}");
-    assert_eq!(report.count(Outcome::Pass), report.records.len(), "{all}");
+    // Every test this run admits passes; the others (another dialect, or
+    // `target: x86_64`) are skipped.
+    let skipped = corpus_size() - runnable(majors[0], Arch::host().unwrap());
+    assert_eq!(report.count(Outcome::Skip), skipped, "{all}");
+    assert_eq!(report.count(Outcome::Pass), report.records.len() - skipped, "{all}");
+    let ran = report.records.iter().filter(|r| r.outcome != Outcome::Skip);
     assert!(
-        report.records.iter().all(|r| matches!(r.built_by, BuiltBy::Hod | BuiltBy::Fallback)),
+        ran.into_iter().all(|r| matches!(r.built_by, BuiltBy::Hod | BuiltBy::Fallback)),
         "{all}"
     );
     assert!(all.contains("irdiff: coverage: hod built "), "{all}");
 }
 
-// "Cross targets": for the architecture that is not this machine's, both
-// compilers build every test's object and nothing is linked or run.
+/// Whether the other architecture's programs can be run here: its
+/// emulator, cross driver and system root are found
+/// (`spec/harness.md` "Cross runs").
+fn emulated() -> bool {
+    let search = Search::from_env();
+    let target = tools::target_of(other_arch());
+    let found = tools::find_emulator(other_arch(), &search).is_some()
+        && tools::find_driver_for(other_arch(), &search).is_some()
+        && target.sysroot().is_dir();
+    assert!(
+        found || !hod_testutil::tools_required(),
+        "required tools are missing (HOD_REQUIRE_TOOLS=1): {}'s emulator",
+        target.name()
+    );
+    found
+}
+
+// "Cross runs": for the architecture that is not this machine's, with
+// LLVM 22 and with LLVM 19, the oracle's program of every test runs under
+// the emulator with every linker and behaves as the directives say (hod,
+// with no code generator for it yet, declines). Without the emulator,
+// "Cross targets": both compilers build the objects and nothing is
+// linked or run.
 #[test]
-fn the_seed_corpus_builds_for_the_other_target() {
+fn the_seed_corpus_runs_for_the_other_target() {
     let Some(majors) = installed() else { return };
+    let emulated = emulated();
     let scratch = Scratch::new("irdiff-cross");
+    let other = other_arch();
     for major in majors {
         let mut config = config(&scratch);
         config.hod = Some(workspace_hod());
         config.llvm = Some(major.to_string());
-        config.target = Some(other_arch());
+        config.target = Some(other);
         let report = irdiff::run(&config).unwrap();
         let all = report.summary(true);
         assert_eq!(report.exit_status(), 0, "LLVM {major}:\n{all}");
-        assert_eq!(report.records.len(), corpus_size(), "{all}");
-        assert_eq!(report.count(Outcome::Skip), corpus_size() - dialect_size(major), "{all}");
-        assert!(report.records.iter().all(|record| record.linker.is_none()), "{all}");
-        assert!(report.records.iter().all(|r| r.target == other_arch().triple()), "{all}");
         assert!(report.count(Outcome::Error) + report.count(Outcome::Fail) == 0, "{all}");
+        assert!(report.records.iter().all(|r| r.target == other.triple()), "{all}");
+        let skipped = corpus_size() - runnable(major, other);
+        assert_eq!(report.count(Outcome::Skip), skipped, "{all}");
+        if !emulated {
+            assert_eq!(report.records.len(), corpus_size(), "{all}");
+            assert!(report.records.iter().all(|record| record.linker.is_none()), "{all}");
+            continue;
+        }
+        assert!(all.contains("(emulated: "), "{all}");
+        let linkers = all.split("; linkers ").nth(1).unwrap().split(';').next().unwrap();
+        let linkers: Vec<&str> = linkers.split(' ').collect();
+        assert!(linkers.len() >= 2, "{all}");
+        assert_eq!(report.records.len(), runnable(major, other) * linkers.len() + skipped, "{all}");
+        for record in report.records.iter().filter(|r| r.outcome != Outcome::Skip) {
+            assert!(record.linker.as_deref().is_some_and(|l| linkers.contains(&l)), "{all}");
+            assert!(record.llvm == Some(major), "{all}");
+        }
     }
 }
 

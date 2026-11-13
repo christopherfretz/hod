@@ -481,7 +481,7 @@ impl UnitPlan<'_> {
         // type, so which record is which instance does not matter.
         let mut tail: Vec<(u32, u32)> = self.locals[start..]
             .iter()
-            .filter(|l| matches!(l.what, LocalWhat::Var { .. }))
+            .filter(|l| matches!(l.what, LocalWhat::Var { .. } | LocalWhat::CoroVar { .. }))
             .map(|l| (self.dies[l.die as usize].node.raw(), l.die))
             .collect();
         tail.sort_unstable();

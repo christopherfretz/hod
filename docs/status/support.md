@@ -94,7 +94,7 @@ Debug information.
 | `debug:module-flags` | supported | not-implemented | `Dwarf Version` or `Debug Info Version` is set (WP-087) |
 | `debug:dwarf-version` | not-implemented | not-implemented | T-DW. a compile unit with debug information and a `Dwarf Version` other than 5 (absent is LLVM's 4): `hod_dwarf` writes DWARF 5 only |
 | `debug:subprogram` | supported | not-implemented | a function with a body and a `DISubprogram` (WP-087) |
-| `debug:slot-variables` | supported | not-implemented | a stack slot that is a source variable (WP-087) |
+| `debug:slot-variables` | supported | not-implemented | a stack slot that is a source variable (WP-087); in a coroutine body, on the frame word (WP-108, `spec/dwarf.md` §6.16) |
 | `debug:locations` | supported | not-implemented | a body whose instructions carry source locations (WP-087) |
 
 ## `global`
@@ -259,7 +259,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:ssp` | not-implemented | not-implemented | spec/codegen.md §13. open question: accept and ignore, or implement |
 | `attr:sspreq` | not-implemented | not-implemented | spec/codegen.md §13 |
 | `attr:sspstrong` | not-implemented | not-implemented | spec/codegen.md §13 |
-| `attr:presplitcoroutine` | supported | not-implemented | one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name (WP-106) |
+| `attr:presplitcoroutine` | supported | not-implemented | one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name (WP-106); with `-g`, its variables on the frame word (WP-108) |
 | `attr:sanitize_address` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_alloc_token` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_hwaddress` | not-implemented | not-implemented | unplanned |

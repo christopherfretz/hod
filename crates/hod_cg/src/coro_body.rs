@@ -116,6 +116,8 @@ pub(crate) struct CoroFn {
     violation: Option<String>,
     /// The stubs' offsets: resume, destroy, the end of the stubs.
     entries: Option<[u32; 3]>,
+    /// Where each stub's frame is built (WP-108, [`FnCx::coro_stub_ready`]).
+    ready: Vec<u32>,
 }
 
 impl CoroFn {
@@ -133,6 +135,7 @@ impl CoroFn {
             before_begin: false,
             violation: None,
             entries: None,
+            ready: Vec::new(),
         }
     }
 }
@@ -674,6 +677,42 @@ impl<'a, T: Target> FnCx<'a, T> {
     pub fn set_coro_entries(&mut self, resume: u32, destroy: u32, end: u32) {
         if let Some(coro) = self.coro.as_deref_mut() {
             coro.entries = Some([resume, destroy, end]);
+        }
+    }
+
+    // ---- debug information (WP-108, `coro_debug`) ----
+
+    /// What the variable locations of a coroutine body need: the machine
+    /// words, and the `coro.begin` copies as (shadow, heap place) of
+    /// slots and of values. `None` outside a coroutine.
+    pub(crate) fn coro_debug_view(&self) -> Option<crate::coro_debug::View> {
+        let coro = self.coro.as_deref()?;
+        coro.plan.as_ref()?;
+        let slots = coro.slots?;
+        let pairs = |copies: &mut dyn Iterator<Item = (FrameRef, FrameRef)>| copies.collect();
+        Some(crate::coro_debug::View {
+            words: slots,
+            slot_copies: pairs(&mut coro.slot_copies.iter().map(|&(_, s, h, _)| (s, h))),
+            value_copies: pairs(&mut coro.value_copies.iter().map(|&(_, s, h, _)| (s, h))),
+        })
+    }
+
+    /// From the target's stubs, once a stub's machine frame, mode and
+    /// frame word are set: where a debugger stepping into the stub stops
+    /// (its `prologue_end`, `spec/dwarf.md` §6.16). Once per stub, in
+    /// stub order.
+    pub fn coro_stub_ready(&mut self) {
+        let offset = self.offset();
+        if let Some(coro) = self.coro.as_deref_mut() {
+            coro.ready.push(offset);
+        }
+    }
+
+    /// Where each stub's frame is built, for the function's record.
+    pub(crate) fn coro_ready(&self) -> Option<[u32; 2]> {
+        match self.coro.as_deref()?.ready.as_slice() {
+            &[resume, destroy] => Some([resume, destroy]),
+            _ => None,
         }
     }
 }

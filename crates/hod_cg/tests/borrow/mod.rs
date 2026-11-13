@@ -120,6 +120,7 @@ pub fn chunk_from(
             islands: empty.clone(),
             block_offsets: empty,
             coro_entries: None,
+            coro_ready: None,
         });
     }
     chunk

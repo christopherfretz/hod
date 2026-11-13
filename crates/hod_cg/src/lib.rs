@@ -33,6 +33,7 @@
 //! | `driver` | §1, §4.7, §4.8, §6.1, §6.3 | `compile_function`: the walk, entry code, reachability, the far-mode retry |
 //! | `coro` | "Coroutines" | the noop coroutine frame a function refers to (WP-105) |
 //! | `coro_body` | §7.6 | coroutine bodies: the heap frame, the `coro.begin` copies, the suspend switch, the suspended-region check (WP-106) |
+//! | `coro_debug` | §7.6 | the variable locations of a coroutine body (WP-108) |
 //!
 //! Not here: any real target. The test target that exercises this crate
 //! is in `tests/common/`.
@@ -43,6 +44,7 @@ pub mod asm_constraints;
 mod call;
 mod coro;
 mod coro_body;
+mod coro_debug;
 mod cx;
 mod driver;
 pub mod emit;

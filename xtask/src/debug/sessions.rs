@@ -394,6 +394,10 @@ pub fn find_line_tools() -> Option<LineTools> {
     })
 }
 
+/// The detail of a `pre-opt: checks` session that differs from `llc`'s
+/// and meets the checks.
+pub const PRE_OPT_PASS: &str = "permitted: pre-opt checks";
+
 /// Runs made by this process, for unique work directories.
 static RUNS: AtomicUsize = AtomicUsize::new(0);
 
@@ -596,7 +600,14 @@ impl Run<'_> {
             }
             facts.add_module(&fs::read_to_string(&ir).unwrap_or_default());
             let llc_o = dir.join(format!("m{i}.llc.o"));
-            if let Err(e) = build::llc_object(llc, &ir, &llc_o, limits) {
+            let llc_ir = if test.pre_opt { dir.join(format!("m{i}.post.ll")) } else { ir.clone() };
+            if test.pre_opt
+                && let Err(e) = build::opt_ir(llc, &ir, &llc_ir, limits)
+            {
+                done.records.push(record("llc", None, None, Outcome::Error, e));
+                return;
+            }
+            if let Err(e) = build::llc_object(llc, &llc_ir, &llc_o, limits) {
                 done.records.push(record("llc", None, None, Outcome::Error, e));
                 return;
             }
@@ -676,6 +687,7 @@ impl Run<'_> {
             }
             // The (function, line) comparison, with the first linker.
             if number == 0
+                && !test.pre_opt
                 && let Some(line_tools) = self.line_tools
                 && let Some((_, ours)) = programs.iter().find(|(v, _)| v == "hod")
             {
@@ -751,6 +763,16 @@ impl Run<'_> {
                             match transcript::first_difference(&masked, &theirs_text) {
                                 None => (Outcome::Pass, String::new()),
                                 // `spec/dwarf.md` §5.7 `return-column`.
+                                // `pre-opt: checks`: the checks judge.
+                                Some(_) if test.pre_opt => {
+                                    match directives::first_missing_check(&masked, &script.checks) {
+                                        None => (Outcome::Pass, PRE_OPT_PASS.to_owned()),
+                                        Some(miss) => (
+                                            Outcome::Fail,
+                                            format!("hod's session lacks the check '{miss}'"),
+                                        ),
+                                    }
+                                }
                                 Some(_)
                                     if !debugger.is_gdb()
                                         && permitted::only_return_columns(

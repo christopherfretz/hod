@@ -121,6 +121,8 @@ pub enum VarPlace {
     FrameIndirect(i64),
     /// A `#dbg_label` at this code offset; the row's `var` is the label.
     Label(u32),
+    /// A variable of a coroutine body (WP-108, `coro_debug`), final.
+    Coro(hod_dwarf::CoroPlace),
     /// The row's variable or label cannot be described exactly: a full
     /// debug unit refuses the function under this stable name, a unit
     /// that writes no variables ignores it.
@@ -220,6 +222,9 @@ pub struct FuncRecord {
     /// offsets of `F.resume` and `F.destroy` and the end of the stubs.
     /// The function's own symbol ends at the first.
     pub coro_entries: Option<[u32; 3]>,
+    /// Where each stub's frame is built (WP-108): the stubs' rows of the
+    /// line table (`spec/dwarf.md` §6.16).
+    pub coro_ready: Option<[u32; 2]>,
 }
 
 impl FuncRecord {
@@ -396,6 +401,7 @@ impl Chunk {
             islands: mark.islands..now.islands,
             block_offsets: mark.block_offsets..now.block_offsets,
             coro_entries: None,
+            coro_ready: None,
         }
     }
 }

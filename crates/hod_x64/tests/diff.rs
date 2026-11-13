@@ -358,14 +358,13 @@ fn a_mutated_program_is_caught() {
     assert!(compared.wrong.iter().all(|(_, report)| report.starts_with("hod ")));
 }
 
-/// The `tests/ir` seeds that hod's classifier refuses on x86-64 while
-/// the code generator lowers them: each is compiled by `hod_x64`
-/// directly (no classifier), plainly and stressed, linked and run under
-/// the emulator, and must print its `stdout` directives.
-/// `drift_call_widths.ll` is refused by `attr:zeroext`/`attr:signext`
-/// (`crates/hod_ir/src/classify/matrix.rs:688-689`, still `todo(X64)`).
+/// `drift_call_widths.ll` (the width invariant at calls), which `irdiff`
+/// builds only plainly: compiled by `hod_x64` plainly and with every
+/// stress option, linked and run under the emulator, it must print its
+/// `stdout` directives. Written while the classifier still refused
+/// `zeroext`/`signext` on x86-64, to show the code generator lowered them.
 #[test]
-fn seed_without_the_classifier() {
+fn call_widths_seed_stressed() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/ir/");
     for seed in ["drift_call_widths.ll"] {
         let text = std::fs::read_to_string(format!("{root}{seed}")).expect("the seed");

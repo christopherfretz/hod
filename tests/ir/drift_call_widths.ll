@@ -7,12 +7,8 @@
 ; passed and returned by value. Each callee widens what it got by zero
 ; and by sign, so a value whose bits above the width leak through
 ; prints wrong. Both targets must print the same. Expected values
-; computed by a script, not a compiler. On x86-64 hod's classifier still
-; refuses zeroext and signext (attr:zeroext, attr:signext); the code
-; generator itself builds this program correctly
-; (crates/hod_x64/tests/diff.rs, seed_without_the_classifier).
+; computed by a script, not a compiler.
 ;@ covers: spec/ir.md §5.7 attributes (zeroext, signext), §5.4 integer (odd widths across calls); spec/codegen.md §4 (the width invariant at calls), §7.2 (odd-leaf clearing)
-;@ unsupported(x86_64): *
 ;@ stdout: ze8 128 se8 -128 se16 -32640 ze1 1 se1 -1
 ;@ stdout: i7 zext 65 sext -63 i33 zext 4294967231 sext 4294967231
 ;@ stdout: ret i8 signext -128 i1 zeroext 1 i17 zext 79855 sext -51217

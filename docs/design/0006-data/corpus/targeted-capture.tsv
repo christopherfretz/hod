@@ -1,0 +1,43 @@
+kiln	kiln/llvm22/c/c23/va-start-no-named-parameter.c.ll	ok
+kiln	kiln/llvm22/c/c99/misc-c99-c11.c.ll	ok
+kiln	kiln/llvm22/c/decl/ellipsis-only-parameter-c23.c.ll	ok
+kiln	kiln/llvm22/c/decl/unprototyped.c.ll	ok
+kiln	kiln/llvm22/c/lex/c23-keywords.c.ll	ok
+kiln	kiln/llvm22/c/run/compound-literal-lvalue-o2.c.ll	ok
+kiln	kiln/llvm22/c/run/compound-literal-object.c.ll	ok
+kiln	kiln/llvm22/c/run/static-init-compound-literal-values.c.ll	ok
+kiln	kiln/llvm22/c/run/static-init-float-ieee.c.ll	ok
+kiln	kiln/llvm22/c/run/struct-by-value.c.ll	ok
+kiln	kiln/llvm22/c/run/vla-runtime-o2.c.ll	ok
+kiln	kiln/llvm22/conformance/atomics.types.generic/run-libstdcxx-atomic-struct-sizes.cpp.ll	ok
+kiln	kiln/llvm22/conformance/basic.extended.fp/f128-wrapper-args-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/basic.extended.fp/float-nx-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/basic.extended.fp/nextafterf16-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/basic.extended.fp/p1467-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/basic.stc.auto/lifetime-markers-O2-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/basic.stc.thread/local-lvalue-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/basic.stc.thread/module-tls-run.cpp.ll	FAILED kiln++: error: no such file or directory: '&&'
+kiln++: error: no such file or directory: '&&'
+kiln++: error: no such file or directory: '&&'
+kiln++: e
+kiln	kiln/llvm22/conformance/basic.stc.thread/self-address-dynamic-init-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/class.virtual/variadic-covariant-thunk-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/conv.fpint/float-integral.cpp.ll	ok
+kiln	kiln/llvm22/conformance/cstdarg.syn/va-arg-complex.cpp.ll	ok
+kiln	kiln/llvm22/conformance/ext.c11.atomic/bool-inc-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/ext.c11.atomic/bool-postinc-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/ext.c11.atomic/class-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/ext.c11.atomic/fp-minmax-fetch-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/ext.c11.atomic/templates-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/ext.complex/complex-bf16.cpp.ll	ok
+gcc-torture	gcc-torture/llvm22/20000519-1.c.ll	ok
+gcc-torture	gcc-torture/llvm22/20010605-2.c.ll	ok
+gcc-torture	gcc-torture/llvm22/20020413-1.c.ll	ok
+gcc-torture	gcc-torture/llvm22/20030914-1.c.ll	ok
+gcc-torture	gcc-torture/llvm22/20040208-1.c.ll	ok
+gcc-torture	gcc-torture/llvm22/20040709-1.c.ll	ok
+gcc-torture	gcc-torture/llvm22/20040709-3.c.ll	ok
+gcc-torture	gcc-torture/llvm22/20041113-1.c.ll	ok
+gcc-torture	gcc-torture/llvm22/20071213-1.c.ll	ok
+gcc-torture	gcc-torture/llvm22/920501-8.c.ll	ok
+gcc-torture	gcc-torture/llvm22/920726-1.c.ll	ok

@@ -1,0 +1,4 @@
+emu-loop.c, clang 22 -O0, llc 22 -O0 (SelectionDAG), on the shared host (load ~25):
+native aarch64 0.76 s
+qemu-x86_64    5.56 s  (7.3x)
+same output: 1655695404048054147 55250002560.000000

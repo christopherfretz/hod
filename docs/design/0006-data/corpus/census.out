@@ -1,0 +1,214 @@
+## x86-64 sample, kiln: 46 modules
+feature	modules	occurrences
+x86_fp80	0	0
+fp128	0	0
+half	0	0
+bfloat	0	0
+i128	1	8
+i128-divrem	0	0
+wide-int(>128 or odd)	0	0
+vector	1	23
+float-or-double-op	3	13
+fp-conv	3	11
+uitofp/fptoui-64	0	0
+atomic	0	0
+atomic-16-byte	0	0
+thread_local	0	0
+invoke	6	37
+landingpad	6	24
+va_start	0	0
+va_arg-inst	0	0
+musttail	0	0
+byval	0	0
+sret	4	11
+inreg	0	0
+inline-asm	0	0
+indirectbr/blockaddress	0	0
+switch	0	0
+x86-intrinsic	0	0
+memcpy/memset/memmove	27	164
+bit-intrinsic	1	2
+overflow-intrinsic	1	9
+fp-intrinsic	1	2
+coroutine	0	0
+debug-info	0	0
+cx16-feature	0	0
+## x86-64 sample, gcc-torture: 24 modules
+feature	modules	occurrences
+x86_fp80	0	0
+fp128	0	0
+half	0	0
+bfloat	0	0
+i128	0	0
+i128-divrem	0	0
+wide-int(>128 or odd)	0	0
+vector	0	0
+float-or-double-op	1	2
+fp-conv	0	0
+uitofp/fptoui-64	0	0
+atomic	0	0
+atomic-16-byte	0	0
+thread_local	0	0
+invoke	0	0
+landingpad	0	0
+va_start	0	0
+va_arg-inst	0	0
+musttail	0	0
+byval	0	0
+sret	0	0
+inreg	0	0
+inline-asm	0	0
+indirectbr/blockaddress	0	0
+switch	0	0
+x86-intrinsic	0	0
+memcpy/memset/memmove	3	6
+bit-intrinsic	0	0
+overflow-intrinsic	1	2
+fp-intrinsic	0	0
+coroutine	0	0
+debug-info	0	0
+cx16-feature	0	0
+## same tests, aarch64 corpus entries, kiln: 46 modules
+feature	modules	occurrences
+x86_fp80	0	0
+fp128	0	0
+half	0	0
+bfloat	0	0
+i128	1	8
+i128-divrem	0	0
+wide-int(>128 or odd)	0	0
+vector	1	23
+float-or-double-op	3	13
+fp-conv	3	11
+uitofp/fptoui-64	0	0
+atomic	0	0
+atomic-16-byte	0	0
+thread_local	0	0
+invoke	6	37
+landingpad	6	24
+va_start	0	0
+va_arg-inst	0	0
+musttail	0	0
+byval	0	0
+sret	4	11
+inreg	0	0
+inline-asm	0	0
+indirectbr/blockaddress	0	0
+switch	0	0
+x86-intrinsic	0	0
+memcpy/memset/memmove	27	165
+bit-intrinsic	1	2
+overflow-intrinsic	1	9
+fp-intrinsic	1	2
+coroutine	0	0
+debug-info	0	0
+cx16-feature	0	0
+## same tests, aarch64 corpus entries, gcc-torture: 24 modules
+feature	modules	occurrences
+x86_fp80	0	0
+fp128	0	0
+half	0	0
+bfloat	0	0
+i128	0	0
+i128-divrem	0	0
+wide-int(>128 or odd)	0	0
+vector	0	0
+float-or-double-op	1	2
+fp-conv	0	0
+uitofp/fptoui-64	0	0
+atomic	0	0
+atomic-16-byte	0	0
+thread_local	0	0
+invoke	0	0
+landingpad	0	0
+va_start	0	0
+va_arg-inst	0	0
+musttail	0	0
+byval	0	0
+sret	0	0
+inreg	0	0
+inline-asm	0	0
+indirectbr/blockaddress	0	0
+switch	0	0
+x86-intrinsic	0	0
+memcpy/memset/memmove	3	6
+bit-intrinsic	0	0
+overflow-intrinsic	1	2
+fp-intrinsic	0	0
+coroutine	0	0
+debug-info	0	0
+cx16-feature	0	0
+## target attributes (attribute groups)
+211	+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87
+211	cpu=x86-64
+## per module
+kiln/c__c23__bitint.c.ll	i128
+kiln/c__decl__param-scope-tag-body.c.ll	memcpy/memset/memmove
+kiln/c__run__static-init-compound-literal-values.c.ll	vector
+kiln/conformance__basic.contract.eval__run-site-name-explicit-spec.cpp.ll	memcpy/memset/memmove
+kiln/conformance__basic.lookup.unqual__qualified-declarator-run.cpp.ll	memcpy/memset/memmove
+kiln/conformance__c.math__finite-math-only-run.cpp.ll	
+kiln/conformance__class.copy.ctor__deleted-defaulted-move-ignored.cpp.ll	
+kiln/conformance__class.local__template-local-class-anonymous-member-init-run.cpp.ll	memcpy/memset/memmove
+kiln/conformance__class.static.data__template-direct-list-init.cpp.ll	
+kiln/conformance__class.virtual__implicit-assignment-override-run.cpp.ll	invoke,landingpad,memcpy/memset/memmove
+kiln/conformance__cpp.include__pch-pattern-inits-run.cpp.ll	memcpy/memset/memmove
+kiln/conformance__dcl.attr.cconv__cc-run.cpp.ll	float-or-double-op,fp-conv,sret,memcpy/memset/memmove,fp-intrinsic
+kiln/conformance__dcl.constexpr__consteval-run.cpp.ll	memcpy/memset/memmove
+kiln/conformance__dcl.fct.def.general__predefined-partial-spec-scopes-run.cpp.ll	memcpy/memset/memmove
+kiln/conformance__dcl.init.aggr__reference-member.cpp.ll	memcpy/memset/memmove
+kiln/conformance__dcl.link__extern-c-runtime-function-redeclaration.cpp.ll	invoke,landingpad
+kiln/conformance__dcl.struct.bind__p2686-run.cpp.ll	memcpy/memset/memmove
+kiln/conformance__driver.sanitize__trapv-run.cpp.ll	overflow-intrinsic
+kiln/conformance__expr.ass__compound-assignment.cpp.ll	memcpy/memset/memmove
+kiln/conformance__expr.cond__p4-cv-differing-class-arms-not-builtin-run.cpp.ll	memcpy/memset/memmove
+kiln/conformance__expr.const__oven-dead-statics.cpp.ll	
+kiln/conformance__expr.new__p28-placement-delete-template-run.cpp.ll	invoke,landingpad
+kiln/conformance__expr.prim.id.dtor__run-qualified-destructor-template-id.cpp.ll	invoke,landingpad
+kiln/conformance__expr.prim.lambda__p2036-init-capture-scope.cpp.ll	float-or-double-op,fp-conv
+kiln/conformance__expr.ref__p6-static-member-function-value-run.cpp.ll	memcpy/memset/memmove,bit-intrinsic
+kiln/conformance__expr.static.cast__libstdcxx-dependent-cast-to-reference-typedef.cpp.ll	memcpy/memset/memmove
+kiln/conformance__ext.clang.pass.object.size__pass-object-size-run.cpp.ll	memcpy/memset/memmove
+kiln/conformance__ext.gnu.builtins__readcyclecounter-run.cpp.ll	
+kiln/conformance__ext.gnu.mode__mode-dependent-param-run.cpp.ll	
+kiln/conformance__ext.vector__bool-constexpr-convert-run.cpp.ll	
+kiln/conformance__meta.define.static__define-static-run.cpp.ll	memcpy/memset/memmove
+kiln/conformance__namespace.alias__local-alias-in-function-template.cpp.ll	memcpy/memset/memmove
+kiln/conformance__over.ics.list__aggregate-single-element-of-class-run.cpp.ll	memcpy/memset/memmove
+kiln/conformance__over.match.oper__rewritten-template-run.cpp.ll	memcpy/memset/memmove
+kiln/conformance__stmt.if.consteval__char-traits-length-O2-run.cpp.ll	memcpy/memset/memmove
+kiln/conformance__stmt.ranged__p2718-order.cpp.ll	invoke,landingpad,sret
+kiln/conformance__temp.arg.explicit__libstdcxx-member-template-id-overload-set.cpp.ll	memcpy/memset/memmove
+kiln/conformance__temp.constr.normal__concept-pack-fold-expansion.cpp.ll	
+kiln/conformance__temp.deduct.type__constrained-placeholder-nttp-prior-param-constrained-ref-run.cpp.ll	memcpy/memset/memmove
+kiln/conformance__temp.dep.type__injected-class-name-address-of-member.cpp.ll	memcpy/memset/memmove
+kiln/conformance__temp.expl.spec__member-class-enum-spec.cpp.ll	memcpy/memset/memmove
+kiln/conformance__temp.friend__friend-defined-in-partial-spec.cpp.ll	
+kiln/conformance__temp.func.order__p12-empty-expansion-deduces-empty-pack-run.cpp.ll	
+kiln/conformance__temp.inst__shared-expr-odr-use.cpp.ll	invoke,landingpad,sret,memcpy/memset/memmove
+kiln/conformance__temp.mem__conversion-template-named-explicitly-run.cpp.ll	float-or-double-op,fp-conv,sret,memcpy/memset/memmove
+kiln/conformance__temp.spec.partial.match__order-non-deduced-context-must-match.cpp.ll	
+gcc-torture/20000112-1.c.ll	
+gcc-torture/20001017-1.c.ll	
+gcc-torture/20020127-1.c.ll	
+gcc-torture/20030120-2.c.ll	
+gcc-torture/20040625-1.c.ll	
+gcc-torture/20060412-1.c.ll	
+gcc-torture/20100827-1.c.ll	
+gcc-torture/920618-1.c.ll	
+gcc-torture/930713-1.c.ll	memcpy/memset/memmove
+gcc-torture/951003-1.c.ll	
+gcc-torture/980709-1.c.ll	float-or-double-op
+gcc-torture/bf-pack-1.c.ll	
+gcc-torture/compare-2.c.ll	
+gcc-torture/loop-9.c.ll	
+gcc-torture/pr110252-3.c.ll	
+gcc-torture/pr22061-2.c.ll	
+gcc-torture/pr34768-2.c.ll	
+gcc-torture/pr42721.c.ll	
+gcc-torture/pr52129.c.ll	memcpy/memset/memmove
+gcc-torture/pr59358.c.ll	
+gcc-torture/pr68381.c.ll	overflow-intrinsic
+gcc-torture/pr81555.c.ll	
+gcc-torture/pr93744-3.c.ll	
+gcc-torture/strcpy-2.c.ll	memcpy/memset/memmove

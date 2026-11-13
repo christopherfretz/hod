@@ -2183,6 +2183,85 @@ travels in `ymm` under `+avx` is the argument assignment's
 (`x64:wide-vector-abi`, WP-118). `-mattr` items are checked the same
 way, by the module's target.
 
+#### Mem-class values (WP-126)
+
+`src/aggr.rs` and `src/constaddr.rs`: integers wider than 64 bits,
+structs and arrays, copies of `Mem` vectors and `x86_fp80` images, the
+overflow intrinsics, `Mem` constants and constants with addresses. The
+AArch64 rules of "Mem-class values (WP-040)" (§5.5.1) hold as written,
+including the slot image (the bits above `N` in a wide integer's top
+limb unspecified, an aggregate's image exact), what extends first, a
+`store` of exactly the store size and the layouts; what differs is
+below.
+
+- **Registers.** A lowering computes in `rax`, `rcx`, `rdx`, `r10`,
+  `r11` and `xmm15` and asks the pool for nothing; limbs are loaded,
+  operated on and stored back (no load folding). A carry chain is
+  `add`/`adc` (`sub`/`sbb`) with only `mov` between its links; a top
+  limb that must be extended is extended into `rcx`/`rdx` before the
+  chain (the shift pair that extends writes the flags). Extension in a
+  register is `movzx`/`movsx`/`movsxd`/`mov r32` for 8, 16 and 32 bits,
+  `shl` + `shr`/`sar` otherwise. Copies go 16 bytes at a time through
+  `xmm15`, then 8, 4, 2, 1 through `r10`.
+- **Arithmetic.** `mul` of two limbs is `mul` and two `imul`s; wider,
+  a schoolbook product into the zeroed result through `rdx:rax` with
+  the carry in `rcx`. A constant shift is `shld`/`shrd` per limb (an
+  amount of the width or more emits nothing). A variable shift copies the
+  source into a frame area of `2n` limbs next to the fill (0, or the
+  sign), moves the area's address by `min(s >> 6, n - 1)` limbs and
+  combines two limbs per result limb with `shld`/`shrd` by `cl` (which
+  takes the amount mod 64 and leaves the destination alone for 0). Beyond
+  `MAX_QUADRATIC_BITS` (4096) they are `x64:wide-mul` and
+  `x64:wide-shift`. Division up to 128 bits calls `__udivti3`,
+  `__divti3`, `__umodti3`, `__modti3` (`int_divide_routine`), the
+  operands extended into 16-byte slots when narrower; wider is
+  `x64:wide-division`.
+- **Compares**: `eq`/`ne` or the limbs' differences; the orderings are a
+  `cmp`/`sbb` chain over the limbs, both top limbs shifted left by
+  `64 - N mod 64` first. The result is a `setcc` (no deferral).
+- **Casts.** As AArch64, `xmm15` in place of `v31`. `fptosi`, `fptoui`,
+  `sitofp`, `uitofp` between `half`, `float`, `double` or `fp128` and an
+  integer of 65 to 128 bits call `__fix[uns]{hf,sf,df,tf}ti` and
+  `__float[un]ti{hf,sf,df,tf}` (`fp_to_int_routine`,
+  `int_to_fp_routine`), the integer extended to 128 bits in a slot
+  first. Wider integers and `bfloat` are `x64:wide-fp-cast`;
+  `addrspacecast` is `x64:mem-cast`.
+- **Aggregates**: as AArch64. `select` with a non-constant condition
+  forms both addresses, `test` and `cmovz`, then copies once. An atomic
+  `load` or `store` of a `Mem` value is `x64:todo:atomic` (X-atomic).
+- **Overflow intrinsics**, every width up to `MAX_QUADRATIC_BITS / 2`.
+  At 64 bits and below they are computed in `r10`/`r11` with the
+  operands extended to 64 bits, and the flag comes from the carry, `OF`,
+  the bits above the width, or the result not being its own sign
+  extension. Wider, `add`/`sub` is a carry chain over the extended top
+  limbs, and `mul` an exact product at twice the width. The result
+  `{iN, i1}` is written as its image. A vector is
+  `x64:overflow-intrinsic`, and `mul` wider than 2048 bits is
+  `x64:wide-mul-overflow`.
+- **Returned in memory** (`spec/abi-x64.md` §5.2, §8.2.3). The
+  prologue (`frame::begin` → `aggr::save_ret_address`) stores the
+  buffer's address from `rdi` in a slot of its own. `ret`
+  (`term::ret` → `aggr::ret_memory`) writes the value through that
+  address as a `store` would and returns the address in `rax`.
+- **Constants** (`materialize_mem`, glue: `rax`, `r11`, `xmm15` only,
+  never `r10`, flags kept). A zero-like constant is immediate stores
+  of zero. A wide integer is written word by word, with an 8-byte word
+  that is not a sign-extended 32-bit value going through `r11`.
+  Anything else is written from its flattened image
+  (`ConstPool::flatten`).
+- **Addresses in constants** (`constaddr`). Every relocated field of an
+  image is computed in code with the symbol access of §7.4, in `rax`,
+  and stored with its width (1, 2, 4 or 8 bytes, at any offset). This
+  covers `Sym`, `Plt`, `Diff` and `PltDiff`. There is no constant pool
+  and no data relocation, so the code is right for preemptible, local
+  and weak undefined symbols alike. As a `Gpr` operand, a `SymDiff` is
+  `a + addend` plus the complement of `b` plus 1 (`not`, `lea`), and a
+  number minus an address (`ConstPool::neg_addr`) is `not` and `lea +1`
+  of the address. Both keep the flags. A block address is
+  `x64:todo:control` (X-control). A block difference is
+  `x64:constant-relocation`, and so is a vector image with any
+  relocation other than an aligned 8-byte symbol address.
+
 ## 6. Control flow
 
 ### 6.1 Reachability

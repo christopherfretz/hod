@@ -78,7 +78,7 @@ pub fn begin(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     let sub = mc::sub_ri(Size::Q, RSP, FRAME_PLACEHOLDER);
     cx.state.frame.frame_imm = cx.offset() + sub.len() as u32 - 4;
     put(cx, sub);
-    Ok(())
+    crate::aggr::save_ret_address(cx)
 }
 
 /// The final `FRAME` for a local area of `size` bytes: the least value

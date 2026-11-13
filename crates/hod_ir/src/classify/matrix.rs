@@ -736,8 +736,8 @@ const ATTR_STRING: [SupportRow; FnStr::ALL.len()] = [
 /// In `TypeClass::ALL` order.
 const TYPE: [SupportRow; TypeClass::ALL.len()] = [
     both("type:int", ON, "integers of at most 64 bits"),
-    row("type:i128", ON, todo(X64), "WP-040"),
-    row("type:int-wide", ON, todo(X64), "integers wider than 64 bits other than `i128` (WP-040)"),
+    row("type:i128", ON, ON, "WP-040"),
+    row("type:int-wide", ON, ON, "integers wider than 64 bits other than `i128` (WP-040)"),
     both("type:ptr", ON, "pointers in address space 0"),
     row("type:half", ON, todo(X64), "arithmetic in single precision"),
     row(
@@ -757,7 +757,7 @@ const TYPE: [SupportRow; TypeClass::ALL.len()] = [
         "vectors of fixed length; what is lowered of them by element and shape: `spec/codegen.md` §5.5.1 (WP-079)",
     ),
     both("type:scalable-vector", never(SCALABLE), ""),
-    row("type:aggregate", ON, todo(X64), "structs and arrays as first-class values (WP-040)"),
+    row("type:aggregate", ON, ON, "structs and arrays as first-class values (WP-040)"),
     a64("type:token", CORO, "the results of the coroutine intrinsics"),
     both("type:target-ext", never("no target extension type has a lowering"), ""),
 ];
@@ -767,79 +767,79 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
     row(
         "inst:add",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:sub",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:mul",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:udiv",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::I128]),
         "wider than 64 bits: up to 128 (WP-040)",
     ),
     row(
         "inst:sdiv",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::I128]),
         "wider than 64 bits: up to 128 (WP-040)",
     ),
     row(
         "inst:urem",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::I128]),
         "wider than 64 bits: up to 128 (WP-040)",
     ),
     row(
         "inst:srem",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::I128]),
         "wider than 64 bits: up to 128 (WP-040)",
     ),
     row(
         "inst:shl",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:lshr",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:ashr",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:and",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:or",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:xor",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
@@ -929,7 +929,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Ptr,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide]),
         "vectors: masks of up to 64 lanes (WP-081)",
     ),
     row(
@@ -949,19 +949,19 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
     row(
         "inst:trunc",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:zext",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
         "inst:sext",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
@@ -1003,7 +1003,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128]),
         "",
     ),
     row(
@@ -1019,7 +1019,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128]),
         "",
     ),
     row(
@@ -1035,7 +1035,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128]),
         "",
     ),
     row(
@@ -1051,7 +1051,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128]),
         "",
     ),
     row(
@@ -1063,7 +1063,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Ptr,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
@@ -1075,7 +1075,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Ptr,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
@@ -1087,7 +1087,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Ptr,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide]),
         "",
     ),
     row(
@@ -1104,7 +1104,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide]),
         "between integers and floats with WP-039",
     ),
     both(
@@ -1127,7 +1127,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Aggregate,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "a plain load; see `mem:`; FP and vector values: WP-067",
     ),
     row(
@@ -1145,7 +1145,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Aggregate,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "a plain store; see `mem:`; FP and vector values: WP-067",
     ),
     row("inst:alloca", ON, todo(X64), "a dynamic allocation; fixed ones are `function:slots`"),
@@ -1186,7 +1186,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "",
     ),
     row(
@@ -1204,7 +1204,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "",
     ),
     row(
@@ -1263,7 +1263,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Aggregate,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "",
     ),
     row(
@@ -1281,7 +1281,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Aggregate,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "",
     ),
     both(
@@ -1396,16 +1396,16 @@ const OPERAND: [SupportRow; 11] = [
     row("operand:blockaddress", ON, todo(X64), "of a block of the same function"),
     both("operand:addr-of-int", ON, "`inttoptr` of a constant number"),
     row("operand:int-of-addr", ON, todo(X64), "`ptrtoint` of a constant address (WP-072)"),
-    row("operand:sym-diff", ON, todo(X64), "a difference of two symbol addresses (WP-072)"),
+    row("operand:sym-diff", ON, ON, "a difference of two symbol addresses (WP-072)"),
     a64("operand:block-diff", LATER, "a label difference as an operand (WP-095)"),
     a64("operand:dso-local-equivalent", LATER, ""),
     a64("operand:no-cfi", LATER, ""),
     // WP-101.
-    row("operand:neg-addr", ON, todo(X64), "a number minus an address, alone (`init:neg-addr`)"),
+    row("operand:neg-addr", ON, ON, "a number minus an address, alone (`init:neg-addr`)"),
     row(
         "operand:address-in-aggregate",
         ON,
-        todo(X64),
+        ON,
         "an aggregate or vector constant with an address (WP-072)",
     ),
 ];
@@ -1563,37 +1563,37 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
     row(
         "intrinsic:llvm.sadd.with.overflow",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "",
     ),
     row(
         "intrinsic:llvm.uadd.with.overflow",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "",
     ),
     row(
         "intrinsic:llvm.ssub.with.overflow",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "",
     ),
     row(
         "intrinsic:llvm.usub.with.overflow",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "",
     ),
     row(
         "intrinsic:llvm.smul.with.overflow",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "wider than 2048 bits refused (`a64:wide-mul-overflow`)",
     ),
     row(
         "intrinsic:llvm.umul.with.overflow",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        todo(X64),
+        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "wider than 2048 bits refused (`a64:wide-mul-overflow`)",
     ),
     row(

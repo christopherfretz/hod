@@ -529,9 +529,7 @@ pub fn materialize_gpr_const(cx: &mut FnCx<'_, X64>, rd: Reg, id: ConstId) -> Cg
         Const::IntOfAddr { addr, .. } => return materialize_gpr_const(cx, rd, addr),
         Const::DsoLocalEquivalent(sym) | Const::NoCfi(sym) => sym_address(cx, rd, sym, 0)?,
         Const::BlockAddr { .. } => return unsupported(crate::control::CONTROL),
-        Const::SymDiff { .. } | Const::Expr { .. } => {
-            return unsupported(crate::constaddr::CONSTADDR);
-        }
+        Const::SymDiff { .. } | Const::Expr { .. } => crate::constaddr::gpr(cx, rd, id)?,
         _ => return unsupported(CONSTANT),
     }
     Ok(())

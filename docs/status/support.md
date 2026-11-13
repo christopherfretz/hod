@@ -365,8 +365,8 @@ Instructions.
 | `inst:ptradd` | supported | supported | LLVM's `getelementptr` (§5.4); not a vector of pointers |
 | `inst:extractvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, x86_fp80, vector, aggregate) | x86-64: floating-point members with WP-144; `x86_fp80` with WP-131 |
 | `inst:insertvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, x86_fp80, vector, aggregate) | x86-64: floating-point members with WP-144; `x86_fp80` with WP-131 |
-| `inst:extractelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | byte-sized elements, up to 256 lanes (WP-079) |
-| `inst:insertelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | byte-sized elements, up to 256 lanes (WP-079) |
+| `inst:extractelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | supported (int, i128, ptr, half, bfloat, float, double, fp128, x86_fp80, vector) | byte-sized elements, up to 256 lanes (WP-079) |
+| `inst:insertelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | supported (int, i128, ptr, half, bfloat, float, double, fp128, x86_fp80, vector) | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:shufflevector` | supported (vector) | supported (vector) | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:phi` | supported | supported | for every class whose `type:*` row is supported |
 | `inst:select` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, x86_fp80, vector, aggregate) |  |

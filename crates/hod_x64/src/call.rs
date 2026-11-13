@@ -41,8 +41,8 @@
 use hod_cg::abi::{AbiUnsupported, Assignment, Place, Sig};
 use hod_cg::{CallArg, CgResult, Class, FnCx, FrameRef, RuntimeFn, Target};
 use hod_ir::{
-    Clause, Const, Inst, Intrinsic, LandingPad, Opcode, ParamAttrs, ParamMem, SymId, TailKind,
-    TypeId, TypeKind, Value, ValueKind,
+    CallSite, Clause, Const, Inst, Intrinsic, LandingPad, Opcode, ParamAttrs, ParamMem, SymId,
+    TailKind, TypeId, TypeKind, Value, ValueKind,
 };
 use hod_mc_x64 as mc;
 use hod_mc_x64::{FpSize, Mem, Reg, Size, Xmm};
@@ -78,6 +78,32 @@ pub const RESUME: &str = "x64:resume";
 /// those in registers with the forwarded registers and passes `al` as
 /// it arrived, so it gives no meaning to follow.
 pub const MUSTTAIL_VARIABLE_ARGUMENTS: &str = "x64:musttail-variable-arguments";
+
+/// The target as it compiles `function` of `module`, from the symbol
+/// alone: what [`Target::for_function`] answers for its body (the
+/// features of `"target-cpu"` and `"target-features"`, `spec/abi-x64.md`
+/// §1.3; the coroutine mark). `None` for a symbol that is not a function.
+///
+/// The facade's `musttail` stack-argument rule assigns a function's own
+/// signature and each `musttail` call in it with this target
+/// (`hod_cg::abi::TargetStackArgs::per_function`, §8.5, WP-148), as the
+/// call sequence does.
+pub fn target_of(module: &hod_ir::Module, function: hod_ir::Symbol<'_>) -> Option<X64> {
+    let hod_ir::SymbolKind::Function { attrs, .. } = function.kind() else {
+        return None;
+    };
+    if attrs.index() >= module.fn_attrs_count() {
+        return None;
+    }
+    let attrs = module.fn_attrs(attrs);
+    let text = |what| attrs.string(what).and_then(|s| std::str::from_utf8(s).ok());
+    let features = crate::features::of_function(
+        text(hod_ir::FnStr::TargetCpu),
+        text(hod_ir::FnStr::TargetFeatures),
+    );
+    let coro = attrs.has(hod_ir::FnAttrs::PRESPLIT_COROUTINE);
+    Some(X64 { features, coro })
+}
 
 /// Every name this module refuses with.
 pub const UNSUPPORTED: &[&str] = &[
@@ -306,6 +332,9 @@ pub fn call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
     if musttail && is_variadic(cx) {
         forward_variadic_registers(cx, inst)?;
     }
+    if !musttail {
+        align_stack_area(cx, &site);
+    }
     cx.call(inst)?;
     // An `invoke`'s are cleared by the call sequence before its branch
     // (WP-084).
@@ -314,6 +343,53 @@ pub fn call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
         clear_above_leaves(cx, result, home, 0);
     }
     Ok(())
+}
+
+/// The largest alignment of a `byval` copy among the arguments of
+/// `site` (`spec/abi-x64.md` §6.2), with the attributes the call
+/// sequence assigns it with; 0 when it has none.
+fn byval_align(cx: &FnCx<'_, X64>, site: &CallSite<'_>) -> u64 {
+    let mut align = 0;
+    for index in 0..site.args().len() {
+        let Ok(attrs) = hod_ir::call_arg_attrs(cx.module, site, index) else { continue };
+        if attrs.mem() == ParamMem::ByVal {
+            let pointee = attrs.mem_type().unwrap_or(TypeId::VOID);
+            align = align.max(crate::abi::byval_align(cx.types(), pointee, attrs));
+        }
+    }
+    align
+}
+
+/// WP-152 (`spec/codegen.md` §5.6.18): before the call sequence of a
+/// call with a `byval` argument aligned to `a > 16`, `rsp` is lowered so
+/// that the stack-argument area the sequence then allocates (`area`
+/// bytes, the assignment's size rounded to 16) starts at a multiple of
+/// `a`, as `llc`'s realigned frame does: with `c = area mod a`,
+/// `lea rsp, [rsp - c]` · `and rsp, -a` · `lea rsp, [rsp + c]`. `rsp`
+/// stays 16-aligned; the sequence gives back `area` after the call, so
+/// `rsp` stays at most `a - 16` bytes lower, and the same call run again
+/// (a loop) does not lower it further. Nothing addresses the frame from
+/// `rsp` across a call, and the epilogue restores it from `rbp`. A
+/// `musttail` call writes its caller's incoming area and is not aligned.
+/// Writes the flags (no compare is live across a call).
+fn align_stack_area(cx: &mut FnCx<'_, X64>, site: &CallSite<'_>) {
+    let a = byval_align(cx, site);
+    if a <= 16 || a > crate::abi::MAX_BYVAL_ALIGN {
+        return;
+    }
+    // The size the sequence will assign (a signature it refuses is
+    // refused there, before anything is placed).
+    let stack_args = hod_cg::abi::TargetStackArgs::new(cx.target);
+    let Some(bytes) = hod_ir::StackArgs::of_call(&stack_args, cx.module, site) else { return };
+    let area = bytes.next_multiple_of(16);
+    let c = (area % a) as i64;
+    if c != 0 {
+        crate::frame::adjust_sp(cx, -c);
+    }
+    put(cx, mc::and_ri(Size::Q, Reg::Rsp, -(a as i64)));
+    if c != 0 {
+        crate::frame::adjust_sp(cx, c);
+    }
 }
 
 /// The most leaves a result returned in registers has (`rax`, `rdx`,

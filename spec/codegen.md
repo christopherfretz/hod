@@ -221,7 +221,10 @@ the frame, 8 or 16 bytes by class; spill slots are reused once their
 value's use has been emitted). After a call to a `returns_twice`
 function no spill slot is reused for the rest of the function: the code
 after such a call can run a second time and reads its slots again (v1
-does not track which ones were occupied at the call). The choice of register
+does not track which ones were occupied at the call). A target lowering
+whose code can run a second time without a call instruction sets the
+same state with `FnCx::never_reuse_spill_slots` (x86-64's
+`llvm.eh.sjlj.setjmp`, §5.6.18 (4)). The choice of register
 must not depend on anything but the function's IR: v1 takes the lowest-numbered unpinned occupied pool
 register. A lowering that needs one particular register (a return
 register, a shift count register on x86-64) displaces its occupant the
@@ -2076,7 +2079,9 @@ words compared with `llvm-mc`'s; the refusals; features from
   `FRAME` is not known while the body is emitted, so the access is
   emitted as `[rbp + o]` with a 32-bit displacement and every such
   displacement is recorded and biased by `-8n - FRAME` in
-  `end_function` (`hod_x64::common::frame_inst`). `Incoming(n)` is
+  `end_function` (`hod_x64::common::frame_inst`); one that then fits a
+  signed byte is rewritten as `disp8` and the three bytes it no longer
+  needs are cut (§5.6.17). `Incoming(n)` is
   `[rbp + 16 + n]`: no incoming base slot. `Outgoing(n)` is `[rsp + n]`.
   The frame base for debug information is `rbp` (DWARF 6).
 - **Exit sequences.** The epilogue is `lea rsp, [rbp - 8n]` · the pops
@@ -3065,7 +3070,8 @@ mask (`<N x i1>`, `N ≤ 64`, class `Gpr`, bit `i` = element `i`), or
   addressable bytes, at most 256 lanes. Every other shape is refused by
   the generic name AArch64 uses: `x64:mask-wide` (an operation on the
   lanes of more than 64 `i1`), `x64:vector-odd-element` (`i4`, `i24`),
-  `x64:vector-wide-element` (`i128`, `fp128`, `x86_fp80`),
+  `x64:vector-wide-element` (`i128`, `fp128`, `x86_fp80`; lane
+  moves of `i128` and `x86_fp80` since §5.6.18),
   `x64:vector-length` (more than 256 lanes), `x64:vector-index` (an
   index wider than 64 bits), `x64:ptradd-vector` (a `ptradd` of a
   vector of pointers, `mem.rs`'s); a conversion to
@@ -3206,7 +3212,9 @@ its data islands, so that an island is aligned in the final layout),
 branches the target marked:
 
 - `FnCx::cut(at, len)`: `len` bytes at `at` go; nothing refers into
-  them and no row or label is inside them.
+  them and no row or label is inside them. x86-64 cuts the prologue's
+  unused bytes (cut 1 below) and the three high bytes of each local
+  displacement that fits a byte (§5.6.17).
 - `FnCx::relaxable(start, short, kind)`, right after the `fixup` of a
   branch that starts at `start` and ends with its field: if the label
   ends up in reach of a signed byte, the branch becomes `[short, rel8]`
@@ -3309,10 +3317,8 @@ Each against `llc -O0 -fast-isel=0` 22 and 19 under the emulator, and
    epilogue restores the caller's from `rbp`.
    `longjmp` reads all three words before it writes `rbp`, then `rsp`,
    then `jmp`s. hod's and `llc`'s objects jump into each other's
-   buffers. Refused: `x64:sjlj-live-value` (a register value of the
-   block defined before the `setjmp` and used after it, or an entry
-   argument used after it: the second return would read a reused spill
-   slot), `x64:sjlj-coroutine` (`rbx`, the frame base, is not restored
+   buffers. A value live across the `setjmp` is read from memory after
+   it (WP-152, §5.6.18 (4)). Refused: `x64:sjlj-coroutine` (`rbx`, the frame base, is not restored
    at the resume address), `x64:sjlj-shadow-stack` (the
    `cf-protection-return` module flag: the jump would unbalance the
    shadow stack). On AArch64, `llc` compiles `setjmp` to 0 and `longjmp`
@@ -3340,6 +3346,110 @@ Each against `llc -O0 -fast-isel=0` 22 and 19 under the emulator, and
 9. **`is.fpclass` of a pseudo-denormal**: §5.6.12.
 
 Evidence: `spec/landed/codegen/WP-147.md`.
+
+#### 5.6.17 Short frame displacements (WP-151)
+
+**A local's displacement is `disp8` when it fits.** Every access to a
+local is emitted as `[rbp + o]` with a 32-bit displacement and its field
+recorded (`common::frame_inst`, §5.6), because `8n + FRAME` is known
+only in `end_function`. There, `common::bias_local_sites` computes each
+field's final displacement `o - 8n - FRAME`; one in `-128..=127` is
+rewritten in place as `[rbp + disp8]`: the `ModRM` byte before the field
+goes from `mod` 10 to `mod` 01 (`rm` 101, `reg` unchanged), the low byte
+of the field becomes the displacement, and the three bytes after it are
+cut (`FnCx::cut`, §5.6.15). Whatever follows the field in the same
+instruction (an immediate of 1, 2 or 4 bytes, or nothing) moves with the
+code, so the instruction stays whole; prefixes (`66`, `F2`, `F3`, REX,
+`lock`) and the opcode come before the `ModRM` and are untouched. A
+recorded field whose preceding byte is not the `[rbp + disp32]` `ModRM`
+(`mod` 10, `rm` 101) keeps its `disp32`; no access emitted today has
+another shape. `Incoming(n)` and `Outgoing(n)` places, RIP-relative
+operands, `SIB` forms and the coroutine stubs' own frame words are
+emitted at their final displacement and were already the shortest form
+(`hod_mc_x64` picks it); `FrameRef::Coro` is `[rbx + o]`, not a local.
+
+The cuts are shrink-pass ranges like the prologue's (§5.6.15): they
+are disjoint (a field is inside one instruction, after its `ModRM`),
+recorded in offset order, and nothing refers into them — a relocation,
+a label, a fixup or a row is never inside an instruction's
+displacement. Each table of offsets moves by the bytes cut before it,
+so relocations of a later field of the same instruction (none today),
+call-site rows (whose ends are mapped, not their lengths), line rows,
+CFI rows and labels stay exact; the relaxation of §5.6.15 sees the cut
+bytes, so a branch over frame accesses that reaches only once they are
+`disp8` is relaxed too. Nothing in `hod_x64` records an instruction's
+length or a distance between two offsets except through those tables
+(§5.6.15, cut 2): relaxable branches have no frame operand; `rep movsb`
+copies have no loop; inline assembly is a barrier with no frame
+operand. Variable locations are `DW_OP_fbreg` from `rbp`: they name
+the displacement, not its encoding, and do not change.
+
+The frame layout (`hod_cg`'s, §5.1) is unchanged: ordering the slots by
+use, so that the most used are nearest `rbp`, would make about 0.7% of
+the corpus's text smaller at best (`spec/landed/codegen/WP-151.md`)
+and needs a layout pass in `hod_cg`; it is not done. A store to a slot
+followed at once by a load of it is not rewritten either: about 0.5%
+at best, and the load is the target of a branch in 43% of those pairs,
+which an x86-64 peephole at emission cannot see without a query on
+`hod_cg`'s labels.
+
+#### 5.6.18 The first libc++ run's leftovers (WP-152)
+
+Each against `llc -O0 -fast-isel=0` 22 and 19 under the emulator, and
+`hod_interp` where it has the type (`crates/hod_x64/tests/leftovers3.rs`):
+
+1. **Lanes of `i128` and `x86_fp80`** (`vector.rs`, "wide lanes"). Such
+   a vector is a `Mem` value (`<1 x i128>` too: `target::vector_class`
+   keeps it out of `Fpr`, as it travels in two general registers like an
+   `i128`, §4.3 of `spec/abi-x64.md`). Its image is packed as LLVM lays
+   it out: lane `i` at `16·i` (`i128`) or `10·i` (`x86_fp80`, 10 bytes
+   each, so a lane may start at any even offset). `extractelement`,
+   `insertelement` and `shufflevector` copy lanes between images:
+   a constant index is a frame place; a variable index (`lane_number`,
+   §5.6.13: an index out of range is poison, any lane) is scaled into
+   `rcx` (`shl rax, 4`, or `lea rax, [rax + rax·4]` · `lea rcx, [rcx +
+   rax·2]`) and the lane copied through `rcx`. A `poison` index of
+   `insertelement` copies nothing; an undefined `shufflevector` lane is
+   zeroed. More than `MAX_LANES` lanes is `x64:vector-length`; `fp128`
+   lanes stay `x64:vector-wide-element` (§5.6.16). Arithmetic on such
+   lanes, and casts other than item 5's, stay `x64:vector-wide-element`.
+2. **Vectors of `i128` and `x86_fp80` as arguments and results**
+   (`abi.rs`, `spec/abi-x64.md` §4.3): element by element, `x86_fp80`
+   as a scalar `x86_fp80` (16-byte stack slots; `st0`/`st1` results up
+   to two elements), `i128` as LLVM 22's 8-byte pieces where LLVM 19
+   agrees, else `x64:vector-i128-split`.
+3. **`byval` aligned above 16** (`call::align_stack_area`,
+   `spec/abi-x64.md` §6.2): before a call sequence with such an
+   argument, `sub rsp, c` · `and rsp, -a` · `add rsp, c` (`c` the
+   rounded stack size mod `a`) makes the stack-argument area
+   `a`-aligned, as `llc`'s realigned frame does. The callee needs
+   nothing: its copy is at the offset §6.2 gives. Not on a `musttail`
+   call (it reuses the caller's incoming area, which the caller's caller
+   aligned: `spec/abi-x64.md` §8.5 (5)). Above 2^30 (the `and`
+   immediate) or not a power of two stays `abi:byval-align`.
+4. **Values live across `llvm.eh.sjlj.setjmp`** (was
+   `x64:sjlj-live-value`). `intrinsic::sjlj_setjmp` calls
+   `FnCx::never_reuse_spill_slots` (§4.3), then `displace_all`: every
+   register value, an argument of the entry block still in its
+   register included, is stored to a spill slot, and its reload after
+   either return reads that slot, which nothing reuses. Home values
+   (§4.1) are in their slots already; a deferred value is computed
+   again from operands in memory; the buffer operand is pinned, and its
+   only register use is the `setjmp`. `rbx`, `r12`–`r15` are saved
+   whatever the body uses (§5.6.15), so no callee-saved register holds
+   a value of the caller across the jump.
+
+5. **Masks of `i128` lanes** (`mask.rs`, "`i128` lanes"): `icmp` of
+   `<N x i128>` and `zext`/`sext` of a mask to `<N x i128>`, `trunc`
+   back, lane by lane on the vector's slot as `llc` does. Equality:
+   `xor` of each half, `or`, `sete`/`setne`. An order: `cmp` of the low
+   halves, `sbb` of the high halves, `setb`/`setae`/`setl`/`setge`, the
+   operands swapped for `>` and `<=`. `zext`/`sext`: bit `i` of the mask
+   (negated for `sext`) as the low half, 0 or the same as the high half.
+   `trunc`: bit 0 of each low half. A cast of a mask to `x86_fp80` lanes
+   stays `x64:vector-wide-element`.
+
+Evidence: `spec/landed/codegen/WP-152.md`.
 
 ## 6. Control flow
 
@@ -3535,8 +3645,14 @@ above; a target owes the tail exits after its epilogue
 (`FnCx::tail_exit`; AArch64 `frame.rs`) and, in a variadic function, the
 pass-through of the variable-argument registers (AArch64 `call.rs`,
 `abi-a64.md` §8.5). AArch64 has both (WP-038).
-The facade has to hand the hook to its classifier; until it does,
-every `musttail` call is `musttail:stack-args-unknown` there.
+The facade hands the hook to its classifier for both targets
+(`crates/hod/src/session.rs` `classifier_for`): AArch64 with
+`TargetStackArgs::new(&target)`, x86-64 with
+`TargetStackArgs::per_function(&target, hod_x64::call::target_of)`,
+because `X64::assign` depends on the target features of the function
+making the call (`spec/abi-x64.md` §8.5, WP-148). A classifier without
+the hook refuses every `musttail` call it must size as
+`musttail:stack-args-unknown`.
 
 ### 7.2 Argument assignment
 

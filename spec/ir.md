@@ -1697,7 +1697,7 @@ groups in the order of `docs/status/support.md`: `module`, `structor`,
 `debug`, `global`, `linkage`, `visibility`, `tls`, `comdat`, `init`,
 `function`, `cc`, `attr`, `type`, `inst`, `mem`, `atomicrmw`, `call`,
 `tail`, `bundle`, `landingpad`, `operand`, `const-expr`, `intrinsic`.
-There are 445 rows.
+There are 674 rows (`docs/status/support.md`, "Summary").
 
 ### 8.5 Vocabulary
 

@@ -181,6 +181,10 @@ fn frame_mem(place: FrameRef, sp_shift: i32) -> (Mem, bool) {
         }
         FrameRef::Incoming(n) => (Mem::base(RBP, INCOMING_BASE.wrapping_add(n as i32)), false),
         FrameRef::Outgoing(n) => (Mem::base(RSP, (n as i32).wrapping_add(sp_shift)), false),
+        // A coroutine's heap frame (§7.6). `X64` does not compile coroutine
+        // bodies (`Target::CORO_BODIES` is false: `coro:target`, WP-137),
+        // so the core never hands it one.
+        FrameRef::Coro(_) => unreachable!("x86-64 refuses coroutine bodies as coro:target"),
     }
 }
 

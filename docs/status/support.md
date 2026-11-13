@@ -31,8 +31,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `init` | 10 | 6 | 3 | 1 | 5 | 4 | 1 |
 | `function` | 6 | 6 | 0 | 0 | 6 | 0 | 0 |
 | `cc` | 15 | 6 | 7 | 2 | 1 | 11 | 3 |
-| `attr` | 57 | 23 | 31 | 3 | 15 | 34 | 8 |
-| `type` | 15 | 11 | 1 | 3 | 5 | 8 | 2 |
+| `attr` | 57 | 24 | 30 | 3 | 15 | 34 | 8 |
+| `type` | 15 | 12 | 0 | 3 | 5 | 8 | 2 |
 | `inst` | 67 | 60 | 0 | 7 | 44 | 16 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 1 | 2 | 0 |
 | `atomicrmw` | 21 | 21 | 0 | 0 | 0 | 21 | 0 |
@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 7 | 4 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 354 | 334 | 20 | 0 | 11 | 127 | 216 |
-| total | 663 | 533 | 84 | 46 | 145 | 247 | 271 |
+| `intrinsic` | 354 | 346 | 8 | 0 | 11 | 127 | 216 |
+| total | 663 | 547 | 70 | 46 | 145 | 247 | 271 |
 
 ## `module`
 
@@ -248,7 +248,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:ssp` | not-implemented | not-implemented | spec/codegen.md §13. open question: accept and ignore, or implement |
 | `attr:sspreq` | not-implemented | not-implemented | spec/codegen.md §13 |
 | `attr:sspstrong` | not-implemented | not-implemented | spec/codegen.md §13 |
-| `attr:presplitcoroutine` | not-implemented | not-implemented | T-XF (coroutine splitting) |
+| `attr:presplitcoroutine` | supported | not-implemented | one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name (WP-106) |
 | `attr:sanitize_address` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_alloc_token` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_hwaddress` | not-implemented | not-implemented | unplanned |
@@ -301,7 +301,7 @@ Type classes of the values instructions produce and consume.
 | `type:vector` | supported | not-implemented | vectors of fixed length; what is lowered of them by element and shape: `spec/codegen.md` §5.5.1 (WP-079) |
 | `type:scalable-vector` | rejected | rejected | scalable vectors are refused by design |
 | `type:aggregate` | supported | supported | structs and arrays as first-class values (WP-040) |
-| `type:token` | not-implemented | not-implemented | T-XF (coroutine splitting). the results of the coroutine intrinsics |
+| `type:token` | supported | not-implemented | the results and operands of the coroutine intrinsics (WP-106) |
 | `type:target-ext` | rejected | rejected | no target extension type has a lowering |
 
 ## `inst`
@@ -631,24 +631,24 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.vector.reduce.fmul` | supported (half, float, double, vector) | not-implemented | lanes up to 256 (WP-081) |
 | `intrinsic:llvm.vector.extract` | not-implemented | not-implemented | M2 (vectors) |
 | `intrinsic:llvm.vector.insert` | not-implemented | not-implemented | M2 (vectors) |
-| `intrinsic:llvm.coro.id` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.alloc` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.begin` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.end` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.free` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.size` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.align` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.save` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.suspend` | not-implemented | not-implemented | T-XF (coroutine splitting) |
+| `intrinsic:llvm.coro.id` | supported (int, ptr, token) | not-implemented | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.alloc` | supported (int, token) | not-implemented | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.begin` | supported (ptr, token) | not-implemented | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.end` | supported (int, ptr, token) | not-implemented | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.free` | supported (ptr, token) | not-implemented | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.size` | supported (int) | not-implemented | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.align` | supported (int) | not-implemented | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.save` | supported (ptr, token) | not-implemented | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.suspend` | supported (int, token) | not-implemented | in a coroutine body (WP-106) |
 | `intrinsic:llvm.coro.resume` | supported (ptr) | not-implemented | in any function (WP-105) |
 | `intrinsic:llvm.coro.destroy` | supported (ptr) | not-implemented | in any function (WP-105) |
 | `intrinsic:llvm.coro.done` | supported (int, ptr) | not-implemented | in any function (WP-105) |
 | `intrinsic:llvm.coro.promise` | supported (int, ptr) | not-implemented | in any function; a constant power-of-two alignment (WP-105) |
 | `intrinsic:llvm.coro.frame` | not-implemented | not-implemented | T-XF (coroutine splitting) |
 | `intrinsic:llvm.coro.noop` | supported (ptr) | not-implemented | the noop frame (WP-105) |
-| `intrinsic:llvm.coro.is_in_ramp` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.await.suspend.void` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.await.suspend.bool` | not-implemented | not-implemented | T-XF (coroutine splitting) |
+| `intrinsic:llvm.coro.is_in_ramp` | supported (int) | not-implemented | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.await.suspend.void` | supported (ptr) | not-implemented | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.await.suspend.bool` | supported (int, ptr) | not-implemented | in a coroutine body (WP-106) |
 | `intrinsic:llvm.coro.await.suspend.handle` | not-implemented | not-implemented | T-XF (coroutine splitting) |
 | `intrinsic:llvm.sshl.sat` | supported (int) | not-implemented | up to 64 bits (WP-084) |
 | `intrinsic:llvm.ushl.sat` | supported (int) | not-implemented | up to 64 bits (WP-084) |

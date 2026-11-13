@@ -290,7 +290,9 @@ fn the_other_triggers_of_the_o0_pipeline_are_refused_by_name() {
             "attr:instrument-function-exit",
         ),
         ("sanitize_alloc_token", "attr:sanitize_alloc_token"),
-        ("presplitcoroutine", "attr:presplitcoroutine"),
+        // Coroutine bodies are compiled since WP-106: what the plan
+        // refuses is refused by its `coro:*` name (here, no `coro.id`).
+        ("presplitcoroutine", "coro:begin-shape"),
     ];
     for (attr, name) in cases {
         let module =
@@ -299,7 +301,7 @@ fn the_other_triggers_of_the_o0_pipeline_are_refused_by_name() {
     }
     let coro = "declare token @llvm.coro.id(i32, ptr, ptr, ptr)\n\
                 define void @f() {\n  %t = call token @llvm.coro.id(i32 0, ptr null, ptr null, ptr null)\n  ret void\n}\n";
-    assert_eq!(declined(coro), "intrinsic:llvm.coro.id");
+    assert_eq!(declined(coro), "coro:outside-coroutine");
 }
 
 // End to end.

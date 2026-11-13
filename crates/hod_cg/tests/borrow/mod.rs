@@ -119,6 +119,7 @@ pub fn chunk_from(
             vars: empty.clone(),
             islands: empty.clone(),
             block_offsets: empty,
+            coro_entries: None,
         });
     }
     chunk

@@ -33,7 +33,7 @@ const STATIC: Options = Options {
     code_model: None,
     function_sections: false,
     data_sections: false,
-    stress: Stress { min_pool: false, far: false, displace: false },
+    stress: Stress { min_pool: false, far: false, displace: false, coro_frame: false },
     debug_compression: hod_obj::Compression::None,
     split_dwarf: hod_dwarf::SplitDwarf::Off,
 };
@@ -454,11 +454,12 @@ fn the_noop_frame_is_written_once_per_object() {
     }
 }
 
-/// A presplit coroutine stays refused, under the names of its attribute
-/// and its body intrinsics, until WP-106; the handle operations are
-/// accepted wherever they are.
+/// A presplit coroutine's attribute and body intrinsics are classified
+/// supported (WP-106; what the plan refuses is refused later, by its
+/// `coro:*` name), the handle operations wherever they are; `coro.frame`
+/// and symmetric transfer (`await.suspend.handle`, WP-107) stay refused.
 #[test]
-fn coroutine_bodies_stay_refused() {
+fn coroutine_bodies_are_classified() {
     let text = module_text(
         22,
         r"
@@ -467,27 +468,34 @@ declare ptr @llvm.coro.begin(token, ptr)
 declare i8 @llvm.coro.suspend(token, i1)
 declare i1 @llvm.coro.done(ptr)
 declare void @llvm.coro.resume(ptr)
+declare ptr @llvm.coro.frame()
+declare void @llvm.coro.await.suspend.handle(ptr, ptr, ptr)
 define ptr @co(ptr %mem) presplitcoroutine {
   %id = call token @llvm.coro.id(i32 16, ptr null, ptr null, ptr null)
   %h = call ptr @llvm.coro.begin(token %id, ptr %mem)
   %s = call i8 @llvm.coro.suspend(token none, i1 false)
   %d = call i1 @llvm.coro.done(ptr %h)
   call void @llvm.coro.resume(ptr %h)
+  %f = call ptr @llvm.coro.frame()
+  call void @llvm.coro.await.suspend.handle(ptr %f, ptr %h, ptr null)
   ret ptr %h
 }
 ",
     );
     let (module, bodies) = parse(&text);
     let census = hod_ir::census(&module, &bodies);
-    for refused in [
+    for refused in ["intrinsic:llvm.coro.frame", "intrinsic:llvm.coro.await.suspend.handle"] {
+        assert!(census.get(refused).is_some(), "{refused}: {:?}", census.entries());
+    }
+    for accepted in [
         "attr:presplitcoroutine",
+        "type:token",
         "intrinsic:llvm.coro.id",
         "intrinsic:llvm.coro.begin",
         "intrinsic:llvm.coro.suspend",
+        "intrinsic:llvm.coro.done",
+        "intrinsic:llvm.coro.resume",
     ] {
-        assert!(census.get(refused).is_some(), "{refused}: {:?}", census.entries());
-    }
-    for accepted in ["intrinsic:llvm.coro.done", "intrinsic:llvm.coro.resume"] {
         assert!(census.get(accepted).is_none(), "{accepted}: {:?}", census.entries());
     }
     let (module, bodies) = parse(&module_text(22, HANDLES));

@@ -169,6 +169,23 @@ pub fn intrinsic<'a>(
         (I::CoroResume | I::CoroDestroy | I::CoroDone | I::CoroPromise | I::CoroNoop, _) => {
             crate::coro::intrinsic(cx, inst, which, args)
         }
+        (
+            I::CoroId
+            | I::CoroAlloc
+            | I::CoroBegin
+            | I::CoroEnd
+            | I::CoroFree
+            | I::CoroSize
+            | I::CoroAlign
+            | I::CoroSave
+            | I::CoroSuspend
+            | I::CoroFrame
+            | I::CoroIsInRamp
+            | I::CoroAwaitSuspendVoid
+            | I::CoroAwaitSuspendBool
+            | I::CoroAwaitSuspendHandle,
+            _,
+        ) => crate::coro_body::intrinsic(cx, inst, which, args),
         (I::ReadRegister | I::ReadVolatileRegister | I::WriteRegister, _) => {
             crate::named_reg::lower(cx, inst, which, args)
         }
@@ -698,6 +715,7 @@ fn slot_at(slot: FrameRef, off: u32) -> FrameRef {
         FrameRef::Local(o) => FrameRef::Local(o + off),
         FrameRef::Incoming(o) => FrameRef::Incoming(o + off),
         FrameRef::Outgoing(o) => FrameRef::Outgoing(o + off),
+        FrameRef::Coro(o) => FrameRef::Coro(o + off),
     }
 }
 

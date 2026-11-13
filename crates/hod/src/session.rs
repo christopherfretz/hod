@@ -23,6 +23,7 @@ use crate::back::generate_with;
 use crate::front::{Report, Settings, reason_name, symbol_name};
 use crate::{CompileError, Construct, Options, OutputKind, Unsupported};
 
+mod coro;
 pub(crate) mod inlining;
 
 /// What the producer may do next.
@@ -504,7 +505,15 @@ impl Session {
                             "function '{function}': {error}"
                         )));
                     }
-                    Ok(()) => self.accept(body),
+                    // WP-106: a coroutine the plan refuses, by its name.
+                    Ok(()) => match coro::refusal(&self.module, &body) {
+                        Some(name) => {
+                            let function = symbol_name(&self.module, sym);
+                            let construct = Construct::Named(name.into());
+                            self.note(Unsupported::in_function(construct, function).into());
+                        }
+                        None => self.accept(body),
+                    },
                 },
             }
         }

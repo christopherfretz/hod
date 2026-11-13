@@ -180,10 +180,16 @@ workflow (a `sweep/**` branch or by hand; never a required check).
 
 **Tests that need a particular host.** A test of AArch64 programs runs
 on both hosts when it takes its toolchain from `hod_testutil::target`
-(natively, or under `qemu-aarch64`); so do `hod_obj`'s `link`,
-`link_tls` and `link_conventions`, `hod_cg`'s `emit_link` and `emit_eh`,
-and `hod_ir`'s `print_run`. These still run on an AArch64 host only, and
-why:
+(natively, or under `qemu-aarch64`, its C and C++ drivers built by the
+AArch64 gcc, g++ or `clang --target=aarch64-linux-gnu`); so do
+`hod_obj`'s `link`, `link_tls` and `link_conventions`, `hod_cg`'s
+`emit_link` and `emit_eh`, `hod_ir`'s `print_run`, `hod`'s `back` and
+`musttail`, and `hod_a64`'s program tests (`Toolchain::aarch64`). A test
+of an extension's instructions asks for QEMU's `max` model
+(`Toolchain::with_emulated_cpu`: `neon`, `tail3`'s bf16 intrinsics).
+`hod_interp`'s NaNs under `NanPolicy::Host` are the host's, so off an
+AArch64 host `hod_a64`'s float tests take any NaN for the interpreter's.
+These still run on an AArch64 host only, and why:
 
 - the debugger tests of AArch64 programs (`hod_dwarf`'s `debugger`,
   `die_debugger`, `type_debugger`; `hod_a64`'s `*_debugger`, `dies_e2e`,

@@ -6,8 +6,11 @@
 //!
 //! The IR is read as text (`llvm-dis` syntax, as the front ends write it):
 //! the `!DILocation`s, and per defined function the opcode, line and
-//! column of each instruction with a `!dbg`. Scopes are not followed: a
-//! location's line and column are what the line table shows.
+//! column of each instruction with a `!dbg`, the file of its scope
+//! (`DIFile` of the `DILocation`'s scope, joined as the line table joins
+//! it), whether its block has a predecessor (the entry block, or a block
+//! some `label %N` names: `llc` deletes the others, even at `-O0`) and
+//! the pointer operand of a load or `getelementptr`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,6 +20,13 @@ pub struct Located {
     pub opcode: String,
     pub line: u32,
     pub column: u32,
+    /// The file of the location's scope; `None` when the IR does not say
+    /// (it then matches any file).
+    pub file: Option<String>,
+    /// Its block is the entry block or has a predecessor.
+    pub reachable: bool,
+    /// A load's or `getelementptr`'s pointer operand (`%13`).
+    pub pointer: Option<String>,
 }
 
 /// What the classes need of one function.
@@ -84,26 +94,39 @@ impl IrFacts {
     pub fn add_module(&mut self, text: &str) {
         let locations: BTreeMap<u32, (u32, u32)> =
             text.lines().filter_map(location).map(|(id, l, c)| (id, (l, c))).collect();
-        let mut current: Option<(String, IrFunction)> = None;
+        let files = Files::of(text);
+        let mut current: Option<(String, IrFunction, Blocks)> = None;
         for line in text.lines() {
             if let Some(name) = defined(line) {
-                current = Some((name, IrFunction::default()));
+                current = Some((name, IrFunction::default(), Blocks::default()));
                 continue;
             }
-            let Some((name, function)) = current.as_mut() else { continue };
+            let Some((name, function, blocks)) = current.as_mut() else { continue };
             if line.starts_with('}') {
-                let (name, function) = (std::mem::take(name), std::mem::take(function));
+                let (name, mut function) = (std::mem::take(name), std::mem::take(function));
+                blocks.mark(&mut function.insts);
                 self.functions.insert(name, function);
                 current = None;
                 continue;
             }
+            blocks.read(line);
             if line.contains("@llvm.is.constant.") {
                 function.calls_is_constant = true;
             }
-            if let (Some(op), Some(&(l, c))) =
-                (opcode(line), dbg(line).and_then(|n| locations.get(&n)))
+            if let (Some(op), Some(n)) = (opcode(line), dbg(line))
+                && let Some(&(l, c)) = locations.get(&n)
             {
-                function.insts.push(Located { opcode: op.to_owned(), line: l, column: c });
+                let pointer =
+                    matches!(op, "load" | "getelementptr").then(|| pointer(line)).flatten();
+                function.insts.push(Located {
+                    opcode: op.to_owned(),
+                    line: l,
+                    column: c,
+                    file: files.of_location(n),
+                    reachable: true,
+                    pointer,
+                });
+                blocks.of_inst.push(blocks.current.clone());
             }
         }
     }
@@ -117,20 +140,39 @@ impl IrFacts {
         facts
     }
 
-    /// The permitted class of a `(function, line)` pair only one side
-    /// has (`spec/dwarf.md` §5.7), by the opcodes of the function's
-    /// instructions at that line (any column):
+    /// The permitted class of a `(function, file, line)` pair only one
+    /// side has (`spec/dwarf.md` §5.7), by the opcodes of the function's
+    /// instructions at that line (any column) of that file, in blocks
+    /// with a predecessor:
     ///
     /// - `load-placement`: they are loads and `getelementptr`s, at least
     ///   one load (either side);
+    /// - `post-indexed-load`: hod's side, they are `getelementptr`s whose
+    ///   pointer operand some load of the function reads, which `llc`
+    ///   folds into that load's post-increment;
     /// - `is-constant`: hod's side, in a function that calls
     ///   `llvm.is.constant`.
-    pub fn pair_class(&self, function: &str, line: u32, hod_side: bool) -> Option<PairClass> {
+    pub fn pair_class(
+        &self,
+        function: &str,
+        file: &str,
+        line: u32,
+        hod_side: bool,
+    ) -> Option<PairClass> {
         let f = self.functions.get(function)?;
-        let ops: BTreeSet<&str> =
-            f.insts.iter().filter(|i| i.line == line).map(|i| i.opcode.as_str()).collect();
+        let at: Vec<&Located> = f
+            .insts
+            .iter()
+            .filter(|i| {
+                i.line == line && i.reachable && i.file.as_deref().is_none_or(|x| x == file)
+            })
+            .collect();
+        let ops: BTreeSet<&str> = at.iter().map(|i| i.opcode.as_str()).collect();
         if ops.contains("load") && ops.iter().all(|op| matches!(*op, "load" | "getelementptr")) {
             return Some(PairClass::LoadPlacement);
+        }
+        if hod_side && !at.is_empty() && at.iter().all(|i| f.post_indexed(i)) {
+            return Some(PairClass::PostIndexedLoad);
         }
         if hod_side && f.calls_is_constant {
             return Some(PairClass::IsConstant);
@@ -155,7 +197,141 @@ impl IrFacts {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PairClass {
     LoadPlacement,
+    PostIndexedLoad,
     IsConstant,
+}
+
+impl IrFunction {
+    /// `i` is a `getelementptr` whose pointer operand a load of the
+    /// function reads (the post-indexed load `llc` folds it into).
+    fn post_indexed(&self, i: &Located) -> bool {
+        i.opcode == "getelementptr"
+            && i.pointer.as_ref().is_some_and(|p| {
+                self.insts.iter().any(|l| l.opcode == "load" && l.pointer.as_ref() == Some(p))
+            })
+    }
+}
+
+/// The first `ptr %x` operand of an instruction line (a load's or a
+/// `getelementptr`'s pointer: their type comes first and is not `ptr %`).
+fn pointer(line: &str) -> Option<String> {
+    let at = line.find("ptr %")? + 4;
+    let rest = &line[at..];
+    let end = if rest[1..].starts_with('"') {
+        rest[2..].find('"').map(|e| e + 3)?
+    } else {
+        rest[1..]
+            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '$')))
+            .map_or(rest.len(), |e| e + 1)
+    };
+    Some(rest[..end].to_owned())
+}
+
+/// The files of a module's locations: `DIFile`s, the `file:` of each
+/// scope, and each `DILocation`'s scope.
+#[derive(Default)]
+struct Files {
+    /// `DIFile` id: the joined path (the name when absolute, else
+    /// `directory/name`, as `lines.rs` joins the line table's).
+    names: BTreeMap<u32, String>,
+    /// Scope id: its `file:` id.
+    scopes: BTreeMap<u32, u32>,
+    /// `DILocation` id: its `scope:` id.
+    locations: BTreeMap<u32, u32>,
+}
+
+/// The id of a field `name: !N` of a metadata line.
+fn field_ref(fields: &str, name: &str) -> Option<u32> {
+    let at = fields.find(name)? + name.len();
+    let digits: String =
+        fields[at..].strip_prefix('!')?.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// The string of a field `name: "..."` of a metadata line.
+fn field_str<'t>(fields: &'t str, name: &str) -> Option<&'t str> {
+    let at = fields.find(name)? + name.len();
+    fields[at..].strip_prefix('"')?.split('"').next()
+}
+
+impl Files {
+    fn of(text: &str) -> Self {
+        let mut files = Self::default();
+        for line in text.lines() {
+            let Some((id, rest)) = line.strip_prefix('!').and_then(|r| r.split_once(" = ")) else {
+                continue;
+            };
+            let Ok(id) = id.parse::<u32>() else { continue };
+            let rest = rest.strip_prefix("distinct ").unwrap_or(rest);
+            if rest.starts_with("!DIFile(") {
+                let name = field_str(rest, "filename: ").unwrap_or_default();
+                let dir = field_str(rest, "directory: ").unwrap_or_default();
+                let joined = if name.starts_with('/') || dir.is_empty() {
+                    name.to_owned()
+                } else {
+                    format!("{dir}/{name}")
+                };
+                files.names.insert(id, joined);
+            } else if rest.starts_with("!DILocation(") {
+                if let Some(scope) = field_ref(rest, "scope: ") {
+                    files.locations.insert(id, scope);
+                }
+            } else if rest.starts_with("!DI")
+                && let Some(file) = field_ref(rest, " file: ")
+            {
+                files.scopes.insert(id, file);
+            }
+        }
+        files
+    }
+
+    fn of_location(&self, location: u32) -> Option<String> {
+        let scope = self.locations.get(&location)?;
+        self.names.get(self.scopes.get(scope)?).cloned()
+    }
+}
+
+/// A function's blocks while it is read: the current block's label
+/// (`None` for the entry block), the labels some `label %N` names, and
+/// each located instruction's block.
+#[derive(Default)]
+struct Blocks {
+    current: Option<String>,
+    named: BTreeSet<String>,
+    of_inst: Vec<Option<String>>,
+}
+
+impl Blocks {
+    fn read(&mut self, line: &str) {
+        if !line.starts_with([' ', '\t', ';']) && !line.is_empty() {
+            if let Some((label, _)) = line.split_once(':') {
+                self.current = Some(label.trim_matches('"').to_owned());
+            }
+            return;
+        }
+        let mut rest = line;
+        while let Some(at) = rest.find("label %") {
+            rest = &rest[at + 7..];
+            let name = if let Some(quoted) = rest.strip_prefix('"') {
+                quoted.split('"').next().unwrap_or_default()
+            } else {
+                let end = rest
+                    .find(|c: char| {
+                        !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '$'))
+                    })
+                    .unwrap_or(rest.len());
+                &rest[..end]
+            };
+            self.named.insert(name.to_owned());
+        }
+    }
+
+    /// Marks the instructions of blocks without a predecessor.
+    fn mark(&mut self, insts: &mut [Located]) {
+        for (inst, block) in insts.iter_mut().zip(&self.of_inst) {
+            inst.reachable = block.as_ref().is_none_or(|b| self.named.contains(b));
+        }
+    }
 }
 
 // ------------------------------------------------- sessions ----
@@ -253,11 +429,71 @@ define linkonce_odr void @\"quoted name\"() {
         assert_eq!(ops, ["load", "call", "store", "call", "ret"]);
         assert_eq!(main.insts[4].column, 0);
         assert!(facts.functions.contains_key("quoted name"));
-        assert_eq!(facts.pair_class("main", 9, false), Some(PairClass::LoadPlacement));
-        assert_eq!(facts.pair_class("main", 20, true), Some(PairClass::IsConstant));
-        assert_eq!(facts.pair_class("main", 20, false), None);
-        assert_eq!(facts.pair_class("other", 9, true), None);
+        assert_eq!(facts.pair_class("main", "c.c", 9, false), Some(PairClass::LoadPlacement));
+        assert_eq!(facts.pair_class("main", "c.c", 20, true), Some(PairClass::IsConstant));
+        assert_eq!(facts.pair_class("main", "c.c", 20, false), None);
+        assert_eq!(facts.pair_class("other", "c.c", 9, true), None);
         assert!(facts.has_call_at(20, 13) && !facts.has_call_at(20, 7));
+    }
+
+    // `post-indexed-load`, and the file and predecessor checks (WP-111):
+    // libstdc++'s `_Sp_counted_base::_M_release_last_use`, whose line 187
+    // also has a terminate landing pad without predecessors, which `llc`
+    // deletes.
+    const POST_INDEXED: &str = "\
+define void @release(ptr %0) personality ptr @p !dbg !10 {
+  %2 = alloca ptr, align 8
+  %3 = load ptr, ptr %2, align 8
+  %4 = load ptr, ptr %3, align 8, !dbg !20
+  call void %4(ptr %3), !dbg !20
+  %5 = getelementptr inbounds nuw %\"class.C\", ptr %3, i32 0, i32 2, !dbg !21
+  %6 = getelementptr inbounds i8, ptr %2, i64 4, !dbg !24
+  br label %7, !dbg !20
+
+7:                                                ; preds = %1
+  %8 = load i32, ptr %5, align 4, !dbg !23
+  ret void, !dbg !23
+
+9:                                                ; No predecessors!
+  %10 = landingpad { ptr, i32 }
+          catch ptr null, !dbg !22
+  call void @t(ptr null), !dbg !22
+  unreachable, !dbg !22
+}
+!1 = !DIFile(filename: \"c.cpp\", directory: \"/w\")
+!2 = !DIFile(filename: \"/abs/h.h\", directory: \"/w\")
+!10 = distinct !DISubprogram(name: \"release\", scope: !1, file: !1, line: 1)
+!11 = distinct !DILexicalBlock(scope: !10, file: !1, line: 3, column: 6)
+!20 = !DILocation(line: 2, column: 3, scope: !10)
+!21 = !DILocation(line: 3, column: 46, scope: !11)
+!22 = !DILocation(line: 3, column: 6, scope: !11)
+!23 = !DILocation(line: 4, column: 3, scope: !10)
+!24 = !DILocation(line: 3, column: 9, scope: !12)
+!12 = distinct !DILexicalBlockFile(scope: !10, file: !2, discriminator: 0)
+";
+
+    #[test]
+    fn post_indexed_loads_by_file_and_predecessor() {
+        let facts = IrFacts::of_modules([POST_INDEXED]);
+        let f = &facts.functions["release"];
+        let gep = &f.insts[2];
+        assert_eq!(
+            (gep.file.as_deref(), gep.pointer.as_deref(), gep.reachable),
+            (Some("/w/c.cpp"), Some("%3"), true)
+        );
+        assert_eq!(f.insts[3].file.as_deref(), Some("/abs/h.h"));
+        assert!(f.insts[4].reachable && !f.insts.last().unwrap().reachable);
+        let class = |file, line, hod| facts.pair_class("release", file, line, hod);
+        assert_eq!(class("/w/c.cpp", 3, true), Some(PairClass::PostIndexedLoad));
+        // llc's side, another file's line 3 (a gep of a slot no load
+        // reads), and a line without instructions.
+        assert_eq!(class("/w/c.cpp", 3, false), None);
+        assert_eq!(class("/abs/h.h", 3, true), None);
+        assert_eq!(class("/w/c.cpp", 5, true), None);
+        // The landing pad counted (it had a predecessor): not the class.
+        let reached = POST_INDEXED.replace("br label %7", "br label %9");
+        let facts = IrFacts::of_modules([reached.as_str()]);
+        assert_eq!(facts.pair_class("release", "/w/c.cpp", 3, true), None);
     }
 
     // spec/harness.md "debug", "Permitted differences of sessions".

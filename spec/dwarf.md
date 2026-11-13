@@ -90,10 +90,15 @@ module; several appear only in linked IR (`llvm-link`). The line writer of
 appending to the same two sections (planned: the writer today creates the
 sections, §4.6).
 
-A unit with neither globals nor code gets no debug sections at all from
-`llc` (checked with `llc` 19 by WP-053). `write_debug_info` still writes
-such a unit when asked to (it verifies clean); skipping it as `llc` does
-is the bridge's choice (§9).
+A unit without code is written by `llc` (`DwarfDebug::beginModule`)
+when it lists a global (placed or not), an enumeration, a retained type
+or an import whose scope is not a function's or a block's (a function's
+imports are its children); a unit that lists none of them gets no debug
+sections at all (checked with `llc` 19 by WP-053, and with `llc` 19 and
+22 by WP-111: a compile-only test with only `using` declarations, or
+only `-fno-eliminate-unused-debug-types` types). The bridge applies the
+same rule (`crates/hod_cg/src/emit/lines.rs`, `lists_entities`);
+`write_debug_info` itself writes whatever unit it is asked to.
 
 ### 1.3 Functions in COMDAT groups and in their own sections
 
@@ -570,8 +575,16 @@ Since WP-097 (the harness recognises each BY RULE from the IR both
 programs were built from, `xtask/src/debug/permitted.rs`; nothing is
 masked in general):
 
-- `load-placement`: a `(function, line)` pair one side lacks where the
-  function's instructions at that line (any column) are loads and
+The instructions "at a pair's line" are, since WP-111, the function's
+instructions with that line (any column) whose location's scope has the
+pair's file (the scope's `DIFile`, joined as the line table joins it),
+in the entry block or a block some `label %N` names: `llc` deletes
+blocks without a predecessor even at `-O0` (`UnreachableBlockElim`), and
+hod emits none (a terminate landing pad left behind by a folded
+`invoke` has the line of the call it guarded).
+
+- `load-placement`: a `(function, file, line)` pair one side lacks where the
+  function's instructions at that line are loads and
   `getelementptr`s, at least one load. `llc`'s `SelectionDAG` merges a
   load with an earlier or later load of the same address in its block
   (the dead load of a trivial destructor's `n->~T()` keeps ITS line in
@@ -580,6 +593,17 @@ masked in general):
   a load of a call's argument into the call's sequence
   (`arg_load.c`); hod emits each load where the IR has it. Reproducing
   it would be load CSE, an optimisation. Either side.
+- `post-indexed-load` (WP-111): hod's pair whose instructions at the
+  line are all `getelementptr`s whose pointer operand a load of the
+  function (with a location) also reads. `llc`'s AArch64 load/store
+  optimizer merges the add of a constant offset into an earlier load of
+  the same base as its post-increment (`ldr x8, [x9], #12`), which runs
+  at that load's line, so the `getelementptr`'s line has no row of its
+  own (libstdc++'s `_Sp_counted_base::_M_release_last_use`,
+  `shared_ptr_base.h:187`, `&_M_weak_count` as the argument of an
+  `always_inline` call; `xtask/tests/data/debug_post_index/post_index.cpp`,
+  `llc` 19 and 22). Reproducing it would be an optimisation. hod's side
+  only: the fold removes `llc`'s row.
 - `is-constant`: hod's pair in a function that calls `llvm.is.constant`.
   `llc` folds the call to false even at `-O0` and deletes the blocks it
   guards (`LowerConstantIntrinsics`); hod does not emit the dead
@@ -870,6 +894,20 @@ the type DIEs come after every function, in `llc`'s order.
 fragment are refused (§ below). `llc -O0` writes the same location for
 a slot as `DW_OP_fbreg` from its own frame base, so locations are
 compared by behaviour, under the debuggers (§6.7, §8.8).
+
+**Retained variables** (WP-111, `retained_vars`): a `DILocalVariable`
+in the subprogram's `retainedNodes` that no row of the function names
+gets a DIE without `location` (the families' location bit clear), in
+its own scope when that scope has code (else none), after the scope's
+declared variables (a parameter in its number's place), its type made
+after the function's other variables' (`llc`'s `collectEntityInfo`
+makes the retained nodes' entities last). A `CoroSplit` ramp retains
+`__coro_frame` and declares it only on a `phi`, which neither `llc` nor
+hod describes (`spec/codegen.md` §9.5): gdb prints `<optimized out>`,
+lldb `<no location, value may have been optimized out>`, under both. A
+retained label without a record is not written (no producer emits one
+at `-O0`); a function with an abstract instance and retained nodes is
+refused (`debug:retained-nodes`, §6.9).
 
 **Lexical blocks** (`scope_ranges`). `llc`'s `LexicalScopes` over the
 function's transitions: for each transition with a location, the scopes
@@ -1481,6 +1519,17 @@ For each, the scope comes first, then the entity's DIE if it has none
 (a namespace, a type, a function declaration, a global without a
 location), then the import: decl, `import`, `name`.
 
+Checked against `llc` for every shape clang 19 and 22 write (WP-111,
+`crates/hod_a64/tests/dies_followups.rs`
+`imports_of_every_shape_match_llc`, `data/dies_followups/imports.cpp`):
+using-directives at unit, namespace, function and nested block scope,
+using-declarations of a function, a variable and a type at each of
+those scopes, namespace aliases at unit and block scope, and the C
+library's imports into `std` from `<cstdlib>`, `<cmath>`, `<cstring>`
+and `<vector>`: 786 imports in 3 trees (clang 19 by `llc` 19 and 22,
+clang 22 by `llc` 22), all equal, without a code change. kiln++ writes
+no `DIImportedEntity`.
+
 **Specifications** (`getOrCreateSubprogramDIE`,
 `applySubprogramDefinitionAttributes`):
 - a member function's declaration that its class does not list (a
@@ -1758,12 +1807,12 @@ other than the unit's with `low_pc`/`high_pc` equals one with
 names the class; the census (`scripts/debug-census.sh`) counts trees
 equal, permitted by class, and differing.
 
-**Not written by `hod_cg`, so not compared** (each an `#[ignore]`d test in
-`crates/hod_a64/tests/dies_label.rs`): a unit with imports but no code
-or globals (`llc` writes it; the bridge's `finish` writes none); a
-`dbg_declare` of a non-slot address in a coroutine's ramp (`llc -O0`
-drops it, hod's code generator keeps it). clang 22's ramp declares the
-coroutine's parameter twice, which stays `debug:variable-twice`.
+**Not written by `hod_cg` at WP-098, written since WP-111**
+(`crates/hod_a64/tests/dies_label.rs`, no longer ignored): a unit with
+imports but no code or globals (§1.2); a `dbg_declare` of the frame
+pointer's `phi` in a coroutine's ramp (`spec/codegen.md` §9.5, §6.4
+"Retained variables"). With it, clang 22's ramp no longer declares its
+parameter twice: the second declaration was the `phi`'s.
 
 **WP-099's findings** (`docs/status/debug.md`; each compared with `llc`
 19 and 22 for clang 19, clang 22 and kiln++ in `dies_label.rs`, and a
@@ -2103,6 +2152,54 @@ frame base and slot offsets were already reported (`frame.rs`
 
 Evidence: `xtask/tests/debug_x64.rs`, `tests/debug/x64_places.c`,
 `spec/landed/dwarf/WP-136.md`, `docs/status/debug-x64.md`.
+
+### 6.18 Follow-ups of WP-097 and WP-098 (implemented, WP-111)
+
+- **A unit without code** is written when it lists globals,
+  enumerations, retained types or imports not scoped in a function
+  (§1.2; `crates/hod_cg/src/emit/lines.rs` `lists_entities`).
+- **A `#dbg_declare` of a `phi`** has no row and its variable no
+  location (`spec/codegen.md` §9.5); a retained variable without a row
+  gets a DIE without a location (§6.4 "Retained variables").
+- **`debug:variable-twice`** (clang 22's coroutine ramp): its second
+  declaration of the parameter was the frame pointer's `phi`, now
+  dropped, so the ramp's tree equals `llc`'s (clang 19 and 22, `llc` 19
+  and 22). What is left of the refusal: two rows of one variable in one
+  function or one inlined instance (`func.rs`, `first_of` and the
+  variable's slot). `llc` keeps the first frame-index declaration and
+  drops the rest; hod refuses. No module of the corpus (14) or the `-g`
+  set (198) declines with it, so the rule is not written.
+- **Imports** of every shape: §6.11.
+- **The line classes** read from the IR count only the pair's file and
+  blocks with a predecessor, and `post-indexed-load` is permitted
+  (§5.7).
+- **Not done, with the reason:**
+  - `DW_AT_GNU_pubnames` and `.debug_gnu_pubnames`/`pubtypes` for a
+    split unit (`nameTableKind: GNU`, clang's default with
+    `-gsplit-dwarf`), and `.debug_names` for `Default`: still §6.15's
+    permitted difference. What `llc` 22 writes: the flag on the
+    skeleton, both sections in the object (version 2, the skeleton's
+    offset and size, relocated), each entry the offset of a DIE of the
+    split unit, a GDB index kind (`EXTERNAL`/`STATIC`,
+    `FUNCTION`/`VARIABLE`/`TYPE`) and the qualified name (`ns::f`),
+    sorted by offset; namespaces and enumerators are in `pubnames`,
+    base types, typedefs and named composites in `pubtypes`. Matching it
+    means `llc`'s `computeIndexValue` and `getParentContextString` over
+    every DIE kind, a new pass over the split unit's offsets and two
+    new relocated sections: more than a follow-up, and gdb and lldb
+    index the DIEs themselves.
+  - `DW_AT_ranges` on a coroutine's subprogram for its stubs after the
+    ready point (§6.16 R1): `llc` writes a separate subprogram for each
+    clone, so there is no tree of `llc`'s to compare a ranged body
+    with, and the ranges would need a subprogram family with
+    `DW_AT_ranges` beside each definition family that writes
+    `low_pc`/`high_pc` (appended, §6.1), and the stubs' ready offsets passed through the bridge, which
+    WP-136 is changing. What it would gain is §6.16's permitted
+    differences at one stop (the frame's name and its variables there).
+
+Evidence: `crates/hod_a64/tests/dies_followups.rs`,
+`crates/hod_a64/tests/dies_label.rs`, `xtask/tests/debug_post_index.rs`,
+`spec/landed/dwarf/WP-111.md`.
 
 ## 7. Speed and memory
 

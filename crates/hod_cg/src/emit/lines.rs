@@ -357,10 +357,14 @@ impl<'m> DebugLines<'m> {
             u.plan.seal().map_err(dwarf_err)?;
             u.plan.place_symbols(|s| place(obj, s));
         }
-        // `llc` writes nothing for a unit with neither code nor globals
-        // (`spec/dwarf.md` §1.2).
+        // `llc` writes nothing for a unit with neither code nor anything
+        // it lists (`spec/dwarf.md` §1.2, WP-111).
         let written: Vec<usize> = (0..self.units.len())
-            .filter(|&i| !self.units[i].code.is_empty() || !globals[i].is_empty())
+            .filter(|&i| {
+                !self.units[i].code.is_empty()
+                    || !globals[i].is_empty()
+                    || lists_entities(self.debug, self.units[i].plan.unit())
+            })
             .collect();
         if written.is_empty() {
             return Ok(());
@@ -391,6 +395,24 @@ impl<'m> DebugLines<'m> {
             .map_err(dwarf_err)?;
         Ok(())
     }
+}
+
+/// Whether `llc` writes compile unit `unit` without code
+/// (`DwarfDebug::beginModule`, WP-111, `spec/dwarf.md` §1.2): it lists
+/// a global, an enumeration, a retained type, or an import whose scope
+/// is not a function's (a function's imports are its own children).
+fn lists_entities(debug: &DebugInfo, unit: DiId) -> bool {
+    let DiNode::CompileUnit(cu) = debug.node(unit) else { return false };
+    let local = |id: DiId| {
+        let DiNode::ImportedEntity(import) = debug.node(id) else { return false };
+        import.scope.and_then(|s| debug.find_kind(s)).is_some_and(|kind| {
+            matches!(kind, DiKind::Subprogram | DiKind::LexicalBlock | DiKind::LexicalBlockFile)
+        })
+    };
+    !cu.globals.is_empty()
+        || !cu.enums.is_empty()
+        || !cu.retained_types.is_empty()
+        || cu.imports.iter().any(|&i| !local(i))
 }
 
 /// The rows of a coroutine's entry stubs (WP-108, `spec/dwarf.md`

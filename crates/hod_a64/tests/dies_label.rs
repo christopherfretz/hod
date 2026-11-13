@@ -199,7 +199,6 @@ fn clones(unit: &Node) -> Vec<&Node> {
 /// of `dbg_declare`), so hod's ramp has a `__promise` with a location
 /// `llc`'s has not. Outside WP-098's ownership.
 #[test]
-#[ignore = "hod_cg keeps a dbg_declare of a non-slot address that llc -O0 drops (WP-098)"]
 fn ramp_frame_variables_match_llc() {
     let (Some(dwarfdump), Some(cc), Some(llc)) =
         (tool("llvm-dwarfdump"), tool("clang++-22"), tool("llc-22"))
@@ -211,11 +210,11 @@ fn ramp_frame_variables_match_llc() {
     compare(&scratch, &dwarfdump, &llc, "ramp", &text);
 }
 
-/// `-g -O0` IR of `coro.cpp`, each variable declared once per function:
-/// clang's ramp function declares the coroutine's parameter twice (its
-/// slot and its copy in the frame), which hod refuses
-/// (`debug:variable-twice`, not this package's); the labels are the
-/// clones' and are kept.
+/// `-g -O0` IR of `coro.cpp`, each variable declared once per function
+/// (clang 22's ramp declares the coroutine's parameter a second time on
+/// the frame pointer's `phi`, which hod refused as `debug:variable-twice`
+/// before WP-111; `dies_followups::coroutine_ramps_match_llc` compares
+/// the IR as it is); the labels are the clones' and are kept.
 fn coro_ir(compiler: &Path, scratch: &Scratch, name: &str) -> String {
     let text = ir(compiler, scratch, name, "coro.cpp");
     let mut out = String::with_capacity(text.len());
@@ -364,7 +363,6 @@ fn sub_byte_alignment_matches_llc() {
 /// units it writes (`crates/hod_cg/src/emit/lines.rs`, `finish`,
 /// "`llc` writes nothing for a unit with neither code nor globals").
 #[test]
-#[ignore = "hod_cg writes no unit without code or globals; llc writes one with imports (WP-098)"]
 fn unit_with_only_imports_matches_llc() {
     let (Some(dwarfdump), Some(cc), Some(llc)) =
         (tool("llvm-dwarfdump"), tool("clang++-22"), tool("llc-22"))

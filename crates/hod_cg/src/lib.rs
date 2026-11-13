@@ -17,6 +17,7 @@
 //! | `label` | §6.2, §6.3 | `Label`, `Labels`, fixups |
 //! | `call` | §4.4, §7.1 to §7.3 | the call sequence, `musttail`, `invoke`, runtime calls |
 //! | `abi` | §7.2 | `Sig`, `Part`, `Assignment`: the argument-assignment interface; the leaf walk (`Classify`, `place_leaves`) |
+//! | `memplan` | §7.3 | `mem_plan`: what a `memcpy`, `memmove` or `memset` becomes |
 //! | `sym` | §7.3, §9.2 | `SymRef`, `RuntimeFn`; the routines by type and target (`fp_routine`, ...) |
 //! | `target` | §8.2 | the `Target` trait |
 //! | `cx` | §8.1, §11 | `FnCx`: what a lowering is given; `Scratch` |
@@ -43,6 +44,7 @@ mod frame;
 mod label;
 mod line_rows;
 mod loc;
+pub mod memplan;
 mod options;
 mod phi;
 mod policy;

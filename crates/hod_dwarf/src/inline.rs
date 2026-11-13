@@ -115,6 +115,11 @@ impl Inline {
         die != NONE && self.early.remove(&die)
     }
 
+    /// Marks `die` as made early, for a call's callee (WP-113, §6.19).
+    pub(crate) fn mark_early(&mut self, die: u32) {
+        self.early.insert(die);
+    }
+
     /// The index in `UnitPlan::funcs` of the function of subprogram DIE
     /// `die` (sealed plans).
     pub(crate) fn fn_index(&self, die: u32) -> Option<usize> {
@@ -568,6 +573,7 @@ impl UnitPlan<'_> {
                     | Kind::Unspecified
                     | Kind::Inlined
                     | Kind::Variable
+                    | Kind::CallSite
             );
             if !local && self.inline.die(owner).is_some() {
                 return Err(unsupported(d.node, DEBUG_INLINED_LOCAL_TYPE));
@@ -811,7 +817,8 @@ impl<'a> Writer<'a> {
         children: bool,
     ) {
         let objptr = fd.object_pointer != NONE;
-        self.abbrev(code(fam::SUBPROGRAM_OF_ABSTRACT, u32::from(objptr), children));
+        let family = crate::call_sites::family(fam::SUBPROGRAM_OF_ABSTRACT, fd.calls); // WP-113
+        self.abbrev(code(family, u32::from(objptr), children));
         self.addr_attrs(index, fd.code.size);
         self.exprloc();
         if objptr {

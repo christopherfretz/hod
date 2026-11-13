@@ -140,6 +140,9 @@ impl<'a, T: Target> FnCx<'a, T> {
         s.occupied = RegSet::EMPTY;
         s.pinned = RegSet::EMPTY;
         s.temps = RegSet::EMPTY;
+        s.used = RegSet::EMPTY;
+        s.cuts.clear();
+        s.relax.clear();
         s.frame.reset(T::STACK_ALIGN);
         s.labels.reset(blocks as u32);
         s.slots.clear();
@@ -777,6 +780,8 @@ impl<'a, T: Target> FnCx<'a, T> {
                 }
             }
         }
+        // §6.4: before the islands, which are aligned in the final layout.
+        self.shrink()?;
         self.emit_islands()?;
         if self.s.labels.pending() != 0 {
             return internal("a label that code refers to was never bound");
@@ -807,6 +812,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         }
 
         self.finish_vars();
+        self.finish_debug_calls()?; // WP-113: `spec/dwarf.md` §6.19
 
         let mut record = self.out.record(self.mark, self.body.symbol());
         record.align = T::FN_ALIGN.max(self.island_align);

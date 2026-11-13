@@ -20,8 +20,8 @@
 
 use hod_cg::Target;
 use hod_ir::{
-    Arch, BlockId, Body, CallConv, FnAttrs, FnAttrsId, Inst, InstKind, Intrinsic, Module, SlotId,
-    Support, SymbolKind, TypeId, TypeKind, ValueKind,
+    Arch, BlockId, Body, CallConv, FnAttrs, FnAttrsId, Inst, Intrinsic, Module, SlotId, Support,
+    SymbolKind, ValueKind,
 };
 use hod_xform::coro::CoroPlan;
 
@@ -122,11 +122,6 @@ fn generator_refusal(module: &Module, body: &Body, plan: &CoroPlan) -> Option<&'
             return Some(hod_a64::coro_body::PRESERVE_CC);
         }
     }
-    // `hod_x64::coro_body::enter`: `lock cmpxchg16b` writes rbx, the
-    // frame base.
-    if arch == Arch::X86_64 && has_wide_atomic(module, body) {
-        return Some(hod_x64::coro_body::WIDE_ATOMIC);
-    }
     // `FnCx::coro_slot_place`: a slot left on the machine stack, aligned
     // above the stack alignment.
     let align = stack_align(arch);
@@ -138,21 +133,6 @@ fn generator_refusal(module: &Module, body: &Body, plan: &CoroPlan) -> Option<&'
         return Some(hod_cg::OVERALIGNED_STACK);
     }
     shares_begin_block(body, plan).then_some(hod_cg::BEGIN_SHARED_BLOCK)
-}
-
-/// `hod_x64::coro_body::has_wide_atomic`: an atomic access wider than 64
-/// bits.
-fn has_wide_atomic(module: &Module, body: &Body) -> bool {
-    let wide = |ty: TypeId| matches!(module.types.kind(ty), TypeKind::Int(bits) if bits > 64);
-    body.insts().any(|inst| match inst.kind() {
-        InstKind::Load { mem, .. } => mem.ordering().is_some() && wide(inst.ty()),
-        InstKind::Store { value, mem, .. } => {
-            mem.ordering().is_some() && wide(body.value_type(module, value))
-        }
-        InstKind::CmpXchg { expected, .. } => wide(body.value_type(module, expected)),
-        InstKind::AtomicRmw { value, .. } => wide(body.value_type(module, value)),
-        _ => false,
-    })
 }
 
 /// `hod_cg::coro_body::pre_begin`'s refusal: a block that runs both

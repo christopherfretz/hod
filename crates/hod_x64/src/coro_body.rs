@@ -18,8 +18,8 @@
 //!                  mov [rbp + frame], rbx
 //!             ...  coro.suspend k: mov eax, -1
 //!   .Lk:           mov r<n>d, eax        (a resumed activation enters here)
-//!             ...  epilogue: lea rsp, [rbp - 40] · pop r15 .. rbx · pop rbp
-//! F.resume:   push rbp · mov rbp, rsp · push rbx .. r15 · sub rsp, FRAME ·
+//!             ...  epilogue: lea rsp, [rbp - 8n] · pops of the save set · pop rbp
+//! F.resume:   push rbp · mov rbp, rsp · the save set's pushes · sub rsp, FRAME ·
 //!             mov rbx, rdi · mov qword [rbp + mode], 1 ·
 //!             mov [rbp + frame], rdi · mov eax, 0 ·
 //!             cmp dword [rbx + index], k · je .Lk ... · ud2
@@ -35,24 +35,19 @@
 //! and the return address of whoever called the stub.
 
 use hod_cg::{
-    CallArg, CfiOp, CgResult, Class, FnCx, FrameDesc, FrameRef, Label, PReg, RegInfo, RegSet,
-    Target,
+    CallArg, CfiOp, CgResult, Class, FnCx, FrameRef, Label, PReg, RegInfo, RegSet, Target,
 };
-use hod_ir::{CallConv, Inst, InstKind, Intrinsic, TypeId, TypeKind, Value};
+use hod_ir::{CallConv, Inst, Intrinsic, TypeId, Value};
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, Mem, Reg, Size};
 
 use crate::common::{
-    R11, RBP, REL32, RSP, branch_cond, deferred_first, frame_inst, gp, mov_imm, put, unsupported,
+    R11, RBP, REL32, RSP, branch_cond, deferred_first, frame_inst, gp, mov_imm, put,
 };
 use crate::frame::SAVED;
 use crate::intrinsic::const_int;
 use crate::reg::{DWARF_RBP, DWARF_RSP, dwarf, gpr};
 use crate::target::{REG_INFO, X64};
-
-/// A 16-byte atomic operation in a coroutine: `lock cmpxchg16b` writes
-/// `rbx` (`atomic.rs`), which holds the frame base there.
-pub const WIDE_ATOMIC: &str = "x64:coro-wide-atomic";
 
 /// The frame base register.
 pub const RBX: Reg = Reg::Rbx;
@@ -84,13 +79,10 @@ pub struct CoroState {
 /// or rule shows (at this point no value is in a register of the pool).
 ///
 /// # Errors
-/// [`WIDE_ATOMIC`]; what allocating the words reports.
+/// What allocating the words reports.
 pub fn enter(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     if !cx.has_coro_frame() {
         return Ok(());
-    }
-    if cx.is_coroutine() && has_wide_atomic(cx) {
-        return unsupported(WIDE_ATOMIC);
     }
     let words = cx.coro_slots()?;
     frame_inst(cx, words.mode, |m| mc::mov_mi(Size::Q, m, 0));
@@ -100,21 +92,6 @@ pub fn enter(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
         put(cx, mc::mov_rr(Size::Q, RBX, RBP));
     }
     Ok(())
-}
-
-/// Whether the body has an atomic access of 16 bytes.
-fn has_wide_atomic(cx: &FnCx<'_, X64>) -> bool {
-    let types = cx.types();
-    let wide = |ty: TypeId| matches!(types.kind(ty), TypeKind::Int(bits) if bits > 64);
-    cx.body.insts().any(|inst| match inst.kind() {
-        InstKind::Load { mem, .. } => mem.ordering().is_some() && wide(inst.ty()),
-        InstKind::Store { value, mem, .. } => {
-            mem.ordering().is_some() && wide(cx.body.value_type(cx.module, value))
-        }
-        InstKind::CmpXchg { expected, .. } => wide(cx.body.value_type(cx.module, expected)),
-        InstKind::AtomicRmw { value, .. } => wide(cx.body.value_type(cx.module, value)),
-        _ => false,
-    })
 }
 
 /// `Target::reg_info` of a function: [`REG_INFO_CORO`] when it has the
@@ -130,8 +107,9 @@ pub fn reg_info(coro: bool) -> &'static RegInfo {
 /// # Errors
 /// What the fixups report; `Internal` for a function without the words.
 pub fn stubs(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
-    let frame = crate::frame::final_size(cx.frame_size())?;
-    let desc = FrameDesc { frame_size: frame, frame_base: DWARF_RBP };
+    // WP-146: the body's frame, built the same way (`frame::end`).
+    let desc = cx.state.frame.desc;
+    let frame = desc.frame_size - 8 * crate::frame::saved(cx).count() as u32;
     let words = cx.coro_slots()?;
     let layout = cx.coro_layout()?;
     let local = |place: FrameRef| -> CgResult<Mem> {
@@ -159,7 +137,7 @@ pub fn stubs(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
         cx.cfi(CfiOp::Offset { reg: DWARF_RBP, cfa_offset: -16 });
         put(cx, mc::mov_rr(Size::Q, RBP, RSP));
         cx.cfi(CfiOp::DefCfaRegister(DWARF_RBP));
-        for (index, &saved) in SAVED.iter().enumerate() {
+        for (index, saved) in crate::frame::saved(cx).enumerate() {
             put(cx, mc::push_r(saved));
             let cfa_offset = -24 - 8 * index as i32;
             cx.cfi(CfiOp::Offset { reg: dwarf(gpr(saved)), cfa_offset });

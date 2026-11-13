@@ -178,6 +178,7 @@ fn add_functions(module: &Module, bodies: &[Body], plan: &mut UnitPlan<'_>, s: &
             frame_base: rec.frame.frame_base,
             scopes: &scopes,
             vars: &vars,
+            calls: &[],
         };
         match plan.add_function(&input) {
             Ok(()) => s.written += 1,

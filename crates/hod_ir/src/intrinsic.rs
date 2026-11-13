@@ -160,6 +160,9 @@ intrinsics! {
     IsFpClass = "llvm.is.fpclass" [P(0)],
     // Exceptions and thread-local storage.
     EhTypeidFor = "llvm.eh.typeid.for" [P(0)],
+    // `__builtin_setjmp`/`__builtin_longjmp` (WP-147).
+    EhSjljSetjmp = "llvm.eh.sjlj.setjmp" [],
+    EhSjljLongjmp = "llvm.eh.sjlj.longjmp" [],
     ThreadLocalAddress = "llvm.threadlocal.address" [Ret],
     ThreadPointer = "llvm.thread.pointer" [Ret],
     // Pointers, caches, counters.
@@ -585,8 +588,9 @@ impl IntrinsicRef<'_> {
 /// Anything else is `Intrinsic::Other(name)` with no overloads: an unknown
 /// name, a known base name with a signature that does not fit it, or a
 /// spelling LLVM would only accept by renaming (the typed-pointer suffixes
-/// of old IR). One spelling without a suffix is accepted:
-/// `llvm.thread.pointer`, which was not overloaded before LLVM 21.
+/// of old IR). Spellings LLVM 19 and 22 still read are accepted:
+/// `llvm.thread.pointer` without a suffix, which was not overloaded
+/// before LLVM 21, and those of [`upgraded_va_spelling`].
 ///
 /// A producer first asks [`no_code_intrinsic`]; names it claims never get
 /// here.
@@ -613,10 +617,23 @@ pub fn resolve_intrinsic<'a, L: Layering>(
     let exact = intrinsic.mangled_name(types, &overloads[..len]).is_some_and(|m| m == name);
     let unsuffixed_thread_pointer =
         intrinsic == Intrinsic::ThreadPointer && name == base && overloads[0] == TypeId::PTR;
-    if !exact && !unsuffixed_thread_pointer {
+    if !exact && !unsuffixed_thread_pointer && !upgraded_va_spelling(intrinsic, name, &overloads) {
         return other;
     }
     IntrinsicRef { intrinsic, overloads, len: len as u8 }
+}
+
+/// The spellings of the variable-argument intrinsics that LLVM 19 and 22
+/// read and rename to `<base>.p0` (WP-147): the unsuffixed name of
+/// `llvm.va_start`, `llvm.va_end`, `llvm.va_copy` (not overloaded before
+/// LLVM 19), and `llvm.va_copy.p0.p0` (one suffix per pointer operand),
+/// each of a pointer in address space 0.
+fn upgraded_va_spelling(intrinsic: Intrinsic<'_>, name: &str, overloads: &[TypeId]) -> bool {
+    use Intrinsic::{VaCopy, VaEnd, VaStart};
+    if overloads[0] != TypeId::PTR || !matches!(intrinsic, VaStart | VaEnd | VaCopy) {
+        return false;
+    }
+    name == intrinsic.name() || (intrinsic == VaCopy && name == "llvm.va_copy.p0.p0")
 }
 
 /// Whether `name` is `prefix` or starts with `prefix` and a dot.
@@ -789,6 +806,24 @@ mod tests {
             resolve_intrinsic(t, "llvm.thread.pointer", tp).intrinsic,
             Intrinsic::ThreadPointer
         );
+
+        // WP-147: the variable-argument spellings LLVM 19 and 22 rename
+        // to `.p0`.
+        let one = t.function(TypeId::VOID, &[ptr], false).unwrap();
+        let two = t.function(TypeId::VOID, &[ptr, ptr], false).unwrap();
+        for (name, ty, want) in [
+            ("llvm.va_copy.p0.p0", two, Intrinsic::VaCopy),
+            ("llvm.va_copy", two, Intrinsic::VaCopy),
+            ("llvm.va_start", one, Intrinsic::VaStart),
+            ("llvm.va_end", one, Intrinsic::VaEnd),
+        ] {
+            let r = resolve_intrinsic(t, name, ty);
+            assert_eq!((r.intrinsic, r.overloads()), (want, &[ptr][..]), "{name}");
+        }
+        assert!(matches!(
+            resolve_intrinsic(t, "llvm.va_end.p0.p0", one).intrinsic,
+            Intrinsic::Other(_)
+        ));
     }
 
     /// §5.5: anything that is not exactly a known intrinsic is `Other`

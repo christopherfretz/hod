@@ -40,10 +40,10 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `tail` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
-| `operand` | 11 | 8 | 3 | 0 | 7 | 4 | 0 |
+| `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 354 | 347 | 7 | 0 | 128 | 10 | 216 |
-| total | 674 | 549 | 68 | 57 | 322 | 74 | 278 |
+| `intrinsic` | 356 | 347 | 7 | 2 | 130 | 10 | 216 |
+| total | 676 | 549 | 68 | 59 | 325 | 73 | 278 |
 
 ## `module`
 
@@ -92,7 +92,7 @@ Debug information.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `debug:module-flags` | supported | supported | `Dwarf Version` or `Debug Info Version` is set (WP-087) |
-| `debug:dwarf-version` | not-implemented | not-implemented | T-DW. a compile unit with debug information and a `Dwarf Version` other than 5 (absent is LLVM's 4): `hod_dwarf` writes DWARF 5 only |
+| `debug:dwarf-version` | not-implemented | not-implemented | T-DW. a compile unit with debug information and a `Dwarf Version` other than 4 and 5 (absent is LLVM's 4): `hod_dwarf` writes DWARF 5 and, since WP-114, 4 when the flag says so |
 | `debug:subprogram` | supported | supported | a function with a body and a `DISubprogram` (WP-087) |
 | `debug:slot-variables` | supported | supported | a stack slot that is a source variable (WP-087); in a coroutine body, on the frame word (WP-108, `spec/dwarf.md` §6.16) |
 | `debug:locations` | supported | supported | a body whose instructions carry source locations (WP-087) |
@@ -485,7 +485,7 @@ Constant addresses as instruction operands.
 | `operand:slot` | supported | supported | the address of a stack slot |
 | `operand:blockaddress` | supported | supported | of a block of the same function |
 | `operand:addr-of-int` | supported | supported | `inttoptr` of a constant number |
-| `operand:int-of-addr` | supported | not-implemented | `ptrtoint` of a constant address (WP-072) |
+| `operand:int-of-addr` | supported | supported | `ptrtoint` of a constant address (WP-072, WP-147) |
 | `operand:sym-diff` | supported | supported | a difference of two symbol addresses (WP-072) |
 | `operand:block-diff` | not-implemented | not-implemented | unplanned. a label difference as an operand (WP-095) |
 | `operand:dso-local-equivalent` | not-implemented | not-implemented | unplanned |
@@ -613,6 +613,8 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.fptoui.sat` | supported (int, half, float, double, vector) | supported (int, half, float, double, x86_fp80, vector) |  |
 | `intrinsic:llvm.is.fpclass` | supported (int, half, float, double, fp128) | supported (int, half, float, double, fp128, x86_fp80) |  |
 | `intrinsic:llvm.eh.typeid.for` | supported (int, ptr) | supported (int, ptr) |  |
+| `intrinsic:llvm.eh.sjlj.setjmp` | rejected | supported | `llc` for AArch64 compiles `setjmp` to 0 and `longjmp` to nothing; clang refuses the builtins there |
+| `intrinsic:llvm.eh.sjlj.longjmp` | rejected | supported | `llc` for AArch64 compiles `setjmp` to 0 and `longjmp` to nothing; clang refuses the builtins there |
 | `intrinsic:llvm.threadlocal.address` | supported (ptr) | supported (ptr) |  |
 | `intrinsic:llvm.thread.pointer` | supported (ptr) | supported (ptr) |  |
 | `intrinsic:llvm.prefetch` | supported (int, ptr) | supported (int, ptr) |  |

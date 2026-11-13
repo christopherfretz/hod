@@ -8,60 +8,43 @@ Every module of the captured corpus (`docs/status/corpus-x64-census.md`, capture
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `(compiled)` | 3163 | 3126 |
-| `type:vector` | 67 | 63 |
-| `type:x86_fp80` | 38 | 38 |
-| `operand:int-of-addr` | 27 | 27 |
-| `intrinsic:llvm.eh.sjlj.longjmp` | 18 | 19 |
-| `inst:extractvalue/double` | 17 | 17 |
-| `intrinsic:llvm.eh.sjlj.setjmp` | 14 | 14 |
-| `debug:module-flags` | 7 | 7 |
-| `inst:insertelement` | 7 | 7 |
+| `(compiled)` | 3351 | 3311 |
 | `musttail:stack-args-unknown` | 6 | 6 |
+| `abi:byval-align` | 3 | 3 |
+| `call:inline-asm` | 3 | 3 |
 | `inst:callbr` | 3 | 3 |
 | `init:block-diff` | 2 | 3 |
-| `call:inline-asm` | 2 | 2 |
-| `atomicrmw:fmin` | 1 | 1 |
 | `cc:preserve_mostcc` | 1 | 1 |
+| `debug:call-sites` | 1 | 1 |
+| `debug:dwarf-version` | 1 | 1 |
 | `intrinsic:llvm.x86.sse2.pause` | 1 | 1 |
+| `intrinsic:llvm.x86.sse2.pmovmskb.128` | 1 | 1 |
 | `module:asm` | 1 | 1 |
 | `x64:inline-asm-operand` | 1 | 1 |
+| `x64:vector-wide-element` | 1 | 1 |
 | all | 3376 | 3337 |
 
 ## Every reason (census)
 
 | reason | LLVM 22 | LLVM 19 |
 |---|---:|---:|
-| `type:vector` | 77 | 73 |
-| `type:x86_fp80` | 45 | 45 |
-| `inst:extractelement` | 33 | 29 |
-| `operand:int-of-addr` | 29 | 29 |
-| `inst:insertelement` | 21 | 20 |
-| `inst:extractvalue/double` | 20 | 20 |
-| `intrinsic:llvm.eh.sjlj.longjmp` | 18 | 19 |
-| `intrinsic:llvm.eh.sjlj.setjmp` | 16 | 17 |
-| `inst:shufflevector` | 14 | 11 |
-| `debug:locations` | 7 | 7 |
-| `debug:module-flags` | 7 | 7 |
-| `debug:subprogram` | 7 | 7 |
 | `musttail:stack-args-unknown` | 6 | 6 |
-| `debug:slot-variables` | 5 | 5 |
-| `intrinsic:llvm.vector.reduce.add` | 5 | 5 |
 | `call:inline-asm` | 4 | 4 |
+| `abi:byval-align` | 3 | 3 |
 | `inst:callbr` | 3 | 3 |
 | `init:block-diff` | 2 | 3 |
-| `atomicrmw:fmax` | 1 | 1 |
-| `atomicrmw:fmin` | 1 | 1 |
 | `cc:preserve_allcc` | 1 | 1 |
 | `cc:preserve_mostcc` | 1 | 1 |
 | `cc:win64cc` | 1 | 1 |
 | `cc:x86_regcallcc` | 1 | 1 |
 | `cc:x86_vectorcallcc` | 1 | 1 |
+| `debug:call-sites` | 1 | 1 |
 | `debug:dwarf-version` | 1 | 1 |
 | `intrinsic:llvm.x86.sse2.pause` | 1 | 1 |
 | `intrinsic:llvm.x86.sse2.pmovmskb.128` | 1 | 1 |
 | `module:asm` | 1 | 1 |
 | `x64:inline-asm-operand` | 1 | 1 |
+| `x64:vector-wide-element` | 1 | 1 |
 
 ## The ten most frequent refusals
 
@@ -69,16 +52,16 @@ By the census (modules with the reason anywhere, all LLVM majors), with the modu
 
 | reason | census | first refusal | owner |
 |---|---:|---:|---|
-| `type:vector` | 150 | 130 | WP-132 |
-| `type:x86_fp80` | 90 | 76 | WP-131 |
-| `inst:extractelement` | 62 | 0 | WP-132 |
-| `operand:int-of-addr` | 58 | 54 | - |
-| `inst:insertelement` | 41 | 14 | WP-132 |
-| `inst:extractvalue/double` | 40 | 34 | WP-144 |
-| `intrinsic:llvm.eh.sjlj.longjmp` | 37 | 37 | - |
-| `intrinsic:llvm.eh.sjlj.setjmp` | 33 | 28 | - |
-| `inst:shufflevector` | 25 | 0 | WP-132 |
-| `debug:locations` | 14 | 0 | WP-136 |
+| `musttail:stack-args-unknown` | 12 | 12 | - |
+| `call:inline-asm` | 8 | 6 | - |
+| `abi:byval-align` | 6 | 6 | - |
+| `inst:callbr` | 6 | 6 | - |
+| `init:block-diff` | 5 | 5 | - |
+| `cc:preserve_allcc` | 2 | 0 | - |
+| `cc:preserve_mostcc` | 2 | 2 | - |
+| `cc:win64cc` | 2 | 0 | - |
+| `cc:x86_regcallcc` | 2 | 0 | - |
+| `cc:x86_vectorcallcc` | 2 | 0 | - |
 
 ## What the built modules do
 
@@ -86,17 +69,8 @@ From `cargo xtask corpus verify --target x86_64` (hybrid: a module hod declines 
 
 | LLVM | tests | built by hod | results | PASS | FAIL | ERROR | other | PASS of hod's |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 22 | 3140 | 2941 | 9420 | 9417 | 3 | 0 | 0 | 8820 of 8823 |
-| 19 | 3104 | 2907 | 9312 | 9309 | 3 | 0 | 0 | 8718 of 8721 |
-
-Every result that is not a PASS (at most 40):
-
-- LLVM 22 FAIL `gcc-torture/llvm22/builtins/strncmp.c.ll` [bfd], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
-- LLVM 22 FAIL `gcc-torture/llvm22/builtins/strncmp.c.ll` [lld], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
-- LLVM 22 FAIL `gcc-torture/llvm22/builtins/strncmp.c.ll` [mold], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
-- LLVM 19 FAIL `gcc-torture/llvm19/builtins/strncmp.c.ll` [bfd], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
-- LLVM 19 FAIL `gcc-torture/llvm19/builtins/strncmp.c.ll` [lld], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
-- LLVM 19 FAIL `gcc-torture/llvm19/builtins/strncmp.c.ll` [mold], built by hod: the program of hod's object ended with signal 6, llc's with exit status 0
+| 22 | no `verify-x86_64-llvm22-hybrid.tsv` | | | | | | | |
+| 19 | no `verify-x86_64-llvm19-hybrid.tsv` | | | | | | | |
 
 ## The routes agree
 
@@ -109,8 +83,8 @@ Modules whose outcome and first reason are the same by two routes, and whose cen
 
 The modules that differ (at most 20):
 
-- `kiln/llvm22/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), native `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), `llvm-dis` `malformed-input` (malformed-input)
-- `kiln/llvm19/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll`: text `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), native `debug:module-flags` (debug:module-flags,debug:subprogram,debug:locations), `llvm-dis` `malformed-input` (malformed-input)
+- `kiln/llvm22/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll`: text `-` (-), native `-` (-), `llvm-dis` `malformed-input` (malformed-input)
+- `kiln/llvm19/conformance/temp.arg.nontype/class-type-argument-debuginfo-run.cpp.ll`: text `-` (-), native `-` (-), `llvm-dis` `malformed-input` (malformed-input)
 
 ## What a decline costs
 
@@ -118,11 +92,11 @@ Coverage-log field 7 (from the process's start to the decline) of the first-refu
 
 | LLVM | route | median | p99 | worst | share of `llc`: median | p99 | worst |
 |---|---|---:|---:|---:|---:|---:|---:|
-| 22 | text | 8744 | 30761 | 305995 | | | |
-| 22 | bitcode, native | 8527 | 27603 | 197585 | | | |
-| 22 | bitcode, `llvm-dis` | 16262 | 39184 | 701957 | | | |
-| 22 | the `convert` of the `llvm-dis` route | 8971 | 14630 | 454011 | | | |
-| 19 | text | 8958 | 25486 | 404434 | | | |
-| 19 | bitcode, native | 8807 | 25078 | 286614 | | | |
-| 19 | bitcode, `llvm-dis` | 17210 | 37745 | 878318 | | | |
-| 19 | the `convert` of the `llvm-dis` route | 10003 | 17143 | 511651 | | | |
+| 22 | text | 11353 | 39839 | 247385 | | | |
+| 22 | bitcode, native | 11073 | 31048 | 178805 | | | |
+| 22 | bitcode, `llvm-dis` | 54356 | 118333 | 615994 | | | |
+| 22 | the `convert` of the `llvm-dis` route | 44267 | 99925 | 382979 | | | |
+| 19 | text | 11431 | 34612 | 240910 | | | |
+| 19 | bitcode, native | 10591 | 28905 | 210126 | | | |
+| 19 | bitcode, `llvm-dis` | 52790 | 120357 | 782567 | | | |
+| 19 | the `convert` of the `llvm-dis` route | 42355 | 102073 | 552866 | | | |

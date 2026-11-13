@@ -80,9 +80,9 @@ instructions and types, this design relies on `classify` rejecting:
 Never touched: the platform register (`x18`), the thread pointer. `pool`
 and `holdable` are disjoint from `scratch`.
 
-**Save set.** A target may name a fixed set of callee-saved registers that
-its prologue saves and its epilogue restores in *every* function, so the
-prologue keeps one shape (§5). They are then ordinary pool registers;
+**Save set.** A target may name a set of callee-saved registers that its
+prologue may save and its epilogue restore (§5); x86-64 saves only those
+of them the function used (§5.6.15). They are then ordinary pool registers;
 §4.4 displaces them at calls like any other. No other callee-saved
 register (besides the frame pointer and the link register) is used in v1.
 AArch64 has enough caller-saved registers and an empty save set (§5.5).
@@ -2056,39 +2056,38 @@ words compared with `llvm-mc`'s; the refusals; features from
             | incoming stack arguments [rbp+16+n]  |
             | return address           [rbp + 8]   |  CFA = rbp + 16
       rbp ->| saved rbp                [rbp + 0]   |
-            | saved rbx, r12..r15      [rbp-8..-40]|
-            | local area: FRAME bytes              |  Local(o) = [rbp + o - 40 - FRAME]
+            | the save set, n of rbx, r12..r15     |  [rbp - 8] .. [rbp - 8n]
+            | local area: FRAME bytes              |  Local(o) = [rbp + o - 8n - FRAME]
       sp -> +--------------------------------------+
             | dynamic allocations, outgoing args   |  (rsp moves below)
 ```
 
-- **Prologue** (always this shape): `push rbp` · `mov rbp, rsp` · `push
-  rbx` · `push r12` .. `push r15` · `sub rsp, imm32`, the immediate
-  emitted as `0x7fffffff` (forcing the 32-bit form) and patched in
-  `end_function`. The five registers are saved in every function, used
-  or not: one prologue shape and one set of CFI rows (design 0006 §2.9).
-  With the return address the six pushes are 56 bytes, so `FRAME` is the
-  local area rounded up to `≡ 8 (mod 16)`, and `rsp` is 16-aligned after
-  the prologue and at every `call`. `FRAME` up to `2^31 - 2^16`; above
-  it, `limit:frame-size`.
+- **Prologue**: `push rbp` · `mov rbp, rsp` · the pushes of the save
+  set, the `n` of `rbx`, `r12`..`r15` the function used, in that order ·
+  `sub rsp, FRAME` (omitted when `FRAME` is 0, `imm8` when it fits).
+  It is emitted at its largest and cut to this in `end_function`
+  (§5.6.15). With the return address and `rbp` the pushes are `16 + 8n`
+  bytes, so `FRAME` is the local area rounded up to `≡ 8n (mod 16)`, and
+  `rsp` is 16-aligned after the prologue and at every `call`. `FRAME`
+  up to `2^31 - 2^16`; above it, `limit:frame-size`.
 - **The red zone is not used**; `noredzone` is accepted and changes
   nothing.
-- **Frame places.** `FrameRef::Local(o)` is `[rbp + o - 40 - FRAME]`:
+- **Frame places.** `FrameRef::Local(o)` is `[rbp + o - 8n - FRAME]`:
   `FRAME` is not known while the body is emitted, so the access is
   emitted as `[rbp + o]` with a 32-bit displacement and every such
-  displacement is recorded and biased by `-40 - FRAME` in
+  displacement is recorded and biased by `-8n - FRAME` in
   `end_function` (`hod_x64::common::frame_inst`). `Incoming(n)` is
   `[rbp + 16 + n]`: no incoming base slot. `Outgoing(n)` is `[rsp + n]`.
   The frame base for debug information is `rbp` (DWARF 6).
-- **Exit sequences.** The epilogue is `lea rsp, [rbp - 40]` · `pop r15`
-  .. `pop rbx` · `pop rbp` · `ret`; nothing in it depends on `FRAME` or
-  on dynamic allocation. A tail exit is the same teardown ending in `jmp
+- **Exit sequences.** The epilogue is `lea rsp, [rbp - 8n]` · the pops
+  of the save set in reverse · `pop rbp` · `ret` (`leave` · `ret` when
+  `n` is 0); nothing in it depends on `FRAME` or on dynamic allocation. A tail exit is the same teardown ending in `jmp
   callee` (`R_X86_64_PLT32`) or `jmp r11`.
 - **CFI** (design 0006 §4), written as the prologue is emitted, since the
   CFA is `rbp + 16` from the second instruction on: after `push rbp`
   `def_cfa_offset 16` and `offset rbp, -16`; after `mov rbp, rsp`
-  `def_cfa_register rbp`; after each save `offset rbx, -24`, `offset
-  r12, -32`, `offset r13, -40`, `offset r14, -48`, `offset r15, -56`.
+  `def_cfa_register rbp`; after the last save, one `offset` row per
+  saved register, the `i`-th pushed at `-24 - 8i` (§5.6.15).
   After the `pop rbp` of an exit: `def_cfa rsp, 8`. A tail exit, which
   follows another exit sequence, first restates `def_cfa rbp, 16` (§9.3);
   the save rows never change. DWARF numbers (SysV psABI figure 3.36):
@@ -2136,7 +2135,8 @@ words compared with `llvm-mc`'s; the refusals; features from
 - **Branches** (design 0006 §2.10). `jmp rel32` and `jcc rel32` reach ±2
   GiB, so there is no far mode and the §6.3 retry never fires. A branch
   to a label already bound uses the short `rel8` form when it reaches;
-  a forward one is `rel32`. Fixup kinds: 0 `rel32`, 1 `rel8`; `at` is
+  any other is `rel32`, made `rel8` once the function is complete when
+  it then reaches (§5.6.15). Fixup kinds: 0 `rel32`, 1 `rel8`; `at` is
   the field's offset, and the displacement written is `target - (at +
   field size)` (`hod_x64::common::patch_branch`). `unreachable` and
   `llvm.trap` are `ud2`. Functions are 16-byte aligned (the emitter
@@ -2988,8 +2988,9 @@ only around a truncating store (below).
   to the 16 bytes below `rsp` (no red zone is assumed: `lea rsp, [rsp -
   16]` first and `lea rsp, [rsp + 16]` after) and a load into the `xmm`
   register. `half` and `fp128` call `__extendhfxf2`, `__truncxfhf2`,
-  `__extendxftf2`, `__trunctfxf2`. `fptrunc` to `bfloat` is refused
-  (`x64:x87-bfloat`; `llc` 19 cannot select it). `fptosi`/`fptoui` to
+  `__extendxftf2`, `__trunctfxf2`. `fptrunc` to `bfloat` calls
+  `__truncxfbf2` (libgcc 13 and later, compiler-rt; as `llc` 22 does,
+  `llc` 19 cannot select it; WP-147). `fptosi`/`fptoui` to
   at most 64 bits are `fistp qword` under a control word with the
   rounding set to truncation (`fnstcw`, `or` of `0x0c00`, `fldcw`, the
   store, `fldcw` of the saved word), all in the 16 bytes below `rsp`;
@@ -3035,9 +3036,12 @@ only around a truncating store (below).
   `i32`, an integer result wider than 64 bits, an intrinsic with no
   routine).
 - **`is.fpclass` of the encodings only the x87 has.** A pseudo-denormal
-  (exponent 0, integer bit set) is a subnormal, as the x87 loads it;
-  `llc` 19 and 22 answer differently from each other for four masks and
-  depend on the mask's expansion elsewhere, so it is not compared. An
+  (exponent 0, integer bit set) is a subnormal of its sign for every
+  mask, as `fxam` classifies it (denormal: C3 C2 C0 = 1 1 0) and as the
+  x87 loads it. `llc` is not followed: 19 and 22 put it in no class
+  (false for each single class) yet answer true for some unions by
+  their expansion, differing on four (19: `0x7`, `0xf3`, `0x203`; 22:
+  `0x30c`), which no class gives (WP-147). An
   unnormal, a pseudo-zero, a pseudo-infinity or a pseudo-NaN is in the
   test when the test has both NaN classes, or is all classes but one NaN
   class (`x87::invalid_in`): `llc` 19 and 22 agree on all 1024 masks.
@@ -3189,6 +3193,153 @@ emulator (`crates/hod_x64/tests/leftovers.rs`):
    (§5.6.8).
 
 Evidence: `spec/landed/codegen/WP-144.md`.
+
+#### 5.6.15 Text size, the first cuts (WP-146)
+
+hod's x86-64 text was about twice `llc -O0`'s (WP-130). Three cuts,
+each independent of the others:
+
+**Shrinking a function (`hod_cg::shrink`).** Once a function's code is
+complete (after its exits, its coroutine stubs and the trap, before
+its data islands, so that an island is aligned in the final layout),
+`FnCx::shrink` removes byte ranges the target asked for and relaxes
+branches the target marked:
+
+- `FnCx::cut(at, len)`: `len` bytes at `at` go; nothing refers into
+  them and no row or label is inside them.
+- `FnCx::relaxable(start, short, kind)`, right after the `fixup` of a
+  branch that starts at `start` and ends with its field: if the label
+  ends up in reach of a signed byte, the branch becomes `[short, rel8]`
+  with a field of `kind`.
+
+The relaxed set is a fixpoint of at most 8 passes, each only adding:
+a forward branch is taken when `map(target) - map(start) - long` fits
+(the target moves by what the branch itself loses, so the distance is
+the same from either form's end), a backward one when `map(target) -
+map(start) - 2` does; any set so found stays valid, since removing
+bytes only shortens distances. The bytes are compacted, and every
+offset the function holds moves by what is removed before it (an offset
+inside a removed range goes to its start): labels, pending fixups,
+relocations, CFI rows, call-site rows (start, end, landing), pad rows,
+line rows, `VarPlace::Label`s, island rows, block offsets, the
+coroutine offsets and the described calls' rows (§9.5; a row a target
+has not completed stays incomplete). A table of code offsets a later
+package adds to the function's record is moved here too: a test must
+compare such offsets with the final bytes of a function that shrank.
+Every reference to a bound label is then patched again; one out of
+reach is an internal error. A function that asked for
+neither costs nothing.
+
+**1. The save set.** The prologue pushes only the members of `rbx`,
+`r12`..`r15` the body used (`hod_cg` records every register `alloc`,
+`take_reg` and `own` hand out: `FnCx::regs_used`), plus `rbx` in a
+function with the coroutine frame (`coro_body` writes it directly),
+and all five in a function with a `llvm.eh.sjlj.setjmp` (its resume
+point is entered with the registers of the code that jumped, §5.6.16).
+Nothing else writes a callee-saved register: inline assembly templates
+assemble to nothing, the ABI refuses `swift*` (no argument arrives in
+one), and `cmpxchg16b` takes `rbx` with `take_reg`. The body is
+emitted before the set is known, so `begin` writes the largest
+prologue (`push rbp` · `mov rbp, rsp` · five pushes · `sub rsp,
+imm32`, 16 bytes after `mov`) and `end` rewrites those bytes as the
+set's pushes and `sub rsp, FRAME` (`imm8` when it fits, nothing when
+`FRAME` is 0), then cuts the rest. `FRAME ≡ 8n (mod 16)`, a local is
+at `[rbp + o - 8n - FRAME]`, and `FrameDesc::frame_size` is `8n +
+FRAME`, the bytes below `rbp`. The save rows are written once, at the
+offset after the last push: x86-64 has no CFI row inside the body
+before the epilogue, and the CFA is `rbp + 16` from the second
+instruction on. Until then each register still holds the caller's value
+(a push does not change it), which is what a register without a row
+means, so the rows are exact at every instruction. Each exit is `lea rsp, [rbp - 8n]` · the pops in
+reverse · `pop rbp` (`leave` when `n` is 0), and the coroutine stubs
+push the same set. `invoke`, landing pads, `musttail`, variadic
+functions and stack probes are unchanged: none depends on the set.
+
+**2. Branches.** A branch to the block emitted next was already
+omitted (§6.2). Every other `jmp rel32` and `jcc rel32` (`common::branch`,
+`branch_cond`: block edges, the lowerings' local loops and skips, the
+coroutine stubs' dispatch) is marked relaxable and becomes `EB cb` or
+`70+cc cb` when its label is then in reach; a backward branch that
+reaches when it is emitted is short at once and recorded as a reference
+(`REL8`) so that it is patched again. Nothing else in `hod_x64` encodes
+a displacement between two places of a function except through a
+label: `blockaddress` (a `lea` with a `REL32` field), the data islands
+and the call-site, line, CFI and variable rows all move with the code.
+Relaxation keeps every branch's target, so line rows, CFI advances and
+DWARF ranges, computed from the moved offsets, stay exact.
+
+**3. Copies.** `common::copy_frame` (frame place to frame place) and
+`common::copy_from_ptr` (memory to a frame place) of more than 64 bytes
+(`UNROLLED_MAX`) are `push rcx` · `push rsi` · `push rdi` · `lea rsi,
+src` · `lea rdi, dst` · `mov ecx, n` · `rep movsb` · `pop rdi` · `pop
+rsi` · `pop rcx`; 64 bytes and fewer stay moves through `xmm15` and
+`r11`. Every instruction keeps the flags (the flags rule, §5.6), so a
+copy may sit between a compare and its reader. `rcx` never holds a value
+but may hold an argument already placed at a call site, as `rsi` and
+`rdi` may, so all three are kept. An `Outgoing` place is addressed 24
+bytes further from `rsp` while they are pushed (`frame_inst_shifted`).
+In `copy_from_ptr`, `rsi` is computed first when the pointer is in
+`rdi`, and a displacement beyond 1 GiB is added to `rsi` in steps.
+`rep movsb` copies forward, byte by byte, with the direction flag clear
+(psABI): the source and destination of these copies never overlap, and
+no volatile access goes through them (`memcpy` and `memmove`, volatile
+or not, are `intrinsic.rs`'s).
+
+#### 5.6.16 Leftovers, second set (WP-147)
+
+Each against `llc -O0 -fast-isel=0` 22 and 19 under the emulator, and
+`hod_interp` where it has the type (`crates/hod_x64/tests/leftovers2.rs`,
+`crates/hod_x64/tests/coro_wide_atomic.rs`):
+
+1. **`ptrtoint` of a constant address as an operand**
+   (`operand:int-of-addr`): `common::materialize_gpr_const` already
+   formed it (`lea` of the symbol, plus the offset); the matrix now says
+   so. A vector constant whose lanes are addresses (`<1 x i64>`,
+   `<2 x i64>`, `<2 x ptr>`) is written to the 16 bytes below `rsp` by
+   `constaddr::write_image` and loaded into the `xmm` register
+   (`vector::materialize`). An address in a lane narrower than 8 bytes
+   stays `x64:constant-relocation`.
+2. **`llvm.eh.sjlj.setjmp` / `llvm.eh.sjlj.longjmp`** with `llc`'s
+   x86-64 buffer: word 0 the frame pointer and word 2 the stack pointer
+   (both stored by the front end), word 1 the resume address. `setjmp`
+   displaces every value, stores `lea r11, [rip + resume]` to word 1 and
+   is 0; at the resume label it is 1. A function with a `setjmp` saves
+   all of `rbx`, `r12`–`r15` whatever its body used (§5.6.15): they
+   arrive at the resume label as the jumping code left them, and the
+   epilogue restores the caller's from `rbp`.
+   `longjmp` reads all three words before it writes `rbp`, then `rsp`,
+   then `jmp`s. hod's and `llc`'s objects jump into each other's
+   buffers. Refused: `x64:sjlj-live-value` (a register value of the
+   block defined before the `setjmp` and used after it, or an entry
+   argument used after it: the second return would read a reused spill
+   slot), `x64:sjlj-coroutine` (`rbx`, the frame base, is not restored
+   at the resume address), `x64:sjlj-shadow-stack` (the
+   `cf-protection-return` module flag: the jump would unbalance the
+   shadow stack). On AArch64, `llc` compiles `setjmp` to 0 and `longjmp`
+   to nothing, and clang refuses the builtins; hod refuses both there.
+3. **A constant mask other than zero** as a `phi` incoming, a call
+   argument or a return value: `vector::materialize`, from the target's
+   materialize hook, puts its bits in a general register (`mask::
+   const_bits`, `mov` of the 64-bit immediate), for every width of
+   §5.6.13's masks.
+4. **`fp128` lanes** stay `x64:vector-wide-element`: no corpus module
+   has a vector of `fp128`; each lane operation would be a libcall.
+5. **`fptrunc x86_fp80` to `bfloat`** calls `__truncxfbf2` (libgcc 13
+   and later, compiler-rt), as `llc` 22 does; `llc` 19 cannot select it
+   (§5.6.12).
+6. **16-byte atomics in a coroutine** (§7.6 "x86-64"): with `+cx16`,
+   in a function with the coroutine frame, `push rbx` before the
+   sequence writes `rbx` and `pop rbx` after the last `cmpxchg16b`; the
+   new value is loaded high half (`rcx`) first, so its low half's load
+   is the last use of `rbx` as the frame base; the results are stored
+   after the `pop`. The libatomic calls without `+cx16` need nothing.
+7. **`hod_ir`** reads `llvm.va_start` and `llvm.va_end` without a
+   suffix and `llvm.va_copy.p0.p0` as the `.p0` intrinsics (LLVM 19 and
+   22 rename them on reading).
+8. **`tests/ir/const_operands.ll`** names no target and runs on both.
+9. **`is.fpclass` of a pseudo-denormal**: §5.6.12.
+
+Evidence: `spec/landed/codegen/WP-147.md`.
 
 ## 6. Control flow
 
@@ -4076,16 +4227,20 @@ of two of at most 2^30, or a direction that is not a constant, is
 (`R_X86_64_PC32`), small code model only (`x64:code-model` otherwise);
 the noop frame's function is one `ret` (`NOOP_CORO_FN`).
 
-*The machine frame.* `rbx` is the frame base. Every x86-64 function
-already pushes `rbx` with `rbp`, `r12`–`r15` (one save set, one CFI
-row each), so a coroutine only takes `rbx` out of the allocation pool
+*The machine frame.* `rbx` is the frame base. A function with the
+coroutine frame always has `rbx` in its save set (§5.6.15), so a
+coroutine only takes `rbx` out of the allocation pool
 and the holdable set: `X64::for_function` sets `X64::coro` from
 `presplitcoroutine` and `reg_info` is then `REG_INFO_CORO`. The mode
 and frame words are `[rbp − d]` slots; the prologue stores 0 to both
 right after `sub rsp, FRAME`. `Stress::coro_frame` gives every function
 those words and clobbers `rbx` (`mov rbx, rbp`) after the prologue.
-`cmpxchg16b` needs `rbx`, so a coroutine with an atomic access wider
-than 64 bits is refused as `x64:coro-wide-atomic`.
+`cmpxchg16b` needs `rbx`: in a function with the coroutine frame a
+16-byte atomic pushes `rbx` before the sequence writes it and pops it
+after the last `cmpxchg16b`; between the two nothing addresses the heap
+frame, and the new value's high half is loaded before its low half
+(into `rbx`). Without `+cx16` the libatomic calls need nothing (WP-147,
+§5.6.16).
 
 *Intrinsics.* As on AArch64, with `rbx` for x19: `coro.begin` is
 `mov rbx, mem`, `lea r11, [rip + F.resume]` / `[rip + F.destroy]`
@@ -4099,7 +4254,7 @@ with (awaiter, frame), C convention.
 *The stubs.* Local `STT_FUNC` symbols `F.resume` and `F.destroy`
 after F's code. Each states the entry CFI (CFA = `rsp + 8`, `rbp` and
 the save set restored), then builds F's machine frame with F's rows
-(`push rbp`, `mov rbp, rsp`, `push rbx, r12–r15`, `sub rsp, FRAME`),
+(`push rbp`, `mov rbp, rsp`, the save set's pushes, `sub rsp, FRAME`),
 then `mov rbx, rdi`, mode := 1, the frame word := `rdi`
 (`coro_stub_ready` here), `mov eax, 0 | 1`, one `cmp dword [rbx +
 index], k` / `je` per suspend, and `ud2`. Their displacements are the
@@ -4118,7 +4273,7 @@ locals are biased.
     jne exit                    a resumed activation: a tail exit
     call r11                    the ramp: its own call-site row
     ...
-exit:                           lea rsp, [rbp - 40]; pop r15 … rbx; pop rbp
+exit:                           lea rsp, [rbp - 8n]; the save set's pops; pop rbp
     jmp r11
 ```
 
@@ -4369,6 +4524,17 @@ Recorded only when the module has debug information.
   `-O0`, and none is described yet, `spec/dwarf.md` open question 9),
   `debug:dbg-assign`, `debug:declare-address` (a `#dbg_declare` of a
   constant, a symbol, or a value that never got a home).
+- `debug_calls` (`DebugCallRow`, WP-113, `spec/dwarf.md` §6.19): in a
+  function whose subprogram has `DIFlagAllCallsDescribed`, one row per
+  call instruction an IR `call` or `invoke` became, in lowering order:
+  the callee (a module function, an indirect call's DWARF register, or
+  `Refused(name)`), whether it is a `musttail` call, and the offset after
+  the call instruction (for a `musttail` call, of the tail exit's
+  branch). The engine arms the row before `Target::emit_call`; the
+  target completes it with `FnCx::call_returns_here` right after the
+  call instruction and `FnCx::tail_branch_here` right before a tail
+  exit's branch. A row left incomplete is an internal error. Calls the
+  code generator makes on its own have none.
 
 ### 9.6 Block addresses
 

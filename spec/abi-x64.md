@@ -655,7 +655,9 @@ the x87 control word and the MXCSR control bits (psABI §3.2.1, figure
 `rdx`, `rsi`, `rdi`, `r8`..`r11` are clobbered. The x87 stack is empty
 at a call and at a return, except for the x87 return parts. The
 direction flag is clear at both. `rsp` is 16-byte aligned at every
-`call` (so ≡ 8 mod 16 at a function's entry).
+`call` (so ≡ 8 mod 16 at a function's entry). A hod function saves and
+restores only the callee-saved registers it writes (its save set,
+`codegen.md` §5.6.15); `rbp` always.
 
 ### 8.5 `musttail`
 

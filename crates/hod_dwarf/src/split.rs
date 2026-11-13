@@ -140,6 +140,9 @@ pub fn write_unit_dies(
     units: &[UnitInput<'_, '_>],
     split: SplitDwarf,
 ) -> Result<(), Error> {
+    if let Some(result) = crate::dwarf4::write_unit_dies(obj, line, units, split) {
+        return result; // WP-114: §6.20
+    }
     match split {
         SplitDwarf::Off => write_debug_info(obj, line, units).map(|_| ()),
         _ => write_split_debug_info(obj, line, units, split).map(|_| ()),
@@ -558,6 +561,9 @@ pub fn write_split_debug_info(
 
 /// What [`write_split_debug_info`] refuses besides the full writer.
 fn check(plan: &UnitPlan<'_>) -> Result<(), Error> {
+    if plan.version == 4 {
+        return Err(unsupported(plan.unit, SPLIT_DWARF_4)); // WP-114: §6.20
+    }
     let cu = &plan.cu;
     // clang writes no name for a unit that is only a line table, whose
     // skeleton names no `.dwo`.

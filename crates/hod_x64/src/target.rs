@@ -471,6 +471,10 @@ impl Target for X64 {
     }
 
     fn materialize(&self, cx: &mut FnCx<'_, Self>, reg: PReg, value: Value) -> CgResult<()> {
+        // WP-147: a constant mask, a vector constant with addresses.
+        if let Some(done) = vector::materialize(cx, reg, value) {
+            return done;
+        }
         if reg::is_fpr(reg) {
             return float::materialize(cx, xm(reg), value);
         }
@@ -529,7 +533,9 @@ impl Target for X64 {
     }
 
     fn emit_call(&self, cx: &mut FnCx<'_, Self>, call: &CallEmit) -> CgResult<()> {
-        frame::emit_call(cx, call.target, call.variadic, call.vector_regs_used)
+        frame::emit_call(cx, call.target, call.variadic, call.vector_regs_used)?;
+        cx.call_returns_here(call.target, reg::dwarf); // WP-113: `spec/dwarf.md` §6.19
+        Ok(())
     }
 
     fn dynamic_slot(

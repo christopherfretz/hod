@@ -196,6 +196,10 @@ fn count_tag(n: &Node, tag: &str) -> usize {
     usize::from(n.tag == tag) + n.children.iter().map(|c| count_tag(c, tag)).sum::<usize>()
 }
 
+fn has_attr(n: &Node, attr: &str) -> bool {
+    n.attrs.iter().any(|a| a == attr) || n.children.iter().any(|c| has_attr(c, attr))
+}
+
 fn render(n: &Node, depth: usize, out: &mut String) {
     let _ = writeln!(out, "{}{}", "  ".repeat(depth), n.tag);
     for a in &n.attrs {
@@ -335,6 +339,10 @@ pub fn permitted(h: &Node, l: &Node, is_constant: bool, llc19: bool) -> Option<V
     {
         l.attrs.retain(|a| a != "DW_AT_loclists_base");
         sret = true;
+    } else if !l.attrs.iter().any(|a| a == "DW_AT_str_offsets_base") {
+        // WP-114: a DWARF 4 unit has no base attribute; its lists are
+        // in `.debug_loc`, seen as a location `list` in the tree.
+        sret = has_attr(&l, "DW_AT_location list") && !has_attr(h, "DW_AT_location list");
     }
     let extras_ok =
         count_tag(&l, "DW_TAG_inlined_subroutine") > count_tag(h, "DW_TAG_inlined_subroutine");
@@ -625,11 +633,12 @@ pub fn compare(
         }
     }
     // `llc`'s location lists (the `sret` class) add its relocation of
-    // `DW_AT_loclists_base` against `.debug_loclists`; every other must
-    // be equal.
+    // `DW_AT_loclists_base` against `.debug_loclists` (in DWARF 4, of each
+    // list's offset against `.debug_loc`, WP-114); every other must be
+    // equal.
     let mut theirs_r = theirs_r.to_vec();
     if classes.contains(&"sret") {
-        theirs_r.retain(|(_, symbol)| symbol != ".debug_loclists");
+        theirs_r.retain(|(_, symbol)| symbol != ".debug_loclists" && symbol != ".debug_loc");
     }
     let theirs_r = theirs_r.as_slice();
     if ours_r != theirs_r {
@@ -845,9 +854,15 @@ mod tests {
 
     #[test]
     fn sret_location_lists_are_permitted() {
+        // A DWARF 5 unit has `str_offsets_base`, and `loclists_base` with
+        // lists; a DWARF 4 unit neither (WP-114).
         let unit = |loclists: bool, location: &str| Node {
             tag: "DW_TAG_compile_unit".into(),
-            attrs: if loclists { vec!["DW_AT_loclists_base".into()] } else { vec![] },
+            attrs: if loclists {
+                vec!["DW_AT_str_offsets_base".into(), "DW_AT_loclists_base".into()]
+            } else {
+                vec!["DW_AT_str_offsets_base".into()]
+            },
             children: vec![Node {
                 tag: "DW_TAG_variable".into(),
                 attrs: vec![location.into()],
@@ -861,7 +876,23 @@ mod tests {
         );
         // Without llc's location lists, a list is a difference.
         assert!(matches!(
-            compare(&[h], &[unit(false, SRET_LLC)], &[], &[], false, false),
+            compare(std::slice::from_ref(&h), &[unit(false, SRET_LLC)], &[], &[], false, false),
+            Outcome::Differs(_)
+        ));
+        // DWARF 4: no base attribute; `llc`'s list is relocated against
+        // `.debug_loc`.
+        let v4 = |location: &str| {
+            let mut n = unit(false, location);
+            n.attrs.clear();
+            n
+        };
+        let loc = [("R_X86_64_32".to_owned(), ".debug_loc".to_owned())];
+        assert_eq!(
+            compare(&[v4(SRET_HOD)], &[v4(SRET_LLC)], &[], &loc, false, false),
+            Outcome::Permitted(vec!["sret"])
+        );
+        assert!(matches!(
+            compare(&[v4(SRET_HOD)], &[v4(IN_SLOT)], &[], &[], false, false),
             Outcome::Differs(_)
         ));
     }

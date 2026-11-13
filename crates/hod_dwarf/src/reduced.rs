@@ -117,6 +117,9 @@ pub(crate) fn add_function(plan: &UnitPlan<'_>, f: &FunctionInput<'_>) -> Result
     let DiNode::Subprogram(sp) = plan.debug.node(f.subprogram) else {
         return Err(unsupported(f.subprogram, LINE_TABLES_INLINED));
     };
+    if crate::call_sites::describes(&sp) {
+        return Err(unsupported(f.subprogram, crate::call_sites::DEBUG_CALL_SITES_LINE_TABLES)); // WP-113
+    }
     let typed = sp.ty.is_some_and(|t| match plan.debug.node(t) {
         DiNode::SubroutineType(t) => !t.types.is_empty(),
         _ => true,
@@ -131,13 +134,17 @@ pub(crate) fn add_function(plan: &UnitPlan<'_>, f: &FunctionInput<'_>) -> Result
     Ok(false)
 }
 
-/// The flags a minimal subprogram may have; anything else (above all
-/// `DIFlagAllCallsDescribed`, whose `DW_AT_call_all_calls` and call-site
-/// entries need the generated code's return addresses: `debug:call-sites`
-/// since WP-098) is refused as `debug:subprogram-attribute`, as for a full
-/// unit.
-const MINIMAL_FLAGS: u32 =
-    DiFlags::PROTOTYPED.0 | DiFlags::ARTIFICIAL.0 | DiFlags::NO_RETURN.0 | DiFlags::THUNK.0;
+/// The flags a minimal subprogram may have; anything else is refused as
+/// `debug:subprogram-attribute`, as for a full unit.
+/// `DIFlagAllCallsDescribed` changes nothing in a function without a DIE
+/// (WP-113); one with inlined code is refused as
+/// [`crate::call_sites::DEBUG_CALL_SITES_LINE_TABLES`] (`llc` writes its
+/// call sites in minimal form, §6.19).
+const MINIMAL_FLAGS: u32 = DiFlags::PROTOTYPED.0
+    | DiFlags::ARTIFICIAL.0
+    | DiFlags::NO_RETURN.0
+    | DiFlags::THUNK.0
+    | DiFlags::ALL_CALLS_DESCRIBED.0;
 const MINIMAL_SP_FLAGS: u32 =
     SpFlags::DEFINITION.0 | SpFlags::LOCAL_TO_UNIT.0 | SpFlags::OPTIMIZED.0;
 
@@ -152,7 +159,6 @@ pub(crate) fn minimal_parent(
     if !sp.sp_flags.contains(SpFlags::DEFINITION) || sp.unit != Some(plan.unit) {
         return Err(unsupported(sp_id, "debug:subprogram-not-definition"));
     }
-    crate::call_sites::check(sp).map_err(|name| unsupported(sp_id, name))?; // WP-098: §6.14
     if !sp.thrown_types.is_empty()
         || sp.sp_flags.0 & !MINIMAL_SP_FLAGS != 0
         || sp.flags.0 & !MINIMAL_FLAGS != 0

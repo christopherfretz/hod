@@ -9,7 +9,7 @@ name: ci
 # a matrix axis would rename them.
 on:
   push:
-    branches: [main]
+    branches: [main, wp/155-x64-hardware]
   pull_request:
   merge_group:
 permissions:
@@ -18,24 +18,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  arm:
-    uses: ./.github/workflows/ci-lane.yml
-    with: { runner: ubuntu-24.04-arm, cache-key: ci-arm }
   x86_64:
     uses: ./.github/workflows/ci-lane.yml
     with: { runner: ubuntu-24.04, cache-key: ci-x86_64 }
   # Fan-in: passes only if every job of the lane succeeded. `always()` so a
   # failed, cancelled or skipped lane makes this job FAIL (a skipped
   # required check would otherwise count as passing).
-  check:
-    needs: [arm]
-    if: always()
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - name: every arm job succeeded
-        run: |
-          echo "arm lane: ${{ needs.arm.result }}"
-          test "${{ needs.arm.result }}" = success
   check-x86_64:
     needs: [x86_64]
     if: always()

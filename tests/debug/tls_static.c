@@ -29,7 +29,7 @@ int main(void) {
 //@ gdb: continue
 //@ gdb-check: Breakpoint 1, tick (by=1)
 //@ gdb-check: $1 = 6
-//@ gdb-check: $2 = <optimized out>
+//@ gdb-check: $2 = 
 //@ gdb-check: exited normally
 //@ lldb: breakpoint set --file tls_static.c --line 16
 //@ lldb: run

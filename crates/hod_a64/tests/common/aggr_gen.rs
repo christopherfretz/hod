@@ -1410,6 +1410,7 @@ fn interpret(suite: &Suite, header: &str) -> Vec<Result<Option<Vec<u8>>, ()>> {
             Ok(Some(Val::Int { value, .. })) => Ok(Some(value.to_le_bytes()[..store].to_vec())),
             Ok(Some(Val::Ptr(v) | Val::Double(v))) => Ok(Some(v.to_le_bytes().to_vec())),
             Ok(Some(Val::Float(v))) => Ok(Some(v.to_le_bytes().to_vec())),
+            Ok(Some(Val::X86Fp80(v))) => Ok(Some(v.to_le_bytes()[..10].to_vec())),
             Ok(Some(Val::Agg(agg))) => Ok(Some(agg.bytes()[..store].to_vec())),
             Ok(None) => panic!("{}: no result", f.name),
             Err(Stop::Trap(_)) => Err(()),

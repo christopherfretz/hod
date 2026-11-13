@@ -21,7 +21,7 @@ mod module;
 mod raw;
 mod types;
 
-pub use body::{BodyReader, ReadBody, read_bodies};
+pub use body::{BodyReader, ReadBody, read_bodies, read_bodies_on};
 pub use error::{BcError, BcErrorKind, BcResult};
 pub use module::{BcModule, FunctionBits, Metadata, ModuleBits, ReadOptions, read_module};
 

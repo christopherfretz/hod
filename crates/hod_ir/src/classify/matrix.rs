@@ -411,8 +411,8 @@ const fn a64(name: &'static str, by: &'static str, note: &'static str) -> Suppor
 // ---- the groups, in the order of `docs/status/support.md` ----
 
 const MODULE: [SupportRow; 24] = [
-    row("module:pic", ON, todo(X64), "`PIC Level` is not 0"),
-    row("module:pie", ON, todo(X64), "`PIE Level` is not 0"),
+    both("module:pic", ON, "`PIC Level` is not 0"),
+    both("module:pie", ON, "`PIE Level` is not 0"),
     // `CodeModel` order.
     a64("module:code-model-tiny", LATER, ""),
     both("module:code-model-small", ON, "the default of both targets: nothing changes"),
@@ -420,12 +420,7 @@ const MODULE: [SupportRow; 24] = [
     a64("module:code-model-medium", LATER, ""),
     a64("module:code-model-large", LATER, ""),
     a64("module:large-data-threshold", LATER, ""),
-    row(
-        "module:uwtable",
-        ON,
-        todo(X64),
-        "the module's default unwind-table kind is not `none` (WP-049)",
-    ),
+    both("module:uwtable", ON, "the module's default unwind-table kind is not `none` (WP-049)"),
     both(
         "module:frame-pointer",
         ON,
@@ -496,7 +491,7 @@ const DEBUG_ROWS: [SupportRow; 5] = [
 const GLOBAL: [SupportRow; 12] = [
     both("global:function-declaration", ON, "nothing is emitted for a declaration"),
     both("global:variable-declaration", ON, "nothing is emitted for a declaration"),
-    row("global:function-definition", ON, todo(X64), "a function that gets a body"),
+    both("global:function-definition", ON, "a function that gets a body"),
     row("global:variable-definition", ON, todo(X64), "a variable with an initializer"),
     row("global:alias", ON, todo(X64), ""),
     row("global:alias-offset", ON, todo(X64), "an alias of a symbol plus a non-zero offset"),
@@ -526,7 +521,7 @@ const LINKAGE: [SupportRow; Linkage::ALL.len()] = [
         never("only LLVM's special arrays have it, and those are not symbols (§2.2)"),
         "",
     ),
-    row("linkage:internal", ON, todo(X64), ""),
+    both("linkage:internal", ON, ""),
     row("linkage:private", ON, todo(X64), ""),
     row("linkage:extern_weak", ON, todo(X64), ""),
     row("linkage:common", ON, todo(X64), ""),
@@ -576,14 +571,9 @@ const INIT: [SupportRow; 10] = [
 ];
 
 const FUNCTION: [SupportRow; 6] = [
-    row("function:parameters", ON, todo(X64), "a body with parameters; per class of parameter"),
+    both("function:parameters", ON, "a body with parameters; per class of parameter"),
     row("function:variadic", ON, todo(X64), "a variadic function with a body"),
-    row(
-        "function:may-unwind",
-        ON,
-        todo(X64),
-        "a body without `nounwind`: it needs unwind tables (WP-049)",
-    ),
+    both("function:may-unwind", ON, "a body without `nounwind`: it needs unwind tables (WP-049)"),
     row("function:personality", ON, todo(X64), "a body with a personality function"),
     row("function:slots", ON, todo(X64), "a body with fixed stack objects (`Body::slots`)"),
     row("function:over-aligned-slot", ON, todo(X64), "a stack object aligned above 16 bytes"),
@@ -591,7 +581,7 @@ const FUNCTION: [SupportRow; 6] = [
 
 /// In the order of [`cc_index`].
 const CC: [SupportRow; 15] = [
-    row("cc:ccc", ON, todo(X64), ""),
+    both("cc:ccc", ON, ""),
     row("cc:fastcc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     a64("cc:coldcc", LATER, ""),
     a64("cc:ghccc", LATER, ""),
@@ -692,7 +682,12 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
     a64("attr:ssp", "spec/codegen.md §13", "open question: accept and ignore, or implement"),
     a64("attr:sspreq", "spec/codegen.md §13", ""),
     a64("attr:sspstrong", "spec/codegen.md §13", ""),
-    a64("attr:presplitcoroutine", CORO, ""),
+    row(
+        "attr:presplitcoroutine",
+        ON,
+        todo(X64),
+        "one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name (WP-106)",
+    ),
     a64("attr:sanitize_address", LATER, ""),
     a64("attr:sanitize_alloc_token", LATER, ""),
     a64("attr:sanitize_hwaddress", LATER, ""),
@@ -712,12 +707,15 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
 
 /// In `FnStr::ALL` order.
 const ATTR_STRING: [SupportRow; FnStr::ALL.len()] = [
-    row("attr:target-cpu", ON, todo(X64), "AArch64: the code is ARMv8.0, which every CPU runs"),
-    row(
+    both(
+        "attr:target-cpu",
+        ON,
+        "the code is ARMv8.0 on AArch64 and the x86-64 base set on x86-64, which every CPU runs",
+    ),
+    both(
         "attr:target-features",
         ON,
-        todo(X64),
-        "each feature judged by code generation (`spec/codegen.md` §5.5.2)",
+        "each feature judged by code generation (`spec/codegen.md` §5.5.2, §5.6.2)",
     ),
     both("attr:tune-cpu", ON, "tuning only: hod does not tune"),
     both("attr:frame-pointer", ON, "any value: hod always keeps a frame pointer"),
@@ -734,18 +732,18 @@ const ATTR_STRING: [SupportRow; FnStr::ALL.len()] = [
     a64("attr:split-stack", LATER, ""),
     a64("attr:zero-call-used-regs", LATER, ""),
     both("attr:stack-protector-buffer-size", ON, "a parameter of `attr:ssp`, read with it"),
-    row("attr:min-legal-vector-width", ON, todo(X64), "read by x86 only"),
-    row("attr:no-jump-tables", ON, todo(X64), "hod emits no jump table (`spec/codegen.md` §6.2)"),
+    both("attr:min-legal-vector-width", ON, "read by x86 only"),
+    both("attr:no-jump-tables", ON, "hod emits no jump table (`spec/codegen.md` §6.2)"),
     both("attr:no-builtins", ON, "hod recognises no library call"),
     both("attr:no-builtin", ON, "every `no-builtin-<function>`; hod recognises no library call"),
 ];
 
 /// In `TypeClass::ALL` order.
 const TYPE: [SupportRow; TypeClass::ALL.len()] = [
-    row("type:int", ON, todo(X64), "integers of at most 64 bits"),
+    both("type:int", ON, "integers of at most 64 bits"),
     row("type:i128", ON, todo(X64), "WP-040"),
     row("type:int-wide", ON, todo(X64), "integers wider than 64 bits other than `i128` (WP-040)"),
-    row("type:ptr", ON, todo(X64), "pointers in address space 0"),
+    both("type:ptr", ON, "pointers in address space 0"),
     row("type:half", ON, todo(X64), "arithmetic in single precision"),
     row(
         "type:bfloat",
@@ -765,7 +763,12 @@ const TYPE: [SupportRow; TypeClass::ALL.len()] = [
     ),
     both("type:scalable-vector", never(SCALABLE), ""),
     row("type:aggregate", ON, todo(X64), "structs and arrays as first-class values (WP-040)"),
-    a64("type:token", CORO, "the results of the coroutine intrinsics"),
+    row(
+        "type:token",
+        ON,
+        todo(X64),
+        "the results and operands of the coroutine intrinsics (WP-106)",
+    ),
     both("type:target-ext", never("no target extension type has a lowering"), ""),
 ];
 
@@ -1254,7 +1257,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         todo(X64),
         "byte-sized elements, up to 256 lanes (WP-079)",
     ),
-    row("inst:phi", ON, todo(X64), "for every class whose `type:*` row is supported"),
+    both("inst:phi", ON, "for every class whose `type:*` row is supported"),
     row(
         "inst:select",
         on(&[
@@ -1300,12 +1303,12 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
     row("inst:landingpad", ON, todo(X64), ""),
     both("inst:catchpad", never(WINDOWS_EH), ""),
     both("inst:cleanuppad", never(WINDOWS_EH), ""),
-    row("inst:br", ON, todo(X64), ""),
+    both("inst:br", ON, ""),
     row("inst:condbr", ON, todo(X64), "LLVM's two-way `br`"),
     row("inst:switch", on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide]), todo(X64), ""),
     row("inst:indirectbr", ON, todo(X64), ""),
-    row("inst:ret", ON, todo(X64), ""),
-    row("inst:unreachable", ON, todo(X64), ""),
+    both("inst:ret", ON, ""),
+    both("inst:unreachable", ON, ""),
     row(
         "inst:callbr",
         ON,
@@ -1398,15 +1401,10 @@ const LANDINGPAD: [SupportRow; 3] = [
 ];
 
 const OPERAND: [SupportRow; 11] = [
-    row(
-        "operand:symbol",
-        ON,
-        todo(X64),
-        "a symbol's address as a value, with or without an offset",
-    ),
+    both("operand:symbol", ON, "a symbol's address as a value, with or without an offset"),
     row("operand:slot", ON, todo(X64), "the address of a stack slot"),
     row("operand:blockaddress", ON, todo(X64), "of a block of the same function"),
-    row("operand:addr-of-int", ON, todo(X64), "`inttoptr` of a constant number"),
+    both("operand:addr-of-int", ON, "`inttoptr` of a constant number"),
     row("operand:int-of-addr", ON, todo(X64), "`ptrtoint` of a constant address (WP-072)"),
     row("operand:sym-diff", ON, todo(X64), "a difference of two symbol addresses (WP-072)"),
     a64("operand:block-diff", LATER, "a label difference as an operand (WP-095)"),
@@ -2305,15 +2303,60 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
     ),
     a64("intrinsic:llvm.vector.extract", VECTORS, ""),
     a64("intrinsic:llvm.vector.insert", VECTORS, ""),
-    a64("intrinsic:llvm.coro.id", CORO, ""),
-    a64("intrinsic:llvm.coro.alloc", CORO, ""),
-    a64("intrinsic:llvm.coro.begin", CORO, ""),
-    a64("intrinsic:llvm.coro.end", CORO, ""),
-    a64("intrinsic:llvm.coro.free", CORO, ""),
-    a64("intrinsic:llvm.coro.size", CORO, ""),
-    a64("intrinsic:llvm.coro.align", CORO, ""),
-    a64("intrinsic:llvm.coro.save", CORO, ""),
-    a64("intrinsic:llvm.coro.suspend", CORO, ""),
+    row(
+        "intrinsic:llvm.coro.id",
+        on(&[TypeClass::Token, TypeClass::Int, TypeClass::Ptr]),
+        todo(X64),
+        "in a coroutine body (WP-106)",
+    ),
+    row(
+        "intrinsic:llvm.coro.alloc",
+        on(&[TypeClass::Token, TypeClass::Int]),
+        todo(X64),
+        "in a coroutine body (WP-106)",
+    ),
+    row(
+        "intrinsic:llvm.coro.begin",
+        on(&[TypeClass::Token, TypeClass::Ptr]),
+        todo(X64),
+        "in a coroutine body (WP-106)",
+    ),
+    row(
+        "intrinsic:llvm.coro.end",
+        on(&[TypeClass::Token, TypeClass::Int, TypeClass::Ptr]),
+        todo(X64),
+        "in a coroutine body (WP-106)",
+    ),
+    row(
+        "intrinsic:llvm.coro.free",
+        on(&[TypeClass::Token, TypeClass::Ptr]),
+        todo(X64),
+        "in a coroutine body (WP-106)",
+    ),
+    row(
+        "intrinsic:llvm.coro.size",
+        on(&[TypeClass::Int]),
+        todo(X64),
+        "in a coroutine body (WP-106)",
+    ),
+    row(
+        "intrinsic:llvm.coro.align",
+        on(&[TypeClass::Int]),
+        todo(X64),
+        "in a coroutine body (WP-106)",
+    ),
+    row(
+        "intrinsic:llvm.coro.save",
+        on(&[TypeClass::Token, TypeClass::Ptr]),
+        todo(X64),
+        "in a coroutine body (WP-106)",
+    ),
+    row(
+        "intrinsic:llvm.coro.suspend",
+        on(&[TypeClass::Token, TypeClass::Int]),
+        todo(X64),
+        "in a coroutine body (WP-106)",
+    ),
     row("intrinsic:llvm.coro.resume", on(&[TypeClass::Ptr]), todo(X64), "in any function (WP-105)"),
     row(
         "intrinsic:llvm.coro.destroy",
@@ -2335,9 +2378,24 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
     ),
     a64("intrinsic:llvm.coro.frame", CORO, ""),
     row("intrinsic:llvm.coro.noop", on(&[TypeClass::Ptr]), todo(X64), "the noop frame (WP-105)"),
-    a64("intrinsic:llvm.coro.is_in_ramp", CORO, ""),
-    a64("intrinsic:llvm.coro.await.suspend.void", CORO, ""),
-    a64("intrinsic:llvm.coro.await.suspend.bool", CORO, ""),
+    row(
+        "intrinsic:llvm.coro.is_in_ramp",
+        on(&[TypeClass::Int]),
+        todo(X64),
+        "in a coroutine body (WP-106)",
+    ),
+    row(
+        "intrinsic:llvm.coro.await.suspend.void",
+        on(&[TypeClass::Ptr]),
+        todo(X64),
+        "in a coroutine body (WP-106)",
+    ),
+    row(
+        "intrinsic:llvm.coro.await.suspend.bool",
+        on(&[TypeClass::Int, TypeClass::Ptr]),
+        todo(X64),
+        "in a coroutine body (WP-106)",
+    ),
     a64("intrinsic:llvm.coro.await.suspend.handle", CORO, ""),
     row("intrinsic:llvm.sshl.sat", on(&[TypeClass::Int]), todo(X64), "up to 64 bits (WP-084)"),
     row("intrinsic:llvm.ushl.sat", on(&[TypeClass::Int]), todo(X64), "up to 64 bits (WP-084)"),

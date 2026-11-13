@@ -21,7 +21,14 @@ use crate::error::{Stop, Trap, invalid, unsupported};
 use crate::memory::{AllocKind, Mark, Memory};
 use crate::ops::{self, Checked, IntOp};
 use crate::value::{Agg, MAX_INT_BITS, Val, sext};
+use crate::x87;
+
+/// §8: `llvm.is.fpclass` of an encoding only the x87 has (§5.11).
+const X87_INTRINSIC: &str = "intrinsic-x86_fp80";
+mod varargs;
 mod vector_ops;
+
+use varargs::{VaArea, VaCall, VaOp};
 
 /// A module and the bodies of some of its functions (§2).
 #[derive(Clone, Debug)]
@@ -305,6 +312,8 @@ enum Class {
     Ptr,
     Float,
     Double,
+    /// `x86_fp80` (§5.11): ten bytes.
+    X86Fp80,
     Agg,
     /// A vector (§3.1): its type and store size.
     Vector(TypeId, u32),
@@ -317,6 +326,7 @@ impl Class {
             Class::Int(bits) => bits.div_ceil(8) as usize,
             Class::Ptr | Class::Double => 8,
             Class::Float => 4,
+            Class::X86Fp80 => 10,
             Class::Vector(_, size) => size as usize,
             Class::Void | Class::Agg => 0,
         }
@@ -333,6 +343,7 @@ fn decode(class: Class, bytes: &[u8]) -> Val {
         Class::Ptr => Val::Ptr(value as u64),
         Class::Float => Val::Float(value as u32),
         Class::Double => Val::Double(value as u64),
+        Class::X86Fp80 => Val::X86Fp80(value & ((1 << 80) - 1)),
         Class::Void | Class::Agg | Class::Vector(..) => {
             unreachable!("{class:?} is not a scalar")
         }
@@ -347,6 +358,7 @@ fn encode(val: &Val, out: &mut [u8]) {
         Val::Ptr(addr) => u128::from(*addr),
         Val::Float(bits) => u128::from(*bits),
         Val::Double(bits) => u128::from(*bits),
+        Val::X86Fp80(bits) => *bits,
         Val::Agg(agg) => return out.copy_from_slice(&agg.bytes),
     };
     out.copy_from_slice(&wide.to_le_bytes()[..out.len()]);
@@ -370,6 +382,8 @@ struct Frame<'a> {
     noreturn: bool,
     /// Which activation this is: frames of a run have distinct serials.
     serial: u64,
+    /// The variable arguments of a variadic function (§5.12).
+    va: Option<VaArea>,
 }
 
 /// What executing one instruction leads to.
@@ -516,7 +530,8 @@ impl<'a> Machine<'_, 'a> {
                 return invalid(format!("argument {index} ({arg}) is not of the parameter's type"));
             }
         }
-        self.push_frame(entry, body, args.to_vec(), false)?;
+        let va = self.entry_va(body)?;
+        self.push_frame_with(entry, body, args.to_vec(), &[], va.as_ref(), false)?;
         loop {
             match self.step() {
                 Ok(Step::Done(result)) => return Ok(result),
@@ -570,7 +585,8 @@ impl<'a> Machine<'_, 'a> {
                         || self.host_of[sym.index()] != 0
                         || builtin != Builtin::None;
                     if defined || symbol.linkage() != Linkage::ExternWeak {
-                        self.addrs[sym.index()] = self.mem.alloc_function(sym)?;
+                        let align = symbol.align().unwrap_or(1);
+                        self.addrs[sym.index()] = self.mem.alloc_function(sym, align)?;
                     }
                 }
                 SymbolKind::Variable { constant, tls: TlsModel::None, init: Some(init) } => {
@@ -696,7 +712,7 @@ impl<'a> Machine<'_, 'a> {
             TypeKind::Half => return unsupported("type:half"),
             TypeKind::BFloat => return unsupported("type:bfloat"),
             TypeKind::Fp128 => return unsupported("type:fp128"),
-            TypeKind::X86Fp80 => return unsupported("type:x86_fp80"),
+            TypeKind::X86Fp80 => Class::X86Fp80,
             TypeKind::Vector { .. } => self.vector_class(ty)?,
             TypeKind::ScalableVector { .. } => return unsupported("type:scalable-vector"),
             TypeKind::Opaque(_) => return unsupported("type:opaque"),
@@ -714,7 +730,8 @@ impl<'a> Machine<'_, 'a> {
             (Class::Int(bits), Val::Int { bits: have, .. }) => bits == *have,
             (Class::Ptr, Val::Ptr(_))
             | (Class::Float, Val::Float(_))
-            | (Class::Double, Val::Double(_)) => true,
+            | (Class::Double, Val::Double(_))
+            | (Class::X86Fp80, Val::X86Fp80(_)) => true,
             (Class::Agg, Val::Agg(agg)) => agg.ty == ty,
             (Class::Vector(..), Val::Agg(vector)) => vector.ty == ty,
             _ => false,
@@ -788,6 +805,7 @@ impl<'a> Machine<'_, 'a> {
             Class::Ptr => Val::Ptr(0),
             Class::Float => Val::Float(0),
             Class::Double => Val::Double(0),
+            Class::X86Fp80 => Val::X86Fp80(0),
             Class::Agg => {
                 self.leaves(ty, 0, &mut Vec::new())?;
                 Val::Agg(Agg { ty, bytes: vec![0; self.image_len(ty)?].into(), lanes: None })
@@ -820,10 +838,10 @@ impl<'a> Machine<'_, 'a> {
                 Class::Double => Val::Double(bits),
                 _ => return invalid(format!("{id:?} is a float of a type that is not")),
             },
-            Const::WideFloat { ty, .. } => {
-                self.class(ty)?;
-                return invalid(format!("{id:?} is a wide float of a narrow type"));
-            }
+            Const::WideFloat { ty, bits } => match self.class(ty)? {
+                Class::X86Fp80 => Val::X86Fp80(bits & ((1 << 80) - 1)),
+                _ => return invalid(format!("{id:?} is a wide float of a narrow type")),
+            },
             Const::Null(_) => Val::Ptr(0),
             // `spec/ir.md` §4.1: `undef` and `poison` are zero.
             Const::Zero(ty) | Const::Undef(ty) | Const::Poison(ty) => self.zero(ty)?,
@@ -928,6 +946,14 @@ impl<'a> Machine<'_, 'a> {
         Ok(Val::Float(value.to_bits()))
     }
 
+    /// As [`Machine::float`], for an `x86_fp80` (§5.11).
+    fn x87(&self, bits: u128) -> Result<Val, Stop> {
+        if x87::is_nan(x87::Format::X87, bits) && self.config.nan == NanPolicy::Trap {
+            return Err(Trap::NanResult.into());
+        }
+        Ok(Val::X86Fp80(bits))
+    }
+
     /// As [`Machine::float`], for a `double`.
     fn double(&self, value: f64) -> Result<Val, Stop> {
         if value.is_nan() && self.config.nan == NanPolicy::Trap {
@@ -1021,17 +1047,30 @@ impl<'a> Machine<'_, 'a> {
                 encode(val, &mut bytes);
                 self.mem.store(addr, &bytes, align)?;
             }
+            Val::X86Fp80(_) => {
+                let mut bytes = [0u8; 10];
+                encode(val, &mut bytes);
+                self.mem.store(addr, &bytes, align)?;
+            }
         }
         Ok(())
     }
 
     // ---- frames ----
 
-    fn push_frame(
+    /// Pushes the frame of a call of `body` with `args`, and the `byval` arguments `copies`
+    /// (`(argument, size, alignment)`): each pointee is copied, written
+    /// flags included, into stack memory that lives as long as the new
+    /// frame, and the callee gets the copy's address (§5.8). A variadic
+    /// callee on x86-64 gets the layout `va` of its variable arguments
+    /// (§5.12).
+    fn push_frame_with(
         &mut self,
         sym: SymId,
         body: &'a Body,
-        args: Vec<Val>,
+        mut args: Vec<Val>,
+        copies: &[(usize, u64, u64)],
+        va: Option<&VaCall>,
         noreturn: bool,
     ) -> Result<(), Stop> {
         if self.frames.len() >= self.config.max_call_depth as usize {
@@ -1041,6 +1080,22 @@ impl<'a> Machine<'_, 'a> {
             return invalid(format!("the body of {sym:?} has no entry block"));
         }
         let mark = self.mem.mark();
+        for &(index, size, align) in copies {
+            let Some(Val::Ptr(from)) = args.get(index).cloned() else {
+                return invalid("a byval argument that is not a pointer");
+            };
+            let made = self
+                .mem
+                .alloc(size.max(1), align, AllocKind::Stack)
+                .and_then(|to| self.mem.copy((to, align), (from, 1), size).map(|()| to));
+            match made {
+                Ok(to) => args[index] = Val::Ptr(to),
+                Err(trap) => {
+                    self.mem.release(mark);
+                    return Err(trap.into());
+                }
+            }
+        }
         let slots = self.slots.len();
         for slot in body.slots() {
             match self.mem.alloc(slot.size(), slot.align(), AllocKind::Stack) {
@@ -1052,6 +1107,14 @@ impl<'a> Machine<'_, 'a> {
                 }
             }
         }
+        let va = match va.map(|call| self.lay_out_va(call)).transpose() {
+            Ok(va) => va,
+            Err(stop) => {
+                self.mem.release(mark);
+                self.slots.truncate(slots);
+                return Err(stop);
+            }
+        };
         let base = self.vals.len();
         self.vals.extend(args.into_iter().map(Some));
         let insts = self.vals.len();
@@ -1069,6 +1132,7 @@ impl<'a> Machine<'_, 'a> {
             block: entry.id(),
             noreturn,
             serial: self.serials,
+            va,
         });
         self.serials += 1;
         self.max_depth = self.max_depth.max(self.frames.len() as u32);
@@ -1198,6 +1262,17 @@ impl<'a> Machine<'_, 'a> {
                 (Val::Double(a), Val::Double(b)) => {
                     self.double(ops::f64_binary(op, f64::from_bits(a), f64::from_bits(b)))?
                 }
+                (Val::X86Fp80(a), Val::X86Fp80(b)) => {
+                    let op = match op {
+                        Opcode::FAdd => x87::Op::Add,
+                        Opcode::FSub => x87::Op::Sub,
+                        Opcode::FMul => x87::Op::Mul,
+                        Opcode::FDiv => x87::Op::Div,
+                        Opcode::FRem => x87::Op::Rem,
+                        _ => return invalid("float arithmetic with an integer opcode"),
+                    };
+                    self.x87(x87::binary(op, a, b))?
+                }
                 _ => {
                     self.class(ty)?;
                     return invalid("float arithmetic on something else");
@@ -1206,6 +1281,7 @@ impl<'a> Machine<'_, 'a> {
             InstKind::Unary { arg } => match (op, self.get(f, arg)?) {
                 (Opcode::FNeg, Val::Float(bits)) => Val::Float(bits ^ (1 << 31)),
                 (Opcode::FNeg, Val::Double(bits)) => Val::Double(bits ^ (1 << 63)),
+                (Opcode::FNeg, Val::X86Fp80(bits)) => Val::X86Fp80(bits ^ (1 << 79)),
                 (Opcode::FNeg, _) => {
                     self.class(ty)?;
                     return invalid("fneg of something that is not a float");
@@ -1241,6 +1317,9 @@ impl<'a> Machine<'_, 'a> {
                 )),
                 (Val::Double(a), Val::Double(b)) => {
                     Val::i1(ops::fcmp(pred, f64::from_bits(a), f64::from_bits(b)))
+                }
+                (Val::X86Fp80(a), Val::X86Fp80(b)) => {
+                    Val::i1(ops::fcmp_ordering(pred, x87::compare(x87::Format::X87, a, b)))
                 }
                 _ => {
                     self.class(ty)?;
@@ -1320,6 +1399,7 @@ impl<'a> Machine<'_, 'a> {
                     Val::Int { bits, .. } => Class::Int(*bits).store_len(),
                     Val::Ptr(_) | Val::Double(_) => 8,
                     Val::Float(_) => 4,
+                    Val::X86Fp80(_) => 10,
                     // An aggregate has no poison lanes to keep (§3.1).
                     Val::Agg(inner) if inner.has_poison() => {
                         return Err(Trap::PoisonLane.into());
@@ -1439,6 +1519,30 @@ impl<'a> Machine<'_, 'a> {
             (Opcode::FPExt, Val::Float(bits), Class::Double) => {
                 self.double(f64::from(f32::from_bits(bits)))?
             }
+            // §5.11: to and from `x86_fp80`.
+            (Opcode::FPExt, Val::Float(bits), Class::X86Fp80) => {
+                self.x87(x87::convert(x87::Format::FLOAT, x87::Format::X87, u128::from(bits)))?
+            }
+            (Opcode::FPExt, Val::Double(bits), Class::X86Fp80) => {
+                self.x87(x87::convert(x87::Format::DOUBLE, x87::Format::X87, u128::from(bits)))?
+            }
+            (Opcode::FPTrunc, Val::X86Fp80(bits), Class::Float) => {
+                let narrow = x87::convert(x87::Format::X87, x87::Format::FLOAT, bits) as u32;
+                self.float(f32::from_bits(narrow))?
+            }
+            (Opcode::FPTrunc, Val::X86Fp80(bits), Class::Double) => {
+                let narrow = x87::convert(x87::Format::X87, x87::Format::DOUBLE, bits) as u64;
+                self.double(f64::from_bits(narrow))?
+            }
+            (Opcode::FPToUI | Opcode::FPToSI, Val::X86Fp80(from), Class::Int(bits)) => {
+                let value = x87::to_int(x87::Format::X87, from, bits, op == Opcode::FPToSI)?;
+                Val::Int { bits, value }
+            }
+            (Opcode::UIToFP | Opcode::SIToFP, Val::Int { bits, value }, Class::X86Fp80) => {
+                Val::X86Fp80(x87::from_int(x87::Format::X87, value, bits, op == Opcode::SIToFP))
+            }
+            (Opcode::BitCast, Val::Int { bits: 80, value }, Class::X86Fp80) => Val::X86Fp80(value),
+            (Opcode::BitCast, Val::X86Fp80(bits), Class::Int(80)) => Val::int(80, bits),
             (Opcode::FPToUI | Opcode::FPToSI, Val::Float(from), Class::Int(bits)) => {
                 let x = f64::from(f32::from_bits(from));
                 Val::Int { bits, value: ops::float_to_int(x, bits, op == Opcode::FPToSI)? }
@@ -1546,7 +1650,7 @@ impl<'a> Machine<'_, 'a> {
                 let op = if op == RmwOp::FAdd { Opcode::FAdd } else { Opcode::FSub };
                 self.double(ops::f64_binary(op, f64::from_bits(a), f64::from_bits(b)))?
             }
-            (Val::Float(_) | Val::Double(_), _) if op.is_float() => {
+            (Val::Float(_) | Val::Double(_) | Val::X86Fp80(_), _) if op.is_float() => {
                 return unsupported(format!("inst:atomicrmw-{}", op.name()));
             }
             _ => return invalid(format!("atomicrmw {} of these operands", op.name())),
@@ -1611,16 +1715,24 @@ impl<'a> Machine<'_, 'a> {
         if cc != call.cc() {
             return Err(Trap::CallConvMismatch.into());
         }
-        let ret = match module.types.kind(call.fn_type()) {
-            TypeKind::Function { variadic: true, .. } => return unsupported("call:variadic"),
-            TypeKind::Function { ret, .. } => ret,
+        let (ret, named, variadic) = match module.types.kind(call.fn_type()) {
+            TypeKind::Function { ret, params, variadic } => (ret, params.len(), variadic),
             _ => return invalid("a call with a type that is not a function type"),
         };
         let mut args = Vec::with_capacity(call.args().len());
+        // `byval(T)` arguments (§5.8): (index, size, alignment).
+        let mut copies: Vec<(usize, u64, u64)> = Vec::new();
         for (index, &arg) in call.args().iter().enumerate() {
             for attrs in [call.arg_attrs(index), symbol.param_attrs(index)] {
                 match attrs.mem() {
-                    ParamMem::ByVal => return unsupported("attr:byval"),
+                    ParamMem::ByVal if !copies.iter().any(|&(at, ..)| at == index) => {
+                        let Some(pointee) = attrs.mem_type() else {
+                            return invalid("byval without a type");
+                        };
+                        let types = &module.types;
+                        let align = attrs.align().unwrap_or(1).max(types.align_of(pointee));
+                        copies.push((index, types.size_of(pointee), align));
+                    }
                     ParamMem::InAlloca => return unsupported("attr:inalloca"),
                     ParamMem::Preallocated => return unsupported("attr:preallocated"),
                     _ => {}
@@ -1629,8 +1741,15 @@ impl<'a> Machine<'_, 'a> {
             args.push(self.get(f, arg)?);
         }
         if let Some(body) = self.program.body(target) {
-            self.push_frame(target, body, args, call.is_noreturn())?;
+            if !variadic {
+                self.push_frame_with(target, body, args, &copies, None, call.is_noreturn())?;
+                return Ok(Flow::Called);
+            }
+            self.call_variadic_body(f, call, target, body, args, copies, named)?;
             return Ok(Flow::Called);
+        }
+        if !copies.is_empty() {
+            return unsupported("attr:byval");
         }
         if self.host_of[target.index()] == 0 && self.builtin_of[target.index()] != Builtin::None {
             return self.builtin(target, &args, ret, call.is_noreturn());
@@ -2067,6 +2186,13 @@ impl<'a> Machine<'_, 'a> {
                 Ok(Some(match (self.get(f, arg(0)?)?, sign) {
                     (Val::Float(bits), None) => Val::Float(bits & !(1 << 31)),
                     (Val::Double(bits), None) => Val::Double(bits & !(1 << 63)),
+                    (Val::X86Fp80(bits), None) => Val::X86Fp80(bits & !(1 << 79)),
+                    (Val::X86Fp80(bits), Some(sign)) => match self.get(f, sign)? {
+                        Val::X86Fp80(sign) => {
+                            Val::X86Fp80((bits & !(1 << 79)) | (sign & (1 << 79)))
+                        }
+                        _ => return invalid("copysign of two types"),
+                    },
                     (Val::Float(bits), Some(sign)) => match self.get(f, sign)? {
                         Val::Float(sign) => Val::Float((bits & !(1 << 31)) | (sign & (1 << 31))),
                         _ => return invalid("copysign of two types"),
@@ -2105,6 +2231,17 @@ impl<'a> Machine<'_, 'a> {
                 Ok(Some(match self.get(f, arg(0)?)? {
                     Val::Float(bits) => self.float(rounded!(f32::from_bits(bits)))?,
                     Val::Double(bits) => self.double(rounded!(f64::from_bits(bits)))?,
+                    Val::X86Fp80(bits) => {
+                        use x87::Rounding;
+                        self.x87(match intrinsic {
+                            Intrinsic::Sqrt => x87::sqrt(bits),
+                            Intrinsic::Floor => x87::round_integral(bits, Rounding::Floor),
+                            Intrinsic::Ceil => x87::round_integral(bits, Rounding::Ceil),
+                            Intrinsic::Trunc => x87::round_integral(bits, Rounding::Trunc),
+                            Intrinsic::Round => x87::round_integral(bits, Rounding::NearestAway),
+                            _ => x87::round_integral(bits, Rounding::NearestEven),
+                        })?
+                    }
                     _ => {
                         self.class(ty)?;
                         return invalid("a float intrinsic on something else");
@@ -2119,11 +2256,70 @@ impl<'a> Machine<'_, 'a> {
                     }
                     (Val::Double(a), Val::Double(b), Val::Double(c)) => self
                         .double(f64::from_bits(a).mul_add(f64::from_bits(b), f64::from_bits(c)))?,
+                    (Val::X86Fp80(a), Val::X86Fp80(b), Val::X86Fp80(c)) => {
+                        self.x87(x87::fma(a, b, c))?
+                    }
                     _ => {
                         self.class(ty)?;
                         return invalid("fma on something that is not three floats");
                     }
                 }))
+            }
+            Intrinsic::MinNum | Intrinsic::MaxNum => {
+                let (a, b) = (self.get(f, arg(0)?)?, self.get(f, arg(1)?)?);
+                let max = intrinsic == Intrinsic::MaxNum;
+                let (format, a, b, wrap): (_, _, _, fn(u128) -> Val) = match (a, b) {
+                    (Val::Float(a), Val::Float(b)) => {
+                        (x87::Format::FLOAT, a.into(), b.into(), |x| Val::Float(x as u32))
+                    }
+                    (Val::Double(a), Val::Double(b)) => {
+                        (x87::Format::DOUBLE, a.into(), b.into(), |x| Val::Double(x as u64))
+                    }
+                    (Val::X86Fp80(a), Val::X86Fp80(b)) => (x87::Format::X87, a, b, Val::X86Fp80),
+                    _ => {
+                        self.class(ty)?;
+                        return invalid("minnum or maxnum of something that is not two floats");
+                    }
+                };
+                let host = self.config.nan == NanPolicy::Host;
+                Ok(Some(wrap(x87::min_max(format, a, b, max, host)?)))
+            }
+            Intrinsic::IsFpClass => {
+                let (_, test) = self.int(f, arg(1)?)?;
+                let (format, bits) = match self.get(f, arg(0)?)? {
+                    Val::Float(bits) => (x87::Format::FLOAT, u128::from(bits)),
+                    Val::Double(bits) => (x87::Format::DOUBLE, u128::from(bits)),
+                    Val::X86Fp80(bits) => (x87::Format::X87, bits),
+                    _ => {
+                        self.class(ty)?;
+                        return invalid("llvm.is.fpclass of something that is not a float");
+                    }
+                };
+                let Some(class) = x87::fp_class(format, bits) else {
+                    return unsupported(X87_INTRINSIC);
+                };
+                Ok(Some(Val::i1((test >> class) & 1 == 1)))
+            }
+            Intrinsic::VaStart | Intrinsic::VaEnd | Intrinsic::VaCopy => {
+                let op = match intrinsic {
+                    Intrinsic::VaStart => VaOp::Start,
+                    Intrinsic::VaEnd => VaOp::End,
+                    _ => VaOp::Copy,
+                };
+                match self.va_intrinsic(f, op, call)? {
+                    Some(()) => Ok(None),
+                    None => unsupported(format!("intrinsic:{}", intrinsic.name())),
+                }
+            }
+            Intrinsic::Ptrmask => {
+                // LangRef "'llvm.ptrmask' Intrinsic": the address ANDed
+                // with the mask, as a pointer based on the operand.
+                let (Val::Ptr(addr), (64, mask)) = (self.get(f, arg(0)?)?, self.int(f, arg(1)?)?)
+                else {
+                    self.class(ty)?;
+                    return unsupported("intrinsic:llvm.ptrmask");
+                };
+                Ok(Some(Val::Ptr(addr & mask as u64)))
             }
             Intrinsic::Trap => Err(Trap::TrapIntrinsic.into()),
             Intrinsic::EhTypeidFor => {

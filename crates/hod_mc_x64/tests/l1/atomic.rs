@@ -3,7 +3,7 @@
 use hod_mc_x64::*;
 
 use crate::harness::Batch;
-use crate::text::{SIZES, WIDE, r, reg, some_mems};
+use crate::text::{SIZES, WIDE, all_mems, r, reg, some_mems};
 
 pub fn build(b: &mut Batch) {
     for size in SIZES {
@@ -120,5 +120,55 @@ fn locked(b: &mut Batch) {
     ];
     for inst in refused {
         reject!(b, try_lock(inst));
+    }
+}
+
+/// The `atomicrmw` forms without a result under `lock` (`spec/mc-x64.md`
+/// "Atomics"): every memory form of "Memory operands" at every size,
+/// through each ALU instruction with a register and with an immediate
+/// source, `xadd`, and the one-operand forms. The register cycles through
+/// all sixteen across the operands, so each REX bit and each byte register
+/// that needs a REX prefix is reached at each size.
+pub fn locked_memory(b: &mut Batch) {
+    for (i, m) in all_mems().into_iter().enumerate() {
+        for size in SIZES {
+            let n = (i % 16) as u8;
+            let (mt, rt) = (m.sized(size), reg(size, n));
+            for (inst, mn) in [
+                (add_mr(size, m.mem(), r(n)), "add"),
+                (sub_mr(size, m.mem(), r(n)), "sub"),
+                (and_mr(size, m.mem(), r(n)), "and"),
+                (or_mr(size, m.mem(), r(n)), "or"),
+                (xor_mr(size, m.mem(), r(n)), "xor"),
+                (xadd_mr(size, m.mem(), r(n)), "xadd"),
+            ] {
+                let text = format!("lock {mn} {mt}, {rt}");
+                b.push("lock", try_lock(inst), Some(format!("lock {mn}")), text);
+            }
+            let v = [1i64, -1, 100, 1000][i % 4] & if size == Size::B { 0x7f } else { -1 };
+            for (inst, mn) in [
+                (add_mi(size, m.mem(), v), "add"),
+                (sub_mi(size, m.mem(), v), "sub"),
+                (and_mi(size, m.mem(), v), "and"),
+                (or_mi(size, m.mem(), v), "or"),
+                (xor_mi(size, m.mem(), v), "xor"),
+            ] {
+                let text = format!("lock {mn} {mt}, {v}");
+                b.push("lock", try_lock(inst), Some(format!("lock {mn}")), text);
+            }
+            for (inst, mn) in [
+                (inc_m(size, m.mem()), "inc"),
+                (dec_m(size, m.mem()), "dec"),
+                (not_m(size, m.mem()), "not"),
+                (neg_m(size, m.mem()), "neg"),
+            ] {
+                b.push(
+                    "lock",
+                    try_lock(inst),
+                    Some(format!("lock {mn}")),
+                    format!("lock {mn} {mt}"),
+                );
+            }
+        }
     }
 }

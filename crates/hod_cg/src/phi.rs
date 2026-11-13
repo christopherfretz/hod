@@ -62,6 +62,16 @@ impl<'a, T: Target> FnCx<'a, T> {
             return Ok(());
         }
         *mark = stamp;
+        self.phi_stores_edge(succ)
+    }
+
+    /// [`FnCx::phi_stores`] for one edge, every time it is asked: the
+    /// suspend switch of a coroutine writes each edge's slots on that
+    /// edge (WP-106, §7.6), and two of its edges may go to one block.
+    pub(crate) fn phi_stores_edge(&mut self, succ: BlockId) -> CgResult<()> {
+        if succ.index() >= self.body.block_count() {
+            return self.bug("a successor that is not a block of this body");
+        }
         let block = self.body.block(succ);
         if !block.has_phis() {
             return Ok(());

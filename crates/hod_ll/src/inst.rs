@@ -2,6 +2,7 @@
 //! checks LLVM's parser makes on it, and its form in `hod_ir`. Calls are
 //! in `call.rs`.
 
+use hod_ir::Layering;
 use hod_ir::{
     AtomicOrdering, Clause, Const, ConstId, FloatPredicate, IntPredicate, MemFlags, Opcode, RmwOp,
     SHUFFLE_UNDEF, SyncScope, TailKind, TypeId, TypeKind, Value, aggregate_field, cast_is_valid,
@@ -28,7 +29,7 @@ fn mistyped<T>(at: u32, message: &str) -> PResult<T> {
     fail(LlErrorKind::Type, at, message)
 }
 
-impl Fx<'_, '_, '_> {
+impl<L: Layering> Fx<'_, '_, '_, L> {
     // ---- operands ----
 
     /// The element type and the vector shape of `ty`; a type that is not

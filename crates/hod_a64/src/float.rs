@@ -23,8 +23,12 @@
 //! - Out-of-range `fptoui`/`fptosi` are poison (LangRef): the saturating
 //!   `fcvtz*` result is as good as any.
 
+use hod_cg::sym::{
+    FpOp, FpType, ZeroCmp, fp_ext_routine, fp_routine, fp_to_int_routine, fp_trunc_routine,
+    fp128_compare, int_to_fp_routine,
+};
 use hod_cg::{CallArg, CgResult, Class, FnCx, FrameRef, PReg, RuntimeFn};
-use hod_ir::{FloatPredicate, Inst, InstKind, IntPredicate, Opcode, TypeId, TypeKind, Value};
+use hod_ir::{Arch, FloatPredicate, Inst, InstKind, IntPredicate, Opcode, TypeId, TypeKind, Value};
 use hod_mc_a64 as mc;
 use hod_mc_a64::{
     Arr, Cond, FpArr, FpFormat, FpSize, Load, MemSize, RegZr, Size, VMemSize, VReg, VecBits,
@@ -97,6 +101,15 @@ impl Fp {
     /// The size an operation computes in: `half` in single precision.
     fn size(self) -> FpSize {
         if self == Fp::D { FpSize::D } else { FpSize::S }
+    }
+
+    /// The type, as `hod_cg::sym`'s routine tables key it.
+    fn fp_type(self) -> FpType {
+        match self {
+            Fp::H => FpType::Half,
+            Fp::S => FpType::Float,
+            Fp::D => FpType::Double,
+        }
     }
 }
 
@@ -292,22 +305,20 @@ fn quad_flags(
     rhs: Value,
 ) -> CgResult<FpCond> {
     use FloatPredicate as P;
-    use RuntimeFn::{EqTf2, LeTf2, LtTf2, UnordTf2};
-    let (func, swap, first) = match pred {
-        P::Oeq => (EqTf2, false, Cond::Eq),
-        P::Une => (EqTf2, false, Cond::Ne),
-        P::Olt => (LtTf2, false, Cond::Lt),
-        P::Uge => (LtTf2, false, Cond::Ge),
-        P::Ogt => (LtTf2, true, Cond::Lt),
-        P::Ule => (LtTf2, true, Cond::Ge),
-        P::Ole => (LeTf2, false, Cond::Le),
-        P::Ugt => (LeTf2, false, Cond::Gt),
-        P::Oge => (LeTf2, true, Cond::Le),
-        P::Ult => (LeTf2, true, Cond::Gt),
-        P::Ord => (UnordTf2, false, Cond::Eq),
-        P::Uno => (UnordTf2, false, Cond::Ne),
-        P::Ueq | P::One => return quad_two_calls(cx, pred, lhs, rhs),
-        P::True | P::False => return cx.bug("a constant fcmp predicate at the call"),
+    let Some(plan) = fp128_compare(pred) else {
+        return match pred {
+            P::Ueq | P::One => quad_two_calls(cx, pred, lhs, rhs),
+            _ => cx.bug("a constant fcmp predicate at the call"),
+        };
+    };
+    let (func, swap) = (plan.func, plan.swap);
+    let first = match plan.result {
+        ZeroCmp::Eq => Cond::Eq,
+        ZeroCmp::Ne => Cond::Ne,
+        ZeroCmp::Lt => Cond::Lt,
+        ZeroCmp::Ge => Cond::Ge,
+        ZeroCmp::Le => Cond::Le,
+        ZeroCmp::Gt => Cond::Gt,
     };
     let (x, y) = if swap { (rhs, lhs) } else { (lhs, rhs) };
     let r = runtime_int(cx, func, &[CallArg::Value(x), CallArg::Value(y)])?;
@@ -383,41 +394,23 @@ fn quad_cast<'a>(
             let t = cx.temp(Class::Fpr)?;
             put(cx, mc::fcvt(FpFormat::S, vr(t), FpFormat::H, vr(a)));
             give_back(cx, arg, a);
-            (RuntimeFn::ExtendSfTf2, CallArg::Reg(t))
+            (fp_ext_routine(FpType::Float, FpType::Fp128, Arch::Aarch64), CallArg::Reg(t))
         }
-        (Opcode::FPExt, Some(Shape::Scalar(Fp::S)), Some(Shape::Quad)) => {
-            (RuntimeFn::ExtendSfTf2, CallArg::Value(arg))
-        }
-        (Opcode::FPExt, Some(Shape::Scalar(Fp::D)), Some(Shape::Quad)) => {
-            (RuntimeFn::ExtendDfTf2, CallArg::Value(arg))
+        (Opcode::FPExt, Some(Shape::Scalar(fp @ (Fp::S | Fp::D))), Some(Shape::Quad)) => {
+            (fp_ext_routine(fp.fp_type(), FpType::Fp128, Arch::Aarch64), CallArg::Value(arg))
         }
         (Opcode::FPTrunc, Some(Shape::Quad), Some(Shape::Scalar(fp))) => {
-            let func = match fp {
-                Fp::H => RuntimeFn::TruncTfHf2,
-                Fp::S => RuntimeFn::TruncTfSf2,
-                Fp::D => RuntimeFn::TruncTfDf2,
-            };
-            (func, CallArg::Value(arg))
+            (fp_trunc_routine(FpType::Fp128, fp.fp_type(), Arch::Aarch64), CallArg::Value(arg))
         }
         (Opcode::FPToSI | Opcode::FPToUI, Some(Shape::Quad), None) => {
-            let wide = int_width(cx, inst.ty())? > 32;
-            let func = match (op == Opcode::FPToSI, wide) {
-                (true, false) => RuntimeFn::FixTfSi,
-                (true, true) => RuntimeFn::FixTfDi,
-                (false, false) => RuntimeFn::FixunsTfSi,
-                (false, true) => RuntimeFn::FixunsTfDi,
-            };
-            (func, CallArg::Value(arg))
+            let bits = int_width(cx, inst.ty())?;
+            let signed = op == Opcode::FPToSI;
+            (fp_to_int_routine(FpType::Fp128, signed, bits, Arch::Aarch64), CallArg::Value(arg))
         }
         (Opcode::SIToFP | Opcode::UIToFP, None, Some(Shape::Quad)) => {
             let bits = int_width(cx, value_ty(cx, arg))?;
             let signed = op == Opcode::SIToFP;
-            let func = match (signed, bits > 32) {
-                (true, false) => RuntimeFn::FloatSiTf,
-                (true, true) => RuntimeFn::FloatDiTf,
-                (false, false) => RuntimeFn::FloatunSiTf,
-                (false, true) => RuntimeFn::FloatunDiTf,
-            };
+            let func = int_to_fp_routine(signed, bits, FpType::Fp128, Arch::Aarch64);
             if bits == 32 || bits == 64 {
                 (func, CallArg::Value(arg))
             } else {
@@ -431,6 +424,7 @@ fn quad_cast<'a>(
         }
         _ => return unsupported(CAST),
     };
+    let Some(func) = func else { return cx.bug("an fp128 conversion without a routine") };
     let Some(reg) = cx.call_runtime(func, &[args], None)? else {
         return cx.bug("a runtime function returned nothing");
     };
@@ -485,13 +479,16 @@ pub fn binary<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, lhs: Value, rhs: Value
             cx.finish(inst, a)
         }
         Shape::Quad => {
-            let func = match op {
-                Opcode::FAdd => RuntimeFn::AddTf3,
-                Opcode::FSub => RuntimeFn::SubTf3,
-                Opcode::FMul => RuntimeFn::MulTf3,
-                Opcode::FDiv => RuntimeFn::DivTf3,
-                Opcode::FRem => RuntimeFn::Fmodl,
+            let fp_op = match op {
+                Opcode::FAdd => FpOp::Add,
+                Opcode::FSub => FpOp::Sub,
+                Opcode::FMul => FpOp::Mul,
+                Opcode::FDiv => FpOp::Div,
+                Opcode::FRem => FpOp::Rem,
                 _ => return unsupported(BINARY),
+            };
+            let Some(func) = fp_routine(fp_op, FpType::Fp128, Arch::Aarch64) else {
+                return unsupported(BINARY);
             };
             libcall(cx, inst, func, lhs, rhs)
         }
@@ -560,7 +557,10 @@ pub fn lane_binary(
 
 /// The function `frem` of `fp` calls (`half` through `fmodf`).
 fn fmod_of(fp: Fp) -> RuntimeFn {
-    if fp == Fp::D { RuntimeFn::Fmod } else { RuntimeFn::Fmodf }
+    match fp_routine(FpOp::Rem, fp.fp_type(), Arch::Aarch64) {
+        Some(func) => func,
+        None => unreachable!("frem of half, float and double is a call on AArch64"),
+    }
 }
 
 /// `fmod` of the two values in the pool temporaries `t1` and `t2` (a

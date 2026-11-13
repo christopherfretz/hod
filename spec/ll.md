@@ -577,7 +577,7 @@ impl Span { pub fn of<'a>(&self, source: &'a [u8]) -> &'a [u8]; }
 `ModuleText` is read-only, and it and `ParsedModule` are `Send` and
 `Sync`. The two fields are separate so that a caller can do either of the
 things `spec/ir.md` §5.1 allows: share `&module` and `&text` among
-workers that parse bodies in parallel against frozen tables, or keep
+workers that parse bodies in parallel against forks of a seed, or keep
 `&mut module` (to add the types, constants and symbols a body mentions)
 while any number of readers hold `&text`.
 
@@ -904,19 +904,29 @@ A body's debug information is in the body itself (§11.9).
   storage while it has none. `parse_bodies` hands out each body
   in the storage itself, in file order, so peak memory follows the
   largest function.
-- **Parallel parsing.** `spec/ir.md` §5.1 has bodies parsed in parallel
-  against a frozen `&Module`. That is not implementable on `hod_ir` as it
-  is: there is no lookup-only access to the type and constant tables,
-  and `Value` has no immediate integers, so almost every body interns
-  something. The deviation: each worker parses with its own **clone** of
-  the module (`Module: Clone`), with a `BodyParser` of its own over the
-  shared `&ModuleText`. Every id present in the module before the clone
-  means the same in every clone, so a body is the same body against any
-  clone that has what it interned; a consumer that needs one module
-  re-parses, or runs one sequential pass first (after which the bodies'
-  ids are all present). The unsupported names come back from the parser
-  as well as in the clone's record, for merging. This is a gap of
-  `hod_ir` (`spec/landed/ll/WP-008.md`).
+- **Parallel parsing** (WP-063). `parse_bodies_on` reads every body as
+  `parse_bodies` does, on up to `threads` threads, through
+  `hod_ir::read_bodies` (`spec/ir.md` §5.1, "Reading bodies in
+  parallel"): each thread parses with a `BodyParser` of its own against
+  a fork of a seed of the module (one copy of its tables per parallel
+  read, shared by every fork),
+  and the calling thread adopts what each body added in file order. Its
+  promise: the bodies delivered, their order, the unsupported constructs
+  and their record, the module's tables and every id in them, and the
+  error returned are those of the sequential parse, at any number of
+  threads; with one thread it *is* the sequential parse. The error is the
+  first in file order: a body whose parse fails in a fork is parsed again
+  in its turn against the module itself, and nothing after it is
+  delivered. `each(host, function, Ok(body) | Err(constructs))` gets the
+  host back (the module is `module(host)`, as the sequential parse leaves
+  it at that body) and returns whether to go on.
+
+```rust
+pub fn parse_bodies_on<H>(host: &mut H, module: fn(&mut H) -> &mut Module,
+    text: &ModuleText<'_>, threads: usize,
+    each: impl FnMut(&mut H, &FunctionText, Result<Body, &[Box<str>]>) -> bool)
+    -> Result<hod_ir::ReadStats, LlError>;
+```
 
 ### 11.2 Locals
 
@@ -1099,6 +1109,7 @@ blocks referred to ahead (`tests/robustness.rs`). Figures:
 | §11.2 | `numbering::numbers_out_of_order_are_refused_as_llvm_as_refuses_them` | `llvm-as` 19 and 22: the same position and words |
 | §11, §11.3 | `differential::bodies::every_body_parses_verifies_and_has_llvms_blocks` | `Body::verify`; the text as written and as `llvm-dis` prints it give the same shapes; block counts against `llvm-dis`'s labels |
 | §11.1 | `differential::bodies::bodies_parsed_on_clones_in_parallel_are_the_sequential_ones` | one sequential parser |
+| §11.1 | `parallel::*` (hand-written modules; randomized bodies racing for the same new types and constants, seeds 1 to 6; clang 22's C++ with and without `-g`; a malformed body in the middle and one late in a huge body) at 1, 2, 3, 8 and 24 threads, twice each | the sequential parse: every body, every table entry by id, the unsupported record, the error; no body read again on a clean input |
 | §11 | `corpus::every_corpus_body_parses_and_verifies` (with `HOD_LL_CORPUS`) | `Body::verify` over the captured corpus |
 | §8, §11.10 | `robustness` (prefixes and mutations now parse bodies too; body inputs) | each returns in time |
 | §11.10 | `perf` | printed |

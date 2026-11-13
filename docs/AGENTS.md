@@ -43,8 +43,9 @@ section, under about 2000 lines.
 8. The record of what a WP did goes in its own file,
    `spec/landed/<spec>/WP-NNN.md`, never appended to a shared spec file:
    parallel branches appending to one file conflict.
-9. This repository is public. Never name private downstream codebases, in
-   code, comments, tests, docs, commit messages or branch names.
+9. This repository is public. Code, comments, tests, docs, commit
+   messages and branch names refer only to public projects and public
+   material.
 10. Hand back when `cargo xtask ci --quick` is clean with
     `HOD_REQUIRE_TOOLS=1`, with: the branch head, a summary, the test
     evidence (commands and results), open questions, and follow-ups as

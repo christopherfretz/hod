@@ -77,6 +77,19 @@ pub fn icmp(pred: IntPredicate, bits: u32, a: u128, b: u128) -> bool {
 }
 
 /// `fcmp`. A `float` is compared after the (exact) widening to `f64`.
+/// [`fcmp`] on the order of two values, `None` when either is a NaN:
+/// the compare of the formats the host has no type for (`x86_fp80`).
+pub fn fcmp_ordering(pred: FloatPredicate, order: Option<std::cmp::Ordering>) -> bool {
+    use std::cmp::Ordering;
+    let (a, b) = match order {
+        None => (f64::NAN, 0.0),
+        Some(Ordering::Less) => (0.0, 1.0),
+        Some(Ordering::Equal) => (0.0, 0.0),
+        Some(Ordering::Greater) => (1.0, 0.0),
+    };
+    fcmp(pred, a, b)
+}
+
 pub fn fcmp(pred: FloatPredicate, a: f64, b: f64) -> bool {
     let unordered = a.is_nan() || b.is_nan();
     match pred {

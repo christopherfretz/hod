@@ -4,6 +4,7 @@
 
 use crate::attrs::{ParamAttrs, ParamMem};
 use crate::ids::TypeId;
+use crate::intern::Layering;
 use crate::types::TypeTable;
 
 /// The values whose attributes are checked together: a function's
@@ -22,7 +23,7 @@ pub(crate) struct Signature<'a> {
 }
 
 /// Whether `ty` is a pointer or a vector of pointers.
-fn pointer_like(types: &TypeTable, ty: TypeId) -> bool {
+fn pointer_like<L: Layering>(types: &TypeTable<L>, ty: TypeId) -> bool {
     types.is_ptr(ty)
         || (types.is_vector(ty) && types.element_type(ty).is_some_and(|elem| types.is_ptr(elem)))
 }
@@ -40,8 +41,8 @@ fn mem_name(mem: ParamMem) -> &'static str {
 }
 
 /// The attributes `attrs` of one value of type `ty` (`verifyParameterAttrs`).
-fn value(
-    types: &TypeTable,
+fn value<L: Layering>(
+    types: &TypeTable<L>,
     ty: TypeId,
     attrs: ParamAttrs,
     elementtype: bool,
@@ -86,8 +87,8 @@ fn value(
 
 /// Checks `sig`, with `attrs(i)` the attributes of parameter or argument
 /// `i`.
-pub(crate) fn signature(
-    types: &TypeTable,
+pub(crate) fn signature<L: Layering>(
+    types: &TypeTable<L>,
     sig: &Signature<'_>,
     attrs: impl Fn(usize) -> ParamAttrs,
 ) -> Result<(), String> {

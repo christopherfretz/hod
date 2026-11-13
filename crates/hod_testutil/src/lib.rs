@@ -10,8 +10,14 @@
 //! [`write_script`] holds a token of the machine's jobserver for its
 //! lifetime, when there is one ([`jobs`], `spec/harness.md` "Jobserver"): a
 //! test binary is a jobserver client like the cargo that built it.
+//!
+//! [`target`] names a target's tools, system root and emulator, for the
+//! tests that link and run programs of another architecture.
 
 pub mod jobs;
+pub mod target;
+
+pub use target::Target;
 
 use std::ffi::OsStr;
 use std::io::{Read, Write};

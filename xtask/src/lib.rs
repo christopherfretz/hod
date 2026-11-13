@@ -18,5 +18,7 @@ pub mod irdiff;
 pub mod roundtrip;
 #[cfg(unix)]
 pub mod shim;
+#[cfg(unix)]
+pub mod x64census;
 
 pub mod jobs;

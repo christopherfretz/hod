@@ -43,6 +43,7 @@
 //! | `vcall` | WP-082 | vectors across calls: the lanes of masks and promoted vectors (`PartKind::Lanes`) | `tests/vcall.rs` |
 //! | `tail` | WP-084 | wide fp conversions, wide `mul.with.overflow`, wide `switch`, `readcyclecounter`, `is.constant`, `{s,u}shl.sat`, `crc32` | `tests/tail.rs` |
 //! | `neon` | WP-083 | the target intrinsics: `llvm.aarch64.neon.*`, `crypto.*`, `sisd.*`, `cls`, barriers and hints | `tests/neon.rs` |
+//! | `coro_body` | WP-106 | coroutine bodies: `x19` as the heap frame's base, the entry stubs, the suspend dispatch, `llvm.coro.id`/`alloc`/`size`/`align`/`begin`/`save`/`suspend`/`end`/`free`/`is_in_ramp`, `await.suspend.void`/`bool` | `tests/coro_body*.rs` |
 //! | `coro` | WP-105 | coroutine handle operations in any function: `llvm.coro.resume`, `destroy`, `done`, `promise`, `noop` | `tests/coro.rs` |
 //! | `named_reg` | WP-064 | `llvm.read_register`, `read_volatile_register`, `write_register` | `tests/named_reg.rs` |
 //! | `inline_asm` | WP-103 | inline assembly with a template of instructions, through `hod_asm`; `callbr` | `tests/inline_asm.rs` |
@@ -61,6 +62,7 @@ pub mod common;
 pub mod constaddr;
 pub mod control;
 pub mod coro;
+pub mod coro_body;
 pub mod features;
 pub mod float;
 pub mod fpintr;

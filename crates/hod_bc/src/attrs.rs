@@ -3,6 +3,7 @@
 //! attributes as a group's, return and parameter attributes as written in
 //! place — with the same names noted.
 
+use hod_ir::Layering;
 use hod_ir::{
     AttrClass, AttrSyntax, FnAttrs, FnAttrsId, FnStr, ParamAttrs, ParamMem, UwTable, attr_info,
 };
@@ -250,8 +251,8 @@ pub(crate) struct FnGroup {
 }
 
 /// Builds a function-index group (`fn_attr` with `in_group`).
-pub(crate) fn fn_group(
-    module: &mut hod_ir::Module,
+pub(crate) fn fn_group<L: Layering>(
+    module: &mut hod_ir::Module<L>,
     attrs: &[Attr<'_>],
     at: u64,
 ) -> BcResult<FnGroup> {

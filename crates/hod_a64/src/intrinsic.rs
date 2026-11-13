@@ -50,6 +50,7 @@
 //!   `x16`/`x17` and at most four temporaries; a wider width is
 //!   [`WIDE`].
 
+use hod_cg::memplan::{MemOp, MemPlan, mem_plan};
 use hod_cg::{CallArg, CgResult, Class, FnCx, FrameRef, RuntimeFn};
 use hod_ir::{Const, Inst, Intrinsic, TypeKind, Value, ValueKind};
 use hod_mc_a64 as mc;
@@ -82,14 +83,7 @@ pub const FRAME_DEPTH: &str = "a64:frame-depth";
 /// The deepest frame record `frameaddress`/`returnaddress` follow.
 pub const MAX_DEPTH: u64 = 256;
 
-/// The longest constant length `memcpy` and `memset` copy or set inline:
-/// at most four 16-byte accesses and the pieces of the rest, against a
-/// call that displaces every live register.
-pub const INLINE_MAX: u64 = 64;
-/// The longest constant length `memmove` copies inline: every byte is
-/// read before any is written, into the scratch registers (two 16-byte
-/// vector registers at most).
-pub const INLINE_MOVE_MAX: u64 = 32;
+pub use hod_cg::memplan::{INLINE_MAX, INLINE_MOVE_MAX};
 
 /// `llvm.readcyclecounter`: not refused any more (`tail`, WP-084); kept
 /// for the coverage log's history.
@@ -175,6 +169,23 @@ pub fn intrinsic<'a>(
         (I::CoroResume | I::CoroDestroy | I::CoroDone | I::CoroPromise | I::CoroNoop, _) => {
             crate::coro::intrinsic(cx, inst, which, args)
         }
+        (
+            I::CoroId
+            | I::CoroAlloc
+            | I::CoroBegin
+            | I::CoroEnd
+            | I::CoroFree
+            | I::CoroSize
+            | I::CoroAlign
+            | I::CoroSave
+            | I::CoroSuspend
+            | I::CoroFrame
+            | I::CoroIsInRamp
+            | I::CoroAwaitSuspendVoid
+            | I::CoroAwaitSuspendBool
+            | I::CoroAwaitSuspendHandle,
+            _,
+        ) => crate::coro_body::intrinsic(cx, inst, which, args),
         (I::ReadRegister | I::ReadVolatileRegister | I::WriteRegister, _) => {
             crate::named_reg::lower(cx, inst, which, args)
         }
@@ -704,6 +715,7 @@ fn slot_at(slot: FrameRef, off: u32) -> FrameRef {
         FrameRef::Local(o) => FrameRef::Local(o + off),
         FrameRef::Incoming(o) => FrameRef::Incoming(o + off),
         FrameRef::Outgoing(o) => FrameRef::Outgoing(o + off),
+        FrameRef::Coro(o) => FrameRef::Coro(o + off),
     }
 }
 
@@ -954,28 +966,22 @@ fn copy<'a>(
     len: Value,
 ) -> CgResult<()> {
     let moving = which == Intrinsic::Memmove;
-    let Some(bytes) = const_int(cx, len) else {
-        if which == Intrinsic::MemcpyInline {
-            return unsupported(INLINE_LENGTH);
-        }
-        let func = if moving { RuntimeFn::Memmove } else { RuntimeFn::Memcpy };
-        let len = length_arg(cx, len)?;
-        cx.call_runtime(func, &[CallArg::Value(dst), CallArg::Value(src), len], None)?;
-        return Ok(());
+    let op = match which {
+        Intrinsic::Memmove => MemOp::Move,
+        Intrinsic::MemcpyInline => MemOp::CopyInline,
+        _ => MemOp::Copy,
     };
-    if bytes == 0 {
-        return Ok(());
-    }
-    let limit = if moving { INLINE_MOVE_MAX } else { INLINE_MAX };
-    if bytes > limit && which != Intrinsic::MemcpyInline {
-        let func = if moving { RuntimeFn::Memmove } else { RuntimeFn::Memcpy };
-        cx.call_runtime(
-            func,
-            &[CallArg::Value(dst), CallArg::Value(src), CallArg::Value(len)],
-            None,
-        )?;
-        return Ok(());
-    }
+    let constant = const_int(cx, len);
+    let bytes = match mem_plan(op, constant) {
+        MemPlan::Nothing => return Ok(()),
+        MemPlan::VariableInline => return unsupported(INLINE_LENGTH),
+        MemPlan::Call(func) => {
+            let len = if constant.is_some() { CallArg::Value(len) } else { length_arg(cx, len)? };
+            cx.call_runtime(func, &[CallArg::Value(dst), CallArg::Value(src), len], None)?;
+            return Ok(());
+        }
+        MemPlan::Inline { bytes } | MemPlan::Loop { bytes } => bytes,
+    };
     let d = xr(cx.use_reg(dst)?);
     let s = xr(cx.use_reg(src)?);
     if moving {
@@ -1056,29 +1062,18 @@ fn copy_loop(cx: &mut FnCx<'_, A64>, d: Reg, s: Reg, bytes: u64) -> CgResult<()>
 /// `memset` or `memset.inline` (`inline`) of `len` bytes at `dst` to
 /// `byte`.
 fn set(cx: &mut FnCx<'_, A64>, inline: bool, dst: Value, byte: Value, len: Value) -> CgResult<()> {
-    let Some(bytes) = const_int(cx, len) else {
-        if inline {
-            return unsupported(INLINE_LENGTH);
+    let op = if inline { MemOp::SetInline } else { MemOp::Set };
+    let constant = const_int(cx, len);
+    let bytes = match mem_plan(op, constant) {
+        MemPlan::Nothing => return Ok(()),
+        MemPlan::VariableInline => return unsupported(INLINE_LENGTH),
+        MemPlan::Call(func) => {
+            let len = if constant.is_some() { CallArg::Value(len) } else { length_arg(cx, len)? };
+            cx.call_runtime(func, &[CallArg::Value(dst), CallArg::Value(byte), len], None)?;
+            return Ok(());
         }
-        let len = length_arg(cx, len)?;
-        cx.call_runtime(
-            RuntimeFn::Memset,
-            &[CallArg::Value(dst), CallArg::Value(byte), len],
-            None,
-        )?;
-        return Ok(());
+        MemPlan::Inline { bytes } | MemPlan::Loop { bytes } => bytes,
     };
-    if bytes == 0 {
-        return Ok(());
-    }
-    if bytes > INLINE_MAX && !inline {
-        cx.call_runtime(
-            RuntimeFn::Memset,
-            &[CallArg::Value(dst), CallArg::Value(byte), CallArg::Value(len)],
-            None,
-        )?;
-        return Ok(());
-    }
     let d = xr(cx.use_reg(dst)?);
     // The byte in every byte of x17 (or xzr for zero).
     let pattern = match const_int(cx, byte) {

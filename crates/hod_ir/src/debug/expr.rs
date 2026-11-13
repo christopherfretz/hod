@@ -9,7 +9,7 @@
 use std::fmt;
 
 use crate::error::{IrErrorKind, IrResult, err};
-use crate::intern::{Hasher64, InternTable, next_id, pool_start};
+use crate::intern::{Hasher64, InternTable, Layered, Layering, NoLayer, Seg, next_id, pool_start};
 
 /// A debug expression of a module (§6.4). Equal expressions have equal
 /// ids.
@@ -255,17 +255,44 @@ impl Iterator for DiOps<'_> {
 
 /// The expressions of a module: one element pool, a span per expression.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ExprTable {
-    elements: Vec<u64>,
+pub(crate) struct ExprTable<L: Layering = NoLayer> {
+    elements: Seg<u64, L>,
     /// `(start, len)` in `elements`; entry 0 is the empty expression and
     /// exists once any other does.
-    spans: Vec<(u32, u32)>,
-    interner: Option<InternTable>,
+    spans: Seg<(u32, u32), L>,
+    interner: Option<InternTable<L>>,
     /// The distinct `Other` elements met, for `classify`.
     others: Vec<u64>,
 }
 
 impl ExprTable {
+    pub(crate) fn seed(&self) -> ExprTable<Layered> {
+        ExprTable {
+            elements: self.elements.seed(),
+            spans: self.spans.seed(),
+            interner: self.interner.as_ref().map(InternTable::seed),
+            others: self.others.clone(),
+        }
+    }
+}
+
+impl ExprTable<Layered> {
+    pub(crate) fn fork(&self) -> ExprTable<Layered> {
+        ExprTable {
+            elements: self.elements.fork(),
+            spans: self.spans.fork(),
+            interner: self.interner.as_ref().map(InternTable::fork),
+            others: self.others.clone(),
+        }
+    }
+
+    /// The elements of the expressions from span `from` on, each owned.
+    pub(crate) fn owned_since(&self, from: usize) -> Vec<Box<[u64]>> {
+        (from..self.spans.len()).map(|id| self.elements(ExprId(id as u32)).into()).collect()
+    }
+}
+
+impl<L: Layering> ExprTable<L> {
     /// The number of expressions, the empty one included.
     pub(crate) fn len(&self) -> usize {
         self.spans.len().max(1)
@@ -275,7 +302,7 @@ impl ExprTable {
     #[inline]
     pub(crate) fn elements(&self, id: ExprId) -> &[u64] {
         match self.spans.get(id.index()) {
-            Some(&(start, len)) => &self.elements[start as usize..(start + len) as usize],
+            Some(&(start, len)) => self.elements.slice(start as usize, len as usize),
             None => &[],
         }
     }
@@ -289,7 +316,7 @@ impl ExprTable {
     }
 
     pub(crate) fn bytes(&self) -> usize {
-        size_of_val(&self.elements[..]) + size_of_val(&self.spans[..])
+        self.elements.bytes() + self.spans.bytes()
     }
 
     /// The id of the expression whose elements were just pushed at
@@ -304,7 +331,7 @@ impl ExprTable {
 
     /// The id for the tail, and whether the tail was kept.
     fn intern_tail(&mut self, start: usize) -> IrResult<(ExprId, bool)> {
-        let tail = &self.elements[start..];
+        let tail = self.elements.from(start);
         if tail.is_empty() {
             return Ok((ExprId::EMPTY, false));
         }
@@ -325,7 +352,7 @@ impl ExprTable {
             }
             rest = &rest[taken..];
         }
-        let tail = &self.elements[start..];
+        let tail = self.elements.from(start);
         let mut hasher = Hasher64::new(0xd1e);
         for &element in tail {
             hasher.word(element);
@@ -334,7 +361,7 @@ impl ExprTable {
         let interner = self.interner.get_or_insert_with(InternTable::new);
         let found = interner.find(hash, |id| {
             let (at, len) = self.spans[id as usize];
-            self.elements[at as usize..(at + len) as usize] == *tail
+            self.elements.slice(at as usize, len as usize) == tail
         });
         if let Some(id) = found {
             return Ok((ExprId(id), false));
@@ -365,6 +392,14 @@ impl ExprTable {
         let start = self.elements.len();
         self.elements.extend_from_slice(elements);
         self.intern(start)
+    }
+
+    // ---- `spec/ir.md` §5.1: reading bodies in parallel ----
+
+    /// The number of spans, the empty expression's included once made:
+    /// where a fork's next expression goes.
+    pub(crate) fn mark(&self) -> usize {
+        self.spans.len()
     }
 }
 
@@ -407,7 +442,7 @@ mod tests {
     /// nothing.
     #[test]
     fn expressions_are_interned() {
-        let mut table = ExprTable::default();
+        let mut table = <ExprTable>::default();
         assert_eq!(table.add_ops(&[]).unwrap(), ExprId::EMPTY);
         assert_eq!(table.bytes(), 0);
         assert_eq!(table.len(), 1);
@@ -429,7 +464,7 @@ mod tests {
     /// without its operands is refused.
     #[test]
     fn unknown_elements_are_kept_and_counts_checked() {
-        let mut table = ExprTable::default();
+        let mut table = <ExprTable>::default();
         let id = table.add_elements(&[0x90, 7, 0x06]).unwrap();
         assert_eq!(
             table.ops(id).collect::<Vec<_>>(),
@@ -462,7 +497,7 @@ mod tests {
     /// §6.4: LLVM's placement rules.
     #[test]
     fn placement_rules() {
-        let mut table = ExprTable::default();
+        let mut table = <ExprTable>::default();
         let mut check = |ops: &[DiOp]| {
             let id = table.add_ops(ops).unwrap();
             order_error(table.ops(id)).is_none()

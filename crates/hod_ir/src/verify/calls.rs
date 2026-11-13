@@ -10,6 +10,7 @@ use crate::constant::Const;
 use crate::error::IrErrorKind::{InvalidAttribute, InvalidCall, InvalidOperand};
 use crate::error::IrResult;
 use crate::inst::{Opcode, TailKind};
+use crate::intern::Layering;
 use crate::intrinsic::{CODE_OTHER, Intrinsic};
 use crate::symbol::SymbolKind;
 use crate::types::TypeKind;
@@ -64,7 +65,7 @@ fn tailcc_refuses(attrs: ParamAttrs) -> bool {
         || attrs.has(ParamAttrs::SWIFT_ERROR)
 }
 
-impl Verifier<'_> {
+impl<L: Layering> Verifier<'_, L> {
     /// The intrinsic a call record names, if any.
     pub(super) fn intrinsic_of(&self, call: &CallData) -> Option<Intrinsic<'_>> {
         let body = self.body;

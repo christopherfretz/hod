@@ -287,6 +287,8 @@ pub struct FnCx<'a, T: Target> {
     /// `ret`s emitted, and the location of the last one (§9.5).
     pub(crate) rets: u32,
     pub(crate) ret_loc: LocId,
+    /// A coroutine body's state (WP-106, `coro_body`).
+    pub(crate) coro: Option<Box<crate::coro_body::CoroFn>>,
 }
 
 impl<'a, T: Target> FnCx<'a, T> {

@@ -60,7 +60,8 @@ fn types() {
     assert_eq!(frozen(|_| Ok(TypeId::HALF)), "type:half");
     assert_eq!(frozen(|_| Ok(TypeId::BFLOAT)), "type:bfloat");
     assert_eq!(frozen(|_| Ok(TypeId::FP128)), "type:fp128");
-    assert_eq!(frozen(|_| Ok(TypeId::X86_FP80)), "type:x86_fp80");
+    // `x86_fp80` is supported (§5.11), but not as a vector lane.
+    assert_eq!(frozen(|m| m.types.vector(TypeId::X86_FP80, 2)), "type:x86_fp80");
     // Vectors are supported (§3.1) but for these lanes.
     assert_eq!(frozen(|m| m.types.vector(TypeId::HALF, 4)), "type:half");
     assert_eq!(
@@ -214,7 +215,7 @@ fn intrinsics() {
     assert_eq!(one("llvm.fmuladd.f64", DOUBLE, &[DOUBLE; 3]), "intrinsic:llvm.fmuladd");
     assert_eq!(one("llvm.sin.f64", DOUBLE, &[DOUBLE]), "intrinsic:llvm.sin");
     assert_eq!(one("llvm.pow.f64", DOUBLE, &[DOUBLE; 2]), "intrinsic:llvm.pow");
-    assert_eq!(one("llvm.minnum.f64", DOUBLE, &[DOUBLE; 2]), "intrinsic:llvm.minnum");
+    assert_eq!(one("llvm.minimum.f64", DOUBLE, &[DOUBLE; 2]), "intrinsic:llvm.minimum");
     assert_eq!(one("llvm.debugtrap", VOID, &[]), "intrinsic:llvm.debugtrap");
     assert_eq!(one("llvm.aarch64.hint", VOID, &[I32]), "intrinsic:llvm.aarch64.hint");
     assert_eq!(one("llvm.returnaddress", PTR, &[I32]), "intrinsic:llvm.returnaddress");
@@ -320,7 +321,9 @@ fn calls() {
         b.call(I32, &CallDesc::new(Value::sym(printf)?, ty, &[p, one]))?;
         Ok(())
     });
-    assert_eq!(variadic, "call:variadic");
+    // §5.8: a variadic call of a declaration is a call of a host
+    // function, or of nothing (a variadic body: `tests/x86_64.rs`).
+    assert_eq!(variadic, "extern:printf");
     for (mem, name) in [
         (ParamMem::ByVal, "attr:byval"),
         (ParamMem::InAlloca, "attr:inalloca"),

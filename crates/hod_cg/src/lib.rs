@@ -16,8 +16,13 @@
 //! | `frame` | §5.1 to §5.3 | `Frame`, `FrameRef`, `SlotPlace` |
 //! | `label` | §6.2, §6.3 | `Label`, `Labels`, fixups |
 //! | `call` | §4.4, §7.1 to §7.3 | the call sequence, `musttail`, `invoke`, runtime calls |
-//! | `abi` | §7.2 | `Sig`, `Part`, `Assignment`: the argument-assignment interface |
-//! | `sym` | §7.3, §9.2 | `SymRef`, `RuntimeFn` |
+//! | `abi` | §7.2 | `Sig`, `Part`, `Assignment`: the argument-assignment interface; the leaf walk (`Classify`, `place_leaves`) |
+//! | `features` | §7.3 | `FeatureTable`: the reading of a `target-features` string |
+//! | `memplan` | §7.3 | `mem_plan`: what a `memcpy`, `memmove` or `memset` becomes |
+//! | `switch` | §7.3 | `canonical_cases`, `search_step`: the `switch` plan |
+//! | `sym` | §7.3, §9.2 | `SymRef`, `RuntimeFn`; the routines by type and target (`fp_routine`, ...) |
+//! | `lanes` | §7.3 | the lane loop: `LaneKernels`, `setup`, `each_lane`, `finish`; `Elem`, `lane_log2` |
+//! | `asm_constraints` | §7.3 | `parse`: an inline-assembly constraint string, `ConstraintSyntax` the target's part |
 //! | `target` | §8.2 | the `Target` trait |
 //! | `cx` | §8.1, §11 | `FnCx`: what a lowering is given; `Scratch` |
 //! | `record` | §9.1 to §9.6 | `Chunk`, `FuncRecord` and the rows |
@@ -27,33 +32,43 @@
 //! | `emit` | §9.7 | `ModuleEmitter`, `emit_module`: the module's object |
 //! | `driver` | §1, §4.7, §4.8, §6.1, §6.3 | `compile_function`: the walk, entry code, reachability, the far-mode retry |
 //! | `coro` | "Coroutines" | the noop coroutine frame a function refers to (WP-105) |
+//! | `coro_body` | §7.6 | coroutine bodies: the heap frame, the `coro.begin` copies, the suspend switch, the suspended-region check (WP-106) |
 //!
 //! Not here: any real target. The test target that exercises this crate
 //! is in `tests/common/`.
 
 pub mod abi;
 mod access;
+pub mod asm_constraints;
 mod call;
 mod coro;
+mod coro_body;
 mod cx;
 mod driver;
 pub mod emit;
 pub mod error;
+pub mod features;
 mod frame;
 mod label;
+pub mod lanes;
 mod line_rows;
 mod loc;
+pub mod memplan;
 mod options;
 mod phi;
 mod policy;
 mod record;
 mod reg;
-mod sym;
+pub mod switch;
+pub mod sym;
 mod target;
 
 pub use access::{Access, CallAccess, TlsAccess, call_access, prefers_local_alias, sym_access};
 pub use call::CallArg;
 pub use coro::NOOP_CORO_TARGET;
+pub use coro_body::{
+    BEGIN_SHARED_BLOCK, CORO_TARGET, CoroLayout, CoroSlots, OUTSIDE_COROUTINE, OVERALIGNED_STACK,
+};
 pub use cx::{FnCx, Scratch, TailExit};
 pub use driver::{MAX_FUNCTION_SIZE, compile_function};
 pub use emit::{COPY_SUFFIX, Emitted, ModuleEmitter, PlacedFunc, emit_module};

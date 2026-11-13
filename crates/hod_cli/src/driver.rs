@@ -593,9 +593,11 @@ mod tests {
     /// A module hod compiles: declarations only.
     const DECLARATIONS: &[u8] = b"target triple = \"aarch64-unknown-linux-gnu\"\n\
         declare i32 @g()\n";
-    /// A module of the target without a code generator
-    /// (`codegen-not-implemented`, stable until x86-64 has one).
-    const X64: &[u8] = b"target triple = \"x86_64-unknown-linux-gnu\"\ndeclare i32 @g()\n";
+    /// A module code generation declines after its bodies are read: a
+    /// target feature hod does not honour (`spec/codegen.md` §5.5.2), a
+    /// refusal no package lifts.
+    const CG_DECLINED: &[u8] = b"target triple = \"aarch64-unknown-linux-gnu\"\n\
+        define void @f() \"target-features\"=\"+strict-align\" {\n  ret void\n}\n";
     const OBJECT: &[u8] = b"\x7FELF-stand-in\n\0\xFF";
 
     /// A stand-in for `hod::compile` that succeeds.
@@ -804,7 +806,7 @@ mod tests {
         assert_eq!(ran.exit, EXIT_OK);
         assert_eq!(phases(), "read parse classify bodies emission object compile write total");
         // One declined by the code generator reads its bodies too.
-        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_with, X64);
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_with, CG_DECLINED);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert_eq!(phases(), "read parse classify bodies compile total");
         // A module declined before it is read has none of them.
@@ -1138,13 +1140,14 @@ mod tests {
         let scratch = Scratch::new("driver-unsupported");
         let log = scratch.join("cov.tsv");
         let env = Environment { coverage_log: Some(log.clone()), ..Environment::default() };
-        let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &hod::compile_with, X64);
+        let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &hod::compile_with, CG_DECLINED);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert!(ran.stdout.is_empty());
         assert_eq!(
             ran.stderr,
-            "hod: error: unsupported construct 'codegen-not-implemented'; no fallback is \
-             configured (--fallback=<llc> or HOD_FALLBACK_LLC)\n"
+            "hod: error: unsupported construct 'attr:target-feature-strict-align' in function \
+             'f': +strict-align; no fallback is configured (--fallback=<llc> or \
+             HOD_FALLBACK_LLC)\n"
         );
 
         let in_function = |_: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
@@ -1161,8 +1164,9 @@ mod tests {
 
         let lines = fields(&log);
         assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0][..3], ["error", "attr:target-feature-strict-align", "text"]);
+        assert_eq!(lines[1][..3], ["error", "codegen-not-implemented", "text"]);
         for line in &lines {
-            assert_eq!(line[..3], ["error", "codegen-not-implemented", "text"]);
             assert_eq!(line[7], "-");
         }
     }

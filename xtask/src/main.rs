@@ -7,6 +7,7 @@
 //! `cargo xtask corpus ...` captures, verifies and counts the IR corpus.
 //! `cargo xtask roundtrip ...` parses and prints the corpus (layer L2).
 //! `cargo xtask debug ...` runs the debuggers on hod's programs (layer L7).
+//! `cargo xtask x64census ...` checks the front half on x86-64 modules.
 
 use std::process::ExitCode;
 
@@ -19,6 +20,7 @@ usage: cargo xtask ci [--quick]
        cargo xtask bench [options]                                (--help for the options)
        cargo xtask roundtrip [options]                            (--help for the options)
        cargo xtask debug [run|kiln|verify] [options]              (--help for the options)
+       cargo xtask x64census [options] <dir or file.ll>...        (--help for the options)
 ";
 
 fn main() -> ExitCode {
@@ -35,6 +37,8 @@ fn main() -> ExitCode {
         Some("bench") => xtask::bench::main(&args[1..]),
         #[cfg(unix)]
         Some("debug") => ExitCode::from(xtask::debug::command(&args[1..])),
+        #[cfg(unix)]
+        Some("x64census") => ExitCode::from(xtask::x64census::command(&args[1..])),
         _ => {
             eprint!("{USAGE}");
             ExitCode::from(2)
@@ -84,20 +88,19 @@ fn ci(quick: bool) -> ExitCode {
 }
 
 /// The L4 step of the gate (spec/harness.md "irdiff", "In the gate"): the
-/// quick tier against the preferred oracle, or every test against each
-/// oracle LLVM, with the witness.
+/// runs `xtask::ci::irdiff_runs` plans for the tier, the other
+/// architecture's under its emulator among them.
 #[cfg(unix)]
 fn irdiff_gate(quick: bool) -> bool {
-    use xtask::irdiff::{Config, TierFilter, run, tools::LLVM_MAJORS};
-    let runs: Vec<(Option<String>, TierFilter)> = if quick {
-        vec![(None, TierFilter::Quick)]
-    } else {
-        LLVM_MAJORS.iter().map(|major| (Some(major.to_string()), TierFilter::All)).collect()
-    };
+    use xtask::irdiff::{Arch, Config, run, workspace_root};
     let mut ok = true;
-    for (llvm, tier) in runs {
+    for planned in xtask::ci::irdiff_runs(quick, Arch::host()) {
+        eprintln!("ci: {}", xtask::ci::irdiff_command(&planned));
         let mut config = Config::for_workspace();
-        (config.llvm, config.tier, config.witness) = (llvm, tier, !quick);
+        config.llvm = planned.llvm.map(|major| major.to_string());
+        (config.target, config.tier, config.mode) = (planned.target, planned.tier, planned.mode);
+        config.witness = planned.witness;
+        config.paths = planned.paths.iter().map(|path| workspace_root().join(path)).collect();
         match run(&config) {
             Ok(report) => {
                 eprint!("{}", report.summary(false));

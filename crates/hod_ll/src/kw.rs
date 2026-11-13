@@ -283,6 +283,25 @@ impl Kw {
         TEXTS[self as usize]
     }
 
+    /// Whether it is the keyword of an instruction that ends a block
+    /// ([`is_terminator`](crate::body::is_terminator)).
+    pub(crate) fn is_terminator(self) -> bool {
+        matches!(
+            self,
+            Kw::Ret
+                | Kw::Br
+                | Kw::Switch
+                | Kw::Indirectbr
+                | Kw::Invoke
+                | Kw::Resume
+                | Kw::Unreachable
+                | Kw::Cleanupret
+                | Kw::Catchret
+                | Kw::Catchswitch
+                | Kw::Callbr
+        )
+    }
+
     /// Whether it is the code of an integer type (`i32`), which only a
     /// [`Tok::IntType`](crate::Tok::IntType) token carries.
     pub fn is_int_type(self) -> bool {
@@ -429,6 +448,18 @@ mod tests {
         let hashed = TEXTS.iter().skip(1).filter(|text| text.len() <= MAX_HASHED).count();
         assert_eq!(used, hashed, "each hashed keyword has a slot of its own");
         assert!(TEXTS.windows(2).skip(1).all(|pair| pair[0] < pair[1]), "sorted, no repeats");
+    }
+
+    /// The keyword tests by code say what the tests by text say.
+    #[test]
+    fn code_tests_agree_with_text_tests() {
+        for &kw in KWS {
+            assert_eq!(kw.is_terminator(), crate::body::is_terminator(kw.text()), "{kw:?}");
+            let int = kw.text().len() > 1
+                && kw.text()[0] == b'i'
+                && kw.text()[1..].iter().all(u8::is_ascii_digit);
+            assert_eq!(kw.is_int_type(), int, "{kw:?}");
+        }
     }
 
     /// The one-load path and the general one agree, for a word with

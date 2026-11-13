@@ -299,20 +299,20 @@ impl<L: Layering> Parser<'_, '_, L> {
     /// A constant that starts with a word.
     fn word_const(&mut self, ty: TypeId) -> PResult<ConstId> {
         let at = self.tok.start;
-        let word = self.text();
+        let word = self.tok.kw;
         let (consts, types) = (&mut self.module.consts, &self.module.types);
         let simple = match word {
-            b"true" | b"false" if ty == TypeId::I1 => {
-                consts.int(types, ty, u64::from(word == b"true"))
+            Kw::True | Kw::False if ty == TypeId::I1 => {
+                consts.int(types, ty, u64::from(word == Kw::True))
             }
-            b"true" | b"false" => {
+            Kw::True | Kw::False => {
                 return fail(LlErrorKind::Type, at, "a boolean constant must have type i1");
             }
-            b"null" => consts.null(types, ty),
-            b"zeroinitializer" => consts.zero(types, ty),
-            b"undef" => consts.undef(types, ty),
-            b"poison" => consts.poison(types, ty),
-            b"none" if ty == TypeId::TOKEN => consts.none_token(),
+            Kw::Null => consts.null(types, ty),
+            Kw::Zeroinitializer => consts.zero(types, ty),
+            Kw::Undef => consts.undef(types, ty),
+            Kw::Poison => consts.poison(types, ty),
+            Kw::None if ty == TypeId::TOKEN => consts.none_token(),
             _ => {
                 let id = self.expression(ty)?;
                 if self.module.consts.ty(id) != ty {
@@ -332,20 +332,20 @@ impl<L: Layering> Parser<'_, '_, L> {
     /// A string or a constant expression, at its first word.
     fn expression(&mut self, ty: TypeId) -> PResult<ConstId> {
         let at = self.tok.start;
-        let word = self.text();
+        let word = self.tok.kw;
         let cast = |op| Some((op, false));
         let binary = |op| Some((op, true));
         let operator = match word {
-            b"trunc" => cast(ConstOp::Trunc),
-            b"ptrtoint" => cast(ConstOp::PtrToInt),
-            b"ptrtoaddr" => cast(ConstOp::PtrToAddr),
-            b"inttoptr" => cast(ConstOp::IntToPtr),
-            b"bitcast" => cast(ConstOp::BitCast),
-            b"addrspacecast" => cast(ConstOp::AddrSpaceCast),
-            b"add" => binary(ConstOp::Add),
-            b"sub" => binary(ConstOp::Sub),
-            b"mul" => binary(ConstOp::Mul),
-            b"xor" => binary(ConstOp::Xor),
+            Kw::Trunc => cast(ConstOp::Trunc),
+            Kw::Ptrtoint => cast(ConstOp::PtrToInt),
+            Kw::Ptrtoaddr => cast(ConstOp::PtrToAddr),
+            Kw::Inttoptr => cast(ConstOp::IntToPtr),
+            Kw::Bitcast => cast(ConstOp::BitCast),
+            Kw::Addrspacecast => cast(ConstOp::AddrSpaceCast),
+            Kw::Add => binary(ConstOp::Add),
+            Kw::Sub => binary(ConstOp::Sub),
+            Kw::Mul => binary(ConstOp::Mul),
+            Kw::Xor => binary(ConstOp::Xor),
             _ => None,
         };
         self.enter()?;
@@ -370,35 +370,35 @@ impl<L: Layering> Parser<'_, '_, L> {
                 self.expect(Tok::RParen, "expected ')' after the operands")?;
                 ir(at, self.module.consts.fold_binary(&self.module.types, op, lhs, rhs))?
             }
-            (b"c", _) => {
+            (Kw::C, _) => {
                 let text = self.expect(Tok::Str, "expected a string after 'c'")?;
                 self.buf.clear();
                 let src = self.src;
                 unescape(&src[text.start as usize + 1..text.end as usize - 1], &mut self.buf);
                 ir(at, self.module.consts.bytes(&mut self.module.types, &self.buf))?
             }
-            (b"getelementptr", _) => self.gep(at)?,
-            (b"extractelement", _) => self.vector_op(ConstOp::ExtractElement, ty, at)?,
-            (b"insertelement", _) => self.vector_op(ConstOp::InsertElement, ty, at)?,
-            (b"shufflevector", _) => self.vector_op(ConstOp::ShuffleVector, ty, at)?,
-            (b"blockaddress", _) => self.block_address(at)?,
-            (b"dso_local_equivalent", _) => {
+            (Kw::Getelementptr, _) => self.gep(at)?,
+            (Kw::Extractelement, _) => self.vector_op(ConstOp::ExtractElement, ty, at)?,
+            (Kw::Insertelement, _) => self.vector_op(ConstOp::InsertElement, ty, at)?,
+            (Kw::Shufflevector, _) => self.vector_op(ConstOp::ShuffleVector, ty, at)?,
+            (Kw::Blockaddress, _) => self.block_address(at)?,
+            (Kw::DsoLocalEquivalent, _) => {
                 let sym = self.global_ref(self.tok)?;
                 self.bump();
                 ir(at, self.module.consts.dso_local_equivalent(sym))?
             }
-            (b"no_cfi", _) => {
+            (Kw::NoCfi, _) => {
                 let sym = self.global_ref(self.tok)?;
                 self.bump();
                 ir(at, self.module.consts.no_cfi(sym))?
             }
-            (b"splat", _) => {
+            (Kw::Splat, _) => {
                 self.expect(Tok::LParen, "expected '(' after splat")?;
                 let elem = self.parse_typed_const()?;
                 self.expect(Tok::RParen, "expected ')' after the splat value")?;
                 ir(at, self.module.consts.splat(&self.module.types, ty, elem))?
             }
-            (b"ptrauth", _) => {
+            (Kw::Ptrauth, _) => {
                 // A signed pointer: `hod_ir` has no form for it. Noted,
                 // and the pointer stands in for it.
                 self.note("const-expr:ptrauth");

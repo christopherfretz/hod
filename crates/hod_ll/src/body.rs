@@ -818,7 +818,7 @@ impl<'a, L: Layering> Fx<'_, 'a, '_, L> {
                         self.set(&key, Local::Block(ordinal));
                     }
                 }
-                Tok::Word if is_terminator(lexer.text(token)) => ordinal += 1,
+                Tok::Word if token.kw.is_terminator() => ordinal += 1,
                 _ => {}
             }
         }

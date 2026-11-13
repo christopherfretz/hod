@@ -264,11 +264,17 @@ impl Case {
         Ok(out)
     }
 
-    /// Whether an `i128` is among the parameters, in an aggregate or not.
-    pub fn has_i128(&self) -> bool {
+    /// Whether a parameter holds a value LLVM 19 keeps in consecutive
+    /// general registers (`spec/abi-x64.md` §4.2): an integer wider than
+    /// 64 bits, or a vector of `i64` or `ptr` passed element by element,
+    /// in an aggregate or not.
+    pub fn has_wide_general(&self) -> bool {
         fn has(ty: &Ty) -> bool {
             match ty {
-                Ty::Int(128) => true,
+                Ty::Int(bits) => *bits > 64,
+                Ty::Vec(elem, len) => {
+                    matches!(**elem, Ty::Int(64) | Ty::Ptr) && *len > 1 && !len.is_power_of_two()
+                }
                 Ty::Arr(elem, _) => has(elem),
                 Ty::Struct(fields) | Ty::Packed(fields) => fields.iter().any(has),
                 _ => false,

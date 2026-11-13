@@ -227,14 +227,17 @@ fn variadic_against_c() {
         must("llc on the walkers", &compile(llc, *config, &walkers_ir, &objects[0]));
         let compiled = compile(llc, *config, &callers, &objects[1]);
         assert!(compiled.success(), "llc {tag} on the callers:\n{}", tail(&compiled.stderr_text()));
-        let (out, crashed) = harness.execute(&tag, &objects, &tools).unwrap_or_else(|problem| {
-            panic!("[llc {tag}] {problem}");
-        });
+        // §4.2: LLVM 19 keeps a wide integer whole where LLVM 22 splits
+        // it; those steps do not run against LLVM 19.
+        let skip = |index: usize| config.major < 22 && plans[index].case.has_wide_general();
+        let wanted: Vec<bool> = (0..plans.len() * 2).map(|step| !skip(step / 2)).collect();
+        let (out, crashed) =
+            harness.execute(&tag, &objects, &wanted, &tools).unwrap_or_else(|(problem, _)| {
+                panic!("[llc {tag}] {problem}");
+            });
         let size = harness.blobs.out_size as usize;
         for (index, plan) in plans.iter().enumerate() {
-            // §4.2: LLVM 19 gives up the registers left after an `i128`
-            // on the stack.
-            if config.major < 22 && plan.case.has_i128() {
+            if skip(index) {
                 continue;
             }
             for hod_calls in [true, false] {

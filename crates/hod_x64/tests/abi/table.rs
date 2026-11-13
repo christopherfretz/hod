@@ -335,6 +335,14 @@ fn vectors() {
             .concat(),
             64,
         ),
+        // `<1 x half>` is widened, not scalarized: a 16-byte slot, where
+        // a `half` takes 8.
+        example(
+            cat(&[&of(8, &Ty::Double), &[vec(h.clone(), 1), h.clone(), vec(Ty::BFloat, 1)]]),
+            [fill(0, 8, x), vec![val(8, 0, 2, s(0)), val(9, 0, 2, s(16)), val(10, 0, 2, s(32))]]
+                .concat(),
+            48,
+        ),
     ]);
 }
 
@@ -484,16 +492,25 @@ fn conventions() {
     let fast = case.assign(&mut types).expect("fastcc");
     let c = case.cc(CallConv::C).assign(&mut types).expect("ccc");
     assert_eq!(fast, c);
+    // §5.1: but `fastcc` returns a third `float` or `double` in `xmm2`,
+    // where `ccc` would use `st0`.
+    let three = Case::of(&[]).ret(st(&[Ty::Double, Ty::Float, Ty::Double]));
+    let fast = three.clone().cc(CallConv::FAST).assign(&mut types).expect("fastcc");
+    let places: Vec<Place> = fast.ret.iter().map(|part| part.place).collect();
+    assert_eq!(places, [0, 1, 2].map(|n| Place::Reg(abi::xmm(n))));
+    let refused = three.cc(CallConv::C).assign(&mut types).expect_err("ccc");
+    assert_eq!(refused, "x64:ret-x87-part");
 }
 
 /// `spec/abi-x64.md` §7: the two tables, row by row.
 #[test]
 fn extension_tables() {
+    type Row = (u32, Option<bool>, bool, (bool, u32));
     let reg = Place::Reg(abi::gpr(RDI));
     let stack = Place::Stack(0);
     // (bits, ext, ret, extended to): `(false, bits)` when nothing is
     // owed.
-    let rows: [(u32, Option<bool>, bool, (bool, u32)); 16] = [
+    let rows: [Row; 16] = [
         (1, None, false, (false, 1)),
         (1, Some(false), false, (false, 32)),
         (8, Some(true), false, (true, 32)),
@@ -534,4 +551,34 @@ fn output_is_reused() {
     let refused = Case::new(vec![pa(Ty::Ptr, Attr::Nest)]).lower(&mut types);
     assert!(assign(&types, &refused.sig(), Features::default(), &mut out).is_err());
     assert_eq!(out, Assignment::default());
+}
+
+/// `spec/abi-x64.md` §8.6: DWARF register numbers.
+#[test]
+fn dwarf_numbers() {
+    use hod_x64::abi::{dwarf_number, gpr, st as x87, xmm};
+    // psABI figure 3.36, by name.
+    let named = [
+        ("rax", 0, 0),
+        ("rdx", 2, 1),
+        ("rcx", 1, 2),
+        ("rbx", 3, 3),
+        ("rsi", 6, 4),
+        ("rdi", 7, 5),
+        ("rbp", 5, 6),
+        ("rsp", 4, 7),
+    ];
+    for (name, encoding, dwarf) in named {
+        assert_eq!(dwarf_number(gpr(encoding)), Some(dwarf), "{name}");
+    }
+    for n in 8..16 {
+        assert_eq!(dwarf_number(gpr(n)), Some(u16::from(n)), "r{n}");
+    }
+    for n in 0..16 {
+        assert_eq!(dwarf_number(xmm(n)), Some(17 + u16::from(n)), "xmm{n}");
+    }
+    for n in 0..8 {
+        assert_eq!(dwarf_number(x87(n)), Some(33 + u16::from(n)), "st{n}");
+    }
+    assert_eq!(dwarf_number(hod_cg::PReg::new(40)), None);
 }

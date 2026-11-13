@@ -54,7 +54,7 @@ fn perf_of_assign() {
                 p(st(&[I32, I32, st(&[f, I8])])),
             ]),
         ),
-        ("aggregate return", Case::of(&[Ty::Ptr]).ret(st(&[I64, d.clone(), arr(d, 2)]))),
+        ("aggregate return", Case::of(&[Ty::Ptr]).ret(st(&[I64, d.clone(), arr(d, 1)]))),
     ];
     let mut types = table();
     let mut out = Assignment::default();

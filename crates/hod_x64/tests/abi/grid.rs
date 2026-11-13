@@ -371,6 +371,21 @@ fn conventions() -> Vec<Case> {
             ]
             .map(|case| case.cc(cc)),
         );
+        if cc == CallConv::FAST {
+            // §5.1: a third `float` or `double` return register.
+            let f = Ty::Float;
+            cases.extend(
+                [
+                    Case::of(std::slice::from_ref(&d)).ret(st(&[d.clone(), d.clone(), d.clone()])),
+                    Case::of(&[I8]).ret(st(&[f.clone(), Ty::Half, d.clone(), I64])),
+                    Case::of(std::slice::from_ref(&f)).ret(vec(d.clone(), 3)),
+                    Case::of(std::slice::from_ref(&f)).ret(st(&[Ty::Half, Ty::Half, d.clone()])),
+                    Case::of(&[]).ret(st(&[d.clone(), d.clone(), d.clone(), d.clone()])),
+                    Case::of(&[]).ret(vec(f, 5)),
+                ]
+                .map(|case| case.cc(cc)),
+            );
+        }
         if cc != CallConv::FAST {
             // A variadic `fastcc` function is not valid IR (§1.2).
             cases.extend(
@@ -551,14 +566,7 @@ pub fn run_cases(label: &str, cases: &[Case], seed: u64, tools: &Tools) -> Repor
 }
 
 /// The names the systematic grid's refused signatures have.
-const GRID_REFUSALS: [&str; 6] = [
-    "abi:cc",
-    "abi:invalid-signature",
-    "abi:vector-element",
-    "x64:mask-vector",
-    "x64:nest",
-    "x64:ret-x87-part",
-];
+const GRID_REFUSALS: [&str; 4] = ["abi:cc", "x64:mask-vector", "x64:nest", "x64:ret-x87-part"];
 
 /// Whether the whole grid runs: `HOD_ABI_GRID=full`.
 pub fn full() -> bool {

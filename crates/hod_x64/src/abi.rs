@@ -67,6 +67,26 @@ pub const fn number(reg: PReg) -> u8 {
     reg.index() % 16
 }
 
+/// The DWARF register number of `reg` (psABI §3.6.2, figure 3.36):
+/// `rax` 0, `rdx` 1, `rcx` 2, `rbx` 3, `rsi` 4, `rdi` 5, `rbp` 6, `rsp` 7,
+/// `r8`..`r15` 8..=15, `xmm0`..`xmm15` 17..=32, `st0`..`st7` 33..=40.
+/// `None` for an index that names no register. (The return address is
+/// column 16, which no `PReg` names.)
+pub const fn dwarf_number(reg: PReg) -> Option<u16> {
+    const LOW: [u16; 8] = [0, 2, 1, 3, 7, 6, 4, 5];
+    let index = reg.index();
+    if index < 8 {
+        Some(LOW[index as usize])
+    } else if index < 16 {
+        Some(index as u16)
+    } else if index < 40 {
+        // `xmm<n>` (16 + n) is 17 + n, `st<n>` (32 + n) is 33 + n.
+        Some(index as u16 + 1)
+    } else {
+        None
+    }
+}
+
 pub const RAX: PReg = gpr(0);
 pub const RCX: PReg = gpr(1);
 pub const RDX: PReg = gpr(2);
@@ -436,8 +456,11 @@ fn vector_leaf(types: &TypeTable, elem: TypeId, len: u32, features: Features) ->
         _ => return no(VECTOR_ELEMENT),
     };
     if len == 1 {
-        // Scalarized.
-        return Ok(Leaf::one(scalar, bytes));
+        // Scalarized, except `<1 x half>` and `<1 x bfloat>`, which LLVM
+        // widens to a 128-bit vector (a 16-byte stack slot, `xmm3` among
+        // the return registers).
+        let class = if scalar == Class::Half { Class::Vector } else { scalar };
+        return Ok(Leaf::one(class, bytes));
     }
     let Some(total) = len.checked_mul(bytes) else { return no(SIZE_LIMIT) };
     let widened = len.checked_next_power_of_two().and_then(|n| n.checked_mul(bytes));
@@ -683,6 +706,9 @@ struct Memory;
 /// The return registers of §5.1 as they are taken.
 #[derive(Default)]
 struct RetState {
+    /// How many of `xmm0`.. a `float` or `double` may take: 2, or 3
+    /// under `fastcc` (§5.1).
+    float_xmm: usize,
     gpr: usize,
     /// `xmm0`..`xmm3`, taken.
     xmm: [bool; 4],
@@ -714,7 +740,7 @@ impl RetState {
                 Some(reg)
             }
             Class::Half => self.xmm(3),
-            Class::Float => self.xmm(2).or_else(|| {
+            Class::Float => self.xmm(self.float_xmm).or_else(|| {
                 self.float_in_x87 = true;
                 self.x87()
             }),
@@ -741,7 +767,8 @@ fn assign_return(
         return Ok(false);
     }
 
-    let mut regs = RetState::default();
+    let float_xmm = if sig.cc == CallConv::FAST { 3 } else { 2 };
+    let mut regs = RetState { float_xmm, ..RetState::default() };
     let mut place = |leaf: Leaf, offset: u64, parts: &mut Vec<Part>| -> Result<(), Memory> {
         for piece in 0..leaf.count {
             let reg = regs.reg(leaf.class).ok_or(Memory)?;

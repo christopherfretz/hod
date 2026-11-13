@@ -161,7 +161,9 @@ version = "0.0.0"
 dependencies = [
  "hod_cg",
  "hod_ir",
+ "hod_ll",
  "hod_mc_x64",
+ "hod_testutil",
 ]
 
 [[package]]

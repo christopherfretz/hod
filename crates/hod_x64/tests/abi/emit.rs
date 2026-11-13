@@ -10,7 +10,7 @@
 use std::fmt::Write as _;
 
 use hod_cg::PReg;
-use hod_cg::abi::{Assignment, Part, Place, VaInfo};
+use hod_cg::abi::{Assignment, Part, PartKind, Place, VaInfo};
 use hod_x64::abi;
 
 /// The bytes of one argument or return value: where the producer reads
@@ -269,6 +269,28 @@ impl Asm<'_> {
     /// a stack place is `stack` plus the part's offset. An x87 part is
     /// left for [`Asm::produce_x87`].
     fn produce(&mut self, item: &Item, part: &Part, stack: &str) {
+        if let PartKind::Lanes { lane, len, .. } = part.kind {
+            // §4.3: element `i` in the low bit of lane `i`; the other bits
+            // of the lane are junk.
+            self.junk_scratch();
+            for index in 0..i64::from(len) {
+                let at = (item.src + u64::from(part.offset)) as i64 + index / 8;
+                ins!(self, "movzbl {at}(%rbx), %r11d");
+                ins!(self, "shrl ${}, %r11d", index % 8);
+                ins!(self, "xorb %r13b, %r11b");
+                ins!(self, "andb $1, %r11b");
+                ins!(self, "xorb %r13b, %r11b");
+                ins!(self, "movb %r11b, {}(%rbp)", SCRATCH + index * i64::from(lane));
+            }
+            match part.place {
+                Place::Reg(reg) => match classify(reg) {
+                    Reg::Vector(number) => ins!(self, "movdqu {SCRATCH}(%rbp), %xmm{number}"),
+                    _ => panic!("lanes outside a vector register"),
+                },
+                Place::Stack(offset) => self.copy(16, ("rbp", SCRATCH), (stack, i64::from(offset))),
+            }
+            return;
+        }
         let src = ("rbx", (item.src + u64::from(part.offset)) as i64);
         let size = u64::from(part.size);
         let extension = Self::extension(item, part);
@@ -330,6 +352,31 @@ impl Asm<'_> {
     /// x87 stack: those go in order from `st0`.
     fn consume(&mut self, item: &Item, part: &Part, stack: (&str, i64)) {
         let dst = ("r12", (item.dst + u64::from(part.offset)) as i64);
+        if let PartKind::Lanes { lane, len, .. } = part.kind {
+            match part.place {
+                Place::Reg(reg) => match classify(reg) {
+                    Reg::Vector(number) => ins!(self, "movdqu %xmm{number}, {SCRATCH}(%rbp)"),
+                    _ => panic!("lanes outside a vector register"),
+                },
+                Place::Stack(offset) => {
+                    self.copy(16, (stack.0, stack.1 + i64::from(offset)), ("rbp", SCRATCH));
+                }
+            }
+            // The low bit of each lane, packed.
+            ins!(self, "xorl %r10d, %r10d");
+            for index in 0..i64::from(len) {
+                ins!(self, "movzbl {}(%rbp), %r11d", SCRATCH + index * i64::from(lane));
+                ins!(self, "andl $1, %r11d");
+                ins!(self, "shll ${index}, %r11d");
+                ins!(self, "orl %r11d, %r10d");
+            }
+            if len > 8 {
+                ins!(self, "movw %r10w, {}(%r12)", dst.1);
+            } else {
+                ins!(self, "movb %r10b, {}(%r12)", dst.1);
+            }
+            return;
+        }
         let mut size = u64::from(part.size);
         if item.int {
             // The whole unit, to see what the producer extended.

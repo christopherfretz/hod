@@ -151,6 +151,35 @@ impl Ty {
 }
 
 impl Ty {
+    /// Calls `visit` with the byte offset of every `half` (`false`) and
+    /// `bfloat` (`true`) in the value, vector elements included.
+    pub fn half_scalars(&self, types: &mut TypeTable, base: u64, visit: &mut dyn FnMut(u64, bool)) {
+        match self {
+            Ty::Half => visit(base, false),
+            Ty::BFloat => visit(base, true),
+            Ty::Vec(elem, len) if matches!(**elem, Ty::Half | Ty::BFloat) => {
+                for index in 0..u64::from(*len) {
+                    visit(base + 2 * index, matches!(**elem, Ty::BFloat));
+                }
+            }
+            Ty::Arr(elem, len) => {
+                let id = elem.intern(types);
+                let stride = types.alloc_size_of(id);
+                for index in 0..*len {
+                    elem.half_scalars(types, base + index * stride, visit);
+                }
+            }
+            Ty::Struct(fields) | Ty::Packed(fields) => {
+                let id = self.intern(types);
+                for (index, field) in fields.iter().enumerate() {
+                    let offset = types.field_offset(id, index as u32);
+                    field.half_scalars(types, base + offset, visit);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Calls `visit` with the byte offset of every `x86_fp80` in the value.
     pub fn x87_scalars(&self, types: &mut TypeTable, base: u64, visit: &mut dyn FnMut(u64)) {
         match self {
@@ -245,6 +274,19 @@ impl Image {
             values[at + 7] |= 0x80;
             values[at + 8] = values[at + 8].max(1);
             values[at + 9] &= 0xbf;
+        });
+        ty.half_scalars(types, 0, &mut |offset, bfloat| {
+            // No signaling NaN: LLVM may convert a `half` or `bfloat` to
+            // `float` and back on the way, which quiets one. A NaN gets
+            // its quiet bit (9 of a `half`, 6 of a `bfloat`).
+            let at = offset as usize;
+            let bits = u16::from_le_bytes([values[at], values[at + 1]]);
+            let (exponent, quiet) = if bfloat { (0x7f80, 0x0040) } else { (0x7c00, 0x0200) };
+            if bits & exponent == exponent && bits & !(exponent | 0x8000) != 0 {
+                let [low, high] = (bits | quiet).to_le_bytes();
+                values[at] = low;
+                values[at + 1] = high;
+            }
         });
         let mut clean = vec![0u8; size + SLACK];
         let mut dirty = vec![0u8; size + SLACK];

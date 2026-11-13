@@ -220,10 +220,11 @@ impl Report {
 /// Whether a case runs against a configuration, with hod calling or with
 /// LLVM calling.
 fn runs(plan: &Plan, config: Config, hod_calls: bool) -> bool {
-    // LLVM 19 passes an `i128` in an aggregate whole on the stack and
-    // gives up the registers left after an `i128` on the stack (§4.2).
+    // LLVM 19 keeps an integer wider than 64 bits (and a vector of `i64`
+    // split into general pieces) all in registers or all on the stack,
+    // and then gives up the registers left (§4.2).
     if config.major < 22
-        && plan.case.has_i128()
+        && plan.case.has_wide_general()
         && (plan.asg.stack_size > 0 || plan.case.fixed.is_some())
     {
         return false;
@@ -265,7 +266,11 @@ STEPS
 int main(int argc, char **argv) {
     unsigned from = strtoul(argv[1], 0, 10), to = strtoul(argv[2], 0, 10);
     if (fread(hodabi_in, 1, IN_SIZE, stdin) != IN_SIZE) return 2;
+    /* argv[3], when given: a '1' for each step to run, a '0' for each
+       step whose LLVM side is a stub. */
+    const char *wanted = argc > 3 ? argv[3] : 0;
     for (unsigned i = from; i < to; i++) {
+        if (wanted && wanted[i] != '1') continue;
         fprintf(stderr, "@step %u\n", i);
         steps[i]();
     }
@@ -341,13 +346,15 @@ impl Harness {
     /// is left out and the steps around it run again.
     ///
     /// # Errors
-    /// A description, when more steps crash than is worth isolating.
+    /// A description and the steps that crashed, when more steps crash
+    /// than is worth isolating.
     pub fn execute(
         &self,
         tag: &str,
         objects: &[PathBuf],
+        wanted: &[bool],
         tools: &Tools,
-    ) -> Result<(Vec<u8>, Vec<bool>), String> {
+    ) -> Result<Ran, (String, Vec<bool>)> {
         let exe = self.scratch.join(format!("run{tag}"));
         let mut link = Command::new(&tools.gcc);
         link.arg(self.scratch.join("driver.o")).arg(self.scratch.join("hod.o"));
@@ -355,6 +362,8 @@ impl Harness {
         must("linking", &run_with(&mut link, &[], hod_testutil::DEFAULT_TIMEOUT));
 
         let steps = self.cases * 2;
+        assert_eq!(wanted.len(), steps, "one flag per step");
+        let wanted: String = wanted.iter().map(|&run| if run { '1' } else { '0' }).collect();
         let size = self.blobs.out_size as usize;
         let mut out = vec![0u8; 2 * size];
         let mut crashed = vec![false; steps];
@@ -365,7 +374,7 @@ impl Harness {
                 continue;
             }
             let outcome = run_with(
-                tools.command(&exe).arg(from.to_string()).arg(to.to_string()),
+                tools.command(&exe).arg(from.to_string()).arg(to.to_string()).arg(&wanted),
                 &self.blobs.input,
                 Duration::from_mins(2),
             );
@@ -387,7 +396,7 @@ impl Harness {
             crashed[step] = true;
             crashes += 1;
             if crashes > 16 {
-                return Err("more than 16 steps crash".to_string());
+                return Err(("more than 16 steps crash".to_string(), crashed));
             }
             ranges.push((from, step));
             ranges.push((step + 1, to));
@@ -395,6 +404,10 @@ impl Harness {
         Ok((out, crashed))
     }
 }
+
+/// What [`Harness::execute`] returns: the two output blobs, and which
+/// steps crashed.
+pub type Ran = (Vec<u8>, Vec<bool>);
 
 /// Runs `llc` on `source`.
 pub fn compile(llc: &Path, config: Config, source: &Path, object: &Path) -> Outcome {
@@ -508,9 +521,21 @@ impl Batch {
                 }
             }
         }
-        let (out, crashed) = match self.harness.execute(&tag, &[object], tools) {
+        // Step `2i` is hod calling case `i`, `2i + 1` LLVM calling it.
+        let wanted: Vec<bool> = (0..self.plans.len() * 2)
+            .map(|step| runs(&left_out, step / 2, step % 2 == 0))
+            .collect();
+        let (out, crashed) = match self.harness.execute(&tag, &[object], &wanted, tools) {
             Ok(ran) => ran,
             Err(problem) => {
+                // Name the cases of the steps that crashed (step `2i` is
+                // hod calling case `i`, `2i + 1` LLVM calling it).
+                let (mut problem, crashed) = problem;
+                for (step, _) in crashed.iter().enumerate().filter(|(_, crashed)| **crashed) {
+                    let case = &self.plans[step / 2].case;
+                    let side = if step % 2 == 0 { "hod calls LLVM" } else { "LLVM calls hod" };
+                    let _ = write!(problem, "\n    case {}, {side}: `{}`", step / 2, case.text());
+                }
                 report.failures.push(format!("[llc {tag}] {problem}"));
                 return report;
             }

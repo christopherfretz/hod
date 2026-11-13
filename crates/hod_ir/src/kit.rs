@@ -107,6 +107,8 @@ fn shape<L: Layering>(types: &TypeTable<L>, ty: TypeId) -> (TypeId, Shape) {
 /// The value of a constant used as a `getelementptr` index: sign-extended
 /// or truncated to 64 bits. `None` if it is not one integer (the same in
 /// every element, for a vector).
+#[allow(clippy::inline_always)] // Per instruction; LLVM declined `#[inline]`.
+#[inline(always)]
 pub fn gep_index_value<L: Layering>(
     types: &TypeTable<L>,
     consts: &ConstPool<L>,
@@ -198,7 +200,8 @@ impl Gep {
     ///
     /// # Errors
     /// `InvalidIndices`.
-    #[inline]
+    #[allow(clippy::inline_always)] // Per instruction; LLVM declined `#[inline]`.
+    #[inline(always)]
     pub fn index<L: Layering>(
         &mut self,
         types: &TypeTable<L>,
@@ -351,7 +354,8 @@ impl From<crate::IrError> for AllocaError {
 ///
 /// # Errors
 /// `InvalidType` before anything else; then the builder's errors.
-#[inline]
+#[allow(clippy::inline_always)] // Per instruction; LLVM declined `#[inline]`.
+#[inline(always)]
 pub fn lower_alloca<L: Layering>(
     module: &mut Module<L>,
     b: &mut FunctionBuilder,
@@ -498,7 +502,8 @@ pub enum ValueKeyword {
 }
 
 /// The keyword attribute `name` of a parameter or return value.
-#[inline]
+#[allow(clippy::inline_always)] // Per instruction; LLVM declined `#[inline]`.
+#[inline(always)]
 pub fn value_keyword(name: &[u8]) -> ValueKeyword {
     match name {
         b"zeroext" => ValueKeyword::Flag(ParamAttrs::ZEROEXT),

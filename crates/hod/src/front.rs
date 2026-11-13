@@ -11,13 +11,14 @@
 //! reason. The back half is `back.rs`.
 
 use std::borrow::Cow;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use hod_bc::{BcError, BcErrorKind};
 use hod_ir::{Body, IrErrorKind, Module, Support, SymId, TargetSpec};
 use hod_ll::{LlError, LlErrorKind};
 
-use crate::back::{Threads, generate_with};
+use crate::back::{ThreadTokens, Threads, generate_with};
 use crate::session::Session;
 use crate::{
     CompileError, Construct, InputKind, Options, OutputKind, Unsupported, module_triple,
@@ -224,13 +225,22 @@ fn front(
     };
 
     // The module level is read, then the session judges it and each body
-    // as the reader delivers it, by value (`session.rs`).
+    // as the reader delivers it, by value (`session.rs`). Where tokens
+    // come from a pool, the session takes them through `held`, so that
+    // reading and code generation share one request (`HeldTokens`).
+    let held = settings.threads.tokens.clone().map(|pool| Arc::new(HeldTokens::new(pool)));
+    let mut session_settings = settings.clone();
+    if let Some(held) = &held {
+        session_settings.threads.tokens = Some(held.clone());
+    }
     let start = |module: Module, report: &mut Report| {
         let started = std::mem::take(report);
-        Session::open(module, options, settings.clone(), started).map_err(|(error, started)| {
-            *report = started;
-            error
-        })
+        Session::open(module, options, session_settings.clone(), started).map_err(
+            |(error, started)| {
+                *report = started;
+                error
+            },
+        )
     };
     let session = match kind {
         InputKind::Text => {
@@ -241,17 +251,15 @@ fn front(
             let mut session = start(module, report)?;
             if session.end_module().is_ok() {
                 let functions = text.functions();
-                let work = functions.iter().map(|f| (f.body.end - f.body.start) as usize).sum();
-                let lease =
-                    ReadLease::new(&settings.threads, work, READ_TEXT_BYTES, functions.len());
+                let bytes = functions.iter().map(|f| (f.body.end - f.body.start) as usize).sum();
+                let threads = reading_threads(&settings.threads, held.as_deref(), bytes, functions);
                 let read = hod_ll::parse_bodies_on(
                     &mut session,
                     Session::module,
                     &text,
-                    lease.threads,
+                    threads,
                     |session, function, read| feed(session, function.sym, read),
                 );
-                drop(lease);
                 if let Err(error) = read {
                     return answer(Err(session.abort(from_ll(&error))), report);
                 }
@@ -269,18 +277,18 @@ fn front(
             let mut session = start(module, report)?;
             if session.end_module().is_ok() {
                 let functions = bits.functions();
-                let work =
-                    functions.iter().map(|f| ((f.span.end - f.span.start) / 8) as usize).sum();
-                let lease =
-                    ReadLease::new(&settings.threads, work, READ_BITCODE_BYTES, functions.len());
+                // Bitcode takes about a quarter of the bytes of the same
+                // body as text.
+                let bytes =
+                    functions.iter().map(|f| ((f.span.end - f.span.start) / 2) as usize).sum();
+                let threads = reading_threads(&settings.threads, held.as_deref(), bytes, functions);
                 let read = hod_bc::read_bodies_on(
                     &mut session,
                     Session::module,
                     &bits,
-                    lease.threads,
+                    threads,
                     |session, function, read| feed(session, function.sym, read),
                 );
-                drop(lease);
                 if let Err(error) = read {
                     return answer(Err(session.abort(from_bc(&error))), report);
                 }
@@ -292,47 +300,112 @@ fn front(
     answer(session.finish(&mut object).map(|done| (object, done)), report)
 }
 
-/// The body text, in bytes, each thread reading LLVM IR text needs: a
-/// module with less than twice this is read on the calling thread
-/// (`spec/ll.md` §11.1; measured: `spec/landed/ll/WP-063.md`).
-pub const READ_TEXT_BYTES: usize = 64 << 10;
+/// The most threads that read bodies: past four, the calling thread,
+/// which takes in and delivers every body in order, is the bottleneck
+/// (measured: `spec/landed/ll/WP-063.md`).
+pub const READ_MAX_THREADS: usize = 4;
 
-/// [`READ_TEXT_BYTES`] for bitcode, which takes about a quarter of the
-/// bytes for the same body.
-pub const READ_BITCODE_BYTES: usize = 16 << 10;
+/// The body text, in bytes, each thread reading bodies needs (bitcode
+/// counts its bytes four times): below twice this, a module is read on
+/// the calling thread. Every thread then has at least eight runs of
+/// bodies, each of the full `hod_ir::CHUNK_WEIGHT` (16 KiB).
+pub const READ_BYTES_PER_THREAD: usize = 128 << 10;
 
-/// The threads that read the bodies, and the tokens taken for them from
-/// the session's [`Threads`], given back when dropped: before code
-/// generation takes its own.
-struct ReadLease<'a> {
-    threads: usize,
-    tokens: Option<&'a dyn crate::back::ThreadTokens>,
-    taken: usize,
+/// The body text, in bytes, a module's bodies must have on average to be
+/// read in parallel: smaller bodies cost the calling thread about as much
+/// to take in as they cost a thread to read.
+pub const READ_MIN_BODY_BYTES: usize = 512;
+
+/// How many threads read the bodies of a module whose bodies are
+/// `body_bytes` of text in `bodies` functions, when `granted` threads may
+/// run (`spec/cli.md` "Threads"). A pure function of the three.
+#[must_use]
+pub fn read_threads(body_bytes: usize, bodies: usize, granted: usize) -> usize {
+    if bodies < 2 || body_bytes / bodies < READ_MIN_BODY_BYTES {
+        return 1;
+    }
+    granted.min(READ_MAX_THREADS).min(bodies).min(body_bytes / READ_BYTES_PER_THREAD).max(1)
 }
 
-impl<'a> ReadLease<'a> {
-    /// One thread per `per_thread` bytes of `work`, at most `threads.max`
-    /// and one per function; every one past the first from the tokens,
-    /// if the threads come from tokens.
-    fn new(threads: &'a Threads, work: usize, per_thread: usize, functions: usize) -> Self {
-        let wanted = threads.max.min(functions).min(work / per_thread).max(1);
-        match threads.tokens.as_deref() {
-            Some(tokens) if wanted > 1 => {
-                let taken = tokens.take(wanted - 1);
-                ReadLease { threads: 1 + taken, tokens: Some(tokens), taken }
-            }
-            Some(_) => ReadLease { threads: 1, tokens: None, taken: 0 },
-            None => ReadLease { threads: wanted, tokens: None, taken: 0 },
-        }
+/// The threads that read the bodies: [`read_threads`] of what `threads`
+/// grants; where threads come from tokens, of what one request to the
+/// pool gives, held for code generation after.
+fn reading_threads<T>(
+    threads: &Threads,
+    held: Option<&HeldTokens>,
+    body_bytes: usize,
+    functions: &[T],
+) -> usize {
+    let granted = threads.max.max(1);
+    let wanted = read_threads(body_bytes, functions.len(), granted);
+    match held {
+        Some(held) if wanted > 1 => 1 + held.fill(granted - 1).min(wanted - 1),
+        Some(_) => 1,
+        None => wanted,
     }
 }
 
-impl Drop for ReadLease<'_> {
+/// A compile's tokens: at most one request to the pool per compile.
+/// Reading in parallel asks for every token the compile may use and holds
+/// them ([`HeldTokens::fill`]); code generation then takes from them, and
+/// what it does not take goes back to the pool at once. Without that
+/// request, code generation's goes to the pool. What is held when the
+/// compile ends goes back.
+#[derive(Debug)]
+struct HeldTokens {
+    pool: Arc<dyn ThreadTokens>,
+    /// Whether the pool was asked; the tokens held.
+    state: Mutex<(bool, usize)>,
+}
+
+impl HeldTokens {
+    fn new(pool: Arc<dyn ThreadTokens>) -> Self {
+        HeldTokens { pool, state: Mutex::new((false, 0)) }
+    }
+
+    fn state(&self) -> MutexGuard<'_, (bool, usize)> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Asks the pool for up to `wanted` tokens and holds them; the
+    /// number held.
+    fn fill(&self, wanted: usize) -> usize {
+        let mut state = self.state();
+        if !state.0 {
+            state.0 = true;
+            state.1 = self.pool.take(wanted);
+        }
+        state.1
+    }
+}
+
+impl ThreadTokens for HeldTokens {
+    fn take(&self, wanted: usize) -> usize {
+        let mut state = self.state();
+        if !state.0 {
+            state.0 = true;
+            return self.pool.take(wanted);
+        }
+        let got = state.1.min(wanted);
+        let surplus = state.1 - got;
+        state.1 = 0;
+        drop(state);
+        if surplus > 0 {
+            self.pool.give_back(surplus);
+        }
+        got
+    }
+
+    fn give_back(&self, count: usize) {
+        self.pool.give_back(count);
+    }
+}
+
+impl Drop for HeldTokens {
     fn drop(&mut self) {
-        if let Some(tokens) = self.tokens
-            && self.taken > 0
-        {
-            tokens.give_back(self.taken);
+        let held = std::mem::take(&mut self.state().1);
+        if held > 0 {
+            self.pool.give_back(held);
         }
     }
 }

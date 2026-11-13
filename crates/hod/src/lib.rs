@@ -29,7 +29,8 @@ pub use back::{
     PARALLEL_MIN_INSTS, ThreadTokens, Threads, generate_with,
 };
 pub use front::{
-    BitcodeReading, INTERNAL_ERROR, LIMIT_READER, Report, Settings, compile_with, generate,
+    BitcodeReading, INTERNAL_ERROR, LIMIT_READER, READ_BYTES_PER_THREAD, READ_MAX_THREADS,
+    READ_MIN_BODY_BYTES, Report, Settings, compile_with, generate, read_threads,
 };
 pub use session::Session;
 /// The names of the bodies declined because their meaning depends on being

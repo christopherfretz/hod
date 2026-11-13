@@ -144,7 +144,10 @@ impl<T: Clone> Seg<T> {
     /// Number of entries, both layers.
     #[inline]
     pub(crate) fn len(&self) -> usize {
-        self.off() + self.local.len()
+        match &self.layer {
+            None => self.local.len(),
+            Some(layer) => layer.off + self.local.len(),
+        }
     }
 
     #[inline]
@@ -157,9 +160,16 @@ impl<T: Clone> Seg<T> {
     pub(crate) fn get(&self, i: usize) -> Option<&T> {
         match &self.layer {
             None => self.local.get(i),
-            Some(layer) if i < layer.off => layer.base().get(i),
-            Some(layer) => self.local.get(i - layer.off),
+            Some(layer) => self.get_layered(layer, i),
         }
+    }
+
+    /// [`Seg::get`] in a frozen table or a fork: out of line, so that the
+    /// one-layer path stays a test and a vector access.
+    #[cold]
+    #[inline(never)]
+    fn get_layered<'a>(&'a self, layer: &'a Layer<T>, i: usize) -> Option<&'a T> {
+        if i < layer.off { layer.base().get(i) } else { self.local.get(i - layer.off) }
     }
 
     /// `len` entries from `start`, which lie in one layer (a table's
@@ -168,8 +178,7 @@ impl<T: Clone> Seg<T> {
     pub(crate) fn slice(&self, start: usize, len: usize) -> &[T] {
         match &self.layer {
             None => &self.local[start..][..len],
-            Some(layer) if start < layer.off => &layer.base()[start..][..len],
-            Some(layer) => &self.local[start - layer.off..][..len],
+            Some(layer) => &self.tail_of_layer(layer, start)[..len],
         }
     }
 
@@ -178,8 +187,18 @@ impl<T: Clone> Seg<T> {
     pub(crate) fn from(&self, start: usize) -> &[T] {
         match &self.layer {
             None => &self.local[start..],
-            Some(layer) if start < layer.off => &layer.base()[start..layer.off],
-            Some(layer) => &self.local[start - layer.off..],
+            Some(layer) => self.tail_of_layer(layer, start),
+        }
+    }
+
+    /// [`Seg::from`] in a frozen table or a fork, out of line.
+    #[cold]
+    #[inline(never)]
+    fn tail_of_layer<'a>(&'a self, layer: &'a Layer<T>, start: usize) -> &'a [T] {
+        if start < layer.off {
+            &layer.base()[start..layer.off]
+        } else {
+            &self.local[start - layer.off..]
         }
     }
 
@@ -213,7 +232,18 @@ impl<T: Clone> Seg<T> {
     /// Entry `i` to change in place. An entry of a shared base is copied
     /// first (the whole base: callers change base entries only in a
     /// module no fork shares, or the fork cannot hand its work over).
+    #[inline]
     pub(crate) fn get_mut(&mut self, i: usize) -> &mut T {
+        if self.layer.is_none() {
+            return &mut self.local[i];
+        }
+        self.get_mut_layered(i)
+    }
+
+    /// [`Seg::get_mut`] in a frozen table or a fork, out of line.
+    #[cold]
+    #[inline(never)]
+    fn get_mut_layered(&mut self, i: usize) -> &mut T {
         let off = self.off();
         if i >= off {
             return &mut self.local[i - off];
@@ -304,8 +334,7 @@ impl<T: Clone> std::ops::Index<usize> for Seg<T> {
     fn index(&self, i: usize) -> &T {
         match &self.layer {
             None => &self.local[i],
-            Some(layer) if i < layer.off => &layer.base()[i],
-            Some(layer) => &self.local[i - layer.off],
+            Some(layer) => self.get_layered(layer, i).expect("an index in the table"),
         }
     }
 }
@@ -387,13 +416,24 @@ impl InternTable {
 
     /// The id of an entry with `hash` for which `eq` holds.
     #[inline]
-    pub(crate) fn find(&self, hash: u32, mut eq: impl FnMut(u32) -> bool) -> Option<u32> {
-        if let Some(base) = &self.base
-            && let Some(id) = base.find_here(hash, &mut eq)
-        {
-            return Some(id);
+    pub(crate) fn find(&self, hash: u32, eq: impl FnMut(u32) -> bool) -> Option<u32> {
+        match &self.base {
+            None => self.find_here(hash, eq),
+            Some(base) => self.find_layered(base, hash, eq),
         }
-        self.find_here(hash, eq)
+    }
+
+    /// [`InternTable::find`] in a frozen table or a fork: the base, then
+    /// the local slots; out of line.
+    #[cold]
+    #[inline(never)]
+    fn find_layered(
+        &self,
+        base: &InternTable,
+        hash: u32,
+        mut eq: impl FnMut(u32) -> bool,
+    ) -> Option<u32> {
+        base.find_here(hash, &mut eq).or_else(|| self.find_here(hash, eq))
     }
 
     /// [`InternTable::find`] in the local slots alone.

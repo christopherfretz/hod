@@ -838,7 +838,7 @@ impl<'a, S: Sink> Walker<'a, S> {
     /// row has `classes`, decided the short way: an instruction's
     /// result, a parameter, a stack slot, a constant that is plain data,
     /// or a symbol that is not thread-local.
-    #[inline]
+    #[inline(always)]
     fn accepts_operand(&self, cx: &Cx<'_>, classes: u16, value: Value) -> bool {
         let module = self.module;
         let ptr = has_class(classes, TypeClass::Ptr as u8);

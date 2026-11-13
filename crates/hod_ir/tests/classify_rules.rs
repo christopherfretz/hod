@@ -1006,9 +1006,8 @@ fn convergent_is_accepted_and_convergence_control_is_not() {
 
     let controlled = program(true);
     let names = census_names(shipped, &controlled);
-    for name in
-        ["intrinsic:llvm.experimental.convergence.entry", "type:token", "bundle:convergencectrl"]
-    {
+    // (`type:token` is supported since WP-106: the coroutine intrinsics.)
+    for name in ["intrinsic:llvm.experimental.convergence.entry", "bundle:convergencectrl"] {
         assert!(names.iter().any(|found| found == name), "{name} in {names:?}");
     }
     assert!(!names.iter().any(|found| found == "attr:convergent"), "{names:?}");

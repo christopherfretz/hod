@@ -74,6 +74,7 @@ dependencies = [
  "hod_ll",
  "hod_obj",
  "hod_testutil",
+ "hod_xform",
 ]
 
 [[package]]

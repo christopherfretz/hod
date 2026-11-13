@@ -216,6 +216,10 @@ pub struct FuncRecord {
     pub islands: Range<u32>,
     /// Its rows in [`Chunk::block_offsets`].
     pub block_offsets: Range<u32>,
+    /// A coroutine's entry stubs (WP-106, `spec/codegen.md` §7.6): the
+    /// offsets of `F.resume` and `F.destroy` and the end of the stubs.
+    /// The function's own symbol ends at the first.
+    pub coro_entries: Option<[u32; 3]>,
 }
 
 impl FuncRecord {
@@ -391,6 +395,7 @@ impl Chunk {
             vars: mark.vars..now.vars,
             islands: mark.islands..now.islands,
             block_offsets: mark.block_offsets..now.block_offsets,
+            coro_entries: None,
         }
     }
 }

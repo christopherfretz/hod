@@ -136,7 +136,7 @@ pub fn base_offset(desc: &FrameDesc, place: FrameRef) -> Option<i64> {
             Some(i64::from(o) - i64::from(SAVE_BYTES) - i64::from(desc.frame_size))
         }
         FrameRef::Incoming(n) => Some(i64::from(INCOMING_BASE) + i64::from(n)),
-        FrameRef::Outgoing(_) => None,
+        FrameRef::Outgoing(_) | FrameRef::Coro(_) => None,
     }
 }
 

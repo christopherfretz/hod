@@ -54,6 +54,10 @@
 
 use hod_asm::a64::{self as asm, Arg, Features};
 use hod_asm::{Refusal, template};
+use hod_cg::asm_constraints::{
+    self as constraints, Clobber, ConstraintError, ConstraintSyntax, FLAG, Kind, MAX_OPS, SPEC,
+    TIED,
+};
 use hod_cg::{CgError, CgResult, Class, FnCx, FrameRef, PReg, SymRef};
 use hod_ir::{
     BlockId, Const, FnStr, InlineAsm, Inst, Opcode, SymbolKind, TypeId, TypeKind, Value, ValueKind,
@@ -93,9 +97,6 @@ pub const FORM: &str = "a64:inline-asm-form";
 pub const UNSUPPORTED: &[&str] =
     &[FRAME_REGISTER, SCRATCH_REGISTER, OPERAND_TYPE, TOO_MANY, UNWIND, FORM];
 
-const MAX_OPS: usize = 16;
-const MAX_ALTS: usize = 4;
-
 /// A `hod_asm` refusal as a codegen refusal.
 fn refused(r: Refusal) -> CgError {
     CgError::unsupported(r.0)
@@ -103,47 +104,26 @@ fn refused(r: Refusal) -> CgError {
 
 // ---- constraints ----
 
-/// Codes of one alternative, as bits.
+// The constraint string is read by `hod_cg::asm_constraints`; the codes
+// of the letters, the register names and the clobbers are AArch64's
+// (`A64Syntax`).
+
+/// Codes of one alternative, as bits (`SPEC`, `TIED` and `FLAG` are the
+/// shared parser's).
 const R: u32 = 1 << 0; // r, X (general)
 const W: u32 = 1 << 1; // w, x, y
 const M: u32 = 1 << 2; // m, Q, o
 const I: u32 = 1 << 3; // i, n, I..N, s
 const XX: u32 = 1 << 4; // X
-const SPEC: u32 = 1 << 5; // {reg}
-const TIED: u32 = 1 << 6; // a digit
-const FLAG: u32 = 1 << 7; // @cc<cond>
 const LOW: u32 = 1 << 8; // x: v0..v15
 const LOWEST: u32 = 1 << 9; // y: v0..v7
 
-#[derive(Clone, Copy, Default, Debug)]
-struct Alt {
-    codes: u32,
-    tied: u8,
-    /// The explicit register (`{x0}`).
-    reg: Option<PReg>,
-    /// The condition of a flag output.
-    cond: Option<mc::Cond>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-enum Kind {
-    #[default]
-    Input,
-    Output,
-    Label,
-}
-
-#[derive(Clone, Copy, Default, Debug)]
-struct Op {
-    kind: Kind,
-    indirect: bool,
-    alts: [Alt; MAX_ALTS],
-    nalts: u8,
-    /// The call argument of an input or an indirect output.
-    arg: Option<u8>,
-    /// The field of the result of a direct output.
-    field: Option<u8>,
-}
+/// One alternative of an operand.
+type Alt = constraints::Alt<mc::Cond>;
+/// One operand.
+type Op = constraints::Op<mc::Cond>;
+/// The parsed constraints.
+type Ops = constraints::Constraints<mc::Cond>;
 
 /// What an operand became.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -160,16 +140,6 @@ enum Place {
     Flag(mc::Cond),
     /// An `asm goto` target: the index of the indirect destination.
     Label(u8),
-}
-
-/// The parsed constraints.
-struct Ops {
-    list: [Op; MAX_OPS],
-    len: usize,
-    direct_outputs: u8,
-    labels: u8,
-    /// General and vector registers clobbered.
-    clobbers: u64,
 }
 
 /// The register a name inside braces denotes (`x0`, `w0`, `v0`, `q0`,
@@ -200,170 +170,66 @@ fn text(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).unwrap_or("other")
 }
 
-fn parse_alt(code: &[u8], output: bool) -> CgResult<Alt> {
-    let mut alt = Alt::default();
-    let mut i = 0;
-    while i < code.len() {
-        let c = code[i];
-        match c {
-            b'r' => alt.codes |= R,
-            b'w' => alt.codes |= W,
-            b'x' => alt.codes |= W | LOW,
-            b'y' => alt.codes |= W | LOWEST,
-            b'm' | b'Q' | b'o' => alt.codes |= M,
-            b'i' | b'n' | b's' | b'I' | b'J' | b'K' | b'L' | b'M' | b'N' => alt.codes |= I,
-            b'X' => alt.codes |= XX,
-            b'{' => {
-                let Some(close) = code[i..].iter().position(|&b| b == b'}') else {
-                    return Err(refused(hod_asm::reason::constraint(text(&code[i..]))));
-                };
-                let name = &code[i + 1..i + close];
-                if let Some(c) = name.strip_prefix(b"@cc").filter(|_| output) {
-                    let Some(cond) = asm::encode::cond_name(text(c)).filter(|_| !c.is_empty())
-                    else {
-                        return Err(refused(hod_asm::reason::constraint(text(name))));
-                    };
-                    alt.codes |= FLAG;
-                    alt.cond = Some(cond);
-                    i += close + 1;
-                    continue;
-                }
-                match named_reg(name) {
-                    Err(()) => return unsupported(FRAME_REGISTER),
-                    Ok(None) => return Err(refused(hod_asm::reason::constraint(text(name)))),
-                    Ok(Some(r)) => {
-                        if matches!(reg::number(r), 16 | 17) && reg::is_gpr(r)
-                            || matches!(reg::number(r), 30 | 31) && reg::is_fpr(r)
-                        {
-                            return unsupported(SCRATCH_REGISTER);
-                        }
-                        alt.codes |= SPEC;
-                        alt.reg = Some(r);
-                    }
-                }
-                i += close;
-            }
-            b'0'..=b'9' if !output => {
-                let mut n = 0u32;
-                while i < code.len() && code[i].is_ascii_digit() {
-                    n = n * 10 + u32::from(code[i] - b'0');
-                    i += 1;
-                }
-                if alt.codes & TIED != 0 || n >= MAX_OPS as u32 {
-                    return unsupported(TOO_MANY);
-                }
-                alt.codes |= TIED;
-                alt.tied = n as u8;
-                continue;
-            }
-            _ => {
-                return Err(refused(hod_asm::reason::constraint(&char::from(c).to_string())));
-            }
-        }
-        i += 1;
-    }
-    if alt.codes == 0 {
-        return Err(refused(hod_asm::reason::constraint("empty")));
-    }
-    Ok(alt)
-}
+/// AArch64's part of a constraint string.
+struct A64Syntax;
 
-impl Ops {
-    fn parse(constraints: &[u8]) -> CgResult<Ops> {
-        let mut ops = Ops {
-            list: [Op::default(); MAX_OPS],
-            len: 0,
-            direct_outputs: 0,
-            labels: 0,
-            clobbers: 0,
+impl ConstraintSyntax for A64Syntax {
+    type Cond = mc::Cond;
+
+    fn letters(&self, code: &[u8], _output: bool) -> Option<(u32, usize)> {
+        let bits = match code.first()? {
+            b'r' => R,
+            b'w' => W,
+            b'x' => W | LOW,
+            b'y' => W | LOWEST,
+            b'm' | b'Q' | b'o' => M,
+            b'i' | b'n' | b's' | b'I' | b'J' | b'K' | b'L' | b'M' | b'N' => I,
+            b'X' => XX,
+            _ => return None,
         };
-        if constraints.is_empty() {
-            return Ok(ops);
-        }
-        let mut args = 0u8;
-        for part in constraints.split(|&b| b == b',') {
-            if let Some(rest) = part.strip_prefix(b"~") {
-                ops.clobber(rest)?;
-                continue;
-            }
-            if ops.len == MAX_OPS {
-                return unsupported(TOO_MANY);
-            }
-            let mut op = Op::default();
-            let mut rest = part;
-            if let Some(r) = rest.strip_prefix(b"=") {
-                op.kind = Kind::Output;
-                rest = r;
-            } else if let Some(r) = rest.strip_prefix(b"!") {
-                if r != b"i" {
-                    return Err(refused(hod_asm::reason::constraint(text(part))));
-                }
-                op.kind = Kind::Label;
-                op.nalts = 1;
-                op.alts[0].codes = I;
-                ops.list[ops.len] = op;
-                ops.len += 1;
-                ops.labels += 1;
-                continue;
-            }
-            loop {
-                match rest.first() {
-                    Some(b'*') => op.indirect = true,
-                    Some(b'&' | b'%') => {}
-                    _ => break,
-                }
-                rest = &rest[1..];
-            }
-            for code in rest.split(|&b| b == b'|') {
-                if usize::from(op.nalts) == MAX_ALTS {
-                    return unsupported(TOO_MANY);
-                }
-                op.alts[usize::from(op.nalts)] = parse_alt(code, op.kind == Kind::Output)?;
-                op.nalts += 1;
-            }
-            if op.kind == Kind::Output && !op.indirect {
-                op.field = Some(ops.direct_outputs);
-                ops.direct_outputs += 1;
-            } else {
-                op.arg = Some(args);
-                args += 1;
-            }
-            ops.list[ops.len] = op;
-            ops.len += 1;
-        }
-        // Outputs first, then inputs, then labels; a digit names an
-        // output.
-        let outputs = ops.list[..ops.len].iter().take_while(|op| op.kind == Kind::Output).count();
-        let inputs =
-            ops.list[outputs..ops.len].iter().take_while(|op| op.kind == Kind::Input).count();
-        let tied_ok = ops.list[..ops.len].iter().all(|op| {
-            op.alts[..usize::from(op.nalts)]
-                .iter()
-                .all(|a| a.codes & TIED == 0 || usize::from(a.tied) < outputs)
-        });
-        if outputs + inputs + usize::from(ops.labels) != ops.len || !tied_ok {
-            return Err(refused(hod_asm::reason::constraint("order")));
-        }
-        Ok(ops)
+        Some((bits, 1))
     }
 
-    fn clobber(&mut self, rest: &[u8]) -> CgResult<()> {
-        let Some(name) = rest.strip_prefix(b"{").and_then(|r| r.strip_suffix(b"}")) else {
-            return Err(refused(hod_asm::reason::clobber(text(rest))));
-        };
-        match name {
-            b"memory" | b"cc" | b"nzcv" => return Ok(()),
-            _ => {}
+    fn flag(&self, cond: &[u8]) -> Option<mc::Cond> {
+        asm::encode::cond_name(text(cond))
+    }
+
+    fn operand_reg(&self, name: &[u8]) -> Result<Option<PReg>, CgError> {
+        match named_reg(name) {
+            Err(()) => Err(CgError::unsupported(FRAME_REGISTER)),
+            Ok(Some(r))
+                if matches!(reg::number(r), 16 | 17) && reg::is_gpr(r)
+                    || matches!(reg::number(r), 30 | 31) && reg::is_fpr(r) =>
+            {
+                Err(CgError::unsupported(SCRATCH_REGISTER))
+            }
+            Ok(r) => Ok(r),
+        }
+    }
+
+    fn clobber(&self, name: &[u8]) -> Result<Clobber, CgError> {
+        if let b"cc" | b"nzcv" = name {
+            return Ok(Clobber::Ignored);
         }
         match named_reg(name) {
-            Err(()) => unsupported(FRAME_REGISTER),
-            Ok(None) => Err(refused(hod_asm::reason::clobber(text(name)))),
-            Ok(Some(r)) => {
-                self.clobbers |= 1 << r.index();
-                Ok(())
-            }
+            Err(()) => Err(CgError::unsupported(FRAME_REGISTER)),
+            Ok(None) => Ok(Clobber::Unknown),
+            Ok(Some(r)) => Ok(Clobber::Reg(r)),
         }
     }
+}
+
+/// Reads the constraint string `constraints` (`hod_cg::asm_constraints`).
+fn parse(constraints: &[u8]) -> CgResult<Ops> {
+    constraints::parse(&A64Syntax, constraints).map_err(|e| match e {
+        ConstraintError::Constraint(t) => refused(hod_asm::reason::constraint(text(t))),
+        ConstraintError::Letter(c) => {
+            refused(hod_asm::reason::constraint(&char::from(c).to_string()))
+        }
+        ConstraintError::Clobber(t) => refused(hod_asm::reason::clobber(text(t))),
+        ConstraintError::TooMany => CgError::unsupported(TOO_MANY),
+        ConstraintError::Target(e) => e,
+    })
 }
 
 // ---- choosing ----
@@ -405,38 +271,22 @@ fn code_weight(cx: &FnCx<'_, A64>, operand: Option<Value>, code: u32) -> Option<
 }
 
 fn alt_of(op: &Op, index: usize) -> Alt {
-    op.alts[if index < usize::from(op.nalts) { index } else { 0 }]
+    op.alt(index)
 }
 
-/// The alternative `llc` takes: the first of the greatest total weight.
+/// The alternative `llc` takes: the first of the greatest total weight
+/// (`Constraints::choose`); an alternative weighs what its best code
+/// weighs.
 fn choose(cx: &FnCx<'_, A64>, ops: &Ops, args: &[Value]) -> usize {
-    let count = ops.list[..ops.len].iter().map(|op| usize::from(op.nalts)).max().unwrap_or(1);
-    if count <= 1 {
-        return 0;
-    }
-    let (mut chosen, mut best) = (0, -1);
-    for index in 0..count {
-        let mut sum = Some(0);
-        for op in &ops.list[..ops.len] {
-            let alt = alt_of(op, index);
-            let operand = op.arg.map(|a| args[usize::from(a)]);
-            let mut w = None;
-            for code in [R, M, I, W, XX, SPEC, TIED, FLAG] {
-                if alt.codes & code != 0 {
-                    w = w.max(code_weight(cx, operand, code));
-                }
+    ops.choose(args, |operand, codes| {
+        let mut w = None;
+        for code in [R, M, I, W, XX, SPEC, TIED, FLAG] {
+            if codes & code != 0 {
+                w = w.max(code_weight(cx, operand, code));
             }
-            sum = match (sum, w) {
-                (Some(s), Some(w)) => Some(s + w),
-                _ => None,
-            };
         }
-        if let Some(sum) = sum.filter(|&s| s > best) {
-            best = sum;
-            chosen = index;
-        }
-    }
-    chosen
+        w
+    })
 }
 
 const GPR_ORDER: [u8; 16] = [9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7, 8];
@@ -702,7 +552,7 @@ pub fn call<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>) -> CgResult<()> {
     if asm.has(InlineAsm::UNWIND) && inst.opcode() == Opcode::Invoke {
         return unsupported(UNWIND);
     }
-    let ops = Ops::parse(asm.constraints)?;
+    let ops = parse(asm.constraints)?;
     let args = site.args();
     let operands = ops.list[..ops.len].iter().filter(|op| op.arg.is_some()).count();
     let dests = site.indirect_dests().len();
@@ -1111,17 +961,17 @@ mod tests {
 
     #[test]
     fn constraints_parse() {
-        let ops = Ops::parse(b"=r,={x10},=*m,0,{x9},~{x1},~{memory},~{cc}").unwrap();
+        let ops = parse(b"=r,={x10},=*m,0,{x9},~{x1},~{memory},~{cc}").unwrap();
         assert_eq!(ops.len, 5);
         assert_eq!(ops.direct_outputs, 2);
         assert!(reg_set_has(ops.clobbers, reg::x(1)));
         assert_eq!(ops.list[1].alts[0].reg, Some(reg::x(10)));
         assert_eq!(ops.list[3].alts[0].tied, 0);
-        assert!(Ops::parse(b"={@cceq},r").unwrap().list[0].alts[0].cond == Some(mc::Cond::Eq));
-        assert!(Ops::parse(b"{sp}").is_err());
-        assert!(Ops::parse(b"~{x29}").is_err());
-        assert!(Ops::parse(b"{x16}").is_err());
-        assert!(Ops::parse(b"g").is_err());
-        assert!(Ops::parse(b"r,=r").is_err());
+        assert!(parse(b"={@cceq},r").unwrap().list[0].alts[0].cond == Some(mc::Cond::Eq));
+        assert!(parse(b"{sp}").is_err());
+        assert!(parse(b"~{x29}").is_err());
+        assert!(parse(b"{x16}").is_err());
+        assert!(parse(b"g").is_err());
+        assert!(parse(b"r,=r").is_err());
     }
 }

@@ -23,9 +23,12 @@ use crate::ops::{self, Checked, IntOp};
 use crate::value::{Agg, MAX_INT_BITS, Val, sext};
 use crate::x87;
 
-/// §8: a rounding or square-root intrinsic, or `fma`, on `x86_fp80`.
+/// §8: `llvm.is.fpclass` of an encoding only the x87 has (§5.11).
 const X87_INTRINSIC: &str = "intrinsic-x86_fp80";
+mod varargs;
 mod vector_ops;
+
+use varargs::{VaArea, VaCall, VaOp};
 
 /// A module and the bodies of some of its functions (§2).
 #[derive(Clone, Debug)]
@@ -379,6 +382,8 @@ struct Frame<'a> {
     noreturn: bool,
     /// Which activation this is: frames of a run have distinct serials.
     serial: u64,
+    /// The variable arguments of a variadic function (§5.12).
+    va: Option<VaArea>,
 }
 
 /// What executing one instruction leads to.
@@ -525,7 +530,8 @@ impl<'a> Machine<'_, 'a> {
                 return invalid(format!("argument {index} ({arg}) is not of the parameter's type"));
             }
         }
-        self.push_frame(entry, body, args.to_vec(), false)?;
+        let va = self.entry_va(body)?;
+        self.push_frame_with(entry, body, args.to_vec(), &[], va.as_ref(), false)?;
         loop {
             match self.step() {
                 Ok(Step::Done(result)) => return Ok(result),
@@ -1052,26 +1058,19 @@ impl<'a> Machine<'_, 'a> {
 
     // ---- frames ----
 
-    fn push_frame(
-        &mut self,
-        sym: SymId,
-        body: &'a Body,
-        args: Vec<Val>,
-        noreturn: bool,
-    ) -> Result<(), Stop> {
-        self.push_frame_with(sym, body, args, &[], noreturn)
-    }
-
-    /// [`Machine::push_frame`], with the `byval` arguments `copies`
+    /// Pushes the frame of a call of `body` with `args`, and the `byval` arguments `copies`
     /// (`(argument, size, alignment)`): each pointee is copied, written
     /// flags included, into stack memory that lives as long as the new
-    /// frame, and the callee gets the copy's address (§5.8).
+    /// frame, and the callee gets the copy's address (§5.8). A variadic
+    /// callee on x86-64 gets the layout `va` of its variable arguments
+    /// (§5.12).
     fn push_frame_with(
         &mut self,
         sym: SymId,
         body: &'a Body,
         mut args: Vec<Val>,
         copies: &[(usize, u64, u64)],
+        va: Option<&VaCall>,
         noreturn: bool,
     ) -> Result<(), Stop> {
         if self.frames.len() >= self.config.max_call_depth as usize {
@@ -1108,6 +1107,14 @@ impl<'a> Machine<'_, 'a> {
                 }
             }
         }
+        let va = match va.map(|call| self.lay_out_va(call)).transpose() {
+            Ok(va) => va,
+            Err(stop) => {
+                self.mem.release(mark);
+                self.slots.truncate(slots);
+                return Err(stop);
+            }
+        };
         let base = self.vals.len();
         self.vals.extend(args.into_iter().map(Some));
         let insts = self.vals.len();
@@ -1125,6 +1132,7 @@ impl<'a> Machine<'_, 'a> {
             block: entry.id(),
             noreturn,
             serial: self.serials,
+            va,
         });
         self.serials += 1;
         self.max_depth = self.max_depth.max(self.frames.len() as u32);
@@ -1707,9 +1715,8 @@ impl<'a> Machine<'_, 'a> {
         if cc != call.cc() {
             return Err(Trap::CallConvMismatch.into());
         }
-        let ret = match module.types.kind(call.fn_type()) {
-            TypeKind::Function { variadic: true, .. } => return unsupported("call:variadic"),
-            TypeKind::Function { ret, .. } => ret,
+        let (ret, named, variadic) = match module.types.kind(call.fn_type()) {
+            TypeKind::Function { ret, params, variadic } => (ret, params.len(), variadic),
             _ => return invalid("a call with a type that is not a function type"),
         };
         let mut args = Vec::with_capacity(call.args().len());
@@ -1734,7 +1741,11 @@ impl<'a> Machine<'_, 'a> {
             args.push(self.get(f, arg)?);
         }
         if let Some(body) = self.program.body(target) {
-            self.push_frame_with(target, body, args, &copies, call.is_noreturn())?;
+            if !variadic {
+                self.push_frame_with(target, body, args, &copies, None, call.is_noreturn())?;
+                return Ok(Flow::Called);
+            }
+            self.call_variadic_body(f, call, target, body, args, copies, named)?;
             return Ok(Flow::Called);
         }
         if !copies.is_empty() {
@@ -2220,7 +2231,17 @@ impl<'a> Machine<'_, 'a> {
                 Ok(Some(match self.get(f, arg(0)?)? {
                     Val::Float(bits) => self.float(rounded!(f32::from_bits(bits)))?,
                     Val::Double(bits) => self.double(rounded!(f64::from_bits(bits)))?,
-                    Val::X86Fp80(_) => return unsupported(X87_INTRINSIC),
+                    Val::X86Fp80(bits) => {
+                        use x87::Rounding;
+                        self.x87(match intrinsic {
+                            Intrinsic::Sqrt => x87::sqrt(bits),
+                            Intrinsic::Floor => x87::round_integral(bits, Rounding::Floor),
+                            Intrinsic::Ceil => x87::round_integral(bits, Rounding::Ceil),
+                            Intrinsic::Trunc => x87::round_integral(bits, Rounding::Trunc),
+                            Intrinsic::Round => x87::round_integral(bits, Rounding::NearestAway),
+                            _ => x87::round_integral(bits, Rounding::NearestEven),
+                        })?
+                    }
                     _ => {
                         self.class(ty)?;
                         return invalid("a float intrinsic on something else");
@@ -2235,12 +2256,70 @@ impl<'a> Machine<'_, 'a> {
                     }
                     (Val::Double(a), Val::Double(b), Val::Double(c)) => self
                         .double(f64::from_bits(a).mul_add(f64::from_bits(b), f64::from_bits(c)))?,
-                    (Val::X86Fp80(_), ..) => return unsupported(X87_INTRINSIC),
+                    (Val::X86Fp80(a), Val::X86Fp80(b), Val::X86Fp80(c)) => {
+                        self.x87(x87::fma(a, b, c))?
+                    }
                     _ => {
                         self.class(ty)?;
                         return invalid("fma on something that is not three floats");
                     }
                 }))
+            }
+            Intrinsic::MinNum | Intrinsic::MaxNum => {
+                let (a, b) = (self.get(f, arg(0)?)?, self.get(f, arg(1)?)?);
+                let max = intrinsic == Intrinsic::MaxNum;
+                let (format, a, b, wrap): (_, _, _, fn(u128) -> Val) = match (a, b) {
+                    (Val::Float(a), Val::Float(b)) => {
+                        (x87::Format::FLOAT, a.into(), b.into(), |x| Val::Float(x as u32))
+                    }
+                    (Val::Double(a), Val::Double(b)) => {
+                        (x87::Format::DOUBLE, a.into(), b.into(), |x| Val::Double(x as u64))
+                    }
+                    (Val::X86Fp80(a), Val::X86Fp80(b)) => (x87::Format::X87, a, b, Val::X86Fp80),
+                    _ => {
+                        self.class(ty)?;
+                        return invalid("minnum or maxnum of something that is not two floats");
+                    }
+                };
+                let host = self.config.nan == NanPolicy::Host;
+                Ok(Some(wrap(x87::min_max(format, a, b, max, host)?)))
+            }
+            Intrinsic::IsFpClass => {
+                let (_, test) = self.int(f, arg(1)?)?;
+                let (format, bits) = match self.get(f, arg(0)?)? {
+                    Val::Float(bits) => (x87::Format::FLOAT, u128::from(bits)),
+                    Val::Double(bits) => (x87::Format::DOUBLE, u128::from(bits)),
+                    Val::X86Fp80(bits) => (x87::Format::X87, bits),
+                    _ => {
+                        self.class(ty)?;
+                        return invalid("llvm.is.fpclass of something that is not a float");
+                    }
+                };
+                let Some(class) = x87::fp_class(format, bits) else {
+                    return unsupported(X87_INTRINSIC);
+                };
+                Ok(Some(Val::i1((test >> class) & 1 == 1)))
+            }
+            Intrinsic::VaStart | Intrinsic::VaEnd | Intrinsic::VaCopy => {
+                let op = match intrinsic {
+                    Intrinsic::VaStart => VaOp::Start,
+                    Intrinsic::VaEnd => VaOp::End,
+                    _ => VaOp::Copy,
+                };
+                match self.va_intrinsic(f, op, call)? {
+                    Some(()) => Ok(None),
+                    None => unsupported(format!("intrinsic:{}", intrinsic.name())),
+                }
+            }
+            Intrinsic::Ptrmask => {
+                // LangRef "'llvm.ptrmask' Intrinsic": the address ANDed
+                // with the mask, as a pointer based on the operand.
+                let (Val::Ptr(addr), (64, mask)) = (self.get(f, arg(0)?)?, self.int(f, arg(1)?)?)
+                else {
+                    self.class(ty)?;
+                    return unsupported("intrinsic:llvm.ptrmask");
+                };
+                Ok(Some(Val::Ptr(addr & mask as u64)))
             }
             Intrinsic::Trap => Err(Trap::TrapIntrinsic.into()),
             Intrinsic::EhTypeidFor => {

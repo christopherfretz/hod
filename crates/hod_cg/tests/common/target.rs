@@ -119,7 +119,8 @@ fn unsup<R>(what: &'static str) -> CgResult<R> {
 
 fn mem(of: FrameRef) -> Opnd {
     match of {
-        FrameRef::Local(at) => Opnd::Mem { base: isa::FP, disp: at as i32 },
+        // The test target compiles no coroutine (`CORO_BODIES` is false).
+        FrameRef::Local(at) | FrameRef::Coro(at) => Opnd::Mem { base: isa::FP, disp: at as i32 },
         FrameRef::Incoming(at) => Opnd::Mem { base: isa::AP, disp: at as i32 },
         FrameRef::Outgoing(at) => Opnd::Mem { base: isa::SP, disp: at as i32 },
     }

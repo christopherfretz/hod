@@ -124,6 +124,7 @@ pub(crate) fn at(slot: FrameRef, off: u32) -> FrameRef {
         FrameRef::Local(o) => FrameRef::Local(o + off),
         FrameRef::Incoming(o) => FrameRef::Incoming(o + off),
         FrameRef::Outgoing(o) => FrameRef::Outgoing(o + off),
+        FrameRef::Coro(o) => FrameRef::Coro(o + off),
     }
 }
 

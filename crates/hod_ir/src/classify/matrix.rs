@@ -602,15 +602,15 @@ const CC: [SupportRow; 26] = [
     row(
         "cc:preserve_mostcc",
         ON,
-        todo(X64),
-        "assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095)",
+        ON,
+        "assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095); x86-64: `rax`, `rcx`, `rdx`, `rsi`, `rdi`, `r8`..`r10` but its result's (WP-181)",
     ),
     // WP-101.
     row(
         "cc:preserve_allcc",
         ON,
-        todo(X64),
-        "assigned as `ccc`; the callee also saves `x9`..`x15` and `q8`..`q31` whole",
+        ON,
+        "assigned as `ccc`; the callee also saves `x9`..`x15` and `q8`..`q31` whole; x86-64: `preserve_mostcc`'s and `xmm0`..`xmm15` but its result's (WP-181)",
     ),
     row("cc:swiftcc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     row("cc:cxx_fast_tlscc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),

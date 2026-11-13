@@ -3539,14 +3539,9 @@ Evidence: `spec/landed/codegen/WP-171.md`.
    relocation) holds unchanged; the block rows it reads are moved by
    `shrink.rs` (§5.6.15), so the number is the one of the final code.
    Only the classification row was `x64:todo`.
-3. **Kept refused**: `inst:callbr` (an empty-template `callbr` needs
-   `barrier.rs` to take `!i` label constraints and branch to the normal
-   destination, the indirect ones being unreachable from an empty
-   template; any other template is `call:inline-asm`, x86-64 has no
-   assembler), `cc:preserve_mostcc` / `cc:preserve_allcc` (`abi:cc`: a
-   callee must save `rcx`, `rdx`, `rsi`, `rdi`, `r8`..`r10`, and for
-   `preserve_allcc` the `xmm` registers, in the prologue with their CFI,
-   `frame.rs`). Sizes and reasons: `spec/landed/codegen/WP-174.md`.
+3. **Kept refused** then: `inst:callbr`, `cc:preserve_mostcc` /
+   `cc:preserve_allcc`; built since WP-181 (§5.6.23). Sizes and reasons:
+   `spec/landed/codegen/WP-174.md`.
 
 #### 5.6.22 x86 target intrinsics, SSE to SSSE3 (WP-173)
 
@@ -3635,6 +3630,38 @@ Evidence: `spec/landed/codegen/WP-173.md`.
    internal error; the fix is the walk's, see the landed record).
    AArch64 builds `callbr` through its assembler (§5.5.3) and is not
    changed.
+2. **`preserve_mostcc` and `preserve_allcc`** (`frame.rs`, `abi.rs`;
+   `cc:preserve_mostcc` and `cc:preserve_allcc` `ON` on x86-64).
+   `assign` gives both `ccc`'s assignment (`spec/abi-x64.md` §1.2).
+   *Callee:* after `mov rbp, rsp` the prologue pushes `rax`, `rcx`,
+   `rdx`, `rsi`, `rdi`, `r8`, `r9`, `r10` (`frame::PRESERVED`) but the
+   registers a part of the result is returned in, with their rows at
+   `-24`, `-32`, ...; the save set (§5.6.15) follows them, its rows
+   below; a `preserve_allcc` function then stores `xmm0`..`xmm15` but
+   the result's (`movups`) in a 16-aligned local area after `sub rsp`,
+   their rows (`DW_CFA_offset` of DWARF 17..32) after the last store.
+   Every exit loads the `xmm` registers back, then `lea rsp, [rbp -
+   8n]` (`n` counting every push), pops the save set, the extra
+   registers and `rbp`. This is LLVM 19's and 22's set, measured on
+   their `.cfi_offset` rows: `r11` is not kept; `rax` is kept in a
+   `void` or `sret` function (the caller's `rax` comes back over the
+   `sret` address), not for `i64`/`i32`/`i1`, `rax` and `rdx` not for
+   `i128`, `rax`, `rdx`, `rcx` not for three `i64`s, `xmm0` (`xmm1`)
+   not for a `float`, `double`, `<4 x float>` (two `double`s); an
+   `x86_fp80` result keeps them all. hod pushes every register of the
+   set, `llc` those its allocator touched: the caller cannot tell.
+   *Caller:* a call is a `ccc` call. The callee keeps a superset of
+   `ccc`'s callee-saved registers, so the code around it, which assumes
+   only `ccc`'s, is correct; it does not use what the callee keeps
+   beyond them.
+   *Refused:* a result returned in memory is
+   `x64:preserve-cc-return-memory` (LLVM 19 and 22 keep sets off the
+   rule there: `xmm0`/`xmm1` unsaved for four `double`s, the address
+   in `rax` popped over); a `musttail` exit from either is
+   `x64:preserve-cc-tail-call` (the teardown restores the registers the
+   tail call passes arguments in); a coroutine body is
+   `x64:coro-preserve-cc`. `swifttailcc`, `preserve_nonecc` and the
+   other conventions stay `abi:cc`.
 
 ## 6. Control flow
 

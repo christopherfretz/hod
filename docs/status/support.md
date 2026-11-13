@@ -30,7 +30,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `comdat` | 5 | 2 | 0 | 3 | 2 | 0 | 3 |
 | `init` | 10 | 6 | 3 | 1 | 6 | 3 | 1 |
 | `function` | 6 | 6 | 0 | 0 | 6 | 0 | 0 |
-| `cc` | 26 | 6 | 7 | 13 | 3 | 13 | 10 |
+| `cc` | 26 | 6 | 7 | 13 | 5 | 11 | 10 |
 | `attr` | 57 | 24 | 30 | 3 | 22 | 27 | 8 |
 | `type` | 15 | 12 | 0 | 3 | 13 | 0 | 2 |
 | `inst` | 67 | 60 | 0 | 7 | 60 | 0 | 7 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 455 | 347 | 7 | 101 | 229 | 10 | 216 |
-| total | 775 | 549 | 68 | 158 | 426 | 71 | 278 |
+| total | 775 | 549 | 68 | 158 | 428 | 69 | 278 |
 
 ## `module`
 
@@ -207,8 +207,8 @@ Calling conventions, of a body's function and of a call.
 | `cc:coldcc` | not-implemented | not-implemented | unplanned |
 | `cc:ghccc` | not-implemented | not-implemented | unplanned |
 | `cc:anyregcc` | not-implemented | not-implemented | unplanned |
-| `cc:preserve_mostcc` | supported | not-implemented | assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095) |
-| `cc:preserve_allcc` | supported | not-implemented | assigned as `ccc`; the callee also saves `x9`..`x15` and `q8`..`q31` whole |
+| `cc:preserve_mostcc` | supported | supported | assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095); x86-64: `rax`, `rcx`, `rdx`, `rsi`, `rdi`, `r8`..`r10` but its result's (WP-181) |
+| `cc:preserve_allcc` | supported | supported | assigned as `ccc`; the callee also saves `x9`..`x15` and `q8`..`q31` whole; x86-64: `preserve_mostcc`'s and `xmm0`..`xmm15` but its result's (WP-181) |
 | `cc:swiftcc` | supported | not-implemented | assigned as `ccc` (`spec/abi-a64.md` §1.2) |
 | `cc:cxx_fast_tlscc` | supported | not-implemented | assigned as `ccc` (`spec/abi-a64.md` §1.2) |
 | `cc:tailcc` | not-implemented | not-implemented | unplanned |

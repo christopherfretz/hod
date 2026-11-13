@@ -121,39 +121,26 @@ impl<'a> BitReader<'a> {
     pub fn vbr(&mut self, width: u32) -> BcResult<u64> {
         debug_assert!((2..=32).contains(&width), "a VBR chunk is 2 to 32 bits");
         // The common case, inline: at least 64 bits are left, so the
-        // word at the current byte is all in the data, and the number is
-        // one chunk.
+        // word at the current byte is all in the data and holds at least
+        // 57 of them; a number whose chunks all lie there is decoded from
+        // it. Its payload is under 57 bits, so none of the errors of
+        // `vbr_long` can arise; anything else starts over there.
         if self.end - self.pos >= 64 {
-            let word = self.word_at((self.pos >> 3) as usize) >> (self.pos & 7);
-            let chunk = word & ((1u64 << width) - 1);
-            if chunk >> (width - 1) == 0 {
+            let shift = (self.pos & 7) as u32;
+            let word = self.word_at((self.pos >> 3) as usize) >> shift;
+            let mask = (1u64 << width) - 1;
+            let high = 1u64 << (width - 1);
+            let mut chunk = word & mask;
+            if chunk & high == 0 {
                 self.pos += u64::from(width);
                 return Ok(chunk);
             }
-        }
-        self.vbr_long(width)
-    }
-
-    /// [`Self::vbr`] for a number of more than one chunk or near the end.
-    #[inline(never)]
-    fn vbr_long(&mut self, width: u32) -> BcResult<u64> {
-        let high = 1u64 << (width - 1);
-        // At least 64 bits are left, so the word at the current byte is
-        // all in the data and holds at least 57 of them; a number whose
-        // chunks all fit there is decoded from it. Its payload is under
-        // 57 bits, so none of the errors below can arise; anything else
-        // starts over the general way.
-        if self.end - self.pos >= 64 {
-            let byte = (self.pos >> 3) as usize;
-            let shift = (self.pos & 7) as u32;
-            let word = self.word_at(byte) >> shift;
             let avail = 64 - shift;
-            let mask = (1u64 << width) - 1;
-            let mut used = 0;
-            let mut value = 0;
-            let mut out = 0;
+            let mut value = chunk & (high - 1);
+            let mut used = width;
+            let mut out = width - 1;
             while used + width <= avail {
-                let chunk = (word >> used) & mask;
+                chunk = (word >> used) & mask;
                 value |= (chunk & (high - 1)) << out;
                 used += width;
                 out += width - 1;
@@ -163,6 +150,14 @@ impl<'a> BitReader<'a> {
                 }
             }
         }
+        self.vbr_long(width)
+    }
+
+    /// [`Self::vbr`] chunk by chunk: near the end of the bits, or for a
+    /// number longer than a word.
+    #[inline(never)]
+    fn vbr_long(&mut self, width: u32) -> BcResult<u64> {
+        let high = 1u64 << (width - 1);
         let mut chunk = self.read(width)?;
         if chunk & high == 0 {
             return Ok(chunk);

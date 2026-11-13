@@ -286,6 +286,10 @@ const IN_SLOT: &str = "DW_AT_location DW_OP_fbreg";
 /// `llc`'s in a function whose stack it realigned (x86-64): relative to
 /// `rsp`.
 const RSP_RELATIVE: &str = "DW_AT_location DW_OP_breg7";
+/// The same on AArch64 (WP-150): `AArch64FrameLowering` cannot reach a
+/// slot of a realigned frame from `x29`, so `llc` names it from `sp`
+/// (DWARF 31) while the frame base stays `DW_OP_reg29`.
+const SP_RELATIVE: &str = "DW_AT_location DW_OP_breg31";
 
 /// The class that permits hod's location `h` where `llc` writes `l` in
 /// a DIE tagged `tag` (`spec/dwarf.md` §6.7 and §6.17), if any. `lists`:
@@ -298,7 +302,7 @@ fn location_class(tag: &str, h: &str, l: &str, lists: bool) -> Option<&'static s
         // x86-64 byval: `llc` names the argument area (`DW_OP_fbreg
         // +16`), hod the pointer to it it saved.
         (SRET_HOD, IN_SLOT) if tag == "DW_TAG_formal_parameter" => Some("byval"),
-        (SRET_HOD | IN_SLOT, RSP_RELATIVE) => Some("realigned frame"),
+        (SRET_HOD | IN_SLOT, RSP_RELATIVE | SP_RELATIVE) => Some("realigned frame"),
         _ => None,
     }
 }
@@ -311,8 +315,9 @@ fn location_class(tag: &str, h: &str, l: &str, lists: bool) -> Option<&'static s
 ///   pointer; on x86-64 also a dynamic alloca);
 /// - `byval` (x86-64): a byval parameter `llc` places at `DW_OP_fbreg
 ///   +16` and hod at `DW_OP_fbreg N, DW_OP_deref`;
-/// - `realigned frame` (x86-64): `llc` realigned the stack and places
-///   variables by `DW_OP_breg7` (`rsp`), hod by `DW_OP_fbreg`;
+/// - `realigned frame`: `llc` realigned the stack and places variables
+///   by `DW_OP_breg7` (`rsp`, x86-64) or `DW_OP_breg31` (`sp`, AArch64,
+///   WP-150), hod by `DW_OP_fbreg`;
 /// - `(b) is.constant block`: hod has a lexical block `llc` does not
 ///   (only where the module calls `llvm.is.constant`);
 /// - `(a) fallthrough inlined`: `llc` has an inlined subroutine hod does
@@ -895,6 +900,22 @@ mod tests {
             compare(&[v4(SRET_HOD)], &[v4(IN_SLOT)], &[], &[], false, false),
             Outcome::Differs(_)
         ));
+    }
+
+    /// WP-150: `llc`'s places in a realigned frame are `sp`-relative on
+    /// AArch64 as they are `rsp`-relative on x86-64; any other register
+    /// is a difference.
+    #[test]
+    fn realigned_frames_are_permitted_on_both_targets() {
+        for tag in ["DW_TAG_variable", "DW_TAG_formal_parameter"] {
+            for h in [IN_SLOT, SRET_HOD] {
+                for l in [RSP_RELATIVE, SP_RELATIVE] {
+                    assert_eq!(location_class(tag, h, l, false), Some("realigned frame"));
+                }
+            }
+            assert_eq!(location_class(tag, IN_SLOT, "DW_AT_location DW_OP_breg29", false), None);
+        }
+        assert_eq!(location_class("DW_TAG_member", IN_SLOT, SP_RELATIVE, false), None);
     }
 
     #[test]

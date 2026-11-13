@@ -5,11 +5,14 @@
 
 use std::borrow::Cow;
 
-use hod_ir::kit::merge_fn_attrs;
+use hod_ir::kit::{
+    GlobalAttachment, SpecialDeliveryError, SpecialGlobal, annotations_construct, deliver_special,
+    global_attachment_construct, merge_fn_attrs,
+};
 use hod_ir::{
     AliasDesc, Arch, CallConv, ComdatId, ComdatKind, Const, ConstId, DiId, DiKind, FlagValue,
-    FnAttrs, FnAttrsId, FnStr, FunctionDesc, IFuncDesc, Linkage, Module, ParamAttrs, Retained,
-    SymId, TargetSpec, TlsModel, TypeId, TypeKind, UnnamedAddr, VariableDesc, Visibility,
+    FnAttrs, FnAttrsId, FnStr, FunctionDesc, IFuncDesc, Linkage, Module, ParamAttrs, SymId,
+    TargetSpec, TlsModel, TypeId, TypeKind, UnnamedAddr, VariableDesc, Visibility,
 };
 
 use crate::attrs::{self, Attr, FUNCTION_INDEX, FnGroup, chars};
@@ -266,17 +269,6 @@ struct Upgrade {
     sign: bool,
     sign_all: bool,
     sign_b_key: bool,
-}
-
-/// The arrays that are not symbols.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Special {
-    Ctors,
-    Dtors,
-    Used,
-    CompilerUsed,
-    /// `llvm.global.annotations` (WP-095, `hod_ll`'s).
-    Annotations,
 }
 
 pub(crate) struct Build<'r, 'a> {
@@ -617,9 +609,10 @@ impl<'r, 'a> Build<'r, 'a> {
                 return fail(BcErrorKind::Invalid, rec.pos, "an address space over 32 bits");
             };
             let ptr_ty = ir(rec.pos, self.module.types.ptr(space))?;
-            let special = (rec.code == mc::GLOBALVAR).then(|| special_of(name)).flatten();
+            let special =
+                (rec.code == mc::GLOBALVAR).then(|| SpecialGlobal::from_name(name)).flatten();
             let sym = if let Some(special) = special {
-                let bit = 1 << special as u8;
+                let bit = special.bit();
                 if specials & bit != 0 {
                     return fail(BcErrorKind::Redefined, rec.pos, "redefinition of global");
                 }
@@ -707,14 +700,11 @@ impl<'r, 'a> Build<'r, 'a> {
                     continue;
                 }
                 let name = self.kind_name(kind, at)?;
-                match name {
-                    b"dbg" => dbg.push(self.debug_node(md_id)),
-                    b"type" | b"vcall_visibility" | b"prof" | b"section_prefix" | b"annotation" => {
-                    }
-                    _ => {
-                        let construct =
-                            format!("global-metadata:{}", String::from_utf8_lossy(name));
-                        self.notes.add(construct);
+                match GlobalAttachment::of(name) {
+                    GlobalAttachment::Debug => dbg.push(self.debug_node(md_id)),
+                    GlobalAttachment::Dropped => {}
+                    GlobalAttachment::Unsupported => {
+                        self.notes.add(global_attachment_construct(name));
                     }
                 }
             }
@@ -863,14 +853,21 @@ impl<'r, 'a> Build<'r, 'a> {
         }
         let Some(sym) = self.sym(index) else {
             let name = self.strtab_name(ops, at)?;
-            let special = special_of(name).expect("only the special arrays have no symbol");
-            if special == Special::Annotations {
+            let special =
+                SpecialGlobal::from_name(name).expect("only the special arrays have no symbol");
+            if special == SpecialGlobal::Annotations {
                 // `llc` emits nothing of a variable in `llvm.metadata`.
-                if section.as_deref() != Some(&b"llvm.metadata"[..]) {
-                    self.notes.add("special-global:llvm.global.annotations");
+                if let Some(construct) = annotations_construct(section.as_deref()) {
+                    self.notes.add(construct);
                 }
             } else if let Some(init) = init {
-                self.special(special, init, at)?;
+                match deliver_special(&mut self.module, special, init) {
+                    Ok(()) => {}
+                    Err(SpecialDeliveryError::Malformed(error)) => {
+                        return fail(BcErrorKind::Type, at, error.message());
+                    }
+                    Err(SpecialDeliveryError::Ir(error)) => return ir(at, Err(error)),
+                }
             }
             let mut notes = std::mem::take(&mut self.notes);
             notes.flush(&mut self.module, None);
@@ -930,74 +927,6 @@ impl<'r, 'a> Build<'r, 'a> {
             Some(&id) => Ok(Some(id)),
             None => fail(BcErrorKind::Invalid, at, format!("comdat {field} is not defined")),
         }
-    }
-
-    /// Delivers one of the special arrays (`hod_ll`'s `special`).
-    fn special(&mut self, which: Special, init: ConstId, at: u64) -> BcResult<()> {
-        let consts = &self.module.consts;
-        let elems: Vec<ConstId> = match consts.get(init) {
-            Const::Aggregate { elems, .. } => elems.to_vec(),
-            Const::Zero(_) | Const::Undef(_) | Const::Poison(_) => Vec::new(),
-            _ => {
-                return fail(
-                    BcErrorKind::Type,
-                    at,
-                    "this special array is not an array of its members",
-                );
-            }
-        };
-        let symbol_of = |module: &Module, id: ConstId| match module.consts.get(id) {
-            Const::Addr { sym, addend: 0 } => Ok(Some(sym)),
-            Const::Null(_) => Ok(None),
-            _ => fail(BcErrorKind::Type, at, "a member of this special array is not a symbol"),
-        };
-        for elem in elems {
-            match which {
-                Special::Used | Special::CompilerUsed => {
-                    let Some(sym) = symbol_of(&self.module, elem)? else {
-                        return fail(BcErrorKind::Type, at, "a used symbol cannot be null");
-                    };
-                    let how = if which == Special::Used {
-                        Retained::Used
-                    } else {
-                        Retained::CompilerUsed
-                    };
-                    ir(at, self.module.retain(sym, how))?;
-                }
-                Special::Annotations => {}
-                Special::Ctors | Special::Dtors => {
-                    let fields = match self.module.consts.get(elem) {
-                        Const::Aggregate { elems, .. } if matches!(elems.len(), 2 | 3) => {
-                            elems.to_vec()
-                        }
-                        Const::Zero(_) => continue,
-                        _ => {
-                            return fail(
-                                BcErrorKind::Type,
-                                at,
-                                "an entry is { i32 priority, ptr function, ptr data }",
-                            );
-                        }
-                    };
-                    let Some(priority) = self.module.consts.int_value(fields[0]) else {
-                        return fail(BcErrorKind::Type, at, "a priority is an integer constant");
-                    };
-                    let Some(func) = symbol_of(&self.module, fields[1])? else {
-                        continue;
-                    };
-                    let associated = match fields.get(2) {
-                        Some(&data) => symbol_of(&self.module, data)?,
-                        None => None,
-                    };
-                    if which == Special::Ctors {
-                        self.module.add_ctor(priority as u32, func, associated);
-                    } else {
-                        self.module.add_dtor(priority as u32, func, associated);
-                    }
-                }
-            }
-        }
-        Ok(())
     }
 
     #[allow(clippy::too_many_lines)] // One record's fields, in order.
@@ -1619,17 +1548,6 @@ impl<'r, 'a> Build<'r, 'a> {
 /// Adds the attributes `id` of `module` to `out`.
 fn merge(out: &mut FnAttrs, module: &Module, id: FnAttrsId, at: u64) -> BcResult<()> {
     ir(at, merge_fn_attrs(out, &module.fn_attrs(id)))
-}
-
-fn special_of(name: &[u8]) -> Option<Special> {
-    match name {
-        b"llvm.global_ctors" => Some(Special::Ctors),
-        b"llvm.global_dtors" => Some(Special::Dtors),
-        b"llvm.used" => Some(Special::Used),
-        b"llvm.compiler.used" => Some(Special::CompilerUsed),
-        b"llvm.global.annotations" => Some(Special::Annotations),
-        _ => None,
-    }
 }
 
 /// A linkage code (`getDecodedLinkage`), the older codes included.

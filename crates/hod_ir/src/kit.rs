@@ -8,6 +8,7 @@
 //! call (the scratch vectors are the caller's), and the generic ones are
 //! inlined into the caller.
 
+use crate::Retained;
 use crate::{
     AttrClass, AttrSyntax, CallDesc, Const, ConstId, ConstPool, FnAttrs, FnAttrsView, FnStr,
     FunctionBuilder, IrResult, Layering, Module, ParamAttrs, ParamMem, TypeId, TypeKind, TypeTable,
@@ -614,4 +615,202 @@ pub fn merge_fn_attrs<L: Layering>(out: &mut FnAttrs, view: &FnAttrsView<'_, L>)
         out.set_string(key, value)?;
     }
     Ok(())
+}
+
+// ---- special globals and global attachments (`spec/ir.md` §2.2) ----
+
+/// The arrays LLVM names `llvm.*` that are not symbols.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpecialGlobal {
+    /// `llvm.global_ctors`.
+    Ctors,
+    /// `llvm.global_dtors`.
+    Dtors,
+    /// `llvm.used`.
+    Used,
+    /// `llvm.compiler.used`.
+    CompilerUsed,
+    /// `llvm.global.annotations`.
+    Annotations,
+}
+
+impl SpecialGlobal {
+    /// The special array named `name` (without `@`), if it is one.
+    pub fn from_name(name: &[u8]) -> Option<SpecialGlobal> {
+        match name {
+            b"llvm.global_ctors" => Some(SpecialGlobal::Ctors),
+            b"llvm.global_dtors" => Some(SpecialGlobal::Dtors),
+            b"llvm.used" => Some(SpecialGlobal::Used),
+            b"llvm.compiler.used" => Some(SpecialGlobal::CompilerUsed),
+            b"llvm.global.annotations" => Some(SpecialGlobal::Annotations),
+            _ => None,
+        }
+    }
+
+    /// A bit of its own, for a producer that refuses a second definition.
+    pub fn bit(self) -> u8 {
+        1 << self as u8
+    }
+}
+
+/// Why a special array is malformed (LLVM's verifier refuses it). Every
+/// one is a type error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpecialError {
+    /// The initializer is not an array (nor zero, `undef` or `poison`).
+    NotAnArray,
+    /// A member is not a symbol's address (nor null).
+    NotASymbol,
+    /// A member of `llvm.used` or `llvm.compiler.used` is null.
+    NullUsed,
+    /// A structor entry is not `{ i32, ptr, ptr }` (or `{ i32, ptr }`).
+    BadEntry,
+    /// A structor's priority is not an integer constant.
+    BadPriority,
+}
+
+impl SpecialError {
+    /// The message for the error.
+    pub fn message(self) -> &'static str {
+        match self {
+            SpecialError::NotAnArray => "this special array is not an array of its members",
+            SpecialError::NotASymbol => "a member of this special array is not a symbol",
+            SpecialError::NullUsed => "a used symbol cannot be null",
+            SpecialError::BadEntry => "an entry is { i32 priority, ptr function, ptr data }",
+            SpecialError::BadPriority => "a priority is an integer constant",
+        }
+    }
+}
+
+/// The construct to record for `llvm.global.annotations` in `section`:
+/// `llc` emits nothing of it in `llvm.metadata`, anything else is
+/// unsupported.
+pub fn annotations_construct(section: Option<&[u8]>) -> Option<&'static str> {
+    (section != Some(&b"llvm.metadata"[..])).then_some("special-global:llvm.global.annotations")
+}
+
+/// Delivers the special array `which` with the initializer `init` (an
+/// array of addresses, or of structor entries) into `module`: the members
+/// of `llvm.used` and `llvm.compiler.used` are retained
+/// (`Module::retain`), each structor entry is added
+/// (`Module::add_ctor`/`add_dtor`) unless it is all zeros or its function
+/// is null, and `llvm.global.annotations` is ignored (see
+/// [`annotations_construct`]). A zero, `undef` or `poison` array has no
+/// members.
+///
+/// # Errors
+/// A [`SpecialError`] for a malformed array, else
+/// `Module::retain`'s error.
+pub fn deliver_special<L: Layering>(
+    module: &mut Module<L>,
+    which: SpecialGlobal,
+    init: ConstId,
+) -> Result<(), SpecialDeliveryError> {
+    let elems: Vec<ConstId> = match module.consts.get(init) {
+        Const::Aggregate { elems, .. } => elems.to_vec(),
+        Const::Zero(_) | Const::Undef(_) | Const::Poison(_) => Vec::new(),
+        _ => return Err(SpecialError::NotAnArray.into()),
+    };
+    let symbol_of = |module: &Module<L>, id: ConstId| match module.consts.get(id) {
+        Const::Addr { sym, addend: 0 } => Ok(Some(sym)),
+        Const::Null(_) => Ok(None),
+        _ => Err(SpecialError::NotASymbol),
+    };
+    for elem in elems {
+        match which {
+            SpecialGlobal::Used | SpecialGlobal::CompilerUsed => {
+                let Some(sym) = symbol_of(module, elem)? else {
+                    return Err(SpecialError::NullUsed.into());
+                };
+                let how = if which == SpecialGlobal::Used {
+                    Retained::Used
+                } else {
+                    Retained::CompilerUsed
+                };
+                module.retain(sym, how)?;
+            }
+            SpecialGlobal::Annotations => {}
+            SpecialGlobal::Ctors | SpecialGlobal::Dtors => {
+                let fields = match module.consts.get(elem) {
+                    Const::Aggregate { elems, .. } if matches!(elems.len(), 2 | 3) => {
+                        elems.to_vec()
+                    }
+                    // An entry that is all zeros has a null function.
+                    Const::Zero(_) => continue,
+                    _ => return Err(SpecialError::BadEntry.into()),
+                };
+                let Some(priority) = module.consts.int_value(fields[0]) else {
+                    return Err(SpecialError::BadPriority.into());
+                };
+                // An entry whose function is null is skipped.
+                let Some(func) = symbol_of(module, fields[1])? else {
+                    continue;
+                };
+                let associated = match fields.get(2) {
+                    Some(&data) => symbol_of(module, data)?,
+                    None => None,
+                };
+                let priority = priority as u32;
+                if which == SpecialGlobal::Ctors {
+                    module.add_ctor(priority, func, associated);
+                } else {
+                    module.add_dtor(priority, func, associated);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Why [`deliver_special`] failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpecialDeliveryError {
+    /// The array is malformed.
+    Malformed(SpecialError),
+    /// The module refused.
+    Ir(crate::IrError),
+}
+
+impl From<SpecialError> for SpecialDeliveryError {
+    fn from(error: SpecialError) -> SpecialDeliveryError {
+        SpecialDeliveryError::Malformed(error)
+    }
+}
+
+impl From<crate::IrError> for SpecialDeliveryError {
+    fn from(error: crate::IrError) -> SpecialDeliveryError {
+        SpecialDeliveryError::Ir(error)
+    }
+}
+
+/// What a metadata attachment `!kind` on a global value is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlobalAttachment {
+    /// `!dbg`: the debug information of the symbol.
+    Debug,
+    /// Dropped: `!type`, `!vcall_visibility`, `!prof`, `!section_prefix`,
+    /// `!annotation`.
+    Dropped,
+    /// Any other: unsupported, recorded as [`global_attachment_construct`].
+    Unsupported,
+}
+
+impl GlobalAttachment {
+    /// The attachment of kind `kind` (without `!`).
+    #[inline]
+    pub fn of(kind: &[u8]) -> GlobalAttachment {
+        match kind {
+            b"dbg" => GlobalAttachment::Debug,
+            b"type" | b"vcall_visibility" | b"prof" | b"section_prefix" | b"annotation" => {
+                GlobalAttachment::Dropped
+            }
+            _ => GlobalAttachment::Unsupported,
+        }
+    }
+}
+
+/// The construct an unsupported attachment is recorded by:
+/// `global-metadata:<kind>`.
+pub fn global_attachment_construct(kind: &[u8]) -> String {
+    format!("global-metadata:{}", String::from_utf8_lossy(kind))
 }

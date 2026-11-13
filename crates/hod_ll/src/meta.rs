@@ -3,6 +3,7 @@
 //! flags, linker options and dependent libraries.
 
 use hod_ir::Layering;
+use hod_ir::kit::{GlobalAttachment, global_attachment_construct};
 use hod_ir::{Arch, FlagValue};
 
 use crate::Span;
@@ -469,10 +470,10 @@ impl<L: Layering> Parser<'_, '_, L> {
         let kind = &self.text()[1..];
         self.bump();
         let node = self.md_ref()?;
-        match kind {
-            b"dbg" => self.dbg.push(node),
-            b"type" | b"vcall_visibility" | b"prof" | b"section_prefix" | b"annotation" => {}
-            _ => self.note(format!("global-metadata:{}", String::from_utf8_lossy(kind))),
+        match GlobalAttachment::of(kind) {
+            GlobalAttachment::Debug => self.dbg.push(node),
+            GlobalAttachment::Dropped => {}
+            GlobalAttachment::Unsupported => self.note(global_attachment_construct(kind)),
         }
         Ok(())
     }

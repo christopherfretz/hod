@@ -2,9 +2,10 @@
 //! IFUNCs, function headers, COMDATs and the special LLVM arrays.
 
 use hod_ir::Layering;
+use hod_ir::kit::{SpecialDeliveryError, SpecialGlobal, annotations_construct, deliver_special};
 use hod_ir::{
-    AliasDesc, ComdatId, ComdatKind, Const, ConstId, FunctionDesc, IFuncDesc, Linkage, Retained,
-    SymId, TlsModel, UnnamedAddr, VariableDesc, Visibility,
+    AliasDesc, ComdatId, ComdatKind, Const, FunctionDesc, IFuncDesc, Linkage, SymId, TlsModel,
+    UnnamedAddr, VariableDesc, Visibility,
 };
 
 use crate::error::{LlErrorKind, PResult, fail};
@@ -28,19 +29,6 @@ struct Placement<'a> {
     section: Option<std::borrow::Cow<'a, [u8]>>,
     comdat: Option<ComdatId>,
     align: Option<u64>,
-}
-
-/// The LLVM arrays that are not symbols.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Special {
-    Ctors,
-    Dtors,
-    Used,
-    CompilerUsed,
-    /// `llvm.global.annotations` (WP-095): in section `llvm.metadata`,
-    /// which `llc` never emits, it is dropped; anywhere else it is noted
-    /// `special-global:llvm.global.annotations` (§5.9).
-    Annotations,
 }
 
 impl<L: Layering> Parser<'_, '_, L> {
@@ -290,14 +278,7 @@ pub(crate) enum GlobalKind {
 /// Whether `name` (with its `@`) is one of the special arrays, which are
 /// not symbols (§5.9).
 fn is_special(name: &[u8]) -> bool {
-    matches!(
-        name,
-        b"@llvm.global_ctors"
-            | b"@llvm.global_dtors"
-            | b"@llvm.used"
-            | b"@llvm.compiler.used"
-            | b"@llvm.global.annotations"
-    )
+    name.strip_prefix(b"@").and_then(SpecialGlobal::from_name).is_some()
 }
 
 impl<'a, L: Layering> Parser<'a, '_, L> {
@@ -553,28 +534,28 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
 
         let place = self.variable_properties(item.name)?;
 
-        let special = match self.tok_text(item.name) {
-            b"@llvm.global_ctors" => Some(Special::Ctors),
-            b"@llvm.global_dtors" => Some(Special::Dtors),
-            b"@llvm.used" => Some(Special::Used),
-            b"@llvm.compiler.used" => Some(Special::CompilerUsed),
-            b"@llvm.global.annotations" => Some(Special::Annotations),
-            _ => None,
-        };
+        let special =
+            self.tok_text(item.name).strip_prefix(b"@").and_then(SpecialGlobal::from_name);
         if let Some(special) = special {
             // Not a symbol (`spec/ir.md` §2.2).
-            let bit = 1 << special as u8;
+            let bit = special.bit();
             if self.specials_seen & bit != 0 {
                 return fail(LlErrorKind::Redefined, item.name.start, "redefinition of global");
             }
             self.specials_seen |= bit;
-            if special == Special::Annotations {
+            if special == SpecialGlobal::Annotations {
                 // `llc` emits nothing of a variable in `llvm.metadata`.
-                if place.section.as_deref() != Some(&b"llvm.metadata"[..]) {
-                    self.note("special-global:llvm.global.annotations");
+                if let Some(construct) = annotations_construct(place.section.as_deref()) {
+                    self.note(construct);
                 }
             } else if let Some(init) = init {
-                self.special(special, init, item.name.start)?;
+                match deliver_special(&mut *self.module, special, init) {
+                    Ok(()) => {}
+                    Err(SpecialDeliveryError::Malformed(error)) => {
+                        return fail(LlErrorKind::Type, item.name.start, error.message());
+                    }
+                    Err(SpecialDeliveryError::Ir(error)) => return ir(item.name.start, Err(error)),
+                }
             }
             self.flush(None);
             return Ok(());
@@ -669,72 +650,6 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
             ir(ty_at, self.module.set_ifunc(sym, &desc))?;
         }
         self.finish_symbol(sym);
-        Ok(())
-    }
-
-    /// The elements of the array constant `init`: none for a zero or
-    /// undefined array.
-    fn array_elements(&self, init: ConstId, at: u32) -> PResult<Vec<ConstId>> {
-        match self.module.consts.get(init) {
-            Const::Aggregate { elems, .. } => Ok(elems.to_vec()),
-            Const::Zero(_) | Const::Undef(_) | Const::Poison(_) => Ok(Vec::new()),
-            _ => fail(LlErrorKind::Type, at, "this special array is not an array of its members"),
-        }
-    }
-
-    /// Delivers one of the special arrays.
-    fn special(&mut self, which: Special, init: ConstId, at: u32) -> PResult<()> {
-        let symbol_of = |parser: &Self, id: ConstId| match parser.module.consts.get(id) {
-            Const::Addr { sym, addend: 0 } => Ok(Some(sym)),
-            Const::Null(_) => Ok(None),
-            _ => fail(LlErrorKind::Type, at, "a member of this special array is not a symbol"),
-        };
-        for elem in self.array_elements(init, at)? {
-            match which {
-                Special::Used | Special::CompilerUsed => {
-                    let Some(sym) = symbol_of(self, elem)? else {
-                        return fail(LlErrorKind::Type, at, "a used symbol cannot be null");
-                    };
-                    let how = if which == Special::Used {
-                        Retained::Used
-                    } else {
-                        Retained::CompilerUsed
-                    };
-                    ir(at, self.module.retain(sym, how))?;
-                }
-                Special::Annotations => {}
-                Special::Ctors | Special::Dtors => {
-                    let fields = match self.module.consts.get(elem) {
-                        Const::Aggregate { elems, .. } if matches!(elems.len(), 2 | 3) => {
-                            elems.to_vec()
-                        }
-                        // An entry that is all zeros has a null function.
-                        Const::Zero(_) => continue,
-                        _ => {
-                            let message = "an entry is { i32 priority, ptr function, ptr data }";
-                            return fail(LlErrorKind::Type, at, message);
-                        }
-                    };
-                    let Some(priority) = self.module.consts.int_value(fields[0]) else {
-                        return fail(LlErrorKind::Type, at, "a priority is an integer constant");
-                    };
-                    // An entry whose function is null is skipped.
-                    let Some(func) = symbol_of(self, fields[1])? else {
-                        continue;
-                    };
-                    let associated = match fields.get(2) {
-                        Some(&data) => symbol_of(self, data)?,
-                        None => None,
-                    };
-                    let priority = priority as u32;
-                    if which == Special::Ctors {
-                        self.module.add_ctor(priority, func, associated);
-                    } else {
-                        self.module.add_dtor(priority, func, associated);
-                    }
-                }
-            }
-        }
         Ok(())
     }
 

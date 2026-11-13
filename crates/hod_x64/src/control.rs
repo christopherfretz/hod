@@ -117,8 +117,9 @@ pub fn cond_br<'a>(
 /// to the consumer's after it (`spec/dwarf.md` §5.8, §6.17): `llc`'s
 /// x86-64 program keeps the compare's instruction (`cmp`, `sub`,
 /// `ucomisd`, `fucomip`) and the moves that place its operands at the
-/// `icmp`'s or `fcmp`'s location, and only the `jcc`, `cmovcc` or
-/// `setcc` + `movzx` of the consumer at the consumer's. The consumers
+/// `icmp`'s or `fcmp`'s location, and only the `jcc`, `cmovcc` or the
+/// `movzx` (`neg`) of the consumer at the consumer's: a `zext`'s or
+/// `sext`'s `setcc` is at the compare's (WP-163). The consumers
 /// that call it: `condbr` on an `icmp` (here), on an `fcmp`
 /// (`float::cond_br`), on an `x86_fp80` `fcmp` (`x87::cond_br`); a
 /// `select` of class `Gpr` and a `zext`/`sext` on an `icmp` (`int`);

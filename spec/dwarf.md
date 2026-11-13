@@ -2252,7 +2252,18 @@ on an `fcmp` of `float`/`double` and on an `x86_fp80` `fcmp`; a
 `select` of class `Gpr` and a `zext`/`sext` on an `icmp`; a `select` of
 `x86_fp80` on an `x86_fp80` `fcmp` (`control::at_compare`, called by
 `control::cond_br`, `float::cond_br`, `x87::cond_br`, `x87::select`,
-`int::select`, `int`'s casts). Each switch is an ordinary transition
+`int::select`, `int`'s casts). The consumer's instructions are the `jcc`,
+the `cmovcc`, or a cast's `movzx` (and `neg` for a `sext`): the cast's
+`setcc` is the compare's, as in `llc`, whatever uses the cast, a store
+included (WP-163; WP-157 had put it at the cast's, a row difference
+after a fused `zext` feeding a store). Classified, not fixed: a `zext
+i1` to `i8` is no instruction for `llc` (`setcc` writes the byte), and a
+store of it folds the `setcc` into the store (`setl (%rdx)`, at the
+store's location), so `llc` has no row at the cast's line; hod widens
+the byte with a `movzx` at the cast's line and stores the register. The
+row is of an instruction hod emits for that line; matching it would mean
+folding the `setcc` into the store, an instruction selection hod does
+not do. Each switch is an ordinary transition
 (`FnCx::line_switch`), a row the shrink pass moves; `is_stmt` and the
 column follow §5.1, §5.2 (and §5.9 with key instructions: the compare
 and its consumer are separate atoms). Not a `select` of class `Fpr` on
@@ -2264,7 +2275,9 @@ is not fused (its own lowering, its own location). AArch64 is unchanged
 (§5.8). Evidence: `crates/hod_x64/tests/fused_lines.rs` (each row at
 an instruction of its line after the `jcc`s were relaxed to `rel8`, on
 hod's object and on `llc`'s), `xtask/tests/debug_post_index.rs`
-`fused_compare_keeps_its_line_on_x86_64`.
+`fused_compare_keeps_its_line_on_x86_64`,
+`crates/hod_x64/tests/zext_lines.rs` (the `setcc` of a cast against
+`llc` 19 and 22, the `i8` store fold).
 
 **`.debug_frame`**: `llc` writes it only for functions that are
 `nounwind` without `uwtable` (`-fno-asynchronous-unwind-tables`), on

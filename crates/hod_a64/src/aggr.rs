@@ -42,7 +42,8 @@
 )]
 #![allow(clippy::too_many_lines, reason = "one match per intrinsic, read top to bottom")]
 
-use hod_cg::{CallArg, CgResult, Class, FnCx, FrameRef, RuntimeFn, SlotPlace, Target};
+use hod_cg::sym::int_divide_routine;
+use hod_cg::{CallArg, CgResult, Class, FnCx, FrameRef, SlotPlace, Target};
 use hod_ir::{Const, Inst, IntPredicate, Intrinsic, MemFlags, Opcode, TypeId, Value, ValueKind};
 use hod_mc_a64 as mc;
 use hod_mc_a64::{Cond, Load, MemSize, Reg, RegZr, Shift, Size};
@@ -534,11 +535,8 @@ fn divide<'a>(
     rhs: Value,
 ) -> CgResult<()> {
     let signed = matches!(op, Opcode::SDiv | Opcode::SRem);
-    let func = match op {
-        Opcode::UDiv => RuntimeFn::UDivTi3,
-        Opcode::SDiv => RuntimeFn::DivTi3,
-        Opcode::URem => RuntimeFn::UModTi3,
-        _ => RuntimeFn::ModTi3,
+    let Some(func) = int_divide_routine(op) else {
+        return cx.bug("a division call of another opcode");
     };
     let mut args = [CallArg::Mem(FrameRef::Local(0)); 2];
     for (arg, value) in args.iter_mut().zip([lhs, rhs]) {

@@ -1050,6 +1050,7 @@ fn capture_group(
             hod: common.decline.clone(),
             driver: Some(common.driver.clone()),
             linkers: common.linkers.clone(),
+            emulator: None,
         },
         arch: common.host,
         host: Some(common.host),

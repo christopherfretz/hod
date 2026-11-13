@@ -10,7 +10,9 @@ its tests, "Test directives"), `corpus`, `roundtrip`, `bench`, `debug` and the g
 `cargo xtask ci [--quick]` is the gate (`docs/VALIDATION.md` "Gates"): in
 order `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --
 -D warnings`, `cargo test --workspace --quiet`, then the `irdiff` runs of
-"irdiff", "In the gate", then the `roundtrip` run of "roundtrip", "In the
+"irdiff", "In the gate" (the quick gate's include a few seeds for the
+other architecture under its emulator, the full gate's every seed with
+both oracles and hybrid mode), then the `roundtrip` run of "roundtrip", "In the
 gate", then (full gate only) the `debug` run of "debug", "In the gate". It
 stops at the first step that fails, printing
 `ci: <step> FAILED`, and ends with `ci: ok` and exit status 0 only if every
@@ -231,7 +233,8 @@ compiles it with the oracle (`llc -O0` with the SelectionDAG selector,
 "The oracle") and with hod, links the objects with every linker of the
 matrix, runs the programs, and requires the oracle's program to behave as
 the directives say and hod's program to behave as the oracle's. Unix hosts only; programs are linked
-and run on Linux only.
+and run on Linux only, those of the architecture that is not the host's
+under its emulator ("Cross runs").
 
 A path argument is a test file (any name) or a directory, searched
 recursively for `*.ll`. With no path the tests are the workspace's
@@ -271,13 +274,25 @@ The build directory is `$CARGO_TARGET_DIR` when it is set, else
   reports it. With no `--llvm`, 22 is tried, then 19, then a plain `llc`
   that is one of the two. `--llvm <dir>` is `<dir>/bin/llc`, of whatever
   major it reports.
-- **Linker driver.** `gcc` on `PATH`. Programs are linked through it so
-  that the C runtime and libraries are found the way a C++ build finds
-  them.
-- **Linkers.** `bfd`: `ld.bfd`. `lld`: `ld.lld-N` on `PATH` or
+- **Linker driver.** `gcc` on `PATH` for the host's architecture, the GNU
+  cross driver `<prefix>-gcc` for the other (`x86_64-linux-gnu-gcc`,
+  `aarch64-linux-gnu-gcc`). Programs are linked through it so that the C
+  runtime and libraries are found the way a C++ build finds them.
+- **Linkers.** `bfd`: `ld.bfd`, or `<prefix>-ld.bfd` for the other
+  architecture (lld, mold and wild link every target as they are). `lld`: `ld.lld-N` on `PATH` or
   `/usr/lib/llvm-N/bin/ld.lld` for 22 then 19, then `ld.lld`. `mold`:
   `mold`, then `ld.mold`. `wild`: `wild`, then `ld.wild`. The matrix is
   every one of these that is found, in this order.
+- **Emulator**, for the architecture that is not the host's ("Cross
+  runs"): `qemu-<arch>` on `PATH`, then `qemu-<arch>-static`; and the
+  cross system root `/usr/<prefix>` (the target's C library and dynamic
+  loader).
+
+The GNU prefix is `aarch64-linux-gnu` or `x86_64-linux-gnu`. A note for a
+missing tool names its Debian package: `gcc-<arch>-linux-gnu` (with `_`
+as `-`) for the driver, `binutils-<arch>-linux-gnu` for `bfd`,
+`qemu-user` for the emulator, `libc6-dev-<debian arch>-cross`
+(`amd64`, `arm64`) for the system root.
 
 What is missing:
 
@@ -285,6 +300,7 @@ What is missing:
 |---|---|---|
 | the oracle | every test is SKIP, with a note | failure (exit status 3) |
 | the linker driver | objects are built, nothing is linked or run ("Cross targets"), with a note | failure |
+| the emulator or the system root, for the other architecture | objects are built, nothing is linked or run ("Cross targets"), with a note | failure |
 | `bfd`, `lld` or `mold` | that linker is not in the matrix, with a note | failure |
 | `wild` | not in the matrix, with a note | still a note: it is optional until it is provisioned |
 | a linker named with `--linker` | usage error (exit status 2) | the same |
@@ -349,10 +365,20 @@ selector (`-global-isel=0 -fast-isel=0`), on every target. Plain `llc
 correct program (`spec/interp.md` §10.1, the seed tests
 `selector_narrow_load.ll` and `selector_i1_compare.ll`, with LLVM 22 and
 19). SelectionDAG is the selector every optimized build uses, so it is the
-best-tested one. x86-64 gets the same arguments: no miscompile is known
-there, but FastISel is the same `-O0`-only design, and `-global-isel=0` is
-what x86-64 does anyway. hod is not given the selector: it gets what a
-compiler driver gives `llc`.
+best-tested one.
+
+The arguments are chosen per target in one place,
+`xtask::irdiff::tools::reference_selector`, which the hybrid fallback and
+every harness command that builds a reference use. x86-64 gets the same
+arguments. Plain `llc -O0` there selects with FastISel (with SelectionDAG
+behind it for what FastISel does not handle). With LLVM 22 and with
+LLVM 19, FastISel and `-fast-isel=0` built different code for every seed
+(43 of 43 differ in assembly) and the same behaviour for every seed with
+every linker under the emulator (WP-025: a stand-in hod of each kind in
+hybrid mode, 0 differences; `coro/` built after `opt` by hand), so no x86-64
+miscompile is known. The reference keeps SelectionDAG alone all the same:
+it is the selector every optimized build uses. hod is not given the
+selector: it gets what a compiler driver gives `llc`.
 
 ### The witness
 
@@ -454,11 +480,62 @@ reason exactly as the directive spells them (`irdiff_real`'s
 None yet: the first is expected with WP-106's `gro-throws-uaf` seed,
 whose oracle crashes under poisoning (design 0005 §5.3).
 
+### Cross runs
+
+`--target` names the architecture the objects are for. When it is not the
+host's (x86-64 on an AArch64 machine, the case this is built for), the
+programs are linked with that architecture's cross driver and run under
+its emulator, the user-mode `qemu-<arch>`, as
+
+```
+qemu-<arch> -cpu <cpu> -L /usr/<prefix> <program> <args>
+```
+
+with everything else as for the host ("What a test does"). `-L` points the
+emulator at the cross system root, where the program's dynamic loader and
+C library are; without it a dynamic program does not start. `-cpu` is
+chosen, not the emulator's default (`max`, every extension it knows):
+programs run on the target's baseline, so an object that uses an
+instruction the baseline does not have dies with SIGILL instead of
+passing. The CPUs are `hod_testutil::target`'s:
+
+| target | `-cpu` | what it is |
+|---|---|---|
+| x86-64 | `qemu64,-sse3,-cx16,-lahf-lm` | x86-64-v1: SSE2, no SSE3, SSSE3, SSE4, POPCNT, CMPXCHG16B or LAHF in 64-bit mode |
+| AArch64 | `cortex-a53` | Armv8.0-A with the FP and SIMD unit, no LSE atomics |
+
+`cx16` is off although LLVM's default x86-64 CPU does not use it either
+(an `i128` `cmpxchg` is a call to `__atomic_compare_exchange_16` with
+LLVM 19 and 22): if hod ever uses it, the choice is a decision of its own
+in `spec/abi-x64.md`, not something the emulator lets through.
+
+The summary's first line says `(emulated: <emulator> -cpu <cpu> -L
+<root>)` after the target. A program under the emulator has six times a
+native program's wall-clock limit ("Child processes"); its address-space
+limit is the same (qemu runs a program in 1 GiB). A run in which hod
+declined every test it was asked to build (more than one), with the same
+reason or not, says so in one note,
+`hod declined all <N> tests it was asked to build for <arch>; only the
+reference side (llc, the linkers, the programs) was checked`, instead of
+leaving it to be read from the counts: the reference side is still run in
+full, so a broken test or a broken cross toolchain is an ERROR. (WP-025:
+for x86-64 hod declines every seed with `global:variable-definition` or
+an earlier construct, and every seed's reference side passes with every
+linker, with LLVM 22 and 19.)
+
+A debugger can attach to an emulated program through qemu's gdb stub
+(`qemu-<arch> -g <port>`): LLDB (`lldb-19`, `gdb-remote <port>`) debugs
+an x86-64 program from this AArch64 host with breakpoints, backtraces,
+variables and registers, but sees no shared libraries; the host's `gdb`
+is AArch64-only and needs `gdb-multiarch` (`spec/landed/harness/WP-025.md`).
+`debug` does not use the emulator.
+
 ### Cross targets
 
 Programs are linked and run only when the target is this host's
-architecture, the host is Linux, and the driver and at least one linker
-were found. Otherwise the run says why in a note, both objects are still
+architecture or its emulator, cross driver and system root were found
+("Cross runs"), the host is Linux, and at least one linker was found.
+Otherwise the run says why in a note, both objects are still
 built, and each test has one result with no linker:
 
 - ERROR if the oracle's side failed;
@@ -467,8 +544,7 @@ built, and each test has one result with no linker:
   detail; an `xfail` condition that names a linker does not apply;
 - else SKIP: hod built an object and nothing here can run it.
 
-Running such programs under an emulator, or on a second machine, is not
-specified yet.
+Running programs on a second machine is not specified.
 
 ### Child processes
 
@@ -491,6 +567,7 @@ it the linker, the programs) has:
 |---|---|---|
 | `llc`, `hod`, the driver and linker | 60 s | 4 GiB |
 | a test's program | 10 s | 1 GiB |
+| a test's program under the emulator ("Cross runs") | 60 s | 1 GiB |
 
 A harness run therefore ends whatever its children do, and `-j` bounds
 the processes alive at once to one per job (plus a linker under its
@@ -580,14 +657,40 @@ trusted". UNSUPPORTED, XFAIL and SKIP do not fail a run.
 
 ### In the gate
 
-`cargo xtask ci --quick` runs, after the format check, clippy and the
-tests, `irdiff --tier quick` with the default oracle. `cargo xtask ci`
-runs `irdiff --witness` over every test once per oracle, LLVM 22 and LLVM
-19. The
-gate fails if any of these runs would exit non-zero. Without the tools the
-runs skip with their notes and the gate passes; under
+The gate's runs are planned by `xtask::ci::irdiff_runs` and each is
+logged as the command that makes it (`ci: cargo xtask irdiff ...`). On a
+Linux host of a known architecture, "the other architecture" is the one
+that is not the host's (x86-64 on AArch64), run under its emulator ("Cross
+runs").
+
+| tier | runs, in order |
+|---|---|
+| `ci --quick` | `irdiff --tier quick` with the default oracle; `irdiff --target <other>` on the fixed `xtask::ci::QUICK_CROSS_SEEDS` (`main_args.ll`, `exit_float.ll`, `two_modules.ll`, `eh_invoke.ll`) |
+| `ci` | `irdiff --witness` over every test with LLVM 22, then 19; `irdiff --hybrid` over every test with the default oracle; `irdiff --target <other>` over every test with LLVM 22, then 19 |
+
+The quick cross seeds cross the process interface (arguments, input, exit
+status), call into the C library, use floating point, link two modules
+and throw a C++ exception, in both dialects; they are valid for both
+targets. The full gate runs the other architecture once per oracle, so a
+program LLVM 19 builds differently from LLVM 22 for that target is a
+failure of one of the two runs. The cross runs have no witness: the
+witness checks the reference, and the reference of the other target is
+the same `llc` with the same selector (WP-025 ran it: no difference).
+
+What they cost, measured at load average 20 to 22 on the 16-core AArch64
+host with `-j 4` (WP-025, `spec/landed/harness/WP-025.md`): every seed
+for x86-64 under the emulator, with hod declining, takes 4 to 18 s, and
+natively, with hod building them, 6 to 13 s. The spread is the load, not
+the emulator. The quick cross run takes about a second. An emulated
+program costs about 27 ms of wall time, a native one 3 ms; a link costs
+25 to 60 ms either way. Nothing in a test depends on wall time: the
+limits are bounds, not measurements.
+
+The gate fails if any of these runs would exit non-zero. Without the tools
+the runs skip with their notes and the gate passes; under
 `HOD_REQUIRE_TOOLS=1` a missing oracle (for the full gate: either one),
-driver, or `bfd`, `lld` or `mold` fails it.
+driver, `bfd`, `lld` or `mold`, or for the cross runs the other
+architecture's driver, emulator or system root fails it.
 
 ### Library
 
@@ -682,12 +785,27 @@ business, not the program's; "Test directives").
 | `exit_control.ll` | call-free: loops, phi, switch, indirectbr, local arrays, narrow loads and stores, a pointer table | quick |
 | `coro/handles.ll` | `input: pre-opt`: `coro.resume`, `destroy` (call and invoke, one unwinding), `done`, `promise` both ways at alignments 8 and 32, on frames built by hand outside any coroutine | |
 | `coro/noop.ll` | `input: pre-opt`: `coro.noop` from two functions, resumed and destroyed (also through invokes), never done | |
+| `bit_intrinsics.ll` | ctpop, ctlz, cttz, bswap, bitreverse, fshl, fshr, abs, smin, umax at i8 to i64 | |
+| `fp_intrinsics.ll` | sqrt, fabs, floor, ceil, trunc, rint, nearbyint, round, roundeven, minimum, maximum, minnum, maxnum, copysign, fma on double and float | |
+| `byval_sret.ll` | `byval` and `sret`: a callee writing its copy, past the argument registers at alignment 16, through a pointer, both in one call, a 3-byte struct | |
+| `half_fp128.ll` | scalar `half` (arithmetic, rounding, conversions) and `fp128` (libgcc's soft float, a subnormal, from `i128`) | |
+| `vector_arith.ll` | whole-vector integer and floating-point arithmetic at 128 bits, the min/max and saturating intrinsics, `icmp` of vectors | |
+| `x86_fp80.ll` | `target: x86_64`: `x86_fp80` arithmetic, conversions, `%Lg` through varargs | |
 
 The three `exit_*.ll` programs make no call, so hod compiled them before
 it had calls (WP-043): each checks its results against values derived
 independently of any compiler and reports through its exit status alone
 (7 when every check passed, `100 + n` for check `n`). They carry
 `unsupported(x86_64): *`, since x86-64 has no code generator yet.
+
+The seeds from `bit_intrinsics.ll` to `x86_fp80.ll` (WP-025) were written
+for the gaps the cross runs exposed. Their expected output comes from
+scripts with exact arithmetic (Python's integers and fractions; NaNs print
+as `nan` whatever their sign, since the targets' default NaNs differ),
+and each was confirmed with `llc` 19 and 22 for AArch64 natively and for
+x86-64 under the emulator, linked by the GNU drivers with libgcc, not
+compiler-rt. `x86_fp80.ll` is the one seed for a single target: LLVM has
+no `x86_fp80` for AArch64. `indirectbr` is in `exit_control.ll`.
 
 The `va_arg` instruction is not in the corpus, because it has no oracle:
 for AArch64 Linux, `llc` (19 and 22) accepts it and reads the `va_list` as
@@ -712,7 +830,10 @@ covered through `va_start`, `va_copy`, `va_end` and the C library's
 `xtask/src/irdiff/tools.rs` ("Tools", "What a test does" step 3):
 `llvm_default_search`, `plain_llc_must_be_a_wanted_major`,
 `llvm_directory_and_errors`, `linkers_and_driver`, `linker_signatures`,
-`single_threaded_linkers`, `opt_beside_the_oracle`. `xtask/src/irdiff/report.rs`:
+`single_threaded_linkers`, `opt_beside_the_oracle`, `cross_tools` (the
+cross driver and `bfd`, the emulator, one reference per target).
+`xtask/src/ci.rs` ("In the gate"): `the_gates_irdiff_runs`.
+`xtask/src/irdiff/report.rs`:
 `exit_status_mapping`, `results_lines`, `results_file_is_replaced`,
 `summary_text`. `xtask/src/irdiff/engine.rs`: `differences_are_located`,
 `coverage_log_reading`. `xtask/src/irdiff.rs`: `defaults`, `options`,
@@ -729,6 +850,11 @@ every outcome is provoked on any Linux machine: `the_witness`,
 `unsupported_expected_and_unexpected`, `xfail_and_xpass`,
 `oracle_trouble_is_an_error`, `limits_are_in_force_for_programs`, `skips`,
 `the_oracle_is_selected`, `cross_target_builds_and_does_not_run`,
+`cross_target_runs_under_the_emulator` (the fake emulator requires
+`-cpu <cpu> -L <root>`; a hang under it is cut at six times the program
+limit), `cross_runs_need_the_emulator_and_the_system_root` (each missing
+is a note naming its Debian package, and under `HOD_REQUIRE_TOOLS=1` a
+missing required tool), `a_target_hod_declines_wholesale_is_one_note`,
 `the_linker_matrix`, `the_wrong_linker_is_detected`, `hybrid_mode`,
 `parallel_runs_are_deterministic`, `tiers_and_paths`,
 `work_directory_and_keep`, `results_file`, `command_exit_status`,
@@ -746,7 +872,9 @@ oracle in use).
 (fails under `HOD_REQUIRE_TOOLS=1`, which also requires both LLVM 22 and
 19): `the_seed_corpus_is_green` (each oracle, every linker),
 `the_seed_corpus_passes_in_hybrid_mode`,
-`the_seed_corpus_builds_for_the_other_target`,
+`the_seed_corpus_runs_for_the_other_target` (with LLVM 22 and 19, every
+admitted test with every linker under the emulator, no ERROR or FAIL; or,
+without the emulator, objects only),
 `a_real_miscompile_is_detected` (a stand-in hod that runs the real `llc`
 on a rewritten module: a wrong result, wrong output, a hang and a missing
 `main` are each a FAIL with every linker, and the unmodified module is a
@@ -765,6 +893,50 @@ link warning fails `ld.bfd` only under `--fatal-warnings`),
 `a_real_program_of_two_modules`, `a_pre_opt_seed_goes_through_opt`
 (`coro/noop.ll` passes, and without `input: pre-opt` the real `llc`
 cannot build it), `dialects_come_in_pairs_and_oracle_skips_are_listed`.
+
+## Toolchain for tests
+
+The tests that link and run programs (`crates/hod_obj/tests/`, and the
+cross runs of "irdiff") find their tools through one description of a
+target, `hod_testutil::Target` (`crates/hod_testutil/src/target.rs`), so
+that a test for AArch64 and one for x86-64 differ in one value:
+
+| | the host's architecture | the other one |
+|---|---|---|
+| C and C++ drivers | `gcc`, `g++` | `<prefix>-gcc`, `<prefix>-g++` |
+| GNU ld | `ld.bfd` | `<prefix>-ld.bfd` |
+| system root | - | `/usr/<prefix>` |
+| runner | the program itself | `qemu-<arch> -cpu <cpu> -L /usr/<prefix>` ("Cross runs") |
+
+`Target::tool(what)` finds one of them, or prints a note naming its
+Debian package (`gcc-x86-64-linux-gnu`, `g++-x86-64-linux-gnu`,
+`binutils-x86-64-linux-gnu`, `libc6-dev-amd64-cross`,
+`libstdc++-14-dev-amd64-cross`, `qemu-user`, and their AArch64
+counterparts) and the test skips; under `HOD_REQUIRE_TOOLS=1` it panics.
+Nothing is ever installed by a test.
+
+`crates/hod_obj/tests/common/linking.rs`'s `Toolchain` holds a target, its
+drivers, its linkers and its runner: `Toolchain::host` is the host's
+(unchanged from before targets: `gcc`, the linkers as they are, the
+program run directly), `Toolchain::for_target` any target's. A linker is
+selected with `-B<dir>` holding it as `ld.<name>` and `-fuse-ld=<name>`
+(`spec/object.md` "Toolchains"); lld is selected per major
+(`Toolchain::lld(scratch, 19 or 22)`, since only `ld.lld-19` and
+`ld.lld-22` are installed). An emulated program has a five-minute limit.
+
+What this machine does (WP-025): with the cross gcc 14, bfd, lld 19, lld
+22 and mold each link C and C++ programs for x86-64 as PIE, non-PIE,
+static and static PIE, with C++ exceptions, `thread_local` and
+`std::thread`, and the programs run under the emulator; so do objects
+from `llc` 19 and 22.
+
+Tests: `crates/hod_testutil/src/target.rs` `names_of_a_targets_tools`;
+`crates/hod_obj/tests/link_cross.rs` (the other architecture, objects of
+the cross gcc and of `llc` only, no hod code generation):
+`a_c_program_runs_with_every_linker_and_mode`,
+`cxx_exceptions_and_thread_locals_run`, `llc_objects_run`,
+`the_emulated_cpu_is_the_baseline` (the emulated x86-64 CPU reports SSE2
+and not SSE3, CMPXCHG16B or POPCNT, and `popcnt` dies with SIGILL).
 
 ## Jobserver
 
@@ -2882,3 +3054,61 @@ FAIL, ERROR, XPASS or crash; no unclassified pair, at least 95% of pairs
 the same) and `catches_differences_and_broken_tests` (a hod whose line 2
 is line 3 FAILs; the same test PASSes with hod; a check `llc`'s session
 does not meet is an ERROR; an `xfail` on a passing test is an XPASS).
+
+## x64census
+
+`cargo xtask x64census [--interp] [--shipped] [-j <N>] [--keep <dir>]
+<dir or file.ll>...` (WP-138, `xtask/src/x64census.rs`): how ready the
+target-neutral half (`hod_ll`, `hod_bc`, `verify`, the printer, classify,
+`hod_interp`) is for x86-64 modules. It takes any `.ll` files, by
+convention an x86-64 recompilation of the corpus (below); the LLVM major
+of a file is the `llvmNN` component of its path, 22 without one.
+
+Each module goes through these stages; the first that fails is its stage
+outcome, `ready` when none does:
+
+1. `ll:<outcome>`: `roundtrip`'s in-process ingest (`hod_ll` reads the
+   module and every body, every body and the symbols verify). A refusal
+   is `ll:ParserUnsupported` with its reason in the line.
+2. `print:llvm-as-refused`: `llvm-as` of the major refuses what `hod_ir`'s
+   printer writes. `print:not-a-fixed-point`: reading that text again and
+   printing it does not give the same text, after local names are
+   renamed by rank within each function (the printer may invent names).
+3. `facade:routes-differ`: the text and its `llvm-as` bitcode, through
+   `hod::compile_with` with `census: true` and every classify row not
+   refused by design taken as supported
+   (`Support::everything_implemented(Arch::X86_64)`), give different
+   reasons. `facade:front-refuses`: a reason remains once the code
+   generator's are dropped (`codegen-not-implemented`, `x64:*`), so the
+   front half refuses the module; the reasons are counted by name.
+
+With `--shipped`, the reasons of the shipped matrix are counted too (the
+first, and every one by modules): what the x86-64 column of classify
+refuses. With `--interp`, a module with `main` (no parameters, or `argc`
+and `argv`, given 1 and null) runs in `hod_interp` with `abort`, `exit`,
+`_exit` and `_Exit` as host functions; when the run ends, its exit
+status (134 for `abort`) must equal that of the module compiled by
+`llc -O0 -fast-isel=0 -mtriple=x86_64-unknown-linux-gnu
+-relocation-model=pic`, linked by `x86_64-linux-gnu-gcc` and run under
+`qemu-x86_64 -L /usr/x86_64-linux-gnu` (abort is exit 134 or signal 6).
+A run that does not end is counted by its reason (`unsupported:<reason>`,
+`trap:<name> in @fn at %inst`, `no-main`); a disagreement is `DIFFERS`
+and an `Invalid` run `INVALID`, both listed.
+
+Output: one line per module that is not ready (and per `DIFFERS`,
+`INVALID` or trap), then the counts: by LLVM major, by stage, front-half
+refusals, the shipped matrix's reasons, and the interpreter's results.
+Exit status 0 when every module is ready, 1 otherwise, 2 on a usage
+error. At most 4 modules at a time; child processes run under
+`irdiff::process` limits with a jobserver token.
+
+The sample (not in the repository) is made by a script kept with the
+work: every Nth corpus entry per source and major, the entries of design
+0006's `targeted.txt`, a stride recompiled with `-g`, and kiln entries
+that throw, each recompiled for `x86_64-unknown-linux-gnu` with its own
+producer (kiln++ `--target=` with the major's `--llvm-dir`, clang-19/22
+for gcc-torture).
+
+Tests: `x64census::tests::{arguments, majors_and_reasons,
+a_ready_module}` (a module the front half takes whole is refused by the
+code generator alone and runs to its exit status).

@@ -16,6 +16,10 @@ hod_testutil.workspace = true
 # hod_ll, print with hod_ir.
 hod_ir.workspace = true
 hod_ll.workspace = true
+# `x64census` (spec/harness.md "x64census"): the facade on both routes,
+# and the interpreter against llc + qemu.
+hod.workspace = true
+hod_interp.workspace = true
 
 # Kills the children and returns the held jobserver tokens on SIGINT/SIGTERM
 # (spec/harness.md "Jobserver").

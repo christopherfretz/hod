@@ -462,7 +462,7 @@ mod tests {
         assert_eq!(reason(MODULE, &march), Construct::UnsupportedTarget);
         let x64 = Options { triple: Some("x86_64-pc-linux-gnu".into()), ..obj.clone() };
         let x64_decls = b"target triple = \"x86_64-pc-linux-gnu\"\ndeclare i32 @g()\n";
-        assert_eq!(reason(x64_decls, &x64), Construct::CodegenNotImplemented);
+        assert!(compile(x64_decls, &x64).is_ok_and(|o| o[18..20] == [0x3e, 0]));
         // -mtriple names another target than the module's: not retargeted.
         assert_eq!(reason(DECLARATIONS, &x64), Construct::UnsupportedTarget);
         let wasm = b"target triple = \"wasm32-unknown-unknown\"\n";

@@ -947,11 +947,204 @@ fn cross_target_builds_and_does_not_run() {
         [format!("the oracle's program was not run: {why}")]
     );
     assert!(details(&report, "xfailed.ll")[0].starts_with("any (hod was terminated"), "{all}");
-    assert_eq!(report.notes[1], format!("{why}; objects are built, programs are not"));
+    let built_only = format!("{why}; objects are built, programs are not");
+    assert!(report.notes.contains(&built_only), "{all}");
+    // What is missing for the programs to run under the emulator is said
+    // with the Debian package to install.
+    let emulator = format!("qemu-{}", other_arch().name());
+    let missing = format!("emulator '{emulator}' not found (Debian package qemu-user)");
+    assert!(report.notes.iter().any(|note| note.starts_with(&missing)), "{all}");
+    let driver = format!("linker driver '{}-gcc' not found (Debian package gcc-", prefix());
+    assert!(report.notes.iter().any(|note| note.starts_with(&driver)), "{all}");
     assert!(report.records.iter().all(|r| r.target == other_arch().triple()));
     assert_eq!(report.records[0].built_by, BuiltBy::Hod);
     let results = format!("results-{}-llvm22.tsv", other_arch().name());
     assert_eq!(report.results_file, Some(world.build().join("irdiff").join(results)));
+}
+
+/// The GNU prefix of the other architecture's cross tools.
+fn prefix() -> &'static str {
+    if other_arch() == Arch::X86_64 { "x86_64-linux-gnu" } else { "aarch64-linux-gnu" }
+}
+
+/// A fake `qemu-<arch>`: requires `-cpu <model> -L <existing directory>`
+/// before the program, says what it was given in `$EMULATED` and runs the
+/// program with the rest of its arguments.
+const FAKE_QEMU: &str = r#"[ "$1" = -cpu ] && [ "$3" = -L ] && [ -d "$4" ] || { echo "qemu: usage: $*" >&2; exit 1; }
+EMULATED="$(basename "$0") $2 $4"
+export EMULATED
+shift 4
+exec "$@""#;
+
+impl World {
+    /// The other architecture's cross driver and GNU ld, its emulator and
+    /// a system root: what a cross run needs.
+    fn with_cross_tools(&self) -> Config {
+        self.tool(&format!("{}-gcc", prefix()), FAKE_DRIVER);
+        self.tool(&format!("{}-ld.bfd", prefix()), &fake_linker("bfd"));
+        self.tool(&format!("qemu-{}", other_arch().name()), FAKE_QEMU);
+        let sysroot = self.scratch.join("sysroot");
+        std::fs::create_dir_all(&sysroot).unwrap();
+        let mut config = self.config();
+        config.target = Some(other_arch());
+        config.sysroot = Some(sysroot);
+        config
+    }
+}
+
+// spec/harness.md "irdiff", "Cross runs": with the other architecture's
+// cross driver, its GNU ld, its emulator and its system root, both sides of
+// a test are linked by every linker and run under the emulator, which gets
+// the baseline CPU model and the system root; the program gets its
+// arguments and input as on the host, and six times the run limit. Both
+// compilers are given the target's triple.
+#[test]
+fn cross_target_runs_under_the_emulator() {
+    let world = World::new("irdiff-emulated");
+    let config = world.with_cross_tools();
+    world.test(
+        "seen.ll",
+        &[
+            ";@ args: one two",
+            ";@ stdin: typed",
+            ";@ stdout: one two",
+            ";@ stdout: typed",
+            &format!(
+                ";@ stdout: qemu-{} {} {}",
+                other_arch().name(),
+                irdiff::tools::target_of(other_arch()).emulated_cpu(),
+                world.scratch.join("sysroot").display()
+            ),
+            ";@ exit: 3",
+            // Both sides are built for the target, not for the host.
+            &format!(
+                "; program(llc): case \"$CODEGEN\" in *-mtriple={0}*) ;; *) echo \"$CODEGEN\" ;; esac",
+                other_arch().triple()
+            ),
+            &format!(
+                "; program(hod): case \"$CODEGEN\" in *-mtriple={0}*) ;; *) echo \"$CODEGEN\" ;; esac",
+                other_arch().triple()
+            ),
+            "; program: echo \"$@\"; cat; echo \"$EMULATED\"; exit 3",
+        ]
+        .join("\n"),
+    );
+    world.test(
+        "differs.ll",
+        ";@ stdout: same\n; program(llc): echo same\n; program(hod): echo other\n",
+    );
+    world.test("declines.ll", ";@ unsupported: vector-type\n; hod: decline vector-type\n");
+    let report = irdiff::run(&config).unwrap();
+    let all = report.summary(true);
+    assert_eq!(
+        rows(&report),
+        [
+            "UNSUPPORTED declines.ll bfd",
+            "UNSUPPORTED declines.ll lld",
+            "UNSUPPORTED declines.ll mold",
+            "FAIL differs.ll bfd",
+            "FAIL differs.ll lld",
+            "FAIL differs.ll mold",
+            "PASS seen.ll bfd",
+            "PASS seen.ll lld",
+            "PASS seen.ll mold",
+        ],
+        "{all}"
+    );
+    assert!(report.records.iter().all(|r| r.target == other_arch().triple()), "{all}");
+    assert!(
+        all.contains(&format!(
+            "(emulated: {}",
+            world.scratch.join("bin").join(format!("qemu-{}", other_arch().name())).display()
+        )),
+        "{all}"
+    );
+    assert!(report.notes.iter().all(|note| !note.contains("not run")), "{all}");
+
+    // A hang is killed at six times the run limit, and says so.
+    world.test("hangs.ll", "; program(hod): exec sleep 600\n");
+    let mut short = config.clone();
+    short.paths = vec![world.scratch.join("tests/hangs.ll")];
+    short.run_limits.time = Duration::from_secs(1);
+    short.linkers = vec!["bfd".to_owned()];
+    let report = irdiff::run(&short).unwrap();
+    assert_eq!(rows(&report), ["FAIL hangs.ll bfd"], "{}", report.summary(true));
+    assert_eq!(
+        details(&report, "hangs.ll"),
+        ["the program of hod's object timed out after 6 s"],
+        "{}",
+        report.summary(true)
+    );
+}
+
+// "Cross runs": without the emulator or the system root the other
+// architecture's objects are built and not run, with a note naming what to
+// install; under HOD_REQUIRE_TOOLS=1 that fails the run (exit status 3).
+#[test]
+fn cross_runs_need_the_emulator_and_the_system_root() {
+    let world = World::new("irdiff-emulator-missing");
+    let mut config = world.with_cross_tools();
+    world.test("a.ll", "");
+    world.without(&format!("qemu-{}", other_arch().name()));
+    let report = irdiff::run(&config).unwrap();
+    assert_eq!(rows(&report), ["SKIP a.ll -"], "{}", report.summary(true));
+    let note = format!(
+        "emulator 'qemu-{0}' not found (Debian package qemu-user); {0} programs are not run",
+        other_arch().name()
+    );
+    assert_eq!(report.notes[1], note, "{}", report.summary(true));
+    config.require_tools = true;
+    let report = irdiff::run(&config).unwrap();
+    assert_eq!(report.missing_tools, [note]);
+    assert_eq!(report.exit_status(), 3);
+
+    world.tool(&format!("qemu-{}", other_arch().name()), FAKE_QEMU);
+    config.sysroot = Some(world.scratch.join("no-such-root"));
+    let report = irdiff::run(&config).unwrap();
+    assert_eq!(rows(&report), ["SKIP a.ll -"]);
+    assert!(report.missing_tools[0].starts_with("system root '"), "{:?}", report.missing_tools);
+    assert!(
+        report.missing_tools[0].contains("(Debian package libc6-dev-"),
+        "{:?}",
+        report.missing_tools
+    );
+    config.sysroot = Some(world.scratch.join("sysroot"));
+    let report = irdiff::run(&config).unwrap();
+    assert_eq!(rows(&report), ["PASS a.ll bfd", "PASS a.ll lld", "PASS a.ll mold"]);
+    // The host's GNU ld is not the cross one.
+    world.without(&format!("{}-ld.bfd", prefix()));
+    let report = irdiff::run(&config).unwrap();
+    assert_eq!(rows(&report), ["PASS a.ll lld", "PASS a.ll mold"]);
+    assert!(
+        report.missing_tools[0].starts_with("linker 'bfd' not found (Debian package binutils-"),
+        "{:?}",
+        report.missing_tools
+    );
+}
+
+// "Cross runs": a target hod declines every test of is one note, not one
+// line per test.
+#[test]
+fn a_target_hod_declines_wholesale_is_one_note() {
+    let world = World::new("irdiff-wholesale");
+    let config = world.with_cross_tools();
+    for name in ["a.ll", "b.ll", "c.ll"] {
+        world.test(name, ";@ unsupported: *\n; hod: decline codegen-not-implemented\n");
+    }
+    let report = irdiff::run(&config).unwrap();
+    let summary = report.summary(false);
+    assert_eq!(report.count(Outcome::Unsupported), 9, "{summary}");
+    let note = format!(
+        "irdiff: note: hod declined all 3 tests it was asked to build for {}; only the \
+         reference side (llc, the linkers, the programs) was checked",
+        other_arch().name()
+    );
+    assert!(summary.contains(&note), "{summary}");
+    assert!(!summary.lines().any(|line| line.starts_with("UNSUPPORTED")), "{summary}");
+    // One test hod builds: no such note.
+    world.test("d.ll", "");
+    let report = irdiff::run(&config).unwrap();
+    assert!(!report.summary(false).contains("declined all"), "{}", report.summary(false));
 }
 
 // "Tools": a linker that is not found is left out with a note; under

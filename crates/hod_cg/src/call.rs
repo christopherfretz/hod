@@ -698,9 +698,17 @@ impl<'a, T: Target> FnCx<'a, T> {
                     return self.bug("a scalar return value that is not in one register");
                 };
                 self.check_class(from, class)?;
-                self.s.temps = self.s.temps.with(from);
-                self.s.pinned = self.s.pinned.with(from);
-                reg = Some(from);
+                if self.ri.holdable.contains(from) {
+                    self.s.temps = self.s.temps.with(from);
+                    self.s.pinned = self.s.pinned.with(from);
+                    reg = Some(from);
+                } else {
+                    // A result register that never holds a value (x86-64's
+                    // `rax`): moved to a temporary at once.
+                    let to = self.temp(class)?;
+                    t.mov(self, to, from);
+                    reg = Some(to);
+                }
             }
         }
         Ok(Called { reg, area: if stack.is_some() { area } else { 0 }, row })

@@ -41,6 +41,8 @@ pub enum Val {
     Float(u32),
     /// `double`, as its IEEE binary64 encoding.
     Double(u64),
+    /// `x86_fp80`, as its 80-bit encoding in the low bits (§5.11).
+    X86Fp80(u128),
     /// A struct, an array, or a fixed-width vector (§3.1).
     Agg(Agg),
 }
@@ -166,6 +168,7 @@ impl fmt::Display for Val {
             Val::Ptr(addr) => write!(f, "ptr {addr:#x}"),
             Val::Float(bits) => write!(f, "float {bits:#010x}"),
             Val::Double(bits) => write!(f, "double {bits:#018x}"),
+            Val::X86Fp80(bits) => write!(f, "x86_fp80 {bits:#022x}"),
             Val::Agg(agg) if agg.is_vector() => agg.fmt_lanes(f),
             Val::Agg(agg) => {
                 f.write_str("agg ")?;

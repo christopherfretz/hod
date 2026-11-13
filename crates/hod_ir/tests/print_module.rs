@@ -340,6 +340,7 @@ fn everything(major: u32, for_object: bool) -> (Module, Vec<Body>) {
             FnStr::StackProtectorBufferSize => b"8",
             FnStr::MinLegalVectorWidth => b"128",
             FnStr::NoBuiltin => b"memcpy",
+            FnStr::DisableTailCalls => b"false",
         };
         attrs.set_string(key, value).unwrap();
     }

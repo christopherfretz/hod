@@ -3692,7 +3692,12 @@ psABI fixes byte for byte (the linker has to recognize it to relax it):
 the lowering displaces what the sequence clobbers and records the row
 through the same service.
 
-**Tail kinds.** `tail` and `notail` are permissions and are ignored.
+**Tail kinds.** `tail` and `notail` are permissions and are ignored:
+hod makes no tail call but a `musttail` one, in any function (where `llc
+-O0` turns a `tail` call into a jump, hod calls). A function's
+`"disable-tail-calls"="true"` (WP-179) therefore changes nothing: LLVM's
+rule for it, no tail call except a `musttail` one, is hod's rule
+everywhere; `"false"` is the default.
 `musttail` is an obligation (variadic thunks depend on it,
 `docs/design/0001-input.md`). Control transfers by a branch, with the
 frame gone and the arguments where the *caller's own* incoming arguments

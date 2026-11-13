@@ -204,15 +204,19 @@ GitHub Actions runs the gate on real hardware of both architectures
 | tools | LLVM 19 and 22, binutils, mold, gdb, lldb-19, the x86-64 cross toolchain, `qemu-user` | the same, with the AArch64 cross toolchain |
 | AArch64 programs under test | native | `qemu-aarch64 -cpu cortex-a53` |
 | x86-64 programs under test | `qemu-x86_64 -cpu qemu64,-sse3,-cx16,-lahf-lm` | native (the runner's CPU, more than the baseline) |
-| jobs | `kiln`, `lints`, `test`, `irdiff`, fan-in `check` | the same, fan-in `check-x86_64` |
+| jobs | `kiln`, `lints`, `test <part>` (five parts, `xtask::ci::TEST_PARTS`), `irdiff`, fan-in `check` | the same, fan-in `check-x86_64` |
 | not run | `roundtrip` (no corpus) | the same |
 
 Every job sets `HOD_REQUIRE_TOOLS=1`. On the x86-64 runner an x86-64
 program is not held to the baseline CPU: the emulated AArch64 lane is
 where a use of an instruction beyond the baseline faults.
 
-The libc++ suite with kiln and hod runs natively on x86-64 in the `sweep`
-workflow (a `sweep/**` branch or by hand; never a required check).
+The libc++ suite with kiln runs natively on both runners in the `sweep`
+workflow (a `sweep/**` branch or by hand; never a required check), once
+with hod and once with `llc`; a test that passes with `llc` and not with
+hod fails it (`scripts/libcxx-sweep.py`; numbers in
+`docs/status/libcxx-hod-x64.md` and `docs/status/libcxx-hod.md`, "Native
+... runner").
 
 **Tests that need a particular host.** A test of AArch64 programs runs
 on both hosts when it takes its toolchain from `hod_testutil::target`

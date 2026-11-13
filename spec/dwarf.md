@@ -659,7 +659,8 @@ columns). On x86-64 (WP-149) the `cmp` of a branch fused with an integer
 compare IS at the compare's location: `llc`'s x86-64 program keeps the
 compare's instruction (`subl`/`cmpl`) at the `icmp`'s location and only
 the `jcc` at the branch's (`crates/hod_x64/src/control.rs` `cond_br`
-switches around `fused_icmp`). Measured on the `tests/debug` sources and
+switches around `fused_icmp`). WP-157 extends it to every x86-64 fused
+form whose compare `llc` keeps as an instruction of its own (§6.17). Measured on the `tests/debug` sources and
 250 gcc torture sources at clang 22 `-O0`, x86-64: functions with `llc`'s
 set of (line, column) positions 666 before, 732 after of 981; positions
 only `llc` has 777 before, 320 after. With key instructions it decides
@@ -2222,6 +2223,27 @@ them; its objects are byte-identical before and after.
 **Line table**: unchanged (§4, §5); `prologue_end` at the first row
 after the prologue, as `llc`'s. The `(function, line)` comparison of
 every debugger test on x86-64 has no difference but two P1 pairs.
+
+**Fused compares** (WP-157; §5.8): the compare's instruction and the
+moves that place its operands are at the compare's row location, the
+consumer's instruction at the consumer's, for a `condbr` on an `icmp`,
+on an `fcmp` of `float`/`double` and on an `x86_fp80` `fcmp`; a
+`select` of class `Gpr` and a `zext`/`sext` on an `icmp`; a `select` of
+`x86_fp80` on an `x86_fp80` `fcmp` (`control::at_compare`, called by
+`control::cond_br`, `float::cond_br`, `x87::cond_br`, `x87::select`,
+`int::select`, `int`'s casts). Each switch is an ordinary transition
+(`FnCx::line_switch`), a row the shrink pass moves; `is_stmt` and the
+column follow §5.1, §5.2 (and §5.9 with key instructions: the compare
+and its consumer are separate atoms). Not a `select` of class `Fpr` on
+an `fcmp`: `llc` turns it into `minsd`/`maxsd` or a `cmpsd` mask at the
+`select`'s location and has no row at the compare's line, nor does hod.
+`llc` 19 and 22 agree on every form; a `switch` has no compare
+instruction in the IR, and a compare with users other than its consumer
+is not fused (its own lowering, its own location). AArch64 is unchanged
+(§5.8). Evidence: `crates/hod_x64/tests/fused_lines.rs` (each row at
+an instruction of its line after the `jcc`s were relaxed to `rel8`, on
+hod's object and on `llc`'s), `xtask/tests/debug_post_index.rs`
+`fused_compare_keeps_its_line_on_x86_64`.
 
 **`.debug_frame`**: `llc` writes it only for functions that are
 `nounwind` without `uwtable` (`-fno-asynchronous-unwind-tables`), on

@@ -272,6 +272,7 @@ impl Job<'_, '_> {
             CompileError::MalformedInput(_) => ("malformed-input".into(), EXIT_ERROR),
             CompileError::InvalidOptions(_) => ("invalid-options".into(), EXIT_ERROR),
             CompileError::Internal(_) => (hod::INTERNAL_ERROR.into(), EXIT_ERROR),
+            CompileError::Panic(_) => (hod::INTERNAL_PANIC.into(), EXIT_ERROR),
         };
         if let Some(llc) = self.settings.hybrid().map(Path::to_path_buf) {
             return self.fall_back(&llc, reason, piped);
@@ -528,6 +529,15 @@ mod tests {
     use hod::{Construct, Unsupported};
     use hod_testutil::Scratch;
 
+    /// `base` with `set` applied: [`Environment`] is `#[non_exhaustive]`,
+    /// so a test builds one from a value, not from a literal
+    /// (`spec/cli.md` "Embedding").
+    fn with(base: &Environment, set: impl FnOnce(&mut Environment)) -> Environment {
+        let mut env = base.clone();
+        set(&mut env);
+        env
+    }
+
     /// A module declined in the module pass (`module:code-model-tiny`) with a body
     /// the body pass refuses (`cc:ghccc`): constructs no code-generation
     /// package turns on, so the reasons do not move with the matrix.
@@ -585,11 +595,10 @@ mod tests {
         };
         let make = Some("-j8 --jobserver-auth=fifo:/nonexistent/fifo".to_owned());
         let threads = |args: &[&str], explicit: Option<usize>, makeflags: &Option<String>| {
-            let env = Environment {
-                threads: explicit,
-                makeflags: makeflags.clone(),
-                ..Environment::default()
-            };
+            let env = with(&Environment::default(), |e| {
+                e.threads = explicit;
+                e.makeflags = makeflags.clone();
+            });
             seen.set(None);
             let ran = run_with(args, &env, &probe, DECLARATIONS);
             assert_eq!(ran.exit, EXIT_OK, "{args:?}: {}", ran.stderr);
@@ -607,12 +616,15 @@ mod tests {
 
         // A mistake in it is an error, never a fallback; an invalid
         // HOD_THREADS is one even when the option is given.
-        let llc =
-            Environment { fallback: Some("/nonexistent/llc".into()), ..Environment::default() };
+        let llc = with(&Environment::default(), |e| {
+            e.fallback = Some("/nonexistent/llc".into());
+        });
         let ran = run_with(&["-filetype=obj", "--threads=0"], &llc, &probe, DECLARATIONS);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.contains("invalid value '0' for '--threads'"), "{}", ran.stderr);
-        let bad = Environment { error: Some("invalid value 'x' for HOD_THREADS".into()), ..llc };
+        let bad = with(&llc, |e| {
+            e.error = Some("invalid value 'x' for HOD_THREADS".into());
+        });
         let ran = run_with(&["-filetype=obj", "--threads=2"], &bad, &probe, DECLARATIONS);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.contains("HOD_THREADS"), "{}", ran.stderr);
@@ -625,8 +637,12 @@ mod tests {
     fn census_of_every_reason() {
         let scratch = Scratch::new("driver-census");
         let log = scratch.join("cov.tsv");
-        let env = Environment { coverage_log: Some(log.clone()), ..Environment::default() };
-        let census = Environment { census: true, ..env.clone() };
+        let env = with(&Environment::default(), |e| {
+            e.coverage_log = Some(log.clone());
+        });
+        let census = with(&env, |e| {
+            e.census = true;
+        });
         for env in [&env, &census] {
             let ran = run_with(&["-filetype=obj"], env, &hod::compile_with, MODULE);
             assert_eq!(ran.exit, EXIT_UNSUPPORTED);
@@ -661,7 +677,12 @@ mod tests {
         let env = Environment::from_vars(|name| {
             (name == "HOD_TIME_PHASES").then(|| file.clone().into_os_string())
         });
-        assert_eq!(env, Environment { time_phases: Some(file.clone()), ..Environment::default() });
+        assert_eq!(
+            env,
+            with(&Environment::default(), |e| {
+                e.time_phases = Some(file.clone());
+            })
+        );
         let phases = || {
             let text = std::fs::read_to_string(&file).unwrap();
             let _ = std::fs::remove_file(&file);
@@ -704,7 +725,9 @@ mod tests {
 
         // A report that cannot be written is an error, like a coverage line.
         let nowhere = scratch.join("no-such-dir/phases.tsv");
-        let env = Environment { time_phases: Some(nowhere.clone()), ..Environment::default() };
+        let env = with(&Environment::default(), |e| {
+            e.time_phases = Some(nowhere.clone());
+        });
         let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &object, MODULE);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(
@@ -850,11 +873,10 @@ mod tests {
         scratch.write("llvm-dis.text", CONVERTED);
         let converter = scratch.write_script("llvm-dis", "cat > /dev/null\ncat \"$0.text\"");
         let file = scratch.join("phases.tsv");
-        let env = Environment {
-            bitcode_via: Some(converter),
-            time_phases: Some(file.clone()),
-            ..Environment::default()
-        };
+        let env = with(&Environment::default(), |e| {
+            e.bitcode_via = Some(converter);
+            e.time_phases = Some(file.clone());
+        });
         let seen = std::cell::RefCell::new(Vec::new());
         let ran = run_with(&["-O0", "-filetype=obj", "-o", "-"], &env, &text_only(&seen), BITCODE);
         assert_eq!((ran.exit, ran.stderr.as_str()), (EXIT_OK, ""));
@@ -879,11 +901,10 @@ mod tests {
         );
         let log = scratch.join("cov.tsv");
         let out = scratch.join("a.o");
-        let env = Environment {
-            coverage_log: Some(log.clone()),
-            bitcode_via: Some(converter.clone()),
-            ..Environment::default()
-        };
+        let env = with(&Environment::default(), |e| {
+            e.coverage_log = Some(log.clone());
+            e.bitcode_via = Some(converter.clone());
+        });
         let seen = std::cell::RefCell::new(Vec::new());
         let ran = run_with(
             &["-O0", "-filetype=obj", "-o", out.to_str().unwrap()],
@@ -917,7 +938,9 @@ mod tests {
 
         // The command line's converter wins over the environment's, and
         // -mtriple over the converted module's own triple.
-        let unused = Environment { bitcode_via: Some(scratch.join("missing")), ..env.clone() };
+        let unused = with(&env, |e| {
+            e.bitcode_via = Some(scratch.join("missing"));
+        });
         let ran = run_with(
             &[
                 "-filetype=obj",
@@ -959,11 +982,10 @@ mod tests {
     fn conversion_only_when_bitcode_is_the_reason() {
         let scratch = Scratch::new("driver-no-convert");
         let log = scratch.join("cov.tsv");
-        let env = Environment {
-            coverage_log: Some(log.clone()),
-            bitcode_via: Some(scratch.join("no-llvm-dis")),
-            ..Environment::default()
-        };
+        let env = with(&Environment::default(), |e| {
+            e.coverage_log = Some(log.clone());
+            e.bitcode_via = Some(scratch.join("no-llvm-dis"));
+        });
         // Text; assembly output of bitcode; a rejected command line.
         let ran = run_with(&["-filetype=obj"], &env, &hod::compile_with, MODULE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
@@ -1005,7 +1027,9 @@ mod tests {
         // Without a converter, or with `native`, hod reads the bitcode
         // itself: these twelve bytes are a bitcode header and nothing else.
         for via in [None, Some(PathBuf::from(BITCODE_NATIVE))] {
-            let plain = Environment { bitcode_via: via, ..env.clone() };
+            let plain = with(&env, |e| {
+                e.bitcode_via = via;
+            });
             let ran = run_with(&["-filetype=obj"], &plain, &hod::compile_with, BITCODE);
             assert_eq!(ran.exit, EXIT_ERROR, "{}", ran.stderr);
             assert!(ran.stderr.starts_with("hod: error: malformed input: bit "), "{}", ran.stderr);
@@ -1022,7 +1046,9 @@ mod tests {
     fn unsupported_without_fallback() {
         let scratch = Scratch::new("driver-unsupported");
         let log = scratch.join("cov.tsv");
-        let env = Environment { coverage_log: Some(log.clone()), ..Environment::default() };
+        let env = with(&Environment::default(), |e| {
+            e.coverage_log = Some(log.clone());
+        });
         let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &hod::compile_with, CG_DECLINED);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert!(ran.stdout.is_empty());
@@ -1062,7 +1088,9 @@ mod tests {
     fn malformed_input_and_invalid_options() {
         let scratch = Scratch::new("driver-malformed");
         let log = scratch.join("cov.tsv");
-        let env = Environment { coverage_log: Some(log.clone()), ..Environment::default() };
+        let env = with(&Environment::default(), |e| {
+            e.coverage_log = Some(log.clone());
+        });
         let malformed = |_: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
             Err(CompileError::MalformedInput("line 2: expected '}'".into()))
         };
@@ -1086,7 +1114,9 @@ mod tests {
     fn internal_errors_are_not_declines() {
         let scratch = Scratch::new("driver-internal");
         let log = scratch.join("cov.tsv");
-        let env = Environment { coverage_log: Some(log.clone()), ..Environment::default() };
+        let env = with(&Environment::default(), |e| {
+            e.coverage_log = Some(log.clone());
+        });
         let internal = |_: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
             Err(CompileError::Internal("function 'f': a lost value".into()))
         };
@@ -1102,6 +1132,21 @@ mod tests {
         let summary: Vec<(&str, &str)> =
             lines.iter().map(|l| (l[0].as_str(), l[1].as_str())).collect();
         assert_eq!(summary, [("error", "internal-error"), ("fallback", "internal-error")]);
+        // A contained panic (WP-093, "Embedding") likewise: `internal-panic`.
+        let panicked = |_: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
+            Err(CompileError::Panic("index out of bounds".into()))
+        };
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &panicked, MODULE);
+        assert_eq!(ran.exit, EXIT_ERROR);
+        assert_eq!(
+            ran.stderr,
+            "hod: error: internal error: hod panicked: index out of bounds (strict mode: no fallback)\n"
+        );
+        let ran = run_with(&["-filetype=obj", "--fallback=/bin/true"], &env, &panicked, MODULE);
+        assert_eq!((ran.exit, ran.stderr.as_str()), (EXIT_OK, ""));
+        let lines = fields(&log);
+        let reasons: Vec<&str> = lines[2..].iter().map(|l| l[1].as_str()).collect();
+        assert_eq!(reasons, ["internal-panic", "internal-panic"]);
     }
 
     // spec/cli.md "Options": without a fallback an unknown option is an
@@ -1110,7 +1155,9 @@ mod tests {
     fn unknown_option_without_fallback() {
         let scratch = Scratch::new("driver-unknown");
         let log = scratch.join("cov.tsv");
-        let env = Environment { coverage_log: Some(log.clone()), ..Environment::default() };
+        let env = with(&Environment::default(), |e| {
+            e.coverage_log = Some(log.clone());
+        });
         let never = |_: &[u8],
                      _: &Options,
                      _: &hod::Settings,
@@ -1123,8 +1170,10 @@ mod tests {
         assert!(ran.stderr.starts_with("hod: error: unknown option '-bogus'"), "{}", ran.stderr);
         assert_eq!(ran.stderr.lines().count(), 1);
         // Strict mode ignores a configured fallback.
-        let strict =
-            Environment { fallback: Some("/nonexistent/llc".into()), strict: true, ..env.clone() };
+        let strict = with(&env, |e| {
+            e.fallback = Some("/nonexistent/llc".into());
+            e.strict = true;
+        });
         let ran = run_with(&["-filetype=null"], &strict, &never, MODULE);
         // WP-021: in strict mode an unknown option is a decline, status 2;
         // a usage mistake stays an error.
@@ -1161,16 +1210,16 @@ mod tests {
     fn mistakes_in_hod_settings() {
         let scratch = Scratch::new("driver-usage");
         let log = scratch.join("cov.tsv");
-        let env = Environment {
-            fallback: Some("/nonexistent/llc".into()),
-            coverage_log: Some(log.clone()),
-            ..Environment::default()
-        };
+        let env = with(&Environment::default(), |e| {
+            e.fallback = Some("/nonexistent/llc".into());
+            e.coverage_log = Some(log.clone());
+        });
         let ran = run_with(&["-filetype=obj", "--strict=maybe"], &env, &object, MODULE);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.contains("invalid value 'maybe' for '--strict'"), "{}", ran.stderr);
-        let bad_env =
-            Environment { error: Some("invalid value 'yes' for HOD_STRICT".into()), ..env };
+        let bad_env = with(&env, |e| {
+            e.error = Some("invalid value 'yes' for HOD_STRICT".into());
+        });
         let ran = run_with(&["-filetype=obj"], &bad_env, &object, MODULE);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert_eq!(ran.stderr, "hod: error: invalid value 'yes' for HOD_STRICT\n");
@@ -1181,11 +1230,10 @@ mod tests {
     // spec/cli.md "Fallback protocol": a hod started as a fallback stops.
     #[test]
     fn fallback_loop_is_refused() {
-        let env = Environment {
-            fallback: Some("/nonexistent/llc".into()),
-            in_fallback: true,
-            ..Environment::default()
-        };
+        let env = with(&Environment::default(), |e| {
+            e.fallback = Some("/nonexistent/llc".into());
+            e.in_fallback = true;
+        });
         let ran = run_with(&["-filetype=obj"], &env, &hod::compile_with, MODULE);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.contains("HOD_IN_FALLBACK"), "{}", ran.stderr);
@@ -1197,7 +1245,9 @@ mod tests {
     fn io_errors() {
         let scratch = Scratch::new("driver-io");
         let log = scratch.join("cov.tsv");
-        let env = Environment { coverage_log: Some(log.clone()), ..Environment::default() };
+        let env = with(&Environment::default(), |e| {
+            e.coverage_log = Some(log.clone());
+        });
         let missing = scratch.join("missing.ll");
         let ran = run_with(&["-filetype=obj", missing.to_str().unwrap()], &env, &object, b"");
         assert_eq!(ran.exit, EXIT_ERROR);
@@ -1207,7 +1257,9 @@ mod tests {
             run_with(&["-filetype=obj", "-o", unwritable.to_str().unwrap()], &env, &object, MODULE);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.starts_with("hod: error: cannot write '"), "{}", ran.stderr);
-        let unrunnable = Environment { fallback: Some(scratch.join("no-llc")), ..env.clone() };
+        let unrunnable = with(&env, |e| {
+            e.fallback = Some(scratch.join("no-llc"));
+        });
         let ran = run_with(&["-filetype=obj"], &unrunnable, &hod::compile_with, MODULE);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.starts_with("hod: error: cannot run fallback '"), "{}", ran.stderr);
@@ -1216,10 +1268,9 @@ mod tests {
 
         // A coverage log that cannot be opened stops the invocation before
         // anything is compiled or written.
-        let bad_log = Environment {
-            coverage_log: Some(scratch.join("no-such-dir/cov.tsv")),
-            ..Environment::default()
-        };
+        let bad_log = with(&Environment::default(), |e| {
+            e.coverage_log = Some(scratch.join("no-such-dir/cov.tsv"));
+        });
         let out = scratch.join("b.o");
         let ran =
             run_with(&["-filetype=obj", "-o", out.to_str().unwrap()], &bad_log, &object, MODULE);
@@ -1233,7 +1284,9 @@ mod tests {
     fn version_and_help() {
         let scratch = Scratch::new("driver-version");
         let log = scratch.join("cov.tsv");
-        let env = Environment { coverage_log: Some(log.clone()), ..Environment::default() };
+        let env = with(&Environment::default(), |e| {
+            e.coverage_log = Some(log.clone());
+        });
         let ran = run_with(&["--version"], &env, &object, b"");
         assert_eq!(ran.exit, EXIT_OK);
         let text = String::from_utf8(ran.stdout).unwrap();

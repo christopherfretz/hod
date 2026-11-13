@@ -53,6 +53,7 @@ pub mod emit;
 pub mod error;
 pub mod features;
 mod frame;
+mod idhash;
 mod key_rows;
 mod label;
 pub mod lanes;

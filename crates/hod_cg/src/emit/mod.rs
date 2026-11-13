@@ -40,6 +40,7 @@ use self::lines::DebugLines;
 use self::section::{Found, Kind, NO_GROUP, Sections};
 use crate::access::prefers_local_alias;
 use crate::error::{CgError, CgResult};
+use crate::idhash::IdMap;
 use crate::options::Options;
 use crate::record::{Chunk, FuncRecord};
 use crate::sym::{RuntimeFn, SymRef};
@@ -168,12 +169,12 @@ pub struct ModuleEmitter<'m> {
     places: Vec<Place>,
     groups: Vec<Group>,
     runtime: Vec<u32>,
-    local_aliases: HashMap<SymId, SymbolId>,
+    local_aliases: IdMap<SymId, SymbolId>,
     /// The local copies of `available_externally` functions (WP-021).
-    copies: HashMap<SymId, SymbolId>,
+    copies: IdMap<SymId, SymbolId>,
     /// The group of each signature symbol: `MCContext` has one group per
     /// signature name, whether a COMDAT or an associated structor made it.
-    signatures: HashMap<SymbolId, GroupId>,
+    signatures: IdMap<SymbolId, GroupId>,
     /// Code relocations whose target is placed later: section, offset,
     /// kind, target, addend.
     pending: Vec<(SectionId, u64, RelocKind, SymRef, i64)>,
@@ -372,9 +373,9 @@ impl<'m> ModuleEmitter<'m> {
             places: vec![Place::NONE; count],
             groups: Vec::new(),
             runtime: vec![NOWHERE; RuntimeFn::ALL.len()],
-            local_aliases: HashMap::new(),
-            copies: HashMap::new(),
-            signatures: HashMap::new(),
+            local_aliases: IdMap::default(),
+            copies: IdMap::default(),
+            signatures: IdMap::default(),
             pending: Vec::new(),
             fixups: Vec::new(),
             image: Vec::new(),

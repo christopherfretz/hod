@@ -5,13 +5,14 @@ It knows nothing about the IR, object files or assembly text. Its consumer
 is a single-pass code generator that calls it once per emitted instruction,
 so the whole API is plain functions on small `Copy` values.
 
-This document covers the base integer instruction set and the scalar
-SSE/SSE2 floating point an `-O0` code generator needs, in 64-bit mode, and
-the fixed forms of the thread-local storage accesses. Vectors are a later
-work package. The oracle and the crate assume the x86-64 baseline (which
+This document covers the base integer instruction set, the scalar
+SSE/SSE2 floating point and the packed SSE2 forms an `-O0` code generator
+needs, in 64-bit mode, and the fixed forms of the thread-local storage
+accesses. The oracle and the crate assume the x86-64 baseline (which
 includes SSE2 and `CMPXCHG8B`) plus the instructions named below that need
 a CPUID feature (`LZCNT`, `TZCNT` (BMI1), `POPCNT`, `CMPXCHG16B`,
-`ENDBR64`); the crate does not check features, the code generator does.
+`ENDBR64`, `RDTSCP`); the crate does not check features, the code
+generator does. Nothing is VEX-encoded: hod's x86-64 code is SSE2 only.
 
 Instructions are cited by their Intel SDM names (Intel 64 and IA-32
 Architectures Software Developer's Manual, Volume 2, "Instruction Set
@@ -47,6 +48,7 @@ immediate of 1, 2, 4 or 8 bytes, `cb`/`cd` a relative displacement.
   | `_rri`, `_rrcl`, `_mri`, `_mrcl`, `_rmi` | three operands, in order |
   | `_r` / `_m` | one register / one memory operand |
   | `_xr` / `_rx` | an `xmm` and a general register / the reverse, where the kinds would otherwise share a suffix |
+  | `_rri`, `_rmi` (packed) | two registers / a register and memory, then an `imm8` (a shuffle order, a lane) |
 
   An `xmm` register is an `r` in every other suffix: `adds_rr` takes two
   `xmm` registers, `cvtsi2s_rr` an `xmm` and a general register, and the
@@ -112,7 +114,8 @@ It is built by one of:
 | `m.with_abs32() -> Option<Mem>` | the same operand with its displacement an **absolute field** ("Fixups and relocations"); `None` for a RIP-relative operand, whose displacement is already the PC-relative field |
 
 `get_base()` (a `Base`: `None`, `Reg(Reg)`, `Rip`), `get_index()`, `disp()`,
-`seg()` and `is_abs32()` read the parts back. Every value of `Mem` has an encoding:
+`seg()` and `is_abs32()` read the parts back; `has_field()` says whether
+the displacement is a relocatable field (RIP-relative or `with_abs32`). Every value of `Mem` has an encoding:
 `rsp` is not an `Index` and a RIP-relative operand has no index, by
 construction. A segment override on `lea`'s operand is encoded and has no
 effect.
@@ -158,6 +161,10 @@ operand is `spl`, `bpl`, `sil` or `dil`, which exist only with REX.
 `inst.has_rex()` says whether the instruction has one. An `xmm` register
 never needs a REX prefix of its own; `xmm8`..`xmm15` set `R` or `B` like
 `r8`..`r15`.
+
+`rep_movs` and `rep_stos` are the exception to this order: LLVM emits
+`REP` as an instruction of its own, so `F3` comes first, before `66`
+("String instructions").
 
 Instructions whose default operand size is 64 bits (`push`, `pop`, `jmp`
 and `call` through a register or memory, `leave`) take no size and no
@@ -306,6 +313,7 @@ distance is known to fit.
 | `push_r(r: Reg)`, `pop_r(r: Reg)` | PUSH `50+r`, POP `58+r` |
 | `push_m(m: Mem)`, `pop_m(m: Mem)` | PUSH `FF /6`, POP `8F /0` |
 | `push_i(imm: i32)` | PUSH `6A ib` for a sign-extended byte, else `68 id`; pushes 8 bytes |
+| `push_i32(imm: i32)` | PUSH `68 id` always; the `id` is the site ("Relocatable immediates") |
 | `leave()` | LEAVE `C9` |
 
 ## Bit counting
@@ -355,6 +363,11 @@ outside the operand.
 | `mfence()`, `lfence()`, `sfence()` | `0F AE F0`, `0F AE E8`, `0F AE F8` | |
 | `pause()` | PAUSE `F3 90` | |
 
+`lock` with a memory-destination `add`, `sub`, `and`, `or`, `xor`, `xadd`,
+`inc`, `dec`, `not` or `neg` is what the code generator writes for an
+`atomicrmw` whose result is unused; each is swept under `lock` at every
+size over every memory form ("Test method").
+
 An instruction is **lockable** when the SDM allows `LOCK` on it: the
 memory-destination forms marked lockable in the tables above (`op_mr` and
 `op_mi` except `cmp`, `inc_m`, `dec_m`, `not_m`, `neg_m`, `xchg_mr`,
@@ -378,6 +391,9 @@ is LLVM's choice; `xchg ax, ax` is `66 90`.
 | `int3()` | INT3 `CC` | |
 | `endbr64()` | ENDBR64 `F3 0F 1E FA` | |
 | `nop(len: usize)` | one NOP of exactly `len` bytes | `nop_len_ok(len)`: `1..=15` |
+| `rdtsc()` | RDTSC `0F 31`: the time-stamp counter into `edx:eax` (`llvm.readcyclecounter`) | |
+| `rdtscp()` | RDTSCP `0F 01 F9`: the same and `IA32_TSC_AUX` into `ecx`; needs the RDTSCP feature | |
+| `cpuid()` | CPUID `0F A2`: leaf `eax`, subleaf `ecx`, into `eax`, `ebx`, `ecx`, `edx` | |
 
 `nop(len)` is, for 1 to 9 bytes, the SDM's recommended form (Vol. 2B,
 "NOP", table 4-12): `90`; `66 90`; `0F 1F 00`; `0F 1F 40 00`;
@@ -385,6 +401,20 @@ is LLVM's choice; `xchg ax, ax` is `66 90`.
 `0F 1F 84 00` + 4; `66 0F 1F 84 00` + 4. For 10 bytes it is
 `66 2E 0F 1F 84 00` + 4, and for 11 to 15 bytes that with one more `66`
 per byte in front. This is LLVM's padding (`.nops len, len`).
+
+## String instructions
+
+| constructor | encodes |
+|---|---|
+| `cld()` | CLD `FC`: clears the direction flag (the psABI guarantees it clear at calls and returns) |
+| `rep_movs(size)` | `F3` then MOVSB/MOVSW/MOVSD/MOVSQ `[66] [REX.W] A4`/`A5`: copies `rcx` elements of `size` from `[rsi]` to `[rdi]`, advancing both; `rcx` ends at 0 |
+| `rep_stos(size)` | `F3` then STOSB/W/D/Q `[66] [REX.W] AA`/`AB`: stores `al`/`ax`/`eax`/`rax` to `rcx` elements at `[rdi]`; `rcx` ends at 0 |
+
+The `F3` is first, before the `66` of the 16-bit forms (`F3 66 A5`), as
+LLVM writes `rep` (an instruction of its own to its assembler). The
+operands are implicit; there is no segment override and no form without
+`rep`. hod does not use them in v1 (a large `memcpy` is a call); they are
+here for an inline copy or fill when one is wanted.
 
 ## Scalar floating point
 
@@ -419,6 +449,13 @@ faults.
 | `cmps_rr(pred: FpCmp, fp, dst: X, src: X)`, `cmps_rm(pred, fp, dst: X, src: Mem)` | CMPSS/CMPSD `F3`/`F2 0F C2 /r ib`, `ib` the predicate: the low element of `dst` all ones where it holds, else zero | |
 | `cvtsi2s_rr(fp, dst: X, size, src: Reg)`, `cvtsi2s_rm(fp, dst: X, size, src: Mem)` | CVTSI2SS/CVTSI2SD `F3`/`F2 [REX.W] 0F 2A /r`: the signed 32- or 64-bit integer, rounded as MXCSR says; the rest of `dst` kept | `size` is `D` or `Q` |
 | `cvtts2si_rr(size, dst: Reg, fp, src: X)`, `cvtts2si_rm(size, dst: Reg, fp, src: Mem)` | CVTTSS2SI/CVTTSD2SI `F3`/`F2 [REX.W] 0F 2C /r`: toward zero; `1 << (size.bits() - 1)` (the "integer indefinite") when NaN or out of range | `size` is `D` or `Q` |
+| `cvts2si_rr(size, dst: Reg, fp, src: X)`, `cvts2si_rm(size, dst: Reg, fp, src: Mem)` | CVTSS2SI/CVTSD2SI `F3`/`F2 [REX.W] 0F 2D /r`: rounded as MXCSR says (`lrint`, `llrint`); the integer indefinite when NaN or out of range | `size` is `D` or `Q` |
+| `mins_rr`, `maxs_rr` `(fp, dst: X, src: X)`, `mins_rm`, `maxs_rm` `(fp, dst: X, src: Mem)` | MIN/MAX SS/SD `F3`/`F2 0F 5D`, `5F /r`: `dst < src ? dst : src` (`>` for max), so the **second** operand when either is NaN or both are zeros of either sign; `minnum`/`fmin` need a NaN fix-up around it | |
+| `movup_rr(fp, dst: X, src: X)` | MOVUPS/MOVUPD `[66] 0F 10 /r`, `dst` in reg | |
+| `movdqu_rr(dst: X, src: X)` | MOVDQU `F3 0F 6F /r` | |
+| `movq_rr(dst: X, src: X)` | MOVQ `F3 0F 7E /r`: the low 64 bits, the high 64 zeroed | |
+| `movd_rm(size, dst: X, src: Mem)` | MOVD `66 0F 6E /r` (`D`) / MOVQ `F3 0F 7E /r` (`Q`): a load into the low element, the rest zeroed | `size` is `D` or `Q` |
+| `movd_mr(size, dst: Mem, src: X)` | MOVD `66 0F 7E /r` (`D`) / MOVQ `66 0F D6 /r` (`Q`): a store of the low element | `size` is `D` or `Q` |
 | `cvtss2sd_rr(dst: X, src: X)`, `cvtss2sd_rm(dst: X, src: Mem)` | CVTSS2SD `F3 0F 5A /r`: exact | |
 | `cvtsd2ss_rr(dst: X, src: X)`, `cvtsd2ss_rm(dst: X, src: Mem)` | CVTSD2SS `F2 0F 5A /r`: rounded as MXCSR says | |
 
@@ -426,26 +463,137 @@ Register-register moves use the load opcode with `dst` in reg (`0F 10`,
 `0F 28`, `66 0F 6F`), as LLVM encodes them. The conversions' operand order
 follows `movzx`: destination, then the source and its size or precision.
 An unsigned conversion, a 64-bit unsigned one in particular, is a sequence
-the code generator writes from these.
+the code generator writes from these. The 64-bit `movq` memory forms are
+LLVM's: `F3 0F 7E` to load and `66 0F D6` to store, not `66 REX.W 0F
+6E`/`7E`, which LLVM reserves for the general-register forms.
+
+## Packed SSE2
+
+SSE and SSE2 on all 128 bits of an `xmm`, legacy-encoded: the `0F` map,
+mandatory prefix `66` for the integer forms, none or `66` for the single
+and double floating-point forms (an `fp` operand, as in "Scalar floating
+point": `addp` is ADDPS or ADDPD). The mandatory prefix precedes REX.
+Every memory operand is 128 bits and must be 16-byte aligned, except
+where a row names a narrower width (those have no alignment requirement).
+A `_rm` form is its `_rr` form with the second register replaced by the
+memory operand; both exist for every row with "/r".
+
+**Integer, `66 0F op /r`**, constructors `name_rr(dst: X, src: X)` and
+`name_rm(dst: X, src: Mem)`:
+
+| instructions | `op` |
+|---|---|
+| `paddb`, `paddw`, `paddd`, `paddq` | `FC`, `FD`, `FE`, `D4` |
+| `psubb`, `psubw`, `psubd`, `psubq` | `F8`, `F9`, `FA`, `FB` |
+| `paddsb`, `paddsw`, `paddusb`, `paddusw` (saturating) | `EC`, `ED`, `DC`, `DD` |
+| `psubsb`, `psubsw`, `psubusb`, `psubusw` (saturating) | `E8`, `E9`, `D8`, `D9` |
+| `pmullw`, `pmulhw`, `pmulhuw`, `pmuludq`, `pmaddwd` | `D5`, `E5`, `E4`, `F4`, `F5` |
+| `pand`, `pandn` (`!dst & src`), `por`, `pxor` | `DB`, `DF`, `EB`, `EF` |
+| `pcmpeqb`, `pcmpeqw`, `pcmpeqd` | `74`, `75`, `76` |
+| `pcmpgtb`, `pcmpgtw`, `pcmpgtd` (signed `dst > src`) | `64`, `65`, `66` |
+| `pminsw`, `pmaxsw`, `pminub`, `pmaxub` | `EA`, `EE`, `DA`, `DE` |
+| `pavgb`, `pavgw`, `psadbw` | `E0`, `E3`, `F6` |
+| `psllw`, `pslld`, `psllq` (count in the low 64 bits of `src`) | `F1`, `F2`, `F3` |
+| `psrlw`, `psrld`, `psrlq` | `D1`, `D2`, `D3` |
+| `psraw`, `psrad` | `E1`, `E2` |
+| `punpcklbw`, `punpcklwd`, `punpckldq`, `punpcklqdq` | `60`, `61`, `62`, `6C` |
+| `punpckhbw`, `punpckhwd`, `punpckhdq`, `punpckhqdq` | `68`, `69`, `6A`, `6D` |
+| `packsswb`, `packssdw`, `packuswb` | `63`, `6B`, `67` |
+
+A shift count of at least the element width gives 0 (`psra*`: the sign
+in every bit).
+
+**Shifts by an immediate**, `name_ri(dst: X, n: u8)`, `66 0F op /digit ib`
+with `dst` in `rm`:
+
+| instructions | encoding |
+|---|---|
+| `psrlw`, `psraw`, `psllw` | `71 /2`, `71 /4`, `71 /6` |
+| `psrld`, `psrad`, `pslld` | `72 /2`, `72 /4`, `72 /6` |
+| `psrlq`, `psrldq`, `psllq`, `pslldq` | `73 /2`, `73 /3`, `73 /6`, `73 /7` |
+
+`psrldq`/`pslldq` shift the whole register by `n` **bytes** (all zero for
+`n > 15`).
+
+**Shuffles and the rest:**
+
+| constructor | encodes |
+|---|---|
+| `pshufd_rri(dst: X, src: X, order: u8)`, `pshufd_rmi(dst, src: Mem, order)` | PSHUFD `66 0F 70 /r ib`: element `i` of `dst` is element `(order >> 2i) & 3` of `src` |
+| `pshuflw_rri`, `pshuflw_rmi` | PSHUFLW `F2 0F 70 /r ib`: the same on the low four words, the high 64 bits copied |
+| `pshufhw_rri`, `pshufhw_rmi` | PSHUFHW `F3 0F 70 /r ib`: the same on the high four words |
+| `shufp_rri(fp, dst: X, src: X, order: u8)`, `shufp_rmi(fp, dst, src: Mem, order)` | SHUFPS/SHUFPD `[66] 0F C6 /r ib`: the low half from `dst`, the high half from `src` |
+| `addp`, `subp`, `mulp`, `divp`, `sqrtp`, `minp`, `maxp` `_rr(fp, dst: X, src: X)` / `_rm(fp, dst, src: Mem)` | ADD/SUB/MUL/DIV/SQRT/MIN/MAX PS/PD `[66] 0F 58`, `5C`, `59`, `5E`, `51`, `5D`, `5F /r`; `minp`/`maxp` per element as `mins`/`maxs` |
+| `unpcklp_rr`, `unpckhp_rr` `(fp, dst, src: X)`, `_rm` | UNPCKLPS/PD `[66] 0F 14 /r`, UNPCKHPS/PD `[66] 0F 15 /r` |
+| `cmpp_rr(pred: FpCmp, fp, dst: X, src: X)`, `cmpp_rm(pred, fp, dst, src: Mem)` | CMPPS/CMPPD `[66] 0F C2 /r ib`, `ib` the predicate: each element all ones where it holds |
+| `andp_*`, `andnp_*`, `orp_*`, `xorp_*` | in "Scalar floating point" (they are packed already) |
+| `movap_*`, `movup_*`, `movdqa_*`, `movdqu_*` | in "Scalar floating point" |
+| `movlhps_rr(dst: X, src: X)`, `movhlps_rr(dst, src)` | MOVLHPS `0F 16 /r` (low half of `src` to high half of `dst`), MOVHLPS `0F 12 /r` (high to low) |
+| `movlp_rm(fp, dst: X, src: Mem)`, `movhp_rm(fp, dst, src)` | MOVLPS/PD `[66] 0F 12 /r`, MOVHPS/PD `[66] 0F 16 /r`: a 64-bit load into the low / high half, the other half kept |
+| `movlp_mr(fp, dst: Mem, src: X)`, `movhp_mr(fp, dst, src)` | `[66] 0F 13 /r`, `[66] 0F 17 /r`: the low / high half stored (64 bits) |
+| `cvtdq2ps_*` | CVTDQ2PS `0F 5B /r` |
+| `cvtps2dq_*`, `cvttps2dq_*` | CVTPS2DQ `66 0F 5B /r` (MXCSR rounding), CVTTPS2DQ `F3 0F 5B /r` (toward zero) |
+| `cvtdq2pd_*` | CVTDQ2PD `F3 0F E6 /r`: the low two `i32`; the memory form reads 64 bits |
+| `cvtpd2dq_*`, `cvttpd2dq_*` | CVTPD2DQ `F2 0F E6 /r`, CVTTPD2DQ `66 0F E6 /r`: into the low half, the high half zeroed |
+| `cvtps2pd_*` | CVTPS2PD `0F 5A /r`: the low two `f32`; the memory form reads 64 bits |
+| `cvtpd2ps_*` | CVTPD2PS `66 0F 5A /r`: into the low half, the high half zeroed |
+| `pmovmskb_rr(dst: Reg, src: X)` | PMOVMSKB `66 0F D7 /r`, `dst` (32 bits) in reg: the 16 byte sign bits, zero-extended |
+| `movmskp_rr(fp, dst: Reg, src: X)` | MOVMSKPS/PD `[66] 0F 50 /r`, `dst` (32 bits) in reg: the element sign bits |
+| `pextrw_rri(dst: Reg, src: X, lane: u8)` | PEXTRW `66 0F C5 /r ib`, `dst` (32 bits) in reg: word `lane & 7`, zero-extended |
+| `pinsrw_rri(dst: X, src: Reg, lane: u8)`, `pinsrw_rmi(dst: X, src: Mem, lane)` | PINSRW `66 0F C4 /r ib`: the low 16 bits of `src` (the memory form reads 16 bits) into word `lane & 7` |
+
+Each `cvt*` row is `_rr(dst: X, src: X)` and `_rm(dst: X, src: Mem)`. The
+`imm8` operands take every `u8` (the instruction uses the bits it needs).
+A packed-form instruction has a site exactly when its memory operand is
+RIP-relative or marked `with_abs32`; an `imm8` after a RIP-relative
+displacement is part of the addend, as for `cmps_rm`.
+
+Not provided: anything from SSE3 and later (`pshufb`, `pminsd`,
+`pmulld`, `pcmpeqq`, `blendv*`, `round*`, `ptest`, `pextrb/d/q`,
+`pinsrb/d/q`, `movddup`), `maskmovdqu`, the non-temporal stores, and
+MMX.
+
+## Relocatable immediates
+
+The non-PIC address materialisations: the immediate itself is the
+instruction's site, with addend 0, an **absolute field** like a
+`with_abs32` displacement. Each constructor always writes the full-width
+immediate, whatever the value, so the field is where the relocation
+expects it.
+
+| constructor | encodes | site | relocation | precondition |
+|---|---|---|---|---|
+| `movabs_ri(dst: Reg, imm: i64)` | MOVABS `REX.W B8+r io` (10 bytes) | `Abs64`, offset 2 | `R_X86_64_64` | |
+| `mov_ri32s(dst: Reg, imm: i32)` | MOV `REX.W C7 /0 id`: sign-extended into 64 bits | `Abs32`, the last 4 bytes | `R_X86_64_32S` | |
+| `mov_ri32(dst: Reg, imm: u32)` | MOV `B8+r id` (`41 B8+r` for `r8`..): zero-extended into 64 bits | `Abs32U`, the last 4 bytes | `R_X86_64_32` | |
+| `mov_mi32s(dst: Mem, imm: i32)` | MOV `REX.W C7 /0 id` on memory | `Abs32`, the last 4 bytes | `R_X86_64_32S` | `!dst.has_field()`: not RIP-relative and not `with_abs32` |
+| `push_i32(imm: i32)` | PUSH `68 id` | `Abs32`, offset 1 | `R_X86_64_32S` | |
+
+An instruction has one site, so `mov_mi32s` refuses a memory operand that
+is a field itself (`Mem::has_field`); the code generator puts such an
+address in a register first. `mov_ri(Size::Q, ..)`, `mov_ri(Size::D, ..)`
+and `push_i` remain the forms for a known constant: they choose the
+shortest encoding and have no site.
 
 ## Fixups and relocations
 
 An instruction has at most one **relocatable field**, its *site*: the
 **PC-relative field**, the `rel8`/`rel32` of a branch or call or the
 `disp32` of a RIP-relative memory operand, which holds the distance from
-the end of the instruction to the target; or the **absolute field**, the
+the end of the instruction to the target; or an **absolute field**, the
 `disp32` of a memory operand marked `with_abs32`, which holds a value (a
-thread-pointer offset, a `sym` in `[base + sym]`). A RIP-relative operand
-cannot be marked, so no instruction has two.
+thread-pointer offset, a `sym` in `[base + sym]`), or the immediate of a
+form of "Relocatable immediates". A RIP-relative operand cannot be
+marked, and `mov_mi32s` refuses either, so no instruction has two.
 
 ```rust
-pub enum Fixup { Rel8, Rel32, Abs32 }
+pub enum Fixup { Rel8, Rel32, Abs32, Abs32U, Abs64 }
 impl Fixup {
-    pub const ALL: [Fixup; 3];
-    pub const fn is_pc_relative(self) -> bool;            // Abs32 is not
-    pub const fn size(self) -> usize;                     // 1, 4, 4
-    pub const fn min(self) -> i64;                        // -128, -(1 << 31), -(1 << 31)
-    pub const fn max(self) -> i64;                        // 127, (1 << 31) - 1, (1 << 31) - 1
+    pub const ALL: [Fixup; 5];
+    pub const fn is_pc_relative(self) -> bool;            // Rel8 and Rel32 only
+    pub const fn size(self) -> usize;                     // 1, 4, 4, 4, 8
+    pub const fn min(self) -> i64;                        // -128, -(1 << 31), -(1 << 31), 0, i64::MIN
+    pub const fn max(self) -> i64;                        // 127, (1 << 31) - 1, (1 << 31) - 1, (1 << 32) - 1, i64::MAX
     pub const fn fits(self, disp: i64) -> bool;
     pub const fn patch(self, code: &mut [u8], at: usize, disp: i64) -> bool;
     pub const fn extract(self, code: &[u8], at: usize) -> Option<i64>;
@@ -468,7 +616,8 @@ impl Inst {
   `offset` is the field's offset from the start of the instruction. For
   a PC-relative field `addend` is `offset as i64 - len`: minus the bytes
   from the field to the end of the instruction (including an immediate
-  after a RIP-relative operand). For `Abs32` it is 0: the relocation
+  after a RIP-relative operand). For an absolute field (`Abs32`,
+  `Abs32U`, `Abs64`) it is 0: the relocation
   computes the value itself (`S + A`, `S + A - TP`, ...). A relocation at `start + offset` with that addend computes
   `S + A - P` = the distance from the end of the instruction to `S`, so
   the same `Site` serves an ELF relocation and an internal fixup: to patch
@@ -494,7 +643,9 @@ symbol offset):
 | TLS descriptor | `lea(Size::Q, Reg::Rax, Mem::rip(0))` | `R_X86_64_GOTPC32_TLSDESC` |
 | offset of a variable in its module's TLS block | an absolute field | `R_X86_64_DTPOFF32` |
 | offset of a variable from the thread pointer | an absolute field | `R_X86_64_TPOFF32` |
-| absolute address in the low or high 2 GiB (non-PIC) | an absolute field | `R_X86_64_32S` |
+| absolute address in the low or high 2 GiB (non-PIC) | an absolute field: a `with_abs32` displacement, `mov_ri32s`, `mov_mi32s`, `push_i32` | `R_X86_64_32S` |
+| absolute address in the low 4 GiB (non-PIC) | `mov_ri32` | `R_X86_64_32` |
+| absolute 64-bit address (any code model) | `movabs_ri` | `R_X86_64_64` |
 
 The code generator picks the relocation and gives it to the object writer
 (`spec/object.md` "Relocations"); this crate names only the place and the
@@ -534,18 +685,18 @@ may use any register (the linkers relax `mov r64, [rip + x@gottpoff]` to
 ## Not provided
 
 By decision of the scope so far: the high-byte registers `ah`..`bh`; the
-string instructions (`movs`, `stos`, `rep` prefixes); `xadd` and `cmpxchg`
+string instructions other than `rep_movs`/`rep_stos` (`cmps`, `scas`,
+`lods`, `repne`, the forms without `rep`, `std`); `xadd` and `cmpxchg`
 with a register destination; `movabs` to and from the accumulator with a
 64-bit address; `enter`; 16-bit `push`/`pop`; far branches; `jrcxz` and
-`loop`; `cpuid`, `rdtsc`, `hlt` and the other system instructions; an
-absolute field in an immediate (`mov r32, imm32` against `R_X86_64_32`)
-rather than a displacement; the `-fno-plt` general-dynamic call through
+`loop`; `hlt` and the system instructions other than `rdtsc`, `rdtscp`
+and `cpuid`; a relocatable immediate other than those of "Relocatable
+immediates" (an `imm32` of an ALU instruction, for one); the `-fno-plt` general-dynamic call through
 the GOT (`data16 rex64 call [rip + __tls_get_addr@GOTPCREL]`) and the
 descriptor call `call [rax]`, whose `R_X86_64_TLSDESC_CALL` marks an
 instruction rather than a field; the SSE instructions not listed in
-"Scalar floating point" (`min`/`max`, `rounds`, the rounding conversions
-`cvtss2si`, packed arithmetic, shuffles and integer SIMD); and everything
-VEX- or EVEX-encoded (AVX, APX). Adding an instruction is a constructor, a
+"Scalar floating point" or "Packed SSE2" (SSE3 and later: `rounds`,
+`pshufb`, ...); MMX; and everything VEX- or EVEX-encoded (AVX, APX). Adding an instruction is a constructor, a
 row here, a row in `tests/l1/table.rs` and a sweep.
 
 ## Test method
@@ -596,6 +747,16 @@ through a 128-bit load; `absolute-fields` takes every form but
 RIP-relative, marked `with_abs32`, through a load with every register, a
 store with an immediate and `lea`, against LLVM's `{disp32}` text, and
 checks each load's site (`Abs32`, the last four bytes, addend 0).
+`packed-memory-operands` takes every form through `paddd` with every
+`xmm` in the reg field, and through `pshufd` and `cmpltpd` (an `imm8`
+after the displacement). `locked-memory-destinations` takes every form
+at every size through `lock` with `add`, `sub`, `and`, `or`, `xor` and
+`xadd` (the register cycling through all sixteen), the same five with an
+immediate, and `inc`, `dec`, `not`, `neg`. `relocatable-immediates`
+checks each form's site (kind, the last bytes, addend 0) on every
+register and the field's boundary values; `push_i32` is swept with values
+that are not a sign-extended byte, where LLVM's text has the same form
+(its other values are the zero form patched, in `fixups`).
 
 **Coverage.** `coverage::every_constructor_is_swept` reads the crate's
 source for its public constructors (as `hod_mc_a64`'s does) and fails if
@@ -607,6 +768,8 @@ encodings.
 with LLVM (wrong bytes, a wrong length, a wrong instruction, bytes that
 decode as two instructions, a wrong family member, text LLVM refuses, a
 rejection LLVM accepts) and requires each to be reported, by every major.
+The disassembler's `lock` and `rep` prefixes are part of the mnemonic
+(`lock add`, `rep movsb`).
 
 **Fixups**, `fixups`: without tools, the ranges; `patch` and `extract` are
 inverses, little-endian, touch only the field, and refuse out-of-range
@@ -618,8 +781,10 @@ test; constructors equal their zero form patched. With tools,
 loads, an immediate after the field, a `lock` and a segment prefix before
 it) the bytes equal LLVM's, and LLVM's relocation is at hod's site, with
 hod's addend and the type the table gives, `has_rex` deciding between the
-two GOTPCRELX kinds (86 instructions now, with the RIP-relative SSE and
-bit-test operands, every TLS relocation of the table and `R_X86_64_32S`);
+two GOTPCRELX kinds (104 instructions now, with the RIP-relative SSE,
+packed and bit-test operands, every TLS relocation of the table,
+`R_X86_64_32S` on a displacement and on the immediates, `R_X86_64_32` and
+`R_X86_64_64`);
 and `a_laid_out_function_matches_llvm`: a function
 with forward and backward short and near branches, a call, RIP-relative
 operands with and without an immediate after the field, under `lock` and
@@ -656,6 +821,9 @@ rewritten into other bytes (lld 22, mold 2.37: into a load without the
   on an instruction that is not lockable; tested by hod alone.
 - LLVM accepts `movsx r64, r32` as another spelling of MOVSXD; hod spells
   it `movsxd_rr` and `movsx_*` rejects that size pair; tested by hod alone.
+- LLVM accepts a RIP-relative or symbolic displacement together with a
+  symbolic immediate (two relocations); `mov_mi32s` refuses a memory
+  operand that is a field; tested by hod alone.
 
 Every encoding the crate produces is the one LLVM's assembler produces for
 the same text, at both majors; there is no choice where they differ.

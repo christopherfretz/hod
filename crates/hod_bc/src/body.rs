@@ -43,6 +43,15 @@ pub(crate) enum CalleeInfo {
     Plain,
 }
 
+/// A call-site return or argument group as built (`call_attrs`).
+#[derive(Debug, Clone)]
+pub(crate) struct ParamGroup {
+    pub id: u64,
+    pub attrs: ParamAttrs,
+    pub notes: u8,
+    pub names: Vec<String>,
+}
+
 /// Everything a reader keeps from one function to the next.
 #[derive(Debug, Default)]
 pub(crate) struct State {
@@ -82,6 +91,10 @@ pub(crate) struct State {
     pub callees: Vec<CalleeInfo>,
     /// Call-site function groups: id, kept flags, names rejected.
     pub fn_groups: Vec<(u64, u32, Vec<String>)>,
+    /// Call-site return and argument groups, by position in the
+    /// module's group table, built once: the attributes, the type note
+    /// bits and the names noted, replayed at each use.
+    pub param_groups: Vec<Option<ParamGroup>>,
     /// The call of a debug intrinsic waiting for its location.
     pub old_record: Option<crate::body_debug::OldRecord>,
     /// The values of the debug record being read.
@@ -924,11 +937,10 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
         Ok(self.s.fn_groups.len() - 1)
     }
 
-    /// The group entry `id` of the attribute tables: its index and record.
-    pub fn group(&self, id: u64) -> BcResult<(u64, Rec)> {
-        let groups = &self.bits.groups;
-        match groups.binary_search_by_key(&id, |&(gid, _, _)| gid) {
-            Ok(found) => Ok((groups[found].1, groups[found].2)),
+    /// The position of group `id` in the attribute tables.
+    pub fn group_slot(&self, id: u64) -> BcResult<usize> {
+        match self.bits.groups.binary_search_by_key(&id, |&(gid, _, _)| gid) {
+            Ok(found) => Ok(found),
             Err(_) => self.invalid("an attribute group that is not defined"),
         }
     }

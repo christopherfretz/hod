@@ -28,6 +28,11 @@
 //! [`vector::MASK_WIDE`]; an intrinsic of `i1` lanes other than a
 //! reduction as [`MASK`]; a mask crossing a call is `vcall`'s.
 //!
+//! Compares of `<N x i128>` lanes and `zext`/`sext`/`trunc` between a
+//! mask and them (WP-152, `spec/codegen.md` §5.6.18 (5)) work lane by
+//! lane on the vector's slot (class `Mem`, `vector::Wide`): both halves
+//! of a lane through `rax`, `rcx`, `r11`, `rdx`.
+//!
 //! A constant mask operand of these lowerings is put in a register by its
 //! bits (undefined lanes 0). Elsewhere (a `phi` incoming, a call
 //! argument, a returned constant) the glue does the same
@@ -383,6 +388,10 @@ pub fn icmp<'a>(
         }
         return cx.finish(inst, a);
     }
+    if let Some(w) = wide_int(cx, value_ty(cx, lhs)) {
+        let w = wide_of_mask(cx, w, n)?;
+        return wide_icmp(cx, inst, &w, pred, lhs, rhs);
+    }
     vector::lanes(cx, value_ty(cx, lhs))?;
     deferred_first(cx, inst, None)?;
     let [a, b] = images(cx, [lhs, rhs], n)?;
@@ -405,6 +414,134 @@ pub fn icmp<'a>(
         or_bit(cx, r, RAX, lane);
     }
     cx.finish(inst, rd)
+}
+
+// ---- `i128` lanes (WP-152, §5.6.18) ----
+
+/// The wide image of `ty` when it is a vector of `i128` lanes (class
+/// `Mem`, [`vector::Wide`]); `None` for any other type.
+fn wide_int(cx: &FnCx<'_, X64>, ty: TypeId) -> Option<CgResult<vector::Wide>> {
+    let types = cx.types();
+    match types.kind(ty) {
+        TypeKind::Vector { elem, .. } if types.int_bits(elem) == Some(128) => {
+            vector::Wide::of(cx, ty)
+        }
+        _ => None,
+    }
+}
+
+/// `%r = icmp <pred> <N x i128> %lhs, %rhs`, per lane from the
+/// operands' slots as `llc` does: equality by `xor` of both halves and
+/// `or`; an order by `cmp` of the low halves and `sbb` of the high ones
+/// (the operands swapped for `>` and `<=`), then `setcc`.
+fn wide_icmp<'a>(
+    cx: &mut FnCx<'a, X64>,
+    inst: Inst<'a>,
+    w: &vector::Wide,
+    pred: IntPredicate,
+    lhs: Value,
+    rhs: Value,
+) -> CgResult<()> {
+    use IntPredicate as P;
+    deferred_first(cx, inst, None)?;
+    let left = cx.use_mem(lhs)?;
+    let right = if rhs == lhs { left } else { cx.use_mem(rhs)? };
+    let rd = cx.def_reg(inst)?;
+    let r = gp(rd);
+    let (swap, cond) = match pred {
+        P::Eq => (false, Cond::E),
+        P::Ne => (false, Cond::Ne),
+        P::Ult => (false, Cond::B),
+        P::Ugt => (true, Cond::B),
+        P::Uge => (false, Cond::Ae),
+        P::Ule => (true, Cond::Ae),
+        P::Slt => (false, Cond::L),
+        P::Sgt => (true, Cond::L),
+        P::Sge => (false, Cond::Ge),
+        P::Sle => (true, Cond::Ge),
+    };
+    let (first, second) = if swap { (right, left) } else { (left, right) };
+    mov_imm(cx, r, 0, 32);
+    for lane in 0..w.lanes {
+        let (xl, yl) = (first.offset_by(w.offset(lane)), second.offset_by(w.offset(lane)));
+        frame_inst(cx, xl, |m| mc::mov_rm(Size::Q, RAX, m));
+        frame_inst(cx, yl, |m| mc::mov_rm(Size::Q, RCX, m));
+        frame_inst(cx, xl.offset_by(8), |m| mc::mov_rm(Size::Q, R11, m));
+        frame_inst(cx, yl.offset_by(8), |m| mc::mov_rm(Size::Q, RDX, m));
+        if matches!(pred, P::Eq | P::Ne) {
+            put(cx, mc::xor_rr(Size::Q, RAX, RCX));
+            put(cx, mc::xor_rr(Size::Q, R11, RDX));
+            put(cx, mc::or_rr(Size::Q, RAX, R11));
+        } else {
+            put(cx, mc::cmp_rr(Size::Q, RAX, RCX));
+            put(cx, mc::sbb_rr(Size::Q, R11, RDX));
+        }
+        put(cx, mc::setcc_r(cond, RAX));
+        put(cx, mc::movzx_rr(Size::D, RAX, Size::B, RAX));
+        or_bit(cx, r, RAX, lane);
+    }
+    cx.finish(inst, rd)
+}
+
+/// `zext` / `sext` of a mask of `w.lanes` lanes to `<N x i128>`: each
+/// lane's bit, 0 or 1 / all ones, stored as both halves of the lane.
+fn wide_extend<'a>(
+    cx: &mut FnCx<'a, X64>,
+    inst: Inst<'a>,
+    w: &vector::Wide,
+    arg: Value,
+    signed: bool,
+) -> CgResult<()> {
+    deferred_first(cx, inst, None)?;
+    let c = gp(operand(cx, arg, w.lanes)?);
+    let out = cx.def_mem(inst)?;
+    if !signed {
+        mov_imm(cx, RCX, 0, 32);
+    }
+    for lane in 0..w.lanes {
+        put(cx, mc::mov_rr(Size::Q, RAX, c));
+        if lane != 0 {
+            put(cx, mc::shr_ri(Size::Q, RAX, lane as u8));
+        }
+        put(cx, mc::and_ri(Size::D, RAX, 1));
+        if signed {
+            put(cx, mc::neg_r(Size::Q, RAX));
+        }
+        let at = out.offset_by(w.offset(lane));
+        frame_inst(cx, at, |m| mc::mov_mr(Size::Q, m, RAX));
+        let high = if signed { RAX } else { RCX };
+        frame_inst(cx, at.offset_by(8), |m| mc::mov_mr(Size::Q, m, high));
+    }
+    Ok(())
+}
+
+/// `trunc <N x i128>` to a mask: bit 0 of each lane's low half.
+fn wide_trunc<'a>(
+    cx: &mut FnCx<'a, X64>,
+    inst: Inst<'a>,
+    w: &vector::Wide,
+    arg: Value,
+) -> CgResult<()> {
+    deferred_first(cx, inst, None)?;
+    let a = cx.use_mem(arg)?;
+    let rd = cx.def_reg(inst)?;
+    let r = gp(rd);
+    mov_imm(cx, r, 0, 32);
+    for lane in 0..w.lanes {
+        frame_inst(cx, a.offset_by(w.offset(lane)), |m| mc::mov_rm(Size::D, RAX, m));
+        put(cx, mc::and_ri(Size::D, RAX, 1));
+        or_bit(cx, r, RAX, lane);
+    }
+    cx.finish(inst, rd)
+}
+
+/// `w` checked to have the `n` lanes of the mask on the other side.
+fn wide_of_mask(cx: &FnCx<'_, X64>, w: CgResult<vector::Wide>, n: u32) -> CgResult<vector::Wide> {
+    let w = w?;
+    if w.lanes != n {
+        return cx.bug("a mask operation on vectors of different lengths");
+    }
+    Ok(w)
 }
 
 /// LLVM's code of `pred`: bit 0 equal, 1 greater, 2 less, 3 unordered.
@@ -636,6 +773,12 @@ pub fn cast<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> CgResult<
         if !matches!(op, O::ZExt | O::SExt | O::UIToFP | O::SIToFP) {
             return unsupported(crate::int::CAST);
         }
+        if matches!(op, O::ZExt | O::SExt)
+            && let Some(w) = wide_int(cx, inst.ty())
+        {
+            let w = wide_of_mask(cx, w, n)?;
+            return wide_extend(cx, inst, &w, arg, op == O::SExt);
+        }
         let to = vector::lanes(cx, inst.ty())?;
         deferred_first(cx, inst, None)?;
         let c = gp(operand(cx, arg, n)?);
@@ -664,6 +807,12 @@ pub fn cast<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> CgResult<
     let n = mask_of(cx, inst.ty())?;
     if !matches!(op, O::Trunc | O::FPToUI | O::FPToSI) {
         return unsupported(crate::int::CAST);
+    }
+    if op == O::Trunc
+        && let Some(w) = wide_int(cx, value_ty(cx, arg))
+    {
+        let w = wide_of_mask(cx, w, n)?;
+        return wide_trunc(cx, inst, &w, arg);
     }
     let from = vector::lanes(cx, value_ty(cx, arg))?;
     deferred_first(cx, inst, None)?;

@@ -608,6 +608,14 @@ impl<'a, T: Target> FnCx<'a, T> {
         Ok(())
     }
 
+    /// From here on no spill slot that is released is handed out again
+    /// (§4.3), as for a call of a `returns_twice` function: for a target
+    /// lowering whose code after it can run a second time and read a
+    /// spill slot again (x86-64's `llvm.eh.sjlj.setjmp`).
+    pub fn never_reuse_spill_slots(&mut self) {
+        self.s.frame.keep_spills();
+    }
+
     /// Displaces every register that holds a value and is not pinned.
     ///
     /// # Errors

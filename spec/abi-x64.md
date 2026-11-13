@@ -740,7 +740,15 @@ hook"), which for x86-64 is
    the stack. Otherwise the rule accepts the call, and the code
    generator lowers it, or refuses one with such variable arguments as
    `x64:musttail-variable-arguments`.
-5. When `X64::assign` refuses either signature (for example a vector
+5. A `byval` aligned above 16 (§6.2) needs no realignment in a
+   `musttail` call: the verifier makes the callee's parameter list the
+   caller's, its alignment included (`hod_ir`'s verifier rejects a
+   differing one as malformed input, as LLVM's does), so each copy goes
+   where the caller's arrived, in an area the caller's caller aligned;
+   `call::align_stack_area` does not run for the call (WP-152). Growth
+   with such a copy is possible only through variable arguments before
+   the `...`, refused by the two names of item 4.
+6. When `X64::assign` refuses either signature (for example a vector
    wider than 16 bytes under AVX, `x64:wide-vector-abi`, or an
    `x86_fp80` under `-x87`), or the symbol is not a function, the rule
    has no answer and the call is `musttail:stack-args-unknown`.
@@ -755,7 +763,13 @@ program under `qemu-x86_64` losing the variable arguments);
 case, those that compile run against `llc` 19 and 22 under bfd, lld and
 mold; the features of the calling function deciding);
 `crates/hod/tests/musttail_forward.rs` (the three outcomes by text and
-bitcode).
+bitcode); `crates/hod/tests/musttail_byval_x64.rs` (WP-152: thunks with
+`byval` aligned 32 and 64, forwarded, permuted after a clobbering call,
+two copies swapped, variadic, from the facade, hod stressed and `llc`
+22, with `llc` 22's and hod's callers and callees that trap on a
+misaligned copy, under bfd, lld and mold; growth refused by name; a
+differing alignment malformed; `llc` 19 is no leg, it stages
+`musttail` `byval` copies over the return address).
 
 ### 8.6 DWARF register numbers
 

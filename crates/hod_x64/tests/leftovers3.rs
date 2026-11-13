@@ -321,9 +321,137 @@ fn wide_lanes_agree() {
     assert!(report.interpreted > 0 || report.legs.is_empty(), "{report:?}");
 }
 
+/// Lines that hash the mask `<n x i1>` `%{m}` into `acc` lane by lane;
+/// returns them and the new hash's name.
+fn fold_mask(n: u32, m: &str, acc: &str) -> (String, String) {
+    let mut text = String::new();
+    let mut acc = acc.to_string();
+    for i in 0..n {
+        writeln!(
+            text,
+            "  %{m}.e{i} = extractelement <{n} x i1> %{m}, i32 {i}\n  \
+             %{m}.z{i} = zext i1 %{m}.e{i} to i64\n  %{m}.s{i} = shl i64 %{m}.z{i}, {i}\n  \
+             %{m}.h{i} = mul i64 {acc}, 1099511628211\n  %{m}.x{i} = xor i64 %{m}.h{i}, %{m}.s{i}"
+        )
+        .unwrap();
+        acc = format!("%{m}.x{i}");
+    }
+    (text, acc)
+}
+
+/// Lines that build `<n x i128>` `%x` from `%a0`, `%a1` ([`chain`]) and
+/// `%y.c{n-1}` from it lane by lane: lane `i` equal (`i % 4 == 0`), its low
+/// half changed by `%a2` (1), its sign bit flipped (2), both halves
+/// changed by `%a2` and `%a3` (3), so that every predicate sees equal
+/// lanes, lanes ordered by the low half alone and by the sign.
+fn compare_operands(n: u32) -> String {
+    let vt = format!("<{n} x i128>");
+    let mut text = chain(Wide::I128, n, "x");
+    let mut prev = "poison".to_string();
+    for i in 0..n {
+        let (lo, hi) = match i % 4 {
+            0 => ("0".to_string(), "0".to_string()),
+            1 => ("%a2".to_string(), "0".to_string()),
+            2 => ("0".to_string(), "-9223372036854775808".to_string()),
+            _ => ("%a2".to_string(), "%a3".to_string()),
+        };
+        text.push_str(&Wide::I128.lane(&format!("y.d{i}"), &lo, &hi));
+        writeln!(
+            text,
+            "  %y.k{i} = xor i128 %x.k{i}, %y.d{i}\n  \
+             %y.c{i} = insertelement {vt} {prev}, i128 %y.k{i}, i32 {i}"
+        )
+        .unwrap();
+        prev = format!("%y.c{i}");
+    }
+    text
+}
+
+/// The mask functions of `i128` lanes (`spec/codegen.md` §5.6.18 (5)):
+/// every predicate on built operands, against a constant, an operand
+/// with itself; `zext`/`sext` of a mask to `i128` lanes and `trunc`
+/// back.
+fn wide_mask_functions(suite: &mut Suite, rng: &mut Rng) {
+    let seed = "-3750763034362895579";
+    let preds = ["eq", "ne", "ugt", "uge", "ult", "ule", "sgt", "sge", "slt", "sle"];
+    for &n in Wide::I128.lengths() {
+        let vt = format!("<{n} x i128>");
+        let mut funcs = Vec::new();
+        for p in preds {
+            let mut body = compare_operands(n);
+            let y = format!("%y.c{}", n - 1);
+            writeln!(body, "  %c = icmp {p} {vt} %x, {y}\n  %d = icmp {p} {vt} {y}, %x").unwrap();
+            let (f, h) = fold_mask(n, "c", seed);
+            body.push_str(&f);
+            let (g, h) = fold_mask(n, "d", &h);
+            body.push_str(&g);
+            writeln!(body, "  %r = add i64 {h}, 0").unwrap();
+            funcs.push(suite.add(&format!("cmp_{p}_{n}"), &[I64; 4], I64, &body, Check::Interp));
+        }
+        {
+            let cst = Wide::I128.vec_const(n);
+            let mut body = chain(Wide::I128, n, "x");
+            writeln!(
+                body,
+                "  %c = icmp slt {vt} %x, {cst}\n  %d = icmp ule {vt} %x, %x\n  \
+                 %e = icmp ne {vt} %x, zeroinitializer"
+            )
+            .unwrap();
+            let mut h = seed.to_string();
+            for m in ["c", "d", "e"] {
+                let (f, k) = fold_mask(n, m, &h);
+                body.push_str(&f);
+                h = k;
+            }
+            writeln!(body, "  %r = add i64 {h}, 0").unwrap();
+            funcs.push(suite.add(&format!("cmpc_{n}"), &[I64, I64], I64, &body, Check::Interp));
+        }
+        for ext in ["zext", "sext"] {
+            let mut body = format!(
+                "  %t = trunc i64 %a0 to i{n}\n  %m = bitcast i{n} %t to <{n} x i1>\n  \
+                 %v = {ext} <{n} x i1> %m to {vt}\n"
+            );
+            let (f, h) = fold(Wide::I128, n, "v", &all(n), seed);
+            body.push_str(&f);
+            writeln!(body, "  %r = add i64 {h}, 0").unwrap();
+            funcs.push(suite.add(&format!("{ext}_{n}"), &[I64], I64, &body, Check::Interp));
+        }
+        {
+            let mut body = chain(Wide::I128, n, "x");
+            writeln!(body, "  %m = trunc {vt} %x to <{n} x i1>").unwrap();
+            let (f, h) = fold_mask(n, "m", seed);
+            body.push_str(&f);
+            writeln!(body, "  %r = add i64 {h}, 0").unwrap();
+            funcs.push(suite.add(&format!("trunc_{n}"), &[I64, I64], I64, &body, Check::Interp));
+        }
+        for f in funcs {
+            for _ in 0..6 {
+                let args: Vec<u64> = (0..suite.funcs[f].ops.len()).map(|_| rng.next()).collect();
+                suite.case(f, &args);
+            }
+            let zero = vec![0; suite.funcs[f].ops.len()];
+            suite.case(f, &zero);
+        }
+    }
+}
+
+/// §5.6.18 (5): compares of `i128` lanes (every predicate; equal lanes,
+/// lanes that differ in the low half alone, in the sign) and the casts
+/// between masks and `i128` lanes agree with the interpreter and with
+/// `llc` 22 and 19 (hod plain and stressed).
+#[test]
+fn wide_masks_agree() {
+    let mut suite = Suite::default();
+    let mut rng = Rng(0x1525);
+    wide_mask_functions(&mut suite, &mut rng);
+    let report = check("wide-masks", &suite, &MAJORS);
+    assert!(report.interpreted > 0 || report.legs.is_empty(), "{report:?}");
+}
+
 /// §5.6.18 (1): what stays refused: a wide lane of a vector of more than
-/// `MAX_LANES` lanes, `fp128` lanes, and compares and casts of `i128`
-/// lanes (they go through the mask lowering).
+/// `MAX_LANES` lanes, arithmetic on `i128` lanes, a cast of a mask to
+/// `x86_fp80` lanes, and a cast between `i128` lanes and lanes other
+/// than a mask's.
 #[test]
 fn wide_lane_refusals_by_name() {
     let many = hod_x64::vector::MAX_LANES + 1;
@@ -335,8 +463,13 @@ fn wide_lane_refusals_by_name() {
         hod_x64::vector::LENGTH,
     );
     refused(
-        "define i1 @f(<2 x i128> %v, ptr %p) {\n  %w = load <2 x i128>, ptr %p\n  \
-         %c = icmp eq <2 x i128> %v, %w\n  %e = extractelement <2 x i1> %c, i32 0\n  ret i1 %e\n}\n",
+        "define void @f(<2 x i1> %c, ptr %p) {\n  %v = uitofp <2 x i1> %c to <2 x x86_fp80>\n  \
+         store <2 x x86_fp80> %v, ptr %p\n  ret void\n}\n",
+        hod_x64::vector::WIDE_ELEMENT,
+    );
+    refused(
+        "define void @f(<2 x i64> %v, ptr %p) {\n  %w = zext <2 x i64> %v to <2 x i128>\n  \
+         store <2 x i128> %w, ptr %p\n  ret void\n}\n",
         hod_x64::vector::WIDE_ELEMENT,
     );
     refused(
@@ -896,4 +1029,154 @@ fn wide_vector_and_byval_refusals_by_name() {
         compile("define i64 @f(ptr byval([4 x i64]) align 1073741824 %p) {\n  ret i64 0\n}\n"),
         Ok(())
     );
+}
+
+// ---- values live across `llvm.eh.sjlj.setjmp` (§5.6.18 (4)) ----
+
+/// The setter: register values of the entry block live across the
+/// `setjmp` (an instruction result `%x`, a floating-point `%f`, the
+/// argument `%b`), read after both returns; after the first, sixteen
+/// values live at once force spills, which would land in the slots the
+/// reloads of `%x`, `%f` and `%b` released if they were reused.
+const SJLJ_SETTER: &str = "
+declare i32 @llvm.eh.sjlj.setjmp(ptr)
+declare ptr @llvm.frameaddress.p0(i32)
+declare ptr @llvm.stacksave.p0()
+declare void @g_jump(ptr, i64)
+
+define i64 @live(ptr %buf, i64 %a, i64 %b) {
+entry:
+  %x = mul i64 %a, 7
+  %f = sitofp i64 %a to double
+  %fa = call ptr @llvm.frameaddress.p0(i32 0)
+  store ptr %fa, ptr %buf, align 8
+  %ss = call ptr @llvm.stacksave.p0()
+  %p2 = getelementptr ptr, ptr %buf, i64 2
+  store ptr %ss, ptr %p2, align 8
+  %r = call i32 @llvm.eh.sjlj.setjmp(ptr %buf)
+  %s0 = add i64 %x, %b
+  %fi = fptosi double %f to i64
+  %s1 = add i64 %s0, %fi
+  %rz = zext i32 %r to i64
+  %u = add i64 %s1, %rz
+  %z = icmp eq i32 %r, 0
+  br i1 %z, label %first, label %second
+first:
+SPILLS  call void @g_jump(ptr %buf, i64 %t16)
+  unreachable
+second:
+  %p3 = getelementptr ptr, ptr %buf, i64 3
+  %w = load i64, ptr %p3, align 8
+  %ret = add i64 %u, %w
+  ret i64 %ret
+}
+";
+
+/// G: stores its value in word 3 of the buffer (unused by the layout)
+/// and jumps.
+const SJLJ_JUMPER: &str = "
+declare void @llvm.eh.sjlj.longjmp(ptr)
+
+define void @g_jump(ptr %buf, i64 %v) {
+  %p3 = getelementptr ptr, ptr %buf, i64 3
+  store i64 %v, ptr %p3, align 8
+  call void @llvm.eh.sjlj.longjmp(ptr %buf)
+  unreachable
+}
+";
+
+/// The caller of the setter, with the buffer in its frame.
+const SJLJ_CALLER: &str = "
+declare i64 @live(ptr, i64, i64)
+
+define i64 @call_live(i64 %a, i64 %b) {
+  %buf = alloca [5 x ptr], align 16
+  %r = call i64 @live(ptr %buf, i64 %a, i64 %b)
+  ret i64 %r
+}
+";
+
+/// The arguments the driver passes.
+const SJLJ_ARGS: [(i64, i64); 4] = [(3, 10), (-5, -77), (1 << 40, 9), (12_345, 0)];
+
+/// [`SJLJ_SETTER`] with its sixteen products of `%u` and their sum `%t16`.
+fn sjlj_setter() -> String {
+    let mut spills = String::new();
+    for i in 1..=16 {
+        let _ = writeln!(spills, "  %v{i} = mul i64 %u, {i}");
+    }
+    let _ = writeln!(spills, "  %t1 = add i64 %v1, 0");
+    for i in 2..=16 {
+        let _ = writeln!(spills, "  %t{i} = add i64 %t{}, %v{i}", i - 1);
+    }
+    SJLJ_SETTER.replace("SPILLS", &spills)
+}
+
+/// What `live(a, b)` returns: `u = 8a + b` at the first return, the sum
+/// of `u · i` through G, `u + 1` plus that at the second.
+fn sjlj_expected() -> String {
+    let mut out = String::new();
+    for (a, b) in SJLJ_ARGS {
+        let u = a.wrapping_mul(8).wrapping_add(b);
+        let w = u.wrapping_mul(136);
+        let _ = writeln!(out, "{:x}", u.wrapping_add(1).wrapping_add(w) as u64);
+    }
+    out
+}
+
+/// §5.6.18 (4): values live across `llvm.eh.sjlj.setjmp` are read from
+/// memory after both returns, and no slot they are in is reused: every
+/// triple of setter, G and caller, each from hod plain, hod stressed,
+/// `llc` 22 and 19, linked by every linker, returns the expected values.
+#[test]
+fn sjlj_live_values_survive_the_second_return() {
+    let scratch = Scratch::new("x64-wp152-sjlj");
+    let setters = sides(&scratch, "set", &sjlj_setter());
+    let jumpers = sides(&scratch, "g", SJLJ_JUMPER);
+    let callers = sides(&scratch, "caller", SJLJ_CALLER);
+    let Some(toolchain) = linking::Toolchain::x86_64(&scratch) else { return };
+    let mut driver = String::from(
+        "#include <stdio.h>\n#include <stdint.h>\nuint64_t call_live(uint64_t, uint64_t);\n\
+         int main(void) {\n",
+    );
+    for (a, b) in SJLJ_ARGS {
+        let _ = writeln!(
+            driver,
+            "  printf(\"%llx\\n\", (unsigned long long)call_live((uint64_t){a}LL, (uint64_t){b}LL));"
+        );
+    }
+    driver.push_str("  return 0;\n}\n");
+    let driver = toolchain.compile_c(&scratch, "sjlj-driver", &driver, &[]);
+    let expected = sjlj_expected();
+    let mut runs = 0;
+    for (s, set) in &setters {
+        for (g, jump) in &jumpers {
+            for (c, caller) in &callers {
+                for linker in &toolchain.linkers {
+                    let program = scratch.join(format!("sjlj-{s}-{g}-{c}-{}", linker.name));
+                    let ran = toolchain.link_and_run(
+                        linker,
+                        &[],
+                        &[&driver, set, jump, caller],
+                        &program,
+                    );
+                    assert!(
+                        ran.success(),
+                        "{s} + {g} + {c} [{}]: {:?}\n{}",
+                        linker.name,
+                        ran.status,
+                        ran.stderr_text()
+                    );
+                    assert_eq!(
+                        ran.stdout_text(),
+                        expected,
+                        "setter {s}, G {g}, caller {c} [{}]",
+                        linker.name
+                    );
+                    runs += 1;
+                }
+            }
+        }
+    }
+    eprintln!("wp152 sjlj: {runs} programs");
 }

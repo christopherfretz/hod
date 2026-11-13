@@ -685,8 +685,8 @@ const fn cc_index(id: u16) -> Option<usize> {
 
 /// In the bit order of the `ParamAttrs` flags, from `ZEROEXT`.
 const ATTR_PARAM: [SupportRow; 7] = [
-    row("attr:zeroext", ON, todo(X64), ""),
-    row("attr:signext", ON, todo(X64), ""),
+    row("attr:zeroext", ON, ON, ""),
+    row("attr:signext", ON, ON, ""),
     a64("attr:inreg", LATER, ""),
     row("attr:nest", ON, todo(X64), ""),
     a64("attr:swiftself", LATER, ""),
@@ -698,7 +698,7 @@ const ATTR_PARAM: [SupportRow; 7] = [
 const ATTR_MEM: [SupportRow; 6] = [
     row("attr:sret", ON, ON, ""),
     row("attr:byval", ON, ON, ""),
-    row("attr:byref", ON, todo(X64), ""),
+    row("attr:byref", ON, ON, ""),
     both("attr:inalloca", never(WINDOWS), ""),
     both("attr:preallocated", never(WINDOWS), ""),
     a64("attr:elementtype", LATER, "on an inline-assembly or intrinsic argument"),

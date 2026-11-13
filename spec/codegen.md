@@ -4072,8 +4072,12 @@ and the holdable set: `X64::for_function` sets `X64::coro` from
 and frame words are `[rbp − d]` slots; the prologue stores 0 to both
 right after `sub rsp, FRAME`. `Stress::coro_frame` gives every function
 those words and clobbers `rbx` (`mov rbx, rbp`) after the prologue.
-`cmpxchg16b` needs `rbx`, so a coroutine with an atomic access wider
-than 64 bits is refused as `x64:coro-wide-atomic`.
+`cmpxchg16b` needs `rbx`: in a function with the coroutine frame a
+16-byte atomic pushes `rbx` before the sequence writes it and pops it
+after the last `cmpxchg16b`; between the two nothing addresses the heap
+frame, and the new value's high half is loaded before its low half
+(into `rbx`). Without `+cx16` the libatomic calls need nothing (WP-147,
+§5.6.16).
 
 *Intrinsics.* As on AArch64, with `rbx` for x19: `coro.begin` is
 `mov rbx, mem`, `lea r11, [rip + F.resume]` / `[rip + F.destroy]`

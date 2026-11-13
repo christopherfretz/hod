@@ -1,4 +1,4 @@
-//! The x86-64 memory group (WP-123, `spec/codegen.md` §5.2, §5.6.3
+//! The x86-64 memory group (WP-123, `spec/codegen.md` §5.2, §5.6.4
 //! "Memory"): `load`, `store`, `alloca`, `ptradd`, `llvm.stacksave` and
 //! `llvm.stackrestore`, for `Gpr` and `Fpr` values.
 //!

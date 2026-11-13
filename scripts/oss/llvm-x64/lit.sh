@@ -1,9 +1,12 @@
 #!/bin/bash
 # Run lit slices in both trees and compare (WP-180, from WP-178):
 #   lit.sh <flavour: hod|llc|both> <slice>...
-# A slice is a path under build/ of a tree's lit suite, e.g. test/CodeGen/AArch64,
-# test/MC, test (all of check-llvm's lit tests). Each runs as
-# `llvm-lit -sv -j 4 -o <json>` under `ulimit -v 4000000` and a 3 h
+# A slice is a path under build/ of a tree's lit suite, e.g. test/CodeGen/X86,
+# test/MC, test (all of check-llvm's lit tests), or <name>=@<list>: the
+# tests named in <list> (paths relative to llvm/test of the source tree,
+# one per line; build/bin/llvm-lit maps them to the tree's suite).
+# Under qemu-x86_64 the tree's tools must be wrapped first (qemu-tools.sh). Each runs as
+# `llvm-lit -sv -j 4 -o <json>` under `ulimit -v 16000000` (qemu included) and a 3 h
 # timeout; the result of each test is written as "<code> <name>" to
 # logs/lit-<slice>.txt of its tree (slice with / as _). With both trees'
 # lists present, logs/lit-<slice>.diff in the hod tree is the comparison
@@ -15,13 +18,16 @@ which="${1:?usage: lit.sh hod|llc|both <slice>...}"
 shift
 case "$which" in both) trees="hod llc" ;; hod | llc) trees=$which ;; *) exit 2 ;; esac
 for slice in "$@"; do
-  key=$(echo "$slice" | tr / _)
+  case "$slice" in
+    *=@*) key="${slice%%=@*}"; mapfile -t paths < <(sed "s#^#$HOD_OSS_SRC/llvm/test/#" "${slice#*=@}") ;;
+    *) key=$(echo "$slice" | tr / _); paths=() ;;
+  esac
   for f in $trees; do
     b="$HOD_OSS_ROOT/$HOD_X64_PREFIX$f/build"
     js="$HOD_OSS_ROOT/$HOD_X64_PREFIX$f/logs/lit-$key.json"
     rm -f "$js"
     start=$(date +%s)
-    (ulimit -v 4000000 && timeout 10800 nice -n 10 python3 "$b/bin/llvm-lit" -sv -j 4 -o "$js" "$b/$slice" \
+    (ulimit -v 16000000 && timeout 10800 nice -n 10 python3 "$b/bin/llvm-lit" -sv -j 4 -o "$js" "${paths[@]:-$b/$slice}" \
       > "$HOD_OSS_ROOT/$HOD_X64_PREFIX$f/logs/lit-$key.log" 2>&1)
     rc=$?
     echo "lit-$key $start $(date +%s) $rc" >> "$HOD_OSS_ROOT/$HOD_X64_PREFIX$f/logs/stages.txt"

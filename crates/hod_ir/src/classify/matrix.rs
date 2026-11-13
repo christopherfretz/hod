@@ -471,10 +471,12 @@ const MODULE: [SupportRow; 24] = [
     row(
         "module:cf-protection-branch",
         never(X64_ONLY),
-        todo(X64),
-        "changes code: `endbr64` at every function entry an indirect branch may reach, at \
-         landing pads and after `returns_twice` calls, then the IBT property note; `llc` \
-         19 and 22 turn it on for any value, 0 included (WP-143), as `hod_ir` reads it (WP-144)",
+        ON,
+        "`endbr64` at every function entry but a `nocf_check` one, at address-taken blocks, \
+         landing pads, the `llvm.eh.sjlj.setjmp` resume point, coroutine entry stubs and after \
+         direct calls of `returns_twice` functions, then the IBT bit in `.note.gnu.property` \
+         (WP-184); `llc` 19 and 22 turn it on for any value, 0 included (WP-143), as `hod_ir` \
+         reads it (WP-144)",
     ),
     row(
         "module:cf-protection-return",
@@ -781,6 +783,11 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
         "constrains transformations only, and hod makes none (§5.7); `bundle:convergencectrl` and the `llvm.experimental.convergence.*` intrinsics stay refused",
     ),
     both("attr:noredzone", ON, "hod keeps no data below the stack pointer (`spec/codegen.md` §5)"),
+    both(
+        "attr:nocf_check",
+        ON,
+        "on x86-64 under `cf-protection-branch`: no `endbr64` at the function's entry; an indirect call with it is refused as `x64:nocf-check-indirect-call` (no `notrack` encoding); no code elsewhere, as `llc` (WP-184)",
+    ),
 ];
 
 /// In `FnStr::ALL` order.

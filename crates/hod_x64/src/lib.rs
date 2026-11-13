@@ -22,6 +22,7 @@
 //! | `reg` | WP-116, WP-140 | the registers as `hod_cg::PReg` indexes (x87 `st0`, `st1` too), DWARF numbers | unit, `tests/abi` |
 //! | `abi` | WP-118, WP-140 | `assign`: where arguments and return values travel, on `hod_cg::abi`'s walk | `tests/abi`, `tests/vcall_i128.rs` |
 //! | `target` | WP-116, WP-140 | `X64`: the function's features, register description, classes, glue, the dispatch | `tests/skeleton.rs`, `tests/abi_followups.rs` |
+//! | `cet` | WP-184 | `cf-protection-branch`: `endbr64` at entries, address-taken blocks, landing pads, after `returns_twice` calls (§5.6.25) | `tests/cf_protection.rs` |
 //! | `frame` | WP-116 | prologue, exit sequences, CFI rows, frame addressing, dynamic slots, the call instruction | `tests/skeleton.rs` |
 //! | `common` | WP-116 (shared) | moves, frame places, constants, symbol addresses, branches | `tests/skeleton.rs` |
 //! | `term` | WP-116 | `br`, `ret`, `unreachable` | `tests/skeleton.rs` |
@@ -53,6 +54,7 @@ pub mod aggr;
 pub mod atomic;
 pub mod barrier;
 pub mod call;
+pub mod cet;
 pub mod common;
 pub mod constaddr;
 pub mod control;

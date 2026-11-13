@@ -95,4 +95,4 @@ pub use record::{
 };
 pub use reg::{MIN_POOL_FPR, MIN_POOL_GPR, PReg, RegInfo, RegSet};
 pub use sym::{RuntimeFn, SymRef};
-pub use target::{CallEmit, CallTarget, Target};
+pub use target::{BranchTarget, CallEmit, CallTarget, Target};

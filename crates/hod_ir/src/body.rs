@@ -362,6 +362,7 @@ pub(crate) const CALL_NORETURN: u8 = 1 << 2;
 pub(crate) const CALL_NOUNWIND: u8 = 1 << 3;
 pub(crate) const CALL_RETURNS_TWICE: u8 = 1 << 4;
 pub(crate) const CALL_CONVERGENT: u8 = 1 << 5;
+pub(crate) const CALL_NO_CF_CHECK: u8 = 1 << 6;
 
 /// The record of one call, `invoke` or `callbr`. 40 bytes.
 ///
@@ -1904,6 +1905,12 @@ impl<'a> CallSite<'a> {
         self.data().flags & CALL_CONVERGENT != 0
     }
 
+    /// `nocf_check` on the call (`spec/ir.md` §5.7, WP-184).
+    #[inline]
+    pub fn is_nocf_check(&self) -> bool {
+        self.data().flags & CALL_NO_CF_CHECK != 0
+    }
+
     /// Whether the return value or any argument has an attribute.
     #[inline]
     pub fn has_param_attrs(&self) -> bool {
@@ -2012,6 +2019,7 @@ impl fmt::Debug for CallSite<'_> {
             .field("noreturn", &self.is_noreturn())
             .field("nounwind", &self.is_nounwind())
             .field("returns_twice", &self.returns_twice())
+            .field("nocf_check", &self.is_nocf_check())
             .field("convergent", &self.is_convergent());
         if self.has_param_attrs() {
             s.field("ret_attrs", &self.ret_attrs());

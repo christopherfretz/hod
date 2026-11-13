@@ -23,11 +23,23 @@ pub const GNU_PROPERTY_X86_FEATURE_1_IBT: u32 = 1 << 0;
 pub const GNU_PROPERTY_X86_FEATURE_1_SHSTK: u32 = 1 << 1;
 
 const NT_GNU_PROPERTY_TYPE_0: u32 = 5;
-/// The `pr_type` of the AArch64 feature property (the `..._FEATURE_1_*`
-/// bits, combined with AND by the linker over the program's objects).
+/// The `pr_type` of AArch64's feature word (AArch64 ELF "Program
+/// Property"): its data is a 32-bit OR of `GNU_PROPERTY_AARCH64_FEATURE_1_*`.
 pub const GNU_PROPERTY_AARCH64_FEATURE_1_AND: u32 = 0xc000_0000;
-/// The `pr_type` of the x86 feature property.
+/// The `pr_type` of x86-64's feature word (x86-64 psABI "Program
+/// Property"): its data is a 32-bit OR of `GNU_PROPERTY_X86_FEATURE_1_*`.
 pub const GNU_PROPERTY_X86_FEATURE_1_AND: u32 = 0xc000_0002;
+
+/// The feature-word property type of `arch`
+/// ([`GNU_PROPERTY_AARCH64_FEATURE_1_AND`] or
+/// [`GNU_PROPERTY_X86_FEATURE_1_AND`]).
+#[inline]
+pub const fn feature_1_and(arch: Arch) -> u32 {
+    match arch {
+        Arch::AArch64 => GNU_PROPERTY_AARCH64_FEATURE_1_AND,
+        Arch::X86_64 => GNU_PROPERTY_X86_FEATURE_1_AND,
+    }
+}
 
 /// `<base>` for the default priority, else `<base>.<priority>` with the
 /// priority in decimal, as LLVM names these sections. Returns the buffer
@@ -78,10 +90,7 @@ pub fn add_fini_array(obj: &mut Object, priority: u16) -> Result<SectionId, Erro
 /// for every function of an object: the `GNU_PROPERTY_AARCH64_FEATURE_1_*`
 /// bits for AArch64, the `GNU_PROPERTY_X86_FEATURE_1_*` bits for x86-64.
 pub const fn gnu_property_note(arch: Arch, features: u32) -> [u8; 32] {
-    let property = match arch {
-        Arch::AArch64 => GNU_PROPERTY_AARCH64_FEATURE_1_AND,
-        Arch::X86_64 => GNU_PROPERTY_X86_FEATURE_1_AND,
-    };
+    let property = feature_1_and(arch);
     // An `Elf64_Nhdr`, the owner, then one property: type, data size, the
     // data, and padding to eight bytes.
     let words =
@@ -107,28 +116,37 @@ pub fn add_gnu_property_note(obj: &mut Object, features: u32) -> Result<SectionI
     Ok(section)
 }
 
-/// Appends to `out` a `.note.gnu.property` section's contents: one
-/// `NT_GNU_PROPERTY_TYPE_0` note owned by `GNU` whose descriptor is
-/// `properties`, each a `pr_type` and its `pr_data`, in the order given
-/// (the gABI asks for increasing `pr_type`), each padded with zeros to 8
-/// bytes (ELFCLASS64). One `(GNU_PROPERTY_*_FEATURE_1_AND, features)`
-/// with four bytes of data gives [`gnu_property_note`]'s bytes.
-pub fn gnu_properties_note(properties: &[(u32, &[u8])], out: &mut Vec<u8>) {
-    let desc: usize = properties.iter().map(|(_, data)| 8 + data.len().next_multiple_of(8)).sum();
-    for word in [4, desc as u32, NT_GNU_PROPERTY_TYPE_0, u32::from_le_bytes(*b"GNU\0")] {
-        out.extend_from_slice(&word.to_le_bytes());
+/// The contents of a `.note.gnu.property` section holding `properties`,
+/// each a `(pr_type, pr_data)` pair, in increasing `pr_type` order (the
+/// order the gABI asks for and linkers merge by; the input order does not
+/// matter): one `NT_GNU_PROPERTY_TYPE_0` note owned by `"GNU"`, each
+/// property's data padded with zeros to a multiple of 8 bytes (ELF64).
+/// For one feature word this is [`gnu_property_note`].
+///
+/// # Panics
+/// Never for a note below 4 GiB.
+pub fn gnu_properties(properties: &[(u32, &[u8])]) -> Vec<u8> {
+    let mut order: Vec<&(u32, &[u8])> = properties.iter().collect();
+    order.sort_by_key(|&&(kind, _)| kind);
+    let desc: usize = order.iter().map(|(_, data)| 8 + data.len().next_multiple_of(8)).sum();
+    let mut note = Vec::with_capacity(16 + desc);
+    let desc = u32::try_from(desc).expect("a property note below 4 GiB");
+    for word in [4, desc, NT_GNU_PROPERTY_TYPE_0, u32::from_le_bytes(*b"GNU\0")] {
+        note.extend_from_slice(&word.to_le_bytes());
     }
-    for &(kind, data) in properties {
-        out.extend_from_slice(&kind.to_le_bytes());
-        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        out.extend_from_slice(data);
-        out.resize(out.len() + (data.len().next_multiple_of(8) - data.len()), 0);
+    for &&(kind, data) in &order {
+        let size = u32::try_from(data.len()).expect("a property below 4 GiB");
+        note.extend_from_slice(&kind.to_le_bytes());
+        note.extend_from_slice(&size.to_le_bytes());
+        note.extend_from_slice(data);
+        note.resize(note.len().next_multiple_of(8), 0);
     }
+    note
 }
 
-/// Adds the `.note.gnu.property` section (`SHT_NOTE`, allocated,
-/// alignment 8) holding [`gnu_properties_note`] of `properties`. An
-/// object has at most one.
+/// Adds the `.note.gnu.property` section (kind `Note`, alignment 8) that
+/// holds `properties` (see [`gnu_properties`]). An object has at most
+/// one: a producer collects every property of the object first.
 ///
 /// # Errors
 /// As [`Object::add_section`].
@@ -137,9 +155,7 @@ pub fn add_gnu_properties(
     properties: &[(u32, &[u8])],
 ) -> Result<SectionId, Error> {
     let section = obj.add_section(b".note.gnu.property", SectionKind::Note, 8)?;
-    let mut note = Vec::with_capacity(16 + 16 * properties.len());
-    gnu_properties_note(properties, &mut note);
-    obj.append_owned(section, note);
+    obj.append(section, &gnu_properties(properties));
     Ok(section)
 }
 
@@ -149,25 +165,6 @@ mod tests {
 
     /// `spec/object.md` "ELF conventions": the priority is in decimal
     /// without padding; the default priority has no suffix.
-    /// WP-185: the generic writer gives the one-property note's bytes.
-    #[test]
-    fn generic_property_note() {
-        for (arch, kind) in [
-            (Arch::AArch64, GNU_PROPERTY_AARCH64_FEATURE_1_AND),
-            (Arch::X86_64, GNU_PROPERTY_X86_FEATURE_1_AND),
-        ] {
-            for features in [1u32, 3, 7] {
-                let mut out = Vec::new();
-                gnu_properties_note(&[(kind, &features.to_le_bytes())], &mut out);
-                assert_eq!(out, gnu_property_note(arch, features));
-            }
-        }
-        let mut two = Vec::new();
-        gnu_properties_note(&[(1, &[9; 4]), (2, &[8; 12])], &mut two);
-        assert_eq!(two.len(), 16 + 16 + 24);
-        assert_eq!(two[4..8], 40u32.to_le_bytes());
-    }
-
     #[test]
     fn priority_names() {
         let name = |priority| {
@@ -192,5 +189,27 @@ mod tests {
         assert_eq!((word(16), word(20), word(24), word(28)), (0xc000_0002, 4, 3, 0));
         let note = gnu_property_note(Arch::AArch64, GNU_PROPERTY_AARCH64_FEATURE_1_BTI);
         assert_eq!(note[16..28], [0, 0, 0, 0xc0, 4, 0, 0, 0, 1, 0, 0, 0]);
+    }
+
+    /// "ELF conventions": the list form; one feature word is the fixed
+    /// form; properties come out in type order, each padded to 8.
+    #[test]
+    fn property_list() {
+        for arch in [Arch::AArch64, Arch::X86_64] {
+            for features in [1, 2, 3, 7] {
+                let word = u32::to_le_bytes(features);
+                let list = gnu_properties(&[(feature_1_and(arch), &word)]);
+                assert_eq!(list, gnu_property_note(arch, features));
+            }
+        }
+        let wide = [9u8; 9];
+        let list = gnu_properties(&[(0xc000_0002, &[3, 0, 0, 0]), (1, &wide), (2, &[])]);
+        let word = |at: usize| u32::from_le_bytes(list[at..at + 4].try_into().unwrap());
+        assert_eq!(list.len(), 16 + (8 + 16) + 8 + (8 + 8));
+        assert_eq!((word(4), word(16), word(20)), (48, 1, 9));
+        assert_eq!(&list[24..33], &wide);
+        assert_eq!(&list[33..40], &[0; 7]);
+        assert_eq!((word(40), word(44)), (2, 0));
+        assert_eq!((word(48), word(52), word(56), word(60)), (0xc000_0002, 4, 3, 0));
     }
 }

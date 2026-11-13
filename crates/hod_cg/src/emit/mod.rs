@@ -417,59 +417,35 @@ impl<'m> ModuleEmitter<'m> {
         Ok(emitter)
     }
 
-    /// `.note.gnu.property` for `cf-protection-return` on x86-64
-    /// (`X86AsmPrinter::emitStartOfAsmFile`, WP-143): a
-    /// `GNU_PROPERTY_X86_FEATURE_1_AND` note with the shadow-stack bit.
-    /// The code is unchanged: hod's x86-64 code returns only to the
-    /// address its call pushed. `cf-protection-branch` (`endbr64`) is
-    /// refused by `hod_ir::classify`; without the code it asks for, its
-    /// bit is never written.
+    /// `.note.gnu.property` on AArch64 (BTI, PAC, GCS: WP-185) and on
+    /// x86-64 (`X86AsmPrinter::emitStartOfAsmFile`,
+    /// WP-143, WP-184): a `GNU_PROPERTY_X86_FEATURE_1_AND` property with
+    /// the IBT bit for `cf-protection-branch` (the target marks every
+    /// indirect-branch target with `endbr64`) and the shadow-stack bit for
+    /// `cf-protection-return` (the code does not change: hod's x86-64 code
+    /// returns only to the address its call pushed). The note is written
+    /// by `hod_obj`'s property-list writer.
     fn gnu_property(&mut self) -> CgResult<()> {
         use hod_ir::BranchProtection as Bp;
-        const GNU_PROPERTY_X86_FEATURE_1_AND: u32 = 0xc000_0002;
-        const GNU_PROPERTY_X86_FEATURE_1_SHSTK: u32 = 2;
-        let bits = self.module.props.branch_protection.bits();
-        if self.obj.arch() == Arch::AArch64 {
-            return self.a64_gnu_property(bits); // WP-185
-        }
-        if self.obj.arch() != Arch::X86_64 || bits & Bp::CET_SHSTK == 0 || bits & Bp::CET_IBT != 0 {
-            return Ok(());
-        }
-        let note =
-            self.obj.add_section(b".note.gnu.property", SectionKind::Note, 8).map_err(obj_err)?;
-        // namesz, descsz, type (NT_GNU_PROPERTY_TYPE_0), "GNU"; one
-        // property: type, datasz, the features, padding to 8 bytes.
-        for word in [4, 16, 5, u32::from_le_bytes(*b"GNU\0")] {
-            self.obj.append(note, &word.to_le_bytes());
-        }
-        for word in [GNU_PROPERTY_X86_FEATURE_1_AND, 4, GNU_PROPERTY_X86_FEATURE_1_SHSTK, 0] {
-            self.obj.append(note, &word.to_le_bytes());
-        }
-        Ok(())
-    }
-
-    /// WP-185: `.note.gnu.property` on AArch64, as
-    /// `AArch64AsmPrinter::emitStartOfAsmFile` writes it (`llc` 19 and 22):
-    /// one `GNU_PROPERTY_AARCH64_FEATURE_1_AND` property whose bits are
-    /// BTI, PAC and GCS for the module flags `branch-target-enforcement`,
-    /// `sign-return-address` and `guarded-control-stack` that are not 0;
-    /// no note when none is set.
-    fn a64_gnu_property(&mut self, bits: u8) -> CgResult<()> {
-        use hod_ir::BranchProtection as Bp;
         use hod_obj::elf;
-        let mut features = 0u32;
-        for (bit, feature) in [
-            (Bp::BTI, elf::GNU_PROPERTY_AARCH64_FEATURE_1_BTI),
-            (Bp::PAC_RET, elf::GNU_PROPERTY_AARCH64_FEATURE_1_PAC),
-            (Bp::GCS, elf::GNU_PROPERTY_AARCH64_FEATURE_1_GCS),
-        ] {
-            if bits & bit != 0 {
-                features |= feature;
+        let bits = self.module.props.branch_protection.bits();
+        let on = |bit: u8, feature: u32| if bits & bit != 0 { feature } else { 0 };
+        let features = match self.obj.arch() {
+            Arch::X86_64 => {
+                on(Bp::CET_IBT, elf::GNU_PROPERTY_X86_FEATURE_1_IBT)
+                    | on(Bp::CET_SHSTK, elf::GNU_PROPERTY_X86_FEATURE_1_SHSTK)
             }
-        }
+            // WP-185 (§5.6.26): the bit of each feature whose module flag
+            // is set, as `AArch64AsmPrinter::emitStartOfAsmFile`.
+            Arch::AArch64 => {
+                on(Bp::BTI, elf::GNU_PROPERTY_AARCH64_FEATURE_1_BTI)
+                    | on(Bp::PAC_RET, elf::GNU_PROPERTY_AARCH64_FEATURE_1_PAC)
+                    | on(Bp::GCS, elf::GNU_PROPERTY_AARCH64_FEATURE_1_GCS)
+            }
+        };
         if features != 0 {
-            let data = features.to_le_bytes();
-            let properties = [(elf::GNU_PROPERTY_AARCH64_FEATURE_1_AND, &data[..])];
+            let word = features.to_le_bytes();
+            let properties = [(elf::feature_1_and(self.obj.arch()), &word[..])];
             elf::add_gnu_properties(&mut self.obj, &properties).map_err(obj_err)?;
         }
         Ok(())

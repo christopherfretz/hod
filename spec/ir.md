@@ -985,7 +985,8 @@ does not have is `Rejected`. The lists below are the table, in full.
   `sanitize_address`, `sanitize_alloc_token`, `sanitize_hwaddress`,
   `sanitize_memory`, `sanitize_memtag`, `sanitize_numerical_stability`,
   `sanitize_realtime`, `sanitize_realtime_blocking`, `sanitize_thread`,
-  `sanitize_type`, `convergent` (below), `noredzone` (below); with a
+  `sanitize_type`, `convergent` (below), `noredzone` (below),
+  `nocf_check` (below); with a
   value: `uwtable`
   (`UwTable`: `sync` or `async`) and `alignstack(N)`.
 - On functions, as strings (`FnStr`, 22 keys): `target-cpu`,
@@ -1060,6 +1061,15 @@ does not have is `Rejected`. The lists below are the table, in full.
   changes no code; `classify` accepts it on every target
   (`attr:noredzone`, row `ON`).
 
+  `nocf_check` (WP-184; clang's `__attribute__((nocf_check))`), a
+  function flag (`FnAttrs::NO_CF_CHECK`, bit 21) and a call-site flag
+  (`CallDesc::nocf_check`, `CallSite::is_nocf_check`, printed after the
+  call as ` nocf_check`). On a function it drops the entry `endbr64` of
+  a `cf-protection-branch` module; on an indirect call it asks for
+  `notrack` (`spec/codegen.md` §5.6.25). `classify` accepts it on every
+  target (`attr:nocf_check`, row `ON`); it changes no AArch64 code, as
+  in `llc`.
+
 **Dropped**, because only an optimizer (or a pass that runs before any
 backend) reads them:
 
@@ -1108,7 +1118,7 @@ backend) reads them:
 producer records with `record_unsupported`, §2). It is never silently
 dropped. Of LLVM 19's and 22's attribute names these are:
 `coro_elide_safe`, `coro_only_destroy_when_complete`,
-`fn_ret_thunk_extern`, `hybrid_patchable`, `jumptable`, `nocf_check`,
+`fn_ret_thunk_extern`, `hybrid_patchable`, `jumptable`,
 `nodivergencesource`, `noduplicate`, `noimplicitfloat`, `nonlazybind`,
 `optdebug`, `optforfuzzing`, `safestack`, `shadowcallstack`,
 `speculative_load_hardening`, `strictfp`, and the strings
@@ -1116,7 +1126,7 @@ dropped. Of LLVM 19's and 22's attribute names these are:
 `denormal-fp-math-f32`, `loader-replaceable`,
 `marked_for_windows_hot_patching`, `no-inline-line-tables`,
 `profile-sample-accurate`, `use-sample-profile`. Some of them change
-code (`noimplicitfloat`, `nonlazybind`, `nocf_check`,
+code (`noimplicitfloat`, `nonlazybind`,
 `shadowcallstack`, ...) and move to "kept" with the work package that
 implements them; some look optimizer-only (`nodivergencesource`,
 `noduplicate`, `optdebug`, `optforfuzzing`, the profile strings) and

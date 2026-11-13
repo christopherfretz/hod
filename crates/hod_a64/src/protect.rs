@@ -5,7 +5,7 @@
 //! (the entry, the entry's CFI rows, every exit sequence, the body's
 //! rules restated before a tail exit), `coro_body::stubs` (each stub's
 //! entry), `intrinsic::frame_walk` (a loaded return address is
-//! stripped), and `Target::begin_block` / `Target::emit_call` (`bti j`).
+//! stripped), and `Target::branch_target` / `Target::emit_call` (`bti j`).
 //!
 //! A function's policy is its string attributes, as `llc` 19 and 22 read
 //! them once `hod_ll` has upgraded an older module (`spec/ll.md` §7.3):
@@ -32,7 +32,7 @@
 //! ```
 
 use hod_cg::{CallTarget, CfiOp, CgResult, FnCx, SymRef};
-use hod_ir::{Block, FnAttrs, FnStr, InstKind, SymbolKind, ValueKind};
+use hod_ir::{FnAttrs, FnStr, SymbolKind, ValueKind};
 use hod_mc_a64 as mc;
 use hod_mc_a64::{Reg, Size};
 
@@ -57,8 +57,6 @@ pub struct ProtectState {
     pub sign: bool,
     /// With the B key.
     pub b_key: bool,
-    /// Some block of the function has its address taken.
-    jump_targets: bool,
     /// The return address is signed at the current offset, as the CFI
     /// rows emitted so far say: the parity of their negations.
     signed_rows: bool,
@@ -82,7 +80,6 @@ fn policy(cx: &FnCx<'_, A64>) -> CgResult<ProtectState> {
         Some(b"b_key") => true,
         Some(_) => return unsupported(PROTECT_VALUE),
     };
-    state.jump_targets = state.bti && cx.module.consts.has_address_taken_block(cx.body.symbol());
     Ok(state)
 }
 
@@ -172,20 +169,15 @@ pub fn stub_entry(cx: &mut FnCx<'_, A64>) {
     }
 }
 
-/// `Target::begin_block`: `bti j` at a landing pad and at a block whose
-/// address is taken, under BTI.
+/// `Target::branch_target` (`hod_cg`'s hook, WP-184): `bti j` at an
+/// address-taken block, a landing pad and an `invoke`'s pad stub (where
+/// the unwinder lands), under BTI.
 ///
 /// # Errors
 /// None today.
-pub fn begin_block(cx: &mut FnCx<'_, A64>, block: Block<'_>) -> CgResult<()> {
-    let state = cx.state.frame.protect;
-    if !state.bti {
-        return Ok(());
-    }
-    let pad = block.non_phis().next().is_some_and(|i| matches!(i.kind(), InstKind::LandingPad(_)));
-    let taken =
-        state.jump_targets && cx.module.consts.is_address_taken(cx.body.symbol(), block.id());
-    if pad || taken {
+pub fn branch_target(cx: &mut FnCx<'_, A64>, at: hod_cg::BranchTarget) -> CgResult<()> {
+    let _ = at;
+    if cx.state.frame.protect.bti {
         put(cx, mc::bti_j());
     }
     Ok(())

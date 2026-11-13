@@ -657,6 +657,11 @@ pub const GNU_PROPERTY_X86_FEATURE_1_IBT: u32 = 1;
 pub const GNU_PROPERTY_X86_FEATURE_1_SHSTK: u32 = 2;
 pub const fn gnu_property_note(arch: Arch, features: u32) -> [u8; 32]
 pub fn add_gnu_property_note(obj: &mut Object, features: u32) -> Result<SectionId, Error>
+pub const GNU_PROPERTY_AARCH64_FEATURE_1_AND: u32 = 0xc000_0000;
+pub const GNU_PROPERTY_X86_FEATURE_1_AND: u32 = 0xc000_0002;
+pub const fn feature_1_and(arch: Arch) -> u32
+pub fn gnu_properties(properties: &[(u32, &[u8])]) -> Vec<u8>
+pub fn add_gnu_properties(obj: &mut Object, properties: &[(u32, &[u8])]) -> Result<SectionId, Error>
 ```
 
 **Initializer and finalizer arrays.** `add_init_array` adds a section of
@@ -692,17 +697,19 @@ x86-64 (`branch` 1, `return` 2, `full` 3). `features` is not checked
 against the architecture's defined bits. An object should have one such
 section; the helper does not look for one already there.
 
-`gnu_properties_note(properties, out)` is the general form (WP-185): any
-list of `(pr_type, pr_data)` properties, in the order given, each a
-32-bit type, a 32-bit `pr_datasz` (the data's length), the data and zero
-padding to 8; the header's `descsz` is the sum of the padded properties.
-`add_gnu_properties(obj, properties)` adds that as `.note.gnu.property`
-(kind `Note`, alignment 8) and returns its id. With one 4-byte property it
-is byte for byte `gnu_property_note`. The two property numbers are public
-(`GNU_PROPERTY_AARCH64_FEATURE_1_AND`, `GNU_PROPERTY_X86_FEATURE_1_AND`);
-a caller wanting several properties (an x86-64 feature word beside an ISA
-level, say) passes them in one call, sorted by type, as the gABI requires.
-`hod_cg` writes the AArch64 note through it (`spec/codegen.md` §5.6.26).
+`gnu_properties` is the general form (WP-184): one `NT_GNU_PROPERTY_TYPE_0`
+note named `GNU` holding the given `(pr_type, pr_data)` properties in
+increasing `pr_type` order (the order the gABI requires; the caller's
+order does not matter), each `pr_datasz` the data's length and the data
+padded with zeros to 8 bytes; `add_gnu_properties` adds it as above
+(`.note.gnu.property`, `Note`, alignment 8). With the one property
+`(feature_1_and(arch), features as 4 little-endian bytes)` it is exactly
+`gnu_property_note(arch, features)`. `feature_1_and` names the
+architecture's `FEATURE_1_AND` type. The code generators write their note
+through `add_gnu_properties`, so a further property (an ISA level, a
+second feature word) is one more list entry.
+The AArch64 note (`GNU_PROPERTY_AARCH64_FEATURE_1_AND`, WP-185,
+`spec/codegen.md` §5.6.26) goes through the same call.
 
 The note is a promise about all code in the object: every indirect branch
 target starts with the landing pad instruction (BTI, IBT), and so on. A

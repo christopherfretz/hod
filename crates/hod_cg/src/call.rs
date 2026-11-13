@@ -295,6 +295,8 @@ impl<'a, T: Target> FnCx<'a, T> {
                 // §5.3: the unwinder enters the pad with the stack
                 // pointer as it was at the call.
                 let at = self.offset();
+                // §5.6.25 (WP-184): the unwinder lands here.
+                t.branch_target(self, crate::target::BranchTarget::LandingPad)?;
                 t.adjust_sp(self, i64::from(done.area));
                 t.jump(self, self.block_label(pad))?;
                 if let Some(row) = done.row.and_then(|row| self.out.call_sites.get_mut(row)) {

@@ -408,8 +408,11 @@ pub fn lower_alloca<L: Layering>(
 // ---- attributes (`spec/ir.md` §5.7) ----
 
 /// The call-site function attributes `hod_ir` keeps: `CallDesc`'s flags.
-pub const CALL_SITE_FLAGS: u32 =
-    FnAttrs::NORETURN | FnAttrs::NOUNWIND | FnAttrs::RETURNS_TWICE | FnAttrs::CONVERGENT;
+pub const CALL_SITE_FLAGS: u32 = FnAttrs::NORETURN
+    | FnAttrs::NOUNWIND
+    | FnAttrs::RETURNS_TWICE
+    | FnAttrs::CONVERGENT
+    | FnAttrs::NO_CF_CHECK;
 
 /// Sets `desc`'s flags from the call site's function attributes `flags`
 /// (any [`FnAttrs`] flags; those outside [`CALL_SITE_FLAGS`] are
@@ -420,6 +423,7 @@ pub fn set_call_site_flags(desc: &mut CallDesc<'_>, flags: u32) {
     desc.nounwind = flags & FnAttrs::NOUNWIND != 0;
     desc.returns_twice = flags & FnAttrs::RETURNS_TWICE != 0;
     desc.convergent = flags & FnAttrs::CONVERGENT != 0;
+    desc.nocf_check = flags & FnAttrs::NO_CF_CHECK != 0;
 }
 
 /// What an attribute does in the place it was written.

@@ -184,7 +184,7 @@ pub fn lower<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> Option<CgResult<()>>
 
 /// The bits of the mask constant `id` of `n` lanes, if it has them: an
 /// undefined lane is 0.
-fn const_bits(cx: &FnCx<'_, X64>, id: ConstId, n: u32) -> Option<u64> {
+pub fn const_bits(cx: &FnCx<'_, X64>, id: ConstId, n: u32) -> Option<u64> {
     let bit = |id: ConstId| match cx.module.consts.get(id) {
         Const::Int { value, .. } => Some(value & 1),
         Const::Zero(_) | Const::Undef(_) | Const::Poison(_) => Some(0),

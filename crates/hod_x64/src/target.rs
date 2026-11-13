@@ -471,6 +471,10 @@ impl Target for X64 {
     }
 
     fn materialize(&self, cx: &mut FnCx<'_, Self>, reg: PReg, value: Value) -> CgResult<()> {
+        // WP-147: a constant mask, a vector constant with addresses.
+        if let Some(done) = vector::materialize(cx, reg, value) {
+            return done;
+        }
         if reg::is_fpr(reg) {
             return float::materialize(cx, xm(reg), value);
         }

@@ -1730,7 +1730,7 @@ const OPERAND: [SupportRow; 11] = [
     row("operand:slot", ON, ON, "the address of a stack slot"),
     both("operand:blockaddress", ON, "of a block of the same function"),
     both("operand:addr-of-int", ON, "`inttoptr` of a constant number"),
-    row("operand:int-of-addr", ON, todo(X64), "`ptrtoint` of a constant address (WP-072)"),
+    both("operand:int-of-addr", ON, "`ptrtoint` of a constant address (WP-072, WP-147)"),
     row("operand:sym-diff", ON, ON, "a difference of two symbol addresses (WP-072)"),
     a64("operand:block-diff", LATER, "a label difference as an operand (WP-095)"),
     a64("operand:dso-local-equivalent", LATER, ""),

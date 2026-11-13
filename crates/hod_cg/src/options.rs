@@ -65,6 +65,7 @@ impl RelocModel {
 /// The stress options of §12, for tests only. A program must behave the
 /// same under all of them.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+#[allow(clippy::struct_excessive_bools)] // independent switches, any combination
 pub struct Stress {
     /// Restrict the pool to its minimum (§2.1): the four lowest general
     /// and the two lowest vector registers of the target's pool.
@@ -74,9 +75,14 @@ pub struct Stress {
     /// Displace every register value to a spill slot after each
     /// instruction (§4.3).
     pub displace: bool,
+    /// WP-106: give every function the coroutine machine frame (the
+    /// target's frame-base save, the mode and frame words), as a
+    /// coroutine has, so that its prologue, exits and unwind rows are
+    /// tested on any program. Not in [`Stress::ALL`].
+    pub coro_frame: bool,
 }
 
 impl Stress {
     /// Every stress option at once.
-    pub const ALL: Stress = Stress { min_pool: true, far: true, displace: true };
+    pub const ALL: Stress = Stress { min_pool: true, far: true, displace: true, coro_frame: false };
 }

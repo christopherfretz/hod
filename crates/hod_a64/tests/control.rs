@@ -27,7 +27,7 @@ const MODES: [Mode; 3] = [
     Mode {
         name: "plain",
         options: Options {
-            stress: Stress { min_pool: false, far: false, displace: false },
+            stress: Stress { min_pool: false, far: false, displace: false, coro_frame: false },
             ..DEFAULT
         },
     },
@@ -35,7 +35,7 @@ const MODES: [Mode; 3] = [
     Mode {
         name: "far",
         options: Options {
-            stress: Stress { min_pool: false, far: true, displace: false },
+            stress: Stress { min_pool: false, far: true, displace: false, coro_frame: false },
             ..DEFAULT
         },
     },
@@ -46,7 +46,7 @@ const DEFAULT: Options = Options {
     code_model: None,
     function_sections: false,
     data_sections: false,
-    stress: Stress { min_pool: false, far: false, displace: false },
+    stress: Stress { min_pool: false, far: false, displace: false, coro_frame: false },
     debug_compression: hod_obj::Compression::None,
     split_dwarf: hod_dwarf::SplitDwarf::Off,
 };

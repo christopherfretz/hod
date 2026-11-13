@@ -248,9 +248,14 @@ impl<'a, T: Target> FnCx<'a, T> {
         self.s.sig_params.clear();
         self.s.sig_params.extend_from_slice(params);
         self.s.sig_attrs.clear();
+        // WP-106: a result of class `Gpr` (`llvm.coro.await.suspend.bool`).
+        let ret = inst.ty();
+        if ret != TypeId::VOID && self.target.class_of(self.types(), ret) != Class::Gpr {
+            return self.bug("call_through with a result not of class Gpr");
+        }
         let desc = CallDesc {
             cc,
-            ret: TypeId::VOID,
+            ret,
             ret_attrs: ParamAttrs::NONE,
             fixed: params.len() as u32,
             variadic: false,
@@ -262,6 +267,10 @@ impl<'a, T: Target> FnCx<'a, T> {
             ret_mem: None,
         };
         let done = self.run_call(&desc, Args::Custom(args))?;
+        self.coro_called(inst);
+        if let Some(reg) = done.reg {
+            self.finish(inst, reg)?;
+        }
         self.invoke_edges(normal, unwind, done)
     }
 

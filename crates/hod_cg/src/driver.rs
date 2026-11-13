@@ -185,6 +185,7 @@ impl<'a, T: Target> FnCx<'a, T> {
             line_block_start: false,
             rets: 0,
             ret_loc: LocId::NONE,
+            coro: None,
         }
     }
 
@@ -200,7 +201,9 @@ impl<'a, T: Target> FnCx<'a, T> {
         }
         self.mark_reachable()?;
         self.assign_own()?;
+        self.coro_plan()?;
         t.begin_function(self)?;
+        self.coro_setup()?;
         self.layout_slots()?;
         self.enter_arguments()?;
         self.enter_slots()?;
@@ -229,6 +232,7 @@ impl<'a, T: Target> FnCx<'a, T> {
             self.out.lines.push(LineRow { offset, loc, block_start: false });
         }
         t.end_function(self)?;
+        self.coro_finish()?;
         self.finish_function()
     }
 
@@ -308,8 +312,10 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// [`FnCx::enter_slots`].
     fn layout_slots(&mut self) -> CgResult<()> {
         let pointer = self.reg_bytes(Class::Gpr);
-        for slot in self.body.slots() {
-            let place = if slot.align() <= u64::from(T::STACK_ALIGN) {
+        for (index, slot) in self.body.slots().iter().enumerate() {
+            let place = if let Some(place) = self.coro_slot_place(index)? {
+                place
+            } else if slot.align() <= u64::from(T::STACK_ALIGN) {
                 SlotPlace::Direct(self.s.frame.alloc(slot.size(), slot.align() as u32)?)
             } else {
                 SlotPlace::Indirect(
@@ -528,6 +534,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         self.block = id;
         self.skip_rest = false;
         self.bind(self.block_label(id))?;
+        self.coro_block_start(id);
         let mut start = self.offset();
         // §9.5, `spec/dwarf.md` §5.3: whether no instruction of the block
         // has emitted code yet.
@@ -552,7 +559,9 @@ impl<'a, T: Target> FnCx<'a, T> {
                 self.label_rows(inst.id().raw());
             }
             let dead = inst.ty() != TypeId::VOID && inst.uses().is_unused() && has_no_effect(inst);
-            if !dead {
+            if !dead && self.coro.is_some() && self.coro_switch(inst)? {
+                // WP-106: a suspend switch writes its edges itself.
+            } else if !dead {
                 if inst.is_terminator() && inst.opcode() != Opcode::Invoke {
                     // §4.5: for all successors, whichever is taken. An
                     // `invoke`'s are written by the call sequence.
@@ -771,6 +780,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         record.align = T::FN_ALIGN.max(self.island_align);
         record.frame = self.frame_desc;
         record.has_pads = self.has_pads;
+        record.coro_entries = self.coro_entries();
         // `spec/eh.md` §1.1: what decides the function's unwind tables.
         if let SymbolKind::Function { attrs, personality, .. } =
             self.module.symbol(self.body.symbol()).kind()

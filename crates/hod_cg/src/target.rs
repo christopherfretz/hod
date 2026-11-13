@@ -94,6 +94,13 @@ pub trait Target: Sized + Sync {
     /// not lower `llvm.coro.noop`.
     const NOOP_CORO_FN: &'static [u8] = &[];
 
+    /// Whether the target compiles coroutine bodies (WP-106, §7.6): it
+    /// implements [`Target::coro_stubs`] and [`Target::coro_dispatch`],
+    /// addresses [`FrameRef::Coro`] from its frame base register, and
+    /// lowers the body intrinsics. `false`: a coroutine is refused as
+    /// `coro:target`.
+    const CORO_BODIES: bool = false;
+
     /// The stack alignment in bytes: the largest alignment the local area
     /// gives a slot (§5.1), and what a call's stack-argument area is
     /// rounded to (§5.3).
@@ -313,4 +320,38 @@ pub trait Target: Sized + Sync {
     /// hold the displacement: the function is then compiled again in far
     /// mode (§6.3).
     fn patch_branch(code: &mut [u8], at: u32, kind: FixupKind, displacement: i64) -> bool;
+
+    /// WP-106, §7.6: after `end_function` of a coroutine, its two entry
+    /// stubs, which build the same machine frame as the prologue, set
+    /// the frame base from their argument and the mode to 1, and
+    /// dispatch on the frame's suspend index to the re-entry labels
+    /// ([`FnCx::coro_reentries`]) with the suspend result 0 (`F.resume`)
+    /// or 1 (`F.destroy`). The target records where they are with
+    /// [`FnCx::set_coro_entries`].
+    ///
+    /// # Errors
+    /// `Unsupported("coro:target")` by default.
+    fn coro_stubs(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
+        let _ = cx;
+        Err(crate::error::CgError::unsupported(crate::coro_body::CORO_TARGET))
+    }
+
+    /// WP-106, §7.6: the dispatch of a suspend `switch` on `cond`, a
+    /// `coro.suspend` result: a branch to `resume` when it is 0 and to
+    /// `destroy` when it is 1, falling through otherwise (−1). Writes no
+    /// register but scratch registers.
+    ///
+    /// # Errors
+    /// What [`FnCx::fixup`] reports; `Unsupported("coro:target")` by
+    /// default.
+    fn coro_dispatch(
+        &self,
+        cx: &mut FnCx<'_, Self>,
+        cond: PReg,
+        resume: Label,
+        destroy: Label,
+    ) -> CgResult<()> {
+        let _ = (cx, cond, resume, destroy);
+        Err(crate::error::CgError::unsupported(crate::coro_body::CORO_TARGET))
+    }
 }

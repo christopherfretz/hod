@@ -27,6 +27,7 @@
 //! | `emit` | §9.7 | `ModuleEmitter`, `emit_module`: the module's object |
 //! | `driver` | §1, §4.7, §4.8, §6.1, §6.3 | `compile_function`: the walk, entry code, reachability, the far-mode retry |
 //! | `coro` | "Coroutines" | the noop coroutine frame a function refers to (WP-105) |
+//! | `coro_body` | §7.6 | coroutine bodies: the heap frame, the `coro.begin` copies, the suspend switch, the suspended-region check (WP-106) |
 //!
 //! Not here: any real target. The test target that exercises this crate
 //! is in `tests/common/`.
@@ -35,6 +36,7 @@ pub mod abi;
 mod access;
 mod call;
 mod coro;
+mod coro_body;
 mod cx;
 mod driver;
 pub mod emit;
@@ -54,6 +56,9 @@ mod target;
 pub use access::{Access, CallAccess, TlsAccess, call_access, prefers_local_alias, sym_access};
 pub use call::CallArg;
 pub use coro::NOOP_CORO_TARGET;
+pub use coro_body::{
+    BEGIN_SHARED_BLOCK, CORO_TARGET, CoroLayout, CoroSlots, OUTSIDE_COROUTINE, OVERALIGNED_STACK,
+};
 pub use cx::{FnCx, Scratch, TailExit};
 pub use driver::{MAX_FUNCTION_SIZE, compile_function};
 pub use emit::{COPY_SUFFIX, Emitted, ModuleEmitter, PlacedFunc, emit_module};

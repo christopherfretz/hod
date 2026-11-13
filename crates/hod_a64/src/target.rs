@@ -168,6 +168,8 @@ impl Target for A64 {
     const FN_ALIGN: u32 = 4;
     const PAD_BYTE: u8 = 0;
     const STACK_ALIGN: u32 = 16;
+    /// WP-106: `crate::coro_body`.
+    const CORO_BODIES: bool = true;
 
     fn reg_info(&self) -> &RegInfo {
         &REG_INFO
@@ -458,6 +460,20 @@ impl Target for A64 {
         align: u64,
     ) -> CgResult<()> {
         frame::dynamic_slot(cx, ptr, size, align)
+    }
+
+    fn coro_stubs(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
+        crate::coro_body::stubs(cx)
+    }
+
+    fn coro_dispatch(
+        &self,
+        cx: &mut FnCx<'_, Self>,
+        cond: PReg,
+        resume: Label,
+        destroy: Label,
+    ) -> CgResult<()> {
+        crate::coro_body::dispatch(cx, cond, resume, destroy)
     }
 
     fn patch_branch(code: &mut [u8], at: u32, kind: FixupKind, displacement: i64) -> bool {

@@ -575,8 +575,8 @@ const FUNCTION: [SupportRow; 6] = [
     row("function:variadic", ON, todo(X64), "a variadic function with a body"),
     both("function:may-unwind", ON, "a body without `nounwind`: it needs unwind tables (WP-049)"),
     row("function:personality", ON, todo(X64), "a body with a personality function"),
-    row("function:slots", ON, todo(X64), "a body with fixed stack objects (`Body::slots`)"),
-    row("function:over-aligned-slot", ON, todo(X64), "a stack object aligned above 16 bytes"),
+    row("function:slots", ON, ON, "a body with fixed stack objects (`Body::slots`)"),
+    row("function:over-aligned-slot", ON, ON, "a stack object aligned above 16 bytes"),
 ];
 
 /// In the order of [`cc_index`].
@@ -1127,7 +1127,15 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Aggregate,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Int,
+            TypeClass::Ptr,
+            TypeClass::Half,
+            TypeClass::BFloat,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+        ]),
         "a plain load; see `mem:`; FP and vector values: WP-067",
     ),
     row(
@@ -1145,10 +1153,18 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Aggregate,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Int,
+            TypeClass::Ptr,
+            TypeClass::Half,
+            TypeClass::BFloat,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+        ]),
         "a plain store; see `mem:`; FP and vector values: WP-067",
     ),
-    row("inst:alloca", ON, todo(X64), "a dynamic allocation; fixed ones are `function:slots`"),
+    row("inst:alloca", ON, ON, "a dynamic allocation; fixed ones are `function:slots`"),
     row("inst:fence", ON, todo(X64), "WP-074"),
     row(
         "inst:cmpxchg",
@@ -1170,7 +1186,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         todo(X64),
         "and the operation's `atomicrmw:` row; WP-074",
     ),
-    row("inst:ptradd", ON, todo(X64), "LLVM's `getelementptr` (§5.4); not a vector of pointers"),
+    row("inst:ptradd", ON, ON, "LLVM's `getelementptr` (§5.4); not a vector of pointers"),
     row(
         "inst:extractvalue",
         on(&[
@@ -1313,7 +1329,7 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
 ];
 
 const MEM: [SupportRow; 3] = [
-    row("mem:volatile", ON, todo(X64), "a volatile `load`, `store`, `cmpxchg` or `atomicrmw`"),
+    row("mem:volatile", ON, ON, "a volatile `load`, `store`, `cmpxchg` or `atomicrmw`"),
     row("mem:atomic-load", ON, todo(X64), "WP-074; `fp128` and vectors: `a64:atomic-type`"),
     row("mem:atomic-store", ON, todo(X64), "WP-074; `fp128` and vectors: `a64:atomic-type`"),
 ];
@@ -1392,7 +1408,7 @@ const LANDINGPAD: [SupportRow; 3] = [
 
 const OPERAND: [SupportRow; 11] = [
     both("operand:symbol", ON, "a symbol's address as a value, with or without an offset"),
-    row("operand:slot", ON, todo(X64), "the address of a stack slot"),
+    row("operand:slot", ON, ON, "the address of a stack slot"),
     both("operand:blockaddress", ON, "of a block of the same function"),
     both("operand:addr-of-int", ON, "`inttoptr` of a constant number"),
     row("operand:int-of-addr", ON, todo(X64), "`ptrtoint` of a constant address (WP-072)"),
@@ -1468,8 +1484,8 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
     row("intrinsic:llvm.va_start", ON, todo(X64), ""),
     row("intrinsic:llvm.va_end", ON, todo(X64), ""),
     row("intrinsic:llvm.va_copy", ON, todo(X64), ""),
-    row("intrinsic:llvm.stacksave", ON, todo(X64), ""),
-    row("intrinsic:llvm.stackrestore", ON, todo(X64), ""),
+    row("intrinsic:llvm.stacksave", ON, ON, ""),
+    row("intrinsic:llvm.stackrestore", ON, ON, ""),
     row("intrinsic:llvm.frameaddress", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
     row("intrinsic:llvm.returnaddress", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
     row("intrinsic:llvm.trap", ON, todo(X64), ""),

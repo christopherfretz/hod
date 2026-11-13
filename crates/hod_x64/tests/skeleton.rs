@@ -273,7 +273,6 @@ fn data_layout_is_honoured() {
 #[test]
 fn groups_that_have_not_landed_refuse_by_name() {
     for (body, name) in [
-        ("define void @f(ptr %p) {\n  store i32 1, ptr %p\n  ret void\n}\n", "x64:todo:mem"),
         ("define void @f() {\n  fence seq_cst\n  ret void\n}\n", "x64:todo:atomic"),
         ("define void @f(ptr sret(i64) %r) {\n  ret void\n}\n", "x64:todo:abi"),
     ] {

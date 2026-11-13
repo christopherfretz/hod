@@ -100,14 +100,15 @@ Preparing (on the branch; nothing shared is written):
 3. Regenerate, against the new corpora, what the gate or the status
    pages read from them, and commit it on the branch:
    - `cargo xtask roundtrip --corpus <P>/new/corpus --update-expected`
-     writes `tests/roundtrip/expected-aarch64.tsv` (its `# corpus:`
+     (about 55 minutes at `-j 3`) writes `tests/roundtrip/expected-aarch64.tsv` (its `# corpus:`
      line names the new manifest; the gate's `roundtrip` step compares
      with it);
    - `cargo xtask corpus census <P>/new/corpus` writes
      `docs/status/corpus.md`; with `--target x86_64` and
      `<P>/new/corpus-x64`, `docs/status/corpus-x64-census.md`;
-   - `cargo xtask corpus reasons [--target x86_64] -j 4 --report
-     docs/status/reasons[-x64].md <P>/new/corpus[-x64]`;
+   - `cargo xtask corpus reasons [--target x86_64] --llc -j 4 --report
+     docs/status/reasons[-x64].md <P>/new/corpus[-x64]` (about 45
+     minutes each at `-j 3`);
    - `cargo xtask corpus compare --target x86_64 --against
      <P>/new/corpus <P>/new/corpus-x64`: a difference it reports is
      classified in `docs/status/corpus-x64-differences.tsv`;

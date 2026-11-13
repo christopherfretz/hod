@@ -26,6 +26,13 @@ fn val(arg: u32, offset: u32, size: u32, place: Place) -> Part {
     Part { arg, kind: PartKind::Value, offset, size, place }
 }
 
+/// Limb `limb` (0 low, 1 high) of a lone `<1 x i128>` argument `arg`
+/// (WP-167).
+fn limb(arg: u32, limb: u8, place: Place) -> Part {
+    let kind = PartKind::Lanes { bits: 64, lane: 8, first: limb, len: 2 };
+    Part { arg, kind, offset: 0, size: 8, place }
+}
+
 /// The `size` bytes argument `arg` points to.
 fn mem(arg: u32, size: u32, place: Place) -> Part {
     Part { arg, kind: PartKind::Pointee, offset: 0, size, place }
@@ -339,6 +346,19 @@ fn vectors() {
                 ],
             ]
             .concat(),
+            16,
+        ),
+        // WP-167: a lone `<1 x i128>` is an `i128` (the even-register
+        // rule, a 16-aligned stack slot), as two 64-bit limbs.
+        example(
+            Case::of(&[I64, vec(I128, 1)]).ret(vec(I128, 1)),
+            vec![val(0, 0, 8, x(0)), limb(1, 0, x(2)), limb(1, 1, x(3))],
+            0,
+        )
+        .ret(vec![limb(0, 0, x(0)), limb(0, 1, x(1))]),
+        example(
+            cat(&[&of(7, &I64), &[vec(I128, 1)]]),
+            [fill(0, 7, x), vec![limb(7, 0, s(0)), limb(7, 1, s(8))]].concat(),
             16,
         ),
         example(

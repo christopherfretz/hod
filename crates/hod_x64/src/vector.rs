@@ -40,14 +40,17 @@
 //! which), never the flags across a reader (no compare is live in a
 //! vector lowering).
 
-use hod_cg::{CgResult, Class, FnCx, FrameRef, PReg, Target};
-use hod_ir::{Const, Inst, SHUFFLE_UNDEF, TypeId, TypeKind, TypeTable, Value, ValueKind};
+use hod_cg::sym::{FpType, fp_to_int_routine, int_divide_routine, int_to_fp_routine};
+use hod_cg::{CallArg, CgResult, Class, FnCx, FrameRef, PReg, Target};
+use hod_ir::{
+    Arch, Const, Inst, Opcode, SHUFFLE_UNDEF, TypeId, TypeKind, TypeTable, Value, ValueKind,
+};
 use hod_mc_x64 as mc;
-use hod_mc_x64::{Cond, FpSize, Mem, Reg, Scale, Size, Xmm};
+use hod_mc_x64::{Cond, FpSize, Mem, Reg, Scale, Size, St, X87Size, Xmm};
 
 use crate::common::{
-    R11, XMM15, copy_frame, deferred_first, frame_address, frame_inst, gp, gpr_load, load_fpr, put,
-    store_fpr, unsupported, value_ty, xm,
+    R10, R11, XMM15, copy_frame, deferred_first, frame_address, frame_inst, gp, gpr_load, load_fpr,
+    put, store_fpr, unsupported, value_ty, xm,
 };
 use crate::reg;
 use crate::target::X64;
@@ -874,6 +877,285 @@ fn wide_shuffle<'a>(
         }
     }
     Ok(())
+}
+
+// ---- arithmetic on `i128` lanes (WP-161, §5.6.19) ----
+
+/// The wide image of `ty` when it is a vector of `i128` lanes; `None`
+/// for any other type.
+fn int_lanes(cx: &FnCx<'_, X64>, ty: TypeId) -> Option<CgResult<Wide>> {
+    let TypeKind::Vector { elem, .. } = cx.types().kind(ty) else { return None };
+    if cx.types().kind(elem) != TypeKind::Int(128) {
+        return None;
+    }
+    Wide::of(cx, ty)
+}
+
+/// Glue (the dispatch's binary arm, `target.rs`): `%r = <op> %lhs, %rhs`
+/// of `<N x i128>`, lane by lane with the scalar `i128` sequences of
+/// `aggr.rs` on each lane's 16 bytes of the slots (§5.6.19): `add`,
+/// `sub` and the bitwise operations by `aggr::limbwise`, `mul` by
+/// `aggr::multiply`, a shift by a constant lane amount by
+/// `aggr::shift_const` (nothing for an amount of 128 or more: poison),
+/// any other by `aggr::shift_var`, the divisions by `__udivti3`,
+/// `__divti3`, `__umodti3`, `__modti3`. `None` when the result is no
+/// vector of `i128` lanes.
+///
+/// `x86_fp80` lanes: `fadd`, `fsub`, `fmul`, `fdiv` per lane as the
+/// scalar (`x87::binary`): both lanes pushed (`fld tbyte`), `faddp` ..
+/// `fdivp` into `st1`, the result popped to the lane (`fstp tbyte`);
+/// `frem` stays [`WIDE_ELEMENT`].
+pub fn wide_binary<'a>(
+    cx: &mut FnCx<'a, X64>,
+    inst: Inst<'a>,
+    lhs: Value,
+    rhs: Value,
+) -> Option<CgResult<()>> {
+    if let Some(w) = int_lanes(cx, inst.ty()) {
+        return Some(w.and_then(|w| binary_lanes(cx, inst, &w, lhs, rhs)));
+    }
+    let w = fp80_lanes(cx, inst.ty())?;
+    Some(w.and_then(|w| fp80_binary(cx, inst, &w, lhs, rhs)))
+}
+
+/// The wide image of `ty` when it is a vector of `x86_fp80` lanes;
+/// `None` for any other type.
+fn fp80_lanes(cx: &FnCx<'_, X64>, ty: TypeId) -> Option<CgResult<Wide>> {
+    let TypeKind::Vector { elem, .. } = cx.types().kind(ty) else { return None };
+    if cx.types().kind(elem) != TypeKind::X86Fp80 {
+        return None;
+    }
+    Wide::of(cx, ty)
+}
+
+fn fp80_binary<'a>(
+    cx: &mut FnCx<'a, X64>,
+    inst: Inst<'a>,
+    w: &Wide,
+    lhs: Value,
+    rhs: Value,
+) -> CgResult<()> {
+    let op = match inst.opcode() {
+        Opcode::FAdd => mc::faddp(St::St1),
+        Opcode::FSub => mc::fsubp(St::St1),
+        Opcode::FMul => mc::fmulp(St::St1),
+        Opcode::FDiv => mc::fdivp(St::St1),
+        Opcode::FRem => return unsupported(WIDE_ELEMENT),
+        _ => return cx.bug("a binary opcode that does not fit the vector's elements"),
+    };
+    deferred_first(cx, inst, None)?;
+    let a = cx.use_mem(lhs)?;
+    let b = cx.use_mem(rhs)?;
+    let r = cx.def_mem(inst)?;
+    for lane in 0..w.lanes {
+        let off = w.offset(lane);
+        frame_inst(cx, a.offset_by(off), |m| mc::fld_m(X87Size::T, m));
+        frame_inst(cx, b.offset_by(off), |m| mc::fld_m(X87Size::T, m));
+        put(cx, op);
+        frame_inst(cx, r.offset_by(off), |m| mc::fstp_m(X87Size::T, m));
+    }
+    Ok(())
+}
+
+/// Glue (the dispatch's `fneg` arm, `target.rs`): `fneg` of `x86_fp80`
+/// lanes, the image copied and the sign bit of each lane (bit 7 of its
+/// byte 9) flipped, as the scalar (`x87::fneg`). `None` for other lanes.
+pub fn wide_fneg<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> Option<CgResult<()>> {
+    let w = fp80_lanes(cx, inst.ty())?;
+    Some(w.and_then(|w| {
+        deferred_first(cx, inst, None)?;
+        let r = cx.def_mem(inst)?;
+        write_mem(cx, r, arg, w.size)?;
+        for lane in 0..w.lanes {
+            frame_inst(cx, r.offset_by(w.offset(lane) + 9), |m| mc::xor_mi(Size::B, m, -0x80));
+        }
+        Ok(())
+    }))
+}
+
+fn binary_lanes<'a>(
+    cx: &mut FnCx<'a, X64>,
+    inst: Inst<'a>,
+    w: &Wide,
+    lhs: Value,
+    rhs: Value,
+) -> CgResult<()> {
+    use Opcode as O;
+    let op = inst.opcode();
+    let divide = match op {
+        O::Add | O::Sub | O::And | O::Or | O::Xor | O::Mul | O::Shl | O::LShr | O::AShr => None,
+        O::UDiv | O::SDiv | O::URem | O::SRem => int_divide_routine(op),
+        _ => return cx.bug("a binary opcode that does not fit the vector's elements"),
+    };
+    deferred_first(cx, inst, None)?;
+    let a = cx.use_mem(lhs)?;
+    let b = cx.use_mem(rhs)?;
+    let r = cx.def_mem(inst)?;
+    for lane in 0..w.lanes {
+        let off = w.offset(lane);
+        let (rl, al, bl) = (r.offset_by(off), a.offset_by(off), b.offset_by(off));
+        match op {
+            O::Add | O::Sub | O::And | O::Or | O::Xor => {
+                crate::aggr::limbwise(cx, op, 128, rl, al, bl);
+            }
+            O::Mul => crate::aggr::multiply(cx, 128, rl, al, bl),
+            O::Shl | O::LShr | O::AShr => match lane_amount(cx, rhs, lane) {
+                Some(amount) if amount >= 128 => {}
+                Some(amount) => crate::aggr::shift_const(cx, op, 128, rl, al, amount as u32),
+                None => crate::aggr::shift_var(cx, op, 128, rl, al, bl)?,
+            },
+            _ => {
+                let Some(func) = divide else {
+                    return cx.bug("a division without its runtime function");
+                };
+                cx.call_runtime(func, &[CallArg::Mem(al), CallArg::Mem(bl)], Some(rl))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The amount in lane `lane` of a constant shift operand: its low 64
+/// bits, `u64::MAX` when a higher word is set (poison either way), 0 for
+/// `zeroinitializer`, `undef` and `poison`; `None` for a value that is no
+/// such constant.
+fn lane_amount(cx: &FnCx<'_, X64>, value: Value, lane: u32) -> Option<u64> {
+    let ValueKind::Const(id) = value.kind() else { return None };
+    let consts = &cx.module.consts;
+    let elem = match consts.get(id) {
+        Const::Zero(_) | Const::Undef(_) | Const::Poison(_) => return Some(0),
+        Const::Splat { elem, .. } => elem,
+        Const::Aggregate { elems, .. } => *elems.get(lane as usize)?,
+        _ => return None,
+    };
+    match consts.get(elem) {
+        Const::Int { value, .. } => Some(value),
+        Const::WideInt { words, .. } => {
+            let low = words.first().copied().unwrap_or(0);
+            Some(if words.iter().skip(1).any(|&w| w != 0) { u64::MAX } else { low })
+        }
+        Const::Zero(_) | Const::Undef(_) | Const::Poison(_) => Some(0),
+        _ => None,
+    }
+}
+
+/// Glue (the dispatch's cast arm, `target.rs`): a cast other than
+/// `bitcast` with a vector of `i128` lanes on one side (§5.6.19). `None`
+/// when neither side is one (masks are `mask.rs`'s, which the dispatch
+/// asks first).
+pub fn wide_cast<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> Option<CgResult<()>> {
+    let from = int_lanes(cx, value_ty(cx, arg));
+    let to = int_lanes(cx, inst.ty());
+    Some(match (from, to) {
+        (None, None) => return None,
+        (Some(w), None) => w.and_then(|w| from_wide(cx, inst, &w, arg)),
+        (None, Some(w)) => w.and_then(|w| to_wide(cx, inst, &w, arg)),
+        (Some(_), Some(_)) => cx.bug("a cast between vectors of i128 lanes"),
+    })
+}
+
+/// The `float`/`double` of a lane, for the conversion routines; the
+/// other floating-point lanes stay [`WIDE_ELEMENT`].
+fn conversion_type(elem: Elem) -> CgResult<FpType> {
+    match elem {
+        Elem::Float => Ok(FpType::Float),
+        Elem::Double => Ok(FpType::Double),
+        _ => unsupported(WIDE_ELEMENT),
+    }
+}
+
+/// `zext`, `sext`, `ptrtoint`, `ptrtoaddr` of integer or pointer lanes
+/// to `i128` lanes: each lane loaded zero-extended into `r10` (`sext`
+/// extends it), stored as the low limb, the high limb 0 or the sign;
+/// `fptosi`/`fptoui` of `float` or `double` lanes: one call of
+/// `__fix[uns]{sf,df}ti` per lane, its result written to the lane.
+fn to_wide<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, w: &Wide, arg: Value) -> CgResult<()> {
+    use Opcode as O;
+    let op = inst.opcode();
+    let from = lanes(cx, value_ty(cx, arg))?;
+    let elem = from.shape.elem;
+    let routine = match op {
+        O::ZExt | O::SExt | O::PtrToInt | O::PtrToAddr if !elem.is_float() => None,
+        O::FPToSI | O::FPToUI if elem.is_float() => {
+            let fp = conversion_type(elem)?;
+            match fp_to_int_routine(fp, op == O::FPToSI, 128, Arch::X86_64) {
+                Some(func) => Some(func),
+                None => return cx.bug("no conversion routine to i128"),
+            }
+        }
+        _ => return unsupported(crate::float::CAST),
+    };
+    if from.count() != w.lanes {
+        return cx.bug("a cast between vectors of different lengths");
+    }
+    deferred_first(cx, inst, None)?;
+    let src = image(cx, arg, &from, 0)?;
+    let r = cx.def_mem(inst)?;
+    for lane in 0..w.lanes {
+        let at = src.offset_by(from.offset(lane));
+        let rl = r.offset_by(w.offset(lane));
+        if let Some(func) = routine {
+            let t = cx.temp(Class::Fpr)?;
+            load_lane(cx, &from, At::Frame(at), t);
+            cx.call_runtime(func, &[CallArg::Reg(t)], Some(rl))?;
+            continue;
+        }
+        frame_inst(cx, at, |m| gpr_load(R10, m, from.bytes()));
+        if op == O::SExt {
+            crate::mem::sign_extend(cx, R10, elem.bits());
+        }
+        crate::aggr::st(cx, R10, rl, 0);
+        if op == O::SExt {
+            put(cx, mc::sar_ri(Size::Q, R10, 63));
+            crate::aggr::st(cx, R10, rl, 1);
+        } else {
+            frame_inst(cx, rl.offset_by(8), |m| mc::mov_mi(Size::Q, m, 0));
+        }
+    }
+    Ok(())
+}
+
+/// `trunc`, `inttoptr` of `i128` lanes to integer or pointer lanes: the
+/// low bytes of each lane's low limb (through `r10`); `sitofp`/`uitofp`
+/// to `float` or `double` lanes: one call of `__float[un]ti{sf,df}` per
+/// lane. A register result is loaded from its image at the end.
+fn from_wide<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, w: &Wide, arg: Value) -> CgResult<()> {
+    use Opcode as O;
+    let op = inst.opcode();
+    let to = lanes(cx, inst.ty())?;
+    let elem = to.shape.elem;
+    let routine = match op {
+        O::Trunc | O::IntToPtr if !elem.is_float() => None,
+        O::SIToFP | O::UIToFP if elem.is_float() => {
+            let fp = conversion_type(elem)?;
+            match int_to_fp_routine(op == O::SIToFP, 128, fp, Arch::X86_64) {
+                Some(func) => Some(func),
+                None => return cx.bug("no conversion routine from i128"),
+            }
+        }
+        _ => return unsupported(crate::float::CAST),
+    };
+    if to.count() != w.lanes {
+        return cx.bug("a cast between vectors of different lengths");
+    }
+    deferred_first(cx, inst, None)?;
+    let src = cx.use_mem(arg)?;
+    let dst = if to.shape.class == Class::Mem { cx.def_mem(inst)? } else { scratch(cx, 0)? };
+    for lane in 0..w.lanes {
+        let sl = src.offset_by(w.offset(lane));
+        let at = At::Frame(dst.offset_by(to.offset(lane)));
+        if let Some(func) = routine {
+            let Some(x) = cx.call_runtime(func, &[CallArg::Mem(sl)], None)? else {
+                return cx.bug("a runtime function returned nothing");
+            };
+            store_lane(cx, &to, at, x);
+            cx.free_temp(x);
+            continue;
+        }
+        crate::aggr::ld(cx, R10, sl, 0);
+        at_inst(cx, at, |m| mc::mov_mr(to.size(), m, R10));
+    }
+    hod_cg::lanes::finish(cx, inst, &to, dst)
 }
 
 /// Whether `ty` is a vector whose lanes `lanes` accepts.

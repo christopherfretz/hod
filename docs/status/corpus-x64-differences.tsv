@@ -6,7 +6,8 @@
 # class: target | emulation | kiln | clang | llc | unknown.
 #
 # WP-139's capture (LLVM 22 and 19, kiln 1.0.1 at bd60e1829, GCC tests at
-# 6afcc4f6d) has no such test: every test with an entry in both corpora
-# has the same exit status and standard output. The tests captured for one
+# 6afcc4f6d) has no such test, and neither has WP-165's (kiln 1.1.0 at
+# 22905b77d, the GCC groups kept; 6404 tests in both): every test with an
+# entry in both corpora has the same exit status and standard output. The tests captured for one
 # architecture only are classified in docs/status/corpus-x64.md
 # "Cross-check".

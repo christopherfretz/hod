@@ -8,6 +8,7 @@
 //! word, a word ends at the first character that is not alphanumeric or
 //! `_`, and a string ends at the first `"`.
 
+use crate::kw::{Kw, by_key, keyword_at};
 use crate::skip::{comment_end, find_byte};
 
 /// The kind of a [`Token`].
@@ -107,11 +108,15 @@ pub enum Tok {
     DotDotDot,
 }
 
-/// One token: its kind and the bytes `start..end` of the source.
+/// One token: its kind, its keyword code and the bytes `start..end` of
+/// the source.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Token {
     /// What it is.
     pub kind: Tok,
+    /// For a [`Tok::Word`] or a [`Tok::IntType`], the keyword it is, if
+    /// it is one (`spec/ll.md` §2.2); [`Kw::Other`] for every other token.
+    pub kw: Kw,
     /// Offset of its first byte.
     pub start: u32,
     /// Offset one past its last byte.
@@ -193,6 +198,42 @@ pub struct Lexer<'a> {
     /// token.
     run_start: usize,
     run_end: usize,
+    /// Tokens already lexed by another lexer over the same source, each
+    /// with the offset it was looked for at, in order of that offset
+    /// (`spec/ll.md` §2.8): a token is a function of the source and that
+    /// offset alone, so one looked for at the same offset is the same.
+    replay: Vec<Replayed>,
+    /// The next entry of `replay` that may still be wanted.
+    replay_at: usize,
+    /// The offset that entry was looked for at; `usize::MAX` when there
+    /// is none, so the test per token is one compare.
+    replay_from: usize,
+}
+
+/// A token and the offset its lexer looked for it at.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Replayed {
+    from: u32,
+    token: Token,
+}
+
+/// A record of tokens to replay ([`Lexer::replay`]): what [`Lexer::record`]
+/// gives and what it is filled by.
+#[derive(Debug, Default)]
+pub(crate) struct Recording(Vec<Replayed>);
+
+impl Recording {
+    /// The most tokens kept, 16 bytes each: past them a scan goes on
+    /// unrecorded and those tokens are lexed again.
+    pub(crate) const MAX: usize = 1 << 16;
+
+    /// Keeps `token`, looked for at `from`, while there is room.
+    #[inline]
+    pub(crate) fn push(&mut self, from: usize, token: Token) {
+        if self.0.len() < Self::MAX {
+            self.0.push(Replayed { from: from as u32, token });
+        }
+    }
 }
 
 impl<'a> Lexer<'a> {
@@ -201,7 +242,71 @@ impl<'a> Lexer<'a> {
     pub fn new(src: &'a [u8]) -> Lexer<'a> {
         let full = src;
         let src = if src.len() > MAX_SOURCE_BYTES { &src[..0] } else { src };
-        Lexer { src, full, pos: 0, error: "", run_start: usize::MAX, run_end: 0 }
+        Lexer {
+            src,
+            full,
+            pos: 0,
+            error: "",
+            run_start: usize::MAX,
+            run_end: 0,
+            replay: Vec::new(),
+            replay_at: 0,
+            replay_from: usize::MAX,
+        }
+    }
+
+    /// Takes the tokens left to replay, emptied, to be filled again: the
+    /// storage goes from one scan to the next.
+    pub(crate) fn record(&mut self) -> Recording {
+        let mut tokens = std::mem::take(&mut self.replay);
+        tokens.clear();
+        self.replay_at = 0;
+        self.replay_from = usize::MAX;
+        Recording(tokens)
+    }
+
+    /// Keeps the storage of `recording` for the next [`Lexer::record`],
+    /// replaying none of it.
+    pub(crate) fn reuse(&mut self, recording: Recording) {
+        let mut tokens = recording.0;
+        tokens.clear();
+        self.replay = tokens;
+        self.replay_at = 0;
+        self.replay_from = usize::MAX;
+    }
+
+    /// From now on a token looked for at an offset `recording` has one
+    /// for is that one, not lexed again. `recording` must come from a
+    /// lexer over the same source, every token it holds be neither
+    /// [`Tok::Eof`] nor [`Tok::Error`], and their offsets increase.
+    pub(crate) fn replay(&mut self, recording: Recording) {
+        debug_assert!(recording.0.windows(2).all(|pair| pair[0].from < pair[1].from));
+        self.replay = recording.0;
+        self.replay_at = 0;
+        self.replay_from = self.replay.first().map_or(usize::MAX, |entry| entry.from as usize);
+    }
+
+    /// The recorded token looked for at `pos`, if there is one; skips the
+    /// entries behind `pos`, which a lexer that goes forward never wants.
+    #[inline]
+    fn replayed(&mut self) -> Option<Token> {
+        while let Some(entry) = self.replay.get(self.replay_at) {
+            let from = entry.from as usize;
+            if from > self.pos {
+                self.replay_from = from;
+                return None;
+            }
+            self.replay_at += 1;
+            if from == self.pos {
+                let token = entry.token;
+                self.replay_from =
+                    self.replay.get(self.replay_at).map_or(usize::MAX, |next| next.from as usize);
+                self.pos = token.end as usize;
+                return Some(token);
+            }
+        }
+        self.replay_from = usize::MAX;
+        None
     }
 
     /// The source.
@@ -261,15 +366,32 @@ impl<'a> Lexer<'a> {
 
     /// The first offset at or after `at` whose byte is not of `class`
     /// (the end of the source has none).
+    ///
+    /// Eight bytes at a time while eight are left, so that a byte costs
+    /// its class test and not also an end test, then byte by byte.
     #[inline]
-    fn skip_while(&self, at: usize, class: u8) -> usize {
+    fn skip_while(&self, mut at: usize, class: u8) -> usize {
+        while let Some(chunk) = self.src.get(at..).and_then(<[u8]>::first_chunk::<8>) {
+            if let Some(n) = chunk.iter().position(|&b| !is(b, class)) {
+                return at + n;
+            }
+            at += 8;
+        }
         let rest = self.src.get(at..).unwrap_or_default();
         at + rest.iter().position(|&b| !is(b, class)).unwrap_or(rest.len())
     }
 
     fn token(&mut self, kind: Tok, start: usize, end: usize) -> Token {
         self.pos = end;
-        Token { kind, start: start as u32, end: end as u32 }
+        Token { kind, kw: Kw::Other, start: start as u32, end: end as u32 }
+    }
+
+    /// A word or an integer type, with its keyword code.
+    #[inline]
+    fn keyword_token(&mut self, kind: Tok, start: usize, end: usize) -> Token {
+        self.pos = end;
+        let kw = keyword_at(self.src, start, end);
+        Token { kind, kw, start: start as u32, end: end as u32 }
     }
 
     fn fail(&mut self, why: &'static str, start: usize, end: usize) -> Token {
@@ -278,6 +400,8 @@ impl<'a> Lexer<'a> {
     }
 
     /// Skips white space and comments; `Err` is an error token.
+    #[allow(clippy::inline_always)] // Measured: a call per token otherwise (WP-168).
+    #[inline(always)]
     fn skip_blank(&mut self) -> Result<usize, Token> {
         let src = self.src;
         let mut pos = self.pos;
@@ -309,6 +433,31 @@ impl<'a> Lexer<'a> {
     /// [`Tok::Error`] token is at least one byte, so a caller that goes on
     /// makes progress.
     pub fn next_token(&mut self) -> Token {
+        // A tail call either way, so that lexing needs no frame here.
+        if self.pos >= self.replay_from {
+            return self.replay_or_lex();
+        }
+        self.lex()
+    }
+
+    /// The recorded token at `pos`, or the one lexed there.
+    #[inline(never)]
+    fn replay_or_lex(&mut self) -> Token {
+        match self.replayed() {
+            Some(token) => token,
+            None => self.lex_out_of_line(),
+        }
+    }
+
+    #[inline(never)]
+    fn lex_out_of_line(&mut self) -> Token {
+        self.lex()
+    }
+
+    /// The token at `pos`, lexed.
+    #[allow(clippy::inline_always)] // Measured: `next_token` is this (WP-168).
+    #[inline(always)]
+    fn lex(&mut self) -> Token {
         let start = match self.skip_blank() {
             Ok(start) => start,
             Err(token) => return token,
@@ -319,7 +468,9 @@ impl<'a> Lexer<'a> {
             }
             return self.token(Tok::Eof, start, start);
         };
-        let one = |kind| Token { kind, start: start as u32, end: start as u32 + 1 };
+        let one = |kind| Token { kind, kw: Kw::Other, start: start as u32, end: start as u32 + 1 };
+        // One dispatch on the first byte: the tokens that are most of a
+        // text go straight to their rule, the rest to `compound`.
         let simple = match c {
             b'=' => Tok::Equal,
             b',' => Tok::Comma,
@@ -334,12 +485,28 @@ impl<'a> Lexer<'a> {
             b')' => Tok::RParen,
             b'|' => Tok::Bar,
             b':' => Tok::Colon,
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => return self.word(c, start),
+            b'%' => return self.local(start),
+            b'@' => return self.global(start),
+            b'-' | b'0'..=b'9' => return self.number(c, start),
             _ => return self.compound(c, start),
         };
         self.pos = start + 1;
         one(simple)
     }
 
+    #[inline(never)]
+    fn local(&mut self, start: usize) -> Token {
+        self.sigil(start, Tok::Local, Tok::LocalQuoted, Some(Tok::LocalId))
+    }
+
+    #[inline(never)]
+    fn global(&mut self, start: usize) -> Token {
+        self.sigil(start, Tok::Global, Tok::GlobalQuoted, Some(Tok::GlobalId))
+    }
+
+    /// Every first byte that `next_token` does not dispatch itself.
+    #[inline(never)]
     fn compound(&mut self, c: u8, start: usize) -> Token {
         match c {
             b'@' => self.sigil(start, Tok::Global, Tok::GlobalQuoted, Some(Tok::GlobalId)),
@@ -457,7 +624,25 @@ impl<'a> Lexer<'a> {
 
     /// A token that starts with a digit or `-`: a label, an integer, a
     /// floating-point number or a hexadecimal form.
+    ///
+    /// Most are digits, with or without a `-`, followed by a byte that
+    /// neither goes on a label nor ends one, which [`Lexer::number_rule`]
+    /// makes an integer whatever the digits: that is looked at first.
+    #[inline(never)]
     fn number(&mut self, c: u8, start: usize) -> Token {
+        if c != b'-' || is(self.at(start + 1), DIGIT) {
+            let digits = self.skip_while(start + 1, DIGIT);
+            let next = self.at(digits);
+            if !is(next, LABEL) && next != b':' {
+                return self.token(Tok::Int, start, digits);
+            }
+        }
+        self.number_rule(c, start)
+    }
+
+    /// The rules for a token that starts with a digit or `-`.
+    #[inline(never)]
+    fn number_rule(&mut self, c: u8, start: usize) -> Token {
         if c == b'-' && !is(self.at(start + 1), DIGIT) {
             return match self.label_tail(start) {
                 Some(end) => self.token(Tok::Label, start, end),
@@ -500,16 +685,56 @@ impl<'a> Lexer<'a> {
         self.token(kind, start, end)
     }
 
+    /// A token that starts with a letter or `_`. Most are a word or an
+    /// integer type (`i` and digits) of at most 15 bytes with sixteen
+    /// bytes of source from its start, not `u0…`, `s0…` or `cc` and a
+    /// digit, and followed by a byte that neither goes on a label nor
+    /// ends one: for those the rules of [`Lexer::word_rule`] all come to
+    /// the word or the type itself, which is found, and its key made,
+    /// from those sixteen bytes. Everything else goes through the rules.
+    #[inline(never)]
+    fn word(&mut self, c: u8, start: usize) -> Token {
+        let Some(bytes) = self.src.get(start..).and_then(<[u8]>::first_chunk::<16>) else {
+            return self.word_rule(c, start);
+        };
+        let second = bytes[1];
+        let int_type = c == b'i' && is(second, DIGIT);
+        let special = (second == b'0' && matches!(c, b'u' | b's'))
+            || (c == b'c' && second == b'c' && is(bytes[2], DIGIT));
+        let rest = &bytes[1..];
+        let len = if int_type {
+            rest.iter().position(|&b| !is(b, DIGIT))
+        } else {
+            rest.iter().position(|&b| !is(b, WORD))
+        }
+        .map_or(16, |n| n + 1);
+        if special || len == 16 || is(bytes[len], LABEL) || bytes[len] == b':' {
+            return self.word_rule(c, start);
+        }
+        let (first, rest) = bytes.split_at(8);
+        let lo = u64::from_le_bytes(first.try_into().unwrap_or_default());
+        let hi = u64::from_le_bytes(rest.try_into().unwrap_or_default());
+        let key = if len <= 8 {
+            [lo & (u64::MAX >> (64 - 8 * len)), 0]
+        } else {
+            [lo, hi & (u64::MAX >> (128 - 8 * len))]
+        };
+        self.pos = start + len;
+        let kind = if int_type { Tok::IntType } else { Tok::Word };
+        Token { kind, kw: by_key(key), start: start as u32, end: (start + len) as u32 }
+    }
+
     /// A token that starts with a letter or `_`: a label, an integer
     /// type, a hexadecimal integer or a word.
-    fn word(&mut self, c: u8, start: usize) -> Token {
+    #[inline(never)]
+    fn word_rule(&mut self, c: u8, start: usize) -> Token {
         // `i` and digits: an integer type unless the whole run of label
         // characters ends in a colon.
         if c == b'i' && is(self.at(start + 1), DIGIT) {
             let digits = self.skip_while(start + 1, DIGIT);
             return match self.label_tail(digits) {
                 Some(end) => self.token(Tok::Label, start, end),
-                None => self.token(Tok::IntType, start, digits),
+                None => self.keyword_token(Tok::IntType, start, digits),
             };
         }
         let end = self.skip_while(start + 1, WORD);
@@ -527,9 +752,9 @@ impl<'a> Lexer<'a> {
         }
         // `cc42` is `cc` and `42`.
         if text.len() > 2 && text.starts_with(b"cc") && text[2].is_ascii_digit() {
-            return self.token(Tok::Word, start, start + 2);
+            return self.keyword_token(Tok::Word, start, start + 2);
         }
-        self.token(Tok::Word, start, end)
+        self.keyword_token(Tok::Word, start, end)
     }
 }
 
@@ -777,7 +1002,7 @@ mod tests {
         assert_eq!(kinds("a /* open"), [Tok::Word, Tok::Error, Tok::Word]);
         assert_eq!(kinds("a / b"), [Tok::Word, Tok::Error, Tok::Word]);
         let mut lexer = Lexer::new(b"  ");
-        assert_eq!(lexer.next_token(), Token { kind: Tok::Eof, start: 2, end: 2 });
+        assert_eq!(lexer.next_token(), Token { kind: Tok::Eof, kw: Kw::Other, start: 2, end: 2 });
         assert_eq!(lexer.next_token().kind, Tok::Eof);
     }
 
@@ -798,6 +1023,98 @@ mod tests {
             lex("!a\\b-c.d$e_9 \0\r\t\n!x"),
             [(Tok::Meta, "!a\\b-c.d$e_9"), (Tok::Meta, "!x")]
         );
+    }
+
+    /// The word fast path is the word rules: every word made of the
+    /// bytes the rules look at, of every length around the sixteen bytes
+    /// the fast path reads, before every kind of byte, agrees with
+    /// `word_rule` in its token and in where it leaves the lexer.
+    #[test]
+    fn the_word_fast_path_is_the_rules() {
+        let heads: [&[u8]; 12] =
+            [b"x", b"i", b"i3", b"u0", b"s0x1f", b"u0xfg", b"cc", b"cc1", b"c", b"ret", b"_", b"Z"];
+        let fill = b"a0_9Zq";
+        let tails: [&[u8]; 12] =
+            [b"", b" ", b":", b".", b"-", b"$", b",", b"(", b"\"", b"\\", b"\x80", b"a:"];
+        let mut cases = 0;
+        for head in heads {
+            for len in 0..20 {
+                for tail in tails {
+                    for pad in [0usize, 1, 16, 32] {
+                        let mut text = head.to_vec();
+                        text.extend((0..len).map(|n| fill[n % fill.len()]));
+                        text.extend_from_slice(tail);
+                        text.extend(std::iter::repeat_n(b' ', pad));
+                        let mut fast = Lexer::new(&text);
+                        let mut rule = Lexer::new(&text);
+                        let (a, b) = (fast.word(text[0], 0), rule.word_rule(text[0], 0));
+                        assert_eq!(
+                            (a, fast.pos()),
+                            (b, rule.pos()),
+                            "{:?}",
+                            String::from_utf8_lossy(&text)
+                        );
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        // And every keyword, as itself and with a byte more.
+        for &word in &crate::kw::TEXTS[1..] {
+            for tail in [&b" "[..], b"x ", b"  "] {
+                let text = [word, tail, &[b' '; 16]].concat();
+                let mut fast = Lexer::new(&text);
+                let mut rule = Lexer::new(&text);
+                if text[0].is_ascii_alphabetic() || text[0] == b'_' {
+                    assert_eq!(fast.word(text[0], 0), rule.word_rule(text[0], 0));
+                    cases += 1;
+                }
+            }
+        }
+        assert!(cases > 10_000);
+    }
+
+    /// §2.8: a lexer that replays the tokens another lexer recorded from
+    /// some offsets on gives the tokens it would have lexed, whatever
+    /// the recording skipped and wherever the replaying lexer moves.
+    #[test]
+    fn replayed_tokens_are_the_lexed_ones() {
+        let text = b"entry:\n  %1 = call i32 @f(i32 %x, ptr \"q\") ; c\n  br label %next\n\
+                     next: ; preds\n  %y = add nuw i32 %1, -7\n  ret i32 %y\n}\n";
+        let plain: Vec<(usize, Token)> = {
+            let mut lexer = Lexer::new(text);
+            std::iter::from_fn(|| {
+                let from = lexer.pos();
+                let token = lexer.next_token();
+                (token.kind != Tok::Eof).then_some((from, token))
+            })
+            .collect()
+        };
+        // Record every other token from the third on, as a scan that skips
+        // some does.
+        for skip in 1..4 {
+            let mut scan = Lexer::new(text);
+            let mut recording = Recording::default();
+            for (n, &(from, _)) in plain.iter().enumerate().skip(2) {
+                scan.set_pos(from);
+                let token = scan.next_token();
+                if n % skip == 0 {
+                    recording.push(from, token);
+                }
+            }
+            let mut lexer = Lexer::new(text);
+            lexer.replay(recording);
+            for &(from, token) in &plain {
+                assert_eq!(lexer.pos(), from);
+                assert_eq!(lexer.next_token(), token);
+            }
+            assert_eq!(lexer.next_token().kind, Tok::Eof);
+            // Moving back and forth: every token is still the one lexed.
+            for &(from, token) in plain.iter().rev().chain(plain.iter().step_by(3)) {
+                lexer.set_pos(from);
+                assert_eq!(lexer.next_token(), token);
+            }
+        }
     }
 
     /// §2.7: escapes.

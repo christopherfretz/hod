@@ -19,6 +19,8 @@ the command-line tool:
 pub fn compile(input: &[u8], options: &Options) -> Result<Vec<u8>, CompileError>;
 pub fn compile_with(input: &[u8], options: &Options, settings: &Settings, report: &mut Report)
     -> Result<Vec<u8>, CompileError>;
+pub fn compile_releasing(input: &mut Cow<'_, [u8]>, options: &Options, settings: &Settings,
+    report: &mut Report) -> Result<Vec<u8>, CompileError>;
 pub fn generate(module: &hod_ir::Module, bodies: &[hod_ir::Body], options: &Options)
     -> Result<Vec<u8>, CompileError>;
 pub fn generate_with(module: &hod_ir::Module, bodies: &[hod_ir::Body], options: &Options,
@@ -51,6 +53,19 @@ pub trait ThreadTokens: Send + Sync + Debug {
 - `input` is one whole module, LLVM text or bitcode (see "Input"), read
   by `hod_ll` or `hod_bc` ("The front half"). `compile` is `compile_with`
   with `Settings::default()`: bitcode read natively, the first reason.
+- `compile_releasing` is `compile_with` that frees an owned input once it
+  is read (WP-166): when the walk of the bodies has ended, before code
+  generation, `Cow::Owned` bytes are dropped (shrunk first, so that
+  glibc's `free` of a mapped block does not raise its mapping threshold
+  for the tables of code generation) and `input` is left empty;
+  `Cow::Borrowed` bytes are left as they are, and so is an owned input on
+  an answer given before the bodies are walked (a decline of the bitcode
+  or of the target, a reader's error). The module and its bodies borrow
+  nothing from the input. The `hod` binary compiles with it, passing the
+  input owned unless it reads standard input with a fallback configured
+  (the fallback is then fed the same bytes); the input is then not part
+  of the peak of code generation (on a 36 MB libc++ module, a third of
+  the peak resident set).
 - `Settings` is how the front half works, not an `llc` option:
   `bitcode` (`BitcodeReading::Native`, or `Decline` for a caller that
   converts bitcode itself, which then gets `bitcode-input`), `census`
@@ -435,7 +450,12 @@ is produced, partial or otherwise:
    `-x87` to the code generator: refused only in a function with an
    `x86_fp80` value, §5.6.9): a refusal is `attr:target-feature-<class>`,
    with the item as the detail, in the function for an attribute and of
-   the module for `-mattr`.
+   the module for `-mattr`. A function's attributes are judged once per
+   attribute set (`FnAttrsId`) of the module, not once per function, and
+   on x86-64 the set's target (`hod_x64::X64::of_attrs`) is made then
+   too: every function of the set is compiled with it, and
+   `X64::for_function` keeps a target made this way (`own`). The verdict
+   and the code are those of judging each function (WP-166).
 4. Every body is compiled (`hod_cg::compile_function` with `hod_a64`),
    on the threads of "Threads", each with its own scratch state, into
    chunks of whole functions in module order. A `CgError::Unsupported`
@@ -443,8 +463,16 @@ is produced, partial or otherwise:
    `call:...`, ...); a `CgError::Internal` is `CompileError::Internal`.
    When several functions fail, the answer is the one first in module
    order, whatever thread met it first.
-5. `hod_cg::emit_module` lays out the module from the chunks in module
-   order, and `hod_obj::elf::to_vec` writes the object in memory: their
+5. The module emitter (`hod_cg::ModuleEmitter`, as `hod_cg::emit_module`)
+   lays out the module from the chunks in module order, and
+   `hod_obj::elf::to_vec` writes the object in memory. Each chunk is
+   emptied as it is added, so a module's code and relocations are not held
+   twice (WP-166): on the calling thread alone, the functions are compiled
+   in chunks of about `PARALLEL_MIN_INSTS` instructions, each added as soon
+   as it is made and its buffers reused; on several threads, the chunks are
+   added once all are made, each freed as it is added. A refusal of a
+   function (step 4) is the answer before one of the emitter's, as when
+   every chunk was made first. Their
    `Unsupported` is a module refusal; `hod_obj`'s `NulInName` is
    `object:nul-in-name`, `TooLarge` is `limit:object`, anything else
    `Internal`.
@@ -1215,7 +1243,7 @@ no phase covers (the coverage line).
 | `parse` | the module level has been read (`hod_ll::parse_module`, `hod_bc::read_module`) |
 | `classify` | `classify`'s module pass has judged the module |
 | `bodies` | every body has been read and judged (only when the walk did not stop at a reason) |
-| `emission` | every body has been compiled to machine code ("The back half", step 4) |
+| `emission` | every body has been compiled to machine code ("The back half", step 4); compiled on the calling thread alone, each chunk is also laid out as it is made (step 5) |
 | `object` | the module has been laid out and its object written in memory |
 | `convert` | the bitcode converter ended ("Bitcode conversion"), with text or a failure; the attempt that declined the bitcode is in it. Only an invocation that started a conversion has it |
 | `compile` | `hod::compile` returned, with an object or an error: what follows the last of `parse`, `classify`, `bodies` (code generation, today the seam's decline), or the whole call when it declined before reading |

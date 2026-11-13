@@ -361,15 +361,29 @@ be `i8`, `i16`, `i32`, `i64`, `ptr`, `half`, `bfloat`, `float`, `double`,
 | `<N x x86_fp80>` | N `x86_fp80` pieces, as N scalars: an argument a 16-byte stack slot each; a result in `st0` (N = 1), `st0` and `st1` (N = 2), memory (N ≥ 3, §5.2). The elements are 10 bytes apart in the vector's image |
 | `<N x i128>` | 2N general pieces of 8 bytes, element `i`'s low half first; no pair rule (§4.2): see below. A result in `rax`:`rdx` (N = 1), memory (N ≥ 2) |
 
-**Vectors of `i128` across the last register** (WP-152). LLVM 22
+**Vectors of `i128` across the last register** (WP-152, WP-171). LLVM 22
 scalarizes the argument into 2N ordinary 8-byte pieces: one may go in
 `r9` and the next on the stack, and a stack piece is 8-aligned. LLVM 19
-keeps each element a pair (both halves on the stack once one is,
-16-aligned) for N = 1, and places a longer vector differently again.
-Both agree only when every piece is in a register, or every piece is on
-the stack from an offset that is a multiple of 16; any other placement
-is `x64:vector-i128-split`. (`assign` checks the placement after it
-places the pieces; the caller and the callee see the same.)
+places the **first element** as a lone `i128` (§4.2: both halves in
+registers if two are left, else both on the stack at an offset aligned
+to 16, the register left marked used) and the pieces after it as
+ordinary pieces, exactly as LLVM 22 does (element 1 of `<2 x i128>`
+after three `i64`s is `r9` and `s+0` under both). So the two agree
+exactly when the first element is in two registers, or is on the stack
+from an offset that is a multiple of 16; hod places the vector as LLVM
+22 does then. The rest is `x64:vector-i128-split`: the first element's
+low half in `r9` (five general registers taken before it) or the vector
+on the stack from an offset of 8 mod 16. (`assign` checks the placement
+after it places the pieces; the caller and the callee see the same.) Where
+kiln's IR has such a vector it comes from a vector of `__int128` (libc++
+22's `std::__load_vector` returns a `<1 x i128>`, in `rax`:`rdx`, which
+both versions agree on); the refused placements stay refused until one
+version can be followed alone.
+
+As a leaf of an aggregate a vector of `i128` is placed piece by piece
+(§4.4), as LLVM 22 places it; LLVM 19 keeps its first element a pair
+there too (`{ i64, <1 x i128> }` after four `i64`s: LLVM 22 `r9`, `s+0`;
+LLVM 19 `s+0`, `s+8`), as it does an `i128` leaf (§4.2).
 
 **Vectors of `i1`:**
 
@@ -392,7 +406,12 @@ type at the lengths above, under every pressure, as returns); `07-vec.ll`,
 `<3 x i128>` all in registers and all on the stack from offset 0,
 `<1 x i128>` and `<2 x i128>` results, `<1..3 x x86_fp80>` arguments
 and results, callers and callees each from hod or `llc` 22/19;
-`wide_vector_and_byval_refusals_by_name`).
+`wide_vector_and_byval_refusals_by_name`);
+`hod_x64/tests/vcall_i128.rs` (WP-171: WP-167's 81 signatures and 52 of
+`<1..4 x i128>` after 0 to 10 general arguments, each case compiled
+alone, the cases hod builds run hod against `llc` 22 and 19 both ways,
+and every case refused as `x64:vector-i128-split` shown to lose a leaf
+between `llc` 19 and `llc` 22).
 
 ### 4.4 Aggregates
 
@@ -853,7 +872,7 @@ functions); `08-varargs.ll`.
 | `abi:target-ext-type` | a target extension type |
 | `abi:addrspace` | a pointer outside address space 0 |
 | `abi:vector-element` | a vector of an element §4.3 does not list (`i24`, `i256`, …) |
-| `x64:vector-i128-split` | a vector of `i128` argument partly in registers, or on the stack from an offset not a multiple of 16 (§4.3) |
+| `x64:vector-i128-split` | a vector of `i128` argument whose first element is partly in registers, or which is on the stack from an offset not a multiple of 16 (§4.3) |
 | `x64:mask-vector` | `<N x i1>` with N not 1, 2, 4, 8 or 16 (§4.3) |
 | `x64:wide-vector-abi` | a wide vector, or an `i1` vector, under AVX/AVX-512 (§1.3) |
 | `x64:nest` | `nest` (§6.3) |
@@ -921,8 +940,8 @@ measurement, not a gate).
   memory; LLVM does the same for a lone `i128` but not inside an
   aggregate (§4.2), and LLVM 19 and 22 differ there and in the registers
   left behind (§4.2, §9.4). A vector of `i128` is split as 8-byte
-  pieces by LLVM 22 and kept in pairs by LLVM 19; hod takes the
-  placements both agree on and refuses the rest (§4.3,
+  pieces by LLVM 22; LLVM 19 keeps its first element a pair; hod takes
+  the placements both agree on and refuses the rest (§4.3,
   `x64:vector-i128-split`).
 - **`byval` aligned above 16.** The psABI's stack-argument area is
   16-aligned; LLVM aligns it to the copy's alignment by realigning the

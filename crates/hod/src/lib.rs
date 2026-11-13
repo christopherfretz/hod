@@ -47,12 +47,12 @@ pub use back::{
     LIMIT_OBJECT, OBJECT_NUL_IN_NAME, OPTION_RELOCATION_MODEL, OPTION_SPLIT_DWARF,
     PARALLEL_MIN_INSTS, ThreadTokens, Threads, generate_with,
 };
-#[cfg(feature = "readers")]
-pub use front::compile_with;
 pub use front::{
     BitcodeReading, INTERNAL_ERROR, INTERNAL_PANIC, LIMIT_READER, READ_BYTES_PER_THREAD,
     READ_MAX_THREADS, READ_MIN_BODY_BYTES, Report, Settings, generate, read_threads,
 };
+#[cfg(feature = "readers")]
+pub use front::{compile_releasing, compile_with};
 pub use session::Session;
 /// The names of the bodies declined because their meaning depends on being
 /// inlined (`spec/cli.md` "Always-inline").
@@ -490,6 +490,20 @@ mod tests {
         assert!(generated.is_ok_and(|o| o.starts_with(b"\x7FELF")));
         let phases: Vec<&str> = report.phases.iter().map(|&(name, _)| name).collect();
         assert_eq!(phases, ["parse", "classify", "bodies", "emission", "object"]);
+        // WP-166: an owned input is freed once read, with the same object;
+        // a borrowed one, or one declined before reading, is left.
+        let object = compile(accepted.as_bytes(), &obj).unwrap();
+        let mut owned = Cow::Owned(accepted.clone().into_bytes());
+        let released = compile_releasing(&mut owned, &obj, &Settings::default(), &mut report);
+        assert_eq!((released.as_ref(), owned.as_ref()), (Ok(&object), &b""[..]));
+        let mut borrowed = Cow::Borrowed(accepted.as_bytes());
+        let kept = compile_releasing(&mut borrowed, &obj, &Settings::default(), &mut report);
+        assert_eq!((kept.as_ref(), borrowed.as_ref()), (Ok(&object), accepted.as_bytes()));
+        let decline = Settings { bitcode: BitcodeReading::Decline, ..Settings::default() };
+        let mut bitcode = Cow::Owned(b"BC\xC0\xDE....".to_vec());
+        let declined = compile_releasing(&mut bitcode, &obj, &decline, &mut report);
+        assert!(declined.is_err());
+        assert_eq!(bitcode.as_ref(), b"BC\xC0\xDE....");
         // MODULE's data layout is not the target's.
         assert_eq!(reason(MODULE, &obj), Construct::UnsupportedTarget);
         // No stated target: hod does not guess the host's.

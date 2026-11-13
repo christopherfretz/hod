@@ -14,6 +14,7 @@ use crate::body::{CalleeInfo, Fx};
 use crate::error::{LlErrorKind, PResult, fail};
 use crate::index::parse_u32;
 use crate::inst::Done;
+use crate::kw::Kw;
 use crate::lexer::{Tok, Token};
 use crate::parser::ir;
 use crate::{MdRef, Span};
@@ -396,7 +397,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     /// type was, the type as written, and the return type.
     fn call_type(&mut self) -> PResult<(TypeId, u32, TypeId, TypeId)> {
         let mut ptr_ty = TypeId::PTR;
-        if self.p.eat_word(b"addrspace") {
+        if self.p.eat_word(Kw::Addrspace) {
             self.p.expect(Tok::LParen, "expected '(' in an address space")?;
             let space_at = self.p.tok.start;
             let space = self.p.expect_u32("expected an address space number")?;
@@ -536,13 +537,13 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     fn successors(&mut self, op: Opcode) -> PResult<(BlockId, BlockId)> {
         match op {
             Opcode::Invoke => {
-                self.p.expect_word(b"to", "expected 'to' in invoke")?;
+                self.p.expect_word(Kw::To, "expected 'to' in invoke")?;
                 let normal = self.label()?;
-                self.p.expect_word(b"unwind", "expected 'unwind' in invoke")?;
+                self.p.expect_word(Kw::Unwind, "expected 'unwind' in invoke")?;
                 Ok((normal, self.label()?))
             }
             Opcode::CallBr => {
-                self.p.expect_word(b"to", "expected 'to' in callbr")?;
+                self.p.expect_word(Kw::To, "expected 'to' in callbr")?;
                 let fallthrough = self.label()?;
                 self.p.expect(Tok::LBracket, "expected '[' in callbr")?;
                 self.s.targets.clear();

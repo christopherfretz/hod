@@ -95,14 +95,7 @@ pub fn target_of(module: &hod_ir::Module, function: hod_ir::Symbol<'_>) -> Optio
     if attrs.index() >= module.fn_attrs_count() {
         return None;
     }
-    let attrs = module.fn_attrs(attrs);
-    let text = |what| attrs.string(what).and_then(|s| std::str::from_utf8(s).ok());
-    let features = crate::features::of_function(
-        text(hod_ir::FnStr::TargetCpu),
-        text(hod_ir::FnStr::TargetFeatures),
-    );
-    let coro = attrs.has(hod_ir::FnAttrs::PRESPLIT_COROUTINE);
-    Some(X64 { features, coro })
+    Some(X64::of_attrs(module.fn_attrs(attrs)))
 }
 
 /// Every name this module refuses with.

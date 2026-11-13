@@ -79,11 +79,11 @@ use hod_ir::{
     TypeKind, TypeTable, Value, ValueKind,
 };
 use hod_mc_x64 as mc;
-use hod_mc_x64::{Cond, FpSize, Mem, Reg, Size};
+use hod_mc_x64::{Cond, FpSize, Mem, Reg, Size, St, X87Size};
 
 use crate::common::{
-    R11, XMM14, XMM15, deferred_first, fpr_load, frame_inst, gp, gpr_load, mov_imm, put,
-    unsupported, value_ty,
+    R11, XMM14, XMM15, copy_from_ptr, deferred_first, fpr_load, frame_address, frame_inst, gp,
+    gpr_load, mov_imm, put, unsupported, value_ty,
 };
 use crate::target::X64;
 use crate::vector::{self, Elem, Index, Lanes};
@@ -583,6 +583,10 @@ pub fn fcmp<'a>(
     rhs: Value,
 ) -> CgResult<()> {
     let n = mask_of(cx, inst.ty())?;
+    if let Some(w) = wide_fp80(cx, value_ty(cx, lhs)) {
+        let w = wide_of_mask(cx, w, n)?;
+        return wide_fcmp(cx, inst, &w, pred, lhs, rhs);
+    }
     let lanes = vector::lanes(cx, value_ty(cx, lhs))?;
     if !lanes.shape.elem.is_float() {
         return cx.bug("an fcmp of lanes that are no floating-point type");
@@ -610,6 +614,92 @@ pub fn fcmp<'a>(
         or_bit(cx, bits, RCX, lane);
     }
     cx.finish(inst, rd)
+}
+
+// ---- `x86_fp80` lanes (WP-161, §5.6.19) ----
+
+/// The wide image of `ty` when it is a vector of `x86_fp80` lanes;
+/// `None` for any other type.
+fn wide_fp80(cx: &FnCx<'_, X64>, ty: TypeId) -> Option<CgResult<vector::Wide>> {
+    let types = cx.types();
+    match types.kind(ty) {
+        TypeKind::Vector { elem, .. } if types.kind(elem) == TypeKind::X86Fp80 => {
+            vector::Wide::of(cx, ty)
+        }
+        _ => None,
+    }
+}
+
+/// `%r = fcmp <pred> <N x x86_fp80> %lhs, %rhs`: per lane the class of
+/// the module docs from the flags of the scalar's compare
+/// (`x87::flags`: the right lane pushed, then the left, `fucomip st0,
+/// st1`, `fstp st0`, which set the flags as `ucomisd left, right`), the
+/// bit or-ed into the result. `true` and `false` are all ones and zero.
+fn wide_fcmp<'a>(
+    cx: &mut FnCx<'a, X64>,
+    inst: Inst<'a>,
+    w: &vector::Wide,
+    pred: FloatPredicate,
+    lhs: Value,
+    rhs: Value,
+) -> CgResult<()> {
+    deferred_first(cx, inst, None)?;
+    let code = fcmp_code(pred);
+    if code == 0 || code == 15 {
+        let rd = cx.def_reg(inst)?;
+        mov_imm(cx, gp(rd), if code == 15 { low_bits(w.lanes) } else { 0 }, 64);
+        return cx.finish(inst, rd);
+    }
+    let left = cx.use_mem(lhs)?;
+    let right = if rhs == lhs { left } else { cx.use_mem(rhs)? };
+    let rd = cx.def_reg(inst)?;
+    let bits = gp(rd);
+    mov_imm(cx, bits, 0, 32);
+    for lane in 0..w.lanes {
+        let off = w.offset(lane);
+        frame_inst(cx, right.offset_by(off), |m| mc::fld_m(X87Size::T, m));
+        frame_inst(cx, left.offset_by(off), |m| mc::fld_m(X87Size::T, m));
+        put(cx, mc::fucomip(St::St1));
+        put(cx, mc::fstp_st(St::St0));
+        put(cx, mc::setcc_r(Cond::P, RAX));
+        put(cx, mc::setcc_r(Cond::B, RCX));
+        put(cx, mc::setcc_r(Cond::E, RDX));
+        put(cx, mc::setcc_r(Cond::A, R11));
+        ordered_code(cx, RAX, R11);
+        put(cx, mc::test_ri(Size::D, RCX, i64::from(code)));
+        put(cx, mc::setcc_r(Cond::Ne, RCX));
+        put(cx, mc::movzx_rr(Size::D, RCX, Size::B, RCX));
+        or_bit(cx, bits, RCX, lane);
+    }
+    cx.finish(inst, rd)
+}
+
+/// `%r = select <N x i1> %cond, %if_true, %if_false` of `i128` or
+/// `x86_fp80` lanes: per lane the addresses of both lanes in `rax` and
+/// `rcx`, `bt` of the condition's bit and `cmovae`, the chosen lane
+/// copied into the result's slot.
+fn wide_select<'a>(
+    cx: &mut FnCx<'a, X64>,
+    inst: Inst<'a>,
+    w: &vector::Wide,
+    cond: Value,
+    if_true: Value,
+    if_false: Value,
+) -> CgResult<()> {
+    deferred_first(cx, inst, None)?;
+    let t = cx.use_mem(if_true)?;
+    let f = if if_false == if_true { t } else { cx.use_mem(if_false)? };
+    let c = gp(operand(cx, cond, w.lanes)?);
+    let out = cx.def_mem(inst)?;
+    for lane in 0..w.lanes {
+        let off = w.offset(lane);
+        frame_address(cx, RAX, t.offset_by(off));
+        frame_address(cx, RCX, f.offset_by(off));
+        put(cx, mc::bt_ri(Size::Q, c, lane as u8));
+        put(cx, mc::cmovcc_rr(Cond::Ae, Size::Q, RAX, RCX));
+        copy_from_ptr(cx, out.offset_by(off), RAX, 0, w.stride);
+    }
+    Ok(())
 }
 
 /// The class of lane `lane` of `float`/`double` images `a`, `b` in `rcx`
@@ -715,6 +805,10 @@ pub fn select<'a>(
         put(cx, mc::and_rr(Size::Q, rf, R11));
         put(cx, mc::or_rr(Size::Q, rt, rf));
         return cx.finish(inst, t);
+    }
+    if let Some(w) = vector::Wide::of(cx, inst.ty()) {
+        let w = wide_of_mask(cx, w, n)?;
+        return wide_select(cx, inst, &w, cond, if_true, if_false);
     }
     let result = vector::lanes(cx, inst.ty())?;
     deferred_first(cx, inst, None)?;

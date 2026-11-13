@@ -315,11 +315,9 @@ treatment to every width. `table::wide_integers`; the grid (65, 96, 127,
 For `<n x T>`, let `b` be the element's size in bytes and `t = n·b`.
 Supported elements are `i1` (a mask, below), `i8`, `i16`, `i32`, `i64`,
 `ptr`, `half`, `bfloat`, `float`, `double`, `fp128` and `i128`; any
-other element (`i7`, `i96`, …) is `abi:vector-element`, and so is a lone
-`<1 x i128>` argument or return value (WP-101: hod keeps it in a `Q`
-register, `spec/codegen.md` §2, and the call sequence moves no value
-between register classes; in an aggregate it passes). A scalable vector is
-`abi:scalable-vector`. The first row that applies gives the pieces:
+other element (`i7`, `i24`, `i96`, `i256`, …) is `abi:vector-element`
+(below). A scalable vector is `abi:scalable-vector`. The first row that
+applies gives the pieces:
 
 | condition | pieces | example |
 |---|---|---|
@@ -336,7 +334,28 @@ between register classes; in an aggregate it passes). A scalable vector is
 | `n` not a power of two, otherwise | `n` pieces, `b` bytes each: class `W` for `i8`, `i16`, `i32`; `D` for `i64`, `ptr`, `double`; `H`, `Bf`, `S` for `half`, `bfloat`, `float` | `<3 x i64>`, `<5 x i32>`, `<3 x i8>` |
 
 Piece `i` of a multi-piece vector carries the bytes from `i` times the
-piece size on. Note that `<1 x i64>` and the elements of `<3 x i64>`
+piece size on.
+
+**A lone `<1 x i128>`** (an argument or return value that is not inside
+an aggregate) has the pieces of the `i128` row, placed as an `i128`
+(the even-register rule, a 16-aligned stack slot, `x0`/`x1` as a
+result), as `llc` 19 and 22 both place it. hod holds the value in a `Q`
+register (`spec/codegen.md` §2), so each piece is a `Lanes` part
+(`bits` 64, `lane` 8, `len` 2, `first` 0 for the low limb and 1 for the
+high one; `offset` 0, `size` 8) rather than `Value` bytes, and the
+target moves it between the classes (WP-167). Inside an aggregate the
+value is memory and its pieces are `Value` parts at offsets 0 and 8.
+
+**Elements that stay refused.** Integers whose width is not 1, 8, 16,
+32, 64 or 128 (`<2 x i7>`, `<4 x i24>`, `<2 x i96>`, `<1 x i256>`):
+AAPCS64 has no such vector (no C or C++ type has one; clang refuses
+`_BitInt` vector elements that are not a power of two of at least 8
+bits), and hod has no lowering of their values (`a64:vector-odd-element`,
+`a64:vector-wide-element`). `llc` 19 and 22 do give them placements
+(odd lanes widened in a `D`/`Q` register, wide elements as integers in
+general registers), but those were measured only for the shapes above;
+a package that lowers such values starts from them. `x86_fp80`
+elements are refused as well. Note that `<1 x i64>` and the elements of `<3 x i64>`
 travel in vector registers, while the elements of `<3 x i8>` travel in
 general registers.
 
@@ -372,7 +391,13 @@ rest is LLVM's type legalization. `table::vectors`; the grid's
 mask length up to 64 and every widened shape, alone, after full
 argument registers, in structures and arrays, as results, through a
 pointer, `invoke`, `musttail` and as named arguments of a variadic
-function; also LLVM's own `-O0` output read for each row.
+function; also LLVM's own `-O0` output read for each row. A lone
+`<1 x i128>` (WP-167): `table::vectors` (at an odd register, on the
+stack, as a result); `vcall::lone_i128_vectors_cross_calls`, 81
+signatures against `llc` 22 and 19 in both directions (after 0 to 8
+general arguments, beside the other `i128` shapes and vectors, in a
+structure, through a pointer, `invoke`, `musttail`, as a named argument
+of a variadic function).
 
 ### 4.4 Aggregates
 
@@ -862,7 +887,7 @@ coverage log (`spec/cli.md`) counts by them.
 | `abi:scalable-vector` | a scalable vector, also as a `byval` pointee |
 | `abi:target-ext-type` | a target extension type |
 | `abi:addrspace` | a pointer in an address space other than 0 |
-| `abi:vector-element` | a vector whose element is not one of §4.3's; a lone `<1 x i128>` |
+| `abi:vector-element` | a vector whose element is not one of §4.3's |
 | `abi:mask-wide` | a mask of more than 64 elements (§4.3) |
 | `abi:wide-int-array` | an array argument of integers wider than 64 bits, where LLVM's selectors disagree (§3.3) |
 | `abi:bfloat-array` | an array argument of `bfloat` that does not fit the vector registers left (§3.3) |

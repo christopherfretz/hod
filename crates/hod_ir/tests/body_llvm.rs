@@ -745,6 +745,7 @@ const INTRINSICS: &[(&str, &str)] = &[
     ("llvm.aarch64.crc32ch", "i32 (i32, i32)"),
     ("llvm.aarch64.crc32cw", "i32 (i32, i32)"),
     ("llvm.aarch64.crc32cx", "i32 (i32, i64)"),
+    ("llvm.x86.sse2.pause", "void ()"),
     ("llvm.aarch64.cls", "i32 (i32)"),
     ("llvm.aarch64.cls64", "i32 (i64)"),
     ("llvm.aarch64.crypto.aesd", "<16 x i8> (<16 x i8>, <16 x i8>)"),

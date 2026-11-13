@@ -4,9 +4,8 @@
 //! `llc` arguments it planned.
 //!
 //! - Strict mode: a coroutine hod compiles is written (status 0, both LLVM
-//!   dialects); one it does not is declined with status 2, the construct
-//!   named, nothing written, the reason in the coverage log: the plan's
-//!   refusal on AArch64, `attr:presplitcoroutine` on x86-64.
+//!   dialects, both targets); one it does not is declined with status 2,
+//!   the construct named, nothing written, the reason in the coverage log.
 //! - Hybrid mode: the fallback runs exactly for the declined module, with
 //!   the same bytes; with a real `opt` + `llc` wrapper as the fallback the
 //!   declined module still becomes an object.
@@ -87,43 +86,30 @@ fn is_elf(path: &Path) -> bool {
 fn strict_mode_builds_or_declines_by_name() {
     let scratch = Scratch::new("preopt-coro-strict");
     let log = scratch.join("cov.tsv");
-    for (name, text) in [("gen-19", GEN_19), ("gen-22", GEN_22)] {
-        let out = scratch.join(format!("{name}.o"));
-        let outcome = run_hod(&mut strict(A64, &out, &log), text);
-        assert_eq!(status(&outcome), 0, "{name}: {}", outcome.stderr_text());
-        assert!(is_elf(&out), "{name}: an object");
+    for triple in [A64, X64] {
+        for (name, text) in [("gen-19", GEN_19), ("gen-22", GEN_22)] {
+            let out = scratch.join(format!("{name}.o"));
+            let outcome = run_hod(&mut strict(triple, &out, &log), text);
+            assert_eq!(status(&outcome), 0, "{triple} {name}: {}", outcome.stderr_text());
+            assert!(is_elf(&out), "{triple} {name}: an object");
+            std::fs::remove_file(&out).unwrap();
+        }
     }
 
-    let declined = [
-        (
-            A64,
-            POST_SYNC,
-            "hod: error: unsupported construct 'coro:frame-access-after-suspend' in function \
-             '_Z1fv' (strict mode: no fallback)\n",
-            "coro:frame-access-after-suspend",
-        ),
-        (
-            X64,
-            GEN_22,
-            "hod: error: unsupported construct 'attr:presplitcoroutine' (strict mode: no \
-             fallback)\n",
-            "attr:presplitcoroutine",
-        ),
-    ];
-    for (triple, text, stderr, _) in declined {
-        let out = scratch.join("declined.o");
-        let outcome = run_hod(&mut strict(triple, &out, &log), text);
-        assert_eq!(status(&outcome), 2, "{}", outcome.stderr_text());
-        assert_eq!(outcome.stderr_text(), stderr);
-        assert!(!out.exists(), "nothing is written for a declined module");
-    }
+    let out = scratch.join("declined.o");
+    let outcome = run_hod(&mut strict(A64, &out, &log), POST_SYNC);
+    assert_eq!(status(&outcome), 2, "{}", outcome.stderr_text());
+    assert_eq!(
+        outcome.stderr_text(),
+        "hod: error: unsupported construct 'coro:frame-access-after-suspend' in function \
+         '_Z1fv' (strict mode: no fallback)\n"
+    );
+    assert!(!out.exists(), "nothing is written for a declined module");
     let lines = logged(&log);
     let reasons: Vec<(&str, &str)> =
         lines.iter().map(|(outcome, reason)| (outcome.as_str(), reason.as_str())).collect();
-    assert_eq!(
-        reasons,
-        [("hod", "-"), ("hod", "-"), ("error", declined[0].3), ("error", declined[1].3)]
-    );
+    let built = ("hod", "-");
+    assert_eq!(reasons, [built, built, built, built, ("error", "coro:frame-access-after-suspend")]);
 }
 
 /// A stand-in fallback: records that it ran and its standard input.
@@ -148,19 +134,18 @@ fn hybrid_mode_falls_back_for_the_declined_module_only() {
             .arg(out);
         command
     };
-    let out = scratch.join("gen.o");
-    let outcome = run_hod(&mut hybrid(A64, &out), GEN_22);
-    assert_eq!(status(&outcome), 0, "{}", outcome.stderr_text());
-    assert!(is_elf(&out) && !recorded.exists(), "hod built it; no fallback");
-
-    for (triple, text) in [(A64, POST_SYNC), (X64, GEN_22)] {
-        let outcome = run_hod(&mut hybrid(triple, &scratch.join("declined.o")), text);
+    for triple in [A64, X64] {
+        let out = scratch.join("gen.o");
+        let outcome = run_hod(&mut hybrid(triple, &out), GEN_22);
         assert_eq!(status(&outcome), 0, "{}", outcome.stderr_text());
-        assert_eq!(std::fs::read_to_string(&recorded).unwrap(), text, "the same bytes");
-        std::fs::remove_file(&recorded).unwrap();
+        assert!(is_elf(&out) && !recorded.exists(), "{triple}: hod built it; no fallback");
     }
+
+    let outcome = run_hod(&mut hybrid(A64, &scratch.join("declined.o")), POST_SYNC);
+    assert_eq!(status(&outcome), 0, "{}", outcome.stderr_text());
+    assert_eq!(std::fs::read_to_string(&recorded).unwrap(), POST_SYNC, "the same bytes");
     let outcomes: Vec<String> = logged(&log).into_iter().map(|(outcome, _)| outcome).collect();
-    assert_eq!(outcomes, ["hod", "fallback", "fallback"]);
+    assert_eq!(outcomes, ["hod", "hod", "fallback"]);
 }
 
 // spec/cli.md "kiln's contract": the fallback of a pre-opt module is

@@ -2330,6 +2330,13 @@ lexing or records, positions, its error kinds and messages for malformed
 input (the kit returns an error value with LLVM's message where LLVM has
 one, and the producer reports it at its own position).
 
+The kit maps a construct as written; it applies none of the upgrades
+LLVM's reader makes to IR of older versions (renamed or removed
+intrinsics), except the branch-protection upgrade (`BranchUpgrade`).
+The readers' byte equality is therefore between the text and the
+bitcode of the same module, the bitcode written by the `llvm-as` of the
+text's version (`bc.md` §9.2, WP-172).
+
 Cost: no boxing and no allocation per call on the body path (the index
 list of a `getelementptr` is the caller's scratch vector); the body-path
 helpers are `#[inline]` and generic over the `Layering`. Strings are

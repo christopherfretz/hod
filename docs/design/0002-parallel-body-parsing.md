@@ -3,8 +3,26 @@
 This is the park note of WP-029, kept as the plan for its first item,
 which is now the backlog row WP-063: type and constant tables that
 workers can read while they parse, so that bodies are parsed in parallel
-without a copy of the module per worker. Today `hod_ll::parse_bodies`
-and `hod_bc::read_bodies` are sequential. "Done" below is on `main`.
+without a copy of the module per worker. "Done" below is on `main`.
+
+**Status: built by WP-063, with the plan refined** (`spec/ir.md` §5.1,
+`spec/landed/ll/WP-063.md`). Items 2 to 5 were done another way:
+
+- No interning trait in the parser (item 3). The overlay is in `hod_ir`'s
+  tables themselves: `Module::freeze` puts each table a body adds to in a
+  shared base, and `Module::fork` is a module whose tables are that base
+  and a layer of its own. The parsers are unchanged and read against a
+  fork as against the module, so the sequential path costs nothing new.
+- Item 2's lookup-only probe is the fork's lookup, base first.
+- Item 4 is `Module::delta` / `Module::adopt` / `Body::remap`, and the
+  driver is generic, `hod_ir::read_bodies`, shared by `hod_ll`
+  (`parse_bodies_on`) and `hod_bc` (`read_bodies_on`). The plan missed
+  that debug expressions and locations are interned by bodies too, and
+  that an error must be the first in file order: a body that fails in a
+  fork is read again on the module in its turn.
+- The clone in `tests/differential/bodies.rs` is left as it is; the
+  determinism tests are `crates/hod_ll/tests/parallel.rs` and
+  `crates/hod_bc/tests/parallel.rs`.
 
 ## Done (branch `wp/029-ir-gaps`, each with its tests and spec lines)
 

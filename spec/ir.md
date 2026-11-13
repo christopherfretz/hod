@@ -578,6 +578,54 @@ read-only. (A producer that appends to the tables while earlier bodies are
 still being compiled needs snapshot semantics; that is a planned extension,
 §10.)
 
+**Reading bodies in parallel: frozen tables and forks** (WP-063). A
+reader adds to the module the types, constants, inline-assembly callees,
+function attribute sets, debug expressions and locations a body uses.
+To read bodies on several threads without a copy of the module per
+thread:
+
+- `Module::freeze` moves each of those tables into a shared base (an
+  `Arc`); a table is a base and a layer of its own above it, with ids
+  counted on from the base's end. A table never frozen has no layer and
+  reads as before. `thaw` folds the layers back once no fork shares the
+  base; the module is the same module before and after.
+- `Module::fork` of a frozen module shares every table (the symbol,
+  COMDAT, flag, constructor and linker tables are always shared, behind
+  one `Arc`) and copies only the properties and a few words of debug
+  counts. A lookup in a fork probes the base, then its own layer: what
+  the module has, the fork finds, with the module's id. What it adds goes
+  to its layer, with ids after the base's.
+- `fork.mark()` and `fork.delta(mark)` give what a body added, owned; the
+  delta is `None` if the fork changed what it cannot hand over (a symbol,
+  a COMDAT, a property or flag, a debug node, a location in place).
+  `module.adopt(&delta, &mut remap)` interns the delta's entries into the
+  module in the fork's order, translating each id, and extends the
+  `Remap` from fork ids to module ids; `Body::remap` translates a body
+  read in the fork. `Module::stamp` changes when the module changes what
+  forks read and do not add to.
+- Interning is by content, so adopting the deltas of bodies in file
+  order makes every new entry, and so every id, what reading those
+  bodies in order against the module makes.
+
+`hod_ir::read_bodies` is the driver over any `BodySource` (`hod_ll`,
+`hod_bc`): the calling thread and up to `threads - 1` scoped workers
+(no global pool) take runs of consecutive bodies of about
+`CHUNK_WEIGHT` (16 KiB of text, by `BodySource::weight`; smaller when
+that would not give each thread four runs) in order from a shared
+counter, each against its own fork, at most four runs per thread ahead
+of the last delivered. The calling thread adopts and delivers body by
+body in file order, and reads runs itself while the next is not ready.
+A lock is taken once per run, and a thread is woken only when it waits
+(the calling thread for the next run, the others for room ahead). A body whose read fails, or whose
+delta is `None`, is read again by the calling thread against the module
+itself in its turn, and the worker that met it starts a new fork; if
+that read changed the module's stamp, the forks are stale and the rest
+is read sequentially. So the bodies delivered, the module's tables and
+ids, the unsupported record and the error (the first in file order) are
+the sequential reading's at any thread count, and one thread is the
+sequential reading. `ReadStats` says how many bodies were read again and
+whether the reading fell back.
+
 Building, in order:
 
 1. `create_block()` returns a `BlockId`; ids count up in creation order.
@@ -2117,7 +2165,10 @@ IR").
   assigned by the frontend's ABI layer, so the target does not re-derive
   them from IR types.
 - **Tables that grow during parallel code generation**, for a producer
-  that streams bodies to workers while it is still lowering.
+  that streams bodies to workers while it is still lowering. The frozen
+  tables and forks of §5.1 (WP-063) are the reading side of this: a
+  layered table whose base is shared. A producer that lowers on several
+  threads could hand its bodies over as forks' deltas the same way.
 - **A serialized form**, if a use appears for one (caching, distributed
   builds). In-process delivery needs none.
 

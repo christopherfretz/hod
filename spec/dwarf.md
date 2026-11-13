@@ -2047,6 +2047,54 @@ in the prologue and calls `coro_stub_ready` in each stub
 Evidence: `crates/hod_a64/tests/coro_debug.rs`, `tests/debug/coroutine.cpp`
 (L7), `spec/landed/dwarf/WP-108.md`.
 
+### 6.17 Follow-ups of WP-097 and WP-098 (implemented, WP-111)
+
+- **A unit without code** is written when it lists globals,
+  enumerations, retained types or imports not scoped in a function
+  (§1.2; `crates/hod_cg/src/emit/lines.rs` `lists_entities`).
+- **A `#dbg_declare` of a `phi`** has no row and its variable no
+  location (`spec/codegen.md` §9.5); a retained variable without a row
+  gets a DIE without a location (§6.4 "Retained variables").
+- **`debug:variable-twice`** (clang 22's coroutine ramp): its second
+  declaration of the parameter was the frame pointer's `phi`, now
+  dropped, so the ramp's tree equals `llc`'s (clang 19 and 22, `llc` 19
+  and 22). What is left of the refusal: two rows of one variable in one
+  function or one inlined instance (`func.rs`, `first_of` and the
+  variable's slot). `llc` keeps the first frame-index declaration and
+  drops the rest; hod refuses. No module of the corpus (14) or the `-g`
+  set (198) declines with it, so the rule is not written.
+- **Imports** of every shape: §6.11.
+- **The line classes** read from the IR count only the pair's file and
+  blocks with a predecessor, and `post-indexed-load` is permitted
+  (§5.7).
+- **Not done, with the reason:**
+  - `DW_AT_GNU_pubnames` and `.debug_gnu_pubnames`/`pubtypes` for a
+    split unit (`nameTableKind: GNU`, clang's default with
+    `-gsplit-dwarf`), and `.debug_names` for `Default`: still §6.15's
+    permitted difference. What `llc` 22 writes: the flag on the
+    skeleton, both sections in the object (version 2, the skeleton's
+    offset and size, relocated), each entry the offset of a DIE of the
+    split unit, a GDB index kind (`EXTERNAL`/`STATIC`,
+    `FUNCTION`/`VARIABLE`/`TYPE`) and the qualified name (`ns::f`),
+    sorted by offset; namespaces and enumerators are in `pubnames`,
+    base types, typedefs and named composites in `pubtypes`. Matching it
+    means `llc`'s `computeIndexValue` and `getParentContextString` over
+    every DIE kind, a new pass over the split unit's offsets and two
+    new relocated sections: more than a follow-up, and gdb and lldb
+    index the DIEs themselves.
+  - `DW_AT_ranges` on a coroutine's subprogram for its stubs after the
+    ready point (§6.16 R1): `llc` writes a separate subprogram for each
+    clone, so there is no tree of `llc`'s to compare a ranged body
+    with, and the ranges would need a subprogram family with
+    `DW_AT_ranges` beside each definition family that writes
+    `low_pc`/`high_pc` (appended, §6.1), and the stubs' ready offsets passed through the bridge, which
+    WP-136 is changing. What it would gain is §6.16's permitted
+    differences at one stop (the frame's name and its variables there).
+
+Evidence: `crates/hod_a64/tests/dies_followups.rs`,
+`crates/hod_a64/tests/dies_label.rs`, `xtask/tests/debug_post_index.rs`,
+`spec/landed/dwarf/WP-111.md`.
+
 ## 7. Speed and memory
 
 ### 7.1 Parallel emission and determinism

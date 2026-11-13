@@ -216,6 +216,11 @@ fn masks(b: &mut Batch) {
         for v in 0..16 {
             let (gt, xt) = (reg(Size::D, g), xmm(v));
             emit!(b, pmovmskb_rr(r(g), x(v)), "pmovmskb {gt}, {xt}");
+            // WP-181: two `xmm` operands, swept here with the masks.
+            let yt = xmm(g);
+            emit!(b, rcpps_rr(x(g), x(v)), "rcpps {yt}, {xt}");
+            emit!(b, rsqrtps_rr(x(g), x(v)), "rsqrtps {yt}, {xt}");
+            emit!(b, maskmovdqu_rr(x(g), x(v)), "maskmovdqu {yt}, {xt}");
             for (fp, p) in FPS {
                 let mn = format!("movmskp{p}");
                 emit_as!(b, &mn, movmskp_rr(fp, r(g), x(v)), "{mn} {gt}, {xt}");

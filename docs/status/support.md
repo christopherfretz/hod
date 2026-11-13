@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 455 | 347 | 7 | 101 | 229 | 10 | 216 |
-| total | 775 | 549 | 68 | 158 | 428 | 69 | 278 |
+| `intrinsic` | 463 | 347 | 7 | 109 | 237 | 10 | 216 |
+| total | 783 | 549 | 68 | 166 | 436 | 69 | 278 |
 
 ## `module`
 
@@ -905,6 +905,12 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.x86.sse.min.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
 | `intrinsic:llvm.x86.sse.movmsk.ps` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
 | `intrinsic:llvm.x86.sse.sfence` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.ldmxcsr` | rejected | supported (int, ptr, vector) | an x86 property. SSE; WP-181 |
+| `intrinsic:llvm.x86.sse.rcp.ps` | rejected | supported (int, ptr, vector) | an x86 property. SSE; WP-181 |
+| `intrinsic:llvm.x86.sse.rcp.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE; WP-181 |
+| `intrinsic:llvm.x86.sse.rsqrt.ps` | rejected | supported (int, ptr, vector) | an x86 property. SSE; WP-181 |
+| `intrinsic:llvm.x86.sse.rsqrt.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE; WP-181 |
+| `intrinsic:llvm.x86.sse.stmxcsr` | rejected | supported (int, ptr, vector) | an x86 property. SSE; WP-181 |
 | `intrinsic:llvm.x86.sse2.cmp.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
 | `intrinsic:llvm.x86.sse2.comieq.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
 | `intrinsic:llvm.x86.sse2.comige.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
@@ -930,6 +936,8 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.x86.sse2.cvttsd2si64` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
 | `intrinsic:llvm.x86.sse2.lfence` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
 | `intrinsic:llvm.x86.sse2.mfence` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.clflush` | rejected | supported (int, ptr, vector) | an x86 property. SSE2; WP-181 |
+| `intrinsic:llvm.x86.sse2.maskmov.dqu` | rejected | supported (int, ptr, vector) | an x86 property. SSE2; WP-181 |
 | `intrinsic:llvm.x86.sse2.max.pd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
 | `intrinsic:llvm.x86.sse2.max.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
 | `intrinsic:llvm.x86.sse2.min.pd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |

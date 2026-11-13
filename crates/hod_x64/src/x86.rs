@@ -3,7 +3,8 @@
 //! `-O0` for the functions of `<xmmintrin.h>`, `<emmintrin.h>`,
 //! `<pmmintrin.h>` and `<tmmintrin.h>` that do not lower to generic IR.
 //!
-//! **Owner: WP-173.** Tests: `tests/x86_intrinsics.rs`.
+//! **Owner: WP-173** (the WP-181 rows: MXCSR, `clflush`, the
+//! approximations, `maskmovdqu`). Tests: `tests/x86_intrinsics.rs`.
 //!
 //! - **SSE and SSE2** (the x86-64 baseline, no feature check): one
 //!   instruction each, as `llc -O0` writes it: `maxps`/`minps`/`maxss`/...
@@ -17,7 +18,11 @@
 //!   `pmulh*`, `psadbw`, the shifts by a vector count (its low 64 bits)
 //!   and by an `i32` count (a constant as `imm8`, saturated at 255,
 //!   which every count at or above the lane width equals; a variable one
-//!   through `movd xmm15`), and the fences.
+//!   through `movd xmm15`), and the fences. WP-181: `ldmxcsr`/`stmxcsr`
+//!   and `clflush` on the pointer operand's memory, `rcpps`/`rcpss`/
+//!   `rsqrtps`/`rsqrtss` in place (the emulator's approximation, as for
+//!   `llc`'s), `maskmovdqu` with the address moved to `rdi` (kept in
+//!   `rax` around it).
 //! - **SSE3** (only where the function's features enable `sse3`): built
 //!   from SSE2 instructions, lane for lane the same operations:
 //!   `hadd`/`hsub` gather the even and the odd lanes (`shufps`,
@@ -207,6 +212,11 @@ enum Op {
     ShiftI(fn(Xmm, u8) -> mc::Inst, fn(Xmm, Xmm) -> mc::Inst),
     /// A fence.
     Fence(mc::Inst),
+    /// One instruction on the memory at the pointer operand: `ldmxcsr`,
+    /// `stmxcsr`, `clflush` (WP-181).
+    AtPtr(fn(Mem) -> mc::Inst),
+    /// `maskmovdqu`: data, mask, and the address in `rdi` (WP-181).
+    MaskMov,
     /// SSE3 horizontal and alternating arithmetic.
     Sse3(Sse3),
     /// `lddqu`: an unaligned load.
@@ -362,6 +372,14 @@ fn row(which: Intrinsic<'_>) -> Option<(K, &'static [K], Op)> {
         I::X86SseSfence => (Void, NONE, Op::Fence(mc::sfence())),
         I::X86Sse2Lfence => (Void, NONE, Op::Fence(mc::lfence())),
         I::X86Sse2Mfence => (Void, NONE, Op::Fence(mc::mfence())),
+        I::X86SseLdmxcsr => (Void, &[P], Op::AtPtr(mc::ldmxcsr_m)),
+        I::X86SseStmxcsr => (Void, &[P], Op::AtPtr(mc::stmxcsr_m)),
+        I::X86Sse2Clflush => (Void, &[P], Op::AtPtr(mc::clflush_m)),
+        I::X86SseRcpPs => (V, V1, Op::One(mc::rcpps_rr)),
+        I::X86SseRcpSs => (V, V1, Op::One(mc::rcpss_rr)),
+        I::X86SseRsqrtPs => (V, V1, Op::One(mc::rsqrtps_rr)),
+        I::X86SseRsqrtSs => (V, V1, Op::One(mc::rsqrtss_rr)),
+        I::X86Sse2MaskmovDqu => (Void, &[V, V, P], Op::MaskMov),
         I::X86Sse3AddsubPd => (V, VV, Op::Sse3(Sse3::Addsub(d))),
         I::X86Sse3AddsubPs => (V, VV, Op::Sse3(Sse3::Addsub(s))),
         I::X86Sse3HaddPd => (V, VV, Op::Sse3(Sse3::Hadd(d))),
@@ -510,6 +528,23 @@ fn lower<'a>(
         }
         Op::Fence(fence) => {
             put(cx, fence);
+            Ok(())
+        }
+        Op::AtPtr(make) => {
+            let p = cx.use_reg(args[0])?;
+            put(cx, make(Mem::base(gp(p), 0)));
+            Ok(())
+        }
+        Op::MaskMov => {
+            let (data, mask) = pair(cx, args[0], args[1])?;
+            let p = cx.use_reg(args[2])?;
+            // The store's address is `rdi`, which may hold a value: kept
+            // in `rax` (which never holds one) around the instruction.
+            let rdi = Reg::Rdi;
+            put(cx, mc::mov_rr(Size::Q, RAX, rdi));
+            put(cx, mc::mov_rr(Size::Q, rdi, gp(p)));
+            put(cx, mc::maskmovdqu_rr(xm(data), xm(mask)));
+            put(cx, mc::mov_rr(Size::Q, rdi, RAX));
             Ok(())
         }
         Op::Load => {

@@ -465,6 +465,13 @@ intrinsics! {
     X86SseMinSs = "llvm.x86.sse.min.ss" [],
     X86SseMovmskPs = "llvm.x86.sse.movmsk.ps" [],
     X86SseSfence = "llvm.x86.sse.sfence" [],
+    // WP-181: MXCSR and the approximations.
+    X86SseLdmxcsr = "llvm.x86.sse.ldmxcsr" [],
+    X86SseRcpPs = "llvm.x86.sse.rcp.ps" [],
+    X86SseRcpSs = "llvm.x86.sse.rcp.ss" [],
+    X86SseRsqrtPs = "llvm.x86.sse.rsqrt.ps" [],
+    X86SseRsqrtSs = "llvm.x86.sse.rsqrt.ss" [],
+    X86SseStmxcsr = "llvm.x86.sse.stmxcsr" [],
     X86Sse2CmpSd = "llvm.x86.sse2.cmp.sd" [],
     X86Sse2ComieqSd = "llvm.x86.sse2.comieq.sd" [],
     X86Sse2ComigeSd = "llvm.x86.sse2.comige.sd" [],
@@ -490,6 +497,9 @@ intrinsics! {
     X86Sse2Cvttsd2si64 = "llvm.x86.sse2.cvttsd2si64" [],
     X86Sse2Lfence = "llvm.x86.sse2.lfence" [],
     X86Sse2Mfence = "llvm.x86.sse2.mfence" [],
+    // WP-181.
+    X86Sse2Clflush = "llvm.x86.sse2.clflush" [],
+    X86Sse2MaskmovDqu = "llvm.x86.sse2.maskmov.dqu" [],
     X86Sse2MaxPd = "llvm.x86.sse2.max.pd" [],
     X86Sse2MaxSd = "llvm.x86.sse2.max.sd" [],
     X86Sse2MinPd = "llvm.x86.sse2.min.pd" [],
@@ -938,7 +948,7 @@ mod tests {
         let memcpy = t.function(TypeId::VOID, &[ptr, ptr, i64, i1], false).unwrap();
         let cases = [
             // Unknown.
-            ("llvm.x86.sse.ldmxcsr", memcpy),
+            ("llvm.x86.sse3.monitor", memcpy),
             // A typed-pointer spelling LLVM would rename.
             ("llvm.memcpy.p0i8.p0i8.i64", memcpy),
             // The wrong suffix for the signature.

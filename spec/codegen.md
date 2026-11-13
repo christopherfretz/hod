@@ -3576,7 +3576,15 @@ result types are not LLVM's declaration is `x64:x86-intrinsic-signature`.
    written as 255 (each count at or above the lane width shifts out
    every bit, or fills with the sign for `psra`), a variable count is
    moved to `xmm15` by `movd` and the vector form used; `sfence`,
-   `lfence`, `mfence`. `pause` stays §5.6.19 (5).
+   `lfence`, `mfence`. `pause` stays §5.6.19 (5). WP-181:
+
+   | intrinsic | instruction |
+   |---|---|
+   | `sse.ldmxcsr(ptr)`, `sse.stmxcsr(ptr)` | `ldmxcsr [p]`, `stmxcsr [p]` |
+   | `sse2.clflush(ptr)` | `clflush [p]` |
+   | `sse.rcp.ps`, `sse.rsqrt.ps` | `rcpps`, `rsqrtps` in place (the hardware's approximation, the same instruction as `llc`'s) |
+   | `sse.rcp.ss`, `sse.rsqrt.ss` | `rcpss`, `rsqrtss` in place: lanes 1 to 3 of the operand kept |
+   | `sse2.maskmov.dqu(data, mask, ptr)` | `mov rax, rdi` · `mov rdi, p` · `maskmovdqu data, mask` · `mov rdi, rax` (the address is `rdi`; `rax` never holds a value) |
 2. **SSE3**, only in a function whose `target-features` enable `sse3`
    (the last item that implies it, `+sse3`, `+ssse3`, `+sse4.1`,
    `+sse4.2`, `+avx` or an AVX feature, or disables it, `-sse`, `-sse2`,
@@ -3600,9 +3608,8 @@ result types are not LLVM's declaration is `x64:x86-intrinsic-signature`.
 4. **Refused by name.** An SSE3 or SSSE3 intrinsic in a function without
    its feature is `intrinsic:` and its LLVM name, as `llc` cannot select
    it. Every `llvm.x86.*` name hod does not list is `intrinsic:` and its
-   name from `classify` (`spec/ir.md`): `sse.ldmxcsr`/`stmxcsr`, `sse.rcp.*`,
-   `sse.rsqrt.*`, `sse2.clflush`, `sse2.maskmov.dqu`, `sse3.monitor`/
-   `mwait` (no encoding in `hod_mc_x64`), the `x86_mmx` forms clang 19
+   name from `classify` (`spec/ir.md`): `sse3.monitor`/`mwait` (no
+   encoding in `hod_mc_x64`), the `x86_mmx` forms clang 19
    writes (`mmx.*`, `sse.cvtpi2ps`, ..., the 64-bit `ssse3.*`), and all of
    `sse41.*` and `sse42.*`. AArch64 refuses every `llvm.x86.*` name.
 

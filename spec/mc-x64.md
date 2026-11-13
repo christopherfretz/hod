@@ -362,6 +362,7 @@ outside the operand.
 | `cmpxchg8b_m(m: Mem)` | CMPXCHG8B `0F C7 /1`: `edx:eax` against the 8 bytes at `m`, `ecx:ebx` stored if equal; lockable | |
 | `cmpxchg16b_m(m: Mem)` | CMPXCHG16B `REX.W 0F C7 /1`; lockable | |
 | `mfence()`, `lfence()`, `sfence()` | `0F AE F0`, `0F AE E8`, `0F AE F8` | |
+| `clflush_m(m: Mem)` | CLFLUSH `0F AE /7`: the cache line of `m` written back and invalidated (WP-181) | |
 | `pause()` | PAUSE `F3 90` | |
 
 `lock` with a memory-destination `add`, `sub`, `and`, `or`, `xor`, `xadd`,
@@ -460,6 +461,8 @@ faults.
 | `movd_mr(size, dst: Mem, src: X)` | MOVD `66 0F 7E /r` (`D`) / MOVQ `66 0F D6 /r` (`Q`): a store of the low element | `size` is `D` or `Q` |
 | `cvtss2sd_rr(dst: X, src: X)`, `cvtss2sd_rm(dst: X, src: Mem)` | CVTSS2SD `F3 0F 5A /r`: exact | |
 | `cvtsd2ss_rr(dst: X, src: X)`, `cvtsd2ss_rm(dst: X, src: Mem)` | CVTSD2SS `F2 0F 5A /r`: rounded as MXCSR says | |
+| `rcpss_rr(dst: X, src: X)`, `rsqrtss_rr(dst, src)` | RCPSS `F3 0F 53 /r`, RSQRTSS `F3 0F 52 /r`: the low element approximated, the rest of `dst` kept (WP-181) | |
+| `ldmxcsr_m(src: Mem)`, `stmxcsr_m(dst: Mem)` | LDMXCSR `0F AE /2`, STMXCSR `0F AE /3`: MXCSR from or to 32 bits of memory (WP-181) | |
 
 Register-register moves use the load opcode with `dst` in reg (`0F 10`,
 `0F 28`, `66 0F 6F`), as LLVM encodes them. The conversions' operand order
@@ -539,6 +542,8 @@ with `dst` in `rm`:
 | `cvtpd2dq_*`, `cvttpd2dq_*` | CVTPD2DQ `F2 0F E6 /r`, CVTTPD2DQ `66 0F E6 /r`: into the low half, the high half zeroed |
 | `cvtps2pd_*` | CVTPS2PD `0F 5A /r`: the low two `f32`; the memory form reads 64 bits |
 | `cvtpd2ps_*` | CVTPD2PS `66 0F 5A /r`: into the low half, the high half zeroed |
+| `rcpps_rr(dst: X, src: X)`, `rsqrtps_rr(dst, src)` | RCPPS `0F 53 /r`, RSQRTPS `0F 52 /r`: approximate reciprocals and reciprocal square roots (WP-181) |
+| `maskmovdqu_rr(data: X, mask: X)` | MASKMOVDQU `66 0F F7 /r`, `data` in reg: byte `i` of `data` stored to `[rdi + i]` where bit 7 of byte `i` of `mask` is set (WP-181) |
 | `pmovmskb_rr(dst: Reg, src: X)` | PMOVMSKB `66 0F D7 /r`, `dst` (32 bits) in reg: the 16 byte sign bits, zero-extended |
 | `movmskp_rr(fp, dst: Reg, src: X)` | MOVMSKPS/PD `[66] 0F 50 /r`, `dst` (32 bits) in reg: the element sign bits |
 | `pextrw_rri(dst: Reg, src: X, lane: u8)` | PEXTRW `66 0F C5 /r ib`, `dst` (32 bits) in reg: word `lane & 7`, zero-extended |
@@ -552,8 +557,7 @@ displacement is part of the addend, as for `cmps_rm`.
 
 Not provided: anything from SSE3 and later (`pshufb`, `pminsd`,
 `pmulld`, `pcmpeqq`, `blendv*`, `round*`, `ptest`, `pextrb/d/q`,
-`pinsrb/d/q`, `movddup`), `maskmovdqu`, the non-temporal stores, and
-MMX.
+`pinsrb/d/q`, `movddup`), the non-temporal stores, and MMX.
 
 ## Relocatable immediates
 

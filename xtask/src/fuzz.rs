@@ -349,6 +349,7 @@ pub struct Summary {
     /// pairs at self-assignments taken out of them.
     pub lines: Option<LinesReport>,
     pub self_assigned: usize,
+    pub constant_branches: usize,
 }
 
 impl Summary {
@@ -380,6 +381,7 @@ impl Summary {
             self.lines.get_or_insert_default().add(report);
         }
         self.self_assigned += outcome.self_assigned.len();
+        self.constant_branches += outcome.constant_branches.len();
     }
 
     /// The table a run prints.
@@ -454,8 +456,9 @@ impl Summary {
             let _ = writeln!(text, "  lines: {}", report.summary());
             let _ = writeln!(
                 text,
-                "  hod's pairs at a self-assignment (x = x, which llc deletes), not counted above: {}",
-                self.self_assigned
+                "  not counted above: hod's pairs at a self-assignment (x = x, which llc \
+                 deletes) {}, llc's at a constant branch (which hod folds) {}",
+                self.self_assigned, self.constant_branches
             );
             let _ = writeln!(text, "  columns: {}", report.columns.summary());
         }

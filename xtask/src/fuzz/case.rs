@@ -237,6 +237,9 @@ pub struct Outcome {
     /// `--debug`: hod's pairs at a self-assignment ([`self_assignment`]),
     /// taken out of the comparison's report and counted apart.
     pub self_assigned: Vec<lines::Pair>,
+    /// `--debug`: llc's pairs at a constant branch ([`constant_branch`]),
+    /// taken out of the report and counted apart.
+    pub constant_branches: Vec<lines::Pair>,
 }
 
 impl Outcome {
@@ -253,6 +256,7 @@ impl Outcome {
             census: None,
             lines: None,
             self_assigned: Vec::new(),
+            constant_branches: Vec::new(),
         }
     }
 }
@@ -594,7 +598,9 @@ impl Bench {
             let report = self.compare_lines(&ir, &hod_x, &oracle_x).map_err(harness)?;
             // As `cargo xtask debug`: an unclassified pair fails, the
             // columns are counted. hod's pairs at a statement `x = x`,
-            // which llc deletes, are counted apart ([`self_assignment`]).
+            // which llc deletes, and llc's at a line that is only a
+            // constant branch, which hod folds, are counted apart
+            // ([`self_assignment`], [`constant_branch`]).
             let text = fs::read_to_string(&ir).unwrap_or_default();
             let mut report = report;
             report.hod_only.retain(|(pair, class)| {
@@ -602,6 +608,14 @@ impl Bench {
                     *class == lines::Class::Unclassified && self_assignment(&text, &pair.0, pair.2);
                 if apart {
                     outcome.self_assigned.push(pair.clone());
+                }
+                !apart
+            });
+            report.llc_only.retain(|(pair, class)| {
+                let apart =
+                    *class == lines::Class::Unclassified && constant_branch(&text, &pair.0, pair.2);
+                if apart {
+                    outcome.constant_branches.push(pair.clone());
                 }
                 !apart
             });
@@ -712,51 +726,159 @@ impl Bench {
     }
 }
 
-/// The address `value` is computed by, as the chain of loads and
-/// `getelementptr`s ([`self_assignment`]).
-fn canonical(value: &str, defs: &BTreeMap<&str, &str>, depth: usize) -> String {
-    let Some(def) = defs.get(value).filter(|_| depth < 16) else { return value.to_owned() };
-    let items = super::profile::top_level(def);
-    let last = |i: usize| items.get(i).and_then(|x| x.split_whitespace().last()).unwrap_or("");
-    if def.starts_with("load ") && !def.starts_with("load volatile") {
-        format!("*({})", canonical(last(1), defs, depth + 1))
-    } else if def.starts_with("getelementptr") {
-        let rest: Vec<&str> = items.iter().skip(2).map(|x| x.trim()).collect();
-        format!("gep({}, {})", canonical(last(1), defs, depth + 1), rest.join(", "))
-    } else {
-        value.to_owned()
+/// The integer operations whose right operand leaves the left one as it
+/// is, with that operand; the commutative ones also with it on the left.
+const IDENTITIES: [(&str, &str, bool); 11] = [
+    ("add", "0", true),
+    ("sub", "0", false),
+    ("or", "0", true),
+    ("xor", "0", true),
+    ("shl", "0", false),
+    ("lshr", "0", false),
+    ("ashr", "0", false),
+    ("and", "-1", true),
+    ("mul", "1", true),
+    ("sdiv", "1", false),
+    ("udiv", "1", false),
+];
+
+/// The flags an instruction's opcode may carry before its type.
+const FLAGS: [&str; 9] =
+    ["nsw", "nuw", "exact", "disjoint", "inbounds", "nusw", "inrange", "samesign", "volatile"];
+
+/// The casts [`value_number`] looks through.
+const CASTS: [&str; 6] = ["sext", "zext", "trunc", "bitcast", "ptrtoint", "inttoptr"];
+
+/// A typed operand's type and value: `i32 %5`, `ptr getelementptr (...)`,
+/// `{ i32, i8 } %v`.
+fn split_typed(item: &str) -> (&str, &str) {
+    let item = item.trim();
+    let end = match item.as_bytes().first() {
+        Some(b'{' | b'<' | b'[') => {
+            let mut depth = 0i32;
+            item.char_indices()
+                .find_map(|(i, c)| {
+                    depth += i32::from(matches!(c, '{' | '<' | '['))
+                        - i32::from(matches!(c, '}' | '>' | ']'));
+                    (depth == 0).then_some(i + 1)
+                })
+                .unwrap_or(item.len())
+        }
+        _ => item.find(' ').unwrap_or(item.len()),
+    };
+    (&item[..end], item[end..].trim())
+}
+
+/// What the value `value` of a function is, as a text equal for two
+/// values `llc`'s DAG would number the same ([`self_assignment`]): a
+/// non-volatile load at the line (`local`) is its type and its address's
+/// number; `getelementptr`s, casts, integer operations and comparisons
+/// are their operands' numbers, an operation with its identity
+/// ([`IDENTITIES`]) its other operand's, a truncation of an extension
+/// back to its type the extended value's, a comparison of a value with
+/// itself a constant; anything else (another line's load, a call, an
+/// argument, a constant) is itself.
+fn value_number(value: &str, defs: &BTreeMap<&str, &str>, local: &[&str], depth: usize) -> String {
+    let opaque = || value.to_owned();
+    let Some(def) = defs.get(value).filter(|_| depth < 24) else { return opaque() };
+    let number = |v: &str| value_number(v, defs, local, depth + 1);
+    let items: Vec<&str> =
+        super::profile::top_level(def).into_iter().filter(|i| !i.trim().starts_with('!')).collect();
+    let Some(first) = items.first() else { return opaque() };
+    let mut words: Vec<&str> = first.split_whitespace().collect();
+    let op = words.first().copied().unwrap_or("");
+    words.retain(|w| !FLAGS.contains(w));
+    match op {
+        "load" if words.len() >= 2 && local.contains(&value) && !first.contains(" atomic ") => {
+            let Some(address) = items.get(1) else { return opaque() };
+            format!("*{}({})", words[1..].join(" "), number(split_typed(address).1))
+        }
+        "getelementptr" => {
+            let operands: Vec<String> = items[1..]
+                .iter()
+                .map(|i| {
+                    let (ty, v) = split_typed(i);
+                    format!("{ty} {}", number(v))
+                })
+                .collect();
+            format!("gep({}; {})", words[1..].join(" "), operands.join(", "))
+        }
+        cast if CASTS.contains(&cast) => {
+            let rest = words[1..].join(" ");
+            let Some((from, to)) = rest.rsplit_once(" to ") else { return opaque() };
+            let (from_ty, inner) = split_typed(from);
+            let (to, inner) = (to.trim(), number(inner));
+            if cast == "trunc" {
+                let suffix = format!(" to {from_ty})");
+                for ext in ["sext(", "zext("] {
+                    let prefix = format!("{ext}{to} ");
+                    if inner.starts_with(&prefix) && inner.ends_with(&suffix) {
+                        return inner[prefix.len()..inner.len() - suffix.len()].to_owned();
+                    }
+                }
+            }
+            if from_ty == to && cast == "bitcast" {
+                return inner;
+            }
+            match (cast, inner.as_str()) {
+                ("zext" | "sext", "false" | "0") => return "0".to_owned(),
+                ("zext", "true") => return "1".to_owned(),
+                ("sext", "true") => return "-1".to_owned(),
+                _ => {}
+            }
+            format!("{cast}({from_ty} {inner} to {to})")
+        }
+        "icmp" if words.len() >= 4 => {
+            let (pred, ty, left) = (words[1], words[2], words[3]);
+            let Some(right) = items.get(1).map(|r| r.trim()) else { return opaque() };
+            let (l, r) = (number(left), number(right));
+            if l == r {
+                let holds = matches!(pred, "eq" | "ule" | "uge" | "sle" | "sge");
+                return if holds { "true".to_owned() } else { "false".to_owned() };
+            }
+            format!("icmp({pred} {ty} {l}, {r})")
+        }
+        op => {
+            let Some(&(_, identity, commutes)) = IDENTITIES.iter().find(|(name, ..)| *name == op)
+            else {
+                return opaque();
+            };
+            let (Some(left), Some(right)) = (words.last(), items.get(1).map(|r| r.trim())) else {
+                return opaque();
+            };
+            let (l, r) = (number(left), number(right));
+            if r == identity {
+                return l;
+            }
+            if commutes && l == identity {
+                return r;
+            }
+            let ty = words.get(words.len().saturating_sub(2)).copied().unwrap_or("");
+            format!("{op}({ty} {l}, {r})")
+        }
     }
 }
 
-/// Whether `function`'s instructions at `line` of `text` are a
-/// self-assignment, `x = x` (csmith writes many): loads and
-/// `getelementptr`s, and stores, none volatile, each of a value loaded
-/// from the address it stores to. `llc -O0` deletes such a store (its
-/// DAG combiner folds a store of a load of the same address), and with it
-/// the line's only row; hod keeps it. `spec/dwarf.md` §5.7 has no class
-/// for this yet (`xtask/src/debug/permitted.rs` `pair_class`): until it
-/// has, `--debug` counts these pairs apart instead of calling them
-/// findings.
-pub fn self_assignment(text: &str, function: &str, line: u32) -> bool {
+/// `function`'s named values, its instructions at `line` (any column) of
+/// `text`, a module's text, and all its instructions.
+type AtLine<'t> = (BTreeMap<&'t str, &'t str>, Vec<&'t str>, Vec<&'t str>);
+
+fn at_line<'t>(text: &'t str, function: &str, line: u32) -> Option<AtLine<'t>> {
     let ids: std::collections::BTreeSet<&str> = text
         .lines()
         .filter(|l| l.contains(&format!("!DILocation(line: {line},")))
         .filter_map(|l| l.split_once(" = ").map(|(id, _)| id))
         .collect();
     let header = format!(" @{function}(");
-    let Some(body) =
-        text.split("\ndefine ").find(|f| f.lines().next().is_some_and(|h| h.contains(&header)))
-    else {
-        return false;
-    };
+    let body =
+        text.split("\ndefine ").find(|f| f.lines().next().is_some_and(|h| h.contains(&header)))?;
     let body: Vec<&str> = body.lines().skip(1).take_while(|l| *l != "}").collect();
-    let defs: BTreeMap<&str, &str> = body
+    let defs = body
         .iter()
         .filter_map(|l| l.trim_start().split_once(" = "))
         .filter(|(n, _)| n.starts_with('%'))
         .collect();
-    let operand = |item: &str| item.split_whitespace().last().unwrap_or("").to_owned();
-    let at: Vec<&str> = body
+    let at = body
         .iter()
         .map(|l| l.trim_start())
         .filter(|l| {
@@ -764,30 +886,101 @@ pub fn self_assignment(text: &str, function: &str, line: u32) -> bool {
                 .is_some_and(|(_, id)| ids.contains(id.split([',', ' ']).next().unwrap_or("")))
         })
         .collect();
-    let mut store_count = 0;
+    let body = body.iter().map(|l| l.trim_start()).collect();
+    Some((defs, at, body))
+}
+
+/// Whether `function`'s instructions at `line` of `text` are a branch
+/// whose destination is known, `br label %b` or `br i1 true|false, ...`,
+/// and loads (non-volatile) and `getelementptr`s whose values nothing
+/// uses: csmith's `if ((x, -6L))`. hod folds the branch (and omits a
+/// branch to the block it emits next, `spec/codegen.md` §6.2) and drops
+/// the unused loads, so its object has no row at the line; `llc -O0`
+/// keeps a test and a jump. `spec/dwarf.md` §5.7 has no class for this
+/// yet (`xtask/src/debug/permitted.rs` `pair_class`): until it has,
+/// `--debug` counts llc's pairs there apart instead of calling them
+/// findings.
+pub fn constant_branch(text: &str, function: &str, line: u32) -> bool {
+    let Some((_, at, body)) = at_line(text, function, line) else { return false };
+    let used = |name: &str| {
+        body.iter().filter_map(|l| l.split_once(" = ").map_or(Some(*l), |(_, r)| Some(r))).any(
+            |l| {
+                l.match_indices(name).any(|(i, _)| {
+                    !l[i + name.len()..]
+                        .starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+                })
+            },
+        )
+    };
+    let mut branches = 0;
     for inst in &at {
-        let rest =
-            inst.split_once(" = ").filter(|(n, _)| n.starts_with('%')).map_or(*inst, |(_, r)| r);
-        if rest.starts_with("load ") && !rest.starts_with("load volatile")
-            || rest.starts_with("getelementptr")
-        {
-            continue;
+        if let Some((name, rest)) = inst.split_once(" = ").filter(|(n, _)| n.starts_with('%')) {
+            let unused = !used(name);
+            let pure = rest.starts_with("getelementptr")
+                || rest.starts_with("load ") && !rest.starts_with("load volatile");
+            if pure && unused {
+                continue;
+            }
+            return false;
         }
-        let Some(stored) = rest.strip_prefix("store ").filter(|r| !r.starts_with("volatile"))
+        let known = inst.strip_prefix("br ").is_some_and(|b| {
+            b.starts_with("label ") || b.starts_with("i1 true,") || b.starts_with("i1 false,")
+        });
+        if !known {
+            return false;
+        }
+        branches += 1;
+    }
+    branches > 0
+}
+
+/// Whether `function`'s instructions at `line` of `text` store back what
+/// they loaded: loads, `getelementptr`s, casts, integer operations and
+/// comparisons, and stores, none volatile or atomic, no load after a
+/// store, each store storing `poison` or `undef`, or a value numbered
+/// ([`value_number`]) as a load of its type from the address it stores
+/// to. csmith writes many: `x = x;`, `(*p) = (*p);`, `a[i] = a[i];`, `x ^=
+/// 0;`, `x &= -1L;`, `x ^= (&y != &y);`, an out-of-range conversion.
+/// `llc -O0` folds such a store away (its DAG combiner removes a store of
+/// a load of the same address, and a store of `poison`), and with it the
+/// line's only row; hod keeps it. `spec/dwarf.md` §5.7 has no class for
+/// this yet (`xtask/src/debug/permitted.rs` `pair_class`): until it has,
+/// `--debug` counts these pairs apart instead of calling them findings.
+pub fn self_assignment(text: &str, function: &str, line: u32) -> bool {
+    let Some((defs, at, _)) = at_line(text, function, line) else { return false };
+    let local: Vec<&str> = at.iter().filter_map(|i| i.split_once(" = ").map(|(n, _)| n)).collect();
+    let (mut store_count, mut stored) = (0, false);
+    for inst in &at {
+        if let Some((_, rest)) = inst.split_once(" = ").filter(|(n, _)| n.starts_with('%')) {
+            let op = rest.split_whitespace().next().unwrap_or("");
+            let pure = ["getelementptr", "icmp"].contains(&op)
+                || CASTS.contains(&op)
+                || IDENTITIES.iter().any(|(name, ..)| *name == op);
+            let load = op == "load"
+                && !stored
+                && !rest.starts_with("load volatile")
+                && !rest.starts_with("load atomic");
+            if pure || load {
+                continue;
+            }
+            return false;
+        }
+        let Some(store) = inst
+            .strip_prefix("store ")
+            .filter(|r| !r.starts_with("volatile") && !r.starts_with("atomic"))
         else {
             return false;
         };
-        let items = super::profile::top_level(stored);
-        let (value, pointer) =
-            (operand(items.first().unwrap_or(&"")), operand(items.get(1).unwrap_or(&"")));
-        let loaded = defs.get(value.as_str()).filter(|d| d.starts_with("load ")).map(|d| {
-            let items = super::profile::top_level(d);
-            canonical(&operand(items.get(1).unwrap_or(&"")), &defs, 0)
-        });
-        if loaded != Some(canonical(&pointer, &defs, 0)) {
+        let items = super::profile::top_level(store);
+        let (ty, value) = split_typed(items.first().unwrap_or(&""));
+        let pointer = split_typed(items.get(1).unwrap_or(&"")).1;
+        let same = matches!(value, "poison" | "undef")
+            || value_number(value, &defs, &local, 0)
+                == format!("*{ty}({})", value_number(pointer, &defs, &local, 0));
+        if !same {
             return false;
         }
-        store_count += 1;
+        (store_count, stored) = (store_count + 1, true);
     }
     store_count > 0
 }
@@ -941,6 +1134,115 @@ define internal i32 @func_22(ptr %0) #0 !dbg !5 {
         assert!(!self_assignment(&text, "func_22", 232));
         assert!(!self_assignment(&text, "func_22", 233));
         assert!(!self_assignment(&text, "func_9", 231));
+        let text = "\
+define i32 @f(ptr %0) {
+  %1 = getelementptr inbounds [1 x i32], ptr %0, i64 0, i64 0, !dbg !10
+  %2 = load i32, ptr %1, align 4, !dbg !10
+  %3 = sext i32 %2 to i64, !dbg !11
+  %4 = and i64 %3, -1, !dbg !11
+  %5 = trunc i64 %4 to i32, !dbg !11
+  %6 = getelementptr inbounds [1 x i32], ptr %0, i64 0, i64 0, !dbg !11
+  store i32 %5, ptr %6, align 4, !dbg !11
+  %7 = load i32, ptr %0, align 4, !dbg !12
+  %8 = trunc i32 %7 to i8, !dbg !12
+  %9 = zext i8 %8 to i32, !dbg !12
+  store i32 %9, ptr %0, align 4, !dbg !12
+  %10 = load i32, ptr %0, align 4, !dbg !13
+  %11 = xor i32 %10, 1, !dbg !13
+  store i32 %11, ptr %0, align 4, !dbg !13
+  %12 = load i32, ptr %0, align 4, !dbg !14
+  %13 = sub i32 0, %12, !dbg !14
+  store i32 %13, ptr %0, align 4, !dbg !14
+  %14 = load i32, ptr %0, align 4, !dbg !15
+  %15 = or i32 0, %14, !dbg !15
+  store i32 %15, ptr %0, align 4, !dbg !15
+  ret i32 0
+}
+!10 = !DILocation(line: 5, column: 3, scope: !5)
+!11 = !DILocation(line: 5, column: 4, scope: !5)
+!12 = !DILocation(line: 6, column: 3, scope: !5)
+!13 = !DILocation(line: 7, column: 3, scope: !5)
+!14 = !DILocation(line: 8, column: 3, scope: !5)
+!15 = !DILocation(line: 9, column: 3, scope: !5)
+";
+        let text = format!("source\n{text}");
+        // x &= -1 through the usual conversions, and 0 | x: yes.
+        assert!(self_assignment(&text, "f", 5));
+        assert!(self_assignment(&text, "f", 9));
+        // A narrowing on the way, x ^= 1, 0 - x: no.
+        assert!(!self_assignment(&text, "f", 6));
+        assert!(!self_assignment(&text, "f", 7));
+        assert!(!self_assignment(&text, "f", 8));
+        // a[i] = a[i], i loaded twice; x ^= (&y != &y); a store of poison;
+        // a[i] = a[j]: the first three only.
+        let text = "source
+define i32 @g(ptr %0, ptr %1) {
+  %3 = load i32, ptr %1, align 4, !dbg !10
+  %4 = zext i32 %3 to i64, !dbg !10
+  %5 = getelementptr inbounds nuw [5 x i32], ptr @a, i64 0, i64 %4, !dbg !10
+  %6 = load i32, ptr %5, align 4, !dbg !10
+  %7 = load i32, ptr %1, align 4, !dbg !10
+  %8 = zext i32 %7 to i64, !dbg !10
+  %9 = getelementptr inbounds nuw [5 x i32], ptr @a, i64 0, i64 %8, !dbg !10
+  store i32 %6, ptr %9, align 4, !dbg !10
+  %10 = icmp ne ptr %0, %0, !dbg !11
+  %11 = zext i1 %10 to i32, !dbg !11
+  %12 = load i32, ptr %1, align 4, !dbg !11
+  %13 = xor i32 %12, %11, !dbg !11
+  store i32 %13, ptr %1, align 4, !dbg !11
+  store i32 poison, ptr %1, align 4, !dbg !12
+  %14 = load i32, ptr %1, align 4, !dbg !13
+  %15 = zext i32 %14 to i64, !dbg !13
+  %16 = getelementptr inbounds nuw [5 x i32], ptr @a, i64 0, i64 %15, !dbg !13
+  %17 = load i32, ptr %16, align 4, !dbg !13
+  %18 = load i32, ptr %0, align 4, !dbg !13
+  %19 = zext i32 %18 to i64, !dbg !13
+  %20 = getelementptr inbounds nuw [5 x i32], ptr @a, i64 0, i64 %19, !dbg !13
+  store i32 %17, ptr %20, align 4, !dbg !13
+  ret i32 0
+}
+!10 = !DILocation(line: 5, column: 3, scope: !5)
+!11 = !DILocation(line: 6, column: 3, scope: !5)
+!12 = !DILocation(line: 7, column: 3, scope: !5)
+!13 = !DILocation(line: 8, column: 3, scope: !5)
+";
+        assert!(self_assignment(text, "g", 5));
+        assert!(self_assignment(text, "g", 6));
+        assert!(self_assignment(text, "g", 7));
+        assert!(!self_assignment(text, "g", 8));
+    }
+
+    // spec/harness.md "Random programs", "Modes" (Debug): llc's pairs at a
+    // branch whose destination is known, and only those, are taken apart.
+    #[test]
+    fn constant_branches() {
+        let text = "source
+define i32 @f(ptr %0) {
+  %1 = load i32, ptr %0, align 4, !dbg !10
+  br i1 true, label %2, label %3, !dbg !11
+
+2:
+  %4 = load i32, ptr %0, align 4, !dbg !12
+  br i1 true, label %3, label %5, !dbg !12
+
+3:
+  %6 = load i1, ptr %0, align 4, !dbg !13
+  br i1 %6, label %5, label %5, !dbg !13
+
+5:
+  ret i32 %4, !dbg !14
+}
+!10 = !DILocation(line: 5, column: 3, scope: !5)
+!11 = !DILocation(line: 5, column: 4, scope: !5)
+!12 = !DILocation(line: 6, column: 3, scope: !5)
+!13 = !DILocation(line: 7, column: 3, scope: !5)
+!14 = !DILocation(line: 8, column: 3, scope: !5)
+";
+        assert!(constant_branch(text, "f", 5), "the first");
+        // A load something uses, a branch on a value, a return: no.
+        assert!(!constant_branch(text, "f", 6));
+        assert!(!constant_branch(text, "f", 7));
+        assert!(!constant_branch(text, "f", 8));
     }
 
     #[test]

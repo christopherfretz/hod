@@ -167,6 +167,27 @@ fn self_assignments_are_a_permitted_class() {
     assert_eq!(summary.self_assigned, 0, "{}", summary.text());
 }
 
+// Harness gap (debug comparison, not hod): at csmith's `if ((x, -6L))`,
+// a branch on a constant to the next block, hod emits nothing (it folds
+// the branch, spec/codegen.md §6.2) and `llc -O0` a test and a jump, so
+// llc's object alone has a row at the line; `debug::permitted` has no
+// class for it (xtask/src/debug/permitted.rs:165 `pair_class`). `--debug`
+// takes such pairs apart (`case::constant_branch`); this passes once the
+// comparison classifies them itself. Seed 231 on x86-64 has one.
+#[test]
+#[ignore = "harness gap: no permitted class for a folded constant branch, xtask/src/debug/permitted.rs:165"]
+fn constant_branches_are_a_permitted_class() {
+    if !found(&["csmith", "clang-22", "llc-22", "x86_64-linux-gnu-gcc", "llvm-dwarfdump-22"]) {
+        return;
+    }
+    let scratch = Scratch::new("fuzz-constant-branch");
+    let mut options = options(&scratch, 231, 1);
+    options.mode = Mode::Debug;
+    options.target = Some(Arch::X86_64);
+    let summary = run(&options).expect("the run");
+    assert_eq!(summary.constant_branches, 0, "{}", summary.text());
+}
+
 /// A hod that swaps the first two parameters of every `callee_*` of the
 /// ABI generator's programs in its definitions, declarations and calls
 /// alike (`fuzz/swap-params.awk`): a module agrees with itself, an object

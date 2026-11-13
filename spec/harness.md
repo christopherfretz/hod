@@ -3722,14 +3722,29 @@ agree, the `(function, line)` comparison of `cargo xtask debug`
 ([`debug::lines::compare`], "debug", "Lines", with the IR's facts for its
 classes) compares hod's program with the oracle's: an unclassified pair
 is a `debug-lines` finding (as in `cargo xtask debug`, the columns are
-counted, not judged). One kind of pair is taken out of the comparison
-first and counted apart: a hod-only line whose instructions in the
-function are non-volatile loads, `getelementptr`s and at least one store,
-each store storing a value loaded from the same address (`case::
-self_assignment`; the address compared as the chain of loads and
-`getelementptr`s it is computed by). That is csmith's `x = x;` and `(*p)
-= (*p);`, whose store `llc -O0` deletes, so its object has no row at the
-line; `debug::permitted` has no class for it yet. The summary adds the
+counted, not judged). Two kinds of pair are taken out of the comparison
+first and counted apart, where `llc -O0` and hod differ in what they
+fold and `debug::permitted` has no class yet:
+
+- hod-only, a **self-assignment** (`case::self_assignment`): the line's
+  instructions in the function are non-volatile, non-atomic loads,
+  `getelementptr`s, casts, integer operations and comparisons, and at
+  least one store, no load after a store, and every store stores
+  `poison` or `undef` or a value that numbers as a load of its type
+  from the address it stores to. Numbering looks through casts, an
+  operation with its identity (`x + 0`, `x & -1`, `x * 1`, ...), a
+  truncation of an extension back to its type and a comparison of a
+  value with itself; two loads at the line from addresses that number
+  the same number the same. That is csmith's `x = x;`, `a[i] = a[i];`,
+  `x ^= 0;`, `x &= -1L;`, `x ^= (&y != &y);` and an out-of-range
+  conversion, whose store `llc` deletes;
+- llc-only, a **constant branch** (`case::constant_branch`): the line's
+  instructions are `br label` or `br i1 true|false` and loads and
+  `getelementptr`s nothing uses. That is csmith's `if ((x, -6L))`: hod
+  folds the branch (and omits one to the block it emits next) and drops
+  the loads, `llc` keeps a test and a jump.
+
+The summary adds the
 comparisons of every seed,
 and counts the refusals whose reason starts with `debug:`. No debugger
 runs.
@@ -3840,7 +3855,7 @@ why, each error, and each finding with its witness, its directory and
 the reduction (`lines before -> after (probes)`); the 50th and 90th
 percentile and the longest run time of the oracle's programs; in
 `--debug` the line and column comparisons added over the seeds and the
-count of hod's pairs at a self-assignment ("Modes"); the
+counts of the pairs taken apart ("Modes"); the
 results file, `<out>/results-<run>.tsv`, one line per seed: seed,
 flavour, verdict, detail, the oracle's run time in ms; in `--census` the
 census table.

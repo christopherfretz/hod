@@ -21,7 +21,7 @@ use crate::{CompileError, Construct, Options};
 #[cfg(feature = "readers")]
 mod read;
 #[cfg(feature = "readers")]
-pub use read::compile_with;
+pub use read::{compile_releasing, compile_with};
 
 /// How a bitcode input is read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

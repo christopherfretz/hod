@@ -2,6 +2,7 @@
 //! the module with `hod_ll` (text) or `hod_bc` (bitcode) and feeds a
 //! [`Session`] with it (`spec/cli.md` "The facade", "Reasons").
 
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use hod_bc::{BcError, BcErrorKind};
@@ -57,12 +58,33 @@ pub fn compile_with(
     settings: &Settings,
     report: &mut Report,
 ) -> Result<Vec<u8>, CompileError> {
+    compile_releasing(&mut Cow::Borrowed(input), options, settings, report)
+}
+
+/// [`compile_with`] that frees an owned input once it is read
+/// (`spec/cli.md` "The facade"): when the walk of the bodies has ended,
+/// before code generation, `Cow::Owned` bytes are dropped and `input` is
+/// left empty, so that the input does not add to the peak of code
+/// generation (the module and its bodies own all they took from it).
+/// Borrowed bytes are left as they are, and so is an owned input on an
+/// answer given before the bodies are walked (a decline of the bitcode or
+/// of the target, a reader's error).
+///
+/// # Errors
+/// As [`crate::compile`].
+pub fn compile_releasing(
+    input: &mut Cow<'_, [u8]>,
+    options: &Options,
+    settings: &Settings,
+    report: &mut Report,
+) -> Result<Vec<u8>, CompileError> {
     // A panic of hod's is contained (`spec/cli.md` "Embedding"). Unwind
-    // safe: `input`, `options` and `settings` are only read (the tokens
-    // behind `settings.threads` are given back by guards as the panic
-    // unwinds, and their locks ignore poisoning); the reader, the session
-    // and their threads are dropped and joined inside; `report` is left as
-    // the front half last wrote it, which the caller reads as such.
+    // safe: `input` is only read until it is replaced whole, `options` and
+    // `settings` are only read (the tokens behind `settings.threads` are
+    // given back by guards as the panic unwinds, and their locks ignore
+    // poisoning); the reader, the session and their threads are dropped
+    // and joined inside; `report` is left as the front half last wrote
+    // it, which the caller reads as such.
     let result = contained(|| front(input, options, settings, report)).and_then(|result| result);
     if settings.census
         && report.reasons.is_empty()
@@ -74,11 +96,12 @@ pub fn compile_with(
 }
 
 fn front(
-    input: &[u8],
+    source: &mut Cow<'_, [u8]>,
     options: &Options,
     settings: &Settings,
     report: &mut Report,
 ) -> Result<Vec<u8>, CompileError> {
+    let input: &[u8] = source;
     if options.output_kind != OutputKind::Object {
         return Err(decline(Construct::AssemblyOutput));
     }
@@ -175,6 +198,19 @@ fn front(
         }
         InputKind::Module => unreachable!("InputKind::detect never says module"),
     };
+    // Read whole: nothing of the module or its bodies borrows the input
+    // (the readers' `text` and `bits` are gone), so an owned input is
+    // freed before code generation (WP-166).
+    if let Cow::Owned(bytes) = source {
+        // Shrunk before it is freed: glibc's `free` of a block it mapped
+        // (any input over 128 KiB) raises its mapping threshold to the
+        // block's size, so that the larger tables of code generation
+        // would come from the heap and cost more to grow and to free; a
+        // shrinking `realloc` gives the pages back without that.
+        bytes.clear();
+        bytes.shrink_to(1);
+        *source = Cow::Borrowed(&[]);
+    }
     let mut object = Vec::new();
     answer(session.finish(&mut object).map(|done| (object, done)), report)
 }

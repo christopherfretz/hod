@@ -19,6 +19,8 @@ the command-line tool:
 pub fn compile(input: &[u8], options: &Options) -> Result<Vec<u8>, CompileError>;
 pub fn compile_with(input: &[u8], options: &Options, settings: &Settings, report: &mut Report)
     -> Result<Vec<u8>, CompileError>;
+pub fn compile_releasing(input: &mut Cow<'_, [u8]>, options: &Options, settings: &Settings,
+    report: &mut Report) -> Result<Vec<u8>, CompileError>;
 pub fn generate(module: &hod_ir::Module, bodies: &[hod_ir::Body], options: &Options)
     -> Result<Vec<u8>, CompileError>;
 pub fn generate_with(module: &hod_ir::Module, bodies: &[hod_ir::Body], options: &Options,
@@ -51,6 +53,19 @@ pub trait ThreadTokens: Send + Sync + Debug {
 - `input` is one whole module, LLVM text or bitcode (see "Input"), read
   by `hod_ll` or `hod_bc` ("The front half"). `compile` is `compile_with`
   with `Settings::default()`: bitcode read natively, the first reason.
+- `compile_releasing` is `compile_with` that frees an owned input once it
+  is read (WP-166): when the walk of the bodies has ended, before code
+  generation, `Cow::Owned` bytes are dropped (shrunk first, so that
+  glibc's `free` of a mapped block does not raise its mapping threshold
+  for the tables of code generation) and `input` is left empty;
+  `Cow::Borrowed` bytes are left as they are, and so is an owned input on
+  an answer given before the bodies are walked (a decline of the bitcode
+  or of the target, a reader's error). The module and its bodies borrow
+  nothing from the input. The `hod` binary compiles with it, passing the
+  input owned unless it reads standard input with a fallback configured
+  (the fallback is then fed the same bytes); the input is then not part
+  of the peak of code generation (on a 36 MB libc++ module, a third of
+  the peak resident set).
 - `Settings` is how the front half works, not an `llc` option:
   `bitcode` (`BitcodeReading::Native`, or `Decline` for a caller that
   converts bitcode itself, which then gets `bitcode-input`), `census`

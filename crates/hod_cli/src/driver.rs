@@ -29,9 +29,15 @@ pub const EXIT_ERROR: u8 = 1;
 /// Exit status: the module is unsupported and no fallback ran.
 pub const EXIT_UNSUPPORTED: u8 = 2;
 
-/// The code generator: `hod::compile_with` in the binary.
-pub type Compile<'a> =
-    &'a dyn Fn(&[u8], &Options, &hod::Settings, &mut Report) -> Result<Vec<u8>, CompileError>;
+/// The code generator: `hod::compile_releasing` in the binary. The input
+/// is owned where nothing after the compile needs it, so that the
+/// compile may free it once read (`spec/cli.md` "The facade").
+pub type Compile<'a> = &'a dyn Fn(
+    &mut Cow<'_, [u8]>,
+    &Options,
+    &hod::Settings,
+    &mut Report,
+) -> Result<Vec<u8>, CompileError>;
 
 /// The process's standard streams.
 pub struct Io<'a> {
@@ -203,12 +209,18 @@ impl Job<'_, '_> {
 
         // The fallback reads a file input itself; standard input was
         // consumed, so it gets the same bytes on a pipe: the module as it
-        // arrived, also when hod went on with a conversion of it.
-        let piped = matches!(line.input, Input::Stdin).then_some(input.as_slice());
+        // arrived, also when hod went on with a conversion of it. Those
+        // bytes are kept; any other input is the compile's to free once
+        // it is read (WP-166): a conversion needs it only when the compile
+        // declined the bitcode, before reading.
+        let keep = matches!(line.input, Input::Stdin) && self.settings.hybrid().is_some();
+        let (kept, owned) = if keep { (input, None) } else { (Vec::new(), Some(input)) };
+        let piped = keep.then_some(kept.as_slice());
+        let mut input = owned.map_or(Cow::Borrowed(kept.as_slice()), Cow::Owned);
 
         let settings = self.settings.compile();
         let mut report = Report::default();
-        let mut compiled = compile(&input, &line.options, &settings, &mut report);
+        let mut compiled = compile(&mut input, &line.options, &settings, &mut report);
         if let Err(CompileError::Unsupported(unsupported)) = &compiled
             && unsupported.construct == Construct::BitcodeInput
             && let Some(llvm_dis) = self.settings.converter().map(Path::to_path_buf)
@@ -217,6 +229,9 @@ impl Job<'_, '_> {
             // the encoding is in the way: go on with the module as text.
             let started = Instant::now();
             let converted = convert::run(&llvm_dis, &input);
+            // The bitcode is not needed again (the fallback's copy is
+            // `piped`).
+            input = Cow::Borrowed(&[]);
             self.record.conversion_time = Some(started.elapsed());
             // The attempt that declined the bitcode is in this phase too.
             self.phases.end("convert");
@@ -225,7 +240,7 @@ impl Job<'_, '_> {
                     self.record.target =
                         hod::effective_triple(&text, &line.options).map(str::to_owned);
                     report = Report::default();
-                    compiled = compile(&text, &line.options, &settings, &mut report);
+                    compiled = compile(&mut Cow::Owned(text), &line.options, &settings, &mut report);
                 }
                 Err(failure) => {
                     if let Some(llc) = self.settings.hybrid().map(Path::to_path_buf) {
@@ -556,7 +571,7 @@ mod tests {
     /// A stand-in for `hod::compile` that succeeds.
     #[expect(clippy::unnecessary_wraps, reason = "a stand-in has the signature of the real one")]
     fn object(
-        _: &[u8],
+        _: &mut Cow<'_, [u8]>,
         _: &Options,
         _: &hod::Settings,
         _: &mut Report,
@@ -589,7 +604,7 @@ mod tests {
     #[test]
     fn threads_option_environment_and_jobserver() {
         let seen = std::cell::Cell::new(None);
-        let probe = |_: &[u8], _: &Options, settings: &hod::Settings, _: &mut Report| {
+        let probe = |_: &mut Cow<'_, [u8]>, _: &Options, settings: &hod::Settings, _: &mut Report| {
             seen.set(Some((settings.threads.max, settings.threads.tokens.is_some())));
             Ok(OBJECT.to_vec())
         };
@@ -644,12 +659,12 @@ mod tests {
             e.census = true;
         });
         for env in [&env, &census] {
-            let ran = run_with(&["-filetype=obj"], env, &hod::compile_with, MODULE);
+            let ran = run_with(&["-filetype=obj"], env, &hod::compile_releasing, MODULE);
             assert_eq!(ran.exit, EXIT_UNSUPPORTED);
-            let ran = run_with(&["-filetype=obj"], env, &hod::compile_with, DECLARATIONS);
+            let ran = run_with(&["-filetype=obj"], env, &hod::compile_releasing, DECLARATIONS);
             assert_eq!(ran.exit, EXIT_OK);
             assert!(ran.stdout.starts_with(b"\x7FELF"));
-            let ran = run_with(&["-filetype=asm"], env, &hod::compile_with, MODULE);
+            let ran = run_with(&["-filetype=asm"], env, &hod::compile_releasing, MODULE);
             assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         }
         let lines = fields(&log);
@@ -702,19 +717,19 @@ mod tests {
         assert_eq!((ran.exit, ran.stderr.as_str()), (EXIT_OK, ""));
         assert_eq!(phases(), "read compile write total");
         // A decline is the phases up to it.
-        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_with, MODULE);
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_releasing, MODULE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert_eq!(phases(), "read parse classify compile total");
         // A module hod builds reads its bodies and generates code.
-        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_with, DECLARATIONS);
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_releasing, DECLARATIONS);
         assert_eq!(ran.exit, EXIT_OK);
         assert_eq!(phases(), "read parse classify bodies emission object compile write total");
         // One declined by the code generator reads its bodies too.
-        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_with, CG_DECLINED);
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_releasing, CG_DECLINED);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert_eq!(phases(), "read parse classify bodies compile total");
         // A module declined before it is read has none of them.
-        let ran = run_with(&["-filetype=asm", "--strict"], &env, &hod::compile_with, MODULE);
+        let ran = run_with(&["-filetype=asm", "--strict"], &env, &hod::compile_releasing, MODULE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert_eq!(phases(), "read compile total");
         // Reports are appended; an invocation that compiles nothing has none.
@@ -738,7 +753,7 @@ mod tests {
             "{}",
             ran.stderr
         );
-        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_with, MODULE);
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_releasing, MODULE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED, "the first failure's status stands");
     }
 
@@ -794,7 +809,7 @@ mod tests {
         // A file input: read from the file, and named after it without -o.
         let input = scratch.write("m.ll", MODULE);
         let seen = std::cell::RefCell::new(Vec::new());
-        let record = |input: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
+        let record = |input: &mut Cow<'_, [u8]>, _: &Options, _: &hod::Settings, _: &mut Report| {
             seen.borrow_mut().extend_from_slice(input);
             Ok(OBJECT.to_vec())
         };
@@ -803,6 +818,37 @@ mod tests {
         assert_eq!(*seen.borrow(), MODULE);
         assert!(ran.stdout.is_empty());
         assert_eq!(std::fs::read(scratch.join("m.o")).unwrap(), OBJECT);
+    }
+
+    // spec/cli.md "The facade", WP-166: the compile owns the input (and
+    // may free it once read) unless the fallback needs it after: standard
+    // input with a fallback.
+    #[test]
+    fn the_input_is_owned_unless_the_fallback_needs_it() {
+        let scratch = Scratch::new("driver-input-owned");
+        let file = scratch.write("m.ll", MODULE);
+        let owned = std::cell::RefCell::new(Vec::new());
+        let record = |input: &mut Cow<'_, [u8]>, _: &Options, _: &hod::Settings, _: &mut Report| {
+            owned.borrow_mut().push(matches!(input, Cow::Owned(_)));
+            assert_eq!(&**input, MODULE);
+            Ok(OBJECT.to_vec())
+        };
+        let fallback = with(&Environment::default(), |e| {
+            e.fallback = Some(PathBuf::from("/nonexistent/llc"));
+        });
+        let file = file.to_str().unwrap();
+        let plain = Environment::default();
+        for (args, env) in [
+            (&["-filetype=obj", "-o", "-", file][..], &plain),
+            (&["-filetype=obj", "-o", "-", file][..], &fallback),
+            (&["-filetype=obj", "-o", "-"][..], &plain),
+            (&["-filetype=obj", "-o", "-", "--strict"][..], &fallback),
+            (&["-filetype=obj", "-o", "-"][..], &fallback),
+        ] {
+            let ran = run_with(args, env, &record, MODULE);
+            assert_eq!((ran.exit, ran.stderr.as_str()), (EXIT_OK, ""), "{args:?}");
+        }
+        assert_eq!(*owned.borrow(), [true, true, true, true, false]);
     }
 
     #[test]
@@ -826,7 +872,7 @@ mod tests {
     #[test]
     fn options_reach_the_code_generator() {
         let seen = std::cell::RefCell::new(None);
-        let record = |_: &[u8], options: &Options, _: &hod::Settings, _: &mut Report| {
+        let record = |_: &mut Cow<'_, [u8]>, options: &Options, _: &hod::Settings, _: &mut Report| {
             *seen.borrow_mut() = Some(options.clone());
             Ok(Vec::new())
         };
@@ -848,9 +894,9 @@ mod tests {
     /// it keeps what it was given.
     fn text_only(
         seen: &std::cell::RefCell<Vec<Vec<u8>>>,
-    ) -> impl Fn(&[u8], &Options, &hod::Settings, &mut Report) -> Result<Vec<u8>, CompileError> + '_
+    ) -> impl Fn(&mut Cow<'_, [u8]>, &Options, &hod::Settings, &mut Report) -> Result<Vec<u8>, CompileError> + '_
     {
-        |input: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
+        |input: &mut Cow<'_, [u8]>, _: &Options, _: &hod::Settings, _: &mut Report| {
             seen.borrow_mut().push(input.to_vec());
             match InputKind::detect(input) {
                 InputKind::Bitcode => Err(Unsupported::module(Construct::BitcodeInput).into()),
@@ -959,7 +1005,7 @@ mod tests {
 
         // What the text reader says of converted text is the reason.
         let malformed =
-            |input: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| match InputKind::detect(
+            |input: &mut Cow<'_, [u8]>, _: &Options, _: &hod::Settings, _: &mut Report| match InputKind::detect(
                 input,
             ) {
                 InputKind::Bitcode => Err(Unsupported::module(Construct::BitcodeInput).into()),
@@ -987,11 +1033,11 @@ mod tests {
             e.bitcode_via = Some(scratch.join("no-llvm-dis"));
         });
         // Text; assembly output of bitcode; a rejected command line.
-        let ran = run_with(&["-filetype=obj"], &env, &hod::compile_with, MODULE);
+        let ran = run_with(&["-filetype=obj"], &env, &hod::compile_releasing, MODULE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
-        let ran = run_with(&["-filetype=asm"], &env, &hod::compile_with, BITCODE);
+        let ran = run_with(&["-filetype=asm"], &env, &hod::compile_releasing, BITCODE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
-        let ran = run_with(&["-filetype=obj", "-bogus"], &env, &hod::compile_with, BITCODE);
+        let ran = run_with(&["-filetype=obj", "-bogus"], &env, &hod::compile_releasing, BITCODE);
         assert_eq!(ran.exit, EXIT_ERROR);
         // A generator that reads bitcode itself never asks for a conversion.
         let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &object, BITCODE);
@@ -1013,7 +1059,7 @@ mod tests {
 
         // Bitcode is the reason: the converter is tried, and its absence is
         // the error (status 1: hod failed, not "unsupported").
-        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_with, BITCODE);
+        let ran = run_with(&["-filetype=obj", "--strict"], &env, &hod::compile_releasing, BITCODE);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(
             ran.stderr.starts_with("hod: error: cannot run bitcode converter '")
@@ -1030,7 +1076,7 @@ mod tests {
             let plain = with(&env, |e| {
                 e.bitcode_via = via;
             });
-            let ran = run_with(&["-filetype=obj"], &plain, &hod::compile_with, BITCODE);
+            let ran = run_with(&["-filetype=obj"], &plain, &hod::compile_releasing, BITCODE);
             assert_eq!(ran.exit, EXIT_ERROR, "{}", ran.stderr);
             assert!(ran.stderr.starts_with("hod: error: malformed input: bit "), "{}", ran.stderr);
         }
@@ -1049,7 +1095,7 @@ mod tests {
         let env = with(&Environment::default(), |e| {
             e.coverage_log = Some(log.clone());
         });
-        let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &hod::compile_with, CG_DECLINED);
+        let ran = run_with(&["-filetype=obj", "-o", "-"], &env, &hod::compile_releasing, CG_DECLINED);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert!(ran.stdout.is_empty());
         assert_eq!(
@@ -1059,7 +1105,7 @@ mod tests {
              HOD_FALLBACK_LLC)\n"
         );
 
-        let in_function = |_: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
+        let in_function = |_: &mut Cow<'_, [u8]>, _: &Options, _: &hod::Settings, _: &mut Report| {
             Err(Unsupported::in_function(
                 Construct::Named("x64:todo:abi".into()),
                 Some("_Z1fv".into()),
@@ -1091,13 +1137,13 @@ mod tests {
         let env = with(&Environment::default(), |e| {
             e.coverage_log = Some(log.clone());
         });
-        let malformed = |_: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
+        let malformed = |_: &mut Cow<'_, [u8]>, _: &Options, _: &hod::Settings, _: &mut Report| {
             Err(CompileError::MalformedInput("line 2: expected '}'".into()))
         };
         let ran = run_with(&["-filetype=obj"], &env, &malformed, b"define");
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.starts_with("hod: error: malformed input: line 2: expected '}'"));
-        let invalid = |_: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
+        let invalid = |_: &mut Cow<'_, [u8]>, _: &Options, _: &hod::Settings, _: &mut Report| {
             Err(CompileError::InvalidOptions("a without b".into()))
         };
         let ran = run_with(&["-filetype=obj"], &env, &invalid, b"");
@@ -1117,7 +1163,7 @@ mod tests {
         let env = with(&Environment::default(), |e| {
             e.coverage_log = Some(log.clone());
         });
-        let internal = |_: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
+        let internal = |_: &mut Cow<'_, [u8]>, _: &Options, _: &hod::Settings, _: &mut Report| {
             Err(CompileError::Internal("function 'f': a lost value".into()))
         };
         let ran = run_with(&["-filetype=obj", "--strict"], &env, &internal, MODULE);
@@ -1133,7 +1179,7 @@ mod tests {
             lines.iter().map(|l| (l[0].as_str(), l[1].as_str())).collect();
         assert_eq!(summary, [("error", "internal-error"), ("fallback", "internal-error")]);
         // A contained panic (WP-093, "Embedding") likewise: `internal-panic`.
-        let panicked = |_: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
+        let panicked = |_: &mut Cow<'_, [u8]>, _: &Options, _: &hod::Settings, _: &mut Report| {
             Err(CompileError::Panic("index out of bounds".into()))
         };
         let ran = run_with(&["-filetype=obj", "--strict"], &env, &panicked, MODULE);
@@ -1158,7 +1204,7 @@ mod tests {
         let env = with(&Environment::default(), |e| {
             e.coverage_log = Some(log.clone());
         });
-        let never = |_: &[u8],
+        let never = |_: &mut Cow<'_, [u8]>,
                      _: &Options,
                      _: &hod::Settings,
                      _: &mut Report|
@@ -1234,7 +1280,7 @@ mod tests {
             e.fallback = Some("/nonexistent/llc".into());
             e.in_fallback = true;
         });
-        let ran = run_with(&["-filetype=obj"], &env, &hod::compile_with, MODULE);
+        let ran = run_with(&["-filetype=obj"], &env, &hod::compile_releasing, MODULE);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.contains("HOD_IN_FALLBACK"), "{}", ran.stderr);
         assert!(ran.stderr.contains("fallback or its bitcode converter"), "{}", ran.stderr);
@@ -1260,7 +1306,7 @@ mod tests {
         let unrunnable = with(&env, |e| {
             e.fallback = Some(scratch.join("no-llc"));
         });
-        let ran = run_with(&["-filetype=obj"], &unrunnable, &hod::compile_with, MODULE);
+        let ran = run_with(&["-filetype=obj"], &unrunnable, &hod::compile_releasing, MODULE);
         assert_eq!(ran.exit, EXIT_ERROR);
         assert!(ran.stderr.starts_with("hod: error: cannot run fallback '"), "{}", ran.stderr);
         let reasons: Vec<String> = fields(&log).into_iter().map(|l| l[1].clone()).collect();

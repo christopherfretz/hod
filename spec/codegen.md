@@ -3217,9 +3217,13 @@ bytes only shortens distances. The bytes are compacted, and every
 offset the function holds moves by what is removed before it (an offset
 inside a removed range goes to its start): labels, pending fixups,
 relocations, CFI rows, call-site rows (start, end, landing), pad rows,
-line rows, `VarPlace::Label`s, island rows, block offsets and the
-coroutine offsets. Every reference to a bound label is then patched
-again; one out of reach is an internal error. A function that asked for
+line rows, `VarPlace::Label`s, island rows, block offsets, the
+coroutine offsets and the described calls' rows (§9.5; a row a target
+has not completed stays incomplete). A table of code offsets a later
+package adds to the function's record is moved here too: a test must
+compare such offsets with the final bytes of a function that shrank.
+Every reference to a bound label is then patched again; one out of
+reach is an internal error. A function that asked for
 neither costs nothing.
 
 **1. The save set.** The prologue pushes only the members of `rbx`,

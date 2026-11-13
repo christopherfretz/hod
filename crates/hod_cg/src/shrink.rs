@@ -232,6 +232,7 @@ impl<T: Target> FnCx<'_, T> {
             row.offset = map(row.offset);
         }
         self.map_coro_offsets(map);
+        self.map_debug_calls(map); // WP-113: `spec/dwarf.md` §6.19
     }
 }
 

@@ -153,6 +153,19 @@ impl<T: Target> FnCx<'_, T> {
         }
     }
 
+    /// The rows' offsets after the function's code shrank
+    /// (`spec/codegen.md` §5.6.15): a call returns, and a tail exit
+    /// branches, where its bytes moved to. A row not completed stays so
+    /// for [`FnCx::finish_debug_calls`] to report.
+    pub(crate) fn map_debug_calls(&mut self, map: impl Fn(u32) -> u32) {
+        let first = self.mark.debug_calls as usize;
+        for row in &mut self.out.debug_calls[first..] {
+            if row.offset != PENDING {
+                row.offset = map(row.offset);
+            }
+        }
+    }
+
     /// After `Target::emit_call`: the armed row is complete.
     pub(crate) fn check_debug_call(&self, armed: bool) -> CgResult<()> {
         if armed && self.out.debug_calls.last().is_none_or(|r| r.offset == PENDING) {

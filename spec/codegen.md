@@ -2558,6 +2558,68 @@ x86-64 snippets `dso-local-data`, `pie`, `narrow-fields`,
 module whose code is a C driver, and an `available_externally` copy,
 linked by bfd, lld and mold and run under `qemu-x86_64`).
 
+#### 5.6.8 Intrinsics (WP-128)
+
+`hod_x64::intrinsic` lowers the integer, memory, trap and frame
+intrinsics; `hod_x64::barrier` lowers inline assembly whose template is
+empty. The scratch registers are `rax`, `rcx`, `rdx`, `r10`, `r11`; no
+sequence puts an instruction other than `mov`, `lea`, `movzx`/`movsx`,
+`push` or `pop` between a flag setter and its reader.
+
+- **Bit counts.** `ctlz`/`cttz` use `bsr`/`bsf`, with a `cmove` for a
+  zero operand; `ctpop` is the SWAR sum; `bitreverse` is `bswap`, then
+  nibbles, pairs and bits swapped by masks. i128 forms work on the
+  limbs.
+- **`abs`** is `neg` + `cmovs`; **`smin`/`smax`/`umin`/`umax`** are
+  `cmp` + `cmov`; **`scmp`/`ucmp`** are `setg`/`seta` and
+  `setl`/`setb` minus each other.
+- **Funnel shifts** use `shld`/`shrd` (by `cl`) at 32 and 64 bits.
+  Below that, `k = amount mod width` (`and`, or `div` for a width that
+  is not a power of two) and the two operands are shifted by `k` and
+  `width - k` and `or`ed. i128 picks limbs by `cmov` on bit 6 of `k`.
+- **Saturating `add`/`sub`** at the register width use `cmovo`
+  (signed) or `cmovb`/`cmovae` (unsigned) against the bound; below the
+  register width the operation is done at 64 bits and clamped.
+  **`sshl.sat`/`ushl.sat`** move the operand to the top of the register,
+  shift it, shift it back and compare; on a difference the result is the
+  saturated value.
+- **Memory.** `memcpy` and `memset` of a constant length up to
+  `INLINE_MAX`, and `memmove` up to `INLINE_MOVE_MAX`, are inline: 8-, 4-, 2- and 1-byte moves, or 16-byte
+  `movups` with an overlapping last move; a `memmove` loads every piece
+  before storing any. `memcpy.inline`/`memset.inline` longer than that
+  are a loop of 16-byte steps and a tail. Every other length calls
+  `memcpy`, `memmove` or `memset`. A variable length of `i32` is
+  zero-extended first.
+- **Traps.** `trap` and `ubsantrap` are `ud2` (`llc` writes `ud1` with
+  the check's kind for `ubsantrap`, which `hod_mc_x64` cannot encode; the
+  signal is the same, `SIGILL`). `debugtrap` is `int3`.
+- **Frames.** `frameaddress(n)` follows `rbp` n times; `returnaddress(n)`
+  reads `[frame + 8]`. Depths above 256 are refused
+  (`x64:frame-depth`).
+- **The rest.** `readcyclecounter` is `rdtsc`, then `shl rdx, 32; or
+  rax, rdx`. `prefetch` and `clear_cache` emit nothing (x86 caches are
+  coherent). `ptrmask` is `and`. `eh.typeid.for` is the type's index
+  (`FnCx::type_id`; `x64:eh-typeid` without one). `is.constant` and
+  `objectsize` fold to their constants as `llc -O0` folds them, and the
+  operands of a folded call are not computed (`intrinsic::begin` and
+  `intrinsic::dropped`). Their rows stay `todo(X64)` until the target's
+  `begin_function` and `lower` call these two.
+- **Inline assembly.** An empty template with `r`, `m`, `i`, `n`, `x`,
+  `g`, `X`, a `{reg}` code, a tied output, and the classes `q`, `Q`,
+  `R` is a barrier. The alternative chosen is `llc`'s, by LLVM's x86
+  constraint weights. `llc` does not read clang's `a`, `b`, `c`, `d`,
+  `S`, `D` or `A` (a front end writes `{ax}`), so they are refused.
+
+Refused names: `x64:intrinsic` (an intrinsic not listed), and also
+`x64:intrinsic-wide` (a width above 128, or i128 where only `Int` is
+on), `x64:intrinsic-vector`, `x64:mem-inline-length` (an `.inline` form
+with a variable length), `x64:frame-depth`, `x64:eh-typeid`,
+`x64:inline-asm` (a template that is not empty), and
+`x64:inline-asm-{output,outputs,constraint,clobber,operand,bundle}`.
+
+Evidence: `crates/hod_x64/tests/intrinsic.rs` and `tests/barrier.rs`,
+summarized in `spec/landed/codegen/WP-128.md`.
+
 ## 6. Control flow
 
 ### 6.1 Reachability

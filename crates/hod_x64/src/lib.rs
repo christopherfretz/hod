@@ -34,8 +34,8 @@
 //! | `aggr` | WP-126 | `Mem`-class values: wide integers, aggregates, overflow intrinsics | `tests/aggr.rs` |
 //! | `float` | WP-127 | scalar and vector-register floating point (SSE2) | |
 //! | `fpintr` | WP-127, WP-128 | the floating-point intrinsics | |
-//! | `intrinsic` | WP-128 | the other intrinsics | |
-//! | `barrier` | WP-128 | inline assembly whose template assembles to nothing | |
+//! | `intrinsic` | WP-128 | the other intrinsics | `tests/intrinsic.rs` |
+//! | `barrier` | WP-128 | inline assembly whose template assembles to nothing | `tests/barrier.rs` |
 //! | `x87` | WP-131 | `x86_fp80` arithmetic, compares and conversions | |
 //! | `vector` | WP-132 | `extractelement`, `insertelement`, `shufflevector` | |
 //! | `lanes` | WP-132 | element-wise operations on `Mem`-class vectors | |

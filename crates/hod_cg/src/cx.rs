@@ -270,6 +270,10 @@ pub struct FnCx<'a, T: Target> {
     pub(crate) has_pads: bool,
     /// Whether the function's block offsets are recorded (§9.6).
     pub(crate) block_addrs: bool,
+    /// Whether the function has an `indirectbr`: every unreachable block
+    /// is then given the trap's offset, else only an address-taken one
+    /// (§9.6, WP-115).
+    pub(crate) indirect_br: bool,
     pub(crate) frame_desc: FrameDesc,
     /// The largest alignment a data island asked for.
     pub(crate) island_align: u32,

@@ -242,7 +242,9 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
 
     fn binary(&mut self, at: u32, op: Opcode) -> PResult<(TypeId, Value)> {
         match op {
-            Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Shl => self.flags(&[Kw::Nuw, Kw::Nsw]),
+            Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Shl => {
+                self.flags(&[Kw::Nuw, Kw::Nsw]);
+            }
             Opcode::UDiv | Opcode::SDiv | Opcode::LShr | Opcode::AShr => self.flags(&[Kw::Exact]),
             Opcode::Or => self.flags(&[Kw::Disjoint]),
             _ if op.is_float_binary() => self.fast_math(),

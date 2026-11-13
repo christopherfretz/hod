@@ -8,7 +8,7 @@
 //! word, a word ends at the first character that is not alphanumeric or
 //! `_`, and a string ends at the first `"`.
 
-use crate::kw::{Kw, keyword_at};
+use crate::kw::{Kw, by_key, keyword_at};
 use crate::skip::{comment_end, find_byte};
 
 /// The kind of a [`Token`].
@@ -266,8 +266,17 @@ impl<'a> Lexer<'a> {
 
     /// The first offset at or after `at` whose byte is not of `class`
     /// (the end of the source has none).
+    ///
+    /// Eight bytes at a time while eight are left, so that a byte costs
+    /// its class test and not also an end test, then byte by byte.
     #[inline]
-    fn skip_while(&self, at: usize, class: u8) -> usize {
+    fn skip_while(&self, mut at: usize, class: u8) -> usize {
+        while let Some(chunk) = self.src.get(at..).and_then(<[u8]>::first_chunk::<8>) {
+            if let Some(n) = chunk.iter().position(|&b| !is(b, class)) {
+                return at + n;
+            }
+            at += 8;
+        }
         let rest = self.src.get(at..).unwrap_or_default();
         at + rest.iter().position(|&b| !is(b, class)).unwrap_or(rest.len())
     }
@@ -291,6 +300,8 @@ impl<'a> Lexer<'a> {
     }
 
     /// Skips white space and comments; `Err` is an error token.
+    #[allow(clippy::inline_always)] // Measured: a call per token otherwise (WP-168).
+    #[inline(always)]
     fn skip_blank(&mut self) -> Result<usize, Token> {
         let src = self.src;
         let mut pos = self.pos;
@@ -333,6 +344,8 @@ impl<'a> Lexer<'a> {
             return self.token(Tok::Eof, start, start);
         };
         let one = |kind| Token { kind, kw: Kw::Other, start: start as u32, end: start as u32 + 1 };
+        // One dispatch on the first byte: the tokens that are most of a
+        // text go straight to their rule, the rest to `compound`.
         let simple = match c {
             b'=' => Tok::Equal,
             b',' => Tok::Comma,
@@ -347,12 +360,28 @@ impl<'a> Lexer<'a> {
             b')' => Tok::RParen,
             b'|' => Tok::Bar,
             b':' => Tok::Colon,
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => return self.word(c, start),
+            b'%' => return self.local(start),
+            b'@' => return self.global(start),
+            b'-' | b'0'..=b'9' => return self.number(c, start),
             _ => return self.compound(c, start),
         };
         self.pos = start + 1;
         one(simple)
     }
 
+    #[inline(never)]
+    fn local(&mut self, start: usize) -> Token {
+        self.sigil(start, Tok::Local, Tok::LocalQuoted, Some(Tok::LocalId))
+    }
+
+    #[inline(never)]
+    fn global(&mut self, start: usize) -> Token {
+        self.sigil(start, Tok::Global, Tok::GlobalQuoted, Some(Tok::GlobalId))
+    }
+
+    /// Every first byte that `next_token` does not dispatch itself.
+    #[inline(never)]
     fn compound(&mut self, c: u8, start: usize) -> Token {
         match c {
             b'@' => self.sigil(start, Tok::Global, Tok::GlobalQuoted, Some(Tok::GlobalId)),
@@ -470,7 +499,25 @@ impl<'a> Lexer<'a> {
 
     /// A token that starts with a digit or `-`: a label, an integer, a
     /// floating-point number or a hexadecimal form.
+    ///
+    /// Most are digits, with or without a `-`, followed by a byte that
+    /// neither goes on a label nor ends one, which [`Lexer::number_rule`]
+    /// makes an integer whatever the digits: that is looked at first.
+    #[inline(never)]
     fn number(&mut self, c: u8, start: usize) -> Token {
+        if c != b'-' || is(self.at(start + 1), DIGIT) {
+            let digits = self.skip_while(start + 1, DIGIT);
+            let next = self.at(digits);
+            if !is(next, LABEL) && next != b':' {
+                return self.token(Tok::Int, start, digits);
+            }
+        }
+        self.number_rule(c, start)
+    }
+
+    /// The rules for a token that starts with a digit or `-`.
+    #[inline(never)]
+    fn number_rule(&mut self, c: u8, start: usize) -> Token {
         if c == b'-' && !is(self.at(start + 1), DIGIT) {
             return match self.label_tail(start) {
                 Some(end) => self.token(Tok::Label, start, end),
@@ -513,9 +560,49 @@ impl<'a> Lexer<'a> {
         self.token(kind, start, end)
     }
 
+    /// A token that starts with a letter or `_`. Most are a word or an
+    /// integer type (`i` and digits) of at most 15 bytes with sixteen
+    /// bytes of source from its start, not `u0…`, `s0…` or `cc` and a
+    /// digit, and followed by a byte that neither goes on a label nor
+    /// ends one: for those the rules of [`Lexer::word_rule`] all come to
+    /// the word or the type itself, which is found, and its key made,
+    /// from those sixteen bytes. Everything else goes through the rules.
+    #[inline(never)]
+    fn word(&mut self, c: u8, start: usize) -> Token {
+        let Some(bytes) = self.src.get(start..).and_then(<[u8]>::first_chunk::<16>) else {
+            return self.word_rule(c, start);
+        };
+        let second = bytes[1];
+        let int_type = c == b'i' && is(second, DIGIT);
+        let special = (second == b'0' && matches!(c, b'u' | b's'))
+            || (c == b'c' && second == b'c' && is(bytes[2], DIGIT));
+        let rest = &bytes[1..];
+        let len = if int_type {
+            rest.iter().position(|&b| !is(b, DIGIT))
+        } else {
+            rest.iter().position(|&b| !is(b, WORD))
+        }
+        .map_or(16, |n| n + 1);
+        if special || len == 16 || is(bytes[len], LABEL) || bytes[len] == b':' {
+            return self.word_rule(c, start);
+        }
+        let (first, rest) = bytes.split_at(8);
+        let lo = u64::from_le_bytes(first.try_into().unwrap_or_default());
+        let hi = u64::from_le_bytes(rest.try_into().unwrap_or_default());
+        let key = if len <= 8 {
+            [lo & (u64::MAX >> (64 - 8 * len)), 0]
+        } else {
+            [lo, hi & (u64::MAX >> (128 - 8 * len))]
+        };
+        self.pos = start + len;
+        let kind = if int_type { Tok::IntType } else { Tok::Word };
+        Token { kind, kw: by_key(key), start: start as u32, end: (start + len) as u32 }
+    }
+
     /// A token that starts with a letter or `_`: a label, an integer
     /// type, a hexadecimal integer or a word.
-    fn word(&mut self, c: u8, start: usize) -> Token {
+    #[inline(never)]
+    fn word_rule(&mut self, c: u8, start: usize) -> Token {
         // `i` and digits: an integer type unless the whole run of label
         // characters ends in a colon.
         if c == b'i' && is(self.at(start + 1), DIGIT) {
@@ -811,6 +898,55 @@ mod tests {
             lex("!a\\b-c.d$e_9 \0\r\t\n!x"),
             [(Tok::Meta, "!a\\b-c.d$e_9"), (Tok::Meta, "!x")]
         );
+    }
+
+    /// The word fast path is the word rules: every word made of the
+    /// bytes the rules look at, of every length around the sixteen bytes
+    /// the fast path reads, before every kind of byte, agrees with
+    /// `word_rule` in its token and in where it leaves the lexer.
+    #[test]
+    fn the_word_fast_path_is_the_rules() {
+        let heads: [&[u8]; 12] =
+            [b"x", b"i", b"i3", b"u0", b"s0x1f", b"u0xfg", b"cc", b"cc1", b"c", b"ret", b"_", b"Z"];
+        let fill = b"a0_9Zq";
+        let tails: [&[u8]; 12] =
+            [b"", b" ", b":", b".", b"-", b"$", b",", b"(", b"\"", b"\\", b"\x80", b"a:"];
+        let mut cases = 0;
+        for head in heads {
+            for len in 0..20 {
+                for tail in tails {
+                    for pad in [0usize, 1, 16, 32] {
+                        let mut text = head.to_vec();
+                        text.extend((0..len).map(|n| fill[n % fill.len()]));
+                        text.extend_from_slice(tail);
+                        text.extend(std::iter::repeat_n(b' ', pad));
+                        let mut fast = Lexer::new(&text);
+                        let mut rule = Lexer::new(&text);
+                        let (a, b) = (fast.word(text[0], 0), rule.word_rule(text[0], 0));
+                        assert_eq!(
+                            (a, fast.pos()),
+                            (b, rule.pos()),
+                            "{:?}",
+                            String::from_utf8_lossy(&text)
+                        );
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        // And every keyword, as itself and with a byte more.
+        for &word in &crate::kw::TEXTS[1..] {
+            for tail in [&b" "[..], b"x ", b"  "] {
+                let text = [word, tail, &[b' '; 16]].concat();
+                let mut fast = Lexer::new(&text);
+                let mut rule = Lexer::new(&text);
+                if text[0].is_ascii_alphabetic() || text[0] == b'_' {
+                    assert_eq!(fast.word(text[0], 0), rule.word_rule(text[0], 0));
+                    cases += 1;
+                }
+            }
+        }
+        assert!(cases > 10_000);
     }
 
     /// §2.7: escapes.

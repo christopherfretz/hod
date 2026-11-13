@@ -32,7 +32,7 @@ macro_rules! keywords {
         const KWS: &[Kw] = &[Kw::Other, $(Kw::$name,)*];
 
         /// The text of each keyword, by code; empty for [`Kw::Other`].
-        const TEXTS: &[&[u8]] = &[b"", $($text,)*];
+        pub(crate) const TEXTS: &[&[u8]] = &[b"", $($text,)*];
     };
 }
 
@@ -334,7 +334,7 @@ fn key(word: &[u8]) -> Key {
 }
 
 /// A word's bytes, zero-padded to 16: the first eight and the next eight.
-type Key = [u64; 2];
+pub(crate) type Key = [u64; 2];
 
 /// The slot of a key.
 #[inline]
@@ -372,9 +372,11 @@ static SLOTS: [u8; 1 << SLOT_BITS] = {
 };
 
 /// The key of each keyword, by code; `[0, 0]` for [`Kw::Other`] and for
-/// the keywords longer than [`MAX_HASHED`], which no word's key equals.
-static KEYS: [Key; TEXTS.len()] = {
-    let mut keys = [[0u64; 2]; TEXTS.len()];
+/// the keywords longer than [`MAX_HASHED`] and past the last code, which
+/// no word's key equals; 256 entries, so a slot's byte indexes it without
+/// a bounds test.
+static KEYS: [Key; 256] = {
+    let mut keys = [[0u64; 2]; 256];
     let mut code = 1;
     while code < TEXTS.len() {
         if TEXTS[code].len() <= MAX_HASHED {
@@ -418,13 +420,26 @@ pub(crate) fn keyword(word: &[u8]) -> Kw {
     by_key(key(word))
 }
 
-/// The code of the word whose key is `key`.
+/// The code of the word whose key is `key` (a key as [`key`] makes it:
+/// the word's bytes zero-padded to 16, as two little-endian words).
 #[inline]
-fn by_key(key: Key) -> Kw {
+pub(crate) fn by_key(key: Key) -> Kw {
     let code = SLOTS[slot(key)] as usize;
     let known = KEYS[code];
-    if (known[0] ^ key[0]) | (known[1] ^ key[1]) == 0 { KWS[code] } else { Kw::Other }
+    if (known[0] ^ key[0]) | (known[1] ^ key[1]) == 0 { CODES[code] } else { Kw::Other }
 }
+
+/// [`KWS`] padded to 256 entries, so that a slot's byte indexes it
+/// without a bounds test.
+static CODES: [Kw; 256] = {
+    let mut codes = [Kw::Other; 256];
+    let mut code = 0;
+    while code < KWS.len() {
+        codes[code] = KWS[code];
+        code += 1;
+    }
+    codes
+};
 
 #[cfg(test)]
 mod tests {

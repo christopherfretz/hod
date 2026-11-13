@@ -139,9 +139,8 @@ of §7 holds the choice. Covered:
 - LSE (feature `lse`): `cas` `swp` `ldadd` `ldclr` `ldeor` `ldset`
   `ldsmax` `ldsmin` `ldumax` `ldumin` with every ordering suffix and size;
 - system: `nop` `yield` `wfe` `wfi` `sev` `sevl` `hint` `isb` `dmb`
-  `dsb` (every option), `svc` `brk` `udf`, `mrs`/`msr` of `nzcv`
-  `fpcr` `fpsr` `tpidr_el0` `cntvct_el0` (and their `s3_...` names),
-  `bti`, `paciasp` `pacibsp` `autiasp` `autibsp`;
+  `dsb` (every option), `svc` `brk` `udf`, `mrs`/`msr` of a system
+  register (§5.4), `bti`, `paciasp` `pacibsp` `autiasp` `autibsp`;
 - scalar floating point (feature `fp`): `fmov` (register, general to
   and from FP, `#imm8`), `fabs` `fneg` `fsqrt` `frint*`, `fadd` `fsub`
   `fmul` `fdiv` `fnmul` `fmax` `fmin` `fmaxnm` `fminnm`, `fmadd`
@@ -163,6 +162,34 @@ emitted more than once by an optimiser; hod refuses rather than
 guesses); any directive is `asm:directive/<name>`. A reference to a
 symbol is returned as a `Ref` (offset, kind, name, addend) for the
 caller.
+
+### 5.4 System registers (`sysreg.rs`, WP-188)
+
+`mrs <Xt>, <reg>` and `msr <reg>, <Xt>` (`xzr` allowed, a W register,
+`sp` or a vector register is `asm:operand/register`) take a register by
+name, in any case, or in the generic form `S<op0>_<op1>_C<n>_C<m>_<op2>`
+(any case; decimal fields without leading zeros, op0 0..3, op1 and op2
+0..7, n and m 0..15). The words are `llvm-mc-22`'s: the field
+`op0:op1:CRn:CRm:op2` at bit 5 of `0xd520_0000` (`mrs`) or `0xd500_0000`
+(`msr`). The generic form is accepted for both directions whatever the
+register, as `llvm-mc` accepts it, and needs no feature.
+
+The names are the table `sysreg::TABLE`, generated once from
+`llvm-mc-22` (a test regenerates it when the tool is present and
+compares): every name `llvm-mc-22` prints, without a feature, for the
+ID-register space Linux emulates for user space (op0 3, op1 0, CRn 0,
+CRm 0..7: `midr_el1`, `mpidr_el1`, `revidr_el1`, the `id_aa64*_el1`
+and AArch32 `id_*_el1`/`mvfr*_el1` registers), and `cntfrq_el0`,
+`cntvct_el0`, `cntpct_el0`, `tpidr_el0`, `tpidrro_el0`, `fpcr`, `fpsr`,
+`nzcv`, `daif`, `dczid_el0`, `ctr_el0`, `currentel`, `rndr`, `rndrrs`;
+each with the directions `llvm-mc` accepts (`msr` to a read-only
+register is `asm:operand/sysreg`). `rndr` and `rndrrs` need `+rand` in
+the function's `target-features`, else `asm:feature`. Names `llvm-mc`
+gates behind another feature (`id_aa64zfr0_el1`, `id_aa64smfr0_el1`,
+`id_isar6_el1`, `id_pfr2_el1`, `tpidr2_el0`, `tco`, `dit`, `ssbs`, ...)
+and any other name are `asm:operand/sysreg` (the generic form reaches
+them). `msr` of an immediate to a PSTATE field (`daifset`, `spsel`, ...)
+is `asm:operand/sysreg`.
 
 ## 6. Inline assembly in code (`hod_a64::inline_asm`)
 
@@ -194,6 +221,16 @@ The lowering is `spec/codegen.md` §5.5.3 "WP-103". In short:
 - `crates/hod_a64/tests/inline_asm.rs`: the lowering (§6), run against
   `llc`; the template's words appear in the code as `llvm-mc` writes
   them.
+- `crates/hod_asm/tests/sysreg.rs` (§5.4): the table regenerated from
+  `llvm-mc-22` equals `sysreg::TABLE`; every row in each direction it
+  allows (both cases) and the generic form at its edges for each op0
+  encode as `llvm-mc-22`; the refusals.
+- `crates/hod_a64/tests/sysreg_asm.rs` (§5.4): seeds reading
+  `cntfrq_el0` (by name and generic), `cntvct_el0`, `tpidr_el0`,
+  `midr_el1`, ID registers, `ctr_el0`, `dczid_el0`, and writing `fpcr`,
+  `nzcv`, `fpsr`, built by hod and by `llc` 19 and 22, linked with a C
+  driver that checks each against its own `mrs`, run under every
+  linker; the system-register words of hod's code equal `llc`'s.
 - `crates/hod_cg/tests/emit_module_asm.rs`: module text (§9: every
   directive, section shape, reference kind, and module-symbol meeting)
   emitted by hod and by `llc` 19 and 22: sections with their bytes,

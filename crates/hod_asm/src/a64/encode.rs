@@ -11,11 +11,11 @@
 use hod_mc_a64 as mc;
 use hod_mc_a64::{
     Barrier, Cond, Extend, FpFormat, FpSize, Load, MemSize, Order, RegSp, RegZr, Shift, Size,
-    SysReg, VMemSize, VPairSize, VReg,
+    VMemSize, VPairSize, VReg,
 };
 
 use super::operand::{Gp, IndexExt, Mem, Offset, Op, View};
-use super::{Features, RefKind};
+use super::{Features, RefKind, sysreg};
 use crate::expr::{Name, Value};
 use crate::reason::{self, Refusal, operand, other};
 
@@ -326,15 +326,13 @@ pub fn encode<'a>(mnemonic: &str, ops: &[Op<'a>], features: Features) -> R<Encod
         }
         "mrs" => {
             let [r, s] = ops else { return form() };
-            Ok(word(mc::mrs(zr_of(r, Size::X)?, sysreg(s)?)))
+            let field = sysreg(s, sysreg::READ, features)?;
+            Ok(word(sysreg::mrs(zr_of(r, Size::X)?.code(), field)))
         }
         "msr" => {
             let [s, r] = ops else { return form() };
-            let reg = sysreg(s)?;
-            if reg == SysReg::CntvctEl0 {
-                return fail(operand::SYSREG);
-            }
-            Ok(word(mc::msr(reg, zr_of(r, Size::X)?)))
+            let field = sysreg(s, sysreg::WRITE, features)?;
+            Ok(word(sysreg::msr(field, zr_of(r, Size::X)?.code())))
         }
         "bti" => match ops {
             [] => Ok(word(mc::hint(32))),
@@ -1274,17 +1272,23 @@ fn barrier(op: &Op<'_>) -> R<Barrier> {
     })
 }
 
-fn sysreg(op: &Op<'_>) -> R<SysReg> {
+/// The `op0:op1:CRn:CRm:op2` field of a system-register operand that
+/// allows `access` ([`sysreg::READ`] or [`sysreg::WRITE`]): a name of
+/// [`sysreg::TABLE`] or the generic form (`spec/asm.md` §5.4).
+fn sysreg(op: &Op<'_>, access: u8, features: Features) -> R<u16> {
     let Some(name) = op.ident() else { return fail(operand::SYSREG) };
-    let lower = name.to_ascii_lowercase();
-    Ok(match lower.as_str() {
-        "nzcv" | "s3_3_c4_c2_0" => SysReg::Nzcv,
-        "fpcr" | "s3_3_c4_c4_0" => SysReg::Fpcr,
-        "fpsr" | "s3_3_c4_c4_1" => SysReg::Fpsr,
-        "tpidr_el0" | "s3_3_c13_c0_2" => SysReg::TpidrEl0,
-        "cntvct_el0" | "s3_3_c14_c0_2" => SysReg::CntvctEl0,
-        _ => return fail(operand::SYSREG),
-    })
+    if let Some(field) = sysreg::generic(name) {
+        return Ok(field);
+    }
+    match sysreg::named(name) {
+        Some((_, field, bits)) if bits & access != 0 => {
+            if bits & sysreg::RAND != 0 && !features.rand {
+                return fail(other::FEATURE);
+            }
+            Ok(field)
+        }
+        _ => fail(operand::SYSREG),
+    }
 }
 
 // ---- scalar floating point ----

@@ -20,7 +20,7 @@
 //! | `asm` | §2 | the inline-assembly table |
 //! | `props` | §2.1 | `ModuleProps` and module flags |
 //! | `strings` | §2 | interned byte strings |
-//! | `value` | §5.3 | `Value`, `InstId`, `SlotId` |
+//! | `value` | §5.3 | `Value`, `InstId`, `SlotId`, `MetaId` |
 //! | `inst` | §5.4 | opcodes, predicates, memory flags, the instruction record |
 //! | `intrinsic` | §5.5 | `Intrinsic`, name resolution, the no-code rule |
 //! | `body` | §5.1, §5.2, §5.6 | `Body` and the API code generation reads |
@@ -74,7 +74,7 @@ pub use attrs::{CallConv, ParamAttrs, ParamMem};
 pub use comdat::{Comdat, ComdatKind};
 pub use constant::{Const, ConstOp, ConstPool};
 pub use error::{IrError, IrErrorKind, IrResult};
-pub use flatten::{BlockDiff, Fixup, FixupTarget};
+pub use flatten::{BlockDiff, Fixup, FixupTarget, NegAddr};
 pub use ids::{AsmId, BlockId, ComdatId, ConstId, DiId, LocId, SymId, TypeId};
 pub use module::{Module, StringLists, Structor, Unsupported};
 pub use print::{Dialect, IoSink, Part, PrintError};
@@ -95,8 +95,9 @@ pub use target::{
 pub use types::{MAX_INT_BITS, MAX_TYPE_SIZE, TypeKind, TypeTable};
 
 pub use body::{
-    Block, Blocks, Body, Bundle, CallSite, Callee, Clause, Inst, InstKind, Insts, LandingPad, Phi,
-    PtrAdd, SHUFFLE_UNDEF, Slot, SlotVar, Successors, Switch, UseFacts,
+    Block, Blocks, Body, Bundle, CallSite, Callee, Clause, Inst, InstKind, Insts, LandingPad,
+    LifetimeMarker, Metadata, Phi, PtrAdd, SHUFFLE_UNDEF, Slot, SlotVar, Successors, Switch,
+    UseFacts,
 };
 pub use builder::{CallDesc, FunctionBuilder};
 pub use inst::{
@@ -104,9 +105,10 @@ pub use inst::{
     aggregate_field,
 };
 pub use intrinsic::{
-    Intrinsic, IntrinsicRef, NoCode, no_code_intrinsic, no_code_names, resolve_intrinsic,
+    Intrinsic, IntrinsicRef, NoCode, lifetime_intrinsic, no_code_intrinsic, no_code_names,
+    resolve_intrinsic,
 };
-pub use value::{InstId, SlotId, Value, ValueKind};
+pub use value::{InstId, MetaId, SlotId, Value, ValueKind};
 pub use verify::cast_is_valid;
 pub use wide::sext64;
 

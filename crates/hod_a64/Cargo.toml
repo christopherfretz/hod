@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+hod_asm.workspace = true
 hod_cg.workspace = true
 hod_ir.workspace = true
 hod_mc_a64.workspace = true
@@ -18,6 +19,7 @@ hod_obj.workspace = true
 hod_testutil = { workspace = true }
 hod_interp.workspace = true
 hod_ll.workspace = true
+hod_dwarf.workspace = true
 
 [lints]
 workspace = true

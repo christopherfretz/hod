@@ -411,7 +411,13 @@ Only what `hod_ll` uses is built. The rest takes an id and is never read.
 - **Attachments.** GLOBAL_DECL_ATTACHMENT of a declaration gives the
   `global-metadata:<kind>` notes of `ll.md §5.7`.
   - A definition's own attachments live in its function block, so stage
-    1 does not see them (§10).
+    1 does not see them (§10). The body reader records their
+    `global-metadata:<kind>` notes and keeps them as
+    `BodyReader::attachment_notes()` until the next read; the body is
+    still returned, as `hod_ll` returns it. The facade
+    (`crates/hod/src/front.rs`) declines such a function by those names,
+    where `hod_ll`'s same notes decline the module (WP-064; before, they
+    were recorded after the module was judged and nothing refused them).
 
 ## 6. Debug information
 
@@ -884,8 +890,14 @@ The rest follows `hod_ll`'s order:
 
 1. a call of a debug intrinsic is dropped, as `hod_ll` drops it;
 2. the arguments: one per parameter (a metadata parameter consumes one
-   operand, a metadata id; a label parameter is a `Type` error), then
-   VT operands for the variadic part;
+   operand, a relative metadata id; a label parameter is a `Type`
+   error), then VT operands for the variadic part. A metadata argument
+   becomes a metadata operand as `hod_ll` makes one (`spec/ll.md`
+   §11.6, WP-064): a METADATA_STRING, or a METADATA_NODE (not
+   `distinct`) of strings, of the module or of the function's own
+   METADATA block. That block is read by the module pass when the module
+   has debug information (§6.2), and otherwise by the body reader, which
+   then reads the block's strings and nodes only;
 3. the attributes: `attrs` is a PARAMATTR list (§5.3); function flags
    come from its groups (each group decoded once per reader), the
    return and argument attributes as `hod_ll` keeps them, and the
@@ -900,7 +912,8 @@ The rest follows `hod_ll`'s order:
 ### 11.6 Skipped
 
 - the function's VALUE_SYMTAB (local names: `hod_ir` keeps none), its
-  METADATA block (read at module level, §6.2), USELIST blocks and any
+  METADATA block (read at module level, §6.2, or for metadata operands,
+  §11.5 step 2), USELIST blocks and any
   other nested block;
 - BLOCKADDR_USERS (60);
 - metadata attachments of instructions other than `!dbg` (which

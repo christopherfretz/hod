@@ -2686,6 +2686,14 @@ Per unit (a test and a front end), in its own directory under
 3. per linker: `llc`'s program and each variant's, by `gcc -B<dir> -pie`
    with the linker as `ld`, the `link` flags, `-lstdc++` for C++, `-lm`;
    the program's signature checked as `irdiff` does;
+   A module whose IR records a `.dwo` name (`splitDebugFilename`, a test
+   with `cflags: -gsplit-dwarf`; WP-062) gets `-split-dwarf-file=<that
+   name> -split-dwarf-output=<its object>.dwo` on both sides, and each
+   program gets each of its objects' `.dwo` beside it under the name's
+   last component, where gdb and lldb look after the unit's directory
+   (the test's own directory, which has none). Such a test names only
+   clang front ends: kiln++ records the absolute path of its output,
+   which gdb does not look for beside the program;
 4. on the first linker, the lines comparison of `hod` against `llc`;
 5. per debugger with a script: the session on `llc`'s program, then on
    each variant's. Each masked transcript is written beside its program
@@ -2752,8 +2760,54 @@ one program has are classified: **P3** (`spec/dwarf.md` §5.7) a pair
 only hod's has whose line is that of its function's first row (the scope
 line of a prologue `llc` does not have); **P1** a pair only `llc`'s has
 whose every range holds only unconditional branches (`b`, by
-`llvm-objdump -d`); else **unclassified**. An unclassified pair fails the
-run.
+`llvm-objdump -d`); else, by the IR of the unit's modules
+(`permitted::IrFacts`: per defined function, the opcode, line and column
+of each instruction with a `!dbg`, scopes not followed),
+**load-placement** when the function's instructions at that line are
+loads and `getelementptr`s with at least one load (either side), and
+**is-constant** a pair only hod's has in a function that calls
+`llvm.is.constant` (`spec/dwarf.md` §5.7); else **unclassified**. An
+unclassified pair fails the run.
+
+### Columns
+
+The same rows with their columns, per function both programs have
+(`lines::function_rows`, `compare_function_rows`): the *positions*
+`(file, line, column)` of every row with a line other than 0 whose range
+is not empty, and the *sequence* of `(file, line, column, is_stmt)` of
+every such row, line 0 included, a row equal to the one before in all
+four not repeated (hod's `epilogue_begin` row). Counted: functions, with
+the same set of positions, with the same set but for P1 and P3
+positions, with the same sequence; and the positions one side lacks (P1,
+P3 or unclassified, as for pairs). Columns are reported (`debug:
+columns:`), never a failure: `llc` folds instructions into others within
+a line (`spec/dwarf.md` §5.7).
+
+`debug columns [-j N] [--hod <binary>] [--dump <dir>] [-v] [<dir or
+.ll>...]` runs both comparisons over every `-g` module of the paths
+(default: the corpus): hod `--strict -O0 -filetype=obj
+-relocation-model=pic` and `llc` of the module's LLVM major (a path
+component `llvm19` or `llvm22`, else 22) with the reference options,
+both with the module's `;@ llc-args:`; each object linked by `ld.lld`
+into a position-independent executable with undefined symbols allowed
+and no entry (`-pie --unresolved-symbols=ignore-all -z notext -e 0`),
+so that every function has an address and a symbol. `--dump` writes
+`llvm-objdump -d -r` of hod's object (its path replaced by `hod.o`) to
+`<dir>/<index>.dis`: two dumps compared with `diff -r` show that a
+change of rows left the code and relocations alone. `-j` at most 4.
+Exit status 1 when a module fails, else 0.
+
+### Permitted differences of sessions
+
+A hod session whose masked transcript differs from `llc`'s PASSes with
+the detail `permitted: return-column` when the session is lldb's and
+`permitted::only_return_columns` holds: the transcripts have the same
+number of lines, and every differing pair of lines is in a stop whose
+`stop reason` is `step out` (after `finish`), and is either the
+`frame #0:` line, equal but for the column of its ` at file:line:col`,
+`llc`'s column being that of a `call` or `invoke` at that line in the
+IR, or the source caret line (`^`) after such a line
+(`spec/dwarf.md` §5.7 `return-column`). Nothing else is permitted.
 
 ### Results file
 
@@ -2806,8 +2860,8 @@ non-zero exit status of either.
 
 ### Library
 
-`xtask::debug::{sessions, directives, transcript, build, lines, kiln,
-verify}`; `sessions::run(&Options) -> Report`, `verify::run`,
+`xtask::debug::{sessions, directives, transcript, build, lines,
+permitted, columns, kiln, verify}`; `sessions::run(&Options) -> Report`, `verify::run`,
 `kiln::run`, `debug::gate`.
 
 ### Tests
@@ -2816,7 +2870,9 @@ Unit tests: `debug::tests::run_options`; `directives::tests::
 {reads_every_directive, refuses_broken_tests, scopes, checks_in_order,
 discovery}`; `transcript::tests::{masks_what_may_differ,
 first_differing_line, crash_reports}`; `lines::tests::{reads_line_tables,
-reads_instructions, summary_counts_classes}`; `verify::tests::
+reads_instructions, summary_counts_classes, compares_columns}`;
+`permitted::tests::{reads_ir_and_classifies_pairs, return_columns}`;
+`columns::tests::major_of_a_module`; `verify::tests::
 {reads_module_directives, summary_and_status}`;
 `kiln::tests::reads_kiln_directives`.
 

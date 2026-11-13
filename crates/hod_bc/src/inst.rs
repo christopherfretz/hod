@@ -54,6 +54,116 @@ enum Kind {
 }
 
 impl Fx<'_, '_, '_> {
+    /// Metadata `id` as a metadata operand (`spec/ir.md` §5.3): a string,
+    /// or a node (not `distinct`) whose operands are all strings, of the
+    /// module or of this function; `None` for any other metadata, or a
+    /// string that is not UTF-8.
+    fn metadata_arg(&mut self, id: u64) -> BcResult<Option<Value>> {
+        let mut strings = Vec::new();
+        let node = match self.md_operands(id) {
+            Some(operands) => {
+                for operand in operands {
+                    match operand.checked_sub(1).and_then(|op| self.md_text(op)) {
+                        Some(text) => strings.push(text),
+                        None => return Ok(None),
+                    }
+                }
+                true
+            }
+            None => match self.md_text(id) {
+                Some(text) => {
+                    strings.push(text);
+                    false
+                }
+                None => return Ok(None),
+            },
+        };
+        let strings: Vec<&str> = strings.iter().map(String::as_str).collect();
+        Ok(Some(ir(self.at, self.b.metadata(node, &strings))?))
+    }
+
+    /// The local metadata `id` of this function, past the module's, and
+    /// the tables its strings and operands are in.
+    fn local_md(&self, id: u64) -> Option<(crate::debug::LocalMd, &crate::debug::DebugBits)> {
+        let local = id.checked_sub(self.bits.metadata_count() as u64)?;
+        if !self.bits.debug.on {
+            let plain = &self.s.plain_md;
+            return Some((*plain.local.get(usize::try_from(local).ok()?)?, plain));
+        }
+        if local >= u64::from(self.fdbg.len) {
+            return None;
+        }
+        let debug = &self.bits.debug;
+        Some((*debug.local.get((u64::from(self.fdbg.start) + local) as usize)?, debug))
+    }
+
+    /// A function's METADATA block in a module without debug
+    /// information (whose function blocks the module pass does not
+    /// read): its strings and nodes, for metadata operands.
+    pub(crate) fn plain_local_metadata(
+        &mut self,
+        cursor: &mut crate::bitstream::Cursor<'_, '_>,
+        ops: &mut Vec<u64>,
+    ) -> BcResult<()> {
+        use crate::debug::{LSlot, LocalBlock, LocalMd};
+        let mut block = LocalBlock::default();
+        crate::debug::read_local_block(cursor, ops, &mut block)?;
+        let md = &mut self.s.plain_md;
+        for slot in &block.slots {
+            let local = match *slot {
+                LSlot::String(bytes) => {
+                    let start = md.strs.len() as u32;
+                    md.strs.extend_from_slice(bytes);
+                    LocalMd::String { start, len: bytes.len() as u32 }
+                }
+                LSlot::Rec { code: crate::codes::md::NODE, start, len, .. } => {
+                    let operands = &block.pool[start as usize..][..len as usize];
+                    let start = md.args.len() as u32;
+                    md.args.extend_from_slice(operands);
+                    LocalMd::Node { start, len }
+                }
+                LSlot::Rec { .. } => LocalMd::Other,
+            };
+            md.local.push(local);
+        }
+        Ok(())
+    }
+
+    /// Metadata `id` if it is a UTF-8 string.
+    fn md_text(&self, id: u64) -> Option<String> {
+        use crate::debug::LocalMd;
+        use crate::module::Metadata;
+        let bytes = match self.bits.metadata(id) {
+            Some(Metadata::String(bytes)) => bytes,
+            Some(_) => return None,
+            None => match self.local_md(id)? {
+                (LocalMd::String { start, len }, md) => {
+                    md.strs.get(start as usize..)?.get(..len as usize)?
+                }
+                _ => return None,
+            },
+        };
+        std::str::from_utf8(bytes).ok().map(str::to_owned)
+    }
+
+    /// The operands (metadata id + 1) of metadata `id` if it is a node
+    /// that is not `distinct` and not debug information.
+    fn md_operands(&self, id: u64) -> Option<Vec<u64>> {
+        use crate::debug::LocalMd;
+        use crate::module::Metadata;
+        match self.bits.metadata(id) {
+            Some(Metadata::Node { distinct: false, operands }) => Some(operands.to_vec()),
+            Some(_) => None,
+            None => match self.local_md(id)? {
+                (LocalMd::Node { start, len }, md) => {
+                    Some(md.args.get(start as usize..)?.get(..len as usize)?.to_vec())
+                }
+                (LocalMd::EmptyTuple, _) => Some(Vec::new()),
+                _ => None,
+            },
+        }
+    }
+
     // ---- types ----
 
     fn shape(&self, ty: TypeId) -> (TypeId, Shape) {
@@ -1314,9 +1424,12 @@ impl Fx<'_, '_, '_> {
             match param {
                 TypeId::LABEL => return self.mistyped("a block where a value is expected"),
                 TypeId::METADATA => {
-                    o.next()?;
-                    metadata = true;
-                    self.s.vals.push(Value::NONE);
+                    // A metadata id, relative as values are; a string or a
+                    // node of strings is a metadata operand (WP-064).
+                    let id = self.absolute(o.next()?);
+                    let meta = self.metadata_arg(id)?;
+                    metadata |= meta.is_none();
+                    self.s.vals.push(meta.unwrap_or(Value::NONE));
                 }
                 _ => {
                     let arg = self.v(o, param)?;
@@ -1368,9 +1481,21 @@ impl Fx<'_, '_, '_> {
                 }
                 return Ok((ret, self.s.vals[0], false));
             }
+            if let Target::Sym(sym) = target
+                && let Ok(name) = std::str::from_utf8(self.module.symbol(sym).name())
+                && let Some(start) = hod_ir::lifetime_intrinsic(name)
+                && let Some(&ptr) = self.s.vals.last()
+            {
+                ir(self.at, self.b.lifetime_marker(start, ptr))?;
+            }
             return self.stand_in_call(kind, ret, normal);
         }
 
+        // Metadata operands are arguments of the intrinsics on hod's list
+        // that take them (`spec/ir.md` §5.5); for any other callee the
+        // call is not emitted.
+        let metadata = metadata
+            || (!matches!(info, CalleeInfo::Known(..)) && params.contains(&TypeId::METADATA));
         if metadata {
             let construct = match target {
                 Target::Sym(sym) => format!(

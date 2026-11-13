@@ -26,10 +26,11 @@ use hod_cg::{Options, RelocModel, Stress};
 
 const CALLS: &str = include_str!("data/neon/cases.txt");
 
-/// The calls whose results `llc` 19 computes differently from `llc` 22:
+/// The calls whose results `llc` 22 computes differently from `llc` 19:
 /// the 16-bit sum of `saddlv` of bytes, which 19 sign-extends to `i32`
-/// and 22 zero-extends (hod follows 22; `<arm_neon.h>` truncates it).
-const LLVM19_DIFFERS: &[&str] =
+/// and 22 zero-extends (hod sign-extends since WP-101, the signed sum;
+/// `<arm_neon.h>` truncates it).
+const LLVM22_DIFFERS: &[&str] =
     &["@llvm.aarch64.neon.saddlv.i32.v8i8(", "@llvm.aarch64.neon.saddlv.i32.v16i8("];
 
 /// What every case uses: `@fill` writes 32 words derived from the six
@@ -185,6 +186,7 @@ const DEFAULT: Options = Options {
     data_sections: false,
     stress: Stress { min_pool: false, far: false, displace: false },
     debug_compression: hod_obj::Compression::None,
+    split_dwarf: hod_dwarf::SplitDwarf::Off,
 };
 
 const MODES: [(&str, Options); 3] = [
@@ -265,7 +267,8 @@ fn cases_match_llc() {
     let Some(toolchain) = Toolchain::host(&dir) else { return };
     let driver = toolchain.compile_c(&dir, "driver", &c, &[]);
     let mut objects = Vec::new();
-    for major in [22, 19] {
+    // 19 first: the reference is the first build (`LLVM22_DIFFERS`).
+    for major in [19, 22] {
         let Some(llc) = hod_testutil::tool(&format!("llc-{major}")) else { continue };
         let input = dir.write(&format!("llc{major}.ll"), format!("{}{all}", ll_header(major)));
         let output = dir.join(format!("llc{major}.o"));
@@ -308,7 +311,7 @@ fn cases_match_llc() {
                 .zip(reference.lines())
                 .zip(&calls)
                 .filter(|((g, w), (_, what, _))| {
-                    g != w && !(name == "llc-19" && LLVM19_DIFFERS.iter().any(|d| what.contains(d)))
+                    g != w && !(name == "llc-22" && LLVM22_DIFFERS.iter().any(|d| what.contains(d)))
                 })
                 .map(|((g, w), (f, what, args))| format!("@{f} ({what}) {args:x?}: {g}, want {w}"))
                 .collect();
@@ -396,13 +399,13 @@ fn what_is_not_lowered_is_refused_by_name() {
     assert_refused(&cases);
 }
 
-/// The bfloat intrinsics stay refused by their names (their matrix rows
-/// are not supported).
+/// The bfloat intrinsics compile since WP-101 (`tests/tail3.rs` checks
+/// them against `llc`).
 #[test]
-fn bfloat_intrinsics_are_refused() {
+fn bfloat_intrinsics_compile() {
     let text = "declare <4 x float> @llvm.aarch64.neon.bfdot.v4f32.v8bf16(<4 x float>, <8 x bfloat>, <8 x bfloat>)\n\
                 define <4 x float> @f(<4 x float> %a, <8 x bfloat> %b, <8 x bfloat> %c) {\n  \
                 %r = call <4 x float> @llvm.aarch64.neon.bfdot.v4f32.v8bf16(<4 x float> %a, <8 x bfloat> %b, <8 x bfloat> %c)\n  \
                 ret <4 x float> %r\n}\n";
-    assert!(compile_ll(text).is_err());
+    assert!(compile_ll(text).is_ok());
 }

@@ -67,14 +67,10 @@ pub const DI_FIELD_NOTES: &[(&str, &str, DiMapping)] = notes! {
     "DISubprogram"."keyInstructions": (dropped KEY),
     "DISubprogram"."annotations": unsupported,
     "DISubprogram"."targetFuncName": unsupported,
-    "DICompileUnit"."splitDebugInlining": (dropped "chooses what the skeleton unit of split \
-        DWARF repeats; split DWARF itself is debug:DICompileUnit.splitDebugFilename"),
     "DICompileUnit"."debugInfoForProfiling": (dropped "asks for attributes sample profilers \
         use (linkage names on declarations, discriminators); a debugger reads none of them"),
     "DICompileUnit"."rangesBaseAddress": (dropped "an encoding preference for range lists; \
         every encoding describes the same ranges"),
-    "DICompileUnit"."splitDebugFilename": unsupported,
-    "DICompileUnit"."dwoId": unsupported,
     "DICompileUnit"."macros": unsupported,
     "DICompileUnit"."sourceLanguageName": unsupported,
     "DICompileUnit"."sourceLanguageVersion": unsupported,

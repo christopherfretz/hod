@@ -20,7 +20,7 @@ use crate::attrs::{CallConv, ParamAttrs};
 use crate::body::{
     BlockData, Body, Bundle, BundleData, CALL_CONVERGENT, CALL_NORETURN, CALL_NOUNWIND,
     CALL_RETURNS_TWICE, CallData, Callee, Clause, DbgDeclare, DbgRecordData, DbgRecordKind, Fixup,
-    Incoming, PadData, Place, Reserved, Slot, SlotVar, UNSET, UseFacts,
+    Incoming, LifetimeMarker, MetaData, PadData, Place, Reserved, Slot, SlotVar, UNSET, UseFacts,
 };
 use crate::debug::expr::ExprId;
 use crate::error::{IrErrorKind, IrResult, err};
@@ -33,7 +33,8 @@ use crate::intrinsic::Intrinsic;
 use crate::module::Module;
 use crate::types::TypeKind;
 use crate::value::{
-    RESERVED_BASE, SlotId, TAG_ARG, TAG_ASM, TAG_CONST, TAG_INST, TAG_SLOT, TAG_SYM, Value,
+    InstId, MetaId, RESERVED_BASE, SlotId, TAG_ARG, TAG_ASM, TAG_CONST, TAG_INST, TAG_META,
+    TAG_SLOT, TAG_SYM, Value,
 };
 
 /// Everything a call says besides its result type (§5.4, §5.7).
@@ -393,6 +394,66 @@ impl FunctionBuilder {
         }
         Ok(Value::from_parts(TAG_SLOT, slot.raw()))
     }
+    /// A metadata operand (§5.3) for an argument of an intrinsic call: the
+    /// node `!{!"s0", …}` of `strings` if `node`, else the string
+    /// `!"s0"`, which takes exactly one string.
+    ///
+    /// # Errors
+    /// `InvalidOperand` for a string that is not exactly one string,
+    /// `TableFull`.
+    pub fn metadata(&mut self, node: bool, strings: &[&str]) -> IrResult<Value> {
+        if !node && strings.len() != 1 {
+            return bad(
+                IrErrorKind::InvalidOperand,
+                format!("a metadata string is one string, not {}", strings.len()),
+            );
+        }
+        let bytes = strings.iter().map(|text| text.len()).sum::<usize>();
+        room(self.body.names.len(), bytes, "name bytes")?;
+        room(self.body.words.len(), 2 * strings.len(), "operand words")?;
+        room(self.body.metas.len(), 1, "metadata operands")?;
+        let id = MetaId::new(self.body.metas.len() as u32);
+        let value = Value::meta(id)?;
+        let first = self.body.words.len() as u32;
+        for text in strings {
+            self.body.words.extend([self.body.names.len() as u32, text.len() as u32]);
+            self.body.names.push_str(text);
+        }
+        self.body.metas.push(MetaData { node, first, count: strings.len() as u32 });
+        Ok(value)
+    }
+
+    /// Marks `slot` as carrying `!coro.outside.frame` (§5.2): the front
+    /// end promises that the object never lives across a coroutine's
+    /// suspend.
+    ///
+    /// # Errors
+    /// `InvalidOperand` if `slot` is not a slot of this builder.
+    pub fn set_slot_outside_frame(&mut self, slot: SlotId) -> IrResult<()> {
+        match self.body.slots.get_mut(slot.index()) {
+            Some(data) => {
+                data.set_outside_frame();
+                Ok(())
+            }
+            None => bad(IrErrorKind::InvalidOperand, format!("{slot:?} does not exist")),
+        }
+    }
+
+    /// A lifetime marker (§5.2) before the next instruction appended: a
+    /// call of `llvm.lifetime.start` (`start`) or `llvm.lifetime.end` on
+    /// `ptr`, which may be a reserved value. The marker is not a use of
+    /// `ptr` and generates no code.
+    ///
+    /// # Errors
+    /// `BadBlock` without an open block; `InvalidOperand` if `ptr` does
+    /// not exist in this body.
+    pub fn lifetime_marker(&mut self, start: bool, ptr: Value) -> IrResult<()> {
+        let before = self.open()?;
+        self.check(ptr)?;
+        room(self.body.markers.len(), 1, "lifetime markers")?;
+        self.body.markers.push(LifetimeMarker { before: InstId::new(before), ptr, start });
+        Ok(())
+    }
 
     /// Records that the source variable `var`, declared at `loc`, lives in
     /// `slot` for the whole function (§5.2):
@@ -642,6 +703,7 @@ impl FunctionBuilder {
             TAG_ARG => "names no parameter",
             TAG_SLOT => "names no stack slot",
             TAG_ASM => "is inline assembly, which can only be called",
+            TAG_META => "is metadata, which can only be an argument of an intrinsic call",
             _ => "is no value",
         };
         err(IrErrorKind::InvalidOperand, format!("operand {value:?} {why}"))
@@ -1121,7 +1183,10 @@ impl FunctionBuilder {
         }
         let mut values = 1 + desc.args.len();
         for &arg in desc.args {
-            self.check(arg)?;
+            let meta = arg.tag() == TAG_META && matches!(desc.callee, Callee::Intrinsic(_));
+            if !(meta && (arg.payload() as usize) < self.body.metas.len()) {
+                self.check(arg)?;
+            }
         }
         for bundle in desc.bundles {
             values += bundle.inputs.len();
@@ -1556,6 +1621,9 @@ fn name_debug_values(body: &mut Body) {
                 *value = reserved[(value.payload() - RESERVED_BASE) as usize].target;
             }
         };
+        for marker in &mut body.markers {
+            resolve(&mut marker.ptr);
+        }
         for record in &body.dbg_records {
             let count =
                 usize::from(record.count) + usize::from(record.kind == DbgRecordKind::Assign);

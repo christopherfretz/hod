@@ -545,7 +545,8 @@ fn output_is_reused() {
     let mut types = table();
     let big = Case::of(&of(40, &I128)).ret(Ty::Int(512)).lower(&mut types);
     let small = Case::of(&[I64]).ret(I64).lower(&mut types);
-    let bad = Case::of(&[I64, arr(I128, 2)]).ret(I64).lower(&mut types);
+    // WP-101: `[2 x i128]` after one `i64` passes; after five it does not.
+    let bad = cat(&[&of(5, &I64), &[arr(I128, 2)]]).ret(I64).lower(&mut types);
     let mut out = Assignment::default();
     assign(&types, &big.sig(), &mut out).expect("supported");
     let (args, ret) = (out.args.as_ptr(), out.ret.as_ptr());

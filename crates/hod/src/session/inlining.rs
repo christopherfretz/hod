@@ -42,7 +42,8 @@ use crate::{CompileError, Construct, Unsupported};
 /// reported in the function whose body has it.
 pub mod reason {
     /// `llvm.frameaddress`, `llvm.sponentry`, `llvm.localaddress`,
-    /// `llvm.eh.dwarf.cfa`: inlined, the frame is the caller's.
+    /// `llvm.eh.dwarf.cfa`, a named-register intrinsic of a frame
+    /// register: inlined, the frame is the caller's.
     pub const FRAME_ADDRESS: &str = "alwaysinline:frame-address";
     /// `llvm.returnaddress`, `llvm.addressofreturnaddress`: inlined, the
     /// return address is the caller's.
@@ -189,6 +190,17 @@ pub(crate) fn sensitivity(module: &Module, body: &Body) -> Option<&'static str> 
                 | "llvm.eh.dwarf.cfa" => return Some(reason::FRAME_ADDRESS),
                 "llvm.returnaddress" | "llvm.addressofreturnaddress" => {
                     return Some(reason::RETURN_ADDRESS);
+                }
+                // WP-064: a named register that is a frame register
+                // (`sp`, `x29`, `x30`) is the caller's once inlined.
+                "llvm.read_register" | "llvm.read_volatile_register" | "llvm.write_register"
+                    if site.args().first().and_then(|arg| arg.as_meta()).is_some_and(|meta| {
+                        body.metadata(meta).is_none_or(|meta| {
+                            meta.strings().any(|name| names_frame_register(name.as_bytes()))
+                        })
+                    }) =>
+                {
+                    return Some(reason::FRAME_ADDRESS);
                 }
                 "llvm.stacksave" if stacksave_escapes(body, body.inst(site.inst()).result()) => {
                     return Some(reason::STACKSAVE);

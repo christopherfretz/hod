@@ -4,8 +4,6 @@
 # corpus: 6250 entries, MANIFEST.tsv sha256 37254c252964563e22cfc7766ea576846cd31f7d107ef1f8e92fd4c4259b29c3
 kiln/llvm19/conformance/dcl.attr/annotate-run-O2.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
 kiln/llvm19/conformance/dcl.attr/clang-attr-valid-forms-run.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
-kiln/llvm19/conformance/target.acle/exclusive-sysreg-run.cpp.ll	parser-unsupported	metadata-arg:llvm.read_volatile_register.i64
 kiln/llvm22/conformance/dcl.attr/annotate-run-O2.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
 kiln/llvm22/conformance/dcl.attr/clang-attr-valid-forms-run.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
 kiln/llvm22/conformance/ext.multiversion/multiversion-run.cpp.ll	parser-unsupported	attr:fmv-features
-kiln/llvm22/conformance/target.acle/exclusive-sysreg-run.cpp.ll	parser-unsupported	metadata-arg:llvm.read_volatile_register.i64

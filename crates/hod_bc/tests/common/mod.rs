@@ -374,23 +374,8 @@ pub fn body_dump(module: &Module, numbered: &[SymId], body: &hod_ir::Body) -> St
     for block in body.blocks() {
         let _ = writeln!(out, "{:?}:", block.id());
         for inst in block.insts() {
-            // A switch's Debug prints its case constants as raw ids:
-            // write them as constants.
-            let kind = match inst.kind() {
-                hod_ir::InstKind::Switch(switch) => {
-                    let cases: Vec<String> = switch
-                        .cases()
-                        .map(|(c, block)| format!("c{} -> {block:?}", c.raw()))
-                        .collect();
-                    format!(
-                        "Switch {{ cond: {:?}, default: {:?}, cases: [{}] }}",
-                        switch.cond,
-                        switch.default,
-                        cases.join(", ")
-                    )
-                }
-                kind => format!("{kind:?}"),
-            };
+            // A switch's Debug writes its cases as typed ids (WP-064).
+            let kind = format!("{:?}", inst.kind());
             while let Some(record) = records.peek().filter(|r| r.before == inst.id()) {
                 let values = format!("{:?}", record.values);
                 let _ = writeln!(

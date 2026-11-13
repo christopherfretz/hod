@@ -53,7 +53,7 @@ instructions and types, this design relies on `classify` rejecting:
   difference, a landing-pad clause) (§3);
 - a `blockaddress` in a body that names a block of another function
   (§9.2);
-- `naked` functions (§5.4) and `callbr`;
+- `naked` functions (§5.4);
 - a `musttail` call whose stack-argument area is larger than the
   caller's own, or whose calling convention has the callee pop its
   arguments (§7.1).
@@ -870,18 +870,23 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
   (clang expands it inline). A `musttail` call in a variadic function
   reloads the unnamed argument registers from the save areas first, so
   the callee receives them as this function did; the stack area beyond
-  the named arguments is never written.
+  the named arguments is never written. Variable arguments of the call
+  before the `...`, which `hod_ir`'s verifier accepts since WP-064, are
+  `musttail:stack-args-unknown`: `TargetStackArgs::of_call` does not
+  type a call's variable arguments (`hod_cg/src/abi.rs`). `llc` places
+  them as any argument, over the forwarded registers they take.
 - **Landing pads** are `{ ptr, i32 }` only: `x0`/`x1` stored to the
   pad's home; clauses are `catch` of a symbol or `null` and `filter` of
   such arrays. `resume` calls `_Unwind_Resume` with the exception
   pointer, then traps.
-- **Refused by name**: `a64:call` (`callbr`), `a64:call-inline-asm`,
-  `a64:call-bundle`, `a64:va-intrinsic`, `a64:va_arg`, `a64:landingpad`,
+- **Refused by name**: `a64:call-bundle`, `a64:va-intrinsic`, `a64:va_arg`, `a64:landingpad`,
   `a64:landingpad-clause`, `a64:resume`. `a64:variadic-definition` is
   no longer produced, nor, since WP-084, `a64:invoke-odd-int-result`
   (an `invoke`'s odd leaves are cleared by `FnCx::call`); WP-069 removed `a64:call-wide-int-extension` and
   `a64:call-narrow-ext-stack-arg` (`abi-a64.md` §7.1) and
-  `a64:call-mismatched-declaration` (§7.1 here).
+  `a64:call-mismatched-declaration` (§7.1 here). Since WP-103 every
+  call of inline assembly, `callbr` included, goes to §5.5.3, so
+  `a64:call` (`callbr`) and `a64:call-inline-asm` are no longer produced.
 - **Tests** (`tests/call.rs`): random signatures (`tests/common/
   callgen.rs`) linking gcc-compiled C with modules compiled by hod and
   `llc` in every pairing, stressed, PIC with a shared object; the call
@@ -1014,8 +1019,42 @@ them there, and has the saturating arithmetic, `scmp`/`ucmp`, the
 - **`clear_cache`** calls `__clear_cache`. **`readcyclecounter`** is
   `mrs rd, CNTVCT_EL0` since WP-084 (`a64:readcyclecounter` is no longer
   produced).
+- **Named registers** (`read_register`, `read_volatile_register`,
+  `write_register`) are `hod_a64::named_reg`'s since WP-064 ("Named
+  registers" below).
 - `sshl.sat`/`ushl.sat` are lowered by WP-084 (below). Vector forms are `a64:intrinsic-vector`,
   `bfloat` ones `a64:intrinsic-bfloat`.
+
+#### Named registers (WP-064)
+
+`hod_a64::named_reg` lowers `llvm.read_register`,
+`llvm.read_volatile_register` and `llvm.write_register` of an `i64`
+whose metadata operand (`spec/ir.md` §5.3) is a node of one string, as
+`llc -O0 -global-isel=0 -fast-isel=0` of LLVM 19 and 22 does
+(`tests/named_reg.rs` compares 39 accesses with both, and runs 16):
+
+- `sp`, `x29`, `x30` (exactly so spelled; `llc` refuses `SP`, `fp`,
+  `lr`) read as `mov xd, sp` (`add xd, sp, #0`) or `mov xd, x29`/`x30`;
+  written, they are `a64:write-register-gpr` (the frame `llc` and hod
+  address slots through would break). The facade declines a body that
+  reads one of them where it may still be always-inlined
+  (`alwaysinline:frame-address`): inlined, it reads the caller's frame.
+- A system register named in `SYSREGS` (any case, as `llc`; the timer,
+  `CTR_EL0`, `DCZID_EL0`, `DAIF`, `NZCV`, `FPCR`, `FPSR`, `TPIDR_EL0`,
+  `TPIDRRO_EL0`, `MIDR_EL1`, `MPIDR_EL1`, `REVIDR_EL1`), or as
+  `op0:op1:CRn:CRm:op2` in decimal with `op0` 2 or 3 and every field in
+  range, reads with `mrs` and writes with `msr`. A write of a register
+  the table marks read-only is `a64:named-register`, as `llc` 22 refuses
+  it (`llc` 19 aborts).
+- Anything else is `a64:named-register`: the general registers `llc`
+  takes only when reserved (`-ffixed-xN`, which hod does not model),
+  `x0` and `xzr` (`llc` reads nothing), the `w` names (`llc` misreads
+  them as `NZCV`), a system register outside the table, a numeric form
+  out of range (`llc` encodes garbage). Another type than `i64` is
+  `a64:named-register-width` (`llc` emits an unencodable `mrs w0`).
+
+The interpreter refuses the three by name (`intrinsic:<name>`): what a
+register holds is the machine's.
 
 #### Assembly that needs no assembler (WP-075)
 
@@ -1123,15 +1162,14 @@ section.
 - **Calls.** `Fpr` vectors are passed and returned as `abi::assign`
   places them (`v0`..`v7`, then the stack; the AAPCS64 short-vector
   rules, checked against `llc` by the ABI grid and here against gcc's
-  `vector_size`). A `Mem` vector anywhere in a signature (parameter,
-  result, or a leaf of an aggregate one) is `a64:vector-call` until
-  WP-082 (the hook is the first line of `A64::assign`).
+  `vector_size`). A `Mem` vector in a signature (parameter, result, or
+  a leaf of an aggregate one) is WP-082's (below).
 - **Refused, by name** (`hod_a64::vector`): `a64:vector-mask` (a lane
   operation on `<N x i1>`, `N ≤ 64`: WP-081), `a64:mask-wide` (more
   than 64 `i1`), `a64:vector-odd-element` (integer lanes of a width other
   than 8, 16, 32, 64 and at most 64), `a64:vector-wide-element`
   (`i128` or `fp128` lanes), `a64:vector-length` (more than 256 lanes),
-  `a64:vector-index`, `a64:vector-call`; `getelementptr` over a vector
+  `a64:vector-index`; `getelementptr` over a vector
   of pointers stays `a64:ptradd-vector`, element-wise arithmetic
   `a64:vector-op` / `a64:mem-vector` (WP-080). `a64:vector-bfloat` and
   `a64:intrinsic-target` are defined for WP-080 and WP-083.
@@ -1188,10 +1226,11 @@ section.
   already lowered (WP-039/040).
 - **Refused, by name.** The shapes `vector::lanes` refuses keep its
   names (`a64:vector-length`, `a64:vector-wide-element` for `i128` and
-  `fp128` lanes, `a64:vector-odd-element`); a vector of `bfloat` is
-  `a64:vector-bfloat`. Lanes of `i1` are WP-081's: a binary operation or
-  a cast of one stays `a64:mem-vector`, an intrinsic of one
-  `a64:intrinsic-vector`, as before. `frexp` and `is.fpclass` of a vector
+  `fp128` lanes, `a64:vector-odd-element`; the arithmetic, `fcmp` and
+  casts of `i128`, `fp128` and `bfloat` lanes are WP-101's, §5.5.1); any
+  other lane operation on `bfloat` is `a64:vector-bfloat`. Lanes of `i1` are WP-081's (below), which lowers
+  their binary operations and casts; an intrinsic of one stays
+  `a64:intrinsic-vector`. `frexp` and `is.fpclass` of a vector
   stay `a64:intrinsic-vector`.
 - **Cost.** The code is a constant number of bytes per lane (no lane
   shares work with another), emitted without allocating; see the landed
@@ -1253,11 +1292,10 @@ part of this section.
   that LLVM leaves poison takes what the bit rule gives.
 - **Refused, by name.** A lane operation on a mask of more than 64 lanes
   (it stays of class `Mem`): `a64:mask-wide`. A mask crossing a call or a
-  return (argument, result, or leaf of an aggregate one):
-  `a64:vector-call` (WP-082: no ABI is invented here). An intrinsic of
+  return is WP-082's (below). An intrinsic of
   `i1` lanes (`llvm.umax.v4i1`): the intrinsic group's
-  `a64:intrinsic-vector`. `fcmp` of `bfloat` lanes:
-  `a64:vector-bfloat`. A reduction whose operand list is not the
+  `a64:intrinsic-vector`. (`fcmp` of `bfloat` lanes was
+  `a64:vector-bfloat` until WP-101.) A reduction whose operand list is not the
   intrinsic's: `a64:vector-reduce`. `reduce.fmaximum`/`fminimum` stay
   the intrinsic group's refusal.
 - **Known `llc` defects** (not hod's, not chased; the interpreter and
@@ -1266,10 +1304,8 @@ part of this section.
   crashes on `llvm.vector.insert` of non-power-of-two lengths; stores of
   `<4 x i3>` are wrong. None of them is on a mask path tested here.
 - **Hooks.** `target::vector_class` (a vector of `i1` of at most 64
-  lanes is `Gpr`), the first line of `A64::lower` (`mask::lower`), the
-  constant arm of `A64::materialize` (`mask::materialize`), and
-  `vector::has_mem_vector` (any vector of `i1` in a signature is
-  `a64:vector-call`).
+  lanes is `Gpr`), the first line of `A64::lower` (`mask::lower`) and
+  the constant arm of `A64::materialize` (`mask::materialize`).
 - **Tests**: `crates/hod_a64/tests/mask.rs` (every construct × lane type
   × lane count against a Rust model, `hod_interp` on value-form twins,
   `llc` 22 and 19, under bfd, lld and mold, plain and stressed; masks
@@ -1281,9 +1317,9 @@ part of this section.
 Every vector `abi::assign` places crosses a call and a return, in both
 directions, exactly as `llc -O0` passes it (`spec/abi-a64.md` §4.3);
 what `llc` passes differently from any `Part` hod can say is refused by
-name, never approximated. This supersedes the `a64:vector-call` lines
-of WP-079 and WP-081 above: `vector::check_signature` is no longer
-called, and `a64:vector-call` is no longer reported.
+name, never approximated. (WP-079 and WP-081 refused these as
+`a64:vector-call`; the name, and the check that reported it, are gone,
+WP-101.)
 
 - **Bytes.** A `Mem` vector whose pieces are bytes of its image
   (`<3 x float>`, `<8 x i32>`, `<3 x i64>`, `<5 x i32>`, `<3 x half>`,
@@ -1316,8 +1352,7 @@ called, and `a64:vector-call` is no longer reported.
   `call:musttail-ret-memory`, and `va_arg` `a64:va_arg`. x86-64 passes
   no `Lanes` part: its `Target` keeps the default hooks
   (`call:part-lanes`), and its `assign` is unchanged.
-- **Hooks.** `A64::assign` (no `check_signature` before
-  `abi::assign`), `A64::lanes_out` and `A64::lanes_in` (to `vcall`), and
+- **Hooks.** `A64::assign` (`abi::assign` directly), `A64::lanes_out` and `A64::lanes_in` (to `vcall`), and
   the memory-return arm of `term::ret` (`vcall::ret_image`).
 - **Tests**: `crates/hod_a64/tests/vcall.rs`: hod (plain and stressed)
   callers against `llc` 22 and 19 callees and the reverse, under bfd,
@@ -1640,8 +1675,11 @@ WP-095 below).
   are put into `v30`, `v31`, then temporaries; an `i32`/`i64` operand is
   moved in with `fmov`. A general result is moved out with `fmov`,
   zero-extending: also the signed reductions of bytes and halfwords
-  (`saddv`, `smaxv`, `sminv`, `saddlv`), as `llc` 22 (`llc` 19
-  sign-extends `saddlv`'s; `<arm_neon.h>` truncates either).
+  (`saddv`, `smaxv`, `sminv`), as `llc` does. `saddlv` of bytes is the
+  exception (WP-101, `tail3::saddlv`): its 16-bit signed sum is
+  sign-extended to `i32` (`smov w, v.h[0]`), as `llc` 19 does; `llc` 22
+  zero-extends it, which is a different `i32` for a negative sum
+  (`<arm_neon.h>` truncates either to 16 bits).
 - **Consecutive registers.** `tbl`/`tbx` tables and the structure loads
   and stores use `v24`..`v27`, taken (`take_reg`) before the deferred
   operands. A structure result (`ld2`.. `ld4`, `ld2lane`.., `ld2r`..) is
@@ -1742,6 +1780,7 @@ that refused it before (WP-084's "stays refused" list is settled here).
     an operand): `spec/ir.md` §4.2 keeps it an `Expr`; no ELF data
     relocation is `-S`, and as an operand it needs a normal form of its
     own and a lowering (`neg` of the address). One corpus module.
+    (WP-101 gives it both, below.)
   - `metadata-arg:llvm.read_volatile_register.i64`: the register name is
     a metadata operand, which the IR does not carry for intrinsics
     (BACKLOG WP-064) and `hod_ll`'s body reader would have to read.
@@ -1755,6 +1794,100 @@ that refused it before (WP-084's "stays refused" list is settled here).
     `debug:dbg-value`.
   - `cc:preserve_allcc`, `cc:79` (`win64cc`) and `cc:aarch64_vector_pcs`
     (WP-082), which the one `preserve_mostcc` corpus module also uses.
+    (`preserve_allcc` since WP-101, below.)
+
+#### The short tail, third part (WP-101)
+
+`src/tail3.rs`, reached by one call at the top of `A64Target::lower`
+(`target.rs`) that answers only for the vector forms below, and by one
+call each from the places named with the other items.
+
+- **Vectors of `i128` and `fp128` lanes** ("wide lanes"). `<1 x i128>`
+  and `<1 x fp128>` are class `Fpr` (one `Q` register); every longer one
+  is `Mem`, lane `i` at byte `16·i`. A lowering spills an `Fpr` operand
+  to a scratch image (`vector::scratch`) and works on memory images;
+  an `Fpr` result is built in the last scratch image and loaded. Per
+  lane, as `llc` scalarizes them:
+  - `add`, `sub` (`adds`/`adc`, `subs`/`sbc`), `and`, `or`, `xor` limb
+    by limb; `mul` as the scalar `i128` multiply (`umulh`, `madd`);
+  - `icmp`: the low limbs compared, then `ccmp` of the high limbs for
+    `eq`/`ne` or `sbcs xzr` for an ordering; the result is a mask
+    (`<N x i1>`, at most 64 lanes, bit-packed in a `Gpr`; more is
+    `a64:mask-wide`);
+  - `fadd`, `fsub`, `fmul`, `fdiv`, `frem`, `fcmp` of `fp128` lanes are
+    the runtime calls of the scalar (`__addtf3` .. `__divtf3`, `fmodl`,
+    `__eqtf2`, `__lttf2`, `__letf2`, `__unordtf2`, with
+    `float::quad_flags`' table); the mask of `fcmp` is collected in a
+    frame slot across the calls; `fneg` flips bit 127;
+  - `select` with a mask condition, `tst` and `csel` per limb;
+  - `sext`/`zext` of a mask, of `i8`..`i64` lanes to `i128` lanes,
+    `trunc` of `i128` lanes to a mask or to `i8`..`i64` lanes;
+  - `insertelement`, `extractelement` (constant or variable index,
+    wrapped as `vector::index` does) and `shufflevector` (an undefined
+    lane is zero).
+  Refused, by name: shifts, `udiv`, `sdiv`, `urem`, `srem` of `i128`
+  lanes (`a64:vector-i128-op`: `llc` calls `__ashlti3`.. per lane; no
+  corpus module); any other cast with a wide side
+  (`a64:vector-wide-cast`: `sitofp`, `fpext`, `fptrunc`, bitcasts
+  between floating-point and integer lanes); intrinsics on wide lanes
+  stay `a64:vector-wide-element`.
+- **Wide lanes across calls** (`abi.rs`, `spec/abi-a64.md` §3.3, §4.3):
+  each `i128` element travels as an `i128` (two general registers under
+  the even-register rule, or a 16-aligned stack slot), as both LLVM
+  selectors in 19 and 22 pass it; an `fp128` element in a `Q` register.
+  A lone `<1 x i128>` argument or result stays `abi:vector-element`: it
+  is a `Q`-register value in two general registers, and the call
+  sequence moves no value between classes (§7.2). In a structure or an
+  array it is memory and passes (`std::experimental::simd<__int128>`
+  passes `[1 x <1 x i128>] alignstack(16)` and returns `{<1 x i128>}`).
+- **Arrays of `bfloat`** (HFAs and `[n x bfloat]`, `spec/abi-a64.md`
+  §3.3): passed as a block of `H` registers when `NSRN + n <= 8`, where
+  `llc` 22 (a block) and `llc` 19 (piece by piece) place them alike;
+  otherwise `abi:bfloat-array`, since the two versions put the stack
+  pieces in different places.
+- **Vectors of `bfloat` without `+bf16`.** Load, store, passing, lane
+  insertion, extraction and shuffles are the 16-bit-lane forms of
+  `vector.rs` (a 64- or 128-bit power-of-two count is `Fpr`, any other
+  `Mem`). Per lane, as `llc` scalarizes them: `fadd`, `fsub`, `fmul`,
+  `fdiv` widen both lanes to `float` (a 16-bit shift), operate in `S`,
+  and narrow with round-to-nearest-even as the scalar does
+  (`tail2::narrow`); `frem` calls `fmodf`; `fneg` flips bit 15; `fcmp`
+  compares in `S` and collects the mask in a `Gpr`; `fpext` to `float` or
+  `double`, `fptrunc` from `float`, or from `double` through `fcvtxn`
+  (round to odd) then the narrowing. Any other cast is
+  `a64:vector-bfloat-cast`.
+  `llc -O0` of LLVM 19 and 22 miscompiles the vector form: its rounding
+  takes the rounding bit from the operand's image rather than the
+  result's (`ushr v1.4s, v0.4s, #16` of the loaded operand), so its
+  vector results differ from its own scalar ones. hod follows the
+  scalar, and its tests compare with `llc`'s build of the scalarized
+  program.
+- **The `bfloat` NEON intrinsics** `bfcvt`, `bfcvtn`, `bfcvtn2`, `bfdot`,
+  `bfmlalb`, `bfmlalt` and `bfmmla` (`intrinsic.rs`, one arm): the
+  instruction itself (FEAT_BF16), as `llc` emits for a function with
+  `+bf16`; the accumulator operand is the result register. Another
+  signature is `a64:intrinsic-target`.
+- **A number minus an address** as an operand (`operand:neg-addr`,
+  `spec/ir.md` §4.2; `common::materialize_gpr_const` hands an `Expr` to
+  `tail3::neg_addr`): the symbol's address with `offset - addend` added,
+  by the symbol access of §7.4, then `neg`. Data and aggregate operands
+  are `init:neg-addr`.
+- **`preserve_allcc`**, as caller and callee, done as `preserve_mostcc`
+  above (`tail3::assign_preserve_all`, `save_all`, `all_rows`,
+  `restore_all`, one hook each in `target.rs` and `frame.rs`): assigned
+  as `ccc`; a callee also saves `x9`..`x15` and the whole of `q8`..`q31`
+  (LLVM's `CSR_AArch64_RT_AllRegs`, the same in 19 and 22; `x8`,
+  `x16`..`x18` and `q0`..`q7` are not preserved) in 448 bytes after the
+  frame record (`x9` lowest, then `q8` lowest, `stp` pairs), with one
+  `DW_CFA_offset` per register after the stores (a vector register's
+  DWARF number is 64 plus its index, as `llc`'s `.cfi_offset b8`), and
+  reloads them with `DW_CFA_restore` in every exit sequence. All are
+  saved, as `llc -O0` saves them in a function with a call.
+- **`saddlv` of bytes** (`llvm.aarch64.neon.saddlv.i32.v8i8`/`.v16i8`,
+  `tail3::saddlv` from `intrinsic.rs`): `saddlv h30`, then `smov w,
+  v30.h[0]`, the sum sign-extended, as `llc` 19 (see "Operands" in the
+  NEON section; `llc` 22 zero-extends). Every other `saddlv` signature
+  is `neon`'s.
 
 #### 5.5.2 Target features (WP-043)
 
@@ -1802,6 +1935,108 @@ reports it as the refusal's detail (`spec/cli.md` "The back half").
 Tests: `features.rs` (`what_compilers_write_is_accepted`,
 `contract_features_are_refused_by_name`, `unknown_features_are_refused`),
 `crates/hod/tests/back.rs` `target_features`.
+
+#### 5.5.3 Inline assembly with instructions (WP-103)
+
+`hod_a64::inline_asm::call` lowers every `call`, `invoke` and `callbr`
+of inline assembly (`call.rs` sends each one there). A template that is
+empty goes to "Assembly that needs no assembler (WP-075)" first; what
+that module refuses by its own model (an output it does not take, `Q`,
+two outputs, a struct result) falls through to the sequence below, which
+handles any template. The template is substituted and assembled by
+`hod_asm` (`spec/asm.md` §4, §5) **before** anything is emitted, so a
+template that refuses leaves no trace; the words written are exactly
+the words `hod_asm` encoded.
+
+**Operands.** Constraints are read as `spec/asm.md` §6 lists. Of several
+alternatives (`r|m`), the one of LLVM's weights, as in WP-075. Within
+the chosen alternative an operand is, in order: its explicit register
+(`{x0}`, `{w3}`, `{d8}`, `{v1}`); its tied output's place (a digit, or
+`+`); an immediate (`i`, `n`, `I`..`N`) for a constant integer, a
+symbol (`i`) for a symbol's address; memory (`m`, `Q`, `o`) when the
+alternative has it and the operand is no tied output; else a register,
+general for `r` and integer or pointer `X`, vector for `w`, `x`
+(`v0`..`v15`), `y` (`v0`..`v7`) and floating-point `X`. A flag output
+`={@cc<cond>}` is no register: it is read after the template. A label
+operand (`!i`, `callbr` only) prints as a local name the sequence
+binds.
+
+**Registers.** Every operand gets a register of its own, distinct from
+every other operand's and every clobber, except a tied input, which
+shares its output's (giving an output its own register is always a
+valid choice of what `llc` might share). General registers are chosen
+from `x9`..`x15`, then `x0`..`x8`; vector registers from `v16`..`v29`,
+then `v0`..`v7`. Refused: `sp`, `x29`/`fp` as an operand or clobber
+(`a64:inline-asm-frame-register`: the frame is addressed from them), and
+`x16`, `x17`, `v30`, `v31` as an operand (`a64:inline-asm-scratch-register`:
+the sequence uses them). The clobbers `~{x16}`, `~{x17}`, `~{x18}`,
+`~{v30}`, `~{v31}` are accepted: no value of hod's lives in them across
+the template (hod never allocates `x18`).
+
+**The sequence.**
+
+1. Deferred operands are emitted (as for any call). Every input, and the
+   pointer of every indirect or memory operand, is evaluated and stored
+   to a 16-byte frame slot (one per distinct value); every direct
+   output gets a slot.
+2. Every register value is displaced (§4.4: the template is a call for
+   the location policy); every register the template may write
+   (operands, clobbers) is taken. Those among `x19`..`x28` and
+   `v8`..`v15` (their low 64 bits, AAPCS64) are saved to slots: a
+   template may clobber them and the function's own saves do not cover
+   them. `x30` is always free across the template (the frame record
+   holds the return address), so `~{lr}` and `~{x30}` need nothing;
+   `llc` ignores `~{x30}`, hod honours both.
+3. Inputs are loaded into their registers, vector ones first; an
+   integer narrower than 64 bits is zero-extended (`i1` included);
+   a memory operand's address is loaded into its register.
+4. The template's words; each symbol reference becomes a relocation of
+   its kind (`CALL26`, `JUMP26`, `CONDBR19`, `TSTBR14`, `LD_PREL_LO19`,
+   `ADR_PREL_LO21`) against the module's symbol.
+5. Register outputs are stored to their slots, or for an indirect
+   output (`=*r`) through its pointer, its `elementtype`'s size; each
+   flag output is `cset` of its condition and stored; the saved
+   callee-saved registers are reloaded.
+6. The result is read from the slots: one scalar, or each field of the
+   struct of several outputs at its offset.
+
+**Flags.** `sideeffect` and `alignstack` change nothing (hod moves no
+instruction across the template, and `sp` is always 16-byte aligned at
+it). `inteldialect` with a non-empty template is `asm:dialect`.
+`unwind` on an `invoke` of a non-empty template is
+`a64:inline-asm-unwind` (no call site is recorded for the template's
+words); an `invoke` of assembly that does not unwind continues at its
+normal destination.
+
+**`callbr`** (asm goto): the normal path stores its phis and branches to
+the normal destination; then, for each indirect destination, a
+trampoline the template's branches to `${N:l}` are fixed up to: it
+reloads the callee-saved registers, stores that edge's phis and branches
+to the destination. A `callbr` with an output (which would be defined
+on every path) is `a64:inline-asm-form`, as is an operand bundle on any
+inline-assembly call.
+
+**Refused by name**, besides `spec/asm.md` §8:
+`a64:inline-asm-frame-register`, `a64:inline-asm-scratch-register`,
+`a64:inline-asm-operand-type` (an aggregate, an integer wider than 64
+bits, a vector wider than 16 bytes, more than 8 bytes in a general
+register), `a64:inline-asm-operands` (more than 16 operands, 4
+alternatives, or the registers of a class), `a64:inline-asm-unwind`,
+`a64:inline-asm-form`; `asm:constraint/count` when the constraints do
+not match the call's arguments, result or labels; `asm:symbol` for a
+template reference to a name the module does not have.
+
+**Tests** (`tests/inline_asm.rs`, seeds in `tests/data/inline_asm/`):
+32 functions (syscalls through `svc`, `mrs`/`msr` of `tpidr_el0`,
+`cntvct_el0` and `fpcr`, an exclusive-monitor loop, explicit registers,
+tied, memory and `rm` operands, clobbers of registers hod uses and of
+callee-saved ones, flag outputs, immediates with modifiers, two
+outputs, an indirect output, a `bl` from the template, variants and
+`${:uid}`, local labels, `asm goto` with phis, `invoke`) built by hod
+(plain, `Stress::ALL`, far) and by `llc` 22 and 19, linked with a C
+driver under bfd, lld and mold, dynamic and static; the template's
+words compared with `llvm-mc`'s; the refusals; features from
+`target-features`.
 
 ### 5.6 x86-64 (planned)
 
@@ -2441,10 +2676,11 @@ the block's offset as addend, as LLVM emits it. It must not be against the
 function's own symbol: that symbol may be preemptible, and the table
 would then point into whatever definition the dynamic linker chose. A
 `blockaddress` in code is formed PC-relative by the function itself
-(§6.3). (`hod_ir` has no address-taken marker on blocks; until it does,
-a function without an `IndirectBr` has no `block_offsets`; what a
-`blockaddress` in data of one of its blocks refers to is an open
-question, §13.)
+(§6.3). (`hod_ir` marks address-taken blocks since WP-064,
+`ConstPool::is_address_taken`; `hod_cg` does not use the mark yet, so
+a function without an `IndirectBr` has no `block_offsets` and a
+`blockaddress` in data of one of its blocks is
+`init:blockaddress-unplaced`, §13.)
 
 ### 9.7 Merge and module emission
 
@@ -2741,9 +2977,11 @@ pub enum CgError {
 - (Closed by WP-069.) A direct call's attributes: §7.1, "Effective
   attributes", measured against `llc` 19 and 22.
 - Address-taken blocks without an `indirectbr` in their function (§9.6):
-  `hod_ir` has no marker, so `block_offsets` is not recorded for them.
-  Either `hod_ir` marks address-taken blocks, or `hod_cg` scans the
-  module's constants for `blockaddress`es of each function.
+  `block_offsets` is not recorded for them. `hod_ir` marks them since
+  WP-064 (`ConstPool::has_address_taken_block`, `is_address_taken`);
+  what remains is `hod_cg`'s `mark_reachable` recording offsets for such
+  a function, and binding only its unreachable address-taken blocks to
+  the trap, measured against `llc`.
 
 - Stack protector attributes (`ssp`, `sspstrong`, `sspreq`): accept and
   ignore (hod is a debug backend; the IR's meaning is unchanged) or

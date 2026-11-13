@@ -474,7 +474,11 @@ the difference) and identical for code generation: any value, here zero.
   denotes an address: a symbol, `getelementptr` constant expressions over
   it (folded with §3 layout), and the pointer casts LLVM still has as
   expressions, in any nesting.
-- `BlockAddr { function, block }`.
+- `BlockAddr { function, block }`. The pool keeps a list of them as
+  they are interned, which is the address-taken mark on blocks (WP-064):
+  `ConstPool::block_addresses()` in id order, `is_address_taken(func,
+  block)`, `has_address_taken_block(func)`. A block is address-taken if
+  any `blockaddress` of it was interned, used or not.
 - `SymDiff { ty, a, b, addend, plt }`: `a - b + addend` as a value of
   integer type `ty`. The normal form of `trunc (sub (ptrtoint a),
   (ptrtoint b))` and its variants, used by relative tables. `plt` says
@@ -496,12 +500,23 @@ a number, and integer arithmetic on numbers. Everything else stays `Expr`.
 - An addend is reduced to the signed range of the field it will be
   written to, so that equal values are one constant. LLVM keeps the
   unreduced sum; the two agree modulo the field's width.
-- Two expressions LLVM can emit are deliberately left as `Expr`, and so
-  are declined by `classify`: a number minus an address (`sub (i64 4,
-  ptrtoint @a)`), and an address in an integer whose width is not 8, 16,
-  32 or 64 bits. Neither has been seen from a C++ front end; a normal
-  form is added when one is. (A number minus an address is in one GCC
-  torture module, C; it stays declined, WP-095.)
+- Two expressions LLVM can emit are deliberately left as `Expr`: a
+  number minus an address (`sub (i64 4, ptrtoint @a)`), and an address
+  in an integer whose width is not 8, 16, 32 or 64 bits. The second is
+  declined by `classify` (its `const-expr:<op>`); neither has been seen
+  from a C++ front end.
+- A number minus an address stays an `Expr`, and
+  `ConstPool::neg_addr(types, c)` recognizes one (WP-101): an `i64`
+  expression of only numbers, `add`, `sub` and one `ptrtoint` to `i64`
+  of an `Addr`, in which the address is subtracted, returning `NegAddr {
+  sym, addend }` whose value is `addend - sym` modulo 2^64 (the
+  `Addr`'s own offset is folded into `addend`). `classify` names it
+  `operand:neg-addr` as an operand on its own, and `init:neg-addr` in
+  an initializer or inside an aggregate operand, whose image has no
+  relocation for it (`llc`: "Cannot represent a difference across
+  sections"); a thread-local symbol is `tls:address-in-constant`. Any
+  other shape (two addresses subtracted, another width) keeps
+  `const-expr:<op>`.
 - `fold_cast` also folds a `bitcast` of a fixed vector of at most 128
   bits whose elements are all numbers to an integer or float: the
   vector's image (§4.3), as `llc` folds it (WP-095).
@@ -638,13 +653,27 @@ and several variables can share a slot: the variables of an inlined call
 and of its caller, or the pieces of one variable, each with a fragment
 expression.
 
+Two facts about slots and their lifetimes are kept for the coroutine plan
+(`spec/xform.md` §3); neither is code, and neither is a use:
+
+- `Slot::outside_frame()`: the `alloca` carried `!coro.outside.frame`
+  (set with `FunctionBuilder::set_slot_outside_frame`).
+- `Body::lifetime_markers()`: one `LifetimeMarker { before, ptr, start }`
+  per `llvm.lifetime.start` (`start`) or `llvm.lifetime.end` call, which
+  is still not built (§5.5): `ptr` is its pointer operand and `before`
+  the instruction appended after it. `FunctionBuilder::lifetime_marker`
+  records one; `lifetime_intrinsic(name)` tells a producer which names
+  these are. The verifier checks that each stands before a non-`phi`
+  instruction, in position order, with a valid pointer.
+
 ### 5.3 Values
 
 A `Value` is 4 bytes: a 3-bit tag and a 29-bit index. Tags: instruction
 result, argument, constant, symbol address, stack slot address, inline
-assembly (callee position only), and "none" (`Value::NONE`: the value of
-`ret void`, the callee of an intrinsic call). `Value::kind()` decodes it
-to a `ValueKind`. Blocks are `BlockId`s and appear only in terminators,
+assembly (callee position only), metadata (an argument of an intrinsic
+call only, below), and "none" (`Value::NONE`: the value of `ret void`,
+the callee of an intrinsic call). `Value::kind()` decodes it to a
+`ValueKind`. Blocks are `BlockId`s and appear only in terminators,
 `phi` and `BlockAddr`; they are never `Value`s.
 
 Values may be referred to before they are defined (a `phi` operand, or a
@@ -661,6 +690,20 @@ checked against the definition.
 The builder cannot hand out the final instruction id ahead of time, because
 ids are layout positions (§5.1) and a producer that meets a use first does
 not know how many instructions come before the definition.
+
+**Metadata operands** (WP-064). `FunctionBuilder::metadata(node,
+strings)` adds a metadata operand to the body and returns its `Value`
+(`ValueKind::Meta(MetaId)`, type `metadata`): a string `!"s"` (`node`
+false, exactly one string) or a node of strings `!{!"a", ...}` (`node`
+true, any number, the empty node included). Nothing else LLVM writes as
+metadata (numbers, values, nested or `distinct` nodes, debug nodes) has a
+form; a producer refuses it as `metadata-arg:<callee>`. The operand
+belongs to the body (`Body::metadata(id)` reads it back: `is_node`,
+`strings`, `single_node_string`), so bodies stay independent of each
+other and of the module. It is allowed only as an argument of a call
+whose callee is an intrinsic, in a parameter of type `metadata` (the
+builder checks the first, `verify` both, §5.8); the producers make one
+only for an intrinsic on hod's list (§5.5).
 
 ### 5.4 Instructions
 
@@ -753,7 +796,7 @@ suffix, so a producer reading LLVM's output never sees one. One exception:
 the member. `Intrinsic::mangled_name(types, overloads)` is the inverse, for
 the printer.
 
-The list (351; each with every overload LLVM allows):
+The list (354; each with every overload LLVM allows):
 
 - memory: `memcpy memcpy.inline memmove memset memset.inline`
 - variable arguments and stack: `va_start va_end va_copy stacksave
@@ -784,12 +827,18 @@ The list (351; each with every overload LLVM allows):
   `aarch64.sisd.*` that clang 22 or 19 emits for `<arm_neon.h>` (178 of
   them; `bfcvt`, `bfcvtn` and `bfcvtn2` are LLVM 19's, which LLVM 22
   upgrades to other IR on reading) but the SM3/SM4, FP8, `famax`/`famin`
-  and `vluti` ones. The list in
+  and `vluti` ones.
+- named registers (WP-064): `read_register read_volatile_register
+  write_register`, whose first argument is a metadata operand (§5.3)
+  naming the register. Which names a target reads or writes is the
+  target's to judge. The list in
   `crates/hod_ir/src/intrinsic.rs` is the reference.
 
 Not on the list, and therefore `Other`: the other target-specific
-intrinsics (`llvm.aarch64.*` not above, `llvm.x86.*`), intrinsics with metadata arguments (the
-constrained floating-point family, `llvm.read_register`), the masked
+intrinsics (`llvm.aarch64.*` not above, `llvm.x86.*`), the other
+intrinsics with metadata arguments (the constrained floating-point family,
+whose producers refuse the call as `metadata-arg:<callee>`: no input in
+the corpus has one), the masked
 vector family (its signatures differ between LLVM 19 and 22), and anything
 no frontend in scope emits at `-O0`.
 
@@ -799,7 +848,7 @@ and what a producer does with the call:
 
 | names | rule |
 |---|---|
-| `llvm.lifetime.start/end`, `llvm.invariant.start/end`, `llvm.assume`, `llvm.donothing`, `llvm.var.annotation`, `llvm.experimental.noalias.scope.decl` | `NoCode::Drop`: omit the call. (The `{}*` result of `invariant.start` can only be used by `invariant.end`.) |
+| `llvm.lifetime.start/end`, `llvm.invariant.start/end`, `llvm.assume`, `llvm.donothing`, `llvm.var.annotation`, `llvm.experimental.noalias.scope.decl` | `NoCode::Drop`: omit the call. (The `{}*` result of `invariant.start` can only be used by `invariant.end`.) A lifetime call is recorded as a lifetime marker (§5.2). |
 | `llvm.expect`, `llvm.expect.with.probability`, `llvm.annotation`, `llvm.ptr.annotation`, `llvm.launder.invariant.group`, `llvm.strip.invariant.group` | `NoCode::FirstArg`: omit the call and use its first argument as its result |
 | `llvm.dbg.*` | `NoCode::DebugRecord`: a debug record (§6), not a call |
 
@@ -1063,7 +1112,7 @@ so that it also judges a body that did not come from the builder:
 | check | error |
 |---|---|
 | the tables are consistent: block ranges tile the instructions in layout order, each block ends in its only terminator, `phi`s first, landing pads placed as in §5.4, `phi` lists match predecessor edges | `BadBlock` |
-| operands, ids, pool ranges, side-table links and counts are in range and allowed in their position; atomic orderings (§5.4); `switch` cases; call argument counts against the function type; an inline-assembly value only as a callee | `InvalidOperand` |
+| operands, ids, pool ranges, side-table links and counts are in range and allowed in their position; atomic orderings (§5.4); `switch` cases; call argument counts against the function type; an inline-assembly value only as a callee; a metadata operand (§5.3) only as an argument of an intrinsic call in a `metadata` parameter, naming an operand of this body whose strings are in range and a string operand with one string | `InvalidOperand` |
 | types that must agree do: operands with each other and with the result, call arguments with the function type's parameters, the result with its return type, `ret` with the function's, `resume` and landing pads, a known intrinsic's overload types with its function type | `TypeMismatch` |
 | a type is of the class the instruction needs (integer, float, pointer, vector, aggregate, a valid cast, an atomic type) | `InvalidType` |
 | a loaded, stored or `va_arg` type is sized | `UnsizedType` |
@@ -1096,7 +1145,9 @@ intervals: each query is two compares); the cost is in
 
 **`musttail`** (LLVM's `verifyMustTailCall`): the callee is not inline
 assembly; the call and the function agree in variadic-ness, return type
-and calling convention, and pass no variable arguments; the next
+and calling convention (variable arguments of the call before a
+variadic function's forwarded ones are allowed, as LLVM allows them,
+WP-064); the next
 instruction is `ret`, or a `bitcast` of the result and then `ret`, which
 returns nothing, the result (or its cast), `undef` or `poison`. With
 `tailcc` or `swifttailcc` no parameter of the function or the call has
@@ -1128,7 +1179,7 @@ array lookup and none allocates.
 | blocks in layout order | `Body::blocks()` (`Block`s), `layout()` (ids), `entry()`, `block(id)`, `block_count()` |
 | a block | `Block::id`, `inst_range`, `insts()`, `has_phis()`, `phis()`, `non_phis()`, `terminator()`, `successors()` |
 | an instruction | `Body::inst(id)`, `insts()`; `Inst::id`, `opcode`, `ty`, `result`, `uses`, `loc`, `operands()` (the value operands as one slice, whatever the opcode), `is_terminator`, `successors()`, `call()`, and `kind()`, an `InstKind` with one variant per instruction shape and named fields |
-| lists | `PtrAdd::{base, offset, indices()}`, `Phi::{values(), blocks(), incoming()}`, `Switch::{cond, default, cases()}`, `InstKind::ShuffleVector { mask }`, `InstKind::IndirectBr { targets }` |
+| lists | `PtrAdd::{base, offset, indices()}`, `Phi::{values(), blocks(), incoming(), value_for(pred)}` (the first value listed for `pred`, WP-064), `Switch::{cond, default, cases()}` (its `Debug` writes the cases as typed `(constant, block)` pairs, WP-064), `InstKind::ShuffleVector { mask }`, `InstKind::IndirectBr { targets }` |
 | calls | `Body::calls()`, `call_count()`; `CallSite::{inst, opcode, ty, callee, callee_value, intrinsic, overloads, fn_type, args, cc, tail, is_noreturn, is_nounwind, returns_twice, is_convergent, has_param_attrs, ret_attrs, arg_attrs(i), bundles(), normal_dest, unwind_dest, indirect_dests}` |
 | exceptions | `Body::landing_pads()`, `has_landing_pads()`; `LandingPad::{inst, is_cleanup, clauses}` |
 | the frame | `Body::slots()`, `slot_vars()` |
@@ -1623,8 +1674,9 @@ Reasons no `Support` takes away (`STRUCTURAL_RULES`):
 | `target:support-mismatch` | the `Support` given is for another architecture than the module's |
 
 Also refused on both targets, as matrix rows whose status is `rejected`:
-`attr:naked`, `inst:callbr`, `inst:va_arg`, and the 19 `const-expr:*`
-rows (constant expressions without a normal form, §4.2).
+`attr:naked`, `inst:va_arg`, and the 19 `const-expr:*` rows (constant
+expressions without a normal form, §4.2). `inst:callbr` was one until
+WP-103; it is supported on AArch64 (`spec/codegen.md` §5.5.3).
 
 - Producer records (`Module::unsupported()`) are reported unchanged.
 - A module flag that is neither known nor ignorable (§2.1), or any
@@ -1935,6 +1987,8 @@ than the entry (`blockaddress-of-entry-block`).
   bundles as `[ "tag"(...) ]`, `to label ... unwind label ...` for
   `invoke`, the indirect labels for `callbr`; inline assembly as `asm
   sideeffect "template", "constraints"`.
+- A metadata operand is written in place: `metadata !"s"` or `metadata
+  !{!"a", !"b"}`, each string quoted as a string constant's name is.
 - An intrinsic's name is `Intrinsic::mangled_name`'s: the base name and
   one suffix per overload type (§9.2 for `llvm.thread.pointer`), and
   `Other(name)` as it is. A dialect without the intrinsic is

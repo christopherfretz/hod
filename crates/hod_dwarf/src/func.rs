@@ -364,6 +364,7 @@ impl<'a> UnitPlan<'a> {
         if !sp.sp_flags.contains(SpFlags::DEFINITION) || sp.unit != Some(self.unit) {
             return Err(unsupported(sp_id, "debug:subprogram-not-definition"));
         }
+        crate::call_sites::check(sp).map_err(|name| unsupported(sp_id, name))?; // WP-098: §6.14
         if !sp.thrown_types.is_empty() || sp.sp_flags.0 & !DEF_SP_FLAGS != 0 {
             return Err(unsupported(sp_id, "debug:subprogram-attribute"));
         }
@@ -495,15 +496,20 @@ impl<'a> UnitPlan<'a> {
                         if n.arg != 0 { (0, u32::from(n.arg)) } else { (1, row as u32) };
                     (n.scope, class, key)
                 }
-                DiNode::Label(n) => {
-                    if n.name.is_empty() || n.is_artificial || n.coro_suspend_idx.is_some() {
-                        return Err(unsupported(v.node, "debug:label-attribute"));
-                    }
-                    (n.scope, 2, row as u32)
-                }
+                // WP-098: every label is written (§6.14).
+                DiNode::Label(n) => (n.scope, 2, row as u32),
                 _ => return Err(bad(v.node, "variable")),
             };
             let (scope, ia) = match self.debug.location(v.loc) {
+                // WP-098: a variable or label is in its own scope, inlined
+                // where its record is (`llc`'s `findLexicalScope` and
+                // `findInlinedScope` of `getScope()`): `CoroSplit` moves
+                // records to a clone's entry, located in the subprogram,
+                // and gives its suspend labels the subprogram as scope with
+                // records in a block (§6.14).
+                Some(DiLocation { inlined_at, .. }) if scope.is_some() => {
+                    (scope.unwrap_or(DiId::NONE), inlined_at)
+                }
                 Some(DiLocation { scope, inlined_at, .. }) => (scope, inlined_at),
                 None => (scope.ok_or(bad(v.node, "scope"))?, LocId::NONE),
             };
@@ -966,7 +972,7 @@ impl<'a> Writer<'a> {
                     let mask = 1 | b(decl.is_some()) << 1 | b(art) << 2;
                     // WP-087: an unnamed variable has no `DW_AT_name`; an
                     // aligned one has `DW_AT_alignment` after it.
-                    let family = match (v.name.is_empty(), v.align != 0) {
+                    let family = match (v.name.is_empty(), v.align >= 8) {
                         (true, _) => fam::VARIABLE_UNNAMED,
                         (false, true) => fam::VARIABLE_ALIGNED,
                         (false, false) => fam::VARIABLE,
@@ -976,7 +982,7 @@ impl<'a> Writer<'a> {
                     if !v.name.is_empty() {
                         self.strx(v.name)?;
                     }
-                    if v.align != 0 {
+                    if v.align >= 8 {
                         write_uleb(&mut self.info, u64::from(v.align / 8));
                     }
                 }
@@ -1013,6 +1019,10 @@ impl<'a> Writer<'a> {
                 if let Some(origin) = plan.inline.die(node) {
                     self.label_of_abstract(&fd, offset, origin);
                     return Ok(());
+                }
+                if !crate::label::is_plain(&n) {
+                    let at = (fd.code.symbol, fd.code.addend + i64::from(offset));
+                    return self.label_any(plan, node, &n, Some(at));
                 }
                 let decl = Writer::decl_of(plan, node, n.file, n.line)?;
                 if let Some(d) = decl

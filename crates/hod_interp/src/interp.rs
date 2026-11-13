@@ -621,13 +621,10 @@ impl<'a> Machine<'_, 'a> {
         for sym in declared {
             self.addrs[sym.index()] = self.mem.alloc_extern(sym)?;
         }
-        for index in 0..module.consts.len() {
-            if let Const::BlockAddr { func, block } = module.consts.get(ConstId::new(index as u32))
-            {
-                let addr = self.mem.reserve()?;
-                self.block_addrs.insert((func, block), addr);
-                self.block_at.insert(addr, (func, block));
-            }
+        for (_, func, block) in module.consts.block_addresses() {
+            let addr = self.mem.reserve()?;
+            self.block_addrs.insert((func, block), addr);
+            self.block_at.insert(addr, (func, block));
         }
         for (at, fixup) in patches {
             let value = self.fixup_value(fixup.target)?.wrapping_add(fixup.addend as u64);
@@ -900,6 +897,10 @@ impl<'a> Machine<'_, 'a> {
                 _ => invalid(format!("{slot:?} is not a slot of the body")),
             },
             ValueKind::Asm(_) => unsupported("call:inline-asm"),
+            // `spec/ir.md` §5.3: an argument of an intrinsic, which the
+            // intrinsic reads itself; the named-register ones are refused
+            // by name (`intrinsic:llvm.read_register`, ...).
+            ValueKind::Meta(_) => invalid("metadata where a value is required"),
             ValueKind::None => invalid("an operand is missing"),
         }
     }
@@ -1151,7 +1152,7 @@ impl<'a> Machine<'_, 'a> {
             let InstKind::Phi(list) = phi.kind() else {
                 return invalid(format!("{:?} is not a phi", phi.id()));
             };
-            let Some((value, _)) = list.incoming().find(|&(_, from)| from == f.block) else {
+            let Some(value) = list.value_for(f.block) else {
                 return invalid(format!("{:?} has no entry for {:?}", phi.id(), f.block));
             };
             pending.push(self.get(f, value)?);

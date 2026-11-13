@@ -35,6 +35,7 @@ const STATIC: Options = Options {
     data_sections: false,
     stress: Stress { min_pool: false, far: false, displace: false },
     debug_compression: hod_obj::Compression::None,
+    split_dwarf: hod_dwarf::SplitDwarf::Off,
 };
 const PIC: Options = Options { reloc_model: RelocModel::Pic, ..STATIC };
 

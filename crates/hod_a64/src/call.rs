@@ -153,11 +153,12 @@ pub fn call<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>) -> CgResult<()> {
     let Some(site) = inst.call() else {
         return cx.bug("a call lowering of something that is no call");
     };
+    if matches!(site.callee_value().kind(), ValueKind::Asm(_)) {
+        // WP-103: every inline-assembly callee, `callbr` included.
+        return crate::inline_asm::call(cx, inst);
+    }
     if inst.opcode() == Opcode::CallBr {
         return unsupported(CALL);
-    }
-    if matches!(site.callee_value().kind(), ValueKind::Asm(_)) {
-        return crate::barrier::call(cx, inst);
     }
     if site.bundle_count() != 0 {
         return unsupported(CALL_BUNDLE);

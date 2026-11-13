@@ -115,10 +115,48 @@ pub fn frontend_ir(
     }
 }
 
+/// The `.dwo` name a `-gsplit-dwarf` module records (its unit's
+/// `splitDebugFilename`), if any (WP-062).
+pub fn split_dwarf_name(ir: &Path) -> Option<String> {
+    let text = fs::read_to_string(ir).ok()?;
+    let at = text.find("splitDebugFilename: \"")? + "splitDebugFilename: \"".len();
+    let len = text[at..].find('"')?;
+    Some(text[at..at + len].to_owned()).filter(|name| !name.is_empty())
+}
+
+/// What `llc` and hod are given for such a module: the name, and the
+/// `.dwo` file beside the object.
+fn split_dwarf_args(ir: &Path, object: &Path) -> Vec<OsString> {
+    split_dwarf_name(ir).map_or_else(Vec::new, |name| {
+        vec![
+            OsString::from(format!("-split-dwarf-file={name}")),
+            tools::prefixed("-split-dwarf-output=", &object.with_extension("dwo")),
+        ]
+    })
+}
+
+/// Puts the `.dwo` of each of `objects` that has one beside `program`,
+/// under the last component of its recorded name (`dwos`: object, name),
+/// where the debuggers look for it.
+pub fn place_dwos(
+    objects: &[PathBuf],
+    dwos: &[(PathBuf, String)],
+    program: &Path,
+) -> Result<(), String> {
+    let dir = program.parent().unwrap_or(Path::new("."));
+    for (object, name) in dwos.iter().filter(|(o, _)| objects.contains(o)) {
+        let from = object.with_extension("dwo");
+        let to = dir.join(Path::new(name).file_name().unwrap_or_default());
+        fs::copy(&from, &to).map_err(|e| format!("cannot copy '{}': {e}", from.display()))?;
+    }
+    Ok(())
+}
+
 /// `llc` (the reference) on `ir` into `object`.
 pub fn llc_object(llc: &Path, ir: &Path, object: &Path, limits: Limits) -> Result<(), String> {
+    let split = split_dwarf_args(ir, object);
     let configure = |c: &mut Command| {
-        c.args(REFERENCE).args(["-filetype=obj", "-relocation-model=pic", "-o"]);
+        c.args(REFERENCE).args(&split).args(["-filetype=obj", "-relocation-model=pic", "-o"]);
         c.arg(object).arg(ir);
     };
     let output = process::run(llc, configure, b"", limits)?;
@@ -141,8 +179,9 @@ pub enum HodBuild {
 /// hod (strict) on `ir` into `object`, with its coverage log beside it.
 pub fn hod_object(hod: &Path, ir: &Path, object: &Path, limits: Limits) -> HodBuild {
     let log = object.with_extension("coverage.tsv");
+    let split = split_dwarf_args(ir, object);
     let configure = |c: &mut Command| {
-        c.arg(tools::prefixed("--coverage-log=", &log)).arg("--strict");
+        c.arg(tools::prefixed("--coverage-log=", &log)).arg("--strict").args(&split);
         c.args(["-O0", "-filetype=obj", "-relocation-model=pic", "-o"]).arg(object).arg(ir);
         for variable in ["HOD_FALLBACK_LLC", "HOD_STRICT", "HOD_COVERAGE_LOG", "HOD_IN_FALLBACK"] {
             c.env_remove(variable);

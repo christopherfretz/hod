@@ -347,8 +347,10 @@ struct Leaf {
     stride: u32,
     size: u32,
     last_size: u32,
-    /// The first piece is the first of an integer wider than a register.
-    split: bool,
+    /// The pieces that start an integer wider than a register (the
+    /// even-register rule): piece `i` with `i % split == 0`; none for 0.
+    /// A wide integer has `split == count`, a vector of `i128` 2 (WP-101).
+    split: u32,
     lanes: Option<LaneLeaf>,
 }
 
@@ -364,12 +366,17 @@ struct LaneLeaf {
 }
 
 impl Leaf {
+    /// Whether piece `piece` starts an integer wider than a register.
+    fn split_at(&self, piece: u32) -> bool {
+        self.split != 0 && piece.is_multiple_of(self.split)
+    }
+
     fn one(class: Class, size: u32) -> Leaf {
-        Leaf { class, count: 1, stride: 0, size, last_size: size, split: false, lanes: None }
+        Leaf { class, count: 1, stride: 0, size, last_size: size, split: 0, lanes: None }
     }
 
     fn each(class: Class, count: u32, size: u32) -> Leaf {
-        Leaf { class, count, stride: size, size, last_size: size, split: false, lanes: None }
+        Leaf { class, count, stride: size, size, last_size: size, split: 0, lanes: None }
     }
 
     /// One piece of class `class` (`D` or `Q`) whose lanes carry every
@@ -378,7 +385,7 @@ impl Leaf {
         let size = if class == Class::Q { 16 } else { 8 };
         let lane = (size / u32::from(len)) as u8;
         let lanes = Some(LaneLeaf { bits, lane, len, each: false });
-        Leaf { class, count: 1, stride: 0, size, last_size: size, split: false, lanes }
+        Leaf { class, count: 1, stride: 0, size, last_size: size, split: 0, lanes }
     }
 
     /// The kind of piece `piece` of this leaf.
@@ -393,6 +400,42 @@ impl Leaf {
             },
         }
     }
+}
+
+/// §3.3 (WP-101): an array argument of `leaves` members of 16 bytes in
+/// two general registers (`i128`, `<1 x i128>`), where LLVM's selectors
+/// agree: one member at an even register number, or with fewer than two
+/// registers left (an ordinary `i128`: `None` inside); several members
+/// when all fit in consecutive registers from the next one, without the
+/// even-register rule (a block). Anything else, or wider members, is
+/// [`WIDE_INT_ARRAY`].
+fn wide_int_array(state: &mut State, leaf: &Leaf, leaves: u64) -> Abi<Option<Block>> {
+    let next = u64::from(state.ngrn);
+    let agreed = leaf.count == 2
+        && leaf.split == 2
+        && if leaves == 1 {
+            next.is_multiple_of(2) || next + 2 > u64::from(ARG_REGS)
+        } else {
+            next + 2 * leaves <= u64::from(ARG_REGS)
+        };
+    if !agreed {
+        return no(WIDE_INT_ARRAY);
+    }
+    Ok((leaves > 1).then(|| state.block(Class::X, 2 * leaves, 16)))
+}
+
+/// §4.3 (WP-101): the pieces of an argument or result that is not an
+/// aggregate. A lone `<1 x i128>` is a `Q`-register value
+/// (`spec/codegen.md` §2) that travels in two general registers, and the
+/// code generator moves no value between register classes:
+/// [`VECTOR_ELEMENT`]. In an aggregate it is memory, and passes.
+fn lone_leaf(types: &TypeTable, ty: TypeId) -> Abi<Leaf> {
+    if let TypeKind::Vector { elem, len: 1 } = types.kind(ty)
+        && matches!(types.kind(elem), TypeKind::Int(128))
+    {
+        return no(VECTOR_ELEMENT);
+    }
+    leaf_of(types, ty)
 }
 
 /// §4: the pieces of a leaf type.
@@ -411,7 +454,7 @@ fn leaf_of(types: &TypeTable, ty: TypeId) -> Abi<Leaf> {
                         stride: 8,
                         size: 8,
                         last_size: bytes - 8 * (count - 1),
-                        split: true,
+                        split: count,
                         lanes: None,
                     }
                 }
@@ -455,6 +498,20 @@ fn vector_leaf(types: &TypeTable, elem: TypeId, len: u32) -> Abi<Leaf> {
         TypeKind::Fp128 => return Ok(Leaf::each(Class::Q, len, 16)),
         TypeKind::Ptr { .. } => return no(ADDRSPACE),
         TypeKind::Int(1) => return mask_leaf(len),
+        // WP-101: each element as an `i128` (two general registers, the
+        // even-register rule), as LLVM scalarizes the vector.
+        TypeKind::Int(128) => {
+            let Some(count) = len.checked_mul(2) else { return no(SIZE_LIMIT) };
+            return Ok(Leaf {
+                class: Class::X,
+                count,
+                stride: 8,
+                size: 8,
+                last_size: 8,
+                split: 2,
+                lanes: None,
+            });
+        }
         _ => return no(VECTOR_ELEMENT),
     };
     let Some(total) = len.checked_mul(bytes) else { return no(SIZE_LIMIT) };
@@ -510,7 +567,7 @@ fn mask_leaf(len: u32) -> Abi<Leaf> {
             stride: 0,
             size: 4,
             last_size: 4,
-            split: false,
+            split: 0,
             lanes: Some(LaneLeaf { bits: 1, lane: 4, len: len as u8, each: true }),
         },
         _ => return no(MASK_WIDE),
@@ -751,7 +808,7 @@ fn assign_return(types: &TypeTable, sig: &Sig<'_>, parts: &mut Vec<Part>) -> Abi
             place(leaf, offset, parts)
         })
     } else {
-        place(leaf_of(types, sig.ret)?, 0, parts)
+        place(lone_leaf(types, sig.ret)?, 0, parts)
     };
     if fits.is_err() {
         // §5.2.
@@ -840,10 +897,10 @@ fn assign_value(
         TypeKind::Struct { .. } => false,
         _ => {
             // §3.2: a scalar or a vector, piece by piece.
-            let leaf = leaf_of(types, ty)?;
+            let leaf = lone_leaf(types, ty)?;
             charge(budget, leaf.count)?;
             for piece in 0..leaf.count {
-                let loc = state.piece(leaf.class, leaf.split && piece == 0);
+                let loc = state.piece(leaf.class, leaf.split_at(piece));
                 let size = if piece + 1 == leaf.count { leaf.last_size } else { leaf.size };
                 let at = u64::from(piece) * u64::from(leaf.stride);
                 push(parts, arg, leaf.kind(piece), at, size, loc)?;
@@ -860,8 +917,13 @@ fn assign_value(
         match leaf.class {
             // LLVM does not treat these as a block.
             Class::W => {}
-            Class::Bf => return no(BFLOAT_ARRAY),
-            Class::X if leaf.split => return no(WIDE_INT_ARRAY),
+            // llc 22 passes a block, llc 19 each member as a piece: the
+            // same registers when all fit (WP-101).
+            Class::Bf if u64::from(state.nsrn) + leaves > u64::from(ARG_REGS) => {
+                return no(BFLOAT_ARRAY);
+            }
+            // WP-101: the placements every configuration agrees on.
+            Class::X if leaf.split != 0 => block = wide_int_array(state, &leaf, leaves)?,
             // A vector passed in several registers: LLVM's two instruction
             // selectors disagree about a block of them.
             _ if leaf.count > 1 => return no(VECTOR_ARRAY),
@@ -896,7 +958,7 @@ fn assign_value(
         charge(budget, leaf.count)?;
         for piece in 0..leaf.count {
             let loc = match &mut block {
-                None => state.piece(leaf.class, leaf.split && piece == 0),
+                None => state.piece(leaf.class, leaf.split_at(piece)),
                 Some(Block::Regs(next)) => {
                     *next += 1;
                     let number = *next - 1;

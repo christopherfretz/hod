@@ -6,7 +6,10 @@
 //! other. The section numbers in the comments are the spec's.
 
 use hod_cg::PReg;
-use hod_cg::abi::{AbiUnsupported, Assignment, Part, PartKind, Place, RetMemory, Sig, VaInfo};
+use hod_cg::abi::{
+    AbiUnsupported, Assignment, Classify, LaneLeaf, Part, PartKind, PieceLoc as Loc, Place,
+    RetMemory, Shape, Sig, VaInfo, charge, check_type, place_leaf, place_leaves, push, shape, walk,
+};
 use hod_ir::{CallConv, ParamAttrs, ParamMem, TypeId, TypeKind, TypeTable};
 
 use crate::reg;
@@ -78,8 +81,8 @@ const INALLOCA: &str = "abi:inalloca";
 const PREALLOCATED: &str = "abi:preallocated";
 const ELEMENTTYPE: &str = "abi:elementtype";
 const BYVAL_ALIGN: &str = "abi:byval-align";
-const TOO_MANY_PIECES: &str = "abi:too-many-pieces";
-const SIZE_LIMIT: &str = "abi:size-limit";
+const TOO_MANY_PIECES: &str = hod_cg::abi::TOO_MANY_PIECES;
+const SIZE_LIMIT: &str = hod_cg::abi::SIZE_LIMIT;
 
 type Abi<T> = Result<T, AbiUnsupported>;
 
@@ -280,13 +283,6 @@ impl State {
     }
 }
 
-/// Where a piece goes, before the offsets are checked against `u32`.
-#[derive(Clone, Copy)]
-enum Loc {
-    Reg(PReg),
-    Stack(u64),
-}
-
 enum Block {
     /// The members take registers from this number on.
     Regs(u8),
@@ -335,71 +331,28 @@ impl Class {
     }
 }
 
-/// How one leaf (a scalar or a vector) is broken into pieces (§4): `count`
-/// pieces of class `class`; piece `i` holds the bytes of the leaf from
-/// `i * stride`, `size` of them (`last_size` for the last piece). A leaf
-/// whose elements travel widened to lanes (§4.3, WP-082) has `lanes`, and
-/// then `size` is the bytes of the place each piece fills.
-#[derive(Clone, Copy, Debug)]
-struct Leaf {
-    class: Class,
-    count: u32,
-    stride: u32,
-    size: u32,
-    last_size: u32,
-    /// The pieces that start an integer wider than a register (the
-    /// even-register rule): piece `i` with `i % split == 0`; none for 0.
-    /// A wide integer has `split == count`, a vector of `i128` 2 (WP-101).
-    split: u32,
-    lanes: Option<LaneLeaf>,
+/// How one leaf (a scalar or a vector) is broken into pieces (§4), by
+/// the classification hook of `hod_cg`'s leaf walk ([`Leaves`]).
+type Leaf = hod_cg::abi::Leaf<Class>;
+
+/// The classification hook of the leaf walk: §4.
+struct Leaves;
+
+impl Classify for Leaves {
+    type Class = Class;
+
+    fn leaf(&self, types: &TypeTable, ty: TypeId) -> Abi<Leaf> {
+        leaf_of(types, ty)
+    }
 }
 
-/// The elements of a vector leaf as lanes (§4.3): `len` elements of
-/// `bits` bits, `lane` bytes per lane; with `each`, piece `i` carries
-/// element `i` alone, else the one piece carries them all.
-#[derive(Clone, Copy, Debug)]
-struct LaneLeaf {
-    bits: u8,
-    lane: u8,
-    len: u8,
-    each: bool,
-}
-
-impl Leaf {
-    /// Whether piece `piece` starts an integer wider than a register.
-    fn split_at(&self, piece: u32) -> bool {
-        self.split != 0 && piece.is_multiple_of(self.split)
-    }
-
-    fn one(class: Class, size: u32) -> Leaf {
-        Leaf { class, count: 1, stride: 0, size, last_size: size, split: 0, lanes: None }
-    }
-
-    fn each(class: Class, count: u32, size: u32) -> Leaf {
-        Leaf { class, count, stride: size, size, last_size: size, split: 0, lanes: None }
-    }
-
-    /// One piece of class `class` (`D` or `Q`) whose lanes carry every
-    /// element.
-    fn lanes(class: Class, bits: u8, len: u8) -> Leaf {
-        let size = if class == Class::Q { 16 } else { 8 };
-        let lane = (size / u32::from(len)) as u8;
-        let lanes = Some(LaneLeaf { bits, lane, len, each: false });
-        Leaf { class, count: 1, stride: 0, size, last_size: size, split: 0, lanes }
-    }
-
-    /// The kind of piece `piece` of this leaf.
-    fn kind(&self, piece: u32) -> PartKind {
-        match self.lanes {
-            None => PartKind::Value,
-            Some(l) => PartKind::Lanes {
-                bits: l.bits,
-                lane: l.lane,
-                first: if l.each { piece as u8 } else { 0 },
-                len: l.len,
-            },
-        }
-    }
+/// One piece of class `class` (`D` or `Q`) whose lanes carry every
+/// element.
+fn lanes_leaf(class: Class, bits: u8, len: u8) -> Leaf {
+    let size = if class == Class::Q { 16 } else { 8 };
+    let lane = (size / u32::from(len)) as u8;
+    let lanes = Some(LaneLeaf { bits, lane, len, each: false });
+    Leaf { class, count: 1, stride: 0, size, last_size: size, split: 0, lanes }
 }
 
 /// §3.3 (WP-101): an array argument of `leaves` members of 16 bytes in
@@ -539,7 +492,7 @@ fn vector_leaf(types: &TypeTable, elem: TypeId, len: u32) -> Abi<Leaf> {
         // of a 64-bit vector (`<2 x i8>`, `<2 x i16>` as `2s`, `<4 x i8>`
         // as `4h`); floating-point elements are widened.
         return Ok(if integer {
-            Leaf::lanes(Class::D, (bytes * 8) as u8, len as u8)
+            lanes_leaf(Class::D, (bytes * 8) as u8, len as u8)
         } else {
             Leaf::one(Class::D, total)
         });
@@ -559,8 +512,8 @@ fn vector_leaf(types: &TypeTable, elem: TypeId, len: u32) -> Abi<Leaf> {
 /// general register (and its 8-byte stack slot, 4 bytes written).
 fn mask_leaf(len: u32) -> Abi<Leaf> {
     Ok(match len {
-        2 | 4 | 8 => Leaf::lanes(Class::D, 1, len as u8),
-        16 => Leaf::lanes(Class::Q, 1, 16),
+        2 | 4 | 8 => lanes_leaf(Class::D, 1, len as u8),
+        16 => lanes_leaf(Class::Q, 1, 16),
         1..=64 => Leaf {
             class: Class::W,
             count: len,
@@ -572,158 +525,6 @@ fn mask_leaf(len: u32) -> Abi<Leaf> {
         },
         _ => return no(MASK_WIDE),
     })
-}
-
-/// A number that is equal for two leaf types exactly when LLVM gives them
-/// one value type (§3.3): a pointer is an `i64`.
-fn leaf_key(types: &TypeTable, ty: TypeId) -> u64 {
-    let scalar = |ty: TypeId| -> u64 {
-        match types.kind(ty) {
-            TypeKind::Int(bits) => u64::from(bits),
-            TypeKind::Ptr { .. } => 64,
-            TypeKind::Half => 1 << 24,
-            TypeKind::BFloat => 2 << 24,
-            TypeKind::Float => 3 << 24,
-            TypeKind::Double => 4 << 24,
-            _ => 5 << 24,
-        }
-    };
-    match types.kind(ty) {
-        TypeKind::Vector { elem, len } => 1 << 63 | scalar(elem) << 32 | u64::from(len),
-        _ => scalar(ty),
-    }
-}
-
-/// The leaves of a type, as far as §3.3 needs them.
-#[derive(Clone, Copy)]
-enum Shape {
-    /// No leaf.
-    Empty,
-    /// `leaves` leaves of one value type, `ty` being one of them.
-    Uniform { key: u64, ty: TypeId, leaves: u64 },
-    /// Leaves of more than one value type.
-    Mixed,
-}
-
-/// The shape of `ty`, in time proportional to the type's description,
-/// not to its number of leaves.
-fn shape(types: &TypeTable, ty: TypeId) -> Shape {
-    match types.kind(ty) {
-        TypeKind::Struct { fields, .. } => {
-            let mut all = Shape::Empty;
-            for &field in fields {
-                all = match (all, shape(types, field)) {
-                    (Shape::Empty, other) | (other, Shape::Empty) => other,
-                    (
-                        Shape::Uniform { key, ty, leaves },
-                        Shape::Uniform { key: other, leaves: more, .. },
-                    ) if key == other => {
-                        Shape::Uniform { key, ty, leaves: leaves.saturating_add(more) }
-                    }
-                    _ => return Shape::Mixed,
-                };
-            }
-            all
-        }
-        TypeKind::Array { elem, len } => match shape(types, elem) {
-            Shape::Uniform { key, ty, leaves } if len > 0 => {
-                Shape::Uniform { key, ty, leaves: leaves.saturating_mul(len) }
-            }
-            Shape::Mixed if len > 0 => Shape::Mixed,
-            _ => Shape::Empty,
-        },
-        _ => Shape::Uniform { key: leaf_key(types, ty), ty, leaves: 1 },
-    }
-}
-
-/// Refuses a type that has a leaf §4 does not pass, in time proportional
-/// to the type's description.
-fn check_type(types: &TypeTable, ty: TypeId) -> Abi<()> {
-    match types.kind(ty) {
-        TypeKind::Struct { fields, .. } => fields.iter().try_for_each(|&f| check_type(types, f)),
-        TypeKind::Array { elem, .. } => check_type(types, elem),
-        _ => leaf_of(types, ty).map(|_| ()),
-    }
-}
-
-/// Calls `visit` with each leaf of `ty` and its byte offset in the value,
-/// in offset order (§4.4).
-fn walk<E>(
-    types: &TypeTable,
-    ty: TypeId,
-    base: u64,
-    visit: &mut impl FnMut(TypeId, u64) -> Result<(), E>,
-) -> Result<(), E> {
-    match types.kind(ty) {
-        TypeKind::Struct { fields, .. } => {
-            let offsets = types.field_offsets(ty).unwrap_or(&[]);
-            for (&field, &offset) in fields.iter().zip(offsets) {
-                walk(types, field, base.saturating_add(offset), visit)?;
-            }
-            Ok(())
-        }
-        TypeKind::Array { elem, len } => {
-            if matches!(shape(types, elem), Shape::Empty) {
-                return Ok(());
-            }
-            // Every element has a leaf, and every leaf is charged against
-            // the piece budget, so this loop is bounded by it.
-            let stride = types.alloc_size_of(elem);
-            for index in 0..len {
-                walk(types, elem, base.saturating_add(index.saturating_mul(stride)), visit)?;
-            }
-            Ok(())
-        }
-        _ => visit(ty, base),
-    }
-}
-
-fn charge(budget: &mut u32, pieces: u32) -> Abi<()> {
-    match budget.checked_sub(pieces) {
-        Some(left) => {
-            *budget = left;
-            Ok(())
-        }
-        None => no(TOO_MANY_PIECES),
-    }
-}
-
-/// Appends a part; a stack part that continues the previous one, in the
-/// value and on the stack, extends it instead (§3.4).
-fn push(
-    parts: &mut Vec<Part>,
-    arg: u32,
-    kind: PartKind,
-    offset: u64,
-    size: u32,
-    loc: Loc,
-) -> Abi<()> {
-    let narrow = |n: u64| u32::try_from(n).or(no(SIZE_LIMIT));
-    let offset = narrow(offset)?;
-    let place = match loc {
-        Loc::Reg(reg) => Place::Reg(reg),
-        Loc::Stack(at) => {
-            // The end of the part must be expressible too.
-            narrow(at.saturating_add(u64::from(size)))?;
-            Place::Stack(narrow(at)?)
-        }
-    };
-    if offset.checked_add(size).is_none() {
-        return no(SIZE_LIMIT);
-    }
-    if let (Some(last), Place::Stack(at)) = (parts.last_mut(), place)
-        && let Place::Stack(last_at) = last.place
-        && last.arg == arg
-        && last.kind == kind
-        && !matches!(kind, PartKind::Lanes { .. })
-        && last_at + last.size == at
-        && last.offset + last.size == offset
-    {
-        last.size += size;
-        return Ok(());
-    }
-    parts.push(Part { arg, kind, offset, size, place });
-    Ok(())
 }
 
 fn is_plain_pointer(types: &TypeTable, ty: TypeId) -> bool {
@@ -772,6 +573,14 @@ fn is_aggregate(types: &TypeTable, ty: TypeId) -> bool {
 /// The return value does not fit the return registers.
 struct Memory;
 
+/// A part's offset beyond `u32`: such a value has far more than eight
+/// leaves or is mostly padding; memory serves both.
+impl From<AbiUnsupported> for Memory {
+    fn from(_: AbiUnsupported) -> Memory {
+        Memory
+    }
+}
+
 /// §5: the return value. `Ok(true)` when it travels in memory.
 fn assign_return(types: &TypeTable, sig: &Sig<'_>, parts: &mut Vec<Part>) -> Abi<bool> {
     let attrs = sig.ret_attrs;
@@ -785,30 +594,23 @@ fn assign_return(types: &TypeTable, sig: &Sig<'_>, parts: &mut Vec<Part>) -> Abi
 
     // §5.1: the next register of each class; no even-register rule.
     let (mut general, mut vector) = (0, 0);
-    let mut place = |leaf: Leaf, offset: u64, parts: &mut Vec<Part>| {
+    let mut place = |leaf: &Leaf, piece: u32| {
         let next = if leaf.class.is_gpr() { &mut general } else { &mut vector };
-        if u64::from(*next) + u64::from(leaf.count) > u64::from(ARG_REGS) {
+        if piece == 0 && u64::from(*next) + u64::from(leaf.count) > u64::from(ARG_REGS) {
             return Err(Memory);
         }
-        for piece in 0..leaf.count {
-            let reg = if leaf.class.is_gpr() { reg::x(*next) } else { reg::v(*next) };
-            *next += 1;
-            let size = if piece + 1 == leaf.count { leaf.last_size } else { leaf.size };
-            let at = offset.saturating_add(u64::from(piece) * u64::from(leaf.stride));
-            // An offset beyond `u32`: such a value has far more than
-            // eight leaves or is mostly padding; memory serves both.
-            push(parts, 0, leaf.kind(piece), at, size, Loc::Reg(reg)).map_err(|_| Memory)?;
-        }
-        Ok(())
+        let reg = if leaf.class.is_gpr() { reg::x(*next) } else { reg::v(*next) };
+        *next += 1;
+        Ok(Loc::Reg(reg))
     };
     let fits = if is_aggregate(types, sig.ret) {
-        check_type(types, sig.ret)?;
+        check_type(types, sig.ret, &Leaves)?;
         walk(types, sig.ret, 0, &mut |leaf_ty, offset| {
             let leaf = leaf_of(types, leaf_ty).map_err(|_| Memory)?;
-            place(leaf, offset, parts)
+            place_leaf(&leaf, 0, offset, parts, &mut place)
         })
     } else {
-        place(lone_leaf(types, sig.ret)?, 0, parts)
+        place_leaf(&lone_leaf(types, sig.ret)?, 0, 0, parts, &mut place)
     };
     if fits.is_err() {
         // §5.2.
@@ -899,16 +701,12 @@ fn assign_value(
             // §3.2: a scalar or a vector, piece by piece.
             let leaf = lone_leaf(types, ty)?;
             charge(budget, leaf.count)?;
-            for piece in 0..leaf.count {
-                let loc = state.piece(leaf.class, leaf.split_at(piece));
-                let size = if piece + 1 == leaf.count { leaf.last_size } else { leaf.size };
-                let at = u64::from(piece) * u64::from(leaf.stride);
-                push(parts, arg, leaf.kind(piece), at, size, loc)?;
-            }
-            return Ok(());
+            return place_leaf(&leaf, arg, 0, parts, &mut |leaf: &Leaf, piece| {
+                Ok::<_, AbiUnsupported>(state.piece(leaf.class, leaf.split_at(piece)))
+            });
         }
     };
-    check_type(types, ty)?;
+    check_type(types, ty, &Leaves)?;
 
     // §3.3: an array whose leaves all have one value type is a block.
     let mut block = None;
@@ -953,27 +751,19 @@ fn assign_value(
         }
     }
 
-    walk(types, ty, 0, &mut |leaf_ty, offset| {
-        let leaf = leaf_of(types, leaf_ty)?;
-        charge(budget, leaf.count)?;
-        for piece in 0..leaf.count {
-            let loc = match &mut block {
-                None => state.piece(leaf.class, leaf.split_at(piece)),
-                Some(Block::Regs(next)) => {
-                    *next += 1;
-                    let number = *next - 1;
-                    Loc::Reg(if leaf.class.is_gpr() { reg::x(number) } else { reg::v(number) })
-                }
-                Some(Block::Stack { align }) => {
-                    let at = state.stack(leaf.class.packed(), *align);
-                    *align = 1;
-                    Loc::Stack(at)
-                }
-            };
-            let size = if piece + 1 == leaf.count { leaf.last_size } else { leaf.size };
-            let at = offset.saturating_add(u64::from(piece) * u64::from(leaf.stride));
-            push(parts, arg, leaf.kind(piece), at, size, loc)?;
-        }
-        Ok(())
+    place_leaves(types, ty, &Leaves, arg, budget, parts, &mut |leaf, piece| {
+        Ok(match &mut block {
+            None => state.piece(leaf.class, leaf.split_at(piece)),
+            Some(Block::Regs(next)) => {
+                *next += 1;
+                let number = *next - 1;
+                Loc::Reg(if leaf.class.is_gpr() { reg::x(number) } else { reg::v(number) })
+            }
+            Some(Block::Stack { align }) => {
+                let at = state.stack(leaf.class.packed(), *align);
+                *align = 1;
+                Loc::Stack(at)
+            }
+        })
     })
 }

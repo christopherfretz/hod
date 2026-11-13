@@ -151,7 +151,8 @@ pub struct RegInfo {
     /// copies, stack-argument placement).
     pub scratch: RegSet,
     /// The two registers a landing pad receives: the exception pointer
-    /// and the selector.
+    /// and the selector. General registers; not necessarily holdable
+    /// (x86-64's `rax`, `rdx`): the landing pad moves them out.
     pub eh_data: [PReg; 2],
     /// The general scratch register an indirect callee's address is
     /// brought into, last, by the call sequence (§7.1). The target's exit
@@ -197,8 +198,8 @@ impl RegInfo {
         if !self.scratch.intersection(self.gpr).contains(self.callee) {
             return Err("the callee register is not a general scratch register");
         }
-        if !self.holdable.contains(self.eh_data[0]) || !self.holdable.contains(self.eh_data[1]) {
-            return Err("an eh_data register is not holdable");
+        if !self.gpr.contains(self.eh_data[0]) || !self.gpr.contains(self.eh_data[1]) {
+            return Err("an eh_data register is not a general register");
         }
         if !self.gpr_bytes.is_power_of_two() || !self.fpr_bytes.is_power_of_two() {
             return Err("a register size is not a power of two");

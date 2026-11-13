@@ -70,9 +70,9 @@ instructions and types, this design relies on `classify` rejecting:
 |---|---|
 | `gpr`, `fpr` | the registers of each class |
 | `pool` | registers a fresh value may be allocated to. None is reserved (below), and none is written by argument placement or by a return under any supported calling convention (argument and return registers, the indirect-result register, the `nest` register). Each is caller-saved or in the target's save set (below) |
-| `holdable` | registers a value may rest in: `pool` plus the registers argument placement and returns write. An incoming argument rests in its argument register and a call's result in the return register until used or displaced |
+| `holdable` | registers a value may rest in: `pool` plus the registers argument placement and returns write. An incoming argument rests in its argument register and a call's result in the return register until used or displaced; one that arrives in a register that is not holdable (x86-64's `rcx`, `rdx`, `rax`) is stored to its home, or moved to a temporary, at once |
 | `scratch` | at least two general and one vector register that never hold a value across instructions. They belong to whatever is being emitted right now: glue (§8.2), large offsets, phi copies. On AArch64 these include `x16`/`x17`, which a linker veneer may clobber at any call |
-| `eh_data` | the two registers a landing pad receives (exception pointer, selector) |
+| `eh_data` | the two general registers a landing pad receives (exception pointer, selector); not necessarily holdable (x86-64: `rax`, `rdx`) |
 | `dwarf` | each register's DWARF number, for CFI (a function from `PReg`) |
 | `callee` | the scratch register an indirect callee's address is brought into (§7.1) |
 | `gpr_bytes`, `fpr_bytes` | the size of a register of each class: the size of its home and spill slots |
@@ -825,16 +825,13 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
   first; fusing a deferred compare into the branch is left to the
   integration package after WP-035 and WP-039, at the place marked in
   `control.rs`.
-- **`switch`** zero-extends the condition in its register (`ubfx`, below
-  64 bits), drops the cases that go to the default, sorts the others by
-  unsigned value (skipped when they come sorted) and emits a binary
-  search: a node compares with its middle case (`b.eq` to its block,
-  `b.hi` to the upper half), a run of at most four cases is a chain of
-  `cmp` · `b.eq` ending in `b default` (or `b.ne default` when the last
-  case's block comes next). A case value is compared by `cmp #imm`,
-  `cmn #-imm`, or through `x16`. Code is linear in the cases; a run does
-  about `log2(n) + 4` compares; no jump table and no data island. A
-  constant condition is a `br`. A `switch` wider than 64 bits is a
+- **`switch`** follows the plan of §7.3 "`switch`" (`hod_cg::switch`).
+  The condition is zero-extended in its register (`ubfx`, below 64
+  bits); a node is `cmp` · `b.eq` to its block · `b.hi` to the upper
+  half; a chain is `cmp` · `b.eq` per case ending in `b default` (or
+  `b.ne default` when the last case's block comes next). A case value is
+  compared by `cmp #imm`, `cmn #-imm`, or through `x16`. No data
+  island. A `switch` wider than 64 bits is a
   compare chain (WP-084 below); `a64:switch-wide` is no longer produced.
 - **`indirectbr`** is `br` of the address in its register; a
   `blockaddress` constant operand is formed in `x16` first.
@@ -922,24 +919,16 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
     (`lslv`, `mvn`, `lsr #1`, `lsrv`, `orr`); below it the amount is
     reduced by `and #(N-1)` for a power of two, else by `udiv` + `msub`
     against `N` in `x16`, and both shifts are by `k` and `N - k`.
-- **Memory intrinsics.** A length of 0 emits nothing (the pointers may
-  be null). A constant length of at most 64 bytes (`memcpy`, `memset`)
-  or 32 bytes (`memmove`) is inline and touches exactly the bytes of the
-  range: the largest power-of-two accesses, the tail overlapping the
-  previous access for copies, exact-size stores for sets. An inline
-  `memmove` reads every byte (into `x16`, `x17`, `v30`, `v31`) before
-  it writes one, so overlap in either direction is correct; 32 is what
-  those four registers hold. 64 keeps the inline code to a few
-  loads and stores while covering the common small
-  struct copies and clears; beyond it the library routine is as fast
-  and the code stays small. Anything longer, and every
-  variable length, calls `memcpy`, `memmove` or `memset` through
-  `hod_cg`'s runtime-call sequence, so live values are saved as for any
-  call; a length narrower than 64 bits is zero-extended first. The
-  `.inline` forms never call: a constant length above 64 is a loop of
-  16-byte post-indexed `q31` accesses counted in `x16` with an
-  overlapping last access, the fill byte replicated by `dup v31.16b`;
-  a variable length is `a64:mem-inline-length`. Volatile is lowered as
+- **Memory intrinsics** follow the plan of §7.3 "Memory intrinsics"
+  (`hod_cg::memplan`). Inline, the accesses are the largest
+  power-of-two ones, the tail overlapping the previous access for
+  copies, exact-size stores for sets. An inline `memmove` reads every
+  byte (into `x16`, `x17`, `v30`, `v31`) before it writes one; 32 bytes
+  is what those four registers hold. A length narrower than 64 bits is
+  zero-extended for a call. The loop of an `.inline` form is 16-byte
+  post-indexed `q31` accesses counted in `x16` with an overlapping last
+  access, the fill byte replicated by `dup v31.16b`; a variable
+  `.inline` length is `a64:mem-inline-length`. Volatile is lowered as
   the plain form (each byte is accessed once).
 - **Traps:** `trap` is `brk #1`, `debugtrap` `brk #0xf000`,
   `ubsantrap(k)` `brk #(0x5500 | k)`, as `llc`.
@@ -991,9 +980,9 @@ them there, and has the saturating arithmetic, `scmp`/`ucmp`, the
   `__multf3(x, 1.0)`. `fabs`, `copysign`, `is.fpclass` are inline.
   `fptosi.sat`/`fptoui.sat` of `fp128` are refused
   (`a64:intrinsic-fp128`).
-- **Calls**: `sin` .. `log10`, `pow`, `atan2` call libm (`sinf`/`sin`/
-  `sinl`); `powi` `__powisf2`/`__powidf2`/`__powitf2`; `ldexp`
-  `ldexpf`/`ldexp`/`ldexpl`; `frexp` `frexpf`/`frexp`/`frexpl` with the
+- **Calls**: `sin` .. `log10`, `pow`, `atan2`, `powi`, `ldexp` and
+  `frexp` call the routines of §7.3 "Runtime routines by type and
+  target" (`sinf`/`sin`/`sinl`, `__powisf2`, ...); `frexp` with the
   address of a 4-byte slot, its `{T, i32}` result a `Mem`-class value.
   `half` goes through the `float` function. An exponent narrower than 32
   bits is sign-extended; a wider `ldexp` exponent is clamped to the
@@ -1892,9 +1881,10 @@ call each from the places named with the other items.
 #### 5.5.2 Target features (WP-043)
 
 `hod_a64::features::check` judges a `target-features` string (a
-function's attribute) and each `-mattr` item: items separated by `,`,
-each `+name` or `-name`, empty items skipped. hod emits ARMv8.0 code with
-FP and Advanced SIMD and never chooses an instruction by a feature, so:
+function's attribute) and each `-mattr` item, read as §7.3 "Target
+features" says (`hod_cg::features`) against AArch64's table. hod emits
+ARMv8.0 code with FP and Advanced SIMD and never chooses an instruction
+by a feature, so:
 
 - **Accepted, either sign**: a feature that only makes instructions or
   system registers available. The architecture versions `v8a`..`v8.9a`,
@@ -2038,16 +2028,160 @@ driver under bfd, lld and mold, dynamic and static; the template's
 words compared with `llvm-mc`'s; the refusals; features from
 `target-features`.
 
-### 5.6 x86-64 (planned)
+### 5.6 x86-64 (normative for `hod_x64`)
 
-`push rbp` · `mov rbp, rsp` · pushes of the save set · `sub rsp, imm32`
-(patched). Locals at negative offsets from `rbp`, incoming arguments at
-`rbp + 16 + n`, so no incoming base slot is needed, and the epilogue
-(`lea rsp, [rbp - saved]` · pops · `pop rbp` · `ret`) does not depend on
-the frame size. The save set (`rbx`, `r12`..`r15`) is the general pool
-(§2.1); `r10` and `r11` are scratch, with `r10` also the `nest` register,
-which the first work package must reconcile. The red zone is not used.
-Written out with `hod_x64`'s first work package.
+```
+            | caller's frame                       |
+            | incoming stack arguments [rbp+16+n]  |
+            | return address           [rbp + 8]   |  CFA = rbp + 16
+      rbp ->| saved rbp                [rbp + 0]   |
+            | saved rbx, r12..r15      [rbp-8..-40]|
+            | local area: FRAME bytes              |  Local(o) = [rbp + o - 40 - FRAME]
+      sp -> +--------------------------------------+
+            | dynamic allocations, outgoing args   |  (rsp moves below)
+```
+
+- **Prologue** (always this shape): `push rbp` · `mov rbp, rsp` · `push
+  rbx` · `push r12` .. `push r15` · `sub rsp, imm32`, the immediate
+  emitted as `0x7fffffff` (forcing the 32-bit form) and patched in
+  `end_function`. The five registers are saved in every function, used
+  or not: one prologue shape and one set of CFI rows (design 0006 §2.9).
+  With the return address the six pushes are 56 bytes, so `FRAME` is the
+  local area rounded up to `≡ 8 (mod 16)`, and `rsp` is 16-aligned after
+  the prologue and at every `call`. `FRAME` up to `2^31 - 2^16`; above
+  it, `limit:frame-size`.
+- **The red zone is not used**; `noredzone` is accepted and changes
+  nothing.
+- **Frame places.** `FrameRef::Local(o)` is `[rbp + o - 40 - FRAME]`:
+  `FRAME` is not known while the body is emitted, so the access is
+  emitted as `[rbp + o]` with a 32-bit displacement and every such
+  displacement is recorded and biased by `-40 - FRAME` in
+  `end_function` (`hod_x64::common::frame_inst`). `Incoming(n)` is
+  `[rbp + 16 + n]`: no incoming base slot. `Outgoing(n)` is `[rsp + n]`.
+  The frame base for debug information is `rbp` (DWARF 6).
+- **Exit sequences.** The epilogue is `lea rsp, [rbp - 40]` · `pop r15`
+  .. `pop rbx` · `pop rbp` · `ret`; nothing in it depends on `FRAME` or
+  on dynamic allocation. A tail exit is the same teardown ending in `jmp
+  callee` (`R_X86_64_PLT32`) or `jmp r11`.
+- **CFI** (design 0006 §4), written as the prologue is emitted, since the
+  CFA is `rbp + 16` from the second instruction on: after `push rbp`
+  `def_cfa_offset 16` and `offset rbp, -16`; after `mov rbp, rsp`
+  `def_cfa_register rbp`; after each save `offset rbx, -24`, `offset
+  r12, -32`, `offset r13, -40`, `offset r14, -48`, `offset r15, -56`.
+  After the `pop rbp` of an exit: `def_cfa rsp, 8`. A tail exit, which
+  follows another exit sequence, first restates `def_cfa rbp, 16` (§9.3);
+  the save rows never change. DWARF numbers (SysV psABI figure 3.36):
+  `rax rdx rcx rbx rsi rdi rbp rsp` 0..7, `r8`..`r15` 8..15, `rip` 16,
+  `xmm0`..`xmm15` 17..32.
+- **Registers** (design 0006 §2.1). Pool: the save set `rbx`, `r12`..`r15`,
+  and `xmm8`..`xmm13` (SysV has no callee-saved vector register: a value
+  in one is displaced at a call, §4.4). Holdable: the pool, `rsi`, `rdi`,
+  `r8`, `r9`, `xmm0`..`xmm7`. Scratch: `r11`, `r10` (in that order of
+  use), `xmm14`, `xmm15`. `rax`, `rcx`, `rdx` are general registers that
+  **never hold a value**: a lowering may clobber them without asking the
+  driver (division, wide multiply, shifts by `cl`, `cmpxchg`, `al` of a
+  variadic call), and a call result returned in `rax` is moved to a
+  temporary at once (`hod_cg` `run_call`). Landing-pad data: `rax`,
+  `rdx` (not holdable, so the landing pad moves them out). The indirect
+  callee register is `r11`. `rsp` is in no set. A lowering pins at most
+  four general pool registers (§4.2; the pool has five).
+- **`nest`** is refused as `x64:nest`: LLVM passes it in `r10`, which is
+  scratch here; the corpus has no use of it.
+- **No deferral into an argument window across a fixed register.** An
+  operand evaluated straight into an argument register must not clobber
+  one already placed, and `rcx`/`rdx` are argument registers. The driver
+  already guarantees it: `hod_cg::call` emits every deferred argument,
+  and the deferred callee, before it places any (§7.1), so no lowering
+  runs inside the window. A lowering that uses a fixed register needs no
+  query of its own.
+- **Two-operand instructions** (design 0006 §2.2). `dst = a op b` is
+  `mov t, a` · `op t, b` · (`mov dst, t`); when `dst` is `b` and `op`
+  does not commute the result is computed in a temporary. `lea` is the
+  three-operand, flag-free `add`.
+- **Flags** (design 0006 §2.3). Between the instruction that sets the
+  flags and a fused reader (`jcc`, `setcc`, `cmovcc`) only flag-keeping
+  glue is emitted: `mov` (an immediate included: zero is `mov r32, 0`,
+  never `xor`), `lea`, `movzx`/`movsx`, `push`/`pop`, SSE moves. Every
+  glue sequence of `hod_x64` keeps the flags: odd-size stores of a
+  register bounce through the stack below `rsp` with `lea`, stack
+  adjustments are `lea rsp, [rsp + d]`.
+- **Classes.** Integers up to 64 bits and pointers are `Gpr`; `half`,
+  `bfloat`, `float`, `double`, `fp128` are `Fpr`; `x86_fp80` is `Mem` (a
+  16-byte slot of which 10 bytes are used; its arithmetic is X-x87's, on
+  the x87 stack inside one lowering); a vector is `Fpr` when its length is
+  a power of two, its size 64 or 128 bits and its element not `i1`; a
+  vector of at most 64 `i1` is a mask of class `Gpr`; everything else is
+  `Mem`.
+- **Branches** (design 0006 §2.10). `jmp rel32` and `jcc rel32` reach ±2
+  GiB, so there is no far mode and the §6.3 retry never fires. A branch
+  to a label already bound uses the short `rel8` form when it reaches;
+  a forward one is `rel32`. Fixup kinds: 0 `rel32`, 1 `rel8`; `at` is
+  the field's offset, and the displacement written is `target - (at +
+  field size)` (`hod_x64::common::patch_branch`). `unreachable` and
+  `llvm.trap` are `ud2`. Functions are 16-byte aligned (the emitter
+  pads between them with `nop`, `0x90`); the padding before a data
+  island is `int3` (`0xcc`, `Target::PAD_BYTE`).
+- **Integer constants**: `mov r32, imm32` (zero-extends) for a value of
+  at most 32 bits; `mov r64, simm32` for one that sign-extends;
+  `movabs` otherwise.
+- **PIC, symbols and code model.** Calls are `call rel32` with
+  `R_X86_64_PLT32`, local callee or not, as `llc` writes them. The
+  address of a dso-local symbol is `lea r, [rip + x]` (`R_X86_64_PC32`,
+  an addend below 16 MiB folded); of a preemptible one `mov r, [rip +
+  x@GOTPCREL]` (`R_X86_64_REX_GOTPCRELX`, relaxable) then the addend
+  added with `lea`. A `Code Model` other than small is `x64:code-model`.
+  A thread-local symbol is X-tls's (`x64:todo:tls`). A variadic call
+  sets `al` to the number of vector registers used.
+
+#### 5.6.1 Settled by the skeleton (WP-116)
+
+- **Crate layout.** As `hod_a64` (§5.5.1): one module per group, the
+  ownership table in `hod_x64/src/lib.rs`, the dispatch in `target.rs`
+  final. It routes as on AArch64, with three additions: an instruction
+  whose result or an operand is a mask goes to `mask` first; a `Mem`
+  binary, `fneg`, cast or `fcmp` of `x86_fp80` goes to `x87`, of a
+  vector to `lanes`; a call of inline assembly goes to `barrier`, the
+  floating-point intrinsics to `fpintr`, the coroutine handle ones to
+  `coro`, the thread-local ones to `tls`. Each stub refuses with
+  `x64:todo:<group>` (`int`, `mem`, `control`, `call`, `vcall`, `aggr`,
+  `float`, `fpintr`, `intrinsic`, `barrier`, `atomic`, `tls`, `vector`,
+  `lanes`, `mask`, `x87`, `constaddr`, `coro`), a `pub const` of its
+  module; the stub `abi` (WP-118 replaces it) assigns `ccc`, non-variadic
+  signatures of up to six integer or pointer arguments and such a result,
+  and refuses the rest as `x64:todo:abi`. Other names: `x64:funclet`,
+  `x64:nest`, `x64:code-model`, `x64:todo:constant` (a constant `common`
+  cannot materialize yet).
+- **What the skeleton lowers**: `br`, `ret` (of a value in a register),
+  `unreachable`, `phi` (the driver's copies over the glue), direct calls
+  through the driver, constants, symbol and slot addresses.
+
+#### 5.6.2 Target features (WP-116)
+
+As §5.5.2, with `hod_x64::features`'s table (design 0006 §10.1). hod
+emits the base x86-64 instruction set (SSE2) and never chooses an
+instruction by a feature, so a feature that only makes instructions
+available is **accepted and ignored**, `+` or `-`: `sse3`, `ssse3`,
+`sse4.1`, `sse4.2`, `popcnt`, `lzcnt`, `bmi`, `bmi2`, `fma`, `f16c`,
+`movbe`, `avx`, `avx2`, `cx16` (X-atomic uses `cmpxchg16b` inline with
+it, libatomic without), `crc32`, `sahf`, `xsave`, and the baseline
+`mmx`, `fxsr`, `cmov`, `cx8`. `target-cpu` is accepted with any value.
+Refused by name:
+
+| item | reason |
+|---|---|
+| `-sse`, `-sse2` | `attr:target-feature-no-sse` |
+| `-x87` | `attr:target-feature-no-x87` |
+| `+soft-float` | `attr:target-feature-soft-float` |
+| `+retpoline*` | `attr:target-feature-retpoline` |
+| `+harden-sls-*` | `attr:target-feature-harden-sls` |
+| `+lvi-*` | `attr:target-feature-lvi` |
+| anything else, or an item that is not `+name`/`-name` | `attr:target-feature-unknown` |
+
+`+sse`, `+sse2`, `+x87` and `-soft-float`, `-retpoline*`,
+`-harden-sls-*`, `-lvi-*` are accepted. Whether a wide vector argument
+travels in `ymm` under `+avx` is the argument assignment's
+(`x64:wide-vector-abi`, WP-118). `-mattr` items are checked the same
+way, by the module's target.
 
 ## 6. Control flow
 
@@ -2286,6 +2420,39 @@ caller then passes the address of a buffer, as LLVM does. A target's
 cannot pass (`abi:<what>`); the facade runs it over a module's signatures
 as part of deciding support, so code generation never meets a failure.
 
+#### The leaf walk (WP-117)
+
+The part of assignment every target shares is in `hod_cg::abi`; the
+rules that place each piece stay the target's.
+
+- A **leaf** is a value that is not an array or a structure. `walk`
+  visits the leaves of a type with their byte offsets in offset order,
+  to any depth: a structure's fields at `TypeTable::field_offsets`, an
+  array's element `i` at `i` times the element's alloc size. An array
+  whose element has no leaf (`shape` is `Empty`) is skipped without
+  iterating it. `shape` tells whether all leaves of an aggregate have one
+  LLVM value type (`leaf_key`: a pointer is an `i64`), in time
+  proportional to the type's description.
+- The **classification hook** is the trait `Classify`: `leaf(types, ty)`
+  returns a `Leaf<Class>` (the target's class, `count` pieces of `size`
+  bytes `stride` apart, `last_size` for the last, `split` marking the
+  pieces that start an integer wider than a register, `lanes` for a
+  vector widened to lanes) or the target's `abi:<what>` name.
+  `check_type` refuses an aggregate with a refused leaf.
+- `place_leaf(leaf, arg, offset, parts, place)` asks the target's
+  `place(leaf, piece)` for each piece's `PieceLoc` (a register or a
+  stack offset) and appends the part with `push`; `place` sees the whole
+  leaf, so a pair kept whole (x86-64's `i128`) is decided at its first
+  piece, and the target keeps its own state (next registers, stack
+  offset, the vector-register count for `al`). `place_leaves` is
+  `walk` + the hook + `charge` (the piece budget,
+  `abi:too-many-pieces`) + `place_leaf` for one argument of any type.
+- `push` merges a stack part into the previous one when both are of one
+  argument and kind (never `Lanes`) and continue each other in the value
+  and on the stack; an offset or end beyond `u32` is `abi:size-limit`.
+- Where a return value goes, and whether it is demoted to memory, is the
+  target's: its return `place` fails, and it clears the parts.
+
 ### 7.3 Runtime functions
 
 Some instructions lower to calls of functions that are not in the module:
@@ -2298,6 +2465,129 @@ global symbol otherwise, so that the object never has two symbols with one
 name. A lowering calls one through `FnCx` (§8.1) with operands and a
 result like an IR call's; the service runs §7.1, so registers are
 displaced and the call site is recorded.
+
+#### Runtime routines by type and target (WP-117)
+
+Which routine an operation calls is a table in `hod_cg::sym`, keyed by
+the type (`FpType`: `half`, `float`, `double`, `fp128`, `x86_fp80`) and
+the target (`hod_ir::Arch`), so that every target asks one place. A table
+answers `None` where the target computes the operation inline, or
+refuses it by its own name. The x86-64 column is `llc` 22's
+(`-O0 -fast-isel=0`, SSE2, no SSE4.1, no FMA); the AArch64 column is
+`llc` 22's with `-global-isel=0`. `crates/hod_cg/tests/runtime_names.rs`
+compares every row with `llc` 22 and 19 on both targets, from the IR in
+`crates/hod_cg/tests/data/runtime/`.
+
+```rust
+pub fn fp_routine(op: FpOp, ty: FpType, arch: Arch) -> Option<RuntimeFn>;
+pub fn fp_ext_routine(from: FpType, to: FpType, arch: Arch) -> Option<RuntimeFn>;
+pub fn fp_trunc_routine(from: FpType, to: FpType, arch: Arch) -> Option<RuntimeFn>;
+pub fn fp_to_int_routine(from: FpType, signed: bool, bits: u32, arch: Arch) -> Option<RuntimeFn>;
+pub fn int_to_fp_routine(signed: bool, bits: u32, to: FpType, arch: Arch) -> Option<RuntimeFn>;
+pub fn fp128_compare(pred: FloatPredicate) -> Option<Fp128Compare>;   // { func, swap, result: ZeroCmp }
+pub fn int_divide_routine(op: Opcode) -> Option<RuntimeFn>;
+```
+
+- `fp128` is AArch64's `long double`: `sinl`, `fmodl`, `fmal`, ... On
+  x86-64 it is `__float128`: `sinf128`, `fmodf128`, `fmaf128`. Its
+  arithmetic is `__addtf3`, `__subtf3`, `__multf3`, `__divtf3` on both.
+  `x86_fp80` is x86-64's `long double`: `sinl`, `fmodl`, `__powixf2`;
+  its arithmetic, `sqrt`, `lrint` and `llrint` are x87 instructions. A
+  `long double` routine (`...l`) is one `RuntimeFn` whose signature is
+  written with `fp128`; on x86-64 the same symbol takes `x86_fp80`.
+- `half` calls the `float` routine, widened first and the result
+  narrowed, except on x86-64: `fma` calls `fma`, `minnum`/`maxnum` call
+  `fminf`/`fmaxf` (which `float` does not), and `frexp`, `lround` and
+  `llround` are no single call.
+- On AArch64 `float` and `double` call only the libm functions (`sin`
+  .. `log10`, `pow`, `atan2`), `frem` (`fmodf`/`fmod`), `powi`
+  (`__powisf2`/`__powidf2`), `ldexp` and `frexp`; everything else is an
+  instruction. On x86-64 the rounding functions (`floor` ..
+  `nearbyint`), `fma`, `lround` and `llround` are calls too.
+- Conversions: `fpext`/`fptrunc` with `fp128` are `__extend{sf,df}tf2`
+  and `__trunctf{hf,sf,df}2`; on x86-64 `half` is `__extendhfsf2` /
+  `__truncsfhf2` / `__truncdfhf2` (`__extendhftf2`, `__extendhfxf2`,
+  `__truncxfhf2` with the long types), `x86_fp80` and `fp128` are
+  `__extendxftf2` / `__trunctfxf2`. AArch64 widens `half` to `float`
+  before `__extendsftf2` (exact; `llc` calls `__extendhftf2`). Integer
+  conversions of `fp128` are `__fix{,uns}tf{si,di,ti}` and
+  `__float{,un}{si,di,ti}tf` by the integer's width class (1 to 32, 33
+  to 64, 65 to 128 bits); `i128` with the others is `__fix{,uns}{sf,df,
+  xf}ti` and `__float{,un}ti{hf,sf,df,xf}`.
+- `fp128` compares are `__eqtf2`, `__lttf2`, `__letf2`, `__unordtf2`,
+  operands swapped for the reversed orderings, the result compared with
+  0 (`ZeroCmp`); `ueq` and `one` are two calls (`None`, the target's).
+- `udiv`, `sdiv`, `urem`, `srem` of 65 to 128 bits are `__udivti3`,
+  `__divti3`, `__umodti3`, `__modti3` on both targets.
+- hod's choice where `llc` has none: `minimum`, `maximum`, `minimumnum`
+  and `maximumnum` of `fp128` and `x86_fp80` call the C23 functions
+  (`fminimuml`, `fminimum_numl`, `fminimumf128`, ...; glibc 2.35+).
+
+#### Memory intrinsics (WP-117)
+
+`hod_cg::memplan::mem_plan(op, len) -> MemPlan` says what a `memcpy`,
+`memcpy.inline`, `memmove`, `memset` or `memset.inline` of a constant
+(`Some`) or variable (`None`) length becomes; the target emits it.
+
+- A length of 0 is `Nothing` (the pointers may be null).
+- A constant length of at most `INLINE_MAX` = 64 bytes (`memcpy`,
+  `memset`) or `INLINE_MOVE_MAX` = 32 bytes (`memmove`) is `Inline`:
+  straight-line accesses touching exactly the bytes of the range. An
+  inline `memmove` reads every byte before it writes one, so overlap in
+  either direction is correct; 32 is what two 16-byte registers and two
+  scratch general registers hold. 64 keeps the inline code to a few
+  loads and stores while covering the common small struct copies and
+  clears; beyond it the library routine is as fast and the code stays
+  small.
+- Anything longer, and every variable length, is `Call` of `memcpy`,
+  `memmove` or `memset` through `hod_cg`'s runtime-call sequence, so live
+  values are saved as for any call; a variable length narrower than 64
+  bits is zero-extended first.
+- The `.inline` forms never call: a constant length above 64 is a
+  `Loop`; a variable length is `VariableInline`, which the target refuses
+  by its own name.
+
+#### `switch` (WP-117)
+
+`hod_cg::switch` plans a `switch` on a condition of at most 64 bits; the
+target emits the compares and branches.
+
+- Case values and the condition are compared zero-extended
+  (`case_mask(bits)`).
+- A constant condition goes to the first case of its value, else the
+  default (`constant_target`): one `br`.
+- `canonical_cases` drops the cases that go to the default, sorts the
+  others by unsigned value (stable; skipped when they come sorted, so
+  compile time is linear for a frontend's usual order and `n log n`
+  otherwise) and keeps one case per value. Of two cases of one value
+  (invalid IR), the first of those not to the default wins; a first one
+  to the default is dropped before that, so the second is kept, where
+  the constant fold above takes the default.
+- No cases left is a `br` to the default. Otherwise the search
+  (`search_step`): a run of at most `LINEAR_CASES` = 4 cases is a chain
+  (compare with each in order, equal goes to its block, then the
+  default); a longer one is a node at its middle case `len / 2` (equal
+  goes to its block, above to the search of the upper half, else the
+  lower half). Code is linear in the cases; a run does about
+  `log2(n) + 4` compares; no jump table, so a function's code has no
+  relocation against itself (§6.2).
+
+#### Target features (WP-117)
+
+`hod_cg::features::FeatureTable { required, available, contract }` reads
+a `target-features` string or an `-mattr` item; the table is the
+target's (AArch64: §5.5.2). Items are separated by `,`, empty items
+skipped; each is `+name` or `-name`. In order:
+
+1. `-name` of a `required` feature is refused with its reason.
+2. A name in `available` is accepted with either sign.
+3. A name `contract` gives a reason for is refused with it when `+`,
+   and accepted when `-` (the default, which hod's code keeps).
+4. Anything else, either sign, and an item without a sign, is
+   `attr:target-feature-unknown` (`UNKNOWN`).
+
+The first refused item of a string is the answer (`Refused { reason,
+feature }`).
 
 ### 7.4 Symbol addresses
 

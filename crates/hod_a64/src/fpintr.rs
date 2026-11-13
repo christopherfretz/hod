@@ -29,8 +29,9 @@
     reason = "the operands are LangRef's x, a, b, c; f the format"
 )]
 
+use hod_cg::sym::{FpOp, FpType, fp_routine};
 use hod_cg::{CallArg, CgResult, Class, FnCx, PReg, RuntimeFn};
-use hod_ir::{Inst, Intrinsic, TypeId, TypeKind, Value};
+use hod_ir::{Arch, Inst, Intrinsic, TypeId, TypeKind, Value};
 use hod_mc_a64 as mc;
 use hod_mc_a64::{Cond, FpFormat, FpSize, Reg, Size, VMemSize, VReg, VecBits};
 
@@ -76,14 +77,19 @@ impl Fmt {
         }
     }
 
-    /// The function of three (`float`, `double`, `fp128`) for this
-    /// format; `half` calls the `float` one.
-    fn pick(self, funcs: [RuntimeFn; 3]) -> RuntimeFn {
-        match self {
-            Fmt::H | Fmt::S => funcs[0],
-            Fmt::D => funcs[1],
-            Fmt::Q => funcs[2],
-        }
+    /// The routine `op` of this format calls (`hod_cg::sym`'s table;
+    /// `half` calls the `float` one).
+    ///
+    /// # Errors
+    /// [`INTRINSIC`] where the table has no call.
+    fn routine(self, op: FpOp) -> CgResult<RuntimeFn> {
+        let ty = match self {
+            Fmt::H => FpType::Half,
+            Fmt::S => FpType::Float,
+            Fmt::D => FpType::Double,
+            Fmt::Q => FpType::Fp128,
+        };
+        fp_routine(op, ty, Arch::Aarch64).map_or_else(|| unsupported(INTRINSIC), Ok)
     }
 }
 
@@ -149,28 +155,28 @@ pub fn is_fp(which: Intrinsic<'_>) -> bool {
     ) || libm(which).is_some()
 }
 
-/// The `float`, `double` and `fp128` functions of a libm intrinsic.
-fn libm(which: Intrinsic<'_>) -> Option<[RuntimeFn; 3]> {
+/// The routine operation of a libm intrinsic.
+fn libm(which: Intrinsic<'_>) -> Option<FpOp> {
+    use FpOp as O;
     use Intrinsic as I;
-    use RuntimeFn as R;
     Some(match which {
-        I::Sin => [R::Sinf, R::Sin, R::Sinl],
-        I::Cos => [R::Cosf, R::Cos, R::Cosl],
-        I::Tan => [R::Tanf, R::Tan, R::Tanl],
-        I::Asin => [R::Asinf, R::Asin, R::Asinl],
-        I::Acos => [R::Acosf, R::Acos, R::Acosl],
-        I::Atan => [R::Atanf, R::Atan, R::Atanl],
-        I::Atan2 => [R::Atan2f, R::Atan2, R::Atan2l],
-        I::Sinh => [R::Sinhf, R::Sinh, R::Sinhl],
-        I::Cosh => [R::Coshf, R::Cosh, R::Coshl],
-        I::Tanh => [R::Tanhf, R::Tanh, R::Tanhl],
-        I::Exp => [R::Expf, R::Exp, R::Expl],
-        I::Exp2 => [R::Exp2f, R::Exp2, R::Exp2l],
-        I::Exp10 => [R::Exp10f, R::Exp10, R::Exp10l],
-        I::Log => [R::Logf, R::Log, R::Logl],
-        I::Log2 => [R::Log2f, R::Log2, R::Log2l],
-        I::Log10 => [R::Log10f, R::Log10, R::Log10l],
-        I::Pow => [R::Powf, R::Pow, R::Powl],
+        I::Sin => O::Sin,
+        I::Cos => O::Cos,
+        I::Tan => O::Tan,
+        I::Asin => O::Asin,
+        I::Acos => O::Acos,
+        I::Atan => O::Atan,
+        I::Atan2 => O::Atan2,
+        I::Sinh => O::Sinh,
+        I::Cosh => O::Cosh,
+        I::Tanh => O::Tanh,
+        I::Exp => O::Exp,
+        I::Exp2 => O::Exp2,
+        I::Exp10 => O::Exp10,
+        I::Log => O::Log,
+        I::Log2 => O::Log2,
+        I::Log10 => O::Log10,
+        I::Pow => O::Pow,
         _ => return None,
     })
 }
@@ -190,8 +196,8 @@ pub fn fp_intrinsic<'a>(
     use Intrinsic as I;
     let Some(&first) = args.first() else { return unsupported(INTRINSIC) };
     let f = fmt_of(cx, value_ty(cx, first))?;
-    if let Some(funcs) = libm(which) {
-        return call_math(cx, inst, f, f.pick(funcs), args, None);
+    if let Some(op) = libm(which) {
+        return call_math(cx, inst, f, f.routine(op)?, args, None);
     }
     match (which, args) {
         (
@@ -223,11 +229,11 @@ pub fn fp_intrinsic<'a>(
         (I::FptosiSat | I::FptouiSat, &[x]) => saturate(cx, inst, which == I::FptosiSat, f, x),
         (I::IsFpClass, &[x, mask]) => fp_class(cx, inst, f, x, mask),
         (I::Powi, &[_, n]) => {
-            let func = f.pick([RuntimeFn::PowiSf2, RuntimeFn::PowiDf2, RuntimeFn::PowiTf2]);
+            let func = f.routine(FpOp::Powi)?;
             call_math(cx, inst, f, func, &args[..1], Some(n))
         }
         (I::Ldexp, &[_, n]) => {
-            let func = f.pick([RuntimeFn::Ldexpf, RuntimeFn::Ldexp, RuntimeFn::Ldexpl]);
+            let func = f.routine(FpOp::Ldexp)?;
             call_math(cx, inst, f, func, &args[..1], Some(n))
         }
         (I::Frexp, &[x]) => frexp(cx, inst, f, x),
@@ -272,18 +278,18 @@ pub fn lane_plan(
     if f == Fmt::Q {
         return cx.bug("a vector lane of fp128");
     }
-    if let Some(funcs) = libm(which) {
-        return Ok(LaneFp::Call { func: f.pick(funcs), n: 0 });
+    if let Some(op) = libm(which) {
+        return Ok(LaneFp::Call { func: f.routine(op)?, n: 0 });
     }
-    let (funcs, clamp) = match which {
-        I::Powi => ([RuntimeFn::PowiSf2, RuntimeFn::PowiDf2, RuntimeFn::PowiTf2], false),
-        I::Ldexp => ([RuntimeFn::Ldexpf, RuntimeFn::Ldexp, RuntimeFn::Ldexpl], true),
+    let (op, clamp) = match which {
+        I::Powi => (FpOp::Powi, false),
+        I::Ldexp => (FpOp::Ldexp, true),
         I::Frexp | I::IsFpClass => return unsupported(VECTOR),
         _ => return Ok(LaneFp::Inline),
     };
     let Some(n_elem) = n_elem else { return unsupported(INTRINSIC) };
     let n = int_arg_bits(cx.types().int_bits(n_elem), clamp)?;
-    Ok(LaneFp::Call { func: f.pick(funcs), n })
+    Ok(LaneFp::Call { func: f.routine(op)?, n })
 }
 
 /// One lane of an inline floating-point intrinsic ([`LaneFp::Inline`])
@@ -398,22 +404,23 @@ fn rounding<'a>(
     f: Fmt,
     x: Value,
 ) -> CgResult<()> {
+    use FpOp as O;
     use Intrinsic as I;
-    use RuntimeFn as R;
     deferred_first(cx, inst, None)?;
     if f == Fmt::Q {
-        let func = match which {
-            I::Sqrt => R::Sqrtl,
-            I::Floor => R::Floorl,
-            I::Ceil => R::Ceill,
-            I::Trunc => R::Truncl,
-            I::Round => R::Roundl,
-            I::RoundEven => R::Roundevenl,
-            I::NearbyInt => R::Nearbyintl,
-            I::Rint => R::Rintl,
+        let op = match which {
+            I::Sqrt => O::Sqrt,
+            I::Floor => O::Floor,
+            I::Ceil => O::Ceil,
+            I::Trunc => O::Trunc,
+            I::Round => O::Round,
+            I::RoundEven => O::RoundEven,
+            I::NearbyInt => O::NearbyInt,
+            I::Rint => O::Rint,
             // `x * 1.0`, as `llc`.
             _ => return quad_canonicalize(cx, inst, x),
         };
+        let func = f.routine(op)?;
         return finish_call(cx, inst, func, &[CallArg::Value(x)], false);
     }
     let r = cx.use_reg(x)?;
@@ -553,7 +560,7 @@ fn fma<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, f: Fmt, [a, b, c]: [Value; 3]
     deferred_first(cx, inst, None)?;
     if f == Fmt::Q {
         let args = [CallArg::Value(a), CallArg::Value(b), CallArg::Value(c)];
-        return finish_call(cx, inst, RuntimeFn::Fmal, &args, false);
+        return finish_call(cx, inst, f.routine(FpOp::Fma)?, &args, false);
     }
     let (ra, rb) = addend_last(cx, a, b, c)?;
     fma_reg(cx, f, vr(ra), vr(rb), V31);
@@ -635,18 +642,18 @@ fn min_max<'a>(
     a: Value,
     b: Value,
 ) -> CgResult<()> {
+    use FpOp as O;
     use Intrinsic as I;
-    use RuntimeFn as R;
     deferred_first(cx, inst, None)?;
     if f == Fmt::Q {
-        let func = match which {
-            I::MinNum => R::Fminl,
-            I::MaxNum => R::Fmaxl,
-            I::Minimum => R::Fminimuml,
-            I::Maximum => R::Fmaximuml,
-            I::MinimumNum => R::FminimumNuml,
-            _ => R::FmaximumNuml,
-        };
+        let func = f.routine(match which {
+            I::MinNum => O::MinNum,
+            I::MaxNum => O::MaxNum,
+            I::Minimum => O::Minimum,
+            I::Maximum => O::Maximum,
+            I::MinimumNum => O::MinimumNum,
+            _ => O::MaximumNum,
+        })?;
         return finish_call(cx, inst, func, &[CallArg::Value(a), CallArg::Value(b)], false);
     }
     let ra = cx.use_reg(a)?;
@@ -697,12 +704,12 @@ fn to_int<'a>(
     let bits = int_result(cx, inst)?;
     deferred_first(cx, inst, None)?;
     if f == Fmt::Q {
-        let func = match which {
-            I::Lround => RuntimeFn::Lroundl,
-            I::Llround => RuntimeFn::Llroundl,
-            I::Lrint => RuntimeFn::Lrintl,
-            _ => RuntimeFn::Llrintl,
-        };
+        let func = f.routine(match which {
+            I::Lround => FpOp::Lround,
+            I::Llround => FpOp::Llround,
+            I::Lrint => FpOp::Lrint,
+            _ => FpOp::Llrint,
+        })?;
         return finish_call(cx, inst, func, &[CallArg::Value(x)], false);
     }
     let a = cx.use_reg(x)?;
@@ -994,7 +1001,7 @@ fn frexp<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, f: Fmt, x: Value) -> CgResu
     }
     let exp_at = cx.types().field_offset(ty, 1) as u32;
     deferred_first(cx, inst, None)?;
-    let func = f.pick([RuntimeFn::Frexpf, RuntimeFn::Frexp, RuntimeFn::Frexpl]);
+    let func = f.routine(FpOp::Frexp)?;
     let slot = cx.alloc_slot(4, 4)?;
     let arg = fp_arg(cx, f, x)?;
     let Some(r) = cx.call_runtime(func, &[arg, CallArg::Addr(slot)], None)? else {

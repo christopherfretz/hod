@@ -126,10 +126,12 @@ impl Memory {
         Ok(base)
     }
 
-    /// The address of a function: an allocation without bytes.
-    pub(crate) fn alloc_function(&mut self, sym: SymId) -> Result<u64, Trap> {
-        let base = self.place(1, 1)?;
-        self.allocs.push(Alloc { base, size: 1, align: 1, at: 0, kind: AllocKind::Function(sym) });
+    /// The address of a function: an allocation without bytes, aligned
+    /// to the function's `align` (the Itanium C++ ABI of x86-64 tests the
+    /// low bit of a member function's address).
+    pub(crate) fn alloc_function(&mut self, sym: SymId, align: u64) -> Result<u64, Trap> {
+        let base = self.place(1, align)?;
+        self.allocs.push(Alloc { base, size: 1, align, at: 0, kind: AllocKind::Function(sym) });
         Ok(base)
     }
 
@@ -418,9 +420,12 @@ mod tests {
     #[test]
     fn functions_and_limits() {
         let mut m = Memory::new(0x1000, 1, 32);
-        let f = m.alloc_function(SymId::new(3)).unwrap();
-        let g = m.alloc_function(SymId::new(4)).unwrap();
+        let f = m.alloc_function(SymId::new(3), 1).unwrap();
+        let g = m.alloc_function(SymId::new(4), 1).unwrap();
         assert_ne!(f, g);
+        // WP-138: a function's `align` holds for its address.
+        let mut aligned = Memory::new(0x1001, 1, 32);
+        assert_eq!(aligned.alloc_function(SymId::new(5), 16).unwrap() % 16, 0);
         assert_eq!(m.function_at(f), Some(SymId::new(3)));
         assert_eq!(m.function_at(f + 1), None);
         assert_eq!(m.function_at(0), None);
@@ -434,7 +439,7 @@ mod tests {
         let mut top = Memory::new(u64::MAX - 8, 1, 1 << 20);
         assert!(top.alloc(4, 1, AllocKind::Stack).is_ok());
         assert_eq!(top.alloc(4, 1, AllocKind::Stack), Err(Trap::Memory));
-        assert_eq!(top.alloc_function(SymId::new(0)), Ok(u64::MAX - 2));
-        assert_eq!(top.alloc_function(SymId::new(0)), Err(Trap::Memory));
+        assert_eq!(top.alloc_function(SymId::new(0), 1), Ok(u64::MAX - 2));
+        assert_eq!(top.alloc_function(SymId::new(0), 1), Err(Trap::Memory));
     }
 }

@@ -41,7 +41,7 @@
 //! | `lanes` | WP-132 | element-wise operations on `Mem`-class vectors | |
 //! | `mask` | WP-132 | vectors of `i1` | |
 //! | `atomic` | WP-133 | atomic `load`/`store`, `atomicrmw`, `cmpxchg`, `fence` | |
-//! | `tls` | WP-134 | thread-local addresses, `llvm.threadlocal.address`, `llvm.thread.pointer` | |
+//! | `tls` | WP-134 | thread-local addresses, `llvm.threadlocal.address`, `llvm.thread.pointer` | `tests/tls.rs` |
 //! | `constaddr` | WP-126 | constant operands that hold addresses: differences, relocated images | `tests/aggr.rs` |
 //! | `tail` | (later) | what no group package takes | |
 //! | `coro` | WP-137 | coroutine handle operations: `llvm.coro.resume`, `destroy`, `done`, `promise`, `noop` | |

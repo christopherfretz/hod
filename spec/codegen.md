@@ -2558,6 +2558,69 @@ x86-64 snippets `dso-local-data`, `pie`, `narrow-fields`,
 module whose code is a C driver, and an `available_externally` copy,
 linked by bfd, lld and mold and run under `qemu-x86_64`).
 
+#### 5.6.11 Thread-local storage (WP-134)
+
+The model is `hod_cg::sym_access`'s (`TargetMachine::getTLSModel`, as
+on AArch64): a shared object (PIC without `PIE Level`) gets general
+dynamic for a preemptible variable and local dynamic for a `dso_local`
+one; an executable, PIE or not, initial exec and local exec; a model
+the variable asks for wins when it is more specific. x86-64 lowers
+local dynamic as itself (`llc` uses no TLS descriptors here). Every
+sequence is `llc -relocation-model=pic`'s, with its relocations and
+without an addend in them; an offset from the variable is added in code
+afterwards (`common::add_addend`), as on AArch64:
+
+| model | sequence | relocations |
+|---|---|---|
+| general dynamic | `data16 lea rdi, [rip + x@tlsgd]` · `data16 data16 rex64 call __tls_get_addr@PLT`: exactly `66 48 8D 3D` · `66 66 48 E8` and their fields, 16 bytes; `rax` = `&x` | `TLSGD`, `PLT32` |
+| local dynamic | `lea rdi, [rip + x@tlsld]` · `call __tls_get_addr@PLT` (12 bytes) · `lea rd, [rax + x@dtpoff]` (`disp32`) | `TLSLD`, `PLT32`, `DTPOFF32` |
+| initial exec | `mov rd, [rip + x@gottpoff]` · `push t` · `mov t, fs:[0]` · `lea rd, [rd + t]` · `pop t` (`t` is `r11`, or `r10` when `rd` is `r11`) | `GOTTPOFF` |
+| local exec | `mov rd, fs:[0]` · `lea rd, [rd + x@tpoff]` (`disp32`) | `TPOFF32` |
+
+`llvm.thread.pointer` is `mov rd, fs:[0]`. A dso-local variable with
+external linkage in a shared object is reached through its local alias
+(§9.7), as `llc` does.
+
+- **Where `llc` differs.** Initial exec puts `GOTTPOFF` on the `mov`
+  and adds the thread pointer with `lea` under a saved `t`, where `llc`
+  writes `mov rd, fs:[0]` · `add rd, [rip + x@gottpoff]` or folds
+  `fs:` into the access: `add` writes the flags, which an operand may
+  not (below). Both forms are the ones the linkers relax. `llc` folds
+  `fs:[x@tpoff]` and `[rax + x@dtpoff]` into loads and stores; hod
+  forms the address, then accesses it (no load folding, §5.6).
+- **`llvm.threadlocal.address` of a dynamic model is a call** (§4.4):
+  every register value is displaced, then the bare pair is emitted and
+  `rax` (or the `DTPOFF32` `lea` from it) is moved to the result. The
+  call is recorded as a call site (§7.1). The static models are
+  lowered as an operand.
+- **A thread-local address is an operand** like any other symbol
+  address (§3; the AArch64 decision of WP-073): `common::sym_address`
+  hands it to `tls::address`, which may run at any point of a lowering
+  (argument placement, between a fused compare and its `cmovcc`) and
+  writes `rd` and nothing else, the flags kept. For the dynamic models
+  that means saving what `__tls_get_addr` clobbers below `rsp`, in a
+  336-byte area (so `rsp` stays 16-aligned at the call; the CFA is
+  `rbp`-based, so no CFI row changes): the nine caller-saved general
+  registers but `rd`, `xmm0`..`xmm15` (`movdqu`), and the flags as the
+  five bytes `seto`, `setb`, `sete`, `sets`, `setp`. After the call the
+  flags are rebuilt in three caller-saved registers other than `rd`:
+  `test u, u` with `u = (SF << 63 | PF << 1 | 1) & (ZF - 1)` sets ZF,
+  SF, PF; `rol v, 1` with `v = CF << 63 | (OF ^ CF) << 62` sets CF and
+  OF and leaves the others. AF, which no condition reads, is not kept; a
+  state with ZF and SF both set, which no arithmetic produces, is not
+  rebuilt. The encoder has no `pushfq`/`popfq` (`9C`/`9D`), which would
+  replace the rebuild. The x87 stack must be empty there, as at any
+  call (WP-131).
+- **Refused**: as on AArch64, `tls:direct-operand` (a thread-local
+  callee) and `tls:address-in-constant` by `hod_ir`'s classification;
+  a code model other than small is `x64:code-model`. `x64:todo:tls` is
+  no longer returned. The DWARF location of a thread-local variable
+  (`DW_OP_const8u x@dtpoff; DW_OP_GNU_push_tls_address`,
+  `R_X86_64_DTPOFF64`) stays refused by `hod_dwarf`
+  (`debug:tls-location` on x86-64) for WP-136.
+
+Evidence: `hod_x64/tests/tls.rs` (WP-134 record).
+
 ## 6. Control flow
 
 ### 6.1 Reachability

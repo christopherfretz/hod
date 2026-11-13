@@ -665,3 +665,31 @@ fn flags_survive_a_dynamic_access_under_every_predicate() {
         ran.stderr_text()
     );
 }
+
+/// The size of an object's `.text`, by `llvm-readelf`, if it is installed.
+fn text_bytes(object: &Path) -> Option<u64> {
+    let readelf = tool("llvm-readelf")?;
+    let text = output(&readelf, &["-SW".as_ref(), object.as_os_str()]);
+    let line = text.lines().find(|line| line.contains(" .text "))?;
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    let at = fields.iter().position(|field| *field == ".text")?;
+    u64::from_str_radix(fields.get(at + 4)?, 16).ok()
+}
+
+/// The `.text` of the library module, hod against `llc` 22 (printed, not
+/// asserted: code size is not a goal).
+#[test]
+fn text_size_against_llc() {
+    let dir = Scratch::new("x64-tls-size");
+    let lib = data("lib.ll");
+    for mode in [Mode::Pie, Mode::Shared] {
+        let ours = object(&dir, &format!("size-hod-{mode:?}"), &lib, mode, Who::Hod).unwrap();
+        let Some(theirs) = object(&dir, &format!("size-llc-{mode:?}"), &lib, mode, Who::Llc(22))
+        else {
+            return;
+        };
+        if let (Some(a), Some(b)) = (text_bytes(&ours), text_bytes(&theirs)) {
+            eprintln!("x64 tls {mode:?}: .text hod {a} llc22 {b} bytes: hod/llc {}%", a * 100 / b);
+        }
+    }
+}

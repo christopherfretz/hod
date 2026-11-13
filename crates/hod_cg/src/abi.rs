@@ -184,12 +184,10 @@ pub struct AbiUnsupported(pub &'static str);
 ///
 /// Both sides are assigned as the call sequence assigns them: a
 /// function's own signature with its declared attributes, a call with its
-/// effective ones (`hod_ir::call_arg_attrs`). A call that passes more
-/// arguments than its function type names (the variable arguments of a
-/// variadic call) has no answer: their types are the body's, which the
-/// hook is not given. `musttail` forwards a variadic caller's variable
-/// arguments as `...`, which a call site does not list, so this costs no
-/// `musttail` call of the corpus.
+/// effective ones (`hod_ir::call_arg_attrs`). The variable arguments of a
+/// variadic call (those beyond its function type's parameters, before a
+/// forwarded `...`) are typed by their values in the call's body, as the
+/// call sequence types them (WP-115).
 #[derive(Clone, Copy)]
 pub struct TargetStackArgs<'t, T> {
     target: &'t T,
@@ -231,11 +229,19 @@ impl<T: Target> StackArgs for TargetStackArgs<'_, T> {
         let TypeKind::Function { ret, params, variadic } = module.types.kind(call.fn_type()) else {
             return None;
         };
-        if call.args().len() != params.len() {
+        let args = call.args();
+        if args.len() < params.len() || (args.len() > params.len() && !variadic) {
             return None;
         }
+        // The variable arguments are typed as the call sequence types
+        // them: by their values, in the call's body (WP-115).
+        let types: Vec<TypeId> = params
+            .iter()
+            .copied()
+            .chain(args[params.len()..].iter().map(|&value| call.body().value_type(module, value)))
+            .collect();
         let ret_attrs = call_ret_attrs(module, call).ok()?;
-        let param_attrs = (0..params.len())
+        let param_attrs = (0..args.len())
             .map(|index| call_arg_attrs(module, call, index).ok())
             .collect::<Option<Vec<ParamAttrs>>>()?;
         let fixed = u32::try_from(params.len()).ok()?;
@@ -243,7 +249,7 @@ impl<T: Target> StackArgs for TargetStackArgs<'_, T> {
             cc: call.cc(),
             ret,
             ret_attrs,
-            params,
+            params: &types,
             param_attrs: &param_attrs,
             fixed,
             variadic,

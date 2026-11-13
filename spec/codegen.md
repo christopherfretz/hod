@@ -2183,6 +2183,69 @@ travels in `ymm` under `+avx` is the argument assignment's
 (`x64:wide-vector-abi`, WP-118). `-mattr` items are checked the same
 way, by the module's target.
 
+#### 5.6.3 Memory (WP-123)
+
+`hod_x64::mem`: non-atomic `load`/`store` of `Gpr` and `Fpr` values,
+`alloca`, `ptradd`, `llvm.stacksave`/`stackrestore`. `Mem`-class values
+are X-aggr's, atomic accesses X-atomic's (`x64:todo:atomic`).
+
+- **Addresses** (`mem::compute`, `mem::At`). A `ptradd` whose only use
+  is the address of a load or store is deferred when the driver allows it
+  (§4.6) and fused into that access; otherwise it is computed into its
+  result with `lea` (or `mov`, a plain base; the frame address, a slot
+  plus a constant). Order inside a lowering: every operand is asked for
+  first (`use_reg`, `def_reg`); the first variable index is put in `rcx`,
+  sign-extended from its width (`movsxd`/`movsx`, or `shl`/`sar` for an
+  odd width), scaled by the addressing mode when the scale is 1, 2, 4 or
+  8, else by `shl` or `imul`; a second goes through `rdx` and is added
+  into `rcx` with `lea`. Constant indices fold into the offset. The base
+  is formed last, in `r11`: a symbol's address with the whole constant
+  offset as its addend (§7.4); a slot's address; a constant pointer. A
+  slot with no variable index and an offset below `2^24` is a frame
+  access, no address formed. An offset outside the 32-bit displacement
+  (minus 16, the room of a 16-byte access in pieces) is moved into
+  `rcx` before `r11` is written. `rax` is left to the access.
+- **Flags.** `shl`, `imul` and `and` of a `ptradd`, an odd-width store or
+  an `alloca` write the flags; none of them is glue and none runs
+  between a compare and its fused reader (a deferred compare is emitted
+  by its reader).
+- **Integer loads** read exactly the store size: 1, 2, 4 bytes with
+  `movzx`/`mov r32` (zero above), 8 with `mov`; 3 is a word, then the
+  byte at 2 shifted by 16 and `or`ed; 5, 6, 7 are a dword, then the rest
+  (byte, word, or word and byte) shifted by 32 and `or`ed, through `rax`
+  and `rdx`. The bits loaded above an odd width are those memory holds,
+  zero for a defined program.
+- **Integer stores** write exactly the store size and zero the bits above
+  the width (§2.2, as `llc`): a width that is a multiple of 8 and a store
+  size of 1, 2, 4 or 8 is one `mov`; otherwise the value is copied to
+  `rax`, masked (`and`, `mov r32` for 32, `shl`/`shr` for widths above
+  32) when the width is odd, and stored in pieces: 3 is a word, `shr eax,
+  16`, a byte; 5..7 a dword, `shr rax, 32`, then a byte, a word, or a word
+  and a byte. A constant is stored as an immediate (`mov m, imm32`, or
+  through `rax` when it does not fit a sign-extended 32 bits).
+- **`Fpr` values**: by store size, `half`/`bfloat` with `pinsrw x, m, 0`
+  (load) and `pextrw eax, x, 0` + `mov m16` (store), 4 bytes `movss`, 8
+  `movsd`, 16 (`fp128`, 128-bit vectors) `movups`; alignment is never
+  assumed. A constant `Fpr` value is stored as integer immediates (two
+  8-byte stores for 16 bytes), not loaded into a register.
+- **`volatile`** is an ordinary access; a volatile load whose result is
+  unused is still emitted (once).
+- **`alloca`** (dynamic; fixed ones are slots, §5.6): the size is
+  `count × element size`, the count zero-extended from its width
+  (`count` is unsigned, as `llc`), the product wrapping at 64 bits,
+  rounded up to 16; `rsp` moves down by it through `r11` (`lea r11, [rsp
+  - size]` for a constant that fits, else `mov`/`sub`), then, for an
+  alignment above 16, `and r11, -align`; `mov rsp, r11`; the result is
+  the new `rsp`. **An alignment above 16 is supported** (design 0006 §2.9
+  planned `x64:stackrealign`; the frame is never realigned, the
+  allocation is aligned by itself, as on AArch64). Outgoing arguments
+  are allocated per call below it (§5.6), and the epilogue restores `rsp`
+  from `rbp`. An alignment that is not a power of two or is above `2^32`,
+  or a constant size at or above `2^63`, is `limit:frame-size`.
+- **`stacksave`** is `mov r, rsp`; **`stackrestore`** `mov rsp, r`.
+- **Refused**: `x64:ptradd-vector`, a `ptradd` whose result is a vector
+  of pointers (a `<2 x ptr>` is `Fpr`; X-lanes may take it).
+
 ## 6. Control flow
 
 ### 6.1 Reachability

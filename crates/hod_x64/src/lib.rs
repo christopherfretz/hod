@@ -27,7 +27,7 @@
 //! | `term` | WP-116 | `br`, `ret`, `unreachable` | `tests/skeleton.rs` |
 //! | `features` | WP-116, WP-117 | the judged target features (§5.6.2) | unit |
 //! | `int` | WP-122 | integer binary operations, casts, `icmp`, `select`, `freeze` | |
-//! | `mem` | WP-123 | `load`, `store`, `alloca`, `ptradd`, `llvm.stacksave`/`stackrestore` | |
+//! | `mem` | WP-123 | `load`, `store`, `alloca`, `ptradd`, `llvm.stacksave`/`stackrestore` | `tests/mem.rs` |
 //! | `control` | WP-124 | `condbr`, `switch`, `indirectbr` | |
 //! | `call` | WP-125 | calls, `invoke`, `musttail`, landing pads, `resume`, variadics | |
 //! | `vcall` | WP-125, WP-132 | vectors across calls (`PartKind::Lanes`) | |

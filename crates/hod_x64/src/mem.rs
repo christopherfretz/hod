@@ -587,8 +587,8 @@ pub fn alloca<'a>(
             .and_then(|s| s.checked_next_multiple_of(16))
             .filter(|&s| s < 1 << 63)
             .ok_or_else(too_big)?;
-        if size <= i32::MAX as u64 {
-            put(cx, mc::lea(Size::Q, R11, Mem::base(RSP, -(size as i32))));
+        if let Ok(size) = i32::try_from(size) {
+            put(cx, mc::lea(Size::Q, R11, Mem::base(RSP, -size)));
         } else {
             put(cx, mc::mov_rr(Size::Q, R11, RSP));
             put(cx, mc::mov_ri(Size::Q, RAX, size as i64));

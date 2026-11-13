@@ -23,7 +23,7 @@ mod mem_gen;
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 use std::time::Duration;
@@ -226,7 +226,10 @@ fn driver(funcs: &[Func]) -> String {
          static double f64(uint64_t b) { double d; memcpy(&d, &b, 8); return d; }\n",
     );
     for f in funcs {
-        let params: String = f.params.iter().map(|p| format!(", {}", p.ty.c_name())).collect();
+        let params: String = f.params.iter().fold(String::new(), |mut out, p| {
+            write!(out, ", {}", p.ty.c_name()).unwrap();
+            out
+        });
         writeln!(c, "uint64_t {}(unsigned char *{params});", f.name).unwrap();
         for g in &f.globals {
             writeln!(c, "extern unsigned char {}[{GLOBAL}];", g.name).unwrap();
@@ -282,6 +285,20 @@ fn split(output: &str) -> Vec<String> {
 /// and 19.
 const MODES: [&str; 5] = ["plain", "stress", "pic", "llc22", "llc19"];
 
+/// The bytes of an ELF64 object's executable sections.
+fn text_bytes(object: &Path) -> u64 {
+    let elf = std::fs::read(object).expect("an object");
+    let u = |at: usize, n: usize| {
+        elf[at..at + n].iter().rev().fold(0u64, |acc, &b| (acc << 8) | u64::from(b))
+    };
+    let (table, entry, count) = (u(0x28, 8) as usize, u(0x3a, 2) as usize, u(0x3c, 2) as usize);
+    (0..count)
+        .map(|k| table + k * entry)
+        .filter(|&h| u(h + 8, 8) & 4 != 0)
+        .map(|h| u(h + 32, 8))
+        .sum()
+}
+
 /// Runs `funcs` in every mode and returns the first difference from
 /// `want` per mode, as `(what, report)`. `None` without the tools.
 fn run_modes(funcs: &[Func], want: &[String]) -> Option<Vec<(String, String)>> {
@@ -307,6 +324,9 @@ fn run_modes(funcs: &[Func], want: &[String]) -> Option<Vec<(String, String)>> {
                 object(&scratch, mode, &text, &options)
             }
         };
+        if mode == "pic" || mode == "llc22" {
+            eprintln!("x64 mem: {mode}: {} text bytes", text_bytes(&object));
+        }
         let program = scratch.join(mode);
         toolchain.link_ok(linker, &["-pie"], &[&driver, &object], &program);
         let ran = run_with(&mut toolchain.runner_command(&program), &[], Duration::from_mins(5));
@@ -608,12 +628,12 @@ fn mixed_objects_agree() {
     let Some(linker) = toolchain.linkers.first() else { return };
     let driver = toolchain.compile_c(&dir, "driver", MIXED_DRIVER, &["-fPIE"]);
     let pic = Options { reloc_model: RelocModel::Pic, ..Options::default() };
-    let caller = format!("{}{MIXED_CALLER}", header());
-    let callee = format!("{}{MIXED_CALLEE}", header());
-    let hod = (object(&dir, "hod-caller", &caller, &pic), object(&dir, "hod-callee", &callee, &pic));
-    let Some(llc_caller) = llc(&dir, 22, "llc-caller", &caller) else { return };
-    let Some(llc_callee) = llc(&dir, 22, "llc-callee", &callee) else { return };
-    for (name, a, b) in [("hod-llc", &hod.0, &llc_callee), ("llc-hod", &llc_caller, &hod.1)] {
+    let outer = format!("{}{MIXED_CALLER}", header());
+    let fill = format!("{}{MIXED_CALLEE}", header());
+    let hod = (object(&dir, "hod-outer", &outer, &pic), object(&dir, "hod-fill", &fill, &pic));
+    let Some(llc_outer) = llc(&dir, 22, "llc-outer", &outer) else { return };
+    let Some(llc_fill) = llc(&dir, 22, "llc-fill", &fill) else { return };
+    for (name, a, b) in [("hod-llc", &hod.0, &llc_fill), ("llc-hod", &llc_outer, &hod.1)] {
         let program = dir.join(name);
         let ran = toolchain.link_and_run(linker, &["-pie"], &[&driver, a, b], &program);
         assert_eq!(exit_code(&ran), Some(0), "{name}:\n{}{}", ran.stdout_text(), ran.stderr_text());

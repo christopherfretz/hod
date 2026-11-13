@@ -29,21 +29,21 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `tls` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
 | `init` | 10 | 6 | 3 | 1 | 0 | 10 | 0 |
-| `function` | 6 | 6 | 0 | 0 | 2 | 4 | 0 |
+| `function` | 6 | 6 | 0 | 0 | 4 | 2 | 0 |
 | `cc` | 15 | 6 | 7 | 2 | 1 | 11 | 3 |
 | `attr` | 57 | 23 | 31 | 3 | 14 | 35 | 8 |
 | `type` | 15 | 11 | 1 | 3 | 2 | 11 | 2 |
-| `inst` | 67 | 60 | 0 | 7 | 4 | 56 | 7 |
-| `mem` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
+| `inst` | 67 | 60 | 0 | 7 | 8 | 52 | 7 |
+| `mem` | 3 | 3 | 0 | 0 | 1 | 2 | 0 |
 | `atomicrmw` | 21 | 21 | 0 | 0 | 0 | 21 | 0 |
 | `call` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
 | `tail` | 3 | 3 | 0 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
-| `operand` | 11 | 8 | 3 | 0 | 2 | 9 | 0 |
+| `operand` | 11 | 8 | 3 | 0 | 3 | 8 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 354 | 334 | 20 | 0 | 0 | 138 | 216 |
-| total | 663 | 533 | 84 | 46 | 37 | 356 | 270 |
+| `intrinsic` | 354 | 334 | 20 | 0 | 2 | 136 | 216 |
+| total | 663 | 533 | 84 | 46 | 47 | 346 | 270 |
 
 ## `module`
 
@@ -193,8 +193,8 @@ Properties of a function that has a body.
 | `function:variadic` | supported | not-implemented | a variadic function with a body |
 | `function:may-unwind` | supported | supported | a body without `nounwind`: it needs unwind tables (WP-049) |
 | `function:personality` | supported | not-implemented | a body with a personality function |
-| `function:slots` | supported | not-implemented | a body with fixed stack objects (`Body::slots`) |
-| `function:over-aligned-slot` | supported | not-implemented | a stack object aligned above 16 bytes |
+| `function:slots` | supported | supported | a body with fixed stack objects (`Body::slots`) |
+| `function:over-aligned-slot` | supported | supported | a stack object aligned above 16 bytes |
 
 ## `cc`
 
@@ -345,13 +345,13 @@ Instructions.
 | `inst:inttoptr` | supported (int, i128, int-wide, ptr, vector) | not-implemented |  |
 | `inst:bitcast` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | between integers and floats with WP-039 |
 | `inst:addrspacecast` | rejected | rejected | it has a pointer in a non-zero address space on one side |
-| `inst:load` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented | a plain load; see `mem:`; FP and vector values: WP-067 |
-| `inst:store` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented | a plain store; see `mem:`; FP and vector values: WP-067 |
-| `inst:alloca` | supported | not-implemented | a dynamic allocation; fixed ones are `function:slots` |
+| `inst:load` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, ptr, half, bfloat, float, double, fp128) | a plain load; see `mem:`; FP and vector values: WP-067 |
+| `inst:store` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, ptr, half, bfloat, float, double, fp128) | a plain store; see `mem:`; FP and vector values: WP-067 |
+| `inst:alloca` | supported | supported | a dynamic allocation; fixed ones are `function:slots` |
 | `inst:fence` | supported | not-implemented | WP-074 |
 | `inst:cmpxchg` | supported (int, i128, ptr, aggregate) | not-implemented | WP-074; the `{ T, i1 }` result is an aggregate |
 | `inst:atomicrmw` | supported (int, i128, ptr, half, bfloat, float, double) | not-implemented | and the operation's `atomicrmw:` row; WP-074 |
-| `inst:ptradd` | supported | not-implemented | LLVM's `getelementptr` (§5.4); not a vector of pointers |
+| `inst:ptradd` | supported | supported | LLVM's `getelementptr` (§5.4); not a vector of pointers |
 | `inst:extractvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented |  |
 | `inst:insertvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented |  |
 | `inst:extractelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
@@ -384,7 +384,7 @@ Kinds of memory access.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `mem:volatile` | supported | not-implemented | a volatile `load`, `store`, `cmpxchg` or `atomicrmw` |
+| `mem:volatile` | supported | supported | a volatile `load`, `store`, `cmpxchg` or `atomicrmw` |
 | `mem:atomic-load` | supported | not-implemented | WP-074; `fp128` and vectors: `a64:atomic-type` |
 | `mem:atomic-store` | supported | not-implemented | WP-074; `fp128` and vectors: `a64:atomic-type` |
 
@@ -471,7 +471,7 @@ Constant addresses as instruction operands.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `operand:symbol` | supported | supported | a symbol's address as a value, with or without an offset |
-| `operand:slot` | supported | not-implemented | the address of a stack slot |
+| `operand:slot` | supported | supported | the address of a stack slot |
 | `operand:blockaddress` | supported | not-implemented | of a block of the same function |
 | `operand:addr-of-int` | supported | supported | `inttoptr` of a constant number |
 | `operand:int-of-addr` | supported | not-implemented | `ptrtoint` of a constant address (WP-072) |
@@ -522,8 +522,8 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.va_start` | supported | not-implemented |  |
 | `intrinsic:llvm.va_end` | supported | not-implemented |  |
 | `intrinsic:llvm.va_copy` | supported | not-implemented |  |
-| `intrinsic:llvm.stacksave` | supported | not-implemented |  |
-| `intrinsic:llvm.stackrestore` | supported | not-implemented |  |
+| `intrinsic:llvm.stacksave` | supported | supported |  |
+| `intrinsic:llvm.stackrestore` | supported | supported |  |
 | `intrinsic:llvm.frameaddress` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.returnaddress` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.trap` | supported | not-implemented |  |

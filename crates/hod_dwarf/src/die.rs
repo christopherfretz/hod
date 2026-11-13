@@ -90,6 +90,9 @@ pub(crate) enum Kind {
     AbstractBlock,
     /// An inlined subroutine; its node is the inlined `DISubprogram`.
     Inlined,
+    /// A call site (WP-113, §6.19; not keyed); its node is its
+    /// function's `DISubprogram`.
+    CallSite,
 }
 
 /// One DIE of the plan: the node it is written from and its parent's
@@ -159,6 +162,8 @@ pub struct UnitPlan<'a> {
     pub(crate) inline: crate::inline::Inline,
     /// The DWARF version: 4 or 5 (WP-114, §6.20).
     pub(crate) version: u16,
+    /// Call sites (WP-113, §6.19).
+    pub(crate) calls: crate::call_sites::Calls,
 }
 
 fn md5_of(f: &DiFile<'_>) -> Option<[u8; 16]> {
@@ -300,6 +305,7 @@ impl<'a> UnitPlan<'a> {
             scope_dies: crate::scope::ScopeDies::new(module),
             inline: crate::inline::Inline::new(bodies),
             version: module.map_or(5, crate::dwarf4::version_of), // WP-114: §6.20
+            calls: crate::call_sites::Calls::default(),
         };
         plan.push(unit, 0, Kind::Unit);
         let mut chain = Vec::new();
@@ -1020,6 +1026,7 @@ impl<'a> Writer<'a> {
                 | Kind::Inlined,
                 _,
             ) => self.inline_die(plan, die, d.kind, d.node, children)?,
+            (Kind::CallSite, _) => self.call_site_die(plan, die)?, // WP-113: §6.19
             (Kind::Unit, _) => unreachable!("the unit DIE is written by `unit`"),
             (_, node) => self.type_die(plan, die, d, node, children)?,
         }

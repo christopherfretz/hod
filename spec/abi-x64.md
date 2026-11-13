@@ -675,10 +675,23 @@ arrived.
   caller received: `rdi`..`r9` and all 128 bits of `xmm0`..`xmm7` as far
   as they hold no named argument, `al`, and the stack-argument area,
   exactly as they were at entry. `r10` and `r11` are not passed on.
+- Variable arguments of the call before the forwarded `...` (which
+  LLVM's verifier accepts) are refused, `x64:musttail-variable-arguments`
+  (`hod_x64::call`). `llc` 19 and 22 give them no meaning to follow:
+  they place them, then write the forwarded registers over them, so
+  the callee receives the caller's entry values in those registers
+  (`musttail call (ptr, ...) @printf(ptr %f, i32 42, double 1.5, ...)`
+  prints the caller's own second and third arguments, not 42 and 1.5),
+  and `al` is passed on as it arrived, not counted. AArch64 places them
+  over the forwarded registers (`abi-a64.md` §8.5). The facade gives
+  x86-64's `classify` no stack-argument rule, so there every `musttail`
+  call is `musttail:stack-args-unknown` first (`spec/codegen.md` §7.1).
 
 *Evidence:* `cc::musttail_in_llvm` (LLVM refuses a pair differing in
 `alignstack`; its variadic thunk restores `rdi`..`r9`, `xmm0`..`xmm7`
-and `al` before its `jmp`, in all six configurations); `09-musttail.ll`.
+and `al` before its `jmp`, in all six configurations); `09-musttail.ll`;
+`crates/hod_x64/tests/musttail_varargs.rs` (the refusal, and `llc`'s
+program under `qemu-x86_64` losing the variable arguments).
 
 ### 8.6 DWARF register numbers
 

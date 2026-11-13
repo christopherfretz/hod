@@ -71,7 +71,10 @@ mod template;
 mod types;
 pub mod x86_64;
 
-pub use call_sites::DEBUG_CALL_SITES;
+pub use call_sites::{
+    CallOrigin, CallSiteInput, DEBUG_CALL_SITE_INTRINSIC, DEBUG_CALL_SITE_ORIGIN,
+    DEBUG_CALL_SITE_PC, DEBUG_CALL_SITES, DEBUG_CALL_SITES_LINE_TABLES,
+};
 pub use coro::{CoroAt, CoroPlace};
 pub use die::{CodeSpan, DieSections, GlobalAddr, UnitInput, UnitPlan, write_debug_info};
 pub use dwarf4::{DWARF_4_SHAPE, Dwarf4Sections, write_debug_info4};

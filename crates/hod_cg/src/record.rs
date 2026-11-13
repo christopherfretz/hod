@@ -218,6 +218,8 @@ pub struct FuncRecord {
     pub islands: Range<u32>,
     /// Its rows in [`Chunk::block_offsets`].
     pub block_offsets: Range<u32>,
+    /// Its rows in [`Chunk::debug_calls`] (WP-113).
+    pub debug_calls: Range<u32>,
     /// A coroutine's entry stubs (WP-106, `spec/codegen.md` §7.6): the
     /// offsets of `F.resume` and `F.destroy` and the end of the stubs.
     /// The function's own symbol ends at the first.
@@ -268,6 +270,8 @@ pub struct Chunk {
     pub islands: Vec<IslandRow>,
     /// Block offsets (§9.6).
     pub block_offsets: Vec<BlockOffset>,
+    /// The calls of functions that describe them (§9.5, WP-113).
+    pub debug_calls: Vec<crate::debug_calls::DebugCallRow>,
     /// One record per function, in the order they were compiled.
     pub funcs: Vec<FuncRecord>,
     /// The target's `Target::NOOP_CORO_FN`, once a function of the chunk
@@ -292,6 +296,7 @@ pub(crate) struct Mark {
     pub(crate) vars: u32,
     pub(crate) islands: u32,
     pub(crate) block_offsets: u32,
+    pub(crate) debug_calls: u32,
     pub(crate) funcs: u32,
 }
 
@@ -316,6 +321,7 @@ impl Chunk {
             vars: 0,
             islands: 0,
             block_offsets: 0,
+            debug_calls: 0,
             funcs: 0,
         });
         self.noop_coro_fn = &[];
@@ -340,6 +346,7 @@ impl Chunk {
             + size_of_val(self.vars.as_slice())
             + size_of_val(self.islands.as_slice())
             + size_of_val(self.block_offsets.as_slice())
+            + size_of_val(self.debug_calls.as_slice())
             + size_of_val(self.funcs.as_slice())
     }
 
@@ -357,6 +364,7 @@ impl Chunk {
             vars: self.vars.len() as u32,
             islands: self.islands.len() as u32,
             block_offsets: self.block_offsets.len() as u32,
+            debug_calls: self.debug_calls.len() as u32,
             funcs: self.funcs.len() as u32,
         }
     }
@@ -374,6 +382,7 @@ impl Chunk {
         self.vars.truncate(mark.vars as usize);
         self.islands.truncate(mark.islands as usize);
         self.block_offsets.truncate(mark.block_offsets as usize);
+        self.debug_calls.truncate(mark.debug_calls as usize);
         self.funcs.truncate(mark.funcs as usize);
     }
 
@@ -400,6 +409,7 @@ impl Chunk {
             vars: mark.vars..now.vars,
             islands: mark.islands..now.islands,
             block_offsets: mark.block_offsets..now.block_offsets,
+            debug_calls: mark.debug_calls..now.debug_calls,
             coro_entries: None,
             coro_ready: None,
         }

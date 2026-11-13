@@ -129,6 +129,7 @@ pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
         // WP-125: `al` of a variadic function, as it arrived.
         crate::call::before_tail_exit(cx);
         teardown(cx);
+        cx.tail_branch_here(index, dwarf); // WP-113: `spec/dwarf.md` §6.19
         match exit.target {
             CallTarget::Sym(sym) => put_reloc(cx, mc::jmp_near(0), X64Reloc::Plt32, sym, 0)?,
             CallTarget::Reg(callee) => put(cx, mc::jmp_r(gp(callee))),

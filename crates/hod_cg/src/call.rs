@@ -74,6 +74,9 @@ impl Args<'_> {
 enum Callee {
     Sym(SymRef),
     Value(Value),
+    /// The address the lowering computed in this temporary
+    /// ([`FnCx::call_through`], WP-105).
+    Temp(PReg),
 }
 
 /// A call, as far as the engine needs to know it. The parameter types
@@ -201,7 +204,77 @@ impl<'a, T: Target> FnCx<'a, T> {
         if let (Some(_), Some(home)) = (unwind, ret_mem) {
             self.clear_odd_leaves(ret, home);
         }
-        // §7.1 step 6.
+        self.invoke_edges(normal, unwind, done)
+    }
+
+    /// A `call` or `invoke` `inst` that the lowering of an intrinsic
+    /// turns into a call of the function whose address it computed in
+    /// the temporary `callee` ([`FnCx::temp`]), with `args` of types
+    /// `params` and no result, by convention `cc` (WP-105: `llvm.coro.resume`
+    /// and `llvm.coro.destroy`). The sequence is [`FnCx::call`]'s: for
+    /// an `invoke`, the landing pad's incoming slots are written first,
+    /// and after the call the normal destination's, then the branch and
+    /// the pad stub.
+    ///
+    /// # Errors
+    /// As [`FnCx::call`]; `Internal` for `args` and `params` of different
+    /// lengths or a `callee` that is not a temporary.
+    pub fn call_through(
+        &mut self,
+        inst: Inst<'a>,
+        callee: PReg,
+        args: &[CallArg],
+        params: &[TypeId],
+        cc: CallConv,
+    ) -> CgResult<()> {
+        let Some(site) = inst.call() else {
+            return self.bug("call_through of an instruction that is no call");
+        };
+        if args.len() != params.len() || !self.s.temps.contains(callee) {
+            return self.bug("call_through with mismatched arguments or a callee not a temporary");
+        }
+        let unwind = site.unwind_dest();
+        let normal = site.normal_dest();
+        if let Some(pad) = unwind {
+            self.phi_stores(pad)?;
+        }
+        for arg in args {
+            if let CallArg::Value(value) = *arg
+                && self.deferred(value).is_some()
+            {
+                self.use_reg(value)?;
+            }
+        }
+        self.s.sig_params.clear();
+        self.s.sig_params.extend_from_slice(params);
+        self.s.sig_attrs.clear();
+        let desc = CallDesc {
+            cc,
+            ret: TypeId::VOID,
+            ret_attrs: ParamAttrs::NONE,
+            fixed: params.len() as u32,
+            variadic: false,
+            callee: Callee::Temp(callee),
+            noreturn: false,
+            returns_twice: false,
+            musttail: false,
+            unwind,
+            ret_mem: None,
+        };
+        let done = self.run_call(&desc, Args::Custom(args))?;
+        self.invoke_edges(normal, unwind, done)
+    }
+
+    /// §7.1 step 6, after the call of an `invoke` (`normal` and `unwind`
+    /// are its destinations; nothing for a `call`): the normal
+    /// destination's incoming slots, the branch to it, and the pad stub
+    /// that restores the stack pointer for the unwinder.
+    fn invoke_edges(
+        &mut self,
+        normal: Option<BlockId>,
+        unwind: Option<BlockId>,
+        done: Called,
+    ) -> CgResult<()> {
         if let (Some(normal), Some(pad)) = (normal, unwind) {
             let t = self.target;
             self.phi_stores(normal)?;
@@ -536,6 +609,11 @@ impl<'a, T: Target> FnCx<'a, T> {
                     CallTarget::Reg(reg)
                 }
             },
+            Callee::Temp(temp) => {
+                let reg = self.ri.callee;
+                t.mov(self, reg, temp);
+                CallTarget::Reg(reg)
+            }
         };
         // The operands are consumed, and no temporary outlives a call.
         for index in 0..args.len() {

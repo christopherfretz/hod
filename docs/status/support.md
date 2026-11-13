@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `operand` | 10 | 7 | 3 | 0 | 0 | 10 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 351 | 319 | 32 | 0 | 0 | 135 | 216 |
-| total | 658 | 514 | 98 | 46 | 17 | 370 | 271 |
+| `intrinsic` | 351 | 324 | 27 | 0 | 0 | 135 | 216 |
+| total | 658 | 519 | 93 | 46 | 17 | 370 | 271 |
 
 ## `module`
 
@@ -635,12 +635,12 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.coro.align` | not-implemented | not-implemented | T-XF (coroutine splitting) |
 | `intrinsic:llvm.coro.save` | not-implemented | not-implemented | T-XF (coroutine splitting) |
 | `intrinsic:llvm.coro.suspend` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.resume` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.destroy` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.done` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.promise` | not-implemented | not-implemented | T-XF (coroutine splitting) |
+| `intrinsic:llvm.coro.resume` | supported (ptr) | not-implemented | in any function (WP-105) |
+| `intrinsic:llvm.coro.destroy` | supported (ptr) | not-implemented | in any function (WP-105) |
+| `intrinsic:llvm.coro.done` | supported (int, ptr) | not-implemented | in any function (WP-105) |
+| `intrinsic:llvm.coro.promise` | supported (int, ptr) | not-implemented | in any function; a constant power-of-two alignment (WP-105) |
 | `intrinsic:llvm.coro.frame` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.noop` | not-implemented | not-implemented | T-XF (coroutine splitting) |
+| `intrinsic:llvm.coro.noop` | supported (ptr) | not-implemented | the noop frame (WP-105) |
 | `intrinsic:llvm.coro.is_in_ramp` | not-implemented | not-implemented | T-XF (coroutine splitting) |
 | `intrinsic:llvm.coro.await.suspend.void` | not-implemented | not-implemented | T-XF (coroutine splitting) |
 | `intrinsic:llvm.coro.await.suspend.bool` | not-implemented | not-implemented | T-XF (coroutine splitting) |

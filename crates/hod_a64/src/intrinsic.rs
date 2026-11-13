@@ -172,6 +172,9 @@ pub fn intrinsic<'a>(
             Ok(())
         }
         (I::ReadCycleCounter, _) => crate::tail::read_cycle_counter(cx, inst),
+        (I::CoroResume | I::CoroDestroy | I::CoroDone | I::CoroPromise | I::CoroNoop, _) => {
+            crate::coro::intrinsic(cx, inst, which, args)
+        }
         (I::Memcpy | I::MemcpyInline | I::Memmove, &[dst, src, len, _volatile]) => {
             deferred_first(cx, inst, None)?;
             copy(cx, which, dst, src, len)

@@ -88,6 +88,12 @@ pub trait Target: Sized + Sync {
     /// The byte that pads the space between functions.
     const PAD_BYTE: u8;
 
+    /// The code of a function of one pointer argument that only returns:
+    /// the resume and destroy function of the noop coroutine frame
+    /// (`spec/codegen.md` "Coroutines", WP-105). Empty: the target does
+    /// not lower `llvm.coro.noop`.
+    const NOOP_CORO_FN: &'static [u8] = &[];
+
     /// The stack alignment in bytes: the largest alignment the local area
     /// gives a slot (§5.1), and what a call's stack-argument area is
     /// rounded to (§5.3).

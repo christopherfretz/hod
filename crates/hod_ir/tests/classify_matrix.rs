@@ -523,8 +523,8 @@ const A64_SUPPORTED_BODY: [&str; 16] = [
     "tail:musttail",
 ];
 
-/// The rows of `RICH_BODY` x86-64 supports (WP-116).
-const X64_SUPPORTED_BODY: [&str; 7] = [
+/// The rows of `RICH_BODY` x86-64 supports (WP-116, WP-125).
+const X64_SUPPORTED_BODY: [&str; 9] = [
     "cc:ccc",
     "function:parameters",
     "type:int",
@@ -532,6 +532,8 @@ const X64_SUPPORTED_BODY: [&str; 7] = [
     "function:may-unwind",
     "operand:symbol",
     "inst:ret",
+    "inst:call",
+    "tail:musttail",
 ];
 
 /// What the shipped matrix finds in the rich body on `arch`.

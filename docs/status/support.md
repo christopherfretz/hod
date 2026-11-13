@@ -29,21 +29,21 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `tls` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
 | `init` | 10 | 6 | 3 | 1 | 0 | 10 | 0 |
-| `function` | 6 | 6 | 0 | 0 | 2 | 4 | 0 |
+| `function` | 6 | 6 | 0 | 0 | 4 | 2 | 0 |
 | `cc` | 15 | 6 | 7 | 2 | 1 | 11 | 3 |
-| `attr` | 57 | 23 | 31 | 3 | 14 | 35 | 8 |
+| `attr` | 57 | 23 | 31 | 3 | 15 | 34 | 8 |
 | `type` | 15 | 11 | 1 | 3 | 2 | 11 | 2 |
-| `inst` | 67 | 60 | 0 | 7 | 4 | 56 | 7 |
+| `inst` | 67 | 60 | 0 | 7 | 8 | 52 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 21 | 0 | 0 | 0 | 21 | 0 |
-| `call` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
-| `tail` | 3 | 3 | 0 | 0 | 2 | 1 | 0 |
+| `call` | 4 | 4 | 0 | 0 | 2 | 2 | 0 |
+| `tail` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
-| `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
+| `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 2 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 354 | 334 | 20 | 0 | 0 | 138 | 216 |
-| total | 663 | 533 | 84 | 46 | 37 | 356 | 270 |
+| `intrinsic` | 354 | 334 | 20 | 0 | 3 | 135 | 216 |
+| total | 663 | 533 | 84 | 46 | 53 | 340 | 270 |
 
 ## `module`
 
@@ -190,9 +190,9 @@ Properties of a function that has a body.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `function:parameters` | supported | supported | a body with parameters; per class of parameter |
-| `function:variadic` | supported | not-implemented | a variadic function with a body |
+| `function:variadic` | supported | supported | a variadic function with a body |
 | `function:may-unwind` | supported | supported | a body without `nounwind`: it needs unwind tables (WP-049) |
-| `function:personality` | supported | not-implemented | a body with a personality function |
+| `function:personality` | supported | supported | a body with a personality function |
 | `function:slots` | supported | not-implemented | a body with fixed stack objects (`Body::slots`) |
 | `function:over-aligned-slot` | supported | not-implemented | a stack object aligned above 16 bytes |
 
@@ -243,7 +243,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:noreturn` | supported | supported | a promise: nothing to do in the function itself |
 | `attr:naked` | rejected | rejected | a naked function is its inline assembly, with no frame (`spec/codegen.md` §1) |
 | `attr:nounwind` | supported | supported | its absence is `function:may-unwind` |
-| `attr:returns_twice` | supported | not-implemented | on a body, a call, or a function called directly |
+| `attr:returns_twice` | supported | supported | on a body, a call, or a function called directly |
 | `attr:alwaysinline` | supported | supported | an ordinary call; a body whose meaning depends on being inlined is declined (`spec/cli.md` "Always-inline", WP-021) |
 | `attr:ssp` | not-implemented | not-implemented | spec/codegen.md §13. open question: accept and ignore, or implement |
 | `attr:sspreq` | not-implemented | not-implemented | spec/codegen.md §13 |
@@ -361,8 +361,8 @@ Instructions.
 | `inst:select` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented |  |
 | `inst:freeze` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented |  |
 | `inst:va_arg` | rejected | rejected | `llc` miscompiles it on AArch64, so there is no oracle; frontends do not emit it |
-| `inst:call` | supported | not-implemented | a call of anything but an intrinsic |
-| `inst:landingpad` | supported | not-implemented |  |
+| `inst:call` | supported | supported | a call of anything but an intrinsic |
+| `inst:landingpad` | supported | supported |  |
 | `inst:catchpad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:cleanuppad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:br` | supported | supported |  |
@@ -372,8 +372,8 @@ Instructions.
 | `inst:ret` | supported | supported |  |
 | `inst:unreachable` | supported | supported |  |
 | `inst:callbr` | supported | not-implemented | inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3) |
-| `inst:invoke` | supported | not-implemented |  |
-| `inst:resume` | supported | not-implemented |  |
+| `inst:invoke` | supported | supported |  |
+| `inst:resume` | supported | supported |  |
 | `inst:catchswitch` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:catchret` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:cleanupret` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
@@ -422,10 +422,10 @@ Kinds of callee.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `call:indirect` | supported | not-implemented | the callee is a computed address |
+| `call:indirect` | supported | supported | the callee is a computed address |
 | `call:inline-asm` | supported | not-implemented | the callee is inline assembly of instructions: `hod_asm` (WP-103, `spec/asm.md`) |
 | `call:inline-asm-empty` | supported | not-implemented | the callee is inline assembly whose template assembles to nothing (`spec/ir.md` §2.3) |
-| `call:variadic` | supported | not-implemented | a call through a variadic function type |
+| `call:variadic` | supported | supported | a call through a variadic function type |
 
 ## `tail`
 
@@ -435,7 +435,7 @@ Tail-call markers.
 |---|---|---|---|
 | `tail:tail` | supported | supported | a permission: ignored (`spec/codegen.md` §7.1) |
 | `tail:notail` | supported | supported | hod makes no tail call of its own |
-| `tail:musttail` | supported | not-implemented | and the `musttail:` rules of §8.6, which need the `StackArgs` hook (`hod_cg::abi::TargetStackArgs`) |
+| `tail:musttail` | supported | supported | and the `musttail:` rules of §8.6, which need the `StackArgs` hook (`hod_cg::abi::TargetStackArgs`) |
 
 ## `bundle`
 
@@ -460,9 +460,9 @@ Landing-pad clauses.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `landingpad:cleanup` | supported | not-implemented |  |
-| `landingpad:catch` | supported | not-implemented |  |
-| `landingpad:filter` | supported | not-implemented |  |
+| `landingpad:cleanup` | supported | supported |  |
+| `landingpad:catch` | supported | supported |  |
+| `landingpad:filter` | supported | supported |  |
 
 ## `operand`
 
@@ -519,9 +519,9 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.memmove` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.memset` | supported (int, ptr) | not-implemented |  |
 | `intrinsic:llvm.memset.inline` | supported (int, ptr) | not-implemented |  |
-| `intrinsic:llvm.va_start` | supported | not-implemented |  |
-| `intrinsic:llvm.va_end` | supported | not-implemented |  |
-| `intrinsic:llvm.va_copy` | supported | not-implemented |  |
+| `intrinsic:llvm.va_start` | supported | supported |  |
+| `intrinsic:llvm.va_end` | supported | supported |  |
+| `intrinsic:llvm.va_copy` | supported | supported |  |
 | `intrinsic:llvm.stacksave` | supported | not-implemented |  |
 | `intrinsic:llvm.stackrestore` | supported | not-implemented |  |
 | `intrinsic:llvm.frameaddress` | supported (int, ptr) | not-implemented |  |

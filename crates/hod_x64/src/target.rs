@@ -424,21 +424,8 @@ impl Target for X64 {
     }
 
     fn extend_arg(&self, cx: &mut FnCx<'_, Self>, reg: PReg, ty: TypeId, attrs: ParamAttrs) {
-        // The psABI extends an argument narrower than 32 bits to 32 under
-        // `zeroext`/`signext` (clang relies on it); the upper half of a
-        // 64-bit register is unspecified either way.
-        let Some(bits) = cx.types().int_bits(ty) else { return };
-        if bits >= 32 {
-            return;
-        }
-        let signed = if attrs.has(ParamAttrs::SIGNEXT) {
-            true
-        } else if attrs.has(ParamAttrs::ZEROEXT) {
-            false
-        } else {
-            return;
-        };
-        common::extend(cx, gp(reg), bits, Some(signed));
+        // `spec/abi-x64.md` §7, every width: WP-125.
+        call::extend_arg(cx, gp(reg), ty, attrs);
     }
 
     fn lanes_out(

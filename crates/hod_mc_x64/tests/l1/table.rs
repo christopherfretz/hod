@@ -200,6 +200,7 @@ pub const CONSTRUCTORS: &[(&str, &[&str])] = &[
     ("pause", &["pause"]),
     // system
     ("ud2", &["ud2"]),
+    ("ud1_eax", &["ud1"]),
     ("int3", &["int3"]),
     ("endbr64", &["endbr64"]),
     ("nop", &["nop"]),

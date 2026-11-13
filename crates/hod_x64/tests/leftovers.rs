@@ -677,6 +677,59 @@ fn wide_atomics_without_cx16_call_libatomic() {
     );
 }
 
+// ---- ubsantrap ----
+
+/// The disassembled `ud1` lines (bytes and text) of `object`, in order.
+fn ud1_lines(objdump: &std::path::Path, object: &std::path::Path) -> Vec<String> {
+    let mut command = std::process::Command::new(objdump);
+    command.arg("-d").arg(object);
+    let ran = hod_testutil::run_with(&mut command, &[], std::time::Duration::from_mins(1));
+    assert!(ran.success(), "{}", ran.stderr_text());
+    ran.stdout_text()
+        .lines()
+        .filter(|l| l.contains("ud1"))
+        .map(|l| l.split_once(':').map_or(l, |(_, rest)| rest).trim().to_owned())
+        .collect()
+}
+
+/// §5.6.14 (7): `llvm.ubsantrap(kind)` is `ud1 eax, [eax + kind]` with
+/// 32-bit addressing, byte for byte what `llc` 22 and 19 write, for the
+/// displacement forms (none, 8-bit, 32-bit), plain and stressed.
+#[test]
+fn ubsantrap_is_llc_s_ud1() {
+    use std::fmt::Write as _;
+    let kinds = [0u8, 1, 7, 127, 128, 200, 255];
+    let mut text = float_gen::ll_header();
+    text.push_str("declare void @llvm.ubsantrap(i8)\n");
+    for k in kinds {
+        write!(
+            text,
+            "define void @k{k}() {{\n  call void @llvm.ubsantrap(i8 {k})\n  unreachable\n}}\n"
+        )
+        .unwrap();
+    }
+    let (m, bodies) = float_gen::parse(&text);
+    let scratch = hod_testutil::Scratch::new("x64-leftovers-ubsantrap");
+    let Some(objdump) = hod_testutil::tool("llvm-objdump") else { return };
+    let mut compared = Vec::new();
+    for (mode, stress) in [("plain", hod_cg::Stress::default()), ("stress", hod_cg::Stress::ALL)] {
+        let bytes = hod_x64::compile_to_object(&m, &bodies, &float_gen::pic(stress)).unwrap();
+        let hod = ud1_lines(&objdump, &scratch.write(&format!("hod-{mode}.o"), bytes));
+        assert_eq!(hod.len(), kinds.len(), "{hod:#?}");
+        for major in MAJORS {
+            let Some(object) = aggr_gen::llc(&scratch, major, &format!("llc{major}"), &text) else {
+                continue;
+            };
+            assert_eq!(hod, ud1_lines(&objdump, &object), "{mode}, llc {major}");
+            compared.push(format!("{mode}/llc{major}"));
+        }
+        if mode == "plain" {
+            eprintln!("ubsantrap: {hod:?}");
+        }
+    }
+    eprintln!("ubsantrap: equal to {compared:?}");
+}
+
 // ---- refusals ----
 
 /// What compiling `.ll` functions (the header added) reports.

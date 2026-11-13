@@ -389,6 +389,7 @@ is LLVM's choice; `xchg ax, ax` is `66 90`.
 | constructor | encodes | precondition |
 |---|---|---|
 | `ud2()` | UD2 `0F 0B` | |
+| `ud1_eax(disp: u8)` | UD1 `67 0F B9 /r`: `ud1 eax, [eax + disp]` with 32-bit addressing, `00` for 0, `40 ib` up to 127, else `80 id` (`llc`'s `llvm.ubsantrap`, WP-144) | |
 | `int3()` | INT3 `CC` | |
 | `endbr64()` | ENDBR64 `F3 0F 1E FA` | |
 | `nop(len: usize)` | one NOP of exactly `len` bytes | `nop_len_ok(len)`: `1..=15` |

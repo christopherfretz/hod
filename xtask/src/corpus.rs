@@ -280,6 +280,8 @@ pub fn parse_reasons(
         jobs: capture::DEFAULT_JOBS,
         limit: None,
         work: build_dir.join("corpus-reasons"),
+        target: other_target(target),
+        verify_dir: build_dir.join("corpus"),
     };
     let (mut report, mut given, mut index) = (None, false, 0);
     while index < args.len() {

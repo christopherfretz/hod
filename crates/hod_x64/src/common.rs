@@ -22,8 +22,9 @@
 //!   that reads it. Zero is `mov r32, 0`, never `xor`.
 //! - **Frame places** go through [`frame_inst`]: a local is addressed
 //!   from `rbp` by a `disp32` that `end_function` biases by the final
-//!   frame size (`frame::end`), so every access to a local must be made
-//!   by that function.
+//!   frame size (`frame::end`) and shortens to a `disp8` when it then
+//!   fits (`spec/codegen.md` §5.6.17), so every access to a local must be
+//!   made by that function.
 
 use std::cell::RefCell;
 
@@ -136,8 +137,9 @@ pub fn deferred_first<'a>(cx: Cx<'_, 'a>, inst: IrInst<'a>, fused: Option<Value>
 
 thread_local! {
     /// The offsets of the `disp32` fields of the accesses to locals in the
-    /// function being compiled: `frame::end` adds the bias of the final
-    /// frame to each. One buffer per thread, reused across functions.
+    /// function being compiled, in offset order: `frame::end` adds the
+    /// bias of the final frame to each and shortens those that fit a byte
+    /// (§5.6.17). One buffer per thread, reused across functions.
     static LOCAL_SITES: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -146,21 +148,54 @@ pub fn reset_local_sites() {
     LOCAL_SITES.with(|sites| sites.borrow_mut().clear());
 }
 
-/// Adds `bias` to the `disp32` of every local access of the function
-/// (`end_function`).
+/// The `ModRM` of `[rbp + disp32]`, its `reg` field masked out: `mod`
+/// 10, `rm` 101 (no `SIB`).
+const MODRM_RBP_DISP32: u8 = 0b10_000_101;
+
+/// The `ModRM` bits `mod` and `rm`.
+const MODRM_MOD_RM: u8 = 0b11_000_111;
+
+/// The `mod` field of a `disp8` operand, `01`.
+const MOD_DISP8: u8 = 0b01_000_000;
+
+/// The bytes a `disp8` saves over a `disp32`.
+const DISP8_SAVES: u32 = 3;
+
+/// Adds `bias` to the displacement of every local access of the function
+/// (`end_function`), and writes each one that then fits a signed byte as
+/// `[rbp + disp8]` (`spec/codegen.md` §5.6.17): `ModRM` `mod` 10 → 01,
+/// the byte written, the three bytes after it cut (`FnCx::cut`), so that
+/// whatever follows the displacement (an immediate) moves with the code.
 ///
 /// # Errors
 /// `Internal` for a field outside the code or a displacement the bias
 /// takes out of 32 bits (the frame limit keeps it in).
 pub fn bias_local_sites(cx: &mut FnCx<'_, X64>, bias: i64) -> CgResult<()> {
-    let code = cx.code_mut();
     let ok = LOCAL_SITES.with(|sites| {
-        sites.borrow().iter().all(|&at| {
-            let at = at as usize;
-            mc::Fixup::Abs32
-                .extract(code, at)
-                .is_some_and(|disp| mc::Fixup::Abs32.patch(code, at, disp + bias))
-        })
+        let sites = sites.borrow();
+        for &field in sites.iter() {
+            let at = field as usize;
+            let code = cx.code_mut();
+            let Some(disp) = mc::Fixup::Abs32.extract(code, at).map(|d| d + bias) else {
+                return false;
+            };
+            // A local is `[rbp + disp32]`, `ModRM` right before the
+            // field; any other shape keeps its `disp32`.
+            let short = at
+                .checked_sub(1)
+                .filter(|&m| code[m] & MODRM_MOD_RM == MODRM_RBP_DISP32)
+                .filter(|_| i8::try_from(disp).is_ok());
+            match short {
+                Some(modrm) => {
+                    code[modrm] = code[modrm] & !MODRM_MOD_RM | MOD_DISP8 | 0b101;
+                    code[at] = disp as u8;
+                    cx.cut(field + 1, DISP8_SAVES);
+                }
+                None if !mc::Fixup::Abs32.patch(code, at, disp) => return false,
+                None => {}
+            }
+        }
+        true
     });
     if ok { Ok(()) } else { cx.bug("a local access whose displacement cannot be biased") }
 }

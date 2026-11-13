@@ -2076,7 +2076,9 @@ words compared with `llvm-mc`'s; the refusals; features from
   `FRAME` is not known while the body is emitted, so the access is
   emitted as `[rbp + o]` with a 32-bit displacement and every such
   displacement is recorded and biased by `-8n - FRAME` in
-  `end_function` (`hod_x64::common::frame_inst`). `Incoming(n)` is
+  `end_function` (`hod_x64::common::frame_inst`); one that then fits a
+  signed byte is rewritten as `disp8` and the three bytes it no longer
+  needs are cut (§5.6.17). `Incoming(n)` is
   `[rbp + 16 + n]`: no incoming base slot. `Outgoing(n)` is `[rsp + n]`.
   The frame base for debug information is `rbp` (DWARF 6).
 - **Exit sequences.** The epilogue is `lea rsp, [rbp - 8n]` · the pops
@@ -3206,7 +3208,9 @@ its data islands, so that an island is aligned in the final layout),
 branches the target marked:
 
 - `FnCx::cut(at, len)`: `len` bytes at `at` go; nothing refers into
-  them and no row or label is inside them.
+  them and no row or label is inside them. x86-64 cuts the prologue's
+  unused bytes (cut 1 below) and the three high bytes of each local
+  displacement that fits a byte (§5.6.17).
 - `FnCx::relaxable(start, short, kind)`, right after the `fixup` of a
   branch that starts at `start` and ends with its field: if the label
   ends up in reach of a signed byte, the branch becomes `[short, rel8]`
@@ -3340,6 +3344,52 @@ Each against `llc -O0 -fast-isel=0` 22 and 19 under the emulator, and
 9. **`is.fpclass` of a pseudo-denormal**: §5.6.12.
 
 Evidence: `spec/landed/codegen/WP-147.md`.
+
+#### 5.6.17 Short frame displacements (WP-151)
+
+**A local's displacement is `disp8` when it fits.** Every access to a
+local is emitted as `[rbp + o]` with a 32-bit displacement and its field
+recorded (`common::frame_inst`, §5.6), because `8n + FRAME` is known
+only in `end_function`. There, `common::bias_local_sites` computes each
+field's final displacement `o - 8n - FRAME`; one in `-128..=127` is
+rewritten in place as `[rbp + disp8]`: the `ModRM` byte before the field
+goes from `mod` 10 to `mod` 01 (`rm` 101, `reg` unchanged), the low byte
+of the field becomes the displacement, and the three bytes after it are
+cut (`FnCx::cut`, §5.6.15). Whatever follows the field in the same
+instruction (an immediate of 1, 2 or 4 bytes, or nothing) moves with the
+code, so the instruction stays whole; prefixes (`66`, `F2`, `F3`, REX,
+`lock`) and the opcode come before the `ModRM` and are untouched. A
+recorded field whose preceding byte is not the `[rbp + disp32]` `ModRM`
+(`mod` 10, `rm` 101) keeps its `disp32`; no access emitted today has
+another shape. `Incoming(n)` and `Outgoing(n)` places, RIP-relative
+operands, `SIB` forms and the coroutine stubs' own frame words are
+emitted at their final displacement and were already the shortest form
+(`hod_mc_x64` picks it); `FrameRef::Coro` is `[rbx + o]`, not a local.
+
+The cuts are shrink-pass ranges like the prologue's (§5.6.15): they
+are disjoint (a field is inside one instruction, after its `ModRM`),
+recorded in offset order, and nothing refers into them — a relocation,
+a label, a fixup or a row is never inside an instruction's
+displacement. Each table of offsets moves by the bytes cut before it,
+so relocations of a later field of the same instruction (none today),
+call-site rows (whose ends are mapped, not their lengths), line rows,
+CFI rows and labels stay exact; the relaxation of §5.6.15 sees the cut
+bytes, so a branch over frame accesses that reaches only once they are
+`disp8` is relaxed too. Nothing in `hod_x64` records an instruction's
+length or a distance between two offsets except through those tables
+(§5.6.15, cut 2): relaxable branches have no frame operand; `rep movsb`
+copies have no loop; inline assembly is a barrier with no frame
+operand. Variable locations are `DW_OP_fbreg` from `rbp`: they name
+the displacement, not its encoding, and do not change.
+
+The frame layout (`hod_cg`'s, §5.1) is unchanged: ordering the slots by
+use, so that the most used are nearest `rbp`, would make about 0.7% of
+the corpus's text smaller at best (`spec/landed/codegen/WP-151.md`)
+and needs a layout pass in `hod_cg`; it is not done. A store to a slot
+followed at once by a load of it is not rewritten either: about 0.5%
+at best, and the load is the target of a branch in 43% of those pairs,
+which an x86-64 peephole at emission cannot see without a query on
+`hod_cg`'s labels.
 
 ## 6. Control flow
 

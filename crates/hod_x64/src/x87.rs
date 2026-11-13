@@ -161,7 +161,7 @@ pub fn binary<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, lhs: Value, rhs: Value
         Opcode::FRem => {
             deferred_first(cx, inst, None)?;
             let r = cx.def_mem(inst)?;
-            return libcall(cx, RuntimeFn::Fmodl, &[lhs, rhs], Extra::None, Some(r)).map(|_| ());
+            return libcall(cx, RuntimeFn::Fmodl, &[lhs, rhs], Extra::None, Some(r));
         }
         _ => return unsupported(CAST),
     };
@@ -705,13 +705,13 @@ pub fn intrinsic<'a>(
             return cx.finish(inst, rd);
         }
         let r = cx.def_mem(inst)?;
-        return libcall(cx, func, args, Extra::None, Some(r)).map(|_| ());
+        return libcall(cx, func, args, Extra::None, Some(r));
     }
     match (which, args) {
         (I::Fabs, &[x]) => sign_op(cx, inst, x, mc::and_mi, 0x7f),
-        (I::CopySign, &[x, y]) => {
-            let a = cx.use_mem(x)?;
-            let b = cx.use_mem(y)?;
+        (I::CopySign, &[magnitude, sign_of]) => {
+            let a = cx.use_mem(magnitude)?;
+            let b = cx.use_mem(sign_of)?;
             let r = cx.def_mem(inst)?;
             frame_inst(cx, b.offset_by(SIGN_BYTE), |m| mc::movzx_rm(Size::D, RAX, Size::B, m));
             put(cx, mc::and_ri(Size::D, RAX, 0x80));
@@ -741,33 +741,7 @@ pub fn intrinsic<'a>(
             fstp(cx, r);
             Ok(())
         }
-        (I::Lrint | I::Llrint, &[x]) => {
-            // The store of the result's width, as `llc`: out of its range
-            // (or for an invalid encoding) the integer indefinite of that
-            // width.
-            let bits = int_result(cx, inst)?;
-            let a = cx.use_mem(x)?;
-            let rd = cx.def_reg(inst)?;
-            fld(cx, a);
-            below(cx);
-            let d = gp(rd);
-            match bits {
-                ..=16 => {
-                    put(cx, mc::fistp_m(Size::W, sp(0)));
-                    put(cx, mc::movzx_rm(Size::D, d, Size::W, sp(0)));
-                }
-                17..=32 => {
-                    put(cx, mc::fistp_m(Size::D, sp(0)));
-                    put(cx, mc::mov_rm(Size::D, d, sp(0)));
-                }
-                _ => {
-                    put(cx, mc::fistp_m(Size::Q, sp(0)));
-                    put(cx, mc::mov_rm(Size::Q, d, sp(0)));
-                }
-            }
-            above(cx);
-            cx.finish(inst, rd)
-        }
+        (I::Lrint | I::Llrint, &[x]) => lrint(cx, inst, x),
         (I::FptosiSat | I::FptouiSat, &[x]) => saturate(cx, inst, which == I::FptosiSat, x),
         (I::IsFpClass, &[x, mask]) => fp_class(cx, inst, x, mask),
         (I::Powi, &[x, n]) => {
@@ -779,11 +753,40 @@ pub fn intrinsic<'a>(
         (I::Ldexp, &[x, n]) => {
             let n = int32(cx, n)?;
             let r = cx.def_mem(inst)?;
-            libcall(cx, RuntimeFn::Ldexpl, &[x], Extra::Int(n), Some(r)).map(|_| ())
+            libcall(cx, RuntimeFn::Ldexpl, &[x], Extra::Int(n), Some(r))
         }
         (I::Frexp, &[x]) => frexp(cx, inst, x),
         _ => unsupported(INTRINSIC),
     }
+}
+
+/// `lrint`/`llrint`: `fistp` under the current rounding.
+fn lrint<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, x: Value) -> CgResult<()> {
+    // The store of the result's width, as `llc`: out of its range
+    // (or for an invalid encoding) the integer indefinite of that
+    // width.
+    let bits = int_result(cx, inst)?;
+    let a = cx.use_mem(x)?;
+    let rd = cx.def_reg(inst)?;
+    fld(cx, a);
+    below(cx);
+    let d = gp(rd);
+    match bits {
+        ..=16 => {
+            put(cx, mc::fistp_m(Size::W, sp(0)));
+            put(cx, mc::movzx_rm(Size::D, d, Size::W, sp(0)));
+        }
+        17..=32 => {
+            put(cx, mc::fistp_m(Size::D, sp(0)));
+            put(cx, mc::mov_rm(Size::D, d, sp(0)));
+        }
+        _ => {
+            put(cx, mc::fistp_m(Size::Q, sp(0)));
+            put(cx, mc::mov_rm(Size::Q, d, sp(0)));
+        }
+    }
+    above(cx);
+    cx.finish(inst, rd)
 }
 
 /// `inst`'s result: the operands `xs` pushed in order, `ops` run, the

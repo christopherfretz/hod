@@ -18,7 +18,12 @@
 //!   NaN where the result is a NaN. A case the interpreter traps on (an
 //!   out-of-range conversion: poison) or refuses is not run.
 
-#![allow(clippy::many_single_char_names, clippy::too_many_lines, clippy::cast_precision_loss)]
+#![allow(
+    clippy::many_single_char_names,
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    clippy::similar_names
+)]
 #![allow(dead_code, reason = "each test uses part of it")]
 
 use std::fmt::Write as _;

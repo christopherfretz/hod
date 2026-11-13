@@ -8,6 +8,12 @@
 //! `llc` linked together; the flags rule and the empty x87 stack on the
 //! disassembly; what is refused, by name.
 
+#![allow(
+    clippy::too_many_lines,
+    clippy::field_reassign_with_default,
+    reason = "a test is a list of cases"
+)]
+
 #[path = "../../hod_obj/tests/common/linking.rs"]
 #[allow(dead_code, reason = "a shared helper: not every function is used here")]
 mod linking;
@@ -226,7 +232,7 @@ fn int_as_x(n: &[u64], bits: u32, signed: bool) -> Vec<u64> {
     if v == 0 {
         return vec![0xc000_0000_0000_0000, 0x3ffe | u64::from(negative) << 15];
     }
-    let top = 127 - v.leading_zeros();
+    let top = v.ilog2();
     let (m, e) = if top >= 63 {
         ((v >> (top - 63)) as u64, top)
     } else {
@@ -471,7 +477,7 @@ fn every_intrinsic_agrees() {
         );
         let in_range: Vec<[u64; 2]> = x87_gen::x_edges()
             .into_iter()
-            .filter(|w| w[1] & 0x7fff < 16383 + bits as u64 - 1)
+            .filter(|w| w[1] & 0x7fff < 16383 + u64::from(bits) - 1)
             .collect();
         for w in in_range {
             suite.case(f, &w);
@@ -562,7 +568,7 @@ fn invalid(m: u64, e: u64) -> bool {
 
 /// Whether the words `m`, `e` are a pseudo-denormal.
 fn pseudo_denormal(m: u64, e: u64) -> bool {
-    e & 0x7fff == 0 && m & x87_gen::J != 0
+    e.trailing_zeros() >= 15 && m & x87_gen::J != 0
 }
 
 /// `llvm.is.fpclass` with every one of the 1024 masks, on one value of
@@ -888,11 +894,25 @@ fn compares_are_quiet() {
 /// What the group does not lower, by name, one construct per program.
 #[test]
 fn what_is_not_lowered_is_refused_by_name() {
-    for (text, name) in [(
-        "define bfloat @f(x86_fp80 %a) {\n  %r = fptrunc x86_fp80 %a to bfloat\n  \
-         ret bfloat %r\n}\n",
-        hod_x64::x87::BFLOAT,
-    )] {
+    for (text, name) in [
+        (
+            "define bfloat @f(x86_fp80 %a) {\n  %r = fptrunc x86_fp80 %a to bfloat\n  \
+             ret bfloat %r\n}\n",
+            hod_x64::x87::BFLOAT,
+        ),
+        (
+            "declare x86_fp80 @llvm.powi.f80.i64(x86_fp80, i64)\n\
+             define x86_fp80 @f(x86_fp80 %a, i64 %n) {\n  \
+             %r = call x86_fp80 @llvm.powi.f80.i64(x86_fp80 %a, i64 %n)\n  ret x86_fp80 %r\n}\n",
+            hod_x64::x87::INTRINSIC,
+        ),
+        (
+            "declare i128 @llvm.lrint.i128.f80(x86_fp80)\n\
+             define i128 @f(x86_fp80 %a) {\n  \
+             %r = call i128 @llvm.lrint.i128.f80(x86_fp80 %a)\n  ret i128 %r\n}\n",
+            hod_x64::x87::INTRINSIC,
+        ),
+    ] {
         let (m, bodies) = parse(&format!("{}{text}", ll_header()));
         match hod_x64::compile_to_object(&m, &bodies, &pic(Stress::default())) {
             Err(hod_x64::ModuleError::Function { error, .. }) => {

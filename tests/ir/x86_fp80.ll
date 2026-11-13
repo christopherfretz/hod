@@ -7,7 +7,6 @@
 ; exact rational arithmetic, not a compiler.
 ;@ covers: spec/ir.md §5.4 floating point (x86_fp80)
 ;@ target: x86_64
-;@ unsupported: *
 ;@ stdout: x86_fp80 third 3ffdaaaaaaaaaaaaaaab 0.333333333333333333342
 ;@ stdout: x86_fp80 third*3 3fff8000000000000000 1
 ;@ stdout: x86_fp80 third-double 3fc7aac0000000000000 1.85127520951899882107e-17

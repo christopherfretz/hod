@@ -1343,9 +1343,9 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
     row(
         "inst:cmpxchg",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Ptr, TypeClass::Aggregate]),
-        on(&[TypeClass::Int, TypeClass::Ptr, TypeClass::Aggregate]),
-        "WP-074; the `{ T, i1 }` result is an aggregate; x86-64 (WP-133): `i128` only with \
-         `+cx16` (`lock cmpxchg16b`), else `x64:atomic-libatomic`",
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::Ptr, TypeClass::Aggregate]),
+        "WP-074; the `{ T, i1 }` result is an aggregate; x86-64 `i128`: `lock cmpxchg16b` \
+         with `+cx16` (WP-133), else libatomic's `__atomic_compare_exchange_16` (WP-144)",
     ),
     row(
         "inst:atomicrmw",
@@ -1360,14 +1360,15 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         ]),
         on(&[
             TypeClass::Int,
+            TypeClass::I128,
             TypeClass::Ptr,
             TypeClass::Half,
             TypeClass::BFloat,
             TypeClass::Float,
             TypeClass::Double,
         ]),
-        "and the operation's `atomicrmw:` row; WP-074; x86-64 (WP-133): `i128` only with \
-         `+cx16`, else `x64:atomic-libatomic`",
+        "and the operation's `atomicrmw:` row; WP-074; x86-64 `i128`: a `cmpxchg16b` loop with \
+         `+cx16` (WP-133), else libatomic's `__atomic_*_16` (WP-144)",
     ),
     row("inst:ptradd", ON, ON, "LLVM's `getelementptr` (§5.4); not a vector of pointers"),
     row(
@@ -1562,14 +1563,14 @@ const MEM: [SupportRow; 3] = [
         ON,
         ON,
         "WP-074, WP-133; `fp128` and vectors: `a64:atomic-type`, `x64:atomic-type`; x86-64 \
-         `i128` without `+cx16`: `x64:atomic-libatomic`",
+         `i128` without `+cx16`: libatomic (WP-144)",
     ),
     row(
         "mem:atomic-store",
         ON,
         ON,
         "WP-074, WP-133; `fp128` and vectors: `a64:atomic-type`, `x64:atomic-type`; x86-64 \
-         `i128` without `+cx16`: `x64:atomic-libatomic`",
+         `i128` without `+cx16`: libatomic (WP-144)",
     ),
 ];
 

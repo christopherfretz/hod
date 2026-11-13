@@ -880,4 +880,8 @@ fn leftover_rows_of_wp_144() {
         );
         assert!(x64.classes(row).unwrap().has(TypeClass::IntWide), "{row}");
     }
+    // `i128` atomics: `cmpxchg16b` with `+cx16`, libatomic without.
+    for row in ["inst:cmpxchg", "inst:atomicrmw"] {
+        assert!(x64.classes(row).unwrap().has(TypeClass::I128), "{row}");
+    }
 }

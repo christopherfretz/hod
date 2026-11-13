@@ -42,19 +42,25 @@
 //! `cmpxchg16b` of zero by zero (as `llc`: it writes, so a read-only cell
 //! faults); a store, an `atomicrmw` and a `cmpxchg` are `cmpxchg16b`
 //! loops. `rbx` is taken for the lowering (`FnCx::take_reg`), `rcx:rbx`
-//! is the new value, `rdx:rax` the old one. Without `+cx16`, `llc` calls
-//! libatomic's `__atomic_*_16`; `hod_cg::RuntimeFn` has no such member
-//! yet, so hod refuses as [`LIBATOMIC`].
+//! is the new value, `rdx:rax` the old one. Without `+cx16`, hod calls
+//! libatomic as `llc` 19 and 22 do (WP-144, §5.6.14), with the C
+//! `memory_order` numbers: `__atomic_load_16`, `__atomic_store_16`,
+//! `__atomic_exchange_16`, `__atomic_compare_exchange_16` (the expected
+//! value in the result's slot, which the routine overwrites on failure),
+//! `__atomic_fetch_{add,sub,and,nand,or,xor}_16`; `max`, `min`, `umax`,
+//! `umin`, `uinc_wrap`, `udec_wrap`, `usub_cond`, `usub_sat` are a loop of
+//! `__atomic_compare_exchange_16` from a plain read of the cell, its
+//! failure ordering the strongest one the success ordering allows.
 //!
 //! # Refused
 //!
 //! [`UNALIGNED`]: an access whose alignment is below its size. [`TYPE`]:
 //! `fp128`, `x86_fp80`, vectors, an integer that is not 8, 16, 32, 64 or
 //! 128 bits wide, an operation whose type does not fit it.
-//! [`BFLOAT_OP`]: arithmetic on `bfloat` (as AArch64). [`LIBATOMIC`]:
-//! 16 bytes without `+cx16`. [`FLOAT_OP`] is no longer returned (WP-144).
+//! [`BFLOAT_OP`]: arithmetic on `bfloat` (as AArch64). [`FLOAT_OP`]
+//! and [`LIBATOMIC`] are no longer returned (WP-144).
 
-use hod_cg::{CgResult, Class, FnCx, FrameRef, PReg};
+use hod_cg::{CallArg, CgResult, Class, FnCx, FrameRef, PReg, RuntimeFn};
 use hod_ir::{
     AtomicOrdering, FnStr, Inst, Intrinsic, MemFlags, RmwOp, SymbolKind, SyncScope, TypeId,
     TypeKind, Value,
@@ -86,8 +92,9 @@ pub const BFLOAT_OP: &str = "x64:atomic-bfloat-op";
 /// `fadd`/`fsub` of `half`, before WP-144. Nothing is refused under it
 /// any more; kept for the coverage log's history.
 pub const FLOAT_OP: &str = "x64:atomic-float-op";
-/// A 16-byte atomic in a function without `+cx16`: `llc` calls
-/// libatomic's `__atomic_*_16`, which `hod_cg::RuntimeFn` does not have.
+/// A 16-byte atomic in a function without `+cx16`, before WP-144 (it
+/// calls libatomic's `__atomic_*_16` now). Nothing is refused under it
+/// any more; kept for the coverage log's history.
 pub const LIBATOMIC: &str = "x64:atomic-libatomic";
 
 /// Every refusal of this module.
@@ -240,16 +247,12 @@ fn locked(inst: McInst) -> McInst {
     mc::lock(inst)
 }
 
-/// Takes `rbx` for a 16-byte sequence (before anything else is asked
-/// for: at the start of a lowering nothing is pinned) and checks that the
-/// function has `+cx16`.
+/// Takes `rbx` for a 16-byte `cmpxchg16b` sequence (before anything
+/// else is asked for: at the start of a lowering nothing is pinned).
 ///
 /// # Errors
-/// [`LIBATOMIC`] without `+cx16`; what displacing `rbx` reports.
+/// What displacing `rbx` reports.
 fn take_rbx(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
-    if !has_cx16(cx) {
-        return unsupported(LIBATOMIC);
-    }
     cx.take_reg(crate::reg::gpr(RBX))
 }
 
@@ -284,11 +287,17 @@ fn wide_loop(
 /// `%r = load atomic <ty>, ptr %ptr <ordering>`.
 ///
 /// # Errors
-/// [`UNALIGNED`], [`TYPE`], [`LIBATOMIC`]; what asking for the operands
-/// reports.
+/// [`UNALIGNED`], [`TYPE`]; what asking for the operands reports.
 pub fn load<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, ptr: Value, mem: MemFlags) -> CgResult<()> {
     let shape = shape(cx, inst.ty(), mem)?;
     if shape == Shape::Wide {
+        if !has_cx16(cx) {
+            deferred_first(cx, inst, None)?;
+            let r = cx.def_mem(inst)?;
+            let order = c_order(cx, ordering(mem))?;
+            cx.call_runtime(RuntimeFn::AtomicLoad16, &[CallArg::Value(ptr), order], Some(r))?;
+            return Ok(());
+        }
         take_rbx(cx)?;
     }
     deferred_first(cx, inst, None)?;
@@ -323,8 +332,7 @@ pub fn load<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, ptr: Value, mem: MemFlag
 /// `store atomic <ty> %value, ptr %ptr <ordering>`.
 ///
 /// # Errors
-/// [`UNALIGNED`], [`TYPE`], [`LIBATOMIC`]; what asking for the operands
-/// reports.
+/// [`UNALIGNED`], [`TYPE`]; what asking for the operands reports.
 pub fn store<'a>(
     cx: &mut FnCx<'a, X64>,
     inst: Inst<'a>,
@@ -334,6 +342,14 @@ pub fn store<'a>(
 ) -> CgResult<()> {
     let shape = shape(cx, value_ty(cx, value), mem)?;
     if shape == Shape::Wide {
+        if !has_cx16(cx) {
+            deferred_first(cx, inst, None)?;
+            let src = cx.use_mem(value)?;
+            let order = c_order(cx, ordering(mem))?;
+            let args = [CallArg::Value(ptr), CallArg::Mem(src), order];
+            cx.call_runtime(RuntimeFn::AtomicStore16, &args, None)?;
+            return Ok(());
+        }
         take_rbx(cx)?;
     }
     deferred_first(cx, inst, None)?;
@@ -390,8 +406,8 @@ pub fn fence(cx: &mut FnCx<'_, X64>, ordering: AtomicOrdering, scope: SyncScope)
 /// `%r = atomicrmw <op> ptr %ptr, <ty> %value <ordering>`.
 ///
 /// # Errors
-/// [`UNALIGNED`], [`TYPE`], [`BFLOAT_OP`], [`FLOAT_OP`], [`LIBATOMIC`];
-/// what asking for the operands reports.
+/// [`UNALIGNED`], [`TYPE`], [`BFLOAT_OP`]; what asking for the operands
+/// reports.
 pub fn rmw<'a>(
     cx: &mut FnCx<'a, X64>,
     inst: Inst<'a>,
@@ -410,6 +426,10 @@ pub fn rmw<'a>(
         return unsupported(BFLOAT_OP);
     }
     if shape == Shape::Wide {
+        if !has_cx16(cx) {
+            deferred_first(cx, inst, None)?;
+            return rmw_libatomic(cx, inst, op, ptr, value, ordering(mem));
+        }
         take_rbx(cx)?;
     }
     deferred_first(cx, inst, None)?;
@@ -845,14 +865,172 @@ fn rmw_wide<'a>(
     Ok(())
 }
 
+// ---- 16 bytes without cx16: libatomic ----
+
+/// `ordering`'s C `memory_order` number (`relaxed` 0, `acquire` 2,
+/// `release` 3, `acq_rel` 4, `seq_cst` 5; `unordered` is `relaxed`, as
+/// `llc`'s `toCABI`), in a temporary as a call argument.
+fn c_order(cx: &mut FnCx<'_, X64>, ordering: AtomicOrdering) -> CgResult<CallArg> {
+    let number = match ordering {
+        AtomicOrdering::Unordered | AtomicOrdering::Monotonic => 0,
+        AtomicOrdering::Acquire => 2,
+        AtomicOrdering::Release => 3,
+        AtomicOrdering::AcqRel => 4,
+        AtomicOrdering::SeqCst => 5,
+    };
+    let t = cx.temp(Class::Gpr)?;
+    put(cx, mc::mov_ri(Size::D, gp(t), number));
+    Ok(CallArg::Reg(t))
+}
+
+/// The failure ordering of the `cmpxchg` an `atomicrmw` loop uses: the
+/// strongest one `success` allows (`AtomicCmpXchgInst::
+/// getStrongestFailureOrdering`).
+const fn failure_of(success: AtomicOrdering) -> AtomicOrdering {
+    match success {
+        AtomicOrdering::Release | AtomicOrdering::Monotonic | AtomicOrdering::Unordered => {
+            AtomicOrdering::Monotonic
+        }
+        AtomicOrdering::AcqRel | AtomicOrdering::Acquire => AtomicOrdering::Acquire,
+        AtomicOrdering::SeqCst => AtomicOrdering::SeqCst,
+    }
+}
+
+/// An `i128` `atomicrmw` without `+cx16`. `xchg`, `add`, `sub`, `and`,
+/// `nand`, `or`, `xor` are one call of `__atomic_exchange_16` or
+/// `__atomic_fetch_<op>_16`. The others are `llc`'s expansion: a plain
+/// read of the cell into the old value's slot, then a loop that
+/// computes the new value into a slot of its own from the old one and
+/// the operand (with `rax`, `rcx`, `rdx`, `r10`, `r11`, which hold no
+/// value) and calls `__atomic_compare_exchange_16`, which writes the
+/// cell's value to the old value's slot when it fails.
+///
+/// Everything the loop's call would displace is displaced before the
+/// loop, so the call's own glue only reloads what is the same on every
+/// pass: the pointer stays in its pool register, which is callee-saved.
+#[allow(clippy::many_single_char_names, reason = "register names")]
+fn rmw_libatomic<'a>(
+    cx: &mut FnCx<'a, X64>,
+    inst: Inst<'a>,
+    op: RmwOp,
+    ptr: Value,
+    value: Value,
+    ordering: AtomicOrdering,
+) -> CgResult<()> {
+    let src = cx.use_mem(value)?;
+    let old = if cx.is_dead(inst) { cx.alloc_slot(16, 16)? } else { cx.def_mem(inst)? };
+    let func = match op {
+        RmwOp::Xchg => Some(RuntimeFn::AtomicExchange16),
+        RmwOp::Add => Some(RuntimeFn::AtomicFetchAdd16),
+        RmwOp::Sub => Some(RuntimeFn::AtomicFetchSub16),
+        RmwOp::And => Some(RuntimeFn::AtomicFetchAnd16),
+        RmwOp::Nand => Some(RuntimeFn::AtomicFetchNand16),
+        RmwOp::Or => Some(RuntimeFn::AtomicFetchOr16),
+        RmwOp::Xor => Some(RuntimeFn::AtomicFetchXor16),
+        _ => None,
+    };
+    if let Some(func) = func {
+        let order = c_order(cx, ordering)?;
+        cx.call_runtime(func, &[CallArg::Value(ptr), CallArg::Mem(src), order], Some(old))?;
+        return Ok(());
+    }
+    let a = gp(cx.use_reg(ptr)?);
+    for (half, disp) in [(0, 0), (8, 8)] {
+        put(cx, mc::mov_rm(Size::Q, R10, Mem::base(a, disp)));
+        frame_inst(cx, old.offset_by(half), |m| mc::mov_mr(Size::Q, m, R10));
+    }
+    let new = cx.alloc_slot(16, 16)?;
+    cx.displace_all()?;
+    let q = Size::Q;
+    let again = cx.new_label();
+    let done = cx.new_label();
+    cx.bind(again)?;
+    // `rdx:rax` = old, `r11:r10` = v; the new value is stored from
+    // `r11:r10` at `done`.
+    load_pair(cx, old, RAX, RDX);
+    load_pair(cx, src, R10, R11);
+    // The flags of `old - v` (`b`/`ae`, `l`/`ge`; not `e`).
+    let compare = |cx: &mut FnCx<'_, X64>| {
+        put(cx, mc::cmp_rr(q, RAX, R10));
+        put(cx, mc::mov_rr(q, RCX, RDX));
+        put(cx, mc::sbb_rr(q, RCX, R11));
+    };
+    let old_to_new = |cx: &mut FnCx<'_, X64>| {
+        put(cx, mc::mov_rr(q, R10, RAX));
+        put(cx, mc::mov_rr(q, R11, RDX));
+    };
+    match op {
+        RmwOp::Max | RmwOp::Min | RmwOp::UMax | RmwOp::UMin => {
+            // `v` stays when it wins.
+            let keep_v = match op {
+                RmwOp::Max => Cond::L,
+                RmwOp::Min => Cond::Ge,
+                RmwOp::UMax => Cond::B,
+                _ => Cond::Ae,
+            };
+            compare(cx);
+            branch_cond(cx, keep_v, done)?;
+            old_to_new(cx);
+        }
+        RmwOp::UIncWrap => {
+            // old >= v ? 0 : old + 1
+            compare(cx);
+            put(cx, mc::mov_ri(Size::D, R10, 0));
+            put(cx, mc::mov_ri(Size::D, R11, 0));
+            branch_cond(cx, Cond::Ae, done)?;
+            put(cx, mc::add_ri(q, RAX, 1));
+            put(cx, mc::adc_ri(q, RDX, 0));
+            old_to_new(cx);
+        }
+        RmwOp::UDecWrap => {
+            // old == 0 || old > v ? v : old - 1
+            put(cx, mc::mov_rr(q, RCX, RAX));
+            put(cx, mc::or_rr(q, RCX, RDX));
+            branch_cond(cx, Cond::E, done)?;
+            // `v - old` borrows: `v < old`.
+            put(cx, mc::cmp_rr(q, R10, RAX));
+            put(cx, mc::mov_rr(q, RCX, R11));
+            put(cx, mc::sbb_rr(q, RCX, RDX));
+            branch_cond(cx, Cond::B, done)?;
+            put(cx, mc::sub_ri(q, RAX, 1));
+            put(cx, mc::sbb_ri(q, RDX, 0));
+            old_to_new(cx);
+        }
+        RmwOp::USubCond | RmwOp::USubSat => {
+            // old - v, unless it borrows: then old (`usub_cond`) or 0.
+            put(cx, mc::sub_rr(q, RAX, R10));
+            put(cx, mc::sbb_rr(q, RDX, R11));
+            if op == RmwOp::USubCond {
+                load_pair(cx, old, R10, R11);
+            } else {
+                put(cx, mc::mov_ri(Size::D, R10, 0));
+                put(cx, mc::mov_ri(Size::D, R11, 0));
+            }
+            branch_cond(cx, Cond::B, done)?;
+            old_to_new(cx);
+        }
+        _ => return cx.bug("a floating-point atomicrmw of i128"),
+    }
+    cx.bind(done)?;
+    frame_inst(cx, new, |m| mc::mov_mr(q, m, R10));
+    frame_inst(cx, new.offset_by(8), |m| mc::mov_mr(q, m, R11));
+    let success = c_order(cx, ordering)?;
+    let failure = c_order(cx, failure_of(ordering))?;
+    let args = [CallArg::Value(ptr), CallArg::Addr(old), CallArg::Mem(new), success, failure];
+    let Some(ok) = cx.call_runtime(RuntimeFn::AtomicCompareExchange16, &args, None)? else {
+        return cx.bug("__atomic_compare_exchange_16 without a result");
+    };
+    put(cx, mc::test_rr(Size::B, gp(ok), gp(ok)));
+    branch_cond(cx, Cond::E, again)
+}
+
 // ---- cmpxchg ----
 
 /// `%r = cmpxchg [weak] ptr %ptr, <ty> %expected, <ty> %replacement
 /// <success> <failure>`: the `{ <ty>, i1 }` result in its slot.
 ///
 /// # Errors
-/// [`UNALIGNED`], [`TYPE`], [`LIBATOMIC`]; what asking for the operands
-/// reports.
+/// [`UNALIGNED`], [`TYPE`]; what asking for the operands reports.
 #[allow(
     clippy::too_many_arguments,
     reason = "the instruction's operands, as the dispatch has them"
@@ -876,6 +1054,26 @@ pub fn cmpxchg<'a>(
     };
     let size = match shape {
         Shape::Int(size) => size,
+        Shape::Wide if !has_cx16(cx) => {
+            deferred_first(cx, inst, None)?;
+            let e = cx.use_mem(expected)?;
+            let n = cx.use_mem(replacement)?;
+            let r = cx.def_mem(inst)?;
+            // The expected value where the routine reads it and writes
+            // the cell's value on failure: the result's own slot.
+            for half in [0, 8] {
+                frame_inst(cx, e.offset_by(half), |m| mc::mov_rm(Size::Q, R10, m));
+                frame_inst(cx, r.offset_by(half), |m| mc::mov_mr(Size::Q, m, R10));
+            }
+            let success = c_order(cx, ordering(mem))?;
+            let failure = c_order(cx, failure)?;
+            let args = [CallArg::Value(ptr), CallArg::Addr(r), CallArg::Mem(n), success, failure];
+            let Some(ok) = cx.call_runtime(RuntimeFn::AtomicCompareExchange16, &args, None)? else {
+                return cx.bug("__atomic_compare_exchange_16 without a result");
+            };
+            frame_inst(cx, r.offset_by(flag_at), |m| mc::mov_mr(Size::B, m, gp(ok)));
+            return Ok(());
+        }
         Shape::Wide => {
             take_rbx(cx)?;
             deferred_first(cx, inst, None)?;

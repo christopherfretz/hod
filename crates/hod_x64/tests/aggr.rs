@@ -218,10 +218,7 @@ fn what_is_refused_is_refused_by_name() {
             "define void @f(ptr %p, i8000 %a, i8000 %k) { %r = shl i8000 %a, %k\n store i8000 %r, ptr %p\n ret void }",
             aggr::WIDE_SHIFT,
         ),
-        (
-            "define void @f(ptr %p, ptr %q) { %v = load atomic i128, ptr %q seq_cst, align 16\n store i128 %v, ptr %p\n ret void }",
-            hod_x64::atomic::LIBATOMIC,
-        ),
+        // An `i128` atomic without `+cx16` calls libatomic since WP-144.
     ]);
     // Linear forms have no limit.
     let text = "define void @f(ptr %p, i8000 %a) { %s = lshr i8000 %a, 4001\n %r = add i8000 %s, %a\n store i8000 %r, ptr %p\n ret void }";

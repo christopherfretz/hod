@@ -11,6 +11,7 @@
 
 use crate::Span;
 use crate::error::{Fail, LlErrorKind, PResult, fail};
+use crate::kw::Kw;
 use crate::lexer::{Lexer, Tok, Token};
 use crate::meta::MdKind;
 use crate::skip::skip_group;
@@ -118,7 +119,7 @@ pub(crate) fn scan(src: &[u8]) -> PResult<Index> {
             }
             Tok::Local | Tok::LocalQuoted | Tok::LocalId => {
                 scanner.expect(Tok::Equal, "expected '=' after a type name")?;
-                scanner.expect_word(b"type", "expected 'type' after the name")?;
+                scanner.expect_word(Kw::Type, "expected 'type' after the name")?;
                 let start = scanner.lx.pos() as u32;
                 let next = scanner.rest_of_entity()?;
                 scanner.index.types.push(TypeEnt { name: token, start, end: next.start });
@@ -126,7 +127,7 @@ pub(crate) fn scan(src: &[u8]) -> PResult<Index> {
             }
             Tok::Comdat | Tok::ComdatQuoted => {
                 scanner.expect(Tok::Equal, "expected '=' after a comdat name")?;
-                scanner.expect_word(b"comdat", "expected 'comdat' here")?;
+                scanner.expect_word(Kw::Comdat, "expected 'comdat' here")?;
                 let kind = scanner.expect(Tok::Word, "expected a comdat selection kind")?;
                 scanner.index.comdats.push(ComdatEnt { name: token, kind });
                 scanner.next()?
@@ -167,9 +168,9 @@ impl Scanner<'_> {
         Ok(token)
     }
 
-    fn expect_word(&mut self, word: &[u8], what: &'static str) -> PResult<Token> {
+    fn expect_word(&mut self, word: Kw, what: &'static str) -> PResult<Token> {
         let token = self.next()?;
-        if token.kind != Tok::Word || self.lx.text(token) != word {
+        if token.kind != Tok::Word || token.kw != word {
             return fail(LlErrorKind::Syntax, token.start, what);
         }
         Ok(token)
@@ -296,7 +297,7 @@ impl Scanner<'_> {
                 self.next()
             }
             b"module" => {
-                self.expect_word(b"asm", "expected 'module asm'")?;
+                self.expect_word(Kw::Asm, "expected 'module asm'")?;
                 let text = self.expect(Tok::Str, "expected a string")?;
                 self.index.module_asm.push(text);
                 self.next()

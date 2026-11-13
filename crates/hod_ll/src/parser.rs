@@ -279,11 +279,16 @@ impl<'a, 'm, L: Layering> Parser<'a, 'm, L> {
         self.tok_text(self.tok)
     }
 
-    pub(crate) fn at_word(&self, word: &[u8]) -> bool {
-        self.tok.kind == Tok::Word && self.text() == word
+    /// Whether the current token is the word `word`: one compare, as
+    /// only a word token carries the code of a word that is not an
+    /// integer type.
+    #[inline]
+    pub(crate) fn at_word(&self, word: Kw) -> bool {
+        debug_assert!(word != Kw::Other && !word.is_int_type());
+        self.tok.kw == word
     }
 
-    pub(crate) fn eat_word(&mut self, word: &[u8]) -> bool {
+    pub(crate) fn eat_word(&mut self, word: Kw) -> bool {
         let found = self.at_word(word);
         if found {
             self.bump();
@@ -316,7 +321,7 @@ impl<'a, 'm, L: Layering> Parser<'a, 'm, L> {
         Ok(token)
     }
 
-    pub(crate) fn expect_word(&mut self, word: &[u8], what: &str) -> PResult<()> {
+    pub(crate) fn expect_word(&mut self, word: Kw, what: &str) -> PResult<()> {
         if !self.eat_word(word) {
             return self.syntax(what);
         }

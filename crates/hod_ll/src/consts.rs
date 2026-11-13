@@ -11,6 +11,7 @@ use crate::body::is_terminator;
 use crate::error::{LlErrorKind, PResult, fail};
 use crate::float::{Narrow, decimal, fp80, fp128, hex_u64, hex_value_u64, narrow};
 use crate::index::{ItemKind, parse_u32};
+use crate::kw::Kw;
 use crate::lexer::{Lexer, Tok, Token, hex_value, unescape};
 use crate::limits::MAX_INT_LITERAL_DIGITS;
 use crate::parser::{Parser, ir};
@@ -353,13 +354,13 @@ impl<L: Layering> Parser<'_, '_, L> {
             (_, Some((op, false))) => {
                 self.expect(Tok::LParen, "expected '(' after a cast")?;
                 let value = self.parse_typed_const()?;
-                self.expect_word(b"to", "expected 'to' in a cast")?;
+                self.expect_word(Kw::To, "expected 'to' in a cast")?;
                 let to = self.parse_type()?;
                 self.expect(Tok::RParen, "expected ')' at the end of a cast")?;
                 ir(at, self.module.consts.fold_cast(&self.module.types, op, value, to))?
             }
             (_, Some((op, true))) => {
-                while self.at_word(b"nuw") || self.at_word(b"nsw") {
+                while self.at_word(Kw::Nuw) || self.at_word(Kw::Nsw) {
                     self.bump();
                 }
                 self.expect(Tok::LParen, "expected '(' after a binary operator")?;
@@ -418,7 +419,7 @@ impl<L: Layering> Parser<'_, '_, L> {
     /// `getelementptr flags (type, base, indices…)`, after the keyword.
     fn gep(&mut self, at: u32) -> PResult<ConstId> {
         loop {
-            if self.at_word(b"inrange") {
+            if self.at_word(Kw::Inrange) {
                 self.bump();
                 if self.tok.kind != Tok::LParen {
                     return self.syntax("expected '(' after inrange");

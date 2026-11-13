@@ -12,6 +12,7 @@ use hod_ir::{
 
 use crate::body::Fx;
 use crate::error::{LlErrorKind, PResult, fail};
+use crate::kw::Kw;
 use crate::lexer::Tok;
 use crate::parser::ir;
 
@@ -233,7 +234,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     fn tail_call(&mut self, at: u32, tail: TailKind) -> PResult<Done> {
-        self.p.expect_word(b"call", "expected 'call' after a tail-call marker")?;
+        self.p.expect_word(Kw::Call, "expected 'call' after a tail-call marker")?;
         self.call(at, Opcode::Call, tail)
     }
 
@@ -348,7 +349,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
         }
         let from_at = self.p.tok.start;
         let (from, arg) = self.typed()?;
-        self.p.expect_word(b"to", "expected 'to' after cast value")?;
+        self.p.expect_word(Kw::To, "expected 'to' after cast value")?;
         let to = self.p.parse_type()?;
         if !cast_is_valid(&self.p.module.types, op, from, to) {
             return mistyped(from_at, "invalid cast opcode for cast between these types");
@@ -439,7 +440,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
                 self.extra_comma = true;
                 break;
             }
-            if !self.p.at_word(b"align") {
+            if !self.p.at_word(Kw::Align) {
                 return self.p.syntax("expected metadata or 'align'");
             }
             align = Some(self.alignment()?);
@@ -449,7 +450,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
 
     /// `[syncscope("name")]`.
     fn scope(&mut self) -> PResult<SyncScope> {
-        if !self.p.eat_word(b"syncscope") {
+        if !self.p.eat_word(Kw::Syncscope) {
             return Ok(SyncScope::System);
         }
         self.p.expect(Tok::LParen, "expected '(' in synchronization scope")?;
@@ -500,8 +501,8 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     fn load(&mut self, at: u32) -> PResult<(TypeId, Value)> {
-        let atomic = self.p.eat_word(b"atomic");
-        let volatile = self.p.eat_word(b"volatile");
+        let atomic = self.p.eat_word(Kw::Atomic);
+        let volatile = self.p.eat_word(Kw::Volatile);
         let ty_at = self.p.tok.start;
         let ty = self.p.parse_type()?;
         self.p.expect(Tok::Comma, "expected comma after load's type")?;
@@ -531,8 +532,8 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     fn store(&mut self, at: u32) -> PResult<(TypeId, Value)> {
-        let atomic = self.p.eat_word(b"atomic");
-        let volatile = self.p.eat_word(b"volatile");
+        let atomic = self.p.eat_word(Kw::Atomic);
+        let volatile = self.p.eat_word(Kw::Volatile);
         let ty_at = self.p.tok.start;
         let (ty, value) = self.typed()?;
         self.p.expect(Tok::Comma, "expected ',' after store operand")?;
@@ -563,8 +564,8 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     fn alloca(&mut self, at: u32) -> PResult<(TypeId, Value)> {
-        let in_alloca = self.p.eat_word(b"inalloca");
-        let swift_error = self.p.eat_word(b"swifterror");
+        let in_alloca = self.p.eat_word(Kw::Inalloca);
+        let swift_error = self.p.eat_word(Kw::Swifterror);
         let ty_at = self.p.tok.start;
         let ty = self.p.parse_type()?;
         let mut count = None;
@@ -578,10 +579,10 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
                 self.extra_comma = true;
                 break;
             }
-            if self.p.at_word(b"align") && stage < 2 {
+            if self.p.at_word(Kw::Align) && stage < 2 {
                 align = Some(self.alignment()?);
                 stage = 2;
-            } else if self.p.at_word(b"addrspace") && stage < 3 {
+            } else if self.p.at_word(Kw::Addrspace) && stage < 3 {
                 self.p.bump();
                 self.p.expect(Tok::LParen, "expected '(' in address space")?;
                 space = self.p.expect_u32("expected an address space number")?;
@@ -622,8 +623,8 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     fn cmpxchg(&mut self, at: u32) -> PResult<(TypeId, Value)> {
-        let weak = self.p.eat_word(b"weak");
-        let volatile = self.p.eat_word(b"volatile");
+        let weak = self.p.eat_word(Kw::Weak);
+        let volatile = self.p.eat_word(Kw::Volatile);
         let ptr = self.pointer("cmpxchg")?;
         self.p.expect(Tok::Comma, "expected ',' after cmpxchg address")?;
         let ty_at = self.p.tok.start;
@@ -660,7 +661,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     fn atomic_rmw(&mut self, at: u32) -> PResult<(TypeId, Value)> {
-        let volatile = self.p.eat_word(b"volatile");
+        let volatile = self.p.eat_word(Kw::Volatile);
         let found = match self.p.tok.kind {
             Tok::Word => {
                 let word = self.p.text();
@@ -943,11 +944,11 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
 
     fn landing_pad(&mut self, at: u32) -> PResult<(TypeId, Value)> {
         let ty = self.p.parse_type()?;
-        let cleanup = self.p.eat_word(b"cleanup");
+        let cleanup = self.p.eat_word(Kw::Cleanup);
         self.s.clauses.clear();
         loop {
-            let catch = self.p.at_word(b"catch");
-            if !catch && !self.p.at_word(b"filter") {
+            let catch = self.p.at_word(Kw::Catch);
+            if !catch && !self.p.at_word(Kw::Filter) {
                 break;
             }
             self.p.bump();
@@ -972,13 +973,13 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
 
     /// `within none` or `within %pad`.
     fn within(&mut self) -> PResult<()> {
-        self.p.expect_word(b"within", "expected 'within' after the funclet instruction")?;
+        self.p.expect_word(Kw::Within, "expected 'within' after the funclet instruction")?;
         self.pad_ref()
     }
 
     /// `none` or a token value.
     fn pad_ref(&mut self) -> PResult<()> {
-        if self.p.eat_word(b"none") {
+        if self.p.eat_word(Kw::None) {
             return Ok(());
         }
         let token = self.p.tok;
@@ -1021,9 +1022,9 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
 
     /// `unwind to caller` or `unwind label %block`.
     fn unwind(&mut self) -> PResult<()> {
-        self.p.expect_word(b"unwind", "expected 'unwind'")?;
-        if self.p.eat_word(b"to") {
-            return self.p.expect_word(b"caller", "expected 'caller' in the unwind destination");
+        self.p.expect_word(Kw::Unwind, "expected 'unwind'")?;
+        if self.p.eat_word(Kw::To) {
+            return self.p.expect_word(Kw::Caller, "expected 'caller' in the unwind destination");
         }
         self.label().map(drop)
     }
@@ -1045,9 +1046,9 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     fn catch_ret(&mut self, at: u32) -> PResult<Done> {
-        self.p.expect_word(b"from", "expected 'from' after catchret")?;
+        self.p.expect_word(Kw::From, "expected 'from' after catchret")?;
         self.pad_ref()?;
-        self.p.expect_word(b"to", "expected 'to' in catchret")?;
+        self.p.expect_word(Kw::To, "expected 'to' in catchret")?;
         self.label()?;
         self.p.note("inst:catchret");
         ir(at, self.b.funclet(Opcode::CatchRet, TypeId::VOID))?;
@@ -1055,7 +1056,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     fn cleanup_ret(&mut self, at: u32) -> PResult<Done> {
-        self.p.expect_word(b"from", "expected 'from' after cleanupret")?;
+        self.p.expect_word(Kw::From, "expected 'from' after cleanupret")?;
         self.pad_ref()?;
         self.unwind()?;
         self.p.note("inst:cleanupret");
@@ -1077,7 +1078,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     fn br(&mut self, at: u32) -> PResult<Done> {
-        if self.p.at_word(b"label") {
+        if self.p.at_word(Kw::Label) {
             let target = self.label()?;
             ir(at, self.b.br(target))?;
             return Ok((TypeId::VOID, Value::NONE, true));

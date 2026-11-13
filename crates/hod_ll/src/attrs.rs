@@ -11,6 +11,7 @@ use hod_ir::{AttrInfo, AttrSyntax, CallConv, FnAttrsId, ParamAttrs, UwTable, att
 use crate::AttrGroup;
 use crate::error::{LlErrorKind, PResult, fail};
 use crate::index::parse_u32;
+use crate::kw::Kw;
 use crate::lexer::Tok;
 use crate::meta::Upgrade;
 use crate::parser::{Parser, ir};
@@ -121,9 +122,9 @@ impl<L: Layering> Parser<'_, '_, L> {
     pub(crate) fn call_conv(&mut self) -> PResult<CallConv> {
         let at = self.tok.start;
         let mut cc = 0;
-        if self.eat_word(b"cc") {
+        if self.eat_word(Kw::Cc) {
             cc = self.expect_u32("expected a calling convention number")?;
-        } else if self.at_word(b"riscv_vls_cc") {
+        } else if self.at_word(Kw::RiscvVlsCc) {
             self.bump();
             self.expect(Tok::LParen, "expected '(' after riscv_vls_cc")?;
             let width = self.expect_u32("expected a vector length")?;

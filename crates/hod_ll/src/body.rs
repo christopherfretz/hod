@@ -17,6 +17,7 @@ use hod_ir::{
 use crate::debug::{Handle, INVALID};
 use crate::error::{LlErrorKind, PResult, fail, ir_fail};
 use crate::index::{Index, parse_u32};
+use crate::kw::Kw;
 use crate::lexer::{Lexer, Tok, Token, unescape};
 use crate::meta::{MdKind, MdRef};
 use crate::names::hash;
@@ -784,7 +785,7 @@ impl<'a, L: Layering> Fx<'_, 'a, '_, L> {
 
     /// `label %name`.
     pub(crate) fn label(&mut self) -> PResult<BlockId> {
-        self.p.expect_word(b"label", "expected 'label' before a block name")?;
+        self.p.expect_word(Kw::Label, "expected 'label' before a block name")?;
         self.block_ref()
     }
 
@@ -880,7 +881,7 @@ impl<'a, L: Layering> Fx<'_, 'a, '_, L> {
             return self.p.syntax("function body requires at least one basic block");
         }
         while self.p.tok.start < self.end {
-            if self.p.at_word(b"uselistorder") {
+            if self.p.at_word(Kw::Uselistorder) {
                 self.use_list_orders()?;
                 break;
             }
@@ -967,7 +968,7 @@ impl<'a, L: Layering> Fx<'_, 'a, '_, L> {
     /// `uselistorder type value, { order }` directives at the end of a
     /// body: the order of use lists means nothing to hod.
     fn use_list_orders(&mut self) -> PResult<()> {
-        while self.p.eat_word(b"uselistorder") {
+        while self.p.eat_word(Kw::Uselistorder) {
             while self.p.tok.kind != Tok::LBrace {
                 if self.p.tok.start >= self.end || self.p.tok.kind == Tok::Error {
                     return self.p.syntax("expected '{' in a uselistorder directive");
@@ -1153,7 +1154,7 @@ impl<'a, L: Layering> Fx<'_, 'a, '_, L> {
 
     fn metadata_word(&mut self, old: bool) -> PResult<()> {
         if old {
-            self.p.expect_word(b"metadata", "expected 'metadata' before the operand")?;
+            self.p.expect_word(Kw::Metadata, "expected 'metadata' before the operand")?;
         }
         Ok(())
     }

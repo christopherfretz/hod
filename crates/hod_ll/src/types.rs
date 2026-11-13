@@ -6,6 +6,7 @@ use hod_ir::TypeId;
 
 use crate::error::{LlErrorKind, PResult, fail};
 use crate::index::parse_u32;
+use crate::kw::Kw;
 use crate::lexer::{Lexer, Tok, Token};
 use crate::parser::{Parser, TypeSlot, ir};
 
@@ -139,7 +140,7 @@ impl<L: Layering> Parser<'_, '_, L> {
         let ent = self.index.types[at];
         self.enter()?;
         self.goto(ent.start);
-        let ty = if self.at_word(b"opaque") {
+        let ty = if self.at_word(Kw::Opaque) {
             let opaque = self.module.types.opaque_struct();
             self.bump();
             ir(ent.name.start, opaque)?
@@ -238,7 +239,7 @@ impl<L: Layering> Parser<'_, '_, L> {
                     self.bump();
                     ty = TypeId::PTR;
                 }
-                Tok::Word if self.at_word(b"addrspace") => {
+                Tok::Word if self.at_word(Kw::Addrspace) => {
                     self.pointee(ty)?;
                     self.bump();
                     self.expect(Tok::LParen, "expected '(' in an address space")?;
@@ -265,7 +266,7 @@ impl<L: Layering> Parser<'_, '_, L> {
         let ty = match self.text() {
             b"ptr" => {
                 self.bump();
-                if !self.eat_word(b"addrspace") {
+                if !self.eat_word(Kw::Addrspace) {
                     return Ok(TypeId::PTR);
                 }
                 self.expect(Tok::LParen, "expected '(' in an address space")?;
@@ -352,7 +353,7 @@ impl<L: Layering> Parser<'_, '_, L> {
         self.enter()?;
         self.bump();
         let len = self.expect_u64("expected the number of elements")?;
-        self.expect_word(b"x", "expected 'x' after the number of elements")?;
+        self.expect_word(Kw::X, "expected 'x' after the number of elements")?;
         let elem = self.parse_type()?;
         self.expect(Tok::RBracket, "expected ']' at the end of an array type")?;
         self.leave();
@@ -370,12 +371,12 @@ impl<L: Layering> Parser<'_, '_, L> {
             self.leave();
             return Ok(ty);
         }
-        let scalable = self.eat_word(b"vscale");
+        let scalable = self.eat_word(Kw::Vscale);
         if scalable {
-            self.expect_word(b"x", "expected 'x' after vscale")?;
+            self.expect_word(Kw::X, "expected 'x' after vscale")?;
         }
         let len = self.expect_u32("expected the number of elements")?;
-        self.expect_word(b"x", "expected 'x' after the number of elements")?;
+        self.expect_word(Kw::X, "expected 'x' after the number of elements")?;
         let elem = self.parse_type()?;
         self.expect(Tok::Greater, "expected '>' at the end of a vector type")?;
         self.leave();

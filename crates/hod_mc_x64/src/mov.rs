@@ -2,7 +2,8 @@
 //! (`spec/mc-x64.md` "Moves and extensions").
 
 use crate::alu::{imm_len, not_byte};
-use crate::inst::{Inst, Op, Rm, digit_m, digit_r, imm, modrm, plain, plus_r, rmem, rr};
+use crate::fixup::Fixup;
+use crate::inst::{Inst, Op, Rm, abs_imm, digit_m, digit_r, imm, modrm, plain, plus_r, rmem, rr};
 use crate::reg::{Mem, Reg, Size};
 
 /// `MOV r/m, r` with a register destination (`88`/`89 /r`).
@@ -51,6 +52,43 @@ checked! {
     pub fn mov_mi / try_mov_mi(size: Size, dst: Mem, value: i64)
     requires size.fits_imm(value);
     { imm(digit_m(Op::one(0xc6).sized(size, 1), 0, dst), value, imm_len(size)) }
+}
+
+/// `MOVABS r64, imm64` (`REX.W B8+r io`), always the 10-byte form: the
+/// `imm64` is the instruction's site, [`Fixup::Abs64`] (`R_X86_64_64`).
+#[inline]
+pub const fn movabs_ri(dst: Reg, value: i64) -> Inst {
+    abs_imm(plus_r(Op::one(0xb8).sized(Size::Q, 0), dst, false), Fixup::Abs64, value)
+}
+
+/// `MOV r64, imm32` (`REX.W C7 /0 id`), the immediate sign-extended: the
+/// `imm32` is the instruction's site, [`Fixup::Abs32`] (`R_X86_64_32S`).
+#[inline]
+pub const fn mov_ri32s(dst: Reg, value: i32) -> Inst {
+    let op = Op::one(0xc7).sized(Size::Q, 0);
+    abs_imm(digit_r(op, 0, Size::Q, dst), Fixup::Abs32, value as i64)
+}
+
+/// `MOV r32, imm32` (`B8+r id`), zero-extended into the 64-bit register:
+/// the `imm32` is the instruction's site, [`Fixup::Abs32U`]
+/// (`R_X86_64_32`).
+#[inline]
+pub const fn mov_ri32(dst: Reg, value: u32) -> Inst {
+    abs_imm(plus_r(Op::one(0xb8), dst, false), Fixup::Abs32U, value as i64)
+}
+
+checked! {
+    /// `MOV m64, imm32` (`REX.W C7 /0 id`), the immediate sign-extended:
+    /// the `imm32` is the instruction's site, [`Fixup::Abs32`]
+    /// (`R_X86_64_32S`). An instruction has one site, so `dst` must have
+    /// no relocatable field of its own (not RIP-relative, not
+    /// [`with_abs32`](Mem::with_abs32)).
+    pub fn mov_mi32s / try_mov_mi32s(dst: Mem, value: i32)
+    requires !dst.has_field();
+    {
+        let op = Op::one(0xc7).sized(Size::Q, 0);
+        abs_imm(digit_m(op, 0, dst), Fixup::Abs32, value as i64)
+    }
 }
 
 /// Whether `src` is a source size of `movzx`/`movsx` into `dst`: 8 or 16

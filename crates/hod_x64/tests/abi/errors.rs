@@ -91,14 +91,18 @@ fn every_name() {
     let function = t.function(TypeId::VOID, &[], false).expect("a type");
     let opaque = t.opaque_struct().expect("a type");
     let t_int24 = t.int(24).expect("a type");
+    let t_int256 = t.int(256).expect("a type");
+    let t_int7 = t.int(7).expect("a type");
     let mut array = |elem, len| t.array(elem, len).expect("a type");
     let many_bytes = array(i8, u64::from(MAX_PIECES) + 1);
     let most_bytes = array(i8, u64::from(MAX_PIECES));
     let huge = array(i64, 1 << 30);
     let huge_bytes = array(i8, 1 << 33);
     let mut vector = |elem, len| t.vector(elem, len).expect("a type");
+    // WP-152: vectors of `i128` and `x86_fp80` are placed (§4.3).
+    let v1i256 = vector(t_int256, 1);
+    let v2i7 = vector(t_int7, 2);
     let v1i128 = vector(i128, 1);
-    let v2x86 = vector(TypeId::X86_FP80, 2);
     let v2i24 = vector(t_int24, 2);
     let v3i1 = vector(TypeId::I1, 3);
     let v32i1 = vector(TypeId::I1, 32);
@@ -173,8 +177,18 @@ fn every_name() {
         ("abi:addrspace", refusal(&t, c, void, &[(far, NONE)], None)),
         ("abi:addrspace", refusal(&t, c, void, &[(far_vector, NONE)], None)),
         ("abi:addrspace", refusal(&t, c, (far, NONE), &[], None)),
-        ("abi:vector-element", refusal(&t, c, void, &[(v1i128, NONE)], None)),
-        ("abi:vector-element", refusal(&t, c, void, &[(v2x86, NONE)], None)),
+        ("abi:vector-element", refusal(&t, c, void, &[(v1i256, NONE)], None)),
+        ("abi:vector-element", refusal(&t, c, void, &[(v2i7, NONE)], None)),
+        (
+            "x64:vector-i128-split",
+            refusal(
+                &t,
+                c,
+                void,
+                &[(i64, NONE), (i64, NONE), (i64, NONE), (i64, NONE), (i64, NONE), (v1i128, NONE)],
+                None,
+            ),
+        ),
         ("abi:vector-element", refusal(&t, c, void, &[(v2i24, NONE)], None)),
         ("x64:mask-vector", refusal(&t, c, void, &[(v3i1, NONE)], None)),
         ("x64:mask-vector", refusal(&t, c, (v32i1, NONE), &[], None)),
@@ -201,7 +215,7 @@ fn every_name() {
                 &t,
                 c,
                 void,
-                &[(ptr, typed(ParamMem::ByVal, i64).with_align(32).expect("an alignment"))],
+                &[(ptr, typed(ParamMem::ByVal, i64).with_align(1 << 31).expect("an alignment"))],
                 None,
             ),
         ),

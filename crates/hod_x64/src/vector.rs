@@ -69,7 +69,9 @@ pub const MASK_WIDE: &str = "x64:mask-wide";
 /// A lane operation on a vector of integers of a width other than 1, 8,
 /// 16, 32 or 64 bits (`<4 x i4>`, `<2 x i24>`).
 pub const ODD_ELEMENT: &str = "x64:vector-odd-element";
-/// A lane operation on a vector of `i128` (or wider) or `fp128`.
+/// A lane operation on a vector of `i128` (or wider), `fp128` or
+/// `x86_fp80` other than `extractelement`, `insertelement` and
+/// `shufflevector` (WP-152, [`Wide`]).
 pub const WIDE_ELEMENT: &str = "x64:vector-wide-element";
 /// A lane operation on a vector of more than [`MAX_LANES`] lanes.
 pub const LENGTH: &str = "x64:vector-length";
@@ -202,6 +204,7 @@ impl Lanes {
 pub fn lanes(cx: &FnCx<'_, X64>, ty: TypeId) -> CgResult<Lanes> {
     match Shape::of(cx.types(), ty) {
         Some(shape) => shape.lanes(),
+        None if Wide::of(cx, ty).is_some() => unsupported(WIDE_ELEMENT),
         None if cx.types().is_vector(ty) => unsupported(ODD_ELEMENT),
         None => cx.bug("a vector operation on a type that is no fixed vector"),
     }
@@ -308,6 +311,14 @@ pub enum Index {
 /// # Errors
 /// [`INDEX`] for an index wider than 64 bits; what asking reports.
 pub fn index(cx: &mut FnCx<'_, X64>, value: Value, lanes: &Lanes) -> CgResult<Index> {
+    index_in(cx, value, lanes.count())
+}
+
+/// [`index`] for a vector of `count` lanes of any shape.
+///
+/// # Errors
+/// As [`index`].
+pub fn index_in(cx: &mut FnCx<'_, X64>, value: Value, count: u32) -> CgResult<Index> {
     let ty = value_ty(cx, value);
     let Some(bits @ 1..=64) = cx.types().int_bits(ty) else {
         return unsupported(INDEX);
@@ -319,7 +330,7 @@ pub fn index(cx: &mut FnCx<'_, X64>, value: Value, lanes: &Lanes) -> CgResult<In
             _ => return Ok(Index::Poison),
         };
         return Ok(match u32::try_from(lane) {
-            Ok(lane) if lane < lanes.count() => Index::Lane(lane),
+            Ok(lane) if lane < count => Index::Lane(lane),
             _ => Index::Poison,
         });
     }
@@ -487,6 +498,9 @@ pub fn extract_element<'a>(
     index_value: Value,
 ) -> CgResult<()> {
     deferred_first(cx, inst, None)?;
+    if let Some(w) = Wide::of(cx, value_ty(cx, vector)) {
+        return wide_extract(cx, inst, &w?, vector, index_value);
+    }
     let lanes = lanes(cx, value_ty(cx, vector))?;
     let idx = index(cx, index_value, &lanes)?;
     if lanes.shape.class == Class::Fpr {
@@ -528,6 +542,9 @@ pub fn insert_element<'a>(
     index_value: Value,
 ) -> CgResult<()> {
     deferred_first(cx, inst, None)?;
+    if let Some(w) = Wide::of(cx, inst.ty()) {
+        return wide_insert(cx, inst, &w?, vector, value, index_value);
+    }
     let lanes = lanes(cx, inst.ty())?;
     let idx = index(cx, index_value, &lanes)?;
     let e = cx.use_reg(value)?;
@@ -593,6 +610,9 @@ pub fn shuffle_vector<'a>(
     mask: &[u32],
 ) -> CgResult<()> {
     deferred_first(cx, inst, None)?;
+    if let Some(w) = Wide::of(cx, value_ty(cx, first)) {
+        return wide_shuffle(cx, inst, &w?, first, second, mask);
+    }
     let src = lanes(cx, value_ty(cx, first))?;
     let dst = lanes(cx, inst.ty())?;
     let n = src.count();
@@ -678,6 +698,182 @@ fn shuffle_dwords<'a>(
         put(cx, mc::pshufd_rri(xm(rd), xm(v), order));
         cx.finish(inst, rd)
     })())
+}
+
+// ---- wide lanes (WP-152, §5.6.18) ----
+
+/// A vector of `i128` or `x86_fp80` lanes, which the lane loop does not
+/// address: `extractelement`, `insertelement` and `shufflevector` copy
+/// them whole between slots. An `i128` lane is 16 bytes at `16 · i`; an
+/// `x86_fp80` lane is its 10 bytes at `10 · i` (vector elements are
+/// packed, `spec/ir.md` §4.3). Vector and element are of class `Mem`
+/// (`target::vector_class` makes `<1 x i128>` `Mem`). `fp128` lanes stay
+/// [`WIDE_ELEMENT`] (§5.6.16).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Wide {
+    /// The number of lanes.
+    pub lanes: u32,
+    /// The bytes of a lane, which are also the bytes between the starts
+    /// of two lanes: 16, or 10.
+    pub stride: u32,
+    /// The store size of the vector.
+    pub size: u32,
+}
+
+impl Wide {
+    /// The wide lanes of `ty`; `None` when it is no vector of such
+    /// lanes; [`LENGTH`] beyond [`MAX_LANES`] lanes.
+    pub fn of(cx: &FnCx<'_, X64>, ty: TypeId) -> Option<CgResult<Wide>> {
+        let types = cx.types();
+        let TypeKind::Vector { elem, len } = types.kind(ty) else { return None };
+        let stride = match types.kind(elem) {
+            TypeKind::Int(128) => 16,
+            TypeKind::X86Fp80 => 10,
+            _ => return None,
+        };
+        if len > MAX_LANES || X64.class_of(types, ty) != Class::Mem {
+            return Some(unsupported(LENGTH));
+        }
+        Some(Ok(Wide { lanes: len, stride, size: len * stride }))
+    }
+
+    /// The offset of lane `lane` in the image.
+    pub fn offset(&self, lane: u32) -> u32 {
+        lane * self.stride
+    }
+}
+
+/// Where lane `index` of the wide image `image` is: a frame place for a
+/// constant (lane 0 for [`Index::Poison`]); for a variable, its address
+/// in `rcx` (the lane number by [`lane_number`], times the stride).
+/// Writes `rax`, `rcx`, `rdx` and the flags for a variable.
+fn wide_lane_at(cx: &mut FnCx<'_, X64>, image: FrameRef, w: &Wide, index: Index) -> At {
+    match index {
+        Index::Lane(lane) => At::Frame(image.offset_by(w.offset(lane))),
+        Index::Poison => At::Frame(image),
+        Index::Reg { reg, bits } => {
+            lane_number(cx, reg, bits, w.lanes);
+            frame_address(cx, RCX, image);
+            let Some(i) = RAX.index() else { unreachable!("rax is an index register") };
+            if w.stride == 16 {
+                put(cx, mc::shl_ri(Size::Q, RAX, 4));
+                put(cx, mc::lea(Size::Q, RCX, Mem::base_index(RCX, i, Scale::S1, 0)));
+            } else {
+                // 10 · n = 2 · (n + 4n).
+                put(cx, mc::lea(Size::Q, RAX, Mem::base_index(RAX, i, Scale::S4, 0)));
+                put(cx, mc::lea(Size::Q, RCX, Mem::base_index(RCX, i, Scale::S2, 0)));
+            }
+            At::Mem(Mem::base(RCX, 0))
+        }
+    }
+}
+
+/// Copies `bytes` bytes from `src` to the lane at `at` (a frame place, or
+/// `[rcx]` from [`wide_lane_at`]): 16 through `xmm15`, the rest through
+/// `r11`.
+fn copy_into_lane(cx: &mut FnCx<'_, X64>, at: At, src: FrameRef, bytes: u32) {
+    if let At::Frame(dst) = at {
+        return copy_frame(cx, dst, src, bytes);
+    }
+    let mut done = 0;
+    if bytes >= 16 {
+        frame_inst(cx, src, |s| mc::movup_rm(FpSize::S, XMM15, s));
+        put(cx, mc::movup_mr(FpSize::S, Mem::base(RCX, 0), XMM15));
+        done = 16;
+    }
+    for (off, size) in crate::common::pieces(bytes - done) {
+        let size_of = crate::common::exact_size(size).unwrap_or(Size::Q);
+        frame_inst(cx, src.offset_by(done + off), |s| gpr_load(R11, s, size));
+        put(cx, mc::mov_mr(size_of, Mem::base(RCX, (done + off) as i32), R11));
+    }
+}
+
+/// `extractelement` of a wide lane: the lane's bytes copied to the
+/// result's slot.
+fn wide_extract<'a>(
+    cx: &mut FnCx<'a, X64>,
+    inst: Inst<'a>,
+    w: &Wide,
+    vector: Value,
+    index_value: Value,
+) -> CgResult<()> {
+    let idx = index_in(cx, index_value, w.lanes)?;
+    let image = cx.use_mem(vector)?;
+    let r = cx.def_mem(inst)?;
+    match wide_lane_at(cx, image, w, idx) {
+        At::Frame(src) => copy_frame(cx, r, src, w.stride),
+        At::Mem(_) => crate::common::copy_from_ptr(cx, r, RCX, 0, w.stride),
+    }
+    Ok(())
+}
+
+/// `insertelement` of a wide lane: the vector copied to the result's
+/// slot, the element's bytes stored over the lane.
+fn wide_insert<'a>(
+    cx: &mut FnCx<'a, X64>,
+    inst: Inst<'a>,
+    w: &Wide,
+    vector: Value,
+    value: Value,
+    index_value: Value,
+) -> CgResult<()> {
+    let idx = index_in(cx, index_value, w.lanes)?;
+    let r = cx.def_mem(inst)?;
+    write_mem(cx, r, vector, w.size)?;
+    let e = cx.use_mem(value)?;
+    if idx != Index::Poison {
+        let at = wide_lane_at(cx, r, w, idx);
+        copy_into_lane(cx, at, e, w.stride);
+    }
+    Ok(())
+}
+
+/// `shufflevector` of wide lanes: lane by lane from the sources' slots
+/// into the result's, an undefined entry zero (as for the other lanes).
+fn wide_shuffle<'a>(
+    cx: &mut FnCx<'a, X64>,
+    inst: Inst<'a>,
+    src: &Wide,
+    first: Value,
+    second: Value,
+    mask: &[u32],
+) -> CgResult<()> {
+    let dst = match Wide::of(cx, inst.ty()) {
+        Some(dst) => dst?,
+        None => return cx.bug("a shuffle whose result has other lanes than its sources"),
+    };
+    let n = src.lanes;
+    let mut used = [false; 2];
+    for &entry in mask {
+        if let Some((which, _)) = source(entry, n) {
+            used[which] = true;
+        }
+    }
+    if second == first && used[1] {
+        used[0] = true;
+    }
+    let mut images: [Option<FrameRef>; 2] = [None; 2];
+    for (which, value) in [first, second].into_iter().enumerate() {
+        if !used[which] {
+            continue;
+        }
+        images[which] =
+            if which == 1 && second == first { images[0] } else { Some(cx.use_mem(value)?) };
+    }
+    let out = cx.def_mem(inst)?;
+    for (lane, &entry) in (0u32..).zip(mask) {
+        let to = out.offset_by(dst.offset(lane));
+        match source(entry, n).and_then(|(which, l)| Some((images[which]?, l))) {
+            None => {
+                for (off, size) in crate::common::pieces(dst.stride) {
+                    let size_of = crate::common::exact_size(size).unwrap_or(Size::Q);
+                    frame_inst(cx, to.offset_by(off), |m| mc::mov_mi(size_of, m, 0));
+                }
+            }
+            Some((image, l)) => copy_frame(cx, to, image.offset_by(src.offset(l)), dst.stride),
+        }
+    }
+    Ok(())
 }
 
 /// Whether `ty` is a vector whose lanes `lanes` accepts.

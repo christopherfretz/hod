@@ -106,10 +106,6 @@ pub const TYPEID: &str = "x64:eh-typeid";
 /// `cf-protection-return` (WP-147): the jump does not unwind the shadow
 /// stack (`llc` writes `rdsspq`/`incsspq` there).
 pub const SJLJ_SHADOW_STACK: &str = "x64:sjlj-shadow-stack";
-/// `llvm.eh.sjlj.setjmp` while a register value of its block lives
-/// across it (WP-147): the code after it runs a second time and reads
-/// the value's spill slot again, which the policy may have reused.
-pub const SJLJ_LIVE_VALUE: &str = "x64:sjlj-live-value";
 /// `llvm.eh.sjlj.setjmp` in a coroutine body (WP-147): its frame base
 /// `rbx` is not restored at the resume address.
 pub const SJLJ_COROUTINE: &str = "x64:sjlj-coroutine";
@@ -123,7 +119,6 @@ pub const UNSUPPORTED: &[&str] = &[
     FRAME_DEPTH,
     TYPEID,
     SJLJ_SHADOW_STACK,
-    SJLJ_LIVE_VALUE,
     SJLJ_COROUTINE,
 ];
 
@@ -1231,45 +1226,15 @@ fn sjlj_allowed(cx: &FnCx<'_, X64>) -> CgResult<()> {
     Ok(())
 }
 
-/// Whether a register value (§4.1: one use, in its block, no declare)
-/// defined before `inst` in its block, or an argument when that is the
-/// entry block, has its use after `inst`: it would be in a spill slot
-/// across the `setjmp`, and spill slots are reused.
-fn register_value_across(cx: &FnCx<'_, X64>, inst: Inst<'_>) -> bool {
-    let body = cx.body;
-    let at = inst.id().index() as u32;
-    let Some(block) = body.blocks().find(|b| b.inst_range().contains(&at)) else { return false };
-    let start = block.inst_range().start;
-    let is_register_value = |facts: hod_ir::UseFacts| {
-        facts.count() == 1 && !facts.used_outside_block() && !facts.named_by_declare()
-    };
-    // The values the instructions up to `inst` (included) use.
-    let used_before = |value: Value| {
-        (start..=at).any(|i| body.inst(hod_ir::InstId::new(i)).operands().contains(&value))
-    };
-    let defined = (start..at).filter_map(|i| {
-        let def = body.inst(hod_ir::InstId::new(i));
-        (def.ty() != TypeId::VOID && is_register_value(def.uses()))
-            .then(|| Value::inst(def.id()).ok())
-            .flatten()
-    });
-    let args = (block.id() == body.entry())
-        .then(|| {
-            (0..body.arg_count())
-                .filter(|&n| is_register_value(body.arg_uses(n)))
-                .filter_map(|n| Value::arg(n).ok())
-        })
-        .into_iter()
-        .flatten();
-    defined.chain(args).any(|value| !used_before(value))
-}
-
 /// `%r = call i32 @llvm.eh.sjlj.setjmp(ptr %buf)`, `llc`'s layout of the
 /// five-word buffer (the front end has stored the frame address in word
 /// 0 and the stack pointer in word 2): the resume address to word 1, 0
 /// as the result; a `longjmp` (hod's or `llc`'s) restores `rbp` and
 /// `rsp` and jumps there, where the result is 1. Every value is in
-/// memory across it (as across a call). The function saves all five
+/// memory across it (as across a call: `displace_all`, the entry
+/// block's arguments included), and from it on no spill slot released
+/// is reused (`FnCx::never_reuse_spill_slots`, as for a `returns_twice`
+/// call), so the second return reads what the first one did. The function saves all five
 /// callee-saved registers (`FrameState::save_all`, §5.6.15): the resume
 /// point is entered with the registers of the code that jumped, and the
 /// epilogue restores the caller's from `rbp`.
@@ -1284,12 +1249,12 @@ fn sjlj_setjmp<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, buf: Value) -> CgResu
     if cx.target.coro {
         return unsupported(SJLJ_COROUTINE);
     }
-    if register_value_across(cx, inst) {
-        return unsupported(SJLJ_LIVE_VALUE);
-    }
     cx.state.frame.save_all = true;
     deferred_first(cx, inst, None)?;
     let b = gp(cx.use_reg(buf)?);
+    // The code after the call runs again at the second return: every
+    // value is in memory across it and no slot it reads is reused.
+    cx.never_reuse_spill_slots();
     cx.displace_all()?;
     let (resume, done) = (cx.new_label(), cx.new_label());
     let lea = mc::lea(Size::Q, R11, Mem::rip(0));

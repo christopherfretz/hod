@@ -221,7 +221,10 @@ the frame, 8 or 16 bytes by class; spill slots are reused once their
 value's use has been emitted). After a call to a `returns_twice`
 function no spill slot is reused for the rest of the function: the code
 after such a call can run a second time and reads its slots again (v1
-does not track which ones were occupied at the call). The choice of register
+does not track which ones were occupied at the call). A target lowering
+whose code can run a second time without a call instruction sets the
+same state with `FnCx::never_reuse_spill_slots` (x86-64's
+`llvm.eh.sjlj.setjmp`, §5.6.18 (4)). The choice of register
 must not depend on anything but the function's IR: v1 takes the lowest-numbered unpinned occupied pool
 register. A lowering that needs one particular register (a return
 register, a shift count register on x86-64) displaces its occupant the
@@ -3067,7 +3070,8 @@ mask (`<N x i1>`, `N ≤ 64`, class `Gpr`, bit `i` = element `i`), or
   addressable bytes, at most 256 lanes. Every other shape is refused by
   the generic name AArch64 uses: `x64:mask-wide` (an operation on the
   lanes of more than 64 `i1`), `x64:vector-odd-element` (`i4`, `i24`),
-  `x64:vector-wide-element` (`i128`, `fp128`, `x86_fp80`),
+  `x64:vector-wide-element` (`i128`, `fp128`, `x86_fp80`; lane
+  moves of `i128` and `x86_fp80` since §5.6.18),
   `x64:vector-length` (more than 256 lanes), `x64:vector-index` (an
   index wider than 64 bits), `x64:ptradd-vector` (a `ptradd` of a
   vector of pointers, `mem.rs`'s); a conversion to
@@ -3313,10 +3317,8 @@ Each against `llc -O0 -fast-isel=0` 22 and 19 under the emulator, and
    epilogue restores the caller's from `rbp`.
    `longjmp` reads all three words before it writes `rbp`, then `rsp`,
    then `jmp`s. hod's and `llc`'s objects jump into each other's
-   buffers. Refused: `x64:sjlj-live-value` (a register value of the
-   block defined before the `setjmp` and used after it, or an entry
-   argument used after it: the second return would read a reused spill
-   slot), `x64:sjlj-coroutine` (`rbx`, the frame base, is not restored
+   buffers. A value live across the `setjmp` is read from memory after
+   it (WP-152, §5.6.18 (4)). Refused: `x64:sjlj-coroutine` (`rbx`, the frame base, is not restored
    at the resume address), `x64:sjlj-shadow-stack` (the
    `cf-protection-return` module flag: the jump would unbalance the
    shadow stack). On AArch64, `llc` compiles `setjmp` to 0 and `longjmp`
@@ -3390,6 +3392,64 @@ followed at once by a load of it is not rewritten either: about 0.5%
 at best, and the load is the target of a branch in 43% of those pairs,
 which an x86-64 peephole at emission cannot see without a query on
 `hod_cg`'s labels.
+
+#### 5.6.18 The first libc++ run's leftovers (WP-152)
+
+Each against `llc -O0 -fast-isel=0` 22 and 19 under the emulator, and
+`hod_interp` where it has the type (`crates/hod_x64/tests/leftovers3.rs`):
+
+1. **Lanes of `i128` and `x86_fp80`** (`vector.rs`, "wide lanes"). Such
+   a vector is a `Mem` value (`<1 x i128>` too: `target::vector_class`
+   keeps it out of `Fpr`, as it travels in two general registers like an
+   `i128`, §4.3 of `spec/abi-x64.md`). Its image is packed as LLVM lays
+   it out: lane `i` at `16·i` (`i128`) or `10·i` (`x86_fp80`, 10 bytes
+   each, so a lane may start at any even offset). `extractelement`,
+   `insertelement` and `shufflevector` copy lanes between images:
+   a constant index is a frame place; a variable index (`lane_number`,
+   §5.6.13: an index out of range is poison, any lane) is scaled into
+   `rcx` (`shl rax, 4`, or `lea rax, [rax + rax·4]` · `lea rcx, [rcx +
+   rax·2]`) and the lane copied through `rcx`. A `poison` index of
+   `insertelement` copies nothing; an undefined `shufflevector` lane is
+   zeroed. More than `MAX_LANES` lanes is `x64:vector-length`; `fp128`
+   lanes stay `x64:vector-wide-element` (§5.6.16). Arithmetic on such
+   lanes, and casts other than item 5's, stay `x64:vector-wide-element`.
+2. **Vectors of `i128` and `x86_fp80` as arguments and results**
+   (`abi.rs`, `spec/abi-x64.md` §4.3): element by element, `x86_fp80`
+   as a scalar `x86_fp80` (16-byte stack slots; `st0`/`st1` results up
+   to two elements), `i128` as LLVM 22's 8-byte pieces where LLVM 19
+   agrees, else `x64:vector-i128-split`.
+3. **`byval` aligned above 16** (`call::align_stack_area`,
+   `spec/abi-x64.md` §6.2): before a call sequence with such an
+   argument, `sub rsp, c` · `and rsp, -a` · `add rsp, c` (`c` the
+   rounded stack size mod `a`) makes the stack-argument area
+   `a`-aligned, as `llc`'s realigned frame does. The callee needs
+   nothing: its copy is at the offset §6.2 gives. Not on a `musttail`
+   call (it reuses the caller's incoming area, which the caller's caller
+   aligned: `spec/abi-x64.md` §8.5 (5)). Above 2^30 (the `and`
+   immediate) or not a power of two stays `abi:byval-align`.
+4. **Values live across `llvm.eh.sjlj.setjmp`** (was
+   `x64:sjlj-live-value`). `intrinsic::sjlj_setjmp` calls
+   `FnCx::never_reuse_spill_slots` (§4.3), then `displace_all`: every
+   register value, an argument of the entry block still in its
+   register included, is stored to a spill slot, and its reload after
+   either return reads that slot, which nothing reuses. Home values
+   (§4.1) are in their slots already; a deferred value is computed
+   again from operands in memory; the buffer operand is pinned, and its
+   only register use is the `setjmp`. `rbx`, `r12`–`r15` are saved
+   whatever the body uses (§5.6.15), so no callee-saved register holds
+   a value of the caller across the jump.
+
+5. **Masks of `i128` lanes** (`mask.rs`, "`i128` lanes"): `icmp` of
+   `<N x i128>` and `zext`/`sext` of a mask to `<N x i128>`, `trunc`
+   back, lane by lane on the vector's slot as `llc` does. Equality:
+   `xor` of each half, `or`, `sete`/`setne`. An order: `cmp` of the low
+   halves, `sbb` of the high halves, `setb`/`setae`/`setl`/`setge`, the
+   operands swapped for `>` and `<=`. `zext`/`sext`: bit `i` of the mask
+   (negated for `sext`) as the low half, 0 or the same as the high half.
+   `trunc`: bit 0 of each low half. A cast of a mask to `x86_fp80` lanes
+   stays `x64:vector-wide-element`.
+
+Evidence: `spec/landed/codegen/WP-152.md`.
 
 ## 6. Control flow
 

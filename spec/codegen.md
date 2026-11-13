@@ -2224,6 +2224,63 @@ decisions that are not instruction selection are §5.5.1 "Integers
   rejects it first); `x64:int-binary` and `x64:int-cast` name forms the
   dispatch never sends. `i128` is `Mem`: `aggr` (WP-126).
 
+##### X-call: calls (WP-125)
+
+- **Division of labour** as §5.5.1's WP-038: `hod_cg`'s call sequence
+  places arguments, copies `byval`, receives results in memory, stages
+  `musttail` and records call sites; `frame::emit_call` emits `mov al,
+  n` (a variadic callee: the vector registers used), then `call rel32`
+  (`R_X86_64_PLT32`) or `call r11`; tail exits are `jmp rel32` or `jmp
+  r11`. `crate::call` adds the rest below.
+- **The address handed back in `rax`** (`abi-x64.md` §5.2, §6.1): a
+  function with an `sret` parameter, or whose result travels in memory,
+  saves the address in a frame slot in the prologue (`call::enter`,
+  before any argument register is read) and reloads it into `rax` at the
+  start of the shared epilogue (`call::before_return`), which every
+  `ret` reaches. A `musttail` exit does not reload it: the callee
+  returns it.
+- **Extension** (`abi-x64.md` §7): `Target::extend_arg` brings a
+  `zeroext`/`signext` integer below 32 bits to 32 (`movzx`/`movsx` for 8
+  and 16, else `and` or `shl`·`sar` on 32 bits), one of 33..63 bits to 64
+  (`shl`·`shr`/`sar`), and the last piece of a wider one to 64. 32 and 64
+  bits need nothing. Results take the same rule (the core calls it at
+  `ret`), which over-delivers §7's 8 and 16 for narrow results.
+- **Odd leaves.** After a call whose `Mem`-class result has at most 16
+  leaves (it may come back in registers) and an integer leaf whose width
+  is not a multiple of 8, the byte holding that leaf's top bit is masked
+  in the result's home (through `r11`): a producer owes nothing above a
+  leaf, memory holds zeros there (§2.2). An `invoke`'s are cleared by
+  the call sequence.
+- **Variadic definitions** (`abi-x64.md` §9.3) always save `rdi`..`r9`
+  and `xmm0`..`xmm7` (`movups`) into a 176-byte, 16-aligned register save
+  area in the prologue, and `al` into a slot of its own. `va_start`
+  writes the 24-byte `va_list`: `gp_offset` = 8 x the named general
+  registers, `fp_offset` = 48 + 16 x the named vector registers,
+  `overflow_arg_area` = `rbp + 16 +` the named stack area,
+  `reg_save_area`. `va_copy` copies 24 bytes (`xmm15`, `r11`), `va_end`
+  is nothing, `va_arg` is refused (`x64:va_arg`; front ends expand it).
+  `va_start` outside a variadic function is `x64:va-intrinsic`.
+- **`musttail`** in a variadic function first reloads the argument
+  registers no named argument uses from the save area (every live value
+  displaced before), and its tail exit reloads `al` (`movzx eax, byte`):
+  the callee receives the variable arguments as this function did. `r10`
+  and `r11` are not forwarded (a `nest` is refused anyway); the stack
+  area beyond the named arguments is never written. `tail` and `notail`
+  are hints: no tail call is made for them. Indirect calls and tail
+  exits go through `r11`.
+- **Landing pads** are `{ ptr, i32 }`: `rax` and `edx` (`RegInfo::
+  eh_data`) are stored to the pad's home; clauses are `catch` of a symbol
+  or `null` and `filter` of arrays of them. `resume` calls
+  `_Unwind_Resume` with the exception pointer, then `ud2`. The tables are
+  `hod_eh`'s for x86-64: the personality and LSDA pointers are always
+  `pcrel | sdata4` (indirect for the personality), also in a static
+  object, where `llc` uses absolute `udata4` pointers.
+- **Refused by name**: `x64:call` (a `callbr` that is not inline
+  assembly), `x64:call-bundle`, `x64:va-intrinsic`, `x64:va_arg`,
+  `x64:landingpad`, `x64:landingpad-clause`, `x64:resume`; an x87 part in
+  a signature stays `x64:todo:abi` (WP-131), a value returned in memory
+  at `ret` is WP-126's.
+
 #### 5.6.2 Target features (WP-116)
 
 As §5.5.2, with `hod_x64::features`'s table (design 0006 §10.1). hod

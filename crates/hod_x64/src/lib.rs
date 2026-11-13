@@ -29,7 +29,7 @@
 //! | `int` | WP-122 | integer binary operations, casts, `icmp`, `select`, `freeze` | `tests/int.rs` |
 //! | `mem` | WP-123 | `load`, `store`, `alloca`, `ptradd`, `llvm.stacksave`/`stackrestore` | `tests/mem.rs` |
 //! | `control` | WP-124 | `condbr`, `switch`, `indirectbr` | `tests/control.rs` |
-//! | `call` | WP-125 | calls, `invoke`, `musttail`, landing pads, `resume`, variadics | |
+//! | `call` | WP-125 | calls, `invoke`, `musttail`, landing pads, `resume`, variadics | `tests/call.rs` |
 //! | `vcall` | WP-125, WP-132 | vectors across calls (`PartKind::Lanes`) | |
 //! | `aggr` | WP-126 | `Mem`-class values: wide integers, aggregates, overflow intrinsics | |
 //! | `float` | WP-127 | scalar and vector-register floating point (SSE2) | |

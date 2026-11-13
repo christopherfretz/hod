@@ -57,6 +57,9 @@ const FRAME_PLACEHOLDER: i64 = 0x7fff_ffff;
 pub struct FrameState {
     /// The offset of the 32-bit immediate of the prologue's `sub rsp`.
     pub frame_imm: u32,
+    /// The slots of the address returned in `rax` and of a variadic
+    /// function's register save area (`crate::call::enter`, WP-125).
+    pub call: crate::call::CallState,
 }
 
 /// `Target::begin_function`: the prologue and its CFI rows.
@@ -78,7 +81,8 @@ pub fn begin(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     let sub = mc::sub_ri(Size::Q, RSP, FRAME_PLACEHOLDER);
     cx.state.frame.frame_imm = cx.offset() + sub.len() as u32 - 4;
     put(cx, sub);
-    Ok(())
+    // WP-125: the address returned in `rax`, the register save area.
+    crate::call::enter(cx)
 }
 
 /// The final `FRAME` for a local area of `size` bytes: the least value
@@ -105,9 +109,9 @@ pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     if !mc::Fixup::Abs32.patch(cx.code_mut(), at, i64::from(frame)) {
         return cx.bug("the prologue's frame size is not where it was emitted");
     }
-    bias_local_sites(cx, -i64::from(SAVE_BYTES) - i64::from(frame))?;
-
     cx.bind(cx.epilogue())?;
+    // WP-125: the `sret` or return-in-memory address back in `rax`.
+    crate::call::before_return(cx);
     teardown(cx);
     put(cx, mc::ret());
 
@@ -118,12 +122,16 @@ pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
         // states the body's rule again; the saved registers' rows never
         // changed.
         cx.cfi(CfiOp::DefCfa { reg: DWARF_RBP, offset: INCOMING_BASE });
+        // WP-125: `al` of a variadic function, as it arrived.
+        crate::call::before_tail_exit(cx);
         teardown(cx);
         match exit.target {
             CallTarget::Sym(sym) => put_reloc(cx, mc::jmp_near(0), X64Reloc::Plt32, sym, 0)?,
             CallTarget::Reg(callee) => put(cx, mc::jmp_r(gp(callee))),
         }
     }
+    // Last: the exit sequences above may address locals too (WP-125).
+    bias_local_sites(cx, -i64::from(SAVE_BYTES) - i64::from(frame))?;
     cx.set_frame_desc(FrameDesc { frame_size: frame, frame_base: DWARF_RBP });
     Ok(())
 }

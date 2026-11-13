@@ -572,9 +572,9 @@ const INIT: [SupportRow; 10] = [
 
 const FUNCTION: [SupportRow; 6] = [
     both("function:parameters", ON, "a body with parameters; per class of parameter"),
-    row("function:variadic", ON, todo(X64), "a variadic function with a body"),
+    row("function:variadic", ON, ON, "a variadic function with a body"),
     both("function:may-unwind", ON, "a body without `nounwind`: it needs unwind tables (WP-049)"),
-    row("function:personality", ON, todo(X64), "a body with a personality function"),
+    row("function:personality", ON, ON, "a body with a personality function"),
     row("function:slots", ON, ON, "a body with fixed stack objects (`Body::slots`)"),
     row("function:over-aligned-slot", ON, ON, "a stack object aligned above 16 bytes"),
 ];
@@ -672,7 +672,7 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
         "",
     ),
     both("attr:nounwind", ON, "its absence is `function:may-unwind`"),
-    row("attr:returns_twice", ON, todo(X64), "on a body, a call, or a function called directly"),
+    row("attr:returns_twice", ON, ON, "on a body, a call, or a function called directly"),
     both(
         "attr:alwaysinline",
         ON,
@@ -1305,8 +1305,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         never("`llc` miscompiles it on AArch64, so there is no oracle; frontends do not emit it"),
         "",
     ),
-    row("inst:call", ON, todo(X64), "a call of anything but an intrinsic"),
-    row("inst:landingpad", ON, todo(X64), ""),
+    row("inst:call", ON, ON, "a call of anything but an intrinsic"),
+    row("inst:landingpad", ON, ON, ""),
     both("inst:catchpad", never(WINDOWS_EH), ""),
     both("inst:cleanuppad", never(WINDOWS_EH), ""),
     both("inst:br", ON, ""),
@@ -1321,8 +1321,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         todo(X64),
         "inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3)",
     ),
-    row("inst:invoke", ON, todo(X64), ""),
-    row("inst:resume", ON, todo(X64), ""),
+    row("inst:invoke", ON, ON, ""),
+    row("inst:resume", ON, ON, ""),
     both("inst:catchswitch", never(WINDOWS_EH), ""),
     both("inst:catchret", never(WINDOWS_EH), ""),
     both("inst:cleanupret", never(WINDOWS_EH), ""),
@@ -1360,7 +1360,7 @@ const ATOMICRMW: [SupportRow; RmwOp::ALL.len()] = [
 ];
 
 const CALL: [SupportRow; 4] = [
-    row("call:indirect", ON, todo(X64), "the callee is a computed address"),
+    row("call:indirect", ON, ON, "the callee is a computed address"),
     row(
         "call:inline-asm",
         ON,
@@ -1373,7 +1373,7 @@ const CALL: [SupportRow; 4] = [
         todo(X64),
         "the callee is inline assembly whose template assembles to nothing (`spec/ir.md` §2.3)",
     ),
-    row("call:variadic", ON, todo(X64), "a call through a variadic function type"),
+    row("call:variadic", ON, ON, "a call through a variadic function type"),
 ];
 
 const TAIL: [SupportRow; 3] = [
@@ -1382,7 +1382,7 @@ const TAIL: [SupportRow; 3] = [
     row(
         "tail:musttail",
         ON,
-        todo(X64),
+        ON,
         "and the `musttail:` rules of §8.6, which need the `StackArgs` hook (`hod_cg::abi::TargetStackArgs`)",
     ),
 ];
@@ -1401,9 +1401,9 @@ const BUNDLE: [SupportRow; 10] = [
 ];
 
 const LANDINGPAD: [SupportRow; 3] = [
-    row("landingpad:cleanup", ON, todo(X64), ""),
-    row("landingpad:catch", ON, todo(X64), ""),
-    row("landingpad:filter", ON, todo(X64), ""),
+    row("landingpad:cleanup", ON, ON, ""),
+    row("landingpad:catch", ON, ON, ""),
+    row("landingpad:filter", ON, ON, ""),
 ];
 
 const OPERAND: [SupportRow; 11] = [
@@ -1481,9 +1481,9 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
     row("intrinsic:llvm.memmove", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
     row("intrinsic:llvm.memset", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
     row("intrinsic:llvm.memset.inline", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
-    row("intrinsic:llvm.va_start", ON, todo(X64), ""),
-    row("intrinsic:llvm.va_end", ON, todo(X64), ""),
-    row("intrinsic:llvm.va_copy", ON, todo(X64), ""),
+    row("intrinsic:llvm.va_start", ON, ON, ""),
+    row("intrinsic:llvm.va_end", ON, ON, ""),
+    row("intrinsic:llvm.va_copy", ON, ON, ""),
     row("intrinsic:llvm.stacksave", ON, ON, ""),
     row("intrinsic:llvm.stackrestore", ON, ON, ""),
     row("intrinsic:llvm.frameaddress", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),

@@ -274,7 +274,8 @@ fn data_layout_is_honoured() {
 fn groups_that_have_not_landed_refuse_by_name() {
     for (body, name) in [
         ("define void @f() {\n  fence seq_cst\n  ret void\n}\n", "x64:todo:atomic"),
-        ("define void @f(ptr sret(i64) %r) {\n  ret void\n}\n", "x64:todo:abi"),
+        // WP-125 lowers `sret`; an x87 result stays WP-131's.
+        ("define x86_fp80 @f() {\n  ret x86_fp80 0xK00000000000000000000\n}\n", "x64:todo:abi"),
     ] {
         assert_eq!(refusal(body), name, "{body}");
     }

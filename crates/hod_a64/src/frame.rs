@@ -160,6 +160,7 @@ pub fn end(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
         // states the body's rules again.
         body_rows(cx, frame);
         teardown(cx, frame);
+        cx.tail_branch_here(index, crate::target::dwarf); // WP-113: `spec/dwarf.md` §6.19
         match exit.target {
             CallTarget::Sym(sym) => {
                 let at = cx.offset();

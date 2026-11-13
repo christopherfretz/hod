@@ -785,14 +785,15 @@ fn what_is_not_compiled_is_refused_by_name() {
     assert_eq!(refused_as(&format!("{h}{}", coroutine(4, ""))), None);
     let transfer = "  call void @llvm.coro.await.suspend.handle(ptr null, ptr %h, ptr @wrapper)";
     assert_eq!(refused_as(&format!("{h}{}", coroutine(4, transfer))), None);
+    // WP-147: a 16-byte atomic compiles (`rbx` saved around it).
     let wide = "  %old = atomicrmw add ptr %q, i128 1 seq_cst, align 16";
+    assert_eq!(refused_as(&format!("{h}{}", coroutine(4, wide))), None);
     let outside = "declare token @llvm.coro.id(i32, ptr, ptr, ptr)\n\
          define void @f() {\n  %t = call token @llvm.coro.id(i32 0, ptr null, ptr null, ptr null)\n  ret void\n}\n";
     let promise = "declare ptr @llvm.coro.promise(ptr, i32, i1)\n\
          define ptr @f(ptr %p, i32 %a) {\n  %r = call ptr @llvm.coro.promise(ptr %p, i32 %a, i1 false)\n  ret ptr %r\n}\n";
     for (text, name) in [
         (coroutine(32, ""), "coro:overaligned-stack-slot"),
-        (coroutine(4, wide), "x64:coro-wide-atomic"),
         (outside.to_owned(), "coro:outside-coroutine"),
         (promise.to_owned(), "x64:coro-promise"),
     ] {

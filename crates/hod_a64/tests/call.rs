@@ -913,9 +913,9 @@ fn alignstack_arguments_and_functions_run() {
 /// `handwritten_calls_run` runs (stack and register arguments exchanged,
 /// variadic thunks forwarding `...`, an indirect call) meet no
 /// `musttail:` rule; a call that needs a larger stack-argument area than
-/// its caller's has is `musttail:stack-args-grow`, one that lists
-/// variable arguments is `musttail:stack-args-unknown`, and so is every
-/// `musttail` call without the hook. The areas are those of the
+/// its caller's has is `musttail:stack-args-grow`, also by variable
+/// arguments it lists before a forwarded `...` (WP-115), and every
+/// `musttail` call without the hook is `musttail:stack-args-unknown`. The areas are those of the
 /// effective attributes: a `byval` the call takes from the declaration
 /// counts.
 #[test]
@@ -947,7 +947,7 @@ fn the_stack_args_hook_decides_musttail() {
     assert_eq!(musttail_rules(&hand, false), ["musttail:stack-args-unknown"]);
 
     let nine = "i64, i64, i64, i64, i64, i64, i64, i64, i64";
-    let cases: [(String, &[&str]); 4] = [
+    let cases: [(String, &[&str]); 5] = [
         (
             format!(
                 "declare i64 @g({nine})\n\
@@ -970,11 +970,21 @@ fn the_stack_args_hook_decides_musttail() {
                 .into(),
             &["musttail:stack-args-grow"],
         ),
+        // WP-115: variable arguments before a forwarded `...` are typed
+        // from the body; in registers they fit, on the stack they grow.
         (
             "declare void @g(i32, ...)\n\
-             define void @f(i32 %n) {\n  musttail call void (i32, ...) @g(i32 %n, i64 1)\n  ret void\n}\n"
+             define void @f(i32 %n, ...) {\n  musttail call void (i32, ...) @g(i32 %n, i64 1, ...)\n  \
+             ret void\n}\n"
                 .into(),
-            &["musttail:stack-args-unknown"],
+            &[],
+        ),
+        (
+            "declare void @g(i32, ...)\n\
+             define void @f(i32 %n, ...) {\n  musttail call void (i32, ...) @g(i32 %n, i64 1, i64 2, \
+             i64 3, i64 4, i64 5, i64 6, i64 7, i64 8, ...)\n  ret void\n}\n"
+                .into(),
+            &["musttail:stack-args-grow"],
         ),
     ];
     for (text, want) in &cases {

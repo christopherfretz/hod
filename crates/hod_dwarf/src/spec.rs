@@ -144,6 +144,7 @@ impl<'a> Writer<'a> {
         index: u32,
         size: u64,
         object_pointer: u32,
+        calls: bool,
         children: bool,
     ) -> Result<(), Error> {
         let b = u32::from;
@@ -159,10 +160,11 @@ impl<'a> Writer<'a> {
         let op = object_pointer != NONE;
         if new_file {
             let mask = b(op) | 1 << 1 | 1 << 2 | b(new_line) << 3 | b(link) << 4;
-            self.abbrev(code(fam::SUBPROGRAM_SPEC_ANY, mask, children));
+            let family = crate::call_sites::family(fam::SUBPROGRAM_SPEC_ANY, calls);
+            self.abbrev(code(family, mask, children));
         } else {
             self.abbrev(code(
-                fam::SUBPROGRAM_SPEC_TYPED,
+                crate::call_sites::family(fam::SUBPROGRAM_SPEC_TYPED, calls),
                 b(op) | b(new_line) << 1 | b(link) << 2,
                 children,
             ));

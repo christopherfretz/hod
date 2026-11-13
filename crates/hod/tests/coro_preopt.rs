@@ -176,7 +176,6 @@ fn a_pre_opt_coroutine_is_compiled() {
 fn every_coroutine_refusal_is_decided_before_code_generation() {
     let a64 = header(Arch::Aarch64);
     let x64 = header(Arch::X86_64);
-    let wide = "  %w = load atomic i128, ptr null seq_cst, align 16";
     let outside = "declare token @llvm.coro.id(i32, ptr, ptr, ptr)\n\
                    define void @f() {\n  %t = call token @llvm.coro.id(i32 0, ptr null, ptr null, ptr null)\n  ret void\n}\n";
     let cases = [
@@ -185,7 +184,6 @@ fn every_coroutine_refusal_is_decided_before_code_generation() {
         (format!("{a64}{}", coroutine("", 32)), "coro:overaligned-stack-slot"),
         (format!("{a64}{DECLS}{SHARED_BLOCK}"), "coro:begin-shared-block"),
         (format!("{a64}{outside}"), "coro:outside-coroutine"),
-        (format!("{x64}{}", coroutine_with("", 4, wide)), "x64:coro-wide-atomic"),
         (format!("{x64}{}", coroutine("", 32)), "coro:overaligned-stack-slot"),
         (format!("{x64}{DECLS}{SHARED_BLOCK}"), "coro:begin-shared-block"),
         (format!("{x64}{outside}"), "coro:outside-coroutine"),

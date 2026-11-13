@@ -211,7 +211,8 @@ fn objects_read_back_clean() {
 }
 
 /// The CFI program of `main` in `ret42`, as `llvm-dwarfdump --eh-frame`
-/// prints it: design 0006 §4, the prologue's rows then the epilogue's.
+/// prints it: design 0006 §4, the prologue's rows then the epilogue's;
+/// `main` uses no callee-saved register, so it saves none (§5.6.15).
 #[test]
 fn cfi_is_design_section_4() {
     let dir = Scratch::new("x64-cfi");
@@ -229,16 +230,6 @@ fn cfi_is_design_section_4() {
         "DW_CFA_offset: RBP -16",
         "DW_CFA_advance_loc: 3 to 0x4",
         "DW_CFA_def_cfa_register: RBP",
-        "DW_CFA_advance_loc: 1 to 0x5",
-        "DW_CFA_offset: RBX -24",
-        "DW_CFA_advance_loc: 2 to 0x7",
-        "DW_CFA_offset: R12 -32",
-        "DW_CFA_advance_loc: 2 to 0x9",
-        "DW_CFA_offset: R13 -40",
-        "DW_CFA_advance_loc: 2 to 0xb",
-        "DW_CFA_offset: R14 -48",
-        "DW_CFA_advance_loc: 2 to 0xd",
-        "DW_CFA_offset: R15 -56",
     ];
     assert_eq!(&ops[..expect.len()], expect, "{fde}");
     let rest = &ops[expect.len()..];

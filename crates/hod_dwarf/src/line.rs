@@ -89,7 +89,9 @@ pub struct LineHeader<'a> {
 pub struct LineSections {
     /// `.debug_line`.
     pub line: SectionId,
-    /// `.debug_line_str`.
+    /// `.debug_line_str`. A table whose units are all DWARF 4 has no line
+    /// strings and no such section (WP-114, `spec/dwarf.md` §6.20): then
+    /// this is `line`.
     pub line_str: SectionId,
 }
 
@@ -236,12 +238,27 @@ pub struct LineProgram {
     target: &'static LineTarget,
     bytes: Vec<u8>,
     addrs: Vec<AddrField>,
+    /// WP-114: 1 for a DWARF 4 unit, whose files are counted from 1
+    /// (`spec/dwarf.md` §6.20); 0 for DWARF 5.
+    file_base: u32,
 }
 
 impl LineProgram {
     /// An empty program for `arch`.
     pub fn new(arch: Arch) -> Self {
-        Self { target: for_arch(arch), bytes: Vec::new(), addrs: Vec::new() }
+        Self { target: for_arch(arch), bytes: Vec::new(), addrs: Vec::new(), file_base: 0 }
+    }
+
+    /// An empty program for `arch` of a unit of DWARF `version`: 4 numbers
+    /// the header's files from 1 (`spec/dwarf.md` §6.20), any other
+    /// version is DWARF 5's (the unit plan refuses the others).
+    pub fn for_version(arch: Arch, version: u16) -> Self {
+        Self { file_base: u32::from(version == 4), ..Self::new(arch) }
+    }
+
+    /// The DWARF version of the unit the program is for: 4 or 5.
+    pub fn version(&self) -> u16 {
+        if self.file_base == 1 { 4 } else { 5 }
     }
 
     /// An empty program with room for about `rows` rows in `seqs`
@@ -251,6 +268,7 @@ impl LineProgram {
             target: for_arch(arch),
             bytes: Vec::with_capacity(rows * 5 + seqs * 16),
             addrs: Vec::with_capacity(seqs),
+            file_base: 0,
         }
     }
 
@@ -297,9 +315,9 @@ impl LineProgram {
     ///
     /// # Errors
     /// `TooLarge`; `ArchMismatch` if the two are for different
-    /// architectures. The program is then unchanged.
+    /// architectures or DWARF versions. The program is then unchanged.
     pub fn append(&mut self, other: &LineProgram) -> Result<(), Error> {
-        if other.target.arch != self.target.arch {
+        if other.target.arch != self.target.arch || other.file_base != self.file_base {
             return Err(Error::ArchMismatch);
         }
         let base = u32::try_from(self.bytes.len()).map_err(|_| Error::TooLarge)?;
@@ -321,8 +339,9 @@ impl LineProgram {
         let mut at = first.offset;
         let mut addr = None;
         for (i, r) in seq.rows.iter().enumerate() {
-            if r.file != file {
-                file = r.file;
+            let row_file = r.file + self.file_base;
+            if row_file != file {
+                file = row_file;
                 out.push(DW_LNS_SET_FILE);
                 write_uleb(out, u64::from(file));
             }
@@ -585,7 +604,11 @@ pub fn write_debug_line_units(
     let mut relocs = Vec::with_capacity(names + addrs);
     let mut offsets = Vec::with_capacity(units.len());
     for u in units {
-        let start = write_header(&mut out, &mut relocs, &mut strings, target, &u.header)?;
+        let start = if u.program.file_base == 0 {
+            write_header(&mut out, &mut relocs, &mut strings, target, &u.header)?
+        } else {
+            crate::dwarf4::write_line_header(&mut out, target, &u.header)? // WP-114: §6.20
+        };
         let base = u32::try_from(out.len()).map_err(|_| Error::TooLarge)?;
         out.extend_from_slice(&u.program.bytes);
         relocs.extend(u.program.addrs.iter().map(|a| Pending {
@@ -611,9 +634,13 @@ pub fn write_debug_line_units(
         sh_flags: SHF_MERGE | SHF_STRINGS,
         sh_entsize: 1,
     };
-    let line_str = obj.add_section(b".debug_line_str", str_kind, 1)?;
+    // WP-114: DWARF 4 units have no line strings (§6.20).
+    let dwarf4 = !units.is_empty() && units.iter().all(|u| u.program.file_base != 0);
+    let line_str = if dwarf4 { line } else { obj.add_section(b".debug_line_str", str_kind, 1)? };
     obj.append_owned(line, out);
-    obj.append_owned(line_str, strings.data);
+    if !dwarf4 {
+        obj.append_owned(line_str, strings.data);
+    }
     let str_symbol = obj.section_symbol(line_str);
     obj.reserve(0, 0, relocs.len(), 0);
     for r in relocs {

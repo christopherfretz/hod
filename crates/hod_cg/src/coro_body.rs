@@ -708,6 +708,18 @@ impl<'a, T: Target> FnCx<'a, T> {
         }
     }
 
+    /// Moves the stubs' offsets with the code (`shrink`, §5.6.15).
+    pub(crate) fn map_coro_offsets(&mut self, map: impl Fn(u32) -> u32) {
+        if let Some(coro) = self.coro.as_deref_mut() {
+            if let Some(entries) = &mut coro.entries {
+                *entries = entries.map(&map);
+            }
+            for offset in &mut coro.ready {
+                *offset = map(*offset);
+            }
+        }
+    }
+
     /// Where each stub's frame is built, for the function's record.
     pub(crate) fn coro_ready(&self) -> Option<[u32; 2]> {
         match self.coro.as_deref()?.ready.as_slice() {

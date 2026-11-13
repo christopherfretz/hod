@@ -71,7 +71,7 @@ impl Args<'_> {
 
 /// What is called.
 #[derive(Clone, Copy)]
-enum Callee {
+pub(crate) enum Callee {
     Sym(SymRef),
     Value(Value),
     /// The address the lowering computed in this temporary
@@ -636,6 +636,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         self.s.temps = RegSet::EMPTY;
         self.s.pinned = RegSet::EMPTY;
 
+        let armed = self.arm_debug_call(call.callee, target, call.musttail); // WP-113
         if call.musttail {
             let label = self.new_label();
             self.s.tail_exits.push(TailExit { label, target });
@@ -648,6 +649,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         let emit =
             CallEmit { target, variadic: call.variadic, vector_regs_used: asg.vector_regs_used };
         t.emit_call(self, &emit)?;
+        self.check_debug_call(armed)?; // WP-113
         let len = self.offset() - start;
         let nounwind = self.callee_is_nounwind(target);
         let row = self.push_call_site(start, len, call.unwind, nounwind);

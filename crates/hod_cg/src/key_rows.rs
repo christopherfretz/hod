@@ -40,7 +40,7 @@
 
 use std::collections::HashMap;
 
-use hod_ir::{DiAtom, DiId, DiNode, SymbolKind};
+use hod_ir::{DiAtom, DiId, SymbolKind};
 
 use crate::cx::FnCx;
 use crate::error::{CgError, CgResult};
@@ -74,9 +74,10 @@ impl KeyScratch {
     }
 }
 
-/// Whether the subprogram `sp` has `keyInstructions`.
+/// Whether the subprogram `sp` has `keyInstructions`: a flag read, no
+/// decode of the node (WP-170).
 fn is_key(debug: &hod_ir::DebugInfo, sp: Option<DiId>) -> bool {
-    matches!(sp.map(|sp| debug.node(sp)), Some(DiNode::Subprogram(s)) if s.key_instructions)
+    sp.is_some_and(|sp| debug.has_key_instructions(sp))
 }
 
 impl<T: Target> FnCx<'_, T> {
@@ -259,7 +260,7 @@ fn candidate(ks: &mut KeyScratch, key: (u32, u64), atom: DiAtom, at: Option<u32>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hod_ir::{DebugInfo, DiFieldValue, DiKind, DiLocation, LocId};
+    use hod_ir::{DebugInfo, DiFieldValue, DiKind, DiLocation, DiNode, LocId};
 
     const CALL: u8 = ROW_CALL;
 

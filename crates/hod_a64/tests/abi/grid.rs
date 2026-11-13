@@ -271,6 +271,83 @@ fn attributes() -> Vec<Case> {
     cases
 }
 
+/// §3.3 (WP-182): arrays of every leaf class, one leaf above all, at
+/// every stack alignment clang writes (none, 8, 16), as arguments and as
+/// results, in registers, at the register boundary, on the stack at an
+/// odd offset and next to `sret` and `byval`. Lengths 1 and 2 in the
+/// quick grid; 3, 4, 5, 8 and 9 too under `HOD_ABI_GRID=full`.
+pub fn one_leaf_arrays() -> Vec<Case> {
+    let (d, f) = (Ty::Double, Ty::Float);
+    let leaves = [
+        I8,
+        I32,
+        Ty::Int(33),
+        Ty::Int(48),
+        I64,
+        Ty::Ptr,
+        Ty::Int(65),
+        I128,
+        Ty::Half,
+        Ty::BFloat,
+        f.clone(),
+        d.clone(),
+        Ty::Fp128,
+        vec(I32, 2),
+        vec(I64, 1),
+        vec(I32, 4),
+        vec(f.clone(), 3),
+        vec(I8, 16),
+    ];
+    let lens: &[u64] = if full() { &[1, 2, 3, 4, 5, 8, 9] } else { &[1, 2] };
+    let fill = |ty: &Ty, count: usize| std::iter::repeat_n(p(ty.clone()), count);
+    let mut cases = Vec::new();
+    for leaf in &leaves {
+        // The forms a one-leaf array takes: plain, nested, of a structure.
+        let mut shapes: Vec<Ty> = lens.iter().map(|&len| arr(leaf.clone(), len)).collect();
+        shapes.push(arr(arr(leaf.clone(), 1), 1));
+        shapes.push(arr(st(std::slice::from_ref(leaf)), 1));
+        shapes.push(st(&[arr(leaf.clone(), 1)]));
+        for ty in &shapes {
+            cases.push(Case::of(std::slice::from_ref(ty)).ret(ty.clone()));
+            cases.push(Case::of(&[I64, d.clone()]).ret(ty.clone()));
+            for align in [None, Some(8), Some(16)] {
+                let val = || match align {
+                    None => p(ty.clone()),
+                    Some(n) => pa(ty.clone(), Attr::StackAlign(n)),
+                };
+                // Registers, then one register of each class left.
+                cases.push(Case::new(vec![p(I8), val(), p(f.clone()), val()]));
+                cases.push(Case::new(
+                    fill(&I64, 7).chain(fill(&d, 7)).chain([val(), p(I8), val()]).collect(),
+                ));
+                // The stack, at an odd offset: 8 then 12 bytes on.
+                cases.push(Case::new(
+                    fill(&I64, 8)
+                        .chain(fill(&d, 8))
+                        .chain([p(I8), val(), p(f.clone()), val(), p(I8)])
+                        .collect(),
+                ));
+                // `sret` and `byval` neighbours.
+                cases.push(Case::new(
+                    [pa(Ty::Ptr, Attr::Sret)]
+                        .into_iter()
+                        .chain(fill(&I64, 8))
+                        .chain(fill(&d, 8))
+                        .chain([byval(st(&[I8, I64]), None, None), val(), p(I8)])
+                        .collect(),
+                ));
+                cases.push(Case::new(
+                    fill(&I64, 8)
+                        .chain(fill(&d, 8))
+                        .chain([val(), byval(arr(I8, 3), Some(1), None), val()])
+                        .collect(),
+                ));
+            }
+        }
+    }
+    cases
+}
+
 /// §5: return values of the types §3.3 refuses as arguments.
 fn returns_only() -> Vec<Case> {
     let types = [
@@ -363,6 +440,7 @@ pub fn systematic() -> Vec<Case> {
     cases.extend(attributes());
     cases.extend(returns_only());
     cases.extend(conventions());
+    cases.extend(one_leaf_arrays());
     cases
 }
 
@@ -507,9 +585,13 @@ pub fn full() -> bool {
 fn systematic_grid() {
     let Some(tools) = Tools::find() else { return };
     let (cases, refused) = accepted(systematic());
-    // Nothing in the grid is unsupported but arrays of one leaf that
-    // LLVM's two selectors pass differently (§3.3).
-    assert_eq!(refused.keys().copied().collect::<Vec<_>>(), ["abi:one-leaf-array"]);
+    // Nothing in the grid is unsupported but arrays of `bfloat` that do
+    // not fit the registers left and of `i128` where LLVM's selectors
+    // disagree (§3.3).
+    assert_eq!(
+        refused.keys().copied().collect::<Vec<_>>(),
+        ["abi:bfloat-array", "abi:wide-int-array"]
+    );
     let report = run_cases("abi-grid", &cases, 0x5eed, &tools);
     eprintln!(
         "systematic grid: {} signatures; {}; refused: {refused:?}; llc crashed on: {:#?}",

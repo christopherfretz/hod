@@ -168,26 +168,6 @@ fn every_name() {
         ("abi:vector-array", refusal(&t, c, void, &[(quad_vectors, NONE)], None)),
         ("abi:vector-array", refusal(&t, c, void, &[(scalarized_vectors, NONE)], None)),
         (
-            "abi:one-leaf-array",
-            refusal(
-                &t,
-                c,
-                void,
-                &[(one_long, NONE.with_stack_align(16).expect("an alignment"))],
-                None,
-            ),
-        ),
-        (
-            "abi:one-leaf-array",
-            refusal(
-                &t,
-                c,
-                void,
-                &[(one_quad, NONE.with_stack_align(8).expect("an alignment"))],
-                None,
-            ),
-        ),
-        (
             "abi:attribute-after-empty-argument",
             refusal(&t, c, void, &[(empty, NONE), (i8, flags(ParamAttrs::ZEROEXT))], None),
         ),
@@ -260,6 +240,13 @@ fn every_name() {
     assert_eq!(seen, UNSUPPORTED.iter().copied().collect::<BTreeSet<_>>());
     assert_eq!(seen.len(), UNSUPPORTED.len(), "a name is listed twice");
     assert!(UNSUPPORTED.iter().all(|name| name.starts_with("abi:")));
+
+    // WP-182: a one-leaf array at any stack alignment is a block, not
+    // the former `abi:one-leaf-array`.
+    for (one, align) in [(one_long, 16), (one_quad, 8), (one_quad, 16), (one_long, 4)] {
+        let attrs = NONE.with_stack_align(align).expect("an alignment");
+        assert_eq!(refusal(&t, c, void, &[(one, attrs)], None), None);
+    }
 
     // At the limits, not beyond them.
     assert_eq!(refusal(&t, c, void, &[(most_bytes, NONE)], None), None);

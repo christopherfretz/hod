@@ -184,6 +184,35 @@ impl Case {
         self.params.iter().any(|param| param.attr == Attr::Nest)
     }
 
+    /// Whether an argument is an array of one leaf whose stack alignment
+    /// `A` (§3.3) is not the leaf's own slot size. SelectionDAG passes it
+    /// as a block aligned to `A`, GlobalISel as a plain leaf in the
+    /// leaf's slot (WP-182); integers of up to 32 bits are not blocks, and
+    /// wider than 128 bits are refused.
+    pub fn has_one_leaf_block(&self) -> bool {
+        let mut types = table();
+        self.params.iter().any(|param| {
+            let stack_align = match param.attr {
+                Attr::None => None,
+                Attr::StackAlign(n) => Some(n),
+                _ => return false,
+            };
+            if !matches!(param.ty, Ty::Arr(..)) {
+                return false;
+            }
+            let mut leaves = Vec::new();
+            param.ty.leaves(&mut leaves);
+            let [leaf] = leaves.as_slice() else { return false };
+            if leaf.int_bits().is_some_and(|bits| bits <= 32 || bits > 128) {
+                return false;
+            }
+            let array = param.ty.intern(&mut types);
+            let leaf = leaf.intern(&mut types);
+            let slot = if types.alloc_size_of(leaf) > 8 { 16 } else { 8 };
+            stack_align.unwrap_or(types.align_of(array)).clamp(8, 16) != slot
+        })
+    }
+
     /// `ret (params)` in LLVM's syntax.
     pub fn text(&self) -> String {
         let mut text = String::new();

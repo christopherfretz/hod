@@ -1,9 +1,4 @@
 # The corpus entries that do not survive `cargo xtask roundtrip` today, by
 # outcome (spec/harness.md "roundtrip"). An entry not listed must pass.
 # Fields: entry, outcome, detail (for the reader; not compared).
-# corpus: 6250 entries, MANIFEST.tsv sha256 37254c252964563e22cfc7766ea576846cd31f7d107ef1f8e92fd4c4259b29c3
-kiln/llvm19/conformance/dcl.attr/annotate-run-O2.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
-kiln/llvm19/conformance/dcl.attr/clang-attr-valid-forms-run.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
-kiln/llvm22/conformance/dcl.attr/annotate-run-O2.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
-kiln/llvm22/conformance/dcl.attr/clang-attr-valid-forms-run.cpp.ll	parser-unsupported	special-global:llvm.global.annotations
-kiln/llvm22/conformance/ext.multiversion/multiversion-run.cpp.ll	parser-unsupported	attr:fmv-features
+# corpus: 6454 entries, MANIFEST.tsv sha256 7a4f99c2039cf04774c0c74431e9409045560b840c5f9a4249e42d53ac186431

@@ -17,7 +17,6 @@
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use hod_a64::compile_module;
@@ -346,8 +345,8 @@ fn interpret(suite: &Suite, header: &str) -> Vec<Option<u64>> {
 }
 
 /// Runs `program` and parses one hex number per line.
-fn lines(program: &std::path::Path, what: &str) -> Vec<u64> {
-    let ran = run_with(&mut Command::new(program), &[], Duration::from_mins(2));
+fn lines(toolchain: &Toolchain, program: &std::path::Path, what: &str) -> Vec<u64> {
+    let ran = run_with(&mut toolchain.runner_command(program), &[], Duration::from_mins(2));
     assert!(ran.success(), "{what}: {:?}\n{}", ran.status, ran.stderr_text());
     ran.stdout_text()
         .lines()
@@ -387,14 +386,14 @@ pub fn run(name: &str, g: &Gen) -> Report {
     if let Some(object) = llc(&scratch, "llc", &text, &[]) {
         legs.push(("llc".to_string(), object));
     }
-    let Some(toolchain) = Toolchain::host(&scratch) else { return report };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return report };
     let Some(linker) = toolchain.linkers.first() else { return report };
     let mut rng = Rng(0x0041_0041);
     let driver = toolchain.compile_c(&scratch, "driver", &driver(suite, &mut rng), &[]);
     for (leg, object) in &legs {
         let program = scratch.join(leg.replace(' ', "-"));
         toolchain.link_ok(linker, &[], &[&driver, object], &program);
-        let got = lines(&program, leg);
+        let got = lines(&toolchain, &program, leg);
         assert_eq!(got.len(), suite.cases.len(), "{leg}: one line per case");
         for ((case, want), got) in suite.cases.iter().zip(&expected).zip(&got) {
             let f = &suite.funcs[case.func];

@@ -561,7 +561,7 @@ fn a_far_constant_offset_from_a_global_links() {
     let emitted = common::emit(&m, &bodies, &Options::default());
     let scratch = hod_testutil::Scratch::new("a64-atomic-far-offset");
     let object = common::write_object(&scratch, "far.o", &emitted);
-    let Some(toolchain) = common::linking::Toolchain::host(&scratch) else { return };
+    let Some(toolchain) = common::linking::Toolchain::aarch64(&scratch) else { return };
     for linker in &toolchain.linkers {
         let outcome = toolchain.link(linker, &[], &[&object], &scratch.join(linker.name));
         assert!(outcome.success(), "{}: {}", linker.name, outcome.stderr_text());

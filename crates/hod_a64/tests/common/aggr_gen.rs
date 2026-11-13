@@ -42,7 +42,6 @@
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use hod_a64::compile_module;
@@ -1474,7 +1473,7 @@ pub fn run(name: &str, suite: &Suite) -> Report {
         ));
     }
     let llc_object = llc(&scratch, "llc", &text, &[]);
-    let Some(toolchain) = Toolchain::host(&scratch) else { return report };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return report };
     let Some(linker) = toolchain.linkers.first() else { return report };
     let driver = toolchain.compile_c(&scratch, "driver", &driver(suite, &mut Rng(0x0400)), &[]);
     let mut outputs: Vec<(String, Lines)> = Vec::new();
@@ -1484,7 +1483,7 @@ pub fn run(name: &str, suite: &Suite) -> Report {
     for (leg, object) in &legs {
         let program = scratch.join(leg);
         toolchain.link_ok(linker, &[], &[&driver, object], &program);
-        let ran = run_with(&mut Command::new(&program), &[], Duration::from_mins(2));
+        let ran = run_with(&mut toolchain.runner_command(&program), &[], Duration::from_mins(2));
         assert!(ran.success(), "{leg}: {:?}\n{}", ran.status, ran.stderr_text());
         outputs.push((leg.clone(), ran.stdout_text().lines().map(str::to_string).collect()));
     }

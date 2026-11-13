@@ -214,7 +214,7 @@ fn prog_sessions_match_llc() {
     let Some(llc) = tool("llc-22") else { return };
     let Some(gcc) = tool("gcc") else { return };
     let scratch = Scratch::new("lines-debug-prog");
-    let Some(toolchain) = Toolchain::host(&scratch) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return };
     let main = host_object(&scratch, &gcc, "main.c");
     let text = with_header(&data("prog.ll"), 22);
     let hod = hod_object(&scratch, "prog-hod", &text);
@@ -294,7 +294,7 @@ fn comdat_sessions_and_verify() {
     let Some(gxx) = tool("g++") else { return };
     let Some(dwarfdump) = tool("llvm-dwarfdump") else { return };
     let scratch = Scratch::new("lines-debug-comdat");
-    let Some(toolchain) = Toolchain::host(&scratch) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return };
     let main = host_object(&scratch, &gxx, "comdat_main.cpp");
     let (t1, t2) = (with_header(&data("tu1.ll"), 22), with_header(&data("tu2.ll"), 22));
     let hod = [hod_object(&scratch, "tu1-hod", &t1), hod_object(&scratch, "tu2-hod", &t2)];

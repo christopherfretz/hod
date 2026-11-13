@@ -44,7 +44,7 @@ fn pre_opt(dir: &Scratch, compiler: &Path, name: &str) -> PathBuf {
     let mut command = Command::new(compiler);
     command
         .current_dir(dir.path())
-        .args(["-std=c++20", "-g", "-O0", "-S", "-emit-llvm", "-w"])
+        .args(["-std=c++20", "-g", "-O0", "--target=aarch64-linux-gnu", "-S", "-emit-llvm", "-w"])
         .args(["-Xclang", "-disable-llvm-passes"])
         .arg(cpp.file_name().unwrap_or_default())
         .arg("-o")
@@ -169,7 +169,7 @@ fn coroutine_variables_hold_in_every_activation() {
     }
     let Some(llvm_dwarfdump) = tool("llvm-dwarfdump") else { return };
     let dir = Scratch::new("coro-debug");
-    let toolchain = Toolchain::host(&dir);
+    let toolchain = Toolchain::aarch64(&dir);
     let gdb = tool("gdb");
     let mut built = 0;
     for (name, compiler) in front_ends() {

@@ -1,11 +1,12 @@
 //! `spec/object.md` "Testing", link-and-run: objects the writer produces
 //! are linked by GNU ld, lld and mold, and the programs run.
 //!
-//! The code in the objects is hand-encoded AArch64, so these tests exist
-//! only on an AArch64 Linux host. A missing linker skips its part with a
+//! The code in the objects is hand-encoded AArch64: the programs run
+//! natively on an AArch64 Linux host and under `qemu-aarch64` on an x86-64
+//! one (`Toolchain::for_target`). A missing linker skips its part with a
 //! note, or fails under `HOD_REQUIRE_TOOLS=1`.
 
-#![cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#![cfg(target_os = "linux")]
 
 mod common;
 
@@ -19,13 +20,13 @@ use common::{
 use hod_obj::{
     A64Reloc, Arch, Binding, GroupKind, Object, SectionKind, Symbol, SymbolKind, SymbolPlace,
 };
-use hod_testutil::Scratch;
+use hod_testutil::{Scratch, Target};
 
 /// (a) `main` returns 42.
 #[test]
 fn main_returns_42() {
     let scratch = Scratch::new("obj-link-ret42");
-    let Some(tools) = Toolchain::host(&scratch) else { return };
+    let Some(tools) = Toolchain::for_target(&scratch, Target::Aarch64) else { return };
     let object = write(&scratch, "ret42.o", &common::return_42());
     for linker in &tools.linkers {
         let program = scratch.join(format!("ret42-{}", linker.name));
@@ -39,7 +40,7 @@ fn main_returns_42() {
 #[test]
 fn main_calls_puts() {
     let scratch = Scratch::new("obj-link-hello");
-    let Some(tools) = Toolchain::host(&scratch) else { return };
+    let Some(tools) = Toolchain::for_target(&scratch, Target::Aarch64) else { return };
     let object = write(&scratch, "hello.o", &common::hello("hello from hod"));
     for linker in &tools.linkers {
         let program = scratch.join(format!("hello-{}", linker.name));
@@ -80,7 +81,7 @@ fn comdat_helper(binding: Binding, value: u32) -> Object {
 #[test]
 fn comdat_groups_are_deduplicated() {
     let scratch = Scratch::new("obj-link-comdat");
-    let Some(tools) = Toolchain::host(&scratch) else { return };
+    let Some(tools) = Toolchain::for_target(&scratch, Target::Aarch64) else { return };
     for (binding, label) in [(Binding::Weak, "weak"), (Binding::Global, "global")] {
         let main = write(&scratch, &format!("main-{label}.o"), &comdat_main(binding, 42));
         let helper = write(&scratch, &format!("helper-{label}.o"), &comdat_helper(binding, 7));
@@ -99,7 +100,7 @@ fn comdat_groups_are_deduplicated() {
 #[test]
 fn duplicate_global_definitions_without_comdat_fail() {
     let scratch = Scratch::new("obj-link-duplicate");
-    let Some(tools) = Toolchain::host(&scratch) else { return };
+    let Some(tools) = Toolchain::for_target(&scratch, Target::Aarch64) else { return };
     let build = |name: &str| {
         let mut obj = Object::new(Arch::AArch64);
         let text = obj.add_section(b".text", SectionKind::Text, 4).unwrap();
@@ -126,7 +127,7 @@ fn duplicate_global_definitions_without_comdat_fail() {
 #[test]
 fn data_relocations() {
     let scratch = Scratch::new("obj-link-data");
-    let Some(tools) = Toolchain::host(&scratch) else { return };
+    let Some(tools) = Toolchain::for_target(&scratch, Target::Aarch64) else { return };
     let build = |through_section_symbol: bool| {
         let mut obj = Object::new(Arch::AArch64);
         let text = obj.add_section(b".text", SectionKind::Text, 4).unwrap();
@@ -168,7 +169,7 @@ fn data_relocations() {
 #[test]
 fn bss_is_zero_and_aligned() {
     let scratch = Scratch::new("obj-link-bss");
-    let Some(tools) = Toolchain::host(&scratch) else { return };
+    let Some(tools) = Toolchain::for_target(&scratch, Target::Aarch64) else { return };
     let mut obj = Object::new(Arch::AArch64);
     let text = obj.add_section(b".text", SectionKind::Text, 4).unwrap();
     let bss = obj.add_section(b".bss", SectionKind::Bss, 1).unwrap();
@@ -206,7 +207,7 @@ fn bss_is_zero_and_aligned() {
 #[test]
 fn more_than_65k_sections_link() {
     let scratch = Scratch::new("obj-link-many");
-    let Some(tools) = Toolchain::host(&scratch) else { return };
+    let Some(tools) = Toolchain::for_target(&scratch, Target::Aarch64) else { return };
     let object = write(&scratch, "many.o", &common::many_sections(70_000));
     for linker in &tools.linkers {
         let program = scratch.join(format!("many-{}", linker.name));
@@ -230,7 +231,7 @@ fn mov_w0(value: u32) -> u32 {
 #[test]
 fn discarded_comdat_copies_may_be_referenced_by_debug_sections() {
     let scratch = Scratch::new("obj-link-group-debug");
-    let Some(tools) = Toolchain::host(&scratch) else { return };
+    let Some(tools) = Toolchain::for_target(&scratch, Target::Aarch64) else { return };
     let describe = |mut obj: Object, tag: &str| {
         let answer = obj.symbol_count() - 1;
         let answer = (0..=answer).map(hod_obj::SymbolId::from_index);
@@ -306,7 +307,7 @@ fn tagged_group(kind: GroupKind, tag: &str, with_main: bool) -> Object {
 #[test]
 fn plain_groups_are_not_deduplicated() {
     let scratch = Scratch::new("obj-link-group-plain");
-    let Some(tools) = Toolchain::host(&scratch) else { return };
+    let Some(tools) = Toolchain::for_target(&scratch, Target::Aarch64) else { return };
     for (kind, label) in [(GroupKind::Plain, "plain"), (GroupKind::Comdat, "comdat")] {
         let first = write(&scratch, &format!("{label}-a.o"), &tagged_group(kind, "FIRST", true));
         let second = write(&scratch, &format!("{label}-b.o"), &tagged_group(kind, "SECOND", false));
@@ -339,7 +340,7 @@ fn plain_groups_are_not_deduplicated() {
 #[test]
 fn linked_sections_follow_their_targets() {
     let scratch = Scratch::new("obj-link-order");
-    let Some(tools) = Toolchain::host(&scratch) else { return };
+    let Some(tools) = Toolchain::for_target(&scratch, Target::Aarch64) else { return };
     let build = |linked: bool| {
         let mut obj = Object::new(Arch::AArch64);
         let mut functions = Vec::new();
@@ -396,7 +397,7 @@ fn linked_sections_follow_their_targets() {
 #[test]
 fn mergeable_sections_are_merged() {
     let scratch = Scratch::new("obj-link-merge");
-    let Some(tools) = Toolchain::host(&scratch) else { return };
+    let Some(tools) = Toolchain::for_target(&scratch, Target::Aarch64) else { return };
     let build = |mergeable: bool, is_main: bool| {
         let mut obj = Object::new(Arch::AArch64);
         let (strings, constants) = if mergeable {

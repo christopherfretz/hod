@@ -15,7 +15,8 @@
 //! The same program split into two texts (`Part::Main`, `Part::Rest`)
 //! prints the same and returns the same.
 //!
-//! They run only where `llc`'s target is the host: AArch64 Linux.
+//! The programs are AArch64: they run natively on an AArch64 Linux host
+//! and under `qemu-aarch64` on an x86-64 one (`print_support::link_and_run`).
 #![expect(
     clippy::many_single_char_names,
     clippy::similar_names,
@@ -41,11 +42,12 @@ const I64: TypeId = TypeId::I64;
 const PTR: TypeId = TypeId::PTR;
 const DOUBLE: TypeId = TypeId::DOUBLE;
 
-/// Whether the programs can run here.
-fn host_is_aarch64_linux() -> bool {
-    let host = cfg!(all(target_arch = "aarch64", target_os = "linux"));
+/// Whether the programs can run here: on Linux, natively or under the
+/// emulator.
+fn runs_here() -> bool {
+    let host = cfg!(target_os = "linux");
     if !host {
-        eprintln!("note: skipping: the printed programs run on AArch64 Linux only");
+        eprintln!("note: skipping: the printed programs run on Linux only");
     }
     host
 }
@@ -976,7 +978,7 @@ fn expect_run(scratch: &Scratch, name: &str, objects: &[std::path::PathBuf], p: 
 /// LLVM 19 prints and returns what the IR says.
 #[test]
 fn printed_programs_run_as_the_ir_says() {
-    if !host_is_aarch64_linux() {
+    if !runs_here() {
         return;
     }
     let p = program();
@@ -1007,7 +1009,7 @@ fn printed_programs_run_as_the_ir_says() {
 /// anonymous ones, the private format string) are found by both objects.
 #[test]
 fn a_split_module_links_to_the_same_program() {
-    if !host_is_aarch64_linux() {
+    if !runs_here() {
         return;
     }
     let p = program();
@@ -1187,7 +1189,7 @@ fn exception_program() -> (Module, Vec<Body>) {
 /// LLVM 22 and `llc -O2` of LLVM 19, linked with the C++ runtime.
 #[test]
 fn printed_landing_pads_catch_a_thrown_exception() {
-    if !host_is_aarch64_linux() {
+    if !runs_here() {
         return;
     }
     let (m, bodies) = exception_program();

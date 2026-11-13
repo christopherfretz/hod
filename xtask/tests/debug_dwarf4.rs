@@ -450,7 +450,9 @@ fn dwarf4_sessions_match_llc() {
 #[test]
 fn dwarf4_x86_64_sessions_match_llc() {
     if Arch::host() == Some(Arch::X86_64) {
-        return skip("this test is of the remote sessions; the host is x86-64");
+        // Not a missing tool: the native sessions are the other tests'.
+        eprintln!("note: this test is of the remote sessions; the host is x86-64");
+        return;
     }
     sessions_pass(
         Some(Arch::X86_64),

@@ -396,7 +396,7 @@ fn debug_census() {
     };
     let sessions = std::env::var_os("HOD_DEBUG_CENSUS_SESSIONS").is_some_and(|v| v == "1");
     let scratch = Scratch::new("dies-e2e-census");
-    let toolchain = if cfg!(target_arch = "aarch64") { Toolchain::host(&scratch) } else { None };
+    let toolchain = if cfg!(target_arch = "aarch64") { Toolchain::aarch64(&scratch) } else { None };
     let mut t = Tally::default();
     for file in inputs(&var.to_string_lossy()) {
         census_one(&file, &scratch, toolchain.as_ref(), sessions, &mut t);
@@ -439,7 +439,15 @@ fn data_dir() -> PathBuf {
 fn e2e_ir(compiler: &Path, scratch: &Scratch, name: &str) -> String {
     let out = scratch.join(format!("{name}.ll"));
     let mut command = Command::new(compiler);
-    command.args(["-g", "-O0", "-S", "-emit-llvm", "-w", "-std=c++20"]);
+    command.args([
+        "-g",
+        "-O0",
+        "--target=aarch64-linux-gnu",
+        "-S",
+        "-emit-llvm",
+        "-w",
+        "-std=c++20",
+    ]);
     command.arg(data_dir().join("e2e.cpp")).arg("-o").arg(&out);
     let outcome = run_with(&mut command, &[], Duration::from_mins(2));
     assert!(outcome.success(), "{command:?}: {}", outcome.stderr_text());
@@ -621,7 +629,7 @@ fn e2e_sessions_match_llc() {
     }
     let (Some(gdb), Some(lldb)) = (tool("gdb"), tool("lldb")) else { return };
     let scratch = Scratch::new("dies-e2e-sessions");
-    let Some(toolchain) = Toolchain::host(&scratch) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return };
     let mut sessions = 0;
     for (name, compiler, llc) in pairs() {
         let text = e2e_ir(&compiler, &scratch, name);

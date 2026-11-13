@@ -67,6 +67,13 @@ impl Toolchain {
         Self::new(scratch, target, "gcc", "g++", "ld.bfd", Vec::new())
     }
 
+    /// A toolchain for AArch64 Linux: [`Toolchain::for_target`] (the
+    /// host's on an AArch64 host, the cross one and `qemu-aarch64` on any
+    /// other).
+    pub fn aarch64(scratch: &Scratch) -> Option<Self> {
+        Self::for_target(scratch, Target::Aarch64)
+    }
+
     /// A toolchain for x86-64 Linux: [`Toolchain::for_target`].
     pub fn x86_64(scratch: &Scratch) -> Option<Self> {
         Self::for_target(scratch, Target::X86_64)
@@ -116,6 +123,18 @@ impl Toolchain {
         let dir = scratch.join(format!("lld-{major}"));
         std::fs::create_dir_all(&dir).unwrap();
         Some(Linker::through(&dir, "lld", &found))
+    }
+
+    /// The same toolchain whose emulator models the CPU `cpu` (QEMU's
+    /// name, `max`): for a test of instructions an extension adds, which
+    /// the baseline model ([`Target::emulated_cpu`]) lacks. A native
+    /// runner is unchanged.
+    #[allow(dead_code)] // Not every test binary that includes this uses it.
+    pub fn with_emulated_cpu(mut self, cpu: &str) -> Self {
+        if let Some(at) = self.runner.iter().position(|arg| arg == "-cpu") {
+            self.runner[at + 1] = cpu.into();
+        }
+        self
     }
 
     /// Whether programs run under an emulator.

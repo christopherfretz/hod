@@ -46,7 +46,15 @@ fn output(command: &mut Command) -> String {
 pub fn ir_with(compiler: &Path, scratch: &Scratch, name: &str, source: &str, flag: &str) -> String {
     let out = scratch.join(format!("{name}.ll"));
     let mut command = Command::new(compiler);
-    command.args([flag, "-O0", "-S", "-emit-llvm", "-w", "-std=c++20"]);
+    command.args([
+        flag,
+        "-O0",
+        "--target=aarch64-linux-gnu",
+        "-S",
+        "-emit-llvm",
+        "-w",
+        "-std=c++20",
+    ]);
     command.arg(data_dir().join(source)).arg("-o").arg(&out);
     output(&mut command);
     std::fs::read_to_string(out).unwrap()

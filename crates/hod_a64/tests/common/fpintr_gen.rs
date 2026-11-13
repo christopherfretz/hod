@@ -710,7 +710,7 @@ pub struct Report {
 pub fn run_native(label: &str, funcs: &[Func], per: usize, seed: u64) -> Report {
     let dir = hod_testutil::Scratch::new(label);
     let mut report = Report::default();
-    let Some(toolchain) = Toolchain::host(&dir) else { return report };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return report };
     let mut objects = Vec::new();
     let mut hod_text = String::new();
     for (prefix, stress) in [("h_", Stress::default()), ("s_", Stress::ALL)] {
@@ -844,7 +844,12 @@ pub fn run_native(label: &str, funcs: &[Func], per: usize, seed: u64) -> Report 
             }
             if let Some(want) = want {
                 report.interp += 1;
-                if *want != hod {
+                // `NanPolicy::Host`: the interpreter's NaNs are the
+                // host's, AArch64's only on an AArch64 host (x86-64's
+                // default NaN is negative); elsewhere any NaN agrees.
+                if *want != hod
+                    && (cfg!(target_arch = "aarch64") || !same_but_nan(f.ret, *want, hod))
+                {
                     why.push(format!("interp {want:x}"));
                 }
             }

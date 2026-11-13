@@ -27,7 +27,15 @@ fn data_dir() -> PathBuf {
 fn ir_with(compiler: &Path, scratch: &Scratch, name: &str, source: &str, flag: &str) -> PathBuf {
     let out = scratch.join(format!("{name}.ll"));
     let mut command = Command::new(compiler);
-    command.args([flag, "-O0", "-S", "-emit-llvm", "-w", "-std=c++20"]);
+    command.args([
+        flag,
+        "-O0",
+        "--target=aarch64-linux-gnu",
+        "-S",
+        "-emit-llvm",
+        "-w",
+        "-std=c++20",
+    ]);
     command.arg(data_dir().join(source)).arg("-o").arg(&out);
     let outcome = run_with(&mut command, &[], Duration::from_mins(2));
     assert!(outcome.success(), "{command:?}: {}", outcome.stderr_text());
@@ -259,7 +267,7 @@ fn run_case(case: &Case) {
     }
     let (Some(gdb), Some(lldb)) = (tool("gdb"), tool("lldb")) else { return };
     let scratch = Scratch::new(&format!("reduced-debug-{}", case.name));
-    let Some(toolchain) = Toolchain::host(&scratch) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return };
     let mut sessions = 0;
     for major in [19, 22] {
         let Some(llc) = tool(&format!("llc-{major}")) else { continue };

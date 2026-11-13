@@ -1,0 +1,68 @@
+name: hod-ci
+description: >
+  The setup every job of .github/workflows/ci-lane.yml shares
+  (docs/VALIDATION.md "Hosted CI", spec/harness.md "CI"), after kiln's
+  kiln-ci action: Debian 13's toolchain packages (LLVM 19 and 22 with clang
+  and lld, binutils, mold, gdb and lldb-19), the GNU cross toolchain, system
+  root and qemu-user of the OTHER architecture (x86-64 on an AArch64
+  runner, AArch64 on an x86-64 one), the pinned Rust toolchain and the cargo
+  cache. The job env's HOD_REQUIRE_TOOLS=1 makes any tool missing from this
+  list a test failure, never a skip. A local action is only readable after
+  checkout, so each job checks out first.
+inputs:
+  cache-key:
+    description: rust-cache's shared-key; one per architecture, so every job of a lane restores the same cache.
+    required: true
+  save-cache:
+    description: '"true" in the one job per lane that saves the cache.'
+    required: false
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Install the toolchain packages
+      shell: bash
+      run: |
+        export DEBIAN_FRONTEND=noninteractive
+        # The other architecture's GNU cross toolchain and system root
+        # (hod_testutil::target, Target::cross_package): its programs run
+        # under qemu-user, the host's natively.
+        case "$(uname -m)" in
+          aarch64) cross=x86-64-linux-gnu arch=amd64 prefix=x86_64-linux-gnu emu=qemu-x86_64 ;;
+          x86_64) cross=aarch64-linux-gnu arch=arm64 prefix=aarch64-linux-gnu emu=qemu-aarch64 ;;
+          *) echo "unsupported runner architecture $(uname -m)" >&2; exit 1 ;;
+        esac
+        apt-get update -qq
+        apt-get install -y -qq --no-install-recommends \
+          ca-certificates curl git build-essential procps time xz-utils file python3 \
+          binutils clang-19 llvm-19 lld-19 libc++-19-dev libc++abi-19-dev \
+          clang-22 llvm-22 lld-22 mold gdb gdb-multiarch lldb-19 qemu-user \
+          "gcc-$cross" "g++-$cross" "binutils-$cross" \
+          "libc6-dev-$arch-cross" "libstdc++-14-dev-$arch-cross" >/dev/null
+        for t in clang++-19 clang++-22 llc-19 llc-22 ld.lld-22 ld.bfd mold gdb lldb-19 \
+                 "$prefix-gcc" "$prefix-ld.bfd" "$emu"; do
+          printf '%-24s %s\n' "$t" "$("$t" --version 2>&1 | head -1)"
+        done
+        nproc; free -g | head -2
+        # The container runs as root over a checkout the runner owns.
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        # The build directory outside the checkout, as scripts/env.sh puts
+        # it on the development machine: the harness names a test file by
+        # its path relative to the workspace, and several tests expect
+        # their scratch files (in the build directory) to be outside it.
+        echo "CARGO_TARGET_DIR=$(dirname "$GITHUB_WORKSPACE")/target" >> "$GITHUB_ENV"
+    # As kiln-ci: the job runs as root in a container whose $HOME is
+    # /github/home while root's passwd home is /root; rustup-init's anti-sudo
+    # check refuses that mismatch. rust-toolchain.toml pins the same version.
+    - uses: dtolnay/rust-toolchain@stable
+      with: { toolchain: "1.95.0", components: "rustfmt, clippy" }
+      env: { RUSTUP_INIT_SKIP_SUDO_CHECK: "yes" }
+    # ~/.cargo and the dependency builds, keyed per architecture; only the
+    # `save-cache` job writes the entry (kiln's docs/VALIDATION.md
+    # "GitHub Actions" explains why the workspace crates are left out).
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.cache-key }}
+        workspaces: ". -> ../target"
+        save-if: ${{ inputs.save-cache == 'true' }}
+        cache-on-failure: true

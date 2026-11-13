@@ -564,7 +564,7 @@ fn run_seed(seed: u64, count: usize, kinds: &mut [usize; KINDS.len()]) -> (usize
         .count();
     let counts = (compiled.len(), grown, stacked);
     let dir = Scratch::new("a64-musttail-varargs");
-    let Some(toolchain) = Toolchain::host(&dir) else { return counts };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return counts };
     let text = thunks(&compiled);
     let driver = toolchain.compile_c(&dir, "driver", &driver(&compiled), &["-w"]);
     let (module, bodies) = parse(&format!("{}{text}", ll_header(22)));

@@ -61,7 +61,7 @@ fn block_addresses_in_data_without_an_indirectbr_run() {
     let text = format!("{}{PROGRAM}", ll_header(22));
     let (module, bodies) = parse(&text);
     let dir = Scratch::new("a64-block-address-taken");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let driver = toolchain.compile_c(&dir, "driver", DRIVER, &["-w"]);
     let mut objects = Vec::new();
     for (tag, stress) in [("hod", hod_cg::Stress::default()), ("stress", hod_cg::Stress::ALL)] {

@@ -2,6 +2,7 @@
 //! compares what each side received (`spec/abi-a64.md` §11).
 
 use std::collections::{BTreeMap, HashSet};
+use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -9,7 +10,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use hod_cg::abi::Place;
-use hod_testutil::{Outcome, run, run_with, tools_required};
+use hod_testutil::{Outcome, Target, run, run_with, tools_required};
 
 use crate::emit::{self, Ext, Func, Item};
 use crate::ir;
@@ -66,18 +67,30 @@ pub struct Tools {
     pub assembler: PathBuf,
     pub gcc: PathBuf,
     pub llc: Vec<(Config, PathBuf)>,
+    /// The command a program is run with: empty on an AArch64 host, else
+    /// `qemu-aarch64` and its arguments (`hod_testutil::target`).
+    pub runner: Vec<OsString>,
 }
 
 impl Tools {
     /// The tools, or `None` when one is missing.
     pub fn find() -> Option<Tools> {
         let assembler = llvm_tool(22, "clang")?;
-        let gcc = hod_testutil::tool("gcc")?;
+        // AArch64 programs: natively, or the cross gcc and the emulator.
+        let target = Target::Aarch64;
+        let gcc = target.tool("gcc")?;
+        let runner = if target.is_host() {
+            Vec::new()
+        } else {
+            let mut runner = vec![target.tool("emulator")?.into_os_string()];
+            runner.extend(target.emulator_args(&target.tool("sysroot")?));
+            runner
+        };
         let mut llc = Vec::new();
         for config in CONFIGS {
             llc.push((config, llvm_tool(config.major, "llc")?));
         }
-        Some(Tools { assembler, gcc, llc })
+        Some(Tools { assembler, gcc, llc, runner })
     }
 }
 
@@ -270,7 +283,13 @@ impl Harness {
         let driver = scratch.write("driver.c", driver);
         let assembled = run(
             &tools.assembler,
-            ["-c".as_ref(), asm.as_os_str(), "-o".as_ref(), scratch.join("hod.o").as_os_str()],
+            [
+                "--target=aarch64-linux-gnu".as_ref(),
+                "-c".as_ref(),
+                asm.as_os_str(),
+                "-o".as_ref(),
+                scratch.join("hod.o").as_os_str(),
+            ],
         );
         must("assembling the hod side", &assembled);
         let compiled = run(
@@ -315,8 +334,16 @@ impl Harness {
             if from >= to {
                 continue;
             }
+            let mut command = match tools.runner.split_first() {
+                Some((emulator, flags)) => {
+                    let mut command = Command::new(emulator);
+                    command.args(flags).arg(&exe);
+                    command
+                }
+                None => Command::new(&exe),
+            };
             let outcome = run_with(
-                Command::new(&exe).arg(from.to_string()).arg(to.to_string()),
+                command.arg(from.to_string()).arg(to.to_string()),
                 &self.blobs.input,
                 Duration::from_mins(2),
             );

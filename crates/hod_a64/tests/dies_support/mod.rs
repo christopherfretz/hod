@@ -65,7 +65,7 @@ pub fn ir(compiler: &Path, scratch: &Scratch, name: &str, source: &str) -> Strin
     }
     let out = scratch.join(format!("{name}.ll"));
     let mut command = Command::new(compiler);
-    command.args(["-g", "-O0", "-S", "-emit-llvm", "-w"]);
+    command.args(["-g", "-O0", "--target=aarch64-linux-gnu", "-S", "-emit-llvm", "-w"]);
     if !has_ext(source, "c") || is_kiln {
         command.arg("-std=c++20");
     }

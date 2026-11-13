@@ -23,7 +23,7 @@ fn main_returning_42_links_and_runs_with_every_linker() {
     let emitted = emit(&m, &bodies, &Options::default());
     let dir = hod_testutil::Scratch::new("a64-42");
     let object = write_object(&dir, "main.o", &emitted);
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     assert!(
         !hod_testutil::tools_required() || toolchain.linkers.len() == 3,
         "bfd, lld and mold are all required"

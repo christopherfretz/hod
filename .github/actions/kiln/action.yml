@@ -1,0 +1,73 @@
+name: kiln
+description: >
+  kiln++ installed in /opt/kiln and named by HOD_KILN, for the tests and
+  the harness runs that compile C++ with kiln (spec/harness.md "CI"). kiln
+  is built at the revision in .github/kiln-revision (or the `revision`
+  input) with kiln's own `cargo xtask dist`, the relocatable install tree
+  of kiln's spec/driver.md "Installation layout", and kept in the Actions
+  cache under that revision and the runner's architecture: one build per
+  revision and architecture. Run after the hod-ci action (it needs Rust and
+  the packages).
+inputs:
+  revision:
+    description: kiln's commit; empty means the one .github/kiln-revision records.
+    required: false
+    default: ""
+  build:
+    description: >
+      "true" in the one job per lane that builds kiln on a cache miss; any
+      other job fails on a miss (it runs after that job).
+    required: false
+    default: "false"
+outputs:
+  revision:
+    description: the kiln commit installed
+    value: ${{ steps.rev.outputs.revision }}
+runs:
+  using: composite
+  steps:
+    - id: rev
+      name: kiln's revision
+      shell: bash
+      env: { REVISION: "${{ inputs.revision }}" }
+      run: |
+        rev="${REVISION:-$(cat .github/kiln-revision)}"
+        case "$rev" in
+          *[!0-9a-f]* | "") echo "bad kiln revision '$rev'" >&2; exit 1 ;;
+        esac
+        echo "revision=$rev" >> "$GITHUB_OUTPUT"
+        echo "kiln revision $rev"
+    - id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: /opt/kiln
+        key: kiln-dist-${{ steps.rev.outputs.revision }}-${{ runner.arch }}
+        fail-on-cache-miss: ${{ inputs.build != 'true' }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/checkout@v4
+      with:
+        repository: christopherfretz/kiln
+        ref: ${{ steps.rev.outputs.revision }}
+        path: .ci/kiln-src
+        persist-credentials: false
+    - if: steps.cache.outputs.cache-hit != 'true'
+      name: cargo xtask dist (kiln)
+      shell: bash
+      run: |
+        cd .ci/kiln-src
+        git config --global --add safe.directory "$PWD"
+        export CARGO_TARGET_DIR="$PWD/target"
+        export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+        cargo xtask dist --out "$PWD/../kiln-dist"
+        mkdir -p /opt/kiln
+        tar -xJf ../kiln-dist/kiln-*-linux-gnu.tar.xz -C /opt/kiln --strip-components=1
+    - if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: /opt/kiln
+        key: kiln-dist-${{ steps.rev.outputs.revision }}-${{ runner.arch }}
+    - name: HOD_KILN
+      shell: bash
+      run: |
+        /opt/kiln/bin/kiln++ --version | head -1
+        echo "HOD_KILN=/opt/kiln/bin/kiln++" >> "$GITHUB_ENV"

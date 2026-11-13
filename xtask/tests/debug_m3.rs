@@ -127,6 +127,10 @@ fn dead_load_line_is_permitted() {
 // Class `load-placement`, hod only: hod's load of a call argument on a
 // line of its own has a row (20 pairs, 10 modules).
 #[test]
+#[cfg_attr(
+    target_arch = "x86_64",
+    ignore = "x86-64 runner: the difference it classifies is AArch64's; on x86-64 hod's and llc's lines are the same; WP-145 finding"
+)]
 fn argument_load_line_is_permitted() {
     classified_as("arg_load.c", Class::LoadPlacement);
 }

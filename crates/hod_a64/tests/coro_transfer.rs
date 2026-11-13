@@ -169,7 +169,15 @@ fn pre_opt(dir: &Scratch, major: u32, source: &str, name: &str) -> Option<PathBu
     let ir = dir.join(format!("{name}.ll"));
     run_ok(
         Command::new(clang)
-            .args(["-std=c++20", "-O0", "-S", "-emit-llvm", "-w", "-fPIC"])
+            .args([
+                "-std=c++20",
+                "-O0",
+                "--target=aarch64-linux-gnu",
+                "-S",
+                "-emit-llvm",
+                "-w",
+                "-fPIC",
+            ])
             .args(["-Xclang", "-disable-llvm-passes", "--target=aarch64-unknown-linux-gnu"])
             .arg(&cpp)
             .arg("-o")
@@ -254,7 +262,7 @@ fn symmetric_transfer_between_objects_runs_in_constant_stack() {
         return;
     }
     let dir = Scratch::new("coro-transfer-mixed");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let mut runs = 0;
     for major in [19, 22] {
         let Some(clang) = versioned("clang++", major) else { continue };

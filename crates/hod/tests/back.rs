@@ -303,7 +303,10 @@ done:
 "
     );
     let object = compile(&input, max(1)).expect("hod compiles the module");
-    let Some(gcc) = hod_testutil::tool("gcc") else { return };
+    // An AArch64 object: the AArch64 gcc links it (the cross one on
+    // another host), and the program runs natively or under the emulator.
+    let target = hod_testutil::Target::Aarch64;
+    let Some(gcc) = target.tool("gcc") else { return };
     let scratch = hod_testutil::Scratch::new("hod-huge-offset");
     let path = scratch.write("huge.o", object);
     let program = scratch.join("huge");
@@ -311,10 +314,16 @@ done:
     link.arg(&path).arg("-o").arg(&program);
     let linked = hod_testutil::run_with(&mut link, b"", std::time::Duration::from_mins(1));
     assert!(linked.success(), "the object links: {}", linked.stderr_text());
-    let ran = hod_testutil::run_with(
-        &mut std::process::Command::new(&program),
-        b"",
-        std::time::Duration::from_mins(1),
-    );
+    let mut run = if target.is_host() {
+        std::process::Command::new(&program)
+    } else {
+        let (Some(emulator), Some(root)) = (target.tool("emulator"), target.tool("sysroot")) else {
+            return;
+        };
+        let mut run = std::process::Command::new(emulator);
+        run.args(target.emulator_args(&root)).arg(&program);
+        run
+    };
+    let ran = hod_testutil::run_with(&mut run, b"", std::time::Duration::from_mins(1));
     assert!(ran.success(), "{ran:?}");
 }

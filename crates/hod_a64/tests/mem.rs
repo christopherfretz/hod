@@ -19,7 +19,6 @@ mod mem_gen;
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
-use std::process::Command;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -187,7 +186,7 @@ const MODES: [&str; 4] = ["plain", "stress", "pic", "llc"];
 /// without the tools.
 fn run_modes(funcs: &[Func], want: &[String]) -> Option<Vec<(String, String)>> {
     let scratch = Scratch::new("a64-mem");
-    let toolchain = Toolchain::host(&scratch)?;
+    let toolchain = Toolchain::aarch64(&scratch)?;
     let linker = toolchain.linkers.first()?;
     let text = native_text(funcs);
     let (module, bodies) = parse(&text);
@@ -209,7 +208,7 @@ fn run_modes(funcs: &[Func], want: &[String]) -> Option<Vec<(String, String)>> {
         };
         let program = scratch.join(mode);
         toolchain.link_ok(linker, &[], &[&driver, &object], &program);
-        let ran = run_with(&mut Command::new(&program), &[], Duration::from_mins(2));
+        let ran = run_with(&mut toolchain.runner_command(&program), &[], Duration::from_mins(2));
         let got = split(&ran.stdout_text());
         for (k, f) in funcs.iter().enumerate() {
             let got = got.get(k).map_or("(nothing: the run stopped)", String::as_str);
@@ -393,7 +392,7 @@ fn the_stack_forms_hold_natively() {
     let text = format!("{}{STACK}", ll_header(22));
     let (m, bodies) = parse(&text);
     let dir = Scratch::new("a64-mem-stack");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let driver = toolchain.compile_c(&dir, "driver", STACK_DRIVER, &[]);
     let mut objects = Vec::new();
     for stress in [Stress::default(), Stress::ALL] {

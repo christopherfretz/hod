@@ -293,7 +293,7 @@ fn link_run(
 #[test]
 fn every_model_links_runs_and_relaxes() {
     let dir = Scratch::new("a64-tls");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let lib = data("lib.ll");
     let main = data("main.ll");
     let dso_src = "__thread int dso_tls = 200;\n";
@@ -502,7 +502,7 @@ fn page_relocations(object: &Path) -> Option<Vec<String>> {
 #[test]
 fn symbol_offsets_fold_as_llc_folds() {
     let dir = Scratch::new("a64-offsets");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let (ir, c) = offset_table();
     for (mode, c_flags, link) in
         [(Mode::Static, "-fno-pie", "-no-pie"), (Mode::Pie, "-fPIE", "-pie")]

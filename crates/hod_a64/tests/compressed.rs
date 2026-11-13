@@ -49,7 +49,7 @@ fn output(command: &mut Command) -> String {
 fn ir(clang: &Path, scratch: &Scratch, name: &str, source: &Path, flag: &str) -> String {
     let out = scratch.join(format!("{name}.ll"));
     let mut command = Command::new(clang);
-    command.args([flag, "-O0", "-S", "-emit-llvm", "-w"]);
+    command.args([flag, "-O0", "--target=aarch64-linux-gnu", "-S", "-emit-llvm", "-w"]);
     if source.extension().is_some_and(|e| e == "cpp") {
         command.arg("-std=c++20");
     }
@@ -334,7 +334,7 @@ fn run_case(case: &Case) {
         return;
     }
     let scratch = Scratch::new(&format!("compressed-{}", case.name));
-    let Some(toolchain) = Toolchain::host(&scratch) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return };
     let debuggers = tool("gdb").is_some() && tool("lldb").is_some();
     let mut tally = (0, 0, 0);
     let mut sessions = 0;
@@ -441,7 +441,7 @@ fn large_sections_compressed() {
     assert!(big >= 2, "{big} sections past 256 KiB");
     let t = same_but_compressed(&scratch, &plain, &zlib);
     readers_agree(&plain, &zlib);
-    let Some(toolchain) = Toolchain::host(&scratch) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return };
     for linker in &toolchain.linkers {
         let program = scratch.join(format!("large-{}", linker.name));
         let ran = toolchain.link_and_run(linker, &[], &[&zlib], &program);

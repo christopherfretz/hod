@@ -1,0 +1,153 @@
+name: sweep
+# The x86-64 libc++ sweep (docs/VALIDATION.md "Hosted CI", spec/harness.md
+# "CI"), after kiln's sweep.yml: libc++ 22.1.8's test suite (`std` and
+# `libcxx`) compiled by kiln with hod as its back end, natively on GitHub's
+# x86-64 runner, in the CI lane's container (Debian 13):
+#   build           hod_cli in release, uploaded once; kiln++ at the revision
+#                   in .github/kiln-revision (or the `kiln` input) built or
+#                   restored into the Actions cache by the kiln action
+#   libcxx K/N      kiln's `cargo xtask libcxx --shard K/N` with hod's shim
+#                   (`cargo xtask shim`, scripts/libcxx-hod-kiln.sh) as the
+#                   compiler: kiln's llc is hod. Strict (HOD_STRICT=1, no
+#                   fallback to llc) unless the dispatch says hybrid.
+#   libcxx-summary  the shards merged into one file by kiln's
+#                   scripts/libcxx-results.py, uploaded as `libcxx-summary`
+# It never gates a merge: no pull_request or merge_group trigger, and it is
+# not a required check. Start it by pushing a `sweep/<name>` branch or with
+# workflow_dispatch. A newer push of the same ref cancels the older run.
+on:
+  workflow_dispatch:
+    inputs:
+      kiln:
+        description: kiln's commit (empty is .github/kiln-revision)
+        type: string
+        default: ""
+      strict:
+        description: strict (every module by hod) rather than hybrid (llc where hod declines)
+        type: boolean
+        default: true
+  push:
+    branches: ["sweep/**"]
+permissions:
+  contents: read
+concurrency:
+  group: sweep-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: never
+  # The libc++ tests' tag, the one docs/status/libcxx-hod.md measures.
+  LIBCXX_TAG: llvmorg-22.1.8
+defaults:
+  run: { shell: bash }
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-24.04
+    container: buildpack-deps:trixie
+    timeout-minutes: 90
+    outputs:
+      kiln: ${{ steps.kiln.outputs.revision }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/hod-ci
+        with: { cache-key: ci-x86_64 }
+      - id: kiln
+        uses: ./.github/actions/kiln
+        with: { revision: "${{ inputs.kiln }}", build: "true" }
+      - name: cargo build --release -p hod_cli
+        run: |
+          cargo build --release -p hod_cli
+          mkdir -p sweep-bin && cp "$CARGO_TARGET_DIR/release/hod" sweep-bin/
+      - uses: actions/upload-artifact@v4
+        with: { name: hod, path: sweep-bin/hod, if-no-files-found: error, retention-days: 7 }
+
+  # S shards; S is the list's length. `-j 4 --timeout 20 --mem-limit 3072`
+  # as kiln's sweep. The libc++ 22 tree is extracted from Debian's packages
+  # into kiln's .toolchain/libcxx-22-root, as kiln's sweep does.
+  libcxx:
+    name: libcxx ${{ matrix.shard }}/${{ strategy.job-total }}
+    needs: [build]
+    runs-on: ubuntu-24.04
+    container: buildpack-deps:trixie
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/hod-ci
+        with: { cache-key: ci-x86_64 }
+      - uses: ./.github/actions/kiln
+        with: { revision: "${{ needs.build.outputs.kiln }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: hod, path: sweep-bin }
+      - uses: actions/checkout@v4
+        with:
+          repository: christopherfretz/kiln
+          ref: ${{ needs.build.outputs.kiln }}
+          path: .ci/kiln-src
+          persist-credentials: false
+      - name: the shim, libc++ 22, its tests and the locales
+        run: |
+          chmod +x sweep-bin/hod
+          # The shim directory's name carries the LLVM major (xtask shim).
+          cargo xtask shim --llvm /usr/lib/llvm-22 --hod "$PWD/sweep-bin/hod" \
+            --out "$PWD/.ci/llvm-22" --kiln /opt/kiln/bin/kiln++
+          echo "HOD_LIBCXX_KILN=$PWD/.ci/llvm-22/kiln++-hod" >> "$GITHUB_ENV"
+          cd .ci/kiln-src
+          root="$PWD/.toolchain/libcxx-22-root"
+          mkdir -p "$RUNNER_TEMP/debs" "$root"
+          (cd "$RUNNER_TEMP/debs" && apt-get download libc++-22-dev libc++abi-22-dev libunwind-22-dev)
+          for d in "$RUNNER_TEMP"/debs/*.deb; do dpkg-deb -x "$d" "$root"; done
+          grep -m1 '_LIBCPP_VERSION ' "$root/usr/lib/llvm-22/include/c++/v1/__config"
+          scripts/fetch-libcxx-tests.sh "$LIBCXX_TAG"
+          scripts/provision-locales.sh
+          locale -a | head -5
+      - name: cargo xtask libcxx std libcxx --shard ${{ matrix.shard }}/${{ strategy.job-total }}
+        env:
+          HOD_STRICT: ${{ (github.event_name == 'push' || inputs.strict) && '1' || '' }}
+        run: |
+          [ -n "$HOD_STRICT" ] || unset HOD_STRICT
+          out="$GITHUB_WORKSPACE/libcxx-out"
+          mkdir -p "$out"
+          cd .ci/kiln-src
+          export CARGO_TARGET_DIR="$PWD/target"
+          cargo xtask libcxx std libcxx --tag "$LIBCXX_TAG" \
+            --compiler "$GITHUB_WORKSPACE/scripts/libcxx-hod-kiln.sh" \
+            --shard ${{ matrix.shard }}/${{ strategy.job-total }} --no-fail -j 4 --timeout 20 \
+            --mem-limit 3072 --results "$out/libcxx-${{ matrix.shard }}.tsv" \
+            --report "$out/libcxx-${{ matrix.shard }}.md"
+      # A workspace-relative path: in a container job `runner.temp` is the
+      # host's path (kiln's sweep.yml).
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: libcxx-${{ matrix.shard }}
+          path: libcxx-out/
+          if-no-files-found: error
+
+  libcxx-summary:
+    name: libcxx summary
+    needs: [build, libcxx]
+    if: ${{ !cancelled() && needs.libcxx.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: christopherfretz/kiln
+          ref: ${{ needs.build.outputs.kiln }}
+          sparse-checkout: scripts
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with: { pattern: libcxx-*, path: results, merge-multiple: true }
+      - name: merge the shards
+        env:
+          MODE: ${{ (github.event_name == 'push' || inputs.strict) && 'strict' || 'hybrid' }}
+        run: |
+          ls results
+          python3 scripts/libcxx-results.py \
+            --label "libc++ 22.1.8 suite, kiln + hod ($MODE), x86_64 (kiln ${{ needs.build.outputs.kiln }})" \
+            $(find results -name 'libcxx-*.tsv' | sort) | tee libcxx-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: { name: libcxx-summary, path: libcxx-summary.md }

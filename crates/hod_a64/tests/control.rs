@@ -504,7 +504,7 @@ int main(void) {
     let text = format!("{}{functions}", ll_header(22));
     let (m, bodies) = parse(&text);
     let dir = hod_testutil::Scratch::new("a64-blocktab");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let driver = toolchain.compile_c(&dir, "driver", driver, &[]);
     for (sections, reloc_model) in [
         (false, RelocModel::Static),

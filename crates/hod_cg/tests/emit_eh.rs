@@ -518,13 +518,13 @@ fn wrong_wiring_fails_the_comparison() {
 /// copy and catches in it, and its tables decode.
 #[test]
 fn comdat_tables_link_with_every_linker() {
-    if !cfg!(target_arch = "aarch64") {
-        eprintln!("note: not an AArch64 host; skipping");
-        return;
-    }
     let Some(&major) = majors().last() else { return };
     let scratch = Scratch::new("emit-eh-link");
-    let Some(toolchain) = linking::Toolchain::host(&scratch) else { return };
+    // Natively on AArch64, under qemu-aarch64 elsewhere.
+    let Some(toolchain) = linking::Toolchain::for_target(&scratch, hod_testutil::Target::Aarch64)
+    else {
+        return;
+    };
     let thrower = r"
 define void @may_throw() {
   %e = call ptr @__cxa_allocate_exception(i64 4)

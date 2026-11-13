@@ -1326,12 +1326,16 @@ fn llc_object(scratch: &Scratch, major: u32, text: &str) -> Option<PathBuf> {
 fn c_object(scratch: &Scratch, cc: Cc, source: &str) -> Option<PathBuf> {
     let (compiler, name) = match cc {
         Cc::Clang => (tool("clang")?, "clang"),
-        Cc::Gcc => (tool("gcc")?, "gcc"),
+        Cc::Gcc => (hod_testutil::Target::Aarch64.tool("gcc")?, "gcc"),
     };
     let input = scratch.write(&format!("c-{name}.c"), source);
     let output = scratch.join(format!("c-{name}.o"));
     let mut command = Command::new(compiler);
     command.args(["-c", "-O1", "-w", "-fno-strict-aliasing"]).arg(&input).arg("-o").arg(&output);
+    // AArch64 objects on any host: clang's target, the cross gcc.
+    if matches!(cc, Cc::Clang) {
+        command.arg("--target=aarch64-linux-gnu");
+    }
     let outcome = run_with(&mut command, &[], Duration::from_mins(5));
     assert!(outcome.success(), "{name}:\n{}", outcome.stderr_text());
     Some(output)
@@ -1372,7 +1376,7 @@ fn run(name: &str, funcs: &[Func], seed: u64) -> Report {
     let cases = cases(funcs, seed);
     let input = stdin(funcs, &cases);
     let mut report = Report::default();
-    let Some(toolchain) = Toolchain::host(&scratch) else { return report };
+    let Some(toolchain) = Toolchain::aarch64(&scratch) else { return report };
     let driver = toolchain.compile_c(&scratch, "driver", &driver(funcs), &[]);
     let mut outputs: Vec<(String, Vec<Vec<u8>>, Option<Vec<bool>>)> = Vec::new();
     for (leg, object, compared) in &legs {
@@ -1384,7 +1388,8 @@ fn run(name: &str, funcs: &[Func], seed: u64) -> Report {
             let program = scratch.join(label.replace('/', "-"));
             let inputs: [&Path; 2] = [&driver, object];
             toolchain.link_ok(linker, &["-Wl,--no-as-needed", "-lm"], &inputs, &program);
-            let ran = run_with(&mut Command::new(&program), &input, Duration::from_mins(3));
+            let ran =
+                run_with(&mut toolchain.runner_command(&program), &input, Duration::from_mins(3));
             assert!(ran.success(), "{label}: {:?}\n{}", ran.status, ran.stderr_text());
             let lines = ran.stdout_text().lines().map(parse_line).collect();
             outputs.push((label, lines, compared.clone()));

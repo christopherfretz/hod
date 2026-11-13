@@ -61,6 +61,7 @@ fn outcome(result: &Result<Vec<u8>, CompileError>, report: &Report) -> String {
                 CompileError::MalformedInput(_) => "malformed-input".into(),
                 CompileError::InvalidOptions(_) => "invalid-options".into(),
                 CompileError::Internal(_) => "internal-error".into(),
+                CompileError::Panic(_) => "internal-panic".into(),
             };
             format!("err {reason} [{error}] [{}]", report.reasons.join(","))
         }

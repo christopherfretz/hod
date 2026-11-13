@@ -211,8 +211,12 @@ Every job sets `HOD_REQUIRE_TOOLS=1`. On the x86-64 runner an x86-64
 program is not held to the baseline CPU: the emulated AArch64 lane is
 where a use of an instruction beyond the baseline faults.
 
-The libc++ suite with kiln and hod runs natively on x86-64 in the `sweep`
-workflow (a `sweep/**` branch or by hand; never a required check).
+The libc++ suite with kiln runs natively on both runners in the `sweep`
+workflow (a `sweep/**` branch or by hand; never a required check), once
+with hod and once with `llc`; a test that passes with `llc` and not with
+hod fails it (`scripts/libcxx-sweep.py`; numbers in
+`docs/status/libcxx-hod-x64.md` and `docs/status/libcxx-hod.md`, "Native
+... runner").
 
 **Tests that need a particular host.** A test of AArch64 programs runs
 on both hosts when it takes its toolchain from `hod_testutil::target`

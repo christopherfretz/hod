@@ -63,6 +63,10 @@ fn ci(args: &xtask::ci::Args) -> ExitCode {
     let steps: &[(&str, &[&str])] = &[
         ("fmt", &["fmt", "--all", "--check"]),
         ("clippy", &["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]),
+        // spec/cli.md "Embedding": the facade without its readers, as a
+        // program that builds `hod_ir` itself takes it. Part of the
+        // `clippy` step, so every lane that lints runs it.
+        ("clippy", &["clippy", "-p", "hod", "--no-default-features", "--", "-D", "warnings"]),
     ];
     let test: Vec<String> = xtask::ci::test_args(args.part);
     let test: Vec<&str> = test.iter().map(String::as_str).collect();

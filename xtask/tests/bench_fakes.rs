@@ -412,13 +412,20 @@ fn a_run_measures_every_tool() {
     assert!(summary.contains("bench: llc built 4; hod built 2, declined 2; hod+fallback built 2, fell back 2; 0 errors\n"), "{summary}");
 
     // A round runs each tool once: llc, hod, hod with its fallback (which
-    // runs llc), then the next round. The tools get the same arguments.
-    let args = "-O0 -filetype=obj -relocation-model=pic plain.ll";
+    // runs llc), then the next round. The tools get the same arguments,
+    // but for what `llc` alone is told on this machine (`llc_options`:
+    // the selector on an x86-64 host, nothing on an AArch64 one).
+    let args = "-O0 -filetype=obj -relocation-model=pic";
+    let mut own = String::new();
+    for option in world.config(Action::Measure).llc_options() {
+        own.push(' ');
+        own.push_str(&option);
+    }
     let round = [
-        format!("llc {args}"),
-        format!("hod strict {args}"),
-        format!("hod fallback {args}"),
-        format!("llc {args}"),
+        format!("llc {args}{own} plain.ll"),
+        format!("hod strict {args} plain.ll"),
+        format!("hod fallback {args} plain.ll"),
+        format!("llc {args} plain.ll"),
     ];
     assert_eq!(world.calls()[..8], [round.clone(), round].concat());
     assert_eq!(world.calls().len(), 4 * 2 * 4 - 2 * 2, "hod builds 'built' without its fallback");

@@ -791,6 +791,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         }
 
         self.finish_vars();
+        self.finish_debug_calls()?; // WP-113: `spec/dwarf.md` §6.19
 
         let mut record = self.out.record(self.mark, self.body.symbol());
         record.align = T::FN_ALIGN.max(self.island_align);

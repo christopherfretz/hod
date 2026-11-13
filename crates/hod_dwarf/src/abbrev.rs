@@ -61,6 +61,8 @@ pub mod tag {
     pub const GNU_TEMPLATE_PARAMETER_PACK: u16 = 0x4107;
     // WP-062.
     pub const SKELETON_UNIT: u16 = 0x4a;
+    // WP-113.
+    pub const CALL_SITE: u16 = 0x48;
 }
 
 /// `DW_AT_*` (DWARF 5 §7.5.4, table 7.5).
@@ -130,6 +132,14 @@ pub mod at {
     pub const LLVM_CORO_SUSPEND_IDX: u16 = 0x3e0d;
     // WP-062.
     pub const DWO_NAME: u16 = 0x76;
+    // WP-113: call-site entries (`spec/dwarf.md` §6.19).
+    pub const CALL_ALL_CALLS: u16 = 0x7a;
+    pub const CALL_RETURN_PC: u16 = 0x7d;
+    pub const CALL_ORIGIN: u16 = 0x7f;
+    pub const CALL_PC: u16 = 0x81;
+    pub const CALL_TAIL_CALL: u16 = 0x82;
+    pub const CALL_TARGET: u16 = 0x83;
+    pub const CALL_TARGET_CLOBBERED: u16 = 0x84;
 }
 
 /// `DW_FORM_*` (DWARF 5 §7.5.6, table 7.6).
@@ -320,6 +330,18 @@ pub mod fam {
     pub const SKELETON_UNIT_ALONE: usize = 93;
     pub const SKELETON_UNIT_ALONE_RANGES: usize = 94;
     pub const SPLIT_COMPILE_UNIT: usize = 95;
+    // WP-113: call-site entries (`spec/dwarf.md` §6.19). The definitions
+    // of a subprogram with `DIFlagAllCallsDescribed`, each its family
+    // above with `DW_AT_call_all_calls` (same option bits), the call
+    // site, and a C declaration a call names.
+    pub const SUBPROGRAM_CALLS: usize = 96;
+    pub const SUBPROGRAM_ANY_CALLS: usize = 97;
+    pub const SUBPROGRAM_MEMBER_CALLS: usize = 98;
+    pub const SUBPROGRAM_SPEC_TYPED_CALLS: usize = 99;
+    pub const SUBPROGRAM_SPEC_ANY_CALLS: usize = 100;
+    pub const SUBPROGRAM_OF_ABSTRACT_CALLS: usize = 101;
+    pub const CALL_SITE: usize = 102;
+    pub const SUBPROGRAM_DECL_C: usize = 103;
 }
 
 /// Every family, in code order (`spec/dwarf.md` §6.1 has the same table).
@@ -1458,6 +1480,161 @@ pub const FAMILIES: &[Family] = &[
         "WP-062",
         &[s(at::PRODUCER, STRX), s(at::LANGUAGE, DATA2), s(at::NAME, STRX), s(at::DWO_NAME, STRX)],
     ),
+    // WP-113 (`spec/dwarf.md` §6.19). 96 to 101: families 4, 69, 70, 35,
+    // 86 and 74 with `DW_AT_call_all_calls` after the frame base and the
+    // object pointer, where `constructCallSiteEntryDIEs` adds it (the
+    // name and the rest come later, from `finishSubprogramDefinitions`).
+    // The option bits are the originals'.
+    fam(
+        "subprogram (definition, calls)",
+        tag::SUBPROGRAM,
+        Optional,
+        32,
+        "WP-113",
+        &[
+            s(at::LOW_PC, ADDRX),
+            s(at::HIGH_PC, DATA4),
+            s(at::FRAME_BASE, EXPRLOC),
+            s(at::CALL_ALL_CALLS, FLAG_PRESENT),
+            o(0, at::LINKAGE_NAME, STRX),
+            s(at::NAME, STRX),
+            o(1, at::DECL_FILE, UDATA),
+            o(1, at::DECL_LINE, UDATA),
+            o(2, at::TYPE, REF4),
+            o(3, at::EXTERNAL, FLAG_PRESENT),
+        ],
+    ),
+    fam(
+        "subprogram (definition, any, calls)",
+        tag::SUBPROGRAM,
+        Optional,
+        512,
+        "WP-113",
+        &[
+            s(at::LOW_PC, ADDRX),
+            s(at::HIGH_PC, DATA4),
+            s(at::FRAME_BASE, EXPRLOC),
+            s(at::CALL_ALL_CALLS, FLAG_PRESENT),
+            o(0, at::LINKAGE_NAME, STRX),
+            o(1, at::NAME, STRX),
+            o(2, at::DECL_FILE, UDATA),
+            o(2, at::DECL_LINE, UDATA),
+            o(3, at::PROTOTYPED, FLAG_PRESENT),
+            o(4, at::TYPE, REF4),
+            o(5, at::ARTIFICIAL, FLAG_PRESENT),
+            o(6, at::EXTERNAL, FLAG_PRESENT),
+            o(7, at::NORETURN, FLAG_PRESENT),
+        ],
+    ),
+    fam(
+        "subprogram (member definition, calls)",
+        tag::SUBPROGRAM,
+        Optional,
+        32,
+        "WP-113",
+        &[
+            s(at::LOW_PC, ADDRX),
+            s(at::HIGH_PC, DATA4),
+            s(at::FRAME_BASE, EXPRLOC),
+            o(0, at::OBJECT_POINTER, REF4),
+            s(at::CALL_ALL_CALLS, FLAG_PRESENT),
+            o(1, at::DECL_FILE, UDATA),
+            o(2, at::DECL_LINE, UDATA),
+            o(3, at::LINKAGE_NAME, STRX),
+            s(at::SPECIFICATION, REF4),
+        ],
+    ),
+    fam(
+        "subprogram (specification, typed, calls)",
+        tag::SUBPROGRAM,
+        Optional,
+        16,
+        "WP-113",
+        &[
+            s(at::LOW_PC, ADDRX),
+            s(at::HIGH_PC, DATA4),
+            s(at::FRAME_BASE, EXPRLOC),
+            o(0, at::OBJECT_POINTER, REF4),
+            s(at::CALL_ALL_CALLS, FLAG_PRESENT),
+            s(at::TYPE, REF4),
+            o(1, at::DECL_LINE, UDATA),
+            o(2, at::LINKAGE_NAME, STRX),
+            s(at::SPECIFICATION, REF4),
+        ],
+    ),
+    fam(
+        "subprogram (specification, any, calls)",
+        tag::SUBPROGRAM,
+        Optional,
+        64,
+        "WP-113",
+        &[
+            s(at::LOW_PC, ADDRX),
+            s(at::HIGH_PC, DATA4),
+            s(at::FRAME_BASE, EXPRLOC),
+            o(0, at::OBJECT_POINTER, REF4),
+            s(at::CALL_ALL_CALLS, FLAG_PRESENT),
+            o(1, at::TYPE, REF4),
+            o(2, at::DECL_FILE, UDATA),
+            o(3, at::DECL_LINE, UDATA),
+            o(4, at::LINKAGE_NAME, STRX),
+            s(at::SPECIFICATION, REF4),
+        ],
+    ),
+    fam(
+        "subprogram (of abstract, calls)",
+        tag::SUBPROGRAM,
+        Optional,
+        4,
+        "WP-113",
+        &[
+            s(at::LOW_PC, ADDRX),
+            s(at::HIGH_PC, DATA4),
+            s(at::FRAME_BASE, EXPRLOC),
+            o(0, at::OBJECT_POINTER, REF4),
+            s(at::CALL_ALL_CALLS, FLAG_PRESENT),
+            s(at::ABSTRACT_ORIGIN, REF4),
+        ],
+    ),
+    // 102: a call site (`constructCallSiteEntryDIE`): the callee's DIE
+    // (bit 0) or the register an indirect call's target was in (bit 1,
+    // `DW_AT_call_target_clobbered`, `llc` 22's form), then a tail
+    // call's flag and branch address (bit 2) or the return address (bit
+    // 3).
+    fam(
+        "call_site",
+        tag::CALL_SITE,
+        No,
+        16,
+        "WP-113",
+        &[
+            o(0, at::CALL_ORIGIN, REF4),
+            o(1, at::CALL_TARGET_CLOBBERED, EXPRLOC),
+            o(2, at::CALL_TAIL_CALL, FLAG_PRESENT),
+            o(2, at::CALL_PC, ADDRX),
+            o(3, at::CALL_RETURN_PC, ADDRX),
+        ],
+    ),
+    // 103: a C function's declaration that a call site names (family 3
+    // with `DW_AT_prototyped`, same option bits, and `DW_AT_noreturn`).
+    fam(
+        "subprogram (declaration, C)",
+        tag::SUBPROGRAM,
+        Optional,
+        64,
+        "WP-113",
+        &[
+            o(0, at::LINKAGE_NAME, STRX),
+            s(at::NAME, STRX),
+            o(1, at::DECL_FILE, UDATA),
+            o(1, at::DECL_LINE, UDATA),
+            s(at::PROTOTYPED, FLAG_PRESENT),
+            o(2, at::TYPE, REF4),
+            s(at::DECLARATION, FLAG_PRESENT),
+            o(3, at::EXTERNAL, FLAG_PRESENT),
+            o(4, at::NORETURN, FLAG_PRESENT),
+        ],
+    ),
 ];
 
 /// The slots of the general static-member families (54, 55), in `llc`'s
@@ -1627,7 +1804,9 @@ mod tests {
         assert_eq!(BASES[fam::LABEL_ANY], 10655);
         // WP-062 appended families 91 to 95.
         assert_eq!(BASES[fam::SKELETON_UNIT], 10719);
-        assert_eq!(CODE_END, 10731);
+        // WP-113 appended families 96 to 103.
+        assert_eq!(BASES[fam::SUBPROGRAM_CALLS], 10731);
+        assert_eq!(CODE_END, 11471);
         for (index, name) in [
             (fam::CONST_TYPE, "const_type"),
             (fam::TYPEDEF, "typedef"),

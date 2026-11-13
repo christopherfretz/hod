@@ -69,7 +69,7 @@ pub struct FnState {
 }
 
 /// DWARF numbers: `x<n>` is `n`, `sp` is 31, `v<n>` is `64 + n`.
-fn dwarf(reg: PReg) -> u16 {
+pub(crate) fn dwarf(reg: PReg) -> u16 {
     if reg::is_fpr(reg) { 64 + u16::from(reg::number(reg)) } else { u16::from(reg.index()) }
 }
 
@@ -449,6 +449,7 @@ impl Target for A64 {
 
     fn emit_call(&self, cx: &mut FnCx<'_, Self>, call: &CallEmit) -> CgResult<()> {
         frame::emit_call(cx, call.target);
+        cx.call_returns_here(call.target, dwarf); // WP-113: `spec/dwarf.md` §6.19
         Ok(())
     }
 

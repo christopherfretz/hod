@@ -529,7 +529,9 @@ impl Target for X64 {
     }
 
     fn emit_call(&self, cx: &mut FnCx<'_, Self>, call: &CallEmit) -> CgResult<()> {
-        frame::emit_call(cx, call.target, call.variadic, call.vector_regs_used)
+        frame::emit_call(cx, call.target, call.variadic, call.vector_regs_used)?;
+        cx.call_returns_here(call.target, reg::dwarf); // WP-113: `spec/dwarf.md` §6.19
+        Ok(())
     }
 
     fn dynamic_slot(

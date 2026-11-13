@@ -70,6 +70,7 @@ pub(super) struct DebugLines<'m> {
     rows: Vec<Row>,
     scopes: Vec<ScopeRow>,
     locals: Vec<LocalRow>,
+    calls: Vec<hod_dwarf::CallSiteInput>,
     /// How the DIEs are written (`Options::split_dwarf`).
     pub(super) split: hod_dwarf::SplitDwarf,
     /// The unit and the section symbol of the last function given a code
@@ -79,7 +80,7 @@ pub(super) struct DebugLines<'m> {
 
 /// Where a function was placed, and its frame.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Placed {
+pub(super) struct Placed<'c> {
     /// Its section.
     pub(super) section: SectionId,
     /// Its offset there.
@@ -91,6 +92,8 @@ pub(super) struct Placed {
     /// A coroutine's entry stubs (WP-108): where they start and end, and
     /// where each one's frame is built.
     pub(super) stubs: Option<([u32; 3], [u32; 2])>,
+    /// Its described calls (WP-113).
+    pub(super) calls: &'c [crate::debug_calls::DebugCallRow],
 }
 
 fn dwarf_err(error: hod_dwarf::Error) -> CgError {
@@ -161,6 +164,7 @@ impl<'m> DebugLines<'m> {
             rows: Vec::new(),
             scopes: Vec::new(),
             locals: Vec::new(),
+            calls: Vec::new(),
             split: hod_dwarf::SplitDwarf::Off,
             prev_span: None,
         })))
@@ -230,9 +234,9 @@ impl<'m> DebugLines<'m> {
         sym: SymId,
         lines: &[LineRow],
         vars: &[VarRow],
-        placed: Placed,
+        placed: Placed<'_>,
     ) -> CgResult<()> {
-        let Placed { section, offset, size, frame, stubs } = placed;
+        let Placed { section, offset, size, frame, stubs, calls } = placed;
         let subprogram = match module.symbol(sym).kind() {
             SymbolKind::Function { subprogram, .. } => subprogram,
             _ => None,
@@ -272,12 +276,14 @@ impl<'m> DebugLines<'m> {
         // WP-108: a coroutine's subprogram ends where its stubs start
         // (`spec/dwarf.md` §6.16 R1); its unit's range covers them.
         let die_code = CodeSpan { size: stubs.map_or(code.size, |(e, _)| u64::from(e[0])), ..code };
+        crate::debug_calls::call_inputs(module, sp, calls, stubs.is_some(), &mut self.calls)?; // WP-113
         let input = FunctionInput {
             subprogram: sp,
             code: die_code,
             frame_base: frame.frame_base,
             scopes: &self.scopes,
             vars: &self.locals,
+            calls: &self.calls,
         };
         self.units[unit].plan.add_function(&input).map_err(dwarf_err)?;
         if lines.is_empty() {

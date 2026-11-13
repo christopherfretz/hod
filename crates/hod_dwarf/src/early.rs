@@ -101,6 +101,7 @@ pub fn check_functions(module: &Module, bodies: &[Body]) -> Result<(), (usize, &
             continue;
         }
         check_subprogram(&sp).map_err(|name| (i, name))?;
+        crate::call_sites::check(module.props.dwarf_version, &sp).map_err(|name| (i, name))?; // WP-113: §6.19
         seen.push((sp_id.raw(), i));
         check_records(debug, body).map_err(|name| (i, name))?;
         check_imports(debug, sp_id, &sp).map_err(|name| (i, name))?;
@@ -125,7 +126,6 @@ fn check_subprogram(sp: &DiSubprogram<'_>) -> Result<(), &'static str> {
     if !sp.sp_flags.contains(SpFlags::DEFINITION) {
         return Err("debug:subprogram-not-definition");
     }
-    crate::call_sites::check(sp)?; // WP-098: §6.14
     if !sp.thrown_types.is_empty()
         || sp.sp_flags.0 & !DEF_SP_FLAGS != 0
         || (sp.declaration.is_none() && sp.flags.0 & !DEF_FLAGS != 0)

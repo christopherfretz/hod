@@ -46,6 +46,7 @@ mod coro;
 mod coro_body;
 mod coro_debug;
 mod cx;
+mod debug_calls;
 mod driver;
 pub mod emit;
 pub mod error;
@@ -72,6 +73,7 @@ pub use coro_body::{
     BEGIN_SHARED_BLOCK, CORO_TARGET, CoroLayout, CoroSlots, OUTSIDE_COROUTINE, OVERALIGNED_STACK,
 };
 pub use cx::{FnCx, Scratch, TailExit};
+pub use debug_calls::{DebugCallRow, DebugCallee};
 pub use driver::{MAX_FUNCTION_SIZE, compile_function};
 pub use emit::{COPY_SUFFIX, Emitted, ModuleEmitter, PlacedFunc, emit_module};
 pub use error::{CgError, CgResult, LIMIT_FRAME_SIZE, LIMIT_FUNCTION_SIZE};

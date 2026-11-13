@@ -4353,6 +4353,17 @@ Recorded only when the module has debug information.
   `-O0`, and none is described yet, `spec/dwarf.md` open question 9),
   `debug:dbg-assign`, `debug:declare-address` (a `#dbg_declare` of a
   constant, a symbol, or a value that never got a home).
+- `debug_calls` (`DebugCallRow`, WP-113, `spec/dwarf.md` §6.19): in a
+  function whose subprogram has `DIFlagAllCallsDescribed`, one row per
+  call instruction an IR `call` or `invoke` became, in lowering order:
+  the callee (a module function, an indirect call's DWARF register, or
+  `Refused(name)`), whether it is a `musttail` call, and the offset after
+  the call instruction (for a `musttail` call, of the tail exit's
+  branch). The engine arms the row before `Target::emit_call`; the
+  target completes it with `FnCx::call_returns_here` right after the
+  call instruction and `FnCx::tail_branch_here` right before a tail
+  exit's branch. A row left incomplete is an internal error. Calls the
+  code generator makes on its own have none.
 
 ### 9.6 Block addresses
 

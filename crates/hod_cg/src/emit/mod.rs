@@ -738,8 +738,16 @@ impl<'m> ModuleEmitter<'m> {
             let lines = &chunk.lines[func.lines.start as usize..func.lines.end as usize];
             let vars = &chunk.vars[func.vars.start as usize..func.vars.end as usize];
             let stubs = func.coro_entries.zip(func.coro_ready);
-            let placed =
-                lines::Placed { section, offset, size: len as u32, frame: func.frame, stubs };
+            let calls =
+                &chunk.debug_calls[func.debug_calls.start as usize..func.debug_calls.end as usize];
+            let placed = lines::Placed {
+                section,
+                offset,
+                size: len as u32,
+                frame: func.frame,
+                stubs,
+                calls,
+            };
             debug.add_function(self.module, &mut self.obj, func.sym, lines, vars, placed)?;
         }
         let record = self.merge_rows(chunk, func, offset);
@@ -853,6 +861,7 @@ impl<'m> ModuleEmitter<'m> {
             vars: copy(&mut rows.vars, &chunk.vars, &func.vars),
             islands: copy(&mut rows.islands, &chunk.islands, &func.islands),
             block_offsets: copy(&mut rows.block_offsets, &chunk.block_offsets, &func.block_offsets),
+            debug_calls: 0..0, // WP-113: read when the function is added
             coro_entries: func.coro_entries,
             coro_ready: func.coro_ready,
         }

@@ -783,6 +783,14 @@ exclusive `low_pc` forms), and pin the bytes of one entry.
 | 93 | `skeleton_unit` (no split unit): `stmt_list`, `str_offsets_base`, `comp_dir`, `producer`, `language`, `name`, `low_pc`, `high_pc` (0), `addr_base` (1) | 4 | 10724 | WP-062 |
 | 94 | `skeleton_unit` (no split unit, ranges): 93's fixed attributes, `low_pc`, `ranges`, `addr_base`, `rnglists_base` | 1 | 10728 | WP-062 |
 | 95 | `compile_unit` (split, `.debug_info.dwo`): `producer`, `language`, `name`, `dwo_name`, children optional | 2 | 10729 | WP-062 |
+| 96 | `subprogram` (definition, calls, §6.19): family 4 with `call_all_calls` after `frame_base` | 32 | 10731 | WP-113 |
+| 97 | `subprogram` (any, calls): family 69 with `call_all_calls` | 512 | 10763 | WP-113 |
+| 98 | `subprogram` (member definition, calls): family 70 with `call_all_calls` | 32 | 11275 | WP-113 |
+| 99 | `subprogram` (specification, typed, calls): family 35 with `call_all_calls` after `object_pointer` | 16 | 11307 | WP-113 |
+| 100 | `subprogram` (specification, any, calls): family 86 with `call_all_calls` after `object_pointer` | 64 | 11323 | WP-113 |
+| 101 | `subprogram` (of an abstract instance, calls): family 74 with `call_all_calls` | 4 | 11387 | WP-113 |
+| 102 | `call_site`: `call_origin` (0), `call_target_clobbered` (1), `call_tail_call` and `call_pc` (2), `call_return_pc` (3) | 16 | 11391 | WP-113 |
+| 103 | `subprogram` (declaration, C): `linkage_name` (0), `name`, decl (1), `prototyped`, `type` (2), `declaration`, `external` (3), `noreturn` (4), children optional | 64 | 11407 | WP-113 |
 
 Families 2 to 45 that WP-058 owns are used for the common shape of each
 kind (they keep the codes the reserved shapes promised); the "any"
@@ -798,7 +806,7 @@ WP-057 uses its reserved families 0 (`formal_parameter`), 1 (local
 `low_pc`/`high_pc` or `ranges` as `DW_FORM_sec_offset`) and 39 (`label`),
 and appends 69 to 71 for the other shapes.
 
-`CODE_END` is 10731 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085, 10631 after WP-059, 10647 after WP-087, 10655 after WP-094, 10719 after WP-098). Since the core families come last, their codes take
+`CODE_END` is 11471 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085, 10631 after WP-059, 10647 after WP-087, 10655 after WP-094, 10719 after WP-098, 10731 after WP-062). Since the core families come last, their codes take
 two ULEB bytes where `llc`'s take one (the cost is in §7.2; open question
 7).
 
@@ -944,7 +952,7 @@ reports a `debug:*` name as itself and §6.5's unnamed shapes as
 |---|---|
 | `debug:subprogram-not-definition` | a function whose `DISubprogram` is not a definition of this unit |
 | `debug:subprogram-attribute` | flags beyond prototyped, artificial, noreturn, local-to-unit, optimized; thrown types |
-| `debug:call-sites` | `DIFlagAllCallsDescribed`: call-site entries need the code's return addresses (WP-098, §6.14) |
+| `debug:call-sites`, `debug:call-sites-line-tables`, `debug:call-site-*` | what of `DIFlagAllCallsDescribed` hod does not write: a unit that is not DWARF 5, a line-tables-only unit with inlined code, and the callees and calls §6.19 lists (call-site entries are written since WP-113) |
 | `debug:subprogram-scope` | a definition scoped in something that is not a namespace or the unit |
 | `debug:subprogram-twice` | two functions with one `DISubprogram` |
 | `debug:out-of-line-definition` | a definition with a `declaration:` not scoped in a class (WP-059) |
@@ -1120,6 +1128,11 @@ is the whole list of permitted differences:
     under an empty `DW_TAG_subprogram` of its own, after the abstract
     instance (`llc` 22, and hod, under the abstract instance). `llc`
     19's tree of `statics.cpp` is not compared.
+- **call-site entries** (WP-113, §6.19): `DW_AT_call_return_pc`,
+  `DW_AT_call_pc` and `DW_AT_call_target_clobbered`'s register are
+  masked (each address is checked against the disassembly instead);
+  `llc` 19's `DW_AT_call_target` is compared as `llc` 22's
+  `DW_AT_call_target_clobbered`;
 - **what code generation changes in the tree** (WP-094, §6.13;
   `crates/hod_a64/tests/dies_decline.rs` holds each to exactly this
   shape, for clang 19, clang 22 and kiln++):
@@ -1701,9 +1714,11 @@ children, nested as they are inlined. Each inlined function has an
 abstract instance of only `name` and `DW_AT_inline`; a function that is
 also out of line has `DW_AT_abstract_origin` in place of the name. No
 types, parameters, variables or blocks. A function with
-`DIFlagAllCallsDescribed` (`-O1 -gmlt`) stays refused (as
-`debug:call-sites` since WP-098, §6.14): its call-site entries need the
-generated code's return addresses. What no producer writes in such a unit stays
+`DIFlagAllCallsDescribed` (`-O1 -gmlt`) was refused (as
+`debug:call-sites` from WP-098, §6.14); since WP-113 a unit without
+inlined code is written (`llc` writes no function DIE there either), and
+one with inlined code is refused as `debug:call-sites-line-tables`
+(§6.19). What no producer writes in such a unit stays
 `debug:line-tables-inlined`: a function with inlined code whose
 subprogram has a declaration, template parameters, retained nodes or a
 subroutine type with elements.
@@ -1725,7 +1740,7 @@ writer's (`tests/early.rs`):
 |---|---|
 | `debug:subprogram-not-definition` | a function whose subprogram is not a definition |
 | `debug:subprogram-attribute` | thrown types, `spFlags` or (without a declaration) flags hod does not write |
-| `debug:call-sites` | `DIFlagAllCallsDescribed` (WP-098, §6.14) |
+| `debug:call-sites-line-tables` | `DIFlagAllCallsDescribed` with inlined code (WP-113, §6.19) |
 | `debug:variable-without-type`, `debug:variable-alignment` | a variable record's variable (§6.4, §6.12) |
 | `debug:fragment`, `debug:expression` | a variable record's expression |
 | `debug:label-attribute` | no longer refused (WP-098, §6.14) |
@@ -1836,10 +1851,11 @@ parameter twice: the second declaration was the `phi`'s.
   every definition of such a unit `DIFlagAllCallsDescribed`, and for
   that flag `llc` writes `DW_AT_call_all_calls` and one `DW_TAG_call_site`
   per call (`call_origin`, `call_return_pc`), which needs the code's
-  call return addresses. hod refuses it as **`debug:call-sites`**
+  call return addresses. hod refused it as **`debug:call-sites`**
   (`hod_dwarf::DEBUG_CALL_SITES`, before code generation as well),
   narrowed from `debug:subprogram-attribute`, whether the definition has
-  a declaration or not. Before WP-098 a member definition (one with a
+  a declaration or not; WP-113 writes the entries (§6.19), and the name
+  is left for a unit that is not DWARF 5. Before WP-098 a member definition (one with a
   declaration) with the flag was written without its call sites. The
   corpus's optimized modules also have `#dbg_value`
   (`debug:dbg-value`).
@@ -2200,6 +2216,99 @@ Evidence: `xtask/tests/debug_x64.rs`, `tests/debug/x64_places.c`,
 Evidence: `crates/hod_a64/tests/dies_followups.rs`,
 `crates/hod_a64/tests/dies_label.rs`, `xtask/tests/debug_post_index.rs`,
 `spec/landed/dwarf/WP-111.md`.
+
+### 6.19 Call-site entries (implemented, WP-113)
+
+A definition whose subprogram has `DIFlagAllCallsDescribed` (clang sets
+it on every definition when optimizing: `-O1` and above, with
+`-Xclang -disable-llvm-passes` too; kiln does not set it) describes its
+calls, as `llc` 19 and 22 write them at `-O0`
+(`DwarfDebug::constructCallSiteEntryDIEs`, DWARF 5 forms):
+
+- **The flag.** `DW_AT_call_all_calls` (`flag_present`) on the
+  subprogram, right after `DW_AT_frame_base` (and `DW_AT_object_pointer`
+  when it has one), before the name: families 96 to 101 are families 4,
+  69, 70, 35, 86 and 74 with that slot, same option bits
+  (`call_sites::family`). An abstract instance has no flag; the
+  concrete DIE of an inlined function that is also out of line has it.
+- **One `DW_TAG_call_site` per call instruction** an IR `call` or
+  `invoke` became (family 102), the subprogram's last children: after
+  its parameters, variables, blocks, inlined subroutines and
+  `unspecified_parameters`, before its template parameters. A call
+  inside a block or an inlined subroutine is still a child of the
+  subprogram. They are in the order the code generator lowered the
+  calls (the IR's), which is not address order: a `musttail` call's
+  branch is at its tail exit after the body (`spec/codegen.md` §5.4),
+  and its entry keeps the call's place.
+  - a direct call: `DW_AT_call_origin` (`ref4`), then
+    `DW_AT_call_return_pc` (`addrx`): the address right after the call
+    instruction (`bl`, `call`);
+  - an indirect call: `DW_AT_call_target_clobbered`, `DW_OP_reg<n>` of
+    the register the call goes through (`llc` 19 writes the attribute
+    as `DW_AT_call_target`), then `DW_AT_call_return_pc`;
+  - a `musttail` call: the origin or the target, `DW_AT_call_tail_call`,
+    and `DW_AT_call_pc` (`addrx`), the address of the branch (`b`, `br`,
+    `jmp`); no return address.
+  No call site has parameters (`DW_TAG_call_site_parameter`): `llc` writes
+  them only from `-O1` code (`-emit-call-site-info`), never at `-O0`.
+- **Which calls have one** (`llc`'s rule: a call whose callee is a
+  `GlobalAddress` with a `DISubprogram`, or a register): a call of a
+  function of the module, defined or declared, that has a subprogram;
+  every indirect call. None: a function without a subprogram, an alias,
+  what the code generator calls on its own (the runtime, `memcpy`,
+  `__tls_get_addr`, a libcall an intrinsic becomes: external symbols to
+  `llc`), and an intrinsic with no call.
+- **The origin** is `getOrCreateSubprogramDIE` of the callee:
+  - a definition of this unit: its concrete DIE (never its abstract
+    instance, which only an inlined scope finds). A callee defined later
+    in the module gets its DIE at the call, in its scope (after a member
+    function's declaration DIE), and its attributes when its own
+    function is added (`call_sites::call_origin`, `Inline::mark_early`).
+    A callee whose subprogram is a definition with no code in this unit,
+    or in another unit, is refused (`debug:call-site-origin`);
+  - a declaration: its declaration DIE, made in its scope at the first
+    call (a namespace is made then, a class member is the class's
+    declaration DIE). A C declaration has `DW_AT_prototyped` (family
+    103: family 3's slots, the flag, and `DW_AT_noreturn`).
+
+The code generator reports each call (`hod_cg::debug_calls`): the
+engine arms a row before it asks the target for the call, and each
+target says where the call returns (its `emit_call`, right after the
+call instruction) and where a tail exit branches (right before the
+branch). A row a target did not complete is an internal error: an
+address is never guessed. `hod_dwarf` checks every address is inside the
+function and that the returning calls are in code order
+(`debug:call-site-pc` otherwise).
+
+A tail exit of a function that describes its calls also gets a line
+row at its start with the `musttail` call's location, as `llc` gives the
+exit sequence the call's location: lldb shows a tail call's artificial
+frame at the line of the row at its `DW_AT_call_pc` (line 0 before).
+
+**Refused**, by name:
+
+| name | what |
+|---|---|
+| `debug:call-sites` | the flag in a unit that is not DWARF 5 (`llc` writes DWARF 4's `DW_TAG_GNU_call_site` and `DW_AT_GNU_*` forms there) |
+| `debug:call-sites-line-tables` | the flag in a `LineTablesOnly` unit with inlined code: `llc` writes the flag and call sites under the minimal subprogram, and full declaration DIEs at the unit's level (without inlined code it writes no function DIE, and neither does hod, §6.10) |
+| `debug:call-site-origin` | a callee whose DIE `llc` would make in another unit, or a definition without code here |
+| `debug:call-site-intrinsic` | a call of an address the lowering computed (a coroutine's resume or destroy, WP-105), and a coroutine body (`llc` describes `CoroSplit`'s clones) |
+| `debug:call-site-pc` | an address outside the function, or returning calls out of order (a bug of the code generator, declined) |
+
+**Permitted differences** (§6.7): the addresses and the target register
+are masked in the tree comparison (hod's code is not `llc`'s; hod calls
+through `x16` on AArch64 and `r11` on x86-64, `llc` through any
+register); a `tail` call `llc` turns into a sibling call (only when
+optimizing) is an ordinary call in hod's code, so its entry is an
+ordinary one. hod writes no sibling call at `-O0`, and neither does
+`llc`.
+
+Evidence: `crates/hod/tests/dwarf_call_sites.rs` (the trees of
+`tests/data/call_sites/` by clang 19, clang 22 and kiln++ against `llc`
+19 and 22 on both targets, every address of both writers checked
+against the disassembly), `crates/hod_dwarf/src/call_sites.rs`'s unit
+tests, `tests/debug/call_sites.c` (tail calls, AArch64) and
+`call_sites_direct.c` (both targets), `spec/landed/dwarf/WP-113.md`.
 
 ## 7. Speed and memory
 

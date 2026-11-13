@@ -29,6 +29,9 @@ pub fn build(b: &mut Batch) {
     emit!(b, mfence(), "mfence");
     emit!(b, lfence(), "lfence");
     emit!(b, sfence(), "sfence");
+    for m in some_mems() {
+        emit!(b, clflush_m(m.mem()), "clflush {}", m.sized(Size::B));
+    }
     emit!(b, pause(), "pause");
 }
 

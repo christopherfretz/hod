@@ -784,11 +784,15 @@ fn the_census_counts_occurrences_and_symbols() {
 fn inline_assembly_rows_of_wp_103() {
     let a64 = Support::shipped(Arch::Aarch64);
     let x64 = Support::shipped(Arch::X86_64);
-    for row in ["call:inline-asm", "inst:callbr", "module:asm"] {
+    for row in ["call:inline-asm", "module:asm"] {
         assert_eq!(a64.supports(row), Some(true), "{row}");
         assert_eq!(x64.supports(row), Some(false), "{row}");
         assert!(x64.clone().with(row).is_some(), "{row}: x86-64 may switch it on");
     }
+    // WP-181: `callbr` of an empty template on x86-64 (a template of
+    // instructions stays `call:inline-asm`).
+    assert_eq!(a64.supports("inst:callbr"), Some(true));
+    assert_eq!(x64.supports("inst:callbr"), Some(true));
 }
 
 // WP-128: the x86-64 intrinsics no other group takes, the overflow

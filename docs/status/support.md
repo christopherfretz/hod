@@ -30,10 +30,10 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `comdat` | 5 | 2 | 0 | 3 | 2 | 0 | 3 |
 | `init` | 10 | 6 | 3 | 1 | 6 | 3 | 1 |
 | `function` | 6 | 6 | 0 | 0 | 6 | 0 | 0 |
-| `cc` | 26 | 6 | 7 | 13 | 3 | 13 | 10 |
+| `cc` | 26 | 6 | 7 | 13 | 5 | 11 | 10 |
 | `attr` | 62 | 29 | 30 | 3 | 27 | 27 | 8 |
 | `type` | 15 | 12 | 0 | 3 | 13 | 0 | 2 |
-| `inst` | 67 | 60 | 0 | 7 | 59 | 1 | 7 |
+| `inst` | 67 | 60 | 0 | 7 | 60 | 0 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `atomicrmw` | 21 | 21 | 0 | 0 | 21 | 0 | 0 |
 | `call` | 4 | 4 | 0 | 0 | 3 | 1 | 0 |
@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 522 | 347 | 7 | 168 | 296 | 10 | 216 |
-| total | 847 | 554 | 68 | 225 | 498 | 71 | 278 |
+| `intrinsic` | 530 | 347 | 7 | 176 | 304 | 10 | 216 |
+| total | 855 | 554 | 68 | 233 | 509 | 68 | 278 |
 
 ## `module`
 
@@ -207,8 +207,8 @@ Calling conventions, of a body's function and of a call.
 | `cc:coldcc` | not-implemented | not-implemented | unplanned |
 | `cc:ghccc` | not-implemented | not-implemented | unplanned |
 | `cc:anyregcc` | not-implemented | not-implemented | unplanned |
-| `cc:preserve_mostcc` | supported | not-implemented | assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095) |
-| `cc:preserve_allcc` | supported | not-implemented | assigned as `ccc`; the callee also saves `x9`..`x15` and `q8`..`q31` whole |
+| `cc:preserve_mostcc` | supported | supported | assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095); x86-64: `rax`, `rcx`, `rdx`, `rsi`, `rdi`, `r8`..`r10` but its result's (WP-181) |
+| `cc:preserve_allcc` | supported | supported | assigned as `ccc`; the callee also saves `x9`..`x15` and `q8`..`q31` whole; x86-64: `preserve_mostcc`'s and `xmm0`..`xmm15` but its result's (WP-181) |
 | `cc:swiftcc` | supported | not-implemented | assigned as `ccc` (`spec/abi-a64.md` §1.2) |
 | `cc:cxx_fast_tlscc` | supported | not-implemented | assigned as `ccc` (`spec/abi-a64.md` §1.2) |
 | `cc:tailcc` | not-implemented | not-implemented | unplanned |
@@ -387,7 +387,7 @@ Instructions.
 | `inst:indirectbr` | supported | supported |  |
 | `inst:ret` | supported | supported |  |
 | `inst:unreachable` | supported | supported |  |
-| `inst:callbr` | supported | not-implemented | inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3) |
+| `inst:callbr` | supported | supported | inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3; x86-64: an empty template, WP-181, §5.6.23) |
 | `inst:invoke` | supported | supported |  |
 | `inst:resume` | supported | supported |  |
 | `inst:catchswitch` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
@@ -910,6 +910,12 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.x86.sse.min.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
 | `intrinsic:llvm.x86.sse.movmsk.ps` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
 | `intrinsic:llvm.x86.sse.sfence` | rejected | supported (int, ptr, vector) | an x86 property. SSE |
+| `intrinsic:llvm.x86.sse.ldmxcsr` | rejected | supported (int, ptr, vector) | an x86 property. SSE; WP-181 |
+| `intrinsic:llvm.x86.sse.rcp.ps` | rejected | supported (int, ptr, vector) | an x86 property. SSE; WP-181 |
+| `intrinsic:llvm.x86.sse.rcp.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE; WP-181 |
+| `intrinsic:llvm.x86.sse.rsqrt.ps` | rejected | supported (int, ptr, vector) | an x86 property. SSE; WP-181 |
+| `intrinsic:llvm.x86.sse.rsqrt.ss` | rejected | supported (int, ptr, vector) | an x86 property. SSE; WP-181 |
+| `intrinsic:llvm.x86.sse.stmxcsr` | rejected | supported (int, ptr, vector) | an x86 property. SSE; WP-181 |
 | `intrinsic:llvm.x86.sse2.cmp.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
 | `intrinsic:llvm.x86.sse2.comieq.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
 | `intrinsic:llvm.x86.sse2.comige.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
@@ -935,6 +941,8 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.x86.sse2.cvttsd2si64` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
 | `intrinsic:llvm.x86.sse2.lfence` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
 | `intrinsic:llvm.x86.sse2.mfence` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
+| `intrinsic:llvm.x86.sse2.clflush` | rejected | supported (int, ptr, vector) | an x86 property. SSE2; WP-181 |
+| `intrinsic:llvm.x86.sse2.maskmov.dqu` | rejected | supported (int, ptr, vector) | an x86 property. SSE2; WP-181 |
 | `intrinsic:llvm.x86.sse2.max.pd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
 | `intrinsic:llvm.x86.sse2.max.sd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |
 | `intrinsic:llvm.x86.sse2.min.pd` | rejected | supported (int, ptr, vector) | an x86 property. SSE2 |

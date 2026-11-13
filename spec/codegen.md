@@ -272,7 +272,13 @@ out like a home slot of its class (§2.2). The protocol:
 
 The driver does these stores before it lowers the terminator (for an
 `invoke`, the call sequence does them at their two places), so a
-terminator's lowering does not.
+terminator's lowering does not. The exception is a `callbr` whose result
+a successor's `phi` takes: the driver skips that successor and the
+`callbr`'s lowering stores its `phi`s on each edge to it, after the
+result has its location (WP-181). A successor so skipped that the
+`callbr` lists more than once is refused as
+`call:callbr-result-repeated-edge` (each listing is its own code path on
+AArch64, and a successor's stores are written once per terminator).
 
 No edge is ever split and no parallel copy is ever sequenced: the values
 read (locations) and the slots written (incoming slots) are disjoint, so
@@ -281,8 +287,8 @@ the "swap" and "lost copy" problems cannot occur, a conditional branch,
 that is not taken is dead (every edge into a block rewrites the slots
 before the block reads them).
 
-`invoke` is the one supported terminator whose result can be a
-successor's incoming value. Its unwind destination's incoming slots are
+`invoke` and `callbr` are the supported terminators whose result can be
+a successor's incoming value. Its unwind destination's incoming slots are
 written **before** the call (the result is not available on that edge); its normal destination's
 incoming slots are written **after** the call, once the result has its
 location.
@@ -3538,14 +3544,9 @@ Evidence: `spec/landed/codegen/WP-171.md`.
    relocation) holds unchanged; the block rows it reads are moved by
    `shrink.rs` (§5.6.15), so the number is the one of the final code.
    Only the classification row was `x64:todo`.
-3. **Kept refused**: `inst:callbr` (an empty-template `callbr` needs
-   `barrier.rs` to take `!i` label constraints and branch to the normal
-   destination, the indirect ones being unreachable from an empty
-   template; any other template is `call:inline-asm`, x86-64 has no
-   assembler), `cc:preserve_mostcc` / `cc:preserve_allcc` (`abi:cc`: a
-   callee must save `rcx`, `rdx`, `rsi`, `rdi`, `r8`..`r10`, and for
-   `preserve_allcc` the `xmm` registers, in the prologue with their CFI,
-   `frame.rs`). Sizes and reasons: `spec/landed/codegen/WP-174.md`.
+3. **Kept refused** then: `inst:callbr`, `cc:preserve_mostcc` /
+   `cc:preserve_allcc`; built since WP-181 (§5.6.23). Sizes and reasons:
+   `spec/landed/codegen/WP-174.md`.
 
 #### 5.6.22 x86 target intrinsics, SSE to SSSE3 (WP-173)
 
@@ -3580,7 +3581,15 @@ result types are not LLVM's declaration is `x64:x86-intrinsic-signature`.
    written as 255 (each count at or above the lane width shifts out
    every bit, or fills with the sign for `psra`), a variable count is
    moved to `xmm15` by `movd` and the vector form used; `sfence`,
-   `lfence`, `mfence`. `pause` stays §5.6.19 (5).
+   `lfence`, `mfence`. `pause` stays §5.6.19 (5). WP-181:
+
+   | intrinsic | instruction |
+   |---|---|
+   | `sse.ldmxcsr(ptr)`, `sse.stmxcsr(ptr)` | `ldmxcsr [p]`, `stmxcsr [p]` |
+   | `sse2.clflush(ptr)` | `clflush [p]` |
+   | `sse.rcp.ps`, `sse.rsqrt.ps` | `rcpps`, `rsqrtps` in place (the hardware's approximation, the same instruction as `llc`'s) |
+   | `sse.rcp.ss`, `sse.rsqrt.ss` | `rcpss`, `rsqrtss` in place: lanes 1 to 3 of the operand kept |
+   | `sse2.maskmov.dqu(data, mask, ptr)` | `mov rax, rdi` · `mov rdi, p` · `maskmovdqu data, mask` · `mov rdi, rax` (the address is `rdi`; `rax` never holds a value) |
 2. **SSE3**, only in a function whose `target-features` enable `sse3`
    (the last item that implies it, `+sse3`, `+ssse3`, `+sse4.1`,
    `+sse4.2`, `+avx` or an AVX feature, or disables it, `-sse`, `-sse2`,
@@ -3604,9 +3613,8 @@ result types are not LLVM's declaration is `x64:x86-intrinsic-signature`.
 4. **Refused by name.** An SSE3 or SSSE3 intrinsic in a function without
    its feature is `intrinsic:` and its LLVM name, as `llc` cannot select
    it. Every `llvm.x86.*` name hod does not list is `intrinsic:` and its
-   name from `classify` (`spec/ir.md`): `sse.ldmxcsr`/`stmxcsr`, `sse.rcp.*`,
-   `sse.rsqrt.*`, `sse2.clflush`, `sse2.maskmov.dqu`, `sse3.monitor`/
-   `mwait` (no encoding in `hod_mc_x64`), the `x86_mmx` forms clang 19
+   name from `classify` (`spec/ir.md`): `sse3.monitor`/`mwait` (no
+   encoding in `hod_mc_x64`), the `x86_mmx` forms clang 19
    writes (`mmx.*`, `sse.cvtpi2ps`, ..., the 64-bit `ssse3.*`), and all of
    `sse41.*` and `sse42.*` but `sse42.crc32.*` (§5.6.29). AArch64 refuses
    every `llvm.x86.*` name.
@@ -3792,6 +3800,58 @@ to the result's slot.
 
 Evidence: `spec/landed/codegen/WP-173.md` for the rules this reuses,
 `spec/landed/codegen/WP-190.md` for these.
+
+#### 5.6.23 `callbr` of an empty template, `preserve_mostcc` and `preserve_allcc` (WP-181)
+
+1. **`callbr` of an empty template** (`barrier.rs`, `inst:callbr` `ON`
+   on x86-64). The constraint string has one `!i` per indirect
+   destination, after the operands; a label takes no call argument and
+   any other count of labels (or a label on `call` or `invoke`) is
+   `x64:inline-asm-constraint`. The template never jumps, so the call is
+   §5.6.8's barrier (inputs evaluated, a tied output is its input)
+   followed by the fallthrough edge: its `phi`s and a branch unless the
+   fallthrough is the next block. Nothing is written for an indirect
+   edge: the indirect destinations are blocks like any other, emitted
+   because they are successors, entered only from elsewhere (a branch,
+   an `indirectbr` through their `blockaddress`), as `llc` builds them.
+   A template that assembles to something stays `x64:inline-asm` (no
+   assembler). A destination's `phi` that takes the result is written
+   on the fallthrough edge after the result (§4.5; the refusal
+   `x64:callbr-result-phi` of the first landing is retired: WP-181).
+   AArch64 builds `callbr` through its assembler (§5.5.3) and is not
+   changed.
+2. **`preserve_mostcc` and `preserve_allcc`** (`frame.rs`, `abi.rs`;
+   `cc:preserve_mostcc` and `cc:preserve_allcc` `ON` on x86-64).
+   `assign` gives both `ccc`'s assignment (`spec/abi-x64.md` §1.2).
+   *Callee:* after `mov rbp, rsp` the prologue pushes `rax`, `rcx`,
+   `rdx`, `rsi`, `rdi`, `r8`, `r9`, `r10` (`frame::PRESERVED`) but the
+   registers a part of the result is returned in, with their rows at
+   `-24`, `-32`, ...; the save set (§5.6.15) follows them, its rows
+   below; a `preserve_allcc` function then stores `xmm0`..`xmm15` but
+   the result's (`movups`) in a 16-aligned local area after `sub rsp`,
+   their rows (`DW_CFA_offset` of DWARF 17..32) after the last store.
+   Every exit loads the `xmm` registers back, then `lea rsp, [rbp -
+   8n]` (`n` counting every push), pops the save set, the extra
+   registers and `rbp`. This is LLVM 19's and 22's set, measured on
+   their `.cfi_offset` rows: `r11` is not kept; `rax` is kept in a
+   `void` or `sret` function (the caller's `rax` comes back over the
+   `sret` address), not for `i64`/`i32`/`i1`, `rax` and `rdx` not for
+   `i128`, `rax`, `rdx`, `rcx` not for three `i64`s, `xmm0` (`xmm1`)
+   not for a `float`, `double`, `<4 x float>` (two `double`s); an
+   `x86_fp80` result keeps them all. hod pushes every register of the
+   set, `llc` those its allocator touched: the caller cannot tell.
+   *Caller:* a call is a `ccc` call. The callee keeps a superset of
+   `ccc`'s callee-saved registers, so the code around it, which assumes
+   only `ccc`'s, is correct; it does not use what the callee keeps
+   beyond them.
+   *Refused:* a result returned in memory is
+   `x64:preserve-cc-return-memory` (LLVM 19 and 22 keep sets off the
+   rule there: `xmm0`/`xmm1` unsaved for four `double`s, the address
+   in `rax` popped over); a `musttail` exit from either is
+   `x64:preserve-cc-tail-call` (the teardown restores the registers the
+   tail call passes arguments in); a coroutine body is
+   `x64:coro-preserve-cc`. `swifttailcc`, `preserve_nonecc` and the
+   other conventions stay `abi:cc`.
 
 ## 6. Control flow
 

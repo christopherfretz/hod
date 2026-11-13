@@ -108,6 +108,25 @@ pub fn compile_function<T: Target>(
 
 /// Whether an instruction whose result has no use can be left out
 /// (§4.7): it has no effect besides its result.
+/// A `callbr` whose result a successor's `phi` takes, on an edge the
+/// successor list names more than once (an indirect destination that is
+/// the fallthrough, or one label twice): each edge is its own code path,
+/// and a lowering writes a successor's `phi`s once per terminator
+/// (§4.5, WP-181).
+const CALLBR_RESULT_REPEATED_EDGE: &str = "call:callbr-result-repeated-edge";
+
+/// The result of `inst` if it is a `callbr` with one.
+fn callbr_result(inst: Inst<'_>) -> Option<Value> {
+    (inst.opcode() == Opcode::CallBr && inst.ty() != TypeId::VOID).then(|| inst.result())
+}
+
+/// Whether a `phi` of `succ` takes `value` on the edge from `from`.
+fn takes(body: &Body, succ: BlockId, from: BlockId, value: Value) -> bool {
+    body.block(succ)
+        .phis()
+        .any(|phi| matches!(phi.kind(), InstKind::Phi(list) if list.value_for(from) == Some(value)))
+}
+
 fn has_no_effect(inst: Inst<'_>) -> bool {
     let op = inst.opcode();
     if op.is_binary() || op.is_cast() {
@@ -631,8 +650,19 @@ impl<'a, T: Target> FnCx<'a, T> {
             } else if !dead {
                 if inst.is_terminator() && inst.opcode() != Opcode::Invoke {
                     // §4.5: for all successors, whichever is taken. An
-                    // `invoke`'s are written by the call sequence.
+                    // `invoke`'s are written by the call sequence; a
+                    // `callbr`'s that take its result, by its lowering
+                    // once the result exists (WP-181).
+                    let own = callbr_result(inst);
                     for succ in inst.successors() {
+                        if let Some(result) = own
+                            && takes(self.body, succ, self.block, result)
+                        {
+                            if inst.successors().filter(|&s| s == succ).count() > 1 {
+                                return Err(CgError::unsupported(CALLBR_RESULT_REPEATED_EDGE));
+                            }
+                            continue;
+                        }
                         self.phi_stores(succ)?;
                     }
                 }

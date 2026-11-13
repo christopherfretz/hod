@@ -79,6 +79,12 @@ const ROWS: &[Row] = &[
     ("llvm.x86.sse.min.ss", F4, &[F4, F4], 0),
     ("llvm.x86.sse.movmsk.ps", "i32", &[F4], 0),
     ("llvm.x86.sse.sfence", "void", &[], 0),
+    ("llvm.x86.sse.ldmxcsr", "void", &["ptr"], 0),
+    ("llvm.x86.sse.stmxcsr", "void", &["ptr"], 0),
+    ("llvm.x86.sse.rcp.ps", F4, &[F4], 0),
+    ("llvm.x86.sse.rcp.ss", F4, &[F4], 0),
+    ("llvm.x86.sse.rsqrt.ps", F4, &[F4], 0),
+    ("llvm.x86.sse.rsqrt.ss", F4, &[F4], 0),
     ("llvm.x86.sse2.cmp.sd", D2, &[D2, D2, "i8"], 0),
     ("llvm.x86.sse2.comieq.sd", "i32", &[D2, D2], 0),
     ("llvm.x86.sse2.comige.sd", "i32", &[D2, D2], 0),
@@ -104,6 +110,8 @@ const ROWS: &[Row] = &[
     ("llvm.x86.sse2.cvttsd2si64", "i64", &[D2], 0),
     ("llvm.x86.sse2.lfence", "void", &[], 0),
     ("llvm.x86.sse2.mfence", "void", &[], 0),
+    ("llvm.x86.sse2.clflush", "void", &["ptr"], 0),
+    ("llvm.x86.sse2.maskmov.dqu", "void", &[B16, B16, "ptr"], 0),
     ("llvm.x86.sse2.max.pd", D2, &[D2, D2], 0),
     ("llvm.x86.sse2.max.sd", D2, &[D2, D2], 0),
     ("llvm.x86.sse2.min.pd", D2, &[D2, D2], 0),
@@ -159,6 +167,22 @@ const ROWS: &[Row] = &[
 /// The features of the functions that call an SSE3 or SSSE3 intrinsic.
 const FEATURES: &str = "+cx8,+fxsr,+mmx,+sse,+sse2,+sse3,+ssse3,+x87";
 
+/// WP-181: `%m0` the caller's MXCSR, `%mx` it with the flags cleared
+/// and the rounding mode the low two bits of `%c`.
+const MXCSR_SET: &str = "  %m0 = alloca i32, align 4\n  %mx = alloca i32, align 4\n  \
+     call void @llvm.x86.sse.stmxcsr(ptr %m0)\n  %v0 = load i32, ptr %m0, align 4\n  \
+     %keep = and i32 %v0, -24640\n  %cm = shl i32 %c, 13\n  %mode = and i32 %cm, 24576\n  \
+     %w = or i32 %keep, %mode\n  store i32 %w, ptr %mx, align 4\n";
+
+/// WP-181: after `ldmxcsr(%mx)`: `cvtss2si` and an `addss` in its
+/// rounding mode, the MXCSR they leave, then `%m0` back.
+const MXCSR_READ: &str = "  %r1 = call i32 @llvm.x86.sse.cvtss2si(<4 x float> %a)\n  \
+     store i32 %r1, ptr %out, align 16\n  %o4 = getelementptr i8, ptr %out, i64 4\n  \
+     %a0 = extractelement <4 x float> %a, i32 0\n  %b0 = extractelement <4 x float> %b, i32 0\n  \
+     %s = fadd float %a0, %b0\n  %o8 = getelementptr i8, ptr %out, i64 8\n  \
+     store float %s, ptr %o8, align 8\n  call void @llvm.x86.sse.stmxcsr(ptr %o4)\n  \
+     call void @llvm.x86.sse.ldmxcsr(ptr %m0)\n";
+
 /// Shift counts: at, around and far above every lane width.
 const COUNTS: [u32; 16] = [0, 1, 7, 8, 15, 16, 17, 31, 32, 33, 63, 64, 65, 255, 256, u32::MAX];
 
@@ -187,45 +211,81 @@ fn functions() -> (String, Vec<Func>) {
         let declared = format!("declare {ret} @{name}({})\n", params.join(", "));
         decls.push_str(&declared);
         let attrs = if level > 0 { " #0" } else { "" };
-        let a = params.first().copied().unwrap_or("i32");
+        let mxcsr = name.ends_with("mxcsr");
+        let a = if mxcsr { F4 } else { params.first().copied().unwrap_or("i32") };
         let b = params.get(1).copied().filter(|p| p.starts_with('<')).unwrap_or(a);
         let mut variants: Vec<(String, Vec<String>)> = Vec::new();
+        // What a variant does after the call (WP-181: MXCSR put back).
+        let mut post = String::new();
         let vector_count =
             (name.contains(".psll.") || name.contains(".psrl.")) || name.contains(".psra.");
-        match params {
-            [] => variants.push((String::new(), Vec::new())),
-            ["ptr"] => variants
-                .push(("  %q = getelementptr i8, ptr %in, i64 1\n".into(), vec!["ptr %q".into()])),
-            [x] => variants.push((String::new(), vec![format!("{x} %a")])),
-            [x, "i32"] => {
-                variants.push((String::new(), vec![format!("{x} %a"), "i32 %c".into()]));
-                for k in CONST_COUNTS {
-                    variants.push((String::new(), vec![format!("{x} %a"), format!("i32 {k}")]));
-                }
+        match (name, params) {
+            // WP-181: MXCSR from a valid image only (a reserved bit
+            // faults): the original with its flags cleared and the
+            // rounding mode from the low two bits of the count; then a
+            // conversion and an addition in that mode, the flags they
+            // raise, and the original back.
+            ("llvm.x86.sse.ldmxcsr", _) => {
+                variants.push((MXCSR_SET.into(), vec!["ptr %mx".into()]));
+                post.push_str(MXCSR_READ);
             }
-            [x, y, "i8"] => {
-                for p in PREDICATES {
-                    variants.push((
-                        String::new(),
-                        vec![format!("{x} %a"), format!("{y} %b"), format!("i8 {p}")],
-                    ));
-                }
+            ("llvm.x86.sse.stmxcsr", _) => {
+                let prelude = format!(
+                    "{MXCSR_SET}  call void @llvm.x86.sse.ldmxcsr(ptr %mx)\n  \
+                     %a0 = extractelement <4 x float> %a, i32 0\n  \
+                     %b0 = extractelement <4 x float> %b, i32 0\n  %q = fdiv float %a0, %b0\n  \
+                     %o8 = getelementptr i8, ptr %out, i64 8\n  store float %q, ptr %o8, align 8\n"
+                );
+                variants.push((prelude, vec!["ptr %out".into()]));
+                post.push_str("  call void @llvm.x86.sse.ldmxcsr(ptr %m0)\n");
             }
-            [x, y] if vector_count => {
-                let count = format!(
-                    "  %c64 = zext i32 %c to i64\n  %bq = bitcast {y} %b to <2 x i64>\n  \
+            (_, [x, y, "ptr"]) => {
+                variants.push((
+                    String::new(),
+                    vec![format!("{x} %a"), format!("{y} %b"), "ptr %out".into()],
+                ));
+                variants.push((
+                    String::new(),
+                    vec![format!("{x} %a"), format!("{y} %a"), "ptr %out".into()],
+                ));
+            }
+            (_, params) => match params {
+                [] => variants.push((String::new(), Vec::new())),
+                ["ptr"] => variants.push((
+                    "  %q = getelementptr i8, ptr %in, i64 1\n".into(),
+                    vec!["ptr %q".into()],
+                )),
+                [x] => variants.push((String::new(), vec![format!("{x} %a")])),
+                [x, "i32"] => {
+                    variants.push((String::new(), vec![format!("{x} %a"), "i32 %c".into()]));
+                    for k in CONST_COUNTS {
+                        variants.push((String::new(), vec![format!("{x} %a"), format!("i32 {k}")]));
+                    }
+                }
+                [x, y, "i8"] => {
+                    for p in PREDICATES {
+                        variants.push((
+                            String::new(),
+                            vec![format!("{x} %a"), format!("{y} %b"), format!("i8 {p}")],
+                        ));
+                    }
+                }
+                [x, y] if vector_count => {
+                    let count = format!(
+                        "  %c64 = zext i32 %c to i64\n  %bq = bitcast {y} %b to <2 x i64>\n  \
                      %bq2 = insertelement <2 x i64> %bq, i64 %c64, i32 0\n  \
                      %bc = bitcast <2 x i64> %bq2 to {y}\n"
-                );
-                variants.push((count, vec![format!("{x} %a"), format!("{y} %bc")]));
-            }
-            [x, y] => {
-                variants.push((String::new(), vec![format!("{x} %a"), format!("{y} %b")]));
-                if x == y {
-                    variants.push((String::new(), vec![format!("{x} %a"), format!("{y} %a")]));
+                    );
+                    variants.push((count, vec![format!("{x} %a"), format!("{y} %bc")]));
                 }
-            }
-            _ => panic!("{name}: no generator for {params:?}"),
+                [x, y] => {
+                    variants.push((String::new(), vec![format!("{x} %a"), format!("{y} %b")]));
+                    if x == y {
+                        variants.push((String::new(), vec![format!("{x} %a"), format!("{y} %a")]));
+                    }
+                }
+                _ => panic!("{name}: no generator for {params:?}"),
+            },
         }
         for (prelude, args) in variants {
             let k = funcs.len();
@@ -240,7 +300,7 @@ fn functions() -> (String, Vec<Func>) {
                 "define void @t{k}(ptr %in, ptr %out){attrs} {{\n  \
                  %a = load {a}, ptr %in, align 16\n  %pb = getelementptr i8, ptr %in, i64 16\n  \
                  %b = load {b}, ptr %pb, align 16\n  %pc = getelementptr i8, ptr %in, i64 32\n  \
-                 %c = load i32, ptr %pc, align 4\n{prelude}{result}{store}  ret void\n}}\n"
+                 %c = load i32, ptr %pc, align 4\n{prelude}{result}{store}{post}  ret void\n}}\n"
             )
             .unwrap();
             funcs.push(Func { name: format!("{name}({})", args.join(", ")), a, b });
@@ -608,16 +668,19 @@ fn rows_and_refusals_by_name() {
         assert_eq!(x64.supports(&row), Some(true), "{row}");
         assert_eq!(a64.supports(&row), Some(false), "{row}");
     }
-    let unknown = "declare void @llvm.x86.sse.ldmxcsr(ptr)\ndefine void @f(ptr %p) {\n  \
-                   call void @llvm.x86.sse.ldmxcsr(ptr %p)\n  ret void\n}\n";
+    // WP-181: `monitor`/`mwait` stay unknown (no encoding).
+    let unknown = "declare void @llvm.x86.sse3.monitor(ptr, i32, i32)\ndefine void @f(ptr %p) {\n  \
+                   call void @llvm.x86.sse3.monitor(ptr %p, i32 0, i32 0)\n  ret void\n}\n";
     let (m, bodies) = parse(&format!("{}{unknown}", ll_header()));
     // No row on either target: `classify` names it whatever the target.
-    assert_eq!(x64.supports("intrinsic:llvm.x86.sse.ldmxcsr"), None);
-    assert_eq!(a64.supports("intrinsic:llvm.x86.sse.ldmxcsr"), None);
+    for name in ["intrinsic:llvm.x86.sse3.monitor", "intrinsic:llvm.x86.sse3.mwait"] {
+        assert_eq!(x64.supports(name), None, "{name}");
+        assert_eq!(a64.supports(name), None, "{name}");
+    }
     {
         let classifier = hod_ir::Classifier::new(x64);
         let refused = classifier.body(&m, &bodies[0]).expect_err("an unknown intrinsic");
-        assert_eq!(format!("{}", refused.construct), "intrinsic:llvm.x86.sse.ldmxcsr");
+        assert_eq!(format!("{}", refused.construct), "intrinsic:llvm.x86.sse3.monitor");
     }
     // A signature LLVM does not declare the intrinsic with.
     let wrong = "declare i32 @llvm.x86.sse2.pmovmskb.128(<8 x i8>)\ndefine i32 @f(<8 x i8> %v) {\n  \

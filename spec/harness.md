@@ -3549,7 +3549,11 @@ does not meet is an ERROR; an `xfail` on a passing test is an XPASS).
 target-neutral half (`hod_ll`, `hod_bc`, `verify`, the printer, classify,
 `hod_interp`) is for x86-64 modules. It takes any `.ll` files, by
 convention an x86-64 recompilation of the corpus (below); the LLVM major
-of a file is the `llvmNN` component of its path, 22 without one.
+of a file is the `llvmNN` component of its path, 22 without one. A file
+with `;@ module:` directives (a corpus entry of several translation
+units) is that many modules, each checked alone and named
+`<file>#<N>` (from 1); `--interp` does not run them, each being a part of
+a program (WP-165).
 
 Each module goes through these stages; the first that fails is its stage
 outcome, `ready` when none does:
@@ -3597,5 +3601,5 @@ producer (kiln++ `--target=` with the major's `--llvm-dir`, clang-19/22
 for gcc-torture).
 
 Tests: `x64census::tests::{arguments, majors_and_reasons,
-a_ready_module}` (a module the front half takes whole is refused by the
+a_ready_module, several_modules_are_units}` (a module the front half takes whole is refused by the
 code generator alone and runs to its exit status).

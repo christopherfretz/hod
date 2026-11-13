@@ -12,7 +12,7 @@
 ; On x86-64 llc and hod ignore every one of these names. Landing pads
 ; are in branch_protection_unwind.ll: llc 19 puts no `bti j` on them, so
 ; its program would fault here.
-;@ covers: spec/codegen.md §5.6.26 branch protection, spec/ir.md §5.7 attributes (branch-target-enforcement, sign-return-address, sign-return-address-key, guarded-control-stack)
+;@ covers: spec/ir.md §5.7 attributes (branch-target-enforcement, sign-return-address, sign-return-address-key, guarded-control-stack), spec/codegen.md §5.6.26 branch protection
 ;@ tier: quick
 ;@ link: c++
 ;@ stdout: through a pointer 43

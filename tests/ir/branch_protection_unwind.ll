@@ -9,7 +9,7 @@
 ; under BTI its own program would fault; spec/codegen.md §5.6.26). On
 ; AArch64 the object's .note.gnu.property has the PAC bit only. On x86-64
 ; llc and hod ignore every one of these names.
-;@ covers: spec/codegen.md §5.6.26 branch protection, spec/eh.md §4.5 negate_ra_state and the B key
+;@ covers: spec/ir.md §5.7 attributes (sign-return-address, sign-return-address-key), spec/codegen.md §5.6.26 branch protection, spec/eh.md §4.5 negate_ra_state and the B key
 ;@ tier: quick
 ;@ link: c++
 ;@ stdout: caught 1234 through 4 signed frames, 1 cleanup

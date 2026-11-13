@@ -501,6 +501,18 @@ pub(crate) fn parse_u64(digits: &[u8]) -> Option<u64> {
     if digits.is_empty() {
         return None;
     }
+    // Nineteen digits always fit: no overflow test per digit.
+    if digits.len() <= 19 {
+        let mut value = 0u64;
+        for &d in digits {
+            let digit = d.wrapping_sub(b'0');
+            if digit > 9 {
+                return None;
+            }
+            value = value * 10 + u64::from(digit);
+        }
+        return Some(value);
+    }
     let mut value = 0u64;
     for &d in digits {
         if !d.is_ascii_digit() {
@@ -509,4 +521,43 @@ pub(crate) fn parse_u64(digits: &[u8]) -> Option<u64> {
         value = value.checked_mul(10)?.checked_add(u64::from(d - b'0'))?;
     }
     Some(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_u32, parse_u64};
+
+    /// §2.4: decimal numbers, at every length around the one up to which
+    /// no digit is tested for overflow, against `str::parse`.
+    #[test]
+    fn decimal_numbers() {
+        for text in [
+            "0",
+            "7",
+            "4294967295",
+            "4294967296",
+            "999999999999999999",
+            "9999999999999999999",
+            "18446744073709551615",
+            "18446744073709551616",
+            "99999999999999999999",
+            "00000000000000000000001",
+            "",
+            "1a",
+            "-1",
+            "12345678901234567x",
+        ] {
+            let expected = if text.bytes().all(|b| b.is_ascii_digit()) {
+                text.parse::<u64>().ok()
+            } else {
+                None
+            };
+            assert_eq!(parse_u64(text.as_bytes()), expected, "{text:?}");
+            assert_eq!(
+                parse_u32(text.as_bytes()),
+                expected.and_then(|v| u32::try_from(v).ok()),
+                "{text:?}"
+            );
+        }
+    }
 }

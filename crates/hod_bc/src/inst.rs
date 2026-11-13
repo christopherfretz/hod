@@ -15,9 +15,10 @@ use hod_ir::kit::{
 };
 
 use crate::attrs::{self, FUNCTION_INDEX};
-use crate::body::{CalleeInfo, Fx, Local, Ops};
+use crate::body::{CalleeInfo, Fx, Local, Ops, ParamGroup};
 use crate::codes::func;
 use crate::error::{BcErrorKind, BcResult, fail, ir};
+use crate::raw::Rec;
 
 /// What an instruction leaves: its result type and value (`void` and no
 /// value for most), and whether it ended the block.
@@ -1147,9 +1148,9 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
             return self.invalid("an attribute list that is not defined");
         };
         let mut fn_groups = Vec::new();
-        let mut scratch = Vec::new();
         for &group in groups {
-            let (index, rec) = self.group(group)?;
+            let slot = self.group_slot(group)?;
+            let (_, index, rec) = self.bits.groups[slot];
             if index == FUNCTION_INDEX {
                 fn_groups.push((group, rec));
                 continue;
@@ -1157,22 +1158,21 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
             if fn_only {
                 continue;
             }
-            attrs::decode(&rec.ops(&self.bits.raw.pool)[2..], rec.pos, &mut scratch)?;
-            let types = &self.bits.types;
-            let mut notes = 0u8;
-            let mut type_of = |id: u64| {
-                notes |= types.notes_of(id);
-                types.get(id, rec.pos)
+            // A group is built once per module (its record and the type
+            // table do not change); its notes are made again at each use.
+            let built = if let Some(Some(memo)) = self.s.param_groups.get(slot)
+                && memo.id == group
+            {
+                let (built, notes) = (memo.attrs, memo.notes);
+                let names = memo.names.clone();
+                self.note_bits(notes);
+                for name in names {
+                    self.note(name);
+                }
+                built
+            } else {
+                self.param_group(slot, group, rec)?
             };
-            let mut pending = Vec::new();
-            let built = attrs::param_attrs(&scratch, rec.pos, &mut type_of, &mut |name| {
-                pending.push(name);
-            });
-            self.note_bits(notes);
-            for name in pending {
-                self.note(name);
-            }
-            let built = built?;
             if index == 0 {
                 ret_attrs = built;
             } else {
@@ -1195,6 +1195,34 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
             }
         }
         Ok((flags & CALL_SITE_FLAGS, ret_attrs, any))
+    }
+
+    /// Builds call-site group `group` (at `slot` of the group table),
+    /// making its notes, and keeps it for the next use.
+    fn param_group(&mut self, slot: usize, group: u64, rec: Rec) -> BcResult<ParamAttrs> {
+        let mut scratch = Vec::new();
+        attrs::decode(&rec.ops(&self.bits.raw.pool)[2..], rec.pos, &mut scratch)?;
+        let types = &self.bits.types;
+        let mut notes = 0u8;
+        let mut type_of = |id: u64| {
+            notes |= types.notes_of(id);
+            types.get(id, rec.pos)
+        };
+        let mut pending = Vec::new();
+        let built = attrs::param_attrs(&scratch, rec.pos, &mut type_of, &mut |name| {
+            pending.push(name);
+        });
+        self.note_bits(notes);
+        let names = pending.clone();
+        for name in pending {
+            self.note(name);
+        }
+        let built = built?;
+        if self.s.param_groups.len() <= slot {
+            self.s.param_groups.resize(self.bits.groups.len().max(slot + 1), None);
+        }
+        self.s.param_groups[slot] = Some(ParamGroup { id: group, attrs: built, notes, names });
+        Ok(built)
     }
 
     /// The end of a call that is not emitted: an `invoke` or `callbr`

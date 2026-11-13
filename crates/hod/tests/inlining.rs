@@ -288,7 +288,7 @@ fn outcome(text: &str) -> Result<Vec<u8>, String> {
 #[test]
 fn the_decision_is_opt_s_per_call_site() {
     let ra = "declare ptr @llvm.returnaddress(i32 immarg)";
-    let callee = |attrs: &str, params: &str, body: &str| {
+    let body_of = |attrs: &str, params: &str, body: &str| {
         format!("define linkonce_odr ptr @s({params}) {attrs} {{\n{body}\n}}\n{ra}\n")
     };
     let plain = "  %p = call ptr @llvm.returnaddress(i32 0)\n  ret ptr %p";
@@ -297,42 +297,42 @@ fn the_decision_is_opt_s_per_call_site() {
     let why = inline_reason::RETURN_ADDRESS;
     let cases: Vec<(String, Option<&str>)> = vec![
         // `noinline` callee, plain call, `alwaysinline` elsewhere: kept.
-        (callee("noinline", "", plain) + &caller("call ptr @s()") + marker, None),
+        (body_of("noinline", "", plain) + &caller("call ptr @s()") + marker, None),
         // `noinline` callee, call site `alwaysinline` (group and in place).
         (
-            callee("noinline", "", plain)
+            body_of("noinline", "", plain)
                 + &caller("call ptr @s() #8")
                 + "attributes #8 = { alwaysinline }\n",
             Some(why),
         ),
-        (callee("noinline", "", plain) + &caller("call ptr @s() alwaysinline"), Some(why)),
+        (body_of("noinline", "", plain) + &caller("call ptr @s() alwaysinline"), Some(why)),
         // `alwaysinline` callee, call site `noinline` (group, in place,
         // a group that also holds other attributes): kept.
         (
-            callee("alwaysinline", "", plain)
+            body_of("alwaysinline", "", plain)
                 + &caller("call ptr @s() #8")
                 + "attributes #8 = { noinline }\n",
             None,
         ),
-        (callee("alwaysinline", "", plain) + &caller("call ptr @s() noinline"), None),
+        (body_of("alwaysinline", "", plain) + &caller("call ptr @s() noinline"), None),
         (
-            callee("alwaysinline", "", plain)
+            body_of("alwaysinline", "", plain)
                 + &caller("call ptr @s() #8")
                 + "attributes #8 = { nounwind noinline }\n",
             None,
         ),
         // Called once kept, once inlined: declined.
         (
-            callee("alwaysinline", "", plain)
+            body_of("alwaysinline", "", plain)
                 + &caller("call ptr @s() noinline")
                 + "define ptr @second() {\n  %p = call ptr @s()\n  ret ptr %p\n}\n",
             Some(why),
         ),
         // Bodies LLVM does not inline: variadic, recursive, `indirectbr`,
         // `llvm.localescape`.
-        (callee("alwaysinline", "...", plain) + &caller("call ptr (...) @s()"), None),
+        (body_of("alwaysinline", "...", plain) + &caller("call ptr (...) @s()"), None),
         (
-            callee(
+            body_of(
                 "alwaysinline",
                 "",
                 "  %p = call ptr @llvm.returnaddress(i32 0)\n  %q = call ptr @s()\n  ret ptr %p",
@@ -340,7 +340,7 @@ fn the_decision_is_opt_s_per_call_site() {
             None,
         ),
         (
-            callee(
+            body_of(
                 "alwaysinline",
                 "",
                 "  %p = call ptr @llvm.returnaddress(i32 0)\n  indirectbr ptr blockaddress(@s, %l), [label %l]\nl:\n  ret ptr %p",
@@ -348,7 +348,7 @@ fn the_decision_is_opt_s_per_call_site() {
             None,
         ),
         (
-            callee(
+            body_of(
                 "alwaysinline",
                 "",
                 "  %a = alloca i32\n  call void (...) @llvm.localescape(ptr %a)\n  %p = call ptr @llvm.returnaddress(i32 0)\n  ret ptr %p",
@@ -357,7 +357,7 @@ fn the_decision_is_opt_s_per_call_site() {
             None,
         ),
         // A plain call of an `alwaysinline` callee: declined.
-        (callee("alwaysinline", "", plain) + &caller("call ptr @s()"), Some(why)),
+        (body_of("alwaysinline", "", plain) + &caller("call ptr @s()"), Some(why)),
     ];
     for (text, want) in &cases {
         match (outcome(text), want) {

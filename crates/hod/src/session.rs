@@ -73,6 +73,8 @@ pub struct Session {
     idle_since: Instant,
     /// What `-O0`'s always-inliner would have done (WP-021).
     inlining: inlining::Inlining,
+    /// What the module level says about coroutines (WP-109).
+    coro: coro::CoroModule,
 }
 
 /// A producer's mistake (`spec/cli.md` "Session").
@@ -194,6 +196,7 @@ impl Session {
             delivered: Vec::new(),
             idle_since: Instant::now(),
             inlining: inlining::Inlining::default(),
+            coro: coro::CoroModule::default(),
         })
     }
 
@@ -384,6 +387,13 @@ impl Session {
             let error = from_rejection(&self.module, rejection, false);
             self.note(error);
         }
+        // WP-109: a coroutine module the target cannot build is declined
+        // before any body is read.
+        let (coro, refusal) = coro::module_refusal(&self.module, support_of(&self.settings, arch));
+        self.coro = coro;
+        if let Some(name) = refusal {
+            self.note(Unsupported::module(Construct::Named(name.into())).into());
+        }
         self.report.phase("classify");
         self.verdict()
     }
@@ -505,8 +515,9 @@ impl Session {
                             "function '{function}': {error}"
                         )));
                     }
-                    // WP-106: a coroutine the plan refuses, by its name.
-                    Ok(()) => match coro::refusal(&self.module, &body) {
+                    // WP-106, WP-109: a coroutine the plan or code
+                    // generation would refuse, by its name, now.
+                    Ok(()) => match coro::refusal(&self.module, &body, self.coro) {
                         Some(name) => {
                             let function = symbol_name(&self.module, sym);
                             let construct = Construct::Named(name.into());

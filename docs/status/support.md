@@ -33,7 +33,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `cc` | 26 | 6 | 7 | 13 | 3 | 13 | 10 |
 | `attr` | 57 | 24 | 30 | 3 | 22 | 27 | 8 |
 | `type` | 15 | 12 | 0 | 3 | 13 | 0 | 2 |
-| `inst` | 67 | 60 | 0 | 7 | 59 | 1 | 7 |
+| `inst` | 67 | 60 | 0 | 7 | 60 | 0 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `atomicrmw` | 21 | 21 | 0 | 0 | 21 | 0 | 0 |
 | `call` | 4 | 4 | 0 | 0 | 3 | 1 | 0 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 455 | 347 | 7 | 101 | 229 | 10 | 216 |
-| total | 775 | 549 | 68 | 158 | 425 | 72 | 278 |
+| total | 775 | 549 | 68 | 158 | 426 | 71 | 278 |
 
 ## `module`
 
@@ -382,7 +382,7 @@ Instructions.
 | `inst:indirectbr` | supported | supported |  |
 | `inst:ret` | supported | supported |  |
 | `inst:unreachable` | supported | supported |  |
-| `inst:callbr` | supported | not-implemented | inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3) |
+| `inst:callbr` | supported | supported | inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3; x86-64: an empty template, WP-181, §5.6.23) |
 | `inst:invoke` | supported | supported |  |
 | `inst:resume` | supported | supported |  |
 | `inst:catchswitch` | rejected | rejected | Windows funclet exception handling; not an ELF construct |

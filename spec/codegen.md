@@ -3613,6 +3613,29 @@ result types are not LLVM's declaration is `x64:x86-intrinsic-signature`.
 
 Evidence: `spec/landed/codegen/WP-173.md`.
 
+#### 5.6.23 `callbr` of an empty template, `preserve_mostcc` and `preserve_allcc` (WP-181)
+
+1. **`callbr` of an empty template** (`barrier.rs`, `inst:callbr` `ON`
+   on x86-64). The constraint string has one `!i` per indirect
+   destination, after the operands; a label takes no call argument and
+   any other count of labels (or a label on `call` or `invoke`) is
+   `x64:inline-asm-constraint`. The template never jumps, so the call is
+   §5.6.8's barrier (inputs evaluated, a tied output is its input)
+   followed by the fallthrough edge: its `phi`s and a branch unless the
+   fallthrough is the next block. Nothing is written for an indirect
+   edge: the indirect destinations are blocks like any other, emitted
+   because they are successors, entered only from elsewhere (a branch,
+   an `indirectbr` through their `blockaddress`), as `llc` builds them.
+   A template that assembles to something stays `x64:inline-asm` (no
+   assembler). The shared walk writes a terminator's `phi`s before its
+   lowering, except an `invoke`'s (§4.5): for a `callbr` whose result a
+   destination's `phi` takes, that copy would precede the result, so it
+   is refused as `x64:callbr-result-phi` (a result whose only use is
+   such a `phi` is a register value, and the walk stops earlier with an
+   internal error; the fix is the walk's, see the landed record).
+   AArch64 builds `callbr` through its assembler (§5.5.3) and is not
+   changed.
+
 ## 6. Control flow
 
 ### 6.1 Reachability

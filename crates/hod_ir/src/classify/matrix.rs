@@ -1632,8 +1632,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
     row(
         "inst:callbr",
         ON,
-        todo(X64),
-        "inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3)",
+        ON,
+        "inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3; x86-64: an empty template, WP-181, §5.6.23)",
     ),
     row("inst:invoke", ON, ON, ""),
     row("inst:resume", ON, ON, ""),

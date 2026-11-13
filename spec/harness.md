@@ -54,6 +54,62 @@ links no dylib), and a second failure of the step, fails the gate.
 `xtask::ci::tests::retries_only_missing_crates_once`,
 `retries_a_crate_seen_only_as_rmeta_once`.
 
+`--step <name>` (repeatable; `fmt`, `clippy`, `test`, `irdiff`,
+`roundtrip`, `debug`) runs only the named steps, in the gate's order
+whatever the order they are named in; without it every step runs. An
+unknown step or argument is a usage error (exit status 2). Test:
+`xtask::ci::tests::steps_are_selected_by_name`.
+
+## CI
+
+The hosted gate is GitHub Actions (`.github/workflows/`, ported from
+kiln's lanes). Its rules:
+
+1. **Two lanes, one per architecture.** `ci.yml` (push to `main`,
+   `pull_request`, `merge_group`) calls the reusable `ci-lane.yml` once
+   with `ubuntu-24.04-arm` (AArch64) and once with `ubuntu-24.04`
+   (x86-64). Each lane's programs of the runner's own architecture run
+   natively, the other architecture's under `qemu-<arch>` ("Toolchain for
+   tests"). The fan-in jobs `check` (AArch64) and `check-x86_64` pass
+   only when every job of their lane succeeded (a skipped or cancelled
+   lane fails them); their names are stable whatever jobs a lane has.
+2. **The reference environment.** Every job runs in
+   `buildpack-deps:trixie` (Debian 13, as the development container) set
+   up by `.github/actions/hod-ci`: clang, llvm and lld 19 and 22, binutils,
+   mold, gdb, gdb-multiarch, lldb-19, `qemu-user`, the other
+   architecture's GNU cross gcc, g++, binutils, C library and libstdc++,
+   Rust 1.95.0 and the cargo cache (one per architecture, saved by the
+   `test` job).
+3. **Tools are required.** The lane sets `HOD_REQUIRE_TOOLS=1`: a tool
+   this list lacks fails the test that needs it.
+4. **kiln++** is kiln's `cargo xtask dist` tree, built at the commit in
+   `.github/kiln-revision` by the `kiln` job and kept in the Actions cache
+   under that commit and the runner's architecture
+   (`.github/actions/kiln`); jobs that need it restore it into
+   `/opt/kiln` and get `HOD_KILN=/opt/kiln/bin/kiln++`. hod records
+   kiln's revision only there.
+5. **The steps.** The lane's jobs `lints` (`--step fmt`, `--step
+   clippy`), `test` (`--step test`; `CAP_SYS_PTRACE` for the debuggers)
+   and `irdiff` (`--step irdiff`) run `cargo xtask ci --quick` with those
+   steps, in parallel: `xtask::ci::HOSTED_STEPS`. `roundtrip`
+   (`xtask::ci::NOT_HOSTED`) does not run there: it needs the corpus,
+   build output of the development machine ("corpus"). Each of these
+   steps runs exactly once per lane. Test:
+   `xtask::ci::tests::the_hosted_lane_runs_the_quick_gates_steps`.
+6. **The sweep never gates.** `sweep.yml` runs on a push to a `sweep/**`
+   branch or by `workflow_dispatch` (inputs: kiln's commit, strict or
+   hybrid), never on `pull_request` or `merge_group`, and is not a
+   required check. On `ubuntu-24.04` it builds `hod_cli` (release) and
+   kiln++, puts hod in front of kiln with `cargo xtask shim` and
+   `scripts/libcxx-hod-kiln.sh` ("shim"), runs kiln's `cargo xtask
+   libcxx std libcxx --tag llvmorg-22.1.8 --shard K/6 --no-fail -j 4
+   --timeout 20 --mem-limit 3072` natively (strict by default), and
+   merges the six shards' results with kiln's `scripts/libcxx-results.py`
+   into the artifact `libcxx-summary`.
+
+What runs where, and the tests compiled or run for one host only, is
+`docs/VALIDATION.md` "Hosted CI".
+
 ## shim
 
 ```
@@ -987,6 +1043,13 @@ that a test for AArch64 and one for x86-64 differ in one value:
 | GNU ld | `ld.bfd` | `<prefix>-ld.bfd` |
 | system root | - | `/usr/<prefix>` |
 | runner | the program itself | `qemu-<arch> -cpu <cpu> -L /usr/<prefix>` ("Cross runs") |
+
+An LLVM tool asked for without its major (`clang++`, `llc`, `ld.lld`,
+`lldb`, `llvm-*`) is found only as `<name>-22`, `<name>-19` on `PATH` or
+in `/usr/lib/llvm-<N>/bin`, never as the plain name on `PATH`, whose
+major is unknown: a hosted runner's stock clang 18 wrote IR hod does not
+read (`hod_testutil::find_tool`, test
+`llvm_tools_are_found_only_by_supported_major`).
 
 `Target::tool(what)` finds one of them, or prints a note naming its
 Debian package (`gcc-x86-64-linux-gnu`, `g++-x86-64-linux-gnu`,

@@ -69,6 +69,7 @@ jobs:
       - uses: ./.github/actions/hod-ci
         with: { cache-key: "${{ inputs.cache-key }}", save-cache: "true" }
       - uses: ./.github/actions/kiln
+      - run: cargo test --workspace --no-fail-fast -q 2>&1 | grep -E 'panicked|FAILED|^test result|^error|^---- ' || true # TEMP(WP-145)
       - run: cargo xtask ci --quick --step test
   irdiff:
     name: irdiff

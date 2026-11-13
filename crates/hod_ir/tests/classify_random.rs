@@ -801,6 +801,28 @@ fn reason(result: Result<(), Rejection>) -> Option<(String, RejectionKind)> {
 const SEEDS: u64 = 400;
 const ARCHES: [Arch; 2] = [Arch::Aarch64, Arch::X86_64];
 
+/// What repeated classification found (`found`) less the pairs the
+/// census (`names`) cannot have: a pair `row/class` whose class's `type:`
+/// row is not supported is hidden behind that row (§8.3, §8.9). The
+/// iteration meets it once it has switched the type row on, so each pair
+/// left out must come after its `type:` row, which the census has.
+fn behind_type_rows<'f>(seed: u64, found: &'f [String], names: &[&str]) -> Vec<&'f str> {
+    let mut kept = Vec::new();
+    for (index, name) in found.iter().enumerate() {
+        match name.rsplit_once('/') {
+            Some((_, class)) if !names.contains(&name.as_str()) => {
+                let type_row = format!("type:{class}");
+                assert!(
+                    found[..index].contains(&type_row) && names.contains(&type_row.as_str()),
+                    "seed {seed}: {name} is in neither the census nor behind {type_row}"
+                );
+            }
+            _ => kept.push(name.as_str()),
+        }
+    }
+    kept
+}
+
 /// §8.1, §8.9: tame programs are never malformed. With everything
 /// implemented, whatever is refused cannot be switched on; under the
 /// shipped matrix the census lists what repeated classification finds,
@@ -847,14 +869,7 @@ fn tame_programs_are_decided_consistently() {
             }
             assert!(found.len() < 1000, "seed {seed}: no progress");
         }
-        // A pair `row/class` whose class is unsupported is hidden behind
-        // the `type:` row (§8.3): the census cannot meet it, the
-        // iteration meets it once the type row is switched on.
-        let found: Vec<&str> = found
-            .iter()
-            .map(String::as_str)
-            .filter(|name| !name.contains('/') || names.contains(name))
-            .collect();
+        let found = behind_type_rows(seed, &found, &names);
         assert_eq!(found, names[..found.len()], "seed {seed}");
         if verdict(&support, &program).is_ok() {
             assert_eq!(found.len(), names.len(), "seed {seed}");
@@ -936,4 +951,43 @@ fn wild_programs_never_panic() {
     for name in ["tls:direct-operand", "blockaddress:other-function", "addrspace:pointer"] {
         assert!(structural.contains(name), "{name} was never met: {structural:?}");
     }
+}
+
+/// WP-027, the finding of WP-033: with `function:parameters` supported
+/// for some classes but not `token`, and `type:token` not supported (the
+/// matrix of that day), seed 360 has a body with a `token` parameter. Its
+/// finding is `type:token` (§8.3); the pair `function:parameters/token`
+/// is a finding only once `type:token` is supported. The census and
+/// repeated classification follow that one rule.
+#[test]
+fn a_pair_is_found_only_behind_its_type_row() {
+    let seed = 360;
+    let arch = ARCHES[(seed % 2) as usize];
+    let program = program(seed, arch, false);
+    let then = Support::shipped(arch).clone().without("type:token").unwrap();
+    let then = then.without("function:parameters/token").unwrap();
+    assert_eq!(then.supports("function:parameters"), Some(true));
+    const PAIR: &str = "function:parameters/token";
+
+    let census = census_of(&then, &program);
+    let names: Vec<&str> = census.entries().iter().map(|e| e.construct.as_str()).collect();
+    assert!(names.contains(&"type:token") && !names.contains(&PAIR), "{names:?}");
+
+    let token_on = then.clone().with("type:token").unwrap();
+    let census = census_of(&token_on, &program);
+    let names: Vec<&str> = census.entries().iter().map(|e| e.construct.as_str()).collect();
+    assert!(names.contains(&PAIR) && !names.contains(&"type:token"), "{names:?}");
+
+    let mut support = then;
+    let mut found = Vec::new();
+    while let Err(rejection) = verdict(&support, &program) {
+        let name = rejection.construct.into_owned();
+        match support.clone().with(&name) {
+            Some(wider) => support = wider,
+            None => break,
+        }
+        found.push(name);
+    }
+    let at = |name: &str| found.iter().position(|found| found == name);
+    assert!(at("type:token").unwrap() < at(PAIR).unwrap(), "{found:?}");
 }

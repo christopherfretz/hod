@@ -1867,6 +1867,16 @@ first occurrence, where `symbols` counts the distinct symbols it was met
 at. Its first entry is the first reason. It is for coverage reports, not
 for the compile path.
 
+A census is the findings of one `Support`, so a pair `<row>/<class>` is
+in it only where §8.3 makes the pair a finding: while `type:<class>` is
+not supported, the finding at that subject is `type:<class>`, and the
+pair appears only under a `Support` with that type row switched on.
+Classifying again and again, switching on each first reason, therefore
+meets such a pair after its `type:` row, where the census of the first
+`Support` has the type row alone (WP-027: the `token` parameter of
+`classify_random`'s seed 360 under WP-033's matrix; pinned by
+`a_pair_is_found_only_behind_its_type_row`).
+
 ### 8.10 `docs/status/support.md`
 
 `support_markdown()` writes the matrix as a document: a per-group

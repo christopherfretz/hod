@@ -14,9 +14,15 @@ on:
   merge_group:
 permissions:
   contents: read
+# One run per ref at a time. A newer push cancels a pull request's or a
+# branch's run in progress, never main's: main is pushed every few
+# minutes, and a cancelled run there would leave main without a complete
+# one. On main the newer run waits (GitHub keeps one waiting run per
+# group, the newest), so every run that starts finishes (spec/harness.md
+# "CI").
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   arm:
     uses: ./.github/workflows/ci-lane.yml

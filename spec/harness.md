@@ -83,6 +83,12 @@ kiln's lanes). Its rules:
    tests"). The fan-in jobs `check` (AArch64) and `check-x86_64` pass
    only when every job of their lane succeeded (a skipped or cancelled
    lane fails them); their names are stable whatever jobs a lane has.
+   **Concurrency**: one run per ref at a time (`ci-<ref>`). A newer
+   push cancels the run in progress of a pull request or a branch, never
+   of `main`: there the newer run waits until the one in progress ends
+   (GitHub keeps one waiting run per group, the newest, so a push that
+   is followed by another before it starts gets no run of its own), and
+   every run on `main` that starts completes.
 2. **The reference environment.** Every job runs in
    `buildpack-deps:trixie` (Debian 13, as the development container) set
    up by `.github/actions/hod-ci`: clang, llvm and lld 19 and 22, binutils,

@@ -879,10 +879,25 @@ impl<'a, S: Sink> Walker<'a, S> {
             return false;
         }
         let callee = module.symbol(sym);
-        if callee.tls() != TlsModel::None || self.returns_twice(callee) {
+        if callee.tls() != TlsModel::None {
             return false;
         }
         let fn_ty = site.fn_type();
+        // One read of the callee for `returns_twice` and the declared
+        // attributes: what `returns_twice` and `declared_attrs` (through
+        // `call_declaration`) read, decided the same way.
+        let declared = match callee.kind() {
+            SymbolKind::Function { attrs, ret_attrs, param_attrs, .. } => {
+                if attrs.index() < module.fn_attrs_count()
+                    && module.fn_attrs(attrs).has(FnAttrs::RETURNS_TWICE)
+                {
+                    return false;
+                }
+                let has = !ret_attrs.is_none() || !param_attrs.is_empty();
+                (has && callee.ty() == fn_ty).then_some((ret_attrs, param_attrs))
+            }
+            _ => None,
+        };
         let fixed = fn_ty.index() < module.types.len()
             && match module.types.kind(fn_ty) {
                 TypeKind::Function { variadic, .. } => {
@@ -896,7 +911,6 @@ impl<'a, S: Sink> Walker<'a, S> {
             return false;
         }
         // The attributes the call passes with (`spec/codegen.md` §7.1).
-        let declared = declared_attrs(module, &site);
         let has_attrs = site.has_param_attrs() || declared.is_some();
         let accepts = |own: ParamAttrs, theirs: ParamAttrs| {
             merge_call_attrs(own, theirs).is_ok_and(|attrs| self.accepts_attrs(attrs))

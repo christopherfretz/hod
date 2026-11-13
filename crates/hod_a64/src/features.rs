@@ -9,7 +9,9 @@
 //! FP registers, no unaligned accesses, a register taken from the
 //! allocator or the calling convention, no data in code, a mitigation
 //! hod does not apply) is refused by name. Everything else is unknown and
-//! refused: a feature hod has not judged is not assumed harmless.
+//! refused: a feature hod has not judged is not assumed harmless. The
+//! reading of the string is `hod_cg::features` (WP-117); the table is
+//! this module's.
 //!
 //! Branch protection is not a feature: `+bti` and `+pauth` only make the
 //! instructions available. Whether a function must start with `bti` or
@@ -38,9 +40,8 @@ pub const HARDEN_SLS: &str = "attr:target-feature-harden-sls";
 pub const ERRATUM: &str = "attr:target-feature-erratum";
 /// `+v8r`: the R profile, a different memory system.
 pub const PROFILE: &str = "attr:target-feature-profile";
-/// A feature hod has not judged, or an item that is not `+name` or
-/// `-name`.
-pub const UNKNOWN: &str = "attr:target-feature-unknown";
+use hod_cg::features::FeatureTable;
+pub use hod_cg::features::{Refused, UNKNOWN};
 
 /// Every reason [`check`] gives.
 pub const REASONS: [&str; 11] = [
@@ -56,15 +57,6 @@ pub const REASONS: [&str; 11] = [
     PROFILE,
     UNKNOWN,
 ];
-
-/// A refused feature: the reason, and the item as written.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Refused<'a> {
-    /// The stable name (one of [`REASONS`]).
-    pub reason: &'static str,
-    /// The item that was refused, sign included.
-    pub feature: &'a str,
-}
 
 /// Features that only make instructions or system registers available
 /// (LLVM's `AArch64Features.td`, LLVM 19 and 22, and the architecture
@@ -228,14 +220,22 @@ const AVAILABILITY: &[&str] = &[
     "sme-tmop",
 ];
 
-/// Checks one feature string: items separated by `,`, each `+name` or
-/// `-name`; empty items are skipped (`-mattr` drops them, and LLVM's
-/// parser does).
+/// hod's AArch64 table: `fp-armv8` and `neon` required, the
+/// [`AVAILABILITY`] features, the [`contract`] ones.
+const TABLE: FeatureTable = FeatureTable {
+    required: &[("fp-armv8", SOFT_FLOAT), ("neon", NO_NEON)],
+    available: AVAILABILITY,
+    contract,
+};
+
+/// Checks one feature string against hod's AArch64 table
+/// ([`FeatureTable::check`]).
 ///
 /// # Errors
-/// The first item hod's code is not correct under, with its reason.
+/// The first item hod's code is not correct under, with its reason (one
+/// of [`REASONS`]).
 pub fn check(features: &str) -> Result<(), Refused<'_>> {
-    features.split(',').filter(|item| !item.is_empty()).try_for_each(check_one)
+    TABLE.check(features)
 }
 
 /// One item of a feature string.
@@ -243,25 +243,7 @@ pub fn check(features: &str) -> Result<(), Refused<'_>> {
 /// # Errors
 /// As [`check`].
 pub fn check_one(item: &str) -> Result<(), Refused<'_>> {
-    let refuse = |reason| Err(Refused { reason, feature: item });
-    let (on, name) = match item.split_at_checked(1) {
-        Some(("+", name)) => (true, name),
-        Some(("-", name)) => (false, name),
-        _ => return refuse(UNKNOWN),
-    };
-    match (on, name) {
-        (false, "fp-armv8") => refuse(SOFT_FLOAT),
-        (false, "neon") => refuse(NO_NEON),
-        (_, name) if AVAILABILITY.contains(&name) => Ok(()),
-        // The contract features are off by default: turning one off is
-        // what hod's code already keeps.
-        (false, name) if contract(name).is_some() => Ok(()),
-        (true, name) => match contract(name) {
-            Some(reason) => refuse(reason),
-            None => refuse(UNKNOWN),
-        },
-        (false, _) => refuse(UNKNOWN),
-    }
+    TABLE.check_one(item)
 }
 
 /// The reason of a feature that changes the contract of the code, if

@@ -17,6 +17,7 @@
 //! | `label` | §6.2, §6.3 | `Label`, `Labels`, fixups |
 //! | `call` | §4.4, §7.1 to §7.3 | the call sequence, `musttail`, `invoke`, runtime calls |
 //! | `abi` | §7.2 | `Sig`, `Part`, `Assignment`: the argument-assignment interface; the leaf walk (`Classify`, `place_leaves`) |
+//! | `features` | §7.3 | `FeatureTable`: the reading of a `target-features` string |
 //! | `memplan` | §7.3 | `mem_plan`: what a `memcpy`, `memmove` or `memset` becomes |
 //! | `switch` | §7.3 | `canonical_cases`, `search_step`: the `switch` plan |
 //! | `sym` | §7.3, §9.2 | `SymRef`, `RuntimeFn`; the routines by type and target (`fp_routine`, ...) |
@@ -41,6 +42,7 @@ mod cx;
 mod driver;
 pub mod emit;
 pub mod error;
+pub mod features;
 mod frame;
 mod label;
 mod line_rows;

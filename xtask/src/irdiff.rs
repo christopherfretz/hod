@@ -30,7 +30,7 @@ pub use directives::{Arch, Expectations, LINKER_NAMES, Tier};
 pub use engine::{Mode, Session, Test};
 pub use process::Limits;
 pub use report::{BuiltBy, Failure, Outcome, Record, Report};
-pub use tools::{Linker, Search, Toolchain};
+pub use tools::{Emulator, Linker, Search, Toolchain};
 
 /// The command's help.
 pub const USAGE: &str = "\
@@ -114,6 +114,9 @@ pub struct Config {
     pub run_limits: Limits,
     /// Where tools are looked for.
     pub search: Search,
+    /// The system root a cross target's programs run with; `None` is that
+    /// of the target's cross packages (`/usr/<prefix>`, "Cross runs").
+    pub sysroot: Option<PathBuf>,
 }
 
 impl Config {
@@ -138,6 +141,7 @@ impl Config {
             tool_limits: Limits { time: Duration::from_mins(1), memory_kib: 4 << 20 },
             run_limits: Limits { time: Duration::from_secs(10), memory_kib: 1 << 20 },
             search: Search::from_env(),
+            sysroot: None,
         }
     }
 
@@ -279,11 +283,13 @@ fn missing(config: &Config, report: &mut Report, what: String, required: bool) {
     }
 }
 
-/// Finds everything but the oracle: the hod under test, the linker driver
-/// and the linkers.
+/// Finds everything but the oracle: the hod under test, the linker driver,
+/// the linkers and, for a cross target, the emulator ("Cross runs").
 fn toolchain(
     config: &Config,
     llvm: &tools::Llvm,
+    arch: Arch,
+    host: Option<Arch>,
     report: &mut Report,
 ) -> Result<Toolchain, String> {
     let hod = match &config.hod {
@@ -291,10 +297,25 @@ fn toolchain(
         Some(hod) => return Err(format!("'{}' is not a file", hod.display())),
         None => build_workspace_hod(&config.build_dir)?,
     };
-    let driver = tools::find_driver(&config.search);
+    // Programs of another architecture are linked by its cross tools and
+    // run under its emulator; a host that is not Linux runs nothing.
+    let cross = host.is_some_and(|host| host != arch);
+    let target = tools::target_of(arch);
+    let package = |what: &str| {
+        if cross {
+            format!(" (Debian package {})", target.cross_package(what))
+        } else {
+            String::new()
+        }
+    };
+    let driver = tools::find_driver_for(arch, &config.search);
     if driver.is_none() {
-        let what = "linker driver 'gcc' not found; nothing is linked or run";
-        missing(config, report, what.to_owned(), true);
+        let what = format!(
+            "linker driver '{}' not found{}; nothing is linked or run",
+            target.c_driver(),
+            package("gcc")
+        );
+        missing(config, report, what, true);
     }
     let mut linkers = Vec::new();
     for name in LINKER_NAMES {
@@ -302,21 +323,52 @@ fn toolchain(
         if !(asked || config.linkers.is_empty()) {
             continue;
         }
-        match tools::find_linker(name, &config.search) {
+        match tools::find_linker_for(name, arch, &config.search) {
             Some(path) => linkers.push(Linker { name: name.to_owned(), path }),
             None if asked => return Err(format!("linker '{name}' was asked for and is not found")),
             None => {
                 let required = tools::REQUIRED_LINKERS.contains(&name);
+                let hint = if name == "bfd" { package("ld.bfd") } else { String::new() };
                 missing(
                     config,
                     report,
-                    format!("linker '{name}' not found; not in this run"),
+                    format!("linker '{name}' not found{hint}; not in this run"),
                     required,
                 );
             }
         }
     }
-    Ok(Toolchain { llc: llvm.llc.clone(), llvm_major: llvm.major, hod, driver, linkers })
+    let emulator = if cross { emulator(config, arch, report) } else { None };
+    Ok(Toolchain { llc: llvm.llc.clone(), llvm_major: llvm.major, hod, driver, linkers, emulator })
+}
+
+/// The emulator of a cross target's programs, with the target's system
+/// root, or a note (a failure under `HOD_REQUIRE_TOOLS=1`) for what is
+/// missing: then the target's programs are built and not run.
+fn emulator(config: &Config, arch: Arch, report: &mut Report) -> Option<Emulator> {
+    let target = tools::target_of(arch);
+    let program = tools::find_emulator(arch, &config.search);
+    if program.is_none() {
+        let what = format!(
+            "emulator '{}' not found (Debian package {}); {} programs are not run",
+            target.emulator(),
+            target.cross_package("emulator"),
+            arch.name()
+        );
+        missing(config, report, what, true);
+    }
+    let sysroot = config.sysroot.clone().unwrap_or_else(|| target.sysroot());
+    if !sysroot.is_dir() {
+        let what = format!(
+            "system root '{}' not found (Debian package {}); {} programs are not run",
+            sysroot.display(),
+            target.cross_package("sysroot"),
+            arch.name()
+        );
+        missing(config, report, what, true);
+        return None;
+    }
+    Some(Emulator { args: target.emulator_args(&sysroot), program: program? })
 }
 
 /// Runs the command: finds the tools, reads the tests, runs them and
@@ -365,7 +417,7 @@ pub fn run(config: &Config) -> Result<Report, String> {
     let mut report = Report::default();
 
     if let Some(llvm) = &llvm {
-        let toolchain = toolchain(config, llvm, &mut report)?;
+        let toolchain = toolchain(config, llvm, arch, host, &mut report)?;
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_nanos());
@@ -408,6 +460,9 @@ pub fn run(config: &Config) -> Result<Report, String> {
                 }
             }
         }
+        if let Some(note) = declined_everything(&report, arch) {
+            report.notes.push(note);
+        }
         if config.keep && report.records.iter().any(|record| record.outcome.is_failure()) {
             report.kept = Some(session.work.clone());
         } else {
@@ -435,6 +490,26 @@ pub fn run(config: &Config) -> Result<Report, String> {
     Ok(report)
 }
 
+/// The one note for a run in which hod declined every test it was asked to
+/// build (a target it has no code generator for): its results are
+/// UNSUPPORTED (or a FAIL, listed, where a test does not expect it), and
+/// what the run checked is the reference side ("Cross runs").
+fn declined_everything(report: &Report, arch: Arch) -> Option<String> {
+    let mut tests: Vec<(&str, BuiltBy)> =
+        report.records.iter().map(|record| (record.test.as_str(), record.built_by)).collect();
+    tests.dedup();
+    let asked: Vec<BuiltBy> =
+        tests.iter().map(|(_, by)| *by).filter(|by| *by != BuiltBy::Nobody).collect();
+    (asked.len() > 1 && asked.iter().all(|by| *by == BuiltBy::Declined)).then(|| {
+        format!(
+            "hod declined all {} tests it was asked to build for {}; only the reference side \
+             (llc, the linkers, the programs) was checked",
+            asked.len(),
+            arch.name()
+        )
+    })
+}
+
 /// The line of the summary that says what ran. It names the jobserver
 /// pool when there is one: `-j` is then an upper bound ("Jobserver").
 fn describe(session: &Session, jobs: usize) -> String {
@@ -444,11 +519,16 @@ fn describe(session: &Session, jobs: usize) -> String {
         .describe()
         .map_or_else(String::new, |pool| format!(" (jobserver {pool})"));
     format!(
-        "LLVM {} ({}); hod {}; target {}; linkers {}; {}{}; -j {jobs}{pool}",
+        "LLVM {} ({}); hod {}; target {}{}; linkers {}; {}{}; -j {jobs}{pool}",
         tools.llvm_major,
         tools.llc.display(),
         tools.hod.display(),
         session.arch.triple(),
+        tools.emulator.as_ref().map_or_else(String::new, |emulator| {
+            let args: Vec<String> =
+                emulator.args.iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
+            format!(" (emulated: {} {})", emulator.program.display(), args.join(" "))
+        }),
         if linkers.is_empty() { "none".to_owned() } else { linkers.join(" ") },
         match session.mode {
             Mode::Strict => "strict",

@@ -2944,7 +2944,9 @@ probe is within its stated error).
 ```
 cargo xtask debug [run] [options] [<test or directory>...]
 cargo xtask debug kiln [--kiln <kiln++>] [--kiln-repo <dir>] [--hod <binary>]
-cargo xtask debug verify [-j <N>] [--hod <binary>] [-v] [<corpus dir or .ll>...]
+cargo xtask debug verify [-j <N>] [--hod <binary>] [--target <arch>] [-v] [<corpus dir or .ll>...]
+cargo xtask debug columns [-j <N>] [--hod <binary>] [--dump <dir>] [-v] [<dir or .ll>...]
+cargo xtask debug trees [-j <N>] [--hod <binary>] [--llc <19|22>] [-v] [<dir or .ll>...]
 ```
 
 Layer L7 of `docs/VALIDATION.md`: hod's debug information under the
@@ -2963,6 +2965,7 @@ Code: `xtask/src/debug.rs` and `xtask/src/debug/`.
 | `--debugger <name>` | `gdb`, `lldb` (every lldb), `lldb-19`, `lldb-22`; repeatable; default all |
 | `--frontend <name>` | `clang-19`, `clang-22`, `kiln`, `ir-19`, `ir-22`; repeatable; default every one the test allows |
 | `--tier <quick\|all>` | `quick`: only the tests with `tier: quick`; default `all` |
+| `--target <arch>` | `aarch64` or `x86_64` (WP-136): the programs are built for it (the front ends get `--target=<triple>`); when it is not this machine's, they are linked by its cross driver and run under its emulator's gdb stub ("Other targets" below). Default: this machine's |
 | `--no-lines` | no `(function, line)` comparison |
 | `--kiln <kiln++>` | the kiln front end; default the build root's (`corpus::capture_defaults`) |
 | `--keep` | keep the work directories of units with a result other than PASS or SKIP |
@@ -3004,10 +3007,14 @@ of the file**, so that editing them moves no source line:
 | `tier: quick\|all` | default `all` |
 | `pre-opt: checks` | the IR before LLVM's passes (below); the sessions are judged by the checks |
 | `xfail(<scope>): <reason>`, `xfail: <reason>` | a known difference (below) |
+| `target: <arch>...` | WP-136: the targets the test is run for (`aarch64`, `x86_64`); default every one. On another, each unit is SKIP |
+| `skip(<scope>): <reason>`, `skip: <reason>` | WP-136: the sessions the scope covers are not run (SKIP with the reason): what a debugger cannot do there, a gdb stub's limits (below) |
 
-A scope is words naming front ends, linkers or debuggers (`lldb` is any
-lldb), comma- or space-separated; it covers a result when, for each kind
-it names, one of its words of that kind is the result's. An unknown key, word or value
+A scope is words naming front ends, linkers, debuggers (`lldb` is any
+lldb), targets (`aarch64`, `x86_64`) or `remote` (a session through an
+emulator's gdb stub), comma- or space-separated; it covers a result when,
+for each kind it names, one of its words of that kind is the result's,
+and, with `remote`, the session is remote. An unknown key, word or value
 is an ERROR of the test. A test's checks must hold on `llc`'s program: the
 checks say what the test means, the comparison with `llc` is what judges
 hod. Tests print no uninitialized value (stack contents differ between the
@@ -3122,11 +3129,15 @@ only hod's has whose line is that of its function's first row (the scope
 line of a prologue `llc` does not have); **P1** a pair only `llc`'s has
 whose every range holds only unconditional branches (`b`, by
 `llvm-objdump -d`); else, by the IR of the unit's modules
-(`permitted::IrFacts`: per defined function, the opcode, line and column
-of each instruction with a `!dbg`, scopes not followed),
-**load-placement** when the function's instructions at that line are
-loads and `getelementptr`s with at least one load (either side), and
-**is-constant** a pair only hod's has in a function that calls
+(`permitted::IrFacts`: per defined function, the opcode, line, column,
+scope's file, whether its block has a predecessor, and a load's or
+`getelementptr`'s pointer operand of each instruction with a `!dbg`;
+only the instructions of the pair's file and of blocks with a
+predecessor count), **load-placement** when the function's instructions
+at that line are loads and `getelementptr`s with at least one load
+(either side), **post-indexed-load** a pair only hod's has whose
+instructions at that line are `getelementptr`s of pointers a load of the
+function reads, and **is-constant** a pair only hod's has in a function that calls
 `llvm.is.constant` (`spec/dwarf.md` §5.7); else **unclassified**. An
 unclassified pair fails the run.
 
@@ -3158,6 +3169,72 @@ so that every function has an address and a symbol. `--dump` writes
 change of rows left the code and relocations alone. `-j` at most 4.
 Exit status 1 when a module fails, else 0.
 
+### Other targets
+
+With `--target <arch>` naming another architecture than this machine's
+(WP-136; today `x86_64` on an AArch64 host): the front ends get
+`--target=<triple>`, `llc` and hod read the triple from the IR, the
+programs are linked by the target's cross driver (`<prefix>-gcc`, and
+its `ld.bfd` for `bfd`; lld and mold are the same binaries) as `irdiff`
+links them, and every session is remote:
+
+- **one child per session**: `/bin/sh -c <script>` through
+  `irdiff::process::run`, with the session's limits and a jobserver
+  token. The script starts the emulator (`qemu-<arch> -cpu <baseline> -L
+  <system root> -g <port> <program>`, the program stopped at its first
+  instruction) in the background, waits until a socket of the port is
+  in state `LISTEN` in `/proc/net/tcp` or `/proc/net/tcp6` (or the
+  emulator died), runs the debugger in the foreground, then kills the
+  emulator and waits for it; its status is the debugger's. The harness
+  kills the whole process group at the time limit, so no emulator
+  outlives its session; no verdict depends on how long a session took
+  (a time-out is a FAIL of hod's or an ERROR of `llc`'s, as on the host);
+- **the port** is the operating system's choice: a listener bound to
+  `127.0.0.1:0`, closed for the emulator to take. When another process
+  took it meanwhile (the emulator says `could not open gdbserver` or
+  `Address already in use`), the session is run again on another, three
+  times at most;
+- **gdb** is `gdb-multiarch` (still named `gdb` in results and scopes):
+  the prelude, `set sysroot <system root>`, `target remote
+  127.0.0.1:<port>`, the script with `run` (`r`) replaced by `continue`.
+  Without `gdb-multiarch` there is no gdb session;
+- **lldb** (`lldb-19`; lldb 22 is looked for as on the host): the
+  prelude, `gdb-remote 127.0.0.1:<port>`, the script with `run`, `r` and
+  `process launch` replaced by `process continue`;
+- **masking** adds the port (`127.0.0.1:PORT`) and gdb's thread names
+  `Thread <pid>.<tid>` (`Thread ?.?`);
+- IR tests (`.ll`) are SKIP: their modules are written for the host.
+
+What `qemu-user`'s gdb stub cannot do, and so no remote session asks
+(`cross::STUB_LIMITS`; a test says so with `skip(remote, ...)`):
+thread-local variables (no `qGetTLSAddr`: gdb prints `Remote target
+doesn't support qGetTLSAddr packet`, lldb `no TLS data currently exists
+for this thread`; the locations are held by `debug trees` instead);
+hardware watchpoints (a `watch` is single-stepped); shared libraries
+under lldb (it reads no link map through the stub); `run` after the
+program exited (the stub ends with it).
+
+### Trees
+
+`debug trees [-j N] [--hod <binary>] [--llc <19|22>] [-v] [<dir or
+.ll>...]` (WP-136): per `-g` module of the paths (default: the corpus),
+hod `--strict` and `llc` (of `--llc`'s major, else the module's: a path
+naming `llvm19`, `clang-19`, else 22) with the reference options, the
+module's `;@ llc-args:` and its split-DWARF names; both objects
+`llvm-dwarfdump --verify` clean (else FAILED); then their `.debug_info`
+compared: the DIE trees as `llvm-dwarfdump --debug-info` prints them,
+normalized as `spec/dwarf.md` §6.7 says (addresses, sizes, other
+sections' bases and offsets, reference offsets masked; a location by its
+operations without operands, a location list as `list`; the frame base
+compared on x86-64, masked on AArch64), and the relocations of
+`.debug_info` as a sorted multiset of (kind, symbol). Each module is
+SAME (with its DIE count), PERMITTED (the §6.7 classes named: `sret`,
+`byval`, `realigned frame`, `split pubnames`, `(a) fallthrough inlined`,
+`(b) is.constant block`, `llc 19 blocks`), DIFFERS (the first
+difference; `-v` the whole of it), DECLINED or FAILED. `-j` at most 4.
+Exit status 1 when a module differs or fails. The evidence of a package;
+not a gate step.
+
 ### Permitted differences of sessions
 
 A hod session whose masked transcript differs from `llc`'s PASSes with
@@ -3166,8 +3243,10 @@ the detail `permitted: return-column` when the session is lldb's and
 number of lines, and every differing pair of lines is in a stop whose
 `stop reason` is `step out` (after `finish`), and is either the
 `frame #0:` line, equal but for the column of its ` at file:line:col`,
-`llc`'s column being that of a `call` or `invoke` at that line in the
-IR, or the source caret line (`^`) after such a line
+`llc`'s column (or hod's: on x86-64 hod's copy of the result out of
+`rax` keeps the call's location where `llc` coalesced it, WP-136) being
+that of a `call` or `invoke` at that line in the IR, or the source caret
+line (`^`) after such a line
 (`spec/dwarf.md` §5.7 `return-column`). A `pre-opt: checks` test's
 sessions are judged by its checks (above). Nothing else is permitted.
 
@@ -3207,7 +3286,8 @@ kiln is read, never written.
 the corpus (default `corpus::default_dir`) or of the paths with `hod
 --strict -O0 -filetype=obj` and the module's `;@ llc-args:`, then runs
 `llvm-dwarfdump --verify` of LLVM 22 and of 19 on the object. A module
-whose `;@ target:` is not the host's is skipped; a decline is counted
+whose `;@ target:` is not the host's (with `--target <arch>`, WP-136:
+not that architecture's) is skipped; a decline is counted
 with its reason; a module that does not verify fails (exit 1), as does
 hod failing. `-j` at most 16, default 4.
 

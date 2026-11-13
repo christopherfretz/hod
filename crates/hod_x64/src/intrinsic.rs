@@ -53,9 +53,9 @@
 //!   the `.inline` forms count in `rcx`. Calls go to `memcpy`,
 //!   `memmove`, `memset` with a narrow length zero-extended. Volatile is
 //!   the plain form. No `rep movs`/`rep stos`.
-//! - **Traps**: `trap` is `ud2`, `debugtrap` `int3`; `ubsantrap` is
-//!   `ud2` (`llc` writes `ud1 eax, [eax + kind]`, which the encoder does
-//!   not have: both raise `SIGILL`).
+//! - **Traps**: `trap` is `ud2`, `debugtrap` `int3`; `ubsantrap(kind)` is
+//!   `ud1 eax, [eax + kind]` with 32-bit addressing, as `llc` 19 and 22
+//!   write it (WP-144): the kind in the displacement, `SIGILL`.
 //! - **Frame**: `frameaddress(n)` follows `n` saved `rbp`s; `returnaddress(n)`
 //!   loads `[record + 8]`. Above [`MAX_DEPTH`]: [`FRAME_DEPTH`].
 //! - **Folded**: `objectsize` is `-1` (`min` false) or `0`; `is.constant`
@@ -127,6 +127,9 @@ pub fn intrinsic<'a>(
     args: &'a [Value],
 ) -> CgResult<()> {
     use Intrinsic as I;
+    if let Some(done) = crate::lanes::intrinsic(cx, inst, which, args) {
+        return done;
+    }
     match (which, args) {
         (I::Ctlz | I::Cttz | I::Ctpop | I::Bswap | I::BitReverse | I::Abs, &[x, ..]) => {
             let width = int_or_quad(cx, inst.ty())?;
@@ -180,9 +183,12 @@ pub fn intrinsic<'a>(
             put(cx, mc::int3());
             Ok(())
         }
-        // `llc` writes `ud1 eax, [eax + kind]`; the encoder has no `ud1`.
-        (I::UbsanTrap, &[_kind]) => {
-            put(cx, mc::ud2());
+        // `ud1 eax, [eax + kind]`, as `llc` (`immarg i8`, zero-extended).
+        (I::UbsanTrap, &[kind]) => {
+            let Some(kind) = const_int(cx, kind) else {
+                return cx.bug("llvm.ubsantrap of a kind that is not a constant");
+            };
+            put(cx, mc::ud1_eax(kind as u8));
             Ok(())
         }
         (I::FrameAddress | I::ReturnAddress, &[depth]) => {

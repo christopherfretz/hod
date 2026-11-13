@@ -275,7 +275,9 @@ fn short_forms() {
     let order = [at("ud2"), at("int3"), at("rdtsc"), at("shl rdx, 0x20"), at("or rax, rdx")];
     assert!(order.iter().all(Option::is_some), "{misc:#?}");
     assert!(order.windows(2).all(|w| w[0] < w[1]), "{misc:#?}");
-    assert_eq!(misc.iter().filter(|l| mnemonic(l) == "ud2").count(), 2, "{misc:#?}");
+    // `ubsantrap` is `ud1 eax, [eax + kind]` since WP-144.
+    assert_eq!(misc.iter().filter(|l| mnemonic(l) == "ud2").count(), 1, "{misc:#?}");
+    assert_eq!(misc.iter().filter(|l| mnemonic(l) == "ud1").count(), 1, "{misc:#?}");
     assert!(misc.iter().any(|l| l.starts_with("mov") && l.ends_with(", rbp")), "{misc:#?}");
     assert!(!misc.iter().any(|l| l.starts_with("prefetch") || l.starts_with("call")), "{misc:#?}");
     let copies = disassembly(
@@ -743,8 +745,8 @@ int main(int argc, char **argv) {
     /// The frame walk, the folded intrinsics, the counter and the traps,
     /// natively: hod plainly and stressed, and `llc` 22 and 19, under
     /// every linker, against what the driver expects. `trap` and
-    /// `ubsantrap` end the process with `SIGILL` (`ud2`; `llc`'s `ud1`
-    /// for the second), `debugtrap` with `SIGTRAP`.
+    /// `ubsantrap` end the process with `SIGILL` (`ud2`, and `ud1` for the
+    /// second as `llc` since WP-144), `debugtrap` with `SIGTRAP`.
     #[test]
     fn the_native_forms_hold() {
         use std::os::unix::process::ExitStatusExt as _;

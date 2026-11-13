@@ -4,7 +4,6 @@
 ; vector forms of integer and floating-point intrinsics (a libm call per
 ; lane among them).
 ;@ covers: spec/ir.md §5.4 integer
-;@ unsupported(x86_64): *
 ;@ link: m
 ;@ stdout: div: 3 -3 2 1 | rem: 1 -1 0 2 | udiv: 33 1
 ;@ stdout: odd: 6 -6 25 | shr: 8 -2 64

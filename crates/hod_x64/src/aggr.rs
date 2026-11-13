@@ -667,6 +667,9 @@ pub fn select<'a>(
     if_true: Value,
     if_false: Value,
 ) -> CgResult<()> {
+    if let Some(compare) = crate::x87::fusable(cx, inst, cond) {
+        return crate::x87::select(cx, inst, compare, cond, if_true, if_false);
+    }
     deferred_first(cx, inst, None)?;
     if cx.types().is_vector(value_ty(cx, cond)) {
         return unsupported(crate::lanes::LANES);

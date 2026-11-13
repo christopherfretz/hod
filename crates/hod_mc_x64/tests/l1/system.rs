@@ -8,6 +8,9 @@ use crate::text::SIZES;
 
 pub fn build(b: &mut Batch) {
     emit!(b, ud2(), "ud2");
+    for disp in [0, 1, 5, 127, 128, 200, 255] {
+        emit!(b, ud1_eax(disp), "ud1 eax, dword ptr [eax + {disp}]");
+    }
     emit!(b, int3(), "int3");
     emit!(b, endbr64(), "endbr64");
     for len in 1..=15 {

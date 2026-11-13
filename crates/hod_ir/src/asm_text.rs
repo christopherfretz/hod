@@ -20,9 +20,10 @@ fn is_space(byte: u8) -> bool {
 
 /// One statement of assembly text at a time, comments removed: the
 /// statement separators are a newline and `;`; a comment is `/* ... */`
-/// anywhere, `//` to the end of the line (AArch64), and `#` to the end
-/// of the line at the start of a statement (both targets) or anywhere
-/// (x86-64), as LLVM's assembly lexer reads them.
+/// anywhere, `//` to the end of the line (both targets: `llvm-mc` 19
+/// and 22 read `nop // x` as `nop` on x86-64 too, WP-144), and `#` to
+/// the end of the line at the start of a statement (both targets) or
+/// anywhere (x86-64), as LLVM's assembly lexer reads them.
 struct Statements<'a> {
     text: &'a [u8],
     at: usize,
@@ -66,7 +67,7 @@ impl<'a> Statements<'a> {
             let rest = &t[at..];
             match arch {
                 Arch::Aarch64 => rest.starts_with(b"//") || (first && rest.starts_with(b"#")),
-                Arch::X86_64 => rest.starts_with(b"#"),
+                Arch::X86_64 => rest.starts_with(b"//") || rest.starts_with(b"#"),
             }
         };
         let mut end = start;
@@ -461,9 +462,14 @@ mod tests {
         for text in ["nop", " nop ", "$0", "// $0", "/* open", "a: ", ".byte 0", "x /* c */"] {
             assert!(!empty(text), "{text:?}");
         }
-        // `//` is no comment on x86-64; `#` is one anywhere.
-        assert!(!asm_template_is_empty(Arch::X86_64, b"// x"));
-        assert!(asm_template_is_empty(Arch::X86_64, b" # x"));
+        // `//` is a comment on x86-64 too (`llvm-mc` 19 and 22, WP-144);
+        // `#` is one anywhere there.
+        for text in ["// x", " # x", "/*a*/ // b\n#c", "; // x\n"] {
+            assert!(asm_template_is_empty(Arch::X86_64, text.as_bytes()), "{text:?}");
+        }
+        for text in ["nop // x", "// x\nnop", "// $0\n x"] {
+            assert!(!asm_template_is_empty(Arch::X86_64, text.as_bytes()), "{text:?}");
+        }
     }
 
     fn read(text: &str) -> Result<Vec<AsmDirectives<'_>>, AsmRefusal> {
@@ -490,6 +496,13 @@ mod tests {
         assert_eq!(got[2].visibility, Some(Visibility::Hidden));
         assert_eq!(read("").unwrap(), []);
         assert_eq!(read("\n\n").unwrap(), []);
+        // x86-64 reads `//` as a comment too (WP-144).
+        let mut out = Vec::new();
+        read_module_asm(Arch::X86_64, b".globl b // c\n// .weak b\n.hidden b # d", &mut out)
+            .unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].binding, Some(AsmBinding::Global));
+        assert_eq!(out[0].visibility, Some(Visibility::Hidden));
     }
 
     /// §2.3: everything else is refused, and says what it met.

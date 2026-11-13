@@ -22,7 +22,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 |---|---|---|---|---|---|---|---|
 | `module` | 24 | 11 | 11 | 2 | 11 | 7 | 6 |
 | `structor` | 2 | 2 | 0 | 0 | 2 | 0 | 0 |
-| `debug` | 5 | 4 | 1 | 0 | 0 | 5 | 0 |
+| `debug` | 5 | 4 | 1 | 0 | 4 | 1 | 0 |
 | `global` | 12 | 11 | 1 | 0 | 11 | 1 | 0 |
 | `linkage` | 11 | 10 | 0 | 1 | 10 | 0 | 1 |
 | `visibility` | 2 | 2 | 0 | 0 | 2 | 0 | 0 |
@@ -31,19 +31,19 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `init` | 10 | 6 | 3 | 1 | 5 | 4 | 1 |
 | `function` | 6 | 6 | 0 | 0 | 6 | 0 | 0 |
 | `cc` | 26 | 6 | 7 | 13 | 3 | 13 | 10 |
-| `attr` | 57 | 24 | 30 | 3 | 18 | 31 | 8 |
-| `type` | 15 | 12 | 0 | 3 | 10 | 3 | 2 |
-| `inst` | 67 | 60 | 0 | 7 | 56 | 4 | 7 |
+| `attr` | 57 | 24 | 30 | 3 | 22 | 27 | 8 |
+| `type` | 15 | 12 | 0 | 3 | 13 | 0 | 2 |
+| `inst` | 67 | 60 | 0 | 7 | 59 | 1 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
-| `atomicrmw` | 21 | 21 | 0 | 0 | 17 | 4 | 0 |
+| `atomicrmw` | 21 | 21 | 0 | 0 | 21 | 0 | 0 |
 | `call` | 4 | 4 | 0 | 0 | 3 | 1 | 0 |
 | `tail` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 7 | 4 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 354 | 347 | 7 | 0 | 97 | 41 | 216 |
-| total | 674 | 549 | 68 | 57 | 273 | 123 | 278 |
+| `intrinsic` | 354 | 347 | 7 | 0 | 128 | 10 | 216 |
+| total | 674 | 549 | 68 | 57 | 322 | 74 | 278 |
 
 ## `module`
 
@@ -67,8 +67,8 @@ Module properties (`ModuleProps`, §2.1) and module-level tables.
 | `module:sign-return-address-all` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
 | `module:sign-return-address-with-bkey` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
 | `module:branch-protection-pauth-lr` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `module:cf-protection-branch` | rejected | not-implemented | an x86 property. changes code: `endbr64` at every function entry an indirect branch may reach, at landing pads and after `returns_twice` calls, then the IBT property note; `llc` turns it on for any value, 0 included (WP-143) |
-| `module:cf-protection-return` | rejected | supported | an x86 property. the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143) |
+| `module:cf-protection-branch` | rejected | not-implemented | an x86 property. changes code: `endbr64` at every function entry an indirect branch may reach, at landing pads and after `returns_twice` calls, then the IBT property note; `llc` 19 and 22 turn it on for any value, 0 included (WP-143), as `hod_ir` reads it (WP-144) |
+| `module:cf-protection-return` | rejected | supported | an x86 property. the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143); on for any value, 0 included, as `llc` (WP-144) |
 | `module:asm` | supported | not-implemented | module-level assembly of code and data: `hod_asm` (WP-112, `spec/asm.md` §9); what it does not read is refused by an `asm:*` name |
 | `module:asm-symbols` | supported | supported | module-level assembly made only of symbol directives (`spec/ir.md` §2.3) |
 | `module:linker-options` | supported | supported | `!llvm.linker.options` |
@@ -91,11 +91,11 @@ Debug information.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `debug:module-flags` | supported | not-implemented | `Dwarf Version` or `Debug Info Version` is set (WP-087) |
+| `debug:module-flags` | supported | supported | `Dwarf Version` or `Debug Info Version` is set (WP-087) |
 | `debug:dwarf-version` | not-implemented | not-implemented | T-DW. a compile unit with debug information and a `Dwarf Version` other than 5 (absent is LLVM's 4): `hod_dwarf` writes DWARF 5 only |
-| `debug:subprogram` | supported | not-implemented | a function with a body and a `DISubprogram` (WP-087) |
-| `debug:slot-variables` | supported | not-implemented | a stack slot that is a source variable (WP-087); in a coroutine body, on the frame word (WP-108, `spec/dwarf.md` §6.16) |
-| `debug:locations` | supported | not-implemented | a body whose instructions carry source locations (WP-087) |
+| `debug:subprogram` | supported | supported | a function with a body and a `DISubprogram` (WP-087) |
+| `debug:slot-variables` | supported | supported | a stack slot that is a source variable (WP-087); in a coroutine body, on the frame word (WP-108, `spec/dwarf.md` §6.16) |
+| `debug:locations` | supported | supported | a body whose instructions carry source locations (WP-087) |
 
 ## `global`
 
@@ -235,8 +235,8 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `attr:zeroext` | supported | not-implemented |  |
-| `attr:signext` | supported | not-implemented |  |
+| `attr:zeroext` | supported | supported |  |
+| `attr:signext` | supported | supported |  |
 | `attr:inreg` | not-implemented | not-implemented | unplanned |
 | `attr:nest` | supported | not-implemented |  |
 | `attr:swiftself` | not-implemented | not-implemented | unplanned |
@@ -244,7 +244,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:swiftasync` | not-implemented | not-implemented | unplanned |
 | `attr:sret` | supported | supported |  |
 | `attr:byval` | supported | supported |  |
-| `attr:byref` | supported | not-implemented |  |
+| `attr:byref` | supported | supported |  |
 | `attr:inalloca` | rejected | rejected | a Windows construct |
 | `attr:preallocated` | rejected | rejected | a Windows construct |
 | `attr:elementtype` | not-implemented | not-implemented | unplanned. on an inline-assembly or intrinsic argument |
@@ -259,7 +259,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:ssp` | not-implemented | not-implemented | spec/codegen.md §13. open question: accept and ignore, or implement |
 | `attr:sspreq` | not-implemented | not-implemented | spec/codegen.md §13 |
 | `attr:sspstrong` | not-implemented | not-implemented | spec/codegen.md §13 |
-| `attr:presplitcoroutine` | supported | not-implemented | one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name (WP-106); with `-g`, its variables on the frame word (WP-108) |
+| `attr:presplitcoroutine` | supported | supported | one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name (WP-106); with `-g`, its variables on the frame word (WP-108); a pre-opt module with one is accepted in place of `opt` + `llc`; with this row off, it is declined by its module level (WP-109, `spec/cli.md` "Pre-opt modules") |
 | `attr:sanitize_address` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_alloc_token` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_hwaddress` | not-implemented | not-implemented | unplanned |
@@ -308,11 +308,11 @@ Type classes of the values instructions produce and consume.
 | `type:float` | supported | supported |  |
 | `type:double` | supported | supported |  |
 | `type:fp128` | supported | supported | arithmetic, compares and conversions are calls |
-| `type:x86_fp80` | rejected | not-implemented | not an AArch64 type |
-| `type:vector` | supported | not-implemented | vectors of fixed length; what is lowered of them by element and shape: `spec/codegen.md` §5.5.1 (WP-079) |
+| `type:x86_fp80` | rejected | supported | not an AArch64 type. in a 16-byte slot, computed on the x87 stack; calls of the C library's `l` functions (WP-131) |
+| `type:vector` | supported | supported | vectors of fixed length; what is lowered of them by element and shape: `spec/codegen.md` §5.5.1 (WP-079) |
 | `type:scalable-vector` | rejected | rejected | scalable vectors are refused by design |
 | `type:aggregate` | supported | supported | structs and arrays as first-class values (WP-040) |
-| `type:token` | supported | not-implemented | the results and operands of the coroutine intrinsics (WP-106) |
+| `type:token` | supported | supported | the results and operands of the coroutine intrinsics (WP-106) |
 | `type:target-ext` | rejected | rejected | no target extension type has a lowering |
 
 ## `inst`
@@ -321,56 +321,56 @@ Instructions.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `inst:add` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
-| `inst:sub` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
-| `inst:mul` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
-| `inst:udiv` | supported (int, i128, vector) | supported (int, i128) | wider than 64 bits: up to 128 (WP-040) |
-| `inst:sdiv` | supported (int, i128, vector) | supported (int, i128) | wider than 64 bits: up to 128 (WP-040) |
-| `inst:urem` | supported (int, i128, vector) | supported (int, i128) | wider than 64 bits: up to 128 (WP-040) |
-| `inst:srem` | supported (int, i128, vector) | supported (int, i128) | wider than 64 bits: up to 128 (WP-040) |
-| `inst:shl` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
-| `inst:lshr` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
-| `inst:ashr` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
-| `inst:and` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
-| `inst:or` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
-| `inst:xor` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
-| `inst:fadd` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128) |  |
-| `inst:fsub` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128) |  |
-| `inst:fmul` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128) |  |
-| `inst:fdiv` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128) |  |
-| `inst:frem` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128) | a call of `fmod` |
-| `inst:fneg` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128) |  |
-| `inst:icmp` | supported (int, i128, int-wide, ptr, vector) | supported (int, i128, int-wide, ptr) | vectors: masks of up to 64 lanes (WP-081) |
-| `inst:fcmp` | supported (int, half, bfloat, float, double, fp128, vector) | supported (int, half, bfloat, float, double, fp128) | vectors: masks of up to 64 lanes (WP-081) |
-| `inst:trunc` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
-| `inst:zext` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
-| `inst:sext` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
-| `inst:fptrunc` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128) |  |
-| `inst:fpext` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128) |  |
-| `inst:fptoui` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, half, bfloat, float, double, fp128) |  |
-| `inst:fptosi` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, half, bfloat, float, double, fp128) |  |
-| `inst:uitofp` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, half, bfloat, float, double, fp128) |  |
-| `inst:sitofp` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, half, bfloat, float, double, fp128) |  |
-| `inst:ptrtoint` | supported (int, i128, int-wide, ptr, vector) | supported (int, i128, int-wide, ptr) |  |
-| `inst:ptrtoaddr` | supported (int, i128, int-wide, ptr, vector) | supported (int, i128, int-wide, ptr) |  |
-| `inst:inttoptr` | supported (int, i128, int-wide, ptr, vector) | supported (int, i128, int-wide, ptr) |  |
-| `inst:bitcast` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128) | between integers and floats with WP-039 |
+| `inst:add` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide, vector) |  |
+| `inst:sub` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide, vector) |  |
+| `inst:mul` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide, vector) |  |
+| `inst:udiv` | supported (int, i128, vector) | supported (int, i128, vector) | wider than 64 bits: up to 128 (WP-040) |
+| `inst:sdiv` | supported (int, i128, vector) | supported (int, i128, vector) | wider than 64 bits: up to 128 (WP-040) |
+| `inst:urem` | supported (int, i128, vector) | supported (int, i128, vector) | wider than 64 bits: up to 128 (WP-040) |
+| `inst:srem` | supported (int, i128, vector) | supported (int, i128, vector) | wider than 64 bits: up to 128 (WP-040) |
+| `inst:shl` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide, vector) |  |
+| `inst:lshr` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide, vector) |  |
+| `inst:ashr` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide, vector) |  |
+| `inst:and` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide, vector) |  |
+| `inst:or` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide, vector) |  |
+| `inst:xor` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide, vector) |  |
+| `inst:fadd` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128, x86_fp80, vector) |  |
+| `inst:fsub` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128, x86_fp80, vector) |  |
+| `inst:fmul` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128, x86_fp80, vector) |  |
+| `inst:fdiv` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128, x86_fp80, vector) |  |
+| `inst:frem` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128, x86_fp80, vector) | a call of `fmod` |
+| `inst:fneg` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128, x86_fp80, vector) |  |
+| `inst:icmp` | supported (int, i128, int-wide, ptr, vector) | supported (int, i128, int-wide, ptr, vector) | vectors: masks of up to 64 lanes (WP-081) |
+| `inst:fcmp` | supported (int, half, bfloat, float, double, fp128, vector) | supported (int, half, bfloat, float, double, fp128, x86_fp80, vector) | vectors: masks of up to 64 lanes (WP-081) |
+| `inst:trunc` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide, vector) |  |
+| `inst:zext` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide, vector) |  |
+| `inst:sext` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide, vector) |  |
+| `inst:fptrunc` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128, x86_fp80, vector) |  |
+| `inst:fpext` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128, x86_fp80, vector) |  |
+| `inst:fptoui` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, int-wide, half, bfloat, float, double, fp128, x86_fp80, vector) | an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the target (`a64:wide-fp-cast`, `x64:wide-fp-cast`) |
+| `inst:fptosi` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, int-wide, half, bfloat, float, double, fp128, x86_fp80, vector) | an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the target (`a64:wide-fp-cast`, `x64:wide-fp-cast`) |
+| `inst:uitofp` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, int-wide, half, bfloat, float, double, fp128, x86_fp80, vector) | an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the target (`a64:wide-fp-cast`, `x64:wide-fp-cast`) |
+| `inst:sitofp` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, int-wide, half, bfloat, float, double, fp128, x86_fp80, vector) | an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the target (`a64:wide-fp-cast`, `x64:wide-fp-cast`) |
+| `inst:ptrtoint` | supported (int, i128, int-wide, ptr, vector) | supported (int, i128, int-wide, ptr, vector) |  |
+| `inst:ptrtoaddr` | supported (int, i128, int-wide, ptr, vector) | supported (int, i128, int-wide, ptr, vector) |  |
+| `inst:inttoptr` | supported (int, i128, int-wide, ptr, vector) | supported (int, i128, int-wide, ptr, vector) |  |
+| `inst:bitcast` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, x86_fp80, vector) | between integers and floats with WP-039 |
 | `inst:addrspacecast` | rejected | rejected | it has a pointer in a non-zero address space on one side |
-| `inst:load` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | a plain load; see `mem:`; FP and vector values: WP-067 |
-| `inst:store` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | a plain store; see `mem:`; FP and vector values: WP-067 |
+| `inst:load` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, x86_fp80, vector, aggregate) | a plain load; see `mem:`; FP and vector values: WP-067 |
+| `inst:store` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, x86_fp80, vector, aggregate) | a plain store; see `mem:`; FP and vector values: WP-067 |
 | `inst:alloca` | supported | supported | a dynamic allocation; fixed ones are `function:slots` |
 | `inst:fence` | supported | supported | WP-074; x86-64: WP-133 |
-| `inst:cmpxchg` | supported (int, i128, ptr, aggregate) | supported (int, ptr, aggregate) | WP-074; the `{ T, i1 }` result is an aggregate; x86-64 (WP-133): `i128` only with `+cx16` (`lock cmpxchg16b`), else `x64:atomic-libatomic` |
-| `inst:atomicrmw` | supported (int, i128, ptr, half, bfloat, float, double) | supported (int, ptr, half, bfloat, float, double) | and the operation's `atomicrmw:` row; WP-074; x86-64 (WP-133): `i128` only with `+cx16`, else `x64:atomic-libatomic` |
+| `inst:cmpxchg` | supported (int, i128, ptr, aggregate) | supported (int, i128, ptr, aggregate) | WP-074; the `{ T, i1 }` result is an aggregate; x86-64 `i128`: `lock cmpxchg16b` with `+cx16` (WP-133), else libatomic's `__atomic_compare_exchange_16` (WP-144) |
+| `inst:atomicrmw` | supported (int, i128, ptr, half, bfloat, float, double) | supported (int, i128, ptr, half, bfloat, float, double) | and the operation's `atomicrmw:` row; WP-074; x86-64 `i128`: a `cmpxchg16b` loop with `+cx16` (WP-133), else libatomic's `__atomic_*_16` (WP-144) |
 | `inst:ptradd` | supported | supported | LLVM's `getelementptr` (§5.4); not a vector of pointers |
-| `inst:extractvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, aggregate) |  |
-| `inst:insertvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, aggregate) |  |
-| `inst:extractelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
-| `inst:insertelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
-| `inst:shufflevector` | supported (vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
+| `inst:extractvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, x86_fp80, vector, aggregate) | x86-64: floating-point members with WP-144; `x86_fp80` with WP-131 |
+| `inst:insertvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, x86_fp80, vector, aggregate) | x86-64: floating-point members with WP-144; `x86_fp80` with WP-131 |
+| `inst:extractelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | byte-sized elements, up to 256 lanes (WP-079) |
+| `inst:insertelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | byte-sized elements, up to 256 lanes (WP-079) |
+| `inst:shufflevector` | supported (vector) | supported (vector) | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:phi` | supported | supported | for every class whose `type:*` row is supported |
-| `inst:select` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) |  |
-| `inst:freeze` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) |  |
+| `inst:select` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, x86_fp80, vector, aggregate) |  |
+| `inst:freeze` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, x86_fp80, vector, aggregate) |  |
 | `inst:va_arg` | rejected | rejected | `llc` miscompiles it on AArch64, so there is no oracle; frontends do not emit it |
 | `inst:call` | supported | supported | a call of anything but an intrinsic |
 | `inst:landingpad` | supported | supported |  |
@@ -396,8 +396,8 @@ Kinds of memory access.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `mem:volatile` | supported | supported | a volatile `load`, `store`, `cmpxchg` or `atomicrmw` |
-| `mem:atomic-load` | supported | supported | WP-074, WP-133; `fp128` and vectors: `a64:atomic-type`, `x64:atomic-type`; x86-64 `i128` without `+cx16`: `x64:atomic-libatomic` |
-| `mem:atomic-store` | supported | supported | WP-074, WP-133; `fp128` and vectors: `a64:atomic-type`, `x64:atomic-type`; x86-64 `i128` without `+cx16`: `x64:atomic-libatomic` |
+| `mem:atomic-load` | supported | supported | WP-074, WP-133; `fp128` and vectors: `a64:atomic-type`, `x64:atomic-type`; x86-64 `i128` without `+cx16`: libatomic (WP-144) |
+| `mem:atomic-store` | supported | supported | WP-074, WP-133; `fp128` and vectors: `a64:atomic-type`, `x64:atomic-type`; x86-64 `i128` without `+cx16`: libatomic (WP-144) |
 
 ## `atomicrmw`
 
@@ -416,16 +416,16 @@ Kinds of memory access.
 | `atomicrmw:min` | supported | supported | WP-074, WP-133 |
 | `atomicrmw:umax` | supported | supported | WP-074, WP-133 |
 | `atomicrmw:umin` | supported | supported | WP-074, WP-133 |
-| `atomicrmw:fadd` | supported | supported | WP-074, WP-133; x86-64 `half`: `x64:atomic-float-op` |
-| `atomicrmw:fsub` | supported | supported | WP-074, WP-133; x86-64 `half`: `x64:atomic-float-op` |
-| `atomicrmw:fmax` | supported | not-implemented | WP-074; x86-64: `x64:atomic-float-op` until WP-127 |
-| `atomicrmw:fmin` | supported | not-implemented | WP-074; x86-64: `x64:atomic-float-op` until WP-127 |
+| `atomicrmw:fadd` | supported | supported | WP-074, WP-133; x86-64 `half`: WP-144 |
+| `atomicrmw:fsub` | supported | supported | WP-074, WP-133; x86-64 `half`: WP-144 |
+| `atomicrmw:fmax` | supported | supported | WP-074; x86-64: WP-144 |
+| `atomicrmw:fmin` | supported | supported | WP-074; x86-64: WP-144 |
 | `atomicrmw:uinc_wrap` | supported | supported | WP-074, WP-133 |
 | `atomicrmw:udec_wrap` | supported | supported | WP-074, WP-133 |
 | `atomicrmw:usub_cond` | supported | supported | WP-074, WP-133 |
 | `atomicrmw:usub_sat` | supported | supported | WP-074, WP-133 |
-| `atomicrmw:fmaximum` | supported | not-implemented | WP-074; x86-64: `x64:atomic-float-op` until WP-127 |
-| `atomicrmw:fminimum` | supported | not-implemented | WP-074; x86-64: `x64:atomic-float-op` until WP-127 |
+| `atomicrmw:fmaximum` | supported | supported | WP-074; x86-64: WP-144 |
+| `atomicrmw:fminimum` | supported | supported | WP-074; x86-64: WP-144 |
 
 ## `call`
 
@@ -540,20 +540,20 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.trap` | supported | supported |  |
 | `intrinsic:llvm.debugtrap` | supported | supported |  |
 | `intrinsic:llvm.ubsantrap` | supported (int) | supported (int) |  |
-| `intrinsic:llvm.bswap` | supported (int, i128, vector) | supported (int, i128) |  |
-| `intrinsic:llvm.bitreverse` | supported (int, i128, vector) | supported (int, i128) |  |
-| `intrinsic:llvm.ctpop` | supported (int, i128, vector) | supported (int, i128) |  |
-| `intrinsic:llvm.ctlz` | supported (int, i128, vector) | supported (int, i128) |  |
-| `intrinsic:llvm.cttz` | supported (int, i128, vector) | supported (int, i128) |  |
-| `intrinsic:llvm.fshl` | supported (int, i128, vector) | supported (int, i128) |  |
-| `intrinsic:llvm.fshr` | supported (int, i128, vector) | supported (int, i128) |  |
-| `intrinsic:llvm.abs` | supported (int, i128, vector) | supported (int, i128) |  |
-| `intrinsic:llvm.smax` | supported (int, i128, vector) | supported (int, i128) |  |
-| `intrinsic:llvm.smin` | supported (int, i128, vector) | supported (int, i128) |  |
-| `intrinsic:llvm.umax` | supported (int, i128, vector) | supported (int, i128) |  |
-| `intrinsic:llvm.umin` | supported (int, i128, vector) | supported (int, i128) |  |
-| `intrinsic:llvm.scmp` | supported (int, i128, vector) | supported (int, i128) |  |
-| `intrinsic:llvm.ucmp` | supported (int, i128, vector) | supported (int, i128) |  |
+| `intrinsic:llvm.bswap` | supported (int, i128, vector) | supported (int, i128, vector) |  |
+| `intrinsic:llvm.bitreverse` | supported (int, i128, vector) | supported (int, i128, vector) |  |
+| `intrinsic:llvm.ctpop` | supported (int, i128, vector) | supported (int, i128, vector) |  |
+| `intrinsic:llvm.ctlz` | supported (int, i128, vector) | supported (int, i128, vector) |  |
+| `intrinsic:llvm.cttz` | supported (int, i128, vector) | supported (int, i128, vector) |  |
+| `intrinsic:llvm.fshl` | supported (int, i128, vector) | supported (int, i128, vector) |  |
+| `intrinsic:llvm.fshr` | supported (int, i128, vector) | supported (int, i128, vector) |  |
+| `intrinsic:llvm.abs` | supported (int, i128, vector) | supported (int, i128, vector) |  |
+| `intrinsic:llvm.smax` | supported (int, i128, vector) | supported (int, i128, vector) |  |
+| `intrinsic:llvm.smin` | supported (int, i128, vector) | supported (int, i128, vector) |  |
+| `intrinsic:llvm.umax` | supported (int, i128, vector) | supported (int, i128, vector) |  |
+| `intrinsic:llvm.umin` | supported (int, i128, vector) | supported (int, i128, vector) |  |
+| `intrinsic:llvm.scmp` | supported (int, i128, vector) | supported (int, i128, vector) |  |
+| `intrinsic:llvm.ucmp` | supported (int, i128, vector) | supported (int, i128, vector) |  |
 | `intrinsic:llvm.clmul` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.sadd.with.overflow` | supported (int, i128, int-wide, aggregate) | supported (int, i128, int-wide, aggregate) |  |
 | `intrinsic:llvm.uadd.with.overflow` | supported (int, i128, int-wide, aggregate) | supported (int, i128, int-wide, aggregate) |  |
@@ -561,57 +561,57 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.usub.with.overflow` | supported (int, i128, int-wide, aggregate) | supported (int, i128, int-wide, aggregate) |  |
 | `intrinsic:llvm.smul.with.overflow` | supported (int, i128, int-wide, aggregate) | supported (int, i128, int-wide, aggregate) | wider than 2048 bits refused (`a64:wide-mul-overflow`) |
 | `intrinsic:llvm.umul.with.overflow` | supported (int, i128, int-wide, aggregate) | supported (int, i128, int-wide, aggregate) | wider than 2048 bits refused (`a64:wide-mul-overflow`) |
-| `intrinsic:llvm.sadd.sat` | supported (int, i128, vector) | supported (int, i128) |  |
-| `intrinsic:llvm.uadd.sat` | supported (int, i128, vector) | supported (int, i128) |  |
-| `intrinsic:llvm.ssub.sat` | supported (int, i128, vector) | supported (int, i128) |  |
-| `intrinsic:llvm.usub.sat` | supported (int, i128, vector) | supported (int, i128) |  |
-| `intrinsic:llvm.fabs` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.sqrt` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.floor` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.ceil` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.trunc` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.round` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.roundeven` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.nearbyint` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.rint` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.copysign` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.fma` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.fmuladd` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.minnum` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.maxnum` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.minimum` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.maximum` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.minimumnum` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.maximumnum` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.canonicalize` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.arithmetic.fence` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.pow` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.powi` | supported (int, half, float, double, fp128, vector) | supported (int, half, float, double, fp128) |  |
-| `intrinsic:llvm.ldexp` | supported (int, half, float, double, fp128, vector) | supported (int, half, float, double, fp128) |  |
-| `intrinsic:llvm.frexp` | supported (int, half, float, double, fp128, aggregate) | supported (int, half, float, double, fp128, aggregate) |  |
-| `intrinsic:llvm.sin` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.cos` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.tan` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.asin` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.acos` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.atan` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.atan2` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.sinh` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.cosh` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.tanh` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.exp` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.exp2` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.exp10` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.log` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.log2` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.log10` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128) |  |
-| `intrinsic:llvm.lround` | supported (int, half, float, double, fp128, vector) | supported (int, half, float, double, fp128) |  |
-| `intrinsic:llvm.llround` | supported (int, half, float, double, fp128, vector) | supported (int, half, float, double, fp128) |  |
-| `intrinsic:llvm.lrint` | supported (int, half, float, double, fp128, vector) | supported (int, half, float, double, fp128) |  |
-| `intrinsic:llvm.llrint` | supported (int, half, float, double, fp128, vector) | supported (int, half, float, double, fp128) |  |
-| `intrinsic:llvm.fptosi.sat` | supported (int, half, float, double, vector) | supported (int, half, float, double) |  |
-| `intrinsic:llvm.fptoui.sat` | supported (int, half, float, double, vector) | supported (int, half, float, double) |  |
-| `intrinsic:llvm.is.fpclass` | supported (int, half, float, double, fp128) | supported (int, half, float, double, fp128) |  |
+| `intrinsic:llvm.sadd.sat` | supported (int, i128, vector) | supported (int, i128, vector) |  |
+| `intrinsic:llvm.uadd.sat` | supported (int, i128, vector) | supported (int, i128, vector) |  |
+| `intrinsic:llvm.ssub.sat` | supported (int, i128, vector) | supported (int, i128, vector) |  |
+| `intrinsic:llvm.usub.sat` | supported (int, i128, vector) | supported (int, i128, vector) |  |
+| `intrinsic:llvm.fabs` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.sqrt` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.floor` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.ceil` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.trunc` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.round` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.roundeven` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.nearbyint` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.rint` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.copysign` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.fma` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.fmuladd` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.minnum` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.maxnum` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.minimum` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.maximum` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.minimumnum` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.maximumnum` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.canonicalize` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.arithmetic.fence` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.pow` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.powi` | supported (int, half, float, double, fp128, vector) | supported (int, half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.ldexp` | supported (int, half, float, double, fp128, vector) | supported (int, half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.frexp` | supported (int, half, float, double, fp128, aggregate) | supported (int, half, float, double, fp128, x86_fp80, aggregate) |  |
+| `intrinsic:llvm.sin` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.cos` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.tan` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.asin` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.acos` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.atan` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.atan2` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.sinh` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.cosh` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.tanh` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.exp` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.exp2` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.exp10` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.log` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.log2` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.log10` | supported (half, float, double, fp128, vector) | supported (half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.lround` | supported (int, half, float, double, fp128, vector) | supported (int, half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.llround` | supported (int, half, float, double, fp128, vector) | supported (int, half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.lrint` | supported (int, half, float, double, fp128, vector) | supported (int, half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.llrint` | supported (int, half, float, double, fp128, vector) | supported (int, half, float, double, fp128, x86_fp80, vector) |  |
+| `intrinsic:llvm.fptosi.sat` | supported (int, half, float, double, vector) | supported (int, half, float, double, x86_fp80, vector) |  |
+| `intrinsic:llvm.fptoui.sat` | supported (int, half, float, double, vector) | supported (int, half, float, double, x86_fp80, vector) |  |
+| `intrinsic:llvm.is.fpclass` | supported (int, half, float, double, fp128) | supported (int, half, float, double, fp128, x86_fp80) |  |
 | `intrinsic:llvm.eh.typeid.for` | supported (int, ptr) | supported (int, ptr) |  |
 | `intrinsic:llvm.threadlocal.address` | supported (ptr) | supported (ptr) |  |
 | `intrinsic:llvm.thread.pointer` | supported (ptr) | supported (ptr) |  |
@@ -623,44 +623,44 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.write_register` | supported (int) | not-implemented |  |
 | `intrinsic:llvm.is.constant` | supported | supported |  |
 | `intrinsic:llvm.objectsize` | supported (int, ptr) | supported (int, ptr) |  |
-| `intrinsic:llvm.ptrmask` | supported (int, ptr, vector) | supported (int, ptr) |  |
+| `intrinsic:llvm.ptrmask` | supported (int, ptr, vector) | supported (int, ptr, vector) |  |
 | `intrinsic:llvm.load.relative` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.instrprof.increment` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.instrprof.increment.step` | not-implemented | not-implemented | unplanned |
-| `intrinsic:llvm.vector.reduce.add` | supported (int, vector) | not-implemented | masks of up to 64 lanes, lanes up to 256 (WP-081) |
-| `intrinsic:llvm.vector.reduce.mul` | supported (int, vector) | not-implemented | masks of up to 64 lanes, lanes up to 256 (WP-081) |
-| `intrinsic:llvm.vector.reduce.and` | supported (int, vector) | not-implemented | masks of up to 64 lanes, lanes up to 256 (WP-081) |
-| `intrinsic:llvm.vector.reduce.or` | supported (int, vector) | not-implemented | masks of up to 64 lanes, lanes up to 256 (WP-081) |
-| `intrinsic:llvm.vector.reduce.xor` | supported (int, vector) | not-implemented | masks of up to 64 lanes, lanes up to 256 (WP-081) |
-| `intrinsic:llvm.vector.reduce.smax` | supported (int, vector) | not-implemented | masks of up to 64 lanes, lanes up to 256 (WP-081) |
-| `intrinsic:llvm.vector.reduce.smin` | supported (int, vector) | not-implemented | masks of up to 64 lanes, lanes up to 256 (WP-081) |
-| `intrinsic:llvm.vector.reduce.umax` | supported (int, vector) | not-implemented | masks of up to 64 lanes, lanes up to 256 (WP-081) |
-| `intrinsic:llvm.vector.reduce.umin` | supported (int, vector) | not-implemented | masks of up to 64 lanes, lanes up to 256 (WP-081) |
-| `intrinsic:llvm.vector.reduce.fmax` | supported (half, float, double, vector) | not-implemented | lanes up to 256 (WP-081) |
-| `intrinsic:llvm.vector.reduce.fmin` | supported (half, float, double, vector) | not-implemented | lanes up to 256 (WP-081) |
-| `intrinsic:llvm.vector.reduce.fadd` | supported (half, float, double, vector) | not-implemented | lanes up to 256 (WP-081) |
-| `intrinsic:llvm.vector.reduce.fmul` | supported (half, float, double, vector) | not-implemented | lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.add` | supported (int, vector) | supported (int, vector) | masks of up to 64 lanes, lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.mul` | supported (int, vector) | supported (int, vector) | masks of up to 64 lanes, lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.and` | supported (int, vector) | supported (int, vector) | masks of up to 64 lanes, lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.or` | supported (int, vector) | supported (int, vector) | masks of up to 64 lanes, lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.xor` | supported (int, vector) | supported (int, vector) | masks of up to 64 lanes, lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.smax` | supported (int, vector) | supported (int, vector) | masks of up to 64 lanes, lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.smin` | supported (int, vector) | supported (int, vector) | masks of up to 64 lanes, lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.umax` | supported (int, vector) | supported (int, vector) | masks of up to 64 lanes, lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.umin` | supported (int, vector) | supported (int, vector) | masks of up to 64 lanes, lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.fmax` | supported (half, float, double, vector) | supported (half, float, double, vector) | lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.fmin` | supported (half, float, double, vector) | supported (half, float, double, vector) | lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.fadd` | supported (half, float, double, vector) | supported (half, float, double, vector) | lanes up to 256 (WP-081) |
+| `intrinsic:llvm.vector.reduce.fmul` | supported (half, float, double, vector) | supported (half, float, double, vector) | lanes up to 256 (WP-081) |
 | `intrinsic:llvm.vector.extract` | not-implemented | not-implemented | M2 (vectors) |
 | `intrinsic:llvm.vector.insert` | not-implemented | not-implemented | M2 (vectors) |
-| `intrinsic:llvm.coro.id` | supported (int, ptr, token) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.alloc` | supported (int, token) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.begin` | supported (ptr, token) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.end` | supported (int, ptr, token) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.free` | supported (ptr, token) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.size` | supported (int) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.align` | supported (int) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.save` | supported (ptr, token) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.suspend` | supported (int, token) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.resume` | supported (ptr) | not-implemented | in any function (WP-105) |
-| `intrinsic:llvm.coro.destroy` | supported (ptr) | not-implemented | in any function (WP-105) |
-| `intrinsic:llvm.coro.done` | supported (int, ptr) | not-implemented | in any function (WP-105) |
-| `intrinsic:llvm.coro.promise` | supported (int, ptr) | not-implemented | in any function; a constant power-of-two alignment (WP-105) |
+| `intrinsic:llvm.coro.id` | supported (int, ptr, token) | supported (int, ptr, token) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.alloc` | supported (int, token) | supported (int, token) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.begin` | supported (ptr, token) | supported (ptr, token) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.end` | supported (int, ptr, token) | supported (int, ptr, token) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.free` | supported (ptr, token) | supported (ptr, token) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.size` | supported (int) | supported (int) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.align` | supported (int) | supported (int) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.save` | supported (ptr, token) | supported (ptr, token) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.suspend` | supported (int, token) | supported (int, token) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.resume` | supported (ptr) | supported (ptr) | in any function (WP-105) |
+| `intrinsic:llvm.coro.destroy` | supported (ptr) | supported (ptr) | in any function (WP-105) |
+| `intrinsic:llvm.coro.done` | supported (int, ptr) | supported (int, ptr) | in any function (WP-105) |
+| `intrinsic:llvm.coro.promise` | supported (int, ptr) | supported (int, ptr) | in any function; a constant power-of-two alignment (WP-105) |
 | `intrinsic:llvm.coro.frame` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.coro.noop` | supported (ptr) | not-implemented | the noop frame (WP-105) |
-| `intrinsic:llvm.coro.is_in_ramp` | supported (int) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.await.suspend.void` | supported (ptr) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.await.suspend.bool` | supported (int, ptr) | not-implemented | in a coroutine body (WP-106) |
-| `intrinsic:llvm.coro.await.suspend.handle` | supported (ptr) | not-implemented | in a coroutine body; symmetric transfer in constant stack (WP-107) |
+| `intrinsic:llvm.coro.noop` | supported (ptr) | supported (ptr) | the noop frame (WP-105) |
+| `intrinsic:llvm.coro.is_in_ramp` | supported (int) | supported (int) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.await.suspend.void` | supported (ptr) | supported (ptr) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.await.suspend.bool` | supported (int, ptr) | supported (int, ptr) | in a coroutine body (WP-106) |
+| `intrinsic:llvm.coro.await.suspend.handle` | supported (ptr) | supported (ptr) | in a coroutine body; symmetric transfer in constant stack (WP-107) |
 | `intrinsic:llvm.sshl.sat` | supported (int) | supported (int) | up to 64 bits (WP-084) |
 | `intrinsic:llvm.ushl.sat` | supported (int) | supported (int) | up to 64 bits (WP-084) |
 | `intrinsic:llvm.aarch64.crc32b` | supported (int) | rejected | x86_64: an AArch64 property |

@@ -9,7 +9,6 @@
 ;@ covers: spec/ir.md §5.5 intrinsics (coro.resume, coro.destroy, coro.done, coro.promise)
 ;@ input: pre-opt
 ;@ link: c++
-;@ unsupported(x86_64): *
 ;@ stdout: small: promise +16 back 1, done 0
 ;@ stdout: resumed 1 2 3, done 1
 ;@ stdout: destroyed 1

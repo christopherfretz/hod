@@ -6,7 +6,6 @@
 ; zero). Operands come from memory. Lanes print in hex, or with %.17g.
 ; Expected values computed by a script, not a compiler.
 ;@ covers: spec/ir.md §5.4 integer, floating point (vector operands)
-;@ unsupported(x86_64): *
 ;@ stdout: i8 add: ff 81 2 b6 6d 3f 12 8f 79 b da 73 40 a1 cc 3b
 ;@ stdout: i8 sub: 1 81 fc 4a 91 81 76 4b 87 f7 24 8d be 1f bc 9f
 ;@ stdout: i8 mul: 0 80 fd 0 12 a0 b8 fa 0 a 25 80 bf 60 20 36

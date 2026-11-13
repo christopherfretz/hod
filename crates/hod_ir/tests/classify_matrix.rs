@@ -121,11 +121,12 @@ const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 27] = [
     ("module:pic", "", "", "", ""),
     ("module:frame-pointer", "", "", "", ""),
     ("structor:priority", "", "", "", ""),
-    // WP-087: debug modules reach the DWARF writer on AArch64.
-    ("debug:module-flags", "", "debug:module-flags", "", ""),
-    ("debug:dwarf-version", "debug:dwarf-version", "debug:module-flags", "", ""),
+    // WP-087: debug modules reach the DWARF writer on AArch64; WP-136 on
+    // x86-64.
+    ("debug:module-flags", "", "", "", ""),
+    ("debug:dwarf-version", "debug:dwarf-version", "debug:dwarf-version", "", ""),
     // WP-127: `type:double` no longer refuses an x86-64 body first.
-    ("debug:locations", "", "", "", "debug:locations"),
+    ("debug:locations", "", "", "", ""),
     ("global:function-declaration", "", "", "", ""),
     // WP-143: x86-64 module-level constructs.
     ("global:variable-definition", "", "", "", ""),
@@ -138,7 +139,7 @@ const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 27] = [
     ("function:slots", "", "", "", ""),
     // WP-140: `fastcc` is `ccc` on x86-64 too.
     ("cc:fastcc", "", "", "", "+"),
-    ("attr:zeroext", "", "", "", "attr:zeroext"),
+    ("attr:zeroext", "", "", "", ""),
     ("type:double", "", "", "", ""),
     ("inst:add", "", "", "", ""),
     ("mem:volatile", "", "", "", ""),
@@ -481,10 +482,11 @@ const A64_SUPPORTED: [&str; 13] = [
     "module:asm-symbols",
 ];
 
-/// The rows of `RICH_MODULE` x86-64 supports (WP-116, WP-143).
-const X64_SUPPORTED: [&str; 12] = [
+/// The rows of `RICH_MODULE` x86-64 supports (WP-116, WP-143, WP-136).
+const X64_SUPPORTED: [&str; 13] = [
     "module:pic",
     "module:uwtable",
+    "debug:module-flags",
     "global:function-definition",
     "module:global-ctors",
     "structor:priority",
@@ -617,8 +619,7 @@ fn findings_come_in_the_specified_order() {
         // The first reason of each pass is the first finding of it.
         let classifier = Classifier::new(shipped).with_stack_args(&NO_STACK);
         let module_reason = classifier.module(&program.m).unwrap_err();
-        let first =
-            if arch == Arch::Aarch64 { "module-flag:mystery" } else { "debug:module-flags" };
+        let first = "module-flag:mystery";
         assert_eq!((module_reason.construct.as_ref(), module_reason.symbol), (first, None));
         // AArch64 supports the whole body (WP-069: `tail:musttail`).
         let Some(&first_body) = body.first() else {
@@ -846,4 +847,213 @@ fn intrinsic_rows_of_wp_128() {
     }
     // Named registers stay with a later package.
     assert_eq!(x64.supports("intrinsic:llvm.read_register"), Some(false));
+}
+
+// WP-137: coroutine bodies and the handle operations on x86-64 (`spec/codegen.md`
+// §7.6 "x86-64"). `RICH_BODY` has none of them; the rows are checked here.
+#[test]
+fn coroutine_rows_of_wp_137() {
+    let x64 = Support::shipped(Arch::X86_64);
+    let a64 = Support::shipped(Arch::Aarch64);
+    let mut rows = vec!["attr:presplitcoroutine".to_owned(), "type:token".to_owned()];
+    for name in [
+        "id",
+        "alloc",
+        "begin",
+        "end",
+        "free",
+        "size",
+        "align",
+        "save",
+        "suspend",
+        "resume",
+        "destroy",
+        "done",
+        "promise",
+        "noop",
+        "is_in_ramp",
+        "await.suspend.void",
+        "await.suspend.bool",
+        "await.suspend.handle",
+    ] {
+        rows.push(format!("intrinsic:llvm.coro.{name}"));
+    }
+    for row in &rows {
+        assert_eq!(x64.supports(row), Some(true), "{row}");
+        assert_eq!(a64.supports(row), Some(true), "{row}");
+    }
+    // `coro.frame` is the plan's refusal on both targets.
+    assert_eq!(x64.supports("intrinsic:llvm.coro.frame"), Some(false));
+}
+
+// WP-131: `x86_fp80` on x86-64 (the x87), never on AArch64.
+#[test]
+fn x87_rows_of_wp_131() {
+    let a64 = Support::shipped(Arch::Aarch64);
+    let x64 = Support::shipped(Arch::X86_64);
+    assert_eq!(x64.supports("type:x86_fp80"), Some(true));
+    assert_eq!(a64.supports("type:x86_fp80"), Some(false));
+    let insts = [
+        "fadd",
+        "fsub",
+        "fmul",
+        "fdiv",
+        "frem",
+        "fneg",
+        "fcmp",
+        "fptrunc",
+        "fpext",
+        "fptoui",
+        "fptosi",
+        "uitofp",
+        "sitofp",
+        "bitcast",
+        "load",
+        "store",
+        "extractvalue",
+        "insertvalue",
+        "select",
+        "freeze",
+    ];
+    let intrinsics = [
+        "fabs",
+        "sqrt",
+        "floor",
+        "ceil",
+        "trunc",
+        "round",
+        "roundeven",
+        "nearbyint",
+        "rint",
+        "copysign",
+        "fma",
+        "fmuladd",
+        "minnum",
+        "maxnum",
+        "minimum",
+        "maximum",
+        "minimumnum",
+        "maximumnum",
+        "canonicalize",
+        "arithmetic.fence",
+        "pow",
+        "powi",
+        "ldexp",
+        "frexp",
+        "sin",
+        "cos",
+        "tan",
+        "asin",
+        "acos",
+        "atan",
+        "atan2",
+        "sinh",
+        "cosh",
+        "tanh",
+        "exp",
+        "exp2",
+        "exp10",
+        "log",
+        "log2",
+        "log10",
+        "lround",
+        "llround",
+        "lrint",
+        "llrint",
+        "fptosi.sat",
+        "fptoui.sat",
+        "is.fpclass",
+    ];
+    let rows = insts
+        .iter()
+        .map(|n| format!("inst:{n}"))
+        .chain(intrinsics.iter().map(|n| format!("intrinsic:llvm.{n}")));
+    for row in rows {
+        let pair = format!("{row}/x86_fp80");
+        assert_eq!(x64.supports(&pair), Some(true), "{pair}");
+        assert_eq!(a64.supports(&pair), Some(false), "{pair}");
+    }
+}
+
+// WP-144: the x86-64 leftovers between the groups. Floating-point
+// members of aggregates (`x86_fp80` is WP-131's), conversions with
+// integers wider than 64 bits (the target refuses those wider than 128 by
+// name, as AArch64 does).
+#[test]
+fn leftover_rows_of_wp_144() {
+    let x64 = Support::shipped(Arch::X86_64);
+    let a64 = Support::shipped(Arch::Aarch64);
+    for row in ["inst:extractvalue", "inst:insertvalue"] {
+        let classes = x64.classes(row).unwrap();
+        for class in [
+            TypeClass::Half,
+            TypeClass::BFloat,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+        ] {
+            assert!(classes.has(class), "{row}: {class:?}");
+        }
+    }
+    for row in ["inst:fptoui", "inst:fptosi", "inst:uitofp", "inst:sitofp"] {
+        // Every class AArch64 has (WP-131 adds `x86_fp80`, which AArch64
+        // has not); vectors are WP-132's.
+        let x64_classes = x64.classes(row).unwrap();
+        for class in a64.classes(row).unwrap().iter().filter(|&k| k != TypeClass::Vector) {
+            assert!(x64_classes.has(class), "{row}: {class:?}");
+        }
+        assert!(x64_classes.has(TypeClass::IntWide), "{row}");
+    }
+    // `i128` atomics: `cmpxchg16b` with `+cx16`, libatomic without.
+    for row in ["inst:cmpxchg", "inst:atomicrmw"] {
+        assert!(x64.classes(row).unwrap().has(TypeClass::I128), "{row}");
+    }
+}
+
+// WP-132: vectors on x86-64. Every row AArch64 supports for vector
+// values x86-64 supports for them too; `type:vector` is on.
+#[test]
+fn vector_rows_of_wp_132() {
+    let a64 = Support::shipped(Arch::Aarch64);
+    let x64 = Support::shipped(Arch::X86_64);
+    assert_eq!(x64.supports("type:vector"), Some(true));
+    for row in [
+        "inst:add",
+        "inst:sdiv",
+        "inst:ashr",
+        "inst:fadd",
+        "inst:frem",
+        "inst:fneg",
+        "inst:icmp",
+        "inst:fcmp",
+        "inst:sext",
+        "inst:fptrunc",
+        "inst:sitofp",
+        "inst:inttoptr",
+        "inst:bitcast",
+        "inst:load",
+        "inst:store",
+        "inst:extractelement",
+        "inst:insertelement",
+        "inst:shufflevector",
+        "inst:select",
+        "inst:freeze",
+        "intrinsic:llvm.ctpop",
+        "intrinsic:llvm.usub.sat",
+        "intrinsic:llvm.fma",
+        "intrinsic:llvm.minimum",
+        "intrinsic:llvm.ldexp",
+        "intrinsic:llvm.fptoui.sat",
+        "intrinsic:llvm.ptrmask",
+        "intrinsic:llvm.vector.reduce.add",
+        "intrinsic:llvm.vector.reduce.umin",
+        "intrinsic:llvm.vector.reduce.fmul",
+    ] {
+        let vector = format!("{row}/vector");
+        assert_eq!(a64.supports(&vector), Some(true), "{vector}");
+        assert_eq!(x64.supports(&vector), Some(true), "{vector}");
+    }
+    for row in ["inst:extractelement", "inst:shufflevector", "intrinsic:llvm.vector.reduce.fmax"] {
+        assert_eq!(x64.classes(row), a64.classes(row), "{row}: the same cell");
+    }
 }

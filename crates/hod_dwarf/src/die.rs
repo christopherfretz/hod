@@ -590,6 +590,9 @@ pub(crate) enum Target {
     Addr,
     Rnglists,
     Symbol(SymbolId),
+    /// WP-136: a thread-local variable's offset in its TLS block
+    /// (`crate::x86_64::tls_offset_reloc`).
+    Tls(SymbolId),
 }
 
 #[derive(Clone, Copy)]
@@ -1131,14 +1134,14 @@ pub fn write_debug_info(
             Target::Line => (sym_line, false),
             Target::Addr => (sym_addr.unwrap_or(sym_abbrev), false),
             Target::Rnglists => (sym_rnglists.unwrap_or(sym_abbrev), false),
-            Target::Symbol(s) => (s, true),
+            Target::Symbol(s) | Target::Tls(s) => (s, true),
         };
         let section = match r.sec {
             Sec::Info => info,
             Sec::StrOffsets => str_offsets,
             Sec::Addr => addr.unwrap_or(info),
         };
-        let kind = if wide { target.address_reloc } else { target.offset_reloc };
+        let kind = crate::x86_64::reloc_kind(r.target, wide, target); // WP-136
         obj.add_relocation(section, r.offset as u64, kind, symbol, r.addend);
     }
     Ok(DieSections { abbrev: abbrev_sec, info, str_offsets, str: str_sec, addr, rnglists })

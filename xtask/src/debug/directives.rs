@@ -47,6 +47,14 @@ pub const DEBUGGER_WORDS: [&str; 4] = ["gdb", "lldb", "lldb-19", "lldb-22"];
 /// The linkers' names in scopes.
 pub const LINKER_WORDS: [&str; 4] = ["bfd", "lld", "mold", "wild"];
 
+/// The targets' names in scopes and in `target:` (WP-136): the
+/// architecture the programs are built for (`--target`).
+pub const TARGET_WORDS: [&str; 2] = ["aarch64", "x86_64"];
+
+/// The scope word of a session through an emulator's gdb stub (a target
+/// that is not this machine's, WP-136).
+pub const REMOTE_WORD: &str = "remote";
+
 /// When an `xfail` applies: each list that is not empty must contain the
 /// session's front end, linker or debugger.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -54,9 +62,21 @@ pub struct Scope {
     pub frontends: Vec<String>,
     pub linkers: Vec<String>,
     pub debuggers: Vec<String>,
+    /// WP-136: the targets (`aarch64`, `x86_64`).
+    pub targets: Vec<String>,
+    /// WP-136: `remote`, only sessions through an emulator's gdb stub.
+    pub remote: bool,
 }
 
 impl Scope {
+    /// Whether the scope covers sessions on `target` (an architecture's
+    /// name), `remote` when they go through an emulator's gdb stub: when
+    /// it names no target, every one; `remote` only the remote ones.
+    pub fn covers_target(&self, target: &str, remote: bool) -> bool {
+        (self.targets.is_empty() || self.targets.iter().any(|t| t == target))
+            && (!self.remote || remote)
+    }
+
     /// Whether the scope covers a session. `debugger` is `gdb` or
     /// `lldb-<N>`, which `lldb` also names.
     pub fn covers(&self, frontend: &str, linker: Option<&str>, debugger: Option<&str>) -> bool {
@@ -79,6 +99,10 @@ impl Scope {
                 scope.linkers.push(word.to_owned());
             } else if DEBUGGER_WORDS.contains(&word) {
                 scope.debuggers.push(word.to_owned());
+            } else if TARGET_WORDS.contains(&word) {
+                scope.targets.push(word.to_owned());
+            } else if word == REMOTE_WORD {
+                scope.remote = true;
             } else {
                 return Err(format!("unknown word '{word}' in an xfail scope"));
             }
@@ -137,9 +161,47 @@ pub struct DebugTest {
     pub gdb: Script,
     pub lldb: Script,
     pub xfails: Vec<Xfail>,
+    /// `target:` (WP-136): the targets the test is run for; empty is
+    /// every one.
+    pub targets: Vec<String>,
+    /// `skip(<scope>): <reason>` (WP-136): sessions not run, for what a
+    /// debugger cannot do there (a gdb stub's limits).
+    pub skips: Vec<Xfail>,
 }
 
 impl DebugTest {
+    /// Whether the test is run for `target` (an architecture's name).
+    pub fn runs_on(&self, target: &str) -> bool {
+        self.targets.is_empty() || self.targets.iter().any(|t| t == target)
+    }
+
+    /// The first `xfail` that covers a session on `target` (`remote`:
+    /// through an emulator's gdb stub).
+    pub fn xfail_on(
+        &self,
+        (target, remote): (&str, bool),
+        frontend: &str,
+        linker: Option<&str>,
+        debugger: Option<&str>,
+    ) -> Option<&Xfail> {
+        self.xfails.iter().find(|x| {
+            x.scope.covers_target(target, remote) && x.scope.covers(frontend, linker, debugger)
+        })
+    }
+
+    /// The first `skip` that covers a session, like [`Self::xfail_on`].
+    pub fn skip_on(
+        &self,
+        (target, remote): (&str, bool),
+        frontend: &str,
+        linker: Option<&str>,
+        debugger: Option<&str>,
+    ) -> Option<&Xfail> {
+        self.skips.iter().find(|x| {
+            x.scope.covers_target(target, remote) && x.scope.covers(frontend, linker, debugger)
+        })
+    }
+
     /// The front ends this test is built by, in [`FRONTENDS`] order.
     pub fn frontends(&self) -> Vec<&'static str> {
         let allowed: &[&str] = match self.lang {
@@ -154,20 +216,54 @@ impl DebugTest {
             .collect()
     }
 
-    /// The first `xfail` that covers a session.
+    /// The first `xfail` that covers a session on this machine's
+    /// architecture.
     pub fn xfail(
         &self,
         frontend: &str,
         linker: Option<&str>,
         debugger: Option<&str>,
     ) -> Option<&Xfail> {
-        self.xfails.iter().find(|x| x.scope.covers(frontend, linker, debugger))
+        let host = crate::irdiff::directives::Arch::host().map_or("", |a| a.name());
+        self.xfail_on((host, false), frontend, linker, debugger)
     }
 }
 
 /// Whether `text` has a directive line for `lang`.
 pub fn has_directives(text: &str, lang: Lang) -> bool {
     text.lines().any(|line| line.trim_start().starts_with(lang.marker()))
+}
+
+/// The words of a `target:` directive.
+fn target_words(value: &str) -> Result<Vec<String>, String> {
+    value
+        .split_whitespace()
+        .map(|word| {
+            if TARGET_WORDS.contains(&word) {
+                Ok(word.to_owned())
+            } else {
+                Err(format!("unknown target '{word}'"))
+            }
+        })
+        .collect()
+}
+
+/// An `xfail` or `skip` directive (`key`: `xfail`, `xfail(<scope>)`,
+/// `skip`, `skip(<scope>)`; `value`: the reason).
+fn scoped(key: &str, value: &str) -> Result<Xfail, String> {
+    let word = if key.starts_with("skip") { "skip" } else { "xfail" };
+    let scope = match key.strip_prefix(word).unwrap_or("") {
+        "" => Scope::default(),
+        inner => {
+            let inner = inner.strip_prefix('(').and_then(|s| s.strip_suffix(')'));
+            Scope::parse(inner.ok_or_else(|| format!("bad {word} scope '{key}'"))?)?
+        }
+    };
+    if value.is_empty() {
+        let what = if word == "skip" { "a skip" } else { "an xfail" };
+        return Err(format!("{what} needs a reason"));
+    }
+    Ok(Xfail { scope, reason: value.to_owned() })
 }
 
 /// Parses the directives of `path`, whose content is `source`. An error
@@ -188,6 +284,8 @@ pub fn parse(path: &Path, source: &str) -> Result<DebugTest, String> {
         gdb: Script::default(),
         lldb: Script::default(),
         xfails: Vec::new(),
+        targets: Vec::new(),
+        skips: Vec::new(),
     };
     for (number, line) in source.lines().enumerate() {
         let Some(rest) = line.trim_start().strip_prefix(lang.marker()) else { continue };
@@ -223,6 +321,7 @@ pub fn parse(path: &Path, source: &str) -> Result<DebugTest, String> {
                     test.frontends.push(word);
                 }
             }
+            "target" => test.targets.extend(target_words(value).map_err(at)?),
             "cflags" => test.cflags.extend(words()),
             "link" => test.link.extend(words()),
             "tier" => {
@@ -238,20 +337,14 @@ pub fn parse(path: &Path, source: &str) -> Result<DebugTest, String> {
                 }
                 test.pre_opt = true;
             }
-            _ if key == "xfail" || key.starts_with("xfail(") => {
-                let scope = match key.strip_prefix("xfail") {
-                    Some("") => Scope::default(),
-                    Some(inner) => {
-                        let inner = inner.strip_prefix('(').and_then(|s| s.strip_suffix(')'));
-                        let inner = inner.ok_or_else(|| at(format!("bad xfail scope '{key}'")))?;
-                        Scope::parse(inner).map_err(at)?
-                    }
-                    None => unreachable!("the key starts with xfail"),
-                };
-                if value.is_empty() {
-                    return Err(at("an xfail needs a reason".to_owned()));
-                }
-                test.xfails.push(Xfail { scope, reason: value.to_owned() });
+            _ if key == "skip"
+                || key.starts_with("skip(")
+                || key == "xfail"
+                || key.starts_with("xfail(") =>
+            {
+                let skip = key.starts_with("skip");
+                let scoped = scoped(key, value).map_err(at)?;
+                if skip { test.skips.push(scoped) } else { test.xfails.push(scoped) }
             }
             _ => return Err(at(format!("unknown directive '{key}'"))),
         }

@@ -10,10 +10,12 @@ use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use super::build::{self, HodBuild, Tools};
+use super::cross;
 use super::directives::{self, DebugTest, Lang, Objects};
 use super::lines::{self, LineTools, LinesReport};
 use super::permitted::{self, IrFacts};
 use super::transcript::{self, Debugger, Ended};
+use crate::irdiff::directives::Arch;
 use crate::irdiff::process::Limits;
 use crate::irdiff::tools::Linker;
 
@@ -130,6 +132,8 @@ pub struct Options {
     pub kiln: Option<PathBuf>,
     pub tool_limits: Limits,
     pub session_limits: Limits,
+    /// WP-136: the target (`--target`); `None` is this machine's.
+    pub target: Option<Arch>,
 }
 
 impl Options {
@@ -152,6 +156,7 @@ impl Options {
             kiln: None,
             tool_limits: Limits { time: Duration::from_mins(2), memory_kib: 4 << 20 },
             session_limits: transcript::SESSION_LIMITS,
+            target: None,
         }
     }
 }
@@ -295,8 +300,11 @@ fn test_name(path: &Path) -> String {
 
 /// Finds the tools of a run, with notes for what is missing.
 fn find_tools(options: &Options, report: &mut Report) -> Result<(Tools, Vec<Debugger>), String> {
-    use crate::irdiff::tools::{REQUIRED_LINKERS, Search, find_driver, find_linker};
+    use crate::irdiff::tools::{REQUIRED_LINKERS, Search, find_driver_for, find_linker_for};
     let search = Search::from_env();
+    let host = Arch::host();
+    let arch = options.target.or(host).unwrap_or(Arch::Aarch64);
+    let cross = if Some(arch) == host { None } else { Some(cross::find(arch, &search)?) };
     let missing = |what: String, required: bool, report: &mut Report| {
         report.notes.push(format!("{what} not found"));
         report.missing_required |= required && options.require_tools;
@@ -328,7 +336,7 @@ fn find_tools(options: &Options, report: &mut Report) -> Result<(Tools, Vec<Debu
             None => missing(format!("`llc-{major}`"), true, report),
         }
     }
-    let driver = find_driver(&search);
+    let driver = find_driver_for(arch, &search);
     if driver.is_none() {
         missing("the linker driver `gcc`".to_owned(), true, report);
     }
@@ -338,7 +346,7 @@ fn find_tools(options: &Options, report: &mut Report) -> Result<(Tools, Vec<Debu
         if !wanted {
             continue;
         }
-        match find_linker(name, &search) {
+        match find_linker_for(name, arch, &search) {
             Some(path) => linkers.push(Linker { name: name.to_owned(), path }),
             None if options.linkers.iter().any(|l| l == name) => {
                 return Err(format!("the linker '{name}' was asked for and is not found"));
@@ -349,6 +357,9 @@ fn find_tools(options: &Options, report: &mut Report) -> Result<(Tools, Vec<Debu
         }
     }
     let mut debuggers = transcript::find_debuggers(&search);
+    if cross.is_some() {
+        cross::remote_debuggers(&mut debuggers, &search);
+    }
     if !debuggers.iter().any(Debugger::is_gdb) {
         missing("`gdb`".to_owned(), true, report);
     }
@@ -368,6 +379,15 @@ fn find_tools(options: &Options, report: &mut Report) -> Result<(Tools, Vec<Debu
         dir.join("bin/clang++").is_file().then_some(dir)
     });
     report.tools.push(format!("hod {}", hod.display()));
+    if let Some(cross) = &cross {
+        let remote = &cross.remote;
+        report.tools.push(format!(
+            "target {}: emulator {}, system root {}",
+            cross.arch.name(),
+            remote.emulator.display(),
+            remote.sysroot.display()
+        ));
+    }
     for (name, path) in &frontends {
         report.tools.push(format!("front end {name}: {}", path.display()));
     }
@@ -380,7 +400,7 @@ fn find_tools(options: &Options, report: &mut Report) -> Result<(Tools, Vec<Debu
     for debugger in &debuggers {
         report.tools.push(format!("debugger {}: {}", debugger.name, debugger.path.display()));
     }
-    Ok((Tools { frontends, llc, hod, driver, linkers, kiln_llvm }, debuggers))
+    Ok((Tools { frontends, llc, hod, driver, linkers, kiln_llvm, cross }, debuggers))
 }
 
 /// The tools of the lines comparison: LLVM 22's, else 19's.
@@ -523,6 +543,16 @@ struct Variant {
 }
 
 impl Run<'_> {
+    /// The name of the architecture the programs are built for.
+    fn target_name(&self) -> &'static str {
+        self.tools.cross.as_ref().map(|c| c.arch).or_else(Arch::host).map_or("", Arch::name)
+    }
+
+    /// The target's name, and whether sessions are remote.
+    fn target(&self) -> (&'static str, bool) {
+        (self.target_name(), self.tools.cross.is_some())
+    }
+
     fn unit(&self, index: usize, name: &str, test: &DebugTest, frontend: &str) -> Done {
         let stem = test.path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
         let dir = self.work.join(format!("{index:04}-{stem}-{frontend}"));
@@ -534,7 +564,7 @@ impl Run<'_> {
                       detail: String| {
             // An xfail turns a FAIL (or a crash on hod's program) into an
             // XFAIL and a PASS into an XPASS.
-            let xfail = test.xfail(frontend, linker, debugger);
+            let xfail = test.xfail_on(self.target(), frontend, linker, debugger);
             let (outcome, detail) = match (outcome, xfail) {
                 (Outcome::Fail, Some(x)) => (Outcome::Xfail, format!("{}; {detail}", x.reason)),
                 (Outcome::Crash, Some(x)) if variant != "llc" => {
@@ -579,6 +609,16 @@ impl Run<'_> {
         let major = build::frontend_major(frontend);
         let tool = build::frontend_tool(frontend, test.lang);
         let skip = |why: String| record("-", None, None, Outcome::Skip, why);
+        let target = self.target_name();
+        if !test.runs_on(target) {
+            done.records.push(skip(format!("not run on {target} (target:)")));
+            return;
+        }
+        // An IR test's module is written for this machine (WP-136).
+        if test.lang == Lang::Ir && self.tools.cross.is_some() {
+            done.records.push(skip(format!("an IR test is not run on {target}")));
+            return;
+        }
         if test.lang != Lang::Ir && self.tools.frontend(&tool).is_none() {
             done.records.push(skip(format!("no {tool}")));
             return;
@@ -706,8 +746,16 @@ impl Run<'_> {
                     continue;
                 }
                 let at_debugger = Some(debugger.name.as_str());
+                if let Some(skip) = test.skip_on(self.target(), frontend, at_linker, at_debugger) {
+                    let why = format!("skip: {}", skip.reason);
+                    done.records.push(record("hod", at_linker, at_debugger, Outcome::Skip, why));
+                    continue;
+                }
                 let limits = self.options.session_limits;
-                let session = |p: &Path| transcript::session(debugger, p, &script.commands, limits);
+                let session = |p: &Path| match &self.tools.cross {
+                    Some(c) => cross::session(&c.remote, debugger, p, &script.commands, limits),
+                    None => transcript::session(debugger, p, &script.commands, limits),
+                };
                 let save = |p: &Path, printed: &str| {
                     let _ = fs::write(p.with_file_name(format!("{}.txt", debugger.name)), printed);
                 };

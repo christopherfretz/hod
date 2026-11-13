@@ -46,6 +46,8 @@ pub fn build(b: &mut Batch) {
         emit!(b, push_r(r(n)), "push {}", reg(Size::Q, n));
         emit!(b, pop_r(r(n)), "pop {}", reg(Size::Q, n));
     }
+    emit!(b, pushfq(), "pushfq");
+    emit!(b, popfq(), "popfq");
     for m in some_mems() {
         emit!(b, jmp_m(m.mem()), "jmp {}", m.sized(Size::Q));
         emit!(b, call_m(m.mem()), "call {}", m.sized(Size::Q));

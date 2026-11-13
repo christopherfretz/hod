@@ -32,6 +32,10 @@ pub enum Class {
     /// loads (and `getelementptr`s), which `llc` merges or places with
     /// their user ([`permitted::IrFacts::pair_class`]).
     LoadPlacement,
+    /// §5.7 `post-indexed-load`: hod's pair whose instructions are
+    /// `getelementptr`s of a pointer a load reads, which `llc` folds into
+    /// that load ([`permitted::IrFacts::pair_class`]).
+    PostIndexedLoad,
     /// §5.7 `is-constant`: hod's pair in a function that calls
     /// `llvm.is.constant`, whose guarded blocks `llc` deletes.
     IsConstant,
@@ -45,14 +49,21 @@ impl Class {
             Self::P1 => "P1",
             Self::P3 => "P3",
             Self::LoadPlacement => "load-placement",
+            Self::PostIndexedLoad => "post-indexed-load",
             Self::IsConstant => "is-constant",
             Self::Unclassified => "unclassified",
         }
     }
 
     /// The classes, in the summary's order.
-    pub const ALL: [Self; 5] =
-        [Self::P1, Self::P3, Self::LoadPlacement, Self::IsConstant, Self::Unclassified];
+    pub const ALL: [Self; 6] = [
+        Self::P1,
+        Self::P3,
+        Self::LoadPlacement,
+        Self::PostIndexedLoad,
+        Self::IsConstant,
+        Self::Unclassified,
+    ];
 }
 
 /// The comparison of one pair of programs.
@@ -87,7 +98,7 @@ impl LinesReport {
     }
 
     /// One line: `same N, hod only N (P1 N, P3 N, load-placement N,
-    /// is-constant N, unclassified N), llc only ...`.
+    /// post-indexed-load N, is-constant N, unclassified N), llc only ...`.
     pub fn summary(&self) -> String {
         let side = |list: &[(Pair, Class)]| {
             let count = |c| list.iter().filter(|(_, k)| *k == c).count();
@@ -272,9 +283,10 @@ fn pairs_of(rows: &[Row], symbols: &[(u64, u64, String)]) -> Pairs {
 }
 
 /// The class [`IrFacts::pair_class`] gives a pair, else unclassified.
-fn ir_class(facts: &IrFacts, (function, _, line): &Pair, hod_side: bool) -> Class {
-    match facts.pair_class(function, *line, hod_side) {
+fn ir_class(facts: &IrFacts, (function, file, line): &Pair, hod_side: bool) -> Class {
+    match facts.pair_class(function, file, *line, hod_side) {
         Some(PairClass::LoadPlacement) => Class::LoadPlacement,
+        Some(PairClass::PostIndexedLoad) => Class::PostIndexedLoad,
         Some(PairClass::IsConstant) => Class::IsConstant,
         None => Class::Unclassified,
     }
@@ -564,8 +576,9 @@ Address            Line   Column File   ISA Discriminator OpIndex Flags
         assert_eq!(report.unclassified(), 1);
         assert_eq!(
             report.summary(),
-            "same 3, hod only 1 (P1 0, P3 1, load-placement 0, is-constant 0, unclassified 0), \
-             llc only 2 (P1 1, P3 0, load-placement 0, is-constant 0, unclassified 1)"
+            "same 3, hod only 1 (P1 0, P3 1, load-placement 0, post-indexed-load 0, \
+             is-constant 0, unclassified 0), llc only 2 (P1 1, P3 0, load-placement 0, \
+             post-indexed-load 0, is-constant 0, unclassified 1)"
         );
     }
 

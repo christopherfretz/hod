@@ -983,8 +983,8 @@ fn emit<'a>(
                 cx.bind(here)?;
                 outputs(cx, ops, &plan, &callee_slots);
                 // WP-112: the result is defined on every edge out, as
-                // `llc` 19 and 22 write it (an output is valid at an
-                // indirect destination).
+                // `llc` 22 writes it (an output is valid at an indirect
+                // destination; `spec/codegen.md` §5.5.3 has LLVM 19's).
                 result(cx, inst, ops, &plan)?;
                 cx.phi_stores(*dest)?;
                 branch(cx, cx.block_label(*dest))?;

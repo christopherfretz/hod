@@ -334,7 +334,7 @@ fn x86_64_module_assembly_stays_refused() {
         assert_eq!(rejection.construct, "module:asm", "{name}");
         match emit_module(&parsed.module, &options(), &[]) {
             Err(CgError::Unsupported { construct }) => {
-                assert_eq!(construct, "module:asm", "{name}")
+                assert_eq!(construct, "module:asm", "{name}");
             }
             other => panic!("{name}: {other:?}"),
         }

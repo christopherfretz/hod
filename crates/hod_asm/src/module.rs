@@ -381,18 +381,18 @@ fn string_into(text: &str, out: &mut Vec<u8>) -> R<()> {
         .and_then(|t| t.strip_suffix('"'))
         .filter(|_| text.len() >= 2)
         .ok_or(Refusal(op_reason::SYNTAX))?;
-    let b = inner.as_bytes();
+    let bytes = inner.as_bytes();
     let mut i = 0;
-    while i < b.len() {
-        if b[i] != b'\\' {
-            out.push(b[i]);
+    while i < bytes.len() {
+        if bytes[i] != b'\\' {
+            out.push(bytes[i]);
             i += 1;
             continue;
         }
         i += 1;
-        let Some(&e) = b.get(i) else { return fail(op_reason::SYNTAX) };
+        let Some(&escape) = bytes.get(i) else { return fail(op_reason::SYNTAX) };
         i += 1;
-        match e {
+        match escape {
             b'b' => out.push(8),
             b'f' => out.push(12),
             b'n' => out.push(b'\n'),
@@ -401,35 +401,35 @@ fn string_into(text: &str, out: &mut Vec<u8>) -> R<()> {
             b'"' => out.push(b'"'),
             b'\\' => out.push(b'\\'),
             b'x' | b'X' => {
-                let mut v: u32 = 0;
+                let mut value: u32 = 0;
                 let mut digits = 0;
-                while let Some(d) = b.get(i).and_then(|&c| char::from(c).to_digit(16)) {
-                    v = (v.wrapping_mul(16) + d) & 0xffff;
+                while let Some(d) = bytes.get(i).and_then(|&c| char::from(c).to_digit(16)) {
+                    value = (value.wrapping_mul(16) + d) & 0xffff;
                     i += 1;
                     digits += 1;
                 }
                 if digits == 0 {
                     return fail(op_reason::SYNTAX);
                 }
-                out.push(v as u8);
+                out.push(value as u8);
             }
             b'0'..=b'7' => {
-                let mut v = u32::from(e - b'0');
+                let mut value = u32::from(escape - b'0');
                 let mut digits = 1;
                 while digits < 3 {
-                    match b.get(i) {
+                    match bytes.get(i) {
                         Some(&d @ b'0'..=b'7') => {
-                            v = v * 8 + u32::from(d - b'0');
+                            value = value * 8 + u32::from(d - b'0');
                             i += 1;
                             digits += 1;
                         }
                         _ => break,
                     }
                 }
-                if v > 255 {
+                if value > 255 {
                     return fail(op_reason::RANGE);
                 }
-                out.push(v as u8);
+                out.push(value as u8);
             }
             _ => return fail(op_reason::SYNTAX),
         }
@@ -564,7 +564,7 @@ impl State<'_> {
         if self.section().kind != SectionKind::Text {
             return fail(other::SECTION);
         }
-        if self.section().size % 4 != 0 {
+        if !self.section().size.is_multiple_of(4) {
             return fail(other::UNALIGNED);
         }
         let ops = operand::parse(rest)?;

@@ -272,7 +272,13 @@ out like a home slot of its class (§2.2). The protocol:
 
 The driver does these stores before it lowers the terminator (for an
 `invoke`, the call sequence does them at their two places), so a
-terminator's lowering does not.
+terminator's lowering does not. The exception is a `callbr` whose result
+a successor's `phi` takes: the driver skips that successor and the
+`callbr`'s lowering stores its `phi`s on each edge to it, after the
+result has its location (WP-181). A successor so skipped that the
+`callbr` lists more than once is refused as
+`call:callbr-result-repeated-edge` (each listing is its own code path on
+AArch64, and a successor's stores are written once per terminator).
 
 No edge is ever split and no parallel copy is ever sequenced: the values
 read (locations) and the slots written (incoming slots) are disjoint, so
@@ -281,8 +287,8 @@ the "swap" and "lost copy" problems cannot occur, a conditional branch,
 that is not taken is dead (every edge into a block rewrites the slots
 before the block reads them).
 
-`invoke` is the one supported terminator whose result can be a
-successor's incoming value. Its unwind destination's incoming slots are
+`invoke` and `callbr` are the supported terminators whose result can be
+a successor's incoming value. Its unwind destination's incoming slots are
 written **before** the call (the result is not available on that edge); its normal destination's
 incoming slots are written **after** the call, once the result has its
 location.
@@ -3629,12 +3635,9 @@ Evidence: `spec/landed/codegen/WP-173.md`.
    because they are successors, entered only from elsewhere (a branch,
    an `indirectbr` through their `blockaddress`), as `llc` builds them.
    A template that assembles to something stays `x64:inline-asm` (no
-   assembler). The shared walk writes a terminator's `phi`s before its
-   lowering, except an `invoke`'s (§4.5): for a `callbr` whose result a
-   destination's `phi` takes, that copy would precede the result, so it
-   is refused as `x64:callbr-result-phi` (a result whose only use is
-   such a `phi` is a register value, and the walk stops earlier with an
-   internal error; the fix is the walk's, see the landed record).
+   assembler). A destination's `phi` that takes the result is written
+   on the fallthrough edge after the result (§4.5; the refusal
+   `x64:callbr-result-phi` of the first landing is retired: WP-181).
    AArch64 builds `callbr` through its assembler (§5.5.3) and is not
    changed.
 2. **`preserve_mostcc` and `preserve_allcc`** (`frame.rs`, `abi.rs`;

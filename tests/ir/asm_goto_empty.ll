@@ -1,17 +1,20 @@
 ; `asm goto` with an empty template: `callbr` of inline assembly that
 ; assembles to nothing goes on at its fallthrough; its indirect
 ; destinations are entered only from elsewhere (here an `indirectbr`
-; through a `blockaddress` of one). A tied output is its input.
+; through a `blockaddress` of one). A tied output is its input, and a
+; `phi` that takes it is written after it (spec/codegen.md §4.5).
 ;@ covers: spec/ir.md §5.4 callbr
 ;@ stdout: void 5 -1 8
 ;@ stdout: out 22 4 -5
 ;@ stdout: loop 45
 ;@ stdout: addr 8 1007
+;@ stdout: carry -12 0 20
 
 @.void = private unnamed_addr constant [15 x i8] c"void %d %d %d\0A\00"
 @.out = private unnamed_addr constant [14 x i8] c"out %d %d %d\0A\00"
 @.loop = private unnamed_addr constant [9 x i8] c"loop %d\0A\00"
 @.addr = private unnamed_addr constant [12 x i8] c"addr %d %d\0A\00"
+@.carry = private unnamed_addr constant [16 x i8] c"carry %d %d %d\0A\00"
 
 declare i32 @printf(ptr, ...)
 
@@ -77,6 +80,25 @@ ind:
   ret i32 %w
 }
 
+define internal i32 @carry(i32 %x, i32 %n) {
+entry:
+  br label %head
+head:
+  %i = phi i32 [ 0, %entry ], [ %i1, %body ]
+  %acc = phi i32 [ 0, %entry ], [ %y, %body ]
+  %c = icmp slt i32 %i, %n
+  br i1 %c, label %body, label %done
+body:
+  %t = add i32 %acc, %x
+  %i1 = add i32 %i, 1
+  %y = callbr i32 asm "", "=r,0,!i"(i32 %t) to label %head [label %bad]
+bad:
+  %b = add i32 %y, -1000
+  ret i32 %b
+done:
+  ret i32 %acc
+}
+
 define i32 @main() {
 entry:
   %a0 = call i32 @plus_one(i32 4)
@@ -92,5 +114,9 @@ entry:
   %d0 = call i32 @addr(i32 4)
   %d1 = call i32 @addr(i32 7)
   call i32 (ptr, ...) @printf(ptr @.addr, i32 %d0, i32 %d1)
+  %e0 = call i32 @carry(i32 -3, i32 4)
+  %e1 = call i32 @carry(i32 7, i32 0)
+  %e2 = call i32 @carry(i32 5, i32 4)
+  call i32 (ptr, ...) @printf(ptr @.carry, i32 %e0, i32 %e1, i32 %e2)
   ret i32 0
 }

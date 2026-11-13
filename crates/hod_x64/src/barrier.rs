@@ -34,7 +34,8 @@
 //! - a `callbr` (WP-181, `spec/codegen.md` §5.6.23) has one label
 //!   constraint `!i` per indirect destination, which takes no argument;
 //!   the template never jumps, so it continues at its fallthrough with
-//!   that edge's `phi`s, as `llc` builds it. Its indirect destinations
+//!   that edge's `phi`s, written here after the result (§4.5), as `llc`
+//!   builds it. Its indirect destinations
 //!   are blocks like any other (emitted, their labels bound, reached from
 //!   elsewhere or not at all): nothing is written for those edges.
 //!
@@ -50,7 +51,7 @@
 //! `ComputeConstraintToUse`: a register class when the output is tied.
 
 use hod_cg::{CgResult, Class, FnCx};
-use hod_ir::{Const, Inst, InstKind, MemFlags, Opcode, TypeId, TypeKind, Value, ValueKind};
+use hod_ir::{Const, Inst, MemFlags, Opcode, TypeId, TypeKind, Value, ValueKind};
 
 use crate::common::{branch, deferred_first, unsupported, value_ty};
 use crate::target::X64;
@@ -80,17 +81,9 @@ pub const BUNDLE: &str = "x64:inline-asm-bundle";
 /// x86 assembler for templates.
 pub const INLINE_ASM: &str = "x64:inline-asm";
 
-/// A `callbr` whose result a `phi` of one of its destinations takes: the
-/// shared walk writes a `callbr`'s `phi`s before its lowering, as for
-/// every terminator but `invoke` (`hod_cg` `driver.rs`), so that `phi`
-/// would be given the result before it exists. (A result whose only use
-/// is such a `phi` is a register value and stops the walk first with an
-/// internal error.)
-pub const RESULT_PHI: &str = "x64:callbr-result-phi";
-
 /// Every name this module refuses with.
 pub const UNSUPPORTED: &[&str] =
-    &[OUTPUT, OUTPUTS, CONSTRAINT, CLOBBER, OPERAND, BUNDLE, INLINE_ASM, RESULT_PHI];
+    &[OUTPUT, OUTPUTS, CONSTRAINT, CLOBBER, OPERAND, BUNDLE, INLINE_ASM];
 
 /// The most operands (constraints that are not clobbers) and
 /// alternatives kept.
@@ -514,18 +507,6 @@ pub fn asm<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
         return unsupported(CONSTRAINT);
     }
     let effect = effect(cx, inst, site, &ops)?;
-    if inst.opcode() == Opcode::CallBr && inst.ty() != TypeId::VOID {
-        let result = inst.result();
-        for succ in inst.successors() {
-            for phi in cx.body.block(succ).phis() {
-                if let InstKind::Phi(list) = phi.kind()
-                    && list.values().contains(&result)
-                {
-                    return unsupported(RESULT_PHI);
-                }
-            }
-        }
-    }
     deferred_first(cx, inst, None)?;
     match effect {
         Effect::None => {}

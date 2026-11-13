@@ -103,6 +103,29 @@ ft:
 ind:
   ret i32 -3
 }
+
+define i32 @cb_phi(i32 %x) {
+entry:
+  %r = callbr i32 asm "", "=r,0,!i"(i32 %x) to label %ft [label %ind]
+ind:
+  ret i32 -4
+ft:
+  %p = phi i32 [ %r, %entry ]
+  %q = mul i32 %r, 5
+  %s = sub i32 %q, %p
+  ret i32 %s
+}
+
+define i32 @cb_only(i32 %x) {
+entry:
+  %y = add i32 %x, 9
+  %r = callbr i32 asm "", "=r,0,!i"(i32 %y) to label %ft [label %ind]
+ind:
+  ret i32 0
+ft:
+  %p = phi i32 [ %r, %entry ]
+  ret i32 %p
+}
 "#;
 
 const DRIVER: &str = r#"#include <stdio.h>
@@ -111,11 +134,13 @@ int cb_out(int);
 long cb_loop(long);
 int cb_addr(int);
 int cb_mem(int *, int);
+int cb_phi(int);
+int cb_only(int);
 int main(void) {
   for (int i = -3; i < 8; i++) {
     int m = 40 + i;
-    printf("%d %d %ld %d %d\n", cb_void(i), cb_out(i), cb_loop(i < 0 ? 0 : i), cb_addr(i),
-           cb_mem(&m, i));
+    printf("%d %d %ld %d %d %d %d\n", cb_void(i), cb_out(i), cb_loop(i < 0 ? 0 : i), cb_addr(i),
+           cb_mem(&m, i), cb_phi(i), cb_only(i));
   }
   return 0;
 }
@@ -128,7 +153,7 @@ fn expected() -> String {
         let n = i.max(0);
         let addr = if i & 1 != 0 { i + 1000 } else { 2 * i };
         let (out, sum, mem) = (3 * i + 7, n * (n - 1) / 2, 40 + 2 * i);
-        writeln!(lines, "{} {out} {sum} {addr} {mem}", i + 1).unwrap();
+        writeln!(lines, "{} {out} {sum} {addr} {mem} {} {}", i + 1, 4 * i, i + 9).unwrap();
     }
     lines
 }
@@ -169,37 +194,12 @@ fn empty_template_callbr_runs_as_llc_builds_it() {
             ran.push(format!("{leg}/{}", linker.name));
         }
     }
-    eprintln!("x64 callbr: 5 functions x 11 arguments agree over {ran:?}");
+    eprintln!("x64 callbr: 7 functions x 11 arguments agree over {ran:?}");
 }
 
-/// A `callbr` result that a `phi` of a destination takes besides another
-/// use (a home value): the shared walk has written that `phi` before the
-/// lowering, so it is refused by name.
-const RESULT_PHI: &str = r#"
-define i32 @cb_phi(i32 %x) {
-entry:
-  %r = callbr i32 asm "", "=r,0,!i"(i32 %x) to label %ft [label %ind]
-ind:
-  ret i32 -4
-ft:
-  %p = phi i32 [ %r, %entry ]
-  %q = mul i32 %r, 5
-  %s = sub i32 %q, %p
-  ret i32 %s
-}
-"#;
-
-/// A `callbr` whose template assembles to something stays refused, and
-/// so does one whose result a destination's `phi` takes.
+/// A `callbr` whose template assembles to something stays refused.
 #[test]
 fn callbr_of_instructions_is_refused_by_name() {
-    let (m, bodies) = parse(&format!("{}{RESULT_PHI}", ll_header()));
-    match hod_x64::compile_to_object(&m, &bodies, &pic(Stress::default())) {
-        Err(hod_x64::ModuleError::Function { error, .. }) => {
-            assert_eq!(error, CgError::unsupported(barrier::RESULT_PHI));
-        }
-        other => panic!("not refused: {:?}", other.map(|o| o.len())),
-    }
     let text = format!(
         "{}define void @f() {{\nentry:\n  callbr void asm \"jmp ${{0:l}}\", \"!i\"() to label %a [label %b]\na:\n  ret void\nb:\n  ret void\n}}\n",
         ll_header()
@@ -214,25 +214,17 @@ fn callbr_of_instructions_is_refused_by_name() {
 }
 
 /// A `callbr` result whose only use is a `phi` of a successor is a
-/// register value (§4.1), and the shared walk writes a `callbr`'s `phi`s
-/// before the lowering, as for every terminator but `invoke`
-/// (`crates/hod_cg/src/driver.rs:622`): the result has no location yet,
-/// and the walk stops with an internal error before `barrier` can refuse
-/// it by name. Not `hod_x64`'s to fix (WP-181's handback); with
-/// `CallBr` left out there as `Invoke` is, the lowerings write the
-/// edges' `phi`s themselves and both refusals can go.
+/// register value (§4.1): the shared walk leaves that edge's `phi`s to
+/// the lowering, which writes them once the result exists (§4.5,
+/// WP-181), plain and stressed. (`cb_only` runs it.)
 #[test]
-#[ignore = "hod_cg writes a callbr's phis before the result exists (driver.rs:622)"]
 fn callbr_result_used_only_by_a_phi() {
     let text = format!(
         "{}define i32 @f(i32 %x) {{\nentry:\n  %r = callbr i32 asm \"\", \"=r,0,!i\"(i32 %x) to label %ft [label %ind]\nind:\n  ret i32 0\nft:\n  %p = phi i32 [ %r, %entry ]\n  ret i32 %p\n}}\n",
         ll_header()
     );
     let (m, bodies) = parse(&text);
-    match hod_x64::compile_to_object(&m, &bodies, &pic(Stress::default())) {
-        Err(hod_x64::ModuleError::Function { error, .. }) => {
-            assert_eq!(error, CgError::unsupported(barrier::RESULT_PHI));
-        }
-        other => panic!("not refused: {:?}", other.map(|o| o.len())),
+    for stress in [Stress::default(), Stress::ALL] {
+        hod_x64::compile_to_object(&m, &bodies, &pic(stress)).unwrap_or_else(|e| panic!("{e}"));
     }
 }

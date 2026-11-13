@@ -998,6 +998,9 @@ pub struct Tally {
     pub llc_crashed: BTreeMap<u32, usize>,
     /// The legs run.
     pub legs: Vec<String>,
+    /// Calls the interpreter has no values for, by what it lacks, checked
+    /// against `llc` 22 on both sides instead.
+    pub by_llc: BTreeMap<String, usize>,
     /// Text bytes of hod's plain objects and of `llc` 22's.
     pub text: (u64, u64),
     /// Instructions compiled and hod's (plain) compile time.
@@ -1021,10 +1024,10 @@ fn module_text(functions: &[(u64, String)], decls: &BTreeMap<String, String>) ->
 
 /// `llc -O0 -fast-isel=0` of LLVM `major` on `text`: the object, `Err`
 /// where it fails, `None` if it is not installed.
-fn llc(scratch: &Scratch, major: u32, text: &str) -> Option<Result<PathBuf, ()>> {
+fn llc(scratch: &Scratch, major: u32, stem: &str, text: &str) -> Option<Result<PathBuf, ()>> {
     let llc = llc_of(major)?;
-    let input = scratch.write(&format!("llc{major}.ll"), text);
-    let output = scratch.join(format!("llc{major}.o"));
+    let input = scratch.write(&format!("{stem}llc{major}.ll"), text);
+    let output = scratch.join(format!("{stem}llc{major}.o"));
     let mut command = std::process::Command::new(llc);
     command
         .args([
@@ -1132,7 +1135,7 @@ pub fn check_functions(
         legs.push((format!("hod-{mode}"), scratch.write(&format!("hod-{mode}.o"), bytes)));
     }
     for major in [22, 19] {
-        match llc(&scratch, major, &source) {
+        match llc(&scratch, major, "", &source) {
             Some(Ok(object)) => legs.push((format!("llc{major}"), object)),
             Some(Err(())) => *tally.llc_crashed.entry(major).or_default() += 1,
             None => {}
@@ -1197,4 +1200,177 @@ pub fn assert_agrees(tally: &Tally) {
         tally.wrong.len(),
         tally.wrong.iter().take(4).cloned().collect::<Vec<_>>().join("\n")
     );
+}
+
+// ---- calls between hod's objects and llc's ----
+
+/// One call of [`check_mixed`]: the caller `@t<seed>` (a `void()` that
+/// emits what it gets back), the callee's definition and its
+/// declaration.
+pub struct Mixed {
+    /// The caller's number.
+    pub seed: u64,
+    /// The caller (with its globals).
+    pub caller: String,
+    /// The callee's `declare` line.
+    pub decl: String,
+    /// The callee (with its globals).
+    pub callee: String,
+}
+
+/// Checks calls across objects: the callers in one module, the callees
+/// in another, each compiled by hod (plain, stressed) and `llc` 22/19,
+/// linked in every pairing with hod on at least one side, against the
+/// interpreter on both together. Nothing may be refused.
+#[allow(clippy::similar_names, reason = "callers and callees")]
+pub fn check_mixed(name: &str, cases: &[Mixed], tally: &mut Tally) {
+    let none = BTreeMap::new();
+    let decls: BTreeMap<String, String> =
+        cases.iter().map(|c| (c.decl.clone(), c.decl.clone())).collect();
+    let callers: Vec<(u64, String)> = cases.iter().map(|c| (c.seed, c.caller.clone())).collect();
+    let callees: Vec<(u64, String)> = cases.iter().map(|c| (c.seed, c.callee.clone())).collect();
+    let both: Vec<(u64, String)> = callers.iter().chain(&callees).cloned().collect();
+    let caller_text = module_text(&callers, &decls);
+    let callee_text = module_text(&callees, &none);
+    let source = module_text(&both, &none);
+    tally.generated += cases.len();
+    let (module, bodies) = parse(&source);
+    let program = Program::with_bodies(&module, &bodies)
+        .unwrap_or_else(|stop| panic!("interpreter: {stop:?}"));
+    let mut expected = Vec::new();
+    for case in cases {
+        match interpret(&module, &program, &format!("t{}", case.seed)) {
+            Ok(lines) => {
+                tally.poison_bytes += lines.matches("??").count();
+                expected.push((case.seed, lines));
+            }
+            Err(Stop::Trap(trap)) => {
+                tally.trapped += 1;
+                *tally.traps.entry(format!("{trap:?}")).or_default() += 1;
+            }
+            // A signature the interpreter has no values for (`half`
+            // lanes): `llc` 22 on both sides is the reference.
+            Err(Stop::Unsupported(what)) => {
+                *tally.by_llc.entry(what.clone()).or_default() += 1;
+                expected.push((case.seed, String::new()));
+            }
+            Err(other) => panic!("t{}: {other:?}", case.seed),
+        }
+    }
+    tally.run += expected.len();
+    let scratch = Scratch::new(&format!("x64-vcall-{name}"));
+    if let Ok(dir) = std::env::var("HOD_VECTOR_DUMP") {
+        std::fs::write(format!("{dir}/x64-vcall-{name}.ll"), &source).expect("write");
+    }
+    // The objects of each side, by leg.
+    let mut sides: [Vec<(String, PathBuf)>; 2] = [Vec::new(), Vec::new()];
+    for (side, (stem, text)) in
+        [("caller", &caller_text), ("callee", &callee_text)].iter().enumerate()
+    {
+        let (module, bodies) = parse(text);
+        tally.insts += bodies.iter().map(hod_ir::Body::inst_count).sum::<usize>();
+        for (mode, stress) in [("plain", Stress::default()), ("stress", Stress::ALL)] {
+            let t = Instant::now();
+            let bytes = hod_x64::compile_to_object(&module, &bodies, &pic(stress))
+                .unwrap_or_else(|e| panic!("{stem} {mode}: {e}"));
+            if mode == "plain" {
+                tally.compile += t.elapsed();
+            }
+            let object = scratch.write(&format!("{stem}-hod-{mode}.o"), bytes);
+            sides[side].push((format!("hod-{mode}"), object));
+        }
+        for major in [22, 19] {
+            match llc(&scratch, major, stem, text) {
+                Some(Ok(object)) => sides[side].push((format!("llc{major}"), object)),
+                Some(Err(())) => *tally.llc_crashed.entry(major).or_default() += 1,
+                None => {}
+            }
+        }
+        if let (Some(hod), Some(llc)) = (
+            text_bytes(&sides[side][0].1),
+            sides[side].iter().find(|(leg, _)| leg == "llc22").and_then(|(_, o)| text_bytes(o)),
+        ) {
+            tally.text.0 += hod;
+            tally.text.1 += llc;
+        }
+    }
+    let mut driver = String::from(DRIVER);
+    for (seed, _) in &expected {
+        let _ = writeln!(driver, "void t{seed}(void);");
+    }
+    driver.push_str("int main(void) {\n");
+    for (seed, _) in &expected {
+        let _ = writeln!(driver, "  puts(\"t{seed}\"); fflush(stdout); t{seed}();");
+    }
+    driver.push_str("  return 0;\n}\n");
+    let Some(toolchain) = Toolchain::x86_64(&scratch) else { return };
+    let Some(linker) = toolchain.linkers.first() else { return };
+    let c = toolchain.compile_c(&scratch, "driver", &driver, &["-fPIE"]);
+    // `llc` 22 on both sides first: the reference where the interpreter
+    // has none.
+    let mut pairs: Vec<(&String, &PathBuf, &String, &PathBuf)> = Vec::new();
+    for (caller_leg, caller) in &sides[0] {
+        for (callee_leg, callee) in &sides[1] {
+            let hod = caller_leg.starts_with("hod") || callee_leg.starts_with("hod");
+            if hod {
+                pairs.push((caller_leg, caller, callee_leg, callee));
+            } else if caller_leg == "llc22" && callee_leg == "llc22" {
+                pairs.insert(0, (caller_leg, caller, callee_leg, callee));
+            }
+        }
+    }
+    if !pairs.first().is_some_and(|p| p.0 == "llc22" && p.2 == "llc22") {
+        // No `llc` 22: only what the interpreter ran is compared.
+        expected.retain(|(_, lines)| !lines.is_empty());
+    }
+    for (caller_leg, caller, callee_leg, callee) in pairs {
+        {
+            let hod = caller_leg.starts_with("hod") || callee_leg.starts_with("hod");
+            let leg = format!("{caller_leg}>{callee_leg}");
+            let program = scratch.join(&leg);
+            let lm = std::path::Path::new("-lm");
+            let inputs = [c.as_path(), caller.as_path(), callee.as_path(), lm];
+            toolchain.link_ok(linker, &["-pie"], &inputs, &program);
+            let ran =
+                run_with(&mut toolchain.runner_command(&program), &[], Duration::from_mins(5));
+            tally.legs.push(leg.clone());
+            if hod && !ran.success() {
+                tally.wrong.push(format!("{leg}: exit {:?}\n{}", ran.status, ran.stderr_text()));
+            }
+            let mut got: BTreeMap<u64, String> = BTreeMap::new();
+            let mut current = None;
+            for line in ran.stdout_text().lines() {
+                if let Some(seed) = line.strip_prefix('t').and_then(|seed| seed.parse().ok()) {
+                    current = Some(seed);
+                    got.insert(seed, String::new());
+                } else if let Some(seed) = current {
+                    let entry = got.get_mut(&seed).expect("inserted");
+                    entry.push_str(line);
+                    entry.push('\n');
+                }
+            }
+            if !hod {
+                for (seed, lines) in &mut expected {
+                    if lines.is_empty() {
+                        *lines = got.get(seed).cloned().unwrap_or_default();
+                    }
+                }
+            }
+            for (seed, lines) in &expected {
+                let actual = got.get(seed).map_or("(not run)\n", String::as_str);
+                if matches(lines, actual) {
+                    continue;
+                }
+                if hod {
+                    let case = cases.iter().find(|c| c.seed == *seed).expect("a case");
+                    tally.wrong.push(format!(
+                        "{leg}: t{seed}:\n{}{}interpreter:\n{lines}got:\n{actual}",
+                        case.caller, case.callee
+                    ));
+                } else {
+                    *tally.llc_wrong.entry(22).or_default() += 1;
+                }
+            }
+        }
+    }
 }

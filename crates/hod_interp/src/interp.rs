@@ -21,6 +21,10 @@ use crate::error::{Stop, Trap, invalid, unsupported};
 use crate::memory::{AllocKind, Mark, Memory};
 use crate::ops::{self, Checked, IntOp};
 use crate::value::{Agg, MAX_INT_BITS, Val, sext};
+use crate::x87;
+
+/// §8: a rounding or square-root intrinsic, or `fma`, on `x86_fp80`.
+const X87_INTRINSIC: &str = "intrinsic-x86_fp80";
 mod vector_ops;
 
 /// A module and the bodies of some of its functions (§2).
@@ -305,6 +309,8 @@ enum Class {
     Ptr,
     Float,
     Double,
+    /// `x86_fp80` (§5.11): ten bytes.
+    X86Fp80,
     Agg,
     /// A vector (§3.1): its type and store size.
     Vector(TypeId, u32),
@@ -317,6 +323,7 @@ impl Class {
             Class::Int(bits) => bits.div_ceil(8) as usize,
             Class::Ptr | Class::Double => 8,
             Class::Float => 4,
+            Class::X86Fp80 => 10,
             Class::Vector(_, size) => size as usize,
             Class::Void | Class::Agg => 0,
         }
@@ -333,6 +340,7 @@ fn decode(class: Class, bytes: &[u8]) -> Val {
         Class::Ptr => Val::Ptr(value as u64),
         Class::Float => Val::Float(value as u32),
         Class::Double => Val::Double(value as u64),
+        Class::X86Fp80 => Val::X86Fp80(value & ((1 << 80) - 1)),
         Class::Void | Class::Agg | Class::Vector(..) => {
             unreachable!("{class:?} is not a scalar")
         }
@@ -347,6 +355,7 @@ fn encode(val: &Val, out: &mut [u8]) {
         Val::Ptr(addr) => u128::from(*addr),
         Val::Float(bits) => u128::from(*bits),
         Val::Double(bits) => u128::from(*bits),
+        Val::X86Fp80(bits) => *bits,
         Val::Agg(agg) => return out.copy_from_slice(&agg.bytes),
     };
     out.copy_from_slice(&wide.to_le_bytes()[..out.len()]);
@@ -570,7 +579,8 @@ impl<'a> Machine<'_, 'a> {
                         || self.host_of[sym.index()] != 0
                         || builtin != Builtin::None;
                     if defined || symbol.linkage() != Linkage::ExternWeak {
-                        self.addrs[sym.index()] = self.mem.alloc_function(sym)?;
+                        let align = symbol.align().unwrap_or(1);
+                        self.addrs[sym.index()] = self.mem.alloc_function(sym, align)?;
                     }
                 }
                 SymbolKind::Variable { constant, tls: TlsModel::None, init: Some(init) } => {
@@ -696,7 +706,7 @@ impl<'a> Machine<'_, 'a> {
             TypeKind::Half => return unsupported("type:half"),
             TypeKind::BFloat => return unsupported("type:bfloat"),
             TypeKind::Fp128 => return unsupported("type:fp128"),
-            TypeKind::X86Fp80 => return unsupported("type:x86_fp80"),
+            TypeKind::X86Fp80 => Class::X86Fp80,
             TypeKind::Vector { .. } => self.vector_class(ty)?,
             TypeKind::ScalableVector { .. } => return unsupported("type:scalable-vector"),
             TypeKind::Opaque(_) => return unsupported("type:opaque"),
@@ -714,7 +724,8 @@ impl<'a> Machine<'_, 'a> {
             (Class::Int(bits), Val::Int { bits: have, .. }) => bits == *have,
             (Class::Ptr, Val::Ptr(_))
             | (Class::Float, Val::Float(_))
-            | (Class::Double, Val::Double(_)) => true,
+            | (Class::Double, Val::Double(_))
+            | (Class::X86Fp80, Val::X86Fp80(_)) => true,
             (Class::Agg, Val::Agg(agg)) => agg.ty == ty,
             (Class::Vector(..), Val::Agg(vector)) => vector.ty == ty,
             _ => false,
@@ -788,6 +799,7 @@ impl<'a> Machine<'_, 'a> {
             Class::Ptr => Val::Ptr(0),
             Class::Float => Val::Float(0),
             Class::Double => Val::Double(0),
+            Class::X86Fp80 => Val::X86Fp80(0),
             Class::Agg => {
                 self.leaves(ty, 0, &mut Vec::new())?;
                 Val::Agg(Agg { ty, bytes: vec![0; self.image_len(ty)?].into(), lanes: None })
@@ -820,10 +832,10 @@ impl<'a> Machine<'_, 'a> {
                 Class::Double => Val::Double(bits),
                 _ => return invalid(format!("{id:?} is a float of a type that is not")),
             },
-            Const::WideFloat { ty, .. } => {
-                self.class(ty)?;
-                return invalid(format!("{id:?} is a wide float of a narrow type"));
-            }
+            Const::WideFloat { ty, bits } => match self.class(ty)? {
+                Class::X86Fp80 => Val::X86Fp80(bits & ((1 << 80) - 1)),
+                _ => return invalid(format!("{id:?} is a wide float of a narrow type")),
+            },
             Const::Null(_) => Val::Ptr(0),
             // `spec/ir.md` §4.1: `undef` and `poison` are zero.
             Const::Zero(ty) | Const::Undef(ty) | Const::Poison(ty) => self.zero(ty)?,
@@ -928,6 +940,14 @@ impl<'a> Machine<'_, 'a> {
         Ok(Val::Float(value.to_bits()))
     }
 
+    /// As [`Machine::float`], for an `x86_fp80` (§5.11).
+    fn x87(&self, bits: u128) -> Result<Val, Stop> {
+        if x87::is_nan(x87::Format::X87, bits) && self.config.nan == NanPolicy::Trap {
+            return Err(Trap::NanResult.into());
+        }
+        Ok(Val::X86Fp80(bits))
+    }
+
     /// As [`Machine::float`], for a `double`.
     fn double(&self, value: f64) -> Result<Val, Stop> {
         if value.is_nan() && self.config.nan == NanPolicy::Trap {
@@ -1021,6 +1041,11 @@ impl<'a> Machine<'_, 'a> {
                 encode(val, &mut bytes);
                 self.mem.store(addr, &bytes, align)?;
             }
+            Val::X86Fp80(_) => {
+                let mut bytes = [0u8; 10];
+                encode(val, &mut bytes);
+                self.mem.store(addr, &bytes, align)?;
+            }
         }
         Ok(())
     }
@@ -1034,6 +1059,21 @@ impl<'a> Machine<'_, 'a> {
         args: Vec<Val>,
         noreturn: bool,
     ) -> Result<(), Stop> {
+        self.push_frame_with(sym, body, args, &[], noreturn)
+    }
+
+    /// [`Machine::push_frame`], with the `byval` arguments `copies`
+    /// (`(argument, size, alignment)`): each pointee is copied, written
+    /// flags included, into stack memory that lives as long as the new
+    /// frame, and the callee gets the copy's address (§5.8).
+    fn push_frame_with(
+        &mut self,
+        sym: SymId,
+        body: &'a Body,
+        mut args: Vec<Val>,
+        copies: &[(usize, u64, u64)],
+        noreturn: bool,
+    ) -> Result<(), Stop> {
         if self.frames.len() >= self.config.max_call_depth as usize {
             return Err(Trap::CallDepth.into());
         }
@@ -1041,6 +1081,22 @@ impl<'a> Machine<'_, 'a> {
             return invalid(format!("the body of {sym:?} has no entry block"));
         }
         let mark = self.mem.mark();
+        for &(index, size, align) in copies {
+            let Some(Val::Ptr(from)) = args.get(index).cloned() else {
+                return invalid("a byval argument that is not a pointer");
+            };
+            let made = self
+                .mem
+                .alloc(size.max(1), align, AllocKind::Stack)
+                .and_then(|to| self.mem.copy((to, align), (from, 1), size).map(|()| to));
+            match made {
+                Ok(to) => args[index] = Val::Ptr(to),
+                Err(trap) => {
+                    self.mem.release(mark);
+                    return Err(trap.into());
+                }
+            }
+        }
         let slots = self.slots.len();
         for slot in body.slots() {
             match self.mem.alloc(slot.size(), slot.align(), AllocKind::Stack) {
@@ -1198,6 +1254,17 @@ impl<'a> Machine<'_, 'a> {
                 (Val::Double(a), Val::Double(b)) => {
                     self.double(ops::f64_binary(op, f64::from_bits(a), f64::from_bits(b)))?
                 }
+                (Val::X86Fp80(a), Val::X86Fp80(b)) => {
+                    let op = match op {
+                        Opcode::FAdd => x87::Op::Add,
+                        Opcode::FSub => x87::Op::Sub,
+                        Opcode::FMul => x87::Op::Mul,
+                        Opcode::FDiv => x87::Op::Div,
+                        Opcode::FRem => x87::Op::Rem,
+                        _ => return invalid("float arithmetic with an integer opcode"),
+                    };
+                    self.x87(x87::binary(op, a, b))?
+                }
                 _ => {
                     self.class(ty)?;
                     return invalid("float arithmetic on something else");
@@ -1206,6 +1273,7 @@ impl<'a> Machine<'_, 'a> {
             InstKind::Unary { arg } => match (op, self.get(f, arg)?) {
                 (Opcode::FNeg, Val::Float(bits)) => Val::Float(bits ^ (1 << 31)),
                 (Opcode::FNeg, Val::Double(bits)) => Val::Double(bits ^ (1 << 63)),
+                (Opcode::FNeg, Val::X86Fp80(bits)) => Val::X86Fp80(bits ^ (1 << 79)),
                 (Opcode::FNeg, _) => {
                     self.class(ty)?;
                     return invalid("fneg of something that is not a float");
@@ -1241,6 +1309,9 @@ impl<'a> Machine<'_, 'a> {
                 )),
                 (Val::Double(a), Val::Double(b)) => {
                     Val::i1(ops::fcmp(pred, f64::from_bits(a), f64::from_bits(b)))
+                }
+                (Val::X86Fp80(a), Val::X86Fp80(b)) => {
+                    Val::i1(ops::fcmp_ordering(pred, x87::compare(x87::Format::X87, a, b)))
                 }
                 _ => {
                     self.class(ty)?;
@@ -1320,6 +1391,7 @@ impl<'a> Machine<'_, 'a> {
                     Val::Int { bits, .. } => Class::Int(*bits).store_len(),
                     Val::Ptr(_) | Val::Double(_) => 8,
                     Val::Float(_) => 4,
+                    Val::X86Fp80(_) => 10,
                     // An aggregate has no poison lanes to keep (§3.1).
                     Val::Agg(inner) if inner.has_poison() => {
                         return Err(Trap::PoisonLane.into());
@@ -1439,6 +1511,30 @@ impl<'a> Machine<'_, 'a> {
             (Opcode::FPExt, Val::Float(bits), Class::Double) => {
                 self.double(f64::from(f32::from_bits(bits)))?
             }
+            // §5.11: to and from `x86_fp80`.
+            (Opcode::FPExt, Val::Float(bits), Class::X86Fp80) => {
+                self.x87(x87::convert(x87::Format::FLOAT, x87::Format::X87, u128::from(bits)))?
+            }
+            (Opcode::FPExt, Val::Double(bits), Class::X86Fp80) => {
+                self.x87(x87::convert(x87::Format::DOUBLE, x87::Format::X87, u128::from(bits)))?
+            }
+            (Opcode::FPTrunc, Val::X86Fp80(bits), Class::Float) => {
+                let narrow = x87::convert(x87::Format::X87, x87::Format::FLOAT, bits) as u32;
+                self.float(f32::from_bits(narrow))?
+            }
+            (Opcode::FPTrunc, Val::X86Fp80(bits), Class::Double) => {
+                let narrow = x87::convert(x87::Format::X87, x87::Format::DOUBLE, bits) as u64;
+                self.double(f64::from_bits(narrow))?
+            }
+            (Opcode::FPToUI | Opcode::FPToSI, Val::X86Fp80(from), Class::Int(bits)) => {
+                let value = x87::to_int(x87::Format::X87, from, bits, op == Opcode::FPToSI)?;
+                Val::Int { bits, value }
+            }
+            (Opcode::UIToFP | Opcode::SIToFP, Val::Int { bits, value }, Class::X86Fp80) => {
+                Val::X86Fp80(x87::from_int(x87::Format::X87, value, bits, op == Opcode::SIToFP))
+            }
+            (Opcode::BitCast, Val::Int { bits: 80, value }, Class::X86Fp80) => Val::X86Fp80(value),
+            (Opcode::BitCast, Val::X86Fp80(bits), Class::Int(80)) => Val::int(80, bits),
             (Opcode::FPToUI | Opcode::FPToSI, Val::Float(from), Class::Int(bits)) => {
                 let x = f64::from(f32::from_bits(from));
                 Val::Int { bits, value: ops::float_to_int(x, bits, op == Opcode::FPToSI)? }
@@ -1546,7 +1642,7 @@ impl<'a> Machine<'_, 'a> {
                 let op = if op == RmwOp::FAdd { Opcode::FAdd } else { Opcode::FSub };
                 self.double(ops::f64_binary(op, f64::from_bits(a), f64::from_bits(b)))?
             }
-            (Val::Float(_) | Val::Double(_), _) if op.is_float() => {
+            (Val::Float(_) | Val::Double(_) | Val::X86Fp80(_), _) if op.is_float() => {
                 return unsupported(format!("inst:atomicrmw-{}", op.name()));
             }
             _ => return invalid(format!("atomicrmw {} of these operands", op.name())),
@@ -1617,10 +1713,19 @@ impl<'a> Machine<'_, 'a> {
             _ => return invalid("a call with a type that is not a function type"),
         };
         let mut args = Vec::with_capacity(call.args().len());
+        // `byval(T)` arguments (§5.8): (index, size, alignment).
+        let mut copies: Vec<(usize, u64, u64)> = Vec::new();
         for (index, &arg) in call.args().iter().enumerate() {
             for attrs in [call.arg_attrs(index), symbol.param_attrs(index)] {
                 match attrs.mem() {
-                    ParamMem::ByVal => return unsupported("attr:byval"),
+                    ParamMem::ByVal if !copies.iter().any(|&(at, ..)| at == index) => {
+                        let Some(pointee) = attrs.mem_type() else {
+                            return invalid("byval without a type");
+                        };
+                        let types = &module.types;
+                        let align = attrs.align().unwrap_or(1).max(types.align_of(pointee));
+                        copies.push((index, types.size_of(pointee), align));
+                    }
                     ParamMem::InAlloca => return unsupported("attr:inalloca"),
                     ParamMem::Preallocated => return unsupported("attr:preallocated"),
                     _ => {}
@@ -1629,8 +1734,11 @@ impl<'a> Machine<'_, 'a> {
             args.push(self.get(f, arg)?);
         }
         if let Some(body) = self.program.body(target) {
-            self.push_frame(target, body, args, call.is_noreturn())?;
+            self.push_frame_with(target, body, args, &copies, call.is_noreturn())?;
             return Ok(Flow::Called);
+        }
+        if !copies.is_empty() {
+            return unsupported("attr:byval");
         }
         if self.host_of[target.index()] == 0 && self.builtin_of[target.index()] != Builtin::None {
             return self.builtin(target, &args, ret, call.is_noreturn());
@@ -2067,6 +2175,13 @@ impl<'a> Machine<'_, 'a> {
                 Ok(Some(match (self.get(f, arg(0)?)?, sign) {
                     (Val::Float(bits), None) => Val::Float(bits & !(1 << 31)),
                     (Val::Double(bits), None) => Val::Double(bits & !(1 << 63)),
+                    (Val::X86Fp80(bits), None) => Val::X86Fp80(bits & !(1 << 79)),
+                    (Val::X86Fp80(bits), Some(sign)) => match self.get(f, sign)? {
+                        Val::X86Fp80(sign) => {
+                            Val::X86Fp80((bits & !(1 << 79)) | (sign & (1 << 79)))
+                        }
+                        _ => return invalid("copysign of two types"),
+                    },
                     (Val::Float(bits), Some(sign)) => match self.get(f, sign)? {
                         Val::Float(sign) => Val::Float((bits & !(1 << 31)) | (sign & (1 << 31))),
                         _ => return invalid("copysign of two types"),
@@ -2105,6 +2220,7 @@ impl<'a> Machine<'_, 'a> {
                 Ok(Some(match self.get(f, arg(0)?)? {
                     Val::Float(bits) => self.float(rounded!(f32::from_bits(bits)))?,
                     Val::Double(bits) => self.double(rounded!(f64::from_bits(bits)))?,
+                    Val::X86Fp80(_) => return unsupported(X87_INTRINSIC),
                     _ => {
                         self.class(ty)?;
                         return invalid("a float intrinsic on something else");
@@ -2119,6 +2235,7 @@ impl<'a> Machine<'_, 'a> {
                     }
                     (Val::Double(a), Val::Double(b), Val::Double(c)) => self
                         .double(f64::from_bits(a).mul_add(f64::from_bits(b), f64::from_bits(c)))?,
+                    (Val::X86Fp80(_), ..) => return unsupported(X87_INTRINSIC),
                     _ => {
                         self.class(ty)?;
                         return invalid("fma on something that is not three floats");

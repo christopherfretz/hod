@@ -635,6 +635,26 @@ impl<'a, T: Target> FnCx<'a, T> {
         Ok(())
     }
 
+    /// §4.5: the `phi` stores of a terminator, for all its successors,
+    /// whichever is taken, before it is lowered. (An `invoke`'s are
+    /// written by the call sequence.) Those of a `callbr` that take its
+    /// result are left to its lowering, once the result exists (WP-181).
+    fn terminator_phi_stores(&mut self, inst: Inst<'a>) -> CgResult<()> {
+        let own = callbr_result(inst);
+        for succ in inst.successors() {
+            if let Some(result) = own
+                && takes(self.body, succ, self.block, result)
+            {
+                if inst.successors().filter(|&s| s == succ).count() > 1 {
+                    return Err(CgError::unsupported(CALLBR_RESULT_REPEATED_EDGE));
+                }
+                continue;
+            }
+            self.phi_stores(succ)?;
+        }
+        Ok(())
+    }
+
     /// One reachable block: its label, its `phi`s, its instructions.
     fn emit_block(&mut self, block: Block<'a>) -> CgResult<()> {
         let t = self.target;
@@ -687,22 +707,7 @@ impl<'a, T: Target> FnCx<'a, T> {
                 // WP-106: a suspend switch writes its edges itself.
             } else if !dead {
                 if inst.is_terminator() && inst.opcode() != Opcode::Invoke {
-                    // §4.5: for all successors, whichever is taken. An
-                    // `invoke`'s are written by the call sequence; a
-                    // `callbr`'s that take its result, by its lowering
-                    // once the result exists (WP-181).
-                    let own = callbr_result(inst);
-                    for succ in inst.successors() {
-                        if let Some(result) = own
-                            && takes(self.body, succ, self.block, result)
-                        {
-                            if inst.successors().filter(|&s| s == succ).count() > 1 {
-                                return Err(CgError::unsupported(CALLBR_RESULT_REPEATED_EDGE));
-                            }
-                            continue;
-                        }
-                        self.phi_stores(succ)?;
-                    }
+                    self.terminator_phi_stores(inst)?;
                 }
                 t.lower(self, inst)?;
                 if inst.opcode() == Opcode::Ret {

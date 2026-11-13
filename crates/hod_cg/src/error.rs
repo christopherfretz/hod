@@ -44,10 +44,6 @@ pub const CALL_PART_LANES: &str = "call:part-lanes";
 /// A `byval` argument that `assign` does not place wholly on the stack.
 pub const CALL_BYVAL_PLACE: &str = "call:byval-not-on-stack";
 
-/// A `#dbg_value` (§9.5): hod describes no variable by its values yet
-/// (`spec/dwarf.md` §6.4).
-pub const DEBUG_DBG_VALUE: &str = "debug:dbg-value";
-
 /// A `#dbg_assign` (§9.5).
 pub const DEBUG_DBG_ASSIGN: &str = "debug:dbg-assign";
 

@@ -305,6 +305,7 @@ impl<T: Target> FnCx<'_, T> {
         }
         self.map_coro_offsets(map);
         self.map_debug_calls(map); // WP-113: `spec/dwarf.md` §6.19
+        self.map_value_ranges(map); // WP-162: `spec/dwarf.md` §6.23
     }
 }
 

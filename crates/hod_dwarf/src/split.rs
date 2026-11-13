@@ -113,6 +113,7 @@ const DW_FORM_SEC_OFFSET: u64 = 0x17;
 const DW_FORM_RNGLISTX: u64 = 0x23;
 const DW_FORM_IMPLICIT_CONST: u64 = 0x21;
 const DW_AT_RANGES: u64 = 0x55;
+const DW_AT_LOCATION: u64 = 0x02;
 /// A DWARF 5 split or skeleton unit header: 12 bytes and the DWO id.
 const HEADER: usize = 20;
 /// Where the DWO id is in that header.
@@ -152,7 +153,8 @@ pub fn write_unit_dies(
 /// The DWO id hod writes: a 64-bit hash of `parts` (the `.dwo` name,
 /// then the split unit's `.debug_info.dwo` with a zero id,
 /// `.debug_abbrev.dwo`, `.debug_str_offsets.dwo`, `.debug_str.dwo` and
-/// `.debug_rnglists.dwo`), never 0 (`spec/dwarf.md` §6.15).
+/// `.debug_rnglists.dwo`, then `.debug_loclists.dwo` when there is one,
+/// WP-162), never 0 (`spec/dwarf.md` §6.15).
 ///
 /// Each part is hashed as its length, then its bytes in 8-byte
 /// little-endian words (the last one zero-padded); each word goes
@@ -220,6 +222,8 @@ impl<'a> Writer<'a> {
             fn_addr: Vec::new(),
             block_lists: Vec::new(),
             block_lists_base: 0,
+            loclists: Vec::new(),
+            loclists_unit: crate::loclists::NO_LISTS,
         }
     }
 
@@ -386,6 +390,9 @@ fn dwo_abbrev(used: &Used) -> Vec<u8> {
             if name == DW_AT_RANGES && form == DW_FORM_SEC_OFFSET {
                 table[form_at] = DW_FORM_RNGLISTX as u8;
             }
+            if name == DW_AT_LOCATION && form == DW_FORM_SEC_OFFSET {
+                table[form_at] = crate::abbrev::form::LOCLISTX; // WP-162
+            }
         }
         if at >= table.len() {
             break;
@@ -437,9 +444,11 @@ pub fn write_split_debug_info(
 
     // The `.dwo` sections: no relocation survives.
     let mut lists: Vec<(usize, i64)> = Vec::new();
+    let mut locs: Vec<(usize, i64)> = Vec::new();
     for r in &w.relocs {
         match (r.sec, r.target) {
             (Sec::Info, Target::Rnglists) => lists.push((r.offset, r.addend)),
+            (Sec::Info, Target::Loclists) => locs.push((r.offset, r.addend)), // WP-162
             (Sec::StrOffsets, Target::Str) => {
                 let offset = u32::try_from(r.addend).map_err(|_| Error::TooLarge)?;
                 w.str_offsets[r.offset..r.offset + 4].copy_from_slice(&offset.to_le_bytes());
@@ -449,10 +458,16 @@ pub fn write_split_debug_info(
         }
     }
     let rnglists = dwo_lists(&mut w, &lists)?;
+    let loclists = crate::loclists::dwo_loclists(&mut w, &locs)?; // WP-162
     let abbrev = dwo_abbrev(&w.used);
     let strings = std::mem::take(&mut w.strings).into_data();
     let id = if has_split {
-        let id = dwo_id(&[dwo_name, &w.info, &abbrev, &w.str_offsets, &strings, &rnglists]);
+        let mut parts: Vec<&[u8]> =
+            vec![dwo_name, &w.info, &abbrev, &w.str_offsets, &strings, &rnglists];
+        if !loclists.is_empty() {
+            parts.push(&loclists); // WP-162
+        }
+        let id = dwo_id(&parts);
         w.info[ID_AT..ID_AT + 8].copy_from_slice(&id.to_le_bytes());
         id
     } else {
@@ -466,7 +481,7 @@ pub fn write_split_debug_info(
             return Err(Error::TooLarge);
         }
     }
-    if obj.section_count() >= u32::MAX - 12 {
+    if obj.section_count() >= u32::MAX - 13 {
         return Err(Error::Object(hod_obj::Error::TooLarge(hod_obj::Limit::Sections)));
     }
 
@@ -510,7 +525,8 @@ pub fn write_split_debug_info(
     obj.reserve(0, 0, skeleton.relocs.len() + w.addrs.len(), 0);
     for r in skeleton.relocs.iter().chain(w.relocs.iter().filter(|r| r.sec == Sec::Addr)) {
         let (symbol, wide) = match r.target {
-            Target::Abbrev => (sym_abbrev, false),
+            // `Loclists`: only in the split unit (WP-162).
+            Target::Abbrev | Target::Loclists => (sym_abbrev, false),
             Target::Str => (sym_str, false),
             Target::StrOffsets => (sym_str_offsets, false),
             Target::Line => (sym_line, false),
@@ -551,6 +567,10 @@ pub fn write_split_debug_info(
         if !rnglists.is_empty() {
             let s = dwo.add_section(b".debug_rnglists.dwo", kind, 1)?;
             dwo.append_owned(s, rnglists);
+        }
+        if !loclists.is_empty() {
+            let s = dwo.add_section(b".debug_loclists.dwo", kind, 1)?; // WP-162
+            dwo.append_owned(s, loclists);
         }
     }
     if split == SplitDwarf::Separate {

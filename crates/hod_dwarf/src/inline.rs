@@ -484,22 +484,37 @@ impl UnitPlan<'_> {
         let start = self.locals.iter().rposition(|l| l.func as usize != func).map_or(0, |i| i + 1);
         // By node: the instances of one variable inlined twice have one
         // type, so which record is which instance does not matter.
-        let mut tail: Vec<(u32, u32)> = self.locals[start..]
-            .iter()
-            .filter(|l| matches!(l.what, LocalWhat::Var { .. } | LocalWhat::CoroVar { .. }))
-            .map(|l| (self.dies[l.die as usize].node.raw(), l.die))
-            .collect();
-        tail.sort_unstable();
-        let mut done = vec![false; tail.len()];
-        for v in f.vars {
-            let node = v.node.raw();
-            let mut i = tail.partition_point(|&(n, _)| n < node);
-            while i < tail.len() && tail[i].0 == node && done[i] {
-                i += 1;
+        // WP-162: the variables described by value records follow
+        // (`collectVariableInfo` takes the frame table's first, then the
+        // value history's, in the order of their first records).
+        for value in [false, true] {
+            let mut tail: Vec<(u32, u32)> = self.locals[start..]
+                .iter()
+                .filter(|l| match l.what {
+                    LocalWhat::Var { .. } | LocalWhat::CoroVar { .. } => !value,
+                    LocalWhat::List { .. } => value,
+                    _ => false,
+                })
+                .map(|l| (self.dies[l.die as usize].node.raw(), l.die))
+                .collect();
+            if tail.is_empty() {
+                continue;
             }
-            if i < tail.len() && tail[i].0 == node {
-                done[i] = true;
-                self.inline.entities.push(tail[i].1);
+            tail.sort_unstable();
+            let mut done = vec![false; tail.len()];
+            for v in f.vars {
+                if matches!(v.place, crate::func::LocalPlace::Value { .. }) != value {
+                    continue;
+                }
+                let node = v.node.raw();
+                let mut i = tail.partition_point(|&(n, _)| n < node);
+                while i < tail.len() && tail[i].0 == node && done[i] {
+                    i += 1;
+                }
+                if i < tail.len() && tail[i].0 == node {
+                    done[i] = true;
+                    self.inline.entities.push(tail[i].1);
+                }
             }
         }
         self.record_retained(f.subprogram, start);

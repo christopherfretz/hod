@@ -60,6 +60,7 @@ mod label;
 mod leb;
 mod line;
 mod local_type;
+mod loclists;
 mod policy;
 mod reduced;
 pub mod scope;
@@ -84,6 +85,7 @@ pub use inline::{
     DEBUG_INLINED_DISCRIMINATOR, DEBUG_INLINED_FOREIGN_UNIT, DEBUG_INLINED_LOCAL_TYPE,
     DEBUG_INLINED_MEMBER, DEBUG_LOCAL_STATIC, DEBUG_RETAINED_NODES,
 };
+pub use loclists::{DEBUG_DBG_VALUE_EXPR, DEBUG_DBG_VALUE_FRAGMENT, ValueLoc};
 pub use reduced::{LINE_TABLES_INLINED, LINE_TABLES_VARIABLES, REDUCED_UNIT_ENTITIES, has_dies};
 pub use split::{
     DWO_ID, SPLIT_DWARF_4, SPLIT_INLINING, SPLIT_NAME, SPLIT_REDUCED, SPLIT_SEVERAL_UNITS,

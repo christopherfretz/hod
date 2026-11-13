@@ -162,6 +162,27 @@ fn add_functions(module: &Module, bodies: &[Body], plan: &mut UnitPlan<'_>, s: &
                     VarPlace::Label(o) => LocalPlace::Label(o),
                     VarPlace::Coro(place) => LocalPlace::Coro(place),
                     VarPlace::Refused(name) => LocalPlace::Refused(name),
+                    // WP-162: the bridge's mapping (`hod_cg::dbg_value::local_place`).
+                    VarPlace::Value(r) => {
+                        let at = match r.at {
+                            hod_cg::ValueAt::Frame(offset, size) => {
+                                hod_dwarf::ValueLoc::Frame { offset, size }
+                            }
+                            hod_cg::ValueAt::Const { bits, width } => {
+                                hod_dwarf::ValueLoc::Const { bits, width }
+                            }
+                            hod_cg::ValueAt::None => hod_dwarf::ValueLoc::None,
+                            hod_cg::ValueAt::Home(..) => {
+                                return LocalRow {
+                                    place: LocalPlace::Refused("debug:frame-place"),
+                                    node: v.var,
+                                    loc: v.loc,
+                                    expr: v.expr,
+                                };
+                            }
+                        };
+                        LocalPlace::Value { start: r.start, end: r.end, at }
+                    }
                     VarPlace::Slot(_) | VarPlace::Indirect(_) => {
                         LocalPlace::Refused("debug:frame-place")
                     }

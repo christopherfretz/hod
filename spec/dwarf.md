@@ -52,8 +52,9 @@ Not written, with the reason:
 - `.debug_loclists`: at `-O0` every variable `hod_cg` describes has one
   location for the whole function (`spec/codegen.md` §9.5, "`vars`"), which
   is an expression in the DIE (`DW_FORM_exprloc`). A location list is
-  needed only for `#dbg_value` variables tracked over ranges, which policy
-  v1 drops (§9.5). `llc -O0` writes none for `clang -O0` output either.
+  needed only for `#dbg_value` variables tracked over ranges, which
+  hod writes since WP-162 (§6.23). `llc -O0` writes none for `clang -O0`
+  output.
 - `.debug_names`, `.debug_gnu_pubnames`/`pubtypes`: `llc` writes
   `.debug_names` when the unit's `nameTableKind` is `Default` and the GNU
   pair for `GNU`; clang on Linux and kiln write `nameTableKind: None`, and
@@ -151,7 +152,7 @@ keeps the per-function facts that only exist after code generation
 | line table | `DiFile` (`filename`, `directory`, `checksumkind`, `checksum`, `source`); `DiLocation` (`line`, `column`, `scope` → file) | `lines` (offset, `LocId`) | a block-start mark on a transition (§5.3, `crates/hod_cg/src/record.rs:119`) |
 | subprogram | `DiSubprogram` (name, linkage name, scope, file, line, type, `scopeLine`, flags, `spFlags`, `declaration`, `templateParams`, `containingType`, `virtualIndex`), `FunctionDesc`'s subprogram | code size and placement (`DW_AT_low_pc`/`high_pc`), `FrameDesc::frame_base` (`DW_AT_frame_base`) | nothing |
 | lexical block | `DiLexicalBlock` (`scope`, `file`, `line`, `column`), `DiLexicalBlockFile` | code ranges, derived from `lines`: the union of the transitions whose location's scope chain contains the block (§6.4) | nothing; the ranges are derived, not recorded |
-| parameter, local variable | `DiLocalVariable` (`name`, `arg`, `scope`, `file`, `line`, `type`, `flags`, `align`); the record's `DIExpression` | `vars` (variable, expression, declared-at, `VarPlace`) | `VarRow` has no expression field yet (`crates/hod_cg/src/record.rs:139`) although `hod_ir` has `SlotVar.expr` now; `#dbg_value` variables are dropped by policy v1 |
+| parameter, local variable | `DiLocalVariable` (`name`, `arg`, `scope`, `file`, `line`, `type`, `flags`, `align`); the record's `DIExpression` | `vars` (variable, expression, declared-at, `VarPlace`) | `VarRow` has no expression field yet (`crates/hod_cg/src/record.rs:139`) although `hod_ir` has `SlotVar.expr` now; `#dbg_value` variables get location lists (§6.23, WP-162) |
 | label | `DiLabel` | `labels` | `Chunk` has no `labels` table yet (`crates/hod_cg/src/record.rs:225`) although `hod_ir` has `#dbg_label` now |
 | type graph (WP-058, §6.8) | `DiBasicType`, `DiDerivedType` (pointers, references, typedefs, template aliases, cv, atomic, restrict, members, static members, inheritance, pointers to member, friends), `DiCompositeType` (classes, structs, unions, enums, arrays and vectors with `DiSubrange`s), `DiSubroutineType`, `DiEnumerator`, member function declarations (`DiSubprogram` without `DISPFlagDefinition`); a static member's constant from `Module`'s constant pool | nothing | nothing for C++ at `-O0`; Fortran-style bounds, strides, address spaces and annotations are `unsupported` (§6.8) |
 | global variable | `DiGlobalVariableExpression` (`var`, `expr`) via `Module::global_exprs()`; `DiGlobalVariable` | the variable's symbol (address, TLS) | nothing |
@@ -1061,6 +1062,8 @@ reports a `debug:*` name as itself and §6.5's unnamed shapes as
 | `debug:specification-type` | a definition whose return type differs from its declaration's |
 | `debug:foreign-scope` | a variable or row in another function's scope |
 | `debug:fragment` | a `DW_OP_LLVM_fragment` in a declared variable's expression |
+| `debug:dbg-value-fragment`, `debug:dbg-value-expr` | a value record's expression with a fragment, or one §6.23 does not write (WP-162) |
+| `debug:dbg-value-arglist`, `debug:dbg-value-coroutine` | a value record with a `DIArgList`; one in a coroutine body (`hod_cg`, §6.23) |
 | `debug:expression` | any other op that is not a plain DWARF op |
 | `debug:variable-without-type`, `debug:variable-twice` | as named |
 | `debug:variable-alignment` | an `alignas` parameter, or an unnamed one; an `alignas` variable of an abstract instance (§6.9). A named local's `alignment` is written since WP-087 (family 88, in bytes, after `name`) |
@@ -1270,6 +1273,17 @@ is the whole list of permitted differences:
     stored the address (the parameters there are unset under both).
     From `prologue_end`, where `break make` and `step` stop, both print
     the same.
+- **value records** (WP-162, §6.23): hod writes a location list for
+  every variable of `#dbg_value` records that has a range, where `llc`
+  may write a single location expression or `DW_AT_const_value`; and its
+  lists have fewer entries (no ranges across blocks, none for register
+  values). In sessions the class *value-range* (`xtask/src/debug/permitted.rs`
+  `only_value_ranges`) permits a transcript line where hod says
+  `<optimized out>`, `<variable not available>` or `<unavailable>` and
+  `llc`'s line has a value there (each marker of hod's line matches a
+  non-empty run of `llc`'s that is not a marker; the rest equal). Never
+  the reverse, and never a different value. A debugger user sees fewer
+  variables (`info locals`) under hod outside the proven ranges.
 
 The relocations of `.debug_info`, `.debug_str_offsets` (by the string
 each one points at) and `.debug_addr` must name the same targets.
@@ -1466,14 +1480,10 @@ declaration's),
 | `debug:inlined-local-type` | a type local to a function with an abstract instance, or a variable a type names (a VLA bound) in one |
 | `debug:local-static` | a static scoped in a block, or in a subprogram that is not a definition of this unit, or whose early DIE no function filled by `seal()`, or read without the module (`UnitPlan::new`) |
 
-**`#dbg_value` stays refused** (`debug:dbg-value`), on a census:
-`-O0` input from clang 19, clang 22 and kiln++ has no `#dbg_value` at
-all (the C++ sources of §8.8 and `stl.cpp`, and every `-O0` module of
-the corpus), so there is no exact form it would describe; the one corpus
-module that has any is `-O2`. Their `#dbg_declare` expressions are
-empty or `DW_OP_deref`: no `DW_OP_LLVM_fragment` (`debug:fragment`
-stays refused, for the same reason). A value with a home becomes a
-`LocalPlace` when one is needed (open question 9).
+**`#dbg_value`** was refused (`debug:dbg-value`) until WP-162, which
+writes location lists for it (§6.23). `-O0` input from clang 19, clang
+22 and kiln++ has none; their `#dbg_declare` expressions are empty or
+`DW_OP_deref`, so `debug:fragment` stays refused.
 
 **Tests** (`crates/hod_a64/tests/`, data in `data/dies_inline/`):
 - `dies_inline.rs`:
@@ -1845,13 +1855,14 @@ writer's (`tests/early.rs`):
 | `debug:call-sites-line-tables` | `DIFlagAllCallsDescribed` with inlined code (WP-113, §6.19) |
 | `debug:variable-without-type`, `debug:variable-alignment` | a variable record's variable (§6.4, §6.12) |
 | `debug:fragment`, `debug:expression` | a variable record's expression |
+| `debug:dbg-value-fragment`, `debug:dbg-value-expr` | a value record's expression (WP-162, §6.23) |
 | `debug:label-attribute` | no longer refused (WP-098, §6.14) |
 | `debug:import-scope`, `debug:import` | a function's import with no scope, or scoped in a block file or another function; one in its own scope of a shape hod does not write |
 | `debug:subprogram-twice` | two bodies with one subprogram |
 
 What still needs the generated code or the plan's state, and is found as
 the function's DIEs are written: a variable whose location the code
-generator refused (its names, as `dbg-value`); the inlined-code refusals
+generator refused (its names, as `dbg-value-arglist`); the inlined-code refusals
 that depend on which locations survive (`debug:retained-nodes`,
 `debug:inlined-foreign-unit`, `debug:inlined-discriminator`,
 `debug:inlined-local-type`, `debug:inlined-member`);
@@ -1960,7 +1971,7 @@ parameter twice: the second declaration was the `phi`'s.
   is left for a unit that is not DWARF 5. Before WP-098 a member definition (one with a
   declaration) with the flag was written without its call sites. The
   corpus's optimized modules also have `#dbg_value`
-  (`debug:dbg-value`).
+  (`debug:dbg-value` then; §6.23 since WP-162).
 
 **DWARF 4** stayed `debug:dwarf-version` (§6.12) until WP-114 wrote it
 (§6.20); the measured plan was `spec/landed/dwarf/WP-098.md`.
@@ -2642,6 +2653,100 @@ targets, trees equal to `llc` 22's), `tests/debug/empty_tag_inlined.cpp`
 (gdb and lldb stop in the inlined callee and read its other parameters
 and the caller's variables), `spec/landed/dwarf/WP-156.md`.
 
+### 6.23 Variables described by `#dbg_value` (implemented, WP-162)
+
+A variable that a function describes by `#dbg_value` records gets a
+location list: `DW_AT_location` is `DW_FORM_sec_offset` into
+`.debug_loclists` (`DW_FORM_loclistx` in a split unit, §6.15). Every
+entry is a range hod can prove; outside the entries a debugger says
+`<optimized out>`. hod never writes a location the value is not in.
+
+**Rows** (`crates/hod_cg/src/dbg_value.rs`). `value_records` (in
+`layout_slots`) finds the records of the function; a function without
+any pays one flag test per block. As each block is emitted, a record
+opens a range of its `(variable, inlinedAt)` and closes the previous
+one:
+
+- the range starts at the code of the instruction after the record. A
+  record before a non-entry block's first instruction starts at the
+  block's first byte (before the `phi` loads), unless its value is a
+  `phi` of that block;
+- it ends at the next record of the same variable in the block, or at
+  the end of the block when the terminator is `br`, `switch`,
+  `indirectbr` or `invoke` (the fused compare and branch emit the whole
+  block's tail at the terminator), or at the start of the terminator for
+  `ret`, any other terminator and a `musttail` call. Ranges never
+  cross blocks;
+- what the range holds (`ValueAt`): the value's frame home, when it has
+  one that is written before the range starts (an argument, an earlier
+  instruction of the block or an instruction of a dominating block) and
+  its type is `i8`, `i16`, `i32`, `i64`, `ptr`, `float` or `double`; a
+  constant, for an integer of at most 64 bits or `null`; otherwise
+  nothing (a register value, `undef`, `poison`, a slot address, a
+  floating constant), and the range gets no entry.
+
+Ranges are code offsets: `move_rows` (`shrink.rs`) moves them with the
+other tables when branches shrink (`crates/hod/tests/dbg_value.rs`
+`ranges_follow_the_final_code` compares them with the final line rows
+on x86-64). A record with a `DIArgList` is `debug:dbg-value-arglist`;
+a value record in a coroutine body is `debug:dbg-value-coroutine`.
+
+**Entries** (`crates/hod_dwarf/src/loclists.rs`). Each list is
+`DW_LLE_base_addressx` (the function's address), one
+`DW_LLE_offset_pair` per range with a location (adjacent ranges with the
+same location merged), `DW_LLE_end_of_list`. Each unit's lists are one
+`.debug_loclists` contribution, started on the first list; a unit with
+none writes no section, so objects without value records do not change.
+The expression of a record is checked before code generation:
+
+- allowed: the empty expression, one ending in `DW_OP_stack_value`, or
+  one ending in `DW_OP_deref` (a memory location: the value is the
+  address, and the final deref is dropped), with the plain DWARF ops
+  the `#dbg_declare` path writes in between;
+- `debug:dbg-value-fragment`: a `DW_OP_LLVM_fragment`;
+- `debug:dbg-value-expr`: any other op (`DW_OP_LLVM_convert`,
+  `DW_OP_LLVM_arg`, entry values, `DW_OP_LLVM_tag_offset`, ...), an op
+  after `DW_OP_stack_value`, or another last op.
+
+A home with the empty expression is `DW_OP_fbreg n`; otherwise
+`DW_OP_fbreg n`, `DW_OP_deref` (`DW_OP_deref_size k` for a value under
+8 bytes), the record's ops. A value under 64 bits (a home or a
+constant) takes only ops that keep the low bits (`plus_uconst`,
+arithmetic, logic, `shl`, stack ops); with another (`shr`, `div`, a
+deref) the range has no entry, since the value's high bits are not
+known. A memory location needs an 8-byte value. A constant is
+`DW_OP_consts` when the variable's type is a signed base type, else
+`DW_OP_litN` or `DW_OP_constu`, then `DW_OP_stack_value` for the empty
+expression.
+
+**DIEs.** Families 106 to 109 (`FORMAL_PARAMETER_LIST`,
+`VARIABLE_LIST`, `VARIABLE_UNNAMED_LIST`, `VARIABLE_ALIGNED_LIST`) are
+families 0, 1, 87 and 88 with a `sec_offset` location; 110 and 111 are a
+concrete parameter or variable of an abstract instance with one. A
+variable of value records whose ranges all have no entry has no
+location and keeps its base family. In an inlined instance the
+variables of declarations come before those of value records, the
+order of `llc`'s `collectVariableInfo`. hod always writes a list
+where `llc` may write a single location or `DW_AT_const_value`; the
+DIE trees differ there (§6.7).
+
+**DWARF 4**: the list families are past `LAST_CHECKED` (§6.20), so a
+version 4 unit with a located value variable is `debug:dwarf-4-shape`.
+`.debug_loc` is a follow-up.
+
+**Sessions**: `tests/debug/dbg_value.c` (`-O1`) prints variables inside
+and outside their ranges on both targets. The harness class
+`value-range` (§6.7) permits a line where hod says `<optimized out>`
+(gdb), `<variable not available>` or `<unavailable>` (lldb) and `llc`
+has a value; never the reverse, never another value.
+
+Not done: ranges across blocks (they would give loop variables and
+values defined before a loop a location over the loop body; today a
+loop header's records start ranges only in the header); a home for
+register values a record names (most of `-O1` code's records); slot
+addresses and floating constants; `.debug_loc`. Evidence:
+`spec/landed/dwarf/WP-162.md`.
+
 ## 7. Speed and memory
 
 ### 7.1 Parallel emission and determinism
@@ -3102,7 +3207,7 @@ normalized as §6.7 says.
     subprograms, 324 variables;
   - `hand_written_cases`: the block with two ranges has `DW_AT_ranges`;
     the dropped variable has no DIE; the label-only block is flattened;
-  - `refusals_are_named`: `debug:dbg-value`, `debug:dbg-assign`,
+  - `refusals_are_named`: `debug:dbg-value-arglist` (was `debug:dbg-value`), `debug:dbg-assign`,
     `debug:fragment`, `debug:declare-address`,
     `debug:out-of-line-definition`, each in a module with that construct
     only (`debug:inlined-subroutine` and `debug:local-static` went with
@@ -3240,9 +3345,9 @@ Rows for `docs/BACKLOG.md` (ids to be assigned; "this" is WP-052):
    ns per DIE (§7.2). Per-chunk DIE runs become worth it only if that
    shows up in a whole-module profile; the plan's side tables are by DIE,
    so either scheme can be added behind `add_function`.
-9. `#dbg_value` (`debug:dbg-value`) is refused outright: clang and kiln
-   do not emit it at `-O0`, so no exact form has been needed. When one
-   is (a value with a home), it becomes a `LocalPlace` like `Frame`.
+9. `#dbg_value`: written as location lists since WP-162 (§6.23).
+   Open: ranges across blocks, homes for register values, `.debug_loc`
+   for DWARF 4.
 10. `debugInfoForProfiling` (WP-061, §6.10): `llc` writes a subprogram
     for every function of a `LineTablesOnly` unit with the flag set;
     `hod_ir` drops the flag (`crates/hod_ir/src/debug/map.rs:72`). Map it

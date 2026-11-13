@@ -158,6 +158,8 @@ pub mod form {
     pub const STRX: u8 = 0x1a;
     pub const ADDRX: u8 = 0x1b;
     pub const RNGLISTX: u8 = 0x23;
+    // WP-162: a split unit's location list (`split.rs`).
+    pub const LOCLISTX: u8 = 0x22;
 }
 
 /// Whether a family's DIEs have children.
@@ -347,6 +349,16 @@ pub mod fam {
     // empty DIE of a callee that has no function DIE.
     pub const SUBPROGRAM_MINIMAL_CALLS: usize = 104;
     pub const SUBPROGRAM_EMPTY: usize = 105;
+    // WP-162: variables described by value records (`spec/dwarf.md`
+    // §6.23), `DW_AT_location` a location list (`DW_FORM_sec_offset`):
+    // 0, 1, 87 and 88 (same option bits), and 78 and 79 with the location
+    // optional (bit 0).
+    pub const FORMAL_PARAMETER_LIST: usize = 106;
+    pub const VARIABLE_LIST: usize = 107;
+    pub const VARIABLE_UNNAMED_LIST: usize = 108;
+    pub const VARIABLE_ALIGNED_LIST: usize = 109;
+    pub const FORMAL_PARAMETER_OF_ABSTRACT_LIST: usize = 110;
+    pub const VARIABLE_OF_ABSTRACT_LIST: usize = 111;
 }
 
 /// Every family, in code order (`spec/dwarf.md` §6.1 has the same table).
@@ -1661,6 +1673,85 @@ pub const FAMILIES: &[Family] = &[
     // call site in a `LineTablesOnly` unit when the callee's function has
     // no DIE of its own (no inlined code): no attributes, no children.
     fam("subprogram (empty)", tag::SUBPROGRAM, No, 1, "WP-150", &[]),
+    // WP-162. 106 to 109: families 0, 1, 87 and 88 with a location list.
+    fam(
+        "formal_parameter (location list)",
+        tag::FORMAL_PARAMETER,
+        No,
+        16,
+        "WP-162",
+        &[
+            o(0, at::LOCATION, SEC_OFFSET),
+            o(1, at::NAME, STRX),
+            o(2, at::DECL_FILE, UDATA),
+            o(2, at::DECL_LINE, UDATA),
+            s(at::TYPE, REF4),
+            o(3, at::ARTIFICIAL, FLAG_PRESENT),
+        ],
+    ),
+    fam(
+        "variable (local, location list)",
+        tag::VARIABLE,
+        No,
+        8,
+        "WP-162",
+        &[
+            o(0, at::LOCATION, SEC_OFFSET),
+            s(at::NAME, STRX),
+            o(1, at::DECL_FILE, UDATA),
+            o(1, at::DECL_LINE, UDATA),
+            s(at::TYPE, REF4),
+            o(2, at::ARTIFICIAL, FLAG_PRESENT),
+        ],
+    ),
+    fam(
+        "variable (local, unnamed, location list)",
+        tag::VARIABLE,
+        No,
+        8,
+        "WP-162",
+        &[
+            o(0, at::LOCATION, SEC_OFFSET),
+            o(1, at::DECL_FILE, UDATA),
+            o(1, at::DECL_LINE, UDATA),
+            s(at::TYPE, REF4),
+            o(2, at::ARTIFICIAL, FLAG_PRESENT),
+        ],
+    ),
+    fam(
+        "variable (local, aligned, location list)",
+        tag::VARIABLE,
+        No,
+        8,
+        "WP-162",
+        &[
+            o(0, at::LOCATION, SEC_OFFSET),
+            s(at::NAME, STRX),
+            s(at::ALIGNMENT, UDATA),
+            o(1, at::DECL_FILE, UDATA),
+            o(1, at::DECL_LINE, UDATA),
+            s(at::TYPE, REF4),
+            o(2, at::ARTIFICIAL, FLAG_PRESENT),
+        ],
+    ),
+    // 110, 111: families 78 and 79 with a location list, or none (an
+    // inlined variable no range locates).
+    fam(
+        "formal_parameter (of abstract, location list)",
+        tag::FORMAL_PARAMETER,
+        No,
+        2,
+        "WP-162",
+        &[o(0, at::LOCATION, SEC_OFFSET), s(at::ABSTRACT_ORIGIN, REF4)],
+    ),
+    fam(
+        "variable (of abstract, location list)",
+        tag::VARIABLE,
+        No,
+        2,
+        "WP-162",
+        &[o(0, at::LOCATION, SEC_OFFSET), s(at::ABSTRACT_ORIGIN, REF4)],
+    ),
 ];
 
 /// The slots of the general static-member families (54, 55), in `llc`'s
@@ -1835,7 +1926,10 @@ mod tests {
         // WP-150 appended families 104 and 105.
         assert_eq!(BASES[fam::SUBPROGRAM_MINIMAL_CALLS], 11471);
         assert_eq!(BASES[fam::SUBPROGRAM_EMPTY], 11479);
-        assert_eq!(CODE_END, 11480);
+        // WP-162 appended families 106 to 111.
+        assert_eq!(BASES[fam::FORMAL_PARAMETER_LIST], 11480);
+        assert_eq!(BASES[fam::VARIABLE_OF_ABSTRACT_LIST], 11522);
+        assert_eq!(CODE_END, 11524);
         for (index, name) in [
             (fam::CONST_TYPE, "const_type"),
             (fam::TYPEDEF, "typedef"),

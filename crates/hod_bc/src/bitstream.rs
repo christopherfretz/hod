@@ -119,7 +119,7 @@ impl<'a> BitReader<'a> {
     ///
     /// # Errors
     /// As [`Self::read`].
-    #[inline]
+    #[inline(always)]
     fn fixed(&mut self, width: u32, mask: u64) -> BcResult<u64> {
         if width <= 57 && self.end - self.pos >= 64 {
             let value = (self.word_at((self.pos >> 3) as usize) >> (self.pos & 7)) & mask;
@@ -937,7 +937,7 @@ impl<'a, 'b> Cursor<'a, 'b> {
 
 /// One scalar of an abbreviated record: a scalar operand, or an
 /// element of an array op.
-#[inline]
+#[inline(always)]
 fn scalar(bits: &mut BitReader<'_>, op: Op) -> BcResult<u64> {
     match op.kind {
         Kind::Literal => Ok(op.value),

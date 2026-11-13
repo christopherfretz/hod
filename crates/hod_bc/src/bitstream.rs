@@ -119,6 +119,7 @@ impl<'a> BitReader<'a> {
     ///
     /// # Errors
     /// As [`Self::read`].
+    #[allow(clippy::inline_always)] // Measured: a call per operand otherwise (WP-169).
     #[inline(always)]
     fn fixed(&mut self, width: u32, mask: u64) -> BcResult<u64> {
         if width <= 57 && self.end - self.pos >= 64 {
@@ -937,6 +938,7 @@ impl<'a, 'b> Cursor<'a, 'b> {
 
 /// One scalar of an abbreviated record: a scalar operand, or an
 /// element of an array op.
+#[allow(clippy::inline_always)] // Measured: a call per operand otherwise (WP-169).
 #[inline(always)]
 fn scalar(bits: &mut BitReader<'_>, op: Op) -> BcResult<u64> {
     match op.kind {

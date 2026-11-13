@@ -178,7 +178,12 @@ fn is(byte: u8, class: u8) -> bool {
 /// The lexer: a position in a source.
 #[derive(Clone, Debug)]
 pub struct Lexer<'a> {
+    /// The bytes tokens are read from: the source, or nothing for a
+    /// source larger than [`MAX_SOURCE_BYTES`], so that the size is
+    /// looked at once and not per token.
     src: &'a [u8],
+    /// The source as given.
+    full: &'a [u8],
     pos: usize,
     /// Why the last [`Tok::Error`] was one.
     error: &'static str,
@@ -194,12 +199,14 @@ impl<'a> Lexer<'a> {
     /// A lexer at the start of `src`. A source longer than
     /// [`MAX_SOURCE_BYTES`] lexes as a single [`Tok::Error`].
     pub fn new(src: &'a [u8]) -> Lexer<'a> {
-        Lexer { src, pos: 0, error: "", run_start: usize::MAX, run_end: 0 }
+        let full = src;
+        let src = if src.len() > MAX_SOURCE_BYTES { &src[..0] } else { src };
+        Lexer { src, full, pos: 0, error: "", run_start: usize::MAX, run_end: 0 }
     }
 
     /// The source.
     pub fn source(&self) -> &'a [u8] {
-        self.src
+        self.full
     }
 
     /// The offset the next token is looked for at.
@@ -302,14 +309,14 @@ impl<'a> Lexer<'a> {
     /// [`Tok::Error`] token is at least one byte, so a caller that goes on
     /// makes progress.
     pub fn next_token(&mut self) -> Token {
-        if self.src.len() > MAX_SOURCE_BYTES {
-            return self.fail("source is larger than 4 GiB", 0, 0);
-        }
         let start = match self.skip_blank() {
             Ok(start) => start,
             Err(token) => return token,
         };
         let Some(&c) = self.src.get(start) else {
+            if self.full.len() > MAX_SOURCE_BYTES {
+                return self.fail("source is larger than 4 GiB", 0, 0);
+            }
             return self.token(Tok::Eof, start, start);
         };
         let one = |kind| Token { kind, start: start as u32, end: start as u32 + 1 };
@@ -397,6 +404,7 @@ impl<'a> Lexer<'a> {
     }
 
     /// `@`, `%` or `$` and what follows.
+    #[inline(always)]
     fn sigil(&mut self, start: usize, name: Tok, quoted: Tok, id: Option<Tok>) -> Token {
         let first = self.at(start + 1);
         if first == b'"' {

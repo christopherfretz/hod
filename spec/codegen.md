@@ -2752,6 +2752,111 @@ summarized in `spec/landed/codegen/WP-128.md`.
 
 Evidence: `spec/landed/codegen/WP-140.md`.
 
+#### 5.6.10 Atomics (WP-133)
+
+`crates/hod_x64/src/atomic.rs` lowers atomic `load` and `store`,
+`atomicrmw`, `cmpxchg` and `fence`, dispatched from `target.rs` (and
+from `mem.rs` for an atomic access) before the class-based arms. The
+sequences are `llc -O0`'s where that is correct by itself; the
+differences are listed below. x86-64 is TSO, so no ordering but
+`seq_cst` needs an instruction of its own.
+
+- **Orderings.** Every aligned load of 1..8 bytes is an acquire load and
+  every aligned store a release store; every `lock`ed instruction and
+  `xchg` with memory is a full barrier. So `unordered`, `monotonic`,
+  `acquire`, `release`, `acq_rel` and `seq_cst` select the same
+  instruction for every operation except a store: a `seq_cst` store is
+  `xchg` with memory (the old value discarded), what `llc` writes, which
+  keeps it ordered before a later load; the others are `mov`. A
+  `cmpxchg`'s orderings change nothing. Weak `cmpxchg` is strong.
+- **Loads and stores** of 1..8 bytes are `mov` (`movzx` into a 32-bit
+  register for 1 and 2 bytes); `half`, `bfloat`, `float`, `double` go
+  through `rax` (`movd`/`movq`, `pextrw`/`pinsrw` for 2 bytes).
+- **`atomicrmw`** of 1..8 bytes (integers and pointers): `xchg` is
+  `xchg` (implicitly locked); `add` is `lock xadd`, `sub` `neg` then
+  `lock xadd`; when the result is unused (`FnCx::is_dead`), `add`, `sub`,
+  `and`, `or`, `xor` are `lock add`/`sub`/`and`/`or`/`xor` with memory
+  from a register (a constant operand is materialised first). Every
+  other operation is a `lock cmpxchg` loop: the old value in `rax`
+  (loaded once before the loop, then refreshed by the failing
+  `cmpxchg`), the new one computed into `r10` with `rcx` as a second
+  temporary: `nand` is `and` then `not`; `max`, `min`, `umax`, `umin`
+  `cmp` at the operation's width then `cmovl`/`cmovg`/`cmovb`/`cmova`
+  (32-bit `cmov` for 1 and 2 bytes: the compared bits are the width's);
+  `uinc_wrap` is `old >= v ? 0 : old + 1`, `udec_wrap` `old == 0 ||
+  old > v ? v : old - 1`, `usub_cond` `old >= v ? old - v : old`,
+  `usub_sat` `old >= v ? old - v : 0`, each by `cmov` after the
+  comparison (§5.6.1's flags rule: only `mov`, `lea`, `movzx` between
+  a flag setter and its reader, `mov r32, 0` for a zero). Every operand
+  is in a register or is an immediate before the loop's label; the loop
+  body touches memory only through its `lock cmpxchg`, under any
+  `Stress`.
+- **Floating `atomicrmw`.** `xchg` of `half`, `bfloat`, `float`,
+  `double` exchanges the bits through `rax`. `fadd` and `fsub` of
+  `float` and `double` are a `lock cmpxchg` loop computing in `xmm15`
+  (`addss`/`addsd`, `subss`/`subsd`) from the old bits in `rax`.
+- **16 bytes** (`i128`, 16-aligned) need `cmpxchg16b`: with `+cx16` in
+  the function's `target-features` (the last `±cx16` item decides, as
+  `llc` reads it), every operation is `lock cmpxchg16b`: a load is a
+  compare of `rdx:rax` = `rcx:rbx` = 0 (which writes back what it found
+  if it was zero, and fails otherwise; the old value is `rdx:rax` either
+  way), a store and every `atomicrmw` a loop on the new value in
+  `rcx:rbx`, computed pairwise (`add`/`adc`, `sub`/`sbb`, `cmp` and `sbb`
+  for the comparisons, then `cmov`s). `rbx` is a callee-saved register
+  taken for the operation (`FnCx::take_reg`). Without `+cx16`, `llc`
+  calls libatomic's `__atomic_load_16` and its siblings, which
+  `hod_cg::RuntimeFn` does not have yet: refused (`x64:atomic-libatomic`).
+  A load through `cmpxchg16b` writes: it faults on read-only memory
+  exactly as `llc`'s does.
+- **`cmpxchg` result.** `{ T, i1 }` is a `Mem` value: the old value
+  (`rax`, or `rdx:rax`) at offset 0 and `sete`'s byte at the flag
+  field's offset; `extractvalue` reads either field (`aggr.rs`). The
+  expected value goes in `rax` (`rdx:rax`), the replacement in a
+  register (`rcx:rbx`).
+- **`fence`**: `mfence` for `seq_cst` with the system scope; nothing for
+  `acquire`, `release`, `acq_rel` (TSO already orders them; hod does not
+  reorder memory accesses) and nothing for `syncscope("singlethread")`,
+  as on AArch64.
+- **Volatile** changes nothing: an atomic volatile access is the same
+  instruction, and a plain volatile access is not atomic (`mem.rs`).
+- **Refused, by name:** `x64:atomic-unaligned`, an access whose
+  alignment is below its size (`llc` calls `__atomic_*`);
+  `x64:atomic-type`, an atomic of `fp128`, `x86_fp80`, a vector, an
+  integer that is not 8, 16, 32, 64 or 128 bits, or an operation whose
+  type does not fit it; `x64:atomic-bfloat-op`, `bfloat` arithmetic;
+  `x64:atomic-float-op`, `fmax`, `fmin`, `fmaximum`, `fminimum` and
+  `half` `fadd`/`fsub` (they need WP-127's compares and conversions);
+  `x64:atomic-libatomic`, 16 bytes without `+cx16`.
+- **Differences from `llc -O0`.** hod never uses an immediate form
+  (`lock add [m], imm`): the operand is in a register first. `llc`
+  keeps the values of a `lock cmpxchg` loop in stack slots between
+  iterations; hod keeps them in `rax` and `r10`. A 16-byte load or
+  store without `+cx16` is a libatomic call in `llc` and refused here.
+  None changes what another thread can observe.
+
+**What the emulator proves.** The threaded programs run under
+`qemu-x86_64` user mode, which runs each guest thread on a host thread:
+on a multi-core host the counters, spinlocks and the stack are really
+contended, and a read-modify-write without `lock` loses updates (WP-133's
+mutation check: the threaded counters catch it, the single-threaded
+table does not). qemu translates a `lock`ed instruction to a host atomic
+operation and, for an x86 guest on a weakly ordered host, adds host
+barriers for the orderings TSO guarantees (all but store-then-load), so
+the message-passing programs pass whatever ordering the guest code asks
+for: they show that the sequences are atomic, not that hod's choice of
+instructions gives TSO's guarantees. A `seq_cst` store written as a
+plain `mov` is not caught by any emulated run here (only a
+store-buffering litmus could see it, and only on a host that reorders);
+the instruction forms test pins `xchg` for that store and `mfence` for
+the `seq_cst` fence.
+
+Tests: `crates/hod_x64/tests/atomic.rs` (the table, against the
+interpreter and `llc` 22 and 19; 16 bytes with `+cx16` in
+`tests/common/atomic_wide.rs`; the threaded programs of
+`tests/common/atomic_threads.rs`; the instruction forms; the
+refusals), and `tests/ir/atomics.ll` under `cargo xtask irdiff --target
+x86_64`.
+
 #### 5.6.11 Thread-local storage (WP-134)
 
 The model is `hod_cg::sym_access`'s (`TargetMachine::getTLSModel`, as

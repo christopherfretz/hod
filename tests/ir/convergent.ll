@@ -6,7 +6,6 @@
 ; LowerConstantIntrinsics does at -O0: true for a literal operand, false
 ; for a value computed at run time or a symbol's address.
 ;@ covers: spec/ir.md §5.7 attributes (convergent), §5.5 intrinsics (is.constant)
-;@ unsupported(x86_64): *
 ;@ stdout: lit 1 1 1 1 1
 ;@ stdout: run 0 0 0 0 0
 ;@ stdout: step 0 3

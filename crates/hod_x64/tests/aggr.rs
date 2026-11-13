@@ -220,7 +220,7 @@ fn what_is_refused_is_refused_by_name() {
         ),
         (
             "define void @f(ptr %p, ptr %q) { %v = load atomic i128, ptr %q seq_cst, align 16\n store i128 %v, ptr %p\n ret void }",
-            hod_x64::atomic::ATOMIC,
+            hod_x64::atomic::LIBATOMIC,
         ),
     ]);
     // Linear forms have no limit.

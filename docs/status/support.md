@@ -33,9 +33,9 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `cc` | 15 | 6 | 7 | 2 | 2 | 10 | 3 |
 | `attr` | 57 | 24 | 30 | 3 | 18 | 31 | 8 |
 | `type` | 15 | 12 | 0 | 3 | 10 | 3 | 2 |
-| `inst` | 67 | 60 | 0 | 7 | 53 | 7 | 7 |
-| `mem` | 3 | 3 | 0 | 0 | 1 | 2 | 0 |
-| `atomicrmw` | 21 | 21 | 0 | 0 | 0 | 21 | 0 |
+| `inst` | 67 | 60 | 0 | 7 | 56 | 4 | 7 |
+| `mem` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
+| `atomicrmw` | 21 | 21 | 0 | 0 | 17 | 4 | 0 |
 | `call` | 4 | 4 | 0 | 0 | 3 | 1 | 0 |
 | `tail` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 11 | 8 | 3 | 0 | 7 | 4 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 354 | 346 | 8 | 0 | 97 | 41 | 216 |
-| total | 663 | 547 | 70 | 46 | 250 | 142 | 271 |
+| total | 663 | 547 | 70 | 46 | 272 | 120 | 271 |
 
 ## `module`
 
@@ -348,9 +348,9 @@ Instructions.
 | `inst:load` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | a plain load; see `mem:`; FP and vector values: WP-067 |
 | `inst:store` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | a plain store; see `mem:`; FP and vector values: WP-067 |
 | `inst:alloca` | supported | supported | a dynamic allocation; fixed ones are `function:slots` |
-| `inst:fence` | supported | not-implemented | WP-074 |
-| `inst:cmpxchg` | supported (int, i128, ptr, aggregate) | not-implemented | WP-074; the `{ T, i1 }` result is an aggregate |
-| `inst:atomicrmw` | supported (int, i128, ptr, half, bfloat, float, double) | not-implemented | and the operation's `atomicrmw:` row; WP-074 |
+| `inst:fence` | supported | supported | WP-074; x86-64: WP-133 |
+| `inst:cmpxchg` | supported (int, i128, ptr, aggregate) | supported (int, ptr, aggregate) | WP-074; the `{ T, i1 }` result is an aggregate; x86-64 (WP-133): `i128` only with `+cx16` (`lock cmpxchg16b`), else `x64:atomic-libatomic` |
+| `inst:atomicrmw` | supported (int, i128, ptr, half, bfloat, float, double) | supported (int, ptr, half, bfloat, float, double) | and the operation's `atomicrmw:` row; WP-074; x86-64 (WP-133): `i128` only with `+cx16`, else `x64:atomic-libatomic` |
 | `inst:ptradd` | supported | supported | LLVM's `getelementptr` (§5.4); not a vector of pointers |
 | `inst:extractvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, aggregate) |  |
 | `inst:insertvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, aggregate) |  |
@@ -385,8 +385,8 @@ Kinds of memory access.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `mem:volatile` | supported | supported | a volatile `load`, `store`, `cmpxchg` or `atomicrmw` |
-| `mem:atomic-load` | supported | not-implemented | WP-074; `fp128` and vectors: `a64:atomic-type` |
-| `mem:atomic-store` | supported | not-implemented | WP-074; `fp128` and vectors: `a64:atomic-type` |
+| `mem:atomic-load` | supported | supported | WP-074, WP-133; `fp128` and vectors: `a64:atomic-type`, `x64:atomic-type`; x86-64 `i128` without `+cx16`: `x64:atomic-libatomic` |
+| `mem:atomic-store` | supported | supported | WP-074, WP-133; `fp128` and vectors: `a64:atomic-type`, `x64:atomic-type`; x86-64 `i128` without `+cx16`: `x64:atomic-libatomic` |
 
 ## `atomicrmw`
 
@@ -394,27 +394,27 @@ Kinds of memory access.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `atomicrmw:xchg` | supported | not-implemented | WP-074 |
-| `atomicrmw:add` | supported | not-implemented | WP-074 |
-| `atomicrmw:sub` | supported | not-implemented | WP-074 |
-| `atomicrmw:and` | supported | not-implemented | WP-074 |
-| `atomicrmw:nand` | supported | not-implemented | WP-074 |
-| `atomicrmw:or` | supported | not-implemented | WP-074 |
-| `atomicrmw:xor` | supported | not-implemented | WP-074 |
-| `atomicrmw:max` | supported | not-implemented | WP-074 |
-| `atomicrmw:min` | supported | not-implemented | WP-074 |
-| `atomicrmw:umax` | supported | not-implemented | WP-074 |
-| `atomicrmw:umin` | supported | not-implemented | WP-074 |
-| `atomicrmw:fadd` | supported | not-implemented | WP-074 |
-| `atomicrmw:fsub` | supported | not-implemented | WP-074 |
-| `atomicrmw:fmax` | supported | not-implemented | WP-074 |
-| `atomicrmw:fmin` | supported | not-implemented | WP-074 |
-| `atomicrmw:uinc_wrap` | supported | not-implemented | WP-074 |
-| `atomicrmw:udec_wrap` | supported | not-implemented | WP-074 |
-| `atomicrmw:usub_cond` | supported | not-implemented | WP-074 |
-| `atomicrmw:usub_sat` | supported | not-implemented | WP-074 |
-| `atomicrmw:fmaximum` | supported | not-implemented | WP-074 |
-| `atomicrmw:fminimum` | supported | not-implemented | WP-074 |
+| `atomicrmw:xchg` | supported | supported | WP-074, WP-133 |
+| `atomicrmw:add` | supported | supported | WP-074, WP-133 |
+| `atomicrmw:sub` | supported | supported | WP-074, WP-133 |
+| `atomicrmw:and` | supported | supported | WP-074, WP-133 |
+| `atomicrmw:nand` | supported | supported | WP-074, WP-133 |
+| `atomicrmw:or` | supported | supported | WP-074, WP-133 |
+| `atomicrmw:xor` | supported | supported | WP-074, WP-133 |
+| `atomicrmw:max` | supported | supported | WP-074, WP-133 |
+| `atomicrmw:min` | supported | supported | WP-074, WP-133 |
+| `atomicrmw:umax` | supported | supported | WP-074, WP-133 |
+| `atomicrmw:umin` | supported | supported | WP-074, WP-133 |
+| `atomicrmw:fadd` | supported | supported | WP-074, WP-133; x86-64 `half`: `x64:atomic-float-op` |
+| `atomicrmw:fsub` | supported | supported | WP-074, WP-133; x86-64 `half`: `x64:atomic-float-op` |
+| `atomicrmw:fmax` | supported | not-implemented | WP-074; x86-64: `x64:atomic-float-op` until WP-127 |
+| `atomicrmw:fmin` | supported | not-implemented | WP-074; x86-64: `x64:atomic-float-op` until WP-127 |
+| `atomicrmw:uinc_wrap` | supported | supported | WP-074, WP-133 |
+| `atomicrmw:udec_wrap` | supported | supported | WP-074, WP-133 |
+| `atomicrmw:usub_cond` | supported | supported | WP-074, WP-133 |
+| `atomicrmw:usub_sat` | supported | supported | WP-074, WP-133 |
+| `atomicrmw:fmaximum` | supported | not-implemented | WP-074; x86-64: `x64:atomic-float-op` until WP-127 |
+| `atomicrmw:fminimum` | supported | not-implemented | WP-074; x86-64: `x64:atomic-float-op` until WP-127 |
 
 ## `call`
 

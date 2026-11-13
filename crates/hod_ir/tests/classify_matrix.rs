@@ -142,13 +142,13 @@ const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 27] = [
     ("type:double", "", "", "", ""),
     ("inst:add", "", "", "", ""),
     ("mem:volatile", "", "", "", ""),
-    ("atomicrmw:add", "", "", "", "inst:atomicrmw"),
+    ("atomicrmw:add", "", "", "", ""),
     ("call:indirect", "", "", "", ""),
     ("tail:musttail", "", "", "", ""),
     ("bundle:deopt", "", "", "bundle:deopt", "bundle:deopt"),
     ("landingpad:catch", "", "", "", ""),
     ("operand:slot", "", "", "", ""),
-    ("intrinsic:llvm.memcpy", "", "", "", "intrinsic:llvm.memcpy"),
+    ("intrinsic:llvm.memcpy", "", "", "", ""),
 ];
 
 #[test]

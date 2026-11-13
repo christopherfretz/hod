@@ -1070,10 +1070,11 @@ fn other_target_runs_under_the_emulator() {
     assert!(flags.ends_with(&format!(" {triple}")), "{torture}");
     // Every program run has its time.
     let times = capture::read_times(&options.out);
-    let mut timed: Vec<String> = times.iter().map(|t| format!("{} {}", t.source, t.test)).collect();
-    timed.sort();
+    let mut run_tests: Vec<String> =
+        times.iter().map(|t| format!("{} {}", t.source, t.test)).collect();
+    run_tests.sort();
     assert_eq!(
-        timed,
+        run_tests,
         [
             "gcc-torture a.c",
             "kiln tests/conformance/a/same.cpp",

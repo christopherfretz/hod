@@ -10,8 +10,8 @@
 //!
 //! The programs print what they compute; they depend on the layout only as
 //! far as both 64-bit little-endian Linux targets share it. On an AArch64
-//! host this is x86-64 SelectionDAG under `qemu-x86_64` against native
-//! AArch64 SelectionDAG.
+//! host this is x86-64 `SelectionDAG` under `qemu-x86_64` against native
+//! AArch64 `SelectionDAG`.
 //!
 //! The quick test runs four batches (120 programs) with each major; the
 //! ignored one runs the design's larger batches. Without the tools the
@@ -106,7 +106,8 @@ fn build(llc: &Path, driver: &Path, triple: &str, source: &Path, out: &Path) -> 
 fn printed(outcome: &hod_testutil::Outcome) -> String {
     let mut text = outcome.stdout_text();
     if !outcome.success() {
-        text.push_str(&format!("exited with {:?}\n", outcome.status));
+        use std::fmt::Write as _;
+        writeln!(text, "exited with {:?}", outcome.status).expect("writing to a String");
     }
     text
 }

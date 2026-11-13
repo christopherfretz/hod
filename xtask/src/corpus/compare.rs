@@ -54,15 +54,15 @@ pub fn parse_differences(text: &str) -> Result<BTreeMap<String, Explained>, Stri
             continue;
         }
         let fields: Vec<&str> = line.split('\t').collect();
-        let [test, class, cause] = fields[..] else {
+        let [name, class, cause] = fields[..] else {
             return Err(format!("line {}: expected 3 tab-separated fields", index + 1));
         };
         if !CLASSES.iter().any(|(name, _)| *name == class) {
             return Err(format!("line {}: unknown class '{class}'", index + 1));
         }
         let explained = Explained { class: class.to_owned(), cause: cause.to_owned() };
-        if found.insert(test.to_owned(), explained).is_some() {
-            return Err(format!("line {}: '{test}' is explained twice", index + 1));
+        if found.insert(name.to_owned(), explained).is_some() {
+            return Err(format!("line {}: '{name}' is explained twice", index + 1));
         }
     }
     Ok(found)
@@ -448,7 +448,7 @@ mod tests {
             "stdout line 2: `16` here, `8` there"
         );
         assert_eq!(describe(&b(0, "a\n"), &b(0, "a\nb\n")), "stdout line 2: `` here, `b` there");
-        assert_eq!(quantile(&[1.0, 2.0, 3.0], 0.5), 2.0);
-        assert_eq!(quantile(&[], 0.5), 0.0);
+        assert_eq!(quantile(&[1.0, 2.0, 3.0], 0.5).to_bits(), 2.0_f64.to_bits());
+        assert_eq!(quantile(&[], 0.5).to_bits(), 0.0_f64.to_bits());
     }
 }

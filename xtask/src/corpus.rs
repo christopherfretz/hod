@@ -409,6 +409,45 @@ fn reasons_command(args: &[String], build_dir: &Path, target: Option<Arch>) -> u
     }
 }
 
+/// `cargo xtask corpus census`.
+fn census_command(rest: &[String], build_dir: &Path, target: Option<Arch>) -> u8 {
+    let usage = |message: &str| {
+        eprint!("xtask corpus: {message}\n{USAGE}");
+        2
+    };
+    let mut dir = default_dir_for(build_dir, target);
+    let mut report = default_report_for(target);
+    let mut index = 0;
+    let mut given = false;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "--report" => match value(rest, &mut index, "--report") {
+                Ok(path) => report = absolute(Path::new(path)),
+                Err(message) => return usage(&message),
+            },
+            other if other.starts_with('-') => {
+                return usage(&format!("unknown option '{other}'"));
+            }
+            other if !given => {
+                dir = absolute(Path::new(other));
+                given = true;
+            }
+            other => return usage(&format!("more than one corpus directory: '{other}'")),
+        }
+        index += 1;
+    }
+    match census::write_report(&dir, &report) {
+        Ok(summary) => {
+            print!("{summary}");
+            0
+        }
+        Err(message) => {
+            eprintln!("xtask corpus: {message}");
+            2
+        }
+    }
+}
+
 /// Runs `cargo xtask corpus <args>` and returns the exit status.
 pub fn command(args: &[String]) -> u8 {
     let build_dir = irdiff::default_build_dir();
@@ -458,36 +497,7 @@ pub fn command(args: &[String]) -> u8 {
                 Err(message) => failed(&message),
             }
         }
-        Some("census") => {
-            let mut dir = default_dir_for(&build_dir, target);
-            let mut report = default_report_for(target);
-            let mut index = 0;
-            let mut given = false;
-            while index < rest.len() {
-                match rest[index].as_str() {
-                    "--report" => match value(rest, &mut index, "--report") {
-                        Ok(path) => report = absolute(Path::new(path)),
-                        Err(message) => return usage(&message),
-                    },
-                    other if other.starts_with('-') => {
-                        return usage(&format!("unknown option '{other}'"));
-                    }
-                    other if !given => {
-                        dir = absolute(Path::new(other));
-                        given = true;
-                    }
-                    other => return usage(&format!("more than one corpus directory: '{other}'")),
-                }
-                index += 1;
-            }
-            match census::write_report(&dir, &report) {
-                Ok(summary) => {
-                    print!("{summary}");
-                    0
-                }
-                Err(message) => failed(&message),
-            }
-        }
+        Some("census") => census_command(rest, &build_dir, target),
         Some("reasons") => reasons_command(rest, &build_dir, target),
         Some("compare") => compare::command(rest, &build_dir, target),
         Some("fetch") => {

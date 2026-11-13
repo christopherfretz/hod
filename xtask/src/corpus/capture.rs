@@ -1315,8 +1315,9 @@ pub struct TimeRow {
 
 /// Reads `<dir>/TIMES.tsv`; a missing or damaged file is no rows.
 pub fn read_times(dir: &Path) -> Vec<TimeRow> {
-    let text = fs::read_to_string(dir.join(TIMES)).unwrap_or_default();
-    text.lines()
+    let table = fs::read_to_string(dir.join(TIMES)).unwrap_or_default();
+    table
+        .lines()
         .skip(1)
         .filter_map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();

@@ -501,6 +501,34 @@ pub fn is_signaling(format: Format, bits: u128) -> bool {
     integer_missing || (bits >> quiet_bit) & 1 == 0
 }
 
+/// `llvm.minnum` (`max` false) or `llvm.maxnum` (`max` true) on bit
+/// patterns of `format` (`spec/interp.md` §5.6): a quiet NaN operand
+/// gives the other operand.
+///
+/// # Errors
+/// Where LLVM leaves the result open: [`Trap::NanResult`] for a signaling
+/// NaN operand (unless `host_nan`, which treats it as quiet) or for two
+/// NaNs (unless `host_nan`, which gives the default NaN), and
+/// [`Trap::ZeroSign`] for two zeros of opposite signs.
+pub fn min_max(format: Format, a: u128, b: u128, max: bool, host_nan: bool) -> Result<u128, Trap> {
+    if !host_nan && (is_signaling(format, a) || is_signaling(format, b)) {
+        return Err(Trap::NanResult);
+    }
+    match (is_nan(format, a), is_nan(format, b)) {
+        (true, true) if host_nan => return Ok(format.nan()),
+        (true, true) => return Err(Trap::NanResult),
+        (true, false) => return Ok(b),
+        (false, true) => return Ok(a),
+        (false, false) => {}
+    }
+    match compare(format, a, b) {
+        Some(Ordering::Equal) if a != b => Err(Trap::ZeroSign),
+        Some(Ordering::Less) => Ok(if max { b } else { a }),
+        Some(Ordering::Greater) => Ok(if max { a } else { b }),
+        _ => Ok(a),
+    }
+}
+
 /// The class `llvm.is.fpclass` tests (LangRef "'llvm.is.fpclass'
 /// Intrinsic"): the index of its bit in the test mask, 0 (signaling NaN)
 /// to 9 (positive infinity). `None` for the encodings only the x87 has,

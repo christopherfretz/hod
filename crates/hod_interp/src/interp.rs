@@ -955,35 +955,6 @@ impl<'a> Machine<'_, 'a> {
         Ok(Val::X86Fp80(bits))
     }
 
-    /// `llvm.minnum`/`llvm.maxnum` on bit patterns of `format` (§5.6): a
-    /// quiet NaN operand gives the other operand. What LLVM 19 and 22 leave
-    /// open traps: a signaling NaN operand (a NaN or the other operand)
-    /// `nan-result`, and zeros of opposite signs `zero-sign`.
-    fn min_max(&self, format: x87::Format, a: u128, b: u128, max: bool) -> Result<u128, Stop> {
-        use std::cmp::Ordering;
-        let host = self.config.nan == NanPolicy::Host;
-        let signaling = x87::is_signaling(format, a) || x87::is_signaling(format, b);
-        if signaling && !host {
-            return Err(Trap::NanResult.into());
-        }
-        match (x87::is_nan(format, a), x87::is_nan(format, b)) {
-            (true, true) if host => return Ok(format.nan()),
-            (true, true) => return Err(Trap::NanResult.into()),
-            (true, false) => return Ok(b),
-            (false, true) => return Ok(a),
-            (false, false) => {}
-        }
-        Ok(match x87::compare(format, a, b) {
-            Some(Ordering::Equal) if a != b => {
-                // Two zeros of opposite signs.
-                return Err(Trap::ZeroSign.into());
-            }
-            Some(Ordering::Less) => if max { b } else { a },
-            Some(Ordering::Greater) => if max { a } else { b },
-            _ => a,
-        })
-    }
-
     /// As [`Machine::float`], for a `double`.
     fn double(&self, value: f64) -> Result<Val, Stop> {
         if value.is_nan() && self.config.nan == NanPolicy::Trap {
@@ -2337,7 +2308,8 @@ impl<'a> Machine<'_, 'a> {
                         return invalid("minnum or maxnum of something that is not two floats");
                     }
                 };
-                Ok(Some(wrap(self.min_max(format, a, b, max)?)))
+                let host = self.config.nan == NanPolicy::Host;
+                Ok(Some(wrap(x87::min_max(format, a, b, max, host)?)))
             }
             Intrinsic::IsFpClass => {
                 let (_, test) = self.int(f, arg(1)?)?;

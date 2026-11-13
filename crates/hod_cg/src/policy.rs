@@ -16,10 +16,10 @@
 //! that follows it in the same block, and nothing has to be reconciled
 //! at a block boundary.
 
-use hod_ir::{Inst, InstId, TypeId, Value, ValueKind};
+use hod_ir::{Inst, InstId, InstKind, TypeId, Value, ValueKind};
 
 use crate::cx::FnCx;
-use crate::error::{CgResult, internal};
+use crate::error::{CgError, CgResult, internal};
 use crate::frame::FrameRef;
 use crate::loc::{Class, Key, Kind, Loc, ValState};
 use crate::reg::{PReg, RegSet};
@@ -91,6 +91,9 @@ impl<'a, T: Target> FnCx<'a, T> {
             return internal(format!("value {:#x} has no type: it is not a value", key.0));
         }
         let class = self.target.class_of(self.types(), ty);
+        if uses.named_by_declare() && key.as_arg().is_none() {
+            self.check_declared(InstId::new(key.0))?;
+        }
         let kind = if uses.named_by_declare() {
             // §4.1: a variable's address for the whole function.
             Kind::Home
@@ -109,6 +112,22 @@ impl<'a, T: Target> FnCx<'a, T> {
             *entry = state;
         }
         Ok(state)
+    }
+
+    /// A `#dbg_declare` of a stack slot plus a constant offset (a
+    /// `getelementptr` of an `alloca`, a slot, with constant indices) is refused
+    /// by name (WP-150, `spec/dwarf.md` §6.21): the target folds such an
+    /// address into its users and never gives it the home the
+    /// declaration needs. `llc` describes it as the slot plus the offset.
+    fn check_declared(&self, id: InstId) -> CgResult<()> {
+        let inst = self.body.inst(id);
+        if let InstKind::PtrAdd(add) = inst.kind()
+            && add.index_count() == 0
+            && matches!(add.base.kind(), ValueKind::Slot(_))
+        {
+            return Err(CgError::unsupported(crate::emit::unsupported::DEBUG_DECLARE_OFFSET));
+        }
+        Ok(())
     }
 
     /// A new slot laid out for a value of `class` and type `ty` (§2.2):

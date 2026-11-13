@@ -469,11 +469,20 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
         }
     }
 
+    /// Notes what the type note bits `bits` name; nothing, in line, for
+    /// none (most uses).
+    #[allow(clippy::inline_always)] // Measured: a call per value used otherwise (WP-169).
+    #[inline(always)]
     pub fn note_bits(&mut self, bits: u8) {
         if bits != 0 {
-            for name in note_names(bits) {
-                self.note(name);
-            }
+            self.note_names(bits);
+        }
+    }
+
+    #[inline(never)]
+    fn note_names(&mut self, bits: u8) {
+        for name in note_names(bits) {
+            self.note(name);
         }
     }
 
@@ -760,7 +769,24 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
 
     /// The value `id` (absolute), of type `ty` if one is expected; a
     /// forward reference needs one.
+    #[inline]
     pub fn get(&mut self, id: u64, ty: Option<TypeId>) -> BcResult<Local> {
+        // An instruction already defined, with the type expected (or
+        // none expected): what the general path gives, without its tests.
+        if let Some(number) = id.checked_sub(self.local_end)
+            && number < self.s.insts.len() as u64
+            && let Some(&local) = self.s.insts.get(number as usize)
+            && ty.is_none_or(|ty| ty == local.ty)
+        {
+            self.note_bits(local.notes);
+            return Ok(local);
+        }
+        self.get_any(id, ty)
+    }
+
+    /// [`Self::get`] of any value id.
+    #[inline(never)]
+    fn get_any(&mut self, id: u64, ty: Option<TypeId>) -> BcResult<Local> {
         let local = if id < self.base {
             self.module_value(id)?
         } else if id < self.base + self.arg_count {

@@ -80,6 +80,13 @@ DEFINE_ABBREV lists operands: literal, Fixed, VBR, Array, Char6 and Blob.
   and is checked before anything is allocated (§8).
 - At most `limits::MAX_ABBREV_OPS` abbreviation operands may be defined
   in one block together with its BLOCKINFO ones.
+- **Compiled once.** The cursor compiles each abbreviation where it is
+  defined: one op per operand, its kind resolved, an array's element
+  folded into the array op, a Fixed field's mask computed. A record is
+  read from the compiled ops. Every value, position and error is that
+  of reading the definition field by field: a Fixed field of at most 57
+  bits with a word of bits left is read from that word (no check of
+  that read can fail); any other field is read with its checks.
 
 ### 2.4 BLOCKINFO
 
@@ -647,6 +654,10 @@ where the error was found.
 - counts checked before allocation
 - a block that cannot read past its length
 - nesting 100,000 deep as a Limit error
+- compiled abbreviations against a field-by-field reference reader:
+  every encoding at every offset, over arbitrary bits (values,
+  positions, errors), and UNABBREV_RECORD operands cut short or over
+  64 bits
 
 ### 9.2 The differential
 

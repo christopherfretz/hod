@@ -116,13 +116,13 @@ fn the_matrices_are_the_table() {
 /// table. `*` is "not checked here" (no row uses it since WP-066 pinned
 /// the AArch64 bodies again once every instruction group was in).
 const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 27] = [
-    ("module:pic", "", "module:pic", "", ""),
+    ("module:pic", "", "", "", ""),
     ("module:frame-pointer", "", "", "", ""),
     ("structor:priority", "", "module:global-ctors", "", ""),
     // WP-087: debug modules reach the DWARF writer on AArch64.
     ("debug:module-flags", "", "debug:module-flags", "", ""),
     ("debug:dwarf-version", "debug:dwarf-version", "debug:module-flags", "", ""),
-    ("debug:locations", "", "global:function-definition", "", "cc:ccc"),
+    ("debug:locations", "", "", "", "type:double"),
     ("global:function-declaration", "", "", "", ""),
     ("global:variable-definition", "", "global:variable-definition", "", ""),
     ("global:ifunc", "", "global:ifunc", "", ""),
@@ -131,19 +131,19 @@ const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 27] = [
     ("tls:initial-exec", "", "global:variable-definition", "", ""),
     ("comdat:any", "", "global:variable-definition", "", ""),
     ("init:symbol", "", "global:variable-definition", "", ""),
-    ("function:slots", "", "global:function-definition", "", "cc:ccc"),
-    ("cc:fastcc", "", "global:function-definition", "", "cc:fastcc"),
-    ("attr:zeroext", "", "global:function-definition", "", "cc:ccc"),
-    ("type:double", "", "global:function-definition", "", "cc:ccc"),
-    ("inst:add", "", "global:function-definition", "", "cc:ccc"),
-    ("mem:volatile", "", "global:function-definition", "", "cc:ccc"),
-    ("atomicrmw:add", "", "global:function-definition", "", "cc:ccc"),
-    ("call:indirect", "", "global:function-definition", "", "cc:ccc"),
-    ("tail:musttail", "", "global:function-definition", "", "cc:ccc"),
-    ("bundle:deopt", "", "global:function-definition", "bundle:deopt", "cc:ccc"),
-    ("landingpad:catch", "", "global:function-definition", "", "cc:ccc"),
-    ("operand:slot", "", "global:function-definition", "", "cc:ccc"),
-    ("intrinsic:llvm.memcpy", "", "global:function-definition", "", "cc:ccc"),
+    ("function:slots", "", "", "", "type:double"),
+    ("cc:fastcc", "", "", "", "cc:fastcc"),
+    ("attr:zeroext", "", "", "", "attr:zeroext"),
+    ("type:double", "", "", "", "type:double"),
+    ("inst:add", "", "", "", "type:double"),
+    ("mem:volatile", "", "", "", "type:double"),
+    ("atomicrmw:add", "", "", "", "type:double"),
+    ("call:indirect", "", "", "", "type:double"),
+    ("tail:musttail", "", "", "", "type:double"),
+    ("bundle:deopt", "", "", "bundle:deopt", "type:double"),
+    ("landingpad:catch", "", "", "", "type:double"),
+    ("operand:slot", "", "", "", "type:double"),
+    ("intrinsic:llvm.memcpy", "", "", "", "type:double"),
 ];
 
 #[test]
@@ -475,13 +475,13 @@ const A64_SUPPORTED: [&str; 13] = [
     "module:asm-symbols",
 ];
 
+/// The rows of `RICH_MODULE` x86-64 supports (WP-116).
+const X64_SUPPORTED: [&str; 3] = ["module:pic", "module:uwtable", "global:function-definition"];
+
 /// What the shipped matrix finds in the rich module on `arch`.
 fn rich_module(arch: Arch) -> Vec<&'static str> {
-    RICH_MODULE
-        .iter()
-        .copied()
-        .filter(|row| arch != Arch::Aarch64 || !A64_SUPPORTED.contains(row))
-        .collect()
+    let supported: &[&str] = if arch == Arch::Aarch64 { &A64_SUPPORTED } else { &X64_SUPPORTED };
+    RICH_MODULE.iter().copied().filter(|row| !supported.contains(row)).collect()
 }
 
 const RICH_BODY: [&str; 16] = [
@@ -523,13 +523,22 @@ const A64_SUPPORTED_BODY: [&str; 16] = [
     "tail:musttail",
 ];
 
+/// The rows of `RICH_BODY` x86-64 supports (WP-116).
+const X64_SUPPORTED_BODY: [&str; 7] = [
+    "cc:ccc",
+    "function:parameters",
+    "type:int",
+    "type:ptr",
+    "function:may-unwind",
+    "operand:symbol",
+    "inst:ret",
+];
+
 /// What the shipped matrix finds in the rich body on `arch`.
 fn rich_body(arch: Arch) -> Vec<&'static str> {
-    RICH_BODY
-        .iter()
-        .copied()
-        .filter(|row| arch != Arch::Aarch64 || !A64_SUPPORTED_BODY.contains(row))
-        .collect()
+    let supported: &[&str] =
+        if arch == Arch::Aarch64 { &A64_SUPPORTED_BODY } else { &X64_SUPPORTED_BODY };
+    RICH_BODY.iter().copied().filter(|row| !supported.contains(row)).collect()
 }
 
 fn census_of(support: &Support, program: &Program) -> Census {
@@ -562,11 +571,12 @@ fn findings_come_in_the_specified_order() {
         let flags =
             expected.iter().position(|row| *row == "debug:module-flags").map_or(0, |p| p + 1);
         expected.insert(flags, "module-flag:mystery");
-        // The function's attributes come before its definition, after the
-        // module's own properties.
+        // The function's attributes come before its definition (the first
+        // symbol), after the module's own properties.
         let at = expected
             .iter()
             .position(|row| *row == "global:function-definition")
+            .or_else(|| expected.iter().position(|row| *row == "global:variable-definition"))
             .unwrap_or(expected.len());
         expected.insert(at, "attr:jumptable");
         let body = rich_body(arch);
@@ -576,7 +586,8 @@ fn findings_come_in_the_specified_order() {
         // The first reason of each pass is the first finding of it.
         let classifier = Classifier::new(shipped).with_stack_args(&NO_STACK);
         let module_reason = classifier.module(&program.m).unwrap_err();
-        let first = if arch == Arch::Aarch64 { "module-flag:mystery" } else { "module:pic" };
+        let first =
+            if arch == Arch::Aarch64 { "module-flag:mystery" } else { "debug:module-flags" };
         assert_eq!((module_reason.construct.as_ref(), module_reason.symbol), (first, None));
         // AArch64 supports the whole body (WP-069: `tail:musttail`).
         let Some(&first_body) = body.first() else {

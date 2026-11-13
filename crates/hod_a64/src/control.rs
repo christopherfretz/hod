@@ -28,6 +28,7 @@
 
 use std::cell::RefCell;
 
+use hod_cg::switch::{Step, canonical_cases, case_mask, constant_target, search_step};
 use hod_cg::{CgResult, Class, FnCx};
 use hod_ir::{BlockId, Const, Inst, InstKind, Switch, Value, ValueKind};
 use hod_mc_a64 as mc;
@@ -51,9 +52,7 @@ pub const INDIRECT_BR: &str = "a64:indirectbr";
 /// (`tail`, WP-084); kept for the coverage log's history.
 pub const SWITCH_WIDE: &str = "a64:switch-wide";
 
-/// A run of at most this many sorted cases is a linear chain; a longer
-/// one is split at its middle case.
-pub const LINEAR_CASES: usize = 4;
+pub use hod_cg::switch::LINEAR_CASES;
 
 /// `br i1 %cond, label %if_true, label %if_false`: `tbnz` of bit 0 (§2.2:
 /// only bit 0 of an `i1` is defined), the branch omitted for a target
@@ -149,33 +148,22 @@ pub fn switch<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>, switch: &Switch<'a>) -
         return crate::tail::switch_wide(cx, switch);
     }
     let bits = cx.types().int_bits(value_ty(cx, switch.cond)).unwrap_or(64);
-    let mask = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
+    let mask = case_mask(bits);
     let case_value = |cx: &FnCx<'a, A64>, id| match cx.module.consts.get(id) {
         Const::Int { value, .. } => value & mask,
         _ => 0,
     };
     if let ValueKind::Const(id) = switch.cond.kind() {
         let value = case_value(cx, id);
-        let target = switch
-            .cases()
-            .find(|&(case, _)| case_value(cx, case) == value)
-            .map_or(switch.default, |(_, block)| block);
-        return term::br(cx, target);
+        let cases = switch.cases().map(|(case, block)| (case_value(cx, case), block));
+        return term::br(cx, constant_target(cases, value, switch.default));
     }
     let mut cases = CASES.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
-    cases.clear();
-    cases.extend(
-        switch
-            .cases()
-            .filter(|&(_, block)| block != switch.default)
-            .map(|(case, block)| (case_value(cx, case), block)),
+    canonical_cases(
+        &mut cases,
+        switch.cases().map(|(case, block)| (case_value(cx, case), block)),
+        switch.default,
     );
-    if !cases.is_sorted_by_key(|&(value, _)| value) {
-        // Stable, so that of two equal cases (invalid IR) the first wins,
-        // as in the interpreter.
-        cases.sort_by_key(|&(value, _)| value);
-    }
-    cases.dedup_by_key(|&mut (value, _)| value);
     let result = if cases.is_empty() {
         term::br(cx, switch.default)
     } else {
@@ -200,7 +188,7 @@ fn search(
     default: BlockId,
     last: bool,
 ) -> CgResult<()> {
-    if cases.len() <= LINEAR_CASES {
+    let Step::Node { lower, mid: (value, block), upper } = search_step(cases) else {
         let (&(final_value, final_block), init) = cases.split_last().expect("a case");
         for &(value, block) in init {
             compare(cx, rt, value);
@@ -212,16 +200,14 @@ fn search(
         }
         branch_cond(cx, Cond::Eq, cx.block_label(final_block))?;
         return if last { term::br(cx, default) } else { branch(cx, cx.block_label(default)) };
-    }
-    let mid = cases.len() / 2;
-    let (value, block) = cases[mid];
+    };
     compare(cx, rt, value);
     branch_cond(cx, Cond::Eq, cx.block_label(block))?;
-    let upper = cx.new_label();
-    branch_cond(cx, Cond::Hi, upper)?;
-    search(cx, rt, &cases[..mid], default, false)?;
-    cx.bind(upper)?;
-    search(cx, rt, &cases[mid + 1..], default, last)
+    let upper_label = cx.new_label();
+    branch_cond(cx, Cond::Hi, upper_label)?;
+    search(cx, rt, lower, default, false)?;
+    cx.bind(upper_label)?;
+    search(cx, rt, upper, default, last)
 }
 
 /// Sets the flags as `cmp rt, #value`: by the immediate form, by `cmn`

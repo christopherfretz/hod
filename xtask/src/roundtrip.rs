@@ -576,6 +576,7 @@ fn groups(
                         hod: decline.clone(),
                         driver: Some(driver.clone()),
                         linkers: linkers.clone(),
+                        emulator: None,
                     },
                     arch: host,
                     host: Some(host),

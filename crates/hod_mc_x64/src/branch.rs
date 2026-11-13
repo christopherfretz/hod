@@ -5,7 +5,7 @@
 //! branch to its target.
 
 use crate::fixup::Fixup;
-use crate::inst::{Inst, Op, digit_m, digit_r, imm, plain, plus_r, rel};
+use crate::inst::{Inst, Op, abs_imm, digit_m, digit_r, imm, plain, plus_r, rel};
 use crate::reg::{Cond, Mem, Reg, Size};
 
 /// `JMP rel8` (`EB cb`).
@@ -107,6 +107,14 @@ pub const fn push_i(value: i32) -> Inst {
     } else {
         imm(plain(Op::one(0x68)), value as i64, 4)
     }
+}
+
+/// `PUSH imm32` (`68 id`), always the 4-byte immediate, which is the
+/// instruction's site, [`Fixup::Abs32`] (`R_X86_64_32S`): pushes the
+/// sign-extended value as 8 bytes.
+#[inline]
+pub const fn push_i32(value: i32) -> Inst {
+    abs_imm(plain(Op::one(0x68)), Fixup::Abs32, value as i64)
 }
 
 /// `LEAVE` (`C9`): `mov rsp, rbp; pop rbp`.

@@ -162,7 +162,10 @@ version = "0.0.0"
 dependencies = [
  "hod_cg",
  "hod_ir",
+ "hod_ll",
  "hod_mc_x64",
+ "hod_obj",
+ "hod_testutil",
 ]
 
 [[package]]
@@ -220,6 +223,8 @@ dependencies = [
 name = "xtask"
 version = "0.0.0"
 dependencies = [
+ "hod",
+ "hod_interp",
  "hod_ir",
  "hod_ll",
  "hod_testutil",

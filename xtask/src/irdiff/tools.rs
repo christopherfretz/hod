@@ -6,6 +6,10 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use hod_testutil::Target;
+
+use super::directives::Arch;
+use super::engine::REFERENCE_SELECTOR;
 use super::process::{self, End, Limits};
 
 /// The LLVM majors searched when none is asked for, preferred first.
@@ -76,6 +80,67 @@ pub struct Toolchain {
     pub driver: Option<PathBuf>,
     /// The linkers to link with, in report order.
     pub linkers: Vec<Linker>,
+    /// What runs the programs of a cross target ("Cross runs"); `None`
+    /// runs them directly, which only the host's own programs can be.
+    pub emulator: Option<Emulator>,
+}
+
+/// The user-mode emulator that runs a cross target's programs: `program
+/// <args> <test program> <test args>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Emulator {
+    /// `qemu-<arch>`.
+    pub program: PathBuf,
+    /// `-cpu <baseline> -L <system root>` ([`Target::emulator_args`]).
+    pub args: Vec<OsString>,
+}
+
+/// The `hod_testutil` name of an architecture, which knows its cross
+/// tools, system root and emulated CPU.
+pub fn target_of(arch: Arch) -> Target {
+    match arch {
+        Arch::Aarch64 => Target::Aarch64,
+        Arch::X86_64 => Target::X86_64,
+    }
+}
+
+/// The arguments the oracle's `llc` gets after `-O0` for `arch`: the
+/// instruction selector (`spec/harness.md` "The oracle"). The one place
+/// the reference is configured per target; the hybrid fallback and every
+/// harness command that builds a reference use it.
+///
+/// Both targets use `SelectionDAG` alone. On AArch64 `llc -O0` is not
+/// trusted (`GlobalISel`). On x86-64, plain `-O0` (`FastISel` with
+/// `SelectionDAG` behind it) and `-fast-isel=0` built different code for
+/// every seed but the same behaviour with LLVM 19 and 22
+/// (`spec/landed/harness/WP-025.md`). The reference keeps the one
+/// selector that is LLVM's most exercised.
+pub fn reference_selector(arch: Arch) -> &'static [&'static str] {
+    match arch {
+        Arch::Aarch64 | Arch::X86_64 => &REFERENCE_SELECTOR,
+    }
+}
+
+/// Finds the compiler driver that links programs of `arch`: `gcc` for the
+/// host's, else the GNU cross driver `<prefix>-gcc`.
+pub fn find_driver_for(arch: Arch, search: &Search) -> Option<PathBuf> {
+    search.on_path(&target_of(arch).c_driver())
+}
+
+/// [`find_linker`] for programs of `arch`: GNU ld of another architecture
+/// is its cross `<prefix>-ld.bfd`; lld, mold and wild link every target.
+pub fn find_linker_for(name: &str, arch: Arch, search: &Search) -> Option<PathBuf> {
+    match name {
+        "bfd" => search.on_path(&target_of(arch).bfd()),
+        _ => find_linker(name, search),
+    }
+}
+
+/// Finds the emulator of `arch`'s programs: `qemu-<arch>`, then
+/// `qemu-<arch>-static`.
+pub fn find_emulator(arch: Arch, search: &Search) -> Option<PathBuf> {
+    let name = target_of(arch).emulator();
+    search.on_path(&name).or_else(|| search.on_path(&format!("{name}-static")))
 }
 
 /// The limits of a tool the harness only asks for its version.
@@ -391,6 +456,45 @@ mod tests {
         assert_eq!(opt("/usr/lib/llvm-19/bin/llc"), Path::new("/usr/lib/llvm-19/bin/opt"));
         assert_eq!(opt("/x/bin/llc-19.1"), Path::new("/x/bin/opt-19.1"));
         assert_eq!(opt("/x/bin/my-llc"), Path::new("/x/bin/opt"));
+    }
+
+    // "Cross runs": the driver, GNU ld and the emulator of the target that
+    // is not the host; lld and mold are the same for every target.
+    #[test]
+    fn cross_tools() {
+        let scratch = Scratch::new("irdiff-cross-tools");
+        let found = search(&scratch, &["bin"]);
+        let host = Arch::host().expect("a Linux host");
+        let other = if host == Arch::Aarch64 { Arch::X86_64 } else { Arch::Aarch64 };
+        let prefix = target_of(other).gnu_prefix();
+        let touch = |name: &str| {
+            let path = scratch.join("bin").join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "").unwrap();
+            path
+        };
+        let (gcc, bfd, lld) = (touch("gcc"), touch("ld.bfd"), touch("ld.lld"));
+        assert_eq!(find_driver_for(host, &found), Some(gcc));
+        assert_eq!(find_driver_for(other, &found), None, "the host's gcc is not a cross driver");
+        assert_eq!(find_linker_for("bfd", host, &found), Some(bfd));
+        assert_eq!(find_linker_for("bfd", other, &found), None);
+        let cross_gcc = touch(&format!("{prefix}-gcc"));
+        let cross_bfd = touch(&format!("{prefix}-ld.bfd"));
+        assert_eq!(find_driver_for(other, &found), Some(cross_gcc));
+        assert_eq!(find_linker_for("bfd", other, &found), Some(cross_bfd));
+        assert_eq!(find_linker_for("lld", other, &found), Some(lld));
+
+        assert_eq!(find_emulator(other, &found), None);
+        let qemu = format!("qemu-{}", other.name());
+        let fallback = touch(&format!("{qemu}-static"));
+        assert_eq!(find_emulator(other, &found), Some(fallback));
+        let preferred = touch(&qemu);
+        assert_eq!(find_emulator(other, &found), Some(preferred));
+        // The reference is configured per target in one place, and on
+        // x86-64 too it is SelectionDAG alone, not FastISel.
+        for arch in Arch::ALL {
+            assert_eq!(reference_selector(arch), ["-global-isel=0", "-fast-isel=0"]);
+        }
     }
 
     #[test]

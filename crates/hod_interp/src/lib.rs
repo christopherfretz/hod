@@ -29,6 +29,7 @@ mod memory;
 pub mod ops;
 mod value;
 mod vector;
+pub mod x87;
 
 pub use error::{Stop, Trap};
 pub use interp::{Config, Event, HostCx, Interp, NanPolicy, Outcome, Program};

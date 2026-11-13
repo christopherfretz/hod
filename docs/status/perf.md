@@ -12,16 +12,16 @@ compares against a baseline recorded on the machine it runs on.
 
 ## Where and how
 
-- measured: 2026-11-12T12:05:03Z
+- measured: 2026-11-13T02:13:32Z
 - machine: `aarch64-implementer-0x61-part-0x000-24c` (implementer 0x61 part 0x000, 24 cores, aarch64)
 - reference: `llc -O0 -filetype=obj -relocation-model=pic`, LLVM version 22.1.8
-- hod: hod version 0.0.0 (given with --hod)
+- hod: hod version 0.0.0 (workspace, release profile)
 - inputs produced by: Debian clang version 22.1.8 (1~deb13u4)
 - times are the fastest of 5 runs, memory the middle one
-- every time includes 6.09 ms of starting a measured process
-- peak memory is off by -64 KiB on a 64 MiB allocation
-- load average 22.28 20.66 19.40
-- spread of `llc`'s times, middle run over fastest: median 7.2%, largest 50.8% (`containers-g`)
+- every time includes 8.65 ms of starting a measured process
+- peak memory is off by +64 KiB on a 64 MiB allocation
+- load average 15.83 17.70 18.98
+- spread of `llc`'s times, middle run over fastest: median 9.8%, largest 35.4% (`tables`)
 
 ## `llc` baselines
 
@@ -31,26 +31,26 @@ definitions) per second of the fastest run. Inputs named `-g` carry debug inform
 
 | input | class | IR KiB | functions | ms | spread | MiB | object KiB | IR MB/s | functions/s |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| small-c | small | 10.5 | 6 | 42.41 | 20.2% | 61.3 | 3.3 | 0.25 | 141 |
-| small-c-g | small | 24.1 | 6 | 41.57 | 4.1% | 61.7 | 7.1 | 0.59 | 144 |
-| small-cxx | small | 22.8 | 18 | 37.10 | 8.6% | 61.4 | 13.7 | 0.63 | 485 |
-| small-cxx-g | small | 53.7 | 18 | 39.29 | 7.2% | 61.6 | 22.1 | 1.40 | 458 |
-| interp | typical | 200.8 | 10 | 52.28 | 5.4% | 63.1 | 24.4 | 3.93 | 191 |
-| interp-g | typical | 364.9 | 10 | 55.16 | 12.5% | 64.4 | 45.1 | 6.77 | 181 |
-| tables | typical | 916.7 | 4 | 73.33 | 28.0% | 66.4 | 391.4 | 12.80 | 54 |
-| tables-g | typical | 1526.3 | 4 | 102.84 | 6.3% | 69.3 | 522.1 | 15.19 | 38 |
-| exceptions | typical | 852.4 | 163 | 107.65 | 6.3% | 65.4 | 228.2 | 8.10 | 1514 |
-| exceptions-g | typical | 1691.5 | 163 | 152.28 | 5.1% | 73.2 | 359.2 | 11.37 | 1070 |
-| containers | typical | 1134.3 | 643 | 129.75 | 8.1% | 68.1 | 393.4 | 8.95 | 4955 |
-| containers-g | typical | 3182.9 | 643 | 226.29 | 50.8% | 80.0 | 940.1 | 14.40 | 2841 |
-| templates | large | 4434.5 | 3318 | 520.07 | 6.1% | 91.3 | 1586.6 | 8.73 | 6379 |
-| templates-g | large | 9429.6 | 3318 | 788.56 | 11.9% | 122.0 | 2494.7 | 12.24 | 4207 |
-| stl-heavy | large | 5843.1 | 3308 | 545.76 | 4.6% | 98.6 | 2116.5 | 10.96 | 6061 |
-| stl-heavy-g | large | 16000.4 | 3308 | 1098.22 | 2.4% | 153.9 | 4863.5 | 14.91 | 3012 |
-| huge-function | pathological | 3313.9 | 3 | 306.82 | 14.6% | 111.0 | 304.4 | 11.06 | 9 |
-| huge-function-g | pathological | 4857.0 | 3 | 397.74 | 11.6% | 123.6 | 329.0 | 12.50 | 7 |
-| tiny-functions | pathological | 1256.9 | 5001 | 351.19 | 3.7% | 79.6 | 682.6 | 3.66 | 14240 |
-| tiny-functions-g | pathological | 3427.7 | 5001 | 501.99 | 1.5% | 97.5 | 1226.6 | 6.99 | 9962 |
+| small-c | small | 10.5 | 6 | 30.52 | 21.0% | 61.6 | 3.3 | 0.35 | 196 |
+| small-c-g | small | 24.1 | 6 | 34.69 | 29.6% | 62.0 | 7.1 | 0.71 | 172 |
+| small-cxx | small | 22.8 | 18 | 32.30 | 9.9% | 61.5 | 13.7 | 0.72 | 557 |
+| small-cxx-g | small | 53.7 | 18 | 33.08 | 2.6% | 61.8 | 22.1 | 1.66 | 544 |
+| interp | typical | 200.8 | 10 | 46.68 | 3.5% | 63.2 | 24.4 | 4.40 | 214 |
+| interp-g | typical | 364.9 | 10 | 55.54 | 7.3% | 64.5 | 45.1 | 6.72 | 180 |
+| tables | typical | 916.7 | 4 | 66.83 | 35.4% | 66.7 | 391.4 | 14.04 | 59 |
+| tables-g | typical | 1526.3 | 4 | 94.02 | 12.7% | 69.6 | 522.1 | 16.62 | 42 |
+| exceptions | typical | 852.4 | 163 | 93.57 | 12.4% | 65.8 | 228.2 | 9.32 | 1741 |
+| exceptions-g | typical | 1691.5 | 163 | 140.59 | 9.8% | 73.3 | 359.2 | 12.31 | 1159 |
+| containers | typical | 1134.3 | 643 | 128.08 | 20.5% | 68.3 | 393.4 | 9.06 | 5020 |
+| containers-g | typical | 3182.9 | 643 | 248.59 | 6.6% | 80.3 | 940.1 | 13.11 | 2586 |
+| templates | large | 4434.5 | 3318 | 437.67 | 3.3% | 91.4 | 1586.6 | 10.37 | 7580 |
+| templates-g | large | 9429.6 | 3318 | 746.53 | 20.5% | 122.1 | 2494.7 | 12.93 | 4444 |
+| stl-heavy | large | 5843.1 | 3308 | 610.05 | 2.5% | 98.5 | 2116.5 | 9.80 | 5422 |
+| stl-heavy-g | large | 16000.4 | 3308 | 1121.63 | 5.9% | 153.8 | 4863.5 | 14.60 | 2949 |
+| huge-function | pathological | 3313.9 | 3 | 285.39 | 6.3% | 111.3 | 304.4 | 11.89 | 10 |
+| huge-function-g | pathological | 4857.0 | 3 | 473.46 | 6.1% | 124.0 | 329.0 | 10.50 | 6 |
+| tiny-functions | pathological | 1256.9 | 5001 | 419.39 | 13.0% | 79.5 | 682.6 | 3.06 | 11924 |
+| tiny-functions-g | pathological | 3427.7 | 5001 | 577.21 | 4.8% | 97.7 | 1226.6 | 6.08 | 8663 |
 
 ## hod
 
@@ -62,30 +62,30 @@ ratio to `llc` is the price of going through hod for a module hod hands on. Rati
 
 | input | hod ms | x llc | MiB | x llc | object | hod+fallback ms | x llc | MiB | x llc | hod |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| small-c | 26.50 | 0.62x | 3.0 | 0.05x | 1.10x | 24.54 | 0.57x | 2.9 | 0.04x | built |
-| small-c-g | - | - | - | - | - | 53.25 | 1.28x | 61.8 | 1.00x | declined: debug:module-flags (in 15.97 ms, 2.6 MiB) |
-| small-cxx | - | - | - | - | - | 51.03 | 1.37x | 61.6 | 1.00x | declined: intrinsic:llvm.eh.typeid.for (in 14.91 ms, 2.7 MiB) |
-| small-cxx-g | - | - | - | - | - | 49.14 | 1.25x | 61.7 | 1.00x | declined: debug:module-flags (in 15.86 ms, 2.6 MiB) |
-| interp | 16.17 | 0.30x | 3.4 | 0.05x | 1.11x | 14.75 | 0.28x | 3.4 | 0.05x | built |
-| interp-g | - | - | - | - | - | 63.81 | 1.15x | 64.4 | 0.99x | declined: debug:module-flags (in 15.47 ms, 3.2 MiB) |
-| tables | 29.07 | 0.39x | 6.9 | 0.10x | 0.99x | 27.46 | 0.37x | 7.0 | 0.10x | built |
-| tables-g | - | - | - | - | - | 126.19 | 1.22x | 69.3 | 0.99x | declined: debug:module-flags (in 27.12 ms, 6.2 MiB) |
-| exceptions | - | - | - | - | - | 112.99 | 1.04x | 65.5 | 1.00x | declined: intrinsic:llvm.eh.typeid.for (in 19.62 ms, 3.6 MiB) |
-| exceptions-g | - | - | - | - | - | 175.22 | 1.15x | 73.3 | 1.00x | declined: debug:module-flags (in 20.93 ms, 5.0 MiB) |
-| containers | - | - | - | - | - | 138.39 | 1.06x | 68.4 | 1.00x | declined: intrinsic:llvm.eh.typeid.for (in 17.37 ms, 4.1 MiB) |
-| containers-g | - | - | - | - | - | 313.66 | 1.38x | 80.2 | 1.00x | declined: debug:module-flags (in 35.33 ms, 7.7 MiB) |
-| templates | 87.07 | 0.16x | 18.1 | 0.19x | 1.18x | 83.33 | 0.16x | 18.5 | 0.20x | built |
-| templates-g | - | - | - | - | - | 858.90 | 1.08x | 122.0 | 0.99x | declined: debug:module-flags (in 60.51 ms, 16.0 MiB) |
-| stl-heavy | - | - | - | - | - | 564.80 | 1.03x | 98.6 | 1.00x | declined: module:asm (in 33.23 ms, 9.9 MiB) |
-| stl-heavy-g | - | - | - | - | - | 1171.04 | 1.06x | 154.0 | 1.00x | declined: debug:module-flags (in 88.08 ms, 27.7 MiB) |
-| huge-function | - | - | - | - | - | 361.38 | 1.17x | 111.2 | 1.00x | ERROR |
-| huge-function-g | - | - | - | - | - | 466.92 | 1.17x | 123.8 | 1.00x | declined: debug:module-flags (in 21.63 ms, 7.9 MiB) |
-| tiny-functions | 35.19 | 0.10x | 13.9 | 0.17x | 1.25x | 36.67 | 0.10x | 13.8 | 0.17x | built |
-| tiny-functions-g | - | - | - | - | - | 528.11 | 1.05x | 97.3 | 0.99x | declined: debug:module-flags (in 34.60 ms, 8.2 MiB) |
+| small-c | 18.12 | 0.59x | 3.4 | 0.05x | 1.09x | 18.64 | 0.61x | 3.4 | 0.05x | built |
+| small-c-g | 21.96 | 0.63x | 3.6 | 0.05x | 1.05x | 19.17 | 0.55x | 3.8 | 0.06x | built |
+| small-cxx | 20.15 | 0.62x | 3.7 | 0.06x | 1.05x | 18.07 | 0.55x | 3.7 | 0.06x | built |
+| small-cxx-g | 18.61 | 0.56x | 3.7 | 0.06x | 1.05x | 17.08 | 0.51x | 3.9 | 0.06x | built |
+| interp | 24.53 | 0.52x | 4.1 | 0.06x | 1.08x | 23.25 | 0.49x | 3.8 | 0.06x | built |
+| interp-g | 24.06 | 0.43x | 4.2 | 0.06x | 1.03x | 21.60 | 0.38x | 4.5 | 0.07x | built |
+| tables | 29.04 | 0.43x | 7.5 | 0.11x | 0.99x | 28.82 | 0.43x | 7.5 | 0.11x | built |
+| tables-g | 32.27 | 0.34x | 8.8 | 0.12x | 1.00x | 33.49 | 0.35x | 9.0 | 0.12x | built |
+| exceptions | 24.13 | 0.25x | 6.0 | 0.09x | 1.05x | 24.24 | 0.25x | 6.0 | 0.09x | built |
+| exceptions-g | 36.36 | 0.25x | 7.9 | 0.10x | 1.04x | 34.12 | 0.24x | 7.9 | 0.10x | built |
+| containers | 30.90 | 0.24x | 7.5 | 0.10x | 1.20x | 31.02 | 0.24x | 7.5 | 0.11x | built |
+| containers-g | 46.70 | 0.18x | 13.3 | 0.16x | 1.10x | 48.18 | 0.19x | 13.3 | 0.16x | built |
+| templates | 65.84 | 0.15x | 18.5 | 0.20x | 1.18x | 66.72 | 0.15x | 19.0 | 0.20x | built |
+| templates-g | 107.41 | 0.14x | 32.9 | 0.26x | 1.16x | 113.48 | 0.15x | 32.7 | 0.26x | built |
+| stl-heavy | 89.34 | 0.14x | 22.5 | 0.22x | 1.22x | 87.18 | 0.14x | 22.5 | 0.22x | built |
+| stl-heavy-g | 171.15 | 0.15x | 51.2 | 0.33x | 1.11x | 174.87 | 0.15x | 51.2 | 0.33x | built |
+| huge-function | 56.27 | 0.19x | 10.5 | 0.09x | 1.16x | 57.66 | 0.20x | 10.5 | 0.09x | built |
+| huge-function-g | 70.74 | 0.14x | 13.3 | 0.10x | 1.11x | 72.60 | 0.15x | 13.6 | 0.10x | built |
+| tiny-functions | 61.65 | 0.14x | 14.2 | 0.17x | 1.25x | 54.24 | 0.12x | 13.9 | 0.17x | built |
+| tiny-functions-g | 80.76 | 0.13x | 21.3 | 0.21x | 1.31x | 79.24 | 0.13x | 21.3 | 0.21x | built |
 
-hod built 5 of 20 inputs itself and declined 14.
-Sum of the fastest runs, over the inputs `hod` produced an object for: 194.02 ms against 1039.29 ms for `llc` (0.18x).
-Sum of the fastest runs, over the inputs `hod+fallback` produced an object for: 5221.68 ms against 5570.38 ms for `llc` (0.93x).
+hod built 20 of 20 inputs itself and declined 0.
+Sum of the fastest runs, over the inputs `hod` produced an object for: 1030.09 ms against 5675.90 ms for `llc` (0.18x).
+Sum of the fastest runs, over the inputs `hod+fallback` produced an object for: 1023.75 ms against 5675.90 ms for `llc` (0.18x).
 
 ## Phases
 
@@ -94,48 +94,43 @@ in milliseconds.
 
 | input | tool | phases |
 |---|---|---|
-| small-c | hod | read 1.44, parse 2.77, classify 0.00, bodies 1.91, emission 1.27, object 0.04, compile 0.00, write 1.22, total 9.04 |
-| small-c | hod+fallback | read 1.25, parse 3.05, classify 0.00, bodies 0.37, emission 1.25, object 0.03, compile 0.00, write 1.31, total 7.83 |
-| small-c-g | hod | read 1.07, parse 2.82, classify 0.00, compile 0.00, total 4.16 |
-| small-c-g | hod+fallback | read 1.21, parse 2.42, classify 0.00, compile 0.00, fallback 35.94, total 40.07 |
-| small-cxx | hod | read 1.05, parse 2.01, classify 0.00, compile 0.59, total 3.93 |
-| small-cxx | hod+fallback | read 1.01, parse 2.16, classify 0.00, compile 0.42, fallback 33.78, total 37.55 |
-| small-cxx-g | hod | read 0.95, parse 2.73, classify 0.00, compile 0.00, total 4.08 |
-| small-cxx-g | hod+fallback | read 1.18, parse 2.24, classify 0.00, compile 0.00, fallback 32.76, total 36.45 |
-| interp | hod | read 1.21, parse 2.29, classify 0.00, bodies 1.64, emission 1.06, object 0.07, compile 0.00, write 0.76, total 7.34 |
-| interp | hod+fallback | read 1.31, parse 1.56, classify 0.00, bodies 1.48, emission 1.14, object 0.06, compile 0.00, write 0.60, total 6.37 |
-| interp-g | hod | read 1.39, parse 2.43, classify 0.00, compile 0.00, total 4.28 |
-| interp-g | hod+fallback | read 1.18, parse 2.64, classify 0.00, compile 0.00, fallback 50.33, total 54.56 |
-| tables | hod | read 2.29, parse 10.08, classify 0.18, bodies 0.13, emission 1.25, object 1.11, compile 0.04, write 2.08, total 17.83 |
-| tables | hod+fallback | read 1.75, parse 9.90, classify 0.16, bodies 0.13, emission 0.59, object 1.14, compile 0.05, write 1.19, total 15.20 |
-| tables-g | hod | read 2.84, parse 13.64, classify 0.00, compile 0.04, total 16.82 |
-| tables-g | hod+fallback | read 3.06, parse 13.62, classify 0.00, compile 0.04, fallback 99.34, total 116.40 |
-| exceptions | hod | read 2.44, parse 2.84, classify 0.00, compile 0.26, total 5.83 |
-| exceptions | hod+fallback | read 1.84, parse 2.64, classify 0.00, compile 0.29, fallback 96.59, total 101.77 |
-| exceptions-g | hod | read 3.49, parse 6.13, classify 0.00, compile 0.01, total 9.92 |
-| exceptions-g | hod+fallback | read 3.21, parse 6.18, classify 0.00, compile 0.00, fallback 151.22, total 161.11 |
-| containers | hod | read 2.26, parse 3.02, classify 0.01, compile 0.51, total 6.11 |
-| containers | hod+fallback | read 2.44, parse 3.78, classify 0.01, compile 0.53, fallback 118.89, total 127.49 |
-| containers-g | hod | read 5.67, parse 15.56, classify 0.00, compile 0.05, total 21.87 |
-| containers-g | hod+fallback | read 4.98, parse 14.86, classify 0.00, compile 0.05, fallback 277.32, total 297.99 |
-| templates | hod | read 9.41, parse 8.20, classify 0.02, bodies 22.44, emission 9.27, object 4.76, compile 0.62, write 10.02, total 65.25 |
-| templates | hod+fallback | read 10.46, parse 8.43, classify 0.02, bodies 22.57, emission 8.47, object 5.01, compile 0.63, write 9.46, total 65.73 |
-| templates-g | hod | read 15.57, parse 30.76, classify 0.00, compile 0.11, total 46.77 |
-| templates-g | hod+fallback | read 15.93, parse 30.05, classify 0.00, compile 0.05, fallback 796.54, total 843.66 |
-| stl-heavy | hod | read 10.04, parse 9.25, classify 0.00, compile 0.03, total 19.66 |
-| stl-heavy | hod+fallback | read 9.63, parse 9.84, classify 0.00, compile 0.03, fallback 530.51, total 551.25 |
-| stl-heavy-g | hod | read 19.96, parse 55.58, classify 0.00, compile 0.29, total 76.16 |
-| stl-heavy-g | hod+fallback | read 32.84, parse 58.84, classify 0.01, compile 0.50, fallback 1063.14, total 1156.27 |
-| huge-function | hod+fallback | read 6.29, parse 2.95, classify 0.00, compile 49.83, fallback 282.33, total 341.78 |
-| huge-function-g | hod | read 6.37, parse 5.77, classify 0.00, compile 0.01, total 12.46 |
-| huge-function-g | hod+fallback | read 7.35, parse 6.55, classify 0.00, compile 0.01, fallback 443.17, total 457.39 |
-| tiny-functions | hod | read 2.24, parse 6.12, classify 0.05, bodies 7.44, emission 4.29, object 1.81, compile 0.56, write 2.00, total 25.03 |
-| tiny-functions | hod+fallback | read 2.48, parse 6.63, classify 0.05, bodies 7.68, emission 4.91, object 1.70, compile 0.49, write 2.21, total 26.66 |
-| tiny-functions-g | hod | read 4.71, parse 18.61, classify 0.00, compile 0.03, total 23.70 |
-| tiny-functions-g | hod+fallback | read 6.88, parse 18.26, classify 0.00, compile 0.03, fallback 489.40, total 515.18 |
-
-## Errors
-
-These were not measured; the run is not a complete picture.
-
-- `huge-function` with hod: hod exited with status 1: hod: error: malformed input: line 55568:12: use of undefined value '%42022' (strict mode: no fallback)
+| small-c | hod | read 1.11, parse 2.27, classify 0.02, bodies 0.48, emission 1.32, object 0.03, compile 0.16, write 0.98, total 6.79 |
+| small-c | hod+fallback | read 1.15, parse 2.67, classify 0.03, bodies 0.70, emission 1.28, object 0.03, compile 0.34, write 0.88, total 7.49 |
+| small-c-g | hod | read 1.45, parse 3.11, classify 0.02, bodies 0.71, emission 1.61, object 0.33, compile 0.00, write 1.04, total 8.78 |
+| small-c-g | hod+fallback | read 1.57, parse 2.53, classify 0.02, bodies 1.07, emission 1.42, object 0.25, compile 0.00, write 1.11, total 8.24 |
+| small-cxx | hod | read 1.52, parse 2.43, classify 0.02, bodies 0.68, emission 1.93, object 0.25, compile 0.02, write 0.91, total 8.17 |
+| small-cxx | hod+fallback | read 1.12, parse 2.78, classify 0.02, bodies 0.66, emission 1.28, object 0.43, compile 0.03, write 1.04, total 7.58 |
+| small-cxx-g | hod | read 1.21, parse 2.62, classify 0.02, bodies 0.62, emission 1.77, object 0.35, compile 0.00, write 1.06, total 7.89 |
+| small-cxx-g | hod+fallback | read 1.17, parse 2.52, classify 0.02, bodies 0.84, emission 1.52, object 0.32, compile 0.00, write 0.83, total 7.43 |
+| interp | hod | read 2.10, parse 4.29, classify 0.02, bodies 1.98, emission 2.35, object 0.04, compile 0.27, write 1.42, total 12.95 |
+| interp | hod+fallback | read 1.77, parse 2.95, classify 0.03, bodies 1.91, emission 1.89, object 0.04, compile 0.38, write 1.32, total 10.71 |
+| interp-g | hod | read 2.24, parse 4.01, classify 0.03, bodies 2.51, emission 2.02, object 0.36, compile 0.01, write 0.83, total 12.37 |
+| interp-g | hod+fallback | read 1.69, parse 3.54, classify 0.02, bodies 2.34, emission 2.50, object 0.43, compile 0.02, write 1.00, total 11.85 |
+| tables | hod | read 2.69, parse 10.38, classify 0.22, bodies 0.53, emission 2.30, object 0.33, compile 0.30, write 1.71, total 18.84 |
+| tables | hod+fallback | read 2.06, parse 9.79, classify 0.19, bodies 0.84, emission 2.14, object 0.31, compile 0.43, write 2.04, total 18.67 |
+| tables-g | hod | read 2.84, parse 13.79, classify 0.20, bodies 0.57, emission 2.47, object 0.93, compile 0.05, write 1.93, total 23.14 |
+| tables-g | hod+fallback | read 3.07, parse 14.30, classify 0.19, bodies 0.78, emission 2.34, object 0.90, compile 0.06, write 2.17, total 24.21 |
+| exceptions | hod | read 2.05, parse 2.43, classify 0.03, bodies 5.08, emission 2.73, object 0.71, compile 0.07, write 1.25, total 14.70 |
+| exceptions | hod+fallback | read 1.92, parse 2.25, classify 0.04, bodies 5.38, emission 2.85, object 0.61, compile 0.08, write 0.94, total 14.38 |
+| exceptions-g | hod | read 4.15, parse 6.64, classify 0.02, bodies 6.66, emission 3.53, object 1.65, compile 0.06, write 1.52, total 24.64 |
+| exceptions-g | hod+fallback | read 3.42, parse 6.46, classify 0.03, bodies 6.87, emission 3.47, object 1.58, compile 0.08, write 1.13, total 23.35 |
+| containers | hod | read 2.61, parse 3.25, classify 0.03, bodies 6.00, emission 3.10, object 1.35, compile 0.16, write 1.77, total 18.64 |
+| containers | hod+fallback | read 2.49, parse 3.21, classify 0.03, bodies 6.20, emission 3.36, object 1.34, compile 0.17, write 1.82, total 19.03 |
+| containers-g | hod | read 4.41, parse 13.02, classify 0.03, bodies 7.92, emission 4.65, object 5.01, compile 0.29, write 2.86, total 38.60 |
+| containers-g | hod+fallback | read 4.83, parse 13.81, classify 0.03, bodies 7.97, emission 4.25, object 4.95, compile 0.22, write 2.79, total 39.28 |
+| templates | hod | read 7.16, parse 6.58, classify 0.02, bodies 20.25, emission 9.51, object 4.09, compile 0.68, write 5.08, total 53.91 |
+| templates | hod+fallback | read 7.68, parse 6.70, classify 0.02, bodies 19.97, emission 9.20, object 4.25, compile 0.81, write 4.11, total 53.14 |
+| templates-g | hod | read 10.63, parse 26.91, classify 0.02, bodies 25.91, emission 12.05, object 12.31, compile 0.89, write 7.66, total 96.87 |
+| templates-g | hod+fallback | read 15.12, parse 27.41, classify 0.02, bodies 26.75, emission 11.91, object 12.29, compile 0.58, write 7.11, total 101.62 |
+| stl-heavy | hod | read 10.99, parse 9.05, classify 0.19, bodies 26.64, emission 10.74, object 6.66, compile 0.95, write 7.89, total 73.89 |
+| stl-heavy | hod+fallback | read 9.14, parse 8.92, classify 0.26, bodies 27.51, emission 11.47, object 6.57, compile 0.86, write 6.85, total 72.03 |
+| stl-heavy-g | hod | read 23.25, parse 51.85, classify 0.19, bodies 34.61, emission 14.18, object 21.98, compile 1.33, write 11.31, total 159.25 |
+| stl-heavy-g | hod+fallback | read 28.72, parse 52.04, classify 0.19, bodies 34.16, emission 14.50, object 21.13, compile 1.17, write 11.99, total 164.36 |
+| huge-function | hod | read 6.66, parse 2.86, classify 0.02, bodies 21.61, emission 9.76, object 0.07, compile 0.26, write 2.36, total 44.39 |
+| huge-function | hod+fallback | read 7.05, parse 3.04, classify 0.02, bodies 22.88, emission 10.82, object 0.12, compile 0.39, write 2.03, total 46.96 |
+| huge-function-g | hod | read 6.95, parse 6.10, classify 0.02, bodies 31.03, emission 10.67, object 0.99, compile 0.14, write 1.48, total 58.10 |
+| huge-function-g | hod+fallback | read 10.28, parse 7.41, classify 0.02, bodies 29.59, emission 10.26, object 0.67, compile 0.12, write 1.79, total 60.57 |
+| tiny-functions | hod | read 3.33, parse 7.40, classify 0.08, bodies 8.63, emission 6.11, object 1.67, compile 3.43, write 12.66, total 44.49 |
+| tiny-functions | hod+fallback | read 4.21, parse 8.04, classify 0.08, bodies 9.78, emission 6.49, object 2.18, compile 0.82, write 4.63, total 36.93 |
+| tiny-functions-g | hod | read 9.09, parse 19.98, classify 0.07, bodies 11.64, emission 7.75, object 5.90, compile 0.50, write 6.72, total 62.40 |
+| tiny-functions-g | hod+fallback | read 9.40, parse 18.90, classify 0.07, bodies 11.32, emission 7.31, object 6.11, compile 0.47, write 6.63, total 60.72 |

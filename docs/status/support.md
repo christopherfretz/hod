@@ -20,30 +20,30 @@ input to the fallback when one is configured (`spec/cli.md`).
 
 | group | constructs | aarch64 supported | not-implemented | rejected | x86_64 supported | not-implemented | rejected |
 |---|---|---|---|---|---|---|---|
-| `module` | 24 | 10 | 12 | 2 | 2 | 16 | 6 |
+| `module` | 24 | 10 | 12 | 2 | 5 | 13 | 6 |
 | `structor` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `debug` | 5 | 4 | 1 | 0 | 0 | 5 | 0 |
-| `global` | 12 | 11 | 1 | 0 | 2 | 10 | 0 |
-| `linkage` | 11 | 10 | 0 | 1 | 1 | 9 | 1 |
+| `global` | 12 | 11 | 1 | 0 | 3 | 9 | 0 |
+| `linkage` | 11 | 10 | 0 | 1 | 2 | 8 | 1 |
 | `visibility` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `tls` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
 | `init` | 10 | 6 | 3 | 1 | 0 | 10 | 0 |
-| `function` | 6 | 6 | 0 | 0 | 0 | 6 | 0 |
-| `cc` | 15 | 6 | 7 | 2 | 0 | 12 | 3 |
-| `attr` | 57 | 24 | 30 | 3 | 10 | 39 | 8 |
-| `type` | 15 | 12 | 0 | 3 | 0 | 13 | 2 |
-| `inst` | 67 | 60 | 0 | 7 | 0 | 60 | 7 |
+| `function` | 6 | 6 | 0 | 0 | 2 | 4 | 0 |
+| `cc` | 15 | 6 | 7 | 2 | 1 | 11 | 3 |
+| `attr` | 57 | 24 | 30 | 3 | 14 | 35 | 8 |
+| `type` | 15 | 12 | 0 | 3 | 2 | 11 | 2 |
+| `inst` | 67 | 60 | 0 | 7 | 4 | 56 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 21 | 0 | 0 | 0 | 21 | 0 |
 | `call` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
 | `tail` | 3 | 3 | 0 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
-| `operand` | 11 | 8 | 3 | 0 | 0 | 11 | 0 |
+| `operand` | 11 | 8 | 3 | 0 | 2 | 9 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 354 | 346 | 8 | 0 | 0 | 138 | 216 |
-| total | 663 | 547 | 70 | 46 | 17 | 376 | 270 |
+| total | 663 | 547 | 70 | 46 | 37 | 356 | 270 |
 
 ## `module`
 
@@ -51,15 +51,15 @@ Module properties (`ModuleProps`, §2.1) and module-level tables.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `module:pic` | supported | not-implemented | `PIC Level` is not 0 |
-| `module:pie` | supported | not-implemented | `PIE Level` is not 0 |
+| `module:pic` | supported | supported | `PIC Level` is not 0 |
+| `module:pie` | supported | supported | `PIE Level` is not 0 |
 | `module:code-model-tiny` | not-implemented | not-implemented | unplanned |
 | `module:code-model-small` | supported | supported | the default of both targets: nothing changes |
 | `module:code-model-kernel` | not-implemented | not-implemented | unplanned |
 | `module:code-model-medium` | not-implemented | not-implemented | unplanned |
 | `module:code-model-large` | not-implemented | not-implemented | unplanned |
 | `module:large-data-threshold` | not-implemented | not-implemented | unplanned |
-| `module:uwtable` | supported | not-implemented | the module's default unwind-table kind is not `none` (WP-049) |
+| `module:uwtable` | supported | supported | the module's default unwind-table kind is not `none` (WP-049) |
 | `module:frame-pointer` | supported | supported | any `frame-pointer` value: hod always keeps a frame pointer (`spec/codegen.md` §5) |
 | `module:branch-target-enforcement` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
 | `module:guarded-control-stack` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
@@ -105,7 +105,7 @@ Symbols: what they are and what a definition carries.
 |---|---|---|---|
 | `global:function-declaration` | supported | supported | nothing is emitted for a declaration |
 | `global:variable-declaration` | supported | supported | nothing is emitted for a declaration |
-| `global:function-definition` | supported | not-implemented | a function that gets a body |
+| `global:function-definition` | supported | supported | a function that gets a body |
 | `global:variable-definition` | supported | not-implemented | a variable with an initializer |
 | `global:alias` | supported | not-implemented |  |
 | `global:alias-offset` | supported | not-implemented | an alias of a symbol plus a non-zero offset |
@@ -129,7 +129,7 @@ Linkages, on declarations and definitions.
 | `linkage:weak` | supported | not-implemented |  |
 | `linkage:weak_odr` | supported | not-implemented |  |
 | `linkage:appending` | rejected | rejected | only LLVM's special arrays have it, and those are not symbols (§2.2) |
-| `linkage:internal` | supported | not-implemented |  |
+| `linkage:internal` | supported | supported |  |
 | `linkage:private` | supported | not-implemented |  |
 | `linkage:extern_weak` | supported | not-implemented |  |
 | `linkage:common` | supported | not-implemented |  |
@@ -189,9 +189,9 @@ Properties of a function that has a body.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `function:parameters` | supported | not-implemented | a body with parameters; per class of parameter |
+| `function:parameters` | supported | supported | a body with parameters; per class of parameter |
 | `function:variadic` | supported | not-implemented | a variadic function with a body |
-| `function:may-unwind` | supported | not-implemented | a body without `nounwind`: it needs unwind tables (WP-049) |
+| `function:may-unwind` | supported | supported | a body without `nounwind`: it needs unwind tables (WP-049) |
 | `function:personality` | supported | not-implemented | a body with a personality function |
 | `function:slots` | supported | not-implemented | a body with fixed stack objects (`Body::slots`) |
 | `function:over-aligned-slot` | supported | not-implemented | a stack object aligned above 16 bytes |
@@ -202,7 +202,7 @@ Calling conventions, of a body's function and of a call.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `cc:ccc` | supported | not-implemented |  |
+| `cc:ccc` | supported | supported |  |
 | `cc:fastcc` | supported | not-implemented | assigned as `ccc` (`spec/abi-a64.md` §1.2) |
 | `cc:coldcc` | not-implemented | not-implemented | unplanned |
 | `cc:ghccc` | not-implemented | not-implemented | unplanned |
@@ -260,8 +260,8 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:sanitize_thread` | not-implemented | not-implemented | unplanned |
 | `attr:sanitize_type` | not-implemented | not-implemented | unplanned |
 | `attr:convergent` | supported | supported | constrains transformations only, and hod makes none (§5.7); `bundle:convergencectrl` and the `llvm.experimental.convergence.*` intrinsics stay refused |
-| `attr:target-cpu` | supported | not-implemented | AArch64: the code is ARMv8.0, which every CPU runs |
-| `attr:target-features` | supported | not-implemented | each feature judged by code generation (`spec/codegen.md` §5.5.2) |
+| `attr:target-cpu` | supported | supported | the code is ARMv8.0 on AArch64 and the x86-64 base set on x86-64, which every CPU runs |
+| `attr:target-features` | supported | supported | each feature judged by code generation (`spec/codegen.md` §5.5.2, §5.6.2) |
 | `attr:tune-cpu` | supported | supported | tuning only: hod does not tune |
 | `attr:frame-pointer` | supported | supported | any value: hod always keeps a frame pointer |
 | `attr:patchable-function-entry` | not-implemented | not-implemented | unplanned |
@@ -277,8 +277,8 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:split-stack` | not-implemented | not-implemented | unplanned |
 | `attr:zero-call-used-regs` | not-implemented | not-implemented | unplanned |
 | `attr:stack-protector-buffer-size` | supported | supported | a parameter of `attr:ssp`, read with it |
-| `attr:min-legal-vector-width` | supported | not-implemented | read by x86 only |
-| `attr:no-jump-tables` | supported | not-implemented | hod emits no jump table (`spec/codegen.md` §6.2) |
+| `attr:min-legal-vector-width` | supported | supported | read by x86 only |
+| `attr:no-jump-tables` | supported | supported | hod emits no jump table (`spec/codegen.md` §6.2) |
 | `attr:no-builtins` | supported | supported | hod recognises no library call |
 | `attr:no-builtin` | supported | supported | every `no-builtin-<function>`; hod recognises no library call |
 
@@ -288,10 +288,10 @@ Type classes of the values instructions produce and consume.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `type:int` | supported | not-implemented | integers of at most 64 bits |
+| `type:int` | supported | supported | integers of at most 64 bits |
 | `type:i128` | supported | not-implemented | WP-040 |
 | `type:int-wide` | supported | not-implemented | integers wider than 64 bits other than `i128` (WP-040) |
-| `type:ptr` | supported | not-implemented | pointers in address space 0 |
+| `type:ptr` | supported | supported | pointers in address space 0 |
 | `type:half` | supported | not-implemented | arithmetic in single precision |
 | `type:bfloat` | supported | not-implemented | computed in single precision, rounded as `llc` without `+bf16` (WP-095) |
 | `type:float` | supported | not-implemented |  |
@@ -357,7 +357,7 @@ Instructions.
 | `inst:extractelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:insertelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:shufflevector` | supported (vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
-| `inst:phi` | supported | not-implemented | for every class whose `type:*` row is supported |
+| `inst:phi` | supported | supported | for every class whose `type:*` row is supported |
 | `inst:select` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented |  |
 | `inst:freeze` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | not-implemented |  |
 | `inst:va_arg` | rejected | rejected | `llc` miscompiles it on AArch64, so there is no oracle; frontends do not emit it |
@@ -365,12 +365,12 @@ Instructions.
 | `inst:landingpad` | supported | not-implemented |  |
 | `inst:catchpad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:cleanuppad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
-| `inst:br` | supported | not-implemented |  |
+| `inst:br` | supported | supported |  |
 | `inst:condbr` | supported | not-implemented | LLVM's two-way `br` |
 | `inst:switch` | supported (int, i128, int-wide) | not-implemented |  |
 | `inst:indirectbr` | supported | not-implemented |  |
-| `inst:ret` | supported | not-implemented |  |
-| `inst:unreachable` | supported | not-implemented |  |
+| `inst:ret` | supported | supported |  |
+| `inst:unreachable` | supported | supported |  |
 | `inst:callbr` | supported | not-implemented | inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3) |
 | `inst:invoke` | supported | not-implemented |  |
 | `inst:resume` | supported | not-implemented |  |
@@ -470,10 +470,10 @@ Constant addresses as instruction operands.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `operand:symbol` | supported | not-implemented | a symbol's address as a value, with or without an offset |
+| `operand:symbol` | supported | supported | a symbol's address as a value, with or without an offset |
 | `operand:slot` | supported | not-implemented | the address of a stack slot |
 | `operand:blockaddress` | supported | not-implemented | of a block of the same function |
-| `operand:addr-of-int` | supported | not-implemented | `inttoptr` of a constant number |
+| `operand:addr-of-int` | supported | supported | `inttoptr` of a constant number |
 | `operand:int-of-addr` | supported | not-implemented | `ptrtoint` of a constant address (WP-072) |
 | `operand:sym-diff` | supported | not-implemented | a difference of two symbol addresses (WP-072) |
 | `operand:block-diff` | not-implemented | not-implemented | unplanned. a label difference as an operand (WP-095) |

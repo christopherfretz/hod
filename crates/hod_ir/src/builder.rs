@@ -29,6 +29,7 @@ use crate::inst::{
     AtomicOrdering, FloatPredicate, InstData, IntPredicate, MemFlags, Opcode, PTRADD_POOLED, RmwOp,
     SyncScope, TailKind, align_log2, word,
 };
+use crate::intern::Layering;
 use crate::intrinsic::Intrinsic;
 use crate::module::Module;
 use crate::types::TypeKind;
@@ -179,7 +180,11 @@ impl FunctionBuilder {
     ///
     /// # Errors
     /// `InvalidType` if `fn_ty` is not a function type.
-    pub fn new(module: &Module, sym: SymId, fn_ty: TypeId) -> IrResult<FunctionBuilder> {
+    pub fn new<L: Layering>(
+        module: &Module<L>,
+        sym: SymId,
+        fn_ty: TypeId,
+    ) -> IrResult<FunctionBuilder> {
         Self::reusing(module, sym, fn_ty, Body::empty())
     }
 
@@ -190,8 +195,8 @@ impl FunctionBuilder {
     ///
     /// # Errors
     /// `InvalidType` if `fn_ty` is not a function type.
-    pub fn reusing(
-        module: &Module,
+    pub fn reusing<L: Layering>(
+        module: &Module<L>,
         sym: SymId,
         fn_ty: TypeId,
         mut storage: Body,

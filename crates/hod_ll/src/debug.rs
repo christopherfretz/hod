@@ -11,6 +11,7 @@
 //! tuple's elements in place. Nesting happens only for nodes written in
 //! place, and that is bounded by `MAX_NESTING`.
 
+use hod_ir::Layering;
 use std::borrow::Cow;
 
 use hod_ir::{
@@ -135,7 +136,7 @@ fn virtuality(name: &[u8]) -> Option<u16> {
     }
 }
 
-impl<'a> Parser<'a, '_> {
+impl<'a, L: Layering> Parser<'a, '_, L> {
     /// The subprogram a function's `!dbg` names, if it has one.
     pub(crate) fn function_dbg(&mut self) -> PResult<Option<DiId>> {
         let mut subprogram = None;
@@ -1068,9 +1069,9 @@ impl Made<'_> {
         Ok(node)
     }
 
-    fn define(
+    fn define<L: Layering>(
         &self,
-        debug: &mut hod_ir::DebugInfo,
+        debug: &mut hod_ir::DebugInfo<L>,
         id: DiId,
         scratch: &DebugScratch,
         src: &[u8],
@@ -1079,9 +1080,9 @@ impl Made<'_> {
         debug.define(id, &node)
     }
 
-    fn define_distinct(
+    fn define_distinct<L: Layering>(
         &self,
-        debug: &mut hod_ir::DebugInfo,
+        debug: &mut hod_ir::DebugInfo<L>,
         id: DiId,
         scratch: &DebugScratch,
         src: &[u8],
@@ -1090,9 +1091,9 @@ impl Made<'_> {
         debug.define_distinct(id, &node)
     }
 
-    fn add(
+    fn add<L: Layering>(
         &self,
-        debug: &mut hod_ir::DebugInfo,
+        debug: &mut hod_ir::DebugInfo<L>,
         fields: &[(&'static str, Val)],
         scratch: &DebugScratch,
         src: &[u8],

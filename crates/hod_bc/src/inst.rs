@@ -4,8 +4,8 @@
 
 use hod_ir::{
     AtomicOrdering, BlockId, Bundle, CallConv, CallDesc, Clause, Const, ConstId, FloatPredicate,
-    FnAttrs, InlineAsm, IntPredicate, Intrinsic, MemFlags, NoCode, Opcode, ParamAttrs, RmwOp,
-    SHUFFLE_UNDEF, SymId, SyncScope, TailKind, TypeId, TypeKind, Value, aggregate_field,
+    FnAttrs, InlineAsm, IntPredicate, Intrinsic, Layering, MemFlags, NoCode, Opcode, ParamAttrs,
+    RmwOp, SHUFFLE_UNDEF, SymId, SyncScope, TailKind, TypeId, TypeKind, Value, aggregate_field,
     no_code_intrinsic, resolve_intrinsic,
 };
 
@@ -53,7 +53,7 @@ enum Kind {
     CallBr,
 }
 
-impl Fx<'_, '_, '_> {
+impl<L: Layering> Fx<'_, '_, '_, L> {
     /// Metadata `id` as a metadata operand (`spec/ir.md` §5.3): a string,
     /// or a node (not `distinct`) whose operands are all strings, of the
     /// module or of this function; `None` for any other metadata, or a

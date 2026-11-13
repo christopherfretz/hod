@@ -26,6 +26,7 @@ use crate::dom::Dominators;
 use crate::error::{IrError, IrErrorKind, IrResult};
 use crate::ids::{BlockId, ConstId, DiId, LocId, TypeId};
 use crate::inst::{AtomicOrdering, InstData, MemFlags, Opcode, PTRADD_POOLED, RmwOp};
+use crate::intern::{Layering, NoLayer};
 use crate::intrinsic::{CODE_OTHER, Intrinsic};
 use crate::module::Module;
 use crate::symbol::SymbolKind;
@@ -82,7 +83,7 @@ impl Body {
     ///
     /// # Errors
     /// `InvalidDebugInfo`, as [`Body::verify`].
-    pub fn verify_debug(&self, module: &Module) -> IrResult<()> {
+    pub fn verify_debug<L: Layering>(&self, module: &Module<L>) -> IrResult<()> {
         let v = Verifier { body: self, module, types: &module.types };
         v.debug_records()?;
         v.debug_ids()
@@ -91,7 +92,7 @@ impl Body {
 
 /// The scalar type of `ty` and, for a vector, its length and whether it
 /// is scalable.
-fn shape(types: &TypeTable, ty: TypeId) -> (TypeId, Option<(u32, bool)>) {
+fn shape<L: Layering>(types: &TypeTable<L>, ty: TypeId) -> (TypeId, Option<(u32, bool)>) {
     match types.kind(ty) {
         TypeKind::Vector { elem, len } => (elem, Some((len, false))),
         TypeKind::ScalableVector { elem, min_len } => (elem, Some((min_len, true))),
@@ -102,7 +103,12 @@ fn shape(types: &TypeTable, ty: TypeId) -> (TypeId, Option<(u32, bool)>) {
 /// Whether the cast `op` can convert a value of type `src` to type `dst`:
 /// LLVM's `CastInst::castIsValid` (§5.4). `false` for an `op` that is not
 /// a cast.
-pub fn cast_is_valid(types: &TypeTable, op: Opcode, src: TypeId, dst: TypeId) -> bool {
+pub fn cast_is_valid<L: Layering>(
+    types: &TypeTable<L>,
+    op: Opcode,
+    src: TypeId,
+    dst: TypeId,
+) -> bool {
     let (s, s_vec) = shape(types, src);
     let (d, d_vec) = shape(types, dst);
     let same = s_vec == d_vec;
@@ -150,7 +156,7 @@ pub fn cast_is_valid(types: &TypeTable, op: Opcode, src: TypeId, dst: TypeId) ->
 /// pointer, float or vector of them whose size in bits is a power of two
 /// and at least eight (LLVM's rule). A scalable vector counts with its
 /// minimum size, as LLVM counts it.
-fn atomic_type(types: &TypeTable, ty: TypeId) -> bool {
+fn atomic_type<L: Layering>(types: &TypeTable<L>, ty: TypeId) -> bool {
     let (scalar, vec) = shape(types, ty);
     let class = types.is_int(scalar) || types.is_ptr(scalar) || types.is_float(scalar);
     let bits = types.size_in_bits_of(scalar) * vec.map_or(1, |(len, _)| u64::from(len));
@@ -159,7 +165,7 @@ fn atomic_type(types: &TypeTable, ty: TypeId) -> bool {
 
 /// Whether `agg` has, at any depth, a field or element of type `field`
 /// at byte `offset`.
-fn field_at(types: &TypeTable, agg: TypeId, offset: u64, field: TypeId) -> bool {
+fn field_at<L: Layering>(types: &TypeTable<L>, agg: TypeId, offset: u64, field: TypeId) -> bool {
     match types.kind(agg) {
         TypeKind::Struct { fields, .. } => {
             let Some(offsets) = types.field_offsets(agg) else { return false };
@@ -189,13 +195,13 @@ fn fail_block<T>(block: BlockId, what: impl Display) -> IrResult<T> {
     Err(IrError::new(BadBlock, format!("{block:?}: {what}")))
 }
 
-struct Verifier<'a> {
+struct Verifier<'a, L: Layering = NoLayer> {
     body: &'a Body,
-    module: &'a Module,
-    types: &'a TypeTable,
+    module: &'a Module<L>,
+    types: &'a TypeTable<L>,
 }
 
-impl Verifier<'_> {
+impl<L: Layering> Verifier<'_, L> {
     /// An error about instruction `id`.
     #[cold]
     fn fail<T>(&self, kind: IrErrorKind, id: u32, what: impl Display) -> IrResult<T> {

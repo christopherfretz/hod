@@ -1,5 +1,6 @@
 //! The module-level parser's state and its phases (`spec/ll.md` §4.3).
 
+use hod_ir::{Layering, NoLayer};
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -28,12 +29,12 @@ pub(crate) enum TypeSlot {
     Done(TypeId),
 }
 
-pub(crate) struct Parser<'a, 'm> {
+pub(crate) struct Parser<'a, 'm, L: Layering = NoLayer> {
     pub src: &'a [u8],
     pub lx: Lexer<'a>,
     /// The current token: one token of lookahead.
     pub tok: Token,
-    pub module: &'m mut Module,
+    pub module: &'m mut Module<L>,
     pub index: Index,
     /// Set when a function body is parsed (`spec/ll.md` §6): the tables
     /// the module level left behind answer for named types, numbered
@@ -177,16 +178,16 @@ fn target_of(src: &[u8], index: &Index, options: &ParseOptions) -> PResult<Targe
     Ok(target)
 }
 
-impl<'a, 'm> Parser<'a, 'm> {
+impl<'a, 'm, L: Layering> Parser<'a, 'm, L> {
     /// A parser over `src` that adds to `module`. `text` is given for a
     /// function body, and `index` is empty then.
     pub(crate) fn new(
         src: &'a [u8],
-        module: &'m mut Module,
+        module: &'m mut Module<L>,
         index: Index,
         text: Option<&'m ModuleText<'a>>,
         scratch: Scratch,
-    ) -> Parser<'a, 'm> {
+    ) -> Parser<'a, 'm, L> {
         Parser {
             src,
             lx: Lexer::new(src),

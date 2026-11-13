@@ -10,15 +10,17 @@
 //! added the debug tables (§6): the field `debug`, the attachment of
 //! global-variable expressions to symbols, and the two checks.
 
-use crate::asm::{AsmTable, InlineAsm};
+use std::sync::Arc;
+
+use crate::asm::{AsmTable, InlineAsm, OwnedAsm};
 use crate::attrs::{FnAttrTable, FnAttrs, FnAttrsId, FnAttrsView};
 use crate::comdat::{Comdat, ComdatKind, ComdatTable};
 use crate::constant::ConstPool;
-use crate::debug::DebugInfo;
 use crate::debug::node::{DiKind, DiNode};
+use crate::debug::{DebugCounts, DebugDelta, DebugInfo, DebugRemap};
 use crate::error::{IrErrorKind, IrResult, err};
-use crate::ids::{AsmId, ComdatId, ConstId, DiId, SymId};
-use crate::intern::pool_start;
+use crate::ids::{AsmId, ComdatId, ConstId, DiId, SymId, TypeId};
+use crate::intern::{Inline, Layered, Layering, NoLayer, pool_start};
 use crate::props::{FlagTable, FlagValue, ModuleFlag, ModuleProps};
 use crate::symbol::{
     AliasDesc, FunctionDesc, IFuncDesc, Retained, Symbol, SymbolKind, SymbolTable, VariableDesc,
@@ -106,32 +108,58 @@ impl StringLists {
 /// constant never changes; a symbol's description changes only as §2.2
 /// allows.
 #[derive(Clone, Debug)]
-pub struct Module {
+pub struct Module<L: Layering = NoLayer> {
     target: TargetSpec,
     /// The type table (§3), laid out for the target's data layout.
-    pub types: TypeTable,
+    pub types: TypeTable<L>,
     /// The constant pool (§4).
-    pub consts: ConstPool,
+    pub consts: ConstPool<L>,
     /// The module properties (§2.1). A producer sets them directly or
     /// through [`Module::set_module_flag`].
     pub props: ModuleProps,
+    /// The tables bodies only read: one copy, which a seed and its forks
+    /// share (§5.1, "Reading bodies in parallel").
+    shared: L::Own<Shared>,
+    asms: AsmTable<L>,
+    fn_attrs: FnAttrTable<L>,
+    unsupported: Vec<(Box<str>, Option<SymId>)>,
+    /// The debug tables (§6): nodes, expressions, locations, compile
+    /// units. Empty, and without an allocation, for a module without
+    /// debug information.
+    pub debug: DebugInfo<L>,
+    /// What a fork knows of where it came from; in a module, a count of
+    /// the changes to the tables bodies only read (§5.1).
+    fork: L::Origin<ForkOrigin>,
+}
+
+/// The parts of a [`Module`] that reading a body does not add to.
+#[derive(Clone, Debug, Default)]
+struct Shared {
     symbols: SymbolTable,
     comdats: ComdatTable,
-    asms: AsmTable,
-    fn_attrs: FnAttrTable,
     flags: FlagTable,
     ctors: Vec<Structor>,
     dtors: Vec<Structor>,
     asm_text: Vec<u8>,
     linker_options: StringLists,
     dependent_libraries: StringLists,
-    unsupported: Vec<(Box<str>, Option<SymId>)>,
-    /// The debug tables (§6): nodes, expressions, locations, compile
-    /// units. Empty, and without an allocation, for a module without
-    /// debug information.
-    pub debug: DebugInfo,
     /// `!dbg` attachments of variables (§6.7), in the order attached.
     global_exprs: Vec<(SymId, DiId)>,
+}
+
+/// The shared tables, to change: in a fork, the change makes the fork's
+/// work one it cannot hand over ([`Module::delta`]).
+/// In a module, the change is counted ([`Module::stamp`]).
+#[inline]
+fn shared_mut<'a, L: Layering>(
+    shared: &'a mut L::Own<Shared>,
+    fork: &mut L::Origin<ForkOrigin>,
+) -> &'a mut Shared {
+    if let Some(fork) = L::origin_mut(fork) {
+        fork.refused = true;
+    }
+    L::count_edit(fork);
+    L::own_mut(shared)
 }
 
 impl Module {
@@ -143,22 +171,17 @@ impl Module {
             types,
             consts: ConstPool::new(),
             props: ModuleProps::default(),
-            symbols: SymbolTable::default(),
-            comdats: ComdatTable::default(),
+            shared: Inline(Shared::default()),
             asms: AsmTable::default(),
             fn_attrs: FnAttrTable::default(),
-            flags: FlagTable::default(),
-            ctors: Vec::new(),
-            dtors: Vec::new(),
-            asm_text: Vec::new(),
-            linker_options: StringLists::default(),
-            dependent_libraries: StringLists::default(),
             unsupported: Vec::new(),
             debug: DebugInfo::default(),
-            global_exprs: Vec::new(),
+            fork: 0,
         }
     }
+}
 
+impl<L: Layering> Module<L> {
     /// What the module is compiled for.
     pub fn target(&self) -> &TargetSpec {
         &self.target
@@ -177,7 +200,14 @@ impl Module {
     /// `InvalidSymbol` for an empty name or a name with a zero byte;
     /// `TableFull`.
     pub fn symbol_named(&mut self, name: &[u8]) -> IrResult<SymId> {
-        self.symbols.named(name)
+        // A module no fork shares a table with interns at once; one
+        // that does looks first, so that finding changes nothing.
+        if self.shares_tables()
+            && let Some(sym) = self.shared.symbols.find(name)
+        {
+            return Ok(sym);
+        }
+        shared_mut::<L>(&mut self.shared, &mut self.fork).symbols.named(name)
     }
 
     /// A new unresolved symbol without a name (LLVM's `@0`). It can only
@@ -187,13 +217,13 @@ impl Module {
     /// # Errors
     /// `TableFull`.
     pub fn anonymous_symbol(&mut self) -> IrResult<SymId> {
-        self.symbols.anonymous()
+        shared_mut::<L>(&mut self.shared, &mut self.fork).symbols.anonymous()
     }
 
     /// The symbol called `name`, if the module has one.
     #[inline]
     pub fn find_symbol(&self, name: &[u8]) -> Option<SymId> {
-        self.symbols.find(name)
+        self.shared.symbols.find(name)
     }
 
     /// The symbol `id`.
@@ -202,17 +232,17 @@ impl Module {
     /// If `id` is not a symbol of this module.
     #[inline]
     pub fn symbol(&self, id: SymId) -> Symbol<'_> {
-        self.symbols.get(id)
+        self.shared.symbols.get(id)
     }
 
     /// Number of symbols; their ids are `0..symbol_count()`.
     pub fn symbol_count(&self) -> usize {
-        self.symbols.len()
+        self.shared.symbols.len()
     }
 
     /// The symbols in id order.
     pub fn symbols(&self) -> impl ExactSizeIterator<Item = Symbol<'_>> + '_ {
-        (0..self.symbols.len() as u32).map(|raw| self.symbols.get(SymId::new(raw)))
+        (0..self.shared.symbols.len() as u32).map(|raw| self.shared.symbols.get(SymId::new(raw)))
     }
 
     /// Makes `sym` the variable `desc` describes: a declaration, or with
@@ -240,7 +270,12 @@ impl Module {
     /// # Panics
     /// If `sym` is not a symbol of this module.
     pub fn set_variable(&mut self, sym: SymId, desc: &VariableDesc<'_>) -> IrResult<()> {
-        self.symbols.set_variable(&self.types, &self.consts, sym, desc)
+        shared_mut::<L>(&mut self.shared, &mut self.fork).symbols.set_variable(
+            &self.types,
+            &self.consts,
+            sym,
+            desc,
+        )
     }
 
     /// Makes `sym` the function `desc` describes: a declaration, or with
@@ -263,7 +298,12 @@ impl Module {
     /// # Panics
     /// If `sym` or `desc.personality` is not a symbol of this module.
     pub fn set_function(&mut self, sym: SymId, desc: &FunctionDesc<'_>) -> IrResult<()> {
-        self.symbols.set_function(&self.types, &self.consts, sym, desc)
+        shared_mut::<L>(&mut self.shared, &mut self.fork).symbols.set_function(
+            &self.types,
+            &self.consts,
+            sym,
+            desc,
+        )
     }
 
     /// Makes `sym` the alias `desc` describes. An alias is a definition.
@@ -285,7 +325,12 @@ impl Module {
     /// # Panics
     /// If `sym` is not a symbol of this module.
     pub fn set_alias(&mut self, sym: SymId, desc: &AliasDesc) -> IrResult<()> {
-        self.symbols.set_alias(&self.types, &self.consts, sym, desc)
+        shared_mut::<L>(&mut self.shared, &mut self.fork).symbols.set_alias(
+            &self.types,
+            &self.consts,
+            sym,
+            desc,
+        )
     }
 
     /// Makes `sym` the IFUNC `desc` describes. An IFUNC is a definition.
@@ -303,7 +348,7 @@ impl Module {
     /// # Panics
     /// If `sym` or `desc.resolver` is not a symbol of this module.
     pub fn set_ifunc(&mut self, sym: SymId, desc: &IFuncDesc) -> IrResult<()> {
-        self.symbols.set_ifunc(sym, desc)
+        shared_mut::<L>(&mut self.shared, &mut self.fork).symbols.set_ifunc(sym, desc)
     }
 
     /// [`Module::symbol_named`], then [`Module::set_variable`].
@@ -311,7 +356,7 @@ impl Module {
     /// # Errors
     /// Those of the two.
     pub fn add_variable(&mut self, name: &[u8], desc: &VariableDesc<'_>) -> IrResult<SymId> {
-        let sym = self.symbols.named(name)?;
+        let sym = shared_mut::<L>(&mut self.shared, &mut self.fork).symbols.named(name)?;
         self.set_variable(sym, desc)?;
         Ok(sym)
     }
@@ -321,7 +366,7 @@ impl Module {
     /// # Errors
     /// Those of the two.
     pub fn add_function(&mut self, name: &[u8], desc: &FunctionDesc<'_>) -> IrResult<SymId> {
-        let sym = self.symbols.named(name)?;
+        let sym = shared_mut::<L>(&mut self.shared, &mut self.fork).symbols.named(name)?;
         self.set_function(sym, desc)?;
         Ok(sym)
     }
@@ -331,7 +376,7 @@ impl Module {
     /// # Errors
     /// Those of the two.
     pub fn add_alias(&mut self, name: &[u8], desc: &AliasDesc) -> IrResult<SymId> {
-        let sym = self.symbols.named(name)?;
+        let sym = shared_mut::<L>(&mut self.shared, &mut self.fork).symbols.named(name)?;
         self.set_alias(sym, desc)?;
         Ok(sym)
     }
@@ -341,7 +386,7 @@ impl Module {
     /// # Errors
     /// Those of the two.
     pub fn add_ifunc(&mut self, name: &[u8], desc: &IFuncDesc) -> IrResult<SymId> {
-        let sym = self.symbols.named(name)?;
+        let sym = shared_mut::<L>(&mut self.shared, &mut self.fork).symbols.named(name)?;
         self.set_ifunc(sym, desc)?;
         Ok(sym)
     }
@@ -357,7 +402,12 @@ impl Module {
     /// # Panics
     /// If `sym` is not a symbol of this module.
     pub fn set_initializer(&mut self, sym: SymId, init: ConstId) -> IrResult<()> {
-        self.symbols.set_initializer(&self.types, &self.consts, sym, init)
+        shared_mut::<L>(&mut self.shared, &mut self.fork).symbols.set_initializer(
+            &self.types,
+            &self.consts,
+            sym,
+            init,
+        )
     }
 
     /// Says that a body will be delivered for the declared function
@@ -371,7 +421,11 @@ impl Module {
     /// # Panics
     /// If `sym` is not a symbol of this module.
     pub fn set_has_body(&mut self, sym: SymId) -> IrResult<()> {
-        self.symbols.set_has_body(&self.types, &self.consts, sym)
+        shared_mut::<L>(&mut self.shared, &mut self.fork).symbols.set_has_body(
+            &self.types,
+            &self.consts,
+            sym,
+        )
     }
 
     /// Takes the definition of `sym` away so that it can be described
@@ -387,7 +441,7 @@ impl Module {
     /// # Panics
     /// If `sym` is not a symbol of this module.
     pub fn discard_definition(&mut self, sym: SymId) {
-        self.symbols.discard_definition(sym);
+        shared_mut::<L>(&mut self.shared, &mut self.fork).symbols.discard_definition(sym);
     }
 
     /// Marks `sym` as a member of `llvm.used` or `llvm.compiler.used`.
@@ -400,7 +454,7 @@ impl Module {
     /// # Panics
     /// If `sym` is not a symbol of this module.
     pub fn retain(&mut self, sym: SymId, how: Retained) -> IrResult<()> {
-        self.symbols.retain(sym, how)
+        shared_mut::<L>(&mut self.shared, &mut self.fork).symbols.retain(sym, how)
     }
 
     /// The checks that need the whole module (§2.2 "End checks"); a
@@ -419,7 +473,7 @@ impl Module {
     ///   that returns a pointer, directly or through aliases at offset
     ///   zero.
     pub fn verify_symbols(&self) -> IrResult<()> {
-        self.symbols.verify(&self.types, &self.consts)
+        self.shared.symbols.verify(&self.types, &self.consts)
     }
 
     // ---- §2 COMDATs ----
@@ -430,7 +484,14 @@ impl Module {
     /// # Errors
     /// `TableFull`.
     pub fn comdat_named(&mut self, name: &[u8]) -> IrResult<ComdatId> {
-        self.comdats.named(name)
+        // A module no fork shares a table with interns at once; one
+        // that does looks first, so that finding changes nothing.
+        if self.shares_tables()
+            && let Some(id) = self.shared.comdats.find(name)
+        {
+            return Ok(id);
+        }
+        shared_mut::<L>(&mut self.shared, &mut self.fork).comdats.named(name)
     }
 
     /// Sets the selection kind of `id`.
@@ -438,12 +499,12 @@ impl Module {
     /// # Panics
     /// If `id` is not a COMDAT of this module.
     pub fn set_comdat_kind(&mut self, id: ComdatId, kind: ComdatKind) {
-        self.comdats.set_kind(id, kind);
+        shared_mut::<L>(&mut self.shared, &mut self.fork).comdats.set_kind(id, kind);
     }
 
     /// The COMDAT called `name`, if the module has one.
     pub fn find_comdat(&self, name: &[u8]) -> Option<ComdatId> {
-        self.comdats.find(name)
+        self.shared.comdats.find(name)
     }
 
     /// The COMDAT `id`.
@@ -451,12 +512,12 @@ impl Module {
     /// # Panics
     /// If `id` is not a COMDAT of this module.
     pub fn comdat(&self, id: ComdatId) -> Comdat<'_> {
-        self.comdats.get(id)
+        self.shared.comdats.get(id)
     }
 
     /// Number of COMDATs; their ids are `0..comdat_count()`.
     pub fn comdat_count(&self) -> usize {
-        self.comdats.len()
+        self.shared.comdats.len()
     }
 
     // ---- §2 inline assembly ----
@@ -498,7 +559,7 @@ impl Module {
     ///
     /// # Panics
     /// If `id` is not a set of this module.
-    pub fn fn_attrs(&self, id: FnAttrsId) -> FnAttrsView<'_> {
+    pub fn fn_attrs(&self, id: FnAttrsId) -> FnAttrsView<'_, L> {
         self.fn_attrs.get(id)
     }
 
@@ -531,14 +592,19 @@ impl Module {
         name: &[u8],
         value: FlagValue<'_>,
     ) -> IrResult<()> {
-        self.flags.set(&mut self.props, behavior, name, value)
+        shared_mut::<L>(&mut self.shared, &mut self.fork).flags.set(
+            &mut self.props,
+            behavior,
+            name,
+            value,
+        )
     }
 
     /// The module flags that did not map onto [`Module::props`], in the
     /// order they were set. `classify` refuses a module that has one
     /// that is not `ignorable`.
     pub fn other_flags(&self) -> impl ExactSizeIterator<Item = ModuleFlag<'_>> {
-        self.flags.others()
+        self.shared.flags.others()
     }
 
     // ---- §2.2 constructors and destructors ----
@@ -551,7 +617,7 @@ impl Module {
     /// If `func` or `associated` is not a symbol of this module.
     pub fn add_ctor(&mut self, priority: u32, func: SymId, associated: Option<SymId>) {
         let structor = self.structor(priority, func, associated);
-        self.ctors.push(structor);
+        shared_mut::<L>(&mut self.shared, &mut self.fork).ctors.push(structor);
     }
 
     /// Adds an entry of `llvm.global_dtors`; see [`Module::add_ctor`].
@@ -560,24 +626,24 @@ impl Module {
     /// If `func` or `associated` is not a symbol of this module.
     pub fn add_dtor(&mut self, priority: u32, func: SymId, associated: Option<SymId>) {
         let structor = self.structor(priority, func, associated);
-        self.dtors.push(structor);
+        shared_mut::<L>(&mut self.shared, &mut self.fork).dtors.push(structor);
     }
 
     fn structor(&self, priority: u32, func: SymId, associated: Option<SymId>) -> Structor {
         // An id of another module panics here, not at code generation.
-        let _ = self.symbols.get(func);
-        let _ = associated.map(|sym| self.symbols.get(sym));
+        let _ = self.shared.symbols.get(func);
+        let _ = associated.map(|sym| self.shared.symbols.get(sym));
         Structor { priority: u16::try_from(priority).unwrap_or(u16::MAX), func, associated }
     }
 
     /// The constructors, in the order they were added.
     pub fn ctors(&self) -> &[Structor] {
-        &self.ctors
+        &self.shared.ctors
     }
 
     /// The destructors, in the order they were added.
     pub fn dtors(&self) -> &[Structor] {
-        &self.dtors
+        &self.shared.dtors
     }
 
     // ---- §2.1 module-level assembly, linker options ----
@@ -585,16 +651,16 @@ impl Module {
     /// Appends one `module asm "..."` string. As in LLVM, each string
     /// ends a line: a newline is added if `text` does not end in one.
     pub fn append_module_asm(&mut self, text: &[u8]) {
-        self.asm_text.extend_from_slice(text);
+        shared_mut::<L>(&mut self.shared, &mut self.fork).asm_text.extend_from_slice(text);
         if text.last().is_some_and(|&last| last != b'\n') {
-            self.asm_text.push(b'\n');
+            shared_mut::<L>(&mut self.shared, &mut self.fork).asm_text.push(b'\n');
         }
     }
 
     /// The module-level assembly: the strings appended so far, one per
     /// line.
     pub fn module_asm(&self) -> &[u8] {
-        &self.asm_text
+        &self.shared.asm_text
     }
 
     /// Adds one operand of `!llvm.linker.options`: a list of strings.
@@ -602,12 +668,12 @@ impl Module {
     /// # Errors
     /// `TableFull`.
     pub fn add_linker_option(&mut self, strings: &[&[u8]]) -> IrResult<()> {
-        self.linker_options.push(strings)
+        shared_mut::<L>(&mut self.shared, &mut self.fork).linker_options.push(strings)
     }
 
     /// The operands of `!llvm.linker.options`.
     pub fn linker_options(&self) -> &StringLists {
-        &self.linker_options
+        &self.shared.linker_options
     }
 
     /// Adds one operand of `!llvm.dependent-libraries`: a library name.
@@ -615,13 +681,13 @@ impl Module {
     /// # Errors
     /// `TableFull`.
     pub fn add_dependent_library(&mut self, name: &[u8]) -> IrResult<()> {
-        self.dependent_libraries.push(&[name])
+        shared_mut::<L>(&mut self.shared, &mut self.fork).dependent_libraries.push(&[name])
     }
 
     /// The operands of `!llvm.dependent-libraries`, each a list of one
     /// string.
     pub fn dependent_libraries(&self) -> &StringLists {
-        &self.dependent_libraries
+        &self.shared.dependent_libraries
     }
 
     // ---- §8 what the producer could not represent ----
@@ -662,13 +728,13 @@ impl Module {
     /// `InvalidDebugInfo` if `expr` is defined as anything but a
     /// global-variable expression.
     pub fn attach_global_expr(&mut self, sym: SymId, expr: DiId) -> IrResult<()> {
-        if sym.index() >= self.symbols.len() {
+        if sym.index() >= self.shared.symbols.len() {
             return err(IrErrorKind::UndefinedSymbol, format!("{sym:?} is not a symbol"));
         }
         match self.debug.find_kind(expr) {
             None => err(IrErrorKind::UndefinedDebugNode, format!("{expr:?} does not exist")),
             Some(DiKind::GlobalVariableExpression | DiKind::Undefined) => {
-                self.global_exprs.push((sym, expr));
+                shared_mut::<L>(&mut self.shared, &mut self.fork).global_exprs.push((sym, expr));
                 Ok(())
             }
             Some(kind) => err(
@@ -683,14 +749,18 @@ impl Module {
     /// global-variable expression. The DWARF writer reads this list
     /// once to find the address of each global it describes.
     pub fn global_exprs(&self) -> &[(SymId, DiId)] {
-        &self.global_exprs
+        &self.shared.global_exprs
     }
 
     /// The global-variable expressions attached to `sym`, in the order
     /// attached. A scan of [`Module::global_exprs`]: for one symbol, not
     /// for a loop over all of them.
     pub fn global_exprs_of(&self, sym: SymId) -> impl Iterator<Item = DiId> + '_ {
-        self.global_exprs.iter().filter(move |(owner, _)| *owner == sym).map(|&(_, expr)| expr)
+        self.shared
+            .global_exprs
+            .iter()
+            .filter(move |(owner, _)| *owner == sym)
+            .map(|&(_, expr)| expr)
     }
 
     /// Closes the debug tables (§6.3): a producer calls it once, after
@@ -775,7 +845,7 @@ impl Module {
                 pair[0].0, pair[0].1, pair[1].1
             ));
         }
-        for &(sym, expr) in &self.global_exprs {
+        for &(sym, expr) in &self.shared.global_exprs {
             if !self.symbol(sym).is_variable() {
                 return invalid(format!(
                     "{sym:?} has a global-variable expression and is no variable"
@@ -786,6 +856,276 @@ impl Module {
             }
         }
         Ok(())
+    }
+}
+
+// ---- §5.1 reading bodies in parallel ----
+
+/// What a fork knows of the module it was made of.
+#[derive(Clone, Debug)]
+struct ForkOrigin {
+    /// A table bodies only read was changed: the fork's work since can
+    /// not be handed over.
+    refused: bool,
+    props: ModuleProps,
+    debug: DebugCounts,
+}
+
+/// See [`Module::stamp`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Stamp {
+    shared: u32,
+    props: ModuleProps,
+    debug: DebugCounts,
+    debug_edits: u32,
+}
+
+/// Where a fork's tables end: the start of the next body's
+/// [`Delta`] (`spec/ir.md` §5.1).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Mark {
+    types: usize,
+    consts: usize,
+    asms: usize,
+    fn_attrs: usize,
+    debug: (usize, usize),
+    unsupported: usize,
+}
+
+/// What a fork added to its tables between a [`Mark`] and its end: the
+/// types, constants, inline assembly, function attributes, debug
+/// expressions and locations and unsupported constructs one body read
+/// into it, owned, for [`Module::adopt`].
+#[derive(Clone, Debug)]
+pub struct Delta {
+    types_from: usize,
+    /// `None`: no type added (an empty table costs allocations).
+    types: Option<Box<TypeTable<Layered>>>,
+    consts_from: usize,
+    consts: Option<Box<ConstPool<Layered>>>,
+    asms: Vec<OwnedAsm>,
+    fn_attrs: Vec<FnAttrs>,
+    debug: DebugDelta,
+    unsupported: Vec<(Box<str>, Option<SymId>)>,
+}
+
+/// A fork's ids to the ids of the module it was made of: the identity
+/// below the fork's base, and below it what [`Module::adopt`] made of
+/// each entry the fork added. One per fork, grown by every adopt of its
+/// deltas, in their order.
+#[derive(Clone, Debug)]
+pub struct Remap {
+    types_base: usize,
+    types: Vec<TypeId>,
+    consts_base: usize,
+    consts: Vec<ConstId>,
+    asms_base: usize,
+    asms: Vec<AsmId>,
+    pub(crate) debug: DebugRemap,
+}
+
+impl Remap {
+    #[inline]
+    pub(crate) fn ty(&self, ty: TypeId) -> TypeId {
+        match ty.index().checked_sub(self.types_base) {
+            Some(at) => self.types[at],
+            None => ty,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn constant(&self, id: ConstId) -> ConstId {
+        match id.index().checked_sub(self.consts_base) {
+            Some(at) => self.consts[at],
+            None => id,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn asm(&self, id: AsmId) -> AsmId {
+        match id.index().checked_sub(self.asms_base) {
+            Some(at) => self.asms[at],
+            None => id,
+        }
+    }
+
+    /// Whether every id maps to itself: the fork added nothing.
+    pub fn is_identity(&self) -> bool {
+        self.types.is_empty()
+            && self.consts.is_empty()
+            && self.asms.is_empty()
+            && self.debug.is_identity()
+    }
+}
+
+impl Module {
+    /// The base of the forks that read bodies on other threads: a module
+    /// that reads as this one, with a copy of the tables bodies add to
+    /// (types, constants, inline assembly, function attributes, debug
+    /// tables) and of the tables they only read, made once per parallel
+    /// reading. [`Module::fork`] of it copies nothing. This module stays
+    /// as it is, with no layer.
+    #[must_use]
+    pub fn seed(&self) -> Module<Layered> {
+        let debug = self.debug.seed();
+        let origin = ForkOrigin { refused: false, props: self.props, debug: debug.counts() };
+        Module {
+            target: self.target.clone(),
+            types: self.types.seed(),
+            consts: self.consts.seed(),
+            props: self.props,
+            shared: Arc::new(Shared::clone(&self.shared)),
+            asms: self.asms.seed(),
+            fn_attrs: self.fn_attrs.seed(),
+            unsupported: Vec::new(),
+            debug,
+            fork: Some(Box::new(origin)),
+        }
+    }
+
+    /// Adds what `delta` holds, as the fork added it and in the same
+    /// order, with every id translated by `remap`, which is extended with
+    /// the ids the new entries became. Adopting a fork's deltas in the
+    /// order of their bodies leaves this module as reading those bodies
+    /// against it would have (`spec/ir.md` §5.1).
+    ///
+    /// # Errors
+    /// `TableFull`, as reading the bodies would have.
+    pub fn adopt(&mut self, delta: &Delta, remap: &mut Remap) -> IrResult<()> {
+        if let Some(types) = &delta.types {
+            self.types.adopt(types, delta.types_from, &mut remap.types, remap.types_base)?;
+        }
+        if let Some(consts) = &delta.consts {
+            self.consts.adopt(
+                consts,
+                delta.consts_from,
+                &mut remap.consts,
+                remap.consts_base,
+                &remap.types,
+                remap.types_base,
+            )?;
+        }
+        for asm in &delta.asms {
+            let id = self.asms.intern(&self.types, &asm.view(remap.ty(asm.ty)))?;
+            remap.asms.push(id);
+        }
+        for attrs in &delta.fn_attrs {
+            self.fn_attrs.intern(attrs)?;
+        }
+        self.debug.adopt(&delta.debug, &mut remap.debug)?;
+        self.unsupported.extend(delta.unsupported.iter().cloned());
+        Ok(())
+    }
+
+    /// What changes when the module changes a table that its forks read
+    /// and do not add to: a symbol, a COMDAT, a property or flag, a debug
+    /// node, a location in place. Equal stamps: the forks still read
+    /// this module.
+    pub fn stamp(&self) -> Stamp {
+        Stamp {
+            shared: self.fork,
+            props: self.props,
+            debug: self.debug.counts(),
+            debug_edits: self.debug.edits(),
+        }
+    }
+}
+
+impl Module<Layered> {
+    /// A module that reads as this seed, and adds to tables of its own:
+    /// a body read against it is read as against the module the seed was
+    /// made of, with the ids of what it adds its own. Shares every table;
+    /// copies nothing but the properties, the debug compile units and the
+    /// kinds of other debug nodes (a few words).
+    #[must_use]
+    pub fn fork(&self) -> Module<Layered> {
+        debug_assert!(
+            self.types.local_is_empty()
+                && self.consts.local_is_empty()
+                && self.asms.local_is_empty()
+                && self.fn_attrs.local_is_empty(),
+            "a fork of a fork that read a body"
+        );
+        let debug = self.debug.fork();
+        let origin = ForkOrigin { refused: false, props: self.props, debug: debug.counts() };
+        Module {
+            target: self.target.clone(),
+            types: self.types.fork(),
+            consts: self.consts.fork(),
+            props: self.props,
+            shared: Arc::clone(&self.shared),
+            asms: self.asms.fork(),
+            fn_attrs: self.fn_attrs.fork(),
+            unsupported: Vec::new(),
+            debug,
+            fork: Some(Box::new(origin)),
+        }
+    }
+
+    /// What this fork added since `mark`, owned. `None` if, since it was
+    /// made, the fork changed what it cannot hand over: a symbol, a
+    /// COMDAT, a module property or flag, a debug node, a reserved
+    /// location; or if it is not a fork.
+    ///
+    /// # Errors
+    /// None in practice: a function attribute set that no longer interns.
+    pub fn delta(&self, mark: Mark) -> IrResult<Option<Delta>> {
+        let Some(origin) = &self.fork else { return Ok(None) };
+        if origin.refused || self.props != origin.props || self.debug.changed_since(&origin.debug) {
+            return Ok(None);
+        }
+        let Some(debug) = self.debug.delta(mark.debug) else { return Ok(None) };
+        Ok(Some(Delta {
+            types_from: mark.types,
+            types: (self.types.len() > mark.types).then(|| Box::new(self.types.tail(mark.types))),
+            consts_from: mark.consts,
+            consts: (self.consts.len() > mark.consts)
+                .then(|| Box::new(self.consts.tail(mark.consts))),
+            asms: self.asms.owned_since(mark.asms),
+            fn_attrs: self.fn_attrs.owned_since(mark.fn_attrs)?,
+            debug,
+            unsupported: self.unsupported[mark.unsupported..].to_vec(),
+        }))
+    }
+}
+
+impl<L: Layering> Module<L> {
+    /// The remap of a fork made now: the identity until a delta is
+    /// adopted with it.
+    pub fn remap(&self) -> Remap {
+        Remap {
+            types_base: self.types.len(),
+            types: Vec::new(),
+            consts_base: self.consts.len(),
+            consts: Vec::new(),
+            asms_base: self.asms.len(),
+            asms: Vec::new(),
+            debug: self.debug.remap(),
+        }
+    }
+
+    /// Where the tables end now.
+    pub fn mark(&self) -> Mark {
+        Mark {
+            types: self.types.len(),
+            consts: self.consts.len(),
+            asms: self.asms.len(),
+            fn_attrs: self.fn_attrs.len(),
+            debug: self.debug.mark(),
+            unsupported: self.unsupported.len(),
+        }
+    }
+
+    /// Whether this module is a fork ([`Module::fork`]).
+    pub fn is_fork(&self) -> bool {
+        L::origin(&self.fork).is_some()
+    }
+
+    /// Whether this module is a seed or a fork: whether another fork may
+    /// share its tables. Always false for a `Module<NoLayer>`.
+    #[inline]
+    fn shares_tables(&self) -> bool {
+        L::origin(&self.fork).is_some()
     }
 }
 

@@ -18,18 +18,20 @@
 //!   [`Body::layout`] lists them in layout order, entry block first;
 //! - every operand names something that exists: no reserved values remain.
 
+use crate::intern::Layering;
 use std::fmt;
 use std::ops::Range;
 
 use crate::attrs::{CallConv, ParamAttrs};
 use crate::debug::expr::ExprId;
+use crate::error::IrResult;
 use crate::ids::{BlockId, ConstId, DiId, LocId, SymId, TypeId};
 use crate::inst::{
     AtomicOrdering, FloatPredicate, InstData, IntPredicate, MemFlags, Opcode, PTRADD_POOLED, RmwOp,
     SyncScope, TailKind,
 };
 use crate::intrinsic::{CODE_OTHER, Intrinsic};
-use crate::module::Module;
+use crate::module::{Module, Remap};
 use crate::types::TypeKind;
 use crate::value::{InstId, MetaId, SlotId, Value, ValueKind};
 
@@ -592,7 +594,7 @@ impl Body {
     }
 
     /// The argument types: the parameters of the function type.
-    pub fn arg_types<'m>(&self, module: &'m Module) -> &'m [TypeId] {
+    pub fn arg_types<'m, L: Layering>(&self, module: &'m Module<L>) -> &'m [TypeId] {
         match module.types.kind(self.fn_ty) {
             TypeKind::Function { params, .. } => params,
             _ => &[],
@@ -600,7 +602,7 @@ impl Body {
     }
 
     /// The return type of the function type.
-    pub fn ret_type(&self, module: &Module) -> TypeId {
+    pub fn ret_type<L: Layering>(&self, module: &Module<L>) -> TypeId {
         match module.types.kind(self.fn_ty) {
             TypeKind::Function { ret, .. } => ret,
             _ => TypeId::VOID,
@@ -617,7 +619,7 @@ impl Body {
     /// The type of `value`: an instruction's result type, an argument's
     /// parameter type, a constant's type, `ptr` for an address, `void` for
     /// [`Value::NONE`].
-    pub fn value_type(&self, module: &Module, value: Value) -> TypeId {
+    pub fn value_type<L: Layering>(&self, module: &Module<L>, value: Value) -> TypeId {
         match value.kind() {
             ValueKind::Inst(id) => self.insts.get(id.index()).map_or(TypeId::VOID, |inst| inst.ty),
             ValueKind::Arg(index) => {
@@ -843,6 +845,92 @@ impl Body {
             + bytes(&self.metas)
             + bytes(&self.pads)
             + bytes(&self.clauses)
+    }
+
+    /// Translates every module id the body holds (types, constants,
+    /// inline assembly, debug expressions and locations) from a fork's
+    /// to the module's the fork was made of, by `remap`
+    /// (`spec/ir.md` §5.1). Symbols and debug nodes are the module's in
+    /// a fork already.
+    ///
+    /// # Errors
+    /// `TableFull` if a translated id does not fit an operand.
+    pub fn remap(&mut self, remap: &Remap) -> IrResult<()> {
+        if remap.is_identity() {
+            return Ok(());
+        }
+        let value = |v: Value| -> IrResult<Value> {
+            match v.kind() {
+                ValueKind::Const(id) => Value::constant(remap.constant(id)),
+                ValueKind::Asm(id) => Value::asm(remap.asm(id)),
+                _ => Ok(v),
+            }
+        };
+        self.fn_ty = remap.ty(self.fn_ty);
+        for at in 0..self.insts.len() {
+            let d = &mut self.insts[at];
+            d.ty = remap.ty(d.ty);
+            let inline = match d.op.inline_values() {
+                Some(n) => usize::from(n),
+                None => match d.op {
+                    Opcode::Ret => usize::from(!d.ops[0].is_none()),
+                    Opcode::PtrAdd if d.flags & PTRADD_POOLED == 0 => 1,
+                    _ => 0,
+                },
+            };
+            for op in &mut d.ops[..inline] {
+                *op = value(*op)?;
+            }
+            if d.op == Opcode::Switch {
+                let start = d.ops[1].bits() as usize;
+                let count = d.ops[2].bits() as usize;
+                for word in &mut self.words[start + 1 + count..][..count] {
+                    *word = remap.constant(ConstId::new(*word)).raw();
+                }
+            }
+        }
+        for v in &mut self.vals {
+            *v = value(*v)?;
+        }
+        // A marker's pointer can be a constant (WP-104); metadata
+        // operands are strings of the body's own (WP-064).
+        for marker in &mut self.markers {
+            marker.ptr = value(marker.ptr)?;
+        }
+        for ty in &mut self.types {
+            *ty = remap.ty(*ty);
+        }
+        for call in &mut self.calls {
+            call.fn_ty = remap.ty(call.fn_ty);
+        }
+        for attrs in &mut self.param_attrs {
+            *attrs = attrs.map_mem_ty(|ty| remap.ty(ty));
+        }
+        for clause in &mut self.clauses {
+            *clause = match *clause {
+                Clause::Catch(id) => Clause::Catch(remap.constant(id)),
+                Clause::Filter(id) => Clause::Filter(remap.constant(id)),
+            };
+        }
+        let debug = &remap.debug;
+        for loc in &mut self.locs {
+            *loc = debug.loc(*loc);
+        }
+        for var in &mut self.slot_vars {
+            var.loc = debug.loc(var.loc);
+            var.expr = debug.expr(var.expr);
+        }
+        for declare in &mut self.declares {
+            declare.address = value(declare.address)?;
+            declare.loc = debug.loc(declare.loc);
+            declare.expr = debug.expr(declare.expr);
+        }
+        for record in &mut self.dbg_records {
+            record.loc = debug.loc(record.loc);
+            record.expr = debug.expr(record.expr);
+            record.addr_expr = debug.expr(record.addr_expr);
+        }
+        Ok(())
     }
 
     /// The bytes this body has allocated, spare capacity included.

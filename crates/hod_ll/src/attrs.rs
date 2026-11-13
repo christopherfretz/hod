@@ -1,6 +1,7 @@
 //! Attributes (`spec/ll.md` §5.6): each one goes through `hod_ir`'s
 //! table and is kept, dropped, or noted as `attr:<name>`.
 
+use hod_ir::Layering;
 use hod_ir::{
     AttrClass, AttrInfo, AttrSyntax, FnAttrs, FnAttrsId, FnStr, ParamAttrs, ParamMem, UwTable,
     attr_info,
@@ -129,7 +130,7 @@ fn lossy(name: &[u8]) -> String {
     format!("attr:{}", String::from_utf8_lossy(name))
 }
 
-impl Parser<'_, '_> {
+impl<L: Layering> Parser<'_, '_, L> {
     /// Parses every attribute group. Of two definitions of one number
     /// the later one is the group, as in LLVM; the earlier one is still
     /// read, and an error in it is an error.

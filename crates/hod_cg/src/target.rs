@@ -6,7 +6,7 @@
 //! (§4.8) are implemented once, in this crate, on top of a target's
 //! **glue** (the primitive moves) and its `assign`.
 
-use hod_ir::{Inst, ParamAttrs, TypeId, TypeTable, Value};
+use hod_ir::{Body, Inst, Module, ParamAttrs, TypeId, TypeTable, Value};
 
 use crate::abi::{AbiUnsupported, Assignment, Sig};
 use crate::cx::FnCx;
@@ -128,6 +128,18 @@ pub trait Target: Sized + Sync {
         sig: &Sig<'_>,
         out: &mut Assignment,
     ) -> Result<(), AbiUnsupported>;
+
+    /// The target as it compiles `body` of `module` (§8.2), for a target
+    /// whose convention depends on the function's attributes (x86-64:
+    /// the target features that decide where a wide vector travels,
+    /// `spec/abi-x64.md` §1.3). While the function is compiled, the value
+    /// returned is the target: every `assign` (the function's own
+    /// signature and each call in it) and every other method is called
+    /// on it. `None`, the default, keeps `self`.
+    fn for_function(&self, module: &Module, body: &Body) -> Option<Self> {
+        let _ = (module, body);
+        None
+    }
 
     /// Emits the prologue in its fixed-size form and reserves what the
     /// target needs in the frame (§5.4): the frame record, a register

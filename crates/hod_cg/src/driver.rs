@@ -62,6 +62,8 @@ pub fn compile_function<T: Target>(
         return internal("a chunk with more than 2 GiB of code");
     }
     let mark = chunk.mark();
+    let own = target.for_function(module, body);
+    let target = own.as_ref().unwrap_or(target);
     let mut far = options.stress.far;
     loop {
         let mut cx = FnCx::new(target, module, body, options, scratch, chunk, far);
@@ -695,9 +697,11 @@ impl<'a, T: Target> FnCx<'a, T> {
             let row = VarRow { var: declare.var, loc: declare.loc, expr: declare.expr, place };
             self.out.vars.push(row);
         }
+        let start = self.mark.vars as usize;
+        // WP-108: a coroutine body's variables.
+        self.coro_vars(start);
         let t = self.target;
         let desc = self.frame_desc;
-        let start = self.mark.vars as usize;
         for row in self.out.vars.get_mut(start..).unwrap_or_default() {
             let (place, indirect) = match row.place {
                 VarPlace::Slot(place) => (place, false),
@@ -781,6 +785,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         record.frame = self.frame_desc;
         record.has_pads = self.has_pads;
         record.coro_entries = self.coro_entries();
+        record.coro_ready = self.coro_ready();
         // `spec/eh.md` §1.1: what decides the function's unwind tables.
         if let SymbolKind::Function { attrs, personality, .. } =
             self.module.symbol(self.body.symbol()).kind()

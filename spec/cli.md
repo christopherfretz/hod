@@ -196,8 +196,9 @@ generation before `finish` (§6).
 `generate_with`, in order; the first refusal is the answer and no object
 is produced, partial or otherwise:
 
-1. An x86-64 module declines with `codegen-not-implemented` (its code
-   generator is planned, `spec/codegen.md` §5.6).
+1. (Retired by WP-140: an x86-64 module no longer declines with
+   `codegen-not-implemented`; WP-116 gave it a code generator and nothing
+   reports the name.)
 2. The options code generation cannot honour: `-relocation-model=ropi`,
    `rwpi` or `ropi-rwpi` is `option:relocation-model`, `-split-dwarf-output`
    without `-split-dwarf-file` is `option:split-dwarf-output` (`llc` then
@@ -205,10 +206,13 @@ is produced, partial or otherwise:
    `static`, `llc`'s default for these targets. The optimization level is
    accepted and ignored: hod generates the same code at every `-O`.
 3. Each `-mattr` item, then each function's `target-features` attribute,
-   is judged by `hod_a64::features::check` (`spec/codegen.md` §5.5.2):
-   a refusal is `attr:target-feature-<class>`, with the item as the
-   detail, in the function for an attribute and of the module for
-   `-mattr`.
+   is judged by `hod_a64::features::check` (`spec/codegen.md` §5.5.2)
+   or, on x86-64, `hod_x64::features::check` for `-mattr` and
+   `hod_x64::features::check_function` for an attribute (which leaves
+   `-x87` to the code generator: refused only in a function with an
+   `x86_fp80` value, §5.6.9): a refusal is `attr:target-feature-<class>`,
+   with the item as the detail, in the function for an attribute and of
+   the module for `-mattr`.
 4. Every body is compiled (`hod_cg::compile_function` with `hod_a64`),
    on the threads of "Threads", each with its own scratch state, into
    chunks of whole functions in module order. A `CgError::Unsupported`
@@ -611,7 +615,7 @@ not. What would have fallen back fails, and the diagnostic ends with
 ` (strict mode: no fallback)`:
 
 ```
-hod: error: unsupported construct 'codegen-not-implemented' (strict mode: no fallback)
+hod: error: unsupported construct 'type:double' in function 'f' (strict mode: no fallback)
 ```
 
 Without strict mode and without a fallback the same failures end with
@@ -723,7 +727,6 @@ that applies is the reason:
 | `unsupported-target` | `-mtriple` names another target than the module's (retargeting is not implemented) |
 | a `classify` name | `hod_ir::classify`'s module pass refused the module (`module:pic`, `global:function-definition`, `debug:module-flags`, ...; `docs/status/support.md`) |
 | a body's reason | for each body in the module's order: the reader's error (the table below), the body reader's own refusal (`call:forwarded-varargs`, ...), `classify`'s body pass, then `Body::verify` (`malformed-input`) |
-| `codegen-not-implemented` | the module reached `generate` and its target is x86-64 |
 | `option:relocation-model`, `option:split-dwarf-output` | an option code generation cannot honour ("The back half") |
 | `attr:target-feature-<class>` | an `-mattr` item or a function's `target-features` item hod's code is not correct under (`spec/codegen.md` §5.5.2); the item is the detail |
 | a code generator's name | `hod_cg`/`hod_a64` refused a function (`a64:`, `abi:`, `limit:`, `call:`, ...), in the function; or `emit_module` refused the module |

@@ -47,6 +47,7 @@ use std::fmt;
 
 pub mod abbrev;
 mod call_sites;
+mod coro;
 mod die;
 mod early;
 mod func;
@@ -68,6 +69,7 @@ mod template;
 mod types;
 
 pub use call_sites::DEBUG_CALL_SITES;
+pub use coro::{CoroAt, CoroPlace};
 pub use die::{CodeSpan, DieSections, GlobalAddr, UnitInput, UnitPlan, write_debug_info};
 pub use early::{LOCAL_TYPE_SCOPE, check_functions};
 pub use func::{FunctionInput, LocalPlace, LocalRow, ScopeRow};

@@ -487,8 +487,8 @@ pub fn put_reloc(
 /// general scratch register other than `rd`.
 ///
 /// # Errors
-/// [`CODE_MODEL`] for a code model other than small; `x64:todo:tls` for
-/// a thread-local symbol (WP-134).
+/// [`CODE_MODEL`] for a code model other than small. A thread-local
+/// symbol is `tls::address`'s (WP-134).
 pub fn sym_address(cx: &mut FnCx<'_, X64>, rd: Reg, sym: SymId, addend: i64) -> CgResult<()> {
     if cx.options.code_model(cx.module) != CodeModel::Small {
         return unsupported(CODE_MODEL);
@@ -506,7 +506,7 @@ pub fn sym_address(cx: &mut FnCx<'_, X64>, rd: Reg, sym: SymId, addend: i64) -> 
             put_reloc(cx, load, kind, target, 0)?;
             add_addend(cx, rd, addend);
         }
-        Access::Tls(_) => return unsupported(crate::tls::TLS),
+        Access::Tls(model) => return crate::tls::address(cx, rd, sym, model, addend),
     }
     Ok(())
 }

@@ -145,15 +145,12 @@ pub struct Options {
 /// Why hod declined a module: the name is what the coverage log and the
 /// strict-mode diagnostic print (`spec/cli.md` "Reasons").
 ///
-/// The four fixed reasons are the facade's own; every other reason is
+/// The three fixed reasons are the facade's own; every other reason is
 /// [`Construct::Named`]: a name of `hod_ir::classify`'s vocabulary
 /// (`spec/ir.md` §8.5) or of a reader (`spec/cli.md` "Reasons").
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Construct {
-    /// The target has no code generator (x86-64): every module of it
-    /// that `classify` accepts whole is declined with this.
-    CodegenNotImplemented,
     /// The input is LLVM bitcode and the caller asked for it not to be
     /// read ([`BitcodeReading::Decline`]).
     BitcodeInput,
@@ -168,17 +165,12 @@ pub enum Construct {
 
 impl Construct {
     /// The fixed constructs, in the order [`compile`] checks them.
-    pub const ALL: [Construct; 4] = [
-        Construct::AssemblyOutput,
-        Construct::BitcodeInput,
-        Construct::UnsupportedTarget,
-        Construct::CodegenNotImplemented,
-    ];
+    pub const ALL: [Construct; 3] =
+        [Construct::AssemblyOutput, Construct::BitcodeInput, Construct::UnsupportedTarget];
 
     /// The stable name.
     pub fn name(&self) -> &str {
         match self {
-            Construct::CodegenNotImplemented => "codegen-not-implemented",
             Construct::BitcodeInput => "bitcode-input",
             Construct::AssemblyOutput => "assembly-output",
             Construct::UnsupportedTarget => "unsupported-target",
@@ -488,10 +480,7 @@ mod tests {
     #[test]
     fn construct_names_are_stable_and_distinct() {
         let names: Vec<&str> = Construct::ALL.iter().map(Construct::name).collect();
-        assert_eq!(
-            names,
-            ["assembly-output", "bitcode-input", "unsupported-target", "codegen-not-implemented"]
-        );
+        assert_eq!(names, ["assembly-output", "bitcode-input", "unsupported-target"]);
         assert_eq!(Construct::BitcodeInput.to_string(), "bitcode-input");
         assert_eq!(Construct::Named("cc:ccc".into()).name(), "cc:ccc");
         assert_eq!(Construct::Named(LIMIT_READER.into()).to_string(), "limit:reader");
@@ -553,10 +542,10 @@ mod tests {
         let module = Unsupported::module(Construct::BitcodeInput);
         assert_eq!(module.to_string(), "unsupported construct 'bitcode-input'");
         let function =
-            Unsupported::in_function(Construct::CodegenNotImplemented, Some("_Z1fv".into()));
+            Unsupported::in_function(Construct::Named("x64:todo:abi".into()), Some("_Z1fv".into()));
         assert_eq!(
             CompileError::from(function).to_string(),
-            "unsupported construct 'codegen-not-implemented' in function '_Z1fv'"
+            "unsupported construct 'x64:todo:abi' in function '_Z1fv'"
         );
         let feature = Unsupported {
             construct: Construct::Named("attr:target-feature-unknown".into()),

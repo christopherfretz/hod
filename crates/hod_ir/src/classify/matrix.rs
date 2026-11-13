@@ -488,7 +488,13 @@ const DEBUG_ROWS: [SupportRow; 5] = [
          LLVM's 4): `hod_dwarf` writes DWARF 5 only",
     ),
     row("debug:subprogram", ON, todo(X64), "a function with a body and a `DISubprogram` (WP-087)"),
-    row("debug:slot-variables", ON, todo(X64), "a stack slot that is a source variable (WP-087)"),
+    row(
+        "debug:slot-variables",
+        ON,
+        todo(X64),
+        "a stack slot that is a source variable (WP-087); in a coroutine body, on the frame word \
+         (WP-108, `spec/dwarf.md` §6.16)",
+    ),
     row(
         "debug:locations",
         ON,
@@ -538,9 +544,8 @@ const LINKAGE: [SupportRow; Linkage::ALL.len()] = [
 const VISIBILITY: [SupportRow; 2] =
     [both("visibility:hidden", ON, ""), both("visibility:protected", ON, "")];
 
-// On x86-64 these rows are the symbol and its definition (WP-143); an
-// access is `intrinsic:llvm.threadlocal.address`, or `x64:todo:tls` in
-// `hod_x64`, until WP-134.
+// The symbol, its definition (WP-143 on x86-64) and every access to it
+// (WP-073 on AArch64, WP-134 on x86-64).
 const TLS_ROWS: [SupportRow; 4] = [
     both("tls:general-dynamic", ON, "`thread_local`"),
     both("tls:local-dynamic", ON, "`thread_local(localdynamic)`"),
@@ -596,7 +601,7 @@ const FUNCTION: [SupportRow; 6] = [
 /// target's is refused by design (`llc` aborts on it).
 const CC: [SupportRow; 26] = [
     both("cc:ccc", ON, ""),
-    row("cc:fastcc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
+    row("cc:fastcc", ON, ON, "assigned as `ccc` (`spec/abi-a64.md` §1.2, `spec/abi-x64.md` §1.2)"),
     both("cc:coldcc", todo(LATER), ""),
     both("cc:ghccc", todo(LATER), ""),
     both("cc:anyregcc", todo(LATER), ""),
@@ -691,8 +696,8 @@ const ATTR_PARAM: [SupportRow; 7] = [
 
 /// In `ParamMem` order, from `Sret`.
 const ATTR_MEM: [SupportRow; 6] = [
-    row("attr:sret", ON, todo(X64), ""),
-    row("attr:byval", ON, todo(X64), ""),
+    row("attr:sret", ON, ON, ""),
+    row("attr:byval", ON, ON, ""),
     row("attr:byref", ON, todo(X64), ""),
     both("attr:inalloca", never(WINDOWS), ""),
     both("attr:preallocated", never(WINDOWS), ""),
@@ -707,7 +712,7 @@ const ATTR_VALUE: [SupportRow; 3] = [
         todo(X64),
         "on a parameter: placement of a stack block (abi-a64.md §3.3); on a function: no code, `sp` is always 16-aligned and an over-aligned slot aligns itself",
     ),
-    row("attr:uwtable", ON, todo(X64), "on a function with a body (WP-049)"),
+    row("attr:uwtable", ON, ON, "on a function with a body (WP-049)"),
 ];
 
 /// In the order of `FnAttrs::FLAG_NAMES`.
@@ -733,7 +738,8 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
         "attr:presplitcoroutine",
         ON,
         todo(X64),
-        "one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name (WP-106)",
+        "one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name \
+         (WP-106); with `-g`, its variables on the frame word (WP-108)",
     ),
     a64("attr:sanitize_address", LATER, ""),
     a64("attr:sanitize_alloc_token", LATER, ""),
@@ -791,16 +797,16 @@ const TYPE: [SupportRow; TypeClass::ALL.len()] = [
     row("type:i128", ON, ON, "WP-040"),
     row("type:int-wide", ON, ON, "integers wider than 64 bits other than `i128` (WP-040)"),
     both("type:ptr", ON, "pointers in address space 0"),
-    row("type:half", ON, todo(X64), "arithmetic in single precision"),
+    row("type:half", ON, ON, "arithmetic in single precision"),
     row(
         "type:bfloat",
         ON,
-        todo(X64),
+        ON,
         "computed in single precision, rounded as `llc` without `+bf16` (WP-095)",
     ),
-    row("type:float", ON, todo(X64), ""),
-    row("type:double", ON, todo(X64), ""),
-    row("type:fp128", ON, todo(X64), "arithmetic, compares and conversions are calls"),
+    row("type:float", ON, ON, ""),
+    row("type:double", ON, ON, ""),
+    row("type:fp128", ON, ON, "arithmetic, compares and conversions are calls"),
     row("type:x86_fp80", never("not an AArch64 type"), todo(X64), ""),
     row(
         "type:vector",
@@ -909,7 +915,13 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::BFloat,
+        ]),
         "",
     ),
     row(
@@ -922,7 +934,13 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::BFloat,
+        ]),
         "",
     ),
     row(
@@ -935,7 +953,13 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::BFloat,
+        ]),
         "",
     ),
     row(
@@ -948,7 +972,13 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::BFloat,
+        ]),
         "",
     ),
     row(
@@ -961,7 +991,13 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::BFloat,
+        ]),
         "a call of `fmod`",
     ),
     row(
@@ -974,7 +1010,13 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::BFloat,
+        ]),
         "",
     ),
     row(
@@ -1000,7 +1042,14 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Int,
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::BFloat,
+        ]),
         "vectors: masks of up to 64 lanes (WP-081)",
     ),
     row(
@@ -1031,7 +1080,13 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::BFloat,
+        ]),
         "",
     ),
     row(
@@ -1044,7 +1099,13 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::BFloat,
+        ]),
         "",
     ),
     row(
@@ -1060,7 +1121,15 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        on(&[TypeClass::I128]),
+        on(&[
+            TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::BFloat,
+        ]),
         "",
     ),
     row(
@@ -1076,7 +1145,15 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        on(&[TypeClass::I128]),
+        on(&[
+            TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::BFloat,
+        ]),
         "",
     ),
     row(
@@ -1092,7 +1169,15 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        on(&[TypeClass::I128]),
+        on(&[
+            TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::BFloat,
+        ]),
         "",
     ),
     row(
@@ -1108,7 +1193,15 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        on(&[TypeClass::I128]),
+        on(&[
+            TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::BFloat,
+        ]),
         "",
     ),
     row(
@@ -1161,7 +1254,17 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Ptr]),
+        on(&[
+            TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::IntWide,
+            TypeClass::Ptr,
+            TypeClass::Half,
+            TypeClass::BFloat,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+        ]),
         "between integers and floats with WP-039",
     ),
     both(
@@ -1228,12 +1331,13 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         "a plain store; see `mem:`; FP and vector values: WP-067",
     ),
     row("inst:alloca", ON, ON, "a dynamic allocation; fixed ones are `function:slots`"),
-    row("inst:fence", ON, todo(X64), "WP-074"),
+    row("inst:fence", ON, ON, "WP-074; x86-64: WP-133"),
     row(
         "inst:cmpxchg",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Ptr, TypeClass::Aggregate]),
-        todo(X64),
-        "WP-074; the `{ T, i1 }` result is an aggregate",
+        on(&[TypeClass::Int, TypeClass::Ptr, TypeClass::Aggregate]),
+        "WP-074; the `{ T, i1 }` result is an aggregate; x86-64 (WP-133): `i128` only with \
+         `+cx16` (`lock cmpxchg16b`), else `x64:atomic-libatomic`",
     ),
     row(
         "inst:atomicrmw",
@@ -1246,8 +1350,16 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Float,
             TypeClass::Double,
         ]),
-        todo(X64),
-        "and the operation's `atomicrmw:` row; WP-074",
+        on(&[
+            TypeClass::Int,
+            TypeClass::Ptr,
+            TypeClass::Half,
+            TypeClass::BFloat,
+            TypeClass::Float,
+            TypeClass::Double,
+        ]),
+        "and the operation's `atomicrmw:` row; WP-074; x86-64 (WP-133): `i128` only with \
+         `+cx16`, else `x64:atomic-libatomic`",
     ),
     row("inst:ptradd", ON, ON, "LLVM's `getelementptr` (§5.4); not a vector of pointers"),
     row(
@@ -1265,7 +1377,13 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
+        on(&[
+            TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::IntWide,
+            TypeClass::Ptr,
+            TypeClass::Aggregate,
+        ]),
         "",
     ),
     row(
@@ -1283,7 +1401,13 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
+        on(&[
+            TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::IntWide,
+            TypeClass::Ptr,
+            TypeClass::Aggregate,
+        ]),
         "",
     ),
     row(
@@ -1347,6 +1471,11 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::I128,
             TypeClass::IntWide,
             TypeClass::Ptr,
+            TypeClass::Half,
+            TypeClass::BFloat,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
             TypeClass::Aggregate,
         ]),
         "",
@@ -1371,6 +1500,11 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::I128,
             TypeClass::IntWide,
             TypeClass::Ptr,
+            TypeClass::Half,
+            TypeClass::BFloat,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
             TypeClass::Aggregate,
         ]),
         "",
@@ -1405,33 +1539,45 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
 
 const MEM: [SupportRow; 3] = [
     row("mem:volatile", ON, ON, "a volatile `load`, `store`, `cmpxchg` or `atomicrmw`"),
-    row("mem:atomic-load", ON, todo(X64), "WP-074; `fp128` and vectors: `a64:atomic-type`"),
-    row("mem:atomic-store", ON, todo(X64), "WP-074; `fp128` and vectors: `a64:atomic-type`"),
+    row(
+        "mem:atomic-load",
+        ON,
+        ON,
+        "WP-074, WP-133; `fp128` and vectors: `a64:atomic-type`, `x64:atomic-type`; x86-64 \
+         `i128` without `+cx16`: `x64:atomic-libatomic`",
+    ),
+    row(
+        "mem:atomic-store",
+        ON,
+        ON,
+        "WP-074, WP-133; `fp128` and vectors: `a64:atomic-type`, `x64:atomic-type`; x86-64 \
+         `i128` without `+cx16`: `x64:atomic-libatomic`",
+    ),
 ];
 
 /// In `RmwOp::ALL` order.
 const ATOMICRMW: [SupportRow; RmwOp::ALL.len()] = [
-    row("atomicrmw:xchg", ON, todo(X64), "WP-074"),
-    row("atomicrmw:add", ON, todo(X64), "WP-074"),
-    row("atomicrmw:sub", ON, todo(X64), "WP-074"),
-    row("atomicrmw:and", ON, todo(X64), "WP-074"),
-    row("atomicrmw:nand", ON, todo(X64), "WP-074"),
-    row("atomicrmw:or", ON, todo(X64), "WP-074"),
-    row("atomicrmw:xor", ON, todo(X64), "WP-074"),
-    row("atomicrmw:max", ON, todo(X64), "WP-074"),
-    row("atomicrmw:min", ON, todo(X64), "WP-074"),
-    row("atomicrmw:umax", ON, todo(X64), "WP-074"),
-    row("atomicrmw:umin", ON, todo(X64), "WP-074"),
-    row("atomicrmw:fadd", ON, todo(X64), "WP-074"),
-    row("atomicrmw:fsub", ON, todo(X64), "WP-074"),
-    row("atomicrmw:fmax", ON, todo(X64), "WP-074"),
-    row("atomicrmw:fmin", ON, todo(X64), "WP-074"),
-    row("atomicrmw:uinc_wrap", ON, todo(X64), "WP-074"),
-    row("atomicrmw:udec_wrap", ON, todo(X64), "WP-074"),
-    row("atomicrmw:usub_cond", ON, todo(X64), "WP-074"),
-    row("atomicrmw:usub_sat", ON, todo(X64), "WP-074"),
-    row("atomicrmw:fmaximum", ON, todo(X64), "WP-074"),
-    row("atomicrmw:fminimum", ON, todo(X64), "WP-074"),
+    row("atomicrmw:xchg", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:add", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:sub", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:and", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:nand", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:or", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:xor", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:max", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:min", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:umax", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:umin", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:fadd", ON, ON, "WP-074, WP-133; x86-64 `half`: `x64:atomic-float-op`"),
+    row("atomicrmw:fsub", ON, ON, "WP-074, WP-133; x86-64 `half`: `x64:atomic-float-op`"),
+    row("atomicrmw:fmax", ON, todo(X64), "WP-074; x86-64: `x64:atomic-float-op` until WP-127"),
+    row("atomicrmw:fmin", ON, todo(X64), "WP-074; x86-64: `x64:atomic-float-op` until WP-127"),
+    row("atomicrmw:uinc_wrap", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:udec_wrap", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:usub_cond", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:usub_sat", ON, ON, "WP-074, WP-133"),
+    row("atomicrmw:fmaximum", ON, todo(X64), "WP-074; x86-64: `x64:atomic-float-op` until WP-127"),
+    row("atomicrmw:fminimum", ON, todo(X64), "WP-074; x86-64: `x64:atomic-float-op` until WP-127"),
 ];
 
 const CALL: [SupportRow; 4] = [
@@ -1445,7 +1591,7 @@ const CALL: [SupportRow; 4] = [
     row(
         "call:inline-asm-empty",
         ON,
-        todo(X64),
+        ON,
         "the callee is inline assembly whose template assembles to nothing (`spec/ir.md` §2.3)",
     ),
     row("call:variadic", ON, ON, "a call through a variadic function type"),
@@ -1551,164 +1697,199 @@ const fn const_op_index(op: ConstOp) -> usize {
 
 /// In `Intrinsic::ALL` order.
 const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
-    row("intrinsic:llvm.memcpy", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
-    row("intrinsic:llvm.memcpy.inline", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
-    row("intrinsic:llvm.memmove", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
-    row("intrinsic:llvm.memset", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
-    row("intrinsic:llvm.memset.inline", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
+    row(
+        "intrinsic:llvm.memcpy",
+        on(&[TypeClass::Ptr, TypeClass::Int]),
+        on(&[TypeClass::Ptr, TypeClass::Int]),
+        "",
+    ),
+    row(
+        "intrinsic:llvm.memcpy.inline",
+        on(&[TypeClass::Ptr, TypeClass::Int]),
+        on(&[TypeClass::Ptr, TypeClass::Int]),
+        "",
+    ),
+    row(
+        "intrinsic:llvm.memmove",
+        on(&[TypeClass::Ptr, TypeClass::Int]),
+        on(&[TypeClass::Ptr, TypeClass::Int]),
+        "",
+    ),
+    row(
+        "intrinsic:llvm.memset",
+        on(&[TypeClass::Ptr, TypeClass::Int]),
+        on(&[TypeClass::Ptr, TypeClass::Int]),
+        "",
+    ),
+    row(
+        "intrinsic:llvm.memset.inline",
+        on(&[TypeClass::Ptr, TypeClass::Int]),
+        on(&[TypeClass::Ptr, TypeClass::Int]),
+        "",
+    ),
     row("intrinsic:llvm.va_start", ON, ON, ""),
     row("intrinsic:llvm.va_end", ON, ON, ""),
     row("intrinsic:llvm.va_copy", ON, ON, ""),
     row("intrinsic:llvm.stacksave", ON, ON, ""),
     row("intrinsic:llvm.stackrestore", ON, ON, ""),
-    row("intrinsic:llvm.frameaddress", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
-    row("intrinsic:llvm.returnaddress", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
-    row("intrinsic:llvm.trap", ON, todo(X64), ""),
-    row("intrinsic:llvm.debugtrap", ON, todo(X64), ""),
-    row("intrinsic:llvm.ubsantrap", on(&[TypeClass::Int]), todo(X64), ""),
+    row(
+        "intrinsic:llvm.frameaddress",
+        on(&[TypeClass::Ptr, TypeClass::Int]),
+        on(&[TypeClass::Ptr, TypeClass::Int]),
+        "",
+    ),
+    row(
+        "intrinsic:llvm.returnaddress",
+        on(&[TypeClass::Ptr, TypeClass::Int]),
+        on(&[TypeClass::Ptr, TypeClass::Int]),
+        "",
+    ),
+    row("intrinsic:llvm.trap", ON, ON, ""),
+    row("intrinsic:llvm.debugtrap", ON, ON, ""),
+    row("intrinsic:llvm.ubsantrap", on(&[TypeClass::Int]), on(&[TypeClass::Int]), ""),
     row(
         "intrinsic:llvm.bswap",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "",
     ),
     row(
         "intrinsic:llvm.bitreverse",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "",
     ),
     row(
         "intrinsic:llvm.ctpop",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "",
     ),
     row(
         "intrinsic:llvm.ctlz",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "",
     ),
     row(
         "intrinsic:llvm.cttz",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "",
     ),
     row(
         "intrinsic:llvm.fshl",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "",
     ),
     row(
         "intrinsic:llvm.fshr",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "",
     ),
     row(
         "intrinsic:llvm.abs",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "",
     ),
     row(
         "intrinsic:llvm.smax",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "",
     ),
     row(
         "intrinsic:llvm.smin",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "",
     ),
     row(
         "intrinsic:llvm.umax",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "",
     ),
     row(
         "intrinsic:llvm.umin",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "",
     ),
     row(
         "intrinsic:llvm.scmp",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "",
     ),
     row(
         "intrinsic:llvm.ucmp",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "",
     ),
     a64("intrinsic:llvm.clmul", LATER, ""),
     row(
         "intrinsic:llvm.sadd.with.overflow",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "",
     ),
     row(
         "intrinsic:llvm.uadd.with.overflow",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "",
     ),
     row(
         "intrinsic:llvm.ssub.with.overflow",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "",
     ),
     row(
         "intrinsic:llvm.usub.with.overflow",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "",
     ),
     row(
         "intrinsic:llvm.smul.with.overflow",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "wider than 2048 bits refused (`a64:wide-mul-overflow`)",
     ),
     row(
         "intrinsic:llvm.umul.with.overflow",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
-        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
+        on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
         "wider than 2048 bits refused (`a64:wide-mul-overflow`)",
     ),
     row(
         "intrinsic:llvm.sadd.sat",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "",
     ),
     row(
         "intrinsic:llvm.uadd.sat",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "",
     ),
     row(
         "intrinsic:llvm.ssub.sat",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "",
     ),
     row(
         "intrinsic:llvm.usub.sat",
         on(&[TypeClass::Int, TypeClass::I128, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Int, TypeClass::I128]),
         "",
     ),
     row(
@@ -1720,7 +1901,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1732,7 +1913,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1744,7 +1925,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1756,7 +1937,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1768,7 +1949,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1780,7 +1961,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1792,7 +1973,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1804,7 +1985,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1816,7 +1997,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1828,7 +2009,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1840,7 +2021,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1852,7 +2033,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1864,7 +2045,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1876,7 +2057,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1888,7 +2069,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1900,7 +2081,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1912,7 +2093,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1924,7 +2105,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1936,7 +2117,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1948,7 +2129,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1960,7 +2141,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -1973,7 +2154,13 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Int,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::Int,
+        ]),
         "",
     ),
     row(
@@ -1986,7 +2173,13 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Int,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::Int,
+        ]),
         "",
     ),
     row(
@@ -1999,7 +2192,14 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Int,
             TypeClass::Aggregate,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::Int,
+            TypeClass::Aggregate,
+        ]),
         "",
     ),
     row(
@@ -2011,7 +2211,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -2023,7 +2223,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -2035,7 +2235,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -2047,7 +2247,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -2059,7 +2259,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -2071,7 +2271,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -2083,7 +2283,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -2095,7 +2295,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -2107,7 +2307,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -2119,7 +2319,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -2131,7 +2331,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -2143,7 +2343,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -2155,7 +2355,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -2167,7 +2367,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -2179,7 +2379,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -2191,7 +2391,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Fp128]),
         "",
     ),
     row(
@@ -2204,7 +2404,13 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Int,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::Int,
+        ]),
         "",
     ),
     row(
@@ -2217,7 +2423,13 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Int,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::Int,
+        ]),
         "",
     ),
     row(
@@ -2230,7 +2442,13 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Int,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::Int,
+        ]),
         "",
     ),
     row(
@@ -2243,7 +2461,13 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Int,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::Int,
+        ]),
         "",
     ),
     row(
@@ -2255,7 +2479,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Int,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Int]),
         "",
     ),
     row(
@@ -2267,7 +2491,7 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Int,
             TypeClass::Vector,
         ]),
-        todo(X64),
+        on(&[TypeClass::Half, TypeClass::Float, TypeClass::Double, TypeClass::Int]),
         "",
     ),
     row(
@@ -2279,26 +2503,42 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
             TypeClass::Fp128,
             TypeClass::Int,
         ]),
-        todo(X64),
+        on(&[
+            TypeClass::Half,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+            TypeClass::Int,
+        ]),
         "",
     ),
-    row("intrinsic:llvm.eh.typeid.for", on(&[TypeClass::Int, TypeClass::Ptr]), todo(X64), ""),
-    row("intrinsic:llvm.threadlocal.address", on(&[TypeClass::Ptr]), todo(X64), ""),
-    row("intrinsic:llvm.thread.pointer", on(&[TypeClass::Ptr]), todo(X64), ""),
-    row("intrinsic:llvm.prefetch", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
-    row("intrinsic:llvm.clear_cache", on(&[TypeClass::Ptr]), todo(X64), ""),
-    row("intrinsic:llvm.readcyclecounter", on(&[TypeClass::Int]), todo(X64), ""),
+    row(
+        "intrinsic:llvm.eh.typeid.for",
+        on(&[TypeClass::Int, TypeClass::Ptr]),
+        on(&[TypeClass::Int, TypeClass::Ptr]),
+        "",
+    ),
+    both("intrinsic:llvm.threadlocal.address", on(&[TypeClass::Ptr]), ""),
+    both("intrinsic:llvm.thread.pointer", on(&[TypeClass::Ptr]), ""),
+    row(
+        "intrinsic:llvm.prefetch",
+        on(&[TypeClass::Ptr, TypeClass::Int]),
+        on(&[TypeClass::Ptr, TypeClass::Int]),
+        "",
+    ),
+    row("intrinsic:llvm.clear_cache", on(&[TypeClass::Ptr]), on(&[TypeClass::Ptr]), ""),
+    row("intrinsic:llvm.readcyclecounter", on(&[TypeClass::Int]), on(&[TypeClass::Int]), ""),
     // WP-064: named registers; the target refuses a register it does not
     // read or write by name (`spec/codegen.md`).
     row("intrinsic:llvm.read_register", on(&[TypeClass::Int]), todo(X64), ""),
     row("intrinsic:llvm.read_volatile_register", on(&[TypeClass::Int]), todo(X64), ""),
     row("intrinsic:llvm.write_register", on(&[TypeClass::Int]), todo(X64), ""),
-    row("intrinsic:llvm.is.constant", ON, todo(X64), ""),
-    row("intrinsic:llvm.objectsize", on(&[TypeClass::Ptr, TypeClass::Int]), todo(X64), ""),
+    both("intrinsic:llvm.is.constant", ON, ""),
+    both("intrinsic:llvm.objectsize", on(&[TypeClass::Ptr, TypeClass::Int]), ""),
     row(
         "intrinsic:llvm.ptrmask",
         on(&[TypeClass::Ptr, TypeClass::Int, TypeClass::Vector]),
-        todo(X64),
+        on(&[TypeClass::Ptr, TypeClass::Int]),
         "",
     ),
     a64("intrinsic:llvm.load.relative", LATER, ""),
@@ -2483,8 +2723,18 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len()] = [
         todo(X64),
         "in a coroutine body; symmetric transfer in constant stack (WP-107)",
     ),
-    row("intrinsic:llvm.sshl.sat", on(&[TypeClass::Int]), todo(X64), "up to 64 bits (WP-084)"),
-    row("intrinsic:llvm.ushl.sat", on(&[TypeClass::Int]), todo(X64), "up to 64 bits (WP-084)"),
+    row(
+        "intrinsic:llvm.sshl.sat",
+        on(&[TypeClass::Int]),
+        on(&[TypeClass::Int]),
+        "up to 64 bits (WP-084)",
+    ),
+    row(
+        "intrinsic:llvm.ushl.sat",
+        on(&[TypeClass::Int]),
+        on(&[TypeClass::Int]),
+        "up to 64 bits (WP-084)",
+    ),
     row("intrinsic:llvm.aarch64.crc32b", on(&[TypeClass::Int]), never(A64_ONLY), ""),
     row("intrinsic:llvm.aarch64.crc32h", on(&[TypeClass::Int]), never(A64_ONLY), ""),
     row("intrinsic:llvm.aarch64.crc32w", on(&[TypeClass::Int]), never(A64_ONLY), ""),

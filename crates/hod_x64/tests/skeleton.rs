@@ -5,10 +5,11 @@
 //! `llvm-readelf` and `llvm-dwarfdump`, the CFI compared with design 0006
 //! §4 row by row; the x86-64 data layout; the refusals.
 //!
-//! The cross runner (`x86_64-linux-gnu-gcc` and `qemu-x86_64 -L
-//! /usr/x86_64-linux-gnu` on a non-x86 host) is `hod_obj`'s test helper,
-//! included by path; WP-025 (the shared link-and-run harness) replaces
-//! this `#[path]` include and [`programs`] with its own.
+//! The cross runner is WP-025's `Toolchain` (`spec/harness.md` "Cross
+//! runs"): the C driver, the three linkers and the emulated runner
+//! (`qemu-x86_64` with the baseline CPU model on a non-x86 host) come from
+//! `hod_testutil::Target::X86_64`, through `hod_obj`'s shared test helper
+//! included by path.
 
 #[path = "../../hod_obj/tests/common/linking.rs"]
 #[allow(dead_code, reason = "a shared helper: not every function is used here")]
@@ -272,11 +273,8 @@ fn data_layout_is_honoured() {
 /// Each group that has not landed refuses by its own name.
 #[test]
 fn groups_that_have_not_landed_refuse_by_name() {
-    for (body, name) in [
-        ("define void @f() {\n  fence seq_cst\n  ret void\n}\n", "x64:todo:atomic"),
-        // WP-125 lowers `sret`; an x87 result stays WP-131's.
-        ("define x86_fp80 @f() {\n  ret x86_fp80 0xK00000000000000000000\n}\n", "x64:todo:abi"),
-    ] {
-        assert_eq!(refusal(body), name, "{body}");
-    }
+    // WP-125 lowers `sret`; an `x86_fp80` result stays WP-131's
+    // (WP-140 places it in `st0`; `call::guard` refuses it).
+    let body = "define x86_fp80 @f() {\n  ret x86_fp80 0xK00000000000000000000\n}\n";
+    assert_eq!(refusal(body), "x64:todo:abi", "{body}");
 }

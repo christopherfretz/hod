@@ -114,7 +114,9 @@ fn the_matrices_are_the_table() {
 /// on x86-64, body on AArch64, body on x86-64)`. A flip of the
 /// matrix that changes one of these is a deliberate change of this
 /// table. `*` is "not checked here" (no row uses it since WP-066 pinned
-/// the AArch64 bodies again once every instruction group was in).
+/// the AArch64 bodies again once every instruction group was in); `+` is
+/// "the body is accepted" where an empty reason would read as "no body"
+/// (WP-140: the first x86-64 body accepted whole).
 const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 27] = [
     ("module:pic", "", "", "", ""),
     ("module:frame-pointer", "", "", "", ""),
@@ -122,7 +124,8 @@ const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 27] = [
     // WP-087: debug modules reach the DWARF writer on AArch64.
     ("debug:module-flags", "", "debug:module-flags", "", ""),
     ("debug:dwarf-version", "debug:dwarf-version", "debug:module-flags", "", ""),
-    ("debug:locations", "", "", "", "type:double"),
+    // WP-127: `type:double` no longer refuses an x86-64 body first.
+    ("debug:locations", "", "", "", "debug:locations"),
     ("global:function-declaration", "", "", "", ""),
     // WP-143: x86-64 module-level constructs.
     ("global:variable-definition", "", "", "", ""),
@@ -132,19 +135,20 @@ const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 27] = [
     ("tls:initial-exec", "", "", "", ""),
     ("comdat:any", "", "", "", ""),
     ("init:symbol", "", "", "", ""),
-    ("function:slots", "", "", "", "type:double"),
-    ("cc:fastcc", "", "", "", "cc:fastcc"),
+    ("function:slots", "", "", "", ""),
+    // WP-140: `fastcc` is `ccc` on x86-64 too.
+    ("cc:fastcc", "", "", "", "+"),
     ("attr:zeroext", "", "", "", "attr:zeroext"),
-    ("type:double", "", "", "", "type:double"),
-    ("inst:add", "", "", "", "type:double"),
-    ("mem:volatile", "", "", "", "type:double"),
-    ("atomicrmw:add", "", "", "", "type:double"),
-    ("call:indirect", "", "", "", "type:double"),
-    ("tail:musttail", "", "", "", "type:double"),
-    ("bundle:deopt", "", "", "bundle:deopt", "type:double"),
-    ("landingpad:catch", "", "", "", "type:double"),
-    ("operand:slot", "", "", "", "type:double"),
-    ("intrinsic:llvm.memcpy", "", "", "", "type:double"),
+    ("type:double", "", "", "", ""),
+    ("inst:add", "", "", "", ""),
+    ("mem:volatile", "", "", "", ""),
+    ("atomicrmw:add", "", "", "", ""),
+    ("call:indirect", "", "", "", ""),
+    ("tail:musttail", "", "", "", ""),
+    ("bundle:deopt", "", "", "bundle:deopt", "bundle:deopt"),
+    ("landingpad:catch", "", "", "", ""),
+    ("operand:slot", "", "", "", ""),
+    ("intrinsic:llvm.memcpy", "", "", "", ""),
 ];
 
 #[test]
@@ -161,6 +165,7 @@ fn shipped_refuses_with_the_expected_first_reason() {
             let a64 = arch == Arch::Aarch64;
             let module_reason = if a64 { a64_reason } else { x64_reason };
             let body_reason = if a64 { a64_body } else { x64_body };
+            let body_reason = if body_reason == "+" { "" } else { body_reason };
             let program = program_for(row, arch);
             let reason = |result: Result<(), Rejection>| {
                 result.err().map_or(String::new(), |rejection| rejection.construct.into_owned())
@@ -171,7 +176,8 @@ fn shipped_refuses_with_the_expected_first_reason() {
             if body_reason != "*" {
                 assert_eq!(found, body_reason, "{row} on {arch:?}");
             }
-            assert_eq!(program.bodies.is_empty(), x64_body.is_empty(), "{row}");
+            // A body reason needs a body.
+            assert!(!program.bodies.is_empty() || x64_body.is_empty(), "{row}");
         }
     }
 }
@@ -536,8 +542,8 @@ const A64_SUPPORTED_BODY: [&str; 16] = [
     "tail:musttail",
 ];
 
-/// The rows of `RICH_BODY` x86-64 supports (WP-116, WP-122, WP-123, WP-125).
-const X64_SUPPORTED_BODY: [&str; 15] = [
+/// The rows of `RICH_BODY` x86-64 supports (WP-116, WP-122, WP-123, WP-125, WP-127).
+const X64_SUPPORTED_BODY: [&str; 16] = [
     "cc:ccc",
     "function:parameters",
     "type:int",
@@ -555,6 +561,8 @@ const X64_SUPPORTED_BODY: [&str; 15] = [
     // WP-125.
     "inst:call",
     "tail:musttail",
+    // WP-127.
+    "type:double",
 ];
 
 /// What the shipped matrix finds in the rich body on `arch`.
@@ -776,4 +784,66 @@ fn inline_assembly_rows_of_wp_103() {
         assert_eq!(x64.supports(row), Some(false), "{row}");
         assert!(x64.clone().with(row).is_some(), "{row}: x86-64 may switch it on");
     }
+}
+
+// WP-128: the x86-64 intrinsics no other group takes, the overflow
+// intrinsics on register integers, and empty-template inline assembly.
+// `RICH_BODY` has none of them; the rows are checked here.
+#[test]
+fn intrinsic_rows_of_wp_128() {
+    let x64 = Support::shipped(Arch::X86_64);
+    for name in [
+        "memcpy",
+        "memcpy.inline",
+        "memmove",
+        "memset",
+        "memset.inline",
+        "frameaddress",
+        "returnaddress",
+        "trap",
+        "debugtrap",
+        "ubsantrap",
+        "bswap",
+        "bitreverse",
+        "ctpop",
+        "ctlz",
+        "cttz",
+        "fshl",
+        "fshr",
+        "abs",
+        "smax",
+        "smin",
+        "umax",
+        "umin",
+        "scmp",
+        "ucmp",
+        "sadd.with.overflow",
+        "uadd.with.overflow",
+        "ssub.with.overflow",
+        "usub.with.overflow",
+        "smul.with.overflow",
+        "umul.with.overflow",
+        "sadd.sat",
+        "uadd.sat",
+        "ssub.sat",
+        "usub.sat",
+        "eh.typeid.for",
+        "prefetch",
+        "clear_cache",
+        "readcyclecounter",
+        "ptrmask",
+        "sshl.sat",
+        "ushl.sat",
+    ] {
+        let row = format!("intrinsic:llvm.{name}");
+        assert_eq!(x64.supports(&row), Some(true), "{row}");
+    }
+    assert_eq!(x64.supports("call:inline-asm-empty"), Some(true));
+    // On since the target calls `intrinsic::begin` and
+    // `intrinsic::dropped` (the instructions `llc` deletes with the call).
+    for row in ["intrinsic:llvm.is.constant", "intrinsic:llvm.objectsize"] {
+        assert_eq!(x64.supports(row), Some(true), "{row}");
+    }
+    // Named registers stay with a later package.
+    assert_eq!(x64.supports("intrinsic:llvm.read_register"), Some(false));
 }

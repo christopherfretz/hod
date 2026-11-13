@@ -1906,6 +1906,98 @@ compressed as the object's debug sections are).
 Evidence: `crates/hod_a64/tests/dies_split.rs` (§8.8),
 `tests/debug/split.cpp` (L7, §8.4), `spec/landed/dwarf/WP-062.md`.
 
+### 6.16 Coroutine bodies (implemented, WP-108)
+
+`crates/hod_dwarf/src/coro.rs` (the locations), `crates/hod_cg/src/coro_debug.rs`
+(the rows). hod compiles a coroutine as one body and two stubs
+(`spec/codegen.md` §7.6), where `llc` sees `CoroSplit`'s clones. The
+debug information follows hod's shape, not the clones', by these rules.
+
+**R1. One subprogram, the body only.** The body's `DISubprogram` is
+written once, as for any function, and its `DW_AT_high_pc` ends where the
+stubs `F.resume` and `F.destroy` start (as the ELF symbol `F` does,
+§7.6): no DIE describes the stubs. A stub builds the machine frame
+before it writes the frame word, so before its ready point no location
+of R3 holds there, and a range that claimed them would show another
+frame's bytes (gdb's `break F` resolves the stub's symbol and stops at
+its entry). Described by no DIE, the stubs are what the `.await_suspend`
+wrappers are: code with line rows and CFI, named by their local
+`STT_FUNC` symbols (`count(int) [clone .resume]` in gdb), which is what
+`break F.resume` (lldb `-n _Z1Fi.resume`) resolves. There is no
+`F.cleanup`: hod never elides the frame's allocation. The unit's range
+covers the stubs.
+
+**R2. The stubs' rows.** Each stub gets two `is_stmt` rows at the
+subprogram's `scopeLine`: at its entry, and with `prologue_end` at the
+**ready point** (`FnCx::coro_stub_ready`, after the stub has set the mode
+and frame words), so a breakpoint on the stub stops past its prologue
+and a `step` into `handle.resume()` goes on into the body, where every
+variable reads correctly. The body's own rows after the first stub are
+dropped.
+
+**R3. Locations on the frame word.** A variable's location is one
+expression valid at every pc of the body, in the ramp and in a resumed
+activation, built on the **frame word** (the machine-stack word holding
+`coro.begin`'s result; the prologue stores 0 to it, `coro.begin` and the
+stubs the frame's address):
+
+| the variable's address | location |
+|---|---|
+| a heap slot or a value homed in the heap (`FrameRef::Coro`) | `DW_OP_fbreg word, DW_OP_deref, DW_OP_plus_uconst o` (LLVM's clone expression) |
+| copied at `coro.begin` (a shadowed slot or value, the promise) | `fbreg word, deref, dup, bra H, drop, fbreg s, skip E, H: plus_uconst o, E:`: the shadow while the word is 0, the heap after |
+| declared twice, on a machine-stack slot and on a heap slot (clang's parameter and its frame copy) | one DIE, the copied form above; the second declaration is dropped |
+| a parameter on a machine-stack slot whose frame copy is declared as an artificial variable of the same name and scope on a heap slot (kiln) | both DIEs the copied form, with the parameter's slot and the copy's heap offset: the body's `n` is the copy ([dcl.fct.def.coroutine]), and gdb reads a parameter through the variable of its name |
+| a parameter on a machine-stack slot only (`!coro.outside.frame`) | `fbreg mode, deref, bra Z, fbreg s, skip 1, Z: lit0`: the slot in the ramp, address 0 in a resumed activation (the debugger says it cannot read it, rather than showing bytes the ramp never wrote there) |
+| any other machine-stack slot or home | §6.4 (`fbreg`), valid in the activation that wrote it, as any `-O0` local |
+
+The word, not `x19`, is the base: it is 0 before `coro.begin`, so the
+expression holds in the prologue and before the frame exists, needs no
+location list, and does not depend on the register the code addresses
+the heap through. A value homed in the heap (`indirect`) adds the
+trailing `DW_OP_deref` of §6.4. The variable's `DIExpression` follows,
+as in §6.4.
+
+**Left out, with the reason** (no installed tool reads them; L7 shows
+the sessions without them):
+
+- `__coro_frame` and the `F.coro_frame_ty` structure type that
+  `CoroSplit` synthesizes: libstdc++ installs no coroutine pretty
+  printers; lldb 19's `std::coroutine_handle` formatter reads the
+  handle's resume and destroy pointers and the promise through the
+  handle's template argument, and both work on hod's programs;
+- the `__coro_resume_N` labels with `DW_AT_LLVM_coro_suspend_idx` that
+  `CoroSplit` adds to the clones (§6.14): pre-split IR has none, and hod
+  does not synthesize them;
+- one subprogram per clone (`linkageName` `F.resume`), R1; describing
+  the code of a stub after its ready point would take `DW_AT_ranges` on
+  the subprogram families (a follow-up), and gains only the variables at
+  that one stop.
+
+**Permitted differences** (L7 `pre-opt: checks`, `spec/harness.md`):
+the frames' names (`count(int) [clone .resume]` against `count`), the
+breakpoints' location counts, a stop in a stub showing no variables
+(R1) where `llc`'s stops in its clone at the re-entry line, the order of `info locals`, a variable
+`llc`'s clone has no DIE for (a ramp-only local is "optimized out" or
+absent there, unreadable or readable in hod's), and one more stop of
+`next`/`step` at the clone's return line when a suspend returns to the
+resumer (hod's suspend path is in line-0 rows and the debuggers step
+through it to the caller). The line comparison is not run on these
+tests: the clones' functions are not hod's.
+
+**Refusals.** `coro:debug-info` (WP-106) is lifted. The generic
+refusals of §6.4 still apply (a variable whose frame place the frame
+base does not reach is `debug:frame-place`).
+
+**Hooks** (one call each): `FnCx::coro_vars` in `finish_vars`
+(`crates/hod_cg/src/driver.rs`); `coro_ready` into the function's record
+(`driver.rs`, `record.rs`, `emit/mod.rs`); `stub_rows` after
+`function_rows` (`emit/lines.rs`); the target stores 0 to the frame word
+in the prologue and calls `coro_stub_ready` in each stub
+(`crates/hod_a64/src/coro_body.rs`, `spec/codegen.md` §7.6).
+
+Evidence: `crates/hod_a64/tests/coro_debug.rs`, `tests/debug/coroutine.cpp`
+(L7), `spec/landed/dwarf/WP-108.md`.
+
 ## 7. Speed and memory
 
 ### 7.1 Parallel emission and determinism

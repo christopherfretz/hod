@@ -160,6 +160,7 @@ fn add_functions(module: &Module, bodies: &[Body], plan: &mut UnitPlan<'_>, s: &
                     VarPlace::Frame(o) => LocalPlace::Frame(o),
                     VarPlace::FrameIndirect(o) => LocalPlace::FrameIndirect(o),
                     VarPlace::Label(o) => LocalPlace::Label(o),
+                    VarPlace::Coro(place) => LocalPlace::Coro(place),
                     VarPlace::Refused(name) => LocalPlace::Refused(name),
                     VarPlace::Slot(_) | VarPlace::Indirect(_) => {
                         LocalPlace::Refused("debug:frame-place")

@@ -7,7 +7,6 @@
 ; compared with llc in crates/hod_a64/tests/tail.rs.
 ;@ covers: spec/ir.md §5.5 intrinsics (sshl.sat, ushl.sat, readcyclecounter, is.constant); spec/codegen.md §5.5.1 (WP-084)
 ;@ tier: quick
-;@ unsupported(x86_64): *
 ;@ stdout: sat 48 48 48 0
 ;@ stdout: sat 12800 127 12800 0
 ;@ stdout: sat -192 -128 65535 4294967295

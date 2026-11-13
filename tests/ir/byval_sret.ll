@@ -5,7 +5,6 @@
 ; pointer, sret and byval of the same type in one call, and a 3-byte
 ; struct byval. The expected values are worked out in the comments.
 ;@ covers: spec/ir.md §5.3 parameter attributes (byval, sret)
-;@ unsupported(x86_64): *
 ;@ stdout: made: 3000000021 4 0 3 6 9 12 1.5
 ;@ stdout: sum 3000000058, after: 3000000021 12
 ;@ stdout: twice: 6000000042 8 0 6 12 18 24 3

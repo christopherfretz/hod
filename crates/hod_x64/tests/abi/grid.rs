@@ -566,7 +566,7 @@ pub fn run_cases(label: &str, cases: &[Case], seed: u64, tools: &Tools) -> Repor
 }
 
 /// The names the systematic grid's refused signatures have.
-const GRID_REFUSALS: [&str; 4] = ["abi:cc", "x64:mask-vector", "x64:nest", "x64:ret-x87-part"];
+const GRID_REFUSALS: [&str; 3] = ["abi:cc", "x64:mask-vector", "x64:nest"];
 
 /// Whether the whole grid runs: `HOD_ABI_GRID=full`.
 pub fn full() -> bool {

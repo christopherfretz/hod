@@ -16,6 +16,14 @@
 //! Each judged feature is one line of [`JUDGED`] with its reason; a group
 //! package that implements what a refused feature asks for moves it.
 //! The parsing is target-neutral and moves to `hod_cg` (WP-117).
+//!
+//! Two things a function's features decide besides instructions are
+//! [`of_function`]'s (`spec/codegen.md` §5.6.9): where a vector wider than
+//! 128 bits travels (AVX, `spec/abi-x64.md` §1.3), and whether the
+//! function may use the x87 unit (`-x87`, refused only for a function that
+//! has an `x86_fp80` value: [`check_function`]).
+
+use crate::abi;
 
 /// `+soft-float`: floating point in general registers, another ABI.
 pub const SOFT_FLOAT: &str = "attr:target-feature-soft-float";
@@ -23,6 +31,8 @@ pub const SOFT_FLOAT: &str = "attr:target-feature-soft-float";
 /// the SysV ABI use.
 pub const NO_SSE: &str = "attr:target-feature-no-sse";
 /// `-x87`: no x87 unit; `x86_fp80` would need a soft implementation.
+/// Refused in a function only when it has an `x86_fp80` value (`X64`'s
+/// `begin_function`), and always in `-mattr`, which reaches no function.
 pub const NO_X87: &str = "attr:target-feature-no-x87";
 /// `+retpoline*`: indirect branches through thunks, which hod does not
 /// emit.
@@ -102,12 +112,138 @@ const JUDGED: &[Judged] = &[
 
 /// Checks one feature string: items separated by `,`, each `+name` or
 /// `-name`; empty items are skipped (`-mattr` drops them, and LLVM's
-/// parser does).
+/// parser does). `-x87` is refused ([`NO_X87`]): this is the judgement of
+/// `-mattr`; a function's own string is [`check_function`]'s.
 ///
 /// # Errors
 /// The first item hod's code is not correct under, with its reason.
 pub fn check(features: &str) -> Result<(), Refused<'_>> {
     features.split(',').filter(|item| !item.is_empty()).try_for_each(check_one)
+}
+
+/// [`check`] for a function's `target-features`: `-x87` is accepted here,
+/// and refused as [`NO_X87`] by code generation only when the function
+/// has an `x86_fp80` value ([`FnFeatures::no_x87`]).
+///
+/// # Errors
+/// As [`check`].
+pub fn check_function(features: &str) -> Result<(), Refused<'_>> {
+    features.split(',').filter(|item| !item.is_empty() && *item != "-x87").try_for_each(check_one)
+}
+
+/// What a function's `target-cpu` and `target-features` decide besides
+/// the instructions LLVM may choose (`spec/codegen.md` §5.6.9).
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub struct FnFeatures {
+    /// Whether AVX and AVX-512 may be on: what `abi::assign` is given. A
+    /// feature hod cannot rule out counts as on, which refuses the
+    /// signatures it would change (`x64:wide-vector-abi`).
+    pub abi: abi::Features,
+    /// `-x87` is in force.
+    pub no_x87: bool,
+}
+
+/// CPUs (`target-cpu`, LLVM's names) without AVX: `llc` 19 and 22 pass a
+/// `<4 x double>` in two `xmm` for each.
+const CPUS_WITHOUT_AVX: &[&str] = &[
+    "",
+    "generic",
+    "x86-64",
+    "x86-64-v2",
+    "nocona",
+    "prescott",
+    "core2",
+    "penryn",
+    "nehalem",
+    "corei7",
+    "westmere",
+    "bonnell",
+    "atom",
+    "silvermont",
+    "slm",
+    "goldmont",
+    "goldmont-plus",
+    "tremont",
+    "k8",
+    "k8-sse3",
+    "amdfam10",
+    "barcelona",
+    "btver1",
+];
+
+/// CPUs with AVX and without AVX-512: `ymm` for a `<4 x double>`. Every
+/// other CPU, known to LLVM or not, may have AVX-512.
+const CPUS_WITHOUT_AVX512: &[&str] = &[
+    "x86-64-v3",
+    "sandybridge",
+    "corei7-avx",
+    "ivybridge",
+    "core-avx-i",
+    "haswell",
+    "core-avx2",
+    "broadwell",
+    "skylake",
+    "alderlake",
+    "raptorlake",
+    "meteorlake",
+    "gracemont",
+    "arrowlake",
+    "lunarlake",
+    "pantherlake",
+    "sierraforest",
+    "grandridge",
+    "clearwaterforest",
+    "btver2",
+    "bdver1",
+    "bdver2",
+    "bdver3",
+    "bdver4",
+    "znver1",
+    "znver2",
+    "znver3",
+];
+
+/// What a function compiled with `target-cpu` `cpu` and `target-features`
+/// `features` (either absent) may assume, as `llc` reads them: the CPU's
+/// features, then each item in order, `+name` turning on `name` and what
+/// it implies, `-name` turning off `name` and what implies it
+/// (`spec/codegen.md` §5.6.9). The caller's features decide every
+/// signature it meets, its own and each call's, a direct call to a
+/// function with other features included (`spec/abi-x64.md` §1.3).
+pub fn of_function(cpu: Option<&str>, features: Option<&str>) -> FnFeatures {
+    let cpu = cpu.unwrap_or("");
+    let (mut avx, mut avx512) = if CPUS_WITHOUT_AVX.contains(&cpu) {
+        (false, false)
+    } else {
+        (true, !CPUS_WITHOUT_AVX512.contains(&cpu))
+    };
+    let mut no_x87 = false;
+    for item in features.unwrap_or("").split(',') {
+        let (on, name) = match item.split_at_checked(1) {
+            Some(("+", name)) => (true, name),
+            Some(("-", name)) => (false, name),
+            _ => continue,
+        };
+        let is_avx512 = name.starts_with("avx512") || name.starts_with("avx10");
+        match (on, name) {
+            (_, "x87") => no_x87 = !on,
+            // What implies AVX-512, and AVX-512 itself.
+            (true, _) if is_avx512 => (avx, avx512) = (true, true),
+            // What implies AVX.
+            (true, "avx" | "avx2" | "fma" | "f16c" | "fma4" | "xop" | "vaes" | "vpclmulqdq") => {
+                avx = true;
+            }
+            (true, _) if name.starts_with("avx") => avx = true,
+            // What AVX implies.
+            (false, "sse" | "sse2" | "sse3" | "ssse3" | "sse4.1" | "sse4.2" | "avx") => {
+                (avx, avx512) = (false, false);
+            }
+            // What AVX-512 implies.
+            (false, "avx2" | "fma" | "f16c" | "avx512f") => avx512 = false,
+            _ => {}
+        }
+    }
+    FnFeatures { abi: abi::Features { avx, avx512 }, no_x87 }
 }
 
 /// One item of a feature string.
@@ -143,6 +279,34 @@ fn mitigation(name: &str) -> Option<&'static str> {
         _ if name.starts_with("lvi-") => LVI,
         _ => return None,
     })
+}
+
+/// Whether `ty` is or contains an `x86_fp80` (a function type: in its
+/// return or a parameter).
+pub fn has_x86_fp80(types: &hod_ir::TypeTable, ty: hod_ir::TypeId) -> bool {
+    use hod_ir::TypeKind;
+    match types.kind(ty) {
+        TypeKind::X86Fp80 => true,
+        TypeKind::Struct { fields, .. } => fields.iter().any(|&f| has_x86_fp80(types, f)),
+        TypeKind::Array { elem, .. } | TypeKind::Vector { elem, .. } => has_x86_fp80(types, elem),
+        TypeKind::Function { ret, params, .. } => {
+            has_x86_fp80(types, ret) || params.iter().any(|&p| has_x86_fp80(types, p))
+        }
+        _ => false,
+    }
+}
+
+/// Whether the function `body` has an `x86_fp80` value (§5.6.9): in its
+/// signature, or as the result or an operand of an instruction, at any
+/// depth of an aggregate. A slot of that type that is only addressed is
+/// memory, not a value.
+pub fn uses_x86_fp80(module: &hod_ir::Module, body: &hod_ir::Body) -> bool {
+    let types = &module.types;
+    has_x86_fp80(types, body.fn_type())
+        || body.insts().any(|inst| {
+            has_x86_fp80(types, inst.ty())
+                || inst.operands().iter().any(|&v| has_x86_fp80(types, body.value_type(module, v)))
+        })
 }
 
 #[cfg(test)]
@@ -201,6 +365,44 @@ mod tests {
         assert_eq!(reason("+SSE2"), Some(UNKNOWN));
         // An AArch64 feature is not an x86-64 one.
         assert_eq!(reason("+neon"), Some(UNKNOWN));
+    }
+
+    /// §5.6.9: `-x87` in a function's string is left to code generation;
+    /// in `-mattr` it stays refused.
+    #[test]
+    fn no_x87_is_judged_per_function() {
+        assert_eq!(check_function("+sse2,-x87"), Ok(()));
+        assert_eq!(reason("-x87"), Some(NO_X87));
+        assert_eq!(check_function("-x87,+soft-float").map_err(|r| r.reason), Err(SOFT_FLOAT));
+        assert!(of_function(None, Some("+sse2,-x87")).no_x87);
+        assert!(!of_function(None, Some("-x87,+x87")).no_x87);
+        assert!(!of_function(None, None).no_x87);
+    }
+
+    /// §5.6.9: the CPU, then the items in order, with their implications.
+    #[test]
+    fn features_that_decide_the_convention() {
+        let abi = |cpu: Option<&str>, features: &str| {
+            let f = of_function(cpu, Some(features)).abi;
+            (f.avx, f.avx512)
+        };
+        let base = Some("x86-64");
+        assert_eq!(abi(base, "+sse2,+x87"), (false, false));
+        assert_eq!(abi(None, ""), (false, false));
+        assert_eq!(abi(base, "+avx"), (true, false));
+        assert_eq!(abi(base, "+fma"), (true, false));
+        assert_eq!(abi(base, "+f16c"), (true, false));
+        assert_eq!(abi(base, "+avx2,-avx"), (false, false));
+        assert_eq!(abi(base, "-avx,+avx2"), (true, false));
+        assert_eq!(abi(base, "+avx,-sse4.2"), (false, false));
+        assert_eq!(abi(base, "+avx512f"), (true, true));
+        assert_eq!(abi(base, "+avx512f,-avx2"), (true, false));
+        assert_eq!(abi(Some("haswell"), ""), (true, false));
+        assert_eq!(abi(Some("haswell"), "-avx"), (false, false));
+        assert_eq!(abi(Some("skylake-avx512"), ""), (true, true));
+        // A CPU hod does not know may have anything.
+        assert_eq!(abi(Some("future-cpu"), ""), (true, true));
+        assert_eq!(abi(Some("future-cpu"), "-avx512f"), (true, false));
     }
 
     #[test]

@@ -3002,6 +3002,7 @@ of the file**, so that editing them moves no source line:
 | `cflags: <flags>` | after `-g -O0 -S -emit-llvm` |
 | `link: <flags>` | after the objects |
 | `tier: quick\|all` | default `all` |
+| `pre-opt: checks` | the IR before LLVM's passes (below); the sessions are judged by the checks |
 | `xfail(<scope>): <reason>`, `xfail: <reason>` | a known difference (below) |
 
 A scope is words naming front ends, linkers or debuggers (`lldb` is any
@@ -3013,6 +3014,18 @@ hod. Tests print no uninitialized value (stack contents differ between the
 programs), and a program with threads prints nothing (its output races
 the debugger's).
 
+**`pre-opt: checks`** (WP-108) is for what hod lowers itself and `llc`
+only after an IR pass, a coroutine (`spec/dwarf.md` §6.16): the front
+end also gets `-Xclang -disable-llvm-passes`, hod is given that IR, and
+`llc` is given it after `opt -passes='default<O0>'` (the `opt` beside
+that `llc`, as `irdiff`'s pre-opt tests). The programs then differ by
+design (`CoroSplit`'s clones), so the lines comparison is not run, and a
+session whose masked transcript differs from `llc`'s PASSes, with the
+detail `permitted: pre-opt checks`, when hod's transcript meets every
+check too; otherwise it FAILs with the first check it lacks. The checks
+are then the whole judgement of hod, so they name every value the test
+is about.
+
 ### What a test does
 
 Per unit (a test and a front end), in its own directory under
@@ -3020,7 +3033,9 @@ Per unit (a test and a front end), in its own directory under
 
 1. each module through the front end into IR (`-g -O0 -S -emit-llvm` and
    the `cflags`, run in the module's directory with its file name, so the
-   unit's name is the file's), then into an object by
+   unit's name is the file's; `pre-opt: checks` adds
+   `-Xclang -disable-llvm-passes` and runs `opt` before `llc`), then
+   into an object by
    `llc -O0 -global-isel=0 -fast-isel=0 -filetype=obj
    -relocation-model=pic` and by `hod --strict` with the same options and
    a coverage log. A front end or `llc` failure is an ERROR; hod
@@ -3039,7 +3054,8 @@ Per unit (a test and a front end), in its own directory under
    (the test's own directory, which has none). Such a test names only
    clang front ends: kiln++ records the absolute path of its output,
    which gdb does not look for beside the program;
-4. on the first linker, the lines comparison of `hod` against `llc`;
+4. on the first linker, the lines comparison of `hod` against `llc`
+   (not for `pre-opt: checks`);
 5. per debugger with a script: the session on `llc`'s program, then on
    each variant's. Each masked transcript is written beside its program
    as `<debugger>.txt`.
@@ -3085,7 +3101,7 @@ One record per session of a hod variant (and per failure before one):
 
 | outcome | when | run |
 |---|---|---|
-| PASS | the masked transcripts are equal | |
+| PASS | the masked transcripts are equal, or a permitted difference (below) | |
 | FAIL | they differ (the first differing line is the detail), hod declined or failed, hod's program did not link, hod's session timed out | fails |
 | XFAIL | a FAIL, or a crash on hod's program, that an `xfail` covers | |
 | XPASS | a PASS that an `xfail` covers: the directive is stale | fails |
@@ -3152,7 +3168,8 @@ number of lines, and every differing pair of lines is in a stop whose
 `frame #0:` line, equal but for the column of its ` at file:line:col`,
 `llc`'s column being that of a `call` or `invoke` at that line in the
 IR, or the source caret line (`^`) after such a line
-(`spec/dwarf.md` §5.7 `return-column`). Nothing else is permitted.
+(`spec/dwarf.md` §5.7 `return-column`). A `pre-opt: checks` test's
+sessions are judged by its checks (above). Nothing else is permitted.
 
 ### Results file
 

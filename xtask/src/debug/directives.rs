@@ -131,6 +131,9 @@ pub struct DebugTest {
     /// `link:`, given to the linker driver after the objects.
     pub link: Vec<String>,
     pub quick: bool,
+    /// `pre-opt: checks`: the IR before LLVM's passes, `opt` before
+    /// `llc`, the sessions judged by the checks (WP-108).
+    pub pre_opt: bool,
     pub gdb: Script,
     pub lldb: Script,
     pub xfails: Vec<Xfail>,
@@ -181,6 +184,7 @@ pub fn parse(path: &Path, source: &str) -> Result<DebugTest, String> {
         cflags: Vec::new(),
         link: Vec::new(),
         quick: false,
+        pre_opt: false,
         gdb: Script::default(),
         lldb: Script::default(),
         xfails: Vec::new(),
@@ -227,6 +231,12 @@ pub fn parse(path: &Path, source: &str) -> Result<DebugTest, String> {
                     "all" => false,
                     _ => return Err(at(format!("tier: '{value}' is not quick or all"))),
                 };
+            }
+            "pre-opt" => {
+                if value != "checks" {
+                    return Err(at(format!("pre-opt: '{value}' is not checks")));
+                }
+                test.pre_opt = true;
             }
             _ if key == "xfail" || key.starts_with("xfail(") => {
                 let scope = match key.strip_prefix("xfail") {
@@ -329,7 +339,7 @@ mod tests {
         let source = "//@ gdb: break main\n//@ gdb: run\n//@ gdb-check: Breakpoint 1\n\
                     //@ lldb: run\n//@ lldb-check: stop reason\n//@ module: b.cpp\n\
                     //@ objects: mixed\n//@ frontend: clang-22 kiln\n//@ cflags: -std=c++20 -DX\n\
-                    //@ link: -pthread\n//@ tier: quick\n//@ xfail(kiln, lldb): kiln: a reason\n\
+                    //@ link: -pthread\n//@ tier: quick\n//@ pre-opt: checks\n//@ xfail(kiln, lldb): kiln: a reason\n\
                     //@ xfail: everywhere\nint main() {}\n";
         std::fs::write(&main, source).unwrap();
         let test = parse(&main, source).unwrap();
@@ -340,6 +350,7 @@ mod tests {
         assert_eq!(test.cflags, vec!["-std=c++20", "-DX"]);
         assert_eq!(test.link, vec!["-pthread"]);
         assert!(test.quick);
+        assert!(test.pre_opt);
         assert_eq!(test.gdb.commands, vec!["break main", "run"]);
         assert_eq!(test.gdb.checks, vec!["Breakpoint 1"]);
         assert_eq!(test.lldb.checks, vec!["stop reason"]);
@@ -364,6 +375,7 @@ mod tests {
         refused("//@ gdb: run\n//@ xfail:\n", "needs a reason");
         refused("//@ gdb: run\n//@ frontend: gcc\n", "unknown front end 'gcc'");
         refused("//@ gdb run\n", "no ':'");
+        refused("//@ gdb: run\n//@ pre-opt: yes\n", "is not checks");
         let error = parse(Path::new("t.c"), "//@ gdb: run\n//@ frontend: kiln\n").unwrap_err();
         assert!(error.contains("no front end"), "{error}");
     }

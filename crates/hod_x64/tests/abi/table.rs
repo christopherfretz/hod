@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
 
 use hod_cg::abi::{Assignment, Part, PartKind, Place, RetMemory, VaInfo};
 use hod_ir::CallConv;
-use hod_x64::abi::{
-    self, Features, INDIRECT_RESULT, RET_X87_PART, RETURNS_ADDRESS, assign, cc_is_c,
-};
+use hod_mc_x64::{Reg, Xmm};
+use hod_x64::abi::{Features, INDIRECT_RESULT, RETURNS_ADDRESS, assign, cc_is_c};
+use hod_x64::reg;
 
 use crate::sigs::{Attr, Case, assumed_bits, byval, p, pa, produced_bits, table};
 use crate::ty::{I1, I8, I16, I32, I64, I128, Ty, arr, st, vec};
@@ -20,7 +20,7 @@ const RDI: u8 = 7;
 const ARGS: [u8; 6] = [RDI, 6, RDX, RCX, 8, 9];
 
 fn g(n: u8) -> Place {
-    Place::Reg(abi::gpr(n))
+    Place::Reg(reg::gpr(Reg::new(n).expect("a general register")))
 }
 
 /// Argument register `n` (`rdi` 0 … `r9` 5).
@@ -29,11 +29,11 @@ fn a(n: usize) -> Place {
 }
 
 fn x(n: u8) -> Place {
-    Place::Reg(abi::xmm(n))
+    Place::Reg(reg::xmm(Xmm::new(n).expect("a vector register")))
 }
 
 fn st87(n: u8) -> Place {
-    Place::Reg(abi::st(n))
+    Place::Reg(reg::st(n))
 }
 
 fn s(offset: u32) -> Place {
@@ -98,7 +98,7 @@ impl Example {
             .args
             .iter()
             .filter_map(|part| match part.place {
-                Place::Reg(reg) if abi::is_xmm(reg) => Some(abi::number(reg)),
+                Place::Reg(r) if reg::is_fpr(r) => Some(reg::number(r)),
                 _ => None,
             })
             .collect();
@@ -401,16 +401,32 @@ fn returns() {
         example(ret(vec(f, 6)), vec![], 0).memory(),
         example(ret(arr(I128, 2)), vec![], 0).memory(),
     ]);
-    // §5.1: a `float` or `double` LLVM returns in `st0`/`st1`.
-    let mut types = table();
-    for ty in [
-        st(&[d.clone(), d.clone(), d.clone()]),
-        vec(d.clone(), 3),
-        st(&[I8, d.clone(), d.clone(), Ty::Float]),
-    ] {
-        let case = ret(ty);
-        assert_eq!(case.assign(&mut types), Err(RET_X87_PART), "`{}`", case.text());
-    }
+    // §5.1: a `float` or `double` LLVM returns in `st0`/`st1`, converted
+    // to the x87 format there; `X64::assign` refuses it until WP-131.
+    check(vec![
+        example(ret(st(&[d.clone(), d.clone(), d.clone()])), vec![], 0).ret(vec![
+            val(0, 0, 8, x(0)),
+            val(0, 8, 8, x(1)),
+            val(0, 16, 8, st87(0)),
+        ]),
+        example(ret(vec(d.clone(), 3)), vec![], 0).ret(vec![
+            val(0, 0, 8, x(0)),
+            val(0, 8, 8, x(1)),
+            val(0, 16, 8, st87(0)),
+        ]),
+        example(ret(st(&[I8, d.clone(), d.clone(), Ty::Float])), vec![], 0).ret(vec![
+            val(0, 0, 1, g(RAX)),
+            val(0, 8, 8, x(0)),
+            val(0, 16, 8, x(1)),
+            val(0, 24, 4, st87(0)),
+        ]),
+        example(ret(st(&[Ty::Float, Ty::Float, Ty::Float, Ty::Float])), vec![], 0).ret(vec![
+            val(0, 0, 4, x(0)),
+            val(0, 4, 4, x(1)),
+            val(0, 8, 4, st87(0)),
+            val(0, 12, 4, st87(1)),
+        ]),
+    ]);
 }
 
 /// `spec/abi-x64.md` §6: `sret` an ordinary pointer handed back in
@@ -497,16 +513,17 @@ fn conventions() {
     let three = Case::of(&[]).ret(st(&[Ty::Double, Ty::Float, Ty::Double]));
     let fast = three.clone().cc(CallConv::FAST).assign(&mut types).expect("fastcc");
     let places: Vec<Place> = fast.ret.iter().map(|part| part.place).collect();
-    assert_eq!(places, [0, 1, 2].map(|n| Place::Reg(abi::xmm(n))));
-    let refused = three.cc(CallConv::C).assign(&mut types).expect_err("ccc");
-    assert_eq!(refused, "x64:ret-x87-part");
+    assert_eq!(places, [0, 1, 2].map(x));
+    let c = three.cc(CallConv::C).assign(&mut types).expect("ccc");
+    let places: Vec<Place> = c.ret.iter().map(|part| part.place).collect();
+    assert_eq!(places, [x(0), x(1), st87(0)]);
 }
 
 /// `spec/abi-x64.md` §7: the two tables, row by row.
 #[test]
 fn extension_tables() {
     type Row = (u32, Option<bool>, bool, (bool, u32));
-    let reg = Place::Reg(abi::gpr(RDI));
+    let rdi = g(RDI);
     let stack = Place::Stack(0);
     // (bits, ext, ret, extended to): `(false, bits)` when nothing is
     // owed.
@@ -531,7 +548,7 @@ fn extension_tables() {
     for (bits, ext, ret, want) in rows {
         let what = format!("i{bits} {ext:?} ret {ret}");
         assert_eq!(produced_bits(bits, ext, ret).unwrap_or((false, bits)), want, "{what}");
-        assert_eq!(assumed_bits(bits, ext, ret, reg), want, "{what}, register");
+        assert_eq!(assumed_bits(bits, ext, ret, rdi), want, "{what}, register");
         assert_eq!(assumed_bits(bits, ext, ret, stack), want, "{what}, stack");
     }
 }
@@ -553,10 +570,10 @@ fn output_is_reused() {
     assert_eq!(out, Assignment::default());
 }
 
-/// `spec/abi-x64.md` §8.6: DWARF register numbers.
+/// `spec/abi-x64.md` §8.6: DWARF register numbers (`hod_x64::reg`).
 #[test]
 fn dwarf_numbers() {
-    use hod_x64::abi::{dwarf_number, gpr, st as x87, xmm};
+    let gpr = |n: u8| reg::gpr(Reg::new(n).expect("a general register"));
     // psABI figure 3.36, by name.
     let named = [
         ("rax", 0, 0),
@@ -569,16 +586,15 @@ fn dwarf_numbers() {
         ("rsp", 4, 7),
     ];
     for (name, encoding, dwarf) in named {
-        assert_eq!(dwarf_number(gpr(encoding)), Some(dwarf), "{name}");
+        assert_eq!(reg::dwarf(gpr(encoding)), dwarf, "{name}");
     }
     for n in 8..16 {
-        assert_eq!(dwarf_number(gpr(n)), Some(u16::from(n)), "r{n}");
+        assert_eq!(reg::dwarf(gpr(n)), u16::from(n), "r{n}");
     }
-    for n in 0..16 {
-        assert_eq!(dwarf_number(xmm(n)), Some(17 + u16::from(n)), "xmm{n}");
+    for x in Xmm::ALL {
+        assert_eq!(reg::dwarf(reg::xmm(x)), 17 + u16::from(x.code()), "{x:?}");
     }
     for n in 0..8 {
-        assert_eq!(dwarf_number(x87(n)), Some(33 + u16::from(n)), "st{n}");
+        assert_eq!(reg::dwarf(reg::st(n)), 33 + u16::from(n), "st{n}");
     }
-    assert_eq!(dwarf_number(hod_cg::PReg::new(40)), None);
 }

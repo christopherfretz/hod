@@ -569,8 +569,8 @@ fn compares_fuse_into_select_and_br() {
 }
 
 /// What the group does not lower, by name, one construct per program:
-/// a conversion between `bfloat` and `fp128`; a vector `fadd`
-/// (WP-132's).
+/// a conversion between `bfloat` and `fp128` (vectors are WP-132's,
+/// `tests/vector.rs`).
 #[test]
 fn what_is_not_lowered_is_refused_by_name() {
     for (text, name) in [
@@ -581,11 +581,6 @@ fn what_is_not_lowered_is_refused_by_name() {
         (
             "define fp128 @f(bfloat %a) {\n  %r = fpext bfloat %a to fp128\n  ret fp128 %r\n}\n",
             hod_x64::float::BFLOAT_FP128,
-        ),
-        (
-            "define <4 x float> @f(<4 x float> %a) {\n  %r = fadd <4 x float> %a, %a\n  \
-             ret <4 x float> %r\n}\n",
-            hod_x64::vector::VECTOR,
         ),
     ] {
         let (m, bodies) = parse(&format!("{}{text}", ll_header()));

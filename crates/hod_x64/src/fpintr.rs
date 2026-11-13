@@ -209,6 +209,9 @@ pub fn intrinsic<'a>(
     args: &'a [Value],
 ) -> CgResult<()> {
     use Intrinsic as I;
+    if let Some(done) = crate::lanes::intrinsic(cx, inst, which, args) {
+        return done;
+    }
     let Some(&first) = args.first() else { return unsupported(INTRINSIC) };
     let f = scalar(cx, value_ty(cx, first))?;
     deferred_first(cx, inst, None)?;

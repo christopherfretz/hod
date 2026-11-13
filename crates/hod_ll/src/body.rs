@@ -630,6 +630,16 @@ impl<'a, L: Layering> Fx<'_, 'a, '_, L> {
     /// The value the local name `token` stands for, used with type `ty`:
     /// a placeholder if it is not defined yet.
     pub(crate) fn local_value(&mut self, token: Token, ty: TypeId) -> PResult<Value> {
+        // The common case first: `%42`, defined already with this type.
+        // Anything else takes the general path, which finds the same.
+        if token.kind == Tok::LocalId
+            && let Some(number) = parse_u32(&self.p.tok_text(token)[1..])
+            && let Some(&(Local::Value(value, has) | Local::Forward(value, has))) =
+                self.s.nums.get(number as usize)
+            && has == ty
+        {
+            return Ok(value);
+        }
         let key = self.key(token)?;
         match self.get(&key) {
             Local::Value(value, has) | Local::Forward(value, has) if has == ty => Ok(value),

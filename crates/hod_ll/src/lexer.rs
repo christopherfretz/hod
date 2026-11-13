@@ -198,6 +198,42 @@ pub struct Lexer<'a> {
     /// token.
     run_start: usize,
     run_end: usize,
+    /// Tokens already lexed by another lexer over the same source, each
+    /// with the offset it was looked for at, in order of that offset
+    /// (`spec/ll.md` §2.8): a token is a function of the source and that
+    /// offset alone, so one looked for at the same offset is the same.
+    replay: Vec<Replayed>,
+    /// The next entry of `replay` that may still be wanted.
+    replay_at: usize,
+    /// The offset that entry was looked for at; `usize::MAX` when there
+    /// is none, so the test per token is one compare.
+    replay_from: usize,
+}
+
+/// A token and the offset its lexer looked for it at.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Replayed {
+    from: u32,
+    token: Token,
+}
+
+/// A record of tokens to replay ([`Lexer::replay`]): what [`Lexer::record`]
+/// gives and what it is filled by.
+#[derive(Debug, Default)]
+pub(crate) struct Recording(Vec<Replayed>);
+
+impl Recording {
+    /// The most tokens kept, 16 bytes each: past them a scan goes on
+    /// unrecorded and those tokens are lexed again.
+    pub(crate) const MAX: usize = 1 << 16;
+
+    /// Keeps `token`, looked for at `from`, while there is room.
+    #[inline]
+    pub(crate) fn push(&mut self, from: usize, token: Token) {
+        if self.0.len() < Self::MAX {
+            self.0.push(Replayed { from: from as u32, token });
+        }
+    }
 }
 
 impl<'a> Lexer<'a> {
@@ -206,7 +242,71 @@ impl<'a> Lexer<'a> {
     pub fn new(src: &'a [u8]) -> Lexer<'a> {
         let full = src;
         let src = if src.len() > MAX_SOURCE_BYTES { &src[..0] } else { src };
-        Lexer { src, full, pos: 0, error: "", run_start: usize::MAX, run_end: 0 }
+        Lexer {
+            src,
+            full,
+            pos: 0,
+            error: "",
+            run_start: usize::MAX,
+            run_end: 0,
+            replay: Vec::new(),
+            replay_at: 0,
+            replay_from: usize::MAX,
+        }
+    }
+
+    /// Takes the tokens left to replay, emptied, to be filled again: the
+    /// storage goes from one scan to the next.
+    pub(crate) fn record(&mut self) -> Recording {
+        let mut tokens = std::mem::take(&mut self.replay);
+        tokens.clear();
+        self.replay_at = 0;
+        self.replay_from = usize::MAX;
+        Recording(tokens)
+    }
+
+    /// Keeps the storage of `recording` for the next [`Lexer::record`],
+    /// replaying none of it.
+    pub(crate) fn reuse(&mut self, recording: Recording) {
+        let mut tokens = recording.0;
+        tokens.clear();
+        self.replay = tokens;
+        self.replay_at = 0;
+        self.replay_from = usize::MAX;
+    }
+
+    /// From now on a token looked for at an offset `recording` has one
+    /// for is that one, not lexed again. `recording` must come from a
+    /// lexer over the same source, every token it holds be neither
+    /// [`Tok::Eof`] nor [`Tok::Error`], and their offsets increase.
+    pub(crate) fn replay(&mut self, recording: Recording) {
+        debug_assert!(recording.0.windows(2).all(|pair| pair[0].from < pair[1].from));
+        self.replay = recording.0;
+        self.replay_at = 0;
+        self.replay_from = self.replay.first().map_or(usize::MAX, |entry| entry.from as usize);
+    }
+
+    /// The recorded token looked for at `pos`, if there is one; skips the
+    /// entries behind `pos`, which a lexer that goes forward never wants.
+    #[inline]
+    fn replayed(&mut self) -> Option<Token> {
+        while let Some(entry) = self.replay.get(self.replay_at) {
+            let from = entry.from as usize;
+            if from > self.pos {
+                self.replay_from = from;
+                return None;
+            }
+            self.replay_at += 1;
+            if from == self.pos {
+                let token = entry.token;
+                self.replay_from =
+                    self.replay.get(self.replay_at).map_or(usize::MAX, |next| next.from as usize);
+                self.pos = token.end as usize;
+                return Some(token);
+            }
+        }
+        self.replay_from = usize::MAX;
+        None
     }
 
     /// The source.
@@ -333,6 +433,31 @@ impl<'a> Lexer<'a> {
     /// [`Tok::Error`] token is at least one byte, so a caller that goes on
     /// makes progress.
     pub fn next_token(&mut self) -> Token {
+        // A tail call either way, so that lexing needs no frame here.
+        if self.pos >= self.replay_from {
+            return self.replay_or_lex();
+        }
+        self.lex()
+    }
+
+    /// The recorded token at `pos`, or the one lexed there.
+    #[inline(never)]
+    fn replay_or_lex(&mut self) -> Token {
+        match self.replayed() {
+            Some(token) => token,
+            None => self.lex_out_of_line(),
+        }
+    }
+
+    #[inline(never)]
+    fn lex_out_of_line(&mut self) -> Token {
+        self.lex()
+    }
+
+    /// The token at `pos`, lexed.
+    #[allow(clippy::inline_always)] // Measured: `next_token` is this (WP-168).
+    #[inline(always)]
+    fn lex(&mut self) -> Token {
         let start = match self.skip_blank() {
             Ok(start) => start,
             Err(token) => return token,
@@ -947,6 +1072,49 @@ mod tests {
             }
         }
         assert!(cases > 10_000);
+    }
+
+    /// §2.8: a lexer that replays the tokens another lexer recorded from
+    /// some offsets on gives the tokens it would have lexed, whatever
+    /// the recording skipped and wherever the replaying lexer moves.
+    #[test]
+    fn replayed_tokens_are_the_lexed_ones() {
+        let text = b"entry:\n  %1 = call i32 @f(i32 %x, ptr \"q\") ; c\n  br label %next\n\
+                     next: ; preds\n  %y = add nuw i32 %1, -7\n  ret i32 %y\n}\n";
+        let plain: Vec<(usize, Token)> = {
+            let mut lexer = Lexer::new(text);
+            std::iter::from_fn(|| {
+                let from = lexer.pos();
+                let token = lexer.next_token();
+                (token.kind != Tok::Eof).then_some((from, token))
+            })
+            .collect()
+        };
+        // Record every other token from the third on, as a scan that skips
+        // some does.
+        for skip in 1..4 {
+            let mut scan = Lexer::new(text);
+            let mut recording = Recording::default();
+            for (n, &(from, _)) in plain.iter().enumerate().skip(2) {
+                scan.set_pos(from);
+                let token = scan.next_token();
+                if n % skip == 0 {
+                    recording.push(from, token);
+                }
+            }
+            let mut lexer = Lexer::new(text);
+            lexer.replay(recording);
+            for &(from, token) in &plain {
+                assert_eq!(lexer.pos(), from);
+                assert_eq!(lexer.next_token(), token);
+            }
+            assert_eq!(lexer.next_token().kind, Tok::Eof);
+            // Moving back and forth: every token is still the one lexed.
+            for &(from, token) in plain.iter().rev().chain(plain.iter().step_by(3)) {
+                lexer.set_pos(from);
+                assert_eq!(lexer.next_token(), token);
+            }
+        }
     }
 
     /// §2.7: escapes.

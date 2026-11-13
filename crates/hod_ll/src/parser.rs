@@ -14,7 +14,7 @@ use crate::debug::{DebugMap, DebugScratch};
 use crate::error::{LlErrorKind, PResult, fail, ir_fail};
 use crate::index::{Index, scan};
 use crate::kw::Kw;
-use crate::lexer::{Lexer, MAX_SOURCE_BYTES, Tok, Token, unescape};
+use crate::lexer::{Lexer, MAX_SOURCE_BYTES, Recording, Tok, Token, unescape};
 use crate::meta::{MdRef, MetadataIndex, Upgrade};
 use crate::names::NameMap;
 use crate::skip::skip_group;
@@ -119,6 +119,7 @@ pub(crate) struct Scratch {
     pub defined: Option<HashMap<LabelKey, usize>>,
     pub labels: HashMap<usize, BlockLabels>,
     pub by_sym: Vec<(u32, u32)>,
+    pub recording: Recording,
 }
 
 /// Maps a refusal of `hod_ir` to a failure at `at`.
@@ -189,9 +190,11 @@ impl<'a, 'm, L: Layering> Parser<'a, 'm, L> {
         text: Option<&'m ModuleText<'a>>,
         scratch: Scratch,
     ) -> Parser<'a, 'm, L> {
+        let mut lx = Lexer::new(src);
+        lx.reuse(scratch.recording);
         Parser {
             src,
-            lx: Lexer::new(src),
+            lx,
             tok: Token { kind: Tok::Eof, kw: Kw::Other, start: 0, end: 0 },
             module,
             index,
@@ -246,6 +249,7 @@ impl<'a, 'm, L: Layering> Parser<'a, 'm, L> {
             defined: self.defined,
             labels: self.labels,
             by_sym: self.by_sym,
+            recording: self.lx.record(),
         }
     }
 

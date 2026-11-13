@@ -18,7 +18,7 @@ use crate::debug::{Handle, INVALID};
 use crate::error::{LlErrorKind, PResult, fail, ir_fail};
 use crate::index::{Index, parse_u32};
 use crate::kw::Kw;
-use crate::lexer::{Lexer, Tok, Token, unescape};
+use crate::lexer::{Lexer, Recording, Tok, Token, unescape};
 use crate::meta::{MdKind, MdRef};
 use crate::names::hash;
 use crate::parser::{Parser, Scratch, ir};
@@ -792,20 +792,30 @@ impl<'a, L: Layering> Fx<'_, 'a, '_, L> {
     /// Puts every label from the current statement to the end of the body
     /// in the tables, with the ordinal of its block: a block has exactly
     /// one terminator, so the ordinal is the number of terminators before
-    /// the label (`spec/ll.md` §11.3).
+    /// the label (`spec/ll.md` §11.3). The tokens it lexes are the ones
+    /// the parse is about to look for: the parse replays them instead of
+    /// lexing them again (§2.8).
     fn scan_labels(&mut self) {
         self.scanned = true;
+        let mut recording = self.p.lx.record();
+        self.scan_labels_into(&mut recording);
+        self.p.lx.replay(recording);
+    }
+
+    /// [`Fx::scan_labels`], keeping the tokens it lexes in `recording`.
+    fn scan_labels_into(&mut self, recording: &mut Recording) {
         let src = self.p.src;
         let mut lexer = Lexer::new(src);
         lexer.set_pos(self.stmt as usize);
         let mut ordinal = self.blocks.saturating_sub(1);
         loop {
+            let from = lexer.pos();
             let token = lexer.next_token();
-            if token.start >= self.end {
+            if token.start >= self.end || matches!(token.kind, Tok::Eof | Tok::Error) {
                 return;
             }
+            recording.push(from, token);
             match token.kind {
-                Tok::Eof | Tok::Error => return,
                 // Nothing in parentheses is a label or a terminator.
                 Tok::LParen => match skip_group::<b'(', b')'>(src, token.end as usize) {
                     Ok(end) => lexer.set_pos(end),

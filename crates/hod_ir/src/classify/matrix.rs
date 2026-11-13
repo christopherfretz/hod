@@ -1124,13 +1124,15 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         on(&[
             TypeClass::Int,
             TypeClass::I128,
+            TypeClass::IntWide,
             TypeClass::Half,
             TypeClass::Float,
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::BFloat,
         ]),
-        "",
+        "an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the \
+         target (`a64:wide-fp-cast`, `x64:wide-fp-cast`)",
     ),
     row(
         "inst:fptosi",
@@ -1148,13 +1150,15 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         on(&[
             TypeClass::Int,
             TypeClass::I128,
+            TypeClass::IntWide,
             TypeClass::Half,
             TypeClass::Float,
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::BFloat,
         ]),
-        "",
+        "an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the \
+         target (`a64:wide-fp-cast`, `x64:wide-fp-cast`)",
     ),
     row(
         "inst:uitofp",
@@ -1172,13 +1176,15 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         on(&[
             TypeClass::Int,
             TypeClass::I128,
+            TypeClass::IntWide,
             TypeClass::Half,
             TypeClass::Float,
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::BFloat,
         ]),
-        "",
+        "an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the \
+         target (`a64:wide-fp-cast`, `x64:wide-fp-cast`)",
     ),
     row(
         "inst:sitofp",
@@ -1196,13 +1202,15 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
         on(&[
             TypeClass::Int,
             TypeClass::I128,
+            TypeClass::IntWide,
             TypeClass::Half,
             TypeClass::Float,
             TypeClass::Double,
             TypeClass::Fp128,
             TypeClass::BFloat,
         ]),
-        "",
+        "an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the \
+         target (`a64:wide-fp-cast`, `x64:wide-fp-cast`)",
     ),
     row(
         "inst:ptrtoint",
@@ -1382,9 +1390,14 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::I128,
             TypeClass::IntWide,
             TypeClass::Ptr,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Half,
+            TypeClass::Fp128,
             TypeClass::Aggregate,
+            TypeClass::BFloat,
         ]),
-        "",
+        "x86-64: floating-point members with WP-144; `x86_fp80` with WP-131",
     ),
     row(
         "inst:insertvalue",
@@ -1406,9 +1419,14 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::I128,
             TypeClass::IntWide,
             TypeClass::Ptr,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Half,
+            TypeClass::Fp128,
             TypeClass::Aggregate,
+            TypeClass::BFloat,
         ]),
-        "",
+        "x86-64: floating-point members with WP-144; `x86_fp80` with WP-131",
     ),
     row(
         "inst:extractelement",

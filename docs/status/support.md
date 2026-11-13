@@ -347,10 +347,10 @@ Instructions.
 | `inst:sext` | supported (int, i128, int-wide, vector) | supported (int, i128, int-wide) |  |
 | `inst:fptrunc` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128) |  |
 | `inst:fpext` | supported (half, bfloat, float, double, fp128, vector) | supported (half, bfloat, float, double, fp128) |  |
-| `inst:fptoui` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, half, bfloat, float, double, fp128) |  |
-| `inst:fptosi` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, half, bfloat, float, double, fp128) |  |
-| `inst:uitofp` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, half, bfloat, float, double, fp128) |  |
-| `inst:sitofp` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, half, bfloat, float, double, fp128) |  |
+| `inst:fptoui` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, int-wide, half, bfloat, float, double, fp128) | an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the target (`a64:wide-fp-cast`, `x64:wide-fp-cast`) |
+| `inst:fptosi` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, int-wide, half, bfloat, float, double, fp128) | an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the target (`a64:wide-fp-cast`, `x64:wide-fp-cast`) |
+| `inst:uitofp` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, int-wide, half, bfloat, float, double, fp128) | an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the target (`a64:wide-fp-cast`, `x64:wide-fp-cast`) |
+| `inst:sitofp` | supported (int, i128, int-wide, half, bfloat, float, double, fp128, vector) | supported (int, i128, int-wide, half, bfloat, float, double, fp128) | an integer wider than 128 bits, or one wider than 64 with `bfloat`, is refused by the target (`a64:wide-fp-cast`, `x64:wide-fp-cast`) |
 | `inst:ptrtoint` | supported (int, i128, int-wide, ptr, vector) | supported (int, i128, int-wide, ptr) |  |
 | `inst:ptrtoaddr` | supported (int, i128, int-wide, ptr, vector) | supported (int, i128, int-wide, ptr) |  |
 | `inst:inttoptr` | supported (int, i128, int-wide, ptr, vector) | supported (int, i128, int-wide, ptr) |  |
@@ -363,8 +363,8 @@ Instructions.
 | `inst:cmpxchg` | supported (int, i128, ptr, aggregate) | supported (int, ptr, aggregate) | WP-074; the `{ T, i1 }` result is an aggregate; x86-64 (WP-133): `i128` only with `+cx16` (`lock cmpxchg16b`), else `x64:atomic-libatomic` |
 | `inst:atomicrmw` | supported (int, i128, ptr, half, bfloat, float, double) | supported (int, ptr, half, bfloat, float, double) | and the operation's `atomicrmw:` row; WP-074; x86-64 (WP-133): `i128` only with `+cx16`, else `x64:atomic-libatomic` |
 | `inst:ptradd` | supported | supported | LLVM's `getelementptr` (§5.4); not a vector of pointers |
-| `inst:extractvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, aggregate) |  |
-| `inst:insertvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, aggregate) |  |
+| `inst:extractvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | x86-64: floating-point members with WP-144; `x86_fp80` with WP-131 |
+| `inst:insertvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, aggregate) | x86-64: floating-point members with WP-144; `x86_fp80` with WP-131 |
 | `inst:extractelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:insertelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:shufflevector` | supported (vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |

@@ -847,3 +847,37 @@ fn intrinsic_rows_of_wp_128() {
     // Named registers stay with a later package.
     assert_eq!(x64.supports("intrinsic:llvm.read_register"), Some(false));
 }
+
+// WP-144: the x86-64 leftovers between the groups. Floating-point
+// members of aggregates (not `x86_fp80`: WP-131), conversions with
+// integers wider than 64 bits (the target refuses those wider than 128 by
+// name, as AArch64 does).
+#[test]
+fn leftover_rows_of_wp_144() {
+    let x64 = Support::shipped(Arch::X86_64);
+    let a64 = Support::shipped(Arch::Aarch64);
+    for row in ["inst:extractvalue", "inst:insertvalue"] {
+        let classes = x64.classes(row).unwrap();
+        for class in [
+            TypeClass::Half,
+            TypeClass::BFloat,
+            TypeClass::Float,
+            TypeClass::Double,
+            TypeClass::Fp128,
+        ] {
+            assert!(classes.has(class), "{row}: {class:?}");
+        }
+        assert!(!classes.has(TypeClass::X86Fp80), "{row}");
+        assert!(!classes.has(TypeClass::Vector), "{row}");
+    }
+    for row in ["inst:fptoui", "inst:fptosi", "inst:uitofp", "inst:sitofp"] {
+        assert_eq!(
+            x64.classes(row),
+            a64.classes(row).map(|c| {
+                TypeClasses::of(&c.iter().filter(|&k| k != TypeClass::Vector).collect::<Vec<_>>())
+            }),
+            "{row}"
+        );
+        assert!(x64.classes(row).unwrap().has(TypeClass::IntWide), "{row}");
+    }
+}

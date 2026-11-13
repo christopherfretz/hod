@@ -2,9 +2,12 @@
 //! metadata, and the three named lists the module level reads — module
 //! flags, linker options and dependent libraries.
 
+use hod_ir::Arch;
 use hod_ir::Layering;
-use hod_ir::kit::{GlobalAttachment, global_attachment_construct};
-use hod_ir::{Arch, FlagValue};
+use hod_ir::kit::{
+    GlobalAttachment, NamedMetadataKind, global_attachment_construct, module_flag,
+    named_metadata_construct,
+};
 
 use crate::Span;
 use crate::error::{LlErrorKind, PResult, fail, ir_fail};
@@ -216,18 +219,7 @@ impl MetadataIndex {
     }
 }
 
-/// What LLVM's reader does to the functions of an AArch64 module whose
-/// branch-protection module flags are in the old form (§7.3).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[allow(clippy::struct_excessive_bools)] // One for each of six module flags.
-pub(crate) struct Upgrade {
-    pub bte: bool,
-    pub pauth_lr: bool,
-    pub gcs: bool,
-    pub sign: bool,
-    pub sign_all: bool,
-    pub sign_b_key: bool,
-}
+pub(crate) use hod_ir::kit::BranchUpgrade as Upgrade;
 
 impl<L: Layering> Parser<'_, '_, L> {
     /// Builds the node index.
@@ -279,13 +271,13 @@ impl<L: Layering> Parser<'_, '_, L> {
             let ent = self.index.named[at];
             let raw = &self.src[ent.name.start as usize + 1..ent.name.end as usize];
             let name = unquote(raw);
-            match &*name {
-                b"llvm.module.flags" => {
+            match NamedMetadataKind::of(&name) {
+                NamedMetadataKind::ModuleFlags => {
                     for id in self.node_list(ent.span)? {
                         self.module_flag(id, &mut upgrade)?;
                     }
                 }
-                b"llvm.linker.options" => {
+                NamedMetadataKind::LinkerOptions => {
                     for id in self.node_list(ent.span)? {
                         let strings = self.string_tuple(id)?;
                         let refs: Vec<&[u8]> = strings.iter().map(Vec::as_slice).collect();
@@ -294,7 +286,7 @@ impl<L: Layering> Parser<'_, '_, L> {
                             .map_err(|e| ir_fail(ent.name.start, e))?;
                     }
                 }
-                b"llvm.dependent-libraries" => {
+                NamedMetadataKind::DependentLibraries => {
                     for id in self.node_list(ent.span)? {
                         let strings = self.string_tuple(id)?;
                         let [library] = strings.as_slice() else {
@@ -309,13 +301,13 @@ impl<L: Layering> Parser<'_, '_, L> {
                             .map_err(|e| ir_fail(ent.name.start, e))?;
                     }
                 }
-                b"llvm.ident" | b"llvm.errno.tbaa" => {}
-                b"llvm.dbg.cu" => {
+                NamedMetadataKind::Dropped => {}
+                NamedMetadataKind::DebugCompileUnits => {
                     self.md.debug_info = true;
                     self.dbg_cu = Some(ent.span);
                 }
-                other => {
-                    let construct = format!("named-metadata:{}", String::from_utf8_lossy(other));
+                NamedMetadataKind::Unsupported => {
+                    let construct = named_metadata_construct(&name);
                     self.module.record_unsupported(&construct, None);
                 }
             }
@@ -404,31 +396,8 @@ impl<L: Layering> Parser<'_, '_, L> {
         if self.tok.start < span.end {
             return self.syntax("a module flag has three operands");
         }
-        let value = match (int, &text) {
-            (Some(value), _) => FlagValue::Int(value),
-            (None, Some(text)) => FlagValue::Str(text),
-            (None, None) => FlagValue::Other,
-        };
-        let behavior = u32::try_from(behavior).unwrap_or(u32::MAX);
-        self.module.set_module_flag(behavior, &name, value).map_err(|e| ir_fail(at, e))?;
-        if let Some(value) = int {
-            let field = upgrade.as_mut().and_then(|up| match name.as_slice() {
-                b"branch-target-enforcement" => Some(&mut up.bte),
-                b"branch-protection-pauth-lr" => Some(&mut up.pauth_lr),
-                b"guarded-control-stack" => Some(&mut up.gcs),
-                b"sign-return-address" => Some(&mut up.sign),
-                b"sign-return-address-all" => Some(&mut up.sign_all),
-                b"sign-return-address-with-bkey" => Some(&mut up.sign_b_key),
-                _ => None,
-            });
-            if let Some(field) = field {
-                if value == 2 {
-                    *upgrade = None;
-                } else {
-                    *field = value == 1;
-                }
-            }
-        }
+        module_flag(&mut *self.module, behavior, &name, int, text.as_deref(), upgrade)
+            .map_err(|e| ir_fail(at, e))?;
         Ok(())
     }
 

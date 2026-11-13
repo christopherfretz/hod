@@ -6,13 +6,14 @@
 use std::borrow::Cow;
 
 use hod_ir::kit::{
-    GlobalAttachment, SpecialDeliveryError, SpecialGlobal, annotations_construct, deliver_special,
-    global_attachment_construct, merge_fn_attrs,
+    BranchUpgrade as Upgrade, GlobalAttachment, NamedMetadataKind, SpecialDeliveryError,
+    SpecialGlobal, annotations_construct, deliver_special, global_attachment_construct,
+    merge_fn_attrs, module_flag, named_metadata_construct,
 };
 use hod_ir::{
-    AliasDesc, Arch, CallConv, ComdatId, ComdatKind, Const, ConstId, DiId, DiKind, FlagValue,
-    FnAttrs, FnAttrsId, FnStr, FunctionDesc, IFuncDesc, Linkage, Module, ParamAttrs, SymId,
-    TargetSpec, TlsModel, TypeId, TypeKind, UnnamedAddr, VariableDesc, Visibility,
+    AliasDesc, Arch, CallConv, ComdatId, ComdatKind, Const, ConstId, DiId, DiKind, FnAttrs,
+    FnAttrsId, FunctionDesc, IFuncDesc, Linkage, Module, ParamAttrs, SymId, TargetSpec, TlsModel,
+    TypeId, TypeKind, UnnamedAddr, VariableDesc, Visibility,
 };
 
 use crate::attrs::{self, Attr, FUNCTION_INDEX, FnGroup, chars};
@@ -257,18 +258,6 @@ impl Notes {
             module.record_unsupported(&construct, sym);
         }
     }
-}
-
-/// The AArch64 branch-protection flags (`spec/ll.md` §7.3).
-#[derive(Clone, Copy, Default)]
-#[allow(clippy::struct_excessive_bools)]
-struct Upgrade {
-    bte: bool,
-    pauth_lr: bool,
-    gcs: bool,
-    sign: bool,
-    sign_all: bool,
-    sign_b_key: bool,
 }
 
 pub(crate) struct Build<'r, 'a> {
@@ -1094,48 +1083,7 @@ impl<'r, 'a> Build<'r, 'a> {
 
     /// `hod_ll`'s `upgrade_attrs` (`spec/ll.md` §7.3).
     fn upgrade_attrs(&mut self, id: FnAttrsId, upgrade: Upgrade, at: u64) -> BcResult<FnAttrsId> {
-        if let Some(&(_, done)) = self.upgraded.iter().find(|(from, _)| *from == id) {
-            return Ok(done);
-        }
-        let view = self.module.fn_attrs(id);
-        let mut out = FnAttrs::new();
-        ir(at, out.set(view.flags()))?;
-        out.set_uwtable(view.uwtable());
-        if let Some(bytes) = view.stack_align() {
-            ir(at, out.set_stack_align(bytes))?;
-        }
-        let drop_sign = !upgrade.sign && view.string(FnStr::SignReturnAddress) == Some(b"none");
-        for (key, value) in view.strings() {
-            let value = match key {
-                FnStr::SignReturnAddress | FnStr::SignReturnAddressKey if drop_sign => continue,
-                FnStr::BranchTargetEnforcement
-                | FnStr::BranchProtectionPauthLr
-                | FnStr::GuardedControlStack => {
-                    if value.eq_ignore_ascii_case(b"false") {
-                        continue;
-                    }
-                    if value.eq_ignore_ascii_case(b"true") { b"" } else { value }
-                }
-                _ => value,
-            };
-            ir(at, out.set_string(key, value))?;
-        }
-        let mut default = |key: FnStr, wanted: bool, value: &[u8]| {
-            if wanted && view.string(key).is_none() {
-                return out.set_string(key, value);
-            }
-            Ok(())
-        };
-        let kind: &[u8] = if upgrade.sign_all { b"all" } else { b"non-leaf" };
-        let sign_key: &[u8] = if upgrade.sign_b_key { b"b_key" } else { b"a_key" };
-        ir(at, default(FnStr::SignReturnAddress, upgrade.sign, kind))?;
-        ir(at, default(FnStr::SignReturnAddressKey, upgrade.sign, sign_key))?;
-        ir(at, default(FnStr::BranchTargetEnforcement, upgrade.bte, b""))?;
-        ir(at, default(FnStr::BranchProtectionPauthLr, upgrade.pauth_lr, b""))?;
-        ir(at, default(FnStr::GuardedControlStack, upgrade.gcs, b""))?;
-        let done = ir(at, self.module.intern_fn_attrs(&out))?;
-        self.upgraded.push((id, done));
-        Ok(done)
+        ir(at, upgrade.apply(&mut self.module, id, &mut self.upgraded))
     }
 
     fn indirect(&mut self, index: usize, rec: Rec) -> BcResult<()> {
@@ -1301,20 +1249,20 @@ impl<'r, 'a> Build<'r, 'a> {
             let name = text(raw, name_rec)?;
             let at = name_rec.pos;
             let nodes = node_rec.ops(&raw.pool);
-            match &name[..] {
-                b"llvm.module.flags" => {
+            match NamedMetadataKind::of(&name) {
+                NamedMetadataKind::ModuleFlags => {
                     for &id in nodes {
                         self.module_flag(id, at, &mut upgrade)?;
                     }
                 }
-                b"llvm.linker.options" => {
+                NamedMetadataKind::LinkerOptions => {
                     for &id in nodes {
                         let strings = self.string_tuple(id, at)?;
                         let refs: Vec<&[u8]> = strings.iter().map(Vec::as_slice).collect();
                         ir(at, self.module.add_linker_option(&refs))?;
                     }
                 }
-                b"llvm.dependent-libraries" => {
+                NamedMetadataKind::DependentLibraries => {
                     for &id in nodes {
                         let strings = self.string_tuple(id, at)?;
                         let [library] = strings.as_slice() else {
@@ -1327,10 +1275,10 @@ impl<'r, 'a> Build<'r, 'a> {
                         ir(at, self.module.add_dependent_library(library))?;
                     }
                 }
-                b"llvm.ident" | b"llvm.errno.tbaa" => {}
-                b"llvm.dbg.cu" => self.dbg_cu = Some((nodes.to_vec(), at)),
-                other => {
-                    let construct = format!("named-metadata:{}", String::from_utf8_lossy(other));
+                NamedMetadataKind::Dropped => {}
+                NamedMetadataKind::DebugCompileUnits => self.dbg_cu = Some((nodes.to_vec(), at)),
+                NamedMetadataKind::Unsupported => {
+                    let construct = named_metadata_construct(&name);
                     self.module.record_unsupported(&construct, None);
                 }
             }
@@ -1516,32 +1464,7 @@ impl<'r, 'a> Build<'r, 'a> {
                 int = self.module.consts.int_value(built);
             }
         }
-        let flag = match (int, string) {
-            (Some(value), _) => FlagValue::Int(value),
-            (None, Some(text)) => FlagValue::Str(text),
-            (None, None) => FlagValue::Other,
-        };
-        let behavior = u32::try_from(behavior).unwrap_or(u32::MAX);
-        ir(at, self.module.set_module_flag(behavior, name, flag))?;
-        if let Some(value) = int {
-            let field = upgrade.as_mut().and_then(|up| match name {
-                b"branch-target-enforcement" => Some(&mut up.bte),
-                b"branch-protection-pauth-lr" => Some(&mut up.pauth_lr),
-                b"guarded-control-stack" => Some(&mut up.gcs),
-                b"sign-return-address" => Some(&mut up.sign),
-                b"sign-return-address-all" => Some(&mut up.sign_all),
-                b"sign-return-address-with-bkey" => Some(&mut up.sign_b_key),
-                _ => None,
-            });
-            if let Some(field) = field {
-                if value == 2 {
-                    *upgrade = None;
-                } else {
-                    *field = value == 1;
-                }
-            }
-        }
-        Ok(())
+        ir(at, module_flag(&mut self.module, behavior, name, int, string, upgrade))
     }
 }
 

@@ -8,12 +8,12 @@
 //! call (the scratch vectors are the caller's), and the generic ones are
 //! inlined into the caller.
 
-use crate::Retained;
 use crate::{
     AttrClass, AttrSyntax, CallDesc, Const, ConstId, ConstPool, FnAttrs, FnAttrsView, FnStr,
     FunctionBuilder, IrResult, Layering, Module, ParamAttrs, ParamMem, TypeId, TypeKind, TypeTable,
     UwTable, Value, attr_info, sext64,
 };
+use crate::{FlagValue, FnAttrsId, Retained};
 
 /// What a lowering made of a construct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -813,4 +813,179 @@ impl GlobalAttachment {
 /// `global-metadata:<kind>`.
 pub fn global_attachment_construct(kind: &[u8]) -> String {
     format!("global-metadata:{}", String::from_utf8_lossy(kind))
+}
+
+// ---- named metadata and module flags (`spec/ir.md` §2.1) ----
+
+/// What a named metadata node of the module is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NamedMetadataKind {
+    /// `!llvm.module.flags`: each operand is a flag, [`module_flag`].
+    ModuleFlags,
+    /// `!llvm.linker.options`: each operand is a tuple of strings,
+    /// `Module::add_linker_option`.
+    LinkerOptions,
+    /// `!llvm.dependent-libraries`: each operand is a tuple of one
+    /// string, `Module::add_dependent_library`.
+    DependentLibraries,
+    /// `!llvm.dbg.cu`: the compile units (debug information, §6).
+    DebugCompileUnits,
+    /// `!llvm.ident`, `!llvm.errno.tbaa`: dropped.
+    Dropped,
+    /// Any other: unsupported, recorded (against no symbol) as
+    /// [`named_metadata_construct`].
+    Unsupported,
+}
+
+impl NamedMetadataKind {
+    /// The named metadata `name` (without `!`).
+    pub fn of(name: &[u8]) -> NamedMetadataKind {
+        match name {
+            b"llvm.module.flags" => NamedMetadataKind::ModuleFlags,
+            b"llvm.linker.options" => NamedMetadataKind::LinkerOptions,
+            b"llvm.dependent-libraries" => NamedMetadataKind::DependentLibraries,
+            b"llvm.dbg.cu" => NamedMetadataKind::DebugCompileUnits,
+            b"llvm.ident" | b"llvm.errno.tbaa" => NamedMetadataKind::Dropped,
+            _ => NamedMetadataKind::Unsupported,
+        }
+    }
+}
+
+/// The construct unsupported named metadata is recorded by:
+/// `named-metadata:<name>`.
+pub fn named_metadata_construct(name: &[u8]) -> String {
+    format!("named-metadata:{}", String::from_utf8_lossy(name))
+}
+
+/// What LLVM's reader does to the branch-protection attributes of the
+/// definitions of an AArch64 module whose branch-protection module flags
+/// are not in the current form (`spec/ll.md` §7.3): the flags read so far.
+/// Start with `Some(BranchUpgrade::default())`, feed every integer module
+/// flag to [`BranchUpgrade::observe`], and apply the result to each
+/// definition's attribute set with [`BranchUpgrade::apply`] (AArch64 only).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // One for each of six module flags.
+pub struct BranchUpgrade {
+    /// `branch-target-enforcement`.
+    pub bte: bool,
+    /// `branch-protection-pauth-lr`.
+    pub pauth_lr: bool,
+    /// `guarded-control-stack`.
+    pub gcs: bool,
+    /// `sign-return-address`.
+    pub sign: bool,
+    /// `sign-return-address-all`.
+    pub sign_all: bool,
+    /// `sign-return-address-with-bkey`.
+    pub sign_b_key: bool,
+}
+
+impl BranchUpgrade {
+    /// Notes the integer module flag `name` = `value`: a branch-protection
+    /// flag sets its field (value 1); the value 2 (the current form) ends
+    /// the upgrade (`*upgrade` becomes `None`).
+    #[inline]
+    pub fn observe(upgrade: &mut Option<BranchUpgrade>, name: &[u8], value: u64) {
+        let field = upgrade.as_mut().and_then(|up| match name {
+            b"branch-target-enforcement" => Some(&mut up.bte),
+            b"branch-protection-pauth-lr" => Some(&mut up.pauth_lr),
+            b"guarded-control-stack" => Some(&mut up.gcs),
+            b"sign-return-address" => Some(&mut up.sign),
+            b"sign-return-address-all" => Some(&mut up.sign_all),
+            b"sign-return-address-with-bkey" => Some(&mut up.sign_b_key),
+            _ => None,
+        });
+        if let Some(field) = field {
+            if value == 2 {
+                *upgrade = None;
+            } else {
+                *field = value == 1;
+            }
+        }
+    }
+
+    /// The attribute set LLVM's reader turns `id` into on a definition;
+    /// `cache` remembers the sets already upgraded (one entry per set).
+    ///
+    /// # Errors
+    /// As the setters of [`FnAttrs`] and `Module::intern_fn_attrs`.
+    pub fn apply<L: Layering>(
+        self,
+        module: &mut Module<L>,
+        id: FnAttrsId,
+        cache: &mut Vec<(FnAttrsId, FnAttrsId)>,
+    ) -> IrResult<FnAttrsId> {
+        if let Some(&(_, done)) = cache.iter().find(|(from, _)| *from == id) {
+            return Ok(done);
+        }
+        let view = module.fn_attrs(id);
+        let mut out = FnAttrs::new();
+        out.set(view.flags())?;
+        out.set_uwtable(view.uwtable());
+        if let Some(bytes) = view.stack_align() {
+            out.set_stack_align(bytes)?;
+        }
+        let drop_sign = !self.sign && view.string(FnStr::SignReturnAddress) == Some(b"none");
+        for (key, value) in view.strings() {
+            let value = match key {
+                FnStr::SignReturnAddress | FnStr::SignReturnAddressKey if drop_sign => continue,
+                FnStr::BranchTargetEnforcement
+                | FnStr::BranchProtectionPauthLr
+                | FnStr::GuardedControlStack => {
+                    if value.eq_ignore_ascii_case(b"false") {
+                        continue;
+                    }
+                    if value.eq_ignore_ascii_case(b"true") { b"" } else { value }
+                }
+                _ => value,
+            };
+            out.set_string(key, value)?;
+        }
+        let mut default = |key: FnStr, wanted: bool, value: &[u8]| {
+            if wanted && view.string(key).is_none() {
+                return out.set_string(key, value);
+            }
+            Ok(())
+        };
+        let kind: &[u8] = if self.sign_all { b"all" } else { b"non-leaf" };
+        let sign_key: &[u8] = if self.sign_b_key { b"b_key" } else { b"a_key" };
+        default(FnStr::SignReturnAddress, self.sign, kind)?;
+        default(FnStr::SignReturnAddressKey, self.sign, sign_key)?;
+        default(FnStr::BranchTargetEnforcement, self.bte, b"")?;
+        default(FnStr::BranchProtectionPauthLr, self.pauth_lr, b"")?;
+        default(FnStr::GuardedControlStack, self.gcs, b"")?;
+        let done = module.intern_fn_attrs(&out)?;
+        cache.push((id, done));
+        Ok(done)
+    }
+}
+
+/// One module flag `!{i32 behavior, !"name", value}` into `module`: the
+/// value is an integer when it is an integer constant (`int`), else a
+/// string when it is one (`text`), else "other" (a node, `null`, or any
+/// other constant); a behavior over `u32::MAX` is `u32::MAX` (refused by
+/// `set_module_flag`). An integer flag is also fed to `upgrade`
+/// ([`BranchUpgrade::observe`]).
+///
+/// # Errors
+/// As `Module::set_module_flag`.
+pub fn module_flag<L: Layering>(
+    module: &mut Module<L>,
+    behavior: u64,
+    name: &[u8],
+    int: Option<u64>,
+    text: Option<&[u8]>,
+    upgrade: &mut Option<BranchUpgrade>,
+) -> IrResult<()> {
+    let value = match (int, text) {
+        (Some(value), _) => FlagValue::Int(value),
+        (None, Some(text)) => FlagValue::Str(text),
+        (None, None) => FlagValue::Other,
+    };
+    let behavior = u32::try_from(behavior).unwrap_or(u32::MAX);
+    module.set_module_flag(behavior, name, value)?;
+    if let Some(value) = int {
+        BranchUpgrade::observe(upgrade, name, value);
+    }
+    Ok(())
 }

@@ -6,9 +6,7 @@ use hod_ir::kit::{
     AttrUse, TypedAttrError, ValueKeyword, add_typed, attr_construct, fn_keyword, merge_fn_attrs,
     string_attr, value_keyword,
 };
-use hod_ir::{
-    AttrInfo, AttrSyntax, CallConv, FnAttrs, FnAttrsId, FnStr, ParamAttrs, UwTable, attr_info,
-};
+use hod_ir::{AttrInfo, AttrSyntax, CallConv, FnAttrsId, ParamAttrs, UwTable, attr_info};
 
 use crate::AttrGroup;
 use crate::error::{LlErrorKind, PResult, fail};
@@ -359,47 +357,6 @@ impl<L: Layering> Parser<'_, '_, L> {
     /// in an AArch64 module whose branch-protection module flags are not
     /// in the current form (§7.3).
     fn upgrade_attrs(&mut self, id: FnAttrsId, upgrade: Upgrade, at: u32) -> PResult<FnAttrsId> {
-        if let Some(&(_, done)) = self.upgraded.iter().find(|(from, _)| *from == id) {
-            return Ok(done);
-        }
-        let view = self.module.fn_attrs(id);
-        let mut out = FnAttrs::new();
-        ir(at, out.set(view.flags()))?;
-        out.set_uwtable(view.uwtable());
-        if let Some(bytes) = view.stack_align() {
-            ir(at, out.set_stack_align(bytes))?;
-        }
-        let drop_sign = !upgrade.sign && view.string(FnStr::SignReturnAddress) == Some(b"none");
-        for (key, value) in view.strings() {
-            let value = match key {
-                FnStr::SignReturnAddress | FnStr::SignReturnAddressKey if drop_sign => continue,
-                FnStr::BranchTargetEnforcement
-                | FnStr::BranchProtectionPauthLr
-                | FnStr::GuardedControlStack => {
-                    if value.eq_ignore_ascii_case(b"false") {
-                        continue;
-                    }
-                    if value.eq_ignore_ascii_case(b"true") { b"" } else { value }
-                }
-                _ => value,
-            };
-            ir(at, out.set_string(key, value))?;
-        }
-        let mut default = |key: FnStr, wanted: bool, value: &[u8]| {
-            if wanted && view.string(key).is_none() {
-                return out.set_string(key, value);
-            }
-            Ok(())
-        };
-        let kind: &[u8] = if upgrade.sign_all { b"all" } else { b"non-leaf" };
-        let sign_key: &[u8] = if upgrade.sign_b_key { b"b_key" } else { b"a_key" };
-        ir(at, default(FnStr::SignReturnAddress, upgrade.sign, kind))?;
-        ir(at, default(FnStr::SignReturnAddressKey, upgrade.sign, sign_key))?;
-        ir(at, default(FnStr::BranchTargetEnforcement, upgrade.bte, b""))?;
-        ir(at, default(FnStr::BranchProtectionPauthLr, upgrade.pauth_lr, b""))?;
-        ir(at, default(FnStr::GuardedControlStack, upgrade.gcs, b""))?;
-        let done = ir(at, self.module.intern_fn_attrs(&out))?;
-        self.upgraded.push((id, done));
-        Ok(done)
+        ir(at, upgrade.apply(&mut *self.module, id, &mut self.upgraded))
     }
 }

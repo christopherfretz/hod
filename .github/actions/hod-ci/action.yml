@@ -46,6 +46,11 @@ runs:
         nproc; free -g | head -2
         # The container runs as root over a checkout the runner owns.
         git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        # The build directory outside the checkout, as scripts/env.sh puts
+        # it on the development machine: the harness names a test file by
+        # its path relative to the workspace, and several tests expect
+        # their scratch files (in the build directory) to be outside it.
+        echo "CARGO_TARGET_DIR=$(dirname "$GITHUB_WORKSPACE")/target" >> "$GITHUB_ENV"
     # As kiln-ci: the job runs as root in a container whose $HOME is
     # /github/home while root's passwd home is /root; rustup-init's anti-sudo
     # check refuses that mismatch. rust-toolchain.toml pins the same version.
@@ -58,5 +63,6 @@ runs:
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: ${{ inputs.cache-key }}
+        workspaces: ". -> ../target"
         save-if: ${{ inputs.save-cache == 'true' }}
         cache-on-failure: true

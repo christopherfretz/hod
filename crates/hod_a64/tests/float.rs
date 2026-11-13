@@ -1507,8 +1507,12 @@ fn run_native(label: &str, funcs: &[Func], per: usize, seed: u64) -> usize {
                     why.push(format!("llc {theirs:x}"));
                 }
             }
+            // `NanPolicy::Host`: the interpreter's NaNs are the host's,
+            // whose sign and payload are AArch64's only on an AArch64 host
+            // (x86-64's default NaN is negative); elsewhere any NaN agrees.
             if let Some(want) = want
                 && *want != hod
+                && (cfg!(target_arch = "aarch64") || !same_but_nan(f.ret, *want, hod))
             {
                 why.push(format!("interp {want:x}"));
             }

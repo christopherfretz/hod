@@ -621,7 +621,8 @@ fn eh_typeid_for_selects_the_clause() {
     use common::{emit, llc, llc_major, write_object};
     let dir = hod_testutil::Scratch::new("a64-intrinsic-typeid");
     let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
-    let Some(gxx) = hod_testutil::tool("g++") else { return };
+    // The AArch64 g++ (the host's on an AArch64 host, the cross one else).
+    let Some(gxx) = hod_testutil::Target::Aarch64.tool("g++") else { return };
     let data = |name: &str| {
         let path = format!("{}/tests/data/intrinsic/{name}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))

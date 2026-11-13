@@ -293,7 +293,9 @@ fn uncaught_is_terminate() {
             text.insert_str(end + 1, "  call i32 @fflush(ptr null)\n");
         }
         for output in compile_and_run(tools, &scratch, &text) {
-            // SIGABRT, and no `s` line: no cleanup ran.
+            // SIGABRT, and no `s` line: no cleanup ran. Where core dumps
+            // are on (a hosted runner), the status has the core bit, 0x80.
+            let output = output.replace("unix_wait_status(134)", "unix_wait_status(6)");
             assert_eq!(output, "p 0\nexited with Some(ExitStatus(unix_wait_status(6)))\n");
         }
         1

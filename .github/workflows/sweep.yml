@@ -57,7 +57,7 @@ jobs:
       - name: cargo build --release -p hod_cli
         run: |
           cargo build --release -p hod_cli
-          mkdir -p sweep-bin && cp target/release/hod sweep-bin/
+          mkdir -p sweep-bin && cp "$CARGO_TARGET_DIR/release/hod" sweep-bin/
       - uses: actions/upload-artifact@v4
         with: { name: hod, path: sweep-bin/hod, if-no-files-found: error, retention-days: 7 }
 
@@ -112,6 +112,7 @@ jobs:
           out="$GITHUB_WORKSPACE/libcxx-out"
           mkdir -p "$out"
           cd .ci/kiln-src
+          export CARGO_TARGET_DIR="$PWD/target"
           cargo xtask libcxx std libcxx --tag "$LIBCXX_TAG" \
             --compiler "$GITHUB_WORKSPACE/scripts/libcxx-hod-kiln.sh" \
             --shard ${{ matrix.shard }}/${{ strategy.job-total }} --no-fail -j 4 --timeout 20 \

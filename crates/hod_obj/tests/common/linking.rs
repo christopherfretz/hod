@@ -125,6 +125,18 @@ impl Toolchain {
         Some(Linker::through(&dir, "lld", &found))
     }
 
+    /// The same toolchain whose emulator models the CPU `cpu` (QEMU's
+    /// name, `max`): for a test of instructions an extension adds, which
+    /// the baseline model ([`Target::emulated_cpu`]) lacks. A native
+    /// runner is unchanged.
+    #[allow(dead_code)] // Not every test binary that includes this uses it.
+    pub fn with_emulated_cpu(mut self, cpu: &str) -> Self {
+        if let Some(at) = self.runner.iter().position(|arg| arg == "-cpu") {
+            self.runner[at + 1] = cpu.into();
+        }
+        self
+    }
+
     /// Whether programs run under an emulator.
     pub fn emulated(&self) -> bool {
         !self.runner.is_empty()

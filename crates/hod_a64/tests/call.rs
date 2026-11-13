@@ -330,7 +330,8 @@ fn handwritten_calls_run() {
 fn exceptions_unwind_through_hod_frames() {
     let dir = Scratch::new("a64-call-eh");
     let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
-    let Some(gxx) = hod_testutil::tool("g++") else { return };
+    // The AArch64 g++ (the host's on an AArch64 host, the cross one else).
+    let Some(gxx) = hod_testutil::Target::Aarch64.tool("g++") else { return };
     let source = dir.write("eh.cpp", data("eh.cpp"));
     let driver = dir.join("eh-driver.o");
     let mut command = std::process::Command::new(&gxx);

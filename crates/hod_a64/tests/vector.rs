@@ -998,7 +998,7 @@ fn clang_object(scratch: &Scratch, name: &str, source: &str) -> Option<PathBuf> 
     let input = scratch.write(&format!("{name}.c"), source);
     let output = scratch.join(format!("{name}.o"));
     let mut command = Command::new(clang);
-    command.args(["-c", "-O1", "-w"]).arg(&input).arg("-o").arg(&output);
+    command.args(["-c", "-O1", "-w", "--target=aarch64-linux-gnu"]).arg(&input).arg("-o").arg(&output);
     let outcome = run_with(&mut command, &[], Duration::from_mins(2));
     assert!(outcome.success(), "clang {name}.c:\n{}", outcome.stderr_text());
     Some(output)

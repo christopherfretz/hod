@@ -170,7 +170,8 @@ fn musttail_programs_compile_and_run_like_llc() {
     let text = format!("{HEADER}{PROGRAM}{}", BYVAL.replace("KIND", "musttail"));
     let object = hod_object(&text).unwrap_or_else(|e| panic!("hod declines the program: {e}"));
     let dir = Scratch::new("hod-musttail");
-    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    // An AArch64 program: natively or under the emulator.
+    let Some(toolchain) = Toolchain::aarch64(&dir) else { return };
     let Some(llc) = tool("llc") else { return };
     let hod_o = dir.write("hod.o", object);
     let input = dir.write("p.ll", format!("{HEADER}{PROGRAM}{}", BYVAL.replace("KIND", "")));

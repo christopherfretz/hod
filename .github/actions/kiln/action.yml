@@ -56,6 +56,7 @@ runs:
       run: |
         cd .ci/kiln-src
         git config --global --add safe.directory "$PWD"
+        export CARGO_TARGET_DIR="$PWD/target"
         export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
         cargo xtask dist --out "$PWD/../kiln-dist"
         mkdir -p /opt/kiln

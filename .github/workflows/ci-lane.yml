@@ -62,7 +62,9 @@ jobs:
     runs-on: ${{ inputs.runner }}
     container:
       image: buildpack-deps:trixie
-      options: --cap-add=SYS_PTRACE
+      # No core files: a test's crashing program ends with its signal's
+      # own status, as in the development container.
+      options: --cap-add=SYS_PTRACE --ulimit core=0
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

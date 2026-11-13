@@ -697,8 +697,10 @@ impl Shimmed {
     /// LLVM's tools read an object hod wrote without complaint.
     fn inspect(&self, object: &Path, shows: &str) {
         let bin = self.llvm.join("bin");
+        // kiln compiles for the host: `Machine:` names its architecture.
+        let machine = if cfg!(target_arch = "aarch64") { "AArch64" } else { "X86-64" };
         for (tool, args, expect) in [
-            ("llvm-readelf", &["-h", "-S", "-r", "-s"][..], "AArch64"),
+            ("llvm-readelf", &["-h", "-S", "-r", "-s"][..], machine),
             ("llvm-objdump", &["-d", "-r"][..], shows),
             ("llvm-dwarfdump", &["--eh-frame"][..], "FDE"),
             ("llvm-dwarfdump", &["--verify"][..], "No errors."),

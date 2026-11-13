@@ -187,6 +187,13 @@ fn build_and_run(
 ) -> usize {
     let dir = hod_testutil::Scratch::new(label);
     let Some(toolchain) = Toolchain::aarch64(&dir) else { return 0 };
+    // The bf16 intrinsics are FEAT_BF16 instructions, which the
+    // emulator's baseline model lacks (SIGILL): its `max` model.
+    let toolchain = if label.ends_with("-bf16-intrinsics") {
+        toolchain.with_emulated_cpu("max")
+    } else {
+        toolchain
+    };
     let driver = toolchain.compile_c(&dir, "driver", &driver(calls), &[]);
     // builds[k] = (name, one object per module)
     let mut builds: Vec<(String, Vec<PathBuf>)> = Vec::new();

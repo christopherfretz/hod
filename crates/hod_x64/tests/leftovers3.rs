@@ -984,9 +984,9 @@ fn wide_vectors_and_aligned_byval_interoperate() {
 }
 
 /// The refusals that stay (`spec/abi-x64.md` §4.3, §6.2): a vector of
-/// `i128` whose pieces would straddle the last register and the stack, or
-/// start the stack at an offset not a multiple of 16 (LLVM 19 and 22
-/// disagree there), and a `byval` alignment above 2^30 or not a power
+/// `i128` whose first element would straddle the last register and the
+/// stack, or start the stack at an offset not a multiple of 16 (LLVM 19
+/// and 22 disagree there, WP-171), and a `byval` alignment above 2^30 or not a power
 /// of two.
 #[test]
 fn wide_vector_and_byval_refusals_by_name() {
@@ -995,7 +995,10 @@ fn wide_vector_and_byval_refusals_by_name() {
         "define i64 @f(i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, <1 x i128> %v) {\n  ret i64 %a\n}\n",
         split,
     );
-    refused("define i64 @f(i64 %a, i64 %b, i64 %c, <2 x i128> %v) {\n  ret i64 %a\n}\n", split);
+    refused(
+        "define i64 @f(i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, <2 x i128> %v) {\n  ret i64 %a\n}\n",
+        split,
+    );
     refused(
         "define i64 @f(i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, i64 %g, i64 %s, <2 x i128> %v) {\n  \
          ret i64 %a\n}\n",
@@ -1007,6 +1010,12 @@ fn wide_vector_and_byval_refusals_by_name() {
          define void @f(<1 x i128> %v) {\n  call void @g(i64 1, i64 2, i64 3, i64 4, i64 5, \
          <1 x i128> %v)\n  ret void\n}\n",
         split,
+    );
+    // WP-171: the first element in two registers, the rest straddling
+    // `r9` and the stack (both versions split those): accepted.
+    assert_eq!(
+        compile("define i64 @f(i64 %a, i64 %b, i64 %c, <2 x i128> %v) {\n  ret i64 %a\n}\n"),
+        Ok(())
     );
     // Whole on the stack from offset 0, or all in registers: accepted.
     assert_eq!(

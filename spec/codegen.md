@@ -3498,6 +3498,34 @@ on `i128` or `x86_fp80` lanes; `fp128` lanes.
 
 Evidence: `spec/landed/codegen/WP-161.md`.
 
+#### 5.6.20 Vectors of `i128` and `<1 x i64>` across calls (WP-171)
+
+Against `llc -O0 -fast-isel=0` 22 and 19 under the emulator, both
+directions (`crates/hod_x64/tests/vcall_i128.rs`):
+
+1. **`<N x i128>` arguments** (`abi::check_i128_vector`,
+   `spec/abi-x64.md` §4.3): accepted when the first element is in two
+   registers or on the stack from an offset that is a multiple of 16,
+   whatever the later elements straddle; LLVM 19 pairs only the first
+   element. `x64:vector-i128-split` stays for a first element whose low
+   half would be in `r9`, and for a vector on the stack from an offset of
+   8 mod 16: there LLVM 19 and 22 place it differently (each such case
+   of the test loses a leaf between an `llc` 19 caller and an `llc` 22
+   callee).
+2. **`musttail` with such a signature** stays
+   `musttail:stack-args-unknown` (`spec/abi-x64.md` §8.5, item 6): the
+   rule has no stack-argument area for a signature `assign` refuses, and
+   `llc` 19 and 22 disagree on where its arguments are.
+3. **`<1 x i64>` and `<1 x ptr>`** stay `call:part-register-class`: the
+   value is `Fpr` (an `xmm`, `target::vector_class`) and both versions
+   pass it in a general register. Moving it needs `hod_cg`'s call
+   sequence to accept a part of another class for an `Fpr` value (a
+   `Lanes` part through a scratch register of the value's class, as
+   WP-167 does for AArch64's `<1 x i128>`), which `hod_x64` cannot do
+   alone.
+
+Evidence: `spec/landed/codegen/WP-171.md`.
+
 ## 6. Control flow
 
 ### 6.1 Reachability

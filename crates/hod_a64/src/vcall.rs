@@ -25,6 +25,12 @@
 //!   (only the low bits of a lane are read: `llc` 19 leaves garbage above
 //!   the element in lane 0).
 //!
+//! - **A lone `<1 x i128>`** (WP-167): a `Q` register value that travels
+//!   as an `i128`, in two general registers or 8-byte stack slots. Each
+//!   part is one 64-bit limb (`bits` 64, `lane` 8, `len` 2, `first` the
+//!   limb), moved with `umov`/`ins` between the value's `Q` register (the
+//!   scratch `v30` that `hod_cg` gives for the value) and the place.
+//!
 //! On the stack a `D`/`Q` part is the register's image in its slot.
 //!
 //! # Registers
@@ -122,6 +128,9 @@ fn vmem(bytes: u32) -> VMemSize {
 /// # Errors
 /// `Internal` for a part `abi::assign` does not make.
 pub fn lanes_out(cx: &mut FnCx<'_, A64>, part: &Part, from: LaneLoc, to: LaneLoc) -> CgResult<()> {
+    if let Some(limb) = limb_of(cx, part)? {
+        return limb_out(cx, limb, from, to);
+    }
     let l = Lanes::of(cx, part)?;
     if l.bits != 1 {
         return promoted_out(cx, l, from, to);
@@ -201,6 +210,9 @@ fn promoted_out(cx: &mut FnCx<'_, A64>, l: Lanes, from: LaneLoc, to: LaneLoc) ->
 /// # Errors
 /// `Internal` for a part `abi::assign` does not make.
 pub fn lanes_in(cx: &mut FnCx<'_, A64>, part: &Part, from: LaneLoc, to: LaneLoc) -> CgResult<()> {
+    if let Some(limb) = limb_of(cx, part)? {
+        return limb_in(cx, limb, from, to);
+    }
     let l = Lanes::of(cx, part)?;
     if l.bits != 1 {
         return promoted_in(cx, l, from, to);
@@ -304,6 +316,65 @@ fn promoted_in(cx: &mut FnCx<'_, A64>, l: Lanes, from: LaneLoc, to: LaneLoc) -> 
     }
     let mut at = Cursor::frame(cx, image, X16);
     store_fpr_at(cx, vmem(l.image_bytes()), v, &mut at);
+    Ok(())
+}
+
+/// WP-167: the limb (0 low, 1 high) a part of a lone `<1 x i128>`
+/// carries; `None` for any other `Lanes` part.
+fn limb_of(cx: &FnCx<'_, A64>, part: &Part) -> CgResult<Option<u32>> {
+    let PartKind::Lanes { bits: 64, lane, first, len } = part.kind else { return Ok(None) };
+    if lane != 8 || len != 2 || first > 1 || part.size != 8 {
+        return cx.bug("a limb part whose shape abi::assign does not make");
+    }
+    Ok(Some(u32::from(first)))
+}
+
+/// WP-167: limb `limb` of the `Q`-register value at `from` (a vector
+/// register, or the value's 16-byte image) to its place `to`: a general
+/// register or an 8-byte stack slot. Writes `x16`, `x17` and `to` only.
+fn limb_out(cx: &mut FnCx<'_, A64>, limb: u32, from: LaneLoc, to: LaneLoc) -> CgResult<()> {
+    let t = match to {
+        LaneLoc::Reg(r) if reg::is_gpr(r) => xr(r),
+        LaneLoc::Reg(_) => return cx.bug("a limb part in a vector register"),
+        LaneLoc::Frame(_) => X16,
+    };
+    match from {
+        LaneLoc::Reg(v) if reg::is_fpr(v) => put(cx, mc::umov(Elem::D, t.zr(), vr(v), limb)),
+        LaneLoc::Reg(_) => return cx.bug("a Q-register value in a general register"),
+        LaneLoc::Frame(image) => {
+            let mut at = Cursor::frame(cx, offset(image, 8 * limb), other_scratch(t));
+            load_gpr_at(cx, Load::X, t, &mut at);
+        }
+    }
+    if let LaneLoc::Frame(slot) = to {
+        let mut at = Cursor::frame(cx, slot, X17);
+        store_gpr_at(cx, MemSize::X, t.zr(), &mut at);
+    }
+    Ok(())
+}
+
+/// WP-167: limb `limb` at its place `from` (a general register or an
+/// incoming 8-byte stack slot) into the `Q`-register value at `to` (a
+/// vector register, whose other limb is kept, or the value's image).
+/// Writes `x16`, `x17` and `to` only.
+fn limb_in(cx: &mut FnCx<'_, A64>, limb: u32, from: LaneLoc, to: LaneLoc) -> CgResult<()> {
+    let t = match from {
+        LaneLoc::Reg(r) if reg::is_gpr(r) => xr(r),
+        LaneLoc::Reg(_) => return cx.bug("a limb part in a vector register"),
+        LaneLoc::Frame(slot) => {
+            let mut at = Cursor::frame(cx, slot, X17);
+            load_gpr_at(cx, Load::X, X16, &mut at);
+            X16
+        }
+    };
+    match to {
+        LaneLoc::Reg(v) if reg::is_fpr(v) => put(cx, mc::ins_gpr(Elem::D, vr(v), limb, t.zr())),
+        LaneLoc::Reg(_) => return cx.bug("a Q-register value in a general register"),
+        LaneLoc::Frame(image) => {
+            let mut at = Cursor::frame(cx, offset(image, 8 * limb), other_scratch(t));
+            store_gpr_at(cx, MemSize::X, t.zr(), &mut at);
+        }
+    }
     Ok(())
 }
 

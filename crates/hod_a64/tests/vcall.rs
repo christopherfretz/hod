@@ -62,6 +62,8 @@ enum E {
     I16,
     I32,
     I64,
+    /// WP-167: `i128`, as a scalar and as the element of a vector.
+    I128,
     Half,
     Float,
     Double,
@@ -75,6 +77,7 @@ impl E {
             E::I16 => "i16",
             E::I32 => "i32",
             E::I64 => "i64",
+            E::I128 => "i128",
             E::Half => "half",
             E::Float => "float",
             E::Double => "double",
@@ -88,6 +91,7 @@ impl E {
             E::I16 | E::Half => 16,
             E::I32 | E::Float => 32,
             E::I64 | E::Double => 64,
+            E::I128 => 128,
         }
     }
 
@@ -100,7 +104,7 @@ impl E {
             E::I64 => "long",
             E::Float => "float",
             E::Double => "double",
-            E::I1 | E::Half => return None,
+            E::I1 | E::I128 | E::Half => return None,
         })
     }
 }
@@ -333,6 +337,12 @@ fn bytes() -> Vec<Ty> {
         V(E::Float, 16),
         V(E::I16, 12),
     ]
+}
+
+/// WP-167: a lone `<1 x i128>` (a `Q`-register value passed as an
+/// `i128`), the longer `i128` vectors and the scalar beside it.
+fn wide() -> Vec<Ty> {
+    vec![V(E::I128, 1), V(E::I128, 2), V(E::I128, 3), S(E::I128)]
 }
 
 fn scalars() -> Vec<Ty> {
@@ -1077,6 +1087,52 @@ fn vectors_agree_with_gcc() {
     }));
     assert!(cases.iter().all(Case::c_ok));
     check("gcc", &cases);
+}
+
+/// WP-167: a lone `<1 x i128>` as an argument and as the result: in two
+/// general registers at every register number (the even-register rule
+/// skips an odd one), split nowhere, on the stack (16-aligned), between
+/// other vectors and scalars; in a structure and beside the other `i128`
+/// shapes; through a pointer, an `invoke`, a `musttail` forwarder and as
+/// a named argument of a variadic function.
+#[test]
+fn lone_i128_vectors_cross_calls() {
+    let v1 = V(E::I128, 1);
+    let mut cases = each(&wide());
+    for before in 0..=8 {
+        let mut params: Vec<Ty> = (0..before).map(|_| S(E::I64)).collect();
+        params.push(v1.clone());
+        params.push(S(E::I32));
+        params.push(v1.clone());
+        cases.push(Case::new(params, Some(v1.clone())));
+    }
+    cases.push(Case::new(vec![V(E::I32, 4), v1.clone(), S(E::Double), v1.clone()], None));
+    cases.push(Case::new(
+        vec![St(vec![S(E::I64), v1.clone()]), v1.clone()],
+        Some(St(vec![v1.clone()])),
+    ));
+    let mut rng = Rng(0x0167_0001);
+    let mut pool = wide();
+    pool.push(v1.clone());
+    pool.extend(bytes());
+    pool.extend(scalars());
+    cases.extend(random(&mut rng, &pool, 40, false));
+    let mut styled = random(&mut rng, &pool, 18, false);
+    for (k, case) in styled.iter_mut().enumerate() {
+        case.params.push(v1.clone());
+        case.style = [Style::Indirect, Style::Invoke, Style::Musttail][k % 3];
+        if case.style == Style::Musttail || k % 2 == 0 {
+            case.ret = Some(v1.clone());
+        }
+    }
+    cases.extend(styled);
+    for before in [0, 1, 7, 8] {
+        let mut params: Vec<Ty> = (0..before).map(|_| S(E::I64)).collect();
+        params.push(v1.clone());
+        let var = vec![S(E::I64), V(E::I32, 4), S(E::I32)];
+        cases.push(Case { params, ret: None, style: Style::Direct, var: Some(var) });
+    }
+    check("i128", &cases);
 }
 
 /// A mask wider than 64 elements is refused by its name, as argument and

@@ -435,8 +435,10 @@ impl<'a, T: Target> FnCx<'a, T> {
         let ret_ty = self.body.ret_type(self.module);
         let source = if class == Class::Mem { Some(self.use_mem(value)?) } else { None };
         // WP-082: a mask whose elements travel as lanes is converted from
-        // its bits, which wait in a scratch register.
-        let bits = self.scratch_reg(Class::Gpr);
+        // its bits, which wait in a scratch register; WP-167: a register
+        // value of the other class (a lone `<1 x i128>` on AArch64) waits
+        // in a scratch register of its own class.
+        let bits = self.scratch_reg(class);
         if source.is_none() && self.s.fn_asg.ret.iter().any(|part| is_lanes(part.kind)) {
             self.put(value, bits)?;
         }
@@ -693,8 +695,9 @@ impl<'a, T: Target> FnCx<'a, T> {
             } else if asg.ret.iter().any(|part| is_lanes(part.kind)) {
                 // WP-082: a mask whose elements return as lanes: their
                 // bits are gathered in a scratch register, then moved to
-                // a temporary.
-                let bits = self.scratch_reg(Class::Gpr);
+                // a temporary (WP-167: a scratch register of the result's
+                // class).
+                let bits = self.scratch_reg(class);
                 for part in &asg.ret {
                     let Place::Reg(from) = part.place else {
                         return self.bug("a part of a return value on the stack");
@@ -787,8 +790,10 @@ impl<'a, T: Target> FnCx<'a, T> {
                     }
                     LaneLoc::Frame(mem_source.1.offset_by(part.offset))
                 }
-                CallArg::Value(value) if class == Class::Gpr => {
-                    let bits = self.scratch_reg(Class::Gpr);
+                // WP-167: a register value, in a scratch register of its
+                // class (a mask's bits; a lone `<1 x i128>` on AArch64).
+                CallArg::Value(value) => {
+                    let bits = self.scratch_reg(class);
                     self.put(value, bits)?;
                     LaneLoc::Reg(bits)
                 }

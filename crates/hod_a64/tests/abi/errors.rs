@@ -71,9 +71,12 @@ fn every_name() {
     let most_bytes = array(i8, u64::from(MAX_PIECES));
     let huge = array(i64, 1 << 30);
     let huge_bytes = array(i8, 1 << 33);
+    // WP-167: a lone `<1 x i128>` passes; odd and wider integer
+    // elements do not.
+    let (i7, i256) = (t.int(7).expect("a type"), t.int(256).expect("a type"));
     let mut vector = |elem, len| t.vector(elem, len).expect("a type");
-    // WP-101: a lone `<1 x i128>`; wider ones pass.
-    let v1i128 = vector(i128, 1);
+    let v2i7 = vector(i7, 2);
+    let v1i256 = vector(i256, 1);
     // WP-082: masks of up to 64 elements and widened vectors pass.
     let v65i1 = vector(TypeId::I1, 65);
     let v128i1 = vector(TypeId::I1, 128);
@@ -154,7 +157,8 @@ fn every_name() {
         ("abi:addrspace", refusal(&t, c, void, &[(far, NONE)], None)),
         ("abi:addrspace", refusal(&t, c, void, &[(far_vector, NONE)], None)),
         ("abi:addrspace", refusal(&t, c, (far, NONE), &[], None)),
-        ("abi:vector-element", refusal(&t, c, void, &[(v1i128, NONE)], None)),
+        ("abi:vector-element", refusal(&t, c, void, &[(v2i7, NONE)], None)),
+        ("abi:vector-element", refusal(&t, c, (v1i256, NONE), &[], None)),
         ("abi:vector-element", refusal(&t, c, void, &[(v2x86, NONE)], None)),
         ("abi:mask-wide", refusal(&t, c, void, &[(v65i1, NONE)], None)),
         ("abi:mask-wide", refusal(&t, c, (v128i1, NONE), &[], None)),

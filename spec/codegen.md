@@ -1840,11 +1840,15 @@ call each from the places named with the other items.
   each `i128` element travels as an `i128` (two general registers under
   the even-register rule, or a 16-aligned stack slot), as both LLVM
   selectors in 19 and 22 pass it; an `fp128` element in a `Q` register.
-  A lone `<1 x i128>` argument or result stays `abi:vector-element`: it
-  is a `Q`-register value in two general registers, and the call
-  sequence moves no value between classes (§7.2). In a structure or an
-  array it is memory and passes (`std::experimental::simd<__int128>`
-  passes `[1 x <1 x i128>] alignstack(16)` and returns `{<1 x i128>}`).
+  A lone `<1 x i128>` argument or result (WP-167; libc++'s
+  `__load_vector` returns one for `std::find` over `__int128`) travels
+  as an `i128` too: it is a `Q`-register value, so its two pieces are
+  `Lanes` parts of one 64-bit limb each (§7.2), which `vcall.rs` moves
+  with `umov xN, vM.d[i]` and `ins vM.d[i], xN` (through `x16` for a
+  stack slot) between the scratch `v30` and the place. In a structure or
+  an array it is memory and its pieces are plain bytes
+  (`std::experimental::simd<__int128>` passes `[1 x <1 x i128>]
+  alignstack(16)` and returns `{<1 x i128>}`).
 - **Arrays of `bfloat`** (HFAs and `[n x bfloat]`, `spec/abi-a64.md`
   §3.3): passed as a block of `H` registers when `NSRN + n <= 8`, where
   `llc` 22 (a block) and `llc` 19 (piece by piece) place them alike;
@@ -3685,7 +3689,11 @@ element's bits; WP-082). The call sequence never copies a `Lanes` part
 as bytes: it hands it to the target's `lanes_out(part, from, to)` and
 `lanes_in(part, from, to)`, each side a `LaneLoc` (a register, or a
 frame place: the stack slot, or the vector's image in a `Mem` value);
-a `Gpr` mask value is gathered in the general scratch register. The
+a register value is gathered in (or produced from) the scratch register
+of its own class: a `Gpr` mask in the general one, an `Fpr` value in
+the vector one (WP-167: AArch64's lone `<1 x i128>`, a `Q` register
+whose two 64-bit limbs travel as `Lanes { bits: 64, lane: 8, len: 2 }`
+parts, `first` the limb). The
 default hooks refuse with `call:part-lanes`;
 `Assignment { args, ret, ret_memory, sret_returned_in, stack_size, va,
 vector_regs_used }`. `ret_memory` is set when a return value does not fit

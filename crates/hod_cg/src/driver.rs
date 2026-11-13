@@ -454,7 +454,8 @@ impl<'a, T: Target> FnCx<'a, T> {
         parts: std::ops::Range<usize>,
     ) -> CgResult<()> {
         let t = self.target;
-        let bits = self.scratch_reg(Class::Gpr);
+        // WP-167: a scratch register of the value's class.
+        let bits = self.scratch_reg(class);
         for at in parts {
             let part = self.s.fn_asg.args[at];
             t.lanes_in(self, &part, incoming(part.place), LaneLoc::Reg(bits))?;

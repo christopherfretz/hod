@@ -1,4 +1,5 @@
-//! DWARF 5 debug information writer (`spec/dwarf.md`).
+//! DWARF 5 debug information writer, and DWARF 4 by transcoding its
+//! units (`spec/dwarf.md`, §6.20).
 //!
 //! Implemented: the line table (§4), the line policy (§5), and the core
 //! of the DIE writer (§6.1 to §6.3): the fixed abbreviation table, the
@@ -49,6 +50,7 @@ pub mod abbrev;
 mod call_sites;
 mod coro;
 mod die;
+mod dwarf4;
 mod early;
 mod func;
 mod global;
@@ -72,6 +74,7 @@ pub mod x86_64;
 pub use call_sites::DEBUG_CALL_SITES;
 pub use coro::{CoroAt, CoroPlace};
 pub use die::{CodeSpan, DieSections, GlobalAddr, UnitInput, UnitPlan, write_debug_info};
+pub use dwarf4::{DWARF_4_SHAPE, Dwarf4Sections, write_debug_info4};
 pub use early::{LOCAL_TYPE_SCOPE, check_functions};
 pub use func::{FunctionInput, LocalPlace, LocalRow, ScopeRow};
 pub use inline::{

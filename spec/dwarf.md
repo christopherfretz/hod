@@ -1580,7 +1580,8 @@ unit's `LineTablesOnly` and compressed sections are WP-061's.
 keeps them, its code generator being absent). One row is new and refused
 on both: `debug:dwarf-version`, a compile unit that is not `NoDebug` in a
 module whose `Dwarf Version` is not 5. No flag is LLVM's DWARF 4 (`llc`
-22 writes version 4 then); `hod_dwarf` writes 5 only.
+22 writes version 4 then). Since WP-114 the flag 4 is written too
+(§6.20); 2, 3 and no flag stay refused.
 
 **Declines, not errors** (`crates/hod/src/back.rs`, the bridge): the
 module's `ModuleEmitter` is made before any function is compiled, so
@@ -1844,8 +1845,8 @@ parameter twice: the second declaration was the `phi`'s.
   corpus's optimized modules also have `#dbg_value`
   (`debug:dbg-value`).
 
-**DWARF 4** stays `debug:dwarf-version` (§6.12); the measured plan is in
-`spec/landed/dwarf/WP-098.md`.
+**DWARF 4** stayed `debug:dwarf-version` (§6.12) until WP-114 wrote it
+(§6.20); the measured plan was `spec/landed/dwarf/WP-098.md`.
 
 **The census** (`scripts/debug-census.sh`, regenerated: 123 modules, 44
 libc++ tests, `stl.cpp` and four bench sources by clang 19, clang 22 and
@@ -1943,7 +1944,7 @@ two module-level ones are checked by the facade before code generation,
 | `debug:split-dwarf-inlining` | `splitDebugInlining: true` (LLVM's default when the field is omitted) and inlined code: `llc` then repeats the inlined subroutines in the skeleton |
 | `debug:split-reduced-unit` | a `LineTablesOnly` unit with function DIEs in split mode (today refused earlier as `debug:line-tables-inlined`; kept for when that is lifted) |
 | `debug:split-dwarf-name` | a unit with a split unit and no `splitDebugFilename`, or (facade) a name that is not `-split-dwarf-file`'s: hod writes the unit's name, `llc` the option's |
-| `debug:split-dwarf-4` | (facade) split DWARF with `Dwarf Version` below 5 (GNU fission: `DW_AT_GNU_dwo_name`, `DW_FORM_GNU_addr_index`); today `debug:dwarf-version` refuses such a module first |
+| `debug:split-dwarf-4` | (facade) split DWARF with `Dwarf Version` below 5 (GNU fission: `DW_AT_GNU_dwo_name`, `DW_FORM_GNU_addr_index`); since WP-114 version 4 is written (§6.20) and this name refuses it with split DWARF |
 
 **Hooks** (one call each): `UnitPlan::build` calls `split::check_unit`
 (`die.rs`); `DebugLines::finish` calls `write_unit_dies` with the
@@ -2054,8 +2055,8 @@ The same writer and the same bridge for x86-64; what the target changes
 is in `crates/hod_dwarf/src/x86_64.rs`, and `classify` lets `-g` modules
 through for x86-64 (the rows `debug:module-flags`, `debug:subprogram`,
 `debug:slot-variables`, `debug:locations` are `ON` for both targets;
-`debug:dwarf-version` stays AArch64's: DWARF 4 is refused by name on
-x86-64 too).
+`debug:dwarf-version` stays AArch64's: versions other than 4 and 5 are
+refused by name on x86-64 too; version 4 is written on both, §6.20).
 
 **Register numbers** (System V psABI, "DWARF Register Number Mapping"):
 `rax` 0, `rdx` 1, `rcx` 2, `rbx` 3, `rsi` 4, `rdi` 5, `rbp` 6, `rsp` 7,
@@ -2200,6 +2201,101 @@ Evidence: `xtask/tests/debug_x64.rs`, `tests/debug/x64_places.c`,
 Evidence: `crates/hod_a64/tests/dies_followups.rs`,
 `crates/hod_a64/tests/dies_label.rs`, `xtask/tests/debug_post_index.rs`,
 `spec/landed/dwarf/WP-111.md`.
+
+### 6.20 DWARF version 4 (implemented, WP-114)
+
+A module whose flag `"Dwarf Version"` is `i32 4` (clang's and kiln++'s
+`-gdwarf-4`) is written as `llc` 19 and 22 write it. Every other version
+is refused by `classify` as `debug:dwarf-version`: 2, 3, and **no flag**
+(for which `llc` also writes 4, the same tree as flag 4; hod's own tests
+write IR without the flag, so it stays a refusal rather than a silent
+version change). Split DWARF with version 4 (`-gsplit-dwarf -gdwarf-4`,
+GNU fission) is refused as `debug:split-dwarf-4` (§6.15, the facade's
+check and `hod_dwarf::split`).
+
+**Design: a transcoder.** `UnitPlan::version` is 4 or 5
+(`dwarf4::version_of`). The DIE writer is unchanged: a version 4 unit is
+written by `Writer::unit` as DWARF 5 into scratch buffers, then
+rewritten attribute by attribute (`crates/hod_dwarf/src/dwarf4.rs`,
+`Out::unit`), driven by the abbreviation table of §6.1: the family of
+each code (`BASES`) and its mask give the slots and their forms, so the
+walk needs no knowledge of what the DIE means. Abbreviation **codes are
+the same** as DWARF 5's; the version 4 table (written for the codes the
+units use) gives each the version 4 tag and forms and omits the
+attributes version 4 does not have. A family appended after
+`fam::SPLIT_COMPILE_UNIT` is refused as `debug:dwarf-4-shape` until its
+version 4 shape is checked against `llc` (WP-113's call sites, whose
+version 4 form is `DW_TAG_GNU_call_site`, are such). DWARF 5 never
+enters the module: the hooks are `die.rs` (`UnitPlan::version`, and
+`check_dwarf5`, which refuses a version 4 plan in the version 5 writer),
+`split.rs` (`write_unit_dies` hands version 4 units to
+`write_debug_info4`), `types.rs` (the subrange's default lower bound)
+and the bridge's `UnitPlan::line_program`.
+
+**What changes against §6.2–§6.19** (each found by comparing `llc`'s
+version 4 and version 5 trees of the same IR: `tests/debug`, the corpus
+and the census, both targets):
+
+| | DWARF 5 | DWARF 4 |
+|---|---|---|
+| unit header | 12 bytes: version 5, `DW_UT_compile`, address size, abbreviation offset | 11 bytes: version 4, abbreviation offset (`ABS32` against `.debug_abbrev`), address size 8 |
+| strings | `DW_FORM_strx1..4` into `.debug_str_offsets` | `DW_FORM_strp` (`ABS32` against `.debug_str`, addend the string's offset); no `.debug_str_offsets` |
+| addresses | `DW_FORM_addrx`, `DW_OP_addrx` into `.debug_addr` | `DW_FORM_addr`, `DW_OP_addr`, 8 bytes with the entry's relocation (`ABS64`; x86-64 TLS keeps `DW_OP_const8u` + `R_X86_64_DTPOFF64` + `DW_OP_GNU_push_tls_address`); no `.debug_addr` |
+| ranges | `DW_FORM_rnglistx` / `sec_offset` into `.debug_rnglists` | `DW_FORM_sec_offset` into `.debug_ranges` (`ABS32`) |
+| unit attributes | `str_offsets_base`, `addr_base`, `rnglists_base` | none of the three |
+| static data members | `DW_TAG_variable` (families 40, 54) | `DW_TAG_member`, same attributes |
+| deleted member functions | `DW_AT_deleted` | not written |
+| file numbers | `decl_file`, `call_file` and the line program's files from 0 | the same files from 1 (index + 1) |
+| default lower bound | §6.8 (`default_lower_bound`) | -1 for languages `DW_LANG_OpenCL` (0x15) and above, so `llc` writes `DW_AT_lower_bound` wherever the IR has `lowerBound` (`dwarf4::default_lower_bound`) |
+
+**`.debug_ranges`** (`Out::ranges_list`): a list is pairs of 8-byte
+start and end, then 16 zero bytes. A block's list, in a unit with one
+code span (the unit has `low_pc`), is offsets from that span's start
+with no relocation; in a unit with several spans, every entry is an
+absolute address with an `ABS64` relocation (the symbol of the span
+plus the offset), as is the unit's own list (one pair per merged span,
+§6.4). DIE expressions with `DW_OP_addrx` are rewritten to `DW_OP_addr`
+and their relocations moved; an expression whose length changes and
+that holds a branch (`DW_OP_skip`, `DW_OP_bra`) is refused as
+`debug:dwarf-4-shape` (no producer writes one).
+
+**The version 4 line table** (`line.rs`, `LineProgram::for_version`,
+`dwarf4::write_line_header`): version 4, `header_length`,
+`minimum_instruction_length` 1, `maximum_operations_per_instruction` 1,
+`default_is_stmt` 1, `line_base` -5, `line_range` 14, `opcode_base` 13
+and its 12 lengths; `include_directories` as NUL-terminated strings
+(directories 1 and up of §4.4's table; directory 0 is the unit's
+`comp_dir` and is not written), ended by an empty string; `file_names`
+as name, ULEB directory, mtime 0, length 0, ended by a 0 byte; files are
+numbered from 1 (`DW_LNS_set_file` is the file + 1). No MD5, no source,
+no `.debug_line_str`: when every unit of the object is version 4,
+`LineSections::line_str` is `.debug_line` itself, which no relocation
+names.
+
+**Permitted differences**: §6.7's, unchanged. Two show up differently in
+version 4: the `sret` location list is in `.debug_loc` (`llc`'s unit has
+no `loclists_base` and its `.debug_info` a relocation against
+`.debug_loc`; the harness's `trees` recognises both,
+`xtask/src/debug/trees.rs`); hod's file table holds every `DiFile`, so
+its `file_names` can name files `llc`'s does not.
+
+**Errors**: `debug:dwarf-4-shape` (`hod_dwarf::DWARF_4_SHAPE`), a family
+or an expression whose version 4 shape is not checked;
+`debug:split-dwarf-4` (`hod_dwarf::split::SPLIT_DWARF_4` and the
+facade), split DWARF with version 4; `debug:dwarf-version` (`classify`),
+any version other than 4 and 5.
+
+**Speed**: DWARF 5 does not pass through the module (its objects are
+byte-identical to before WP-114 on every `-g` module of the corpus, the
+census and the test sources). Version 4 costs the version 5 writer plus
+one linear pass over the unit's bytes, about 1.3 times version 5's cost
+per DIE; see `spec/landed/dwarf/WP-114.md`.
+
+Evidence: `xtask/tests/debug_dwarf4.rs` (trees, forms, line headers,
+ranges, lower bounds, sessions on both targets), `tests/debug/dwarf4_*`
+(the twins of nine debugger tests and `dwarf4_shapes.cpp`),
+`crates/hod/tests/dwarf4.rs` (the facade's refusals and objects),
+`spec/landed/dwarf/WP-114.md`.
 
 ## 7. Speed and memory
 
@@ -2740,7 +2836,7 @@ the command line.
 
 **`classify`'s `debug:*` refusals** dropped on AArch64 with WP-087
 (§6.12); `debug:dwarf-version` replaces them for units other than DWARF
-5 (open question 6).
+5 and (since WP-114, §6.20) 4.
 
 ## 10. Follow-on work packages
 
@@ -2780,6 +2876,7 @@ Rows for `docs/BACKLOG.md` (ids to be assigned; "this" is WP-052):
    lldb read. Write version 4 only if a consumer that needs it shows up
    (`hod_ir` maps the flag as `ModuleProps::dwarf_version`,
    `crates/hod_ir/src/props.rs:140`, so the bridge can refuse or warn).
+   Answered (WP-114): version 4 is written as `llc` writes it (§6.20).
 7. Every code from 128 up takes two ULEB bytes, where `llc`'s codes take
    one. That covers the core families (698 to 753) and most type families
    (`base_type` at 129, and the cv-qualified, reference and composite

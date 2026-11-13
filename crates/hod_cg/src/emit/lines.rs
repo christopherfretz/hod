@@ -141,13 +141,8 @@ impl<'m> DebugLines<'m> {
             let mut globals = cu.globals.to_vec();
             globals.sort_unstable();
             let dies = has_dies(cu.emission_kind);
-            units.push(Unit {
-                plan,
-                program: LineProgram::new(arch),
-                code: Vec::new(),
-                globals,
-                dies,
-            });
+            let program = plan.line_program(arch); // WP-114: DWARF 4 (`spec/dwarf.md` §6.20)
+            units.push(Unit { plan, program, code: Vec::new(), globals, dies });
         }
         if units.is_empty() {
             return Ok(None);

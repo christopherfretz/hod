@@ -1309,6 +1309,8 @@ impl<'a> Writer<'a> {
                     return Ok(());
                 }
                 let default = default_lower_bound(plan.cu.language);
+                let default =
+                    crate::dwarf4::default_lower_bound(plan.version, plan.cu.language, default); // WP-114
                 let lower = match r.lower_bound {
                     DiBound::Const(v) if default == -1 || v != default => Some(v),
                     _ => None,

@@ -98,10 +98,9 @@ fn a_dwarf_5_module_is_compiled_with_its_dies() {
 
 #[test]
 fn a_module_without_the_version_flag_is_declined_as_dwarf_4() {
-    // No `Dwarf Version` is LLVM's 4; hod writes 5 only.
+    // No `Dwarf Version` is LLVM's 4; hod writes 4 only when the flag says
+    // so (WP-114, `crates/hod/tests/dwarf4.rs`).
     let text = TINY.replace("!llvm.module.flags = !{!2, !3}", "!llvm.module.flags = !{!3}");
-    assert_eq!(declined(&text).0, "debug:dwarf-version");
-    let text = TINY.replace(r#""Dwarf Version", i32 5"#, r#""Dwarf Version", i32 4"#);
     assert_eq!(declined(&text).0, "debug:dwarf-version");
 }
 

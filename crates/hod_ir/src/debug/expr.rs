@@ -9,7 +9,7 @@
 use std::fmt;
 
 use crate::error::{IrErrorKind, IrResult, err};
-use crate::intern::{Hasher64, InternTable, Seg, next_id, pool_start};
+use crate::intern::{Hasher64, InternTable, Layered, Layering, NoLayer, Seg, next_id, pool_start};
 
 /// A debug expression of a module (§6.4). Equal expressions have equal
 /// ids.
@@ -255,17 +255,44 @@ impl Iterator for DiOps<'_> {
 
 /// The expressions of a module: one element pool, a span per expression.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ExprTable {
-    elements: Seg<u64>,
+pub(crate) struct ExprTable<L: Layering = NoLayer> {
+    elements: Seg<u64, L>,
     /// `(start, len)` in `elements`; entry 0 is the empty expression and
     /// exists once any other does.
-    spans: Seg<(u32, u32)>,
-    interner: Option<InternTable>,
+    spans: Seg<(u32, u32), L>,
+    interner: Option<InternTable<L>>,
     /// The distinct `Other` elements met, for `classify`.
     others: Vec<u64>,
 }
 
 impl ExprTable {
+    pub(crate) fn seed(&self) -> ExprTable<Layered> {
+        ExprTable {
+            elements: self.elements.seed(),
+            spans: self.spans.seed(),
+            interner: self.interner.as_ref().map(InternTable::seed),
+            others: self.others.clone(),
+        }
+    }
+}
+
+impl ExprTable<Layered> {
+    pub(crate) fn fork(&self) -> ExprTable<Layered> {
+        ExprTable {
+            elements: self.elements.fork(),
+            spans: self.spans.fork(),
+            interner: self.interner.as_ref().map(InternTable::fork),
+            others: self.others.clone(),
+        }
+    }
+
+    /// The elements of the expressions from span `from` on, each owned.
+    pub(crate) fn owned_since(&self, from: usize) -> Vec<Box<[u64]>> {
+        (from..self.spans.len()).map(|id| self.elements(ExprId(id as u32)).into()).collect()
+    }
+}
+
+impl<L: Layering> ExprTable<L> {
     /// The number of expressions, the empty one included.
     pub(crate) fn len(&self) -> usize {
         self.spans.len().max(1)
@@ -374,36 +401,6 @@ impl ExprTable {
     pub(crate) fn mark(&self) -> usize {
         self.spans.len()
     }
-
-    pub(crate) fn freeze(&mut self) {
-        self.elements.freeze();
-        self.spans.freeze();
-        if let Some(interner) = &mut self.interner {
-            interner.freeze();
-        }
-    }
-
-    pub(crate) fn fork(&self) -> ExprTable {
-        ExprTable {
-            elements: self.elements.fork(),
-            spans: self.spans.fork(),
-            interner: self.interner.as_ref().map(InternTable::fork),
-            others: self.others.clone(),
-        }
-    }
-
-    pub(crate) fn thaw(&mut self) {
-        self.elements.thaw();
-        self.spans.thaw();
-        if let Some(interner) = &mut self.interner {
-            interner.thaw();
-        }
-    }
-
-    /// The elements of the expressions from span `from` on, each owned.
-    pub(crate) fn owned_since(&self, from: usize) -> Vec<Box<[u64]>> {
-        (from..self.spans.len()).map(|id| self.elements(ExprId(id as u32)).into()).collect()
-    }
 }
 
 /// What is wrong with the placement of `ops`, by the rules of LLVM's
@@ -445,7 +442,7 @@ mod tests {
     /// nothing.
     #[test]
     fn expressions_are_interned() {
-        let mut table = ExprTable::default();
+        let mut table = <ExprTable>::default();
         assert_eq!(table.add_ops(&[]).unwrap(), ExprId::EMPTY);
         assert_eq!(table.bytes(), 0);
         assert_eq!(table.len(), 1);
@@ -467,7 +464,7 @@ mod tests {
     /// without its operands is refused.
     #[test]
     fn unknown_elements_are_kept_and_counts_checked() {
-        let mut table = ExprTable::default();
+        let mut table = <ExprTable>::default();
         let id = table.add_elements(&[0x90, 7, 0x06]).unwrap();
         assert_eq!(
             table.ops(id).collect::<Vec<_>>(),
@@ -500,7 +497,7 @@ mod tests {
     /// §6.4: LLVM's placement rules.
     #[test]
     fn placement_rules() {
-        let mut table = ExprTable::default();
+        let mut table = <ExprTable>::default();
         let mut check = |ops: &[DiOp]| {
             let id = table.add_ops(ops).unwrap();
             order_error(table.ops(id)).is_none()

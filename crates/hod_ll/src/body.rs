@@ -10,8 +10,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use hod_ir::{
-    BlockId, Body, DiId, ExprId, FunctionBuilder, Intrinsic, IrErrorKind, LocId, Module, NoCode,
-    ParamAttrs, TypeId, TypeKind, Value,
+    BlockId, Body, DiId, ExprId, FunctionBuilder, Intrinsic, IrErrorKind, Layering, LocId, Module,
+    NoCode, NoLayer, ParamAttrs, TypeId, TypeKind, Value,
 };
 
 use crate::debug::{Handle, INVALID};
@@ -253,9 +253,9 @@ impl<'t, 'a> BodyParser<'t, 'a> {
     /// # Errors
     /// [`LlError`] with the position of the first thing that is not LLVM
     /// IR, or that `hod_ir` refuses.
-    pub fn parse(
+    pub fn parse<L: Layering>(
         &mut self,
-        module: &mut Module,
+        module: &mut Module<L>,
         function: &FunctionText,
     ) -> Result<Option<Body>, LlError> {
         // The body is built in the parser's own storage, whose tables
@@ -276,7 +276,11 @@ impl<'t, 'a> BodyParser<'t, 'a> {
 
     /// Parses the body of `function` into the parser's storage; whether
     /// a body was built there ([`BodyParser::built`]).
-    fn read(&mut self, module: &mut Module, function: &FunctionText) -> Result<bool, LlError> {
+    fn read<L: Layering>(
+        &mut self,
+        module: &mut Module<L>,
+        function: &FunctionText,
+    ) -> Result<bool, LlError> {
         let source = self.text.source();
         self.unsupported.clear();
         if function.sym.index() >= module.symbol_count() {
@@ -402,7 +406,11 @@ pub fn parse_bodies_on<H>(
 impl hod_ir::BodySource for BodyParser<'_, '_> {
     type Error = LlError;
 
-    fn read_body(&mut self, module: &mut Module, index: usize) -> Result<Option<Body>, LlError> {
+    fn read_body<L: Layering>(
+        &mut self,
+        module: &mut Module<L>,
+        index: usize,
+    ) -> Result<Option<Body>, LlError> {
         let text = self.text;
         self.parse(module, &text.functions()[index])
     }
@@ -420,8 +428,8 @@ impl hod_ir::BodySource for BodyParser<'_, '_> {
 
 /// Parses one body; with a second pass before it if the text refers to a
 /// block that has no label before reaching it (`spec/ll.md` §11.3).
-fn body(
-    p: &mut Parser<'_, '_>,
+fn body<L: Layering>(
+    p: &mut Parser<'_, '_, L>,
     state: &mut FnState,
     function: &FunctionText,
 ) -> PResult<Option<Body>> {
@@ -440,8 +448,8 @@ fn body(
 
 /// One pass over the body. With `numbering`, nothing is built to be
 /// kept: the pass finds the numbers of the blocks without labels.
-fn build(
-    p: &mut Parser<'_, '_>,
+fn build<L: Layering>(
+    p: &mut Parser<'_, '_, L>,
     state: &mut FnState,
     function: &FunctionText,
     numbering: bool,
@@ -507,8 +515,8 @@ fn build(
 }
 
 /// The parser of one function body.
-pub(crate) struct Fx<'p, 'a, 'm> {
-    pub p: &'p mut Parser<'a, 'm>,
+pub(crate) struct Fx<'p, 'a, 'm, L: Layering = NoLayer> {
+    pub p: &'p mut Parser<'a, 'm, L>,
     pub b: FunctionBuilder,
     pub s: &'p mut FnState,
     /// Where the body ends: the offset of its `}`.
@@ -535,7 +543,7 @@ enum Key<'k> {
     Name(Cow<'k, [u8]>),
 }
 
-impl<'a> Fx<'_, 'a, '_> {
+impl<'a, L: Layering> Fx<'_, 'a, '_, L> {
     // ---- local names ----
 
     fn key(&self, token: Token) -> PResult<Key<'a>> {

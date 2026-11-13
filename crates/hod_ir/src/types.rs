@@ -28,7 +28,7 @@
 
 use crate::error::{IrErrorKind, IrResult, err};
 use crate::ids::TypeId;
-use crate::intern::{Hasher64, InternTable, Seg, next_id, pool_start};
+use crate::intern::{Hasher64, InternTable, Layered, Layering, NoLayer, Seg, next_id, pool_start};
 use crate::target::{DataLayout, MAX_ADDR_SPACE};
 
 /// The largest integer width LLVM accepts (`IntegerType::MAX_INT_BITS`).
@@ -194,18 +194,18 @@ fn align_up(size: u64, align_log2: u8) -> u64 {
 
 /// The interned types of a module, with their layout.
 #[derive(Clone, Debug)]
-pub struct TypeTable {
+pub struct TypeTable<L: Layering = NoLayer> {
     layout: DataLayout,
-    data: Seg<TypeData>,
+    data: Seg<TypeData, L>,
     /// Struct field types; a struct owns a contiguous range.
-    fields: Seg<TypeId>,
+    fields: Seg<TypeId, L>,
     /// Struct field byte offsets, parallel to `fields`.
-    field_offsets: Seg<u64>,
+    field_offsets: Seg<u64, L>,
     /// Function parameter types; a function type owns a contiguous range.
-    params: Seg<TypeId>,
+    params: Seg<TypeId, L>,
     /// Target extension type names.
-    names: Seg<Box<str>>,
-    interner: InternTable,
+    names: Seg<Box<str>, L>,
+    interner: InternTable<L>,
     opaque_count: u32,
 }
 
@@ -250,89 +250,19 @@ impl TypeTable {
         table
     }
 
-    /// The data layout the table computes layouts for.
-    pub fn data_layout(&self) -> &DataLayout {
-        &self.layout
-    }
-
-    /// Number of types in the table.
-    pub fn len(&self) -> usize {
-        self.data.len()
-    }
-
-    /// Never true: the fixed types are always present.
-    pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
-    }
-
     // ---- §5.1 reading bodies in parallel ----
 
-    /// Moves every type into a base that forks share.
-    pub(crate) fn freeze(&mut self) {
-        self.data.freeze();
-        self.fields.freeze();
-        self.field_offsets.freeze();
-        self.params.freeze();
-        self.names.freeze();
-        self.interner.freeze();
-    }
-
-    /// A table with this one's (frozen) types and none of its own.
-    pub(crate) fn fork(&self) -> TypeTable {
+    /// The base of the forks of parallel reading: a copy of every type.
+    pub(crate) fn seed(&self) -> TypeTable<Layered> {
         TypeTable {
             layout: self.layout.clone(),
-            data: self.data.fork(),
-            fields: self.fields.fork(),
-            field_offsets: self.field_offsets.fork(),
-            params: self.params.fork(),
-            names: self.names.fork(),
-            interner: self.interner.fork(),
+            data: self.data.seed(),
+            fields: self.fields.seed(),
+            field_offsets: self.field_offsets.seed(),
+            params: self.params.seed(),
+            names: self.names.seed(),
+            interner: self.interner.seed(),
             opaque_count: self.opaque_count,
-        }
-    }
-
-    /// Back to one layer where no fork shares the base.
-    pub(crate) fn thaw(&mut self) {
-        self.data.thaw();
-        self.fields.thaw();
-        self.field_offsets.thaw();
-        self.params.thaw();
-        self.names.thaw();
-        self.interner.thaw();
-    }
-
-    /// Whether no type was added since the table was frozen or forked.
-    pub(crate) fn local_is_empty(&self) -> bool {
-        self.data.local_is_empty()
-    }
-
-    /// The types from `from` on, copied, for [`TypeTable::adopt`]: a
-    /// table that can describe only those.
-    pub(crate) fn tail(&self, from: usize) -> TypeTable {
-        let fields = (from..self.data.len())
-            .filter(|&id| self.data[id].tag == Tag::Struct)
-            .map(|id| self.data[id].a as usize)
-            .min()
-            .unwrap_or(self.fields.len());
-        let params = (from..self.data.len())
-            .filter(|&id| self.data[id].tag == Tag::Function)
-            .map(|id| self.data[id].b as usize)
-            .min()
-            .unwrap_or(self.params.len());
-        let names = (from..self.data.len())
-            .filter(|&id| self.data[id].tag == Tag::TargetExt)
-            .map(|id| self.data[id].a as usize)
-            .min()
-            .unwrap_or(self.names.len());
-        TypeTable {
-            layout: self.layout.clone(),
-            data: self.data.tail(from),
-            fields: self.fields.tail(fields),
-            field_offsets: self.field_offsets.tail(fields),
-            params: self.params.tail(params),
-            names: self.names.tail(names),
-            interner: InternTable::new(),
-            opaque_count: 0,
         }
     }
 
@@ -342,7 +272,7 @@ impl TypeTable {
     /// the same order, that made them in the fork.
     pub(crate) fn adopt(
         &mut self,
-        tail: &TypeTable,
+        tail: &TypeTable<Layered>,
         first: usize,
         map: &mut Vec<TypeId>,
         base: usize,
@@ -377,6 +307,74 @@ impl TypeTable {
             map.push(made);
         }
         Ok(())
+    }
+}
+
+impl TypeTable<Layered> {
+    /// A table with this seed's types and none of its own.
+    pub(crate) fn fork(&self) -> TypeTable<Layered> {
+        TypeTable {
+            layout: self.layout.clone(),
+            data: self.data.fork(),
+            fields: self.fields.fork(),
+            field_offsets: self.field_offsets.fork(),
+            params: self.params.fork(),
+            names: self.names.fork(),
+            interner: self.interner.fork(),
+            opaque_count: self.opaque_count,
+        }
+    }
+
+    /// Whether no type was added since the table was forked.
+    pub(crate) fn local_is_empty(&self) -> bool {
+        self.data.local_is_empty()
+    }
+
+    /// The types from `from` on, copied, for [`TypeTable::adopt`]: a
+    /// table that can describe only those.
+    pub(crate) fn tail(&self, from: usize) -> TypeTable<Layered> {
+        let fields = (from..self.data.len())
+            .filter(|&id| self.data[id].tag == Tag::Struct)
+            .map(|id| self.data[id].a as usize)
+            .min()
+            .unwrap_or(self.fields.len());
+        let params = (from..self.data.len())
+            .filter(|&id| self.data[id].tag == Tag::Function)
+            .map(|id| self.data[id].b as usize)
+            .min()
+            .unwrap_or(self.params.len());
+        let names = (from..self.data.len())
+            .filter(|&id| self.data[id].tag == Tag::TargetExt)
+            .map(|id| self.data[id].a as usize)
+            .min()
+            .unwrap_or(self.names.len());
+        TypeTable {
+            layout: self.layout.clone(),
+            data: self.data.tail(from),
+            fields: self.fields.tail(fields),
+            field_offsets: self.field_offsets.tail(fields),
+            params: self.params.tail(params),
+            names: self.names.tail(names),
+            interner: InternTable::new(),
+            opaque_count: 0,
+        }
+    }
+}
+
+impl<L: Layering> TypeTable<L> {
+    /// The data layout the table computes layouts for.
+    pub fn data_layout(&self) -> &DataLayout {
+        &self.layout
+    }
+
+    /// Number of types in the table.
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Never true: the fixed types are always present.
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
     }
 
     // ---- constructors ----

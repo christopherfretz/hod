@@ -6,7 +6,7 @@
 
 use std::borrow::Cow;
 
-use hod_ir::{DiId, DiKind, DiLocation, ExprId, LocId, Value};
+use hod_ir::{DiId, DiKind, DiLocation, ExprId, Layering, LocId, Value};
 
 use crate::body::{Fx, Ops};
 use crate::codes::func;
@@ -54,7 +54,7 @@ enum Use {
     Other,
 }
 
-impl Fx<'_, '_, '_> {
+impl<L: Layering> Fx<'_, '_, '_, L> {
     /// What metadata `id` is: of the module, or of this function.
     fn md_use(&self, id: u64) -> BcResult<Use> {
         let debug = &self.bits.debug;

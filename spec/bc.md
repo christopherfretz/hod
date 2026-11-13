@@ -591,8 +591,8 @@ borrows the input and carries what a body reader needs:
 **Reading bodies in parallel** (WP-063). Bodies are independent of each
 other given `ModuleBits`, which is shared read-only. Each thread's reader
 (`BodyReader`, §11.1) keeps its own copy of the value table and reads
-against a fork of the frozen module (`spec/ir.md` §5.1), which shares
-every table and copies none; the constants a body builds go to the fork,
+against a fork of a seed of the module (`spec/ir.md` §5.1): one copy
+of its tables per parallel read, shared by every fork; the constants a body builds go to the fork,
 and the calling thread adopts them into the module in file order. A
 module-level constant built on first use (`constant`) is built in the
 fork and adopted like the rest, so it gets the id the sequential reader
@@ -756,7 +756,7 @@ instead of text.
 
 **In parallel** (WP-063). `read_bodies_on` reads through
 `hod_ir::read_bodies` (`spec/ir.md` §5.1): one `BodyReader` per thread,
-against a fork of the frozen module, over the shared `ModuleBits` (§7).
+against a fork of a seed of the module, over the shared `ModuleBits` (§7).
 `each(host, function, Ok(body) | Err(constructs))` gets the host back
 (the module is `module(host)`) and returns whether to go on. Its promise
 is determinism: the bodies delivered and their order, the unsupported

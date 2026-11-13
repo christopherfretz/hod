@@ -1,5 +1,5 @@
 //! `spec/bc.md` §7, `spec/ir.md` §5.1: bodies read on several threads,
-//! against forks of the frozen module, are the sequential reader's
+//! against forks of a seed of the module, are the sequential reader's
 //! bodies, and the module ends as the sequential reader leaves it: every
 //! table entry by entry, every id, every unsupported construct, and the
 //! first error in file order.

@@ -3,6 +3,7 @@
 //! call-site attributes `hod_ir` keeps, operand bundles, and the calls of
 //! intrinsics that generate no code.
 
+use hod_ir::Layering;
 use hod_ir::{
     BlockId, Bundle, CallConv, CallDesc, Const, FnAttrs, InlineAsm, Intrinsic, NoCode, Opcode,
     ParamAttrs, SymId, TailKind, TypeId, TypeKind, Value, no_code_intrinsic, resolve_intrinsic,
@@ -74,7 +75,7 @@ fn not_attr(word: &[u8]) -> bool {
     )
 }
 
-impl Fx<'_, '_, '_> {
+impl<L: Layering> Fx<'_, '_, '_, L> {
     /// Parameter or return attributes, if the current token can start
     /// one.
     fn value_attrs(&mut self) -> PResult<ParamAttrs> {

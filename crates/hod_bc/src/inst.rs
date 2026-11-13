@@ -4,8 +4,8 @@
 
 use hod_ir::{
     AtomicOrdering, BlockId, Bundle, CallConv, CallDesc, Clause, Const, ConstId, FloatPredicate,
-    FnAttrs, InlineAsm, IntPredicate, Intrinsic, MemFlags, NoCode, Opcode, ParamAttrs, RmwOp,
-    SHUFFLE_UNDEF, SymId, SyncScope, TailKind, TypeId, TypeKind, Value, aggregate_field,
+    FnAttrs, InlineAsm, IntPredicate, Intrinsic, Layering, MemFlags, NoCode, Opcode, ParamAttrs,
+    RmwOp, SHUFFLE_UNDEF, SymId, SyncScope, TailKind, TypeId, TypeKind, Value, aggregate_field,
     no_code_intrinsic, resolve_intrinsic,
 };
 
@@ -53,7 +53,7 @@ enum Kind {
     CallBr,
 }
 
-impl Fx<'_, '_, '_> {
+impl<L: Layering> Fx<'_, '_, '_, L> {
     // ---- types ----
 
     fn shape(&self, ty: TypeId) -> (TypeId, Shape) {

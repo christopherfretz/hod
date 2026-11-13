@@ -577,7 +577,7 @@ impl Span { pub fn of<'a>(&self, source: &'a [u8]) -> &'a [u8]; }
 `ModuleText` is read-only, and it and `ParsedModule` are `Send` and
 `Sync`. The two fields are separate so that a caller can do either of the
 things `spec/ir.md` §5.1 allows: share `&module` and `&text` among
-workers that parse bodies in parallel against frozen tables, or keep
+workers that parse bodies in parallel against forks of a seed, or keep
 `&mut module` (to add the types, constants and symbols a body mentions)
 while any number of readers hold `&text`.
 
@@ -908,7 +908,8 @@ A body's debug information is in the body itself (§11.9).
   `parse_bodies` does, on up to `threads` threads, through
   `hod_ir::read_bodies` (`spec/ir.md` §5.1, "Reading bodies in
   parallel"): each thread parses with a `BodyParser` of its own against
-  a fork of the frozen module, which shares every table and copies none,
+  a fork of a seed of the module (one copy of its tables per parallel
+  read, shared by every fork),
   and the calling thread adopts what each body added in file order. Its
   promise: the bodies delivered, their order, the unsupported constructs
   and their record, the module's tables and every id in them, and the

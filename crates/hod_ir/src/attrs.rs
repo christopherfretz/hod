@@ -15,7 +15,7 @@ use std::fmt;
 
 use crate::error::{IrErrorKind, IrResult, err};
 use crate::ids::TypeId;
-use crate::intern::{Hasher64, InternTable, Seg, next_id, pool_start};
+use crate::intern::{Hasher64, InternTable, Layered, Layering, NoLayer, Seg, next_id, pool_start};
 use crate::strings::{StrId, StrPool};
 
 /// A calling convention, by LLVM's number (`llvm::CallingConv::ID`).
@@ -829,14 +829,14 @@ struct FnAttrsEntry {
 
 /// The interned function attribute sets of a module.
 #[derive(Clone, Debug)]
-pub(crate) struct FnAttrTable {
-    sets: Seg<FnAttrsEntry>,
-    strings: Seg<(FnStr, StrId)>,
-    values: StrPool,
-    interner: InternTable,
+pub(crate) struct FnAttrTable<L: Layering = NoLayer> {
+    sets: Seg<FnAttrsEntry, L>,
+    strings: Seg<(FnStr, StrId), L>,
+    values: StrPool<L>,
+    interner: InternTable<L>,
 }
 
-impl Default for FnAttrTable {
+impl<L: Layering> Default for FnAttrTable<L> {
     fn default() -> Self {
         let empty = FnAttrsEntry {
             flags: 0,
@@ -857,6 +857,49 @@ impl Default for FnAttrTable {
 }
 
 impl FnAttrTable {
+    pub(crate) fn seed(&self) -> FnAttrTable<Layered> {
+        FnAttrTable {
+            sets: self.sets.seed(),
+            strings: self.strings.seed(),
+            values: self.values.seed(),
+            interner: self.interner.seed(),
+        }
+    }
+}
+
+impl FnAttrTable<Layered> {
+    pub(crate) fn fork(&self) -> FnAttrTable<Layered> {
+        FnAttrTable {
+            sets: self.sets.fork(),
+            strings: self.strings.fork(),
+            values: self.values.fork(),
+            interner: self.interner.fork(),
+        }
+    }
+
+    pub(crate) fn local_is_empty(&self) -> bool {
+        self.sets.local_is_empty()
+    }
+
+    /// The sets from `from` on, as owned values.
+    pub(crate) fn owned_since(&self, from: usize) -> IrResult<Vec<FnAttrs>> {
+        (from..self.sets.len())
+            .map(|id| {
+                let view = self.get(FnAttrsId(id as u32));
+                let mut attrs = FnAttrs::new();
+                attrs.flags = view.entry.flags;
+                attrs.uwtable = view.entry.uwtable;
+                attrs.stack_align = view.entry.stack_align;
+                for (key, value) in view.strings() {
+                    attrs.set_string(key, value)?;
+                }
+                Ok(attrs)
+            })
+            .collect()
+    }
+}
+
+impl<L: Layering> FnAttrTable<L> {
     /// The id of the set equal to `attrs`, added if new.
     pub(crate) fn intern(&mut self, attrs: &FnAttrs) -> IrResult<FnAttrsId> {
         if attrs.is_empty() {
@@ -908,7 +951,7 @@ impl FnAttrTable {
 
     /// The set `id`.
     #[inline]
-    pub(crate) fn get(&self, id: FnAttrsId) -> FnAttrsView<'_> {
+    pub(crate) fn get(&self, id: FnAttrsId) -> FnAttrsView<'_, L> {
         FnAttrsView { table: self, entry: self.sets[id.index()] }
     }
 
@@ -916,63 +959,17 @@ impl FnAttrTable {
     pub(crate) fn len(&self) -> usize {
         self.sets.len()
     }
-
-    // ---- §5.1 reading bodies in parallel ----
-
-    pub(crate) fn freeze(&mut self) {
-        self.sets.freeze();
-        self.strings.freeze();
-        self.values.freeze();
-        self.interner.freeze();
-    }
-
-    pub(crate) fn fork(&self) -> FnAttrTable {
-        FnAttrTable {
-            sets: self.sets.fork(),
-            strings: self.strings.fork(),
-            values: self.values.fork(),
-            interner: self.interner.fork(),
-        }
-    }
-
-    pub(crate) fn thaw(&mut self) {
-        self.sets.thaw();
-        self.strings.thaw();
-        self.values.thaw();
-        self.interner.thaw();
-    }
-
-    pub(crate) fn local_is_empty(&self) -> bool {
-        self.sets.local_is_empty()
-    }
-
-    /// The sets from `from` on, as owned values.
-    pub(crate) fn owned_since(&self, from: usize) -> IrResult<Vec<FnAttrs>> {
-        (from..self.sets.len())
-            .map(|id| {
-                let view = self.get(FnAttrsId(id as u32));
-                let mut attrs = FnAttrs::new();
-                attrs.flags = view.entry.flags;
-                attrs.uwtable = view.entry.uwtable;
-                attrs.stack_align = view.entry.stack_align;
-                for (key, value) in view.strings() {
-                    attrs.set_string(key, value)?;
-                }
-                Ok(attrs)
-            })
-            .collect()
-    }
 }
 
 /// An interned set of function attributes, read through its module
 /// (`Module::fn_attrs`).
 #[derive(Clone, Copy)]
-pub struct FnAttrsView<'a> {
-    table: &'a FnAttrTable,
+pub struct FnAttrsView<'a, L: Layering = NoLayer> {
+    table: &'a FnAttrTable<L>,
     entry: FnAttrsEntry,
 }
 
-impl<'a> FnAttrsView<'a> {
+impl<'a, L: Layering> FnAttrsView<'a, L> {
     /// True if every flag in `flags` (an OR of the [`FnAttrs`] flag
     /// constants) is set.
     #[inline]
@@ -1005,7 +1002,7 @@ impl<'a> FnAttrsView<'a> {
     }
 
     /// The string attributes, ordered by key.
-    pub fn strings(&self) -> impl Iterator<Item = (FnStr, &'a [u8])> + use<'a> {
+    pub fn strings(&self) -> impl Iterator<Item = (FnStr, &'a [u8])> + use<'a, L> {
         let table = self.table;
         let start = self.entry.strings as usize;
         table
@@ -1024,7 +1021,7 @@ impl<'a> FnAttrsView<'a> {
     }
 }
 
-impl fmt::Debug for FnAttrsView<'_> {
+impl<L: Layering> fmt::Debug for FnAttrsView<'_, L> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut set = f.debug_set();
         for (name, flag) in FnAttrs::FLAG_NAMES {
@@ -1494,7 +1491,7 @@ mod tests {
         assert_eq!(size_of::<FnAttrsEntry>(), 12);
         assert_eq!(size_of::<FnAttrsId>(), 4);
         assert_eq!(size_of::<(FnStr, StrId)>(), 8);
-        let mut table = FnAttrTable::default();
+        let mut table = <FnAttrTable>::default();
         assert_eq!(table.intern(&FnAttrs::new()).unwrap(), FnAttrsId::EMPTY);
         assert!(table.get(FnAttrsId::EMPTY).is_empty());
         assert_eq!(FnAttrsId::default(), FnAttrsId::EMPTY);

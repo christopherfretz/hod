@@ -1,6 +1,7 @@
 //! Types (`spec/ll.md` §5.1, §5.2): every type of `spec/ir.md` §3, and
 //! named types resolved on first use, in whatever order they are written.
 
+use hod_ir::Layering;
 use hod_ir::TypeId;
 
 use crate::error::{LlErrorKind, PResult, fail};
@@ -8,7 +9,7 @@ use crate::index::parse_u32;
 use crate::lexer::{Lexer, Tok, Token};
 use crate::parser::{Parser, TypeSlot, ir};
 
-impl Parser<'_, '_> {
+impl<L: Layering> Parser<'_, '_, L> {
     /// Registers every `%name = type …` and resolves each.
     pub(crate) fn define_types(&mut self) -> PResult<()> {
         self.type_slots = vec![TypeSlot::Pending; self.index.types.len()];

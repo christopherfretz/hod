@@ -1,8 +1,9 @@
 //! Reading a module's bodies on several threads (`spec/ir.md` §5.1,
 //! "Reading bodies in parallel").
 //!
-//! The module is frozen; each thread reads bodies against a fork of it,
-//! which shares its tables and adds to tables of its own. A body read in
+//! The module stays as it is. A seed made of it once holds a copy of its
+//! tables, layered ([`Layered`]); each thread reads bodies against a fork
+//! of the seed, which shares those tables and adds to tables of its own. A body read in
 //! a fork is handed to the module as a [`Delta`] of what it added and the
 //! body itself, in fork ids. The calling thread adopts the deltas in file
 //! order and translates each body, so the module grows exactly as reading
@@ -20,6 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 
 use crate::body::Body;
+use crate::intern::{Layered, Layering};
 use crate::module::{Delta, Module, Remap};
 
 /// A reader of the bodies of one module, one per thread.
@@ -28,14 +30,19 @@ pub trait BodySource: Send {
     type Error: Send;
 
     /// Reads body `index` (in file order) against `module`: the module
-    /// the text was read into, or a fork of it. `Ok(None)` for a body with
+    /// the text was read into ([`crate::NoLayer`]), or a fork of its seed
+    /// ([`Layered`]). The two are separate instantiations: the one-thread
+    /// reading runs only the first. `Ok(None)` for a body with
     /// constructs the reader cannot represent, which it records in
     /// `module` and names in [`BodySource::unsupported`].
     ///
     /// # Errors
     /// The reader's.
-    fn read_body(&mut self, module: &mut Module, index: usize)
-    -> Result<Option<Body>, Self::Error>;
+    fn read_body<L: Layering>(
+        &mut self,
+        module: &mut Module<L>,
+        index: usize,
+    ) -> Result<Option<Body>, Self::Error>;
 
     /// The constructs of the last body read that was `Ok(None)`.
     fn unsupported(&self) -> Vec<Box<str>>;
@@ -103,8 +110,8 @@ struct Queue {
 }
 
 struct Shared<'s> {
-    /// The frozen module's fork that every fork is made of.
-    seed: &'s Module,
+    /// The module's seed, of which every fork is made.
+    seed: &'s Module<Layered>,
     /// Run `r` is the bodies `starts[r]..starts[r + 1]`.
     starts: Vec<usize>,
     /// The next run to read.
@@ -133,7 +140,7 @@ impl Drop for HaltOnPanic<'_, '_> {
 /// A thread's fork and reader.
 struct Worker<R> {
     id: usize,
-    fork: Module,
+    fork: Module<Layered>,
     reader: R,
     generation: u32,
 }
@@ -141,7 +148,12 @@ struct Worker<R> {
 impl<R: BodySource> Worker<R> {
     /// Reads body `index` in the fork; on an error or a change the fork
     /// cannot hand over, starts a new fork and reader.
-    fn read(&mut self, index: usize, seed: &Module, new_reader: &(dyn Fn() -> R + Sync)) -> Done {
+    fn read(
+        &mut self,
+        index: usize,
+        seed: &Module<Layered>,
+        new_reader: &(dyn Fn() -> R + Sync),
+    ) -> Done {
         let mark = self.fork.mark();
         let work = match self.reader.read_body(&mut self.fork, index) {
             Ok(body) => match self.fork.delta(mark) {
@@ -256,10 +268,10 @@ fn runs<R: BodySource>(reader: &R, count: usize, threads: usize) -> Vec<usize> {
 /// (`spec/ir.md` §5.1). `each` returns whether to go on.
 ///
 /// With one thread (or one body) it is the sequential reading: one
-/// reader, against the module, in order. With more, the module is frozen
-/// for the reading and thawed after; the bodies delivered, the module's
-/// tables and every id in them are the sequential reading's, at any
-/// number of threads.
+/// reader, against the module, in order, and nothing else. With more, a
+/// seed is made of the module (a copy of its tables) and forks of it read
+/// the bodies; the bodies delivered, the module's tables and every id in
+/// them are the sequential reading's, at any number of threads.
 ///
 /// # Errors
 /// The first error in file order: the error the sequential reading
@@ -278,10 +290,8 @@ pub fn read_bodies<H, R: BodySource>(
         return Ok(ReadStats::default());
     }
     let starts = runs(&main, count, threads);
-    module(host).freeze();
-    // The forks, the seed among them, are gone before the thaw.
-    let result = {
-        let seed = module(host).fork();
+    {
+        let seed = module(host).seed();
         let queue =
             Queue { runs: VecDeque::new(), delivered: 0, merger_waits: false, readers_wait: 0 };
         let shared = Shared {
@@ -316,9 +326,7 @@ pub fn read_bodies<H, R: BodySource>(
             shared.halt();
             result
         })
-    };
-    module(host).thaw();
-    result
+    }
 }
 
 /// The bodies `from..count`, one after the other.

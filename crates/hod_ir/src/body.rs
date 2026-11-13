@@ -18,6 +18,7 @@
 //!   [`Body::layout`] lists them in layout order, entry block first;
 //! - every operand names something that exists: no reserved values remain.
 
+use crate::intern::Layering;
 use std::fmt;
 use std::ops::Range;
 
@@ -548,7 +549,7 @@ impl Body {
     }
 
     /// The argument types: the parameters of the function type.
-    pub fn arg_types<'m>(&self, module: &'m Module) -> &'m [TypeId] {
+    pub fn arg_types<'m, L: Layering>(&self, module: &'m Module<L>) -> &'m [TypeId] {
         match module.types.kind(self.fn_ty) {
             TypeKind::Function { params, .. } => params,
             _ => &[],
@@ -556,7 +557,7 @@ impl Body {
     }
 
     /// The return type of the function type.
-    pub fn ret_type(&self, module: &Module) -> TypeId {
+    pub fn ret_type<L: Layering>(&self, module: &Module<L>) -> TypeId {
         match module.types.kind(self.fn_ty) {
             TypeKind::Function { ret, .. } => ret,
             _ => TypeId::VOID,
@@ -573,7 +574,7 @@ impl Body {
     /// The type of `value`: an instruction's result type, an argument's
     /// parameter type, a constant's type, `ptr` for an address, `void` for
     /// [`Value::NONE`].
-    pub fn value_type(&self, module: &Module, value: Value) -> TypeId {
+    pub fn value_type<L: Layering>(&self, module: &Module<L>, value: Value) -> TypeId {
         match value.kind() {
             ValueKind::Inst(id) => self.insts.get(id.index()).map_or(TypeId::VOID, |inst| inst.ty),
             ValueKind::Arg(index) => {

@@ -578,24 +578,30 @@ read-only. (A producer that appends to the tables while earlier bodies are
 still being compiled needs snapshot semantics; that is a planned extension,
 §10.)
 
-**Reading bodies in parallel: frozen tables and forks** (WP-063). A
+**Reading bodies in parallel: a seed and forks** (WP-063). A
 reader adds to the module the types, constants, inline-assembly callees,
 function attribute sets, debug expressions and locations a body uses.
 To read bodies on several threads without a copy of the module per
 thread:
 
-- `Module::freeze` moves each of those tables into a shared base (an
-  `Arc`); a table is a base and a layer of its own above it, with ids
-  counted on from the base's end. A table never frozen has no layer and
-  reads as before: the layered access is out of line (`#[cold]`), so the
-  one-thread path pays one predictable branch and nothing else. `thaw` folds the layers back once no fork shares the
-  base; the module is the same module before and after.
-- `Module::fork` of a frozen module shares every table (the symbol,
-  COMDAT, flag, constructor and linker tables are always shared, behind
-  one `Arc`) and copies only the properties and a few words of debug
-  counts. A lookup in a fork probes the base, then its own layer: what
-  the module has, the fork finds, with the module's id. What it adds goes
-  to its layer, with ids after the base's.
+- The layer is a type parameter of the tables and of `Module`
+  (`Layering`, sealed): `NoLayer`, zero-sized, is the default and the
+  only kind a producer or the one-thread reader sees (`Module` is
+  `Module<NoLayer>`), so with one thread the table code is plain vectors
+  and hash tables, with no base pointer and no branch on one. `Layered`
+  is for forks only. The body readers are generic over it and are
+  instantiated twice; the `Layered` instantiation runs only when bodies
+  are read on more than one thread.
+- `Module::seed` copies those tables once, into a `Module<Layered>` whose
+  tables are a shared base (an `Arc`) with an empty layer each, ids
+  counted on from the base's end; the module itself is not changed and
+  stays a `Module<NoLayer>`. The symbol, COMDAT, flag, constructor and
+  linker tables are always shared, behind one `Arc`.
+- `seed.fork()` shares every table of the seed and copies only the
+  properties and a few words of debug counts. A lookup in a fork probes
+  the base, then its own layer: what the module has, the fork finds,
+  with the module's id. What it adds goes to its layer, with ids after
+  the base's.
 - `fork.mark()` and `fork.delta(mark)` give what a body added, owned; the
   delta is `None` if the fork changed what it cannot hand over (a symbol,
   a COMDAT, a property or flag, a debug node, a location in place).

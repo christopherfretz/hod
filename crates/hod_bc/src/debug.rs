@@ -18,7 +18,7 @@
 
 use hod_ir::{
     DiConstant, DiFieldValue, DiId, DiKind, DiLocation, DiMapping, DiNode, DiOther, DiString,
-    DiTuple, ExprId, LocId, Module, di_field,
+    DiTuple, ExprId, Layering, LocId, Module, NoLayer, di_field,
 };
 
 use crate::bitstream::{BitReader, BlockInfo, BlockSpan, Cursor, Entry};
@@ -531,8 +531,8 @@ enum Slot<'x, 'a> {
 
 /// The reader of one METADATA block's debug records: the module's, or a
 /// function's (with the module's ids in reach, numbered first).
-pub(crate) struct Dx<'x, 'a> {
-    pub module: &'x mut Module,
+pub(crate) struct Dx<'x, 'a, L: Layering = NoLayer> {
+    pub module: &'x mut Module<L>,
     pub values: &'x mut Values,
     pub raw: &'x Raw<'a>,
     /// The module's metadata strings: (start, len) by table and index.
@@ -547,7 +547,7 @@ pub(crate) struct Dx<'x, 'a> {
     pub notes: u8,
 }
 
-impl<'x, 'a> Dx<'x, 'a> {
+impl<'x, 'a, L: Layering> Dx<'x, 'a, L> {
     fn count(&self) -> u64 {
         self.raw.md.len() as u64
     }

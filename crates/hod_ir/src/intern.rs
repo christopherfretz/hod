@@ -7,6 +7,8 @@
 //! arena. Nothing here depends on addresses or random state, so ids are
 //! assigned deterministically.
 
+use std::fmt::Debug;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::error::{IrErrorKind, IrResult, err};
@@ -95,23 +97,194 @@ pub(crate) fn pool_start(len: usize, extra: usize, what: &str) -> IrResult<u32> 
     }
 }
 
-/// A vector in two layers (`spec/ir.md` §5.1, "Reading bodies in
-/// parallel"): a frozen base shared by every fork of a module, and the
-/// entries added since, local to this one. Indices are global: entry `i`
-/// is in the base below `off` and at `i - off` in the local part above.
-/// A table that was never frozen has no layer at all, so an index is one
-/// test away from a plain vector's, and the table is one word larger.
+/// What a table entry must be to live in a [`Seg`].
+pub trait Entry: Clone + Debug + Send + Sync + 'static {}
+
+impl<T: Clone + Debug + Send + Sync + 'static> Entry for T {}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for super::NoLayer {}
+    impl Sealed for super::Layered {}
+}
+
+/// How a module's tables are kept (`spec/ir.md` §5.1, "Reading bodies in
+/// parallel"). [`NoLayer`]: one vector and one hash table per table, as
+/// a module is built, read and compiled; the type parameter of every
+/// table and of [`crate::Module`] defaults to it. [`Layered`]: a shared
+/// base, copied once from a module, and a local layer above it, for the
+/// forks that read bodies on other threads. Code generic over the two is
+/// instantiated twice, so the one-thread path is the plain tables' code:
+/// no base pointer, no test.
+pub trait Layering:
+    sealed::Sealed + Clone + Copy + Debug + Default + Send + Sync + 'static
+{
+    /// A table's layer: nothing, or where its base ends.
+    #[doc(hidden)]
+    type Layer<T: Entry>: Clone + Debug + Default + Send + Sync;
+    /// A hash table's base: nothing, or the shared one.
+    #[doc(hidden)]
+    type Below: Clone + Debug + Default + Send + Sync;
+    /// What a module only reads: owned, or shared with the other forks.
+    #[doc(hidden)]
+    type Own<T: Entry + Default>: Clone + Debug + Default + Send + Sync + Deref<Target = T>;
+    /// What a fork knows of its origin; in a module, a count of the
+    /// changes to what forks read.
+    #[doc(hidden)]
+    type Origin<T: Entry>: Clone + Debug + Default + Send + Sync;
+
+    #[doc(hidden)]
+    fn layer<T: Entry>(layer: &Self::Layer<T>) -> Option<&Layer<T>>;
+    #[doc(hidden)]
+    fn layer_mut<T: Entry>(layer: &mut Self::Layer<T>) -> Option<&mut Layer<T>>;
+    #[doc(hidden)]
+    fn below(below: &Self::Below) -> Option<&InternTable>;
+    #[doc(hidden)]
+    fn own_mut<T: Entry + Default>(own: &mut Self::Own<T>) -> &mut T;
+    #[doc(hidden)]
+    fn origin<T: Entry>(origin: &Self::Origin<T>) -> Option<&T>;
+    #[doc(hidden)]
+    fn origin_mut<T: Entry>(origin: &mut Self::Origin<T>) -> Option<&mut T>;
+    /// Counts a change to what forks read (a module) or does nothing (a
+    /// fork, which says so in its origin).
+    #[doc(hidden)]
+    fn count_edit<T: Entry>(origin: &mut Self::Origin<T>);
+    #[doc(hidden)]
+    fn edits<T: Entry>(origin: &Self::Origin<T>) -> u32;
+}
+
+/// The tables of a module: one layer ([`Layering`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoLayer;
+
+/// The tables of a fork: a shared base and a local layer ([`Layering`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Layered;
+
+/// [`NoLayer`]'s owned value: the value itself.
+#[doc(hidden)]
+#[derive(Clone, Debug, Default)]
+pub struct Inline<T>(pub(crate) T);
+
+impl<T> Deref for Inline<T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl Layering for NoLayer {
+    type Layer<T: Entry> = ();
+    type Below = ();
+    type Own<T: Entry + Default> = Inline<T>;
+    type Origin<T: Entry> = u32;
+
+    #[inline]
+    fn layer<T: Entry>((): &()) -> Option<&Layer<T>> {
+        None
+    }
+
+    #[inline]
+    fn layer_mut<T: Entry>((): &mut ()) -> Option<&mut Layer<T>> {
+        None
+    }
+
+    #[inline]
+    fn below((): &()) -> Option<&InternTable> {
+        None
+    }
+
+    #[inline]
+    fn own_mut<T: Entry + Default>(own: &mut Inline<T>) -> &mut T {
+        &mut own.0
+    }
+
+    #[inline]
+    fn origin<T: Entry>(_: &u32) -> Option<&T> {
+        None
+    }
+
+    #[inline]
+    fn origin_mut<T: Entry>(_: &mut u32) -> Option<&mut T> {
+        None
+    }
+
+    #[inline]
+    fn count_edit<T: Entry>(edits: &mut u32) {
+        *edits = edits.wrapping_add(1);
+    }
+
+    #[inline]
+    fn edits<T: Entry>(edits: &u32) -> u32 {
+        *edits
+    }
+}
+
+impl Layering for Layered {
+    type Layer<T: Entry> = Option<Box<Layer<T>>>;
+    type Below = Option<Arc<InternTable>>;
+    type Own<T: Entry + Default> = Arc<T>;
+    type Origin<T: Entry> = Option<Box<T>>;
+
+    #[inline]
+    fn layer<T: Entry>(layer: &Option<Box<Layer<T>>>) -> Option<&Layer<T>> {
+        layer.as_deref()
+    }
+
+    #[inline]
+    fn layer_mut<T: Entry>(layer: &mut Option<Box<Layer<T>>>) -> Option<&mut Layer<T>> {
+        layer.as_deref_mut()
+    }
+
+    #[inline]
+    fn below(below: &Option<Arc<InternTable>>) -> Option<&InternTable> {
+        below.as_deref()
+    }
+
+    #[inline]
+    fn own_mut<T: Entry + Default>(own: &mut Arc<T>) -> &mut T {
+        Arc::make_mut(own)
+    }
+
+    #[inline]
+    fn origin<T: Entry>(origin: &Option<Box<T>>) -> Option<&T> {
+        origin.as_deref()
+    }
+
+    #[inline]
+    fn origin_mut<T: Entry>(origin: &mut Option<Box<T>>) -> Option<&mut T> {
+        origin.as_deref_mut()
+    }
+
+    #[inline]
+    fn count_edit<T: Entry>(_: &mut Option<Box<T>>) {}
+
+    #[inline]
+    fn edits<T: Entry>(_: &Option<Box<T>>) -> u32 {
+        0
+    }
+}
+
+/// A table's vector (`spec/ir.md` §5.1, "Reading bodies in parallel").
+/// In a module ([`NoLayer`]) it is a vector and nothing else. In a fork
+/// ([`Layered`]) it is in two layers: a base shared by every fork, and
+/// the entries added since, local to this one. Indices are global: entry
+/// `i` is in the base below `off` and at `i - off` in the local part.
 ///
 /// A tail ([`Seg::tail`]) has no base: it is the copy of a fork's entries
 /// from `off` on, and reading below `off` is a bug.
 #[derive(Clone, Debug)]
-pub(crate) struct Seg<T> {
+pub struct Seg<T: Entry, L: Layering = NoLayer> {
     local: Vec<T>,
-    layer: Option<Box<Layer<T>>>,
+    layer: L::Layer<T>,
 }
 
+/// A layer: where the base ends.
+#[doc(hidden)]
 #[derive(Clone, Debug)]
-struct Layer<T> {
+pub struct Layer<T> {
     base: Option<Arc<Vec<T>>>,
     off: usize,
     /// Whether an entry of the base was changed ([`Seg::get_mut`]): a
@@ -119,9 +292,9 @@ struct Layer<T> {
     touched: bool,
 }
 
-impl<T> Default for Seg<T> {
+impl<T: Entry, L: Layering> Default for Seg<T, L> {
     fn default() -> Self {
-        Seg { local: Vec::new(), layer: None }
+        Seg { local: Vec::new(), layer: L::Layer::<T>::default() }
     }
 }
 
@@ -135,16 +308,16 @@ impl<T> Layer<T> {
     }
 }
 
-impl<T: Clone> Seg<T> {
+impl<T: Entry, L: Layering> Seg<T, L> {
     #[inline]
     fn off(&self) -> usize {
-        self.layer.as_ref().map_or(0, |layer| layer.off)
+        L::layer(&self.layer).map_or(0, |layer| layer.off)
     }
 
     /// Number of entries, both layers.
     #[inline]
     pub(crate) fn len(&self) -> usize {
-        match &self.layer {
+        match L::layer(&self.layer) {
             None => self.local.len(),
             Some(layer) => layer.off + self.local.len(),
         }
@@ -158,16 +331,13 @@ impl<T: Clone> Seg<T> {
     /// Entry `i`, or `None` past the end.
     #[inline]
     pub(crate) fn get(&self, i: usize) -> Option<&T> {
-        match &self.layer {
+        match L::layer(&self.layer) {
             None => self.local.get(i),
             Some(layer) => self.get_layered(layer, i),
         }
     }
 
-    /// [`Seg::get`] in a frozen table or a fork: out of line, so that the
-    /// one-layer path stays a test and a vector access.
-    #[cold]
-    #[inline(never)]
+    #[inline]
     fn get_layered<'a>(&'a self, layer: &'a Layer<T>, i: usize) -> Option<&'a T> {
         if i < layer.off { layer.base().get(i) } else { self.local.get(i - layer.off) }
     }
@@ -176,7 +346,7 @@ impl<T: Clone> Seg<T> {
     /// pooled parts are appended in one piece).
     #[inline]
     pub(crate) fn slice(&self, start: usize, len: usize) -> &[T] {
-        match &self.layer {
+        match L::layer(&self.layer) {
             None => &self.local[start..][..len],
             Some(layer) => &self.tail_of_layer(layer, start)[..len],
         }
@@ -185,15 +355,13 @@ impl<T: Clone> Seg<T> {
     /// The entries from `start` to the end of the layer `start` is in.
     #[inline]
     pub(crate) fn from(&self, start: usize) -> &[T] {
-        match &self.layer {
+        match L::layer(&self.layer) {
             None => &self.local[start..],
             Some(layer) => self.tail_of_layer(layer, start),
         }
     }
 
-    /// [`Seg::from`] in a frozen table or a fork, out of line.
-    #[cold]
-    #[inline(never)]
+    #[inline]
     fn tail_of_layer<'a>(&'a self, layer: &'a Layer<T>, start: usize) -> &'a [T] {
         if start < layer.off {
             &layer.base()[start..layer.off]
@@ -204,7 +372,7 @@ impl<T: Clone> Seg<T> {
 
     /// Every entry, base first.
     pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &T> + Clone + '_ {
-        let base = self.layer.as_ref().and_then(|layer| layer.base.as_deref());
+        let base = L::layer(&self.layer).and_then(|layer| layer.base.as_deref());
         base.into_iter().flat_map(|base| base.iter()).chain(self.local.iter())
     }
 
@@ -229,26 +397,24 @@ impl<T: Clone> Seg<T> {
         self.local.truncate(len - off);
     }
 
-    /// Entry `i` to change in place. An entry of a shared base is copied
-    /// first (the whole base: callers change base entries only in a
-    /// module no fork shares, or the fork cannot hand its work over).
+    /// Entry `i` to change in place. In a fork, an entry of the shared
+    /// base is copied first (the whole base: the fork's work can then not
+    /// be handed over).
     #[inline]
     pub(crate) fn get_mut(&mut self, i: usize) -> &mut T {
-        if self.layer.is_none() {
+        if L::layer(&self.layer).is_none() {
             return &mut self.local[i];
         }
         self.get_mut_layered(i)
     }
 
-    /// [`Seg::get_mut`] in a frozen table or a fork, out of line.
-    #[cold]
     #[inline(never)]
     fn get_mut_layered(&mut self, i: usize) -> &mut T {
         let off = self.off();
         if i >= off {
             return &mut self.local[i - off];
         }
-        let layer = self.layer.as_mut().expect("a layer below `off`");
+        let layer = L::layer_mut(&mut self.layer).expect("a layer below `off`");
         layer.touched = true;
         match &mut layer.base {
             Some(base) => &mut Arc::make_mut(base)[i],
@@ -257,9 +423,9 @@ impl<T: Clone> Seg<T> {
     }
 
     /// Whether an entry below the local layer was changed since the
-    /// table was frozen or forked.
+    /// table was forked.
     pub(crate) fn touched(&self) -> bool {
-        self.layer.as_ref().is_some_and(|layer| layer.touched)
+        L::layer(&self.layer).is_some_and(|layer| layer.touched)
     }
 
     /// The capacity of the local layer.
@@ -273,21 +439,29 @@ impl<T: Clone> Seg<T> {
         self.local.is_empty()
     }
 
-    /// Moves every entry into the base, which forks share.
-    pub(crate) fn freeze(&mut self) {
-        self.thaw();
-        let mut all = match self.layer.take().and_then(|layer| layer.base) {
-            Some(base) => Arc::unwrap_or_clone(base),
-            None => Vec::new(),
-        };
-        all.append(&mut self.local);
-        let off = all.len();
-        self.layer = Some(Box::new(Layer { base: Some(Arc::new(all)), off, touched: false }));
+    /// The bytes held, both layers (a size report).
+    pub(crate) fn bytes(&self) -> usize {
+        self.len() * size_of::<T>()
     }
+}
 
+impl<T: Entry> Seg<T, NoLayer> {
+    /// The base of the forks of parallel reading: a copy of every entry,
+    /// shared, and no entry of its own.
+    pub(crate) fn seed(&self) -> Seg<T, Layered> {
+        let base = Arc::new(self.local.clone());
+        let off = self.local.len();
+        Seg {
+            local: Vec::new(),
+            layer: Some(Box::new(Layer { base: Some(base), off, touched: false })),
+        }
+    }
+}
+
+impl<T: Entry> Seg<T, Layered> {
     /// A table with this one's base and no entry of its own. The local
-    /// layer must be empty (a fork is made of a frozen table).
-    pub(crate) fn fork(&self) -> Seg<T> {
+    /// layer must be empty (a fork is made of a seed).
+    pub(crate) fn fork(&self) -> Seg<T, Layered> {
         debug_assert!(self.local.is_empty(), "a fork of a table with local entries");
         let layer = self.layer.as_ref().map(|layer| {
             Box::new(Layer { base: layer.base.clone(), off: layer.off, touched: false })
@@ -296,50 +470,27 @@ impl<T: Clone> Seg<T> {
     }
 
     /// The entries from `from` on, copied, at their indices.
-    pub(crate) fn tail(&self, from: usize) -> Seg<T> {
+    pub(crate) fn tail(&self, from: usize) -> Seg<T, Layered> {
         let off = self.off();
         debug_assert!(from >= off, "a tail reaches into the base");
         let local = self.local[from - off..].to_vec();
         Seg { local, layer: Some(Box::new(Layer { base: None, off: from, touched: false })) }
     }
-
-    /// Back to one layer when no fork shares the base any more; else as
-    /// it is.
-    pub(crate) fn thaw(&mut self) {
-        let Some(mut layer) = self.layer.take() else { return };
-        match layer.base.take().map(Arc::try_unwrap) {
-            Some(Ok(mut all)) => {
-                all.append(&mut self.local);
-                self.local = all;
-            }
-            Some(Err(base)) => {
-                layer.base = Some(base);
-                self.layer = Some(layer);
-            }
-            // A tail stays one.
-            None => self.layer = Some(layer),
-        }
-    }
-
-    /// The bytes held, both layers (a size report).
-    pub(crate) fn bytes(&self) -> usize {
-        self.len() * size_of::<T>()
-    }
 }
 
-impl<T: Clone> std::ops::Index<usize> for Seg<T> {
+impl<T: Entry, L: Layering> std::ops::Index<usize> for Seg<T, L> {
     type Output = T;
 
     #[inline]
     fn index(&self, i: usize) -> &T {
-        match &self.layer {
+        match L::layer(&self.layer) {
             None => &self.local[i],
             Some(layer) => self.get_layered(layer, i).expect("an index in the table"),
         }
     }
 }
 
-impl<T: Clone> std::ops::IndexMut<usize> for Seg<T> {
+impl<T: Entry, L: Layering> std::ops::IndexMut<usize> for Seg<T, L> {
     #[inline]
     fn index_mut(&mut self, i: usize) -> &mut T {
         self.get_mut(i)
@@ -348,85 +499,58 @@ impl<T: Clone> std::ops::IndexMut<usize> for Seg<T> {
 
 /// An open-addressing hash set of ids, keyed by caller-supplied hashes.
 ///
-/// A frozen table ([`InternTable::freeze`]) is the shared base of its
-/// forks: a lookup probes the base, then the local slots.
+/// In a fork ([`Layered`]) the shared base comes first: a lookup probes
+/// the base, then the local slots.
 #[derive(Clone, Debug)]
-pub(crate) struct InternTable {
-    base: Option<Arc<InternTable>>,
+pub struct InternTable<L: Layering = NoLayer> {
+    base: L::Below,
     slots: Box<[Slot]>,
     len: usize,
 }
 
-impl Default for InternTable {
+impl<L: Layering> Default for InternTable<L> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl InternTable {
-    const INITIAL: usize = 64;
-
-    pub(crate) fn new() -> Self {
-        Self { base: None, slots: vec![Slot { hash: 0, id: EMPTY }; Self::INITIAL].into(), len: 0 }
+impl InternTable<NoLayer> {
+    /// The base of the forks of parallel reading: a copy, shared.
+    pub(crate) fn seed(&self) -> InternTable<Layered> {
+        InternTable { base: Some(Arc::new(self.clone())), ..InternTable::new() }
     }
+}
 
-    /// Moves every slot into the base, which forks share.
-    pub(crate) fn freeze(&mut self) {
-        self.thaw();
-        if self.base.is_some() {
-            // A base still shared: a new one with both layers, copied.
-            let mut all = (**self.base.as_ref().expect("a base")).clone();
-            all.base = None;
-            for slot in std::mem::take(&mut self.slots) {
-                if slot.id != EMPTY {
-                    all.insert(slot.hash, slot.id);
-                }
-            }
-            self.base = Some(Arc::new(all));
-        } else {
-            let own = std::mem::take(self);
-            self.base = Some(Arc::new(own));
-        }
-        self.slots = vec![Slot { hash: 0, id: EMPTY }; Self::INITIAL].into();
-        self.len = 0;
-    }
-
+impl InternTable<Layered> {
     /// A table with this one's base and no slot of its own.
-    pub(crate) fn fork(&self) -> InternTable {
+    pub(crate) fn fork(&self) -> InternTable<Layered> {
         debug_assert_eq!(self.len, 0, "a fork of a table with local entries");
         InternTable { base: self.base.clone(), ..InternTable::new() }
     }
+}
 
-    /// Back to one layer when no fork shares the base any more.
-    pub(crate) fn thaw(&mut self) {
-        if let Some(base) = self.base.take() {
-            match Arc::try_unwrap(base) {
-                Ok(mut all) => {
-                    for slot in std::mem::take(&mut self.slots) {
-                        if slot.id != EMPTY {
-                            all.insert(slot.hash, slot.id);
-                        }
-                    }
-                    *self = all;
-                }
-                Err(base) => self.base = Some(base),
-            }
+impl<L: Layering> InternTable<L> {
+    const INITIAL: usize = 64;
+
+    pub(crate) fn new() -> Self {
+        Self {
+            base: L::Below::default(),
+            slots: vec![Slot { hash: 0, id: EMPTY }; Self::INITIAL].into(),
+            len: 0,
         }
     }
 
     /// The id of an entry with `hash` for which `eq` holds.
     #[inline]
     pub(crate) fn find(&self, hash: u32, eq: impl FnMut(u32) -> bool) -> Option<u32> {
-        match &self.base {
+        match L::below(&self.base) {
             None => self.find_here(hash, eq),
-            Some(base) => self.find_layered(base, hash, eq),
+            Some(base) => Self::find_layered(self, base, hash, eq),
         }
     }
 
-    /// [`InternTable::find`] in a frozen table or a fork: the base, then
-    /// the local slots; out of line.
-    #[cold]
-    #[inline(never)]
+    /// [`InternTable::find`] in a fork: the base, then the local slots.
+    #[inline]
     fn find_layered(
         &self,
         base: &InternTable,
@@ -488,7 +612,7 @@ mod tests {
     /// §1: interning finds what was inserted, across growth and collisions.
     #[test]
     fn table_finds_inserted_ids_across_growth() {
-        let mut table = InternTable::new();
+        let mut table = <InternTable>::new();
         let keys: Vec<u64> = (0..5000).map(|i| i * 7919).collect();
         for (id, key) in keys.iter().enumerate() {
             // A deliberately poor hash (few distinct values) to force probing.

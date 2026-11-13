@@ -1,5 +1,5 @@
 //! `spec/ll.md` §11.1, `spec/ir.md` §5.1: bodies parsed on several
-//! threads, against forks of the frozen module, are the sequential
+//! threads, against forks of a seed of the module, are the sequential
 //! parser's bodies, and the module ends as the sequential parser leaves
 //! it: every table, entry by entry, every id, every unsupported
 //! construct, and the first error in file order.

@@ -9,7 +9,10 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use hod_ir::{Body, FunctionBuilder, IrErrorKind, Module, ParamAttrs, TypeId, TypeKind, Value};
+use hod_ir::{
+    Body, FunctionBuilder, IrErrorKind, Layering, Module, NoLayer, ParamAttrs, TypeId, TypeKind,
+    Value,
+};
 
 use crate::attrs::FnGroup;
 use crate::bitstream::{Cursor, Entry};
@@ -134,7 +137,11 @@ impl<'b, 'a> BodyReader<'b, 'a> {
     /// # Errors
     /// [`BcError`] at the first record that is not what LLVM writes, or
     /// that `hod_ir` refuses. Never a panic, for any input.
-    pub fn read(&mut self, module: &mut Module, function: &FunctionBits) -> BcResult<Option<Body>> {
+    pub fn read<L: Layering>(
+        &mut self,
+        module: &mut Module<L>,
+        function: &FunctionBits,
+    ) -> BcResult<Option<Body>> {
         self.unsupported.clear();
         let at = function.span.start;
         if function.sym.index() >= module.symbol_count() {
@@ -167,7 +174,11 @@ impl<'b, 'a> BodyReader<'b, 'a> {
         self.state.storage = Some(body);
     }
 
-    fn body(&mut self, module: &mut Module, function: &FunctionBits) -> BcResult<Option<Body>> {
+    fn body<L: Layering>(
+        &mut self,
+        module: &mut Module<L>,
+        function: &FunctionBits,
+    ) -> BcResult<Option<Body>> {
         let at = function.span.start;
         let TypeKind::Function { ret, params, .. } = module.types.kind(function.ty) else {
             return fail(BcErrorKind::Type, at, "this function's type is not a function type");
@@ -315,7 +326,11 @@ pub fn read_bodies_on<H>(
 impl hod_ir::BodySource for BodyReader<'_, '_> {
     type Error = BcError;
 
-    fn read_body(&mut self, module: &mut Module, index: usize) -> BcResult<Option<Body>> {
+    fn read_body<L: Layering>(
+        &mut self,
+        module: &mut Module<L>,
+        index: usize,
+    ) -> BcResult<Option<Body>> {
         let bits = self.bits;
         self.read(module, &bits.functions()[index])
     }
@@ -333,10 +348,10 @@ impl hod_ir::BodySource for BodyReader<'_, '_> {
 }
 
 /// The reader of one function block.
-pub(crate) struct Fx<'s, 'b, 'a> {
+pub(crate) struct Fx<'s, 'b, 'a, L: Layering = NoLayer> {
     pub bits: &'b ModuleBits<'a>,
     pub values: &'s mut Values,
-    pub module: &'s mut Module,
+    pub module: &'s mut Module<L>,
     pub b: FunctionBuilder,
     pub s: &'s mut State,
     pub ret_ty: TypeId,
@@ -396,7 +411,7 @@ impl Ops<'_> {
     }
 }
 
-impl Fx<'_, '_, '_> {
+impl<L: Layering> Fx<'_, '_, '_, L> {
     /// Notes `construct` for the body (`spec/bc.md` §11.6), once.
     pub fn note(&mut self, construct: impl Into<Cow<'static, str>>) {
         let construct = construct.into();

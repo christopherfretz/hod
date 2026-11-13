@@ -20,6 +20,7 @@ use crate::debug::names::{
 };
 use crate::error::{IrErrorKind, IrResult, err};
 use crate::ids::{ConstId, DiId};
+use crate::intern::Layering;
 use crate::strings::{StrId, StrPool};
 
 impl DiId {
@@ -143,9 +144,9 @@ pub enum DiFieldOut<'a> {
 }
 
 /// Where a node's fields are written.
-pub(crate) struct Enc<'t> {
-    pub(crate) cells: &'t mut crate::intern::Seg<DiId>,
-    pub(crate) strings: &'t mut Option<Box<StrPool>>,
+pub(crate) struct Enc<'t, L: Layering> {
+    pub(crate) cells: &'t mut crate::intern::Seg<DiId, L>,
+    pub(crate) strings: &'t mut Option<Box<StrPool<L>>>,
     /// The number of strings in `strings` and the bytes they take, kept
     /// here because the pool does not report them.
     pub(crate) string_count: &'t mut u32,
@@ -156,7 +157,7 @@ pub(crate) struct Enc<'t> {
     pub(crate) exprs: u32,
 }
 
-impl Enc<'_> {
+impl<L: Layering> Enc<'_, L> {
     #[inline]
     fn word(&mut self, word: u32) {
         self.cells.push(DiId::new(word));
@@ -184,13 +185,13 @@ fn dangling(id: DiId) -> IrResult<()> {
 }
 
 /// Where a node's fields are read from.
-pub(crate) struct Dec<'m> {
+pub(crate) struct Dec<'m, L: Layering = crate::intern::NoLayer> {
     pub(crate) cells: &'m [DiId],
     pub(crate) at: usize,
-    pub(crate) strings: Option<&'m StrPool>,
+    pub(crate) strings: Option<&'m StrPool<L>>,
 }
 
-impl Dec<'_> {
+impl<L: Layering> Dec<'_, L> {
     #[inline]
     fn word(&mut self) -> u32 {
         let word = self.cells.get(self.at).map_or(0, |cell| cell.raw());
@@ -213,8 +214,8 @@ pub(crate) trait Field<'a>: Copy {
     /// Whether the value differs from the default. Only then is it
     /// stored.
     fn present(&self) -> bool;
-    fn put(&self, enc: &mut Enc<'_>) -> IrResult<()>;
-    fn get(dec: &mut Dec<'a>) -> Self;
+    fn put<L: Layering>(&self, enc: &mut Enc<'_, L>) -> IrResult<()>;
+    fn get<L: Layering>(dec: &mut Dec<'a, L>) -> Self;
     fn assign(value: DiFieldValue<'a>) -> Option<Self>;
     /// What kind of value the field holds.
     const SHAPE: DiShape;
@@ -242,12 +243,12 @@ macro_rules! number_field {
                 *self != 0
             }
             #[inline]
-            fn put(&self, enc: &mut Enc<'_>) -> IrResult<()> {
+            fn put<L: Layering>(&self, enc: &mut Enc<'_, L>) -> IrResult<()> {
                 enc.word(u32::from(*self));
                 Ok(())
             }
             #[inline]
-            fn get(dec: &mut Dec<'a>) -> Self {
+            fn get<L: Layering>(dec: &mut Dec<'a, L>) -> Self {
                 // What `put` wrote fits.
                 dec.word() as $ty
             }
@@ -278,12 +279,12 @@ impl<'a> Field<'a> for u64 {
         *self != 0
     }
     #[inline]
-    fn put(&self, enc: &mut Enc<'_>) -> IrResult<()> {
+    fn put<L: Layering>(&self, enc: &mut Enc<'_, L>) -> IrResult<()> {
         enc.wide(*self);
         Ok(())
     }
     #[inline]
-    fn get(dec: &mut Dec<'a>) -> Self {
+    fn get<L: Layering>(dec: &mut Dec<'a, L>) -> Self {
         dec.wide()
     }
     fn assign(value: DiFieldValue<'a>) -> Option<Self> {
@@ -309,12 +310,12 @@ impl<'a> Field<'a> for i64 {
         *self != 0
     }
     #[inline]
-    fn put(&self, enc: &mut Enc<'_>) -> IrResult<()> {
+    fn put<L: Layering>(&self, enc: &mut Enc<'_, L>) -> IrResult<()> {
         enc.wide(*self as u64);
         Ok(())
     }
     #[inline]
-    fn get(dec: &mut Dec<'a>) -> Self {
+    fn get<L: Layering>(dec: &mut Dec<'a, L>) -> Self {
         dec.wide() as i64
     }
     fn assign(value: DiFieldValue<'a>) -> Option<Self> {
@@ -344,11 +345,11 @@ impl<'a> Field<'a> for bool {
     }
     /// The mask bit is the value.
     #[inline]
-    fn put(&self, _enc: &mut Enc<'_>) -> IrResult<()> {
+    fn put<L: Layering>(&self, _enc: &mut Enc<'_, L>) -> IrResult<()> {
         Ok(())
     }
     #[inline]
-    fn get(_dec: &mut Dec<'a>) -> Self {
+    fn get<L: Layering>(_dec: &mut Dec<'a, L>) -> Self {
         true
     }
     fn assign(value: DiFieldValue<'a>) -> Option<Self> {
@@ -374,12 +375,12 @@ impl<'a> Field<'a> for Option<u32> {
         self.is_some()
     }
     #[inline]
-    fn put(&self, enc: &mut Enc<'_>) -> IrResult<()> {
+    fn put<L: Layering>(&self, enc: &mut Enc<'_, L>) -> IrResult<()> {
         enc.word(self.unwrap_or(0));
         Ok(())
     }
     #[inline]
-    fn get(dec: &mut Dec<'a>) -> Self {
+    fn get<L: Layering>(dec: &mut Dec<'a, L>) -> Self {
         Some(dec.word())
     }
     fn assign(value: DiFieldValue<'a>) -> Option<Self> {
@@ -404,7 +405,7 @@ impl<'a> Field<'a> for &'a [u8] {
     fn present(&self) -> bool {
         !self.is_empty()
     }
-    fn put(&self, enc: &mut Enc<'_>) -> IrResult<()> {
+    fn put<L: Layering>(&self, enc: &mut Enc<'_, L>) -> IrResult<()> {
         let id = enc.strings.get_or_insert_with(Box::default).intern(self)?;
         if id.raw() == *enc.string_count {
             // New: ids are handed out in order.
@@ -415,7 +416,7 @@ impl<'a> Field<'a> for &'a [u8] {
         Ok(())
     }
     #[inline]
-    fn get(dec: &mut Dec<'a>) -> Self {
+    fn get<L: Layering>(dec: &mut Dec<'a, L>) -> Self {
         let raw = dec.word();
         match (dec.strings, StrId::from_raw(raw)) {
             (Some(strings), Some(id)) => strings.get(id),
@@ -445,11 +446,11 @@ impl<'a> Field<'a> for Option<DiId> {
         self.is_some()
     }
     #[inline]
-    fn put(&self, enc: &mut Enc<'_>) -> IrResult<()> {
+    fn put<L: Layering>(&self, enc: &mut Enc<'_, L>) -> IrResult<()> {
         enc.node(self.unwrap_or(DiId::NONE))
     }
     #[inline]
-    fn get(dec: &mut Dec<'a>) -> Self {
+    fn get<L: Layering>(dec: &mut Dec<'a, L>) -> Self {
         Some(DiId::new(dec.word()))
     }
     fn assign(value: DiFieldValue<'a>) -> Option<Self> {
@@ -480,7 +481,7 @@ impl<'a> Field<'a> for &'a [DiId] {
     fn present(&self) -> bool {
         !self.is_empty()
     }
-    fn put(&self, enc: &mut Enc<'_>) -> IrResult<()> {
+    fn put<L: Layering>(&self, enc: &mut Enc<'_, L>) -> IrResult<()> {
         let Ok(len) = u32::try_from(self.len()) else {
             return err(IrErrorKind::TableFull, "a debug node list is too long");
         };
@@ -492,7 +493,7 @@ impl<'a> Field<'a> for &'a [DiId] {
         Ok(())
     }
     #[inline]
-    fn get(dec: &mut Dec<'a>) -> Self {
+    fn get<L: Layering>(dec: &mut Dec<'a, L>) -> Self {
         let len = dec.word() as usize;
         let list = dec.cells.get(dec.at..).and_then(|rest| rest.get(..len)).unwrap_or(&[]);
         dec.at += len;
@@ -526,7 +527,7 @@ impl<'a> Field<'a> for ExprId {
     fn present(&self) -> bool {
         *self != ExprId::EMPTY
     }
-    fn put(&self, enc: &mut Enc<'_>) -> IrResult<()> {
+    fn put<L: Layering>(&self, enc: &mut Enc<'_, L>) -> IrResult<()> {
         if self.raw() >= enc.exprs {
             return err(IrErrorKind::UndefinedDebugNode, format!("{self:?} does not exist"));
         }
@@ -534,7 +535,7 @@ impl<'a> Field<'a> for ExprId {
         Ok(())
     }
     #[inline]
-    fn get(dec: &mut Dec<'a>) -> Self {
+    fn get<L: Layering>(dec: &mut Dec<'a, L>) -> Self {
         ExprId::new(dec.word())
     }
     fn assign(value: DiFieldValue<'a>) -> Option<Self> {
@@ -561,12 +562,12 @@ impl<'a> Field<'a> for ConstId {
         true
     }
     #[inline]
-    fn put(&self, enc: &mut Enc<'_>) -> IrResult<()> {
+    fn put<L: Layering>(&self, enc: &mut Enc<'_, L>) -> IrResult<()> {
         enc.word(self.raw());
         Ok(())
     }
     #[inline]
-    fn get(dec: &mut Dec<'a>) -> Self {
+    fn get<L: Layering>(dec: &mut Dec<'a, L>) -> Self {
         ConstId::new(dec.word())
     }
     fn assign(_value: DiFieldValue<'a>) -> Option<Self> {
@@ -588,7 +589,7 @@ impl<'a> Field<'a> for DiBound {
     fn present(&self) -> bool {
         *self != DiBound::None
     }
-    fn put(&self, enc: &mut Enc<'_>) -> IrResult<()> {
+    fn put<L: Layering>(&self, enc: &mut Enc<'_, L>) -> IrResult<()> {
         match *self {
             DiBound::Node(id) if id.raw() >= enc.nodes => return dangling(id),
             DiBound::Expr(id) if id.raw() >= enc.exprs => {
@@ -606,7 +607,7 @@ impl<'a> Field<'a> for DiBound {
         enc.wide(value);
         Ok(())
     }
-    fn get(dec: &mut Dec<'a>) -> Self {
+    fn get<L: Layering>(dec: &mut Dec<'a, L>) -> Self {
         let tag = dec.word();
         let value = dec.wide();
         match tag {
@@ -651,13 +652,13 @@ macro_rules! coded_field {
                 *self != $absent
             }
             #[inline]
-            fn put(&self, enc: &mut Enc<'_>) -> IrResult<()> {
+            fn put<L: Layering>(&self, enc: &mut Enc<'_, L>) -> IrResult<()> {
                 let code: fn(&$ty) -> u32 = $code;
                 enc.word(code(self));
                 Ok(())
             }
             #[inline]
-            fn get(dec: &mut Dec<'a>) -> Self {
+            fn get<L: Layering>(dec: &mut Dec<'a, L>) -> Self {
                 let make: fn(u64) -> Option<$ty> = $make;
                 make(u64::from(dec.word())).unwrap_or($absent)
             }
@@ -802,7 +803,7 @@ macro_rules! nodes {
                 /// Writes the fields that are not at their default;
                 /// returns the tag and the mask of those fields.
                 #[allow(unused_assignments, reason = "the last field's bit is not read")]
-                fn encode(&self, enc: &mut Enc<'_>) -> IrResult<(u16, u32)> {
+                fn encode<L: Layering>(&self, enc: &mut Enc<'_, L>) -> IrResult<(u16, u32)> {
                     let mut mask = 0u32;
                     let mut bit = 1u32;
                     $(
@@ -816,7 +817,7 @@ macro_rules! nodes {
                 }
 
                 #[allow(unused_assignments, unused_variables, clippy::redundant_field_names, reason = "the last field's bit is not read; not every kind has a tag; the macro writes `tag: tag`")]
-                fn decode(tag: u16, mask: u32, dec: &mut Dec<'a>) -> Self {
+                fn decode<L: Layering>(tag: u16, mask: u32, dec: &mut Dec<'a, L>) -> Self {
                     let mut bit = 1u32;
                     Self {
                         $( tag: nodes!(@second $tag, tag), )?
@@ -909,7 +910,7 @@ macro_rules! nodes {
                 }
             }
 
-            pub(crate) fn encode(&self, enc: &mut Enc<'_>) -> IrResult<(u16, u32)> {
+            pub(crate) fn encode<L: Layering>(&self, enc: &mut Enc<'_, L>) -> IrResult<(u16, u32)> {
                 match self {
                     DiNode::Undefined => err(
                         IrErrorKind::InvalidDebugInfo,
@@ -919,7 +920,7 @@ macro_rules! nodes {
                 }
             }
 
-            pub(crate) fn decode(kind: DiKind, tag: u16, mask: u32, dec: &mut Dec<'a>) -> DiNode<'a> {
+            pub(crate) fn decode<L: Layering>(kind: DiKind, tag: u16, mask: u32, dec: &mut Dec<'a, L>) -> DiNode<'a> {
                 match kind {
                     DiKind::Undefined => DiNode::Undefined,
                     $( DiKind::$variant => DiNode::$variant(<$name>::decode(tag, mask, dec)), )*

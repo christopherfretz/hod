@@ -6,7 +6,7 @@
 //! its own buffer so that a name lookup lands on the symbol directly.
 
 use crate::error::IrResult;
-use crate::intern::{Hasher64, InternTable, Seg, next_id, pool_start};
+use crate::intern::{Hasher64, InternTable, Layered, Layering, NoLayer, Seg, next_id, pool_start};
 
 /// An interned byte string of one [`StrPool`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
@@ -39,14 +39,36 @@ pub(crate) fn hash_bytes(bytes: &[u8]) -> u32 {
 
 /// A set of interned byte strings.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct StrPool {
-    bytes: Seg<u8>,
+pub(crate) struct StrPool<L: Layering = NoLayer> {
+    bytes: Seg<u8, L>,
     /// `(start, len)` in `bytes`.
-    spans: Seg<(u32, u32)>,
-    interner: InternTable,
+    spans: Seg<(u32, u32), L>,
+    interner: InternTable<L>,
 }
 
 impl StrPool {
+    /// The base of the forks of parallel reading: a copy.
+    pub(crate) fn seed(&self) -> StrPool<Layered> {
+        StrPool {
+            bytes: self.bytes.seed(),
+            spans: self.spans.seed(),
+            interner: self.interner.seed(),
+        }
+    }
+}
+
+impl StrPool<Layered> {
+    /// A pool sharing this one's base, with no string of its own.
+    pub(crate) fn fork(&self) -> StrPool<Layered> {
+        StrPool {
+            bytes: self.bytes.fork(),
+            spans: self.spans.fork(),
+            interner: self.interner.fork(),
+        }
+    }
+}
+
+impl<L: Layering> StrPool<L> {
     /// The id of `text`, added if new.
     pub(crate) fn intern(&mut self, text: &[u8]) -> IrResult<StrId> {
         let hash = hash_bytes(text);
@@ -85,29 +107,6 @@ impl StrPool {
     pub(crate) fn len(&self) -> usize {
         self.spans.len()
     }
-
-    /// `spec/ir.md` §5.1: the strings move into a base forks share.
-    pub(crate) fn freeze(&mut self) {
-        self.bytes.freeze();
-        self.spans.freeze();
-        self.interner.freeze();
-    }
-
-    /// A pool sharing this one's base, with no string of its own.
-    pub(crate) fn fork(&self) -> StrPool {
-        StrPool {
-            bytes: self.bytes.fork(),
-            spans: self.spans.fork(),
-            interner: self.interner.fork(),
-        }
-    }
-
-    /// Back to one layer where no fork shares the base.
-    pub(crate) fn thaw(&mut self) {
-        self.bytes.thaw();
-        self.spans.thaw();
-        self.interner.thaw();
-    }
 }
 
 #[cfg(test)]
@@ -118,7 +117,7 @@ mod tests {
     /// bytes are ordinary strings.
     #[test]
     fn strings_are_interned_by_content() {
-        let mut pool = StrPool::default();
+        let mut pool = <StrPool>::default();
         let a = pool.intern(b".text.hot").unwrap();
         let b = pool.intern(b".data").unwrap();
         let empty = pool.intern(b"").unwrap();

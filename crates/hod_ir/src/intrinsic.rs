@@ -9,6 +9,7 @@
 //! `classify`'s decision.
 
 use crate::ids::TypeId;
+use crate::intern::Layering;
 use crate::types::{TypeKind, TypeTable};
 
 /// Where an overload type of an intrinsic is read from its function type.
@@ -505,7 +506,11 @@ impl<'a> Intrinsic<'a> {
 
     /// The full LLVM name for `overloads` (`llvm.memcpy.p0.p0.i64`), or
     /// `None` if a type has no mangling here. For `Other`, the name itself.
-    pub fn mangled_name(self, types: &TypeTable, overloads: &[TypeId]) -> Option<String> {
+    pub fn mangled_name<L: Layering>(
+        self,
+        types: &TypeTable<L>,
+        overloads: &[TypeId],
+    ) -> Option<String> {
         let mut name = self.name().to_string();
         if self.index().is_some() {
             for &ty in overloads {
@@ -523,9 +528,9 @@ impl<'a> Intrinsic<'a> {
     /// `fn_ty` is not a function type or lacks a parameter or return field
     /// the intrinsic reads one from. Entries past
     /// [`Intrinsic::overload_count`] are `void`.
-    pub(crate) fn overloads_from(
+    pub(crate) fn overloads_from<L: Layering>(
         self,
-        types: &TypeTable,
+        types: &TypeTable<L>,
         fn_ty: TypeId,
     ) -> Option<[TypeId; MAX_OVERLOADS]> {
         let sources = self.index().map_or(&[][..], |index| TABLE[index].1);
@@ -581,7 +586,11 @@ impl IntrinsicRef<'_> {
 ///
 /// A producer first asks [`no_code_intrinsic`]; names it claims never get
 /// here.
-pub fn resolve_intrinsic<'a>(types: &TypeTable, name: &'a str, fn_ty: TypeId) -> IntrinsicRef<'a> {
+pub fn resolve_intrinsic<'a, L: Layering>(
+    types: &TypeTable<L>,
+    name: &'a str,
+    fn_ty: TypeId,
+) -> IntrinsicRef<'a> {
     let other = IntrinsicRef {
         intrinsic: Intrinsic::Other(name),
         overloads: [TypeId::VOID; MAX_OVERLOADS],
@@ -615,7 +624,7 @@ fn has_dotted_prefix(name: &str, prefix: &str) -> bool {
 /// (`getMangledTypeStr`). False for a type whose mangling hod cannot
 /// reproduce: named structs (names are not kept, §3), opaque structs,
 /// target extension types, and the non-value types.
-fn mangle(types: &TypeTable, ty: TypeId, out: &mut String) -> bool {
+fn mangle<L: Layering>(types: &TypeTable<L>, ty: TypeId, out: &mut String) -> bool {
     use std::fmt::Write as _;
     // Writing to a `String` cannot fail.
     let _ = match types.kind(ty) {

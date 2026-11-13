@@ -3,7 +3,7 @@
 
 use crate::error::{IrErrorKind, IrResult, err};
 use crate::ids::{AsmId, TypeId};
-use crate::intern::{Hasher64, InternTable, Seg, next_id};
+use crate::intern::{Hasher64, InternTable, Layered, Layering, NoLayer, Seg, next_id};
 use crate::strings::{StrId, StrPool};
 use crate::types::{TypeKind, TypeTable};
 
@@ -52,15 +52,55 @@ struct Entry {
 
 /// The inline-assembly callees of a module.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct AsmTable {
-    entries: Seg<Entry>,
-    strings: StrPool,
-    interner: InternTable,
+pub(crate) struct AsmTable<L: Layering = NoLayer> {
+    entries: Seg<Entry, L>,
+    strings: StrPool<L>,
+    interner: InternTable<L>,
 }
 
 impl AsmTable {
+    pub(crate) fn seed(&self) -> AsmTable<Layered> {
+        AsmTable {
+            entries: self.entries.seed(),
+            strings: self.strings.seed(),
+            interner: self.interner.seed(),
+        }
+    }
+}
+
+impl AsmTable<Layered> {
+    pub(crate) fn fork(&self) -> AsmTable<Layered> {
+        AsmTable {
+            entries: self.entries.fork(),
+            strings: self.strings.fork(),
+            interner: self.interner.fork(),
+        }
+    }
+
+    pub(crate) fn local_is_empty(&self) -> bool {
+        self.entries.local_is_empty()
+    }
+
+    /// The callees from `from` on, as owned values (their strings may be
+    /// older than they are: the pool shares equal strings).
+    pub(crate) fn owned_since(&self, from: usize) -> Vec<OwnedAsm> {
+        (from..self.entries.len())
+            .map(|id| {
+                let asm = self.get(AsmId::new(id as u32));
+                OwnedAsm {
+                    template: asm.template.into(),
+                    constraints: asm.constraints.into(),
+                    flags: asm.flags,
+                    ty: asm.ty,
+                }
+            })
+            .collect()
+    }
+}
+
+impl<L: Layering> AsmTable<L> {
     /// The id of `asm`, added if new.
-    pub(crate) fn intern(&mut self, types: &TypeTable, asm: &InlineAsm<'_>) -> IrResult<AsmId> {
+    pub(crate) fn intern(&mut self, types: &TypeTable<L>, asm: &InlineAsm<'_>) -> IrResult<AsmId> {
         if !matches!(types.kind(asm.ty), TypeKind::Function { .. }) {
             return err(
                 IrErrorKind::InvalidType,
@@ -106,48 +146,6 @@ impl AsmTable {
     /// Number of distinct callees.
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
-    }
-
-    // ---- §5.1 reading bodies in parallel ----
-
-    pub(crate) fn freeze(&mut self) {
-        self.entries.freeze();
-        self.strings.freeze();
-        self.interner.freeze();
-    }
-
-    pub(crate) fn fork(&self) -> AsmTable {
-        AsmTable {
-            entries: self.entries.fork(),
-            strings: self.strings.fork(),
-            interner: self.interner.fork(),
-        }
-    }
-
-    pub(crate) fn thaw(&mut self) {
-        self.entries.thaw();
-        self.strings.thaw();
-        self.interner.thaw();
-    }
-
-    pub(crate) fn local_is_empty(&self) -> bool {
-        self.entries.local_is_empty()
-    }
-
-    /// The callees from `from` on, as owned values (their strings may be
-    /// older than they are: the pool shares equal strings).
-    pub(crate) fn owned_since(&self, from: usize) -> Vec<OwnedAsm> {
-        (from..self.entries.len())
-            .map(|id| {
-                let asm = self.get(AsmId::new(id as u32));
-                OwnedAsm {
-                    template: asm.template.into(),
-                    constraints: asm.constraints.into(),
-                    flags: asm.flags,
-                    ty: asm.ty,
-                }
-            })
-            .collect()
     }
 }
 

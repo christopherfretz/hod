@@ -67,6 +67,7 @@ pub mod intrinsic;
 pub mod lanes;
 pub mod mask;
 pub mod mem;
+pub mod probe;
 pub mod reg;
 pub mod tail;
 pub mod target;

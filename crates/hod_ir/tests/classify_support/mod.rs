@@ -681,6 +681,17 @@ fn attr_row(name: &str, arch: Arch) -> Program {
         "no-builtin" => {
             attrs_program(arch, |attrs| attrs.set_string(FnStr::NoBuiltin, b"memcpy").unwrap())
         }
+        // WP-186: `probe-stack` and its values.
+        "probe-stack" => {
+            attrs_program(arch, |attrs| attrs.set_string(FnStr::ProbeStack, b"inline-asm").unwrap())
+        }
+        "probe-stack-function" => attrs_program(arch, |attrs| {
+            attrs.set_string(FnStr::ProbeStack, b"__probestack").unwrap();
+        }),
+        "stack-probe-size-value" => attrs_program(arch, |attrs| {
+            attrs.set_string(FnStr::ProbeStack, b"inline-asm").unwrap();
+            attrs.set_string(FnStr::StackProbeSize, b"1").unwrap();
+        }),
         _ => {
             let key = FnStr::ALL.into_iter().find(|key| key.name() == name);
             let key = key.unwrap_or_else(|| panic!("no case for attr:{name}"));

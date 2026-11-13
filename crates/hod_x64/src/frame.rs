@@ -86,6 +86,9 @@ pub struct FrameState {
     pub call: crate::call::CallState,
     /// The coroutine stubs' labels (WP-137, `crate::coro_body`).
     pub coro: crate::coro_body::CoroState,
+    /// The probe size, 0 when the function does not probe its stack
+    /// (WP-186, `crate::probe`).
+    pub probe: u32,
 }
 
 /// `Target::begin_function`: the prologue and its CFI rows.
@@ -105,6 +108,11 @@ pub fn begin(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
         put(cx, mc::push_r(saved));
     }
     put(cx, mc::sub_ri(Size::Q, RSP, FRAME_PLACEHOLDER));
+    // WP-186: room for the probed allocation.
+    cx.state.frame.probe = crate::probe::size_of(cx);
+    if cx.state.frame.probe != 0 {
+        cx.emit(&[0xcc; crate::probe::RESERVE as usize]);
+    }
     // WP-137: a coroutine's mode and frame words.
     crate::coro_body::enter(cx)?;
     // WP-125: the address returned in `rax`, the register save area.
@@ -203,7 +211,9 @@ pub fn saved(cx: &FnCx<'_, X64>) -> impl DoubleEndedIterator<Item = Reg> + Clone
 fn prologue(cx: &mut FnCx<'_, X64>, frame: u32) -> CgResult<()> {
     let at = cx.state.frame.saves_at;
     let regs = saved(cx);
-    let Some(code) = cx.code_mut().get_mut(at as usize..(at + RESERVED) as usize) else {
+    let probe = cx.state.frame.probe;
+    let reserved = RESERVED + if probe == 0 { 0 } else { crate::probe::RESERVE };
+    let Some(code) = cx.code_mut().get_mut(at as usize..(at + reserved) as usize) else {
         return cx.bug("the prologue is not where it was emitted");
     };
     let mut len = 0;
@@ -211,14 +221,13 @@ fn prologue(cx: &mut FnCx<'_, X64>, frame: u32) -> CgResult<()> {
         len += write(&mut code[len..], mc::push_r(reg));
     }
     let pushed = len as u32;
-    if frame != 0 {
-        len += write(&mut code[len..], mc::sub_ri(Size::Q, RSP, i64::from(frame)));
-    }
+    // WP-186: `sub rsp, FRAME`, or its probes.
+    len += crate::probe::write_allocation(&mut code[len..], frame, probe);
     for (index, reg) in regs.enumerate() {
         let cfa_offset = -24 - 8 * index as i32;
         cx.cfi_at(at + pushed, CfiOp::Offset { reg: dwarf(gpr(reg)), cfa_offset })?;
     }
-    cx.cut(at + len as u32, RESERVED - len as u32);
+    cx.cut(at + len as u32, reserved - len as u32);
     Ok(())
 }
 
@@ -261,6 +270,9 @@ fn teardown(cx: &mut FnCx<'_, X64>) {
 /// of at most 1 GiB.
 pub fn adjust_sp(cx: &mut FnCx<'_, X64>, delta: i64) {
     const STEP: i64 = 1 << 30;
+    if delta < 0 && crate::probe::adjust_sp(cx, delta.unsigned_abs()) {
+        return;
+    }
     let mut left = delta;
     while left != 0 {
         let step = left.clamp(-STEP, STEP);
@@ -288,7 +300,7 @@ pub fn dynamic_slot(cx: &mut FnCx<'_, X64>, ptr: FrameRef, size: u64, align: u64
     }
     put(cx, mc::lea(Size::Q, R11, Mem::base(RSP, -(size as i32))));
     put(cx, mc::and_ri(Size::Q, R11, -(align as i64)));
-    put(cx, mc::mov_rr(Size::Q, RSP, R11));
+    crate::probe::set_sp(cx); // WP-186: `mov rsp, r11`, probed
     frame_inst(cx, ptr, |m| mc::mov_mr(Size::Q, m, R11));
     Ok(())
 }

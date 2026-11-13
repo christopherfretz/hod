@@ -75,6 +75,7 @@ pub mod mask;
 pub mod mem;
 pub mod named_reg;
 pub mod neon;
+pub mod probe;
 pub mod reg;
 pub mod tail;
 pub mod tail2;

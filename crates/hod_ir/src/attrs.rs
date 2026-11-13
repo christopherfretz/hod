@@ -1129,12 +1129,72 @@ impl<'a, L: Layering> FnAttrsView<'a, L> {
             .map(move |&(key, value)| (key, table.values.get(value)))
     }
 
+    /// How the function probes its stack (WP-186, `spec/ir.md` §5.7):
+    /// `"probe-stack"` and `"stack-probe-size"` read together.
+    pub fn stack_probe(&self) -> StackProbe {
+        stack_probe(self.string(FnStr::ProbeStack), self.string(FnStr::StackProbeSize))
+    }
+
     /// True if the set has no attribute.
     pub fn is_empty(&self) -> bool {
         self.entry.flags == 0
             && self.entry.uwtable == UwTable::None
             && self.entry.stack_align == 0
             && self.entry.strings_len == 0
+    }
+}
+
+/// How a function probes its stack (WP-186, `spec/ir.md` §5.7,
+/// `spec/codegen.md` §5.6.27).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StackProbe {
+    /// No `"probe-stack"`: nothing is probed (`"stack-probe-size"` alone
+    /// changes nothing, as in `llc`).
+    None,
+    /// `"probe-stack"="inline-asm"`: no page of this many bytes below
+    /// the stack pointer is skipped.
+    Inline(u32),
+    /// A value hod does not build, refused under this stable name.
+    Refused(&'static str),
+}
+
+impl StackProbe {
+    /// A `"probe-stack"` value other than `"inline-asm"`: a probe
+    /// function to call (`__probestack`-style), which hod does not.
+    pub const FUNCTION: &'static str = "attr:probe-stack-function";
+    /// A `"stack-probe-size"` that is not a multiple of 4096 between
+    /// 4096 and 2^24 - 4096 in decimal (`llc` accepts others, some of
+    /// which do not probe at all: 0 on x86-64).
+    pub const SIZE_VALUE: &'static str = "attr:stack-probe-size-value";
+    /// The probe size without `"stack-probe-size"` (`llc`'s, both
+    /// targets).
+    pub const DEFAULT_SIZE: u32 = 4096;
+    /// The refusals of [`FnAttrsView::stack_probe`].
+    pub const REASONS: [&'static str; 2] = [StackProbe::FUNCTION, StackProbe::SIZE_VALUE];
+
+    /// The probe size, if the function probes inline.
+    pub const fn size(self) -> Option<u32> {
+        match self {
+            StackProbe::Inline(size) => Some(size),
+            _ => None,
+        }
+    }
+}
+
+/// [`FnAttrsView::stack_probe`] from the two values.
+pub fn stack_probe(probe: Option<&[u8]>, size: Option<&[u8]>) -> StackProbe {
+    match probe {
+        None => StackProbe::None,
+        Some(b"inline-asm") => match size {
+            None => StackProbe::Inline(StackProbe::DEFAULT_SIZE),
+            Some(text) => std::str::from_utf8(text)
+                .ok()
+                .filter(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|t| t.parse::<u32>().ok())
+                .filter(|&n| n >= 4096 && n.is_multiple_of(4096) && n < (1 << 24))
+                .map_or(StackProbe::Refused(StackProbe::SIZE_VALUE), StackProbe::Inline),
+        },
+        Some(_) => StackProbe::Refused(StackProbe::FUNCTION),
     }
 }
 

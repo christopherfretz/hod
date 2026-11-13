@@ -14,7 +14,7 @@ use super::attrs::{call_declaration, merge_call_attrs};
 use super::matrix::{FAR_PTR, NO_VALUE, SUPPORT_ROWS, TypeClass, at, class_code, rules};
 use super::support::{SHORT_CALL, SHORT_COUNT_SHIFT, SHORT_LIST, SHORT_MEM, SHORT_ON, Support};
 use super::{Rejection, RejectionKind, StackArgs};
-use crate::attrs::{CallConv, FnAttrs, FnAttrsView, ParamAttrs, ParamMem, UwTable};
+use crate::attrs::{CallConv, FnAttrs, FnAttrsView, ParamAttrs, ParamMem, StackProbe, UwTable};
 use crate::body::{Body, CallSite, Clause};
 use crate::constant::Const;
 use crate::ids::{BlockId, ConstId, SymId, TypeId};
@@ -811,6 +811,14 @@ impl<'a, S: Sink> Walker<'a, S> {
         }
         for (key, _) in attrs.strings() {
             self.row(at::ATTR_STRING + key as usize, at)?;
+        }
+        // WP-186: the values of `probe-stack` and `stack-probe-size`.
+        match attrs.stack_probe() {
+            StackProbe::Refused(StackProbe::FUNCTION) => {
+                self.row(at::ATTR_PROBE_STACK_FUNCTION, at)?;
+            }
+            StackProbe::Refused(_) => self.row(at::ATTR_STACK_PROBE_SIZE_VALUE, at)?,
+            StackProbe::None | StackProbe::Inline(_) => {}
         }
         GO
     }

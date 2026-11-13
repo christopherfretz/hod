@@ -698,7 +698,7 @@ const ATTR_MEM: [SupportRow; 6] = [
     a64("attr:elementtype", LATER, "on an inline-assembly or intrinsic argument"),
 ];
 
-const ATTR_VALUE: [SupportRow; 3] = [
+const ATTR_VALUE: [SupportRow; 5] = [
     both("attr:align", ON, "on a parameter or return: an assumption, no code"),
     row(
         "attr:alignstack",
@@ -707,6 +707,16 @@ const ATTR_VALUE: [SupportRow; 3] = [
         "on a parameter: placement of a stack block (abi-a64.md §3.3); on a function: no code, `sp` is always 16-aligned and an over-aligned slot aligns itself",
     ),
     row("attr:uwtable", ON, ON, "on a function with a body (WP-049)"),
+    both(
+        "attr:probe-stack-function",
+        todo(LATER),
+        "a `probe-stack` value other than `inline-asm`: a probe function to call",
+    ),
+    both(
+        "attr:stack-probe-size-value",
+        todo(LATER),
+        "a `stack-probe-size` other than a multiple of 4096 below 2^24 (WP-186)",
+    ),
 ];
 
 /// In the order of `FnAttrs::FLAG_NAMES`.
@@ -777,8 +787,12 @@ const ATTR_STRING: [SupportRow; FnStr::ALL.len()] = [
     row("attr:sign-return-address-key", todo(LATER), never(A64_ONLY), ""),
     row("attr:branch-protection-pauth-lr", todo(LATER), never(A64_ONLY), ""),
     row("attr:guarded-control-stack", todo(LATER), never(A64_ONLY), ""),
-    a64("attr:stack-probe-size", LATER, ""),
-    a64("attr:probe-stack", LATER, ""),
+    both("attr:stack-probe-size", ON, "a parameter of `attr:probe-stack`, read with it (WP-186)"),
+    both(
+        "attr:probe-stack",
+        ON,
+        "`inline-asm`: frames and `alloca`s probed page by page (`spec/codegen.md` §5.6.27, WP-186); other values are `attr:probe-stack-function`",
+    ),
     a64("attr:split-stack", LATER, ""),
     a64("attr:zero-call-used-regs", LATER, ""),
     both("attr:stack-protector-buffer-size", ON, "a parameter of `attr:ssp`, read with it"),
@@ -3705,6 +3719,8 @@ pub(crate) mod at {
     pub(crate) const ATTR_ALIGN: usize = find("attr:align");
     pub(crate) const ATTR_ALIGNSTACK: usize = find("attr:alignstack");
     pub(crate) const ATTR_UWTABLE: usize = find("attr:uwtable");
+    pub(crate) const ATTR_PROBE_STACK_FUNCTION: usize = find("attr:probe-stack-function");
+    pub(crate) const ATTR_STACK_PROBE_SIZE_VALUE: usize = find("attr:stack-probe-size-value");
     /// Plus the bit number of an `FnAttrs` flag.
     pub(crate) const ATTR_FLAG: usize = find("attr:noreturn");
     pub(crate) const ATTR_RETURNS_TWICE: usize = find("attr:returns_twice");

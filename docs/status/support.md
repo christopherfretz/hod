@@ -31,7 +31,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `init` | 10 | 6 | 3 | 1 | 6 | 3 | 1 |
 | `function` | 6 | 6 | 0 | 0 | 6 | 0 | 0 |
 | `cc` | 26 | 6 | 7 | 13 | 3 | 13 | 10 |
-| `attr` | 59 | 26 | 30 | 3 | 24 | 27 | 8 |
+| `attr` | 61 | 28 | 30 | 3 | 26 | 27 | 8 |
 | `type` | 15 | 12 | 0 | 3 | 13 | 0 | 2 |
 | `inst` | 67 | 60 | 0 | 7 | 59 | 1 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 455 | 347 | 7 | 101 | 229 | 10 | 216 |
-| total | 777 | 551 | 68 | 158 | 427 | 72 | 278 |
+| total | 779 | 553 | 68 | 158 | 429 | 72 | 278 |
 
 ## `module`
 
@@ -251,6 +251,8 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:align` | supported | supported | on a parameter or return: an assumption, no code |
 | `attr:alignstack` | supported | not-implemented | on a parameter: placement of a stack block (abi-a64.md §3.3); on a function: no code, `sp` is always 16-aligned and an over-aligned slot aligns itself |
 | `attr:uwtable` | supported | supported | on a function with a body (WP-049) |
+| `attr:probe-stack-function` | not-implemented | not-implemented | unplanned. a `probe-stack` value other than `inline-asm`: a probe function to call |
+| `attr:stack-probe-size-value` | not-implemented | not-implemented | unplanned. a `stack-probe-size` other than a multiple of 4096 below 2^24 (WP-186) |
 | `attr:noreturn` | supported | supported | a promise: nothing to do in the function itself |
 | `attr:naked` | rejected | rejected | a naked function is its inline assembly, with no frame (`spec/codegen.md` §1) |
 | `attr:nounwind` | supported | supported | its absence is `function:may-unwind` |
@@ -284,8 +286,8 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:sign-return-address-key` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
 | `attr:branch-protection-pauth-lr` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
 | `attr:guarded-control-stack` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `attr:stack-probe-size` | not-implemented | not-implemented | unplanned |
-| `attr:probe-stack` | not-implemented | not-implemented | unplanned |
+| `attr:stack-probe-size` | supported | supported | a parameter of `attr:probe-stack`, read with it (WP-186) |
+| `attr:probe-stack` | supported | supported | `inline-asm`: frames and `alloca`s probed page by page (`spec/codegen.md` §5.6.27, WP-186); other values are `attr:probe-stack-function` |
 | `attr:split-stack` | not-implemented | not-implemented | unplanned |
 | `attr:zero-call-used-regs` | not-implemented | not-implemented | unplanned |
 | `attr:stack-protector-buffer-size` | supported | supported | a parameter of `attr:ssp`, read with it |

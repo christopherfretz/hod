@@ -1053,6 +1053,21 @@ does not have is `Rejected`. The lists below are the table, in full.
   changes no code; `classify` accepts it on every target
   (`attr:noredzone`, row `ON`).
 
+  `"probe-stack"` and `"stack-probe-size"` (WP-186; clang's
+  `-fstack-clash-protection` writes `"probe-stack"="inline-asm"` on every
+  function, `-mstack-probe-size=N` the size) are read together by
+  `FnAttrsView::stack_probe` (`hod_ir::StackProbe`): no `"probe-stack"`
+  is `None` (a `"stack-probe-size"` alone changes nothing, as in `llc`);
+  `"inline-asm"` is `Inline(P)`, `P` the size or 4096 without one; any
+  other `"probe-stack"` value names a probe function to call
+  (`__probestack`-style), refused as `attr:probe-stack-function`; a size
+  that is not a decimal multiple of 4096 in `[4096, 2^24)` is refused as
+  `attr:stack-probe-size-value` (`llc` takes others, and some of them do
+  not probe: 0 on x86-64 allocates the whole frame at once). Both rows
+  are `ON` (`attr:probe-stack`, `attr:stack-probe-size`); what the
+  targets build is `spec/codegen.md` §5.6.27. kiln accepts
+  `-fstack-clash-protection` and writes neither attribute.
+
 **Dropped**, because only an optimizer (or a pass that runs before any
 backend) reads them:
 

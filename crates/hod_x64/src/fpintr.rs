@@ -209,6 +209,9 @@ pub fn intrinsic<'a>(
     args: &'a [Value],
 ) -> CgResult<()> {
     use Intrinsic as I;
+    if let Some(done) = crate::lanes::intrinsic(cx, inst, which, args) {
+        return done;
+    }
     let Some(&first) = args.first() else { return unsupported(INTRINSIC) };
     if crate::x87::is_x86_fp80(cx, value_ty(cx, first)) {
         return crate::x87::intrinsic(cx, inst, which, args);

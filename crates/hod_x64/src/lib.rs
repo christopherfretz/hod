@@ -30,16 +30,16 @@
 //! | `mem` | WP-123 | `load`, `store`, `alloca`, `ptradd`, `llvm.stacksave`/`stackrestore` | `tests/mem.rs` |
 //! | `control` | WP-124 | `condbr`, `switch`, `indirectbr` | `tests/control.rs` |
 //! | `call` | WP-125 | calls, `invoke`, `musttail`, landing pads, `resume`, variadics | `tests/call.rs` |
-//! | `vcall` | WP-125, WP-132 | vectors across calls (`PartKind::Lanes`) | |
+//! | `vcall` | WP-125, WP-132 | vectors across calls (`PartKind::Lanes`) | `tests/vcall.rs` |
 //! | `aggr` | WP-126 | `Mem`-class values: wide integers, aggregates, overflow intrinsics | `tests/aggr.rs` |
 //! | `float` | WP-127 | scalar and vector-register floating point (SSE2) | `tests/float.rs` |
 //! | `fpintr` | WP-127, WP-128 | the floating-point intrinsics | `tests/fpintr.rs` |
 //! | `intrinsic` | WP-128 | the other intrinsics | `tests/intrinsic.rs` |
 //! | `barrier` | WP-128 | inline assembly whose template assembles to nothing | `tests/barrier.rs` |
 //! | `x87` | WP-131 | `x86_fp80` arithmetic, compares, conversions and intrinsics | `tests/x87.rs` |
-//! | `vector` | WP-132 | `extractelement`, `insertelement`, `shufflevector` | |
-//! | `lanes` | WP-132 | element-wise operations on `Mem`-class vectors | |
-//! | `mask` | WP-132 | vectors of `i1` | |
+//! | `vector` | WP-132 | `extractelement`, `insertelement`, `shufflevector` | `tests/vector.rs` |
+//! | `lanes` | WP-132 | element-wise operations and intrinsics on vectors (packed or lane by lane) | `tests/lanes.rs` |
+//! | `mask` | WP-132 | vectors of `i1` | `tests/mask.rs` |
 //! | `atomic` | WP-133 | atomic `load`/`store`, `atomicrmw`, `cmpxchg`, `fence` | `tests/atomic.rs` |
 //! | `tls` | WP-134 | thread-local addresses, `llvm.threadlocal.address`, `llvm.thread.pointer` | `tests/tls.rs` |
 //! | `constaddr` | WP-126 | constant operands that hold addresses: differences, relocated images | `tests/aggr.rs` |

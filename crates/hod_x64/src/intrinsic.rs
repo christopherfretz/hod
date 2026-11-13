@@ -127,6 +127,9 @@ pub fn intrinsic<'a>(
     args: &'a [Value],
 ) -> CgResult<()> {
     use Intrinsic as I;
+    if let Some(done) = crate::lanes::intrinsic(cx, inst, which, args) {
+        return done;
+    }
     match (which, args) {
         (I::Ctlz | I::Cttz | I::Ctpop | I::Bswap | I::BitReverse | I::Abs, &[x, ..]) => {
             let width = int_or_quad(cx, inst.ty())?;

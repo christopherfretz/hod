@@ -468,6 +468,9 @@ fn quad_call_from(cx: &mut FnCx<'_, X64>, slot: FrameRef, func: RuntimeFn) -> Cg
 pub fn binary<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, lhs: Value, rhs: Value) -> CgResult<()> {
     let op = inst.opcode();
     let shape = shape(cx, inst.ty());
+    if shape == Shape::Vector {
+        return crate::lanes::binary(cx, inst, lhs, rhs);
+    }
     if !matches!(op, Opcode::FAdd | Opcode::FSub | Opcode::FMul | Opcode::FDiv | Opcode::FRem) {
         return unsupported(if shape == Shape::Vector { crate::vector::VECTOR } else { BINARY });
     }
@@ -565,7 +568,7 @@ fn fmod_of(ty: FpType) -> RuntimeFn {
 pub fn fneg<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> CgResult<()> {
     let shape = shape(cx, inst.ty());
     if shape == Shape::Vector {
-        return unsupported(crate::vector::VECTOR);
+        return crate::lanes::fneg(cx, inst, arg);
     }
     deferred_first(cx, inst, None)?;
     let a = cx.use_reg(arg)?;
@@ -617,7 +620,7 @@ pub fn cast<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, arg: Value) -> CgResult<
     let from = if from_gpr { None } else { Some(shape(cx, from_ty)) };
     let to = if to_gpr { None } else { Some(shape(cx, to_ty)) };
     if from == Some(Shape::Vector) || to == Some(Shape::Vector) {
-        return unsupported(crate::vector::VECTOR);
+        return crate::lanes::cast(cx, inst, arg);
     }
     if from == Some(Shape::Quad) || to == Some(Shape::Quad) {
         if from == Some(Shape::BFloat) || to == Some(Shape::BFloat) {

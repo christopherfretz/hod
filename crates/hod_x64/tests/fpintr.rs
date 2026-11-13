@@ -429,7 +429,7 @@ fn the_integer_intrinsics_agree() {
 
 /// What is not lowered, by name, one construct per program: an intrinsic
 /// of `bfloat`, `fptosi.sat` of `fp128`, a `powi` exponent wider than 32
-/// bits, an `lround` to `i128`, a vector `fabs`.
+/// bits, an `lround` to `i128` (vectors are WP-132's, `tests/lanes.rs`).
 #[test]
 fn what_is_not_lowered_is_refused_by_name() {
     use hod_x64::fpintr;
@@ -453,12 +453,6 @@ fn what_is_not_lowered_is_refused_by_name() {
             "declare i128 @llvm.lround.i128.f64(double)\ndefine i128 @f(double %a) {\n  \
              %r = call i128 @llvm.lround.i128.f64(double %a)\n  ret i128 %r\n}\n",
             fpintr::WIDE,
-        ),
-        (
-            "declare <4 x float> @llvm.fabs.v4f32(<4 x float>)\n\
-             define <4 x float> @f(<4 x float> %a) {\n  \
-             %r = call <4 x float> @llvm.fabs.v4f32(<4 x float> %a)\n  ret <4 x float> %r\n}\n",
-            hod_x64::vector::VECTOR,
         ),
     ] {
         let (m, bodies) = parse(&format!("{}{text}", ll_header()));

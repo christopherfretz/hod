@@ -295,7 +295,9 @@ fn vectors() {
             vec![
                 val(0, 0, 16, x(0)),
                 val(0, 16, 16, x(1)),
-                val(1, 0, 8, a(0)),
+                // WP-174: the value is an `xmm`, the part a general
+                // register: a lane move.
+                Part { kind: hod_x64::abi::LONE_LANE, ..val(1, 0, 8, a(0)) },
                 val(2, 0, 6, x(2)),
                 val(3, 0, 8, a(1)),
                 val(3, 8, 8, a(2)),

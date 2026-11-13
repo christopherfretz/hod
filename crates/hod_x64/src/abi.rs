@@ -551,6 +551,9 @@ fn assign_return(
         parts.clear();
         return Ok(true);
     }
+    if is_lone_gpr_vector(types, sig.ret) {
+        mark_lone(parts);
+    }
     Ok(false)
 }
 
@@ -619,7 +622,33 @@ fn assign_argument(
     if is_i128_vector(types, ty) {
         check_i128_vector(&out[first..])?;
     }
+    if whole && is_lone_gpr_vector(types, ty) {
+        mark_lone(&mut out[first..]);
+    }
     Ok(())
+}
+
+/// WP-174: the kind of the one part of a lone `<1 x i64>` or `<1 x ptr>`
+/// argument or result (§4.3): the value is a vector register (class
+/// `Fpr`), the place a general register or an 8-byte stack slot, so the
+/// part is a lane move (`vcall.rs`, a `movq`), never a plain `Value`
+/// part, which cannot change register class.
+pub const LONE_LANE: PartKind = PartKind::Lanes { bits: 64, lane: 8, first: 0, len: 1 };
+
+/// Whether `ty` is a vector of one 64-bit integer or pointer: LLVM
+/// scalarizes it into a general piece, while hod keeps its value in an
+/// `xmm` (`target.rs` `vector_class`).
+pub fn is_lone_gpr_vector(types: &TypeTable, ty: TypeId) -> bool {
+    matches!(types.kind(ty), TypeKind::Vector { elem, len: 1 }
+        if matches!(types.kind(elem), TypeKind::Int(64) | TypeKind::Ptr { addr_space: 0 }))
+}
+
+/// The parts of a lone `<1 x i64>`/`<1 x ptr>` (one, 8 bytes) made lane
+/// moves ([`LONE_LANE`]).
+fn mark_lone(parts: &mut [Part]) {
+    for part in parts {
+        part.kind = LONE_LANE;
+    }
 }
 
 /// §6.2: the alignment of the copy of a `byval(pointee)` argument with

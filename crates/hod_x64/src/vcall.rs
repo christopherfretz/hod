@@ -22,6 +22,11 @@
 //! slot of a part on the stack, else in a slot of the function's own,
 //! loaded into or stored from the register (`movups`).
 //!
+//! WP-174: a lone `<1 x i64>` or `<1 x ptr>` argument or result is one
+//! `Lanes { bits: 64, len: 1 }` part (`abi::LONE_LANE`): its value is an
+//! `xmm`, its place a general register or an 8-byte stack slot; it moves
+//! with one `movq` (or an 8-byte load or store), `lone_out`/`lone_in`.
+//!
 //! # Registers
 //!
 //! Every move writes `r10` or `r11` (the one that is not the general
@@ -37,8 +42,8 @@ use hod_mc_x64::{Reg, Size};
 use crate::common::{
     R10, gp, load_fpr, load_gpr, mov_imm, other_scratch, put, store_fpr, store_gpr, xm,
 };
-use crate::reg;
 use crate::target::X64;
+use crate::{abi, reg};
 
 /// A part of kind `Lanes`, decoded.
 #[derive(Clone, Copy, Debug)]
@@ -118,6 +123,9 @@ fn classes_ok(value: LaneLoc, place: LaneLoc) -> bool {
 /// does not move ([`classes_ok`]); `Internal` for a part `abi::assign`
 /// does not make; `limit:frame-size`.
 pub fn lanes_out(cx: &mut FnCx<'_, X64>, part: &Part, from: LaneLoc, to: LaneLoc) -> CgResult<()> {
+    if is_lone(part) {
+        return lone_out(cx, from, to);
+    }
     if !classes_ok(from, to) {
         return Err(CgError::unsupported(CALL_PART_LANES));
     }
@@ -156,6 +164,9 @@ pub fn lanes_out(cx: &mut FnCx<'_, X64>, part: &Part, from: LaneLoc, to: LaneLoc
 /// # Errors
 /// As [`lanes_out`].
 pub fn lanes_in(cx: &mut FnCx<'_, X64>, part: &Part, from: LaneLoc, to: LaneLoc) -> CgResult<()> {
+    if is_lone(part) {
+        return lone_in(cx, from, to);
+    }
     if !classes_ok(to, from) {
         return Err(CgError::unsupported(CALL_PART_LANES));
     }
@@ -184,6 +195,65 @@ pub fn lanes_in(cx: &mut FnCx<'_, X64>, part: &Part, from: LaneLoc, to: LaneLoc)
             Ok(())
         }
     }
+}
+
+/// WP-174: whether `part` is the one part of a lone `<1 x i64>` or
+/// `<1 x ptr>` ([`abi::LONE_LANE`]), 8 bytes.
+fn is_lone(part: &Part) -> bool {
+    part.kind == abi::LONE_LANE && part.size == 8
+}
+
+/// WP-174: whether the sides of a lone `<1 x i64>`/`<1 x ptr>` move are
+/// of the classes it moves: the value an `xmm` (its low 8 bytes), the
+/// place a general register; a frame place on either side.
+fn lone_classes_ok(value: LaneLoc, place: LaneLoc) -> bool {
+    let value_ok = match value {
+        LaneLoc::Reg(r) => reg::is_fpr(r),
+        LaneLoc::Frame(_) => true,
+    };
+    let place_ok = match place {
+        LaneLoc::Reg(r) => reg::is_gpr(r),
+        LaneLoc::Frame(_) => true,
+    };
+    value_ok && place_ok
+}
+
+/// WP-174: the producer's side of a lone `<1 x i64>`/`<1 x ptr>`: the
+/// `xmm`'s low 8 bytes to the general register (`movq r64, xmm`) or to
+/// the stack slot; a value in memory through `r10`.
+fn lone_out(cx: &mut FnCx<'_, X64>, from: LaneLoc, to: LaneLoc) -> CgResult<()> {
+    if !lone_classes_ok(from, to) {
+        return Err(CgError::unsupported(CALL_PART_LANES));
+    }
+    match (from, to) {
+        (LaneLoc::Reg(x), LaneLoc::Reg(g)) => put(cx, mc::movd_rx(Size::Q, gp(g), xm(x))),
+        (LaneLoc::Reg(x), LaneLoc::Frame(slot)) => store_fpr(cx, xm(x), slot, 8),
+        (LaneLoc::Frame(image), LaneLoc::Reg(g)) => load_gpr(cx, gp(g), image, 8),
+        (LaneLoc::Frame(image), LaneLoc::Frame(slot)) => {
+            load_gpr(cx, R10, image, 8);
+            store_gpr(cx, R10, slot, 8);
+        }
+    }
+    Ok(())
+}
+
+/// WP-174: the consumer's side of a lone `<1 x i64>`/`<1 x ptr>`: the
+/// general register (`movq xmm, r64`) or the stack slot to the `xmm`; to
+/// a value in memory through `r10`.
+fn lone_in(cx: &mut FnCx<'_, X64>, from: LaneLoc, to: LaneLoc) -> CgResult<()> {
+    if !lone_classes_ok(to, from) {
+        return Err(CgError::unsupported(CALL_PART_LANES));
+    }
+    match (from, to) {
+        (LaneLoc::Reg(g), LaneLoc::Reg(x)) => put(cx, mc::movd_xr(Size::Q, xm(x), gp(g))),
+        (LaneLoc::Frame(slot), LaneLoc::Reg(x)) => load_fpr(cx, xm(x), slot, 8),
+        (LaneLoc::Reg(g), LaneLoc::Frame(image)) => store_gpr(cx, gp(g), image, 8),
+        (LaneLoc::Frame(slot), LaneLoc::Frame(image)) => {
+            load_gpr(cx, R10, slot, 8);
+            store_gpr(cx, R10, image, 8);
+        }
+    }
+    Ok(())
 }
 
 /// Bit `first + i` of `g` set to bit 0 of lane `i` at `src`, through the
@@ -228,5 +298,21 @@ mod tests {
         assert!(!classes_ok(r(x), frame));
         assert!(!classes_ok(r(st), frame));
         assert!(!classes_ok(frame, r(g)));
+    }
+
+    /// WP-174: a lone `<1 x i64>` move takes an `xmm` value and a
+    /// general place, nothing else.
+    #[test]
+    fn lone_moves_accept_only_their_register_classes() {
+        let (g, x, st) = (reg::gpr(Reg::Rax), reg::xmm(mc::Xmm::Xmm0), reg::st(0));
+        let frame = LaneLoc::Frame(FrameRef::Local(0));
+        let r = LaneLoc::Reg;
+        assert!(lone_classes_ok(r(x), r(g)));
+        assert!(lone_classes_ok(frame, r(g)));
+        assert!(lone_classes_ok(r(x), frame));
+        assert!(lone_classes_ok(frame, frame));
+        for (value, place) in [(g, g), (x, x), (st, g), (x, st), (g, x)] {
+            assert!(!lone_classes_ok(r(value), r(place)), "{value:?} {place:?}");
+        }
     }
 }

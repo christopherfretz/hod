@@ -561,11 +561,10 @@ const INIT: [SupportRow; 10] = [
     both("init:sym-diff", ON, "the difference of two symbol addresses"),
     a64("init:sym-diff-plt", LATER, "the same through `dso_local_equivalent` (relative vtables)"),
     both("init:int-of-addr", ON, "an address in an integer field"),
-    row(
+    both(
         "init:block-diff",
         ON,
-        todo(X64),
-        "a label difference `&&a - &&b` of two blocks of one function, a number (WP-095)",
+        "a label difference `&&a - &&b` of two blocks of one function, a number (WP-095, WP-174)",
     ),
     a64("init:dso-local-equivalent", LATER, ""),
     a64("init:no-cfi", LATER, ""),

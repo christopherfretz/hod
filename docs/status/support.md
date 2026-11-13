@@ -28,7 +28,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `visibility` | 2 | 2 | 0 | 0 | 2 | 0 | 0 |
 | `tls` | 4 | 4 | 0 | 0 | 4 | 0 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 2 | 0 | 3 |
-| `init` | 10 | 6 | 3 | 1 | 5 | 4 | 1 |
+| `init` | 10 | 6 | 3 | 1 | 6 | 3 | 1 |
 | `function` | 6 | 6 | 0 | 0 | 6 | 0 | 0 |
 | `cc` | 26 | 6 | 7 | 13 | 3 | 13 | 10 |
 | `attr` | 57 | 24 | 30 | 3 | 22 | 27 | 8 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 357 | 347 | 7 | 3 | 131 | 10 | 216 |
-| total | 677 | 549 | 68 | 60 | 326 | 73 | 278 |
+| total | 677 | 549 | 68 | 60 | 327 | 72 | 278 |
 
 ## `module`
 
@@ -178,7 +178,7 @@ What a variable's initializer contains.
 | `init:sym-diff` | supported | supported | the difference of two symbol addresses |
 | `init:sym-diff-plt` | not-implemented | not-implemented | unplanned. the same through `dso_local_equivalent` (relative vtables) |
 | `init:int-of-addr` | supported | supported | an address in an integer field |
-| `init:block-diff` | supported | not-implemented | a label difference `&&a - &&b` of two blocks of one function, a number (WP-095) |
+| `init:block-diff` | supported | supported | a label difference `&&a - &&b` of two blocks of one function, a number (WP-095, WP-174) |
 | `init:dso-local-equivalent` | not-implemented | not-implemented | unplanned |
 | `init:no-cfi` | not-implemented | not-implemented | unplanned |
 | `init:neg-addr` | rejected | rejected | no ELF relocation subtracts a symbol's address; `llc` refuses it too. a number minus an address, `sub (i64 4, i64 ptrtoint (ptr @a to i64))`, in data or in an aggregate operand's image |

@@ -52,7 +52,10 @@ pub const FRAME_ACCESS_AFTER_SUSPEND: &str = "coro:frame-access-after-suspend";
 /// coroutine that does not call `llvm.coro.align`.
 pub const OVERALIGNED_FRAME: &str = "coro:overaligned-frame";
 
-/// Every refusal name, in the order the plan checks them.
+/// Every refusal name. A body with several refused constructs gets one of
+/// them: which one is not specified, except that
+/// [`FRAME_ACCESS_AFTER_SUSPEND`] and then [`OVERALIGNED_FRAME`] are given
+/// only to a body with no other (`spec/xform.md` §3.8).
 pub const REFUSALS: [&str; 11] = [
     VARIADIC,
     BEGIN_SHAPE,

@@ -1,6 +1,6 @@
 //! The plan against LLVM's coroutine frame, over a directory of
 //! pre-optimisation modules (`HOD_XFORM_PREOPT`, searched for `*.ll`);
-//! skipped without it (`spec/xform.md` §5).
+//! skipped without it (`spec/xform.md` §4).
 //!
 //! For every coroutine `opt -passes=coro-early,cgscc(coro-split),coro-cleanup`
 //! builds, the allocas and values LLVM keeps in `%F.Frame` must be in

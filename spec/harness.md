@@ -3054,3 +3054,61 @@ FAIL, ERROR, XPASS or crash; no unclassified pair, at least 95% of pairs
 the same) and `catches_differences_and_broken_tests` (a hod whose line 2
 is line 3 FAILs; the same test PASSes with hod; a check `llc`'s session
 does not meet is an ERROR; an `xfail` on a passing test is an XPASS).
+
+## x64census
+
+`cargo xtask x64census [--interp] [--shipped] [-j <N>] [--keep <dir>]
+<dir or file.ll>...` (WP-138, `xtask/src/x64census.rs`): how ready the
+target-neutral half (`hod_ll`, `hod_bc`, `verify`, the printer, classify,
+`hod_interp`) is for x86-64 modules. It takes any `.ll` files, by
+convention an x86-64 recompilation of the corpus (below); the LLVM major
+of a file is the `llvmNN` component of its path, 22 without one.
+
+Each module goes through these stages; the first that fails is its stage
+outcome, `ready` when none does:
+
+1. `ll:<outcome>`: `roundtrip`'s in-process ingest (`hod_ll` reads the
+   module and every body, every body and the symbols verify). A refusal
+   is `ll:ParserUnsupported` with its reason in the line.
+2. `print:llvm-as-refused`: `llvm-as` of the major refuses what `hod_ir`'s
+   printer writes. `print:not-a-fixed-point`: reading that text again and
+   printing it does not give the same text, after local names are
+   renamed by rank within each function (the printer may invent names).
+3. `facade:routes-differ`: the text and its `llvm-as` bitcode, through
+   `hod::compile_with` with `census: true` and every classify row not
+   refused by design taken as supported
+   (`Support::everything_implemented(Arch::X86_64)`), give different
+   reasons. `facade:front-refuses`: a reason remains once the code
+   generator's are dropped (`codegen-not-implemented`, `x64:*`), so the
+   front half refuses the module; the reasons are counted by name.
+
+With `--shipped`, the reasons of the shipped matrix are counted too (the
+first, and every one by modules): what the x86-64 column of classify
+refuses. With `--interp`, a module with `main` (no parameters, or `argc`
+and `argv`, given 1 and null) runs in `hod_interp` with `abort`, `exit`,
+`_exit` and `_Exit` as host functions; when the run ends, its exit
+status (134 for `abort`) must equal that of the module compiled by
+`llc -O0 -fast-isel=0 -mtriple=x86_64-unknown-linux-gnu
+-relocation-model=pic`, linked by `x86_64-linux-gnu-gcc` and run under
+`qemu-x86_64 -L /usr/x86_64-linux-gnu` (abort is exit 134 or signal 6).
+A run that does not end is counted by its reason (`unsupported:<reason>`,
+`trap:<name> in @fn at %inst`, `no-main`); a disagreement is `DIFFERS`
+and an `Invalid` run `INVALID`, both listed.
+
+Output: one line per module that is not ready (and per `DIFFERS`,
+`INVALID` or trap), then the counts: by LLVM major, by stage, front-half
+refusals, the shipped matrix's reasons, and the interpreter's results.
+Exit status 0 when every module is ready, 1 otherwise, 2 on a usage
+error. At most 4 modules at a time; child processes run under
+`irdiff::process` limits with a jobserver token.
+
+The sample (not in the repository) is made by a script kept with the
+work: every Nth corpus entry per source and major, the entries of design
+0006's `targeted.txt`, a stride recompiled with `-g`, and kiln entries
+that throw, each recompiled for `x86_64-unknown-linux-gnu` with its own
+producer (kiln++ `--target=` with the major's `--llvm-dir`, clang-19/22
+for gcc-torture).
+
+Tests: `x64census::tests::{arguments, majors_and_reasons,
+a_ready_module}` (a module the front half takes whole is refused by the
+code generator alone and runs to its exit status).

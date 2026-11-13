@@ -109,6 +109,7 @@ pub enum Val {
     Ptr(u64),
     Float(u32),                       // IEEE-754 binary32 bit pattern
     Double(u64),                      // IEEE-754 binary64 bit pattern
+    X86Fp80(u128),                    // x87 extended bit pattern, 80 bits (§5.11)
     Agg(Agg),                         // an array, a struct or a vector (§3.1): its type and memory image
 }
 pub const MAX_INT_BITS: u32 = 128;
@@ -128,7 +129,7 @@ element's allocation size), with padding bytes zero. `Agg::ty()`,
 
 The types a value may have: `iN` for N ≤ 128, `ptr` (any address space is
 accepted as a type; `addrspacecast` is unsupported), `float`, `double`,
-arrays and structs of these, and the vectors of §3.1. Every other type is
+`x86_fp80` (§5.11), arrays and structs of these, and the vectors of §3.1. Every other type is
 unsupported (§8).
 
 Tests: `tests/memory.rs` (`aggregates`), unit tests of `value.rs`.
@@ -195,7 +196,9 @@ alignment, a kind and, for every byte, a **written** flag.
   aligned as asked and occupying at least one address. Addresses only grow
   and are **never reused**: the addresses of a returned frame stay dead for
   the rest of the run. Null is address 0 and is in no allocation. A function
-  has one address and no bytes; distinct functions have distinct addresses.
+  has one address and no bytes, aligned to its `align` (x86-64's
+  Itanium ABI tests the low bit of a member function's address); distinct
+  functions have distinct addresses.
 - **An access** (a load, a store, each end of a `memcpy`, a host function's
   read or write) of `len` bytes at `addr` with alignment `align` is checked
   in this order:
@@ -504,7 +507,18 @@ LangRef "'call' Instruction".
   `extern:<name>`.
 - A call marked `noreturn` that returns traps `noreturn-returned`.
 - Tail-call markers change nothing. Parameter attributes change nothing,
-  except `byval`, `inalloca` and `preallocated`, which are unsupported.
+  except `byval`, `inalloca` and `preallocated`.
+- **`byval(T)`** (WP-138; LangRef "Parameter Attributes"): the callee gets
+  a hidden copy. When the frame is made, after its stack slots, each
+  `byval` argument gets a stack allocation of `size_of(T)` bytes aligned to
+  the larger of its `align` attribute and `T`'s ABI alignment; the
+  pointed-to bytes are copied into it with their written/unwritten state
+  (an unwritten source byte stays unwritten), and the callee's argument is
+  the copy's address. The copy dies with the frame. A `byval` argument of
+  a call to a function without a body (a host function or `extern:`) is
+  unsupported `attr:byval`: the interpreter cannot give the host a copy
+  with C's layout guarantees. `inalloca` and `preallocated` are
+  unsupported.
   Variadic callees, inline assembly callees and operand bundles are
   unsupported.
 
@@ -654,6 +668,50 @@ Tests: `tests/vectors.rs` (`integer_lanes_and_poison`,
 `vectors_as_values`, `truncation_of_wide_lanes`, `refused_vector_forms`),
 `tests/vector_oracle.rs` (§10.3).
 
+### 5.11 `x86_fp80`
+
+LangRef "Floating-Point Types"; Intel SDM vol. 1 §4.2.2, §4.8 (WP-138).
+An `x86_fp80` value is `Val::X86Fp80(bits)`: the 80-bit pattern, sign in
+bit 79, exponent (15 bits, bias 16383) in 78..64, and a 64-bit significand
+whose bit 63 is the **explicit integer bit**. In memory it is those 10
+bytes, little-endian; its allocation size and ABI alignment come from the
+data layout (16 and 16 on x86-64, `ir.md` §3), and the 6 bytes after it
+are padding. `hod_interp::x87` is a soft-float of the x87 at 64-bit
+precision with round-to-nearest-even (the control word clang and gcc
+leave in effect), with no dependency:
+
+- `fadd`, `fsub`, `fmul`, `fdiv` are correctly rounded; `frem` is C's
+  `fmodl` (exact, the dividend's sign). The NaN policy of §5.1 applies: a
+  computed NaN traps `nan-result` under `NanPolicy::Trap`; under
+  `NanPolicy::Host` a NaN operand is quieted and propagated (of two, the
+  one with the larger significand, as the x87 does), and an invalid
+  operation gives the default NaN
+  `0xFFFF_C000_0000_0000_0000`.
+- Denormals are kept (exponent 0, integer bit 0) and results round into
+  them; overflow gives infinity. The encodings the 387 calls invalid
+  (an integer bit of 0 with a nonzero exponent: unnormals, pseudo-NaN,
+  pseudo-infinity) are operands as the 387 treats them: invalid, so NaN.
+  A pseudo-denormal (exponent 0, integer bit 1) reads as exponent 1.
+- `fneg` flips bit 79; `llvm.fabs` and `llvm.copysign` are bit operations;
+  `fcmp` compares as IEEE does (`-0 == +0`; a NaN is unordered).
+- Casts: `fpext` from `float`/`double` is exact, `fptrunc` to them rounds
+  to nearest even (with denormals and overflow); `sitofp`/`uitofp` round
+  integers wider than 64 bits; `fptosi`/`fptoui` truncate and trap
+  `float-to-int-overflow` when the result does not fit (LangRef: poison);
+  `bitcast` to and from `i80` is the bit pattern.
+- Unsupported: the other float intrinsics on `x86_fp80` (`llvm.sqrt`,
+  `floor` .. `nearbyint`, `fma`): `intrinsic-x86_fp80`; vectors of
+  `x86_fp80` lanes: `type:x86_fp80`; `atomicrmw` float operations on it:
+  `inst:atomicrmw-fadd` and so on.
+
+Tests: `x87.rs` unit tests (exact values, `1/3`, ties, specials,
+conversions against the host's `f32`/`f64`), `tests/x86_64.rs`
+(`extended_precision`, `in_memory`), `tests/x87_oracle.rs` (thousands of
+random operand pairs, including denormals, near-overflow values and
+specials, against a C program on `long double` run on x86-64, or under
+`qemu-x86_64` elsewhere: every result has the same bits, a NaN only has to
+be a NaN).
+
 ## 6. Host functions and the trace
 
 A host function stands for a function the module declares and does not
@@ -746,7 +804,9 @@ starts.
 |---|---|
 | `target:pointer-width` | pointers are not 64 bits |
 | `target:big-endian` | the target is big-endian |
-| `type:half`, `type:bfloat`, `type:fp128`, `type:x86_fp80` | a value of that type, or a vector of lanes of it |
+| `type:half`, `type:bfloat`, `type:fp128` | a value of that type, or a vector of lanes of it |
+| `type:x86_fp80` | a vector of `x86_fp80` lanes (a scalar is §5.11) |
+| `intrinsic-x86_fp80` | a float intrinsic of §5.6 other than `fabs` and `copysign` on `x86_fp80` (§5.11) |
 | `type:vector-odd-element` | a vector whose lanes are `iN` with N neither 1 nor a multiple of 8 (§3.1) |
 | `type:scalable-vector` | a `<vscale x N x T>` value |
 | `type:vector` | a vector of lanes that are not of §3.1 and have no reason of their own. Defensive: `hod_ir` makes no such type |
@@ -769,7 +829,8 @@ starts.
 | `global:extern-weak` | the address of an undefined `extern_weak` function (it would be null or not, by the link) |
 | `extern:<name>` | a call of a function with neither body nor host function; an access of a variable without an initializer |
 | `call:inline-asm`, `call:operand-bundle`, `call:variadic` | such a call |
-| `attr:byval`, `attr:inalloca`, `attr:preallocated` | a call with such an argument |
+| `attr:byval` | a `byval` argument of a call to a function without a body (§5.8) |
+| `attr:inalloca`, `attr:preallocated` | a call with such an argument |
 
 Tests: `tests/unsupported.rs` checks every reason that can be provoked
 through `hod_ir`'s builder, and `tests/vectors.rs`
@@ -1202,6 +1263,8 @@ Where LLVM is wrong, the oracle steers around it, each with a comment:
 | `tests/llvm_oracle.rs` | §10, §10.2 (with the cases of `tests/eh_cases`), the generated vector programs of §10.3 |
 | `tests/vectors.rs` | §3.1, §4 (vectors in memory), §5.10, the vector reasons of §8: hand-computed lanes, poison and traps |
 | `tests/vector_oracle.rs` | §10.3 |
+| `tests/x86_64.rs` | §4 (function alignment), §5.8 (`byval`), §5.11, from LLVM text read by `hod_ll` |
+| `tests/x87_oracle.rs` | §5.11 against the x87 |
 
 Each test names its section. `tests/common` builds one-function modules;
 `tests/llvm_text` is the printer of §10; `tests/vector_text` reads LLVM
@@ -1261,7 +1324,6 @@ Follow-ups, none of which the code generator's first milestones need:
   four fundamental types; foreign exceptions; the funclet instructions;
 - variadic functions: `va_arg`, `llvm.va_start`, `llvm.va_end`,
   `llvm.va_copy`;
-- `byval` arguments (a copy in the callee's frame);
 - thread-local variables (one thread: a plain variable), aliases;
 - vectors beyond §5.10: `half`/`bfloat` lanes; scalable vectors; vector
   `getelementptr`; vector `with.overflow`; the masked, gather and scatter

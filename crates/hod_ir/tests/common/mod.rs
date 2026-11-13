@@ -518,6 +518,12 @@ pub fn edge_types() -> Vec<Ty> {
         plain(&[int(8), Ty::Fp128]),
         plain(&[int(8), Ty::X86Fp80, int(8)]),
         packed(&[int(8), Ty::X86Fp80, int(8)]),
+        // WP-138: `{long, long double}`, `va_list`'s `__va_list_tag` and
+        // its array, and pointers of x86-64's address spaces 270..272.
+        plain(&[int(64), Ty::X86Fp80]),
+        plain(&[int(32), int(32), Ty::Ptr(0), Ty::Ptr(0)]),
+        array(plain(&[int(32), int(32), Ty::Ptr(0), Ty::Ptr(0)]), 1),
+        plain(&[int(8), Ty::Ptr(270), Ty::Ptr(271), int(8), Ty::Ptr(272)]),
         plain(&[int(8), vector(int(32), 4)]),
         packed(&[int(8), vector(int(64), 2)]),
         plain(&[vector(int(8), 3), int(8)]),

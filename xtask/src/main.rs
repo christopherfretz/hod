@@ -7,6 +7,7 @@
 //! `cargo xtask corpus ...` captures, verifies and counts the IR corpus.
 //! `cargo xtask roundtrip ...` parses and prints the corpus (layer L2).
 //! `cargo xtask debug ...` runs the debuggers on hod's programs (layer L7).
+//! `cargo xtask x64census ...` checks the front half on x86-64 modules.
 
 use std::process::ExitCode;
 
@@ -19,6 +20,7 @@ usage: cargo xtask ci [--quick]
        cargo xtask bench [options]                                (--help for the options)
        cargo xtask roundtrip [options]                            (--help for the options)
        cargo xtask debug [run|kiln|verify] [options]              (--help for the options)
+       cargo xtask x64census [options] <dir or file.ll>...        (--help for the options)
 ";
 
 fn main() -> ExitCode {
@@ -35,6 +37,8 @@ fn main() -> ExitCode {
         Some("bench") => xtask::bench::main(&args[1..]),
         #[cfg(unix)]
         Some("debug") => ExitCode::from(xtask::debug::command(&args[1..])),
+        #[cfg(unix)]
+        Some("x64census") => ExitCode::from(xtask::x64census::command(&args[1..])),
         _ => {
             eprint!("{USAGE}");
             ExitCode::from(2)

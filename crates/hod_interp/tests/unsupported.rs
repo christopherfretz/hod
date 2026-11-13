@@ -60,7 +60,8 @@ fn types() {
     assert_eq!(frozen(|_| Ok(TypeId::HALF)), "type:half");
     assert_eq!(frozen(|_| Ok(TypeId::BFLOAT)), "type:bfloat");
     assert_eq!(frozen(|_| Ok(TypeId::FP128)), "type:fp128");
-    assert_eq!(frozen(|_| Ok(TypeId::X86_FP80)), "type:x86_fp80");
+    // `x86_fp80` is supported (§5.11), but not as a vector lane.
+    assert_eq!(frozen(|m| m.types.vector(TypeId::X86_FP80, 2)), "type:x86_fp80");
     // Vectors are supported (§3.1) but for these lanes.
     assert_eq!(frozen(|m| m.types.vector(TypeId::HALF, 4)), "type:half");
     assert_eq!(

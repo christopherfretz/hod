@@ -92,7 +92,7 @@ kiln's lanes). Its rules:
 2. **The reference environment.** Every job runs in
    `buildpack-deps:trixie` (Debian 13, as the development container) set
    up by `.github/actions/hod-ci`: clang, llvm and lld 19 and 22, binutils,
-   mold, gdb, gdb-multiarch, lldb-19, `qemu-user`, `csmith`, the other
+   mold, gdb, gdb-multiarch, lldb-19, `qemu-user`, `csmith` with `libcsmith-dev` (its header), the other
    architecture's GNU cross gcc, g++, binutils, C library and libstdc++,
    Rust 1.95.0 and the cargo cache (one per architecture, saved by the
    `test harness` job).
@@ -143,7 +143,7 @@ kiln's lanes). Its rules:
    csmith) is on `main`, a lane job (marked in `ci-lane.yml`) runs a
    fixed range of seeds natively: every program built by hod and by
    `llc`, a difference a failure. `.github/actions/hod-ci` already
-   installs `csmith`.
+   installs `csmith` and `libcsmith-dev`.
 
 What runs where, and the tests compiled or run for one host only, is
 `docs/VALIDATION.md` "Hosted CI".

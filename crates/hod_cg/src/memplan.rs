@@ -66,11 +66,11 @@ pub fn mem_plan(op: MemOp, len: Option<u64>) -> MemPlan {
     let inline = matches!(op, MemOp::CopyInline | MemOp::SetInline);
     match len {
         None if inline => MemPlan::VariableInline,
-        None => MemPlan::Call(func),
         Some(0) => MemPlan::Nothing,
         Some(bytes) if bytes <= limit => MemPlan::Inline { bytes },
         Some(bytes) if inline => MemPlan::Loop { bytes },
-        Some(_) => MemPlan::Call(func),
+        // Longer, or a variable length.
+        None | Some(_) => MemPlan::Call(func),
     }
 }
 

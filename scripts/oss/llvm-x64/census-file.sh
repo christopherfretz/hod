@@ -24,6 +24,7 @@ python3 "$HOD_OSS_SCRIPTS/save-modules.py" "$hod_tree/logs/census.json" "$HOD_OS
   for f in hod llc; do
     [ -f "$HOD_OSS_ROOT/$HOD_X64_PREFIX$f/logs/stages.txt" ] || continue
     while read -r st s e rc rest; do
+      [ ${#rest} -gt 200 ] && rest="${rest:0:200}... ($(echo "$rest" | wc -w) targets)"
       echo "- $f $st: $((e - s)) s, rc $rc: $rest"
     done < "$HOD_OSS_ROOT/$HOD_X64_PREFIX$f/logs/stages.txt"
   done

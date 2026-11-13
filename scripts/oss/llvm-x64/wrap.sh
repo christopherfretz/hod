@@ -54,6 +54,15 @@ else
   export KILN_BACKEND=llvm
   unset KILN_HOD HOD_COVERAGE_LOG HOD_CENSUS
 fi
+# A link maps every archive it reads (mold maps the whole of each -O0
+# static library at once): kiln's 3 GB address-space cap is for
+# compiles. Links get 16 GB of address space (they run one at a time).
+# (WP-178's wrap.sh does the same.)
+is_link=1
+for a in "$@"; do
+  case "$a" in -c | -S | -E | -fsyntax-only) is_link=0; break ;; esac
+done
+[ "$is_link" = 1 ] && export KILN_OSS_VMEM_KB="${HOD_OSS_LINK_VMEM_KB:-16000000}"
 case "$name" in
   *-cxx) exec "$HOD_OSS_KILN_SCRIPTS/kiln-cxx" "--target=$target" "$@" ;;
   *-cc) exec "$HOD_OSS_KILN_SCRIPTS/kiln-cc" "--target=$target" "$@" ;;

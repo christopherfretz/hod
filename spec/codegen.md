@@ -3669,6 +3669,62 @@ them there.
 
 Evidence: `spec/landed/codegen/WP-184.md`.
 
+#### 5.6.27 Stack probing (WP-186)
+
+A function with `"probe-stack"="inline-asm"` (`hod_ir::StackProbe::
+Inline(P)`, `spec/ir.md` §5.7; `P` is 4096 unless `"stack-probe-size"`
+says otherwise) touches the stack it allocates so that a guard region of
+`P` bytes below the stack cannot be jumped over: after each allocation
+step the new lowest page is touched before the stack pointer goes lower
+again, from high to low addresses, and the CFI is valid at every
+instruction, the probe loops included. Both targets keep the probe code
+in one module (`hod_x64::probe`, `hod_a64::probe`) called where the
+frame is allocated (the prologue, and the coroutine stubs' copy of it),
+where a dynamic allocation sets the stack pointer (`alloca`, an
+over-aligned slot: `dynamic_slot`) and where an outgoing argument area
+is allocated (`adjust_sp`). A function without the attribute is
+byte-identical to what it was.
+
+1. **x86-64**, `llc -O0`'s shapes (19 and 22). `FRAME` (the `sub` after
+   the pushes, §5.6.15) of at most `P` is one `sub`; up to `8P`, `sub rsp,
+   P` · `mov qword [rsp], 0` while more than `P` remain, then `sub rsp,
+   rest`; above, `mov r11, rsp` · `sub r11, FRAME & -P` · `1: sub rsp, P`
+   · `mov qword [rsp], 0` · `cmp rsp, r11` · `jne 1b` · `[sub rsp, FRAME %
+   P]`. The rest below the last touch (at most `P`) is left as `llc`
+   leaves it: the next push or call touches it. The CFA is `rbp + 16`
+   from the second instruction on, so no row changes in the loop. The
+   prologue of a probed function reserves 105 bytes more, cut with the
+   rest (§5.6.15). A dynamic allocation ends in `llc`'s loop before `mov
+   rsp, r11`: `1: cmp rsp, r11` · `jbe 2f` · `xor qword [rsp], 0` · `sub
+   rsp, P` · `jmp 1b` (`r11` already aligned: hod aligns before the loop,
+   `llc` after). An outgoing argument area is `mov qword [rsp - 8], 0`
+   (a dead word below the stack pointer: the touch of what the frame
+   left) then `lea rsp, [rsp - c]` · `mov qword [rsp], 0` per page of at
+   most `P`, flags kept.
+2. **AArch64.** LLVM's protocol: a caller leaves at most 1024 bytes
+   below its lowest touch unprobed at a call. hod's frame record is at
+   the bottom of the frame (§5.5), so its `stp` is the touch of the
+   bottom page and the top is touched first. A `FRAME` with `FRAME + 1024
+   <= P` is the unprobed prologue. Otherwise, with `k = (FRAME - 16) / P`
+   and `r = (FRAME - 16) % P`: `str xzr, [sp, #-16]!` (CFA `sp + 16`),
+   then for `k <= 4` (`llc`'s unroll limit) `k` times `sub sp, sp, #P` ·
+   `str xzr, [sp]` (CFA `sp + 16 + iP` after each `sub`), for `k > 4`
+   `sub x17, sp, #kP` (CFA `x17 + 16 + kP`) · `1: sub sp, sp, #P` · `str
+   xzr, [sp]` · `cmp sp, x17` · `b.ne 1b` (CFA register `sp`), then `r`
+   in one or two `sub`s (CFA `sp + FRAME`), then `stp x29, x30, [sp]` as
+   always. `x17` because `x16` may hold the incoming base and `x9`..`x15`
+   are `preserve_most`'s. The prologue reserves 36 bytes more. A dynamic
+   allocation: `1: sub sp, sp, #P` · `cmp sp, x16` · `b.ls 2f` · `str
+   xzr, [sp]` · `b 1b` · `2: mov sp, x16` · `ldr xzr, [sp]`, `llc`'s loop.
+   An outgoing argument area of more than 1024 bytes: `sub sp, sp, #c` ·
+   `str xzr, [sp]` per page of at most `P`. `llc` lays the frame out the
+   other way round (frame record on top, locals below, the rest probed
+   above 1024 bytes); the loop decision is the same.
+3. **Refused by name:** `attr:probe-stack-function`,
+   `attr:stack-probe-size-value` (`spec/ir.md` §5.7).
+
+Evidence: `spec/landed/codegen/WP-186.md`.
+
 ## 6. Control flow
 
 ### 6.1 Reachability

@@ -143,7 +143,7 @@ pub fn stubs(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
             let cfa_offset = -24 - 8 * index as i32;
             cx.cfi(CfiOp::Offset { reg: dwarf(gpr(saved)), cfa_offset });
         }
-        put(cx, mc::sub_ri(Size::Q, RSP, i64::from(frame)));
+        crate::probe::put_allocation(cx, frame); // WP-186: `sub rsp, frame`
         // The frame base, the mode, the frame word, the suspend result.
         put(cx, mc::mov_rr(Size::Q, RBX, Reg::Rdi));
         put(cx, mc::mov_mi(Size::Q, mode, 1));

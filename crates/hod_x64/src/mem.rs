@@ -623,7 +623,7 @@ pub fn alloca<'a>(
             put(cx, mc::and_rr(Size::Q, R11, RAX));
         }
     }
-    put(cx, mc::mov_rr(Size::Q, RSP, R11));
+    crate::probe::set_sp(cx); // WP-186: `mov rsp, r11`, probed
     put(cx, mc::mov_rr(Size::Q, gp(rd), R11));
     cx.finish(inst, rd)
 }

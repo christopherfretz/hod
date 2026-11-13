@@ -63,6 +63,9 @@ pub struct FrameState {
     pub dynamic: bool,
     /// The coroutine frame's `x19` save (WP-106, `crate::coro_body`).
     pub coro: crate::coro_body::CoroState,
+    /// The probe size, 0 when the function does not probe its stack
+    /// (WP-186, `crate::probe`).
+    pub probe: u32,
 }
 
 /// Whether the function addresses its incoming stack area (§5.5): it has
@@ -94,6 +97,13 @@ pub fn begin(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
     // The immediates are patched in `end`; until then both are 0.
     put(cx, mc::sub_imm(Size::X, SP, SP, 0));
     put(cx, mc::sub_imm(Size::X, SP, SP, 0));
+    // WP-186: room for the probed allocation, cut in `end`.
+    cx.state.frame.probe = crate::probe::size_of(cx);
+    if cx.state.frame.probe != 0 {
+        for _ in 0..crate::probe::RESERVE / 4 {
+            put(cx, mc::nop());
+        }
+    }
     put(cx, mc::stp_off(Size::X, Reg::X29.zr(), Reg::X30.zr(), SP, 0));
     put(cx, mc::mov_sp(Size::X, FP, SP));
     crate::tail2::save_preserved(cx)?;
@@ -135,14 +145,38 @@ pub fn final_size(cx: &FnCx<'_, A64>) -> CgResult<u32> {
 /// `Target::end_function`.
 pub fn end(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
     let frame = final_size(cx)?;
-    let (lo, hi) = (frame & 0xfff, frame & 0xff_f000);
     let at = cx.state.frame.prologue;
-    let patch =
-        [mc::sub_imm(Size::X, SP, SP, u64::from(lo)), mc::sub_imm(Size::X, SP, SP, u64::from(hi))];
-    for (index, word) in patch.into_iter().enumerate() {
+    // WP-186: the allocation, probed or not; `at + PROLOGUE_BYTES` is
+    // where the body starts once the room left is cut.
+    let probe = cx.state.frame.probe;
+    let room = if probe == 0 { 0 } else { crate::probe::RESERVE };
+    let (words, rows) = if crate::probe::probes(frame, probe) {
+        crate::probe::allocation(frame, probe)
+    } else {
+        let (lo, hi) = (frame & 0xfff, frame & 0xff_f000);
+        let words = vec![
+            mc::sub_imm(Size::X, SP, SP, u64::from(lo)),
+            mc::sub_imm(Size::X, SP, SP, u64::from(hi)),
+        ];
+        let mut rows = Vec::new();
+        if lo != 0 {
+            rows.push((1, CfiOp::DefCfaOffset(lo as i32)));
+        }
+        if hi != 0 {
+            rows.push((2, CfiOp::DefCfaOffset(frame as i32)));
+        }
+        (words, rows)
+    };
+    for (index, word) in words.iter().enumerate() {
         let start = at as usize + index * 4;
         cx.code_mut()[start..start + 4].copy_from_slice(&word.to_le_bytes());
     }
+    for (after, op) in rows {
+        cx.cfi_at(at + 4 * after as u32, op)?;
+    }
+    let written = 4 * words.len() as u32;
+    cx.cut(at + written, 8 + room - written);
+    let at = at + room;
     prologue_rows(cx, at, frame)?;
     crate::tail2::preserved_rows(cx, Some(at + PROLOGUE_BYTES + crate::tail2::SAVE_BYTES), frame)?;
     crate::tail3::all_rows(cx, Some(at + PROLOGUE_BYTES), frame)?;
@@ -186,17 +220,10 @@ pub fn base_offset(desc: &FrameDesc, place: FrameRef) -> Option<i64> {
     }
 }
 
-/// The CFI rows of the prologue at `at` (§5.5, §9.3): the CFA moves with
-/// each `sub`, the frame record is saved by the `stp`, and from the
-/// `mov x29, sp` on the CFA is `x29 + FRAME`.
+/// The CFI rows of the prologue at `at` after its allocation (§5.5, §9.3,
+/// whose rows `end` writes): the frame record is saved by the `stp`, and
+/// from the `mov x29, sp` on the CFA is `x29 + FRAME`.
 fn prologue_rows(cx: &mut FnCx<'_, A64>, at: u32, frame: u32) -> CgResult<()> {
-    let (lo, hi) = (frame & 0xfff, frame & 0xff_f000);
-    if lo != 0 {
-        cx.cfi_at(at + 4, CfiOp::DefCfaOffset(lo as i32))?;
-    }
-    if hi != 0 {
-        cx.cfi_at(at + 8, CfiOp::DefCfaOffset(frame as i32))?;
-    }
     let f = frame as i32;
     cx.cfi_at(at + 12, CfiOp::Offset { reg: DWARF_FP, cfa_offset: -f })?;
     cx.cfi_at(at + 12, CfiOp::Offset { reg: DWARF_LR, cfa_offset: -f + 8 })?;
@@ -243,6 +270,9 @@ fn teardown(cx: &mut FnCx<'_, A64>, frame: u32) {
 /// `Target::adjust_sp`: `delta` added to the stack pointer, writing no
 /// other register.
 pub fn adjust_sp(cx: &mut FnCx<'_, A64>, delta: i64) {
+    if delta < 0 && crate::probe::adjust_sp(cx, delta.unsigned_abs()) {
+        return;
+    }
     if delta != 0 {
         add_const(cx, SP, SP, delta);
     }
@@ -267,7 +297,7 @@ pub fn dynamic_slot(cx: &mut FnCx<'_, A64>, ptr: FrameRef, size: u64, align: u64
         put(cx, mc::sub_ext(Size::X, X16.sp(), SP, X17.zr(), mc::Extend::Uxtx, 0));
     }
     put(cx, mc::and_imm(Size::X, X16.sp(), X16.zr(), !(align - 1)));
-    put(cx, mc::mov_sp(Size::X, SP, X16.sp()));
+    crate::probe::set_sp(cx); // WP-186: `mov sp, x16`, probed
     let mut at = Cursor::frame(cx, ptr, X17);
     store_gpr_at(cx, MemSize::X, X16.zr(), &mut at);
     cx.state.frame.dynamic = true;

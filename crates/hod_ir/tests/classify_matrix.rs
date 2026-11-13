@@ -332,6 +332,7 @@ fn every_kept_attribute_has_a_row() {
     expected.extend(PARAM_FLAGS.iter().map(|(name, _)| name));
     expected.extend(PARAM_MEMS.iter().map(|(name, _)| name));
     expected.extend(["align", "alignstack", "uwtable"]);
+    expected.extend(["probe-stack-function", "stack-probe-size-value"]); // WP-186
     expected.extend(FnAttrs::FLAG_NAMES.iter().map(|(name, _)| name));
     expected.extend(FnStr::ALL.iter().map(|key| match key {
         FnStr::NoBuiltin => "no-builtin",
@@ -339,7 +340,10 @@ fn every_kept_attribute_has_a_row() {
     }));
     assert_eq!(rows_of("attr"), expected);
 
-    let rows: BTreeSet<&str> = rows_of("attr").into_iter().collect();
+    // WP-186: two rows are values of a kept attribute, not attributes.
+    let values = ["probe-stack-function", "stack-probe-size-value"];
+    let rows: BTreeSet<&str> =
+        rows_of("attr").into_iter().filter(|n| !values.contains(n)).collect();
     let kept: BTreeSet<&str> = ATTRIBUTES
         .iter()
         .filter(|info| info.class == AttrClass::Kept)

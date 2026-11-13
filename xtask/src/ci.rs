@@ -85,33 +85,95 @@ pub const HOSTED_STEPS: [&str; 4] = ["fmt", "clippy", "test", "irdiff"];
 /// (`spec/harness.md` "corpus") and not on a hosted runner.
 pub const NOT_HOSTED: [&str; 1] = ["roundtrip"];
 
-/// What `cargo xtask ci [--quick] [--step <name>]...` asks for.
+/// The parts of the `test` step (`--part <name>`), which the hosted lane
+/// runs as parallel jobs: each names workspace packages, and the last,
+/// `rest`, is every package the others do not name (`--workspace
+/// --exclude ...`), so that the parts together are the whole step, also
+/// for a package added later.
+pub const TEST_PARTS: [(&str, &[&str]); 5] = [
+    ("a64", &["hod_a64"]),
+    ("x64", &["hod_x64", "hod_mc_x64"]),
+    ("harness", &["xtask"]),
+    ("front", &["hod", "hod_cli", "hod_interp"]),
+    ("rest", &[]),
+];
+
+/// The `cargo` arguments of the `test` step, or of its part `part`.
+pub fn test_args(part: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = vec!["test".into()];
+    let named = part.and_then(|part| TEST_PARTS.iter().find(|(name, _)| *name == part));
+    match named {
+        Some((_, packages)) if !packages.is_empty() => {
+            for package in *packages {
+                args.extend(["-p".into(), (*package).into()]);
+            }
+        }
+        Some(_) => {
+            args.push("--workspace".into());
+            for package in TEST_PARTS.iter().flat_map(|(_, packages)| packages.iter()) {
+                args.extend(["--exclude".into(), (*package).into()]);
+            }
+        }
+        None => args.push("--workspace".into()),
+    }
+    args.extend(["--quiet".into(), "--no-fail-fast".into()]);
+    args
+}
+
+/// What `cargo xtask ci [--quick] [--step <name>]... [--part <name>]` asks
+/// for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Args {
     pub quick: bool,
     /// The steps to run, in [`STEPS`] order; every step when none is named.
     pub steps: Vec<&'static str>,
+    /// One part of the `test` step ([`TEST_PARTS`]); `None` is all of it.
+    pub part: Option<&'static str>,
 }
 
 impl Args {
     /// Parses the arguments after `ci`.
     ///
     /// # Errors
-    /// An unknown argument or step, or `--step` without a name.
+    /// An unknown argument, step or part, `--step` or `--part` without a
+    /// name, or `--part` with any step but `test` alone.
     pub fn parse(args: &[String]) -> Result<Self, String> {
         let mut quick = false;
         let mut named: Vec<String> = Vec::new();
+        let mut part: Option<String> = None;
         let mut rest = args.iter();
         while let Some(arg) = rest.next() {
             match arg.as_str() {
                 "--quick" => quick = true,
                 "--step" => named.push(rest.next().ok_or("--step needs a step name")?.clone()),
-                other => match other.strip_prefix("--step=") {
-                    Some(step) => named.push(step.to_owned()),
-                    None => return Err(format!("unknown argument '{other}'")),
-                },
+                "--part" => part = Some(rest.next().ok_or("--part needs a part name")?.clone()),
+                other => {
+                    if let Some(step) = other.strip_prefix("--step=") {
+                        named.push(step.to_owned());
+                    } else if let Some(name) = other.strip_prefix("--part=") {
+                        part = Some(name.to_owned());
+                    } else {
+                        return Err(format!("unknown argument '{other}'"));
+                    }
+                }
             }
         }
+        let part = match part {
+            None => None,
+            Some(name) => {
+                let Some((known, _)) = TEST_PARTS.iter().find(|(known, _)| *known == name) else {
+                    let parts: Vec<&str> = TEST_PARTS.iter().map(|(n, _)| *n).collect();
+                    return Err(format!("unknown part '{name}' (parts: {})", parts.join(", ")));
+                };
+                if named != ["test"] {
+                    return Err(
+                        "--part is a part of the test step: give it with --step test alone"
+                            .to_owned(),
+                    );
+                }
+                Some(*known)
+            }
+        };
         if let Some(unknown) = named.iter().find(|step| !STEPS.contains(&step.as_str())) {
             return Err(format!("unknown step '{unknown}' (steps: {})", STEPS.join(", ")));
         }
@@ -119,7 +181,7 @@ impl Args {
             .into_iter()
             .filter(|step| named.is_empty() || named.iter().any(|n| n == step))
             .collect();
-        Ok(Self { quick, steps })
+        Ok(Self { quick, steps, part })
     }
 
     /// Whether `step` runs.
@@ -240,6 +302,44 @@ mod tests {
         assert!(parse(&["--step", "lint"]).unwrap_err().contains("unknown step 'lint'"));
         assert!(parse(&["--step"]).is_err());
         assert!(parse(&["--fast"]).is_err());
+        assert_eq!(all.part, None);
+        let part = parse(&["--quick", "--step", "test", "--part", "a64"]).unwrap();
+        assert_eq!((part.steps.as_slice(), part.part), (&["test"][..], Some("a64")));
+        assert_eq!(parse(&["--step", "test", "--part=rest"]).unwrap().part, Some("rest"));
+        assert!(parse(&["--step", "test", "--part", "b"]).unwrap_err().contains("unknown part"));
+        assert!(parse(&["--part", "a64"]).is_err(), "a part of every step");
+        assert!(parse(&["--step", "fmt", "--step", "test", "--part", "a64"]).is_err());
+    }
+
+    // The test step's parts are the whole step: each package of the
+    // workspace is in exactly one part (`rest` takes the ones the others
+    // do not name), and without a part the step is the whole workspace.
+    #[test]
+    fn the_test_parts_cover_the_workspace_once() {
+        use super::{TEST_PARTS, test_args};
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut packages = vec!["xtask".to_owned()];
+        for entry in std::fs::read_dir(root.join("crates")).unwrap() {
+            let entry = entry.unwrap();
+            if entry.path().join("Cargo.toml").is_file() {
+                packages.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+        let named: Vec<&str> = TEST_PARTS.iter().flat_map(|(_, p)| p.iter().copied()).collect();
+        for package in &named {
+            assert!(packages.iter().any(|p| p == package), "{package} is a workspace package");
+        }
+        let mut unique = named.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), named.len(), "no package in two parts");
+        assert_eq!(TEST_PARTS.iter().filter(|(_, p)| p.is_empty()).count(), 1, "one rest part");
+        assert_eq!(TEST_PARTS.last().unwrap().0, "rest");
+        let rest = test_args(Some("rest"));
+        assert!(rest.contains(&"--workspace".to_owned()));
+        assert_eq!(rest.iter().filter(|a| *a == "--exclude").count(), named.len());
+        assert_eq!(test_args(Some("a64"))[..3], ["test", "-p", "hod_a64"]);
+        assert_eq!(test_args(None), ["test", "--workspace", "--quiet", "--no-fail-fast"]);
     }
 
     // spec/harness.md "CI": the hosted lane runs every step of the quick
@@ -253,6 +353,14 @@ mod tests {
             let command = format!("cargo xtask ci --quick --step {step}");
             assert_eq!(lane.matches(&command).count(), 1, "{command} once in ci-lane.yml");
         }
+        // The test step runs as one job per part, every part once.
+        assert_eq!(
+            lane.matches("cargo xtask ci --quick --step test --part ${{ matrix.part }}").count(),
+            1
+        );
+        let parts: Vec<&str> = super::TEST_PARTS.iter().map(|(name, _)| *name).collect();
+        let matrix = format!("part: [{}]", parts.join(", "));
+        assert_eq!(lane.matches(&matrix).count(), 1, "{matrix} once in ci-lane.yml");
         let mut steps: Vec<&str> = super::HOSTED_STEPS.to_vec();
         steps.extend(super::NOT_HOSTED);
         steps.sort_unstable();

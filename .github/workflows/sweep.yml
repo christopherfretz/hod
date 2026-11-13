@@ -111,6 +111,12 @@ jobs:
           [ -n "$HOD_STRICT" ] || unset HOD_STRICT
           out="$GITHUB_WORKSPACE/libcxx-out"
           mkdir -p "$out"
+          # scripts/libcxx-hod-kiln.sh's per-test logs (args.tsv, cov/,
+          # phases/): which module hod built, which it declined and why,
+          # the input of scripts/libcxx-hod-report.py.
+          export HOD_LIBCXX_LOGDIR="$GITHUB_WORKSPACE/libcxx-log/log-${{ matrix.shard }}"
+          mkdir -p "$HOD_LIBCXX_LOGDIR"
+          start=$(date +%s)
           cd .ci/kiln-src
           export CARGO_TARGET_DIR="$PWD/target"
           cargo xtask libcxx std libcxx --tag "$LIBCXX_TAG" \
@@ -118,6 +124,8 @@ jobs:
             --shard ${{ matrix.shard }}/${{ strategy.job-total }} --no-fail -j 4 --timeout 20 \
             --mem-limit 3072 --results "$out/libcxx-${{ matrix.shard }}.tsv" \
             --report "$out/libcxx-${{ matrix.shard }}.md"
+          echo "shard ${{ matrix.shard }}: $(( $(date +%s) - start )) s" | tee "$out/wall-${{ matrix.shard }}.txt"
+          tar -czf "$out/log-${{ matrix.shard }}.tar.gz" -C "$GITHUB_WORKSPACE/libcxx-log" "log-${{ matrix.shard }}"
       # A workspace-relative path: in a container job `runner.temp` is the
       # host's path (kiln's sweep.yml).
       - if: ${{ !cancelled() }}

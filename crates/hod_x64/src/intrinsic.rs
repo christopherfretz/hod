@@ -144,6 +144,9 @@ pub fn intrinsic<'a>(
     args: &'a [Value],
 ) -> CgResult<()> {
     use Intrinsic as I;
+    if let Some(done) = crate::x86::intrinsic(cx, inst, which, args) {
+        return done;
+    }
     if let Some(done) = crate::lanes::intrinsic(cx, inst, which, args) {
         return done;
     }

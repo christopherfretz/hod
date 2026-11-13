@@ -35,6 +35,7 @@
 //! | `float` | WP-127 | scalar and vector-register floating point (SSE2) | `tests/float.rs` |
 //! | `fpintr` | WP-127, WP-128 | the floating-point intrinsics | `tests/fpintr.rs` |
 //! | `intrinsic` | WP-128 | the other intrinsics | `tests/intrinsic.rs` |
+//! | `x86` | WP-173 | the x86 target intrinsics `llvm.x86.*`, SSE to SSSE3 (§5.6.22) | `tests/x86_intrinsics.rs` |
 //! | `barrier` | WP-128 | inline assembly whose template assembles to nothing | `tests/barrier.rs` |
 //! | `x87` | WP-131 | `x86_fp80` arithmetic, compares, conversions and intrinsics | `tests/x87.rs` |
 //! | `vector` | WP-132 | `extractelement`, `insertelement`, `shufflevector` | `tests/vector.rs` |
@@ -73,6 +74,7 @@ pub mod term;
 pub mod tls;
 pub mod vcall;
 pub mod vector;
+pub mod x86;
 pub mod x87;
 
 use std::fmt;

@@ -781,6 +781,7 @@ business, not the program's; "Test directives").
 | `selector_i1_compare.ll` | `spec/interp.md` §10.1: an `i1` compare FastISel miscompiles on AArch64 | |
 | `two_modules.ll` | two modules: definitions and declarations across them, internal linkage, linkonce_odr | quick |
 | `exit_int.ll` | call-free: integer operations, shifts, compares, casts, select at i8 to i64 | quick |
+| `exit_odd_widths.ll` | call-free: integer operations, compares, casts and select at odd widths (i1, i7, i17, i33, i63), with the bits above the width set by the caller | quick |
 | `exit_float.ll` | call-free: floating-point arithmetic, conversions, the fcmp predicates with NaN | quick |
 | `exit_control.ll` | call-free: loops, phi, switch, indirectbr, local arrays, narrow loads and stores, a pointer table | quick |
 | `coro/handles.ll` | `input: pre-opt`: `coro.resume`, `destroy` (call and invoke, one unwinding), `done`, `promise` both ways at alignments 8 and 32, on frames built by hand outside any coroutine | |

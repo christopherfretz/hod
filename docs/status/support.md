@@ -28,22 +28,22 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `visibility` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
 | `tls` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
 | `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
-| `init` | 10 | 6 | 3 | 1 | 0 | 10 | 0 |
+| `init` | 10 | 6 | 3 | 1 | 1 | 9 | 0 |
 | `function` | 6 | 6 | 0 | 0 | 2 | 4 | 0 |
 | `cc` | 15 | 6 | 7 | 2 | 1 | 11 | 3 |
 | `attr` | 57 | 23 | 31 | 3 | 14 | 35 | 8 |
 | `type` | 15 | 11 | 1 | 3 | 2 | 11 | 2 |
-| `inst` | 67 | 60 | 0 | 7 | 27 | 33 | 7 |
+| `inst` | 67 | 60 | 0 | 7 | 30 | 30 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 21 | 0 | 0 | 0 | 21 | 0 |
 | `call` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
 | `tail` | 3 | 3 | 0 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
-| `operand` | 11 | 8 | 3 | 0 | 2 | 9 | 0 |
+| `operand` | 11 | 8 | 3 | 0 | 3 | 8 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 354 | 334 | 20 | 0 | 0 | 138 | 216 |
-| total | 663 | 533 | 84 | 46 | 60 | 333 | 270 |
+| total | 663 | 533 | 84 | 46 | 65 | 328 | 270 |
 
 ## `module`
 
@@ -174,7 +174,7 @@ What a variable's initializer contains.
 |---|---|---|---|
 | `init:data` | supported | not-implemented | any initializer: numbers, zero, `undef`, aggregates, bytes |
 | `init:symbol` | supported | not-implemented | a symbol's address, with or without an offset |
-| `init:blockaddress` | supported | not-implemented | of a block of a function with an `indirectbr` (§9.6) |
+| `init:blockaddress` | supported | supported | of a block of a function with an `indirectbr` (§9.6) |
 | `init:sym-diff` | supported | not-implemented | the difference of two symbol addresses |
 | `init:sym-diff-plt` | not-implemented | not-implemented | unplanned. the same through `dso_local_equivalent` (relative vtables) |
 | `init:int-of-addr` | supported | not-implemented | an address in an integer field |
@@ -366,9 +366,9 @@ Instructions.
 | `inst:catchpad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:cleanuppad` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
 | `inst:br` | supported | supported |  |
-| `inst:condbr` | supported | not-implemented | LLVM's two-way `br` |
-| `inst:switch` | supported (int, i128, int-wide) | not-implemented |  |
-| `inst:indirectbr` | supported | not-implemented |  |
+| `inst:condbr` | supported | supported | LLVM's two-way `br` |
+| `inst:switch` | supported (int, i128, int-wide) | supported (int, i128, int-wide) |  |
+| `inst:indirectbr` | supported | supported |  |
 | `inst:ret` | supported | supported |  |
 | `inst:unreachable` | supported | supported |  |
 | `inst:callbr` | supported | not-implemented | inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3) |
@@ -472,7 +472,7 @@ Constant addresses as instruction operands.
 |---|---|---|---|
 | `operand:symbol` | supported | supported | a symbol's address as a value, with or without an offset |
 | `operand:slot` | supported | not-implemented | the address of a stack slot |
-| `operand:blockaddress` | supported | not-implemented | of a block of the same function |
+| `operand:blockaddress` | supported | supported | of a block of the same function |
 | `operand:addr-of-int` | supported | supported | `inttoptr` of a constant number |
 | `operand:int-of-addr` | supported | not-implemented | `ptrtoint` of a constant address (WP-072) |
 | `operand:sym-diff` | supported | not-implemented | a difference of two symbol addresses (WP-072) |

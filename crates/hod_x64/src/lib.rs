@@ -28,7 +28,7 @@
 //! | `features` | WP-116, WP-117 | the judged target features (§5.6.2) | unit |
 //! | `int` | WP-122 | integer binary operations, casts, `icmp`, `select`, `freeze` | `tests/int.rs` |
 //! | `mem` | WP-123 | `load`, `store`, `alloca`, `ptradd`, `llvm.stacksave`/`stackrestore` | |
-//! | `control` | WP-124 | `condbr`, `switch`, `indirectbr` | |
+//! | `control` | WP-124 | `condbr`, `switch`, `indirectbr` | `tests/control.rs` |
 //! | `call` | WP-125 | calls, `invoke`, `musttail`, landing pads, `resume`, variadics | |
 //! | `vcall` | WP-125, WP-132 | vectors across calls (`PartKind::Lanes`) | |
 //! | `aggr` | WP-126 | `Mem`-class values: wide integers, aggregates, overflow intrinsics | |

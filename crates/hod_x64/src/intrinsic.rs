@@ -1255,7 +1255,7 @@ fn register_value_across(cx: &FnCx<'_, X64>, inst: Inst<'_>) -> bool {
     });
     let args = (block.id() == body.entry())
         .then(|| {
-            (0..body.arg_count() as u32)
+            (0..body.arg_count())
                 .filter(|&n| is_register_value(body.arg_uses(n)))
                 .filter_map(|n| Value::arg(n).ok())
         })

@@ -3179,6 +3179,60 @@ emulator (`crates/hod_x64/tests/leftovers.rs`):
 
 Evidence: `spec/landed/codegen/WP-144.md`.
 
+#### 5.6.16 Leftovers, second set (WP-147)
+
+Each against `llc -O0 -fast-isel=0` 22 and 19 under the emulator, and
+`hod_interp` where it has the type (`crates/hod_x64/tests/leftovers2.rs`,
+`crates/hod_x64/tests/coro_wide_atomic.rs`):
+
+1. **`ptrtoint` of a constant address as an operand**
+   (`operand:int-of-addr`): `common::materialize_gpr_const` already
+   formed it (`lea` of the symbol, plus the offset); the matrix now says
+   so. A vector constant whose lanes are addresses (`<1 x i64>`,
+   `<2 x i64>`, `<2 x ptr>`) is written to the 16 bytes below `rsp` by
+   `constaddr::write_image` and loaded into the `xmm` register
+   (`vector::materialize`). An address in a lane narrower than 8 bytes
+   stays `x64:constant-relocation`.
+2. **`llvm.eh.sjlj.setjmp` / `llvm.eh.sjlj.longjmp`** with `llc`'s
+   x86-64 buffer: word 0 the frame pointer and word 2 the stack pointer
+   (both stored by the front end), word 1 the resume address. `setjmp`
+   displaces every value, stores `lea r11, [rip + resume]` to word 1 and
+   is 0; at the resume label it is 1. The save set is the prologue's
+   (all of `rbx`, `r12`–`r15`), restored by the epilogue from `rbp`.
+   `longjmp` reads all three words before it writes `rbp`, then `rsp`,
+   then `jmp`s. hod's and `llc`'s objects jump into each other's
+   buffers. Refused: `x64:sjlj-live-value` (a register value of the
+   block defined before the `setjmp` and used after it, or an entry
+   argument used after it: the second return would read a reused spill
+   slot), `x64:sjlj-coroutine` (`rbx`, the frame base, is not restored
+   at the resume address), `x64:sjlj-shadow-stack` (the
+   `cf-protection-return` module flag: the jump would unbalance the
+   shadow stack). On AArch64, `llc` compiles `setjmp` to 0 and `longjmp`
+   to nothing, and clang refuses the builtins; hod refuses both there.
+3. **A constant mask other than zero** as a `phi` incoming, a call
+   argument or a return value: `vector::materialize`, from the target's
+   materialize hook, puts its bits in a general register (`mask::
+   const_bits`, `mov` of the 64-bit immediate), for every width of
+   §5.6.13's masks.
+4. **`fp128` lanes** stay `x64:vector-wide-element`: no corpus module
+   has a vector of `fp128`; each lane operation would be a libcall.
+5. **`fptrunc x86_fp80` to `bfloat`** calls `__truncxfbf2` (libgcc 13
+   and later, compiler-rt), as `llc` 22 does; `llc` 19 cannot select it
+   (§5.6.12).
+6. **16-byte atomics in a coroutine** (§7.6 "x86-64"): with `+cx16`,
+   in a function with the coroutine frame, `push rbx` before the
+   sequence writes `rbx` and `pop rbx` after the last `cmpxchg16b`; the
+   new value is loaded high half (`rcx`) first, so its low half's load
+   is the last use of `rbx` as the frame base; the results are stored
+   after the `pop`. The libatomic calls without `+cx16` need nothing.
+7. **`hod_ir`** reads `llvm.va_start` and `llvm.va_end` without a
+   suffix and `llvm.va_copy.p0.p0` as the `.p0` intrinsics (LLVM 19 and
+   22 rename them on reading).
+8. **`tests/ir/const_operands.ll`** names no target and runs on both.
+9. **`is.fpclass` of a pseudo-denormal**: §5.6.12.
+
+Evidence: `spec/landed/codegen/WP-147.md`.
+
 ## 6. Control flow
 
 ### 6.1 Reachability

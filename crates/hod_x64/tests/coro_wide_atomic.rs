@@ -20,6 +20,7 @@
 #[allow(dead_code, reason = "a shared helper: not every function is used here")]
 mod linking;
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -225,7 +226,11 @@ int main(void) {
 
 /// What [`DRIVER`] prints when every result is right and `rbx` intact.
 fn want() -> String {
-    (0..6).map(|i| format!("co {i}: ok rbx 7\nplain {i}: ok rbx 1\n")).collect()
+    let mut out = String::new();
+    for i in 0..6 {
+        writeln!(out, "co {i}: ok rbx 7\nplain {i}: ok rbx 1").unwrap();
+    }
+    out
 }
 
 /// A module and its bodies from `.ll` text.

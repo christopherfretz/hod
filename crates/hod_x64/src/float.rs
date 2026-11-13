@@ -1031,7 +1031,12 @@ pub fn vector_icmp<'a>(
 
 /// The branches of `br` on the condition(s) `c`: to `if_true` when it
 /// holds, else to `if_false`; a block emitted next is not branched to.
-fn branch_fp(cx: &mut FnCx<'_, X64>, c: FpCond, if_true: BlockId, if_false: BlockId) -> CgResult<()> {
+fn branch_fp(
+    cx: &mut FnCx<'_, X64>,
+    c: FpCond,
+    if_true: BlockId,
+    if_false: BlockId,
+) -> CgResult<()> {
     let last = match c {
         FpCond::One(c) => c,
         FpCond::All(c1, c2) => {
@@ -1066,7 +1071,8 @@ pub fn cond_br<'a>(
     if_true: BlockId,
     if_false: BlockId,
 ) -> CgResult<()> {
-    let fused = matches!(compare.kind(), InstKind::FCmp { lhs, .. } if cx.class_of(lhs) == Class::Fpr);
+    let fused =
+        matches!(compare.kind(), InstKind::FCmp { lhs, .. } if cx.class_of(lhs) == Class::Fpr);
     if !fused {
         deferred_first(cx, inst, None)?;
         let r = gp(cx.use_reg(cond)?);
@@ -1097,9 +1103,9 @@ pub fn select<'a>(
     if !matches!(cx.types().kind(value_ty(cx, cond)), TypeKind::Int(1)) {
         return unsupported(crate::vector::VECTOR);
     }
-    let fused = cx.deferred(cond).filter(|d| {
-        matches!(d.kind(), InstKind::FCmp { lhs, .. } if cx.class_of(lhs) == Class::Fpr)
-    });
+    let fused = cx.deferred(cond).filter(
+        |d| matches!(d.kind(), InstKind::FCmp { lhs, .. } if cx.class_of(lhs) == Class::Fpr),
+    );
     deferred_first(cx, inst, fused.map(|_| cond))?;
     let c = if let Some(compare) = fused {
         flags(cx, compare)?

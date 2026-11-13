@@ -37,10 +37,7 @@
 //! Besides the operands' registers, a lowering here writes `rax`, `rcx`,
 //! `rdx`, `r11`, `xmm14` and `xmm15`, and every register a call writes.
 
-#![allow(
-    clippy::many_single_char_names,
-    reason = "the operands are LangRef's x, a, b, c"
-)]
+#![allow(clippy::many_single_char_names, reason = "the operands are LangRef's x, a, b, c")]
 
 use hod_cg::sym::{FpOp, FpType, fp_routine};
 use hod_cg::{CallArg, CgResult, Class, FnCx, FrameRef, PReg, RuntimeFn};
@@ -407,25 +404,28 @@ fn copysign<'a>(
 }
 
 /// `fma`: `fmaf`/`fma`/`fmaf128` (SSE2 has no fused instruction); `half`
-/// in `double` through `fma`, then `__truncdfhf2` (as `llc` 22: exact,
-/// double has more than three times half's precision).
+/// in `double`, then `__truncdfhf2`. `llc` 22 calls `fma` in `double`;
+/// the product of two `half`s is exact in `double` (22 bits), so
+/// `mulsd` + `addsd` rounds once, as that `fma` does, in two registers.
 fn fma<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, f: Shape, abc: [Value; 3]) -> CgResult<()> {
-    let func = routine(f, FpOp::Fma)?;
     if f != Shape::Half {
+        let func = routine(f, FpOp::Fma)?;
         let args = abc.map(CallArg::Value);
         let r = runtime(cx, func, &args)?;
         return cx.finish(inst, r);
     }
     let slots = half_slots(cx, &abc)?;
-    let mut args = [CallArg::Value(Value::NONE); 3];
-    for (arg, slot) in args.iter_mut().zip(slots) {
-        let t = load_temp(cx, slot)?;
-        put(cx, mc::cvtss2sd_rr(xm(t), xm(t)));
-        *arg = CallArg::Reg(t);
-    }
-    let r = runtime(cx, func, &args)?;
-    let t = to_pool(cx, r)?;
-    let r = crate::float::narrow_call(cx, Shape::Double, CallArg::Reg(t))?;
+    let p = load_temp(cx, slots[0])?;
+    let t = load_temp(cx, slots[1])?;
+    put(cx, mc::cvtss2sd_rr(xm(p), xm(p)));
+    put(cx, mc::cvtss2sd_rr(xm(t), xm(t)));
+    put(cx, mc::muls_rr(FpSize::D, xm(p), xm(t)));
+    let Some(slot) = slots[2] else { return cx.bug("a half operand without its slot") };
+    load_fpr(cx, xm(t), slot, 4);
+    put(cx, mc::cvtss2sd_rr(xm(t), xm(t)));
+    put(cx, mc::adds_rr(FpSize::D, xm(p), xm(t)));
+    cx.free_temp(t);
+    let r = crate::float::narrow_call(cx, Shape::Double, CallArg::Reg(p))?;
     cx.finish(inst, r)
 }
 
@@ -453,8 +453,7 @@ fn fmuladd<'a>(
             cx.free_temp(tb);
             let p = half_out(cx, ta)?;
             let t = to_pool(cx, p)?;
-            let Some(ext) =
-                hod_cg::sym::fp_ext_routine(FpType::Half, FpType::Float, Arch::X86_64)
+            let Some(ext) = hod_cg::sym::fp_ext_routine(FpType::Half, FpType::Float, Arch::X86_64)
             else {
                 return cx.bug("no half extension routine on x86-64");
             };
@@ -547,7 +546,8 @@ pub fn min_max_reg(
 ) -> CgResult<()> {
     use Intrinsic as I;
     let is_min = matches!(which, I::MinNum | I::Minimum | I::MinimumNum);
-    let op = |dst, src| if is_min { mc::mins_rr(size, dst, src) } else { mc::maxs_rr(size, dst, src) };
+    let op =
+        |dst, src| if is_min { mc::mins_rr(size, dst, src) } else { mc::maxs_rr(size, dst, src) };
     if matches!(which, I::MinNum | I::MaxNum) {
         put(cx, mc::movap_rr(size, XMM15, rb));
         put(cx, op(XMM15, ra));
@@ -687,18 +687,22 @@ fn saturate<'a>(
 /// -2^(bits-1)` (0 where `x < 0` unsigned, a NaN included: unordered sets
 /// `CF`), and 0 for a NaN. Writes `rcx`, `rdx`, `r11`, `xmm14`, `xmm15`
 /// and the flags.
-pub fn saturate_reg(cx: &mut FnCx<'_, X64>, signed: bool, size: FpSize, x: Xmm, rd: Reg, bits: u32) {
+pub fn saturate_reg(
+    cx: &mut FnCx<'_, X64>,
+    signed: bool,
+    size: FpSize,
+    x: Xmm,
+    rd: Reg,
+    bits: u32,
+) {
     let fbits = if size == FpSize::D { 64 } else { 32 };
     if signed || bits < 64 {
         put(cx, mc::cvtts2si_rr(Size::Q, rd, size, x));
     } else {
         fp_to_int(cx, size, x, 64, false, rd);
     }
-    let (top, max) = if signed {
-        (bits - 1, (1u64 << (bits - 1)) - 1)
-    } else {
-        (bits, u64::MAX >> (64 - bits))
-    };
+    let (top, max) =
+        if signed { (bits - 1, (1u64 << (bits - 1)) - 1) } else { (bits, u64::MAX >> (64 - bits)) };
     xmm_imm(cx, XMM15, pow2(size, top, false), fbits);
     mov_imm(cx, RCX, max, 64);
     put(cx, mc::ucomis_rr(size, x, XMM15));

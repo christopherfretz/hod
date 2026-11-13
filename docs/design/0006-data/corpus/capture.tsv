@@ -1,0 +1,85 @@
+kiln	kiln/llvm22/c/c23/bitint.c.ll	ok
+kiln	kiln/llvm22/c/decl/param-scope-tag-body.c.ll	ok
+kiln	kiln/llvm22/c/interop/cxx-calls-c.cpp.ll	FAILED kiln++: error: no such file or directory: '&&'
+kiln++: error: no such file or directory: '&&'
+kiln++: error: no such file or directory: 'unit0.o'
+kiln
+kiln	kiln/llvm22/c/run/static-init-compound-literal-values.c.ll	ok
+kiln	kiln/llvm22/conformance/basic.contract.eval/run-site-name-explicit-spec.cpp.ll	ok
+kiln	kiln/llvm22/conformance/basic.lookup.unqual/qualified-declarator-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/c.math/finite-math-only-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/class.copy.ctor/deleted-defaulted-move-ignored.cpp.ll	ok
+kiln	kiln/llvm22/conformance/class.local/template-local-class-anonymous-member-init-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/class.static.data/template-direct-list-init.cpp.ll	ok
+kiln	kiln/llvm22/conformance/class.virtual/implicit-assignment-override-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/cpp.include/pch-pattern-inits-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/dcl.attr.cconv/cc-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/dcl.constexpr/consteval-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/dcl.fct.def.general/predefined-partial-spec-scopes-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/dcl.init.aggr/reference-member.cpp.ll	ok
+kiln	kiln/llvm22/conformance/dcl.link/extern-c-runtime-function-redeclaration.cpp.ll	ok
+kiln	kiln/llvm22/conformance/dcl.struct.bind/p2686-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/driver.sanitize/trapv-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/expr.ass/compound-assignment.cpp.ll	ok
+kiln	kiln/llvm22/conformance/expr.cond/p4-cv-differing-class-arms-not-builtin-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/expr.const/oven-dead-statics.cpp.ll	ok
+kiln	kiln/llvm22/conformance/expr.new/p28-placement-delete-template-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/expr.prim.id.dtor/run-qualified-destructor-template-id.cpp.ll	ok
+kiln	kiln/llvm22/conformance/expr.prim.lambda/p2036-init-capture-scope.cpp.ll	ok
+kiln	kiln/llvm22/conformance/expr.ref/p6-static-member-function-value-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/expr.static.cast/libstdcxx-dependent-cast-to-reference-typedef.cpp.ll	ok
+kiln	kiln/llvm22/conformance/ext.clang.pass.object.size/pass-object-size-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/ext.gnu.builtins/readcyclecounter-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/ext.gnu.mode/mode-dependent-param-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/ext.vector/bool-constexpr-convert-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/meta.define.static/define-static-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/module.interface/image-bodies-run.cpp.ll	FAILED kiln++: error: no such file or directory: '&&'
+kiln++: error: no such file or directory: '&&'
+kiln++: error: no such file or directory: 'imgb.o'
+kiln+
+kiln	kiln/llvm22/conformance/module.interface/image-name-clash.cpp.ll	FAILED kiln++: error: no such file or directory: '&&'
+kiln++: error: no such file or directory: '&&'
+kiln++: error: no such file or directory: '&&'
+kiln++: e
+kiln	kiln/llvm22/conformance/namespace.alias/local-alias-in-function-template.cpp.ll	ok
+kiln	kiln/llvm22/conformance/over.ics.list/aggregate-single-element-of-class-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/over.match.oper/rewritten-template-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/stmt.if.consteval/char-traits-length-O2-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/stmt.ranged/p2718-order.cpp.ll	ok
+kiln	kiln/llvm22/conformance/temp.arg.explicit/libstdcxx-member-template-id-overload-set.cpp.ll	ok
+kiln	kiln/llvm22/conformance/temp.constr.normal/concept-pack-fold-expansion.cpp.ll	ok
+kiln	kiln/llvm22/conformance/temp.deduct.type/constrained-placeholder-nttp-prior-param-constrained-ref-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/temp.dep.type/injected-class-name-address-of-member.cpp.ll	ok
+kiln	kiln/llvm22/conformance/temp.expl.spec/member-class-enum-spec.cpp.ll	ok
+kiln	kiln/llvm22/conformance/temp.friend/friend-defined-in-partial-spec.cpp.ll	ok
+kiln	kiln/llvm22/conformance/temp.func.order/p12-empty-expansion-deduces-empty-pack-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/temp.inst/shared-expr-odr-use.cpp.ll	ok
+kiln	kiln/llvm22/conformance/temp.mem/conversion-template-named-explicitly-run.cpp.ll	ok
+kiln	kiln/llvm22/conformance/temp.over.link/unresolved-nested-qualified-two-units-run.cpp.ll	FAILED kiln++: error: cannot specify -o when generating multiple output files
+kiln	kiln/llvm22/conformance/temp.spec.partial.match/order-non-deduced-context-must-match.cpp.ll	ok
+gcc-torture	gcc-torture/llvm22/20000112-1.c.ll	ok
+gcc-torture	gcc-torture/llvm22/20001017-1.c.ll	ok
+gcc-torture	gcc-torture/llvm22/20020127-1.c.ll	ok
+gcc-torture	gcc-torture/llvm22/20030120-2.c.ll	ok
+gcc-torture	gcc-torture/llvm22/20040625-1.c.ll	ok
+gcc-torture	gcc-torture/llvm22/20060412-1.c.ll	ok
+gcc-torture	gcc-torture/llvm22/20100827-1.c.ll	ok
+gcc-torture	gcc-torture/llvm22/920618-1.c.ll	ok
+gcc-torture	gcc-torture/llvm22/930713-1.c.ll	ok
+gcc-torture	gcc-torture/llvm22/951003-1.c.ll	ok
+gcc-torture	gcc-torture/llvm22/980709-1.c.ll	ok
+gcc-torture	gcc-torture/llvm22/bf-pack-1.c.ll	ok
+gcc-torture	gcc-torture/llvm22/compare-2.c.ll	ok
+gcc-torture	gcc-torture/llvm22/ieee/fp-cmp-4l.c.ll	FAILED clang: error: no such file or directory: 'ieee/fp-cmp-4l.c'
+clang: error: no input files
+gcc-torture	gcc-torture/llvm22/loop-9.c.ll	ok
+gcc-torture	gcc-torture/llvm22/pr110252-3.c.ll	ok
+gcc-torture	gcc-torture/llvm22/pr22061-2.c.ll	ok
+gcc-torture	gcc-torture/llvm22/pr34768-2.c.ll	ok
+gcc-torture	gcc-torture/llvm22/pr42721.c.ll	ok
+gcc-torture	gcc-torture/llvm22/pr52129.c.ll	ok
+gcc-torture	gcc-torture/llvm22/pr59358.c.ll	ok
+gcc-torture	gcc-torture/llvm22/pr68381.c.ll	ok
+gcc-torture	gcc-torture/llvm22/pr81555.c.ll	ok
+gcc-torture	gcc-torture/llvm22/pr93744-3.c.ll	ok
+gcc-torture	gcc-torture/llvm22/strcpy-2.c.ll	ok

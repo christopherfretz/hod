@@ -11,7 +11,7 @@ use crate::reg::{FpCmp, FpSize, Mem, Reg, Size, Xmm};
 
 /// `0F opcode` with mandatory prefix `prefix` (0, `66`, `F2` or `F3`).
 #[inline]
-const fn op(prefix: u8, opcode: u8) -> Op {
+pub(crate) const fn op(prefix: u8, opcode: u8) -> Op {
     let op = Op::two(opcode);
     match prefix {
         0 => op,
@@ -31,7 +31,7 @@ const fn scalar(fp: FpSize) -> u8 {
 
 /// The packed prefix: none for single, `66` for double.
 #[inline]
-const fn packed(fp: FpSize) -> u8 {
+pub(crate) const fn packed(fp: FpSize) -> u8 {
     match fp {
         FpSize::S => 0,
         FpSize::D => 0x66,
@@ -40,13 +40,13 @@ const fn packed(fp: FpSize) -> u8 {
 
 /// `ModRM` with two `xmm` operands.
 #[inline]
-const fn xx(op: Op, reg: Xmm, rm: Xmm) -> Inst {
+pub(crate) const fn xx(op: Op, reg: Xmm, rm: Xmm) -> Inst {
     modrm(op, reg.code(), false, Rm::Reg(rm.as_gpr()), false)
 }
 
 /// `ModRM` with an `xmm` in reg and a memory operand.
 #[inline]
-const fn xm(op: Op, reg: Xmm, m: Mem) -> Inst {
+pub(crate) const fn xm(op: Op, reg: Xmm, m: Mem) -> Inst {
     modrm(op, reg.code(), false, Rm::Mem(m), false)
 }
 
@@ -63,12 +63,12 @@ const fn scalar_rm(opcode: u8, fp: FpSize, dst: Xmm, src: Mem) -> Inst {
 
 /// Packed `op xmm, xmm/m` (`0F opcode /r`, `66 0F opcode /r`).
 #[inline]
-const fn packed_rr(opcode: u8, fp: FpSize, dst: Xmm, src: Xmm) -> Inst {
+pub(crate) const fn packed_rr(opcode: u8, fp: FpSize, dst: Xmm, src: Xmm) -> Inst {
     xx(op(packed(fp), opcode), dst, src)
 }
 
 #[inline]
-const fn packed_rm(opcode: u8, fp: FpSize, dst: Xmm, src: Mem) -> Inst {
+pub(crate) const fn packed_rm(opcode: u8, fp: FpSize, dst: Xmm, src: Mem) -> Inst {
     xm(op(packed(fp), opcode), dst, src)
 }
 
@@ -152,6 +152,48 @@ pub const fn movdqu_mr(dst: Mem, src: Xmm) -> Inst {
     xm(op(0xf3, 0x7f), src, dst)
 }
 
+/// `MOVUPS`/`MOVUPD xmm, xmm` (`0F 10 /r`, `66 0F 10 /r`, `dst` in reg).
+#[inline]
+pub const fn movup_rr(fp: FpSize, dst: Xmm, src: Xmm) -> Inst {
+    packed_rr(0x10, fp, dst, src)
+}
+
+/// `MOVDQU xmm, xmm` (`F3 0F 6F /r`).
+#[inline]
+pub const fn movdqu_rr(dst: Xmm, src: Xmm) -> Inst {
+    xx(op(0xf3, 0x6f), dst, src)
+}
+
+/// `MOVQ xmm, xmm` (`F3 0F 7E /r`): the low 64 bits, the high 64 zeroed.
+#[inline]
+pub const fn movq_rr(dst: Xmm, src: Xmm) -> Inst {
+    xx(op(0xf3, 0x7e), dst, src)
+}
+
+checked! {
+    /// `MOVD xmm, m32` (`66 0F 6E /r`) / `MOVQ xmm, m64` (`F3 0F 7E /r`):
+    /// a load into the low element, the rest zeroed.
+    pub fn movd_rm / try_movd_rm(size: Size, dst: Xmm, src: Mem)
+    requires matches!(size, Size::D | Size::Q);
+    {
+        match size {
+            Size::Q => xm(op(0xf3, 0x7e), dst, src),
+            _ => xm(op(0x66, 0x6e), dst, src),
+        }
+    }
+
+    /// `MOVD m32, xmm` (`66 0F 7E /r`) / `MOVQ m64, xmm` (`66 0F D6 /r`):
+    /// a store of the low 32 or 64 bits.
+    pub fn movd_mr / try_movd_mr(size: Size, dst: Mem, src: Xmm)
+    requires matches!(size, Size::D | Size::Q);
+    {
+        match size {
+            Size::Q => xm(op(0x66, 0xd6), src, dst),
+            _ => xm(op(0x66, 0x7e), src, dst),
+        }
+    }
+}
+
 /// `66 [REX.W] 0F opcode`: `movd` for 32 bits, `movq` for 64.
 #[inline]
 const fn movd_op(opcode: u8, size: Size) -> Op {
@@ -184,6 +226,12 @@ family! {
     pub fn divs_rr = (0x5e);
     /// `SQRTSS`/`SQRTSD xmm, xmm` (`F3`/`F2 0F 51 /r`).
     pub fn sqrts_rr = (0x51);
+    /// `MINSS`/`MINSD xmm, xmm` (`F3`/`F2 0F 5D /r`): `dst < src ? dst :
+    /// src`, so `src` when either is NaN or both are zero.
+    pub fn mins_rr = (0x5d);
+    /// `MAXSS`/`MAXSD xmm, xmm` (`F3`/`F2 0F 5F /r`): `dst > src ? dst :
+    /// src`, so `src` when either is NaN or both are zero.
+    pub fn maxs_rr = (0x5f);
 }
 
 family! {
@@ -198,6 +246,10 @@ family! {
     pub fn divs_rm = (0x5e);
     /// `SQRTSS`/`SQRTSD xmm, m32/m64`.
     pub fn sqrts_rm = (0x51);
+    /// `MINSS`/`MINSD xmm, m32/m64`.
+    pub fn mins_rm = (0x5d);
+    /// `MAXSS`/`MAXSD xmm, m32/m64`.
+    pub fn maxs_rm = (0x5f);
 }
 
 family! {
@@ -280,6 +332,18 @@ checked! {
     pub fn cvtts2si_rm / try_cvtts2si_rm(size: Size, dst: Reg, fp: FpSize, src: Mem)
     requires matches!(size, Size::D | Size::Q);
     { modrm(cvt_op(0x2c, fp, size), dst.code(), false, Rm::Mem(src), false) }
+
+    /// `CVTSS2SI`/`CVTSD2SI r32/r64, xmm` (`F3`/`F2 [REX.W] 0F 2D /r`):
+    /// rounded as MXCSR says (`lrint`); the "integer indefinite" value
+    /// when out of range or NaN.
+    pub fn cvts2si_rr / try_cvts2si_rr(size: Size, dst: Reg, fp: FpSize, src: Xmm)
+    requires matches!(size, Size::D | Size::Q);
+    { modrm(cvt_op(0x2d, fp, size), dst.code(), false, Rm::Reg(src.as_gpr()), false) }
+
+    /// `CVTSS2SI`/`CVTSD2SI r32/r64, m32/m64`.
+    pub fn cvts2si_rm / try_cvts2si_rm(size: Size, dst: Reg, fp: FpSize, src: Mem)
+    requires matches!(size, Size::D | Size::Q);
+    { modrm(cvt_op(0x2d, fp, size), dst.code(), false, Rm::Mem(src), false) }
 }
 
 /// `CVTSS2SD xmm, xmm` (`F3 0F 5A /r`): single to double, exact.

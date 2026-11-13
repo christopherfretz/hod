@@ -27,6 +27,7 @@ fn moves(b: &mut Batch) {
             for s in 0..16 {
                 emit_as!(b, &movs, movs_rr(fp, x(d), x(s)), "{movs} {}, {}", xmm(d), xmm(s));
                 emit_as!(b, &movap, movap_rr(fp, x(d), x(s)), "{movap} {}, {}", xmm(d), xmm(s));
+                emit_as!(b, &movup, movup_rr(fp, x(d), x(s)), "{movup} {}, {}", xmm(d), xmm(s));
             }
         }
         for m in some_mems() {
@@ -45,6 +46,8 @@ fn moves(b: &mut Batch) {
     for d in 0..16 {
         for s in 0..16 {
             emit!(b, movdqa_rr(x(d), x(s)), "movdqa {}, {}", xmm(d), xmm(s));
+            emit!(b, movdqu_rr(x(d), x(s)), "movdqu {}, {}", xmm(d), xmm(s));
+            emit!(b, movq_rr(x(d), x(s)), "movq {}, {}", xmm(d), xmm(s));
         }
     }
     for m in some_mems() {
@@ -65,7 +68,20 @@ fn moves(b: &mut Batch) {
             }
         }
     }
+    for (size, mn) in [(Size::D, "movd"), (Size::Q, "movq")] {
+        for m in some_mems() {
+            for n in SOME {
+                let (xt, mt) = (xmm(n), m.sized(size));
+                emit_as!(b, mn, try_movd_rm(size, x(n), m.mem()), "{mn} {xt}, {mt}");
+                emit_as!(b, mn, try_movd_mr(size, m.mem(), x(n)), "{mn} {mt}, {xt}");
+            }
+        }
+    }
     for size in [Size::B, Size::W] {
+        let mt = format!("{} [rax]", crate::text::ptr(size));
+        let m = Mem::base(Reg::Rax, 0);
+        reject!(b, try_movd_rm(size, x(0), m), "movd xmm0, {mt}");
+        reject!(b, try_movd_mr(size, m, x(0)), "movd {mt}, xmm0");
         let gt = reg(size, 1);
         reject!(b, try_movd_xr(size, x(0), r(1)), "movd xmm0, {gt}");
         reject!(b, try_movd_rx(size, r(1), x(0)), "movd {gt}, xmm0");
@@ -101,6 +117,8 @@ fn arithmetic(b: &mut Batch) {
         muls_rr muls_rm "mul" "s";
         divs_rr divs_rm "div" "s";
         sqrts_rr sqrts_rm "sqrt" "s";
+        mins_rr mins_rm "min" "s";
+        maxs_rr maxs_rm "max" "s";
         andp_rr andp_rm "and" "p";
         andnp_rr andnp_rm "andn" "p";
         orp_rr orp_rm "or" "p";
@@ -180,12 +198,14 @@ fn conversions(b: &mut Batch) {
     let mems = some_mems();
     for (fp, p) in FPS {
         let (to, from) = (format!("cvtsi2s{p}"), format!("cvtts{p}2si"));
+        let round = format!("cvts{p}2si");
         for size in [Size::D, Size::Q] {
             for v in 0..16 {
                 for g in 0..16 {
                     let (xt, gt) = (xmm(v), reg(size, g));
                     emit_as!(b, &to, try_cvtsi2s_rr(fp, x(v), size, r(g)), "{to} {xt}, {gt}");
                     emit_as!(b, &from, try_cvtts2si_rr(size, r(g), fp, x(v)), "{from} {gt}, {xt}");
+                    emit_as!(b, &round, try_cvts2si_rr(size, r(g), fp, x(v)), "{round} {gt}, {xt}");
                 }
             }
             for m in &mems {
@@ -199,6 +219,12 @@ fn conversions(b: &mut Batch) {
                         &from,
                         try_cvtts2si_rm(size, r(n), fp, m.mem()),
                         "{from} {gt}, {ft}"
+                    );
+                    emit_as!(
+                        b,
+                        &round,
+                        try_cvts2si_rm(size, r(n), fp, m.mem()),
+                        "{round} {gt}, {ft}"
                     );
                 }
             }
@@ -217,6 +243,13 @@ fn conversions(b: &mut Batch) {
             );
             reject!(b, try_cvtsi2s_rr(fp, x(13), size, r(10)));
             reject!(b, try_cvtts2si_rr(size, r(10), fp, x(13)));
+            reject!(b, try_cvts2si_rr(size, r(2), fp, x(1)), "{round} {gt}, xmm1");
+            reject!(
+                b,
+                try_cvts2si_rm(size, r(2), fp, m),
+                "{round} {gt}, {} [rax]",
+                crate::text::fp_ptr(fp)
+            );
         }
     }
     for d in 0..16 {

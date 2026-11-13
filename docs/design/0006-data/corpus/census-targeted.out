@@ -1,0 +1,183 @@
+## x86-64 sample, kiln: 28 modules
+feature	modules	occurrences
+x86_fp80	4	68
+fp128	2	189
+half	3	155
+bfloat	3	649
+i128	0	0
+i128-divrem	0	0
+wide-int(>128 or odd)	0	0
+vector	9	158
+float-or-double-op	8	46
+fp-conv	9	140
+uitofp/fptoui-64	1	1
+atomic	6	116
+atomic-16-byte	0	0
+thread_local	4	18
+invoke	0	0
+landingpad	0	0
+va_start	5	16
+va_arg-inst	0	0
+musttail	0	0
+byval	2	7
+sret	0	0
+inreg	0	0
+inline-asm	0	0
+indirectbr/blockaddress	0	0
+switch	3	18
+x86-intrinsic	0	0
+memcpy/memset/memmove	10	136
+bit-intrinsic	0	0
+overflow-intrinsic	0	0
+fp-intrinsic	3	20
+coroutine	0	0
+debug-info	0	0
+cx16-feature	0	0
+## x86-64 sample, gcc-torture: 11 modules
+feature	modules	occurrences
+x86_fp80	6	173
+fp128	0	0
+half	0	0
+bfloat	0	0
+i128	0	0
+i128-divrem	0	0
+wide-int(>128 or odd)	0	0
+vector	1	4
+float-or-double-op	1	1
+fp-conv	2	2
+uitofp/fptoui-64	0	0
+atomic	0	0
+atomic-16-byte	0	0
+thread_local	0	0
+invoke	0	0
+landingpad	0	0
+va_start	5	12
+va_arg-inst	0	0
+musttail	0	0
+byval	4	36
+sret	2	32
+inreg	0	0
+inline-asm	0	0
+indirectbr/blockaddress	0	0
+switch	1	1
+x86-intrinsic	0	0
+memcpy/memset/memmove	2	368
+bit-intrinsic	0	0
+overflow-intrinsic	0	0
+fp-intrinsic	0	0
+coroutine	0	0
+debug-info	0	0
+cx16-feature	0	0
+## same tests, aarch64 corpus entries, kiln: 28 modules
+feature	modules	occurrences
+x86_fp80	0	0
+fp128	6	259
+half	3	149
+bfloat	3	632
+i128	0	0
+i128-divrem	0	0
+wide-int(>128 or odd)	0	0
+vector	6	86
+float-or-double-op	7	42
+fp-conv	8	130
+uitofp/fptoui-64	1	1
+atomic	6	116
+atomic-16-byte	0	0
+thread_local	4	18
+invoke	0	0
+landingpad	0	0
+va_start	5	16
+va_arg-inst	0	0
+musttail	0	0
+byval	0	0
+sret	0	0
+inreg	0	0
+inline-asm	0	0
+indirectbr/blockaddress	0	0
+switch	3	18
+x86-intrinsic	0	0
+memcpy/memset/memmove	11	148
+bit-intrinsic	0	0
+overflow-intrinsic	0	0
+fp-intrinsic	3	20
+coroutine	0	0
+debug-info	0	0
+cx16-feature	0	0
+## same tests, aarch64 corpus entries, gcc-torture: 11 modules
+feature	modules	occurrences
+x86_fp80	0	0
+fp128	6	175
+half	0	0
+bfloat	0	0
+i128	0	0
+i128-divrem	0	0
+wide-int(>128 or odd)	0	0
+vector	0	0
+float-or-double-op	1	1
+fp-conv	2	2
+uitofp/fptoui-64	0	0
+atomic	0	0
+atomic-16-byte	0	0
+thread_local	0	0
+invoke	0	0
+landingpad	0	0
+va_start	5	12
+va_arg-inst	0	0
+musttail	0	0
+byval	0	0
+sret	2	16
+inreg	0	0
+inline-asm	0	0
+indirectbr/blockaddress	0	0
+switch	1	1
+x86-intrinsic	0	0
+memcpy/memset/memmove	5	419
+bit-intrinsic	0	0
+overflow-intrinsic	0	0
+fp-intrinsic	0	0
+coroutine	0	0
+debug-info	0	0
+cx16-feature	0	0
+## target attributes (attribute groups)
+118	+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87
+118	cpu=x86-64
+## per module
+kiln/c__c23__va-start-no-named-parameter.c.ll	va_start
+kiln/c__c99__misc-c99-c11.c.ll	thread_local,memcpy/memset/memmove
+kiln/c__decl__ellipsis-only-parameter-c23.c.ll	va_start
+kiln/c__decl__unprototyped.c.ll	half,float-or-double-op,fp-conv
+kiln/c__lex__c23-keywords.c.ll	thread_local
+kiln/c__run__compound-literal-lvalue-o2.c.ll	vector
+kiln/c__run__compound-literal-object.c.ll	vector,memcpy/memset/memmove
+kiln/c__run__static-init-compound-literal-values.c.ll	vector
+kiln/c__run__static-init-float-ieee.c.ll	x86_fp80,float-or-double-op,fp-intrinsic
+kiln/c__run__struct-by-value.c.ll	va_start
+kiln/c__run__vla-runtime-o2.c.ll	vector
+kiln/conformance__atomics.types.generic__run-libstdcxx-atomic-struct-sizes.cpp.ll	atomic,switch,memcpy/memset/memmove
+kiln/conformance__basic.extended.fp__f128-wrapper-args-run.cpp.ll	fp128,vector,fp-conv,byval,memcpy/memset/memmove
+kiln/conformance__basic.extended.fp__float-nx-run.cpp.ll	x86_fp80,float-or-double-op,fp-conv
+kiln/conformance__basic.extended.fp__nextafterf16-run.cpp.ll	half,bfloat,float-or-double-op,fp-conv,memcpy/memset/memmove
+kiln/conformance__basic.extended.fp__p1467-run.cpp.ll	fp128,half,bfloat,vector,float-or-double-op,fp-conv,uitofp/fptoui-64,memcpy/memset/memmove,fp-intrinsic
+kiln/conformance__basic.stc.auto__lifetime-markers-O2-run.cpp.ll	vector,switch
+kiln/conformance__basic.stc.thread__local-lvalue-run.cpp.ll	thread_local
+kiln/conformance__basic.stc.thread__self-address-dynamic-init-run.cpp.ll	thread_local
+kiln/conformance__class.virtual__variadic-covariant-thunk-run.cpp.ll	va_start,memcpy/memset/memmove
+kiln/conformance__conv.fpint__float-integral.cpp.ll	x86_fp80,fp-conv
+kiln/conformance__cstdarg.syn__va-arg-complex.cpp.ll	x86_fp80,vector,float-or-double-op,fp-conv,va_start,byval,memcpy/memset/memmove
+kiln/conformance__ext.c11.atomic__bool-inc-run.cpp.ll	atomic
+kiln/conformance__ext.c11.atomic__bool-postinc-run.cpp.ll	atomic
+kiln/conformance__ext.c11.atomic__class-run.cpp.ll	atomic,memcpy/memset/memmove
+kiln/conformance__ext.c11.atomic__fp-minmax-fetch-run.cpp.ll	fp-conv,atomic,fp-intrinsic
+kiln/conformance__ext.c11.atomic__templates-run.cpp.ll	float-or-double-op,atomic,switch,memcpy/memset/memmove
+kiln/conformance__ext.complex__complex-bf16.cpp.ll	bfloat,vector,float-or-double-op,fp-conv
+gcc-torture/20000519-1.c.ll	va_start
+gcc-torture/20010605-2.c.ll	x86_fp80,vector,byval
+gcc-torture/20020413-1.c.ll	x86_fp80
+gcc-torture/20030914-1.c.ll	x86_fp80,fp-conv,byval
+gcc-torture/20040208-1.c.ll	x86_fp80
+gcc-torture/20040709-1.c.ll	x86_fp80,byval,sret,memcpy/memset/memmove
+gcc-torture/20040709-3.c.ll	x86_fp80,byval,sret,memcpy/memset/memmove
+gcc-torture/20041113-1.c.ll	float-or-double-op,fp-conv,va_start
+gcc-torture/20071213-1.c.ll	va_start,switch
+gcc-torture/920501-8.c.ll	va_start
+gcc-torture/920726-1.c.ll	va_start

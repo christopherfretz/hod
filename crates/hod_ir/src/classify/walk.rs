@@ -423,7 +423,13 @@ impl<'a, S: Sink> Walker<'a, S> {
                 }
             }
             Const::Aggregate { elems, .. } => {
+                // A leaf element (a number, a zero, bytes) passes at any
+                // depth within the limit: skip the walk into it (WP-027).
+                let leaves = depth < MAX_CONSTANT_NESTING;
                 for &elem in elems {
+                    if leaves && module.consts.leaf_type(elem).is_some() {
+                        continue;
+                    }
                     self.constant(cx, elem, place, true, depth + 1, at)?;
                 }
                 GO

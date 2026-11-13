@@ -635,10 +635,11 @@ pub(crate) struct Writer<'a> {
     pub(crate) expr: Vec<u8>,
     /// Per function of the unit: its `.debug_addr` index.
     pub(crate) fn_addr: Vec<u32>,
-    /// The unit's blocks' range lists, and where they will start in
-    /// `.debug_rnglists`.
+    /// The unit's blocks' range lists, and where each starts in it: a
+    /// list's `DW_FORM_rnglistx` index is its position in `block_starts`
+    /// (WP-163).
     pub(crate) block_lists: Vec<u8>,
-    pub(crate) block_lists_base: usize,
+    pub(crate) block_starts: Vec<usize>,
 }
 
 #[inline]
@@ -671,9 +672,12 @@ impl<'a> Writer<'a> {
         (self.addrs.len() - 1) as u32
     }
 
-    /// A `DW_FORM_sec_offset` into `.debug_rnglists`.
-    pub(crate) fn rnglists_offset(&mut self, offset: i64) {
-        self.sec_offset(Target::Rnglists, offset);
+    /// The `DW_AT_ranges` of the scope whose list starts at `at` in
+    /// `block_lists`: a `DW_FORM_rnglistx` index, the lists numbered in
+    /// DIE order as `llc` numbers them (WP-163, §6.4). No relocation.
+    pub(crate) fn block_list(&mut self, at: usize) {
+        write_uleb(&mut self.info, self.block_starts.len() as u64);
+        self.block_starts.push(at);
     }
 
     #[inline]
@@ -739,27 +743,29 @@ impl<'a> Writer<'a> {
     }
 
     /// The functions' state of a unit (§6.4): their `.debug_addr`
-    /// entries follow the globals', in DIE order, then the spans'; the
-    /// blocks' lists follow the unit's own list in `.debug_rnglists`.
-    /// The first span's address index.
-    pub(crate) fn begin_functions(
-        &mut self,
-        plan: &UnitPlan<'a>,
-        globals: usize,
-        ranges: bool,
-        rnglists_base: usize,
-    ) -> usize {
+    /// entries follow the globals', in DIE order, then the spans'. The
+    /// first span's address index.
+    pub(crate) fn begin_functions(&mut self, plan: &UnitPlan<'a>, globals: usize) -> usize {
         let span_base = globals + plan.code_addrs() as usize;
         self.fn_addr.clear();
         self.fn_addr.resize(plan.funcs.len(), 0);
         self.block_lists.clear();
-        self.block_lists_base = rnglists_base
-            + if ranges {
-                4 + crate::func::cu_list_len(span_base as u32, self.spans.iter().map(|s| s.size))
-            } else {
-                0
-            };
+        self.block_starts.clear();
         span_base
+    }
+
+    /// The unit header (DWARF 5 §7.5.1.1), its length patched later; where
+    /// it starts in `info`.
+    fn unit_header(&mut self) -> usize {
+        let unit_start = self.info.len();
+        self.unit_start = unit_start;
+        self.info.extend_from_slice(&[0; 4]);
+        self.info.extend_from_slice(&5u16.to_le_bytes());
+        self.info.push(DW_UT_COMPILE);
+        self.info.push(8);
+        self.sec_offset(Target::Abbrev, 0);
+        debug_assert_eq!(self.info.len() - unit_start, UNIT_HEADER);
+        unit_start
     }
 
     pub(crate) fn unit(&mut self, u: &UnitInput<'_, 'a>, symbols: u32) -> Result<(), Error> {
@@ -795,29 +801,27 @@ impl<'a> Writer<'a> {
         self.patches.clear();
         self.strings.begin_unit();
 
-        // The unit header (DWARF 5 §7.5.1.1).
-        let unit_start = self.info.len();
-        self.unit_start = unit_start;
         let str_offsets_base = self.str_offsets.len() + 8;
         let addr_base = self.addr.len() + 8;
         let rnglists_base = self.rnglists.len() + 12;
-        self.info.extend_from_slice(&[0; 4]);
-        self.info.extend_from_slice(&5u16.to_le_bytes());
-        self.info.push(DW_UT_COMPILE);
-        self.info.push(8);
-        self.sec_offset(Target::Abbrev, 0);
-        debug_assert_eq!(self.info.len() - unit_start, UNIT_HEADER);
+        let unit_start = self.unit_header();
 
         let ranges = self.spans.len() > 1;
-        let span_base = self.begin_functions(plan, globals, ranges, rnglists_base);
+        let span_base = self.begin_functions(plan, globals);
+        let lists = plan.scope_lists(); // WP-163: numbered before the unit's
 
         // The unit DIE.
         let cu = &plan.cu;
         let pc = self.spans.len() == 1;
         let has_addr = span_base > 0 || !self.spans.is_empty();
+        // One span and scope lists: `DW_AT_rnglists_base`, no `ranges`
+        // (version 4 has no base: `crate::dwarf4` reads the table).
+        let pc_lists = pc && lists > 0 && plan.version == 5;
         let mask = u32::from(pc) | u32::from(ranges) << 1 | u32::from(has_addr) << 2;
+        let (family, mask) =
+            if pc_lists { (fam::COMPILE_UNIT_LISTS, 0) } else { (fam::COMPILE_UNIT, mask) };
         self.offsets[0] = UNIT_HEADER as u32;
-        self.abbrev(code(fam::COMPILE_UNIT, mask, n > 1));
+        self.abbrev(code(family, mask, n > 1));
         self.strx(cu.producer)?;
         self.info.extend_from_slice(&cu.language.to_le_bytes());
         self.strx(plan.name)?;
@@ -831,12 +835,12 @@ impl<'a> Writer<'a> {
         }
         if ranges {
             self.info.extend_from_slice(&[0; 8]); // DW_AT_low_pc 0, no relocation
-            write_uleb(&mut self.info, 0);
+            write_uleb(&mut self.info, lists as u64); // the unit's list, the last
         }
         if has_addr {
             self.sec_offset(Target::Addr, addr_base as i64);
         }
-        if ranges {
+        if ranges || pc_lists {
             self.sec_offset(Target::Rnglists, rnglists_base as i64);
         }
 
@@ -861,6 +865,9 @@ impl<'a> Writer<'a> {
             }
         }
         debug_assert_eq!(self.addrs.len(), span_base);
+        if self.block_starts.len() != lists {
+            return Err(unsupported(plan.unit, "a scope range list the plan did not count"));
+        }
 
         for &(at, die) in &self.patches {
             let offset = self.offsets[die as usize];
@@ -923,17 +930,26 @@ impl<'a> Writer<'a> {
             }
         }
 
-        // `.debug_rnglists` (DWARF 5 §7.28): the unit's list, one
-        // `DW_RLE_startx_length` per span, reached by the one offset;
-        // then the blocks' lists, reached by `DW_FORM_sec_offset` (§6.4).
-        if ranges || !self.block_lists.is_empty() {
+        // `.debug_rnglists` (DWARF 5 §7.28), as `llc` writes it (WP-163):
+        // one offset per list, every `DW_AT_ranges` a `DW_FORM_rnglistx`
+        // index of them; the scopes' lists in DIE order (§6.4), then the
+        // unit's own, one `DW_RLE_startx_length` per span.
+        let lists = self.block_starts.len() + usize::from(ranges);
+        if lists > 0 {
             let start = self.rnglists.len();
+            let table = 4 * lists;
+            let count = u32::try_from(lists).map_err(|_| Error::TooLarge)?;
             self.rnglists.extend_from_slice(&[0; 4]);
             self.rnglists.extend_from_slice(&5u16.to_le_bytes());
             self.rnglists.extend_from_slice(&[8, 0]);
-            self.rnglists.extend_from_slice(&u32::from(ranges).to_le_bytes()); // offset_entry_count
+            self.rnglists.extend_from_slice(&count.to_le_bytes()); // offset_entry_count
+            let own = ranges.then_some(self.block_lists.len());
+            for &at in self.block_starts.iter().chain(own.iter()) {
+                let offset = u32::try_from(table + at).map_err(|_| Error::TooLarge)?;
+                self.rnglists.extend_from_slice(&offset.to_le_bytes());
+            }
+            self.rnglists.extend_from_slice(&self.block_lists);
             if ranges {
-                self.rnglists.extend_from_slice(&4u32.to_le_bytes()); // offsets[0]
                 for (k, s) in self.spans.iter().enumerate() {
                     self.rnglists.push(DW_RLE_STARTX_LENGTH);
                     write_uleb(&mut self.rnglists, (span_base + k) as u64);
@@ -941,8 +957,6 @@ impl<'a> Writer<'a> {
                 }
                 self.rnglists.push(DW_RLE_END_OF_LIST);
             }
-            debug_assert_eq!(self.rnglists.len(), self.block_lists_base);
-            self.rnglists.extend_from_slice(&self.block_lists);
             let length =
                 u32::try_from(self.rnglists.len() - start - 4).map_err(|_| Error::TooLarge)?;
             self.rnglists[start..start + 4].copy_from_slice(&length.to_le_bytes());
@@ -1078,7 +1092,7 @@ pub fn write_debug_info(
         expr: Vec::new(),
         fn_addr: Vec::new(),
         block_lists: Vec::new(),
-        block_lists_base: 0,
+        block_starts: Vec::new(),
     };
     if let Some(u) = units.iter().find(|u| !u.plan.sealed) {
         return Err(unsupported(u.plan.unit, "a unit plan that is not sealed"));

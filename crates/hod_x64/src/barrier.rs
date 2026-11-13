@@ -90,7 +90,7 @@ const G: u16 = 1 << 4; // g
 const XX: u16 = 1 << 5; // X
 const SPEC: u16 = 1 << 6; // {reg}
 const TIED: u16 = 1 << 7; // a digit
-const CLASS: u16 = 1 << 8; // q, Q, R, a, b, c, d, S, D, A: general registers by class or name
+const CLASS: u16 = 1 << 8; // q, Q, R: general registers by class
 const SMALL: u16 = 1 << 9; // I: an integer constant 0 to 31
 
 #[derive(Clone, Copy, Default, Debug)]
@@ -173,7 +173,7 @@ fn parse_alt(text: &[u8]) -> CgResult<Alt> {
         let c = text[i];
         match c {
             b'r' | b'l' => alt.codes |= R,
-            b'q' | b'Q' | b'R' | b'a' | b'b' | b'c' | b'd' | b'S' | b'D' | b'A' => {
+            b'q' | b'Q' | b'R' => {
                 alt.codes |= CLASS;
             }
             b'm' | b'o' => alt.codes |= M,
@@ -287,8 +287,10 @@ impl Ops {
 /// (`X86TargetLowering::getSingleConstraintMatchWeight`): `None` is
 /// `CW_Invalid`. The codes x86 does not handle itself take the generic
 /// weight and then, for an integer operand, `CW_SpecificReg` (0), as do
-/// the register classes and names; for another operand those keep the
-/// generic weight, and the classes and names stay invalid.
+/// the register classes `q`, `Q`, `R`; for another operand those keep
+/// the generic weight, and the classes stay invalid. (`a`, `b`, `c`,
+/// `d`, `S`, `D`, `A` are clang's spellings; IR writes `{ax}` and `llc`
+/// does not read them: [`CONSTRAINT`].)
 fn code_weight(cx: &FnCx<'_, X64>, operand: Option<Value>, code: u16) -> Option<i32> {
     // A direct output has no operand: every code is `CW_Default`.
     let Some(value) = operand else { return Some(0) };

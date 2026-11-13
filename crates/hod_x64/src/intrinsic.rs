@@ -1283,7 +1283,11 @@ fn removable(inst: Inst<'_>) -> bool {
 /// stays. A function without those calls costs a look at its call sites.
 /// [`dropped`] answers for each instruction afterwards.
 pub fn begin(cx: &FnCx<'_, X64>) {
-    let body = cx.body;
+    begin_body(cx.body);
+}
+
+/// [`begin`] for `body`.
+pub fn begin_body(body: &Body) {
     let drops = body.calls().any(|site| folds(&site)) && decide(body);
     if !drops {
         BITS.with(|bits| bits.borrow_mut().clear());

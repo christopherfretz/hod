@@ -750,7 +750,10 @@ impl<'a, T: Target> FnCx<'a, T> {
                 // blocks only those whose address is taken need a place.
                 let placed = self.block_addrs
                     && (self.indirect_br
-                        || self.module.consts.is_address_taken(self.body.symbol(), BlockId::new(raw)));
+                        || self
+                            .module
+                            .consts
+                            .is_address_taken(self.body.symbol(), BlockId::new(raw)));
                 if self.s.reachable.get(raw as usize) != Some(&false)
                     || !(placed || self.s.labels.has_pending(label))
                 {

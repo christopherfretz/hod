@@ -66,7 +66,10 @@ fn block_addresses_in_data_without_an_indirectbr_run() {
     let mut objects = Vec::new();
     for (tag, stress) in [("hod", hod_cg::Stress::default()), ("stress", hod_cg::Stress::ALL)] {
         let options = Options { stress, ..Options::default() };
-        objects.push((tag, write_object(&dir, &format!("{tag}.o"), &emit(&module, &bodies, &options))));
+        objects.push((
+            tag,
+            write_object(&dir, &format!("{tag}.o"), &emit(&module, &bodies, &options)),
+        ));
     }
     if let Some(object) = llc(&dir, "llc", &text, &[]) {
         objects.push(("llc", object));

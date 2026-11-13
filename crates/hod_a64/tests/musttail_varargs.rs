@@ -11,11 +11,13 @@
 //! parameter, and some thunks first call a function that sets every
 //! argument register. `c_k` is C: it prints what it receives, named,
 //! extras and then what is left of the forwarded arguments (registers by
-//! the `va_list`'s own counters, then the stack). Its caller `run_k`
+//! the `va_list`'s own counters, then the stack). The forwarded stack
+//! words, right after the named stack area, are canaries checked
+//! exactly: that is the area a thunk must never write, so a tail call
+//! that writes beyond its caller's named area is caught there (and one
+//! that writes further clobbers `run_k`'s frame record). `run_k` also
 //! keeps canaries in its frame and values in callee-saved registers
-//! across the call and checks them after it: a tail call that writes
-//! beyond its caller's stack-argument area, or returns with another
-//! stack pointer, is caught there, not only by a wrong printout.
+//! across the call and checks them after it.
 //!
 //! The named and extra values printed are checked against the
 //! generator's; the whole output (forwarded values included) must equal
@@ -28,7 +30,13 @@
 //! (`musttail:stack-args-grow`). Which one is predicted here by the
 //! AAPCS64 rules of `spec/abi-a64.md` §3 written out in the test.
 
-#![allow(clippy::too_many_lines)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    clippy::many_single_char_names,
+    clippy::similar_names,
+    reason = "generated values of small ranges, named as the C side names them"
+)]
 
 mod common;
 
@@ -106,7 +114,8 @@ struct Case {
     /// first is an `i64`.
     named: Vec<bool>,
     extras: Vec<Extra>,
-    /// Forwarded `i64`s main passes on the stack.
+    /// Forwarded `i64`s main passes on the stack, right after the named
+    /// stack area: canaries in the one place a thunk must not write.
     stack_longs: usize,
     clobber: bool,
 }
@@ -118,6 +127,11 @@ fn named_long(k: usize, i: usize) -> u64 {
 
 fn named_double(k: usize, i: usize) -> f64 {
     (k * 16 + i) as f64 + 0.5
+}
+
+/// Forwarded stack word `j` of case `k`.
+fn stack_canary(k: usize, j: usize) -> u64 {
+    0xE000_0000 + (k as u64) * 256 + j as u64
 }
 
 fn f32_value(rng: &mut Rng) -> f32 {
@@ -178,7 +192,11 @@ fn extra(rng: &mut Rng, pool: &[Kind], case_named: &[bool], k: usize, n: usize) 
         Kind::D2 => {
             let (a, b) = (f64_value(rng), f64_value(rng));
             (
-                format!("[2 x double] [double 0x{:016X}, double 0x{:016X}]", a.to_bits(), b.to_bits()),
+                format!(
+                    "[2 x double] [double 0x{:016X}, double 0x{:016X}]",
+                    a.to_bits(),
+                    b.to_bits()
+                ),
                 format!("{:x}:{:x}", a.to_bits(), b.to_bits()),
             )
         }
@@ -227,7 +245,7 @@ fn random_case(rng: &mut Rng, k: usize) -> Case {
     for n in 0..count {
         extras.push(extra(rng, pool, &named, k, n));
     }
-    Case { k, named, extras, stack_longs: rng.below(4) as usize, clobber: rng.below(3) == 0 }
+    Case { k, named, extras, stack_longs: 1 + rng.below(3) as usize, clobber: rng.below(3) == 0 }
 }
 
 /// AAPCS64 (`spec/abi-a64.md` §3): whether every extra of `case` lands in
@@ -367,8 +385,12 @@ fn driver(cases: &[&Case]) -> String {
             .collect();
         let last = case.named.len() - 1;
         writeln!(out, "long t_{k}({}, ...);", params.join(", ")).unwrap();
-        writeln!(out, "long c_{k}({}, ...) {{\n  va_list ap;\n  va_start(ap, p{last});", params.join(", "))
-            .unwrap();
+        writeln!(
+            out,
+            "long c_{k}({}, ...) {{\n  va_list ap;\n  va_start(ap, p{last});",
+            params.join(", ")
+        )
+        .unwrap();
         writeln!(out, "  printf(\"{k}:\");").unwrap();
         for (i, &int) in case.named.iter().enumerate() {
             if int {
@@ -416,7 +438,7 @@ fn driver(cases: &[&Case]) -> String {
             args.push(format!("{:?}", 1000.25 + (k * 16 + j) as f64));
         }
         for j in 0..case.stack_longs {
-            args.push(format!("{:#x}UL", 0xE000_0000u64 + (k as u64) * 256 + j as u64));
+            args.push(format!("{:#x}UL", stack_canary(k, j)));
         }
         writeln!(
             out,
@@ -522,7 +544,13 @@ fn run_seed(seed: u64, count: usize, kinds: &mut [usize; KINDS.len()]) -> (usize
             }
             compiled.push(case);
         } else {
-            assert_eq!(rules, ["musttail:stack-args-grow"], "case {}:\n{}", case.k, thunks(&[case]));
+            assert_eq!(
+                rules,
+                ["musttail:stack-args-grow"],
+                "case {}:\n{}",
+                case.k,
+                thunks(&[case])
+            );
             grown += 1;
         }
     }
@@ -548,8 +576,13 @@ fn run_seed(seed: u64, count: usize, kinds: &mut [usize; KINDS.len()]) -> (usize
                     let mut lines = output.lines();
                     for case in &compiled {
                         let line = lines.next().unwrap_or_default();
+                        let mut canaries = String::new();
+                        for j in 0..case.stack_longs {
+                            write!(canaries, " s{:x}", stack_canary(case.k, j)).unwrap();
+                        }
                         assert!(
-                            line.starts_with(&expected_prefix(case)) && line.contains(" -> "),
+                            line.starts_with(&expected_prefix(case))
+                                && line.contains(&format!("{canaries} -> ")),
                             "{tag} case {}: {line}\nwant {}\n{}",
                             case.k,
                             expected_prefix(case),

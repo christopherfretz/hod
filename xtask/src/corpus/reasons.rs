@@ -466,7 +466,8 @@ fn behaviour(out: &mut String, options: &Options, majors: &[u32]) {
         "\n## What the built modules do\n\nFrom `cargo xtask corpus verify{}` (hybrid: a module \
          hod declines is built by `llc`): every entry linked by each linker and run{}, its output \
          and exit status compared with the entry's. A test counts as built by hod when hod built \
-         its every module. A FAIL in a test hod built is a wrong result.\n\n\
+         its every module. A FAIL in a test hod built is a wrong result unless the entry's \
+         program is undefined. Tests are named by their path in the corpus.\n\n\
          | LLVM | tests | built by hod | results | PASS | FAIL | ERROR | other | PASS of hod's |\n\
          |---|---:|---:|---:|---:|---:|---:|---:|---:|",
         options.target.map_or(String::new(), |arch| format!(" --target {}", arch.name())),
@@ -502,7 +503,9 @@ fn behaviour(out: &mut String, options: &Options, majors: &[u32]) {
                 (
                     major,
                     r.outcome.clone(),
-                    r.test.clone(),
+                    Path::new(&r.test)
+                        .strip_prefix(&options.dir)
+                        .map_or_else(|_| r.test.clone(), |p| p.display().to_string()),
                     r.linker.clone(),
                     r.built_by.clone(),
                     r.detail.clone(),

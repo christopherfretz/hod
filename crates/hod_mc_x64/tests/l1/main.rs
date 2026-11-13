@@ -25,11 +25,16 @@ mod fixups;
 mod link;
 mod mem;
 mod mov;
+mod packed;
 mod selftest;
 mod shift;
 mod sse;
 mod system;
 mod tls;
+
+// x87 (WP-119).
+mod byte_regs;
+mod x87;
 
 use harness::Batch;
 
@@ -52,6 +57,15 @@ pub const GROUPS: &[Group] = &[
     ("scalar-floating-point", sse::build),
     ("xmm-memory-operands", sse::memory),
     ("thread-local-storage", tls::build),
+    ("locked-memory-destinations", atomic::locked_memory),
+    ("relocatable-immediates", mov::relocatable),
+    ("packed-integer", packed::integer),
+    ("packed-floating-point", packed::floating_point),
+    ("packed-memory-operands", packed::memory),
+    // x87 (WP-119).
+    ("x87", x87::build),
+    ("x87-memory-operands", x87::memory),
+    ("x87-llc-text", x87::llc_text),
 ];
 
 fn check(group: &str) {
@@ -85,4 +99,13 @@ differential! {
     scalar_floating_point_matches_llvm => "scalar-floating-point";
     xmm_memory_operands_match_llvm => "xmm-memory-operands";
     thread_local_storage_matches_llvm => "thread-local-storage";
+    locked_memory_destinations_match_llvm => "locked-memory-destinations";
+    relocatable_immediates_match_llvm => "relocatable-immediates";
+    packed_integer_matches_llvm => "packed-integer";
+    packed_floating_point_matches_llvm => "packed-floating-point";
+    packed_memory_operands_match_llvm => "packed-memory-operands";
+    // x87 (WP-119).
+    x87_matches_llvm => "x87";
+    x87_memory_operands_match_llvm => "x87-memory-operands";
+    x87_llc_text_matches_llvm => "x87-llc-text";
 }

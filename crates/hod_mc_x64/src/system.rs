@@ -1,6 +1,9 @@
-//! Traps, CET markers and padding (`spec/mc-x64.md` "System and padding").
+//! Traps, CET markers and padding (`spec/mc-x64.md` "System and padding"),
+//! the counters and `cpuid`, and the repeated string moves and stores
+//! ("String instructions").
 
 use crate::inst::{Inst, Op, plain};
+use crate::reg::Size;
 
 /// `UD2` (`0F 0B`): raises an invalid-opcode exception.
 #[inline]
@@ -74,4 +77,65 @@ checked! {
         }
         inst
     }
+}
+
+/// `RDTSC` (`0F 31`): the time-stamp counter into `edx:eax`.
+#[inline]
+pub const fn rdtsc() -> Inst {
+    plain(Op::two(0x31))
+}
+
+/// `RDTSCP` (`0F 01 F9`): the time-stamp counter into `edx:eax` and
+/// `IA32_TSC_AUX` into `ecx`, after the earlier instructions have
+/// executed. Needs the RDTSCP CPUID feature.
+#[inline]
+pub const fn rdtscp() -> Inst {
+    let mut inst = plain(Op::two(0x01));
+    inst.push(0xf9);
+    inst
+}
+
+/// `CPUID` (`0F A2`): leaf `eax`, subleaf `ecx`, into `eax`, `ebx`,
+/// `ecx`, `edx`.
+#[inline]
+pub const fn cpuid() -> Inst {
+    plain(Op::two(0xa2))
+}
+
+/// `CLD` (`FC`): clears the direction flag, so the string instructions
+/// count upward.
+#[inline]
+pub const fn cld() -> Inst {
+    plain(Op::one(0xfc))
+}
+
+/// `F3` in front of `inst`: LLVM emits `REP` as an instruction of its
+/// own, so it precedes even the `66` of a 16-bit operation.
+#[inline]
+const fn rep(inst: Inst) -> Inst {
+    let mut out = Inst::EMPTY;
+    out.push(0xf3);
+    let bytes = inst.bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        out.push(bytes[i]);
+        i += 1;
+    }
+    out
+}
+
+/// `REP MOVSB`/`MOVSW`/`MOVSD`/`MOVSQ` (`F3 [66] [REX.W] A4`/`A5`):
+/// copies `rcx` elements of `size` from `[rsi]` to `[rdi]`, advancing
+/// both (downward if the direction flag is set); `rcx` ends at 0.
+#[inline]
+pub const fn rep_movs(size: Size) -> Inst {
+    rep(plain(Op::one(0xa4).sized(size, 1)))
+}
+
+/// `REP STOSB`/`STOSW`/`STOSD`/`STOSQ` (`F3 [66] [REX.W] AA`/`AB`):
+/// stores `al`/`ax`/`eax`/`rax` to `rcx` elements of `size` at `[rdi]`,
+/// advancing it; `rcx` ends at 0.
+#[inline]
+pub const fn rep_stos(size: Size) -> Inst {
+    rep(plain(Op::one(0xaa).sized(size, 1)))
 }

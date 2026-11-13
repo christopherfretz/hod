@@ -329,8 +329,41 @@ W=$PWD/hod   # or a worktree
    --results $PWD/../.build/libcxx-x64/baseline/baseline.tsv)
 ```
 
-hod in place of `llc` (WP-135): `HOD_X64_KILN` names the shim's
-`kiln++-hod`.
+### hod in place of `llc`
+
+`scripts/libcxx-hod-x64.sh` runs the same suite with hod as kiln's back
+end (WP-135; results: `docs/status/libcxx-hod-x64.md`). It chains the
+wrappers that exist: `HOD_X64_KILN` is `scripts/libcxx-hod-kiln.sh`
+(the per-test coverage log of `docs/status/libcxx-hod.md`), whose
+`HOD_LIBCXX_KILN` is the shim's `kiln++-hod` (default
+`<workspace>/.build/target-<checkout>/llvm-22-shim`, or `$HOD_SHIM`).
+
+```
+scripts/libcxx-hod-x64.sh <hybrid|strict> <run dir> [cargo xtask libcxx arguments...]
+scripts/libcxx-hod-x64.sh merge <run dir> <hybrid|strict>
+```
+
+- `hybrid` sets `HOD_CENSUS=1` and unsets `HOD_STRICT`; `strict` sets
+  `HOD_STRICT=1` and unsets `HOD_CENSUS`. Anything else is a usage error
+  (exit 2), as is a missing shim.
+- The fixed arguments are the baseline's: `--tag llvmorg-22.1.8`,
+  `--timeout 160 --run-timeout-long 1920 -j $HOD_JOBS` (default 3)
+  `--mem-limit 3072 --no-fail`. The selection is `std libcxx` unless a
+  path is among the extra arguments. When `/run/hod/jobserver.fifo` (or
+  `$HOD_JOBSERVER_FIFO`) is a FIFO, the runner gets it in `MAKEFLAGS`, as
+  the baseline did (kiln's `env.sh` names kiln's own pool).
+- A run writes `<run dir>/<name>/` (the log directory: `args.tsv`,
+  `cov/`, `phases/`), `<name>.tsv` (kiln's `--results`) and `<name>.log`
+  (the runner's output between `oom_kill` and the date before and after,
+  and `exit <status>`). `<name>` is the mode, or `<mode>-K-of-N` with
+  `--shard K/N`. The exit status is the runner's.
+- Resuming: kiln's runner cannot resume inside a run, so a whole run is
+  made of shards run one after another; one that died is rerun whole
+  after its three entries are deleted, and finished shards are kept.
+- `merge` joins `<mode>-*-of-*` into `<mode>.tsv` (one header) and
+  `<mode>/` (`args.tsv` concatenated, `cov/` and `phases/` copied; the
+  keys are the runner's scratch directories, unique per run), the input of
+  `scripts/libcxx-hod-report.py`.
 
 ## irdiff
 
@@ -2459,7 +2492,9 @@ One action at most; value options are `--name <value>` or
 | `--hod <binary>` | the hod to measure | build the workspace's with the release profile (`cargo build --release --package hod_cli --bin hod`, into the build directory) |
 | `--kiln <kiln++>` | produce the inputs with kiln instead of clang ("Inputs") | clang |
 | `--judge <tool>` | the configuration `--check` judges: `hod` or `hod+fallback` | `hod` |
-| `--baseline <file>` | the baseline to check against or to write | `bench/baselines/<machine id>.tsv` |
+| `--target <arch>` | the objects' architecture, `aarch64` or `x86_64`; one that is not this machine's makes a cross run ("Cross runs") | this machine's |
+| `--instructions` | also count the instructions of one run of `llc` and of strict hod per input under callgrind ("Instructions") | |
+| `--baseline <file>` | the baseline to check against or to write | `bench/baselines/<machine id>.tsv`, `<machine id>-<arch>.tsv` for a cross run |
 | `--results <file>` | the results file to write; for `--report`, to read | under the build directory ("Results file") |
 | `--out <file>` | what `--report` writes | `docs/status/perf.md` |
 | `-v`, `--verbose` | also print hod's phase times | |
@@ -2576,13 +2611,58 @@ An input that cannot be produced (the compiler fails, times out, writes
 nothing, or there is no compiler for its language) is one `error` record
 with the tool `generate` and is not measured.
 
+### Cross runs
+
+`--target <arch>` names the architecture of the objects. When it is this
+machine's (or not given) nothing changes. Another architecture is a
+**cross run**: the same inputs, compiled for that target and built into
+its objects on this machine.
+
+- Every compile gets `--target=<triple>` first (part of the stamp's key),
+  and the inputs are `<build directory>/bench/inputs/<producer>-<arch>/`.
+- `llc` and hod get `-mtriple=<triple>` after the codegen arguments.
+- The results file is `results-<arch>-llvm<major>.tsv`
+  (`results-kiln-<arch>-llvm<major>.tsv`), the baseline
+  `bench/baselines/<machine id>-<arch>.tsv`, and the header has `target`.
+
+Whenever the objects are x86-64's, `llc` also gets `-fast-isel=0`: at
+`-O0` `llc` selects x86-64 code with `FastISel`, which only `-O0` builds
+use; the reference is the selector of every optimised build, as for
+irdiff ("The oracle"). AArch64 is measured with `llc`'s default, as its
+baseline was.
+What `llc` gets besides the codegen arguments is the header's
+`llc_options`.
+
+The triples are those of irdiff (`aarch64-unknown-linux-gnu`,
+`x86_64-unknown-linux-gnu`).
+
+### Instructions
+
+`--instructions` adds, after an input's rounds, one run each of `llc` and
+of strict hod under valgrind's callgrind (`valgrind --tool=callgrind
+--callgrind-out-file=<file> <tool> <arguments>`, `valgrind` found on
+`PATH`), with the arguments of the measured runs and with
+`HOD_THREADS=1` for hod, so that the count is that of one thread's work
+and repeats from run to run. The count is the first number of the output
+file's `summary:` line (`totals:` in older versions): the instructions the
+program executed, a figure that does not depend on the machine's load and
+is the one to compare two versions of hod with on a shared machine.
+
+A tool that failed is not counted; nor is `hod+fallback`. A decline is
+counted (what declining cost). A counted run that does not end as the
+measured ones did (status 0, or 2 for a decline), or whose output has no
+summary, leaves the record without a count and is a note in the summary.
+The counted run's time limit is 30 times the measured child's. Without
+`valgrind` there are no counts, and the summary says so, as for any
+missing tool. The gate does not judge counts.
+
 ### Measurement
 
 Each input is measured with three tool configurations:
 
 | tool | command | what it is |
 |---|---|---|
-| `llc` | `<llc> -O0 -filetype=obj -relocation-model=pic -o <object> <input>.ll` | the reference |
+| `llc` | `<llc> -O0 -filetype=obj -relocation-model=pic [<llc_options>] -o <object> <input>.ll` | the reference |
 | `hod` | `<hod> --strict --coverage-log=<file>` and the same arguments | what hod does by itself |
 | `hod+fallback` | `<hod> --fallback=<llc> --coverage-log=<file>` and the same arguments | what a hybrid build runs: hod, and `llc` for what hod declines |
 
@@ -2713,14 +2793,15 @@ code generator's own phases are `ingest`, `analysis`, `emission`,
 ### Results file
 
 `<build directory>/bench/results-llvm<major>.tsv`
-(`results-kiln-llvm<major>.tsv` with `--kiln`), or the `--results` file.
+(`results-kiln-llvm<major>.tsv` with `--kiln`; with `-<arch>` before
+`-llvm` for a cross run), or the `--results` file.
 Each run replaces it (written to a temporary name beside it and renamed).
 A baseline is the same format. The file is text:
 
 ```
 # hod-bench 1
 # <key>⇥<value>            (the header, one line per key)
-# fields⇥status⇥input⇥...  (the names of the 25 fields)
+# fields⇥status⇥input⇥...  (the names of the 26 fields)
 <record>                   (one line per input and tool)
 ```
 
@@ -2731,7 +2812,9 @@ The header keys, in order; a key whose value is not known is left out:
 | `date` | when the measurement started, UTC, `YYYY-MM-DDThh:mm:ssZ` |
 | `machine` | the machine id ("Machine") |
 | `cpu`, `cores`, `arch` | what the id is made of |
+| `target` | a cross run's triple ("Cross runs") |
 | `llc_version` | `LLVM version <x.y.z>`, from `llc --version` |
+| `llc_options` | what `llc` got besides the codegen arguments, if anything |
 | `hod_version` | the first line of `hod --version` |
 | `hod_build` | `workspace, release profile` or `given with --hod` |
 | `producer` | the producer's version |
@@ -2763,6 +2846,7 @@ tabs; a figure that does not exist is `-`:
 | 22–23 | `ir_bytes_per_s`, `functions_per_s` | |
 | 24 | `phases` | `<phase>=<microseconds>` joined by `,` |
 | 25 | `detail` | the reason of a decline or a fallback; what failed |
+| 26 | `instructions` | what one run under callgrind executed ("Instructions") |
 
 Every number is a decimal integer except the ratios. Header values and
 fields 2, 8, 24 and 25 are free text, escaped as in hod's coverage log
@@ -2771,8 +2855,10 @@ exactly `-` is written `\-`). Fields 22 and 23 are derived from 6, 7 and
 10 and are ignored when a file is read. A file read and written again is
 the same bytes. A reader refuses a first line that is not `# hod-bench
 1`, a `fields` line that differs from its own, a header key that appears
-twice or after a record, and a record that is not 25 well-formed fields,
-with the line number.
+twice or after a record, and a record that is not 26 well-formed fields,
+with the line number. A file whose `fields` line is the 25 fields before
+`instructions` is read too, its records with 25 fields and no counts; it
+is written with 26.
 
 ### Machine
 
@@ -2806,7 +2892,8 @@ are. Times are in milliseconds, memory in MiB, sizes in KiB.
 ### Baselines
 
 A baseline is the results file of a run on one machine, committed as
-`bench/baselines/<machine id>.tsv`, with every tool's records: hod's are
+`bench/baselines/<machine id>.tsv` (`<machine id>-<arch>.tsv` for a cross
+run's target), with every tool's records: hod's are
 what the gate compares, `llc`'s are its control.
 
 `--update-baseline --reason "<text>"` measures every input and then
@@ -2834,12 +2921,14 @@ reason, or with another LLVM is a usage error.
 
 `--check` measures, then judges every record of the judged configuration
 (`hod`; `hod+fallback` with `--judge`) against the baseline: the one
-named with `--baseline`, else this machine's, else the first by name of
-the baselines recorded for other machines; with none at all there is
-nothing to judge, the summary says so, and the exit status is 0.
+named with `--baseline`, else this machine's for the run's target, else
+the first by name of the baselines recorded for other machines with the
+run's `target` (both without one, for a run that is not a cross run);
+with none at all there is nothing to judge, the summary says so, and the
+exit status is 0.
 
-The baseline **binds** the run when its `machine` and its `llc_version`
-are the run's. Per input, with `base` the baseline's record and `now` the
+The baseline **binds** the run when its `machine`, its `target` and its
+`llc_version` are the run's. Per input, with `base` the baseline's record and `now` the
 run's, the verdict is the first of these that applies:
 
 | verdict | when | effect |
@@ -2848,7 +2937,7 @@ run's, the verdict is the first of these that applies:
 | new: the baseline does not have this input | no `base`, or `base` is an `error` | |
 | advisory: the input changed since the baseline | the `ir_hash` differs | |
 | not judged: declined, as in the baseline | both are `declined` | |
-| advisory: another machine (`<id>`), another llc (`<version>`) | the baseline does not bind | |
+| advisory: another machine (`<id>`), another target (`<triple>`), another llc (`<version>`) | the baseline does not bind | |
 | LOST | `base` is `ok` and `now` is not: hod no longer builds what it built | fails |
 | new: hod builds this input now | `now` is `ok` and `base` is not | |
 | REGRESSED (time), (memory), (time, memory) | below | fails |
@@ -2942,10 +3031,14 @@ the rest.
 the preferred LLVM, or of `--llvm <major>`) and writes
 `docs/status/perf.md` (`--out`): where and how the numbers were measured
 (date, machine, reference, hod, producer, method, spread), a table of
-`llc`'s figures per input, a table of hod's with what it declined, hod's
-phases, and the errors. The report is a function of the results file; it
-says that it is generated and that its numbers are those of one machine.
-It is regenerated when the baseline is.
+`llc`'s figures per input, a table of hod's with what it declined, the
+instruction counts if there are any, hod's phases, and the errors.
+Without `--results` and `--target`, each cross run's default results file
+of the same LLVM that exists follows in a section of its own, `## <arch>
+objects`, with the same parts one heading level down. The report is a
+function of its results files; it says that it is generated and that its
+numbers are those of one machine. It is regenerated when the baseline
+is.
 
 ### Work directory
 
@@ -2998,7 +3091,8 @@ of a 64 MiB allocation; skipped without it, required under
 `xtask/src/bench/record.rs` ("Ratios and throughput", "Results file",
 "Machine"): `ratio_computation`, `throughput`, `record_lines_round_trip`,
 `malformed_lines`, `results_file_round_trip`,
-`results_are_written_and_read`, `input_hash`, `machine_id`.
+`results_are_written_and_read`, `files_without_instructions_are_read`,
+`input_hash`, `machine_id`.
 
 `xtask/src/bench/check.rs` ("The gate", "Baselines"):
 `check_pass_and_fail`, `small_differences_are_not_judged`,
@@ -3009,7 +3103,7 @@ of a 64 MiB allocation; skipped without it, required under
 `number_formats`, `baseline_update_with_reason`.
 
 `xtask/src/bench/report.rs` ("Summary", "The report"): `summary_text`,
-`perf_report`, `units`. `xtask/src/bench.rs` ("Options", "Phases"):
+`perf_report`, `cross_sections_and_instructions`, `units`. `xtask/src/bench.rs` ("Options", "Phases"):
 `options`, `utc_dates`, `phase_reports`.
 
 `xtask/tests/bench_fakes.rs` runs the whole command against fake tools
@@ -3022,7 +3116,10 @@ round trip), `failures_are_error_lines_not_zeros`,
 `a_tool_that_hangs_is_an_error`, `check_pass_and_fail` (pass; a decline
 is not judged; slower; larger; LOST; `--judge`), `the_remeasure_rule`,
 `advisory_on_another_machine`, `a_busy_machine_is_not_judged`,
-`baseline_update_with_reason`, `missing_tools`, `generate_and_report`.
+`baseline_update_with_reason`, `missing_tools`, `generate_and_report`,
+`a_cross_run_with_instructions` (a fake `valgrind`: the cross run's
+inputs, arguments, results file and baseline; the counts of `llc` and
+strict hod, a decline's too, and none without `valgrind`).
 Their gate thresholds are the contract's except the absolute time margin
 (100 ms) and the drift and spread limits (off, but for the test of a
 busy machine): the fakes run for milliseconds, and the tests that judge

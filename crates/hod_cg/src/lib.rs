@@ -53,6 +53,7 @@ pub mod emit;
 pub mod error;
 pub mod features;
 mod frame;
+mod key_rows;
 mod label;
 pub mod lanes;
 mod line_rows;
@@ -80,13 +81,14 @@ pub use driver::{MAX_FUNCTION_SIZE, compile_function};
 pub use emit::{COPY_SUFFIX, Emitted, ModuleEmitter, PlacedFunc, emit_module};
 pub use error::{CgError, CgResult, LIMIT_FRAME_SIZE, LIMIT_FUNCTION_SIZE};
 pub use frame::{Frame, FrameRef, MAX_FRAME, SlotPlace};
+pub use key_rows::{DEBUG_KEY_INSTRUCTIONS_COROUTINE, DEBUG_KEY_INSTRUCTIONS_MIXED};
 pub use label::{FixupKind, Label, Labels, OutOfRange};
 pub use loc::{Class, Loc};
 pub use options::{LIMIT_COMPRESSED_SECTION, Options, RelocModel, Stress};
 pub use policy::MAX_DEFERRED_RUN;
 pub use record::{
     BlockOffset, CallSiteRow, CfiOp, CfiRow, Chunk, ClauseRow, FrameDesc, FuncRecord, IslandRow,
-    LineRow, NO_PAD, PadRow, Reloc, VarPlace, VarRow,
+    LineRow, NO_PAD, PadRow, Reloc, Stmt, VarPlace, VarRow,
 };
 pub use reg::{MIN_POOL_FPR, MIN_POOL_GPR, PReg, RegInfo, RegSet};
 pub use sym::{RuntimeFn, SymRef};

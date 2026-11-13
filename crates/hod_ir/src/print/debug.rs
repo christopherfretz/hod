@@ -323,6 +323,14 @@ impl<W: Write + ?Sized> Writer<'_, W> {
                 let number = self.loc_number(loc.inlined_at)?;
                 write!(self.out, ", inlinedAt: !{number}")?;
             }
+            // WP-149: LLVM writes each only when it is not 0.
+            let atom = m.debug.atom(id);
+            if atom.group != 0 {
+                write!(self.out, ", atomGroup: {}", atom.group)?;
+            }
+            if atom.rank != 0 {
+                write!(self.out, ", atomRank: {}", atom.rank)?;
+            }
             self.s(")\n")?;
         }
         Ok(())

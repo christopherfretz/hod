@@ -21,10 +21,11 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use hod_ir::{
-    ChecksumKind, ConstId, DiConstant, DiFieldValue, DiFlags, DiId, DiKind, DiLocation, DiMapping,
-    DiNode, DiOther, DiString, DiTuple, EmissionKind, ExprId, FunctionBuilder, FunctionDesc,
-    IrResult, LocId, Module, NameTableKind, Opcode, SpFlags, TargetSpec, TypeId, Value,
-    VariableDesc, di_field, di_kind, di_op_named, di_record, dw_ate, dw_cc, dw_lang, dw_op, dw_tag,
+    ChecksumKind, ConstId, DiAtom, DiConstant, DiFieldValue, DiFlags, DiId, DiKind, DiLocation,
+    DiMapping, DiNode, DiOther, DiString, DiTuple, EmissionKind, ExprId, FunctionBuilder,
+    FunctionDesc, IrResult, LocId, Module, NameTableKind, Opcode, SpFlags, TargetSpec, TypeId,
+    Value, VariableDesc, di_field, di_kind, di_op_named, di_record, dw_ate, dw_cc, dw_lang, dw_op,
+    dw_tag,
 };
 use hod_testutil::{Scratch, tools_required};
 use modlevel::{MAJORS, llvm_tool};
@@ -475,6 +476,7 @@ impl<'a> Loader<'a> {
 
     fn define_location(&mut self, id: LocId, body: &str) -> Res<()> {
         let mut loc = DiLocation { line: 0, column: 0, scope: DiId::NONE, inlined_at: LocId::NONE };
+        let mut atom = DiAtom::NONE;
         for (name, text) in fields(body) {
             let bad = |_| format!("DILocation.{name}: {text}");
             match name {
@@ -482,6 +484,9 @@ impl<'a> Loader<'a> {
                 "column" => loc.column = text.parse().map_err(bad)?,
                 "scope" => loc.scope = self.node(text)?,
                 "inlinedAt" => loc.inlined_at = self.loc(text)?,
+                // WP-149: key instructions.
+                "atomGroup" => atom.group = text.parse().map_err(bad)?,
+                "atomRank" => atom.rank = text.parse().map_err(bad)?,
                 _ => match di_field(b"DILocation", name.as_bytes()) {
                     Some(DiMapping::Dropped(_)) => {}
                     Some(DiMapping::Unsupported(construct)) => self.unsupported(construct),
@@ -489,7 +494,7 @@ impl<'a> Loader<'a> {
                 },
             }
         }
-        s(self.m.debug.define_loc(id, loc))
+        s(self.m.debug.define_loc_in_atom(id, loc, atom, false))
     }
 
     fn define_node(&mut self, id: DiId, distinct: bool, kind_name: &str, body: &str) -> Res<()> {

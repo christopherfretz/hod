@@ -424,8 +424,15 @@ pub fn loc_text(module: &Module, loc: hod_ir::LocId) -> String {
     }
     let Some(at) = module.debug.location(loc) else { return "undefined".into() };
     let distinct = if module.debug.is_distinct_loc(loc) { " distinct" } else { "" };
+    // WP-149: the key-instruction atom, when there is one.
+    let atom = module.debug.atom(loc);
+    let atom = if atom == hod_ir::DiAtom::NONE {
+        String::new()
+    } else {
+        format!(" atom {}/{}", atom.group, atom.rank)
+    };
     format!(
-        "({}:{} di{} at {}{distinct})",
+        "({}:{} di{} at {}{distinct}{atom})",
         at.line,
         at.column,
         at.scope.raw(),

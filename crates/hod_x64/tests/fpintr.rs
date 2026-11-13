@@ -92,10 +92,6 @@ fn binary(suite: &mut Suite, rng: &mut Rng, name: &str, t: T, check: Check) -> u
 /// `fabs`, `copysign`, `fma`, `fmuladd`, `minnum`/`maxnum`/`minimum`/
 /// `maximum`.
 #[test]
-#[cfg_attr(
-    target_arch = "x86_64",
-    ignore = "x86-64 runner: natively, 66 results differ from llc 22 (the first a NaN of fma_h: hod 0xfe00, llc 0x7e01); they agree under qemu-x86_64; WP-145 finding"
-)]
 fn the_inline_and_rounding_intrinsics_agree() {
     let mut rng = Rng(1270);
     let mut suite = Suite::default();
@@ -141,6 +137,17 @@ fn the_inline_and_rounding_intrinsics_agree() {
         let (ty, s) = (t.ll(), sfx(t));
         for (name, exact) in [("fma", true), ("fmuladd", false)] {
             suite.declare(&format!("declare {ty} @llvm.{name}.{s}({ty}, {ty}, {ty})"));
+            // `fma` of `half`: hod computes `a * b + c` in `double`
+            // (`mulsd`, `addsd`: exact, then rounded once, as `fma` of
+            // the widened values is), `llc` calls the C library's `fma`,
+            // which uses `vfmadd` on a CPU with FMA. When several operands
+            // are NaNs the two return different ones on such hardware
+            // (`fma_h(0xfe00, 0x7e01, 0x3c00)`: hod 0xfe00, the first
+            // operand, as `mulsd` does; `llc` 0x7e01); either is a
+            // quieted operand NaN, which the IR permits. qemu-x86_64
+            // hides it: its SSE returns the NaN with the larger
+            // significand, not the first operand.
+            let open = name == "fma" && t == T::H;
             let f = suite.add(
                 &format!("{name}_{}", tag(t)),
                 &[t, t, t],
@@ -148,6 +155,7 @@ fn the_inline_and_rounding_intrinsics_agree() {
                 &format!("  %r = call {ty} @llvm.{name}.{s}({ty} %a0, {ty} %a1, {ty} %a2)\n"),
                 who(t, exact),
             );
+            suite.funcs[f].nan_open = open;
             cases(&mut suite, &mut rng, f, &[t, t, t], 900, 200);
             let g = suite.add(
                 &format!("{name}_aab_{}", tag(t)),
@@ -156,6 +164,7 @@ fn the_inline_and_rounding_intrinsics_agree() {
                 &format!("  %r = call {ty} @llvm.{name}.{s}({ty} %a0, {ty} %a1, {ty} %a0)\n"),
                 who(t, exact),
             );
+            suite.funcs[g].nan_open = open;
             cases(&mut suite, &mut rng, g, &[t, t], 300, 50);
         }
     }

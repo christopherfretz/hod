@@ -8,7 +8,7 @@
 //! operands, the records, and the retry in far mode.
 
 use hod_ir::{
-    Block, BlockId, Body, DbgRecordKind, FnAttrs, Inst, InstKind, LocId, Module, Opcode,
+    Block, BlockId, Body, Const, DbgRecordKind, FnAttrs, Inst, InstKind, LocId, Module, Opcode,
     ParamAttrs, SymbolKind, TypeId, TypeKind, UwTable, Value,
 };
 
@@ -22,7 +22,7 @@ use crate::frame::{FrameRef, SlotPlace};
 use crate::label::Label;
 use crate::loc::{Class, Key, Kind, Loc, ValState};
 use crate::options::Options;
-use crate::record::{BlockOffset, CfiOp, Chunk, FrameDesc, LineRow, VarPlace, VarRow};
+use crate::record::{BlockOffset, CfiOp, Chunk, FrameDesc, LineRow, ROW_CONT, VarPlace, VarRow};
 use crate::reg::{MIN_POOL_FPR, MIN_POOL_GPR, RegSet};
 use crate::target::Target;
 
@@ -35,6 +35,20 @@ use crate::target::Target;
 /// the frame's variables right after the frame pointer's `phi`).
 fn declares_a_phi(body: &Body, address: Value) -> bool {
     address.as_inst().is_some_and(|id| body.inst(id).opcode() == Opcode::Phi)
+}
+
+/// Whether a `#dbg_declare` names `undef` or `poison` as the address
+/// (§6.22, WP-156). `llc -O0` drops such a declaration
+/// (`SelectionDAGBuilder::visitDbgDeclare` returns on an `UndefValue`
+/// address) and writes no DIE for the variable. Clang writes one on
+/// x86-64 for an empty-class parameter of an `always_inline` callee:
+/// the SysV ABI passes no argument for an empty record, so the inlined
+/// copy of the parameter has no storage (AArch64 passes it as an `i8`,
+/// and the declaration names a slot there).
+fn declares_undef(module: &Module, address: Value) -> bool {
+    address
+        .as_const()
+        .is_some_and(|id| matches!(module.consts.get(id), Const::Undef(_) | Const::Poison(_)))
 }
 
 /// The most code one function may have, in bytes. No target's far
@@ -200,7 +214,10 @@ impl<'a, T: Target> FnCx<'a, T> {
             last_loc: None,
             line_seg: (0, LocId::NONE),
             line_block_start: false,
+            key_lines: false,
+            line_call: false,
             rets: 0,
+            ret_last: false,
             ret_loc: LocId::NONE,
             coro: None,
         }
@@ -216,6 +233,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         if body.block_count() == 0 || body.block_count() >= 1 << 30 {
             return internal("a body without a block, or with more blocks than labels");
         }
+        self.key_lines = self.key_function();
         self.mark_reachable()?;
         self.assign_own()?;
         self.coro_plan()?;
@@ -246,10 +264,16 @@ impl<'a, T: Target> FnCx<'a, T> {
             // whichever block was emitted last.
             let loc = if self.rets == 1 { self.ret_loc } else { LocId::NONE };
             let offset = self.offset();
-            self.out.lines.push(LineRow { offset, loc, block_start: false });
+            let mut row = LineRow { stmt: self.row_stmt(), ..LineRow::new(offset, loc, false) };
+            if !self.ret_last {
+                // §5.9 K6: reached by a branch from the `ret`'s block.
+                row.marks = ROW_CONT;
+            }
+            self.out.lines.push(row);
         }
         t.end_function(self)?;
         self.coro_finish()?;
+        self.key_rows()?;
         self.finish_function()
     }
 
@@ -597,6 +621,7 @@ impl<'a, T: Target> FnCx<'a, T> {
                 if inst.opcode() == Opcode::Ret {
                     self.rets += 1;
                     self.ret_loc = inst.loc();
+                    self.ret_last = self.next_block.is_none();
                 }
             }
             // §4.2: the operands are released here, not by lowerings;
@@ -705,9 +730,13 @@ impl<'a, T: Target> FnCx<'a, T> {
     fn finish_vars(&mut self) {
         let body = self.body;
         for declare in body.declares() {
-            if declare.address == Value::NONE || declares_a_phi(body, declare.address) {
-                // The address was dropped, or is a `phi`: no row, as `llc`
-                // writes none (§9.5, WP-111).
+            if declare.address == Value::NONE
+                || declares_a_phi(body, declare.address)
+                || declares_undef(self.module, declare.address)
+            {
+                // The address was dropped, is a `phi`, or is `undef` or
+                // `poison`: no row, as `llc` writes none (§9.5, WP-111,
+                // WP-156).
                 continue;
             }
             // §4.1: a declared value has a home for the whole function.

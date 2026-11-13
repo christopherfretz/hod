@@ -39,6 +39,11 @@ pub enum Class {
     /// §5.7 `is-constant`: hod's pair in a function that calls
     /// `llvm.is.constant`, whose guarded blocks `llc` deletes.
     IsConstant,
+    /// §5.9 `prologue-end` (WP-149): hod's pair whose only `is_stmt` row
+    /// is its prologue end, in a function with key instructions: the
+    /// prologue end is a statement on both sides, and hod's is at another
+    /// line where the two programs' first code differs.
+    PrologueEnd,
     /// Not a permitted difference: a finding.
     Unclassified,
 }
@@ -51,17 +56,19 @@ impl Class {
             Self::LoadPlacement => "load-placement",
             Self::PostIndexedLoad => "post-indexed-load",
             Self::IsConstant => "is-constant",
+            Self::PrologueEnd => "prologue-end",
             Self::Unclassified => "unclassified",
         }
     }
 
     /// The classes, in the summary's order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::P1,
         Self::P3,
         Self::LoadPlacement,
         Self::PostIndexedLoad,
         Self::IsConstant,
+        Self::PrologueEnd,
         Self::Unclassified,
     ];
 }
@@ -98,7 +105,8 @@ impl LinesReport {
     }
 
     /// One line: `same N, hod only N (P1 N, P3 N, load-placement N,
-    /// post-indexed-load N, is-constant N, unclassified N), llc only ...`.
+    /// post-indexed-load N, is-constant N, prologue-end N, unclassified N),
+    /// llc only ...`.
     pub fn summary(&self) -> String {
         let side = |list: &[(Pair, Class)]| {
             let count = |c| list.iter().filter(|(_, k)| *k == c).count();
@@ -150,6 +158,7 @@ pub struct Row {
     pub line: u32,
     pub column: u32,
     pub is_stmt: bool,
+    pub prologue_end: bool,
     pub end_sequence: bool,
 }
 
@@ -201,6 +210,7 @@ pub fn parse_line_tables(text: &str) -> Vec<Row> {
                 line: line as u32,
                 column: column as u32,
                 is_stmt: words.contains(&"is_stmt"),
+                prologue_end: words.contains(&"prologue_end"),
                 end_sequence: words.contains(&"end_sequence"),
             });
         }
@@ -252,6 +262,8 @@ pub fn parse_instructions(text: &str) -> BTreeMap<u64, String> {
 #[derive(Debug, Default)]
 struct Pairs {
     ranges: BTreeMap<Pair, Vec<(u64, u64)>>,
+    /// The pairs with an `is_stmt` row that is not the prologue end.
+    not_prologue: BTreeSet<Pair>,
     first_line: BTreeMap<String, (String, u32)>,
 }
 
@@ -276,6 +288,9 @@ fn pairs_of(rows: &[Row], symbols: &[(u64, u64, String)]) -> Pairs {
         }
         if row.is_stmt && row.line != 0 {
             let key = (function.to_owned(), row.file.clone(), row.line);
+            if !row.prologue_end {
+                pairs.not_prologue.insert(key.clone());
+            }
             pairs.ranges.entry(key).or_default().push((row.address, next.address));
         }
     }
@@ -312,9 +327,23 @@ pub fn compare(
         let (rows, symbols) = (parse_line_tables(&lines), parse_symbols(&symbols));
         Ok((pairs_of(&rows, &symbols), function_rows(&rows, &symbols)))
     };
-    let ((ours, our_rows), (theirs, their_rows)) = (read(hod)?, read(llc)?);
-    let code =
-        parse_instructions(&tool_output(&tools.objdump, &["-d", "--no-show-raw-insn"], llc)?);
+    let ((ours, mut our_rows), (theirs, mut their_rows)) = (read(hod)?, read(llc)?);
+    let disassemble = |program: &Path| -> Result<BTreeMap<u64, String>, String> {
+        Ok(parse_instructions(&tool_output(
+            &tools.objdump,
+            &["-d", "--no-show-raw-insn"],
+            program,
+        )?))
+    };
+    let code = disassemble(llc)?;
+    // §5.7 P1 in the `is_stmt` sequences: a row of unconditional branches
+    // only is no step on either side (hod falls through where `llc`
+    // branches to the next block).
+    for (rows, code) in [(&mut our_rows, &disassemble(hod)?), (&mut their_rows, &code)] {
+        for f in rows.values_mut() {
+            f.stmts.retain(|(_, _, start, end)| !only_branches(code, *start, *end));
+        }
+    }
     let mut report = LinesReport::default();
     let keys: BTreeSet<&Pair> = ours.ranges.keys().chain(theirs.ranges.keys()).collect();
     for key in keys {
@@ -323,7 +352,15 @@ pub fn compare(
             (Some(_), None) => {
                 let first = ours.first_line.get(&key.0);
                 let p3 = first.is_some_and(|(file, line)| *file == key.1 && *line == key.2);
-                let class = if p3 { Class::P3 } else { ir_class(facts, key, true) };
+                let prologue_end =
+                    !ours.not_prologue.contains(key) && facts.key_instructions(&key.0);
+                let class = if p3 {
+                    Class::P3
+                } else if prologue_end {
+                    Class::PrologueEnd
+                } else {
+                    ir_class(facts, key, true)
+                };
                 report.hod_only.push((key.clone(), class));
             }
             (None, Some(ranges)) => {
@@ -357,6 +394,12 @@ pub struct FunctionRows {
     /// The positions with a line other than 0, and for each the address
     /// ranges of its rows.
     pub positions: BTreeMap<Position, Vec<(u64, u64)>>,
+    /// `(file, line, address range)` of each `is_stmt` row with a line
+    /// other than 0, in address order, repeats included (WP-149: a key
+    /// instruction's row on the line of the one before, as at a call's
+    /// return address); the function's start row (§5.1 rule 1: at its
+    /// first address, column 0) is not one.
+    pub stmts: Vec<(String, u32, u64, u64)>,
 }
 
 /// Each function's rows.
@@ -380,9 +423,23 @@ pub fn function_rows(
         if row.line != 0 {
             let key = (row.file.clone(), row.line, row.column);
             entry.positions.entry(key).or_default().push((row.address, next.address));
+            let start = row.column == 0 && entry.sequence.len() == 1;
+            if row.is_stmt && !start {
+                entry.stmts.push((row.file.clone(), row.line, row.address, next.address));
+            }
         }
     }
     out
+}
+
+/// A function's `is_stmt` rows: `(file, line)` each.
+pub type StmtLines = Vec<(String, u32)>;
+
+/// Whether `llc`'s code in `[start, end)` is unconditional branches only
+/// (§5.7 P1).
+fn only_branches(llc_code: &BTreeMap<u64, String>, start: u64, end: u64) -> bool {
+    let mut inside = llc_code.range(start..end).peekable();
+    inside.peek().is_some() && inside.all(|(_, m)| is_unconditional_branch(m))
 }
 
 /// Why a position is in one function's rows on one side only.
@@ -420,6 +477,10 @@ pub struct ColumnsReport {
     pub same_permitted: usize,
     /// With the same sequence of `(file, line, column, is_stmt)` rows.
     pub same_sequence: usize,
+    /// With the same sequence of `is_stmt` rows ([`FunctionRows::stmts`]);
+    /// the functions that differ, with hod's and `llc`'s sequence.
+    pub same_stmts: usize,
+    pub stmt_differs: Vec<(String, StmtLines, StmtLines)>,
     /// Positions on one side only: function, position, class.
     pub hod_only: Vec<(String, Position, ColumnClass)>,
     pub llc_only: Vec<(String, Position, ColumnClass)>,
@@ -432,6 +493,8 @@ impl ColumnsReport {
         self.same_set += other.same_set;
         self.same_permitted += other.same_permitted;
         self.same_sequence += other.same_sequence;
+        self.same_stmts += other.same_stmts;
+        self.stmt_differs.extend(other.stmt_differs.iter().cloned());
         self.hod_only.extend(other.hod_only.iter().cloned());
         self.llc_only.extend(other.llc_only.iter().cloned());
     }
@@ -458,12 +521,13 @@ impl ColumnsReport {
             )
         };
         format!(
-            "functions {}, same (line, column) set {}, same but permitted {}, same sequence {}; \
-             positions hod only {}, llc only {}",
+            "functions {}, same (line, column) set {}, same but permitted {}, same sequence {}, \
+             same is_stmt sequence {}; positions hod only {}, llc only {}",
             self.functions,
             self.same_set,
             self.same_permitted,
             self.same_sequence,
+            self.same_stmts,
             side(&self.hod_only),
             side(&self.llc_only)
         )
@@ -505,6 +569,15 @@ pub fn compare_function_rows(
         report.same_set += usize::from(same);
         report.same_permitted += usize::from(!same && permitted);
         report.same_sequence += usize::from(hod.sequence == llc.sequence);
+        let lines = |v: &[(String, u32, u64, u64)]| -> StmtLines {
+            v.iter().map(|(file, line, _, _)| (file.clone(), *line)).collect()
+        };
+        let (hod_stmts, llc_stmts) = (lines(&hod.stmts), lines(&llc.stmts));
+        if hod_stmts == llc_stmts {
+            report.same_stmts += 1;
+        } else {
+            report.stmt_differs.push((function.clone(), hod_stmts, llc_stmts));
+        }
     }
     report
 }
@@ -564,6 +637,37 @@ Address            Line   Column File   ISA Discriminator OpIndex Flags
         assert_eq!(code.len(), 2);
     }
 
+    // spec/dwarf.md §5.9 `prologue-end`; the is_stmt sequences (WP-149).
+    #[test]
+    fn prologue_end_pairs_and_stmt_rows() {
+        let row = |address, line, column, is_stmt, prologue_end| Row {
+            address,
+            file: "a.c".to_owned(),
+            line,
+            column,
+            is_stmt,
+            prologue_end,
+            end_sequence: false,
+        };
+        let rows = [
+            row(0x10, 4, 0, true, false),
+            row(0x14, 5, 3, true, true),
+            row(0x18, 6, 3, true, false),
+            row(0x1c, 6, 9, false, false),
+            row(0x20, 6, 3, true, false),
+            Row { end_sequence: true, ..row(0x24, 6, 3, false, false) },
+        ];
+        let symbols = vec![(0x10, 0x24, "f".to_owned())];
+        let pairs = pairs_of(&rows, &symbols);
+        let key = |line| ("f".to_owned(), "a.c".to_owned(), line);
+        assert!(!pairs.not_prologue.contains(&key(5)));
+        assert!(pairs.not_prologue.contains(&key(6)));
+        // The start row is no step; a repeated statement row is.
+        let f = &function_rows(&rows, &symbols)["f"];
+        let lines: Vec<u32> = f.stmts.iter().map(|s| s.1).collect();
+        assert_eq!(lines, [5, 6, 6]);
+    }
+
     #[test]
     fn summary_counts_classes() {
         let pair = || ("f".to_owned(), "a.c".to_owned(), 1);
@@ -577,8 +681,9 @@ Address            Line   Column File   ISA Discriminator OpIndex Flags
         assert_eq!(
             report.summary(),
             "same 3, hod only 1 (P1 0, P3 1, load-placement 0, post-indexed-load 0, \
-             is-constant 0, unclassified 0), llc only 2 (P1 1, P3 0, load-placement 0, \
-             post-indexed-load 0, is-constant 0, unclassified 1)"
+             is-constant 0, prologue-end 0, unclassified 0), llc only 2 (P1 1, P3 0, \
+             load-placement 0, post-indexed-load 0, is-constant 0, prologue-end 0, \
+             unclassified 1)"
         );
     }
 

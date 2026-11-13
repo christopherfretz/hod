@@ -267,7 +267,11 @@ pub fn unsteady(results: &Results, thresholds: &Thresholds) -> usize {
 /// Whether a baseline's absolute numbers bind a run: the same machine and
 /// the same reference tool. The error says what differs.
 pub fn comparable(baseline: &Results, run: &Results) -> Result<(), String> {
-    for (key, what) in [("machine", "another machine"), ("llc_version", "another llc")] {
+    for (key, what) in [
+        ("machine", "another machine"),
+        ("target", "another target"),
+        ("llc_version", "another llc"),
+    ] {
         let (base, now) = (baseline.get(key).unwrap_or("?"), run.get(key).unwrap_or("?"));
         if base != now {
             return Err(format!("{what} ({base})"));

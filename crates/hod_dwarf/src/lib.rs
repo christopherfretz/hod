@@ -96,7 +96,7 @@ pub use line::{
     FileEntry, FileTable, LineHeader, LineProgram, LineSections, LineUnit, LineUnits, Row,
     Sequence, flags, write_debug_line, write_debug_line_units,
 };
-pub use policy::{FunctionLines, SourceLoc, Transition, function_rows};
+pub use policy::{FunctionLines, SourceLoc, Stmt, Transition, function_rows};
 pub use target::{
     AARCH64, LINE_BASE, LINE_RANGE, LineTarget, OPCODE_BASE, STANDARD_OPCODE_LENGTHS, X86_64,
     for_arch,

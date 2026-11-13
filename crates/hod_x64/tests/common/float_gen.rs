@@ -209,6 +209,13 @@ pub struct Func {
     pub llc: bool,
     /// The oldest LLVM whose `llc` knows it.
     pub since: u32,
+    /// Whether a NaN for a NaN matches `llc`'s result: the IR leaves the
+    /// NaN open (the LLVM language reference, "Behavior of Floating-Point
+    /// NaN values": a quieted operand NaN or the preferred NaN) and
+    /// `llc`'s comes from code the two do not share (a C library routine
+    /// where hod computes inline), so the hardware may pick another
+    /// operand's.
+    pub nan_open: bool,
     /// An exact model of the result from the arguments, compared with
     /// hod plain where `llc` is no oracle.
     pub model: Option<fn(&[u64]) -> u64>,
@@ -331,6 +338,7 @@ impl Suite {
             check,
             llc: true,
             since: 19,
+            nan_open: false,
             model: None,
             text,
         });
@@ -864,6 +872,10 @@ pub fn run(name: &str, suite: &Suite, majors: &[u32]) -> Report {
                 }
             } else if (leg == "hod stress" || compared_by_llc(f, leg))
                 && plain[report_index(&index, i)] != got
+                && !(leg != "hod stress"
+                    && f.nan_open
+                    && f.ret.is_nan(plain[report_index(&index, i)])
+                    && f.ret.is_nan(got))
             {
                 wrong("hod plain", plain[report_index(&index, i)]);
             }

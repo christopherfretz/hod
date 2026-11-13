@@ -225,6 +225,15 @@ pub fn summary(outcomes: &[(PathBuf, Outcome)], verbose: bool) -> String {
                     c.same_set, c.functions, c.same_permitted
                 );
                 if verbose {
+                    for (side, list) in
+                        [("hod only", &report.hod_only), ("llc only", &report.llc_only)]
+                    {
+                        for ((function, file, line), class) in list {
+                            let class = class.name();
+                            let _ =
+                                writeln!(out, "  line {class} {side} {file}:{line} in {function}");
+                        }
+                    }
                     for (side, list) in [("hod only", &c.hod_only), ("llc only", &c.llc_only)] {
                         for (function, (file, line, column), class) in list {
                             let class = class.name();
@@ -233,6 +242,17 @@ pub fn summary(outcomes: &[(PathBuf, Outcome)], verbose: bool) -> String {
                                 "  {class} {side} {file}:{line}:{column} in {function}"
                             );
                         }
+                    }
+                    for (function, hod, llc) in &c.stmt_differs {
+                        let show = |v: &lines::StmtLines| {
+                            v.iter().map(|(_, l)| l.to_string()).collect::<Vec<_>>().join(" ")
+                        };
+                        let _ = writeln!(
+                            out,
+                            "  is_stmt in {function}: hod [{}] llc [{}]",
+                            show(hod),
+                            show(llc)
+                        );
                     }
                 }
             }

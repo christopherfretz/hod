@@ -49,7 +49,10 @@ fn usable(report: &Report, options: &Options) -> bool {
 #[test]
 #[cfg_attr(
     target_arch = "x86_64",
-    ignore = "x86-64 runner: tests/debug/tls_static.c is an ERROR: llc's gdb session lacks the check '$2 = <optimized out>' (hod's passes); WP-145 finding"
+    ignore = "x86-64 runner: tests/debug/tls_static.c is an ERROR: its check '$2 = <optimized out>' \
+              is AArch64's (llc writes no TLS location there); on x86-64 llc's gdb prints the \
+              value, and hod's session equals llc's. The test's check must not name the \
+              value; WP-145 finding, WP-155"
 )]
 fn quick_tier_matches_llc() {
     let scratch = Scratch::new("debug-quick");

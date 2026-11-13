@@ -655,7 +655,15 @@ stays at the user's location: `llc`'s `DAGCombiner` turns `brcond
 (setcc)` into `br_cc` and `select (setcc)` into `select_cc` at the
 user's location (measured: switching fused compares to their own
 location made 1 786 fewer functions of the `-g` set match `llc`'s
-columns).
+columns). On x86-64 (WP-149) the `cmp` of a branch fused with an integer
+compare IS at the compare's location: `llc`'s x86-64 program keeps the
+compare's instruction (`subl`/`cmpl`) at the `icmp`'s location and only
+the `jcc` at the branch's (`crates/hod_x64/src/control.rs` `cond_br`
+switches around `fused_icmp`). Measured on the `tests/debug` sources and
+250 gcc torture sources at clang 22 `-O0`, x86-64: functions with `llc`'s
+set of (line, column) positions 666 before, 732 after of 981; positions
+only `llc` has 777 before, 320 after. With key instructions it decides
+statements (§5.9): the compare and the branch are separate atoms.
 
 The **row location** of an instruction is its location, except for two
 whose code has none, so that it stays in the row before it (a line-0
@@ -679,6 +687,98 @@ consumed by the NEXT instruction (§4.6), and every consumer of operands
 arguments, the declaration rows) relies on that; an alias across
 instructions would change all of them, and the line table is the same
 either way.
+
+### 5.9 Key instructions (implemented, WP-149)
+
+clang 22 marks a function's subprogram `keyInstructions: true` and gives
+its instructions' locations an **atom**: `atomGroup` (a source atom: a
+statement, an assignment, a branch; unique in the function and its
+inlined-at chain) and `atomRank` (1 the most important instruction of the
+atom, 0 none). It does so at `-O1` and above (also with `-Xclang
+-disable-llvm-passes`) and with `-gkey-instructions`; not at plain
+`-O0`. kiln++ emits none at `-O0`, `-O1` or `-O2` and rejects
+`-gkey-instructions`. `llc` 22 then writes `is_stmt` on the rows of the
+atoms' KEY instructions only (`DwarfDebug::computeKeyInstructions`,
+honoured at every optimisation level, including `-O0`), instead of on
+every change of line (§5.2). Both readers keep the fields
+(`spec/ll.md`, `spec/bc.md`, `spec/ir.md` §6.5); the rows are chosen in
+`crates/hod_cg/src/key_rows.rs` and written by `function_rows`
+(`hod_dwarf::Stmt`).
+
+The rule, as `llc` applies it to its machine instructions in code order,
+block by block (K1 to K6; the rows of a function whose subprogram has
+`keyInstructions` are its "instructions", K6):
+
+- K1. An instruction without a location or at line 0 is not considered.
+- K2. The **buoy** is the first instruction of a run of instructions at
+  one line in one block: a new block, a different line, or a call (K4)
+  ends it, and the next considered instruction is the new buoy.
+- K3. An instruction with an atom (group and rank not 0) whose group
+  differs from the atom the buoy serves becomes the buoy itself. Then,
+  per atom `(inlined at, group)`: a rank worse than the best seen is
+  ignored; a better rank drops the atom's candidates; the buoy becomes a
+  candidate (an equal rank drops none: `llc` 22's `remove_if` is not
+  followed by an `erase`, measured), and the buoy now serves the atom.
+- K4. A call (or tail call) makes its buoy a key instruction outright and
+  ends the buoy. With an atom it drops the atom's candidates of a worse
+  rank but is no candidate itself (the atom's best rank is 0 again when it
+  has none left).
+- K5. At the end of the function every candidate is a key instruction.
+  `is_stmt` is on the key instructions' rows, and on the prologue end
+  (§5.2) and the start row (§5.1) as before; on no other row. A key
+  instruction's row is written even at the location of the row before.
+
+Measured against `llc` 22's object (a model of K1 to K5 over `llc`'s final
+machine code, `-stop-after=unpack-mi-bundles`, gives exactly `llc`'s
+`is_stmt` rows in 3 160 of 3 160 AArch64 functions of 250 gcc torture
+sources at `-O0 -gkey-instructions`, `-O1 -Xclang -disable-llvm-passes`,
+`-O1` and `-O2`).
+
+hod's rows map to `llc`'s instructions:
+
+- K6. In a key-instructions function the driver records a row for every
+  segment that emitted code (§5.8), not only for a change of location: a
+  row stands for the machine instructions `llc` selects from one IR
+  instruction. A row whose code ends with a call (`FnCx::call_returns_here`,
+  and a `musttail` call's branch) is a call (K4), and the code after the
+  call opens a row of its own, so the return address has one. The row of
+  a tail exit, and the epilogue's row when the `ret` was not in the last
+  block emitted, continue code emitted elsewhere and are no instruction.
+  A call of `_Unwind_Resume` is no call: `llc` makes it from a `resume`
+  without a location (`DwarfEHPrepare`).
+- K7. Refused, by name, before any row is written: a function with
+  locations of subprograms of both kinds (code inlined from a function
+  compiled without key instructions, or the other way round:
+  `debug:key-instructions-mixed`), and a coroutine body with key
+  instructions (`debug:key-instructions-coroutine`: `llc` sees it only
+  after `CoroSplit`).
+
+Permitted differences (§5.7), recognised by `cargo xtask debug`:
+
+- `prologue-end`: hod's `(function, file, line)` pair whose only
+  `is_stmt` row is its prologue end, in a function with key instructions
+  (`keyInstructions: true` in the IR). Both programs mark the prologue end
+  a statement; where their first code differs (hod writes no code for
+  `__builtin_prefetch`; `llc`'s x86-64 prologue of a variadic function
+  saves the argument registers at the scope line) the line differs, and
+  without key instructions the other line's change of line hides it.
+- Differences inside one line run (an `is_stmt` row more or fewer on
+  the line of the row before) are not pairs. `cargo xtask debug columns`
+  counts the functions whose sequence of `is_stmt` rows equals `llc`'s
+  (rows of unconditional branches only left out, P1); measured classes:
+  an empty `asm` statement (`llc` writes a row for it, at the next
+  instruction; hod has no code for it), and a prologue end at a line
+  `llc` keys at another instruction. gdb's `step` and `next` stop at
+  neither (gdb skips `is_stmt` rows of the line it is stepping).
+
+Not done: `llc` places calls hod makes itself and `llc` does not (or the
+other way round: `memcpy` for a copy hod inlines up to 64 bytes, the
+x86-64 and AArch64 TLS descriptor calls that hod's targets emit
+directly) by their own rules; such a call is a K4 call on one side only.
+Measured: the TLS tests (`tls.c`, `tls_static.c`, `dwarf4_tls.c`) have
+the same `is_stmt` sequence; `memcpy-1.c` and `memcpy-bi.c` (gcc
+torture) differ only inside line runs (more `is_stmt` rows on a line
+whose copy one side calls and the other inlines), the class above.
 
 ## 6. DIEs (core implemented, WP-053; the type graph, WP-058; functions, WP-057)
 
@@ -2488,6 +2588,37 @@ Evidence: `crates/hod/tests/dwarf_call_sites4.rs` (trees against `llc`
 `crates/hod_dwarf/src/call_sites.rs` and `dwarf4.rs` unit tests,
 `crates/hod/tests/debug_e2e.rs`, `tests/debug/utf8_source.c`,
 `spec/landed/dwarf/WP-150.md`. `.debug_frame` is `spec/eh.md` §10.
+
+### 6.22 A declaration of `undef` or `poison` (implemented, WP-156)
+
+A `#dbg_declare` whose address is `undef` (clang 19) or `poison` (clang
+22) has no row (`hod_cg` `driver.rs` `finish_vars`,
+`declares_undef`), so its variable has no DIE, unless it is a retained
+node, which gets a DIE without a location (§6.4 "Retained variables").
+That is what `llc` 19 and 22 write at `-O0` on both targets:
+`SelectionDAGBuilder::visitDbgDeclare` drops the declaration of an
+`UndefValue` address, and no other record names the variable. It is
+the same decision as for a dropped address (`!{}`) and a `phi` (§6.18).
+
+Where it comes from: the SysV x86-64 ABI passes no argument for an
+empty record, so an empty-class parameter of an `always_inline` callee
+(libstdc++'s `std::__distance(first, last, random_access_iterator_tag)`,
+`std::__advance`) has no storage once clang's always-inliner has
+inlined it, and clang declares the parameter at `undef`/`poison`. On
+AArch64 the same parameter is an `i8` argument with a slot, so the
+declaration names that slot and nothing changes there. Before WP-156
+hod refused such a module as `debug:declare-address` on x86-64 only
+(`containers`, `exceptions` and `stl_heavy` of `bench/src` at `-g`).
+
+`debug:declare-address` keeps its meaning for every other address that
+has no home: another constant (a null pointer, a symbol), or a value
+the policy keeps in a register. No producer of the corpus, the `-g` set
+or the benchmark inputs writes one at `-O0` on either target.
+
+Evidence: `crates/hod/tests/declare_undef.rs` (both spellings, both
+targets, trees equal to `llc` 22's), `tests/debug/empty_tag_inlined.cpp`
+(gdb and lldb stop in the inlined callee and read its other parameters
+and the caller's variables), `spec/landed/dwarf/WP-156.md`.
 
 ## 7. Speed and memory
 

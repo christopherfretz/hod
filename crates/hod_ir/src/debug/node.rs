@@ -1061,6 +1061,11 @@ nodes! {
         retained_nodes "retainedNodes": &'a [DiId],
         /// The types the function may throw.
         thrown_types "thrownTypes": &'a [DiId] => class::TYPE,
+        /// Whether the function's locations carry key-instruction atoms
+        /// (`atomGroup`, `atomRank`; LLVM 21 and later, WP-149): the
+        /// line table marks statements by `spec/dwarf.md` §5.9 instead
+        /// of §5.2.
+        key_instructions "keyInstructions": bool,
     }
 
     /// A nested block of a function.
@@ -1465,7 +1470,8 @@ mod tests {
             ["filename", "directory", "checksumkind", "checksum", "source"]
         );
         assert_eq!(DiKind::BasicType.fields()[0], "tag");
-        assert_eq!(DiKind::Subprogram.fields().len(), 16);
+        assert_eq!(DiKind::Subprogram.fields().len(), 17);
+        assert_eq!(DiKind::Subprogram.fields()[16], "keyInstructions");
     }
 
     /// §6.2: defaults are LLVM's, with the one stated exception.

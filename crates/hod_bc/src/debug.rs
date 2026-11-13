@@ -378,7 +378,7 @@ fn layout(code: u32) -> Option<Layout> {
                 ("thrownTypes", List),
                 ("annotations", UnsupMd),
                 ("targetFuncName", UnsupMd),
-                ("keyInstructions", Drop),
+                ("keyInstructions", Bool), // WP-149
             ],
         ),
         md::LEXICAL_BLOCK => l(
@@ -869,13 +869,13 @@ impl<'x, 'a, L: Layering> Dx<'x, 'a, L> {
         };
         let location =
             DiLocation { line: ops[1] as u32, column: column(ops[2]), scope, inlined_at };
-        let debug = &mut self.module.debug;
-        let made = if ops[0] != 0 {
-            debug.define_distinct_loc(loc, location)
-        } else {
-            debug.define_loc(loc, location)
+        // WP-149: LLVM 21 and later write `atomGroup, atomRank` last.
+        let (group, rank) = if ops.len() == 8 { (ops[6], ops[7]) } else { (0, 0) };
+        let Ok(rank) = u8::try_from(rank) else {
+            return fail(BcErrorKind::Invalid, at, "a LOCATION atom rank over 8 bits");
         };
-        ir(at, made)
+        let atom = hod_ir::DiAtom { group, rank };
+        ir(at, self.module.debug.define_loc_in_atom(loc, location, atom, ops[0] != 0))
     }
 
     /// A node record of `code`, defining `node`.

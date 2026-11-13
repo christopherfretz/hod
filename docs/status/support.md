@@ -20,15 +20,15 @@ input to the fallback when one is configured (`spec/cli.md`).
 
 | group | constructs | aarch64 supported | not-implemented | rejected | x86_64 supported | not-implemented | rejected |
 |---|---|---|---|---|---|---|---|
-| `module` | 24 | 10 | 12 | 2 | 5 | 13 | 6 |
-| `structor` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
+| `module` | 24 | 10 | 12 | 2 | 11 | 7 | 6 |
+| `structor` | 2 | 2 | 0 | 0 | 2 | 0 | 0 |
 | `debug` | 5 | 4 | 1 | 0 | 0 | 5 | 0 |
-| `global` | 12 | 11 | 1 | 0 | 3 | 9 | 0 |
-| `linkage` | 11 | 10 | 0 | 1 | 2 | 8 | 1 |
-| `visibility` | 2 | 2 | 0 | 0 | 0 | 2 | 0 |
-| `tls` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
-| `comdat` | 5 | 2 | 0 | 3 | 0 | 2 | 3 |
-| `init` | 10 | 6 | 3 | 1 | 1 | 9 | 0 |
+| `global` | 12 | 11 | 1 | 0 | 11 | 1 | 0 |
+| `linkage` | 11 | 10 | 0 | 1 | 10 | 0 | 1 |
+| `visibility` | 2 | 2 | 0 | 0 | 2 | 0 | 0 |
+| `tls` | 4 | 4 | 0 | 0 | 4 | 0 | 0 |
+| `comdat` | 5 | 2 | 0 | 3 | 2 | 0 | 3 |
+| `init` | 10 | 6 | 3 | 1 | 5 | 4 | 1 |
 | `function` | 6 | 6 | 0 | 0 | 6 | 0 | 0 |
 | `cc` | 15 | 6 | 7 | 2 | 1 | 11 | 3 |
 | `attr` | 57 | 23 | 31 | 3 | 15 | 34 | 8 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 11 | 8 | 3 | 0 | 7 | 4 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 354 | 334 | 20 | 0 | 11 | 127 | 216 |
-| total | 663 | 533 | 84 | 46 | 109 | 284 | 270 |
+| total | 663 | 533 | 84 | 46 | 145 | 247 | 271 |
 
 ## `module`
 
@@ -67,14 +67,14 @@ Module properties (`ModuleProps`, §2.1) and module-level tables.
 | `module:sign-return-address-all` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
 | `module:sign-return-address-with-bkey` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
 | `module:branch-protection-pauth-lr` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `module:cf-protection-branch` | rejected | not-implemented | an x86 property |
-| `module:cf-protection-return` | rejected | not-implemented | an x86 property |
+| `module:cf-protection-branch` | rejected | not-implemented | an x86 property. changes code: `endbr64` at every function entry an indirect branch may reach, at landing pads and after `returns_twice` calls, then the IBT property note; `llc` turns it on for any value, 0 included (WP-143) |
+| `module:cf-protection-return` | rejected | supported | an x86 property. the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143) |
 | `module:asm` | not-implemented | not-implemented | hod_asm. module-level inline assembly an assembler must read |
-| `module:asm-symbols` | supported | not-implemented | module-level assembly made only of symbol directives (`spec/ir.md` §2.3) |
-| `module:linker-options` | supported | not-implemented | `!llvm.linker.options` |
-| `module:dependent-libraries` | supported | not-implemented | `!llvm.dependent-libraries` |
-| `module:global-ctors` | supported | not-implemented | an entry of `llvm.global_ctors` |
-| `module:global-dtors` | supported | not-implemented | an entry of `llvm.global_dtors` |
+| `module:asm-symbols` | supported | supported | module-level assembly made only of symbol directives (`spec/ir.md` §2.3) |
+| `module:linker-options` | supported | supported | `!llvm.linker.options` |
+| `module:dependent-libraries` | supported | supported | `!llvm.dependent-libraries` |
+| `module:global-ctors` | supported | supported | an entry of `llvm.global_ctors` |
+| `module:global-dtors` | supported | supported | an entry of `llvm.global_dtors` |
 
 ## `structor`
 
@@ -82,8 +82,8 @@ Constructor and destructor entries.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `structor:priority` | supported | not-implemented | a constructor or destructor priority other than 65535 |
-| `structor:associated` | supported | not-implemented | a constructor or destructor with an associated symbol |
+| `structor:priority` | supported | supported | a constructor or destructor priority other than 65535 |
+| `structor:associated` | supported | supported | a constructor or destructor with an associated symbol |
 
 ## `debug`
 
@@ -106,15 +106,15 @@ Symbols: what they are and what a definition carries.
 | `global:function-declaration` | supported | supported | nothing is emitted for a declaration |
 | `global:variable-declaration` | supported | supported | nothing is emitted for a declaration |
 | `global:function-definition` | supported | supported | a function that gets a body |
-| `global:variable-definition` | supported | not-implemented | a variable with an initializer |
-| `global:alias` | supported | not-implemented |  |
-| `global:alias-offset` | supported | not-implemented | an alias of a symbol plus a non-zero offset |
+| `global:variable-definition` | supported | supported | a variable with an initializer |
+| `global:alias` | supported | supported |  |
+| `global:alias-offset` | supported | supported | an alias of a symbol plus a non-zero offset |
 | `global:alias-absolute` | not-implemented | not-implemented | unplanned. an alias of a number |
-| `global:ifunc` | supported | not-implemented |  |
-| `global:section` | supported | not-implemented | a definition with an explicit section |
-| `global:align` | supported | not-implemented | a definition with a stated alignment |
-| `global:unnamed-addr` | supported | not-implemented | `unnamed_addr` on a definition: mergeable sections |
-| `global:used` | supported | not-implemented | a definition in `llvm.used` (`SHF_GNU_RETAIN`) |
+| `global:ifunc` | supported | supported |  |
+| `global:section` | supported | supported | a definition with an explicit section |
+| `global:align` | supported | supported | a definition with a stated alignment |
+| `global:unnamed-addr` | supported | supported | `unnamed_addr` on a definition: mergeable sections |
+| `global:used` | supported | supported | a definition in `llvm.used` (`SHF_GNU_RETAIN`) |
 
 ## `linkage`
 
@@ -123,16 +123,16 @@ Linkages, on declarations and definitions.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `linkage:external` | supported | supported | by itself; a definition also meets its `global:` row |
-| `linkage:available_externally` | supported | not-implemented | a function's body is discarded, or copied when `alwaysinline` and called directly (design 0001 point 6, WP-021) |
-| `linkage:linkonce` | supported | not-implemented |  |
-| `linkage:linkonce_odr` | supported | not-implemented |  |
-| `linkage:weak` | supported | not-implemented |  |
-| `linkage:weak_odr` | supported | not-implemented |  |
+| `linkage:available_externally` | supported | supported | a function's body is discarded, or copied when `alwaysinline` and called directly (design 0001 point 6, WP-021) |
+| `linkage:linkonce` | supported | supported |  |
+| `linkage:linkonce_odr` | supported | supported |  |
+| `linkage:weak` | supported | supported |  |
+| `linkage:weak_odr` | supported | supported |  |
 | `linkage:appending` | rejected | rejected | only LLVM's special arrays have it, and those are not symbols (§2.2) |
 | `linkage:internal` | supported | supported |  |
-| `linkage:private` | supported | not-implemented |  |
-| `linkage:extern_weak` | supported | not-implemented |  |
-| `linkage:common` | supported | not-implemented |  |
+| `linkage:private` | supported | supported |  |
+| `linkage:extern_weak` | supported | supported |  |
+| `linkage:common` | supported | supported |  |
 
 ## `visibility`
 
@@ -140,8 +140,8 @@ Visibilities other than `default`.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `visibility:hidden` | supported | not-implemented |  |
-| `visibility:protected` | supported | not-implemented |  |
+| `visibility:hidden` | supported | supported |  |
+| `visibility:protected` | supported | supported |  |
 
 ## `tls`
 
@@ -149,10 +149,10 @@ Thread-local models of variables and aliases.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `tls:general-dynamic` | supported | not-implemented | `thread_local` |
-| `tls:local-dynamic` | supported | not-implemented | `thread_local(localdynamic)` |
-| `tls:initial-exec` | supported | not-implemented | `thread_local(initialexec)` |
-| `tls:local-exec` | supported | not-implemented | `thread_local(localexec)` |
+| `tls:general-dynamic` | supported | supported | `thread_local` |
+| `tls:local-dynamic` | supported | supported | `thread_local(localdynamic)` |
+| `tls:initial-exec` | supported | supported | `thread_local(initialexec)` |
+| `tls:local-exec` | supported | supported | `thread_local(localexec)` |
 
 ## `comdat`
 
@@ -160,10 +160,10 @@ COMDAT selection kinds of a definition's COMDAT.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `comdat:any` | supported | not-implemented |  |
+| `comdat:any` | supported | supported |  |
 | `comdat:exactmatch` | rejected | rejected | ELF has `any` and `nodeduplicate` only; `llc` refuses it too |
 | `comdat:largest` | rejected | rejected | ELF has `any` and `nodeduplicate` only; `llc` refuses it too |
-| `comdat:nodeduplicate` | supported | not-implemented |  |
+| `comdat:nodeduplicate` | supported | supported |  |
 | `comdat:samesize` | rejected | rejected | ELF has `any` and `nodeduplicate` only; `llc` refuses it too |
 
 ## `init`
@@ -172,16 +172,16 @@ What a variable's initializer contains.
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `init:data` | supported | not-implemented | any initializer: numbers, zero, `undef`, aggregates, bytes |
-| `init:symbol` | supported | not-implemented | a symbol's address, with or without an offset |
+| `init:data` | supported | supported | any initializer: numbers, zero, `undef`, aggregates, bytes |
+| `init:symbol` | supported | supported | a symbol's address, with or without an offset |
 | `init:blockaddress` | supported | supported | of a block of a function with an `indirectbr` (§9.6) |
-| `init:sym-diff` | supported | not-implemented | the difference of two symbol addresses |
+| `init:sym-diff` | supported | supported | the difference of two symbol addresses |
 | `init:sym-diff-plt` | not-implemented | not-implemented | unplanned. the same through `dso_local_equivalent` (relative vtables) |
-| `init:int-of-addr` | supported | not-implemented | an address in an integer field |
+| `init:int-of-addr` | supported | supported | an address in an integer field |
 | `init:block-diff` | supported | not-implemented | a label difference `&&a - &&b` of two blocks of one function, a number (WP-095) |
 | `init:dso-local-equivalent` | not-implemented | not-implemented | unplanned |
 | `init:no-cfi` | not-implemented | not-implemented | unplanned |
-| `init:neg-addr` | rejected | not-implemented | no ELF relocation subtracts a symbol's address; `llc` refuses it too. a number minus an address, `sub (i64 4, i64 ptrtoint (ptr @a to i64))`, in data or in an aggregate operand's image |
+| `init:neg-addr` | rejected | rejected | no ELF relocation subtracts a symbol's address; `llc` refuses it too. a number minus an address, `sub (i64 4, i64 ptrtoint (ptr @a to i64))`, in data or in an aggregate operand's image |
 
 ## `function`
 

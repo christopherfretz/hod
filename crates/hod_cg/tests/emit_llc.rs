@@ -19,7 +19,10 @@ use std::time::Duration;
 
 use elfview::{Elf, diff};
 use hod_cg::{Options, RelocModel, emit_module};
-use hod_ir::{AARCH64_LINUX_DATA_LAYOUT, AARCH64_LINUX_DATA_LAYOUT_LLVM19};
+use hod_ir::{
+    AARCH64_LINUX_DATA_LAYOUT, AARCH64_LINUX_DATA_LAYOUT_LLVM19, X86_64_LINUX_DATA_LAYOUT,
+};
+use hod_obj::Arch;
 use hod_testutil::{LLVM_MAJORS, Scratch, run_with, tools_required};
 
 /// One case: a name, extra `llc` flags, and the module text after the
@@ -368,11 +371,118 @@ define ptr @r() {
     },
 ];
 
-fn header(major: u32) -> String {
-    let layout =
-        if major >= 20 { AARCH64_LINUX_DATA_LAYOUT } else { AARCH64_LINUX_DATA_LAYOUT_LLVM19 };
-    format!("target datalayout = \"{layout}\"\ntarget triple = \"aarch64-unknown-linux-gnu\"\n")
+/// The module header of `arch` for `llc` of LLVM `major`.
+fn header(arch: Arch, major: u32) -> String {
+    let (layout, triple) = match arch {
+        Arch::AArch64 if major >= 20 => (AARCH64_LINUX_DATA_LAYOUT, "aarch64-unknown-linux-gnu"),
+        Arch::AArch64 => (AARCH64_LINUX_DATA_LAYOUT_LLVM19, "aarch64-unknown-linux-gnu"),
+        Arch::X86_64 => (X86_64_LINUX_DATA_LAYOUT, "x86_64-unknown-linux-gnu"),
+    };
+    format!("target datalayout = \"{layout}\"\ntarget triple = \"{triple}\"\n")
 }
+
+fn arch_tag(arch: Arch) -> &'static str {
+    match arch {
+        Arch::AArch64 => "a64",
+        Arch::X86_64 => "x64",
+    }
+}
+
+/// Snippets for x86-64 only (WP-143).
+const X64_SNIPPETS: &[Snippet] = &[
+    Snippet {
+        // A shared object: `dso_local` definitions in data and in the
+        // constructor table are named by their own symbols on x86-64,
+        // where AArch64 names their local aliases.
+        name: "dso-local-data",
+        flags: &[],
+        ir: r"
+@dl = dso_local global i32 7
+@p = global ptr @dl
+@pk = global <{ i8, ptr }> <{ i8 1, ptr @dl }>
+@pg = global ptr getelementptr (i8, ptr @dl, i64 2)
+@d = dso_local global i64 sub (i64 ptrtoint (ptr @dl to i64), i64 ptrtoint (ptr @d to i64))
+define dso_local void @c() {
+  ret void
+}
+define dso_local ptr @code() {
+  ret ptr @dl
+}
+@pc = global ptr @c
+@llvm.global_ctors = appending global [1 x { i32, ptr, ptr }] [{ i32, ptr, ptr } { i32 65535, ptr @c, ptr null }]
+",
+    },
+    Snippet {
+        // An executable (`PIE Level`): no local aliases anywhere.
+        name: "pie",
+        flags: &[],
+        ir: r#"
+@dl = dso_local global i32 7
+@g = global i32 8
+@l = internal global i32 9
+@p = global [3 x ptr] [ptr @dl, ptr @g, ptr @l]
+define dso_local void @c() {
+  ret void
+}
+define dso_local ptr @code() {
+  ret ptr @dl
+}
+@llvm.global_ctors = appending global [1 x { i32, ptr, ptr }] [{ i32, ptr, ptr } { i32 200, ptr @c, ptr null }]
+!llvm.module.flags = !{!0, !1}
+!0 = !{i32 8, !"PIC Level", i32 2}
+!1 = !{i32 7, !"PIE Level", i32 2}
+"#,
+    },
+    Snippet {
+        // Narrow address fields: x86-64 has `R_X86_64_8` and `_PC8`.
+        name: "narrow-fields",
+        flags: &[],
+        ir: r"
+@y = global i32 0
+@b8 = global i8 ptrtoint (ptr @y to i8)
+@b16 = global i16 ptrtoint (ptr @y to i16)
+@b32 = global i32 ptrtoint (ptr @y to i32)
+@r8 = global i8 trunc (i64 sub (i64 ptrtoint (ptr @y to i64), i64 ptrtoint (ptr @r8 to i64)) to i8)
+@r16 = global i16 trunc (i64 sub (i64 ptrtoint (ptr @y to i64), i64 ptrtoint (ptr @r16 to i64)) to i16)
+@r64 = global i64 sub (i64 ptrtoint (ptr @y to i64), i64 ptrtoint (ptr @r64 to i64))
+",
+    },
+    Snippet {
+        // `cf-protection-return`: the shadow-stack property note, and no
+        // change to the code.
+        name: "cf-protection-return",
+        flags: &[],
+        ir: r#"
+@x = global i32 1
+define i32 @f() {
+  ret i32 7
+}
+!llvm.module.flags = !{!0}
+!0 = !{i32 8, !"cf-protection-return", i32 1}
+"#,
+    },
+    Snippet {
+        // x86-64's own value types in data, and mergeable constants of
+        // every entry size.
+        name: "x86-types",
+        flags: &[],
+        ir: r"
+@f80 = global x86_fp80 0xK4000C90FDAA22168C000
+@f80c = unnamed_addr constant x86_fp80 0xK3FFF8000000000000000
+@f80a = global [2 x x86_fp80] [x86_fp80 0xK3FFF8000000000000000, x86_fp80 0xK00000000000000000000]
+@q = unnamed_addr constant fp128 0xL00000000000000003FFF000000000000
+@h = unnamed_addr constant half 0xH3C00
+@c2 = unnamed_addr constant i16 7
+@c4 = unnamed_addr constant float 1.0
+@c8 = unnamed_addr constant double 2.0
+@c16 = unnamed_addr constant <2 x i64> <i64 1, i64 2>
+@c32 = unnamed_addr constant <8 x i32> <i32 1, i32 2, i32 3, i32 4, i32 5, i32 6, i32 7, i32 8>
+@c64 = unnamed_addr constant <8 x i64> <i64 1, i64 2, i64 3, i64 4, i64 5, i64 6, i64 7, i64 8>
+@i128 = global i128 1
+@ci128 = unnamed_addr constant i128 3
+",
+    },
+];
 
 fn llc_path(major: u32) -> Option<PathBuf> {
     let installed = PathBuf::from(format!("/usr/lib/llvm-{major}/bin/llc"));
@@ -430,14 +540,19 @@ fn snippets_agree_with_llc() {
     }
     let scratch = Scratch::new("emit-llc");
     let mut failures = Vec::new();
-    for major in &majors {
-        for snippet in SNIPPETS {
-            let text = format!("{}{}", header(*major), snippet.ir);
-            let theirs = Elf::parse(llc(&scratch, *major, snippet.name, &text, snippet.flags));
+    for (arch, major) in
+        [Arch::AArch64, Arch::X86_64].into_iter().flat_map(|a| majors.iter().map(move |m| (a, *m)))
+    {
+        for snippet in SNIPPETS.iter().chain(if arch == Arch::X86_64 { X64_SNIPPETS } else { &[] })
+        {
+            let text = format!("{}{}", header(arch, major), snippet.ir);
+            let tag = format!("{}-{}", snippet.name, arch_tag(arch));
+            let theirs = Elf::parse(llc(&scratch, major, &tag, &text, snippet.flags));
             let parsed = hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default())
                 .unwrap_or_else(|e| panic!("{}: hod_ll: {e}", snippet.name));
             let functions: Vec<_> = parsed.functions().iter().map(|f| f.sym).collect();
-            let align = |name: &str| if name == "wk" { 16 } else { 4 };
+            // `llc` aligns x86-64 functions to 16 bytes.
+            let align = |name: &str| if name == "wk" || arch == Arch::X86_64 { 16 } else { 4 };
             let chunk = borrow::chunk_from(&parsed.module, &functions, &theirs, &align);
             let emitted = emit_module(&parsed.module, &options(snippet.flags), &[chunk])
                 .unwrap_or_else(|e| panic!("{}: emit_module: {e}", snippet.name));
@@ -449,9 +564,14 @@ fn snippets_agree_with_llc() {
             let (only_ours, only_theirs) = diff(&a, &b);
             let verdict =
                 if only_ours.is_empty() && only_theirs.is_empty() { "agree" } else { "DIFFER" };
-            eprintln!("emit_llc: LLVM {major} {:<18} {verdict} ({} lines)", snippet.name, b.len());
+            eprintln!(
+                "emit_llc: {} LLVM {major} {:<18} {verdict} ({} lines)",
+                arch_tag(arch),
+                snippet.name,
+                b.len()
+            );
             if verdict != "agree" {
-                let mut report = format!("{} (LLVM {major}):\n", snippet.name);
+                let mut report = format!("{tag} (LLVM {major}):\n");
                 for line in &only_ours {
                     let _ = writeln!(report, "  hod: {line}");
                 }
@@ -484,7 +604,7 @@ fn unsupported_constructs_are_refused_by_name() {
     ];
     let mut checked = 0;
     for &(name, ir) in cases {
-        let text = format!("{}{ir}", header(22));
+        let text = format!("{}{ir}", header(Arch::AArch64, 22));
         let parsed = match hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default()) {
             Ok(parsed) if parsed.module.unsupported().next().is_none() => parsed,
             Ok(_) | Err(_) => {

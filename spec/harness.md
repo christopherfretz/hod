@@ -1708,6 +1708,20 @@ the host's corpus is not read or written:
   `<build>/corpus/verify-<arch>-llvm<N>-<mode>.tsv`.
 - **census** writes `docs/status/corpus-x64-census.md` by default.
 - **reasons** reads that corpus (hod takes the target from each module).
+  Its report is titled for the architecture and adds two sections (WP-130):
+  for x86-64, the ten most frequent refusals of the census with the
+  modules each is the first refusal of and the package that owns it
+  (`reasons::owner_x64`, a prefix table kept with `docs/BACKLOG.md`;
+  `-` when none does); for any `--target`, "What the built modules do",
+  read from `verify`'s hybrid results
+  (`<build>/corpus/verify-<arch>-llvm<N>-hybrid.tsv`, a missing file a
+  row saying so): per major the tests, the tests hod built every module
+  of, PASS, FAIL, ERROR and other results, the PASSes of hod-built
+  results, and up to 40 results that are neither PASS nor UNSUPPORTED. A
+  FAIL of a test hod built is a wrong result unless the entry's program
+  is undefined (the report lists it either way). The x86-64 report is
+  `docs/status/reasons-x64.md`. Tests:
+  `corpus::reasons::tests::{owners_and_verify_results, arguments}`.
 - **compare** sets that corpus against this machine's ("compare").
 
 Entries are the same format, with `target: <arch>` naming the corpus's

@@ -1,5 +1,7 @@
 //! The short tail, third part (WP-101, `spec/codegen.md` §5.5.1
-//! "WP-101"): vectors of `i128` and `fp128` lanes, and their ABI.
+//! "WP-101"): vectors of `i128` and `fp128` lanes and their ABI,
+//! `bfloat` arrays and vectors, the `bfloat` NEON intrinsics, a number
+//! minus an address and `preserve_allcc`.
 //!
 //! Each table of functions is compiled by hod (plain, every stress
 //! option, far mode) and by `llc -O0 -global-isel=0 -fast-isel=0` of
@@ -9,6 +11,13 @@
 //! each `llc`, so that the two sides of every call are checked against
 //! each other. The reference is `hod_interp` where it models the
 //! construct, else the `llc` 22 build.
+
+#![allow(
+    clippy::too_many_lines,
+    clippy::too_many_arguments,
+    clippy::similar_names,
+    reason = "tables of `.ll` text built by hand"
+)]
 
 mod common;
 
@@ -893,7 +902,10 @@ fn bfloat_arrays() -> (String, String, Vec<String>) {
     let (mut callee, mut caller, mut names) = (String::new(), String::new(), Vec::new());
     for (floats, n) in BFLOAT_ARRAYS {
         let name = format!("bfa_{floats}_{n}");
-        let params: String = (0..floats).map(|i| format!("float %f{i}, ")).collect();
+        let params = (0..floats).fold(String::new(), |mut p, i| {
+            write!(p, "float %f{i}, ").unwrap();
+            p
+        });
         let types: String = (0..floats).map(|_| "float, ").collect();
         // The callee folds each member's bits and each float's bits.
         let mut body =
@@ -1208,7 +1220,7 @@ fn bf_word(rng: &mut Rng) -> u64 {
     let mut w = rng.word();
     for k in 0..4 {
         let r = rng.next();
-        if r % 3 == 0 {
+        if r.is_multiple_of(3) {
             let piece = u64::from(PIECES[(r >> 8) as usize % PIECES.len()]);
             w = (w & !(0xffff << (16 * k))) | piece << (16 * k);
         }
@@ -1521,4 +1533,171 @@ define i32 @f() {
     for (text, want) in cases {
         assert_eq!(classify(text).unwrap_or_default(), want, "{text}");
     }
+}
+
+// ---- preserve_allcc ----
+
+/// `@pa` is `preserve_allcc` and calls `clobber` (C, writing every
+/// register a `ccc` callee may) and does vector work of its own; `@cpa`
+/// calls it as `preserve_allcc`.
+const PRESERVE_ALL: &str = "declare void @clobber()
+define preserve_allcc i64 @pa(i64 %a, i64 %b, <2 x double> %v) {
+  call void @clobber()
+  %w = fadd <2 x double> %v, %v
+  %x = bitcast <2 x double> %w to <2 x i64>
+  %e = extractelement <2 x i64> %x, i32 1
+  %s = add i64 %a, %b
+  %r = xor i64 %s, %e
+  call void @clobber()
+  ret i64 %r
+}
+define i64 @cpa(i64 %a, i64 %b) {
+  %r = call preserve_allcc i64 @pa(i64 %a, i64 %b, <2 x double> <double 1.0, double 2.0>)
+  %q = add i64 %r, 1
+  ret i64 %q
+}
+";
+
+/// The C side: `clobber` writes `x9`..`x15`, `x16`, `x17` and every
+/// vector register; `check` puts known values in `x9`..`x15` and
+/// `q8`..`q31`, calls `pa` by `bl` and compares them afterwards.
+const PRESERVE_ALL_C: &str = r#"#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <unwind.h>
+uint64_t cpa(uint64_t, uint64_t);
+void pa(void); /* called only from the assembly below */
+/* What the unwinder finds in `x9`..`x15` in the frame that called `pa`. */
+static uint64_t seen[7];
+static int after_pa;
+static _Unwind_Reason_Code step(struct _Unwind_Context *ctx, void *arg) {
+  (void)arg;
+  if (after_pa) {
+    for (int r = 0; r < 7; r++) seen[r] = _Unwind_GetGR(ctx, 9 + r);
+    after_pa = 0;
+    return _URC_END_OF_STACK;
+  }
+  after_pa = _Unwind_FindEnclosingFunction((void *)_Unwind_GetIP(ctx)) == (void *)pa;
+  return _URC_NO_REASON;
+}
+__attribute__((noinline)) void clobber(void) {
+  /* The second call finds `x9`..`x15` clobbered by the first: only
+     `pa`'s rules say where the caller's values are. */
+  _Unwind_Backtrace(step, 0);
+  __asm__ volatile(
+    "mov x9, #-1\n mov x10, #-1\n mov x11, #-1\n mov x12, #-1\n mov x13, #-1\n"
+    "mov x14, #-1\n mov x15, #-1\n mov x16, #-1\n mov x17, #-1\n"
+    "movi v0.16b, #0xee\n mov v1.16b, v0.16b\n mov v2.16b, v0.16b\n mov v3.16b, v0.16b\n"
+    "mov v4.16b, v0.16b\n mov v5.16b, v0.16b\n mov v6.16b, v0.16b\n mov v7.16b, v0.16b\n"
+    "mov v16.16b, v0.16b\n mov v17.16b, v0.16b\n mov v18.16b, v0.16b\n mov v19.16b, v0.16b\n"
+    "mov v20.16b, v0.16b\n mov v21.16b, v0.16b\n mov v22.16b, v0.16b\n mov v23.16b, v0.16b\n"
+    "mov v24.16b, v0.16b\n mov v25.16b, v0.16b\n mov v26.16b, v0.16b\n mov v27.16b, v0.16b\n"
+    "mov v28.16b, v0.16b\n mov v29.16b, v0.16b\n mov v30.16b, v0.16b\n mov v31.16b, v0.16b\n"
+    "mov v8.d[1], v0.d[0]\n mov v9.d[1], v0.d[0]\n mov v10.d[1], v0.d[0]\n mov v11.d[1], v0.d[0]\n"
+    "mov v12.d[1], v0.d[0]\n mov v13.d[1], v0.d[0]\n mov v14.d[1], v0.d[0]\n mov v15.d[1], v0.d[0]\n"
+    ::: "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
+        "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v16", "v17", "v18", "v19",
+        "v20", "v21", "v22", "v23", "v24", "v25", "v26", "v27", "v28", "v29", "v30", "v31",
+        "memory");
+}
+static int check(uint64_t a, uint64_t b, uint64_t want) {
+  uint64_t xin[8], xout[8], res;
+  uint8_t vin[24 * 16], vout[24 * 16];
+  for (int i = 0; i < 8; i++) xin[i] = 0x0909090909090909ULL * (uint64_t)(i + 1) + a;
+  for (int i = 0; i < 24 * 16; i++) vin[i] = (uint8_t)(i * 7 + 3 + b);
+  double two[2] = {1.5, -2.25};
+  __asm__ volatile(
+    "ldp x9, x10, [%[xin]]\n ldp x11, x12, [%[xin], #16]\n ldp x13, x14, [%[xin], #32]\n"
+    "ldr x15, [%[xin], #48]\n"
+    "ldp q8, q9, [%[vin]]\n ldp q10, q11, [%[vin], #32]\n ldp q12, q13, [%[vin], #64]\n"
+    "ldp q14, q15, [%[vin], #96]\n ldp q16, q17, [%[vin], #128]\n ldp q18, q19, [%[vin], #160]\n"
+    "ldp q20, q21, [%[vin], #192]\n ldp q22, q23, [%[vin], #224]\n ldp q24, q25, [%[vin], #256]\n"
+    "ldp q26, q27, [%[vin], #288]\n ldp q28, q29, [%[vin], #320]\n ldp q30, q31, [%[vin], #352]\n"
+    "mov x0, %[a]\n mov x1, %[b]\n ldr q0, [%[two]]\n"
+    "bl pa\n"
+    "str x0, [%[res]]\n"
+    "stp x9, x10, [%[xout]]\n stp x11, x12, [%[xout], #16]\n stp x13, x14, [%[xout], #32]\n"
+    "str x15, [%[xout], #48]\n"
+    "stp q8, q9, [%[vout]]\n stp q10, q11, [%[vout], #32]\n stp q12, q13, [%[vout], #64]\n"
+    "stp q14, q15, [%[vout], #96]\n stp q16, q17, [%[vout], #128]\n stp q18, q19, [%[vout], #160]\n"
+    "stp q20, q21, [%[vout], #192]\n stp q22, q23, [%[vout], #224]\n stp q24, q25, [%[vout], #256]\n"
+    "stp q26, q27, [%[vout], #288]\n stp q28, q29, [%[vout], #320]\n stp q30, q31, [%[vout], #352]\n"
+    :
+    : [xin] "r"(xin), [vin] "r"(vin), [xout] "r"(xout), [vout] "r"(vout), [res] "r"(&res),
+      [a] "r"(a), [b] "r"(b), [two] "r"(two)
+    : "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13",
+      "x14", "x15", "x16", "x17", "x18", "x30",
+      "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13",
+      "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23", "v24", "v25", "v26",
+      "v27", "v28", "v29", "v30", "v31", "cc", "memory");
+  if (memcmp(xin, xout, 7 * 8) != 0) { printf("general registers changed\n"); return 1; }
+  if (memcmp(xin, seen, 7 * 8) != 0) { printf("the unwinder finds other x9..x15\n"); return 1; }
+  if (memcmp(vin, vout, sizeof vin) != 0) {
+    for (int i = 0; i < 24 * 16; i++)
+      if (vin[i] != vout[i]) { printf("q%d changed\n", 8 + i / 16); return 1; }
+  }
+  if (res != want) { printf("pa gave %llx, want %llx\n", (unsigned long long)res, (unsigned long long)want); return 1; }
+  return 0;
+}
+int main(void) {
+  uint64_t three = 0xc012000000000000ULL; /* the bits of -4.5 */
+  int bad = 0;
+  for (uint64_t a = 0; a < 3; a++)
+    bad |= check(a * 1000, a + 5, (a * 1000 + a + 5) ^ three);
+  printf("%llu\n", (unsigned long long)cpa(7, 8));
+  return bad;
+}
+"#;
+
+/// A `preserve_allcc` function keeps `x9`..`x15` and the whole of
+/// `q8`..`q31` for its caller (checked by C's inline assembly around a
+/// `bl`), as `llc` 22 and 19 builds do; a `ccc` caller calls it.
+#[test]
+fn preserve_all_functions_keep_every_register_llc_keeps() {
+    let dir = hod_testutil::Scratch::new("a64-tail3-preserve-all");
+    let Some(toolchain) = Toolchain::host(&dir) else { return };
+    let c = toolchain.compile_c(&dir, "check", PRESERVE_ALL_C, &[]);
+    let mut builds: Vec<(String, PathBuf)> = Vec::new();
+    for major in [22, 19] {
+        if let Some(object) = llc_build(&dir, major, &format!("llc{major}"), PRESERVE_ALL) {
+            builds.push((format!("llc{major}"), object));
+        }
+    }
+    for (mode, options) in MODES {
+        let (module, bodies) = parse(&format!("{}{PRESERVE_ALL}", ll_header(22)));
+        let emitted = compile_module(&module, &bodies, &options)
+            .unwrap_or_else(|e| panic!("preserve_all {mode}: {e}"));
+        builds.push((mode.to_owned(), write_object(&dir, &format!("{mode}.o"), &emitted)));
+    }
+    let mut reference: Option<String> = None;
+    for linker in &toolchain.linkers {
+        for (name, object) in &builds {
+            let exe = dir.join(format!("{name}-{}", linker.name));
+            let ran = toolchain.link_and_run(linker, &[], &[c.as_path(), object.as_path()], &exe);
+            assert!(ran.success(), "{name} under {}: {}", linker.name, ran.stdout_text());
+            let got = ran.stdout_text();
+            assert_eq!(&got, reference.get_or_insert_with(|| got.clone()), "{name}");
+        }
+    }
+    // The unwinder above reads general registers only: the vector ones'
+    // rules are compared with `llc`'s, register by register.
+    let rules = builds.iter().filter_map(|(name, object)| Some((name, cfi_registers(object)?)));
+    let rules: Vec<_> = rules.collect();
+    for (name, set) in &rules {
+        assert_eq!(set, &rules[0].1, "{name} describes other registers than {}", rules[0].0);
+    }
+}
+
+/// The registers any CFI row of `object` gives a rule (`W9`, `B8`, ..),
+/// by `llvm-dwarfdump`; `None` without it.
+fn cfi_registers(object: &std::path::Path) -> Option<std::collections::BTreeSet<String>> {
+    let tool = hod_testutil::find_tool("llvm-dwarfdump")?;
+    let mut command = Command::new(tool);
+    command.arg("--eh-frame").arg(object);
+    let outcome = hod_testutil::run_with(&mut command, &[], Duration::from_mins(1));
+    assert!(outcome.success(), "llvm-dwarfdump: {}", outcome.stderr_text());
+    let text = outcome.stdout_text();
+    let rows = text.lines().filter_map(|line| line.trim().split_once(": CFA=")).map(|(_, r)| r);
+    let rules = rows.flat_map(|row| row.split(": ").nth(1).unwrap_or_default().split(", "));
+    Some(rules.filter_map(|rule| Some(rule.split_once('=')?.0.to_owned())).collect())
 }

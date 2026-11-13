@@ -36,6 +36,11 @@
 //! nothing, a variable one is masked (`N` a power of two) or clamped to
 //! lane 0. An undefined lane of a shuffle is zero.
 
+#![allow(
+    clippy::many_single_char_names,
+    reason = "a, b the operands, r the result, x, y their registers, l a lane"
+)]
+
 use hod_cg::{CallArg, CgResult, Class, FnCx, FrameRef, PReg, RuntimeFn, Target};
 use hod_ir::{
     ConstId, FloatPredicate, Inst, InstKind, IntPredicate, Intrinsic, Opcode, TypeId, TypeKind,
@@ -169,9 +174,8 @@ fn image(cx: &mut FnCx<'_, A64>, value: Value, k: &mut u32) -> CgResult<FrameRef
     if cx.class_of(value) != Class::Fpr {
         return cx.use_mem(value);
     }
-    let shape = match Shape::of(cx.types(), value_ty(cx, value)) {
-        Some(shape) => shape,
-        None => return cx.bug("the image of something that is no vector"),
+    let Some(shape) = Shape::of(cx.types(), value_ty(cx, value)) else {
+        return cx.bug("the image of something that is no vector");
     };
     let r = cx.use_reg(value)?;
     let at = vector::spill(cx, vr(r), &shape, *k)?;
@@ -357,12 +361,11 @@ pub fn shuffle_vector<'a>(
     }
     let out = result_image(cx, inst)?;
     for (i, &entry) in (0u32..).zip(mask) {
-        match source(entry).and_then(|(which, l)| Some((srcs[which]?, l))) {
-            Some((src, l)) => copy16(cx, lane(out, i), lane(src, l)),
-            None => {
-                let mut to = Cursor::frame(cx, lane(out, i), X17);
-                zero_bytes(cx, &mut to, 16);
-            }
+        if let Some((src, l)) = source(entry).and_then(|(which, l)| Some((srcs[which]?, l))) {
+            copy16(cx, lane(out, i), lane(src, l));
+        } else {
+            let mut to = Cursor::frame(cx, lane(out, i), X17);
+            zero_bytes(cx, &mut to, 16);
         }
     }
     finish(cx, inst, out)
@@ -606,8 +609,8 @@ pub fn fcmp<'a>(
     // (function, operands swapped, condition on the result vs 0); `ueq`
     // and `one` are two calls.
     let (func, swap, cond) = match pred {
-        P::Oeq => (EqTf2, false, Cond::Eq),
-        P::Une => (EqTf2, false, Cond::Ne),
+        P::Oeq | P::Ueq => (EqTf2, false, Cond::Eq),
+        P::Une | P::One => (EqTf2, false, Cond::Ne),
         P::Olt => (LtTf2, false, Cond::Lt),
         P::Uge => (LtTf2, false, Cond::Ge),
         P::Ogt => (LtTf2, true, Cond::Lt),
@@ -618,8 +621,6 @@ pub fn fcmp<'a>(
         P::Ult => (LeTf2, true, Cond::Gt),
         P::Ord => (UnordTf2, false, Cond::Eq),
         P::Uno => (UnordTf2, false, Cond::Ne),
-        P::Ueq => (EqTf2, false, Cond::Eq),
-        P::One => (EqTf2, false, Cond::Ne),
         P::True | P::False => return cx.bug("a constant fcmp predicate"),
     };
     let two = matches!(pred, P::Ueq | P::One);
@@ -1042,12 +1043,11 @@ pub fn bf16_intrinsic<'a>(
         regs[1] = if args[1] == args[0] { vr(d) } else { vr(cx.use_reg(args[1])?) };
     }
     if count > 2 {
-        regs[2] = match args[..2].iter().position(|&a| a == args[2]) {
-            Some(j) => regs[j],
-            None => {
-                cx.put(args[2], crate::reg::v(31))?;
-                V31
-            }
+        regs[2] = if let Some(j) = args[..2].iter().position(|&a| a == args[2]) {
+            regs[j]
+        } else {
+            cx.put(args[2], crate::reg::v(31))?;
+            V31
         };
     }
     // The register fields of `word` (`rd` 4:0, `rn` 9:5, `rm` 20:16) hold
@@ -1080,4 +1080,131 @@ pub fn neg_addr(cx: &mut FnCx<'_, A64>, rd: Reg, id: ConstId) -> CgResult<()> {
     crate::common::sym_address(cx, rd, neg.sym, neg.addend.wrapping_neg())?;
     put(cx, mc::sub_shifted(Size::X, rd.zr(), RegZr::ZR, rd.zr(), Shift::Lsl, 0));
     Ok(())
+}
+
+// ---- preserve_allcc ----
+
+/// The vector registers `preserve_allcc` saves whole: `q8`..`q31`. With
+/// `tail2::PRESERVED` (`x9`..`x15`) they are what it adds to the AAPCS64
+/// callee-saved set (LLVM's `CSR_AArch64_RT_AllRegs`, the same in 19 and
+/// 22); `x8`, `x16`..`x18` and `q0`..`q7` stay as `ccc` has them.
+const ALL_V: std::ops::Range<u8> = 8..32;
+/// Where a `preserve_allcc` function saves its registers: the general
+/// ones in the 64 bytes after the frame record (`x9` lowest), then the
+/// vector ones, 16 bytes each, `q8` lowest.
+const ALL_AREA: u32 = 16;
+const ALL_V_AREA: u32 = ALL_AREA + 64;
+const ALL_SIZE: u32 = 64 + 16 * 24;
+/// The bytes [`save_all`] emits: four general stores and twelve pairs.
+const ALL_BYTES: u32 = 4 * (4 + 12);
+
+/// Whether the function being compiled is `preserve_allcc`.
+fn is_preserve_all(cx: &FnCx<'_, A64>) -> bool {
+    matches!(
+        cx.module.symbol(cx.body.symbol()).kind(),
+        hod_ir::SymbolKind::Function { cc: hod_ir::CallConv::PRESERVE_ALL, .. }
+    )
+}
+
+/// `Target::assign` for `preserve_allcc`: arguments and results travel
+/// as for `ccc`; only the callee-saved set differs. `None` for another
+/// convention.
+pub fn assign_preserve_all(
+    types: &TypeTable,
+    sig: &hod_cg::abi::Sig<'_>,
+    out: &mut hod_cg::abi::Assignment,
+) -> Option<Result<(), hod_cg::abi::AbiUnsupported>> {
+    (sig.cc == hod_ir::CallConv::PRESERVE_ALL).then(|| {
+        crate::abi::assign(types, &hod_cg::abi::Sig { cc: hod_ir::CallConv::C, ..*sig }, out)
+    })
+}
+
+/// The vector register pairs of [`ALL_V`], with each pair's offset from
+/// `x29`.
+fn all_v_pairs() -> impl Iterator<Item = (VReg, VReg, i64)> {
+    ALL_V.step_by(2).filter_map(|n| {
+        let at = i64::from(ALL_V_AREA) + 16 * i64::from(n - ALL_V.start);
+        Some((VReg::new(n)?, VReg::new(n + 1)?, at))
+    })
+}
+
+/// From `frame::begin`, right after `mov x29, sp`: a `preserve_allcc`
+/// function stores `x9`..`x15` and `q8`..`q31` in its save area. Every
+/// lowering may write them and every call clobbers them, so all are
+/// saved (`llc` saves those its allocator touched, which at `-O0` with a
+/// call is all of them).
+///
+/// # Errors
+/// What `alloc_slot` reports.
+pub fn save_all(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
+    if !is_preserve_all(cx) {
+        return Ok(());
+    }
+    if cx.alloc_slot(u64::from(ALL_SIZE), 16)? != FrameRef::Local(ALL_AREA) {
+        return cx.bug("the preserve_all save area is not after the frame record");
+    }
+    for (index, pair) in tail2::PRESERVED.chunks(2).enumerate() {
+        let at = i64::from(ALL_AREA) + 16 * index as i64;
+        match *pair {
+            [a, b] => put(cx, mc::stp_off(Size::X, a.zr(), b.zr(), crate::common::FP, at)),
+            [a] => put(cx, mc::str_off(MemSize::X, a.zr(), crate::common::FP, at)),
+            _ => {}
+        }
+    }
+    for (a, b, at) in all_v_pairs() {
+        put(cx, mc::stp_fp_off(mc::VPairSize::Q, a, b, crate::common::FP, at));
+    }
+    Ok(())
+}
+
+/// The rules saying where [`save_all`] saved each register, given the
+/// CFA is `x29 + frame`: from `after_prologue` plus the bytes of the
+/// stores in `end`, and again (`None`) in the body rows a tail exit
+/// restates. A vector register's DWARF number is 64 plus its index.
+///
+/// # Errors
+/// What `cfi_at` reports.
+pub fn all_rows(cx: &mut FnCx<'_, A64>, after_prologue: Option<u32>, frame: u32) -> CgResult<()> {
+    if !is_preserve_all(cx) {
+        return Ok(());
+    }
+    let general = tail2::PRESERVED
+        .iter()
+        .enumerate()
+        .map(|(index, reg)| (u16::from(reg.index()), ALL_AREA as i32 + 8 * index as i32));
+    let vector = ALL_V.map(|n| (64 + u16::from(n), (ALL_V_AREA + 16 * u32::from(n - 8)) as i32));
+    for (reg, saved) in general.chain(vector) {
+        let op = hod_cg::CfiOp::Offset { reg, cfa_offset: saved - frame as i32 };
+        match after_prologue {
+            Some(at) => cx.cfi_at(at + ALL_BYTES, op)?,
+            None => cx.cfi(op),
+        }
+    }
+    Ok(())
+}
+
+/// From `frame::teardown`, before the frame record is reloaded: the
+/// registers [`save_all`] saved, reloaded, each rule back to "same
+/// value".
+pub fn restore_all(cx: &mut FnCx<'_, A64>) {
+    if !is_preserve_all(cx) {
+        return;
+    }
+    for (index, pair) in tail2::PRESERVED.chunks(2).enumerate() {
+        let at = i64::from(ALL_AREA) + 16 * index as i64;
+        match *pair {
+            [a, b] => put(cx, mc::ldp_off(Size::X, a.zr(), b.zr(), crate::common::FP, at)),
+            [a] => put(cx, mc::ldr_off(Load::X, a.zr(), crate::common::FP, at)),
+            _ => {}
+        }
+    }
+    for (a, b, at) in all_v_pairs() {
+        put(cx, mc::ldp_fp_off(mc::VPairSize::Q, a, b, crate::common::FP, at));
+    }
+    for reg in tail2::PRESERVED {
+        cx.cfi(hod_cg::CfiOp::Restore { reg: u16::from(reg.index()) });
+    }
+    for n in ALL_V {
+        cx.cfi(hod_cg::CfiOp::Restore { reg: 64 + u16::from(n) });
+    }
 }

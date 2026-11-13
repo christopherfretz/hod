@@ -194,6 +194,9 @@ impl Target for A64 {
         if let Some(assigned) = crate::tail2::assign_preserve_most(types, sig, out) {
             return assigned;
         }
+        if let Some(assigned) = crate::tail3::assign_preserve_all(types, sig, out) {
+            return assigned;
+        }
         abi::assign(types, sig, out)
     }
 

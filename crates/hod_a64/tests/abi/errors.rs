@@ -63,6 +63,8 @@ fn every_name() {
     // WP-101: `[2 x i128]` fits the registers as LLVM agrees; five do not.
     let wide_array = array(i128, 5);
     let bfloat_array = array(TypeId::BFLOAT, 2);
+    let mut bfloat_late = vec![(TypeId::FLOAT, NONE); 7];
+    bfloat_late.push((bfloat_array, NONE));
     let one_long = array(i64, 1);
     let one_quad = array(TypeId::FP128, 1);
     let many_bytes = array(i8, u64::from(MAX_PIECES) + 1);
@@ -157,7 +159,8 @@ fn every_name() {
         ("abi:mask-wide", refusal(&t, c, void, &[(v65i1, NONE)], None)),
         ("abi:mask-wide", refusal(&t, c, (v128i1, NONE), &[], None)),
         ("abi:wide-int-array", refusal(&t, c, void, &[(wide_array, NONE)], None)),
-        ("abi:bfloat-array", refusal(&t, c, void, &[(bfloat_array, NONE)], None)),
+        // WP-101: refused only when it does not fit the registers left.
+        ("abi:bfloat-array", refusal(&t, c, void, &bfloat_late, None)),
         ("abi:vector-array", refusal(&t, c, void, &[(quad_vectors, NONE)], None)),
         ("abi:vector-array", refusal(&t, c, void, &[(scalarized_vectors, NONE)], None)),
         (

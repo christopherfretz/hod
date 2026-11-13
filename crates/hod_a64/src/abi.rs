@@ -368,7 +368,7 @@ struct LaneLeaf {
 impl Leaf {
     /// Whether piece `piece` starts an integer wider than a register.
     fn split_at(&self, piece: u32) -> bool {
-        self.split != 0 && piece % self.split == 0
+        self.split != 0 && piece.is_multiple_of(self.split)
     }
 
     fn one(class: Class, size: u32) -> Leaf {
@@ -408,19 +408,20 @@ impl Leaf {
 /// registers left (an ordinary `i128`: `None` inside); several members
 /// when all fit in consecutive registers from the next one, without the
 /// even-register rule (a block). Anything else, or wider members, is
-/// `None` outside: [`WIDE_INT_ARRAY`].
-fn wide_int_array(state: &mut State, leaf: &Leaf, leaves: u64) -> Option<Option<Block>> {
-    if leaf.count != 2 || leaf.split != 2 {
-        return None;
-    }
+/// [`WIDE_INT_ARRAY`].
+fn wide_int_array(state: &mut State, leaf: &Leaf, leaves: u64) -> Abi<Option<Block>> {
     let next = u64::from(state.ngrn);
-    if leaves == 1 {
-        return (next % 2 == 0 || next + 2 > u64::from(ARG_REGS)).then_some(None);
+    let agreed = leaf.count == 2
+        && leaf.split == 2
+        && if leaves == 1 {
+            next.is_multiple_of(2) || next + 2 > u64::from(ARG_REGS)
+        } else {
+            next + 2 * leaves <= u64::from(ARG_REGS)
+        };
+    if !agreed {
+        return no(WIDE_INT_ARRAY);
     }
-    if next + 2 * leaves > u64::from(ARG_REGS) {
-        return None;
-    }
-    Some(Some(state.block(Class::X, 2 * leaves, 16)))
+    Ok((leaves > 1).then(|| state.block(Class::X, 2 * leaves, 16)))
 }
 
 /// §4.3 (WP-101): the pieces of an argument or result that is not an
@@ -921,11 +922,8 @@ fn assign_value(
             Class::Bf if u64::from(state.nsrn) + leaves > u64::from(ARG_REGS) => {
                 return no(BFLOAT_ARRAY);
             }
-            Class::X if leaf.split != 0 => match wide_int_array(state, &leaf, leaves) {
-                // WP-101: the placements every configuration agrees on.
-                Some(placed) => block = placed,
-                None => return no(WIDE_INT_ARRAY),
-            },
+            // WP-101: the placements every configuration agrees on.
+            Class::X if leaf.split != 0 => block = wide_int_array(state, &leaf, leaves)?,
             // A vector passed in several registers: LLVM's two instruction
             // selectors disagree about a block of them.
             _ if leaf.count > 1 => return no(VECTOR_ARRAY),

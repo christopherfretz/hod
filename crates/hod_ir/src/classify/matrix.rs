@@ -602,7 +602,13 @@ const CC: [SupportRow; 15] = [
         todo(X64),
         "assigned as `ccc`; the callee also saves `x9`..`x15` (WP-095)",
     ),
-    a64("cc:preserve_allcc", LATER, ""),
+    // WP-101.
+    row(
+        "cc:preserve_allcc",
+        ON,
+        todo(X64),
+        "assigned as `ccc`; the callee also saves `x9`..`x15` and `q8`..`q31` whole",
+    ),
     row("cc:swiftcc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     row("cc:cxx_fast_tlscc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
     a64("cc:tailcc", LATER, ""),

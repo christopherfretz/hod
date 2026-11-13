@@ -1742,6 +1742,7 @@ that refused it before (WP-084's "stays refused" list is settled here).
     an operand): `spec/ir.md` §4.2 keeps it an `Expr`; no ELF data
     relocation is `-S`, and as an operand it needs a normal form of its
     own and a lowering (`neg` of the address). One corpus module.
+    (WP-101 gives it both, below.)
   - `metadata-arg:llvm.read_volatile_register.i64`: the register name is
     a metadata operand, which the IR does not carry for intrinsics
     (BACKLOG WP-064) and `hod_ll`'s body reader would have to read.
@@ -1755,6 +1756,7 @@ that refused it before (WP-084's "stays refused" list is settled here).
     `debug:dbg-value`.
   - `cc:preserve_allcc`, `cc:79` (`win64cc`) and `cc:aarch64_vector_pcs`
     (WP-082), which the one `preserve_mostcc` corpus module also uses.
+    (`preserve_allcc` since WP-101, below.)
 
 #### The short tail, third part (WP-101)
 
@@ -1831,6 +1833,17 @@ that refused it before (WP-084's "stays refused" list is settled here).
   `tail3::neg_addr`): the symbol's address with `offset - addend` added,
   by the symbol access of §7.4, then `neg`. Data and aggregate operands
   are `init:neg-addr`.
+- **`preserve_allcc`**, as caller and callee, done as `preserve_mostcc`
+  above (`tail3::assign_preserve_all`, `save_all`, `all_rows`,
+  `restore_all`, one hook each in `target.rs` and `frame.rs`): assigned
+  as `ccc`; a callee also saves `x9`..`x15` and the whole of `q8`..`q31`
+  (LLVM's `CSR_AArch64_RT_AllRegs`, the same in 19 and 22; `x8`,
+  `x16`..`x18` and `q0`..`q7` are not preserved) in 448 bytes after the
+  frame record (`x9` lowest, then `q8` lowest, `stp` pairs), with one
+  `DW_CFA_offset` per register after the stores (a vector register's
+  DWARF number is 64 plus its index, as `llc`'s `.cfi_offset b8`), and
+  reloads them with `DW_CFA_restore` in every exit sequence. All are
+  saved, as `llc -O0` saves them in a function with a call.
 
 #### 5.5.2 Target features (WP-043)
 

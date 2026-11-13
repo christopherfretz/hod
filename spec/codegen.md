@@ -2970,9 +2970,18 @@ the coroutine machine frame and clobbers x19 after saving it.
 
 *The facade.* `classify` accepts `presplitcoroutine`, `type:token` and
 the body intrinsics on AArch64; the session refuses a body by the plan's
-`coro:*` name before code generation, and a coroutine in a module that
-writes debug information as `coro:debug-info` until WP-108 describes its
-frame.
+`coro:*` name before code generation. (`coro:debug-info`, WP-106's
+refusal of a coroutine in a module with debug information, is lifted by
+WP-108.)
+
+*Debug information* (WP-108, `spec/dwarf.md` §6.16). The target's
+obligations, so that one location per variable holds at every pc:
+the prologue of a coroutine body stores 0 to the frame word before any
+other code (it stays 0 until `coro.begin` writes the frame's address);
+each stub calls `FnCx::coro_stub_ready` once the mode and frame words are
+written, which places the stub's `prologue_end` row; the stubs stay inside
+the body's subprogram range. `hod_cg` (`FnCx::coro_vars`, from
+`finish_vars`) rewrites the body's variable rows onto the frame word.
 
 ## 8. The `Target` trait
 

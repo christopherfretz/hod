@@ -90,6 +90,13 @@ pub fn save(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
     cx.state.frame.coro.saved_at = cx.offset();
     let mut at = Cursor::frame(cx, words.mode, X16);
     store_gpr_at(cx, MemSize::X, mc::RegZr::ZR, &mut at);
+    // WP-108 (debug hook): the frame word is 0 until `coro.begin`, so
+    // that a variable's location can tell the ramp before the heap frame
+    // exists from every later point (`hod_dwarf::CoroPlace`).
+    if cx.is_coroutine() {
+        let mut word = Cursor::frame(cx, words.frame, X16);
+        store_gpr_at(cx, MemSize::X, mc::RegZr::ZR, &mut word);
+    }
     if !cx.is_coroutine() {
         put(cx, mc::mov_sp(Size::X, X19.sp(), FP));
     }
@@ -167,6 +174,8 @@ pub fn stubs(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
         store_gpr_at(cx, MemSize::X, X16.zr(), &mut mode);
         let mut word = Cursor::frame(cx, words.frame, X17);
         store_gpr_at(cx, MemSize::X, Reg::X0.zr(), &mut word);
+        // WP-108 (debug hook): the stub's `prologue_end`.
+        cx.coro_stub_ready();
         mov_imm(cx, Size::W, Reg::X0, which as u64);
         let mut index = Cursor::at_reg(X19, i64::from(layout.index), X17);
         load_gpr_at(cx, Load::W, X16, &mut index);

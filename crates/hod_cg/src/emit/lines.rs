@@ -85,6 +85,9 @@ pub(super) struct Placed {
     pub(super) size: u32,
     /// Its frame.
     pub(super) frame: FrameDesc,
+    /// A coroutine's entry stubs (WP-108): where they start and end, and
+    /// where each one's frame is built.
+    pub(super) stubs: Option<([u32; 3], [u32; 2])>,
 }
 
 fn dwarf_err(error: hod_dwarf::Error) -> CgError {
@@ -225,7 +228,7 @@ impl<'m> DebugLines<'m> {
         vars: &[VarRow],
         placed: Placed,
     ) -> CgResult<()> {
-        let Placed { section, offset, size, frame } = placed;
+        let Placed { section, offset, size, frame, stubs } = placed;
         let subprogram = match module.symbol(sym).kind() {
             SymbolKind::Function { subprogram, .. } => subprogram,
             _ => None,
@@ -257,6 +260,7 @@ impl<'m> DebugLines<'m> {
                 VarPlace::Frame(o) => LocalPlace::Frame(o),
                 VarPlace::FrameIndirect(o) => LocalPlace::FrameIndirect(o),
                 VarPlace::Label(o) => LocalPlace::Label(o),
+                VarPlace::Coro(place) => LocalPlace::Coro(place),
                 VarPlace::Refused(name) => LocalPlace::Refused(name),
                 VarPlace::Slot(_) | VarPlace::Indirect(_) => LocalPlace::Refused(DEBUG_FRAME_PLACE),
             },
@@ -290,6 +294,9 @@ impl<'m> DebugLines<'m> {
         let made = function_rows(&f, &mut self.rows);
         self.transitions = transitions;
         made.map_err(dwarf_err)?;
+        if let Some((entries, ready)) = stubs {
+            stub_rows(&mut self.rows, scope, entries, ready);
+        }
         let u = &mut self.units[unit];
         let seq = Sequence { order: 0, symbol, addend, size, rows: &self.rows };
         u.program.push(u.plan.files().files().len(), &seq).map_err(dwarf_err)
@@ -356,6 +363,23 @@ impl<'m> DebugLines<'m> {
         hod_dwarf::write_unit_dies(obj, lines.sections.line, &inputs, self.split)
             .map_err(dwarf_err)?;
         Ok(())
+    }
+}
+
+/// The rows of a coroutine's entry stubs (WP-108, `spec/dwarf.md`
+/// §6.16), in place of what the body's last row said of them: each stub
+/// is at the subprogram's scope line, with a second row where its frame,
+/// mode and frame word are set, marked `prologue_end`, so that a debugger
+/// stepping into `F.resume` or `F.destroy` stops where the variables can
+/// be read, then steps on into the body at the re-entry point.
+fn stub_rows(rows: &mut Vec<Row>, scope: SourceLoc, entries: [u32; 3], ready: [u32; 2]) {
+    let first = entries[0];
+    rows.retain(|row| row.offset < first);
+    let at = |offset, flags| Row { offset, file: scope.file, line: scope.line, column: 0, flags };
+    let stmt = if scope.line != 0 { hod_dwarf::flags::IS_STMT } else { 0 };
+    for (entry, ready) in entries.into_iter().zip(ready) {
+        rows.push(at(entry, stmt));
+        rows.push(at(ready, stmt | hod_dwarf::flags::PROLOGUE_END));
     }
 }
 

@@ -50,6 +50,8 @@ pub enum LocalPlace {
     FrameIndirect(i64),
     /// The row is a label at this code offset.
     Label(u32),
+    /// A variable of a coroutine body (WP-108, §6.16).
+    Coro(crate::coro::CoroPlace),
     /// The code generator could not describe the row: the function is
     /// refused under this stable name.
     Refused(&'static str),
@@ -99,6 +101,8 @@ pub(crate) struct FnData {
 pub(crate) enum LocalWhat {
     /// A variable: frame offset, indirect, expression.
     Var { offset: i64, indirect: bool, expr: ExprId },
+    /// A variable of a coroutine body (WP-108): its place, expression.
+    CoroVar { place: crate::coro::CoroPlace, expr: ExprId },
     /// A block: its ranges in `UnitPlan::ranges`.
     Block { first: u32, count: u32 },
     /// A label at a code offset.
@@ -487,7 +491,8 @@ impl<'a> UnitPlan<'a> {
                     if n.align != 0 && (n.arg != 0 || n.name.is_empty()) {
                         return Err(unsupported(v.node, "debug:variable-alignment"));
                     }
-                    if let LocalPlace::Frame(_) | LocalPlace::FrameIndirect(_) = v.place
+                    if let LocalPlace::Frame(_) | LocalPlace::FrameIndirect(_) | LocalPlace::Coro(_) =
+                        v.place
                         && let Err(name) = check_expr(self.debug, v.expr)
                     {
                         return Err(unsupported(v.node, name));
@@ -668,6 +673,7 @@ impl<'a> UnitPlan<'a> {
                     self.code_addrs += 1;
                     LocalWhat::Label { offset }
                 }
+                LocalPlace::Coro(place) => LocalWhat::CoroVar { place, expr: v.expr },
                 LocalPlace::Refused(name) => return Err(unsupported(v.node, name)),
             };
             if class == 0
@@ -946,13 +952,12 @@ impl<'a> Writer<'a> {
         let l = *plan.local_data(die).ok_or(bad(node, "variable"))?;
         let fd = plan.funcs[l.func as usize];
         match (l.what, plan.debug.node(node)) {
-            (LocalWhat::Var { offset, indirect, expr }, DiNode::LocalVariable(v)) => {
+            (
+                what @ (LocalWhat::Var { expr, .. } | LocalWhat::CoroVar { expr, .. }),
+                DiNode::LocalVariable(v),
+            ) => {
                 self.expr.clear();
-                self.expr.push(DW_OP_FBREG);
-                write_sleb(&mut self.expr, offset);
-                if indirect {
-                    self.expr.push(DW_OP_DEREF);
-                }
+                place_ops(&mut self.expr, what);
                 let mut ops = std::mem::take(&mut self.expr);
                 write_ops(plan, expr, &mut ops);
                 self.expr = ops;
@@ -1058,4 +1063,19 @@ pub(crate) fn cu_list_len(base: u32, sizes: impl Iterator<Item = u64>) -> usize 
         n += 1 + uleb_len(u64::from(base) + k as u64) + uleb_len(size);
     }
     n
+}
+
+/// The location ops of a variable's place, before its `DIExpression`'s.
+fn place_ops(out: &mut Vec<u8>, what: LocalWhat) {
+    match what {
+        LocalWhat::Var { offset, indirect, .. } => {
+            out.push(DW_OP_FBREG);
+            write_sleb(out, offset);
+            if indirect {
+                out.push(DW_OP_DEREF);
+            }
+        }
+        LocalWhat::CoroVar { place, .. } => crate::coro::location(out, place),
+        _ => {}
+    }
 }

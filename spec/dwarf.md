@@ -1519,6 +1519,17 @@ For each, the scope comes first, then the entity's DIE if it has none
 (a namespace, a type, a function declaration, a global without a
 location), then the import: decl, `import`, `name`.
 
+Checked against `llc` for every shape clang 19 and 22 write (WP-111,
+`crates/hod_a64/tests/dies_followups.rs`
+`imports_of_every_shape_match_llc`, `data/dies_followups/imports.cpp`):
+using-directives at unit, namespace, function and nested block scope,
+using-declarations of a function, a variable and a type at each of
+those scopes, namespace aliases at unit and block scope, and the C
+library's imports into `std` from `<cstdlib>`, `<cmath>`, `<cstring>`
+and `<vector>`: 786 imports in 3 trees (clang 19 by `llc` 19 and 22,
+clang 22 by `llc` 22), all equal, without a code change. kiln++ writes
+no `DIImportedEntity`.
+
 **Specifications** (`getOrCreateSubprogramDIE`,
 `applySubprogramDefinitionAttributes`):
 - a member function's declaration that its class does not list (a

@@ -289,7 +289,7 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:stack-probe-size` | supported | supported | a parameter of `attr:probe-stack`, read with it (WP-186) |
 | `attr:probe-stack` | supported | supported | `inline-asm`: frames and `alloca`s probed page by page (`spec/codegen.md` §5.6.27, WP-186); other values are `attr:probe-stack-function` |
 | `attr:split-stack` | not-implemented | not-implemented | unplanned |
-| `attr:zero-call-used-regs` | not-implemented | not-implemented | unplanned |
+| `attr:zero-call-used-regs` | not-implemented | not-implemented | unplanned. `skip` accepted: it zeroes nothing (WP-186) |
 | `attr:stack-protector-buffer-size` | supported | supported | a parameter of `attr:ssp`, read with it |
 | `attr:min-legal-vector-width` | supported | supported | read by x86 only |
 | `attr:no-jump-tables` | supported | supported | hod emits no jump table (`spec/codegen.md` §6.2) |

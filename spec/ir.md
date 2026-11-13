@@ -1067,6 +1067,9 @@ does not have is `Rejected`. The lists below are the table, in full.
   are `ON` (`attr:probe-stack`, `attr:stack-probe-size`); what the
   targets build is `spec/codegen.md` §5.6.27. kiln accepts
   `-fstack-clash-protection` and writes neither attribute.
+  `"zero-call-used-regs"="skip"` zeroes nothing and is accepted (the
+  classifier skips its row); every other value is refused as
+  `attr:zero-call-used-regs` (WP-186).
 
 **Dropped**, because only an optimizer (or a pass that runs before any
 backend) reads them:

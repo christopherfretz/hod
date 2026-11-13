@@ -347,6 +347,48 @@ fn text_and_bitcode_give_the_same_object() {
     }
 }
 
+/// `"zero-call-used-regs"="skip"` zeroes nothing: `llc` 19 and 22 give the
+/// same object with it as without it, and so does hod; another value
+/// stays refused by name.
+#[test]
+fn zero_call_used_regs_skip_changes_nothing() {
+    let dir = Scratch::new("stack-probe-zero");
+    let body = |attrs: &str| {
+        format!(
+            "declare i64 @g(i64, double)\n\
+             define i64 @f(i64 %a, double %b) #0 {{\n\
+             \x20 %c = call i64 @g(i64 %a, double %b)\n\
+             \x20 %d = add i64 %c, %a\n\
+             \x20 ret i64 %d\n}}\n\
+             attributes #0 = {{ nounwind \"frame-pointer\"=\"all\" {attrs} }}\n"
+        )
+    };
+    for target in Target::ALL {
+        let plain = with_target(&body(""), target);
+        let skip = with_target(&body("\"zero-call-used-regs\"=\"skip\""), target);
+        let ours = compile(plain.as_bytes()).expect("hod compiles the plain function");
+        assert!(compile(skip.as_bytes()).expect("hod accepts skip") == ours, "{}", target.name());
+        for major in LLVM_MAJORS {
+            let name = format!("llc{major}-{}", target.name());
+            let Some(a) = llc_object(&dir, major, &plain, &format!("{name}-plain.o")) else {
+                continue;
+            };
+            let b = llc_object(&dir, major, &skip, &format!("{name}-skip.o")).expect("llc");
+            let (a, b) = (std::fs::read(a).unwrap(), std::fs::read(b).unwrap());
+            assert!(a == b, "llc {major}, {}: skip changes the object", target.name());
+        }
+        for value in ["used-gpr", "all"] {
+            let text = with_target(&body(&format!("\"zero-call-used-regs\"=\"{value}\"")), target);
+            let error = compile(text.as_bytes()).unwrap_err();
+            assert!(
+                error.contains("attr:zero-call-used-regs"),
+                "{}: {value}: {error}",
+                target.name()
+            );
+        }
+    }
+}
+
 /// Another `probe-stack` value and a probe size hod does not take are
 /// refused by name; `"stack-probe-size"` alone is accepted.
 #[test]

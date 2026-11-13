@@ -794,7 +794,7 @@ const ATTR_STRING: [SupportRow; FnStr::ALL.len()] = [
         "`inline-asm`: frames and `alloca`s probed page by page (`spec/codegen.md` §5.6.27, WP-186); other values are `attr:probe-stack-function`",
     ),
     a64("attr:split-stack", LATER, ""),
-    a64("attr:zero-call-used-regs", LATER, ""),
+    a64("attr:zero-call-used-regs", LATER, "`skip` accepted: it zeroes nothing (WP-186)"),
     both("attr:stack-protector-buffer-size", ON, "a parameter of `attr:ssp`, read with it"),
     both("attr:min-legal-vector-width", ON, "read by x86 only"),
     both("attr:no-jump-tables", ON, "hod emits no jump table (`spec/codegen.md` §6.2)"),

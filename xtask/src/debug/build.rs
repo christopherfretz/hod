@@ -17,6 +17,9 @@ pub const REFERENCE: [&str; 3] = ["-O0", "-global-isel=0", "-fast-isel=0"];
 /// What the front ends are given besides the test's `cflags`.
 pub const FRONTEND_FLAGS: [&str; 4] = ["-g", "-O0", "-S", "-emit-llvm"];
 
+/// What a `pre-opt: checks` test's front end is given besides (WP-108).
+pub const PRE_OPT_FLAGS: [&str; 2] = ["-Xclang", "-disable-llvm-passes"];
+
 /// The tools of a debugger run.
 #[derive(Clone, Debug)]
 pub struct Tools {
@@ -105,7 +108,11 @@ pub fn frontend_ir(
             }
             c.arg("-fno-crash-diagnostics");
         }
-        c.args(FRONTEND_FLAGS).args(&test.cflags).arg(&file).arg("-o").arg(out);
+        c.args(FRONTEND_FLAGS).args(&test.cflags);
+        if test.pre_opt {
+            c.args(PRE_OPT_FLAGS);
+        }
+        c.arg(&file).arg("-o").arg(out);
         c.current_dir(dir).env("TMPDIR", tmp).env("LC_ALL", "C");
     };
     let output = process::run(compiler, configure, b"", limits)?;
@@ -163,6 +170,23 @@ pub fn llc_object(llc: &Path, ir: &Path, object: &Path, limits: Limits) -> Resul
     match output.end {
         End::Exit(0) if object.is_file() => Ok(()),
         _ => Err(failure("llc", &output, limits)),
+    }
+}
+
+/// `opt -passes='default<O0>'` (the `opt` beside `llc`) on `ir` into
+/// `out`: what `llc` is given in a `pre-opt: checks` test.
+pub fn opt_ir(llc: &Path, ir: &Path, out: &Path, limits: Limits) -> Result<(), String> {
+    let opt = tools::opt_beside(llc);
+    if !opt.is_file() {
+        return Err(format!("no opt beside '{}'", llc.display()));
+    }
+    let configure = |c: &mut Command| {
+        c.args([crate::irdiff::engine::PRE_OPT_PASSES, "-S", "-o"]).arg(out).arg(ir);
+    };
+    let output = process::run(&opt, configure, b"", limits)?;
+    match output.end {
+        End::Exit(0) if out.is_file() => Ok(()),
+        _ => Err(failure("opt", &output, limits)),
     }
 }
 

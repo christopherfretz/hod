@@ -1913,21 +1913,27 @@ Evidence: `crates/hod_a64/tests/dies_split.rs` (§8.8),
 (`spec/codegen.md` §7.6), where `llc` sees `CoroSplit`'s clones. The
 debug information follows hod's shape, not the clones', by these rules.
 
-**R1. One subprogram.** The body's `DISubprogram` is written once,
-as for any function. Its range covers the body *and* the stubs
-`F.resume` and `F.destroy` (they are emitted after the body, inside its
-DIE's `high_pc`; the ELF symbol `F` ends at the first stub, §7.6), so a
-debugger stopped in a stub names the coroutine. No DIE carries the
-`F.resume`/`F.destroy` names: they are the local `STT_FUNC` symbols only,
-which is what `break F.resume` (lldb `-n _Z1Fi.resume`) resolves. There
-is no `F.cleanup`: hod never elides the frame's allocation.
+**R1. One subprogram, the body only.** The body's `DISubprogram` is
+written once, as for any function, and its `DW_AT_high_pc` ends where the
+stubs `F.resume` and `F.destroy` start (as the ELF symbol `F` does,
+§7.6): no DIE describes the stubs. A stub builds the machine frame
+before it writes the frame word, so before its ready point no location
+of R3 holds there, and a range that claimed them would show another
+frame's bytes (gdb's `break F` resolves the stub's symbol and stops at
+its entry). Described by no DIE, the stubs are what the `.await_suspend`
+wrappers are: code with line rows and CFI, named by their local
+`STT_FUNC` symbols (`count(int) [clone .resume]` in gdb), which is what
+`break F.resume` (lldb `-n _Z1Fi.resume`) resolves. There is no
+`F.cleanup`: hod never elides the frame's allocation. The unit's range
+covers the stubs.
 
 **R2. The stubs' rows.** Each stub gets two `is_stmt` rows at the
 subprogram's `scopeLine`: at its entry, and with `prologue_end` at the
 **ready point** (`FnCx::coro_stub_ready`, after the stub has set the mode
-and frame words), so a breakpoint on the stub or a `step` into
-`handle.resume()` stops where every variable already reads correctly.
-The body's own rows after the first stub are dropped.
+and frame words), so a breakpoint on the stub stops past its prologue
+and a `step` into `handle.resume()` goes on into the body, where every
+variable reads correctly. The body's own rows after the first stub are
+dropped.
 
 **R3. Locations on the frame word.** A variable's location is one
 expression valid at every pc of the body, in the ramp and in a resumed
@@ -1940,6 +1946,7 @@ stubs the frame's address):
 | a heap slot or a value homed in the heap (`FrameRef::Coro`) | `DW_OP_fbreg word, DW_OP_deref, DW_OP_plus_uconst o` (LLVM's clone expression) |
 | copied at `coro.begin` (a shadowed slot or value, the promise) | `fbreg word, deref, dup, bra H, drop, fbreg s, skip E, H: plus_uconst o, E:`: the shadow while the word is 0, the heap after |
 | declared twice, on a machine-stack slot and on a heap slot (clang's parameter and its frame copy) | one DIE, the copied form above; the second declaration is dropped |
+| a parameter on a machine-stack slot whose frame copy is declared as an artificial variable of the same name and scope on a heap slot (kiln) | both DIEs the copied form, with the parameter's slot and the copy's heap offset: the body's `n` is the copy ([dcl.fct.def.coroutine]), and gdb reads a parameter through the variable of its name |
 | a parameter on a machine-stack slot only (`!coro.outside.frame`) | `fbreg mode, deref, bra Z, fbreg s, skip 1, Z: lit0`: the slot in the ramp, address 0 in a resumed activation (the debugger says it cannot read it, rather than showing bytes the ramp never wrote there) |
 | any other machine-stack slot or home | §6.4 (`fbreg`), valid in the activation that wrote it, as any `-O0` local |
 
@@ -1961,11 +1968,15 @@ the sessions without them):
 - the `__coro_resume_N` labels with `DW_AT_LLVM_coro_suspend_idx` that
   `CoroSplit` adds to the clones (§6.14): pre-split IR has none, and hod
   does not synthesize them;
-- one subprogram per clone (`linkageName` `F.resume`), R1.
+- one subprogram per clone (`linkageName` `F.resume`), R1; describing
+  the code of a stub after its ready point would take `DW_AT_ranges` on
+  the subprogram families (a follow-up), and gains only the variables at
+  that one stop.
 
 **Permitted differences** (L7 `pre-opt: checks`, `spec/harness.md`):
 the frames' names (`count(int) [clone .resume]` against `count`), the
-breakpoints' location counts, the order of `info locals`, a variable
+breakpoints' location counts, a stop in a stub showing no variables
+(R1) where `llc`'s stops in its clone at the re-entry line, the order of `info locals`, a variable
 `llc`'s clone has no DIE for (a ramp-only local is "optimized out" or
 absent there, unreadable or readable in hod's), and one more stop of
 `next`/`step` at the clone's return line when a suspend returns to the

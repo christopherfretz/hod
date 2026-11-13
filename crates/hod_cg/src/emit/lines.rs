@@ -265,9 +265,12 @@ impl<'m> DebugLines<'m> {
                 VarPlace::Slot(_) | VarPlace::Indirect(_) => LocalPlace::Refused(DEBUG_FRAME_PLACE),
             },
         }));
+        // WP-108: a coroutine's subprogram ends where its stubs start
+        // (`spec/dwarf.md` §6.16 R1); its unit's range covers them.
+        let die_code = CodeSpan { size: stubs.map_or(code.size, |(e, _)| u64::from(e[0])), ..code };
         let input = FunctionInput {
             subprogram: sp,
-            code,
+            code: die_code,
             frame_base: frame.frame_base,
             scopes: &self.scopes,
             vars: &self.locals,

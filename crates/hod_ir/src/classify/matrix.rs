@@ -479,7 +479,13 @@ const DEBUG_ROWS: [SupportRow; 5] = [
          LLVM's 4): `hod_dwarf` writes DWARF 5 only",
     ),
     row("debug:subprogram", ON, todo(X64), "a function with a body and a `DISubprogram` (WP-087)"),
-    row("debug:slot-variables", ON, todo(X64), "a stack slot that is a source variable (WP-087)"),
+    row(
+        "debug:slot-variables",
+        ON,
+        todo(X64),
+        "a stack slot that is a source variable (WP-087); in a coroutine body, on the frame word \
+         (WP-108, `spec/dwarf.md` §6.16)",
+    ),
     row(
         "debug:locations",
         ON,
@@ -686,7 +692,8 @@ const ATTR_FLAG: [SupportRow; FnAttrs::FLAG_NAMES.len()] = [
         "attr:presplitcoroutine",
         ON,
         todo(X64),
-        "one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name (WP-106)",
+        "one body, the frame in the heap; what the plan refuses is refused by its `coro:*` name \
+         (WP-106); with `-g`, its variables on the frame word (WP-108)",
     ),
     a64("attr:sanitize_address", LATER, ""),
     a64("attr:sanitize_alloc_token", LATER, ""),

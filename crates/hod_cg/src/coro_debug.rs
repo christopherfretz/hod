@@ -13,13 +13,14 @@
 //! | a heap slot, or a value homed in the heap | `CoroAt::Heap` |
 //! | a slot or value copied at `coro.begin` (its shadow before, its heap place after) | `CoroAt::Copied` |
 //! | one variable declared on a machine-stack slot and on a heap slot (clang's parameter and its frame copy) | one row, `CoroAt::Copied` |
+//! | a parameter on a machine-stack slot, and its frame copy declared as an artificial variable of the same name and scope in the heap (kiln) | both `CoroAt::Copied` |
 //! | a parameter on a machine-stack slot only (`!coro.outside.frame`) | `CoroAt::Ramp`: written by the ramp only |
 //!
 //! Every other row keeps its place: a local on the machine stack is valid
 //! in the activation that wrote it, as any `-O0` local is.
 
 use hod_dwarf::{CoroAt, CoroPlace};
-use hod_ir::DiNode;
+use hod_ir::{DiFlags, DiNode};
 
 use crate::coro_body::CoroSlots;
 use crate::cx::FnCx;
@@ -103,18 +104,43 @@ impl<T: Target> FnCx<'_, T> {
             }
             i += 1;
         }
-        // A parameter on the machine stack only: the ramp's.
+        // A parameter on the machine stack only: the ramp's; or, when the
+        // front end declares its frame copy as an artificial variable of
+        // the same name and scope in the heap (kiln), both are that
+        // parameter, on the stack before `coro.begin` and in the heap after.
         let debug = &self.module.debug;
-        for (k, row) in rows.iter_mut().enumerate() {
+        let var = |id| match debug.node(id) {
+            DiNode::LocalVariable(v) => Some(v),
+            _ => None,
+        };
+        for k in 0..rows.len() {
             if merged.contains(&(start + k)) {
                 continue;
             }
-            if let VarPlace::Slot(stack @ FrameRef::Local(_)) = row.place
-                && let DiNode::LocalVariable(v) = debug.node(row.var)
-                && v.arg != 0
-                && let Some(stack) = base(stack)
-            {
-                row.place = coro(CoroAt::Ramp { stack, mode }, false);
+            let VarPlace::Slot(stack @ FrameRef::Local(_)) = rows[k].place else { continue };
+            let (Some(v), Some(stack)) = (var(rows[k].var), base(stack)) else { continue };
+            if v.arg == 0 {
+                continue;
+            }
+            let copy = rows.iter().position(|r| {
+                let heap = matches!(
+                    r.place,
+                    VarPlace::Coro(CoroPlace { at: CoroAt::Heap(_), indirect: false, .. })
+                );
+                heap && var(r.var).is_some_and(|c| {
+                    c.arg == 0
+                        && c.flags.contains(DiFlags::ARTIFICIAL)
+                        && c.name == v.name
+                        && c.scope == v.scope
+                })
+            });
+            match copy.map(|j| (j, rows[j].place)) {
+                Some((j, VarPlace::Coro(CoroPlace { at: CoroAt::Heap(heap), .. }))) => {
+                    let place = coro(CoroAt::Copied { heap, stack }, false);
+                    rows[k].place = place;
+                    rows[j].place = place;
+                }
+                _ => rows[k].place = coro(CoroAt::Ramp { stack, mode }, false),
             }
         }
         merged.sort_unstable();

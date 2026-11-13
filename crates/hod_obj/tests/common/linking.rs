@@ -92,7 +92,7 @@ impl Toolchain {
         let output = scratch.join(format!("{name}.o"));
         let mut command = Command::new(&self.driver);
         command.args(["-c", "-O1"]).args(flags).arg(&input).arg("-o").arg(&output);
-        let outcome = run_with(&mut command, &[], Duration::from_mins(1));
+        let outcome = run_with(&mut command, &[], Duration::from_mins(5));
         assert!(outcome.success(), "cannot compile {name}.c: {}", outcome.stderr_text());
         output
     }

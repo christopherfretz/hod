@@ -87,8 +87,10 @@ pub enum PartKind {
 /// One side of a [`PartKind::Lanes`] move: a register or a frame place.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LaneLoc {
-    /// A register: the place's register, or a general register holding
-    /// a mask's bits (bit `i` is element `i`).
+    /// A register: the place's register, or a register of the value's
+    /// class holding the value (a general register holding a mask's
+    /// bits, bit `i` element `i`; on AArch64 a vector register holding a
+    /// lone `<1 x i128>`, WP-167).
     Reg(PReg),
     /// A frame place: the place's stack slot, or the vector's image.
     Frame(crate::FrameRef),

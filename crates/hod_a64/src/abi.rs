@@ -62,7 +62,8 @@ const TYPE_X86_FP80: &str = "abi:type-x86_fp80";
 const SCALABLE_VECTOR: &str = "abi:scalable-vector";
 const TARGET_EXT_TYPE: &str = "abi:target-ext-type";
 const ADDRSPACE: &str = "abi:addrspace";
-const VECTOR_ELEMENT: &str = "abi:vector-element";
+/// A vector whose element is not one of §4.3's (`<2 x i7>`, `<1 x i256>`).
+pub const VECTOR_ELEMENT: &str = "abi:vector-element";
 /// A vector of more than 64 `i1` (§4.3): not passed (WP-082).
 pub const MASK_WIDE: &str = "abi:mask-wide";
 /// No longer reported (WP-082 passes these vectors as lanes); kept for
@@ -377,16 +378,26 @@ fn wide_int_array(state: &mut State, leaf: &Leaf, leaves: u64) -> Abi<Option<Blo
     Ok((leaves > 1).then(|| state.block(Class::X, 2 * leaves, 16)))
 }
 
-/// §4.3 (WP-101): the pieces of an argument or result that is not an
-/// aggregate. A lone `<1 x i128>` is a `Q`-register value
-/// (`spec/codegen.md` §2) that travels in two general registers, and the
-/// code generator moves no value between register classes:
-/// [`VECTOR_ELEMENT`]. In an aggregate it is memory, and passes.
+/// §4.3: the pieces of an argument or result that is not an aggregate.
+/// A lone `<1 x i128>` travels as an `i128` (two general registers under
+/// the even-register rule, or a 16-aligned stack slot, as `llc` 19 and 22
+/// pass it), but hod holds it in a `Q` register (`spec/codegen.md` §2):
+/// its two pieces are `Lanes` parts of one 64-bit limb each (WP-167), so
+/// that `vcall` moves them between the register classes. In an aggregate
+/// it is memory, and its pieces are plain bytes ([`vector_leaf`]).
 fn lone_leaf(types: &TypeTable, ty: TypeId) -> Abi<Leaf> {
     if let TypeKind::Vector { elem, len: 1 } = types.kind(ty)
         && matches!(types.kind(elem), TypeKind::Int(128))
     {
-        return no(VECTOR_ELEMENT);
+        return Ok(Leaf {
+            class: Class::X,
+            count: 2,
+            stride: 0,
+            size: 8,
+            last_size: 8,
+            split: 2,
+            lanes: Some(LaneLeaf { bits: 64, lane: 8, len: 2, each: true }),
+        });
     }
     leaf_of(types, ty)
 }

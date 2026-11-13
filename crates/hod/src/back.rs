@@ -15,7 +15,6 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use hod_a64::features;
 use hod_cg::{CgError, Chunk, ModuleEmitter, Scratch, compile_function};
 use hod_ir::{Arch, Body, FnStr, Module, SymbolKind};
 
@@ -133,12 +132,24 @@ fn compile_one(
         && let Some(string) = module.fn_attrs(attrs).string(FnStr::TargetFeatures)
     {
         let string = String::from_utf8_lossy(string);
-        if let Err(refused) = features::check(&string) {
-            let feature = refused.feature.to_owned();
-            return Err(Failure::Feature { reason: refused.reason, feature });
+        if let Err((reason, feature)) = check_features(module.target().arch(), &string) {
+            return Err(Failure::Feature { reason, feature: feature.to_owned() });
         }
     }
-    compile_function(&hod_a64::A64, module, body, &options, scratch, chunk).map_err(Failure::Cg)
+    match module.target().arch() {
+        Arch::Aarch64 => compile_function(&hod_a64::A64, module, body, &options, scratch, chunk),
+        Arch::X86_64 => compile_function(&hod_x64::X64, module, body, &options, scratch, chunk),
+    }
+    .map_err(Failure::Cg)
+}
+
+/// The target's judgement of a feature string (`spec/codegen.md` §5.5,
+/// §5.6.2): the first refused item, with its reason.
+fn check_features(arch: Arch, string: &str) -> Result<(), (&'static str, &str)> {
+    match arch {
+        Arch::Aarch64 => hod_a64::features::check(string).map_err(|r| (r.reason, r.feature)),
+        Arch::X86_64 => hod_x64::features::check(string).map_err(|r| (r.reason, r.feature)),
+    }
 }
 
 /// What one worker made: chunk index, then the chunk or the first
@@ -367,16 +378,13 @@ pub fn generate_with(
     threads: &Threads,
     report: &mut Report,
 ) -> Result<Vec<u8>, CompileError> {
-    if module.target().arch() == Arch::X86_64 {
-        return Err(Unsupported::module(Construct::CodegenNotImplemented).into());
-    }
     let cg = cg_options(options)?;
     check_split_dwarf(module, options)?;
     // `-mattr` applies to every function.
     for item in &options.features {
-        if let Err(refused) = features::check_one(item) {
+        if let Err((reason, _)) = check_features(module.target().arch(), item) {
             return Err(Unsupported {
-                construct: Construct::Named(refused.reason.into()),
+                construct: Construct::Named(reason.into()),
                 function: None,
                 detail: Some(item.clone()),
             }

@@ -205,7 +205,7 @@ const SENSITIVE: [(&str, &str, &str); 6] = [
     (inline_reason::LOCAL_ADDRESS, "  %a = alloca i32\n  ret ptr %a", ""),
     (
         inline_reason::FRAME_REGISTER_ASM,
-        // Only empty templates are compiled today (`call:inline-asm`).
+        // An empty template: independent of what `hod_asm` assembles.
         "  call void asm sideeffect \"\", \"~{x29}\"()\n  ret ptr null",
         "",
     ),

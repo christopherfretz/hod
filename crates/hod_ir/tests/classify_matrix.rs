@@ -214,8 +214,8 @@ fn support_flips_rows() {
     assert_eq!(flipped.clone().without(row).as_ref(), Some(shipped));
     assert_ne!(&flipped, shipped);
 
-    assert!(shipped.clone().with("inst:callbr").is_none(), "rejected by design");
-    assert!(shipped.clone().with_classes("inst:callbr", TypeClasses::ALL).is_none());
+    assert!(shipped.clone().with("attr:naked").is_none(), "rejected by design");
+    assert!(shipped.clone().with_classes("attr:naked", TypeClasses::ALL).is_none());
     assert!(shipped.clone().with("type:x86_fp80").is_none(), "not an AArch64 type");
     assert!(Support::shipped(Arch::X86_64).clone().with("type:x86_fp80").is_some());
 
@@ -716,4 +716,21 @@ fn the_census_counts_occurrences_and_symbols() {
     let mut again = census.clone();
     classifier.census_body(&program.m, &program.bodies[1], &mut again);
     assert_eq!(again.get("inst:va_arg").map(|e| (e.occurrences, e.symbols)), Some((4, 2)));
+}
+
+// WP-103: inline assembly of instructions and `asm goto` are supported on
+// AArch64 (`spec/asm.md`, `spec/codegen.md` §5.5.3); module-level
+// assembly an assembler must read is not yet. `RICH_BODY` has no
+// inline assembly, so `A64_SUPPORTED_BODY` is unchanged; the rows are
+// checked here.
+#[test]
+fn inline_assembly_rows_of_wp_103() {
+    let a64 = Support::shipped(Arch::Aarch64);
+    let x64 = Support::shipped(Arch::X86_64);
+    for row in ["call:inline-asm", "inst:callbr"] {
+        assert_eq!(a64.supports(row), Some(true), "{row}");
+        assert_eq!(x64.supports(row), Some(false), "{row}");
+        assert!(x64.clone().with(row).is_some(), "{row}: x86-64 may switch it on");
+    }
+    assert_eq!(a64.supports("module:asm"), Some(false));
 }

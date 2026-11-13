@@ -168,7 +168,7 @@ GitHub Actions runs the gate on real hardware of both architectures
 | tools | LLVM 19 and 22, binutils, mold, gdb, lldb-19, the x86-64 cross toolchain, `qemu-user` | the same, with the AArch64 cross toolchain |
 | AArch64 programs under test | native | `qemu-aarch64 -cpu cortex-a53` |
 | x86-64 programs under test | `qemu-x86_64 -cpu qemu64,-sse3,-cx16,-lahf-lm` | native (the runner's CPU, more than the baseline) |
-| jobs | `kiln`, `lints`, `test`, `irdiff`, fan-in `check` | the same, fan-in `check-x86_64` |
+| jobs | `kiln`, `lints`, `test <part>` (five parts, `xtask::ci::TEST_PARTS`), `irdiff`, fan-in `check` | the same, fan-in `check-x86_64` |
 | not run | `roundtrip` (no corpus) | the same |
 
 Every job sets `HOD_REQUIRE_TOOLS=1`. On the x86-64 runner an x86-64

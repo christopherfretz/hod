@@ -251,7 +251,7 @@ pub mod abbrev;                    // the fixed table: FAMILIES, BASES, CODE_END
 `UnitPlan::new` builds a unit's DIE tree from the tables alone (§6.2);
 it is read-only afterwards and can be shared by every worker. Its
 `files()` is the unit's `FileTable` (the unit's file, then every `DiFile`
-in id order), whose `header()` is what `write_debug_line` takes, so the
+in the order of its contents, §4.4), whose `header()` is what `write_debug_line` takes, so the
 `DW_AT_decl_file` numbers and the line table agree. `write_debug_info`
 writes every unit's DIEs and its contributions to the string, address
 and range sections, with all relocations, and returns the sections; its
@@ -355,11 +355,17 @@ applies `llc`'s rules (verified on `llc` 19 and 22):
   reachable by `add` and returns 0.
 
 Which files are in the table and in what order is the bridge's decision
-(§5.7): every `DiFile` node of the unit, in `DiId` order. `llc` numbers
-files in order of first use while it writes, which a parallel writer
-cannot know in advance, so hod's file indices (and so its tables' bytes)
-differ from `llc`'s when the orders differ; the decoded rows name the
-same files.
+(§5.7): every `DiFile` node of the unit, in the order of their contents
+(the byte strings `directory`, then `filename`, then the MD5 checksum,
+none first, then the embedded source, none first), each node's index
+the one `add` returns for it. Never in `DiId` order (WP-192): ids are
+the producer's numbering, and the text of a module and its bitcode
+number their metadata differently (the text as its author wrote it,
+the bitcode in `llvm-as`'s enumeration), so a table in id order gave
+one module two objects. `llc` numbers files in order of first use while
+it writes, which a parallel writer cannot know in advance, so hod's file
+indices (and so its tables' bytes) differ from `llc`'s when the orders
+differ; the decoded rows name the same files.
 
 ### 4.5 The program
 
@@ -539,8 +545,8 @@ of the function's code, before any padding to the next function, as in
 
 In `emit_module` (`crates/hod_cg/src/emit/lines.rs`, §9): for each
 compile unit that is written, its `UnitPlan`, whose `FileTable` (the
-unit's file, then every `DiFile` in `DiId` order, §4.4) is the line
-table's; for each function with a subprogram of that unit, as it is
+unit's file, then every `DiFile` in the order of its contents, §4.4) is
+the line table's; for each function with a subprogram of that unit, as it is
 placed, `function_rows` into one `Vec<Row>` reused across functions, and
 the rows encoded at once as its own sequence into the unit's
 `LineProgram`, relative to the section symbol of its code plus its

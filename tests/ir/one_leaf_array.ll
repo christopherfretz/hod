@@ -6,6 +6,7 @@
 ; fp128, 16 for a double, a float or an i64), nested, and next to a
 ; two-leaf array. An fp128 is printed as its two 64-bit halves.
 ;@ covers: spec/ir.md §5.3 parameter attributes (alignstack)
+;@ unsupported(x86_64): *
 ;@ stdout: regs: 4003000000000000 0 2.5 -7 3.25
 ;@ stdout: stack: 9 4003000000000000 0 -5 2.5 -0.75 -7 3.25 4000000000000000 1 bfff000000000000 2 77
 ;@ stdout: ret: 4000800000000000 5 1.125

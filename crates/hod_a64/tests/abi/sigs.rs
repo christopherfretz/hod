@@ -185,8 +185,8 @@ impl Case {
     }
 
     /// Whether an argument is an array of one leaf whose stack alignment
-    /// `A` (§3.3) is not the leaf's own slot size. SelectionDAG passes it
-    /// as a block aligned to `A`, GlobalISel as a plain leaf in the
+    /// `A` (§3.3) is not the leaf's own slot size. `SelectionDAG` passes it
+    /// as a block aligned to `A`, `GlobalISel` as a plain leaf in the
     /// leaf's slot (WP-182); integers of up to 32 bits are not blocks, and
     /// wider than 128 bits are refused.
     pub fn has_one_leaf_block(&self) -> bool {

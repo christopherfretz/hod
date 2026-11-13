@@ -72,7 +72,7 @@ const WIDE_INT_ARRAY: &str = "abi:wide-int-array";
 const BFLOAT_ARRAY: &str = "abi:bfloat-array";
 const VECTOR_ARRAY: &str = "abi:vector-array";
 /// No longer reported (WP-182 passes a one-leaf array as the block
-/// SelectionDAG, the oracle, makes of it: §3.3); kept for the coverage
+/// `SelectionDAG`, the oracle, makes of it: §3.3); kept for the coverage
 /// log's history.
 pub const ONE_LEAF_ARRAY: &str = "abi:one-leaf-array";
 const ATTRIBUTE_AFTER_EMPTY: &str = "abi:attribute-after-empty-argument";
@@ -365,7 +365,7 @@ fn lanes_leaf(class: Class, bits: u8, len: u8) -> Leaf {
 /// when all fit in consecutive registers from the next one, without the
 /// even-register rule (a block). Anything else, or wider members, is
 /// [`WIDE_INT_ARRAY`]. One member on the stack is a block aligned to
-/// `mem_align` (§3.3's `A`) as SelectionDAG passes it, which is the
+/// `mem_align` (§3.3's `A`) as `SelectionDAG` passes it, which is the
 /// ordinary `i128` slot unless an `alignstack` lowers it to 8 (WP-182).
 fn wide_int_array(
     state: &mut State,

@@ -825,16 +825,13 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
   first; fusing a deferred compare into the branch is left to the
   integration package after WP-035 and WP-039, at the place marked in
   `control.rs`.
-- **`switch`** zero-extends the condition in its register (`ubfx`, below
-  64 bits), drops the cases that go to the default, sorts the others by
-  unsigned value (skipped when they come sorted) and emits a binary
-  search: a node compares with its middle case (`b.eq` to its block,
-  `b.hi` to the upper half), a run of at most four cases is a chain of
-  `cmp` · `b.eq` ending in `b default` (or `b.ne default` when the last
-  case's block comes next). A case value is compared by `cmp #imm`,
-  `cmn #-imm`, or through `x16`. Code is linear in the cases; a run does
-  about `log2(n) + 4` compares; no jump table and no data island. A
-  constant condition is a `br`. A `switch` wider than 64 bits is a
+- **`switch`** follows the plan of §7.3 "`switch`" (`hod_cg::switch`).
+  The condition is zero-extended in its register (`ubfx`, below 64
+  bits); a node is `cmp` · `b.eq` to its block · `b.hi` to the upper
+  half; a chain is `cmp` · `b.eq` per case ending in `b default` (or
+  `b.ne default` when the last case's block comes next). A case value is
+  compared by `cmp #imm`, `cmn #-imm`, or through `x16`. No data
+  island. A `switch` wider than 64 bits is a
   compare chain (WP-084 below); `a64:switch-wide` is no longer produced.
 - **`indirectbr`** is `br` of the address in its register; a
   `blockaddress` constant operand is formed in `x16` first.
@@ -922,24 +919,16 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
     (`lslv`, `mvn`, `lsr #1`, `lsrv`, `orr`); below it the amount is
     reduced by `and #(N-1)` for a power of two, else by `udiv` + `msub`
     against `N` in `x16`, and both shifts are by `k` and `N - k`.
-- **Memory intrinsics.** A length of 0 emits nothing (the pointers may
-  be null). A constant length of at most 64 bytes (`memcpy`, `memset`)
-  or 32 bytes (`memmove`) is inline and touches exactly the bytes of the
-  range: the largest power-of-two accesses, the tail overlapping the
-  previous access for copies, exact-size stores for sets. An inline
-  `memmove` reads every byte (into `x16`, `x17`, `v30`, `v31`) before
-  it writes one, so overlap in either direction is correct; 32 is what
-  those four registers hold. 64 keeps the inline code to a few
-  loads and stores while covering the common small
-  struct copies and clears; beyond it the library routine is as fast
-  and the code stays small. Anything longer, and every
-  variable length, calls `memcpy`, `memmove` or `memset` through
-  `hod_cg`'s runtime-call sequence, so live values are saved as for any
-  call; a length narrower than 64 bits is zero-extended first. The
-  `.inline` forms never call: a constant length above 64 is a loop of
-  16-byte post-indexed `q31` accesses counted in `x16` with an
-  overlapping last access, the fill byte replicated by `dup v31.16b`;
-  a variable length is `a64:mem-inline-length`. Volatile is lowered as
+- **Memory intrinsics** follow the plan of §7.3 "Memory intrinsics"
+  (`hod_cg::memplan`). Inline, the accesses are the largest
+  power-of-two ones, the tail overlapping the previous access for
+  copies, exact-size stores for sets. An inline `memmove` reads every
+  byte (into `x16`, `x17`, `v30`, `v31`) before it writes one; 32 bytes
+  is what those four registers hold. A length narrower than 64 bits is
+  zero-extended for a call. The loop of an `.inline` form is 16-byte
+  post-indexed `q31` accesses counted in `x16` with an overlapping last
+  access, the fill byte replicated by `dup v31.16b`; a variable
+  `.inline` length is `a64:mem-inline-length`. Volatile is lowered as
   the plain form (each byte is accessed once).
 - **Traps:** `trap` is `brk #1`, `debugtrap` `brk #0xf000`,
   `ubsantrap(k)` `brk #(0x5500 | k)`, as `llc`.
@@ -991,9 +980,9 @@ them there, and has the saturating arithmetic, `scmp`/`ucmp`, the
   `__multf3(x, 1.0)`. `fabs`, `copysign`, `is.fpclass` are inline.
   `fptosi.sat`/`fptoui.sat` of `fp128` are refused
   (`a64:intrinsic-fp128`).
-- **Calls**: `sin` .. `log10`, `pow`, `atan2` call libm (`sinf`/`sin`/
-  `sinl`); `powi` `__powisf2`/`__powidf2`/`__powitf2`; `ldexp`
-  `ldexpf`/`ldexp`/`ldexpl`; `frexp` `frexpf`/`frexp`/`frexpl` with the
+- **Calls**: `sin` .. `log10`, `pow`, `atan2`, `powi`, `ldexp` and
+  `frexp` call the routines of §7.3 "Runtime routines by type and
+  target" (`sinf`/`sin`/`sinl`, `__powisf2`, ...); `frexp` with the
   address of a 4-byte slot, its `{T, i32}` result a `Mem`-class value.
   `half` goes through the `float` function. An exponent narrower than 32
   bits is sign-extended; a wider `ldexp` exponent is clamped to the
@@ -1892,9 +1881,10 @@ call each from the places named with the other items.
 #### 5.5.2 Target features (WP-043)
 
 `hod_a64::features::check` judges a `target-features` string (a
-function's attribute) and each `-mattr` item: items separated by `,`,
-each `+name` or `-name`, empty items skipped. hod emits ARMv8.0 code with
-FP and Advanced SIMD and never chooses an instruction by a feature, so:
+function's attribute) and each `-mattr` item, read as §7.3 "Target
+features" says (`hod_cg::features`) against AArch64's table. hod emits
+ARMv8.0 code with FP and Advanced SIMD and never chooses an instruction
+by a feature, so:
 
 - **Accepted, either sign**: a feature that only makes instructions or
   system registers available. The architecture versions `v8a`..`v8.9a`,
@@ -2331,6 +2321,129 @@ global symbol otherwise, so that the object never has two symbols with one
 name. A lowering calls one through `FnCx` (§8.1) with operands and a
 result like an IR call's; the service runs §7.1, so registers are
 displaced and the call site is recorded.
+
+#### Runtime routines by type and target (WP-117)
+
+Which routine an operation calls is a table in `hod_cg::sym`, keyed by
+the type (`FpType`: `half`, `float`, `double`, `fp128`, `x86_fp80`) and
+the target (`hod_ir::Arch`), so that every target asks one place. A table
+answers `None` where the target computes the operation inline, or
+refuses it by its own name. The x86-64 column is `llc` 22's
+(`-O0 -fast-isel=0`, SSE2, no SSE4.1, no FMA); the AArch64 column is
+`llc` 22's with `-global-isel=0`. `crates/hod_cg/tests/runtime_names.rs`
+compares every row with `llc` 22 and 19 on both targets, from the IR in
+`crates/hod_cg/tests/data/runtime/`.
+
+```rust
+pub fn fp_routine(op: FpOp, ty: FpType, arch: Arch) -> Option<RuntimeFn>;
+pub fn fp_ext_routine(from: FpType, to: FpType, arch: Arch) -> Option<RuntimeFn>;
+pub fn fp_trunc_routine(from: FpType, to: FpType, arch: Arch) -> Option<RuntimeFn>;
+pub fn fp_to_int_routine(from: FpType, signed: bool, bits: u32, arch: Arch) -> Option<RuntimeFn>;
+pub fn int_to_fp_routine(signed: bool, bits: u32, to: FpType, arch: Arch) -> Option<RuntimeFn>;
+pub fn fp128_compare(pred: FloatPredicate) -> Option<Fp128Compare>;   // { func, swap, result: ZeroCmp }
+pub fn int_divide_routine(op: Opcode) -> Option<RuntimeFn>;
+```
+
+- `fp128` is AArch64's `long double`: `sinl`, `fmodl`, `fmal`, ... On
+  x86-64 it is `__float128`: `sinf128`, `fmodf128`, `fmaf128`. Its
+  arithmetic is `__addtf3`, `__subtf3`, `__multf3`, `__divtf3` on both.
+  `x86_fp80` is x86-64's `long double`: `sinl`, `fmodl`, `__powixf2`;
+  its arithmetic, `sqrt`, `lrint` and `llrint` are x87 instructions. A
+  `long double` routine (`...l`) is one `RuntimeFn` whose signature is
+  written with `fp128`; on x86-64 the same symbol takes `x86_fp80`.
+- `half` calls the `float` routine, widened first and the result
+  narrowed, except on x86-64: `fma` calls `fma`, `minnum`/`maxnum` call
+  `fminf`/`fmaxf` (which `float` does not), and `frexp`, `lround` and
+  `llround` are no single call.
+- On AArch64 `float` and `double` call only the libm functions (`sin`
+  .. `log10`, `pow`, `atan2`), `frem` (`fmodf`/`fmod`), `powi`
+  (`__powisf2`/`__powidf2`), `ldexp` and `frexp`; everything else is an
+  instruction. On x86-64 the rounding functions (`floor` ..
+  `nearbyint`), `fma`, `lround` and `llround` are calls too.
+- Conversions: `fpext`/`fptrunc` with `fp128` are `__extend{sf,df}tf2`
+  and `__trunctf{hf,sf,df}2`; on x86-64 `half` is `__extendhfsf2` /
+  `__truncsfhf2` / `__truncdfhf2` (`__extendhftf2`, `__extendhfxf2`,
+  `__truncxfhf2` with the long types), `x86_fp80` and `fp128` are
+  `__extendxftf2` / `__trunctfxf2`. AArch64 widens `half` to `float`
+  before `__extendsftf2` (exact; `llc` calls `__extendhftf2`). Integer
+  conversions of `fp128` are `__fix{,uns}tf{si,di,ti}` and
+  `__float{,un}{si,di,ti}tf` by the integer's width class (1 to 32, 33
+  to 64, 65 to 128 bits); `i128` with the others is `__fix{,uns}{sf,df,
+  xf}ti` and `__float{,un}ti{hf,sf,df,xf}`.
+- `fp128` compares are `__eqtf2`, `__lttf2`, `__letf2`, `__unordtf2`,
+  operands swapped for the reversed orderings, the result compared with
+  0 (`ZeroCmp`); `ueq` and `one` are two calls (`None`, the target's).
+- `udiv`, `sdiv`, `urem`, `srem` of 65 to 128 bits are `__udivti3`,
+  `__divti3`, `__umodti3`, `__modti3` on both targets.
+- hod's choice where `llc` has none: `minimum`, `maximum`, `minimumnum`
+  and `maximumnum` of `fp128` and `x86_fp80` call the C23 functions
+  (`fminimuml`, `fminimum_numl`, `fminimumf128`, ...; glibc 2.35+).
+
+#### Memory intrinsics (WP-117)
+
+`hod_cg::memplan::mem_plan(op, len) -> MemPlan` says what a `memcpy`,
+`memcpy.inline`, `memmove`, `memset` or `memset.inline` of a constant
+(`Some`) or variable (`None`) length becomes; the target emits it.
+
+- A length of 0 is `Nothing` (the pointers may be null).
+- A constant length of at most `INLINE_MAX` = 64 bytes (`memcpy`,
+  `memset`) or `INLINE_MOVE_MAX` = 32 bytes (`memmove`) is `Inline`:
+  straight-line accesses touching exactly the bytes of the range. An
+  inline `memmove` reads every byte before it writes one, so overlap in
+  either direction is correct; 32 is what two 16-byte registers and two
+  scratch general registers hold. 64 keeps the inline code to a few
+  loads and stores while covering the common small struct copies and
+  clears; beyond it the library routine is as fast and the code stays
+  small.
+- Anything longer, and every variable length, is `Call` of `memcpy`,
+  `memmove` or `memset` through `hod_cg`'s runtime-call sequence, so live
+  values are saved as for any call; a variable length narrower than 64
+  bits is zero-extended first.
+- The `.inline` forms never call: a constant length above 64 is a
+  `Loop`; a variable length is `VariableInline`, which the target refuses
+  by its own name.
+
+#### `switch` (WP-117)
+
+`hod_cg::switch` plans a `switch` on a condition of at most 64 bits; the
+target emits the compares and branches.
+
+- Case values and the condition are compared zero-extended
+  (`case_mask(bits)`).
+- A constant condition goes to the first case of its value, else the
+  default (`constant_target`): one `br`.
+- `canonical_cases` drops the cases that go to the default, sorts the
+  others by unsigned value (stable; skipped when they come sorted, so
+  compile time is linear for a frontend's usual order and `n log n`
+  otherwise) and keeps one case per value. Of two cases of one value
+  (invalid IR), the first of those not to the default wins; a first one
+  to the default is dropped before that, so the second is kept, where
+  the constant fold above takes the default.
+- No cases left is a `br` to the default. Otherwise the search
+  (`search_step`): a run of at most `LINEAR_CASES` = 4 cases is a chain
+  (compare with each in order, equal goes to its block, then the
+  default); a longer one is a node at its middle case `len / 2` (equal
+  goes to its block, above to the search of the upper half, else the
+  lower half). Code is linear in the cases; a run does about
+  `log2(n) + 4` compares; no jump table, so a function's code has no
+  relocation against itself (§6.2).
+
+#### Target features (WP-117)
+
+`hod_cg::features::FeatureTable { required, available, contract }` reads
+a `target-features` string or an `-mattr` item; the table is the
+target's (AArch64: §5.5.2). Items are separated by `,`, empty items
+skipped; each is `+name` or `-name`. In order:
+
+1. `-name` of a `required` feature is refused with its reason.
+2. A name in `available` is accepted with either sign.
+3. A name `contract` gives a reason for is refused with it when `+`,
+   and accepted when `-` (the default, which hod's code keeps).
+4. Anything else, either sign, and an item without a sign, is
+   `attr:target-feature-unknown` (`UNKNOWN`).
+
+The first refused item of a string is the answer (`Refused { reason,
+feature }`).
 
 ### 7.4 Symbol addresses
 

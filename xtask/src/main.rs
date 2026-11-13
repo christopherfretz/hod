@@ -51,6 +51,9 @@ fn ci(quick: bool) -> ExitCode {
     let steps: &[(&str, &[&str])] = &[
         ("fmt", &["fmt", "--all", "--check"]),
         ("clippy", &["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]),
+        // spec/cli.md "Embedding": the facade without its readers, as a
+        // program that builds `hod_ir` itself takes it.
+        ("embed", &["clippy", "-p", "hod", "--no-default-features", "--", "-D", "warnings"]),
         ("test", &["test", "--workspace", "--quiet"]),
     ];
     for (name, cargo_args) in steps {

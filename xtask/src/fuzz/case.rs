@@ -940,7 +940,9 @@ pub fn constant_branch(text: &str, function: &str, line: u32) -> bool {
 /// store, each store storing `poison` or `undef`, or a value numbered
 /// ([`value_number`]) as a load of its type from the address it stores
 /// to. csmith writes many: `x = x;`, `(*p) = (*p);`, `a[i] = a[i];`, `x ^=
-/// 0;`, `x &= -1L;`, `x ^= (&y != &y);`, an out-of-range conversion.
+/// 0;`, `x &= -1L;`, `x ^= (&y != &y);`, an out-of-range conversion; and
+/// a non-volatile `llvm.memcpy` or `llvm.memmove` whose source and
+/// destination number the same, a struct's `s = s;`.
 /// `llc -O0` folds such a store away (its DAG combiner removes a store of
 /// a load of the same address, and a store of `poison`), and with it the
 /// line's only row; hod keeps it. `spec/dwarf.md` §5.7 has no class for
@@ -964,6 +966,27 @@ pub fn self_assignment(text: &str, function: &str, line: u32) -> bool {
                 continue;
             }
             return false;
+        }
+        if let Some(copy) = ["call void @llvm.memcpy.", "call void @llvm.memmove."]
+            .iter()
+            .find_map(|p| inst.strip_prefix(p))
+        {
+            // A copy of an object onto itself, `s = s` of a struct.
+            let args = copy.split_once('(').and_then(|(_, a)| a.rsplit_once(')')).map(|(a, _)| a);
+            let args = super::profile::top_level(args.unwrap_or(""));
+            let pointer = |i: usize| {
+                let arg: &str = args.get(i).copied().unwrap_or("");
+                value_number(arg.split_whitespace().last().unwrap_or(""), &defs, &local, 0)
+            };
+            let in_place = args.len() == 4
+                && args[3].trim() == "i1 false"
+                && pointer(0) == pointer(1)
+                && !pointer(0).is_empty();
+            if !in_place {
+                return false;
+            }
+            (store_count, stored) = (store_count + 1, true);
+            continue;
         }
         let Some(store) = inst
             .strip_prefix("store ")
@@ -1210,6 +1233,22 @@ define i32 @g(ptr %0, ptr %1) {
         assert!(self_assignment(text, "g", 6));
         assert!(self_assignment(text, "g", 7));
         assert!(!self_assignment(text, "g", 8));
+    }
+
+    // A struct's `s = s`, and `s = t`.
+    #[test]
+    fn struct_self_assignments() {
+        let text = "source
+define void @h() {
+  call void @llvm.memcpy.p0.p0.i64(ptr align 4 @s, ptr align 4 @s, i64 4, i1 false), !dbg !10
+  call void @llvm.memcpy.p0.p0.i64(ptr align 4 @s, ptr align 4 @t, i64 4, i1 false), !dbg !11
+  ret void
+}
+!10 = !DILocation(line: 5, column: 3, scope: !5)
+!11 = !DILocation(line: 6, column: 3, scope: !5)
+";
+        assert!(self_assignment(text, "h", 5));
+        assert!(!self_assignment(text, "h", 6));
     }
 
     // spec/harness.md "Random programs", "Modes" (Debug): llc's pairs at a

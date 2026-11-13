@@ -3737,7 +3737,9 @@ fold and `debug::permitted` has no class yet:
   value with itself; two loads at the line from addresses that number
   the same number the same. That is csmith's `x = x;`, `a[i] = a[i];`,
   `x ^= 0;`, `x &= -1L;`, `x ^= (&y != &y);` and an out-of-range
-  conversion, whose store `llc` deletes;
+  conversion, whose store `llc` deletes; a non-volatile `llvm.memcpy` or
+  `llvm.memmove` whose source and destination number the same counts as
+  such a store (a struct's `s = s;`);
 - llc-only, a **constant branch** (`case::constant_branch`): the line's
   instructions are `br label` or `br i1 true|false` and loads and
   `getelementptr`s nothing uses. That is csmith's `if ((x, -6L))`: hod

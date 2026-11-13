@@ -104,6 +104,9 @@ machine: good for proportions, not for baselines. The benchmark harness
    `spec/cli.md` "Always-inline"; the copy's layout in `spec/codegen.md`
    §9.7.2; the evidence and measurements in `spec/landed/ir/WP-021.md`.
 
+   Coroutines are designed in `docs/design/0005-coroutines.md`: no split,
+   one body per coroutine with its frame in the heap and entry stubs.
+
    This matters for the text-first integration: nearly every translation
    unit that includes the standard library contains an `alwaysinline`
    function, so kiln runs `opt` and hands `llc` bitcode in the common

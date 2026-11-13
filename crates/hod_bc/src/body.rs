@@ -49,6 +49,9 @@ pub(crate) struct State {
     pub const_recs: Vec<Rec>,
     /// The instruction values defined, by number from the first.
     pub insts: Vec<Local>,
+    /// The static `alloca`s, by LLVM instruction number (every
+    /// instruction counts): what `!coro.outside.frame` attaches to.
+    pub slot_insts: Vec<(u32, hod_ir::SlotId)>,
     /// Forward references: instruction number, placeholder and type.
     pub forwards: HashMap<u32, (Value, TypeId)>,
     pub pending: Vec<Cow<'static, str>>,
@@ -197,6 +200,7 @@ impl<'b, 'a> BodyReader<'b, 'a> {
         let builder = ir(at, builder)?;
         let st = &mut self.state;
         st.insts.clear();
+        st.slot_insts.clear();
         st.forwards.clear();
         st.pending.clear();
         st.definition_notes.clear();
@@ -231,6 +235,7 @@ impl<'b, 'a> BodyReader<'b, 'a> {
             room: (function.span.end - function.span.start) / 2,
             fdbg: self.bits.debug.function(function.span.start),
             inst_first: 0,
+            llvm_insts: 0,
             last_loc: None,
         };
         let walked = fx.walk(function);
@@ -329,6 +334,8 @@ pub(crate) struct Fx<'s, 'b, 'a> {
     /// its first instruction, where its location starts and its debug
     /// records stand.
     pub inst_first: usize,
+    /// The instructions read: the LLVM number of the next one.
+    pub llvm_insts: u32,
     /// The location of the last `DEBUG_LOC`.
     pub last_loc: Option<hod_ir::LocId>,
 }
@@ -520,6 +527,9 @@ impl Fx<'_, '_, '_> {
                         );
                     }
                     if !ops.len().is_multiple_of(2) {
+                        // An instruction's: only `!coro.outside.frame` on a
+                        // static `alloca` is kept (`spec/ir.md` §5.2).
+                        self.instruction_attachments(ops)?;
                         continue;
                     }
                     for pair in ops.chunks(2) {
@@ -548,6 +558,23 @@ impl Fx<'_, '_, '_> {
                 }
             }
         }
+    }
+
+    /// `[instruction, kind, node, ...]`: marks the slot of a static
+    /// `alloca` that carries `!coro.outside.frame`.
+    fn instruction_attachments(&mut self, ops: &[u64]) -> BcResult<()> {
+        let kinds = self.bits.metadata_kinds();
+        let Some(&(kind, _)) = kinds.iter().find(|(_, name)| name == b"coro.outside.frame") else {
+            return Ok(());
+        };
+        if !ops[1..].chunks(2).any(|pair| pair[0] == kind) {
+            return Ok(());
+        }
+        let Ok(number) = u32::try_from(ops[0]) else { return Ok(()) };
+        if let Some(&(_, slot)) = self.s.slot_insts.iter().find(|(at, _)| *at == number) {
+            ir(self.at, self.b.set_slot_outside_frame(slot))?;
+        }
+        Ok(())
     }
 
     /// One record of the function block.
@@ -605,6 +632,10 @@ impl Fx<'_, '_, '_> {
                 self.flush_old_record();
                 self.inst_first = self.b.inst_count();
                 let (ty, value, terminator) = self.instruction(code, o)?;
+                if let hod_ir::ValueKind::Slot(slot) = value.kind() {
+                    self.s.slot_insts.push((self.llvm_insts, slot));
+                }
+                self.llvm_insts = self.llvm_insts.wrapping_add(1);
                 // The debug records after it stand before it.
                 ir(self.at, self.b.place_records_before(Some(self.inst_first)))?;
                 if terminator {

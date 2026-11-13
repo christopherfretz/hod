@@ -1481,6 +1481,13 @@ impl Fx<'_, '_, '_> {
                 }
                 return Ok((ret, self.s.vals[0], false));
             }
+            if let Target::Sym(sym) = target
+                && let Ok(name) = std::str::from_utf8(self.module.symbol(sym).name())
+                && let Some(start) = hod_ir::lifetime_intrinsic(name)
+                && let Some(&ptr) = self.s.vals.last()
+            {
+                ir(self.at, self.b.lifetime_marker(start, ptr))?;
+            }
             return self.stand_in_call(kind, ret, normal);
         }
 

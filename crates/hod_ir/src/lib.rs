@@ -96,7 +96,8 @@ pub use types::{MAX_INT_BITS, MAX_TYPE_SIZE, TypeKind, TypeTable};
 
 pub use body::{
     Block, Blocks, Body, Bundle, CallSite, Callee, Clause, Inst, InstKind, Insts, LandingPad,
-    Metadata, Phi, PtrAdd, SHUFFLE_UNDEF, Slot, SlotVar, Successors, Switch, UseFacts,
+    LifetimeMarker, Metadata, Phi, PtrAdd, SHUFFLE_UNDEF, Slot, SlotVar, Successors, Switch,
+    UseFacts,
 };
 pub use builder::{CallDesc, FunctionBuilder};
 pub use inst::{
@@ -104,7 +105,8 @@ pub use inst::{
     aggregate_field,
 };
 pub use intrinsic::{
-    Intrinsic, IntrinsicRef, NoCode, no_code_intrinsic, no_code_names, resolve_intrinsic,
+    Intrinsic, IntrinsicRef, NoCode, lifetime_intrinsic, no_code_intrinsic, no_code_names,
+    resolve_intrinsic,
 };
 pub use value::{InstId, MetaId, SlotId, Value, ValueKind};
 pub use verify::cast_is_valid;

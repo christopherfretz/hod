@@ -20,7 +20,7 @@ use crate::attrs::{CallConv, ParamAttrs};
 use crate::body::{
     BlockData, Body, Bundle, BundleData, CALL_CONVERGENT, CALL_NORETURN, CALL_NOUNWIND,
     CALL_RETURNS_TWICE, CallData, Callee, Clause, DbgDeclare, DbgRecordData, DbgRecordKind, Fixup,
-    Incoming, MetaData, PadData, Place, Reserved, Slot, SlotVar, UNSET, UseFacts,
+    Incoming, LifetimeMarker, MetaData, PadData, Place, Reserved, Slot, SlotVar, UNSET, UseFacts,
 };
 use crate::debug::expr::ExprId;
 use crate::error::{IrErrorKind, IrResult, err};
@@ -33,8 +33,8 @@ use crate::intrinsic::Intrinsic;
 use crate::module::Module;
 use crate::types::TypeKind;
 use crate::value::{
-    MetaId, RESERVED_BASE, SlotId, TAG_ARG, TAG_ASM, TAG_CONST, TAG_INST, TAG_META, TAG_SLOT,
-    TAG_SYM, Value,
+    InstId, MetaId, RESERVED_BASE, SlotId, TAG_ARG, TAG_ASM, TAG_CONST, TAG_INST, TAG_META,
+    TAG_SLOT, TAG_SYM, Value,
 };
 
 /// Everything a call says besides its result type (§5.4, §5.7).
@@ -421,6 +421,38 @@ impl FunctionBuilder {
         }
         self.body.metas.push(MetaData { node, first, count: strings.len() as u32 });
         Ok(value)
+    }
+
+    /// Marks `slot` as carrying `!coro.outside.frame` (§5.2): the front
+    /// end promises that the object never lives across a coroutine's
+    /// suspend.
+    ///
+    /// # Errors
+    /// `InvalidOperand` if `slot` is not a slot of this builder.
+    pub fn set_slot_outside_frame(&mut self, slot: SlotId) -> IrResult<()> {
+        match self.body.slots.get_mut(slot.index()) {
+            Some(data) => {
+                data.set_outside_frame();
+                Ok(())
+            }
+            None => bad(IrErrorKind::InvalidOperand, format!("{slot:?} does not exist")),
+        }
+    }
+
+    /// A lifetime marker (§5.2) before the next instruction appended: a
+    /// call of `llvm.lifetime.start` (`start`) or `llvm.lifetime.end` on
+    /// `ptr`, which may be a reserved value. The marker is not a use of
+    /// `ptr` and generates no code.
+    ///
+    /// # Errors
+    /// `BadBlock` without an open block; `InvalidOperand` if `ptr` does
+    /// not exist in this body.
+    pub fn lifetime_marker(&mut self, start: bool, ptr: Value) -> IrResult<()> {
+        let before = self.open()?;
+        self.check(ptr)?;
+        room(self.body.markers.len(), 1, "lifetime markers")?;
+        self.body.markers.push(LifetimeMarker { before: InstId::new(before), ptr, start });
+        Ok(())
     }
 
     /// Records that the source variable `var`, declared at `loc`, lives in
@@ -1589,6 +1621,9 @@ fn name_debug_values(body: &mut Body) {
                 *value = reserved[(value.payload() - RESERVED_BASE) as usize].target;
             }
         };
+        for marker in &mut body.markers {
+            resolve(&mut marker.ptr);
+        }
         for record in &body.dbg_records {
             let count =
                 usize::from(record.count) + usize::from(record.kind == DbgRecordKind::Assign);

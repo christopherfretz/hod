@@ -19,13 +19,13 @@
 //!
 //! | module | owner | contents | tests |
 //! |---|---|---|---|
-//! | `reg` | WP-116 | the registers as `hod_cg::PReg` indexes, DWARF numbers | unit |
-//! | `abi` | WP-118 | `assign`: where arguments and return values travel (WP-116 left a minimal stub) | `tests/abi` |
-//! | `target` | WP-116 | `X64`: register description, classes, glue, the dispatch | `tests/skeleton.rs` |
+//! | `reg` | WP-116, WP-140 | the registers as `hod_cg::PReg` indexes (x87 `st0`, `st1` too), DWARF numbers | unit, `tests/abi` |
+//! | `abi` | WP-118, WP-140 | `assign`: where arguments and return values travel, on `hod_cg::abi`'s walk | `tests/abi` |
+//! | `target` | WP-116, WP-140 | `X64`: the function's features, register description, classes, glue, the dispatch | `tests/skeleton.rs`, `tests/abi_followups.rs` |
 //! | `frame` | WP-116 | prologue, exit sequences, CFI rows, frame addressing, dynamic slots, the call instruction | `tests/skeleton.rs` |
 //! | `common` | WP-116 (shared) | moves, frame places, constants, symbol addresses, branches | `tests/skeleton.rs` |
 //! | `term` | WP-116 | `br`, `ret`, `unreachable` | `tests/skeleton.rs` |
-//! | `features` | WP-116, WP-117 | the judged target features (§5.6.2) | unit |
+//! | `features` | WP-116, WP-117, WP-140 | the judged target features (§5.6.2), the function's (§5.6.9) | unit, `tests/abi_followups.rs` |
 //! | `int` | WP-122 | integer binary operations, casts, `icmp`, `select`, `freeze` | `tests/int.rs` |
 //! | `mem` | WP-123 | `load`, `store`, `alloca`, `ptradd`, `llvm.stacksave`/`stackrestore` | `tests/mem.rs` |
 //! | `control` | WP-124 | `condbr`, `switch`, `indirectbr` | `tests/control.rs` |

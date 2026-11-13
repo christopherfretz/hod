@@ -1151,21 +1151,24 @@ mod tests {
         );
 
         let in_function = |_: &[u8], _: &Options, _: &hod::Settings, _: &mut Report| {
-            Err(Unsupported::in_function(Construct::CodegenNotImplemented, Some("_Z1fv".into()))
-                .into())
+            Err(Unsupported::in_function(
+                Construct::Named("x64:todo:abi".into()),
+                Some("_Z1fv".into()),
+            )
+            .into())
         };
         let ran = run_with(&["-filetype=obj", "--strict"], &env, &in_function, MODULE);
         assert_eq!(ran.exit, EXIT_UNSUPPORTED);
         assert_eq!(
             ran.stderr,
-            "hod: error: unsupported construct 'codegen-not-implemented' in function '_Z1fv' \
+            "hod: error: unsupported construct 'x64:todo:abi' in function '_Z1fv' \
              (strict mode: no fallback)\n"
         );
 
         let lines = fields(&log);
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0][..3], ["error", "attr:target-feature-strict-align", "text"]);
-        assert_eq!(lines[1][..3], ["error", "codegen-not-implemented", "text"]);
+        assert_eq!(lines[1][..3], ["error", "x64:todo:abi", "text"]);
         for line in &lines {
             assert_eq!(line[7], "-");
         }

@@ -37,23 +37,36 @@ use hod_cg::{
     Target,
 };
 use hod_ir::{
-    CallSite, Inst, InstKind, Intrinsic, Opcode, ParamAttrs, TypeId, TypeKind, TypeTable, Value,
-    ValueKind,
+    Body, CallSite, FnStr, Inst, InstKind, Intrinsic, Module, Opcode, ParamAttrs, SymbolKind,
+    TypeId, TypeKind, TypeTable, Value, ValueKind,
 };
 use hod_mc_x64 as mc;
 use hod_mc_x64::Size;
 
 use crate::common::{self, gp, put, unsupported, xm};
+use crate::features::{self, FnFeatures};
 use crate::reg::{self, R8, R9, RAX, RBX, RDI, RDX, RSI, XMM0, XMM8, XMM13, XMM14, XMM15};
 use crate::{
     abi, aggr, atomic, barrier, call, control, coro, float, fpintr, frame, int, intrinsic, lanes,
     mask, mem, term, tls, vector, x87,
 };
 
-/// The x86-64 Linux target (System V AMD64 psABI). A zero-sized value:
-/// everything it knows is in constants.
+/// The x86-64 Linux target (System V AMD64 psABI): constants, and what
+/// the features of the function being compiled decide
+/// (`features::of_function`, `spec/codegen.md` §5.6.9), which
+/// [`Target::for_function`] fills in. [`X64`], the value, is a function
+/// without `target-cpu` and `target-features`: the x86-64 baseline.
 #[derive(Clone, Copy, Default, Debug)]
-pub struct X64;
+pub struct X64 {
+    /// The function's features, as far as they change what hod emits.
+    pub features: FnFeatures,
+}
+
+/// The target for a function without `target-cpu` and
+/// `target-features` (the baseline x86-64 CPU, no AVX).
+pub const X64: X64 = X64 {
+    features: FnFeatures { abi: abi::Features { avx: false, avx512: false }, no_x87: false },
+};
 
 /// What the target remembers about the function being compiled
 /// (`Target::FnState`): the frame's, and one part per group module that
@@ -233,16 +246,41 @@ impl Target for X64 {
         sig: &Sig<'_>,
         out: &mut Assignment,
     ) -> Result<(), AbiUnsupported> {
-        // `X64` does not know the function's features yet (WP-118's
-        // follow-up gives it them), so it assigns as if AVX and AVX-512
-        // were on: the only thing features change in `abi` is which
-        // vectors are refused, and this refuses every one of them.
-        let features = abi::Features { avx: true, avx512: true };
-        abi::assign(types, sig, features, out)?;
+        // §5.6.9: without the x87, a signature with an `x86_fp80` is the
+        // function's `-x87` refusal (this runs before `begin_function`).
+        if self.features.no_x87
+            && (features::has_x86_fp80(types, sig.ret)
+                || sig.params.iter().any(|&p| features::has_x86_fp80(types, p)))
+        {
+            out.clear();
+            return Err(AbiUnsupported(features::NO_X87));
+        }
+        // The features of the function being compiled decide, for its
+        // own signature and each call's (`spec/abi-x64.md` §1.3).
+        abi::assign(types, sig, self.features.abi, out)?;
+        // §5.1: a `float` or `double` piece in `st0`/`st1` is placed and
+        // not yet lowered (WP-131).
+        if out.ret.iter().any(abi::x87_float_part) {
+            out.clear();
+            return Err(AbiUnsupported(abi::RET_X87_PART));
+        }
         call::guard(sig, out).inspect_err(|_| out.clear())
     }
 
+    fn for_function(&self, module: &Module, body: &Body) -> Option<Self> {
+        let SymbolKind::Function { attrs, .. } = module.symbol(body.symbol()).kind() else {
+            return None;
+        };
+        let attrs = module.fn_attrs(attrs);
+        let text = |what| attrs.string(what).and_then(|s| std::str::from_utf8(s).ok());
+        let features = features::of_function(text(FnStr::TargetCpu), text(FnStr::TargetFeatures));
+        Some(X64 { features })
+    }
+
     fn begin_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()> {
+        if self.features.no_x87 && features::uses_x86_fp80(cx.module, cx.body) {
+            return unsupported(features::NO_X87);
+        }
         frame::begin(cx)
     }
 

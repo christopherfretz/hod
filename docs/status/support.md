@@ -30,8 +30,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `comdat` | 5 | 2 | 0 | 3 | 2 | 0 | 3 |
 | `init` | 10 | 6 | 3 | 1 | 5 | 4 | 1 |
 | `function` | 6 | 6 | 0 | 0 | 6 | 0 | 0 |
-| `cc` | 15 | 6 | 7 | 2 | 1 | 11 | 3 |
-| `attr` | 57 | 24 | 30 | 3 | 15 | 34 | 8 |
+| `cc` | 15 | 6 | 7 | 2 | 2 | 10 | 3 |
+| `attr` | 57 | 24 | 30 | 3 | 18 | 31 | 8 |
 | `type` | 15 | 12 | 0 | 3 | 5 | 8 | 2 |
 | `inst` | 67 | 60 | 0 | 7 | 44 | 16 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 1 | 2 | 0 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 11 | 8 | 3 | 0 | 7 | 4 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 354 | 346 | 8 | 0 | 11 | 127 | 216 |
-| total | 663 | 547 | 70 | 46 | 145 | 247 | 271 |
+| total | 663 | 547 | 70 | 46 | 149 | 243 | 271 |
 
 ## `module`
 
@@ -203,7 +203,7 @@ Calling conventions, of a body's function and of a call.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `cc:ccc` | supported | supported |  |
-| `cc:fastcc` | supported | not-implemented | assigned as `ccc` (`spec/abi-a64.md` §1.2) |
+| `cc:fastcc` | supported | supported | assigned as `ccc` (`spec/abi-a64.md` §1.2, `spec/abi-x64.md` §1.2) |
 | `cc:coldcc` | not-implemented | not-implemented | unplanned |
 | `cc:ghccc` | not-implemented | not-implemented | unplanned |
 | `cc:anyregcc` | not-implemented | not-implemented | unplanned |
@@ -231,15 +231,15 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:swiftself` | not-implemented | not-implemented | unplanned |
 | `attr:swifterror` | not-implemented | not-implemented | unplanned |
 | `attr:swiftasync` | not-implemented | not-implemented | unplanned |
-| `attr:sret` | supported | not-implemented |  |
-| `attr:byval` | supported | not-implemented |  |
+| `attr:sret` | supported | supported |  |
+| `attr:byval` | supported | supported |  |
 | `attr:byref` | supported | not-implemented |  |
 | `attr:inalloca` | rejected | rejected | a Windows construct |
 | `attr:preallocated` | rejected | rejected | a Windows construct |
 | `attr:elementtype` | not-implemented | not-implemented | unplanned. on an inline-assembly or intrinsic argument |
 | `attr:align` | supported | supported | on a parameter or return: an assumption, no code |
 | `attr:alignstack` | supported | not-implemented | on a parameter: placement of a stack block (abi-a64.md §3.3); on a function: no code, `sp` is always 16-aligned and an over-aligned slot aligns itself |
-| `attr:uwtable` | supported | not-implemented | on a function with a body (WP-049) |
+| `attr:uwtable` | supported | supported | on a function with a body (WP-049) |
 | `attr:noreturn` | supported | supported | a promise: nothing to do in the function itself |
 | `attr:naked` | rejected | rejected | a naked function is its inline assembly, with no frame (`spec/codegen.md` §1) |
 | `attr:nounwind` | supported | supported | its absence is `function:may-unwind` |
@@ -352,8 +352,8 @@ Instructions.
 | `inst:cmpxchg` | supported (int, i128, ptr, aggregate) | not-implemented | WP-074; the `{ T, i1 }` result is an aggregate |
 | `inst:atomicrmw` | supported (int, i128, ptr, half, bfloat, float, double) | not-implemented | and the operation's `atomicrmw:` row; WP-074 |
 | `inst:ptradd` | supported | supported | LLVM's `getelementptr` (§5.4); not a vector of pointers |
-| `inst:extractvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (i128, int-wide, aggregate) |  |
-| `inst:insertvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (i128, int-wide, aggregate) |  |
+| `inst:extractvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, aggregate) |  |
+| `inst:insertvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, aggregate) |  |
 | `inst:extractelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:insertelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:shufflevector` | supported (vector) | not-implemented | byte-sized elements, up to 256 lanes (WP-079) |

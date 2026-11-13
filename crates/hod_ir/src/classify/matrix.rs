@@ -584,7 +584,7 @@ const FUNCTION: [SupportRow; 6] = [
 /// In the order of [`cc_index`].
 const CC: [SupportRow; 15] = [
     both("cc:ccc", ON, ""),
-    row("cc:fastcc", ON, todo(X64), "assigned as `ccc` (`spec/abi-a64.md` §1.2)"),
+    row("cc:fastcc", ON, ON, "assigned as `ccc` (`spec/abi-a64.md` §1.2, `spec/abi-x64.md` §1.2)"),
     a64("cc:coldcc", LATER, ""),
     a64("cc:ghccc", LATER, ""),
     a64("cc:anyregcc", LATER, ""),
@@ -646,8 +646,8 @@ const ATTR_PARAM: [SupportRow; 7] = [
 
 /// In `ParamMem` order, from `Sret`.
 const ATTR_MEM: [SupportRow; 6] = [
-    row("attr:sret", ON, todo(X64), ""),
-    row("attr:byval", ON, todo(X64), ""),
+    row("attr:sret", ON, ON, ""),
+    row("attr:byval", ON, ON, ""),
     row("attr:byref", ON, todo(X64), ""),
     both("attr:inalloca", never(WINDOWS), ""),
     both("attr:preallocated", never(WINDOWS), ""),
@@ -662,7 +662,7 @@ const ATTR_VALUE: [SupportRow; 3] = [
         todo(X64),
         "on a parameter: placement of a stack block (abi-a64.md §3.3); on a function: no code, `sp` is always 16-aligned and an over-aligned slot aligns itself",
     ),
-    row("attr:uwtable", ON, todo(X64), "on a function with a body (WP-049)"),
+    row("attr:uwtable", ON, ON, "on a function with a body (WP-049)"),
 ];
 
 /// In the order of `FnAttrs::FLAG_NAMES`.
@@ -1220,7 +1220,13 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
+        on(&[
+            TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::IntWide,
+            TypeClass::Ptr,
+            TypeClass::Aggregate,
+        ]),
         "",
     ),
     row(
@@ -1238,7 +1244,13 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::Vector,
             TypeClass::BFloat,
         ]),
-        on(&[TypeClass::I128, TypeClass::IntWide, TypeClass::Aggregate]),
+        on(&[
+            TypeClass::Int,
+            TypeClass::I128,
+            TypeClass::IntWide,
+            TypeClass::Ptr,
+            TypeClass::Aggregate,
+        ]),
         "",
     ),
     row(

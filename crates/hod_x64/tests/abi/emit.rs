@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 
 use hod_cg::PReg;
 use hod_cg::abi::{Assignment, Part, PartKind, Place, VaInfo};
-use hod_x64::abi;
+use hod_x64::{abi, reg};
 
 /// The bytes of one argument or return value: where the producer reads
 /// them, where the consumer writes them.
@@ -119,21 +119,33 @@ enum Reg {
 }
 
 fn classify(reg: PReg) -> Reg {
-    let number = abi::number(reg);
-    if abi::is_gpr(reg) {
+    let number = reg::number(reg);
+    if reg::is_gpr(reg) {
         assert!(
             !TEMPS.contains(&number),
             "%{} is one of the emitter's temporaries",
             GPR64[number as usize]
         );
         Reg::General(GPR64[number as usize])
-    } else if abi::is_xmm(reg) {
+    } else if reg::is_fpr(reg) {
         assert!(number < 8, "xmm{number} is beyond the registers the emitter poisons");
         Reg::Vector(number)
     } else {
-        assert!(abi::is_x87(reg), "{reg:?} is no register");
+        assert!(reg::is_x87(reg), "{reg:?} is no register");
         Reg::X87
     }
+}
+
+/// The x87 load or store (`fld`, `fstp`) of a part of `size` bytes: an
+/// `x86_fp80`, or a `float` or `double` returned on the x87 stack (§5.1).
+fn x87_op(op: &str, size: u32) -> String {
+    let suffix = match size {
+        4 => 's',
+        8 => 'l',
+        10 => 't',
+        _ => panic!("an x87 part of {size} bytes"),
+    };
+    format!("{op}{suffix}")
 }
 
 fn general(reg: PReg) -> &'static str {
@@ -331,7 +343,7 @@ impl Asm<'_> {
         let mut x87: Vec<(u8, &Part)> = parts
             .iter()
             .filter_map(|part| match part.place {
-                Place::Reg(reg) if abi::is_x87(reg) => Some((abi::number(reg), part)),
+                Place::Reg(reg) if reg::is_x87(reg) => Some((reg::number(reg), part)),
                 _ => None,
             })
             .collect();
@@ -343,7 +355,7 @@ impl Asm<'_> {
             self.junk_scratch();
             let src = ("rbx", (item.src + u64::from(part.offset)) as i64);
             self.copy(u64::from(part.size), src, ("rbp", SCRATCH));
-            ins!(self, "fldt {SCRATCH}(%rbp)");
+            ins!(self, "{} {SCRATCH}(%rbp)", x87_op("fld", part.size));
         }
     }
 
@@ -395,7 +407,7 @@ impl Asm<'_> {
                     }
                     Reg::X87 => {
                         assert!(size <= 10, "an x87 register holds 10 bytes");
-                        ins!(self, "fstpt {SCRATCH}(%rbp)");
+                        ins!(self, "{} {SCRATCH}(%rbp)", x87_op("fstp", part.size));
                     }
                 }
                 self.copy(size, ("rbp", SCRATCH), dst);
@@ -456,7 +468,7 @@ pub fn caller(text: &mut String, func: Func<'_>) {
         // The x87 parts in the order they pop.
         let mut parts = func.asg.ret.clone();
         parts.sort_by_key(|part| match part.place {
-            Place::Reg(reg) if abi::is_x87(reg) => i32::from(abi::number(reg)),
+            Place::Reg(reg) if reg::is_x87(reg) => i32::from(reg::number(reg)),
             _ => -1,
         });
         for part in &parts {

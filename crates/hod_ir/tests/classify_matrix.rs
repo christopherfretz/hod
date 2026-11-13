@@ -114,7 +114,9 @@ fn the_matrices_are_the_table() {
 /// on x86-64, body on AArch64, body on x86-64)`. A flip of the
 /// matrix that changes one of these is a deliberate change of this
 /// table. `*` is "not checked here" (no row uses it since WP-066 pinned
-/// the AArch64 bodies again once every instruction group was in).
+/// the AArch64 bodies again once every instruction group was in); `+` is
+/// "the body is accepted" where an empty reason would read as "no body"
+/// (WP-140: the first x86-64 body accepted whole).
 const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 27] = [
     ("module:pic", "", "", "", ""),
     ("module:frame-pointer", "", "", "", ""),
@@ -133,7 +135,8 @@ const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 27] = [
     ("comdat:any", "", "", "", ""),
     ("init:symbol", "", "", "", ""),
     ("function:slots", "", "", "", "type:double"),
-    ("cc:fastcc", "", "", "", "cc:fastcc"),
+    // WP-140: `fastcc` is `ccc` on x86-64 too.
+    ("cc:fastcc", "", "", "", "+"),
     ("attr:zeroext", "", "", "", "attr:zeroext"),
     ("type:double", "", "", "", "type:double"),
     ("inst:add", "", "", "", "type:double"),
@@ -161,6 +164,7 @@ fn shipped_refuses_with_the_expected_first_reason() {
             let a64 = arch == Arch::Aarch64;
             let module_reason = if a64 { a64_reason } else { x64_reason };
             let body_reason = if a64 { a64_body } else { x64_body };
+            let body_reason = if body_reason == "+" { "" } else { body_reason };
             let program = program_for(row, arch);
             let reason = |result: Result<(), Rejection>| {
                 result.err().map_or(String::new(), |rejection| rejection.construct.into_owned())

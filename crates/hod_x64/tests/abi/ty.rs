@@ -201,6 +201,30 @@ impl Ty {
             _ => {}
         }
     }
+
+    /// Calls `visit` with the byte offset and the width in bytes of every
+    /// `float` and `double` scalar (not a vector element) in the value.
+    pub fn fp_scalars(&self, types: &mut TypeTable, base: u64, visit: &mut dyn FnMut(u64, u64)) {
+        match self {
+            Ty::Float => visit(base, 4),
+            Ty::Double => visit(base, 8),
+            Ty::Arr(elem, len) => {
+                let id = elem.intern(types);
+                let stride = types.alloc_size_of(id);
+                for index in 0..*len {
+                    elem.fp_scalars(types, base + index * stride, visit);
+                }
+            }
+            Ty::Struct(fields) | Ty::Packed(fields) => {
+                let id = self.intern(types);
+                for (index, field) in fields.iter().enumerate() {
+                    let offset = types.field_offset(id, index as u32);
+                    field.fp_scalars(types, base + offset, visit);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// A deterministic generator (a 64-bit LCG, high bits).
@@ -286,6 +310,19 @@ impl Image {
                 let [low, high] = (bits | quiet).to_le_bytes();
                 values[at] = low;
                 values[at + 1] = high;
+            }
+        });
+        ty.fp_scalars(types, 0, &mut |offset, bytes| {
+            // No signaling NaN either: a `float` or `double` returned in
+            // `st0`/`st1` (§5.1) is loaded and stored by the x87, which
+            // quiets one. A NaN gets its quiet bit (22 of a `float`, 51 of
+            // a `double`): the top bit of its third or seventh byte.
+            let at = offset as usize;
+            let (top, quiet) = if bytes == 4 { (at + 2, 0x40) } else { (at + 6, 0x08) };
+            let high = u16::from_le_bytes([values[top], values[top + 1]]) & 0x7fff;
+            let exponent = if bytes == 4 { 0x7f80 } else { 0x7ff0 };
+            if high & exponent == exponent {
+                values[top] |= quiet;
             }
         });
         let mut clean = vec![0u8; size + SLACK];

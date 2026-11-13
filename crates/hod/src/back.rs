@@ -132,7 +132,7 @@ fn compile_one(
         && let Some(string) = module.fn_attrs(attrs).string(FnStr::TargetFeatures)
     {
         let string = String::from_utf8_lossy(string);
-        if let Err((reason, feature)) = check_features(module.target().arch(), &string) {
+        if let Err((reason, feature)) = check_function_features(module.target().arch(), &string) {
             return Err(Failure::Feature { reason, feature: feature.to_owned() });
         }
     }
@@ -149,6 +149,18 @@ fn check_features(arch: Arch, string: &str) -> Result<(), (&'static str, &str)> 
     match arch {
         Arch::Aarch64 => hod_a64::features::check(string).map_err(|r| (r.reason, r.feature)),
         Arch::X86_64 => hod_x64::features::check(string).map_err(|r| (r.reason, r.feature)),
+    }
+}
+
+/// [`check_features`] for a function's own `target-features`: on x86-64
+/// `-x87` is left to code generation, which refuses it only for a
+/// function with an `x86_fp80` value (`spec/codegen.md` §5.6.9).
+fn check_function_features(arch: Arch, string: &str) -> Result<(), (&'static str, &str)> {
+    match arch {
+        Arch::Aarch64 => check_features(arch, string),
+        Arch::X86_64 => {
+            hod_x64::features::check_function(string).map_err(|r| (r.reason, r.feature))
+        }
     }
 }
 

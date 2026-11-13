@@ -3,14 +3,14 @@
 //! compares what each side received (`spec/abi-x64.md` §11).
 
 use std::collections::{BTreeMap, HashSet};
+use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use hod_cg::abi::Place;
-use hod_testutil::{Outcome, run, run_with, tools_required};
+use hod_testutil::{Outcome, Target, run, run_with, tools_required};
 
 use crate::emit::{self, Ext, Func, Item};
 use crate::ir;
@@ -66,7 +66,10 @@ pub fn llvm_tool(major: u32, name: &str) -> Option<PathBuf> {
     found
 }
 
-/// The tools a batch needs.
+/// The tools a batch needs. The C driver, the system root and the
+/// emulator are WP-025's (`hod_testutil::Target`, `spec/harness.md`
+/// "Cross runs"): programs run under `qemu-x86_64` with the baseline CPU
+/// model, which faults on an instruction above SSE2.
 #[derive(Clone, Debug)]
 pub struct Tools {
     /// `clang` 22, which assembles and compiles for x86-64 whatever the
@@ -75,8 +78,8 @@ pub struct Tools {
     /// A C compiler driver for x86-64 Linux that links.
     pub gcc: PathBuf,
     /// What runs an x86-64 program: nothing on an x86-64 host, else
-    /// `qemu-x86_64 -L <system root>`.
-    pub runner: Vec<PathBuf>,
+    /// `qemu-x86_64 -cpu <baseline> -L <system root>`.
+    pub runner: Vec<OsString>,
     pub llc: Vec<(Config, PathBuf)>,
 }
 
@@ -84,18 +87,14 @@ impl Tools {
     /// The tools, or `None` when one is missing.
     pub fn find() -> Option<Tools> {
         let assembler = llvm_tool(22, "clang")?;
-        let (gcc, runner) = if cfg!(target_arch = "x86_64") {
-            (hod_testutil::tool("gcc")?, Vec::new())
-        } else {
-            let sysroot = Path::new("/usr/x86_64-linux-gnu");
-            if !sysroot.is_dir() {
-                assert!(!tools_required(), "no x86-64 system root (HOD_REQUIRE_TOOLS=1)");
-                eprintln!("note: {} not found; skipping", sysroot.display());
-                return None;
-            }
-            let qemu = hod_testutil::tool("qemu-x86_64")?;
-            (hod_testutil::tool("x86_64-linux-gnu-gcc")?, vec![qemu, "-L".into(), sysroot.into()])
-        };
+        let target = Target::X86_64;
+        let gcc = target.tool("gcc")?;
+        let mut runner = Vec::new();
+        if !target.is_host() {
+            let sysroot = target.tool("sysroot")?;
+            runner.push(target.tool("emulator")?.into_os_string());
+            runner.extend(target.emulator_args(&sysroot));
+        }
         let mut llc = Vec::new();
         for config in CONFIGS {
             llc.push((config, llvm_tool(config.major, "llc")?));
@@ -119,42 +118,8 @@ impl Tools {
 /// The target `clang` assembles and compiles for.
 pub const TARGET: &str = "--target=x86_64-unknown-linux-gnu";
 
-/// A scratch directory inside the workspace's build tree, removed on drop.
-#[derive(Debug)]
-pub struct Scratch {
-    path: PathBuf,
-}
-
-impl Scratch {
-    pub fn new(label: &str) -> Scratch {
-        static COUNTER: AtomicU32 = AtomicU32::new(0);
-        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = Path::new(env!("CARGO_TARGET_TMPDIR"))
-            .join(format!("hod-{label}-{}-{unique}", std::process::id()));
-        std::fs::create_dir_all(&path)
-            .unwrap_or_else(|error| panic!("cannot create {}: {error}", path.display()));
-        Scratch { path }
-    }
-
-    pub fn join(&self, name: impl AsRef<Path>) -> PathBuf {
-        self.path.join(name)
-    }
-
-    pub fn write(&self, name: &str, contents: impl AsRef<[u8]>) -> PathBuf {
-        let path = self.join(name);
-        std::fs::write(&path, contents)
-            .unwrap_or_else(|error| panic!("cannot write {}: {error}", path.display()));
-        path
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        if std::env::var_os("HOD_ABI_KEEP").is_none() {
-            let _ = std::fs::remove_dir_all(&self.path);
-        }
-    }
-}
+/// A scratch directory in the build tree, removed on drop.
+pub use hod_testutil::Scratch;
 
 /// Runs a tool that must succeed.
 pub fn must(what: &str, outcome: &Outcome) {

@@ -2277,9 +2277,10 @@ decisions that are not instruction selection are §5.5.1 "Integers
   object, where `llc` uses absolute `udata4` pointers.
 - **Refused by name**: `x64:call` (a `callbr` that is not inline
   assembly), `x64:call-bundle`, `x64:va-intrinsic`, `x64:va_arg`,
-  `x64:landingpad`, `x64:landingpad-clause`, `x64:resume`; an x87 part in
-  a signature stays `x64:todo:abi` (WP-131), a value returned in memory
-  at `ret` is WP-126's.
+  `x64:landingpad`, `x64:landingpad-clause`, `x64:resume`; an
+  `x86_fp80` part in a signature stays `x64:todo:abi` (WP-131), a
+  `float`/`double` return part in `st0`/`st1` is `x64:ret-x87-part`
+  (§5.6.9), a value returned in memory at `ret` is WP-126's.
 
 #### 5.6.2 Target features (WP-116)
 
@@ -2296,7 +2297,7 @@ Refused by name:
 | item | reason |
 |---|---|
 | `-sse`, `-sse2` | `attr:target-feature-no-sse` |
-| `-x87` | `attr:target-feature-no-x87` |
+| `-x87` | `attr:target-feature-no-x87`, only for a function that has an `x86_fp80` value (§5.6.9); in `-mattr`, always |
 | `+soft-float` | `attr:target-feature-soft-float` |
 | `+retpoline*` | `attr:target-feature-retpoline` |
 | `+harden-sls-*` | `attr:target-feature-harden-sls` |
@@ -2306,7 +2307,8 @@ Refused by name:
 `+sse`, `+sse2`, `+x87` and `-soft-float`, `-retpoline*`,
 `-harden-sls-*`, `-lvi-*` are accepted. Whether a wide vector argument
 travels in `ymm` under `+avx` is the argument assignment's
-(`x64:wide-vector-abi`, WP-118). `-mattr` items are checked the same
+(`x64:wide-vector-abi`, WP-118), with the function's own features
+(§5.6.9, `spec/abi-x64.md` §1.3). `-mattr` items are checked the same
 way, by the module's target.
 
 #### 5.6.3 Control flow (WP-124)
@@ -2557,6 +2559,49 @@ x86-64 snippets `dso-local-data`, `pie`, `narrow-fields`,
 `tests/emit_link.rs` (the data module with `llc`'s `main`, a data
 module whose code is a C driver, and an `available_externally` copy,
 linked by bfd, lld and mold and run under `qemu-x86_64`).
+
+#### 5.6.9 ABI follow-ups (WP-140)
+
+- **The function's features.** `X64` carries `FnFeatures { abi:
+  Features { avx, avx512 }, no_x87 }`. The constant `hod_x64::X64` has
+  none of them (the module-level value); `X64::for_function` (§8.2)
+  returns one with the features `features::of_function` reads from the
+  function's `"target-cpu"` and `"target-features"`, and the driver
+  compiles the whole function with it. Every signature the function
+  touches (its own, each call's, each `invoke`'s) is assigned with the
+  compiled function's features, never the callee's: `llc` does the same
+  (`spec/abi-x64.md` §1.3, which has the CPU tables and the rule). So
+  without AVX a `<8 x float>` argument is two `xmm` registers and a
+  `<4 x i1>` one `xmm`, as `llc` places them; with AVX (or a CPU that
+  may have it) a wider-than-128-bit vector is `x64:wide-vector-abi`, and
+  with AVX-512 a vector of `i1`.
+- **`-x87`** is refused (`attr:target-feature-no-x87`) only for a
+  function that has a value of a type containing `x86_fp80` (its
+  signature, an instruction's result or an operand): `llc` cannot
+  select x87 arithmetic without the x87 and stops with an error, so hod
+  refuses where `llc` does not compile. A function without one compiles
+  to the same code with and without `-x87`. In `-mattr` (which reaches
+  no function), `-x87` stays refused.
+- **x87 places.** `abi::assign` places a `float`/`double` return piece
+  that finds no free `xmm` register in `st0`/`st1` (`spec/abi-x64.md`
+  §5.1); the size of the part (4 or 8) says how it is loaded.
+  `X64::assign` refuses a signature with such a part as
+  `x64:ret-x87-part`; `call::guard` keeps refusing an `x86_fp80` part as
+  `x64:todo:abi` until WP-131.
+- **One walk, one register file.** `hod_x64::abi` classifies through
+  `hod_cg::abi`'s `Classify` and places with `place_leaves`/`place_leaf`
+  (as `hod_a64::abi` does); its registers are `hod_x64::reg`'s (`st0`,
+  `st1` at 32 and 33, DWARF 33 and 34).
+- **`fastcc`** is `ccc` (`spec/abi-x64.md` §1.2): its `Assignment`
+  differs only by the third `xmm` return register, and the code
+  generator compiles it as any other `Assignment`.
+- **`sret`, `byval`, `uwtable`, `insertvalue`/`extractvalue`** of
+  integer and pointer members needed no new lowering; they run against
+  `hod_interp` and `llc` in both mixings (`tests/abi_followups.rs`), and
+  the support matrix's x86-64 column says so. The seeds `byval_sret.ll`
+  and `aggregate.ll` now stop at `type:double` (WP-127).
+
+Evidence: `spec/landed/codegen/WP-140.md`.
 
 ## 6. Control flow
 
@@ -3237,6 +3282,7 @@ pub trait Target: Sized + Sync {
     fn class_of(&self, types: &TypeTable, ty: TypeId) -> Class;        // §2.2
     fn assign(&self, types: &TypeTable, sig: &Sig<'_>, out: &mut Assignment)
         -> Result<(), AbiUnsupported>;                                 // §7.2
+    fn for_function(&self, module: &Module, body: &Body) -> Option<Self> { None }
     fn begin_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()>;
     fn end_function(&self, cx: &mut FnCx<'_, Self>) -> CgResult<()>;
     fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()>;
@@ -3274,6 +3320,7 @@ pub trait Target: Sized + Sync {
 | `dynamic_slot(cx, ptr, size, align)` | the entry code for one over-aligned slot: allocate it (§5.2) and store its address to `ptr` |
 | `lower(cx, inst)` | every instruction that is not a `phi`, including terminators and calls. One `match` on the opcode that dispatches to the target's modules, one per instruction group, so that groups are separate work packages |
 | `assign(types, sig, out)` | §7.2 |
+| `for_function(module, body)` | the target to compile `body` with, when it is not `self`: `compile_function` calls it once, before anything else, and every other member is called on the value it returns for the whole function. x86-64 returns `self` with the function's `target-cpu`/`target-features` (§5.6.9); the default, `None`, keeps `self` (AArch64: its convention does not depend on a function's features) |
 | `patch_branch(code, at, kind, displacement) -> bool` | §6.2; `false` when the field cannot hold the displacement |
 | constants | `TRAP` (a byte slice), the function alignment, the padding byte between functions, the stack alignment |
 

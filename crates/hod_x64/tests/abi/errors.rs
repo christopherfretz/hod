@@ -31,6 +31,26 @@ fn refusal(
     refusal_with(types, Features::default(), cc, ret, params, fixed)
 }
 
+/// The name `X64::assign` (the target, without AVX) refuses a signature
+/// of no arguments returning `ret` with.
+fn target_refusal(types: &TypeTable, ret: (TypeId, ParamAttrs)) -> Option<&'static str> {
+    let sig = Sig {
+        cc: CallConv::C,
+        ret: ret.0,
+        ret_attrs: ret.1,
+        params: &[],
+        param_attrs: &[],
+        fixed: 0,
+        variadic: false,
+    };
+    let mut out = Assignment::default();
+    let name = hod_cg::Target::assign(&hod_x64::X64, types, &sig, &mut out).err().map(|e| e.0);
+    if name.is_some() {
+        assert_eq!(out, Assignment::default(), "an error leaves the output empty");
+    }
+    name
+}
+
 /// The name `assign` refuses the signature with under `features`.
 fn refusal_with(
     types: &TypeTable,
@@ -161,9 +181,6 @@ fn every_name() {
         ("x64:wide-vector-abi", refusal_with(&t, avx, c, void, &[(v8f32, NONE)], None)),
         ("x64:wide-vector-abi", refusal_with(&t, avx, c, (v16f32, NONE), &[], None)),
         ("x64:wide-vector-abi", refusal_with(&t, avx512, c, void, &[(v4i1, NONE)], None)),
-        ("x64:ret-x87-part", refusal(&t, c, (doubles3, NONE), &[], None)),
-        ("x64:ret-x87-part", refusal(&t, c, (mixed_x87, NONE), &[], None)),
-        ("x64:ret-x87-part", refusal(&t, c, (v3f64, NONE), &[], None)),
         ("x64:nest", refusal(&t, c, void, &[(ptr, flags(ParamAttrs::NEST))], None)),
         ("x64:nest", refusal(&t, c, (ptr, flags(ParamAttrs::NEST)), &[], None)),
         ("abi:swiftself", refusal(&t, c, void, &[(ptr, flags(ParamAttrs::SWIFT_SELF))], None)),
@@ -195,6 +212,13 @@ fn every_name() {
             refusal(&t, c, void, &[(ptr, typed(ParamMem::ByVal, huge_bytes))], None),
         ),
     ];
+    // §5.1: a `float` or `double` piece beyond `xmm1` is placed in
+    // `st0`/`st1`; the target refuses it until WP-131 lowers it.
+    for ret in [doubles3, mixed_x87, v3f64] {
+        assert_eq!(refusal(&t, c, (ret, NONE), &[], None), None);
+        assert_eq!(target_refusal(&t, (ret, NONE)), Some("x64:ret-x87-part"));
+    }
+    assert!(!UNSUPPORTED.contains(&"x64:ret-x87-part"));
     let mut seen = BTreeSet::new();
     for (index, (want, got)) in cases.iter().enumerate() {
         assert_eq!(*got, Some(*want), "case {index}");

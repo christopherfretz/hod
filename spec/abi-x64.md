@@ -73,6 +73,15 @@ more registers and gives `swiftself`/`swifterror` registers of their
 own; both are refused. A variadic `fastcc` signature is
 `abi:invalid-signature` (LLVM's verifier refuses it).
 
+The code generator does the same: a `fastcc` definition, call or
+`invoke` is compiled exactly as a `ccc` one with the `fastcc`
+`Assignment` (WP-140; the third `xmm` return register is the only place
+the two conventions differ on x86-64, and it comes from `assign`). This
+is LLVM's `-O0` behaviour: `fastcc` lets an optimizing compiler choose
+another convention, which neither `llc -O0` nor hod does, so a `fastcc`
+function compiled by one may be called from an object of the other
+(`abi_followups::rows_run_against_the_interpreter_and_llc`).
+
 *Evidence:* `cc::conventions_equal_to_c` (which also shows the
 comparison can fail: `cxx_fast_tlscc` differs); `table::conventions`; the
 grid's `conventions()` cases; `data::data_signatures_assign` (`swiftcc`
@@ -95,10 +104,48 @@ A 128-bit or narrower vector travels as §4.3 says whatever the features.
 *Evidence:* `errors::every_name` (the refusals with the features, the
 same signatures accepted without them). The grid runs without AVX only.
 
+**Whose features decide (WP-140).** The *compiled function's*: every
+signature a function's code touches (its own, and that of every call and
+`invoke` in it, whatever the callee's attributes) is assigned with the
+features of the function being compiled. `llc` 19 and 22 do the same: a
+caller without AVX passes a `<4 x double>` in two `xmm` registers to a
+callee declared or defined with `"target-features"="+avx"`, which reads
+it from one `ymm`. Such a mismatch is the program's (clang warns about
+it); hod reproduces LLVM, it does not repair it.
+
+`X64` (the `hod_cg::Target`) learns the features through
+`Target::for_function` (`spec/codegen.md` §8.2), which
+`hod_x64::features::of_function` computes from the function's
+`"target-cpu"` and `"target-features"` attributes:
+
+1. The CPU. Without `"target-cpu"`, or with `generic`, `x86-64`,
+   `x86-64-v2` or another CPU LLVM knows without AVX (the table
+   `CPUS_WITHOUT_AVX`), neither feature. A CPU LLVM knows with AVX and
+   without AVX-512 (`CPUS_WITHOUT_AVX512`: `x86-64-v3`, `haswell`,
+   `skylake`, `znver3`, ...): `avx`. Any other CPU, known or not: both
+   (an unknown CPU may have AVX-512; the answer is a refusal, never a
+   wrong placement).
+2. Then each `+name`/`-name` of `"target-features"` in order: `+avx512*`
+   or `+avx10*` sets both; `+avx`, `+avx2`, `+fma`, `+f16c`, `+fma4`,
+   `+xop`, `+vaes`, `+vpclmulqdq` or any other `+avx*` sets `avx`;
+   `-sse`, `-sse2`, `-sse3`, `-ssse3`, `-sse4.1`, `-sse4.2` or `-avx`
+   (what AVX implies) clears both; `-avx2`, `-fma`, `-f16c` or `-avx512f`
+   (what AVX-512 implies) clears `avx512`.
+
+The command line's `-mcpu`/`-mattr` do not reach a function and do not
+take part (`hod_cg::Options` has no field for them). An over-approximation
+only refuses (`x64:wide-vector-abi`); an under-approximation would place a
+wide vector in `xmm` registers where LLVM uses one `ymm`, so the tables
+only list CPUs whose lack of AVX (or AVX-512) was checked against `llc`.
+*Evidence:* `features::tests::features_that_decide_the_convention`;
+`abi_followups::cpu_tables_agree_with_llc` and
+`abi_followups::wide_vectors_follow_the_function` (hod's object mixed with
+`llc`'s under qemu, both directions).
+
 ## 2. Terms
 
-**Registers.** A `PReg` index names a register as `hod_x64::abi` does
-(provisionally: WP-116 owns `hod_x64::reg` and these re-point there):
+**Registers.** A `PReg` index names a register as `hod_x64::reg` does
+(`hod_x64::abi` uses those registers since WP-140):
 
 | index | register |
 |---|---|
@@ -106,8 +153,8 @@ same signatures accepted without them). The grid runs without AVX only.
 | 16..=31 | `xmm0`..`xmm15` |
 | 32..=39 | `st(0)`..`st(7)`, the x87 stack from its top |
 
-`gpr(n)`, `xmm(n)`, `st(n)`, `is_gpr`, `is_xmm`, `is_x87` and `number`
-convert. A value in an `xmm` occupies its low bytes; an x87 register
+`reg::gpr(n)`, `reg::fpr(n)`, `reg::st(n)`, `is_gpr`, `is_fpr`, `is_x87`
+and `number` (the hardware number) convert. A value in an `xmm` occupies its low bytes; an x87 register
 holds an 80-bit `x86_fp80`.
 
 **Part.** `Part { arg, kind, offset, size, place }` says: bytes
@@ -368,12 +415,15 @@ any class: the `xmm` and x87 registers are shared between the rows. If a
 piece finds none free, the whole value is returned in memory (§5.2) and
 `ret` is empty.
 
-A `float` or `double` piece that lands in `st0` or `st1` is refused as
-`x64:ret-x87-part` (`{ double, double, double }`, `{ float × 4 }`,
-`<3 x double>`): `Part` could describe it, but its bits would have to be
-converted to `x86_fp80` on the way, which no consumer of an `Assignment`
-expects. An `x86_fp80` in `st0`/`st1` is supported: the part is the
-10-byte image.
+A `float` or `double` piece that lands in `st0` or `st1` is placed there
+(WP-140): the part's `size` is 4 or 8 and its bytes are the `float` or
+`double` image, which travels converted to the x87's 80-bit format (an
+`fld` of that size by the callee, an `fstp` of that size by the caller,
+which quiets a signaling NaN). `hod_x64::abi::x87_float_part` names such
+a part. The code generator refuses a signature that has one as
+`x64:ret-x87-part` (`X64::assign`, not `abi::assign`), and refuses an
+`x86_fp80` part in an x87 register as `x64:todo:abi` (`call::guard`,
+until WP-131). An `x86_fp80` in `st0`/`st1` is the 10-byte image.
 
 | return type | `ret` |
 |---|---|
@@ -386,7 +436,9 @@ expects. An `x86_fp80` in `st0`/`st1` is supported: the part is the
 | `{ x86_fp80, x86_fp80 }` | `st0`, `st1` |
 | `{ x86_fp80, double }` | `st0`, `xmm0` |
 | `i256`, `[4 x i64]`, `{ half × 4 }`, `{ fp128 × 3 }`, `{ x86_fp80 × 3 }`, `<32 x float>`, `<6 x float>`, `[2 x i128]` | memory |
-| `{ double × 3 }`, `{ float × 4 }`, `<3 x double>` | `x64:ret-x87-part` |
+| `{ double × 3 }`, `<3 x double>` | `xmm0`, `xmm1`, `st0` |
+| `{ i8, double, double, float }` | `al`; `xmm0`, `xmm1`, `st0` |
+| `{ float × 4 }` | one leaf each: `xmm0`, `xmm1`, `st0`, `st1` |
 
 `ret_attrs` may hold only `zeroext` or `signext` (§7), and only on an
 integer; a memory attribute there is `abi:invalid-signature`, `nest`
@@ -711,15 +763,17 @@ functions); `08-varargs.ll`.
 | `abi:vector-element` | a vector of an element §4.3 does not list |
 | `x64:mask-vector` | `<N x i1>` with N not 1, 2, 4, 8 or 16 (§4.3) |
 | `x64:wide-vector-abi` | a wide vector, or an `i1` vector, under AVX/AVX-512 (§1.3) |
-| `x64:ret-x87-part` | a `float`/`double` return piece in `st0`/`st1` (§5.1) |
 | `x64:nest` | `nest` (§6.3) |
 | `abi:swiftself`, `abi:swifterror`, `abi:swiftasync`, `abi:inalloca`, `abi:preallocated`, `abi:elementtype` | §6.6 |
 | `abi:byval-align` | a `byval` alignment above 16 (§6.2) |
 | `abi:too-many-pieces` | more than 2^16 argument pieces in one signature |
 | `abi:size-limit` | an offset or size beyond `u32` |
 
+`x64:ret-x87-part` (a `float`/`double` return piece in `st0`/`st1`,
+§5.1) is no longer `assign`'s: `X64::assign` reports it.
+
 *Evidence:* `errors::every_name` (each name, and that `UNSUPPORTED`
-lists exactly these); `errors::any_signature_is_answered` (20 000
+lists exactly these; `x64:ret-x87-part` from `X64::assign` only); `errors::any_signature_is_answered` (20 000
 random signatures over odd types and attributes: an answer or one of the
 names, never a panic).
 
@@ -737,10 +791,13 @@ The producer puts junk (`0xe7…`) in every byte and register bit it does
 not owe, and poisons every argument register it does not use. The
 random values are any bits except two kinds LLVM may change in transit
 while doing nothing wrong: an `x86_fp80` is a normal number (the x87
-does not keep an unnormal), and a `half` or `bfloat` NaN is quiet (LLVM
-may pass one through `float`, which quiets a signaling NaN). On an
-AArch64 host the program is linked with `x86_64-linux-gnu-gcc` and run
-under `qemu-x86_64 -L /usr/x86_64-linux-gnu`; on an x86-64 host
+does not keep an unnormal), and a `half`, `bfloat`, `float` or `double`
+NaN is quiet (LLVM may pass a `half` through `float`, and a `float` or
+`double` returned in `st0` goes through an x87 load, each of which quiets
+a signaling NaN). The C driver, system root and emulator are WP-025's
+(`hod_testutil::Target::X86_64`): on an AArch64 host the program is
+linked with `x86_64-linux-gnu-gcc` and run under `qemu-x86_64 -cpu
+qemu64,-sse3,-cx16,-lahf-lm -L /usr/x86_64-linux-gnu`; on an x86-64 host
 natively.
 
 | test | what |

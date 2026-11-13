@@ -62,6 +62,8 @@ pub fn compile_function<T: Target>(
         return internal("a chunk with more than 2 GiB of code");
     }
     let mark = chunk.mark();
+    let own = target.for_function(module, body);
+    let target = own.as_ref().unwrap_or(target);
     let mut far = options.stress.far;
     loop {
         let mut cx = FnCx::new(target, module, body, options, scratch, chunk, far);

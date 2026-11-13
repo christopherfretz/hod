@@ -16,11 +16,7 @@ use crate::sigs::{Attr, Case, Param};
 use crate::ty::Ty;
 
 /// The functions of the data that `assign` refuses, and the name.
-const REFUSED: [(&str, &str); 6] = [
-    // §5.1: `{ float x 4 }` and `{ double x 3 }` reach `st0`.
-    ("02-fp.ll:ret_4f", "x64:ret-x87-part"),
-    ("10-edges.ll:ret_4f", "x64:ret-x87-part"),
-    ("10-edges.ll:ret_3d", "x64:ret-x87-part"),
+const REFUSED: [(&str, &str); 3] = [
     // §6.3.
     ("06-ptrattrs.ll:f_nest", "x64:nest"),
     // §1.2: `swiftcc`.

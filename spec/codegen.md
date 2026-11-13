@@ -2122,7 +2122,8 @@ words compared with `llvm-mc`'s; the refusals; features from
 - **Branches** (design 0006 §2.10). `jmp rel32` and `jcc rel32` reach ±2
   GiB, so there is no far mode and the §6.3 retry never fires. A branch
   to a label already bound uses the short `rel8` form when it reaches;
-  a forward one is `rel32`. Fixup kinds: 0 `rel32`, 1 `rel8`; `at` is
+  any other is `rel32`, made `rel8` once the function is complete when
+  it then reaches (§5.6.15). Fixup kinds: 0 `rel32`, 1 `rel8`; `at` is
   the field's offset, and the displacement written is `target - (at +
   field size)` (`hod_x64::common::patch_branch`). `unreachable` and
   `llvm.trap` are `ud2`. Functions are 16-byte aligned (the emitter
@@ -3228,6 +3229,19 @@ unwinder reads. Each exit is `lea rsp, [rbp - 8n]` · the pops in
 reverse · `pop rbp` (`leave` when `n` is 0), and the coroutine stubs
 push the same set. `invoke`, landing pads, `musttail`, variadic
 functions and stack probes are unchanged: none depends on the set.
+
+**2. Branches.** A branch to the block emitted next was already
+omitted (§6.2). Every other `jmp rel32` and `jcc rel32` (`common::branch`,
+`branch_cond`: block edges, the lowerings' local loops and skips, the
+coroutine stubs' dispatch) is marked relaxable and becomes `EB cb` or
+`70+cc cb` when its label is then in reach; a backward branch that
+reaches when it is emitted is short at once and recorded as a reference
+(`REL8`) so that it is patched again. Nothing else in `hod_x64` encodes
+a displacement between two places of a function except through a
+label: `blockaddress` (a `lea` with a `REL32` field), the data islands
+and the call-site, line, CFI and variable rows all move with the code.
+Relaxation keeps every branch's target, so line rows, CFI advances and
+DWARF ranges, computed from the moved offsets, stay exact.
 
 ## 6. Control flow
 

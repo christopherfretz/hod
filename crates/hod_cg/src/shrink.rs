@@ -11,15 +11,15 @@
 
 use crate::cx::FnCx;
 use crate::error::{CgResult, internal};
-use crate::label::FixupKind;
+use crate::label::{FixupKind, RefId};
 use crate::record::VarPlace;
 use crate::target::Target;
 
 /// A branch that may take a short form (§5.6.15).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Relax {
-    /// The reference (`Labels::refs`) of its field.
-    pub(crate) reference: u32,
+    /// The reference of its field.
+    pub(crate) reference: RefId,
     /// The offset of its first byte.
     pub(crate) start: u32,
     /// Its length in the long form: it ends with its field.
@@ -106,8 +106,8 @@ impl<T: Target> FnCx<'_, T> {
     /// (§5.6.15). Call it right after that `fixup`.
     #[inline]
     pub fn relaxable(&mut self, start: u32, short: u8, kind: FixupKind) {
-        let reference = self.s.labels.ref_count().wrapping_sub(1);
-        let Some(r) = self.s.labels.refs().last() else { return };
+        let Some(reference) = self.s.labels.last_ref() else { return };
+        let Some(r) = self.s.labels.get_ref(reference) else { return };
         let Ok(long) = u8::try_from(r.at + 4 - start) else { return };
         self.s.relax.push(Relax { reference, start, long, short, kind });
     }
@@ -131,10 +131,10 @@ impl<T: Target> FnCx<'_, T> {
                 if *chosen {
                     continue;
                 }
-                let refs = self.s.labels.refs();
-                let Some(target) = refs
-                    .get(r.reference as usize)
-                    .and_then(|reference| self.s.labels.offset(reference.label))
+                let labels = &self.s.labels;
+                let Some(target) = labels
+                    .get_ref(r.reference)
+                    .and_then(|reference| labels.offset(reference.label))
                 else {
                     continue;
                 };
@@ -158,7 +158,7 @@ impl<T: Target> FnCx<'_, T> {
         let base = self.mark.code as usize;
         for (r, _) in relax.iter().zip(&chosen).filter(|&(_, &c)| c) {
             self.out.code[base + r.start as usize] = r.short;
-            self.s.labels.retarget_ref(r.reference as usize, r.start + 1, r.kind);
+            self.s.labels.retarget_ref(r.reference, r.start + 1, r.kind);
         }
         // The bytes.
         let mut to = base;
@@ -244,7 +244,8 @@ mod tests {
     #[test]
     fn offsets_move_by_what_is_removed_before_them() {
         let mut edits = Edits::default();
-        let relax = [Relax { reference: 0, start: 20, long: 6, short: 0x74, kind: FixupKind(1) }];
+        let relax =
+            [Relax { reference: RefId(0), start: 20, long: 6, short: 0x74, kind: FixupKind(1) }];
         edits.build(&[(4, 3), (30, 2)], &relax, &[true]);
         assert_eq!(edits.ranges, [(4, 3), (22, 4), (30, 2)]);
         let cases = [

@@ -27,9 +27,19 @@ const END: u32 = u32::MAX;
 struct Fixup {
     at: u32,
     kind: FixupKind,
+    label: Label,
     /// The next fixup of the same label, or [`END`].
     next: u32,
 }
+
+/// The bit of a [`RefId`] that names a reference to a label bound when
+/// it was made.
+const BACK: u32 = 1 << 31;
+
+/// A reference made by [`Labels::refer`]: an index into the fixups, or
+/// with [`BACK`] into the references to bound labels.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct RefId(pub(crate) u32);
 
 /// The labels of one function. Reset, not freed, between functions.
 #[derive(Debug, Default)]
@@ -41,9 +51,12 @@ pub struct Labels {
     fixups: Vec<Fixup>,
     /// Fixups not yet patched.
     pending: u32,
-    /// Every reference, patched or not, in the order made: what
-    /// shrinking the code (`shrink`, §6.4) patches again.
-    refs: Vec<Ref>,
+    /// The references to labels bound when they were made (the fixups
+    /// hold the others): with the fixups, what shrinking the code
+    /// (`shrink`, `spec/codegen.md` §5.6.15) patches again.
+    back: Vec<Ref>,
+    /// The last reference made.
+    last: Option<RefId>,
 }
 
 /// One reference to a label: the field at `at` of `kind`.
@@ -64,7 +77,8 @@ impl Labels {
         self.head.resize(count as usize, END);
         self.fixups.clear();
         self.pending = 0;
-        self.refs.clear();
+        self.back.clear();
+        self.last = None;
     }
 
     /// A new unbound label.
@@ -116,14 +130,16 @@ impl Labels {
     ) -> Result<(), OutOfRange> {
         let index = label.0 as usize;
         debug_assert!(index < self.offset.len(), "a label of another function");
-        self.refs.push(Ref { at, kind, label });
         let target = self.offset[index];
         if target != UNBOUND {
+            self.last = Some(RefId(self.back.len() as u32 | BACK));
+            self.back.push(Ref { at, kind, label });
             return patch(at, kind, i64::from(target) - i64::from(at))
                 .then_some(())
                 .ok_or(OutOfRange);
         }
-        self.fixups.push(Fixup { at, kind, next: self.head[index] });
+        self.last = Some(RefId(self.fixups.len() as u32));
+        self.fixups.push(Fixup { at, kind, label, next: self.head[index] });
         self.head[index] = self.fixups.len() as u32 - 1;
         self.pending += 1;
         Ok(())
@@ -159,28 +175,43 @@ impl Labels {
         Ok(true)
     }
 
-    /// The number of references made so far: the index the next one
-    /// gets in [`Labels::refs`].
-    pub(crate) fn ref_count(&self) -> u32 {
-        self.refs.len() as u32
+    /// The last reference [`Labels::refer`] made.
+    pub(crate) fn last_ref(&self) -> Option<RefId> {
+        self.last
     }
 
-    /// Every reference made, in order.
-    pub(crate) fn refs(&self) -> &[Ref] {
-        &self.refs
+    /// Reference `id`.
+    pub(crate) fn get_ref(&self, id: RefId) -> Option<Ref> {
+        if id.0 & BACK != 0 {
+            self.back.get((id.0 & !BACK) as usize).copied()
+        } else {
+            let f = self.fixups.get(id.0 as usize)?;
+            Some(Ref { at: f.at, kind: f.kind, label: f.label })
+        }
     }
 
-    /// Reference `index` is now the field at `at` of `kind` (a branch
+    /// Every reference made.
+    pub(crate) fn refs(&self) -> impl Iterator<Item = Ref> + '_ {
+        let fixups = self.fixups.iter().map(|f| Ref { at: f.at, kind: f.kind, label: f.label });
+        fixups.chain(self.back.iter().copied())
+    }
+
+    /// Reference `id` is now the field at `at` of `kind` (a branch
     /// relaxed to its short form).
-    pub(crate) fn retarget_ref(&mut self, index: usize, at: u32, kind: FixupKind) {
-        if let Some(r) = self.refs.get_mut(index) {
-            r.at = at;
-            r.kind = kind;
+    pub(crate) fn retarget_ref(&mut self, id: RefId, at: u32, kind: FixupKind) {
+        if id.0 & BACK != 0 {
+            if let Some(r) = self.back.get_mut((id.0 & !BACK) as usize) {
+                r.at = at;
+                r.kind = kind;
+            }
+        } else if let Some(f) = self.fixups.get_mut(id.0 as usize) {
+            f.at = at;
+            f.kind = kind;
         }
     }
 
     /// Moves every code offset the table holds through `map`: the bound
-    /// labels, the pending fixups and the references (§6.4).
+    /// labels and every reference (§5.6.15).
     pub(crate) fn map_offsets(&mut self, map: impl Fn(u32) -> u32) {
         for offset in &mut self.offset {
             if *offset != UNBOUND {
@@ -190,7 +221,7 @@ impl Labels {
         for fixup in &mut self.fixups {
             fixup.at = map(fixup.at);
         }
-        for r in &mut self.refs {
+        for r in &mut self.back {
             r.at = map(r.at);
         }
     }

@@ -396,10 +396,30 @@ fn pushes(insts: &[String]) -> Vec<String> {
 }
 
 /// Whether the branch shape is checked (cut 2 of §5.6.15).
-const SHORT_BRANCHES: bool = false;
+const SHORT_BRANCHES: bool = true;
 
 /// Whether the copy shape is checked (cut 3 of §5.6.15).
 const LOOPED_COPIES: bool = false;
+
+/// A memory operand `xmmword ptr [base + disp]`: its base and
+/// displacement.
+type Place = (String, i64);
+
+/// The [`Place`] of an operand as `llvm-objdump` prints it.
+fn place(operand: &str) -> Option<Place> {
+    let inner = operand.strip_prefix("xmmword ptr [")?.strip_suffix(']')?;
+    let mut words = inner.split(' ');
+    let base = words.next()?.to_owned();
+    let disp = match (words.next(), words.next()) {
+        (None, _) => 0,
+        (Some(sign), Some(n)) => {
+            let n = i64::from_str_radix(n.strip_prefix("0x")?, 16).ok()?;
+            if sign == "-" { -n } else { n }
+        }
+        _ => return None,
+    };
+    Some((base, disp))
+}
 
 /// What [`check_shapes`] counted.
 #[derive(Default, Debug)]
@@ -471,15 +491,23 @@ fn check_shapes(object: &Path, shapes: &mut Shapes) {
                 line.text
             );
         }
-        // No run of more than four 16-byte copies through `xmm15`.
+        // No run of more than four 16-byte moves through `xmm15` that
+        // copy consecutive addresses: one copy above 64 bytes.
         let mut run = 0;
-        for t in texts.iter().filter(|_| LOOPED_COPIES) {
-            if t.starts_with("movups xmm15,") {
-                run += 1;
-                assert!(run <= 4, "{name}: an unrolled copy above 64 bytes\n{texts:#?}");
-            } else if !t.starts_with("movups") || !t.ends_with("xmm15") {
-                run = 0;
-            }
+        let mut last: Option<(Place, Place)> = None;
+        for pair in texts.windows(2).filter(|_| LOOPED_COPIES) {
+            let load = pair[0].strip_prefix("movups xmm15, ").and_then(place);
+            let store = pair[1]
+                .strip_prefix("movups ")
+                .and_then(|t| t.strip_suffix(", xmm15"))
+                .and_then(place);
+            let (Some(load), Some(store)) = (load, store) else { continue };
+            let next = last.is_some_and(|(l, s)| {
+                (l.0 == load.0 && l.1 + 16 == load.1) && (s.0 == store.0 && s.1 + 16 == store.1)
+            });
+            run = if next { run + 1 } else { 1 };
+            last = Some((load, store));
+            assert!(run <= 4, "{name}: an unrolled copy above 64 bytes\n{texts:#?}");
         }
     }
 }

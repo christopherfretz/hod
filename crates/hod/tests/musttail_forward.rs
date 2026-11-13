@@ -6,9 +6,9 @@
 //! which types the variable arguments from the body (WP-115): such a
 //! call compiles on AArch64 as `llc` builds it while its arguments fit
 //! the caller's area, and is `musttail:stack-args-grow` when they do not.
-//! On x86-64 the facade gives `classify` no stack-argument rule, so every
-//! `musttail` call stays `musttail:stack-args-unknown` there
-//! (`spec/abi-x64.md` §8.5).
+//! On x86-64 the facade's rule (WP-148) judges the same way, and the call
+//! that fits is then `x64:musttail-variable-arguments` (`spec/abi-x64.md`
+//! §8.5).
 
 #![allow(dead_code, reason = "the linking support is shared with other tests")]
 
@@ -153,15 +153,19 @@ fn thunks_with_variable_arguments_run_like_llc() {
 // `spec/codegen.md` §5.5, §7.1 "The `musttail` hook": variable
 // arguments in registers compile; ones that need stack beyond the
 // caller's area are refused by name, by text and by bitcode. On x86-64
-// every `musttail` call is `musttail:stack-args-unknown` at the facade.
+// (WP-148, `spec/abi-x64.md` §8.5) the forwarding thunk compiles, one
+// whose extras fit is `x64:musttail-variable-arguments` and one whose
+// extras need stack is `musttail:stack-args-grow`.
 #[test]
 fn variable_arguments_on_the_stack_are_refused_by_name() {
-    let eight = "i64 1, i64 2, i64 3, i64 4, i64 5, i64 6, i64 7, i64 8";
+    let eight = ", i64 1, i64 2, i64 3, i64 4, i64 5, i64 6, i64 7, i64 8";
     for (triple, extra, want) in [
-        ("aarch64", "i32 42", None),
-        ("aarch64", "i32 42, double 1.0, fp128 0xL00000000000000004000000000000000", None),
+        ("aarch64", ", i32 42", None),
+        ("aarch64", ", i32 42, double 1.0, fp128 0xL00000000000000004000000000000000", None),
         ("aarch64", eight, Some("musttail:stack-args-grow")),
-        ("x86_64", "i32 42", Some("musttail:stack-args-unknown")),
+        ("x86_64", "", None),
+        ("x86_64", ", i32 42", Some("x64:musttail-variable-arguments")),
+        ("x86_64", eight, Some("musttail:stack-args-grow")),
     ] {
         judged(triple, extra, want);
     }
@@ -171,7 +175,7 @@ fn judged(triple: &str, extra: &str, want: Option<&str>) {
     let text = format!(
         "target triple = \"{triple}-unknown-linux-gnu\"\n\
          declare i32 @printf(ptr, ...)\n\
-         define i32 @h(ptr %f, ...) {{\n  %r = musttail call i32 (ptr, ...) @printf(ptr %f, {extra}, ...)\n  \
+         define i32 @h(ptr %f, ...) {{\n  %r = musttail call i32 (ptr, ...) @printf(ptr %f{extra}, ...)\n  \
          ret i32 %r\n}}\n"
     );
     let mut inputs = vec![text.as_bytes().to_vec()];

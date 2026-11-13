@@ -1,7 +1,9 @@
 //! The unwind tables of the placed functions (`spec/codegen.md` §9.7,
 //! `spec/eh.md` §1.1 and §9.1): `.gcc_except_table` from the call-site,
 //! pad and clause rows, then `.eh_frame` from the CFI rows, each in one
-//! `hod_eh` call over the whole object.
+//! `hod_eh` call over the whole object; and in a module with debug
+//! information, `.debug_frame` from the CFI rows of the functions that
+//! need no `.eh_frame` entry (`spec/eh.md` §10, WP-150).
 //!
 //! Everything is read from the merged rows ([`Emitted::rows`]) and the
 //! placed records, which do not depend on how the functions were divided
@@ -87,10 +89,52 @@ impl ModuleEmitter<'_> {
     }
 
     /// Writes the LSDAs and `.eh_frame` of every placed function that
-    /// needs them (`spec/eh.md` §1.1).
+    /// needs them (`spec/eh.md` §1.1), or `.debug_frame` (§10).
+    ///
+    /// In a module with debug information every function has CFI, as in
+    /// `llc` (`AsmPrinter::getFunctionCFISectionType`: `CFISection::Debug`
+    /// for one that needs no unwind entry). `llc` chooses the section once
+    /// for the module (`ModuleCFISection`, from the functions it emits):
+    /// `.eh_frame` for all of them when any one needs an unwind entry,
+    /// else `.debug_frame` (WP-150, checked with `llc` 19 and 22 on both
+    /// targets).
     pub(super) fn unwind_tables(&mut self) -> CgResult<()> {
+        let debug = self.debug.is_some();
+        let any_eh = self.funcs.iter().any(|f| f.record.needs_unwind_entry());
+        if debug && !any_eh {
+            return self.debug_frame();
+        }
+        self.eh_tables(debug)
+    }
+
+    /// `.debug_frame` (`spec/eh.md` §10, WP-150): an FDE of each function's
+    /// CFI rows, the rows its `.eh_frame` entry would have.
+    fn debug_frame(&mut self) -> CgResult<()> {
+        if self.funcs.is_empty() {
+            return Ok(());
+        }
+        let mut frames = Vec::with_capacity(self.funcs.len());
+        for placed in &self.funcs {
+            let record = &placed.record;
+            frames.push(Fde {
+                order: record.sym.index() as u32,
+                start: self.obj.section_symbol(placed.section),
+                start_addend: i64::from(record.code.start),
+                size: record.code.end - record.code.start,
+                rows: &self.rows.cfi[record.cfi.start as usize..record.cfi.end as usize],
+                personality: None,
+                lsda: None,
+            });
+        }
+        hod_eh::write_debug_frame(&mut self.obj, &frames).map_err(eh_err)?;
+        Ok(())
+    }
+
+    /// The LSDAs and `.eh_frame`; `all`: every function has an FDE (a
+    /// module with debug information, [`Self::unwind_tables`]).
+    fn eh_tables(&mut self, all: bool) -> CgResult<()> {
         let module = self.module;
-        let (entries, with_pads) = self.count_entries()?;
+        let (entries, with_pads) = self.count_entries(all)?;
         if entries == 0 {
             return Ok(());
         }
@@ -191,17 +235,18 @@ impl ModuleEmitter<'_> {
             hod_eh::write_lsdas(&mut self.obj, &funcs, options).map_err(eh_err)?
         };
 
-        self.write_fdes(entries, &ranges, &lsdas, &slots)
+        self.write_fdes(all, entries, &ranges, &lsdas, &slots)
     }
 
-    /// The functions that need an FDE, and those of them with landing
-    /// pads; an unknown personality without pads is refused.
-    fn count_entries(&self) -> CgResult<(usize, usize)> {
+    /// The functions that need an FDE (all of them when `all`), and those
+    /// of them with landing pads; an unknown personality without pads is
+    /// refused.
+    fn count_entries(&self, all: bool) -> CgResult<(usize, usize)> {
         let module = self.module;
         let (mut entries, mut with_pads) = (0usize, 0usize);
         for func in &self.funcs {
             let record = &func.record;
-            if !record.needs_unwind_entry() {
+            if !all && !record.needs_unwind_entry() {
                 continue;
             }
             entries += 1;
@@ -218,10 +263,11 @@ impl ModuleEmitter<'_> {
         Ok((entries, with_pads))
     }
 
-    /// `.eh_frame`: one FDE per function that needs one, its LSDA by the
-    /// function's position in `ranges`.
+    /// `.eh_frame`: one FDE per function that needs one (each when
+    /// `all`), its LSDA by the function's position in `ranges`.
     fn write_fdes(
         &mut self,
+        all: bool,
         entries: usize,
         ranges: &[Ranges],
         lsdas: &[Lsda],
@@ -231,7 +277,7 @@ impl ModuleEmitter<'_> {
         let mut next_lsda = 0usize;
         for (index, placed) in self.funcs.iter().enumerate() {
             let record = &placed.record;
-            if !record.needs_unwind_entry() {
+            if !all && !record.needs_unwind_entry() {
                 continue;
             }
             let (mut personality, mut lsda) = (None, None);

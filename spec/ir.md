@@ -2316,3 +2316,124 @@ IR").
   for §2.1's option list is unknown or rejected.
 - Printer: §9's guarantees over the IR corpus.
 - classify (§8): every row, rule and malformed-input name, the subject rule and the order (`tests/classify_matrix.rs`, `tests/classify_rules.rs`); consistency and no panic on random tame and wild programs (`tests/classify_random.rs`); `docs/status/support.md` is the generated text (`tests/classify_support_doc.rs`); the cost, not a gate (`examples/classify_throughput.rs`).
+
+## 12. Producer kit
+
+`hod_ir::kit` (WP-092, design 0004 H3) is the part of the mapping from
+LLVM's constructs to `hod_ir` that every producer makes the same way.
+`hod_ll` and `hod_bc` call it; a third producer (a front end lowering
+into `hod_ir` directly) that calls it gets exactly what the readers get,
+refusals included. Normative: each helper promises what is written here,
+and the readers' byte equality over the corpus (WP-092's record) is
+checked against it. What stays in a producer is reading its own syntax:
+lexing or records, positions, its error kinds and messages for malformed
+input (the kit returns an error value with LLVM's message where LLVM has
+one, and the producer reports it at its own position).
+
+Cost: no boxing and no allocation per call on the body path (the index
+list of a `getelementptr` is the caller's scratch vector); the body-path
+helpers are `#[inline]` and generic over the `Layering`. Strings are
+allocated only to name a refused construct.
+
+**Results.** `Lowered` is what a lowering made: `Built(value)`, or
+`Refused { construct, stand_in }`, for which the producer records
+`construct` against the function and uses `stand_in` in a body that will
+not be kept. `stand_in(module, ty)` is no value for `void`, `none` for
+`token`, `poison` of `ty` otherwise.
+
+**`getelementptr`** (`Gep`, §5.4). `Gep::new(types, source, base_ty)`:
+`BaseNotPointer` unless the base (or each element of a vector base) is a
+pointer, then `SourceUnsized` unless `source` is sized. Per index, first
+`index_type(types, ty)` (returns the width; `IndexNotInteger`,
+`VectorLength` when a vector index's length differs from the base's or
+an earlier index's), then `index(types, value, constant, indices)` with
+the index's constant value if it is one (`gep_index_value`: an integer
+sign-extended from its width, a wide integer's low word, zero, a splat,
+or a vector whose elements all have one value; else `None`). The first
+index scales by the source's allocation size; a struct index must be a
+constant in range (else `InvalidIndices`) and adds the field's offset; an
+array index scales by the element's allocation size; a vector index by
+the element stride, and a vector whose elements are not whole bytes makes
+the address `getelementptr:vector-element-not-bytes`; anything scalable
+makes it `getelementptr:scalable`; an index into any other type is
+`InvalidIndices`. Constant contributions are summed into the offset with
+wrapping 64-bit arithmetic; a variable index is pushed with its scale, in
+order. `build(module, b, base, indices)` returns the result type (the
+base's pointer type, a vector of it if the base or an index is one) and
+the `PtrAdd`, or the refusal. `inbounds`, `nuw`, `nusw` are not read.
+
+**`alloca`** (`lower_alloca(module, b, &AllocaDesc)`, §5.2). In order:
+`InvalidType` for an unsized type or `token`; the result type (`ptr`, or
+`ptr addrspace(N)`); refused `alloca:inalloca`, then `alloca:swifterror`,
+then `alloca:scalable`. The alignment is the written one or the type's
+preferred one. A **static** `alloca` (in the entry block, address space
+0, a count that is absent or an integer constant, and `count * size` not
+overflowing) is a slot of that size; any other is the `Alloca`
+instruction with the count (`i32 1` when absent). The count's type is the
+producer's to check (an integer).
+
+**Attributes** (§5.7). `string_attr(fa, name, value)`: a dropped string
+is `Dropped`; a kept one on a function (`fa` given) goes into `fa`
+(`no-builtin-<f>` keeps the name's rest) and is `Kept`; any other
+(unknown, rejected, or kept on a value) is `Rejected`.
+`fn_keyword(fa, name, class)` for a function keyword other than
+`uwtable`, `alignstack`, `align` (whose arguments the producer reads):
+a flag of `FnAttrs` is set and `Kept`, any other is
+`AttrUse::of_class(class)`: `Dropped`, `Rejected`, or `Misplaced` for a
+kept attribute that does not apply there (malformed). `value_keyword`
+names the parameter and return keywords hod keeps: the seven
+`ParamAttrs` flags, the six typed attributes, `align`, `alignstack`; any
+other is `Other`, used as its class says. `add_typed(attrs, mem, ty)`:
+the first typed attribute is kept; `elementtype` beside another keeps the
+other and returns `attr:elementtype-with-<other>` to record; two others
+are `TwoTyped` (malformed). A rejected attribute is recorded as
+`attr_construct(name)` (`attr:<name>`). `merge_fn_attrs(out, view)` adds
+an interned set to `out`: flags, the unwind-table kind unless none, the
+stack alignment, the strings (the merge of two groups on one function).
+`CALL_SITE_FLAGS` are the call-site function attributes kept (`noreturn`,
+`nounwind`, `returns_twice`, `convergent`); `set_call_site_flags` sets
+`CallDesc`'s fields from them.
+
+**Special globals and attachments** (§2.2). `SpecialGlobal::from_name`
+(without `@`): `llvm.global_ctors`, `llvm.global_dtors`, `llvm.used`,
+`llvm.compiler.used`, `llvm.global.annotations`; none of them is a
+symbol. `deliver_special(module, which, init)`: a zero, `undef` or
+`poison` array has no members; otherwise the initializer is an array
+(`NotAnArray`); a member of the two `used` lists is a symbol's address
+(`NotASymbol`, `NullUsed` for null) and is retained; a structor entry is
+`{ i32, ptr }` or `{ i32, ptr, ptr }` (`BadEntry`; an all-zero entry is
+skipped), its priority an integer constant (`BadPriority`, truncated to
+32 bits), its function a symbol or null (skipped), its data a symbol or
+null. `llvm.global.annotations` delivers nothing;
+`annotations_construct(section)` is
+`special-global:llvm.global.annotations` unless the section is
+`llvm.metadata`. `GlobalAttachment::of(kind)`: `!dbg` is debug
+information; `!type`, `!vcall_visibility`, `!prof`, `!section_prefix`,
+`!annotation` are dropped; any other is recorded as
+`global-metadata:<kind>`. Which other `llvm.*` variable names a producer
+records as `special-global:<name>` is lexical and stays the producer's.
+
+**Named metadata and module flags** (§2.1). `NamedMetadataKind::of(name)`:
+`llvm.module.flags`, `llvm.linker.options`, `llvm.dependent-libraries`,
+`llvm.dbg.cu`; `llvm.ident` and `llvm.errno.tbaa` are dropped; any other
+is recorded against no symbol as `named-metadata:<name>`.
+`module_flag(module, behavior, name, int, text, upgrade)`: the value is
+`Int` when the operand is an integer constant, else `Str` when it is a
+string, else `Other`; a behavior over `u32::MAX` becomes `u32::MAX`
+(refused by `set_module_flag`); an integer flag is fed to
+`BranchUpgrade::observe`. `BranchUpgrade` is LLVM's reader upgrade of
+AArch64 definitions whose branch-protection flags are in the old form
+(`spec/ll.md` §7.3): start from `Some(default)`, a flag value 2 ends it,
+value 1 sets the flag's field; `apply(module, id, cache)` rewrites a
+definition's set (`sign-return-address=none` dropped unless signing,
+`"false"` values dropped and `"true"` made empty for the three boolean
+strings, the flags' defaults added where the set has none), once per set.
+It applies to AArch64 only, to definitions only.
+
+Not in the kit yet (WP-092's `PARKED.md`): the debug fields (§6.9's
+mapping of `DI*` fields, `DILocation`, `DIExpression`), which both
+readers still do separately.
+
+Tests: `tests/kit.rs` (each promise above); byte equality of both
+readers' objects over the corpus and the seed tests, both targets, text
+and bitcode, before and after (WP-092's record).

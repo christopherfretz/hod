@@ -92,7 +92,7 @@ Debug information.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `debug:module-flags` | supported | supported | `Dwarf Version` or `Debug Info Version` is set (WP-087) |
-| `debug:dwarf-version` | not-implemented | not-implemented | T-DW. a compile unit with debug information and a `Dwarf Version` other than 4 and 5 (absent is LLVM's 4): `hod_dwarf` writes DWARF 5 and, since WP-114, 4 when the flag says so |
+| `debug:dwarf-version` | not-implemented | not-implemented | T-DW. a compile unit with debug information and a `Dwarf Version` other than 4 and 5: `hod_dwarf` writes DWARF 5, since WP-114 4, and since WP-150 4 for no flag (LLVM's 4) |
 | `debug:subprogram` | supported | supported | a function with a body and a `DISubprogram` (WP-087) |
 | `debug:slot-variables` | supported | supported | a stack slot that is a source variable (WP-087); in a coroutine body, on the frame word (WP-108, `spec/dwarf.md` §6.16) |
 | `debug:locations` | supported | supported | a body whose instructions carry source locations (WP-087) |
@@ -365,8 +365,8 @@ Instructions.
 | `inst:ptradd` | supported | supported | LLVM's `getelementptr` (§5.4); not a vector of pointers |
 | `inst:extractvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, x86_fp80, vector, aggregate) | x86-64: floating-point members with WP-144; `x86_fp80` with WP-131 |
 | `inst:insertvalue` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, x86_fp80, vector, aggregate) | x86-64: floating-point members with WP-144; `x86_fp80` with WP-131 |
-| `inst:extractelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | byte-sized elements, up to 256 lanes (WP-079) |
-| `inst:insertelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | byte-sized elements, up to 256 lanes (WP-079) |
+| `inst:extractelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | supported (int, i128, ptr, half, bfloat, float, double, fp128, x86_fp80, vector) | byte-sized elements, up to 256 lanes (WP-079) |
+| `inst:insertelement` | supported (int, i128, ptr, half, bfloat, float, double, fp128, vector) | supported (int, i128, ptr, half, bfloat, float, double, fp128, x86_fp80, vector) | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:shufflevector` | supported (vector) | supported (vector) | byte-sized elements, up to 256 lanes (WP-079) |
 | `inst:phi` | supported | supported | for every class whose `type:*` row is supported |
 | `inst:select` | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, vector, aggregate) | supported (int, i128, int-wide, ptr, half, bfloat, float, double, fp128, x86_fp80, vector, aggregate) |  |

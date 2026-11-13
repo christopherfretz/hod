@@ -492,8 +492,7 @@ fn options() -> hod::Options {
 
 /// `-gline-tables-only` (`-O1`): a unit with no inlined code has no
 /// function DIE (as `llc`), the flag is accepted; with inlined code
-/// `llc` writes call sites and full declarations hod does not, which is
-/// refused by name.
+/// hod writes `llc`'s call sites (WP-150).
 #[test]
 fn line_tables_only() {
     let Some(clang) = tool("clang-22") else { return };
@@ -510,11 +509,10 @@ fn line_tables_only() {
         let tree = tree(&dwarfdump, &object);
         assert!(!tree.iter().any(|l| l.ends_with("DW_TAG_call_site")), "{tree:?}");
     }
+    // WP-150: with inlined code, `llc`'s minimal call sites
+    // (`dwarf_call_sites4.rs`, `line_tables_only_matches_llc`).
     let inlined = ir(&fe, &scratch, Arch::A64, "calls.c", &["-gline-tables-only"]);
-    assert_eq!(
-        declined(&inlined, &options()).unwrap_err(),
-        hod_dwarf::DEBUG_CALL_SITES_LINE_TABLES
-    );
+    declined(&inlined, &options()).expect("line-tables-only call sites");
 }
 
 /// `-gsplit-dwarf`: the call sites are in the `.dwo`, their addresses in

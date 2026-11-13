@@ -13,16 +13,29 @@
 //! back half (`back.rs`): code generation with `hod_a64`, on worker
 //! threads for a large module, and the object. A program that builds its
 //! own `hod_ir` module (kiln's bridge) feeds a [`Session`] directly.
+//!
+//! What the `hod` binary and such a program share is here too
+//! (`spec/cli.md` "The command line in the facade"): `llc`'s command line
+//! ([`args`], [`Options::from_llc_args`]), the environment ([`env`],
+//! [`Settings::from_env`]) with the jobserver client ([`jobserver`]), and
+//! the coverage line ([`coverage`]).
 
 use std::borrow::Cow;
 use std::fmt;
 use std::path::PathBuf;
 
+pub mod args;
 mod back;
+pub mod coverage;
+pub mod env;
 mod front;
+pub mod jobserver;
 mod session;
 
 pub use hod_obj::Compression;
+
+pub use args::ArgError;
+pub use env::{EnvError, Environment};
 
 pub use back::{
     LIMIT_OBJECT, OBJECT_NUL_IN_NAME, OPTION_RELOCATION_MODEL, OPTION_SPLIT_DWARF,
@@ -266,6 +279,10 @@ pub enum InputKind {
     Text,
     /// LLVM bitcode, bare or in the bitcode wrapper.
     Bitcode,
+    /// A module built in process and handed to a [`Session`] (coverage
+    /// field 3, `spec/cli.md` "Coverage log"). [`InputKind::detect`]
+    /// never says it: bytes are text or bitcode.
+    Module,
 }
 
 impl InputKind {
@@ -282,11 +299,12 @@ impl InputKind {
         }
     }
 
-    /// `text` or `bitcode`.
+    /// `text`, `bitcode` or `module`.
     pub fn name(self) -> &'static str {
         match self {
             InputKind::Text => "text",
             InputKind::Bitcode => "bitcode",
+            InputKind::Module => "module",
         }
     }
 }
@@ -409,6 +427,7 @@ mod tests {
         assert_eq!(InputKind::detect(b"\x0B\x17\xC0\xDE"), InputKind::Text);
         assert_eq!(InputKind::Text.name(), "text");
         assert_eq!(InputKind::Bitcode.name(), "bitcode");
+        assert_eq!(InputKind::Module.name(), "module");
     }
 
     // spec/cli.md "Reasons": the order of the checks before the module is

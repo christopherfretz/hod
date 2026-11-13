@@ -1,4 +1,6 @@
-//! Unwind tables: `.eh_frame` and `.gcc_except_table`.
+//! Unwind tables: `.eh_frame` and `.gcc_except_table`, and the
+//! `.debug_frame` of a `-g` module's functions that need no unwind entry
+//! ([`write_debug_frame`], `spec/eh.md` §10, WP-150).
 //!
 //! See `docs/ARCHITECTURE.md` for this crate's role and `spec/eh.md` for its
 //! contract. This crate writes the call-frame information (`spec/eh.md`
@@ -41,7 +43,8 @@ use std::fmt;
 
 use hod_obj::elf::SHF_ALLOC;
 use hod_obj::{
-    Binding, GroupKind, Object, SectionId, SectionKind, Symbol, SymbolId, SymbolKind, Visibility,
+    A64Reloc, Binding, GroupKind, Object, RelocKind, SectionId, SectionKind, Symbol, SymbolId,
+    SymbolKind, Visibility, X64Reloc,
 };
 
 use leb::{Sink, sleb, uleb};
@@ -228,6 +231,12 @@ pub enum Error {
     },
     /// The object model refused the section.
     Object(hod_obj::Error),
+    /// An FDE of `.debug_frame` has a personality or an LSDA (WP-150): a
+    /// function with one needs an `.eh_frame` entry.
+    PersonalityInDebugFrame {
+        /// The FDE.
+        order: u32,
+    },
 }
 
 impl fmt::Display for Error {
@@ -273,6 +282,9 @@ impl fmt::Display for Error {
             }
             Self::BadName { order } => write!(f, "LSDA {order}: the function's name has a NUL"),
             Self::Object(e) => write!(f, "{e}"),
+            Self::PersonalityInDebugFrame { order } => {
+                write!(f, "FDE {order} of .debug_frame has a personality or an LSDA")
+            }
         }
     }
 }
@@ -685,6 +697,99 @@ pub fn write_eh_frame(obj: &mut Object, fdes: &[Fde<'_>]) -> Result<Option<Secti
     for r in relocs {
         let kind = if r.pointer { target.pointer_reloc } else { target.pc_reloc };
         obj.add_relocation(section, u64::from(r.offset), kind, r.symbol, r.addend);
+    }
+    Ok(Some(section))
+}
+
+/// The alignment of `.debug_frame` and of each of its entries: the
+/// address size (`MCDwarf`'s `EmitCIE`/`EmitFDE` for a non-EH frame).
+const DEBUG_FRAME_ALIGN: usize = 8;
+
+/// Appends `.debug_frame`'s CIE (`spec/eh.md` §10): DWARF 4's format
+/// (`CIE_id` `0xffffffff`, version 4, no augmentation, the address and
+/// segment selector sizes), the target's factors, return address column
+/// and initial instructions, padded with `DW_CFA_nop` to 8.
+fn write_debug_cie(out: &mut Vec<u8>, target: &CfiTarget) {
+    let start = out.len();
+    out.extend_from_slice(&[0; 4]); // length
+    out.extend_from_slice(&0xffff_ffffu32.to_le_bytes()); // CIE_id
+    out.push(4); // version
+    out.push(0); // augmentation ""
+    out.push(8); // address_size
+    out.push(0); // segment_selector_size
+    write_uleb(out, u64::from(target.code_align));
+    write_sleb(out, i64::from(target.data_align));
+    write_uleb(out, u64::from(target.return_address));
+    for &op in target.initial {
+        // The table's initial instructions always factor.
+        let _ = write_op(out, target, op);
+    }
+    pad(out, DEBUG_FRAME_ALIGN);
+    patch_length(out, start);
+}
+
+/// Writes `.debug_frame` for `fdes` into `obj`, with its relocations, and
+/// returns the section; `None`, and no section, when there are no FDEs
+/// (`spec/eh.md` §10, WP-150).
+///
+/// This is what `llc` writes for a function of a module with debug
+/// information that needs no `.eh_frame` entry (`nounwind`, no
+/// `uwtable`, no personality: `AsmPrinter::getFunctionCFISectionType`'s
+/// `CFISection::Debug`): one CIE, then the FDEs by `order`, each its CIE
+/// pointer (an absolute 32-bit offset into the section, relocated against
+/// its section symbol), its initial location (an absolute 64-bit address,
+/// relocated) and range (8 bytes), and the rows [`write_eh_frame`] would
+/// write, padded to 8. The section is not allocated and is aligned to 8.
+///
+/// # Errors
+/// [`Error::PersonalityInDebugFrame`] for an FDE with a personality or an
+/// LSDA; the row errors of [`write_eh_frame`]. On an error `obj` is
+/// unchanged.
+pub fn write_debug_frame(obj: &mut Object, fdes: &[Fde<'_>]) -> Result<Option<SectionId>, Error> {
+    if fdes.is_empty() {
+        return Ok(None);
+    }
+    if let Some(f) = fdes.iter().find(|f| f.personality.is_some() || f.lsda.is_some()) {
+        return Err(Error::PersonalityInDebugFrame { order: f.order });
+    }
+    let target = for_arch(obj.arch());
+    // One CIE: `layout` sorts by `order` and refuses a duplicate.
+    let (sorted, _) = layout(fdes)?;
+    let rows: usize = fdes.iter().map(|f| f.rows.len()).sum();
+    let mut out = Vec::with_capacity(24 + fdes.len() * 32 + rows * 5);
+    // Per FDE: the CIE pointer's offset, then the initial location's.
+    let mut relocs = Vec::with_capacity(fdes.len());
+    write_debug_cie(&mut out, target);
+    for &i in &sorted {
+        let fde = &fdes[i as usize];
+        let start = out.len();
+        relocs.push((start + 4, fde));
+        let mut stage = Staging::new();
+        stage.bytes(&[0; 4]); // length, patched below
+        stage.bytes(&[0; 4]); // CIE_pointer: the CIE at 0, relocated
+        stage.bytes(&[0; 8]); // initial_location, relocated
+        stage.bytes(&u64::from(fde.size).to_le_bytes()); // address_range
+        write_rows(&mut out, &mut stage, target, fde)?;
+        stage.flush(&mut out);
+        pad(&mut out, DEBUG_FRAME_ALIGN);
+        patch_length(&mut out, start);
+    }
+    if u32::try_from(out.len()).is_err() {
+        return Err(Error::TooLarge);
+    }
+    let (abs32, abs64) = match obj.arch() {
+        hod_obj::Arch::AArch64 => {
+            (RelocKind::A64(A64Reloc::Abs32), RelocKind::A64(A64Reloc::Abs64))
+        }
+        hod_obj::Arch::X86_64 => (RelocKind::X64(X64Reloc::Abs32), RelocKind::X64(X64Reloc::Abs64)),
+    };
+    let section = obj.add_section(b".debug_frame", SectionKind::Debug, DEBUG_FRAME_ALIGN as u64)?;
+    let own = obj.section_symbol(section);
+    obj.append_owned(section, out);
+    obj.reserve(0, 0, 2 * relocs.len(), 0);
+    for (at, fde) in relocs {
+        obj.add_relocation(section, at as u64, abs32, own, 0);
+        obj.add_relocation(section, at as u64 + 4, abs64, fde.start, fde.start_addend);
     }
     Ok(Some(section))
 }

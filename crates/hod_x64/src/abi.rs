@@ -67,7 +67,7 @@ pub struct Features {
 /// Every name [`assign`] reports, in the order of §10. [`RET_X87_PART`]
 /// is not one: `assign` places such a part in `st0`/`st1`, and
 /// `X64::assign` refuses it until WP-131 lowers it.
-pub const UNSUPPORTED: [&str; 18] = [
+pub const UNSUPPORTED: [&str; 19] = [
     CC,
     INVALID_SIGNATURE,
     SCALABLE_VECTOR,
@@ -84,6 +84,7 @@ pub const UNSUPPORTED: [&str; 18] = [
     PREALLOCATED,
     ELEMENTTYPE,
     BYVAL_ALIGN,
+    I128_VECTOR_SPLIT,
     TOO_MANY_PIECES,
     SIZE_LIMIT,
 ];
@@ -116,6 +117,14 @@ const INALLOCA: &str = "abi:inalloca";
 const PREALLOCATED: &str = "abi:preallocated";
 const ELEMENTTYPE: &str = "abi:elementtype";
 const BYVAL_ALIGN: &str = "abi:byval-align";
+/// A vector of `i128` argument whose pieces would lie partly in
+/// registers and partly on the stack, or start on the stack at an offset
+/// that is not a multiple of 16 (§4.3): `llc` 19 keeps each element a
+/// pair, `llc` 22 splits it (WP-152).
+pub const I128_VECTOR_SPLIT: &str = "x64:vector-i128-split";
+/// The largest `byval` alignment (§6.2): the caller aligns `rsp` with an
+/// `and` of a 32-bit immediate.
+pub const MAX_BYVAL_ALIGN: u64 = 1 << 30;
 const TOO_MANY_PIECES: &str = hod_cg::abi::TOO_MANY_PIECES;
 const SIZE_LIMIT: &str = hod_cg::abi::SIZE_LIMIT;
 
@@ -287,6 +296,17 @@ fn vector_leaf(types: &TypeTable, elem: TypeId, len: u32, features: Features) ->
         TypeKind::Double => (Class::Float, 8),
         // Element by element, each an `fp128`.
         TypeKind::Fp128 => return Ok(Leaf::each(Class::Quad, len, 16)),
+        // WP-152: element by element, each an `x86_fp80` (a 16-byte slot
+        // as an argument, `st0`/`st1` as a result); the elements are 10
+        // bytes apart in the vector.
+        TypeKind::X86Fp80 => return Ok(Leaf::each(Class::X87, len, 10)),
+        // WP-152: element by element as LLVM 22 scalarizes it: each
+        // `i128` two ordinary general pieces (no pair rule, §4.3), which
+        // [`assign_argument`] refuses to split (`I128_VECTOR_SPLIT`).
+        TypeKind::Int(128) => {
+            let Some(count) = len.checked_mul(2) else { return no(SIZE_LIMIT) };
+            return Ok(Leaf::each(Class::Gpr, count, 8));
+        }
         TypeKind::Int(1) => return mask_leaf(len, features),
         TypeKind::Ptr { .. } => return no(ADDRSPACE),
         _ => return no(VECTOR_ELEMENT),
@@ -573,12 +593,10 @@ fn assign_argument(
             if types.is_scalable(pointee) {
                 return no(SCALABLE_VECTOR);
             }
-            let align = attrs
-                .stack_align()
-                .or(attrs.align())
-                .unwrap_or_else(|| types.align_of(pointee).max(8))
-                .max(8);
-            if align > 16 {
+            let align = byval_align(types, pointee, attrs);
+            // WP-152: above 16 the caller aligns the stack-argument area
+            // (`call::align_stack_area`).
+            if align > MAX_BYVAL_ALIGN || !align.is_power_of_two() {
                 return no(BYVAL_ALIGN);
             }
             let size = types.alloc_size_of(pointee);
@@ -593,9 +611,41 @@ fn assign_argument(
     if !whole {
         check_type(types, ty, &leaves)?;
     }
+    let first = out.len();
     place_leaves(types, ty, &leaves, arg, budget, out, &mut |leaf, piece| {
         Ok(state.piece(leaf, piece, whole))
-    })
+    })?;
+    if is_i128_vector(types, ty) {
+        check_i128_vector(&out[first..])?;
+    }
+    Ok(())
+}
+
+/// §6.2: the alignment of the copy of a `byval(pointee)` argument with
+/// the attributes `attrs`: its `alignstack`, else its `align`, else the
+/// ABI alignment of `pointee`, and at least 8.
+pub fn byval_align(types: &TypeTable, pointee: TypeId, attrs: ParamAttrs) -> u64 {
+    attrs.stack_align().or(attrs.align()).unwrap_or_else(|| types.align_of(pointee)).max(8)
+}
+
+/// Whether `ty` is a vector of `i128`.
+fn is_i128_vector(types: &TypeTable, ty: TypeId) -> bool {
+    matches!(types.kind(ty), TypeKind::Vector { elem, .. }
+        if matches!(types.kind(elem), TypeKind::Int(128)))
+}
+
+/// §4.3 (WP-152): the pieces of a vector of `i128` argument are all in
+/// registers, or all on the stack from an offset that is a multiple of
+/// 16; anything else is placed differently by `llc` 19 and 22.
+fn check_i128_vector(parts: &[Part]) -> Abi<()> {
+    let in_regs = parts.iter().filter(|p| matches!(p.place, Place::Reg(_))).count();
+    if in_regs == parts.len() {
+        return Ok(());
+    }
+    match parts.first().map(|p| p.place) {
+        Some(Place::Stack(at)) if in_regs == 0 && at % 16 == 0 => Ok(()),
+        _ => no(I128_VECTOR_SPLIT),
+    }
 }
 
 /// Where the arguments and the return value of `sig` travel

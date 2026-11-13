@@ -2,6 +2,9 @@
 //!
 //! One line per compile invocation, appended with a single `write` on a file
 //! opened in append mode, so lines from concurrent compilers never interleave.
+//! The `hod` binary writes it; a program that compiles in process (kiln's
+//! route of `docs/design/0004-in-process-seam.md`) writes the same
+//! [`Record`] with the same [`Log`], its input kind [`InputKind::Module`].
 
 use std::borrow::Cow;
 use std::fs::{File, OpenOptions};
@@ -9,7 +12,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-use hod::InputKind;
+use crate::InputKind;
 
 /// Who produced the output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,7 +90,6 @@ impl FallbackStatus {
 }
 
 /// Number of tab-separated fields in a line.
-#[cfg(test)]
 pub const FIELDS: usize = 11;
 
 /// Makes a free-form field safe for one tab-separated line: backslash, tab,
@@ -245,6 +247,11 @@ mod tests {
             reasons: None,
         };
         assert_eq!(hod.line(), "hod\t-\tbitcode\t0\t-\t-\t3000\t-\t-\t-\t-\n");
+        // Field 3 of a module built in process (design 0004 H2).
+        // A module has no bytes: field 4 is `-`.
+        let module =
+            Record { input_kind: Some(InputKind::Module), input_bytes: None, ..hod.clone() };
+        assert_eq!(module.line(), "hod\t-\tmodule\t-\t-\t-\t3000\t-\t-\t-\t-\n");
         let error = Record {
             outcome: Outcome::Error,
             reason: Some("usage".into()),

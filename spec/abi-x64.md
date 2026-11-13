@@ -345,7 +345,7 @@ kind with part of it on the stack); `04-i128.ll` and `10-edges.ll`
 
 Let N be the length and E the element size in bytes; the element must
 be `i8`, `i16`, `i32`, `i64`, `ptr`, `half`, `bfloat`, `float`, `double`,
-`fp128` or `i1`; any other (`x86_fp80`, `i128`, `i24`, …) is
+`fp128`, `x86_fp80`, `i128` or `i1`; any other (`i24`, `i256`, …) is
 `abi:vector-element`.
 
 | vector | pieces |
@@ -358,6 +358,18 @@ be `i8`, `i16`, `i32`, `i64`, `ptr`, `half`, `bfloat`, `float`, `double`,
 | `<3 x half>`, `<3 x bfloat>` | one vector piece of 6 bytes |
 | any other N not a power of two | N pieces, one per element, each of the element's class (`<3 x i8>`: three general pieces; `<6 x float>`: six `xmm`; `<3 x i64>`: three general pieces) |
 | `<N x fp128>` | N vector pieces of 16 bytes |
+| `<N x x86_fp80>` | N `x86_fp80` pieces, as N scalars: an argument a 16-byte stack slot each; a result in `st0` (N = 1), `st0` and `st1` (N = 2), memory (N ≥ 3, §5.2). The elements are 10 bytes apart in the vector's image |
+| `<N x i128>` | 2N general pieces of 8 bytes, element `i`'s low half first; no pair rule (§4.2): see below. A result in `rax`:`rdx` (N = 1), memory (N ≥ 2) |
+
+**Vectors of `i128` across the last register** (WP-152). LLVM 22
+scalarizes the argument into 2N ordinary 8-byte pieces: one may go in
+`r9` and the next on the stack, and a stack piece is 8-aligned. LLVM 19
+keeps each element a pair (both halves on the stack once one is,
+16-aligned) for N = 1, and places a longer vector differently again.
+Both agree only when every piece is in a register, or every piece is on
+the stack from an offset that is a multiple of 16; any other placement
+is `x64:vector-i128-split`. (`assign` checks the placement after it
+places the pieces; the caller and the callee see the same.)
 
 **Vectors of `i1`:**
 
@@ -374,7 +386,13 @@ With `avx`/`avx512`, §1.3 applies before this table.
 
 *Evidence:* `table::vectors`; the grid's `vectors()` (every element
 type at the lengths above, under every pressure, as returns); `07-vec.ll`,
-`10-edges.ll`.
+`10-edges.ll`. `x86_fp80` and `i128` elements:
+`hod_x64/tests/leftovers3.rs` (`wide_vectors_and_aligned_byval_interoperate`:
+`<1 x i128>` in registers and on the stack, `<2 x i128>` and
+`<3 x i128>` all in registers and all on the stack from offset 0,
+`<1 x i128>` and `<2 x i128>` results, `<1..3 x x86_fp80>` arguments
+and results, callers and callees each from hod or `llc` 22/19;
+`wide_vector_and_byval_refusals_by_name`).
 
 ### 4.4 Aggregates
 
@@ -492,13 +510,25 @@ pointer itself is not passed. With `size = alloc_size_of(T)`:
 
 - the alignment `a` is the argument's `alignstack` if present, else its
   `align` if present, else the ABI alignment of `T`, and at least 8;
-  `a` above 16 is `abi:byval-align`;
+  `a` above 2^30 or not a power of two is `abi:byval-align`;
 - O is rounded up to `a`; the copy is at O; O increases by `max(size, 8)`;
 - the argument has one `Pointee` part: offset 0, `size` bytes, at that
   stack place.
 
 No register is used. The callee's parameter value is the address of the
-copy, which the callee owns. The argument must be a `ptr` in address
+copy, which the callee owns.
+
+**`a` above 16** (WP-152). O is relative to the start of the area,
+which the psABI only promises to be 16-aligned; `llc` (19 and 22 agree)
+realigns its frame (`and rsp, -a` in the prologue) so that the area is
+`a`-aligned, and the callee takes the copy at `rsp + 8 + O` on entry,
+trusting it. hod's caller aligns `rsp` just before the call sequence
+(`call::align_stack_area`): with `area` the stack size rounded to 16
+and `c = area mod a`, `sub rsp, c` · `and rsp, -a` · `add rsp, c`, so
+the area the sequence then reserves starts `a`-aligned. `rsp` stays
+16-aligned, and the sequence is idempotent: a call in a loop does not
+move the stack further. The pointer argument itself must be `a`-aligned
+(LLVM copies the pointee with `a`-aligned moves). The argument must be a `ptr` in address
 space 0 and `T` sized, else `abi:invalid-signature`; a scalable `T` is
 `abi:scalable-vector`.
 
@@ -685,15 +715,61 @@ arrived.
   (`musttail call (ptr, ...) @printf(ptr %f, i32 42, double 1.5, ...)`
   prints the caller's own second and third arguments, not 42 and 1.5),
   and `al` is passed on as it arrived, not counted. AArch64 places them
-  over the forwarded registers (`abi-a64.md` §8.5). The facade gives
-  x86-64's `classify` no stack-argument rule, so there every `musttail`
-  call is `musttail:stack-args-unknown` first (`spec/codegen.md` §7.1).
+  over the forwarded registers (`abi-a64.md` §8.5).
+
+**The stack-argument rule (WP-148).** `classify` decides a `musttail`
+call with the facade's hook (`spec/codegen.md` §7.1 "The `musttail`
+hook"), which for x86-64 is
+`hod_cg::abi::TargetStackArgs::per_function(&X64, hod_x64::call::target_of)`:
+
+1. The target of a function is `hod_x64::call::target_of(module,
+   function)`: the features of its `"target-cpu"` and
+   `"target-features"` (§1.3) and its coroutine mark, exactly what
+   `X64::for_function` gives the code generator for its body.
+2. The caller's area (`of_function`) is the `stack_size` of `X64::assign`
+   of the caller's own signature (named parameters only, declared
+   attributes) with the caller's target.
+3. The call's area (`of_call`) is the `stack_size` of `X64::assign` of
+   the call (its effective attributes, the variable arguments before a
+   forwarded `...` typed by their values) with the target of the
+   function the call is in: the caller's, never the callee's.
+4. The call is `musttail:stack-args-grow` when the call's area is larger
+   than the caller's, both as `assign` gives them (not rounded to 16).
+   Since the verifier makes the two signatures agree (above), this
+   happens only through variable arguments before the `...` that go to
+   the stack. Otherwise the rule accepts the call, and the code
+   generator lowers it, or refuses one with such variable arguments as
+   `x64:musttail-variable-arguments`.
+5. A `byval` aligned above 16 (§6.2) needs no realignment in a
+   `musttail` call: the verifier makes the callee's parameter list the
+   caller's, its alignment included (`hod_ir`'s verifier rejects a
+   differing one as malformed input, as LLVM's does), so each copy goes
+   where the caller's arrived, in an area the caller's caller aligned;
+   `call::align_stack_area` does not run for the call (WP-152). Growth
+   with such a copy is possible only through variable arguments before
+   the `...`, refused by the two names of item 4.
+6. When `X64::assign` refuses either signature (for example a vector
+   wider than 16 bytes under AVX, `x64:wide-vector-abi`, or an
+   `x86_fp80` under `-x87`), or the symbol is not a function, the rule
+   has no answer and the call is `musttail:stack-args-unknown`.
 
 *Evidence:* `cc::musttail_in_llvm` (LLVM refuses a pair differing in
 `alignstack`; its variadic thunk restores `rdi`..`r9`, `xmm0`..`xmm7`
 and `al` before its `jmp`, in all six configurations); `09-musttail.ll`;
 `crates/hod_x64/tests/musttail_varargs.rs` (the refusal, and `llc`'s
-program under `qemu-x86_64` losing the variable arguments).
+program under `qemu-x86_64` losing the variable arguments);
+`crates/hod/tests/musttail_x64.rs` (generated thunks of every class of
+§4 and §6 through the facade, the rule against a model of §3 on every
+case, those that compile run against `llc` 19 and 22 under bfd, lld and
+mold; the features of the calling function deciding);
+`crates/hod/tests/musttail_forward.rs` (the three outcomes by text and
+bitcode); `crates/hod/tests/musttail_byval_x64.rs` (WP-152: thunks with
+`byval` aligned 32 and 64, forwarded, permuted after a clobbering call,
+two copies swapped, variadic, from the facade, hod stressed and `llc`
+22, with `llc` 22's and hod's callers and callees that trap on a
+misaligned copy, under bfd, lld and mold; growth refused by name; a
+differing alignment malformed; `llc` 19 is no leg, it stages
+`musttail` `byval` copies over the return address).
 
 ### 8.6 DWARF register numbers
 
@@ -776,12 +852,13 @@ functions); `08-varargs.ll`.
 | `abi:scalable-vector` | a scalable vector anywhere in a type |
 | `abi:target-ext-type` | a target extension type |
 | `abi:addrspace` | a pointer outside address space 0 |
-| `abi:vector-element` | a vector of an element §4.3 does not list |
+| `abi:vector-element` | a vector of an element §4.3 does not list (`i24`, `i256`, …) |
+| `x64:vector-i128-split` | a vector of `i128` argument partly in registers, or on the stack from an offset not a multiple of 16 (§4.3) |
 | `x64:mask-vector` | `<N x i1>` with N not 1, 2, 4, 8 or 16 (§4.3) |
 | `x64:wide-vector-abi` | a wide vector, or an `i1` vector, under AVX/AVX-512 (§1.3) |
 | `x64:nest` | `nest` (§6.3) |
 | `abi:swiftself`, `abi:swifterror`, `abi:swiftasync`, `abi:inalloca`, `abi:preallocated`, `abi:elementtype` | §6.6 |
-| `abi:byval-align` | a `byval` alignment above 16 (§6.2) |
+| `abi:byval-align` | a `byval` alignment above 2^30, or not a power of two (§6.2) |
 | `abi:too-many-pieces` | more than 2^16 argument pieces in one signature |
 | `abi:size-limit` | an offset or size beyond `u32` |
 
@@ -843,7 +920,13 @@ measurement, not a gate).
 - **`i128`.** The psABI's `__int128` is passed in two registers or in
   memory; LLVM does the same for a lone `i128` but not inside an
   aggregate (§4.2), and LLVM 19 and 22 differ there and in the registers
-  left behind (§4.2, §9.4).
+  left behind (§4.2, §9.4). A vector of `i128` is split as 8-byte
+  pieces by LLVM 22 and kept in pairs by LLVM 19; hod takes the
+  placements both agree on and refuses the rest (§4.3,
+  `x64:vector-i128-split`).
+- **`byval` aligned above 16.** The psABI's stack-argument area is
+  16-aligned; LLVM aligns it to the copy's alignment by realigning the
+  caller's frame, and the callee relies on it (§6.2).
 - **Vectors.** The psABI's `__m128` and `__m256`; LLVM additionally
   splits, widens and scalarizes vector types C has no name for (§4.3).
 - **Design 0006 §3's outline.** Where this document and the outline

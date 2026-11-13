@@ -863,13 +863,19 @@ impl<'a> Writer<'a> {
         children: bool,
     ) -> Result<(), Error> {
         let b = u32::from;
+        if plan.calls.is_empty(die) {
+            // WP-150: a callee without a function DIE (§6.21).
+            self.abbrev(code(fam::SUBPROGRAM_EMPTY, 0, false));
+            return Ok(());
+        }
         let (func, fd) = plan.fn_data(die).ok_or(bad(sp_id, "subprogram"))?;
         let index = self.push_addr(fd.code.symbol, fd.code.addend);
         if let Some(a) = self.fn_addr.get_mut(func) {
             *a = index;
         }
         if plan.cu.emission_kind != hod_ir::EmissionKind::FullDebug {
-            return self.minimal_subprogram(plan, sp_id, sp, index, fd.code.size, children); // WP-094
+            let (size, calls) = (fd.code.size, fd.calls);
+            return self.minimal_subprogram(plan, sp_id, sp, (index, size), calls, children); // WP-094
         }
         // The frame base: `DW_OP_reg<n>`.
         self.expr.clear();

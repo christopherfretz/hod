@@ -277,7 +277,13 @@ fn what_is_refused_is_refused_by_name() {
         (extract("<65 x i1>", "i1"), hod_x64::vector::MASK_WIDE),
         (extract("<4 x i4>", "i4"), hod_x64::vector::ODD_ELEMENT),
         (extract("<2 x i24>", "i24"), hod_x64::vector::ODD_ELEMENT),
-        (extract("<2 x i128>", "i128"), hod_x64::vector::WIDE_ELEMENT),
+        // WP-152: `i128` lanes move (`leftovers3.rs`); arithmetic does not.
+        (
+            "define void @f(ptr %p) {\n  %v = load <2 x i128>, ptr %p\n  \
+             %r = add <2 x i128> %v, %v\n  store <2 x i128> %r, ptr %p\n  ret void\n}\n"
+                .into(),
+            hod_x64::vector::WIDE_ELEMENT,
+        ),
         (extract("<257 x i8>", "i8"), hod_x64::vector::LENGTH),
         (
             "define void @f(ptr %p, i128 %i) {\n  %v = load <4 x i32>, ptr %p\n  \

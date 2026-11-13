@@ -2390,8 +2390,8 @@ frame at the line of the row at its `DW_AT_call_pc` (line 0 before).
 
 | name | what |
 |---|---|
-| `debug:call-sites` | the flag in a unit that is not DWARF 5 (`llc` writes DWARF 4's `DW_TAG_GNU_call_site` and `DW_AT_GNU_*` forms there) |
-| `debug:call-sites-line-tables` | the flag in a `LineTablesOnly` unit with inlined code: `llc` writes the flag and call sites under the minimal subprogram, and full declaration DIEs at the unit's level (without inlined code it writes no function DIE, and neither does hod, §6.10) |
+| `debug:call-sites` | the flag in a unit of version 2 or 3 (which `classify` refuses first); version 4 is written since WP-150 (§6.21) |
+| `debug:call-sites-line-tables` | no longer returned: a `LineTablesOnly` unit's call sites are written since WP-150 (§6.21); the name is kept |
 | `debug:call-site-origin` | a callee whose DIE `llc` would make in another unit, or a definition without code here |
 | `debug:call-site-intrinsic` | a call of an address the lowering computed (a coroutine's resume or destroy, WP-105), and a coroutine body (`llc` describes `CoroSplit`'s clones) |
 | `debug:call-site-pc` | an address outside the function, or returning calls out of order (a bug of the code generator, declined) |
@@ -2415,10 +2415,9 @@ tests, `tests/debug/call_sites.c` (tail calls, AArch64) and
 
 A module whose flag `"Dwarf Version"` is `i32 4` (clang's and kiln++'s
 `-gdwarf-4`) is written as `llc` 19 and 22 write it. Every other version
-is refused by `classify` as `debug:dwarf-version`: 2, 3, and **no flag**
-(for which `llc` also writes 4, the same tree as flag 4; hod's own tests
-write IR without the flag, so it stays a refusal rather than a silent
-version change). Split DWARF with version 4 (`-gsplit-dwarf -gdwarf-4`,
+is refused by `classify` as `debug:dwarf-version`: 2 and 3. A module
+with **no flag** is written as version 4, as `llc` writes it (the same
+object as flag 4; a refusal until WP-150, §6.21). Split DWARF with version 4 (`-gsplit-dwarf -gdwarf-4`,
 GNU fission) is refused as `debug:split-dwarf-4` (§6.15, the facade's
 check and `hod_dwarf::split`).
 
@@ -2491,8 +2490,8 @@ its `file_names` can name files `llc`'s does not.
 **Errors**: `debug:dwarf-4-shape` (`hod_dwarf::DWARF_4_SHAPE`), a family
 or an expression whose version 4 shape is not checked;
 `debug:split-dwarf-4` (`hod_dwarf::split::SPLIT_DWARF_4` and the
-facade), split DWARF with version 4; `debug:dwarf-version` (`classify`),
-any version other than 4 and 5.
+facade), split DWARF with version 4 (or no flag); `debug:dwarf-version`
+(`classify`), versions 2 and 3.
 
 **Speed**: DWARF 5 does not pass through the module (its objects are
 byte-identical to before WP-114 on every `-g` module of the corpus, the
@@ -2505,6 +2504,90 @@ ranges, lower bounds, sessions on both targets), `tests/debug/dwarf4_*`
 (the twins of nine debugger tests and `dwarf4_shapes.cpp`),
 `crates/hod/tests/dwarf4.rs` (the facade's refusals and objects),
 `spec/landed/dwarf/WP-114.md`.
+
+### 6.21 Debug leftovers (implemented, WP-150)
+
+What WP-113 to WP-115 left refused or unexplained, each against `llc`
+19 and 22 at `-O0` on both targets:
+
+- **No `Dwarf Version` flag** is version 4 (§6.20), as `llc` writes it:
+  `dwarf4::version_of` is 5 only for the flag 5, and `classify` lets
+  `None`, 4 and 5 through. A module without the flag gives the object of
+  the same module with the flag 4 (`crates/hod/tests/debug_e2e.rs`).
+  hod_dwarf's own tests now carry the flag. DWARF 5 output is unchanged.
+- **DWARF 4 call sites** (§6.19's entries in a version 4 unit): the
+  transcoder (`dwarf4.rs`) maps families 96 to 103 to the GNU forms
+  `llc` writes there:
+  - `DW_AT_call_all_calls` becomes `DW_AT_GNU_all_call_sites` (0x2117);
+  - `DW_TAG_call_site` becomes `DW_TAG_GNU_call_site` (0x4109);
+  - `DW_AT_call_origin` becomes `DW_AT_abstract_origin`;
+  - `DW_AT_call_target_clobbered` becomes `DW_AT_GNU_call_site_target_clobbered`
+    (0x2114);
+  - `DW_AT_call_tail_call` becomes `DW_AT_GNU_tail_call` (0x2115);
+  - `DW_AT_call_return_pc` and `DW_AT_call_pc` both become `DW_AT_low_pc`
+    (`DW_FORM_addr`). For a returning call it is the return address. For
+    a tail call it is the address right **after** the branch, not the
+    branch: `jmp rel32` is 5 bytes, `jmp *%reg` 2 (3 for `r8` to `r15`),
+    and AArch64's `b`/`br` 4 (`debug_calls::tail_branch_len`,
+    `CallSiteInput::end`).
+- **Call sites in a `LineTablesOnly` unit** (formerly
+  `debug:call-sites-line-tables`), as `llc` 22 writes them:
+  - the minimal subprogram (§6.10) of a function that describes its
+    calls is `DW_AT_low_pc`, `DW_AT_high_pc`, `DW_AT_call_all_calls`,
+    then its name or `DW_AT_abstract_origin` (family 104, "subprogram
+    (line tables only, calls)");
+  - its call sites are §6.19's;
+  - a callee's declaration DIE is at the unit's level, as in a full unit;
+  - a callee whose function has no DIE in the unit (a definition of the
+    unit with no code, whose minimal subprogram is not written) gets an
+    **empty** `DW_TAG_subprogram` at unit level, made at the call, with no
+    attributes (family 105, "subprogram (empty)";
+    `Calls::seal_call_sites`). Both families are version 4 as well.
+- **Split DWARF 4** stays refused as `debug:split-dwarf-4`. GNU fission
+  needs, none of which hod writes:
+  - a skeleton unit with `DW_AT_GNU_dwo_name`, `DW_AT_GNU_dwo_id`,
+    `DW_AT_GNU_addr_base`, `DW_AT_GNU_pubnames`, and the unit's ranges;
+  - the `DW_FORM_GNU_str_index` and `DW_FORM_GNU_addr_index` forms, and
+    `DW_OP_GNU_addr_index` in expressions;
+  - `.debug_str_offsets.dwo` and `.debug_addr` without their version 5
+    headers;
+  - `.debug_gnu_pubnames` and `.debug_gnu_pubtypes`, which `llc` writes
+    for every split version 4 unit.
+  That is a second skeleton writer and a second set of forms, larger than
+  the transcoder; no producer of the corpus uses it.
+- **TLS call paths**: the model's runtime calls (`__tls_get_addr`,
+  `__tlsdesc_*`) have no call site in any model (global-dynamic,
+  local-dynamic, initial-exec, local-exec) on either target, as in
+  `llc` (§6.19: an external symbol). kiln++ has no `-ftls-model`; its
+  global-dynamic code is checked too
+  (`crates/hod/tests/dwarf_call_sites4.rs`, `thread_local_models`).
+- **Coroutine `DW_AT_ranges` and split units' `.debug_names`**: not
+  written, for these reasons.
+  - `llc` describes a coroutine through `CoroSplit`'s clones: one
+    subprogram per clone (`.resume`, `.destroy`, `.cleanup`), each with
+    its own `low_pc` and `high_pc`. hod lowers a coroutine as one function
+    (`debug:call-site-intrinsic`, WP-105), so there is no tree of `llc`'s
+    to compare a `DW_AT_ranges` with. Writing one would need range
+    families for the subprogram and the clone offsets through the bridge.
+  - `llc` 22 writes `.debug_names` (version 5) in the object for
+    `-gsplit-dwarf -gpubnames`. hod writes no name index for any unit
+    (§1.1), split or not, so the split case is not a gap of its own.
+- **AArch64 `DW_OP_breg31` against `DW_OP_fbreg`**: the cause is a
+  realigned frame (a local of alignment greater than 16, such as
+  `_Alignas(64)`). `llc` then addresses the locals from `sp`
+  (`DW_OP_breg31 WSP+N`, the frame base staying `x29`), and hod from the
+  frame base (`DW_OP_fbreg`). Both are correct for the frame each wrote.
+  This is x86-64's `breg7` class (§6.7), and the tree comparison accepts
+  it as "realigned frame" on both targets (`xtask/src/debug/trees.rs`).
+- **A `dbg_declare` of a slot plus a constant offset** (a `getelementptr`
+  of an `alloca` named by `#dbg_declare`) is refused as
+  `debug:declare-offset` (`hod_cg::policy`), no longer an internal error.
+
+Evidence: `crates/hod/tests/dwarf_call_sites4.rs` (trees against `llc`
+19 and 22 on both targets, version 4 and line tables only, TLS models),
+`crates/hod_dwarf/src/call_sites.rs` and `dwarf4.rs` unit tests,
+`crates/hod/tests/debug_e2e.rs`, `tests/debug/utf8_source.c`,
+`spec/landed/dwarf/WP-150.md`. `.debug_frame` is `spec/eh.md` §10.
 
 ## 7. Speed and memory
 

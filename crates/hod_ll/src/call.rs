@@ -4,9 +4,10 @@
 //! intrinsics that generate no code.
 
 use hod_ir::Layering;
+use hod_ir::kit::{CALL_SITE_FLAGS, set_call_site_flags};
 use hod_ir::{
-    BlockId, Bundle, CallConv, CallDesc, Const, FnAttrs, InlineAsm, Intrinsic, NoCode, Opcode,
-    ParamAttrs, SymId, TailKind, TypeId, TypeKind, Value, no_code_intrinsic, resolve_intrinsic,
+    BlockId, Bundle, CallConv, CallDesc, Const, InlineAsm, Intrinsic, NoCode, Opcode, ParamAttrs,
+    SymId, TailKind, TypeId, TypeKind, Value, no_code_intrinsic, resolve_intrinsic,
 };
 
 use crate::body::{CalleeInfo, Fx};
@@ -343,11 +344,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
         }
         // The call-site function attributes `hod_ir` keeps (`spec/ir.md`
         // §5.7): `CallDesc`'s flags.
-        Ok(flags
-            & (FnAttrs::NORETURN
-                | FnAttrs::NOUNWIND
-                | FnAttrs::RETURNS_TWICE
-                | FnAttrs::CONVERGENT))
+        Ok(flags & CALL_SITE_FLAGS)
     }
 
     /// `[ "tag"(type value, …), … ]`, into the bundle tables.
@@ -750,10 +747,7 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
         };
         desc.cc = site.cc;
         desc.tail = site.tail;
-        desc.noreturn = site.flags & FnAttrs::NORETURN != 0;
-        desc.nounwind = site.flags & FnAttrs::NOUNWIND != 0;
-        desc.returns_twice = site.flags & FnAttrs::RETURNS_TWICE != 0;
-        desc.convergent = site.flags & FnAttrs::CONVERGENT != 0;
+        set_call_site_flags(&mut desc, site.flags);
         desc.ret_attrs = site.ret_attrs;
         desc.arg_attrs = if site.any_attrs { &self.s.arg_attrs } else { &[] };
         desc.bundles = bundles_slice;

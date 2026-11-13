@@ -346,7 +346,8 @@ fn check_split_dwarf(module: &Module, options: &Options) -> Result<(), CompileEr
     if units.is_empty() {
         return Ok(());
     }
-    if module.props.dwarf_version.is_some_and(|v| v < 5) {
+    // No flag is version 4 (WP-150, `spec/dwarf.md` §6.20).
+    if module.props.dwarf_version.is_none_or(|v| v < 5) {
         return refuse(hod_dwarf::SPLIT_DWARF_4);
     }
     let file = file.as_os_str().as_encoded_bytes();
@@ -491,8 +492,7 @@ mod tests {
             cg_options(&Options::default()).unwrap().split_dwarf,
             hod_dwarf::SplitDwarf::Off
         );
-        // `Dwarf Version` below 5 (today `classify` refuses it first, as
-        // `debug:dwarf-version`).
+        // `Dwarf Version` below 5, or none (WP-150).
         let text = "target triple = \"aarch64-unknown-linux-gnu\"\n\
                     !llvm.dbg.cu = !{!0}\n!llvm.module.flags = !{!2}\n\
                     !0 = distinct !DICompileUnit(language: DW_LANG_C11, file: !1, \
@@ -506,6 +506,13 @@ mod tests {
         };
         assert_eq!(check_split_dwarf(&module, &single), named(hod_dwarf::SPLIT_DWARF_4));
         assert_eq!(check_split_dwarf(&module, &Options::default()), Ok(()));
+        // WP-150: no flag is `llc`'s version 4, refused the same way.
+        let flagless = text.replace("!{!2}", "!{}");
+        let flagless = hod_ll::parse_module(flagless.as_bytes(), &hod_ll::ParseOptions::default())
+            .unwrap()
+            .module;
+        assert_eq!(flagless.props.dwarf_version, None);
+        assert_eq!(check_split_dwarf(&flagless, &single), named(hod_dwarf::SPLIT_DWARF_4));
         let v5 = text.replace("i32 4}", "i32 5}");
         let module =
             hod_ll::parse_module(v5.as_bytes(), &hod_ll::ParseOptions::default()).unwrap().module;

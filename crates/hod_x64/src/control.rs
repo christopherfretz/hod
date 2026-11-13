@@ -58,8 +58,8 @@ pub const CONTROL: &str = "x64:todo:control";
 /// AArch64).
 pub const BLOCKADDRESS: &str = "x64:blockaddress";
 
-/// A `condbr` on a deferred `fcmp`: WP-127 (X-float) replaces this
-/// refusal with one call of its flags-setting compare.
+/// A `condbr` on a deferred `fcmp`: refused until WP-127, which lowers
+/// it through `float::cond_br`. The name stays for the record.
 pub const FUSED_FCMP: &str = "x64:todo:condbr-fcmp";
 
 /// `br i1 %cond, label %if_true, label %if_false`.
@@ -72,8 +72,8 @@ pub const FUSED_FCMP: &str = "x64:todo:condbr-fcmp";
 /// equal targets are a `br`.
 ///
 /// # Errors
-/// [`FUSED_FCMP`] for a deferred `fcmp`; what emitting a deferred
-/// condition or the branches' fixups report.
+/// What `float::cond_br` reports for a deferred `fcmp`; what emitting a
+/// deferred condition or the branches' fixups report.
 pub fn cond_br<'a>(
     cx: &mut FnCx<'a, X64>,
     inst: Inst<'a>,
@@ -90,7 +90,9 @@ pub fn cond_br<'a>(
                 let c = fused_icmp(cx, pred, lhs, rhs)?;
                 return branch_on(cx, c, if_true, if_false);
             }
-            InstKind::FCmp { .. } => return unsupported(FUSED_FCMP),
+            InstKind::FCmp { .. } => {
+                return crate::float::cond_br(cx, inst, compare, cond, if_true, if_false);
+            }
             _ => {}
         }
     }

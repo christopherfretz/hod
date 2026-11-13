@@ -3535,8 +3535,14 @@ above; a target owes the tail exits after its epilogue
 (`FnCx::tail_exit`; AArch64 `frame.rs`) and, in a variadic function, the
 pass-through of the variable-argument registers (AArch64 `call.rs`,
 `abi-a64.md` §8.5). AArch64 has both (WP-038).
-The facade has to hand the hook to its classifier; until it does,
-every `musttail` call is `musttail:stack-args-unknown` there.
+The facade hands the hook to its classifier for both targets
+(`crates/hod/src/session.rs` `classifier_for`): AArch64 with
+`TargetStackArgs::new(&target)`, x86-64 with
+`TargetStackArgs::per_function(&target, hod_x64::call::target_of)`,
+because `X64::assign` depends on the target features of the function
+making the call (`spec/abi-x64.md` §8.5, WP-148). A classifier without
+the hook refuses every `musttail` call it must size as
+`musttail:stack-args-unknown`.
 
 ### 7.2 Argument assignment
 

@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::irdiff::Arch;
 use crate::irdiff::process::{self, End, Limits};
 use crate::irdiff::tools::{LLVM_MAJORS, Search, find_llvm, prefixed};
 use crate::irdiff::{default_build_dir, workspace_root};
@@ -52,10 +53,15 @@ options:
                        with the release profile)
   --kiln <kiln++>      produce the inputs with kiln instead of clang
   --judge <tool>       what --check judges: hod (default) or hod+fallback
+  --target <arch>      the objects' architecture: aarch64 or x86_64 (default:
+                       this machine's); another is a cross run, with its own
+                       inputs, results file and baseline
+  --instructions       also count the instructions of one run of llc and of
+                       strict hod per input, under valgrind's callgrind
   --baseline <file>    the baseline to check against or to update
-                       (default: bench/baselines/<machine id>.tsv)
+                       (default: bench/baselines/<machine id>[-<arch>].tsv)
   --results <file>     the results file to write, or for --report to read
-                       (default: <build directory>/bench/results-llvm<major>.tsv)
+                       (default: <build directory>/bench/results[-<arch>]-llvm<major>.tsv)
   --out <file>         what --report writes (default: docs/status/perf.md)
   -v, --verbose        also print hod's phase times
   -h, --help           this text
@@ -82,6 +88,10 @@ pub const DEFAULT_RUNS: u32 = 3;
 /// The most runs that can be asked for.
 pub const MAX_RUNS: u32 = 100;
 
+/// How many times longer than a measured child a counted one may run:
+/// callgrind runs a program some 50 times slower.
+const COUNTED_SLOWDOWN: u32 = 30;
+
 /// What the command does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -106,6 +116,10 @@ pub struct Config {
     pub hod: Option<PathBuf>,
     pub kiln: Option<PathBuf>,
     pub judge: Tool,
+    /// `--target`: the objects' architecture, if not this machine's.
+    pub target: Option<Arch>,
+    /// `--instructions`: count instructions under callgrind.
+    pub instructions: bool,
     pub baseline: Option<PathBuf>,
     pub results: Option<PathBuf>,
     pub out: Option<PathBuf>,
@@ -137,6 +151,8 @@ impl Config {
             hod: None,
             kiln: None,
             judge: Tool::Hod,
+            target: None,
+            instructions: false,
             baseline: None,
             results: None,
             out: None,
@@ -161,6 +177,48 @@ impl Config {
 
     fn bench_dir(&self) -> PathBuf {
         self.build_dir.join("bench")
+    }
+
+    /// The architecture of a cross run: `--target`, when it is not this
+    /// machine's ("Cross runs").
+    pub fn cross(&self) -> Option<Arch> {
+        self.target.filter(|&target| Some(target) != Arch::host())
+    }
+
+    /// `-<arch>` for a cross run, else nothing: what the names of its
+    /// inputs' directory, results file and baseline carry.
+    fn suffix(&self) -> String {
+        self.cross().map(|arch| format!("-{}", arch.name())).unwrap_or_default()
+    }
+
+    /// What `llc` gets besides [`CODEGEN_ARGS`]: the target of a cross
+    /// run; for x86-64 the selector of every optimised build, `FastISel`
+    /// being the one only `-O0` uses (irdiff's reference selector).
+    pub fn llc_options(&self) -> Vec<String> {
+        let mut options = self.hod_options();
+        if self.target.or_else(Arch::host) == Some(Arch::X86_64) {
+            options.push("-fast-isel=0".to_owned());
+        }
+        options
+    }
+
+    /// What hod gets besides [`CODEGEN_ARGS`]: the target of a cross run.
+    pub fn hod_options(&self) -> Vec<String> {
+        self.cross().map(|arch| format!("-mtriple={}", arch.triple())).into_iter().collect()
+    }
+
+    /// The baseline this run is checked against or writes by default.
+    fn own_baseline(&self) -> PathBuf {
+        let dir = self.workspace.join("bench").join("baselines");
+        self.baseline.clone().unwrap_or_else(|| {
+            baseline_path(&dir, &format!("{}{}", self.machine.id, self.suffix()))
+        })
+    }
+
+    /// The default results file of a run (by kiln or not) with LLVM `major`.
+    fn default_results(&self, kiln: bool, major: &str) -> PathBuf {
+        let kiln = if kiln { "-kiln" } else { "" };
+        self.bench_dir().join(format!("results{kiln}{}-llvm{major}.tsv", self.suffix()))
     }
 }
 
@@ -215,6 +273,17 @@ pub fn parse_args(args: &[String], config: &mut Config) -> Result<bool, String> 
             "--llvm" => config.llvm = Some(value()?),
             "--hod" => config.hod = Some(PathBuf::from(value()?)),
             "--kiln" => config.kiln = Some(PathBuf::from(value()?)),
+            "--target" => {
+                let text = value()?;
+                config.target = Some(
+                    Arch::from_name(&text)
+                        .ok_or_else(|| format!("'--target {text}': expected aarch64 or x86_64"))?,
+                );
+            }
+            "--instructions" => {
+                flag(&joined)?;
+                config.instructions = true;
+            }
             "--judge" => {
                 let text = value()?;
                 config.judge = [Tool::Hod, Tool::HodFallback]
@@ -471,6 +540,9 @@ fn build_release_hod(workspace: &Path, build_dir: &Path) -> Result<PathBuf, Stri
 struct Context<'a> {
     llc: &'a Path,
     hod: &'a Path,
+    /// [`Config::llc_options`] and [`Config::hod_options`].
+    llc_options: &'a [String],
+    hod_options: &'a [String],
     probe: &'a Probe,
     work: &'a Path,
     limits: Limits,
@@ -537,7 +609,9 @@ fn run_once(context: &Context<'_>, id: &str, ir: &Path, tool: Tool) -> Result<Ra
                 }
                 c.env(ENV_TIME_PHASES, &phase_file);
             }
-            c.args(CODEGEN_ARGS).arg("-o").arg(&object).arg(ir).current_dir(context.work);
+            let options = if tool == Tool::Llc { context.llc_options } else { context.hod_options };
+            c.args(CODEGEN_ARGS).args(options).arg("-o").arg(&object).arg(ir);
+            c.current_dir(context.work);
         },
         context.probe,
         &file("usage"),
@@ -577,6 +651,77 @@ fn run_once(context: &Context<'_>, id: &str, ir: &Path, tool: Tool) -> Result<Ra
     Ok(Ran { sample, status, detail: detail.to_owned(), object_bytes, phases })
 }
 
+/// The first program named `name` on the search path.
+fn find_on_path(search: &Search, name: &str) -> Option<PathBuf> {
+    std::env::split_paths(&search.path).map(|dir| dir.join(name)).find(|path| path.is_file())
+}
+
+/// The instructions callgrind counted, from its output file: the number
+/// of its `summary:` line (`totals:` in older versions).
+pub fn read_instructions(path: &Path) -> Result<u64, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("callgrind wrote no output ({}): {e}", path.display()))?;
+    text.lines()
+        .find_map(|line| line.strip_prefix("summary:").or_else(|| line.strip_prefix("totals:")))
+        .and_then(|counts| counts.split_whitespace().next()?.parse().ok())
+        .ok_or_else(|| format!("callgrind's output has no summary line ({})", path.display()))
+}
+
+/// `--instructions`: runs `tool` (`llc`, or hod in strict mode with one
+/// thread) once on `ir` under callgrind and says how many instructions it
+/// ran. `declined`: strict hod is expected to decline (exit status 2).
+fn count_instructions(
+    context: &Context<'_>,
+    valgrind: &Path,
+    id: &str,
+    ir: &Path,
+    tool: Tool,
+    declined: bool,
+) -> Result<u64, String> {
+    let file = |extension: &str| context.work.join(format!("{id}.{}.{extension}", tool.name()));
+    let (out, object, log) = (file("callgrind"), file("counted.o"), file("counted.coverage"));
+    for stale in [&out, &object, &log] {
+        let _ = std::fs::remove_file(stale);
+    }
+    let limits = Limits {
+        time: context.limits.time.saturating_mul(COUNTED_SLOWDOWN),
+        memory_kib: context.limits.memory_kib,
+    };
+    let output = process::run(
+        valgrind,
+        |c| {
+            c.arg("--tool=callgrind").arg(prefixed("--callgrind-out-file=", &out));
+            c.env_remove("MAKEFLAGS").env_remove("CARGO_MAKEFLAGS");
+            if tool == Tool::Llc {
+                c.arg(context.llc).args(CODEGEN_ARGS).args(context.llc_options);
+            } else {
+                for name in HOD_SETTINGS {
+                    c.env_remove(name);
+                }
+                c.env_remove(ENV_TIME_PHASES).env("HOD_THREADS", "1");
+                c.arg(context.hod).arg("--strict").arg(prefixed("--coverage-log=", &log));
+                c.args(CODEGEN_ARGS).args(context.hod_options);
+            }
+            c.arg("-o").arg(&object).arg(ir).current_dir(context.work);
+        },
+        b"",
+        limits,
+    )?;
+    let expected = if declined { 2 } else { 0 };
+    let counted = match output.end {
+        End::Exit(status) if status == expected => read_instructions(&out),
+        End::Exit(status) => Err(format!("exited with status {status} under callgrind")),
+        End::Signal(signal) => Err(format!("was terminated by signal {signal} under callgrind")),
+        End::TimedOut => {
+            Err(format!("timed out after {} s under callgrind", limits.time.as_secs()))
+        }
+    };
+    for done in [&out, &object, &log] {
+        let _ = std::fs::remove_file(done);
+    }
+    counted
+}
+
 /// The runs of one tool on one input.
 #[derive(Clone, Debug, Default)]
 struct ToolRuns {
@@ -588,6 +733,8 @@ struct ToolRuns {
     phases: Vec<(String, u64)>,
     /// What went wrong; the tool is not run again.
     failed: Option<String>,
+    /// `--instructions`: what one run under callgrind counted.
+    instructions: Option<u64>,
 }
 
 impl ToolRuns {
@@ -645,6 +792,7 @@ impl ToolRuns {
             rss_kib_min: rss.map(|(min, _, _)| min),
             rss_kib_max: rss.map(|(_, _, max)| max),
             object_bytes: self.object_bytes,
+            instructions: self.instructions,
             phases: self.phases.clone(),
             detail: self.detail.clone(),
             ..identity(status)
@@ -673,6 +821,25 @@ impl Measured {
         }
     }
 
+    /// `--instructions`: counts `llc` and strict hod once each, if they
+    /// did not fail; what cannot be counted is a note.
+    fn count(&mut self, context: &Context<'_>, valgrind: &Path, notes: &mut Vec<String>) {
+        for (runs, tool) in self.tools.iter_mut().zip(Tool::MEASURED).take(2) {
+            let Some(status) = runs.status.filter(|_| runs.failed.is_none()) else { continue };
+            let declined = status == Status::Declined;
+            let path = &self.generated.path;
+            match count_instructions(context, valgrind, &self.input.id, path, tool, declined) {
+                Ok(count) => runs.instructions = Some(count),
+                Err(why) => notes.push(format!(
+                    "instructions: {} {}: {} {why}",
+                    self.input.id,
+                    tool.name(),
+                    tool.name()
+                )),
+            }
+        }
+    }
+
     /// The records of the tools, `llc` first, with the ratios to it.
     fn records(&self) -> Vec<Record> {
         let mut records: Vec<Record> = self
@@ -691,9 +858,11 @@ impl Measured {
 
 /// The baseline to check against: the one named; else this machine's;
 /// else the first, by name, of those recorded for other machines.
+/// Of those, only the baselines of the run's target are considered
+/// (their `target` is the run's, or both have none).
 fn find_baseline(config: &Config) -> Result<Option<(PathBuf, Results)>, String> {
     let dir = config.workspace.join("bench").join("baselines");
-    let own = config.baseline.clone().unwrap_or_else(|| baseline_path(&dir, &config.machine.id));
+    let own = config.own_baseline();
     if config.baseline.is_some() || own.is_file() {
         return Results::read(&own).map(|results| Some((own, results)));
     }
@@ -702,10 +871,14 @@ fn find_baseline(config: &Config) -> Result<Option<(PathBuf, Results)>, String> 
         .unwrap_or_default();
     others.retain(|path| path.extension().is_some_and(|extension| extension == "tsv"));
     others.sort();
-    match others.into_iter().next() {
-        Some(other) => Results::read(&other).map(|results| Some((other, results))),
-        None => Ok(None),
+    let target = config.cross().map(Arch::triple);
+    for other in others {
+        let results = Results::read(&other)?;
+        if results.get("target") == target {
+            return Ok(Some((other, results)));
+        }
     }
+    Ok(None)
 }
 
 /// Finds the reference `llc` and the producer and makes every input's IR
@@ -748,10 +921,14 @@ fn produce_inputs(
         },
     };
 
-    // The inputs' IR.
-    let inputs_dir = config.bench_dir().join("inputs").join(&producer.tag);
+    // The inputs' IR; a cross run's are compiled for its target.
+    let inputs_dir =
+        config.bench_dir().join("inputs").join(format!("{}{}", producer.tag, config.suffix()));
     let force = config.action == Action::Generate;
-    for input in inputs {
+    for mut input in inputs {
+        if let Some(arch) = config.cross() {
+            input.args.insert(0, format!("--target={}", arch.triple()));
+        }
         let generated =
             generate(&input, &producer, &bench.join("src"), &inputs_dir, force, PRODUCER_LIMITS);
         run.listed.push(Listed { input, generated });
@@ -796,11 +973,23 @@ pub fn run(config: &Config) -> Result<Run, String> {
         run.missing_tools
             .push(format!("GNU time ({}): no memory or CPU figures", config.time.display()));
     }
+    let valgrind = find_on_path(&config.search, "valgrind").filter(|_| config.instructions);
+    if config.instructions && valgrind.is_none() {
+        run.missing_tools.push("valgrind (--instructions): no instruction counts".to_owned());
+    }
     let mut results = header(config, &llvm.llc, &hod, hod_build, &producer, &probe, &work);
 
     // The measurement: input by input, serially.
-    let context =
-        Context { llc: &llvm.llc, hod: &hod, probe: &probe, work: &work, limits: config.limits };
+    let (llc_options, hod_options) = (config.llc_options(), config.hod_options());
+    let context = Context {
+        llc: &llvm.llc,
+        hod: &hod,
+        llc_options: &llc_options,
+        hod_options: &hod_options,
+        probe: &probe,
+        work: &work,
+        limits: config.limits,
+    };
     let mut session = Session::default();
     for Listed { input, generated } in listed {
         match generated {
@@ -813,6 +1002,11 @@ pub fn run(config: &Config) -> Result<Run, String> {
                 detail: why,
                 ..Record::blank(Status::Error, &input.id, input.class, input.debug, Tool::Generate)
             }),
+        }
+    }
+    if let Some(valgrind) = &valgrind {
+        for one in &mut session.measured {
+            one.count(&context, valgrind, &mut run.notes);
         }
     }
     results.records = session.records();
@@ -830,19 +1024,15 @@ pub fn run(config: &Config) -> Result<Run, String> {
         None => {}
     }
 
-    let default_name = if producer.tag == "kiln" {
-        format!("results-kiln-llvm{}.tsv", llvm.major)
-    } else {
-        format!("results-llvm{}.tsv", llvm.major)
-    };
-    let path = config.results.clone().unwrap_or_else(|| config.bench_dir().join(default_name));
+    let path = config
+        .results
+        .clone()
+        .unwrap_or_else(|| config.default_results(producer.tag == "kiln", &llvm.major.to_string()));
     results.write(&path)?;
     run.results_path = Some(path);
 
     if config.action == Action::UpdateBaseline {
-        let dir = config.workspace.join("bench").join("baselines");
-        let path =
-            config.baseline.clone().unwrap_or_else(|| baseline_path(&dir, &config.machine.id));
+        let path = config.own_baseline();
         match update_baseline(&path, &results, config.reason.as_deref().unwrap_or("")) {
             Ok(()) => {
                 run.unsteady = check::unsteady(&results, &config.thresholds);
@@ -888,7 +1078,14 @@ fn header(
     results.set("cpu", config.machine.cpu.clone());
     results.set("cores", config.machine.cores.to_string());
     results.set("arch", config.machine.arch.clone());
+    if let Some(arch) = config.cross() {
+        results.set("target", arch.triple());
+    }
     results.set("llc_version", llvm_version(llc));
+    let options = config.llc_options();
+    if !options.is_empty() {
+        results.set("llc_options", options.join(" "));
+    }
     results.set("hod_version", version_line(hod).unwrap_or_else(|_| "hod version ?".to_owned()));
     results.set("hod_build", hod_build);
     results.set("producer", producer.version.clone());
@@ -951,21 +1148,34 @@ fn gate(
 }
 
 /// `--report`: `docs/status/perf.md` from a results file.
+///
+/// Without `--results` and `--target`, the cross runs' results files of
+/// the same LLVM that exist are reported too, each in its own section.
 fn write_report(config: &Config, mut run: Run) -> Result<Run, String> {
-    let source = match (&config.results, config.llvm.as_deref()) {
-        (Some(path), _) => path.clone(),
-        (None, None) => config.bench_dir().join(format!("results-llvm{}.tsv", LLVM_MAJORS[0])),
-        (None, Some(major)) if major.bytes().all(|b| b.is_ascii_digit()) => {
-            config.bench_dir().join(format!("results-llvm{major}.tsv"))
-        }
+    let major = match (&config.results, config.llvm.as_deref()) {
+        (Some(_), _) => String::new(),
+        (None, None) => LLVM_MAJORS[0].to_string(),
+        (None, Some(major)) if major.bytes().all(|b| b.is_ascii_digit()) => major.to_owned(),
         (None, Some(_)) => {
             return Err("--report with an LLVM directory needs --results <file>".to_owned());
         }
     };
+    let source = config.results.clone().unwrap_or_else(|| config.default_results(false, &major));
     let results = Results::read(&source)?;
+    let mut cross = Vec::new();
+    if config.results.is_none() && config.target.is_none() {
+        for arch in Arch::ALL.into_iter().filter(|&arch| Some(arch) != Arch::host()) {
+            let other = Config { target: Some(arch), ..config.clone() };
+            let path = other.default_results(false, &major);
+            if path.is_file() {
+                cross.push(Results::read(&path)?);
+                run.notes.push(format!("report from {}", path.display()));
+            }
+        }
+    }
     let out = config.out.clone().unwrap_or_else(|| config.workspace.join("docs/status/perf.md"));
-    record::write_replacing(&out, &report::perf_md(&results))?;
-    run.notes.push(format!("report from {}", source.display()));
+    record::write_replacing(&out, &report::perf_md(&results, &cross))?;
+    run.notes.insert(0, format!("report from {}", source.display()));
     run.report = Some(out);
     Ok(run)
 }

@@ -24,7 +24,7 @@ use hod_testutil::write_script;
 use xtask::bench::check::Verdict;
 use xtask::bench::record::{Machine, Ratio, Record, Results, Status, Tool};
 use xtask::bench::{self, Action, Config, Run};
-use xtask::irdiff::Search;
+use xtask::irdiff::{Arch, Search};
 
 /// How much a time must differ to count, and how long a slow run sleeps.
 /// A fake run takes milliseconds on a quiet machine; at load 25 to 32 a
@@ -152,6 +152,28 @@ fi
 rss=1000
 if [ -f "$dir/rss.$tool" ]; then rss=$(cat "$dir/rss.$tool"); fi
 echo "$rss 0.02 0.01" >> "$out"
+exit $status"#;
+
+/// A stand-in for valgrind's callgrind: runs the command and writes an
+/// output file whose summary is 4000 instructions for `llc` and 1000 for
+/// hod, which it refuses to run with other than one thread.
+const FAKE_VALGRIND: &str = r#"PATH=/usr/bin:/bin
+out=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --callgrind-out-file=*) out=${1#--callgrind-out-file=} ;;
+    --*) ;;
+    *) break ;;
+  esac
+  shift
+done
+tool=$(basename "$1")
+if [ "$tool" = hod ] && [ "${HOD_THREADS-}" != 1 ]; then echo "fake valgrind: HOD_THREADS" >&2; exit 1; fi
+"$@"
+status=$?
+count=4000
+if [ "$tool" = hod ]; then count=1000; fi
+printf 'version: 1\ncreator: fake\nevents: Ir\nsummary: %s\n' "$count" > "$out"
 exit $status"#;
 
 const MANIFEST: &str = "\
@@ -872,7 +894,7 @@ fn generate_and_report() {
     let run = world.run(&config);
     assert_eq!((run.exit_status(), world.calls().len()), (0, calls));
     let written = std::fs::read_to_string(world.scratch.join("docs/perf.md")).unwrap();
-    assert_eq!(written, bench::report::perf_md(measured.results.as_ref().unwrap()));
+    assert_eq!(written, bench::report::perf_md(measured.results.as_ref().unwrap(), &[]));
     assert!(
         written.contains("| plain-g | small | ")
             && written.contains("declined: codegen-not-implemented"),
@@ -886,4 +908,82 @@ fn generate_and_report() {
     config.out = None;
     world.run(&config);
     assert!(world.scratch.join("ws/docs/status/perf.md").is_file());
+}
+
+// "Cross runs" and "Instructions": --target another architecture compiles
+// the inputs for it into a directory of their own, gives llc and hod its
+// triple, and writes its own results file and baseline; --instructions
+// counts one run of llc and strict hod per input under callgrind.
+#[test]
+fn a_cross_run_with_instructions() {
+    let world = World::new("bench-cross");
+    let arch = Arch::ALL.into_iter().find(|&arch| Some(arch) != Arch::host()).unwrap();
+    let triple = arch.triple();
+    let mut config = world.config(Action::Measure);
+    (config.target, config.instructions, config.runs) = (Some(arch), true, 1);
+
+    // Without valgrind there are no counts, and the summary says why.
+    let run = world.run(&config);
+    assert_eq!(run.exit_status(), 0, "{}", run.summary(false));
+    assert!(run.missing_tools.iter().any(|tool| tool.starts_with("valgrind")));
+    assert_eq!(record(&run, "built", Tool::Llc).instructions, None);
+
+    write_script(&world.bin("valgrind"), FAKE_VALGRIND);
+    world.clear("calls");
+    let run = world.run(&config);
+    let summary = run.summary(false);
+    assert_eq!((run.exit_status(), run.notes.clone()), (0, Vec::<String>::new()), "{summary}");
+    let results = run.results.as_ref().unwrap();
+    assert_eq!(results.get("target"), Some(triple));
+    let mut llc_options = format!("-mtriple={triple}");
+    if arch == Arch::X86_64 {
+        llc_options.push_str(" -fast-isel=0");
+    }
+    assert_eq!(results.get("llc_options"), Some(llc_options.as_str()));
+    let ir = world.scratch.join(format!("build/bench/inputs/clang22-{}/plain.ll", arch.name()));
+    let ir = std::fs::read_to_string(ir).unwrap();
+    assert!(ir.starts_with(&format!("define void @f() ; --target={triple} -O0 ")), "{ir}");
+    let codegen = "-O0 -filetype=obj -relocation-model=pic";
+    let calls = world.calls();
+    assert!(calls.contains(&format!("llc {codegen} {llc_options} plain.ll")), "{calls:?}");
+    assert!(
+        calls.contains(&format!("hod strict {codegen} -mtriple={triple} plain.ll")),
+        "{calls:?}"
+    );
+
+    // llc and strict hod are counted, a decline too; hod+fallback is not.
+    let counts = |input| {
+        [Tool::Llc, Tool::Hod, Tool::HodFallback].map(|tool| record(&run, input, tool).instructions)
+    };
+    assert_eq!(counts("built"), [Some(4000), Some(1000), None]);
+    assert_eq!(counts("plain-g"), [Some(4000), Some(1000), None]);
+    assert!(summary.contains("bench: instructions under callgrind, over the 2 inputs hod built: hod 0.0 M, llc 0.0 M: 0.25x\n"), "{summary}");
+    let path = world.scratch.join(format!("build/bench/results-{}-llvm22.tsv", arch.name()));
+    assert_eq!(run.results_path.as_deref(), Some(path.as_path()));
+    assert_eq!(&Results::read(&path).unwrap(), results);
+
+    // Its baseline is its own; the gate binds it only to a run for the
+    // same target.
+    let mut update = world.config(Action::UpdateBaseline);
+    (update.target, update.reason) = (Some(arch), Some("cross".to_owned()));
+    let updated = world.run(&update);
+    let own = world.scratch.join(format!("ws/bench/baselines/test-machine-4c-{}.tsv", arch.name()));
+    assert_eq!(updated.updated.as_deref(), Some(own.as_path()), "{}", updated.summary(false));
+    assert!(!world.baseline().exists());
+    let check = world.run(&world.config(Action::Check));
+    assert!(check.check.is_none(), "a native run has no baseline of its own target");
+    let mut check = world.config(Action::Check);
+    (check.target, check.instructions) = (Some(arch), true);
+    let checked = world.run(&check);
+    assert_eq!(checked.check.as_ref().map(|check| check.baseline.clone()), Some(own));
+
+    // The report: the native results, then the cross run's section.
+    let mut report = world.config(Action::Report);
+    report.out = Some(world.scratch.join("docs/perf.md"));
+    world.run(&report);
+    let written = std::fs::read_to_string(world.scratch.join("docs/perf.md")).unwrap();
+    let section = format!("\n## {} objects\n", arch.name());
+    let (native, cross) = written.split_once(&section).expect(&written);
+    assert!(!native.contains("### "), "{native}");
+    assert!(cross.contains("### Instructions\n") && cross.contains("- target: `"), "{cross}");
 }

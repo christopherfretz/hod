@@ -47,7 +47,7 @@
 use hod_cg::lanes::{self as shared, Geometry, LaneKernels};
 use hod_cg::sym::{FpOp, FpType, fp_ext_routine, fp_routine};
 use hod_cg::{CallArg, CgResult, Class, FnCx, FrameRef, PReg, RuntimeFn};
-use hod_ir::{Arch, Inst, Intrinsic, Opcode, TypeId, Value};
+use hod_ir::{Arch, Const, Inst, Intrinsic, Opcode, TypeId, Value, ValueKind};
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, FpSize, Reg, Size, Xmm};
 
@@ -196,6 +196,48 @@ fn packed(op: Opcode, lanes: &Lanes, x: Xmm, y: Xmm) -> Option<mc::Inst> {
     })
 }
 
+/// The shift amount every lane of the constant `value` holds, if it is
+/// one below the lane width (a larger one makes the lane poison: the
+/// lane loop's business).
+fn splat_amount(cx: &FnCx<'_, X64>, value: Value, lanes: &Lanes) -> Option<u8> {
+    let ValueKind::Const(id) = value.kind() else { return None };
+    let int = |id| match cx.module.consts.get(id) {
+        Const::Int { value, .. } => Some(value),
+        Const::Zero(_) => Some(0),
+        _ => None,
+    };
+    let amount = match cx.module.consts.get(id) {
+        Const::Zero(_) => 0,
+        Const::Splat { elem, .. } => int(elem)?,
+        Const::Aggregate { elems, .. } => {
+            let first = int(*elems.first()?)?;
+            elems.iter().all(|&e| int(e) == Some(first)).then_some(first)?
+        }
+        _ => return None,
+    };
+    u8::try_from(amount).ok().filter(|&a| u32::from(a) < lanes.shape.elem.bits())
+}
+
+/// The packed shift of every lane of `x` by `amount`, if SSE2 has one
+/// (no byte lanes, no arithmetic shift of quadwords).
+fn shift_packed(op: Opcode, lanes: &Lanes, x: Xmm, amount: u8) -> Option<mc::Inst> {
+    use Opcode as O;
+    if lanes.shape.elem.is_float() {
+        return None;
+    }
+    Some(match (op, lanes.log2) {
+        (O::Shl, 1) => mc::psllw_ri(x, amount),
+        (O::Shl, 2) => mc::pslld_ri(x, amount),
+        (O::Shl, 3) => mc::psllq_ri(x, amount),
+        (O::LShr, 1) => mc::psrlw_ri(x, amount),
+        (O::LShr, 2) => mc::psrld_ri(x, amount),
+        (O::LShr, 3) => mc::psrlq_ri(x, amount),
+        (O::AShr, 1) => mc::psraw_ri(x, amount),
+        (O::AShr, 2) => mc::psrad_ri(x, amount),
+        _ => return None,
+    })
+}
+
 /// [`binary`] by one packed instruction: the left operand's register
 /// (the right one's too for `%a op %a`).
 fn binary_packed<'a>(
@@ -207,6 +249,17 @@ fn binary_packed<'a>(
     let lanes = vector::lanes(cx, inst.ty()).ok()?;
     if lanes.shape.class != Class::Fpr {
         return None;
+    }
+    if let Some(amount) = splat_amount(cx, rhs, &lanes) {
+        shift_packed(inst.opcode(), &lanes, Xmm::Xmm0, amount)?;
+        return Some((|| {
+            deferred_first(cx, inst, None)?;
+            let a = cx.use_reg(lhs)?;
+            if let Some(word) = shift_packed(inst.opcode(), &lanes, xm(a), amount) {
+                put(cx, word);
+            }
+            cx.finish(inst, a)
+        })());
     }
     packed(inst.opcode(), &lanes, Xmm::Xmm0, Xmm::Xmm0)?;
     Some((|| {

@@ -48,7 +48,7 @@ fn generated_vectors_agree() {
         tally.compile
     );
     assert_agrees(&tally);
-    assert!(tally.run * 5 >= tally.generated * 2, "too few functions compared: {tally:?}");
+    assert!(tally.run * 5 >= tally.generated * 4, "too few functions compared: {tally:?}");
 }
 
 /// The generated text is a function of the seed alone.

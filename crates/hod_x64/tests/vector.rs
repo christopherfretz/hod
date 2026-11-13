@@ -344,3 +344,51 @@ fn three_operand_lanes_fit_the_minimal_pool() {
         }
     }
 }
+
+/// Shifts by a constant splat (`psllw`/`pslld`/`psllq`, `psrlw`/...,
+/// `psraw`/`psrad`) and by everything else (the lane loop), on every
+/// lane width, checked against the interpreter and `llc`.
+#[test]
+fn shifts_by_constants_agree() {
+    let mut functions = Vec::new();
+    let mut k = 0;
+    for (bits, n) in [(8u32, 16u32), (16, 8), (32, 4), (64, 2), (16, 4), (32, 2), (32, 3)] {
+        let t = format!("<{n} x i{bits}>");
+        let lanes: Vec<String> = (0..n)
+            .map(|i| {
+                let v = 0x8d3c_71a5_e62b_f049u64.rotate_left(i * 13 + bits);
+                let shift = 64 - bits;
+                format!("i{bits} {}", ((v << shift) as i64) >> shift)
+            })
+            .collect();
+        let init = format!("{t} <{}>", lanes.join(", "));
+        let mut amounts: Vec<String> =
+            [0, 1, bits / 2 + 1, bits - 1].iter().map(|a| format!("splat (i{bits} {a})")).collect();
+        let same: Vec<String> = (0..n).map(|_| format!("i{bits} 3")).collect();
+        let mixed: Vec<String> = (0..n).map(|i| format!("i{bits} {}", i % bits)).collect();
+        amounts.push(format!("<{}>", same.join(", ")));
+        amounts.push(format!("<{}>", mixed.join(", ")));
+        amounts.push("zeroinitializer".into());
+        for op in ["shl", "lshr", "ashr"] {
+            for amount in &amounts {
+                k += 1;
+                functions.push((
+                    k,
+                    Some(format!(
+                        "@t{k}.a = global {init}, align 16\n\
+                         @t{k}.o = global {t} zeroinitializer, align 16\n\
+                         define void @t{k}() {{\nentry:\n  %a = load {t}, ptr @t{k}.a\n  \
+                         %r = {op} {t} %a, {amount}\n  store {t} %r, ptr @t{k}.o\n  \
+                         call void @emit(ptr @t{k}.o, i64 {})\n  ret void\n}}\n\n",
+                        n * bits / 8
+                    )),
+                ));
+            }
+        }
+    }
+    let mut tally = vector_gen::Tally::default();
+    vector_gen::check_functions("shifts", functions, &mut tally);
+    vector_gen::assert_agrees(&tally);
+    assert!(tally.refused.is_empty(), "{:?}", tally.refused);
+    assert_eq!(tally.run, tally.generated, "{tally:?}");
+}

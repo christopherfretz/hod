@@ -124,7 +124,8 @@ const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 27] = [
     // WP-087: debug modules reach the DWARF writer on AArch64.
     ("debug:module-flags", "", "debug:module-flags", "", ""),
     ("debug:dwarf-version", "debug:dwarf-version", "debug:module-flags", "", ""),
-    ("debug:locations", "", "", "", "type:double"),
+    // WP-127: `type:double` no longer refuses an x86-64 body first.
+    ("debug:locations", "", "", "", "debug:locations"),
     ("global:function-declaration", "", "", "", ""),
     // WP-143: x86-64 module-level constructs.
     ("global:variable-definition", "", "", "", ""),
@@ -134,20 +135,20 @@ const SHIPPED_REASONS: [(&str, &str, &str, &str, &str); 27] = [
     ("tls:initial-exec", "", "", "", ""),
     ("comdat:any", "", "", "", ""),
     ("init:symbol", "", "", "", ""),
-    ("function:slots", "", "", "", "type:double"),
+    ("function:slots", "", "", "", ""),
     // WP-140: `fastcc` is `ccc` on x86-64 too.
     ("cc:fastcc", "", "", "", "+"),
     ("attr:zeroext", "", "", "", "attr:zeroext"),
-    ("type:double", "", "", "", "type:double"),
-    ("inst:add", "", "", "", "type:double"),
-    ("mem:volatile", "", "", "", "type:double"),
-    ("atomicrmw:add", "", "", "", "type:double"),
-    ("call:indirect", "", "", "", "type:double"),
-    ("tail:musttail", "", "", "", "type:double"),
-    ("bundle:deopt", "", "", "bundle:deopt", "type:double"),
-    ("landingpad:catch", "", "", "", "type:double"),
-    ("operand:slot", "", "", "", "type:double"),
-    ("intrinsic:llvm.memcpy", "", "", "", "type:double"),
+    ("type:double", "", "", "", ""),
+    ("inst:add", "", "", "", ""),
+    ("mem:volatile", "", "", "", ""),
+    ("atomicrmw:add", "", "", "", "inst:atomicrmw"),
+    ("call:indirect", "", "", "", ""),
+    ("tail:musttail", "", "", "", ""),
+    ("bundle:deopt", "", "", "bundle:deopt", "bundle:deopt"),
+    ("landingpad:catch", "", "", "", ""),
+    ("operand:slot", "", "", "", ""),
+    ("intrinsic:llvm.memcpy", "", "", "", "intrinsic:llvm.memcpy"),
 ];
 
 #[test]
@@ -175,7 +176,8 @@ fn shipped_refuses_with_the_expected_first_reason() {
             if body_reason != "*" {
                 assert_eq!(found, body_reason, "{row} on {arch:?}");
             }
-            assert_eq!(program.bodies.is_empty(), x64_body.is_empty(), "{row}");
+            // A body reason needs a body.
+            assert!(!program.bodies.is_empty() || x64_body.is_empty(), "{row}");
         }
     }
 }
@@ -541,8 +543,8 @@ const A64_SUPPORTED_BODY: [&str; 16] = [
     "tail:musttail",
 ];
 
-/// The rows of `RICH_BODY` x86-64 supports (WP-116, WP-122, WP-123, WP-125).
-const X64_SUPPORTED_BODY: [&str; 15] = [
+/// The rows of `RICH_BODY` x86-64 supports (WP-116, WP-122, WP-123, WP-125, WP-127).
+const X64_SUPPORTED_BODY: [&str; 16] = [
     "cc:ccc",
     "function:parameters",
     "type:int",
@@ -560,6 +562,8 @@ const X64_SUPPORTED_BODY: [&str; 15] = [
     // WP-125.
     "inst:call",
     "tail:musttail",
+    // WP-127.
+    "type:double",
 ];
 
 /// What the shipped matrix finds in the rich body on `arch`.

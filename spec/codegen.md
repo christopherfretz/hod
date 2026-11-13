@@ -2560,6 +2560,94 @@ x86-64 snippets `dso-local-data`, `pie`, `narrow-fields`,
 module whose code is a C driver, and an `available_externally` copy,
 linked by bfd, lld and mold and run under `qemu-x86_64`).
 
+#### 5.6.7 Scalar floating point (WP-127)
+
+`hod_x64::float` lowers the instructions of class `Fpr` and
+`hod_x64::fpintr` the floating-point intrinsics, in SSE2 and nothing
+above it (no `roundss`, no `cvttps2udq`, no AVX, no x87: `x86_fp80` is
+`x64:x87`'s, vectors `x64:todo:vector`'s). The decisions:
+
+- **`float` and `double`** are the scalar SSE2 instructions, two-operand,
+  the result in the left operand's register; no load is folded. `frem`
+  calls `fmodf`/`fmod`. No instruction reads or writes `MXCSR`: a NaN an
+  operation computes is the hardware's (the first NaN operand quieted, or
+  the negative default NaN), which LangRef allows.
+- **`half`** is computed in `float` through the shared runtime routines,
+  as `llc` without F16C: `__extendhfsf2` in, the operation,
+  `__truncsfhf2` out (`__truncdfhf2` from `double`). It travels in the
+  low 16 bits of an `xmm` register; the bits above are unspecified.
+- **`bfloat`** has no routine in the table: it is widened by a 16-bit
+  shift (exact) and narrowed inline to nearest even, a NaN kept a NaN
+  with its quiet bit set (what `__truncsfbf2` returns). A `double` or an
+  integer of more than 24 bits is first rounded to odd in `float`, so
+  that every conversion rounds once (`llc` rounds an integer twice:
+  `uitofp i33 0x1feffffff` is `0x5000` there, `0x4fff` here). Conversions
+  between `bfloat` and `fp128` are `x64:bfloat-fp128`; every intrinsic of
+  `bfloat` is `x64:intrinsic-bfloat`.
+- **`fp128`** is calls throughout: `__addtf3` .. `__divtf3`,
+  `fmodf128`, the `__*tf2` compares, the `__*tf*` conversions and the
+  `...f128` functions of the intrinsics; its constants come from a data
+  island (`movups`).
+- **`fcmp`** is `ucomiss`/`ucomisd`, the operands swapped where that
+  makes the condition one of `A`/`AE`/`B`/`BE` (unordered sets `ZF`,
+  `PF` and `CF`): `oeq` is `E` and `NP`, `une` is `NE` or `P`, `ueq`/`one`
+  are `E`/`NE`, `ord`/`uno` `NP`/`P`, `true`/`false` `E`/`NE` after `cmp
+  eax, eax`. A compare whose only use is the next `select` or `br` is
+  deferred and fused (§4.6): the branches read the flags directly (two
+  `jcc` for `oeq`/`une`); otherwise `setcc` (and `and`/`or` of two) and
+  `movzx`. `fp128` compares call `__eqtf2` .. `__unordtf2` and test
+  `eax`; `ueq`/`one` call `__eqtf2` and `__unordtf2`.
+- **Conversions.** `fptosi` is `cvttss2si`/`cvttsd2si`, the 32-bit form
+  up to 32 bits (31 unsigned), the 64-bit form above; `fptoui` to 64
+  bits is `llc`'s sequence (the value less `2^63` converted too, or-ed in
+  where the first conversion gave the integer indefinite). Out-of-range
+  results are poison: the indefinite is as good as any value.
+  `sitofp`/`uitofp` extend the source to 32 or 64 bits; `uitofp` of 64
+  bits halves the value with its low bit sticky when the sign bit is
+  set, converts and doubles. `bitcast` with a `Gpr` side is
+  `movd`/`movq` of the 32- or 64-bit view.
+- **`select`, `phi`, `freeze`** of class `Fpr` are moves (`movaps`):
+  bits are kept, signalling NaNs included. `freeze` of `poison` or
+  `undef` is zero.
+- **Intrinsics.** `sqrt` is `sqrtss`/`sqrtsd`; the rounding family,
+  `fma`, `lround`/`llround` call libm (`floorf`, `fmaf`, `lroundf`, ...),
+  `lrint`/`llrint` are `cvtss2si`; `fmuladd` is `mulss` + `addss`
+  (unfused, as `llc -O0`); `canonicalize` is `x * 1.0`; `fabs` and
+  `copysign` are bit operations in `rax`/`rcx`. `minnum`/`maxnum` and
+  `minimum`/`maximum`/`minimumnum`/`maximumnum` are `llc`'s sequences
+  (`minss` with a `cmpunordss` mask; the operands ordered by the first
+  one's sign so that `-0 < +0`, then a NaN test). `fptosi.sat`/
+  `fptoui.sat` truncate at 64 bits and `cmov` the bounds after `ucomis`
+  against them, and 0 for a NaN. `is.fpclass` (a constant mask) counts
+  the magnitude against the class bounds and tests a bit of a table
+  chosen by the sign. `half` is computed in `float` (`fma` in `double`:
+  `mulsd`, exact for two `half`s, then `addsd`, rounding as `llc`'s call
+  of `fma` does), `fp128` calls the `...f128` functions; `powi`,
+  `ldexp` (an `i64` exponent clamped to `int`), `frexp` and the libm
+  intrinsics are calls. Refused: `x64:fp-intrinsic` (a non-constant
+  `is.fpclass` mask, a `powi` exponent wider than 32 bits),
+  `x64:intrinsic-fp128` (`fptosi.sat`/`fptoui.sat` of `fp128`),
+  `x64:intrinsic-wide` (an integer result wider than 64 bits).
+
+A lowering here writes, besides its operands' registers, `rax`, `rcx`,
+`rdx`, `r11`, `xmm14` and `xmm15`; the glue that materializes an `Fpr`
+constant writes `r11` only.
+
+Evidence: `crates/hod_x64/tests/float.rs` and `tests/fpintr.rs`
+(`common/float_gen.rs`): every operation, predicate, conversion and
+intrinsic on edge values (signed zeros, subnormals, infinities, NaNs with
+payloads, the conversion boundaries `±2^31`, `2^32`, `±2^63`, `2^64`
+and their neighbours) and random ones, compiled plainly and with every
+stress option, run under `qemu-x86_64` and compared with `hod_interp`
+(`float`, `double`; NaN for NaN, the host being AArch64) and bit for bit
+with `llc` 22 and 19. Where `llc` is not right or not able, a model in
+the test is the oracle: an integer of more than 24 bits to `bfloat`
+(`llc` rounds twice), `ldexp` with an `i64` exponent outside `int`
+(`llc` truncates it), `minimum`/`maximum` of `fp128` (`llc` cannot
+select them). Where LangRef leaves the NaN open and `llc` picks another,
+`llc` is not compared: two `fp128` NaNs into `minimumnum`/`maximumnum`,
+a signalling `bfloat` NaN through a `phi` (`llc` 22 quiets it).
+
 #### 5.6.8 Intrinsics (WP-128)
 
 `hod_x64::intrinsic` lowers the integer, memory, trap and frame

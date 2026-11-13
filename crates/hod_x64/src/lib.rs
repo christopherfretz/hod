@@ -32,8 +32,8 @@
 //! | `call` | WP-125 | calls, `invoke`, `musttail`, landing pads, `resume`, variadics | `tests/call.rs` |
 //! | `vcall` | WP-125, WP-132 | vectors across calls (`PartKind::Lanes`) | |
 //! | `aggr` | WP-126 | `Mem`-class values: wide integers, aggregates, overflow intrinsics | `tests/aggr.rs` |
-//! | `float` | WP-127 | scalar and vector-register floating point (SSE2) | |
-//! | `fpintr` | WP-127, WP-128 | the floating-point intrinsics | |
+//! | `float` | WP-127 | scalar and vector-register floating point (SSE2) | `tests/float.rs` |
+//! | `fpintr` | WP-127, WP-128 | the floating-point intrinsics | `tests/fpintr.rs` |
 //! | `intrinsic` | WP-128 | the other intrinsics | `tests/intrinsic.rs` |
 //! | `barrier` | WP-128 | inline assembly whose template assembles to nothing | `tests/barrier.rs` |
 //! | `x87` | WP-131 | `x86_fp80` arithmetic, compares and conversions | |

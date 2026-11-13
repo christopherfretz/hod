@@ -2,6 +2,7 @@
 //! metadata, and the three named lists the module level reads — module
 //! flags, linker options and dependent libraries.
 
+use hod_ir::Layering;
 use hod_ir::{Arch, FlagValue};
 
 use crate::Span;
@@ -227,7 +228,7 @@ pub(crate) struct Upgrade {
     pub sign_b_key: bool,
 }
 
-impl Parser<'_, '_> {
+impl<L: Layering> Parser<'_, '_, L> {
     /// Builds the node index.
     pub(crate) fn index_metadata(&mut self) -> PResult<()> {
         let count = self.index.nodes.len();

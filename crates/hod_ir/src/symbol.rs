@@ -19,6 +19,7 @@ use crate::attrs::{CallConv, FnAttrsId, ParamAttrs, SigAttrTable, decode_align, 
 use crate::constant::{Const, ConstPool};
 use crate::error::{IrErrorKind, IrResult, err};
 use crate::ids::{ComdatId, ConstId, DiId, SymId, TypeId};
+use crate::intern::Layering;
 use crate::intern::{InternTable, next_id, pool_start};
 use crate::strings::{StrId, StrPool, hash_bytes};
 use crate::target::MAX_ADDR_SPACE;
@@ -635,12 +636,12 @@ impl SymbolTable {
     }
 
     /// What must hold of a definition as soon as it is one.
-    fn check_definition(
+    fn check_definition<L: Layering>(
         &self,
         sym: SymId,
         entry: &Entry,
-        types: &TypeTable,
-        consts: &ConstPool,
+        types: &TypeTable<L>,
+        consts: &ConstPool<L>,
     ) -> IrResult<()> {
         match entry.linkage {
             Linkage::ExternWeak => {
@@ -679,10 +680,10 @@ impl SymbolTable {
     }
 
     /// Makes `sym` the variable `desc` describes.
-    pub(crate) fn set_variable(
+    pub(crate) fn set_variable<L: Layering>(
         &mut self,
-        types: &TypeTable,
-        consts: &ConstPool,
+        types: &TypeTable<L>,
+        consts: &ConstPool<L>,
         sym: SymId,
         desc: &VariableDesc<'_>,
     ) -> IrResult<()> {
@@ -746,10 +747,10 @@ impl SymbolTable {
     }
 
     /// Makes `sym` the function `desc` describes.
-    pub(crate) fn set_function(
+    pub(crate) fn set_function<L: Layering>(
         &mut self,
-        types: &TypeTable,
-        consts: &ConstPool,
+        types: &TypeTable<L>,
+        consts: &ConstPool<L>,
         sym: SymId,
         desc: &FunctionDesc<'_>,
     ) -> IrResult<()> {
@@ -818,10 +819,10 @@ impl SymbolTable {
     }
 
     /// Makes `sym` the alias `desc` describes.
-    pub(crate) fn set_alias(
+    pub(crate) fn set_alias<L: Layering>(
         &mut self,
-        types: &TypeTable,
-        consts: &ConstPool,
+        types: &TypeTable<L>,
+        consts: &ConstPool<L>,
         sym: SymId,
         desc: &AliasDesc,
     ) -> IrResult<()> {
@@ -899,10 +900,10 @@ impl SymbolTable {
     }
 
     /// Gives the declared variable `sym` its initializer.
-    pub(crate) fn set_initializer(
+    pub(crate) fn set_initializer<L: Layering>(
         &mut self,
-        types: &TypeTable,
-        consts: &ConstPool,
+        types: &TypeTable<L>,
+        consts: &ConstPool<L>,
         sym: SymId,
         init: ConstId,
     ) -> IrResult<()> {
@@ -934,10 +935,10 @@ impl SymbolTable {
     }
 
     /// Says that a body will be delivered for the declared function `sym`.
-    pub(crate) fn set_has_body(
+    pub(crate) fn set_has_body<L: Layering>(
         &mut self,
-        types: &TypeTable,
-        consts: &ConstPool,
+        types: &TypeTable<L>,
+        consts: &ConstPool<L>,
         sym: SymId,
     ) -> IrResult<()> {
         let mut entry = self.entries[sym.index()];
@@ -993,7 +994,11 @@ impl SymbolTable {
     }
 
     /// The end-of-module checks; see `Module::verify_symbols`.
-    pub(crate) fn verify(&self, types: &TypeTable, consts: &ConstPool) -> IrResult<()> {
+    pub(crate) fn verify<L: Layering>(
+        &self,
+        types: &TypeTable<L>,
+        consts: &ConstPool<L>,
+    ) -> IrResult<()> {
         let count = self.entries.len();
         for index in 0..consts.len() {
             let id = ConstId::new(index as u32);
@@ -1058,9 +1063,9 @@ impl SymbolTable {
     }
 
     /// Fills `ends` for the alias `start` and every alias on its chain.
-    fn resolve_alias(
+    fn resolve_alias<L: Layering>(
         &self,
-        consts: &ConstPool,
+        consts: &ConstPool<L>,
         start: u32,
         ends: &mut [(u32, bool)],
         path: &mut Vec<u32>,
@@ -1096,7 +1101,7 @@ impl SymbolTable {
 
     /// LLVM's rules for what an alias may point at, for a target that is
     /// a symbol's address. Any other target is `classify`'s to refuse.
-    fn check_alias(&self, consts: &ConstPool, sym: SymId) -> IrResult<()> {
+    fn check_alias<L: Layering>(&self, consts: &ConstPool<L>, sym: SymId) -> IrResult<()> {
         let alias = &self.entries[sym.index()];
         let Const::Addr { sym: target, addend } = consts.get(ConstId::new(alias.a)) else {
             return Ok(());
@@ -1119,9 +1124,9 @@ impl SymbolTable {
     }
 
     /// LLVM's rules for an IFUNC's resolver.
-    fn check_ifunc(
+    fn check_ifunc<L: Layering>(
         &self,
-        types: &TypeTable,
+        types: &TypeTable<L>,
         sym: SymId,
         ifunc: &Entry,
         ends: &[(u32, bool)],

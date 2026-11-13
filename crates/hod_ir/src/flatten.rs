@@ -27,6 +27,7 @@
 use crate::constant::{Const, ConstOp, ConstPool};
 use crate::error::{IrErrorKind, IrResult, err};
 use crate::ids::{BlockId, ConstId, SymId, TypeId};
+use crate::intern::Layering;
 use crate::types::{TypeKind, TypeTable};
 
 /// A place in a flattened initializer whose value the linker supplies.
@@ -112,7 +113,7 @@ pub struct NegAddr {
     pub addend: i64,
 }
 
-impl ConstPool {
+impl<L: Layering> ConstPool<L> {
     /// Constant `c` as a label difference (WP-095): an integer expression
     /// built only of `ptrtoint` of a `blockaddress`, numbers, `add`, `sub`
     /// and `trunc`, in which exactly one block address is added and one
@@ -247,7 +248,7 @@ impl ConstPool {
     ///   bits, or one inside a vector of elements that are not whole bytes.
     pub fn flatten(
         &self,
-        types: &TypeTable,
+        types: &TypeTable<L>,
         c: ConstId,
         bytes: &mut Vec<u8>,
         fixups: &mut Vec<Fixup>,
@@ -290,14 +291,14 @@ struct Term {
     addend: i64,
 }
 
-struct Writer<'a> {
-    pool: &'a ConstPool,
-    types: &'a TypeTable,
+struct Writer<'a, L: Layering> {
+    pool: &'a ConstPool<L>,
+    types: &'a TypeTable<L>,
     bytes: &'a mut Vec<u8>,
     fixups: &'a mut Vec<Fixup>,
 }
 
-impl Writer<'_> {
+impl<L: Layering> Writer<'_, L> {
     /// Writes constant `c` at byte `at`. The buffer is already zero there.
     fn write(&mut self, c: ConstId, at: usize) -> IrResult<()> {
         let (pool, types) = (self.pool, self.types);

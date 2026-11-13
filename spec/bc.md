@@ -594,11 +594,15 @@ borrows the input and carries what a body reader needs:
 | `debug` (crate-private) | §6.2's `DebugBits`: what each module and function-local metadata id became |
 | `numbered_globals()`, `producer()` | the numbering of §5.5 and the producer string |
 
-**Reading bodies in parallel.** Bodies are independent of each other
-given `ModuleBits`, which is shared read-only. Each reader
-(`BodyReader`, §11.1) keeps its own copy of the value table, and each
-thread reads into its own `Module` clone, so the constants a body
-builds go to that clone.
+**Reading bodies in parallel** (WP-063). Bodies are independent of each
+other given `ModuleBits`, which is shared read-only. Each thread's reader
+(`BodyReader`, §11.1) keeps its own copy of the value table and reads
+against a fork of a seed of the module (`spec/ir.md` §5.1): one copy
+of its tables per parallel read, shared by every fork; the constants a body builds go to the fork,
+and the calling thread adopts them into the module in file order. A
+module-level constant built on first use (`constant`) is built in the
+fork and adopted like the rest, so it gets the id the sequential reader
+gives it.
 
 ## 8. Errors and limits
 
@@ -754,10 +758,25 @@ instead of text.
 | `reader.recycle(body)` | gives a body's storage back for the next |
 | `read_bodies(&mut Module, &ModuleBits, each)` | every definition in order, `each(&Module, ReadBody { function, body, unsupported })`; the shape of `hod_ll::parse_bodies` |
 
-Bodies may be read in parallel: one `BodyReader` and one `Module` clone
-per thread over the shared `ModuleBits` (§7). The constants a body uses
-are built into the module it is read into. A body read on any thread is
-the same as read on one (`tests/bodies.rs`).
+| `read_bodies_on(host, module, &ModuleBits, threads, each)` | the same on up to `threads` threads (below) |
+
+**In parallel** (WP-063). `read_bodies_on` reads through
+`hod_ir::read_bodies` (`spec/ir.md` §5.1): one `BodyReader` per thread,
+against a fork of a seed of the module, over the shared `ModuleBits` (§7).
+`each(host, function, Ok(body) | Err(constructs))` gets the host back
+(the module is `module(host)`) and returns whether to go on. Its promise
+is determinism: the bodies delivered and their order, the unsupported
+constructs and their record, the module's tables and every id in them,
+and the error returned are the sequential reader's at any number of
+threads, and with one thread it is the sequential reader, except that a
+body with attachment notes (`BodyReader::attachment_notes`, WP-064) is
+delivered as unsupported, those notes first, as the facade judges it.
+The error is
+the first in file order: a body that fails in a fork is read again in its
+turn against the module itself, and nothing after it is delivered
+(`tests/parallel.rs`: clang 22's C++ as bitcode with and without `-g`,
+the checked-in files, and bytes flipped in two bodies, at 1, 2, 3, 8 and
+24 threads).
 
 ### 11.2 Value numbering
 

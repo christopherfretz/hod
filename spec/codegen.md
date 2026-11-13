@@ -4675,7 +4675,11 @@ offset.)
 
 `hod_cg::emit_module(module, &Options, chunks) -> CgResult<Emitted>`
 (`src/emit/`), or step by step `ModuleEmitter::new`, `add_chunk` per
-chunk in module order, `finish`. The object is laid out as `llc -O0`
+chunk in module order, `finish`. `add_chunk` takes the chunk by `&mut`
+and empties it (`Chunk::clear`, allocations kept), so that a caller can
+add each chunk as soon as it is made and compile the next into the same
+buffers (WP-166); the object does not depend on how the functions were
+divided into chunks. The object is laid out as `llc -O0`
 lays it out for the same options (`reloc_model`, `code_model`,
 `function_sections`, `data_sections`); the oracle is `llc` of LLVM 19 and
 22, and every difference that remains is listed below.

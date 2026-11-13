@@ -215,61 +215,101 @@ fn work(
     made
 }
 
-/// Compiles every body into chunks in module order, on `workers` threads.
+/// The work, in IR instructions, of each chunk the calling thread compiles
+/// alone: each is handed to the module emitter as soon as it is made, so
+/// that the module's code is not held twice (once in its chunk, once in
+/// the object) whatever its size (WP-166).
+const SERIAL_CHUNK_INSTS: usize = PARALLEL_MIN_INSTS;
+
+/// The functions of `bodies` compiled one chunk after another on the
+/// calling thread, each chunk added to `emitter` once made, its buffers
+/// then reused for the next.
 ///
 /// # Errors
-/// The first function in module order that failed, with its index.
+/// The first function that failed, with its index. The emitter's own
+/// error comes after: once the emitter has refused, the rest of the
+/// functions are still compiled (not added), so that a function's
+/// refusal is the answer as when every chunk was compiled first.
+fn compile_serial(
+    module: &Module,
+    bodies: &[Body],
+    options: hod_cg::Options,
+    emitter: &mut ModuleEmitter<'_>,
+) -> Result<Result<(), CgError>, (usize, Failure)> {
+    #[cfg(test)]
+    crate::contain::fault::hit(crate::contain::fault::Site::Worker);
+    #[cfg(test)]
+    crate::contain::fault::hit(crate::contain::fault::Site::Codegen);
+    let mut scratch = Scratch::new();
+    let mut chunk = Chunk::new();
+    let mut emitted = Ok(());
+    for range in plan(bodies, SERIAL_CHUNK_INSTS) {
+        for at in range {
+            compile_one(module, &bodies[at], options, &mut scratch, &mut chunk)
+                .map_err(|failure| (at, failure))?;
+        }
+        if emitted.is_ok() {
+            emitted = emitter.add_chunk(&mut chunk);
+        } else {
+            chunk.clear();
+        }
+    }
+    Ok(emitted)
+}
+
+/// Compiles every body into chunks in module order, on `workers` threads,
+/// and adds them to `emitter` in that order.
+///
+/// # Errors
+/// The first function in module order that failed, with its index; then
+/// the emitter's error.
 fn compile_bodies(
     module: &Module,
     bodies: &[Body],
     options: hod_cg::Options,
     workers: usize,
     work_size: usize,
-) -> Result<Vec<Chunk>, (usize, Failure)> {
-    let chunks = if workers <= 1 {
-        std::iter::once(0..bodies.len()).collect()
-    } else {
-        plan(bodies, (work_size / (workers * CHUNKS_PER_WORKER)).max(1))
-    };
+    emitter: &mut ModuleEmitter<'_>,
+) -> Result<Result<(), CgError>, (usize, Failure)> {
+    if workers <= 1 {
+        return compile_serial(module, bodies, options, emitter);
+    }
+    let chunks = plan(bodies, (work_size / (workers * CHUNKS_PER_WORKER)).max(1));
     let next = AtomicUsize::new(0);
     let first_failure = AtomicUsize::new(usize::MAX);
     let run = || work(module, bodies, options, &chunks, &next, &first_failure);
-    let mut made = if workers <= 1 {
-        run()
-    } else {
-        // A panic on any of these threads reaches the caller of
-        // `generate_with` only after `scope` has joined every one of them
-        // (`spec/cli.md` "Embedding").
-        #[cfg(test)]
-        let plan = crate::contain::fault::current();
-        std::thread::scope(|scope| {
-            let helpers: Vec<_> = (1..workers)
-                .map(|_| {
+    // A panic on any of these threads reaches the caller of
+    // `generate_with` only after `scope` has joined every one of them
+    // (`spec/cli.md` "Embedding").
+    #[cfg(test)]
+    let plan = crate::contain::fault::current();
+    let mut made = std::thread::scope(|scope| {
+        let helpers: Vec<_> = (1..workers)
+            .map(|_| {
+                #[cfg(test)]
+                let plan = plan.clone();
+                scope.spawn(move || {
                     #[cfg(test)]
-                    let plan = plan.clone();
-                    scope.spawn(move || {
-                        #[cfg(test)]
-                        let _worker = crate::contain::fault::enter_worker(plan);
-                        run()
-                    })
+                    let _worker = crate::contain::fault::enter_worker(plan);
+                    run()
                 })
-                .collect();
-            let mut made = run();
-            for helper in helpers {
-                match helper.join() {
-                    Ok(more) => made.extend(more),
-                    Err(panic) => std::panic::resume_unwind(panic),
-                }
+            })
+            .collect();
+        let mut made = run();
+        for helper in helpers {
+            match helper.join() {
+                Ok(more) => made.extend(more),
+                Err(panic) => std::panic::resume_unwind(panic),
             }
-            made
-        })
-    };
+        }
+        made
+    });
     made.sort_unstable_by_key(|&(index, _)| index);
-    let mut out = Vec::with_capacity(made.len());
+    let mut chunks = Vec::with_capacity(made.len());
     let mut failed: Option<(usize, Failure)> = None;
     for (_, result) in made {
         match result {
-            Ok(chunk) => out.push(chunk),
+            Ok(chunk) => chunks.push(chunk),
             Err((at, failure)) => {
                 if failed.as_ref().is_none_or(|&(first, _)| at < first) {
                     failed = Some((at, failure));
@@ -277,10 +317,17 @@ fn compile_bodies(
             }
         }
     }
-    match failed {
-        Some(failure) => Err(failure),
-        None => Ok(out),
+    if let Some(failure) = failed {
+        return Err(failure);
     }
+    // Each chunk's tables are freed once it is added, as the object grows.
+    let mut emitted = Ok(());
+    for mut chunk in chunks {
+        if emitted.is_ok() {
+            emitted = emitter.add_chunk(&mut chunk);
+        }
+    }
+    Ok(emitted)
 }
 
 /// A code-generation error as a decline (`spec/cli.md` "The back half"):
@@ -446,9 +493,9 @@ pub fn generate_with(
         _ => None,
     };
     let workers = lease.as_ref().map_or(wanted, |lease| 1 + lease.count);
-    let compiled = compile_bodies(module, bodies, cg, workers, work_size);
+    let compiled = compile_bodies(module, bodies, cg, workers, work_size, &mut module_emitter);
     drop(lease);
-    let chunks = compiled.map_err(|(at, failure)| {
+    let emitted = compiled.map_err(|(at, failure)| {
         let function = symbol_name(module, bodies[at].symbol());
         match failure {
             Failure::Feature { reason, feature } => Unsupported {
@@ -463,12 +510,8 @@ pub fn generate_with(
     report.phase("emission");
     #[cfg(test)]
     crate::contain::fault::hit(crate::contain::fault::Site::Finish);
-    let mut emitted = chunks
-        .iter()
-        .try_for_each(|chunk| module_emitter.add_chunk(chunk))
-        .and_then(|()| module_emitter.finish())
-        .map_err(|error| from_cg(error, None))?;
-    drop(chunks);
+    let mut emitted =
+        emitted.and_then(|()| module_emitter.finish()).map_err(|error| from_cg(error, None))?;
     let object = hod_obj::elf::to_vec(&emitted.object).map_err(from_obj)?;
     if let Some(path) = &options.split_dwarf_output
         && cg.split_dwarf == hod_dwarf::SplitDwarf::Separate

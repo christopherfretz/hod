@@ -458,8 +458,16 @@ is produced, partial or otherwise:
    `call:...`, ...); a `CgError::Internal` is `CompileError::Internal`.
    When several functions fail, the answer is the one first in module
    order, whatever thread met it first.
-5. `hod_cg::emit_module` lays out the module from the chunks in module
-   order, and `hod_obj::elf::to_vec` writes the object in memory: their
+5. The module emitter (`hod_cg::ModuleEmitter`, as `hod_cg::emit_module`)
+   lays out the module from the chunks in module order, and
+   `hod_obj::elf::to_vec` writes the object in memory. Each chunk is
+   emptied as it is added, so a module's code and relocations are not held
+   twice (WP-166): on the calling thread alone, the functions are compiled
+   in chunks of about `PARALLEL_MIN_INSTS` instructions, each added as soon
+   as it is made and its buffers reused; on several threads, the chunks are
+   added once all are made, each freed as it is added. A refusal of a
+   function (step 4) is the answer before one of the emitter's, as when
+   every chunk was made first. Their
    `Unsupported` is a module refusal; `hod_obj`'s `NulInName` is
    `object:nul-in-name`, `TooLarge` is `limit:object`, anything else
    `Internal`.
@@ -1230,7 +1238,7 @@ no phase covers (the coverage line).
 | `parse` | the module level has been read (`hod_ll::parse_module`, `hod_bc::read_module`) |
 | `classify` | `classify`'s module pass has judged the module |
 | `bodies` | every body has been read and judged (only when the walk did not stop at a reason) |
-| `emission` | every body has been compiled to machine code ("The back half", step 4) |
+| `emission` | every body has been compiled to machine code ("The back half", step 4); compiled on the calling thread alone, each chunk is also laid out as it is made (step 5) |
 | `object` | the module has been laid out and its object written in memory |
 | `convert` | the bitcode converter ended ("Bitcode conversion"), with text or a failure; the attempt that declined the bitcode is in it. Only an invocation that started a conversion has it |
 | `compile` | `hod::compile` returned, with an object or an error: what follows the last of `parse`, `classify`, `bodies` (code generation, today the seam's decline), or the whole call when it declined before reading |

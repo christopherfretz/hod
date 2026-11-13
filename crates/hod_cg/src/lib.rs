@@ -16,8 +16,8 @@
 //! | `frame` | §5.1 to §5.3 | `Frame`, `FrameRef`, `SlotPlace` |
 //! | `label` | §6.2, §6.3 | `Label`, `Labels`, fixups |
 //! | `call` | §4.4, §7.1 to §7.3 | the call sequence, `musttail`, `invoke`, runtime calls |
-//! | `abi` | §7.2 | `Sig`, `Part`, `Assignment`: the argument-assignment interface |
-//! | `sym` | §7.3, §9.2 | `SymRef`, `RuntimeFn` |
+//! | `abi` | §7.2 | `Sig`, `Part`, `Assignment`: the argument-assignment interface; the leaf walk (`Classify`, `place_leaves`) |
+//! | `sym` | §7.3, §9.2 | `SymRef`, `RuntimeFn`; the routines by type and target (`fp_routine`, ...) |
 //! | `target` | §8.2 | the `Target` trait |
 //! | `cx` | §8.1, §11 | `FnCx`: what a lowering is given; `Scratch` |
 //! | `record` | §9.1 to §9.6 | `Chunk`, `FuncRecord` and the rows |
@@ -48,7 +48,7 @@ mod phi;
 mod policy;
 mod record;
 mod reg;
-mod sym;
+pub mod sym;
 mod target;
 
 pub use access::{Access, CallAccess, TlsAccess, call_access, prefers_local_alias, sym_access};

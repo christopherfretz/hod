@@ -52,17 +52,20 @@
 ;   reg.poke();
 ;   (void)junk[1];
 ; }
+; // Resumes from a deeper frame: the resumed activation's stack is not
+; // where the ramp's was, and the dead ramp stack is overwritten.
+; __attribute__((noinline)) void resume_deep(std::coroutine_handle<> h) {
+;   volatile long pad[256];
+;   for (int i = 0; i < 256; i++) pad[i] = 0x5a5a5a5a5a5a5a5a;
+;   h.resume();
+; }
 ; int main() {
 ;   task a = pointer();
-;   long noise[256];  // overwrite the ramp's dead stack between ramp and resume
-;   for (long& n : noise) n = 0x5a5a5a5a5a5a5a5a;
-;   a.h.resume();
+;   resume_deep(a.h);
 ;   task b = registered();
-;   for (long& n : noise) n = 0x5a5a5a5a5a5a5a5a;
-;   b.h.resume();
+;   resume_deep(b.h);
 ;   a.h.destroy();
 ;   b.h.destroy();
-;   return int(noise[3] & 0);
 ; }
 ;
 ;@ covers: spec/ir.md §5.5 intrinsics (coroutine bodies; spec/codegen.md §7.6)
@@ -118,7 +121,7 @@ $_ZN1TC2Ev = comdat any
 
 $_ZN8registry3addEP1T = comdat any
 
-$_ZNKSt7__n486116coroutine_handleIN4task12promise_typeEE6resumeEv = comdat any
+$_ZNKSt7__n486116coroutine_handleIvE6resumeEv = comdat any
 
 $_ZNKSt7__n486116coroutine_handleIN4task12promise_typeEE7destroyEv = comdat any
 
@@ -1227,115 +1230,90 @@ define private void @_Z10registeredv.__await_suspend_wrapper__final(ptr noundef 
   ret void
 }
 
-; Function Attrs: mustprogress noinline norecurse optnone uwtable
-define dso_local noundef i32 @main() #14 {
-  %1 = alloca i32, align 4
-  %2 = alloca %struct.task, align 8
+; Function Attrs: mustprogress noinline optnone uwtable
+define dso_local void @_Z11resume_deepNSt7__n486116coroutine_handleIvEE(i64 %0) #0 {
+  %2 = alloca %"struct.std::__n4861::coroutine_handle.0", align 8
   %3 = alloca [256 x i64], align 8
-  %4 = alloca ptr, align 8
-  %5 = alloca ptr, align 8
-  %6 = alloca ptr, align 8
-  %7 = alloca ptr, align 8
-  %8 = alloca %struct.task, align 8
-  %9 = alloca ptr, align 8
-  %10 = alloca ptr, align 8
-  %11 = alloca ptr, align 8
-  %12 = alloca ptr, align 8
-  store i32 0, ptr %1, align 4
-  %13 = call i64 @_Z7pointerv()
-  %14 = getelementptr inbounds %struct.task, ptr %2, i32 0, i32 0
-  %15 = getelementptr inbounds %"struct.std::__n4861::coroutine_handle", ptr %14, i32 0, i32 0
-  %16 = inttoptr i64 %13 to ptr
-  store ptr %16, ptr %15, align 8
-  store ptr %3, ptr %4, align 8
-  %17 = load ptr, ptr %4, align 8
-  %18 = getelementptr inbounds [256 x i64], ptr %17, i64 0, i64 0
-  store ptr %18, ptr %5, align 8
-  %19 = load ptr, ptr %4, align 8
-  %20 = getelementptr inbounds [256 x i64], ptr %19, i64 0, i64 0
-  %21 = getelementptr inbounds i64, ptr %20, i64 256
-  store ptr %21, ptr %6, align 8
-  br label %22
+  %4 = alloca i32, align 4
+  %5 = getelementptr inbounds %"struct.std::__n4861::coroutine_handle.0", ptr %2, i32 0, i32 0
+  %6 = inttoptr i64 %0 to ptr
+  store ptr %6, ptr %5, align 8
+  store i32 0, ptr %4, align 4
+  br label %7
 
-22:                                               ; preds = %29, %0
-  %23 = load ptr, ptr %5, align 8
-  %24 = load ptr, ptr %6, align 8
-  %25 = icmp ne ptr %23, %24
-  br i1 %25, label %26, label %32
+7:                                                ; preds = %14, %1
+  %8 = load i32, ptr %4, align 4
+  %9 = icmp slt i32 %8, 256
+  br i1 %9, label %10, label %17
 
-26:                                               ; preds = %22
-  %27 = load ptr, ptr %5, align 8
-  store ptr %27, ptr %7, align 8
-  %28 = load ptr, ptr %7, align 8
-  store i64 6510615555426900570, ptr %28, align 8
-  br label %29
+10:                                               ; preds = %7
+  %11 = load i32, ptr %4, align 4
+  %12 = sext i32 %11 to i64
+  %13 = getelementptr inbounds [256 x i64], ptr %3, i64 0, i64 %12
+  store volatile i64 6510615555426900570, ptr %13, align 8
+  br label %14
 
-29:                                               ; preds = %26
-  %30 = load ptr, ptr %5, align 8
-  %31 = getelementptr inbounds i64, ptr %30, i32 1
-  store ptr %31, ptr %5, align 8
-  br label %22
+14:                                               ; preds = %10
+  %15 = load i32, ptr %4, align 4
+  %16 = add nsw i32 %15, 1
+  store i32 %16, ptr %4, align 4
+  br label %7, !llvm.loop !6
 
-32:                                               ; preds = %22
-  %33 = getelementptr inbounds %struct.task, ptr %2, i32 0, i32 0
-  call void @_ZNKSt7__n486116coroutine_handleIN4task12promise_typeEE6resumeEv(ptr noundef nonnull align 8 dereferenceable(8) %33)
-  %34 = call i64 @_Z10registeredv()
-  %35 = getelementptr inbounds %struct.task, ptr %8, i32 0, i32 0
-  %36 = getelementptr inbounds %"struct.std::__n4861::coroutine_handle", ptr %35, i32 0, i32 0
-  %37 = inttoptr i64 %34 to ptr
-  store ptr %37, ptr %36, align 8
-  store ptr %3, ptr %9, align 8
-  %38 = load ptr, ptr %9, align 8
-  %39 = getelementptr inbounds [256 x i64], ptr %38, i64 0, i64 0
-  store ptr %39, ptr %10, align 8
-  %40 = load ptr, ptr %9, align 8
-  %41 = getelementptr inbounds [256 x i64], ptr %40, i64 0, i64 0
-  %42 = getelementptr inbounds i64, ptr %41, i64 256
-  store ptr %42, ptr %11, align 8
-  br label %43
-
-43:                                               ; preds = %50, %32
-  %44 = load ptr, ptr %10, align 8
-  %45 = load ptr, ptr %11, align 8
-  %46 = icmp ne ptr %44, %45
-  br i1 %46, label %47, label %53
-
-47:                                               ; preds = %43
-  %48 = load ptr, ptr %10, align 8
-  store ptr %48, ptr %12, align 8
-  %49 = load ptr, ptr %12, align 8
-  store i64 6510615555426900570, ptr %49, align 8
-  br label %50
-
-50:                                               ; preds = %47
-  %51 = load ptr, ptr %10, align 8
-  %52 = getelementptr inbounds i64, ptr %51, i32 1
-  store ptr %52, ptr %10, align 8
-  br label %43
-
-53:                                               ; preds = %43
-  %54 = getelementptr inbounds %struct.task, ptr %8, i32 0, i32 0
-  call void @_ZNKSt7__n486116coroutine_handleIN4task12promise_typeEE6resumeEv(ptr noundef nonnull align 8 dereferenceable(8) %54)
-  %55 = getelementptr inbounds %struct.task, ptr %2, i32 0, i32 0
-  call void @_ZNKSt7__n486116coroutine_handleIN4task12promise_typeEE7destroyEv(ptr noundef nonnull align 8 dereferenceable(8) %55)
-  %56 = getelementptr inbounds %struct.task, ptr %8, i32 0, i32 0
-  call void @_ZNKSt7__n486116coroutine_handleIN4task12promise_typeEE7destroyEv(ptr noundef nonnull align 8 dereferenceable(8) %56)
-  %57 = getelementptr inbounds [256 x i64], ptr %3, i64 0, i64 3
-  %58 = load i64, ptr %57, align 8
-  %59 = and i64 %58, 0
-  %60 = trunc i64 %59 to i32
-  ret i32 %60
+17:                                               ; preds = %7
+  call void @_ZNKSt7__n486116coroutine_handleIvE6resumeEv(ptr noundef nonnull align 8 dereferenceable(8) %2)
+  ret void
 }
 
 ; Function Attrs: mustprogress noinline optnone uwtable
-define linkonce_odr dso_local void @_ZNKSt7__n486116coroutine_handleIN4task12promise_typeEE6resumeEv(ptr noundef nonnull align 8 dereferenceable(8) %0) #0 comdat {
+define linkonce_odr dso_local void @_ZNKSt7__n486116coroutine_handleIvE6resumeEv(ptr noundef nonnull align 8 dereferenceable(8) %0) #0 comdat {
   %2 = alloca ptr, align 8
   store ptr %0, ptr %2, align 8
   %3 = load ptr, ptr %2, align 8
-  %4 = getelementptr inbounds %"struct.std::__n4861::coroutine_handle", ptr %3, i32 0, i32 0
+  %4 = getelementptr inbounds %"struct.std::__n4861::coroutine_handle.0", ptr %3, i32 0, i32 0
   %5 = load ptr, ptr %4, align 8
   call void @llvm.coro.resume(ptr %5)
   ret void
+}
+
+; Function Attrs: mustprogress noinline norecurse optnone uwtable
+define dso_local noundef i32 @main() #14 {
+  %1 = alloca %struct.task, align 8
+  %2 = alloca %"struct.std::__n4861::coroutine_handle.0", align 8
+  %3 = alloca %struct.task, align 8
+  %4 = alloca %"struct.std::__n4861::coroutine_handle.0", align 8
+  %5 = call i64 @_Z7pointerv()
+  %6 = getelementptr inbounds %struct.task, ptr %1, i32 0, i32 0
+  %7 = getelementptr inbounds %"struct.std::__n4861::coroutine_handle", ptr %6, i32 0, i32 0
+  %8 = inttoptr i64 %5 to ptr
+  store ptr %8, ptr %7, align 8
+  %9 = getelementptr inbounds %struct.task, ptr %1, i32 0, i32 0
+  %10 = call i64 @_ZNKSt7__n486116coroutine_handleIN4task12promise_typeEEcvNS0_IvEEEv(ptr noundef nonnull align 8 dereferenceable(8) %9) #4
+  %11 = getelementptr inbounds %"struct.std::__n4861::coroutine_handle.0", ptr %2, i32 0, i32 0
+  %12 = inttoptr i64 %10 to ptr
+  store ptr %12, ptr %11, align 8
+  %13 = getelementptr inbounds %"struct.std::__n4861::coroutine_handle.0", ptr %2, i32 0, i32 0
+  %14 = load ptr, ptr %13, align 8
+  %15 = ptrtoint ptr %14 to i64
+  call void @_Z11resume_deepNSt7__n486116coroutine_handleIvEE(i64 %15)
+  %16 = call i64 @_Z10registeredv()
+  %17 = getelementptr inbounds %struct.task, ptr %3, i32 0, i32 0
+  %18 = getelementptr inbounds %"struct.std::__n4861::coroutine_handle", ptr %17, i32 0, i32 0
+  %19 = inttoptr i64 %16 to ptr
+  store ptr %19, ptr %18, align 8
+  %20 = getelementptr inbounds %struct.task, ptr %3, i32 0, i32 0
+  %21 = call i64 @_ZNKSt7__n486116coroutine_handleIN4task12promise_typeEEcvNS0_IvEEEv(ptr noundef nonnull align 8 dereferenceable(8) %20) #4
+  %22 = getelementptr inbounds %"struct.std::__n4861::coroutine_handle.0", ptr %4, i32 0, i32 0
+  %23 = inttoptr i64 %21 to ptr
+  store ptr %23, ptr %22, align 8
+  %24 = getelementptr inbounds %"struct.std::__n4861::coroutine_handle.0", ptr %4, i32 0, i32 0
+  %25 = load ptr, ptr %24, align 8
+  %26 = ptrtoint ptr %25 to i64
+  call void @_Z11resume_deepNSt7__n486116coroutine_handleIvEE(i64 %26)
+  %27 = getelementptr inbounds %struct.task, ptr %1, i32 0, i32 0
+  call void @_ZNKSt7__n486116coroutine_handleIN4task12promise_typeEE7destroyEv(ptr noundef nonnull align 8 dereferenceable(8) %27)
+  %28 = getelementptr inbounds %struct.task, ptr %3, i32 0, i32 0
+  call void @_ZNKSt7__n486116coroutine_handleIN4task12promise_typeEE7destroyEv(ptr noundef nonnull align 8 dereferenceable(8) %28)
+  ret i32 0
 }
 
 ; Function Attrs: mustprogress noinline optnone uwtable
@@ -1445,3 +1423,5 @@ attributes #16 = { noreturn nounwind }
 !3 = !{i32 7, !"uwtable", i32 2}
 !4 = !{i32 7, !"frame-pointer", i32 1}
 !5 = !{!"Debian clang version 19.1.7 (3+b1)"}
+!6 = distinct !{!6, !7}
+!7 = !{!"llvm.loop.mustprogress"}

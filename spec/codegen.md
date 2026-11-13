@@ -2132,6 +2132,70 @@ PC-relative through an internal fixup: no relocation, no separate section,
 nothing shared between functions. Islands are aligned to their contents
 and counted in the function's size. (AArch64 builds `fp128` in the register instead, §5.5.1.)
 
+### 7.6 Coroutines
+
+Design 0005. A coroutine's frame starts with two code addresses: the
+resume function at offset 0 and the destroy function at offset 8, each a
+`void(ptr frame)` function called `fastcc`. That header, the promise's
+place and the noop frame are an ABI between objects: every object that
+holds a `std::coroutine_handle` relies on them, whoever compiled the
+coroutine. hod lowers what LLVM's `coro-early` and `coro-cleanup` passes
+make of the handle intrinsics (`opt -passes='default<O0>'`, LLVM 19 and
+22 agree), so that a hod object and an `opt` + `llc` object share
+handles.
+
+**Handle operations in any function (WP-105).** `hod_a64/src/coro.rs`,
+one arm of `intrinsic::intrinsic`:
+
+| intrinsic | lowering (AArch64) |
+|---|---|
+| `coro.resume(p)` / `coro.destroy(p)` | `ldr x, [p, #0]` / `[p, #8]` into a temporary, then the core's call sequence through it with `p` as the one argument, `fastcc` (the C convention for one pointer on AArch64): `FnCx::call_through`. As an `invoke` too: the normal edge's `phi` stores, the jump and the landing-pad stub are the ones of `FnCx::call` |
+| `coro.done(p)` | the resume pointer is null: `ldr x, [p]`, `cmp x, #0`, `cset w, eq` |
+| `coro.promise(p, align, from)` | `p + alignTo(16, align)`, or `p - alignTo(16, align)` when `from` is true: `add`/`sub` of a constant |
+| `coro.noop()` | the address of the object's noop frame: `adrp` + `add :lo12:` (small code model; `a64:code-model` otherwise) |
+
+`align` must be a constant power of two of at most 2^30 and `from` a
+constant (`a64:coro-promise` otherwise): LLVM computes the offset in
+`i32` from the floor of the alignment's logarithm (an alignment of 0, 24
+or 48 gives 16, 16 and 32), which no front end relies on; front ends
+pass `alignof(promise)`.
+
+`FnCx::call_through(inst, callee, args, params, cc)` is the generic call
+through a computed address: `callee` is a temporary the lowering loaded,
+moved to the sequence's callee register after the arguments are placed;
+the call has no result. It is §7.1's sequence with `Callee::Temp`.
+
+**The noop frame (WP-105).** Generic, in `hod_cg` (`coro.rs`,
+`emit/noop.rs`). `FnCx::noop_coro_frame()` returns
+`SymRef::NoopCoroFrame` and records, in the chunk, the target's
+`Target::NOOP_CORO_FN` (the code of a function that only returns; empty
+means the target does not lower `coro.noop`: `coro:noop-target`). That is
+the one target hook. Module emission places, at the first relocation to
+the frame (after every function is placed, as `llc` orders them):
+
+- `__NoopCoro_ResumeDestroy`: the function's code, in `.text` after the
+  other functions (`.text.__NoopCoro_ResumeDestroy` with function
+  sections), aligned to 4, with a local `STT_FUNC` symbol of that name and
+  size: LLVM 22 makes the function `internal` (LLVM 19 `private`, so its
+  object has no symbol). No unwind entry: it calls nothing and changes
+  no register.
+- the frame, LLVM's `NoopCoro.Frame.Const`: 16 bytes, aligned to 8, both
+  words `R_AARCH64_ABS64` to the function (section symbol plus offset),
+  in `.data.rel.ro` under PIC and `.rodata` otherwise
+  (`.data.rel.ro..LNoopCoro.Frame.Const` / `.rodata..LNoopCoro.Frame.Const` with data
+  sections), with no symbol: it is private, and references name its
+  section.
+
+Each object has its own frame, as each `llc` object has: two
+`coro.noop()` of one object are equal, of two objects are not
+(`noop_coroutine()` handles are compared only within one translation
+unit's expectations; LLVM guarantees nothing across objects).
+
+**Coroutine bodies** (`presplitcoroutine`, `coro.id`, `begin`,
+`suspend`, `end`, `save`, `size`, `align`, `alloc`, `free`, `frame`,
+`is_in_ramp`, `await.suspend.*`) stay refused by `classify` under those
+names until WP-106.
+
 ## 8. The `Target` trait
 
 A target is a zero-sized or small `Sync` value. The driver owns the walk;

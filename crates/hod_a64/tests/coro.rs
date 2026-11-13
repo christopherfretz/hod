@@ -201,9 +201,9 @@ fn module_text(major: u32, body: &str) -> String {
 }
 
 /// hod's object of `body` under `options`.
-fn hod_object(dir: &Scratch, name: &str, body: &str, options: &Options) -> PathBuf {
+fn hod_object(dir: &Scratch, name: &str, body: &str, options: Options) -> PathBuf {
     let (module, bodies) = parse(&module_text(22, body));
-    let emitted = compile_module(&module, &bodies, options).unwrap_or_else(|e| panic!("{e}"));
+    let emitted = compile_module(&module, &bodies, &options).unwrap_or_else(|e| panic!("{e}"));
     write_object(dir, &format!("{name}.o"), &emitted)
 }
 
@@ -307,7 +307,7 @@ fn coroutines_of_other_compilers_are_driven_from_hod() {
     if let Some(kiln) = kiln() {
         drivers.extend(driver_object(&dir, &kiln, 22, "kiln").map(|o| ("kiln".to_owned(), o)));
     }
-    let hod = hod_object(&dir, "hod", HANDLES, &PIC);
+    let hod = hod_object(&dir, "hod", HANDLES, PIC);
     let mut references = Vec::new();
     for major in [19, 22] {
         let input = dir.write(&format!("handles{major}.ll"), module_text(major, HANDLES));
@@ -368,7 +368,7 @@ fn functions(object: &Path) -> Option<Vec<(String, Vec<String>)>> {
 #[test]
 fn the_handle_operations_have_their_shapes() {
     let dir = Scratch::new("coro-shapes");
-    let object = hod_object(&dir, "shapes", HANDLES, &PIC);
+    let object = hod_object(&dir, "shapes", HANDLES, PIC);
     let Some(functions) = functions(&object) else { return };
     let body = |name: &str| {
         let found = functions.iter().find(|(n, _)| n == name);
@@ -422,7 +422,7 @@ fn the_noop_frame_is_written_once_per_object() {
         ("split", split, ".text.__NoopCoro_ResumeDestroy", ".data.rel.ro..LNoopCoro.Frame.Const"),
     ];
     for (name, options, text_section, data_section) in cases {
-        let object = hod_object(&dir, name, HANDLES, &options);
+        let object = hod_object(&dir, name, HANDLES, options);
         let Some(elf) = readelf(&object) else { return };
         let functions: Vec<&str> =
             elf.lines().filter(|l| l.ends_with(" __NoopCoro_ResumeDestroy")).collect();
@@ -447,7 +447,7 @@ fn the_noop_frame_is_written_once_per_object() {
         assert_eq!(rows.len(), 2, "{name}:\n{}", &elf[at..]);
         assert!(rows.iter().all(|r| r.ends_with(&target)), "{name}: {rows:?} to {target}");
     }
-    let plain = hod_object(&dir, "plain", "define void @f() {\n  ret void\n}\n", &PIC);
+    let plain = hod_object(&dir, "plain", "define void @f() {\n  ret void\n}\n", PIC);
     if let Some(elf) = readelf(&plain) {
         assert!(!elf.contains("NoopCoro"), "no frame without a reference:\n{elf}");
     }

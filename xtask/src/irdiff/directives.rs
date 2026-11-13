@@ -165,6 +165,16 @@ impl Conditional {
     }
 }
 
+/// An `oracle-skip` directive: the LLVM majors whose oracle is wrong for
+/// the test, and why. There, the program of hod's object is compared with
+/// the directives only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OracleSkip {
+    /// The majors, at least one.
+    pub llvm: Vec<u32>,
+    pub reason: String,
+}
+
 /// Everything the directives of one test say.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Expectations {
@@ -198,6 +208,14 @@ pub struct Expectations {
     pub unsupported: Vec<Conditional>,
     /// The spec section the test covers.
     pub covers: Option<String>,
+    /// The test is IR before optimisation (`input: pre-opt`): the oracle
+    /// and the witness run `opt -passes='default<O0>'` before `llc`.
+    pub pre_opt: bool,
+    /// The LLVM major whose dialect the test is written in (`dialect`):
+    /// it runs only with that LLVM's oracle.
+    pub dialect: Option<u32>,
+    /// Where the oracle is not used (`oracle-skip`).
+    pub oracle_skip: Vec<OracleSkip>,
 }
 
 impl Default for Expectations {
@@ -217,6 +235,9 @@ impl Default for Expectations {
             xfail: Vec::new(),
             unsupported: Vec::new(),
             covers: None,
+            pre_opt: false,
+            dialect: None,
+            oracle_skip: Vec::new(),
         }
     }
 }
@@ -230,6 +251,21 @@ impl Expectations {
     /// Whether the test is valid for this LLVM major.
     pub fn accepts_llvm(&self, major: u32) -> bool {
         self.llvm.is_empty() || self.llvm.iter().any(|req| req.admits(major))
+    }
+
+    /// Whether the test is in the dialect of this LLVM major: it has no
+    /// `dialect` directive, or that one names `major`.
+    pub fn in_dialect(&self, major: u32) -> bool {
+        self.dialect.is_none_or(|dialect| dialect == major)
+    }
+
+    /// Why the oracle is not used with this LLVM major, if an
+    /// `oracle-skip` directive names it: the first that does.
+    pub fn oracle_skip_reason(&self, major: u32) -> Option<&str> {
+        self.oracle_skip
+            .iter()
+            .find(|skip| skip.llvm.contains(&major))
+            .map(|skip| skip.reason.as_str())
     }
 
     /// The reason hod must decline with here, if an `unsupported`
@@ -285,6 +321,12 @@ impl Expectations {
                 })),
             );
         }
+        if let Some(dialect) = self.dialect {
+            line("dialect", &dialect.to_string());
+        }
+        if self.pre_opt {
+            line("input", PRE_OPT);
+        }
         if !self.libs.is_empty() || !self.pie || self.allow_warnings {
             let libs = self.libs.iter().map(|lib| match lib {
                 Lib::M => "m",
@@ -296,6 +338,10 @@ impl Expectations {
         }
         if !self.llc_args.is_empty() {
             line("llc-args", &self.llc_args.join(" "));
+        }
+        for skip in &self.oracle_skip {
+            let majors: Vec<String> = skip.llvm.iter().map(u32::to_string).collect();
+            line(&format!("oracle-skip(llvm={})", majors.join(",")), &skip.reason);
         }
         for (key, directives) in [("unsupported", &self.unsupported), ("xfail", &self.xfail)] {
             for directive in directives {
@@ -331,6 +377,9 @@ impl Expectations {
         out
     }
 }
+
+/// The value of `input` for IR before optimisation.
+const PRE_OPT: &str = "pre-opt";
 
 /// The `llc` options a test may pass with `llc-args`, by name: the ones a
 /// compiler driver gives `llc` that change the code and name no file. A
@@ -459,7 +508,7 @@ impl Parser {
             .ok_or_else(|| format!("malformed directive: expected ':' after '{key}'"))?;
         let value = value.strip_prefix(' ').unwrap_or(value);
 
-        let conditional = matches!(key, "xfail" | "unsupported");
+        let conditional = matches!(key, "xfail" | "unsupported" | "oracle-skip");
         let known = conditional
             || matches!(
                 key,
@@ -469,6 +518,8 @@ impl Parser {
                     | "args"
                     | "target"
                     | "llvm"
+                    | "dialect"
+                    | "input"
                     | "link"
                     | "tier"
                     | "covers"
@@ -537,7 +588,35 @@ impl Parser {
             "exit" => found.exit = parse_exit(value)?,
             "args" => found.args = words(value).map(str::to_owned).collect(),
             "target" => found.targets = parse_targets(value)?,
-            "llvm" => found.llvm = parse_llvm(value)?,
+            "llvm" => {
+                if found.dialect.is_some() {
+                    return Err("'llvm' and 'dialect' exclude each other".to_owned());
+                }
+                found.llvm = parse_llvm(value)?;
+            }
+            "dialect" => {
+                if !found.llvm.is_empty() {
+                    return Err("'llvm' and 'dialect' exclude each other".to_owned());
+                }
+                let major = parse_major(value.trim()).ok_or_else(|| {
+                    format!("invalid dialect '{}': expected an LLVM major", value.trim())
+                })?;
+                found.dialect = Some(major);
+            }
+            "input" => {
+                if value.trim() != PRE_OPT {
+                    return Err(format!("unknown input '{}': expected {PRE_OPT}", value.trim()));
+                }
+                found.pre_opt = true;
+            }
+            "oracle-skip" => {
+                let llvm = parse_skip_majors(conds)?;
+                let reason = value.trim();
+                if reason.is_empty() {
+                    return Err("'oracle-skip' requires a reason".to_owned());
+                }
+                found.oracle_skip.push(OracleSkip { llvm, reason: reason.to_owned() });
+            }
             "link" => (found.libs, found.pie, found.allow_warnings) = parse_link(value)?,
             "tier" => {
                 found.tier = match value.trim() {
@@ -695,6 +774,23 @@ fn parse_link(value: &str) -> Result<(Vec<Lib>, bool, bool), String> {
         libs.push(lib);
     }
     Ok((libs, pie.unwrap_or(true), allow_warnings))
+}
+
+/// The majors of `oracle-skip(llvm=N,M)`: `list` is the text between the
+/// parentheses.
+fn parse_skip_majors(list: Option<&str>) -> Result<Vec<u32>, String> {
+    let expected = "'oracle-skip' requires its LLVM majors: 'oracle-skip(llvm=N[,M...]): <reason>'";
+    let majors = list.and_then(|list| list.strip_prefix("llvm=")).ok_or(expected)?;
+    let mut found: Vec<u32> = Vec::new();
+    for item in majors.split(',') {
+        let major = parse_major(item)
+            .ok_or_else(|| format!("invalid LLVM major '{item}' in 'oracle-skip'"))?;
+        if found.contains(&major) {
+            return Err(format!("LLVM {major} is listed twice in 'oracle-skip'"));
+        }
+        found.push(major);
+    }
+    Ok(found)
 }
 
 /// `list` is the text between the parentheses, if there were any.
@@ -1157,13 +1253,20 @@ mod tests {
                 reason: "codegen-not-implemented".to_owned(),
             }],
             covers: Some("spec/ir.md §5.4".to_owned()),
+            pre_opt: true,
+            dialect: None,
+            oracle_skip: vec![
+                OracleSkip { llvm: vec![19, 22], reason: "the oracle crashes".to_owned() },
+                OracleSkip { llvm: vec![22], reason: "and another".to_owned() },
+            ],
         };
         let printed = all.to_directives();
         assert_eq!(
             printed,
             ";@ covers: spec/ir.md §5.4\n;@ tier: quick\n;@ target: aarch64 x86_64\n\
-             ;@ llvm: 19 22+\n;@ link: m c++ no-pie allow-warnings\n\
+             ;@ llvm: 19 22+\n;@ input: pre-opt\n;@ link: m c++ no-pie allow-warnings\n\
              ;@ llc-args: -function-sections -debugger-tune=gdb\n\
+             ;@ oracle-skip(llvm=19,22): the oracle crashes\n;@ oracle-skip(llvm=22): and another\n\
              ;@ unsupported(x86_64): codegen-not-implemented\n\
              ;@ xfail(wild,llvm19): why: it fails\n;@ xfail: everywhere\n;@ args: a b\n\
              ;@ stdin: in\n;@ exit: signal 11\n;@ stdout: out 1\n;@ stdout:\n;@ stdout: out 3\n\
@@ -1171,5 +1274,41 @@ mod tests {
         );
         assert_eq!(ok(&printed), all);
         assert_eq!(Expectations::default().to_directives(), "");
+        let dialect = Expectations { dialect: Some(22), ..Expectations::default() };
+        assert_eq!(dialect.to_directives(), ";@ dialect: 22\n");
+        assert_eq!(ok(";@ dialect: 22\n"), dialect);
+    }
+
+    // "Test directives", `input`, `dialect` and `oracle-skip` (WP-105).
+    #[test]
+    fn pre_opt_dialects_and_oracle_skips() {
+        let found = ok(";@ input: pre-opt\n;@ dialect: 19\n\
+                        ;@ oracle-skip(llvm=19): crashes under poisoning\n\
+                        ;@ oracle-skip(llvm=22,23): a second reason\n");
+        assert!(found.pre_opt);
+        assert!(found.in_dialect(19) && !found.in_dialect(22));
+        assert_eq!(found.oracle_skip_reason(19), Some("crashes under poisoning"));
+        assert_eq!(found.oracle_skip_reason(23), Some("a second reason"));
+        assert_eq!(found.oracle_skip_reason(20), None);
+        let plain = Expectations::default();
+        assert!(!plain.pre_opt && plain.in_dialect(19) && plain.in_dialect(22));
+        assert_eq!(plain.oracle_skip_reason(22), None);
+        for (text, message) in [
+            (";@ input: post-opt", "unknown input 'post-opt': expected pre-opt"),
+            (";@ input: pre-opt\n;@ input: pre-opt", "duplicate directive 'input'"),
+            (";@ dialect: llvm22", "invalid dialect 'llvm22'"),
+            (";@ dialect: 22\n;@ llvm: 22", "'llvm' and 'dialect' exclude each other"),
+            (";@ llvm: 19+\n;@ dialect: 19", "'llvm' and 'dialect' exclude each other"),
+            (";@ dialect(aarch64): 22", "takes no conditions"),
+            (";@ oracle-skip: why", "requires its LLVM majors"),
+            (";@ oracle-skip(llvm19): why", "requires its LLVM majors"),
+            (";@ oracle-skip(llvm=): why", "invalid LLVM major ''"),
+            (";@ oracle-skip(llvm=19,x): why", "invalid LLVM major 'x'"),
+            (";@ oracle-skip(llvm=19,19): why", "LLVM 19 is listed twice"),
+            (";@ oracle-skip(llvm=22):  ", "'oracle-skip' requires a reason"),
+        ] {
+            let got = error(text);
+            assert!(got.contains(message), "{text:?}: {got}");
+        }
     }
 }

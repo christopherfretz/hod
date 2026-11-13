@@ -74,6 +74,55 @@ fn corpus_size() -> usize {
     irdiff::collect(&[]).unwrap().len()
 }
 
+/// The directives of every test of the seed corpus.
+fn corpus_directives() -> Vec<(PathBuf, irdiff::directives::Expectations)> {
+    let tests = irdiff::collect(&[]).unwrap().into_iter();
+    tests
+        .map(|(_, path)| {
+            let text = std::fs::read_to_string(&path).unwrap();
+            let expect = irdiff::directives::parse(&text)
+                .unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
+            (path, expect)
+        })
+        .collect()
+}
+
+/// The number of tests of the seed corpus in LLVM `major`'s dialect: all
+/// but those of another dialect (`dialect`).
+fn dialect_size(major: u32) -> usize {
+    corpus_directives().iter().filter(|(_, expect)| expect.in_dialect(major)).count()
+}
+
+// spec/harness.md "Seed corpus": a test in one LLVM's dialect has its twin
+// in the other's, `<stem>-19.ll` and `<stem>-22.ll`, so that the "both
+// LLVMs" rule holds per dialect; and every `oracle-skip` is listed in
+// spec/harness.md "Oracle skips" by its path.
+#[test]
+fn dialects_come_in_pairs_and_oracle_skips_are_listed() {
+    let harness =
+        std::fs::read_to_string(irdiff::workspace_root().join("spec/harness.md")).unwrap();
+    let skips = harness.split("### Oracle skips").nth(1).expect("the section exists");
+    let skips = skips.split("\n## ").next().unwrap();
+    let root = irdiff::workspace_root();
+    for (path, expect) in corpus_directives() {
+        let relative = path.strip_prefix(&root).unwrap().to_string_lossy().into_owned();
+        if let Some(dialect) = expect.dialect {
+            let suffix = format!("-{dialect}.ll");
+            let stem = relative.strip_suffix(&suffix).unwrap_or_else(|| {
+                panic!("{relative}: a test in the LLVM {dialect} dialect ends in '{suffix}'")
+            });
+            let other = if dialect == 19 { 22 } else { 19 };
+            let twin = root.join(format!("{stem}-{other}.ll"));
+            assert!(twin.is_file(), "{relative} has no twin {}", twin.display());
+        }
+        for skip in &expect.oracle_skip {
+            let majors: Vec<String> = skip.llvm.iter().map(u32::to_string).collect();
+            let row = format!("| `{relative}` | {} | {} |", majors.join(", "), skip.reason);
+            assert!(skips.contains(&row), "spec/harness.md \"Oracle skips\" has no row {row}");
+        }
+    }
+}
+
 // spec/harness.md "Seed corpus": every test of `tests/ir/` is green with
 // LLVM 22 and with LLVM 19, with every linker: the oracle's program
 // behaves as the directives say, and hod either declines as the test
@@ -90,16 +139,22 @@ fn the_seed_corpus_is_green() {
         let all = report.summary(true);
         assert_eq!(report.exit_status(), 0, "LLVM {major}:\n{all}");
         assert!(report.records.iter().all(|record| record.llvm == Some(major)), "{all}");
-        // Every test is valid on both targets and both LLVMs, so on a
-        // machine with the tools nothing is skipped, and every test has a
-        // record per linker.
+        // Every test is valid on both targets and both LLVMs, or in one
+        // LLVM's dialect, so on a machine with the tools only the tests of
+        // the other dialect are skipped, and every other test has a record
+        // per linker.
         let linkers = all.split("; linkers ").nth(1).unwrap().split(';').next().unwrap();
         let linkers = linkers.split(' ').count();
         assert!(corpus_size() >= 20 && report.tests() == corpus_size(), "{all}");
-        assert_eq!(report.records.len(), corpus_size() * linkers, "{all}");
+        let skipped = corpus_size() - dialect_size(major);
+        assert_eq!(report.count(Outcome::Skip), skipped, "{all}");
+        assert_eq!(report.records.len(), dialect_size(major) * linkers + skipped, "{all}");
         for record in &report.records {
             assert!(
-                matches!(record.outcome, Outcome::Pass | Outcome::Unsupported | Outcome::Xfail),
+                matches!(
+                    record.outcome,
+                    Outcome::Pass | Outcome::Unsupported | Outcome::Xfail | Outcome::Skip
+                ),
                 "{all}"
             );
             assert!(record.covers.as_deref().is_some_and(|c| c.starts_with("spec/ir.md §")));
@@ -149,6 +204,7 @@ fn the_seed_corpus_builds_for_the_other_target() {
         let all = report.summary(true);
         assert_eq!(report.exit_status(), 0, "LLVM {major}:\n{all}");
         assert_eq!(report.records.len(), corpus_size(), "{all}");
+        assert_eq!(report.count(Outcome::Skip), corpus_size() - dialect_size(major), "{all}");
         assert!(report.records.iter().all(|record| record.linker.is_none()), "{all}");
         assert!(report.records.iter().all(|r| r.target == other_arch().triple()), "{all}");
         assert!(report.count(Outcome::Error) + report.count(Outcome::Fail) == 0, "{all}");
@@ -349,6 +405,7 @@ fn seed_test(scratch: &Scratch, name: &str, replace: &[(&str, &str)]) -> PathBuf
         text = text.replace(from, to);
     }
     let path = scratch.join(name);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, text).unwrap();
     path
 }
@@ -374,6 +431,43 @@ fn llvm_without(scratch: &Scratch, name: &str, llc: &Path, dropped: &[&str]) -> 
 fn report(line: &str) {
     use std::io::Write;
     let _ = writeln!(std::io::stderr(), "{line}");
+}
+
+// "Test directives", `input: pre-opt`, with the real tools: the
+// coroutine handle operations are what only `opt`'s coroutine passes
+// lower, so `llc` alone cannot build the seed, and the oracle that does
+// went through `opt`.
+#[test]
+fn a_pre_opt_seed_goes_through_opt() {
+    let Some(majors) = installed() else { return };
+    let scratch = Scratch::new("irdiff-pre-opt");
+    let with = seed_test(&scratch, "coro/noop.ll", &[]);
+    std::fs::create_dir_all(scratch.join("plain")).unwrap();
+    let without = scratch.join("plain/noop.ll");
+    let text = std::fs::read_to_string(&with).unwrap();
+    std::fs::write(&without, text.replace(";@ input: pre-opt\n", "")).unwrap();
+    for major in majors {
+        let mut config = config(&scratch);
+        config.hod = Some(workspace_hod());
+        config.llvm = Some(major.to_string());
+        config.linkers = vec!["bfd".to_owned()];
+        config.paths = vec![with.clone(), without.clone()];
+        let report = irdiff::run(&config).unwrap();
+        let all = report.summary(true);
+        let of = |path: &Path| {
+            let name = path.to_string_lossy();
+            let record = report.records.iter().find(|r| name.ends_with(&r.test)).unwrap();
+            (record.outcome, record.detail.clone())
+        };
+        assert_eq!(of(&with).0, Outcome::Pass, "LLVM {major}:\n{all}");
+        let (outcome, detail) = of(&without);
+        assert_eq!(outcome, Outcome::Error, "LLVM {major}:\n{all}");
+        // LLVM 19 and 22 abort: "Cannot select: intrinsic %llvm.coro.noop".
+        assert!(
+            detail.starts_with("oracle: llc ") && detail.contains("llvm.coro."),
+            "LLVM {major}: {detail}"
+        );
+    }
 }
 
 const NARROW_LOAD: &str = "selector_narrow_load.ll";

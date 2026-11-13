@@ -15,13 +15,25 @@ use crate::text::{Rng, r};
 
 #[test]
 fn ranges_are_the_architectures() {
-    assert_eq!(Fixup::ALL, [Fixup::Rel8, Fixup::Rel32, Fixup::Abs32]);
+    assert_eq!(Fixup::ALL, [Fixup::Rel8, Fixup::Rel32, Fixup::Abs32, Fixup::Abs32U, Fixup::Abs64]);
     assert_eq!(
         (Fixup::Abs32.size(), Fixup::Abs32.min(), Fixup::Abs32.max()),
         (4, -(1 << 31), (1 << 31) - 1)
     );
+    assert_eq!(
+        (Fixup::Abs32U.size(), Fixup::Abs32U.min(), Fixup::Abs32U.max()),
+        (4, 0, (1 << 32) - 1)
+    );
+    assert_eq!(
+        (Fixup::Abs64.size(), Fixup::Abs64.min(), Fixup::Abs64.max()),
+        (8, i64::MIN, i64::MAX)
+    );
     assert!(Fixup::Rel8.is_pc_relative() && Fixup::Rel32.is_pc_relative());
-    assert!(!Fixup::Abs32.is_pc_relative());
+    assert!(
+        !Fixup::Abs32.is_pc_relative()
+            && !Fixup::Abs32U.is_pc_relative()
+            && !Fixup::Abs64.is_pc_relative()
+    );
     assert_eq!((Fixup::Rel8.size(), Fixup::Rel8.min(), Fixup::Rel8.max()), (1, -128, 127));
     assert_eq!(
         (Fixup::Rel32.size(), Fixup::Rel32.min(), Fixup::Rel32.max()),
@@ -37,6 +49,16 @@ fn displacements(kind: Fixup, rng: &mut Rng) -> Vec<i64> {
             out.extend((0..2000).map(|_| i64::from(rng.next() as i32)));
             out
         }
+        Fixup::Abs32U => {
+            let mut out = vec![0, 1, 127, 128, 0x7fff_ffff, 0x8000_0000, u32::MAX.into()];
+            out.extend((0..2000).map(|_| i64::from(rng.next() as u32)));
+            out
+        }
+        Fixup::Abs64 => {
+            let mut out = vec![0, 1, -1, i64::MAX, i64::MIN, 1 << 32, -(1 << 31) - 1];
+            out.extend((0..2000).map(|_| rng.next() as i64));
+            out
+        }
     }
 }
 
@@ -45,7 +67,7 @@ fn patch_and_extract_are_inverses() {
     let mut rng = Rng::new(0xf1);
     for kind in Fixup::ALL {
         for disp in displacements(kind, &mut rng) {
-            let mut code: Vec<u8> = (0..12).map(|_| rng.next() as u8).collect();
+            let mut code: Vec<u8> = (0..16).map(|_| rng.next() as u8).collect();
             let before = code.clone();
             let at = (rng.next() % 8) as usize;
             assert!(kind.patch(&mut code, at, disp), "{kind:?} {disp}");
@@ -61,14 +83,19 @@ fn patch_and_extract_are_inverses() {
             expected.truncate(kind.size());
             assert_eq!(field, expected.as_slice());
         }
-        for disp in [kind.min() - 1, kind.max() + 1, i64::MIN, i64::MAX] {
+        let outside = [kind.min().checked_sub(1), kind.max().checked_add(1), Some(i64::MIN)]
+            .into_iter()
+            .chain([Some(i64::MAX)])
+            .flatten()
+            .filter(|&d| !kind.fits(d));
+        for disp in outside {
             let mut code = vec![0xaa; 8];
             assert!(!kind.patch(&mut code, 0, disp), "{kind:?} {disp}");
             assert_eq!(code, vec![0xaa; 8], "a refused patch left the code alone");
         }
         // A field that does not lie inside the code.
-        let mut code = vec![0; 4];
-        let at = 5 - kind.size();
+        let mut code = vec![0; 8];
+        let at = 9 - kind.size();
         assert!(!kind.patch(&mut code, at, 0));
         assert_eq!(kind.extract(&code, at), None);
         assert!(!kind.patch(&mut code, usize::MAX, 0));
@@ -108,6 +135,20 @@ fn sites() -> Vec<(Inst, usize, Fixup, usize)> {
         (mov_rm(Size::D, Reg::Rax, abs32(Mem::abs(0).with_seg(Seg::Fs))), 4, Fixup::Abs32, 0),
         (mov_mi(Size::W, abs32(Mem::base(Reg::R13, 0)), 1), 4, Fixup::Abs32, 2),
         (lock(inc_m(Size::Q, abs32(Mem::base(Reg::Rbx, 0)))), 4, Fixup::Abs32, 0),
+        (movabs_ri(Reg::Rax, 0), 2, Fixup::Abs64, 0),
+        (movabs_ri(Reg::R15, 0), 2, Fixup::Abs64, 0),
+        (mov_ri32s(Reg::Rcx, 0), 3, Fixup::Abs32, 0),
+        (mov_ri32s(Reg::R12, 0), 3, Fixup::Abs32, 0),
+        (mov_ri32(Reg::Rax, 0), 1, Fixup::Abs32U, 0),
+        (mov_ri32(Reg::R9, 0), 2, Fixup::Abs32U, 0),
+        (mov_mi32s(Mem::base(Reg::Rcx, 0), 0), 3, Fixup::Abs32, 0),
+        (mov_mi32s(Mem::base(Reg::Rsp, 8), 0), 5, Fixup::Abs32, 0),
+        (mov_mi32s(Mem::abs(0x40).with_seg(Seg::Fs), 0), 9, Fixup::Abs32, 0),
+        (push_i32(0), 1, Fixup::Abs32, 0),
+        (paddd_rm(Xmm::Xmm9, rip), 5, Fixup::Rel32, 0),
+        (pshufd_rmi(Xmm::Xmm0, rip, 0x1b), 4, Fixup::Rel32, 1),
+        (cmpp_rm(FpCmp::Eq, FpSize::S, Xmm::Xmm2, rip), 3, Fixup::Rel32, 1),
+        (psllw_rm(Xmm::Xmm1, abs32(Mem::base(Reg::Rax, 0))), 4, Fixup::Abs32, 0),
     ]
 }
 
@@ -196,7 +237,20 @@ fn constructors_agree_with_patching() {
                             movs_rm(FpSize::S, Xmm::Xmm3, fs(d)),
                             movs_rm(FpSize::S, Xmm::Xmm3, fs(0)),
                         ),
+                        (mov_ri32s(Reg::R10, d), mov_ri32s(Reg::R10, 0)),
+                        (
+                            mov_mi32s(Mem::base(Reg::R13, 0x40), d),
+                            mov_mi32s(Mem::base(Reg::R13, 0x40), 0),
+                        ),
+                        (push_i32(d), push_i32(0)),
                     ]
+                }
+                Fixup::Abs32U => {
+                    let d = u32::try_from(disp).expect("an unsigned 32-bit value");
+                    vec![(mov_ri32(Reg::Rdi, d), mov_ri32(Reg::Rdi, 0))]
+                }
+                Fixup::Abs64 => {
+                    vec![(movabs_ri(Reg::R11, disp), movabs_ri(Reg::R11, 0))]
                 }
             };
             for (direct, zero) in pairs {
@@ -206,6 +260,9 @@ fn constructors_agree_with_patching() {
     }
     assert_eq!(jmp_short(0).with_disp(128), None);
     assert_eq!(call(0).with_disp(1 << 31), None);
+    assert_eq!(mov_ri32(Reg::Rax, 0).with_disp(-1), None);
+    assert_eq!(mov_ri32(Reg::Rax, 0).with_disp(1 << 32), None);
+    assert_eq!(mov_ri32s(Reg::Rax, 0).with_disp(1 << 31), None);
 }
 
 /// The relocations of an object: offset, type name and addend.
@@ -323,6 +380,7 @@ fn references() -> Vec<(&'static str, Inst, String, &'static str)> {
     ];
     out.extend(sse_references());
     out.extend(tls_references());
+    out.extend(immediate_references());
     for n in 0..16 {
         let text = |size| crate::text::reg(size, n);
         out.push((
@@ -384,6 +442,53 @@ fn sse_references() -> Vec<(&'static str, Inst, String, &'static str)> {
         ),
         ("bt_mi", bt_mi(Size::D, rip, 5), "bt dword ptr [rip + foo], 5".into(), "PC32"),
     ]
+}
+
+/// The relocatable immediates (`spec/mc-x64.md` "Relocatable
+/// immediates") against `foo`, and packed SSE operands through RIP.
+fn immediate_references() -> Vec<(&'static str, Inst, String, &'static str)> {
+    let rip = Mem::rip(0);
+    let mut out = vec![
+        ("push_i32", push_i32(0), "push offset foo".into(), "32S"),
+        (
+            "mov_mi32s",
+            mov_mi32s(Mem::base(Reg::Rcx, 0), 0),
+            "mov qword ptr [rcx], offset foo".into(),
+            "32S",
+        ),
+        (
+            "mov_mi32s",
+            mov_mi32s(Mem::base(Reg::Rsp, -8), 0),
+            "mov qword ptr [rsp - 8], offset foo".into(),
+            "32S",
+        ),
+        (
+            "paddd_rm",
+            paddd_rm(Xmm::Xmm9, rip),
+            "paddd xmm9, xmmword ptr [rip + foo]".into(),
+            "PC32",
+        ),
+        (
+            "pshufd_rmi",
+            pshufd_rmi(Xmm::Xmm0, rip, 0x1b),
+            "pshufd xmm0, xmmword ptr [rip + foo], 27".into(),
+            "PC32",
+        ),
+        (
+            "movdqa_rm",
+            movdqa_rm(Xmm::Xmm12, rip),
+            "movdqa xmm12, xmmword ptr [rip + foo]".into(),
+            "PC32",
+        ),
+    ];
+    for n in [0, 3, 8, 15] {
+        let q = crate::text::reg(Size::Q, n);
+        let d = crate::text::reg(Size::D, n);
+        out.push(("movabs_ri", movabs_ri(r(n), 0), format!("movabs {q}, offset foo"), "64"));
+        out.push(("mov_ri32s", mov_ri32s(r(n), 0), format!("mov {q}, offset foo"), "32S"));
+        out.push(("mov_ri32", mov_ri32(r(n), 0), format!("mov {d}, offset foo"), "32"));
+    }
+    out
 }
 
 /// The TLS references (`spec/mc-x64.md` "Thread-local storage") and the

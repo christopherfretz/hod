@@ -1,0 +1,45 @@
+# llvm-dwarfdump --eh-frame, CIE augmentations (eh_invoke.ll, llc -O0 -fast-isel=0 x86_64)
+llc19 -relocation-model=pic:
+   Augmentation:          "zR"
+   Code alignment factor: 1
+   Data alignment factor: -8
+   Return address column: 16
+   Augmentation data:     1B
+   Augmentation:          "zPLR"
+   Code alignment factor: 1
+   Data alignment factor: -8
+   Return address column: 16
+   Augmentation data:     9B 00 00 00 00 1B 1B
+llc19 -relocation-model=static:
+   Augmentation:          "zR"
+   Code alignment factor: 1
+   Data alignment factor: -8
+   Return address column: 16
+   Augmentation data:     1B
+   Augmentation:          "zPLR"
+   Code alignment factor: 1
+   Data alignment factor: -8
+   Return address column: 16
+   Augmentation data:     03 00 00 00 00 03 1B
+llc22 -relocation-model=pic:
+   Augmentation:          "zR"
+   Code alignment factor: 1
+   Data alignment factor: -8
+   Return address column: 16
+   Augmentation data:     1B
+   Augmentation:          "zPLR"
+   Code alignment factor: 1
+   Data alignment factor: -8
+   Return address column: 16
+   Augmentation data:     9B 00 00 00 00 1B 1B
+llc22 -relocation-model=static:
+   Augmentation:          "zR"
+   Code alignment factor: 1
+   Data alignment factor: -8
+   Return address column: 16
+   Augmentation data:     1B
+   Augmentation:          "zPLR"
+   Code alignment factor: 1
+   Data alignment factor: -8
+   Return address column: 16
+   Augmentation data:     03 00 00 00 00 03 1B

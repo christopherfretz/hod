@@ -11,16 +11,20 @@ pub const MAX_LEN: usize = 15;
 const SITE_REL8: u8 = 1;
 const SITE_REL32: u8 = 2;
 const SITE_ABS32: u8 = 3;
-const SITE_MASK: u8 = 3;
-const FLAG_REX: u8 = 4;
-const FLAG_LOCKABLE: u8 = 8;
+const SITE_ABS32U: u8 = 4;
+const SITE_ABS64: u8 = 5;
+const SITE_MASK: u8 = 7;
+const FLAG_REX: u8 = 8;
+const FLAG_LOCKABLE: u8 = 16;
 
 /// One encoded instruction: up to 15 bytes, in order.
 ///
 /// It also records where its relocatable field is, if it has one (a
-/// branch displacement, the `disp32` of a RIP-relative operand, or the
+/// branch displacement, the `disp32` of a RIP-relative operand, the
 /// absolute `disp32` of an operand marked
-/// [`with_abs32`](crate::Mem::with_abs32)), whether
+/// [`with_abs32`](crate::Mem::with_abs32), or the immediate of a
+/// relocatable-immediate form such as [`movabs_ri`](crate::movabs_ri)),
+/// whether
 /// it has a REX prefix, and whether a `lock` prefix may be added to it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Inst {
@@ -45,7 +49,8 @@ pub struct Site {
     pub fixup: Fixup,
     /// The addend of a relocation at the field. For a PC-relative field,
     /// `-(len - offset)`, so that `S + addend - P` is the distance from the
-    /// end of the instruction; for [`Fixup::Abs32`], 0.
+    /// end of the instruction; for an absolute field ([`Fixup::Abs32`],
+    /// [`Fixup::Abs32U`], [`Fixup::Abs64`]), 0.
     pub addend: i64,
 }
 
@@ -78,6 +83,8 @@ impl Inst {
             SITE_REL8 => Fixup::Rel8,
             SITE_REL32 => Fixup::Rel32,
             SITE_ABS32 => Fixup::Abs32,
+            SITE_ABS32U => Fixup::Abs32U,
+            SITE_ABS64 => Fixup::Abs64,
             _ => return None,
         };
         let offset = self.site as usize;
@@ -100,7 +107,7 @@ impl Inst {
 
     /// The same instruction with its relocatable field set to `disp`: for
     /// a PC-relative field the distance from the end of the instruction
-    /// to the target, for [`Fixup::Abs32`] the value. `None` when it has
+    /// to the target, for an absolute field the value. `None` when it has
     /// no such field or `disp` does not fit it.
     #[inline]
     pub const fn with_disp(self, disp: i64) -> Option<Self> {
@@ -133,6 +140,8 @@ impl Inst {
             Fixup::Rel8 => SITE_REL8,
             Fixup::Rel32 => SITE_REL32,
             Fixup::Abs32 => SITE_ABS32,
+            Fixup::Abs32U => SITE_ABS32U,
+            Fixup::Abs64 => SITE_ABS64,
         };
     }
 
@@ -352,6 +361,14 @@ pub(crate) const fn plain(op: Op) -> Inst {
 /// Appends an immediate of `n` bytes.
 pub(crate) const fn imm(mut inst: Inst, v: i64, n: u8) -> Inst {
     inst.push_imm(v as u64, n);
+    inst
+}
+
+/// Appends an absolute immediate field of kind `fixup` holding `v`: the
+/// instruction's site.
+pub(crate) const fn abs_imm(mut inst: Inst, fixup: Fixup, v: i64) -> Inst {
+    inst.mark_site(fixup);
+    inst.push_imm(v as u64, fixup.size() as u8);
     inst
 }
 

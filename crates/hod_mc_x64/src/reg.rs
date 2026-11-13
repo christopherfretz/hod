@@ -491,6 +491,14 @@ impl Mem {
         self.abs32
     }
 
+    /// Whether the operand's displacement is a relocatable field of the
+    /// instruction: RIP-relative, or marked
+    /// [`with_abs32`](Self::with_abs32).
+    #[inline]
+    pub const fn has_field(self) -> bool {
+        self.abs32 || matches!(self.base, Base::Rip)
+    }
+
     #[inline]
     pub const fn get_base(self) -> Base {
         self.base

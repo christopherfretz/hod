@@ -3,7 +3,6 @@
 ; past the width), abs, smin and umax. Operands come from memory, so
 ; nothing is folded. Expected values computed by a script, not a compiler.
 ;@ covers: spec/ir.md §5.5 intrinsics (ctpop, ctlz, cttz, bswap, bitreverse, fshl, fshr, abs, smin, umax)
-;@ unsupported(x86_64): *
 ;@ stdout: i8 x=0 y=3 pop=0 clz=8 ctz=8 brev=0 fshl=0 fshr=0 abs=0 smin=0 umax=3
 ;@ stdout: i8 x=1 y=9 pop=1 clz=7 ctz=0 brev=80 fshl=2 fshr=84 abs=1 smin=1 umax=9
 ;@ stdout: i8 x=80 y=1 pop=1 clz=0 ctz=7 brev=1 fshl=0 fshr=0 abs=80 smin=-128 umax=80

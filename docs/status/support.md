@@ -36,14 +36,14 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `inst` | 67 | 60 | 0 | 7 | 44 | 16 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 1 | 2 | 0 |
 | `atomicrmw` | 21 | 21 | 0 | 0 | 0 | 21 | 0 |
-| `call` | 4 | 4 | 0 | 0 | 2 | 2 | 0 |
+| `call` | 4 | 4 | 0 | 0 | 3 | 1 | 0 |
 | `tail` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 7 | 4 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 354 | 346 | 8 | 0 | 11 | 127 | 216 |
-| total | 663 | 547 | 70 | 46 | 149 | 243 | 271 |
+| `intrinsic` | 354 | 346 | 8 | 0 | 48 | 90 | 216 |
+| total | 663 | 547 | 70 | 46 | 187 | 205 | 271 |
 
 ## `module`
 
@@ -424,7 +424,7 @@ Kinds of callee.
 |---|---|---|---|
 | `call:indirect` | supported | supported | the callee is a computed address |
 | `call:inline-asm` | supported | not-implemented | the callee is inline assembly of instructions: `hod_asm` (WP-103, `spec/asm.md`) |
-| `call:inline-asm-empty` | supported | not-implemented | the callee is inline assembly whose template assembles to nothing (`spec/ir.md` §2.3) |
+| `call:inline-asm-empty` | supported | supported | the callee is inline assembly whose template assembles to nothing (`spec/ir.md` §2.3) |
 | `call:variadic` | supported | supported | a call through a variadic function type |
 
 ## `tail`
@@ -514,46 +514,46 @@ Intrinsics (§5.5).
 
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
-| `intrinsic:llvm.memcpy` | supported (int, ptr) | not-implemented |  |
-| `intrinsic:llvm.memcpy.inline` | supported (int, ptr) | not-implemented |  |
-| `intrinsic:llvm.memmove` | supported (int, ptr) | not-implemented |  |
-| `intrinsic:llvm.memset` | supported (int, ptr) | not-implemented |  |
-| `intrinsic:llvm.memset.inline` | supported (int, ptr) | not-implemented |  |
+| `intrinsic:llvm.memcpy` | supported (int, ptr) | supported (int, ptr) |  |
+| `intrinsic:llvm.memcpy.inline` | supported (int, ptr) | supported (int, ptr) |  |
+| `intrinsic:llvm.memmove` | supported (int, ptr) | supported (int, ptr) |  |
+| `intrinsic:llvm.memset` | supported (int, ptr) | supported (int, ptr) |  |
+| `intrinsic:llvm.memset.inline` | supported (int, ptr) | supported (int, ptr) |  |
 | `intrinsic:llvm.va_start` | supported | supported |  |
 | `intrinsic:llvm.va_end` | supported | supported |  |
 | `intrinsic:llvm.va_copy` | supported | supported |  |
 | `intrinsic:llvm.stacksave` | supported | supported |  |
 | `intrinsic:llvm.stackrestore` | supported | supported |  |
-| `intrinsic:llvm.frameaddress` | supported (int, ptr) | not-implemented |  |
-| `intrinsic:llvm.returnaddress` | supported (int, ptr) | not-implemented |  |
-| `intrinsic:llvm.trap` | supported | not-implemented |  |
-| `intrinsic:llvm.debugtrap` | supported | not-implemented |  |
-| `intrinsic:llvm.ubsantrap` | supported (int) | not-implemented |  |
-| `intrinsic:llvm.bswap` | supported (int, i128, vector) | not-implemented |  |
-| `intrinsic:llvm.bitreverse` | supported (int, i128, vector) | not-implemented |  |
-| `intrinsic:llvm.ctpop` | supported (int, i128, vector) | not-implemented |  |
-| `intrinsic:llvm.ctlz` | supported (int, i128, vector) | not-implemented |  |
-| `intrinsic:llvm.cttz` | supported (int, i128, vector) | not-implemented |  |
-| `intrinsic:llvm.fshl` | supported (int, i128, vector) | not-implemented |  |
-| `intrinsic:llvm.fshr` | supported (int, i128, vector) | not-implemented |  |
-| `intrinsic:llvm.abs` | supported (int, i128, vector) | not-implemented |  |
-| `intrinsic:llvm.smax` | supported (int, i128, vector) | not-implemented |  |
-| `intrinsic:llvm.smin` | supported (int, i128, vector) | not-implemented |  |
-| `intrinsic:llvm.umax` | supported (int, i128, vector) | not-implemented |  |
-| `intrinsic:llvm.umin` | supported (int, i128, vector) | not-implemented |  |
-| `intrinsic:llvm.scmp` | supported (int, i128, vector) | not-implemented |  |
-| `intrinsic:llvm.ucmp` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.frameaddress` | supported (int, ptr) | supported (int, ptr) |  |
+| `intrinsic:llvm.returnaddress` | supported (int, ptr) | supported (int, ptr) |  |
+| `intrinsic:llvm.trap` | supported | supported |  |
+| `intrinsic:llvm.debugtrap` | supported | supported |  |
+| `intrinsic:llvm.ubsantrap` | supported (int) | supported (int) |  |
+| `intrinsic:llvm.bswap` | supported (int, i128, vector) | supported (int, i128) |  |
+| `intrinsic:llvm.bitreverse` | supported (int, i128, vector) | supported (int, i128) |  |
+| `intrinsic:llvm.ctpop` | supported (int, i128, vector) | supported (int, i128) |  |
+| `intrinsic:llvm.ctlz` | supported (int, i128, vector) | supported (int, i128) |  |
+| `intrinsic:llvm.cttz` | supported (int, i128, vector) | supported (int, i128) |  |
+| `intrinsic:llvm.fshl` | supported (int, i128, vector) | supported (int, i128) |  |
+| `intrinsic:llvm.fshr` | supported (int, i128, vector) | supported (int, i128) |  |
+| `intrinsic:llvm.abs` | supported (int, i128, vector) | supported (int, i128) |  |
+| `intrinsic:llvm.smax` | supported (int, i128, vector) | supported (int, i128) |  |
+| `intrinsic:llvm.smin` | supported (int, i128, vector) | supported (int, i128) |  |
+| `intrinsic:llvm.umax` | supported (int, i128, vector) | supported (int, i128) |  |
+| `intrinsic:llvm.umin` | supported (int, i128, vector) | supported (int, i128) |  |
+| `intrinsic:llvm.scmp` | supported (int, i128, vector) | supported (int, i128) |  |
+| `intrinsic:llvm.ucmp` | supported (int, i128, vector) | supported (int, i128) |  |
 | `intrinsic:llvm.clmul` | not-implemented | not-implemented | unplanned |
-| `intrinsic:llvm.sadd.with.overflow` | supported (int, i128, int-wide, aggregate) | supported (i128, int-wide, aggregate) |  |
-| `intrinsic:llvm.uadd.with.overflow` | supported (int, i128, int-wide, aggregate) | supported (i128, int-wide, aggregate) |  |
-| `intrinsic:llvm.ssub.with.overflow` | supported (int, i128, int-wide, aggregate) | supported (i128, int-wide, aggregate) |  |
-| `intrinsic:llvm.usub.with.overflow` | supported (int, i128, int-wide, aggregate) | supported (i128, int-wide, aggregate) |  |
-| `intrinsic:llvm.smul.with.overflow` | supported (int, i128, int-wide, aggregate) | supported (i128, int-wide, aggregate) | wider than 2048 bits refused (`a64:wide-mul-overflow`) |
-| `intrinsic:llvm.umul.with.overflow` | supported (int, i128, int-wide, aggregate) | supported (i128, int-wide, aggregate) | wider than 2048 bits refused (`a64:wide-mul-overflow`) |
-| `intrinsic:llvm.sadd.sat` | supported (int, i128, vector) | not-implemented |  |
-| `intrinsic:llvm.uadd.sat` | supported (int, i128, vector) | not-implemented |  |
-| `intrinsic:llvm.ssub.sat` | supported (int, i128, vector) | not-implemented |  |
-| `intrinsic:llvm.usub.sat` | supported (int, i128, vector) | not-implemented |  |
+| `intrinsic:llvm.sadd.with.overflow` | supported (int, i128, int-wide, aggregate) | supported (int, i128, int-wide, aggregate) |  |
+| `intrinsic:llvm.uadd.with.overflow` | supported (int, i128, int-wide, aggregate) | supported (int, i128, int-wide, aggregate) |  |
+| `intrinsic:llvm.ssub.with.overflow` | supported (int, i128, int-wide, aggregate) | supported (int, i128, int-wide, aggregate) |  |
+| `intrinsic:llvm.usub.with.overflow` | supported (int, i128, int-wide, aggregate) | supported (int, i128, int-wide, aggregate) |  |
+| `intrinsic:llvm.smul.with.overflow` | supported (int, i128, int-wide, aggregate) | supported (int, i128, int-wide, aggregate) | wider than 2048 bits refused (`a64:wide-mul-overflow`) |
+| `intrinsic:llvm.umul.with.overflow` | supported (int, i128, int-wide, aggregate) | supported (int, i128, int-wide, aggregate) | wider than 2048 bits refused (`a64:wide-mul-overflow`) |
+| `intrinsic:llvm.sadd.sat` | supported (int, i128, vector) | supported (int, i128) |  |
+| `intrinsic:llvm.uadd.sat` | supported (int, i128, vector) | supported (int, i128) |  |
+| `intrinsic:llvm.ssub.sat` | supported (int, i128, vector) | supported (int, i128) |  |
+| `intrinsic:llvm.usub.sat` | supported (int, i128, vector) | supported (int, i128) |  |
 | `intrinsic:llvm.fabs` | supported (half, float, double, fp128, vector) | not-implemented |  |
 | `intrinsic:llvm.sqrt` | supported (half, float, double, fp128, vector) | not-implemented |  |
 | `intrinsic:llvm.floor` | supported (half, float, double, fp128, vector) | not-implemented |  |
@@ -601,18 +601,18 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.fptosi.sat` | supported (int, half, float, double, vector) | not-implemented |  |
 | `intrinsic:llvm.fptoui.sat` | supported (int, half, float, double, vector) | not-implemented |  |
 | `intrinsic:llvm.is.fpclass` | supported (int, half, float, double, fp128) | not-implemented |  |
-| `intrinsic:llvm.eh.typeid.for` | supported (int, ptr) | not-implemented |  |
+| `intrinsic:llvm.eh.typeid.for` | supported (int, ptr) | supported (int, ptr) |  |
 | `intrinsic:llvm.threadlocal.address` | supported (ptr) | not-implemented |  |
 | `intrinsic:llvm.thread.pointer` | supported (ptr) | not-implemented |  |
-| `intrinsic:llvm.prefetch` | supported (int, ptr) | not-implemented |  |
-| `intrinsic:llvm.clear_cache` | supported (ptr) | not-implemented |  |
-| `intrinsic:llvm.readcyclecounter` | supported (int) | not-implemented |  |
+| `intrinsic:llvm.prefetch` | supported (int, ptr) | supported (int, ptr) |  |
+| `intrinsic:llvm.clear_cache` | supported (ptr) | supported (ptr) |  |
+| `intrinsic:llvm.readcyclecounter` | supported (int) | supported (int) |  |
 | `intrinsic:llvm.read_register` | supported (int) | not-implemented |  |
 | `intrinsic:llvm.read_volatile_register` | supported (int) | not-implemented |  |
 | `intrinsic:llvm.write_register` | supported (int) | not-implemented |  |
-| `intrinsic:llvm.is.constant` | supported | not-implemented |  |
-| `intrinsic:llvm.objectsize` | supported (int, ptr) | not-implemented |  |
-| `intrinsic:llvm.ptrmask` | supported (int, ptr, vector) | not-implemented |  |
+| `intrinsic:llvm.is.constant` | supported | supported |  |
+| `intrinsic:llvm.objectsize` | supported (int, ptr) | supported (int, ptr) |  |
+| `intrinsic:llvm.ptrmask` | supported (int, ptr, vector) | supported (int, ptr) |  |
 | `intrinsic:llvm.load.relative` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.instrprof.increment` | not-implemented | not-implemented | unplanned |
 | `intrinsic:llvm.instrprof.increment.step` | not-implemented | not-implemented | unplanned |
@@ -650,8 +650,8 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.coro.await.suspend.void` | supported (ptr) | not-implemented | in a coroutine body (WP-106) |
 | `intrinsic:llvm.coro.await.suspend.bool` | supported (int, ptr) | not-implemented | in a coroutine body (WP-106) |
 | `intrinsic:llvm.coro.await.suspend.handle` | not-implemented | not-implemented | T-XF (coroutine splitting) |
-| `intrinsic:llvm.sshl.sat` | supported (int) | not-implemented | up to 64 bits (WP-084) |
-| `intrinsic:llvm.ushl.sat` | supported (int) | not-implemented | up to 64 bits (WP-084) |
+| `intrinsic:llvm.sshl.sat` | supported (int) | supported (int) | up to 64 bits (WP-084) |
+| `intrinsic:llvm.ushl.sat` | supported (int) | supported (int) | up to 64 bits (WP-084) |
 | `intrinsic:llvm.aarch64.crc32b` | supported (int) | rejected | x86_64: an AArch64 property |
 | `intrinsic:llvm.aarch64.crc32h` | supported (int) | rejected | x86_64: an AArch64 property |
 | `intrinsic:llvm.aarch64.crc32w` | supported (int) | rejected | x86_64: an AArch64 property |

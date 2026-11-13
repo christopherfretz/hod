@@ -783,3 +783,65 @@ fn inline_assembly_rows_of_wp_103() {
     }
     assert_eq!(a64.supports("module:asm"), Some(false));
 }
+
+// WP-128: the x86-64 intrinsics no other group takes, the overflow
+// intrinsics on register integers, and empty-template inline assembly.
+// `RICH_BODY` has none of them; the rows are checked here.
+#[test]
+fn intrinsic_rows_of_wp_128() {
+    let x64 = Support::shipped(Arch::X86_64);
+    for name in [
+        "memcpy",
+        "memcpy.inline",
+        "memmove",
+        "memset",
+        "memset.inline",
+        "frameaddress",
+        "returnaddress",
+        "trap",
+        "debugtrap",
+        "ubsantrap",
+        "bswap",
+        "bitreverse",
+        "ctpop",
+        "ctlz",
+        "cttz",
+        "fshl",
+        "fshr",
+        "abs",
+        "smax",
+        "smin",
+        "umax",
+        "umin",
+        "scmp",
+        "ucmp",
+        "sadd.with.overflow",
+        "uadd.with.overflow",
+        "ssub.with.overflow",
+        "usub.with.overflow",
+        "smul.with.overflow",
+        "umul.with.overflow",
+        "sadd.sat",
+        "uadd.sat",
+        "ssub.sat",
+        "usub.sat",
+        "eh.typeid.for",
+        "prefetch",
+        "clear_cache",
+        "readcyclecounter",
+        "ptrmask",
+        "sshl.sat",
+        "ushl.sat",
+    ] {
+        let row = format!("intrinsic:llvm.{name}");
+        assert_eq!(x64.supports(&row), Some(true), "{row}");
+    }
+    assert_eq!(x64.supports("call:inline-asm-empty"), Some(true));
+    // On since the target calls `intrinsic::begin` and
+    // `intrinsic::dropped` (the instructions `llc` deletes with the call).
+    for row in ["intrinsic:llvm.is.constant", "intrinsic:llvm.objectsize"] {
+        assert_eq!(x64.supports(row), Some(true), "{row}");
+    }
+    // Named registers stay with a later package.
+    assert_eq!(x64.supports("intrinsic:llvm.read_register"), Some(false));
+}

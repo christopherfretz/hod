@@ -281,6 +281,7 @@ impl Target for X64 {
         if self.features.no_x87 && features::uses_x86_fp80(cx.module, cx.body) {
             return unsupported(features::NO_X87);
         }
+        intrinsic::begin(cx);
         frame::begin(cx)
     }
 
@@ -293,6 +294,11 @@ impl Target for X64 {
     }
 
     fn lower<'a>(&self, cx: &mut FnCx<'a, Self>, inst: Inst<'a>) -> CgResult<()> {
+        // An instruction `llc` deletes in a function that asks
+        // `is.constant` or `objectsize` (`spec/codegen.md` §5.6.8).
+        if intrinsic::dropped(inst) {
+            return Ok(());
+        }
         if let Some(done) = mask::lower(cx, inst) {
             return done;
         }

@@ -831,6 +831,10 @@ impl Run<'_> {
                                 {
                                     (Outcome::Pass, "permitted: return-column".to_owned())
                                 }
+                                // `spec/dwarf.md` §6.7 `value-range` (WP-162).
+                                Some(_) if permitted::only_value_ranges(&masked, &theirs_text) => {
+                                    (Outcome::Pass, "permitted: value-range".to_owned())
+                                }
                                 Some((number, hod_line, llc_line)) => (
                                     Outcome::Fail,
                                     format!(

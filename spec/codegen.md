@@ -1789,14 +1789,10 @@ that refused it before (WP-084's "stays refused" list is settled here).
   - `metadata-arg:llvm.read_volatile_register.i64`: the register name is
     a metadata operand, which the IR does not carry for intrinsics
     (BACKLOG WP-064) and `hod_ll`'s body reader would have to read.
-  - `debug:dbg-value`: hod writes one location per variable for the
-    whole function (§9.5). A `#dbg_value` maps to that exactly only for
-    a single record of the variable, with an empty expression, of a
-    value whose home is a frame slot from its definition on; the corpus
-    has none such (its one module, at `-O2`, has several records per
-    variable, constants (`DW_AT_const_value`) and `DW_OP_stack_value`
-    expressions, which need location lists). All stay
-    `debug:dbg-value`.
+  - `debug:dbg-value`: was refused here, since hod wrote one location
+    per variable for the whole function (§9.5). WP-162 writes value
+    records as location lists (`spec/dwarf.md` §6.23); the one corpus
+    module (`-O2`) now stops at `debug:dbg-value-arglist`.
   - `cc:preserve_allcc`, `cc:win64cc` (`cc:79` before WP-141) and `cc:aarch64_vector_pcs`
     (WP-082), which the one `preserve_mostcc` corpus module also uses.
     (`preserve_allcc` since WP-101, below.)
@@ -4740,14 +4736,18 @@ Recorded only when the module has debug information.
   ignored tests). At `-O0` a row's location holds for the whole function. The
   body is dropped after its function is compiled, so everything
   `hod_dwarf` needs from it is copied here.
+- `#dbg_value` records are rows of `vars` too (WP-162, `spec/dwarf.md`
+  §6.23): one `VarPlace::Value(ValueRange)` row per record in a
+  reachable block, the code range it holds over and what holds the value
+  there (a frame home, a constant, or nothing); `move_rows` moves the
+  ranges.
 - labels are rows of `vars` too: one `VarPlace::Label(offset)` row per
   `#dbg_label` in a reachable block, the label and the code offset of
   the instruction that follows it.
 - a record hod cannot describe exactly is a `VarPlace::Refused(name)`
   row; a `FullDebug` unit then refuses the function under that name:
-  `debug:dbg-value` (any `#dbg_value`: clang and kiln do not emit them at
-  `-O0`, and none is described yet, `spec/dwarf.md` open question 9),
-  `debug:dbg-assign`, `debug:declare-address` (a `#dbg_declare` of a
+  `debug:dbg-value-arglist` (a `#dbg_value` of a `DIArgList`) and
+  `debug:dbg-value-coroutine` (one in a coroutine body), `debug:dbg-assign`, `debug:declare-address` (a `#dbg_declare` of a
   constant, a symbol, or a value that never got a home; a declaration of
   `undef` or `poison` gets no row at all, as `llc` drops it, WP-156,
   `spec/dwarf.md` §6.22).

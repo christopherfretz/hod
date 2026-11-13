@@ -24,9 +24,9 @@ reference is `llc -O0 -global-isel=0 -fast-isel=0` (`docs/VALIDATION.md`
 |---|---|---|
 | L7: kiln's debugger tests | **met** | nothing: 8 of 8 sessions pass with hod (one transcript differs in a column after `finish`, `spec/dwarf.md` §5.7 `return-column`) |
 | L7: `tests/debug` | **met** on both targets (with known expected failures) | AArch64: 15 XFAIL (`sret_entry.c` 12, §6.7, permitted; `call_sites.c` 3, clang 22's key instructions); x86-64: 22 SKIP (TLS under qemu 18, tests for AArch64 only 4); nothing FAILs, nothing is stale |
-| `--verify` clean | **met for every object hod builds** (210 of 210); not met as "the whole corpus" | 2 corpus modules declined: `debug:dbg-value` 2 |
+| `--verify` clean | **met for every object hod builds** (210 of 210); not met as "the whole corpus" | 2 corpus modules declined: `debug:dbg-value` 2 (`debug:dbg-value-arglist` since WP-162) |
 | line tables agree | **met** on the corpus (12 of 12 modules equal) and on the `-g` set (198 of 198 modules without a pair §5.7 does not permit; 89 with equal sets) | nothing |
-| L6 strict with `-g` | **not met**: 12 of 14 modules pass under every linker | `debug:dbg-value` 2 |
+| L6 strict with `-g` | **not met**: 12 of 14 modules pass under every linker | `debug:dbg-value` 2 (`debug:dbg-value-arglist` since WP-162) |
 
 ## The modules
 
@@ -63,7 +63,7 @@ first refusal of `hod --strict`):
 
 | reason | modules | which | status |
 |---|---:|---|---|
-| `debug:dbg-value` | 2 | corpus `lifetime-markers-O2-g-fpic-run.cpp`, LLVM 19 and 22: an `-O2 -g` unit, whose variables are `#dbg_value`s | hod describes no variable by its values (`spec/dwarf.md` §6.4) |
+| `debug:dbg-value` | 2 | corpus `lifetime-markers-O2-g-fpic-run.cpp`, LLVM 19 and 22: an `-O2 -g` unit, whose variables are `#dbg_value`s | WP-162 writes value records as location lists (`spec/dwarf.md` §6.23); the module now stops at `debug:dbg-value-arglist` (8 records with a `DIArgList`), and after them at `debug:retained-nodes` |
 
 WP-111's two other declines are gone: `define-debuginfo-run.cpp`
 (`-gdwarf-4`) is built since WP-114, and `lifetime-markers`' call sites
@@ -116,7 +116,8 @@ scripts/debug-measure.py --hod <release hod> --work <dir>/gwork -j 4 <dir>/gset 
 | 19 | bfd, lld, mold | 6 each | 1 each |
 
 The FAILs are the decline above: `debug:dbg-value`
-(`lifetime-markers-O2-g-fpic-run.cpp`). Every module hod builds runs as
+(`lifetime-markers-O2-g-fpic-run.cpp`; `debug:dbg-value-arglist` since
+WP-162). Every module hod builds runs as
 `llc`'s does under the three linkers.
 
 ## kiln's debugger tests and `tests/debug`

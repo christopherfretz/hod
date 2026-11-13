@@ -95,6 +95,8 @@ pub struct Scratch {
     pub(crate) dbg_labels: Vec<(u32, hod_ir::DiId, LocId)>,
     /// The key-instructions pass's tables (WP-149).
     pub(crate) key_rows: crate::key_rows::KeyScratch,
+    /// The value records' tables (WP-162).
+    pub(crate) dbg_values: crate::dbg_value::ValueScratch,
 }
 
 impl Default for Scratch {
@@ -128,6 +130,7 @@ impl Default for Scratch {
             island_data: Vec::new(),
             dbg_labels: Vec::new(),
             key_rows: crate::key_rows::KeyScratch::default(),
+            dbg_values: crate::dbg_value::ValueScratch::default(),
         }
     }
 }
@@ -154,6 +157,7 @@ impl Scratch {
             + bytes(&self.sig_params)
             + bytes(&self.sig_attrs)
             + self.key_rows.allocated_bytes()
+            + self.dbg_values.allocated_bytes()
             + bytes(&self.tail_exits)
             + bytes(&self.islands)
             + bytes(&self.island_data)

@@ -15,8 +15,8 @@ use hod_ir::{
 use crate::abi::{AbiUnsupported, LaneLoc, PartKind, Place, Sig};
 use crate::cx::{FnCx, Scratch};
 use crate::error::{
-    CALL_BYVAL_PLACE, CALL_PART_CLASS, CgError, CgResult, DEBUG_DBG_ASSIGN, DEBUG_DBG_VALUE,
-    DEBUG_DECLARE_ADDRESS, DEBUG_FRAME_PLACE, LIMIT_FUNCTION_SIZE, internal,
+    CALL_BYVAL_PLACE, CALL_PART_CLASS, CgError, CgResult, DEBUG_DBG_ASSIGN, DEBUG_DECLARE_ADDRESS,
+    DEBUG_FRAME_PLACE, LIMIT_FUNCTION_SIZE, internal,
 };
 use crate::frame::{FrameRef, SlotPlace};
 use crate::label::Label;
@@ -383,14 +383,16 @@ impl<'a, T: Target> FnCx<'a, T> {
             self.out.vars.push(VarRow { var: var.var, loc: var.loc, expr: var.expr, place });
         }
         // §9.5: a label is a row at the offset of the instruction it
-        // stands before; a `#dbg_value` or `#dbg_assign` is a refused row.
+        // stands before; a `#dbg_value` gives rows of ranges (WP-162,
+        // `dbg_value`); a `#dbg_assign` is a refused row.
+        self.value_records();
         for record in self.body.dbg_records() {
             let refused = match record.kind {
                 DbgRecordKind::Label => {
                     self.s.dbg_labels.push((record.before.raw(), record.var, record.loc));
                     continue;
                 }
-                DbgRecordKind::Value => DEBUG_DBG_VALUE,
+                DbgRecordKind::Value => continue,
                 DbgRecordKind::Assign => DEBUG_DBG_ASSIGN,
             };
             let place = VarPlace::Refused(refused);
@@ -599,6 +601,9 @@ impl<'a, T: Target> FnCx<'a, T> {
             // nothing takes them before the `LandingPad` reads them.
             self.begin_pad(id, pad.is_cleanup());
         }
+        if self.has_value_records() {
+            self.value_block_start(); // WP-162
+        }
         self.phi_loads(block)?;
 
         for inst in block.non_phis() {
@@ -606,6 +611,9 @@ impl<'a, T: Target> FnCx<'a, T> {
             self.line_begin(crate::line_rows::row_loc(inst));
             if !self.s.dbg_labels.is_empty() {
                 self.label_rows(inst.id().raw());
+            }
+            if self.has_value_records() {
+                self.value_rows(inst)?; // WP-162: `spec/dwarf.md` §6.23
             }
             let dead = inst.ty() != TypeId::VOID && inst.uses().is_unused() && has_no_effect(inst);
             if !dead && self.coro.is_some() && self.coro_switch(inst)? {
@@ -659,6 +667,9 @@ impl<'a, T: Target> FnCx<'a, T> {
                 self.s.occupied = RegSet::EMPTY;
                 return Ok(());
             }
+        }
+        if self.has_value_records() {
+            self.value_block_end(); // WP-162
         }
         if !self.s.occupied.is_empty() {
             // §4.5: no register holds a value at the end of a block.
@@ -751,6 +762,7 @@ impl<'a, T: Target> FnCx<'a, T> {
             self.out.vars.push(row);
         }
         let start = self.mark.vars as usize;
+        self.finish_value_ranges(start); // WP-162: `spec/dwarf.md` §6.23
         // WP-108: a coroutine body's variables.
         self.coro_vars(start);
         let t = self.target;

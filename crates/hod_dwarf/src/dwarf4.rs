@@ -738,6 +738,8 @@ fn scratch_writer<'a>(dies: usize) -> Writer<'a> {
         fn_addr: Vec::new(),
         block_lists: Vec::new(),
         block_starts: Vec::new(),
+        loclists: Vec::new(),
+        loclists_unit: crate::loclists::NO_LISTS,
     }
 }
 
@@ -832,8 +834,11 @@ pub fn write_debug_info4(
     for r in &out.relocs {
         let (symbol, wide) = match r.target {
             // `StrOffsets` and `Addr` are not made by `Out`: DWARF 5's
-            // sections are not written.
-            Target::Abbrev | Target::StrOffsets | Target::Addr => (sym_abbrev, false),
+            // sections are not written. WP-162: nor `Loclists`, a
+            // location list's family being past `LAST_CHECKED`.
+            Target::Abbrev | Target::StrOffsets | Target::Addr | Target::Loclists => {
+                (sym_abbrev, false)
+            }
             Target::Str => (sym_str, false),
             Target::Line => (sym_line, false),
             Target::Rnglists => (sym_ranges.unwrap_or(sym_abbrev), false),

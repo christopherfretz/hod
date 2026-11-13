@@ -149,6 +149,9 @@ pub enum VarPlace {
     Label(u32),
     /// A variable of a coroutine body (WP-108, `coro_debug`), final.
     Coro(hod_dwarf::CoroPlace),
+    /// One range of a variable described by `#dbg_value` records
+    /// (WP-162, `dbg_value`, `spec/dwarf.md` §6.23).
+    Value(crate::dbg_value::ValueRange),
     /// The row's variable or label cannot be described exactly: a full
     /// debug unit refuses the function under this stable name, a unit
     /// that writes no variables ignores it.
@@ -268,7 +271,8 @@ impl FuncRecord {
 /// The output of a run of function compiles (§9.1).
 ///
 /// `#dbg_label`s are rows of [`Chunk::vars`] ([`VarPlace::Label`]); a
-/// `#dbg_value` or `#dbg_assign` is a [`VarPlace::Refused`] row.
+/// `#dbg_value` gives [`VarPlace::Value`] rows (WP-162), a `#dbg_assign`
+/// is a [`VarPlace::Refused`] row.
 #[derive(Clone, PartialEq, Eq, Default, Debug)]
 pub struct Chunk {
     /// The functions' instructions and data islands, one function after

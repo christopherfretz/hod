@@ -1509,6 +1509,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             TypeClass::I128,
             // WP-101: `fp128` lanes.
             TypeClass::Fp128,
+            // WP-152: `x86_fp80` lanes.
+            TypeClass::X86Fp80,
         ]),
         "byte-sized elements, up to 256 lanes (WP-079)",
     ),
@@ -1537,6 +1539,8 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
             // WP-101: `i128` and `fp128` lanes.
             TypeClass::I128,
             TypeClass::Fp128,
+            // WP-152: `x86_fp80` lanes.
+            TypeClass::X86Fp80,
         ]),
         "byte-sized elements, up to 256 lanes (WP-079)",
     ),

@@ -3065,7 +3065,8 @@ mask (`<N x i1>`, `N ≤ 64`, class `Gpr`, bit `i` = element `i`), or
   addressable bytes, at most 256 lanes. Every other shape is refused by
   the generic name AArch64 uses: `x64:mask-wide` (an operation on the
   lanes of more than 64 `i1`), `x64:vector-odd-element` (`i4`, `i24`),
-  `x64:vector-wide-element` (`i128`, `fp128`, `x86_fp80`),
+  `x64:vector-wide-element` (`i128`, `fp128`, `x86_fp80`; lane
+  moves of `i128` and `x86_fp80` since §5.6.18),
   `x64:vector-length` (more than 256 lanes), `x64:vector-index` (an
   index wider than 64 bits), `x64:ptradd-vector` (a `ptradd` of a
   vector of pointers, `mem.rs`'s); a conversion to
@@ -3340,6 +3341,54 @@ Each against `llc -O0 -fast-isel=0` 22 and 19 under the emulator, and
 9. **`is.fpclass` of a pseudo-denormal**: §5.6.12.
 
 Evidence: `spec/landed/codegen/WP-147.md`.
+
+#### 5.6.18 The first libc++ run's leftovers (WP-152)
+
+Each against `llc -O0 -fast-isel=0` 22 and 19 under the emulator, and
+`hod_interp` where it has the type (`crates/hod_x64/tests/leftovers3.rs`):
+
+1. **Lanes of `i128` and `x86_fp80`** (`vector.rs`, "wide lanes"). Such
+   a vector is a `Mem` value (`<1 x i128>` too: `target::vector_class`
+   keeps it out of `Fpr`, as it travels in two general registers like an
+   `i128`, §4.3 of `spec/abi-x64.md`). Its image is packed as LLVM lays
+   it out: lane `i` at `16·i` (`i128`) or `10·i` (`x86_fp80`, 10 bytes
+   each, so a lane may start at any even offset). `extractelement`,
+   `insertelement` and `shufflevector` copy lanes between images:
+   a constant index is a frame place; a variable index (`lane_number`,
+   §5.6.13: an index out of range is poison, any lane) is scaled into
+   `rcx` (`shl rax, 4`, or `lea rax, [rax + rax·4]` · `lea rcx, [rcx +
+   rax·2]`) and the lane copied through `rcx`. A `poison` index of
+   `insertelement` copies nothing; an undefined `shufflevector` lane is
+   zeroed. More than `MAX_LANES` lanes is `x64:vector-length`; `fp128`
+   lanes stay `x64:vector-wide-element` (§5.6.16). Arithmetic, compares
+   and casts on such lanes stay `x64:vector-wide-element`: the compares
+   and casts go through `mask.rs`, whose `icmp` and `cast` take
+   `vector::lanes` (the one libc++ module left, `alg.find`, compares
+   `<N x i128>`).
+2. **Vectors of `i128` and `x86_fp80` as arguments and results**
+   (`abi.rs`, `spec/abi-x64.md` §4.3): element by element, `x86_fp80`
+   as a scalar `x86_fp80` (16-byte stack slots; `st0`/`st1` results up
+   to two elements), `i128` as LLVM 22's 8-byte pieces where LLVM 19
+   agrees, else `x64:vector-i128-split`.
+3. **`byval` aligned above 16** (`call::align_stack_area`,
+   `spec/abi-x64.md` §6.2): before a call sequence with such an
+   argument, `sub rsp, c` · `and rsp, -a` · `add rsp, c` (`c` the
+   rounded stack size mod `a`) makes the stack-argument area
+   `a`-aligned, as `llc`'s realigned frame does. The callee needs
+   nothing: its copy is at the offset §6.2 gives. Not on a `musttail`
+   call (it reuses the caller's incoming area). Above 2^30 (the `and`
+   immediate) or not a power of two stays `abi:byval-align`.
+4. **`x64:sjlj-live-value` stays.** Keeping a register value in memory
+   across `llvm.eh.sjlj.setjmp` costs nothing once the value is
+   displaced (§5.6.16 (2) already displaces every value): the slot must
+   only never be reused, as `hod_cg::frame::Frame::keep_spills` does
+   for a `returns_twice` call (§4.3). That flag is `pub(crate)` and set
+   only by `hod_cg::call` for a call instruction; the setjmp is a target
+   intrinsic. What is missing is a public `FnCx` method that sets it;
+   `intrinsic::sjlj_setjmp` would call it before `displace_all` and drop
+   `register_value_across`.
+
+Evidence: `spec/landed/codegen/WP-152.md`.
 
 ## 6. Control flow
 

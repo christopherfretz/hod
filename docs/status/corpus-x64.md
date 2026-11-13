@@ -179,7 +179,28 @@ measured ratios if such a test ever appears.
 
 ## Verify and reasons
 
-(filled in below)
+**Hybrid verify** (`cargo xtask corpus verify --target x86_64 -j 3`, with
+the release hod of this branch). Every entry passes with every linker
+installed (bfd, lld, mold) under `qemu-x86_64` on the baseline CPU.
+
+| LLVM | tests | results | PASS | other | coverage | s |
+|---|---:|---:|---:|---:|---|---:|
+| 22 | 3140 | 9420 | 9420 | 0 | hod built 0 of 3140; fallback `module:pic` 3140 | 1366 |
+| 19 | 3104 | 9312 | 9312 | 0 | hod built 0 of 3104; fallback `module:pic` 3104 | 1291 |
+
+The results are in `.build/target-wp-139/corpus/verify-x86_64-llvm<N>-hybrid.tsv`.
+
+**Reasons** (`cargo xtask corpus reasons --target x86_64 -j 3`, 895 s):
+- It completes over all 6713 modules (3376 with 22, 3337 with 19).
+- Hod refuses every one, first for `module:pic`, because x86-64 has no
+  selector yet.
+- The census of every reason counts each construct by name. The first
+  rows are `attr:target-cpu`, `attr:target-features`, `cc:ccc`,
+  `global:function-definition`, `module:pie` and `module:uwtable`, in
+  3375 (22) and 3336 (19) modules, then `type:int`, `type:ptr`,
+  `inst:ret`, `inst:store` and the rest.
+- The report goes to standard output with no `--report`. Its fixed
+  introduction still names `docs/status/corpus.md`.
 
 ## Package census (design 0006 section 7.2, redone)
 

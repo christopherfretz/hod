@@ -19,6 +19,11 @@
 //!   their `phi`s, at sizes around the threshold and odd ones) against
 //!   `llc` under the emulator, with every argument register live across
 //!   the copy, hod and `llc` objects mixed in both directions.
+//! - Short frame displacements (WP-151, §5.6.17): no `[rbp + disp32]`
+//!   whose displacement fits a byte in any generated program; locals on
+//!   both sides of `[rbp - 128]`, accessed by every instruction class of
+//!   the frame (immediates after the displacement included), against
+//!   `llc` plainly and stressed.
 
 #[path = "../../hod_obj/tests/common/linking.rs"]
 #[allow(dead_code, reason = "a shared helper: not every function is used here")]
@@ -401,6 +406,9 @@ const SHORT_BRANCHES: bool = true;
 /// Whether the copy shape is checked (cut 3 of §5.6.15).
 const LOOPED_COPIES: bool = true;
 
+/// Whether the frame-operand shape is checked (§5.6.17).
+const SHORT_FRAME: bool = true;
+
 /// A memory operand `xmmword ptr [base + disp]`: its base and
 /// displacement.
 type Place = (String, i64);
@@ -428,6 +436,11 @@ struct Shapes {
     pushes: usize,
     long_branches: usize,
     short_branches: usize,
+    /// `[rbp ± d]` operands with a displacement that fits a byte
+    /// (§5.6.17).
+    disp8: usize,
+    /// `[rbp ± d]` operands with one that does not.
+    disp32: usize,
 }
 
 /// §5.6.15 over one object's functions; panics on a violation.
@@ -490,6 +503,21 @@ fn check_shapes(object: &Path, shapes: &mut Shapes) {
                 line.at,
                 line.text
             );
+        }
+        // §5.6.17: no `[rbp + disp32]` whose displacement fits a byte.
+        for line in lines.iter().filter(|_| SHORT_FRAME) {
+            let Some(disp) = rbp_disp(&line.text) else { continue };
+            if i8::try_from(disp).is_ok() {
+                shapes.disp8 += 1;
+                assert!(
+                    !has_rbp_disp32(&line.bytes, disp),
+                    "{name}+{:#x}: {} has a disp32 that fits a byte\n{texts:#?}",
+                    line.at,
+                    line.text
+                );
+            } else {
+                shapes.disp32 += 1;
+            }
         }
         // No run of more than four 16-byte moves through `xmm15` that
         // copy consecutive addresses: one copy above 64 bytes.
@@ -559,6 +587,7 @@ fn generated_programs_have_the_small_shapes() {
     assert!(shapes.functions > 100, "{shapes:?}");
     assert!(shapes.pushes < 5 * shapes.functions, "{shapes:?}");
     assert!(!SHORT_BRANCHES || shapes.short_branches > 0, "{shapes:?}");
+    assert!(!SHORT_FRAME || shapes.disp8 > 0, "{shapes:?}");
 }
 
 // ---- copies above 64 bytes ----
@@ -706,5 +735,322 @@ fn copies_above_64_bytes_agree_with_llc() {
         assert!(!call63.iter().any(|i| i.contains("rep movsb")), "{call63:#?}");
         let call65 = &funcs.iter().find(|(n, _)| n == "call65").expect("call65").1;
         assert!(call65.iter().any(|i| i.contains("rep movsb")), "{call65:#?}");
+    }
+}
+
+// ---- frame operands (§5.6.17) ----
+
+/// The displacement of a plain `[rbp]` / `[rbp ± d]` operand of an
+/// instruction as `llvm-objdump` prints it; `None` for any other operand
+/// (an index, another base, none).
+fn rbp_disp(text: &str) -> Option<i64> {
+    let at = text.find("[rbp")?;
+    let inner = text[at + 4..].split(']').next()?.trim();
+    if inner.is_empty() {
+        return Some(0);
+    }
+    let (sign, n) = inner.split_once(' ')?;
+    let n = i64::from_str_radix(n.trim().strip_prefix("0x")?, 16).ok()?;
+    match sign {
+        "-" => Some(-n),
+        "+" => Some(n),
+        _ => None,
+    }
+}
+
+/// Whether `bytes` hold the `ModRM` of `[rbp + disp32]` followed by a
+/// field of value `disp`.
+fn has_rbp_disp32(bytes: &[u8], disp: i64) -> bool {
+    bytes.windows(5).any(|w| {
+        w[0] & 0xc7 == 0x85 && i64::from(i32::from_le_bytes([w[1], w[2], w[3], w[4]])) == disp
+    })
+}
+
+/// The padding bytes of [`frame_ir`]'s functions: the padding is the
+/// last slot, nearest `rbp` (slots are laid out upward in order), so
+/// the slots before it move away from `rbp` with it and cross the
+/// 128-byte boundary one after the other.
+const PADS: [u32; 32] = {
+    let mut pads = [1; 32];
+    let mut i = 1;
+    while i < 32 {
+        pads[i] = 4 * i as u32;
+        i += 1;
+    }
+    pads
+};
+
+/// The operations of [`frame_ir`], each a small function over a few
+/// locals (so that its spills do not push them all past `[rbp - 128]`):
+/// its name, its slots (the padding follows them) and its body, which
+/// may use `%x` and the padding `%pad` of `{k}` bytes.
+const FRAME_OPS: [(&str, &str, &str); 7] = [
+    (
+        // Two 8-byte stores read back at their odd bytes: a byte whose
+        // displacement is written wrong reads another byte than the
+        // store wrote (the odd displacements around -128 are met).
+        "bytes",
+        "%m = alloca [16 x i8], align 8",
+        r"store i64 %x, ptr %m
+  %hi = getelementptr i8, ptr %m, i64 8
+  %y = mul i64 %x, 40503
+  store i64 %y, ptr %hi
+  %p1 = getelementptr i8, ptr %m, i64 1
+  %b1 = load i8, ptr %p1
+  %z1 = zext i8 %b1 to i64
+  %p3 = getelementptr i8, ptr %m, i64 3
+  %b3 = load i8, ptr %p3
+  %z3 = zext i8 %b3 to i64
+  %p5 = getelementptr i8, ptr %m, i64 5
+  %b5 = load i8, ptr %p5
+  %z5 = zext i8 %b5 to i64
+  %p7 = getelementptr i8, ptr %m, i64 7
+  %b7 = load i8, ptr %p7
+  %z7 = zext i8 %b7 to i64
+  %p9 = getelementptr i8, ptr %m, i64 9
+  %b9 = load i8, ptr %p9
+  %z9 = zext i8 %b9 to i64
+  %p11 = getelementptr i8, ptr %m, i64 11
+  %b11 = load i8, ptr %p11
+  %z11 = zext i8 %b11 to i64
+  %p13 = getelementptr i8, ptr %m, i64 13
+  %b13 = load i8, ptr %p13
+  %z13 = zext i8 %b13 to i64
+  %p15 = getelementptr i8, ptr %m, i64 15
+  %b15 = load i8, ptr %p15
+  %z15 = zext i8 %b15 to i64
+  %m3 = mul i64 %z1, 263
+  %s3 = add i64 %m3, %z3
+  %m5 = mul i64 %s3, 263
+  %s5 = add i64 %m5, %z5
+  %m7 = mul i64 %s5, 263
+  %s7 = add i64 %m7, %z7
+  %m9 = mul i64 %s7, 263
+  %s9 = add i64 %m9, %z9
+  %m11 = mul i64 %s9, 263
+  %s11 = add i64 %m11, %z11
+  %m13 = mul i64 %s11, 263
+  %s13 = add i64 %m13, %z13
+  %m15 = mul i64 %s13, 263
+  %s15 = add i64 %m15, %z15
+  ret i64 %s15",
+    ),
+    (
+        // Stores of immediates of each width (the immediate follows the
+        // displacement), loads by `mov`, `movzx`, `movsx`, a store of a
+        // register; `%c` is at an odd offset, so that some function
+        // addresses `[rbp - 129]`.
+        "imm",
+        "%q = alloca i64\n  %d = alloca i32\n  %w = alloca i16\n  %b = alloca i8\n  %c = alloca i8",
+        r"store i64 -5, ptr %q
+  store i8 99, ptr %c
+  store i32 305419896, ptr %d
+  store i16 -4660, ptr %w
+  store i8 -85, ptr %b
+  %q0 = load i64, ptr %q
+  %q1 = add i64 %q0, %x
+  store i64 %q1, ptr %q
+  %r0 = load i64, ptr %q
+  %r1 = load i32, ptr %d
+  %r1x = zext i32 %r1 to i64
+  %r2 = load i16, ptr %w
+  %r2x = sext i16 %r2 to i64
+  %r3 = load i8, ptr %b
+  %r3x = zext i8 %r3 to i64
+  %s0 = mul i64 %r0, 3
+  %s1 = add i64 %s0, %r1x
+  %s2 = mul i64 %s1, 5
+  %s3 = add i64 %s2, %r2x
+  %s4 = mul i64 %s3, 7
+  %s5 = add i64 %s4, %r3x
+  %r8 = load i8, ptr %c
+  %r8x = sext i8 %r8 to i64
+  %s6 = mul i64 %s5, 11
+  %s7 = add i64 %s6, %r8x
+  ret i64 %s7",
+    ),
+    (
+        // `lock xadd` and `lock cmpxchg` on slots.
+        "atomic",
+        "%q = alloca i64\n  %d = alloca i32",
+        r"store i64 %x, ptr %q
+  %xd = trunc i64 %x to i32
+  store i32 %xd, ptr %d
+  %old = atomicrmw add ptr %q, i64 3 seq_cst
+  %cx = cmpxchg ptr %d, i32 %xd, i32 7 seq_cst seq_cst
+  %cxo = extractvalue { i32, i1 } %cx, 0
+  %cxs = extractvalue { i32, i1 } %cx, 1
+  %r0 = load i64, ptr %q
+  %r1 = load i32, ptr %d
+  %r1x = sext i32 %r1 to i64
+  %cxb = zext i1 %cxs to i64
+  %cxa = sext i32 %cxo to i64
+  %s0 = mul i64 %r0, 3
+  %s1 = add i64 %s0, %r1x
+  %s2 = add i64 %s1, %old
+  %s3 = mul i64 %s2, 5
+  %s4 = add i64 %s3, %cxb
+  %s5 = add i64 %s4, %cxa
+  ret i64 %s5",
+    ),
+    (
+        // `movss`, `movsd` both ways.
+        "fp",
+        "%f = alloca float\n  %g = alloca double",
+        r"%ff = sitofp i64 %x to float
+  store float %ff, ptr %f
+  %gg = sitofp i64 %x to double
+  %gh = fmul double %gg, 2.5
+  store double %gh, ptr %g
+  %r4 = load float, ptr %f
+  %r4x = fptosi float %r4 to i64
+  %r5 = load double, ptr %g
+  %r5x = fptosi double %r5 to i64
+  %s = mul i64 %r4x, 3
+  %t = add i64 %s, %r5x
+  ret i64 %t",
+    ),
+    (
+        // `movups` both ways.
+        "vec",
+        "%v = alloca <4 x i32>",
+        r"%xd = trunc i64 %x to i32
+  %vv = insertelement <4 x i32> <i32 1, i32 2, i32 3, i32 4>, i32 %xd, i32 2
+  store <4 x i32> %vv, ptr %v
+  %r6 = load <4 x i32>, ptr %v
+  %r6a = extractelement <4 x i32> %r6, i32 2
+  %r6b = extractelement <4 x i32> %r6, i32 3
+  %r6x = sext i32 %r6a to i64
+  %r6y = sext i32 %r6b to i64
+  %s = mul i64 %r6x, 3
+  %t = add i64 %s, %r6y
+  ret i64 %t",
+    ),
+    (
+        // x87: `fild`, `fld`, `fadd`, `fstp`, and the sign byte's `xor`
+        // and `and` with an 8-bit immediate after the displacement.
+        "x87",
+        "%e = alloca x86_fp80, align 16",
+        r"%ee = sitofp i64 %x to x86_fp80
+  %en = fneg x86_fp80 %ee
+  %ea = call x86_fp80 @llvm.fabs.f80(x86_fp80 %en)
+  %es = fadd x86_fp80 %ea, %en
+  %eb = fadd x86_fp80 %es, %ea
+  store x86_fp80 %eb, ptr %e
+  %r7 = load x86_fp80, ptr %e
+  %r7x = fptosi x86_fp80 %r7 to i64
+  ret i64 %r7x",
+    ),
+    (
+        // `lea` of a slot passed to a call, its first and last bytes.
+        "lea",
+        "%q = alloca i64",
+        r"store i64 %x, ptr %q
+  %xb = trunc i64 %x to i8
+  store i8 %xb, ptr %pad
+  %pl = getelementptr i8, ptr %pad, i64 {last}
+  store i8 7, ptr %pl
+  %t = call i64 @touch(ptr %pad, i64 {k})
+  %t2 = call i64 @touch(ptr %q, i64 8)
+  %s = mul i64 %t, 3
+  %u = add i64 %s, %t2
+  ret i64 %u",
+    ),
+];
+
+/// Functions `frame_OP_K(x)`, one per operation of [`FRAME_OPS`] and
+/// padding `K` of [`PADS`]: the instruction classes of
+/// `common::frame_inst`'s callers on locals around `[rbp - 128]`.
+fn frame_ir() -> String {
+    let mut ir =
+        String::from("declare i64 @touch(ptr, i64)\ndeclare x86_fp80 @llvm.fabs.f80(x86_fp80)\n");
+    for &k in &PADS {
+        for (op, slots, body) in FRAME_OPS {
+            let body = body.replace("{k}", &k.to_string()).replace("{last}", &(k - 1).to_string());
+            let _ = write!(
+                ir,
+                "\ndefine i64 @frame_{op}_{k}(i64 %x) {{\nentry:\n  {slots}\n  %pad = alloca [{k} x i8]\n  {body}\n}}\n"
+            );
+        }
+    }
+    ir
+}
+
+fn frame_driver() -> String {
+    let mut c = String::from(
+        "#include <stdio.h>\n#include <stdint.h>\n\
+         int64_t touch(unsigned char* p, int64_t n) {\n\
+         \x20 int64_t s = p[0] * 1000 + p[n - 1];\n\
+         \x20 for (int64_t i = 0; i < n; i++) p[i] = 0xee;\n\
+         \x20 return s;\n}\n",
+    );
+    for &k in &PADS {
+        for (op, _, _) in FRAME_OPS {
+            let _ = writeln!(c, "int64_t frame_{op}_{k}(int64_t);");
+        }
+    }
+    c.push_str(
+        "int main(void) {\n  static const int64_t xs[] = {0, 1, -1, 1000, -77, 123456789};\n",
+    );
+    c.push_str("  for (int i = 0; i < 6; i++) {\n");
+    for &k in &PADS {
+        for (op, _, _) in FRAME_OPS {
+            let _ =
+                writeln!(c, "    printf(\"{op} {k} %lld\\n\", (long long)frame_{op}_{k}(xs[i]));");
+        }
+    }
+    c.push_str("  }\n  return 0;\n}\n");
+    c
+}
+
+/// §5.6.17: locals on both sides of `[rbp - 128]`, accessed by every
+/// instruction class of the frame, give `llc`'s results plainly and
+/// stressed; a displacement that fits a byte is `disp8`, one that does
+/// not is `disp32`, and a store of an immediate to a `disp8` slot keeps
+/// its immediate.
+#[test]
+fn frame_operands_at_the_disp8_boundary_agree_with_llc() {
+    let dir = Scratch::new("x64-disp8");
+    let text = format!("{}{}", ll_header(), frame_ir());
+    // The shape first: it needs no emulator.
+    let mut shapes = Shapes::default();
+    let mut imm_after_disp8 = 0;
+    let mut edges = [false; 2];
+    for (mode, stress) in [("plain", Stress::default()), ("stress", Stress::ALL)] {
+        let object = hod(&dir, &format!("disp8-shape-{mode}"), &text, stress);
+        check_shapes(&object, &mut shapes);
+        let Some(funcs) = disassemble_raw(&object) else { continue };
+        for line in funcs.iter().flat_map(|(_, l)| l) {
+            match rbp_disp(&line.text) {
+                Some(-128) => edges[0] = true,
+                Some(-129) => edges[1] = true,
+                _ => {}
+            }
+            // `mov dword ptr [rbp - d], 0x12345678`: `C7 45 d imm32`.
+            if line.bytes.len() == 7 && line.bytes[..2] == [0xc7, 0x45] {
+                assert_eq!(line.bytes[3..], 305_419_896u32.to_le_bytes(), "{}", line.text);
+                imm_after_disp8 += 1;
+            }
+        }
+    }
+    eprintln!("{shapes:?}");
+    assert!(shapes.disp8 > 0 && shapes.disp32 > 0, "both sides of the boundary: {shapes:?}");
+    assert!(imm_after_disp8 > 0, "no `mov [rbp + disp8], imm32`");
+    assert_eq!(edges, [true; 2], "accesses at [rbp - 128] and [rbp - 129]");
+
+    let Some(toolchain) = Toolchain::x86_64(&dir) else { return };
+    let driver = toolchain.compile_c(&dir, "driver", &frame_driver(), &[]);
+    let mut want = None;
+    for major in hod_testutil::LLVM_MAJORS {
+        let Some(by_llc) = llc(&dir, major, &format!("disp8-llc{major}"), &text) else { continue };
+        let out = run(&toolchain, &dir, &format!("disp8-llc{major}"), &[&driver, &by_llc]);
+        assert_eq!(*want.get_or_insert_with(|| out.clone()), out, "llc {major}");
+    }
+    let Some(want) = want else { return };
+    for (mode, stress) in [("plain", Stress::default()), ("stress", Stress::ALL)] {
+        let object = hod(&dir, &format!("disp8-{mode}"), &text, stress);
+        let out = run(&toolchain, &dir, &format!("disp8-{mode}"), &[&driver, &object]);
+        let wrong = out.lines().zip(want.lines()).find(|(a, b)| a != b);
+        assert!(wrong.is_none() && out == want, "{mode}: hod {wrong:?} (hod, llc)");
     }
 }

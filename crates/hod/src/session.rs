@@ -96,16 +96,20 @@ fn from_ir(error: &IrError) -> CompileError {
 static A64_STACK_ARGS: hod_cg::abi::TargetStackArgs<'static, hod_a64::A64> =
     hod_cg::abi::TargetStackArgs::new(&hod_a64::A64);
 
+/// x86-64's stack-argument rule (WP-148, `spec/abi-x64.md` §8.5): each
+/// side assigned with the target of the function making the call, whose
+/// features decide its convention (§1.3), as the call sequence assigns it.
+static X64_STACK_ARGS: hod_cg::abi::TargetStackArgs<'static, hod_x64::X64> =
+    hod_cg::abi::TargetStackArgs::per_function(&hod_x64::X64, hod_x64::call::target_of);
+
 /// The classifier of `arch`, with its stack-argument rule
 /// (`spec/codegen.md` §7.1, "Tail kinds"; `spec/ir.md` §8.6): without it
 /// every `musttail` call is declined as `musttail:stack-args-unknown`.
-/// x86-64 has no code generator, so no rule; its modules are declined
-/// later anyway.
 fn classifier_for(arch: Arch, support: &Support) -> Classifier<'_> {
     let classifier = Classifier::new(support);
     match arch {
         Arch::Aarch64 => classifier.with_stack_args(&A64_STACK_ARGS),
-        Arch::X86_64 => classifier,
+        Arch::X86_64 => classifier.with_stack_args(&X64_STACK_ARGS),
     }
 }
 

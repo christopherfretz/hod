@@ -188,10 +188,24 @@ pub struct AbiUnsupported(pub &'static str);
 /// variadic call (those beyond its function type's parameters, before a
 /// forwarded `...`) are typed by their values in the call's body, as the
 /// call sequence types them (WP-115).
+///
+/// A target whose convention depends on the function being compiled
+/// (x86-64's features, `spec/abi-x64.md` §1.3) is given that function's
+/// target by [`TargetStackArgs::per_function`]: both sides are then
+/// assigned with the target of the function that makes the call, as
+/// [`Target::for_function`] gives it to the call sequence (WP-148).
 #[derive(Clone, Copy)]
 pub struct TargetStackArgs<'t, T> {
     target: &'t T,
+    /// The target as it compiles a function, `None` for none (the
+    /// function is not one the target compiles: no answer).
+    per_function: Option<PerFunction<T>>,
 }
+
+/// The target as it compiles `function` of `module`: what
+/// [`Target::for_function`] answers for its body, computed from the
+/// symbol alone (`classify` has no body for `of_function`).
+pub type PerFunction<T> = fn(&Module, Symbol<'_>) -> Option<T>;
 
 impl<T> std::fmt::Debug for TargetStackArgs<'_, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -202,12 +216,25 @@ impl<T> std::fmt::Debug for TargetStackArgs<'_, T> {
 impl<'t, T: Target> TargetStackArgs<'t, T> {
     /// The hook of `target`.
     pub const fn new(target: &'t T) -> TargetStackArgs<'t, T> {
-        TargetStackArgs { target }
+        TargetStackArgs { target, per_function: None }
     }
 
-    fn stack_size(&self, types: &TypeTable, sig: &Sig<'_>) -> Option<u64> {
+    /// The hook of a target whose convention depends on the function
+    /// being compiled: `of(module, function)` is the target as it
+    /// compiles `function` (WP-148). `target` is not used then; it is
+    /// kept for the type.
+    pub const fn per_function(target: &'t T, of: PerFunction<T>) -> TargetStackArgs<'t, T> {
+        TargetStackArgs { target, per_function: Some(of) }
+    }
+
+    /// The `stack_size` of `sig` as `function` (the function making the
+    /// call, or being called by its own signature) assigns it.
+    fn stack_size(&self, module: &Module, function: Symbol<'_>, sig: &Sig<'_>) -> Option<u64> {
         let mut asg = Assignment::default();
-        self.target.assign(types, sig, &mut asg).ok()?;
+        match self.per_function {
+            Some(of) => of(module, function)?.assign(&module.types, sig, &mut asg).ok()?,
+            None => self.target.assign(&module.types, sig, &mut asg).ok()?,
+        }
         Some(u64::from(asg.stack_size))
     }
 }
@@ -222,7 +249,7 @@ impl<T: Target> StackArgs for TargetStackArgs<'_, T> {
         };
         let fixed = u32::try_from(params.len()).ok()?;
         let sig = Sig { cc, ret, ret_attrs, params, param_attrs, fixed, variadic };
-        self.stack_size(&module.types, &sig)
+        self.stack_size(module, function, &sig)
     }
 
     fn of_call(&self, module: &Module, call: &CallSite<'_>) -> Option<u64> {
@@ -254,7 +281,8 @@ impl<T: Target> StackArgs for TargetStackArgs<'_, T> {
             fixed,
             variadic,
         };
-        self.stack_size(&module.types, &sig)
+        // The call is assigned as the function it is in compiles it.
+        self.stack_size(module, module.symbol(call.body().symbol()), &sig)
     }
 }
 

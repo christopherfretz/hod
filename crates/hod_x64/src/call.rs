@@ -79,6 +79,32 @@ pub const RESUME: &str = "x64:resume";
 /// it arrived, so it gives no meaning to follow.
 pub const MUSTTAIL_VARIABLE_ARGUMENTS: &str = "x64:musttail-variable-arguments";
 
+/// The target as it compiles `function` of `module`, from the symbol
+/// alone: what [`Target::for_function`] answers for its body (the
+/// features of `"target-cpu"` and `"target-features"`, `spec/abi-x64.md`
+/// §1.3; the coroutine mark). `None` for a symbol that is not a function.
+///
+/// The facade's `musttail` stack-argument rule assigns a function's own
+/// signature and each `musttail` call in it with this target
+/// (`hod_cg::abi::TargetStackArgs::per_function`, §8.5, WP-148), as the
+/// call sequence does.
+pub fn target_of(module: &hod_ir::Module, function: hod_ir::Symbol<'_>) -> Option<X64> {
+    let hod_ir::SymbolKind::Function { attrs, .. } = function.kind() else {
+        return None;
+    };
+    if attrs.index() >= module.fn_attrs_count() {
+        return None;
+    }
+    let attrs = module.fn_attrs(attrs);
+    let text = |what| attrs.string(what).and_then(|s| std::str::from_utf8(s).ok());
+    let features = crate::features::of_function(
+        text(hod_ir::FnStr::TargetCpu),
+        text(hod_ir::FnStr::TargetFeatures),
+    );
+    let coro = attrs.has(hod_ir::FnAttrs::PRESPLIT_COROUTINE);
+    Some(X64 { features, coro })
+}
+
 /// Every name this module refuses with.
 pub const UNSUPPORTED: &[&str] = &[
     CALL,

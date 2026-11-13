@@ -31,7 +31,8 @@
 //!
 //! A local `Local(o)` is `[rbp + o - 8n - FRAME]`: emitted as `[rbp + o]`
 //! with a `disp32` (`common::frame_inst`) that [`end`] biases once `n`
-//! and `FRAME` are known. An incoming stack argument `Incoming(n)` is
+//! and `FRAME` are known, and writes as a `disp8` when it then fits
+//! (§5.6.17). An incoming stack argument `Incoming(n)` is
 //! `[rbp + 16 + n]`, so no incoming base is kept; an outgoing one
 //! `Outgoing(n)` is `[rsp + n]`.
 

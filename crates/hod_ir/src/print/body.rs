@@ -790,6 +790,7 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
             (call.is_convergent(), " convergent"),
             (call.is_always_inline(), " alwaysinline"),
             (call.is_noinline(), " noinline"),
+            (call.is_nocf_check(), " nocf_check"),
         ] {
             self.s(if on { word } else { "" })?;
         }

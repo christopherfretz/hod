@@ -657,6 +657,11 @@ pub const GNU_PROPERTY_X86_FEATURE_1_IBT: u32 = 1;
 pub const GNU_PROPERTY_X86_FEATURE_1_SHSTK: u32 = 2;
 pub const fn gnu_property_note(arch: Arch, features: u32) -> [u8; 32]
 pub fn add_gnu_property_note(obj: &mut Object, features: u32) -> Result<SectionId, Error>
+pub const GNU_PROPERTY_AARCH64_FEATURE_1_AND: u32 = 0xc000_0000;
+pub const GNU_PROPERTY_X86_FEATURE_1_AND: u32 = 0xc000_0002;
+pub const fn feature_1_and(arch: Arch) -> u32
+pub fn gnu_properties(properties: &[(u32, &[u8])]) -> Vec<u8>
+pub fn add_gnu_properties(obj: &mut Object, properties: &[(u32, &[u8])]) -> Result<SectionId, Error>
 ```
 
 **Initializer and finalizer arrays.** `add_init_array` adds a section of
@@ -691,6 +696,18 @@ compiler's version adds, `gcs` 4 in clang 22) and `-fcf-protection=` on
 x86-64 (`branch` 1, `return` 2, `full` 3). `features` is not checked
 against the architecture's defined bits. An object should have one such
 section; the helper does not look for one already there.
+
+`gnu_properties` is the general form (WP-184): one `NT_GNU_PROPERTY_TYPE_0`
+note named `GNU` holding the given `(pr_type, pr_data)` properties in
+increasing `pr_type` order (the order the gABI requires; the caller's
+order does not matter), each `pr_datasz` the data's length and the data
+padded with zeros to 8 bytes; `add_gnu_properties` adds it as above
+(`.note.gnu.property`, `Note`, alignment 8). With the one property
+`(feature_1_and(arch), features as 4 little-endian bytes)` it is exactly
+`gnu_property_note(arch, features)`. `feature_1_and` names the
+architecture's `FEATURE_1_AND` type. The code generators write their note
+through `add_gnu_properties`, so a further property (an ISA level, a
+second feature word) is one more list entry.
 
 The note is a promise about all code in the object: every indirect branch
 target starts with the landing pad instruction (BTI, IBT), and so on. A

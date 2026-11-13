@@ -2575,11 +2575,10 @@ what `llc -O0 -fast-isel=0 -relocation-model=pic` writes (LLVM 19 and
   (`0xc0000002`) with the shadow-stack bit (2). The code does not
   change, which requires every x86-64 lowering to return only to the
   address its call pushed (no `push`/`ret` or `call`-to-get-`rip`
-  idioms). **`cf-protection-branch`** stays `todo(T-X64)`: `llc` then
-  writes `endbr64` at the entry of every function an indirect branch may
-  reach (external linkage or address taken), at landing pads and after
-  calls to `returns_twice` functions, and sets the IBT bit (1) in the
-  note. `llc` 19 and 22 read both CET flags by their presence, not their
+  idioms). **`cf-protection-branch`** (WP-184, §5.6.25) writes
+  `endbr64` at function entries, address-taken blocks, landing pads and
+  after direct calls of `returns_twice` functions, and sets the IBT bit
+  (1) in the note. `llc` 19 and 22 read both CET flags by their presence, not their
   value: `i32 0` turns them on as well (`endbr64` and the IBT bit; the
   shadow-stack bit), and an absent flag is off. `hod_ir` reads them the
   same way since WP-144 (before, 0 was off).
@@ -3612,6 +3611,63 @@ result types are not LLVM's declaration is `x64:x86-intrinsic-signature`.
    `sse41.*` and `sse42.*`. AArch64 refuses every `llvm.x86.*` name.
 
 Evidence: `spec/landed/codegen/WP-173.md`.
+
+#### 5.6.25 Indirect-branch tracking: `cf-protection-branch` (WP-184)
+
+A module with the flag `cf-protection-branch` (any value, §5.6 "Module
+flags"; `BranchProtection::CET_IBT`) gets an `endbr64` (`f3 0f 1e fa`)
+at each place an indirect branch, a `longjmp` or the unwinder may
+reach (`crates/hod_x64/src/cet.rs`). The rules are those of `llc` 19
+and 22 (`X86IndirectBranchTracking`, identical in both), with one
+deliberate superset:
+
+1. **Function entry**, the prologue's first instruction (`cet::entry`,
+   one call from `frame::begin`), unless the function has `nocf_check`.
+   `llc` also leaves out a function with local linkage whose address is
+   never taken (no data reference, no `llvm.used`, no cast or indirect
+   use); hod marks those too. That is harmless: `endbr64` is in the
+   reserved-`nop` space and executes as a `nop` on every x86-64
+   processor, with or without CET, and an extra mark only permits a
+   branch the program never makes. It saves a module-wide scan.
+2. **Address-taken blocks** (`blockaddress`, the targets of
+   `indirectbr`) and **landing pads**: right after the block's label and
+   the offset recorded for it (the `BlockOffset` and the call-site
+   table's landing both point at the `endbr64`), before the block's
+   `phi` loads (`hod_cg`'s `Target::branch_target` hook, called from
+   `emit_block`). An `invoke` whose stack arguments must be released
+   lands in a stub that restores the stack pointer first; the stub is the
+   landing address, so it is marked as well (one more `endbr64` than
+   `llc`, which has no stub).
+3. **The resume point of `llvm.eh.sjlj.setjmp`** (`llc` takes its
+   address as a block's; `longjmp` reaches it with `jmp *`), and each
+   coroutine entry stub `F.resume`/`F.destroy` (functions entered
+   through the frame's pointers).
+4. **After a direct call of a function declared `returns_twice`**: the
+   callee's declaration decides, as in `llc`; `returns_twice` on the
+   call site only, or on an indirect call, marks nothing. The return
+   address the call-site table records is the call's, before the mark.
+5. **Not** at `callbr` indirect targets (`llc` marks none) or switch
+   cases (hod makes no jump table, so it has no `notrack jmp`).
+
+All marks are emitted in the instruction stream, so every offset table
+(labels, line rows, CFI, call sites, block offsets, the shrink tables)
+sees them as ordinary instructions.
+
+**`nocf_check`** (`FnAttrs::NO_CF_CHECK`, a call-site flag too): on a
+function it drops the entry mark; on a direct call it changes nothing.
+An indirect call with `nocf_check` under `cf-protection-branch` needs the
+`notrack` prefix (`3e`), which `hod_mc_x64` does not encode: it is
+refused, `x64:nocf-check-indirect-call`, `musttail` or not (`llc` 19 and
+22 abort on the `musttail` form). Without the flag it is an ordinary
+call, as in `llc`.
+
+**The note** carries IBT (1) with this flag and SHSTK (2) with
+`cf-protection-return`, written once by the module emitter through
+`hod_obj::elf::add_gnu_properties` (`spec/object.md`), byte for byte
+`llc`'s. AArch64 refuses both flags (`never(X64_ONLY)`); `llc` ignores
+them there.
+
+Evidence: `spec/landed/codegen/WP-184.md`.
 
 ## 6. Control flow
 

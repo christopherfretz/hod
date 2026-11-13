@@ -116,7 +116,7 @@ impl<L: Layering> Verifier<'_, L> {
     ) -> IrResult<()> {
         let body = self.body;
         let (callee, args) = (vals[0], &vals[1..=call.nargs as usize]);
-        let tail = TailKind::from_raw(call.flags & CALL_TAIL_MASK);
+        let tail = TailKind::from_raw((call.flags & CALL_TAIL_MASK) as u8);
         let both = CALL_ALWAYS_INLINE | CALL_NOINLINE;
         if call.flags & both == both {
             return self.fail(InvalidAttribute, id, "'noinline and alwaysinline' are incompatible");

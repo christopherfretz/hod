@@ -417,30 +417,31 @@ impl<'m> ModuleEmitter<'m> {
         Ok(emitter)
     }
 
-    /// `.note.gnu.property` for `cf-protection-return` on x86-64
-    /// (`X86AsmPrinter::emitStartOfAsmFile`, WP-143): a
-    /// `GNU_PROPERTY_X86_FEATURE_1_AND` note with the shadow-stack bit.
-    /// The code is unchanged: hod's x86-64 code returns only to the
-    /// address its call pushed. `cf-protection-branch` (`endbr64`) is
-    /// refused by `hod_ir::classify`; without the code it asks for, its
-    /// bit is never written.
+    /// `.note.gnu.property` on x86-64 (`X86AsmPrinter::emitStartOfAsmFile`,
+    /// WP-143, WP-184): a `GNU_PROPERTY_X86_FEATURE_1_AND` property with
+    /// the IBT bit for `cf-protection-branch` (the target marks every
+    /// indirect-branch target with `endbr64`) and the shadow-stack bit for
+    /// `cf-protection-return` (the code does not change: hod's x86-64 code
+    /// returns only to the address its call pushed). The note is written
+    /// by `hod_obj`'s property-list writer.
     fn gnu_property(&mut self) -> CgResult<()> {
         use hod_ir::BranchProtection as Bp;
-        const GNU_PROPERTY_X86_FEATURE_1_AND: u32 = 0xc000_0002;
-        const GNU_PROPERTY_X86_FEATURE_1_SHSTK: u32 = 2;
+        use hod_obj::elf;
         let bits = self.module.props.branch_protection.bits();
-        if self.obj.arch() != Arch::X86_64 || bits & Bp::CET_SHSTK == 0 || bits & Bp::CET_IBT != 0 {
+        if self.obj.arch() != Arch::X86_64 {
             return Ok(());
         }
-        let note =
-            self.obj.add_section(b".note.gnu.property", SectionKind::Note, 8).map_err(obj_err)?;
-        // namesz, descsz, type (NT_GNU_PROPERTY_TYPE_0), "GNU"; one
-        // property: type, datasz, the features, padding to 8 bytes.
-        for word in [4, 16, 5, u32::from_le_bytes(*b"GNU\0")] {
-            self.obj.append(note, &word.to_le_bytes());
+        let mut features = 0;
+        if bits & Bp::CET_IBT != 0 {
+            features |= elf::GNU_PROPERTY_X86_FEATURE_1_IBT;
         }
-        for word in [GNU_PROPERTY_X86_FEATURE_1_AND, 4, GNU_PROPERTY_X86_FEATURE_1_SHSTK, 0] {
-            self.obj.append(note, &word.to_le_bytes());
+        if bits & Bp::CET_SHSTK != 0 {
+            features |= elf::GNU_PROPERTY_X86_FEATURE_1_SHSTK;
+        }
+        if features != 0 {
+            let word = features.to_le_bytes();
+            let properties = [(elf::GNU_PROPERTY_X86_FEATURE_1_AND, &word[..])];
+            elf::add_gnu_properties(&mut self.obj, &properties).map_err(obj_err)?;
         }
         Ok(())
     }

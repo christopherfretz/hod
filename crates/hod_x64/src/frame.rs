@@ -94,6 +94,7 @@ pub struct FrameState {
 /// None in practice; `Internal` for a CFI row out of order.
 pub fn begin(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     reset_local_sites();
+    crate::cet::entry(cx); // WP-184: `endbr64` first
     put(cx, mc::push_r(RBP));
     cx.cfi(CfiOp::DefCfaOffset(16));
     cx.cfi(CfiOp::Offset { reg: DWARF_RBP, cfa_offset: -16 });

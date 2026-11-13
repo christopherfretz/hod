@@ -310,6 +310,7 @@ pub fn call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
     if site.bundle_count() != 0 {
         return unsupported(CALL_BUNDLE);
     }
+    crate::cet::check_call(cx, &site)?; // WP-184
     let musttail = site.tail() == TailKind::MustTail;
     let result = inst.ty();
     let odd = !musttail

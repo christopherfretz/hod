@@ -24,7 +24,7 @@ use crate::loc::{Class, Key, Kind, Loc, ValState};
 use crate::options::Options;
 use crate::record::{BlockOffset, CfiOp, Chunk, FrameDesc, LineRow, ROW_CONT, VarPlace, VarRow};
 use crate::reg::{MIN_POOL_FPR, MIN_POOL_GPR, RegSet};
-use crate::target::Target;
+use crate::target::{BranchTarget, Target};
 
 /// Whether `address`, named by a `#dbg_declare`, is the result of a `phi`
 /// (§9.5, WP-111). `llc -O0` drops such a declaration: its
@@ -593,6 +593,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         if self.block_addrs {
             self.out.block_offsets.push(BlockOffset { block: id, offset: start });
         }
+        let mut landing = None;
         if self.has_pads
             && let Some(first) = block.non_phis().next()
             && let InstKind::LandingPad(pad) = first.kind()
@@ -600,6 +601,15 @@ impl<'a, T: Target> FnCx<'a, T> {
             // §4.8: the `eh_data` registers are not in the pool, so
             // nothing takes them before the `LandingPad` reads them.
             self.begin_pad(id, pad.is_cleanup());
+            landing = Some(BranchTarget::LandingPad);
+        }
+        // §5.6.25 (WP-184): the landing instruction of an indirect-branch
+        // target, at the offset just recorded, before the `phi` loads.
+        if self.block_addrs && self.module.consts.is_address_taken(self.body.symbol(), id) {
+            landing = Some(BranchTarget::Block);
+        }
+        if let Some(at) = landing {
+            t.branch_target(self, at)?;
         }
         if self.has_value_records() {
             self.value_block_start(); // WP-162

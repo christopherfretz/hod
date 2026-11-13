@@ -956,15 +956,16 @@ fn wild_programs_never_panic() {
 /// WP-027, the finding of WP-033: with `function:parameters` supported
 /// for some classes but not `token`, and `type:token` not supported (the
 /// matrix of that day), seed 360 had a body with a `token` parameter (since
-/// WP-179 added a function flag and a string key, which move the
-/// generator's draws, seed 1289 is the one that has it). Its
+/// WP-179 added a function flag and a string key, and WP-184 one more
+/// flag, which move the generator's draws, seed 597 is the one that has
+/// it). Its
 /// finding is `type:token` (§8.3); the pair `function:parameters/token`
 /// is a finding only once `type:token` is supported. The census and
 /// repeated classification follow that one rule.
 #[test]
 fn a_pair_is_found_only_behind_its_type_row() {
     const PAIR: &str = "function:parameters/token";
-    let seed = 1289;
+    let seed = 597;
     let arch = ARCHES[(seed % 2) as usize];
     let program = program(seed, arch, false);
     let then = Support::shipped(arch).clone().without("type:token").unwrap();

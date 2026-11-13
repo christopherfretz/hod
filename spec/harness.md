@@ -61,6 +61,15 @@ whatever the order they are named in; without it every step runs. An
 unknown step or argument is a usage error (exit status 2). Test:
 `xtask::ci::tests::steps_are_selected_by_name`.
 
+`--part <name>`, with `--step test` alone, runs one part of the test step
+(`xtask::ci::TEST_PARTS`): `a64` (`hod_a64`), `x64` (`hod_x64`,
+`hod_mc_x64`), `harness` (`xtask`), `front` (`hod`, `hod_cli`,
+`hod_interp`), and `rest`, every workspace package the others do not name
+(`cargo test --workspace --exclude ...`), so that the parts together are
+the step and a new package is in `rest`. An unknown part, or `--part`
+with another step, is a usage error. Test:
+`xtask::ci::tests::the_test_parts_cover_the_workspace_once`.
+
 ## CI
 
 The hosted gate is GitHub Actions (`.github/workflows/`, ported from
@@ -77,10 +86,10 @@ kiln's lanes). Its rules:
 2. **The reference environment.** Every job runs in
    `buildpack-deps:trixie` (Debian 13, as the development container) set
    up by `.github/actions/hod-ci`: clang, llvm and lld 19 and 22, binutils,
-   mold, gdb, gdb-multiarch, lldb-19, `qemu-user`, the other
+   mold, gdb, gdb-multiarch, lldb-19, `qemu-user`, `csmith`, the other
    architecture's GNU cross gcc, g++, binutils, C library and libstdc++,
    Rust 1.95.0 and the cargo cache (one per architecture, saved by the
-   `test` job).
+   `test harness` job).
 3. **Tools are required.** The lane sets `HOD_REQUIRE_TOOLS=1`: a tool
    this list lacks fails the test that needs it.
 4. **kiln++** is kiln's `cargo xtask dist` tree, built at the commit in
@@ -90,12 +99,14 @@ kiln's lanes). Its rules:
    `/opt/kiln` and get `HOD_KILN=/opt/kiln/bin/kiln++`. hod records
    kiln's revision only there.
 5. **The steps.** The lane's jobs `lints` (`--step fmt`, `--step
-   clippy`), `test` (`--step test`; `CAP_SYS_PTRACE` for the debuggers)
-   and `irdiff` (`--step irdiff`) run `cargo xtask ci --quick` with those
-   steps, in parallel: `xtask::ci::HOSTED_STEPS`. `roundtrip`
+   clippy`), `test <part>` (`--step test --part <part>`, one job per
+   part of `xtask::ci::TEST_PARTS`, so that no job runs much over 15
+   minutes; `CAP_SYS_PTRACE` for the debuggers) and `irdiff` (`--step
+   irdiff`) run `cargo xtask ci --quick` with those steps, in parallel:
+   `xtask::ci::HOSTED_STEPS`. `roundtrip`
    (`xtask::ci::NOT_HOSTED`) does not run there: it needs the corpus,
    build output of the development machine ("corpus"). Each of these
-   steps runs exactly once per lane. Test:
+   steps (each part of `test`) runs exactly once per lane. Test:
    `xtask::ci::tests::the_hosted_lane_runs_the_quick_gates_steps`.
 6. **The sweep never gates.** `sweep.yml` runs on a push to a `sweep/**`
    branch or by `workflow_dispatch` (inputs: kiln's commit, strict or
@@ -106,7 +117,14 @@ kiln's lanes). Its rules:
    libcxx std libcxx --tag llvmorg-22.1.8 --shard K/6 --no-fail -j 4
    --timeout 20 --mem-limit 3072` natively (strict by default), and
    merges the six shards' results with kiln's `scripts/libcxx-results.py`
-   into the artifact `libcxx-summary`.
+   into the artifact `libcxx-summary`. Each shard also uploads its wall
+   time and `scripts/libcxx-hod-kiln.sh`'s per-test logs
+   (`HOD_LIBCXX_LOGDIR`, the input of `scripts/libcxx-hod-report.py`).
+7. **Random programs (reserved).** When `cargo xtask fuzz` (WP-154,
+   csmith) is on `main`, a lane job (marked in `ci-lane.yml`) runs a
+   fixed range of seeds natively: every program built by hod and by
+   `llc`, a difference a failure. `.github/actions/hod-ci` already
+   installs `csmith`.
 
 What runs where, and the tests compiled or run for one host only, is
 `docs/VALIDATION.md` "Hosted CI".

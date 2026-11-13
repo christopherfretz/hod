@@ -53,7 +53,7 @@ instructions and types, this design relies on `classify` rejecting:
   difference, a landing-pad clause) (§3);
 - a `blockaddress` in a body that names a block of another function
   (§9.2);
-- `naked` functions (§5.4) and `callbr`;
+- `naked` functions (§5.4);
 - a `musttail` call whose stack-argument area is larger than the
   caller's own, or whose calling convention has the callee pop its
   arguments (§7.1).
@@ -879,13 +879,14 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
   pad's home; clauses are `catch` of a symbol or `null` and `filter` of
   such arrays. `resume` calls `_Unwind_Resume` with the exception
   pointer, then traps.
-- **Refused by name**: `a64:call` (`callbr`), `a64:call-inline-asm`,
-  `a64:call-bundle`, `a64:va-intrinsic`, `a64:va_arg`, `a64:landingpad`,
+- **Refused by name**: `a64:call-bundle`, `a64:va-intrinsic`, `a64:va_arg`, `a64:landingpad`,
   `a64:landingpad-clause`, `a64:resume`. `a64:variadic-definition` is
   no longer produced, nor, since WP-084, `a64:invoke-odd-int-result`
   (an `invoke`'s odd leaves are cleared by `FnCx::call`); WP-069 removed `a64:call-wide-int-extension` and
   `a64:call-narrow-ext-stack-arg` (`abi-a64.md` §7.1) and
-  `a64:call-mismatched-declaration` (§7.1 here).
+  `a64:call-mismatched-declaration` (§7.1 here). Since WP-103 every
+  call of inline assembly, `callbr` included, goes to §5.5.3, so
+  `a64:call` (`callbr`) and `a64:call-inline-asm` are no longer produced.
 - **Tests** (`tests/call.rs`): random signatures (`tests/common/
   callgen.rs`) linking gcc-compiled C with modules compiled by hod and
   `llc` in every pairing, stressed, PIC with a shared object; the call
@@ -1934,6 +1935,108 @@ reports it as the refusal's detail (`spec/cli.md` "The back half").
 Tests: `features.rs` (`what_compilers_write_is_accepted`,
 `contract_features_are_refused_by_name`, `unknown_features_are_refused`),
 `crates/hod/tests/back.rs` `target_features`.
+
+#### 5.5.3 Inline assembly with instructions (WP-103)
+
+`hod_a64::inline_asm::call` lowers every `call`, `invoke` and `callbr`
+of inline assembly (`call.rs` sends each one there). A template that is
+empty goes to "Assembly that needs no assembler (WP-075)" first; what
+that module refuses by its own model (an output it does not take, `Q`,
+two outputs, a struct result) falls through to the sequence below, which
+handles any template. The template is substituted and assembled by
+`hod_asm` (`spec/asm.md` §4, §5) **before** anything is emitted, so a
+template that refuses leaves no trace; the words written are exactly
+the words `hod_asm` encoded.
+
+**Operands.** Constraints are read as `spec/asm.md` §6 lists. Of several
+alternatives (`r|m`), the one of LLVM's weights, as in WP-075. Within
+the chosen alternative an operand is, in order: its explicit register
+(`{x0}`, `{w3}`, `{d8}`, `{v1}`); its tied output's place (a digit, or
+`+`); an immediate (`i`, `n`, `I`..`N`) for a constant integer, a
+symbol (`i`) for a symbol's address; memory (`m`, `Q`, `o`) when the
+alternative has it and the operand is no tied output; else a register,
+general for `r` and integer or pointer `X`, vector for `w`, `x`
+(`v0`..`v15`), `y` (`v0`..`v7`) and floating-point `X`. A flag output
+`={@cc<cond>}` is no register: it is read after the template. A label
+operand (`!i`, `callbr` only) prints as a local name the sequence
+binds.
+
+**Registers.** Every operand gets a register of its own, distinct from
+every other operand's and every clobber, except a tied input, which
+shares its output's (giving an output its own register is always a
+valid choice of what `llc` might share). General registers are chosen
+from `x9`..`x15`, then `x0`..`x8`; vector registers from `v16`..`v29`,
+then `v0`..`v7`. Refused: `sp`, `x29`/`fp` as an operand or clobber
+(`a64:inline-asm-frame-register`: the frame is addressed from them), and
+`x16`, `x17`, `v30`, `v31` as an operand (`a64:inline-asm-scratch-register`:
+the sequence uses them). The clobbers `~{x16}`, `~{x17}`, `~{x18}`,
+`~{v30}`, `~{v31}` are accepted: no value of hod's lives in them across
+the template (hod never allocates `x18`).
+
+**The sequence.**
+
+1. Deferred operands are emitted (as for any call). Every input, and the
+   pointer of every indirect or memory operand, is evaluated and stored
+   to a 16-byte frame slot (one per distinct value); every direct
+   output gets a slot.
+2. Every register value is displaced (§4.4: the template is a call for
+   the location policy); every register the template may write
+   (operands, clobbers) is taken. Those among `x19`..`x28` and
+   `v8`..`v15` (their low 64 bits, AAPCS64) are saved to slots: a
+   template may clobber them and the function's own saves do not cover
+   them. `x30` is always free across the template (the frame record
+   holds the return address), so `~{lr}` and `~{x30}` need nothing;
+   `llc` ignores `~{x30}`, hod honours both.
+3. Inputs are loaded into their registers, vector ones first; an
+   integer narrower than 64 bits is zero-extended (`i1` included);
+   a memory operand's address is loaded into its register.
+4. The template's words; each symbol reference becomes a relocation of
+   its kind (`CALL26`, `JUMP26`, `CONDBR19`, `TSTBR14`, `LD_PREL_LO19`,
+   `ADR_PREL_LO21`) against the module's symbol.
+5. Register outputs are stored to their slots, or for an indirect
+   output (`=*r`) through its pointer, its `elementtype`'s size; each
+   flag output is `cset` of its condition and stored; the saved
+   callee-saved registers are reloaded.
+6. The result is read from the slots: one scalar, or each field of the
+   struct of several outputs at its offset.
+
+**Flags.** `sideeffect` and `alignstack` change nothing (hod moves no
+instruction across the template, and `sp` is always 16-byte aligned at
+it). `inteldialect` with a non-empty template is `asm:dialect`.
+`unwind` on an `invoke` of a non-empty template is
+`a64:inline-asm-unwind` (no call site is recorded for the template's
+words); an `invoke` of assembly that does not unwind continues at its
+normal destination.
+
+**`callbr`** (asm goto): the normal path stores its phis and branches to
+the normal destination; then, for each indirect destination, a
+trampoline the template's branches to `${N:l}` are fixed up to: it
+reloads the callee-saved registers, stores that edge's phis and branches
+to the destination. A `callbr` with an output (which would be defined
+on every path) is `a64:inline-asm-form`, as is an operand bundle on any
+inline-assembly call.
+
+**Refused by name**, besides `spec/asm.md` §8:
+`a64:inline-asm-frame-register`, `a64:inline-asm-scratch-register`,
+`a64:inline-asm-operand-type` (an aggregate, an integer wider than 64
+bits, a vector wider than 16 bytes, more than 8 bytes in a general
+register), `a64:inline-asm-operands` (more than 16 operands, 4
+alternatives, or the registers of a class), `a64:inline-asm-unwind`,
+`a64:inline-asm-form`; `asm:constraint/count` when the constraints do
+not match the call's arguments, result or labels; `asm:symbol` for a
+template reference to a name the module does not have.
+
+**Tests** (`tests/inline_asm.rs`, seeds in `tests/data/inline_asm/`):
+32 functions (syscalls through `svc`, `mrs`/`msr` of `tpidr_el0`,
+`cntvct_el0` and `fpcr`, an exclusive-monitor loop, explicit registers,
+tied, memory and `rm` operands, clobbers of registers hod uses and of
+callee-saved ones, flag outputs, immediates with modifiers, two
+outputs, an indirect output, a `bl` from the template, variants and
+`${:uid}`, local labels, `asm goto` with phis, `invoke`) built by hod
+(plain, `Stress::ALL`, far) and by `llc` 22 and 19, linked with a C
+driver under bfd, lld and mold, dynamic and static; the template's
+words compared with `llvm-mc`'s; the refusals; features from
+`target-features`.
 
 ### 5.6 x86-64 (planned)
 

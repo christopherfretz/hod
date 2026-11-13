@@ -14,3 +14,6 @@ hod_mc_x64.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+hod_testutil.workspace = true

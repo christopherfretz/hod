@@ -44,6 +44,7 @@
 //! | `tail` | WP-084 | wide fp conversions, wide `mul.with.overflow`, wide `switch`, `readcyclecounter`, `is.constant`, `{s,u}shl.sat`, `crc32` | `tests/tail.rs` |
 //! | `neon` | WP-083 | the target intrinsics: `llvm.aarch64.neon.*`, `crypto.*`, `sisd.*`, `cls`, barriers and hints | `tests/neon.rs` |
 //! | `named_reg` | WP-064 | `llvm.read_register`, `read_volatile_register`, `write_register` | `tests/named_reg.rs` |
+//! | `inline_asm` | WP-103 | inline assembly with a template of instructions, through `hod_asm`; `callbr` | `tests/inline_asm.rs` |
 //! | `tail2` | WP-095 | scalar `bfloat` arithmetic, compares and conversions, `extractelement` of `i128` lanes | `tests/tail2.rs` |
 //! | `tail3` | WP-101 | vectors of `i128` and `fp128` lanes, `bfloat` vectors and intrinsics, `preserve_allcc` | `tests/tail3.rs` |
 //!
@@ -62,6 +63,7 @@ pub mod features;
 pub mod float;
 pub mod fpintr;
 pub mod frame;
+pub mod inline_asm;
 pub mod int;
 pub mod intrinsic;
 pub mod lanes;

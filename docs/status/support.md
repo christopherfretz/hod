@@ -33,17 +33,17 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `cc` | 15 | 6 | 7 | 2 | 0 | 12 | 3 |
 | `attr` | 57 | 23 | 31 | 3 | 10 | 39 | 8 |
 | `type` | 15 | 11 | 1 | 3 | 0 | 13 | 2 |
-| `inst` | 67 | 59 | 0 | 8 | 0 | 59 | 8 |
+| `inst` | 67 | 60 | 0 | 7 | 0 | 60 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `atomicrmw` | 21 | 21 | 0 | 0 | 0 | 21 | 0 |
-| `call` | 4 | 3 | 1 | 0 | 0 | 4 | 0 |
+| `call` | 4 | 4 | 0 | 0 | 0 | 4 | 0 |
 | `tail` | 3 | 3 | 0 | 0 | 2 | 1 | 0 |
 | `bundle` | 10 | 0 | 5 | 5 | 0 | 5 | 5 |
 | `landingpad` | 3 | 3 | 0 | 0 | 0 | 3 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 0 | 11 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 354 | 329 | 25 | 0 | 0 | 138 | 216 |
-| total | 663 | 526 | 90 | 47 | 17 | 375 | 271 |
+| total | 663 | 528 | 89 | 46 | 17 | 376 | 270 |
 
 ## `module`
 
@@ -371,7 +371,7 @@ Instructions.
 | `inst:indirectbr` | supported | not-implemented |  |
 | `inst:ret` | supported | not-implemented |  |
 | `inst:unreachable` | supported | not-implemented |  |
-| `inst:callbr` | rejected | rejected | its only use is inline assembly with labels (`spec/codegen.md` §1) |
+| `inst:callbr` | supported | not-implemented | inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3) |
 | `inst:invoke` | supported | not-implemented |  |
 | `inst:resume` | supported | not-implemented |  |
 | `inst:catchswitch` | rejected | rejected | Windows funclet exception handling; not an ELF construct |
@@ -423,7 +423,7 @@ Kinds of callee.
 | construct | aarch64 | x86_64 | work package / why |
 |---|---|---|---|
 | `call:indirect` | supported | not-implemented | the callee is a computed address |
-| `call:inline-asm` | not-implemented | not-implemented | hod_asm. the callee is inline assembly an assembler must read |
+| `call:inline-asm` | supported | not-implemented | the callee is inline assembly of instructions: `hod_asm` (WP-103, `spec/asm.md`) |
 | `call:inline-asm-empty` | supported | not-implemented | the callee is inline assembly whose template assembles to nothing (`spec/ir.md` §2.3) |
 | `call:variadic` | supported | not-implemented | a call through a variadic function type |
 

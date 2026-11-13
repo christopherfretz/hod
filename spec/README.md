@@ -20,6 +20,7 @@ crate could be re-implemented from its spec and its tests alone.
 | `xform.md` | `hod_xform`: required lowerings and analyses | current: the coroutine plan (§3, WP-104, `spec/landed/xform/WP-104.md`) |
 | `cli.md` | the `hod` command line, the `hod` facade's `compile`, fallback, coverage log | current (WP-015); reasons grow with code generation |
 | `harness.md` | `xtask`: the kiln shim, test formats, differential runs, benchmarks | current: "ci", "shim" (WP-015), "irdiff" and "Test directives" (WP-016), "corpus" (WP-017), "bench" (WP-018), "Jobserver" (WP-024); `bisect` planned |
+| `asm.md` | `hod_asm`: assembly text in IR — statements, expressions, template substitution, AArch64 operands and mnemonics, inline assembly in code, refusals | current (WP-103): inline-assembly templates of AArch64 instructions (§1..§8), the lowering in `codegen.md` §5.5.3; module-level assembly beyond symbol directives planned (§9) |
 | `interp.md` | `hod_interp`: the reference interpreter (values, vectors, memory, traps, unsupported reasons, host functions, limits), the program generator, the LLVM oracle | current (WP-044; vectors WP-078, `spec/landed/interp/WP-078.md`) |
 
 ## Conventions

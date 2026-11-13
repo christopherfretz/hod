@@ -1306,10 +1306,11 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
     row("inst:indirectbr", ON, todo(X64), ""),
     row("inst:ret", ON, todo(X64), ""),
     row("inst:unreachable", ON, todo(X64), ""),
-    both(
+    row(
         "inst:callbr",
-        never("its only use is inline assembly with labels (`spec/codegen.md` §1)"),
-        "",
+        ON,
+        todo(X64),
+        "inline assembly with labels, `asm goto` (WP-103, `spec/codegen.md` §5.5.3)",
     ),
     row("inst:invoke", ON, todo(X64), ""),
     row("inst:resume", ON, todo(X64), ""),
@@ -1351,7 +1352,12 @@ const ATOMICRMW: [SupportRow; RmwOp::ALL.len()] = [
 
 const CALL: [SupportRow; 4] = [
     row("call:indirect", ON, todo(X64), "the callee is a computed address"),
-    a64("call:inline-asm", ASM, "the callee is inline assembly an assembler must read"),
+    row(
+        "call:inline-asm",
+        ON,
+        todo(X64),
+        "the callee is inline assembly of instructions: `hod_asm` (WP-103, `spec/asm.md`)",
+    ),
     row(
         "call:inline-asm-empty",
         ON,

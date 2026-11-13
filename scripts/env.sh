@@ -39,6 +39,14 @@ else
   fi
 fi
 unset _WS _MAIN _cand _JSF
+# One target directory per checkout adds up on a shared disk. Half of a
+# debug target directory is the incremental cache and most of the rest
+# is debug information: without the cache, and with line tables only
+# (backtraces keep their file and line), a checkout's build output is a
+# fraction of the size and its many test binaries link faster. Set
+# either variable yourself to get the default back.
+export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
+export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-line-tables-only}"
 # A workspace on a host bind mount has dropped rmeta/rlib writes under
 # several concurrent pipelined builds (seen in kiln: "can't find crate" in
 # the middle of a clean build). Without pipelining a dependent rustc never

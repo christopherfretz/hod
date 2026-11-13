@@ -30,12 +30,55 @@ pub(crate) struct AttrMemo {
 /// A word of 1 to 16 bytes without a zero byte, padded with zeros: a key
 /// that no other such word has, and never 0. `None` for any other word.
 pub(crate) fn packed(word: &[u8]) -> Option<u128> {
-    if word.is_empty() || word.len() > 16 || word.contains(&0) {
+    let len = word.len();
+    if len == 0 || len > 16 {
         return None;
     }
-    let mut bytes = [0u8; 16];
-    bytes[..word.len()].copy_from_slice(word);
-    Some(u128::from_le_bytes(bytes))
+    // Whole words, not byte by byte: the first eight bytes and the rest.
+    let (lo, hi) = if len <= 8 {
+        (padded_word(word), 0)
+    } else {
+        let (first, rest) = word.split_at(8);
+        (padded_word(first), padded_word(rest))
+    };
+    if has_zero(lo, len.min(8)) || (len > 8 && has_zero(hi, len - 8)) {
+        return None;
+    }
+    Some(u128::from(lo) | u128::from(hi) << 64)
+}
+
+/// The 0 to 8 bytes of `bytes` as a word whose lowest byte is the first,
+/// padded with zeros, from at most three loads.
+fn padded_word(bytes: &[u8]) -> u64 {
+    let len = bytes.len();
+    if let Some(&first) = bytes.first_chunk::<8>() {
+        return u64::from_le_bytes(first);
+    }
+    if len >= 4 {
+        // Two four-byte loads that overlap where `len < 8`: the shared
+        // bytes are the same in both.
+        let low = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        let tail = &bytes[len - 4..];
+        let high = u32::from_le_bytes([tail[0], tail[1], tail[2], tail[3]]);
+        return u64::from(low) | u64::from(high) << ((len - 4) * 8);
+    }
+    match len {
+        0 => 0,
+        // The first, middle and last byte: all of a word of 1 to 3.
+        _ => {
+            u64::from(bytes[0])
+                | u64::from(bytes[len / 2]) << (len / 2 * 8)
+                | u64::from(bytes[len - 1]) << ((len - 1) * 8)
+        }
+    }
+}
+
+/// Whether one of the first `len` (1 to 8) bytes of `word` is zero.
+fn has_zero(word: u64, len: usize) -> bool {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    // The bytes past `len` are made 1, so that only the first count.
+    let x = if len >= 8 { word } else { word | ONES << (len * 8) };
+    x.wrapping_sub(ONES) & !x & (ONES << 7) != 0
 }
 
 /// Slots of [`AttrMemo`]: a power of two.
@@ -358,5 +401,39 @@ impl<L: Layering> Parser<'_, '_, L> {
     /// in the current form (§7.3).
     fn upgrade_attrs(&mut self, id: FnAttrsId, upgrade: Upgrade, at: u32) -> PResult<FnAttrsId> {
         ir(at, upgrade.apply(&mut *self.module, id, &mut self.upgraded))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::packed;
+
+    /// The memo's key is the word padded with zeros to 16 bytes, and
+    /// there is none for an empty word, a longer one or one with a zero.
+    #[test]
+    fn packed_is_the_zero_padded_word() {
+        assert_eq!(packed(b""), None);
+        assert_eq!(packed(&[b'a'; 17]), None);
+        assert_eq!(packed(b"no\0undef"), None);
+        for word in [&b"x"[..], b"align", b"dereferenceable", b"noundef_nonnull_"] {
+            let mut bytes = [0u8; 16];
+            bytes[..word.len()].copy_from_slice(word);
+            assert_eq!(packed(word), Some(u128::from_le_bytes(bytes)));
+        }
+        // Every length, with a zero at every place and with none.
+        for len in 0..=20usize {
+            let word: Vec<u8> = (0..len).map(|i| b'a' + i as u8).collect();
+            let mut bytes = [0u8; 16];
+            let expect = (1..=16).contains(&len).then(|| {
+                bytes[..len].copy_from_slice(&word);
+                u128::from_le_bytes(bytes)
+            });
+            assert_eq!(packed(&word), expect, "length {len}");
+            for zero in 0..len {
+                let mut with = word.clone();
+                with[zero] = 0;
+                assert_eq!(packed(&with), None, "length {len}, zero at {zero}");
+            }
+        }
     }
 }

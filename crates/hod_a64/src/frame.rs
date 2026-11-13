@@ -63,6 +63,8 @@ pub struct FrameState {
     pub dynamic: bool,
     /// The coroutine frame's `x19` save (WP-106, `crate::coro_body`).
     pub coro: crate::coro_body::CoroState,
+    /// Branch protection (WP-185, `crate::protect`).
+    pub protect: crate::protect::ProtectState,
 }
 
 /// Whether the function addresses its incoming stack area (§5.5): it has
@@ -86,6 +88,7 @@ pub fn begin(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
     if cx.alloc_slot(16, 16)? != FrameRef::Local(0) {
         return cx.bug("the frame record is not at the start of the local area");
     }
+    crate::protect::entry(cx)?; // WP-185: first, at offset 0
     let base = needs_incoming_base(cx);
     if base {
         put(cx, mc::mov_sp(Size::X, X16.sp(), SP));
@@ -143,6 +146,7 @@ pub fn end(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
         let start = at as usize + index * 4;
         cx.code_mut()[start..start + 4].copy_from_slice(&word.to_le_bytes());
     }
+    crate::protect::entry_rows(cx)?; // WP-185: rows at 0 and 4, first
     prologue_rows(cx, at, frame)?;
     crate::tail2::preserved_rows(cx, Some(at + PROLOGUE_BYTES + crate::tail2::SAVE_BYTES), frame)?;
     crate::tail3::all_rows(cx, Some(at + PROLOGUE_BYTES), frame)?;
@@ -213,6 +217,7 @@ fn body_rows(cx: &mut FnCx<'_, A64>, frame: u32) {
     let _ = crate::tail2::preserved_rows(cx, None, frame);
     let _ = crate::tail3::all_rows(cx, None, frame);
     let _ = crate::coro_body::rows(cx, None, frame);
+    crate::protect::restate(cx); // WP-185
 }
 
 /// The teardown every exit sequence starts with, with its rows: the
@@ -238,6 +243,7 @@ fn teardown(cx: &mut FnCx<'_, A64>, frame: u32) {
         put(cx, mc::add_imm(Size::X, SP, SP, u64::from(lo)));
     }
     cx.cfi(CfiOp::DefCfaOffset(0));
+    crate::protect::exit(cx); // WP-185: the stack pointer is the entry's
 }
 
 /// `Target::adjust_sp`: `delta` added to the stack pointer, writing no

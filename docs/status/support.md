@@ -20,7 +20,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 
 | group | constructs | aarch64 supported | not-implemented | rejected | x86_64 supported | not-implemented | rejected |
 |---|---|---|---|---|---|---|---|
-| `module` | 24 | 11 | 11 | 2 | 11 | 7 | 6 |
+| `module` | 24 | 16 | 6 | 2 | 17 | 7 | 0 |
 | `structor` | 2 | 2 | 0 | 0 | 2 | 0 | 0 |
 | `debug` | 5 | 4 | 1 | 0 | 4 | 1 | 0 |
 | `global` | 12 | 11 | 1 | 0 | 11 | 1 | 0 |
@@ -31,7 +31,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `init` | 10 | 6 | 3 | 1 | 6 | 3 | 1 |
 | `function` | 6 | 6 | 0 | 0 | 6 | 0 | 0 |
 | `cc` | 26 | 6 | 7 | 13 | 3 | 13 | 10 |
-| `attr` | 59 | 26 | 30 | 3 | 24 | 27 | 8 |
+| `attr` | 59 | 30 | 26 | 3 | 29 | 27 | 3 |
 | `type` | 15 | 12 | 0 | 3 | 13 | 0 | 2 |
 | `inst` | 67 | 60 | 0 | 7 | 59 | 1 | 7 |
 | `mem` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 455 | 347 | 7 | 101 | 229 | 10 | 216 |
-| total | 777 | 551 | 68 | 158 | 427 | 72 | 278 |
+| total | 777 | 560 | 59 | 158 | 438 | 72 | 267 |
 
 ## `module`
 
@@ -61,12 +61,12 @@ Module properties (`ModuleProps`, §2.1) and module-level tables.
 | `module:large-data-threshold` | not-implemented | not-implemented | unplanned |
 | `module:uwtable` | supported | supported | the module's default unwind-table kind is not `none` (WP-049) |
 | `module:frame-pointer` | supported | supported | any `frame-pointer` value: hod always keeps a frame pointer (`spec/codegen.md` §5) |
-| `module:branch-target-enforcement` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `module:guarded-control-stack` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `module:sign-return-address` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `module:sign-return-address-all` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `module:sign-return-address-with-bkey` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `module:branch-protection-pauth-lr` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
+| `module:branch-target-enforcement` | supported | supported | AArch64: the BTI bit of `.note.gnu.property`; x86-64: ignored, as `llc` (WP-185) |
+| `module:guarded-control-stack` | supported | supported | AArch64: the GCS bit of `.note.gnu.property`, no code change; x86-64: ignored (WP-185) |
+| `module:sign-return-address` | supported | supported | AArch64: the PAC bit of `.note.gnu.property`; x86-64: ignored, as `llc` (WP-185) |
+| `module:sign-return-address-all` | supported | supported | read with `sign-return-address` by `hod_ll`'s upgrade; x86-64: ignored (WP-185) |
+| `module:sign-return-address-with-bkey` | supported | supported | read with `sign-return-address` by `hod_ll`'s upgrade; x86-64: ignored (WP-185) |
+| `module:branch-protection-pauth-lr` | not-implemented | supported | unplanned. AArch64: `paciasppc` and the PC-modifier forms (FEAT_PAuth_LR); x86-64: ignored (WP-185) |
 | `module:cf-protection-branch` | rejected | not-implemented | an x86 property. changes code: `endbr64` at every function entry an indirect branch may reach, at landing pads and after `returns_twice` calls, then the IBT property note; `llc` 19 and 22 turn it on for any value, 0 included (WP-143), as `hod_ir` reads it (WP-144) |
 | `module:cf-protection-return` | rejected | supported | an x86 property. the shadow-stack bit in `.note.gnu.property`; the code does not change (WP-143); on for any value, 0 included, as `llc` (WP-144) |
 | `module:asm` | supported | not-implemented | module-level assembly of code and data: `hod_asm` (WP-112, `spec/asm.md` §9); what it does not read is refused by an `asm:*` name |
@@ -279,11 +279,11 @@ Kept attributes (§5.7) of parameters, returns, functions and calls.
 | `attr:patchable-function-entry` | not-implemented | not-implemented | unplanned |
 | `attr:patchable-function-prefix` | not-implemented | not-implemented | unplanned |
 | `attr:function-instrument` | not-implemented | not-implemented | unplanned |
-| `attr:branch-target-enforcement` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `attr:sign-return-address` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `attr:sign-return-address-key` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `attr:branch-protection-pauth-lr` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
-| `attr:guarded-control-stack` | not-implemented | rejected | aarch64: unplanned; x86_64: an AArch64 property |
+| `attr:branch-target-enforcement` | supported | supported | AArch64: `bti c` at the entry, `bti j` where an indirect branch lands (`spec/codegen.md` §5.6.26); x86-64: ignored, as `llc` (WP-185) |
+| `attr:sign-return-address` | supported | supported | AArch64: `paciasp`/`autiasp` with `DW_CFA_AARCH64_negate_ra_state`, `non-leaf` and `all` alike (every hod frame saves `x30`); x86-64: ignored (WP-185) |
+| `attr:sign-return-address-key` | supported | supported | AArch64: `b_key` signs with `pacibsp`/`autibsp` under a CIE with `B`; x86-64: ignored (WP-185) |
+| `attr:branch-protection-pauth-lr` | not-implemented | supported | unplanned. AArch64: FEAT_PAuth_LR; x86-64: ignored (WP-185) |
+| `attr:guarded-control-stack` | supported | supported | no code change: hod returns only to the address its call left in `x30` (WP-185) |
 | `attr:stack-probe-size` | not-implemented | not-implemented | unplanned |
 | `attr:probe-stack` | not-implemented | not-implemented | unplanned |
 | `attr:split-stack` | not-implemented | not-implemented | unplanned |

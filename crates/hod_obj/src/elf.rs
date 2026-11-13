@@ -16,6 +16,11 @@ pub use conventions::{
     GNU_PROPERTY_X86_FEATURE_1_SHSTK, add_fini_array, add_gnu_property_note, add_init_array,
     gnu_property_note,
 };
+// WP-185: the generic writer, a list of (`pr_type`, `pr_data`).
+pub use conventions::{
+    GNU_PROPERTY_AARCH64_FEATURE_1_AND, GNU_PROPERTY_X86_FEATURE_1_AND, add_gnu_properties,
+    gnu_properties_note,
+};
 
 use crate::error::{Error, Limit, SymbolProblem, WriteError};
 use crate::model::{

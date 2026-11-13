@@ -188,6 +188,13 @@ Two things a producer of LLVM IR must know:
 - `uwtable` and `frame-pointer` values that LLVM's verifier accepts and
   no LLVM version defines (3, 5, ...) are errors here.
 
+`classify` (§8) accepts the AArch64 branch-protection flags and the
+function attributes `branch-target-enforcement`, `sign-return-address`,
+`sign-return-address-key` and `guarded-control-stack` on both targets
+(WP-185): AArch64 implements them (`spec/codegen.md` §5.6.26), x86-64
+ignores them as `llc` does. `branch-protection-pauth-lr`, flag and
+attribute, stays refused on AArch64 (`module:`/`attr:branch-protection-pauth-lr`).
+
 ### 2.2 Symbols
 
 One `SymId` space, because code refers to all of them the same way: by

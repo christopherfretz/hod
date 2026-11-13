@@ -601,6 +601,7 @@ impl<'a, T: Target> FnCx<'a, T> {
             // nothing takes them before the `LandingPad` reads them.
             self.begin_pad(id, pad.is_cleanup());
         }
+        t.begin_block(self, block)?; // WP-185
         if self.has_value_records() {
             self.value_block_start(); // WP-162
         }
@@ -697,8 +698,19 @@ impl<'a, T: Target> FnCx<'a, T> {
                 CfiOp::DefCfa { reg: r, offset: o } => (reg, offset) = (Some(r), Some(o)),
                 CfiOp::DefCfaOffset(o) => offset = Some(o),
                 CfiOp::DefCfaRegister(r) => reg = Some(r),
-                CfiOp::Offset { .. } | CfiOp::Restore { .. } => {}
+                CfiOp::Offset { .. }
+                | CfiOp::Restore { .. }
+                | CfiOp::NegateRaState
+                | CfiOp::BKeyFrame => {}
             }
+        }
+        // WP-185: the return address's signing state is a flip; it is
+        // flipped back to the body's when the rows since differ in parity.
+        let flips = |rows: &[crate::record::CfiRow]| {
+            rows.iter().filter(|r| r.op == CfiOp::NegateRaState).count()
+        };
+        if flips(&self.out.cfi[start..end]) % 2 != flips(&self.out.cfi[start..]) % 2 {
+            self.cfi(CfiOp::NegateRaState);
         }
         match (reg, offset) {
             (Some(reg), Some(offset)) => self.cfi(CfiOp::DefCfa { reg, offset }),

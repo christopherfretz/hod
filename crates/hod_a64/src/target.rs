@@ -451,7 +451,12 @@ impl Target for A64 {
     fn emit_call(&self, cx: &mut FnCx<'_, Self>, call: &CallEmit) -> CgResult<()> {
         frame::emit_call(cx, call.target);
         cx.call_returns_here(call.target, dwarf); // WP-113: `spec/dwarf.md` §6.19
+        crate::protect::after_call(cx, call.target); // WP-185
         Ok(())
+    }
+
+    fn begin_block(&self, cx: &mut FnCx<'_, Self>, block: hod_ir::Block<'_>) -> CgResult<()> {
+        crate::protect::begin_block(cx, block) // WP-185
     }
 
     fn dynamic_slot(

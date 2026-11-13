@@ -692,6 +692,18 @@ x86-64 (`branch` 1, `return` 2, `full` 3). `features` is not checked
 against the architecture's defined bits. An object should have one such
 section; the helper does not look for one already there.
 
+`gnu_properties_note(properties, out)` is the general form (WP-185): any
+list of `(pr_type, pr_data)` properties, in the order given, each a
+32-bit type, a 32-bit `pr_datasz` (the data's length), the data and zero
+padding to 8; the header's `descsz` is the sum of the padded properties.
+`add_gnu_properties(obj, properties)` adds that as `.note.gnu.property`
+(kind `Note`, alignment 8) and returns its id. With one 4-byte property it
+is byte for byte `gnu_property_note`. The two property numbers are public
+(`GNU_PROPERTY_AARCH64_FEATURE_1_AND`, `GNU_PROPERTY_X86_FEATURE_1_AND`);
+a caller wanting several properties (an x86-64 feature word beside an ISA
+level, say) passes them in one call, sorted by type, as the gABI requires.
+`hod_cg` writes the AArch64 note through it (`spec/codegen.md` §5.6.26).
+
 The note is a promise about all code in the object: every indirect branch
 target starts with the landing pad instruction (BTI, IBT), and so on. A
 linker marks its output with a feature only when every input object has

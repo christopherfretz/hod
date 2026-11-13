@@ -434,12 +434,40 @@ const MODULE: [SupportRow; 24] = [
         "any `frame-pointer` value: hod always keeps a frame pointer (`spec/codegen.md` §5)",
     ),
     // `BranchProtection` bit order.
-    row("module:branch-target-enforcement", todo(LATER), never(A64_ONLY), ""),
-    row("module:guarded-control-stack", todo(LATER), never(A64_ONLY), ""),
-    row("module:sign-return-address", todo(LATER), never(A64_ONLY), ""),
-    row("module:sign-return-address-all", todo(LATER), never(A64_ONLY), ""),
-    row("module:sign-return-address-with-bkey", todo(LATER), never(A64_ONLY), ""),
-    row("module:branch-protection-pauth-lr", todo(LATER), never(A64_ONLY), ""),
+    // WP-185: on AArch64 the flags decide `.note.gnu.property` (BTI,
+    // PAC, GCS bits) and, through `hod_ll`'s upgrade, the functions'
+    // attributes; on x86-64 `llc` ignores them.
+    both(
+        "module:branch-target-enforcement",
+        ON,
+        "AArch64: the BTI bit of `.note.gnu.property`; x86-64: ignored, as `llc` (WP-185)",
+    ),
+    both(
+        "module:guarded-control-stack",
+        ON,
+        "AArch64: the GCS bit of `.note.gnu.property`, no code change; x86-64: ignored (WP-185)",
+    ),
+    both(
+        "module:sign-return-address",
+        ON,
+        "AArch64: the PAC bit of `.note.gnu.property`; x86-64: ignored, as `llc` (WP-185)",
+    ),
+    both(
+        "module:sign-return-address-all",
+        ON,
+        "read with `sign-return-address` by `hod_ll`'s upgrade; x86-64: ignored (WP-185)",
+    ),
+    both(
+        "module:sign-return-address-with-bkey",
+        ON,
+        "read with `sign-return-address` by `hod_ll`'s upgrade; x86-64: ignored (WP-185)",
+    ),
+    row(
+        "module:branch-protection-pauth-lr",
+        todo(LATER),
+        ON,
+        "AArch64: `paciasppc` and the PC-modifier forms (FEAT_PAuth_LR); x86-64: ignored (WP-185)",
+    ),
     row(
         "module:cf-protection-branch",
         never(X64_ONLY),
@@ -772,11 +800,35 @@ const ATTR_STRING: [SupportRow; FnStr::ALL.len()] = [
     a64("attr:patchable-function-entry", LATER, ""),
     a64("attr:patchable-function-prefix", LATER, ""),
     a64("attr:function-instrument", LATER, ""),
-    row("attr:branch-target-enforcement", todo(LATER), never(A64_ONLY), ""),
-    row("attr:sign-return-address", todo(LATER), never(A64_ONLY), ""),
-    row("attr:sign-return-address-key", todo(LATER), never(A64_ONLY), ""),
-    row("attr:branch-protection-pauth-lr", todo(LATER), never(A64_ONLY), ""),
-    row("attr:guarded-control-stack", todo(LATER), never(A64_ONLY), ""),
+    both(
+        "attr:branch-target-enforcement",
+        ON,
+        "AArch64: `bti c` at the entry, `bti j` where an indirect branch lands \
+         (`spec/codegen.md` §5.6.26); x86-64: ignored, as `llc` (WP-185)",
+    ),
+    both(
+        "attr:sign-return-address",
+        ON,
+        "AArch64: `paciasp`/`autiasp` with `DW_CFA_AARCH64_negate_ra_state`, `non-leaf` and \
+         `all` alike (every hod frame saves `x30`); x86-64: ignored (WP-185)",
+    ),
+    both(
+        "attr:sign-return-address-key",
+        ON,
+        "AArch64: `b_key` signs with `pacibsp`/`autibsp` under a CIE with `B`; x86-64: \
+         ignored (WP-185)",
+    ),
+    row(
+        "attr:branch-protection-pauth-lr",
+        todo(LATER),
+        ON,
+        "AArch64: FEAT_PAuth_LR; x86-64: ignored (WP-185)",
+    ),
+    both(
+        "attr:guarded-control-stack",
+        ON,
+        "no code change: hod returns only to the address its call left in `x30` (WP-185)",
+    ),
     a64("attr:stack-probe-size", LATER, ""),
     a64("attr:probe-stack", LATER, ""),
     a64("attr:split-stack", LATER, ""),

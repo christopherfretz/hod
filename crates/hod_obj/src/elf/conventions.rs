@@ -23,8 +23,11 @@ pub const GNU_PROPERTY_X86_FEATURE_1_IBT: u32 = 1 << 0;
 pub const GNU_PROPERTY_X86_FEATURE_1_SHSTK: u32 = 1 << 1;
 
 const NT_GNU_PROPERTY_TYPE_0: u32 = 5;
-const GNU_PROPERTY_AARCH64_FEATURE_1_AND: u32 = 0xc000_0000;
-const GNU_PROPERTY_X86_FEATURE_1_AND: u32 = 0xc000_0002;
+/// The `pr_type` of the AArch64 feature property (the `..._FEATURE_1_*`
+/// bits, ANDed by the linker over the program's objects).
+pub const GNU_PROPERTY_AARCH64_FEATURE_1_AND: u32 = 0xc000_0000;
+/// The `pr_type` of the x86 feature property.
+pub const GNU_PROPERTY_X86_FEATURE_1_AND: u32 = 0xc000_0002;
 
 /// `<base>` for the default priority, else `<base>.<priority>` with the
 /// priority in decimal, as LLVM names these sections. Returns the buffer
@@ -104,12 +107,67 @@ pub fn add_gnu_property_note(obj: &mut Object, features: u32) -> Result<SectionI
     Ok(section)
 }
 
+/// Appends to `out` a `.note.gnu.property` section's contents: one
+/// `NT_GNU_PROPERTY_TYPE_0` note owned by `GNU` whose descriptor is
+/// `properties`, each a `pr_type` and its `pr_data`, in the order given
+/// (the gABI asks for increasing `pr_type`), each padded with zeros to 8
+/// bytes (ELFCLASS64). One `(GNU_PROPERTY_*_FEATURE_1_AND, features)`
+/// with four bytes of data gives [`gnu_property_note`]'s bytes.
+pub fn gnu_properties_note(properties: &[(u32, &[u8])], out: &mut Vec<u8>) {
+    let desc: usize = properties.iter().map(|(_, data)| 8 + data.len().next_multiple_of(8)).sum();
+    for word in [4, desc as u32, NT_GNU_PROPERTY_TYPE_0, u32::from_le_bytes(*b"GNU\0")] {
+        out.extend_from_slice(&word.to_le_bytes());
+    }
+    for &(kind, data) in properties {
+        out.extend_from_slice(&kind.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(data);
+        out.resize(out.len() + (data.len().next_multiple_of(8) - data.len()), 0);
+    }
+}
+
+/// Adds the `.note.gnu.property` section (`SHT_NOTE`, allocated,
+/// alignment 8) holding [`gnu_properties_note`] of `properties`. An
+/// object has at most one.
+///
+/// # Errors
+/// As [`Object::add_section`].
+pub fn add_gnu_properties(
+    obj: &mut Object,
+    properties: &[(u32, &[u8])],
+) -> Result<SectionId, Error> {
+    let section = obj.add_section(b".note.gnu.property", SectionKind::Note, 8)?;
+    let mut note = Vec::with_capacity(16 + 16 * properties.len());
+    gnu_properties_note(properties, &mut note);
+    obj.append_owned(section, note);
+    Ok(section)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// `spec/object.md` "ELF conventions": the priority is in decimal
     /// without padding; the default priority has no suffix.
+    /// WP-185: the generic writer gives the one-property note's bytes.
+    #[test]
+    fn generic_property_note() {
+        for (arch, kind) in [
+            (Arch::AArch64, GNU_PROPERTY_AARCH64_FEATURE_1_AND),
+            (Arch::X86_64, GNU_PROPERTY_X86_FEATURE_1_AND),
+        ] {
+            for features in [1u32, 3, 7] {
+                let mut out = Vec::new();
+                gnu_properties_note(&[(kind, &features.to_le_bytes())], &mut out);
+                assert_eq!(out, gnu_property_note(arch, features));
+            }
+        }
+        let mut two = Vec::new();
+        gnu_properties_note(&[(1, &[9; 4]), (2, &[8; 12])], &mut two);
+        assert_eq!(two.len(), 16 + 16 + 24);
+        assert_eq!(two[4..8], 40u32.to_le_bytes());
+    }
+
     #[test]
     fn priority_names() {
         let name = |priority| {

@@ -429,6 +429,9 @@ impl<'m> ModuleEmitter<'m> {
         const GNU_PROPERTY_X86_FEATURE_1_AND: u32 = 0xc000_0002;
         const GNU_PROPERTY_X86_FEATURE_1_SHSTK: u32 = 2;
         let bits = self.module.props.branch_protection.bits();
+        if self.obj.arch() == Arch::AArch64 {
+            return self.a64_gnu_property(bits); // WP-185
+        }
         if self.obj.arch() != Arch::X86_64 || bits & Bp::CET_SHSTK == 0 || bits & Bp::CET_IBT != 0 {
             return Ok(());
         }
@@ -441,6 +444,33 @@ impl<'m> ModuleEmitter<'m> {
         }
         for word in [GNU_PROPERTY_X86_FEATURE_1_AND, 4, GNU_PROPERTY_X86_FEATURE_1_SHSTK, 0] {
             self.obj.append(note, &word.to_le_bytes());
+        }
+        Ok(())
+    }
+
+    /// WP-185: `.note.gnu.property` on AArch64, as
+    /// `AArch64AsmPrinter::emitStartOfAsmFile` writes it (`llc` 19 and 22):
+    /// one `GNU_PROPERTY_AARCH64_FEATURE_1_AND` property whose bits are
+    /// BTI, PAC and GCS for the module flags `branch-target-enforcement`,
+    /// `sign-return-address` and `guarded-control-stack` that are not 0;
+    /// no note when none is set.
+    fn a64_gnu_property(&mut self, bits: u8) -> CgResult<()> {
+        use hod_ir::BranchProtection as Bp;
+        use hod_obj::elf;
+        let mut features = 0u32;
+        for (bit, feature) in [
+            (Bp::BTI, elf::GNU_PROPERTY_AARCH64_FEATURE_1_BTI),
+            (Bp::PAC_RET, elf::GNU_PROPERTY_AARCH64_FEATURE_1_PAC),
+            (Bp::GCS, elf::GNU_PROPERTY_AARCH64_FEATURE_1_GCS),
+        ] {
+            if bits & bit != 0 {
+                features |= feature;
+            }
+        }
+        if features != 0 {
+            let data = features.to_le_bytes();
+            let properties = [(elf::GNU_PROPERTY_AARCH64_FEATURE_1_AND, &data[..])];
+            elf::add_gnu_properties(&mut self.obj, &properties).map_err(obj_err)?;
         }
         Ok(())
     }

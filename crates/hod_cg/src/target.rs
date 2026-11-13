@@ -6,7 +6,7 @@
 //! (§4.8) are implemented once, in this crate, on top of a target's
 //! **glue** (the primitive moves) and its `assign`.
 
-use hod_ir::{Body, Inst, Module, ParamAttrs, TypeId, TypeTable, Value};
+use hod_ir::{Block, Body, Inst, Module, ParamAttrs, TypeId, TypeTable, Value};
 
 use crate::abi::{AbiUnsupported, Assignment, Sig};
 use crate::cx::FnCx;
@@ -388,5 +388,19 @@ pub trait Target: Sized + Sync {
     fn coro_transfer(&self, cx: &mut FnCx<'_, Self>, exit: Label) -> CgResult<()> {
         let _ = (cx, exit);
         Err(crate::error::CgError::unsupported(crate::coro_body::CORO_TARGET))
+    }
+    /// WP-185: called at the start of each block's code, after its label
+    /// is bound and its offset (§9.6) and landing pad (§9.4) are
+    /// recorded, before anything of the block is emitted: the place for
+    /// a branch-target landing pad (AArch64 `bti j`) at a block an
+    /// indirect branch or the unwinder may enter. The default emits
+    /// nothing.
+    ///
+    /// # Errors
+    /// What the target reports.
+    #[inline]
+    fn begin_block(&self, cx: &mut FnCx<'_, Self>, block: Block<'_>) -> CgResult<()> {
+        let _ = (cx, block);
+        Ok(())
     }
 }

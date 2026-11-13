@@ -781,6 +781,21 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
 
     // ---- calls ----
 
+    /// The call-site flags `hod_ir` keeps, in place after the arguments.
+    fn call_flags(&mut self, call: &CallSite<'a>) -> R {
+        for (on, word) in [
+            (call.is_noreturn(), " noreturn"),
+            (call.is_nounwind(), " nounwind"),
+            (call.returns_twice(), " returns_twice"),
+            (call.is_convergent(), " convergent"),
+            (call.is_always_inline(), " alwaysinline"),
+            (call.is_noinline(), " noinline"),
+        ] {
+            self.s(if on { word } else { "" })?;
+        }
+        Ok(())
+    }
+
     fn call(&mut self, body: &'a Body, id: u32, ty: TypeId, call: CallSite<'a>) -> R {
         let m = self.m;
         let fn_ty = call.fn_type();
@@ -847,10 +862,7 @@ impl<'a, W: Write + ?Sized> Writer<'a, W> {
             self.s(if call.args().is_empty() { "..." } else { ", ..." })?;
         }
         self.s(")")?;
-        self.s(if call.is_noreturn() { " noreturn" } else { "" })?;
-        self.s(if call.is_nounwind() { " nounwind" } else { "" })?;
-        self.s(if call.returns_twice() { " returns_twice" } else { "" })?;
-        self.s(if call.is_convergent() { " convergent" } else { "" })?;
+        self.call_flags(&call)?;
         if call.bundle_count() > 0 {
             self.s(" [ ")?;
             for (index, bundle) in call.bundles().enumerate() {

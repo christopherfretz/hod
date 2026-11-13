@@ -12,6 +12,7 @@
 
 pub mod encode;
 pub mod operand;
+pub mod sysreg;
 
 use hod_mc_a64::Fixup;
 
@@ -20,6 +21,8 @@ use crate::reason::{self, Refusal, operand as op_reason, other};
 
 /// The architecture features an instruction may need, from the
 /// function's (or the module's) `target-features`.
+// One field per `target-features` name, as written in the attribute.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Features {
     /// `+lse`: the large-system-extension atomics (`cas`, `swp`, `ld<op>`).
@@ -28,12 +31,14 @@ pub struct Features {
     pub crc: bool,
     /// `+fp-armv8`: the scalar floating-point instructions.
     pub fp: bool,
+    /// `+rand`: the `rndr` and `rndrrs` system registers.
+    pub rand: bool,
 }
 
 impl Features {
     /// The features of `aarch64-*-linux-*` with no attribute: the base
     /// architecture with floating point.
-    pub const BASE: Features = Features { lse: false, crc: false, fp: true };
+    pub const BASE: Features = Features { lse: false, crc: false, fp: true, rand: false };
 
     /// The features a `target-features` attribute value
     /// (`+lse,+crc,-fp-armv8,+v8.1a,...`) gives over [`Features::BASE`]:
@@ -51,6 +56,7 @@ impl Features {
                 "lse" => f.lse = on,
                 "crc" => f.crc = on,
                 "fp-armv8" => f.fp = on,
+                "rand" => f.rand = on,
                 _ => {
                     if on && is_v81_or_later(name) {
                         f.lse = true;

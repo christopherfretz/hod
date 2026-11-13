@@ -457,6 +457,7 @@ impl Generator {
         } else {
             self.rng.pick(&[TailKind::None, TailKind::Tail, TailKind::NoTail])
         };
+        let always_inline = self.rng.chance(16);
         let desc = CallDesc {
             cc: self.rng.pick(&[CallConv::C, CallConv::FAST, CallConv::COLD]),
             tail,
@@ -464,6 +465,8 @@ impl Generator {
             nounwind: self.rng.chance(2),
             returns_twice: self.rng.chance(16),
             convergent: self.rng.chance(8),
+            always_inline,
+            noinline: !always_inline && self.rng.chance(16),
             ret_attrs: if ret_signext { signext } else { ParamAttrs::NONE },
             arg_attrs: &attrs,
             bundles: &bundles[..bundle_count],

@@ -4,7 +4,7 @@
 //! intrinsics that generate no code.
 
 use hod_ir::Layering;
-use hod_ir::kit::{CALL_SITE_FLAGS, set_call_site_flags};
+use hod_ir::kit::{CALL_SITE_FLAGS, CALL_SITE_NOINLINE, set_call_site_flags};
 use hod_ir::{
     BlockId, Bundle, CallConv, CallDesc, Const, InlineAsm, Intrinsic, NoCode, Opcode, ParamAttrs,
     SymId, TailKind, TypeId, TypeKind, Value, no_code_intrinsic, resolve_intrinsic,
@@ -315,6 +315,9 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
                     let Some(text) = self.p.text else { continue };
                     if let Some(group) = text.attr_group(id) {
                         flags |= self.p.module.fn_attrs(group.attrs).flags();
+                        if group.noinline {
+                            flags |= CALL_SITE_NOINLINE;
+                        }
                         for name in &group.rejected {
                             let known = self
                                 .p
@@ -335,6 +338,9 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
             if !cleared {
                 self.p.fa.clear();
                 cleared = true;
+            }
+            if self.p.tok.kind == Tok::Word && self.p.text() == b"noinline" {
+                flags |= CALL_SITE_NOINLINE;
             }
             if !self.p.fn_attr(false)? {
                 break;

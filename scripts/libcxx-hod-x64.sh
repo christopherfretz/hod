@@ -50,8 +50,8 @@ if [ "$mode" = merge ]; then
         tail -n +2 "$t" >> "$dir/$m.tsv"
         d="${t%.tsv}"
         cat "$d/args.tsv" >> "$out/args.tsv"
-        find "$d/cov" -name '*.tsv' -exec cp {} "$out/cov/" +
-        [ -d "$d/phases" ] && find "$d/phases" -name '*.tsv' -exec cp {} "$out/phases/" +
+        find "$d/cov" -name '*.tsv' -exec cp -t "$out/cov/" {} +
+        [ -d "$d/phases" ] && find "$d/phases" -name '*.tsv' -exec cp -t "$out/phases/" {} +
     done
     exit 0
 fi

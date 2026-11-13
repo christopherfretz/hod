@@ -525,9 +525,9 @@ impl<'a, S: Sink> Walker<'a, S> {
             self.row(at::DEBUG_MODULE_FLAGS, at)?;
         }
         // `llc` writes the version the flag asks for, and DWARF 4 when
-        // there is none; `hod_dwarf` writes DWARF 5 (WP-087) and 4
-        // (WP-114, `spec/dwarf.md` §6.20) when the flag says so.
-        if !matches!(props.dwarf_version, Some(4 | 5)) && writes_debug_info(module) {
+        // there is none; so does `hod_dwarf` (WP-087: 5, WP-114: 4,
+        // WP-150: no flag, `spec/dwarf.md` §6.20).
+        if !matches!(props.dwarf_version, None | Some(4 | 5)) && writes_debug_info(module) {
             self.row(at::DEBUG_DWARF_VERSION, at)?;
         }
         for flag in module.other_flags() {

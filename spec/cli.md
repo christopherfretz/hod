@@ -99,6 +99,85 @@ Helpers the tool uses, also part of the facade: `InputKind::detect`,
 `module_triple`, `effective_triple`, `target_supported` (see "Input" and
 "Reasons").
 
+### The command line in the facade
+
+What the `hod` binary reads and writes besides the module is the
+facade's too (WP-091, design 0004 H2), so that a program that planned an
+`llc` command and compiles in process instead reads the same command
+line and environment and writes the same coverage line as the shim:
+
+```rust
+pub mod args {                       // "Options", "hod's own options"
+    pub fn parse(args: &[OsString]) -> CommandLine;   // the binary's whole command line
+    pub enum ArgError { UnknownOption(String), UnknownValue { option: String, value: String },
+        MissingValue(String), ExtraInput(String), NoCompile(String) }   // #[non_exhaustive]
+    impl ArgError { pub fn reason(&self) -> &'static str; }           // unknown-option, usage
+    pub fn compression(value: &OsStr) -> Result<Compression, String>;
+}
+impl Options { pub fn from_llc_args(args: &[impl AsRef<str>]) -> Result<Options, ArgError>; }
+
+pub mod env {                        // "Environment"; ENV_* names, SETTINGS, BITCODE_NATIVE
+    pub struct Environment { pub fallback, pub strict, pub coverage_log, pub bitcode_via,
+        pub compress_debug_sections, pub in_fallback, pub time_phases, pub census,
+        pub threads, pub makeflags, pub error: Option<String> }
+    impl Environment {
+        pub fn from_process() -> Environment;
+        pub fn from_vars(var: impl Fn(&str) -> Option<OsString>) -> Environment;
+        pub fn threads(&self, explicit: Option<usize>) -> Threads;
+        pub fn settings(&self) -> Result<Settings, EnvError>;
+    }
+    pub struct EnvError(pub String);
+}
+impl Settings { pub fn from_env() -> Result<Settings, EnvError>; }
+
+pub mod jobserver {                  // "Threads"
+    pub const JOBSERVER_MAX_THREADS: usize = 16;
+    pub fn fifo_from_makeflags(flags: &str) -> Option<PathBuf>;
+    pub struct Jobserver;            // impl ThreadTokens; open(path) -> Option<Jobserver>
+    pub fn threads(explicit: Option<usize>, makeflags: Option<&str>) -> Threads;
+}
+
+pub mod coverage {                   // "Coverage log"
+    pub struct Record { /* the eleven fields */ }
+    impl Record { pub fn line(&self) -> String; }
+    pub enum Outcome { Hod, Fallback, Error }
+    pub enum FallbackStatus { Exited(i32), Signaled(i32), Unknown }
+    pub const FIELDS: usize = 11;
+    pub struct Log;                  // open(path), append(&Record): one write per line
+}
+```
+
+- `args::parse` is the binary's parser, unchanged: it never fails and
+  records the first `ArgError` (`rejected`) or a mistake in an option of
+  hod's own (`fatal`), with the arguments for the fallback (`forwarded`).
+- `Options::from_llc_args` is the same parser over `llc`'s options only:
+  `Ok` is exactly the `options` that `parse` makes of the same arguments
+  (`-o` and the input are accepted and are not options), `Err` the
+  `rejected` that `parse` records. Two differences, both because the
+  arguments are `llc`'s: hod's own options (`--fallback`, `--strict`,
+  `--coverage-log`, `--bitcode-via`, `--compress-debug-sections`,
+  `--threads`) are unknown options (`unknown-option`, taking no value),
+  and `-version` or `-help` is `ArgError::NoCompile` (`option '-version'
+  compiles nothing`, `usage`). `debug_compression` stays at its default:
+  the caller sets it, from `Environment::compress_debug_sections` if it
+  wants the shim's bytes.
+- `Environment` reads every variable of "Environment", each once, and
+  never fails: a bad value is `error` (reason `usage`), the other fields
+  what could be read (the binary prints `--version` with them).
+  `Environment::threads` is the rule of "Threads" (`explicit` is the
+  caller's `--threads`, over `HOD_THREADS`, over the jobserver), opening
+  the fifo at its first use only. `Environment::settings` is `census`
+  and `threads(None)`, bitcode read natively (`HOD_BITCODE_VIA` is the
+  binary's: it names a converter process), or `error` as an `EnvError`.
+  `Settings::from_env` is `Environment::from_process().settings()`: a
+  caller reads it once per process, not per module. Strict mode and the
+  coverage log are fields of `Environment`, not of `Settings`: they
+  change what the caller does with an answer, not how hod compiles.
+- `coverage::Record::line` is the line of "Coverage log", newline
+  included; `Log::append` writes it with one `write`. An in-process
+  caller writes input kind `module` (`InputKind::Module`, which
+  `InputKind::detect` never returns) and input bytes `-`.
+
 ## Session
 
 `hod::Session` compiles one module that a producer builds in process and
@@ -909,8 +988,8 @@ A line is eleven fields separated by single tabs and ended by one newline:
 |---|---|---|
 | 1 | outcome | `hod`: hod wrote the output. `fallback`: the fallback ran (whatever its exit status). `error`: the invocation ended in hod without output. |
 | 2 | reason | a name from "Reasons"; `-` when the outcome is `hod` |
-| 3 | input kind | `text`, `bitcode`: what hod was given (a converted module stays `bitcode`); `-` if hod did not read the input |
-| 4 | input bytes | decimal, of what hod was given (the bitcode's, not the converted text's); `-` if hod did not read the input |
+| 3 | input kind | `text`, `bitcode`: what hod was given (a converted module stays `bitcode`); `module`: a module built in process and handed to a `Session` (written by an embedding caller, never by the binary); `-` if hod did not read the input |
+| 4 | input bytes | decimal, of what hod was given (the bitcode's, not the converted text's); `-` if hod did not read the input or was given a `module` |
 | 5 | output path | the output as named: the `-o` value, or the derived name; `-` is standard output (and "not known" when hod did not get that far and no `-o` was given) |
 | 6 | target | the stated target; before the input is read, `-mtriple` only; `-` if none. For bitcode the module's own triple is known once its module level was read ("Input") or it was converted |
 | 7 | hod microseconds | decimal: wall time from process start to the point hod finished its own work (its output written, its error reported, or the fallback about to start). It includes the conversion (field 9) |
@@ -1034,17 +1113,18 @@ inherits the variable with the rest of the environment; `llc` ignores it.
 | The facade, Input, Reasons | `crates/hod/src/lib.rs`: `input_kind_detection`, `reasons_in_order`, `construct_names_are_stable_and_distinct`, `module_triple_scan`, `supported_targets`, `error_text`; `crates/hod/src/front.rs`: `reader_errors_and_their_reasons`; `crates/hod/tests/front.rs` (text, the checked-in `data/front.bc`, and bitcode from each installed `llvm-as`): `fixture_first_refusal_and_census`, `body_reasons_name_the_function`, `verify_is_on_the_path_to_code_generation`, `target_reasons`, `reader_refusals`, `installed_llvm_bitcode_agrees_with_text`; `driver.rs`: `census_of_every_reason`; the whole corpus: `cargo xtask corpus reasons` (`docs/status/reasons.md`) |
 | Session | `crates/hod/tests/session.rs`: `seed_corpus_through_the_session_is_compile` (every `tests/ir` module through the public session equals `compile`; bodies last to first give the same object), `the_object_is_appended_and_an_error_leaves_the_buffer`, `what_new_declines_and_an_empty_module`, `census_through_the_session`, `misuse_is_an_error` (every row of the misuse table), `the_unit_plan_comes_before_code_generation`; `crates/hod/src/session.rs`: `rejections_and_their_reasons`, `errors_from_hod_ir`, the `compile_fail` doctest of `finish`; the whole corpus: `crates/hod/tests/session_corpus.rs` (ignored; two builds compared by their dumps) |
 | Bitcode conversion | `crates/hod_cli/src/convert.rs`: `usable_output`, `quoted_line`, `standard_error_is_bounded`, `reasons_and_messages`; `driver.rs`: `converted_bitcode_is_compiled`, `conversion_only_when_bitcode_is_the_reason`; `cli.rs`: `bitcode_is_converted_and_goes_on_as_text`, `conversion_failures` (every row of the result table, with a fallback, in strict mode and with neither; a megabyte of input the converter may not read; a megabyte on its standard error), `converter_that_cannot_be_started`, `bitcode_file_input`, `converter_settings`, `hod_is_not_its_own_converter`, `real_llvm_dis_converts_bitcode` (each installed LLVM; plain and wrapped bitcode; the native census equals the converted one), `real_llvm_dis_of_another_major`; `kiln_e2e.rs` |
-| Options | `crates/hod_cli/src/args.rs`: `defaults`, `everything_kiln_passes`, `spellings`, `spellings_of_the_rest`, `rejected_command_lines`, `rejection_reasons_and_messages`, `non_utf8_arguments`, `version_and_help`; `crates/hod_cli/src/driver.rs`: `unknown_option_without_fallback`, `version_and_help`; `crates/hod_cli/tests/cli.rs`: `unknown_options`, `version_and_help` |
-| hod's own options, Environment | `args.rs`: `hod_options_are_parsed_and_not_forwarded`, `mistakes_in_hod_options_are_fatal`; `driver.rs`: `environment`, `mistakes_in_hod_settings`; `cli.rs`: `settings_from_the_environment`, `converter_settings` |
+| Options | `crates/hod/src/args.rs`: `defaults`, `everything_kiln_passes`, `spellings`, `spellings_of_the_rest`, `rejected_command_lines`, `rejection_reasons_and_messages`, `non_utf8_arguments`, `version_and_help`; `crates/hod_cli/src/driver.rs`: `unknown_option_without_fallback`, `version_and_help` (also the help text); `crates/hod_cli/tests/cli.rs`: `unknown_options`, `version_and_help` |
+| The command line in the facade | `crates/hod/src/args.rs`: `from_llc_args_is_the_parse`, `from_llc_args_knows_llc_options_only`; `crates/hod/src/env.rs`: `settings_of_the_environment`, `from_env_reads_the_process`; `crates/hod/src/coverage.rs`: `line_format` (field 3 `module`) |
+| hod's own options, Environment | `crates/hod/src/args.rs`: `hod_options_are_parsed_and_not_forwarded`, `mistakes_in_hod_options_are_fatal`; `crates/hod/src/env.rs`: `environment`; `driver.rs`: `mistakes_in_hod_settings`; `cli.rs`: `settings_from_the_environment`, `converter_settings` |
 | Phase report | `driver.rs`: `phase_report`, `phase_report_of_a_conversion`; `cli.rs`: `phase_report_with_a_fallback` |
 | Behaviour | `driver.rs`: `success_writes_the_object`, `options_reach_the_code_generator`, `output_names_follow_llc`, `io_errors` |
 | Fallback protocol | `cli.rs`: `fallback_receives_original_arguments_and_identical_input`, `file_input`, `hod_is_not_its_own_fallback`, `real_llc_fallback_text`, `real_llc_fallback_bitcode`, and the "Bitcode conversion" tests for the original bytes after a conversion; `driver.rs`: `fallback_loop_is_refused` |
 | Strict mode | `cli.rs`: `strict_mode_fails_with_the_construct_named`; `crates/hod_cli/tests/kiln_e2e.rs` |
 | Pre-opt modules | `crates/hod/tests/inlining.rs` (always-inline, WP-021); `crates/hod/tests/coro_preopt.rs`: `a_pre_opt_coroutine_is_compiled`, `every_coroutine_refusal_is_decided_before_code_generation` (each name, no `bodies` phase, the same name from code generation alone), `a_matrix_without_coroutines_declines_at_the_module_level` (the row taken off, both targets), `modules_without_coroutines_are_not_affected`; `crates/hod_cli/tests/preopt_coro.rs`: `strict_mode_builds_or_declines_by_name`, `hybrid_mode_falls_back_for_the_declined_module_only`, `a_declined_module_becomes_an_object_through_opt_and_llc`; the corpus and libc++ census of `spec/landed/codegen/WP-109.md` |
 | Reasons | `cli.rs`: `reasons_reach_the_log`; `driver.rs`: `malformed_input_and_invalid_options`, `internal_errors_are_not_declines` |
-| The back half, Threads | `crates/hod/tests/back.rs`: `object_is_the_same_for_every_thread_count` (1, 2, 3, 8 threads), `tokens_are_asked_for_large_modules_and_given_back`, `the_first_refusal_in_module_order_wins`, `target_features`, `x86_64_is_a_stable_refusal`, `break_even` (ignored: the measurement); `crates/hod/tests/read_threads.rs`: `the_reading_policy`, `reading_and_code_generation_share_one_request`; `crates/hod/src/back.rs`: `threads_wanted`, `options_for_code_generation`, `errors_of_the_back_half`; `crates/hod_cli/src/jobs.rs`: `makeflags_forms`, `where_threads_come_from`, `tokens_are_taken_without_waiting_and_given_back`; `crates/hod_a64/src/features.rs` (§5.5.2); `kiln_e2e.rs`: kiln programs (calls, exceptions, containers, coroutines) through hod or its fallback, each linked under every linker and run against the LLVM build, one pinned to hod (integer code, strict) and one to the fallback (`module:asm`); `cargo xtask corpus verify --strict` (executing the corpus); `tests/ir/exit_*.ll` |
+| The back half, Threads | `crates/hod/tests/back.rs`: `object_is_the_same_for_every_thread_count` (1, 2, 3, 8 threads), `tokens_are_asked_for_large_modules_and_given_back`, `the_first_refusal_in_module_order_wins`, `target_features`, `x86_64_is_a_stable_refusal`, `break_even` (ignored: the measurement); `crates/hod/tests/read_threads.rs`: `the_reading_policy`, `reading_and_code_generation_share_one_request`; `crates/hod/src/back.rs`: `threads_wanted`, `options_for_code_generation`, `errors_of_the_back_half`; `crates/hod/src/jobserver.rs`: `makeflags_forms`, `where_threads_come_from`, `tokens_are_taken_without_waiting_and_given_back`; `crates/hod_a64/src/features.rs` (§5.5.2); `kiln_e2e.rs`: kiln programs (calls, exceptions, containers, coroutines) through hod or its fallback, each linked under every linker and run against the LLVM build, one pinned to hod (integer code, strict) and one to the fallback (`module:asm`); `cargo xtask corpus verify --strict` (executing the corpus); `tests/ir/exit_*.ll` |
 | Exit status | `cli.rs`: `fallback_exit_status_propagates`; `driver.rs`: `unsupported_without_fallback`, `malformed_input_and_invalid_options`, `io_errors` |
-| Coverage log | `crates/hod_cli/src/coverage.rs`: `line_format`, `free_form_fields_are_escaped`, `appends_to_an_existing_file`; `cli.rs`: `coverage_log_survives_concurrent_writers` (16 concurrent writers), `fallback_exit_status_propagates` (field 10, signal included), every test's `coverage` helper (eleven fields, their vocabulary); `xtask/src/irdiff/engine.rs`: `coverage_log_reading` (a reader under the append-only rule) |
+| Coverage log | `crates/hod/src/coverage.rs`: `line_format`, `free_form_fields_are_escaped`, `appends_to_an_existing_file`; `cli.rs`: `coverage_log_survives_concurrent_writers` (16 concurrent writers), `fallback_exit_status_propagates` (field 10, signal included), every test's `coverage` helper (eleven fields, their vocabulary); `xtask/src/irdiff/engine.rs`: `coverage_log_reading` (a reader under the append-only rule) |
 
 The tests that need LLVM tools (`real_llc_*`, `real_llvm_dis_*`) and kiln
 (`kiln_e2e.rs`) skip with a note when the tool is missing and fail instead

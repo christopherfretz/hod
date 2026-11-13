@@ -172,6 +172,12 @@ pub fn mask(text: &str, dir: &Path) -> String {
         let mut i = 0;
         let mut kept = 0;
         while i < b.len() {
+            // Every pattern below is ASCII: a byte inside a multi-byte
+            // character starts none, and `line[..i]` must not split one.
+            if !line.is_char_boundary(i) {
+                i += 1;
+                continue;
+            }
             let rest = &b[i..];
             if rest.starts_with(b"0x") {
                 out.push_str(&line[kept..i]);
@@ -266,6 +272,17 @@ mod tests {
         assert_eq!(mask(text, dir), wanted);
         // Values, lines and columns are never masked.
         assert_eq!(mask("x = 12 at a.c:3:4\n", dir), "x = 12 at a.c:3:4\n");
+    }
+
+    // A source line a debugger shows may hold any character: a position
+    // inside a multi-byte one is never sliced (WP-150).
+    #[test]
+    fn masks_lines_with_multi_byte_characters() {
+        let dir = Path::new("/w");
+        let text = "9\t  int n = 3; // § ü — 0x1f <f+8> prog`f + 4 ✓\n";
+        let wanted = "9\t  int n = 3; // § ü — 0x? <f+?> prog`f + ? ✓\n";
+        assert_eq!(mask(text, dir), wanted);
+        assert_eq!(mask("§+1 « <a+2>»\n", dir), "§+1 « <a+?>»\n");
     }
 
     #[test]

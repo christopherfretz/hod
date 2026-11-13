@@ -4639,7 +4639,9 @@ Recorded only when the module has debug information.
   `debug:dbg-value` (any `#dbg_value`: clang and kiln do not emit them at
   `-O0`, and none is described yet, `spec/dwarf.md` open question 9),
   `debug:dbg-assign`, `debug:declare-address` (a `#dbg_declare` of a
-  constant, a symbol, or a value that never got a home).
+  constant, a symbol, or a value that never got a home; a declaration of
+  `undef` or `poison` gets no row at all, as `llc` drops it, WP-156,
+  `spec/dwarf.md` §6.22).
 - `debug_calls` (`DebugCallRow`, WP-113, `spec/dwarf.md` §6.19): in a
   function whose subprogram has `DIFlagAllCallsDescribed`, one row per
   call instruction an IR `call` or `invoke` became, in lowering order:

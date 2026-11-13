@@ -1,5 +1,6 @@
 //! Extra code-generation threads (`spec/cli.md` "Threads"): from an
-//! explicit `HOD_THREADS`, or else from a GNU make jobserver.
+//! explicit `HOD_THREADS`, or else from a GNU make jobserver. The client
+//! of the shim and of an embedding caller alike ([`crate::Environment`]).
 //!
 //! A build system already runs one compiler per core, so hod takes no
 //! thread it is not given (`docs/ARCHITECTURE.md` "Parallelism"). Under a
@@ -17,7 +18,7 @@ use std::io::{ErrorKind, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-use hod::{ThreadTokens, Threads};
+use crate::{ThreadTokens, Threads};
 
 /// The most threads hod uses under a jobserver.
 pub const JOBSERVER_MAX_THREADS: usize = 16;

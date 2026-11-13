@@ -601,3 +601,62 @@ cause, may leave the sections added so far.)
 - Whether a call can unwind is `CallSiteRow::nounwind` (WP-049, §9.3).
 - The function's name, section and the object's `.data`: the caller
   supplies them after the merge, as it does `Fde::start` (§1.1).
+
+## 10. `.debug_frame` (WP-150)
+
+### 10.1 Which section
+
+In a module with debug information (a compile unit that is not
+`NoDebug`), `llc` gives **every** function it emits CFI, with or without
+`uwtable` (`AsmPrinter::getFunctionCFISectionType`). It chooses the
+section once for the module (`ModuleCFISection`):
+
+- if any emitted function needs an unwind entry (`uwtable`, may throw,
+  or has a personality; §1.1's `needs_unwind_entry`), **all** the FDEs go
+  to `.eh_frame`, the functions that need none included;
+- otherwise they **all** go to `.debug_frame`.
+
+Declarations and `available_externally` functions are not emitted and
+do not count. Without debug information only the functions that need an
+entry have an FDE (§1.1), unchanged. Checked with `llc` 19 and 22 on
+both targets. `hod_cg::emit::unwind` applies the rule over the placed
+functions of the object (`unwind_tables`). The rows are each function's
+CFI rows (`FuncRecord::cfi`), which `shrink.rs` already moves, so no new
+table of code offsets exists.
+
+### 10.2 Layout (`write_debug_frame`)
+
+DWARF 5 §6.4.1, as `llc` writes it:
+
+- **CIE**, once: length (4), CIE id `0xffffffff`, version 4,
+  augmentation `""`, address size 8, segment selector size 0, then §2.1's
+  code alignment (ULEB), data alignment (SLEB), return-address column
+  (ULEB) and initial instructions; zero-padded (`DW_CFA_nop`) to 8.
+- **FDE**, one per function, in `order` (§5): length (4); the CIE pointer,
+  the CIE's offset in the section (0), 4 bytes with an absolute 32-bit
+  relocation (`R_AARCH64_ABS32`, `R_X86_64_32`) against the section's own
+  section symbol; the initial location, 8 bytes with an absolute 64-bit
+  relocation (`R_AARCH64_ABS64`, `R_X86_64_64`) against the function's
+  section symbol plus its start; the address range, 8 bytes; §4's
+  instructions from the rows; zero-padded to 8.
+- No augmentation data, personality or LSDA: an FDE with either is
+  refused (`Error::PersonalityInDebugFrame`).
+- The section is `.debug_frame`, `SHT_PROGBITS` without flags
+  (`SectionKind::Debug`), aligned to 8; no FDE, no section.
+
+### 10.3 Tests
+
+- `crates/hod_eh/tests/debug_frame.rs`: `llc` 19 and 22, both targets, a
+  module of leaf, non-leaf, callee-saving, large-frame and frame-pointer
+  functions: `llc`'s rows read back and written again give its section
+  bytes, alignment and relocations exactly. The empty and refused cases.
+- `crates/hod/tests/debug_frame.rs`: whole objects of `-g` C by clang 19
+  and 22 against `llc`, both targets: the section chosen (`.debug_frame`
+  alone without unwind tables, `.eh_frame` for all when one function
+  needs an entry, neither without `-g`; kiln++'s C++, whose callers may
+  throw, all in `.eh_frame`); the CIE bytes; each FDE's entry rule; hod's
+  `.debug_frame` rows equal to its own `.eh_frame` rows of the module
+  with tables. hod's prologues and epilogues are its own, so the FDE
+  bytes are compared from `llc`'s rows (`hod_eh`'s test above).
+- `tests/debug/debug_frame.c`: a backtrace, `up` and `finish` through two
+  functions with only `.debug_frame` (gdb and lldb, both targets).

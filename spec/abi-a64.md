@@ -743,11 +743,20 @@ present. They may differ in `zeroext`, `signext` and `nest`.
   they were at the caller's entry. (This is what makes a variadic
   forwarding thunk possible; the thunk cannot know which of them carry
   arguments.)
+- Variable arguments of the call before the forwarded `...` (which
+  LLVM's verifier accepts) are assigned after the named ones as by §9.1
+  and written over the forwarded registers they take; the callee reads
+  them first, then the forwarded registers that remain (WP-115, as
+  `llc` does). One placed on the stack would grow the area beyond the
+  caller's named arguments: `spec/codegen.md` §1 rejects it
+  (`musttail:stack-args-grow`).
 
 *Evidence:* `table::musttail_pairs`; `cc::musttail_in_llvm` (LLVM accepts
 a pair differing in `nest`, refuses one differing in `alignstack`, and
 its variadic thunk restores `x1`..`x7`, `x8` and `q0`..`q7` before the
-branch, in all four configurations).
+branch, in all four configurations); `crates/hod_a64/tests/musttail_varargs.rs`
+(generated thunks with variable arguments of every class, against
+`llc` 19 and 22).
 
 ## 9. Variadic functions
 

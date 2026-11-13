@@ -73,10 +73,49 @@ pub const LANDING_PAD: &str = "x64:landingpad";
 pub const LANDING_PAD_CLAUSE: &str = "x64:landingpad-clause";
 /// `resume` of a value that is not `{ ptr, i32 }`.
 pub const RESUME: &str = "x64:resume";
+/// A `musttail` call with variable arguments of its own before a
+/// forwarded `...` (WP-115, `spec/abi-x64.md` §8.5): `llc` overwrites
+/// those in registers with the forwarded registers and passes `al` as
+/// it arrived, so it gives no meaning to follow.
+pub const MUSTTAIL_VARIABLE_ARGUMENTS: &str = "x64:musttail-variable-arguments";
+
+/// The target as it compiles `function` of `module`, from the symbol
+/// alone: what [`Target::for_function`] answers for its body (the
+/// features of `"target-cpu"` and `"target-features"`, `spec/abi-x64.md`
+/// §1.3; the coroutine mark). `None` for a symbol that is not a function.
+///
+/// The facade's `musttail` stack-argument rule assigns a function's own
+/// signature and each `musttail` call in it with this target
+/// (`hod_cg::abi::TargetStackArgs::per_function`, §8.5, WP-148), as the
+/// call sequence does.
+pub fn target_of(module: &hod_ir::Module, function: hod_ir::Symbol<'_>) -> Option<X64> {
+    let hod_ir::SymbolKind::Function { attrs, .. } = function.kind() else {
+        return None;
+    };
+    if attrs.index() >= module.fn_attrs_count() {
+        return None;
+    }
+    let attrs = module.fn_attrs(attrs);
+    let text = |what| attrs.string(what).and_then(|s| std::str::from_utf8(s).ok());
+    let features = crate::features::of_function(
+        text(hod_ir::FnStr::TargetCpu),
+        text(hod_ir::FnStr::TargetFeatures),
+    );
+    let coro = attrs.has(hod_ir::FnAttrs::PRESPLIT_COROUTINE);
+    Some(X64 { features, coro })
+}
 
 /// Every name this module refuses with.
-pub const UNSUPPORTED: &[&str] =
-    &[CALL, CALL_BUNDLE, VA_INTRINSIC, VA_ARG, LANDING_PAD, LANDING_PAD_CLAUSE, RESUME];
+pub const UNSUPPORTED: &[&str] = &[
+    CALL,
+    CALL_BUNDLE,
+    VA_INTRINSIC,
+    VA_ARG,
+    LANDING_PAD,
+    LANDING_PAD_CLAUSE,
+    RESUME,
+    MUSTTAIL_VARIABLE_ARGUMENTS,
+];
 
 /// The size of the SysV `va_list`: `{ i32, i32, ptr, ptr }`.
 pub const VA_LIST_BYTES: u32 = 24;
@@ -284,6 +323,12 @@ pub fn call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
         && result != TypeId::VOID
         && cx.target.class_of(cx.types(), result) == Class::Mem
         && has_odd_leaf(cx, result);
+    if musttail
+        && matches!(cx.types().kind(site.fn_type()),
+            TypeKind::Function { params, .. } if site.args().len() > params.len())
+    {
+        return unsupported(MUSTTAIL_VARIABLE_ARGUMENTS);
+    }
     if musttail && is_variadic(cx) {
         forward_variadic_registers(cx, inst)?;
     }

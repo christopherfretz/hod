@@ -58,6 +58,13 @@ pub struct Scratch {
     pub(crate) pinned: RegSet,
     /// Registers taken as temporaries by the instruction being lowered.
     pub(crate) temps: RegSet,
+    /// Every register the policy has handed out or made a value's
+    /// location since the function began ([`FnCx::regs_used`]).
+    pub(crate) used: RegSet,
+    /// What shrinking the code removes and relaxes (`shrink`, §6.4).
+    pub(crate) cuts: Vec<(u32, u32)>,
+    pub(crate) relax: Vec<crate::shrink::Relax>,
+    pub(crate) chosen: Vec<bool>,
     pub(crate) frame: Frame,
     pub(crate) labels: Labels,
     /// Where each body slot is, by `SlotId`.
@@ -96,6 +103,10 @@ impl Default for Scratch {
             occupied: RegSet::EMPTY,
             pinned: RegSet::EMPTY,
             temps: RegSet::EMPTY,
+            used: RegSet::EMPTY,
+            cuts: Vec::new(),
+            relax: Vec::new(),
+            chosen: Vec::new(),
             frame: Frame::default(),
             labels: Labels::default(),
             slots: Vec::new(),
@@ -141,6 +152,9 @@ impl Scratch {
             + bytes(&self.islands)
             + bytes(&self.island_data)
             + bytes(&self.dbg_labels)
+            + bytes(&self.cuts)
+            + bytes(&self.relax)
+            + bytes(&self.chosen)
     }
 }
 
@@ -270,6 +284,10 @@ pub struct FnCx<'a, T: Target> {
     pub(crate) has_pads: bool,
     /// Whether the function's block offsets are recorded (§9.6).
     pub(crate) block_addrs: bool,
+    /// Whether the function has an `indirectbr`: every unreachable block
+    /// is then given the trap's offset, else only an address-taken one
+    /// (§9.6, WP-115).
+    pub(crate) indirect_br: bool,
     pub(crate) frame_desc: FrameDesc,
     /// The largest alignment a data island asked for.
     pub(crate) island_align: u32,

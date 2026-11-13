@@ -655,7 +655,9 @@ the x87 control word and the MXCSR control bits (psABI §3.2.1, figure
 `rdx`, `rsi`, `rdi`, `r8`..`r11` are clobbered. The x87 stack is empty
 at a call and at a return, except for the x87 return parts. The
 direction flag is clear at both. `rsp` is 16-byte aligned at every
-`call` (so ≡ 8 mod 16 at a function's entry).
+`call` (so ≡ 8 mod 16 at a function's entry). A hod function saves and
+restores only the callee-saved registers it writes (its save set,
+`codegen.md` §5.6.15); `rbp` always.
 
 ### 8.5 `musttail`
 
@@ -675,10 +677,55 @@ arrived.
   caller received: `rdi`..`r9` and all 128 bits of `xmm0`..`xmm7` as far
   as they hold no named argument, `al`, and the stack-argument area,
   exactly as they were at entry. `r10` and `r11` are not passed on.
+- Variable arguments of the call before the forwarded `...` (which
+  LLVM's verifier accepts) are refused, `x64:musttail-variable-arguments`
+  (`hod_x64::call`). `llc` 19 and 22 give them no meaning to follow:
+  they place them, then write the forwarded registers over them, so
+  the callee receives the caller's entry values in those registers
+  (`musttail call (ptr, ...) @printf(ptr %f, i32 42, double 1.5, ...)`
+  prints the caller's own second and third arguments, not 42 and 1.5),
+  and `al` is passed on as it arrived, not counted. AArch64 places them
+  over the forwarded registers (`abi-a64.md` §8.5).
+
+**The stack-argument rule (WP-148).** `classify` decides a `musttail`
+call with the facade's hook (`spec/codegen.md` §7.1 "The `musttail`
+hook"), which for x86-64 is
+`hod_cg::abi::TargetStackArgs::per_function(&X64, hod_x64::call::target_of)`:
+
+1. The target of a function is `hod_x64::call::target_of(module,
+   function)`: the features of its `"target-cpu"` and
+   `"target-features"` (§1.3) and its coroutine mark, exactly what
+   `X64::for_function` gives the code generator for its body.
+2. The caller's area (`of_function`) is the `stack_size` of `X64::assign`
+   of the caller's own signature (named parameters only, declared
+   attributes) with the caller's target.
+3. The call's area (`of_call`) is the `stack_size` of `X64::assign` of
+   the call (its effective attributes, the variable arguments before a
+   forwarded `...` typed by their values) with the target of the
+   function the call is in: the caller's, never the callee's.
+4. The call is `musttail:stack-args-grow` when the call's area is larger
+   than the caller's, both as `assign` gives them (not rounded to 16).
+   Since the verifier makes the two signatures agree (above), this
+   happens only through variable arguments before the `...` that go to
+   the stack. Otherwise the rule accepts the call, and the code
+   generator lowers it, or refuses one with such variable arguments as
+   `x64:musttail-variable-arguments`.
+5. When `X64::assign` refuses either signature (for example a vector
+   wider than 16 bytes under AVX, `x64:wide-vector-abi`, or an
+   `x86_fp80` under `-x87`), or the symbol is not a function, the rule
+   has no answer and the call is `musttail:stack-args-unknown`.
 
 *Evidence:* `cc::musttail_in_llvm` (LLVM refuses a pair differing in
 `alignstack`; its variadic thunk restores `rdi`..`r9`, `xmm0`..`xmm7`
-and `al` before its `jmp`, in all six configurations); `09-musttail.ll`.
+and `al` before its `jmp`, in all six configurations); `09-musttail.ll`;
+`crates/hod_x64/tests/musttail_varargs.rs` (the refusal, and `llc`'s
+program under `qemu-x86_64` losing the variable arguments);
+`crates/hod/tests/musttail_x64.rs` (generated thunks of every class of
+§4 and §6 through the facade, the rule against a model of §3 on every
+case, those that compile run against `llc` 19 and 22 under bfd, lld and
+mold; the features of the calling function deciding);
+`crates/hod/tests/musttail_forward.rs` (the three outcomes by text and
+bitcode).
 
 ### 8.6 DWARF register numbers
 

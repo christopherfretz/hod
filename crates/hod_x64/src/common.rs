@@ -22,8 +22,9 @@
 //!   that reads it. Zero is `mov r32, 0`, never `xor`.
 //! - **Frame places** go through [`frame_inst`]: a local is addressed
 //!   from `rbp` by a `disp32` that `end_function` biases by the final
-//!   frame size (`frame::end`), so every access to a local must be made
-//!   by that function.
+//!   frame size (`frame::end`) and shortens to a `disp8` when it then
+//!   fits (`spec/codegen.md` §5.6.17), so every access to a local must be
+//!   made by that function.
 
 use std::cell::RefCell;
 
@@ -60,13 +61,11 @@ pub const RSP: Reg = Reg::Rsp;
 /// is counted from the field's end (§6.2: `disp = target - (at + 4)`).
 pub const REL32: FixupKind = FixupKind(0);
 /// A `rel8` field of a short jump, counted the same way from the end of
-/// the one-byte field. Only a branch to a label already bound uses it
-/// ([`branch`]), so its fixup is always patched at once.
+/// the one-byte field: a backward branch that reaches when it is
+/// emitted ([`branch`]), or a `rel32` branch relaxed once the function
+/// is complete (`FnCx::relaxable`, `spec/codegen.md` §5.6.15).
 pub const REL8: FixupKind = FixupKind(1);
 
-/// The bytes the prologue pushes below the frame pointer: the save set
-/// `rbx`, `r12`..`r15` (§5.6).
-pub const SAVE_BYTES: i32 = 40;
 /// The offset of the first incoming stack argument from `rbp`: the
 /// saved `rbp` and the return address.
 pub const INCOMING_BASE: i32 = 16;
@@ -138,8 +137,9 @@ pub fn deferred_first<'a>(cx: Cx<'_, 'a>, inst: IrInst<'a>, fused: Option<Value>
 
 thread_local! {
     /// The offsets of the `disp32` fields of the accesses to locals in the
-    /// function being compiled: `frame::end` adds the bias of the final
-    /// frame to each. One buffer per thread, reused across functions.
+    /// function being compiled, in offset order: `frame::end` adds the
+    /// bias of the final frame to each and shortens those that fit a byte
+    /// (§5.6.17). One buffer per thread, reused across functions.
     static LOCAL_SITES: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -148,21 +148,54 @@ pub fn reset_local_sites() {
     LOCAL_SITES.with(|sites| sites.borrow_mut().clear());
 }
 
-/// Adds `bias` to the `disp32` of every local access of the function
-/// (`end_function`).
+/// The `ModRM` of `[rbp + disp32]`, its `reg` field masked out: `mod`
+/// 10, `rm` 101 (no `SIB`).
+const MODRM_RBP_DISP32: u8 = 0b10_000_101;
+
+/// The `ModRM` bits `mod` and `rm`.
+const MODRM_MOD_RM: u8 = 0b11_000_111;
+
+/// The `mod` field of a `disp8` operand, `01`.
+const MOD_DISP8: u8 = 0b01_000_000;
+
+/// The bytes a `disp8` saves over a `disp32`.
+const DISP8_SAVES: u32 = 3;
+
+/// Adds `bias` to the displacement of every local access of the function
+/// (`end_function`), and writes each one that then fits a signed byte as
+/// `[rbp + disp8]` (`spec/codegen.md` §5.6.17): `ModRM` `mod` 10 → 01,
+/// the byte written, the three bytes after it cut (`FnCx::cut`), so that
+/// whatever follows the displacement (an immediate) moves with the code.
 ///
 /// # Errors
 /// `Internal` for a field outside the code or a displacement the bias
 /// takes out of 32 bits (the frame limit keeps it in).
 pub fn bias_local_sites(cx: &mut FnCx<'_, X64>, bias: i64) -> CgResult<()> {
-    let code = cx.code_mut();
     let ok = LOCAL_SITES.with(|sites| {
-        sites.borrow().iter().all(|&at| {
-            let at = at as usize;
-            mc::Fixup::Abs32
-                .extract(code, at)
-                .is_some_and(|disp| mc::Fixup::Abs32.patch(code, at, disp + bias))
-        })
+        let sites = sites.borrow();
+        for &field in sites.iter() {
+            let at = field as usize;
+            let code = cx.code_mut();
+            let Some(disp) = mc::Fixup::Abs32.extract(code, at).map(|d| d + bias) else {
+                return false;
+            };
+            // A local is `[rbp + disp32]`, `ModRM` right before the
+            // field; any other shape keeps its `disp32`.
+            let short = at
+                .checked_sub(1)
+                .filter(|&m| code[m] & MODRM_MOD_RM == MODRM_RBP_DISP32)
+                .filter(|_| i8::try_from(disp).is_ok());
+            match short {
+                Some(modrm) => {
+                    code[modrm] = code[modrm] & !MODRM_MOD_RM | MOD_DISP8 | 0b101;
+                    code[at] = disp as u8;
+                    cx.cut(field + 1, DISP8_SAVES);
+                }
+                None if !mc::Fixup::Abs32.patch(code, at, disp) => return false,
+                None => {}
+            }
+        }
+        true
     });
     if ok { Ok(()) } else { cx.bug("a local access whose displacement cannot be biased") }
 }
@@ -171,7 +204,7 @@ pub fn bias_local_sites(cx: &mut FnCx<'_, X64>, bias: i64) -> CgResult<()> {
 /// `sp_shift` bytes below where the place was defined (an `Outgoing`
 /// place moves with it), and whether it is a local (its `disp32` must be
 /// recorded). A local is `[rbp + o]` with an absolute `disp32` that
-/// `end_function` biases to `o - 40 - FRAME`; an incoming argument is
+/// `end_function` biases to `o - 8n - FRAME`; an incoming argument is
 /// `[rbp + 16 + n]`; an outgoing one `[rsp + n]`.
 fn frame_mem(place: FrameRef, sp_shift: i32) -> (Mem, bool) {
     match place {
@@ -352,10 +385,41 @@ pub fn pieces(bytes: u32) -> impl Iterator<Item = (u32, u32)> {
     })
 }
 
+/// The largest copy written out as moves; a larger one is `rep movsb`
+/// (`spec/codegen.md` §5.6.15).
+pub const UNROLLED_MAX: u32 = 64;
+
+/// The bytes [`rep_movsb`] pushes: `rcx`, `rsi`, `rdi`.
+const REP_PUSHED: i32 = 24;
+
+/// `rep movsb` of `bytes` bytes (§5.6.15), the addresses put in `rsi`
+/// and `rdi` by `addresses` while `rcx`, `rsi` and `rdi` are pushed
+/// (`REP_PUSHED` bytes): an argument already placed in one of them at a
+/// call site is kept. `rep movsb` copies forward and keeps the flags, as
+/// `push`, `pop`, `lea` and `mov` do.
+fn rep_movsb(cx: &mut FnCx<'_, X64>, bytes: u32, addresses: impl FnOnce(&mut FnCx<'_, X64>)) {
+    for r in [Reg::Rcx, Reg::Rsi, Reg::Rdi] {
+        put(cx, mc::push_r(r));
+    }
+    addresses(cx);
+    put(cx, mc::mov_ri(Size::D, Reg::Rcx, i64::from(bytes)));
+    put(cx, mc::rep_movs(Size::B));
+    for r in [Reg::Rdi, Reg::Rsi, Reg::Rcx] {
+        put(cx, mc::pop_r(r));
+    }
+}
+
 /// Copies `bytes` bytes between frame places: 16 at a time through
-/// `xmm15`, the rest in pieces of 8, 4, 2, 1 through `r11`. Flags are
-/// kept.
+/// `xmm15`, the rest in pieces of 8, 4, 2, 1 through `r11`; above
+/// [`UNROLLED_MAX`] bytes, `rep movsb`. Flags are kept.
 pub fn copy_frame(cx: &mut FnCx<'_, X64>, dst: FrameRef, src: FrameRef, bytes: u32) {
+    if bytes > UNROLLED_MAX {
+        rep_movsb(cx, bytes, |cx| {
+            frame_inst_shifted(cx, src, REP_PUSHED, |m| mc::lea(Size::Q, Reg::Rsi, m));
+            frame_inst_shifted(cx, dst, REP_PUSHED, |m| mc::lea(Size::Q, Reg::Rdi, m));
+        });
+        return;
+    }
     let mut at = 0;
     while bytes - at >= 16 {
         frame_inst(cx, src.offset_by(at), |m| mc::movup_rm(FpSize::S, XMM15, m));
@@ -375,9 +439,37 @@ const REBASE: u32 = 1 << 30;
 
 /// Copies `bytes` bytes from the memory at `ptr + offset` to `dst`, with
 /// `ptr` unchanged at the end: through `xmm15` and the general scratch
-/// register other than `ptr`. A displacement beyond 1 GiB moves `ptr` on
-/// with `lea` and back at the end. Flags are kept.
+/// register other than `ptr`; above [`UNROLLED_MAX`] bytes, `rep movsb`.
+/// A displacement beyond 1 GiB moves `ptr` (or `rsi`) on with `lea` and
+/// back at the end. Flags are kept.
 pub fn copy_from_ptr(cx: &mut FnCx<'_, X64>, dst: FrameRef, ptr: Reg, offset: u32, bytes: u32) {
+    if bytes > UNROLLED_MAX {
+        rep_movsb(cx, bytes, |cx| {
+            // `rdi` last unless it is `ptr`: neither `lea` clobbers the
+            // pointer the other still reads.
+            let source = |cx: &mut FnCx<'_, X64>| {
+                let first = offset.min(REBASE);
+                put(cx, mc::lea(Size::Q, Reg::Rsi, Mem::base(ptr, first as i32)));
+                let mut left = offset - first;
+                while left > 0 {
+                    let step = left.min(REBASE);
+                    put(cx, mc::lea(Size::Q, Reg::Rsi, Mem::base(Reg::Rsi, step as i32)));
+                    left -= step;
+                }
+            };
+            let target = |cx: &mut FnCx<'_, X64>| {
+                frame_inst_shifted(cx, dst, REP_PUSHED, |m| mc::lea(Size::Q, Reg::Rdi, m));
+            };
+            if ptr == Reg::Rdi {
+                source(cx);
+                target(cx);
+            } else {
+                target(cx);
+                source(cx);
+            }
+        });
+        return;
+    }
     let t = other_scratch(ptr);
     let mut moved: u64 = 0;
     let mut at: u32 = 0;
@@ -584,8 +676,9 @@ pub fn extend(cx: &mut FnCx<'_, X64>, rd: Reg, bits: u32, signed: Option<bool>) 
 
 /// `jmp label` (§6.2, §5.6.4): to a label already bound (backward) the
 /// shortest form, `jmp rel8` when it reaches; otherwise `jmp rel32`,
-/// patched when the label is bound. There is no far mode: `rel32`
-/// reaches every function (§6.3 never fires).
+/// patched when the label is bound and made `jmp rel8` once the function
+/// is complete if it then reaches (§5.6.15). There is no far mode:
+/// `rel32` reaches every function (§6.3 never fires).
 ///
 /// # Errors
 /// What [`FnCx::fixup`] reports.
@@ -595,15 +688,21 @@ pub fn branch(cx: &mut FnCx<'_, X64>, label: Label) -> CgResult<()> {
         let short = i64::from(target) - i64::from(at + 2);
         if let Ok(disp) = i8::try_from(short) {
             put(cx, mc::jmp_short(disp));
-            return Ok(());
+            // Recorded, so that shrinking the code patches it again.
+            return cx.fixup(at + 1, REL8, label);
         }
     }
     put(cx, mc::jmp_near(0));
-    cx.fixup(at + 1, REL32, label)
+    cx.fixup(at + 1, REL32, label)?;
+    cx.relaxable(at, JMP_SHORT, REL8);
+    Ok(())
 }
 
+/// The opcode of `jmp rel8`.
+const JMP_SHORT: u8 = 0xeb;
+
 /// `jcc label`: as [`branch`], `jcc rel8` backward when it reaches,
-/// `jcc rel32` otherwise.
+/// `jcc rel32` otherwise, relaxed as [`branch`]'s.
 ///
 /// # Errors
 /// What [`FnCx::fixup`] reports.
@@ -613,11 +712,14 @@ pub fn branch_cond(cx: &mut FnCx<'_, X64>, cond: Cond, label: Label) -> CgResult
         let short = i64::from(target) - i64::from(at + 2);
         if let Ok(disp) = i8::try_from(short) {
             put(cx, mc::jcc_short(cond, disp));
-            return Ok(());
+            return cx.fixup(at + 1, REL8, label);
         }
     }
     put(cx, mc::jcc_near(cond, 0));
-    cx.fixup(at + 2, REL32, label)
+    cx.fixup(at + 2, REL32, label)?;
+    // `jcc rel8` is `70+cc`.
+    cx.relaxable(at, 0x70 | cond as u8, REL8);
+    Ok(())
 }
 
 /// `Target::patch_branch`: `at` is the field's offset; the field holds

@@ -140,6 +140,9 @@ impl<'a, T: Target> FnCx<'a, T> {
         s.occupied = RegSet::EMPTY;
         s.pinned = RegSet::EMPTY;
         s.temps = RegSet::EMPTY;
+        s.used = RegSet::EMPTY;
+        s.cuts.clear();
+        s.relax.clear();
         s.frame.reset(T::STACK_ALIGN);
         s.labels.reset(blocks as u32);
         s.slots.clear();
@@ -189,6 +192,7 @@ impl<'a, T: Target> FnCx<'a, T> {
             body_cfi: u32::MAX,
             has_pads,
             block_addrs: false,
+            indirect_br: false,
             frame_desc: FrameDesc::default(),
             island_align: 1,
             ret_attrs: ParamAttrs::NONE,
@@ -292,6 +296,13 @@ impl<'a, T: Target> FnCx<'a, T> {
                     && !block.inst_range().is_empty()
                     && block.terminator().opcode() == Opcode::IndirectBr
             });
+        }
+        self.indirect_br = self.block_addrs;
+        // WP-115: a function whose block addresses are taken without an
+        // `indirectbr` records them too, so a `blockaddress` in data of
+        // it is placed (§9.6).
+        if !self.block_addrs {
+            self.block_addrs = self.module.consts.has_address_taken_block(body.symbol());
         }
         Ok(())
     }
@@ -738,8 +749,16 @@ impl<'a, T: Target> FnCx<'a, T> {
             let mut trap = None;
             for raw in 0..self.body.block_count() as u32 {
                 let label = Label(raw);
+                // §9.6: without an `indirectbr`, of the unreachable
+                // blocks only those whose address is taken need a place.
+                let placed = self.block_addrs
+                    && (self.indirect_br
+                        || self
+                            .module
+                            .consts
+                            .is_address_taken(self.body.symbol(), BlockId::new(raw)));
                 if self.s.reachable.get(raw as usize) != Some(&false)
-                    || !(self.block_addrs || self.s.labels.has_pending(label))
+                    || !(placed || self.s.labels.has_pending(label))
                 {
                     continue;
                 }
@@ -754,13 +773,15 @@ impl<'a, T: Target> FnCx<'a, T> {
                 // a label there, not at the current offset.
                 let at = trap.unwrap_or(0);
                 self.bind_at(label, at)?;
-                if self.block_addrs {
+                if placed {
                     self.out
                         .block_offsets
                         .push(BlockOffset { block: BlockId::new(raw), offset: at });
                 }
             }
         }
+        // §6.4: before the islands, which are aligned in the final layout.
+        self.shrink()?;
         self.emit_islands()?;
         if self.s.labels.pending() != 0 {
             return internal("a label that code refers to was never bound");
@@ -791,6 +812,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         }
 
         self.finish_vars();
+        self.finish_debug_calls()?; // WP-113: `spec/dwarf.md` §6.19
 
         let mut record = self.out.record(self.mark, self.body.symbol());
         record.align = T::FN_ALIGN.max(self.island_align);

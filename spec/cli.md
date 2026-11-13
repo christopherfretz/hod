@@ -668,8 +668,8 @@ mode; the fallback in hybrid mode). The pre-opt names are:
 - for a coroutine body, the coroutine plan's refusals (`coro:*`,
   `spec/xform.md`) and code generation's (`coro:begin-shared-block`,
   `coro:overaligned-stack-slot`, `coro:outside-coroutine`,
-  `a64:coro-preserve-cc`, `x64:coro-wide-atomic`; `spec/codegen.md`
-  §7.6), all decided early (below);
+  `a64:coro-preserve-cc`; `spec/codegen.md` §7.6), all decided early
+  (below);
 - for `llvm.coro.promise` whose alignment is not a constant power of
   two the target lowers, in any function, `a64:coro-promise` /
   `x64:coro-promise`: decided by code generation, not early (a handle

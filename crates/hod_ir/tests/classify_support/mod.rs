@@ -329,9 +329,10 @@ pub fn program_for(row: &str, arch: Arch) -> Program {
         }),
         "debug" => match name {
             "module-flags" => module_program(arch, |m| m.props.dwarf_version = Some(5)),
-            // A compile unit with `-gdwarf-4`.
+            // A compile unit with `-gdwarf-3` (version 4 is written since
+            // WP-114).
             "dwarf-version" => module_program(arch, |m| {
-                m.props.dwarf_version = Some(4);
+                m.props.dwarf_version = Some(3);
                 let d = &mut m.debug;
                 let file = DiFile { filename: b"a.c", directory: b"/", ..Default::default() };
                 let file = d.add(&file.into()).unwrap();

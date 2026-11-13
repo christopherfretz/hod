@@ -1,12 +1,14 @@
-//! Variable arguments before a forwarded `...` (WP-064, `spec/ir.md`
-//! §5.8, `spec/ll.md` §11.6, `spec/codegen.md` §5.5): LLVM's verifier
-//! accepts `musttail call (ptr, ...) @g(ptr %f, i32 42, ...)` in a
-//! variadic function, and so does hod's. Code generation does not
-//! compile such a call yet: `classify` cannot learn its stack-argument
-//! area (`musttail:stack-args-unknown`), because
-//! `hod_cg::abi::TargetStackArgs::of_call` answers nothing for a call
-//! with variable arguments. The run against `llc` that would hold once
-//! it does is here, ignored.
+//! Variable arguments before a forwarded `...` (WP-064, WP-115,
+//! `spec/ir.md` §5.8, `spec/ll.md` §11.6, `spec/codegen.md` §5.5): LLVM's
+//! verifier accepts `musttail call (ptr, ...) @g(ptr %f, i32 42, ...)` in
+//! a variadic function, and so does hod's. `classify` learns the call's
+//! stack-argument area from `hod_cg::abi::TargetStackArgs::of_call`,
+//! which types the variable arguments from the body (WP-115): such a
+//! call compiles on AArch64 as `llc` builds it while its arguments fit
+//! the caller's area, and is `musttail:stack-args-grow` when they do not.
+//! On x86-64 the facade's rule (WP-148) judges the same way, and the call
+//! that fits is then `x64:musttail-variable-arguments` (`spec/abi-x64.md`
+//! §8.5).
 
 #![allow(dead_code, reason = "the linking support is shared with other tests")]
 
@@ -108,8 +110,6 @@ fn the_verifier_accepts_variable_arguments_before_the_forwarded_ones() {
 // `spec/codegen.md` §5.5: the thunks would run as `llc` builds them, by
 // text and by bitcode, under every linker.
 #[test]
-#[ignore = "crates/hod_cg/src/abi.rs:234: TargetStackArgs::of_call answers None for a call with \
-            variable arguments, so classify refuses musttail:stack-args-unknown (outside WP-064)"]
 fn thunks_with_variable_arguments_run_like_llc() {
     let text = format!("{HEADER}{PROGRAM}");
     let mut objects = vec![("hod", hod_object(text.as_bytes()).unwrap_or_else(|e| panic!("{e}")))];
@@ -150,26 +150,43 @@ fn thunks_with_variable_arguments_run_like_llc() {
     eprintln!("{checked} runs agree");
 }
 
-// `spec/codegen.md` §5.5: until then such a call is refused by name, in
-// registers or on the stack, by text and by bitcode.
+// `spec/codegen.md` §5.5, §7.1 "The `musttail` hook": variable
+// arguments in registers compile; ones that need stack beyond the
+// caller's area are refused by name, by text and by bitcode. On x86-64
+// (WP-148, `spec/abi-x64.md` §8.5) the forwarding thunk compiles, one
+// whose extras fit is `x64:musttail-variable-arguments` and one whose
+// extras need stack is `musttail:stack-args-grow`.
 #[test]
-fn variable_arguments_before_the_forwarded_ones_are_refused_by_name() {
-    for extra in ["i32 42", "i64 1, i64 2, i64 3, i64 4, i64 5, i64 6, i64 7, i64 8"] {
-        refused(extra);
+fn variable_arguments_on_the_stack_are_refused_by_name() {
+    let eight = ", i64 1, i64 2, i64 3, i64 4, i64 5, i64 6, i64 7, i64 8";
+    for (triple, extra, want) in [
+        ("aarch64", ", i32 42", None),
+        ("aarch64", ", i32 42, double 1.0, fp128 0xL00000000000000004000000000000000", None),
+        ("aarch64", eight, Some("musttail:stack-args-grow")),
+        ("x86_64", "", None),
+        ("x86_64", ", i32 42", Some("x64:musttail-variable-arguments")),
+        ("x86_64", eight, Some("musttail:stack-args-grow")),
+    ] {
+        judged(triple, extra, want);
     }
 }
 
-fn refused(eight: &str) {
+fn judged(triple: &str, extra: &str, want: Option<&str>) {
     let text = format!(
-        "{HEADER}declare i32 @printf(ptr, ...)\n\
-         define i32 @h(ptr %f, ...) {{\n  %r = musttail call i32 (ptr, ...) @printf(ptr %f, {eight}, ...)\n  \
+        "target triple = \"{triple}-unknown-linux-gnu\"\n\
+         declare i32 @printf(ptr, ...)\n\
+         define i32 @h(ptr %f, ...) {{\n  %r = musttail call i32 (ptr, ...) @printf(ptr %f{extra}, ...)\n  \
          ret i32 %r\n}}\n"
     );
     let mut inputs = vec![text.as_bytes().to_vec()];
     inputs.extend(LLVM_MAJORS.into_iter().filter_map(|major| bitcode(major, &text)));
     for input in inputs {
-        let error = hod_object(&input).expect_err("refused");
-        let CompileError::Unsupported(unsupported) = error else { panic!("{error}") };
-        assert_eq!(unsupported.construct.name(), "musttail:stack-args-unknown", "{eight}");
+        match (hod_object(&input), want) {
+            (Ok(_), None) => {}
+            (Err(CompileError::Unsupported(unsupported)), Some(want)) => {
+                assert_eq!(unsupported.construct.name(), want, "{triple} {extra}");
+            }
+            (outcome, _) => panic!("{triple} {extra}: {:?}", outcome.map(|_| ())),
+        }
     }
 }

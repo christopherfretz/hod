@@ -240,7 +240,10 @@ impl UnitPlan<'_> {
         for i in 0..self.dies.len() {
             if self.dies[i].kind == Kind::Method {
                 let a = method_attrs(self, i as u32);
-                if method_family(&a).is_none() {
+                if method_family(&a).is_none()
+                    && crate::call_sites::c_declaration(self, i as u32).is_none()
+                {
+                    // WP-113: §6.19
                     return Err(unsupported(
                         self.dies[i].node,
                         "a member function declaration with a calling convention, without a vtable index or containing type, or with explicit or artificial and a ref-qualifier or noreturn",
@@ -1309,6 +1312,8 @@ impl<'a> Writer<'a> {
                     return Ok(());
                 }
                 let default = default_lower_bound(plan.cu.language);
+                let default =
+                    crate::dwarf4::default_lower_bound(plan.version, plan.cu.language, default); // WP-114
                 let lower = match r.lower_bound {
                     DiBound::Const(v) if default == -1 || v != default => Some(v),
                     _ => None,
@@ -1362,8 +1367,9 @@ impl<'a> Writer<'a> {
             (Kind::Unspecified, _) => self.abbrev(code(fam::UNSPECIFIED_PARAMETERS, 0, false)),
             (Kind::Method, DiNode::Subprogram(sp)) => {
                 let a = method_attrs(plan, die);
-                let (family, mask) =
-                    method_family(&a).ok_or(unsupported(n, "a member function declaration"))?;
+                let (family, mask) = crate::call_sites::c_declaration(plan, die) // WP-113: §6.19
+                    .or_else(|| method_family(&a))
+                    .ok_or(unsupported(n, "a member function declaration"))?;
                 self.abbrev(code(family, mask, children));
                 self.opt_name(sp.linkage_name)?;
                 self.strx_if(family, sp.name)?;

@@ -118,7 +118,8 @@ pub fn chunk_from(
             lines: empty.clone(),
             vars: empty.clone(),
             islands: empty.clone(),
-            block_offsets: empty,
+            block_offsets: empty.clone(),
+            debug_calls: empty,
             coro_entries: None,
             coro_ready: None,
         });

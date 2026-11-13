@@ -691,8 +691,11 @@ fn optimized_ir(compiler: &Path, scratch: &Scratch, name: &str, source: &str) ->
 /// An optimized unit (`optimized_unit.c`): `DISPFlagOptimized` changes
 /// nothing in `llc`'s tree off Apple targets, so without
 /// `DIFlagAllCallsDescribed` the trees are equal; with it, `llc` writes
-/// `DW_AT_call_all_calls` and call-site entries (the calls' return
-/// addresses), which hod refuses as `debug:call-sites` (§6.14).
+/// `DW_AT_call_all_calls` and call-site entries, as hod does since WP-113
+/// (§6.19). Those trees are compared, with the return addresses masked
+/// and checked against the code, in `crates/hod/tests/dwarf_call_sites.rs`
+/// (this file's normalization does not mask them); here the flagged unit
+/// builds, `--verify` clean, with its one call site.
 #[test]
 fn optimized_unit_matches_llc() {
     let Some(dwarfdump) = tool("llvm-dwarfdump") else { return };
@@ -704,10 +707,9 @@ fn optimized_unit_matches_llc() {
         let tag = format!("optimized-{name}");
         let text = optimized_ir(&cc, &scratch, &tag, "optimized_unit.c");
         assert!(text.contains("DISPFlagOptimized") && text.contains("DIFlagAllCallsDescribed"));
-        let (module, bodies) = common::parse(&text);
-        let refused = hod_a64::compile_to_object(&module, &bodies, &hod_cg::Options::default());
-        let message = refused.err().map(|e| e.to_string()).unwrap_or_default();
-        assert!(message.contains("debug:call-sites"), "{tag}: {message}");
+        let (h, l) = unit_trees(&scratch, &dwarfdump, &llc, &tag, &text);
+        assert_eq!(count_tag(&h, "DW_TAG_call_site"), 1, "{tag}");
+        assert_eq!(count_tag(&l, "DW_TAG_call_site"), 1, "{tag}");
         let text = text.replace(" | DIFlagAllCallsDescribed", "");
         let (h, _) = compare(&scratch, &dwarfdump, &llc, &format!("{tag}-plain"), &text);
         assert_eq!(count_tag(&h, "DW_TAG_subprogram"), 2, "{tag}");

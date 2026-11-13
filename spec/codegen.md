@@ -2183,6 +2183,52 @@ travels in `ymm` under `+avx` is the argument assignment's
 (`x64:wide-vector-abi`, WP-118). `-mattr` items are checked the same
 way, by the module's target.
 
+#### 5.6.3 Control flow (WP-124)
+
+`hod_x64::control`. Observable behaviour is `hod_a64`'s (§6, §7.3); what
+x86-64 settles:
+
+- **`condbr` on an `i1`**: `test r8, 1` (only bit 0 is defined), then
+  `jne` to the true block, or `je` to the false one when the true block
+  is next; the branch to the block emitted next is omitted. A constant
+  condition (`undef`, `poison` false) or two equal targets is a `br`.
+- **`condbr` on a deferred integer `icmp`** (§4.6, operands of class
+  `Gpr`, pointers included): the compare's operands are placed first
+  (a constant on the left is swapped to the right with the predicate),
+  then `cmp`/`test`, then the `jcc` at once: nothing at all runs between
+  the flags' writer and their reader. The successors' `phi` stores are
+  written by the driver before the terminator (§4.5), so before the
+  compare. Widths 8, 16, 32, 64 compare at their own operand size; an
+  odd width is shifted left in place to the top of 32 bits (below 32) or
+  64 bits (above), both operands and a constant alike, which keeps
+  equality and both orders whatever the bits above the width. A constant
+  0 is `test r, r`; another constant is `cmp r, imm` when the immediate
+  form takes it (sign-extended 32 bits at 64), else it goes through
+  `r11`. Unsigned predicates are `a`/`ae`/`b`/`be`, signed `g`/`ge`/
+  `l`/`le`. A deferred `fcmp` is refused as `x64:todo:condbr-fcmp`
+  until X-float (WP-127). The fused compare is `control`'s own
+  (`fused_icmp`), a candidate to share with `int` (WP-130).
+- **`switch`** of class `Gpr`: `hod_cg::switch`'s plan; the condition is
+  zero-extended in its register (`movzx` for 8 and 16 bits, `and r32,
+  mask` for an odd width below 32, `shl`/`shr` above 32); up to 32 bits
+  it is compared with 32-bit `cmp r32, imm32`, above with 64-bit `cmp`,
+  the value through `r11` when no sign-extended 32-bit immediate takes
+  it; a node is `cmp` · `je` · `ja`. **Class `Mem`** (`i65` and wider):
+  for each case not to the default, in the IR's order, each 64-bit limb
+  loaded into `r10` (the top limb shifted left past the bits above the
+  width, the case's limb with it), compared, `jne` to the next case,
+  `je` to the block after the top limb; then the default (as
+  `hod_a64`'s `tail::switch_wide`).
+- **`indirectbr`**: `jmp r`; on a `blockaddress` constant of the same
+  function, a direct `jmp` to the block (omitted when it is next).
+- **`blockaddress` in code**: `lea r, [rip + label]`, the `disp32` a
+  `rel32` fixup to the block's label (the field ends the instruction).
+  `common::materialize_gpr_const` routes every `blockaddress` constant
+  there (glue: `phi` stores, returns, arguments). A block of another
+  function is `x64:blockaddress`. An unreachable block's label is the
+  shared `ud2` trap at the end of the function (§6.1), in code and in
+  data.
+
 ## 6. Control flow
 
 ### 6.1 Reachability

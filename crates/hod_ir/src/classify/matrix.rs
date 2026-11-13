@@ -548,7 +548,7 @@ const COMDAT: [SupportRow; ComdatKind::ALL.len()] = [
 const INIT: [SupportRow; 10] = [
     row("init:data", ON, todo(X64), "any initializer: numbers, zero, `undef`, aggregates, bytes"),
     row("init:symbol", ON, todo(X64), "a symbol's address, with or without an offset"),
-    row("init:blockaddress", ON, todo(X64), "of a block of a function with an `indirectbr` (§9.6)"),
+    both("init:blockaddress", ON, "of a block of a function with an `indirectbr` (§9.6)"),
     row("init:sym-diff", ON, todo(X64), "the difference of two symbol addresses"),
     a64("init:sym-diff-plt", LATER, "the same through `dso_local_equivalent` (relative vtables)"),
     row("init:int-of-addr", ON, todo(X64), "an address in an integer field"),
@@ -1294,9 +1294,9 @@ const INST: [SupportRow; Opcode::ALL.len()] = [
     both("inst:catchpad", never(WINDOWS_EH), ""),
     both("inst:cleanuppad", never(WINDOWS_EH), ""),
     both("inst:br", ON, ""),
-    row("inst:condbr", ON, todo(X64), "LLVM's two-way `br`"),
-    row("inst:switch", on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide]), todo(X64), ""),
-    row("inst:indirectbr", ON, todo(X64), ""),
+    both("inst:condbr", ON, "LLVM's two-way `br`"),
+    both("inst:switch", on(&[TypeClass::Int, TypeClass::I128, TypeClass::IntWide]), ""),
+    both("inst:indirectbr", ON, ""),
     both("inst:ret", ON, ""),
     both("inst:unreachable", ON, ""),
     row(
@@ -1393,7 +1393,7 @@ const LANDINGPAD: [SupportRow; 3] = [
 const OPERAND: [SupportRow; 11] = [
     both("operand:symbol", ON, "a symbol's address as a value, with or without an offset"),
     row("operand:slot", ON, todo(X64), "the address of a stack slot"),
-    row("operand:blockaddress", ON, todo(X64), "of a block of the same function"),
+    both("operand:blockaddress", ON, "of a block of the same function"),
     both("operand:addr-of-int", ON, "`inttoptr` of a constant number"),
     row("operand:int-of-addr", ON, todo(X64), "`ptrtoint` of a constant address (WP-072)"),
     row("operand:sym-diff", ON, todo(X64), "a difference of two symbol addresses (WP-072)"),

@@ -30,8 +30,8 @@
 //!
 //! A constant mask operand of these lowerings is put in a register by its
 //! bits (undefined lanes 0). Elsewhere (a `phi` incoming, a call
-//! argument, a returned constant) a constant mask other than zero is the
-//! integer group's `x64:todo:constant` (`common::materialize_gpr_const`).
+//! argument, a returned constant) the glue does the same
+//! (`vector::materialize`, WP-147).
 //!
 //! # Lane rules on one bit
 //!

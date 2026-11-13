@@ -582,3 +582,65 @@ fn sjlj_refusals_by_name() {
         SJLJ_SHADOW_STACK,
     );
 }
+
+// ---- 3. constant masks across `phi`, calls and returns ----
+
+/// The mask constant of `n` lanes whose lane `i` is bit `i` of `bits`
+/// (without its type).
+fn mask_const(n: u32, bits: u64) -> String {
+    let lanes: Vec<String> = (0..n).map(|i| format!("i1 {}", (bits >> i) & 1)).collect();
+    format!("<{}>", lanes.join(", "))
+}
+
+/// §5.6.16 (3): a constant mask other than zero as a `phi` incoming (of
+/// every lane count), a call argument and a returned value (of the
+/// counts a call takes: 1, 2, 4, 8, 16), all-ones, one lane, alternating
+/// and random patterns.
+#[test]
+fn constant_masks_agree() {
+    let mut suite = Suite::default();
+    let mut rng = float_gen::Rng(147);
+    for n in [1u32, 2, 3, 4, 7, 8, 16, 17, 32, 33, 63, 64] {
+        let all = float_gen::mask(n);
+        let patterns = [all, 1, 1 << (n - 1), 0x5555_5555_5555_5555 & all, rng.next() & all];
+        for (k, &bits) in patterns.iter().enumerate() {
+            let m = mask_const(n, bits);
+            let ty = format!("<{n} x i1>");
+            // The incoming constant or the argument's bits, by bit 63 of
+            // the second operand.
+            let f = suite.add(
+                &format!("mphi{n}_{k}"),
+                &[T::I(n), I64],
+                T::I(n),
+                &format!(
+                    "  %v = bitcast i{n} %a0 to {ty}\n  %c = icmp slt i64 %a1, 0\n  \
+                     br i1 %c, label %t, label %e\nt:\n  br label %j\ne:\n  br label %j\nj:\n  \
+                     %m = phi {ty} [ {m}, %t ], [ %v, %e ]\n  %r = bitcast {ty} %m to i{n}\n"
+                ),
+                Check::Interp,
+            );
+            for a1 in [0, u64::MAX] {
+                suite.case(f, &[rng.next(), a1]);
+            }
+            if ![1, 2, 4, 8, 16].contains(&n) {
+                continue;
+            }
+            suite.declare(&format!(
+                "define i{n} @mtake{n}_{k}({ty} %m) {{\n  %b = bitcast {ty} %m to i{n}\n  ret i{n} %b\n}}\n\
+                 define {ty} @mgive{n}_{k}() {{\n  ret {ty} {m}\n}}"
+            ));
+            let f = suite.add(
+                &format!("mcall{n}_{k}"),
+                &[I64],
+                T::I(n),
+                &format!(
+                    "  %x = call i{n} @mtake{n}_{k}({ty} {m})\n  %g = call {ty} @mgive{n}_{k}()\n  \
+                     %y = bitcast {ty} %g to i{n}\n  %q = xor i{n} %x, %y\n  %r = xor i{n} %q, %x\n"
+                ),
+                Check::Interp,
+            );
+            suite.case(f, &[0]);
+        }
+    }
+    check("const-masks", &suite, &MAJORS);
+}

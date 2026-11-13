@@ -155,6 +155,7 @@ fn the_inline_and_rounding_intrinsics_agree() {
             cases(&mut suite, &mut rng, g, &[t, t], 300, 50);
         }
     }
+    float_gen::assert_sse2(&suite);
     check("fpintr-inline", &suite, &[22, 19]);
 }
 
@@ -250,6 +251,7 @@ fn the_newer_intrinsics_agree() {
         !(name.ends_with("num_q") || name.ends_with("num_same_q"))
             || !(nan(&c.args[0..2]) && (name.contains("same") || nan(&c.args[2..4])))
     });
+    float_gen::assert_sse2(&suite);
     check("fpintr-new", &suite, &[22]);
 }
 
@@ -349,6 +351,7 @@ fn the_calls_agree() {
         };
         i32::try_from(exponent as i64).is_ok()
     });
+    float_gen::assert_sse2(&suite);
     check("fpintr-calls", &suite, &[22, 19]);
 }
 
@@ -420,6 +423,7 @@ fn the_integer_intrinsics_agree() {
             cases(&mut suite, &mut rng, f, &[t], 200, 60);
         }
     }
+    float_gen::assert_sse2(&suite);
     check("fpintr-int", &suite, &[22, 19]);
 }
 

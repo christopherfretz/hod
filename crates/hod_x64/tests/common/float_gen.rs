@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 
 use hod_cg::{Options, RelocModel, Stress};
 use hod_interp::{Config, Interp, NanPolicy, Program, Val};
-use hod_testutil::{Scratch, run_with};
+use hod_testutil::{Scratch, run_with, tool};
 use hod_x64::compile_to_object;
 
 use crate::linking::Toolchain;
@@ -100,7 +100,7 @@ pub fn llc(dir: &Scratch, major: u32, name: &str, text: &str) -> Option<PathBuf>
 
 /// The size of `.text` in `object`, by `llvm-objdump -h`.
 pub fn text_size(object: &Path) -> usize {
-    let Some(objdump) = hod_testutil::tool("llvm-objdump") else { return 0 };
+    let Some(objdump) = tool("llvm-objdump") else { return 0 };
     let mut command = Command::new(objdump);
     command.arg("-h").arg(object);
     let out = run_with(&mut command, &[], Duration::from_mins(1));
@@ -735,6 +735,57 @@ fn interpret(suite: &Suite) -> (Vec<Option<u64>>, Vec<bool>) {
     (expected, defined)
 }
 
+/// `llvm-objdump -d -M intel` of `functions` (the header added),
+/// compiled with `stress`: one line per instruction, `mnemonic
+/// operands`. `None` without the tool.
+pub fn disassembly(functions: &str, stress: Stress) -> Option<Vec<String>> {
+    let objdump = tool("llvm-objdump")?;
+    let (m, bodies) = parse(&format!("{}{functions}", ll_header()));
+    let object = compile_to_object(&m, &bodies, &pic(stress)).unwrap_or_else(|e| panic!("{e}"));
+    let scratch = Scratch::new("x64-float-disasm");
+    let path = scratch.write("f.o", object);
+    let mut command = Command::new(objdump);
+    command.args(["-d", "-M", "intel", "--no-show-raw-insn", "--no-leading-addr"]).arg(&path);
+    let outcome = run_with(&mut command, &[], Duration::from_mins(1));
+    assert!(outcome.success(), "llvm-objdump: {}", outcome.stderr_text());
+    Some(
+        outcome
+            .stdout_text()
+            .lines()
+            .filter(|line| line.starts_with(char::is_whitespace) && !line.trim().is_empty())
+            .map(|line| {
+                let line = line.split('#').next().unwrap_or(line);
+                line.split_whitespace().collect::<Vec<_>>().join(" ")
+            })
+            .collect(),
+    )
+}
+
+pub fn mnemonic(line: &str) -> &str {
+    line.split_whitespace().next().unwrap_or("")
+}
+
+/// Whether mnemonic `m` needs more than SSE2 (SSE4.1's `round*`,
+/// `blend*`, `ptest`, `pextrd`/`pinsrd`; AVX's `v*`) or is x87.
+pub fn above_sse2(m: &str) -> bool {
+    m.starts_with("round")
+        || m.starts_with('v')
+        || m.contains("blend")
+        || m.starts_with("ptest")
+        || m.starts_with('f') && !m.starts_with("fn")
+        || m == "pextrd"
+        || m == "pinsrd"
+}
+
+/// Panics if hod's plain code for `suite` has an instruction above SSE2.
+pub fn assert_sse2(suite: &Suite) {
+    let text = format!("{}{}", suite.decls, suite.text);
+    let Some(lines) = disassembly(&text, Stress::default()) else { return };
+    for line in &lines {
+        assert!(!above_sse2(mnemonic(line)), "{line}");
+    }
+}
+
 /// Whether `got` matches the interpreter's `want` for a result of `ret`:
 /// equal, or both NaNs.
 fn matches_interp(ret: T, want: u64, got: u64) -> bool {
@@ -843,11 +894,12 @@ fn llc_text(suite: &Suite, major: u32) -> String {
         } else {
             let words: usize = f.ops.iter().map(|t| t.params()).sum();
             let params: Vec<String> = (0..words).map(|k| format!("i64 %p{k}")).collect();
-            body.push_str(&format!(
+            let _ = write!(
+                body,
                 "define i64 @{}({}) {{\n  ret i64 0\n}}\n\n",
                 f.name,
                 params.join(", ")
-            ));
+            );
         }
     }
     let decls: String = suite
@@ -858,8 +910,10 @@ fn llc_text(suite: &Suite, major: u32) -> String {
                 .and_then(|(_, rest)| rest.split_once('('))
                 .is_none_or(|(callee, _)| body.contains(&format!("@{callee}(")))
         })
-        .map(|line| format!("{line}\n"))
-        .collect();
+        .fold(String::new(), |mut decls, line| {
+            let _ = writeln!(decls, "{line}");
+            decls
+        });
     format!("{}{decls}{body}", ll_header())
 }
 

@@ -8,7 +8,6 @@
 ; nothing is folded.
 ;@ covers: spec/ir.md §5.4 floating point (call-free; WP-043)
 ;@ tier: quick
-;@ unsupported(x86_64): *
 ;@ exit: 7
 
 @i13 = global i32 13

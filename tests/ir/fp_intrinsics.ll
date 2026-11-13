@@ -7,7 +7,6 @@
 ; differ in sign). Expected values computed by a script, not a compiler.
 ;@ covers: spec/ir.md §5.5 intrinsics (sqrt, fabs, floor, ceil, trunc, rint, nearbyint, round, roundeven, minimum, maximum, minnum, maxnum, copysign, fma)
 ;@ link: m
-;@ unsupported(x86_64): *
 ;@ stdout: double 2.5: 1.5811388300841898 2.5 2 3 2 2 2 3 2
 ;@ stdout: double -2.5: nan 2.5 -3 -2 -2 -2 -2 -3 -2
 ;@ stdout: double 0.5: 0.70710678118654757 0.5 0 1 0 0 0 1 0

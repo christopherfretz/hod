@@ -14,12 +14,11 @@ mod linking;
 #[path = "common/float_gen.rs"]
 mod float_gen;
 
-use std::process::Command;
-use std::time::Duration;
-
-use float_gen::{Check, Rng, Suite, T, cases, check, edges, ll_header, parse, pic};
+use float_gen::{
+    Check, Rng, Suite, T, above_sse2, cases, check, disassembly, edges, ll_header, mnemonic, parse,
+    pic,
+};
 use hod_cg::{CgError, Stress};
-use hod_testutil::{Scratch, run_with, tool};
 
 const MAJORS: [u32; 2] = [22, 19];
 
@@ -193,39 +192,44 @@ fn every_floating_conversion_agrees() {
 /// The value of `bits` of `t`, approximately for `fp128` (its upper word
 /// only), `None` for an infinity or a NaN.
 fn value_of(t: T, bits: &[u64]) -> Option<f64> {
-    let x = match t {
+    let value = match t {
         T::H => {
-            let h = bits[0] & 0xffff;
-            let (e, m) = ((h >> 10) & 0x1f, (h & 0x3ff) as f64);
-            let v =
-                if e == 0 { m * 2f64.powi(-24) } else { (1024.0 + m) * 2f64.powi(e as i32 - 25) };
-            if e == 0x1f {
-                f64::NAN
-            } else if h & 0x8000 != 0 {
-                -v
+            let half = bits[0] & 0xffff;
+            let exponent = ((half >> 10) & 0x1f) as i32;
+            let fraction = f64::from((half & 0x3ff) as u32);
+            let magnitude = if exponent == 0 {
+                fraction * 2f64.powi(-24)
             } else {
-                v
+                (1024.0 + fraction) * 2f64.powi(exponent - 25)
+            };
+            if exponent == 0x1f {
+                f64::NAN
+            } else if half & 0x8000 != 0 {
+                -magnitude
+            } else {
+                magnitude
             }
         }
         T::B => f64::from(f32::from_bits(((bits[0] & 0xffff) as u32) << 16)),
         T::F => f64::from(f32::from_bits(bits[0] as u32)),
         T::D => f64::from_bits(bits[0]),
         T::Q => {
-            let hi = bits[1];
-            let e = ((hi >> 48) & 0x7fff) as i32;
-            let m = (hi & 0xffff_ffff_ffff) as f64;
-            let v = if e == 0x7fff {
+            let high = bits[1];
+            let exponent = ((high >> 48) & 0x7fff) as i32;
+            // The top 32 of the 48 fraction bits of the high word.
+            let fraction = f64::from(((high >> 16) & 0xffff_ffff) as u32);
+            let magnitude = if exponent == 0x7fff {
                 f64::NAN
-            } else if e == 0 {
+            } else if exponent == 0 {
                 0.0
             } else {
-                (281_474_976_710_656.0 + m) * 2f64.powi(e - 16383 - 48)
+                (4_294_967_296.0 + fraction) * 2f64.powi(exponent - 16383 - 32)
             };
-            if hi >> 63 == 1 { -v } else { v }
+            if high >> 63 == 1 { -magnitude } else { magnitude }
         }
         T::I(_) => return None,
     };
-    x.is_finite().then_some(x)
+    value.is_finite().then_some(value)
 }
 
 /// Whether `fptosi`/`fptoui` (`signed`) of `x` to `bits` bits is defined
@@ -453,37 +457,6 @@ fn selects_phis_freezes_and_constants_agree() {
 
 // ---- the code itself ----
 
-/// `llvm-objdump -d -M intel` of `functions` (the header added),
-/// compiled with `stress`: one line per instruction, `mnemonic
-/// operands`. `None` without the tool.
-fn disassembly(functions: &str, stress: Stress) -> Option<Vec<String>> {
-    let objdump = tool("llvm-objdump")?;
-    let (m, bodies) = parse(&format!("{}{functions}", ll_header()));
-    let object =
-        hod_x64::compile_to_object(&m, &bodies, &pic(stress)).unwrap_or_else(|e| panic!("{e}"));
-    let scratch = Scratch::new("x64-float-disasm");
-    let path = scratch.write("f.o", object);
-    let mut command = Command::new(objdump);
-    command.args(["-d", "-M", "intel", "--no-show-raw-insn", "--no-leading-addr"]).arg(&path);
-    let outcome = run_with(&mut command, &[], Duration::from_mins(1));
-    assert!(outcome.success(), "llvm-objdump: {}", outcome.stderr_text());
-    Some(
-        outcome
-            .stdout_text()
-            .lines()
-            .filter(|line| line.starts_with(char::is_whitespace) && !line.trim().is_empty())
-            .map(|line| {
-                let line = line.split('#').next().unwrap_or(line);
-                line.split_whitespace().collect::<Vec<_>>().join(" ")
-            })
-            .collect(),
-    )
-}
-
-fn mnemonic(line: &str) -> &str {
-    line.split_whitespace().next().unwrap_or("")
-}
-
 /// Whether `m` reads the flags: `setcc`, `cmovcc`, `jcc`.
 fn reads_flags(m: &str) -> bool {
     m.starts_with("set") || m.starts_with("cmov") || (m.starts_with('j') && m != "jmp")
@@ -559,15 +532,7 @@ fn nothing_above_sse2_is_emitted() {
     }
     let Some(lines) = disassembly(&text, Stress::default()) else { return };
     for line in &lines {
-        let m = mnemonic(line);
-        let above = m.starts_with("round")
-            || m.starts_with('v')
-            || m.contains("blend")
-            || m.starts_with("ptest")
-            || m.starts_with("f") && !m.starts_with("fn")
-            || m == "pextrd"
-            || m == "pinsrd";
-        assert!(!above, "{line}");
+        assert!(!above_sse2(mnemonic(line)), "{line}");
     }
 }
 

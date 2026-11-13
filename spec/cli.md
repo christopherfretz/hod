@@ -408,8 +408,11 @@ is the caller's: kiln's driver keeps a process-wide contained scope its
 hook consults (design 0004 §10, answer 5), and the threads hod starts for
 a call are started and joined inside that call, so inside the scope.
 
-**Cost.** One `catch_unwind` per call: nothing per instruction, and per
-function only the call's own (measured in `spec/landed/cli/WP-093.md`).
+**Cost.** One `catch_unwind` per call of the producer's: nothing per
+instruction; per function, the `body` call's own (with `panic = "abort"`
+a direct call, the body moved once more into the contained closure,
+about 0.2% of a small function's instructions; measured in
+`spec/landed/cli/WP-093.md`).
 
 ## The back half
 

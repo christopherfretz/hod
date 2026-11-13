@@ -1103,6 +1103,14 @@ call instructions):
 
 - `CallConv` is LLVM's calling-convention number (0 to 1023); every number
   is representable and `classify` names the unsupported ones.
+  `CallConv::keyword` is LLVM 22's keyword for the number (`x86_64_sysvcc`,
+  `riscv_vls_cc(128)`), `None` where LLVM has none (it prints `ccN` and
+  reads `cc N`); `keyword_since` is the first major whose text has it (19
+  for numbers below 112, 22 above: `riscv_vls_cc(N)`,
+  `amdgpu_gfx_whole_wave`, the CHERIoT conventions); `from_keyword` is the
+  inverse, for any dialect 19 to 22. The table was checked against
+  `llvm-dis` 19 and 22 over every number (`hod_bc` `tests/x86_64.rs`
+  `calling_convention_keywords_are_llvms`, WP-141).
 - `ParamAttrs` holds the kept attributes of one parameter or of the return
   value in eight bytes: the flags (`zeroext`, `signext`, `inreg`, `nest`,
   the three `swift*`), `align`, `alignstack`, and at most one typed
@@ -1689,7 +1697,7 @@ groups in the order of `docs/status/support.md`: `module`, `structor`,
 `debug`, `global`, `linkage`, `visibility`, `tls`, `comdat`, `init`,
 `function`, `cc`, `attr`, `type`, `inst`, `mem`, `atomicrmw`, `call`,
 `tail`, `bundle`, `landingpad`, `operand`, `const-expr`, `intrinsic`.
-There are 434 rows.
+There are 674 rows (`docs/status/support.md`, "Summary").
 
 ### 8.5 Vocabulary
 
@@ -1700,7 +1708,10 @@ after the colon where LLVM has one (`intrinsic:llvm.memcpy`,
 rules (§8.6), then the malformed-input names (§8.7). `CONSTRUCT_FAMILIES`
 lists the six families of names built from the input:
 `intrinsic:<name>` (`Intrinsic::Other`, always refused),
-`module-flag:<name>`, `cc:<number>`, `bundle:<tag>`, `<row>/<class>`, and
+`module-flag:<name>`, `cc:<keyword>` (a convention without a row, by
+LLVM's keyword, `cc:arm_apcscc`, or by its number where LLVM has no
+keyword, `cc:42`; before WP-141 every such convention was named by its
+number), `bundle:<tag>`, `<row>/<class>`, and
 a producer's record (`Module::record_unsupported`, §2.2), passed through
 unchanged.
 
@@ -1729,8 +1740,25 @@ Reasons no `Support` takes away (`STRUCTURAL_RULES`):
 | `target:support-mismatch` | the `Support` given is for another architecture than the module's |
 
 Also refused on both targets, as matrix rows whose status is `rejected`:
-`attr:naked`, `inst:va_arg`, and the 19 `const-expr:*` rows (constant
-expressions without a normal form, §4.2). `inst:callbr` was one until
+`attr:naked`, `inst:va_arg`, the 19 `const-expr:*` rows (constant
+expressions without a normal form, §4.2), and the calling conventions
+`cc:cfguard_checkcc`, `cc:win64cc` (Windows), `cc:x86_vectorcallcc`
+(Windows on x86-64), `cc:x86_stdcallcc`, `cc:x86_fastcallcc`,
+`cc:x86_thiscallcc` (32-bit x86: `llc` treats them as `ccc` on x86-64,
+and no x86-64 front end emits them), `cc:x86_intrcc` and
+`cc:x86_regcallcc` (WP-141).
+
+Calling conventions (WP-141): a convention is supported, `unplanned`, or
+refused by design on each target; one of the other target's (the x86
+conventions on AArch64, `aarch64_*` on x86-64) is refused by design,
+since `llc` for that target aborts on it. `x86_64_sysvcc` is supported on
+x86-64 and assigned as `ccc`: it is the System V convention, which is
+x86-64 Linux's C convention (`llc` 19 and 22 emit identical code for the
+two, `-O0` with and without fast instruction selection, SSE2, AVX2 and
+AVX-512, over arguments of every class, on the stack, `byval`, `sret`,
+`x86_fp80`, `fp128`, `i128` and variadic calls). `coldcc`, `ghccc`,
+`anyregcc`, `tailcc`, `swifttailcc` and `preserve_nonecc` are `unplanned`
+on both targets; `intel_ocl_bicc`, `hhvmcc` and `hhvm_ccc` on x86-64. `inst:callbr` was one until
 WP-103; it is supported on AArch64 (`spec/codegen.md` §5.5.3).
 
 - Producer records (`Module::unsupported()`) are reported unchanged.
@@ -1954,7 +1982,7 @@ In this order:
      [comdat($c)] [align A] [personality ptr @p] { body }`. A `declare`
      keeps the calling convention, the parameter and return attributes
      and the attribute set. `cc` is the keyword (`fastcc`, `coldcc`, ...)
-     or `cc <n>`.
+     when the dialect has one (`CallConv::keyword_since`), else `cc <n>`.
    - an alias: `@name = [linkage] ... alias <type>, <aliasee>`; an IFUNC:
      `@name = ... ifunc <type>, ptr @resolver`.
    - `dso_local` is written only where LLVM does not imply it (a local

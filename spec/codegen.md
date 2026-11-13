@@ -1781,7 +1781,7 @@ that refused it before (WP-084's "stays refused" list is settled here).
     variable, constants (`DW_AT_const_value`) and `DW_OP_stack_value`
     expressions, which need location lists). All stay
     `debug:dbg-value`.
-  - `cc:preserve_allcc`, `cc:79` (`win64cc`) and `cc:aarch64_vector_pcs`
+  - `cc:preserve_allcc`, `cc:win64cc` (`cc:79` before WP-141) and `cc:aarch64_vector_pcs`
     (WP-082), which the one `preserve_mostcc` corpus module also uses.
     (`preserve_allcc` since WP-101, below.)
 

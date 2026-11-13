@@ -81,8 +81,8 @@ pub(crate) enum Finding<'a> {
     Named(&'static str, &'a str),
     /// A module flag hod neither knows nor may ignore.
     Flag(&'a [u8]),
-    /// A calling convention without a keyword.
-    Cc(u16),
+    /// A calling convention without a row.
+    Cc(CallConv),
     /// A producer record.
     Record(&'a str),
 }
@@ -102,7 +102,10 @@ impl Finding<'_> {
             Finding::Flag(name) => {
                 Cow::Owned(format!("module-flag:{}", String::from_utf8_lossy(name)))
             }
-            Finding::Cc(number) => Cow::Owned(format!("cc:{number}")),
+            Finding::Cc(cc) => match cc.keyword() {
+                Some(keyword) => Cow::Owned(format!("cc:{keyword}")),
+                None => Cow::Owned(format!("cc:{}", cc.llvm_id())),
+            },
             Finding::Record(name) => Cow::Owned(name.to_owned()),
         };
         (RejectionKind::Unsupported, name)
@@ -292,7 +295,7 @@ impl<'a, S: Sink> Walker<'a, S> {
     fn cc(&mut self, cc: CallConv, at: At) -> Flow {
         match at::cc(cc.llvm_id()) {
             Some(row) => self.row(row, at),
-            None => self.sink.report(Finding::Cc(cc.llvm_id()), at),
+            None => self.sink.report(Finding::Cc(cc), at),
         }
     }
 

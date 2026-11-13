@@ -2426,10 +2426,101 @@ Each object has its own frame, as each `llc` object has: two
 (`noop_coroutine()` handles are compared only within one translation
 unit's expectations; LLVM guarantees nothing across objects).
 
-**Coroutine bodies** (`presplitcoroutine`, `coro.id`, `begin`,
-`suspend`, `end`, `save`, `size`, `align`, `alloc`, `free`, `frame`,
-`is_in_ramp`, `await.suspend.*`) stay refused by `classify` under those
-names until WP-106.
+**Coroutine bodies (WP-106).** Design 0005's approach B: a
+`presplitcoroutine` body is compiled once; what crosses a suspend lives
+in a heap frame addressed through a reserved, saved register; `F.resume`
+and `F.destroy` are entry stubs that rebuild the same machine frame and
+jump to the code after the suspend. Residency is `hod_xform::coro::plan`
+(`spec/xform.md`); what the plan refuses is refused by its `coro:*` name.
+Generic parts in `hod_cg/src/coro_body.rs`, AArch64 in
+`hod_a64/src/coro_body.rs`.
+
+*The heap frame* (`FrameRef::Coro(offset)`, an offset from the frame
+base). In order: the header (resume at 0, destroy at 8); the promise at
+the plan's `promise_offset`; the 4-byte suspend index at
+`alignTo(promise end, 4)`; the heap slots in slot order; the heap values
+(instruction results live across a suspend) in instruction order, each
+at its own alignment. `coro.size` is the end, `coro.align` is
+`max(frame_align, 16)`; both are constants.
+
+*Homes.* A heap slot's place is its heap offset; a heap value's home is
+its heap offset; token results live nowhere; `coro.begin`'s result is the
+**frame word**, a machine-stack slot. A slot or value the plan lists in
+`begin_copies` / `begin_value_copies`, and the promise (whose address
+`coro.id` names before `coro.begin`), has a machine-stack **shadow**: the
+blocks before `coro.begin` (reachable from the entry without leaving
+`coro.begin`'s block) address the shadow, `coro.begin` copies every
+shadow to its heap place, and every later block addresses the heap. A
+block reached both before and after `coro.begin` (the ramp's return after
+a failed allocation) is refused, `coro:begin-shared-block`, when it names
+a shadowed slot or value; otherwise any heap access in it is an internal
+error. A machine-stack slot aligned above the stack alignment is
+`coro:overaligned-stack-slot`.
+
+*The machine frame* (AArch64). x19 is the frame base, saved in the
+prologue after the other saves (with its CFI row), restored before every
+exit and tail exit. Two more words: **mode** (0 in the ramp, 1 in an
+activation a stub entered) and the frame word. `preserve_most` and
+`preserve_all` coroutines are `a64:coro-preserve-cc`.
+
+*Intrinsics* (AArch64):
+
+| intrinsic | lowering |
+|---|---|
+| `coro.id` | nothing (a token) |
+| `coro.alloc` | `1` (no elision) |
+| `coro.size`, `coro.align` | the layout's constants |
+| `coro.begin(id, mem)` | x19 := mem; the frame word := mem; `adr` of each stub stored to `[x19, #0]` and `[x19, #8]`; the shadow copies; the result is the frame word |
+| `coro.save` | `[x19, #index]` := the suspend's index; at the final suspend also `[x19, #0]` := 0 (`done()`) |
+| `await.suspend.void` / `.bool` | a call of the wrapper with (awaiter, frame), through a temporary, C convention; `.bool`'s result is the call's |
+| `coro.suspend` | `w0` := −1, the suspend's **re-entry label**, the result is `w0`: a call that stores nothing |
+| `coro.end` (LLVM 19 `i1`, 22 `void`) | not unwinding: when mode ≠ 0, branch to the epilogue; unwinding: when mode ≠ 0, `[x19, #0]` := 0 and the index := the final suspend's (the coroutine is done). LLVM 19's result is mode |
+| `coro.is_in_ramp` | mode xor 1 |
+| `coro.free`, `coro.frame` | x19 (`coro.frame` itself is the plan's `coro:frame-intrinsic`) |
+| `await.suspend.handle` | refused, `intrinsic:llvm.coro.await.suspend.handle` (symmetric transfer, WP-107) |
+
+A body intrinsic in a function without a plan is
+`coro:outside-coroutine`; a target with `Target::CORO_BODIES` false
+refuses coroutines as `coro:target`.
+
+*The suspend switch.* The `switch` on a `coro.suspend` result is lowered
+as a dispatch first (`cmp w, #0` / `b.eq`, `cmp w, #1` / `b.eq`), then
+each edge's `phi` stores on that edge: the −1 edge (the activation that
+suspended) jumps to its block, the 0 edge (resume) and 1 edge (destroy)
+to theirs.
+
+*The stubs*, emitted after the function's code, before its literal
+islands; local `STT_FUNC` symbols `F.resume` and `F.destroy` (F's own
+symbol's size ends at the first stub). Each builds the same machine frame
+as F's prologue (same CFI rows: first the entry state, then the
+prologue's, then x19's), sets x19 := x0, mode := 1, the frame word := x0,
+`w0` := 0 (resume) or 1 (destroy), loads the index and branches to that
+suspend's re-entry label (`cmp` / `b.eq` per suspend), and ends in
+`brk #1`. Entering after the suspend with `w0` as its result, the
+switch takes the 0 or 1 edge.
+
+*The suspended region* (design 0005 §3.3). From the return of an
+`await_suspend` wrapper (or, without wrappers, from `coro.save`) to the
+suspend, and on the −1 edge, the frame may already be freed: no
+instruction may address it. Blocks of the plan's `suspended_region`,
+the code after a wrapper's call and the −1 edge's `phi` stores are in the
+region; every heap address the target forms passes `FnCx::coro_access`,
+and one formed in the region (or before `coro.begin`) makes the function
+an internal error.
+
+*Hooks.* `Target::CORO_BODIES`, `Target::coro_stubs`,
+`Target::coro_dispatch`; `FnCx::coro_*` for the target; one call each in
+the driver (`coro_plan`, `coro_setup`, `coro_slot_place`,
+`coro_block_start`, `coro_switch`, `coro_finish`, `coro_entries`), in
+`call_through` (`coro_called`) and in module emission (the stub symbols).
+`Stress::coro_frame` (§12, not in `Stress::ALL`) gives every function
+the coroutine machine frame and clobbers x19 after saving it.
+
+*The facade.* `classify` accepts `presplitcoroutine`, `type:token` and
+the body intrinsics on AArch64; the session refuses a body by the plan's
+`coro:*` name before code generation, and a coroutine in a module that
+writes debug information as `coro:debug-info` until WP-108 describes its
+frame.
 
 ## 8. The `Target` trait
 

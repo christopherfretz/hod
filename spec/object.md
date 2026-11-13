@@ -954,7 +954,12 @@ the intended linker produced it.
 The AArch64 tests exist on an AArch64 Linux host and use `gcc`. The x86-64
 tests use the host's `gcc` on an x86-64 Linux host; elsewhere they use
 `x86_64-linux-gnu-gcc`, `x86_64-linux-gnu-ld.bfd` (lld and mold link any
-target as they are) and run the program with
-`qemu-x86_64 -L /usr/x86_64-linux-gnu`. All of these are found through
-`hod_testutil::tool`; when the cross system root is missing the tests skip,
-or fail under `HOD_REQUIRE_TOOLS=1`.
+target as they are) and run the program under the emulated runner,
+`qemu-x86_64 -cpu qemu64,-sse3,-cx16,-lahf-lm -L /usr/x86_64-linux-gnu`:
+the x86-64-v1 baseline CPU, so an instruction beyond it (SSE3, POPCNT,
+CMPXCHG16B, LAHF in 64-bit mode) dies with SIGILL. `spec/harness.md`
+"Cross runs" is the one definition of that runner (its CPU, its system
+root, its time limits and a test's added CPU features); this file does not
+repeat it. All of these are found through `hod_testutil::Target`; when the
+cross system root is missing the tests skip, or fail under
+`HOD_REQUIRE_TOOLS=1`.

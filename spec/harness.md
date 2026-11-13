@@ -504,10 +504,24 @@ passing. The CPUs are `hod_testutil::target`'s:
 | x86-64 | `qemu64,-sse3,-cx16,-lahf-lm` | x86-64-v1: SSE2, no SSE3, SSSE3, SSE4, POPCNT, CMPXCHG16B or LAHF in 64-bit mode |
 | AArch64 | `cortex-a53` | Armv8.0-A with the FP and SIMD unit, no LSE atomics |
 
-`cx16` is off although LLVM's default x86-64 CPU does not use it either
-(an `i128` `cmpxchg` is a call to `__atomic_compare_exchange_16` with
-LLVM 19 and 22): if hod ever uses it, the choice is a decision of its own
-in `spec/abi-x64.md`, not something the emulator lets through.
+`cx16` is off: LLVM's default x86-64 CPU does not use it either (an
+`i128` `cmpxchg` is a call to `__atomic_compare_exchange_16` with LLVM 19
+and 22), and hod uses `lock cmpxchg16b` only in functions whose target
+features include `+cx16`. A test of such a function says so with the
+`cpu` directive ("Test directives"): `;@ cpu: +cx16` gives the emulator's
+model that feature, for that test alone and for both sides' programs
+(the reference's and hod's). A feature is added by removing the model's
+`-<feature>` and appending `+<feature>` (QEMU applies every `-` after
+every `+`; `hod_testutil::target::cpu_with_features`), so the x86-64
+runner of such a test is `-cpu qemu64,-sse3,-lahf-lm,+cx16`. The
+module's own `"target-features"` attributes are what tell `llc` and hod
+they may use the instruction; the directive changes only the runner. A
+native run (the target is the host's) ignores it: the machine's CPU is
+what it is.
+
+This section and its table are the one definition of the emulated
+runner; `spec/object.md` "Toolchains" and the crates' link tests refer to
+it.
 
 The summary's first line says `(emulated: <emulator> -cpu <cpu> -L
 <root>)` after the target. A program under the emulator has six times a
@@ -665,13 +679,14 @@ runs").
 
 | tier | runs, in order |
 |---|---|
-| `ci --quick` | `irdiff --tier quick` with the default oracle; `irdiff --target <other>` on the fixed `xtask::ci::QUICK_CROSS_SEEDS` (`main_args.ll`, `exit_float.ll`, `two_modules.ll`, `eh_invoke.ll`) |
+| `ci --quick` | `irdiff --tier quick` with the default oracle; `irdiff --llvm 22 --target <other>` over every test (`xtask::ci::QUICK_CROSS_LLVM`) |
 | `ci` | `irdiff --witness` over every test with LLVM 22, then 19; `irdiff --hybrid` over every test with the default oracle; `irdiff --target <other>` over every test with LLVM 22, then 19 |
 
-The quick cross seeds cross the process interface (arguments, input, exit
-status), call into the C library, use floating point, link two modules
-and throw a C++ exception, in both dialects; they are valid for both
-targets. The full gate runs the other architecture once per oracle, so a
+The quick gate runs every seed for the other architecture with the newest
+oracle (WP-139; until then a fixed four): all of them take under 20 s
+under the emulator at load 20, and the set grows with hod's x86-64
+coverage, which is what the quick gate has to see. The full gate runs the
+other architecture once per oracle, so a
 program LLVM 19 builds differently from LLVM 22 for that target is a
 failure of one of the two runs. The cross runs have no witness: the
 witness checks the reference, and the reference of the other target is
@@ -1256,6 +1271,7 @@ everywhere.
 | `oracle-skip` | `oracle-skip(llvm=N[,M...]): <reason>`: with those oracles, hod's program is compared with the directives only; the reason is free text, never empty, and the test is listed in "Oracle skips" | any | the oracle is used |
 | `link` | what the link needs: `m` (the math library), `c++` (the C++ runtime), `no-pie` (a position-dependent program, compiled with the static relocation model), `pie` (the default, spelled out), `allow-warnings` (link without `-Wl,--fatal-warnings`) | once | the C library, PIE, warnings fatal |
 | `llc-args` | code-generation arguments the oracle, the witness and hod all get, from the allow-list below | once | none |
+| `cpu` | CPU features the emulated runner's model gets for this test, as words `+<feature>` in QEMU's names (lower-case letters, digits, `.`, `_`, `-`: `+cx16`, `+popcnt`, `+sse4.2`), each once; the test must have a `target` of exactly one architecture ("Cross runs") | once | the baseline CPU |
 | `module` | starts the next module of a test of several, and names it ("Several modules") | any | one module |
 | `tier` | `quick` or `full` | once | `full` |
 | `covers` | the spec section the test exercises, free text | once | none |
@@ -1372,6 +1388,9 @@ a file is reported, with its line:
   kind, or a linker condition on `unsupported`;
 - `input` other than `pre-opt`; `dialect` that is not a major; both
   `dialect` and `llvm`;
+- a `cpu` word that is not `+<feature>`, a feature twice, or `cpu` in a
+  test whose `target` does not name exactly one architecture (reported
+  on the `cpu` line);
 - `oracle-skip` without `(llvm=N[,M...])`, with an item that is not a
   major or a major twice, or without a reason.
 
@@ -1380,7 +1399,7 @@ a file is reported, with its line:
 `Expectations::to_directives` writes directives in this order, leaving
 out everything that is the default: `covers`, `tier`, `target`, `llvm`,
 `dialect`, `input`, `link` (libraries, then `no-pie`, then
-`allow-warnings`), `llc-args`, each `oracle-skip`, each `unsupported`, each `xfail`, `args`, each `stdin`, `exit`, each `stdout`,
+`allow-warnings`), `llc-args`, `cpu`, each `oracle-skip`, each `unsupported`, each `xfail`, `args`, each `stdin`, `exit`, each `stdout`,
 `stdout-no-newline`. `module` directives belong to the modules and are
 not written. Reading what it writes gives
 the same `Expectations` back. Files need not be in this order.
@@ -1388,13 +1407,16 @@ the same `Expectations` back. Files need not be in this order.
 ## corpus
 
 ```
-cargo xtask corpus capture [--source kiln|gcc-torture|all] [--llvm <major>]
-                           [--out <dir>] [--kiln <kiln++>] [--kiln-repo <dir>]
-                           [--torture <dir>] [--limit <N>] [-j <N>]
-                           [--force] [--retry-skipped]
-cargo xtask corpus verify  [-j <N>] [--hod <binary>] [--strict]
+cargo xtask corpus capture [--target <arch>] [--source kiln|gcc-torture|all]
+                           [--llvm <major>] [--out <dir>] [--kiln <kiln++>]
+                           [--kiln-repo <dir>] [--torture <dir>] [--limit <N>]
+                           [-j <N>] [--force] [--retry-skipped]
+cargo xtask corpus verify  [--target <arch>] [-j <N>] [--hod <binary>] [--strict]
                            [--manifest-only] [--keep] [-v] [<corpus dir>]
-cargo xtask corpus census  [--report <file>] [<corpus dir>]
+cargo xtask corpus census  [--target <arch>] [--report <file>] [<corpus dir>]
+cargo xtask corpus reasons [--target <arch>] [options] [<corpus dir>]
+cargo xtask corpus compare [--target <arch>] [--against <dir>]
+                           [--differences <file>] [<corpus dir>]
 cargo xtask corpus fetch   [--torture <dir>]
 ```
 
@@ -1415,7 +1437,7 @@ share nothing.
 
 | what | default | set by |
 |---|---|---|
-| the corpus | `<build root>/corpus` | `--out`, or the directory argument |
+| the corpus | `<build root>/corpus`; for `--target` of the other architecture `<build root>/corpus-x64` (`corpus-a64`) | `--out`, or the directory argument |
 | kiln++ | `<build root>/target-kiln/release/kiln++` | `--kiln`, `$HOD_KILN` |
 | kiln's repository | `<build root>/../kiln` | `--kiln-repo`, `$HOD_KILN_REPO` |
 | the GCC checkout | `<build root>/../.toolchain/gcc-tests` | `--torture`, `$HOD_GCC_TESTS` |
@@ -1575,6 +1597,40 @@ and anything unknown make the test `special-flags`. Tests of `ieee/` get
 arguments and must exit with status 0: the suite's tests report failure
 by `abort` or a non-zero status. The entry's link is `link: m`.
 
+### Other targets
+
+`--target <arch>` (`x86_64`, `aarch64`; default this machine's) is the
+architecture of the corpus, for every subcommand. For this machine's
+architecture nothing changes. For the other one (x86-64 on the AArch64
+reference machine, WP-139) the corpus is a separate directory, by default
+`<build root>/corpus-x64` with its own tables and `corpus-x64.work`, and
+the host's corpus is not read or written:
+
+- **capture** passes `--target=<triple>` (`x86_64-unknown-linux-gnu`) to
+  the producer: kiln++ gets it in every command, before the header's
+  arguments, the link of a test built in steps too, unless the header
+  pins a target of its own; clang gets it before the test's flags. The
+  modules then carry the target's triple and data layout, and `llc`, run
+  as before, builds for it. kiln++ links the program itself with its
+  driver for that target (`clang++ --target=`, which finds the cross GCC
+  installation); a torture program is linked by the target's cross
+  driver (`x86_64-linux-gnu-gcc`). Each program runs under the emulated
+  runner ("irdiff", "Cross runs") with six times the run limit;
+  admission uses `irdiff`'s cross run (the cross driver, the cross
+  `ld.bfd`, lld and mold, the emulator) with the witness as for this
+  machine. A missing emulator or system root is a missing tool: nothing
+  is captured. `other-target` and `requires: target-*` are decided for
+  the corpus's architecture, and so are `dg-options` selectors. The key
+  of a test also covers the triple.
+- **verify** runs `irdiff --target <arch>`; its results are
+  `<build>/corpus/verify-<arch>-llvm<N>-<mode>.tsv`.
+- **census** writes `docs/status/corpus-x64-census.md` by default.
+- **reasons** reads that corpus (hod takes the target from each module).
+- **compare** sets that corpus against this machine's ("compare").
+
+Entries are the same format, with `target: <arch>` naming the corpus's
+architecture.
+
 ### Entries
 
 An entry is one file:
@@ -1683,6 +1739,7 @@ the entry file alone. `verify` does not use the witness again.
 <corpus>/MANIFEST.tsv
 <corpus>/SKIPPED.tsv
 <corpus>/CAPTURE.tsv
+<corpus>/TIMES.tsv
 <corpus>/<source>/llvm<N>/<test>.ll
 <corpus>.work/                       shims, kiln's caches, per-run directories
 ```
@@ -1713,8 +1770,13 @@ backslash, tab, newline and carriage return are written `\\`, `\t`, `\n`,
   `reason`, `detail`, `key`.
 - `CAPTURE.tsv`, one row per group: what the last capture that made the
   whole group anew (nothing reused, no `--limit`) did, how long it took
-  and with how many jobs. It is the one file of the corpus that is not a
-  function of the inputs.
+  and with how many jobs.
+- `TIMES.tsv`, one row per test whose program a capture ran: `source`,
+  `llvm`, `test`, `seconds` (the wall time of the capture's own run of
+  the program, under the emulator for another architecture) and `ended`
+  (`exit`, `signal` or `timeout`). A capture replaces the rows of the
+  tests it ran and keeps the others. With `CAPTURE.tsv` it is what is not
+  a function of the inputs.
 
 ### Incremental
 
@@ -1823,6 +1885,49 @@ instruction counts leave out `#dbg_*` records; a basic block is a label
 line or a function's unlabelled entry block. Anything the scanner cannot
 place is counted under "Not recognised", so a gap is visible.
 
+### compare
+
+```
+cargo xtask corpus compare [--target <arch>] [--against <dir>] [--differences <file>] [<corpus dir>]
+```
+
+An entry's expectations are what the reference build of its module did
+on its architecture, so the same test captured for both architectures
+must behave the same unless its behaviour depends on the target.
+`compare` sets the corpus (default: that of `--target`) against another
+(`--against`, default this machine's corpus) and prints, in Markdown:
+
+- per group, the entries of each corpus, those of both, and how many of
+  those have the same exit status and standard output;
+- each test whose entries differ (both LLVM majors in one row), with what
+  differs (the exits; the first line of output that differs, cut to 60
+  characters), its class and its cause;
+- the tests with an entry in one corpus only, counted by the other
+  corpus's skip reason (`-` when it has no row: the test is not in its
+  suite or its group was not captured), then listed;
+- from the corpus's `TIMES.tsv`, per group, how many programs ran, the
+  median, 90th and 99th percentile and the maximum of their times, how
+  many took over 1 s and over 10 s, and how many timed out; then the
+  slowest 20.
+
+The **table of differences** (`--differences`, default
+`docs/status/corpus-x64-differences.tsv` for x86-64) explains each
+difference: one line `<source> <test>⇥<class>⇥<cause>`, `#` lines and
+blank lines ignored. The classes:
+
+| class | the difference |
+|---|---|
+| `target` | is the target's by nature: `sizeof(long double)`, `char`'s signedness, `va_list`, alignment, code the preprocessor selects |
+| `emulation` | is the emulator's (timing, signals, the CPU model) |
+| `kiln`, `clang`, `llc` | is a suspected bug of that tool for one target; a reduction is kept for the tool's maintainers |
+| `unknown` | is not explained yet |
+
+Exit status: 0; 1 when a difference has no line in the table (each is
+named on standard error), so that a capture that brings a new difference
+shows it; 2 for a usage error, a table that does not parse (a line
+without three fields, an unknown class, a test twice) or a corpus that
+cannot be read.
+
 ### fetch
 
 Clones `https://github.com/gcc-mirror/gcc.git` at the tag
@@ -1836,11 +1941,13 @@ use of the network.
 
 ### Library
 
-`xtask::corpus`: `capture::{Options, capture, CaptureReport}`,
+`xtask::corpus`: `capture::{Options, capture, CaptureReport, read_times,
+TimeRow}`, `compare::{compare, render, parse_differences, Comparison}`,
+`default_dir_for`, `other_target`, `take_target`,
 `verify::{Options, verify, VerifyReport, check_manifest}`,
 `census::{scan_module, count_corpus, render, write_report, GroupCensus, T,
 D}`, `manifest::{Manifest, Skips}`, `entry::{compose, module_of}`, and the
-two sources' rules, `kiln::{discover, parse_header, plan}` and
+two sources' rules, `kiln::{discover, parse_header, plan, plan_for}` and
 `torture::{discover, flags, clang_args}`. `irdiff`'s `Search::on_path` and
 `Search::versioned` are public for it.
 

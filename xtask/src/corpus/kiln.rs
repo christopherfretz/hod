@@ -503,11 +503,26 @@ impl Plan {
 
 /// Decides, before anything is run, whether `test` can be a corpus entry
 /// for a capture on `host` with LLVM `major`, and how it is built.
+pub fn plan(test: &KilnTest, header: &Header, host: Arch, major: u32) -> Result<Plan, Unfit> {
+    plan_for(test, header, host, false, major)
+}
+
+/// [`plan`] for a capture whose programs are for `target`. When `cross`
+/// (the target is not this machine's), kiln++ is told the target: every
+/// command gets `--target=<triple>` before the header's arguments, unless
+/// the header pins a target itself (`spec/harness.md` "corpus", "Other
+/// targets").
 #[expect(
     clippy::too_many_lines,
     reason = "one rule after another, in the order of the spec's table"
 )]
-pub fn plan(test: &KilnTest, header: &Header, host: Arch, major: u32) -> Result<Plan, Unfit> {
+pub fn plan_for(
+    test: &KilnTest,
+    header: &Header,
+    target: Arch,
+    cross: bool,
+    major: u32,
+) -> Result<Plan, Unfit> {
     let skip = |reason: &'static str, detail: String| Err(Unfit::new(reason, detail));
     if let Some(error) = header.errors.first() {
         return skip("header-error", error.clone());
@@ -525,8 +540,8 @@ pub fn plan(test: &KilnTest, header: &Header, host: Arch, major: u32) -> Result<
     if header.env {
         return skip("needs-env", "the test sets environment variables (env:)".to_owned());
     }
-    let arch = target_triple(&header.args).map_or(host.name(), triple_arch);
-    if arch != host.name() {
+    let arch = target_triple(&header.args).map_or(target.name(), triple_arch);
+    if arch != target.name() {
         return skip("other-target", format!("the test targets {arch}"));
     }
     for requirement in &header.requires {
@@ -553,6 +568,9 @@ pub fn plan(test: &KilnTest, header: &Header, host: Arch, major: u32) -> Result<
     }
     let test_dir = test.name.rsplit_once('/').map_or(".", |(dir, _)| dir);
     let mut args = Vec::new();
+    if cross && target_triple(&header.args).is_none() {
+        args.push(format!("--target={}", target.triple()));
+    }
     for arg in &header.args {
         match substitute(arg, test_dir) {
             Ok(arg) => args.push(arg),
@@ -978,6 +996,56 @@ mod tests {
         )
         .unwrap();
         assert_eq!(header_test.compile_args[..3], ["-x", "c++", "-std=c++26"]);
+    }
+
+    // "Other targets": a capture for a target that is not this machine's
+    // tells kiln++ the target in every command, the link of a test built
+    // in steps too, unless the header pins one; the target decides
+    // `other-target` and `requires: target-*`.
+    #[test]
+    fn cross_command_lines() {
+        let cross = |header: &str, name: &str| {
+            let text = format!("//@ expect: run\n{header}");
+            plan_for(&test(name), &parse_header(&text), Arch::X86_64, true, 22)
+        };
+        let one = cross("//@ args: -g\n", "tests/c/hello/h.c").unwrap();
+        assert_eq!(
+            one.compile_args,
+            [
+                "-x",
+                "c",
+                "-std=c17",
+                "-fno-crash-diagnostics",
+                "-fclang-compat=22",
+                "--target=x86_64-unknown-linux-gnu",
+                "-g",
+                "tests/c/hello/h.c"
+            ]
+        );
+        let steps = cross("//@ two-step\n", "tests/conformance/a/t.cpp").unwrap();
+        let steps = steps.two_step("<job>/bmi").unwrap().unwrap();
+        assert!(steps.link_args.contains(&"--target=x86_64-unknown-linux-gnu".to_owned()));
+        for compile in &steps.compiles {
+            assert!(compile.args.contains(&"--target=x86_64-unknown-linux-gnu".to_owned()));
+        }
+        let pinned = cross("//@ args: --target=x86_64-pc-linux-gnu\n", "tests/c/a/t.c").unwrap();
+        assert_eq!(pinned.compile_args.iter().filter(|a| a.starts_with("--target")).count(), 1);
+        let reason = |header: &str| cross(header, "tests/c/a/t.c").map(|_| "captured");
+        assert_eq!(
+            reason("//@ args: --target=aarch64-unknown-linux-gnu\n").unwrap_err().reason,
+            "other-target"
+        );
+        assert_eq!(reason("//@ requires: target-aarch64\n").unwrap_err().reason, "requires");
+        assert_eq!(reason("//@ requires: target-x86_64\n"), Ok("captured"));
+        // The host's own capture is as before: no `--target`.
+        let native = plan_for(
+            &test("tests/c/a/t.c"),
+            &parse_header("//@ expect: run\n"),
+            Arch::X86_64,
+            false,
+            22,
+        );
+        assert!(!native.unwrap().compile_args.iter().any(|a| a.starts_with("--target")));
     }
 
     // "Skip reasons": what is decided from the header alone.

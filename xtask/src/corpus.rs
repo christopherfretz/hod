@@ -9,6 +9,7 @@
 
 pub mod capture;
 pub mod census;
+pub mod compare;
 pub mod entry;
 pub mod kiln;
 pub mod manifest;
@@ -20,16 +21,23 @@ pub mod verify;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::irdiff::directives::Arch;
 use crate::irdiff::process::{self, End, Limits};
 use crate::irdiff::{self, Config, MAX_JOBS, Mode, Search};
 
 /// The command's help.
 pub const USAGE: &str = "\
-usage: cargo xtask corpus capture [options]
-       cargo xtask corpus verify [options] [<corpus dir>]
-       cargo xtask corpus census [--report <file>] [<corpus dir>]
-       cargo xtask corpus reasons [options] [<corpus dir>]
+usage: cargo xtask corpus capture [--target <arch>] [options]
+       cargo xtask corpus verify [--target <arch>] [options] [<corpus dir>]
+       cargo xtask corpus census [--target <arch>] [--report <file>] [<corpus dir>]
+       cargo xtask corpus reasons [--target <arch>] [options] [<corpus dir>]
+       cargo xtask corpus compare [--target <arch>] [--against <dir>] [--differences <file>] [<corpus dir>]
        cargo xtask corpus fetch [--torture <dir>]
+
+--target <arch> (x86_64 or aarch64) selects the corpus of that
+architecture: <build root>/corpus for this machine's, else
+<build root>/corpus-x64 or corpus-a64, captured with the cross tools and
+run under the emulator; default: this machine's.
 
 capture: runs kiln++ over kiln's executing tests and clang over the GCC
 torture suite, and keeps every module whose program can be an irdiff test.
@@ -90,7 +98,59 @@ pub fn build_root(build_dir: &Path) -> PathBuf {
 
 /// The corpus directory when none is given.
 pub fn default_dir(build_dir: &Path) -> PathBuf {
-    build_root(build_dir).join("corpus")
+    default_dir_for(build_dir, None)
+}
+
+/// The architecture `target` names unless it is this machine's: the
+/// corpus of another architecture is kept apart ("Other targets").
+pub fn other_target(target: Option<Arch>) -> Option<Arch> {
+    target.filter(|target| Some(*target) != Arch::host())
+}
+
+/// The short name of an architecture in a directory or report name.
+fn short(arch: Arch) -> &'static str {
+    match arch {
+        Arch::X86_64 => "x64",
+        Arch::Aarch64 => "a64",
+    }
+}
+
+/// The corpus directory of `target` when none is given: `corpus` for this
+/// machine's architecture, `corpus-x64` (`corpus-a64`) for the other.
+pub fn default_dir_for(build_dir: &Path, target: Option<Arch>) -> PathBuf {
+    match other_target(target) {
+        Some(other) => build_root(build_dir).join(format!("corpus-{}", short(other))),
+        None => build_root(build_dir).join("corpus"),
+    }
+}
+
+/// The census report of `target`'s corpus when none is given:
+/// `docs/status/corpus.md`, or `corpus-x64-census.md` for the other
+/// architecture.
+pub fn default_report_for(target: Option<Arch>) -> PathBuf {
+    let name = match other_target(target) {
+        Some(other) => format!("corpus-{}-census.md", short(other)),
+        None => "corpus.md".to_owned(),
+    };
+    irdiff::workspace_root().join("docs").join("status").join(name)
+}
+
+/// Takes `--target <arch>` out of a subcommand's arguments.
+pub fn take_target(args: &[String]) -> Result<(Option<Arch>, Vec<String>), String> {
+    let (mut target, mut rest, mut index) = (None, Vec::new(), 0);
+    while index < args.len() {
+        if args[index] == "--target" {
+            let name = value(args, &mut index, "--target")?;
+            target =
+                Some(Arch::from_name(name).ok_or_else(|| {
+                    format!("unknown target '{name}': expected x86_64 or aarch64")
+                })?);
+        } else {
+            rest.push(args[index].clone());
+        }
+        index += 1;
+    }
+    Ok((target, rest))
 }
 
 fn from_env(name: &str) -> Option<PathBuf> {
@@ -210,9 +270,10 @@ pub fn parse_verify(args: &[String], options: &mut verify::Options) -> Result<()
 pub fn parse_reasons(
     args: &[String],
     build_dir: &Path,
+    target: Option<Arch>,
 ) -> Result<(reasons::Options, Option<PathBuf>), String> {
     let mut options = reasons::Options {
-        dir: default_dir(build_dir),
+        dir: default_dir_for(build_dir, target),
         hod: build_dir.join("release").join("hod"),
         before: None,
         llc: false,
@@ -247,13 +308,15 @@ pub fn parse_reasons(
 }
 
 /// The defaults of `verify` for this workspace and this process's
-/// environment.
-pub fn verify_defaults(build_dir: &Path) -> verify::Options {
+/// environment, for the corpus of `target`: its programs are linked and
+/// run for that architecture.
+pub fn verify_defaults(build_dir: &Path, target: Option<Arch>) -> verify::Options {
     let mut config = Config::for_workspace();
     config.build_dir = build_dir.to_path_buf();
     config.mode = Mode::Hybrid;
     config.jobs = config.jobs.min(capture::DEFAULT_JOBS);
-    verify::Options { dir: default_dir(build_dir), config, manifest_only: false }
+    config.target = target;
+    verify::Options { dir: default_dir_for(build_dir, target), config, manifest_only: false }
 }
 
 /// The steps of `fetch`: git's arguments, in order, for a sparse clone of
@@ -320,8 +383,8 @@ pub fn fetch(dir: &Path, search: &Search) -> Result<String, String> {
 }
 
 /// `cargo xtask corpus reasons`.
-fn reasons_command(args: &[String], build_dir: &Path) -> u8 {
-    let (options, report) = match parse_reasons(args, build_dir) {
+fn reasons_command(args: &[String], build_dir: &Path, target: Option<Arch>) -> u8 {
+    let (options, report) = match parse_reasons(args, build_dir, target) {
         Ok(parsed) => parsed,
         Err(message) => {
             eprint!("xtask corpus: {message}\n{USAGE}");
@@ -361,10 +424,16 @@ pub fn command(args: &[String]) -> u8 {
         print!("{USAGE}");
         return 0;
     }
-    let rest = args.get(1..).unwrap_or_default();
+    let (target, rest) = match take_target(args.get(1..).unwrap_or_default()) {
+        Ok(taken) => taken,
+        Err(message) => return usage(&message),
+    };
+    let rest = rest.as_slice();
     match args.first().map(String::as_str) {
         Some("capture") => {
             let mut options = capture_defaults(&build_dir);
+            options.target = target;
+            options.out = default_dir_for(&build_dir, target);
             if let Err(message) = parse_capture(rest, &mut options) {
                 return usage(&message);
             }
@@ -377,7 +446,7 @@ pub fn command(args: &[String]) -> u8 {
             }
         }
         Some("verify") => {
-            let mut options = verify_defaults(&build_dir);
+            let mut options = verify_defaults(&build_dir, target);
             if let Err(message) = parse_verify(rest, &mut options) {
                 return usage(&message);
             }
@@ -390,8 +459,8 @@ pub fn command(args: &[String]) -> u8 {
             }
         }
         Some("census") => {
-            let mut dir = default_dir(&build_dir);
-            let mut report = irdiff::workspace_root().join("docs").join("status").join("corpus.md");
+            let mut dir = default_dir_for(&build_dir, target);
+            let mut report = default_report_for(target);
             let mut index = 0;
             let mut given = false;
             while index < rest.len() {
@@ -419,7 +488,8 @@ pub fn command(args: &[String]) -> u8 {
                 Err(message) => failed(&message),
             }
         }
-        Some("reasons") => reasons_command(rest, &build_dir),
+        Some("reasons") => reasons_command(rest, &build_dir, target),
+        Some("compare") => compare::command(rest, &build_dir, target),
         Some("fetch") => {
             let mut options = capture_defaults(&build_dir);
             let mut index = 0;
@@ -537,7 +607,7 @@ mod tests {
     #[test]
     fn verify_arguments() {
         let parse = |words: &[&str]| {
-            let mut options = verify_defaults(Path::new("/w/.build/target-x"));
+            let mut options = verify_defaults(Path::new("/w/.build/target-x"), None);
             parse_verify(&strings(words), &mut options).map(|()| options)
         };
         let options = parse(&[]).unwrap();

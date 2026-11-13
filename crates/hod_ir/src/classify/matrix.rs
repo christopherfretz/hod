@@ -478,7 +478,7 @@ const DEBUG_ROWS: [SupportRow; 5] = [
     row(
         "debug:module-flags",
         ON,
-        todo(X64),
+        ON,
         "`Dwarf Version` or `Debug Info Version` is set (WP-087)",
     ),
     a64(
@@ -487,18 +487,18 @@ const DEBUG_ROWS: [SupportRow; 5] = [
         "a compile unit with debug information and a `Dwarf Version` other than 5 (absent is \
          LLVM's 4): `hod_dwarf` writes DWARF 5 only",
     ),
-    row("debug:subprogram", ON, todo(X64), "a function with a body and a `DISubprogram` (WP-087)"),
+    row("debug:subprogram", ON, ON, "a function with a body and a `DISubprogram` (WP-087)"),
     row(
         "debug:slot-variables",
         ON,
-        todo(X64),
+        ON,
         "a stack slot that is a source variable (WP-087); in a coroutine body, on the frame word \
          (WP-108, `spec/dwarf.md` §6.16)",
     ),
     row(
         "debug:locations",
         ON,
-        todo(X64),
+        ON,
         "a body whose instructions carry source locations (WP-087)",
     ),
 ];

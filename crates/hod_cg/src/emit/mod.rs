@@ -1038,6 +1038,11 @@ impl<'m> ModuleEmitter<'m> {
             if !place.is_placed() {
                 return None;
             }
+            // WP-136: a thread-local variable's offset is relocated
+            // against its own symbol (`R_X86_64_DTPOFF64`), local or not.
+            if lines::tls_by_symbol(module, sym) {
+                return Some((Self::obj_sym(sym), 0));
+            }
             let section = (place.section != NOWHERE).then(|| SectionId::from_index(place.section));
             let linkage = binding(module.symbol(sym).linkage());
             Some(lines::variable_address(obj, linkage, section, place.value, Self::obj_sym(sym)))

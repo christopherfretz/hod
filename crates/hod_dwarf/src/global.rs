@@ -8,15 +8,14 @@
 //! location. The plain shape (a definition with an empty expression) stays
 //! the core's (§6.5).
 
-use hod_ir::{Arch, DiFlags, DiGlobalVariable, DiId, DiKind, DiNode, DiOp, ExprId};
+use hod_ir::{DiFlags, DiGlobalVariable, DiId, DiKind, DiNode, DiOp, ExprId};
 
 use crate::Error;
 use crate::abbrev::{code, fam};
 use crate::die::{Kind, NONE, UnitPlan, Writer, bad, uleb_len, unsupported};
 use crate::leb::{write_sleb, write_uleb};
 use crate::scope::{
-    GLOBAL_EXPRESSION, GLOBAL_SCOPE, GLOBAL_SHAPE, STATIC_MEMBER_DECLARATION, TLS_LOCATION,
-    VarShape,
+    GLOBAL_EXPRESSION, GLOBAL_SCOPE, GLOBAL_SHAPE, STATIC_MEMBER_DECLARATION, VarShape,
 };
 
 const DW_OP_ADDRX: u8 = 0xa1;
@@ -96,9 +95,6 @@ impl UnitPlan<'_> {
         let constant = self.global_constant(var, expr)?;
         // `llc` writes a constant even for a thread-local variable.
         let tls = tls && constant.is_none();
-        if tls && self.scope_dies.arch == Some(Arch::X86_64) {
-            return Err(unsupported(var, TLS_LOCATION));
-        }
         if v.line != 0 && v.file.is_none() {
             return Err(unsupported(var, GLOBAL_SHAPE));
         }
@@ -154,9 +150,6 @@ impl UnitPlan<'_> {
         v: &DiGlobalVariable<'_>,
         scope: DiId,
     ) -> Result<u32, Error> {
-        if self.scope_dies.arch == Some(Arch::X86_64) {
-            return Err(unsupported(var, TLS_LOCATION));
-        }
         let parent = self.static_parent(var, scope)?;
         let die = self.push(var, parent, Kind::Variable);
         let shape = VarShape { spec: NONE, spec_type: false, constant: None, tls: true };
@@ -191,12 +184,16 @@ impl<'a> Writer<'a> {
         let b = u32::from;
         let shape = plan.scope_dies.var(die).ok_or(bad(node, "var"))?;
         let addr = self.global_addr(die).filter(|_| shape.constant.is_none() && !shape.tls);
+        // WP-136: x86-64's thread-local location (`crate::x86_64`).
+        let tls = self
+            .global_addr(die)
+            .filter(|_| shape.tls && crate::x86_64::tls_has_location(plan.scope_dies.arch));
         let (cu, cs) = match shape.constant {
             Some((_, false)) => (true, false),
             Some((_, true)) => (false, true),
             None => (false, false),
         };
-        let loc = addr.is_some();
+        let loc = addr.is_some() || tls.is_some();
         let link = !v.linkage_name.is_empty();
         let align = v.align >= 8;
         if shape.spec == NONE {
@@ -254,6 +251,9 @@ impl<'a> Writer<'a> {
             write_uleb(&mut self.info, 1 + uleb_len(u64::from(index)) as u64);
             self.info.push(DW_OP_ADDRX);
             write_uleb(&mut self.info, u64::from(index));
+        }
+        if let Some((symbol, addend)) = tls {
+            self.tls_location(symbol, addend);
         }
         match shape.constant {
             Some((bits, false)) => write_uleb(&mut self.info, bits),

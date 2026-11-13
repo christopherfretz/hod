@@ -92,6 +92,8 @@ pub struct Scratch {
     /// instruction each stands before, the label and its location, in
     /// position order.
     pub(crate) dbg_labels: Vec<(u32, hod_ir::DiId, LocId)>,
+    /// The key-instructions pass's tables (WP-149).
+    pub(crate) key_rows: crate::key_rows::KeyScratch,
 }
 
 impl Default for Scratch {
@@ -123,6 +125,7 @@ impl Default for Scratch {
             islands: Vec::new(),
             island_data: Vec::new(),
             dbg_labels: Vec::new(),
+            key_rows: crate::key_rows::KeyScratch::default(),
         }
     }
 }
@@ -148,6 +151,7 @@ impl Scratch {
             + bytes(&self.site_pads)
             + bytes(&self.sig_params)
             + bytes(&self.sig_attrs)
+            + self.key_rows.allocated_bytes()
             + bytes(&self.tail_exits)
             + bytes(&self.islands)
             + bytes(&self.island_data)
@@ -302,9 +306,16 @@ pub struct FnCx<'a, T: Target> {
     /// than the entry block) has been recorded yet.
     pub(crate) line_seg: (u32, LocId),
     pub(crate) line_block_start: bool,
+    /// Whether the rows follow key instructions (WP-149, `key_rows`),
+    /// and whether the open segment's code ends with a call.
+    pub(crate) key_lines: bool,
+    pub(crate) line_call: bool,
     /// `ret`s emitted, and the location of the last one (§9.5).
     pub(crate) rets: u32,
     pub(crate) ret_loc: LocId,
+    /// Whether the last `ret` was in the last block emitted, so that the
+    /// epilogue follows it (§5.9 K6).
+    pub(crate) ret_last: bool,
     /// A coroutine body's state (WP-106, `coro_body`).
     pub(crate) coro: Option<Box<crate::coro_body::CoroFn>>,
 }

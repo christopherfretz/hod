@@ -295,7 +295,12 @@ impl<'m> DebugLines<'m> {
                 line: l.line,
                 column: l.column,
             });
-            transitions.push(Transition { offset: row.offset, loc, block_start: row.block_start });
+            transitions.push(Transition {
+                offset: row.offset,
+                loc,
+                block_start: row.block_start,
+                stmt: row.stmt,
+            });
         }
         let f = FunctionLines { scope, size, transitions: &transitions, epilogue: true };
         self.rows.clear();

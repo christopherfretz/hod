@@ -140,4 +140,4 @@ pub use debug::node::{
     DiNamespace, DiNode, DiOther, DiShape, DiString, DiSubprogram, DiSubrange, DiSubroutineType,
     DiTemplateTypeParameter, DiTemplateValueParameter, DiTuple,
 };
-pub use debug::{DebugInfo, DebugStats, DiLocation};
+pub use debug::{DebugInfo, DebugStats, DiAtom, DiLocation};

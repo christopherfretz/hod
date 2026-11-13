@@ -15,9 +15,9 @@ use hod_ir::Layering;
 use std::borrow::Cow;
 
 use hod_ir::{
-    ChecksumKind, ConstId, DiConstant, DiFieldValue, DiFlags, DiId, DiKind, DiLocation, DiMapping,
-    DiNode, DiOther, DiShape, DiString, DiTuple, EmissionKind, ExprId, LocId, NameTableKind,
-    SpFlags, di_field, di_kind, dw_ate, dw_cc, dw_lang, dw_op, dw_tag,
+    ChecksumKind, ConstId, DiAtom, DiConstant, DiFieldValue, DiFlags, DiId, DiKind, DiLocation,
+    DiMapping, DiNode, DiOther, DiShape, DiString, DiTuple, EmissionKind, ExprId, LocId,
+    NameTableKind, SpFlags, di_field, di_kind, dw_ate, dw_cc, dw_lang, dw_op, dw_tag,
 };
 
 use crate::Span;
@@ -299,14 +299,10 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                     scratch.strs.clear();
                 }
                 Handle::Loc(id) => {
-                    let (loc, distinct) =
+                    let (loc, atom, distinct) =
                         self.location_body(node.span, node.distinct, &mut scratch)?;
                     let debug = &mut self.module.debug;
-                    let result = if distinct {
-                        debug.define_distinct_loc(id, loc)
-                    } else {
-                        debug.define_loc(id, loc)
-                    };
+                    let result = debug.define_loc_in_atom(id, loc, atom, distinct);
                     ir(node.span.start, result)?;
                 }
                 Handle::None | Handle::Expr(_) | Handle::AssignId => {}
@@ -870,14 +866,16 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
         fail(LlErrorKind::Syntax, at, "a number of a debug node does not fit 64 bits")
     }
 
-    /// The inside of `!DILocation(…)`, and whether it is distinct.
+    /// The inside of `!DILocation(…)`: the location, its key-instruction
+    /// atom (WP-149), and whether it is distinct.
     fn location_body(
         &mut self,
         span: Span,
         distinct: bool,
         scratch: &mut DebugScratch,
-    ) -> PResult<(DiLocation, bool)> {
+    ) -> PResult<(DiLocation, DiAtom, bool)> {
         let mut loc = DiLocation { line: 0, column: 0, scope: DiId::NONE, inlined_at: LocId::NONE };
+        let mut atom = DiAtom::NONE;
         let mut scope = false;
         self.goto(span.start);
         while self.tok.start < span.end {
@@ -909,6 +907,20 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                     }
                 }
                 b"inlinedAt" => loc.inlined_at = self.loc_ref(scratch)?.unwrap_or(LocId::NONE),
+                // WP-149: LLVM's limits are 64 and 8 bits; what it does not
+                // store (61 and 3 bits) `hod_ir` refuses.
+                b"atomGroup" => atom.group = self.expect_u64("expected an atom group")?,
+                b"atomRank" => {
+                    let rank = self.expect_u64("expected an atom rank")?;
+                    let Ok(rank) = u8::try_from(rank) else {
+                        return fail(
+                            LlErrorKind::Syntax,
+                            at,
+                            "value for 'atomRank' too large, limit is 255",
+                        );
+                    };
+                    atom.rank = rank;
+                }
                 _ => {
                     if let Some(DiMapping::Dropped(_)) = di_field(b"DILocation", field) {
                         self.skip_value()?;
@@ -925,7 +937,7 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
         if !scope {
             return fail(LlErrorKind::Syntax, span.end, "missing required field 'scope'");
         }
-        Ok((loc, distinct))
+        Ok((loc, atom, distinct))
     }
 
     /// A location by number, or `null`: `None` for `null`.
@@ -939,10 +951,14 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
         let loc = match node {
             MdRef::Inline(MdKind::Location, span) => {
                 self.enter()?;
-                let (loc, distinct) = self.location_body(span, false, scratch)?;
+                let (loc, atom, distinct) = self.location_body(span, false, scratch)?;
                 self.leave();
                 let debug = &mut self.module.debug;
-                let made = if distinct { debug.distinct_loc(loc) } else { debug.loc(loc) };
+                let made = if distinct {
+                    debug.distinct_loc_in_atom(loc, atom)
+                } else {
+                    debug.loc_in_atom(loc, atom)
+                };
                 Some(ir(at, made)?)
             }
             node => self.loc_of(at, node)?,
@@ -965,9 +981,13 @@ impl<'a, L: Layering> Parser<'a, '_, L> {
                 let read = read.and_then(|read| self.define_tuples(&mut scratch).map(|()| read));
                 scratch.lists.clear();
                 self.dscratch = scratch;
-                let (loc, distinct) = read?;
+                let (loc, atom, distinct) = read?;
                 let debug = &mut self.module.debug;
-                let made = if distinct { debug.distinct_loc(loc) } else { debug.loc(loc) };
+                let made = if distinct {
+                    debug.distinct_loc_in_atom(loc, atom)
+                } else {
+                    debug.loc_in_atom(loc, atom)
+                };
                 Ok(Some(ir(at, made)?))
             }
             MdRef::Inline(..) => Ok(self.invalid_loc()),

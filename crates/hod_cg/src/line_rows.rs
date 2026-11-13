@@ -16,7 +16,7 @@
 use hod_ir::{Inst, InstKind, LocId, Opcode};
 
 use crate::cx::FnCx;
-use crate::record::LineRow;
+use crate::record::{LineRow, ROW_CALL};
 use crate::target::Target;
 
 /// The location the code of `inst` is recorded at (`spec/dwarf.md`
@@ -49,6 +49,7 @@ impl<'a, T: Target> FnCx<'a, T> {
     #[inline]
     pub(crate) fn line_begin(&mut self, loc: LocId) {
         self.line_seg = (self.offset(), loc);
+        self.line_call = false;
     }
 
     /// Closes the open segment: a transition if it emitted code and its
@@ -62,10 +63,18 @@ impl<'a, T: Target> FnCx<'a, T> {
             return;
         }
         let block_start = self.line_block_start;
-        if self.last_loc != Some(loc) || (block_start && loc == LocId::NONE) {
+        // §5.9: in a key-instructions function every segment is a row
+        // (`key_rows` chooses among them), marked when it ends with a call.
+        if self.key_lines || self.last_loc != Some(loc) || (block_start && loc == LocId::NONE) {
             self.last_loc = Some(loc);
-            self.out.lines.push(LineRow { offset, loc, block_start });
+            let marks = if self.line_call { ROW_CALL } else { 0 };
+            self.out.lines.push(LineRow {
+                stmt: self.row_stmt(),
+                marks,
+                ..LineRow::new(offset, loc, block_start)
+            });
         }
+        self.line_call = false;
         self.line_block_start = false;
     }
 

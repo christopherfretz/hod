@@ -711,9 +711,12 @@ the fields LLVM requires are present; the errors are LLVM's. As LLVM, an
 omitted `spFlags` (with no `isDefinition`) is a definition, and so is a
 global variable without `isDefinition`. `!llvm.dbg.cu` adds its compile
 units; a function's `!dbg` is its subprogram; a variable's `!dbg`s are
-its global-variable expressions. Key Instructions (`atomGroup`,
-`atomRank` on a location) are dropped: they change only `is_stmt` and
-the line rows of optimized code.
+its global-variable expressions. Key Instructions (WP-149): a
+location's `atomGroup` (an integer below 2^61) and `atomRank` (at most
+255 as LLVM parses it, at most 7 as LLVM stores it; a larger one is
+`InvalidDebugInfo`) are kept with the location (`DebugInfo::loc_in_atom`,
+`ir.md §6.5`), and `DISubprogram(keyInstructions: true)` is a field of
+the subprogram; `dwarf.md §5.9` decides `is_stmt` from them.
 
 After the global values, `Module::finish_debug` checks that every
 reserved node was defined; and when the debug information is used (a

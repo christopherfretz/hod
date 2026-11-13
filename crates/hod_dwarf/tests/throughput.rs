@@ -28,8 +28,8 @@ use std::time::Instant;
 
 use hod_dwarf::{DebugStrings, GlobalAddr, UnitInput, UnitPlan, write_debug_info};
 use hod_dwarf::{
-    FileEntry, FunctionLines, LineHeader, Row, Sequence, SourceLoc, Transition, function_rows,
-    write_debug_line,
+    FileEntry, FunctionLines, LineHeader, Row, Sequence, SourceLoc, Stmt, Transition,
+    function_rows, write_debug_line,
 };
 use hod_ir::{DiId, DiNode};
 use hod_obj::{Arch, Object, SectionKind, Symbol, SymbolKind, SymbolPlace};
@@ -61,6 +61,7 @@ fn input() -> Vec<(Vec<Transition>, u32)> {
                         offset,
                         loc: Some(SourceLoc { file, line, column: 1 + r.below(40) as u16 }),
                         block_start: false,
+                        stmt: Stmt::Line,
                     };
                     offset += 4 * (1 + r.below(6) as u32);
                     match r.below(20) {

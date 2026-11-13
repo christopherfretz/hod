@@ -98,6 +98,32 @@ pub struct LineRow {
     /// §5.3): a row without a location is then "no line", not the line
     /// of whatever was emitted before the block.
     pub block_start: bool,
+    /// Whether the row is a statement by the line rule or, in a
+    /// function with key instructions, by its atoms (`spec/dwarf.md`
+    /// §5.9, WP-149).
+    pub stmt: Stmt,
+    /// What the key-instruction pass reads (`key_rows`): [`ROW_CALL`],
+    /// [`ROW_CONT`].
+    pub(crate) marks: u8,
+}
+
+/// How a line row's `is_stmt` is decided (`spec/dwarf.md` §5.9).
+pub use hod_dwarf::Stmt;
+
+/// [`LineRow::marks`]: the row's code ends with a call (§5.9 K4).
+pub(crate) const ROW_CALL: u8 = 1;
+/// [`LineRow::marks`]: the row continues the code of the row it
+/// belongs to, emitted elsewhere (a `musttail` call's exit, a shared
+/// epilogue after another block): not an instruction of its own for the
+/// key-instruction pass (§5.9 K6).
+pub(crate) const ROW_CONT: u8 = 2;
+
+impl LineRow {
+    /// A row by the line rule.
+    #[inline]
+    pub(crate) fn new(offset: u32, loc: LocId, block_start: bool) -> Self {
+        LineRow { offset, loc, block_start, stmt: Stmt::Line, marks: 0 }
+    }
 }
 
 /// Where the address a `#dbg_declare` names is, for the whole function

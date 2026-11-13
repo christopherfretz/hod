@@ -6,7 +6,7 @@
 
 use std::borrow::Cow;
 
-use hod_ir::{DiId, DiKind, DiLocation, ExprId, Layering, LocId, Value};
+use hod_ir::{DiAtom, DiId, DiKind, DiLocation, ExprId, Layering, LocId, Value};
 
 use crate::body::{Fx, Ops};
 use crate::codes::func;
@@ -92,7 +92,14 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
     }
 
     /// The location a `DEBUG_LOC` record or a debug record names.
-    fn location(&mut self, scope: u64, inlined_at: u64, line: u64, col: u64) -> BcResult<LocId> {
+    fn location(
+        &mut self,
+        scope: u64,
+        inlined_at: u64,
+        line: u64,
+        col: u64,
+        atom: DiAtom,
+    ) -> BcResult<LocId> {
         let Use::Debug(Handle::Node(scope)) = self.md_use(scope)? else {
             self.note(INVALID);
             return Ok(LocId::NONE);
@@ -111,11 +118,12 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
             return self.invalid("a DEBUG_LOC line over 32 bits");
         };
         let loc = DiLocation { line, column: column(col), scope, inlined_at };
-        ir(self.at, self.module.debug.loc(loc))
+        ir(self.at, self.module.debug.loc_in_atom(loc, atom))
     }
 
     /// `DEBUG_LOC`: `[line, column, scope + 1, inlinedAt + 1, implicit]`,
-    /// and in LLVM 21 and later `atomGroup, atomRank` (dropped).
+    /// and in LLVM 21 and later `atomGroup, atomRank` (WP-149, the
+    /// location's atom).
     pub(crate) fn debug_loc(&mut self, o: &Ops<'_>) -> BcResult<()> {
         let &[line, col, scope, inlined_at, ..] = o.ops else {
             return self.invalid("a DEBUG_LOC record cut short");
@@ -126,7 +134,11 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
         let Some(scope) = scope.checked_sub(1) else {
             return self.invalid("a DEBUG_LOC record without its scope");
         };
-        let loc = self.location(scope, inlined_at, line, col)?;
+        let group = o.ops.get(5).copied().unwrap_or(0);
+        let Ok(rank) = u8::try_from(o.ops.get(6).copied().unwrap_or(0)) else {
+            return self.invalid("a DEBUG_LOC atom rank over 8 bits");
+        };
+        let loc = self.location(scope, inlined_at, line, col, DiAtom { group, rank })?;
         self.last_loc = Some(loc);
         self.loc_last(loc)
     }

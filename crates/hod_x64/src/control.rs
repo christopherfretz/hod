@@ -87,7 +87,14 @@ pub fn cond_br<'a>(
         match compare.kind() {
             InstKind::ICmp { pred, lhs, rhs } if cx.class_of(lhs) == Class::Gpr => {
                 deferred_first(cx, inst, Some(cond))?;
+                // WP-149 (`spec/dwarf.md` §5.8, §5.9): the `cmp` is the
+                // compare's code, at its location, as in `llc`'s x86-64
+                // program (which keeps the compare's atom apart from the
+                // branch's).
+                let outer = cx.line_loc();
+                cx.line_switch(cx.row_loc_of(compare));
                 let c = fused_icmp(cx, pred, lhs, rhs)?;
+                cx.line_switch(outer);
                 return branch_on(cx, c, if_true, if_false);
             }
             InstKind::FCmp { .. } => {

@@ -174,6 +174,10 @@ pub const WIDE_VECTOR_ABI: &str = "x64:wide-vector-abi";
 pub const RET_X87_PART: &str = "x64:ret-x87-part";
 /// A `nest` argument (§6.3).
 pub const NEST: &str = "x64:nest";
+/// An assignment that is right but that no lowering honours yet: the
+/// groups that consume it remove each use as they land (`call::guard`
+/// for WP-125 and WP-131, `term::ret` for WP-126).
+pub const ABI: &str = "x64:todo:abi";
 const SWIFTSELF: &str = "abi:swiftself";
 const SWIFTERROR: &str = "abi:swifterror";
 const SWIFTASYNC: &str = "abi:swiftasync";

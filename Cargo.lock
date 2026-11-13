@@ -163,6 +163,7 @@ dependencies = [
  "hod_ir",
  "hod_ll",
  "hod_mc_x64",
+ "hod_obj",
  "hod_testutil",
 ]
 

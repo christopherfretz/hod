@@ -224,15 +224,30 @@ fn target_features() {
     );
 }
 
-// spec/cli.md "The back half": x86-64 has no code generator yet.
+// spec/cli.md "The back half": an x86-64 module is compiled by the x86-64
+// target (WP-116), into an x86-64 object.
 #[test]
-fn x86_64_is_a_stable_refusal() {
+fn x86_64_modules_are_compiled_for_x86_64() {
     let input = "target triple = \"x86_64-unknown-linux-gnu\"\n\
                  define i32 @f() nounwind {\n  ret i32 1\n}\n";
     let support = hod_ir::Support::everything_implemented(hod_ir::Arch::X86_64);
     let settings = Settings { support: Some(support), ..Settings::default() };
-    let result = hod::compile_with(input.as_bytes(), &obj(), &settings, &mut Report::default());
-    assert_eq!(result, Err(Unsupported::module(Construct::CodegenNotImplemented).into()));
+    let object =
+        hod::compile_with(input.as_bytes(), &obj(), &settings, &mut Report::default()).unwrap();
+    // `e_machine`: EM_X86_64.
+    assert_eq!(object[18..20], [0x3e, 0]);
+    // An x86-64 feature is judged by the x86-64 table, an AArch64 one is
+    // unknown there.
+    for (item, expected) in [("+avx2", None), ("+lse", Some("attr:target-feature-unknown"))] {
+        let options = Options { features: vec![item.into()], ..obj() };
+        let result =
+            hod::compile_with(input.as_bytes(), &options, &settings, &mut Report::default());
+        let refused = result.err().map(|error| match error {
+            CompileError::Unsupported(unsupported) => unsupported.construct.to_string(),
+            other => panic!("{other:?}"),
+        });
+        assert_eq!(refused.as_deref(), expected, "{item}");
+    }
 }
 
 // Measures the break-even of `PARALLEL_MIN_INSTS` (spec/landed/cli/WP-043.md):

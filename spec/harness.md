@@ -3673,7 +3673,8 @@ printed (a pointer is printed as its index in the array).
 run's work directory:
 
 1. the generator writes `prog.c` (csmith with a 60 s limit, as for
-   every tool);
+   every tool, and with the seed's directory as its current directory:
+   csmith also writes `platform.info` there, never in the checkout);
 2. clang writes `prog.ll`;
 3. the oracle: `llc -O0 -global-isel=0 -fast-isel=0 -filetype=obj
    -mtriple=<triple> -relocation-model=pic` writes `oracle.o`;

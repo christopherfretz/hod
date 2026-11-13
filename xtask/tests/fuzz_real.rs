@@ -43,6 +43,20 @@ fn found(tools: &[&str]) -> bool {
     true
 }
 
+/// csmith writes `platform.info` into its current directory: every csmith
+/// child runs in its seed's directory under the build directory, so none
+/// is left in the crate's directory (a test's) or the workspace's.
+fn no_platform_info() {
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for dir in [crate_dir, crate_dir.parent().expect("the workspace")] {
+        assert!(
+            !dir.join("platform.info").exists(),
+            "csmith wrote {}/platform.info",
+            dir.display()
+        );
+    }
+}
+
 fn build_dir() -> PathBuf {
     Path::new(env!("CARGO_TARGET_TMPDIR")).parent().expect("it is <target>/tmp").to_path_buf()
 }
@@ -78,6 +92,7 @@ fn seeds_on_the_host() {
     // The work directory is gone; no finding was saved.
     let left: Vec<_> = std::fs::read_dir(scratch.join("fuzz")).unwrap().flatten().collect();
     assert_eq!(left.len(), 1, "{left:?}");
+    no_platform_info();
 }
 
 // "Findings", "Reduction": a hod that miscompiles (every `xor` is built as
@@ -145,6 +160,7 @@ fn mixed_and_debug_seeds_on_the_host() {
             assert!(summary.lines.as_ref().is_some_and(|l| l.same > 0), "{text}");
         }
     }
+    no_platform_info();
 }
 
 // Harness gap (debug comparison, not hod): `llc -O0` deletes the store of

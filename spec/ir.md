@@ -2437,8 +2437,15 @@ are `TwoTyped` (malformed). A rejected attribute is recorded as
 an interned set to `out`: flags, the unwind-table kind unless none, the
 stack alignment, the strings (the merge of two groups on one function).
 `CALL_SITE_FLAGS` are the call-site function attributes kept (`noreturn`,
-`nounwind`, `returns_twice`, `convergent`); `set_call_site_flags` sets
-`CallDesc`'s fields from them.
+`nounwind`, `returns_twice`, `convergent`, `alwaysinline`, and
+`noinline` as `CALL_SITE_NOINLINE`, a bit above every `FnAttrs` flag:
+a function's `noinline` is dropped, a call site's is kept, WP-188);
+`set_call_site_flags` sets `CallDesc`'s fields from them. A call site
+with both `alwaysinline` and `noinline` is malformed, as in LLVM's
+verifier ("'noinline and alwaysinline' are incompatible"); the printer
+writes them in place after `convergent`. The text reader takes
+`noinline` from a group (`AttrGroup::noinline`) or in place; the
+bitcode reader from a call-site group's kind 14.
 
 **Special globals and attachments** (§2.2). `SpecialGlobal::from_name`
 (without `@`): `llvm.global_ctors`, `llvm.global_dtors`, `llvm.used`,

@@ -362,6 +362,10 @@ pub(crate) const CALL_NORETURN: u8 = 1 << 2;
 pub(crate) const CALL_NOUNWIND: u8 = 1 << 3;
 pub(crate) const CALL_RETURNS_TWICE: u8 = 1 << 4;
 pub(crate) const CALL_CONVERGENT: u8 = 1 << 5;
+/// `alwaysinline` on the call site (WP-188).
+pub(crate) const CALL_ALWAYS_INLINE: u8 = 1 << 6;
+/// `noinline` on the call site (WP-188).
+pub(crate) const CALL_NOINLINE: u8 = 1 << 7;
 
 /// The record of one call, `invoke` or `callbr`. 40 bytes.
 ///
@@ -1904,6 +1908,19 @@ impl<'a> CallSite<'a> {
         self.data().flags & CALL_CONVERGENT != 0
     }
 
+    /// `alwaysinline` on the call site: LLVM's always-inliner inlines
+    /// the call whatever the callee's attributes (`spec/ir.md` §5.7).
+    #[inline]
+    pub fn is_always_inline(&self) -> bool {
+        self.data().flags & CALL_ALWAYS_INLINE != 0
+    }
+
+    /// `noinline` on the call site: no inliner inlines the call.
+    #[inline]
+    pub fn is_noinline(&self) -> bool {
+        self.data().flags & CALL_NOINLINE != 0
+    }
+
     /// Whether the return value or any argument has an attribute.
     #[inline]
     pub fn has_param_attrs(&self) -> bool {
@@ -2012,7 +2029,9 @@ impl fmt::Debug for CallSite<'_> {
             .field("noreturn", &self.is_noreturn())
             .field("nounwind", &self.is_nounwind())
             .field("returns_twice", &self.returns_twice())
-            .field("convergent", &self.is_convergent());
+            .field("convergent", &self.is_convergent())
+            .field("always_inline", &self.is_always_inline())
+            .field("noinline", &self.is_noinline());
         if self.has_param_attrs() {
             s.field("ret_attrs", &self.ret_attrs());
             for index in 0..self.args().len() {

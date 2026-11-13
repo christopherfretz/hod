@@ -215,6 +215,15 @@ const SENSITIVE: [(&str, &str, &str); 6] = [
 fn bodies_that_need_inlining_are_declined_by_name() {
     assert_eq!(SENSITIVE.map(|(why, _, _)| why), inline_reason::ALL);
     for (why, body, extra) in SENSITIVE {
+        // WP-188: LLVM does not inline a body with a `returns_twice`
+        // call; out of line is `opt`'s result.
+        if why == inline_reason::RETURNS_TWICE {
+            for linkage in ["linkonce_odr", "internal", "", "available_externally"] {
+                let module = sensitive(body, extra, linkage, "alwaysinline nounwind");
+                compile(&module).unwrap_or_else(|e| panic!("{linkage}: {e}"));
+            }
+            continue;
+        }
         for linkage in ["linkonce_odr", "internal", ""] {
             let module = sensitive(body, extra, linkage, "alwaysinline nounwind");
             assert_eq!(declined(&module), why, "{linkage}");
@@ -237,9 +246,8 @@ fn bodies_that_need_inlining_are_declined_by_name() {
 
 #[test]
 fn an_alwaysinline_call_site_counts() {
-    // The readers keep a call site's attributes without saying which call
-    // has them: any `alwaysinline` in the module makes every direct call
-    // to a sensitive body suspect.
+    // `opt` inlines at a call site marked `alwaysinline` whatever the
+    // callee says (WP-188).
     let (_, body, extra) = SENSITIVE[0];
     let module = sensitive(
         body,
@@ -249,6 +257,117 @@ fn an_alwaysinline_call_site_counts() {
     )
     .replace("%p = call ptr @s()", "%p = call ptr @s() #2");
     assert_eq!(declined(&module), inline_reason::FRAME_ADDRESS);
+}
+
+/// What `hod::compile` makes of `text` and of its bitcode by each
+/// LLVM's `llvm-as`: the object, or the decline's name. Text and
+/// bitcode agree (the two readers decode call-site attributes apart).
+fn outcome(text: &str) -> Result<Vec<u8>, String> {
+    let module = format!("{HEAD}{text}");
+    let of = |input: &[u8]| match hod::compile(input, &options()) {
+        Ok(object) => Ok(object),
+        Err(CompileError::Unsupported(u)) => Err(u.construct.to_string()),
+        Err(other) => panic!("{other}\n{text}"),
+    };
+    let from_text = of(module.as_bytes());
+    for major in hod_testutil::LLVM_MAJORS {
+        let Some(llvm_as) = tool(&format!("llvm-as-{major}")) else { continue };
+        let mut command = Command::new(llvm_as);
+        command.args(["-o", "-", "-"]);
+        let ran = run_with(&mut command, module.as_bytes(), Duration::from_mins(1));
+        assert!(ran.success(), "llvm-as-{major}: {}\n{module}", ran.stderr_text());
+        assert!(of(&ran.stdout) == from_text, "LLVM {major} bitcode and text differ:\n{text}");
+    }
+    from_text
+}
+
+/// WP-188, `spec/cli.md` "Always-inline": a direct call declines exactly
+/// when `opt -passes=always-inline` (19 and 22) inlines it: the callee or
+/// the call site is `alwaysinline` and the site is not `noinline`, and
+/// the body is one LLVM can inline.
+#[test]
+fn the_decision_is_opt_s_per_call_site() {
+    let ra = "declare ptr @llvm.returnaddress(i32 immarg)";
+    let callee = |attrs: &str, params: &str, body: &str| {
+        format!("define linkonce_odr ptr @s({params}) {attrs} {{\n{body}\n}}\n{ra}\n")
+    };
+    let plain = "  %p = call ptr @llvm.returnaddress(i32 0)\n  ret ptr %p";
+    let caller = |call: &str| format!("define ptr @caller() {{\n  %p = {call}\n  ret ptr %p\n}}\n");
+    let marker = "define void @other() #9 {\n  ret void\n}\nattributes #9 = { alwaysinline }\n";
+    let why = inline_reason::RETURN_ADDRESS;
+    let cases: Vec<(String, Option<&str>)> = vec![
+        // `noinline` callee, plain call, `alwaysinline` elsewhere: kept.
+        (callee("noinline", "", plain) + &caller("call ptr @s()") + marker, None),
+        // `noinline` callee, call site `alwaysinline` (group and in place).
+        (
+            callee("noinline", "", plain)
+                + &caller("call ptr @s() #8")
+                + "attributes #8 = { alwaysinline }\n",
+            Some(why),
+        ),
+        (callee("noinline", "", plain) + &caller("call ptr @s() alwaysinline"), Some(why)),
+        // `alwaysinline` callee, call site `noinline` (group, in place,
+        // a group that also holds other attributes): kept.
+        (
+            callee("alwaysinline", "", plain)
+                + &caller("call ptr @s() #8")
+                + "attributes #8 = { noinline }\n",
+            None,
+        ),
+        (callee("alwaysinline", "", plain) + &caller("call ptr @s() noinline"), None),
+        (
+            callee("alwaysinline", "", plain)
+                + &caller("call ptr @s() #8")
+                + "attributes #8 = { nounwind noinline }\n",
+            None,
+        ),
+        // Called once kept, once inlined: declined.
+        (
+            callee("alwaysinline", "", plain)
+                + &caller("call ptr @s() noinline")
+                + "define ptr @second() {\n  %p = call ptr @s()\n  ret ptr %p\n}\n",
+            Some(why),
+        ),
+        // Bodies LLVM does not inline: variadic, recursive, `indirectbr`,
+        // `llvm.localescape`.
+        (callee("alwaysinline", "...", plain) + &caller("call ptr (...) @s()"), None),
+        (
+            callee(
+                "alwaysinline",
+                "",
+                "  %p = call ptr @llvm.returnaddress(i32 0)\n  %q = call ptr @s()\n  ret ptr %p",
+            ) + &caller("call ptr @s()"),
+            None,
+        ),
+        (
+            callee(
+                "alwaysinline",
+                "",
+                "  %p = call ptr @llvm.returnaddress(i32 0)\n  indirectbr ptr blockaddress(@s, %l), [label %l]\nl:\n  ret ptr %p",
+            ) + &caller("call ptr @s()"),
+            None,
+        ),
+        (
+            callee(
+                "alwaysinline",
+                "",
+                "  %a = alloca i32\n  call void (...) @llvm.localescape(ptr %a)\n  %p = call ptr @llvm.returnaddress(i32 0)\n  ret ptr %p",
+            ) + &caller("call ptr @s()")
+                + "declare void @llvm.localescape(...)\n",
+            None,
+        ),
+        // A plain call of an `alwaysinline` callee: declined.
+        (callee("alwaysinline", "", plain) + &caller("call ptr @s()"), Some(why)),
+    ];
+    for (text, want) in &cases {
+        match (outcome(text), want) {
+            (Ok(_), None) => {}
+            // Kept, and refused for a reason of its own (`localescape`).
+            (Err(name), None) if !inline_reason::ALL.contains(&name.as_str()) => {}
+            (Err(name), Some(want)) if name == *want => {}
+            (got, want) => panic!("{want:?}, got {:?}:\n{text}", got.map(|_| "an object")),
+        }
+    }
 }
 
 #[test]

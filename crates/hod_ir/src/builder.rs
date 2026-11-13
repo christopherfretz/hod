@@ -18,9 +18,10 @@
 
 use crate::attrs::{CallConv, ParamAttrs};
 use crate::body::{
-    BlockData, Body, Bundle, BundleData, CALL_CONVERGENT, CALL_NORETURN, CALL_NOUNWIND,
-    CALL_RETURNS_TWICE, CallData, Callee, Clause, DbgDeclare, DbgRecordData, DbgRecordKind, Fixup,
-    Incoming, LifetimeMarker, MetaData, PadData, Place, Reserved, Slot, SlotVar, UNSET, UseFacts,
+    BlockData, Body, Bundle, BundleData, CALL_ALWAYS_INLINE, CALL_CONVERGENT, CALL_NOINLINE,
+    CALL_NORETURN, CALL_NOUNWIND, CALL_RETURNS_TWICE, CallData, Callee, Clause, DbgDeclare,
+    DbgRecordData, DbgRecordKind, Fixup, Incoming, LifetimeMarker, MetaData, PadData, Place,
+    Reserved, Slot, SlotVar, UNSET, UseFacts,
 };
 use crate::debug::expr::ExprId;
 use crate::error::{IrErrorKind, IrResult, err};
@@ -68,6 +69,10 @@ pub struct CallDesc<'a> {
     /// `convergent` on the call: kept, and constrains transformations
     /// only (`spec/ir.md` §5.7).
     pub convergent: bool,
+    /// `alwaysinline` on the call (WP-188).
+    pub always_inline: bool,
+    /// `noinline` on the call (WP-188).
+    pub noinline: bool,
     /// The kept attributes of the return value.
     pub ret_attrs: ParamAttrs,
     /// The kept attributes of each argument: empty when none has any,
@@ -92,6 +97,8 @@ impl<'a> CallDesc<'a> {
             nounwind: false,
             returns_twice: false,
             convergent: false,
+            always_inline: false,
+            noinline: false,
             ret_attrs: ParamAttrs::NONE,
             arg_attrs: &[],
             bundles: &[],
@@ -1280,7 +1287,9 @@ impl FunctionBuilder {
             | if desc.noreturn { CALL_NORETURN } else { 0 }
             | if desc.nounwind { CALL_NOUNWIND } else { 0 }
             | if desc.returns_twice { CALL_RETURNS_TWICE } else { 0 }
-            | if desc.convergent { CALL_CONVERGENT } else { 0 };
+            | if desc.convergent { CALL_CONVERGENT } else { 0 }
+            | if desc.always_inline { CALL_ALWAYS_INLINE } else { 0 }
+            | if desc.noinline { CALL_NOINLINE } else { 0 };
         let index = body.calls.len() as u32;
         body.calls.push(CallData {
             inst: user,

@@ -5,7 +5,7 @@
 use super::{Signature, Verifier, signature};
 use crate::asm::InlineAsm;
 use crate::attrs::{CallConv, ParamAttrs, ParamMem};
-use crate::body::{BundleData, CALL_TAIL_MASK, CallData, UNSET};
+use crate::body::{BundleData, CALL_ALWAYS_INLINE, CALL_NOINLINE, CALL_TAIL_MASK, CallData, UNSET};
 use crate::constant::Const;
 use crate::error::IrErrorKind::{InvalidAttribute, InvalidCall, InvalidOperand};
 use crate::error::IrResult;
@@ -117,6 +117,10 @@ impl<L: Layering> Verifier<'_, L> {
         let body = self.body;
         let (callee, args) = (vals[0], &vals[1..=call.nargs as usize]);
         let tail = TailKind::from_raw(call.flags & CALL_TAIL_MASK);
+        let both = CALL_ALWAYS_INLINE | CALL_NOINLINE;
+        if call.flags & both == both {
+            return self.fail(InvalidAttribute, id, "'noinline and alwaysinline' are incompatible");
+        }
         let intrinsic = self.intrinsic_of(call);
         let asm = match callee.kind() {
             ValueKind::Asm(asm) if asm.index() < self.module.asm_count() => {

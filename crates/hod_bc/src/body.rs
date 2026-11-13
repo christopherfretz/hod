@@ -958,7 +958,12 @@ impl<L: Layering> Fx<'_, '_, '_, L> {
         crate::attrs::decode(&rec.ops(&self.bits.raw.pool)[2..], rec.pos, &mut scratch)?;
         let FnGroup { attrs, rejected, .. } =
             crate::attrs::fn_group(self.module, &scratch, rec.pos)?;
-        let flags = self.module.fn_attrs(attrs).flags();
+        let mut flags = self.module.fn_attrs(attrs).flags();
+        // `noinline` (kind 14) is dropped from a function's set and kept
+        // on a call site (WP-188).
+        if scratch.iter().any(|a| matches!(a, crate::attrs::Attr::Keyword { kind: 14, .. })) {
+            flags |= hod_ir::kit::CALL_SITE_NOINLINE;
+        }
         self.s.fn_groups.push((id, flags, rejected));
         Ok(self.s.fn_groups.len() - 1)
     }

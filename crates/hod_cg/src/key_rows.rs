@@ -45,7 +45,8 @@ use hod_ir::{DiAtom, DiId, DiNode, SymbolKind};
 use crate::cx::FnCx;
 use crate::error::{CgError, CgResult};
 use crate::record::{LineRow, ROW_CALL, ROW_CONT, Stmt};
-use crate::target::Target;
+use crate::sym::{RuntimeFn, SymRef};
+use crate::target::{CallTarget, Target};
 
 /// A function whose locations come from subprograms with and without
 /// key instructions (§5.9 K7).
@@ -98,12 +99,13 @@ impl<T: Target> FnCx<'_, T> {
         if self.key_lines { Stmt::NotKey } else { Stmt::Line }
     }
 
-    /// A call was emitted for the open segment and returns here (§5.9
-    /// K4): in a key-instructions function, the segment's row ends here,
-    /// marked as ending with a call, and the code after the call is a row
-    /// of its own.
-    pub(crate) fn key_call_returns(&mut self) {
-        if !self.key_lines {
+    /// A call of `target` was emitted for the open segment and returns
+    /// here (§5.9 K4): in a key-instructions function, the segment's row
+    /// ends here, marked as ending with a call, and the code after the
+    /// call is a row of its own. `_Unwind_Resume` is no call there: `llc`
+    /// makes it from a `resume` without a location (`DwarfEHPrepare`).
+    pub(crate) fn key_call_returns(&mut self, target: CallTarget) {
+        if !self.key_lines || target == CallTarget::Sym(SymRef::Runtime(RuntimeFn::UnwindResume)) {
             return;
         }
         let loc = self.line_seg.1;

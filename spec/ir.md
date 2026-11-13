@@ -1443,6 +1443,17 @@ another function, the location of the call it was inlined at
 A location's scope and inlined-at must exist when it is made
 (`UndefinedDebugNode`).
 
+**Atoms** (WP-149, `dwarf.md §5.9`): a location may carry LLVM's Key
+Instructions fields, `DiAtom { group, rank }` (`group` below 2^61, `rank`
+at most 7, as LLVM stores them; 0 for none; otherwise
+`InvalidDebugInfo`). `loc_in_atom`, `distinct_loc_in_atom` and
+`define_loc_in_atom` make one; the atom is part of the location's
+identity (two locations that differ only in it are two ids, as in LLVM).
+`atom(id)` answers for every location. A location without an atom costs
+nothing: the record stays 16 bytes, a flag bit of its state says that a
+side table, keyed by location and only allocated when a module has an
+atom, holds the atom (`has_atoms()`).
+
 ### 6.6 Variables, values and labels in a body
 
 A body carries its debug records in three tables, each empty without

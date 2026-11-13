@@ -111,7 +111,7 @@ impl<T: Target> FnCx<'_, T> {
     /// `target` returns here (`Target::emit_call`, right after the
     /// instruction); `dwarf` numbers an indirect callee's register.
     pub fn call_returns_here(&mut self, target: CallTarget, dwarf: fn(PReg) -> u16) {
-        self.key_call_returns();
+        self.key_call_returns(target);
         let offset = self.offset();
         let first = self.mark.debug_calls as usize;
         if let Some(row) = self.out.debug_calls[first..].last_mut()

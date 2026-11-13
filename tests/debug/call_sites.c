@@ -27,7 +27,6 @@ int main(void) {
 }
 //@ cflags: -O1 -Xclang -disable-llvm-passes
 //@ target: aarch64
-//@ xfail(clang-22 gdb): clang 22's -O1 IR has keyInstructions, which llc 22 uses for is_stmt (a row at each return address); hod ignores atomGroup/atomRank, so gdb's finish stops mid-line (0x? in middle). Equal under -gno-key-instructions
 //@ gdb: break leaf
 //@ gdb: run
 //@ gdb: bt

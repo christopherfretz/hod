@@ -485,7 +485,7 @@ refuses as `di_field` says (`ir.md §6.2`), or a flag read by hand.
 
 | code | record | operands accepted | read by hand |
 |---|---|---|---|
-| 7 | DILocation | 5, 6 or 8: `distinct, line, column, scope (id), inlinedAt + 1[, implicit[, atomGroup, atomRank]]` | column of 16 bits or more is 0; atoms dropped |
+| 7 | DILocation | 5, 6 or 8: `distinct, line, column, scope (id), inlinedAt + 1[, implicit[, atomGroup, atomRank]]` | column of 16 bits or more is 0; `atomGroup, atomRank` kept (WP-149, `ll.md §11.9`) |
 | 12 | GenericDINode | any | `DiOther` |
 | 13 | DISubrange | 5 | version 2 (`op0 >> 1`); each bound a constant, a node or an expression |
 | 14 | DIEnumerator | 3, or wide: `flags, width, name, words…` | sign-rotated words; a value that does not fit 64 bits is `debug:DIEnumerator.wide` |
@@ -941,8 +941,8 @@ The rest follows `hod_ll`'s order:
 **Debug information** is read as `hod_ll` reads it (`ll.md §11.9`):
 
 - **DEBUG_LOC (35)** `[line, column, scope + 1, inlinedAt + 1,
-  implicit]`, and in LLVM 22 `atomGroup, atomRank` (dropped): 4 to 7
-  operands. It is the location of the instructions the last record
+  implicit]`, and in LLVM 22 `atomGroup, atomRank` (kept with the
+  location, WP-149; a rank over 8 bits is `Invalid`): 4 to 7 operands. It is the location of the instructions the last record
   became (`set_loc_since`), interned (`DebugInfo::loc`). A scope that is
   not a node or an inlined-at that is not a location is `debug:invalid`.
   A scope of 0 is `Invalid`. **DEBUG_LOC_AGAIN (33)** repeats the last;

@@ -35,6 +35,8 @@ pub struct IrFunction {
     pub insts: Vec<Located>,
     /// It calls `llvm.is.constant.*`.
     pub calls_is_constant: bool,
+    /// Its subprogram has `keyInstructions: true` (WP-149).
+    pub key_instructions: bool,
 }
 
 /// What the classes need of a set of modules: functions by name (the
@@ -95,10 +97,18 @@ impl IrFacts {
         let locations: BTreeMap<u32, (u32, u32)> =
             text.lines().filter_map(location).map(|(id, l, c)| (id, (l, c))).collect();
         let files = Files::of(text);
+        // WP-149: the subprograms with key instructions.
+        let key: BTreeSet<u32> = text
+            .lines()
+            .filter(|l| l.contains("!DISubprogram(") && l.contains("keyInstructions: true"))
+            .filter_map(|l| l.strip_prefix('!')?.split_once(" = ")?.0.parse().ok())
+            .collect();
         let mut current: Option<(String, IrFunction, Blocks)> = None;
         for line in text.lines() {
             if let Some(name) = defined(line) {
-                current = Some((name, IrFunction::default(), Blocks::default()));
+                let key_instructions = dbg(line).is_some_and(|sp| key.contains(&sp));
+                let function = IrFunction { key_instructions, ..IrFunction::default() };
+                current = Some((name, function, Blocks::default()));
                 continue;
             }
             let Some((name, function, blocks)) = current.as_mut() else { continue };
@@ -178,6 +188,11 @@ impl IrFacts {
             return Some(PairClass::IsConstant);
         }
         None
+    }
+
+    /// Whether `function`'s subprogram has key instructions (§5.9).
+    pub fn key_instructions(&self, function: &str) -> bool {
+        self.functions.get(function).is_some_and(|f| f.key_instructions)
     }
 
     /// Whether some `call` or `invoke` (of any function of the modules)
@@ -418,6 +433,20 @@ define linkonce_odr void @\"quoted name\"() {
 !23 = !DILocation(line: 21, scope: !10)
 !24 = !DILocation(line: 22, column: 3, scope: !10)
 ";
+
+    // spec/dwarf.md §5.9: which functions have key instructions.
+    #[test]
+    fn reads_key_instructions() {
+        let ir = "define void @k() !dbg !5 {\n  ret void, !dbg !6\n}\n\
+                  define void @p() !dbg !7 {\n  ret void\n}\n\
+                  !5 = distinct !DISubprogram(name: \"k\", keyInstructions: true)\n\
+                  !6 = !DILocation(line: 2, scope: !5, atomGroup: 1, atomRank: 1)\n\
+                  !7 = distinct !DISubprogram(name: \"p\")\n";
+        let facts = IrFacts::of_modules([ir]);
+        assert!(facts.key_instructions("k"));
+        assert!(!facts.key_instructions("p"));
+        assert!(!facts.key_instructions("absent"));
+    }
 
     // spec/harness.md "debug", "Lines": the IR's facts and the classes.
     #[test]
